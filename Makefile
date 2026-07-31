@@ -1,4 +1,4 @@
-.PHONY: test-unit test-dev-mcp test-fly-integration test-integration test-hangar-integration test-k8s test-k8s-integration test-k8s-behavioral test-quick test-all build-agent-broker-image test-agent-broker-smoke
+.PHONY: test-unit test-dev-mcp test-bench-harness test-fly-integration test-integration test-hangar-integration test-k8s test-k8s-integration test-k8s-behavioral test-quick test-all build-agent-broker-image test-agent-broker-smoke
 
 AGENT_BROKER_IMAGE ?= concourse-agent-broker:dev
 
@@ -41,6 +41,12 @@ test-unit:
 test-dev-mcp:
 	@echo "==> Running dev-mcp server tests..."
 	cd ci-agent && go test ./... -count=1
+
+# Bench harness: out-of-band graders for bench/corpus (~1 sec)
+# Requires: nothing. Separate module, so `make test-unit` never compiles it.
+test-bench-harness:
+	@echo "==> Running bench harness tests..."
+	cd bench/harness && go test ./... -count=1
 
 # Fly integration tests (~10 min)
 # Requires: nothing (uses mock HTTP server)
