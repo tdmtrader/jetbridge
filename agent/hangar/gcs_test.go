@@ -1309,3 +1309,25 @@ type writeFailingScratch struct {
 func (scratch *writeFailingScratch) Write([]byte) (int, error) {
 	return 0, scratch.err
 }
+
+// The artifact daemon builds its GCSConfig without naming a compression level
+// (cmd/artifact-daemon/main.go). zstd.EncoderLevel's zero value is not a valid
+// level, so an unset field made every Hangar-enabled daemon exit at boot with
+// "invalid zstd encoder configuration: unknown encoder level" — the store is
+// unreachable in production while every test passed, because the tests all set
+// the field explicitly. Treat the zero value as "use the default".
+func TestGCSStoreDefaultsUnsetZstdLevel(t *testing.T) {
+	scratch := t.TempDir()
+	store, err := newGCSStore(newMemoryObjectClient(), GCSConfig{
+		Bucket:       "bucket",
+		ScratchDir:   scratch,
+		ReadTimeout:  time.Minute,
+		WriteTimeout: time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("a config with no ZstdLevel must be usable: %v", err)
+	}
+	if store.config.ZstdLevel != zstd.SpeedDefault {
+		t.Fatalf("ZstdLevel = %v, want SpeedDefault", store.config.ZstdLevel)
+	}
+}

@@ -95,6 +95,13 @@ func newGCSStore(objects objectClient, config GCSConfig) (*GCSStore, error) {
 	if config.WriteTimeout <= 0 {
 		return nil, fmt.Errorf("hangar: GCS write timeout must be positive")
 	}
+	// zstd.EncoderLevel's zero value is not a valid level, so an omitted
+	// ZstdLevel would fail the probe below rather than pick a sane default.
+	// The artifact daemon omits it, which made every Hangar-enabled daemon
+	// exit at boot; treat unset as the default level.
+	if config.ZstdLevel == 0 {
+		config.ZstdLevel = zstd.SpeedDefault
+	}
 
 	encoder, err := zstd.NewWriter(
 		io.Discard,
