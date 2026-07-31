@@ -313,6 +313,170 @@ func waitForCoreDNS(kubeconfig string) {
 	}
 }
 
+const (
+	// hangarEmulatorBucket is the Hangar bucket these tests seal snapshots
+	// into. It exists as a directory under the emulator's filesystem root —
+	// fake-gcs-server treats each top-level directory as a bucket, so creating
+	// it is a mkdir rather than an API call that would have to be retried until
+	// the server is up.
+	hangarEmulatorBucket = "concourse-hangar"
+
+	// hangarEmulatorImage matches the emulator the live cluster runs, so a
+	// snapshot that seals here seals the same way in production.
+	hangarEmulatorImage = "fsouza/fake-gcs-server:1.52.3"
+)
+
+// hangarEmulatorEndpoint is the GCS-compatible JSON endpoint the artifact
+// daemon talks to. The daemon passes it to the GCS client verbatim, which is
+// why it carries the /storage/v1/ suffix while the emulator's own external URL
+// does not.
+func hangarEmulatorEndpoint(namespace string) string {
+	return fmt.Sprintf("http://fake-gcs.%s.svc:4443/storage/v1/", namespace)
+}
+
+// deployHangarEmulator stands up a GCS-compatible object store for the artifact
+// daemon to seal agent snapshots into.
+//
+// The daemon builds its Hangar client at startup and calls os.Exit(1) if that
+// fails, before it ever binds its listener. With agentSnapshots enabled and no
+// endpoint configured it reaches for production application-default
+// credentials, which do not exist in an ephemeral K3s cluster — so the daemon
+// dies, its hostPort answers nothing, and every step that fetches an artifact
+// fails with "connection refused" from an init container that looks like the
+// culprit. An in-cluster emulator is what keeps that failure from being the
+// suite's normal state.
+//
+// Storage is an emptyDir: snapshots live exactly as long as the cluster does,
+// and nothing here should outlive the run that wrote it.
+func deployHangarEmulator(kubeconfig, namespace string) {
+	log.Printf("Deploying Hangar GCS emulator into namespace %s...", namespace)
+
+	manifest := fmt.Sprintf(`
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hangar-fake-gcs
+  namespace: %[1]s
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hangar-fake-gcs
+  template:
+    metadata:
+      labels:
+        app: hangar-fake-gcs
+    spec:
+      initContainers:
+        - name: create-bucket
+          image: %[2]s
+          command: ["/bin/sh", "-c", "mkdir -p /data/%[3]s"]
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      containers:
+        - name: fake-gcs
+          image: %[2]s
+          args:
+            - -scheme=http
+            - -port=4443
+            - -backend=filesystem
+            - -filesystem-root=/data
+            - -external-url=http://fake-gcs.%[1]s.svc:4443
+          ports:
+            - name: http
+              containerPort: 4443
+          readinessProbe:
+            tcpSocket:
+              port: 4443
+            initialDelaySeconds: 1
+            periodSeconds: 2
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fake-gcs
+  namespace: %[1]s
+spec:
+  selector:
+    app: hangar-fake-gcs
+  ports:
+    - name: http
+      port: 4443
+      targetPort: 4443
+`, namespace, hangarEmulatorImage, hangarEmulatorBucket)
+
+	apply := exec.Command("kubectl", "--kubeconfig", kubeconfig, "apply", "-f", "-")
+	apply.Stdin = strings.NewReader(manifest)
+	apply.Stdout = os.Stderr
+	apply.Stderr = os.Stderr
+	if err := apply.Run(); err != nil {
+		log.Fatalf("failed to deploy Hangar GCS emulator: %v", err)
+	}
+
+	wait := exec.Command("kubectl", "--kubeconfig", kubeconfig, "-n", namespace,
+		"wait", "--for=condition=available", "deployment/hangar-fake-gcs", "--timeout=180s")
+	wait.Stdout = os.Stderr
+	wait.Stderr = os.Stderr
+	if err := wait.Run(); err != nil {
+		describePods(kubeconfig, namespace)
+		log.Fatalf("timed out waiting for the Hangar GCS emulator: %v", err)
+	}
+	log.Println("Hangar GCS emulator is ready.")
+}
+
+// waitForArtifactDaemon blocks until the artifact daemon is serving on every
+// node, and explains itself when it is not.
+//
+// Waiting only for web lets the suite start against a daemon that is still
+// crash-looping, and the daemon is not something a spec ever names: it surfaces
+// dozens of specs later as a `fetch-inputs` init container that cannot reach
+// a host port, which reads as a broken artifact protocol rather than a daemon
+// that never started. Failing here instead, with the daemon's own logs,
+// names the actual problem.
+func waitForArtifactDaemon(kubeconfig, namespace string) {
+	log.Println("Waiting for the artifact daemon to be ready...")
+	wait := exec.Command("kubectl", "--kubeconfig", kubeconfig, "-n", namespace,
+		"wait", "--for=condition=ready", "pod",
+		"-l", "app.kubernetes.io/component=artifact-daemon",
+		"--timeout=180s")
+	wait.Stdout = os.Stderr
+	wait.Stderr = os.Stderr
+	if err := wait.Run(); err == nil {
+		log.Println("Artifact daemon is ready.")
+		return
+	} else {
+		log.Printf("artifact daemon did not become ready: %v", err)
+	}
+
+	describe := exec.Command("kubectl", "--kubeconfig", kubeconfig, "-n", namespace,
+		"describe", "pods", "-l", "app.kubernetes.io/component=artifact-daemon")
+	describe.Stdout = os.Stderr
+	describe.Stderr = os.Stderr
+	describe.Run()
+	logs := exec.Command("kubectl", "--kubeconfig", kubeconfig, "-n", namespace,
+		"logs", "-l", "app.kubernetes.io/component=artifact-daemon",
+		"--all-containers", "--tail=80")
+	logs.Stdout = os.Stderr
+	logs.Stderr = os.Stderr
+	logs.Run()
+	log.Fatalf("artifact daemon never became ready; every artifact fetch would fail with connection refused")
+}
+
+// describePods dumps pod state for diagnosis when a wait times out.
+func describePods(kubeconfig, namespace string) {
+	desc := exec.Command("kubectl", "--kubeconfig", kubeconfig, "-n", namespace, "describe", "pods")
+	desc.Stdout = os.Stderr
+	desc.Stderr = os.Stderr
+	desc.Run()
+}
+
 // helmDeployConcourse deploys Concourse via the local Helm chart.
 func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 	repo, tag := splitImageRef(image)
@@ -323,6 +487,8 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 
 	exec.Command("kubectl", "--kubeconfig", kubeconfig,
 		"create", "namespace", namespace).Run()
+
+	deployHangarEmulator(kubeconfig, namespace)
 
 	log.Printf("Deploying Concourse chart from %s into namespace %s...", chartPath, namespace)
 	extraArgs := ""
@@ -348,6 +514,12 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 		"--set", "artifactDaemon.tls.enabled=true",
 		"--set", "agentSnapshots.enabled=true",
 		"--set", "agentSnapshots.replicationFactor=1",
+		// Snapshots need durable Hangar storage, and the daemon exits at
+		// startup rather than run without the bucket it was told to use. Point
+		// it at the in-cluster emulator; production credentials do not exist
+		// here and reaching for them is what kills the daemon.
+		"--set", "artifactDaemon.hangar.bucket=" + hangarEmulatorBucket,
+		"--set", "artifactDaemon.hangar.endpoint=" + hangarEmulatorEndpoint(namespace),
 		"--set", "agentExperiments.runnerEnabled=true",
 		"--timeout", "5m",
 	}
@@ -373,13 +545,11 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 	waitCmd.Stdout = os.Stderr
 	waitCmd.Stderr = os.Stderr
 	if err := waitCmd.Run(); err != nil {
-		descCmd := exec.Command("kubectl", "--kubeconfig", kubeconfig,
-			"-n", namespace, "describe", "pods")
-		descCmd.Stdout = os.Stderr
-		descCmd.Stderr = os.Stderr
-		descCmd.Run()
+		describePods(kubeconfig, namespace)
 		log.Fatalf("timed out waiting for concourse-web pod: %v", err)
 	}
+
+	waitForArtifactDaemon(kubeconfig, namespace)
 }
 
 // portForwardManager manages an in-process port-forward tunnel.
