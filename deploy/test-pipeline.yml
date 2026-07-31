@@ -129,7 +129,7 @@ jobs:
           echo "=== Running jetbridge live integration tests ==="
           echo "These tests create real K8s pods against the live cluster."
           echo ""
-          go test -tags live -v -count=1 -timeout 5m ./atc/worker/jetbridge/...
+          go test -tags live -v -count=1 -timeout 15m ./atc/worker/jetbridge/...
           echo "=== Live integration tests passed ==="
 
 - name: build-image

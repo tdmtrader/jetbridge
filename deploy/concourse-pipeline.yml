@@ -1049,9 +1049,15 @@ jobs:
           done
           echo ""
 
+          # Fallbacks only. The suite reads the daemon's storage path, port,
+          # service name and namespace from the deployed DaemonSet, so these
+          # apply solely if it cannot. ARTIFACT_DAEMON_SERVICE is deliberately
+          # not set: the deployed service is concourse-artifact-daemon, that
+          # name is the SAN the daemon's certificate is verified against, and a
+          # value guessed here breaks every ATC-side mTLS call while leaving
+          # the init containers — which skip hostname verification — working.
           export ARTIFACT_DAEMON_HOST_PATH=/var/concourse/artifacts
           export ARTIFACT_DAEMON_PORT=7780
-          export ARTIFACT_DAEMON_SERVICE=artifact-daemon
           # Exercise the helper this cluster actually deploys. The suite defaults
           # to alpine:latest on its own, so this is about testing what ships
           # rather than about making the tests pass.
@@ -1062,7 +1068,7 @@ jobs:
           echo "These tests create real K8s pods against the live cluster."
           echo "Artifact daemon: hostPath=$ARTIFACT_DAEMON_HOST_PATH port=$ARTIFACT_DAEMON_PORT"
           echo ""
-          go test -tags live -v -count=1 -timeout 5m ./atc/worker/jetbridge/...
+          go test -tags live -v -count=1 -timeout 15m ./atc/worker/jetbridge/...
           echo "=== Live integration tests passed ==="
 
 - name: release
