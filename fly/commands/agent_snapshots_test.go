@@ -17,6 +17,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/concourse/concourse/agent/snapshot"
 )
 
 func TestParseAgentSnapshotIDPreservesExactInt64Identity(t *testing.T) {
@@ -92,7 +94,7 @@ func TestWriteAgentSnapshotTarIsDeterministicAndNormalized(t *testing.T) {
 		got = append(got, entry{hdr.Name, hdr.Mode, hdr.Typeflag, hdr.Linkname, string(body)})
 	}
 	want := []entry{
-		{name: "empty/", mode: 0o755, kind: tar.TypeDir},
+		{name: "empty", mode: 0o755, kind: tar.TypeDir},
 		{name: "run", mode: 0o755, kind: tar.TypeReg, body: "#!/bin/sh\n"},
 		{name: "safe-link", mode: 0o777, kind: tar.TypeSymlink, link: "z.txt"},
 		{name: "z.txt", mode: 0o644, kind: tar.TypeReg, body: "z"},
@@ -100,6 +102,29 @@ func TestWriteAgentSnapshotTarIsDeterministicAndNormalized(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("tar entries = %#v, want %#v", got, want)
 	}
+}
+
+func TestWriteAgentSnapshotTarMatchesServerCanonicalizer(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "nested", "value.txt"), []byte("value"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var archive bytes.Buffer
+	archiveAgentSnapshotDirectory(t, root, &archive)
+	canonicalizer := snapshot.Canonicalizer{
+		MaxEntries:      snapshot.DefaultMaxSnapshotEntries,
+		MaxContentBytes: snapshot.DefaultMaxSnapshotContentBytes,
+		TempDir:         t.TempDir(),
+	}
+	tree, err := canonicalizer.Capture(context.Background(), bytes.NewReader(archive.Bytes()))
+	if err != nil {
+		t.Fatalf("server canonicalizer rejected Fly archive: %v", err)
+	}
+	defer tree.Close()
 }
 
 func TestWriteAgentSnapshotTarRejectsUnsafeFilesystemEntries(t *testing.T) {

@@ -400,32 +400,7 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 		prompt = b.String() + "\n---\n\n" + prompt
 	}
 
-	if outputBuilderEnabled {
-		prompt = "# Structured output builder (platform-managed MCP)\n\nUse describe_output, write_output, and validate_output to author declared records. Builder validation is preflight only; Concourse independently captures, validates, and seals every output after this step.\n\n---\n\n" + prompt
-	} else if len(cfg.InputSnapshots) > 0 || len(cfg.RecordOutputs) > 0 {
-		var b strings.Builder
-		b.WriteString("# Sealed record authority (platform-resolved)\n\n")
-		inputs := sortedAuthorityNames(cfg.InputSnapshots)
-		for _, name := range inputs {
-			authority := cfg.InputSnapshots[name]
-			fmt.Fprintf(&b, "$%s_SNAPSHOT_TYPE = %s\n", name, authority.Type)
-			fmt.Fprintf(&b, "$%s_SNAPSHOT_DIGEST = %s\n", name, authority.Digest)
-		}
-		outputs := sortedAuthorityNames(cfg.RecordOutputs)
-		for _, name := range outputs {
-			authority := cfg.RecordOutputs[name]
-			fmt.Fprintf(&b, "$%s_RECORD_TYPE = %s\n", name, authority.Type)
-			fmt.Fprintf(&b, "$%s_RECORD_SCHEMA = %s\n", name, authority.Schema)
-		}
-		b.WriteString("\nCopy these exact values into record.json; they are verified again when the output is sealed.\n")
-		// The seal gate (contracts.ValidateEntityIDs, reached from
-		// Record.validateEnvelopeShape and every body Validate) rejects
-		// an unsorted or duplicate id set. It fires only after the step
-		// has spent its whole budget slice, so the rule has to reach
-		// every agent — a seed prompt only reaches its own seed.
-		b.WriteString("Sort record subjects and every body entity list (findings, hypotheses, actions, checks, candidates, metrics) lexicographically by id with no duplicates — including any id-reference list inside an entry, such as an action's addresses; unsorted ids are rejected when the output is sealed.\n")
-		prompt = b.String() + "\n---\n\n" + prompt
-	}
+	prompt = decorateOutputContractPrompt(prompt, outputBuilderEnabled, cfg.InputSnapshots, cfg.RecordOutputs)
 
 	// Session-start context (design §4): superpowers-style injection,
 	// done platform-side — the block precedes the step prompt.
@@ -702,6 +677,38 @@ func sortedAuthorityNames[T any](values map[string]T) []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+func decorateOutputContractPrompt(
+	prompt string,
+	outputBuilderEnabled bool,
+	inputSnapshots map[string]SnapshotAuthority,
+	recordOutputs map[string]RecordAuthority,
+) string {
+	// Exact authority remains visible even when the managed builder is enabled:
+	// an unavailable MCP must not force the model to invent input digests or the
+	// current schema digest for a directly authored fallback record.
+	if len(inputSnapshots) > 0 || len(recordOutputs) > 0 {
+		var b strings.Builder
+		b.WriteString("# Sealed record authority (platform-resolved)\n\n")
+		for _, name := range sortedAuthorityNames(inputSnapshots) {
+			authority := inputSnapshots[name]
+			fmt.Fprintf(&b, "$%s_SNAPSHOT_TYPE = %s\n", name, authority.Type)
+			fmt.Fprintf(&b, "$%s_SNAPSHOT_DIGEST = %s\n", name, authority.Digest)
+		}
+		for _, name := range sortedAuthorityNames(recordOutputs) {
+			authority := recordOutputs[name]
+			fmt.Fprintf(&b, "$%s_RECORD_TYPE = %s\n", name, authority.Type)
+			fmt.Fprintf(&b, "$%s_RECORD_SCHEMA = %s\n", name, authority.Schema)
+		}
+		b.WriteString("\nCopy these exact values into record.json; they are verified again when the output is sealed.\n")
+		b.WriteString("Sort record subjects and every body entity list (findings, hypotheses, actions, checks, candidates, metrics) lexicographically by id with no duplicates — including any id-reference list inside an entry, such as an action's addresses; unsorted ids are rejected when the output is sealed.\n")
+		prompt = b.String() + "\n---\n\n" + prompt
+	}
+	if outputBuilderEnabled {
+		prompt = "# Structured output builder (platform-managed MCP)\n\nUse describe_output, write_output, and validate_output to author declared records. Builder validation is preflight only; Concourse independently captures, validates, and seals every output after this step. If the managed builder is unavailable, use the exact sealed-record authority below to author the declared record directly.\n\n---\n\n" + prompt
+	}
+	return prompt
 }
 
 // waitForSidecars polls GET <url with /mcp replaced by /healthz> for every

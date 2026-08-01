@@ -21,6 +21,29 @@ func TestAdmittedMCPServersAddsOnlyServerOwnedOutputBuilder(t *testing.T) {
 	}
 }
 
+func TestOutputBuilderPromptRetainsSealedRecordAuthorityFallback(t *testing.T) {
+	prompt := decorateOutputContractPrompt(
+		"do it",
+		true,
+		map[string]SnapshotAuthority{
+			"AGENT_INPUT_LOGS": {Type: "log-bundle/v1", Digest: "sha256:" + strings.Repeat("a", 64)},
+		},
+		map[string]RecordAuthority{
+			"AGENT_OUTPUT_DIAGNOSIS": {Type: "diagnosis/v1", Schema: "sha256:" + strings.Repeat("b", 64)},
+		},
+	)
+	for _, want := range []string{
+		"# Structured output builder (platform-managed MCP)",
+		"# Sealed record authority (platform-resolved)",
+		"$AGENT_INPUT_LOGS_SNAPSHOT_DIGEST = sha256:" + strings.Repeat("a", 64),
+		"$AGENT_OUTPUT_DIAGNOSIS_RECORD_SCHEMA = sha256:" + strings.Repeat("b", 64),
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
 func TestAdmitBrokerMCPRejectsImpersonationAndInjectsOnlyServerMarker(t *testing.T) {
 	for _, authored := range []map[string]string{{"agent-broker": "http://127.0.0.1:7784/mcp"}, {"other": "http://127.0.0.1:7784/mcp"}} {
 		if _, _, err := admittedMCPServers("", authored); err == nil {

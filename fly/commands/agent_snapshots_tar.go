@@ -82,7 +82,6 @@ func writeAgentSnapshotTarFromRoot(ctx context.Context, root *os.Root, output io
 
 		switch {
 		case mode.IsDir():
-			hdr.Name += "/"
 			hdr.Typeflag = tar.TypeDir
 			hdr.Mode = 0o755
 		case mode.IsRegular():
