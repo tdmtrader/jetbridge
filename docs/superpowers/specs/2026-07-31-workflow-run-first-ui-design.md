@@ -68,6 +68,36 @@ graph.
 
 ## Stable node identity
 
+Graph nodes divide into two classes, and only one of them carries durable
+identity.
+
+**Execution nodes** — agent, task, await, publish, load — are the nodes that
+actually run, and they are the only kinds
+`agent_workflow_run_node_occurrences` stores. Their IDs are the workflow-local
+identities described below, and the durable projection is keyed on them.
+
+**Endpoint nodes** — workflow inputs, workflow outputs, and resource sources —
+exist to make dataflow legible on the canvas. They never execute and never
+carry an occurrence. Their IDs are kind-qualified (`input:repository`,
+`output:review`, `source:main`) so they cannot collide with an execution
+identity.
+
+The qualification is not cosmetic. The shipped seed
+`agent/workflow/seeds/code-review-v3/workflow.yaml` declares output port
+`review` (`from: review`) alongside an agent whose `function_id` is `review` —
+which is idiomatic, since the port takes its name from the binding that feeds
+it. With bare endpoint IDs the output node collides with the agent node, and a
+graph builder that de-duplicates by ID silently drops the workflow's only
+public output. Kind-qualifying endpoints removes the collision class entirely
+rather than forbidding a legal and natural authoring pattern.
+
+Output ports in particular are in no identity namespace at either compile or
+render time, so nothing upstream prevents this — the graph layer must handle
+it.
+
+The rest of this section concerns execution nodes, whose identity does have to
+be unique because durable history is keyed on it.
+
 There is one workflow-local identity namespace per workflow version.
 
 - **agent and task nodes** use the authored `function_id`, as enforced today.
