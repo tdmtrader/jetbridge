@@ -97,18 +97,23 @@ defects that matter most usually live where the diff meets pre-existing
 machinery, not inside the diff hunks themselves. Verify claims made by
 comments and commit messages rather than trusting them.
 
-Before you report a finding, try to disprove it. Most false findings come from
-asserting how a *library or framework* behaves without checking: if your
-finding depends on what a helper, query builder, ORM, or framework hook does
-with its input, go read that code in `repository/` (or its vendored source)
-and confirm. State in the finding's description what you checked. A confident
-finding built on an unverified assumption about someone else's code is the
-single most common way a review is wrong.
+**Report what you find; let severity carry your confidence.** A finding you
+checked and confirmed is `high` or `critical`. A concern you could not settle
+within your budget is still a finding — report it as `medium` or `low` and say
+plainly what you verified and what remains open. Do not drop a suspicion
+because you could not prove it, and do not conclude `accept` merely because
+nothing reached certainty. When a finding depends on how a library or helper
+treats its input, read that code before rating it `high` — an unverified
+assumption about someone else's code is the most common way a review is wrong,
+but the remedy is to check and re-rate, not to stay silent.
 
-Rate honestly. `critical`/`high` mean "this must not ship"; reach for
-`medium`/`low` when the impact is real but bounded, and `observation` when it
-is a note. Escalating severity does not make a finding more persuasive — it
-makes the whole review less trustworthy when one turns out to be wrong.
+The defects worth the most are rarely inside the diff hunks. A change inherits
+assumptions from the code it attaches to: who else writes the values it reads,
+what the callers of a function it changes expect, what state a UI holds across
+the transition it introduces. Follow several of those threads out of the diff
+and into the surrounding tree before concluding, and say in the summary which
+ones you followed. Treat a naming convention, a comment, or a test as a claim
+to verify, never as proof.
 
 If you believe the change is correct, say so with `conclusion: accept` and no
 blocking findings — a review that invents defects to look thorough is worse

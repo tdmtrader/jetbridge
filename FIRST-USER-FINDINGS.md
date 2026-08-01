@@ -280,6 +280,110 @@ $2.10 for the runs above) but `nodes show-run --json` reports no cost at all.
 For iterating on a node, cost per version is exactly the number you want next
 to the outcome.
 
+### F29 🔵 CONFIRMED: "write early, then refine" turns a total loss into a
+correct answer
+Re-ran both nodes with only the prompt changed (write a provisional record
+immediately, refine it after). `log-diagnosis@8` on rca-jb-004 went from
+*80 turns, zero output, errored* to **succeeded with the correct root cause**:
+rank-1 hypothesis at 0.98 confidence naming
+`atc/worker/jetbridge/worker.go:364-367` recording an artifact-daemon **pod
+IP** into a field that contractually holds a Kubernetes **Node name** — which
+is verbatim the withheld answer's "This is the defect", with the right
+supporting anchor in `artifact_locator.go:30-34`, plus honest log anchors and
+three prioritized actions. One sentence of prompt discipline was the whole
+difference between a $2 loss and a correct diagnosis.
+**Take-away for node authors:** any node whose agent explores before it
+concludes should mandate an early provisional write. Idempotent record
+writing makes this free.
+
+### F30 🔵 The same prompt change that fixed one node BROKE the other
+The identical iteration (write-early + "try to disprove your finding before
+reporting it" + severity calibration) applied to code-review produced
+`conclusion: accept` with **zero findings** on a case where two real majors
+exist — worse than the previous version, which at least found the right code.
+The summary is a confident, well-written account of four review angles that
+"came back clean", including the very endpoint the earlier version had
+flagged.
+The lesson is sharper than "prompts are finicky": my precision instruction
+had no floor, so *disprove before reporting* collapsed into *do not report
+what you could not prove*, and an agent that cannot fully confirm a suspicion
+in its turn budget reports nothing. Rebalanced to: verification decides a
+finding's **severity and wording, never whether it is reported**; an
+unresolved suspicion must still be reported at the severity the evidence
+supports; never conclude `accept` merely because nothing reached certainty.
+**Take-away for the platform:** node iteration needs A/B, not sequencing —
+this regression was only visible because the same fixture was re-run and
+graded. `agent/experiment` cannot target a node today
+(`TargetKind` is workflow|function), so every node author has to hand-roll
+what the experiment subsystem already does. Adding `TargetNode` would make
+this loop first-class.
+
+### F32 🔵 Scored against the judge rubric, the diagnosis beats the human
+baseline on provenance
+Hand-scoring `log-diagnosis@8`'s record against
+`rca-jb-004/ground_truth/rubric.md` Part A (the diagnosis half, 60%):
+- **A-1 type confusion (25%) — full.** Names both halves the rubric requires
+  (a pod IP, in a field that holds a Node name) *and* the write site
+  `artifactLocator.Record(cacheKey, daemonIP, cacheKey)`. The rubric scores
+  zero for answers that stop at `NodeIPResolver.Resolve` — this one explicitly
+  distinguishes where the error is printed from where the bad value is made.
+- **A-2 read-back seam (15%) — full, with the bonus.** Traces
+  `WrapVolumeForLookup` → `DaemonSetVolume.sourceNode` → `Resolve`, and its
+  recommended fix cites `NewDaemonSetVolumeFromIP` as the branch that exists
+  precisely to skip the resolver — the rubric's listed bonus.
+- **A-4 provenance (10%) — strong.** Separates the change that *introduced*
+  the bad write from the 18 April change that made it *reachable*, which the
+  rubric says "exceeds the human baseline". (Its introduction date is a week
+  off the human answer of record; the rubric explicitly does not require SHA
+  archaeology when the change is described by content.)
+- **A-3 observed pattern (10%) — the gap.** It never explains why only
+  cache-*hit* builds fail or why wiping the daemon directory buys exactly one
+  good build. It offered a single hypothesis and no counterevidence.
+Roughly 50-52 of 60 on the diagnosis half, with a clean, specific miss to aim
+the next prompt iteration at: require the record to account for the *observed
+pattern*, not only the mechanism.
+
+### F33 ⚪ A node is a signature subset of a corpus case, and nothing says so
+rca-jb-004's signature declares **two** outputs (`diagnosis/v1` *and*
+`repository-change/v1`); my node produces only the diagnosis, so the case's
+Part B is simply unscored. That is a legitimate way to work — start with one
+output, add the second later — but nothing in the platform or the harness
+records that a run covered a *subset* of the case. A result that says
+"52/60 on Part A" and a result that says "52/100 overall" are very different
+claims, and today only a human's memory distinguishes them.
+
+### F34 🔵 Adversarial-precision wording suppresses recall, and the effect is
+stable across versions
+The rebalanced prompt (v10: "disproving means checking, not dropping", explicit
+"never conclude `accept` merely because nothing reached certainty") produced
+**the same `accept`, zero findings** result as v8. Two consecutive versions,
+same fixture. Worse, v10's summary asserts the change "correctly leverages the
+1:1 ticket↔template relationship (`agent-ticket-<id>` naming)" — treating a
+naming convention as an authorization guarantee, which is exactly the reasoning
+the case is built to punish.
+So the floor clause did not undo the damage: once a prompt frames the reviewer's
+job as *surviving scrutiny*, the cheapest way to satisfy it is to find nothing.
+v11 drops the disprove framing entirely and re-expresses the same intent as
+**severity carries confidence** — report the concern, let the rating encode how
+well you verified it — plus "treat a naming convention, a comment, or a test as
+a claim to verify, never as proof". Running now.
+**Generalizable:** precision and recall instructions are not independent knobs
+in a prompt. Language that rewards caution costs recall asymmetrically, and you
+cannot see it without a fixture whose answer you already know. This is the
+strongest argument in the session for `TargetNode` in `agent/experiment`: every
+node author will make this exact mistake, and only a graded A/B reveals it.
+
+### F31 ⚪ Two nodes, two very different failure profiles
+Worth recording as the reason to build more than one node before generalizing:
+the diagnosis node's problem was **stopping** (it explored forever and never
+committed), the review node's problem was **judgment** (it committed
+confidently to a wrong mechanism, then over-corrected into silence). Diagnosis
+work has one answer and rewards depth; review work has an open-ended finding
+set and rewards calibration. A single "agent node" prompt template will not
+serve both — but the *contract* scaffolding (envelope, anchors, sorted ids,
+write-early) is identical and should be platform-provided, not re-authored
+per node.
+
 ### F10 ⚪ Release lineage only counts *released* versions
 Node v1 existed (imported by an earlier session) but was never released;
 releasing v2 as `--compatibility=compatible` succeeded even though v2's port
