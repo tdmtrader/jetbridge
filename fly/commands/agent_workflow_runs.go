@@ -15,6 +15,8 @@ import (
 
 	workflowrunsapi "github.com/concourse/concourse/agent/api/workflowruns"
 	"github.com/concourse/concourse/agent/snapshot"
+	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/event"
 	"github.com/concourse/concourse/fly/commands/internal/displayhelpers"
 	"github.com/concourse/concourse/fly/rc"
 	"github.com/concourse/concourse/fly/ui"
@@ -180,7 +182,7 @@ func (command *WorkflowsRunCommand) Execute([]string) error {
 			return err
 		}
 	}
-	if err := printAgentWorkflowRunDetail(detail, command.Json); err != nil {
+	if err := printAgentWorkflowRunDetail(target, detail, command.Json); err != nil {
 		return err
 	}
 	if command.Wait || command.Follow {
@@ -306,7 +308,7 @@ func (command *WorkflowsShowRunCommand) executePreparedWithTarget(
 			return err
 		}
 	}
-	return printAgentWorkflowRunDetail(detail, prepared.json)
+	return printAgentWorkflowRunDetail(target, detail, prepared.json)
 }
 
 func waitForAgentWorkflowRun(
@@ -398,7 +400,7 @@ func (command *WorkflowsCancelRunCommand) Execute([]string) error {
 	if err := decodeOrError(response, &detail); err != nil {
 		return err
 	}
-	return printAgentWorkflowRunDetail(detail, command.Json)
+	return printAgentWorkflowRunDetail(target, detail, command.Json)
 }
 
 type WorkflowsRetryRunCommand struct {
@@ -444,7 +446,7 @@ func (command *WorkflowsRetryRunCommand) Execute([]string) error {
 	if err := decodeOrError(response, &detail); err != nil {
 		return err
 	}
-	return printAgentWorkflowRunDetail(detail, command.Json)
+	return printAgentWorkflowRunDetail(target, detail, command.Json)
 }
 
 func printAgentWorkflowRun(run workflowrunsapi.RunSummary) error {
@@ -457,7 +459,7 @@ func printAgentWorkflowRun(run workflowrunsapi.RunSummary) error {
 	return nil
 }
 
-func printAgentWorkflowRunDetail(detail workflowrunsapi.RunDetail, jsonOutput bool) error {
+func printAgentWorkflowRunDetail(target rc.Target, detail workflowrunsapi.RunDetail, jsonOutput bool) error {
 	if jsonOutput {
 		return displayhelpers.JsonPrint(detail)
 	}
@@ -465,7 +467,68 @@ func printAgentWorkflowRunDetail(detail workflowrunsapi.RunDetail, jsonOutput bo
 		return err
 	}
 	fmt.Printf("inputs: %d\noutputs: %d\n", len(detail.Inputs), len(detail.Outputs))
+	if reason := runFailureReason(target, detail.RunSummary); reason != "" {
+		fmt.Printf("failure: %s\n", reason)
+		if detail.PlannedBuildID != nil {
+			fmt.Printf("full log: fly -t %s watch -b %d\n", Fly.Target, *detail.PlannedBuildID)
+		}
+	}
 	return nil
+}
+
+// failureReasonFromErrorEvents picks the message a human needs out of a
+// build's error events: the last one, on one line.
+//
+// The last error is the one that terminated the run; earlier errors are
+// usually a retried or superseded step. Multi-line messages are collapsed
+// because this prints inside a field list, and the full text remains
+// available through `fly watch`.
+func failureReasonFromErrorEvents(errorEvents []event.Error) string {
+	for index := len(errorEvents) - 1; index >= 0; index-- {
+		message := strings.TrimSpace(errorEvents[index].Message)
+		if message == "" {
+			continue
+		}
+		if newline := strings.IndexByte(message, '\n'); newline >= 0 {
+			message = strings.TrimSpace(message[:newline])
+		}
+		return message
+	}
+	return ""
+}
+
+// runFailureReason reads the terminal error out of the run's planned build.
+// Every failure here is non-fatal: this is a diagnostic nicety layered on top
+// of a successful show-run, and it must never turn a readable answer into an
+// error.
+func runFailureReason(target rc.Target, run workflowrunsapi.RunSummary) string {
+	if run.PlannedBuildID == nil {
+		return ""
+	}
+	// Only the terminal-unsuccessful states have a reason worth fetching.
+	// Naming them positively means a status added later does not silently
+	// start pulling event streams for healthy runs.
+	switch run.Status {
+	case db.AgentWorkflowRunStatusFailed, db.AgentWorkflowRunStatusErrored, db.AgentWorkflowRunStatusAborted:
+	default:
+		return ""
+	}
+	source, err := target.Client().BuildEvents(fmt.Sprintf("%d", *run.PlannedBuildID))
+	if err != nil {
+		return ""
+	}
+	defer source.Close()
+	var errorEvents []event.Error
+	for {
+		streamEvent, err := source.NextEvent()
+		if err != nil {
+			break
+		}
+		if errorEvent, ok := streamEvent.(event.Error); ok {
+			errorEvents = append(errorEvents, errorEvent)
+		}
+	}
+	return failureReasonFromErrorEvents(errorEvents)
 }
 
 func printAgentWorkflowRunOutputs(response workflowrunsapi.OutputsResponse) error {
