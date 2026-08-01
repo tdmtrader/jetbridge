@@ -155,7 +155,8 @@ func (step *PublishSnapshotStep) run(ctx context.Context, state RunState, delega
 		ApprovalPolicyVersion: step.plan.ApprovalPolicyVersion,
 		Authority: publisher.Authority{
 			TeamID: step.metadata.TeamID, TeamName: step.metadata.TeamName,
-			BuildID: int64(step.metadata.BuildID), Actor: step.metadata.SnapshotCreatedBy,
+			BuildID: int64(step.metadata.BuildID), PlanID: string(step.planID),
+			Actor: step.metadata.SnapshotCreatedBy,
 		},
 	}
 	if step.plan.Mode == publisher.ModeMerge {
@@ -271,7 +272,7 @@ func (step *PublishSnapshotStep) publishPRRevision(
 	authority := publisher.Authority{
 		TeamID: step.metadata.TeamID, TeamName: step.metadata.TeamName,
 		BuildID: int64(step.metadata.BuildID), WorkflowRunID: runID,
-		Actor: step.metadata.SnapshotCreatedBy,
+		PlanID: string(step.planID), Actor: step.metadata.SnapshotCreatedBy,
 	}
 	var publication publisher.PRRevisionPublicationRequest
 	if verifiedImpact.ReapprovalRequired {

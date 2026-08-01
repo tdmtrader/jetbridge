@@ -394,8 +394,12 @@ func (factory *agentPublicationsFactory) Acquire(
 		return publisher.Publication{}, false, fmt.Errorf("db: publication occurrence disappeared after acquire")
 	}
 	publication := record.publication
+	// Compared on operation identity, not on the whole authority: the stored
+	// request is rehydrated from agent_publications, which carries no plan
+	// position because one operation is deliberately shared across plan
+	// positions. See publisher.Authority.OperationIdentity.
 	if storedKey, keyErr := publication.Request.OperationKey(); keyErr != nil || storedKey != key ||
-		publication.Request.Authority != request.Authority {
+		publication.Request.Authority.OperationIdentity() != request.Authority.OperationIdentity() {
 		return publisher.Publication{}, false, publisher.ErrOperationConflict
 	}
 	if inserted {
@@ -589,7 +593,7 @@ func (factory *agentPublicationsFactory) AcquirePR(
 	}
 	storedKey, keyErr := publication.PRAction.OperationKey()
 	if keyErr != nil || storedKey != key ||
-		prActionAuthority(*publication.PRAction) != authority {
+		prActionAuthority(*publication.PRAction).OperationIdentity() != authority.OperationIdentity() {
 		return publisher.Publication{}, false, publisher.ErrOperationConflict
 	}
 	if inserted {
@@ -763,6 +767,14 @@ func ensureAgentPublicationOccurrence(
 		approvalAnswerID = int64(occurrence.approval.Answer.ID)
 		approvalResolvedAt = occurrence.approval.ResolvedAt.UTC()
 	}
+	// plan_id is the only thing that lets the durable node-occurrence
+	// projection join a publish node to the occurrence it produced: this row's
+	// own key is (publication_id, workflow_run_id, build_id) and carries no
+	// plan identity, so without it every publish node in every run's
+	// projection would freeze as pending. It stays NULL when the authority
+	// carries no plan position, matching the pre-projection rows migration
+	// 1773106157 deliberately left alone.
+	planID := nullableNonblank(occurrence.authority.PlanID)
 	var occurrenceID int64
 	if operationInserted {
 		err := tx.QueryRowContext(ctx, `
@@ -770,16 +782,16 @@ func ensureAgentPublicationOccurrence(
 				(id, publication_id, team_id, team_name, workflow_run_id, build_id, actor,
 				 input_snapshot_id, approved_by, approval_wait_id,
 				 approval_question_snapshot_id, approval_answer_snapshot_id,
-				 approval_resolved_at, status)
+				 approval_resolved_at, plan_id, status)
 			SELECT $1, publication.id, $3, $4, $5, $6, $7,
-			       $8, $9, $10, $11, $12, $13, publication.status
+			       $8, $9, $10, $11, $12, $13, $14, publication.status
 			FROM agent_publications publication
 			WHERE publication.id = $2
 			RETURNING id
 		`, reservedOccurrenceID, operationID, occurrence.authority.TeamID, occurrence.authority.TeamName,
 			int64(occurrence.authority.WorkflowRunID), occurrence.authority.BuildID, occurrence.authority.Actor,
 			int64(occurrence.input.ID), nullableNonblank(occurrence.approvedBy), approvalWaitID,
-			approvalQuestionID, approvalAnswerID, approvalResolvedAt,
+			approvalQuestionID, approvalAnswerID, approvalResolvedAt, planID,
 		).Scan(&occurrenceID)
 		return occurrenceID, err
 	}
@@ -788,9 +800,9 @@ func ensureAgentPublicationOccurrence(
 			(publication_id, team_id, team_name, workflow_run_id, build_id, actor,
 			 input_snapshot_id, approved_by, approval_wait_id,
 			 approval_question_snapshot_id, approval_answer_snapshot_id,
-			 approval_resolved_at, status)
+			 approval_resolved_at, plan_id, status)
 		SELECT publication.id, $2, $3, $4, $5, $6,
-		       $7, $8, $9, $10, $11, $12, publication.status
+		       $7, $8, $9, $10, $11, $12, $13, publication.status
 		FROM agent_publications publication
 		WHERE publication.id = $1
 		ON CONFLICT (publication_id, workflow_run_id, build_id) DO NOTHING
@@ -798,7 +810,7 @@ func ensureAgentPublicationOccurrence(
 	`, operationID, occurrence.authority.TeamID, occurrence.authority.TeamName,
 		int64(occurrence.authority.WorkflowRunID), occurrence.authority.BuildID, occurrence.authority.Actor,
 		int64(occurrence.input.ID), nullableNonblank(occurrence.approvedBy), approvalWaitID,
-		approvalQuestionID, approvalAnswerID, approvalResolvedAt,
+		approvalQuestionID, approvalAnswerID, approvalResolvedAt, planID,
 	).Scan(&occurrenceID)
 	if errors.Is(err, sql.ErrNoRows) {
 		err = tx.QueryRowContext(ctx, `

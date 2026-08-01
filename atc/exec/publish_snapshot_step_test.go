@@ -92,8 +92,11 @@ func TestPublishSnapshotStepAuthorizesExactSealedInputAndPublishes(t *testing.T)
 		Input:       snapshot.SnapshotRef{ID: manifest.ID, Type: manifest.Type, Digest: manifest.Digest},
 		Destination: plan.Destination, Mode: plan.Mode, Parameters: plan.Parameters,
 		ApprovalPolicyVersion: plan.ApprovalPolicyVersion,
+		// PlanID is the step's own plan position. It is server-supplied
+		// identity, and it is what lets the durable node-occurrence projection
+		// join this publish node to the occurrence this call records.
 		Authority: publisher.Authority{
-			TeamID: 17, TeamName: "main", BuildID: 42, Actor: "alice",
+			TeamID: 17, TeamName: "main", BuildID: 42, PlanID: "publish", Actor: "alice",
 		},
 	}, captured)
 	require.GreaterOrEqual(t, metadata.GetAuthorizedCallCount(), 3)
@@ -816,7 +819,8 @@ func TestAwaitAndPublishSnapshotStepsBindExactPRReapprovalContext(t *testing.T) 
 		ApprovalPolicyVersion: "engineering/v3",
 	}, verified)
 	require.Equal(t, publisher.Authority{
-		TeamID: 17, TeamName: "main", BuildID: 42, WorkflowRunID: 19, Actor: "alice",
+		TeamID: 17, TeamName: "main", BuildID: 42, WorkflowRunID: 19,
+		PlanID: "publish-pr", Actor: "alice",
 	}, handedOff.Authority)
 	require.Equal(t, awaitRef(observation), handedOff.Observation)
 	require.Equal(t, awaitRef(change), handedOff.Candidate)

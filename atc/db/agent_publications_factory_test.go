@@ -2,6 +2,7 @@ package db_test
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -620,6 +621,50 @@ var _ = Describe("AgentPublicationsFactory", func() {
 		forged.Branch.Evidence.AcceptedReview.OutcomeRevision++
 		_, _, err = factory.AcquirePR(context.Background(), forged, time.Minute)
 		Expect(errors.Is(err, publisher.ErrInvalidRequest)).To(BeTrue())
+	})
+
+	// The NodeOccurrence projection joins a publish node to its occurrence on
+	// nothing but this column: the occurrence's own key is (publication_id,
+	// workflow_run_id, build_id) and carries no plan identity. Without a
+	// writer, migration 1773106157 added a column nothing ever fills and every
+	// publish node in every run would freeze as pending.
+	It("records the publishing step's plan ID on the occurrence, which the NodeOccurrence projection joins on", func() {
+		value := request()
+		value.Authority.PlanID = "1/4"
+
+		publication, execute, err := factory.Acquire(context.Background(), value, time.Minute)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(execute).To(BeTrue())
+
+		var planID sql.NullString
+		Expect(dbConn.QueryRow(`
+			SELECT plan_id FROM agent_publication_occurrences WHERE publication_id = $1
+		`, publication.ID).Scan(&planID)).To(Succeed())
+		Expect(planID.Valid).To(BeTrue(), "a freshly recorded occurrence must carry its plan identity")
+		Expect(planID.String).To(Equal("1/4"))
+
+		// And it reaches the projection's evidence reader keyed on that ID.
+		evidence, err := db.NewAgentWorkflowRunEvidenceFactory(dbConn).EvidenceForRun(
+			context.Background(),
+			db.AgentWorkflowRun{ID: workflowRunID, TeamID: defaultTeam.ID()},
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(evidence.Publications).To(HaveLen(1))
+		Expect(evidence.Publications[0].PlanID).To(Equal("1/4"))
+	})
+
+	// A publication with no plan position — every row written before the
+	// projection existed — must stay NULL rather than take on an empty string
+	// that would look like a real, joinable identity.
+	It("leaves the occurrence's plan identity absent when the authority carries none", func() {
+		publication, _, err := factory.Acquire(context.Background(), request(), time.Minute)
+		Expect(err).NotTo(HaveOccurred())
+
+		var planID sql.NullString
+		Expect(dbConn.QueryRow(`
+			SELECT plan_id FROM agent_publication_occurrences WHERE publication_id = $1
+		`, publication.ID).Scan(&planID)).To(Succeed())
+		Expect(planID.Valid).To(BeFalse())
 	})
 
 	It("acquires once, reclaims an expired lease, and completes exactly one attempt", func() {

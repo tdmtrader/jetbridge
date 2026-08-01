@@ -41,11 +41,21 @@ var parameterNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
 // build, workflow run, or audit actor used for authorization and credentials.
 // WorkflowRunID is populated by the durable store after it verifies the
 // build-to-run association; it may be zero only on an unacquired request.
+// PlanID locates the publishing step inside the build's plan. Like BuildID it
+// is server-supplied identity rather than authored configuration, and it is
+// what lets the durable node-occurrence projection join a publish node to the
+// occurrence it produced — agent_publication_occurrences is otherwise keyed
+// (publication_id, workflow_run_id, build_id) and carries no plan identity at
+// all. It is deliberately outside every operation identity: neither
+// Request.OperationKey nor PRAction.OperationKey (which strips authority down
+// to TeamID before hashing) sees it, so publishing the same effect from a
+// different plan position stays the same idempotent operation.
 type Authority struct {
 	TeamID        int                    `json:"team_id"`
 	TeamName      string                 `json:"team_name"`
 	BuildID       int64                  `json:"build_id"`
 	WorkflowRunID snapshot.WorkflowRunID `json:"workflow_run_id,omitempty"`
+	PlanID        string                 `json:"plan_id,omitempty"`
 	Actor         string                 `json:"actor"`
 }
 
@@ -231,7 +241,30 @@ func (authority Authority) validate(requireWorkflowRun bool) error {
 			return fmt.Errorf("%w: trusted workflow run is invalid", ErrInvalidRequest)
 		}
 	}
+	// PlanID is optional: publications recorded before the projection existed
+	// carry none, and a request that never reaches a workflow run has no plan
+	// position worth asserting. When present it must still be sane text,
+	// because it is written straight into a durable join key.
+	if authority.PlanID != "" && !boundedText(authority.PlanID, 256, false) {
+		return fmt.Errorf("%w: trusted publication plan is invalid", ErrInvalidRequest)
+	}
 	return nil
+}
+
+// OperationIdentity is the authority as the publication OPERATION persists it,
+// which is the authority without its plan position.
+//
+// A publication operation is deliberately shared across plan positions: the
+// same effect published from a retry copy, or replayed from a later step, is
+// one operation with one lease and one result, and agent_publications stores
+// no plan column at all. Plan identity is occurrence-scoped — it lives on
+// agent_publication_occurrences, where the node-occurrence projection joins to
+// it. A store that revalidates a rehydrated request against the live one must
+// therefore compare THIS, or it would reject the very replay the shared
+// operation exists to allow.
+func (authority Authority) OperationIdentity() Authority {
+	authority.PlanID = ""
+	return authority
 }
 
 type Request struct {

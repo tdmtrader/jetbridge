@@ -44,6 +44,7 @@ import (
 	"github.com/concourse/concourse/agent/snapshot/contracts"
 	"github.com/concourse/concourse/agent/workflow"
 	"github.com/concourse/concourse/agent/workflowrun"
+	"github.com/concourse/concourse/agent/workflowrun/occurrence"
 	"github.com/concourse/concourse/agent/workflowwait"
 	"github.com/concourse/concourse/agent/workitem"
 	"github.com/concourse/concourse/atc"
@@ -1328,12 +1329,27 @@ func (cmd *RunCommand) backendComponents(
 	if err != nil {
 		return nil, err
 	}
+	// The durable per-node projection. It shares dispatchGraph's workflow
+	// store deliberately: the freeze resolves each run's own workflow version,
+	// and a second store is a second chance for the version a run executed and
+	// the version its history describes to disagree.
+	nodeOccurrenceFreezer, err := occurrence.NewFreezer(
+		db.NewAgentWorkflowRunEvidenceFactory(dbConn),
+		dispatchGraph.workflows,
+		db.NewAgentWorkflowRunNodeOccurrencesFactory(dbConn),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("construct workflow run node occurrence freezer: %w", err)
+	}
 	reconcilerOptions := []workflowrun.ReconcilerOption{
 		workflowrun.WithWaitCanceler(dbAgentWorkflowWaitsFactory),
 		// THE terminalizer: a finished workflow run projects its owning ticket
 		// to needs_review from here, in the always-on reconciler, and nowhere
 		// else.
 		workflowrun.WithTicketProjector(dispatchGraph.projector),
+		// Deterministic task steps exist nowhere else once build events are
+		// reclaimed, so this is the one call that preserves them.
+		workflowrun.WithNodeOccurrenceFreezer(nodeOccurrenceFreezer),
 	}
 	cmd.agentSnapshotMu.Lock()
 	agentSnapshotCreator := cmd.agentSnapshotCreator
