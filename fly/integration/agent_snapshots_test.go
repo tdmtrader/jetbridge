@@ -176,7 +176,7 @@ var _ = Describe("fly agent snapshots", func() {
 				entries = append(entries, entry{header.Name, header.Mode, string(body)})
 			}
 			Expect(entries).To(Equal([]entry{
-				{name: "empty/", mode: 0o755},
+				{name: "empty", mode: 0o755},
 				{name: "review.txt", mode: 0o644, body: "looks good\n"},
 			}))
 			w.Header().Set("Content-Type", "application/json")
