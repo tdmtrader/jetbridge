@@ -53,10 +53,24 @@
 
 ## Tasks
 
-- [ ] Task 1 — repair exact resource-capture template identity
-  - Gate: both public and persisted-selection constructors, resource-capture
-    unit/API tests, and serial ATC DB capture Ginkgo specs.
-  - Review budget: maximum three blocking rounds.
+- [x] Task 1 — repair exact resource-capture template identity
+  - RED: direct and persisted-selection constructor assertions exposed the
+    legacy unsuffixed name; real immutable-saver failure mapping exposed raw
+    collision/platform errors; the API returned 500 for a template conflict;
+    and the serial DB spec could not discover the valid suffixed template.
+  - GREEN: one shared constructor derives
+    `agent-resource-capture-<operation[:24]>-<target-config-hash[:12]>` while
+    retaining raw canonical `FullHash`; real `TemplateSaver` accepts the
+    capture spec; collision/platform errors map to stable capture categories;
+    bounded API errors log causes and return 409/503 categories; both DB
+    readers retain all ownership predicates and require the anchored lowercase
+    12-hex suffix.
+  - Verification: `go test ./agent/resourcecapture ./agent/workflowrun
+    ./agent/api/snapshots -count=1` passed; `ginkgo --procs=1
+    --silence-skips --focus='exact authorized resource-capture output'
+    ./atc/db` passed (1/1); `git diff --check` passed.
+  - Review: independent blocking review round 1 passed with no blocking
+    findings. Review budget used: 1 of 3.
 - [ ] Task 2 — safe repository validation diagnostics and full upload contract
   - Gate: real Fly archive → canonicalizer → `repository/v1` validator plus
     secret non-disclosure tests.

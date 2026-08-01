@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 
 	"github.com/concourse/concourse/agent/workflow"
@@ -55,6 +56,12 @@ func (store *ImmutableTemplateStore) SaveOrReuse(ctx context.Context, spec Templ
 		Name: spec.Name, FullHash: fullHash, CanonicalJSON: append([]byte(nil), canonical...), Config: spec.Clone().Config,
 	})
 	if err != nil {
+		if errors.Is(err, workflowrun.ErrImmutableTemplateCollision) {
+			return TemplateRef{}, fmt.Errorf("%w: %v", ErrTemplateConflict, err)
+		}
+		if errors.Is(err, workflowrun.ErrPlatformFailure) {
+			return TemplateRef{}, fmt.Errorf("%w: immutable template store: %v", ErrUnavailable, err)
+		}
 		return TemplateRef{}, err
 	}
 	if ref.PipelineID <= 0 || ref.TeamID != spec.TeamID || ref.Name != spec.Name || ref.FullHash != fullHash || ref.ConfigVersion <= 0 {

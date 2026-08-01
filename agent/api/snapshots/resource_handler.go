@@ -106,7 +106,7 @@ func (factory *HandlerFactory) captureResource(w http.ResponseWriter, r *http.Re
 	}
 	result, err := capturer.Capture(r.Context(), request)
 	if err != nil {
-		writeResourceCaptureError(w, err)
+		factory.writeResourceCaptureError(w, err)
 		return
 	}
 	if len(result.OperationKey) != 64 || result.Execution.PipelineRunID <= 0 || result.Execution.TemplatePipelineID <= 0 || result.Execution.InstancePipelineID <= 0 {
@@ -146,7 +146,8 @@ func parseResourceCapturePipelineRunID(raw string) (int64, error) {
 	return value, nil
 }
 
-func writeResourceCaptureError(w http.ResponseWriter, err error) {
+func (factory *HandlerFactory) writeResourceCaptureError(w http.ResponseWriter, err error) {
+	factory.logger.Error("resource-capture-request-failed", err)
 	switch {
 	case errors.Is(err, resourcecapture.ErrNotFound):
 		writeError(w, http.StatusNotFound, "not_found", "resource or exact version was not found")
@@ -154,6 +155,8 @@ func writeResourceCaptureError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "disabled", "resource version is disabled")
 	case errors.Is(err, resourcecapture.ErrTypeRequired):
 		writeError(w, http.StatusUnprocessableEntity, "type_required", "snapshot type is required for this resource")
+	case errors.Is(err, resourcecapture.ErrTemplateConflict):
+		writeError(w, http.StatusConflict, "conflict", "resource capture conflicts with immutable state")
 	case errors.Is(err, resourcecapture.ErrUnavailable), errors.Is(err, resourcecapture.ErrOutputUnavailable):
 		writeError(w, http.StatusServiceUnavailable, "unavailable", "resource capture is unavailable")
 	case errors.Is(err, context.DeadlineExceeded):

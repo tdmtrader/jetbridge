@@ -64,7 +64,11 @@ func (factory *agentSnapshotsFactory) ListPendingResourceCaptureOutputs(
 		  AND production.step_name = 'seal-snapshot'
 		  AND production.source_metadata ->> 'adapter' = 'resource-version'
 		  AND production.source_metadata ->> 'operation_key' ~ '^[0-9a-f]{64}$'
-		  AND template.name = 'agent-resource-capture-' || left(production.source_metadata ->> 'operation_key', 24)
+		  AND template.name ~ (
+		    '^agent-resource-capture-' ||
+		    left(production.source_metadata ->> 'operation_key', 24) ||
+		    '-[0-9a-f]{12}$'
+		  )
 		  AND production.source_metadata ->> 'snapshot_type' = s.type_name || '/v' || s.type_version::text
 		  AND s.content_state = 'available'
 		  AND NOT EXISTS (

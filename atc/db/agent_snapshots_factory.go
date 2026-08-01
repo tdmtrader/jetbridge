@@ -918,7 +918,9 @@ func (factory *agentSnapshotsFactory) FindResourceCaptureOutput(
 		  AND run.status = 'succeeded'
 		  AND template.team_id = $1
 		  AND instance.team_id = $1
-		  AND template.name = 'agent-resource-capture-' || left($3, 24)
+		  AND template.name ~ (
+		    '^agent-resource-capture-' || left($3, 24) || '-[0-9a-f]{12}$'
+		  )
 		  AND template.template = true
 		  AND template.instance_vars IS NULL
 		  AND template.archived = false

@@ -475,39 +475,54 @@ plan:
 
 	It("finds only the exact authorized resource-capture output for one succeeded pipeline run", func() {
 		operationKey := strings.Repeat("a", 64)
-		var templateID, instanceID, pipelineRunID, buildID int
-		Expect(dbConn.QueryRow(`
-			INSERT INTO pipelines (name, team_id, secondary_ordering, template)
-			VALUES ($1, $2, 1, true) RETURNING id
-		`, "agent-resource-capture-"+operationKey[:24], defaultTeam.ID()).Scan(&templateID)).To(Succeed())
-		_, err := dbConn.Exec(`INSERT INTO agent_workflow_run_templates (pipeline_id) VALUES ($1)`, templateID)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(dbConn.QueryRow(`
-			INSERT INTO pipelines (name, team_id, secondary_ordering, template, instance_vars)
-			VALUES ($1, $2, 1, true, '{"run":1}') RETURNING id
-		`, "agent-resource-capture-"+operationKey[:24], defaultTeam.ID()).Scan(&instanceID)).To(Succeed())
-		Expect(dbConn.QueryRow(`
-			INSERT INTO pipeline_runs (template_pipeline_id, instance_pipeline_id, number, status)
-			VALUES ($1, $2, 1, 'succeeded') RETURNING id
-		`, templateID, instanceID).Scan(&pipelineRunID)).To(Succeed())
-		Expect(dbConn.QueryRow(`
-			INSERT INTO builds (name, status, team_id, pipeline_id)
-			VALUES ($1, 'succeeded', $2, $3) RETURNING id
-		`, fmt.Sprintf("resource-capture-%d", time.Now().UnixNano()), defaultTeam.ID(), instanceID).Scan(&buildID)).To(Succeed())
+		createCaptureOutput := func(templateName, valueSeed string) (int64, snapshot.SnapshotRef) {
+			var templateID, instanceID, pipelineRunID, buildID int
+			Expect(dbConn.QueryRow(`
+				INSERT INTO pipelines (name, team_id, secondary_ordering, template)
+				VALUES ($1, $2, 1, true) RETURNING id
+			`, templateName, defaultTeam.ID()).Scan(&templateID)).To(Succeed())
+			_, err := dbConn.Exec(`INSERT INTO agent_workflow_run_templates (pipeline_id) VALUES ($1)`, templateID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(dbConn.QueryRow(`
+				INSERT INTO pipelines (name, team_id, secondary_ordering, template, instance_vars)
+				VALUES ($1, $2, 1, true, '{"run":1}') RETURNING id
+			`, templateName, defaultTeam.ID()).Scan(&instanceID)).To(Succeed())
+			Expect(dbConn.QueryRow(`
+				INSERT INTO pipeline_runs (template_pipeline_id, instance_pipeline_id, number, status)
+				VALUES ($1, $2, 1, 'succeeded') RETURNING id
+			`, templateID, instanceID).Scan(&pipelineRunID)).To(Succeed())
+			Expect(dbConn.QueryRow(`
+				INSERT INTO builds (name, status, team_id, pipeline_id)
+				VALUES ($1, 'succeeded', $2, $3) RETURNING id
+			`, fmt.Sprintf("resource-capture-%s-%d", valueSeed, time.Now().UnixNano()), defaultTeam.ID(), instanceID).Scan(&buildID)).To(Succeed())
 
-		value := digest("e")
-		staged := stage(value, defaultTeam.ID(), "1")
-		candidate := output("snapshot", "snapshot", "repository/v1", value, staged)
-		candidate.SourceMetadata = json.RawMessage(fmt.Sprintf(`{"adapter":"resource-version","operation_key":%q,"snapshot_type":"repository/v1"}`, operationKey))
-		sealed, err := factory.CommitSealBatch(ctx, lease, snapshot.SealCommit{
-			Context: snapshot.SealCommitContext{
-				TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(), CreatedBy: "alice",
-				Build:  &snapshot.BuildOccurrence{BuildID: buildID, PlanID: "capture", Attempt: "1", StepKind: "task", StepName: "seal-snapshot"},
-				Inputs: map[string]snapshot.SnapshotRef{}, InputOrder: []string{}, ExpectedOutputs: []snapshot.Port{candidate.Port},
-			},
-			Outputs: []snapshot.SealCommitOutput{candidate},
-		})
-		Expect(err).NotTo(HaveOccurred())
+			value := digest(valueSeed)
+			staged := stage(value, defaultTeam.ID(), "1")
+			candidate := output("snapshot", "snapshot", "repository/v1", value, staged)
+			candidate.SourceMetadata = json.RawMessage(fmt.Sprintf(`{"adapter":"resource-version","operation_key":%q,"snapshot_type":"repository/v1"}`, operationKey))
+			sealed, err := factory.CommitSealBatch(ctx, lease, snapshot.SealCommit{
+				Context: snapshot.SealCommitContext{
+					TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(), CreatedBy: "alice",
+					Build:  &snapshot.BuildOccurrence{BuildID: buildID, PlanID: "capture", Attempt: "1", StepKind: "task", StepName: "seal-snapshot"},
+					Inputs: map[string]snapshot.SnapshotRef{}, InputOrder: []string{}, ExpectedOutputs: []snapshot.Port{candidate.Port},
+				},
+				Outputs: []snapshot.SealCommitOutput{candidate},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			return int64(pipelineRunID), sealed["snapshot"].Snapshot
+		}
+		validName := "agent-resource-capture-" + operationKey[:24] + "-" + strings.Repeat("a", 12)
+		pipelineRunID, sealed := createCaptureOutput(validName, "e")
+		missingSuffixRunID, _ := createCaptureOutput("agent-resource-capture-"+operationKey[:24], "f")
+		uppercaseSuffixRunID, _ := createCaptureOutput("agent-resource-capture-"+operationKey[:24]+"-"+strings.Repeat("A", 12), "b")
+		shortSuffixRunID, _ := createCaptureOutput("agent-resource-capture-"+operationKey[:24]+"-"+strings.Repeat("a", 11), "c")
+		wrongOperationRunID, _ := createCaptureOutput("agent-resource-capture-"+strings.Repeat("b", 24)+"-"+strings.Repeat("a", 12), "d")
+		invalidRuns := []int64{
+			missingSuffixRunID,
+			uppercaseSuffixRunID,
+			shortSuffixRunID,
+			wrongOperationRunID,
+		}
 		finder, ok := factory.(interface {
 			FindResourceCaptureOutput(context.Context, int, int64, string, string, snapshot.TypeRef) (snapshot.Snapshot, bool, error)
 		})
@@ -515,10 +530,15 @@ plan:
 		found, exists, err := finder.FindResourceCaptureOutput(ctx, defaultTeam.ID(), int64(pipelineRunID), operationKey, "snapshot", "repository/v1")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(exists).To(BeTrue())
-		Expect(snapshot.SnapshotRef{ID: found.ID, Type: found.Type, Digest: found.Digest}).To(Equal(sealed["snapshot"].Snapshot))
+		Expect(snapshot.SnapshotRef{ID: found.ID, Type: found.Type, Digest: found.Digest}).To(Equal(sealed))
 		_, exists, err = finder.FindResourceCaptureOutput(ctx, defaultTeam.ID(), int64(pipelineRunID), strings.Repeat("b", 64), "snapshot", "repository/v1")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(exists).To(BeFalse())
+		for _, invalidRunID := range invalidRuns {
+			_, exists, err = finder.FindResourceCaptureOutput(ctx, defaultTeam.ID(), invalidRunID, operationKey, "snapshot", "repository/v1")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(exists).To(BeFalse())
+		}
 
 		pendingFinder, ok := factory.(interface {
 			ListPendingResourceCaptureOutputs(context.Context, string, int) ([]db.ResourceCaptureOutput, error)
@@ -527,11 +547,11 @@ plan:
 		pending, err := pendingFinder.ListPendingResourceCaptureOutputs(ctx, "system:resource-capture", 100)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(pending).To(ConsistOf(db.ResourceCaptureOutput{
-			TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(), PipelineRunID: int64(pipelineRunID),
+			TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(), PipelineRunID: pipelineRunID,
 			OperationKey: operationKey, OutputPort: "snapshot", ExpectedType: "repository/v1",
 		}))
 		_, err = factory.Pin(
-			ctx, lease, defaultTeam.ID(), "system:resource-capture", sealed["snapshot"].Snapshot,
+			ctx, lease, defaultTeam.ID(), "system:resource-capture", sealed,
 			"resource capture "+operationKey,
 		)
 		Expect(err).NotTo(HaveOccurred())

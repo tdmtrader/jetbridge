@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/agent/snapshot"
+	"github.com/concourse/concourse/agent/workflow"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/mitchellh/copystructure"
@@ -36,6 +37,7 @@ var (
 	ErrDisabled          = errors.New("resource version is disabled")
 	ErrTypeRequired      = errors.New("snapshot type is required for this resource type")
 	ErrUnavailable       = errors.New("resource capture is unavailable")
+	ErrTemplateConflict  = errors.New("resource capture immutable template conflicts with existing state")
 	ErrOutputUnavailable = errors.New("resource capture output is unavailable or unauthorized")
 	// ErrPersistedSelectionDrift rejects a capture before it can create a
 	// template when current ATC state no longer proves the exact scheduler
@@ -215,6 +217,25 @@ type TemplateSpec struct {
 	Config        atc.Config
 }
 
+func newTemplateSpec(resolved ResolvedResource, operationKey string, config atc.Config, canonical []byte) (TemplateSpec, error) {
+	if len(operationKey) < 24 {
+		return TemplateSpec{}, fmt.Errorf("resource capture: operation key is too short for immutable template identity")
+	}
+	targetHash, err := workflow.TargetConfigHash(config)
+	if err != nil {
+		return TemplateSpec{}, fmt.Errorf("resource capture: hash template config: %w", err)
+	}
+	if len(targetHash) < 12 {
+		return TemplateSpec{}, fmt.Errorf("resource capture: template config hash is too short")
+	}
+	configDigest := sha256.Sum256(canonical)
+	return TemplateSpec{
+		TeamID: resolved.TeamID, TeamName: resolved.TeamName,
+		Name: templateNamePrefix + operationKey[:24] + "-" + targetHash[:12], OperationKey: operationKey,
+		FullHash: hex.EncodeToString(configDigest[:]), CanonicalJSON: canonical, Config: config,
+	}, nil
+}
+
 func (spec TemplateSpec) Clone() TemplateSpec {
 	spec.CanonicalJSON = append(json.RawMessage(nil), spec.CanonicalJSON...)
 	if copied, err := copystructure.Copy(spec.Config); err == nil {
@@ -387,11 +408,9 @@ func (capturer *Capturer) Capture(ctx context.Context, request Request) (Capture
 	if err != nil {
 		return CaptureResult{}, fmt.Errorf("resource capture: canonicalize template: %w", err)
 	}
-	configDigest := sha256.Sum256(canonical)
-	spec := TemplateSpec{
-		TeamID: resolved.TeamID, TeamName: resolved.TeamName,
-		Name: templateNamePrefix + operationKey[:24], OperationKey: operationKey,
-		FullHash: hex.EncodeToString(configDigest[:]), CanonicalJSON: canonical, Config: config,
+	spec, err := newTemplateSpec(resolved, operationKey, config, canonical)
+	if err != nil {
+		return CaptureResult{}, err
 	}
 	template, err := capturer.templates.SaveOrReuse(ctx, spec)
 	if err != nil {
@@ -509,11 +528,9 @@ func (capturer *Capturer) CapturePersistedSelection(ctx context.Context, selecti
 	if err != nil {
 		return CaptureResult{}, fmt.Errorf("resource capture: canonicalize persisted template: %w", err)
 	}
-	configDigest := sha256.Sum256(canonical)
-	spec := TemplateSpec{
-		TeamID: resolved.TeamID, TeamName: resolved.TeamName,
-		Name: templateNamePrefix + selection.CaptureOperationKey[:24], OperationKey: selection.CaptureOperationKey,
-		FullHash: hex.EncodeToString(configDigest[:]), CanonicalJSON: canonical, Config: config,
+	spec, err := newTemplateSpec(resolved, selection.CaptureOperationKey, config, canonical)
+	if err != nil {
+		return CaptureResult{}, err
 	}
 	template, err := capturer.templates.SaveOrReuse(ctx, spec)
 	if err != nil {

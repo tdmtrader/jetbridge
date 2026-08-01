@@ -11,6 +11,7 @@ import (
 
 	"github.com/concourse/concourse/agent/resourcecapture"
 	"github.com/concourse/concourse/agent/snapshot"
+	"github.com/concourse/concourse/agent/workflow"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 )
@@ -107,7 +108,12 @@ func TestCaptureBuildsExactPinnedGetAndTypedPassThrough(t *testing.T) {
 	}
 
 	spec := templates.calls[0]
-	if spec.TeamID != 7 || spec.TeamName != "main" || spec.Name != "agent-resource-capture-"+result.OperationKey[:24] || !spec.Config.Template {
+	targetHash, err := workflow.TargetConfigHash(spec.Config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantName := "agent-resource-capture-" + result.OperationKey[:24] + "-" + targetHash[:12]
+	if spec.TeamID != 7 || spec.TeamName != "main" || spec.Name != wantName || !spec.Config.Template {
 		t.Fatalf("template identity = %#v", spec)
 	}
 	if len(spec.Config.Resources) != 1 || !reflect.DeepEqual(spec.Config.Resources[0], resolved.Resource) {
@@ -158,6 +164,74 @@ func TestCaptureBuildsExactPinnedGetAndTypedPassThrough(t *testing.T) {
 	}
 	if executions.calls[0].OperationKey != result.OperationKey || executions.calls[0].Template.ID != 41 || executions.calls[0].CreatedBy != "Alice" {
 		t.Fatalf("execution request = %#v", executions.calls[0])
+	}
+}
+
+func TestCaptureTemplateIdentityTracksRenderedConfigAndIsStable(t *testing.T) {
+	newRunningCapture := func(t *testing.T, resolved resourcecapture.ResolvedResource, image string) (*resourcecapture.Capturer, *fakeTemplates) {
+		t.Helper()
+		resolver := &fakeResolver{resolve: func(context.Context, resourcecapture.ResolveRequest) (resourcecapture.ResolvedResource, bool, error) {
+			return resolved, true, nil
+		}}
+		templates := &fakeTemplates{save: func(_ context.Context, spec resourcecapture.TemplateSpec) (resourcecapture.TemplateRef, error) {
+			return resourcecapture.TemplateRef{ID: 41, Name: spec.Name}, nil
+		}}
+		executions := &fakeExecutions{start: func(_ context.Context, request resourcecapture.ExecutionRequest) (resourcecapture.Execution, bool, error) {
+			return resourcecapture.Execution{PipelineRunID: 51, TemplatePipelineID: request.Template.ID, InstancePipelineID: 61, Status: db.PipelineRunRunning}, true, nil
+		}}
+		capturer, err := resourcecapture.NewCapturer(resolver, templates, executions, &fakeOutputs{}, image)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return capturer, templates
+	}
+	assertCapturedIdentity := func(t *testing.T, result resourcecapture.CaptureResult, spec resourcecapture.TemplateSpec) {
+		t.Helper()
+		targetHash, err := workflow.TargetConfigHash(spec.Config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "agent-resource-capture-" + result.OperationKey[:24] + "-" + targetHash[:12]
+		if spec.Name != want {
+			t.Fatalf("template name = %q, want %q", spec.Name, want)
+		}
+	}
+
+	baseImage := "ghcr.io/acme/agent-runner@sha256:" + strings.Repeat("a", 64)
+	base, baseTemplates := newRunningCapture(t, repositoryResource(), baseImage)
+	first, err := base.Capture(context.Background(), validRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := base.Capture(context.Background(), validRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(baseTemplates.calls) != 2 || first.OperationKey != second.OperationKey || baseTemplates.calls[0].Name != baseTemplates.calls[1].Name {
+		t.Fatalf("same capture did not reuse identity: results=%#v/%#v specs=%#v", first, second, baseTemplates.calls)
+	}
+	assertCapturedIdentity(t, first, baseTemplates.calls[0])
+
+	otherImage, otherImageTemplates := newRunningCapture(t, repositoryResource(), "ghcr.io/acme/agent-runner@sha256:"+strings.Repeat("b", 64))
+	imageResult, err := otherImage.Capture(context.Background(), validRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertCapturedIdentity(t, imageResult, otherImageTemplates.calls[0])
+	if imageResult.OperationKey == first.OperationKey || otherImageTemplates.calls[0].Name == baseTemplates.calls[0].Name {
+		t.Fatalf("task image change did not change operation/template identity: %#v / %#v", first, imageResult)
+	}
+
+	changedResource := repositoryResource()
+	changedResource.Resource.Source["uri"] = "git@example.invalid:acme/other.git"
+	otherResource, otherResourceTemplates := newRunningCapture(t, changedResource, baseImage)
+	resourceResult, err := otherResource.Capture(context.Background(), validRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertCapturedIdentity(t, resourceResult, otherResourceTemplates.calls[0])
+	if resourceResult.OperationKey == first.OperationKey || otherResourceTemplates.calls[0].Name == baseTemplates.calls[0].Name {
+		t.Fatalf("resource change did not change operation/template identity: %#v / %#v", first, resourceResult)
 	}
 }
 
