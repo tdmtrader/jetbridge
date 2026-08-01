@@ -2,10 +2,13 @@ package commands
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -116,6 +119,64 @@ func TestAgentNodesReleasePrintsNameAndVersionAsJSON(t *testing.T) {
 	}
 	if decoded.Name != "code-review" || decoded.Version != 3 || decoded.Compatibility != "breaking" {
 		t.Fatalf("decoded = %+v", decoded)
+	}
+}
+
+// nodeReleaseResult declares Name/Version directly while embedding
+// workflow.NodeRelease. encoding/json prefers the shallower, directly
+// declared field on a name collision — so if NodeRelease ever grows its own
+// Name or Version field, the server's value would be silently dropped from
+// --json output with no compile error and no ambiguity error. This test
+// marshals a fully-populated NodeRelease standalone and confirms every one
+// of its keys and values survives, unchanged, inside the wrapper, and pins
+// the wrapper's exact key set so a dropped or renamed field is caught too.
+func TestAgentNodesReleaseJSONFlattensAllNodeReleaseFields(t *testing.T) {
+	release := workflow.NodeRelease{
+		ReleasedAt:         1700000000,
+		ReleasedBy:         "alice",
+		PredecessorVersion: 2,
+		Compatibility:      workflow.ReleaseBreaking,
+	}
+
+	standaloneBytes, err := json.Marshal(release)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var standalone map[string]any
+	if err := json.Unmarshal(standaloneBytes, &standalone); err != nil {
+		t.Fatal(err)
+	}
+	if len(standalone) != 4 {
+		t.Fatalf("standalone NodeRelease = %s, want all 4 fields populated (test fixture must cover every field)", standaloneBytes)
+	}
+
+	wrapperBytes, err := json.Marshal(nodeReleaseResult{Name: "code-review", Version: 3, NodeRelease: release})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wrapper map[string]any
+	if err := json.Unmarshal(wrapperBytes, &wrapper); err != nil {
+		t.Fatal(err)
+	}
+
+	for key, value := range standalone {
+		wrapperValue, ok := wrapper[key]
+		if !ok {
+			t.Fatalf("wrapper is missing %q, present in standalone NodeRelease: %s", key, wrapperBytes)
+		}
+		if fmt.Sprint(wrapperValue) != fmt.Sprint(value) {
+			t.Fatalf("wrapper[%q] = %v, standalone NodeRelease has %v (outer field shadowed the embedded one)", key, wrapperValue, value)
+		}
+	}
+
+	wrapperKeys := make([]string, 0, len(wrapper))
+	for key := range wrapper {
+		wrapperKeys = append(wrapperKeys, key)
+	}
+	sort.Strings(wrapperKeys)
+	want := []string{"compatibility", "name", "predecessor_version", "released_at", "released_by", "version"}
+	if !reflect.DeepEqual(wrapperKeys, want) {
+		t.Fatalf("wrapper keys = %v, want %v", wrapperKeys, want)
 	}
 }
 
