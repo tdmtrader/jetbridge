@@ -175,8 +175,11 @@ var _ = Describe("fly agent snapshots", func() {
 				Expect(header.Gid).To(BeZero())
 				entries = append(entries, entry{header.Name, header.Mode, string(body)})
 			}
+			// No trailing separator on the directory entry: the server's
+			// validateArchivePath rejects "name/", so the slashless spelling
+			// is the wire dialect.
 			Expect(entries).To(Equal([]entry{
-				{name: "empty/", mode: 0o755},
+				{name: "empty", mode: 0o755},
 				{name: "review.txt", mode: 0o644, body: "looks good\n"},
 			}))
 			w.Header().Set("Content-Type", "application/json")

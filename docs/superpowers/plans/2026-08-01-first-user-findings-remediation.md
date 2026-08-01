@@ -55,6 +55,7 @@ F5, F20 and F25 are already fixed in commit `72526ad7da`. **F20's fix reaches th
 - Modify: `agent/api/snapshots/types.go` — add `detail` to `ErrorResponse`
 - Modify: `agent/api/snapshots/handler.go` — populate `detail` for client-caused error classes only
 - Modify: `agent/api/snapshots/handler_test.go` — extend the existing no-leak table
+- Modify: `fly/commands/agent_snapshots.go` — `decodeAgentSnapshotResponse` must carry `detail` through; it does not use the shared `decodeOrError`
 
 **Phase C — CLI, chart, docs**
 - Modify: `fly/commands/agent_workflow_runs.go` — failure-reason printing shared by node and workflow run detail
@@ -767,9 +768,18 @@ mkdir -p /tmp/bad-work-item && printf '# not the declared document\n' > /tmp/bad
 /tmp/fly -t home agent snapshots create --type work-item/v1 --from /tmp/bad-work-item
 ```
 
-Expected (after the server side is deployed): the error line now contains
-`"detail":"snapshot contracts: required regular file \"work-item.json\" is missing"` —
-`fly`'s `decodeOrError` prints the response body verbatim, so no CLI change is needed.
+Expected (after the server side is deployed): the error line now names the
+missing `work-item.json`.
+
+**Correction (found during execution):** an earlier draft of this plan claimed
+`fly` needed no change because `decodeOrError` prints the response body
+verbatim. That is true of `decodeOrError` — and irrelevant, because the
+snapshot commands never call it. `fly agent snapshots create` goes through
+`decodeAgentSnapshotResponse` (`fly/commands/agent_snapshots.go:500`), which
+decodes the error body into a local struct carrying only `error` and
+`message`, so `encoding/json` silently drops `detail`. Surfacing it therefore
+requires a CLI change too; without it Tasks 2-4 are invisible to the person
+they exist for.
 
 - [ ] **Step 7: Commit**
 
