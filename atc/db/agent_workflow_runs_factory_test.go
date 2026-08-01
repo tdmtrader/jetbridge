@@ -1822,7 +1822,7 @@ plan:
 	})
 
 	Describe("overview list filters", func() {
-		var counter int
+		var counter int64
 
 		nextKey := func(prefix string) string {
 			counter++
@@ -2099,6 +2099,45 @@ plan:
 			if int64(unbound.ID) != int64(input.ID) {
 				Expect(runIDs(runs)).ToNot(ContainElement(unbound.ID))
 			}
+		})
+
+		// The snapshot half of the union needs a snapshot ID that is NOT also the
+		// run's own ID, or the run-ID predicate alone would satisfy the
+		// assertion and the join could be deleted unnoticed.
+		It("finds a run through a bound snapshot ID that is not its own ID", func() {
+			target := createRunWithoutInputs()
+
+			var boundSnapshotID int64
+			for attempt := 0; attempt < 8; attempt++ {
+				counter++
+				digest := fmt.Sprintf("sha256:%064x", counter*7919+int64(time.Now().UnixNano()%1000003))
+				Expect(dbConn.QueryRow(`
+					INSERT INTO agent_snapshots
+						(team_id, type_name, type_version, digest, byte_size, file_count, representation)
+					VALUES ($1, 'repository', 1, $2, 10, 1, 'application/vnd.jetbridge.snapshot.tar.v1')
+					RETURNING id
+				`, defaultTeam.ID(), digest).Scan(&boundSnapshotID)).To(Succeed())
+				if boundSnapshotID != int64(target.ID) {
+					break
+				}
+			}
+			Expect(boundSnapshotID).ToNot(Equal(int64(target.ID)),
+				"the fixture must separate the two identity namespaces")
+
+			_, err := dbConn.Exec(`
+				INSERT INTO agent_workflow_run_snapshots
+					(workflow_run_id, direction, port_name, snapshot_id, promoted_at)
+				VALUES ($1, 'input', 'extra', $2, now())
+			`, int64(target.ID), boundSnapshotID)
+			Expect(err).NotTo(HaveOccurred())
+
+			runs, err := factory.List(ctx, db.AgentWorkflowRunListFilter{
+				TeamID:       defaultTeam.ID(),
+				WorkflowName: definitionName,
+				Search:       strconv.FormatInt(boundSnapshotID, 10),
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(runIDs(runs)).To(ContainElement(target.ID))
 		})
 
 		It("returns nothing for a non-numeric term until ticket references exist", func() {

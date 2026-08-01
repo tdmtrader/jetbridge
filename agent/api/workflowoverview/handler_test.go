@@ -520,6 +520,36 @@ func TestOverviewUnrelatedSuccessDoesNotResolveAnotherRunsFailure(t *testing.T) 
 	}
 }
 
+// Two retries of the same source belong to one closure even when the source
+// itself fell outside the window. The closure is an identity relation over run
+// IDs, not a subset of the fetched page.
+func TestOverviewJoinsRetriesOfASourceOutsideTheWindow(t *testing.T) {
+	dependencies := defaultDeps(t)
+	absentSource := snapshot.WorkflowRunID(300)
+	failedRetry := runFixture(301, 4, db.AgentWorkflowRunStatusFailed, referenceNow.Add(-3*time.Hour))
+	failedRetry.RetryOfWorkflowRunID = &absentSource
+	succeededRetry := runFixture(302, 4, db.AgentWorkflowRunStatusSucceeded, referenceNow.Add(-time.Hour))
+	succeededRetry.RetryOfWorkflowRunID = &absentSource
+	dependencies.runs.runs = []db.AgentWorkflowRun{succeededRetry, failedRetry}
+	dependencies.occurrences.byRun[301] = []occurrence.NodeOccurrence{
+		occurrenceFixture(301, "implement", occurrence.StatusFailed),
+	}
+	dependencies.occurrences.byRun[302] = []occurrence.NodeOccurrence{
+		occurrenceFixture(302, "implement", occurrence.StatusSucceeded),
+	}
+	handler := newHandler(t, dependencies)
+
+	response := decodeOK(t, doOverview(t, handler, nil))
+
+	implement := stateFor(t, response, "implement")
+	if implement.NeedsAttention {
+		t.Fatal("sibling retries of one source resolve each other")
+	}
+	if implement.History.Failed != 1 || implement.History.Succeeded != 1 {
+		t.Fatalf("both outcomes stay in history, got %+v", implement.History)
+	}
+}
+
 func TestOverviewUnpromotedWorkflowReportsLatestVersion(t *testing.T) {
 	dependencies := defaultDeps(t)
 	latest := seedDefinition(t, 9, false)
@@ -711,6 +741,42 @@ func TestOverviewReportsRevisionBoundaries(t *testing.T) {
 	}
 	if response.Revisions[1].PromotedAt != nil {
 		t.Fatal("an unpromoted revision has no promotion timestamp")
+	}
+}
+
+// Equal creation timestamps are ordinary: runs admitted in the same batch
+// share one clock tick. Without the ID tiebreak the boundary row is whichever
+// one the store happened to return first.
+func TestOverviewRevisionBoundaryBreaksTiesByRunID(t *testing.T) {
+	dependencies := defaultDeps(t)
+	sameInstant := referenceNow.Add(-time.Hour)
+	dependencies.runs.runs = []db.AgentWorkflowRun{
+		runFixture(205, 4, db.AgentWorkflowRunStatusSucceeded, sameInstant),
+		runFixture(204, 4, db.AgentWorkflowRunStatusSucceeded, sameInstant),
+		runFixture(206, 4, db.AgentWorkflowRunStatusSucceeded, sameInstant),
+	}
+	handler := newHandler(t, dependencies)
+
+	response := decodeOK(t, doOverview(t, handler, nil))
+
+	if len(response.Revisions) != 1 {
+		t.Fatalf("expected one revision boundary, got %+v", response.Revisions)
+	}
+	if response.Revisions[0].FirstRunID != "204" {
+		t.Fatalf("expected the lowest run ID to break the tie, got %q", response.Revisions[0].FirstRunID)
+	}
+}
+
+// The aggregation is bounded, and the bound must be explicit rather than
+// whatever the store defaults to.
+func TestOverviewAsksForABoundedRunPopulation(t *testing.T) {
+	dependencies := defaultDeps(t)
+	handler := newHandler(t, dependencies)
+
+	decodeOK(t, doOverview(t, handler, nil))
+
+	if dependencies.runs.lastFilter.Limit != 1000 {
+		t.Fatalf("expected an explicit aggregation bound, got limit %d", dependencies.runs.lastFilter.Limit)
 	}
 }
 
