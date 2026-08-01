@@ -1,0 +1,60 @@
+{
+  "nodes": [
+    {
+      "id": "input:repository",
+      "kind": "input",
+      "display_name": "repository",
+      "type_ref": "repository/v1"
+    },
+    {
+      "id": "input:database",
+      "kind": "input",
+      "display_name": "database",
+      "type_ref": "database-snapshot/v1"
+    },
+    {
+      "id": "audit-anonymization",
+      "kind": "agent",
+      "display_name": "audit"
+    },
+    {
+      "id": "output:findings",
+      "kind": "output",
+      "display_name": "findings",
+      "type_ref": "audit-findings/v1"
+    },
+    {
+      "id": "output:change",
+      "kind": "output",
+      "display_name": "change",
+      "type_ref": "repository-change/v1",
+      "optional": true
+    }
+  ],
+  "edges": [
+    {
+      "from": "audit-anonymization",
+      "to": "output:change",
+      "port_name": "change",
+      "type_ref": "repository-change/v1"
+    },
+    {
+      "from": "audit-anonymization",
+      "to": "output:findings",
+      "port_name": "findings",
+      "type_ref": "audit-findings/v1"
+    },
+    {
+      "from": "input:database",
+      "to": "audit-anonymization",
+      "port_name": "database",
+      "type_ref": "database-snapshot/v1"
+    },
+    {
+      "from": "input:repository",
+      "to": "audit-anonymization",
+      "port_name": "repository",
+      "type_ref": "repository/v1"
+    }
+  ]
+}

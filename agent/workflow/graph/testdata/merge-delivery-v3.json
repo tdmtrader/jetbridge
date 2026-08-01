@@ -1,0 +1,156 @@
+{
+  "nodes": [
+    {
+      "id": "input:base",
+      "kind": "input",
+      "display_name": "base",
+      "type_ref": "repository/v1"
+    },
+    {
+      "id": "input:candidate",
+      "kind": "input",
+      "display_name": "candidate",
+      "type_ref": "repository-change/v1"
+    },
+    {
+      "id": "input:target",
+      "kind": "input",
+      "display_name": "target",
+      "type_ref": "repository/v1"
+    },
+    {
+      "id": "merge-preflight",
+      "kind": "task",
+      "display_name": "merge-preflight"
+    },
+    {
+      "id": "merge-prepare",
+      "kind": "task",
+      "display_name": "merge-prepare"
+    },
+    {
+      "id": "dev-validation-merged-change-gates",
+      "kind": "task",
+      "display_name": "validate-merged-change"
+    },
+    {
+      "id": "merge-approval",
+      "kind": "await",
+      "display_name": "merge-approval",
+      "type_ref": "human-answer/v1",
+      "decorations": [
+        "timeout"
+      ]
+    },
+    {
+      "id": "land-merge",
+      "kind": "publish",
+      "display_name": "land-merge",
+      "type_ref": "repository-change/v1"
+    },
+    {
+      "id": "output:merged-change",
+      "kind": "output",
+      "display_name": "merged-change",
+      "type_ref": "repository-change/v1"
+    },
+    {
+      "id": "output:merge-report",
+      "kind": "output",
+      "display_name": "merge-report",
+      "type_ref": "validation/v1"
+    }
+  ],
+  "edges": [
+    {
+      "from": "dev-validation-merged-change-gates",
+      "to": "land-merge",
+      "port_name": "validation",
+      "type_ref": "validation/v1"
+    },
+    {
+      "from": "dev-validation-merged-change-gates",
+      "to": "merge-approval",
+      "port_name": "validation",
+      "type_ref": "validation/v1"
+    },
+    {
+      "from": "input:base",
+      "to": "merge-preflight",
+      "port_name": "base",
+      "type_ref": "repository/v1"
+    },
+    {
+      "from": "input:base",
+      "to": "merge-prepare",
+      "port_name": "base",
+      "type_ref": "repository/v1"
+    },
+    {
+      "from": "input:candidate",
+      "to": "merge-preflight",
+      "port_name": "candidate",
+      "type_ref": "repository-change/v1"
+    },
+    {
+      "from": "input:candidate",
+      "to": "merge-prepare",
+      "port_name": "candidate",
+      "type_ref": "repository-change/v1"
+    },
+    {
+      "from": "input:target",
+      "to": "dev-validation-merged-change-gates",
+      "port_name": "target",
+      "type_ref": "repository/v1"
+    },
+    {
+      "from": "input:target",
+      "to": "merge-preflight",
+      "port_name": "target",
+      "type_ref": "repository/v1"
+    },
+    {
+      "from": "input:target",
+      "to": "merge-prepare",
+      "port_name": "target",
+      "type_ref": "repository/v1"
+    },
+    {
+      "from": "merge-approval",
+      "to": "land-merge",
+      "port_name": "merge-approval",
+      "type_ref": "human-answer/v1"
+    },
+    {
+      "from": "merge-preflight",
+      "to": "output:merge-report",
+      "port_name": "merge-report",
+      "type_ref": "validation/v1"
+    },
+    {
+      "from": "merge-prepare",
+      "to": "dev-validation-merged-change-gates",
+      "port_name": "merged-change",
+      "type_ref": "repository-change/v1"
+    },
+    {
+      "from": "merge-prepare",
+      "to": "land-merge",
+      "port_name": "merged-change",
+      "type_ref": "repository-change/v1"
+    },
+    {
+      "from": "merge-prepare",
+      "to": "merge-approval",
+      "port_name": "merged-change",
+      "type_ref": "repository-change/v1"
+    },
+    {
+      "from": "merge-prepare",
+      "to": "output:merged-change",
+      "port_name": "merged-change",
+      "type_ref": "repository-change/v1"
+    }
+  ]
+}

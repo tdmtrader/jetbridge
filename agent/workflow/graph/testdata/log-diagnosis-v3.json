@@ -1,0 +1,48 @@
+{
+  "nodes": [
+    {
+      "id": "input:logs",
+      "kind": "input",
+      "display_name": "logs",
+      "type_ref": "log-bundle/v1"
+    },
+    {
+      "id": "input:deployment",
+      "kind": "input",
+      "display_name": "deployment",
+      "type_ref": "deployment-snapshot/v1",
+      "optional": true
+    },
+    {
+      "id": "diagnose-logs",
+      "kind": "agent",
+      "display_name": "diagnose"
+    },
+    {
+      "id": "output:diagnosis",
+      "kind": "output",
+      "display_name": "diagnosis",
+      "type_ref": "diagnosis/v1"
+    }
+  ],
+  "edges": [
+    {
+      "from": "diagnose-logs",
+      "to": "output:diagnosis",
+      "port_name": "diagnosis",
+      "type_ref": "diagnosis/v1"
+    },
+    {
+      "from": "input:deployment",
+      "to": "diagnose-logs",
+      "port_name": "deployment",
+      "type_ref": "deployment-snapshot/v1"
+    },
+    {
+      "from": "input:logs",
+      "to": "diagnose-logs",
+      "port_name": "logs",
+      "type_ref": "log-bundle/v1"
+    }
+  ]
+}

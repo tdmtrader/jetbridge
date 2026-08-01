@@ -1,0 +1,131 @@
+{
+  "nodes": [
+    {
+      "id": "input:repository",
+      "kind": "input",
+      "display_name": "repository",
+      "type_ref": "repository/v1"
+    },
+    {
+      "id": "input:work-item",
+      "kind": "input",
+      "display_name": "work-item",
+      "type_ref": "work-item/v1"
+    },
+    {
+      "id": "implement",
+      "kind": "agent",
+      "display_name": "implement"
+    },
+    {
+      "id": "review",
+      "kind": "agent",
+      "display_name": "review"
+    },
+    {
+      "id": "dev-validation-repository-gates",
+      "kind": "task",
+      "display_name": "validate"
+    },
+    {
+      "id": "prepare-question",
+      "kind": "agent",
+      "display_name": "prepare-question"
+    },
+    {
+      "id": "approval",
+      "kind": "await",
+      "display_name": "approval",
+      "type_ref": "human-answer/v1",
+      "decorations": [
+        "timeout"
+      ]
+    },
+    {
+      "id": "output:change",
+      "kind": "output",
+      "display_name": "change",
+      "type_ref": "repository-change/v1"
+    },
+    {
+      "id": "output:report",
+      "kind": "output",
+      "display_name": "report",
+      "type_ref": "opaque/v1"
+    }
+  ],
+  "edges": [
+    {
+      "from": "dev-validation-repository-gates",
+      "to": "prepare-question",
+      "port_name": "validation",
+      "type_ref": "validation/v1"
+    },
+    {
+      "from": "implement",
+      "to": "review",
+      "port_name": "draft",
+      "type_ref": "repository-change/v1"
+    },
+    {
+      "from": "input:repository",
+      "to": "dev-validation-repository-gates",
+      "port_name": "repository",
+      "type_ref": "repository/v1"
+    },
+    {
+      "from": "input:repository",
+      "to": "implement",
+      "port_name": "repository",
+      "type_ref": "repository/v1"
+    },
+    {
+      "from": "input:repository",
+      "to": "review",
+      "port_name": "repository",
+      "type_ref": "repository/v1"
+    },
+    {
+      "from": "input:work-item",
+      "to": "implement",
+      "port_name": "work-item",
+      "type_ref": "work-item/v1"
+    },
+    {
+      "from": "input:work-item",
+      "to": "review",
+      "port_name": "work-item",
+      "type_ref": "work-item/v1"
+    },
+    {
+      "from": "prepare-question",
+      "to": "approval",
+      "port_name": "approval-question",
+      "type_ref": "question/v1"
+    },
+    {
+      "from": "review",
+      "to": "dev-validation-repository-gates",
+      "port_name": "candidate",
+      "type_ref": "repository-change/v1"
+    },
+    {
+      "from": "review",
+      "to": "output:change",
+      "port_name": "candidate",
+      "type_ref": "repository-change/v1"
+    },
+    {
+      "from": "review",
+      "to": "output:report",
+      "port_name": "report",
+      "type_ref": "opaque/v1"
+    },
+    {
+      "from": "review",
+      "to": "prepare-question",
+      "port_name": "candidate",
+      "type_ref": "repository-change/v1"
+    }
+  ]
+}

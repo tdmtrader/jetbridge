@@ -1,0 +1,35 @@
+{
+  "nodes": [
+    {
+      "id": "input:candidate",
+      "kind": "input",
+      "display_name": "candidate",
+      "type_ref": "review/v1"
+    },
+    {
+      "id": "measure-review",
+      "kind": "task",
+      "display_name": "measure-review"
+    },
+    {
+      "id": "output:measurements",
+      "kind": "output",
+      "display_name": "measurements",
+      "type_ref": "measurements/v1"
+    }
+  ],
+  "edges": [
+    {
+      "from": "input:candidate",
+      "to": "measure-review",
+      "port_name": "candidate",
+      "type_ref": "review/v1"
+    },
+    {
+      "from": "measure-review",
+      "to": "output:measurements",
+      "port_name": "measurements",
+      "type_ref": "measurements/v1"
+    }
+  ]
+}

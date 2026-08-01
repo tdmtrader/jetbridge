@@ -1,0 +1,47 @@
+{
+  "nodes": [
+    {
+      "id": "input:before",
+      "kind": "input",
+      "display_name": "before",
+      "type_ref": "repository/v1"
+    },
+    {
+      "id": "input:after",
+      "kind": "input",
+      "display_name": "after",
+      "type_ref": "repository/v1"
+    },
+    {
+      "id": "review",
+      "kind": "agent",
+      "display_name": "review"
+    },
+    {
+      "id": "output:review",
+      "kind": "output",
+      "display_name": "review",
+      "type_ref": "review/v1"
+    }
+  ],
+  "edges": [
+    {
+      "from": "input:after",
+      "to": "review",
+      "port_name": "after",
+      "type_ref": "repository/v1"
+    },
+    {
+      "from": "input:before",
+      "to": "review",
+      "port_name": "before",
+      "type_ref": "repository/v1"
+    },
+    {
+      "from": "review",
+      "to": "output:review",
+      "port_name": "review",
+      "type_ref": "review/v1"
+    }
+  ]
+}
