@@ -605,6 +605,29 @@ func TestCreateBoundsDetailAtMaxErrorDetailBytesEvenForPureASCII(t *testing.T) {
 	}
 }
 
+// TestCreateLeavesADetailAtTheBoundIntact pins the passthrough guard at its
+// exact boundary. A detail of exactly maxErrorDetailBytes is within the bound
+// and must survive whole; without this, flipping truncateDetail's `<=` to `<`
+// silently elides a compliant detail down to 503 bytes and every other test
+// still passes.
+func TestCreateLeavesADetailAtTheBoundIntact(t *testing.T) {
+	harness := newHandlerHarness(t)
+	boundaryDetail := strings.Repeat("a", testMaxErrorDetailBytes)
+	harness.creator.upload = func(context.Context, snapshot.UploadRequest) (snapshot.Snapshot, error) {
+		return snapshot.Snapshot{}, errors.Join(snapshot.ErrValidation, snapshot.ClientDetailf("%s", boundaryDetail))
+	}
+	request := httptest.NewRequest(http.MethodPost, "/snapshots?type=opaque%2Fv1", strings.NewReader("tar"))
+	request.Header.Set("Content-Type", "application/x-tar")
+	recorder := httptest.NewRecorder()
+	harness.factory.Create(harness.team).ServeHTTP(recorder, request)
+
+	response := decodeError(t, recorder)
+	if response.Detail != boundaryDetail {
+		t.Fatalf("detail at exactly %d bytes was altered: len=%d, truncated=%v",
+			testMaxErrorDetailBytes, len(response.Detail), strings.Contains(response.Detail, "…"))
+	}
+}
+
 // TestCreateTruncationRespectsRuneBoundariesOnBothCuts places a two-byte
 // rune ("é") straddling each of truncateDetail's two cut points — byte
 // testTruncateHeadBytes for the head, and byte len(detail)-testTruncateTailBytes

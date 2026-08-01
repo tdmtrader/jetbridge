@@ -989,15 +989,18 @@ const maxErrorDetailBytes = 512
 // truncateHeadBytes and truncateTailBytes are the head/tail split
 // truncateDetail keeps once a detail exceeds maxErrorDetailBytes.
 //
-// Every mark in this codebase puts the caller-supplied value FIRST and the
-// fixed, human-authored reason LAST (see agent/snapshot/archive.go, e.g.
-// `archive path %q has a trailing separator`, `duplicate canonical path
-// %q`). MaxSnapshotPathBytes is 4096, so a deep tree — a node_modules
-// install, a Java package layout — can push that reason several hundred
-// bytes past any head-only cutoff. A tail-truncated response would hand the
-// caller back a fragment of their own path with no indication of what was
-// wrong with it, defeating the whole channel for exactly the users least
-// able to guess the cause on their own.
+// Marks put the fixed, human-authored reason at one end and the
+// caller-supplied value at the other or in the middle: reason-last in
+// `archive path %q contains an empty, dot, or traversal segment`, reason-first
+// in `duplicate canonical path %q`. Retaining both a head and a tail covers
+// either ordering, which is why the split is not simply a longer head.
+//
+// MaxSnapshotPathBytes is 4096, so a deep tree — a node_modules install, a
+// Java package layout — can push a reason-last clause several hundred bytes
+// past any head-only cutoff. A tail-truncated response would hand the caller
+// back a fragment of their own path with no indication of what was wrong with
+// it, defeating the whole channel for exactly the users least able to guess
+// the cause on their own.
 //
 // 400 head bytes is enough to recognize which value is being complained
 // about even inside a deep tree. Every reason clause this package marks
