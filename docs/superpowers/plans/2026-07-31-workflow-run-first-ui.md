@@ -5269,6 +5269,70 @@ Expected: PASS.
 
 ---
 
+## Task C4: Server-side attention lens (found during Phase D)
+
+Phase C shipped `window`, `scope`, `node`, `node_status`, and `q`, but no
+filter matching the design's `attention | active | all` lens, so Phase D had to
+apply it client-side to whatever page the server returned.
+
+That is wrong for the default view. The run list is server-paginated at fifty
+rows and `attention` is the DEFAULT lens, so the page currently shows
+"attention-worthy runs among the newest fifty" rather than "attention-worthy
+runs". An unresolved failure older than fifty runs is invisible on the page
+whose primary job is answering "is anything unresolved?" and "where is the
+problem?".
+
+**Files:**
+- Modify: `atc/db/agent_workflow_run.go`, `atc/db/agent_workflow_runs_factory.go`
+- Modify: `agent/api/workflowruns/handler.go`
+- Modify: `web/elm/src/AgentWorkflow/Filters.elm`, `AgentWorkflow.elm`
+
+- [ ] **Step 1: Add the lens to the filter**
+
+Add a `Lens` field to `AgentWorkflowRunListFilter` with values matching the UI
+vocabulary. Define each as a server-side predicate:
+
+- **`active`** — the run is nonterminal (`admitting`, `running`, `canceling`).
+- **`attention`** — the run is active, OR it is terminal and unresolved:
+  a failed/errored/aborted run with no later successful retry in its closure,
+  or a run with an unresolved wait. Reuse the retry-resolution semantics in
+  `agent/workflowrun/occurrence/attention.go` rather than inventing a second
+  rule — if the two disagree, the canvas and the list will contradict each
+  other, which is worse than either being wrong alone.
+- **`all`** — no predicate.
+
+- [ ] **Step 2: Write DB specs first**
+
+Cover: an old failed run with a later successful retry is NOT attention-worthy;
+the same run with no successful retry IS; a run waiting at an `await` IS; an
+active run older than the window IS (it must survive the window union too); and
+`all` returns everything. Assert against runs positioned beyond one page, since
+that is the bug being fixed.
+
+- [ ] **Step 3: Parse `lens` in the handler, defaulting to `attention`**
+
+Reject an unrecognised value with 400, matching how `scope` and `window` are
+already validated.
+
+- [ ] **Step 4: Move the Elm lens from client-side to the query**
+
+`Filters.runsQuery` emits `lens`; `AgentWorkflow.elm` stops filtering rows
+locally. Keep the distinct empty-state copy that separates "no runs in this
+window" from "no runs match this lens" — that distinction is still right, it
+just now reflects a server answer.
+
+- [ ] **Step 5: Verify and commit**
+
+```bash
+ginkgo --focus="AgentWorkflowRuns" ./atc/db/
+```
+
+```bash
+git commit -m "feat(api): server-side attention lens for the run list"
+```
+
+---
+
 ## Phase E — exact run DAG
 
 The run page renders one immutable run occurrence through the same renderer with a single-run state lookup. Existing durable detail is re-homed under the selected node, not discarded.
