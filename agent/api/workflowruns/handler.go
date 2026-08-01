@@ -41,6 +41,7 @@ type Handler struct {
 	runs      RunStore
 	canceler  Canceler
 	manifests ManifestStore
+	now       func() time.Time
 }
 
 func NewHandler(config Config) (*Handler, error) {
@@ -68,10 +69,15 @@ func NewHandler(config Config) (*Handler, error) {
 	if handlerLogger == nil {
 		handlerLogger = lager.NewLogger("workflow-runs")
 	}
+	now := config.Now
+	if now == nil {
+		now = time.Now
+	}
 	return &Handler{
 		logger: handlerLogger,
 		team:   config.Team, identity: config.Identity, binder: config.Binder,
 		runs: config.Runs, canceler: config.Canceler, manifests: config.Manifests,
+		now: now,
 	}, nil
 }
 
@@ -127,12 +133,13 @@ func (handler *Handler) List(w http.ResponseWriter, r *http.Request) {
 	}
 	allowed := map[string]struct{}{
 		"status": {}, "origin_kind": {}, "origin_reference": {}, "limit": {}, "cursor": {},
+		"window": {}, "scope": {}, "node": {}, "node_status": {}, "q": {},
 	}
 	workflowName, _, query, ok := parseRoute(w, r, false, allowed)
 	if !ok {
 		return
 	}
-	filter, ok := parseListFilter(w, query)
+	filter, ok := parseListFilter(w, query, handler.now)
 	if !ok {
 		return
 	}
@@ -596,8 +603,59 @@ func parseRoute(
 	return workflowName, runID, query, true
 }
 
-func parseListFilter(w http.ResponseWriter, query url.Values) (db.AgentWorkflowRunListFilter, bool) {
+func parseListFilter(
+	w http.ResponseWriter,
+	query url.Values,
+	now func() time.Time,
+) (db.AgentWorkflowRunListFilter, bool) {
 	filter := db.AgentWorkflowRunListFilter{Limit: 100}
+	// Experiment runs are excluded from the default view. Mixing experiment
+	// cells into normal success, latency, or cost would distort the primary
+	// evaluation, so opting into them is an explicit choice.
+	filter.Scope = db.AgentWorkflowRunScopeOperational
+	if raw, present := query["scope"]; present {
+		scope := db.AgentWorkflowRunScope(raw[0])
+		if scope.Validate() != nil {
+			writeError(w, http.StatusBadRequest, "invalid_scope", "workflow run scope filter is invalid")
+			return db.AgentWorkflowRunListFilter{}, false
+		}
+		filter.Scope = scope
+	}
+	// Active runs are always unioned in, so changing the history window never
+	// changes the meaning of active state.
+	filter.IncludeActiveRuns = true
+	if raw, present := query["window"]; present {
+		duration, supported := Windows[raw[0]]
+		if !supported {
+			writeError(w, http.StatusBadRequest, "invalid_window", "workflow run window filter is invalid")
+			return db.AgentWorkflowRunListFilter{}, false
+		}
+		since := now().Add(-duration)
+		filter.CompletedSince = &since
+	}
+	if raw, present := query["node"]; present {
+		if validateText(raw[0], 1024, false, true) != nil {
+			writeError(w, http.StatusBadRequest, "invalid_node", "workflow run node filter is invalid")
+			return db.AgentWorkflowRunListFilter{}, false
+		}
+		filter.NodeID = raw[0]
+	}
+	if raw, present := query["node_status"]; present {
+		// A node status with no node would filter nothing while looking like
+		// it filtered something, so the pair is required together.
+		if filter.NodeID == "" || validateNodeStatus(raw[0]) != nil {
+			writeError(w, http.StatusBadRequest, "invalid_node_status", "workflow run node status filter is invalid")
+			return db.AgentWorkflowRunListFilter{}, false
+		}
+		filter.NodeStatus = raw[0]
+	}
+	if raw, present := query["q"]; present {
+		if validateText(raw[0], 1024, false, false) != nil {
+			writeError(w, http.StatusBadRequest, "invalid_search", "workflow run search term is invalid")
+			return db.AgentWorkflowRunListFilter{}, false
+		}
+		filter.Search = raw[0]
+	}
 	if raw, present := query["status"]; present {
 		status := db.AgentWorkflowRunStatus(raw[0])
 		if validateStatus(status) != nil {
@@ -969,6 +1027,18 @@ func validateStatus(status db.AgentWorkflowRunStatus) error {
 		return nil
 	default:
 		return fmt.Errorf("invalid status")
+	}
+}
+
+// validateNodeStatus mirrors the occurrence status vocabulary the projection's
+// CHECK constraint enforces. It is spelled out rather than imported so an HTTP
+// filter cannot widen what the table accepts.
+func validateNodeStatus(status string) error {
+	switch status {
+	case "pending", "running", "waiting", "succeeded", "failed", "errored", "aborted", "skipped":
+		return nil
+	default:
+		return fmt.Errorf("invalid node status")
 	}
 }
 

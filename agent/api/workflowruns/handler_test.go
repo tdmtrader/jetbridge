@@ -597,6 +597,7 @@ func TestListUsesStrictCombinedFiltersAndReturnsAnEmptyArray(t *testing.T) {
 	want := db.AgentWorkflowRunListFilter{
 		TeamID: 1, WorkflowName: "deploy", Status: db.AgentWorkflowRunStatusFailed,
 		OriginKind: "ticket", OriginReference: "T-7", Limit: 26,
+		Scope: db.AgentWorkflowRunScopeOperational, IncludeActiveRuns: true,
 	}
 	if gotFilter != want {
 		t.Fatalf("filter = %+v, want %+v", gotFilter, want)
@@ -1019,5 +1020,151 @@ func TestStorageFailuresAreBoundedAndDoNotLeak(t *testing.T) {
 	handler.Get(recorder, request(http.MethodGet, "/runs/1", "deploy", "1", nil, ""))
 	if recorder.Code != http.StatusInternalServerError || strings.Contains(recorder.Body.String(), "secret-password") {
 		t.Fatalf("storage error response = %d %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+// listFilterFor drives the real List handler and returns the filter that
+// reached the store, which is the only place a query parameter's meaning is
+// actually decided.
+func listFilterFor(t *testing.T, query url.Values, now func() time.Time) (db.AgentWorkflowRunListFilter, int) {
+	t.Helper()
+	deps := defaultDeps()
+	var got db.AgentWorkflowRunListFilter
+	deps.runs.list = func(_ context.Context, filter db.AgentWorkflowRunListFilter) ([]db.AgentWorkflowRun, error) {
+		got = filter
+		return nil, nil
+	}
+	handler, err := workflowruns.NewHandler(workflowruns.Config{
+		Team:     workflowruns.TrustedTeam{ID: 1, Name: atc.DefaultTeamName},
+		Identity: deps.identity, Binder: deps.binder, Runs: deps.runs,
+		Canceler: deps.canceler, Manifests: deps.manifests, Now: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	handler.List(recorder, request(http.MethodGet, "/api/v1/agent/workflows/deploy/runs", "deploy", "", query, ""))
+	return got, recorder.Code
+}
+
+func TestListParsesOverviewQueryParameters(t *testing.T) {
+	fixed := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	filter, code := listFilterFor(t, url.Values{
+		"window":      {"24h"},
+		"scope":       {"operational"},
+		"node":        {"implement"},
+		"node_status": {"failed"},
+		"q":           {"1234"},
+	}, func() time.Time { return fixed })
+
+	if code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", code)
+	}
+	if filter.Scope != db.AgentWorkflowRunScopeOperational {
+		t.Fatalf("expected operational scope, got %q", filter.Scope)
+	}
+	if filter.CompletedSince == nil {
+		t.Fatal("expected a completed-since bound from the window")
+	}
+	if want := fixed.Add(-24 * time.Hour); !filter.CompletedSince.Equal(want) {
+		t.Fatalf("completed-since = %s, want %s", filter.CompletedSince, want)
+	}
+	if !filter.IncludeActiveRuns {
+		t.Fatal("active runs must always be unioned in")
+	}
+	if filter.NodeID != "implement" || filter.NodeStatus != "failed" {
+		t.Fatalf("unexpected node filter: %+v", filter)
+	}
+	if filter.Search != "1234" {
+		t.Fatalf("expected the search term to reach the store, got %q", filter.Search)
+	}
+}
+
+func TestListDefaultsToOperationalScope(t *testing.T) {
+	filter, code := listFilterFor(t, url.Values{}, nil)
+
+	if code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", code)
+	}
+	if filter.Scope != db.AgentWorkflowRunScopeOperational {
+		t.Fatalf("experiments must be excluded by default, got scope %q", filter.Scope)
+	}
+}
+
+func TestListHonoursAnExplicitScopeChoice(t *testing.T) {
+	for _, scope := range []db.AgentWorkflowRunScope{
+		db.AgentWorkflowRunScopeExperiment, db.AgentWorkflowRunScopeAll,
+	} {
+		filter, code := listFilterFor(t, url.Values{"scope": {string(scope)}}, nil)
+		if code != http.StatusOK {
+			t.Fatalf("scope %q: expected 200, got %d", scope, code)
+		}
+		if filter.Scope != scope {
+			t.Fatalf("scope = %q, want %q", filter.Scope, scope)
+		}
+	}
+}
+
+// Without a window the list applies no completed-at bound: it paginates its
+// own way back through history.
+func TestListWithoutAWindowAppliesNoHistoryBound(t *testing.T) {
+	filter, code := listFilterFor(t, url.Values{}, nil)
+
+	if code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", code)
+	}
+	if filter.CompletedSince != nil {
+		t.Fatalf("expected no history bound, got %s", filter.CompletedSince)
+	}
+	if !filter.IncludeActiveRuns {
+		t.Fatal("active runs are always unioned in, window or not")
+	}
+}
+
+func TestListSupportsEveryDeclaredWindow(t *testing.T) {
+	fixed := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	for kind, want := range map[string]time.Duration{
+		"24h": 24 * time.Hour,
+		"7d":  7 * 24 * time.Hour,
+		"30d": 30 * 24 * time.Hour,
+	} {
+		filter, code := listFilterFor(t, url.Values{"window": {kind}}, func() time.Time { return fixed })
+		if code != http.StatusOK {
+			t.Fatalf("window %q: expected 200, got %d", kind, code)
+		}
+		if filter.CompletedSince == nil || !filter.CompletedSince.Equal(fixed.Add(-want)) {
+			t.Fatalf("window %q: completed-since = %v, want %s", kind, filter.CompletedSince, fixed.Add(-want))
+		}
+	}
+}
+
+func TestListRejectsUnsupportedOverviewFilters(t *testing.T) {
+	deps := defaultDeps()
+	listCalls := 0
+	deps.runs.list = func(context.Context, db.AgentWorkflowRunListFilter) ([]db.AgentWorkflowRun, error) {
+		listCalls++
+		return nil, nil
+	}
+	handler := mustHandler(t, deps)
+	for _, query := range []url.Values{
+		{"window": {"90d"}},
+		{"window": {"24H"}},
+		{"scope": {"everything"}},
+		{"scope": {"Operational"}},
+		// A node status with no node would filter nothing while looking like
+		// it filtered something.
+		{"node_status": {"failed"}},
+		{"node": {"implement"}, "node_status": {"nonsense"}},
+		{"node": {" implement"}},
+		{"q": {"\x00"}},
+	} {
+		recorder := httptest.NewRecorder()
+		handler.List(recorder, request(http.MethodGet, "/api/v1/agent/workflows/deploy/runs", "deploy", "", query, ""))
+		if recorder.Code != http.StatusBadRequest {
+			t.Errorf("query %v status = %d, want 400", query, recorder.Code)
+		}
+	}
+	if listCalls != 0 {
+		t.Fatalf("store called %d times for invalid filters", listCalls)
 	}
 }

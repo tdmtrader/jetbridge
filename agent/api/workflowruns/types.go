@@ -108,7 +108,26 @@ type Config struct {
 	Runs      RunStore
 	Canceler  Canceler
 	Manifests ManifestStore
+	// Now supplies the history window's upper bound. Optional; time.Now by
+	// default.
+	Now func() time.Time
 }
+
+// Windows is the complete supported history-window vocabulary, shared by the
+// run list and the workflow overview. Custom and adaptive windows are out of
+// scope: one explicit global control keeps the graph, the selected node
+// detail, and the run list on a single shared scope. It lives here, in the
+// lower-level package, so the two surfaces cannot drift apart.
+var Windows = map[string]time.Duration{
+	"24h": 24 * time.Hour,
+	"7d":  7 * 24 * time.Hour,
+	"30d": 30 * 24 * time.Hour,
+}
+
+// DefaultWindow is what an unqualified overview request means. The run list
+// applies no window unless one is asked for, because it paginates its own way
+// back through history.
+const DefaultWindow = "7d"
 
 // CreateRequest is the complete caller-controlled workflow admission body.
 // All authority, origin, creator, target-function, and durable-state fields

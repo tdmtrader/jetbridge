@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
+	"github.com/concourse/concourse/agent/api/workflowruns"
 	"github.com/concourse/concourse/agent/workflow"
 	"github.com/concourse/concourse/agent/workflow/graph"
 	"github.com/concourse/concourse/agent/workflowrun/occurrence"
@@ -18,22 +19,6 @@ import (
 	"github.com/concourse/concourse/atc/db"
 	"github.com/tedsuo/rata"
 )
-
-// Windows is the complete supported set. Custom and adaptive windows are out
-// of scope: one explicit global control keeps the graph, the selected node
-// detail, and the run list on a single shared scope.
-var Windows = map[string]time.Duration{
-	"24h": 24 * time.Hour,
-	"7d":  7 * 24 * time.Hour,
-	"30d": 30 * 24 * time.Hour,
-}
-
-// DefaultWindow is what an unqualified request means.
-const DefaultWindow = "7d"
-
-// UnsupportedWindowMessage is shared with the run list so both surfaces reject
-// an unknown window identically.
-const UnsupportedWindowMessage = `unsupported window; use 24h, 7d, or 30d`
 
 // overviewRunLimit bounds how many runs one aggregation reads. The window plus
 // this bound is the honest scope of the counts: a workflow that executes more
@@ -98,13 +83,15 @@ func (handler *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	kind := DefaultWindow
+	// The window vocabulary lives in workflowruns so the run list and this
+	// page cannot drift apart: they are one shared scope by design.
+	kind := workflowruns.DefaultWindow
 	if raw, present := query["window"]; present {
 		kind = raw[0]
 	}
-	duration, supported := Windows[kind]
+	duration, supported := workflowruns.Windows[kind]
 	if !supported {
-		writeError(w, http.StatusBadRequest, "invalid_window", UnsupportedWindowMessage)
+		writeError(w, http.StatusBadRequest, "invalid_window", "workflow overview window is invalid")
 		return
 	}
 
