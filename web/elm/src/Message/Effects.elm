@@ -25,6 +25,7 @@ import Concourse.Pagination exposing (Page)
 import Concourse.Snapshot
 import Concourse.Transcript
 import Concourse.WorkflowOverview
+import Concourse.WorkflowRunGraph
 import Concourse.WorkflowRun
 import Json.Decode
 import Json.Encode
@@ -250,6 +251,7 @@ type Effect
     | FetchAgentWorkflowRuns String
     | FetchAgentWorkflowRunsFiltered String (List ( String, String ))
     | FetchAgentWorkflowOverview String (List ( String, String ))
+    | FetchAgentWorkflowRunGraph String String
     | FetchAgentWorkflowRunOperationalStatusCounts String
     | CreateAgentWorkflowRun
         { workflowName : String
@@ -978,6 +980,12 @@ runEffect effect key csrfToken =
                 |> Api.expectJson Concourse.WorkflowOverview.decodeOverview
                 |> Api.request
                 |> Task.attempt (AgentWorkflowOverviewFetched workflowName)
+
+        FetchAgentWorkflowRunGraph workflowName workflowRunId ->
+            Api.get (Endpoints.AgentWorkflowRunGraph workflowName workflowRunId)
+                |> Api.expectJson Concourse.WorkflowRunGraph.decodeRunGraph
+                |> Api.request
+                |> Task.attempt (AgentWorkflowRunGraphFetched workflowRunId)
 
         FetchAgentWorkflowRunOperationalStatusCounts workflowName ->
             Api.get (Endpoints.AgentWorkflowRunOperationalStatusCounts workflowName)

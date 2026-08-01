@@ -52,6 +52,7 @@ type Endpoint
     | AgentWorkflowRuns String
     | AgentWorkflowRunsFiltered String (List ( String, String ))
     | AgentWorkflowOverview String (List ( String, String ))
+    | AgentWorkflowRunGraph String String
     | AgentWorkflowRunOperationalStatusCounts String
     | AgentWorkflowRun String String
     | AgentWorkflowRunCancel String String
@@ -303,6 +304,11 @@ builder endpoint =
             base
                 |> appendPath [ "agent", "workflows", Url.percentEncode workflowName, "overview" ]
                 |> appendQuery (pairs query)
+
+        AgentWorkflowRunGraph workflowName workflowRunId ->
+            base
+                |> appendPath
+                    [ "agent", "workflows", Url.percentEncode workflowName, "runs", workflowRunId, "graph" ]
 
         AgentWorkflowRunOperationalStatusCounts workflowName ->
             base |> appendPath [ "agent", "workflows", Url.percentEncode workflowName, "runs", "operational-status-counts" ]

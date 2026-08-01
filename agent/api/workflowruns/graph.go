@@ -2,6 +2,7 @@ package workflowruns
 
 import (
 	"net/http"
+	"strconv"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
@@ -49,18 +50,21 @@ type NodeOccurrence struct {
 	// Attempt is which recovery attempt of that copy. They come from different
 	// records and answer different questions, so they stay separate here for
 	// the same reason they are separate in the projection.
-	RetryAttempt        int        `json:"retry_attempt"`
-	Attempt             int        `json:"attempt"`
-	Status              string     `json:"status"`
-	PlanID              string     `json:"plan_id"`
-	ReusableNodeName    string     `json:"reusable_node_name,omitempty"`
-	ReusableNodeVersion int        `json:"reusable_node_version,omitempty"`
-	WaitID              *int64     `json:"wait_id"`
-	PublicationID       *int64     `json:"publication_id"`
-	StartedAt           *time.Time `json:"started_at"`
-	CompletedAt         *time.Time `json:"completed_at"`
-	DurationSeconds     int        `json:"duration_seconds"`
-	CostUSD             float64    `json:"cost_usd"`
+	RetryAttempt        int    `json:"retry_attempt"`
+	Attempt             int    `json:"attempt"`
+	Status              string `json:"status"`
+	PlanID              string `json:"plan_id"`
+	ReusableNodeName    string `json:"reusable_node_name,omitempty"`
+	ReusableNodeVersion int    `json:"reusable_node_version,omitempty"`
+	// WaitID and PublicationID are strings for the same reason a run ID is:
+	// they are bigint identities, and agent/workflowwait already marshals its
+	// own ID as a string. A number here would not join against it.
+	WaitID          *string    `json:"wait_id"`
+	PublicationID   *string    `json:"publication_id"`
+	StartedAt       *time.Time `json:"started_at"`
+	CompletedAt     *time.Time `json:"completed_at"`
+	DurationSeconds int        `json:"duration_seconds"`
+	CostUSD         float64    `json:"cost_usd"`
 }
 
 // Graph serves one run's exact DAG and node state.
@@ -146,6 +150,17 @@ func (handler *Handler) runGraph(run db.AgentWorkflowRun) (graph.Graph, bool, er
 	return built, true, nil
 }
 
+// formatOptionalID renders a durable bigint identity as a string. A JSON
+// number would exceed the range JavaScript represents exactly and would not
+// join against the wait API, which already marshals its ID as a string.
+func formatOptionalID(value *int64) *string {
+	if value == nil {
+		return nil
+	}
+	rendered := strconv.FormatInt(*value, 10)
+	return &rendered
+}
+
 func presentNodeOccurrences(occurrences []occurrence.NodeOccurrence) []NodeOccurrence {
 	presented := make([]NodeOccurrence, 0, len(occurrences))
 	for _, entry := range occurrences {
@@ -154,7 +169,7 @@ func presentNodeOccurrences(occurrences []occurrence.NodeOccurrence) []NodeOccur
 			RetryAttempt: entry.RetryAttempt, Attempt: entry.Attempt,
 			Status: string(entry.Status), PlanID: entry.PlanID,
 			ReusableNodeName: entry.ReusableNodeName, ReusableNodeVersion: entry.ReusableNodeVersion,
-			WaitID: cloneInt64(entry.WaitID), PublicationID: cloneInt64(entry.PublicationID),
+			WaitID: formatOptionalID(entry.WaitID), PublicationID: formatOptionalID(entry.PublicationID),
 			StartedAt: cloneTime(entry.StartedAt), CompletedAt: cloneTime(entry.CompletedAt),
 			DurationSeconds: entry.DurationSeconds, CostUSD: entry.CostUSD,
 		})

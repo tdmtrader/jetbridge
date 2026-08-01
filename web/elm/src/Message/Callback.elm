@@ -11,6 +11,7 @@ import Concourse.Pagination exposing (Page, Paginated)
 import Concourse.Snapshot
 import Concourse.Transcript
 import Concourse.WorkflowOverview
+import Concourse.WorkflowRunGraph
 import Concourse.WorkflowRun
 import Http
 import Message.Message
@@ -94,6 +95,7 @@ type Callback
     | AgentWorkflowVersionPromoted String (Fetched ())
     | AgentWorkflowRunsFetched String (Fetched (List Concourse.WorkflowRun.Summary))
     | AgentWorkflowOverviewFetched String (Fetched Concourse.WorkflowOverview.Overview)
+    | AgentWorkflowRunGraphFetched String (Fetched Concourse.WorkflowRunGraph.RunGraph)
     | AgentWorkflowRunOperationalStatusCountsFetched String (Fetched Concourse.WorkflowRun.OperationalStatusCounts)
     | AgentWorkflowRunFetched String (Fetched Concourse.WorkflowRun.Detail)
     | AgentWorkflowRunMetricsFetched String (Fetched (List Concourse.Agent.RunMetric))

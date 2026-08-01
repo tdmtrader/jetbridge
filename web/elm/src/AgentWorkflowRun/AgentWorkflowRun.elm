@@ -10,8 +10,12 @@ module AgentWorkflowRun.AgentWorkflowRun exposing
     , view
     )
 
+import AgentGraph.Layout as Layout
+import AgentGraph.Model as GraphModel
+import AgentGraph.View as GraphView
 import AgentPage.Chrome as Chrome
 import AgentSnapshot.RepositoryChange as RepositoryChange
+import AgentWorkflowRun.NodeDetail as NodeDetail
 import Application.Models exposing (Session)
 import Build.AgentReview as AgentReviewView
 import Concourse.Agent as Agent
@@ -19,6 +23,7 @@ import Concourse.AgentReview exposing (BuildReview)
 import Concourse.Snapshot as Snapshot
 import Concourse.Transcript as Transcript
 import Concourse.WorkflowRun as WorkflowRun
+import Concourse.WorkflowRunGraph as RunGraph
 import Dict exposing (Dict)
 import EffectTransformer exposing (ET)
 import Html exposing (Html)
@@ -51,6 +56,9 @@ type alias Model =
         , expandedTranscriptEntries : Set String
         , transcriptErrors : Set String
         , transcriptIndexError : Bool
+        , runGraph : Maybe RunGraph.RunGraph
+        , runGraphError : Bool
+        , selectedNode : Maybe String
         , answerSnapshots : Dict String String
         , loadError : Bool
         , actionError : Bool
@@ -81,6 +89,9 @@ init { workflowName, id } =
       , expandedTranscriptEntries = Set.empty
       , transcriptErrors = Set.empty
       , transcriptIndexError = False
+      , runGraph = Nothing
+      , runGraphError = False
+      , selectedNode = Nothing
       , answerSnapshots = Dict.empty
       , loadError = False
       , actionError = False
@@ -107,6 +118,7 @@ fetchAll workflowName id =
     , FetchAgentWorkflowReviews workflowName id
     , FetchAgentWorkflowRunMetrics workflowName id
     , FetchAgentWorkflowRunTranscripts workflowName id
+    , FetchAgentWorkflowRunGraph workflowName id
     ]
 
 
@@ -137,6 +149,24 @@ handleCallback callback ( model, effects ) =
         AgentWorkflowRunFetched runId (Err _) ->
             if runId == model.workflowRunId then
                 ( { model | loadError = True }, effects )
+
+            else
+                ( model, effects )
+
+        AgentWorkflowRunGraphFetched runId (Ok runGraph) ->
+            -- run-qualified for the same reason metrics and transcripts are: a
+            -- second open run page must not repaint this one's canvas.
+            if runId == model.workflowRunId then
+                ( { model | runGraph = Just runGraph, runGraphError = False }, effects )
+
+            else
+                ( model, effects )
+
+        AgentWorkflowRunGraphFetched runId (Err _) ->
+            -- Supplemental: the DAG failing must not blank the run. The flat
+            -- cards below still carry every durable fact the page had before.
+            if runId == model.workflowRunId then
+                ( { model | runGraphError = True }, effects )
 
             else
                 ( model, effects )
@@ -302,6 +332,20 @@ handleCallback callback ( model, effects ) =
 update : Message -> ET Model
 update message ( model, effects ) =
     case message of
+        AgentWorkflowNodeSelected nodeId ->
+            -- Selecting the selected node clears it, so the canvas is a toggle
+            -- rather than a trap with no way back to the whole-run view.
+            ( { model
+                | selectedNode =
+                    if model.selectedNode == Just nodeId then
+                        Nothing
+
+                    else
+                        Just nodeId
+              }
+            , effects
+            )
+
         AgentWaitAnswerChanged waitId snapshotId ->
             ( { model | answerSnapshots = Dict.insert waitId snapshotId model.answerSnapshots }, effects )
 
@@ -531,16 +575,26 @@ view session model =
         ]
 
 
+{-| The run, organised around the DAG it actually executed.
+
+The order is the argument. A slim header states identity and outcome; the graph
+is the dominant element; the selected node carries its own durable evidence; and
+only genuinely run-level facts — dispositions, overall telemetry, the review
+projection, the frozen definition — sit below it.
+
+The flat cards this page used to lead with are not gone. When the graph is
+drawn, each one renders only what the canvas could not place; when it is not,
+they render in full. Either way nothing durable becomes unreachable, which is
+the property that makes this a relocation rather than a redesign.
+-}
 runContent : Session -> Model -> WorkflowRun.Detail -> Html Message
 runContent session model detail =
     Html.div []
-        [ identityCard detail.summary
-        , executionCard model detail.summary
-        , bindingsCard model detail
-        , waitsCard model
+        [ runHeader model detail.summary
+        , graphSection model
+        , nodeDetailSection model detail
         , outcomesCard model
         , telemetryCard model detail.summary
-        , transcriptsCard model
         , if List.isEmpty model.agentReviews && not model.agentReviewLoadError then
             Html.text ""
 
@@ -549,7 +603,463 @@ runContent session model detail =
                 [ heading "Review projection"
                 , AgentReviewView.view (reviewer session) model
                 ]
+        , residualBindingsCard model detail
+        , residualWaitsCard model
+        , residualTranscriptsCard model
+        , executionCard model detail.summary
+        , identityCard detail.summary
         ]
+
+
+{-| Run ID, effective state, the exact revision that executed, the ticket when
+there is one, timing, retry relationship, and one attention cue. Nothing else:
+the design's whole point is that the DAG stays visually dominant, and a header
+that restates every hash pushes it below the fold.
+-}
+runHeader : Model -> WorkflowRun.Summary -> Html Message
+runHeader model run =
+    Html.header
+        [ class "agent-run-header"
+        , style "margin-bottom" "20px"
+        ]
+        [ Html.div
+            [ style "display" "flex"
+            , style "gap" "12px"
+            , style "align-items" "baseline"
+            , style "flex-wrap" "wrap"
+            ]
+            [ Html.strong [ class "agent-run-header-id" ] [ Html.text ("run #" ++ run.id) ]
+            , Html.span [ class "agent-run-header-state" ] [ Html.text (effectiveState run) ]
+            , Html.span [ class "agent-run-header-revision", style "color" "#b5b5b5" ]
+                [ Html.text ("v" ++ String.fromInt (executedRevision model run)) ]
+            , ticketLink run
+            , retryOfBadge run
+            ]
+        , Html.p
+            [ class "agent-run-header-timing"
+            , style "margin" "6px 0 0"
+            , style "color" "#8a8a8a"
+            , style "font-size" "12px"
+            ]
+            [ Html.text (timingLine run) ]
+        , attentionCue run
+        ]
+
+
+{-| The revision the canvas is drawn from, which is the run's OWN revision.
+
+The summary's version says the same thing, but the graph response is the thing
+that was actually built, so the header reports what is on screen rather than a
+second source that could disagree with it.
+-}
+executedRevision : Model -> WorkflowRun.Summary -> Int
+executedRevision model run =
+    case model.runGraph of
+        Just runGraph ->
+            runGraph.workflowVersion
+
+        Nothing ->
+            run.workflowVersion
+
+
+{-| A finished run's execution status is the truth about what happened; the
+durable status only says the run reached an end.
+-}
+effectiveState : WorkflowRun.Summary -> String
+effectiveState run =
+    case run.executionStatus of
+        Just execution ->
+            if List.member execution [ "succeeded", "failed", "errored", "aborted" ] then
+                execution
+
+            else
+                run.status
+
+        Nothing ->
+            run.status
+
+
+{-| The ticket thread this run belongs to, when it belongs to one.
+
+Tickets are optional throughout the platform: a standalone run renders no slot
+at all rather than an empty one that reads as a missing association.
+-}
+ticketLink : WorkflowRun.Summary -> Html Message
+ticketLink run =
+    if run.originKind /= "ticket" then
+        Html.text ""
+
+    else
+        case String.toInt run.originReference of
+            Nothing ->
+                Html.text ""
+
+            Just ticketId ->
+                Html.a
+                    [ class "agent-run-header-ticket"
+                    , href (Routes.toString (Routes.AgentTicket { id = ticketId }))
+                    , style "color" "#7a9ac0"
+                    ]
+                    [ Html.text ("ticket #" ++ run.originReference) ]
+
+
+timingLine : WorkflowRun.Summary -> String
+timingLine run =
+    case ( run.startedAt, run.completedAt ) of
+        ( Just startedAt, Just completedAt ) ->
+            "started " ++ startedAt ++ " · completed " ++ completedAt
+
+        ( Just startedAt, Nothing ) ->
+            "started " ++ startedAt
+
+        _ ->
+            "created " ++ run.createdAt
+
+
+attentionCue : WorkflowRun.Summary -> Html Message
+attentionCue run =
+    if List.member (effectiveState run) [ "failed", "errored", "aborted" ] then
+        Html.p
+            [ class "agent-run-header-attention"
+            , style "margin" "6px 0 0"
+            , style "color" "#e0a44e"
+            ]
+            [ Html.text "This run ended without delivering. Select the failing node for its evidence." ]
+
+    else
+        Html.text ""
+
+
+{-| The canvas, or an honest statement of why there is not one.
+
+A graph that could not be derived is a fact to render, not an error to hide: the
+run and its evidence are unaffected, and the flat cards below carry them.
+-}
+graphSection : Model -> Html Message
+graphSection model =
+    case model.runGraph of
+        Nothing ->
+            if model.runGraphError then
+                Html.div [ class "agent-graph-unavailable" ]
+                    [ Html.text "The DAG for this run could not be loaded. Everything below is unaffected." ]
+
+            else
+                loading "loading this run's graph…"
+
+        Just runGraph ->
+            if runGraph.graphUnavailable then
+                Html.div [ class "agent-graph-unavailable" ]
+                    [ Html.text
+                        ("The graph for version "
+                            ++ String.fromInt runGraph.workflowVersion
+                            ++ " could not be derived, most likely from a step kind the builder does not recognise. Everything else on this page is unaffected."
+                        )
+                    ]
+
+            else if List.isEmpty runGraph.graph.nodes then
+                Html.div [ class "agent-graph-empty" ]
+                    [ Html.text "This revision has no nodes to draw." ]
+
+            else
+                GraphView.view
+                    { selected = model.selectedNode
+                    , nodeState = RunGraph.nodeStateLookup runGraph
+                    , onSelect = AgentWorkflowNodeSelected
+                    }
+                    (Layout.layout runGraph.graph)
+
+
+nodeDetailSection : Model -> WorkflowRun.Detail -> Html Message
+nodeDetailSection model detail =
+    if not (graphIsDrawn model) then
+        Html.text ""
+
+    else
+        NodeDetail.view (selectedNodeDetail model detail)
+
+
+graphIsDrawn : Model -> Bool
+graphIsDrawn model =
+    case model.runGraph of
+        Nothing ->
+            False
+
+        Just runGraph ->
+            not runGraph.graphUnavailable && not (List.isEmpty runGraph.graph.nodes)
+
+
+selectedNodeDetail : Model -> WorkflowRun.Detail -> Maybe (NodeDetail.Detail Message)
+selectedNodeDetail model detail =
+    case ( model.runGraph, model.selectedNode ) of
+        ( Just runGraph, Just nodeId ) ->
+            GraphModel.findNode nodeId runGraph.graph
+                |> Maybe.map (nodeDetailFor model detail runGraph)
+
+        _ ->
+            Nothing
+
+
+nodeDetailFor :
+    Model
+    -> WorkflowRun.Detail
+    -> RunGraph.RunGraph
+    -> GraphModel.Node
+    -> NodeDetail.Detail Message
+nodeDetailFor model detail runGraph node =
+    let
+        occurrences =
+            RunGraph.occurrencesForNode runGraph node.id
+
+        planIds =
+            occurrences |> List.map .planId |> List.filter (\planId -> planId /= "") |> Set.fromList
+
+        waitIds =
+            occurrences |> List.filterMap .waitId |> Set.fromList
+
+        inputPorts =
+            runGraph.graph.edges
+                |> List.filter (\edge -> edge.to == node.id && isEndpointNode runGraph edge.from)
+                |> List.map .portName
+                |> Set.fromList
+
+        outputPorts =
+            runGraph.graph.edges
+                |> List.filter (\edge -> edge.from == node.id && isEndpointNode runGraph edge.to)
+                |> List.map .portName
+                |> Set.fromList
+
+        stepMetrics =
+            model.metrics
+                |> List.filter
+                    (\metric ->
+                        Set.member metric.planId planIds || metric.functionId == node.id
+                    )
+    in
+    { nodeId = node.id
+    , kind = GraphModel.kindName node.kind
+    , displayName = node.displayName
+    , optional = node.optional
+    , decorations = List.map GraphModel.decorationName node.decorations
+    , attempts = List.map nodeAttempt occurrences
+    , inputs =
+        detail.inputs
+            |> List.filter (\binding -> Set.member binding.portName inputPorts)
+            |> List.map
+                (\binding ->
+                    { portName = binding.portName
+                    , snapshotId = binding.snapshot.id
+                    , typeRef = binding.snapshot.typeRef
+                    }
+                )
+    , outputs =
+        detail.outputs
+            |> List.filter (\binding -> Set.member binding.portName outputPorts)
+            |> List.map (nodeOutput model)
+    , waits =
+        model.waits
+            |> List.filter (\wait -> Set.member wait.id waitIds)
+            |> List.map (nodeWait model)
+    , publication = nodePublication node occurrences
+    , transcripts =
+        model.transcripts
+            |> List.filter (\ref -> Set.member ref.planId planIds || ref.functionId == node.id)
+            |> List.map (transcriptRow model)
+    , turns = List.sum (List.map .turns stepMetrics)
+    , tokens =
+        stepMetrics
+            |> List.map (\metric -> metric.usage.inputTokens + metric.usage.outputTokens)
+            |> List.sum
+    }
+
+
+{-| An endpoint node — an input, output, or resource source — is where a
+run-level snapshot binding actually enters or leaves the workflow. Only edges
+touching one of those name a port the run's bindings can be looked up by; an
+edge between two execution nodes carries an intermediate snapshot that has no
+run-level binding at all.
+-}
+isEndpointNode : RunGraph.RunGraph -> String -> Bool
+isEndpointNode runGraph nodeId =
+    GraphModel.findNode nodeId runGraph.graph
+        |> Maybe.map (.kind >> GraphModel.isEndpoint)
+        |> Maybe.withDefault False
+
+
+nodeAttempt : RunGraph.Occurrence -> NodeDetail.Attempt
+nodeAttempt occurrence =
+    { attempt = occurrence.attempt
+    , retryAttempt = occurrence.retryAttempt
+    , status = occurrence.status
+    , startedAt = occurrence.startedAt
+    , completedAt = occurrence.completedAt
+    , durationSeconds = occurrence.durationSeconds
+    , costUsd = occurrence.costUsd
+    }
+
+
+nodeOutput : Model -> WorkflowRun.OutputBinding -> NodeDetail.Output Message
+nodeOutput model binding =
+    { portName = binding.portName
+    , snapshotId = binding.snapshot.id
+    , typeRef = binding.snapshot.typeRef
+    , contentState = binding.snapshot.contentState
+    , projection =
+        case Dict.get binding.snapshot.id model.repositoryChanges of
+            Just projection ->
+                Just (RepositoryChange.view projection)
+
+            Nothing ->
+                if binding.snapshot.typeRef == "repository-change/v1" then
+                    Just (loading "loading bounded repository-change projection…")
+
+                else
+                    Nothing
+    }
+
+
+nodeWait : Model -> WorkflowRun.Wait -> NodeDetail.Wait Message
+nodeWait model wait =
+    { questionName = wait.questionName
+    , prompt = wait.prompt
+    , context = wait.context
+    , status = wait.status
+    , expectedType = wait.expectedType
+    , deadline = wait.deadline
+    , answerSnapshotId = Maybe.map .id wait.answer
+    , resolvedByDisplayName = wait.resolvedByDisplayName
+    , resolution =
+        if wait.status == "waiting" then
+            Just (Html.div [] (waitResolutionControls model wait))
+
+        else
+            Nothing
+    }
+
+
+nodePublication : GraphModel.Node -> List RunGraph.Occurrence -> Maybe NodeDetail.Publication
+nodePublication node occurrences =
+    if node.kind /= GraphModel.Publish then
+        Nothing
+
+    else
+        occurrences
+            |> List.reverse
+            |> List.head
+            |> Maybe.map
+                (\occurrence ->
+                    { status = occurrence.status
+                    , reference =
+                        case occurrence.publicationId of
+                            Just publicationId ->
+                                "publication #" ++ publicationId
+
+                            Nothing ->
+                                ""
+                    }
+                )
+
+
+{-| Waits the canvas could not place.
+
+A wait whose durable ID matches no occurrence is still a human decision this run
+is holding. Dropping it because the graph could not attribute it would be a
+silent loss of exactly the thing a reader came for.
+-}
+residualWaitsCard : Model -> Html Message
+residualWaitsCard model =
+    let
+        residual =
+            List.filter (\wait -> not (Set.member wait.id (attributedWaitIds model))) model.waits
+    in
+    if graphIsDrawn model && List.isEmpty residual then
+        Html.text ""
+
+    else
+        waitsCard { model | waits = residual }
+
+
+residualTranscriptsCard : Model -> Html Message
+residualTranscriptsCard model =
+    let
+        residual =
+            List.filter (\ref -> not (transcriptIsAttributed model ref)) model.transcripts
+    in
+    if graphIsDrawn model && List.isEmpty residual && not model.transcriptIndexError then
+        Html.text ""
+
+    else
+        transcriptsCard { model | transcripts = residual }
+
+
+residualBindingsCard : Model -> WorkflowRun.Detail -> Html Message
+residualBindingsCard model detail =
+    let
+        residual =
+            { detail
+                | inputs =
+                    List.filter
+                        (\binding -> not (Set.member binding.portName (attributedPorts model)))
+                        detail.inputs
+                , outputs =
+                    List.filter
+                        (\binding -> not (Set.member binding.portName (attributedPorts model)))
+                        detail.outputs
+            }
+    in
+    if graphIsDrawn model && List.isEmpty residual.inputs && List.isEmpty residual.outputs then
+        Html.text ""
+
+    else
+        bindingsCard model residual
+
+
+attributedWaitIds : Model -> Set String
+attributedWaitIds model =
+    if not (graphIsDrawn model) then
+        Set.empty
+
+    else
+        model.runGraph
+            |> Maybe.map (.occurrences >> List.filterMap .waitId >> Set.fromList)
+            |> Maybe.withDefault Set.empty
+
+
+attributedPorts : Model -> Set String
+attributedPorts model =
+    if not (graphIsDrawn model) then
+        Set.empty
+
+    else
+        model.runGraph
+            |> Maybe.map
+                (\runGraph ->
+                    runGraph.graph.edges
+                        |> List.filter
+                            (\edge ->
+                                isEndpointNode runGraph edge.from || isEndpointNode runGraph edge.to
+                            )
+                        |> List.map .portName
+                        |> Set.fromList
+                )
+            |> Maybe.withDefault Set.empty
+
+
+transcriptIsAttributed : Model -> Transcript.Ref -> Bool
+transcriptIsAttributed model ref =
+    if not (graphIsDrawn model) then
+        False
+
+    else
+        model.runGraph
+            |> Maybe.map
+                (.occurrences
+                    >> List.any
+                        (\occurrence ->
+                            (occurrence.planId /= "" && occurrence.planId == ref.planId)
+                                || occurrence.nodeId == ref.functionId
+                        )
+                )
+            |> Maybe.withDefault False
 
 
 identityCard : WorkflowRun.Summary -> Html Message
@@ -655,7 +1165,6 @@ executionCard model run =
 
                 Nothing ->
                     Html.span [ style "color" "#8a8a8a" ] [ Html.text "Concourse execution not yet planned" ]
-            , retryOfBadge run
             ]
         , Html.div [ style "margin-top" "10px", style "display" "flex", style "gap" "8px" ]
             [ Html.button
@@ -796,34 +1305,7 @@ waitView model wait =
 
         resolutionContent =
             if wait.status == "waiting" then
-                [ if List.isEmpty wait.options then
-                    Html.input
-                        [ placeholder "answer"
-                        , value (Dict.get wait.id model.answerSnapshots |> Maybe.withDefault "")
-                        , onInput (AgentWaitAnswerChanged wait.id)
-                        ]
-                        []
-
-                  else
-                    Html.div
-                        [ class "agent-run-wait-options"
-                        , style "display" "flex"
-                        , style "gap" "8px"
-                        , style "flex-wrap" "wrap"
-                        ]
-                        (List.map (waitOption model wait) wait.options)
-                , Html.button
-                    [ type_ "button"
-                    , style "margin-top" "8px"
-                    , onClick (AgentWaitResolveClicked wait.id)
-                    , disabled
-                        (Dict.get wait.id model.answerSnapshots
-                            |> Maybe.map (String.trim >> String.isEmpty)
-                            |> Maybe.withDefault True
-                        )
-                    ]
-                    [ Html.text "submit answer" ]
-                ]
+                waitResolutionControls model wait
 
             else
                 case wait.answer of
@@ -848,6 +1330,44 @@ waitView model wait =
         , style "border-top" "1px solid #302f2f"
         ]
         (questionContent ++ resolutionContent)
+
+
+{-| The answer controls for an unresolved wait.
+
+They are extracted so the flat card and the selected-node detail share one
+implementation: a wait that can be answered in one place and not the other is
+worse than a wait that can be answered in neither.
+-}
+waitResolutionControls : Model -> WorkflowRun.Wait -> List (Html Message)
+waitResolutionControls model wait =
+    [ if List.isEmpty wait.options then
+                    Html.input
+                        [ placeholder "answer"
+                        , value (Dict.get wait.id model.answerSnapshots |> Maybe.withDefault "")
+                        , onInput (AgentWaitAnswerChanged wait.id)
+                        ]
+                        []
+
+                  else
+                    Html.div
+                        [ class "agent-run-wait-options"
+                        , style "display" "flex"
+                        , style "gap" "8px"
+                        , style "flex-wrap" "wrap"
+                        ]
+                        (List.map (waitOption model wait) wait.options)
+    , Html.button
+        [ type_ "button"
+        , style "margin-top" "8px"
+        , onClick (AgentWaitResolveClicked wait.id)
+        , disabled
+            (Dict.get wait.id model.answerSnapshots
+                |> Maybe.map (String.trim >> String.isEmpty)
+                |> Maybe.withDefault True
+            )
+        ]
+        [ Html.text "submit answer" ]
+    ]
 
 
 waitOption : Model -> WorkflowRun.Wait -> String -> Html Message

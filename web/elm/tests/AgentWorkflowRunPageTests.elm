@@ -1,11 +1,13 @@
 module AgentWorkflowRunPageTests exposing (all)
 
 import AgenticData
+import AgentGraph.Model
 import Application.Application as Application
 import Common
 import Concourse.Agent
 import Concourse.Transcript
 import Concourse.WorkflowRun
+import Concourse.WorkflowRunGraph
 import Data
 import Dict
 import Expect
@@ -151,6 +153,8 @@ all =
                             (Effects.FetchAgentWorkflowRunMetrics "review-api" AgenticData.runSummary.id)
                         , Common.contains
                             (Effects.FetchAgentWorkflowRunTranscripts "review-api" AgenticData.runSummary.id)
+                        , Common.contains
+                            (Effects.FetchAgentWorkflowRunGraph "review-api" AgenticData.runSummary.id)
                         ]
         , test "keeps refreshing a terminal run while an output projection is pending" <|
             \_ ->
@@ -328,6 +332,133 @@ all =
                         |> Query.find [ class "agent-run-transcript" ]
                         |> Query.has [ text "could not be loaded" ]
             ]
+        , describe "the exact run DAG"
+            [ test "renders the exact run DAG" <|
+                \_ ->
+                    initializedWithGraph
+                        |> Common.queryView
+                        |> Query.has [ class "agent-graph" ]
+            , test "draws the run's own revision, not the promoted one" <|
+                \_ ->
+                    initializedWithGraph
+                        |> Common.queryView
+                        |> Query.find [ class "agent-run-header" ]
+                        |> Query.has [ text "v2" ]
+            , test "keeps the header to high-signal identity only" <|
+                \_ ->
+                    initializedWithGraph
+                        |> Common.queryView
+                        |> Query.find [ class "agent-run-header" ]
+                        |> Expect.all
+                            [ Query.has [ text "succeeded" ]
+                            , Query.hasNot [ class "agent-run-transcript" ]
+                            , Query.hasNot [ class "agent-run-identity" ]
+                            ]
+            , test "invites a selection before one is made" <|
+                \_ ->
+                    initializedWithGraph
+                        |> Common.queryView
+                        |> Query.find [ class "agent-node-detail-empty" ]
+                        |> Query.has [ text "Select a node" ]
+            , test "reveals node detail on selection" <|
+                \_ ->
+                    selectedImplement
+                        |> Common.queryView
+                        |> Query.find [ class "agent-node-detail" ]
+                        |> Query.has [ text "implement" ]
+            , test "re-homes the node's attempts under the selected node" <|
+                \_ ->
+                    selectedImplement
+                        |> Common.queryView
+                        |> Query.find [ class "agent-node-detail-attempts" ]
+                        |> Expect.all
+                            [ Query.has [ text "attempt 1" ]
+                            , Query.has [ text "succeeded" ]
+                            ]
+            , test "re-homes the node's sealed outputs under the selected node" <|
+                \_ ->
+                    selectedImplement
+                        |> Common.queryView
+                        |> Query.find [ class "agent-node-detail-outputs" ]
+                        |> Query.has [ text "9007199254740997" ]
+            , test "re-homes the node's transcript under the selected node" <|
+                \_ ->
+                    selectedImplementWithTranscript
+                        |> Common.queryView
+                        |> Query.find [ class "agent-node-detail-transcripts" ]
+                        |> Query.has [ class "agent-run-transcript" ]
+            , test "keeps run-level outcomes and telemetry below the graph" <|
+                \_ ->
+                    initializedWithGraph
+                        |> Common.queryView
+                        |> Expect.all
+                            [ Query.has [ class "agent-run-outcomes" ]
+                            , Query.has [ class "agent-run-telemetry" ]
+                            , Query.has [ class "agent-run-identity" ]
+                            ]
+            , test "links back to the associated ticket when one exists" <|
+                \_ ->
+                    initializedWithTicket
+                        |> Common.queryView
+                        |> Query.find [ class "agent-run-header-ticket" ]
+                        |> Query.has [ attribute (Attr.href "/agent-tickets/42") ]
+            , test "renders a run with no ticket without an empty ticket slot" <|
+                \_ ->
+                    initializedWithGraph
+                        |> Common.queryView
+                        |> Query.hasNot [ class "agent-run-header-ticket" ]
+            , test "never reads a non-ticket origin reference as a ticket" <|
+                \_ ->
+                    -- A retry's origin reference is the run it retried. Linking
+                    -- it to /agent-tickets/<run id> would point at an unrelated
+                    -- ticket that happens to share the number.
+                    initializedWithRetryOrigin
+                        |> Common.queryView
+                        |> Query.hasNot [ class "agent-run-header-ticket" ]
+            , test "does not attribute a run-level binding to a node fed by an intermediate of the same name" <|
+                \_ ->
+                    -- The edge into `review` carries an intermediate snapshot
+                    -- named `repository`. The run's own `repository` input is a
+                    -- different snapshot, bound to `implement`, and showing it
+                    -- here would attribute evidence to the wrong step.
+                    selectedReview
+                        |> Common.queryView
+                        |> Query.find [ class "agent-node-detail-inputs" ]
+                        |> Query.has [ text "no inputs" ]
+            , test "falls back to the flat cards when the graph could not be derived" <|
+                \_ ->
+                    initializedWithUnavailableGraph
+                        |> Common.queryView
+                        |> Expect.all
+                            [ Query.has [ class "agent-graph-unavailable" ]
+                            , Query.hasNot [ class "agent-graph" ]
+                            , Query.has [ class "agent-run-bindings" ]
+                            , Query.has [ class "agent-run-transcripts" ]
+                            , Query.has [ class "agent-run-waits" ]
+                            ]
+            , test "keeps a wait that belongs to no node reachable at run level" <|
+                \_ ->
+                    initializedWithGraphAndOrphanWait
+                        |> Common.queryView
+                        |> Query.find [ class "agent-run-waits" ]
+                        |> Query.has [ text "Ship this change?" ]
+            , test "does not repeat a node-attributed wait at run level" <|
+                \_ ->
+                    initializedWithGraphAndAttributedWait
+                        |> Common.queryView
+                        |> Query.hasNot [ class "agent-run-waits" ]
+            , test "the run-qualified callback ignores another run's graph" <|
+                \_ ->
+                    initializedWithGraph
+                        |> Application.handleCallback
+                            (Callback.AgentWorkflowRunGraphFetched "9007199254740999"
+                                (Ok { sampleRunGraph | workflowVersion = 99 })
+                            )
+                        |> Tuple.first
+                        |> Common.queryView
+                        |> Query.find [ class "agent-run-header" ]
+                        |> Query.has [ text "v2" ]
+            ]
         ]
 
 
@@ -440,3 +571,212 @@ sampleMetric =
     , eventCounts = Dict.empty
     , createdAt = 0
     }
+
+
+succeededRunDetail : Concourse.WorkflowRun.Detail
+succeededRunDetail =
+    let
+        detail =
+            AgenticData.runDetail
+
+        summary =
+            detail.summary
+    in
+    { detail
+        | summary =
+            { summary
+                | status = "succeeded"
+                , executionStatus = Just "succeeded"
+                , completedAt = Just "2026-07-22T12:04:00Z"
+            }
+    }
+
+
+{-| The run pinned revision 2 while the workflow's promoted revision is 3. The
+header must say v2, or the page is describing a shape this run never executed.
+-}
+sampleRunGraph : Concourse.WorkflowRunGraph.RunGraph
+sampleRunGraph =
+    { workflowRunId = AgenticData.runSummary.id
+    , workflowName = "review-api"
+    , workflowVersion = 2
+    , graph =
+        let
+            base =
+                AgenticData.workflowOverview.graph
+        in
+        { nodes =
+            base.nodes
+                ++ [ { id = "review"
+                     , kind = AgentGraph.Model.Agent
+                     , displayName = "review"
+                     , typeRef = ""
+                     , optional = False
+                     , decorations = []
+                     }
+                   , { id = "output:change"
+                     , kind = AgentGraph.Model.Output
+                     , displayName = "change"
+                     , typeRef = "repository-change/v1"
+                     , optional = False
+                     , decorations = []
+                     }
+                   ]
+        , edges =
+            base.edges
+                ++ [ { from = "implement"
+                     , to = "review"
+                     , portName = "repository"
+                     , typeRef = "repository/v1"
+                     , optional = False
+                     }
+                   , { from = "implement"
+                     , to = "output:change"
+                     , portName = "change"
+                     , typeRef = "repository-change/v1"
+                     , optional = False
+                     }
+                   ]
+        }
+    , graphUnavailable = False
+    , occurrences =
+        [ { nodeId = "implement"
+          , nodeKind = "agent"
+          , retryAttempt = 1
+          , attempt = 1
+          , status = "succeeded"
+          , planId = "p1"
+          , waitId = Nothing
+          , publicationId = Nothing
+          , startedAt = Just "2026-07-22T12:00:05Z"
+          , completedAt = Just "2026-07-22T12:04:00Z"
+          , durationSeconds = 235
+          , costUsd = 1.25
+          }
+        ]
+    }
+
+
+withRunGraph : Concourse.WorkflowRunGraph.RunGraph -> Application.Model -> Application.Model
+withRunGraph runGraph model =
+    model
+        |> Application.handleCallback
+            (Callback.AgentWorkflowRunGraphFetched AgenticData.runSummary.id (Ok runGraph))
+        |> Tuple.first
+
+
+initializedSucceeded : Application.Model
+initializedSucceeded =
+    Common.init "/agent/workflows/review-api/runs/9007199254740993"
+        |> Application.handleCallback
+            (Callback.AgentWorkflowRunFetched AgenticData.runSummary.id (Ok succeededRunDetail))
+        |> Tuple.first
+
+
+initializedWithGraph : Application.Model
+initializedWithGraph =
+    withRunGraph sampleRunGraph initializedSucceeded
+
+
+selectedReview : Application.Model
+selectedReview =
+    initializedWithGraph
+        |> Application.update (Msgs.Update (Message.AgentWorkflowNodeSelected "review"))
+        |> Tuple.first
+
+
+initializedWithRetryOrigin : Application.Model
+initializedWithRetryOrigin =
+    let
+        detail =
+            succeededRunDetail
+
+        summary =
+            detail.summary
+    in
+    Common.init "/agent/workflows/review-api/runs/9007199254740993"
+        |> Application.handleCallback
+            (Callback.AgentWorkflowRunFetched AgenticData.runSummary.id
+                (Ok
+                    { detail
+                        | summary =
+                            { summary
+                                | originKind = "retry"
+                                , originReference = "9007199254740991"
+                            }
+                    }
+                )
+            )
+        |> Tuple.first
+        |> withRunGraph sampleRunGraph
+
+
+selectedImplement : Application.Model
+selectedImplement =
+    initializedWithGraph
+        |> Application.update (Msgs.Update (Message.AgentWorkflowNodeSelected "implement"))
+        |> Tuple.first
+
+
+selectedImplementWithTranscript : Application.Model
+selectedImplementWithTranscript =
+    selectedImplement
+        |> Application.handleCallback
+            (Callback.AgentWorkflowRunTranscriptsFetched AgenticData.runSummary.id
+                (Ok [ sampleTranscriptRef ])
+            )
+        |> Tuple.first
+
+
+initializedWithTicket : Application.Model
+initializedWithTicket =
+    let
+        detail =
+            succeededRunDetail
+
+        summary =
+            detail.summary
+    in
+    Common.init "/agent/workflows/review-api/runs/9007199254740993"
+        |> Application.handleCallback
+            (Callback.AgentWorkflowRunFetched AgenticData.runSummary.id
+                (Ok { detail | summary = { summary | originKind = "ticket", originReference = "42" } })
+            )
+        |> Tuple.first
+        |> withRunGraph sampleRunGraph
+
+
+initializedWithUnavailableGraph : Application.Model
+initializedWithUnavailableGraph =
+    initializedSucceeded
+        |> withRunGraph
+            { sampleRunGraph
+                | graphUnavailable = True
+                , graph = { nodes = [], edges = [] }
+                , occurrences = []
+            }
+
+
+{-| A wait whose durable ID matches no occurrence. It must stay reachable: a
+wait the graph cannot place is still a human decision this run is holding.
+-}
+initializedWithGraphAndOrphanWait : Application.Model
+initializedWithGraphAndOrphanWait =
+    initializedWithGraph
+        |> Application.handleCallback
+            (Callback.AgentWorkflowWaitsFetched AgenticData.runSummary.id (Ok [ AgenticData.wait ]))
+        |> Tuple.first
+
+
+initializedWithGraphAndAttributedWait : Application.Model
+initializedWithGraphAndAttributedWait =
+    initializedSucceeded
+        |> withRunGraph
+            { sampleRunGraph
+                | occurrences =
+                    List.map (\occurrence -> { occurrence | waitId = Just AgenticData.wait.id })
+                        sampleRunGraph.occurrences
+            }
+        |> Application.handleCallback
+            (Callback.AgentWorkflowWaitsFetched AgenticData.runSummary.id (Ok [ AgenticData.wait ]))
+        |> Tuple.first
