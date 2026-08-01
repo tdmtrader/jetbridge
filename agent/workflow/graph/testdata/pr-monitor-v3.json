@@ -59,6 +59,7 @@
       "kind": "await",
       "display_name": "reapproval",
       "type_ref": "human-answer/v1",
+      "optional": true,
       "decorations": [
         "timeout"
       ]
@@ -303,13 +304,15 @@
       "from": "reapproval",
       "to": "publish-revision",
       "port_name": "reapproval",
-      "type_ref": "human-answer/v1"
+      "type_ref": "human-answer/v1",
+      "optional": true
     },
     {
       "from": "respond",
       "to": "authorize-pr-response",
       "port_name": "response-draft",
-      "type_ref": "pull-request-response/v1"
+      "type_ref": "pull-request-response/v1",
+      "optional": true
     },
     {
       "from": "respond",

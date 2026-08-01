@@ -48,17 +48,25 @@ const (
 // Node is one semantic workflow element. ID is the stable workflow-local
 // identity: the authored function_id for agent and task nodes, and the
 // contract-bearing binding or port name for every other kind.
+//
+// There is deliberately no reusable-node provenance here. A reusable node is
+// expanded away by agent/workflow/node_reference.go before compilation: the
+// resolved ResolvedNodeBinding is returned alongside the CompiledDefinition
+// and stored separately, and the compiled FunctionConfig that Build consumes
+// retains no trace of it. Fields Build cannot populate must not sit in a JSON
+// contract about to be frozen and decoded by a browser; a later phase that
+// threads the bindings in can add them deliberately, with a producer.
 type Node struct {
-	ID          string       `json:"id"`
-	Kind        NodeKind     `json:"kind"`
-	DisplayName string       `json:"display_name"`
-	TypeRef     string       `json:"type_ref,omitempty"`
+	ID          string   `json:"id"`
+	Kind        NodeKind `json:"kind"`
+	DisplayName string   `json:"display_name"`
+	TypeRef     string   `json:"type_ref,omitempty"`
+	// Optional means this node's production is not guaranteed: an optional
+	// port, an optional load_snapshot, or a PR-reapproval await whose answer
+	// the server may prove unnecessary. It is the graph's rendering of
+	// typecheck.go's presence == snapshotConditional.
 	Optional    bool         `json:"optional,omitempty"`
 	Decorations []Decoration `json:"decorations,omitempty"`
-
-	// Set only when the node is a reusable-node binding.
-	ReusableNodeName    string `json:"reusable_node_name,omitempty"`
-	ReusableNodeVersion int    `json:"reusable_node_version,omitempty"`
 }
 
 // Edge runs from a producing node to a consuming node, labelled with the
@@ -68,6 +76,14 @@ type Edge struct {
 	To       string `json:"to"`
 	PortName string `json:"port_name"`
 	TypeRef  string `json:"type_ref,omitempty"`
+	// Optional means this specific dataflow may not occur in a given run:
+	// either the binding itself is conditional (optional port, optional load,
+	// PR-reapproval answer, anything produced inside a try), or the binding
+	// has several possible producers and only one of them will have written
+	// it. A run page must be able to render an edge that carried nothing
+	// without implying the run was wrong, so this ships with the contract
+	// rather than being retrofitted after it freezes.
+	Optional bool `json:"optional,omitempty"`
 }
 
 type Graph struct {

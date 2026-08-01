@@ -13,7 +13,8 @@ import (
 var updateGolden = flag.Bool("update-golden", false, "rewrite testdata golden graphs")
 
 // Every shipped seed workflow must produce a stable graph. Regenerate with:
-//   go test ./agent/workflow/graph/ -run TestSeedGraphs -update-golden
+//
+//	go test ./agent/workflow/graph/ -run TestSeedGraphs -update-golden
 func TestSeedGraphs(t *testing.T) {
 	matches, err := filepath.Glob(filepath.Join("..", "seeds", "*", "workflow.yaml"))
 	if err != nil {

@@ -36,7 +36,8 @@
       "from": "input:deployment",
       "to": "diagnose-logs",
       "port_name": "deployment",
-      "type_ref": "deployment-snapshot/v1"
+      "type_ref": "deployment-snapshot/v1",
+      "optional": true
     },
     {
       "from": "input:logs",

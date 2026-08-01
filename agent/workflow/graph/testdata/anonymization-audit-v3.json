@@ -36,7 +36,8 @@
       "from": "audit-anonymization",
       "to": "output:change",
       "port_name": "change",
-      "type_ref": "repository-change/v1"
+      "type_ref": "repository-change/v1",
+      "optional": true
     },
     {
       "from": "audit-anonymization",
