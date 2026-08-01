@@ -42,7 +42,14 @@ func (command *WorkflowsRunsCommand) Execute([]string) error {
 	if command.Limit < 1 || command.Limit > 1000 {
 		return fmt.Errorf("agent workflow runs: --limit must be between 1 and 1000")
 	}
-	query := url.Values{"limit": []string{strconv.Itoa(command.Limit)}}
+	// The API defaults to the attention lens for the web run list, whose job is
+	// finding unresolved work. `fly` lists run history, so it asks for the
+	// unfiltered population explicitly rather than inheriting a default that
+	// would silently hide resolved runs.
+	query := url.Values{
+		"limit": []string{strconv.Itoa(command.Limit)},
+		"lens":  []string{"all"},
+	}
 	if command.Status != "" {
 		query.Set("status", command.Status)
 	}

@@ -1441,6 +1441,11 @@ func (factory *agentWorkflowRunsFactory) ListKind(
 	if filter.NodeStatus != "" && filter.NodeID == "" {
 		return nil, fmt.Errorf("db: workflow-run list node status filter requires a node")
 	}
+	if filter.Lens != "" {
+		if err := filter.Lens.Validate(); err != nil {
+			return nil, err
+		}
+	}
 	query := `SELECT ` + agentWorkflowRunColumns + `
 		FROM agent_workflow_runs
 		WHERE team_id = $1 AND definition_kind = $2`
@@ -1457,8 +1462,10 @@ func (factory *agentWorkflowRunsFactory) ListKind(
 		}
 		return strings.Join(rendered, ", ")
 	}
+	workflowNamePlaceholder := ""
 	if filter.WorkflowName != "" {
 		appendFilter("workflow_name", filter.WorkflowName)
+		workflowNamePlaceholder = `$` + strconv.Itoa(len(args))
 	}
 	if filter.WorkflowVersion != nil {
 		appendFilter("workflow_version", *filter.WorkflowVersion)
@@ -1503,6 +1510,89 @@ func (factory *agentWorkflowRunsFactory) ListKind(
 		}
 		query += ` AND ` + exists + `)`
 	}
+	// The lens is the run-level projection of the node-level attention
+	// resolution in agent/workflowrun/occurrence/attention.go. The canvas and
+	// this list must not contradict each other, so what follows is that file's
+	// rules restated over the durable projection rather than a second rule:
+	//
+	//   activeNeedsAttention   -> an occurrence with status running or waiting.
+	//   terminalNeedsAttention -> an occurrence with status failed, errored, or
+	//                             aborted, unless it is superseded.
+	//   superseded             -> ResolveEffective keeps only the LAST terminal
+	//                             occurrence per node in the retry closure, and
+	//                             suppresses it entirely while a retry is live.
+	//                             So: a later terminal occurrence of the same
+	//                             node in the same closure, a live occurrence of
+	//                             that node anywhere in the closure, or a retry
+	//                             still in flight. An active run has no frozen
+	//                             projection — freeze happens at finalization —
+	//                             so the run row itself is the only evidence of
+	//                             liveRetry available here. Retries are whole-run
+	//                             by construction (workflowruns.Handler.Retry
+	//                             rebinds every input at the same revision), so
+	//                             an in-flight retry is addressing every node of
+	//                             the run it retries.
+	//
+	// A terminal run with no projection at all — one that predates the table, or
+	// whose freeze failed — is treated as a single unresolved unit rather than
+	// dropped, because a failure that GC made invisible is precisely the failure
+	// this lens exists to surface.
+	needsRetryClosure := false
+	switch filter.Lens {
+	case AgentWorkflowRunLensActive:
+		query += ` AND agent_workflow_runs.status IN (` + placeholders(ActiveAgentWorkflowRunStatuses) + `)`
+	case AgentWorkflowRunLensAttention:
+		needsRetryClosure = true
+		supersedingSibling := func(withNode bool) string {
+			clause := `SELECT 1
+				FROM agent_workflow_run_retry_closure self
+				JOIN agent_workflow_run_retry_closure sibling ON sibling.root = self.root
+				JOIN agent_workflow_runs other ON other.id = sibling.id`
+			if withNode {
+				clause += `
+				LEFT JOIN agent_workflow_run_node_occurrences later
+					ON later.workflow_run_id = other.id AND later.node_id = o.node_id`
+			}
+			clause += `
+				WHERE self.id = agent_workflow_runs.id
+					AND other.id <> agent_workflow_runs.id
+					AND (other.status IN (` + placeholders(ActiveAgentWorkflowRunStatuses) + `)`
+			if withNode {
+				clause += `
+						OR later.status IN (` + placeholders(liveNodeOccurrenceStatuses) + `)
+						OR (later.status IN (` + placeholders(terminalNodeOccurrenceStatuses) + `)
+							AND (other.created_at, other.id) > (agent_workflow_runs.created_at, agent_workflow_runs.id))`
+			} else {
+				clause += `
+						OR (other.status IN (` + placeholders(terminalAgentWorkflowRunStatuses) + `)
+							AND (other.created_at, other.id) > (agent_workflow_runs.created_at, agent_workflow_runs.id))`
+			}
+			return clause + `)`
+		}
+		query += `
+			AND (
+				agent_workflow_runs.status IN (` + placeholders(ActiveAgentWorkflowRunStatuses) + `)
+				OR EXISTS (
+					SELECT 1 FROM agent_workflow_run_node_occurrences o
+					WHERE o.workflow_run_id = agent_workflow_runs.id
+						AND (
+							o.status IN (` + placeholders(liveNodeOccurrenceStatuses) + `)
+							OR (
+								o.status IN (` + placeholders(UnresolvedAgentWorkflowRunStatuses) + `)
+								AND NOT EXISTS (` + supersedingSibling(true) + `)
+							)
+						)
+				)
+				OR (
+					agent_workflow_runs.status IN (` + placeholders(UnresolvedAgentWorkflowRunStatuses) + `)
+					AND NOT EXISTS (
+						SELECT 1 FROM agent_workflow_run_node_occurrences o
+						WHERE o.workflow_run_id = agent_workflow_runs.id
+					)
+					AND NOT EXISTS (` + supersedingSibling(false) + `)
+				)
+			)`
+	}
 	// Search is indexed by construction: an exact durable run ID, an exact
 	// snapshot ID through agent_workflow_run_snapshots (snapshot_id,
 	// workflow_run_id, direction), or a ticket reference prefix. Unbounded JSON
@@ -1534,7 +1624,68 @@ func (factory *agentWorkflowRunsFactory) ListKind(
 	}
 	args = append(args, limit)
 	query += ` ORDER BY created_at DESC, id DESC LIMIT $` + strconv.Itoa(len(args))
+	if needsRetryClosure {
+		query = agentWorkflowRunRetryClosureCTE(workflowNamePlaceholder) + query
+	}
 	return queryWorkflowRuns(ctx, factory.conn, factory.conn.EncryptionStrategy(), query, args...)
+}
+
+// liveNodeOccurrenceStatuses mirrors occurrence.activeNeedsAttention: the
+// in-flight node states a human should be looking at. Pending is deliberately
+// absent — every run projects a pending occurrence for every node it never
+// reached, and treating no-data as a call to action would drown the lens.
+var liveNodeOccurrenceStatuses = []string{"running", "waiting"}
+
+// terminalNodeOccurrenceStatuses mirrors occurrence.Status.Terminal().
+var terminalNodeOccurrenceStatuses = []string{
+	"succeeded", "failed", "errored", "aborted", "skipped",
+}
+
+// terminalAgentWorkflowRunStatuses is the run-level terminal set, matching
+// isTerminalWorkflowRunStatus.
+var terminalAgentWorkflowRunStatuses = []string{
+	string(AgentWorkflowRunStatusSucceeded),
+	string(AgentWorkflowRunStatusFailed),
+	string(AgentWorkflowRunStatusErrored),
+	string(AgentWorkflowRunStatusAborted),
+}
+
+// agentWorkflowRunRetryClosureCTE labels every run in scope with the root of
+// its retry closure.
+//
+// retry_of_workflow_run_id is a forest by construction — a run has at most one
+// parent and the parent must already exist when the child is admitted — so
+// walking down from the roots terminates without cycle bookkeeping. A run whose
+// parent falls outside the scoped set seeds its own closure rather than
+// disappearing, so narrowing the scope can never silently drop a run from the
+// lens.
+func agentWorkflowRunRetryClosureCTE(workflowNamePlaceholder string) string {
+	scoped := func(alias string) string {
+		clause := alias + `.team_id = $1 AND ` + alias + `.definition_kind = $2`
+		if workflowNamePlaceholder != "" {
+			clause += ` AND ` + alias + `.workflow_name = ` + workflowNamePlaceholder
+		}
+		return clause
+	}
+	return `WITH RECURSIVE agent_workflow_run_retry_closure(id, root) AS (
+		SELECT r.id, r.id
+			FROM agent_workflow_runs r
+			WHERE ` + scoped("r") + `
+				AND (
+					r.retry_of_workflow_run_id IS NULL
+					OR NOT EXISTS (
+						SELECT 1 FROM agent_workflow_runs p
+						WHERE p.id = r.retry_of_workflow_run_id AND ` + scoped("p") + `
+					)
+				)
+		UNION ALL
+		SELECT child.id, closure.root
+			FROM agent_workflow_runs child
+			JOIN agent_workflow_run_retry_closure closure
+				ON child.retry_of_workflow_run_id = closure.id
+			WHERE ` + scoped("child") + `
+	)
+	`
 }
 
 func (factory *agentWorkflowRunsFactory) CountByStatus(

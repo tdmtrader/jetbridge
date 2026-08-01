@@ -20,6 +20,7 @@ import (
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/workflow"
 	"github.com/concourse/concourse/agent/workflowrun"
+	"github.com/concourse/concourse/agent/workflowrun/occurrence"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/db/encryption"
@@ -2163,6 +2164,323 @@ plan:
 			})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(runIDs(runs)).To(ContainElement(target.ID))
+		})
+	})
+
+	Describe("attention lens", func() {
+		var lensCounter int64
+
+		nextLensKey := func() string {
+			lensCounter++
+			return fmt.Sprintf("lens-%d-%d", time.Now().UnixNano(), lensCounter)
+		}
+
+		// Ages are explicit so the (created_at, id) ordering the retry
+		// resolution depends on is stated by the fixture rather than inferred
+		// from insertion speed.
+		seedRun := func(age time.Duration, status db.AgentWorkflowRunStatus) db.AgentWorkflowRun {
+			run, created, err := factory.CreateWithInputs(ctx, request(nextLensKey()))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(created).To(BeTrue())
+			createdAt := time.Now().Add(-age).UTC().Truncate(time.Microsecond)
+			var completedAt any
+			switch status {
+			case db.AgentWorkflowRunStatusSucceeded, db.AgentWorkflowRunStatusFailed,
+				db.AgentWorkflowRunStatusErrored, db.AgentWorkflowRunStatusAborted:
+				completedAt = createdAt.Add(time.Minute)
+			}
+			_, err = dbConn.Exec(`
+				UPDATE agent_workflow_runs
+				SET created_at = $2, completed_at = $3, status = $4
+				WHERE id = $1
+			`, int64(run.ID), createdAt, completedAt, string(status))
+			Expect(err).NotTo(HaveOccurred())
+			run.CreatedAt = createdAt
+			run.Status = status
+			return run
+		}
+
+		seedOccurrence := func(run db.AgentWorkflowRun, nodeID, status string) {
+			_, err := dbConn.Exec(`
+				INSERT INTO agent_workflow_run_node_occurrences
+					(workflow_run_id, node_id, retry_attempt, attempt, team_id,
+					 workflow_name, workflow_definition_id, workflow_version,
+					 node_kind, plan_id, status)
+				VALUES ($1, $2, 1, 1, $3, $4, $5, 1, 'agent', $6, $7)
+			`, int64(run.ID), nodeID, defaultTeam.ID(), definitionName, definitionID,
+				"plan-"+nodeID, status)
+			Expect(err).NotTo(HaveOccurred())
+		}
+
+		linkRetry := func(child, parent db.AgentWorkflowRun) {
+			_, err := dbConn.Exec(`
+				UPDATE agent_workflow_runs
+				SET retry_of_workflow_run_id = $2, origin_kind = 'retry', origin_reference = $3
+				WHERE id = $1
+			`, int64(child.ID), int64(parent.ID), parent.ID.String())
+			Expect(err).NotTo(HaveOccurred())
+		}
+
+		lensIDs := func(lens db.AgentWorkflowRunLens) []snapshot.WorkflowRunID {
+			runs, err := factory.List(ctx, db.AgentWorkflowRunListFilter{
+				TeamID:       defaultTeam.ID(),
+				WorkflowName: definitionName,
+				Lens:         lens,
+				Limit:        1000,
+			})
+			Expect(err).NotTo(HaveOccurred())
+			ids := make([]snapshot.WorkflowRunID, 0, len(runs))
+			for _, run := range runs {
+				ids = append(ids, run.ID)
+			}
+			return ids
+		}
+
+		It("returns an unresolved failure that sits beyond the first page", func() {
+			buried := seedRun(48*time.Hour, db.AgentWorkflowRunStatusFailed)
+			seedOccurrence(buried, "implement", "failed")
+			for index := 0; index < 55; index++ {
+				resolved := seedRun(time.Duration(index+1)*time.Minute, db.AgentWorkflowRunStatusSucceeded)
+				seedOccurrence(resolved, "implement", "succeeded")
+			}
+
+			page := func(lens db.AgentWorkflowRunLens) []snapshot.WorkflowRunID {
+				runs, err := factory.List(ctx, db.AgentWorkflowRunListFilter{
+					TeamID:       defaultTeam.ID(),
+					WorkflowName: definitionName,
+					Lens:         lens,
+					Limit:        50,
+				})
+				Expect(err).NotTo(HaveOccurred())
+				ids := make([]snapshot.WorkflowRunID, 0, len(runs))
+				for _, run := range runs {
+					ids = append(ids, run.ID)
+				}
+				return ids
+			}
+
+			Expect(page(db.AgentWorkflowRunLensAll)).ToNot(ContainElement(buried.ID),
+				"the fixture must actually bury the failure past one page")
+			Expect(page(db.AgentWorkflowRunLensAttention)).To(ContainElement(buried.ID),
+				"the lens must be applied by the server, not to a returned page")
+		})
+
+		It("resolves a failure once a later retry succeeded at that node", func() {
+			failed := seedRun(6*time.Hour, db.AgentWorkflowRunStatusFailed)
+			seedOccurrence(failed, "implement", "failed")
+			retry := seedRun(time.Hour, db.AgentWorkflowRunStatusSucceeded)
+			seedOccurrence(retry, "implement", "succeeded")
+			linkRetry(retry, failed)
+
+			Expect(lensIDs(db.AgentWorkflowRunLensAttention)).ToNot(ContainElement(failed.ID))
+			Expect(lensIDs(db.AgentWorkflowRunLensAttention)).ToNot(ContainElement(retry.ID))
+		})
+
+		It("keeps a failure unresolved when the successful run is in a different closure", func() {
+			failed := seedRun(6*time.Hour, db.AgentWorkflowRunStatusFailed)
+			seedOccurrence(failed, "implement", "failed")
+			unrelated := seedRun(time.Hour, db.AgentWorkflowRunStatusSucceeded)
+			seedOccurrence(unrelated, "implement", "succeeded")
+
+			Expect(lensIDs(db.AgentWorkflowRunLensAttention)).To(ContainElement(failed.ID),
+				"an unrelated later success is not a retry and resolves nothing")
+		})
+
+		It("moves attention to the newest failure in a closure rather than keeping both", func() {
+			failed := seedRun(6*time.Hour, db.AgentWorkflowRunStatusFailed)
+			seedOccurrence(failed, "implement", "failed")
+			retry := seedRun(time.Hour, db.AgentWorkflowRunStatusFailed)
+			seedOccurrence(retry, "implement", "failed")
+			linkRetry(retry, failed)
+
+			attention := lensIDs(db.AgentWorkflowRunLensAttention)
+			Expect(attention).To(ContainElement(retry.ID))
+			Expect(attention).ToNot(ContainElement(failed.ID),
+				"only the last terminal occurrence in a closure asks for action")
+		})
+
+		It("keeps an unresolved failure that was never retried", func() {
+			failed := seedRun(6*time.Hour, db.AgentWorkflowRunStatusFailed)
+			seedOccurrence(failed, "implement", "failed")
+
+			Expect(lensIDs(db.AgentWorkflowRunLensAttention)).To(ContainElement(failed.ID))
+		})
+
+		It("treats an unresolved wait as needing attention regardless of run status", func() {
+			waiting := seedRun(6*time.Hour, db.AgentWorkflowRunStatusSucceeded)
+			seedOccurrence(waiting, "approve", "waiting")
+			retry := seedRun(time.Hour, db.AgentWorkflowRunStatusSucceeded)
+			seedOccurrence(retry, "approve", "succeeded")
+			linkRetry(retry, waiting)
+
+			Expect(lensIDs(db.AgentWorkflowRunLensAttention)).To(ContainElement(waiting.ID),
+				"a live occurrence always asks for action; supersession applies to terminals")
+		})
+
+		It("suppresses an earlier failure while a retry is still in flight", func() {
+			failed := seedRun(6*time.Hour, db.AgentWorkflowRunStatusFailed)
+			seedOccurrence(failed, "implement", "failed")
+			inFlight := seedRun(time.Hour, db.AgentWorkflowRunStatusRunning)
+			linkRetry(inFlight, failed)
+
+			attention := lensIDs(db.AgentWorkflowRunLensAttention)
+			Expect(attention).To(ContainElement(inFlight.ID))
+			Expect(attention).ToNot(ContainElement(failed.ID),
+				"a retry in flight is addressing the failure, so it is not independently actionable")
+		})
+
+		It("surfaces a terminal failure that has no frozen projection at all", func() {
+			ungrouped := seedRun(6*time.Hour, db.AgentWorkflowRunStatusErrored)
+
+			Expect(lensIDs(db.AgentWorkflowRunLensAttention)).To(ContainElement(ungrouped.ID),
+				"a failure GC made invisible is exactly what this lens exists to surface")
+		})
+
+		It("resolves a projection-less failure through a later successful retry", func() {
+			ungrouped := seedRun(6*time.Hour, db.AgentWorkflowRunStatusErrored)
+			retry := seedRun(time.Hour, db.AgentWorkflowRunStatusSucceeded)
+			linkRetry(retry, ungrouped)
+
+			Expect(lensIDs(db.AgentWorkflowRunLensAttention)).ToNot(ContainElement(ungrouped.ID))
+		})
+
+		It("returns only nonterminal runs under the active lens", func() {
+			running := seedRun(2*time.Hour, db.AgentWorkflowRunStatusRunning)
+			admitting := seedRun(3*time.Hour, db.AgentWorkflowRunStatusAdmitting)
+			canceling := seedRun(4*time.Hour, db.AgentWorkflowRunStatusCanceling)
+			failed := seedRun(5*time.Hour, db.AgentWorkflowRunStatusFailed)
+			seedOccurrence(failed, "implement", "failed")
+			succeeded := seedRun(6*time.Hour, db.AgentWorkflowRunStatusSucceeded)
+
+			active := lensIDs(db.AgentWorkflowRunLensActive)
+			Expect(active).To(ConsistOf(running.ID, admitting.ID, canceling.ID))
+			Expect(active).ToNot(ContainElement(failed.ID),
+				"an unresolved failure is attention-worthy but not active")
+			Expect(active).ToNot(ContainElement(succeeded.ID))
+		})
+
+		It("applies no predicate under the all lens", func() {
+			failed := seedRun(6*time.Hour, db.AgentWorkflowRunStatusFailed)
+			seedOccurrence(failed, "implement", "failed")
+			retry := seedRun(time.Hour, db.AgentWorkflowRunStatusSucceeded)
+			seedOccurrence(retry, "implement", "succeeded")
+			linkRetry(retry, failed)
+
+			all := lensIDs(db.AgentWorkflowRunLensAll)
+			Expect(all).To(ContainElement(failed.ID))
+			Expect(all).To(ContainElement(retry.ID))
+		})
+
+		It("keeps an active run older than the window inside the attention lens", func() {
+			old := seedRun(30*24*time.Hour, db.AgentWorkflowRunStatusRunning)
+			since := time.Now().Add(-7 * 24 * time.Hour)
+
+			runs, err := factory.List(ctx, db.AgentWorkflowRunListFilter{
+				TeamID:            defaultTeam.ID(),
+				WorkflowName:      definitionName,
+				Lens:              db.AgentWorkflowRunLensAttention,
+				CompletedSince:    &since,
+				IncludeActiveRuns: true,
+				Limit:             1000,
+			})
+			Expect(err).NotTo(HaveOccurred())
+			ids := make([]snapshot.WorkflowRunID, 0, len(runs))
+			for _, run := range runs {
+				ids = append(ids, run.ID)
+			}
+			Expect(ids).To(ContainElement(old.ID),
+				"the lens must compose with the window union rather than replace it")
+		})
+
+		It("rejects an unrecognised lens rather than silently returning everything", func() {
+			_, err := factory.List(ctx, db.AgentWorkflowRunListFilter{
+				TeamID:       defaultTeam.ID(),
+				WorkflowName: definitionName,
+				Lens:         db.AgentWorkflowRunLens("interesting"),
+			})
+			Expect(err).To(MatchError(ContainSubstring("invalid agent workflow-run lens")))
+		})
+
+		// The list and the canvas must never contradict each other about what
+		// needs attention. This runs both definitions over one seeded corpus of
+		// terminal runs — where the frozen projection is the complete truth, so
+		// both see identical evidence — and requires them to agree exactly.
+		It("agrees with occurrence.ResolveEffective over a seeded corpus", func() {
+			type seeded struct {
+				run         db.AgentWorkflowRun
+				occurrences []occurrence.NodeOccurrence
+			}
+
+			var corpus []seeded
+			add := func(run db.AgentWorkflowRun, nodes map[string]string) {
+				entry := seeded{run: run}
+				for nodeID, status := range nodes {
+					seedOccurrence(run, nodeID, status)
+					entry.occurrences = append(entry.occurrences, occurrence.NodeOccurrence{
+						NodeID: nodeID, Status: occurrence.Status(status),
+					})
+				}
+				corpus = append(corpus, entry)
+			}
+
+			// Closure 1: a failure superseded by a later success at the same node.
+			first := seedRun(9*time.Hour, db.AgentWorkflowRunStatusFailed)
+			add(first, map[string]string{"implement": "failed", "review": "succeeded"})
+			second := seedRun(8*time.Hour, db.AgentWorkflowRunStatusSucceeded)
+			add(second, map[string]string{"implement": "succeeded", "review": "succeeded"})
+			linkRetry(second, first)
+
+			// Closure 2: a failure retried into a different failure, plus a wait
+			// that nothing resolved.
+			third := seedRun(7*time.Hour, db.AgentWorkflowRunStatusFailed)
+			add(third, map[string]string{"implement": "failed", "approve": "waiting"})
+			fourth := seedRun(6*time.Hour, db.AgentWorkflowRunStatusErrored)
+			add(fourth, map[string]string{"implement": "errored"})
+			linkRetry(fourth, third)
+
+			// Closure 3: a lone success, and a lone unresolved abort.
+			add(seedRun(5*time.Hour, db.AgentWorkflowRunStatusSucceeded),
+				map[string]string{"implement": "succeeded"})
+			add(seedRun(4*time.Hour, db.AgentWorkflowRunStatusAborted),
+				map[string]string{"implement": "aborted", "review": "skipped"})
+
+			closures := map[snapshot.WorkflowRunID][]occurrence.ChainEntry{}
+			root := map[snapshot.WorkflowRunID]snapshot.WorkflowRunID{
+				first.ID: first.ID, second.ID: first.ID,
+				third.ID: third.ID, fourth.ID: third.ID,
+			}
+			for _, entry := range corpus {
+				key, grouped := root[entry.run.ID]
+				if !grouped {
+					key = entry.run.ID
+				}
+				for _, node := range entry.occurrences {
+					closures[key] = append(closures[key], occurrence.ChainEntry{
+						RunID:        int64(entry.run.ID),
+						RunCreatedAt: entry.run.CreatedAt,
+						Occurrence:   node,
+					})
+				}
+			}
+
+			expected := map[int64]bool{}
+			for _, entries := range closures {
+				for runID := range occurrence.RunsNeedingAttention(entries) {
+					expected[runID] = true
+				}
+			}
+
+			attention := lensIDs(db.AgentWorkflowRunLensAttention)
+			returned := map[int64]bool{}
+			for _, id := range attention {
+				returned[int64(id)] = true
+			}
+
+			for _, entry := range corpus {
+				Expect(returned[int64(entry.run.ID)]).To(Equal(expected[int64(entry.run.ID)]),
+					fmt.Sprintf("run %d: SQL lens and occurrence.ResolveEffective disagree", entry.run.ID))
+			}
+			Expect(expected).ToNot(BeEmpty(), "the corpus must contain something to disagree about")
 		})
 	})
 })

@@ -104,6 +104,25 @@ func ResolveEffective(entries []ChainEntry) []Effective {
 	return result
 }
 
+// RunsNeedingAttention projects ResolveEffective onto run identity: a run asks
+// for action when one of its OWN occurrences is the one the resolution left
+// needing attention.
+//
+// It exists so the run list's server-side attention lens has a single
+// definition to be tested against rather than a second, independently authored
+// rule. The list answers "which run needs action" and the canvas answers "which
+// node needs action"; this is the only place the first is derived from the
+// second.
+func RunsNeedingAttention(entries []ChainEntry) map[int64]bool {
+	needing := map[int64]bool{}
+	for _, effective := range ResolveEffective(entries) {
+		if effective.NeedsAttention {
+			needing[effective.RunID] = true
+		}
+	}
+	return needing
+}
+
 // activeNeedsAttention is true for in-flight states a human should be looking
 // at. Pending is deliberately excluded: Derive projects one pending occurrence
 // for every node a run never reached, and treating no-data as a call to action

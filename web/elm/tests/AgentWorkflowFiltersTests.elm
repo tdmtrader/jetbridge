@@ -141,11 +141,11 @@ all =
                         |> Expect.equal [ ( "window", "7d" ) ]
             ]
         , describe "the run list API query"
-            [ test "states window and scope explicitly" <|
+            [ test "states window, scope, and lens explicitly" <|
                 \_ ->
                     Filters.runsQuery default
                         |> Expect.equal
-                            [ ( "window", "7d" ), ( "scope", "operational" ) ]
+                            [ ( "window", "7d" ), ( "scope", "operational" ), ( "lens", "attention" ) ]
             , test "sends the selected node and its status" <|
                 \_ ->
                     Filters.runsQuery
@@ -153,6 +153,7 @@ all =
                         |> Expect.equal
                             [ ( "window", "7d" )
                             , ( "scope", "operational" )
+                            , ( "lens", "attention" )
                             , ( "node", "implement" )
                             , ( "node_status", "failed" )
                             ]
@@ -160,27 +161,39 @@ all =
                 \_ ->
                     Filters.runsQuery { default | selectedNodeStatus = Just "failed" }
                         |> Expect.equal
-                            [ ( "window", "7d" ), ( "scope", "operational" ) ]
+                            [ ( "window", "7d" ), ( "scope", "operational" ), ( "lens", "attention" ) ]
             , test "sends the search term as q" <|
                 \_ ->
                     Filters.runsQuery { default | search = "ticket-42" }
                         |> Expect.equal
-                            [ ( "window", "7d" ), ( "scope", "operational" ), ( "q", "ticket-42" ) ]
+                            [ ( "window", "7d" )
+                            , ( "scope", "operational" )
+                            , ( "lens", "attention" )
+                            , ( "q", "ticket-42" )
+                            ]
             , test "sends origin as origin_kind, the name the API actually accepts" <|
                 \_ ->
                     Filters.runsQuery { default | origin = "manual" }
                         |> Expect.equal
-                            [ ( "window", "7d" ), ( "scope", "operational" ), ( "origin_kind", "manual" ) ]
+                            [ ( "window", "7d" )
+                            , ( "scope", "operational" )
+                            , ( "lens", "attention" )
+                            , ( "origin_kind", "manual" )
+                            ]
             , test "never sends version, which the run list API does not accept" <|
                 \_ ->
                     Filters.runsQuery { default | version = Just 3 }
                         |> Expect.equal
-                            [ ( "window", "7d" ), ( "scope", "operational" ) ]
-            , test "never sends the attention lens, which the run list API does not accept" <|
+                            [ ( "window", "7d" ), ( "scope", "operational" ), ( "lens", "attention" ) ]
+            , test "sends the attention lens as lens, not as the server's status vocabulary" <|
                 \_ ->
                     Filters.runsQuery { default | status = Filters.Active }
                         |> Expect.equal
-                            [ ( "window", "7d" ), ( "scope", "operational" ) ]
+                            [ ( "window", "7d" ), ( "scope", "operational" ), ( "lens", "active" ) ]
+            , test "the page URL keeps the design's status spelling while the wire uses lens" <|
+                \_ ->
+                    Filters.toQueryPairs { default | status = Filters.All }
+                        |> Expect.equal [ ( "status", "all" ) ]
             ]
         ]
 

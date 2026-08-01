@@ -293,7 +293,7 @@ var _ = Describe("fly agent workflows", func() {
 					ghttp.VerifyRequest(
 						"GET",
 						"/api/v1/agent/workflows/standard-dev/runs",
-						"limit=7&origin_kind=ticket&origin_reference=42&status=running",
+						"lens=all&limit=7&origin_kind=ticket&origin_reference=42&status=running",
 					),
 					ghttp.RespondWithJSONEncoded(http.StatusOK, []map[string]any{{
 						"workflow_run_id":  "9007199254740997",
@@ -326,7 +326,7 @@ var _ = Describe("fly agent workflows", func() {
 		It("prints durable and pipeline run IDs as distinct table columns", func() {
 			atcServer.AppendHandlers(
 				ghttp.CombineHandlers(
-					ghttp.VerifyRequest("GET", "/api/v1/agent/workflows/standard-dev/runs", "limit=100"),
+					ghttp.VerifyRequest("GET", "/api/v1/agent/workflows/standard-dev/runs", "lens=all&limit=100"),
 					ghttp.RespondWithJSONEncoded(http.StatusOK, []map[string]any{{
 						"workflow_run_id":  "9007199254740997",
 						"pipeline_run_id":  nil,

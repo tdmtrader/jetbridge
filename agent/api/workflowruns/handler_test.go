@@ -598,12 +598,65 @@ func TestListUsesStrictCombinedFiltersAndReturnsAnEmptyArray(t *testing.T) {
 		TeamID: 1, WorkflowName: "deploy", Status: db.AgentWorkflowRunStatusFailed,
 		OriginKind: "ticket", OriginReference: "T-7", Limit: 26,
 		Scope: db.AgentWorkflowRunScopeOperational, IncludeActiveRuns: true,
+		Lens: db.AgentWorkflowRunLensAttention,
 	}
 	if gotFilter != want {
 		t.Fatalf("filter = %+v, want %+v", gotFilter, want)
 	}
 	if strings.TrimSpace(recorder.Body.String()) != "[]" {
 		t.Fatalf("empty list = %q, want []", recorder.Body.String())
+	}
+}
+
+// The lens must reach the store rather than being applied to a returned page:
+// the list is paginated, and an unresolved failure older than one page is
+// exactly the run the default lens exists to surface.
+func TestListSendsTheAttentionLensToTheStore(t *testing.T) {
+	for _, testCase := range []struct {
+		name  string
+		query url.Values
+		want  db.AgentWorkflowRunLens
+	}{
+		{"default", url.Values{}, db.AgentWorkflowRunLensAttention},
+		{"explicit attention", url.Values{"lens": {"attention"}}, db.AgentWorkflowRunLensAttention},
+		{"active", url.Values{"lens": {"active"}}, db.AgentWorkflowRunLensActive},
+		{"all", url.Values{"lens": {"all"}}, db.AgentWorkflowRunLensAll},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			deps := defaultDeps()
+			var gotFilter db.AgentWorkflowRunListFilter
+			deps.runs.list = func(_ context.Context, filter db.AgentWorkflowRunListFilter) ([]db.AgentWorkflowRun, error) {
+				gotFilter = filter
+				return nil, nil
+			}
+			handler := mustHandler(t, deps)
+			recorder := httptest.NewRecorder()
+			handler.List(recorder, request(http.MethodGet, "/api/v1/agent/workflows/deploy/runs", "deploy", "", testCase.query, ""))
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+			}
+			if gotFilter.Lens != testCase.want {
+				t.Fatalf("lens = %q, want %q", gotFilter.Lens, testCase.want)
+			}
+		})
+	}
+}
+
+func TestListRejectsAnUnrecognisedLens(t *testing.T) {
+	deps := defaultDeps()
+	deps.runs.list = func(context.Context, db.AgentWorkflowRunListFilter) ([]db.AgentWorkflowRun, error) {
+		t.Fatal("an invalid lens must not reach the store")
+		return nil, nil
+	}
+	handler := mustHandler(t, deps)
+	recorder := httptest.NewRecorder()
+	handler.List(recorder, request(http.MethodGet, "/api/v1/agent/workflows/deploy/runs", "deploy", "",
+		url.Values{"lens": {"interesting"}}, ""))
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "invalid_lens") {
+		t.Fatalf("body = %s, want an invalid_lens error", recorder.Body.String())
 	}
 }
 

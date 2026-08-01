@@ -134,6 +134,7 @@ func (handler *Handler) List(w http.ResponseWriter, r *http.Request) {
 	allowed := map[string]struct{}{
 		"status": {}, "origin_kind": {}, "origin_reference": {}, "limit": {}, "cursor": {},
 		"window": {}, "scope": {}, "node": {}, "node_status": {}, "q": {},
+		"lens": {},
 	}
 	workflowName, _, query, ok := parseRoute(w, r, false, allowed)
 	if !ok {
@@ -620,6 +621,20 @@ func parseListFilter(
 			return db.AgentWorkflowRunListFilter{}, false
 		}
 		filter.Scope = scope
+	}
+	// The attention lens is the default because the list's primary job is
+	// answering "is anything unresolved?". It is a server-side predicate rather
+	// than a narrowing of the returned page: the list is paginated, so filtering
+	// a page would answer "attention-worthy runs among the newest hundred" and
+	// hide the older unresolved failure the lens exists to find.
+	filter.Lens = db.AgentWorkflowRunLensAttention
+	if raw, present := query["lens"]; present {
+		lens := db.AgentWorkflowRunLens(raw[0])
+		if lens.Validate() != nil {
+			writeError(w, http.StatusBadRequest, "invalid_lens", "workflow run lens filter is invalid")
+			return db.AgentWorkflowRunListFilter{}, false
+		}
+		filter.Lens = lens
 	}
 	// Active runs are always unioned in, so changing the history window never
 	// changes the meaning of active state.

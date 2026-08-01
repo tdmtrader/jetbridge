@@ -163,6 +163,7 @@ all =
                             (Effects.FetchAgentWorkflowRunsFiltered "review-api"
                                 [ ( "window", "7d" )
                                 , ( "scope", "operational" )
+                                , ( "lens", "attention" )
                                 , ( "node", "implement" )
                                 ]
                             )
@@ -193,7 +194,7 @@ all =
                         |> Expect.all
                             [ Common.contains
                                 (Effects.FetchAgentWorkflowRunsFiltered "review-api"
-                                    [ ( "window", "7d" ), ( "scope", "operational" ) ]
+                                    [ ( "window", "7d" ), ( "scope", "operational" ), ( "lens", "attention" ) ]
                                 )
                             , Common.contains (Effects.ModifyUrl "/agent/workflows/review-api")
                             ]
@@ -210,19 +211,19 @@ all =
                                 )
                             , Common.contains
                                 (Effects.FetchAgentWorkflowRunsFiltered "review-api"
-                                    [ ( "window", "30d" ), ( "scope", "operational" ) ]
+                                    [ ( "window", "30d" ), ( "scope", "operational" ), ( "lens", "attention" ) ]
                                 )
                             ]
-            , test "the attention lens costs no request, because the server cannot express it" <|
+            , test "the attention lens is a server request, not a page filter" <|
                 \_ ->
                     initializedWithOverview
                         |> Application.update
                             (Msgs.Update (Message.AgentWorkflowStatusFilterChanged "all"))
                         |> Tuple.second
                         |> Expect.all
-                            [ Common.notContains
+                            [ Common.contains
                                 (Effects.FetchAgentWorkflowRunsFiltered "review-api"
-                                    [ ( "window", "7d" ), ( "scope", "operational" ) ]
+                                    [ ( "window", "7d" ), ( "scope", "operational" ), ( "lens", "all" ) ]
                                 )
                             , Common.contains
                                 (Effects.ModifyUrl "/agent/workflows/review-api?status=all")
@@ -236,7 +237,7 @@ all =
                         |> Expect.all
                             [ Common.contains
                                 (Effects.FetchAgentWorkflowRunsFiltered "review-api"
-                                    [ ( "window", "7d" ), ( "scope", "experiment" ) ]
+                                    [ ( "window", "7d" ), ( "scope", "experiment" ), ( "lens", "attention" ) ]
                                 )
                             , Common.contains
                                 (Effects.ModifyUrl "/agent/workflows/review-api?scope=experiment")
@@ -251,6 +252,7 @@ all =
                                 (Effects.FetchAgentWorkflowRunsFiltered "review-api"
                                     [ ( "window", "7d" )
                                     , ( "scope", "operational" )
+                                    , ( "lens", "attention" )
                                     , ( "node", "implement" )
                                     ]
                                 )
@@ -271,7 +273,7 @@ all =
                                 )
                             , Common.contains
                                 (Effects.FetchAgentWorkflowRunsFiltered "review-api"
-                                    [ ( "window", "30d" ), ( "scope", "operational" ) ]
+                                    [ ( "window", "30d" ), ( "scope", "operational" ), ( "lens", "attention" ) ]
                                 )
                             ]
             , test "opening a panel through the URL alone costs no request" <|
@@ -286,7 +288,7 @@ all =
                                 )
                             , Common.notContains
                                 (Effects.FetchAgentWorkflowRunsFiltered "review-api"
-                                    [ ( "window", "7d" ), ( "scope", "operational" ) ]
+                                    [ ( "window", "7d" ), ( "scope", "operational" ), ( "lens", "attention" ) ]
                                 )
                             ]
             , test "the back button opens the panel the URL names" <|
@@ -355,15 +357,26 @@ all =
                                 (Attr.href "/agent/workflows/review-api/runs/9007199254740993")
                             , containing [ text "running" ]
                             ]
-            , test "the attention lens hides a healthy run and says why the list is empty" <|
+            , test "the empty attention list says nothing is unresolved, not that nothing ran" <|
+                \_ ->
+                    initializedWith overview
+                        |> Application.handleCallback
+                            (Callback.AgentWorkflowRunsFetched "review-api" (Ok []))
+                        |> Tuple.first
+                        |> Common.queryView
+                        |> Query.find [ class "agent-run-list-empty" ]
+                        |> Query.has [ text "No runs need attention in this window" ]
+            , test "renders every row the lens returned rather than narrowing it again" <|
                 \_ ->
                     initializedWith overview
                         |> Application.handleCallback
                             (Callback.AgentWorkflowRunsFetched "review-api" (Ok [ terminalRunSummary ]))
                         |> Tuple.first
                         |> Common.queryView
-                        |> Query.find [ class "agent-run-list-empty" ]
-                        |> Query.has [ text "No runs need attention in this window" ]
+                        |> Expect.all
+                            [ Query.has [ class "agent-run-row" ]
+                            , Query.hasNot [ class "agent-run-list-empty" ]
+                            ]
             , test "a failed run survives the attention lens" <|
                 \_ ->
                     initializedWith overview
@@ -373,16 +386,14 @@ all =
                         |> Common.queryView
                         |> Query.find [ class "agent-run-row-attention" ]
                         |> Query.has [ text "failed" ]
-            , test "the active lens hides a run that has already finished" <|
+            , test "the empty active list names the active lens" <|
                 \_ ->
                     initializedWith overview
-                        |> Application.handleCallback
-                            (Callback.AgentWorkflowRunsFetched "review-api"
-                                (Ok [ terminalRunSummary ])
-                            )
-                        |> Tuple.first
                         |> Application.update
                             (Msgs.Update (Message.AgentWorkflowStatusFilterChanged "active"))
+                        |> Tuple.first
+                        |> Application.handleCallback
+                            (Callback.AgentWorkflowRunsFetched "review-api" (Ok []))
                         |> Tuple.first
                         |> Common.queryView
                         |> Query.find [ class "agent-run-list-empty" ]
@@ -403,6 +414,9 @@ all =
             , test "distinguishes an empty window from an empty lens" <|
                 \_ ->
                     initializedWith overview
+                        |> Application.update
+                            (Msgs.Update (Message.AgentWorkflowStatusFilterChanged "all"))
+                        |> Tuple.first
                         |> Application.handleCallback
                             (Callback.AgentWorkflowRunsFetched "review-api" (Ok []))
                         |> Tuple.first
@@ -448,7 +462,7 @@ all =
                                 )
                             , Common.contains
                                 (Effects.FetchAgentWorkflowRunsFiltered "review-api"
-                                    [ ( "window", "7d" ), ( "scope", "operational" ) ]
+                                    [ ( "window", "7d" ), ( "scope", "operational" ), ( "lens", "attention" ) ]
                                 )
                             ]
             , test "removes the workflow refresh timer after all visible runs settle" <|
@@ -467,7 +481,7 @@ all =
                                 )
                             , Common.notContains
                                 (Effects.FetchAgentWorkflowRunsFiltered "review-api"
-                                    [ ( "window", "7d" ), ( "scope", "operational" ) ]
+                                    [ ( "window", "7d" ), ( "scope", "operational" ), ( "lens", "attention" ) ]
                                 )
                             ]
             ]
@@ -511,8 +525,9 @@ initializedWith fixture =
         |> Tuple.first
 
 
-{-| The default page: the attention lens is on, so only the failed run is
-visible even though both were fetched.
+{-| The default page. The attention lens is a server predicate now, so every
+row the list returned is rendered; the fixture carries one running run and one
+failed run because that is what the lens would have returned.
 -}
 initializedWithOverview : Application.Model
 initializedWithOverview =

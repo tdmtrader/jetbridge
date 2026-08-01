@@ -423,8 +423,9 @@ push the new URL.
 
 The overview is refetched only when the window moves, because the window is
 the only thing the overview endpoint accepts. The run list is refetched only
-when the query it would receive changes, which is why the attention lens —
-which has no server-side expression — costs no request at all.
+when the query it would receive changes — which now includes the attention
+lens, because the lens is a server-side predicate over the whole population
+rather than a narrowing of one returned page.
 
 -}
 applyFilters : (Filters.Filters -> Filters.Filters) -> ET Model
@@ -880,58 +881,33 @@ runList model =
             note "loading runs…"
 
         Just summaries ->
-            let
-                rows =
-                    List.map (runRow model.workflowName) summaries
-
-                visible =
-                    List.filter (matchesLens model.filters.status) rows
-            in
             RunList.view
                 { now = Maybe.withDefault (Time.millisToPosix 0) model.now
-                , emptyMessage = emptyMessage model.filters.status rows
+                , emptyMessage = emptyMessage model.filters.status
                 }
-                visible
+                (List.map (runRow model.workflowName) summaries)
 
 
 {-| "Nothing ran" and "nothing matches this lens" are different facts and get
 different sentences: a reader who sees "No runs" while a lens is on concludes
 the workflow is idle.
+
+The distinction now reports a server answer rather than a client one. The rows
+are whatever the lens returned, so an empty list under `all` really is an empty
+window, and an empty list under `attention` really is nothing unresolved —
+across the whole population, not just the newest page.
 -}
-emptyMessage : Filters.Status -> List RunList.Row -> String
-emptyMessage status rows =
-    if List.isEmpty rows then
-        "No runs in this window"
-
-    else
-        case status of
-            Filters.Attention ->
-                "No runs need attention in this window"
-
-            Filters.Active ->
-                "No runs are active"
-
-            Filters.All ->
-                "No runs in this window"
-
-
-{-| The attention lens narrows the rows the server returned rather than being
-sent as a filter, because the run list API has no attention filter and cannot
-express "any active status" in a single value. It is honest about its own
-scope — it narrows this page — and the day a server-side filter exists it
-moves into `Filters.runsQuery` and stops touching rows at all.
--}
-matchesLens : Filters.Status -> RunList.Row -> Bool
-matchesLens status row =
+emptyMessage : Filters.Status -> String
+emptyMessage status =
     case status of
-        Filters.All ->
-            True
+        Filters.Attention ->
+            "No runs need attention in this window"
 
         Filters.Active ->
-            isActiveStatus row.status
+            "No runs are active"
 
-        Filters.Attention ->
-            row.attentionCue /= ""
+        Filters.All ->
+            "No runs in this window"
 
 
 runRow : String -> WorkflowRun.Summary -> RunList.Row

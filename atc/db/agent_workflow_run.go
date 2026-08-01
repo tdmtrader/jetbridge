@@ -502,6 +502,49 @@ func (scope AgentWorkflowRunScope) Validate() error {
 	}
 }
 
+// AgentWorkflowRunLens is the attention lens the design's run list offers.
+//
+// It exists server-side because the list is paginated: applying the lens to a
+// returned page answers "attention-worthy runs among the newest fifty" rather
+// than "attention-worthy runs", and the run older than one page is exactly the
+// one the lens is for.
+type AgentWorkflowRunLens string
+
+const (
+	// AgentWorkflowRunLensAttention is the default: work that asks for action.
+	AgentWorkflowRunLensAttention AgentWorkflowRunLens = "attention"
+	// AgentWorkflowRunLensActive is nonterminal runs only.
+	AgentWorkflowRunLensActive AgentWorkflowRunLens = "active"
+	// AgentWorkflowRunLensAll applies no lens predicate.
+	AgentWorkflowRunLensAll AgentWorkflowRunLens = "all"
+)
+
+func (lens AgentWorkflowRunLens) Validate() error {
+	switch lens {
+	case AgentWorkflowRunLensAttention, AgentWorkflowRunLensActive, AgentWorkflowRunLensAll:
+		return nil
+	default:
+		return fmt.Errorf("db: invalid agent workflow-run lens %q", lens)
+	}
+}
+
+// ActiveAgentWorkflowRunStatuses is the nonterminal run population. It is the
+// complement of the terminal set isTerminalWorkflowRunStatus reports, spelled
+// out once so the lens SQL and the Go predicates cannot drift.
+var ActiveAgentWorkflowRunStatuses = []string{
+	string(AgentWorkflowRunStatusAdmitting),
+	string(AgentWorkflowRunStatusRunning),
+	string(AgentWorkflowRunStatusCanceling),
+}
+
+// UnresolvedAgentWorkflowRunStatuses is the terminal run population a human
+// must still act on. It mirrors occurrence.terminalNeedsAttention.
+var UnresolvedAgentWorkflowRunStatuses = []string{
+	string(AgentWorkflowRunStatusFailed),
+	string(AgentWorkflowRunStatusErrored),
+	string(AgentWorkflowRunStatusAborted),
+}
+
 // ExperimentOriginKinds are the origin kinds classified as experiments. Adding
 // an origin kind to the platform requires deciding, here, whether it is
 // operational — mixing experiment cells into operational success, latency, or
@@ -524,6 +567,14 @@ type AgentWorkflowRunListFilter struct {
 	// IncludeActiveRuns unions in every nonterminal run regardless of age, so
 	// changing the history window never changes the meaning of active state.
 	IncludeActiveRuns bool
+
+	// Lens narrows to the attention or active population. Empty means all.
+	//
+	// The predicate is the run-level projection of the node-level resolution in
+	// agent/workflowrun/occurrence/attention.go: a run asks for action when one
+	// of its own node occurrences is effectively unresolved across its retry
+	// closure. See attentionLensPredicate.
+	Lens AgentWorkflowRunLens
 
 	// NodeID restricts results to runs that reached that semantic node.
 	NodeID string

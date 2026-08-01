@@ -34,24 +34,25 @@ why they get three functions rather than one:
 2.  `overviewQuery` — `GET .../overview`, which accepts **only** `window`.
     Anything else is rejected with 400 by
     `workflowoverview.parseRoute`, so nothing else may be sent.
-3.  `runsQuery` — `GET .../runs`, which accepts `window`, `scope`, `node`,
-    `node_status`, `q`, `status`, `origin_kind`, `origin_reference`, `limit`,
-    and `cursor` (`workflowruns.Handler.List`). Note `origin_kind`, not
-    `origin`, and note the absence of a revision filter.
+3.  `runsQuery` — `GET .../runs`, which accepts `window`, `scope`, `lens`,
+    `node`, `node_status`, `q`, `status`, `origin_kind`, `origin_reference`,
+    `limit`, and `cursor` (`workflowruns.Handler.List`). Note `origin_kind`,
+    not `origin`, `lens` rather than `status` for the attention lens, and the
+    absence of a revision filter.
 
-Two design-level filters have no server-side expression in this slice and are
-therefore deliberately _not_ sent:
+One design-level filter has no server-side expression and is therefore
+deliberately _not_ sent: `version` selects which revision the Versions panel
+talks about. The run list API exposes no revision filter
+(`db.AgentWorkflowRunListFilter` has `WorkflowVersion`, but no HTTP parameter
+reaches it), so sending it would 400 the whole list.
 
-  - `version` selects which revision the Versions panel talks about. The run
-    list API exposes no revision filter (`db.AgentWorkflowRunListFilter` has
-    `WorkflowVersion`, but no HTTP parameter reaches it), so sending it would
-    400 the whole list.
-  - `status` here is the design's attention lens (`attention`, `active`,
-    `all`), not the server's run-status vocabulary
-    (`admitting`/`running`/`succeeded`/…). The server has no attention filter
-    and cannot express "any active status" in one value, so the lens is
-    applied to the rows the list returns. It is URL state so the choice is
-    shareable, and it maps to a server parameter the day one exists.
+The attention lens is `status` in the page URL — the design's vocabulary — and
+`lens` on the wire, because the server's `status` parameter is the run-status
+vocabulary (`admitting`/`running`/`succeeded`/…) and means something else. It
+is a server-side predicate rather than a narrowing of the returned page: the
+list is paginated, so filtering rows here would answer "attention-worthy runs
+among the newest page" and hide exactly the older unresolved failure the lens
+exists to find.
 
 -}
 
@@ -190,6 +191,7 @@ runsQuery filters =
     List.filterMap identity
         [ Just ( "window", windowParam filters.window )
         , Just ( "scope", scopeParam filters.scope )
+        , Just ( "lens", statusParam filters.status )
         , Maybe.map (Tuple.pair "node") filters.selectedNode
         , Maybe.map (Tuple.pair "node_status") (qualifiedNodeStatus filters)
         , optional "q" filters.search ""
