@@ -3,6 +3,8 @@ package noderuns_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -51,6 +53,14 @@ type fakeManifestStore struct{}
 
 func (fakeManifestStore) GetAuthorized(context.Context, int, snapshot.SnapshotID) (snapshot.Snapshot, bool, error) {
 	return snapshot.Snapshot{}, false, nil
+}
+
+type fakeCanceler struct {
+	cancel func(context.Context, int, snapshot.WorkflowRunID) (db.AgentWorkflowRun, bool, error)
+}
+
+func (fake *fakeCanceler) Cancel(ctx context.Context, teamID int, id snapshot.WorkflowRunID) (db.AgentWorkflowRun, bool, error) {
+	return fake.cancel(ctx, teamID, id)
 }
 
 func TestCreateBindsExactNodeVersionAndOnlyCallerInputsParametersAndIdempotencyKey(t *testing.T) {
@@ -139,6 +149,185 @@ func TestListAndGetUseNodeKindScopedStore(t *testing.T) {
 	}
 }
 
+func cancelRequest(runID string) *http.Request {
+	return nodeRequest(http.MethodPost, "/api/v1/agent/nodes/code-review/runs/"+runID+"/cancel", "code-review", "", runID, "")
+}
+
+func TestCancelUsesTeamScopedServiceAndIsIdempotentForCancelingOrAborted(t *testing.T) {
+	deps := defaultDependencies()
+	var gotTeam int
+	var gotID snapshot.WorkflowRunID
+	status := db.AgentWorkflowRunStatusCanceling
+	deps.canceler.cancel = func(_ context.Context, teamID int, id snapshot.WorkflowRunID) (db.AgentWorkflowRun, bool, error) {
+		gotTeam, gotID = teamID, id
+		return nodeRunFixture(id, "code-review", status), true, nil
+	}
+	handler := mustHandler(t, deps)
+
+	recorder := httptest.NewRecorder()
+	handler.Cancel(recorder, cancelRequest("9007199254740993"))
+	if recorder.Code != http.StatusAccepted || gotTeam != 1 || gotID != exactNodeRunID {
+		t.Fatalf("cancel status/team/id = %d/%d/%s, body = %s", recorder.Code, gotTeam, gotID.String(), recorder.Body.String())
+	}
+
+	status = db.AgentWorkflowRunStatusAborted
+	recorder = httptest.NewRecorder()
+	handler.Cancel(recorder, cancelRequest("9007199254740993"))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("already-aborted cancel status = %d, want 200", recorder.Code)
+	}
+}
+
+// TestCancelRefusesAWorkflowRunAddressedAsANode is the mutation test for the
+// kind check: node and workflow runs share the durable run table and the ID
+// space, so a workflow-kind run returned for a node-scoped lookup must be
+// refused before the shared (kind-blind) Canceler is ever invoked.
+func TestCancelRefusesAWorkflowRunAddressedAsANode(t *testing.T) {
+	deps := defaultDependencies()
+	getCalled := false
+	deps.runs.get = func(context.Context, int, workflow.DefinitionKind, snapshot.WorkflowRunID) (db.AgentWorkflowRun, bool, error) {
+		getCalled = true
+		run := nodeRunFixture(exactNodeRunID, "code-review", db.AgentWorkflowRunStatusRunning)
+		run.DefinitionKind = workflow.DefinitionKindWorkflow
+		return run, true, nil
+	}
+	canceled := false
+	deps.canceler.cancel = func(context.Context, int, snapshot.WorkflowRunID) (db.AgentWorkflowRun, bool, error) {
+		canceled = true
+		return db.AgentWorkflowRun{}, false, nil
+	}
+	handler := mustHandler(t, deps)
+
+	recorder := httptest.NewRecorder()
+	handler.Cancel(recorder, cancelRequest("9007199254740993"))
+	if recorder.Code != http.StatusNotFound || !getCalled || canceled {
+		t.Fatalf("status = %d getCalled = %v canceled = %v, want 404 with GetKind consulted and canceler untouched; body = %s",
+			recorder.Code, getCalled, canceled, recorder.Body.String())
+	}
+}
+
+// TestCancelRefusesAnotherTeamsNodeRun is the mutation test for the team
+// check: an ID match alone must not be enough to cancel a run owned by a
+// different team.
+func TestCancelRefusesAnotherTeamsNodeRun(t *testing.T) {
+	deps := defaultDependencies()
+	deps.runs.get = func(context.Context, int, workflow.DefinitionKind, snapshot.WorkflowRunID) (db.AgentWorkflowRun, bool, error) {
+		run := nodeRunFixture(exactNodeRunID, "code-review", db.AgentWorkflowRunStatusRunning)
+		run.TeamID = 999
+		return run, true, nil
+	}
+	canceled := false
+	deps.canceler.cancel = func(context.Context, int, snapshot.WorkflowRunID) (db.AgentWorkflowRun, bool, error) {
+		canceled = true
+		return db.AgentWorkflowRun{}, false, nil
+	}
+	handler := mustHandler(t, deps)
+
+	recorder := httptest.NewRecorder()
+	handler.Cancel(recorder, cancelRequest("9007199254740993"))
+	if recorder.Code != http.StatusNotFound || canceled {
+		t.Fatalf("status = %d canceled = %v, want 404 with canceler untouched; body = %s", recorder.Code, canceled, recorder.Body.String())
+	}
+}
+
+// TestCancelRefusesAnotherNodesRunAddressedByID is the mutation test for the
+// name check: an ID match against the right team and kind still must not
+// cancel a run that belongs to a different node name than the route names.
+func TestCancelRefusesAnotherNodesRunAddressedByID(t *testing.T) {
+	deps := defaultDependencies()
+	deps.runs.get = func(context.Context, int, workflow.DefinitionKind, snapshot.WorkflowRunID) (db.AgentWorkflowRun, bool, error) {
+		return nodeRunFixture(exactNodeRunID, "other-node", db.AgentWorkflowRunStatusRunning), true, nil
+	}
+	canceled := false
+	deps.canceler.cancel = func(context.Context, int, snapshot.WorkflowRunID) (db.AgentWorkflowRun, bool, error) {
+		canceled = true
+		return db.AgentWorkflowRun{}, false, nil
+	}
+	handler := mustHandler(t, deps)
+
+	recorder := httptest.NewRecorder()
+	handler.Cancel(recorder, cancelRequest("9007199254740993"))
+	if recorder.Code != http.StatusNotFound || canceled {
+		t.Fatalf("status = %d canceled = %v, want 404 with canceler untouched; body = %s", recorder.Code, canceled, recorder.Body.String())
+	}
+}
+
+func TestCancelReportsNotFoundWhenTheRunDoesNotExist(t *testing.T) {
+	deps := defaultDependencies()
+	deps.runs.get = func(context.Context, int, workflow.DefinitionKind, snapshot.WorkflowRunID) (db.AgentWorkflowRun, bool, error) {
+		return db.AgentWorkflowRun{}, false, nil
+	}
+	handler := mustHandler(t, deps)
+	recorder := httptest.NewRecorder()
+	handler.Cancel(recorder, cancelRequest("9007199254740993"))
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body = %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestCancelMapsConflictAndInternalErrorsWithoutDisclosure(t *testing.T) {
+	tests := []struct {
+		name       string
+		found      bool
+		err        error
+		status     db.AgentWorkflowRunStatus
+		wantStatus int
+		wantCode   string
+	}{
+		{name: "illegal state", found: true, err: fmt.Errorf("%w: secret state", workflowrunsapi.ErrCancelConflict), wantStatus: http.StatusConflict, wantCode: "conflict"},
+		{name: "raced deletion", found: false, wantStatus: http.StatusNotFound, wantCode: "not_found"},
+		{name: "dependency", found: true, err: errors.New("secret abort backend"), wantStatus: http.StatusInternalServerError, wantCode: "internal_error"},
+		{name: "invalid service result", found: true, status: db.AgentWorkflowRunStatusRunning, wantStatus: http.StatusInternalServerError, wantCode: "internal_error"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			deps := defaultDependencies()
+			deps.canceler.cancel = func(_ context.Context, _ int, id snapshot.WorkflowRunID) (db.AgentWorkflowRun, bool, error) {
+				return nodeRunFixture(id, "code-review", test.status), test.found, test.err
+			}
+			handler := mustHandler(t, deps)
+			recorder := httptest.NewRecorder()
+			handler.Cancel(recorder, cancelRequest("9007199254740993"))
+			if recorder.Code != test.wantStatus {
+				t.Fatalf("status = %d, want %d; body = %s", recorder.Code, test.wantStatus, recorder.Body.String())
+			}
+			var response struct {
+				Error string `json:"error"`
+			}
+			if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+				t.Fatal(err)
+			}
+			if response.Error != test.wantCode || strings.Contains(recorder.Body.String(), "secret") {
+				t.Fatalf("response = %+v body=%s", response, recorder.Body.String())
+			}
+		})
+	}
+}
+
+func TestCancelRejectsWrongMethodAndBody(t *testing.T) {
+	handler := mustHandler(t, defaultDependencies())
+
+	recorder := httptest.NewRecorder()
+	handler.Cancel(recorder, nodeRequest(http.MethodGet, "/api/v1/agent/nodes/code-review/runs/9007199254740993/cancel", "code-review", "", "9007199254740993", ""))
+	if recorder.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("wrong-method status = %d, want 405", recorder.Code)
+	}
+
+	deps := defaultDependencies()
+	cancelCalls := 0
+	deps.canceler.cancel = func(context.Context, int, snapshot.WorkflowRunID) (db.AgentWorkflowRun, bool, error) {
+		cancelCalls++
+		return db.AgentWorkflowRun{}, false, nil
+	}
+	handler = mustHandler(t, deps)
+	recorder = httptest.NewRecorder()
+	request := nodeRequest(http.MethodPost, "/api/v1/agent/nodes/code-review/runs/9007199254740993/cancel", "code-review", "", "9007199254740993", `{}`)
+	handler.Cancel(recorder, request)
+	if recorder.Code != http.StatusBadRequest || cancelCalls != 0 {
+		t.Fatalf("cancel-with-body status/calls = %d/%d, want 400/0", recorder.Code, cancelCalls)
+	}
+}
+
 func TestCreateAndGetRejectCollectionFilters(t *testing.T) {
 	handler := mustHandler(t, defaultDependencies())
 	for _, test := range []struct {
@@ -168,8 +357,9 @@ func TestCreateAndGetRejectCollectionFilters(t *testing.T) {
 }
 
 type dependencies struct {
-	binder *fakeBinder
-	runs   *fakeRunStore
+	binder   *fakeBinder
+	runs     *fakeRunStore
+	canceler *fakeCanceler
 }
 
 func defaultDependencies() dependencies {
@@ -188,6 +378,9 @@ func defaultDependencies() dependencies {
 				return nil, nil
 			},
 		},
+		canceler: &fakeCanceler{cancel: func(_ context.Context, _ int, id snapshot.WorkflowRunID) (db.AgentWorkflowRun, bool, error) {
+			return nodeRunFixture(id, "code-review", db.AgentWorkflowRunStatusCanceling), true, nil
+		}},
 	}
 }
 
@@ -196,7 +389,7 @@ func mustHandler(t *testing.T, deps dependencies) *noderuns.Handler {
 	handler, err := noderuns.NewHandler(noderuns.Config{
 		Team:     workflowrunsapi.TrustedTeam{ID: 1, Name: atc.DefaultTeamName},
 		Identity: func(*http.Request) (string, error) { return "alice", nil },
-		Binder:   deps.binder, Runs: deps.runs, Manifests: fakeManifestStore{},
+		Binder:   deps.binder, Runs: deps.runs, Canceler: deps.canceler, Manifests: fakeManifestStore{},
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -172,6 +172,7 @@ func (rw *RejectArchivedWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 			atc.CreateAgentNodeRun,
 			atc.ListAgentNodeRuns,
 			atc.GetAgentNodeRun,
+			atc.CancelAgentNodeRun,
 			atc.ListAgentNodeConsumers,
 			atc.UpgradeAgentNodeConsumers,
 			atc.CreateAgentExperiment,

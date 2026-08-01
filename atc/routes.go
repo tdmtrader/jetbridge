@@ -174,6 +174,7 @@ const (
 	CreateAgentNodeRun                         = "CreateAgentNodeRun"
 	ListAgentNodeRuns                          = "ListAgentNodeRuns"
 	GetAgentNodeRun                            = "GetAgentNodeRun"
+	CancelAgentNodeRun                         = "CancelAgentNodeRun"
 	ListAgentNodeConsumers                     = "ListAgentNodeConsumers"
 	UpgradeAgentNodeConsumers                  = "UpgradeAgentNodeConsumers"
 
@@ -386,6 +387,7 @@ var Routes = rata.Routes([]rata.Route{
 	{Path: "/api/v1/agent/nodes/:node_name/versions/:version/runs", Method: "POST", Name: CreateAgentNodeRun},
 	{Path: "/api/v1/agent/nodes/:node_name/versions/:version/runs", Method: "GET", Name: ListAgentNodeRuns},
 	{Path: "/api/v1/agent/nodes/:node_name/runs/:workflow_run_id", Method: "GET", Name: GetAgentNodeRun},
+	{Path: "/api/v1/agent/nodes/:node_name/runs/:workflow_run_id/cancel", Method: "POST", Name: CancelAgentNodeRun},
 	{Path: "/api/v1/agent/nodes/:node_name/versions/:version/consumers", Method: "GET", Name: ListAgentNodeConsumers},
 	{Path: "/api/v1/agent/nodes/:node_name/versions/:version/upgrades", Method: "POST", Name: UpgradeAgentNodeConsumers},
 

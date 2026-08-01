@@ -433,6 +433,7 @@ func NewHandler(
 		atc.CreateAgentNodeRun:                         http.HandlerFunc(nodeRunHandlers.Create),
 		atc.ListAgentNodeRuns:                          http.HandlerFunc(nodeRunHandlers.List),
 		atc.GetAgentNodeRun:                            http.HandlerFunc(nodeRunHandlers.Get),
+		atc.CancelAgentNodeRun:                         http.HandlerFunc(nodeRunHandlers.Cancel),
 		atc.ListAgentNodeConsumers:                     http.HandlerFunc(nodeUpgradeHandlers.Consumers),
 		atc.UpgradeAgentNodeConsumers:                  http.HandlerFunc(nodeUpgradeHandlers.Upgrade),
 		atc.CreateAgentExperiment:                      http.HandlerFunc(experimentHandlers.Create),

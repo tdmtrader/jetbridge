@@ -14,6 +14,7 @@ func TestNodeRunRoutesRegisteredExactlyOnce(t *testing.T) {
 		atc.CreateAgentNodeRun: {method: "POST", path: "/api/v1/agent/nodes/:node_name/versions/:version/runs"},
 		atc.ListAgentNodeRuns:  {method: "GET", path: "/api/v1/agent/nodes/:node_name/versions/:version/runs"},
 		atc.GetAgentNodeRun:    {method: "GET", path: "/api/v1/agent/nodes/:node_name/runs/:workflow_run_id"},
+		atc.CancelAgentNodeRun: {method: "POST", path: "/api/v1/agent/nodes/:node_name/runs/:workflow_run_id/cancel"},
 	}
 	counts := map[string]int{}
 	for _, route := range atc.Routes {

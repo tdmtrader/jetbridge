@@ -130,6 +130,36 @@ var _ = Describe("fly agent nodes", func() {
 		Expect(sess.ExitCode()).To(Equal(0))
 		Expect(sess.Out).To(gbytes.Say(`"version": 2`))
 	})
+
+	Describe("cancel-run", func() {
+		It("requests cancellation by durable node run ID", func() {
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("POST", "/api/v1/agent/nodes/code-review/runs/9007199254740993/cancel"),
+					ghttp.RespondWithJSONEncoded(http.StatusAccepted, map[string]any{
+						"workflow_run_id":  "9007199254740993",
+						"pipeline_run_id":  nil,
+						"workflow_name":    "code-review",
+						"workflow_version": 5,
+						"status":           "canceling",
+						"inputs":           []any{},
+						"outputs":          []any{},
+					}),
+				),
+			)
+
+			flyCmd := exec.Command(
+				flyPath, "-t", targetName, "agent", "nodes", "cancel-run",
+				"code-review", "9007199254740993", "--json",
+			)
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			<-sess.Exited
+			Expect(sess.ExitCode()).To(Equal(0))
+			Expect(sess.Out).To(gbytes.Say(`"workflow_run_id": "9007199254740993"`))
+			Expect(sess.Out).To(gbytes.Say(`"status": "canceling"`))
+		})
+	})
 })
 
 var _ = Describe("fly agent workflows", func() {
