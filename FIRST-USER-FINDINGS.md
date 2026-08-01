@@ -11,6 +11,39 @@ result below.
 
 Legend: 🔴 pain point · 🟢 works well · 🔵 agent-quality pattern · ⚪ observation
 
+## Summary
+
+The platform's node model is right and the loop genuinely closes: typed inputs
+→ immutable node version → hermetic agent pod → contract-validated record →
+sealed snapshot → out-of-band grading. Two nodes (`code-review`,
+`log-diagnosis`) were authored, released, run against real corpus cases, and
+graded, and one of them produced a root-cause diagnosis that beats the human
+baseline on provenance.
+
+Getting there took **six** fixes. Four are in this branch or already deployed;
+two remain open and block other users:
+
+| # | blocker | state |
+|---|---|---|
+| F5 | fly wrote dir tar headers the server rejects — no nested directory could be uploaded | fixed here |
+| F20 | output-builder MCP never implemented `initialize` → agents had **no** working way to write output | fixed here, **needs agent-runner image rebuild** |
+| F25 | reviewgrade scored sealed records as 0% silently | fixed here |
+| F16 | hermetic egress fail-closed, no preflight → 5-min silent death | fixed live (home-infra `8dc7550`) |
+| **F7** | **deployed web image has no `git`, so no `repository/v1` can ever seal → every flagship seed is unrunnable on this deployment** | **OPEN** |
+| **F12/F17** | **guide examples (`model: claude-sonnet`, `budget_slice_usd`) fail against the deployed runner** | **OPEN** |
+
+The recurring theme across F6, F11, F16, F17, F20 and F25 is **silent or
+distant failure**: nearly every mistake I made produced either a fixed opaque
+string, a status with no reason, or a plausible-looking empty result. The
+single highest-leverage platform investment is not a new capability — it is
+making failures say what went wrong, where the user can see it.
+
+The most valuable *agent-quality* results are F29 (write the record early —
+this alone converted a total loss into a correct diagnosis), F30/F34/F35
+(precision wording suppresses recall, and only a graded fixture reveals it),
+and F26 (retrieval is far ahead of verification: the reviewer finds the right
+code and misjudges what is wrong with it).
+
 ## Findings
 
 ### F1 🔴 The guide never says what bytes a typed snapshot must contain
@@ -372,6 +405,40 @@ in a prompt. Language that rewards caution costs recall asymmetrically, and you
 cannot see it without a fixture whose answer you already know. This is the
 strongest argument in the session for `TargetNode` in `agent/experiment`: every
 node author will make this exact mistake, and only a graded A/B reveals it.
+
+### F35 🔵 RESULT of the controlled iteration: recall came back, mechanism
+accuracy did not
+Dropping the disprove framing (v11: *severity carries confidence*, plus "treat
+a naming convention, a comment, or a test as a claim to verify") restored
+reporting immediately — `changes-required`, 2 findings, back to 1/2 location
+recall. So the suppression was caused by the framing, and it is reversible.
+But the mechanism problem survived every variant:
+
+| ver | prompt change | conclusion | location recall | mechanism confirmed |
+|---|---|---|---|---|
+| v7 | baseline (mechanism-agnostic output) | changes-required | 1/2 | 0/2 |
+| v8 | + write-early, + disprove, + severity | accept (0 findings) | 0/2 | 0/2 |
+| v10 | + "disproving means checking not dropping" | accept (0 findings) | 0/2 | 0/2 |
+| v11 | disprove replaced by severity-carries-confidence | changes-required | 1/2 | 0/2 |
+
+Four runs, three different *wrong* mechanisms proposed at the right code:
+a nonexistent squirrel placeholder bug (v7), then in v11 an `instance_vars IS
+NULL` mismatch — again inside `TemplatesForTerminalTickets`, again not the
+caller-writable-id defect the oracle names. v11 also spent a finding on
+**precision trap N4** (client-side float summing of costs), which the oracle
+pre-registers as "nit-at-most"; it rated it `medium`, so severity calibration
+partly worked even as the trap landed.
+**Conclusion I'd hand to the platform team:** for this node the bottleneck is
+not prompt wording, and no further prompt tuning is warranted without changing
+what the agent can *do*. Both required findings need the agent to leave the
+diff and read a *write path* (`agent/api/tickets` for F1) or a file the diff
+never touches (`Header.elm` for F2). Candidate next moves, in order: give the
+review node a capability sidecar with code-intelligence (find-references /
+call-hierarchy) instead of grep; or decompose into two nodes — an
+`impacted-surface` node that enumerates writers/callers of everything the diff
+touches, feeding a review node that must anchor into that surface. That is a
+node-composition experiment, which is exactly the kind of thing this
+node-first exercise was supposed to surface.
 
 ### F31 ⚪ Two nodes, two very different failure profiles
 Worth recording as the reason to build more than one node before generalizing:
