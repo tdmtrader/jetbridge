@@ -1107,12 +1107,12 @@ func TestTypeCheckRejectsFunctionIDCollidingWithAwaitName(t *testing.T) {
 		},
 		Plan: []atc.Step{
 			{Config: agent},
-			{Config: &atc.AwaitSnapshotStep{
+			{Config: &atc.TimeoutStep{Duration: "1h", Step: &atc.AwaitSnapshotStep{
 				Name:      "approval",
 				Question:  "question",
 				Type:      humanAnswerV1,
 				OnTimeout: atc.AwaitSnapshotOnTimeoutFail,
-			}},
+			}}},
 		},
 	}
 
