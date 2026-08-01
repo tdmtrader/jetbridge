@@ -56,14 +56,11 @@ Replace the model/sidecar assertions with:
 
 ```go
 if agent.Model != "" || agent.BudgetSliceUSD != 5 ||
-	!strings.Contains(agent.Prompt, "MINIMUM_SEVERITY") ||
-	!strings.Contains(agent.Prompt, "lexicographically by finding id") ||
 	!reflect.DeepEqual(agent.Skills, []string{"review"}) {
 	t.Fatalf("frozen agent implementation = model %q budget %v prompt %q skills %q", agent.Model, agent.BudgetSliceUSD, agent.Prompt, agent.Skills)
 }
-skill := definition.Function.SkillFiles["skills/review/SKILL.md"]
-if !strings.Contains(skill, "failure path") || !strings.Contains(skill, "false positive") {
-	t.Fatalf("compiled review skill = %q", skill)
+if definition.Function.SkillFiles["skills/review/SKILL.md"] == "" {
+	t.Fatalf("compiled review skill tree = %#v", definition.Function.SkillFiles)
 }
 if len(agent.Sidecars) != 0 {
 	t.Fatalf("portable code-review node has sidecars = %#v", agent.Sidecars)
@@ -217,9 +214,8 @@ if agent.Model != "" || agent.BudgetSliceUSD != 5 || len(agent.Sidecars) != 0 ||
 	!reflect.DeepEqual(agent.Skills, []string{"diagnosis"}) {
 	t.Fatalf("log-diagnosis agent = %+v", agent)
 }
-skill := definition.Function.SkillFiles["skills/diagnosis/SKILL.md"]
-if !strings.Contains(skill, "counterevidence") || !strings.Contains(skill, "timeline") {
-	t.Fatalf("compiled diagnosis skill = %q", skill)
+if definition.Function.SkillFiles["skills/diagnosis/SKILL.md"] == "" {
+	t.Fatalf("compiled diagnosis skill tree = %#v", definition.Function.SkillFiles)
 }
 ```
 
@@ -299,7 +295,7 @@ POSIX-safe fix/verification, and whether it invents observations.
 
 ---
 
-### Task 4: Add structured-method revisions and select releases
+### Task 4: Add benchmark-driven structured-method revisions and select releases
 
 **Files:**
 - Modify: `agent/workflow/seed_test.go`
@@ -310,19 +306,15 @@ POSIX-safe fix/verification, and whether it invents observations.
 - Consumes: exact version-1 snapshots and evaluations.
 - Produces: immutable version-2 imports, paired evidence, one selected release per node.
 
-- [ ] **Step 1: Add version-2 RED assertions**
+- [ ] **Step 1: Treat version-1 benchmark discrepancies as behavioral RED**
 
-Require `state transition`, `second-order`, and `misleading comment` in the
-review skill; require `environment delta`, `direct experiment`, and
-`discriminating observation` in the diagnosis skill.
+Write the version-1 comparison into the findings record before editing either
+skill. For review, name which F1-F3/D1 obligations were missed or imprecise. For
+diagnosis, name any wrong mechanism, weak evidence, unjustified confidence, or
+non-discriminating action. This is the consumer-visible failure the revision
+must change; do not add tests that merely grep instructional prose.
 
-- [ ] **Step 2: Verify RED**
-
-```bash
-go test ./agent/workflow -run 'TestCodeReviewReusableNodeSeedFreezesItsAtomicImplementation|TestLogDiagnosisReusableNodeSeedFreezesItsAtomicImplementation' -count=1
-```
-
-- [ ] **Step 3: Add the minimal structured passes**
+- [ ] **Step 2: Add the minimal structured passes**
 
 Review must trace state transitions over time/retries/refreshes/reordering,
 inspect second-order consumers, and verify misleading comments against control
@@ -330,7 +322,7 @@ flow. Diagnosis must build an explicit environment delta, run a direct
 experiment against captured interpreter/utility semantics when possible, and
 name a discriminating observation between surviving hypotheses.
 
-- [ ] **Step 4: Verify GREEN and import both changed packages**
+- [ ] **Step 3: Verify package integrity and import both changed packages**
 
 ```bash
 go test ./agent/workflow -run 'TestCodeReviewReusableNodeSeedFreezesItsAtomicImplementation|TestLogDiagnosisReusableNodeSeedFreezesItsAtomicImplementation' -count=1
@@ -339,19 +331,21 @@ fly -t home agent nodes import agent/workflow/seeds/code-review-node-v1
 fly -t home agent nodes import agent/workflow/seeds/log-diagnosis-node-v1
 ```
 
-- [ ] **Step 5: Re-run the exact snapshots against version 2**
+- [ ] **Step 4: Re-run the exact snapshots against version 2**
 
 Use the Task 2/3 snapshot IDs with new idempotency keys
 `first-user-code-review-v2-review-jb-003` and
 `first-user-log-diagnosis-v2-rca-jb-003`. Follow both to terminal state and
 download successful outputs.
 
-- [ ] **Step 6: Compare and release**
+- [ ] **Step 5: Evaluate behavioral GREEN and release**
 
 For review, compare validity, recall, attribution, priorities, anchors, and
 false positives. For diagnosis, compare validity, mechanism, decisive evidence,
 confidence, counterevidence, and verification. Prefer v2 only if it is at least
-as precise and materially stronger.
+as precise and materially stronger. If the named version-1 discrepancy remains,
+record that version 2 stayed red and select the better successful version rather
+than claiming improvement.
 
 ```bash
 fly -t home agent nodes release code-review SELECTED_VERSION --compatibility=compatible
