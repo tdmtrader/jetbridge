@@ -410,12 +410,15 @@ func TestContractFailuresCarryClientDetail(t *testing.T) {
 				"captured_at":"2026-08-01T12:00:00Z","title":"t","body":"b"}`},
 			want: "adapter is required",
 		},
+		// The marked detail names the document that failed to decode, not the
+		// decoder's own message — see the note under Step 3 on why the
+		// dependency's text stays out of the disclosable channel.
 		"unknown field": {
 			typeRef: "work-item/v1",
 			files: map[string]string{"work-item.json": `{
 				"schema_version":"1.0.0","adapter":"a","external_id":"x","revision":"1",
 				"captured_at":"2026-08-01T12:00:00Z","title":"t","body":"b","extra":1}`},
-			want: "extra",
+			want: "decode work-item.json",
 		},
 	}
 	for name, test := range tests {
@@ -499,16 +502,20 @@ In `decodeStrictDocument`, mark the decode failures — their text is composed b
 
 ```go
 	if err := decoder.Decode(target); err != nil {
-		return snapshot.WrapClientDetailf(err, "snapshot contracts: decode %s: %v", name, err)
+		return snapshot.WrapClientDetailf(err, "snapshot contracts: decode %s", name)
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		if err == nil {
 			return snapshot.ClientDetailf("snapshot contracts: %s contains trailing JSON", name)
 		}
-		return snapshot.WrapClientDetailf(err, "snapshot contracts: decode trailing data in %s: %v", name, err)
+		return snapshot.WrapClientDetailf(err, "snapshot contracts: decode trailing data in %s", name)
 	}
 ```
+
+**Do not restate the wrapped error's text in the format string.** `clientDetailError.Error()` composes `detail + ": " + err.Error()`, so the underlying message already reaches the log through the error chain; `ClientDetail` deliberately returns only the marked half. Writing `: %v` with `err` would push an arbitrary dependency's message into the *disclosable* channel, which is exactly what the safety rule forbids.
+
+This means the decode detail a caller sees is `snapshot contracts: decode work-item.json` without the encoding/json specifics. If the test written in Step 1 asserts on a substring of the json decoder's own message (the "unknown field" case expects `extra`), that expectation is now wrong — the marked detail no longer contains it. Change that case's `want` to `decode work-item.json`, and if you want the decoder's own text disclosed, that is a separate decision requiring its own safety argument: raise it rather than smuggling it through `%v`.
 
 `json.go` does not currently import the snapshot package — add
 `"github.com/concourse/concourse/agent/snapshot"` to its import block. (There
@@ -517,11 +524,34 @@ is no cycle: `contracts` already imports `snapshot` in `registry.go` and
 
 - [ ] **Step 4: Mark the document and record-envelope rule failures**
 
+These three differ from Step 3's decode sites: the wrapped error is a message
+**this repository authored** from the caller's own values, and it *is* the
+explanation the user needs (`adapter is required`). So its text must appear in
+the disclosed detail — which means formatting it in with `%v`.
+
+Use `ClientDetailf`, not `WrapClientDetailf`, at these three sites. Reason:
+`clientDetailError.Error()` composes `detail + ": " + err.Error()`, so wrapping
+an error whose text you have already formatted into the detail prints it twice
+in the log. Reproducing the message in the detail loses nothing, because the
+detail becomes a superset of the wrapped error's text.
+
+**Before doing this, verify the assumption it rests on:** nothing may depend on
+`errors.Is`/`errors.As` reaching through these three returns, because
+`ClientDetailf` does not preserve a chain. Check with:
+
+```bash
+grep -rn "errors.Is\|errors.As" agent/snapshot/ atc/ --include="*.go" | grep -i "admitforseal\|workitem\|logbundle"
+grep -rn "AdmitForSeal(" --include="*.go" agent/ atc/ | grep -v _test
+```
+
+If any caller matches a sentinel through these paths, report NEEDS_CONTEXT
+instead of proceeding — do not silently drop a chain someone depends on.
+
 In `agent/snapshot/contracts/workitem.go`, in `workItemValidator.Validate`:
 
 ```go
 	if err := document.Validate(); err != nil {
-		return snapshot.ValidationResult{}, snapshot.WrapClientDetailf(err, "snapshot contracts: work-item.json: %v", err)
+		return snapshot.ValidationResult{}, snapshot.ClientDetailf("snapshot contracts: work-item.json: %v", err)
 	}
 ```
 
@@ -529,7 +559,7 @@ In `agent/snapshot/contracts/logbundle.go`, in `logBundleValidator.Validate`:
 
 ```go
 		if err := metadata.Validate(); err != nil {
-			return snapshot.ValidationResult{}, snapshot.WrapClientDetailf(err, "snapshot contracts: metadata.json: %v", err)
+			return snapshot.ValidationResult{}, snapshot.ClientDetailf("snapshot contracts: metadata.json: %v", err)
 		}
 ```
 
@@ -545,7 +575,7 @@ In `agent/snapshot/contracts/record.go`, in `admitRecordForSeal`:
 
 ```go
 	if err := record.AdmitForSeal(expected, declarations); err != nil {
-		return Record[T]{}, snapshot.WrapClientDetailf(err, "snapshot contracts: record.json: %v", err)
+		return Record[T]{}, snapshot.ClientDetailf("snapshot contracts: record.json: %v", err)
 	}
 ```
 
