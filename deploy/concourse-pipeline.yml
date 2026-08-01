@@ -592,9 +592,17 @@ jobs:
           echo "=== Copying Dockerfile to builder pod ==="
           cat <<'DOCKERFILE' > /tmp/Dockerfile
           FROM ubuntu:22.04
+          # Keep this package set identical to Dockerfile.build's runtime stage;
+          # deploy/runtime_image_parity_test.go pins them together. git is not
+          # optional: the repository/v1 and repository-change/v1 validators exec
+          # it inside ATC, and the direct-Git publisher is pinned to the
+          # image-owned /usr/bin/git.
           RUN apt-get update && \
-              apt-get install -y ca-certificates dumb-init && \
-              rm -rf /var/lib/apt/lists/*
+              apt-get install -y --no-install-recommends \
+                ca-certificates \
+                dumb-init \
+                git=1:2.34.1-1ubuntu1.17 \
+              && rm -rf /var/lib/apt/lists/*
           COPY concourse-linux-amd64 /usr/local/concourse/bin/concourse
           COPY artifact-daemon-linux-amd64 /usr/local/concourse/bin/artifact-daemon
           COPY fly-assets /usr/local/concourse/fly-assets
