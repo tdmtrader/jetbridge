@@ -467,13 +467,40 @@ func printAgentWorkflowRunDetail(target rc.Target, detail workflowrunsapi.RunDet
 		return err
 	}
 	fmt.Printf("inputs: %d\noutputs: %d\n", len(detail.Inputs), len(detail.Outputs))
-	if reason := runFailureReason(target, detail.RunSummary); reason != "" {
-		fmt.Printf("failure: %s\n", reason)
-		if detail.PlannedBuildID != nil {
-			fmt.Printf("full log: fly -t %s watch -b %d\n", Fly.Target, *detail.PlannedBuildID)
+	// The hint must print for every terminal-unsuccessful run, independent of
+	// whether a reason was found: a plain `failed` run often has no
+	// event.Error at all (see runFailureReason), and that must not leave the
+	// user with nothing but a bare status line. This is also what makes the
+	// PlannedBuildID != nil check load-bearing rather than a no-op guard
+	// mirroring runFailureReason's own check: it protects the deref below.
+	if agentWorkflowRunNeedsFailureDiagnosis(detail.Status) && detail.PlannedBuildID != nil {
+		if reason := runFailureReason(target, detail.RunSummary); reason != "" {
+			fmt.Printf("failure: %s\n", reason)
 		}
+		// Fly.Target (a package global, not something threaded through
+		// target) is safe to read here: every call site reaches this
+		// function via loadAgentTarget/executeWithTargetLoader, both of
+		// which resolve target from Fly.Target, and target loading fails on
+		// an empty target name — so the printed command always matches the
+		// target that produced `detail`. rc.Target itself exposes no Name()
+		// to read the value back off target instead.
+		fmt.Printf("full log: fly -t %s watch -b %d\n", Fly.Target, *detail.PlannedBuildID)
 	}
 	return nil
+}
+
+// agentWorkflowRunNeedsFailureDiagnosis reports whether a run's status is a
+// terminal-unsuccessful state worth fetching a failure reason, and worth
+// pointing the user at `fly watch` for. Naming the states positively means a
+// status added later does not silently start pulling event streams for
+// healthy runs.
+func agentWorkflowRunNeedsFailureDiagnosis(status db.AgentWorkflowRunStatus) bool {
+	switch status {
+	case db.AgentWorkflowRunStatusFailed, db.AgentWorkflowRunStatusErrored, db.AgentWorkflowRunStatusAborted:
+		return true
+	default:
+		return false
+	}
 }
 
 // failureReasonFromErrorEvents picks the message a human needs out of a
@@ -483,6 +510,17 @@ func printAgentWorkflowRunDetail(target rc.Target, detail workflowrunsapi.RunDet
 // usually a retried or superseded step. Multi-line messages are collapsed
 // because this prints inside a field list, and the full text remains
 // available through `fly watch`.
+//
+// Last-wins is correct for every shipped seed: the renderer emits a flat
+// PlanSequence (no across/attempts), and only leaf steps are LogError-
+// wrapped, so a run produces at most one error event today. It can mislead
+// once authored plans use ensure/on_failure or try: an ensure hook that
+// itself errors reports the hook's error instead of the step it was
+// guarding, and a try-swallowed error followed by a silent non-zero exit
+// reports nothing useful from this function at all (see the FinishTask
+// fallback in runFailureReason for that second case). Not fixed here —
+// matching an error event back to the step that actually caused the failure
+// is more machinery than this diagnostic nicety warrants right now.
 func failureReasonFromErrorEvents(errorEvents []event.Error) string {
 	for index := len(errorEvents) - 1; index >= 0; index-- {
 		message := strings.TrimSpace(errorEvents[index].Message)
@@ -497,20 +535,41 @@ func failureReasonFromErrorEvents(errorEvents []event.Error) string {
 	return ""
 }
 
-// runFailureReason reads the terminal error out of the run's planned build.
-// Every failure here is non-fatal: this is a diagnostic nicety layered on top
-// of a successful show-run, and it must never turn a readable answer into an
-// error.
-func runFailureReason(target rc.Target, run workflowrunsapi.RunSummary) string {
-	if run.PlannedBuildID == nil {
-		return ""
+// exitStatusReasonFromFinishTaskEvents falls back to the last non-zero exit
+// status when no step reported an error message. A plain `failed` run — a
+// step's process exiting non-zero without the step itself erroring, e.g.
+// `agent-runner: claude: exit status 1` or an output-contract mismatch —
+// never produces an event.Error (atc/exec/agent_step.go takes the
+// ExitStatus path, not the error path, and the engine's StatusFailed branch
+// adds nothing further). event.FinishTask is the only signal left for that
+// case.
+func exitStatusReasonFromFinishTaskEvents(finishEvents []event.FinishTask) string {
+	for index := len(finishEvents) - 1; index >= 0; index-- {
+		if finishEvents[index].ExitStatus != 0 {
+			return fmt.Sprintf("agent step exited %d", finishEvents[index].ExitStatus)
+		}
 	}
-	// Only the terminal-unsuccessful states have a reason worth fetching.
-	// Naming them positively means a status added later does not silently
-	// start pulling event streams for healthy runs.
-	switch run.Status {
-	case db.AgentWorkflowRunStatusFailed, db.AgentWorkflowRunStatusErrored, db.AgentWorkflowRunStatusAborted:
-	default:
+	return ""
+}
+
+// runFailureReasonEventScanLimit bounds how many stream events
+// runFailureReason will read before giving up. The build-events endpoint
+// only supports resuming via Last-Event-ID — no type filter, no reverse
+// read — so finding a terminal error or exit status means reading every
+// event a step logged, and an agent step's stdout is often a full Claude
+// stream-json transcript. This keeps a diagnostic nicety from turning into
+// an unbounded read; if the limit is hit, runFailureReason returns whatever
+// evidence it gathered before the cutoff (often none), and the caller's
+// unconditional "full log:" pointer remains the fallback. A var, not a
+// const, so tests can shrink it instead of emitting the full limit.
+var runFailureReasonEventScanLimit = 20000
+
+// runFailureReason reads the terminal error, or (failing that) the terminal
+// non-zero exit status, out of the run's planned build. Every failure here
+// is non-fatal: this is a diagnostic nicety layered on top of a successful
+// show-run, and it must never turn a readable answer into an error.
+func runFailureReason(target rc.Target, run workflowrunsapi.RunSummary) string {
+	if run.PlannedBuildID == nil || !agentWorkflowRunNeedsFailureDiagnosis(run.Status) {
 		return ""
 	}
 	source, err := target.Client().BuildEvents(fmt.Sprintf("%d", *run.PlannedBuildID))
@@ -519,16 +578,23 @@ func runFailureReason(target rc.Target, run workflowrunsapi.RunSummary) string {
 	}
 	defer source.Close()
 	var errorEvents []event.Error
-	for {
+	var finishEvents []event.FinishTask
+	for scanned := 0; scanned < runFailureReasonEventScanLimit; scanned++ {
 		streamEvent, err := source.NextEvent()
 		if err != nil {
 			break
 		}
-		if errorEvent, ok := streamEvent.(event.Error); ok {
-			errorEvents = append(errorEvents, errorEvent)
+		switch typedEvent := streamEvent.(type) {
+		case event.Error:
+			errorEvents = append(errorEvents, typedEvent)
+		case event.FinishTask:
+			finishEvents = append(finishEvents, typedEvent)
 		}
 	}
-	return failureReasonFromErrorEvents(errorEvents)
+	if reason := failureReasonFromErrorEvents(errorEvents); reason != "" {
+		return reason
+	}
+	return exitStatusReasonFromFinishTaskEvents(finishEvents)
 }
 
 func printAgentWorkflowRunOutputs(response workflowrunsapi.OutputsResponse) error {
