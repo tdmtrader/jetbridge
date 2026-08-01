@@ -1,0 +1,305 @@
+package occurrence
+
+import (
+	"encoding/json"
+	"testing"
+
+	"github.com/concourse/concourse/agent/workflow/graph"
+	"github.com/concourse/concourse/atc"
+)
+
+func TestPlanNodesWalksEverySemanticKind(t *testing.T) {
+	plan := atc.Plan{
+		ID: "1",
+		Do: &atc.DoPlan{
+			{ID: "1/1", Agent: &atc.AgentPlan{Name: "implement step", FunctionID: "implement"}},
+			{ID: "1/2", Retry: &atc.RetryPlan{
+				{ID: "1/2/1", Task: &atc.TaskPlan{Name: "validate", FunctionID: "validate"}},
+			}},
+			{ID: "1/3", AwaitSnapshot: &atc.AwaitSnapshotPlan{Name: "approval", Type: "interaction/v1"}},
+			{ID: "1/4", PublishSnapshot: &atc.PublishSnapshotPlan{Name: "ship", Publisher: "git-branch/v1", InputType: "repository/v1"}},
+			{ID: "1/5", LoadSnapshot: &atc.LoadSnapshotPlan{Name: "repository", Type: "repository/v1"}},
+		},
+	}
+
+	raw, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatalf("marshalling plan: %v", err)
+	}
+
+	nodes, err := PlanNodes(raw)
+	if err != nil {
+		t.Fatalf("PlanNodes returned an error: %v", err)
+	}
+
+	want := []PlanNode{
+		{PlanID: "1/1", NodeID: "implement", Kind: "agent", DisplayName: "implement step", RetryAttempt: 1},
+		{PlanID: "1/2/1", NodeID: "validate", Kind: "task", DisplayName: "validate", RetryAttempt: 1},
+		{PlanID: "1/3", NodeID: "approval", Kind: "await", DisplayName: "approval", RetryAttempt: 1},
+		{PlanID: "1/4", NodeID: "ship", Kind: "publish", DisplayName: "ship", RetryAttempt: 1},
+		{PlanID: "1/5", NodeID: "repository", Kind: "load", DisplayName: "repository", RetryAttempt: 1},
+	}
+	if len(nodes) != len(want) {
+		t.Fatalf("expected %d nodes, got %+v", len(want), nodes)
+	}
+	for index := range want {
+		if nodes[index] != want[index] {
+			t.Fatalf("node %d: expected %+v, got %+v", index, want[index], nodes[index])
+		}
+	}
+}
+
+// Each copy the planner materializes inside a retry is a distinct attempt of
+// the same node. Without a per-copy attempt number every copy would collapse
+// onto one identity, which both misreports the canvas and collides on the
+// projection's (workflow_run_id, node_id, ...) key.
+func TestPlanNodesNumbersRetryCopiesLikeTheEngine(t *testing.T) {
+	raw, err := json.Marshal(atc.Plan{
+		ID: "1",
+		Retry: &atc.RetryPlan{
+			{ID: "1/1", Agent: &atc.AgentPlan{Name: "implement", FunctionID: "implement"}},
+			{ID: "1/2", Agent: &atc.AgentPlan{Name: "implement", FunctionID: "implement"}},
+			{ID: "1/3", Agent: &atc.AgentPlan{Name: "implement", FunctionID: "implement"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshalling plan: %v", err)
+	}
+
+	nodes, err := PlanNodes(raw)
+	if err != nil {
+		t.Fatalf("PlanNodes returned an error: %v", err)
+	}
+	if len(nodes) != 3 {
+		t.Fatalf("expected one node per retry copy, got %+v", nodes)
+	}
+	for index, node := range nodes {
+		if node.NodeID != "implement" {
+			t.Fatalf("copy %d: expected the same node identity, got %q", index, node.NodeID)
+		}
+		if node.RetryAttempt != index+1 {
+			t.Fatalf("copy %d: expected retry attempt %d, got %d", index, index+1, node.RetryAttempt)
+		}
+	}
+}
+
+// A retry wrapping a composite propagates its attempt number to every node in
+// the copy, exactly as atc/engine/builder.go propagates Plan.Attempts.
+func TestPlanNodesPropagatesRetryAttemptThroughComposites(t *testing.T) {
+	raw, err := json.Marshal(atc.Plan{
+		ID: "1",
+		Retry: &atc.RetryPlan{
+			{ID: "1/1", Do: &atc.DoPlan{
+				{ID: "1/1/1", Agent: &atc.AgentPlan{Name: "a", FunctionID: "a"}},
+				{ID: "1/1/2", Task: &atc.TaskPlan{Name: "b", FunctionID: "b"}},
+			}},
+			{ID: "1/2", Do: &atc.DoPlan{
+				{ID: "1/2/1", Agent: &atc.AgentPlan{Name: "a", FunctionID: "a"}},
+				{ID: "1/2/2", Task: &atc.TaskPlan{Name: "b", FunctionID: "b"}},
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshalling plan: %v", err)
+	}
+
+	nodes, err := PlanNodes(raw)
+	if err != nil {
+		t.Fatalf("PlanNodes returned an error: %v", err)
+	}
+	want := map[string]int{"1/1/1": 1, "1/1/2": 1, "1/2/1": 2, "1/2/2": 2}
+	if len(nodes) != len(want) {
+		t.Fatalf("expected %d nodes, got %+v", len(want), nodes)
+	}
+	for _, node := range nodes {
+		if node.RetryAttempt != want[node.PlanID] {
+			t.Fatalf("plan %q: expected retry attempt %d, got %d", node.PlanID, want[node.PlanID], node.RetryAttempt)
+		}
+	}
+}
+
+// Control wrappers are traversed but never emitted: they decorate nodes rather
+// than becoming them.
+func TestPlanNodesTraversesEveryControlWrapperWithoutEmittingIt(t *testing.T) {
+	leaf := func(id, functionID string) atc.Plan {
+		return atc.Plan{ID: atc.PlanID(id), Agent: &atc.AgentPlan{Name: functionID, FunctionID: functionID}}
+	}
+
+	for name, wrapper := range map[string]atc.Plan{
+		"do":          {ID: "w", Do: &atc.DoPlan{leaf("w/1", "one")}},
+		"in_parallel": {ID: "w", InParallel: &atc.InParallelPlan{Steps: []atc.Plan{leaf("w/1", "one")}}},
+		"retry":       {ID: "w", Retry: &atc.RetryPlan{leaf("w/1", "one")}},
+		"try":         {ID: "w", Try: &atc.TryPlan{Step: leaf("w/1", "one")}},
+		"timeout":     {ID: "w", Timeout: &atc.TimeoutPlan{Step: leaf("w/1", "one")}},
+		"on_success":  {ID: "w", OnSuccess: &atc.OnSuccessPlan{Step: leaf("w/1", "one"), Next: leaf("w/2", "two")}},
+		"on_failure":  {ID: "w", OnFailure: &atc.OnFailurePlan{Step: leaf("w/1", "one"), Next: leaf("w/2", "two")}},
+		"on_error":    {ID: "w", OnError: &atc.OnErrorPlan{Step: leaf("w/1", "one"), Next: leaf("w/2", "two")}},
+		"on_abort":    {ID: "w", OnAbort: &atc.OnAbortPlan{Step: leaf("w/1", "one"), Next: leaf("w/2", "two")}},
+		"ensure":      {ID: "w", Ensure: &atc.EnsurePlan{Step: leaf("w/1", "one"), Next: leaf("w/2", "two")}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			raw, err := json.Marshal(wrapper)
+			if err != nil {
+				t.Fatalf("marshalling plan: %v", err)
+			}
+			nodes, err := PlanNodes(raw)
+			if err != nil {
+				t.Fatalf("PlanNodes returned an error: %v", err)
+			}
+			if len(nodes) == 0 {
+				t.Fatalf("%s was not traversed", name)
+			}
+			for _, node := range nodes {
+				if node.PlanID == "w" {
+					t.Fatalf("%s emitted the wrapper itself as a node: %+v", name, node)
+				}
+			}
+		})
+	}
+}
+
+// Hook branches carry real work — an on_failure escalation agent is a node the
+// overview must show — so both arms are walked.
+func TestPlanNodesEmitsHookBranchNodes(t *testing.T) {
+	raw, err := json.Marshal(atc.Plan{
+		ID: "1",
+		OnFailure: &atc.OnFailurePlan{
+			Step: atc.Plan{ID: "1/1", Agent: &atc.AgentPlan{Name: "implement", FunctionID: "implement"}},
+			Next: atc.Plan{ID: "1/2", Agent: &atc.AgentPlan{Name: "escalate", FunctionID: "escalate"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshalling plan: %v", err)
+	}
+	nodes, err := PlanNodes(raw)
+	if err != nil {
+		t.Fatalf("PlanNodes returned an error: %v", err)
+	}
+	if len(nodes) != 2 || nodes[0].NodeID != "implement" || nodes[1].NodeID != "escalate" {
+		t.Fatalf("expected both hook arms, got %+v", nodes)
+	}
+}
+
+// An across step's substeps are materialized at runtime with rewritten plan
+// IDs, so the frozen template's IDs join to no evidence. Emitting them would
+// manufacture permanently-pending nodes for work that ran, so the walker
+// deliberately does not descend. This test pins that as an intentional
+// decision rather than an accidental gap.
+func TestPlanNodesDoesNotDescendIntoAcross(t *testing.T) {
+	substep, err := json.Marshal(atc.Plan{
+		ID: "1/1", Agent: &atc.AgentPlan{Name: "fan-out", FunctionID: "fan-out"},
+	})
+	if err != nil {
+		t.Fatalf("marshalling substep: %v", err)
+	}
+	raw, err := json.Marshal(atc.Plan{
+		ID: "1",
+		Across: &atc.AcrossPlan{
+			Vars:            []atc.AcrossVar{{Var: "target"}},
+			SubStepTemplate: string(substep),
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshalling plan: %v", err)
+	}
+	nodes, err := PlanNodes(raw)
+	if err != nil {
+		t.Fatalf("PlanNodes returned an error: %v", err)
+	}
+	if len(nodes) != 0 {
+		t.Fatalf("expected across substeps to be skipped, got %+v", nodes)
+	}
+}
+
+func TestPlanNodesRejectsMalformedPlan(t *testing.T) {
+	if _, err := PlanNodes([]byte("not json")); err == nil {
+		t.Fatal("expected a decode error for a malformed plan")
+	}
+}
+
+// TestPlanNodesAgreeWithSeedGraphIdentities is the load-bearing contract of
+// this phase. Phase C joins occurrence rows to graph nodes by node ID, so
+// every identity PlanNodes reads out of a real planned workflow must resolve
+// to a node graph.Build produced from the same workflow.
+//
+// The two derivations run on different artifacts on purpose: graph.Build reads
+// the compiled definition, while PlanNodes reads the plan produced after
+// RenderFunction prepends a synthetic load_snapshot per input port and per
+// bound resource source. Those synthetic loads are the same logical thing as
+// the graph's input/resource_source endpoints and share their bare name, which
+// is why a load identity is allowed to resolve against an endpoint node. Every
+// other kind must match a graph execution node of the same kind exactly.
+func TestPlanNodesAgreeWithSeedGraphIdentities(t *testing.T) {
+	seeds := seedNames(t)
+	if len(seeds) == 0 {
+		t.Fatal("expected to find seed workflows")
+	}
+
+	for _, name := range seeds {
+		t.Run(name, func(t *testing.T) {
+			compiled := compileSeed(t, name)
+
+			built, err := graph.Build(compiled.Function)
+			if err != nil {
+				t.Fatalf("graph.Build: %v", err)
+			}
+
+			nodes, err := PlanNodes(planSeed(t, compiled))
+			if err != nil {
+				t.Fatalf("PlanNodes: %v", err)
+			}
+			if len(nodes) == 0 {
+				t.Fatal("expected the planned workflow to contain semantic nodes")
+			}
+
+			graphKinds := map[string]graph.NodeKind{}
+			for _, node := range built.Nodes {
+				graphKinds[node.ID] = node.Kind
+			}
+
+			var sawNonLoad bool
+			for _, node := range nodes {
+				if node.NodeID == "" {
+					t.Fatalf("node %+v has no identity", node)
+				}
+				if node.Kind == "load" {
+					// A load resolves against its own kind or against the
+					// endpoint whose synthetic load it is.
+					_, isLoad := graphKinds[node.NodeID]
+					_, isInput := graphKinds["input:"+node.NodeID]
+					_, isSource := graphKinds["source:"+node.NodeID]
+					if !isLoad && !isInput && !isSource {
+						t.Fatalf("load node %q resolves to no graph node; graph has %v", node.NodeID, graphKinds)
+					}
+					continue
+				}
+				sawNonLoad = true
+				kind, found := graphKinds[node.NodeID]
+				if !found {
+					t.Fatalf("plan node %q (%s) is absent from the graph; graph has %v", node.NodeID, node.Kind, graphKinds)
+				}
+				if string(kind) != node.Kind {
+					t.Fatalf("plan node %q is kind %q in the plan but %q in the graph", node.NodeID, node.Kind, kind)
+				}
+			}
+			if !sawNonLoad {
+				t.Fatal("expected at least one execution node beyond the synthetic loads")
+			}
+
+			// Every occurrence-bearing graph node must be reachable from the
+			// plan, or durable history would silently omit it.
+			planned := map[string]bool{}
+			for _, node := range nodes {
+				planned[node.NodeID] = true
+			}
+			for _, node := range built.Nodes {
+				switch node.Kind {
+				case graph.KindAgent, graph.KindTask, graph.KindAwait, graph.KindPublish, graph.KindLoad:
+					if !planned[node.ID] {
+						t.Fatalf("graph execution node %q (%s) has no plan node", node.ID, node.Kind)
+					}
+				}
+			}
+		})
+	}
+}
