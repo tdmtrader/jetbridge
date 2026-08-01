@@ -8,7 +8,9 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/agent/snapshot"
+	"github.com/concourse/concourse/agent/workflow"
 	"github.com/concourse/concourse/agent/workflowrun"
+	"github.com/concourse/concourse/agent/workflowrun/occurrence"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 )
@@ -50,6 +52,21 @@ type RunStore interface {
 	List(context.Context, db.AgentWorkflowRunListFilter) ([]db.AgentWorkflowRun, error)
 	CountByStatus(context.Context, db.AgentWorkflowRunCountFilter) (map[db.AgentWorkflowRunStatus]int64, error)
 	Snapshots(context.Context, snapshot.WorkflowRunID) ([]db.AgentWorkflowRunSnapshotBinding, error)
+}
+
+// Definitions is the narrow read of workflow.Store the run graph needs: the
+// EXACT revision a run executed. There is deliberately no Live or Latest here —
+// the run page must never be able to reach for the promoted revision.
+type Definitions interface {
+	Get(name string, version int) (*workflow.Definition, bool, error)
+}
+
+// Occurrences answers one run's node occurrences. occurrence.Reader is the
+// production implementation: frozen history for terminal runs, live derivation
+// for everything still executing. Sharing it with the overview is what keeps
+// the two surfaces from disagreeing about what a node did.
+type Occurrences interface {
+	OccurrencesForRun(context.Context, db.AgentWorkflowRun) ([]occurrence.NodeOccurrence, error)
 }
 
 // Canceler owns the restart-safe durable cancellation transition and abort of
@@ -108,6 +125,9 @@ type Config struct {
 	Runs      RunStore
 	Canceler  Canceler
 	Manifests ManifestStore
+	// Definitions and Occurrences serve the exact per-run DAG.
+	Definitions Definitions
+	Occurrences Occurrences
 	// Now supplies the history window's upper bound. Optional; time.Now by
 	// default.
 	Now func() time.Time

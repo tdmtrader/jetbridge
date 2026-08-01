@@ -132,6 +132,7 @@ var DefaultRoles = map[string]string{
 	atc.CancelAgentWorkflowRun:                     MemberRole,
 	atc.RetryAgentWorkflowRun:                      MemberRole,
 	atc.GetAgentWorkflowRunOutputs:                 ViewerRole,
+	atc.GetAgentWorkflowRunGraph:                   ViewerRole,
 	atc.ListAgentWorkflowRunWaits:                  ViewerRole,
 	atc.ResolveAgentWorkflowRunWait:                MemberRole,
 	atc.ListAgentWorkflowRunOutcomes:               ViewerRole,

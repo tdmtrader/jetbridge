@@ -3719,6 +3719,20 @@ func (cmd *RunCommand) constructAPIHandler(
 		resourceCapturer = dispatchGraph.sourceRuntime.resourceCapturer
 	}
 	workflowWaitStore := dispatchGraph.waits
+	// The overview and the run page read occurrences through the same
+	// derivation the freezer writes: frozen history for terminal runs, live
+	// derivation for everything still executing. They share dispatchGraph's
+	// workflow store for the same reason the freezer does — a second store is a
+	// second chance for the version a run executed and the version its history
+	// describes to disagree.
+	nodeOccurrenceReader, err := occurrence.NewReader(
+		db.NewAgentWorkflowRunNodeOccurrencesFactory(dbConn),
+		db.NewAgentWorkflowRunEvidenceFactory(dbConn),
+		workflowStore,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("construct workflow-run node occurrence reader: %w", err)
+	}
 	workflowRunHandlers, err := workflowrunsapi.NewHandler(workflowrunsapi.Config{
 		Logger: logger.Session("workflow-runs-api"),
 		Team:   workflowrunsapi.TrustedTeam{ID: dispatchGraph.teamID, Name: dispatchGraph.teamName},
@@ -3727,22 +3741,10 @@ func (cmd *RunCommand) constructAPIHandler(
 		},
 		Binder: dispatchGraph.binder, Runs: workflowRunStore,
 		Canceler: dispatchGraph.canceler, Manifests: snapshotStore,
+		Definitions: workflowStore, Occurrences: nodeOccurrenceReader,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("construct workflow-run API: %w", err)
-	}
-	// The overview reads occurrences through the same derivation the freezer
-	// writes: frozen history for terminal runs, live derivation for everything
-	// still executing. It shares dispatchGraph's workflow store for the same
-	// reason the freezer does — a second store is a second chance for the
-	// version a run executed and the version its history describes to disagree.
-	nodeOccurrenceReader, err := occurrence.NewReader(
-		db.NewAgentWorkflowRunNodeOccurrencesFactory(dbConn),
-		db.NewAgentWorkflowRunEvidenceFactory(dbConn),
-		workflowStore,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("construct workflow-run node occurrence reader: %w", err)
 	}
 	workflowOverviewHandlers, err := workflowoverviewapi.NewHandler(workflowoverviewapi.Config{
 		Logger:      logger.Session("workflow-overview-api"),

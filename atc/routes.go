@@ -159,6 +159,7 @@ const (
 	CancelAgentWorkflowRun                     = "CancelAgentWorkflowRun"
 	RetryAgentWorkflowRun                      = "RetryAgentWorkflowRun"
 	GetAgentWorkflowRunOutputs                 = "GetAgentWorkflowRunOutputs"
+	GetAgentWorkflowRunGraph                   = "GetAgentWorkflowRunGraph"
 	ListAgentWorkflowRunWaits                  = "ListAgentWorkflowRunWaits"
 	ResolveAgentWorkflowRunWait                = "ResolveAgentWorkflowRunWait"
 	ListAgentWorkflowRunOutcomes               = "ListAgentWorkflowRunOutcomes"
@@ -371,6 +372,7 @@ var Routes = rata.Routes([]rata.Route{
 	{Path: "/api/v1/agent/workflows/:workflow_name/runs/:workflow_run_id/cancel", Method: "POST", Name: CancelAgentWorkflowRun},
 	{Path: "/api/v1/agent/workflows/:workflow_name/runs/:workflow_run_id/retry", Method: "POST", Name: RetryAgentWorkflowRun},
 	{Path: "/api/v1/agent/workflows/:workflow_name/runs/:workflow_run_id/outputs", Method: "GET", Name: GetAgentWorkflowRunOutputs},
+	{Path: "/api/v1/agent/workflows/:workflow_name/runs/:workflow_run_id/graph", Method: "GET", Name: GetAgentWorkflowRunGraph},
 	{Path: "/api/v1/agent/workflows/:workflow_name/runs/:workflow_run_id/waits", Method: "GET", Name: ListAgentWorkflowRunWaits},
 	{Path: "/api/v1/agent/workflows/:workflow_name/runs/:workflow_run_id/waits/:workflow_wait_id/resolve", Method: "PUT", Name: ResolveAgentWorkflowRunWait},
 	{Path: "/api/v1/agent/workflows/:workflow_name/runs/:workflow_run_id/outcomes", Method: "GET", Name: ListAgentWorkflowRunOutcomes},

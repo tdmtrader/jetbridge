@@ -34,14 +34,16 @@ const maxRequestBytes int64 = 64 << 10
 var originKindPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
 
 type Handler struct {
-	logger    lager.Logger
-	team      TrustedTeam
-	identity  IdentityFunc
-	binder    Binder
-	runs      RunStore
-	canceler  Canceler
-	manifests ManifestStore
-	now       func() time.Time
+	logger      lager.Logger
+	team        TrustedTeam
+	identity    IdentityFunc
+	binder      Binder
+	runs        RunStore
+	canceler    Canceler
+	manifests   ManifestStore
+	definitions Definitions
+	occurrences Occurrences
+	now         func() time.Time
 }
 
 func NewHandler(config Config) (*Handler, error) {
@@ -54,6 +56,7 @@ func NewHandler(config Config) (*Handler, error) {
 	for name, dependency := range map[string]any{
 		"binder": config.Binder, "run store": config.Runs,
 		"canceler": config.Canceler, "manifest store": config.Manifests,
+		"definition store": config.Definitions, "occurrence store": config.Occurrences,
 	} {
 		if interfaceIsNil(dependency) {
 			return nil, fmt.Errorf("workflow runs API: %s is required", name)
@@ -77,6 +80,7 @@ func NewHandler(config Config) (*Handler, error) {
 		logger: handlerLogger,
 		team:   config.Team, identity: config.Identity, binder: config.Binder,
 		runs: config.Runs, canceler: config.Canceler, manifests: config.Manifests,
+		definitions: config.Definitions, occurrences: config.Occurrences,
 		now: now,
 	}, nil
 }

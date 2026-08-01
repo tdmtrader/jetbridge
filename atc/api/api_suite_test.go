@@ -282,6 +282,7 @@ var _ = BeforeEach(func() {
 		Identity: func(*http.Request) (string, error) { return "api-suite", nil },
 		Binder:   workflowRunBackend, Runs: workflowRunBackend,
 		Canceler: workflowRunBackend, Manifests: workflowRunBackend,
+		Definitions: apiWorkflowStore, Occurrences: workflowRunBackend,
 	})
 	Expect(err).NotTo(HaveOccurred())
 	nodeUpgradeHandlers, err := nodeupgradesapi.NewHandler(nodeupgradesapi.Config{

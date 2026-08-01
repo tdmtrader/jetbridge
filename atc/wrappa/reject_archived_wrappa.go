@@ -157,6 +157,7 @@ func (rw *RejectArchivedWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 			atc.CancelAgentWorkflowRun,
 			atc.RetryAgentWorkflowRun,
 			atc.GetAgentWorkflowRunOutputs,
+			atc.GetAgentWorkflowRunGraph,
 			atc.ListAgentWorkflowRunWaits,
 			atc.ResolveAgentWorkflowRunWait,
 			atc.ListAgentWorkflowRunOutcomes,

@@ -30,6 +30,7 @@ func TestAgentNodeAndWorkflowRunRoutesAreNotRejectedForArchivedPipelines(t *test
 		atc.CancelAgentWorkflowRun,
 		atc.RetryAgentWorkflowRun,
 		atc.GetAgentWorkflowRunOutputs,
+		atc.GetAgentWorkflowRunGraph,
 	}
 	factory := pipelineserver.NewRejectArchivedHandlerFactory(new(dbfakes.FakeTeamFactory))
 	wrapper := wrappa.NewRejectArchivedWrappa(factory)

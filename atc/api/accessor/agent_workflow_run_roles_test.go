@@ -28,6 +28,7 @@ func TestAgentWorkflowRunRoutesHaveExplicitMainTeamRoles(t *testing.T) {
 		atc.CancelAgentWorkflowRun:                     MemberRole,
 		atc.RetryAgentWorkflowRun:                      MemberRole,
 		atc.GetAgentWorkflowRunOutputs:                 ViewerRole,
+		atc.GetAgentWorkflowRunGraph:                   ViewerRole,
 	}
 	for route, role := range want {
 		if got, found := DefaultRoles[route]; !found || got != role {
@@ -48,6 +49,7 @@ func TestAgentWorkflowRunRolesEnforceViewerAndMemberTiers(t *testing.T) {
 		atc.GetAgentWorkflowRunOperationalStatusCounts,
 		atc.GetAgentWorkflowRun,
 		atc.GetAgentWorkflowRunOutputs,
+		atc.GetAgentWorkflowRunGraph,
 	}
 	writeRoutes := []string{
 		atc.CreateAgentNodeVersion,

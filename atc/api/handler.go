@@ -423,6 +423,7 @@ func NewHandler(
 		atc.CancelAgentWorkflowRun:                     http.HandlerFunc(workflowRunHandlers.Cancel),
 		atc.RetryAgentWorkflowRun:                      http.HandlerFunc(workflowRunHandlers.Retry),
 		atc.GetAgentWorkflowRunOutputs:                 http.HandlerFunc(workflowRunHandlers.Outputs),
+		atc.GetAgentWorkflowRunGraph:                   http.HandlerFunc(workflowRunHandlers.Graph),
 		atc.ListAgentWorkflowRunWaits:                  http.HandlerFunc(workflowWaitHandlers.List),
 		atc.ResolveAgentWorkflowRunWait:                http.HandlerFunc(workflowWaitHandlers.Resolve),
 		atc.ListAgentWorkflowRunOutcomes:               http.HandlerFunc(workflowOutcomeHandlers.List),

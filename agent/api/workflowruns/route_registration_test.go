@@ -18,6 +18,7 @@ func TestWorkflowRunRoutesRegisteredExactlyOnce(t *testing.T) {
 		atc.CancelAgentWorkflowRun:                     {method: "POST", path: "/api/v1/agent/workflows/:workflow_name/runs/:workflow_run_id/cancel"},
 		atc.RetryAgentWorkflowRun:                      {method: "POST", path: "/api/v1/agent/workflows/:workflow_name/runs/:workflow_run_id/retry"},
 		atc.GetAgentWorkflowRunOutputs:                 {method: "GET", path: "/api/v1/agent/workflows/:workflow_name/runs/:workflow_run_id/outputs"},
+		atc.GetAgentWorkflowRunGraph:                   {method: "GET", path: "/api/v1/agent/workflows/:workflow_name/runs/:workflow_run_id/graph"},
 	}
 
 	counts := make(map[string]int, len(required))

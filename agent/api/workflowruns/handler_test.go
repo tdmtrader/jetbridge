@@ -17,6 +17,7 @@ import (
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/workflow"
 	"github.com/concourse/concourse/agent/workflowrun"
+	"github.com/concourse/concourse/agent/workflowrun/occurrence"
 	"github.com/concourse/concourse/agent/workflowrun/workflowrunfakes"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
@@ -77,15 +78,22 @@ func (fake *fakeManifestStore) GetAuthorized(ctx context.Context, teamID int, id
 }
 
 type handlerDeps struct {
-	binder    *fakeBinder
-	runs      *fakeRunStore
-	canceler  *fakeCanceler
-	manifests *fakeManifestStore
-	identity  workflowruns.IdentityFunc
+	binder      *fakeBinder
+	runs        *fakeRunStore
+	canceler    *fakeCanceler
+	manifests   *fakeManifestStore
+	definitions *fakeDefinitionStore
+	occurrences *fakeOccurrenceReader
+	identity    workflowruns.IdentityFunc
 }
 
 func defaultDeps() handlerDeps {
 	deps := handlerDeps{}
+	// The run graph's dependencies are empty here: every test in this file
+	// exercises a route that never reads them, and graph_test.go supplies real
+	// compiled seeds where they matter.
+	deps.definitions = &fakeDefinitionStore{byVersion: map[int]*workflow.Definition{}}
+	deps.occurrences = &fakeOccurrenceReader{byRun: map[int64][]occurrence.NodeOccurrence{}}
 	deps.binder = &fakeBinder{bind: func(_ context.Context, admission workflowrun.AdmissionContext, request workflowrun.BindRequest) (workflowrun.BindResult, error) {
 		run := runFixture(exactLargeRunID, request.WorkflowName, db.AgentWorkflowRunStatusRunning)
 		run.IdempotencyKey = request.IdempotencyKey
@@ -187,6 +195,7 @@ func mustHandler(t *testing.T, deps handlerDeps) *workflowruns.Handler {
 		Team:     workflowruns.TrustedTeam{ID: 1, Name: atc.DefaultTeamName},
 		Identity: deps.identity, Binder: deps.binder, Runs: deps.runs,
 		Canceler: deps.canceler, Manifests: deps.manifests,
+		Definitions: deps.definitions, Occurrences: deps.occurrences,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -336,6 +345,7 @@ func TestNewHandlerRejectsMissingInjectedDependencies(t *testing.T) {
 	_, err := workflowruns.NewHandler(workflowruns.Config{
 		Team:     workflowruns.TrustedTeam{ID: 1, Name: atc.DefaultTeamName},
 		Identity: deps.identity, Runs: deps.runs, Canceler: deps.canceler, Manifests: deps.manifests,
+		Definitions: deps.definitions, Occurrences: deps.occurrences,
 	})
 	if err == nil {
 		t.Fatal("NewHandler accepted a missing binder")
@@ -548,6 +558,7 @@ plan:
 	handler, err := workflowruns.NewHandler(workflowruns.Config{
 		Team: workflowruns.TrustedTeam{ID: 1, Name: atc.DefaultTeamName}, Identity: deps.identity,
 		Binder: binder, Runs: deps.runs, Canceler: deps.canceler, Manifests: deps.manifests,
+		Definitions: deps.definitions, Occurrences: deps.occurrences,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1091,6 +1102,7 @@ func listFilterFor(t *testing.T, query url.Values, now func() time.Time) (db.Age
 		Team:     workflowruns.TrustedTeam{ID: 1, Name: atc.DefaultTeamName},
 		Identity: deps.identity, Binder: deps.binder, Runs: deps.runs,
 		Canceler: deps.canceler, Manifests: deps.manifests, Now: now,
+		Definitions: deps.definitions, Occurrences: deps.occurrences,
 	})
 	if err != nil {
 		t.Fatal(err)

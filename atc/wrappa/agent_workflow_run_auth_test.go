@@ -36,6 +36,7 @@ func TestAgentNodeAndWorkflowRunRoutesUseHumanMainTeamAuthorization(t *testing.T
 		atc.CancelAgentWorkflowRun,
 		atc.RetryAgentWorkflowRun,
 		atc.GetAgentWorkflowRunOutputs,
+		atc.GetAgentWorkflowRunGraph,
 	}
 
 	teamFactory := new(dbfakes.FakeTeamFactory)
