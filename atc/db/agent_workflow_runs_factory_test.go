@@ -2483,6 +2483,232 @@ plan:
 			Expect(expected).ToNot(BeEmpty(), "the corpus must contain something to disagree about")
 		})
 	})
+
+	Describe("ticket association", func() {
+		var counter int64
+
+		nextKey := func(prefix string) string {
+			counter++
+			return fmt.Sprintf("%s-%d-%d", prefix, time.Now().UnixNano(), counter)
+		}
+
+		runIDs := func(runs []db.AgentWorkflowRun) []snapshot.WorkflowRunID {
+			ids := make([]snapshot.WorkflowRunID, 0, len(runs))
+			for _, run := range runs {
+				ids = append(ids, run.ID)
+			}
+			return ids
+		}
+
+		createAgentTicket := func() int64 {
+			var id int64
+			Expect(dbConn.QueryRow(`
+				INSERT INTO agent_tickets (title, repo, external_ref)
+				VALUES ($1, 'org/repo', $2)
+				RETURNING id
+			`, "journal ticket", nextKey("EXT")).Scan(&id)).To(Succeed())
+			return id
+		}
+
+		createRunWithTicketReference := func(ticketID int64, reference string) db.AgentWorkflowRun {
+			candidate := request(nextKey("ticket-run"))
+			candidate.TicketID = &ticketID
+			candidate.TicketReference = reference
+			run, created, err := factory.CreateWithInputs(ctx, candidate)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(created).To(BeTrue())
+			return run
+		}
+
+		createRunWithTicket := func(ticketID int64) db.AgentWorkflowRun {
+			return createRunWithTicketReference(ticketID, fmt.Sprintf("ticket-%d", ticketID))
+		}
+
+		It("carries the association onto the durable run", func() {
+			ticketID := createAgentTicket()
+			run := createRunWithTicket(ticketID)
+
+			Expect(run.TicketID).ToNot(BeNil())
+			Expect(*run.TicketID).To(Equal(ticketID))
+			Expect(run.TicketReference).To(Equal(fmt.Sprintf("ticket-%d", ticketID)))
+		})
+
+		It("leaves an unassociated run unattached", func() {
+			run, created, err := factory.CreateWithInputs(ctx, request(nextKey("no-ticket")))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(created).To(BeTrue())
+
+			Expect(run.TicketID).To(BeNil())
+			Expect(run.TicketReference).To(BeEmpty())
+		})
+
+		It("refuses a live association with no durable evidence", func() {
+			ticketID := createAgentTicket()
+			candidate := request(nextKey("evidence-less"))
+			candidate.TicketID = &ticketID
+
+			_, _, err := factory.CreateWithInputs(ctx, candidate)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("ticket reference is required"))
+		})
+
+		It("refuses durable evidence with no live association", func() {
+			candidate := request(nextKey("id-less"))
+			candidate.TicketReference = "ticket-999"
+
+			_, _, err := factory.CreateWithInputs(ctx, candidate)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("requires a ticket ID"))
+		})
+
+		It("retains the ticket reference after the intake ticket is deleted", func() {
+			ticketID := createAgentTicket()
+			run := createRunWithTicket(ticketID)
+
+			_, err := dbConn.Exec(`DELETE FROM agent_tickets WHERE id = $1`, ticketID)
+			Expect(err).NotTo(HaveOccurred())
+
+			reloaded, found, err := factory.Get(ctx, defaultTeam.ID(), run.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(reloaded.TicketID).To(BeNil(), "the live reference must clear")
+			Expect(reloaded.TicketReference).ToNot(BeEmpty(), "the durable evidence must survive")
+			Expect(reloaded.TicketReference).To(Equal(run.TicketReference))
+		})
+
+		It("rejects mutating a run's ticket evidence after insert", func() {
+			ticketID := createAgentTicket()
+			run := createRunWithTicket(ticketID)
+
+			_, err := dbConn.Exec(
+				`UPDATE agent_workflow_runs SET ticket_reference = 'ticket-999' WHERE id = $1`, int64(run.ID))
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("ticket association is immutable"))
+		})
+
+		It("rejects re-pointing a run at a different ticket", func() {
+			ticketID := createAgentTicket()
+			other := createAgentTicket()
+			run := createRunWithTicket(ticketID)
+
+			_, err := dbConn.Exec(
+				`UPDATE agent_workflow_runs SET ticket_id = $2 WHERE id = $1`, int64(run.ID), other)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("ticket association is immutable"))
+		})
+
+		It("rejects attaching a ticket to a run admitted without one", func() {
+			ticketID := createAgentTicket()
+			run, _, err := factory.CreateWithInputs(ctx, request(nextKey("late-attach")))
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = dbConn.Exec(
+				`UPDATE agent_workflow_runs SET ticket_id = $2 WHERE id = $1`, int64(run.ID), ticketID)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("ticket association is immutable"))
+		})
+
+		It("still allows ordinary run updates that leave the association alone", func() {
+			ticketID := createAgentTicket()
+			run := createRunWithTicket(ticketID)
+
+			_, err := dbConn.Exec(
+				`UPDATE agent_workflow_runs SET error_message = 'still writable' WHERE id = $1`, int64(run.ID))
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("allows at most one ticket per run and many runs per ticket", func() {
+			ticketID := createAgentTicket()
+			first := createRunWithTicket(ticketID)
+			second := createRunWithTicket(ticketID)
+			unrelated := createRunWithTicket(createAgentTicket())
+
+			runs, err := factory.List(ctx, db.AgentWorkflowRunListFilter{
+				TeamID: defaultTeam.ID(), TicketID: &ticketID, Limit: 100,
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(runIDs(runs)).To(ConsistOf(first.ID, second.ID))
+			Expect(runIDs(runs)).ToNot(ContainElement(unrelated.ID))
+		})
+
+		It("orders one ticket's journal by run occurrence time across workflows", func() {
+			ticketID := createAgentTicket()
+			first := createRunWithTicket(ticketID)
+			second := createRunWithTicket(ticketID)
+			third := createRunWithTicket(ticketID)
+
+			// Deliberately out of insertion order so the ordering under test is
+			// occurrence time, not the identity sequence.
+			base := time.Now().Add(-time.Hour)
+			for offset, run := range []db.AgentWorkflowRun{second, third, first} {
+				_, err := dbConn.Exec(`UPDATE agent_workflow_runs SET created_at = $2 WHERE id = $1`,
+					int64(run.ID), base.Add(time.Duration(offset)*time.Minute))
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			runs, err := factory.List(ctx, db.AgentWorkflowRunListFilter{
+				TeamID: defaultTeam.ID(), TicketID: &ticketID, Limit: 100,
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(runIDs(runs)).To(Equal([]snapshot.WorkflowRunID{first.ID, third.ID, second.ID}))
+		})
+
+		It("rejects a nonpositive ticket filter rather than returning everything", func() {
+			zero := int64(0)
+			_, err := factory.List(ctx, db.AgentWorkflowRunListFilter{
+				TeamID: defaultTeam.ID(), TicketID: &zero, Limit: 100,
+			})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("ticket ID must be positive"))
+		})
+
+		It("searches by exact and prefixed ticket reference", func() {
+			stem := nextKey("SEARCHREF")
+			run := createRunWithTicketReference(createAgentTicket(), stem+"-ALPHA")
+			other := createRunWithTicketReference(createAgentTicket(), stem+"-BETA")
+
+			exact, err := factory.List(ctx, db.AgentWorkflowRunListFilter{
+				TeamID: defaultTeam.ID(), Search: run.TicketReference, Limit: 100,
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(runIDs(exact)).To(ConsistOf(run.ID))
+
+			prefix, err := factory.List(ctx, db.AgentWorkflowRunListFilter{
+				TeamID: defaultTeam.ID(), Search: stem, Limit: 100,
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(runIDs(prefix)).To(ConsistOf(run.ID, other.ID))
+		})
+
+		It("returns nothing for a term no ticket reference starts with", func() {
+			createRunWithTicketReference(createAgentTicket(), nextKey("PRESENT"))
+
+			runs, err := factory.List(ctx, db.AgentWorkflowRunListFilter{
+				TeamID: defaultTeam.ID(), Search: "ABSENT-" + nextKey("x"), Limit: 100,
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(runs).To(BeEmpty())
+		})
+
+		It("refuses to re-admit the same idempotency key under a different ticket", func() {
+			ticketID := createAgentTicket()
+			key := nextKey("idempotent-ticket")
+			candidate := request(key)
+			candidate.TicketID = &ticketID
+			candidate.TicketReference = fmt.Sprintf("ticket-%d", ticketID)
+			_, created, err := factory.CreateWithInputs(ctx, candidate)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(created).To(BeTrue())
+
+			other := createAgentTicket()
+			conflicting := request(key)
+			conflicting.TicketID = &other
+			conflicting.TicketReference = fmt.Sprintf("ticket-%d", other)
+			_, _, err = factory.CreateWithInputs(ctx, conflicting)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("conflicts with immutable target"))
+		})
+	})
 })
 
 type rowScannerFunc func(...any) error

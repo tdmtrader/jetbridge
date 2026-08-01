@@ -245,9 +245,16 @@ func (m *MemoryStore) RecordDispatchRun(
 		ticket.RepositorySnapshotID == nil || (ticket.State != tickets.StateQueued && ticket.State != tickets.StateRunning) {
 		return tickets.ErrDispatchConflict
 	}
-	if ticket.WorkflowRunID != nil || ticket.PipelineRunID != nil {
-		if ticket.WorkflowRunID == nil || ticket.PipelineRunID == nil ||
-			*ticket.WorkflowRunID != workflowRunID || *ticket.PipelineRunID != pipelineRunID {
+	// The durable store derives WorkflowRunID from the reservation the binder
+	// admitted the run under, so it is already populated by the time this call
+	// arrives and only the execution linkage is written. This fake has no run
+	// store to derive from, so it materialises the same identity here; what it
+	// reproduces exactly is the conflict contract.
+	if ticket.WorkflowRunID != nil && *ticket.WorkflowRunID != workflowRunID {
+		return tickets.ErrDispatchConflict
+	}
+	if ticket.PipelineRunID != nil {
+		if *ticket.PipelineRunID != pipelineRunID {
 			return tickets.ErrDispatchConflict
 		}
 		return nil

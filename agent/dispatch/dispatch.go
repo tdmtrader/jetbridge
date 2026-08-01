@@ -288,9 +288,12 @@ func dispatch(
 		if !found || !ticketOwnsReservation(latest, reservation.Key) {
 			return result, cancelOrphanedWorkflowRun(ctx, deps, run.ID, fmt.Errorf("record workflow run: %w", recordErr))
 		}
-		if latest.WorkflowRunID == nil && latest.PipelineRunID == nil {
+		if latest.PipelineRunID == nil {
 			// The write failed before committing. The reservation still owns the
 			// binder idempotency key, so a retry will recover this exact run.
+			// The run identity is derived from that same reservation, so only
+			// the execution linkage distinguishes a committed write from a lost
+			// one.
 			return result, fmt.Errorf("record workflow run: %w", recordErr)
 		}
 		if !ticketLinksWorkflowRun(latest, run.ID, *run.PipelineRunID) {

@@ -244,6 +244,84 @@ var _ = Describe("AgentTicketsFactory", func() {
 		Expect(got.PipelineRunID).NotTo(BeNil())
 		Expect(*got.PipelineRunID).To(Equal(pipelineRunID))
 		Expect(got.DispatchReservationKey).To(Equal(reservationKey))
+
+		// The current-attempt run is derived, not stored: releasing the
+		// reservation releases the read, exactly as the dropped column's
+		// explicit nulling did, while the run keeps its own association.
+		Expect(factory.Transition(ticketID, tickets.StateRunning, tickets.StateQueued,
+			tickets.TransitionMeta{})).To(Succeed())
+		requeued, _, err := factory.Get(ticketID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(requeued.DispatchReservationKey).To(BeEmpty())
+		Expect(requeued.WorkflowRunID).To(BeNil())
+
+		var stillAssociated int
+		Expect(dbConn.QueryRow(
+			`SELECT count(*) FROM agent_workflow_runs WHERE id = $1`, int64(workflowRunID),
+		).Scan(&stillAssociated)).To(Succeed())
+		Expect(stillAssociated).To(Equal(1), "the run survives its ticket's requeue")
+	})
+
+	It("does not mistake a run admitted under another reservation for the current one", func() {
+		var definitionID int
+		definitionName := fmt.Sprintf("foreign-run-%d", time.Now().UnixNano())
+		Expect(dbConn.QueryRow(`
+			INSERT INTO agent_workflow_definitions
+				(name, version, content_hash, definition, created_by, schema_version, signature_version)
+			VALUES ($1, 7, $2, 'plan: []', 'alice', 3, 1)
+			RETURNING id
+		`, definitionName, strings.Repeat("a", 64)).Scan(&definitionID)).To(Succeed())
+
+		insertSnapshot := func(typeName, digestDigit string) snapshot.SnapshotID {
+			var id snapshot.SnapshotID
+			Expect(dbConn.QueryRow(`
+				INSERT INTO agent_snapshots
+					(team_id, type_name, type_version, digest, byte_size, file_count, representation)
+				VALUES ($1, $2, 1, $3, 1, 1, 'filesystem-tree-v1')
+				RETURNING id
+			`, defaultTeam.ID(), typeName, "sha256:"+strings.Repeat(digestDigit, 64)).Scan(&id)).To(Succeed())
+			return id
+		}
+		repositoryID := insertSnapshot("repository", "7")
+		workItemID := insertSnapshot("work-item", "8")
+
+		ticketID, err := factory.Create(&tickets.Ticket{
+			Title: "foreign", Body: "captured", Repo: "tdmtrader/concourse",
+			WorkflowName: definitionName, RepositorySnapshotID: &repositoryID,
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(factory.Transition(ticketID, tickets.StateDraft, tickets.StateQueued,
+			tickets.TransitionMeta{})).To(Succeed())
+		before, _, err := factory.Get(ticketID)
+		Expect(err).NotTo(HaveOccurred())
+		reservation, err := factory.ReserveDispatch(context.Background(), ticketID,
+			tickets.DispatchReservationRequest{
+				ExpectedRevision: before.Revision, WorkflowVersion: 7, WorkflowDefinitionID: definitionID,
+			})
+		Expect(err).NotTo(HaveOccurred())
+		reserved, _, err := factory.Get(ticketID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(factory.RecordDispatchWorkItem(
+			context.Background(), ticketID, reservation.Key, reserved.Revision, workItemID)).To(Succeed())
+
+		var foreign snapshot.WorkflowRunID
+		Expect(dbConn.QueryRow(`
+			INSERT INTO agent_workflow_runs
+				(team_id, team_name, workflow_definition_id, workflow_name, workflow_version,
+				 schema_version, signature_version, definition_content_hash, idempotency_key,
+				 parameterized_config, parameterized_config_hash, origin_kind, origin_reference,
+				 created_by, status)
+			VALUES ($1, $2, $3, $4, 7, 3, 1, $5, $6, '{}', $7, 'manual', 'alice', 'alice', 'admitting')
+			RETURNING id
+		`, defaultTeam.ID(), defaultTeam.Name(), definitionID, definitionName,
+			strings.Repeat("a", 64), reservation.Key+"-not-mine", strings.Repeat("e", 64)).Scan(&foreign)).To(Succeed())
+
+		got, _, err := factory.Get(ticketID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(got.WorkflowRunID).To(BeNil())
+
+		Expect(factory.RecordDispatchRun(context.Background(), ticketID, reservation.Key, foreign, 1)).
+			To(MatchError(tickets.ErrDispatchConflict))
 	})
 
 	Describe("Transition (the single writer)", func() {

@@ -21,11 +21,6 @@ import (
 
 var ErrAgentWorkflowRunExperimentAdmissionClosed = errors.New("db: experiment workflow-run admission is closed")
 
-// agentWorkflowRunsHaveTicketReference guards the ticket-reference search
-// predicate against the column Phase F adds. Flip it to true in Phase F Task
-// F1, then delete the constant and the branch it guards.
-const agentWorkflowRunsHaveTicketReference = false
-
 //counterfeiter:generate . AgentWorkflowRunsFactory
 type AgentWorkflowRunsFactory interface {
 	CreateWithInputs(context.Context, AgentWorkflowRunCreateRequest) (AgentWorkflowRun, bool, error)
@@ -189,9 +184,9 @@ func (factory *agentWorkflowRunsFactory) createWithInputs(
 			 dev_validation_provenance_hash,
 			 resource_source_admission_id,
 			 origin_kind, origin_reference, created_by, status,
-			 retry_of_workflow_run_id)
+			 retry_of_workflow_run_id, ticket_id, ticket_reference)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-		        $12, $13, $14, $15, $16, $17, $18, $19, $20)
+		        $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
 		ON CONFLICT (team_id, definition_kind, idempotency_key) DO NOTHING
 	`, string(request.DefinitionKind), request.TeamID, request.TeamName, request.WorkflowDefinitionID, request.WorkflowName,
 		request.WorkflowVersion, request.SchemaVersion, request.SignatureVersion,
@@ -200,7 +195,8 @@ func (factory *agentWorkflowRunsFactory) createWithInputs(
 		request.DevValidationProvenanceHash,
 		nullableWorkflowRunResourceSourceAdmissionID(request.ResourceSourceAdmissionID),
 		request.OriginKind, request.OriginReference, request.CreatedBy, string(request.Status),
-		optionalInt64(request.RetryOfWorkflowRunID))
+		optionalInt64(request.RetryOfWorkflowRunID),
+		nullableWorkflowRunTicketID(request.TicketID), request.TicketReference)
 	if err != nil {
 		return AgentWorkflowRun{}, false, err
 	}
@@ -1201,6 +1197,8 @@ func validateIdempotentWorkflowRun(run AgentWorkflowRun, request AgentWorkflowRu
 		) ||
 		run.OriginKind != request.OriginKind || run.OriginReference != request.OriginReference ||
 		run.CreatedBy != request.CreatedBy ||
+		!equalOptionalWorkflowRunTicketID(run.TicketID, request.TicketID) ||
+		run.TicketReference != request.TicketReference ||
 		!equalWorkflowRunID(run.RetryOfWorkflowRunID, request.RetryOfWorkflowRunID) {
 		return fmt.Errorf("db: workflow-run idempotency key conflicts with immutable target, origin, or inputs")
 	}
@@ -1281,6 +1279,20 @@ func nullableWorkflowRunResourceSourceAdmissionID(value *int64) any {
 		return nil
 	}
 	return *value
+}
+
+func nullableWorkflowRunTicketID(value *int64) any {
+	if value == nil {
+		return nil
+	}
+	return *value
+}
+
+func equalOptionalWorkflowRunTicketID(left, right *int64) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
 }
 
 func equalOptionalWorkflowRunSourceAdmissionID(left, right *int64) bool {
@@ -1433,6 +1445,9 @@ func (factory *agentWorkflowRunsFactory) ListKind(
 	if filter.WorkflowVersion != nil && *filter.WorkflowVersion <= 0 {
 		return nil, fmt.Errorf("db: workflow-run list workflow version must be positive")
 	}
+	if filter.TicketID != nil && *filter.TicketID <= 0 {
+		return nil, fmt.Errorf("db: workflow-run list ticket ID must be positive")
+	}
 	if filter.Scope != "" {
 		if err := filter.Scope.Validate(); err != nil {
 			return nil, err
@@ -1478,6 +1493,11 @@ func (factory *agentWorkflowRunsFactory) ListKind(
 	}
 	if filter.OriginReference != "" {
 		appendFilter("origin_reference", filter.OriginReference)
+	}
+	// One ticket, one query, ordered by run occurrence time — never one query
+	// per workflow name.
+	if filter.TicketID != nil {
+		appendFilter("ticket_id", *filter.TicketID)
 	}
 	switch filter.Scope {
 	case AgentWorkflowRunScopeOperational:
@@ -1604,14 +1624,9 @@ func (factory *agentWorkflowRunsFactory) ListKind(
 			query += ` AND (id = ` + placeholder + ` OR EXISTS (
 				SELECT 1 FROM agent_workflow_run_snapshots s
 				WHERE s.workflow_run_id = agent_workflow_runs.id AND s.snapshot_id = ` + placeholder + `))`
-		} else if agentWorkflowRunsHaveTicketReference {
+		} else {
 			args = append(args, search+"%")
 			query += ` AND ticket_reference LIKE $` + strconv.Itoa(len(args))
-		} else {
-			// Ticket columns arrive with Phase F. Until then a non-numeric term
-			// has nothing indexed to match, and returning everything would be a
-			// silently wrong answer to an explicit search.
-			return []AgentWorkflowRun{}, nil
 		}
 	}
 	if filter.Before != nil {

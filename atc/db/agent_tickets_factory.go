@@ -72,10 +72,30 @@ func (f *agentTicketsFactory) Create(t *tickets.Ticket) (int, error) {
 	return id, err
 }
 
+// ticketCurrentWorkflowRun derives the run of the ticket's CURRENT dispatch
+// attempt, replacing the stored agent_tickets.workflow_run_id that migration
+// 1773106158 dropped. A ticket now drives many runs across many workflows —
+// that whole set lives on agent_workflow_runs.ticket_id — so the one fact this
+// column still owes its callers is which run the live reservation admitted.
+//
+// DispatchOne passes the reservation key straight through as the run's
+// idempotency key, precisely so a re-entry recovers the same run; that makes
+// the reservation key an exact, unique handle on the current attempt. Clearing
+// the reservation on unqueue or requeue therefore clears this read for free,
+// which is exactly what the old column's explicit nulling did. Indexed by
+// agent_workflow_runs_idempotency_key.
+const ticketCurrentWorkflowRun = `(
+		SELECT r.id FROM agent_workflow_runs r
+		WHERE t.dispatch_reservation_key <> ''
+		  AND r.idempotency_key = t.dispatch_reservation_key
+		ORDER BY r.id DESC
+		LIMIT 1
+	)`
+
 const ticketColumns = `t.id, t.revision, t.title, t.body, t.state, t.origin, t.repo, t.target_branch,
 	t.workflow_name, t.workflow_version, t.workflow_definition_id,
 	t.user_id, t.user_name, t.created_by, t.external_ref,
-	t.pipeline_run_id, t.workflow_run_id, t.work_item_snapshot_id, t.repository_snapshot_id,
+	t.pipeline_run_id, ` + ticketCurrentWorkflowRun + `, t.work_item_snapshot_id, t.repository_snapshot_id,
 	t.dispatch_reservation_key, t.attempt_count,
 	EXTRACT(EPOCH FROM t.created_at)::bigint,
 	EXTRACT(EPOCH FROM t.updated_at)::bigint,
@@ -399,19 +419,24 @@ func (f *agentTicketsFactory) RecordDispatchRun(
 		ticket.RepositorySnapshotID == nil || (ticket.State != tickets.StateQueued && ticket.State != tickets.StateRunning) {
 		return tickets.ErrDispatchConflict
 	}
-	if ticket.WorkflowRunID != nil || ticket.PipelineRunID != nil {
-		if ticket.WorkflowRunID == nil || ticket.PipelineRunID == nil ||
-			*ticket.WorkflowRunID != workflowRunID || *ticket.PipelineRunID != pipelineRunID {
+	// The run identity is no longer written here: the binder wrote it onto the
+	// run itself at admission, and this ticket reads it back through its
+	// reservation. What is left to record is the execution linkage.
+	if ticket.WorkflowRunID == nil || *ticket.WorkflowRunID != workflowRunID {
+		return tickets.ErrDispatchConflict
+	}
+	if ticket.PipelineRunID != nil {
+		if *ticket.PipelineRunID != pipelineRunID {
 			return tickets.ErrDispatchConflict
 		}
 		return tx.Commit()
 	}
 	_, err = tx.ExecContext(ctx, `
 		UPDATE agent_tickets
-		SET workflow_run_id = $2, pipeline_run_id = $3,
+		SET pipeline_run_id = $2,
 		    revision = revision + 1, updated_at = now()
 		WHERE id = $1
-	`, id, int64(workflowRunID), pipelineRunID)
+	`, id, pipelineRunID)
 	if err != nil {
 		return err
 	}
@@ -438,9 +463,10 @@ func (f *agentTicketsFactory) Transition(id int, from, to tickets.State, meta ti
 
 	switch to {
 	case tickets.StateDraft: // unqueue
+		// Releasing the reservation releases the derived current-run read with
+		// it; the run itself keeps its durable association, which is the point.
 		q = q.Set("queued_at", nil).
 			Set("dispatch_reservation_key", "").
-			Set("workflow_run_id", nil).
 			Set("work_item_snapshot_id", nil).
 			Set("pipeline_run_id", nil)
 	case tickets.StateQueued:
@@ -453,7 +479,6 @@ func (f *agentTicketsFactory) Transition(id int, from, to tickets.State, meta ti
 		}
 		if from != tickets.StateDraft {
 			q = q.Set("dispatch_reservation_key", "").
-				Set("workflow_run_id", nil).
 				Set("work_item_snapshot_id", nil).
 				Set("pipeline_run_id", nil)
 		}

@@ -132,15 +132,21 @@ type AgentWorkflowRun struct {
 	ExecutionStatus             *AgentWorkflowRunExecutionStatus
 	ErrorMessage                string
 	RetryOfWorkflowRunID        *snapshot.WorkflowRunID
-	PipelineRunID               *int
-	TemplatePipelineID          *int
-	InstancePipelineID          *int
-	PlannedBuildID              *int64
-	ReconcileAfter              time.Time
-	CreatedAt                   time.Time
-	UpdatedAt                   time.Time
-	StartedAt                   *time.Time
-	CompletedAt                 *time.Time
+	// TicketID is the live association, cleared if the intake ticket is
+	// deleted. TicketReference is the immutable copied evidence that survives
+	// that deletion, so durable run history never loses the context that
+	// explains it. Both are decided at admission and immutable thereafter.
+	TicketID           *int64
+	TicketReference    string
+	PipelineRunID      *int
+	TemplatePipelineID *int
+	InstancePipelineID *int
+	PlannedBuildID     *int64
+	ReconcileAfter     time.Time
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+	StartedAt          *time.Time
+	CompletedAt        *time.Time
 }
 
 type AgentWorkflowRunCreateRequest struct {
@@ -164,8 +170,13 @@ type AgentWorkflowRunCreateRequest struct {
 	CreatedBy                   string
 	Status                      AgentWorkflowRunStatus
 	RetryOfWorkflowRunID        *snapshot.WorkflowRunID
-	Inputs                      map[string]snapshot.SnapshotRef
-	ExperimentAdmission         *AgentWorkflowRunExperimentAdmission
+	// TicketID and TicketReference are the optional, explicit ticket context
+	// of this admission. They are never inferred from the origin strings or
+	// from snapshot lineage, and are immutable once the row exists.
+	TicketID            *int64
+	TicketReference     string
+	Inputs              map[string]snapshot.SnapshotRef
+	ExperimentAdmission *AgentWorkflowRunExperimentAdmission
 }
 
 type AgentWorkflowRunExperimentAdmission struct {
@@ -238,6 +249,19 @@ func (request AgentWorkflowRunCreateRequest) Validate() error {
 		if err := request.RetryOfWorkflowRunID.Validate(); err != nil {
 			return err
 		}
+	}
+	// A live association without durable evidence would lose its meaning the
+	// moment the intake ticket is deleted, and evidence without an id would be
+	// an association nobody admitted.
+	if request.TicketID != nil {
+		if *request.TicketID <= 0 {
+			return fmt.Errorf("db: workflow-run ticket ID must be positive when present")
+		}
+		if strings.TrimSpace(request.TicketReference) == "" {
+			return fmt.Errorf("db: workflow-run ticket reference is required with a ticket ID")
+		}
+	} else if strings.TrimSpace(request.TicketReference) != "" {
+		return fmt.Errorf("db: workflow-run ticket reference requires a ticket ID")
 	}
 	if request.ExperimentAdmission != nil {
 		if err := request.ExperimentAdmission.Validate(
@@ -559,6 +583,10 @@ type AgentWorkflowRunListFilter struct {
 	OriginKind      string
 	OriginReference string
 
+	// TicketID narrows to one ticket's cross-workflow journal. Nil means every
+	// run regardless of association; tickets are optional throughout.
+	TicketID *int64
+
 	// Scope classifies which run population to return. Empty means all.
 	Scope AgentWorkflowRunScope
 
@@ -608,7 +636,8 @@ const agentWorkflowRunColumns = `
 	concrete_config, concrete_config_hash, actual_plan, actual_plan_nonce,
 	actual_plan_hash, actual_plan_hash_nonce, resolved_dependencies, resolved_dependencies_nonce,
 	origin_kind, origin_reference, created_by, status,
-	execution_status, error_message, retry_of_workflow_run_id, pipeline_run_id,
+	execution_status, error_message, retry_of_workflow_run_id,
+	ticket_id, ticket_reference, pipeline_run_id,
 	template_pipeline_id, instance_pipeline_id, planned_build_id, reconcile_after,
 	created_at, updated_at, started_at, completed_at`
 
@@ -629,6 +658,7 @@ func scanAgentWorkflowRun(row scannable, encryptionStrategy encryption.Strategy)
 		status                    string
 		executionStatus           sql.NullString
 		retryID                   sql.NullInt64
+		ticketID                  sql.NullInt64
 		resourceSourceAdmissionID sql.NullInt64
 		pipelineRunID             sql.NullInt64
 		templatePipelineID        sql.NullInt64
@@ -646,7 +676,8 @@ func scanAgentWorkflowRun(row scannable, encryptionStrategy encryption.Strategy)
 		&concreteConfig, &concreteConfigHash, &actualPlan, &actualPlanNonce,
 		&actualPlanHash, &actualPlanHashNonce, &resolvedDependencies, &resolvedDependenciesNonce,
 		&run.OriginKind, &run.OriginReference, &run.CreatedBy, &status,
-		&executionStatus, &run.ErrorMessage, &retryID, &pipelineRunID, &templatePipelineID,
+		&executionStatus, &run.ErrorMessage, &retryID,
+		&ticketID, &run.TicketReference, &pipelineRunID, &templatePipelineID,
 		&instancePipelineID, &plannedBuildID, &run.ReconcileAfter, &run.CreatedAt, &run.UpdatedAt,
 		&startedAt, &completedAt,
 	)
@@ -723,6 +754,10 @@ func scanAgentWorkflowRun(row scannable, encryptionStrategy encryption.Strategy)
 	if resourceSourceAdmissionID.Valid {
 		value := resourceSourceAdmissionID.Int64
 		run.ResourceSourceAdmissionID = &value
+	}
+	if ticketID.Valid {
+		value := ticketID.Int64
+		run.TicketID = &value
 	}
 	run.PipelineRunID = nullIntToInt(pipelineRunID)
 	run.TemplatePipelineID = nullIntToInt(templatePipelineID)

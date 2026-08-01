@@ -34,7 +34,7 @@ const v713LastMigration = 1666754000
 const v801LastMigration = 1765921815
 
 // JetBridge HEAD (last migration)
-const jetbridgeHeadMigration = 1773106157
+const jetbridgeHeadMigration = 1773106158
 
 var _ = Describe("Legacy Database Upgrade", func() {
 	var (
@@ -851,7 +851,7 @@ func verifyJetBridgeSchemaChanges(db *sql.DB) {
 	// Ticket dispatch is an adapter over durable generic workflow runs. All
 	// links stay nullable so legacy v1/v2 attempts round-trip unchanged.
 	for _, column := range []string{
-		"workflow_run_id", "work_item_snapshot_id", "repository_snapshot_id", "dispatch_reservation_key",
+		"work_item_snapshot_id", "repository_snapshot_id", "dispatch_reservation_key",
 	} {
 		var exists bool
 		err = db.QueryRow(`
@@ -863,11 +863,46 @@ func verifyJetBridgeSchemaChanges(db *sql.DB) {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(exists).To(BeTrue(), "agent_tickets.%s must exist", column)
 	}
-	for _, index := range []string{"agent_tickets_workflow_run", "agent_tickets_dispatch_reservation"} {
+	// 1773106158 moved the association onto the run: a ticket drives many runs
+	// across many workflows, so the single inverse column and its unique index
+	// are gone at HEAD.
+	{
+		var exists bool
+		err = db.QueryRow(`
+			SELECT EXISTS (
+				SELECT 1 FROM information_schema.columns
+				WHERE table_name = 'agent_tickets' AND column_name = 'workflow_run_id'
+			)
+		`).Scan(&exists)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(exists).To(BeFalse(), "agent_tickets.workflow_run_id must be gone at HEAD")
+	}
+	for _, column := range []string{"ticket_id", "ticket_reference"} {
+		var exists bool
+		err = db.QueryRow(`
+			SELECT EXISTS (
+				SELECT 1 FROM information_schema.columns
+				WHERE table_name = 'agent_workflow_runs' AND column_name = $1
+			)
+		`, column).Scan(&exists)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(exists).To(BeTrue(), "agent_workflow_runs.%s must exist", column)
+	}
+	for _, index := range []string{
+		"agent_tickets_dispatch_reservation",
+		"agent_workflow_runs_ticket_journal",
+		"agent_workflow_runs_ticket_reference",
+	} {
 		var exists bool
 		err = db.QueryRow(`SELECT to_regclass($1) IS NOT NULL`, index).Scan(&exists)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(exists).To(BeTrue(), "index %s must exist", index)
+	}
+	{
+		var exists bool
+		err = db.QueryRow(`SELECT to_regclass('agent_tickets_workflow_run') IS NOT NULL`).Scan(&exists)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(exists).To(BeFalse(), "the inverse unique index must be gone at HEAD")
 	}
 
 	// Workflow schema/signature identity is durable metadata at HEAD.
