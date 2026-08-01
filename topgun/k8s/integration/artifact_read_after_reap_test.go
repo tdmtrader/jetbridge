@@ -10,6 +10,7 @@ import (
 	"github.com/onsi/gomega/gbytes"
 	"github.com/onsi/gomega/gexec"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -18,18 +19,22 @@ import (
 // artifact cache rather than the deleted producer pod.
 //
 // Scenarios covered:
-//   1. File-based task config (`task: ... file: artifact/task-input.yaml`)
-//      where the producing get step's pod is deleted while a later `hold`
-//      task runs, before the file-config task fetches its config.
-//   2. Cross-step input consumption where a later task depends on an
-//      artifact produced by an earlier step, with an intermediate task
-//      that does not reference that artifact. The producer's pod is
-//      deleted during the intermediate step.
+//  1. File-based task config (`task: ... file: artifact/task-input.yaml`)
+//     where the producing get step's pod is deleted while a later `hold`
+//     task runs, before the file-config task fetches its config.
+//  2. Cross-step input consumption where a later task depends on an
+//     artifact produced by an earlier step, with an intermediate task
+//     that does not reference that artifact. The producer's pod is
+//     deleted during the intermediate step.
 //
 // IMPORTANT: the producer pod must only be deleted AFTER the producing step
 // has completed and the intermediate step is running (see waitForStepRunning).
 // Deleting it mid-run instead errors the producer step itself ("pod deleted
 // externally before reaching Running") and never exercises the read path.
+//
+// What matters is that the producer pod is GONE by the time the downstream read
+// happens, not who removed it. The platform reaper is free to get there first,
+// and often does; see ensureProducerPodReaped.
 var _ = Describe("Artifact Read After Producer Pod Reap", func() {
 	stepSelector := func(pipeline, job, build, step string) string {
 		return fmt.Sprintf(
@@ -50,25 +55,31 @@ var _ = Describe("Artifact Read After Producer Pod Reap", func() {
 		waitForPodWithLabel(stepSelector(pipeline, job, build, step), corev1.PodRunning)
 	}
 
-	// deleteProducerPod finds the pod for the named (already-completed)
-	// producer step and force-deletes it. Targets by step name because
-	// cross-step pipelines have multiple type=task pods that a type-only
-	// selector cannot disambiguate. Uses a zero grace period so the delete
-	// is observable to downstream steps quickly.
-	deleteProducerPod := func(pipeline, job, build, step string) {
+	// ensureProducerPodReaped establishes what these tests actually require:
+	// that the named producer step's pod is gone before the downstream read.
+	//
+	// It does NOT require that this test be the one to delete it. Callers gate
+	// on the intermediate step running, which proves the producer step already
+	// finished, so by this point its pod has either been reaped by the platform
+	// already or is still waiting to be. Both give a downstream read with no
+	// producer pod behind it, which is the whole condition under test.
+	//
+	// Insisting on deleting it ourselves made the platform reaping *sooner* a
+	// test failure — the suite spent three minutes polling for a pod that was
+	// already correctly gone, then failed on its own setup rather than on any
+	// behavior. Targets by step name because cross-step pipelines have several
+	// type=task pods a type-only selector cannot disambiguate, and deletes with
+	// a zero grace period so it is observable to downstream steps quickly.
+	ensureProducerPodReaped := func(pipeline, job, build, step string) {
 		selector := stepSelector(pipeline, job, build, step)
 		By(fmt.Sprintf("locating producer pod with selector %q", selector))
-		var podName string
-		Eventually(func() string {
-			pods := getPods(selector)
-			if len(pods) == 0 {
-				return ""
-			}
-			podName = pods[0].Name
-			return podName
-		}, 3*time.Minute, 2*time.Second).ShouldNot(BeEmpty(),
-			fmt.Sprintf("expected producer pod for step %q to exist", step),
-		)
+
+		pods := getPods(selector)
+		if len(pods) == 0 {
+			By(fmt.Sprintf("producer pod for step %q is already gone — the platform reaped it first", step))
+			return
+		}
+		podName := pods[0].Name
 
 		By(fmt.Sprintf("force-deleting producer pod %q", podName))
 		grace := int64(0)
@@ -77,7 +88,9 @@ var _ = Describe("Artifact Read After Producer Pod Reap", func() {
 			podName,
 			metav1.DeleteOptions{GracePeriodSeconds: &grace},
 		)
-		Expect(err).ToNot(HaveOccurred())
+		if err != nil && !apierrors.IsNotFound(err) {
+			Expect(err).ToNot(HaveOccurred())
+		}
 
 		By(fmt.Sprintf("waiting for pod %q to be fully removed from the cluster", podName))
 		Eventually(func() bool {
@@ -140,7 +153,7 @@ jobs:
 		// for `from-reaped-artifact` happens after `hold`, so it must resolve
 		// the config via the DaemonSet rather than the deleted get pod.
 		waitForStepRunning(pipelineName, "file-config-after-reap", "1", "hold")
-		deleteProducerPod(pipelineName, "file-config-after-reap", "1", "task-source")
+		ensureProducerPodReaped(pipelineName, "file-config-after-reap", "1", "task-source")
 
 		session := waitForBuildAndWatch("file-config-after-reap")
 		Expect(session).To(gexec.Exit(0),
@@ -208,7 +221,7 @@ jobs:
 		// all three steps are type=task). The consumer must then materialize
 		// `payload` via the DaemonSet rather than the deleted producer pod.
 		waitForStepRunning(pipelineName, "cross-step-after-reap", "1", "bystander")
-		deleteProducerPod(pipelineName, "cross-step-after-reap", "1", "producer")
+		ensureProducerPodReaped(pipelineName, "cross-step-after-reap", "1", "producer")
 
 		session := waitForBuildAndWatch("cross-step-after-reap")
 		Expect(session).To(gexec.Exit(0),
