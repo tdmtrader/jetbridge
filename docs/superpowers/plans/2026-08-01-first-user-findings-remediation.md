@@ -116,7 +116,7 @@ func TestPipelineInlineRuntimeImageInstallsTheDeclaredPackages(t *testing.T) {
 	}
 }
 
-func TestDockerfileBuildRuntimeStageInstallsTheDeclaredPackages(t *testing.T) {
+func TestDockerfileBuildRuntimeImageStageInstallsTheDeclaredPackages(t *testing.T) {
 	dockerfile := read(t, "../Dockerfile.build")
 	stages := strings.Split(dockerfile, "\nFROM ")
 	runtime := stages[len(stages)-1]
@@ -152,7 +152,7 @@ func inlineDockerfile(t *testing.T, pipeline string) string {
 - [ ] **Step 2: Run the test to verify the inline copy fails and Dockerfile.build passes**
 
 Run: `go test ./deploy/ -run RuntimeImage -v`
-Expected: `TestPipelineInlineRuntimeImageInstallsTheDeclaredPackages` FAILS with `does not install "git=1:2.34.1-1ubuntu1.17"`; `TestDockerfileBuildRuntimeStageInstallsTheDeclaredPackages` PASSES.
+Expected: `TestPipelineInlineRuntimeImageInstallsTheDeclaredPackages` FAILS with `does not install "git=1:2.34.1-1ubuntu1.17"`; `TestDockerfileBuildRuntimeImageStageInstallsTheDeclaredPackages` PASSES.
 
 - [ ] **Step 3: Add git to the pipeline's inline Dockerfile**
 
