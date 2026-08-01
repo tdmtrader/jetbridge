@@ -19,7 +19,27 @@ type ErrorResponse struct {
 	Message string `json:"message"`
 	// Detail is present only for failures caused by the caller's own request
 	// and only when a validator explicitly marked the text as disclosable.
-	// Internal faults never carry it.
+	// Internal faults never carry it. This comment is the contract for this
+	// field — there is no OpenAPI spec or other API doc for it:
+	//
+	//   - Only two Error codes can carry it today: "invalid_archive" and
+	//     "validation_failed" (see writeSnapshotError in handler.go). Every
+	//     other code's Detail is always absent.
+	//   - It is unstable, human-authored prose meant for a terminal or log,
+	//     not a machine-readable value. Clients must not parse it or branch
+	//     on its content; branch on Error instead. Its wording may change
+	//     between releases without notice.
+	//   - It may be truncated (see truncateDetail in handler.go) and, when
+	//     truncated, contains an ellipsis ("…") somewhere in the middle.
+	//     Do not assume it is complete or that a substring search across the
+	//     elided middle will succeed.
+	//   - Its ABSENCE is not informative. A missing Detail on a
+	//     disclosure-eligible code means one of three indistinguishable
+	//     things: no validator at the failure site marked anything, the
+	//     failure was classified as one of the codes that never carries
+	//     detail, or the failure was an internal fault. Do not infer
+	//     anything from an empty Detail beyond "no further detail was
+	//     provided."
 	Detail string `json:"detail,omitempty"`
 }
 

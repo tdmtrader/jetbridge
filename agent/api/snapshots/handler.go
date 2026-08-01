@@ -980,24 +980,70 @@ func writeDetailedError(w http.ResponseWriter, status int, code, message string,
 	writeJSON(w, status, response)
 }
 
-// maxErrorDetailBytes bounds the disclosable detail's size in the response
-// body. It is independent of any snapshot archive/content limit: a mark can
-// quote caller-supplied values (an archive entry name, a JSON field value)
-// with no size relationship to those limits.
+// maxErrorDetailBytes bounds the disclosable detail's size — ellipsis
+// included — in the response body. It is independent of any snapshot
+// archive/content limit: a mark can quote caller-supplied values (an archive
+// entry name, a JSON field value) with no size relationship to those limits.
 const maxErrorDetailBytes = 512
 
-// truncateDetail bounds detail to maxErrorDetailBytes, trimming back to a
-// UTF-8 rune boundary rather than splitting a multi-byte rune in half at the
-// cut point.
+// truncateHeadBytes and truncateTailBytes are the head/tail split
+// truncateDetail keeps once a detail exceeds maxErrorDetailBytes.
+//
+// Every mark in this codebase puts the caller-supplied value FIRST and the
+// fixed, human-authored reason LAST (see agent/snapshot/archive.go, e.g.
+// `archive path %q has a trailing separator`, `duplicate canonical path
+// %q`). MaxSnapshotPathBytes is 4096, so a deep tree — a node_modules
+// install, a Java package layout — can push that reason several hundred
+// bytes past any head-only cutoff. A tail-truncated response would hand the
+// caller back a fragment of their own path with no indication of what was
+// wrong with it, defeating the whole channel for exactly the users least
+// able to guess the cause on their own.
+//
+// 400 head bytes is enough to recognize which value is being complained
+// about even inside a deep tree. Every reason clause this package marks
+// today is well under 100 bytes ("has a trailing separator", "is
+// drive-like", "contains an empty, dot, or traversal segment", "conflicts
+// with an already materialized path", ...), so 100 tail bytes comfortably
+// fits the reason plus some of the value that precedes it, with headroom for
+// a somewhat longer future reason without needing to change the split.
+// head + tail + len(ellipsis) stays inside maxErrorDetailBytes.
+const (
+	truncateHeadBytes = 400
+	truncateTailBytes = 100
+	ellipsis          = "…"
+)
+
+// truncateDetail bounds detail — ellipsis included — to maxErrorDetailBytes.
+// Once detail is over the limit, it keeps the leading truncateHeadBytes and
+// trailing truncateTailBytes joined by ellipsis, so both the caller-supplied
+// value at the front and the operative reason at the back survive; only the
+// middle of an oversized value is lost. Both cuts trim back to a UTF-8 rune
+// boundary rather than splitting a multi-byte rune.
 func truncateDetail(detail string) string {
 	if len(detail) <= maxErrorDetailBytes {
 		return detail
 	}
-	cut := maxErrorDetailBytes
-	for cut > 0 && !utf8.RuneStart(detail[cut]) {
-		cut--
+	head := detail[:runeBoundaryAtOrBefore(detail, truncateHeadBytes)]
+	tail := detail[runeBoundaryAtOrAfter(detail, len(detail)-truncateTailBytes):]
+	return head + ellipsis + tail
+}
+
+// runeBoundaryAtOrBefore returns the largest index <= limit at which
+// detail[:index] does not split a UTF-8 rune.
+func runeBoundaryAtOrBefore(detail string, limit int) int {
+	for limit > 0 && !utf8.RuneStart(detail[limit]) {
+		limit--
 	}
-	return detail[:cut] + "…"
+	return limit
+}
+
+// runeBoundaryAtOrAfter returns the smallest index >= start at which
+// detail[index:] does not split a UTF-8 rune.
+func runeBoundaryAtOrAfter(detail string, start int) int {
+	for start < len(detail) && !utf8.RuneStart(detail[start]) {
+		start++
+	}
+	return start
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {

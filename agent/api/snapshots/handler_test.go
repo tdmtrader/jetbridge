@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -556,18 +557,26 @@ func TestCreateMapsStreamLimitAndDomainErrorsWithoutLeakingDetails(t *testing.T)
 	}
 }
 
-// TestCreateTruncatesOversizedClientDetail proves the disclosable-detail
-// channel is bounded independently of any snapshot archive/content limit: a
-// mark can quote an arbitrarily long caller-supplied value, and the response
-// body must not grow without bound just because the caller's own submission
-// was large. It also proves truncation lands on a UTF-8 rune boundary rather
-// than splitting a multi-byte rune, and that the body stays valid JSON.
-func TestCreateTruncatesOversizedClientDetail(t *testing.T) {
-	const maxErrorDetailBytes = 512 // mirrors the unexported handler constant
+// These mirror the unexported truncateDetail constants in handler.go so
+// these tests can state their expectations in the same terms the
+// implementation uses, without exporting internals just for testing.
+const (
+	testMaxErrorDetailBytes = 512
+	testTruncateHeadBytes   = 400
+	testTruncateTailBytes   = 100
+)
+
+// TestCreateBoundsDetailAtMaxErrorDetailBytesEvenForPureASCII proves the
+// documented bound is on the RESPONSE string including the ellipsis, not on
+// some pre-ellipsis prefix: a naive "cut at the limit, then append '…'"
+// implementation overshoots the bound by len("…") for exactly this shape —
+// a long, pure-ASCII detail with no multi-byte runes near either cut point,
+// so neither cut backs off and the head/tail kept are the full
+// testTruncateHeadBytes/testTruncateTailBytes. That is the maximal case: any
+// implementation bug in the byte arithmetic shows up here first.
+func TestCreateBoundsDetailAtMaxErrorDetailBytesEvenForPureASCII(t *testing.T) {
 	harness := newHandlerHarness(t)
-	// Build a detail whose 512-byte prefix ends mid-rune (each "é" is two
-	// bytes: 511 ASCII bytes then "é" straddles the boundary).
-	longDetail := strings.Repeat("a", maxErrorDetailBytes-1) + "éé"
+	longDetail := strings.Repeat("a", testMaxErrorDetailBytes+100)
 	harness.creator.upload = func(context.Context, snapshot.UploadRequest) (snapshot.Snapshot, error) {
 		return snapshot.Snapshot{}, errors.Join(snapshot.ErrValidation, snapshot.ClientDetailf("%s", longDetail))
 	}
@@ -580,18 +589,118 @@ func TestCreateTruncatesOversizedClientDetail(t *testing.T) {
 	if recorder.Code != http.StatusUnprocessableEntity || response.Error != "validation_failed" {
 		t.Fatalf("status/error = %d/%q", recorder.Code, response.Error)
 	}
-	if !strings.HasSuffix(response.Detail, "…") {
-		t.Fatalf("detail was not truncated: len=%d, tail=%q", len(response.Detail), response.Detail[len(response.Detail)-8:])
+	if len(response.Detail) > testMaxErrorDetailBytes {
+		t.Fatalf("detail is %d bytes, want <= %d", len(response.Detail), testMaxErrorDetailBytes)
 	}
-	trimmed := strings.TrimSuffix(response.Detail, "…")
-	if len(trimmed) >= maxErrorDetailBytes {
-		t.Fatalf("truncated prefix is %d bytes, want < %d", len(trimmed), maxErrorDetailBytes)
+	if !strings.Contains(response.Detail, "…") {
+		t.Fatalf("detail was not truncated: %q", response.Detail)
 	}
-	if !utf8.ValidString(trimmed) {
-		t.Fatalf("truncated detail split a multi-byte rune: %q", trimmed)
+	wantHead := strings.Repeat("a", testTruncateHeadBytes)
+	wantTail := strings.Repeat("a", testTruncateTailBytes)
+	if want := wantHead + "…" + wantTail; response.Detail != want {
+		t.Fatalf("detail = %q, want %q", response.Detail, want)
 	}
 	if !json.Valid(recorder.Body.Bytes()) {
 		t.Fatalf("response body is not valid JSON: %s", recorder.Body.String())
+	}
+}
+
+// TestCreateTruncationRespectsRuneBoundariesOnBothCuts places a two-byte
+// rune ("é") straddling each of truncateDetail's two cut points — byte
+// testTruncateHeadBytes for the head, and byte len(detail)-testTruncateTailBytes
+// for the tail — so both the head-side and the tail-side boundary-backoff
+// logic run, not just one of them. The overall response must still be valid
+// UTF-8 and still respect the byte bound including the ellipsis.
+func TestCreateTruncationRespectsRuneBoundariesOnBothCuts(t *testing.T) {
+	// headPrefix's "é" occupies bytes [399,401), so byte 400
+	// (testTruncateHeadBytes) is its second, continuation byte.
+	headPrefix := strings.Repeat("a", testTruncateHeadBytes-1) + "é"
+	// tailSuffix is exactly the last 101 bytes of detail below, so its "é"
+	// occupies the two bytes immediately before the last 99 bytes — i.e. the
+	// cut point at len(detail)-testTruncateTailBytes lands on its second,
+	// continuation byte.
+	tailSuffix := "é" + strings.Repeat("c", testTruncateTailBytes-1)
+	middle := strings.Repeat("m", 50)
+	longDetail := headPrefix + middle + tailSuffix
+	if len(longDetail) <= testMaxErrorDetailBytes {
+		t.Fatalf("test fixture is %d bytes, want > %d to force truncation", len(longDetail), testMaxErrorDetailBytes)
+	}
+
+	harness := newHandlerHarness(t)
+	harness.creator.upload = func(context.Context, snapshot.UploadRequest) (snapshot.Snapshot, error) {
+		return snapshot.Snapshot{}, errors.Join(snapshot.ErrValidation, snapshot.ClientDetailf("%s", longDetail))
+	}
+	request := httptest.NewRequest(http.MethodPost, "/snapshots?type=opaque%2Fv1", strings.NewReader("tar"))
+	request.Header.Set("Content-Type", "application/x-tar")
+	recorder := httptest.NewRecorder()
+	harness.factory.Create(harness.team).ServeHTTP(recorder, request)
+
+	response := decodeError(t, recorder)
+	if recorder.Code != http.StatusUnprocessableEntity || response.Error != "validation_failed" {
+		t.Fatalf("status/error = %d/%q", recorder.Code, response.Error)
+	}
+	if len(response.Detail) > testMaxErrorDetailBytes {
+		t.Fatalf("detail is %d bytes, want <= %d", len(response.Detail), testMaxErrorDetailBytes)
+	}
+	if !utf8.ValidString(response.Detail) {
+		t.Fatalf("truncated detail split a multi-byte rune: %q", response.Detail)
+	}
+	// Both boundary-straddling "é"s land on their cut point's continuation
+	// byte, so both back off past the whole rune rather than keeping half of
+	// it — the detail should show plain "a"s and "c"s at the seams, no "é".
+	wantHead := strings.Repeat("a", testTruncateHeadBytes-1)
+	wantTail := strings.Repeat("c", testTruncateTailBytes-1)
+	if want := wantHead + "…" + wantTail; response.Detail != want {
+		t.Fatalf("detail = %q, want %q", response.Detail, want)
+	}
+}
+
+// TestCreateElidesMiddleSoOperativeReasonSurvives is the regression test for
+// a real failure mode a reviewer reproduced: MaxSnapshotPathBytes is 4096,
+// and every archive-path mark (agent/snapshot/archive.go's
+// validateArchivePath) puts the caller's path FIRST and the reason LAST, e.g.
+// `archive path %q has a trailing separator`. A deep tree — a node_modules
+// install, a Java package layout — easily produces a path several hundred
+// bytes long, and a head-only truncation would show the caller a fragment of
+// their own path back with NO indication of what was wrong with it — the
+// exact users least able to guess the cause get nothing useful. This uses
+// the real format string from validateArchivePath (mirrored here rather than
+// driven through a real tar upload, since what is under test is
+// truncateDetail's byte arithmetic in the HTTP layer, not archive
+// validation, which agent/snapshot/archive_client_detail_test.go already
+// covers end to end) with a ~700-byte path, and asserts on the tail
+// substring specifically — the reason clause — because that is what a
+// head-only truncation would have destroyed.
+func TestCreateElidesMiddleSoOperativeReasonSurvives(t *testing.T) {
+	deepPath := strings.Repeat("nested/", 100) // 700 bytes, ends with "/"
+	longDetail := fmt.Sprintf("snapshot: archive path %q has a trailing separator", deepPath)
+	if len(longDetail) <= testMaxErrorDetailBytes {
+		t.Fatalf("test fixture is %d bytes, want > %d to force truncation", len(longDetail), testMaxErrorDetailBytes)
+	}
+
+	harness := newHandlerHarness(t)
+	harness.creator.upload = func(context.Context, snapshot.UploadRequest) (snapshot.Snapshot, error) {
+		return snapshot.Snapshot{}, errors.Join(snapshot.ErrInvalidArchive, snapshot.ClientDetailf("%s", longDetail))
+	}
+	request := httptest.NewRequest(http.MethodPost, "/snapshots?type=opaque%2Fv1", strings.NewReader("tar"))
+	request.Header.Set("Content-Type", "application/x-tar")
+	recorder := httptest.NewRecorder()
+	harness.factory.Create(harness.team).ServeHTTP(recorder, request)
+
+	response := decodeError(t, recorder)
+	if recorder.Code != http.StatusBadRequest || response.Error != "invalid_archive" {
+		t.Fatalf("status/error = %d/%q", recorder.Code, response.Error)
+	}
+	if len(response.Detail) > testMaxErrorDetailBytes {
+		t.Fatalf("detail is %d bytes, want <= %d", len(response.Detail), testMaxErrorDetailBytes)
+	}
+	if !strings.HasPrefix(response.Detail, `snapshot: archive path "nested/nested/`) {
+		t.Fatalf("detail lost the identifying head: %q", response.Detail)
+	}
+	// This is the assertion that matters: the operative reason must survive
+	// truncation, not just some arbitrary trailing bytes of the path.
+	if !strings.HasSuffix(response.Detail, "has a trailing separator") {
+		t.Fatalf("detail lost the operative reason: %q", response.Detail)
 	}
 }
 

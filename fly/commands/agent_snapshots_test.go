@@ -338,14 +338,20 @@ func TestCompleteAgentSnapshotCreateDrainsAndClosesSuccessfulResponseBeforeRetur
 	}
 }
 
-// TestDecodeAgentSnapshotResponseComposesDisclosableDetail covers the four
-// shapes decodeAgentSnapshotResponse's error envelope can take. The
-// snapshot API (agent/api/snapshots.ErrorResponse) added a "detail" field so
-// a caller-caused failure (an invalid archive, an unsatisfied contract) can
+// TestDecodeAgentSnapshotResponseComposesDisclosableDetail covers the five
+// shapes decodeAgentSnapshotResponse's error envelope can take: the four
+// combinations of message/detail presence its switch branches on, plus the
+// unparseable-body fallback outside the switch entirely. The snapshot API
+// (agent/api/snapshots.ErrorResponse) added a "detail" field so a
+// caller-caused failure (an invalid archive, an unsatisfied contract) can
 // name its cause; without a matching field on this envelope, json.Unmarshal
 // silently drops it and the fix on the API side never reaches a terminal.
 // The first case's body is the exact shape a real work-item/v1 upload
-// missing its declared work-item.json produces.
+// missing its declared work-item.json produces. The "detail, no message"
+// case is not known to be produced by the server today (every disclosure-
+// eligible response the API sends always carries a message), but the switch
+// has a dedicated branch for it, so it is covered here rather than left
+// untested.
 func TestDecodeAgentSnapshotResponseComposesDisclosableDetail(t *testing.T) {
 	tests := []struct {
 		name string
@@ -361,6 +367,11 @@ func TestDecodeAgentSnapshotResponseComposesDisclosableDetail(t *testing.T) {
 			name: "error and message, no detail",
 			body: `{"error":"conflict","message":"snapshot request conflicts with immutable state"}`,
 			want: "422 Unprocessable Entity: conflict: snapshot request conflicts with immutable state",
+		},
+		{
+			name: "error and detail, no message",
+			body: `{"error":"validation_failed","detail":"snapshot contracts: required regular file \"work-item.json\" is missing"}`,
+			want: `422 Unprocessable Entity: validation_failed (snapshot contracts: required regular file "work-item.json" is missing)`,
 		},
 		{
 			name: "error only",
