@@ -47,6 +47,7 @@ type Endpoint
     | AgentTicket Int
     | AgentTicketState Int
     | AgentTicketDispatch Int
+    | AgentTicketRuns Int
     | AgentWorkflowVersions String
     | AgentWorkflowVersionLive String Int
     | AgentWorkflowRuns String
@@ -285,6 +286,12 @@ builder endpoint =
 
         AgentTicketDispatch ticketId ->
             base |> appendPath [ "agent", "tickets", String.fromInt ticketId, "dispatch" ]
+
+        AgentTicketRuns ticketId ->
+            -- The journal is the whole associated history in occurrence order.
+            -- It takes no query fields; the endpoint rejects anything it does
+            -- not know about.
+            base |> appendPath [ "agent", "tickets", String.fromInt ticketId, "runs" ]
 
         AgentWorkflowVersions workflowName ->
             base |> appendPath [ "agent", "workflows", Url.percentEncode workflowName, "versions" ]

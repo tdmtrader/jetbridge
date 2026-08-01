@@ -32,8 +32,10 @@ run's page rather than leaving them on a ticket that looks unchanged (see
 
 import AgentBadge
 import AgentPage.Chrome as Chrome
+import AgentTicket.Journal as Journal
 import Application.Models exposing (Session)
 import Concourse.AgentTicket as AgentTicket
+import Concourse.Timestamp as Timestamp
 import Concourse.WorkflowRun as WorkflowRun
 import DateFormat
 import EffectTransformer exposing (ET)
@@ -45,7 +47,7 @@ import Login.Login as Login
 import Message.Callback exposing (Callback(..))
 import Message.Effects exposing (Effect(..))
 import Message.Message exposing (Message(..))
-import Message.Subscription exposing (Delivery, Interval(..), Subscription)
+import Message.Subscription exposing (Delivery(..), Interval(..), Subscription(..))
 import Polling
 import Routes
 import Time
@@ -67,6 +69,15 @@ type alias Model =
         , dispatchConfirm : Bool
         , dispatchNotice : Maybe DispatchNotice
         , pendingTransition : Maybe String
+
+        {- The ticket's cross-workflow journal: every associated run
+           occurrence in order. A ticket that has driven several workflows, or
+           the same workflow twice, has a history the single `durableRun` link
+           cannot express — that link is the CURRENT dispatch attempt, this is
+           the whole story.
+        -}
+        , journal : List AgentTicket.JournalEntry
+        , now : Maybe Time.Posix
         }
 
 
@@ -100,9 +111,11 @@ init { id } =
       , dispatchConfirm = False
       , dispatchNotice = Nothing
       , pendingTransition = Nothing
+      , journal = []
+      , now = Nothing
       , isUserMenuExpanded = False
       }
-    , [ FetchAgentTicket id ]
+    , [ FetchAgentTicket id, FetchAgentTicketRuns id ]
     )
 
 
@@ -226,6 +239,27 @@ handleCallback callback ( model, effects ) =
         AgentTicketFetched (Err _) ->
             ( { model | loaded = True, loadError = True }, effects )
 
+        AgentTicketRunsFetched (Ok journal) ->
+            -- Keep the installed list when a refetch decoded identical data:
+            -- Html.Lazy compares by reference, so replacing an equal list
+            -- every 5s would defeat the lazy journal view.
+            ( { model
+                | journal =
+                    if model.journal == journal then
+                        model.journal
+
+                    else
+                        journal
+              }
+            , effects
+            )
+
+        AgentTicketRunsFetched (Err _) ->
+            -- The journal is supporting context, not the page. A failed
+            -- journal read leaves the last good history on screen rather than
+            -- blanking a ticket that loaded perfectly well.
+            ( model, effects )
+
         AgentWorkflowRunFetched workflowRunId (Ok detail) ->
             case model.detail |> Maybe.andThen (.ticket >> durableKey) of
                 Just ( expectedWorkflowName, expectedWorkflowRunId ) ->
@@ -323,14 +357,22 @@ polls =
                     []
 
                 else
-                    [ FetchAgentTicket model.ticketId ]
+                    [ FetchAgentTicket model.ticketId, FetchAgentTicketRuns model.ticketId ]
       }
     ]
 
 
+{-| The one-second clock is not a poll: it only moves "now" so the journal's
+relative times and in-flight durations keep counting.
+-}
 handleDelivery : Delivery -> ET Model
-handleDelivery =
-    Polling.handleDelivery polls
+handleDelivery delivery (( model, effects ) as state) =
+    case delivery of
+        ClockTicked OneSecond time ->
+            ( { model | now = Just time }, effects )
+
+        _ ->
+            Polling.handleDelivery polls delivery state
 
 
 update : Message -> ET Model
@@ -421,7 +463,7 @@ tooltip _ _ =
 
 subscriptions : List Subscription
 subscriptions =
-    Polling.subscriptions polls
+    OnClockTick OneSecond :: Polling.subscriptions polls
 
 
 
@@ -474,6 +516,7 @@ content session model =
                     rest =
                         [ editForm model ticket
                         , Html.div [ id "ticket-hitl-slot" ] []
+                        , journalSection model
                         , ticketBody ticket
                         ]
                 in
@@ -1017,3 +1060,89 @@ formatTimestamp zone epochSeconds =
         ]
         zone
         (Time.millisToPosix (epochSeconds * 1000))
+
+
+{-| The ticket's cross-workflow journal.
+
+The journal renders every associated run occurrence in the order the server
+returned them — one query, ordered by durable occurrence time. This page adds
+no ordering, no grouping by workflow, and no edges: a ticket that ran
+`small-fix`, then `pr-create`, then `small-fix` again reads as three entries.
+
+`outstandingAction` is derived from the run's own status rather than from a
+node-level wait, which the journal deliberately does not read; the words match
+what the run list says about the same run, so the two surfaces cannot
+contradict each other.
+
+-}
+journalSection : Model -> Html Message
+journalSection model =
+    Html.div [ style "margin" "16px 0" ]
+        [ Html.h3
+            [ style "font-size" "13px"
+            , style "color" "#9aa39b"
+            , style "text-transform" "uppercase"
+            , style "letter-spacing" "0.5px"
+            , style "margin" "0 0 6px 0"
+            ]
+            [ Html.text "Runs for this ticket" ]
+        , Html.Lazy.lazy2 viewJournal (Maybe.withDefault (Time.millisToPosix 0) model.now) model.journal
+        ]
+
+
+viewJournal : Time.Posix -> List AgentTicket.JournalEntry -> Html Message
+viewJournal now journal =
+    Journal.view
+        { now = now
+        , emptyMessage = "No runs yet"
+        }
+        (List.map journalEntry journal)
+
+
+journalEntry : AgentTicket.JournalEntry -> Journal.Entry
+journalEntry entry =
+    { id = entry.workflowRunId
+    , url =
+        Routes.toString
+            (Routes.AgentWorkflowRun
+                { workflowName = entry.workflowName, id = entry.workflowRunId }
+            )
+    , workflowName = entry.workflowName
+    , workflowVersion = entry.workflowVersion
+    , status = entry.status
+    , createdAt = Timestamp.fromIso8601 entry.createdAt
+    , startedAt = entry.startedAt |> Maybe.andThen Timestamp.fromIso8601
+    , completedAt = entry.completedAt |> Maybe.andThen Timestamp.fromIso8601
+    , retryOf = entry.retryOfWorkflowRunId
+    , outcome = entry.errorMessage
+    , outstandingAction = outstandingAction entry
+    }
+
+
+outstandingAction : AgentTicket.JournalEntry -> String
+outstandingAction entry =
+    if not entry.outstanding then
+        ""
+
+    else
+        case entry.status of
+            "admitting" ->
+                "still admitting"
+
+            "running" ->
+                "still running"
+
+            "canceling" ->
+                "canceling"
+
+            "failed" ->
+                "failed — needs attention"
+
+            "errored" ->
+                "errored — needs attention"
+
+            "aborted" ->
+                "aborted — needs attention"
+
+            _ ->
+                "needs attention"

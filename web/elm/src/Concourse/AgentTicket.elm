@@ -1,9 +1,11 @@
 module Concourse.AgentTicket exposing
     ( Detail
     , DispatchResult
+    , JournalEntry
     , Ticket
     , decodeDetail
     , decodeDispatchResult
+    , decodeJournal
     , decodeTicket
     , repoWebUrl
     )
@@ -165,3 +167,47 @@ repoWebUrl repo =
 
             _ ->
                 Nothing
+
+
+{-| One entry of the ticket's cross-workflow journal
+(`GET /api/v1/agent/tickets/:id/runs`).
+
+Identities are STRINGS: durable run IDs exceed 2^53, so a JSON number would
+silently round. Timestamps stay in their wire form and are parsed where they
+are rendered, matching every other run surface.
+
+-}
+type alias JournalEntry =
+    { workflowRunId : String
+    , workflowName : String
+    , workflowVersion : Int
+    , status : String
+    , originKind : String
+    , retryOfWorkflowRunId : Maybe String
+    , createdAt : String
+    , startedAt : Maybe String
+    , completedAt : Maybe String
+    , outstanding : Bool
+    , errorMessage : String
+    }
+
+
+decodeJournal : Json.Decode.Decoder (List JournalEntry)
+decodeJournal =
+    defaultTo [] <| Json.Decode.field "runs" (Json.Decode.list decodeJournalEntry)
+
+
+decodeJournalEntry : Json.Decode.Decoder JournalEntry
+decodeJournalEntry =
+    Json.Decode.succeed JournalEntry
+        |> andMap (Json.Decode.field "workflow_run_id" Snapshot.decodeId)
+        |> andMap (defaultTo "" <| Json.Decode.field "workflow_name" Json.Decode.string)
+        |> andMap (defaultTo 0 <| Json.Decode.field "workflow_version" Json.Decode.int)
+        |> andMap (defaultTo "" <| Json.Decode.field "status" Json.Decode.string)
+        |> andMap (defaultTo "" <| Json.Decode.field "origin_kind" Json.Decode.string)
+        |> andMap (Snapshot.decodeOptionalIdField "retry_of_workflow_run_id")
+        |> andMap (defaultTo "" <| Json.Decode.field "created_at" Json.Decode.string)
+        |> andMap (Json.Decode.maybe (Json.Decode.field "started_at" Json.Decode.string))
+        |> andMap (Json.Decode.maybe (Json.Decode.field "completed_at" Json.Decode.string))
+        |> andMap (defaultTo False <| Json.Decode.field "outstanding" Json.Decode.bool)
+        |> andMap (defaultTo "" <| Json.Decode.field "error_message" Json.Decode.string)

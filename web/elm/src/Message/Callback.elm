@@ -88,6 +88,7 @@ type Callback
     | AgentPlatformCredentialsFetched (Fetched (List Concourse.Agent.CredentialStatus))
     | AgentTicketsFetched (Fetched (List Concourse.AgentTicket.Ticket))
     | AgentTicketFetched (Fetched Concourse.AgentTicket.Detail)
+    | AgentTicketRunsFetched (Fetched (List Concourse.AgentTicket.JournalEntry))
     | AgentTicketSaved Int (Fetched ())
     | AgentTicketTransitioned Int (Fetched ())
     | AgentTicketDispatched Int (Fetched Concourse.AgentTicket.DispatchResult)

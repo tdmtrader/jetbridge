@@ -7,6 +7,7 @@ import Concourse.AgentTicket as AgentTicket
 import Data
 import Expect
 import Html.Attributes
+import Http
 import Json.Decode
 import Message.Callback as Callback
 import Message.Effects as Effects
@@ -841,4 +842,136 @@ all =
                             |> Tuple.second
                             |> Common.notContains (Effects.FetchAgentTicket 12)
                     )
+        , describe "cross-workflow journal"
+            [ test "fetches the ticket's whole run history on load" <|
+                \_ ->
+                    initDetail
+                        |> Tuple.second
+                        |> Common.contains (Effects.FetchAgentTicketRuns 12)
+            , test "keeps the journal current on the 5s tick" <|
+                \_ ->
+                    Common.init "/agent-tickets/12"
+                        |> Application.update
+                            (Msgs.DeliveryReceived (ClockTicked FiveSeconds <| Time.millisToPosix 0))
+                        |> Tuple.second
+                        |> Common.contains (Effects.FetchAgentTicketRuns 12)
+            , test "renders every associated run occurrence in the order given" <|
+                \_ ->
+                    journalView
+                        |> Query.findAll [ class "agent-journal-entry-workflow" ]
+                        |> Expect.all
+                            [ Query.index 0 >> Query.has [ text "small-fix" ]
+                            , Query.index 1 >> Query.has [ text "pr-create" ]
+                            , Query.index 2 >> Query.has [ text "small-fix" ]
+                            ]
+            , test "keeps a repeated execution of one workflow as its own entry" <|
+                \_ ->
+                    journalView
+                        |> Query.findAll [ class "agent-journal-entry" ]
+                        |> Query.count (Expect.equal 3)
+            , test "elevates a run that still needs a human" <|
+                \_ ->
+                    journalView
+                        |> Query.find [ class "agent-journal-entry--outstanding" ]
+                        |> Query.has [ text "failed" ]
+            , test "groups a retry with the run it retried" <|
+                \_ ->
+                    journalView
+                        |> Query.find [ class "agent-journal-entry--retry" ]
+                        |> Query.has [ text "retry of 9007199254740993" ]
+            , test "links each entry to its own run, at its own workflow" <|
+                \_ ->
+                    journalView
+                        |> Query.findAll [ class "agent-journal-entry-link" ]
+                        |> Query.index 1
+                        |> Query.has
+                            [ attribute
+                                (Html.Attributes.href "/agent/workflows/pr-create/runs/9007199254740994")
+                            ]
+            , test "says so plainly when a ticket has driven no runs" <|
+                \_ ->
+                    withDetail sampleDetailJson
+                        (\detail ->
+                            Common.init "/agent-tickets/12"
+                                |> Application.handleCallback (Callback.AgentTicketFetched (Ok detail))
+                                |> Tuple.first
+                                |> Common.queryView
+                                |> Query.find [ class "agent-journal-empty" ]
+                                |> Query.has [ text "No runs yet" ]
+                        )
+            , test "a failed journal read leaves the last good history on screen" <|
+                \_ ->
+                    journalModel
+                        |> Tuple.first
+                        |> Application.handleCallback
+                            (Callback.AgentTicketRunsFetched (Err Http.NetworkError))
+                        |> Tuple.first
+                        |> Common.queryView
+                        |> Query.findAll [ class "agent-journal-entry" ]
+                        |> Query.count (Expect.equal 3)
+            ]
         ]
+
+
+journalFixture : List AgentTicket.JournalEntry
+journalFixture =
+    [ { workflowRunId = "9007199254740993"
+      , workflowName = "small-fix"
+      , workflowVersion = 3
+      , status = "failed"
+      , originKind = "ticket"
+      , retryOfWorkflowRunId = Nothing
+      , createdAt = "2026-07-31T09:10:00Z"
+      , startedAt = Just "2026-07-31T09:10:00Z"
+      , completedAt = Just "2026-07-31T09:12:00Z"
+      , outstanding = True
+      , errorMessage = ""
+      }
+    , { workflowRunId = "9007199254740994"
+      , workflowName = "pr-create"
+      , workflowVersion = 2
+      , status = "succeeded"
+      , originKind = "resource-source-build"
+      , retryOfWorkflowRunId = Nothing
+      , createdAt = "2026-07-31T09:20:00Z"
+      , startedAt = Just "2026-07-31T09:20:00Z"
+      , completedAt = Just "2026-07-31T09:21:00Z"
+      , outstanding = False
+      , errorMessage = ""
+      }
+    , { workflowRunId = "9007199254740995"
+      , workflowName = "small-fix"
+      , workflowVersion = 4
+      , status = "succeeded"
+      , originKind = "retry"
+      , retryOfWorkflowRunId = Just "9007199254740993"
+      , createdAt = "2026-07-31T09:30:00Z"
+      , startedAt = Just "2026-07-31T09:30:00Z"
+      , completedAt = Just "2026-07-31T09:31:00Z"
+      , outstanding = False
+      , errorMessage = ""
+      }
+    ]
+
+
+journalModel : ( Application.Model, List Effects.Effect )
+journalModel =
+    let
+        loaded =
+            case Json.Decode.decodeString AgentTicket.decodeDetail sampleDetailJson of
+                Ok detail ->
+                    Common.init "/agent-tickets/12"
+                        |> Application.handleCallback (Callback.AgentTicketFetched (Ok detail))
+                        |> Tuple.first
+
+                Err _ ->
+                    Common.init "/agent-tickets/12"
+    in
+    loaded
+        |> Application.handleCallback
+            (Callback.AgentTicketRunsFetched (Ok journalFixture))
+
+
+journalView : Query.Single Msgs.TopLevelMessage
+journalView =
+    journalModel |> Tuple.first |> Common.queryView

@@ -243,6 +243,7 @@ type Effect
         }
     | FetchAgentTickets
     | FetchAgentTicket Int
+    | FetchAgentTicketRuns Int
     | SaveAgentTicket { id : Int, title : String, body : String }
     | TransitionAgentTicket { id : Int, from : String, to : String }
     | DispatchAgentTicket Int
@@ -928,6 +929,12 @@ runEffect effect key csrfToken =
                 |> Api.expectJson Concourse.AgentTicket.decodeDetail
                 |> Api.request
                 |> Task.attempt AgentTicketFetched
+
+        FetchAgentTicketRuns ticketId ->
+            Api.get (Endpoints.AgentTicketRuns ticketId)
+                |> Api.expectJson Concourse.AgentTicket.decodeJournal
+                |> Api.request
+                |> Task.attempt AgentTicketRunsFetched
 
         SaveAgentTicket params ->
             Api.put (Endpoints.AgentTicket params.id) csrfToken
