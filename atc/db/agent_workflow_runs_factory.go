@@ -972,6 +972,7 @@ func workflowRunTargetDeclaresResourceSources(
 	compiled, _, err := compileStoredWorkflowSource(
 		definition.Name,
 		definition.Version,
+		definition.ContentHash,
 		rawYAML,
 		manifestJSON,
 		compiledJSON,
@@ -1019,6 +1020,7 @@ func loadWorkflowRunResourceSourceTarget(
 	compiled, source, err := compileStoredWorkflowSource(
 		definition.Name,
 		definition.Version,
+		definition.ContentHash,
 		rawYAML,
 		manifestJSON,
 		compiledJSON,

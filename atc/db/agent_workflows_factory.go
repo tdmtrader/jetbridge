@@ -251,7 +251,7 @@ func (f *agentWorkflowsFactory) ImportManifestWithOutcome(
 		// Idempotent on hash: byte-identical source returns the existing
 		// version untouched (contracts §1.6).
 		compiled, storedSource, parseErr := parseStoredWorkflowDefinitionWithResolver(
-			def.Name, def.Version, def.RawYAML, existingManifest, existingCompiledJSON,
+			def.Name, def.Version, def.ContentHash, def.RawYAML, existingManifest, existingCompiledJSON,
 			nodeResolverForTransaction(f.nodeResolver, tx),
 		)
 		if parseErr != nil {
@@ -303,16 +303,17 @@ func (f *agentWorkflowsFactory) ImportManifestWithOutcome(
 		var priorManifest sql.NullString
 		var priorCompiledJSON sql.NullString
 		err = tx.QueryRow(`
-			SELECT version, schema_version, signature_version, definition, source_manifest, compiled_definition
+			SELECT version, content_hash, schema_version, signature_version, definition, source_manifest, compiled_definition
 			FROM agent_workflow_definitions
 			WHERE definition_kind = 'workflow' AND name = $1 AND signature_version = $2
 			ORDER BY version DESC
 			LIMIT 1`, name, metadata.SignatureVersion,
-		).Scan(&prior.Version, &prior.SchemaVersion, &prior.SignatureVersion, &priorRaw, &priorManifest, &priorCompiledJSON)
+		).Scan(&prior.Version, &prior.ContentHash, &prior.SchemaVersion, &prior.SignatureVersion, &priorRaw, &priorManifest, &priorCompiledJSON)
 		if err == nil {
 			priorCompiled, _, compileErr := parseStoredWorkflowDefinitionWithResolver(
 				name,
 				prior.Version,
+				prior.ContentHash,
 				priorRaw,
 				priorManifest,
 				priorCompiledJSON,
@@ -511,7 +512,7 @@ func (f *agentWorkflowsFactory) getOne(where string, args ...any) (*workflow.Def
 		return &def, true, nil
 	}
 	compiled, src, err := parseStoredWorkflowDefinitionWithResolver(
-		def.Name, def.Version, def.RawYAML, manifestJSON, compiledJSON, f.nodeResolver,
+		def.Name, def.Version, def.ContentHash, def.RawYAML, manifestJSON, compiledJSON, f.nodeResolver,
 	)
 	if err != nil {
 		return nil, false, err
@@ -642,6 +643,7 @@ func (f *agentWorkflowsFactory) Promote(name string, version int, promotedBy str
 	compiled, source, err := parseStoredWorkflowDefinitionWithResolver(
 		targetDefinition.Name,
 		targetDefinition.Version,
+		targetDefinition.ContentHash,
 		targetDefinition.RawYAML,
 		targetManifest,
 		targetCompiledJSON,
@@ -808,16 +810,18 @@ func scanWorkflowMetaRows(rows *sql.Rows) ([]workflow.Definition, error) {
 func compileStoredWorkflowSource(
 	name string,
 	version int,
+	contentHash string,
 	rawYAML string,
 	manifestJSON sql.NullString,
 	compiledJSON sql.NullString,
 ) (*workflow.CompiledDefinition, workflow.Manifest, error) {
-	return parseStoredWorkflowDefinitionWithResolver(name, version, rawYAML, manifestJSON, compiledJSON, nil)
+	return parseStoredWorkflowDefinitionWithResolver(name, version, contentHash, rawYAML, manifestJSON, compiledJSON, nil)
 }
 
 func parseStoredWorkflowDefinitionWithResolver(
 	name string,
 	version int,
+	contentHash string,
 	rawYAML string,
 	manifestJSON sql.NullString,
 	compiledJSON sql.NullString,
@@ -836,6 +840,9 @@ func parseStoredWorkflowDefinitionWithResolver(
 		var stored workflow.Manifest
 		if err := json.Unmarshal([]byte(manifestJSON.String), &stored); err != nil {
 			return nil, nil, fmt.Errorf("stored manifest %s/v%d no longer parses: %w", name, version, err)
+		}
+		if stored.Hash() != contentHash {
+			return nil, nil, fmt.Errorf("stored manifest %s/v%d does not match content hash", name, version)
 		}
 		compileSource = stored
 		storedSource = stored

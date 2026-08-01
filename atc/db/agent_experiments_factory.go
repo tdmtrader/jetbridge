@@ -2659,7 +2659,7 @@ func loadAuthoritativeExperimentTarget(
 	if definition.SchemaVersion != 3 {
 		return workflow.FunctionTarget{}, fmt.Errorf("definition_id %d is schema_version %d, not 3", target.DefinitionID, definition.SchemaVersion)
 	}
-	compiled, source, err := compileStoredWorkflowSource(definition.Name, definition.Version, rawYAML, manifestJSON, compiledJSON)
+	compiled, source, err := compileStoredWorkflowSource(definition.Name, definition.Version, definition.ContentHash, rawYAML, manifestJSON, compiledJSON)
 	if err != nil {
 		return workflow.FunctionTarget{}, err
 	}
