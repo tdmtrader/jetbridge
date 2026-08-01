@@ -2675,6 +2675,71 @@ git add atc/db/agent_workflow_run_node_occurrences_factory.go atc/db/agent_workf
 git commit -m "feat(workflowrun): freeze node occurrences at run finalization"
 ```
 
+### Task B7: The production freezer
+
+B6 wired the freeze call site against an interface. Nothing implements that
+interface with real data — the plan's B6 sketch referenced source variables
+that do not exist at the call site, and no earlier task builds the component
+that produces them. Until this lands, the hook runs and freezes nothing, which
+is worse than not having it, because it looks live.
+
+**Files:**
+- Create: `agent/workflowrun/occurrence/freezer.go`
+- Test: `agent/workflowrun/occurrence/freezer_test.go`
+- Modify: `atc/db/agent_publications_factory.go` (write `plan_id`)
+- Modify: `atc/atccmd/command.go` (construct and inject)
+
+- [ ] **Step 1: Give `agent_publication_occurrences.plan_id` a writer**
+
+Migration `1773106157` adds the column; nothing populates it, so every publish
+node would freeze as `pending`. Find where publication occurrences are
+inserted, thread the plan ID through from the publishing step, and add a DB
+spec asserting a freshly recorded occurrence carries it. Without this, one of
+the five execution node kinds is permanently blank in the projection.
+
+- [ ] **Step 2: Build the deterministic-task status reader**
+
+This is the reason the projection exists. Agent steps have attempt metrics,
+awaits have waits, publishes have publications — but a deterministic `task:`
+step has **no durable record except build events**, which are GC-owned.
+
+Read terminal step status from partitioned `pipeline_build_events` for the
+run's build, keyed by plan ID. Confirm against the event schema which event
+types carry per-step terminal status. Map to `occurrence.Status`, and treat a
+step with no terminal event as `pending` rather than inventing a status.
+
+Add a test that a task step with only build-event evidence still projects a
+terminal status.
+
+- [ ] **Step 3: Assemble the freezer**
+
+Implement the interface B6 defined. For one terminal run it must gather:
+attempt metrics by build, waits by run, publications by run, deterministic-task
+status by plan ID, and the run's own compiled definition passed through
+`graph.Build` for the execution-node set. Then call `occurrence.Derive` and
+hand the rows to the factory's `Freeze`.
+
+Load the definition by the run's **own** `workflow_version`, never the promoted
+one — a run's projection must describe the revision that actually executed.
+
+- [ ] **Step 4: Wire construction**
+
+Construct it in `atc/atccmd/command.go` where the reconciler is built, and
+inject it. Until this step the component is dead code.
+
+- [ ] **Step 5: Prove it end to end**
+
+An integration-level test that takes a workflow run through finalization and
+asserts `agent_workflow_run_node_occurrences` contains one row per execution
+node with the right statuses — including at least one deterministic task node,
+which is the case that exists for no other reason.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git commit -m "feat(occurrence): assemble the production node-occurrence freezer"
+```
+
 - [ ] **Step 8: Phase B exit gate**
 
 ```bash
