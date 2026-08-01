@@ -650,11 +650,20 @@ func (b *builder) walkSequence(steps []atc.Step, decorations []Decoration) error
 }
 
 func (b *builder) walkStep(step atc.Step, decorations []Decoration) error {
-	if step.Config == nil {
+	return b.walkStepConfig(step.Config, decorations)
+}
+
+// walkStepConfig is the StepConfig-typed entry point. atc's wrapper steps are
+// not uniform: TimeoutStep.Step, RetryStep.Step, and every hook's .Step are
+// StepConfig, while TryStep.Step, DoStep.Steps, and each hook's .Hook are Step.
+// agent/workflow/typecheck.go splits checkStep/checkWrapped for exactly this
+// reason; mirroring the split keeps both traversals the same shape.
+func (b *builder) walkStepConfig(stepConfig atc.StepConfig, decorations []Decoration) error {
+	if stepConfig == nil {
 		return fmt.Errorf("graph: step config is required")
 	}
 
-	switch config := step.Config.(type) {
+	switch config := stepConfig.(type) {
 	case *atc.AgentStep:
 		b.addLeaf(config.FunctionID, KindAgent, config.Name, decorations,
 			config.Inputs, config.Outputs, snapshotOutputTypes(config.SnapshotOutputs))
@@ -880,8 +889,10 @@ func TestBuildTreatsWrappersAsDecorations(t *testing.T) {
 		SignatureVersion: 1,
 		Inputs:           []snapshot.Port{{Name: "repository", Type: "repository/v1"}},
 		Plan: []atc.Step{
+			// TimeoutStep.Step and RetryStep.Step are StepConfig, not Step, so
+			// the inner agent is passed as inner.Config.
 			{Config: &atc.TimeoutStep{
-				Step:     atc.Step{Config: &atc.RetryStep{Step: inner, Attempts: 3}},
+				Step:     &atc.RetryStep{Step: inner.Config, Attempts: 3},
 				Duration: "1h",
 			}},
 		},
@@ -962,37 +973,40 @@ Insert into the `walkStep` switch in `agent/workflow/graph/build.go`, before `de
 	case *atc.InParallelStep:
 		return b.walkSequence(config.Config.Steps, decorations)
 	case *atc.TryStep:
+		// TryStep.Step is atc.Step, unlike Timeout/Retry below.
 		return b.walkStep(config.Step, append(decorations, DecorationTry))
 	case *atc.RetryStep:
-		return b.walkStep(config.Step, append(decorations, DecorationRetry))
+		return b.walkStepConfig(config.Step, append(decorations, DecorationRetry))
 	case *atc.TimeoutStep:
-		return b.walkStep(config.Step, append(decorations, DecorationTimeout))
+		return b.walkStepConfig(config.Step, append(decorations, DecorationTimeout))
 	case *atc.OnSuccessStep:
-		if err := b.walkStep(config.Step, decorations); err != nil {
+		if err := b.walkStepConfig(config.Step, decorations); err != nil {
 			return err
 		}
 		return b.walkStep(config.Hook, append(decorations, DecorationOnSuccess))
 	case *atc.OnFailureStep:
-		if err := b.walkStep(config.Step, decorations); err != nil {
+		if err := b.walkStepConfig(config.Step, decorations); err != nil {
 			return err
 		}
 		return b.walkStep(config.Hook, append(decorations, DecorationOnFailure))
 	case *atc.OnErrorStep:
-		if err := b.walkStep(config.Step, decorations); err != nil {
+		if err := b.walkStepConfig(config.Step, decorations); err != nil {
 			return err
 		}
 		return b.walkStep(config.Hook, append(decorations, DecorationOnError))
 	case *atc.OnAbortStep:
-		if err := b.walkStep(config.Step, decorations); err != nil {
+		if err := b.walkStepConfig(config.Step, decorations); err != nil {
 			return err
 		}
 		return b.walkStep(config.Hook, append(decorations, DecorationOnAbort))
 	case *atc.EnsureStep:
-		if err := b.walkStep(config.Step, decorations); err != nil {
+		if err := b.walkStepConfig(config.Step, decorations); err != nil {
 			return err
 		}
 		return b.walkStep(config.Hook, append(decorations, DecorationEnsure))
 ```
+
+Each wrapper's `.Step` is `StepConfig` except `TryStep`'s, and each hook's `.Hook` is `Step`. Confirm against `atc/steps.go` rather than assuming uniformity — the compiler will catch a mistake, but knowing why they differ saves a debugging round.
 
 `append(decorations, X)` may share backing storage between sibling branches, which would leak a decoration from one branch into another. `addLeaf` and every node case already copy with `append([]Decoration(nil), decorations...)`, so the stored slice is always private. Keep that copy.
 
