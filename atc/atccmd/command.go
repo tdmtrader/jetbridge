@@ -28,6 +28,7 @@ import (
 	noderunsapi "github.com/concourse/concourse/agent/api/noderuns"
 	nodeupgradesapi "github.com/concourse/concourse/agent/api/nodeupgrades"
 	snapshotsapi "github.com/concourse/concourse/agent/api/snapshots"
+	ticketjournalapi "github.com/concourse/concourse/agent/api/ticketjournal"
 	workflowoutcomesapi "github.com/concourse/concourse/agent/api/workflowoutcomes"
 	workflowoverviewapi "github.com/concourse/concourse/agent/api/workflowoverview"
 	workflowrunsapi "github.com/concourse/concourse/agent/api/workflowruns"
@@ -3892,6 +3893,8 @@ func (cmd *RunCommand) constructAPIHandler(
 		db.NewAgentReviewsFactory(dbConn),
 		db.NewAgentRunMetricsFactory(dbConn),
 		dispatchGraph.tickets,
+		workflowRunStore,
+		ticketjournalapi.TrustedTeam{ID: dispatchGraph.teamID},
 		db.NewAgentUserCredentialsFactory(dbConn),
 		db.NewAgentCostLedgerFactory(dbConn),
 		cmd.AgentDailyBudgetUSD,

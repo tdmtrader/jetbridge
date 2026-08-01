@@ -22,6 +22,7 @@ import (
 	nodeupgradesapi "github.com/concourse/concourse/agent/api/nodeupgrades"
 	"github.com/concourse/concourse/agent/api/reviews/reviewstest"
 	snapshotsapi "github.com/concourse/concourse/agent/api/snapshots"
+	"github.com/concourse/concourse/agent/api/ticketjournal"
 	"github.com/concourse/concourse/agent/api/tickets/ticketstest"
 	workflowoutcomesapi "github.com/concourse/concourse/agent/api/workflowoutcomes"
 	workflowoverviewapi "github.com/concourse/concourse/agent/api/workflowoverview"
@@ -322,6 +323,7 @@ var _ = BeforeEach(func() {
 		Store:    new(dbfakes.FakeAgentExperimentsFactory), RunnerAvailable: true,
 	})
 	Expect(err).NotTo(HaveOccurred())
+	apiTicketStore := ticketstest.NewMemoryStore()
 	handler, err := api.NewHandler(
 		logger,
 
@@ -369,7 +371,9 @@ var _ = BeforeEach(func() {
 		feedback.NewMemoryStore(),
 		reviewstest.NewMemoryStore(),
 		metricstest.NewMemoryStore(),
-		ticketstest.NewMemoryStore(),
+		apiTicketStore,
+		new(dbfakes.FakeAgentWorkflowRunsFactory),
+		ticketjournal.TrustedTeam{ID: 1},
 		credentialstest.NewMemoryBackend(),
 		budgettest.NewMemoryLedger(),
 		0,

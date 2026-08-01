@@ -18,6 +18,7 @@ import (
 	nodeupgradesapi "github.com/concourse/concourse/agent/api/nodeupgrades"
 	reviewsapi "github.com/concourse/concourse/agent/api/reviews"
 	snapshotsapi "github.com/concourse/concourse/agent/api/snapshots"
+	ticketjournalapi "github.com/concourse/concourse/agent/api/ticketjournal"
 	ticketsapi "github.com/concourse/concourse/agent/api/tickets"
 	workflowoutcomesapi "github.com/concourse/concourse/agent/api/workflowoutcomes"
 	workflowoverviewapi "github.com/concourse/concourse/agent/api/workflowoverview"
@@ -123,6 +124,11 @@ func NewHandler(
 	reviewsStore reviewsapi.Store,
 	metricsStore metricsapi.Store,
 	ticketsStore ticketsapi.Store,
+	// ticketRunJournal serves the cross-workflow ticket journal. A ticket may
+	// drive many runs across many workflows, so the journal reads the durable
+	// runs directly rather than anything stored on the ticket.
+	ticketRunJournal ticketjournalapi.RunStore,
+	ticketJournalTeam ticketjournalapi.TrustedTeam,
 	credentialsBackend credentials.Backend,
 	costLedger budget.Ledger,
 	agentDailyBudgetUSD float64,
@@ -218,6 +224,7 @@ func NewHandler(
 	ticketsServer := ticketsapi.NewHandler(ticketsStore, func(r *http.Request) string {
 		return accessor.GetAccessor(r).Claims().UserName
 	})
+	ticketJournalServer := ticketjournalapi.NewHandler(ticketsStore, ticketRunJournal, ticketJournalTeam)
 	transcriptServer := transcriptserver.NewServer(logger, agentRunTranscriptStore)
 	workflowsServer := workflowsapi.NewHandler(workflowStore, metricsStore)
 	nodesServer := nodesapi.NewHandler(nodeStore)
@@ -403,6 +410,7 @@ func NewHandler(
 		atc.UpdateAgentTicket:     http.HandlerFunc(ticketsServer.UpdateTicket),
 		atc.TransitionAgentTicket: http.HandlerFunc(ticketsServer.TransitionTicket),
 		atc.DispatchAgentTicket:   agentDispatchHandler,
+		atc.ListAgentTicketRuns:   http.HandlerFunc(ticketJournalServer.ListRuns),
 
 		atc.SetAgentUserCredential:                     http.HandlerFunc(credentialsServer.Set),
 		atc.GetAgentUserCredentialStatus:               http.HandlerFunc(credentialsServer.Status),

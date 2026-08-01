@@ -258,7 +258,9 @@ func (wrappa *APIAuthWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 			atc.DispatchAgentTicket,
 			atc.CreateAgentTicket,
 			atc.TransitionAgentTicket,
-			atc.GetAgentTicket:
+			atc.GetAgentTicket,
+			// The journal is an ordinary read of the ticket's own run history.
+			atc.ListAgentTicketRuns:
 			newHandler = auth.CheckAgentAuthorizationHandler(handler, rejector)
 
 		// think about it!
