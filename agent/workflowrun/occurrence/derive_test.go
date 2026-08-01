@@ -1,6 +1,7 @@
 package occurrence
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -226,8 +227,65 @@ func TestDeriveEmitsOneOccurrencePerRecoveryAttempt(t *testing.T) {
 }
 
 func TestDeriveRequiresAFrozenActualPlan(t *testing.T) {
-	if _, err := Derive(Sources{Run: db.AgentWorkflowRun{ID: 42}}); err == nil {
+	_, err := Derive(Sources{Run: db.AgentWorkflowRun{ID: 42}})
+	if err == nil {
 		t.Fatal("expected an error when the run has no frozen actual plan")
+	}
+	// The message must name the run and the missing plan, not surface a raw
+	// JSON decode failure, because this is the case a caller has to act on.
+	if !strings.Contains(err.Error(), "no frozen actual plan") || !strings.Contains(err.Error(), "42") {
+		t.Fatalf("unhelpful error for a missing plan: %v", err)
+	}
+}
+
+// Times that cannot describe a real interval must not produce a negative or
+// nonsense duration: a clock skew or a partially written row would otherwise
+// show up on the canvas as a step that took negative time.
+func TestDeriveGuardsAgainstUnusableTimestamps(t *testing.T) {
+	started := time.Date(2026, 7, 31, 10, 0, 0, 0, time.UTC)
+
+	for name, metric := range map[string]AttemptMetric{
+		"completed before started": {ExecutionAttempt: 1, Status: "ok", CreatedAt: started, UpdatedAt: started.Add(-time.Hour)},
+		"no start time":            {ExecutionAttempt: 1, Status: "ok", UpdatedAt: started},
+		"no completion time":       {ExecutionAttempt: 1, Status: "ok", CreatedAt: started},
+	} {
+		t.Run(name, func(t *testing.T) {
+			sources := codeReviewSources(t)
+			metric.PlanID = planIDOf(t, sources.Run.ActualPlan, "review")
+			sources.AttemptMetrics = []AttemptMetric{metric}
+
+			occurrences, err := Derive(sources)
+			if err != nil {
+				t.Fatalf("Derive returned an error: %v", err)
+			}
+			got, _ := findOccurrence(occurrences, "review")
+			if got.DurationSeconds != 0 {
+				t.Fatalf("expected no duration, got %d", got.DurationSeconds)
+			}
+		})
+	}
+}
+
+// A zero timestamp means the record carries no time, so the occurrence must
+// carry no time either rather than pointing at the zero instant.
+func TestDeriveOmitsZeroTimestamps(t *testing.T) {
+	sources := codeReviewSources(t)
+	sources.AttemptMetrics = []AttemptMetric{{
+		PlanID:           planIDOf(t, sources.Run.ActualPlan, "review"),
+		ExecutionAttempt: 1,
+		Status:           "ok",
+	}}
+
+	occurrences, err := Derive(sources)
+	if err != nil {
+		t.Fatalf("Derive returned an error: %v", err)
+	}
+	got, _ := findOccurrence(occurrences, "review")
+	if got.StartedAt != nil {
+		t.Fatalf("expected no start time, got %v", got.StartedAt)
+	}
+	if got.CompletedAt != nil {
+		t.Fatalf("expected no completion time, got %v", got.CompletedAt)
 	}
 }
 

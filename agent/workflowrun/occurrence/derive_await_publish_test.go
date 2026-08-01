@@ -223,6 +223,32 @@ func TestDeriveIgnoresEvidenceForOtherPlanIDs(t *testing.T) {
 	}
 }
 
+// A resolution timestamp alone does not make an occurrence complete. A wait
+// whose status the projection cannot interpret is pending, and a pending
+// occurrence must not be stamped as finished just because the row carries a
+// resolved_at — that would report a completion the projection cannot vouch
+// for.
+func TestDeriveDoesNotCompleteANonTerminalWaitThatCarriesAResolutionTime(t *testing.T) {
+	resolved := time.Date(2026, 7, 31, 11, 0, 0, 0, time.UTC)
+	sources := mergeDeliverySources(t)
+	sources.Waits = []Wait{{
+		ID: 7, PlanID: planIDOf(t, sources.Run.ActualPlan, "merge-approval"),
+		Status: "brand-new", CreatedAt: resolved.Add(-time.Hour), ResolvedAt: &resolved,
+	}}
+
+	occurrences, err := Derive(sources)
+	if err != nil {
+		t.Fatalf("Derive returned an error: %v", err)
+	}
+	got, _ := findOccurrence(occurrences, "merge-approval")
+	if got.Status != StatusPending {
+		t.Fatalf("expected pending, got %q", got.Status)
+	}
+	if got.CompletedAt != nil || got.DurationSeconds != 0 {
+		t.Fatalf("a non-terminal wait must not be reported as completed: %+v", got)
+	}
+}
+
 // An unknown status from either table must degrade to pending rather than be
 // guessed at, so a schema addition cannot silently render as success.
 func TestDeriveDegradesUnknownEvidenceStatusesToPending(t *testing.T) {

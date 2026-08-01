@@ -125,20 +125,27 @@ func TestPlanNodesTraversesEveryControlWrapperWithoutEmittingIt(t *testing.T) {
 		return atc.Plan{ID: atc.PlanID(id), Agent: &atc.AgentPlan{Name: functionID, FunctionID: functionID}}
 	}
 
-	for name, wrapper := range map[string]atc.Plan{
-		"do":          {ID: "w", Do: &atc.DoPlan{leaf("w/1", "one")}},
-		"in_parallel": {ID: "w", InParallel: &atc.InParallelPlan{Steps: []atc.Plan{leaf("w/1", "one")}}},
-		"retry":       {ID: "w", Retry: &atc.RetryPlan{leaf("w/1", "one")}},
-		"try":         {ID: "w", Try: &atc.TryPlan{Step: leaf("w/1", "one")}},
-		"timeout":     {ID: "w", Timeout: &atc.TimeoutPlan{Step: leaf("w/1", "one")}},
-		"on_success":  {ID: "w", OnSuccess: &atc.OnSuccessPlan{Step: leaf("w/1", "one"), Next: leaf("w/2", "two")}},
-		"on_failure":  {ID: "w", OnFailure: &atc.OnFailurePlan{Step: leaf("w/1", "one"), Next: leaf("w/2", "two")}},
-		"on_error":    {ID: "w", OnError: &atc.OnErrorPlan{Step: leaf("w/1", "one"), Next: leaf("w/2", "two")}},
-		"on_abort":    {ID: "w", OnAbort: &atc.OnAbortPlan{Step: leaf("w/1", "one"), Next: leaf("w/2", "two")}},
-		"ensure":      {ID: "w", Ensure: &atc.EnsurePlan{Step: leaf("w/1", "one"), Next: leaf("w/2", "two")}},
-	} {
+	// Both arms of every hook are expected: an on_failure escalation agent or
+	// an ensure cleanup task is real work the overview must show.
+	cases := map[string]struct {
+		plan atc.Plan
+		want []string
+	}{
+		"do":          {atc.Plan{ID: "w", Do: &atc.DoPlan{leaf("w/1", "one"), leaf("w/2", "two")}}, []string{"one", "two"}},
+		"in_parallel": {atc.Plan{ID: "w", InParallel: &atc.InParallelPlan{Steps: []atc.Plan{leaf("w/1", "one"), leaf("w/2", "two")}}}, []string{"one", "two"}},
+		"retry":       {atc.Plan{ID: "w", Retry: &atc.RetryPlan{leaf("w/1", "one"), leaf("w/2", "one")}}, []string{"one", "one"}},
+		"try":         {atc.Plan{ID: "w", Try: &atc.TryPlan{Step: leaf("w/1", "one")}}, []string{"one"}},
+		"timeout":     {atc.Plan{ID: "w", Timeout: &atc.TimeoutPlan{Step: leaf("w/1", "one")}}, []string{"one"}},
+		"on_success":  {atc.Plan{ID: "w", OnSuccess: &atc.OnSuccessPlan{Step: leaf("w/1", "one"), Next: leaf("w/2", "two")}}, []string{"one", "two"}},
+		"on_failure":  {atc.Plan{ID: "w", OnFailure: &atc.OnFailurePlan{Step: leaf("w/1", "one"), Next: leaf("w/2", "two")}}, []string{"one", "two"}},
+		"on_error":    {atc.Plan{ID: "w", OnError: &atc.OnErrorPlan{Step: leaf("w/1", "one"), Next: leaf("w/2", "two")}}, []string{"one", "two"}},
+		"on_abort":    {atc.Plan{ID: "w", OnAbort: &atc.OnAbortPlan{Step: leaf("w/1", "one"), Next: leaf("w/2", "two")}}, []string{"one", "two"}},
+		"ensure":      {atc.Plan{ID: "w", Ensure: &atc.EnsurePlan{Step: leaf("w/1", "one"), Next: leaf("w/2", "two")}}, []string{"one", "two"}},
+	}
+
+	for name, testCase := range cases {
 		t.Run(name, func(t *testing.T) {
-			raw, err := json.Marshal(wrapper)
+			raw, err := json.Marshal(testCase.plan)
 			if err != nil {
 				t.Fatalf("marshalling plan: %v", err)
 			}
@@ -146,8 +153,13 @@ func TestPlanNodesTraversesEveryControlWrapperWithoutEmittingIt(t *testing.T) {
 			if err != nil {
 				t.Fatalf("PlanNodes returned an error: %v", err)
 			}
-			if len(nodes) == 0 {
-				t.Fatalf("%s was not traversed", name)
+			if len(nodes) != len(testCase.want) {
+				t.Fatalf("%s: expected %d nodes, got %+v", name, len(testCase.want), nodes)
+			}
+			for index, want := range testCase.want {
+				if nodes[index].NodeID != want {
+					t.Fatalf("%s: node %d: expected %q, got %q", name, index, want, nodes[index].NodeID)
+				}
 			}
 			for _, node := range nodes {
 				if node.PlanID == "w" {
