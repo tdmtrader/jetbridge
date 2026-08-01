@@ -86,6 +86,17 @@ All four kinds register into the same namespace, with uniqueness enforced
 across it. This closes a real existing hole: today an agent's `function_id`
 can silently collide with an `await_snapshot` name.
 
+Implementation note, verified while landing this rule: `RenderFunction`
+prepends a synthetic `load_snapshot` per declared input port and per bound
+resource source (`agent/workflow/render.go:746-752`, `:766`) before calling
+`TypeCheckFunction`. Registering load names therefore places input-port and
+resource-source names into the same namespace automatically on the render
+path, which is exactly the rule stated above rather than an accident. The
+practical consequence is that a workflow whose input port is named `repo` and
+whose agent carries `function_id: repo` type-checks unrendered but is rejected
+at render. That is correct — an input-port load is a graph node — and Phase B
+may rely on the namespace being uniform across all four kinds.
+
 Rename and replacement behaviour follows from this. A display-name change on an
 agent or task node preserves history because `function_id` is separate. A
 change to any binding name is a dataflow edit that yields a new identity and
