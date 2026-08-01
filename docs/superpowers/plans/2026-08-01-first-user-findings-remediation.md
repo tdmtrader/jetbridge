@@ -724,14 +724,35 @@ func (factory *HandlerFactory) writeSnapshotError(w http.ResponseWriter, err err
 // writeDetailedError adds the disclosable detail when the failing validator
 // marked one. The error CLASS decides whether detail may travel at all, so a
 // mark that somehow reaches an internal fault cannot escape through here.
+//
+// The detail is truncated because a mark carries caller-supplied values and
+// nothing bounds them: an archive-path rejection can quote an entry name up
+// to MaxSnapshotPathBytes, so an unbounded copy would let a caller choose the
+// size of the error body they get back.
 func writeDetailedError(w http.ResponseWriter, status int, code, message string, err error) {
 	response := ErrorResponse{Error: code, Message: message}
 	if detail, ok := snapshot.ClientDetail(err); ok {
-		response.Detail = detail
+		response.Detail = truncateDetail(detail)
 	}
 	writeJSON(w, status, response)
 }
+
+const maxErrorDetailBytes = 512
+
+func truncateDetail(detail string) string {
+	if len(detail) <= maxErrorDetailBytes {
+		return detail
+	}
+	return detail[:maxErrorDetailBytes] + "…"
+}
 ```
+
+Add a test case covering the bound: a marked error whose detail exceeds
+`maxErrorDetailBytes` must come back truncated, and the response must stay
+valid JSON. Truncating on a byte boundary can split a multi-byte rune; decide
+deliberately whether to trim back to a rune boundary (`utf8.DecodeLastRuneInString`)
+and test whichever you choose — an invalid UTF-8 sequence in a JSON string is
+replaced by `encoding/json`, so this is a quality question, not a safety one.
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
