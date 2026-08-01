@@ -1,0 +1,17 @@
+{{ .Chart.Name }} {{ .Chart.Version }} installed into namespace {{ .Release.Namespace }}.
+
+{{- if and .Values.agentSnapshots.enabled (not .Values.networkPolicy.hermeticEgressTo) }}
+
+WARNING: agentSnapshots is enabled and networkPolicy.hermeticEgressTo is empty.
+
+  Hermetic task and agent pods run under a deny-all egress policy, so an
+  agent: node cannot reach a model endpoint. Its first request will hang until
+  the client times out and the run will fail with "Request timed out" — the
+  cause is not reported anywhere else.
+
+  If this deployment runs agent: nodes, set networkPolicy.hermeticEgressTo to
+  complete NetworkPolicy egress rules for your model endpoint or egress proxy
+  (and DNS, if the endpoint is resolved by name). See values.yaml for an
+  example. A deployment that runs only deterministic task: functions can
+  leave it empty.
+{{- end }}
