@@ -78,7 +78,15 @@ type Message
       -- Agent workflow function pages
     | AgentWorkflowInputChanged String String
     | AgentWorkflowVersionSelected String
-    | AgentWorkflowRunFilterChanged String
+    | AgentWorkflowNodeSelected String
+    | AgentWorkflowNodeCleared
+    | AgentWorkflowWindowChanged String
+    | AgentWorkflowScopeChanged String
+    | AgentWorkflowStatusFilterChanged String
+    | AgentWorkflowSearchChanged String
+    | AgentWorkflowPanelOpened String
+    | AgentWorkflowPanelClosed
+    | AgentWorkflowRunListScrolled Float
     | AgentWorkflowStartClicked
     | AgentWorkflowPromoteClicked Int
     | AgentWorkflowRunCancelClicked

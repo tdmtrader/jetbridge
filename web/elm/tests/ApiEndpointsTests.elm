@@ -342,6 +342,24 @@ testEndpoints =
                     AgentWorkflowRun "code-review" "9007199254740993"
                         |> toPath
                         |> Expect.equal "/api/v1/agent/workflows/code-review/runs/9007199254740993"
+            , test "filtered workflow run list carries its own query" <|
+                \_ ->
+                    AgentWorkflowRunsFiltered "review api/v3"
+                        [ ( "window", "7d" ), ( "node", "implement" ) ]
+                        |> toPath
+                        |> Expect.equal
+                            "/api/v1/agent/workflows/review%20api%2Fv3/runs?window=7d&node=implement"
+            , test "workflow overview carries its window" <|
+                \_ ->
+                    AgentWorkflowOverview "review api/v3" [ ( "window", "30d" ) ]
+                        |> toPath
+                        |> Expect.equal
+                            "/api/v1/agent/workflows/review%20api%2Fv3/overview?window=30d"
+            , test "an unfiltered overview asks for no query at all" <|
+                \_ ->
+                    AgentWorkflowOverview "code-review" []
+                        |> toPath
+                        |> Expect.equal "/api/v1/agent/workflows/code-review/overview"
             , test "operational workflow run status counts" <|
                 \_ ->
                     AgentWorkflowRunOperationalStatusCounts "review api/v3"

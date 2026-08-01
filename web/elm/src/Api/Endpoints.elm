@@ -50,6 +50,8 @@ type Endpoint
     | AgentWorkflowVersions String
     | AgentWorkflowVersionLive String Int
     | AgentWorkflowRuns String
+    | AgentWorkflowRunsFiltered String (List ( String, String ))
+    | AgentWorkflowOverview String (List ( String, String ))
     | AgentWorkflowRunOperationalStatusCounts String
     | AgentWorkflowRun String String
     | AgentWorkflowRunCancel String String
@@ -160,6 +162,16 @@ resource :
     -> RouteBuilder
 resource id =
     pipeline id |> appendPath [ "resources", id.resourceName ]
+
+
+{-| An endpoint that carries its own filter query, following the
+`PipelineRunsList` precedent. The pairs come from
+`AgentWorkflow.Filters`, which is the single place that decides which
+parameter names each agent endpoint actually accepts.
+-}
+pairs : List ( String, String ) -> List Url.Builder.QueryParameter
+pairs query =
+    List.map (\( key, value ) -> Url.Builder.string key value) query
 
 
 toString : List Url.Builder.QueryParameter -> Endpoint -> String
@@ -281,6 +293,16 @@ builder endpoint =
 
         AgentWorkflowRuns workflowName ->
             base |> appendPath [ "agent", "workflows", Url.percentEncode workflowName, "runs" ]
+
+        AgentWorkflowRunsFiltered workflowName query ->
+            base
+                |> appendPath [ "agent", "workflows", Url.percentEncode workflowName, "runs" ]
+                |> appendQuery (pairs query)
+
+        AgentWorkflowOverview workflowName query ->
+            base
+                |> appendPath [ "agent", "workflows", Url.percentEncode workflowName, "overview" ]
+                |> appendQuery (pairs query)
 
         AgentWorkflowRunOperationalStatusCounts workflowName ->
             base |> appendPath [ "agent", "workflows", Url.percentEncode workflowName, "runs", "operational-status-counts" ]

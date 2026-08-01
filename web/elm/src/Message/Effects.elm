@@ -24,6 +24,7 @@ import Concourse.Experiment
 import Concourse.Pagination exposing (Page)
 import Concourse.Snapshot
 import Concourse.Transcript
+import Concourse.WorkflowOverview
 import Concourse.WorkflowRun
 import Json.Decode
 import Json.Encode
@@ -247,6 +248,8 @@ type Effect
     | FetchAgentWorkflowVersions String
     | PromoteAgentWorkflowVersion String Int
     | FetchAgentWorkflowRuns String
+    | FetchAgentWorkflowRunsFiltered String (List ( String, String ))
+    | FetchAgentWorkflowOverview String (List ( String, String ))
     | FetchAgentWorkflowRunOperationalStatusCounts String
     | CreateAgentWorkflowRun
         { workflowName : String
@@ -964,6 +967,18 @@ runEffect effect key csrfToken =
                 |> Api.request
                 |> Task.attempt (AgentWorkflowRunsFetched workflowName)
 
+        FetchAgentWorkflowRunsFiltered workflowName query ->
+            Api.get (Endpoints.AgentWorkflowRunsFiltered workflowName query)
+                |> Api.expectJson (Json.Decode.list Concourse.WorkflowRun.decodeSummary)
+                |> Api.request
+                |> Task.attempt (AgentWorkflowRunsFetched workflowName)
+
+        FetchAgentWorkflowOverview workflowName query ->
+            Api.get (Endpoints.AgentWorkflowOverview workflowName query)
+                |> Api.expectJson Concourse.WorkflowOverview.decodeOverview
+                |> Api.request
+                |> Task.attempt (AgentWorkflowOverviewFetched workflowName)
+
         FetchAgentWorkflowRunOperationalStatusCounts workflowName ->
             Api.get (Endpoints.AgentWorkflowRunOperationalStatusCounts workflowName)
                 |> Api.expectJson Concourse.WorkflowRun.decodeOperationalStatusCounts
@@ -1419,6 +1434,10 @@ scroll direction id =
 
         ToId toId ->
             scrollToId ( id, toId )
+
+        ToOffset offset ->
+            scrollCoords id (always 0) (always offset)
+                |> Task.attempt (\_ -> EmptyCallback)
 
 
 scrollCoords :

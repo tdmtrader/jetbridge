@@ -206,7 +206,7 @@ update message ( model, effects ) =
             , effects
             )
 
-        AgentWorkflowRunFilterChanged filter ->
+        AgentWorkflowScopeChanged filter ->
             ( { model | runFilter = filter }, effects )
 
         AgentWorkflowStartClicked ->
@@ -728,7 +728,7 @@ filterChoice model token label =
             [ type_ "radio"
             , name "workflow-run-filter"
             , checked (model.runFilter == token)
-            , onClick (AgentWorkflowRunFilterChanged token)
+            , onClick (AgentWorkflowScopeChanged token)
             ]
             []
         , Html.text label
