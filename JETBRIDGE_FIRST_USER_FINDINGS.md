@@ -194,6 +194,32 @@ inferences and proposed follow-ups are labeled as such.
   acceptance cannot begin until that reviewed handoff completes. The dispatcher
   remains paused; the corrected commit, push, and pipeline retry are pending,
   and no rollout success is claimed.
+- The corrected CI-fixture commit
+  `ae40bf0d2b0ac4e7268260c9388c7f80e4375e72` was subsequently pushed. Set-self
+  `645323`, build-and-vet `645324`, unit `645338`, k8s-runtime `645353`, tag-rc
+  `645362`, build-image `645373`, self-upgrade `645388`, verify-upgrade
+  `645391`, and k8s-live-tests `645394` succeeded. The web advanced to
+  `0.2.221-rc`, but manual runner-image build `645354` checksum-verified and
+  downloaded Claude `2.1.212` and built the required binaries before its
+  build-time smoke exited 1. It did not push an image or publish a digest, so
+  the runner remains old and the dispatcher remains paused.
+- The runner failure was an instruction-order defect: its root smoke ran before
+  `ENV IS_SANDBOX=1`, and `set -e` with captured Claude help made the root
+  refusal silent. The repair first observed a RED Dockerfile-ordering test,
+  then moved the unchanged sandbox contract before smoke and added bounded
+  status-only Claude version/help errors plus named flag/binary diagnostics.
+  The remote image smoke remains valuable executable acceptance evidence; static
+  Dockerfile checks cannot replace a successful built-image smoke, immutable
+  digest pull, and `linux/amd64` inspection.
+- Pipeline orchestration is also a platform pain point: runner-image is manual
+  and not a dependency of self-upgrade or release, so the web RC advanced while
+  the matching runner failed. Manual compatibility-window controls prevented a
+  final mismatch: after the `0.2.221-rc` live tests, both `self-upgrade` and
+  final `release` were manually paused before the next push; a status-only jobs
+  query verified each has `paused:true` and `next_build:null`. This prevents a
+  smoke-fix RC from deploying before matching runner activation. Pipeline
+  dependency wiring is a follow-up candidate, not silently changed in this
+  scoped remediation.
 
 ## Post-Trial Blocker Trace
 

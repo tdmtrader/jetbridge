@@ -50,6 +50,10 @@ func TestAgentRunnerDockerfile(t *testing.T) {
 		t.Fatal("runner Dockerfile retains Claude 2.0.1")
 	}
 	smoke := strings.Index(string(dockerfile), "RUN /usr/local/bin/agent-runner-image-smoke")
+	sandbox := strings.Index(string(dockerfile), "ENV IS_SANDBOX=1")
+	if sandbox < 0 || sandbox >= smoke {
+		t.Fatal("agent runner image must enable IS_SANDBOX before the root Claude smoke")
+	}
 	for _, marker := range []string{
 		"COPY --from=build /out/agent-runner /usr/local/bin/agent-runner",
 		"COPY --from=build /out/function-runner /usr/local/bin/function-runner",
@@ -58,7 +62,9 @@ func TestAgentRunnerDockerfile(t *testing.T) {
 		"COPY --from=build /usr/local/go /usr/local/go",
 		"COPY --chmod=0555 deploy/agent-runner/smoke.sh /usr/local/bin/agent-runner-image-smoke",
 	} {
-		if installed := strings.LastIndex(string(dockerfile), marker); installed < 0 || installed > smoke {
+		if installed := strings.LastIndex(string(dockerfile), marker); installed < 0 || installed > sandbox {
+			t.Fatalf("IS_SANDBOX is enabled before %q is installed", marker)
+		} else if installed > smoke {
 			t.Fatalf("smoke runs before %q is installed", marker)
 		}
 	}

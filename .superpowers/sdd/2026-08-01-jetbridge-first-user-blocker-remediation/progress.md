@@ -157,10 +157,26 @@
     attempted.
   - Review: independent blocking round 1 PASS with no Critical, High, or
     acceptance-blocking findings. Review budget used: 1 of 3.
-  - PENDING until Task 6: successful remote pipeline/Borg image build and
-    `agent-runner-image-smoke`, registry-reported digest, immutable pull, and
-    exact `linux/amd64` inspection. Task 4's repository implementation is
-    complete, but its image acceptance gate remains open.
+  - Live image gate (build `645354`): the exact selected commit
+    `ae40bf0d2b0ac4e7268260c9388c7f80e4375e72` checksum-verified/downloaded
+    Claude `2.1.212` and built every required Concourse binary, but the
+    build-time smoke exited 1 before image push or digest publication. Root
+    cause: the root smoke `RUN` preceded `ENV IS_SANDBOX=1`; `set -e` plus
+    captured Claude help made that refusal silent.
+  - Repair evidence: a focused Dockerfile-ordering assertion was RED against
+    that order and GREEN after moving the unchanged `IS_SANDBOX=1` contract
+    before smoke, while retaining all required binaries before both. Smoke now
+    emits bounded status-only errors for failed Claude version/help calls and
+    names missing required flags or Concourse binaries. `sh -n
+    deploy/agent-runner/smoke.sh`, `env GOCACHE=/tmp/jetbridge-go-cache go
+    test ./deploy -run '^TestAgentRunnerDockerfile$' -count=1`, full
+    `go test ./deploy -count=1`, and the owned-file `git diff --check` passed.
+  - Review: independent blocking review round 2 PASS with no Critical, High,
+    or acceptance-blocking findings. Review budget used: 2 of 3.
+  - PENDING: repeat the remote runner-image build and executable
+    `agent-runner-image-smoke`, then capture the registry-reported digest,
+    immutable pull, and exact `linux/amd64` inspection. The remote smoke is
+    valuable acceptance evidence, not a replaceable static Dockerfile check.
 - [x] Task 5 — safe build-log correlations, target wording, and node docs
   - Gate: Fly command/integration tests, stale-wording residue check, and chart
     documentation that an empty task ServiceAccount selects the namespace
@@ -222,11 +238,26 @@
     (`ok github.com/concourse/concourse/atc/exec`), and `git diff --check`
     passed. Independent Task 6 blocking review round 1 PASS found no Critical,
     High, or acceptance-blocking findings.
-  - Current disposition: dispatcher remains paused. The corrected commit,
-    push, and pipeline retry are pending; no rollout or node acceptance is
-    claimed. The repository pipeline may publish and verify an immutable runner
-    digest, but external home-infra/ArgoCD owns activation. Same-commit node
-    acceptance cannot proceed until that reviewed handoff completes.
+  - Rollout update: corrected CI-fixture commit
+    `ae40bf0d2b0ac4e7268260c9388c7f80e4375e72` was pushed. Set-self `645323`,
+    build-and-vet `645324`, unit `645338`, k8s-runtime `645353`, tag-rc
+    `645362`, build-image `645373`, self-upgrade `645388`, verify-upgrade
+    `645391`, and k8s-live-tests `645394` succeeded. The web is
+    `0.2.221-rc`; the runner remains old because build `645354` failed before
+    image push. Dispatcher remains paused.
+  - Safety disposition: after the `0.2.221-rc` live tests, `self-upgrade` and
+    final `release` were manually paused before the next push. A status-only
+    jobs query verified both `paused:true` and `next_build:null`, preventing
+    smoke-fix RC deployment before matching runner activation and an
+    incompatible `0.2.221` final publication. The runner-image job is manual
+    and not a dependency of self-upgrade/release, so the web RC advanced despite
+    the matching-runner failure. Manual compatibility-window control is required
+    today; pipeline dependency wiring is a follow-up candidate, not part of
+    this scoped delta. New smoke-fix commit/push/retry remains pending.
+  - Current disposition: no rollout or node acceptance is claimed. The
+    repository pipeline may publish and verify an immutable runner digest, but
+    external home-infra/ArgoCD owns activation. Same-commit node acceptance
+    cannot proceed until that reviewed handoff completes.
   - Review budget: maximum three blocking rounds.
 
 ## Execution rules

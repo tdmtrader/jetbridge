@@ -37,12 +37,12 @@ COPY --from=build /out/function-runner /usr/local/bin/function-runner
 COPY --from=build --chmod=0555 /out/agent-output /usr/local/bin/agent-output
 COPY --chmod=0555 deploy/agent-runner/smoke.sh /usr/local/bin/agent-runner-image-smoke
 COPY --from=build /usr/local/go /usr/local/go
-RUN /usr/local/bin/agent-runner-image-smoke
 # Root, like every other step image: jetbridge hostPath step volumes are
 # kubelet-created root:root 0755 and fsGroup is ignored for hostPath, so a
 # non-root user gets EACCES writing the flight recorder. IS_SANDBOX=1 lets
 # the claude CLI accept --dangerously-skip-permissions when running as root
 # (single-tenant, pod-isolated sandbox).
 ENV IS_SANDBOX=1
+RUN /usr/local/bin/agent-runner-image-smoke
 ENV PATH="/usr/local/go/bin:${PATH}"
 ENTRYPOINT ["agent-runner"]
