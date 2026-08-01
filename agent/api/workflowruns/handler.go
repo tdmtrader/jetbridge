@@ -101,6 +101,10 @@ func (handler *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// Direct manual launch: deliberately unattached. Standalone workflows and
+	// their runs are fully supported; this endpoint has no ticket context to
+	// carry, and inferring one from the inputs would make a work-item snapshot
+	// silently confer ticket membership.
 	result, err := handler.binder.BindAndCreate(r.Context(), workflowrun.AdmissionContext{
 		TeamID: handler.team.ID, TeamName: handler.team.Name, CreatedBy: creator,
 		Origin: workflowrun.Origin{Kind: "manual"},
@@ -302,6 +306,9 @@ func (handler *Handler) Retry(w http.ResponseWriter, r *http.Request) {
 	if source.FunctionID != nil {
 		functionID = *source.FunctionID
 	}
+	// Retry: the association is inherited from RetryOf by the binder, never
+	// declared here. A caller cannot use a retry to attach, drop, or move a
+	// ticket.
 	result, err := handler.binder.BindAndCreate(r.Context(), workflowrun.AdmissionContext{
 		TeamID: handler.team.ID, TeamName: handler.team.Name, CreatedBy: creator,
 		Origin: workflowrun.Origin{Kind: "retry", Reference: source.ID.String()},

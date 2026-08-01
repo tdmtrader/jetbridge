@@ -39,6 +39,11 @@ func (adapter *ExperimentBinderAdapter) BindAndCreate(
 		return experiment.BindResult{}, fmt.Errorf("%w: %v", experiment.ErrBindInvalidRequest, err)
 	}
 	expectedDevValidationProvenanceHash := request.ExpectedDevValidationProvenanceHash
+	// Experiment candidate and evaluator launches remain unattached: no ticket
+	// travels through experiment.AdmissionContext, so an experiment can only
+	// ever acquire one by being launched in explicit ticket context, which no
+	// caller does today. Keeping experiments out of ticket journals is the
+	// same rule that keeps them out of default operational evaluation.
 	result, err := adapter.binder.BindExperimentWithReadySourceAdmission(ctx, AdmissionContext{
 		TeamID: admission.TeamID, TeamName: admission.TeamName, CreatedBy: admission.CreatedBy,
 		Origin: Origin{Kind: admission.Origin.Kind, Reference: admission.Origin.Reference},

@@ -702,3 +702,55 @@ func TestDispatchOneRefusals(t *testing.T) {
 		t.Errorf("unknown workflow: got %v, want ErrWorkflowNotFound", err)
 	}
 }
+
+// Ticket dispatch is the one admission path that SUPPLIES an association. The
+// origin string records how the run was launched; the association records
+// whose work it is, and only the latter survives into a later retry.
+func TestDispatchOneSuppliesTheTicketAssociation(t *testing.T) {
+	deps, store, _, binder := v3DispatchDeps(t)
+	id := queuedTicket(t, store, "smoke")
+	setRepositorySnapshot(t, store, id, snapshot.SnapshotID(101))
+
+	if _, err := dispatch.DispatchOne(context.Background(), deps, id, "admin"); err != nil {
+		t.Fatalf("DispatchOne: %v", err)
+	}
+
+	admissions, _ := binder.Calls()
+	association := admissions[0].Ticket
+	if association == nil {
+		t.Fatal("ticket dispatch must supply the association")
+	}
+	if association.ID != int64(id) {
+		t.Fatalf("association id = %d, want %d", association.ID, id)
+	}
+	if association.Reference != fmt.Sprintf("ticket-%d", id) {
+		t.Fatalf("a native ticket gets stable synthetic evidence, got %q", association.Reference)
+	}
+}
+
+// A ticket filed through an external system carries that system's identifier
+// as its durable evidence, matching what migration 1773106158 backfilled.
+func TestDispatchOneCopiesAnExternalReferenceAsEvidence(t *testing.T) {
+	deps, store, _, binder := v3DispatchDeps(t)
+	id, err := store.Create(&tickets.Ticket{
+		Title: "fix X", Body: "details", Origin: "jira",
+		Repo: "tdmtrader/jetbridge", TargetBranch: "main",
+		WorkflowName: "smoke", UserName: "tdm", CreatedBy: "tdm", ExternalRef: "PROJ-7",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Transition(id, tickets.StateDraft, tickets.StateQueued, tickets.TransitionMeta{}); err != nil {
+		t.Fatal(err)
+	}
+	setRepositorySnapshot(t, store, id, snapshot.SnapshotID(101))
+
+	if _, err := dispatch.DispatchOne(context.Background(), deps, id, "admin"); err != nil {
+		t.Fatalf("DispatchOne: %v", err)
+	}
+
+	admissions, _ := binder.Calls()
+	if admissions[0].Ticket == nil || admissions[0].Ticket.Reference != "PROJ-7" {
+		t.Fatalf("external evidence = %+v", admissions[0].Ticket)
+	}
+}

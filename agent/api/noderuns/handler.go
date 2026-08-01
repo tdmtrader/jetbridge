@@ -83,6 +83,8 @@ func (handler *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w)
 		return
 	}
+	// Direct manual node launch: deliberately unattached, same reasoning as the
+	// workflow-run endpoint.
 	result, err := handler.binder.BindAndCreate(r.Context(), workflowrun.AdmissionContext{
 		TeamID: handler.team.ID, TeamName: handler.team.Name, CreatedBy: creator, Origin: workflowrun.Origin{Kind: "manual"},
 	}, workflowrun.BindRequest{

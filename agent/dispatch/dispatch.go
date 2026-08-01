@@ -239,6 +239,11 @@ func dispatch(
 	bindResult, err := deps.WorkflowBinder.BindAndCreate(ctx, workflowrun.AdmissionContext{
 		TeamID: deps.TeamID, TeamName: deps.TeamName, CreatedBy: dispatchedBy,
 		Origin: workflowrun.Origin{Kind: workflowrun.OriginKindTicket, Reference: strconv.Itoa(ticket.ID)},
+		// Explicit run context, separate from the origin string: the origin
+		// records how this run was launched, the association records whose
+		// work it is. Later retries and follow-on workflows inherit the
+		// association even though their origin kind is no longer "ticket".
+		Ticket: ticketAssociation(ticket),
 	}, workflowrun.BindRequest{
 		WorkflowName: definition.Name, Version: &version,
 		Inputs: map[string]snapshot.SnapshotID{
@@ -319,6 +324,18 @@ func dispatch(
 		}
 	}
 	return result, nil
+}
+
+// ticketAssociation copies the durable evidence the run keeps after the
+// mutable intake ticket is deleted. A ticket filed through an external system
+// carries that system's identifier; a native ticket gets a stable synthetic
+// one, matching what migration 1773106158 backfilled.
+func ticketAssociation(ticket *tickets.Ticket) *workflowrun.TicketAssociation {
+	reference := strings.TrimSpace(ticket.ExternalRef)
+	if reference == "" {
+		reference = fmt.Sprintf("ticket-%d", ticket.ID)
+	}
+	return &workflowrun.TicketAssociation{ID: int64(ticket.ID), Reference: reference}
 }
 
 func ticketOwnsReservation(ticket *tickets.Ticket, reservationKey string) bool {

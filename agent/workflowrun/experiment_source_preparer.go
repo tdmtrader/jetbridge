@@ -89,6 +89,8 @@ func (preparer *ExperimentResourceSourcePreparer) PrepareResourceSources(
 		if _, exists := prepared[key]; exists {
 			continue
 		}
+		// Experiment source preparation admits a source pipeline, not a
+		// workflow run, and stays unattached for the same reason.
 		ready, err := preparer.sources.AdmitManual(
 			ctx,
 			AdmissionContext{

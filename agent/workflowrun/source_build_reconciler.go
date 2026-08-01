@@ -648,6 +648,9 @@ func (reconciler *SourceBuildReconciler) reconcileBuild(
 	idempotencyKey := automaticSourceBuildIdempotencyKey(
 		pipeline.PipelineID, build.ID,
 	)
+	// Resource-triggered admission: unattached. The trigger is a standing
+	// source pipeline build, not a workflow run, so there is no run whose
+	// association could be inherited and nothing explicit to carry.
 	_, err = reconciler.launch.launcher.BindReadySourceAdmission(
 		ctx,
 		AdmissionContext{

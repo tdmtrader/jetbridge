@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 
 	"github.com/concourse/concourse/agent/broker"
 	"github.com/concourse/concourse/agent/snapshot"
@@ -36,11 +38,39 @@ type Origin struct {
 	Reference string
 }
 
+// TicketAssociation is explicit run context, never inferred from origin
+// strings or snapshot lineage. Reference is copied durably so the run can
+// still explain itself after the mutable intake ticket is deleted or archived.
+//
+// It does not change the workflow's type signature and does not create a
+// required work-item input port: a workflow may consume a work-item/v1
+// snapshot without acquiring ticket membership, and an associated workflow
+// need not expose that ticket as a semantic input.
+type TicketAssociation struct {
+	ID        int64
+	Reference string
+}
+
+func (association TicketAssociation) Validate() error {
+	if association.ID <= 0 || strings.TrimSpace(association.Reference) == "" {
+		return fmt.Errorf("%w: ticket association requires an id and a reference", ErrInvalidRequest)
+	}
+	if err := validateBoundedText("ticket reference", association.Reference, 1024, false, false); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidRequest, err)
+	}
+	return nil
+}
+
 type AdmissionContext struct {
 	TeamID    int
 	TeamName  string
 	CreatedBy string
 	Origin    Origin
+	// Ticket is the optional, explicit ticket context of this admission.
+	// Tickets are optional throughout: a nil Ticket admits a fully supported
+	// standalone run. A retry inherits its source's association instead of
+	// carrying its own, so callers of the retry path leave this nil.
+	Ticket *TicketAssociation
 }
 
 type BindRequest struct {

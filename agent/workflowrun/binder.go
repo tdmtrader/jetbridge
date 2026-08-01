@@ -185,6 +185,15 @@ func (b *Binder) LaunchMonitor(
 	if err != nil {
 		return 0, err
 	}
+	// A PR follow-up is the same ticket's work continued, so it inherits from
+	// the run that published the accepted review. The origin stays "pr-monitor"
+	// — how it was launched and whose work it is remain separate facts.
+	ticket, err := b.inheritTicketFrom(
+		ctx, source.TeamID, workflow.DefinitionKindWorkflow, accepted.ReviewWorkflowRunID,
+	)
+	if err != nil {
+		return 0, err
+	}
 	version := source.WorkflowVersion
 	result, err := b.bindAndCreate(
 		ctx,
@@ -194,6 +203,7 @@ func (b *Binder) LaunchMonitor(
 			Origin: Origin{
 				Kind: "pr-monitor", Reference: fmt.Sprintf("%d", source.BindingID),
 			},
+			Ticket: ticket,
 		},
 		BindRequest{
 			WorkflowName: source.WorkflowName, Version: &version,
@@ -289,6 +299,13 @@ func (b *Binder) bindAndCreate(
 	trusted *trustedSourceAdmission,
 ) (BindResult, error) {
 	admission, request, err := validateAndClone(admission, request)
+	if err != nil {
+		return BindResult{}, err
+	}
+	// Resolved before the idempotent-replay check, so a re-entry compares
+	// against the association the run was actually admitted under rather than
+	// against a caller that legitimately left it to be inherited.
+	admission, err = b.resolveTicketAssociation(ctx, admission, request)
 	if err != nil {
 		return BindResult{}, err
 	}
@@ -514,6 +531,7 @@ func (b *Binder) bindAndCreate(
 		RetryOfWorkflowRunID: cloneWorkflowRunID(request.RetryOf), Inputs: cloneRefs(refs),
 		ExperimentAdmission: cloneDBExperimentAdmission(request.ExperimentAdmission),
 	}
+	applyTicketAssociation(&createRequest, admission.Ticket)
 	if ready != nil {
 		createRequest.ResourceSourceAdmissionID = cloneInt64(&ready.AdmissionID)
 	} else if trusted != nil && trusted.monitor != nil {
@@ -679,6 +697,7 @@ func (b *Binder) bindSourceReplay(
 		RetryOfWorkflowRunID: cloneWorkflowRunID(request.RetryOf), Inputs: cloneRefs(inputs),
 		ExperimentAdmission: cloneDBExperimentAdmission(request.ExperimentAdmission),
 	}
+	applyTicketAssociation(&createRequest, admission.Ticket)
 	run, created, err := b.runs.CreateWithInputs(ctx, createRequest)
 	if err != nil {
 		if errors.Is(err, db.ErrAgentWorkflowRunExperimentAdmissionClosed) {
@@ -1804,10 +1823,22 @@ func compareCallerIntent(run db.AgentWorkflowRun, admission AdmissionContext, re
 		run.WorkflowName != request.WorkflowName || !equalStringPointer(run.FunctionID, wantFunction) ||
 		run.OriginKind != admission.Origin.Kind || run.OriginReference != admission.Origin.Reference ||
 		run.CreatedBy != admission.CreatedBy || !equalRunIDPointer(run.RetryOfWorkflowRunID, request.RetryOf) ||
+		!runMatchesTicketAssociation(run, admission.Ticket) ||
 		(request.Version != nil && run.WorkflowVersion != *request.Version) {
 		return ErrIdempotencyConflict
 	}
 	return nil
+}
+
+// runMatchesTicketAssociation compares the run's durable evidence rather than
+// only its live foreign key, so a run whose intake ticket was deleted still
+// reports the association it was admitted under.
+func runMatchesTicketAssociation(run db.AgentWorkflowRun, association *TicketAssociation) bool {
+	if association == nil {
+		return run.TicketID == nil && run.TicketReference == ""
+	}
+	return run.TicketReference == association.Reference &&
+		(run.TicketID == nil || *run.TicketID == association.ID)
 }
 
 func compareAllocatedRun(run db.AgentWorkflowRun, request db.AgentWorkflowRunCreateRequest) error {
@@ -1820,7 +1851,9 @@ func compareAllocatedRun(run db.AgentWorkflowRun, request db.AgentWorkflowRunCre
 		!equalInt64Pointer(run.ResourceSourceAdmissionID, request.ResourceSourceAdmissionID) ||
 		!jsonEqual(run.ParameterizedConfig, request.ParameterizedConfig) || run.OriginKind != request.OriginKind ||
 		run.OriginReference != request.OriginReference || run.CreatedBy != request.CreatedBy ||
-		!equalRunIDPointer(run.RetryOfWorkflowRunID, request.RetryOfWorkflowRunID) {
+		!equalRunIDPointer(run.RetryOfWorkflowRunID, request.RetryOfWorkflowRunID) ||
+		run.TicketReference != request.TicketReference ||
+		(run.TicketID != nil && request.TicketID != nil && *run.TicketID != *request.TicketID) {
 		return ErrIdempotencyConflict
 	}
 	return nil
@@ -1944,7 +1977,105 @@ func cloneConfig(value atc.Config) atc.Config {
 	return cloned.(atc.Config)
 }
 
-func cloneAdmission(value AdmissionContext) AdmissionContext { return value }
+func cloneAdmission(value AdmissionContext) AdmissionContext {
+	value.Ticket = cloneTicketAssociation(value.Ticket)
+	return value
+}
+
+func applyTicketAssociation(
+	request *db.AgentWorkflowRunCreateRequest,
+	association *TicketAssociation,
+) {
+	if association == nil {
+		return
+	}
+	id := association.ID
+	request.TicketID = &id
+	request.TicketReference = association.Reference
+}
+
+func cloneTicketAssociation(value *TicketAssociation) *TicketAssociation {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
+// resolveTicketAssociation decides the run's optional ticket context exactly
+// once, keeping it explicit rather than inferred from origin strings or
+// snapshot lineage.
+//
+// A retry inherits its source's association: the retried work is the same
+// ticket's work, and the immutable evidence must travel with it. That
+// inheritance is authoritative — a caller cannot use a retry to attach a
+// ticket the source never had, nor to move a retry to a different ticket.
+func (b *Binder) resolveTicketAssociation(
+	ctx context.Context,
+	admission AdmissionContext,
+	request BindRequest,
+) (AdmissionContext, error) {
+	if admission.Ticket != nil {
+		if err := admission.Ticket.Validate(); err != nil {
+			return AdmissionContext{}, err
+		}
+	}
+	if request.RetryOf == nil {
+		return admission, nil
+	}
+	source, found, err := b.get(ctx, admission.TeamID, request.DefinitionKind, *request.RetryOf)
+	if err != nil {
+		return AdmissionContext{}, fmt.Errorf("%w: load retry source ticket association", ErrPlatformFailure)
+	}
+	if !found {
+		// The durable retry validation stays authoritative if the source row is
+		// missing; refusing to invent an association is the safe answer here.
+		if admission.Ticket != nil {
+			return AdmissionContext{}, fmt.Errorf(
+				"%w: a retry cannot declare a ticket its source does not have", ErrInvalidRequest)
+		}
+		return admission, nil
+	}
+	inherited := (*TicketAssociation)(nil)
+	if source.TicketID != nil {
+		inherited = &TicketAssociation{ID: *source.TicketID, Reference: source.TicketReference}
+	}
+	if admission.Ticket != nil {
+		if inherited == nil || *admission.Ticket != *inherited {
+			return AdmissionContext{}, fmt.Errorf(
+				"%w: a retry must inherit its source's ticket association", ErrInvalidRequest)
+		}
+	}
+	admission.Ticket = inherited
+	return admission, nil
+}
+
+// inheritTicketFrom reads the association of an explicitly named launching run.
+// A missing or unattached source yields no association rather than an error:
+// tickets are optional throughout, and a follow-on workflow launched from a
+// standalone run is itself standalone.
+//
+// A source whose intake ticket was deleted keeps only its evidence, which has
+// no live id to re-admit under, so the follow-on is unattached. The deleted
+// ticket has no journal to appear in either.
+func (b *Binder) inheritTicketFrom(
+	ctx context.Context,
+	teamID int,
+	kind workflow.DefinitionKind,
+	runID snapshot.WorkflowRunID,
+) (*TicketAssociation, error) {
+	if runID.Validate() != nil {
+		return nil, nil
+	}
+	source, found, err := b.get(ctx, teamID, kind, runID)
+	if err != nil {
+		return nil, fmt.Errorf("%w: load launching run ticket association", ErrPlatformFailure)
+	}
+	if !found || source.TicketID == nil {
+		return nil, nil
+	}
+	return &TicketAssociation{ID: *source.TicketID, Reference: source.TicketReference}, nil
+}
 
 func cloneRefs(values map[string]snapshot.SnapshotRef) map[string]snapshot.SnapshotRef {
 	cloned := make(map[string]snapshot.SnapshotRef, len(values))
