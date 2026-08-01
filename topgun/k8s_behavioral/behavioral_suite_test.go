@@ -311,6 +311,8 @@ func dumpArtifactDaemonLogsOnFailure() {
 	if !CurrentSpecReport().Failed() || config.Kubeconfig == "" {
 		return
 	}
+	dumpArtifactDaemonRestarts()
+
 	out, err := exec.Command("kubectl",
 		"--kubeconfig", config.Kubeconfig,
 		"-n", config.Namespace,
@@ -323,6 +325,48 @@ func dumpArtifactDaemonLogsOnFailure() {
 	}
 	log.Printf("=== artifact-daemon logs (tail 400) for FAILED spec %q ===\n%s=== end artifact-daemon logs ===",
 		CurrentSpecReport().FullText(), string(out))
+}
+
+// dumpArtifactDaemonRestarts reports whether the daemon died and why.
+//
+// A daemon that restarts mid-run takes its hostPort with it, so every artifact
+// fetch in that window fails with "connection refused" from an init container
+// that had nothing to do with it. The current container's logs cannot show this
+// — they begin at the *restart*, so they read like a clean startup and the
+// crash looks like it never happened. What distinguishes an OOM kill from a
+// liveness-probe kill from a panic is the previous container's exit, which
+// lives only in lastState and in `logs --previous`.
+//
+// Restart count and termination reason therefore come first, and the dead
+// container's own last words follow when there is a corpse to read.
+func dumpArtifactDaemonRestarts() {
+	state, err := exec.Command("kubectl",
+		"--kubeconfig", config.Kubeconfig,
+		"-n", config.Namespace,
+		"get", "pods", "-l", "app.kubernetes.io/component=artifact-daemon",
+		"-o", "custom-columns=POD:.metadata.name,RESTARTS:.status.containerStatuses[0].restartCount,"+
+			"LAST_REASON:.status.containerStatuses[0].lastState.terminated.reason,"+
+			"LAST_EXIT:.status.containerStatuses[0].lastState.terminated.exitCode,"+
+			"LAST_FINISHED:.status.containerStatuses[0].lastState.terminated.finishedAt",
+	).CombinedOutput()
+	if err != nil {
+		log.Printf("dumpArtifactDaemonRestarts: kubectl get failed: %v", err)
+		return
+	}
+	log.Printf("=== artifact-daemon restart state ===\n%s=== end artifact-daemon restart state ===", string(state))
+
+	previous, err := exec.Command("kubectl",
+		"--kubeconfig", config.Kubeconfig,
+		"-n", config.Namespace,
+		"logs", "-l", "app.kubernetes.io/component=artifact-daemon",
+		"--previous", "--tail=100", "--prefix",
+	).CombinedOutput()
+	if err != nil {
+		// No previous container is the normal case: the daemon never died.
+		return
+	}
+	log.Printf("=== artifact-daemon PREVIOUS container logs (it restarted) ===\n%s=== end previous logs ===",
+		string(previous))
 }
 
 // ---------------------------------------------------------------------
