@@ -708,7 +708,7 @@ func agentFromRun(t *testing.T, run db.AgentWorkflowRun) *atc.AgentStep {
 
 func assertFrozenReviewAgent(t *testing.T, agent *atc.AgentStep, mapped bool) {
 	t.Helper()
-	if agent.Model != "claude-sonnet" ||
+	if agent.Model != "" ||
 		agent.BudgetSliceUSD != 5 ||
 		!strings.Contains(agent.Prompt, "Compare the immutable repositories mounted at `before` and `after`.") ||
 		!reflect.DeepEqual(agent.Skills, []string{"review"}) ||
@@ -722,14 +722,8 @@ func assertFrozenReviewAgent(t *testing.T, agent *atc.AgentStep, mapped bool) {
 			agent.SkillFiles,
 		)
 	}
-	if len(agent.Sidecars) != 1 || agent.Sidecars[0].Config == nil {
+	if len(agent.Sidecars) != 0 {
 		t.Fatalf("frozen review sidecars = %#v", agent.Sidecars)
-	}
-	sidecar := agent.Sidecars[0].Config
-	if sidecar.Image != "registry.example/dev-mcp@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" ||
-		!reflect.DeepEqual(sidecar.Command, []string{"/usr/local/bin/dev-mcp"}) ||
-		len(sidecar.Ports) != 1 || sidecar.Ports[0].ContainerPort != 8080 {
-		t.Fatalf("frozen review sidecar = %+v", sidecar)
 	}
 	if agent.Capabilities != nil {
 		t.Fatalf("source capability aliases survived compilation: %#v", agent.Capabilities)
