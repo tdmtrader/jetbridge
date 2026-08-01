@@ -65,11 +65,20 @@ type TicketProjector interface {
 
 // NodeOccurrenceFreezer freezes the durable per-node projection of a run that
 // has just terminalized. It is called from the ONE place a run becomes
-// terminal, at the moment the finalizing node wins the CAS — that is the last
-// instant at which every source the projection derives from is guaranteed to
-// still exist. Concourse build GC and workflow-template GC only ever consider
-// runs that are already terminal, and both run later on their own component
-// intervals, so a freeze inside finalization strictly precedes them.
+// terminal, at the moment the finalizing node wins the CAS — the earliest
+// point at which the outcome is settled and the latest at which the sources
+// the projection derives from are still there.
+//
+// Nothing can reclaim those sources between the two. WorkflowRunTemplateLifecycle's
+// retired pass is what cascades a run's builds and their build_events away,
+// and it admits a template only when every citing agent_workflow_runs row is
+// already terminal AND every pipeline_run completed more than the retirement
+// period ago — so the terminal status this call site follows is a
+// precondition it takes hours to satisfy, not a starting gun. Build-log
+// reaping is likewise per-job and retention-bounded. The freeze is not inside
+// the finalizing transaction, so the ordering is a wide practical margin
+// rather than a database-level guarantee; closing it entirely would mean
+// deriving the projection inside ReconciliationStore.Finalize.
 //
 // Implementations gather the run's authoritative evidence, call
 // occurrence.Derive, and write the result. They must be idempotent, and they
