@@ -8,11 +8,26 @@ import (
 // clientDetailError carries a message that is safe to return to the API
 // caller.
 //
-// Safe means one thing precisely: every byte of the message is derived from
-// the caller's OWN submitted content plus fixed strings this repository
-// wrote. Host paths, scratch directories, storage-node identities, database
-// state, and wrapped dependency errors are none of those, and must never be
-// marked.
+// Safe means one thing precisely: every byte of the message derives from one
+// of three sources and nothing else —
+//
+//  1. the caller's OWN submitted content;
+//  2. fixed strings and build-time constants this repository wrote — type
+//     refs, the current schema digest for a type, size limits, a time layout;
+//  3. values the platform already declared TO this caller for this request:
+//     the exposed input port names and type refs the sealer handed the
+//     producing step (contracts/record.go:163). The API upload path builds an
+//     empty ValidationContext, so nothing from source 3 reaches a client there
+//     at all.
+//
+// Host paths, scratch directories, storage-node identities, snapshot IDs, the
+// digest of any snapshot other than the caller's own, and database state are
+// none of the three and must never be marked. Neither is a dependency error's
+// text UNLESS the marking site can name the dependency and argue its message
+// is composed only from sources 1 and 2 — encoding/json's decoder text is not
+// (it names Go struct types); time.ParseError's is (caller value + our
+// layout). Formatting %v of an error you did not author is the usual way this
+// gets broken by accident.
 //
 // The channel is opt-in because the default has to be silence: the snapshot
 // API maps failures onto fixed strings on purpose, and one blanket "just
@@ -41,6 +56,16 @@ func (e *clientDetailError) Error() string {
 func (e *clientDetailError) Unwrap() error { return e.err }
 
 // ClientDetailf creates a new error whose message is safe to disclose.
+//
+// Choose between the two constructors by asking who authored the text:
+//
+//   - This repository authored it AND it is the explanation the caller needs
+//     ("adapter is required") — ClientDetailf, formatting it in with %v. The
+//     chain is dropped, so first confirm no caller matches a sentinel through
+//     the site.
+//   - A dependency authored it (encoding/json, os) — WrapClientDetailf, and
+//     describe the failure yourself without restating err. Error() still
+//     appends the wrapped text for the log; ClientDetail never discloses it.
 func ClientDetailf(format string, args ...any) error {
 	return &clientDetailError{detail: fmt.Sprintf(format, args...)}
 }

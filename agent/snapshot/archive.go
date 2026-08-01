@@ -869,12 +869,16 @@ func planMaterialization(name string, kind extractedKind, materialized map[strin
 	return append(planned, materialization{name: name}), nil
 }
 
+// validateHeader's own rejections (as opposed to the validateArchivePath call
+// it delegates to first) share the same safety argument: each is built from
+// hdr's caller-submitted fields — Name, Linkname, Typeflag, a PAX record key —
+// plus a fixed string, and none of them wrap a dependency error.
 func validateHeader(hdr *tar.Header) error {
 	if err := validateArchivePath(hdr.Name); err != nil {
 		return err
 	}
 	if len(hdr.Xattrs) != 0 {
-		return fmt.Errorf("snapshot: PAX and extended metadata are not supported for %q", hdr.Name)
+		return ClientDetailf("snapshot: PAX and extended metadata are not supported for %q", hdr.Name)
 	}
 	for key, value := range hdr.PAXRecords {
 		switch key {
@@ -884,59 +888,65 @@ func validateHeader(hdr *tar.Header) error {
 			// the hidden base header contained. The effective Name was validated
 			// above and is the only name we materialize.
 			if value != hdr.Name {
-				return fmt.Errorf("snapshot: inconsistent PAX path metadata for %q", hdr.Name)
+				return ClientDetailf("snapshot: inconsistent PAX path metadata for %q", hdr.Name)
 			}
 		case "linkpath":
 			if hdr.Typeflag != tar.TypeSymlink {
-				return fmt.Errorf("snapshot: PAX linkpath is only permitted for symlink entries")
+				return ClientDetailf("snapshot: PAX linkpath is only permitted for symlink entries")
 			}
 			if value != hdr.Linkname {
-				return fmt.Errorf("snapshot: inconsistent PAX link metadata for %q", hdr.Name)
+				return ClientDetailf("snapshot: inconsistent PAX link metadata for %q", hdr.Name)
 			}
 		default:
-			return fmt.Errorf("snapshot: unsupported PAX metadata %q for %q", key, hdr.Name)
+			return ClientDetailf("snapshot: unsupported PAX metadata %q for %q", key, hdr.Name)
 		}
 	}
 	if hdr.Mode&06000 != 0 {
-		return fmt.Errorf("snapshot: setuid or setgid bits are not permitted for %q", hdr.Name)
+		return ClientDetailf("snapshot: setuid or setgid bits are not permitted for %q", hdr.Name)
 	}
 	switch hdr.Typeflag {
 	case tar.TypeReg, tar.TypeRegA:
 		if hdr.Size < 0 {
-			return fmt.Errorf("snapshot: regular file %q has negative size", hdr.Name)
+			return ClientDetailf("snapshot: regular file %q has negative size", hdr.Name)
 		}
 	case tar.TypeDir, tar.TypeSymlink:
 		if hdr.Size != 0 {
-			return fmt.Errorf("snapshot: non-regular entry %q declares content", hdr.Name)
+			return ClientDetailf("snapshot: non-regular entry %q declares content", hdr.Name)
 		}
 	default:
-		return fmt.Errorf("snapshot: unsupported tar entry type %q for %q", hdr.Typeflag, hdr.Name)
+		return ClientDetailf("snapshot: unsupported tar entry type %q for %q", hdr.Typeflag, hdr.Name)
 	}
 	return nil
 }
 
+// validateArchivePath's rejections are safe to disclose in full: every one is
+// built from the caller's own submitted entry name plus a fixed string or a
+// build-time size constant, and none of them wrap a dependency error. This is
+// also the highest-value mark in the snapshot API: a first user's `tar -cf
+// x.tar .` emits a "./" entry and lands on the last rejection below, and
+// without a mark the caller sees nothing about why.
 func validateArchivePath(name string) error {
 	if name == "" {
-		return fmt.Errorf("snapshot: archive path is empty")
+		return ClientDetailf("snapshot: archive path is empty")
 	}
 	if int64(len(name)) > MaxSnapshotPathBytes {
-		return fmt.Errorf("snapshot: archive path exceeds %d bytes", MaxSnapshotPathBytes)
+		return ClientDetailf("snapshot: archive path exceeds %d bytes", MaxSnapshotPathBytes)
 	}
 	if strings.Contains(name, `\`) {
-		return fmt.Errorf("snapshot: archive path %q contains a backslash", name)
+		return ClientDetailf("snapshot: archive path %q contains a backslash", name)
 	}
 	if path.IsAbs(name) {
-		return fmt.Errorf("snapshot: archive path %q is absolute", name)
+		return ClientDetailf("snapshot: archive path %q is absolute", name)
 	}
 	if containsDriveLikeSegment(name) {
-		return fmt.Errorf("snapshot: archive path %q is drive-like", name)
+		return ClientDetailf("snapshot: archive path %q is drive-like", name)
 	}
 	if strings.HasSuffix(name, "/") {
-		return fmt.Errorf("snapshot: archive path %q has a trailing separator", name)
+		return ClientDetailf("snapshot: archive path %q has a trailing separator", name)
 	}
 	for _, segment := range strings.Split(name, "/") {
 		if segment == "" || segment == "." || segment == ".." {
-			return fmt.Errorf("snapshot: archive path %q contains an empty, dot, or traversal segment", name)
+			return ClientDetailf("snapshot: archive path %q contains an empty, dot, or traversal segment", name)
 		}
 	}
 	return nil

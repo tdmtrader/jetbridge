@@ -108,7 +108,7 @@ func (v documentValidator[T]) Validate(ctx context.Context, root *os.Root, _ sna
 		return snapshot.ValidationResult{}, err
 	}
 	if err := document.Validate(); err != nil {
-		return snapshot.ValidationResult{}, fmt.Errorf("snapshot contracts: %s: %w", v.fileName, err)
+		return snapshot.ValidationResult{}, snapshot.ClientDetailf("snapshot contracts: %s: %v", v.fileName, err)
 	}
 	return snapshot.ValidationResult{}, nil
 }

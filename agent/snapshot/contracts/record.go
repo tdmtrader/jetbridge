@@ -290,6 +290,16 @@ func admitRecordForSeal[T any](ctx context.Context, root *os.Root, expected snap
 	if err := decodeStrictDocument(ctx, root, "record.json", &record); err != nil {
 		return Record[T]{}, err
 	}
+	// Everything AdmitForSeal composes is disclosable: envelope shape from
+	// record.json's own values, plus RebindSubjectsToExposedInputs naming the
+	// declared type of an input this producer was itself handed. Do not add a
+	// snapshot ID, a digest, or a host path to any message reachable from here
+	// — see agent/snapshot/client_detail.go.
+	//
+	// This gate never runs record.Body's own Validate(): that call happens one
+	// layer up, in each type's own AdmitForSeal (e.g. reviewBody in review.go),
+	// after this function returns. That layer is still unmarked — extending
+	// the mark past the envelope and into a record's body is separate work.
 	if err := record.AdmitForSeal(expected, declarations); err != nil {
 		return Record[T]{}, snapshot.ClientDetailf("snapshot contracts: record.json: %v", err)
 	}
