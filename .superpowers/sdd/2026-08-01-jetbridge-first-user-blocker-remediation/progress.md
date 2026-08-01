@@ -207,6 +207,26 @@
     identities from `/api/v1/info`, read-only runtime ServiceAccount/RBAC
     disposition, and evidence-based release disposition for `JBUSER-007`
     through `JBUSER-009`.
+  - First rollout attempt: dispatcher paused at `2026-08-01T19:21:33Z` for
+    exact pushed/ref commit `72b831de8a8a482f4dbcf4afea60928423663de9`.
+    Set-self build `645222` and build-and-vet build `645223` succeeded. Unit-
+    tests build `645231` consumed that exact ref and stopped the rollout before
+    runtime image publication or deployment.
+  - RED: `go test ./atc/exec -count=1` passed 689/693 specs and failed four
+    flight-recorder fixture cases. Adding `mcp.ready` at index 1 had shifted the
+    stream while downstream positional truncations and mutations still targeted
+    the old locations; this also left cost-floor cases latently false-green.
+    Production ingestion was not at fault.
+  - GREEN: named semantic event indexes repaired every partial-stream and event
+    mutation site while preserving `mcp.ready`; the full package passed 693/693
+    (`ok github.com/concourse/concourse/atc/exec`), and `git diff --check`
+    passed. Independent Task 6 blocking review round 1 PASS found no Critical,
+    High, or acceptance-blocking findings.
+  - Current disposition: dispatcher remains paused. The corrected commit,
+    push, and pipeline retry are pending; no rollout or node acceptance is
+    claimed. The repository pipeline may publish and verify an immutable runner
+    digest, but external home-infra/ArgoCD owns activation. Same-commit node
+    acceptance cannot proceed until that reviewed handoff completes.
   - Review budget: maximum three blocking rounds.
 
 ## Execution rules

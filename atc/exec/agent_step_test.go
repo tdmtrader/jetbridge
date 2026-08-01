@@ -1682,6 +1682,14 @@ var _ = Describe("AgentStep", func() {
 	})
 
 	Context("flight-recorder ingestion", func() {
+		const (
+			flightEventStepStart = iota
+			flightEventMCPReady
+			flightEventToolCall
+			flightEventCostRecord
+			flightEventStepEnd
+		)
+
 		var resultsJSON string
 		var eventLines []string
 		var streamFullFlight func(context.Context, runtime.Artifact, string) (io.ReadCloser, error)
@@ -1767,7 +1775,7 @@ var _ = Describe("AgentStep", func() {
 		Context("when events.ndjson has no step.end", func() {
 			BeforeEach(func() {
 				// events fixture truncated after tool.call
-				eventLines = eventLines[:2]
+				eventLines = eventLines[:flightEventToolCall+1]
 			})
 
 			It("records an error row", func() {
@@ -1787,10 +1795,11 @@ var _ = Describe("AgentStep", func() {
 				oversized := `{"ts":"2026-07-10T12:00:01Z","event":"tool.call","data":{"blob":"` +
 					strings.Repeat("x", 5<<20) + `"}}`
 				eventLines = []string{
-					eventLines[0], // step.start
+					eventLines[flightEventStepStart], // step.start
+					eventLines[flightEventMCPReady],  // mcp.ready
 					oversized,
-					eventLines[2], // cost.record
-					eventLines[3], // step.end
+					eventLines[flightEventCostRecord], // cost.record
+					eventLines[flightEventStepEnd],    // step.end
 				}
 			})
 
@@ -1813,7 +1822,7 @@ var _ = Describe("AgentStep", func() {
 		Context("when the stream has no step.end", func() {
 			BeforeEach(func() {
 				resultsJSON = `{"schema_version":"1.0","status":"pass","confidence":1,"summary":"all good","artifacts":[]}`
-				eventLines = eventLines[:3] // step.start, tool.call, cost.record — no step.end
+				eventLines = eventLines[:flightEventStepEnd] // step.start, mcp.ready, tool.call, cost.record — no step.end
 			})
 
 			It("records error, whatever results.json claimed", func() {
@@ -1969,7 +1978,7 @@ var _ = Describe("AgentStep", func() {
 			// Run 1: partial flight — events truncated before cost.record and
 			// step.end, results.json not written yet. Zero cost ⇒ row inserted,
 			// nothing to charge.
-			partialEvents := strings.Join(eventLines[:2], "\n") + "\n"
+			partialEvents := strings.Join(eventLines[:flightEventCostRecord], "\n") + "\n"
 			fakeStreamer.StreamFileStub = func(ctx context.Context, _ runtime.Artifact, path string) (io.ReadCloser, error) {
 				if err := ctx.Err(); err != nil {
 					return nil, err
@@ -2131,7 +2140,7 @@ var _ = Describe("AgentStep", func() {
 			Context("when the flight recorder under-reports (tampered events.ndjson)", func() {
 				BeforeEach(func() {
 					// The agent zeroed its own cost.record before exit.
-					eventLines[2] = `{"ts":"2026-07-10T12:00:02Z","event":"cost.record","data":{"source":"agent_step","provider":"anthropic","model":"m1","input_tokens":0,"output_tokens":0,"cache_read_tokens":0,"cache_creation_tokens":0,"turns":0,"cost_usd":0}}`
+					eventLines[flightEventCostRecord] = `{"ts":"2026-07-10T12:00:02Z","event":"cost.record","data":{"source":"agent_step","provider":"anthropic","model":"m1","input_tokens":0,"output_tokens":0,"cache_read_tokens":0,"cache_creation_tokens":0,"turns":0,"cost_usd":0}}`
 				})
 
 				It("floors the metrics row and the ledger at the observed stdout envelope", func() {
@@ -2195,7 +2204,7 @@ var _ = Describe("AgentStep", func() {
 			It("trusts a flight recorder that reports MORE than the observed floor", func() {
 				// e.g. gateway-external tool spend rolled into cost.record by a
 				// future runner: the floor only ever raises, never caps.
-				eventLines[2] = `{"ts":"2026-07-10T12:00:02Z","event":"cost.record","data":{"source":"agent_step","provider":"anthropic","model":"m1","input_tokens":100,"output_tokens":50,"cache_read_tokens":1,"cache_creation_tokens":2,"turns":9,"cost_usd":0.50}}`
+				eventLines[flightEventCostRecord] = `{"ts":"2026-07-10T12:00:02Z","event":"cost.record","data":{"source":"agent_step","provider":"anthropic","model":"m1","input_tokens":100,"output_tokens":50,"cache_read_tokens":1,"cache_creation_tokens":2,"turns":9,"cost_usd":0.50}}`
 				_, err := step.Run(ctx, state)
 				Expect(err).ToNot(HaveOccurred())
 				Expect(fakeChecker.RecordArgsForCall(0).CostUSD).To(BeNumerically("~", 0.50, 1e-9))
@@ -2252,7 +2261,7 @@ var _ = Describe("AgentStep", func() {
 				chosenContainer.ProcessDefs[0].Stub.ExitStatus = 2
 
 				resultsJSON = `{"schema_version":"1.0","status":"fail","confidence":0.9,"summary":"tests failed","artifacts":[]}`
-				eventLines[3] = `{"ts":"2026-07-10T12:01:01Z","event":"step.end","data":{"step_name":"write-spec","status":"failed","summary":"tests failed","wall_time_seconds":61,"cost_usd":0.42,"turns":9}}`
+				eventLines[flightEventStepEnd] = `{"ts":"2026-07-10T12:01:01Z","event":"step.end","data":{"step_name":"write-spec","status":"failed","summary":"tests failed","wall_time_seconds":61,"cost_usd":0.42,"turns":9}}`
 			})
 
 			It("fails the step without erroring and still ingests the failed row", func() {

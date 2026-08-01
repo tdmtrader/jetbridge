@@ -169,6 +169,32 @@ inferences and proposed follow-ups are labeled as such.
   suggested command for logs. A first user must know to take `planned_build_id`
   and run `fly watch -b`.
 
+## Remediation Rollout Gate
+
+- The dispatcher was paused at `2026-08-01T19:21:33Z` for exact pushed/ref
+  commit `72b831de8a8a482f4dbcf4afea60928423663de9`. Set-self build `645222` and
+  build-and-vet build `645223` succeeded; unit-tests build `645231` consumed
+  that exact ref and stopped the rollout before runtime image publication or
+  deployment.
+- The unit gate's `go test ./atc/exec -count=1` run passed 689/693 specs and
+  exposed four shared-fixture failures. The new `mcp.ready` event at index 1
+  had shifted later events while positional fixture truncations and mutations
+  still used the old locations, including cost cases that had become latent
+  false-greens. Production ingestion was not at fault. Named semantic event
+  indexes repaired the fixture; the full package then passed 693/693
+  (`ok github.com/concourse/concourse/atc/exec`), `git diff --check` passed,
+  and independent Task 6 blocking review round 1 passed with no blocking
+  findings.
+- This is positive pipeline safety behavior: the full package gate caught
+  shared-fixture semantic drift before deployment. It is also a node-platform
+  pain point because focused feature tests did not expose that shared-fixture
+  dependency.
+- The repository pipeline can publish and verify the immutable runner digest,
+  but external home-infra/ArgoCD owns its activation. Same-commit node
+  acceptance cannot begin until that reviewed handoff completes. The dispatcher
+  remains paused; the corrected commit, push, and pipeline retry are pending,
+  and no rollout success is claimed.
+
 ## Post-Trial Blocker Trace
 
 The remediation-track audit converted four of the deployment symptoms into
