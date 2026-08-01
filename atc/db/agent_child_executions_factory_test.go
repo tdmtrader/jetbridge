@@ -309,6 +309,7 @@ var _ = Describe("AgentChildExecutionsFactory", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 
+		dbConn.SetMaxOpenConns(2)
 		locked, err := dbConn.BeginTx(context.Background(), nil)
 		Expect(err).NotTo(HaveOccurred())
 		defer db.Rollback(locked)
