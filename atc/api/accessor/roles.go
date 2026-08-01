@@ -173,6 +173,7 @@ var DefaultRoles = map[string]string{
 
 	// Ticket-core routes (00-shared-contracts.md §4.2).
 	atc.ListAgentTickets:      ViewerRole,
+	atc.ListAgentTicketRuns:   ViewerRole,
 	atc.CreateAgentTicket:     MemberRole,
 	atc.GetAgentTicket:        ViewerRole,
 	atc.UpdateAgentTicket:     MemberRole,
