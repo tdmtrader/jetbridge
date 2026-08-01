@@ -384,6 +384,38 @@ func defaultDependencies() dependencies {
 	}
 }
 
+// TestNewHandlerRejectsEachMissingInjectedDependency pins the constructor's
+// fail-closed check. Cancel's guarantee is that a node route can never reach
+// a workflow run, and it enforces that with injected collaborators — a
+// Config that silently constructs with one of them nil would hand every
+// request a nil-deref instead of a refusal at boot. Each dependency is
+// omitted in turn so the check cannot rot into testing only whichever one
+// happens to be listed first.
+func TestNewHandlerRejectsEachMissingInjectedDependency(t *testing.T) {
+	team := workflowrunsapi.TrustedTeam{ID: 1, Name: atc.DefaultTeamName}
+	identity := func(*http.Request) (string, error) { return "alice", nil }
+
+	for name, omit := range map[string]func(*noderuns.Config){
+		"identity":  func(config *noderuns.Config) { config.Identity = nil },
+		"binder":    func(config *noderuns.Config) { config.Binder = nil },
+		"runs":      func(config *noderuns.Config) { config.Runs = nil },
+		"canceler":  func(config *noderuns.Config) { config.Canceler = nil },
+		"manifests": func(config *noderuns.Config) { config.Manifests = nil },
+	} {
+		t.Run(name, func(t *testing.T) {
+			deps := defaultDependencies()
+			config := noderuns.Config{
+				Team: team, Identity: identity,
+				Binder: deps.binder, Runs: deps.runs, Canceler: deps.canceler, Manifests: fakeManifestStore{},
+			}
+			omit(&config)
+			if _, err := noderuns.NewHandler(config); err == nil {
+				t.Fatalf("NewHandler accepted a Config with no %s", name)
+			}
+		})
+	}
+}
+
 func mustHandler(t *testing.T, deps dependencies) *noderuns.Handler {
 	t.Helper()
 	handler, err := noderuns.NewHandler(noderuns.Config{
