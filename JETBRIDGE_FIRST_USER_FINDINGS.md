@@ -169,6 +169,61 @@ inferences and proposed follow-ups are labeled as such.
   suggested command for logs. A first user must know to take `planned_build_id`
   and run `fly watch -b`.
 
+## Post-Trial Blocker Trace
+
+The remediation-track audit converted four of the deployment symptoms into
+exact repository defects and narrowed the remaining live 422 without claiming
+an unproven cause:
+
+- The exact resource capture did not fail while finding the Git version. It
+  failed before creating its build because both the public `Capture` path and
+  composition-only `CapturePersistedSelection` path in
+  `agent/resourcecapture/capture.go` name the server template
+  `agent-resource-capture-<operation-key[:24]>`, but
+  `agent/workflowrun.TemplateSaver.SaveOrReuse` admits an immutable template
+  only when its name ends in `-<target-config-hash[:12]>`. The permissive fake
+  behind the capture unit test did not exercise that generic saver invariant.
+  `FindResourceCaptureOutput` and the background finalizer also reconstruct the
+  old name in SQL, so both constructors and both authorization queries must
+  move together.
+- The output-builder's `/healthz` endpoint proves only that its HTTP process is
+  listening. Its MCP adapter handles `tools/list`, `tools/call`, and `ping`, but
+  not `initialize` or `notifications/initialized`; its tool declarations also
+  have neither descriptions nor input schemas. A real Claude MCP client can
+  therefore mark the server failed even while the runner's health poll passes.
+  The runner needs a managed-builder protocol preflight before starting a paid
+  model session.
+- The budget failure is an image contract mismatch, not an argument-construction
+  bug. `agent/runner/runner.go` correctly emits `--max-budget-usd` for every
+  positive slice, while `deploy/agent-runner/Dockerfile` installs Claude Code
+  2.0.1. The repository already checksum-pins a native Claude 2.1.212 binary in
+  the broker image. Converging on that artifact and smoking every load-bearing
+  runner flag is safer than either dropping the cap or checking Dockerfile text
+  alone.
+- The live direct-upload 422 still has no proven semantic cause. The current
+  local validator accepts both the clean source and the real Fly archive after
+  server canonicalization, which makes deployed-code/runtime skew plausible but
+  not established. The sealer retains the validator cause internally;
+  `HandlerFactory.writeSnapshotError` intentionally replaces it with a fixed
+  generic message. The safe repair is a closed allow-list of repository failure
+  categories plus a full Fly-archive-to-real-validator regression, never raw Git
+  stderr or configuration text.
+- The log-correlation data already exists. `RunSummary.PlannedBuildID` is on the
+  API response, and both node and workflow `show-run` commands share
+  `printAgentWorkflowRunDetail`; that plain renderer simply omits the field.
+  Printing the build ID and exact selected-target `fly watch -b` command is a
+  bounded diagnostic improvement that does not expose the deliberately
+  redacted database error message.
+- `fly targets` does not authenticate before printing expiry. It labels any
+  token format its local JWT expiry parser cannot decode as `invalid token`, so
+  an opaque but usable bearer token is misreported. The honest local result is
+  “expiry unavailable” with `fly -t <target> status` as the authenticated check.
+
+The implementation design and task-by-task plan are recorded at
+`docs/superpowers/specs/2026-08-01-jetbridge-first-user-blocker-remediation-design.md`
+and
+`docs/superpowers/plans/2026-08-01-jetbridge-first-user-blocker-remediation.md`.
+
 ## Effective Node-Authoring Patterns
 
 - Keep typed-output mechanics in the prompt and reasoning method in a bundled
