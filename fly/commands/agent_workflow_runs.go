@@ -543,10 +543,17 @@ func failureReasonFromErrorEvents(errorEvents []event.Error) string {
 // ExitStatus path, not the error path, and the engine's StatusFailed branch
 // adds nothing further). event.FinishTask is the only signal left for that
 // case.
+//
+// The message says "step", not "agent step": a rendered workflow can carry an
+// ordinary task in the same build — agent/workflow/render.go injects merge
+// preflight tasks into the same PlanSequence — and those reach the same
+// taskDelegate.Finished. event.FinishTask.Origin carries only a plan ID, so
+// the CLI cannot tell which kind exited without more lookups than a
+// diagnostic line is worth.
 func exitStatusReasonFromFinishTaskEvents(finishEvents []event.FinishTask) string {
 	for index := len(finishEvents) - 1; index >= 0; index-- {
 		if finishEvents[index].ExitStatus != 0 {
-			return fmt.Sprintf("agent step exited %d", finishEvents[index].ExitStatus)
+			return fmt.Sprintf("step exited %d", finishEvents[index].ExitStatus)
 		}
 	}
 	return ""
@@ -562,6 +569,16 @@ func exitStatusReasonFromFinishTaskEvents(finishEvents []event.FinishTask) strin
 // evidence it gathered before the cutoff (often none), and the caller's
 // unconditional "full log:" pointer remains the fallback. A var, not a
 // const, so tests can shrink it instead of emitting the full limit.
+//
+// This bounds a large-but-fast stream, NOT a stalled read, and that is the
+// right scope: a blocked NextEvent is unreachable for the statuses this runs
+// under. build.finish sets status, completed, and the run's execution status
+// in one transaction, so a terminal run's build is always complete, and a
+// complete build's stream ends rather than parking. The one direct-to-aborted
+// path fires only when PlannedBuildID is nil, where no stream is opened at
+// all. The residual risk is a half-open connection, which every other request
+// fly makes shares equally — the fix for that is a client timeout in fly/rc,
+// not a special case here. Do not re-litigate this into a deadline.
 var runFailureReasonEventScanLimit = 20000
 
 // runFailureReason reads the terminal error, or (failing that) the terminal

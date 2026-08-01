@@ -53,7 +53,7 @@ func TestExitStatusReasonFromFinishTaskEventsPrefersTheLastNonZeroExit(t *testin
 		{ExitStatus: 0},
 		{ExitStatus: 2},
 	})
-	if reason != "agent step exited 2" {
+	if reason != "step exited 2" {
 		t.Fatalf("reason = %q", reason)
 	}
 }
@@ -212,8 +212,8 @@ func TestRunFailureReasonFallsBackToExitStatusForAPlainFailedRun(t *testing.T) {
 	buildID := int64(12)
 	run := workflowrunsapi.RunSummary{Status: db.AgentWorkflowRunStatusFailed, PlannedBuildID: &buildID}
 	reason := runFailureReason(target, run)
-	if reason != "agent step exited 1" {
-		t.Fatalf("reason = %q, want %q", reason, "agent step exited 1")
+	if reason != "step exited 1" {
+		t.Fatalf("reason = %q, want %q", reason, "step exited 1")
 	}
 }
 
@@ -257,7 +257,7 @@ func TestRunFailureReasonGivesUpAtTheScanLimitInsteadOfHanging(t *testing.T) {
 	buildID := int64(14)
 	run := workflowrunsapi.RunSummary{Status: db.AgentWorkflowRunStatusFailed, PlannedBuildID: &buildID}
 	reason := runFailureReason(target, run)
-	if reason != "agent step exited 1" {
+	if reason != "step exited 1" {
 		t.Fatalf("reason = %q, want the exit-status evidence gathered before the cutoff", reason)
 	}
 	if source.index != 2 {
