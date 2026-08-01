@@ -201,10 +201,18 @@ user error look like a platform bug for ten minutes.
 import output
 An unrelated actor imported the guide's example node under the same name
 (`code-review`) between my imports, so "my next version" was 5, not 4, and my
-scripted `release 4` hit their node. Node names are team-global with a single
-integer sequence; any automation must use the version echoed by `import`,
-never a predicted one. (A `--json` output for `import` would help; today it's
-a prose line.)
+scripted `release 4` hit their node. Any automation must use the version
+echoed by `import`, never a predicted one. (A `--json` output for `import`
+would help; today it's a prose line.)
+
+**Corrected while fixing this (2026-08-01):** the sequence is **per node
+name**, not team-global — `atc/db/agent_nodes_factory.go:106-110` allocates
+`MAX(version)+1` scoped to the name, under a per-name advisory lock. And
+predicting N+1 is wrong even with no concurrency at all, because import is
+**content-hash idempotent**: re-importing unchanged content returns the
+existing version without bumping. Fixed by adding `--json` to `import` and
+`release`; the release response needed a wrapper because `workflow.NodeRelease`
+carries no name or version of its own.
 
 ### F20 🔴 BUG (fixed in this branch): the output-builder MCP server never
 implemented `initialize`, so no MCP client could ever connect

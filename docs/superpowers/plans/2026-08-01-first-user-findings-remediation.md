@@ -967,7 +967,19 @@ terminating error event plus the exact watch command for the full log."
 
 ## Task 6: `--json` on node import and release
 
-Node names are team-global with one integer sequence. A concurrent importer takes the version your script predicted, so automation must read the version the server actually allocated — today that means scraping a prose line.
+Automation must read the version the server actually allocated rather than
+predict it — today that means scraping a prose line.
+
+**Corrected during execution.** An earlier draft of this plan said versions
+come from "one team-global integer sequence". The sequence is in fact **per
+node name**, shared across actors:
+`atc/db/agent_nodes_factory.go:106-110` allocates
+`COALESCE(MAX(version),0)+1 … WHERE definition_kind='node' AND name=$1` under a
+per-name advisory lock. The concurrency hazard is real — two people iterating
+on `code-review` — and there is a second failure mode that is not concurrency
+at all: import is **content-hash idempotent** (`:79-84`), so re-importing
+unchanged content returns the existing version without bumping. A script
+predicting N+1 is wrong even single-threaded.
 
 **Files:**
 - Modify: `fly/commands/agent_nodes.go:164-214` (import), `:216-250` (release)
