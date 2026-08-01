@@ -520,6 +520,15 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 		// here and reaching for them is what kills the daemon.
 		"--set", "artifactDaemon.hangar.bucket=" + hangarEmulatorBucket,
 		"--set", "artifactDaemon.hangar.endpoint=" + hangarEmulatorEndpoint(namespace),
+		// The chart's 256Mi/200m defaults predate agent snapshots. Sealing one
+		// now means zstd-compressing a whole tree inside the daemon, on top of
+		// serving artifacts for every step in the suite, and the live cluster
+		// already idles at 100Mi of that 256Mi doing neither. A daemon that
+		// dies mid-run takes its hostPort with it, so unrelated steps fail on
+		// a refused connection — which is why this is worth over-provisioning
+		// in a suite that hammers it far harder than any real deployment.
+		"--set", "artifactDaemon.resources.limits.memory=1Gi",
+		"--set", "artifactDaemon.resources.limits.cpu=1",
 		"--set", "agentExperiments.runnerEnabled=true",
 		"--timeout", "5m",
 	}
