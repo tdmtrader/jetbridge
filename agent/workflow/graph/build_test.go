@@ -48,17 +48,17 @@ func TestBuildLinksProducerToConsumer(t *testing.T) {
 	if _, found := g.Node("implement"); !found {
 		t.Fatal("expected an implement node")
 	}
-	if _, found := g.Node("repository"); !found {
-		t.Fatal("expected a repository input node")
+	if _, found := g.Node("input:repository"); !found {
+		t.Fatal("expected a kind-qualified repository input node")
 	}
-	if _, found := g.Node("change"); !found {
-		t.Fatal("expected a change output node")
+	if _, found := g.Node("output:change"); !found {
+		t.Fatal("expected a kind-qualified change output node")
 	}
 
 	want := []Edge{
-		{From: "repository", To: "implement", PortName: "repository", TypeRef: "repository/v1"},
+		{From: "input:repository", To: "implement", PortName: "repository", TypeRef: "repository/v1"},
 		{From: "implement", To: "review", PortName: "draft", TypeRef: "repository-change/v1"},
-		{From: "review", To: "change", PortName: "candidate", TypeRef: "repository-change/v1"},
+		{From: "review", To: "output:change", PortName: "candidate", TypeRef: "repository-change/v1"},
 	}
 	for _, edge := range want {
 		if !hasEdge(g, edge) {
@@ -138,6 +138,45 @@ func TestBuildHonoursAgentInputOutputMapping(t *testing.T) {
 	want := Edge{From: "implement", To: "review", PortName: "draft", TypeRef: "repository-change/v1"}
 	if !hasEdge(g, want) {
 		t.Fatalf("expected mapped edge %+v in %+v", want, g.Edges)
+	}
+}
+
+// TestBuildCodeReviewSeedProducesTerminalOutputEdge is the regression guard
+// for the collision this task fixed: the shipped code-review-v3 seed
+// declares public output port "review" (from: review) right alongside an
+// agent whose function_id is also "review" — an idiomatic pattern, since a
+// port's name is naturally taken from the binding that feeds it. Before
+// endpoint IDs were kind-qualified, addNode's de-duplication silently merged
+// the output node into the agent node and link's self-loop guard silently
+// dropped the edge, so the workflow's only public output vanished from the
+// graph with no error. Build it from the real seed directory, not a
+// synthetic fixture, so a future regression here is caught against shipped
+// data.
+func TestBuildCodeReviewSeedProducesTerminalOutputEdge(t *testing.T) {
+	manifest, err := workflow.ManifestFromDir("../seeds/code-review-v3")
+	if err != nil {
+		t.Fatalf("ManifestFromDir: %v", err)
+	}
+	definition, err := workflow.CompileDefinition(manifest)
+	if err != nil {
+		t.Fatalf("CompileDefinition: %v", err)
+	}
+
+	g, err := Build(definition.Function)
+	if err != nil {
+		t.Fatalf("Build returned an error: %v", err)
+	}
+
+	if _, found := g.Node("review"); !found {
+		t.Fatal("expected the review agent node")
+	}
+	if _, found := g.Node("output:review"); !found {
+		t.Fatalf("expected a kind-qualified output:review node in %+v", g.Nodes)
+	}
+
+	want := Edge{From: "review", To: "output:review", PortName: "review", TypeRef: "review/v1"}
+	if !hasEdge(g, want) {
+		t.Fatalf("expected terminal edge %+v in %+v", want, g.Edges)
 	}
 }
 

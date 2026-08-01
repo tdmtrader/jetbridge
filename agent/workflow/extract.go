@@ -136,13 +136,13 @@ func validateExtractedLeaf(step atc.Step, path string, resourceTypes atc.Resourc
 			return nil, nil, nil, err
 		}
 		inputs, outputs := effectiveAgentArtifactNames(leaf)
-		if err := validateExactTypedCoverage("agent input", inputs, snapshotInputNames(mappedSnapshotInputs(leaf.SnapshotInputs, leaf.InputMapping))); err != nil {
+		if err := validateExactTypedCoverage("agent input", inputs, snapshotInputNames(MappedSnapshotInputs(leaf.SnapshotInputs, leaf.InputMapping))); err != nil {
 			return nil, nil, nil, err
 		}
-		if err := validateExactTypedCoverage("agent output", outputs, snapshotOutputNames(mappedSnapshotOutputs(leaf.SnapshotOutputs, leaf.OutputMapping))); err != nil {
+		if err := validateExactTypedCoverage("agent output", outputs, snapshotOutputNames(MappedSnapshotOutputs(leaf.SnapshotOutputs, leaf.OutputMapping))); err != nil {
 			return nil, nil, nil, err
 		}
-		return signatureInputs(mappedSnapshotInputs(leaf.SnapshotInputs, leaf.InputMapping)), signatureOutputs(mappedSnapshotOutputs(leaf.SnapshotOutputs, leaf.OutputMapping)), nil, nil
+		return signatureInputs(MappedSnapshotInputs(leaf.SnapshotInputs, leaf.InputMapping)), signatureOutputs(MappedSnapshotOutputs(leaf.SnapshotOutputs, leaf.OutputMapping)), nil, nil
 
 	default:
 		return nil, nil, nil, fmt.Errorf("unsupported future leaf %T is not extractable", step.Config)

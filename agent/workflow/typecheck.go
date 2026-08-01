@@ -863,7 +863,7 @@ func collectUntypedArtifactReads(step atc.Step, path string) map[string]string {
 			recordPathSource(config.ConfigPath, currentPath+".task("+config.Name+").file")
 		case *atc.AgentStep:
 			inputs, _ := effectiveAgentArtifactNames(config)
-			inputTypes := mappedSnapshotInputs(config.SnapshotInputs, config.InputMapping)
+			inputTypes := MappedSnapshotInputs(config.SnapshotInputs, config.InputMapping)
 			for _, name := range inputs {
 				if _, typed := inputTypes[name]; !typed {
 					record(name, currentPath+".agent("+config.Name+").inputs")
@@ -952,7 +952,7 @@ func effectiveTaskArtifactNames(step *atc.TaskStep) ([]string, []string) {
 
 func (checker *snapshotFlowChecker) checkAgent(step *atc.AgentStep, entry snapshotEnvironment, path string) (snapshotFlow, error) {
 	inputs, outputs := effectiveAgentArtifactNames(step)
-	flow, err := checker.checkLeaf("agent", step.Name, step.FunctionID, inputs, mappedSnapshotInputs(step.SnapshotInputs, step.InputMapping), outputs, mappedSnapshotOutputs(step.SnapshotOutputs, step.OutputMapping), nil, step, entry, path)
+	flow, err := checker.checkLeaf("agent", step.Name, step.FunctionID, inputs, MappedSnapshotInputs(step.SnapshotInputs, step.InputMapping), outputs, MappedSnapshotOutputs(step.SnapshotOutputs, step.OutputMapping), nil, step, entry, path)
 	if err != nil {
 		return snapshotFlow{}, err
 	}
@@ -964,7 +964,7 @@ func (checker *snapshotFlowChecker) checkAgent(step *atc.AgentStep, entry snapsh
 			entry,
 			step.Validation,
 			candidate,
-			mappedSnapshotInputs(step.SnapshotInputs, step.InputMapping),
+			MappedSnapshotInputs(step.SnapshotInputs, step.InputMapping),
 			step.InputMapping,
 			identity,
 		); err != nil {
@@ -997,7 +997,18 @@ func effectiveAgentArtifactNames(step *atc.AgentStep) ([]string, []string) {
 	return inputs, outputs
 }
 
-func mappedSnapshotInputs(source map[string]atc.SnapshotInputConfig, mapping map[string]string) map[string]atc.SnapshotInputConfig {
+// MappedSnapshotInputs translates each declared input's logical name through
+// mapping (an agent step's InputMapping) to the binding name actually
+// consumed from the snapshot environment. Agents intentionally retain
+// logical declaration keys in SnapshotInputs/SnapshotOutputs because their
+// executor translates at the repository/sealer boundary (see
+// applyNodeInvocation in node_reference.go); task steps do not need this
+// translation because native task planning already consumes typed
+// declarations by the physical artifact name after mapping. Exported so
+// other packages deriving flow from a compiled function (e.g.
+// agent/workflow/graph) apply the identical translation instead of
+// maintaining a second copy that could silently diverge.
+func MappedSnapshotInputs(source map[string]atc.SnapshotInputConfig, mapping map[string]string) map[string]atc.SnapshotInputConfig {
 	if source == nil {
 		return nil
 	}
@@ -1011,7 +1022,9 @@ func mappedSnapshotInputs(source map[string]atc.SnapshotInputConfig, mapping map
 	return mapped
 }
 
-func mappedSnapshotOutputs(source map[string]atc.SnapshotOutputConfig, mapping map[string]string) map[string]atc.SnapshotOutputConfig {
+// MappedSnapshotOutputs is the output-side counterpart of
+// MappedSnapshotInputs.
+func MappedSnapshotOutputs(source map[string]atc.SnapshotOutputConfig, mapping map[string]string) map[string]atc.SnapshotOutputConfig {
 	if source == nil {
 		return nil
 	}
@@ -1040,7 +1053,7 @@ func humanReviewCandidate(step *atc.AgentStep) (string, bool, error) {
 		return "", false, nil
 	}
 	var candidates []string
-	for _, name := range sortedSnapshotInputKeys(step.SnapshotInputs) {
+	for _, name := range SortedSnapshotInputKeys(step.SnapshotInputs) {
 		if step.SnapshotInputs[name].Type == snapshot.TypeRef("repository-change/v1") {
 			candidates = append(candidates, name)
 		}
@@ -1182,7 +1195,7 @@ func (checker *snapshotFlowChecker) checkLeaf(
 		}
 	}
 
-	for _, name := range sortedSnapshotInputKeys(typedInputs) {
+	for _, name := range SortedSnapshotInputKeys(typedInputs) {
 		declaration := typedInputs[name]
 		if err := declaration.Validate(); err != nil {
 			return snapshotFlow{}, fmt.Errorf("workflow: %s: input %q: %w", identity, name, err)
@@ -1219,7 +1232,7 @@ func (checker *snapshotFlowChecker) checkLeaf(
 		produced[name] = binding
 	}
 
-	for _, name := range sortedSnapshotOutputKeys(typedOutputs) {
+	for _, name := range SortedSnapshotOutputKeys(typedOutputs) {
 		if err := rejectResourceSourceShadow(entry, name, identity); err != nil {
 			return snapshotFlow{}, err
 		}
@@ -1397,7 +1410,10 @@ func joinWritePaths(left, right string) string {
 	}
 }
 
-func sortedSnapshotInputKeys(values map[string]atc.SnapshotInputConfig) []string {
+// SortedSnapshotInputKeys returns a deterministic, sorted key order for a
+// SnapshotInputs map. Exported for other packages (e.g. agent/workflow/graph)
+// that need the same iteration order the type checker uses.
+func SortedSnapshotInputKeys(values map[string]atc.SnapshotInputConfig) []string {
 	keys := make([]string, 0, len(values))
 	for key := range values {
 		keys = append(keys, key)
@@ -1406,7 +1422,9 @@ func sortedSnapshotInputKeys(values map[string]atc.SnapshotInputConfig) []string
 	return keys
 }
 
-func sortedSnapshotOutputKeys(values map[string]atc.SnapshotOutputConfig) []string {
+// SortedSnapshotOutputKeys is the output-side counterpart of
+// SortedSnapshotInputKeys.
+func SortedSnapshotOutputKeys(values map[string]atc.SnapshotOutputConfig) []string {
 	keys := make([]string, 0, len(values))
 	for key := range values {
 		keys = append(keys, key)

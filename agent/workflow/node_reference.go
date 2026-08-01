@@ -423,8 +423,8 @@ func applyNodeInvocation(step *atc.Step, ref NodeReference) error {
 		// physical artifact name after applying mappings. Agents intentionally
 		// retain logical declaration keys because their executor translates at
 		// the repository/sealer boundary.
-		leaf.SnapshotInputs = mappedSnapshotInputs(filterSnapshotInputs(leaf.SnapshotInputs, ref.InputMapping), ref.InputMapping)
-		leaf.SnapshotOutputs = mappedSnapshotOutputs(filterSnapshotOutputs(leaf.SnapshotOutputs, ref.OutputMapping), ref.OutputMapping)
+		leaf.SnapshotInputs = MappedSnapshotInputs(filterSnapshotInputs(leaf.SnapshotInputs, ref.InputMapping), ref.InputMapping)
+		leaf.SnapshotOutputs = MappedSnapshotOutputs(filterSnapshotOutputs(leaf.SnapshotOutputs, ref.OutputMapping), ref.OutputMapping)
 	case *atc.AgentStep:
 		leaf.FunctionID = ref.InstanceName
 		leaf.InputMapping = cloneStringMap(ref.InputMapping)
