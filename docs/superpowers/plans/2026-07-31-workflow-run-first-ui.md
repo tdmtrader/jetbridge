@@ -2932,6 +2932,28 @@ git add atc/db/agent_workflow_run.go atc/db/agent_workflow_runs_factory.go atc/d
 git commit -m "feat(db): window, scope, node, and indexed search filters for workflow runs"
 ```
 
+### Graph-derivation failure is a degraded page, not a 500
+
+Decided at the end of Phase A. `graph.Build` returns an error for any step kind
+it does not recognise, so adding a new step type to `atc` without updating
+`agent/workflow/graph/build.go` would take the whole overview and run page
+blank at request time. Nothing connects those two edits at compile time — the
+builder uses a type switch rather than `atc.StepVisitor`.
+
+Rather than refactor the builder onto `StepVisitor`, the API absorbs it: when
+`graph.Build` fails, the overview and run-graph endpoints still return their
+run data with the graph omitted and an explicit
+`"graph_unavailable": true` field, logging the cause. The run list, node
+state, and every other affordance keep working; only the canvas is missing.
+
+This matches what the graph already is — a lossy semantic projection that
+deliberately omits untyped artifact flow — and it keeps one unrecognised step
+from destroying an otherwise usable page. Elm must render the
+graph-unavailable state rather than assuming `graph` is present.
+
+Anyone adding a step type to `atc` must update `agent/workflow/graph/build.go`;
+there is no compiler enforcement of that today.
+
 ### Task C2: Overview endpoint
 
 **Files:**
