@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 )
 
 const (
@@ -203,6 +204,25 @@ func (server *mcpServer) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch request.Method {
+	case "initialize":
+		// Without this handshake no MCP client ever reaches tools/list: the
+		// Claude CLI registers the server as status "failed" at session init
+		// (found live, first node dispatch 2026-08-01). Echo the client's
+		// requested protocol version — this adapter's surface (list/call over
+		// plain HTTP POST) is identical under every published revision.
+		var params struct {
+			ProtocolVersion string `json:"protocolVersion"`
+		}
+		_ = json.Unmarshal(request.Params, &params)
+		version := params.ProtocolVersion
+		if version == "" {
+			version = "2025-03-26"
+		}
+		writeMCP(w, mcpResponse{JSONRPC: "2.0", ID: request.ID, Result: map[string]any{
+			"protocolVersion": version,
+			"capabilities":    map[string]any{"tools": map[string]any{}},
+			"serverInfo":      map[string]any{"name": "output-builder", "version": "1"},
+		}})
 	case "tools/list":
 		writeMCP(w, mcpResponse{JSONRPC: "2.0", ID: request.ID, Result: map[string]any{"tools": []map[string]any{{"name": "describe_output"}, {"name": "write_output"}, {"name": "validate_output"}}}})
 	case "ping":
@@ -210,6 +230,11 @@ func (server *mcpServer) serve(w http.ResponseWriter, r *http.Request) {
 	case "tools/call":
 		server.call(w, r.Context(), request)
 	default:
+		if strings.HasPrefix(request.Method, "notifications/") {
+			// Notifications carry no id and expect no response body.
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
 		writeMCP(w, mcpResponse{JSONRPC: "2.0", ID: request.ID, Error: &mcpError{Code: -32601, Message: "method not found"}})
 	}
 }

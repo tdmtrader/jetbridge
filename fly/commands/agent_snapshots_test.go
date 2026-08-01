@@ -92,7 +92,7 @@ func TestWriteAgentSnapshotTarIsDeterministicAndNormalized(t *testing.T) {
 		got = append(got, entry{hdr.Name, hdr.Mode, hdr.Typeflag, hdr.Linkname, string(body)})
 	}
 	want := []entry{
-		{name: "empty/", mode: 0o755, kind: tar.TypeDir},
+		{name: "empty", mode: 0o755, kind: tar.TypeDir},
 		{name: "run", mode: 0o755, kind: tar.TypeReg, body: "#!/bin/sh\n"},
 		{name: "safe-link", mode: 0o777, kind: tar.TypeSymlink, link: "z.txt"},
 		{name: "z.txt", mode: 0o644, kind: tar.TypeReg, body: "z"},

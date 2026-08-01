@@ -82,7 +82,9 @@ func writeAgentSnapshotTarFromRoot(ctx context.Context, root *os.Root, output io
 
 		switch {
 		case mode.IsDir():
-			hdr.Name += "/"
+			// No trailing separator: the server's validateArchivePath rejects
+			// "name/" and its own canonical writer emits directory entries
+			// without one, so the slashless spelling is the wire dialect.
 			hdr.Typeflag = tar.TypeDir
 			hdr.Mode = 0o755
 		case mode.IsRegular():

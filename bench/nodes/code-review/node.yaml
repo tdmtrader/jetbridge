@@ -1,17 +1,30 @@
 schema_version: 1
 name: code-review
 description: Review one repository change and produce an anchored review/v1 record
+# repository and change SHOULD be repository/v1 and repository-change/v1, but:
+# - repository/v1 cannot be sealed on a web image without a git binary (the
+#   validator execs git; the deployed image has none), and
+# - repository-change/v1 cannot be created standalone by `fly agent snapshots
+#   create` at all (its seal gate requires the base repository as a bound
+#   declared input).
+# Until both gaps close, the tree and the diff travel as opaque/v1.
+# See FIRST-USER-FINDINGS.md (F3, F7).
 inputs:
-  - {name: repository, type: repository/v1}
-  - {name: change, type: repository-change/v1}
+  - {name: repository, type: opaque/v1}
+  - {name: change, type: opaque/v1}
   - {name: work-item, type: work-item/v1}
 outputs:
   - {name: review, type: review/v1}
 parameters:
-  - {name: MINIMUM_SEVERITY, default: minor}
+  - {name: MINIMUM_SEVERITY, default: low}
 step:
   agent: review
   prompt_file: prompts/review.md
-  model: claude-sonnet
-  max_turns: 40
-  budget_slice_usd: 5.0
+  # "claude-sonnet" (the guide example) is not a real model ID — the API answers
+  # 404 not_found_error. The CLI alias "sonnet" resolves per CLI version.
+  model: sonnet
+  max_turns: 80
+  # budget_slice_usd deliberately omitted: the deployed agent-runner image's
+  # Claude CLI predates --max-budget-usd, so any positive slice fails the run
+  # ("error: unknown option '--max-budget-usd'"). Restore a slice once the
+  # runner image is rebuilt. See FIRST-USER-FINDINGS.md (F12).
