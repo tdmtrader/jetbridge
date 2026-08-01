@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -19,6 +20,7 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/agent/snapshot"
+	"github.com/concourse/concourse/agent/snapshot/contracts"
 )
 
 func TestParseAgentSnapshotIDPreservesExactInt64Identity(t *testing.T) {
@@ -125,6 +127,64 @@ func TestWriteAgentSnapshotTarMatchesServerCanonicalizer(t *testing.T) {
 		t.Fatalf("server canonicalizer rejected Fly archive: %v", err)
 	}
 	defer tree.Close()
+}
+
+func TestWriteAgentSnapshotTarProducesRepositoryV1CompatibleArchive(t *testing.T) {
+	repository := filepath.Join(t.TempDir(), "nested", "repository")
+	if err := os.MkdirAll(repository, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runFlySnapshotGit(t, repository, "init", "-q")
+	runFlySnapshotGit(t, repository, "config", "user.name", "Fly Snapshot Test")
+	runFlySnapshotGit(t, repository, "config", "user.email", "fly-snapshot@example.invalid")
+	if err := os.WriteFile(filepath.Join(repository, "README.md"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runFlySnapshotGit(t, repository, "add", "README.md")
+	runFlySnapshotGit(t, repository, "commit", "-q", "-m", "base")
+
+	var archive bytes.Buffer
+	archiveAgentSnapshotDirectory(t, repository, &archive)
+	tree, err := (snapshot.Canonicalizer{
+		MaxEntries:      snapshot.DefaultMaxSnapshotEntries,
+		MaxContentBytes: snapshot.DefaultMaxSnapshotContentBytes,
+		TempDir:         t.TempDir(),
+	}).Capture(context.Background(), bytes.NewReader(archive.Bytes()))
+	if err != nil {
+		t.Fatalf("server canonicalizer rejected Fly repository archive: %v", err)
+	}
+	defer tree.Close()
+
+	root, err := tree.OpenRoot()
+	if err != nil {
+		t.Fatalf("open canonical repository tree: %v", err)
+	}
+	defer root.Close()
+	validationContext, err := snapshot.NewValidationContext(nil, nil)
+	if err != nil {
+		t.Fatalf("new validation context: %v", err)
+	}
+	registry, err := contracts.NewRegistry()
+	if err != nil {
+		t.Fatalf("new contract registry: %v", err)
+	}
+	validator, err := registry.Lookup(snapshot.TypeRef("repository/v1"))
+	if err != nil {
+		t.Fatalf("look up repository/v1 validator: %v", err)
+	}
+	if _, err := validator.AdmitForSeal(context.Background(), root, validationContext); err != nil {
+		t.Fatalf("repository/v1 rejected Fly-produced clean Git archive: %v", err)
+	}
+}
+
+func runFlySnapshotGit(t *testing.T, directory string, args ...string) {
+	t.Helper()
+	command := exec.Command("git", args...)
+	command.Dir = directory
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v in %q: %v: %s", args, directory, err, output)
+	}
 }
 
 func TestWriteAgentSnapshotTarRejectsUnsafeFilesystemEntries(t *testing.T) {

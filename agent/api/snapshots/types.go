@@ -17,6 +17,7 @@ import (
 type ErrorResponse struct {
 	Error   string `json:"error"`
 	Message string `json:"message"`
+	Reason  string `json:"reason,omitempty"`
 }
 
 // PinRequest is the only JSON body accepted by the snapshot API. Actor and

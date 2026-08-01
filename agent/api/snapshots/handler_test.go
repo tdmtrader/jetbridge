@@ -529,6 +529,29 @@ func TestCreateMapsStreamLimitAndDomainErrorsWithoutLeakingDetails(t *testing.T)
 	}
 }
 
+func TestCreateMapsPublicValidationFailureWithoutLeakingCause(t *testing.T) {
+	harness := newHandlerHarness(t)
+	cause := errors.New("git stderr: token=secret /tmp/private-repository")
+	harness.creator.upload = func(context.Context, snapshot.UploadRequest) (snapshot.Snapshot, error) {
+		return snapshot.Snapshot{}, errors.Join(
+			snapshot.ErrValidation,
+			snapshot.NewPublicValidationFailure(snapshot.RepositoryDirty, cause),
+		)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/snapshots?type=repository%2Fv1", strings.NewReader("tar"))
+	request.Header.Set("Content-Type", "application/x-tar")
+	recorder := httptest.NewRecorder()
+	harness.factory.Create(harness.team).ServeHTTP(recorder, request)
+
+	response := decodeError(t, recorder)
+	if recorder.Code != http.StatusUnprocessableEntity || response.Error != "validation_failed" || response.Message != "repository work tree and index must be clean" || response.Reason != string(snapshot.RepositoryDirty) {
+		t.Fatalf("status/response = %d/%#v", recorder.Code, response)
+	}
+	if strings.Contains(recorder.Body.String(), "token=secret") || strings.Contains(recorder.Body.String(), "/tmp/private") {
+		t.Fatalf("response leaked private validation cause: %s", recorder.Body.String())
+	}
+}
+
 func TestListMapsStrictFiltersAndPreservesExactIDs(t *testing.T) {
 	harness := newHandlerHarness(t)
 	createdAfter, err := time.Parse(time.RFC3339, "2026-07-21T01:02:03-07:00")

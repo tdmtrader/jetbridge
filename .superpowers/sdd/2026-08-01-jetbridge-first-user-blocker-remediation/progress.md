@@ -71,10 +71,31 @@
     ./atc/db` passed (1/1); `git diff --check` passed.
   - Review: independent blocking review round 1 passed with no blocking
     findings. Review budget used: 1 of 3.
-- [ ] Task 2 — safe repository validation diagnostics and full upload contract
-  - Gate: real Fly archive → canonicalizer → `repository/v1` validator plus
-    secret non-disclosure tests.
-  - Review budget: maximum three blocking rounds.
+- [x] Task 2 — safe repository validation diagnostics and full upload contract
+  - RED/GREEN: a closed `PublicValidationFailure` API permits exactly seven
+    repository reasons; unknown and nil-cause construction remains private.
+    Repository-category tests first exposed plain internal errors, then proved
+    safe classification for missing/unsafe metadata, shallow history,
+    unsupported object format, committed gitlinks, dirty work trees, and
+    broken object graphs. Root and cancellation failures remain private.
+  - RED/GREEN: the bounded error envelope initially had no `reason`; only an
+    allow-listed public validation failure now returns its optional reason and
+    fixed public message before the generic validation mapping. Generic 422
+    responses retain their prior wire shape and test causes never reach JSON.
+  - RED/GREEN (review round 1): a fake Git process exiting 97 was initially
+    classified as public `repository_invalid`. Generic Git start and exit
+    failures now stay private while explicitly semantic post-start Git checks
+    retain their intended safe classification; the raw process detail remains
+    available to internal logging.
+  - Gate: a clean nested Git repository archived through the real Fly writer,
+    canonicalizer, captured-tree root, and `repository/v1` admission succeeds.
+  - Verification: `go test ./agent/snapshot -count=1`; `go test
+    ./agent/snapshot/contracts -count=1`; `go test ./agent/api/snapshots
+    -count=1`; `go test ./fly/commands -count=1`; and `git diff --check`
+    passed.
+  - Review: independent blocking round 1 found and the TDD process-failure
+    regression fixed one boundary issue; independent round 2 passed with no
+    findings. Review budget used: 2 of 3.
 - [ ] Task 3 — managed output-builder MCP lifecycle and runner preflight
   - Gate: initialize → initialized notification → tools/list → tools/call and
     zero provider starts against a protocol-broken managed builder; a successful

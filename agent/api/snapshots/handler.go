@@ -928,6 +928,7 @@ func validateAuthorityString(value string, maxBytes int) error {
 func (factory *HandlerFactory) writeSnapshotError(w http.ResponseWriter, err error) {
 	factory.logger.Error("snapshot-request-failed", err)
 	var maxBytesError *http.MaxBytesError
+	var publicValidationFailure *snapshot.PublicValidationFailure
 	switch {
 	case errors.As(err, &maxBytesError), errors.Is(err, snapshot.ErrLimitExceeded):
 		writeError(w, http.StatusRequestEntityTooLarge, "limit_exceeded", "snapshot archive exceeds the configured limit")
@@ -935,6 +936,12 @@ func (factory *HandlerFactory) writeSnapshotError(w http.ResponseWriter, err err
 		writeError(w, http.StatusBadRequest, "invalid_archive", "snapshot archive is invalid")
 	case errors.Is(err, snapshot.ErrUnsupportedType):
 		writeError(w, http.StatusBadRequest, "invalid_type", "snapshot type is unsupported")
+	case errors.As(err, &publicValidationFailure):
+		writeJSON(w, http.StatusUnprocessableEntity, ErrorResponse{
+			Error:   "validation_failed",
+			Message: publicValidationFailure.PublicMessage(),
+			Reason:  string(publicValidationFailure.Reason()),
+		})
 	case errors.Is(err, snapshot.ErrValidation):
 		writeError(w, http.StatusUnprocessableEntity, "validation_failed", "snapshot does not satisfy its declared type")
 	case errors.Is(err, snapshot.ErrConflict):

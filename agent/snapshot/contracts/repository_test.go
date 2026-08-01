@@ -109,6 +109,140 @@ func TestRepositoryContractRejectsUnsafeIncompleteOrDirtyRepositories(t *testing
 	}
 }
 
+func TestRepositoryContractClassifiesSafePublicValidationFailures(t *testing.T) {
+	tests := []struct {
+		name   string
+		setup  func(*testing.T, string)
+		reason snapshot.ValidationFailureReason
+		want   string
+	}{
+		{
+			name:   "missing metadata",
+			setup:  func(_ *testing.T, _ string) {},
+			reason: snapshot.RepositoryMetadataMissing,
+			want:   "repository .git directory is required",
+		},
+		{
+			name: "unsafe metadata",
+			setup: func(t *testing.T, dir string) {
+				config := filepath.Join(dir, ".git", "config")
+				contents, err := os.ReadFile(config)
+				if err != nil {
+					t.Fatalf("read config: %v", err)
+				}
+				writeTestFile(t, config, string(contents)+"\n[extensions]\npartialClone = origin\n")
+			},
+			reason: snapshot.RepositoryMetadataUnsafe,
+			want:   "repository config",
+		},
+		{
+			name: "shallow history",
+			setup: func(t *testing.T, dir string) {
+				writeTestFile(t, filepath.Join(dir, ".git", "shallow"), runTestGit(t, dir, "rev-parse", "HEAD")+"\n")
+			},
+			reason: snapshot.RepositoryHistoryIncomplete,
+			want:   "shallow",
+		},
+		{
+			name: "unsupported object format",
+			setup: func(t *testing.T, dir string) {
+				config := filepath.Join(dir, ".git", "config")
+				contents, err := os.ReadFile(config)
+				if err != nil {
+					t.Fatalf("read config: %v", err)
+				}
+				writeTestFile(t, config, string(contents)+"\n[extensions]\nobjectFormat = sha512\n")
+			},
+			reason: snapshot.RepositoryObjectFormatUnsupported,
+			want:   "object format",
+		},
+		{
+			name: "gitlink",
+			setup: func(t *testing.T, dir string) {
+				head := runTestGit(t, dir, "rev-parse", "HEAD")
+				runTestGit(t, dir, "update-index", "--add", "--cacheinfo", "160000,"+head+",vendor/module")
+				runTestGit(t, dir, "commit", "-q", "-m", "add gitlink")
+			},
+			reason: snapshot.RepositoryGitlinksUnsupported,
+			want:   "gitlink",
+		},
+		{
+			name: "dirty work tree",
+			setup: func(t *testing.T, dir string) {
+				writeTestFile(t, filepath.Join(dir, "README.md"), "dirty\n")
+			},
+			reason: snapshot.RepositoryDirty,
+			want:   "clean",
+		},
+		{
+			name: "invalid object graph",
+			setup: func(t *testing.T, dir string) {
+				writeTestFile(t, filepath.Join(dir, ".git", "HEAD"), "ref: refs/heads/missing\n")
+			},
+			reason: snapshot.RepositoryInvalid,
+			want:   "HEAD",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if tc.reason != snapshot.RepositoryMetadataMissing {
+				dir = newGitRepository(t, "")
+			}
+			tc.setup(t, dir)
+			_, err := validateDirectory(t, "repository/v1", dir, emptyValidationContext(t))
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("validation error = %v, want internal detail containing %q", err, tc.want)
+			}
+			var public *snapshot.PublicValidationFailure
+			if !errors.As(err, &public) || public.Reason() != tc.reason {
+				t.Fatalf("validation error = %v, public reason = %#v, want %q", err, public, tc.reason)
+			}
+		})
+	}
+}
+
+func TestRepositoryContractLeavesRootAndCancellationFailuresPrivate(t *testing.T) {
+	validationContext := emptyValidationContext(t)
+	_, err := withValidator(t, "repository/v1", newGitRepository(t, ""), func(validator snapshot.Validator, _ *os.Root) (snapshot.ValidationResult, error) {
+		return validator.AdmitForSeal(context.Background(), nil, validationContext)
+	})
+	assertNoPublicValidationFailure(t, err)
+
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = withValidator(t, "repository/v1", newGitRepository(t, ""), func(validator snapshot.Validator, root *os.Root) (snapshot.ValidationResult, error) {
+		return validator.AdmitForSeal(canceled, root, validationContext)
+	})
+	assertNoPublicValidationFailure(t, err)
+}
+
+func TestRepositoryContractLeavesGitProcessFailuresPrivate(t *testing.T) {
+	repository := newGitRepository(t, "")
+	bin := t.TempDir()
+	git := filepath.Join(bin, "git")
+	writeTestFile(t, git, "#!/bin/sh\necho process-private >&2\nexit 97\n")
+	if err := os.Chmod(git, 0755); err != nil {
+		t.Fatalf("make fake Git executable: %v", err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	_, err := validateDirectory(t, "repository/v1", repository, emptyValidationContext(t))
+	if err == nil || !strings.Contains(err.Error(), "process-private") {
+		t.Fatalf("validation error = %v, want retained process detail", err)
+	}
+	assertNoPublicValidationFailure(t, err)
+}
+
+func assertNoPublicValidationFailure(t *testing.T, err error) {
+	t.Helper()
+	var public *snapshot.PublicValidationFailure
+	if err == nil || errors.As(err, &public) {
+		t.Fatalf("error = %v, want a non-public validation failure", err)
+	}
+}
+
 func TestRepositoryContractRejectsActiveTransportConfigurationBeforeInvokingGit(t *testing.T) {
 	tests := []struct {
 		name   string

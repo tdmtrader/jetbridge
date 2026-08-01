@@ -3,6 +3,7 @@ package snapshot_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"strings"
@@ -10,6 +11,44 @@ import (
 
 	"github.com/concourse/concourse/agent/snapshot"
 )
+
+func TestPublicValidationFailure(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		reason snapshot.ValidationFailureReason
+		want   string
+	}{
+		{snapshot.RepositoryMetadataMissing, "repository metadata is incomplete"},
+		{snapshot.RepositoryMetadataUnsafe, "repository metadata contains an unsupported or unsafe setting"},
+		{snapshot.RepositoryHistoryIncomplete, "repository history is shallow or incomplete"},
+		{snapshot.RepositoryObjectFormatUnsupported, "repository object format is unsupported"},
+		{snapshot.RepositoryGitlinksUnsupported, "repositories containing submodule gitlinks are unsupported"},
+		{snapshot.RepositoryDirty, "repository work tree and index must be clean"},
+		{snapshot.RepositoryInvalid, "repository object graph is invalid or incomplete"},
+	}
+	for _, test := range tests {
+		t.Run(string(test.reason), func(t *testing.T) {
+			cause := errors.New("git stderr contains /tmp/private and token=secret")
+			err := snapshot.NewPublicValidationFailure(test.reason, cause)
+			var public *snapshot.PublicValidationFailure
+			if !errors.As(err, &public) || public.Reason() != test.reason {
+				t.Fatalf("public validation failure = %#v, %v", public, err)
+			}
+			if public.PublicMessage() != test.want {
+				t.Fatalf("public message = %q, want %q", public.PublicMessage(), test.want)
+			}
+			if !errors.Is(err, cause) {
+				t.Fatal("internal cause was not retained for logs")
+			}
+		})
+	}
+
+	unknown := snapshot.NewPublicValidationFailure("invented_reason", errors.New("token=secret"))
+	var public *snapshot.PublicValidationFailure
+	if errors.As(unknown, &public) {
+		t.Fatalf("unknown reason manufactured public failure: %#v", public)
+	}
+}
 
 type validationStub struct{}
 

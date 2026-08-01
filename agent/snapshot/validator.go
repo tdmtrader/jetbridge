@@ -18,6 +18,69 @@ import (
 var canonicalSnapshotPortName = regexp.MustCompile(`^[\p{Ll}\p{Lt}\p{Lm}\p{Lo}\d][\p{Ll}\p{Lt}\p{Lm}\p{Lo}\d\-_.]*$`)
 var numericSnapshotPortName = regexp.MustCompile(`^\d+$`)
 
+type ValidationFailureReason string
+
+const (
+	RepositoryMetadataMissing         ValidationFailureReason = "repository_metadata_missing"
+	RepositoryMetadataUnsafe          ValidationFailureReason = "repository_metadata_unsafe"
+	RepositoryHistoryIncomplete       ValidationFailureReason = "repository_history_incomplete"
+	RepositoryObjectFormatUnsupported ValidationFailureReason = "repository_object_format_unsupported"
+	RepositoryGitlinksUnsupported     ValidationFailureReason = "repository_gitlinks_unsupported"
+	RepositoryDirty                   ValidationFailureReason = "repository_dirty"
+	RepositoryInvalid                 ValidationFailureReason = "repository_invalid"
+)
+
+// PublicValidationFailure carries one closed, safe-to-publish repository
+// validation category while preserving its detailed cause exclusively for
+// structured server logging.
+type PublicValidationFailure struct {
+	reason  ValidationFailureReason
+	message string
+	cause   error
+}
+
+func NewPublicValidationFailure(reason ValidationFailureReason, cause error) error {
+	message, found := publicValidationMessage(reason)
+	if !found || cause == nil {
+		if cause == nil {
+			return fmt.Errorf("snapshot: invalid public validation failure")
+		}
+		return fmt.Errorf("snapshot: invalid public validation failure: %w", cause)
+	}
+	return &PublicValidationFailure{reason: reason, message: message, cause: cause}
+}
+
+func (failure *PublicValidationFailure) Error() string {
+	return failure.message + ": " + failure.cause.Error()
+}
+
+func (failure *PublicValidationFailure) Unwrap() error { return failure.cause }
+
+func (failure *PublicValidationFailure) Reason() ValidationFailureReason { return failure.reason }
+
+func (failure *PublicValidationFailure) PublicMessage() string { return failure.message }
+
+func publicValidationMessage(reason ValidationFailureReason) (string, bool) {
+	switch reason {
+	case RepositoryMetadataMissing:
+		return "repository metadata is incomplete", true
+	case RepositoryMetadataUnsafe:
+		return "repository metadata contains an unsupported or unsafe setting", true
+	case RepositoryHistoryIncomplete:
+		return "repository history is shallow or incomplete", true
+	case RepositoryObjectFormatUnsupported:
+		return "repository object format is unsupported", true
+	case RepositoryGitlinksUnsupported:
+		return "repositories containing submodule gitlinks are unsupported", true
+	case RepositoryDirty:
+		return "repository work tree and index must be clean", true
+	case RepositoryInvalid:
+		return "repository object graph is invalid or incomplete", true
+	default:
+		return "", false
+	}
+}
+
 // ValidationResult contains metadata derived only from the validated snapshot
 // bytes. Callers persist it on the deduplicated snapshot value, so validators
 // must not include invocation or source-adapter data.

@@ -46,6 +46,11 @@ type RepositoryChangeBody struct {
 
 type repositoryValidator struct{}
 
+var (
+	errUnsupportedRepositoryObjectFormat = errors.New("unsupported repository object format")
+	errRepositoryGitlink                 = errors.New("repository contains a gitlink")
+)
+
 func (repositoryValidator) Validate(ctx context.Context, root *os.Root, _ snapshot.ValidationContext) (snapshot.ValidationResult, error) {
 	metadata, err := validateRepository(ctx, root, "HEAD")
 	if err != nil {
@@ -67,10 +72,13 @@ func validateRepository(ctx context.Context, root *os.Root, revision string) (Re
 	}
 	gitInfo, err := root.Lstat(".git")
 	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return RepositoryMetadata{}, publicRepositoryFailure(ctx, snapshot.RepositoryMetadataMissing, fmt.Errorf("snapshot contracts: repository .git directory is required: %w", err))
+		}
 		return RepositoryMetadata{}, fmt.Errorf("snapshot contracts: repository .git directory is required: %w", err)
 	}
 	if !gitInfo.IsDir() || gitInfo.Mode()&os.ModeSymlink != 0 {
-		return RepositoryMetadata{}, fmt.Errorf("snapshot contracts: repository .git must be a real contained directory")
+		return RepositoryMetadata{}, publicRepositoryFailure(ctx, snapshot.RepositoryMetadataUnsafe, fmt.Errorf("snapshot contracts: repository .git must be a real contained directory"))
 	}
 	if err := validateGitAdministrativeFiles(ctx, root); err != nil {
 		return RepositoryMetadata{}, err
@@ -79,77 +87,80 @@ func validateRepository(ctx context.Context, root *os.Root, revision string) (Re
 	runner := controlledGit{dir: root.Name()}
 	inside, err := runner.run(ctx, "rev-parse", "--is-inside-work-tree")
 	if err != nil {
-		return RepositoryMetadata{}, fmt.Errorf("snapshot contracts: repository work tree is invalid: %w", err)
+		return RepositoryMetadata{}, publicRepositoryFailure(ctx, snapshot.RepositoryInvalid, fmt.Errorf("snapshot contracts: repository work tree is invalid: %w", err))
 	}
 	if inside != "true" {
-		return RepositoryMetadata{}, fmt.Errorf("snapshot contracts: repository work tree is invalid")
+		return RepositoryMetadata{}, publicRepositoryFailure(ctx, snapshot.RepositoryInvalid, fmt.Errorf("snapshot contracts: repository work tree is invalid"))
 	}
 	if err := runner.verifyConfinement(ctx); err != nil {
-		return RepositoryMetadata{}, err
+		return RepositoryMetadata{}, publicRepositoryFailure(ctx, snapshot.RepositoryMetadataUnsafe, err)
 	}
 	objectFormat, err := runner.run(ctx, "rev-parse", "--show-object-format=storage")
 	if err != nil {
-		return RepositoryMetadata{}, fmt.Errorf("snapshot contracts: determine repository object format: %w", err)
+		return RepositoryMetadata{}, publicRepositorySemanticFailure(ctx, snapshot.RepositoryInvalid, fmt.Errorf("snapshot contracts: determine repository object format: %w", err))
 	}
 	if objectFormat != "sha1" && objectFormat != "sha256" {
-		return RepositoryMetadata{}, fmt.Errorf("snapshot contracts: unsupported repository object format %q", objectFormat)
+		return RepositoryMetadata{}, publicRepositoryFailure(ctx, snapshot.RepositoryObjectFormatUnsupported, fmt.Errorf("snapshot contracts: unsupported repository object format %q", objectFormat))
 	}
 	shallow, err := runner.run(ctx, "rev-parse", "--is-shallow-repository")
 	if err != nil {
-		return RepositoryMetadata{}, fmt.Errorf("snapshot contracts: determine shallow repository state: %w", err)
+		return RepositoryMetadata{}, publicRepositorySemanticFailure(ctx, snapshot.RepositoryInvalid, fmt.Errorf("snapshot contracts: determine shallow repository state: %w", err))
 	}
 	if shallow != "false" {
-		return RepositoryMetadata{}, fmt.Errorf("snapshot contracts: shallow repositories are not allowed")
+		return RepositoryMetadata{}, publicRepositoryFailure(ctx, snapshot.RepositoryHistoryIncomplete, fmt.Errorf("snapshot contracts: shallow repositories are not allowed"))
 	}
 	headSHA, err := runner.run(ctx, "rev-parse", "--verify", revision+"^{commit}")
 	if err != nil {
-		return RepositoryMetadata{}, fmt.Errorf("snapshot contracts: repository HEAD must resolve to a full commit: %w", err)
+		return RepositoryMetadata{}, publicRepositorySemanticFailure(ctx, snapshot.RepositoryInvalid, fmt.Errorf("snapshot contracts: repository HEAD must resolve to a full commit: %w", err))
 	}
 	if err := validateObjectID(objectFormat, headSHA); err != nil {
-		return RepositoryMetadata{}, fmt.Errorf("snapshot contracts: repository HEAD: %w", err)
+		return RepositoryMetadata{}, publicRepositoryFailure(ctx, snapshot.RepositoryInvalid, fmt.Errorf("snapshot contracts: repository HEAD: %w", err))
 	}
 	treeSHA, err := runner.run(ctx, "rev-parse", "--verify", headSHA+"^{tree}")
 	if err != nil {
-		return RepositoryMetadata{}, fmt.Errorf("snapshot contracts: resolve repository tree: %w", err)
+		return RepositoryMetadata{}, publicRepositorySemanticFailure(ctx, snapshot.RepositoryInvalid, fmt.Errorf("snapshot contracts: resolve repository tree: %w", err))
 	}
 	if err := validateObjectID(objectFormat, treeSHA); err != nil {
-		return RepositoryMetadata{}, fmt.Errorf("snapshot contracts: repository tree: %w", err)
+		return RepositoryMetadata{}, publicRepositoryFailure(ctx, snapshot.RepositoryInvalid, fmt.Errorf("snapshot contracts: repository tree: %w", err))
 	}
 	if err := validateCommitTree(ctx, runner, treeSHA, objectFormat); err != nil {
-		return RepositoryMetadata{}, err
+		if errors.Is(err, errRepositoryGitlink) {
+			return RepositoryMetadata{}, publicRepositoryFailure(ctx, snapshot.RepositoryGitlinksUnsupported, err)
+		}
+		return RepositoryMetadata{}, publicRepositorySemanticFailure(ctx, snapshot.RepositoryInvalid, err)
 	}
 	rootOutput, err := runner.run(ctx, "rev-list", "--max-parents=0", headSHA)
 	if err != nil {
-		return RepositoryMetadata{}, fmt.Errorf("snapshot contracts: resolve repository root commits: %w", err)
+		return RepositoryMetadata{}, publicRepositorySemanticFailure(ctx, snapshot.RepositoryInvalid, fmt.Errorf("snapshot contracts: resolve repository root commits: %w", err))
 	}
 	rootCommits := strings.Fields(rootOutput)
 	if len(rootCommits) == 0 {
-		return RepositoryMetadata{}, fmt.Errorf("snapshot contracts: repository has no reachable root commit")
+		return RepositoryMetadata{}, publicRepositoryFailure(ctx, snapshot.RepositoryInvalid, fmt.Errorf("snapshot contracts: repository has no reachable root commit"))
 	}
 	for _, commit := range rootCommits {
 		if err := validateObjectID(objectFormat, commit); err != nil {
-			return RepositoryMetadata{}, fmt.Errorf("snapshot contracts: repository root commit: %w", err)
+			return RepositoryMetadata{}, publicRepositoryFailure(ctx, snapshot.RepositoryInvalid, fmt.Errorf("snapshot contracts: repository root commit: %w", err))
 		}
 	}
 	sort.Strings(rootCommits)
 	if _, err := runner.run(ctx, "fsck", "--full", "--strict", "--no-reflogs"); err != nil {
-		return RepositoryMetadata{}, fmt.Errorf("snapshot contracts: repository is broken: %w", err)
+		return RepositoryMetadata{}, publicRepositorySemanticFailure(ctx, snapshot.RepositoryInvalid, fmt.Errorf("snapshot contracts: repository is broken: %w", err))
 	}
 	gitlinks, err := runner.run(ctx, "ls-files", "--stage")
 	if err != nil {
-		return RepositoryMetadata{}, fmt.Errorf("snapshot contracts: inspect repository index: %w", err)
+		return RepositoryMetadata{}, publicRepositorySemanticFailure(ctx, snapshot.RepositoryInvalid, fmt.Errorf("snapshot contracts: inspect repository index: %w", err))
 	}
 	for _, line := range strings.Split(gitlinks, "\n") {
 		if strings.HasPrefix(line, "160000 ") {
-			return RepositoryMetadata{}, fmt.Errorf("snapshot contracts: repositories with submodule gitlinks are not supported")
+			return RepositoryMetadata{}, publicRepositoryFailure(ctx, snapshot.RepositoryGitlinksUnsupported, fmt.Errorf("snapshot contracts: repositories with submodule gitlinks are not supported"))
 		}
 	}
 	dirty, err := runner.run(ctx, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none")
 	if err != nil {
-		return RepositoryMetadata{}, fmt.Errorf("snapshot contracts: inspect repository cleanliness: %w", err)
+		return RepositoryMetadata{}, publicRepositorySemanticFailure(ctx, snapshot.RepositoryInvalid, fmt.Errorf("snapshot contracts: inspect repository cleanliness: %w", err))
 	}
 	if dirty != "" {
-		return RepositoryMetadata{}, fmt.Errorf("snapshot contracts: repository work tree and index must be clean")
+		return RepositoryMetadata{}, publicRepositoryFailure(ctx, snapshot.RepositoryDirty, fmt.Errorf("snapshot contracts: repository work tree and index must be clean"))
 	}
 
 	repositoryID := repositoryIdentity(objectFormat, rootCommits)
@@ -162,26 +173,81 @@ func validateRepository(ctx context.Context, root *os.Root, revision string) (Re
 	}, nil
 }
 
+// publicRepositoryFailure only exposes conditions established from the
+// repository itself. Context cancellation, filesystem faults, and failure to
+// start Git remain ordinary internal errors so the HTTP boundary cannot turn
+// operational detail into a public diagnostic.
+func publicRepositoryFailure(ctx context.Context, reason snapshot.ValidationFailureReason, cause error) error {
+	return repositoryFailure(ctx, reason, cause, false)
+}
+
+// publicRepositorySemanticFailure marks failures from a Git command whose
+// nonzero result is itself the repository condition being validated (for
+// example, an unresolved HEAD or a failed fsck). The initial Git invocation
+// still uses publicRepositoryFailure so a broken or substituted Git process is
+// never published as a repository diagnostic.
+func publicRepositorySemanticFailure(ctx context.Context, reason snapshot.ValidationFailureReason, cause error) error {
+	return repositoryFailure(ctx, reason, cause, true)
+}
+
+func repositoryFailure(ctx context.Context, reason snapshot.ValidationFailureReason, cause error, semanticGitExit bool) error {
+	if cause == nil {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if errors.Is(cause, context.Canceled) || errors.Is(cause, context.DeadlineExceeded) {
+		return cause
+	}
+	var startErr *exec.Error
+	if errors.As(cause, &startErr) {
+		return cause
+	}
+	var exitErr *exec.ExitError
+	if errors.As(cause, &exitErr) && !semanticGitExit {
+		return cause
+	}
+	var pathErr *fs.PathError
+	if errors.As(cause, &pathErr) && !errors.Is(cause, fs.ErrNotExist) {
+		return cause
+	}
+	return snapshot.NewPublicValidationFailure(reason, cause)
+}
+
 func validateGitAdministrativeFiles(ctx context.Context, root *os.Root) error {
+	info, err := root.Lstat(".git/config")
+	if errors.Is(err, fs.ErrNotExist) {
+		return publicRepositoryFailure(ctx, snapshot.RepositoryMetadataMissing, fmt.Errorf("snapshot contracts: repository config is required: %w", err))
+	}
+	if err != nil {
+		return fmt.Errorf("snapshot contracts: repository config: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return publicRepositoryFailure(ctx, snapshot.RepositoryMetadataUnsafe, fmt.Errorf("snapshot contracts: repository config must be a regular file"))
+	}
 	config, err := readRegularFile(ctx, root, ".git/config", maxJSONDocumentBytes)
 	if err != nil {
 		return fmt.Errorf("snapshot contracts: repository config: %w", err)
 	}
 	if err := validateRepositoryConfig(config); err != nil {
-		return fmt.Errorf("snapshot contracts: repository config: %w", err)
+		if errors.Is(err, errUnsupportedRepositoryObjectFormat) {
+			return publicRepositoryFailure(ctx, snapshot.RepositoryObjectFormatUnsupported, fmt.Errorf("snapshot contracts: repository config: %w", err))
+		}
+		return publicRepositoryFailure(ctx, snapshot.RepositoryMetadataUnsafe, fmt.Errorf("snapshot contracts: repository config: %w", err))
 	}
 	if info, err := root.Lstat(".git/shallow"); err == nil {
 		if !info.Mode().IsRegular() || info.Size() > 0 {
-			return fmt.Errorf("snapshot contracts: shallow repositories are not allowed")
+			return publicRepositoryFailure(ctx, snapshot.RepositoryHistoryIncomplete, fmt.Errorf("snapshot contracts: shallow repositories are not allowed"))
 		}
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("snapshot contracts: inspect shallow marker: %w", err)
 	}
 	if err := validateContainedGitReference(ctx, root, ".git/commondir", ".git"); err != nil {
-		return fmt.Errorf("snapshot contracts: commondir: %w", err)
+		return publicRepositoryFailure(ctx, snapshot.RepositoryMetadataUnsafe, fmt.Errorf("snapshot contracts: commondir: %w", err))
 	}
 	if err := validateAlternates(ctx, root); err != nil {
-		return err
+		return publicRepositoryFailure(ctx, snapshot.RepositoryMetadataUnsafe, err)
 	}
 	return nil
 }
@@ -221,8 +287,11 @@ func validateRepositoryConfig(config []byte) error {
 				return unsupportedRepositoryConfig(entry)
 			}
 		case "extensions":
-			if entry.subsection != "" || entry.name != "objectformat" || (entry.value != "sha1" && entry.value != "sha256") {
+			if entry.subsection != "" || entry.name != "objectformat" {
 				return unsupportedRepositoryConfig(entry)
+			}
+			if entry.value != "sha1" && entry.value != "sha256" {
+				return fmt.Errorf("%w %q", errUnsupportedRepositoryObjectFormat, entry.value)
 			}
 		case "user":
 			if entry.subsection != "" || (entry.name != "name" && entry.name != "email") {
@@ -704,7 +773,7 @@ func validateCommitTree(ctx context.Context, runner controlledGit, treeSHA, obje
 				return err
 			}
 		case "160000":
-			return fmt.Errorf("snapshot contracts: repository tree contains unsupported gitlink %q", entryPath)
+			return fmt.Errorf("snapshot contracts: %w %q", errRepositoryGitlink, entryPath)
 		default:
 			return fmt.Errorf("snapshot contracts: repository tree path %q has unsupported mode %q", entryPath, mode)
 		}
