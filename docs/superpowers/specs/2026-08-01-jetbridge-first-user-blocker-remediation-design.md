@@ -29,6 +29,9 @@ The acceptance path is deliberately node-level:
 | `JBUSER-004` | A node with `budget_slice_usd: 5` failed before its first model turn with unknown option `--max-budget-usd`. | `agent/runner/runner.go` correctly passes the positive cap, but `deploy/agent-runner/Dockerfile` pins Claude Code `2.0.1`, which does not implement the runner's required flag. Existing tests verify argument construction, not the packaged CLI. | Proven by the live log and image pin. |
 | `JBUSER-005` | `nodes show-run` gave a terminal status but no diagnostic path. | `RunSummary` already contains `planned_build_id`; `printAgentWorkflowRunDetail` drops it in plain output. Raw stored error text is intentionally redacted, so the safe fix is to expose the build correlation and an exact `fly watch -b` command, not dependency errors. | Proven from API and Fly rendering code. |
 | `JBUSER-006` | `fly targets` said `n/a: invalid token` immediately after successful authentication. | The command locally parses token expiry and calls any non-JWT/bearer format invalid; actual authenticated status can still succeed. | Proven from `fly/commands/targets.go`; usability issue, not an authorization failure. |
+| `JBUSER-007` | The live `k8s-live-tests` build log exposed the projected Kubernetes service-account bearer token. | `deploy/concourse-pipeline.yml` runs the task with `sh -x`, assigns the contents of the standard projected token file to a shell variable, and expands that variable into `kubectl config set-credentials`; shell tracing prints both the assignment and expanded argument. `deploy/borg-pipeline.yml` repeats the same pattern in two tasks. Ordinary non-hermetic Jetbridge pods preserve Kubernetes automount defaults, but repository configuration does not establish this token's lifetime, audience, or bound object. | The disclosure path is proven and blocks the next rollout until its repository tests pass. Token claim details remain explicitly unknown and are not acceptance prerequisites. |
+| `JBUSER-008` | The final `v0.2.220` image continued to report `0.2.220-rc`. | `build-image` stamps both server version globals with the RC value. The release task declares final server linker flags but never uses them to build a server; it rebuilds only Fly, then derives the final image from the RC image and copies only Fly assets. A safe correction must build the final server from the same frontend-rebuilt source tree as the RC server, not from the release task's raw checkout. | Proven from the pipeline and running final image; final-stamped release activation is an acceptance blocker. |
+| `JBUSER-009` | Chart documentation said an empty task ServiceAccount setting uses the web ServiceAccount. | `deploy/chart/templates/web-deployment.yaml` emits `--kubernetes-service-account` only for a nonempty value, `atc/atccmd` documents an empty value as the namespace default, and Jetbridge passes that value directly into the task Pod spec. The values comment and chart README therefore contradict the runtime. | Proven nonblocking documentation/config mismatch. The live selected ServiceAccount and its effective privileges still require read-only disposition. |
 
 The nested-directory archive mismatch found during the trial is already fixed
 by commit `a24e0771c2`: Fly now emits directory headers without a trailing
@@ -53,7 +56,11 @@ track.
   evidence;
 - safe Fly build-log hints and truthful target-expiry wording;
 - node lifecycle and first-user documentation;
-- a live, unreleased node-level dogfood gate using fresh post-rollout runs.
+- a live, unreleased node-level dogfood gate using fresh post-rollout runs;
+- no-xtrace deployment pipeline contracts and final-stamped server release
+  activation; and
+- explicit runtime Kubernetes ServiceAccount guidance and read-only live
+  disposition.
 
 ### Out of scope
 
@@ -223,6 +230,26 @@ exactly `linux/amd64` before printing
 `CONCOURSE_AGENT_STEP_IMAGE=<repository>@<digest>`. Mutable tags may remain for
 human convenience but are never deployment evidence.
 
+The same pipeline task also closes two release-safety defects before another
+rollout. Any task that reads a projected Kubernetes service-account token runs
+without shell xtrace; a static contract covers both the Concourse pipeline and
+the duplicate Borg scripts. The exposed token's lifetime, audience, and bound
+object cannot be established from repository configuration and remain
+explicitly unknown. Fixing the proven trace path is required before rollout;
+discovering those token claims is not an acceptance prerequisite and no test
+may print or decode a real credential.
+
+The web release builds both RC and final server binaries from the same source
+tree only after the separately rebuilt frontend has replaced `web/public`.
+The RC artifact carries its RC server as the entrypoint and the final-stamped
+server at a release-only staging path. `Dockerfile.release` activates that
+staged server, retains the final Fly assets, and checks the exact final image's
+`concourse --version` before push. The release task never recompiles the server
+from its raw checkout, which would bypass the frontend rebuild and reopen the
+stale embedded-UI failure. Static coverage requires final linker values for
+both `concourse.Version` and `concourse.JetBridgeVersion`; live acceptance
+confirms both fields through `/api/v1/info`.
+
 ### 5. Diagnostics expose correlations, not secrets
 
 Plain Fly run detail prints `planned build: <id>` whenever the API supplies
@@ -277,8 +304,11 @@ ledger. It does not authorize a live hotfix or an uncapped retry.
    land before interpreting the live 422.
 4. MCP conformance lands before runner preflight can require it.
 5. Runner image capability and digest publication land before deployment.
-6. Operator hints and documentation land before the live first-user rerun.
-7. Same-commit web/runner deployment precedes package re-import and every
+6. Service-account no-xtrace and final-stamped web release contracts land
+   before deployment.
+7. Operator hints and ServiceAccount documentation land before the live
+   first-user rerun.
+8. Same-commit web/runner deployment precedes package re-import and every
    acceptance run.
 
 ## Verification Strategy
@@ -300,6 +330,8 @@ go test ./agent/resourcecapture ./agent/workflowrun -count=1
 ginkgo --procs=1 --focus='exact authorized resource-capture output' ./atc/db
 go test ./agent/snapshot/contracts ./agent/snapshot ./agent/api/snapshots ./fly/commands -count=1
 go test ./agent/schema ./agent/outputbuilder ./cmd/agent-output ./agent/runner -count=1
+go test ./deploy -run '^TestPipelineTasksDoNotTraceServiceAccountTokens$' -count=1
+go test ./deploy -run '^TestConcourseReleaseImageUsesFinalStampedServer$' -count=1
 go test ./deploy ./fly/commands -count=1
 git diff --check
 ```
@@ -321,8 +353,22 @@ Pause new agent dispatch during the compatibility window. Build the web and
 runner artifacts from the same commit, capture immutable digests, update the
 external deployment's `CONCOURSE_AGENT_STEP_IMAGE` through its normal reviewed
 path, roll out the web, and verify the configured runtime digest before
-re-enabling dispatch. Re-import affected node packages only after that check;
-content deduplication to an existing exact version is the expected result.
+re-enabling dispatch. Capture the exact final, non-RC tag on that commit and
+require the running `/api/v1/info` response's `version` and
+`jetbridge_version` fields to equal it exactly. A retained `-rc` value fails
+the rollout even when the image tag itself is final.
+
+Inspect the running web arguments read-only and record the exact
+`--kubernetes-namespace` and `--kubernetes-service-account` values. An absent
+ServiceAccount argument means the task namespace's default ServiceAccount and
+is not itself a failure. Review that selected account's effective RBAC against
+the intended task policy and block only unintended broad privileges. Never
+read a projected token or Secret to collect this evidence. Token lifetime,
+audience, and bound-object claims remain unknown and are not prerequisites for
+acceptance after the proven xtrace path is closed.
+
+Re-import affected node packages only after those checks; content deduplication
+to an existing exact version is the expected result.
 
 If the rollout fails, restore the prior web and exact runner digests together.
 Do not keep a new web against an old runner, do not retag a mutable image to
@@ -349,3 +395,13 @@ on the restored pair.
   runner digest and produce one inspected, valid typed output before release.
 - `JETBRIDGE_FIRST_USER_FINDINGS.md` and the track ledger contain exact
   verification and live disposition.
+- Both deployment pipelines pass the no-xtrace token contract before another
+  rollout. Token lifetime, audience, and bound object remain unknown and are
+  not acceptance prerequisites after the proven disclosure path is closed.
+- The final image activates the final server built from the frontend-rebuilt
+  source tree; its pre-push version check and live `/api/v1/info` evidence show
+  the exact final version for both server identities, with no `-rc` suffix.
+- Chart documentation states that an empty task ServiceAccount selects the
+  namespace default. Live evidence records the configured argument or its
+  absence and effective RBAC without reading a credential; only privileges
+  broader than the intended task policy block acceptance.

@@ -38,6 +38,9 @@
 | `JBUSER-004` | Proven image/version skew | Runner emits the correct positive budget flag; runner image pins Claude Code 2.0.1, which rejects it. |
 | `JBUSER-005` | Proven Fly omission | API carries `planned_build_id`; plain run-detail rendering drops it. |
 | `JBUSER-006` | Proven wording defect | `fly targets` labels undecodable expiry as an invalid token without authenticating. |
+| `JBUSER-007` | Proven credential disclosure; blocks the next rollout | The live `k8s-live-tests` log traced a projected Kubernetes service-account token assignment and its expanded bearer argument because `deploy/concourse-pipeline.yml` uses `sh -x`; `deploy/borg-pipeline.yml` duplicates the pattern. Token lifetime, audience, and bound object remain unknown and are not acceptance prerequisites after the trace path is closed. |
+| `JBUSER-008` | Proven final-image identity defect; blocks acceptance | The final `v0.2.220` image still reports `0.2.220-rc`: the build task stamps only the RC server, and the release task replaces Fly assets without building or activating a final-stamped server. The correction must preserve the separately rebuilt frontend. |
+| `JBUSER-009` | Proven nonblocking documentation/runtime mismatch | An empty chart `kubernetes.serviceAccount` omits the web argument and therefore selects the task namespace's default ServiceAccount, not the web ServiceAccount. Task 6 must record the live argument or absence and effective RBAC read-only without accessing a credential. |
 
 ## Track authoring review
 
@@ -50,6 +53,16 @@
 - Round 2 found no Critical, High, or acceptance-blocking issues. It also
   verified that the build-scoped `fly curl` metrics command is valid and that
   existing ingestion preserves the new `mcp.ready` event count.
+- The rollout addendum integrates `JBUSER-007` and `JBUSER-008` into Task 4,
+  `JBUSER-009` into Task 5, and exact final-version plus runtime
+  ServiceAccount evidence into Task 6. It does not authorize implementation,
+  push, pipeline application, deployment, or credential inspection.
+- Structural verification passed: Task 1 remained identical to `HEAD`; Tasks
+  1–6 each retained exactly one Files block and one Interfaces block; Task 5
+  contains no final-version rollout variable; shortcut/addendum residue is
+  absent; and `git diff --check` passed.
+- Independent blocking review round 1 of the rollout addendum passed with no
+  Critical, High, or acceptance-blocking findings. Review budget used: 1 of 3.
 
 ## Tasks
 
@@ -114,16 +127,23 @@
     unmarshaled.
 - [ ] Task 4 — immutable runner CLI/image capability and digest publication
   - Gate: checksum/version parity, Docker image smoke, and registry-reported
-    digest evidence inspected as exactly `linux/amd64` after registry pull.
+    digest evidence inspected as exactly `linux/amd64` after registry pull;
+    static no-xtrace coverage for projected-token consumers in both deployment
+    pipelines; and a final server built from the frontend-rebuilt source,
+    activated in the final image, and checked before push.
   - Review budget: maximum three blocking rounds.
 - [ ] Task 5 — safe build-log correlations, target wording, and node docs
-  - Gate: Fly command/integration tests and stale-wording residue check.
+  - Gate: Fly command/integration tests, stale-wording residue check, and chart
+    documentation that an empty task ServiceAccount selects the namespace
+    default rather than the web ServiceAccount.
   - Review budget: maximum three blocking rounds.
 - [ ] Task 6 — same-commit deployment and fresh node-level dogfood acceptance
   - Gate: both repository ingress paths, positive `$5` run, one durable
     `mcp.ready` count per managed-builder run, sealed `diagnosis/v1` and
-    `review/v1` outputs, exact failure-log hint, and evidence-based release
-    disposition.
+    `review/v1` outputs, exact failure-log hint, exact final non-RC server
+    identities from `/api/v1/info`, read-only runtime ServiceAccount/RBAC
+    disposition, and evidence-based release disposition for `JBUSER-007`
+    through `JBUSER-009`.
   - Review budget: maximum three blocking rounds.
 
 ## Execution rules

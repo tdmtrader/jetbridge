@@ -642,6 +642,9 @@
 
 **Files:**
 
+- Create: `deploy/pipeline_secret_trace_test.go`
+- Create: `deploy/concourse_pipeline_release_test.go`
+- Modify: `deploy/borg-pipeline.yml`
 - Create: `deploy/agent-runner/smoke.sh`
 - Modify: `deploy/agent-runner/Dockerfile`
 - Modify: `deploy/agent_runner_dockerfile_test.go`
@@ -655,6 +658,12 @@
 - Produces: `/usr/local/bin/agent-runner-image-smoke`, which exits nonzero unless the packaged version and all load-bearing flags are present.
 - Produces: Make targets `build-agent-runner-image` and `test-agent-runner-smoke`, gated by `CONCOURSE_AGENT_RUNNER_SMOKE=1`.
 - Produces: pipeline evidence `CONCOURSE_AGENT_STEP_IMAGE=<repository>@sha256:<64 lowercase hex>` only after an explicit linux/amd64 build, the registry push response, and a registry-pulled immutable reference inspected as exactly `linux/amd64`.
+- Enforces: no task script in the Concourse or Borg deployment pipelines may
+  read a projected Kubernetes service-account token while shell xtrace is
+  enabled.
+- Produces: a final release image whose active server binary is stamped with
+  final `concourse.Version` and `concourse.JetBridgeVersion`, built from the
+  same frontend-rebuilt source tree as the RC binary and checked before push.
 
 - [ ] **Step 1: Strengthen the Dockerfile contract test first**
 
@@ -789,6 +798,71 @@
   commit-tag push has no registry-reported digest or the registry-resolved
   immutable image is not exactly `linux/amd64`.
 
+- [ ] **Step 5a: Prohibit tracing projected service-account tokens**
+
+  Create `pipeline_secret_trace_test.go`. Parse `concourse-pipeline.yml` and
+  `borg-pipeline.yml`, find every task script that reads
+  `/var/run/secrets/kubernetes.io/serviceaccount/token`, and fail if its shell
+  arguments enable xtrace or the script enables `set -x`. This is a closed
+  pipeline policy: a token-consuming task may keep `-e` and command logging
+  that does not expand credentials, but it may not trace the token assignment
+  or a command-line bearer value.
+
+  Run the focused test first:
+
+  ```bash
+  go test ./deploy -run '^TestPipelineTasksDoNotTraceServiceAccountTokens$' -count=1
+  ```
+
+  Expected before the fix: failure on the `k8s-live-tests` task in
+  `concourse-pipeline.yml` and the equivalent live-test and deploy tasks in
+  `borg-pipeline.yml`, because each uses `sh -x` while consuming the projected
+  token.
+
+  Change only those token-consuming task invocations from xtrace-enabled shell
+  flags to `-ec`. Do not print, decode, copy into evidence, or otherwise inspect
+  a real credential. Rerun the focused test and require success. This is a
+  repository correction only; do not apply either pipeline or trigger a
+  deployment during Task 4.
+
+- [ ] **Step 5b: Build and activate a final-stamped server binary**
+
+  Create `concourse_pipeline_release_test.go`. Parse the `build-image` and
+  `release` task scripts and require all of these load-bearing properties:
+
+  - both the RC and final server binaries are compiled only after
+    `build-frontend` output is installed over `web/public`;
+  - the final binary sets both `concourse.Version` and
+    `concourse.JetBridgeVersion` to the final version;
+  - the RC image carries the final binary at a non-entrypoint staging path;
+  - `Dockerfile.release` activates that staged binary instead of inheriting the
+    RC server unchanged; and
+  - the exact final image runs `concourse --version` successfully before any
+    final image push or Git mutation.
+
+  Run:
+
+  ```bash
+  go test ./deploy -run '^TestConcourseReleaseImageUsesFinalStampedServer$' -count=1
+  ```
+
+  Expected before the fix: failure because the release task declares final
+  server linker flags but never uses them to build the server, while its
+  Dockerfile copies Fly assets onto the RC image without replacing the server.
+
+  In the `build-image` task, compile RC and final server binaries from the same
+  checkout after the rebuilt frontend has been copied into `web/public`.
+  Package the RC binary as the active server and the final binary at a fixed
+  release-only staging path. In `Dockerfile.release`, atomically replace the
+  active RC server with that staged final binary, retain the final Fly assets,
+  and run the exact final image's `concourse --version` check before push.
+
+  Never rebuild the final server from the raw checkout in the release task:
+  that checkout does not contain the separately rebuilt frontend and would
+  reopen the stale embedded-UI failure. Rerun the focused test and require
+  success. Do not push an image, tag a commit, apply the pipeline, or deploy as
+  part of this implementation step.
+
 - [ ] **Step 6: Correct the deployment runbook**
 
   Update `V3_CUTOVER_DEPLOY.md` so every deploy pauses new dispatch, builds and
@@ -804,6 +878,8 @@
 
   ```bash
   sh -n deploy/agent-runner/smoke.sh
+  go test ./deploy -run '^TestPipelineTasksDoNotTraceServiceAccountTokens$' -count=1
+  go test ./deploy -run '^TestConcourseReleaseImageUsesFinalStampedServer$' -count=1
   go test ./deploy ./agent/runner -count=1
   git diff --check
   ```
@@ -831,7 +907,7 @@
   commit:
 
   ```bash
-  git add deploy/agent-runner/smoke.sh deploy/agent-runner/Dockerfile deploy/agent_runner_dockerfile_test.go Makefile deploy/concourse-pipeline.yml docs/agentic/V3_CUTOVER_DEPLOY.md .superpowers/sdd/2026-08-01-jetbridge-first-user-blocker-remediation/progress.md
+  git add deploy/agent-runner/smoke.sh deploy/agent-runner/Dockerfile deploy/agent_runner_dockerfile_test.go deploy/pipeline_secret_trace_test.go deploy/concourse_pipeline_release_test.go Makefile deploy/concourse-pipeline.yml deploy/borg-pipeline.yml docs/agentic/V3_CUTOVER_DEPLOY.md .superpowers/sdd/2026-08-01-jetbridge-first-user-blocker-remediation/progress.md
   git commit -m "fix(deploy): enforce agent runner CLI compatibility"
   ```
 
@@ -847,6 +923,8 @@
 - Modify: `fly/integration/targets_test.go`
 - Modify: `docs/operations/reusable-node-definitions.md`
 - Modify: `docs/platform-guide.html`
+- Modify: `deploy/chart/values.yaml`
+- Modify: `deploy/chart/README.md`
 
 **Interfaces:**
 
@@ -935,6 +1013,13 @@
   - bundled skills are immutable and discoverable, not guaranteed to be read,
     so contract-critical record mechanics belong in initial authority/builder.
 
+  Correct the Kubernetes runtime wording in `deploy/chart/values.yaml` and
+  `deploy/chart/README.md`: an empty `kubernetes.serviceAccount` selects the
+  task namespace's default ServiceAccount, not the web ServiceAccount. Explain
+  that operators must set it explicitly when task pods intentionally require
+  Kubernetes API access. Do not change the runtime default or grant ordinary
+  task pods the web ServiceAccount's privileges.
+
   Update the reusable-node section of `platform-guide.html` to remove the
   “undocumented capability” claim, summarize the lifecycle, and link the
   operations guide rather than duplicating it.
@@ -947,7 +1032,7 @@
   gofmt -w fly/commands/agent_workflow_runs.go fly/commands/agent_workflow_runs_test.go fly/commands/agent_nodes.go fly/commands/agent_nodes_test.go fly/commands/targets.go fly/integration/targets_test.go
   go test ./fly/commands -count=1
   ginkgo -r --keep-going --focus='targets' ./fly/integration/
-  rg -n 'undocumented capability|n/a: invalid token' docs/platform-guide.html docs/operations/reusable-node-definitions.md fly/commands fly/integration
+  rg -n 'undocumented capability|n/a: invalid token|uses web SA if empty|`""` \(web SA\)' docs/platform-guide.html docs/operations/reusable-node-definitions.md deploy/chart/values.yaml deploy/chart/README.md fly/commands fly/integration
   git diff --check
   ```
 
@@ -960,7 +1045,7 @@
   Record verification and review in the ledger, then commit:
 
   ```bash
-  git add fly/commands/agent_workflow_runs.go fly/commands/agent_workflow_runs_test.go fly/commands/agent_nodes.go fly/commands/agent_nodes_test.go fly/commands/targets.go fly/integration/targets_test.go docs/operations/reusable-node-definitions.md docs/platform-guide.html .superpowers/sdd/2026-08-01-jetbridge-first-user-blocker-remediation/progress.md
+  git add fly/commands/agent_workflow_runs.go fly/commands/agent_workflow_runs_test.go fly/commands/agent_nodes.go fly/commands/agent_nodes_test.go fly/commands/targets.go fly/integration/targets_test.go docs/operations/reusable-node-definitions.md docs/platform-guide.html deploy/chart/values.yaml deploy/chart/README.md .superpowers/sdd/2026-08-01-jetbridge-first-user-blocker-remediation/progress.md
   git commit -m "docs(agent): expose the first-user diagnostic path"
   ```
 
@@ -975,8 +1060,14 @@
 **Interfaces:**
 
 - Consumes: a web artifact and runner image built from the same accepted commit, plus the registry-reported runner digest.
+- Consumes: the exact final non-RC version attached to that deployment commit.
 - Consumes: target `home`, team `main`, the `concourse/repo` Git resource, `agent/workflow/seeds/code-review-node-v1`, and `agent/workflow/seeds/log-diagnosis-node-v1`.
 - Produces: package re-import dispositions, fresh post-rollout runs, exact snapshot/run/build IDs, one durable `mcp.ready` event count per successful managed-builder run, downloaded typed outputs, and a release decision backed by inspected output.
+- Produces: `/api/v1/info` evidence that both `version` and
+  `jetbridge_version` equal the exact final version with no `-rc` suffix.
+- Produces: a read-only record of the running
+  `--kubernetes-service-account` value or its absence, with absence mapped to
+  the task namespace's default ServiceAccount; no credential is read.
 - Consumes the exact node version returned by byte-content import; because the
   packages are unchanged, content deduplication may correctly return
   `code-review@9` and `log-diagnosis@9`. Pre-rollout runs of those versions are
@@ -1010,7 +1101,19 @@
   Require the pipeline log to include the registry pull and exact
   `linux/amd64` inspection of that immutable reference. Verify the web artifact
   is built from the same full commit. Record the platform and both identities
-  in the ledger before rollout.
+  in the ledger before rollout. Fetch release tags and capture the exact final
+  version attached to that same commit:
+
+  ```bash
+  DEPLOYMENT_COMMIT=$(git rev-parse HEAD)
+  git fetch --tags --force origin
+  FINAL_VERSION=$(git tag --points-at "$DEPLOYMENT_COMMIT" --list 'v0.2.*' \
+    | grep -Ev -- '-rc$' | sed 's/^v//' | sort -V | tail -1)
+  printf '%s\n' "$FINAL_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'
+  ```
+
+  A missing exact final tag, a tag on another commit, or an RC-only tag blocks
+  rollout. Record `DEPLOYMENT_COMMIT` and `FINAL_VERSION` together.
 
 - [ ] **Step 3: Roll out through the normal external deployment path**
 
@@ -1024,8 +1127,28 @@
   fly -t home status
   ```
 
-  succeeds. No repository task may mutate home-infra directly without its
-  separate authority.
+  succeeds. Then query the running API and require both compiled server
+  identities to be the exact final version:
+
+  ```bash
+  INFO_JSON=$(fly -t home curl /api/v1/info -- --silent --show-error)
+  printf '%s\n' "$INFO_JSON" | jq -e --arg want "$FINAL_VERSION" \
+    '.version == $want and .jetbridge_version == $want and
+     (.version | endswith("-rc") | not) and
+     (.jetbridge_version | endswith("-rc") | not)' >/dev/null
+  ```
+
+  Inspect the running web container arguments read-only. Record the exact
+  `--kubernetes-namespace` and `--kubernetes-service-account` values. When the
+  ServiceAccount argument is absent, record that Kubernetes selects the
+  namespace default; absence is not itself a failure. Review the selected
+  ServiceAccount's effective RBAC without reading its token or any Secret, and
+  block only when it has privileges broader than the deployment's intended
+  task policy. Never read, decode, print, or persist a projected token while
+  collecting this evidence.
+
+  No repository task may mutate home-infra directly without its separate
+  authority.
 
 - [ ] **Step 4: Prove direct nested repository upload**
 
@@ -1258,7 +1381,10 @@
   Update `JETBRIDGE_FIRST_USER_FINDINGS.md` with the repaired root causes,
   immutable image/web identities, snapshot/node/run/build/output IDs, bounded
   spend, release state, remaining pain points, and any inference clearly
-  labeled. Mark ledger tasks complete only when their own gates passed.
+  labeled. Record the `JBUSER-007` no-xtrace disposition, the `JBUSER-008`
+  final server identity evidence, and the `JBUSER-009` runtime ServiceAccount
+  documentation/live disposition. Mark ledger tasks complete only when their
+  own gates passed.
 
   Run:
 
