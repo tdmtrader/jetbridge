@@ -180,6 +180,60 @@ func TestBuildCodeReviewSeedProducesTerminalOutputEdge(t *testing.T) {
 	}
 }
 
+func TestBuildAwaitPublishAndLoadNodes(t *testing.T) {
+	function := &workflow.FunctionConfig{
+		SignatureVersion: 1,
+		Inputs:           []snapshot.Port{{Name: "repository", Type: "repository/v1"}},
+		Plan: []atc.Step{
+			agentStep("prepare", "prepare",
+				[]string{"repository"}, []string{"approval-question"},
+				map[string]atc.SnapshotInputConfig{"repository": {Type: "repository/v1"}},
+				map[string]atc.SnapshotOutputConfig{"approval-question": {Type: "question/v1"}}),
+			{Config: &atc.AwaitSnapshotStep{
+				Name:      "approval",
+				Question:  "approval-question",
+				Type:      "human-answer/v1",
+				OnTimeout: atc.AwaitSnapshotOnTimeoutFail,
+			}},
+			{Config: &atc.PublishSnapshotStep{
+				Name:      "ship",
+				Input:     "repository",
+				InputType: "repository/v1",
+				Approval:  "approval",
+			}},
+		},
+	}
+
+	g, err := Build(function)
+	if err != nil {
+		t.Fatalf("Build returned an error: %v", err)
+	}
+
+	await, found := g.Node("approval")
+	if !found || await.Kind != KindAwait {
+		t.Fatalf("expected an await node, got found=%v node=%+v", found, await)
+	}
+	if await.TypeRef != "human-answer/v1" {
+		t.Fatalf("expected the await node to carry its answer type, got %q", await.TypeRef)
+	}
+
+	publish, found := g.Node("ship")
+	if !found || publish.Kind != KindPublish {
+		t.Fatalf("expected a publish node, got found=%v node=%+v", found, publish)
+	}
+
+	want := []Edge{
+		{From: "prepare", To: "approval", PortName: "approval-question", TypeRef: "question/v1"},
+		{From: "input:repository", To: "ship", PortName: "repository", TypeRef: "repository/v1"},
+		{From: "approval", To: "ship", PortName: "approval", TypeRef: "human-answer/v1"},
+	}
+	for _, edge := range want {
+		if !hasEdge(g, edge) {
+			t.Fatalf("expected edge %+v in %+v", edge, g.Edges)
+		}
+	}
+}
+
 func hasEdge(g Graph, want Edge) bool {
 	for _, edge := range g.Edges {
 		if edge == want {

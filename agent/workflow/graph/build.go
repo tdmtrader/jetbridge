@@ -37,9 +37,9 @@ func resourceSourceNodeID(name string) string { return resourceSourceNodePrefix 
 // records nodes and edges instead of validating flow.
 //
 // Build assumes the function already type-checked. Step kinds the type
-// checker rejects are treated as programmer error; A2/A3 only handle agent
-// and task leaves. Wrapped/conditional steps, and await/publish/load nodes,
-// are added by later tasks.
+// checker rejects are treated as programmer error; agent, task, await,
+// publish, and load leaves are handled (A2-A4). Wrapped/conditional steps
+// (retry, timeout, try, ensure, hooks) are added by a later task (A5).
 func Build(function *workflow.FunctionConfig) (Graph, error) {
 	if function == nil {
 		return Graph{}, fmt.Errorf("graph: function config is required")
@@ -207,6 +207,123 @@ func (b *builder) walkStepConfig(stepConfig atc.StepConfig, decorations []Decora
 		// (unlike checkAgent). Mirror that asymmetry rather than inventing a
 		// different contract for tasks.
 		return b.addLeaf(config.FunctionID, KindTask, config.Name, decorations, config.SnapshotInputs, config.SnapshotOutputs)
+	case *atc.AwaitSnapshotStep:
+		// An await is an execution node: it has a durable wait record and is
+		// often exactly where attention is required. It consumes exactly one
+		// of three shapes (checkAwaitSnapshot in typecheck.go dispatches the
+		// same way): a plain question binding, a merge-approval intent over
+		// one repository-change/v1 input plus its authoritative validation,
+		// or a PR-reapproval intent over four named artifacts plus the
+		// accepted-review authority's own three bindings and its validation.
+		// It always produces its own name.
+		b.addNode(Node{
+			ID:          config.Name,
+			Kind:        KindAwait,
+			DisplayName: config.Name,
+			TypeRef:     string(config.Type),
+			Decorations: append([]Decoration(nil), decorations...),
+		})
+		switch {
+		case config.PRApproval != nil:
+			for _, binding := range []string{
+				config.PRApproval.Observation,
+				config.PRApproval.Candidate,
+				config.PRApproval.Impact,
+				config.PRApproval.Response,
+			} {
+				if err := b.link(binding, config.Name); err != nil {
+					return err
+				}
+			}
+			if config.PRApproval.AcceptedReview != nil {
+				for _, binding := range []string{
+					config.PRApproval.AcceptedReview.Review,
+					config.PRApproval.AcceptedReview.Candidate,
+					config.PRApproval.AcceptedReview.Validation,
+				} {
+					if err := b.link(binding, config.Name); err != nil {
+						return err
+					}
+				}
+			}
+			if config.Validation != "" {
+				if err := b.link(config.Validation, config.Name); err != nil {
+					return err
+				}
+			}
+		case config.MergeApproval != nil:
+			if err := b.link(config.MergeApproval.Input, config.Name); err != nil {
+				return err
+			}
+			if config.Validation != "" {
+				if err := b.link(config.Validation, config.Name); err != nil {
+					return err
+				}
+			}
+		default:
+			if config.Question != "" {
+				if err := b.link(config.Question, config.Name); err != nil {
+					return err
+				}
+			}
+		}
+		b.produce(config.Name, config.Name, string(config.Type))
+		return nil
+	case *atc.PublishSnapshotStep:
+		// A publish is an execution node: it is an explicit external
+		// side-effect boundary. checkPublishSnapshot in typecheck.go always
+		// consumes Input, and consumes Approval/Validation whenever they are
+		// set (merge mode and the PR-reapproval fast path both key off the
+		// same Approval binding name). When a PR-reapproval intent is
+		// present, it also consumes the three accepted-review bindings that
+		// prove no new human wait was required. Publish produces nothing —
+		// it is a terminal side effect, not a snapshot producer.
+		b.addNode(Node{
+			ID:          config.Name,
+			Kind:        KindPublish,
+			DisplayName: config.Name,
+			TypeRef:     string(config.InputType),
+			Decorations: append([]Decoration(nil), decorations...),
+		})
+		if err := b.link(config.Input, config.Name); err != nil {
+			return err
+		}
+		if config.Approval != "" {
+			if err := b.link(config.Approval, config.Name); err != nil {
+				return err
+			}
+		}
+		if config.Validation != "" {
+			if err := b.link(config.Validation, config.Name); err != nil {
+				return err
+			}
+		}
+		if config.PRApproval != nil && config.PRApproval.AcceptedReview != nil {
+			for _, binding := range []string{
+				config.PRApproval.AcceptedReview.Review,
+				config.PRApproval.AcceptedReview.Candidate,
+				config.PRApproval.AcceptedReview.Validation,
+			} {
+				if err := b.link(binding, config.Name); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	case *atc.LoadSnapshotStep:
+		// A load is an execution node: it materializes an existing snapshot
+		// into a new binding. checkLoadSnapshot in typecheck.go consumes no
+		// bindings (WorkflowRunID/ID are renderer-owned parameters, not
+		// snapshot-flow bindings) and only ever produces its own name.
+		b.addNode(Node{
+			ID:          config.Name,
+			Kind:        KindLoad,
+			DisplayName: config.Name,
+			TypeRef:     string(config.Type),
+			Decorations: append([]Decoration(nil), decorations...),
+		})
+		b.produce(config.Name, config.Name, string(config.Type))
+		return nil
 	default:
 		return fmt.Errorf("graph: unsupported step config %T", config)
 	}
