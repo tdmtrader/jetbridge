@@ -217,7 +217,7 @@ breadcrumbs session route =
                   , breadcrumbSeparator
                   , agentRouteBreadcrumb
                         "breadcrumb-agent-workflow"
-                        (Routes.AgentWorkflow { name = name })
+                        (Routes.AgentWorkflow { name = name, query = [] })
                         name
                   ]
                 , False
@@ -229,7 +229,7 @@ breadcrumbs session route =
                   , breadcrumbSeparator
                   , agentRouteBreadcrumb
                         "breadcrumb-agent-workflow"
-                        (Routes.AgentWorkflow { name = workflowName })
+                        (Routes.AgentWorkflow { name = workflowName, query = [] })
                         workflowName
                   , breadcrumbSeparator
                   , agentRouteBreadcrumb

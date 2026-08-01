@@ -390,7 +390,7 @@ variantRow variant =
             ]
         , Html.a
             [ class "agent-experiment-promotion-link"
-            , href (Routes.toString (Routes.AgentWorkflow { name = target.workflowName }))
+            , href (Routes.toString (Routes.AgentWorkflow { name = target.workflowName, query = [] }))
             , style "margin-left" "12px"
             ]
             [ Html.text "inspect operational runs / promote explicitly" ]

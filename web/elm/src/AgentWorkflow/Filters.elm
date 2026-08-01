@@ -40,7 +40,7 @@ why they get three functions rather than one:
     `origin`, and note the absence of a revision filter.
 
 Two design-level filters have no server-side expression in this slice and are
-therefore deliberately *not* sent:
+therefore deliberately _not_ sent:
 
   - `version` selects which revision the Versions panel talks about. The run
     list API exposes no revision filter (`db.AgentWorkflowRunListFilter` has

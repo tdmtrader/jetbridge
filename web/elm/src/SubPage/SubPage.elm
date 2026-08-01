@@ -161,8 +161,8 @@ init session route =
             AgentTicket.init { id = id }
                 |> Tuple.mapFirst AgentTicketModel
 
-        Routes.AgentWorkflow { name } ->
-            AgentWorkflow.init { name = name }
+        Routes.AgentWorkflow { name, query } ->
+            AgentWorkflow.init { name = name, query = query }
                 |> Tuple.mapFirst AgentWorkflowModel
 
         Routes.AgentWorkflowRun { workflowName, id } ->
@@ -530,7 +530,13 @@ urlUpdateValid routes =
         identity
         identity
         identity
-        identity
+        (case routes.to of
+            Routes.AgentWorkflow { query } ->
+                AgentWorkflow.changeRoute query
+
+            _ ->
+                identity
+        )
         identity
         identity
         identity

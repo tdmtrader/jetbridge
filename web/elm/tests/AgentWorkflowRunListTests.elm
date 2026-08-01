@@ -46,6 +46,13 @@ all =
                     render [ waitingRow ]
                         |> Query.find [ class "agent-run-row-duration" ]
                         |> Query.has [ text "10m 0s" ]
+            , test "never reports a negative elapsed time before the clock has ticked" <|
+                \_ ->
+                    RunList.view { now = Time.millisToPosix 0, emptyMessage = "No runs" }
+                        [ waitingRow ]
+                        |> Query.fromHtml
+                        |> Query.find [ class "agent-run-row-duration" ]
+                        |> Query.has [ text "0s" ]
             , test "says so plainly when a run never started" <|
                 \_ ->
                     render [ { succeededRow | startedAt = Nothing, completedAt = Nothing } ]
@@ -107,7 +114,7 @@ all =
                 \_ ->
                     render [ { succeededRow | status = "failed" } ]
                         |> Query.find [ class "agent-run-row-status" ]
-                        |> Query.has [ text "\u{2715} failed" ]
+                        |> Query.has [ text "✕ failed" ]
             , test "carries an accessible label naming the run and its state" <|
                 \_ ->
                     render [ succeededRow ]

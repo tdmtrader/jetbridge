@@ -12,7 +12,7 @@ than a click handler so that middle-click, copy-link, and keyboard activation
 all work — there is deliberately no inline preview to intercept the click.
 
 The row never derives an aggregate of its own. `status` is the effective state
-the caller resolved; the list renders it as a glyph *and* a word so colour is
+the caller resolved; the list renders it as a glyph _and_ a word so colour is
 only ever reinforcement.
 
 -}
@@ -127,25 +127,25 @@ glyphFor : String -> String
 glyphFor status =
     case status of
         "succeeded" ->
-            "\u{2713}"
+            "✓"
 
         "failed" ->
-            "\u{2715}"
+            "✕"
 
         "errored" ->
-            "\u{2715}"
+            "✕"
 
         "aborted" ->
-            "\u{2298}"
+            "⊘"
 
         "canceling" ->
-            "\u{2298}"
+            "⊘"
 
         "running" ->
-            "\u{25B6}"
+            "▶"
 
         _ ->
-            "\u{00B7}"
+            "·"
 
 
 {-| A run still executing is timed against now, not left blank: "how long has
@@ -158,8 +158,12 @@ duration config row =
             "not started"
 
         Just startedAt ->
+            -- Clamped because `now` is unknown until the first clock tick, and
+            -- a negative elapsed time is worse than a momentary zero.
             Duration.format
-                (Duration.between startedAt (Maybe.withDefault config.now row.completedAt))
+                (max 0
+                    (Duration.between startedAt (Maybe.withDefault config.now row.completedAt))
+                )
 
 
 relativeTime : Time.Posix -> Maybe Time.Posix -> String

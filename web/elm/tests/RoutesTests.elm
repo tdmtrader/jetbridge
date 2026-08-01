@@ -14,12 +14,60 @@ all =
         [ describe "agent workflow routes"
             [ test "round-trips a percent-safe workflow name" <|
                 \_ ->
-                    Routes.AgentWorkflow { name = "review api/v3" }
+                    Routes.AgentWorkflow { name = "review api/v3", query = [] }
                         |> Routes.toString
                         |> (++) "http://example.com"
                         |> Url.fromString
                         |> Maybe.andThen Routes.parsePath
-                        |> Expect.equal (Just (Routes.AgentWorkflow { name = "review api/v3" }))
+                        |> Expect.equal
+                            (Just (Routes.AgentWorkflow { name = "review api/v3", query = [] }))
+            , test "an untouched overview has no query at all" <|
+                \_ ->
+                    Routes.AgentWorkflow { name = "review-api", query = [] }
+                        |> Routes.toString
+                        |> Expect.equal "/agent/workflows/review-api"
+            , test "carries the overview's filter, selection, and panel state" <|
+                \_ ->
+                    Routes.AgentWorkflow
+                        { name = "review-api"
+                        , query =
+                            [ ( "window", "30d" )
+                            , ( "node", "implement" )
+                            , ( "panel", "versions" )
+                            ]
+                        }
+                        |> Routes.toString
+                        |> (++) "http://example.com"
+                        |> Url.fromString
+                        |> Maybe.andThen Routes.parsePath
+                        |> Expect.equal
+                            (Just
+                                (Routes.AgentWorkflow
+                                    { name = "review-api"
+                                    , query =
+                                        [ ( "panel", "versions" )
+                                        , ( "node", "implement" )
+                                        , ( "window", "30d" )
+                                        ]
+                                    }
+                                )
+                            )
+            , test "drops a query parameter the overview does not own" <|
+                \_ ->
+                    Routes.parsePath
+                        { protocol = Url.Http
+                        , host = "example.com"
+                        , port_ = Nothing
+                        , path = "/agent/workflows/review-api"
+                        , query = Just "window=7d&spurious=1"
+                        , fragment = Nothing
+                        }
+                        |> Expect.equal
+                            (Just
+                                (Routes.AgentWorkflow
+                                    { name = "review-api", query = [ ( "window", "7d" ) ] }
+                                )
+                            )
             , test "round-trips an exact durable workflow run ID" <|
                 \_ ->
                     Routes.AgentWorkflowRun

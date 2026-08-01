@@ -537,6 +537,13 @@ routeMatchesModel route model =
         ( Routes.Job _, SubPage.JobModel _ ) ->
             True
 
+        -- The workflow overview keeps its filters in the URL, so a filter
+        -- change is a route change. Re-initializing the page for one would
+        -- refetch the graph, drop the scroll position, and close the panel
+        -- the reader just opened, so it reconciles instead.
+        ( Routes.AgentWorkflow _, SubPage.AgentWorkflowModel _ ) ->
+            True
+
         ( Routes.Dashboard _, SubPage.DashboardModel _ ) ->
             True
 

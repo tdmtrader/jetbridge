@@ -7,12 +7,15 @@ module AgenticData exposing
     , snapshotDetail
     , storedCell
     , wait
+    , workflowOverview
     , workflowVersion
     )
 
+import AgentGraph.Model as Graph
 import Concourse.Agent as Agent
 import Concourse.Experiment as Experiment
 import Concourse.Snapshot as Snapshot
+import Concourse.WorkflowOverview as WorkflowOverview
 import Concourse.WorkflowRun as WorkflowRun
 import Time
 
@@ -62,6 +65,79 @@ runSummary =
     , instanceConfigHash = Just "instance-hash"
     , actualPlanHash = Just "actual-plan-hash"
     , plannedBuildId = Just 42
+    }
+
+
+{-| A promoted workflow with one agent node that needs attention.
+
+The shape mirrors `workflowoverview.Response`: separate active and windowed
+history counts, no aggregate status, and a graph that is always present even
+when it is empty.
+
+-}
+workflowOverview : WorkflowOverview.Overview
+workflowOverview =
+    { workflow =
+        { name = "review-api"
+        , hasPromotedVersion = True
+        , graphVersion = 3
+        , contentHash = workflowVersion.contentHash
+        }
+    , window =
+        { kind = "7d"
+        , from = "2026-07-24T12:00:00Z"
+        , to = "2026-07-31T12:00:00Z"
+        , includesActiveBeforeWindow = True
+        }
+    , graph =
+        { nodes =
+            [ { id = "input:repository"
+              , kind = Graph.Input
+              , displayName = "repository"
+              , typeRef = "repository/v1"
+              , optional = False
+              , decorations = []
+              }
+            , { id = "implement"
+              , kind = Graph.Agent
+              , displayName = "implement"
+              , typeRef = "review/v1"
+              , optional = False
+              , decorations = []
+              }
+            ]
+        , edges =
+            [ { from = "input:repository"
+              , to = "implement"
+              , portName = "repository"
+              , typeRef = "repository/v1"
+              , optional = False
+              }
+            ]
+        }
+    , graphUnavailable = False
+    , nodeState =
+        [ { nodeId = "implement"
+          , running = 1
+          , waiting = 0
+          , pending = 0
+          , succeeded = 4
+          , failed = 1
+          , errored = 0
+          , aborted = 0
+          , skipped = 0
+          , needsAttention = True
+          , hasWindowActivity = True
+          }
+        ]
+    , revisionBoundaries =
+        [ { version = 3
+          , promotedAt = Just "2026-07-30T09:00:00Z"
+          , firstRunId = "9007199254740993"
+          , firstRunAt = "2026-07-30T10:00:00Z"
+          }
+        ]
+    , hasHistoricalOnlyNodes = False
     }
 
 

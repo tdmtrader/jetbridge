@@ -1,0 +1,296 @@
+@import (reference) "_vars.less";
+
+/* The workflow overview (web/elm/src/AgentWorkflow/AgentWorkflow.elm).
+ *
+ * The page is shape, state, and runs. There is deliberately no rule here for
+ * a metrics strip, a KPI grid, or a per-node chart, because the page does not
+ * render any: they would compete with the graph for the reader's attention.
+ *
+ * The graph and the run list sit side by side and stack on narrow screens,
+ * which is the only layout decision this file really makes. Everything else
+ * is quiet typography, so that the one thing carrying colour on the page is
+ * node state — and even that is reinforcement, never the sole signal.
+ */
+
+.agent-workflow-header-bar {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.agent-workflow-revision-indicator {
+  color: @grey40;
+  font-family: monospace;
+  font-size: 12px;
+}
+
+.agent-workflow-window {
+  color: @grey40;
+  font-size: 12px;
+}
+
+.agent-workflow-header-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.agent-workflow-filter-bar {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.agent-workflow-search {
+  flex: 1 1 240px;
+  min-width: 180px;
+  padding: 5px 8px;
+}
+
+.agent-workflow-lens {
+  display: flex;
+  gap: 4px;
+}
+
+.agent-workflow-lens-choice {
+  background: transparent;
+  border: 1px solid @grey70;
+  color: @grey40;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 4px 10px;
+}
+
+/* The current lens is heavier, not a different hue: three chips in three
+ * colours would read as three states rather than one choice. */
+.agent-workflow-lens-choice--current {
+  border-color: @grey20;
+  color: @grey20;
+  font-weight: 700;
+}
+
+.agent-workflow-selection-chip {
+  background: transparent;
+  border: 1px solid @grey20;
+  color: @grey20;
+  cursor: pointer;
+  font-family: monospace;
+  font-size: 12px;
+  padding: 4px 10px;
+}
+
+.agent-workflow-body {
+  align-items: start;
+  display: grid;
+  gap: 20px;
+  grid-template-columns: minmax(0, 3fr) minmax(280px, 2fr);
+}
+
+/* On a narrow screen the list flows under the graph rather than shrinking
+ * into a column too thin to read. */
+@media (max-width: 900px) {
+  .agent-workflow-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* The canvas scrolls inside its own column; the page body never scrolls
+ * sideways. */
+.agent-workflow-canvas {
+  min-width: 0;
+  overflow: auto;
+}
+
+.agent-workflow-runs {
+  max-height: 70vh;
+  min-width: 0;
+  overflow-y: auto;
+}
+
+.agent-workflow-note,
+.agent-run-list-empty {
+  color: @grey40;
+  font-family: monospace;
+  font-size: 12px;
+}
+
+/* Derivation failed. This says so where the canvas would be, in words, and
+ * everything else on the page keeps working — the degradation is visible,
+ * not silent. */
+.agent-graph-unavailable,
+.agent-graph-empty,
+.agent-workflow-no-versions {
+  border: 1px dashed @grey60;
+  color: @grey40;
+  font-size: 13px;
+  line-height: 1.5;
+  padding: 16px;
+}
+
+/* Run list */
+
+.agent-run-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.agent-run-row {
+  border-top: 1px solid @grey80;
+}
+
+.agent-run-row-link {
+  align-items: baseline;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 110px minmax(0, 1fr) auto;
+  padding: 7px 0;
+  text-decoration: none;
+}
+
+.agent-run-row-status,
+.agent-run-row-id,
+.agent-run-row-time,
+.agent-run-row-duration,
+.agent-run-row-ticket {
+  font-family: monospace;
+  font-size: 12px;
+}
+
+.agent-run-row-id {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-run-row-time,
+.agent-run-row-duration {
+  color: @grey40;
+}
+
+/* The revision marker appears only on the row where the revision changes, so
+ * it can afford to be a full-width label rather than a per-row column. */
+.agent-run-row-revision-boundary {
+  color: @grey40;
+  display: block;
+  font-family: monospace;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  padding-top: 8px;
+  text-transform: uppercase;
+}
+
+/* The cue already says the word; the colour only reinforces it. */
+.agent-run-row-attention {
+  color: @amber-primary;
+  font-size: 12px;
+}
+
+.agent-run-row-ticket {
+  color: @grey20;
+}
+
+/* Panels */
+
+.agent-workflow-panel {
+  border: 1px solid @grey70;
+  background: @grey90;
+  margin-bottom: 20px;
+  padding: 16px;
+}
+
+.agent-workflow-panel-head {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.agent-workflow-panel-head h2 {
+  font-size: 15px;
+  margin: 0;
+}
+
+.agent-workflow-panel-close {
+  background: transparent;
+  border: 1px solid @grey70;
+  color: @grey40;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 3px 10px;
+}
+
+.agent-workflow-panel-note {
+  color: @grey40;
+  font-family: monospace;
+  font-size: 12px;
+}
+
+.agent-workflow-signature-hashes {
+  color: @grey40;
+  font-family: monospace;
+  font-size: 12px;
+}
+
+.agent-workflow-signature-ports {
+  display: grid;
+  gap: 20px;
+  grid-template-columns: 1fr 1fr;
+}
+
+.agent-workflow-signature-ports h3 {
+  font-size: 13px;
+}
+
+.agent-workflow-port {
+  font-family: monospace;
+}
+
+.agent-workflow-start-form {
+  border-top: 1px solid @grey80;
+  margin-top: 16px;
+  padding-top: 12px;
+}
+
+.agent-workflow-input {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 180px minmax(240px, 1fr);
+  margin-top: 8px;
+}
+
+.agent-workflow-start {
+  margin-top: 10px;
+  padding: 7px 12px;
+}
+
+.agent-workflow-version {
+  border-top: 1px solid @grey80;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 90px 1fr auto;
+  padding: 8px 0;
+}
+
+.agent-workflow-version-detail {
+  font-family: monospace;
+  font-size: 12px;
+}
+
+/* Nodes that have left the promoted graph are discoverable here and nowhere
+ * else: the canvas never renders a union across revisions. */
+.agent-workflow-historical-only {
+  border-left: 2px solid @amber-primary;
+  color: @grey20;
+  font-size: 13px;
+  line-height: 1.5;
+  padding-left: 12px;
+}
+
+.agent-page-error {
+  color: @amber-primary;
+}

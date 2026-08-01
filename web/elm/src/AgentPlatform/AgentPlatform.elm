@@ -826,7 +826,7 @@ workflowRow model w =
         [ Html.div [ style "flex" "1", style "min-width" "0" ]
             [ Html.div []
                 (Html.a
-                    [ href (Routes.toString (Routes.AgentWorkflow { name = w.name }))
+                    [ href (Routes.toString (Routes.AgentWorkflow { name = w.name, query = [] }))
                     , class "agent-workflow-link"
                     , style "font-weight" "700"
                     , style "color" "#7a9ac0"

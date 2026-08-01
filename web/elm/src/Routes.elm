@@ -63,7 +63,7 @@ type Route
     | Agent
     | AgentTickets
     | AgentTicket { id : Int }
-    | AgentWorkflow { name : String }
+    | AgentWorkflow { name : String, query : List ( String, String ) }
     | AgentWorkflowRun { workflowName : String, id : String }
     | AgentSnapshot { id : String }
     | AgentExperiments
@@ -361,8 +361,38 @@ durableId =
 
 agentWorkflow : Parser ((b -> Route) -> a) a
 agentWorkflow =
-    map (\name -> always <| AgentWorkflow { name = name })
-        (s "agent" </> s "workflows" </> workflowNameSegment)
+    map (\name query -> always <| AgentWorkflow { name = name, query = query })
+        (s "agent" </> s "workflows" </> workflowNameSegment <?> agentWorkflowQuery)
+
+
+{-| The workflow overview's filter, selection, and panel state lives in the
+URL so back, forward, links, and refresh behave predictably.
+
+`Url.Parser.Query` has no "give me every pair" parser and its `mapN` stops at
+eight, so the nine keys are combined pairwise. Only known keys survive, which
+keeps an unrelated query parameter from being echoed back into a link, and
+`AgentWorkflow.Filters` remains the single place that decides what each value
+means.
+
+-}
+agentWorkflowQuery : Query.Parser (List ( String, String ))
+agentWorkflowQuery =
+    [ "window", "scope", "status", "q", "node", "node_status", "version", "origin", "panel" ]
+        |> List.map queryPair
+        |> List.foldl (Query.map2 (++)) (Query.custom "" (always []))
+
+
+queryPair : String -> Query.Parser (List ( String, String ))
+queryPair key =
+    Query.custom key
+        (\values ->
+            case values of
+                [ value ] ->
+                    [ ( key, value ) ]
+
+                _ ->
+                    []
+        )
 
 
 workflowNameSegment : Parser (String -> a) a
@@ -693,8 +723,10 @@ toString route =
             ( [ "agent-tickets", String.fromInt id ], [] )
                 |> RouteBuilder.build
 
-        AgentWorkflow { name } ->
+        AgentWorkflow { name, query } ->
             ( [ "agent", "workflows", Url.percentEncode name ], [] )
+                |> appendQuery
+                    (List.map (\( key, value ) -> Builder.string key value) query)
                 |> RouteBuilder.build
 
         AgentWorkflowRun { workflowName, id } ->
