@@ -17,12 +17,26 @@ else
   printf 'ERROR: Claude help command failed (status %s)\n' "$status" >&2
   exit 1
 fi
-for flag in --max-budget-usd --mcp-config --strict-mcp-config --max-turns --append-system-prompt --output-format --verbose --dangerously-skip-permissions; do
+for flag in --max-budget-usd --mcp-config --strict-mcp-config --append-system-prompt --output-format --verbose --dangerously-skip-permissions; do
   if ! printf '%s\n' "$help" | grep -F -- "$flag" >/dev/null; then
     printf 'ERROR: Claude help is missing required flag %s\n' "$flag" >&2
     exit 1
   fi
 done
+if max_turns_probe=$(claude --print --max-turns </dev/null 2>&1); then
+  printf 'ERROR: Claude parser accepted a missing --max-turns argument\n' >&2
+  exit 1
+else
+  status=$?
+fi
+case "$max_turns_probe" in
+  *"option '--max-turns <turns>' argument missing"*)
+    ;;
+  *)
+    printf 'ERROR: Claude parser did not report a missing argument for required flag --max-turns (status %s)\n' "$status" >&2
+    exit 1
+    ;;
+esac
 for binary in agent-runner function-runner agent-output; do
   if ! command -v "$binary" >/dev/null 2>&1; then
     printf 'ERROR: required Concourse binary missing: %s\n' "$binary" >&2

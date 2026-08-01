@@ -211,6 +211,17 @@ inferences and proposed follow-ups are labeled as such.
   The remote image smoke remains valuable executable acceptance evidence; static
   Dockerfile checks cannot replace a successful built-image smoke, immutable
   digest pull, and `linux/amd64` inspection.
+- A retry against exact commit `47aaaf7b3efa4dded22bbba685e53bd678dce509`
+  reached Dockerfile smoke twice (build `645476`) and failed before push/digest
+  with bounded `ERROR: Claude help is missing required flag --max-turns`. The
+  binary registers this option as hidden from top-level help and includes the
+  expected missing-argument parser diagnostic. A `--version` probe was a false
+  green because an unknown flag also exits 0. The replacement
+  `claude --print --max-turns </dev/null` probe does zero work and distinguishes
+  the registered missing-argument diagnostic from an unknown option without
+  printing captured output. Shell syntax, focused regression, full deploy, and
+  diff checks passed; independent final Task 4 review round 3 passed. The exact
+  amd64 retry/digest evidence remains pending.
 - Pipeline orchestration is also a platform pain point: runner-image is manual
   and not a dependency of self-upgrade or release, so the web RC advanced while
   the matching runner failed. Manual compatibility-window controls prevented a
@@ -220,6 +231,8 @@ inferences and proposed follow-ups are labeled as such.
   smoke-fix RC from deploying before matching runner activation. Pipeline
   dependency wiring is a follow-up candidate, not silently changed in this
   scoped remediation.
+- Promotion gates remain paused. Web RC build `645496` for the now-superseded
+  commit succeeded but was not promoted.
 
 ## Post-Trial Blocker Trace
 

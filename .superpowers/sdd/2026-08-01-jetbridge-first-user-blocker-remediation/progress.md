@@ -171,8 +171,20 @@
     deploy/agent-runner/smoke.sh`, `env GOCACHE=/tmp/jetbridge-go-cache go
     test ./deploy -run '^TestAgentRunnerDockerfile$' -count=1`, full
     `go test ./deploy -count=1`, and the owned-file `git diff --check` passed.
-  - Review: independent blocking review round 2 PASS with no Critical, High,
-    or acceptance-blocking findings. Review budget used: 2 of 3.
+  - Retry gate (build `645476`): exact commit
+    `47aaaf7b3efa4dded22bbba685e53bd678dce509` reached Dockerfile smoke twice
+    but failed before push/digest with bounded `ERROR: Claude help is missing
+    required flag --max-turns`. The exact binary registers that hidden-help
+    option and bundles its expected missing-argument parser diagnostic. The
+    initial `--version` probe was rejected as a false green because an unknown
+    flag also exits 0. The revised zero-work
+    `claude --print --max-turns </dev/null` probe distinguishes registered
+    missing-argument from unknown-option behavior without printing captured
+    output. Its shell syntax, focused regression, full deploy suite, and diff
+    check passed.
+  - Review: independent final Task 4 blocking review round 3 PASS with no
+    Critical, High, or acceptance-blocking findings. Review budget used: 3 of
+    3.
   - PENDING: repeat the remote runner-image build and executable
     `agent-runner-image-smoke`, then capture the registry-reported digest,
     immutable pull, and exact `linux/amd64` inspection. The remote smoke is
@@ -254,6 +266,8 @@
     the matching-runner failure. Manual compatibility-window control is required
     today; pipeline dependency wiring is a follow-up candidate, not part of
     this scoped delta. New smoke-fix commit/push/retry remains pending.
+  - Promotion remains paused. Web RC build `645496` for the now-superseded
+    commit succeeded but was not promoted.
   - Current disposition: no rollout or node acceptance is claimed. The
     repository pipeline may publish and verify an immutable runner digest, but
     external home-infra/ArgoCD owns activation. Same-commit node acceptance

@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 )
@@ -82,6 +83,66 @@ func TestAgentRunnerDockerfile(t *testing.T) {
 	}
 	if !strings.Contains(string(dockerfile), "COPY --from=build --chmod=0555 /out/agent-output /usr/local/bin/agent-output") {
 		t.Fatal("agent runner image must ship a non-writable managed agent-output tool")
+	}
+}
+
+func TestAgentRunnerImageSmokeProbesMaxTurnsParserWhenTopLevelHelpOmitsIt(t *testing.T) {
+	binDir := t.TempDir()
+	writeExecutable := func(name, contents string) {
+		t.Helper()
+		if err := os.WriteFile(binDir+"/"+name, []byte(contents), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	writeExecutable("claude", `#!/bin/sh
+case "$1" in
+  --version)
+    printf '%s\n' '2.1.212 (Claude Code)'
+    ;;
+  --help)
+    printf '%s\n' '--max-budget-usd --mcp-config --strict-mcp-config --append-system-prompt --output-format --verbose --dangerously-skip-permissions'
+    ;;
+  --print)
+    case "$2" in
+      --max-turns)
+        test "$#" = 2 || exit 64
+        printf '%s\n' "error: option '--max-turns <turns>' argument missing" >&2
+        exit 1
+        ;;
+      --definitely-unknown-jetbridge-probe)
+        printf '%s\n' "error: unknown option '--definitely-unknown-jetbridge-probe'" >&2
+        exit 1
+        ;;
+      *)
+        exit 64
+        ;;
+    esac
+    ;;
+  *)
+    exit 64
+    ;;
+esac
+`)
+	for _, binary := range []string{"agent-runner", "function-runner", "agent-output"} {
+		writeExecutable(binary, "#!/bin/sh\nexit 0\n")
+	}
+
+	maxTurnsProbe := exec.Command(binDir+"/claude", "--print", "--max-turns")
+	maxTurnsOutput, maxTurnsErr := maxTurnsProbe.CombinedOutput()
+	if maxTurnsErr == nil || !strings.Contains(string(maxTurnsOutput), "option '--max-turns <turns>' argument missing") {
+		t.Fatalf("fake must model a registered max-turns option with a missing argument: %v\n%s", maxTurnsErr, maxTurnsOutput)
+	}
+	unknownProbe := exec.Command(binDir+"/claude", "--print", "--definitely-unknown-jetbridge-probe")
+	unknownOutput, unknownErr := unknownProbe.CombinedOutput()
+	if unknownErr == nil || !strings.Contains(string(unknownOutput), "unknown option") {
+		t.Fatalf("fake must reject an unknown option: %v\n%s", unknownErr, unknownOutput)
+	}
+
+	cmd := exec.Command("sh", "agent-runner/smoke.sh")
+	cmd.Env = append(os.Environ(), "PATH="+binDir+":"+os.Getenv("PATH"))
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("smoke must accept a registered max-turns parser diagnostic when top-level help omits --max-turns: %v\n%s", err, output)
 	}
 }
 
