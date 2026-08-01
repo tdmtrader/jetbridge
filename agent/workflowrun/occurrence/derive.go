@@ -83,6 +83,38 @@ func deriveNode(sources Sources, group []PlanNode, metricsByPlan map[string][]At
 func deriveCopy(sources Sources, node PlanNode, metrics []AttemptMetric) []NodeOccurrence {
 	base := baseOccurrence(sources, node)
 
+	// Await and publish nodes are evidenced by their own tables rather than by
+	// metrics, and are matched on the same plan ID.
+	switch node.Kind {
+	case KindAwait:
+		wait, found := findWait(sources.Waits, node.PlanID)
+		if !found {
+			return nil
+		}
+		base.Status = waitStatus(wait)
+		base.WaitID = int64Ref(wait.ID)
+		base.StartedAt = timePtr(wait.CreatedAt)
+		if base.Status.Terminal() && wait.ResolvedAt != nil {
+			base.CompletedAt = wait.ResolvedAt
+			base.DurationSeconds = durationSeconds(wait.CreatedAt, *wait.ResolvedAt)
+		}
+		return []NodeOccurrence{base}
+
+	case KindPublish:
+		publication, found := findPublication(sources.Publications, node.PlanID)
+		if !found {
+			return nil
+		}
+		base.Status = publicationStatus(publication.Status)
+		base.PublicationID = int64Ref(publication.ID)
+		base.StartedAt = timePtr(publication.CreatedAt)
+		if base.Status.Terminal() {
+			base.CompletedAt = timePtr(publication.UpdatedAt)
+			base.DurationSeconds = durationSeconds(publication.CreatedAt, publication.UpdatedAt)
+		}
+		return []NodeOccurrence{base}
+	}
+
 	if len(metrics) == 0 {
 		// Deterministic task steps have no durable metrics row of their own,
 		// so the freeze reads their terminal state from build step state while
@@ -143,6 +175,70 @@ func agentMetricStatus(status string) Status {
 		return StatusPending
 	}
 }
+
+// waitStatus maps agent_workflow_waits onto occurrence status.
+//
+// A cancelled wait is an abort. A timed-out wait depends on its timeout
+// policy, and the status column alone cannot tell the two apart:
+// atc/db/agent_workflow_waits_factory.go writes 'timed_out' both when the wait
+// expired with no answer and when it expired onto its declared default
+// snapshot. Under policy 'fail' the workflow could not obtain the human answer
+// it required, which is a failure. Under policy 'default' the wait resolved
+// with the answer the author declared for exactly this case and the workflow
+// proceeded, so painting it red would be a false alarm.
+func waitStatus(wait Wait) Status {
+	switch wait.Status {
+	case "waiting":
+		return StatusWaiting
+	case "resolved":
+		return StatusSucceeded
+	case "timed_out":
+		if wait.TimeoutPolicy == "default" {
+			return StatusSucceeded
+		}
+		return StatusFailed
+	case "cancelled":
+		return StatusAborted
+	default:
+		return StatusPending
+	}
+}
+
+// publicationStatus maps agent_publication_occurrences.status. Both
+// 'stale_base' and 'rebase_required' are unresolved outbound effects that need
+// human attention, so they surface as failures rather than as pending.
+func publicationStatus(status string) Status {
+	switch status {
+	case "pending":
+		return StatusRunning
+	case "succeeded":
+		return StatusSucceeded
+	case "failed", "stale_base", "rebase_required":
+		return StatusFailed
+	default:
+		return StatusPending
+	}
+}
+
+func findWait(waits []Wait, planID string) (Wait, bool) {
+	for _, wait := range waits {
+		if wait.PlanID == planID {
+			return wait, true
+		}
+	}
+	return Wait{}, false
+}
+
+func findPublication(publications []Publication, planID string) (Publication, bool) {
+	for _, publication := range publications {
+		if publication.PlanID == planID {
+			return publication, true
+		}
+	}
+	return Publication{}, false
+}
+
+func int64Ref(value int64) *int64 { return &value }
 
 func durationSeconds(from, to time.Time) int {
 	if from.IsZero() || to.IsZero() || to.Before(from) {
