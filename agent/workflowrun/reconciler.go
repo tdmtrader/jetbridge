@@ -63,6 +63,25 @@ type TicketProjector interface {
 	ProjectFinalizedRun(ctx context.Context, ticketID int, runID snapshot.WorkflowRunID) error
 }
 
+// NodeOccurrenceFreezer freezes the durable per-node projection of a run that
+// has just terminalized. It is called from the ONE place a run becomes
+// terminal, at the moment the finalizing node wins the CAS — that is the last
+// instant at which every source the projection derives from is guaranteed to
+// still exist. Concourse build GC and workflow-template GC only ever consider
+// runs that are already terminal, and both run later on their own component
+// intervals, so a freeze inside finalization strictly precedes them.
+//
+// Implementations gather the run's authoritative evidence, call
+// occurrence.Derive, and write the result. They must be idempotent, and they
+// must not assume they will be called again: the reconciler deliberately does
+// NOT re-attempt the freeze on a later claim of an already-terminal run, the
+// way it re-attempts ticket projection. Frozen history is immutable, so a
+// second attempt made after GC had reclaimed the sources would write a
+// degraded projection as permanent truth, which is worse than having none.
+type NodeOccurrenceFreezer interface {
+	FreezeRun(ctx context.Context, run db.AgentWorkflowRun) error
+}
+
 type Reconciler struct {
 	store            ReconciliationStore
 	logger           lager.Logger
@@ -74,6 +93,7 @@ type Reconciler struct {
 	waitResolutions  WaitResolutionCompleter
 	waits            WaitCanceler
 	tickets          TicketProjector
+	nodeOccurrences  NodeOccurrenceFreezer
 }
 
 type ReconcilerOption func(*Reconciler) error
@@ -118,6 +138,18 @@ func WithTicketProjector(projector TicketProjector) ReconcilerOption {
 			return fmt.Errorf("workflow run reconciler: ticket projector is required")
 		}
 		reconciler.tickets = projector
+		return nil
+	}
+}
+
+// WithNodeOccurrenceFreezer installs the durable node-occurrence projection.
+// Without it a run still finalizes and simply keeps no per-node history.
+func WithNodeOccurrenceFreezer(freezer NodeOccurrenceFreezer) ReconcilerOption {
+	return func(reconciler *Reconciler) error {
+		if nilInterface(freezer) {
+			return fmt.Errorf("workflow run reconciler: node occurrence freezer is required")
+		}
+		reconciler.nodeOccurrences = freezer
 		return nil
 	}
 }
@@ -454,9 +486,33 @@ func (reconciler *Reconciler) finalize(
 	if applied {
 		// This node's CAS won, so this node owns the projection. A lost CAS
 		// means another node finalized the run and projects it itself.
+		//
+		// The node-occurrence freeze goes first. It is the only consumer that
+		// races GC for the run's evidence, and the ticket projection is a
+		// cross-aggregate write that may block on another table.
+		reconciler.freezeNodeOccurrences(ctx, run)
 		reconciler.projectOwningTicket(ctx, run)
 	}
 	return metric.WorkflowRunReconcilerRowAdvanced, nil
+}
+
+// freezeNodeOccurrences writes the run's durable per-node history. Like the
+// ticket projection it is deliberately not a row failure: the run IS
+// finalized, and a projection fault must not re-classify that outcome or, far
+// worse, strand the run in a non-terminal state forever. Losing history is
+// bad; a run that can never terminalize is worse.
+func (reconciler *Reconciler) freezeNodeOccurrences(ctx context.Context, run db.AgentWorkflowRun) {
+	if reconciler.nodeOccurrences == nil {
+		return
+	}
+	if err := reconciler.nodeOccurrences.FreezeRun(ctx, run); err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		reconciler.logger.Error("freeze-node-occurrences-failed", err, lager.Data{
+			"workflow_run_id": run.ID.String(),
+		})
+	}
 }
 
 // projectOwningTicket terminalizes the ticket that owns a finished run. It is

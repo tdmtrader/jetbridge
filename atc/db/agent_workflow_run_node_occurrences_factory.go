@@ -1,0 +1,140 @@
+package db
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"time"
+)
+
+// AgentWorkflowRunNodeOccurrence is one frozen row of the node-occurrence
+// projection: one attempt of one semantic node within one workflow run.
+//
+// RetryAttempt and Attempt are independent axes and both belong to the key.
+// RetryAttempt is which copy of an authored retry closure the row describes,
+// read from the plan's structure; Attempt is which recovery attempt of that
+// copy it is, read from agent_run_attempt_metrics.execution_attempt.
+type AgentWorkflowRunNodeOccurrence struct {
+	WorkflowRunID        int64
+	NodeID               string
+	RetryAttempt         int
+	Attempt              int
+	TeamID               int
+	WorkflowName         string
+	WorkflowDefinitionID int
+	WorkflowVersion      int
+	NodeKind             string
+	ReusableNodeName     string
+	ReusableNodeVersion  *int
+	PlanID               string
+	Status               string
+	WaitID               *int64
+	PublicationID        *int64
+	StartedAt            *time.Time
+	CompletedAt          *time.Time
+	DurationSeconds      int
+	CostUSD              float64
+	FrozenAt             time.Time
+}
+
+//counterfeiter:generate . AgentWorkflowRunNodeOccurrencesFactory
+type AgentWorkflowRunNodeOccurrencesFactory interface {
+	// Freeze writes the projection for one terminal run. It is idempotent so a
+	// retried finalization cannot double-write, and it never overwrites an
+	// existing row, because frozen history is immutable.
+	Freeze(context.Context, []AgentWorkflowRunNodeOccurrence) error
+	ForRun(context.Context, int64) ([]AgentWorkflowRunNodeOccurrence, error)
+}
+
+type agentWorkflowRunNodeOccurrencesFactory struct {
+	conn DbConn
+}
+
+func NewAgentWorkflowRunNodeOccurrencesFactory(conn DbConn) AgentWorkflowRunNodeOccurrencesFactory {
+	return &agentWorkflowRunNodeOccurrencesFactory{conn: conn}
+}
+
+const agentWorkflowRunNodeOccurrenceColumns = `
+	workflow_run_id, node_id, retry_attempt, attempt, team_id, workflow_name,
+	workflow_definition_id, workflow_version, node_kind, reusable_node_name,
+	reusable_node_version, plan_id, status, wait_id, publication_id,
+	started_at, completed_at, duration_seconds, cost_usd::float8, frozen_at`
+
+func (factory *agentWorkflowRunNodeOccurrencesFactory) Freeze(ctx context.Context, occurrences []AgentWorkflowRunNodeOccurrence) error {
+	if len(occurrences) == 0 {
+		return nil
+	}
+
+	tx, err := factory.conn.Begin()
+	if err != nil {
+		return fmt.Errorf("db: beginning node-occurrence freeze: %w", err)
+	}
+	// One transaction for the whole projection: a half-written freeze is
+	// indistinguishable from a run that never reached the remaining nodes.
+	defer Rollback(tx)
+
+	for _, occurrence := range occurrences {
+		var reusableVersion sql.NullInt64
+		if occurrence.ReusableNodeVersion != nil {
+			reusableVersion = sql.NullInt64{Int64: int64(*occurrence.ReusableNodeVersion), Valid: true}
+		}
+
+		_, err := tx.ExecContext(ctx, `
+			INSERT INTO agent_workflow_run_node_occurrences (
+				workflow_run_id, node_id, retry_attempt, attempt, team_id,
+				workflow_name, workflow_definition_id, workflow_version,
+				node_kind, reusable_node_name, reusable_node_version, plan_id,
+				status, wait_id, publication_id, started_at, completed_at,
+				duration_seconds, cost_usd
+			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+			ON CONFLICT (workflow_run_id, node_id, retry_attempt, attempt) DO NOTHING`,
+			occurrence.WorkflowRunID, occurrence.NodeID, occurrence.RetryAttempt,
+			occurrence.Attempt, occurrence.TeamID, occurrence.WorkflowName,
+			occurrence.WorkflowDefinitionID, occurrence.WorkflowVersion,
+			occurrence.NodeKind, occurrence.ReusableNodeName, reusableVersion,
+			occurrence.PlanID, occurrence.Status, occurrence.WaitID,
+			occurrence.PublicationID, occurrence.StartedAt, occurrence.CompletedAt,
+			occurrence.DurationSeconds, occurrence.CostUSD,
+		)
+		if err != nil {
+			return fmt.Errorf("db: freezing node occurrence %s/%s: %w", occurrence.NodeID, occurrence.PlanID, err)
+		}
+	}
+
+	return tx.Commit()
+}
+
+func (factory *agentWorkflowRunNodeOccurrencesFactory) ForRun(ctx context.Context, workflowRunID int64) ([]AgentWorkflowRunNodeOccurrence, error) {
+	rows, err := factory.conn.QueryContext(ctx, `
+		SELECT `+agentWorkflowRunNodeOccurrenceColumns+`
+		FROM agent_workflow_run_node_occurrences
+		WHERE workflow_run_id = $1
+		ORDER BY plan_id, retry_attempt, attempt`, workflowRunID)
+	if err != nil {
+		return nil, fmt.Errorf("db: reading node occurrences: %w", err)
+	}
+	defer Close(rows)
+
+	var result []AgentWorkflowRunNodeOccurrence
+	for rows.Next() {
+		var occurrence AgentWorkflowRunNodeOccurrence
+		var reusableVersion sql.NullInt64
+		if err := rows.Scan(
+			&occurrence.WorkflowRunID, &occurrence.NodeID, &occurrence.RetryAttempt,
+			&occurrence.Attempt, &occurrence.TeamID, &occurrence.WorkflowName,
+			&occurrence.WorkflowDefinitionID, &occurrence.WorkflowVersion,
+			&occurrence.NodeKind, &occurrence.ReusableNodeName, &reusableVersion,
+			&occurrence.PlanID, &occurrence.Status, &occurrence.WaitID,
+			&occurrence.PublicationID, &occurrence.StartedAt, &occurrence.CompletedAt,
+			&occurrence.DurationSeconds, &occurrence.CostUSD, &occurrence.FrozenAt,
+		); err != nil {
+			return nil, fmt.Errorf("db: scanning node occurrence: %w", err)
+		}
+		if reusableVersion.Valid {
+			value := int(reusableVersion.Int64)
+			occurrence.ReusableNodeVersion = &value
+		}
+		result = append(result, occurrence)
+	}
+	return result, rows.Err()
+}
