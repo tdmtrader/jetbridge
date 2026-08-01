@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"fmt"
 	"os"
 	"sort"
 	"time"
@@ -29,7 +30,7 @@ func (command *TargetsCommand) Execute([]string) error {
 	}
 
 	for targetName, targetValues := range targets {
-		expirationTime := getExpirationFromString(targetValues.Token)
+		expirationTime := getExpirationFromString(targetName, targetValues.Token)
 
 		row := ui.TableRow{
 			{Contents: string(targetName)},
@@ -46,14 +47,14 @@ func (command *TargetsCommand) Execute([]string) error {
 	return table.Render(os.Stdout, Fly.PrintTableHeaders)
 }
 
-func getExpirationFromString(ttoken *rc.TargetToken) string {
+func getExpirationFromString(targetName rc.TargetName, ttoken *rc.TargetToken) string {
 	if ttoken == nil || ttoken.Type == "" || ttoken.Value == "" {
 		return "n/a"
 	}
 
 	expiry, err := token.Factory{}.ParseExpiry(ttoken.Value)
 	if err != nil {
-		return "n/a: invalid token"
+		return fmt.Sprintf("expiry unavailable (run fly -t %s status)", shellQuoteTargetAlias(targetName))
 	}
 
 	return expiry.UTC().Format(time.RFC1123)

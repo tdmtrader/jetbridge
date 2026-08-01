@@ -148,7 +148,9 @@ kubernetes:
   # required runtime RBAC, artifact-daemon discovery, and TLS there.
   namespace: ""
 
-  # -- ServiceAccount for task pods (uses web SA if empty)
+  # -- ServiceAccount for task pods. Empty selects the task namespace's
+  # default ServiceAccount. Set this only when task pods intentionally need
+  # Kubernetes API access, and grant that account only the required RBAC.
   serviceAccount: ""
 
   # -- Pod startup timeout

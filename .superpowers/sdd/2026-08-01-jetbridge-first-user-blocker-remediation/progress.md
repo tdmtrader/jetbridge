@@ -161,11 +161,45 @@
     `agent-runner-image-smoke`, registry-reported digest, immutable pull, and
     exact `linux/amd64` inspection. Task 4's repository implementation is
     complete, but its image acceptance gate remains open.
-- [ ] Task 5 — safe build-log correlations, target wording, and node docs
+- [x] Task 5 — safe build-log correlations, target wording, and node docs
   - Gate: Fly command/integration tests, stale-wording residue check, and chart
     documentation that an empty task ServiceAccount selects the namespace
     default rather than the web ServiceAccount.
-  - Review budget: maximum three blocking rounds.
+  - RED: focused renderer tests failed because plain run detail omitted both
+    `planned build: 418` and the exact `fly -t home watch -b 418` hint, unsafe
+    aliases had no quoted command path, and an empty alias was accepted when a
+    plain build hint was required. The serial focused targets integration ran
+    seven specs and failed exactly the invalid-expiry case because both rows
+    still reported `n/a: invalid token`.
+  - GREEN: all six workflow/node run-detail callsites pass the selected
+    `Fly.Target`. Plain detail emits the planned-build correlation and exact
+    watch command only when a build exists; JSON remains the exact API
+    `JsonPrint` serialization with no prose; an empty alias errors only for a
+    required plain hint; and no stored terminal cause is exposed. Both
+    copyable commands preserve safe aliases such as `home`/`test` unquoted and
+    POSIX-single-quote unsafe aliases, including embedded quotes, without Go
+    `%q` escaping.
+  - Target boundary: undecodable local expiry now reports `expiry unavailable
+    (run fly -t <target> status)` without an authenticated or other network
+    request. Nil/empty tokens remain exactly `n/a`, and valid JWT UTC/RFC1123
+    formatting is unchanged.
+  - Documentation/chart: the operations guide now covers direct typed input
+    creation, exact retained resource capture, exact import-version capture,
+    unreleased run/show/watch, post-watch terminal-detail refresh, sealed
+    output download/inspection, and release. It records positive-budget runner
+    smoke dependence, zero as uncapped, portable model omission, the explicitly
+    non-runnable sample image, and immutable/discoverable skills whose use is
+    not guaranteed. The platform guide links that lifecycle, and chart docs
+    correctly select the task namespace default ServiceAccount when empty,
+    require explicit accounts only for intentional API access, and distinguish
+    ordinary task token automount from the web pod's explicit projection.
+  - Verification: `go test ./fly/commands -count=1` passed. After the sandbox
+    attempt was denied permission to bind its localhost listener, the
+    host-permitted serial `ginkgo -r --keep-going --procs=1 --focus='targets'
+    ./fly/integration/` passed 7/7 focused specs (662 skipped). The exact stale
+    wording `rg` returned no matches, and `git diff --check` passed.
+  - Review: independent blocking review round 1 PASS with no Critical, High,
+    or acceptance-blocking findings. Review budget used: 1 of 3.
 - [ ] Task 6 — same-commit deployment and fresh node-level dogfood acceptance
   - Gate: both repository ingress paths, positive `$5` run, one durable
     `mcp.ready` count per managed-builder run, sealed `diagnosis/v1` and

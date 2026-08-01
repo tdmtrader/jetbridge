@@ -321,7 +321,7 @@ func (command *NodesRunCommand) Execute([]string) error {
 	if err != nil {
 		return err
 	}
-	return printAgentWorkflowRunDetail(detail, command.Json)
+	return printAgentWorkflowRunDetail(Fly.Target, detail, command.Json)
 }
 
 func runNodeVersion(target rc.Target, name string, version int, inputValues, paramValues []string, idempotencyKey string) (workflowrunsapi.RunDetail, error) {
@@ -433,7 +433,7 @@ func (command *NodesShowRunCommand) Execute([]string) error {
 	if err := decodeOrError(response, &detail); err != nil {
 		return err
 	}
-	return printAgentWorkflowRunDetail(detail, command.Json)
+	return printAgentWorkflowRunDetail(Fly.Target, detail, command.Json)
 }
 
 func nodeVersionRunsPath(name string, version int) string {

@@ -180,7 +180,7 @@ func (command *WorkflowsRunCommand) Execute([]string) error {
 			return err
 		}
 	}
-	if err := printAgentWorkflowRunDetail(detail, command.Json); err != nil {
+	if err := printAgentWorkflowRunDetail(Fly.Target, detail, command.Json); err != nil {
 		return err
 	}
 	if command.Wait || command.Follow {
@@ -306,7 +306,7 @@ func (command *WorkflowsShowRunCommand) executePreparedWithTarget(
 			return err
 		}
 	}
-	return printAgentWorkflowRunDetail(detail, prepared.json)
+	return printAgentWorkflowRunDetail(Fly.Target, detail, prepared.json)
 }
 
 func waitForAgentWorkflowRun(
@@ -398,7 +398,7 @@ func (command *WorkflowsCancelRunCommand) Execute([]string) error {
 	if err := decodeOrError(response, &detail); err != nil {
 		return err
 	}
-	return printAgentWorkflowRunDetail(detail, command.Json)
+	return printAgentWorkflowRunDetail(Fly.Target, detail, command.Json)
 }
 
 type WorkflowsRetryRunCommand struct {
@@ -444,7 +444,7 @@ func (command *WorkflowsRetryRunCommand) Execute([]string) error {
 	if err := decodeOrError(response, &detail); err != nil {
 		return err
 	}
-	return printAgentWorkflowRunDetail(detail, command.Json)
+	return printAgentWorkflowRunDetail(Fly.Target, detail, command.Json)
 }
 
 func printAgentWorkflowRun(run workflowrunsapi.RunSummary) error {
@@ -457,15 +457,35 @@ func printAgentWorkflowRun(run workflowrunsapi.RunSummary) error {
 	return nil
 }
 
-func printAgentWorkflowRunDetail(detail workflowrunsapi.RunDetail, jsonOutput bool) error {
+func printAgentWorkflowRunDetail(targetName rc.TargetName, detail workflowrunsapi.RunDetail, jsonOutput bool) error {
 	if jsonOutput {
 		return displayhelpers.JsonPrint(detail)
 	}
 	if err := printAgentWorkflowRun(detail.RunSummary); err != nil {
 		return err
 	}
+	if detail.PlannedBuildID != nil {
+		if targetName == "" {
+			return fmt.Errorf("agent workflow run: target is required to print planned build hint")
+		}
+		fmt.Printf("planned build: %d\n", *detail.PlannedBuildID)
+		fmt.Printf("inspect logs: fly -t %s watch -b %d\n", shellQuoteTargetAlias(targetName), *detail.PlannedBuildID)
+	}
 	fmt.Printf("inputs: %d\noutputs: %d\n", len(detail.Inputs), len(detail.Outputs))
 	return nil
+}
+
+func shellQuoteTargetAlias(targetName rc.TargetName) string {
+	value := string(targetName)
+	if value != "" && strings.IndexFunc(value, func(r rune) bool {
+		return !((r >= 'a' && r <= 'z') ||
+			(r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') ||
+			strings.ContainsRune("_@%+=:,./-", r))
+	}) == -1 {
+		return value
+	}
+	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
 }
 
 func printAgentWorkflowRunOutputs(response workflowrunsapi.OutputsResponse) error {

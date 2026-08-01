@@ -924,53 +924,11 @@ plan:
   <section class="section" id="nodes">
     <span class="section-kicker kicker-agentic">Phase 2</span>
     <h2>Reusable nodes <span class="pill pill-live">Live</span></h2>
-    <p class="dek">A new, first-class, independently versioned unit below the workflow — a shared library of typed functions, not just an internal detail of one definition.</p>
+    <p class="dek">An immutable, independently versioned single-step function that workflows can compose by exact reference.</p>
 
-    <p>A reusable node is a single atomic function — one <code class="flag">task</code>, <code class="flag">agent</code>, or <code class="flag">publish_snapshot</code> step, with no <code class="flag">try</code>/<code class="flag">do</code>/<code class="flag">in_parallel</code>/<code class="flag">across</code>/hooks and no live-read primitives at all — authored in its own directory as a <code class="flag">node.yaml</code>, imported, versioned, and released independently of any workflow that uses it:</p>
-    <div class="cmd yaml"><span class="c"># agent/workflow/seeds/code-review-node-v1/node.yaml</span>
-schema_version: 1
-name: code-review
-description: Review one immutable repository state relative to another.
-inputs:
-  - {name: before, type: repository/v1}
-  - {name: after,  type: repository/v1}
-outputs:
-  - {name: review, type: review/v1}
-parameters:
-  - {name: MINIMUM_SEVERITY, default: medium}
-step:
-  agent: review
-  function_id: review
-  budget_slice_usd: 5
-  prompt_file: prompts/review.md
-  model: claude-sonnet</div>
-    <div class="cmd">fly -t TARGET agent nodes import ./code-review
-fly -t TARGET agent nodes release code-review 1 --compatibility=compatible</div>
-    <p>A node must be explicitly <strong>released</strong>, with a compatibility declaration, before any workflow can reference it. A workflow then composes it in via a per-step <code class="flag">node</code>/<code class="flag">uses</code> reference — an authoring-only shorthand expanded at compile time, never persisted as such in the compiled plan:</p>
-    <div class="cmd yaml">plan:
-  - node: review-change
-    uses: code-review@1                            <span class="c"># exact version only — never "latest"</span>
-    input_mapping: {before: base, after: candidate}
-    output_mapping: {review: review}
-    params: {MINIMUM_SEVERITY: high}</div>
-    <p><code class="flag">uses:</code> must name an exact positive integer version; there is no "latest" or channel concept. A <code class="flag">node</code>/<code class="flag">uses</code> step may carry only a fixed allow-list of modifiers on top (retries, timeouts, <code class="flag">across</code>, hooks) — anything that would collide with the resolved leaf's own configuration is rejected at compile time.</p>
+    <p>A reusable node packages one typed <code class="flag">task</code>, <code class="flag">agent</code>, or <code class="flag">publish_snapshot</code> leaf with its prompts and assets. Create or capture exact typed input snapshots, import the package and retain the exact returned version, then run that unreleased version through the ordinary durable admission engine. Inspect <code class="flag">show-run</code>, follow its exact <code class="flag">fly watch -b</code> build hint, download and inspect the sealed typed output, and only then release the tested version.</p>
 
-    <h3 class="subhead">What this buys you beyond authoring convenience</h3>
-    <p>Every resolved binding — which exact node version a workflow uses, with what mappings and params — is recorded durably. That's what powers a small fleet-management surface that has no equivalent for hand-copied prompt logic:</p>
-    <div class="cmd">fly -t TARGET agent nodes consumers code-review 1 --json
-<span class="c"># → every workflow (live or not) that currently binds this exact node version</span>
-
-fly -t TARGET agent nodes upgrade code-review 2 --workflow=review-change --workflow=another-flow
-<span class="c"># → bulk-rewrites each named consumer's source (uses: code-review@1 → @2)</span>
-<span class="c">#   into a new, unpromoted draft revision. Already-promoted and already-run</span>
-<span class="c">#   history is untouched — exact frozen config/hash survive.</span></div>
-    <p>A node can also run completely standalone, with no parent workflow at all — <code class="flag">fly agent nodes run code-review 1 --input before=101 --input after=102 --param MINIMUM_SEVERITY=high</code> goes through the exact same durable admission engine as an ordinary workflow run, producing a real, crash-survivable run record of kind <code class="flag">node</code>.</p>
-    <p>A node's own <code class="flag">step:</code> can declare <code class="flag">broker_profiles</code> just like an ordinary workflow node — they're frozen at node-import time and correctly remapped to whatever instance name the consuming workflow gives it when composed in via <code class="flag">uses:</code>.</p>
-
-    <div class="callout callout-drift">
-      <div class="callout-head">Documented in an operations guide, not the main README, and CLI-only</div>
-      <p>This entire 11-subcommand command group (<code class="flag">fly agent nodes list/show/import/release/deprecate/restore/run/runs/show-run/consumers/upgrade</code>) is fully built, tested, and has its own dedicated operations doc — but <code class="flag">docs/agentic/README.md</code>, the main product overview, doesn't mention it at all. There is also no web UI page for the reusable-node catalog whatsoever; managing nodes is fly-CLI-only today.</p>
-    </div>
+    <p>Released nodes compose into workflows as <code class="flag">uses: NAME@EXACT-INTEGER</code>; there is no latest channel. Consumer discovery and explicit upgrades create new unpromoted workflow revisions without rewriting existing definitions or historical runs. See the <a href="operations/reusable-node-definitions.md">reusable-node operations guide</a> for the runnable lifecycle, portability and budget rules, release compatibility, and upgrade procedure.</p>
   </section>
 
   <!-- ======================= DURABLE RUNS ======================= -->

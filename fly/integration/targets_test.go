@@ -6,7 +6,6 @@ import (
 	"github.com/concourse/concourse/fly/rc"
 	"github.com/concourse/concourse/fly/ui"
 	"github.com/fatih/color"
-	"github.com/onsi/gomega/gbytes"
 	"github.com/onsi/gomega/gexec"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -81,16 +80,22 @@ var _ = Describe("targets", func() {
 					API:   "https://example.com/test",
 					Token: &rc.TargetToken{Type: "Bearer", Value: "banana"},
 				},
+				"prod'; echo pwn": {
+					API:   "https://example.com/unsafe",
+					Token: &rc.TargetToken{Type: "Bearer", Value: "banana"},
+				},
 			}
 		})
 
-		It("indicates the token is invalid", func() {
+		It("reports that local expiry is unavailable and points to authenticated status", func() {
 			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
 			Expect(err).NotTo(HaveOccurred())
 
 			Eventually(sess).Should(gexec.Exit(0))
 
-			Expect(sess).Should(gbytes.Say("n/a: invalid token"))
+			output := string(sess.Out.Contents())
+			Expect(output).To(ContainSubstring("expiry unavailable (run fly -t test status)"))
+			Expect(output).To(ContainSubstring(`expiry unavailable (run fly -t 'prod'\''; echo pwn' status)`))
 		})
 	})
 

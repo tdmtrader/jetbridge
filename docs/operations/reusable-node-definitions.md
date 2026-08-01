@@ -50,7 +50,7 @@ step:
   agent: review
   function_id: review
   prompt_file: prompts/review.md
-  model: claude-sonnet
+  budget_slice_usd: 5
   skills: [review]
   capabilities: [dev-mcp]
 ```
@@ -61,23 +61,72 @@ Capability images must be digest-pinned. The common agent-runner image is not a
 node override: ATC supplies that trusted execution harness at admission.
 Secrets are never stored in a node version.
 
+The `registry.example/...@sha256:aaaa...` image above is deliberately
+non-runnable sample syntax; replace it with a real digest-pinned image or omit
+that capability. For portability, omit `model` by default. Add a model or
+broker selector only when the target's deliberately configured broker catalog
+requires one.
+
+A positive `budget_slice_usd` depends on the deployment's pinned runner image
+having passed its load-bearing CLI smoke gate, including
+`--max-budget-usd`. The runner always applies that positive cap. Zero is the
+explicit uncapped runner value; it is not a portable spending limit.
+
+Bundled skills are immutable and discoverable in the model session, but the
+platform cannot guarantee that the model reads or invokes one. Put
+contract-critical record mechanics in the initial authority and managed output
+builder, not only in skill text.
+
 Nodes cannot contain sequencing, parallelism, hooks, retries, human waits,
 resource acquisition, or nested nodes. Put those relationships in the
 workflow, where they remain visible.
 
-## Import and inspect
+## Create or capture exact typed inputs
+
+Create a typed snapshot directly from a local directory and retain the exact
+snapshot ID returned by the command:
+
+```sh
+BEFORE_JSON="$(fly -t TARGET agent snapshots create \
+  --type repository/v1 \
+  --from ./fixture/before \
+  --json)"
+BEFORE_SNAPSHOT_ID="$(printf '%s\n' "$BEFORE_JSON" | jq -er '.id')"
+```
+
+For a retained pipeline resource version, pass every exact version field back
+to the capture command. Repeat `-v key:value` when the resource version has
+multiple fields; never substitute a moving `latest` value:
+
+```sh
+CAPTURE_JSON="$(fly -t TARGET agent snapshots capture-resource \
+  -p PIPELINE -r RESOURCE -v ref:EXACT-COMMIT \
+  --type repository/v1 \
+  --json)"
+AFTER_SNAPSHOT_ID="$(printf '%s\n' "$CAPTURE_JSON" | jq -er '.snapshot.id')"
+```
+
+The command waits for the durable capture by default. Record both
+`.snapshot.id` and `.execution.pipeline_run_id`; use the snapshot ID as the
+node input.
+
+## Import and record the exact version
 
 Import validates the complete directory and allocates the next integer version.
 Importing byte-identical resolved content returns the existing version:
 
 ```sh
-fly -t TARGET agent nodes import ./code-review
+IMPORT_OUTPUT="$(fly -t TARGET agent nodes import ./code-review)"
+printf '%s\n' "$IMPORT_OUTPUT"
+NODE_VERSION="$(printf '%s\n' "$IMPORT_OUTPUT" | awk '$1 == "imported" && $2 == "code-review" && $3 == "version" {print $4}')"
 fly -t TARGET agent nodes list
-fly -t TARGET agent nodes show code-review 1 --json
+fly -t TARGET agent nodes show code-review "$NODE_VERSION" --json
 ```
 
 An imported version is immutable but is not yet eligible for workflow
-composition. It can be inspected and run directly before release.
+composition. Do not assume that an import allocated a new integer: retain and
+use the exact returned version. It can be inspected and run directly before
+release.
 
 ## Test an exact version directly
 
@@ -85,11 +134,13 @@ Bind every required logical input to an exact snapshot ID and supply only
 declared parameters:
 
 ```sh
-fly -t TARGET agent nodes run code-review 1 \
-  --input before=101 \
-  --input after=102 \
+RUN_JSON="$(fly -t TARGET agent nodes run code-review "$NODE_VERSION" \
+  --input before="$BEFORE_SNAPSHOT_ID" \
+  --input after="$AFTER_SNAPSHOT_ID" \
   --param MINIMUM_SEVERITY=high \
-  --idempotency-key=code-review-v1-fixture
+  --idempotency-key="code-review-v${NODE_VERSION}-fixture" \
+  --json)"
+RUN_ID="$(printf '%s\n' "$RUN_JSON" | jq -er '.workflow_run_id')"
 ```
 
 The run uses the ordinary durable workflow-run machinery. It records the node
@@ -102,16 +153,37 @@ Direct testing is available for unreleased, released, superseded, and
 deprecated versions:
 
 ```sh
-fly -t TARGET agent nodes runs code-review 1 --status=succeeded
-fly -t TARGET agent nodes show-run code-review RUN-ID --json
+fly -t TARGET agent nodes show-run code-review "$RUN_ID"
+DETAIL_JSON="$(fly -t TARGET agent nodes show-run code-review "$RUN_ID" --json)"
+BUILD_ID="$(printf '%s\n' "$DETAIL_JSON" | jq -er '.planned_build_id')"
+fly -t TARGET watch -b "$BUILD_ID"
+
+while :; do
+  DETAIL_JSON="$(fly -t TARGET agent nodes show-run code-review "$RUN_ID" --json)"
+  RUN_STATUS="$(printf '%s\n' "$DETAIL_JSON" | jq -er '.status')"
+  case "$RUN_STATUS" in
+    succeeded|failed|errored|aborted) break ;;
+    *) sleep 2 ;;
+  esac
+done
+test "$RUN_STATUS" = succeeded
+OUTPUT_ID="$(printf '%s\n' "$DETAIL_JSON" | jq -er '.outputs[] | select(.port == "review") | .snapshot.id')"
+fly -t TARGET agent snapshots show "$OUTPUT_ID" --json
+fly -t TARGET agent snapshots download "$OUTPUT_ID" --to ./review-output.tar
+tar -xOf ./review-output.tar record.json | jq .
 ```
+
+Plain `show-run` prints the same planned build ID and an exact copyable
+`fly -t TARGET watch -b BUILD-ID` command. Keep the version unreleased until
+the run is terminal, the complete build log has been inspected, and the
+downloaded typed output (including the complete `record.json`) is valid.
 
 ## Release
 
 Release is an explicit lifecycle action and does not update a workflow:
 
 ```sh
-fly -t TARGET agent nodes release code-review 1 --compatibility=compatible
+fly -t TARGET agent nodes release code-review "$NODE_VERSION" --compatibility=compatible
 ```
 
 The first release establishes the lineage. Every later release names the latest
@@ -129,7 +201,9 @@ previously released version as its predecessor and declares one of:
 Behavioral changes such as a new prompt or model can be structurally compatible.
 Adoption is still explicit.
 
-Testing is not a release prerequisite and remains available after release.
+The server does not enforce a successful test run as a release prerequisite;
+the inspect-before-release sequence above is the recommended operator gate.
+Direct testing remains available after release.
 Deprecation discourages new use without withdrawing the exact version:
 
 ```sh

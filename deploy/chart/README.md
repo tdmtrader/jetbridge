@@ -206,7 +206,7 @@ All parameters are documented in [`values.yaml`](values.yaml). Complete referenc
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `kubernetes.namespace` | release namespace | Namespace where task/check pods are created. Must equal the Helm release namespace. |
-| `kubernetes.serviceAccount` | `""` (web SA) | ServiceAccount for task pods. |
+| `kubernetes.serviceAccount` | `""` (task namespace default) | ServiceAccount for task pods. Set it explicitly only when tasks intentionally require Kubernetes API access. |
 | `kubernetes.podStartupTimeout` | `5m` | Max time to wait for pod Running. |
 | `kubernetes.imagePullSecrets` | `[]` | Pull secrets for task pod images. |
 | `kubernetes.artifactHelperImage` | required | BusyBox-compatible runtime helper image with the commands listed in Quickstart. Must be an exact reference ending in `@sha256:<64 lowercase hex>`. |
@@ -223,14 +223,24 @@ The Kubernetes runtime is currently single-namespace. Helm rejects a
 cross-namespace RBAC, artifact-daemon discovery, and TLS identities required
 to support that topology are not yet provisioned by this chart.
 
-The web pod sets `automountServiceAccountToken: false`. Only
-`concourse-web` receives an explicit projected Kubernetes API credential at
+An empty `kubernetes.serviceAccount` leaves the task pod ServiceAccount
+unset, so Kubernetes selects the task namespace's default ServiceAccount. Set
+an explicit account only for tasks that intentionally call the Kubernetes API,
+and bind only the RBAC those tasks require. This does not select or grant the
+web ServiceAccount.
+
+The web pod sets `automountServiceAccountToken: false`. Within that pod, only
+`concourse-web` receives the chart-managed projected Kubernetes API credential at
 the standard service-account path: a token with a one-hour maximum lifetime,
 the namespace CA, and the current namespace file. The key-generation,
 snapshot-scratch preparation, and database-migration init containers do not
 receive that credential. The `web-kubernetes-api-access` and
 `snapshot-scratch` volume names are reserved; Helm rejects attempts to
 re-mount either through `web.extraVolumeMounts`.
+
+Task and check pods are separate from the web pod. Ordinary non-hermetic pods
+follow Kubernetes token-automount behavior for their selected (or default)
+ServiceAccount; hermetic pods disable token automount.
 
 ### Agentic Snapshots and Publication
 
@@ -400,9 +410,10 @@ web:
 | `serviceAccount.create` | `true` | Create ServiceAccount for the web pod. |
 | `serviceAccount.annotations` | `{}` | ServiceAccount annotations (e.g. GKE Workload Identity). |
 
-The pod-level service account is not ambient: the chart projects a bounded
-credential only into `concourse-web`, which is the sole container that talks
-to the Kubernetes API.
+Within the web pod, the web ServiceAccount credential is not ambient: the
+chart projects it only into `concourse-web`, the sole container in that pod
+that talks to the Kubernetes API. Task and check pod behavior is governed by
+`kubernetes.serviceAccount` and the runtime rules described above.
 
 ### Tracing (OpenTelemetry)
 
