@@ -164,7 +164,14 @@ var _ = Describe("AgentWorkflowRunNodeOccurrencesFactory", func() {
 			good := occurrence(runID, name, "implement", "agent", "1/1", "succeeded")
 			bad := occurrence(runID, name, "review", "agent", "1/2", "not-a-status")
 
-			Expect(factory.Freeze(ctx, []db.AgentWorkflowRunNodeOccurrence{good, bad})).ToNot(Succeed())
+			err := factory.Freeze(ctx, []db.AgentWorkflowRunNodeOccurrence{good, bad})
+			Expect(err).To(HaveOccurred())
+			// The error must name the row that could not be frozen. Letting the
+			// transaction's own "current transaction is aborted" surface
+			// instead would say a freeze failed without saying which node's
+			// projection was wrong, which is the only actionable part.
+			Expect(err.Error()).To(ContainSubstring("review"))
+			Expect(err.Error()).To(ContainSubstring("1/2"))
 
 			// A half-written projection would be indistinguishable from a run
 			// that never reached the remaining nodes.
