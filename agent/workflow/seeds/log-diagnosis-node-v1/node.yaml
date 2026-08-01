@@ -1,0 +1,21 @@
+schema_version: 1
+name: log-diagnosis
+description: Diagnose one immutable log bundle with optional deployment context.
+inputs:
+  - name: logs
+    type: log-bundle/v1
+    description: Immutable logs and captured query metadata.
+  - name: deployment
+    type: deployment-snapshot/v1
+    optional: true
+    description: Optional immutable deployment configuration and topology context.
+outputs:
+  - name: diagnosis
+    type: diagnosis/v1
+    description: Structured hypotheses, evidence, confidence, and next actions.
+step:
+  agent: diagnose
+  function_id: diagnose-logs
+  budget_slice_usd: 5
+  prompt_file: prompts/diagnose.md
+  skills: [diagnosis]

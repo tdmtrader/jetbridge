@@ -34,6 +34,7 @@ func TestOnlySupportedEngineeringSeedsRemain(t *testing.T) {
 		"anonymization-audit-v3",
 		"code-review-node-v1",
 		"code-review-v3",
+		"log-diagnosis-node-v1",
 		"log-diagnosis-v3",
 		"measure-review-v3",
 		"merge-delivery-v3",
@@ -43,6 +44,66 @@ func TestOnlySupportedEngineeringSeedsRemain(t *testing.T) {
 	}
 	if !reflect.DeepEqual(names, want) {
 		t.Fatalf("seed root entries = %q, want %q", names, want)
+	}
+}
+
+func TestLogDiagnosisReusableNodeSeedFreezesItsAtomicImplementation(t *testing.T) {
+	manifest, err := workflow.ManifestFromDir("seeds/log-diagnosis-node-v1")
+	if err != nil {
+		t.Fatalf("ManifestFromDir: %v", err)
+	}
+	definition, err := workflow.CompileNodeDefinition(manifest)
+	if err != nil {
+		t.Fatalf("CompileNodeDefinition: %v", err)
+	}
+	if definition.SchemaVersion != 1 || definition.Name != "log-diagnosis" {
+		t.Fatalf("node identity = schema %d name %q", definition.SchemaVersion, definition.Name)
+	}
+	if len(definition.Parameters) != 0 {
+		t.Fatalf("node parameter contract = %#v, want none", definition.Parameters)
+	}
+	if len(definition.Function.Inputs) != 2 ||
+		definition.Function.Inputs[0].Name != "logs" ||
+		definition.Function.Inputs[0].Type != snapshot.TypeRef("log-bundle/v1") ||
+		definition.Function.Inputs[0].Optional ||
+		definition.Function.Inputs[1].Name != "deployment" ||
+		definition.Function.Inputs[1].Type != snapshot.TypeRef("deployment-snapshot/v1") ||
+		!definition.Function.Inputs[1].Optional ||
+		len(definition.Function.Outputs) != 1 ||
+		definition.Function.Outputs[0].Name != "diagnosis" ||
+		definition.Function.Outputs[0].Type != snapshot.TypeRef("diagnosis/v1") ||
+		definition.Function.Outputs[0].From != "diagnosis" {
+		t.Fatalf("node port contract = inputs %#v outputs %#v", definition.Function.Inputs, definition.Function.Outputs)
+	}
+	registry, err := contracts.NewRegistry()
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	for _, port := range definition.Function.Inputs {
+		if _, err := registry.Lookup(port.Type); err != nil {
+			t.Fatalf("node port %q has no built-in validator: %v", port.Name, err)
+		}
+	}
+	for _, output := range definition.Function.Outputs {
+		if _, err := registry.Lookup(output.Type); err != nil {
+			t.Fatalf("node port %q has no built-in validator: %v", output.Name, err)
+		}
+	}
+	if len(definition.Function.Plan) != 1 {
+		t.Fatalf("node plan has %d steps, want one visible leaf", len(definition.Function.Plan))
+	}
+	agent, ok := definition.Function.Plan[0].Config.(*atc.AgentStep)
+	if !ok {
+		t.Fatalf("node leaf = %T, want *atc.AgentStep", definition.Function.Plan[0].Config)
+	}
+	if agent.Model != "" || agent.BudgetSliceUSD != 5 || !reflect.DeepEqual(agent.Skills, []string{"diagnosis"}) {
+		t.Fatalf("frozen agent implementation = model %q budget %v skills %q", agent.Model, agent.BudgetSliceUSD, agent.Skills)
+	}
+	if definition.Function.SkillFiles["skills/diagnosis/SKILL.md"] == "" {
+		t.Fatalf("compiled skill tree = %#v", definition.Function.SkillFiles)
+	}
+	if len(agent.Sidecars) != 0 || agent.Capabilities != nil || definition.Function.Capabilities != nil {
+		t.Fatalf("portable log-diagnosis node froze mutable capabilities: agent=%#v catalog=%#v sidecars=%#v", agent.Capabilities, definition.Function.Capabilities, agent.Sidecars)
 	}
 }
 
@@ -96,7 +157,7 @@ func TestCodeReviewReusableNodeSeedFreezesItsAtomicImplementation(t *testing.T) 
 	if !ok {
 		t.Fatalf("node leaf = %T, want *atc.AgentStep", definition.Function.Plan[0].Config)
 	}
-	if agent.Model != "claude-sonnet" ||
+	if agent.Model != "" ||
 		agent.BudgetSliceUSD != 5 ||
 		!strings.Contains(agent.Prompt, "Compare the immutable repositories mounted at `before` and `after`.") ||
 		!strings.Contains(agent.Prompt, "The `subjects` array must be sorted lexicographically by id") ||
@@ -113,14 +174,8 @@ func TestCodeReviewReusableNodeSeedFreezesItsAtomicImplementation(t *testing.T) 
 	if got := defaultInstance.Plan[0].Config.(*atc.AgentStep).Env["MINIMUM_SEVERITY"]; got != "medium" {
 		t.Fatalf("instantiated default MINIMUM_SEVERITY = %q, want medium", got)
 	}
-	if len(agent.Sidecars) != 1 || agent.Sidecars[0].Config == nil {
-		t.Fatalf("compiled capability sidecars = %#v", agent.Sidecars)
-	}
-	sidecar := agent.Sidecars[0].Config
-	if sidecar.Image != "registry.example/dev-mcp@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" ||
-		!reflect.DeepEqual(sidecar.Command, []string{"/usr/local/bin/dev-mcp"}) ||
-		len(sidecar.Ports) != 1 || sidecar.Ports[0].ContainerPort != 8080 {
-		t.Fatalf("frozen dev-mcp authority = %+v", sidecar)
+	if len(agent.Sidecars) != 0 {
+		t.Fatalf("portable code-review node has sidecars = %#v", agent.Sidecars)
 	}
 	if agent.Capabilities != nil || definition.Function.Capabilities != nil {
 		t.Fatalf("mutable capability names escaped compilation: agent=%#v catalog=%#v", agent.Capabilities, definition.Function.Capabilities)

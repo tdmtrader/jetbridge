@@ -15,20 +15,9 @@ outputs:
 parameters:
   - name: MINIMUM_SEVERITY
     default: medium
-capabilities:
-  dev-mcp:
-    contract: dev-mcp/v1
-    sidecar:
-      name: dev-mcp
-      image: registry.example/dev-mcp@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-      command: [/usr/local/bin/dev-mcp]
-      ports:
-        - {containerPort: 8080, protocol: TCP}
 step:
   agent: review
   function_id: review
   budget_slice_usd: 5
   prompt_file: prompts/review.md
-  model: claude-sonnet
   skills: [review]
-  capabilities: [dev-mcp]
