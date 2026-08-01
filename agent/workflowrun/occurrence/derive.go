@@ -19,11 +19,18 @@ func Derive(sources Sources) ([]NodeOccurrence, error) {
 	if len(sources.Run.ActualPlan) == 0 {
 		return nil, fmt.Errorf("occurrence: run %d has no frozen actual plan", sources.Run.ID)
 	}
+	// An empty node set would silently project nothing, which at the freeze
+	// call site means losing a run's entire history. A caller that could not
+	// derive the graph must fail loudly instead.
+	if len(sources.ExecutionNodes) == 0 {
+		return nil, fmt.Errorf("occurrence: run %d has no graph execution nodes", sources.Run.ID)
+	}
 
-	nodes, err := PlanNodes(sources.Run.ActualPlan)
+	planned, err := PlanNodes(sources.Run.ActualPlan)
 	if err != nil {
 		return nil, err
 	}
+	nodes := retainGraphNodes(planned, sources.ExecutionNodes)
 
 	metricsByPlan := map[string][]AttemptMetric{}
 	for _, metric := range sources.AttemptMetrics {
@@ -41,6 +48,21 @@ func Derive(sources Sources) ([]NodeOccurrence, error) {
 		result = append(result, deriveNode(sources, group, metricsByPlan)...)
 	}
 	return result, nil
+}
+
+// retainGraphNodes keeps only the plan nodes the run's own graph recognises as
+// execution nodes of the same kind. Everything else — most importantly the
+// synthetic per-input-port and per-resource-source loads RenderFunction
+// prepends — is not a graph node at all, so projecting it would put an
+// identity into the projection that no graph node can ever join to.
+func retainGraphNodes(nodes []PlanNode, executionNodes map[string]string) []PlanNode {
+	retained := make([]PlanNode, 0, len(nodes))
+	for _, node := range nodes {
+		if executionNodes[node.NodeID] == node.Kind {
+			retained = append(retained, node)
+		}
+	}
+	return retained
 }
 
 // groupByNode collects the plan nodes that share one identity, in first-seen

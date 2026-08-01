@@ -3,25 +3,13 @@ package occurrence
 import (
 	"testing"
 	"time"
-
-	"github.com/concourse/concourse/atc/db"
 )
 
 // mergeDeliverySources builds Sources over the real merge-delivery-v3 seed,
 // which is the shipped workflow that carries both an await and a publish node.
 func mergeDeliverySources(t *testing.T) Sources {
 	t.Helper()
-	compiled := compileSeed(t, "merge-delivery-v3")
-	return Sources{
-		Run: db.AgentWorkflowRun{
-			ID:                   42,
-			TeamID:               1,
-			WorkflowName:         compiled.Name,
-			WorkflowDefinitionID: 41,
-			WorkflowVersion:      3,
-			ActualPlan:           planSeed(t, compiled),
-		},
-	}
+	return sourcesForSeed(t, compileSeed(t, "merge-delivery-v3"))
 }
 
 func TestDeriveAwaitAndPublishOccurrences(t *testing.T) {

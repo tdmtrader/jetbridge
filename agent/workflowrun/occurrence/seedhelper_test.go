@@ -7,8 +7,10 @@ import (
 	"testing"
 
 	"github.com/concourse/concourse/agent/workflow"
+	"github.com/concourse/concourse/agent/workflow/graph"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/builds"
+	"github.com/concourse/concourse/atc/db"
 )
 
 // The helpers below drive the real authoring pipeline — manifest, compile,
@@ -101,6 +103,36 @@ func planSeed(t *testing.T, compiled *workflow.CompiledDefinition) []byte {
 		t.Fatalf("marshalling plan: %v", err)
 	}
 	return raw
+}
+
+// executionNodesOf derives the graph of a compiled definition and returns the
+// execution-node set Derive filters against, exactly as the freeze call site
+// must.
+func executionNodesOf(t *testing.T, compiled *workflow.CompiledDefinition) map[string]string {
+	t.Helper()
+	built, err := graph.Build(compiled.Function)
+	if err != nil {
+		t.Fatalf("graph.Build: %v", err)
+	}
+	return ExecutionNodesOf(built)
+}
+
+// sourcesForSeed assembles the Sources a run of one compiled definition would
+// present: the frozen actual plan the real planner emits, plus the
+// execution-node set of the same definition's graph.
+func sourcesForSeed(t *testing.T, compiled *workflow.CompiledDefinition) Sources {
+	t.Helper()
+	return Sources{
+		Run: db.AgentWorkflowRun{
+			ID:                   42,
+			TeamID:               1,
+			WorkflowName:         compiled.Name,
+			WorkflowDefinitionID: 41,
+			WorkflowVersion:      3,
+			ActualPlan:           planSeed(t, compiled),
+		},
+		ExecutionNodes: executionNodesOf(t, compiled),
+	}
 }
 
 // planIDOf returns the plan ID of the single node with the given identity,

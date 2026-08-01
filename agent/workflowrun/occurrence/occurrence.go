@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/agent/snapshot"
+	"github.com/concourse/concourse/agent/workflow/graph"
 	"github.com/concourse/concourse/atc/db"
 )
 
@@ -119,4 +120,35 @@ type Sources struct {
 	// that have no other durable evidence, notably deterministic tasks. It is
 	// read from build events while they still exist.
 	BuildStepStatus map[string]Status
+	// ExecutionNodes is the execution-node set graph.Build derives for this
+	// run's own workflow version, as node ID to node kind. Derive projects only
+	// plan nodes in this set. See ExecutionNodesOf.
+	ExecutionNodes map[string]string
+}
+
+// ExecutionNodesOf projects a derived graph onto the node set a run's
+// projection may contain: the occurrence-bearing kinds, keyed by node ID.
+//
+// This is what makes the graph-to-occurrence join exact by construction rather
+// than a guess across prefixes. RenderFunction prepends a synthetic
+// load_snapshot per input port and per bound resource source, named with the
+// BARE port name, so the runtime plan contains a node called "before" while
+// graph.Build calls the same concept "input:before". Endpoint nodes never
+// carry occurrences, so a synthetic load is absent from this set and Derive
+// drops it, while an authored load_snapshot is a graph execution node with a
+// bare ID and is kept — with no special case for either.
+//
+// The kind travels with the ID because the node ID alone is not unique across
+// kinds: an input port and an agent function may share a name, and matching on
+// the pair keeps the synthetic load from colliding with the agent on the
+// projection's primary key.
+func ExecutionNodesOf(built graph.Graph) map[string]string {
+	nodes := make(map[string]string, len(built.Nodes))
+	for _, node := range built.Nodes {
+		switch node.Kind {
+		case graph.KindAgent, graph.KindTask, graph.KindAwait, graph.KindPublish, graph.KindLoad:
+			nodes[node.ID] = string(node.Kind)
+		}
+	}
+	return nodes
 }

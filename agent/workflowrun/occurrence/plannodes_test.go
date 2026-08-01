@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/concourse/concourse/agent/workflow/graph"
 	"github.com/concourse/concourse/atc"
 )
 
@@ -237,10 +236,11 @@ func TestPlanNodesRejectsMalformedPlan(t *testing.T) {
 // The two derivations run on different artifacts on purpose: graph.Build reads
 // the compiled definition, while PlanNodes reads the plan produced after
 // RenderFunction prepends a synthetic load_snapshot per input port and per
-// bound resource source. Those synthetic loads are the same logical thing as
-// the graph's input/resource_source endpoints and share their bare name, which
-// is why a load identity is allowed to resolve against an endpoint node. Every
-// other kind must match a graph execution node of the same kind exactly.
+// bound resource source. Those synthetic loads carry the BARE port name and
+// are not execution nodes, so Derive filters them out against this same node
+// set. What must hold here is the two-way agreement that filter relies on:
+// every graph execution node is reachable from the plan, and every plan node
+// the graph knows has the same kind in both.
 func TestPlanNodesAgreeWithSeedGraphIdentities(t *testing.T) {
 	seeds := seedNames(t)
 	if len(seeds) == 0 {
@@ -250,10 +250,9 @@ func TestPlanNodesAgreeWithSeedGraphIdentities(t *testing.T) {
 	for _, name := range seeds {
 		t.Run(name, func(t *testing.T) {
 			compiled := compileSeed(t, name)
-
-			built, err := graph.Build(compiled.Function)
-			if err != nil {
-				t.Fatalf("graph.Build: %v", err)
+			executionNodes := executionNodesOf(t, compiled)
+			if len(executionNodes) == 0 {
+				t.Fatal("expected the workflow's graph to contain execution nodes")
 			}
 
 			nodes, err := PlanNodes(planSeed(t, compiled))
@@ -264,52 +263,36 @@ func TestPlanNodesAgreeWithSeedGraphIdentities(t *testing.T) {
 				t.Fatal("expected the planned workflow to contain semantic nodes")
 			}
 
-			graphKinds := map[string]graph.NodeKind{}
-			for _, node := range built.Nodes {
-				graphKinds[node.ID] = node.Kind
-			}
-
-			var sawNonLoad bool
+			planned := map[string]string{}
 			for _, node := range nodes {
 				if node.NodeID == "" {
 					t.Fatalf("node %+v has no identity", node)
 				}
-				if node.Kind == "load" {
-					// A load resolves against its own kind or against the
-					// endpoint whose synthetic load it is.
-					_, isLoad := graphKinds[node.NodeID]
-					_, isInput := graphKinds["input:"+node.NodeID]
-					_, isSource := graphKinds["source:"+node.NodeID]
-					if !isLoad && !isInput && !isSource {
-						t.Fatalf("load node %q resolves to no graph node; graph has %v", node.NodeID, graphKinds)
-					}
-					continue
-				}
-				sawNonLoad = true
-				kind, found := graphKinds[node.NodeID]
-				if !found {
-					t.Fatalf("plan node %q (%s) is absent from the graph; graph has %v", node.NodeID, node.Kind, graphKinds)
-				}
-				if string(kind) != node.Kind {
-					t.Fatalf("plan node %q is kind %q in the plan but %q in the graph", node.NodeID, node.Kind, kind)
-				}
-			}
-			if !sawNonLoad {
-				t.Fatal("expected at least one execution node beyond the synthetic loads")
+				planned[node.NodeID] = node.Kind
 			}
 
-			// Every occurrence-bearing graph node must be reachable from the
-			// plan, or durable history would silently omit it.
-			planned := map[string]bool{}
-			for _, node := range nodes {
-				planned[node.NodeID] = true
+			for nodeID, kind := range executionNodes {
+				plannedKind, found := planned[nodeID]
+				if !found {
+					t.Fatalf("graph execution node %q (%s) has no plan node; plan has %v", nodeID, kind, planned)
+				}
+				if plannedKind != kind {
+					t.Fatalf("node %q is kind %q in the plan but %q in the graph", nodeID, plannedKind, kind)
+				}
 			}
-			for _, node := range built.Nodes {
-				switch node.Kind {
-				case graph.KindAgent, graph.KindTask, graph.KindAwait, graph.KindPublish, graph.KindLoad:
-					if !planned[node.ID] {
-						t.Fatalf("graph execution node %q (%s) has no plan node", node.ID, node.Kind)
-					}
+
+			// The reverse direction, with exactly one exception: a load may be
+			// one of the synthetic per-input-port or per-resource-source steps
+			// the renderer prepends, which the graph models as an endpoint.
+			// Any other plan node the graph does not know would be silently
+			// dropped from the projection.
+			for _, node := range nodes {
+				if node.Kind == KindLoad {
+					continue
+				}
+				if executionNodes[node.NodeID] != node.Kind {
+					t.Fatalf("plan node %q (%s) is not a graph execution node; graph has %v",
+						node.NodeID, node.Kind, executionNodes)
 				}
 			}
 		})

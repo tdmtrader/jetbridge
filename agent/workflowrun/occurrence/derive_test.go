@@ -1,11 +1,14 @@
 package occurrence
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/concourse/concourse/agent/workflow"
+	"github.com/concourse/concourse/agent/workflow/graph"
+	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 )
 
@@ -14,17 +17,7 @@ import (
 // rest of the system actually produces.
 func codeReviewSources(t *testing.T) Sources {
 	t.Helper()
-	compiled := compileSeed(t, "code-review-v3")
-	return Sources{
-		Run: db.AgentWorkflowRun{
-			ID:                   42,
-			TeamID:               1,
-			WorkflowName:         compiled.Name,
-			WorkflowDefinitionID: 41,
-			WorkflowVersion:      3,
-			ActualPlan:           planSeed(t, compiled),
-		},
-	}
+	return sourcesForSeed(t, compileSeed(t, "code-review-v3"))
 }
 
 func TestDeriveAgentNodeFromAttemptMetrics(t *testing.T) {
@@ -155,14 +148,7 @@ func TestDeriveEmitsPendingForUnreachedNode(t *testing.T) {
 // Deterministic task steps have no durable metrics row, so the freeze reads
 // their terminal state from build step state while it still exists.
 func TestDeriveUsesBuildStepStatusWhenThereAreNoMetrics(t *testing.T) {
-	compiled := compileSeed(t, "measure-review-v3")
-	sources := Sources{
-		Run: db.AgentWorkflowRun{
-			ID: 42, TeamID: 1, WorkflowName: compiled.Name,
-			WorkflowDefinitionID: 41, WorkflowVersion: 3,
-			ActualPlan: planSeed(t, compiled),
-		},
-	}
+	sources := sourcesForSeed(t, compileSeed(t, "measure-review-v3"))
 	taskPlanID := planIDOf(t, sources.Run.ActualPlan, "measure-review")
 	sources.BuildStepStatus = map[string]Status{taskPlanID: StatusSucceeded}
 
@@ -295,20 +281,174 @@ func TestDeriveRejectsAMalformedActualPlan(t *testing.T) {
 	}
 }
 
-// The synthetic loads RenderFunction prepends are real plan steps that can
-// fail, so they are projected like any other execution node.
-func TestDeriveProjectsSyntheticLoadNodes(t *testing.T) {
-	occurrences, err := Derive(codeReviewSources(t))
+// The projection stores only nodes the graph contains.
+//
+// RenderFunction prepends a synthetic load_snapshot per input port, named with
+// the BARE port name, so code-review-v3's plan contains loads called "before"
+// and "after" while graph.Build calls the same concepts "input:before" and
+// "input:after". Those are endpoint nodes, which never carry occurrences, so
+// the synthetic loads must not reach the projection — otherwise Phase C's
+// join from a graph node to its occurrence row would have to guess across
+// three prefixes.
+func TestDeriveDropsSyntheticInputPortLoads(t *testing.T) {
+	sources := codeReviewSources(t)
+
+	// The plan really does contain them, so this is a filter and not an
+	// accident of the fixture.
+	nodes, err := PlanNodes(sources.Run.ActualPlan)
+	if err != nil {
+		t.Fatalf("PlanNodes: %v", err)
+	}
+	for _, name := range []string{"before", "after"} {
+		var inPlan bool
+		for _, node := range nodes {
+			if node.NodeID == name && node.Kind == KindLoad {
+				inPlan = true
+			}
+		}
+		if !inPlan {
+			t.Fatalf("expected the plan to contain a synthetic load %q, got %+v", name, nodes)
+		}
+		if _, inGraph := sources.ExecutionNodes[name]; inGraph {
+			t.Fatalf("expected %q to be an endpoint rather than an execution node", name)
+		}
+	}
+
+	occurrences, err := Derive(sources)
 	if err != nil {
 		t.Fatalf("Derive returned an error: %v", err)
 	}
 	for _, name := range []string{"before", "after"} {
-		got, found := findOccurrence(occurrences, name)
-		if !found {
-			t.Fatalf("expected an occurrence for load %q, got %+v", name, occurrences)
+		if got, found := findOccurrence(occurrences, name); found {
+			t.Fatalf("synthetic input-port load %q must not be projected, got %+v", name, got)
 		}
-		if got.NodeKind != KindLoad {
-			t.Fatalf("expected load kind for %q, got %q", name, got.NodeKind)
+	}
+	if _, found := findOccurrence(occurrences, "review"); !found {
+		t.Fatalf("the filter must keep real execution nodes, got %+v", occurrences)
+	}
+}
+
+// The other half of the same rule: an authored load_snapshot IS a graph
+// execution node with a bare ID, so it is kept — and it is kept without a
+// special case, purely because the graph contains it.
+//
+// The fixture is assembled directly because RenderFunction currently rejects
+// authored load_snapshot steps outright (render.go: "workflow inputs are
+// loaded by the renderer"), so no seed can produce one. graph.Build models
+// them regardless, and the filter must agree with the graph rather than with
+// today's renderer policy.
+func TestDeriveKeepsAnAuthoredLoadSnapshotWhileDroppingASyntheticOne(t *testing.T) {
+	raw, err := json.Marshal(atc.Plan{
+		ID: "1",
+		Do: &atc.DoPlan{
+			// What RenderFunction prepends for the input port "before".
+			{ID: "1/1", LoadSnapshot: &atc.LoadSnapshotPlan{Name: "before", Type: "repository/v1"}},
+			// What an author wrote.
+			{ID: "1/2", LoadSnapshot: &atc.LoadSnapshotPlan{Name: "baseline", Type: "repository/v1"}},
+			{ID: "1/3", Agent: &atc.AgentPlan{Name: "review", FunctionID: "review"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshalling plan: %v", err)
+	}
+
+	occurrences, err := Derive(Sources{
+		Run: db.AgentWorkflowRun{ID: 42, TeamID: 1, WorkflowName: "authored-load", ActualPlan: raw},
+		// graph.Build names the input port "input:before" and the authored
+		// load "baseline".
+		ExecutionNodes: ExecutionNodesOf(graph.Graph{Nodes: []graph.Node{
+			{ID: "input:before", Kind: graph.KindInput},
+			{ID: "baseline", Kind: graph.KindLoad},
+			{ID: "review", Kind: graph.KindAgent},
+		}}),
+	})
+	if err != nil {
+		t.Fatalf("Derive returned an error: %v", err)
+	}
+
+	if got, found := findOccurrence(occurrences, "before"); found {
+		t.Fatalf("the synthetic input-port load must be dropped, got %+v", got)
+	}
+	got, found := findOccurrence(occurrences, "baseline")
+	if !found {
+		t.Fatalf("the authored load_snapshot must be projected, got %+v", occurrences)
+	}
+	if got.NodeKind != KindLoad {
+		t.Fatalf("expected the load kind, got %q", got.NodeKind)
+	}
+}
+
+// A plan node whose identity the graph knows under a different kind is not the
+// same node. Keeping it would put two different concepts on one projection key
+// — an input port named "review" and an agent function named "review" both
+// land on (run, "review", 1).
+func TestDeriveDropsAPlanNodeWhoseGraphKindDiffers(t *testing.T) {
+	raw, err := json.Marshal(atc.Plan{
+		ID: "1",
+		Do: &atc.DoPlan{
+			{ID: "1/1", LoadSnapshot: &atc.LoadSnapshotPlan{Name: "review", Type: "repository/v1"}},
+			{ID: "1/2", Agent: &atc.AgentPlan{Name: "review", FunctionID: "review"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshalling plan: %v", err)
+	}
+
+	occurrences, err := Derive(Sources{
+		Run:            db.AgentWorkflowRun{ID: 42, TeamID: 1, ActualPlan: raw},
+		ExecutionNodes: map[string]string{"review": KindAgent},
+	})
+	if err != nil {
+		t.Fatalf("Derive returned an error: %v", err)
+	}
+	if len(occurrences) != 1 {
+		t.Fatalf("expected only the agent node, got %+v", occurrences)
+	}
+	if occurrences[0].NodeKind != KindAgent || occurrences[0].PlanID != "1/2" {
+		t.Fatalf("expected the agent copy to survive, got %+v", occurrences[0])
+	}
+}
+
+// An absent node set would project nothing at all, so at the freeze call site
+// it would silently discard a run's whole history. It must be an error the
+// caller has to see.
+func TestDeriveRequiresTheGraphExecutionNodeSet(t *testing.T) {
+	sources := codeReviewSources(t)
+	sources.ExecutionNodes = nil
+
+	_, err := Derive(sources)
+	if err == nil {
+		t.Fatal("expected an error when the graph execution-node set is missing")
+	}
+	if !strings.Contains(err.Error(), "no graph execution nodes") || !strings.Contains(err.Error(), "42") {
+		t.Fatalf("unhelpful error for a missing node set: %v", err)
+	}
+}
+
+// ExecutionNodesOf answers "which kinds may carry occurrences", so an endpoint
+// kind sneaking in would reopen the ambiguity the filter exists to close.
+func TestExecutionNodesOfKeepsOnlyOccurrenceBearingKinds(t *testing.T) {
+	nodes := ExecutionNodesOf(graph.Graph{Nodes: []graph.Node{
+		{ID: "input:before", Kind: graph.KindInput},
+		{ID: "source:repo", Kind: graph.KindResourceSource},
+		{ID: "output:draft", Kind: graph.KindOutput},
+		{ID: "baseline", Kind: graph.KindLoad},
+		{ID: "review", Kind: graph.KindAgent},
+		{ID: "measure", Kind: graph.KindTask},
+		{ID: "approval", Kind: graph.KindAwait},
+		{ID: "ship", Kind: graph.KindPublish},
+	}})
+
+	want := map[string]string{
+		"baseline": KindLoad, "review": KindAgent, "measure": KindTask,
+		"approval": KindAwait, "ship": KindPublish,
+	}
+	if len(nodes) != len(want) {
+		t.Fatalf("expected %d execution nodes, got %+v", len(want), nodes)
+	}
+	for id, kind := range want {
+		if nodes[id] != kind {
+			t.Fatalf("node %q: expected kind %q, got %q", id, kind, nodes[id])
 		}
 	}
 }
@@ -317,14 +457,7 @@ func TestDeriveProjectsSyntheticLoadNodes(t *testing.T) {
 // are not separate facts: projecting each as pending would leave a finished
 // workflow showing attention-worthy pending nodes that never existed.
 func TestDeriveOnlyProjectsRetryCopiesThatHaveEvidence(t *testing.T) {
-	compiled := retryCompiled(t)
-	sources := Sources{
-		Run: db.AgentWorkflowRun{
-			ID: 42, TeamID: 1, WorkflowName: compiled.Name,
-			WorkflowDefinitionID: 41, WorkflowVersion: 3,
-			ActualPlan: planSeed(t, compiled),
-		},
-	}
+	sources := sourcesForSeed(t, retryCompiled(t))
 
 	nodes, err := PlanNodes(sources.Run.ActualPlan)
 	if err != nil {
@@ -369,14 +502,7 @@ func TestDeriveOnlyProjectsRetryCopiesThatHaveEvidence(t *testing.T) {
 // When no retry copy ran at all, the node is still in the plan, so it is
 // projected once as pending rather than once per unexecuted copy.
 func TestDeriveProjectsAnUnreachedRetryNodeExactlyOnce(t *testing.T) {
-	compiled := retryCompiled(t)
-	occurrences, err := Derive(Sources{
-		Run: db.AgentWorkflowRun{
-			ID: 42, TeamID: 1, WorkflowName: compiled.Name,
-			WorkflowDefinitionID: 41, WorkflowVersion: 3,
-			ActualPlan: planSeed(t, compiled),
-		},
-	})
+	occurrences, err := Derive(sourcesForSeed(t, retryCompiled(t)))
 	if err != nil {
 		t.Fatalf("Derive returned an error: %v", err)
 	}
@@ -399,20 +525,15 @@ func TestDeriveProjectsAnUnreachedRetryNodeExactlyOnce(t *testing.T) {
 func TestDeriveCoversEverySeedWorkflow(t *testing.T) {
 	for _, name := range seedNames(t) {
 		t.Run(name, func(t *testing.T) {
-			compiled := compileSeed(t, name)
-			occurrences, err := Derive(Sources{
-				Run: db.AgentWorkflowRun{
-					ID: 42, TeamID: 1, WorkflowName: compiled.Name,
-					WorkflowDefinitionID: 41, WorkflowVersion: 3,
-					ActualPlan: planSeed(t, compiled),
-				},
-			})
+			sources := sourcesForSeed(t, compileSeed(t, name))
+			occurrences, err := Derive(sources)
 			if err != nil {
 				t.Fatalf("Derive: %v", err)
 			}
 			if len(occurrences) == 0 {
 				t.Fatal("expected occurrences")
 			}
+			seen := map[string]bool{}
 			for _, occurrence := range occurrences {
 				if err := occurrence.Status.Validate(); err != nil {
 					t.Fatalf("%+v: %v", occurrence, err)
@@ -422,6 +543,20 @@ func TestDeriveCoversEverySeedWorkflow(t *testing.T) {
 				}
 				if occurrence.NodeID == "" || occurrence.NodeKind == "" {
 					t.Fatalf("occurrence has no identity: %+v", occurrence)
+				}
+				// Every projected identity must be a graph node of the same
+				// kind, which is what makes Phase C's join exact.
+				if sources.ExecutionNodes[occurrence.NodeID] != occurrence.NodeKind {
+					t.Fatalf("occurrence %q (%s) is not a graph execution node; graph has %v",
+						occurrence.NodeID, occurrence.NodeKind, sources.ExecutionNodes)
+				}
+				seen[occurrence.NodeID] = true
+			}
+			// And every graph execution node must be projected, or durable
+			// history would silently omit it.
+			for nodeID := range sources.ExecutionNodes {
+				if !seen[nodeID] {
+					t.Fatalf("graph execution node %q has no occurrence", nodeID)
 				}
 			}
 		})
