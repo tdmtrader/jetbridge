@@ -63,27 +63,21 @@ func CompileDefinitionWithNodesAndBrokerCatalog(m Manifest, resolver NodeResolve
 	return compileDefinitionWithNodes(m, resolver, catalog)
 }
 
-func compileDefinitionWithNodes(m Manifest, resolver NodeResolver, catalog *broker.Catalog) (*CompiledDefinition, []ResolvedNodeBinding, error) {
-	if resolver == nil {
-		return nil, nil, fmt.Errorf("workflow: node resolver is required")
-	}
-	if err := m.Validate(); err != nil {
-		return nil, nil, err
-	}
-	raw, ok := m.DefinitionSource()
-	if !ok {
-		return nil, nil, fmt.Errorf("workflow: manifest has no %s (or legacy %s)", WorkflowFileName, LegacyWorkflowFileName)
-	}
-	if err := RequireSchemaVersion3([]byte(raw)); err != nil {
-		return nil, nil, err
-	}
-
-	document, err := decodeNodeReferenceDocument([]byte(raw))
+// ResolveNodeBindings resolves only the exact released reusable-node references
+// in an authored workflow. It deliberately does not compile source-local
+// assets or consult a broker catalog, so callers can validate durable binding
+// records without making idempotency depend on the current deployment catalog.
+func ResolveNodeBindings(m Manifest, resolver NodeResolver) ([]ResolvedNodeBinding, error) {
+	_, expander, err := expandNodeReferences(m, resolver)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	expander := nodeReferenceExpander{resolver: resolver, instances: map[string]struct{}{}, frozen: map[string]frozenNodeAssets{}}
-	if err := expander.expandWorkflow(document); err != nil {
+	return expander.bindings, nil
+}
+
+func compileDefinitionWithNodes(m Manifest, resolver NodeResolver, catalog *broker.Catalog) (*CompiledDefinition, []ResolvedNodeBinding, error) {
+	document, expander, err := expandNodeReferences(m, resolver)
+	if err != nil {
 		return nil, nil, err
 	}
 	expanded, err := yaml.Marshal(document)
@@ -112,8 +106,33 @@ func compileDefinitionWithNodes(m Manifest, resolver NodeResolver, catalog *brok
 	if _, err := ValidateFunction(definition.Function); err != nil {
 		return nil, nil, err
 	}
-	sort.Slice(expander.bindings, func(i, j int) bool { return expander.bindings[i].InstanceName < expander.bindings[j].InstanceName })
 	return definition, expander.bindings, nil
+}
+
+func expandNodeReferences(m Manifest, resolver NodeResolver) (any, *nodeReferenceExpander, error) {
+	if resolver == nil {
+		return nil, nil, fmt.Errorf("workflow: node resolver is required")
+	}
+	if err := m.Validate(); err != nil {
+		return nil, nil, err
+	}
+	raw, ok := m.DefinitionSource()
+	if !ok {
+		return nil, nil, fmt.Errorf("workflow: manifest has no %s (or legacy %s)", WorkflowFileName, LegacyWorkflowFileName)
+	}
+	if err := RequireSchemaVersion3([]byte(raw)); err != nil {
+		return nil, nil, err
+	}
+	document, err := decodeNodeReferenceDocument([]byte(raw))
+	if err != nil {
+		return nil, nil, err
+	}
+	expander := &nodeReferenceExpander{resolver: resolver, instances: map[string]struct{}{}, frozen: map[string]frozenNodeAssets{}}
+	if err := expander.expandWorkflow(document); err != nil {
+		return nil, nil, err
+	}
+	sort.Slice(expander.bindings, func(i, j int) bool { return expander.bindings[i].InstanceName < expander.bindings[j].InstanceName })
+	return document, expander, nil
 }
 
 func decodeNodeReferenceDocument(raw []byte) (any, error) {

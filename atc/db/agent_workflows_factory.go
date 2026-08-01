@@ -264,6 +264,13 @@ func (f *agentWorkflowsFactory) ImportManifestWithOutcome(
 		if def.SchemaVersion != metadata.SchemaVersion || def.SignatureVersion != metadata.SignatureVersion {
 			return workflow.ImportOutcome{}, fmt.Errorf("workflow: stored metadata for %q version %d does not match compiled source", name, def.Version)
 		}
+		bindings, bindingsErr := f.resolveNodeBindingsForTransaction(src, tx)
+		if bindingsErr != nil {
+			return workflow.ImportOutcome{}, workflow.InvalidDefinitionError{Err: bindingsErr}
+		}
+		if err := compareWorkflowNodeBindings(tx, def.ID, bindings); err != nil {
+			return workflow.ImportOutcome{}, err
+		}
 		populateCompiledWorkflowDefinition(&def, compiled, storedSource)
 		if err := tx.Commit(); err != nil {
 			return workflow.ImportOutcome{}, err
@@ -362,6 +369,14 @@ func (f *agentWorkflowsFactory) ImportManifestWithOutcome(
 		return workflow.ImportOutcome{}, err
 	}
 	return workflow.ImportOutcome{Definition: &def, Inserted: true}, nil
+}
+
+func (f *agentWorkflowsFactory) resolveNodeBindingsForTransaction(source workflow.Manifest, tx Tx) ([]workflow.ResolvedNodeBinding, error) {
+	resolver := nodeResolverForTransaction(f.nodeResolver, tx)
+	if resolver == nil {
+		return nil, nil
+	}
+	return workflow.ResolveNodeBindings(source, resolver)
 }
 
 func (f *agentWorkflowsFactory) compileDefinitionWithBindingsForTransaction(
