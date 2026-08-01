@@ -311,7 +311,7 @@ func TestTypeCheckLoadSnapshotIsATypedProducer(t *testing.T) {
 			load("repo", repositoryV1, false),
 		}}}
 		function := &FunctionConfig{SignatureVersion: 1, Plan: []atc.Step{{Config: parallel}}}
-		if err := TypeCheckFunction(function); err == nil || !strings.Contains(err.Error(), "duplicate") || !strings.Contains(err.Error(), `"repo"`) {
+		if err := TypeCheckFunction(function); err == nil || !strings.Contains(err.Error(), `duplicate binding name "repo"`) {
 			t.Fatalf("error = %v, want duplicate node identity rejection", err)
 		}
 	})
@@ -376,7 +376,7 @@ func TestTypeCheckAwaitSnapshotConsumesQuestionAndProducesAnswer(t *testing.T) {
 		}}}
 		function := &FunctionConfig{SignatureVersion: 1, Inputs: []snapshot.Port{{Name: "question", Type: questionV1}}, Plan: []atc.Step{{Config: parallel}}}
 		err := TypeCheckFunction(function)
-		if err == nil || !strings.Contains(err.Error(), "duplicate") || !strings.Contains(err.Error(), `"answer"`) {
+		if err == nil || !strings.Contains(err.Error(), `duplicate binding name "answer"`) {
 			t.Fatalf("error = %v, want duplicate node identity rejection", err)
 		}
 	})
@@ -1120,7 +1120,7 @@ func TestTypeCheckRejectsFunctionIDCollidingWithAwaitName(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected a duplicate-identity error, got nil")
 	}
-	if !strings.Contains(err.Error(), "duplicate") || !strings.Contains(err.Error(), "approval") {
+	if !strings.Contains(err.Error(), `duplicate binding name "approval"`) {
 		t.Fatalf("expected a duplicate identity error naming %q, got: %v", "approval", err)
 	}
 }

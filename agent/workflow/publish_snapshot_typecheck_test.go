@@ -55,7 +55,7 @@ func renderValidationStep(candidate string) atc.Step {
 	return atc.Step{Config: &atc.TaskStep{Name: "validate", FunctionID: "validate", Config: &atc.TaskConfig{Platform: "linux", RootfsURI: profile.CapabilityImage, Run: atc.TaskRunConfig{Path: "/bin/true"}, Inputs: []atc.TaskInputConfig{{Name: candidate}}, Outputs: []atc.TaskOutputConfig{{Name: "validation"}}}, SnapshotInputs: map[string]atc.SnapshotInputConfig{candidate: {Type: repositoryChangeV1}}, SnapshotOutputs: map[string]atc.SnapshotOutputConfig{"validation": {Type: snapshot.TypeRef("validation/v1")}}, DevValidationAuthority: authority}}
 }
 
-func namedStep(name string, inputType snapshot.TypeRef) atc.Step {
+func namedPublishStep(name string, inputType snapshot.TypeRef) atc.Step {
 	return atc.Step{Config: &atc.PublishSnapshotStep{
 		Name:                  name,
 		Publisher:             publisher.GitPublisher,
@@ -70,10 +70,6 @@ func namedStep(name string, inputType snapshot.TypeRef) atc.Step {
 }
 
 func TestTypeCheckPublishSnapshotConsumesExactRequiredTypedInput(t *testing.T) {
-	step := func(inputType snapshot.TypeRef) atc.Step {
-		return namedStep("publish-change", inputType)
-	}
-
 	t.Run("exact required typed input is accepted without changing the environment", func(t *testing.T) {
 		// Two distinctly named publish_snapshot steps, both publishing the
 		// same exact validated input, prove that publish leaves the
@@ -84,7 +80,7 @@ func TestTypeCheckPublishSnapshotConsumesExactRequiredTypedInput(t *testing.T) {
 		function := &FunctionConfig{
 			SignatureVersion:            1,
 			Inputs:                      []snapshot.Port{{Name: "change", Type: repositoryChangeV1}},
-			Plan:                        []atc.Step{exactValidationStep("change"), step(repositoryChangeV1), namedStep("publish-change-again", repositoryChangeV1)},
+			Plan:                        []atc.Step{exactValidationStep("change"), namedPublishStep("publish-change", repositoryChangeV1), namedPublishStep("publish-change-again", repositoryChangeV1)},
 			DevValidationProfiles:       validationProfiles(),
 			DevValidationProvenanceHash: validationProvenance(),
 		}
@@ -129,7 +125,7 @@ func TestTypeCheckPublishSnapshotConsumesExactRequiredTypedInput(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			plan := append([]atc.Step(nil), test.prefix...)
-			plan = append(plan, step(test.inputType))
+			plan = append(plan, namedPublishStep("publish-change", test.inputType))
 			function := &FunctionConfig{SignatureVersion: 1, Inputs: test.inputs, Plan: plan}
 
 			err := TypeCheckFunction(function)
@@ -137,6 +133,39 @@ func TestTypeCheckPublishSnapshotConsumesExactRequiredTypedInput(t *testing.T) {
 				t.Fatalf("error = %v, want substring %q", err, test.want)
 			}
 		})
+	}
+}
+
+// TestTypeCheckRejectsFunctionIDCollidingWithPublishName mirrors
+// TestTypeCheckRejectsFunctionIDCollidingWithAwaitName for the third node
+// kind that shares the workflow-local identity namespace: publish_snapshot.
+// An agent's function_id must not silently collide with a publish_snapshot
+// binding name.
+func TestTypeCheckRejectsFunctionIDCollidingWithPublishName(t *testing.T) {
+	agent := typedAgent("ship", "ship", nil, nil, []string{"repo"}, map[string]atc.SnapshotOutputConfig{
+		"repo": {Type: repositoryV1},
+	})
+
+	function := &FunctionConfig{
+		SignatureVersion: 1,
+		Plan: []atc.Step{
+			{Config: agent},
+			{Config: &atc.PublishSnapshotStep{
+				Name:                  "ship",
+				Publisher:             publisher.GitPublisher,
+				Input:                 "repo",
+				InputType:             repositoryV1,
+				Destination:           "github.example/team/repo",
+				Mode:                  publisher.ModeBranch,
+				Parameters:            map[string]string{"source_branch": "agent/change", "target_branch": "main"},
+				ApprovalPolicyVersion: "engineering/v2",
+			}},
+		},
+	}
+
+	err := TypeCheckFunction(function)
+	if err == nil || !strings.Contains(err.Error(), `duplicate binding name "ship"`) {
+		t.Fatalf("error = %v, want a duplicate node identity between the ship function_id and the ship publish_snapshot", err)
 	}
 }
 

@@ -68,8 +68,16 @@ type publicOutputTarget struct {
 	producer *snapshotProducer
 }
 
+// nodeIdentityDeclaration records who first claimed a workflow-local node
+// identity, so a later collision can name both what kind of binding is being
+// declared and what kind got there first.
+type nodeIdentityDeclaration struct {
+	label    string
+	identity string
+}
+
 type snapshotFlowChecker struct {
-	functionIDs           map[string]string
+	nodeIdentities        map[string]nodeIdentityDeclaration
 	prototypes            map[string]struct{}
 	devValidationProfiles map[string]CompiledDevValidationProfile
 	timeoutDepth          int
@@ -278,7 +286,7 @@ func analyzeFunctionFlow(function *FunctionConfig) ([]publicOutputTarget, error)
 	for _, profile := range function.DevValidationProfiles {
 		profiles[profile.Name] = profile
 	}
-	checker := &snapshotFlowChecker{functionIDs: make(map[string]string), prototypes: prototypes, devValidationProfiles: profiles}
+	checker := &snapshotFlowChecker{nodeIdentities: make(map[string]nodeIdentityDeclaration), prototypes: prototypes, devValidationProfiles: profiles}
 	result, err := checker.checkSequence(function.Plan, env, "plan")
 	if err != nil {
 		return nil, err
@@ -1105,20 +1113,32 @@ func (checker *snapshotFlowChecker) requireValidation(
 	return nil
 }
 
-// registerNodeIdentity records one workflow-local node identity. Every
-// semantic node kind shares a single namespace: agent and task nodes use
-// their authored function_id, while await_snapshot, publish_snapshot, and
-// load_snapshot use their binding name, which downstream steps already
-// reference by value. Two nodes may never share an identity, because the
-// durable node-occurrence projection is keyed by it.
+// registerNodeIdentity records one workflow-local node identity. Within
+// TypeCheckFunction itself, agent and task nodes use their authored
+// function_id, while await_snapshot, publish_snapshot, and load_snapshot use
+// their binding name, which downstream steps already reference by value.
+// Every node checked by this pass shares one namespace: two nodes may never
+// claim the same identity, because the durable node-occurrence projection is
+// keyed by it.
+//
+// This does not by itself make the namespace uniform across a whole
+// workflow: public input ports and bound resource sources join it only
+// because RenderFunction prepends one synthetic load_snapshot step per
+// input/source ahead of the authored plan before its own TypeCheckFunction
+// pass. A function whose declared Inputs collide with a plan node's
+// function_id passes this compile-time check (Inputs are bound straight into
+// the environment, never through this method) and is only caught once
+// rendering substitutes the synthetic load — see
+// TestRenderFunctionRejectsInputPortCollidingWithFunctionID in
+// render_test.go.
 func (checker *snapshotFlowChecker) registerNodeIdentity(label, nodeID, identity string) error {
 	if strings.TrimSpace(nodeID) == "" {
 		return fmt.Errorf("workflow: %s: typed node requires a nonblank authored %s", identity, label)
 	}
-	if previous, found := checker.functionIDs[nodeID]; found {
-		return fmt.Errorf("workflow: %s: duplicate %s %q; first declared at %s", identity, label, nodeID, previous)
+	if previous, found := checker.nodeIdentities[nodeID]; found {
+		return fmt.Errorf("workflow: %s: duplicate %s %q; first declared as %s at %s", identity, label, nodeID, previous.label, previous.identity)
 	}
-	checker.functionIDs[nodeID] = identity
+	checker.nodeIdentities[nodeID] = nodeIdentityDeclaration{label: label, identity: identity}
 	return nil
 }
 

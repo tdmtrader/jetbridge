@@ -666,6 +666,32 @@ func TestRenderFunctionRejectsForgedPrivateWorkflowOutputClaim(t *testing.T) {
 	}
 }
 
+// TestRenderFunctionRejectsInputPortCollidingWithFunctionID pins a contract
+// that otherwise holds only by construction: the renderer prepends one
+// synthetic load_snapshot step per public input port (and, once sources are
+// bound, per resource source) ahead of the authored plan, which is what
+// joins input-port and resource-source names to the same workflow-local node
+// identity namespace as authored function_ids. Nothing in TypeCheckFunction
+// itself enforces that uniformity — a function whose declared Inputs collide
+// with a plan node's function_id passes compile-time TypeCheckFunction
+// (function.Inputs are bound straight into the environment, never through
+// registerNodeIdentity) and is only caught here, once rendering has
+// substituted the synthetic load for the declared input.
+func TestRenderFunctionRejectsInputPortCollidingWithFunctionID(t *testing.T) {
+	definition := renderTestDefinition()
+	definition.Compiled.Function.Plan[0].Config.(*atc.AgentStep).FunctionID = "repo"
+
+	target, err := FullFunctionTarget(definition)
+	if err != nil {
+		t.Fatalf("FullFunctionTarget: %v", err)
+	}
+
+	_, err = RenderFunction(target)
+	if err == nil || !strings.Contains(err.Error(), `duplicate function_id "repo"`) {
+		t.Fatalf("error = %v, want a duplicate node identity between the repo input port and the repo function_id", err)
+	}
+}
+
 func TestRenderFunctionIsDeterministicAndConcurrent(t *testing.T) {
 	definition := renderTestDefinition()
 	target, err := FullFunctionTarget(definition)
