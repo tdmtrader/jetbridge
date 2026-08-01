@@ -96,11 +96,22 @@
   - Review: independent blocking round 1 found and the TDD process-failure
     regression fixed one boundary issue; independent round 2 passed with no
     findings. Review budget used: 2 of 3.
-- [ ] Task 3 — managed output-builder MCP lifecycle and runner preflight
+- [x] Task 3 — managed output-builder MCP lifecycle and runner preflight
   - Gate: initialize → initialized notification → tools/list → tools/call and
     zero provider starts against a protocol-broken managed builder; a successful
     managed preflight persists exactly one `mcp.ready` event.
-  - Review budget: maximum three blocking rounds.
+  - RED/GREEN: output-builder now performs the exact MCP initialize,
+    initialized notification, and tool-discovery lifecycle with bounded,
+    authority-free schemas; runner preflight emits exactly one safe mcp.ready.
+  - Review round 1 corrected helper-only Run proof, unbounded synthetic-204
+    draining, and missing durable mcp.ready event-count evidence.
+  - Review round 2 corrected provider-time typed event/schema assertions.
+  - Review round 3 corrected the broken path to use a recording provider and
+    typed results/events. Final round 3 PASS; no blocking findings.
+  - Verification: outputbuilder/cmd/agent-output/runner, nested schema, and
+    focused atc/exec durable-count Ginkgo all passed; gofmt and diff check
+    passed. Minor nonblocking note: EventError payload is not separately
+    unmarshaled.
 - [ ] Task 4 — immutable runner CLI/image capability and digest publication
   - Gate: checksum/version parity, Docker image smoke, and registry-reported
     digest evidence inspected as exactly `linux/amd64` after registry pull.

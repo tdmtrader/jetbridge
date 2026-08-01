@@ -1702,6 +1702,7 @@ var _ = Describe("AgentStep", func() {
 			resultsJSON = `{"schema_version":"1.0","status":"pass","confidence":1,"summary":"done","artifacts":[]}`
 			eventLines = []string{
 				`{"ts":"2026-07-10T12:00:00Z","event":"step.start","data":{"step_name":"write-spec","build_id":1,"plan_id":"p"}}`,
+				`{"ts":"2026-07-10T12:00:00Z","event":"mcp.ready","data":{"server":"output-builder","protocol_version":"2024-11-05","tools":["describe_output","validate_output","write_output"]}}`,
 				`{"ts":"2026-07-10T12:00:01Z","event":"tool.call","data":{"tool":"run_tests"}}`,
 				`{"ts":"2026-07-10T12:00:02Z","event":"cost.record","data":{"source":"agent_step","provider":"anthropic","model":"m1","input_tokens":100,"output_tokens":50,"cache_read_tokens":1,"cache_creation_tokens":2,"turns":9,"cost_usd":0.42}}`,
 				`{"ts":"2026-07-10T12:01:01Z","event":"step.end","data":{"step_name":"write-spec","status":"ok","summary":"done","wall_time_seconds":61,"cost_usd":0.42,"turns":9}}`,
@@ -1757,6 +1758,7 @@ var _ = Describe("AgentStep", func() {
 			Expect(rm.StepName).To(Equal("write-spec"))
 			Expect(rm.Summary).To(Equal("done"))
 			Expect(rm.EventCounts).To(HaveKeyWithValue("tool.call", 1))
+			Expect(rm.EventCounts).To(HaveKeyWithValue("mcp.ready", 1))
 			Expect(rm.EventCounts).To(HaveKeyWithValue("step.end", 1))
 			Expect(rm.EventsArtifact).ToNot(BeEmpty())
 			Expect(rm.Results).To(MatchJSON(resultsJSON))

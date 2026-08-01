@@ -18,3 +18,13 @@ func TestStepEndDataMarshalsSnakeCase(t *testing.T) {
 	e := schema.Event{Timestamp: "2026-07-08T12:00:00Z", Type: schema.EventStepEnd, Data: data}
 	requireNoErr(t, e.Validate())
 }
+
+func TestMCPReadyDataRoundTripsSafeFields(t *testing.T) {
+	data, err := json.Marshal(schema.MCPReadyData{Server: "output-builder", ProtocolVersion: "2024-11-05", Tools: []string{"describe_output", "validate_output", "write_output"}})
+	requireNoErr(t, err)
+	var got schema.MCPReadyData
+	requireNoErr(t, json.Unmarshal(data, &got))
+	if got.Server != "output-builder" || got.ProtocolVersion != "2024-11-05" || len(got.Tools) != 3 {
+		t.Fatalf("round trip = %#v", got)
+	}
+}

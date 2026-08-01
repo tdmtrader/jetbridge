@@ -43,6 +43,10 @@ var (
 var claudeWaitDelay = 5 * time.Second
 
 const maxSummaryChars = 500
+const (
+	managedOutputBuilderProtocolVersion       = "2024-11-05"
+	managedOutputBuilderResponseLimit   int64 = 1 << 20
+)
 
 const (
 	outputBuilderMarkerEnv = "CONCOURSE_OUTPUT_BUILDER_MCP"
@@ -435,22 +439,14 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 	// 2. Wait for every declared MCP sidecar to become healthy. A sidecar
 	// that never comes up is a platform error, not an agent failure.
 	if err := waitForSidecars(ctx, mcpServers); err != nil {
-		summary := truncate(err.Error(), maxSummaryChars)
-		writeEvent(events, schema.EventError, map[string]string{"message": err.Error()})
-		// Persist results.json too. Server-side ingestion reads step.end only
-		// for WallTimeSeconds — never its Status/Summary — and falls back to
-		// results.json for the run's status/summary; without this write the
-		// metrics row degrades to the generic "flight recorder output missing"
-		// summary and the real sidecar-failure reason never surfaces (review
-		// finding, 2026-07-12).
-		writeResults(cfg.FlightDir, schema.StatusError, summary)
-		writeEvent(events, schema.EventStepEnd, schema.StepEndData{
-			StepName:        cfg.StepName,
-			Status:          schema.RunStatusError,
-			Summary:         summary,
-			WallTimeSeconds: int(time.Since(start).Seconds()),
-		})
-		return 2, nil
+		return finishBeforeModelPlatformError(events, cfg.FlightDir, cfg.StepName, start, err)
+	}
+	if outputBuilderEnabled {
+		client := &http.Client{Timeout: sidecarHealthInterval}
+		if err := preflightManagedOutputBuilder(ctx, client, mcpServers[outputBuilderMCPName]); err != nil {
+			return finishBeforeModelPlatformError(events, cfg.FlightDir, cfg.StepName, start, fmt.Errorf("managed output builder protocol preflight failed: %w", err))
+		}
+		writeEvent(events, schema.EventMCPReady, schema.MCPReadyData{Server: outputBuilderMCPName, ProtocolVersion: managedOutputBuilderProtocolVersion, Tools: []string{"describe_output", "validate_output", "write_output"}})
 	}
 
 	// 4. Invoke the claude CLI. stream-json emits the turn-by-turn NDJSON
@@ -726,6 +722,96 @@ func waitForSidecars(ctx context.Context, servers map[string]string) error {
 		if err := waitHealthy(ctx, client, name, healthzURL(servers[name])); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func finishBeforeModelPlatformError(events *schema.EventWriter, flightDir, stepName string, start time.Time, err error) (int, error) {
+	summary := truncate(err.Error(), maxSummaryChars)
+	writeEvent(events, schema.EventError, map[string]string{"message": err.Error()})
+	writeResults(flightDir, schema.StatusError, summary)
+	writeEvent(events, schema.EventStepEnd, schema.StepEndData{StepName: stepName, Status: schema.RunStatusError, Summary: summary, WallTimeSeconds: int(time.Since(start).Seconds())})
+	return 2, nil
+}
+
+func preflightManagedOutputBuilder(ctx context.Context, client *http.Client, endpoint string) error {
+	post := func(value any, want int, result any) error {
+		body, err := json.Marshal(value)
+		if err != nil {
+			return err
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := client.Do(req)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != want {
+			io.Copy(io.Discard, io.LimitReader(resp.Body, managedOutputBuilderResponseLimit))
+			return fmt.Errorf("unexpected MCP status %d", resp.StatusCode)
+		}
+		if result == nil {
+			data, err := io.ReadAll(io.LimitReader(resp.Body, managedOutputBuilderResponseLimit+1))
+			if err != nil {
+				return err
+			}
+			if int64(len(data)) > managedOutputBuilderResponseLimit {
+				return errors.New("MCP response too large")
+			}
+			return nil
+		}
+		data, err := io.ReadAll(io.LimitReader(resp.Body, managedOutputBuilderResponseLimit+1))
+		if err != nil {
+			return err
+		}
+		if int64(len(data)) > managedOutputBuilderResponseLimit {
+			return errors.New("MCP response too large")
+		}
+		return json.Unmarshal(data, result)
+	}
+	var initialized struct {
+		Result struct {
+			ProtocolVersion string `json:"protocolVersion"`
+		} `json:"result"`
+	}
+	if err := post(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": map[string]any{"protocolVersion": managedOutputBuilderProtocolVersion, "capabilities": map[string]any{}, "clientInfo": map[string]string{"name": "concourse-agent-runner", "version": "1"}}}, http.StatusOK, &initialized); err != nil {
+		return err
+	}
+	if initialized.Result.ProtocolVersion != managedOutputBuilderProtocolVersion {
+		return errors.New("unexpected MCP protocol version")
+	}
+	if err := post(map[string]any{"jsonrpc": "2.0", "method": "notifications/initialized"}, http.StatusNoContent, nil); err != nil {
+		return err
+	}
+	var listed struct {
+		Result struct {
+			Tools []struct {
+				Name        string `json:"name"`
+				InputSchema struct {
+					Type string `json:"type"`
+				} `json:"inputSchema"`
+			} `json:"tools"`
+		} `json:"result"`
+	}
+	if err := post(map[string]any{"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, http.StatusOK, &listed); err != nil {
+		return err
+	}
+	if len(listed.Result.Tools) != 3 {
+		return errors.New("unexpected MCP tool count")
+	}
+	names := make([]string, 0, 3)
+	for _, tool := range listed.Result.Tools {
+		if tool.InputSchema.Type != "object" {
+			return errors.New("MCP tool schema is not object")
+		}
+		names = append(names, tool.Name)
+	}
+	if strings.Join(names, ",") != "describe_output,validate_output,write_output" {
+		return errors.New("unexpected MCP tools")
 	}
 	return nil
 }

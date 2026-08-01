@@ -6,6 +6,7 @@ const (
 	EventStepStart  EventType = "step.start"
 	EventStepEnd    EventType = "step.end"
 	EventCostRecord EventType = "cost.record"
+	EventMCPReady   EventType = "mcp.ready"
 )
 
 // StepStartData is the pod's view of the step: (build_id, plan_id) is the §5
@@ -17,6 +18,13 @@ type StepStartData struct {
 	BuildID        int     `json:"build_id"`
 	PlanID         string  `json:"plan_id"`
 	BudgetSliceUSD float64 `json:"budget_slice_usd,omitempty"`
+}
+
+// MCPReadyData records only the negotiated managed MCP identity and tool names.
+type MCPReadyData struct {
+	Server          string   `json:"server"`
+	ProtocolVersion string   `json:"protocol_version"`
+	Tools           []string `json:"tools"`
 }
 
 type StepEndData struct {

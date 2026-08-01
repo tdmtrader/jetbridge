@@ -14,6 +14,7 @@ import (
 const (
 	DefaultMCPAddress            = "127.0.0.1:7783"
 	maxAdapterRequestBytes int64 = 1 << 20
+	mcpProtocolVersion           = "2024-11-05"
 )
 
 // CLI is a transport adapter only. It has no authority flags and always acts
@@ -173,6 +174,25 @@ type mcpToolCall struct {
 type mcpOutput struct {
 	Output string `json:"output"`
 }
+type mcpInitializeParams struct {
+	ProtocolVersion string         `json:"protocolVersion"`
+	Capabilities    map[string]any `json:"capabilities"`
+	ClientInfo      struct {
+		Name    string `json:"name"`
+		Version string `json:"version"`
+	} `json:"clientInfo"`
+}
+type mcpTool struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	InputSchema map[string]any `json:"inputSchema"`
+}
+
+func outputBuilderTools() []mcpTool {
+	output := map[string]any{"type": "object", "properties": map[string]any{"output": map[string]any{"type": "string"}}, "required": []string{"output"}, "additionalProperties": false}
+	write := map[string]any{"type": "object", "properties": map[string]any{"output": map[string]any{"type": "string"}, "subjects": map[string]any{"type": "array"}, "body": map[string]any{"type": "object"}, "content": map[string]any{"type": "array"}}, "required": []string{"output", "subjects", "body"}, "additionalProperties": false}
+	return []mcpTool{{"describe_output", "Describe a declared output schema.", output}, {"validate_output", "Validate a declared output.", output}, {"write_output", "Write a declared output.", write}}
+}
 
 func NewMCPServer(builder *Builder) http.Handler {
 	server := &mcpServer{builder: builder}
@@ -203,8 +223,21 @@ func (server *mcpServer) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch request.Method {
+	case "initialize":
+		var params mcpInitializeParams
+		if err := strictJSON(request.Params, &params); err != nil || params.ProtocolVersion != mcpProtocolVersion {
+			writeMCP(w, mcpResponse{JSONRPC: "2.0", ID: request.ID, Error: &mcpError{Code: -32602, Message: "unsupported protocol version"}})
+			return
+		}
+		writeMCP(w, mcpResponse{JSONRPC: "2.0", ID: request.ID, Result: map[string]any{"protocolVersion": mcpProtocolVersion, "capabilities": map[string]any{"tools": map[string]any{}}, "serverInfo": map[string]string{"name": "concourse-output-builder", "version": "1"}}})
+	case "notifications/initialized":
+		if len(request.ID) != 0 {
+			writeMCP(w, mcpResponse{JSONRPC: "2.0", ID: request.ID, Error: &mcpError{Code: -32600, Message: "invalid request"}})
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	case "tools/list":
-		writeMCP(w, mcpResponse{JSONRPC: "2.0", ID: request.ID, Result: map[string]any{"tools": []map[string]any{{"name": "describe_output"}, {"name": "write_output"}, {"name": "validate_output"}}}})
+		writeMCP(w, mcpResponse{JSONRPC: "2.0", ID: request.ID, Result: map[string]any{"tools": outputBuilderTools()}})
 	case "ping":
 		writeMCP(w, mcpResponse{JSONRPC: "2.0", ID: request.ID, Result: map[string]any{}})
 	case "tools/call":
@@ -215,13 +248,13 @@ func (server *mcpServer) serve(w http.ResponseWriter, r *http.Request) {
 }
 
 func (server *mcpServer) call(w http.ResponseWriter, ctx context.Context, request mcpRequest) {
-	if server.builder == nil {
-		writeMCP(w, mcpResponse{JSONRPC: "2.0", ID: request.ID, Error: &mcpError{Code: -32603, Message: "output builder unavailable"}})
-		return
-	}
 	var call mcpToolCall
 	if err := strictJSON(request.Params, &call); err != nil || call.Name == "" {
 		writeMCP(w, mcpResponse{JSONRPC: "2.0", ID: request.ID, Error: &mcpError{Code: -32602, Message: "invalid tool parameters"}})
+		return
+	}
+	if server.builder == nil {
+		writeMCP(w, mcpResponse{JSONRPC: "2.0", ID: request.ID, Error: &mcpError{Code: -32603, Message: "output builder unavailable"}})
 		return
 	}
 	var result any
