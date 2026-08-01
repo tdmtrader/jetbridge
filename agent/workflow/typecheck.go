@@ -435,6 +435,9 @@ func (checker *snapshotFlowChecker) checkStep(step atc.Step, entry snapshotEnvir
 
 func (checker *snapshotFlowChecker) checkPublishSnapshot(step *atc.PublishSnapshotStep, entry snapshotEnvironment, path string) (snapshotFlow, error) {
 	identity := fmt.Sprintf("%s.publish_snapshot(%q)", path, step.Name)
+	if err := checker.registerNodeIdentity("binding name", step.Name, identity); err != nil {
+		return snapshotFlow{}, err
+	}
 	if err := step.InputType.Validate(); err != nil {
 		return snapshotFlow{}, fmt.Errorf("workflow: %s: input_type: %w", identity, err)
 	}
@@ -534,6 +537,9 @@ func (checker *snapshotFlowChecker) checkPublishSnapshot(step *atc.PublishSnapsh
 
 func (checker *snapshotFlowChecker) checkLoadSnapshot(step *atc.LoadSnapshotStep, entry snapshotEnvironment, path string) (snapshotFlow, error) {
 	identity := fmt.Sprintf("%s.load_snapshot(%q)", path, step.Name)
+	if err := checker.registerNodeIdentity("binding name", step.Name, identity); err != nil {
+		return snapshotFlow{}, err
+	}
 	if err := rejectResourceSourceShadow(entry, step.Name, identity); err != nil {
 		return snapshotFlow{}, err
 	}
@@ -566,6 +572,9 @@ func (checker *snapshotFlowChecker) checkLoadSnapshot(step *atc.LoadSnapshotStep
 
 func (checker *snapshotFlowChecker) checkAwaitSnapshot(step *atc.AwaitSnapshotStep, entry snapshotEnvironment, path string) (snapshotFlow, error) {
 	identity := fmt.Sprintf("%s.await_snapshot(%q)", path, step.Name)
+	if err := checker.registerNodeIdentity("binding name", step.Name, identity); err != nil {
+		return snapshotFlow{}, err
+	}
 	if err := rejectResourceSourceShadow(entry, step.Name, identity); err != nil {
 		return snapshotFlow{}, err
 	}
@@ -1096,6 +1105,23 @@ func (checker *snapshotFlowChecker) requireValidation(
 	return nil
 }
 
+// registerNodeIdentity records one workflow-local node identity. Every
+// semantic node kind shares a single namespace: agent and task nodes use
+// their authored function_id, while await_snapshot, publish_snapshot, and
+// load_snapshot use their binding name, which downstream steps already
+// reference by value. Two nodes may never share an identity, because the
+// durable node-occurrence projection is keyed by it.
+func (checker *snapshotFlowChecker) registerNodeIdentity(label, nodeID, identity string) error {
+	if strings.TrimSpace(nodeID) == "" {
+		return fmt.Errorf("workflow: %s: typed node requires a nonblank authored %s", identity, label)
+	}
+	if previous, found := checker.functionIDs[nodeID]; found {
+		return fmt.Errorf("workflow: %s: duplicate %s %q; first declared at %s", identity, label, nodeID, previous)
+	}
+	checker.functionIDs[nodeID] = identity
+	return nil
+}
+
 func (checker *snapshotFlowChecker) checkLeaf(
 	kind string,
 	displayName string,
@@ -1110,13 +1136,9 @@ func (checker *snapshotFlowChecker) checkLeaf(
 	path string,
 ) (snapshotFlow, error) {
 	identity := fmt.Sprintf("%s.%s(%q)", path, kind, displayName)
-	if strings.TrimSpace(functionID) == "" {
-		return snapshotFlow{}, fmt.Errorf("workflow: %s: typed node requires a nonblank authored function_id", identity)
+	if err := checker.registerNodeIdentity("function_id", functionID, identity); err != nil {
+		return snapshotFlow{}, err
 	}
-	if previous, found := checker.functionIDs[functionID]; found {
-		return snapshotFlow{}, fmt.Errorf("workflow: %s: duplicate function_id %q; first declared at %s", identity, functionID, previous)
-	}
-	checker.functionIDs[functionID] = identity
 
 	// File-backed task membership is known only after its config snapshot is
 	// fetched. The executor repeats this exact-coverage check against that

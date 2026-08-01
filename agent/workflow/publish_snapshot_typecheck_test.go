@@ -55,26 +55,36 @@ func renderValidationStep(candidate string) atc.Step {
 	return atc.Step{Config: &atc.TaskStep{Name: "validate", FunctionID: "validate", Config: &atc.TaskConfig{Platform: "linux", RootfsURI: profile.CapabilityImage, Run: atc.TaskRunConfig{Path: "/bin/true"}, Inputs: []atc.TaskInputConfig{{Name: candidate}}, Outputs: []atc.TaskOutputConfig{{Name: "validation"}}}, SnapshotInputs: map[string]atc.SnapshotInputConfig{candidate: {Type: repositoryChangeV1}}, SnapshotOutputs: map[string]atc.SnapshotOutputConfig{"validation": {Type: snapshot.TypeRef("validation/v1")}}, DevValidationAuthority: authority}}
 }
 
+func namedStep(name string, inputType snapshot.TypeRef) atc.Step {
+	return atc.Step{Config: &atc.PublishSnapshotStep{
+		Name:                  name,
+		Publisher:             publisher.GitPublisher,
+		Input:                 "change",
+		InputType:             inputType,
+		Destination:           "github.example/team/repo",
+		Mode:                  publisher.ModePullRequest,
+		Parameters:            map[string]string{"source_branch": "agent/change", "target_branch": "main"},
+		ApprovalPolicyVersion: "engineering/v2",
+		Validation:            "validation",
+	}}
+}
+
 func TestTypeCheckPublishSnapshotConsumesExactRequiredTypedInput(t *testing.T) {
 	step := func(inputType snapshot.TypeRef) atc.Step {
-		return atc.Step{Config: &atc.PublishSnapshotStep{
-			Name:                  "publish-change",
-			Publisher:             publisher.GitPublisher,
-			Input:                 "change",
-			InputType:             inputType,
-			Destination:           "github.example/team/repo",
-			Mode:                  publisher.ModePullRequest,
-			Parameters:            map[string]string{"source_branch": "agent/change", "target_branch": "main"},
-			ApprovalPolicyVersion: "engineering/v2",
-			Validation:            "validation",
-		}}
+		return namedStep("publish-change", inputType)
 	}
 
 	t.Run("exact required typed input is accepted without changing the environment", func(t *testing.T) {
+		// Two distinctly named publish_snapshot steps, both publishing the
+		// same exact validated input, prove that publish leaves the
+		// environment unchanged. They must use distinct workflow-local node
+		// identities: identity is name-keyed for publish_snapshot exactly
+		// like it is function_id-keyed for agent/task, so two structurally
+		// distinct nodes may never share one.
 		function := &FunctionConfig{
 			SignatureVersion:            1,
 			Inputs:                      []snapshot.Port{{Name: "change", Type: repositoryChangeV1}},
-			Plan:                        []atc.Step{exactValidationStep("change"), step(repositoryChangeV1), step(repositoryChangeV1)},
+			Plan:                        []atc.Step{exactValidationStep("change"), step(repositoryChangeV1), namedStep("publish-change-again", repositoryChangeV1)},
 			DevValidationProfiles:       validationProfiles(),
 			DevValidationProvenanceHash: validationProvenance(),
 		}

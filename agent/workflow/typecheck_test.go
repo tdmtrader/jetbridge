@@ -301,14 +301,18 @@ func TestTypeCheckLoadSnapshotIsATypedProducer(t *testing.T) {
 		}
 	})
 
-	t.Run("parallel loads use the ordinary collision rules", func(t *testing.T) {
+	t.Run("parallel loads of the same name are a node identity collision", func(t *testing.T) {
+		// Both branches of an in_parallel actually execute in the same run,
+		// so two load_snapshot steps sharing a name are two structurally
+		// distinct plan nodes racing for one workflow-local identity, not
+		// just an ordinary environment-binding collision.
 		parallel := &atc.InParallelStep{Config: atc.InParallelConfig{Steps: []atc.Step{
 			load("repo", repositoryV1, false),
 			load("repo", repositoryV1, false),
 		}}}
 		function := &FunctionConfig{SignatureVersion: 1, Plan: []atc.Step{{Config: parallel}}}
-		if err := TypeCheckFunction(function); err == nil || !strings.Contains(err.Error(), `parallel branches both produce "repo"`) {
-			t.Fatalf("error = %v, want parallel producer collision", err)
+		if err := TypeCheckFunction(function); err == nil || !strings.Contains(err.Error(), "duplicate") || !strings.Contains(err.Error(), `"repo"`) {
+			t.Fatalf("error = %v, want duplicate node identity rejection", err)
 		}
 	})
 }
@@ -361,15 +365,19 @@ func TestTypeCheckAwaitSnapshotConsumesQuestionAndProducesAnswer(t *testing.T) {
 		})
 	}
 
-	t.Run("parallel waits use ordinary producer collision rules", func(t *testing.T) {
+	t.Run("parallel waits of the same name are a node identity collision", func(t *testing.T) {
+		// Both branches of an in_parallel actually execute in the same run,
+		// so two await_snapshot steps sharing a name are two structurally
+		// distinct plan nodes racing for one workflow-local identity, not
+		// just an ordinary environment-binding collision.
 		parallel := &atc.InParallelStep{Config: atc.InParallelConfig{Steps: []atc.Step{
 			{Config: &atc.TimeoutStep{Duration: "1h", Step: wait("question", "answer")}},
 			{Config: &atc.TimeoutStep{Duration: "1h", Step: wait("question", "answer")}},
 		}}}
 		function := &FunctionConfig{SignatureVersion: 1, Inputs: []snapshot.Port{{Name: "question", Type: questionV1}}, Plan: []atc.Step{{Config: parallel}}}
 		err := TypeCheckFunction(function)
-		if err == nil || !strings.Contains(err.Error(), `parallel branches both produce "answer"`) {
-			t.Fatalf("error = %v", err)
+		if err == nil || !strings.Contains(err.Error(), "duplicate") || !strings.Contains(err.Error(), `"answer"`) {
+			t.Fatalf("error = %v, want duplicate node identity rejection", err)
 		}
 	})
 
@@ -1081,5 +1089,38 @@ func typedTask(
 		},
 		SnapshotInputs:  inputTypes,
 		SnapshotOutputs: outputTypes,
+	}
+}
+
+func TestTypeCheckRejectsFunctionIDCollidingWithAwaitName(t *testing.T) {
+	agent := typedAgent("ask", "approval", []string{"repo"}, map[string]atc.SnapshotInputConfig{
+		"repo": {Type: repositoryV1},
+	}, []string{"question"}, map[string]atc.SnapshotOutputConfig{
+		"question": {Type: questionV1},
+	})
+
+	function := &FunctionConfig{
+		SignatureVersion: 1,
+		Inputs:           []snapshot.Port{{Name: "repo", Type: repositoryV1}},
+		Outputs: []FunctionOutput{
+			{Port: snapshot.Port{Name: "answer", Type: humanAnswerV1}, From: "approval"},
+		},
+		Plan: []atc.Step{
+			{Config: agent},
+			{Config: &atc.AwaitSnapshotStep{
+				Name:      "approval",
+				Question:  "question",
+				Type:      humanAnswerV1,
+				OnTimeout: atc.AwaitSnapshotOnTimeoutFail,
+			}},
+		},
+	}
+
+	err := TypeCheckFunction(function)
+	if err == nil {
+		t.Fatal("expected a duplicate-identity error, got nil")
+	}
+	if !strings.Contains(err.Error(), "duplicate") || !strings.Contains(err.Error(), "approval") {
+		t.Fatalf("expected a duplicate identity error naming %q, got: %v", "approval", err)
 	}
 }
