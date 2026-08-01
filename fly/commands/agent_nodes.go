@@ -165,6 +165,7 @@ type NodesImportCommand struct {
 	Args struct {
 		Path string `positional-arg-name:"PATH" required:"true" description:"Node source directory"`
 	} `positional-args:"yes"`
+	Json bool `long:"json" description:"Print the imported node record as JSON"`
 }
 
 func (command *NodesImportCommand) Execute([]string) error {
@@ -172,10 +173,10 @@ func (command *NodesImportCommand) Execute([]string) error {
 	if err != nil {
 		return err
 	}
-	return importNodeDir(target, command.Args.Path)
+	return importNodeDir(target, command.Args.Path, command.Json)
 }
 
-func importNodeDir(target rc.Target, dir string) error {
+func importNodeDir(target rc.Target, dir string, jsonOutput bool) error {
 	info, err := os.Stat(dir)
 	if err != nil {
 		return err
@@ -210,6 +211,9 @@ func importNodeDir(target rc.Target, dir string) error {
 	if err := decodeOrError(response, &node); err != nil {
 		return err
 	}
+	if jsonOutput {
+		return displayhelpers.JsonPrint(node)
+	}
 	_, err = fmt.Printf("imported %s version %d (hash %.12s)\n", node.Name, node.Version, node.ContentHash)
 	return err
 }
@@ -220,6 +224,7 @@ type NodesReleaseCommand struct {
 		Version int    `positional-arg-name:"VERSION" required:"true" description:"Node version"`
 	} `positional-args:"yes"`
 	Compatibility workflow.ReleaseCompatibility `long:"compatibility" required:"true" description:"Release compatibility declaration"`
+	Json          bool                          `long:"json" description:"Print the released node record as JSON"`
 }
 
 func (command *NodesReleaseCommand) Execute([]string) error {
@@ -227,10 +232,20 @@ func (command *NodesReleaseCommand) Execute([]string) error {
 	if err != nil {
 		return err
 	}
-	return releaseNodeVersion(target, command.Args.Name, command.Args.Version, command.Compatibility)
+	return releaseNodeVersion(target, command.Args.Name, command.Args.Version, command.Compatibility, command.Json)
 }
 
-func releaseNodeVersion(target rc.Target, name string, version int, compatibility workflow.ReleaseCompatibility) error {
+// nodeReleaseResult is the release endpoint's response (which carries only
+// the release fields, not the node identity) enriched with the name and
+// version the caller released — so `--json | jq -r .version` reports the
+// same version the caller acted on without a second round trip.
+type nodeReleaseResult struct {
+	Name    string `json:"name"`
+	Version int    `json:"version"`
+	workflow.NodeRelease
+}
+
+func releaseNodeVersion(target rc.Target, name string, version int, compatibility workflow.ReleaseCompatibility, jsonOutput bool) error {
 	payload, err := json.Marshal(struct {
 		Compatibility workflow.ReleaseCompatibility `json:"compatibility"`
 	}{Compatibility: compatibility})
@@ -244,6 +259,9 @@ func releaseNodeVersion(target rc.Target, name string, version int, compatibilit
 	var release workflow.NodeRelease
 	if err := decodeOrError(response, &release); err != nil {
 		return err
+	}
+	if jsonOutput {
+		return displayhelpers.JsonPrint(nodeReleaseResult{Name: name, Version: version, NodeRelease: release})
 	}
 	_, err = fmt.Printf("released %s version %d as %s\n", name, version, release.Compatibility)
 	return err
