@@ -196,3 +196,115 @@ func TestBatchSealerUploadArchivePathRejectionSurvivesClassification(t *testing.
 		t.Fatalf("detail = %q", detail)
 	}
 }
+
+// cleanSymlinkTarget is validateArchivePath's near-twin applied to a
+// symlink's target instead of its name, reached from the same capture loop
+// (extractTar and ValidateArchiveLimits both call it at the point a symlink
+// header is seen). An out-of-tree symlink in `tar -cf` output is the same
+// F5/F6 class as a "./" entry.
+func TestCleanSymlinkTargetMarksEveryRejectionWithClientDetail(t *testing.T) {
+	tests := map[string]struct {
+		name   string
+		target string
+		want   string
+	}{
+		"empty target":  {name: "link", target: "", want: "has an empty target"},
+		"too long":      {name: "link", target: strings.Repeat("a", int(MaxSnapshotSymlinkTargetBytes)+1), want: "target exceeds"},
+		"backslash":     {name: "link", target: `b\c`, want: "contains a backslash"},
+		"absolute":      {name: "link", target: "/etc/passwd", want: "target is absolute"},
+		"drive-like":    {name: "link", target: "C:/b", want: "target is drive-like"},
+		"escapes root":  {name: "link", target: "../../etc/passwd", want: "target escapes the archive root"},
+		"nested escape": {name: "a/b/link", target: "../../../escape", want: "target escapes the archive root"},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			_, err := cleanSymlinkTarget(test.name, test.target)
+			if err == nil {
+				t.Fatal("expected cleanSymlinkTarget to reject the target")
+			}
+			detail, ok := ClientDetail(err)
+			if !ok {
+				t.Fatalf("no client detail on %v", err)
+			}
+			if !strings.Contains(detail, test.want) {
+				t.Fatalf("detail = %q, want it to contain %q", detail, test.want)
+			}
+		})
+	}
+}
+
+// planMaterialization's "conflicts with an already materialized path"
+// rejection is reached from the same extraction loop as validateArchivePath
+// and cleanSymlinkTarget, and is built purely from the caller's own entry
+// name.
+func TestPlanMaterializationConflictMarksClientDetail(t *testing.T) {
+	materialized := map[string]capturedEntry{
+		"a": {name: "a", kind: extractedRegular},
+	}
+	_, err := planMaterialization("a", extractedSymlink, materialized)
+	if err == nil {
+		t.Fatal("expected planMaterialization to reject the kind conflict")
+	}
+	detail, ok := ClientDetail(err)
+	if !ok {
+		t.Fatalf("no client detail on %v", err)
+	}
+	if !strings.Contains(detail, `path "a" conflicts with an already materialized path`) {
+		t.Fatalf("detail = %q", detail)
+	}
+}
+
+// ValidateArchiveLimits is the second, independent validation pass run over
+// the canonical spooled bytes before content storage (see
+// atc/worker/jetbridge/snapshot_content_store.go's SnapshotContentStore.Put),
+// so its rejections are just as reachable from a real request as
+// Canonicalizer.Capture's. This covers its two entry-shape rejections that
+// were left unmarked in the original pass.
+func TestValidateArchiveLimitsMarksEntryShapeRejectionsWithClientDetail(t *testing.T) {
+	limits := ArchiveLimits{MaxContentBytes: 1 << 20, MaxEntries: 100}
+
+	t.Run("duplicate canonical path", func(t *testing.T) {
+		var buf bytes.Buffer
+		tw := tar.NewWriter(&buf)
+		for i := 0; i < 2; i++ {
+			if err := tw.WriteHeader(&tar.Header{Name: "dup.txt", Mode: 0o600, Size: 2, Typeflag: tar.TypeReg}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tw.Write([]byte("hi")); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := tw.Close(); err != nil {
+			t.Fatal(err)
+		}
+
+		err := ValidateArchiveLimits(context.Background(), &buf, limits)
+		if err == nil {
+			t.Fatal("expected ValidateArchiveLimits to reject the duplicate entry")
+		}
+		detail, ok := ClientDetail(err)
+		if !ok {
+			t.Fatalf("no client detail on %v", err)
+		}
+		if !strings.Contains(detail, `duplicate canonical path "dup.txt"`) {
+			t.Fatalf("detail = %q", detail)
+		}
+	})
+
+	t.Run("trailing data after terminator", func(t *testing.T) {
+		body := tarBytes(t, "file.txt", "hi")
+		body = append(body, 'x') // one stray byte after the two-zero-block trailer
+
+		err := ValidateArchiveLimits(context.Background(), bytes.NewReader(body), limits)
+		if err == nil {
+			t.Fatal("expected ValidateArchiveLimits to reject the trailing byte")
+		}
+		detail, ok := ClientDetail(err)
+		if !ok {
+			t.Fatalf("no client detail on %v", err)
+		}
+		if !strings.Contains(detail, "contains trailing data after the tar terminator") {
+			t.Fatalf("detail = %q", detail)
+		}
+	})
+}

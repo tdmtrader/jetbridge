@@ -78,7 +78,8 @@ func ValidateArchiveLimits(ctx context.Context, source io.Reader, limits Archive
 			var trailing [1]byte
 			n, trailingErr := io.ReadFull(contextReader{ctx: ctx, reader: source}, trailing[:])
 			if n != 0 {
-				return fmt.Errorf("snapshot: archive contains trailing data after the tar terminator")
+				// Fixed string, no interpolation at all — trivially source 2.
+				return ClientDetailf("snapshot: archive contains trailing data after the tar terminator")
 			}
 			if errors.Is(trailingErr, io.EOF) {
 				return nil
@@ -92,7 +93,8 @@ func ValidateArchiveLimits(ctx context.Context, source io.Reader, limits Archive
 			return err
 		}
 		if _, exists := seenHeaders[header.Name]; exists {
-			return fmt.Errorf("snapshot: duplicate canonical path %q", header.Name)
+			// header.Name is the caller's own entry name — source 1.
+			return ClientDetailf("snapshot: duplicate canonical path %q", header.Name)
 		}
 		seenHeaders[header.Name] = struct{}{}
 		kind := headerKind(header.Typeflag)
@@ -125,7 +127,10 @@ func ValidateArchiveLimits(ctx context.Context, source io.Reader, limits Archive
 			return fmt.Errorf("snapshot: read regular content for %q: %w", header.Name, err)
 		}
 		if copied != header.Size {
-			return fmt.Errorf("snapshot: regular file %q is truncated: copied %d of %d bytes", header.Name, copied, header.Size)
+			// header.Name and header.Size are the caller's own declared
+			// values; copied is our count of bytes actually read from the
+			// caller's own stream, not a host fact — all source 1.
+			return ClientDetailf("snapshot: regular file %q is truncated: copied %d of %d bytes", header.Name, copied, header.Size)
 		}
 	}
 }
@@ -864,7 +869,8 @@ func planMaterialization(name string, kind extractedKind, materialized map[strin
 		if existing.kind == extractedDirectory && kind == extractedDirectory {
 			return planned, nil
 		}
-		return nil, fmt.Errorf("snapshot: path %q conflicts with an already materialized path", name)
+		// name is the caller's own entry name — source 1.
+		return nil, ClientDetailf("snapshot: path %q conflicts with an already materialized path", name)
 	}
 	return append(planned, materialization{name: name}), nil
 }
@@ -1295,26 +1301,33 @@ func sortSpoolEntries(regulars []capturedEntry) {
 	})
 }
 
+// cleanSymlinkTarget's rejections are safe to disclose for the same reason as
+// validateArchivePath's: each is built from the caller's own submitted name
+// (never the target string itself) plus a fixed string or the
+// MaxSnapshotSymlinkTargetBytes build-time constant, and none of them wrap a
+// dependency error. It is reached from the same capture loop as
+// validateArchivePath (extractTar and ValidateArchiveLimits both call it), so
+// an out-of-tree symlink in `tar -cf` output is the same F5/F6 class.
 func cleanSymlinkTarget(name, target string) (string, error) {
 	if target == "" {
-		return "", fmt.Errorf("snapshot: symlink %q has an empty target", name)
+		return "", ClientDetailf("snapshot: symlink %q has an empty target", name)
 	}
 	if int64(len(target)) > MaxSnapshotSymlinkTargetBytes {
-		return "", fmt.Errorf("snapshot: symlink %q target exceeds %d bytes", name, MaxSnapshotSymlinkTargetBytes)
+		return "", ClientDetailf("snapshot: symlink %q target exceeds %d bytes", name, MaxSnapshotSymlinkTargetBytes)
 	}
 	if strings.Contains(target, `\`) {
-		return "", fmt.Errorf("snapshot: symlink %q target contains a backslash", name)
+		return "", ClientDetailf("snapshot: symlink %q target contains a backslash", name)
 	}
 	if path.IsAbs(target) {
-		return "", fmt.Errorf("snapshot: symlink %q target is absolute", name)
+		return "", ClientDetailf("snapshot: symlink %q target is absolute", name)
 	}
 	if containsDriveLikeSegment(target) {
-		return "", fmt.Errorf("snapshot: symlink %q target is drive-like", name)
+		return "", ClientDetailf("snapshot: symlink %q target is drive-like", name)
 	}
 	cleaned := path.Clean(target)
 	resolved := path.Clean(path.Join(path.Dir(name), cleaned))
 	if resolved == ".." || strings.HasPrefix(resolved, "../") {
-		return "", fmt.Errorf("snapshot: symlink %q target escapes the archive root", name)
+		return "", ClientDetailf("snapshot: symlink %q target escapes the archive root", name)
 	}
 	return cleaned, nil
 }

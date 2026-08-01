@@ -98,6 +98,9 @@ func (logBundleValidator) Validate(ctx context.Context, root *os.Root, _ snapsho
 			return snapshot.ValidationResult{}, err
 		}
 		if err := metadata.Validate(); err != nil {
+			// metadata.Validate's text is ours; the only dependency text
+			// reachable is the captured_at check's time.ParseError (caller
+			// value + our RFC3339 layout) — source 1+2.
 			return snapshot.ValidationResult{}, snapshot.ClientDetailf("snapshot contracts: metadata.json: %v", err)
 		}
 	}

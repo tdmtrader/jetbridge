@@ -108,6 +108,10 @@ func (v documentValidator[T]) Validate(ctx context.Context, root *os.Root, _ sna
 		return snapshot.ValidationResult{}, err
 	}
 	if err := document.Validate(); err != nil {
+		// document.Validate's text is ours for all four T's. The only
+		// dependency text reachable is HumanAnswerDocument's answered_at
+		// check, a time.ParseError (caller value + our RFC3339 layout) —
+		// source 1+2.
 		return snapshot.ValidationResult{}, snapshot.ClientDetailf("snapshot contracts: %s: %v", v.fileName, err)
 	}
 	return snapshot.ValidationResult{}, nil
