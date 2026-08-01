@@ -21,6 +21,11 @@ import (
 
 var ErrAgentWorkflowRunExperimentAdmissionClosed = errors.New("db: experiment workflow-run admission is closed")
 
+// agentWorkflowRunsHaveTicketReference guards the ticket-reference search
+// predicate against the column Phase F adds. Flip it to true in Phase F Task
+// F1, then delete the constant and the branch it guards.
+const agentWorkflowRunsHaveTicketReference = false
+
 //counterfeiter:generate . AgentWorkflowRunsFactory
 type AgentWorkflowRunsFactory interface {
 	CreateWithInputs(context.Context, AgentWorkflowRunCreateRequest) (AgentWorkflowRun, bool, error)
@@ -1428,6 +1433,14 @@ func (factory *agentWorkflowRunsFactory) ListKind(
 	if filter.WorkflowVersion != nil && *filter.WorkflowVersion <= 0 {
 		return nil, fmt.Errorf("db: workflow-run list workflow version must be positive")
 	}
+	if filter.Scope != "" {
+		if err := filter.Scope.Validate(); err != nil {
+			return nil, err
+		}
+	}
+	if filter.NodeStatus != "" && filter.NodeID == "" {
+		return nil, fmt.Errorf("db: workflow-run list node status filter requires a node")
+	}
 	query := `SELECT ` + agentWorkflowRunColumns + `
 		FROM agent_workflow_runs
 		WHERE team_id = $1 AND definition_kind = $2`
@@ -1435,6 +1448,14 @@ func (factory *agentWorkflowRunsFactory) ListKind(
 	appendFilter := func(column string, value any) {
 		args = append(args, value)
 		query += ` AND ` + column + ` = $` + strconv.Itoa(len(args))
+	}
+	placeholders := func(values []string) string {
+		rendered := make([]string, 0, len(values))
+		for _, value := range values {
+			args = append(args, value)
+			rendered = append(rendered, `$`+strconv.Itoa(len(args)))
+		}
+		return strings.Join(rendered, ", ")
 	}
 	if filter.WorkflowName != "" {
 		appendFilter("workflow_name", filter.WorkflowName)
@@ -1450,6 +1471,58 @@ func (factory *agentWorkflowRunsFactory) ListKind(
 	}
 	if filter.OriginReference != "" {
 		appendFilter("origin_reference", filter.OriginReference)
+	}
+	switch filter.Scope {
+	case AgentWorkflowRunScopeOperational:
+		query += ` AND origin_kind NOT IN (` + placeholders(ExperimentOriginKinds) + `)`
+	case AgentWorkflowRunScopeExperiment:
+		query += ` AND origin_kind IN (` + placeholders(ExperimentOriginKinds) + `)`
+	}
+	// History is bounded by completed_at while active runs are unioned in
+	// regardless of age. Without the OR, a long-running run created before the
+	// window would silently vanish from the page whose primary job is showing
+	// what needs attention now.
+	if filter.CompletedSince != nil {
+		args = append(args, filter.CompletedSince.UTC())
+		bound := ` AND completed_at >= $` + strconv.Itoa(len(args))
+		if filter.IncludeActiveRuns {
+			bound = ` AND (completed_at >= $` + strconv.Itoa(len(args)) + ` OR completed_at IS NULL)`
+		}
+		query += bound
+	}
+	// The occurrence projection only ever contains nodes the run's own graph
+	// has as execution nodes, so this join is exact by construction and needs
+	// no prefix guessing.
+	if filter.NodeID != "" {
+		args = append(args, filter.NodeID)
+		exists := `EXISTS (SELECT 1 FROM agent_workflow_run_node_occurrences o
+			WHERE o.workflow_run_id = agent_workflow_runs.id AND o.node_id = $` + strconv.Itoa(len(args))
+		if filter.NodeStatus != "" {
+			args = append(args, filter.NodeStatus)
+			exists += ` AND o.status = $` + strconv.Itoa(len(args))
+		}
+		query += ` AND ` + exists + `)`
+	}
+	// Search is indexed by construction: an exact durable run ID, an exact
+	// snapshot ID through agent_workflow_run_snapshots (snapshot_id,
+	// workflow_run_id, direction), or a ticket reference prefix. Unbounded JSON
+	// scanning is prohibited.
+	if search := strings.TrimSpace(filter.Search); search != "" {
+		if searchID, err := strconv.ParseInt(search, 10, 64); err == nil {
+			args = append(args, searchID)
+			placeholder := `$` + strconv.Itoa(len(args))
+			query += ` AND (id = ` + placeholder + ` OR EXISTS (
+				SELECT 1 FROM agent_workflow_run_snapshots s
+				WHERE s.workflow_run_id = agent_workflow_runs.id AND s.snapshot_id = ` + placeholder + `))`
+		} else if agentWorkflowRunsHaveTicketReference {
+			args = append(args, search+"%")
+			query += ` AND ticket_reference LIKE $` + strconv.Itoa(len(args))
+		} else {
+			// Ticket columns arrive with Phase F. Until then a non-numeric term
+			// has nothing indexed to match, and returning everything would be a
+			// silently wrong answer to an explicit search.
+			return []AgentWorkflowRun{}, nil
+		}
 	}
 	if filter.Before != nil {
 		args = append(args, filter.Before.CreatedAt.UTC(), filter.Before.ID)

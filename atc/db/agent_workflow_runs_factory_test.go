@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1818,6 +1819,312 @@ plan:
 		Expect(err).NotTo(HaveOccurred())
 		Expect(linkedRunID).To(BeNil())
 		Expect(source).To(MatchJSON(`{"adapter":"test"}`))
+	})
+
+	Describe("overview list filters", func() {
+		var counter int
+
+		nextKey := func(prefix string) string {
+			counter++
+			return fmt.Sprintf("%s-%d", prefix, counter)
+		}
+
+		createRun := func(candidate db.AgentWorkflowRunCreateRequest) db.AgentWorkflowRun {
+			run, created, err := factory.CreateWithInputs(ctx, candidate)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(created).To(BeTrue())
+			return run
+		}
+
+		createRunWithTimes := func(
+			createdAt time.Time,
+			completedAt *time.Time,
+			status db.AgentWorkflowRunStatus,
+		) db.AgentWorkflowRun {
+			run := createRun(request(nextKey("window")))
+			_, err := dbConn.Exec(`
+				UPDATE agent_workflow_runs
+				SET created_at = $2, completed_at = $3, status = $4
+				WHERE id = $1
+			`, int64(run.ID), createdAt.UTC(), completedAt, string(status))
+			Expect(err).NotTo(HaveOccurred())
+			run.CreatedAt = createdAt.UTC()
+			run.CompletedAt = completedAt
+			run.Status = status
+			return run
+		}
+
+		createRunWithOrigin := func(originKind string) db.AgentWorkflowRun {
+			candidate := request(nextKey("origin-" + originKind))
+			candidate.OriginKind = originKind
+			candidate.OriginReference = ""
+			return createRun(candidate)
+		}
+
+		createRunWithNodeOccurrence := func(nodeID, status string) db.AgentWorkflowRun {
+			run := createRun(request(nextKey("node-" + nodeID)))
+			_, err := dbConn.Exec(`
+				INSERT INTO agent_workflow_run_node_occurrences
+					(workflow_run_id, node_id, retry_attempt, attempt, team_id,
+					 workflow_name, workflow_definition_id, workflow_version,
+					 node_kind, plan_id, status)
+				VALUES ($1, $2, 1, 1, $3, $4, $5, 1, 'agent', 'plan-1', $6)
+			`, int64(run.ID), nodeID, defaultTeam.ID(), definitionName, definitionID, status)
+			Expect(err).NotTo(HaveOccurred())
+			return run
+		}
+
+		runIDs := func(runs []db.AgentWorkflowRun) []snapshot.WorkflowRunID {
+			ids := make([]snapshot.WorkflowRunID, 0, len(runs))
+			for _, run := range runs {
+				ids = append(ids, run.ID)
+			}
+			return ids
+		}
+
+		timePtr := func(value time.Time) *time.Time {
+			utc := value.UTC()
+			return &utc
+		}
+
+		It("unions active runs older than the window with completed runs inside it", func() {
+			old := createRunWithTimes(time.Now().Add(-30*24*time.Hour), nil, db.AgentWorkflowRunStatusRunning)
+			recent := createRunWithTimes(
+				time.Now().Add(-2*time.Hour),
+				timePtr(time.Now().Add(-time.Hour)),
+				db.AgentWorkflowRunStatusSucceeded,
+			)
+			stale := createRunWithTimes(
+				time.Now().Add(-30*24*time.Hour),
+				timePtr(time.Now().Add(-29*24*time.Hour)),
+				db.AgentWorkflowRunStatusSucceeded,
+			)
+
+			since := time.Now().Add(-7 * 24 * time.Hour)
+			runs, err := factory.List(ctx, db.AgentWorkflowRunListFilter{
+				TeamID:            defaultTeam.ID(),
+				WorkflowName:      definitionName,
+				CompletedSince:    &since,
+				IncludeActiveRuns: true,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			ids := runIDs(runs)
+			Expect(ids).To(ContainElement(old.ID), "an active run older than the window must remain visible")
+			Expect(ids).To(ContainElement(recent.ID))
+			Expect(ids).ToNot(ContainElement(stale.ID), "a run completed before the window must be excluded")
+		})
+
+		It("drops active runs from the window when they are not explicitly unioned in", func() {
+			active := createRunWithTimes(time.Now().Add(-30*24*time.Hour), nil, db.AgentWorkflowRunStatusRunning)
+			recent := createRunWithTimes(
+				time.Now().Add(-2*time.Hour),
+				timePtr(time.Now().Add(-time.Hour)),
+				db.AgentWorkflowRunStatusSucceeded,
+			)
+
+			since := time.Now().Add(-7 * 24 * time.Hour)
+			runs, err := factory.List(ctx, db.AgentWorkflowRunListFilter{
+				TeamID:         defaultTeam.ID(),
+				WorkflowName:   definitionName,
+				CompletedSince: &since,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			ids := runIDs(runs)
+			Expect(ids).To(ContainElement(recent.ID))
+			Expect(ids).ToNot(ContainElement(active.ID),
+				"without IncludeActiveRuns the bound is completed_at alone")
+		})
+
+		It("keeps a run completed exactly on the window boundary", func() {
+			boundary := time.Now().Add(-7 * 24 * time.Hour).UTC().Truncate(time.Microsecond)
+			onBoundary := createRunWithTimes(
+				boundary.Add(-time.Hour), timePtr(boundary), db.AgentWorkflowRunStatusSucceeded,
+			)
+			justBefore := createRunWithTimes(
+				boundary.Add(-time.Hour),
+				timePtr(boundary.Add(-time.Microsecond)),
+				db.AgentWorkflowRunStatusSucceeded,
+			)
+
+			runs, err := factory.List(ctx, db.AgentWorkflowRunListFilter{
+				TeamID:         defaultTeam.ID(),
+				WorkflowName:   definitionName,
+				CompletedSince: &boundary,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			ids := runIDs(runs)
+			Expect(ids).To(ContainElement(onBoundary.ID), "the window bound is inclusive")
+			Expect(ids).ToNot(ContainElement(justBefore.ID))
+		})
+
+		It("excludes experiment origins from the operational scope", func() {
+			operational := createRunWithOrigin("manual")
+			experiment := createRunWithOrigin("experiment")
+
+			runs, err := factory.List(ctx, db.AgentWorkflowRunListFilter{
+				TeamID:       defaultTeam.ID(),
+				WorkflowName: definitionName,
+				Scope:        db.AgentWorkflowRunScopeOperational,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			ids := runIDs(runs)
+			Expect(ids).To(ContainElement(operational.ID))
+			Expect(ids).ToNot(ContainElement(experiment.ID))
+		})
+
+		It("returns only experiment origins in the experiment scope, and both in all", func() {
+			operational := createRunWithOrigin("manual")
+			experiment := createRunWithOrigin("experiment")
+
+			runs, err := factory.List(ctx, db.AgentWorkflowRunListFilter{
+				TeamID:       defaultTeam.ID(),
+				WorkflowName: definitionName,
+				Scope:        db.AgentWorkflowRunScopeExperiment,
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(runIDs(runs)).To(ConsistOf(experiment.ID))
+
+			runs, err = factory.List(ctx, db.AgentWorkflowRunListFilter{
+				TeamID:       defaultTeam.ID(),
+				WorkflowName: definitionName,
+				Scope:        db.AgentWorkflowRunScopeAll,
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(runIDs(runs)).To(ConsistOf(operational.ID, experiment.ID))
+		})
+
+		It("rejects an unclassified scope rather than silently returning everything", func() {
+			_, err := factory.List(ctx, db.AgentWorkflowRunListFilter{
+				TeamID:       defaultTeam.ID(),
+				WorkflowName: definitionName,
+				Scope:        db.AgentWorkflowRunScope("everything"),
+			})
+			Expect(err).To(MatchError(ContainSubstring("invalid agent workflow-run scope")))
+		})
+
+		It("filters to runs that reached a given node", func() {
+			reached := createRunWithNodeOccurrence("implement", "succeeded")
+			untouched := createRunWithNodeOccurrence("review", "succeeded")
+
+			runs, err := factory.List(ctx, db.AgentWorkflowRunListFilter{
+				TeamID:       defaultTeam.ID(),
+				WorkflowName: definitionName,
+				NodeID:       "implement",
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			ids := runIDs(runs)
+			Expect(ids).To(ContainElement(reached.ID))
+			Expect(ids).ToNot(ContainElement(untouched.ID))
+		})
+
+		It("narrows a node filter by occurrence status", func() {
+			failed := createRunWithNodeOccurrence("implement", "failed")
+			succeeded := createRunWithNodeOccurrence("implement", "succeeded")
+
+			runs, err := factory.List(ctx, db.AgentWorkflowRunListFilter{
+				TeamID:       defaultTeam.ID(),
+				WorkflowName: definitionName,
+				NodeID:       "implement",
+				NodeStatus:   "failed",
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			ids := runIDs(runs)
+			Expect(ids).To(ContainElement(failed.ID))
+			Expect(ids).ToNot(ContainElement(succeeded.ID))
+		})
+
+		It("rejects a node status with no node, which would filter nothing", func() {
+			_, err := factory.List(ctx, db.AgentWorkflowRunListFilter{
+				TeamID:       defaultTeam.ID(),
+				WorkflowName: definitionName,
+				NodeStatus:   "failed",
+			})
+			Expect(err).To(MatchError(ContainSubstring("node status filter requires a node")))
+		})
+
+		// Inputless so the only thing a numeric term can match is the run ID.
+		// With a shared input binding the same term is also a snapshot ID, and
+		// the union below is the deliberate answer to that ambiguity.
+		createRunWithoutInputs := func() db.AgentWorkflowRun {
+			candidate := request(nextKey("inputless"))
+			candidate.OriginKind = "manual"
+			candidate.OriginReference = ""
+			candidate.Inputs = nil
+			return createRun(candidate)
+		}
+
+		It("finds a run by its exact durable ID", func() {
+			target := createRunWithoutInputs()
+			other := createRunWithoutInputs()
+
+			runs, err := factory.List(ctx, db.AgentWorkflowRunListFilter{
+				TeamID:       defaultTeam.ID(),
+				WorkflowName: definitionName,
+				Search:       target.ID.String(),
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(runIDs(runs)).To(Equal([]snapshot.WorkflowRunID{target.ID}))
+			Expect(runIDs(runs)).ToNot(ContainElement(other.ID))
+		})
+
+		// A numeric term is exact in both namespaces at once, and the union is
+		// the deliberate answer: every match is either that run ID or a run
+		// bound to that snapshot, and nothing else gets in.
+		It("finds a run by an exact bound snapshot ID", func() {
+			bound := createRunWithOrigin("manual")
+			unbound := createRunWithoutInputs()
+
+			runs, err := factory.List(ctx, db.AgentWorkflowRunListFilter{
+				TeamID:       defaultTeam.ID(),
+				WorkflowName: definitionName,
+				Search:       strconv.FormatInt(int64(input.ID), 10),
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(runIDs(runs)).To(ContainElement(bound.ID))
+			for _, run := range runs {
+				if int64(run.ID) == int64(input.ID) {
+					continue
+				}
+				bindings, err := factory.Snapshots(ctx, run.ID)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(bindings).To(ContainElement(HaveField("Snapshot.ID", input.ID)),
+					"only runs bound to the searched snapshot may match")
+			}
+			if int64(unbound.ID) != int64(input.ID) {
+				Expect(runIDs(runs)).ToNot(ContainElement(unbound.ID))
+			}
+		})
+
+		It("returns nothing for a non-numeric term until ticket references exist", func() {
+			createRunWithOrigin("manual")
+
+			runs, err := factory.List(ctx, db.AgentWorkflowRunListFilter{
+				TeamID:       defaultTeam.ID(),
+				WorkflowName: definitionName,
+				Search:       "JIRA-123",
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(runs).To(BeEmpty(),
+				"an unmatched search must not degrade into an unfiltered list")
+		})
+
+		It("ignores a blank search term", func() {
+			target := createRunWithOrigin("manual")
+
+			runs, err := factory.List(ctx, db.AgentWorkflowRunListFilter{
+				TeamID:       defaultTeam.ID(),
+				WorkflowName: definitionName,
+				Search:       "   ",
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(runIDs(runs)).To(ContainElement(target.ID))
+		})
 	})
 })
 

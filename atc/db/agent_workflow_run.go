@@ -477,6 +477,37 @@ type AgentWorkflowRunSnapshotBinding struct {
 	Snapshot      snapshot.SnapshotRef
 }
 
+// AgentWorkflowRunScope classifies a run population. Classification is an
+// explicit server-side contract rather than a negative string comparison, so
+// that a new origin kind must be classified deliberately when it is
+// introduced.
+type AgentWorkflowRunScope string
+
+const (
+	// AgentWorkflowRunScopeOperational is normal execution: ticket-associated,
+	// manual, retry, resource-triggered, and follow-on runs.
+	AgentWorkflowRunScopeOperational AgentWorkflowRunScope = "operational"
+	// AgentWorkflowRunScopeExperiment is experiment cells only.
+	AgentWorkflowRunScopeExperiment AgentWorkflowRunScope = "experiment"
+	// AgentWorkflowRunScopeAll applies no scope filter.
+	AgentWorkflowRunScopeAll AgentWorkflowRunScope = "all"
+)
+
+func (scope AgentWorkflowRunScope) Validate() error {
+	switch scope {
+	case AgentWorkflowRunScopeOperational, AgentWorkflowRunScopeExperiment, AgentWorkflowRunScopeAll:
+		return nil
+	default:
+		return fmt.Errorf("db: invalid agent workflow-run scope %q", scope)
+	}
+}
+
+// ExperimentOriginKinds are the origin kinds classified as experiments. Adding
+// an origin kind to the platform requires deciding, here, whether it is
+// operational — mixing experiment cells into operational success, latency, or
+// cost would distort the primary view.
+var ExperimentOriginKinds = []string{"experiment"}
+
 type AgentWorkflowRunListFilter struct {
 	TeamID          int
 	WorkflowName    string
@@ -484,8 +515,28 @@ type AgentWorkflowRunListFilter struct {
 	Status          AgentWorkflowRunStatus
 	OriginKind      string
 	OriginReference string
-	Before          *pagination.Cursor
-	Limit           int
+
+	// Scope classifies which run population to return. Empty means all.
+	Scope AgentWorkflowRunScope
+
+	// CompletedSince bounds terminal-run history by completed_at.
+	CompletedSince *time.Time
+	// IncludeActiveRuns unions in every nonterminal run regardless of age, so
+	// changing the history window never changes the meaning of active state.
+	IncludeActiveRuns bool
+
+	// NodeID restricts results to runs that reached that semantic node.
+	NodeID string
+	// NodeStatus further restricts to a node occurrence status.
+	NodeStatus string
+
+	// Search matches an exact durable run ID, an exact or prefixed ticket
+	// reference, or an exact snapshot ID bound to the run. It never scans
+	// unbounded JSON.
+	Search string
+
+	Before *pagination.Cursor
+	Limit  int
 }
 
 // AgentWorkflowRunCountFilter selects one team's immutable run population

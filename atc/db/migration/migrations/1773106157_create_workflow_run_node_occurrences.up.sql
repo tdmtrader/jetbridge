@@ -86,3 +86,9 @@ ALTER TABLE agent_publication_occurrences
 CREATE INDEX agent_publication_occurrences_plan
     ON agent_publication_occurrences (workflow_run_id, plan_id)
     WHERE plan_id IS NOT NULL;
+
+-- The overview's dominant access path: one workflow's history window, newest
+-- first, with active runs unioned in. NULLS FIRST matches the union: an active
+-- run has no completed_at and must stay visible regardless of the window.
+CREATE INDEX agent_workflow_runs_team_workflow_completed
+    ON agent_workflow_runs (team_id, workflow_name, completed_at DESC NULLS FIRST, id DESC);

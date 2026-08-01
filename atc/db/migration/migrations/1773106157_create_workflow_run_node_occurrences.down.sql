@@ -1,3 +1,5 @@
+DROP INDEX IF EXISTS agent_workflow_runs_team_workflow_completed;
+
 DROP INDEX IF EXISTS agent_publication_occurrences_plan;
 ALTER TABLE agent_publication_occurrences DROP COLUMN IF EXISTS plan_id;
 
