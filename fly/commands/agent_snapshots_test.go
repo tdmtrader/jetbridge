@@ -338,6 +338,59 @@ func TestCompleteAgentSnapshotCreateDrainsAndClosesSuccessfulResponseBeforeRetur
 	}
 }
 
+// TestDecodeAgentSnapshotResponseComposesDisclosableDetail covers the four
+// shapes decodeAgentSnapshotResponse's error envelope can take. The
+// snapshot API (agent/api/snapshots.ErrorResponse) added a "detail" field so
+// a caller-caused failure (an invalid archive, an unsatisfied contract) can
+// name its cause; without a matching field on this envelope, json.Unmarshal
+// silently drops it and the fix on the API side never reaches a terminal.
+// The first case's body is the exact shape a real work-item/v1 upload
+// missing its declared work-item.json produces.
+func TestDecodeAgentSnapshotResponseComposesDisclosableDetail(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "error, message, and detail",
+			body: `{"error":"validation_failed","message":"snapshot does not satisfy its declared type","detail":"snapshot contracts: required regular file \"work-item.json\" is missing"}`,
+			want: `422 Unprocessable Entity: validation_failed: snapshot does not satisfy its declared type (snapshot contracts: required regular file "work-item.json" is missing)`,
+		},
+		{
+			name: "error and message, no detail",
+			body: `{"error":"conflict","message":"snapshot request conflicts with immutable state"}`,
+			want: "422 Unprocessable Entity: conflict: snapshot request conflicts with immutable state",
+		},
+		{
+			name: "error only",
+			body: `{"error":"not_found"}`,
+			want: "422 Unprocessable Entity: not_found",
+		},
+		{
+			name: "unparseable body",
+			body: "not json",
+			want: "422 Unprocessable Entity: not json",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			response := &http.Response{
+				StatusCode: http.StatusUnprocessableEntity,
+				Status:     "422 Unprocessable Entity",
+				Body:       io.NopCloser(strings.NewReader(test.body)),
+			}
+			err := decodeAgentSnapshotResponse(response, nil)
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if err.Error() != test.want {
+				t.Fatalf("error = %q, want %q", err.Error(), test.want)
+			}
+		})
+	}
+}
+
 type cancelingWriter struct {
 	cancel func()
 	wrote  bool

@@ -507,12 +507,31 @@ func decodeAgentSnapshotResponse(response *http.Response, output any) error {
 		var envelope struct {
 			Error   string `json:"error"`
 			Message string `json:"message"`
+			// Detail is present only for failures the API attributes to the
+			// caller's own request (see agent/api/snapshots.ErrorResponse) —
+			// e.g. which declared document a work-item/v1 upload was missing.
+			// Dropping it here would make the API-side fix invisible: this
+			// envelope, not the raw body, is what the returned error is built
+			// from.
+			Detail string `json:"detail"`
 		}
 		if json.Unmarshal(body, &envelope) == nil && envelope.Error != "" {
-			if envelope.Message != "" {
+			switch {
+			case envelope.Message != "" && envelope.Detail != "":
+				// The detail is parenthesized rather than added as a third
+				// colon segment: "status: code: message: detail" reads as a
+				// flat, undifferentiated chain by the time a terminal has
+				// wrapped it, and detail is qualifying information about the
+				// message ("here is specifically what was wrong"), not a
+				// fourth peer-level fact.
+				return fmt.Errorf("%s: %s: %s (%s)", response.Status, envelope.Error, envelope.Message, envelope.Detail)
+			case envelope.Message != "":
 				return fmt.Errorf("%s: %s: %s", response.Status, envelope.Error, envelope.Message)
+			case envelope.Detail != "":
+				return fmt.Errorf("%s: %s (%s)", response.Status, envelope.Error, envelope.Detail)
+			default:
+				return fmt.Errorf("%s: %s", response.Status, envelope.Error)
 			}
-			return fmt.Errorf("%s: %s", response.Status, envelope.Error)
 		}
 		return fmt.Errorf("%s: %s", response.Status, strings.TrimSpace(string(body)))
 	}
