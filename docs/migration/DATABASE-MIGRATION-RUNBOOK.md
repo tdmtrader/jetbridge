@@ -140,8 +140,8 @@ concourse migrate \
 ```
 
 This applies all pending migrations up to the JetBridge target version
-(`1773106156`). The complete appended JetBridge block is `1773106100` through
-`1773106156`; it is applied in order and must not be selectively skipped.
+(`1773106157`). The complete appended JetBridge block is `1773106100` through
+`1773106157`; it is applied in order and must not be selectively skipped.
 
 The appended block is operationally significant throughout:
 
@@ -178,6 +178,9 @@ The appended block is operationally significant throughout:
 - `1773106156` persists each workflow or reusable node's exact validated
   compiled definition so static broker catalog changes affect only new
   revisions.
+- `1773106157` creates the immutable workflow-run node-occurrence projection,
+  frozen at run finalization so per-node history survives build and template
+  GC, and adds the plan identity that joins a publication to its node.
 
 ### Option B: Automatic on Startup
 
@@ -245,7 +248,7 @@ FROM migrations_history
 ORDER BY tstamp DESC
 LIMIT 5;
 
--- Expected: version = 1773106156, direction = 'up', status = 'passed'
+-- Expected: version = 1773106157, direction = 'up', status = 'passed'
 ```
 
 ### 5.2 Row Count Comparison
