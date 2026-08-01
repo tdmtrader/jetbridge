@@ -17,6 +17,10 @@ import (
 type ErrorResponse struct {
 	Error   string `json:"error"`
 	Message string `json:"message"`
+	// Detail is present only for failures caused by the caller's own request
+	// and only when a validator explicitly marked the text as disclosable.
+	// Internal faults never carry it.
+	Detail string `json:"detail,omitempty"`
 }
 
 // PinRequest is the only JSON body accepted by the snapshot API. Actor and

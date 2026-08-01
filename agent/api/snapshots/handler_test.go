@@ -1,6 +1,7 @@
 package snapshots_test
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -14,12 +15,15 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	snapshotsapi "github.com/concourse/concourse/agent/api/snapshots"
 	"github.com/concourse/concourse/agent/pagination"
 	"github.com/concourse/concourse/agent/projection"
 	"github.com/concourse/concourse/agent/repodiff"
 	"github.com/concourse/concourse/agent/snapshot"
+	"github.com/concourse/concourse/agent/snapshot/contracts"
+	"github.com/concourse/concourse/agent/snapshot/snapshotfakes"
 )
 
 type fakeCreator struct {
@@ -499,6 +503,7 @@ func TestCreateMapsStreamLimitAndDomainErrorsWithoutLeakingDetails(t *testing.T)
 		err    error
 		status int
 		code   string
+		detail string
 	}{
 		{name: "invalid archive", err: snapshot.ErrInvalidArchive, status: 400, code: "invalid_archive"},
 		{name: "limit", err: snapshot.ErrLimitExceeded, status: 413, code: "limit_exceeded"},
@@ -507,6 +512,25 @@ func TestCreateMapsStreamLimitAndDomainErrorsWithoutLeakingDetails(t *testing.T)
 		{name: "conflict", err: snapshot.ErrConflict, status: 409, code: "conflict"},
 		{name: "unavailable", err: snapshot.ErrContentUnavailable, status: 503, code: "content_unavailable"},
 		{name: "unexpected", err: errors.New("platform"), status: 500, code: "internal_error"},
+		{
+			name:   "validation with client detail",
+			err:    errors.Join(snapshot.ErrValidation, snapshot.ClientDetailf("work-item.json: adapter is required")),
+			status: 422, code: "validation_failed",
+			detail: "work-item.json: adapter is required",
+		},
+		{
+			name:   "archive with client detail",
+			err:    errors.Join(snapshot.ErrInvalidArchive, snapshot.ClientDetailf(`archive path ".claude/" has a trailing separator`)),
+			status: 400, code: "invalid_archive",
+			detail: `archive path ".claude/" has a trailing separator`,
+		},
+		{
+			// An internal fault must stay opaque even if some inner layer
+			// marked something: the class decides disclosure, not the mark.
+			name:   "internal fault ignores any mark",
+			err:    errors.Join(errors.New("platform"), snapshot.ClientDetailf("storage node 7 is down")),
+			status: 500, code: "internal_error",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -522,10 +546,127 @@ func TestCreateMapsStreamLimitAndDomainErrorsWithoutLeakingDetails(t *testing.T)
 			if recorder.Code != test.status || response.Error != test.code {
 				t.Fatalf("status/error = %d/%q, want %d/%q", recorder.Code, response.Error, test.status, test.code)
 			}
+			if response.Detail != test.detail {
+				t.Fatalf("detail = %q, want %q", response.Detail, test.detail)
+			}
 			if strings.Contains(recorder.Body.String(), "secret") || strings.Contains(recorder.Body.String(), "/tmp") {
 				t.Fatalf("response leaked dependency error: %s", recorder.Body.String())
 			}
 		})
+	}
+}
+
+// TestCreateTruncatesOversizedClientDetail proves the disclosable-detail
+// channel is bounded independently of any snapshot archive/content limit: a
+// mark can quote an arbitrarily long caller-supplied value, and the response
+// body must not grow without bound just because the caller's own submission
+// was large. It also proves truncation lands on a UTF-8 rune boundary rather
+// than splitting a multi-byte rune, and that the body stays valid JSON.
+func TestCreateTruncatesOversizedClientDetail(t *testing.T) {
+	const maxErrorDetailBytes = 512 // mirrors the unexported handler constant
+	harness := newHandlerHarness(t)
+	// Build a detail whose 512-byte prefix ends mid-rune (each "é" is two
+	// bytes: 511 ASCII bytes then "é" straddles the boundary).
+	longDetail := strings.Repeat("a", maxErrorDetailBytes-1) + "éé"
+	harness.creator.upload = func(context.Context, snapshot.UploadRequest) (snapshot.Snapshot, error) {
+		return snapshot.Snapshot{}, errors.Join(snapshot.ErrValidation, snapshot.ClientDetailf("%s", longDetail))
+	}
+	request := httptest.NewRequest(http.MethodPost, "/snapshots?type=opaque%2Fv1", strings.NewReader("tar"))
+	request.Header.Set("Content-Type", "application/x-tar")
+	recorder := httptest.NewRecorder()
+	harness.factory.Create(harness.team).ServeHTTP(recorder, request)
+
+	response := decodeError(t, recorder)
+	if recorder.Code != http.StatusUnprocessableEntity || response.Error != "validation_failed" {
+		t.Fatalf("status/error = %d/%q", recorder.Code, response.Error)
+	}
+	if !strings.HasSuffix(response.Detail, "…") {
+		t.Fatalf("detail was not truncated: len=%d, tail=%q", len(response.Detail), response.Detail[len(response.Detail)-8:])
+	}
+	trimmed := strings.TrimSuffix(response.Detail, "…")
+	if len(trimmed) >= maxErrorDetailBytes {
+		t.Fatalf("truncated prefix is %d bytes, want < %d", len(trimmed), maxErrorDetailBytes)
+	}
+	if !utf8.ValidString(trimmed) {
+		t.Fatalf("truncated detail split a multi-byte rune: %q", trimmed)
+	}
+	if !json.Valid(recorder.Body.Bytes()) {
+		t.Fatalf("response body is not valid JSON: %s", recorder.Body.String())
+	}
+}
+
+// TestCreateReturnsRealContractDetailForMissingDeclaredDocument is the
+// end-to-end proof that Task 4 actually reaches a caller. Every other test in
+// this file drives the handler through the harness's stubbed fakeCreator, so
+// it can only prove the mapping from an error VALUE to a response — it says
+// nothing about whether any real validator actually produces a marked error
+// for a real mistake. This test wires a real snapshot.BatchSealer, backed by
+// the real contracts registry (the same one production uses), as the
+// handler's SnapshotCreator, uploads a work-item/v1 archive that is missing
+// its declared work-item.json, and asserts the HTTP response names the
+// missing file. The sealer's metadata/content/lock dependencies are
+// counterfeiter fakes that are never called: validation fails inside
+// BatchSealer.Upload before any of those three are reached (see
+// agent/snapshot/sealer.go's Upload — AdmitForSeal runs, and fails, before
+// commitCaptured), so a stub standing in for them does not weaken the proof
+// that the CONTRACT failure — not a stand-in — produced the detail.
+func TestCreateReturnsRealContractDetailForMissingDeclaredDocument(t *testing.T) {
+	registry, err := contracts.NewRegistry()
+	if err != nil {
+		t.Fatalf("construct contracts registry: %v", err)
+	}
+	sealer, err := snapshot.NewBatchSealer(
+		snapshot.Canonicalizer{TempDir: t.TempDir()},
+		registry,
+		&snapshotfakes.FakeMetadataStore{},
+		&snapshotfakes.FakeContentStore{},
+		&snapshotfakes.FakeDigestLockManager{},
+	)
+	if err != nil {
+		t.Fatalf("construct batch sealer: %v", err)
+	}
+
+	factory, err := snapshotsapi.NewHandlerFactory(snapshotsapi.Config{
+		Enabled: true, Creator: sealer,
+		Metadata: &snapshotfakes.FakeMetadataStore{}, Content: &snapshotfakes.FakeContentStore{},
+		Locks:         &snapshotfakes.FakeDigestLockManager{},
+		ArchiveLimits: snapshot.ArchiveLimits{MaxContentBytes: 1 << 20, MaxEntries: 100},
+		TempDir:       t.TempDir(),
+		Identity: func(*http.Request) (snapshotsapi.RequestIdentity, error) {
+			return snapshotsapi.RequestIdentity{Actor: "github:subject-1", DisplayName: "Alice"}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("construct handler factory: %v", err)
+	}
+
+	// A tar containing only task.md — the exact shape a first user gets from
+	// `tar -cf work-item.tar task.md` while forgetting the declared
+	// work-item.json document.
+	var tarBody bytes.Buffer
+	writer := tar.NewWriter(&tarBody)
+	content := []byte("# task\n")
+	if err := writer.WriteHeader(&tar.Header{Name: "task.md", Mode: 0o600, Size: int64(len(content)), Typeflag: tar.TypeReg}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.Write(content); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/snapshots?type=work-item%2Fv1", bytes.NewReader(tarBody.Bytes()))
+	request.Header.Set("Content-Type", "application/x-tar")
+	recorder := httptest.NewRecorder()
+	factory.Create(snapshotsapi.TrustedTeam{ID: 7, Name: "main"}).ServeHTTP(recorder, request)
+
+	response := decodeError(t, recorder)
+	if recorder.Code != http.StatusUnprocessableEntity || response.Error != "validation_failed" {
+		t.Fatalf("status/error = %d/%q, body = %s", recorder.Code, response.Error, recorder.Body.String())
+	}
+	if !strings.Contains(response.Detail, `"work-item.json"`) || !strings.Contains(response.Detail, "is missing") {
+		t.Fatalf("detail = %q, want it to name the missing work-item.json", response.Detail)
 	}
 }
 

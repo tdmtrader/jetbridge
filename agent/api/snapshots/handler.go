@@ -928,15 +928,23 @@ func validateAuthorityString(value string, maxBytes int) error {
 func (factory *HandlerFactory) writeSnapshotError(w http.ResponseWriter, err error) {
 	factory.logger.Error("snapshot-request-failed", err)
 	var maxBytesError *http.MaxBytesError
+	// Only ErrInvalidArchive and ErrValidation carry disclosable detail today.
+	// ErrLimitExceeded's message is already a fixed, self-explanatory string
+	// built from the configured limit (never from caller-supplied content),
+	// and ErrUnsupportedType's cause is the registry lookup itself, not
+	// anything the caller wrote — neither site marks a ClientDetail today, so
+	// wiring writeDetailedError here now would be a no-op that only widens
+	// this switch's disclosure surface for a future mark to fall into
+	// unreviewed.
 	switch {
 	case errors.As(err, &maxBytesError), errors.Is(err, snapshot.ErrLimitExceeded):
 		writeError(w, http.StatusRequestEntityTooLarge, "limit_exceeded", "snapshot archive exceeds the configured limit")
 	case errors.Is(err, snapshot.ErrInvalidArchive):
-		writeError(w, http.StatusBadRequest, "invalid_archive", "snapshot archive is invalid")
+		writeDetailedError(w, http.StatusBadRequest, "invalid_archive", "snapshot archive is invalid", err)
 	case errors.Is(err, snapshot.ErrUnsupportedType):
 		writeError(w, http.StatusBadRequest, "invalid_type", "snapshot type is unsupported")
 	case errors.Is(err, snapshot.ErrValidation):
-		writeError(w, http.StatusUnprocessableEntity, "validation_failed", "snapshot does not satisfy its declared type")
+		writeDetailedError(w, http.StatusUnprocessableEntity, "validation_failed", "snapshot does not satisfy its declared type", err)
 	case errors.Is(err, snapshot.ErrConflict):
 		writeError(w, http.StatusConflict, "conflict", "snapshot request conflicts with immutable state")
 	case errors.Is(err, snapshot.ErrNotFound):
@@ -952,6 +960,44 @@ func (factory *HandlerFactory) writeSnapshotError(w http.ResponseWriter, err err
 
 func writeError(w http.ResponseWriter, status int, code, message string) {
 	writeJSON(w, status, ErrorResponse{Error: code, Message: message})
+}
+
+// writeDetailedError adds the disclosable detail when the failing validator
+// marked one. The error CLASS decides whether detail may travel at all, so a
+// mark that somehow reaches an internal fault cannot escape through here:
+// only writeSnapshotError's ErrInvalidArchive and ErrValidation branches call
+// this, and every other branch still calls plain writeError.
+//
+// The detail is truncated because a mark carries caller-supplied values and
+// nothing bounds them: an archive-path rejection can quote an entry name up
+// to MaxSnapshotPathBytes, so an unbounded copy would let a caller choose the
+// size of the error body they get back.
+func writeDetailedError(w http.ResponseWriter, status int, code, message string, err error) {
+	response := ErrorResponse{Error: code, Message: message}
+	if detail, ok := snapshot.ClientDetail(err); ok {
+		response.Detail = truncateDetail(detail)
+	}
+	writeJSON(w, status, response)
+}
+
+// maxErrorDetailBytes bounds the disclosable detail's size in the response
+// body. It is independent of any snapshot archive/content limit: a mark can
+// quote caller-supplied values (an archive entry name, a JSON field value)
+// with no size relationship to those limits.
+const maxErrorDetailBytes = 512
+
+// truncateDetail bounds detail to maxErrorDetailBytes, trimming back to a
+// UTF-8 rune boundary rather than splitting a multi-byte rune in half at the
+// cut point.
+func truncateDetail(detail string) string {
+	if len(detail) <= maxErrorDetailBytes {
+		return detail
+	}
+	cut := maxErrorDetailBytes
+	for cut > 0 && !utf8.RuneStart(detail[cut]) {
+		cut--
+	}
+	return detail[:cut] + "…"
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
