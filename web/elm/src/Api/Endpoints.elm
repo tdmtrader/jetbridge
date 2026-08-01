@@ -293,7 +293,12 @@ builder endpoint =
             base |> appendPath [ "agent", "workflows", Url.percentEncode workflowName, "versions", String.fromInt version, "live" ]
 
         AgentWorkflowRuns workflowName ->
-            base |> appendPath [ "agent", "workflows", Url.percentEncode workflowName, "runs" ]
+            -- The run list API defaults to the attention lens, which is right for
+            -- the workflow page's "is anything unresolved?" question and wrong
+            -- for a plain history read. The unfiltered caller says so.
+            base
+                |> appendPath [ "agent", "workflows", Url.percentEncode workflowName, "runs" ]
+                |> appendQuery (pairs [ ( "lens", "all" ) ])
 
         AgentWorkflowRunsFiltered workflowName query ->
             base
