@@ -39,7 +39,9 @@ func resourceSourceNodeID(name string) string { return resourceSourceNodePrefix 
 // Build assumes the function already type-checked. Step kinds the type
 // checker rejects are treated as programmer error; agent, task, await,
 // publish, and load leaves are handled (A2-A4). Wrapped/conditional steps
-// (retry, timeout, try, ensure, hooks) are added by a later task (A5).
+// (do, in_parallel, retry, timeout, try, ensure, hooks) decorate the node or
+// branch they affect rather than becoming nodes of their own (A5) — the
+// graph shows semantic workflow meaning, not serialized plan syntax.
 func Build(function *workflow.FunctionConfig) (Graph, error) {
 	if function == nil {
 		return Graph{}, fmt.Errorf("graph: function config is required")
@@ -324,9 +326,59 @@ func (b *builder) walkStepConfig(stepConfig atc.StepConfig, decorations []Decora
 		})
 		b.produce(config.Name, config.Name, string(config.Type))
 		return nil
+	case *atc.DoStep:
+		return b.walkSequence(config.Steps, decorations)
+	case *atc.InParallelStep:
+		return b.walkSequence(config.Config.Steps, decorations)
+	case *atc.TryStep:
+		// TryStep.Step is atc.Step, unlike Timeout/Retry below.
+		return b.walkStep(config.Step, appendDecoration(decorations, DecorationTry))
+	case *atc.RetryStep:
+		return b.walkStepConfig(config.Step, appendDecoration(decorations, DecorationRetry))
+	case *atc.TimeoutStep:
+		return b.walkStepConfig(config.Step, appendDecoration(decorations, DecorationTimeout))
+	case *atc.OnSuccessStep:
+		if err := b.walkStepConfig(config.Step, decorations); err != nil {
+			return err
+		}
+		return b.walkStep(config.Hook, appendDecoration(decorations, DecorationOnSuccess))
+	case *atc.OnFailureStep:
+		if err := b.walkStepConfig(config.Step, decorations); err != nil {
+			return err
+		}
+		return b.walkStep(config.Hook, appendDecoration(decorations, DecorationOnFailure))
+	case *atc.OnErrorStep:
+		if err := b.walkStepConfig(config.Step, decorations); err != nil {
+			return err
+		}
+		return b.walkStep(config.Hook, appendDecoration(decorations, DecorationOnError))
+	case *atc.OnAbortStep:
+		if err := b.walkStepConfig(config.Step, decorations); err != nil {
+			return err
+		}
+		return b.walkStep(config.Hook, appendDecoration(decorations, DecorationOnAbort))
+	case *atc.EnsureStep:
+		if err := b.walkStepConfig(config.Step, decorations); err != nil {
+			return err
+		}
+		return b.walkStep(config.Hook, appendDecoration(decorations, DecorationEnsure))
 	default:
 		return fmt.Errorf("graph: unsupported step config %T", config)
 	}
+}
+
+// appendDecoration returns a new slice with decoration appended, never
+// mutating or aliasing decorations' backing array. walkSequence calls
+// walkStep/walkStepConfig once per sibling with the same decorations slice;
+// a plain append(decorations, X) can reuse spare capacity in that shared
+// backing array, so writing sibling A's decoration could clobber (or be
+// clobbered by) sibling B's. Copying on every append keeps each recursion
+// branch's decoration list independent of its siblings, regardless of
+// capacity.
+func appendDecoration(decorations []Decoration, decoration Decoration) []Decoration {
+	next := make([]Decoration, len(decorations), len(decorations)+1)
+	copy(next, decorations)
+	return append(next, decoration)
 }
 
 func (b *builder) addLeaf(

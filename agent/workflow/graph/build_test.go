@@ -2,6 +2,7 @@ package graph
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -241,4 +242,188 @@ func hasEdge(g Graph, want Edge) bool {
 		}
 	}
 	return false
+}
+
+func TestBuildTreatsWrappersAsDecorations(t *testing.T) {
+	inner := agentStep("implement", "implement",
+		[]string{"repository"}, []string{"draft"},
+		map[string]atc.SnapshotInputConfig{"repository": {Type: "repository/v1"}},
+		map[string]atc.SnapshotOutputConfig{"draft": {Type: "repository-change/v1"}})
+
+	function := &workflow.FunctionConfig{
+		SignatureVersion: 1,
+		Inputs:           []snapshot.Port{{Name: "repository", Type: "repository/v1"}},
+		Plan: []atc.Step{
+			// TimeoutStep.Step and RetryStep.Step are StepConfig, not Step.
+			{Config: &atc.TimeoutStep{
+				Step:     &atc.RetryStep{Step: inner.Config, Attempts: 3},
+				Duration: "1h",
+			}},
+		},
+	}
+
+	g, err := Build(function)
+	if err != nil {
+		t.Fatalf("Build returned an error: %v", err)
+	}
+
+	if len(g.Nodes) != 2 {
+		t.Fatalf("expected exactly the input and agent nodes, got %+v", g.Nodes)
+	}
+
+	node, found := g.Node("implement")
+	if !found {
+		t.Fatal("expected the wrapped agent to remain a node")
+	}
+	if !hasDecoration(node, DecorationTimeout) || !hasDecoration(node, DecorationRetry) {
+		t.Fatalf("expected timeout and retry decorations, got %+v", node.Decorations)
+	}
+}
+
+func TestBuildWalksDoAndInParallel(t *testing.T) {
+	left := agentStep("left", "left", []string{"repository"}, []string{"a"},
+		map[string]atc.SnapshotInputConfig{"repository": {Type: "repository/v1"}},
+		map[string]atc.SnapshotOutputConfig{"a": {Type: "opaque/v1"}})
+	right := agentStep("right", "right", []string{"repository"}, []string{"b"},
+		map[string]atc.SnapshotInputConfig{"repository": {Type: "repository/v1"}},
+		map[string]atc.SnapshotOutputConfig{"b": {Type: "opaque/v1"}})
+
+	function := &workflow.FunctionConfig{
+		SignatureVersion: 1,
+		Inputs:           []snapshot.Port{{Name: "repository", Type: "repository/v1"}},
+		Plan: []atc.Step{
+			{Config: &atc.DoStep{Steps: []atc.Step{
+				{Config: &atc.InParallelStep{Config: atc.InParallelConfig{Steps: []atc.Step{left, right}}}},
+			}}},
+		},
+	}
+
+	g, err := Build(function)
+	if err != nil {
+		t.Fatalf("Build returned an error: %v", err)
+	}
+	for _, id := range []string{"left", "right"} {
+		if _, found := g.Node(id); !found {
+			t.Fatalf("expected node %q in %+v", id, g.Nodes)
+		}
+	}
+}
+
+func TestBuildDoesNotLeakDecorationsBetweenSiblings(t *testing.T) {
+	plain := agentStep("plain", "plain", []string{"repository"}, []string{"a"},
+		map[string]atc.SnapshotInputConfig{"repository": {Type: "repository/v1"}},
+		map[string]atc.SnapshotOutputConfig{"a": {Type: "opaque/v1"}})
+	retried := agentStep("retried", "retried", []string{"repository"}, []string{"b"},
+		map[string]atc.SnapshotInputConfig{"repository": {Type: "repository/v1"}},
+		map[string]atc.SnapshotOutputConfig{"b": {Type: "opaque/v1"}})
+
+	function := &workflow.FunctionConfig{
+		SignatureVersion: 1,
+		Inputs:           []snapshot.Port{{Name: "repository", Type: "repository/v1"}},
+		Plan: []atc.Step{
+			{Config: &atc.RetryStep{Step: retried.Config, Attempts: 2}},
+			plain,
+		},
+	}
+
+	g, err := Build(function)
+	if err != nil {
+		t.Fatalf("Build returned an error: %v", err)
+	}
+
+	retriedNode, _ := g.Node("retried")
+	if !hasDecoration(retriedNode, DecorationRetry) {
+		t.Fatalf("expected the retried node to carry retry, got %+v", retriedNode.Decorations)
+	}
+	plainNode, _ := g.Node("plain")
+	if len(plainNode.Decorations) != 0 {
+		t.Fatalf("an unwrapped sibling must carry no decorations, got %+v", plainNode.Decorations)
+	}
+}
+
+func hasDecoration(node Node, want Decoration) bool {
+	for _, decoration := range node.Decorations {
+		if decoration == want {
+			return true
+		}
+	}
+	return false
+}
+
+// TestBuildCompilesEveryShippedSeed is the real proof for Task A5: every
+// shipped workflow seed (a directory with a workflow.yaml) ships an
+// await_snapshot wrapped in a mandatory timeout (the type checker requires
+// it), and before this task walkStepConfig rejected *atc.TimeoutStep
+// outright, so no seed with an await could build. Build them all from the
+// real seed directories, not synthetic fixtures.
+//
+// Scoped to */workflow.yaml, not every entry under seeds: code-review-node-v1
+// ships a node.yaml (a reusable node fragment meant to be instantiated via
+// CompiledNodeDefinition.Instantiate and referenced from a workflow, not a
+// standalone workflow function) and correctly has no workflow.yaml of its
+// own; ManifestFromDir/CompileDefinition are the workflow-function pipeline,
+// not the reusable-node one, so it is out of scope here by construction.
+func TestBuildCompilesEveryShippedSeed(t *testing.T) {
+	matches, err := filepath.Glob("../seeds/*/workflow.yaml")
+	if err != nil {
+		t.Fatalf("globbing seed workflow.yaml files: %v", err)
+	}
+	if len(matches) == 0 {
+		t.Fatal("expected at least one seed with a workflow.yaml under ../seeds")
+	}
+
+	for _, match := range matches {
+		dir := filepath.Dir(match)
+		name := filepath.Base(dir)
+		t.Run(name, func(t *testing.T) {
+			manifest, err := workflow.ManifestFromDir(dir)
+			if err != nil {
+				t.Fatalf("ManifestFromDir(%q): %v", name, err)
+			}
+			definition, err := workflow.CompileDefinition(manifest)
+			if err != nil {
+				t.Fatalf("CompileDefinition(%q): %v", name, err)
+			}
+
+			g, err := Build(definition.Function)
+			if err != nil {
+				t.Fatalf("Build(%q) returned an error: %v", name, err)
+			}
+			if len(g.Nodes) == 0 {
+				t.Fatalf("Build(%q) produced no nodes", name)
+			}
+		})
+	}
+}
+
+// TestBuildSmallFixSeedAwaitCarriesTimeoutDecoration pins the specific case
+// that was unreachable before this task: small-fix-v3's approval await is
+// wrapped in a mandatory timeout (72h), which the type checker requires for
+// every await_snapshot. Before wrapper steps decorated rather than rejected,
+// Build failed on *atc.TimeoutStep before ever reaching this node.
+func TestBuildSmallFixSeedAwaitCarriesTimeoutDecoration(t *testing.T) {
+	manifest, err := workflow.ManifestFromDir("../seeds/small-fix-v3")
+	if err != nil {
+		t.Fatalf("ManifestFromDir: %v", err)
+	}
+	definition, err := workflow.CompileDefinition(manifest)
+	if err != nil {
+		t.Fatalf("CompileDefinition: %v", err)
+	}
+
+	g, err := Build(definition.Function)
+	if err != nil {
+		t.Fatalf("Build returned an error: %v", err)
+	}
+
+	node, found := g.Node("approval")
+	if !found {
+		t.Fatalf("expected the approval await node in %+v", g.Nodes)
+	}
+	if node.Kind != KindAwait {
+		t.Fatalf("expected approval to be an await node, got %+v", node)
+	}
+	if !hasDecoration(node, DecorationTimeout) {
+		t.Fatalf("expected the approval await to carry a timeout decoration, got %+v", node.Decorations)
+	}
 }
