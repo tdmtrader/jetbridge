@@ -59,7 +59,7 @@ func (workItemValidator) Validate(ctx context.Context, root *os.Root, _ snapshot
 		return snapshot.ValidationResult{}, err
 	}
 	if err := document.Validate(); err != nil {
-		return snapshot.ValidationResult{}, fmt.Errorf("snapshot contracts: work-item.json: %w", err)
+		return snapshot.ValidationResult{}, snapshot.ClientDetailf("snapshot contracts: work-item.json: %v", err)
 	}
 	return snapshot.ValidationResult{}, nil
 }

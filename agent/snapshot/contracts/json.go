@@ -9,6 +9,8 @@ import (
 	"io"
 	"io/fs"
 	"os"
+
+	"github.com/concourse/concourse/agent/snapshot"
 )
 
 const maxJSONDocumentBytes int64 = 1 << 20
@@ -21,14 +23,14 @@ func decodeStrictDocument(ctx context.Context, root *os.Root, name string, targe
 	decoder := json.NewDecoder(bytes.NewReader(contents))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
-		return fmt.Errorf("snapshot contracts: decode %s: %w", name, err)
+		return snapshot.WrapClientDetailf(err, "snapshot contracts: decode %s", name)
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		if err == nil {
-			return fmt.Errorf("snapshot contracts: %s contains trailing JSON", name)
+			return snapshot.ClientDetailf("snapshot contracts: %s contains trailing JSON", name)
 		}
-		return fmt.Errorf("snapshot contracts: decode trailing data in %s: %w", name, err)
+		return snapshot.WrapClientDetailf(err, "snapshot contracts: decode trailing data in %s", name)
 	}
 	return nil
 }
@@ -66,15 +68,15 @@ func readRegularFile(ctx context.Context, root *os.Root, name string, limit int6
 	info, err := root.Lstat(name)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return nil, fmt.Errorf("snapshot contracts: required regular file %q is missing", name)
+			return nil, snapshot.WrapClientDetailf(err, "snapshot contracts: required regular file %q is missing", name)
 		}
 		return nil, fmt.Errorf("snapshot contracts: inspect %q: %w", name, err)
 	}
 	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("snapshot contracts: %q must be a regular file", name)
+		return nil, snapshot.ClientDetailf("snapshot contracts: %q must be a regular file", name)
 	}
 	if info.Size() > limit {
-		return nil, fmt.Errorf("snapshot contracts: %q exceeds size limit of %d bytes", name, limit)
+		return nil, snapshot.ClientDetailf("snapshot contracts: %q exceeds size limit of %d bytes", name, limit)
 	}
 	file, err := root.Open(name)
 	if err != nil {

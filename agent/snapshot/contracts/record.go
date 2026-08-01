@@ -291,7 +291,7 @@ func admitRecordForSeal[T any](ctx context.Context, root *os.Root, expected snap
 		return Record[T]{}, err
 	}
 	if err := record.AdmitForSeal(expected, declarations); err != nil {
-		return Record[T]{}, fmt.Errorf("snapshot contracts: record.json: %w", err)
+		return Record[T]{}, snapshot.ClientDetailf("snapshot contracts: record.json: %v", err)
 	}
 	return record, nil
 }

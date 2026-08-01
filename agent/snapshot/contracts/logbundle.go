@@ -90,7 +90,7 @@ func (logBundleValidator) Validate(ctx context.Context, root *os.Root, _ snapsho
 		return snapshot.ValidationResult{}, fmt.Errorf("snapshot contracts: inspect log bundle: %w", err)
 	}
 	if logFiles == 0 {
-		return snapshot.ValidationResult{}, fmt.Errorf("snapshot contracts: log bundle must contain at least one log regular file")
+		return snapshot.ValidationResult{}, snapshot.ClientDetailf("snapshot contracts: log bundle must contain at least one log regular file")
 	}
 	if metadataFound {
 		var metadata LogBundleMetadata
@@ -98,7 +98,7 @@ func (logBundleValidator) Validate(ctx context.Context, root *os.Root, _ snapsho
 			return snapshot.ValidationResult{}, err
 		}
 		if err := metadata.Validate(); err != nil {
-			return snapshot.ValidationResult{}, fmt.Errorf("snapshot contracts: metadata.json: %w", err)
+			return snapshot.ValidationResult{}, snapshot.ClientDetailf("snapshot contracts: metadata.json: %v", err)
 		}
 	}
 	return snapshot.ValidationResult{}, nil
