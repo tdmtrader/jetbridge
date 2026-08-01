@@ -139,7 +139,7 @@ jobs:
       run:
         path: sh
         args:
-        - -exc
+        - -ec
         - |
           export GOPATH="$(pwd)/gopath"
           export GOCACHE="$(pwd)/gocache"
@@ -253,7 +253,7 @@ jobs:
       run:
         path: sh
         args:
-        - -exc
+        - -ec
         - |
           echo "=== Installing kubectl ==="
           curl -sLO "https://dl.k8s.io/release/$(curl -sL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"

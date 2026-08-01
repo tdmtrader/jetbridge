@@ -101,3 +101,15 @@ test-quick: test-unit
 
 # All tests in order of speed
 test-all: test-unit test-fly-integration test-integration test-k8s
+
+AGENT_RUNNER_IMAGE ?= concourse-agent-runner:dev
+.PHONY: build-agent-runner-image test-agent-runner-smoke
+build-agent-runner-image:
+	docker build --platform linux/amd64 \
+		--file deploy/agent-runner/Dockerfile \
+		--tag "$(AGENT_RUNNER_IMAGE)" \
+		.
+
+test-agent-runner-smoke:
+	@test "$$CONCOURSE_AGENT_RUNNER_SMOKE" = "1" || { echo "ERROR: set CONCOURSE_AGENT_RUNNER_SMOKE=1 to run the runner smoke gate"; exit 1; }
+	docker run --rm --platform linux/amd64 --entrypoint /usr/local/bin/agent-runner-image-smoke "$(AGENT_RUNNER_IMAGE)"

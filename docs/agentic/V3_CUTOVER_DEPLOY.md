@@ -28,7 +28,9 @@ exec with "executable file not found".
 
 Trigger the manual `build-agent-runner-image` job in `deploy/concourse-pipeline.yml`
 (builds `deploy/agent-runner/Dockerfile`, pushes `ghcr.io/tdmtrader/agent-runner`).
-Record the resulting `@sha256:` digest.
+Require its `agent-runner-image-smoke` step to pass, then record the printed
+`CONCOURSE_AGENT_STEP_IMAGE=<repository>@sha256:<digest>` only after the job
+pulls that immutable reference and verifies it is `linux/amd64`.
 
 `deploy/agent_runner_dockerfile_test.go` asserts the image builds both binaries and
 no longer packages `harvest-runner`, so a stale Dockerfile fails CI rather than
@@ -187,30 +189,43 @@ live is safe even before any experiment references it).
 The cutover order above is one-time. Every subsequent deploy of this branch runs
 this sequence, **in this order**:
 
-1. **Push, self-build, migrate, restart web.** The push triggers the self-build
-   chain; the new web image applies any pending migrations on boot and restarts.
-2. **Rebuild the agent-runner image from the *same commit*** via the manual
-   `build-agent-runner-image` job, then bump the digest in home-infra. The web
-   and the pod-side binaries (`agent-runner`, `function-runner`) are two
-   halves of one contract — record schema descriptors, gate wording and
+1. **Pause new agent dispatch.** Do not admit work while the web and pod-side
+   runtime can temporarily disagree.
+2. **Build and smoke the same-commit runner.** Trigger the manual
+   `build-agent-runner-image` job for the exact commit being deployed. Require
+   `/usr/local/bin/agent-runner-image-smoke` to pass in the exact commit-tagged
+   image and record the job's final
+   `CONCOURSE_AGENT_STEP_IMAGE=<repository>@sha256:<digest>` line. A positive
+   budget slice is unsupported unless this smoke has proved the packaged
+   Claude CLI accepts `--max-budget-usd`.
+3. **Update the reviewed external runtime configuration.** Set
+   `CONCOURSE_AGENT_STEP_IMAGE` to that exact digest through the normal
+   home-infra review path; never substitute a mutable tag.
+4. **Deploy the matching web artifact.** Build and roll out the web from the
+   same full commit as the runner. The new web applies pending migrations on
+   boot. The web and pod-side binaries (`agent-runner`, `function-runner`) are
+   two halves of one contract: record schema descriptors, gate wording, and
    contract types are compiled into both.
-3. **Re-import all seven v3 seeds with `--set-live`**:
+5. **Verify the running configuration.** Inspect the running web arguments or
+   Pod specification and require the configured runner image to equal the
+   recorded immutable digest. Require authenticated Fly status to succeed.
+6. **Re-import all seven v3 seeds with `--set-live`**:
    ```bash
    fly -t <target> agent workflows import agent/workflow/seeds/<name>-v3 --set-live
    ```
    Seed prompt or plan changes are not picked up by the web restart — they are
    stored workflow versions, created only by an import.
-4. **Only then dispatch.**
+7. **Resume agent dispatch only after every prior check passes.**
 
 Why the order is not advisory:
 
-- A run dispatched between (1) and (2) executes against the **old** pod image.
+- A run admitted before step 5 can execute against the **old** pod image.
   Its steps burn the full budget slice and then fail the seal gate, or worse
   succeed against stale contract code. That spend is not recoverable.
 - Dispatch **freezes the workflow version** onto the ticket
   (`agent/dispatch/dispatch.go` pins `WorkflowVersion` at dispatch and
   subsequently resolves by that exact version instead of `Live`). A run queued
-  before (3) therefore stays bound to the pre-import version forever — a later
+  before step 6 therefore stays bound to the pre-import version forever — a later
   import does not repair it. Re-dispatch on a fresh ticket instead.
 
 ### Permanent coupling: descriptor bumps require an agent-runner rebuild

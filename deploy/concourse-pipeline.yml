@@ -500,7 +500,8 @@ jobs:
           SHORT_SHA=$(git rev-parse --short HEAD)
           echo "Version: ${NEXT_VERSION}-rc (${SHORT_SHA})"
 
-          LDFLAGS="-s -w -X github.com/concourse/concourse.Version=${NEXT_VERSION}-rc -X github.com/concourse/concourse.JetBridgeVersion=${NEXT_VERSION}-rc"
+          RC_LDFLAGS="-s -w -X github.com/concourse/concourse.Version=${NEXT_VERSION}-rc -X github.com/concourse/concourse.JetBridgeVersion=${NEXT_VERSION}-rc"
+          FINAL_LDFLAGS="-s -w -X github.com/concourse/concourse.Version=${NEXT_VERSION} -X github.com/concourse/concourse.JetBridgeVersion=${NEXT_VERSION}"
 
           # //go:embed in web/handler.go bakes web/public into the binary, so
           # the freshly built assets from build-frontend MUST land before
@@ -513,9 +514,10 @@ jobs:
           cp -a ../web-public/. web/public/
           sha256sum web/public/elm.min.js
 
-          echo "=== Building concourse binary (linux/amd64 — the only platform this image runs on) ==="
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o concourse-linux-amd64 ./cmd/concourse
-          ls -lh concourse-linux-amd64
+          echo "=== Building RC and final concourse binaries from the rebuilt frontend tree ==="
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "${RC_LDFLAGS}" -o concourse-linux-amd64 ./cmd/concourse
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "${FINAL_LDFLAGS}" -o concourse-linux-amd64-final ./cmd/concourse
+          ls -lh concourse-linux-amd64 concourse-linux-amd64-final
           echo "=== Building artifact-daemon binary ==="
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o artifact-daemon-linux-amd64 ./cmd/artifact-daemon
           ls -lh artifact-daemon-linux-amd64
@@ -586,6 +588,7 @@ jobs:
 
           echo "=== Copying binaries to builder pod ==="
           kubectl cp concourse-linux-amd64 cicd/${BUILDER_POD}:/tmp/concourse-linux-amd64
+          kubectl cp concourse-linux-amd64-final cicd/${BUILDER_POD}:/tmp/concourse-linux-amd64-final
           kubectl cp artifact-daemon-linux-amd64 cicd/${BUILDER_POD}:/tmp/artifact-daemon-linux-amd64
           kubectl cp fly-assets cicd/${BUILDER_POD}:/tmp/fly-assets
 
@@ -596,9 +599,10 @@ jobs:
               apt-get install -y ca-certificates dumb-init && \
               rm -rf /var/lib/apt/lists/*
           COPY concourse-linux-amd64 /usr/local/concourse/bin/concourse
+          COPY concourse-linux-amd64-final /usr/local/concourse/bin/concourse-final
           COPY artifact-daemon-linux-amd64 /usr/local/concourse/bin/artifact-daemon
           COPY fly-assets /usr/local/concourse/fly-assets
-          RUN chmod +x /usr/local/concourse/bin/concourse /usr/local/concourse/bin/artifact-daemon
+          RUN chmod +x /usr/local/concourse/bin/concourse /usr/local/concourse/bin/concourse-final /usr/local/concourse/bin/artifact-daemon
           ENV PATH="/usr/local/concourse/bin:${PATH}"
           ENTRYPOINT ["dumb-init", "concourse"]
           DOCKERFILE
@@ -658,11 +662,12 @@ jobs:
           PATCH=$(echo "$VERSION" | cut -d. -f3)
           NEXT_VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))"
 
-          SHORT_SHA=$(git rev-parse --short HEAD)
+          SHORT_SHA=$(git rev-parse --short=12 HEAD)
           echo "Version: ${NEXT_VERSION} (${SHORT_SHA})"
 
           REGISTRY="registry-docker-registry.cicd.svc.cluster.local:5000"
           GHCR="ghcr.io/tdmtrader/agent-runner"
+          IMAGE="${GHCR}:${SHORT_SHA}"
           BUILDER_POD="agent-runner-builder-$$"
 
           cleanup_builder() { kubectl delete pod -n cicd ${BUILDER_POD} --grace-period=0 --force 2>/dev/null || true; }
@@ -704,6 +709,7 @@ jobs:
             fi
             sleep 2
           done
+          kubectl exec -n cicd "${BUILDER_POD}" -- docker info >/dev/null
 
           echo "=== Copying build context (repo, sans .git) to builder pod ==="
           tar czf /tmp/agent-runner-src.tgz --exclude=.git .
@@ -712,26 +718,49 @@ jobs:
           kubectl exec -n cicd ${BUILDER_POD} -- tar xzf /tmp/agent-runner-src.tgz -C /tmp/src
 
           echo "=== Building agent-runner image ==="
-          kubectl exec -n cicd ${BUILDER_POD} -- \
-            docker build \
-              -t registry.home/agent-runner:latest \
-              -t registry.home/agent-runner:v${NEXT_VERSION} \
-              -t ${GHCR}:latest \
-              -t ${GHCR}:v${NEXT_VERSION} \
-              -f /tmp/src/deploy/agent-runner/Dockerfile /tmp/src
+          kubectl exec -n cicd "${BUILDER_POD}" -- \
+            docker build --platform linux/amd64 \
+              --tag "${IMAGE}" \
+              --tag registry.home/agent-runner:latest \
+              --tag registry.home/agent-runner:v${NEXT_VERSION} \
+              --tag ${GHCR}:latest \
+              --tag ${GHCR}:v${NEXT_VERSION} \
+              --file /tmp/src/deploy/agent-runner/Dockerfile /tmp/src
 
-          echo "=== Pushing to local registry ==="
-          kubectl exec -n cicd ${BUILDER_POD} -- docker push registry.home/agent-runner:latest
-          kubectl exec -n cicd ${BUILDER_POD} -- docker push registry.home/agent-runner:v${NEXT_VERSION}
+          echo "=== Smoking the exact commit-tagged linux/amd64 image ==="
+          kubectl exec -n cicd "${BUILDER_POD}" -- \
+            docker run --rm --platform linux/amd64 \
+              --entrypoint /usr/local/bin/agent-runner-image-smoke "${IMAGE}"
 
           echo "=== Logging into GHCR ==="
-          echo "${GITHUB_TOKEN}" | kubectl exec -i -n cicd ${BUILDER_POD} -- docker login ghcr.io -u tdmtrader --password-stdin
+          set +x
+          printf '%s\n' "${GITHUB_TOKEN}" | kubectl exec -i -n cicd "${BUILDER_POD}" -- docker login ghcr.io -u tdmtrader --password-stdin
+          set -x
 
-          echo "=== Pushing to GHCR ==="
-          kubectl exec -n cicd ${BUILDER_POD} -- docker push ${GHCR}:latest
-          kubectl exec -n cicd ${BUILDER_POD} -- docker push ${GHCR}:v${NEXT_VERSION}
+          echo "=== Pushing the commit tag and resolving its registry digest ==="
+          PUSH_OUTPUT=$(kubectl exec -n cicd "${BUILDER_POD}" -- docker push "${IMAGE}")
+          printf '%s\n' "${PUSH_OUTPUT}"
+          DIGEST=$(printf '%s\n' "${PUSH_OUTPUT}" | sed -n 's/.*digest: \(sha256:[a-f0-9]\{64\}\).*/\1/p' | tail -1)
+          if ! printf '%s\n' "${DIGEST}" | grep -Eq '^sha256:[a-f0-9]{64}$'; then
+            echo "FATAL: registry push returned no exact lowercase sha256 digest"
+            exit 1
+          fi
+          IMAGE_REPOSITORY=${IMAGE%:*}
+          IMMUTABLE_IMAGE="${IMAGE_REPOSITORY}@${DIGEST}"
+          kubectl exec -n cicd "${BUILDER_POD}" -- docker pull --platform linux/amd64 "${IMMUTABLE_IMAGE}"
+          PUSHED_PLATFORM=$(kubectl exec -n cicd "${BUILDER_POD}" -- docker image inspect --format '{{.Os}}/{{.Architecture}}' "${IMMUTABLE_IMAGE}")
+          if test "${PUSHED_PLATFORM}" != "linux/amd64"; then
+            echo "FATAL: pushed runner platform is ${PUSHED_PLATFORM}, want linux/amd64"
+            exit 1
+          fi
 
-          echo "=== agent-runner image built and pushed: v${NEXT_VERSION} (${SHORT_SHA}) ==="
+          echo "=== Pushing optional mutable convenience tags after immutable verification ==="
+          kubectl exec -n cicd "${BUILDER_POD}" -- docker push registry.home/agent-runner:latest
+          kubectl exec -n cicd "${BUILDER_POD}" -- docker push registry.home/agent-runner:v${NEXT_VERSION}
+          kubectl exec -n cicd "${BUILDER_POD}" -- docker push ${GHCR}:latest
+          kubectl exec -n cicd "${BUILDER_POD}" -- docker push ${GHCR}:v${NEXT_VERSION}
+
+          echo "CONCOURSE_AGENT_STEP_IMAGE=${IMMUTABLE_IMAGE}"
 
 # Builds the pinned multi-harness broker companion for linux/amd64 and prints
 # the registry-reported immutable digest. This remains manual because updating
@@ -1027,7 +1056,7 @@ jobs:
       run:
         path: sh
         args:
-        - -exc
+        - -ec
         - |
           echo "=== Setting up kubeconfig for Go test client ==="
           SA_DIR=/var/run/secrets/kubernetes.io/serviceaccount
@@ -1106,10 +1135,6 @@ jobs:
 
           echo "Releasing: v${NEXT_VERSION} (${SHORT_SHA})"
 
-          git config --global user.email "ci@concourse.home"
-          git config --global user.name "Concourse CI"
-          git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/tdmtrader/jetbridge.git"
-
           # NOTE: the git tag and the force-push to main are DEFERRED to the end
           # of this task, after the RC image is verified and the release image is
           # built and pushed. Previously they ran first, so a missing RC image
@@ -1157,7 +1182,6 @@ jobs:
           done
 
           echo "=== Building fly CLI for all platforms ==="
-          LDFLAGS="-s -w -X github.com/concourse/concourse.Version=${NEXT_VERSION} -X github.com/concourse/concourse.JetBridgeVersion=${NEXT_VERSION}"
           FLY_LDFLAGS="-s -w -X github.com/concourse/concourse.Version=${NEXT_VERSION}"
           mkdir -p fly-assets fly-bin
           for pair in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
@@ -1186,6 +1210,7 @@ jobs:
           echo "=== Rebuilding image with all fly platform assets ==="
           cat <<'DOCKERFILE' > /tmp/Dockerfile.release
           FROM registry.home/jetbridge:v__VERSION__-rc
+          RUN mv /usr/local/concourse/bin/concourse-final /usr/local/concourse/bin/concourse
           COPY fly-assets /usr/local/concourse/fly-assets
           DOCKERFILE
           sed -i "s/__VERSION__/${NEXT_VERSION}/g" /tmp/Dockerfile.release
@@ -1198,11 +1223,33 @@ jobs:
               -t ${GHCR}:latest \
               -f /tmp/Dockerfile.release /tmp/
 
+          echo "=== Verifying the exact final image before any push or release mutation ==="
+          UPSTREAM_VERSION=$(sed -n 's/^var ConcourseVersion = "\(.*\)"/\1/p' versions.go)
+          if test -z "${UPSTREAM_VERSION}"; then
+            echo "FATAL: could not read ConcourseVersion from versions.go"
+            exit 1
+          fi
+          FINAL_VERSION_OUTPUT=$(kubectl exec -n cicd "${BUILDER_POD}" -- \
+            docker run --rm --entrypoint /usr/local/concourse/bin/concourse \
+              "registry.home/jetbridge:v${NEXT_VERSION}" --version)
+          printf '%s\n' "${FINAL_VERSION_OUTPUT}"
+          if printf '%s\n' "${FINAL_VERSION_OUTPUT}" | grep -Fq -- "-rc"; then
+            echo "FATAL: final image still reports an RC server version"
+            exit 1
+          fi
+          EXPECTED_FINAL_VERSION="JetBridge ${NEXT_VERSION} (Concourse ${UPSTREAM_VERSION})"
+          if ! test "${FINAL_VERSION_OUTPUT}" = "${EXPECTED_FINAL_VERSION}"; then
+            echo "FATAL: final image version is ${FINAL_VERSION_OUTPUT}; want ${EXPECTED_FINAL_VERSION}"
+            exit 1
+          fi
+
           echo "=== Pushing release to local registry ==="
           kubectl exec -n cicd ${BUILDER_POD} -- docker push registry.home/jetbridge:v${NEXT_VERSION}
 
           echo "=== Logging into GHCR ==="
-          echo "${GITHUB_TOKEN}" | kubectl exec -i -n cicd ${BUILDER_POD} -- docker login ghcr.io -u tdmtrader --password-stdin
+          set +x
+          printf '%s\n' "${GITHUB_TOKEN}" | kubectl exec -i -n cicd ${BUILDER_POD} -- docker login ghcr.io -u tdmtrader --password-stdin
+          set -x
 
           echo "=== Pushing to GHCR ==="
           kubectl exec -n cicd ${BUILDER_POD} -- docker push ${GHCR}:${SHORT_SHA}
@@ -1211,6 +1258,11 @@ jobs:
 
           # --- 3. Image published — NOW create the release tag ---
           # (Deferred from the top: only tag/push once the image actually exists.)
+          git config --global user.email "ci@concourse.home"
+          git config --global user.name "Concourse CI"
+          set +x
+          git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/tdmtrader/jetbridge.git"
+          set -x
           echo "=== Tagging v${NEXT_VERSION} ==="
           if git rev-parse "v${NEXT_VERSION}" >/dev/null 2>&1; then
             echo "Tag v${NEXT_VERSION} already exists — skipping"

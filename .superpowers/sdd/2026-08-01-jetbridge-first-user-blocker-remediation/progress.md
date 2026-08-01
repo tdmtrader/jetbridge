@@ -131,7 +131,36 @@
     static no-xtrace coverage for projected-token consumers in both deployment
     pipelines; and a final server built from the frontend-rebuilt source,
     activated in the final image, and checked before push.
-  - Review budget: maximum three blocking rounds.
+  - Repository implementation: complete. The runner uses the checksum-pinned
+    native Claude `2.1.212`, runs its closed smoke after all binaries are
+    installed, publishes a commit-tagged linux/amd64 image only after smoke,
+    derives its immutable identity from the registry push response, and pulls
+    and inspects that exact reference before printing deployment evidence.
+  - RED: the image contract exposed npm-installed Claude `2.0.1`; the parsed
+    pipeline policy exposed exactly three projected-token consumers with
+    xtrace enabled; the immutable-runner test lacked commit-tag, smoke-before-
+    push, digest, pull, platform, and evidence ordering; the release test lacked
+    post-frontend RC/final builds and final-binary staging; and the recurring
+    runbook lacked the pause-first compatibility sequence.
+  - GREEN: `sh -n deploy/agent-runner/smoke.sh`; `env
+    GOCACHE=/tmp/jetbridge-task4-go-build-cache go test ./deploy -run
+    '^TestPipelineTasksDoNotTraceServiceAccountTokens$' -count=1`; the same
+    command with `^TestConcourseReleaseImageUsesFinalStampedServer$` and
+    `^TestAgentRunner`; and `git diff --check` all passed.
+  - Broad verification: `go test ./deploy ./agent/runner -count=1` passed with
+    `deploy` in 0.176s and `agent/runner` in 2.664s on the approved host. The
+    sandbox attempt stopped only because `httptest` could not bind `[::1]:0`.
+  - Local image probe: `docker info --format '{{.ServerVersion}}
+    {{.OSType}}/{{.Architecture}}'` returned `Cannot connect to the Docker
+    daemon at unix:///var/run/docker.sock. Is the docker daemon running?` No
+    workaround, image build, push, pipeline application, or deployment was
+    attempted.
+  - Review: independent blocking round 1 PASS with no Critical, High, or
+    acceptance-blocking findings. Review budget used: 1 of 3.
+  - PENDING until Task 6: successful remote pipeline/Borg image build and
+    `agent-runner-image-smoke`, registry-reported digest, immutable pull, and
+    exact `linux/amd64` inspection. Task 4's repository implementation is
+    complete, but its image acceptance gate remains open.
 - [ ] Task 5 — safe build-log correlations, target wording, and node docs
   - Gate: Fly command/integration tests, stale-wording residue check, and chart
     documentation that an empty task ServiceAccount selects the namespace
