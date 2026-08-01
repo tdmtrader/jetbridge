@@ -1,0 +1,188 @@
+@import (reference) "_vars.less";
+
+/* AgentGraph (web/elm/src/AgentGraph/View.elm) — the semantic workflow DAG
+ * shared by the workflow overview and the individual run page.
+ *
+ * The one rule this file exists to enforce: no node state is carried by hue
+ * alone. Every state the Elm module can emit is also a glyph, a count, and a
+ * word inside the node, so these rules only ever reinforce something already
+ * legible in greyscale. Consequently:
+ *
+ *   - node bodies keep one neutral fill, never a per-status fill;
+ *   - --no-data is a dashed border, so "nothing ran" cannot be mistaken for
+ *     "everything passed";
+ *   - --selected is a thicker border and a halo, never a colour swap;
+ *   - an optional edge is dashed as well as labelled.
+ */
+
+.agent-graph {
+  position: relative;
+  /* Layout.elm reports exact extents; the canvas scrolls inside its column
+   * rather than widening the page. */
+  min-width: 0;
+}
+
+.agent-graph-edges {
+  position: absolute;
+  top: 0;
+  left: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.agent-graph-edge {
+  fill: none;
+  stroke: @grey60;
+  stroke-width: 2;
+}
+
+/* An optional edge may legitimately carry nothing in a given run. Dashing it
+ * says "may not happen" without borrowing a failure colour. */
+.agent-graph-edge[data-optional="true"] {
+  stroke-dasharray: 5 4;
+  stroke: @grey70;
+}
+
+.agent-graph-nodes {
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+
+.agent-graph-node {
+  position: absolute;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+  margin: 0;
+  padding: 6px 10px;
+  border: 1px solid @grey60;
+  border-radius: 3px;
+  background: @grey90;
+  color: @grey20;
+  font-family: Inconsolata, monospace;
+  font-size: 12px;
+  line-height: 16px;
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.agent-graph-node:hover {
+  border-color: @grey40;
+}
+
+.agent-graph-node:focus-visible {
+  outline: 2px solid @blue-primary;
+  outline-offset: 2px;
+}
+
+.agent-graph-node-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+/* Long identities truncate to their title tooltip rather than widening the
+ * node, so ranks stay aligned at any workflow size. */
+.agent-graph-node-name {
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.agent-graph-node-kind {
+  flex: none;
+  color: @grey40;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.agent-graph-node-state {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: @grey30;
+}
+
+.agent-graph-node-decorations {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  overflow: hidden;
+}
+
+.agent-graph-node-decoration,
+.agent-graph-node-flag {
+  flex: none;
+  padding: 0 5px;
+  border: 1px solid @grey60;
+  border-radius: 8px;
+  color: @grey40;
+  font-size: 10px;
+  line-height: 14px;
+  white-space: nowrap;
+}
+
+/* Endpoint nodes never execute, so they carry no state at all. They read as
+ * quieter than execution nodes without reading as failed or as missing. */
+.agent-graph-node--endpoint {
+  background: transparent;
+  border-style: solid;
+  border-color: @grey70;
+  color: @grey40;
+}
+
+/* No activity in the window. Dashed, not grey-that-reads-as-green, and
+ * deliberately not the same treatment as a healthy node. */
+.agent-graph-node--no-data {
+  border-style: dashed;
+  border-color: @grey60;
+  color: @grey40;
+}
+
+/* Attention and resolved are reinforcement only: the node already says
+ * "2 running" or "ok" in words. Neither fills the body. */
+.agent-graph-node--attention {
+  border-color: @amber-primary;
+}
+
+.agent-graph-node--attention .agent-graph-node-state {
+  color: @amber-primary;
+  font-weight: 700;
+}
+
+.agent-graph-node--resolved .agent-graph-node-state {
+  color: @green-primary;
+}
+
+/* An optional node's production is not guaranteed. That is a fact about the
+ * workflow, not a state, so it is a badge plus a lighter border — never a
+ * treatment that could be read as an error. */
+.agent-graph-node--optional {
+  border-style: dashed;
+}
+
+.agent-graph-node--optional.agent-graph-node--attention {
+  border-style: solid;
+}
+
+/* Selection changes weight, never hue: the state colour above stays exactly
+ * as it was so selecting a node cannot appear to change what it reports. */
+.agent-graph-node--selected {
+  border-width: 2px;
+  border-color: @grey20;
+  padding: 5px 9px;
+  box-shadow: 0 0 0 3px fade(@grey20, 25%);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .agent-graph-node {
+    transition: border-color 120ms ease-in-out;
+  }
+}
