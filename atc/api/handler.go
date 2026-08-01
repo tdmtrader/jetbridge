@@ -20,6 +20,7 @@ import (
 	snapshotsapi "github.com/concourse/concourse/agent/api/snapshots"
 	ticketsapi "github.com/concourse/concourse/agent/api/tickets"
 	workflowoutcomesapi "github.com/concourse/concourse/agent/api/workflowoutcomes"
+	workflowoverviewapi "github.com/concourse/concourse/agent/api/workflowoverview"
 	workflowrunsapi "github.com/concourse/concourse/agent/api/workflowruns"
 	workflowsapi "github.com/concourse/concourse/agent/api/workflows"
 	workflowwaitsapi "github.com/concourse/concourse/agent/api/workflowwaits"
@@ -140,6 +141,7 @@ func NewHandler(
 	snapshotHandlers *snapshotsapi.HandlerFactory,
 	resourceCapturer snapshotsapi.ResourceCapturer,
 	workflowRunHandlers *workflowrunsapi.Handler,
+	workflowOverviewHandlers *workflowoverviewapi.Handler,
 	nodeRunHandlers *noderunsapi.Handler,
 	nodeUpgradeHandlers *nodeupgradesapi.Handler,
 	workflowWaitHandlers *workflowwaitsapi.Handler,
@@ -149,6 +151,9 @@ func NewHandler(
 ) (http.Handler, error) {
 	if workflowRunHandlers == nil {
 		return nil, fmt.Errorf("workflow-run API handlers are required")
+	}
+	if workflowOverviewHandlers == nil {
+		return nil, fmt.Errorf("workflow-overview API handlers are required")
 	}
 	if nodeRunHandlers == nil {
 		return nil, fmt.Errorf("node-run API handlers are required")
@@ -409,6 +414,7 @@ func NewHandler(
 		atc.CreateAgentWorkflowVersion:                 http.HandlerFunc(workflowsServer.Import),
 		atc.PromoteAgentWorkflowVersion:                http.HandlerFunc(workflowsServer.Promote),
 		atc.GetAgentWorkflowStats:                      http.HandlerFunc(workflowsServer.Stats),
+		atc.GetAgentWorkflowOverview:                   http.HandlerFunc(workflowOverviewHandlers.Overview),
 		atc.UpdateAgentWorkflow:                        http.HandlerFunc(workflowsServer.Update),
 		atc.CreateAgentWorkflowRun:                     http.HandlerFunc(workflowRunHandlers.Create),
 		atc.ListAgentWorkflowRuns:                      http.HandlerFunc(workflowRunHandlers.List),

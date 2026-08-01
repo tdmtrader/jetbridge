@@ -24,6 +24,7 @@ import (
 	snapshotsapi "github.com/concourse/concourse/agent/api/snapshots"
 	"github.com/concourse/concourse/agent/api/tickets/ticketstest"
 	workflowoutcomesapi "github.com/concourse/concourse/agent/api/workflowoutcomes"
+	workflowoverviewapi "github.com/concourse/concourse/agent/api/workflowoverview"
 	workflowrunsapi "github.com/concourse/concourse/agent/api/workflowruns"
 	workflowwaitsapi "github.com/concourse/concourse/agent/api/workflowwaits"
 	"github.com/concourse/concourse/agent/budget/budgettest"
@@ -32,6 +33,7 @@ import (
 	"github.com/concourse/concourse/agent/workflow"
 	"github.com/concourse/concourse/agent/workflow/workflowtest"
 	"github.com/concourse/concourse/agent/workflowrun"
+	"github.com/concourse/concourse/agent/workflowrun/occurrence"
 	"github.com/concourse/concourse/agent/workflowwait/workflowwaittest"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api"
@@ -172,6 +174,10 @@ func (unavailableWorkflowRunBackend) Upgrade(context.Context, workflow.NodeUpgra
 	return workflow.NodeUpgradeResult{}, errors.New("node-upgrade backend is unavailable in the API suite")
 }
 
+func (unavailableWorkflowRunBackend) OccurrencesForRun(context.Context, db.AgentWorkflowRun) ([]occurrence.NodeOccurrence, error) {
+	return nil, nil
+}
+
 func (f *fakeEventHandlerFactory) Construct(
 	logger lager.Logger,
 	build db.BuildForAPI,
@@ -289,6 +295,11 @@ var _ = BeforeEach(func() {
 		Binder:   workflowRunBackend, Runs: workflowRunBackend, Manifests: workflowRunBackend,
 	})
 	Expect(err).NotTo(HaveOccurred())
+	workflowOverviewHandlers, err := workflowoverviewapi.NewHandler(workflowoverviewapi.Config{
+		Team:        workflowoverviewapi.TrustedTeam{ID: 1, Name: atc.DefaultTeamName},
+		Definitions: apiWorkflowStore, Runs: workflowRunBackend, Occurrences: workflowRunBackend,
+	})
+	Expect(err).NotTo(HaveOccurred())
 	workflowOutcomeHandlers, err := workflowoutcomesapi.NewHandler(workflowoutcomesapi.HandlerConfig{
 		TeamID: 1, TeamName: atc.DefaultTeamName,
 		Identity:   func(*http.Request) (string, error) { return "api-suite", nil },
@@ -371,6 +382,7 @@ var _ = BeforeEach(func() {
 		snapshotHandlers,
 		nil, // resource capture disabled with the snapshot service in this suite
 		workflowRunHandlers,
+		workflowOverviewHandlers,
 		nodeRunHandlers,
 		nodeUpgradeHandlers,
 		workflowWaitHandlers,

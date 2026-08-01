@@ -29,6 +29,7 @@ import (
 	nodeupgradesapi "github.com/concourse/concourse/agent/api/nodeupgrades"
 	snapshotsapi "github.com/concourse/concourse/agent/api/snapshots"
 	workflowoutcomesapi "github.com/concourse/concourse/agent/api/workflowoutcomes"
+	workflowoverviewapi "github.com/concourse/concourse/agent/api/workflowoverview"
 	workflowrunsapi "github.com/concourse/concourse/agent/api/workflowruns"
 	workflowwaitsapi "github.com/concourse/concourse/agent/api/workflowwaits"
 	"github.com/concourse/concourse/agent/artifactcap"
@@ -3730,6 +3731,29 @@ func (cmd *RunCommand) constructAPIHandler(
 	if err != nil {
 		return nil, fmt.Errorf("construct workflow-run API: %w", err)
 	}
+	// The overview reads occurrences through the same derivation the freezer
+	// writes: frozen history for terminal runs, live derivation for everything
+	// still executing. It shares dispatchGraph's workflow store for the same
+	// reason the freezer does — a second store is a second chance for the
+	// version a run executed and the version its history describes to disagree.
+	nodeOccurrenceReader, err := occurrence.NewReader(
+		db.NewAgentWorkflowRunNodeOccurrencesFactory(dbConn),
+		db.NewAgentWorkflowRunEvidenceFactory(dbConn),
+		workflowStore,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("construct workflow-run node occurrence reader: %w", err)
+	}
+	workflowOverviewHandlers, err := workflowoverviewapi.NewHandler(workflowoverviewapi.Config{
+		Logger:      logger.Session("workflow-overview-api"),
+		Team:        workflowoverviewapi.TrustedTeam{ID: dispatchGraph.teamID, Name: dispatchGraph.teamName},
+		Definitions: workflowStore,
+		Runs:        workflowRunStore,
+		Occurrences: nodeOccurrenceReader,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("construct workflow-overview API: %w", err)
+	}
 	nodeRunHandlers, err := noderunsapi.NewHandler(noderunsapi.Config{
 		Logger: logger.Session("node-runs-api"),
 		Team:   workflowrunsapi.TrustedTeam{ID: dispatchGraph.teamID, Name: dispatchGraph.teamName},
@@ -3880,6 +3904,7 @@ func (cmd *RunCommand) constructAPIHandler(
 		snapshotHandlers,
 		resourceCapturer,
 		workflowRunHandlers,
+		workflowOverviewHandlers,
 		nodeRunHandlers,
 		nodeUpgradeHandlers,
 		workflowWaitHandlers,

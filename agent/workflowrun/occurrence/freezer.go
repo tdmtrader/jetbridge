@@ -98,7 +98,14 @@ func (freezer *Freezer) FreezeRun(ctx context.Context, run db.AgentWorkflowRun) 
 // plausible-looking projection of the wrong workflow for exactly the runs a
 // human most wants to inspect — old ones, whose workflow has since moved on.
 func (freezer *Freezer) executionNodes(run db.AgentWorkflowRun) (map[string]string, error) {
-	definition, found, err := freezer.definitions.Get(run.WorkflowName, run.WorkflowVersion)
+	return executionNodesFor(freezer.definitions, run)
+}
+
+// executionNodesFor is shared by the freeze and the live read so both project
+// against the same node set. Two copies of this resolution would be two chances
+// for the frozen history and the live view of the same run to disagree.
+func executionNodesFor(definitions DefinitionSource, run db.AgentWorkflowRun) (map[string]string, error) {
+	definition, found, err := definitions.Get(run.WorkflowName, run.WorkflowVersion)
 	if err != nil {
 		return nil, fmt.Errorf("occurrence: loading workflow %q version %d: %w",
 			run.WorkflowName, run.WorkflowVersion, err)

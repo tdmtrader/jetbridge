@@ -163,6 +163,7 @@ func (a *auditor) ValidateAction(action string) bool {
 		atc.CreateAgentWorkflowVersion,
 		atc.PromoteAgentWorkflowVersion,
 		atc.GetAgentWorkflowStats,
+		atc.GetAgentWorkflowOverview,
 		atc.UpdateAgentWorkflow,
 		atc.ListAgentNodes,
 		atc.ListAgentNodeVersions,

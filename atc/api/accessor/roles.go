@@ -123,6 +123,7 @@ var DefaultRoles = map[string]string{
 	atc.CreateAgentWorkflowVersion:                 MemberRole,
 	atc.PromoteAgentWorkflowVersion:                MemberRole,
 	atc.GetAgentWorkflowStats:                      ViewerRole,
+	atc.GetAgentWorkflowOverview:                   ViewerRole,
 	atc.UpdateAgentWorkflow:                        MemberRole,
 	atc.CreateAgentWorkflowRun:                     MemberRole,
 	atc.ListAgentWorkflowRuns:                      ViewerRole,
