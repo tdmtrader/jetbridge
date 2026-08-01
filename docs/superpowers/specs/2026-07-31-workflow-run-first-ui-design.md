@@ -186,6 +186,28 @@ Sharing one function between the two call sites is what prevents a second
 execution truth. The projection is derived from authoritative state and frozen
 when appropriate; it never originates a fact.
 
+### The projection stores only nodes the graph contains
+
+`Derive` is given the execution-node ID set from `graph.Build` for the run's
+own workflow version, and projects only nodes in that set.
+
+This is not a filter for tidiness — it makes the graph-to-occurrence join exact
+by construction, which is the load-bearing contract of the whole read model.
+Without it the join is a guess: `RenderFunction` prepends a synthetic
+`load_snapshot` per input port and per resource source, named with the **bare**
+port name, so the runtime plan contains a node called `before` while the graph
+calls the same concept `input:before`. A join that tried `load:X`, then
+`input:X`, then `source:X` would be ambiguous the moment an authored
+`load_snapshot` shared a name with an input port.
+
+Filtering against the graph resolves it correctly and without special cases:
+an authored `load_snapshot` is a graph execution node with a bare ID and is
+kept, while a synthetic input-port load is not an execution node at all and is
+dropped — matching the rule that endpoint nodes never carry occurrences.
+
+It also means a plan node the graph does not recognise can never reach the
+projection, so `Node.ID` remains a single namespace shared by both.
+
 ### `agent_workflow_run_node_occurrences`
 
 Columns: `workflow_run_id`, `node_id`, `attempt`, `team_id`, `workflow_name`,
