@@ -51,6 +51,19 @@ func agentSnapshotsSettings() []string {
 const agentStepImageSetting = "web.extraArgs[0]=--agent-step-image=registry.example/agent@sha256:" +
 	"2222222222222222222222222222222222222222222222222222222222222222"
 
+// agentStepImageEnvSettings is the CONCOURSE_AGENT_STEP_IMAGE env-var
+// equivalent of agentStepImageSetting. This is the form the chart's own
+// deploy docs prescribe (docs/agentic/V3_CUTOVER_DEPLOY.md) and the one the
+// deployment whose outage motivated this warning actually uses, so it must
+// be detected exactly like the --agent-step-image flag.
+func agentStepImageEnvSettings() []string {
+	return []string{
+		"web.env[0].name=CONCOURSE_AGENT_STEP_IMAGE",
+		"web.env[0].value=registry.example/agent@sha256:" +
+			"2222222222222222222222222222222222222222222222222222222222222222",
+	}
+}
+
 func TestNotesWarnsWhenAgentSnapshotsEnabledAndHermeticEgressEmpty(t *testing.T) {
 	notes := renderNotes(t, agentSnapshotsSettings()...)
 	if !strings.Contains(notes, warningHeadline) {
@@ -69,6 +82,16 @@ func TestNotesWarnsWhenAgentStepImageSetWithoutAgentSnapshots(t *testing.T) {
 	notes := renderNotes(t, agentStepImageSetting)
 	if !strings.Contains(notes, warningHeadline) {
 		t.Fatalf("expected fail-closed-egress warning when --agent-step-image is set without agentSnapshots, got:\n%s", notes)
+	}
+}
+
+// TestNotesWarnsWhenAgentStepImageEnvSetWithoutAgentSnapshots pins the same
+// false-negative fix for CONCOURSE_AGENT_STEP_IMAGE (web.env), the env-var
+// equivalent of --agent-step-image (web.extraArgs).
+func TestNotesWarnsWhenAgentStepImageEnvSetWithoutAgentSnapshots(t *testing.T) {
+	notes := renderNotes(t, agentStepImageEnvSettings()...)
+	if !strings.Contains(notes, warningHeadline) {
+		t.Fatalf("expected fail-closed-egress warning when CONCOURSE_AGENT_STEP_IMAGE is set without agentSnapshots, got:\n%s", notes)
 	}
 }
 
@@ -114,6 +137,13 @@ func TestHermeticEgressAnnotationPresentWhenAgentStepImageSetWithoutAgentSnapsho
 	policy := findNetworkPolicy(t, renderChart(t, agentStepImageSetting), "-hermetic-egress")
 	if _, ok := policy.Metadata.Annotations["concourse.ci/hermetic-egress-warning"]; !ok {
 		t.Fatalf("expected concourse.ci/hermetic-egress-warning annotation when --agent-step-image is set without agentSnapshots, got annotations: %v", policy.Metadata.Annotations)
+	}
+}
+
+func TestHermeticEgressAnnotationPresentWhenAgentStepImageEnvSetWithoutAgentSnapshots(t *testing.T) {
+	policy := findNetworkPolicy(t, renderChart(t, agentStepImageEnvSettings()...), "-hermetic-egress")
+	if _, ok := policy.Metadata.Annotations["concourse.ci/hermetic-egress-warning"]; !ok {
+		t.Fatalf("expected concourse.ci/hermetic-egress-warning annotation when CONCOURSE_AGENT_STEP_IMAGE is set without agentSnapshots, got annotations: %v", policy.Metadata.Annotations)
 	}
 }
 

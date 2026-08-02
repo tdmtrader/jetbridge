@@ -16,10 +16,10 @@ metadata:
   {{- if and (include "concourse.agentStepConfigured" .) (not .Values.networkPolicy.hermeticEgressTo) }}
   annotations:
     concourse.ci/hermetic-egress-warning: >-
-      agent: steps are configured (agentSnapshots.enabled or
-      --agent-step-image) but networkPolicy.hermeticEgressTo is empty: an
-      agent: node cannot reach a model endpoint and fails with only a
-      client-side timeout, unless agentBroker.networkPolicy.egress is
+      agent: steps are configured (agentSnapshots.enabled, --agent-step-image,
+      or CONCOURSE_AGENT_STEP_IMAGE) but networkPolicy.hermeticEgressTo is
+      empty: an agent: node cannot reach a model endpoint and fails with only
+      a client-side timeout, unless agentBroker.networkPolicy.egress is
       configured instead. See values.yaml networkPolicy.hermeticEgressTo.
   {{- end }}
 spec:

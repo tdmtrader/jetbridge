@@ -420,8 +420,9 @@ networkPolicy:
   # all containers in the pod, including the main process and sidecars.
   hermeticEgressTo: []
   # Example: allow an in-cluster model egress proxy on TCP 8443, plus DNS to
-  # resolve it by name (omit the DNS rule if the endpoint is an IP literal
-  # or reached via podSelector, as below, rather than by hostname):
+  # resolve it by name (omit the DNS rule only if the client addresses the
+  # endpoint by IP literal; a podSelector peer, as below, does not remove the
+  # need for DNS, since the client still resolves the Service name):
   #   - to:
   #       - podSelector:
   #           matchLabels:
