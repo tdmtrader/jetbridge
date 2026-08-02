@@ -1392,7 +1392,35 @@ task-only deployment, but on one that runs agent: nodes it produces a
 five-minute hang and a bare 'Request timed out' with no other signal."
 ```
 
-## Task 9: Fail fast when the runner's CLI cannot take the flags the runner passes
+## Task 9: Name image skew instead of surfacing a raw CLI flag error
+
+**Approach replaced during execution.** This task originally specified a
+`claude --help` preflight. Review of the implemented version killed it on
+evidence, and the replacement is described at the end of this section:
+
+- **It could not fail fast.** The check lands after prompt assembly, skills
+  materialization, the 60s sidecar health wait, and the MCP config write —
+  milliseconds before exec. The pod is fully launched either way, so the only
+  value was message wording and the only saving was ~1s of a doomed process.
+- **`--help` is not a sound oracle for this CLI.** Verified against the
+  installed binary: `--max-turns` is *accepted but absent from `--help`*.
+  Extending the flag list — which a plural function name and a `[]string`
+  parameter invite — would hard-fail every healthy run that sets `max_turns`.
+  A substring match also hits other options' descriptions, so it has a
+  false-negative mode too.
+- **The message never reached the operator.** Returning early bypassed the
+  flight recorder, so a stream with `step.start` and no `step.end` ingests as
+  `"event stream ended without step.end"` and the skew message existed only in
+  pod stderr — the exact "three hops away" problem (F11) this plan exists to
+  fix.
+
+The replacement captures a bounded tail of the CLI's stderr and rewrites
+Commander's own `unknown option '--flag'` into the skew message, routed through
+the flight recorder. The CLI is then its own oracle: zero false positives,
+every conditional flag covered automatically, no extra subprocess, and no
+knowledge about flags stored anywhere.
+
+### Original specification (superseded, kept for the reasoning)
 
 The runner passes `--max-budget-usd` whenever a step declares a positive budget slice. The deployed agent-runner image's CLI predates that flag, so the run died with `error: unknown option '--max-budget-usd'` after a full pod launch. Runner-image staleness is a recurring incident class in this deployment, and the same shape hides the already-fixed `initialize` handshake (F20) until the image is rebuilt.
 

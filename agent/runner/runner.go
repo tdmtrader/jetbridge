@@ -12,7 +12,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -45,32 +44,83 @@ var claudeWaitDelay = 5 * time.Second
 
 const maxSummaryChars = 500
 
-// maxBudgetFlag is the CLI flag the runner passes when a step declares a
-// positive budget slice. It is the one flag known to have caused agent-runner
-// image skew in practice (a dispatched step died with `error: unknown option
-// '--max-budget-usd'` after a full pod launch), so it is also the one
-// verifyCLISupportsFlags checks for before invoking the CLI.
-const maxBudgetFlag = "--max-budget-usd"
+// claudeStderrTailCap bounds how much of claude's stderr the runner retains
+// for outcome diagnosis. Commander (the CLI's argument parser) writes its
+// "unknown option" rejection as the first and only line before the process
+// exits, so a modest cap is enough; the cap exists so an unrelated, verbose
+// failure can never make this buffer grow without bound.
+const claudeStderrTailCap = 4096
 
-// verifyCLISupportsFlags reports a flag the runner intends to pass that the
-// CLI in this image does not accept, per the CLI's own --help output.
-//
-// The failure it prevents is image skew: agent-runner is built from this
-// repository but the claude CLI inside it is pinned separately
-// (deploy/agent-runner/Dockerfile), so a runner change can start passing a
-// flag the deployed image has never heard of. The raw failure is one line of
-// CLI stderr after a full pod launch and a budget round trip, and it looks
-// nothing like "your image is old".
-func verifyCLISupportsFlags(help string, flags []string) error {
-	for _, flag := range flags {
-		if !strings.Contains(help, flag) {
-			return fmt.Errorf(
-				"the claude CLI in this agent-runner image does not support %s; "+
-					"rebuild the agent-runner image from this commit (build-agent-runner-image) "+
-					"or remove the setting that requires the flag", flag)
-		}
+// unknownOptionPattern recognizes Commander's flag-rejection message.
+// Confirmed stable against the pinned CLI (claude-code 2.0.1): `claude
+// --definitely-not-a-flag -p hi` fails with `error: unknown option
+// '--definitely-not-a-flag'`.
+var unknownOptionPattern = regexp.MustCompile(`unknown option '(--[a-zA-Z0-9-]+)'`)
+
+// boundedTailWriter is an io.Writer that retains only the most recently
+// written claudeStderrTailCap-ish bytes, so capturing a subprocess's stderr
+// for diagnosis can never grow without bound regardless of how much output
+// the subprocess produces.
+type boundedTailWriter struct {
+	cap int
+	buf []byte
+}
+
+func newBoundedTailWriter(cap int) *boundedTailWriter {
+	return &boundedTailWriter{cap: cap}
+}
+
+func (w *boundedTailWriter) Write(p []byte) (int, error) {
+	w.buf = append(w.buf, p...)
+	// Trim only once the buffer has grown to twice the cap, rather than on
+	// every write, so repeated small writes stay amortized O(n) instead of
+	// re-copying the tail on each call.
+	if len(w.buf) > w.cap*2 {
+		w.buf = append([]byte(nil), w.buf[len(w.buf)-w.cap:]...)
 	}
-	return nil
+	return len(p), nil
+}
+
+// tail returns the most recent cap bytes written (or fewer, if less than cap
+// bytes have been written in total).
+func (w *boundedTailWriter) tail() string {
+	if len(w.buf) <= w.cap {
+		return string(w.buf)
+	}
+	return string(w.buf[len(w.buf)-w.cap:])
+}
+
+// diagnoseImageSkew rewrites a claude process failure whose captured stderr
+// shows Commander rejecting a flag the runner passed into a message that
+// names the flag, where its version is pinned, and both escape hatches —
+// instead of the generic "exit status 1" the caller would otherwise report
+// (Wait()'s error carries only the process exit status; the useful text is
+// in stderr, which callers otherwise never see past pod logs).
+//
+// This stores no knowledge of which flags the runner conditionally passes:
+// the CLI is its own oracle, so every conditional flag (--max-turns,
+// --max-budget-usd, --append-system-prompt, --mcp-config,
+// --strict-mcp-config, ...) is covered automatically, and a flag that is
+// accepted but hidden from --help (true of --max-turns in claude-code 2.0.1)
+// can never cause a false positive the way a --help-based preflight would.
+// If stderrTail does not contain a recognizable Commander rejection, runErr
+// is returned unchanged — an unrelated failure must never be misattributed
+// to image skew.
+func diagnoseImageSkew(runErr error, stderrTail string) error {
+	if runErr == nil {
+		return nil
+	}
+	m := unknownOptionPattern.FindStringSubmatch(stderrTail)
+	if m == nil {
+		return runErr
+	}
+	flag := m[1]
+	return fmt.Errorf(
+		"the claude CLI in this agent-runner image does not support %s; its version is pinned in "+
+			"deploy/agent-runner/Dockerfile — rebuild the agent-runner image if that pin is newer than "+
+			"what's actually deployed, otherwise bump the pin so it supports %s, or remove the step "+
+			"configuration that adds this flag",
+		flag, flag)
 }
 
 const (
@@ -522,7 +572,7 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 		args = append(args, "--max-turns", strconv.Itoa(cfg.MaxTurns))
 	}
 	if cfg.BudgetSliceUSD > 0 {
-		args = append(args, maxBudgetFlag, strconv.FormatFloat(cfg.BudgetSliceUSD, 'f', -1, 64))
+		args = append(args, "--max-budget-usd", strconv.FormatFloat(cfg.BudgetSliceUSD, 'f', -1, 64))
 	}
 	if systemPrompt != "" {
 		args = append(args, "--append-system-prompt", systemPrompt)
@@ -545,34 +595,22 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 	args = append(args, "--mcp-config", mcpConfigPath, "--strict-mcp-config")
 
 	adapter := cfg.Adapter
+	// claudeStderrTail captures a bounded copy of claude's stderr alongside
+	// the pod-log copy, so a process failure can be diagnosed from the CLI's
+	// own error text (see diagnoseImageSkew below). It stays nil for any
+	// non-nil cfg.Adapter (fakes, future provider adapters): there is no
+	// real claude subprocess to diagnose in that case.
+	var claudeStderrTail *boundedTailWriter
 	if adapter == nil {
 		claudePath := cfg.ClaudePath
 		if claudePath == "" {
 			claudePath = "claude"
 		}
-		// agent-runner is built from this repository but the claude CLI
-		// inside the image is pinned separately (deploy/agent-runner/Dockerfile).
-		// A runner change can start passing a flag the deployed image has
-		// never heard of; the raw failure is one line of CLI stderr —
-		// "error: unknown option '--max-budget-usd'" — after a full pod
-		// launch and a budget round trip, and it says nothing about the
-		// image being stale. Only check flags that are conditional on step
-		// configuration, and only when they will actually be passed, so a
-		// run that doesn't need the flag never pays for the check.
-		if cfg.BudgetSliceUSD > 0 {
-			if helpOutput, helpErr := exec.CommandContext(ctx, claudePath, "--help").CombinedOutput(); helpErr == nil {
-				if err := verifyCLISupportsFlags(string(helpOutput), []string{maxBudgetFlag}); err != nil {
-					return 2, err
-				}
-			}
-			// A --help failure (missing binary, non-zero exit, timeout) is
-			// deliberately ignored here: this check exists to improve a
-			// diagnosis and must never be the thing that fails a healthy run.
-		}
+		claudeStderrTail = newBoundedTailWriter(claudeStderrTailCap)
 		adapter = legacyClaudeAdapter{
 			path: claudePath, args: args,
 			env:    claudeEnv(os.Environ(), cfg.ModelTokenKind),
-			stderr: stderr, waitDelay: claudeWaitDelay,
+			stderr: io.MultiWriter(stderr, claudeStderrTail), waitDelay: claudeWaitDelay,
 		}
 	}
 	if err := adapter.Identity().Validate(); err != nil {
@@ -625,6 +663,9 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 	}
 	stream := providerResult.Stream
 	if runErr != nil {
+		if claudeStderrTail != nil {
+			runErr = diagnoseImageSkew(runErr, claudeStderrTail.tail())
+		}
 		label := "provider"
 		if _, legacy := adapter.(legacyClaudeAdapter); legacy {
 			label = "claude"

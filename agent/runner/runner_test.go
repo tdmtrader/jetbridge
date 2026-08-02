@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -20,18 +21,10 @@ import (
 	schema "github.com/concourse/concourse/agent/schema"
 )
 
-// stubClaudeHelp is the --help response our stub `claude` scripts give. It
-// stands in for the real CLI's flag listing, so it must name every flag the
-// runner conditionally passes (currently just --max-budget-usd) or the
-// image-skew preflight in Run() will treat a healthy stub as a stale image.
-const stubClaudeHelp = "Usage: claude [options]\n  --model <m>\n  --max-turns <n>\n  --max-budget-usd <usd>\n"
-
 func writeStubClaude(t *testing.T, dir, envelope string) string {
 	t.Helper()
 	path := filepath.Join(dir, "claude")
-	script := "#!/bin/sh\n" +
-		"if [ \"$1\" = \"--help\" ]; then printf '%s' '" + stubClaudeHelp + "'; exit 0; fi\n" +
-		"echo '" + envelope + "'\n"
+	script := "#!/bin/sh\necho '" + envelope + "'\n"
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -134,9 +127,7 @@ func TestRunHardCapsClaudeAtTheAuthoredBudgetSlice(t *testing.T) {
 	argsFile := filepath.Join(dir, "claude-args")
 	claude := filepath.Join(dir, "claude")
 	envelope := `{"type":"result","subtype":"success","result":"\"done\"","model":"m1","cost_usd":0.25,"num_turns":1,"is_error":false,"usage":{"input_tokens":1,"output_tokens":1}}`
-	script := "#!/bin/sh\n" +
-		"if [ \"$1\" = \"--help\" ]; then printf '%s' '" + stubClaudeHelp + "'; exit 0; fi\n" +
-		"printf '%s\\n' \"$@\" > '" + argsFile + "'\necho '" + envelope + "'\n"
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > '" + argsFile + "'\necho '" + envelope + "'\n"
 	if err := os.WriteFile(claude, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -371,6 +362,174 @@ func TestRunMapsCLIErrorToErrorStatus(t *testing.T) {
 	}
 	if exit != 2 {
 		t.Fatalf("expected exit 2 (error), got %d", exit)
+	}
+}
+
+// writeFailingStubClaude writes a `claude` that exits non-zero after printing
+// stderrText, without ever writing a stdout envelope — the shape of a
+// Commander argument-parsing failure (and of any other early process death).
+// stderrText is embedded via a quoted heredoc so it reaches stderr verbatim,
+// with no shell interpretation.
+func writeFailingStubClaude(t *testing.T, dir, stderrText string) string {
+	t.Helper()
+	path := filepath.Join(dir, "claude")
+	script := "#!/bin/sh\ncat <<'STDERR_EOF' 1>&2\n" + stderrText + "\nSTDERR_EOF\nexit 1\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// Regression for the image-skew incident: a dispatched budgeted step died
+// with `error: unknown option '--max-budget-usd'` after a full pod launch,
+// and the only trace of the real cause was one line of pod stderr — the
+// summary/step.end the operator actually looks at said the useless generic
+// "exit status 1". Run() must rewrite the CLI's own Commander rejection into
+// a diagnosis that names the flag and the fix, and it must reach both
+// results.json and the step.end event, not just stderr.
+func TestRunRewritesUnknownOptionAsImageSkew(t *testing.T) {
+	dir := t.TempDir()
+	flight := filepath.Join(dir, "flight")
+	os.MkdirAll(flight, 0o755)
+	claude := writeFailingStubClaude(t, dir, "error: unknown option '--max-budget-usd'")
+
+	exit, err := runner.Run(context.Background(), runner.Config{
+		Prompt: "p", FlightDir: flight, WorkDir: dir, StepName: "s", ClaudePath: claude,
+		BudgetSliceUSD: 1.5,
+		Stdout:         new(bytes.Buffer), Stderr: new(bytes.Buffer),
+	})
+	if err != nil {
+		t.Fatalf("Run() returned an error instead of a step outcome: %v", err)
+	}
+	if exit != 2 {
+		t.Fatalf("expected exit 2 (error), got %d", exit)
+	}
+
+	raw, readErr := os.ReadFile(filepath.Join(flight, "results.json"))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	var results schema.Results
+	if err := json.Unmarshal(raw, &results); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(results.Summary, "--max-budget-usd") {
+		t.Errorf("results.json summary does not name the flag: %q", results.Summary)
+	}
+	if !strings.Contains(results.Summary, "deploy/agent-runner/Dockerfile") {
+		t.Errorf("results.json summary does not name the pin location: %q", results.Summary)
+	}
+	if strings.Contains(results.Summary, "exit status") {
+		t.Errorf("results.json summary leaked the raw process error: %q", results.Summary)
+	}
+
+	events := readEvents(t, flight)
+	var stepEnd *schema.StepEndData
+	for _, e := range events {
+		if e.Type == schema.EventStepEnd {
+			var data schema.StepEndData
+			if err := json.Unmarshal(e.Data, &data); err != nil {
+				t.Fatal(err)
+			}
+			stepEnd = &data
+		}
+	}
+	if stepEnd == nil {
+		t.Fatal("no step.end event recorded")
+	}
+	if !strings.Contains(stepEnd.Summary, "--max-budget-usd") {
+		t.Errorf("step.end summary does not name the flag: %q", stepEnd.Summary)
+	}
+	if strings.Contains(stepEnd.Summary, "exit status") {
+		t.Errorf("step.end summary leaked the raw process error: %q", stepEnd.Summary)
+	}
+}
+
+// An unrelated claude failure (crash, unrelated CLI error, timeout) must
+// never be misattributed to image skew — false attribution would send an
+// operator chasing a stale image that isn't the problem.
+func TestRunDoesNotRewriteUnrelatedClaudeFailure(t *testing.T) {
+	dir := t.TempDir()
+	flight := filepath.Join(dir, "flight")
+	os.MkdirAll(flight, 0o755)
+	claude := writeFailingStubClaude(t, dir, "fatal: something else entirely broke")
+
+	exit, err := runner.Run(context.Background(), runner.Config{
+		Prompt: "p", FlightDir: flight, WorkDir: dir, StepName: "s", ClaudePath: claude,
+		Stdout: new(bytes.Buffer), Stderr: new(bytes.Buffer),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exit != 2 {
+		t.Fatalf("expected exit 2 (error), got %d", exit)
+	}
+
+	raw, readErr := os.ReadFile(filepath.Join(flight, "results.json"))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	var results schema.Results
+	if err := json.Unmarshal(raw, &results); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(results.Summary, "agent-runner image does not support") {
+		t.Errorf("unrelated failure was misattributed to image skew: %q", results.Summary)
+	}
+}
+
+// Run against a claude process that emits megabytes of unrelated stderr
+// before failing must still behave normally: complete promptly, still exit
+// 2, and not misattribute the failure to image skew. This is a coarse,
+// black-box smoke check — it is NOT a precise proof that the internal
+// capture buffer is bounded, because a Go []byte append grows in amortized
+// O(1) regardless of a final cap, so an accidentally-unbounded buffer is not
+// reliably slower at this scale; it just uses more memory, which a wall-clock
+// assertion in a black-box test cannot observe without OS-level
+// instrumentation. The precise invariant — the internal buffer never exceeds
+// 2x its cap — is pinned by TestBoundedTailWriterNeverGrowsPastTwiceItsCap in
+// stderr_tail_internal_test.go, which has direct access to the unexported
+// buffer and is the test that actually catches "the trim was removed."
+func TestRunCapturedClaudeStderrTailIsBounded(t *testing.T) {
+	dir := t.TempDir()
+	flight := filepath.Join(dir, "flight")
+	os.MkdirAll(flight, 0o755)
+	claude := filepath.Join(dir, "claude")
+	// ~8MB of unrelated stderr noise, written in a loop so it arrives across
+	// many small writes rather than a single big one.
+	script := "#!/bin/sh\ni=0\nwhile [ $i -lt 8000 ]; do printf '%01000d\\n' 0; i=$((i+1)); done 1>&2\nexit 1\n"
+	if err := os.WriteFile(claude, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	start := time.Now()
+	exit, err := runner.Run(context.Background(), runner.Config{
+		Prompt: "p", FlightDir: flight, WorkDir: dir, StepName: "s", ClaudePath: claude,
+		Stdout: new(bytes.Buffer), Stderr: io.Discard,
+	})
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exit != 2 {
+		t.Fatalf("expected exit 2 (error), got %d", exit)
+	}
+	// A generous floor against gross pathological behavior (e.g. an O(n^2)
+	// byte-by-byte copy), not a tight bound.
+	if elapsed > 5*time.Second {
+		t.Fatalf("Run() took %s against 8MB of stderr", elapsed)
+	}
+
+	raw, readErr := os.ReadFile(filepath.Join(flight, "results.json"))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	var results schema.Results
+	if err := json.Unmarshal(raw, &results); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(results.Summary, "agent-runner image does not support") {
+		t.Errorf("unrelated large stderr was misattributed to image skew: %q", results.Summary)
 	}
 }
 
