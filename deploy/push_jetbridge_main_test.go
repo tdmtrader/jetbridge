@@ -19,7 +19,7 @@ func newPushJetbridgeMainFixture(t *testing.T) *pushJetbridgeMainFixture {
 	seed := filepath.Join(dir, "seed")
 	release := filepath.Join(dir, "release")
 
-	runGit(t, dir, "init", "--bare", origin)
+	runGit(t, dir, "init", "--bare", "-b", "main", origin)
 	runGit(t, dir, "init", "-b", "main", seed)
 	writeFixtureFile(t, filepath.Join(seed, "README.md"), "M0\n")
 	runGit(t, seed, "add", "README.md")
