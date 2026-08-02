@@ -1068,7 +1068,7 @@
 
 - Consumes: the exact builder-produced file
   `runner-image-metadata/verified-image.env`, whose three newline-terminated
-  records are `CONCOURSE_AGENT_STEP_IMAGE=ghcr.io/tdmtrader/agent-runner@sha256:<64 lowercase hex>`,
+  records are `CONCOURSE_AGENT_STEP_IMAGE=registry.home/agent-runner@sha256:<64 lowercase hex>`,
   `SOURCE_COMMIT=<40 lowercase hex>`, and `RUNNER_VERSION=<major.minor.patch>`.
 - Consumes: the native `home-infra` Concourse Git resource with source URI
   `https://github.com/tdmtrader/home-infra.git`, branch `main`, username
@@ -1085,7 +1085,7 @@
   `put: home-infra` with `rebase: true` and `timeout: 5m`; equal value is an
   exit-0 no-op and no commit. No helper path performs clone, fetch, auth, push,
   or force-push.
-- Enforces: `ghcr.io/tdmtrader/agent-runner@sha256:<64 lowercase hex>` is the
+- Enforces: `registry.home/agent-runner@sha256:<64 lowercase hex>` is the
   only accepted image; one and only one inline mapping
   `- { name: CONCOURSE_AGENT_STEP_IMAGE, value: "..." }` in the fixed file is
   changed; malformed image/source/version input, a mutable reference, a
@@ -1105,7 +1105,7 @@
   ```yaml
   web:
     env:
-      - { name: CONCOURSE_AGENT_STEP_IMAGE, value: "ghcr.io/tdmtrader/agent-runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }
+      - { name: CONCOURSE_AGENT_STEP_IMAGE, value: "registry.home/agent-runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }
   ```
 
   Run the helper through `sh deploy/write-agent-runner-home-infra.sh "$image"
@@ -1157,7 +1157,7 @@
   runner_version=${3-}
   repo=${4-home-infra}
   file=apps/concourse.yaml
-  image_re='^ghcr.io/tdmtrader/agent-runner@sha256:[a-f0-9]{64}$'
+  image_re='^registry.home/agent-runner@sha256:[a-f0-9]{64}$'
   source_re='^[a-f0-9]{40}$'
   version_re='^[0-9]+\.[0-9]+\.[0-9]+$'
   printf '%s\n' "$image" | grep -Eq "$image_re" || {
@@ -1247,7 +1247,7 @@
   CONCOURSE_AGENT_STEP_IMAGE=$(sed -n 's/^CONCOURSE_AGENT_STEP_IMAGE=//p' runner-image-metadata/verified-image.env)
   SOURCE_COMMIT=$(sed -n 's/^SOURCE_COMMIT=//p' runner-image-metadata/verified-image.env)
   RUNNER_VERSION=$(sed -n 's/^RUNNER_VERSION=//p' runner-image-metadata/verified-image.env)
-  printf '%s\n' "$CONCOURSE_AGENT_STEP_IMAGE" | grep -Eq '^ghcr.io/tdmtrader/agent-runner@sha256:[a-f0-9]{64}$'
+  printf '%s\n' "$CONCOURSE_AGENT_STEP_IMAGE" | grep -Eq '^registry.home/agent-runner@sha256:[a-f0-9]{64}$'
   printf '%s\n' "$SOURCE_COMMIT" | grep -Eq '^[a-f0-9]{40}$'
   printf '%s\n' "$RUNNER_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'
   test "$SOURCE_COMMIT" = "$(git -C repo rev-parse HEAD)"
@@ -1342,7 +1342,7 @@
 
   ```bash
   WANT_IMAGE=$(sed -n 's/^CONCOURSE_AGENT_STEP_IMAGE=//p' verified-image.env)
-  printf '%s\n' "$WANT_IMAGE" | grep -Eq '^ghcr.io/tdmtrader/agent-runner@sha256:[a-f0-9]{64}$'
+  printf '%s\n' "$WANT_IMAGE" | grep -Eq '^registry.home/agent-runner@sha256:[a-f0-9]{64}$'
   argocd app get concourse --refresh --hard -n argocd -o json \
     | jq -e '.status.sync.status == "Synced" and .status.health.status == "Healthy"'
   kubectl -n cicd get deploy concourse-web -o json \
@@ -1411,7 +1411,7 @@
   VERIFIED_IMAGE=$(sed -n 's/^CONCOURSE_AGENT_STEP_IMAGE=//p' verified-image.env)
   VERIFIED_SOURCE_COMMIT=$(sed -n 's/^SOURCE_COMMIT=//p' verified-image.env)
   VERIFIED_RUNNER_VERSION=$(sed -n 's/^RUNNER_VERSION=//p' verified-image.env)
-  printf '%s\n' "$VERIFIED_IMAGE" | grep -Eq '^ghcr.io/tdmtrader/agent-runner@sha256:[a-f0-9]{64}$'
+  printf '%s\n' "$VERIFIED_IMAGE" | grep -Eq '^registry.home/agent-runner@sha256:[a-f0-9]{64}$'
   printf '%s\n' "$VERIFIED_SOURCE_COMMIT" | grep -Eq '^[a-f0-9]{40}$'
   printf '%s\n' "$VERIFIED_RUNNER_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'
   argocd app get concourse --refresh --hard -n argocd -o json \

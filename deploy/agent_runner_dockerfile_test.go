@@ -253,7 +253,7 @@ func TestAgentRunnerWritebackRunbookOrdersArgoActivation(t *testing.T) {
 	for _, required := range []string{
 		"rebase: true",
 		"force push",
-		"^ghcr.io/tdmtrader/agent-runner@sha256:[a-f0-9]{64}$",
+		"^registry.home/agent-runner@sha256:[a-f0-9]{64}$",
 		"argocd app get concourse --refresh --hard -n argocd -o json",
 		"kubectl -n cicd rollout status deploy/concourse-web --timeout=10m",
 	} {

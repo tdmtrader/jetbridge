@@ -9,9 +9,9 @@ import (
 )
 
 const (
-	seedRunnerImage = "ghcr.io/tdmtrader/agent-runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	bRunnerImage    = "ghcr.io/tdmtrader/agent-runner@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-	cRunnerImage    = "ghcr.io/tdmtrader/agent-runner@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+	seedRunnerImage = "registry.home/agent-runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	bRunnerImage    = "registry.home/agent-runner@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	cRunnerImage    = "registry.home/agent-runner@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 	sourceCommit    = "0123456789abcdef0123456789abcdef01234567"
 	runnerVersion   = "0.2.222"
 )
@@ -157,8 +157,8 @@ func TestWriteAgentRunnerHomeInfra(t *testing.T) {
 		cases := []struct{ image, source, version string }{
 			{"ghcr.io/tdmtrader/agent-runner:latest", sourceCommit, runnerVersion},
 			{"ghcr.io/example/agent-runner@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", sourceCommit, runnerVersion},
-			{"ghcr.io/tdmtrader/agent-runner@sha256:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB", sourceCommit, runnerVersion},
-			{"ghcr.io/tdmtrader/agent-runner@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", sourceCommit, runnerVersion},
+			{"registry.home/agent-runner@sha256:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB", sourceCommit, runnerVersion},
+			{"registry.home/agent-runner@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", sourceCommit, runnerVersion},
 			{bRunnerImage, "0123", runnerVersion},
 			{bRunnerImage, "0123456789ABCDEF0123456789ABCDEF01234567", runnerVersion},
 			{bRunnerImage, sourceCommit, "v0.2.222"},

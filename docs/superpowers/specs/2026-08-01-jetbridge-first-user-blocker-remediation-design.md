@@ -328,7 +328,7 @@ verified immutable image, exact 40-lowercase-hex source commit, and
 after all image gates and mutable-tag pushes complete. A separate unprivileged
 pipeline task consumes that metadata and the checked-out `home-infra` resource,
 then calls `deploy/write-agent-runner-home-infra.sh`. The helper accepts only
-`ghcr.io/tdmtrader/agent-runner@sha256:<64 lowercase hex>`, counts exactly one
+`registry.home/agent-runner@sha256:<64 lowercase hex>`, counts exactly one
 inline YAML mapping whose `name` is `CONCOURSE_AGENT_STEP_IMAGE`, and replaces
 only that mapping's quoted `value` in `apps/concourse.yaml`. It fails before
 committing on malformed image/source/version input, a mutable reference, a

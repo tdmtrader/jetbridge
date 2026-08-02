@@ -108,7 +108,7 @@ same reasoning applies to hermetic `task:` steps, not only agent steps. A
 wrapped error would also improve `fly agent nodes show-run`, which now reads
 the terminating error event.
 
-## 5. The agent-runner writeback pins an image the cluster cannot pull — OPEN, recurring
+## 5. The agent-runner writeback pins an image the cluster cannot pull — CLOSED 2026-08-02
 
 `build-agent-runner-image` writes the new digest into home-infra
 `apps/concourse.yaml` itself. On 2026-08-01 it wrote
@@ -130,12 +130,26 @@ without credentials.
 next `build-agent-runner-image` run will reintroduce the GHCR value and break
 every agent pod again.
 
-Do one of: have the writeback emit the `registry.home` reference; add a GHCR
-pull secret wherever ATC-created pods will actually honour it; or make the
-package public. Prove it by triggering the job and then running an agent node
-end to end — the failure is invisible until a pod is scheduled. The project's
-notes record "GHCR classic-PAT" as a recurring failure of this chain, so treat
-this as a recurrence rather than a new problem.
+**Fixed 2026-08-02** by making the writeback emit the in-cluster reference.
+The job still builds, pushes, digest-verifies, immutable-pulls and
+platform-inspects through GHCR exactly as before; it then mirrors the same
+commit tag to `registry.home`, **asserts the two registries return the same
+digest**, and writes `registry.home/agent-runner@<digest>`. Because the digest
+is content-addressed, that equality is the whole proof the pullable reference
+is the byte-identical image just verified. GHCR remains the offsite mirror.
+
+The `^ghcr\.io/…` assertion was carried in five places, all updated together:
+the writeback task, the unprivileged validator, `write-agent-runner-home-infra.sh`,
+`deploy/agent_runner_dockerfile_test.go` /
+`deploy/write_agent_runner_home_infra_test.go`, and the runbook and design doc
+that gate promotion on it. Leaving any one behind would have failed the job or
+silently reintroduced the unpullable value.
+
+The alternative fixes — a GHCR pull secret, or making the package public — were
+not taken. A pull secret has to reach pods ATC builds itself rather than the
+chart, so it would need to hang off the namespace default ServiceAccount and
+would be a credential that must exist and stay valid for a pod to start at all;
+pulling from the registry already inside the cluster needs no credential.
 
 ## 6. Reviewer finds the right code and misjudges it — OPEN, experiment not fix
 

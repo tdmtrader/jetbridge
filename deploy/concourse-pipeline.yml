@@ -779,11 +779,35 @@ jobs:
           kubectl exec -n cicd "${BUILDER_POD}" -- docker push ${GHCR}:latest
           kubectl exec -n cicd "${BUILDER_POD}" -- docker push ${GHCR}:v${NEXT_VERSION}
 
+          # The deployed reference must name a registry THIS CLUSTER CAN PULL.
+          # GHCR is where the image is verified above, but the package is
+          # private and neither the web pod nor the default ServiceAccount that
+          # ATC-created agent pods inherit carries a credential for it — on
+          # 2026-08-01 a ghcr.io writeback put every agent pod into
+          # ErrImagePull, and it took a hand override of this row in home-infra
+          # to recover. Push the same commit tag to the in-cluster registry,
+          # prove the two registries agree on the digest, and write the
+          # in-cluster reference. GHCR remains the offsite mirror; the digest
+          # is content-addressed, so equality is the whole proof that the
+          # pullable reference is the byte-identical image just verified.
+          echo "=== Mirroring the exact commit tag to the in-cluster registry ==="
+          LOCAL_IMAGE="registry.home/agent-runner:${SHORT_SHA}"
+          kubectl exec -n cicd "${BUILDER_POD}" -- docker tag "${IMAGE}" "${LOCAL_IMAGE}"
+          LOCAL_PUSH_OUTPUT=$(kubectl exec -n cicd "${BUILDER_POD}" -- docker push "${LOCAL_IMAGE}")
+          printf '%s\n' "${LOCAL_PUSH_OUTPUT}"
+          LOCAL_DIGEST=$(printf '%s\n' "${LOCAL_PUSH_OUTPUT}" | sed -n 's/.*digest: \(sha256:[a-f0-9]\{64\}\).*/\1/p' | tail -1)
+          if test "${LOCAL_DIGEST}" != "${DIGEST}"; then
+            echo "FATAL: in-cluster digest ${LOCAL_DIGEST} does not match verified ${DIGEST}"
+            exit 1
+          fi
+          DEPLOYABLE_IMAGE="registry.home/agent-runner@${DIGEST}"
+          kubectl exec -n cicd "${BUILDER_POD}" -- docker pull --platform linux/amd64 "${DEPLOYABLE_IMAGE}"
+
           umask 077
           printf 'CONCOURSE_AGENT_STEP_IMAGE=%s\nSOURCE_COMMIT=%s\nRUNNER_VERSION=%s\n' \
-            "${IMMUTABLE_IMAGE}" "$(git rev-parse HEAD)" "${NEXT_VERSION}" \
+            "${DEPLOYABLE_IMAGE}" "$(git rev-parse HEAD)" "${NEXT_VERSION}" \
             > ../runner-image-metadata/verified-image.env
-          grep -Eq '^CONCOURSE_AGENT_STEP_IMAGE=ghcr.io/tdmtrader/agent-runner@sha256:[a-f0-9]{64}$' ../runner-image-metadata/verified-image.env
+          grep -Eq '^CONCOURSE_AGENT_STEP_IMAGE=registry.home/agent-runner@sha256:[a-f0-9]{64}$' ../runner-image-metadata/verified-image.env
           grep -Eq '^SOURCE_COMMIT=[a-f0-9]{40}$' ../runner-image-metadata/verified-image.env
           grep -Eq '^RUNNER_VERSION=[0-9]+\.[0-9]+\.[0-9]+$' ../runner-image-metadata/verified-image.env
           echo "CONCOURSE_AGENT_STEP_IMAGE=${IMMUTABLE_IMAGE}"
@@ -812,7 +836,7 @@ jobs:
           CONCOURSE_AGENT_STEP_IMAGE=$(sed -n 's/^CONCOURSE_AGENT_STEP_IMAGE=//p' runner-image-metadata/verified-image.env)
           SOURCE_COMMIT=$(sed -n 's/^SOURCE_COMMIT=//p' runner-image-metadata/verified-image.env)
           RUNNER_VERSION=$(sed -n 's/^RUNNER_VERSION=//p' runner-image-metadata/verified-image.env)
-          printf '%s\n' "$CONCOURSE_AGENT_STEP_IMAGE" | grep -Eq '^ghcr.io/tdmtrader/agent-runner@sha256:[a-f0-9]{64}$'
+          printf '%s\n' "$CONCOURSE_AGENT_STEP_IMAGE" | grep -Eq '^registry.home/agent-runner@sha256:[a-f0-9]{64}$'
           printf '%s\n' "$SOURCE_COMMIT" | grep -Eq '^[a-f0-9]{40}$'
           printf '%s\n' "$RUNNER_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'
           test "$SOURCE_COMMIT" = "$(git -C repo rev-parse HEAD)"

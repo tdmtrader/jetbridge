@@ -196,7 +196,7 @@ this sequence, **in this order**:
    `build-agent-runner-image` job for the exact commit being deployed. Require
    `/usr/local/bin/agent-runner-image-smoke` to pass in the exact commit-tagged
    image. Its final `verified-image.env` is the authority: it must contain one
-   `CONCOURSE_AGENT_STEP_IMAGE=ghcr.io/tdmtrader/agent-runner@sha256:<64 lowercase hex>`
+   `CONCOURSE_AGENT_STEP_IMAGE=registry.home/agent-runner@sha256:<64 lowercase hex>`
    record for the deployment commit. A positive budget slice
    is unsupported unless this smoke has proved the packaged Claude CLI accepts
    `--max-budget-usd`.
@@ -212,7 +212,7 @@ this sequence, **in this order**:
 
    ```bash
    WANT_IMAGE=$(sed -n 's/^CONCOURSE_AGENT_STEP_IMAGE=//p' verified-image.env)
-   printf '%s\n' "$WANT_IMAGE" | grep -Eq '^ghcr.io/tdmtrader/agent-runner@sha256:[a-f0-9]{64}$'
+   printf '%s\n' "$WANT_IMAGE" | grep -Eq '^registry.home/agent-runner@sha256:[a-f0-9]{64}$'
    argocd app get concourse --refresh --hard -n argocd -o json \
      | jq -e '.status.sync.status == "Synced" and .status.health.status == "Healthy"'
    kubectl -n cicd get deploy concourse-web -o json \
