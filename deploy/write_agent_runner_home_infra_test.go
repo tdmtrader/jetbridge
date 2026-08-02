@@ -302,7 +302,7 @@ func TestAgentRunnerPipelineWritesVerifiedHomeInfraDigest(t *testing.T) {
 			}
 			if step.Put == "home-infra" {
 				putIndex = stepIndex
-				if step.Timeout != "5m" || step.Params["repository"] != "home-infra" || step.Params["rebase"] != true || len(step.Params) != 2 {
+				if step.Timeout != "5m" || step.Params["repository"] != "home-infra-updated" || step.Params["rebase"] != true || len(step.Params) != 2 {
 					t.Errorf("home-infra put = %#v, want rebase-only 5m put", step)
 				}
 			}
@@ -324,12 +324,20 @@ func TestAgentRunnerPipelineWritesVerifiedHomeInfraDigest(t *testing.T) {
 	if len(inputs) != 3 || !inputs["repo"] || !inputs["home-infra"] || !inputs["runner-image-metadata"] {
 		t.Fatalf("writeback inputs = %#v", inputs)
 	}
+	if len(update.Config.Outputs) != 1 || update.Config.Outputs[0].Name != "home-infra-updated" {
+		t.Fatalf("writeback outputs = %#v, want distinct modified repository artifact", update.Config.Outputs)
+	}
 	updateScript := deployPipelineTaskScript(t, update)
-	for _, required := range []string{"sed -n 's/^CONCOURSE_AGENT_STEP_IMAGE=//p'", "SOURCE_COMMIT", "RUNNER_VERSION", "write-agent-runner-home-infra.sh", "test \"$SOURCE_COMMIT\" = \"$(git -C repo rev-parse HEAD)\""} {
+	for _, required := range []string{"sed -n 's/^CONCOURSE_AGENT_STEP_IMAGE=//p'", "SOURCE_COMMIT", "RUNNER_VERSION", "test \"$SOURCE_COMMIT\" = \"$(git -C repo rev-parse HEAD)\""} {
 		if !strings.Contains(updateScript, required) {
 			t.Errorf("writeback task lacks %q", required)
 		}
 	}
+	requireTextOrder(t, updateScript,
+		"cp -a home-infra/. home-infra-updated/",
+		"test -e home-infra-updated/.git",
+		"sh repo/deploy/write-agent-runner-home-infra.sh \"$CONCOURSE_AGENT_STEP_IMAGE\" \"$SOURCE_COMMIT\" \"$RUNNER_VERSION\" home-infra-updated",
+	)
 	for _, forbidden := range []string{"source ", ". runner-image-metadata", "set -x", "git push", "--force", "TOKEN", "http://", "https://"} {
 		if strings.Contains(updateScript, forbidden) {
 			t.Errorf("writeback task contains forbidden %q", forbidden)

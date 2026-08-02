@@ -787,6 +787,8 @@ jobs:
       - name: repo
       - name: home-infra
       - name: runner-image-metadata
+      outputs:
+      - name: home-infra-updated
       run:
         path: sh
         args:
@@ -804,11 +806,13 @@ jobs:
           printf '%s\n' "$SOURCE_COMMIT" | grep -Eq '^[a-f0-9]{40}$'
           printf '%s\n' "$RUNNER_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'
           test "$SOURCE_COMMIT" = "$(git -C repo rev-parse HEAD)"
-          sh repo/deploy/write-agent-runner-home-infra.sh "$CONCOURSE_AGENT_STEP_IMAGE" "$SOURCE_COMMIT" "$RUNNER_VERSION" home-infra
+          cp -a home-infra/. home-infra-updated/
+          test -e home-infra-updated/.git
+          sh repo/deploy/write-agent-runner-home-infra.sh "$CONCOURSE_AGENT_STEP_IMAGE" "$SOURCE_COMMIT" "$RUNNER_VERSION" home-infra-updated
   - put: home-infra
     timeout: 5m
     params:
-      repository: home-infra
+      repository: home-infra-updated
       rebase: true
 
 # Builds the pinned multi-harness broker companion for linux/amd64 and prints
