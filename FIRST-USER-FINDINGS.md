@@ -136,6 +136,25 @@ a field the guide never mentions doubles as the only debugging handle, and it
 drops you into classic-Concourse build-land. `show-run` should carry the
 terminal error line (here it would have been one string).
 
+### F12b 🔴 CONFIRMED ROOT CAUSE: the pinned Claude CLI has no
+`--max-budget-usd` at all, so no budgeted step can run
+Chased down while fixing F12. `deploy/agent-runner/Dockerfile` pins
+`@anthropic-ai/claude-code@2.0.1` (published 2025-09-30). Unpacking that exact
+version and grepping its bundle finds **zero** occurrences of
+`--max-budget-usd` or any `budget-usd` variant — the flag does not exist in
+the pinned release. So this is not a stale-deployment problem that a rebuild
+fixes: **every step declaring `budget_slice_usd` fails against the current
+pin, and rebuilding the image reinstalls 2.0.1 and fails identically.** The
+pin itself has to move (or budget slices have to stop being passed).
+That also means the deployment-wide daily budget cap cannot be used as
+designed: with a non-zero cap, every ordinary agent leaf is *required* to
+declare a positive slice, which is exactly what cannot run today.
+The same investigation confirmed `--max-turns` is registered with
+`.hideHelp()` — accepted but absent from `--help` — which is why a
+`--help`-based capability probe was rejected as unsound (see F12's fix).
+Not fixed here: changing the pin is a deliberate operational decision with its
+own verification, and this session's change only makes the failure legible.
+
 ### F12 🔴 Version skew: shipped node samples + current runner vs deployed agent-runner image
 First real agent dispatch failed with `error: unknown option '--max-budget-usd'`
 — the runner ([runner.go:496](agent/runner/runner.go:496)) passes the flag for
