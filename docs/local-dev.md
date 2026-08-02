@@ -1,5 +1,13 @@
 # Fully Local Development (no theborg / concourse.home)
 
+> **Colima was removed from this Mac on 2026-08-02**, which reclaimed
+> significant disk. Every tier below that needs Docker — Tier 2 onward —
+> therefore does not work as written until Colima (or another Docker provider)
+> is reinstalled. Use **theborg** for anything requiring Docker or a cluster in
+> the meantime; `docs/agentic/README.md` and the reusable-node guide describe
+> the `fly -t home` path against the live deployment. Tier 1 (unit tests) is
+> unaffected: it needs only Go and a local PostgreSQL.
+
 Verified 2026-07-11 on this Mac (Apple Silicon, 10 CPU / 24 GiB, Darwin 24.6,
 go 1.25.6, Colima, kind v1.35.0 node image, helm, kubectl). Everything below
 was actually run; anything not verified is explicitly marked.
