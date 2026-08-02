@@ -8,7 +8,20 @@ RUN CGO_ENABLED=0 go build -o /out/agent-output ./cmd/agent-output
 FROM node:20-bookworm-slim
 # Pin to the claude-code version the live theborg review job currently runs
 # (check a recent agent-review build log before bumping).
-RUN npm install -g @anthropic-ai/claude-code@2.0.1 \
+#
+# 2.0.1 -> 2.1.77: the previous pin did not implement --max-budget-usd at all
+# (verified by unpacking the published package: zero occurrences of any
+# budget-usd variant in cli.js). agent/runner passes that flag for any positive
+# budget_slice_usd, so EVERY budgeted agent step failed against 2.0.1 — and
+# rebuilding this image reinstalled 2.0.1 and failed identically. With a
+# non-zero deployment daily cap, every ordinary agent leaf is required to
+# declare a slice, so the cap could not be used at all.
+#
+# 2.1.77 is verified to contain both --max-budget-usd and --max-turns, and is
+# the version the operator's own machine runs. Verify the same way before any
+# future bump — do not trust --help, which hides --max-turns behind
+# .hideHelp(); unpack the package and grep cli.js.
+RUN npm install -g @anthropic-ai/claude-code@2.1.77 \
     && apt-get update && apt-get install -y --no-install-recommends git ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 # NOTE: the Elm 0.19.1 + uglify-js toolchain (WF-2, for front-end tickets) was

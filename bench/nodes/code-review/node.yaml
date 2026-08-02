@@ -24,7 +24,7 @@ step:
   # 404 not_found_error. The CLI alias "sonnet" resolves per CLI version.
   model: sonnet
   max_turns: 80
-  # budget_slice_usd deliberately omitted: the deployed agent-runner image's
-  # Claude CLI predates --max-budget-usd, so any positive slice fails the run
-  # ("error: unknown option '--max-budget-usd'"). Restore a slice once the
-  # runner image is rebuilt. See FIRST-USER-FINDINGS.md (F12).
+  # Restored once the agent-runner CLI pin moved to a version implementing
+  # --max-budget-usd (F12/F12b). A review of a large tree is the shape most
+  # likely to run away, so it gets a real cap.
+  budget_slice_usd: 5.0

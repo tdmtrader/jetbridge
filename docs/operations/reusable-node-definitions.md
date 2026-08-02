@@ -70,13 +70,17 @@ deployment daily budget cap enabled, every agent leaf needs a positive
 enabling the cap without giving every leaf a slice makes ordinary budget
 reservation fail closed — and a slice is independently the step's hard cap
 regardless of whether any deployment cap is set at all: the runner passes
-`--max-budget-usd` for any positive `budget_slice_usd`, cap or no cap. As
-currently pinned, the `@anthropic-ai/claude-code@2.0.1` CLI in
-`deploy/agent-runner/Dockerfile` does not implement `--max-budget-usd` at
-all, so a step that declares `budget_slice_usd` fails against that pin today
-— with or without a deployment cap. This is a property of the pinned CLI
-release, not a permanent platform limitation — moving the pin to a CLI
-version that supports the flag fixes it without any node change.
+`--max-budget-usd` for any positive `budget_slice_usd`, cap or no cap.
+
+The flag therefore has to exist in the CLI the agent-runner image installs.
+`deploy/agent-runner/Dockerfile` pins that version; it was pinned at
+`@anthropic-ai/claude-code@2.0.1`, which does not implement
+`--max-budget-usd` at all, so every budgeted step failed until the pin moved
+to `2.1.77`. Verify the same property before any future bump, and verify it
+by unpacking the published package and grepping `cli.js` — not with
+`--help`, which hides some real options (`--max-turns` is registered with
+`.hideHelp()`). If a step ever fails with an image-skew message naming a
+flag, that check is where to start.
 
 Node parameters are supplied to the step as **environment variables**, not
 interpolated into the prompt text: `CompiledNodeDefinition.Instantiate`

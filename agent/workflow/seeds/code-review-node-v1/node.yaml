@@ -27,11 +27,9 @@ capabilities:
 step:
   agent: review
   function_id: review
-  # budget_slice_usd is a valid per-run cap, but the agent-runner image's
-  # currently pinned Claude CLI (deploy/agent-runner/Dockerfile) does not
-  # implement --max-budget-usd at all, so this step fails outright against
-  # that pin ("error: unknown option '--max-budget-usd'") until the pin
-  # moves. See FIRST-USER-FINDINGS.md (F12, F12b).
+  # Per-run cap, passed to the CLI as --max-budget-usd. Requires an
+  # agent-runner image whose pinned Claude CLI implements that flag; the pin
+  # lives in deploy/agent-runner/Dockerfile.
   budget_slice_usd: 5
   prompt_file: prompts/review.md
   # "claude-sonnet" is not a real model identifier (the API answers 404);

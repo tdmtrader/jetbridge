@@ -16,5 +16,7 @@ step:
   # 404 not_found_error. The CLI alias "sonnet" resolves per CLI version.
   model: sonnet
   max_turns: 80
-  # budget_slice_usd omitted: deployed agent-runner CLI predates
-  # --max-budget-usd (FIRST-USER-FINDINGS.md F12).
+  # Restored once the agent-runner CLI pin moved to a version implementing
+  # --max-budget-usd (F12/F12b). Diagnosis explores widely before it
+  # concludes, so the cap matters more here than anywhere.
+  budget_slice_usd: 5.0
