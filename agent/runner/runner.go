@@ -55,39 +55,56 @@ const claudeStderrTailCap = 4096
 // Confirmed stable against the pinned CLI (claude-code 2.0.1): `claude
 // --definitely-not-a-flag -p hi` fails with `error: unknown option
 // '--definitely-not-a-flag'`.
-var unknownOptionPattern = regexp.MustCompile(`unknown option '(--[a-zA-Z0-9-]+)'`)
+//
+// The `error: ` prefix is required, not decoration. Commander always emits
+// it, and without it the pattern matches the bare phrase anywhere in the 4KB
+// tail — an MCP server relaying its own child's complaint, or tool output
+// quoting one, would be misread as this process being rejected. The option
+// body accepts one or two dashes because the runner passes short options too
+// (`-p`), and accepts anything up to the closing quote so an unusual flag
+// name is still named rather than silently unmatched.
+var unknownOptionPattern = regexp.MustCompile(`error: unknown option '(-{1,2}[^']+)'`)
 
 // boundedTailWriter is an io.Writer that retains only the most recently
-// written claudeStderrTailCap-ish bytes, so capturing a subprocess's stderr
-// for diagnosis can never grow without bound regardless of how much output
-// the subprocess produces.
+// written limit-ish bytes, so capturing a subprocess's stderr for diagnosis
+// stays bounded no matter how much the subprocess produces.
+//
+// "Bounded" means retained bytes, not peak allocation: a single Write of N
+// bytes appends all N before the trim, so the transient high-water mark is
+// O(largest single write). That is safe for the one caller because os/exec's
+// copy goroutine writes in 32KB chunks; a caller feeding it arbitrarily large
+// single writes would not get the guarantee its name implies.
 type boundedTailWriter struct {
-	cap int
-	buf []byte
+	limit int
+	buf   []byte
 }
 
-func newBoundedTailWriter(cap int) *boundedTailWriter {
-	return &boundedTailWriter{cap: cap}
+func newBoundedTailWriter(limit int) *boundedTailWriter {
+	if limit < 1 {
+		limit = 1
+	}
+	return &boundedTailWriter{limit: limit}
 }
 
 func (w *boundedTailWriter) Write(p []byte) (int, error) {
 	w.buf = append(w.buf, p...)
-	// Trim only once the buffer has grown to twice the cap, rather than on
+	// Trim only once the buffer has grown to twice the limit, rather than on
 	// every write, so repeated small writes stay amortized O(n) instead of
-	// re-copying the tail on each call.
-	if len(w.buf) > w.cap*2 {
-		w.buf = append([]byte(nil), w.buf[len(w.buf)-w.cap:]...)
+	// re-copying the tail on each call. The fresh backing array matters: a
+	// reslice would keep the whole grown array alive.
+	if len(w.buf) > w.limit*2 {
+		w.buf = append([]byte(nil), w.buf[len(w.buf)-w.limit:]...)
 	}
 	return len(p), nil
 }
 
-// tail returns the most recent cap bytes written (or fewer, if less than cap
-// bytes have been written in total).
+// tail returns the most recent limit bytes written (or fewer, if less than
+// limit bytes have been written in total).
 func (w *boundedTailWriter) tail() string {
-	if len(w.buf) <= w.cap {
+	if len(w.buf) <= w.limit {
 		return string(w.buf)
 	}
-	return string(w.buf[len(w.buf)-w.cap:])
+	return string(w.buf[len(w.buf)-w.limit:])
 }
 
 // diagnoseImageSkew rewrites a claude process failure whose captured stderr
@@ -115,12 +132,16 @@ func diagnoseImageSkew(runErr error, stderrTail string) error {
 		return runErr
 	}
 	flag := m[1]
+	// The original error is kept, not replaced. On a true positive it is only
+	// "exit status 1" and costs a few characters; on a false positive it is
+	// the operator's only remaining trace of what actually went wrong, and
+	// this rewrite is the last thing standing between them and it.
 	return fmt.Errorf(
 		"the claude CLI in this agent-runner image does not support %s; its version is pinned in "+
 			"deploy/agent-runner/Dockerfile — rebuild the agent-runner image if that pin is newer than "+
 			"what's actually deployed, otherwise bump the pin so it supports %s, or remove the step "+
-			"configuration that adds this flag",
-		flag, flag)
+			"configuration that adds this flag (underlying: %v)",
+		flag, flag, runErr)
 }
 
 const (

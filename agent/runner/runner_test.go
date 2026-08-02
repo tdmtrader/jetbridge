@@ -419,8 +419,12 @@ func TestRunRewritesUnknownOptionAsImageSkew(t *testing.T) {
 	if !strings.Contains(results.Summary, "deploy/agent-runner/Dockerfile") {
 		t.Errorf("results.json summary does not name the pin location: %q", results.Summary)
 	}
-	if strings.Contains(results.Summary, "exit status") {
-		t.Errorf("results.json summary leaked the raw process error: %q", results.Summary)
+	// The property that matters is that the summary LEADS with the diagnosis,
+	// not that the process error is absent — it is deliberately retained at
+	// the end, because on a false positive it is the operator's only trace of
+	// the real failure.
+	if !strings.HasPrefix(results.Summary, "the claude CLI in this agent-runner image does not support") {
+		t.Errorf("results.json summary does not lead with the diagnosis: %q", results.Summary)
 	}
 
 	events := readEvents(t, flight)
@@ -440,8 +444,8 @@ func TestRunRewritesUnknownOptionAsImageSkew(t *testing.T) {
 	if !strings.Contains(stepEnd.Summary, "--max-budget-usd") {
 		t.Errorf("step.end summary does not name the flag: %q", stepEnd.Summary)
 	}
-	if strings.Contains(stepEnd.Summary, "exit status") {
-		t.Errorf("step.end summary leaked the raw process error: %q", stepEnd.Summary)
+	if !strings.HasPrefix(stepEnd.Summary, "the claude CLI in this agent-runner image does not support") {
+		t.Errorf("step.end summary does not lead with the diagnosis: %q", stepEnd.Summary)
 	}
 }
 
