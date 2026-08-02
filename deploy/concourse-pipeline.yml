@@ -810,7 +810,12 @@ jobs:
           grep -Eq '^CONCOURSE_AGENT_STEP_IMAGE=registry.home/agent-runner@sha256:[a-f0-9]{64}$' ../runner-image-metadata/verified-image.env
           grep -Eq '^SOURCE_COMMIT=[a-f0-9]{40}$' ../runner-image-metadata/verified-image.env
           grep -Eq '^RUNNER_VERSION=[0-9]+\.[0-9]+\.[0-9]+$' ../runner-image-metadata/verified-image.env
-          echo "CONCOURSE_AGENT_STEP_IMAGE=${IMMUTABLE_IMAGE}"
+          # Print the deployable reference, not the GHCR one. The promotion
+          # runbook tells an operator to capture this exact line and then
+          # asserts it matches ^registry.home/… — printing IMMUTABLE_IMAGE here
+          # would hand them a value that fails their own gate.
+          echo "VERIFIED_GHCR_IMAGE=${IMMUTABLE_IMAGE}"
+          echo "CONCOURSE_AGENT_STEP_IMAGE=${DEPLOYABLE_IMAGE}"
   - get: home-infra
     trigger: false
   - task: update-home-infra-agent-runner-image

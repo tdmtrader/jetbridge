@@ -185,9 +185,20 @@ func TestAgentRunnerPipelinePublishesVerifiedImmutableImage(t *testing.T) {
 		`IMMUTABLE_IMAGE="${IMAGE_REPOSITORY}@${DIGEST}"`,
 		`docker pull --platform linux/amd64 "${IMMUTABLE_IMAGE}"`,
 		`docker image inspect --format '{{.Os}}/{{.Architecture}}' "${IMMUTABLE_IMAGE}"`,
+		// The deployed reference names the in-cluster registry, but the digest
+		// is verified through GHCR. Mirroring the same commit tag and requiring
+		// both registries to return the same digest is the only thing that
+		// makes the pullable reference provably the image just verified.
+		`LOCAL_IMAGE="registry.home/agent-runner:${SHORT_SHA}"`,
+		`LOCAL_PUSH_OUTPUT=$(kubectl exec -n cicd "${BUILDER_POD}" -- docker push "${LOCAL_IMAGE}")`,
+		`if test "${LOCAL_DIGEST}" != "${DIGEST}"; then`,
+		`DEPLOYABLE_IMAGE="registry.home/agent-runner@${DIGEST}"`,
 		`printf 'CONCOURSE_AGENT_STEP_IMAGE=%s\nSOURCE_COMMIT=%s\nRUNNER_VERSION=%s\n' \`,
 		`> ../runner-image-metadata/verified-image.env`,
-		`CONCOURSE_AGENT_STEP_IMAGE=${IMMUTABLE_IMAGE}`,
+		// The promotion runbook has an operator copy this printed line and then
+		// asserts it against ^registry.home/… — it must be the deployable
+		// reference, not the GHCR one the digest was verified through.
+		`CONCOURSE_AGENT_STEP_IMAGE=${DEPLOYABLE_IMAGE}`,
 	} {
 		if !strings.Contains(script, required) {
 			t.Errorf("agent-runner pipeline lacks immutable-image contract %q", required)
@@ -220,8 +231,9 @@ func TestAgentRunnerPipelinePublishesVerifiedImmutableImage(t *testing.T) {
 		`docker pull --platform linux/amd64 "${IMMUTABLE_IMAGE}"`,
 		`docker image inspect --format '{{.Os}}/{{.Architecture}}' "${IMMUTABLE_IMAGE}"`,
 		`docker push ${GHCR}:v${NEXT_VERSION}`,
+		`if test "${LOCAL_DIGEST}" != "${DIGEST}"; then`,
 		`verified-image.env`,
-		`CONCOURSE_AGENT_STEP_IMAGE=${IMMUTABLE_IMAGE}`,
+		`CONCOURSE_AGENT_STEP_IMAGE=${DEPLOYABLE_IMAGE}`,
 	)
 	if !strings.Contains(script, "done\nkubectl exec -n cicd \"${BUILDER_POD}\" -- docker info >/dev/null") {
 		t.Fatal("agent-runner pipeline does not fail closed after its Docker readiness loop")
