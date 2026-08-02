@@ -30,7 +30,7 @@ func newHomeInfraFixture(t *testing.T, image string) *homeInfraFixture {
 	origin := filepath.Join(dir, "origin.git")
 	seed := filepath.Join(dir, "seed")
 	clone := filepath.Join(dir, "home-infra")
-	runGit(t, dir, "init", "--bare", origin)
+	runGit(t, dir, "-c", "init.defaultBranch=master", "init", "--bare", origin)
 	runGit(t, dir, "init", "-b", "main", seed)
 	if err := os.MkdirAll(filepath.Join(seed, "apps"), 0o755); err != nil {
 		t.Fatal(err)
