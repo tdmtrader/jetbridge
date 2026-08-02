@@ -1188,11 +1188,11 @@ jobs:
 
           echo "Releasing: v${NEXT_VERSION} (${SHORT_SHA})"
 
-          # NOTE: the git tag and the force-push to main are DEFERRED to the end
+          # NOTE: the git tag and main publication are DEFERRED to the end
           # of this task, after the RC image is verified and the release image is
           # built and pushed. Previously they ran first, so a missing RC image
           # (or any image/build failure) left behind a phantom vX tag pointing at
-          # an unbuilt version and force-moved main to an unreleased commit.
+          # an unbuilt version and published an unreleased commit to main.
 
           # --- 1. Build multi-platform fly + push to GHCR ---
           REGISTRY="registry-docker-registry.cicd.svc.cluster.local:5000"
@@ -1327,7 +1327,7 @@ jobs:
 
           # --- 4. Push to main (only after the release image + tag succeeded) ---
           echo "=== Pushing to main ==="
-          git push --force origin HEAD:refs/heads/main
+          sh deploy/push-jetbridge-main.sh .
           echo "=== Pushed ${SHORT_SHA} to main ==="
 
           # --- 5. Redeploy with final release version (includes all fly assets) ---

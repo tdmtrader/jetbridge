@@ -58,6 +58,23 @@ func TestConcourseReleaseImageUsesFinalStampedServer(t *testing.T) {
 	)
 }
 
+func TestConcourseReleasePublishesMainFailClosed(t *testing.T) {
+	pipeline := readDeployPipeline(t, "concourse-pipeline.yml")
+	releaseScript := deployPipelineTaskScript(t, findDeployPipelineTask(t, pipeline, "release", "tag-push-release"))
+
+	if !strings.Contains(releaseScript, "sh deploy/push-jetbridge-main.sh .") {
+		t.Fatal("release task does not invoke the fail-closed main publication helper")
+	}
+	if regexp.MustCompile(`(?m)^[[:space:]]*git[[:space:]]+push[[:space:]]+(?:--force|-f)[^\n]*HEAD:refs/heads/main[[:space:]]*$`).MatchString(releaseScript) {
+		t.Fatal("release task force-pushes main")
+	}
+	requireTextOrder(t, releaseScript,
+		`git push origin "v${NEXT_VERSION}"`,
+		"sh deploy/push-jetbridge-main.sh .",
+		"kubectl set image deployment/concourse-web",
+	)
+}
+
 func requireTextOrder(t *testing.T, text string, markers ...string) {
 	t.Helper()
 	position := 0
