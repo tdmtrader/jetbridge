@@ -1,6 +1,7 @@
 package deploy
 
 import (
+	"fmt"
 	"os"
 	"regexp"
 	"strings"
@@ -86,7 +87,12 @@ func deployPipelineTaskScript(t *testing.T, step deployPipelineStep) string {
 	return step.Config.Run.Args[len(step.Config.Run.Args)-1]
 }
 
-var scriptEnablesXtrace = regexp.MustCompile(`(?m)^[[:space:]]*set[[:space:]]+(-[[:alpha:]]*x[[:alpha:]]*|-o[[:space:]]+xtrace)([[:space:]]|$)`)
+var (
+	scriptEnablesXtrace     = regexp.MustCompile(`(?m)^[[:space:]]*set[[:space:]]+(-[[:alpha:]]*x[[:alpha:]]*|-o[[:space:]]+xtrace)([[:space:]]|$)`)
+	scriptDisablesXtrace    = regexp.MustCompile(`^[[:space:]]*set[[:space:]]+\+x([[:space:]]|$)`)
+	singleDollarParameterRE = regexp.MustCompile(`\$%s([^[:alnum:]_]|$)`)
+	bracedParameterRE       = regexp.MustCompile(`\$\{%s(?:[^[:alnum:]_]|$)`)
+)
 
 func TestPipelineTasksDoNotTraceServiceAccountTokens(t *testing.T) {
 	const projectedServiceAccountDirectory = "/var/run/secrets/kubernetes.io/serviceaccount"
@@ -117,6 +123,61 @@ func TestPipelineTasksDoNotTraceServiceAccountTokens(t *testing.T) {
 	if tokenTaskCount != 3 {
 		t.Fatalf("projected service-account token tasks = %d, want exactly 3", tokenTaskCount)
 	}
+}
+
+func TestPipelineTasksDoNotTraceParameterizedSecrets(t *testing.T) {
+	for _, path := range []string{"concourse-pipeline.yml", "borg-pipeline.yml"} {
+		pipeline := readDeployPipeline(t, path)
+		for _, job := range pipeline.Jobs {
+			for _, step := range job.Plan {
+				secretParams := deployPipelineSecretParams(step.Config.Params)
+				if step.Task == "" || len(secretParams) == 0 {
+					continue
+				}
+
+				script := deployPipelineTaskScript(t, step)
+				xtraceEnabled := shellArgumentsEnableXtrace(step.Config.Run.Args[:len(step.Config.Run.Args)-1])
+				for _, line := range strings.Split(script, "\n") {
+					if shellLineDisablesXtrace(line) {
+						xtraceEnabled = false
+					}
+					if xtraceEnabled {
+						for _, name := range secretParams {
+							if shellLineExpandsParameter(line, name) {
+								t.Errorf("%s job %q task %q expands parameter %q while xtrace is active", path, job.Name, step.Task, name)
+							}
+						}
+					}
+					if shellLineEnablesXtrace(line) {
+						xtraceEnabled = true
+					}
+				}
+			}
+		}
+	}
+}
+
+func deployPipelineSecretParams(params map[string]string) []string {
+	var names []string
+	for name := range params {
+		if strings.Contains(name, "TOKEN") || strings.Contains(name, "PASSWORD") || strings.Contains(name, "SECRET") {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+func shellLineExpandsParameter(line, name string) bool {
+	return regexp.MustCompile(fmt.Sprintf(singleDollarParameterRE.String(), regexp.QuoteMeta(name))).MatchString(line) ||
+		regexp.MustCompile(fmt.Sprintf(bracedParameterRE.String(), regexp.QuoteMeta(name))).MatchString(line)
+}
+
+func shellLineDisablesXtrace(line string) bool {
+	return scriptDisablesXtrace.MatchString(line)
+}
+
+func shellLineEnablesXtrace(line string) bool {
+	return regexp.MustCompile(`^[[:space:]]*set[[:space:]]+-x([[:space:]]|$)`).MatchString(line)
 }
 
 func shellArgumentsEnableXtrace(arguments []string) bool {

@@ -365,7 +365,7 @@ jobs:
       run:
         path: sh
         args:
-        - -exc
+        - -ec
         - |
           cd repo
           git fetch --tags --force origin

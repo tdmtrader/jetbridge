@@ -328,7 +328,7 @@ jobs:
       run:
         path: sh
         args:
-        - -exc
+        - -ec
         - |
           cd repo
 
