@@ -20,7 +20,7 @@
 - Run PostgreSQL-backed suites serially; they share the fixed 5434–5442 test range.
 - Start each task from the smallest existing behavioral failure that proves the defect. Add a test only for load-bearing behavior that is not already covered; when a new test is necessary, observe it fail for the actual defect before implementation. Never add a duplicate or artificial test solely to manufacture another red signal. Use focused tests before broad tests, end with `gofmt` where Go changed and `git diff --check`, and record evidence in `.superpowers/sdd/2026-08-01-jetbridge-first-user-blocker-remediation/progress.md`.
 - Limit every task to three blocking review rounds. Record an unresolved third-round blocker rather than broadening scope or cycling indefinitely.
-- Do not push, open a pull request, merge, change external home-infra, or release a node as an incidental implementation action.
+- Do not push, open a pull request, merge, change external home-infra, or release a node as an incidental implementation action. The user explicitly authorizes the one bounded GitOps write in Task 6A and requests no routine confirmation question for it: only the unprivileged Concourse `home-infra` resource path may make that write, only after every listed image proof, and only to `apps/concourse.yaml`'s one runner-image value.
 
 ---
 
@@ -1049,6 +1049,328 @@
   git commit -m "docs(agent): expose the first-user diagnostic path"
   ```
 
+### Task 6A: Write the verified runner digest through the bounded GitOps resource
+
+**Files:**
+
+- Create: `deploy/write-agent-runner-home-infra.sh`
+- Create: `deploy/write_agent_runner_home_infra_test.go`
+- Modify: `deploy/concourse-pipeline.yml`
+- Modify: `deploy/agent_runner_dockerfile_test.go`
+- Modify: `deploy/pipeline_secret_trace_test.go`
+- Modify: `docs/agentic/V3_CUTOVER_DEPLOY.md`
+- Modify separately, outside this repository and only in a clean isolated
+  worktree: `home-infra/apps/concourse.yaml` stale runner-image comment. This
+  one-time comment-only maintenance commit must not be part of the automatic
+  digest bump or this task's Git commit.
+
+**Interfaces:**
+
+- Consumes: the exact builder-produced file
+  `runner-image-metadata/verified-image.env`, whose three newline-terminated
+  records are `CONCOURSE_AGENT_STEP_IMAGE=ghcr.io/tdmtrader/agent-runner@sha256:<64 lowercase hex>`,
+  `SOURCE_COMMIT=<40 lowercase hex>`, and `RUNNER_VERSION=<major.minor.patch>`.
+- Consumes: the native `home-infra` Concourse Git resource with source URI
+  `https://github.com/tdmtrader/home-infra.git`, branch `main`, username
+  `x-access-token`, password `((github-token))`, and `disable_ci_skip: true`.
+  The resource—not either task script—owns the home-infra checkout and push.
+  `github-token` already reaches the privileged builder for GHCR login; that
+  does not authorize a home-infra checkout or home-infra Git operation there.
+- Produces: `deploy/write-agent-runner-home-infra.sh IMAGE SOURCE_COMMIT VERSION
+  [REPOSITORY_DIR]`, where `REPOSITORY_DIR` is the sole safe test override and
+  defaults to `home-infra`; `apps/concourse.yaml` is fixed.
+- Produces: exactly one ordinary commit in the checked-out resource with
+  subject `chore(deploy): pin agent runner v<major.minor.patch>` and body lines
+  `source_commit=<40 lowercase hex>` plus the immutable image, followed by
+  `put: home-infra` with `rebase: true` and `timeout: 5m`; equal value is an
+  exit-0 no-op and no commit. No helper path performs clone, fetch, auth, push,
+  or force-push.
+- Enforces: `ghcr.io/tdmtrader/agent-runner@sha256:<64 lowercase hex>` is the
+  only accepted image; one and only one inline mapping
+  `- { name: CONCOURSE_AGENT_STEP_IMAGE, value: "..." }` in the fixed file is
+  changed; malformed image/source/version input, a mutable reference, a
+  duplicate, or a missing target fails before a commit; the privileged image
+  builder cannot invoke a home-infra Git operation.
+- Gates: `self-upgrade` receives the same `repo` version only after both
+  `build-image` and `build-agent-runner-image` pass. The latter includes its
+  GitOps `put`, so a web promotion cannot precede a successful digest write.
+
+- [ ] **Step 1: Add red behavioral tests around a real bare Git remote**
+
+  Create `deploy/write_agent_runner_home_infra_test.go`. Its fixture helper
+  creates a bare `origin.git`, seeds `main` with this exact target file, clones
+  it into a temporary `home-infra` worktree, and records the bare remote's
+  initial `refs/heads/main` SHA:
+
+  ```yaml
+  web:
+    env:
+      - { name: CONCOURSE_AGENT_STEP_IMAGE, value: "ghcr.io/tdmtrader/agent-runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }
+  ```
+
+  Run the helper through `sh deploy/write-agent-runner-home-infra.sh "$image"
+  "$source_commit" "$runner_version" "$clone"`, then make the ordinary fixture `git -C "$clone" push origin
+  HEAD:main` call. Implement these subtests with the literal image values and
+  assertions below:
+
+  | Subtest | Input / fixture mutation | Required result |
+  | --- | --- | --- |
+  | `success_changes_only_target_and_commits` | b-digest, source `0123456789abcdef0123456789abcdef01234567`, version `0.2.222` | exit 0; one local commit; `git diff HEAD^ HEAD --name-only` is exactly `apps/concourse.yaml`; the only changed line is the target mapping; commit subject is `chore(deploy): pin agent runner v0.2.222`, its body contains the full source SHA and b-digest, and pushed bare `main` contains the b-digest. |
+  | `equal_digest_is_noop` | seed b-digest and pass the same b-digest | exit 0; `git rev-parse HEAD` is unchanged; bare `main` is unchanged. |
+  | `rejects_malformed_or_mutable_reference` | mutable/wrong-registry/uppercase/63-hex image, `0123`, uppercase source SHA, `v0.2.222`, and `0.2` version variants | nonzero; local `HEAD`, worktree status, and bare `main` equal their baselines. |
+  | `rejects_duplicate_target` | append a second exact inline target mapping | nonzero; no local commit and bare `main` unchanged. |
+  | `rejects_missing_target` | replace the mapping name with `CONCOURSE_AGENT_PLATFORM_TOKEN_SECRET` | nonzero; no local commit and bare `main` unchanged. |
+  | `concurrent_target_change_fails_closed` | make the helper's local b-digest commit; use a second clone to push a c-digest to bare `main`; attempt the normal non-force push from the first clone | the first push fails; bare `main` remains the second clone's c-digest; the test never uses `--force`; a fresh fixture clone can rerun the helper with b-digest and create a new ordinary commit. |
+  | `accepts_linked_worktree_checkout` | invoke the helper in a `git worktree add` checkout rather than a clone directory | exit 0 and commit succeeds, proving the helper uses `git rev-parse --is-inside-work-tree` rather than treating `.git` as a required directory. |
+
+  Add a second test, `TestAgentRunnerPipelineWritesVerifiedHomeInfraDigest`,
+  which parses the pipeline and requires the exact resource and ordering in
+  Steps 3–5. Extend its existing shared YAML fixture types in
+  `pipeline_secret_trace_test.go` with
+  `Resources []deployPipelineResource \`yaml:"resources"\``,
+  `deployPipelineResource{Name, Type string; Source map[string]any}`, and the
+  plan-step fields `Put string \`yaml:"put"\`` and
+  `Params map[string]any \`yaml:"params"\`` so the test asserts structured
+  resource and put values rather than YAML substrings. Run first:
+
+  ```bash
+  go test ./deploy -run '^(TestWriteAgentRunnerHomeInfra|TestAgentRunnerPipelineWritesVerifiedHomeInfraDigest)$' -count=1
+  ```
+
+  Expected: failure because the helper, real-Git behavioral contract, native
+  Git resource, metadata output, unprivileged update task, rebase put, and
+  self-upgrade double gate do not exist.
+
+- [ ] **Step 2: Implement the checked-out-worktree helper with closed validation**
+
+  Create `deploy/write-agent-runner-home-infra.sh` with the following complete
+  control flow. It deliberately has no credential variable, `GIT_ASKPASS`,
+  `git clone`, `git fetch`, `git push`, remote URL, or `--force` path:
+
+  ```sh
+  #!/bin/sh
+  set -eu
+  set +x
+
+  image=${1-}
+  source_commit=${2-}
+  runner_version=${3-}
+  repo=${4-home-infra}
+  file=apps/concourse.yaml
+  image_re='^ghcr.io/tdmtrader/agent-runner@sha256:[a-f0-9]{64}$'
+  source_re='^[a-f0-9]{40}$'
+  version_re='^[0-9]+\.[0-9]+\.[0-9]+$'
+  printf '%s\n' "$image" | grep -Eq "$image_re" || {
+    echo 'FATAL: image must be an immutable ghcr.io/tdmtrader/agent-runner sha256 digest' >&2
+    exit 1
+  }
+  printf '%s\n' "$source_commit" | grep -Eq "$source_re" || { echo 'FATAL: source commit must be 40 lowercase hex' >&2; exit 1; }
+  printf '%s\n' "$runner_version" | grep -Eq "$version_re" || { echo 'FATAL: runner version must be major.minor.patch' >&2; exit 1; }
+  git -C "$repo" rev-parse --is-inside-work-tree | grep -Fx true >/dev/null
+  test -f "$repo/$file"
+  test -z "$(git -C "$repo" status --porcelain)"
+
+  target_re='^[[:space:]]*-[[:space:]]*\{[[:space:]]*name:[[:space:]]*CONCOURSE_AGENT_STEP_IMAGE,[[:space:]]*value:[[:space:]]*"[^"]*"[[:space:]]*\}[[:space:]]*$'
+  matches=$(grep -Ec "$target_re" "$repo/$file" || true)
+  test "$matches" = 1 || { echo "FATAL: target mapping count is $matches, want 1" >&2; exit 1; }
+  old_line=$(grep -E "$target_re" "$repo/$file")
+  indent=$(printf '%s\n' "$old_line" | sed 's/^\([[:space:]]*\).*/\1/')
+  new_line="${indent}- { name: CONCOURSE_AGENT_STEP_IMAGE, value: \"${image}\" }"
+  test "$old_line" = "$new_line" && exit 0
+
+  tmp=$(mktemp "$repo/.agent-runner-image.XXXXXX")
+  trap 'rm -f "$tmp"' EXIT HUP INT TERM
+  awk -v old="$old_line" -v new="$new_line" '{ if ($0 == old) print new; else print }' "$repo/$file" > "$tmp"
+  mv "$tmp" "$repo/$file"
+  test "$(git -C "$repo" diff --name-only)" = "$file"
+  test "$(git -C "$repo" diff --numstat -- "$file" | awk '{print $1 ":" $2}')" = '1:1'
+  git -C "$repo" add -- "$file"
+  git -C "$repo" diff --cached --quiet && exit 0
+  git -C "$repo" -c user.name='Concourse GitOps' -c user.email='concourse-gitops@tdmtrader.local' commit \
+    -m "chore(deploy): pin agent runner v${runner_version}" \
+    -m "source_commit=${source_commit}" \
+    -m "image=${image}"
+  ```
+
+  Make it executable. The implementation must preserve every non-target byte,
+  reject an initial dirty checkout, and leave a rejected fixture clean.
+
+- [ ] **Step 3: Add the native Git resource and verified metadata boundary**
+
+  In `deploy/concourse-pipeline.yml`, add this resource immediately after
+  `repo`:
+
+  ```yaml
+  - name: home-infra
+    type: git
+    source:
+      uri: https://github.com/tdmtrader/home-infra.git
+      branch: main
+      username: x-access-token
+      password: ((github-token))
+      disable_ci_skip: true
+  ```
+
+  In `build-agent-runner-image`, add an output named
+  `runner-image-metadata`. Keep the privileged task's normal `repo` input and
+  add no home-infra input or home-infra Git operation. Retain its existing
+  `-exc` shell and current `set +x`/`set -x` GHCR-token guard. After the exact
+  commit-tagged build, image smoke, registry-reported digest validation,
+  immutable pull/platform inspection, and all four mutable-tag pushes, write
+  this exact file atomically:
+
+  ```sh
+  umask 077
+  printf 'CONCOURSE_AGENT_STEP_IMAGE=%s\nSOURCE_COMMIT=%s\nRUNNER_VERSION=%s\n' \
+    "${IMMUTABLE_IMAGE}" "$(git rev-parse HEAD)" "${NEXT_VERSION}" \
+    > ../runner-image-metadata/verified-image.env
+  ```
+
+  The metadata write follows the last mutable `docker push` and precedes no
+  privileged Git operation; `grep -Eq` validates all three records before the task
+  prints the non-secret image line.
+
+- [ ] **Step 4: Add the unprivileged edit and rebase-only resource put**
+
+  In the same `build-agent-runner-image` plan, get `home-infra` with
+  `trigger: false` only after the builder has emitted verified metadata. After
+  that get, add the
+  unprivileged `update-home-infra-agent-runner-image` task with inputs `repo`,
+  `home-infra`, and `runner-image-metadata`, no params, and `sh -euc`:
+
+  ```sh
+  set +x
+  test "$(wc -l < runner-image-metadata/verified-image.env | tr -d ' ')" = 3
+  test "$(sed -n 's/^CONCOURSE_AGENT_STEP_IMAGE=//p' runner-image-metadata/verified-image.env | wc -l | tr -d ' ')" = 1
+  test "$(sed -n 's/^SOURCE_COMMIT=//p' runner-image-metadata/verified-image.env | wc -l | tr -d ' ')" = 1
+  test "$(sed -n 's/^RUNNER_VERSION=//p' runner-image-metadata/verified-image.env | wc -l | tr -d ' ')" = 1
+  CONCOURSE_AGENT_STEP_IMAGE=$(sed -n 's/^CONCOURSE_AGENT_STEP_IMAGE=//p' runner-image-metadata/verified-image.env)
+  SOURCE_COMMIT=$(sed -n 's/^SOURCE_COMMIT=//p' runner-image-metadata/verified-image.env)
+  RUNNER_VERSION=$(sed -n 's/^RUNNER_VERSION=//p' runner-image-metadata/verified-image.env)
+  printf '%s\n' "$CONCOURSE_AGENT_STEP_IMAGE" | grep -Eq '^ghcr.io/tdmtrader/agent-runner@sha256:[a-f0-9]{64}$'
+  printf '%s\n' "$SOURCE_COMMIT" | grep -Eq '^[a-f0-9]{40}$'
+  printf '%s\n' "$RUNNER_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'
+  test "$SOURCE_COMMIT" = "$(git -C repo rev-parse HEAD)"
+  sh repo/deploy/write-agent-runner-home-infra.sh "$CONCOURSE_AGENT_STEP_IMAGE" "$SOURCE_COMMIT" "$RUNNER_VERSION" home-infra
+  ```
+
+  Follow it with exactly:
+
+  ```yaml
+  - put: home-infra
+    timeout: 5m
+    params:
+      repository: home-infra
+      rebase: true
+  ```
+
+  Do not set `force`, do not add a task token, and do not replace the resource
+  with an authenticated URL. A same-field rebase conflict or non-fast-forward
+  refusal fails closed during the bounded resource put; it requires an
+  operator/job retrigger rather than a force push or a claimed fresh task retry.
+
+- [ ] **Step 5: Gate self-upgrade on the same successful image/writeback version**
+
+  Change the `self-upgrade` `get: repo` constraint from
+  `passed: [build-image]` to:
+
+  ```yaml
+    passed: [build-image, build-agent-runner-image]
+  ```
+
+  This is a same-resource-version Concourse gate: `self-upgrade` cannot select
+  a web image until that exact source version both built the web and completed
+  the runner builder, metadata validation, unprivileged manifest edit, and
+  rebasing `put`. Keep `self-upgrade` paused until Task 6's Argo activation
+  evidence is recorded.
+
+- [ ] **Step 6: Specify the security and ordering assertions**
+
+  Extend `TestAgentRunnerPipelinePublishesVerifiedImmutableImage` and add the
+  new pipeline test so they require all of the following in parsed YAML and
+  task-script order:
+
+  1. `home-infra` has the exact official URI, `main`, `x-access-token`,
+     `((github-token))`, and `disable_ci_skip: true` resource fields, with no
+     debug source field.
+  2. The privileged builder contains `docker build`, exact-image smoke, push
+     digest parsing, immutable pull, platform inspect, all mutable pushes, and
+     only then `verified-image.env`; it has no `git clone`, `git fetch`, `git
+     push`, `GIT_ASKPASS`, or `home-infra` input. Its existing `GITHUB_TOKEN`
+     parameter remains solely for GHCR login and is not described as a distinct
+     unavailable credential.
+  3. The update task is not `privileged`, has the three exact inputs and no
+     params, uses `sh -euc`, parses rather than sources the three metadata
+     records, validates image/source/version and same source commit, invokes
+     the helper, and contains no `set -x`, `git push`, `--force`, token, or URL.
+  4. `put: home-infra` follows the update task and has exactly `repository:
+     home-infra` plus `rebase: true` and `timeout: 5m`, with no force setting.
+  5. `self-upgrade` has `passed: [build-image, build-agent-runner-image]`.
+  6. `TestAgentRunnerWritebackRunbookOrdersArgoActivation` reads the recurring
+     deployment sequence and requires this literal order: `Pause new agent
+     dispatch`, `build-agent-runner-image`, `verified-image.env`, `put:
+     home-infra`, `ArgoCD`, `self-upgrade`, `Verify the running configuration`,
+     and `Resume agent dispatch`. It also requires `rebase: true`, no-force
+     wording, and the exact GHCR digest grammar.
+
+  Run:
+
+  ```bash
+  sh -n deploy/write-agent-runner-home-infra.sh
+  go test ./deploy -run '^(TestWriteAgentRunnerHomeInfra|TestAgentRunnerPipelinePublishesVerifiedImmutableImage|TestAgentRunnerPipelineWritesVerifiedHomeInfraDigest|TestAgentRunnerWritebackRunbookOrdersArgoActivation)$' -count=1
+  git diff --check
+  ```
+
+  Expected: the behavioral cases use ordinary local Git commits and a bare
+  remote; pipeline tests prove the privileged boundary never handles GitOps
+  credentials or pushes and the rebase-only resource put is ordered after
+  verified metadata.
+
+- [ ] **Step 7: Update the operational cutover ordering and isolate comment maintenance**
+
+  Update `docs/agentic/V3_CUTOVER_DEPLOY.md` to require this exact order:
+
+  1. pause dispatch plus `self-upgrade` and `release`;
+  2. run `build-agent-runner-image` for the deployment commit;
+  3. require its verified metadata and successful unprivileged `home-infra`
+     `put` of the exact GHCR digest;
+  4. require Argo to activate that value before unpausing promotion;
+  5. run the same-commit web rollout; then verify the deployment's exact
+     runner digest before resuming dispatch and dogfood.
+
+  Include these read-only activation commands with the captured digest:
+
+  ```bash
+  WANT_IMAGE=$(sed -n 's/^CONCOURSE_AGENT_STEP_IMAGE=//p' verified-image.env)
+  printf '%s\n' "$WANT_IMAGE" | grep -Eq '^ghcr.io/tdmtrader/agent-runner@sha256:[a-f0-9]{64}$'
+  argocd app get concourse --refresh --hard -n argocd -o json \
+    | jq -e '.status.sync.status == "Synced" and .status.health.status == "Healthy"'
+  kubectl -n cicd get deploy concourse-web -o json \
+    | jq -e --arg want "$WANT_IMAGE" \
+      '[.spec.template.spec.containers[].env[]? | select(.name == "CONCOURSE_AGENT_STEP_IMAGE") | .value] == [$want]'
+  kubectl -n cicd rollout status deploy/concourse-web --timeout=10m
+  ```
+
+  State that an Argo sync alone is insufficient if the deployment value is not
+  the captured digest, and promotion stays paused in that case. In a separate
+  clean `git worktree add` checkout of home-infra, replace only the stale
+  registry-home/re-pin explanatory comment around the target row; make that
+  one-time comment-only commit separately from the generated digest commit.
+
+- [ ] **Step 8: Review and commit Task 6A**
+
+  Perform one blocking-only review of this task's delta. It may address only
+  correctness, credential-boundary, data-loss, required behavior-test, or
+  GitOps-concurrency blockers; record lesser cleanup in the deferred catalog.
+  Do not exceed three review rounds.
+
+  Record focused evidence, then commit repository files only:
+
+  ```bash
+  git add deploy/write-agent-runner-home-infra.sh deploy/write_agent_runner_home_infra_test.go deploy/concourse-pipeline.yml deploy/agent_runner_dockerfile_test.go deploy/pipeline_secret_trace_test.go docs/agentic/V3_CUTOVER_DEPLOY.md .superpowers/sdd/2026-08-01-jetbridge-first-user-blocker-remediation/progress.md
+  git commit -m "feat(deploy): write verified runner digest through GitOps"
+  ```
+
 ### Task 6: Deploy the same-commit runtime and repeat the node-level dogfood trial
 
 **Files:**
@@ -1060,6 +1382,10 @@
 **Interfaces:**
 
 - Consumes: a web artifact and runner image built from the same accepted commit, plus the registry-reported runner digest.
+- Consumes: Task 6A's successful `home-infra` Git-resource put carrying that
+  exact digest, then ArgoCD `concourse` `Synced`/`Healthy` evidence and the
+  running `concourse-web` deployment value equal to it. A Git commit alone is
+  not activation evidence.
 - Consumes: the exact final non-RC version attached to that deployment commit.
 - Consumes: target `home`, team `main`, the `concourse/repo` Git resource, `agent/workflow/seeds/code-review-node-v1`, and `agent/workflow/seeds/log-diagnosis-node-v1`.
 - Produces: package re-import dispositions, fresh post-rollout runs, exact snapshot/run/build IDs, one durable `mcp.ready` event count per successful managed-builder run, downloaded typed outputs, and a release decision backed by inspected output.
@@ -1075,7 +1401,43 @@
 - Does not consume: benchmark ground truth, case metadata, notes, or withheld
   fixtures as model inputs.
 
-- [ ] **Step 1: Re-run the repository gates at the deployment commit**
+- [ ] **Step 1: Hold promotion until Argo has activated the Task 6A digest**
+
+  Keep dispatch, `concourse/self-upgrade`, and `concourse/release` paused.
+  From the successful Task 6A build, copy the exact three data-only metadata records and
+  verify the source commit equals the pending web source before any promotion:
+
+  ```bash
+  VERIFIED_IMAGE=$(sed -n 's/^CONCOURSE_AGENT_STEP_IMAGE=//p' verified-image.env)
+  VERIFIED_SOURCE_COMMIT=$(sed -n 's/^SOURCE_COMMIT=//p' verified-image.env)
+  VERIFIED_RUNNER_VERSION=$(sed -n 's/^RUNNER_VERSION=//p' verified-image.env)
+  printf '%s\n' "$VERIFIED_IMAGE" | grep -Eq '^ghcr.io/tdmtrader/agent-runner@sha256:[a-f0-9]{64}$'
+  printf '%s\n' "$VERIFIED_SOURCE_COMMIT" | grep -Eq '^[a-f0-9]{40}$'
+  printf '%s\n' "$VERIFIED_RUNNER_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'
+  argocd app get concourse --refresh --hard -n argocd -o json \
+    | jq -e '.status.sync.status == "Synced" and .status.health.status == "Healthy"'
+  kubectl -n cicd get deploy concourse-web -o json \
+    | jq -e --arg want "$VERIFIED_IMAGE" \
+      '[.spec.template.spec.containers[].env[]? | select(.name == "CONCOURSE_AGENT_STEP_IMAGE") | .value] == [$want]'
+  ```
+
+  If either Argo or the deployment value is not exact, keep both promotion jobs
+  paused, record the status, and do not begin a rollout or node run. Do not
+  patch Kubernetes, retag an image, force-push home-infra, or run a routine
+  manual digest edit. When both checks pass, unpause and run the same-version
+  gated web promotion:
+
+  ```bash
+  fly -t home unpause-job -j concourse/self-upgrade
+  fly -t home trigger-job -j concourse/self-upgrade -w
+  kubectl -n cicd rollout status deploy/concourse-web --timeout=10m
+  ```
+
+  Record the successful home-infra commit, `VERIFIED_SOURCE_COMMIT`,
+  `VERIFIED_IMAGE`, Argo revision, and deployment generation. Keep `release`
+  paused until Step 11 has inspected both fresh outputs.
+
+- [ ] **Step 2: Re-run the repository gates at the deployment commit**
 
   From a clean task commit, run:
 
@@ -1085,20 +1447,22 @@
   git diff --check
   ```
 
-  Record the exact commit. Do not deploy a worktree with uncommitted production
-  changes.
+  Require `git rev-parse HEAD` to equal `VERIFIED_SOURCE_COMMIT`. Record the
+  exact commit. Do not deploy a worktree with uncommitted production changes.
 
-- [ ] **Step 2: Build, smoke, and capture the immutable runner digest**
+- [ ] **Step 3: Capture the immutable runner/web deployment pair**
 
-  Trigger `build-agent-runner-image` for the exact commit or run the approved
-  Borg equivalent. Require the log to show a successful
+  Use Task 6A's exact successful `build-agent-runner-image` build; do not
+  trigger an unpaired replacement build. Require its log to show a successful
   `/usr/local/bin/agent-runner-image-smoke` and capture the printed line:
 
   ```text
   CONCOURSE_AGENT_STEP_IMAGE=<repository>@sha256:<64 lowercase hex>
   ```
 
-  Require the pipeline log to include the registry pull and exact
+  Require the pipeline log to include the registry pull, all mutable
+  convenience-tag pushes before metadata, the unprivileged GitOps resource
+  put, and exact
   `linux/amd64` inspection of that immutable reference. Verify the web artifact
   is built from the same full commit. Record the platform and both identities
   in the ledger before rollout. Fetch release tags and capture the exact final
@@ -1115,13 +1479,12 @@
   A missing exact final tag, a tag on another commit, or an RC-only tag blocks
   rollout. Record `DEPLOYMENT_COMMIT` and `FINAL_VERSION` together.
 
-- [ ] **Step 3: Roll out through the normal external deployment path**
+- [ ] **Step 4: Verify the same-commit running runtime before re-import**
 
-  Pause new dispatch, update the external deployment's
-  `CONCOURSE_AGENT_STEP_IMAGE` to the exact captured digest through its reviewed
-  mechanism, deploy the matching web artifact, and inspect the running web
-  arguments/pod specification to verify that exact digest. Resume dispatch only
-  after:
+  Task 6A and Step 1 already performed the authorized GitOps write, waited for
+  its Argo activation, and ran the same-version-gated web promotion. Inspect
+  the running web arguments/pod specification again to verify the exact digest.
+  Resume dispatch only after:
 
   ```bash
   fly -t home status
@@ -1147,10 +1510,10 @@
   task policy. Never read, decode, print, or persist a projected token while
   collecting this evidence.
 
-  No repository task may mutate home-infra directly without its separate
-  authority.
+  The bounded Task 6A resource write is the only home-infra mutation authorized
+  by this track. No acceptance step may mutate it directly.
 
-- [ ] **Step 4: Prove direct nested repository upload**
+- [ ] **Step 5: Prove direct nested repository upload**
 
   Materialize a clean, ancestor-only test repository in a task-specific
   `mktemp -d` directory, including its real `.git` object graph, and run the
@@ -1183,7 +1546,7 @@
   has been inspected; delete only that exact `mktemp` directory after the
   evidence commit.
 
-- [ ] **Step 5: Prove exact Git resource capture**
+- [ ] **Step 6: Prove exact Git resource capture**
 
   Read the first enabled exact `ref` from `concourse/repo`, then pass that
   complete version back to capture:
@@ -1202,7 +1565,7 @@
   accepted/running generation is polled by the command; do not start a second
   operation with a different identity.
 
-- [ ] **Step 6: Create the log input without exposing benchmark answers**
+- [ ] **Step 7: Create the log input without exposing benchmark answers**
 
   Create a staging directory containing only the user-facing files under
   `bench/corpus/rca-jb-004/task/evidence/`; exclude `case.yaml`, `notes.md`,
@@ -1223,7 +1586,7 @@
   Record `LOG_SNAPSHOT_ID` and the exact contents of `log-exposure.txt` in the
   ledger.
 
-- [ ] **Step 7: Re-import log-diagnosis and start a fresh budget-capped run**
+- [ ] **Step 8: Re-import log-diagnosis and start a fresh budget-capped run**
 
   Import after rollout, parse the exact returned version from stdout, and run
   that immutable version. A byte-identical import returning `@9` is expected;
@@ -1266,7 +1629,7 @@
   verified deployment digest. Inspect the complete `record.json`, not just its
   type assertion, before considering release.
 
-- [ ] **Step 8: Re-import code-review and start a fresh run with two exact repositories**
+- [ ] **Step 9: Re-import code-review and start a fresh run with two exact repositories**
 
   Materialize only the `before` and `after` repository refs declared by
   `bench/corpus/review-jb-003/case.yaml`; remove refs/reflogs that make later
@@ -1333,7 +1696,7 @@
   separately from contract validity without opening `case.yaml`, `notes.md`,
   or `ground_truth` during the run.
 
-- [ ] **Step 9: Exercise the safe failed-run diagnostic**
+- [ ] **Step 10: Exercise the safe failed-run diagnostic**
 
   Use the already imported `code-review@1`, whose immutable placeholder
   capability image deterministically fails after planning and before model
@@ -1362,7 +1725,7 @@
   credential, token, or secret-looking database error merely to test
   redaction.
 
-- [ ] **Step 10: Decide release from output evidence**
+- [ ] **Step 11: Decide release from output evidence**
 
   After the blocking reviewer records that each downloaded record is valid and
   usable, release only the corresponding exact version variables:
@@ -1376,7 +1739,7 @@
   it as unreleased. An exact `@9` may be released only when its newly created
   post-rollout run supplies the proof; its old failed runs never do.
 
-- [ ] **Step 11: Record exact evidence and commit the completed track**
+- [ ] **Step 12: Record exact evidence and commit the completed track**
 
   Update `JETBRIDGE_FIRST_USER_FINDINGS.md` with the repaired root causes,
   immutable image/web identities, snapshot/node/run/build/output IDs, bounded

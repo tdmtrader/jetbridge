@@ -54,6 +54,8 @@ track.
   flag;
 - immutable runner-image digest publication and same-commit deployment
   evidence;
+- one bounded automatic GitOps writeback of the verified runner digest to the
+  normal home-infra manifest, followed by Argo activation evidence;
 - safe Fly build-log hints and truthful target-expiry wording;
 - node lifecycle and first-user documentation;
 - a live, unreleased node-level dogfood gate using fresh post-rollout runs;
@@ -74,8 +76,9 @@ track.
   Kubernetes errors to an API client;
 - releasing any version without a fresh post-rollout run, downloaded valid
   output, and explicit release disposition;
-- changing external home-infra without the repository's normal deployment
-  authority.
+- changing external home-infra outside the narrowly authorized automatic
+  runner-digest writeback described below, or bypassing ArgoCD with a direct
+  Kubernetes mutation.
 
 ## Architecture
 
@@ -101,6 +104,13 @@ snapshot IDs + exact node version
              └─> model ─> candidate record ─> independent final sealer
                                       │
                                       └─> run summary + exact build-log hint
+
+commit-tagged runner image
+             │
+             ├─> image smoke → registry digest → immutable amd64 pull
+             └─> one-file GitOps writeback → Argo exact-digest activation
+                                                │
+                                                └─> matching web rollout → dogfood
 ```
 
 ## Design Decisions
@@ -296,6 +306,60 @@ Any failure preserves the tested node version as unreleased and records the exac
 build, image digest, API response, and bounded logs in the findings and track
 ledger. It does not authorize a live hotfix or an uncapped retry.
 
+### 7. Verified runner publication writes one bounded GitOps change
+
+The user explicitly authorizes this track to write the normal external
+home-infra repository and requests no routine confirmation questions for that
+operation. That authority is deliberately narrower than general home-infra
+administration: the `build-agent-runner-image` pipeline job may invoke its
+unprivileged `deploy/write-agent-runner-home-infra.sh` stage only after the
+exact commit-tagged image has built, passed its Dockerfile smoke, passed its exact-image
+linux/amd64 smoke, returned a registry digest matching
+`sha256:<64 lowercase hex>`, been pulled back by immutable reference, and
+inspected as exactly `linux/amd64`. The mutable convenience tags are pushed
+before the writeback; none is valid deployment evidence.
+
+The `home-infra` Git resource, not the privileged image builder, owns the
+official HTTPS repository (`https://github.com/tdmtrader/home-infra.git`),
+branch `main`, `disable_ci_skip: true`, and its username/password secret
+interpolation; no debug resource field is permitted. The builder writes its
+verified immutable image, exact 40-lowercase-hex source commit, and
+`RUNNER_VERSION=<major.minor.patch>` only to a data-only output metadata file
+after all image gates and mutable-tag pushes complete. A separate unprivileged
+pipeline task consumes that metadata and the checked-out `home-infra` resource,
+then calls `deploy/write-agent-runner-home-infra.sh`. The helper accepts only
+`ghcr.io/tdmtrader/agent-runner@sha256:<64 lowercase hex>`, counts exactly one
+inline YAML mapping whose `name` is `CONCOURSE_AGENT_STEP_IMAGE`, and replaces
+only that mapping's quoted `value` in `apps/concourse.yaml`. It fails before
+committing on malformed image/source/version input, a mutable reference, a
+missing or duplicate target, or any unexpected diff. Its commit records the
+version, full source SHA, and immutable image. An equal value is a successful
+no-op with no commit. `apps/concourse.yaml` is fixed; tests may safely override
+only the checked-out repository path for a local bare-remote fixture. It must
+accept a detached resource checkout and linked worktree by checking
+`git rev-parse --is-inside-work-tree`, not a current branch or `.git`
+directory.
+
+The helper never clones, fetches, authenticates, pushes, accepts a token, or
+constructs an authenticated URL. It runs with xtrace disabled. The pipeline's
+unprivileged `put: home-infra` uses the resource's normal secret-backed HTTPS
+credentials with `rebase: true`, `timeout: 5m`, and no force option. A rebase
+conflict or a non-fast-forward refusal fails closed, leaves the remote without
+the helper's new value, and requires an operator/job retrigger; neither task
+force-pushes. The privileged builder is forbidden from a home-infra checkout
+or Git operation. It retains its existing `github-token` only for GHCR login,
+so the design does not claim that the same named secret is absent from that
+task.
+
+This writeback is a GitOps request, not proof of activation. Keep promotion
+paused until ArgoCD reports the `concourse` Application synced and healthy and
+the running web deployment's effective `CONCOURSE_AGENT_STEP_IMAGE` is the
+same immutable GHCR digest. Only then may the matching same-commit web rollout
+continue and the fresh node dogfood gate begin. Normalize the stale
+`apps/concourse.yaml` runner-image comment separately in a clean, isolated
+external home-infra worktree; do not combine it with the automated one-field
+digest commit.
+
 ## Dependency Order
 
 1. The archive/fallback prerequisite commit must be present.
@@ -306,10 +370,13 @@ ledger. It does not authorize a live hotfix or an uncapped retry.
 5. Runner image capability and digest publication land before deployment.
 6. Service-account no-xtrace and final-stamped web release contracts land
    before deployment.
-7. Operator hints and ServiceAccount documentation land before the live
+7. The bounded GitOps writeback lands after immutable publication and before
+   any promotion; it must remain independently testable and reviewable.
+8. ArgoCD must activate that exact digest before the matching web rollout.
+9. Operator hints and ServiceAccount documentation land before the live
    first-user rerun.
-8. Same-commit web/runner deployment precedes package re-import and every
-   acceptance run.
+10. Same-commit web/runner deployment precedes package re-import and every
+    acceptance run.
 
 ## Verification Strategy
 
@@ -332,6 +399,7 @@ go test ./agent/snapshot/contracts ./agent/snapshot ./agent/api/snapshots ./fly/
 go test ./agent/schema ./agent/outputbuilder ./cmd/agent-output ./agent/runner -count=1
 go test ./deploy -run '^TestPipelineTasksDoNotTraceServiceAccountTokens$' -count=1
 go test ./deploy -run '^TestConcourseReleaseImageUsesFinalStampedServer$' -count=1
+go test ./deploy -run '^(TestWriteAgentRunnerHomeInfra|TestAgentRunnerPipelineWritesVerifiedHomeInfraDigest|TestAgentRunnerWritebackRunbookOrdersArgoActivation)$' -count=1
 go test ./deploy ./fly/commands -count=1
 git diff --check
 ```
@@ -349,12 +417,16 @@ not merely green unit tests or a healthy `/healthz` endpoint.
 
 ## Rollout and Recovery
 
-Pause new agent dispatch during the compatibility window. Build the web and
-runner artifacts from the same commit, capture immutable digests, update the
-external deployment's `CONCOURSE_AGENT_STEP_IMAGE` through its normal reviewed
-path, roll out the web, and verify the configured runtime digest before
-re-enabling dispatch. Capture the exact final, non-RC tag on that commit and
-require the running `/api/v1/info` response's `version` and
+Pause new agent dispatch and the promotion jobs during the compatibility
+window. Build the web and runner artifacts from the same commit, capture the
+immutable runner digest, and let the bounded helper commit the one-file change
+for the `home-infra` resource's rebase-only `main` write. Do not unpause promotion merely because that Git push
+succeeds: first require ArgoCD to report `concourse` synced and healthy and
+require the running web deployment's effective
+`CONCOURSE_AGENT_STEP_IMAGE` to equal the recorded immutable GHCR digest.
+Then perform the matching web rollout and verify the configured runtime digest
+before re-enabling dispatch. Capture the exact final, non-RC tag on that
+commit and require the running `/api/v1/info` response's `version` and
 `jetbridge_version` fields to equal it exactly. A retained `-rc` value fails
 the rollout even when the image tag itself is final.
 
@@ -373,7 +445,11 @@ to an existing exact version is the expected result.
 If the rollout fails, restore the prior web and exact runner digests together.
 Do not keep a new web against an old runner, do not retag a mutable image to
 simulate rollback, and do not release a node that has not sealed a valid output
-on the restored pair.
+on the restored pair. A writeback push race is not a rollback case: retain the
+paused state, require an operator/job retrigger after the bounded resource put,
+and never force-push or edit the contested remote checkout. The stale explanatory comment is a
+separate external-worktree maintenance change and must not be folded into an
+automatic rollback or digest commit.
 
 ## Completion Criteria
 
@@ -389,6 +465,9 @@ on the restored pair.
   unknown-option failure.
 - The deployed runner is named by a registry-reported immutable digest from
   the same commit as the web.
+- The pipeline has committed exactly one `apps/concourse.yaml` field change
+  carrying that verified GHCR digest (or recorded an idempotent no-op), without
+  exposing a Git token; ArgoCD has activated that exact value before promotion.
 - Plain `nodes show-run` output provides an exact build-log command whenever a
   planned build exists.
 - Fresh post-rollout log-diagnosis and code-review runs each pin the deployed
