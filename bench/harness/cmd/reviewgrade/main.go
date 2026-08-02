@@ -39,9 +39,9 @@ func main() {
 	if err != nil {
 		fail(err)
 	}
-	var review reviewgrade.Review
-	if err := json.Unmarshal(reviewRaw, &review); err != nil {
-		fail(fmt.Errorf("parse review record: %w", err))
+	review, err := decodeReview(reviewRaw)
+	if err != nil {
+		fail(err)
 	}
 
 	report := reviewgrade.Score(oracle, review, *tolerance)
@@ -79,4 +79,33 @@ func main() {
 func fail(err error) {
 	fmt.Fprintf(os.Stderr, "reviewgrade: %v\n", err)
 	os.Exit(1)
+}
+
+// decodeReview accepts either a sealed review/v1 record.json (the shape
+// `fly agent snapshots download` produces) or a bare review body.
+//
+// A sealed record wraps the body in the record envelope. Unmarshalling those
+// bytes straight into a Review silently yields an EMPTY review — no error, no
+// findings, 0% recall — which reads exactly like an agent that found nothing.
+// This scored a real, correct review as a total miss before it was caught, so
+// the envelope case is handled explicitly and an empty result is refused.
+func decodeReview(raw []byte) (reviewgrade.Review, error) {
+	var envelope struct {
+		Type string              `json:"type"`
+		Body *reviewgrade.Review `json:"body"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err == nil && envelope.Body != nil {
+		if envelope.Type != "" && envelope.Type != "review/v1" {
+			return reviewgrade.Review{}, fmt.Errorf("parse review record: record type is %q, not review/v1", envelope.Type)
+		}
+		return *envelope.Body, nil
+	}
+	var review reviewgrade.Review
+	if err := json.Unmarshal(raw, &review); err != nil {
+		return reviewgrade.Review{}, fmt.Errorf("parse review record: %w", err)
+	}
+	if review.Conclusion == "" && len(review.Findings) == 0 {
+		return reviewgrade.Review{}, fmt.Errorf("parse review record: no conclusion and no findings — is this a review/v1 record or body?")
+	}
+	return review, nil
 }
