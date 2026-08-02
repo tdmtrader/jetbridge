@@ -96,7 +96,7 @@ func TestCodeReviewReusableNodeSeedFreezesItsAtomicImplementation(t *testing.T) 
 	if !ok {
 		t.Fatalf("node leaf = %T, want *atc.AgentStep", definition.Function.Plan[0].Config)
 	}
-	if agent.Model != "claude-sonnet" ||
+	if agent.Model != "sonnet" ||
 		agent.BudgetSliceUSD != 5 ||
 		!strings.Contains(agent.Prompt, "Compare the immutable repositories mounted at `before` and `after`.") ||
 		!strings.Contains(agent.Prompt, "The `subjects` array must be sorted lexicographically by id") ||

@@ -873,7 +873,6 @@ outputs:
 plan:
   - agent: upgrade
     function_id: upgrade    <span class="c"># stable identity — addressable for extraction / experiments</span>
-    budget_slice_usd: 10
     prompt_file: prompts/upgrade.md
     inputs: [repository, request]
     outputs: [candidate-change, report]
@@ -941,9 +940,9 @@ parameters:
 step:
   agent: review
   function_id: review
-  budget_slice_usd: 5
+  budget_slice_usd: 5     <span class="c"># fails against the currently pinned agent-runner CLI (no --max-budget-usd)</span>
   prompt_file: prompts/review.md
-  model: claude-sonnet</div>
+  model: sonnet            <span class="c"># NOT "claude-sonnet" — that's not a real model ID and returns a 404</span></div>
     <div class="cmd">fly -t TARGET agent nodes import ./code-review
 fly -t TARGET agent nodes release code-review 1 --compatibility=compatible</div>
     <p>A node must be explicitly <strong>released</strong>, with a compatibility declaration, before any workflow can reference it. A workflow then composes it in via a per-step <code class="flag">node</code>/<code class="flag">uses</code> reference — an authoring-only shorthand expanded at compile time, never persisted as such in the compiled plan:</p>

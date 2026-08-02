@@ -79,6 +79,8 @@ plan:
       source-repository: repository/v1
       target-repository: repository/v1
   - agent: respond
+    # Fails against the currently pinned agent-runner CLI, which has no
+    # --max-budget-usd support at all; see FIRST-USER-FINDINGS.md (F12, F12b).
     budget_slice_usd: 5
     function_id: respond
     prompt_file: prompts/respond.md
@@ -167,6 +169,8 @@ plan:
     output_types:
       validation: validation/v1
   - agent: assess-impact
+    # Fails against the currently pinned agent-runner CLI, which has no
+    # --max-budget-usd support at all; see FIRST-USER-FINDINGS.md (F12, F12b).
     budget_slice_usd: 5
     function_id: assess-impact
     prompt_file: prompts/assess-impact.md

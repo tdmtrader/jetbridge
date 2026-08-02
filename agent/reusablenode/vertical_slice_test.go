@@ -708,7 +708,7 @@ func agentFromRun(t *testing.T, run db.AgentWorkflowRun) *atc.AgentStep {
 
 func assertFrozenReviewAgent(t *testing.T, agent *atc.AgentStep, mapped bool) {
 	t.Helper()
-	if agent.Model != "claude-sonnet" ||
+	if agent.Model != "sonnet" ||
 		agent.BudgetSliceUSD != 5 ||
 		!strings.Contains(agent.Prompt, "Compare the immutable repositories mounted at `before` and `after`.") ||
 		!reflect.DeepEqual(agent.Skills, []string{"review"}) ||

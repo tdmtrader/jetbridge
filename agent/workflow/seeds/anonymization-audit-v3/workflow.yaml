@@ -21,6 +21,8 @@ outputs:
     description: Optional policy or implementation change relative to repository.
 plan:
   - agent: audit
+    # Fails against the currently pinned agent-runner CLI, which has no
+    # --max-budget-usd support at all; see FIRST-USER-FINDINGS.md (F12, F12b).
     budget_slice_usd: 5
     function_id: audit-anonymization
     prompt_file: prompts/audit.md

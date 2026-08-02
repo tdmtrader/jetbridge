@@ -50,10 +50,40 @@ step:
   agent: review
   function_id: review
   prompt_file: prompts/review.md
-  model: claude-sonnet
+  model: sonnet
   skills: [review]
   capabilities: [dev-mcp]
 ```
+
+`model` is passed to the agent runtime verbatim and is frozen into the node
+version, so an invalid value is permanent for that version and fails only
+once a pod is running and calls the model API — nothing at import, release,
+or run-create time validates it. Prefer the runtime CLI's short aliases
+(`sonnet`, `opus`, `haiku`) over a full model identifier. `claude-sonnet` is
+not a valid value; it returns `API Error: 404 model: claude-sonnet` from the
+running pod, and by then the run has already spent a pod launch.
+
+`budget_slice_usd` requires an agent runtime that supports a per-run budget
+cap — the runner passes it through as `--max-budget-usd`. With a non-zero
+deployment daily budget cap enabled, every agent leaf needs a positive
+`budget_slice_usd`, so the two settings must be rolled out together:
+enabling the cap without giving every leaf a slice makes ordinary budget
+reservation fail closed — and a slice is independently the step's hard cap
+regardless of whether any deployment cap is set at all: the runner passes
+`--max-budget-usd` for any positive `budget_slice_usd`, cap or no cap. As
+currently pinned, the `@anthropic-ai/claude-code@2.0.1` CLI in
+`deploy/agent-runner/Dockerfile` does not implement `--max-budget-usd` at
+all, so a step that declares `budget_slice_usd` fails against that pin today
+— with or without a deployment cap. This is a property of the pinned CLI
+release, not a permanent platform limitation — moving the pin to a CLI
+version that supports the flag fixes it without any node change.
+
+Node parameters are supplied to the step as **environment variables**, not
+interpolated into the prompt text: `CompiledNodeDefinition.Instantiate`
+writes each resolved parameter into the step's environment
+(`agent/workflow/node_definition.go`). A prompt that writes
+`${MINIMUM_SEVERITY}` gets that literal string, not the parameter's value —
+write "read the `MINIMUM_SEVERITY` environment variable" instead.
 
 The node compiler captures the prompt, selected skill tree, model, logical
 contract, parameter defaults, and resolved capability image/command/ports.
@@ -65,15 +95,65 @@ Nodes cannot contain sequencing, parallelism, hooks, retries, human waits,
 resource acquisition, or nested nodes. Put those relationships in the
 workflow, where they remain visible.
 
+## Writing the step prompt
+
+The runtime prepends its own instructions to the node's prompt, describing
+whichever output mechanism is active for this step: the managed
+output-builder MCP tools (`describe_output`, `write_output`,
+`validate_output`) when the builder is enabled, or the resolved
+record-authority environment variables (`AGENT_INPUT_<PORT>_SNAPSHOT_TYPE`,
+`AGENT_OUTPUT_<PORT>_RECORD_TYPE`, and similar) when it is not. **Do not
+hardcode either mechanism in the node prompt.** A prompt that names
+environment variables the builder path does not set makes the agent write
+empty values into its record, which fails sealing only after the step has
+spent its whole budget. Write "use the platform-provided output mechanism
+described above" and spend the prompt on what a good result looks like, not
+on how to deliver it.
+
+Two rules earn their place in almost any exploring agent node's prompt:
+
+- **Instruct an early provisional write, then refinement.** Record writing
+  is idempotent — the last successful write before the step ends wins — so
+  an agent that writes its best current answer early and keeps refining it
+  cannot lose everything to the turn cap. Without this instruction, an
+  exploring agent reliably spends its whole turn budget and produces
+  nothing: measured on a diagnosis node, this single instruction turned an
+  80-turn, zero-output run into a correct, well-anchored diagnosis.
+- **State the record contract's own vocabulary.** For a review-shaped node
+  (`review/v1`), the prompt should say so explicitly: severities are
+  `observation`, `low`, `medium`, `high`, `critical`; `high` and `critical`
+  findings must be `blocking: true`, `observation` findings must not be; an
+  `accept` conclusion cannot carry a blocking finding, and
+  `changes-required` requires at least one; every entity list (findings,
+  hypotheses, actions, and so on) must be sorted by `id`. A prompt that
+  invents its own vocabulary, or leaves it unstated, produces records that
+  read well and fail validation.
+
 ## Import and inspect
 
-Import validates the complete directory and allocates the next integer version.
-Importing byte-identical resolved content returns the existing version:
+Import validates the complete directory and allocates the next integer
+version:
 
 ```sh
 fly -t TARGET agent nodes import ./code-review
 fly -t TARGET agent nodes list
 fly -t TARGET agent nodes show code-review 1 --json
+```
+
+Version numbers are allocated **per node name**, not team-global: import
+takes a per-name Postgres advisory lock and assigns the next version as
+`COALESCE(MAX(version),0)+1` scoped to that name
+(`atc/db/agent_nodes_factory.go`). A script cannot safely predict "my next
+version" as `N+1` even with no other writers, because import is also
+**content-hash idempotent** — the hash is over the byte-identical *source*
+directory, taken before compilation, so re-importing an unchanged source
+directory returns the existing version without allocating a new one. Use
+`--json` on `import` and `release` and read back the version each call
+actually acted on:
+
+```sh
+VERSION=$(fly -t TARGET agent nodes import ./code-review --json | jq -r .version)
+fly -t TARGET agent nodes release code-review "$VERSION" --compatibility=compatible --json | jq -r .version
 ```
 
 An imported version is immutable but is not yet eligible for workflow
@@ -104,6 +184,25 @@ deprecated versions:
 ```sh
 fly -t TARGET agent nodes runs code-review 1 --status=succeeded
 fly -t TARGET agent nodes show-run code-review RUN-ID --json
+```
+
+For a run that ended `failed`, `errored`, or `aborted`, the non-JSON form of
+`show-run` also prints a `failure:` line with the terminal error (when one
+was captured) and a `full log:` line with the exact `fly watch` command for
+the underlying build, so a doomed run's cause no longer requires fishing
+`planned_build_id` out of `--json` by hand:
+
+```sh
+fly -t TARGET agent nodes show-run code-review RUN-ID
+# failure: API Error: 404 model: claude-sonnet
+# full log: fly -t TARGET watch -b 4821
+```
+
+To stop an in-flight run without dropping to `fly abort-build`, cancel it
+directly:
+
+```sh
+fly -t TARGET agent nodes cancel-run code-review RUN-ID
 ```
 
 ## Release
@@ -234,7 +333,7 @@ and promote it separately.
 
 Reusable-node routes use the main-team agent authorization boundary. Viewers
 may inspect definitions, versions, runs, and consumers. Members may import,
-run, release, deprecate, restore, and upgrade.
+run, cancel a run, release, deprecate, restore, and upgrade.
 
 Use the exact HTTP endpoints when automating the same flow:
 
@@ -243,6 +342,7 @@ GET  /api/v1/agent/nodes
 POST /api/v1/agent/nodes/:name/versions
 PUT  /api/v1/agent/nodes/:name/versions/:version/release
 POST /api/v1/agent/nodes/:name/versions/:version/runs
+POST /api/v1/agent/nodes/:name/runs/:run-id/cancel
 GET  /api/v1/agent/nodes/:name/versions/:version/consumers
 POST /api/v1/agent/nodes/:name/versions/:version/upgrades
 ```

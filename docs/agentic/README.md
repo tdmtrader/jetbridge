@@ -116,6 +116,51 @@ fly -t TARGET agent snapshots capture-resource \
   --type=repository/v1
 ```
 
+### What a typed snapshot directory must contain
+
+`--type` selects a server-authoritative validator, and the directory passed
+to `--from` must already satisfy it before the archive is accepted. The
+common types:
+
+| Type | Required content |
+|---|---|
+| `opaque/v1` | any non-empty set of files; no structure required |
+| `repository/v1` | a real git repository — the validator runs `git` against `HEAD` (clean work tree and index, no shallow clone, no gitlinks); an exported tree with no `.git` directory is rejected |
+| `work-item/v1` | `work-item.json`: `schema_version` exactly `"1.0.0"`, plus non-empty `adapter`, `external_id`, `revision`, `captured_at` (RFC 3339), `title`, `body` |
+| `log-bundle/v1` | at least one regular log file anywhere in the tree; an optional `metadata.json` with `schema_version`, `captured_at` (RFC 3339), `source` |
+| `upgrade-request/v1` | `upgrade-request.json` |
+| record types (e.g. `review/v1`, `diagnosis/v1`, `validation/v1`, `repository-change/v1`, `measurements/v1`) | `record.json` in the common envelope described below, plus optional `content/` for payloads and evidence |
+
+`repository-change/v1` cannot be created from `fly agent snapshots create`:
+sealing it verifies the change against its base `repository/v1`, which must
+be a bound declared input so the server can check lineage — a bare directory
+upload has no input binding to check against. Produce it from a workflow or
+node step instead, where the base is an exact declared input.
+
+A validation failure that a validator has explicitly marked as safe to
+disclose returns the contract's own message in the response's `detail`
+field, naming the exact file or rule that failed — for example
+`snapshot contracts: work-item.json: schema_version must be exactly 1.0.0`
+or `snapshot contracts: log bundle must contain at least one log regular
+file`. `fly`'s snapshot commands decode and print that field, so the CLI
+shows the real cause rather than only the generic `snapshot does not
+satisfy its declared type`. This marking is opt-in per validator
+(`agent/snapshot/client_detail.go`) and today covers the document-shaped
+types (`work-item/v1`, `log-bundle/v1`, `upgrade-request/v1`) and the record
+envelope shared by the record types (`record_version`, `type`, `schema`,
+`subjects` shape) plus invalid-archive rejections. Two things it does not
+yet cover: a `repository/v1` upload that fails one of the git-specific
+checks (dirty work tree, missing `.git`, shallow clone, and so on) still
+returns the generic message with an empty `detail`, since its underlying
+git error text is not marked safe to disclose; and a record whose envelope
+is well-formed but whose *body* violates a contract rule — a bad severity,
+an unsorted findings list, a missing blocking flag — is likewise unmarked.
+Only the envelope layer is marked today; a record body's own validation
+(the declared-schema core plus each type's semantic rules, such as
+`reviewBody` in `agent/snapshot/contracts/review.go`) still returns the
+generic message with an empty `detail`. In both cases the cause is only in
+the web pod's log.
+
 Import and explicitly promote a workflow definition:
 
 ```sh
@@ -602,7 +647,11 @@ Non-zero USD budgets are enforced at start and execution. Every candidate and
 evaluator agent leaf must declare an exact positive `budget_slice_usd`; the
 sum must fit the durable per-cell reservation, which is admitted under a
 database lock against the experiment total and deployment daily cap. The
-runner passes each slice to Claude as `--max-budget-usd`. Retry/across shapes
+runner passes each slice to Claude as `--max-budget-usd`. As with an ordinary
+node's `budget_slice_usd` (see [Reusable node definitions](../operations/reusable-node-definitions.md)),
+this fails outright against whatever agent-runner image is currently
+deployed if its pinned CLI predates `--max-budget-usd` support — check the
+pin before authoring a budgeted experiment. Retry/across shapes
 that could multiply spend are rejected for budgeted experiments. Positive
 token limits currently fail closed at start because the runtime has no exact
 token-stop primitive; zero keeps the corresponding limit unlimited.
