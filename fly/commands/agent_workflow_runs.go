@@ -15,6 +15,8 @@ import (
 
 	workflowrunsapi "github.com/concourse/concourse/agent/api/workflowruns"
 	"github.com/concourse/concourse/agent/snapshot"
+	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/event"
 	"github.com/concourse/concourse/fly/commands/internal/displayhelpers"
 	"github.com/concourse/concourse/fly/rc"
 	"github.com/concourse/concourse/fly/ui"
@@ -479,7 +481,144 @@ func printAgentWorkflowRunDetail(targetName rc.TargetName, detail workflowrunsap
 		fmt.Printf("inspect logs: fly -t %s watch -b %d\n", shellQuoteTargetAlias(targetName), *detail.PlannedBuildID)
 	}
 	fmt.Printf("inputs: %d\noutputs: %d\n", len(detail.Inputs), len(detail.Outputs))
+	if reason := runFailureReasonFn(targetName, detail.RunSummary); reason != "" {
+		fmt.Printf("failure: %s\n", reason)
+	}
 	return nil
+}
+
+// runFailureReason reads the terminal error out of the run's planned build, so
+// a failed run says WHY on the surface the operator is already looking at.
+// Without it the reason exists only in the build event stream, which is what
+// the "inspect logs" hint above is a pointer to — useful, but a second command
+// and a wall of JSON away.
+//
+// Every failure here is non-fatal: this is a diagnostic layered on top of an
+// already-successful show-run, and it must never turn a readable answer into
+// an error. It also loads its own target rather than taking one, so the
+// printer's signature stays the target NAME it needs for the hint.
+func runFailureReason(targetName rc.TargetName, run workflowrunsapi.RunSummary) string {
+	if run.PlannedBuildID == nil || targetName == "" {
+		return ""
+	}
+	// Only the terminal-unsuccessful states have a reason worth fetching.
+	// Naming them positively means a status added later does not silently
+	// start pulling event streams for healthy runs. Checked before the target
+	// is loaded so a healthy run pays nothing at all.
+	if !agentWorkflowRunNeedsFailureDiagnosis(run.Status) {
+		return ""
+	}
+	target, err := rc.LoadTarget(targetName, false)
+	if err != nil {
+		return ""
+	}
+	return failureReasonFromTarget(target, run)
+}
+
+// failureReasonFromTarget is the testable core of runFailureReason: it takes
+// an already-resolved target so a test can inject a fake client, while the
+// caller above keeps the target-NAME signature the printer needs for its
+// "inspect logs" hint.
+func failureReasonFromTarget(target rc.Target, run workflowrunsapi.RunSummary) string {
+	if run.PlannedBuildID == nil {
+		return ""
+	}
+	// Repeated from the caller deliberately. The caller checks it first so a
+	// healthy run never even loads a target, but the guard belongs with the
+	// code that does the fetching: this is the function that would open an
+	// event stream for a succeeded run if it were ever called directly.
+	if !agentWorkflowRunNeedsFailureDiagnosis(run.Status) {
+		return ""
+	}
+	source, err := target.Client().BuildEvents(fmt.Sprintf("%d", *run.PlannedBuildID))
+	if err != nil {
+		return ""
+	}
+	defer source.Close()
+	var errorEvents []event.Error
+	var finishEvents []event.FinishTask
+	// Bounded: an agent step's stdout becomes event.Log, so a transcript-heavy
+	// build can carry a very large stream. This scans a large-but-fast stream,
+	// not a stalled read — a terminal run's build is always complete, and a
+	// complete build's stream ends rather than parking.
+	for scanned := 0; scanned < runFailureReasonEventScanLimit; scanned++ {
+		streamEvent, err := source.NextEvent()
+		if err != nil {
+			break
+		}
+		switch typed := streamEvent.(type) {
+		case event.Error:
+			errorEvents = append(errorEvents, typed)
+		case event.FinishTask:
+			finishEvents = append(finishEvents, typed)
+		}
+	}
+	if reason := failureReasonFromErrorEvents(errorEvents); reason != "" {
+		return reason
+	}
+	return exitStatusReasonFromFinishTaskEvents(finishEvents)
+}
+
+// agentWorkflowRunNeedsFailureDiagnosis names the terminal-unsuccessful
+// statuses positively, so a status added later does not silently start
+// pulling event streams for healthy runs.
+func agentWorkflowRunNeedsFailureDiagnosis(status db.AgentWorkflowRunStatus) bool {
+	switch status {
+	case db.AgentWorkflowRunStatusFailed, db.AgentWorkflowRunStatusErrored, db.AgentWorkflowRunStatusAborted:
+		return true
+	default:
+		return false
+	}
+}
+
+var runFailureReasonEventScanLimit = 20000
+
+// runFailureReasonFn is the printer's seam onto runFailureReason. The printer
+// takes a target NAME (all it needs for the "inspect logs" hint) and resolves
+// the target itself, so a test cannot inject a fake client through it; this
+// var lets a test assert what the printer actually writes without giving the
+// production path an argument it has no use for.
+var runFailureReasonFn = runFailureReason
+
+// failureReasonFromErrorEvents picks the message a human needs out of a
+// build's error events: the last one, on one line.
+//
+// The last error is the one that terminated the run; earlier errors are
+// usually a retried or superseded step. Two authored-plan shapes invert that —
+// an ensure/on_failure hook that itself errors, and a try-swallowed error
+// followed by a silent non-zero exit — but neither occurs in any shipped seed,
+// where the renderer emits a flat plan and only leaf steps are error-wrapped.
+func failureReasonFromErrorEvents(errorEvents []event.Error) string {
+	for index := len(errorEvents) - 1; index >= 0; index-- {
+		message := strings.TrimSpace(errorEvents[index].Message)
+		if message == "" {
+			continue
+		}
+		if newline := strings.IndexByte(message, '\n'); newline >= 0 {
+			message = strings.TrimSpace(message[:newline])
+		}
+		return message
+	}
+	return ""
+}
+
+// exitStatusReasonFromFinishTaskEvents falls back to the last non-zero exit
+// status when no step reported an error message. A plain `failed` run — a
+// step's process exiting non-zero without the step itself erroring — never
+// produces an event.Error: atc/exec/agent_step.go takes the ExitStatus path,
+// not the error path. event.FinishTask is the only signal left for that case,
+// which is the majority of real agent failures.
+//
+// The message says "step", not "agent step": a rendered workflow can carry an
+// ordinary task in the same build, and FinishTask.Origin carries only a plan
+// ID, so the CLI cannot tell which kind exited.
+func exitStatusReasonFromFinishTaskEvents(finishEvents []event.FinishTask) string {
+	for index := len(finishEvents) - 1; index >= 0; index-- {
+		if finishEvents[index].ExitStatus != 0 {
+			return fmt.Sprintf("step exited %d", finishEvents[index].ExitStatus)
+		}
+	}
+	return ""
 }
 
 func shellQuoteTargetAlias(targetName rc.TargetName) string {

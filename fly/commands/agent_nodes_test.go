@@ -1,10 +1,14 @@
 package commands
 
 import (
+	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -48,8 +52,131 @@ func TestAgentNodesImportPackagesDirectoryAndSendsManifest(t *testing.T) {
 		}
 		return nodeResponse(http.StatusOK, `{"name":"code-review","version":1,"content_hash":"abcdef012345"}`), nil
 	})
-	if err := importNodeDir(target, dir); err != nil {
+	if err := importNodeDir(target, dir, false); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A script must read the version the server allocated rather than predict it:
+// the sequence is shared across the team and a concurrent import takes the
+// number you expected. Scraping the prose line was previously the only way.
+func TestAgentNodesImportPrintsTheAllocatedVersionAsJSON(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, workflow.NodeFileName), []byte(agentNodeSource), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "prompts"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "prompts", "review.md"), []byte("review it"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	target := nodeTarget(t, func(*http.Request) (*http.Response, error) {
+		return nodeResponse(http.StatusOK, `{"name":"code-review","version":7,"content_hash":"abcdef012345"}`), nil
+	})
+
+	var importErr error
+	output := captureStdout(t, func() { importErr = importNodeDir(target, dir, true) })
+	if importErr != nil {
+		t.Fatal(importErr)
+	}
+
+	var decoded struct {
+		Name    string `json:"name"`
+		Version int    `json:"version"`
+	}
+	if err := json.Unmarshal([]byte(output), &decoded); err != nil {
+		t.Fatalf("output is not JSON: %q", output)
+	}
+	if decoded.Name != "code-review" || decoded.Version != 7 {
+		t.Fatalf("decoded = %+v", decoded)
+	}
+}
+
+// The release endpoint's response carries only the release fields (not the
+// node identity), so a script reading --json needs the version stitched back
+// in rather than losing track of what it just released.
+func TestAgentNodesReleasePrintsNameAndVersionAsJSON(t *testing.T) {
+	target := nodeTarget(t, func(request *http.Request) (*http.Response, error) {
+		return nodeResponse(http.StatusOK, `{"released_at":1,"released_by":"alice","compatibility":"breaking"}`), nil
+	})
+
+	var releaseErr error
+	output := captureStdout(t, func() {
+		releaseErr = releaseNodeVersion(target, "code-review", 3, workflow.ReleaseBreaking, true)
+	})
+	if releaseErr != nil {
+		t.Fatal(releaseErr)
+	}
+
+	var decoded struct {
+		Name          string `json:"name"`
+		Version       int    `json:"version"`
+		Compatibility string `json:"compatibility"`
+	}
+	if err := json.Unmarshal([]byte(output), &decoded); err != nil {
+		t.Fatalf("output is not JSON: %q", output)
+	}
+	if decoded.Name != "code-review" || decoded.Version != 3 || decoded.Compatibility != "breaking" {
+		t.Fatalf("decoded = %+v", decoded)
+	}
+}
+
+// nodeReleaseResult declares Name/Version directly while embedding
+// workflow.NodeRelease. encoding/json prefers the shallower, directly
+// declared field on a name collision — so if NodeRelease ever grows its own
+// Name or Version field, the server's value would be silently dropped from
+// --json output with no compile error and no ambiguity error. This test
+// marshals a fully-populated NodeRelease standalone and confirms every one
+// of its keys and values survives, unchanged, inside the wrapper, and pins
+// the wrapper's exact key set so a dropped or renamed field is caught too.
+func TestAgentNodesReleaseJSONFlattensAllNodeReleaseFields(t *testing.T) {
+	release := workflow.NodeRelease{
+		ReleasedAt:         1700000000,
+		ReleasedBy:         "alice",
+		PredecessorVersion: 2,
+		Compatibility:      workflow.ReleaseBreaking,
+	}
+
+	standaloneBytes, err := json.Marshal(release)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var standalone map[string]any
+	if err := json.Unmarshal(standaloneBytes, &standalone); err != nil {
+		t.Fatal(err)
+	}
+	if len(standalone) != 4 {
+		t.Fatalf("standalone NodeRelease = %s, want all 4 fields populated (test fixture must cover every field)", standaloneBytes)
+	}
+
+	wrapperBytes, err := json.Marshal(nodeReleaseResult{Name: "code-review", Version: 3, NodeRelease: release})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wrapper map[string]any
+	if err := json.Unmarshal(wrapperBytes, &wrapper); err != nil {
+		t.Fatal(err)
+	}
+
+	for key, value := range standalone {
+		wrapperValue, ok := wrapper[key]
+		if !ok {
+			t.Fatalf("wrapper is missing %q, present in standalone NodeRelease: %s", key, wrapperBytes)
+		}
+		if fmt.Sprint(wrapperValue) != fmt.Sprint(value) {
+			t.Fatalf("wrapper[%q] = %v, standalone NodeRelease has %v (outer field shadowed the embedded one)", key, wrapperValue, value)
+		}
+	}
+
+	wrapperKeys := make([]string, 0, len(wrapper))
+	for key := range wrapper {
+		wrapperKeys = append(wrapperKeys, key)
+	}
+	sort.Strings(wrapperKeys)
+	want := []string{"compatibility", "name", "predecessor_version", "released_at", "released_by", "version"}
+	if !reflect.DeepEqual(wrapperKeys, want) {
+		t.Fatalf("wrapper keys = %v, want %v", wrapperKeys, want)
 	}
 }
 
@@ -77,7 +204,7 @@ step:
 		}
 		return nodeResponse(http.StatusCreated, `{"name":"brokered-fly-node","version":1,"content_hash":"hash"}`), nil
 	})
-	if err := importNodeDir(target, dir); err != nil {
+	if err := importNodeDir(target, dir, false); err != nil {
 		t.Fatalf("valid broker selector should defer to ATC: %v", err)
 	}
 	if requests.Load() != 1 {
@@ -91,7 +218,7 @@ step:
 	); err != nil {
 		t.Fatal(err)
 	}
-	if err := importNodeDir(target, dir); err == nil || !strings.Contains(err.Error(), "effort must be medium or high") {
+	if err := importNodeDir(target, dir, false); err == nil || !strings.Contains(err.Error(), "effort must be medium or high") {
 		t.Fatalf("invalid selector error = %v", err)
 	}
 	if requests.Load() != 1 {
@@ -126,7 +253,7 @@ func TestAgentNodesReleaseAndDeprecationUseExactLifecycleRequests(t *testing.T) 
 			return nil, nil
 		}
 	})
-	if err := releaseNodeVersion(target, "code-review", 3, workflow.ReleaseBreaking); err != nil {
+	if err := releaseNodeVersion(target, "code-review", 3, workflow.ReleaseBreaking, false); err != nil {
 		t.Fatal(err)
 	}
 	if err := setNodeDeprecation(target, "code-review", 3, true); err != nil {

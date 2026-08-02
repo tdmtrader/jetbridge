@@ -1,126 +1,400 @@
 package commands
 
 import (
-	"bytes"
-	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"strings"
 	"testing"
 
 	workflowrunsapi "github.com/concourse/concourse/agent/api/workflowruns"
+	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/event"
 	"github.com/concourse/concourse/fly/rc"
+	"github.com/concourse/concourse/fly/rc/rcfakes"
+	"github.com/concourse/concourse/go-concourse/concourse/concoursefakes"
+	"github.com/vito/go-sse/sse"
 )
 
-func TestPrintAgentWorkflowRunDetailIncludesPlannedBuildHint(t *testing.T) {
-	plannedBuildID := int64(418)
-	detail := workflowrunsapi.RunDetail{RunSummary: workflowrunsapi.RunSummary{WorkflowRunID: 7, PlannedBuildID: &plannedBuildID}}
-
-	output, err := captureAgentWorkflowRunDetail(t, "home", detail, false)
-	if err != nil {
-		t.Fatal(err)
+func TestFailureReasonPrefersTheLastErrorEvent(t *testing.T) {
+	events := []event.Error{
+		{Message: "an earlier, superseded failure"},
+		{Message: `snapshot: validate output "review": required regular file "record.json" is missing`},
 	}
-	if !strings.Contains(output, "planned build: 418\n") {
-		t.Fatalf("output %q does not contain planned build correlation", output)
-	}
-	if !strings.Contains(output, "inspect logs: fly -t home watch -b 418\n") {
-		t.Fatalf("output %q does not contain exact build-log command", output)
+	reason := failureReasonFromErrorEvents(events)
+	if reason != `snapshot: validate output "review": required regular file "record.json" is missing` {
+		t.Fatalf("reason = %q", reason)
 	}
 }
 
-func TestPrintAgentWorkflowRunDetailQuotesUnsafeTargetInBuildHint(t *testing.T) {
-	plannedBuildID := int64(418)
-	detail := workflowrunsapi.RunDetail{RunSummary: workflowrunsapi.RunSummary{PlannedBuildID: &plannedBuildID}}
-
-	output, err := captureAgentWorkflowRunDetail(t, "prod'; echo pwn", detail, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(output, `inspect logs: fly -t 'prod'\''; echo pwn' watch -b 418`+"\n") {
-		t.Fatalf("output %q does not contain a POSIX-shell-quoted target", output)
+func TestFailureReasonIsEmptyWithoutErrorEvents(t *testing.T) {
+	if reason := failureReasonFromErrorEvents(nil); reason != "" {
+		t.Fatalf("reason = %q, want empty", reason)
 	}
 }
 
-func TestPrintAgentWorkflowRunDetailOmitsBuildHintWithoutPlannedBuild(t *testing.T) {
-	output, err := captureAgentWorkflowRunDetail(t, "home", workflowrunsapi.RunDetail{}, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(output, "planned build:") || strings.Contains(output, "inspect logs:") {
-		t.Fatalf("output %q contains a build hint without a planned build", output)
+func TestFailureReasonIsTrimmedToOneReadableLine(t *testing.T) {
+	reason := failureReasonFromErrorEvents([]event.Error{{Message: "  line one\nline two  \n"}})
+	if strings.Contains(reason, "\n") || !strings.HasPrefix(reason, "line one") {
+		t.Fatalf("reason = %q", reason)
 	}
 }
 
-func TestPrintAgentWorkflowRunDetailJSONRemainsAPIOnly(t *testing.T) {
-	plannedBuildID := int64(418)
-	detail := workflowrunsapi.RunDetail{RunSummary: workflowrunsapi.RunSummary{WorkflowRunID: 7, PlannedBuildID: &plannedBuildID}}
-
-	output, err := captureAgentWorkflowRunDetail(t, "", detail, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	expected, err := json.MarshalIndent(detail, "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	expected = append(expected, '\n')
-	if !bytes.Equal([]byte(output), expected) {
-		t.Fatalf("JSON output = %q, want exact API serialization %q", output, expected)
-	}
-	var decoded map[string]any
-	if err := json.Unmarshal([]byte(output), &decoded); err != nil {
-		t.Fatalf("decode JSON output: %v\noutput: %q", err, output)
-	}
-	if decoded["planned_build_id"] != float64(418) {
-		t.Fatalf("planned_build_id = %#v, want 418", decoded["planned_build_id"])
-	}
-	if strings.Contains(output, "planned build:") || strings.Contains(output, "inspect logs:") {
-		t.Fatalf("JSON output %q contains human prose", output)
+func TestFailureReasonSkipsBlankMessagesToFindTheRealOne(t *testing.T) {
+	reason := failureReasonFromErrorEvents([]event.Error{{Message: "  "}, {Message: "real"}})
+	if reason != "real" {
+		t.Fatalf("reason = %q, want %q", reason, "real")
 	}
 }
 
-func TestPrintAgentWorkflowRunDetailRequiresTargetOnlyForPlainBuildHint(t *testing.T) {
-	if _, err := captureAgentWorkflowRunDetail(t, "", workflowrunsapi.RunDetail{}, false); err != nil {
-		t.Fatalf("plain detail without a build unexpectedly required a target: %v", err)
-	}
-
-	plannedBuildID := int64(418)
-	detail := workflowrunsapi.RunDetail{RunSummary: workflowrunsapi.RunSummary{PlannedBuildID: &plannedBuildID}}
-	if _, err := captureAgentWorkflowRunDetail(t, "", detail, false); err == nil {
-		t.Fatal("plain build hint accepted an empty target")
+func TestExitStatusReasonFromFinishTaskEventsPrefersTheLastNonZeroExit(t *testing.T) {
+	reason := exitStatusReasonFromFinishTaskEvents([]event.FinishTask{
+		{ExitStatus: 1},
+		{ExitStatus: 0},
+		{ExitStatus: 2},
+	})
+	if reason != "step exited 2" {
+		t.Fatalf("reason = %q", reason)
 	}
 }
 
-// This adapter keeps the first RED focused on the missing renderer behavior;
-// it passes targetName through once the production renderer accepts it.
-func renderAgentWorkflowRunDetailForTest(targetName rc.TargetName, detail workflowrunsapi.RunDetail, jsonOutput bool) error {
-	return printAgentWorkflowRunDetail(targetName, detail, jsonOutput)
+func TestExitStatusReasonFromFinishTaskEventsIsEmptyWithoutANonZeroExit(t *testing.T) {
+	if reason := exitStatusReasonFromFinishTaskEvents(nil); reason != "" {
+		t.Fatalf("reason = %q, want empty", reason)
+	}
+	if reason := exitStatusReasonFromFinishTaskEvents([]event.FinishTask{{ExitStatus: 0}}); reason != "" {
+		t.Fatalf("reason = %q, want empty", reason)
+	}
 }
 
-func captureAgentWorkflowRunDetail(
-	t *testing.T,
-	targetName rc.TargetName,
-	detail workflowrunsapi.RunDetail,
-	jsonOutput bool,
-) (string, error) {
+// fakeEventSource is a minimal concourse.Events implementation for testing
+// runFailureReason's event-stream consumption without a real ATC.
+type fakeEventSource struct {
+	events  []atc.Event
+	nextErr error
+	index   int
+	closed  bool
+}
+
+func (source *fakeEventSource) NextEvent() (atc.Event, error) {
+	if source.index >= len(source.events) {
+		if source.nextErr != nil {
+			return nil, source.nextErr
+		}
+		return nil, io.EOF
+	}
+	next := source.events[source.index]
+	source.index++
+	return next, nil
+}
+
+func (source *fakeEventSource) NextEventRaw() (sse.Event, error) {
+	return sse.Event{}, io.EOF
+}
+
+func (source *fakeEventSource) Close() error {
+	source.closed = true
+	return nil
+}
+
+func TestFailureReasonFromTargetSkipsEventFetchForNonTerminalUnsuccessfulStatuses(t *testing.T) {
+	for _, status := range []db.AgentWorkflowRunStatus{
+		db.AgentWorkflowRunStatusSucceeded,
+		db.AgentWorkflowRunStatusRunning,
+		db.AgentWorkflowRunStatusAdmitting,
+		db.AgentWorkflowRunStatusCanceling,
+	} {
+		t.Run(string(status), func(t *testing.T) {
+			client := new(concoursefakes.FakeClient)
+			target := new(rcfakes.FakeTarget)
+			target.ClientReturns(client)
+
+			buildID := int64(42)
+			run := workflowrunsapi.RunSummary{Status: status, PlannedBuildID: &buildID}
+			if reason := failureReasonFromTarget(target, run); reason != "" {
+				t.Fatalf("reason = %q, want empty", reason)
+			}
+			if client.BuildEventsCallCount() != 0 {
+				t.Fatalf("BuildEvents called %d times, want 0", client.BuildEventsCallCount())
+			}
+		})
+	}
+}
+
+func TestFailureReasonFromTargetReturnsEmptyForNilPlannedBuildID(t *testing.T) {
+	client := new(concoursefakes.FakeClient)
+	target := new(rcfakes.FakeTarget)
+	target.ClientReturns(client)
+
+	run := workflowrunsapi.RunSummary{Status: db.AgentWorkflowRunStatusFailed, PlannedBuildID: nil}
+	if reason := failureReasonFromTarget(target, run); reason != "" {
+		t.Fatalf("reason = %q, want empty", reason)
+	}
+	if client.BuildEventsCallCount() != 0 {
+		t.Fatalf("BuildEvents called %d times, want 0", client.BuildEventsCallCount())
+	}
+}
+
+func TestFailureReasonFromTargetReturnsEmptyWhenBuildEventsErrors(t *testing.T) {
+	client := new(concoursefakes.FakeClient)
+	client.BuildEventsReturns(nil, errors.New("boom"))
+	target := new(rcfakes.FakeTarget)
+	target.ClientReturns(client)
+
+	buildID := int64(7)
+	run := workflowrunsapi.RunSummary{Status: db.AgentWorkflowRunStatusErrored, PlannedBuildID: &buildID}
+	if reason := failureReasonFromTarget(target, run); reason != "" {
+		t.Fatalf("reason = %q, want empty", reason)
+	}
+}
+
+func TestFailureReasonFromTargetReturnsEmptyOnUnparseableStream(t *testing.T) {
+	client := new(concoursefakes.FakeClient)
+	source := &fakeEventSource{nextErr: errors.New("bad event")}
+	client.BuildEventsReturns(source, nil)
+	target := new(rcfakes.FakeTarget)
+	target.ClientReturns(client)
+
+	buildID := int64(9)
+	run := workflowrunsapi.RunSummary{Status: db.AgentWorkflowRunStatusAborted, PlannedBuildID: &buildID}
+	if reason := failureReasonFromTarget(target, run); reason != "" {
+		t.Fatalf("reason = %q, want empty", reason)
+	}
+	if !source.closed {
+		t.Fatal("event source was not closed after a stream error")
+	}
+}
+
+func TestFailureReasonFromTargetReadsTheTerminalErrorEventFromTheStream(t *testing.T) {
+	client := new(concoursefakes.FakeClient)
+	source := &fakeEventSource{
+		events: []atc.Event{
+			event.Error{Message: "an earlier, superseded failure"},
+			event.FinishTask{ExitStatus: 1},
+			event.Error{Message: `snapshot: validate output "review": required regular file "record.json" is missing`},
+		},
+	}
+	client.BuildEventsReturns(source, nil)
+	target := new(rcfakes.FakeTarget)
+	target.ClientReturns(client)
+
+	buildID := int64(11)
+	run := workflowrunsapi.RunSummary{Status: db.AgentWorkflowRunStatusFailed, PlannedBuildID: &buildID}
+	reason := failureReasonFromTarget(target, run)
+	want := `snapshot: validate output "review": required regular file "record.json" is missing`
+	if reason != want {
+		t.Fatalf("reason = %q, want %q", reason, want)
+	}
+	if !source.closed {
+		t.Fatal("event source was not closed")
+	}
+	if got := client.BuildEventsArgsForCall(0); got != "11" {
+		t.Fatalf("BuildEvents called with %q, want %q", got, "11")
+	}
+}
+
+// TestFailureReasonFromTargetFallsBackToExitStatusForAPlainFailedRun pins the case
+// this feature exists to serve: a step whose process exits non-zero without
+// the step itself erroring (e.g. `agent-runner: claude: exit status 1`)
+// produces event.FinishTask but no event.Error at all. Without the fallback,
+// a plain `failed` run would report nothing.
+func TestFailureReasonFromTargetFallsBackToExitStatusForAPlainFailedRun(t *testing.T) {
+	client := new(concoursefakes.FakeClient)
+	source := &fakeEventSource{
+		events: []atc.Event{
+			event.FinishTask{ExitStatus: 1},
+		},
+	}
+	client.BuildEventsReturns(source, nil)
+	target := new(rcfakes.FakeTarget)
+	target.ClientReturns(client)
+
+	buildID := int64(12)
+	run := workflowrunsapi.RunSummary{Status: db.AgentWorkflowRunStatusFailed, PlannedBuildID: &buildID}
+	reason := failureReasonFromTarget(target, run)
+	if reason != "step exited 1" {
+		t.Fatalf("reason = %q, want %q", reason, "step exited 1")
+	}
+}
+
+func TestFailureReasonFromTargetPrefersAnErrorMessageOverAnExitStatus(t *testing.T) {
+	client := new(concoursefakes.FakeClient)
+	source := &fakeEventSource{
+		events: []atc.Event{
+			event.FinishTask{ExitStatus: 1},
+			event.Error{Message: "the real cause"},
+		},
+	}
+	client.BuildEventsReturns(source, nil)
+	target := new(rcfakes.FakeTarget)
+	target.ClientReturns(client)
+
+	buildID := int64(13)
+	run := workflowrunsapi.RunSummary{Status: db.AgentWorkflowRunStatusFailed, PlannedBuildID: &buildID}
+	if reason := failureReasonFromTarget(target, run); reason != "the real cause" {
+		t.Fatalf("reason = %q, want %q", reason, "the real cause")
+	}
+}
+
+func TestFailureReasonFromTargetGivesUpAtTheScanLimitInsteadOfHanging(t *testing.T) {
+	original := runFailureReasonEventScanLimit
+	runFailureReasonEventScanLimit = 2
+	defer func() { runFailureReasonEventScanLimit = original }()
+
+	client := new(concoursefakes.FakeClient)
+	source := &fakeEventSource{
+		events: []atc.Event{
+			event.FinishTask{ExitStatus: 1},
+			event.FinishTask{ExitStatus: 1},
+			// The real error arrives after the scan limit and must be missed.
+			event.Error{Message: "arrives too late to be read"},
+		},
+	}
+	client.BuildEventsReturns(source, nil)
+	target := new(rcfakes.FakeTarget)
+	target.ClientReturns(client)
+
+	buildID := int64(14)
+	run := workflowrunsapi.RunSummary{Status: db.AgentWorkflowRunStatusFailed, PlannedBuildID: &buildID}
+	reason := failureReasonFromTarget(target, run)
+	if reason != "step exited 1" {
+		t.Fatalf("reason = %q, want the exit-status evidence gathered before the cutoff", reason)
+	}
+	if source.index != 2 {
+		t.Fatalf("events read = %d, want the scan to stop at the limit (2)", source.index)
+	}
+}
+
+// captureStdout redirects os.Stdout for the duration of fn and returns
+// everything written to it. Used to cover printAgentWorkflowRunDetail's
+// user-visible "failure:" and "full log:" lines, which no other test
+// exercises.
+func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()
-	reader, writer, err := os.Pipe()
+	read, write, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
 	}
-	previousStdout := os.Stdout
-	os.Stdout = writer
-	renderErr := renderAgentWorkflowRunDetailForTest(targetName, detail, jsonOutput)
-	os.Stdout = previousStdout
-	if err := writer.Close(); err != nil {
+	original := os.Stdout
+	os.Stdout = write
+	defer func() { os.Stdout = original }()
+
+	fn()
+
+	if err := write.Close(); err != nil {
 		t.Fatal(err)
 	}
-	output, err := io.ReadAll(reader)
+	output, err := io.ReadAll(read)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := reader.Close(); err != nil {
-		t.Fatal(err)
-	}
-	return string(output), renderErr
+	return string(output)
 }
+
+func TestPrintAgentWorkflowRunDetailPrintsFailureAndFullLogForAFailedRun(t *testing.T) {
+	client := new(concoursefakes.FakeClient)
+	source := &fakeEventSource{
+		events: []atc.Event{
+			event.Error{Message: "the real cause"},
+		},
+	}
+	client.BuildEventsReturns(source, nil)
+	target := new(rcfakes.FakeTarget)
+	target.ClientReturns(client)
+	stubFailureReason(t, func(rc.TargetName, workflowrunsapi.RunSummary) string {
+		return failureReasonFromTarget(target, workflowrunsapi.RunSummary{
+			Status: db.AgentWorkflowRunStatusFailed, PlannedBuildID: ptrInt64(21),
+		})
+	})
+
+	buildID := int64(21)
+	detail := workflowrunsapi.RunDetail{
+		RunSummary: workflowrunsapi.RunSummary{
+			WorkflowName: "code-review", Status: db.AgentWorkflowRunStatusFailed, PlannedBuildID: &buildID,
+		},
+	}
+	output := captureStdout(t, func() {
+		if err := printAgentWorkflowRunDetail(rc.TargetName("unit"), detail, false); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(output, "failure: the real cause\n") {
+		t.Fatalf("output = %q, want a failure line", output)
+	}
+	if !strings.Contains(output, "inspect logs: fly -t unit watch -b 21\n") {
+		t.Fatalf("output = %q, want an inspect-logs line", output)
+	}
+}
+
+// TestPrintAgentWorkflowRunDetailPrintsFullLogEvenWithoutAReason pins
+// Important-2: the "full log:" hint must not be nested inside "found a
+// reason" — a plain `failed` run with no readable evidence at all (an empty
+// event stream: no event.Error, no non-zero event.FinishTask) must still
+// point the user at `fly watch` instead of leaving them with nothing beyond
+// the bare status line.
+func TestPrintAgentWorkflowRunDetailPrintsFullLogEvenWithoutAReason(t *testing.T) {
+	client := new(concoursefakes.FakeClient)
+	client.BuildEventsReturns(&fakeEventSource{}, nil)
+	target := new(rcfakes.FakeTarget)
+	target.ClientReturns(client)
+	stubFailureReason(t, func(rc.TargetName, workflowrunsapi.RunSummary) string {
+		return failureReasonFromTarget(target, workflowrunsapi.RunSummary{
+			Status: db.AgentWorkflowRunStatusFailed, PlannedBuildID: ptrInt64(22),
+		})
+	})
+
+	buildID := int64(22)
+	detail := workflowrunsapi.RunDetail{
+		RunSummary: workflowrunsapi.RunSummary{
+			WorkflowName: "code-review", Status: db.AgentWorkflowRunStatusFailed, PlannedBuildID: &buildID,
+		},
+	}
+	output := captureStdout(t, func() {
+		if err := printAgentWorkflowRunDetail(rc.TargetName("unit"), detail, false); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if strings.Contains(output, "failure:") {
+		t.Fatalf("output = %q, want no failure line when no evidence was found", output)
+	}
+	if !strings.Contains(output, "inspect logs: fly -t unit watch -b 22\n") {
+		t.Fatalf("output = %q, want an inspect-logs line", output)
+	}
+}
+
+func TestPrintAgentWorkflowRunDetailPrintsNeitherLineForASucceededRun(t *testing.T) {
+	client := new(concoursefakes.FakeClient)
+	target := new(rcfakes.FakeTarget)
+	target.ClientReturns(client)
+
+	buildID := int64(23)
+	detail := workflowrunsapi.RunDetail{
+		RunSummary: workflowrunsapi.RunSummary{
+			WorkflowName: "code-review", Status: db.AgentWorkflowRunStatusSucceeded, PlannedBuildID: &buildID,
+		},
+	}
+	output := captureStdout(t, func() {
+		if err := printAgentWorkflowRunDetail(rc.TargetName("unit"), detail, false); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if strings.Contains(output, "failure:") {
+		t.Fatalf("output = %q, want no failure line for a succeeded run", output)
+	}
+	if client.BuildEventsCallCount() != 0 {
+		t.Fatalf("BuildEvents called %d times, want 0", client.BuildEventsCallCount())
+	}
+}
+
+// stubFailureReason swaps the printer's reason resolver for the duration of a
+// test. The printer takes a target NAME and resolves its own target, so this
+// is the only seam through which a fake client reaches it.
+func stubFailureReason(t *testing.T, fn func(rc.TargetName, workflowrunsapi.RunSummary) string) {
+	t.Helper()
+	original := runFailureReasonFn
+	runFailureReasonFn = fn
+	t.Cleanup(func() { runFailureReasonFn = original })
+}
+
+func ptrInt64(value int64) *int64 { return &value }

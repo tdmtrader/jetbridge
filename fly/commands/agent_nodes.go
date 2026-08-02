@@ -124,6 +124,12 @@ func (command *NodesShowCommand) Execute([]string) error {
 	return err
 }
 
+// resolveDefaultNodeVersion is a human convenience for `nodes show` when
+// VERSION is omitted: it picks "latest released, else latest imported" over
+// a version sequence that is shared across actors and can advance between
+// this scan and any later action. It must NOT be used to choose a version to
+// release, run, or upgrade — those commands require an explicit version for
+// exactly that reason.
 func resolveDefaultNodeVersion(target rc.Target, escapedName string) (int, error) {
 	latestImported, latestReleased := 0, 0
 	err := followAgentHistoryPages("node version", workflowVersionCursor, func(cursor string) (string, bool, error) {
@@ -166,6 +172,7 @@ type NodesImportCommand struct {
 	Args struct {
 		Path string `positional-arg-name:"PATH" required:"true" description:"Node source directory"`
 	} `positional-args:"yes"`
+	Json bool `long:"json" description:"Print the imported node record as JSON"`
 }
 
 func (command *NodesImportCommand) Execute([]string) error {
@@ -173,10 +180,10 @@ func (command *NodesImportCommand) Execute([]string) error {
 	if err != nil {
 		return err
 	}
-	return importNodeDir(target, command.Args.Path)
+	return importNodeDir(target, command.Args.Path, command.Json)
 }
 
-func importNodeDir(target rc.Target, dir string) error {
+func importNodeDir(target rc.Target, dir string, jsonOutput bool) error {
 	info, err := os.Stat(dir)
 	if err != nil {
 		return err
@@ -211,6 +218,9 @@ func importNodeDir(target rc.Target, dir string) error {
 	if err := decodeOrError(response, &node); err != nil {
 		return err
 	}
+	if jsonOutput {
+		return displayhelpers.JsonPrint(node)
+	}
 	_, err = fmt.Printf("imported %s version %d (hash %.12s)\n", node.Name, node.Version, node.ContentHash)
 	return err
 }
@@ -221,6 +231,7 @@ type NodesReleaseCommand struct {
 		Version int    `positional-arg-name:"VERSION" required:"true" description:"Node version"`
 	} `positional-args:"yes"`
 	Compatibility workflow.ReleaseCompatibility `long:"compatibility" required:"true" description:"Release compatibility declaration"`
+	Json          bool                          `long:"json" description:"Print the released node record as JSON"`
 }
 
 func (command *NodesReleaseCommand) Execute([]string) error {
@@ -228,10 +239,37 @@ func (command *NodesReleaseCommand) Execute([]string) error {
 	if err != nil {
 		return err
 	}
-	return releaseNodeVersion(target, command.Args.Name, command.Args.Version, command.Compatibility)
+	return releaseNodeVersion(target, command.Args.Name, command.Args.Version, command.Compatibility, command.Json)
 }
 
-func releaseNodeVersion(target rc.Target, name string, version int, compatibility workflow.ReleaseCompatibility) error {
+// nodeReleaseResult is the release endpoint's response (which carries only
+// the release fields, not the node identity) enriched with the name and
+// version the caller released — so `--json | jq -r .version` reports the
+// same version the caller acted on without a second round trip.
+//
+// The flattening of the embedded workflow.NodeRelease is deliberate, for jq
+// ergonomics: `release --json | jq .compatibility` rather than needing a
+// `.release.compatibility` path. This intentionally diverges from `nodes
+// show --json`, which nests the same four fields under "release" (they are
+// still workflow.NodeRelease there, embedded inside workflow.NodeDefinition
+// as a named, tagged field). Do not "fix" this divergence by nesting here.
+//
+// CAUTION: because Name/Version are declared directly on this struct while
+// NodeRelease is embedded, encoding/json's shallower-field-wins rule means
+// that if workflow.NodeRelease ever gains its own Name or Version field
+// (e.g. the server starts echoing node identity in the release response),
+// this struct will silently keep emitting the caller-supplied values here
+// instead and the server's values will vanish from the JSON with no compile
+// error. TestAgentNodesReleaseJSONFlattensAllNodeReleaseFields in
+// agent_nodes_test.go guards against exactly that regression — keep it
+// passing if NodeRelease's field set changes.
+type nodeReleaseResult struct {
+	Name    string `json:"name"`
+	Version int    `json:"version"`
+	workflow.NodeRelease
+}
+
+func releaseNodeVersion(target rc.Target, name string, version int, compatibility workflow.ReleaseCompatibility, jsonOutput bool) error {
 	payload, err := json.Marshal(struct {
 		Compatibility workflow.ReleaseCompatibility `json:"compatibility"`
 	}{Compatibility: compatibility})
@@ -245,6 +283,9 @@ func releaseNodeVersion(target rc.Target, name string, version int, compatibilit
 	var release workflow.NodeRelease
 	if err := decodeOrError(response, &release); err != nil {
 		return err
+	}
+	if jsonOutput {
+		return displayhelpers.JsonPrint(nodeReleaseResult{Name: name, Version: version, NodeRelease: release})
 	}
 	_, err = fmt.Printf("released %s version %d as %s\n", name, version, release.Compatibility)
 	return err
