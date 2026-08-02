@@ -185,6 +185,8 @@ func TestAgentRunnerPipelinePublishesVerifiedImmutableImage(t *testing.T) {
 		`IMMUTABLE_IMAGE="${IMAGE_REPOSITORY}@${DIGEST}"`,
 		`docker pull --platform linux/amd64 "${IMMUTABLE_IMAGE}"`,
 		`docker image inspect --format '{{.Os}}/{{.Architecture}}' "${IMMUTABLE_IMAGE}"`,
+		`printf 'CONCOURSE_AGENT_STEP_IMAGE=%s\nSOURCE_COMMIT=%s\nRUNNER_VERSION=%s\n' \`,
+		`> ../runner-image-metadata/verified-image.env`,
 		`CONCOURSE_AGENT_STEP_IMAGE=${IMMUTABLE_IMAGE}`,
 	} {
 		if !strings.Contains(script, required) {
@@ -193,6 +195,19 @@ func TestAgentRunnerPipelinePublishesVerifiedImmutableImage(t *testing.T) {
 	}
 	if strings.Contains(script, "RepoDigests") {
 		t.Fatal("agent-runner pipeline trusts local RepoDigests instead of the registry push response")
+	}
+	for _, forbidden := range []string{"git clone", "git fetch", "git push", "GIT_ASKPASS"} {
+		if strings.Contains(script, forbidden) {
+			t.Fatalf("privileged runner builder must not handle GitOps operation %q", forbidden)
+		}
+	}
+	for _, input := range task.Config.Inputs {
+		if input.Name == "home-infra" {
+			t.Fatal("privileged builder must not receive the GitOps checkout")
+		}
+	}
+	if task.Config.Params["GITHUB_TOKEN"] != "((github-token))" {
+		t.Fatalf("builder GHCR login parameter = %q", task.Config.Params["GITHUB_TOKEN"])
 	}
 	requireTextOrder(t, script,
 		`docker build --platform linux/amd64`,
@@ -204,10 +219,47 @@ func TestAgentRunnerPipelinePublishesVerifiedImmutableImage(t *testing.T) {
 		`DIGEST=$(printf`,
 		`docker pull --platform linux/amd64 "${IMMUTABLE_IMAGE}"`,
 		`docker image inspect --format '{{.Os}}/{{.Architecture}}' "${IMMUTABLE_IMAGE}"`,
+		`docker push ${GHCR}:v${NEXT_VERSION}`,
+		`verified-image.env`,
 		`CONCOURSE_AGENT_STEP_IMAGE=${IMMUTABLE_IMAGE}`,
 	)
 	if !strings.Contains(script, "done\nkubectl exec -n cicd \"${BUILDER_POD}\" -- docker info >/dev/null") {
 		t.Fatal("agent-runner pipeline does not fail closed after its Docker readiness loop")
+	}
+}
+
+func TestAgentRunnerWritebackRunbookOrdersArgoActivation(t *testing.T) {
+	raw, err := os.ReadFile("../docs/agentic/V3_CUTOVER_DEPLOY.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runbook := string(raw)
+	sectionStart := strings.Index(runbook, "## Post-upgrade sequence")
+	sectionEnd := strings.Index(runbook, "### Permanent coupling")
+	if sectionStart < 0 || sectionEnd <= sectionStart {
+		t.Fatal("deployment runbook lacks the recurring deployment sequence")
+	}
+	section := runbook[sectionStart:sectionEnd]
+	requireTextOrder(t, section,
+		"Pause new agent dispatch",
+		"build-agent-runner-image",
+		"verified-image.env",
+		"put: home-infra",
+		"ArgoCD",
+		"self-upgrade",
+		"Verify the running configuration",
+		"Resume agent dispatch",
+	)
+	for _, required := range []string{
+		"rebase: true",
+		"force push",
+		"^ghcr.io/tdmtrader/agent-runner@sha256:[a-f0-9]{64}$",
+		"argocd app get concourse --refresh --hard -n argocd -o json",
+		"kubectl -n cicd rollout status deploy/concourse-web --timeout=10m",
+	} {
+		if !strings.Contains(section, required) {
+			t.Errorf("writeback runbook lacks %q", required)
+		}
 	}
 }
 

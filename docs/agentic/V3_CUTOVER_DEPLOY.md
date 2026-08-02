@@ -189,33 +189,55 @@ live is safe even before any experiment references it).
 The cutover order above is one-time. Every subsequent deploy of this branch runs
 this sequence, **in this order**:
 
-1. **Pause new agent dispatch.** Do not admit work while the web and pod-side
-   runtime can temporarily disagree.
+1. **Pause new agent dispatch, `self-upgrade`, and `release`.** Do not admit
+   work or start a web promotion while the web and pod-side runtime can
+   temporarily disagree.
 2. **Build and smoke the same-commit runner.** Trigger the manual
    `build-agent-runner-image` job for the exact commit being deployed. Require
    `/usr/local/bin/agent-runner-image-smoke` to pass in the exact commit-tagged
-   image and record the job's final
-   `CONCOURSE_AGENT_STEP_IMAGE=<repository>@sha256:<digest>` line. A positive
-   budget slice is unsupported unless this smoke has proved the packaged
-   Claude CLI accepts `--max-budget-usd`.
-3. **Update the reviewed external runtime configuration.** Set
-   `CONCOURSE_AGENT_STEP_IMAGE` to that exact digest through the normal
-   home-infra review path; never substitute a mutable tag.
-4. **Deploy the matching web artifact.** Build and roll out the web from the
-   same full commit as the runner. The new web applies pending migrations on
-   boot. The web and pod-side binaries (`agent-runner`, `function-runner`) are
-   two halves of one contract: record schema descriptors, gate wording, and
-   contract types are compiled into both.
-5. **Verify the running configuration.** Inspect the running web arguments or
+   image. Its final `verified-image.env` is the authority: it must contain one
+   `CONCOURSE_AGENT_STEP_IMAGE=ghcr.io/tdmtrader/agent-runner@sha256:<64 lowercase hex>`
+   record for the deployment commit. A positive budget slice
+   is unsupported unless this smoke has proved the packaged Claude CLI accepts
+   `--max-budget-usd`.
+3. **Require the bounded GitOps digest write.** The unprivileged update task
+   parses `verified-image.env`, makes the single manifest commit, then the
+   native resource performs `put: home-infra` with `rebase: true`. This is not
+   a force push: a rebase conflict or non-fast-forward refusal leaves
+   promotion paused for an operator retrigger.
+4. **Require ArgoCD activation before promotion.** Capture the image from the
+   verified metadata and require both healthy sync and that the deployment
+   carries the same digest. An Argo sync alone is insufficient if the
+   deployment value differs; promotion stays paused in that case.
+
+   ```bash
+   WANT_IMAGE=$(sed -n 's/^CONCOURSE_AGENT_STEP_IMAGE=//p' verified-image.env)
+   printf '%s\n' "$WANT_IMAGE" | grep -Eq '^ghcr.io/tdmtrader/agent-runner@sha256:[a-f0-9]{64}$'
+   argocd app get concourse --refresh --hard -n argocd -o json \
+     | jq -e '.status.sync.status == "Synced" and .status.health.status == "Healthy"'
+   kubectl -n cicd get deploy concourse-web -o json \
+     | jq -e --arg want "$WANT_IMAGE" \
+       '[.spec.template.spec.containers[].env[]? | select(.name == "CONCOURSE_AGENT_STEP_IMAGE") | .value] == [$want]'
+   kubectl -n cicd rollout status deploy/concourse-web --timeout=10m
+   ```
+
+5. **Deploy the matching web artifact through `self-upgrade` for the same commit.** Its `repo` gate requires both
+   `build-image` and the completed `build-agent-runner-image` GitOps writeback,
+   so it cannot select a web image before the runner digest has activated.
+   The matching web artifact applies pending migrations on boot. The web and
+   pod-side binaries (`agent-runner`, `function-runner`) are two halves of one
+   contract: record schema descriptors, gate wording, and contract types are
+   compiled into both.
+6. **Verify the running configuration.** Inspect the running web arguments or
    Pod specification and require the configured runner image to equal the
    recorded immutable digest. Require authenticated Fly status to succeed.
-6. **Re-import all seven v3 seeds with `--set-live`**:
+7. **Re-import all seven v3 seeds with `--set-live`**:
    ```bash
    fly -t <target> agent workflows import agent/workflow/seeds/<name>-v3 --set-live
    ```
    Seed prompt or plan changes are not picked up by the web restart — they are
    stored workflow versions, created only by an import.
-7. **Resume agent dispatch only after every prior check passes.**
+8. **Resume agent dispatch only after every prior check passes.**
 
 Why the order is not advisory:
 

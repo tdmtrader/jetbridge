@@ -10,7 +10,14 @@ import (
 )
 
 type deployPipeline struct {
-	Jobs []deployPipelineJob `yaml:"jobs"`
+	Resources []deployPipelineResource `yaml:"resources"`
+	Jobs      []deployPipelineJob      `yaml:"jobs"`
+}
+
+type deployPipelineResource struct {
+	Name   string         `yaml:"name"`
+	Type   string         `yaml:"type"`
+	Source map[string]any `yaml:"source"`
 }
 
 type deployPipelineJob struct {
@@ -19,13 +26,20 @@ type deployPipelineJob struct {
 }
 
 type deployPipelineStep struct {
-	Get        string `yaml:"get"`
-	Task       string `yaml:"task"`
-	Privileged bool   `yaml:"privileged"`
+	Get        string         `yaml:"get"`
+	Put        string         `yaml:"put"`
+	Task       string         `yaml:"task"`
+	Privileged bool           `yaml:"privileged"`
+	Timeout    string         `yaml:"timeout"`
+	Params     map[string]any `yaml:"params"`
+	Passed     []string       `yaml:"passed"`
 	Config     struct {
 		Inputs []struct {
 			Name string `yaml:"name"`
 		} `yaml:"inputs"`
+		Outputs []struct {
+			Name string `yaml:"name"`
+		} `yaml:"outputs"`
 		Params map[string]string `yaml:"params"`
 		Run    struct {
 			Path string   `yaml:"path"`

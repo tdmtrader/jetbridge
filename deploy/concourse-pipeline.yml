@@ -12,6 +12,14 @@ resources:
     - docs/**
     - notes/**
     - forge/**
+- name: home-infra
+  type: git
+  source:
+    uri: https://github.com/tdmtrader/home-infra.git
+    branch: main
+    username: x-access-token
+    password: ((github-token))
+    disable_ci_skip: true
 jobs:
 # Apply this file to the live pipeline whenever it changes.
 #
@@ -644,6 +652,8 @@ jobs:
       rootfs_uri: docker:///registry.home/concourse-test-runner:v5
       inputs:
       - name: repo
+      outputs:
+      - name: runner-image-metadata
       params:
         GITHUB_TOKEN: ((github-token))
       run:
@@ -652,7 +662,6 @@ jobs:
         - -exc
         - |
           cd repo
-          git fetch --tags --force origin
 
           echo "=== Computing version from tags ==="
           LATEST_TAG=$(git tag -l 'v0.2.*' --sort=-v:refname | grep -v '\-rc' | head -1)
@@ -760,7 +769,47 @@ jobs:
           kubectl exec -n cicd "${BUILDER_POD}" -- docker push ${GHCR}:latest
           kubectl exec -n cicd "${BUILDER_POD}" -- docker push ${GHCR}:v${NEXT_VERSION}
 
+          umask 077
+          printf 'CONCOURSE_AGENT_STEP_IMAGE=%s\nSOURCE_COMMIT=%s\nRUNNER_VERSION=%s\n' \
+            "${IMMUTABLE_IMAGE}" "$(git rev-parse HEAD)" "${NEXT_VERSION}" \
+            > ../runner-image-metadata/verified-image.env
+          grep -Eq '^CONCOURSE_AGENT_STEP_IMAGE=ghcr.io/tdmtrader/agent-runner@sha256:[a-f0-9]{64}$' ../runner-image-metadata/verified-image.env
+          grep -Eq '^SOURCE_COMMIT=[a-f0-9]{40}$' ../runner-image-metadata/verified-image.env
+          grep -Eq '^RUNNER_VERSION=[0-9]+\.[0-9]+\.[0-9]+$' ../runner-image-metadata/verified-image.env
           echo "CONCOURSE_AGENT_STEP_IMAGE=${IMMUTABLE_IMAGE}"
+  - get: home-infra
+    trigger: false
+  - task: update-home-infra-agent-runner-image
+    config:
+      platform: linux
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v5
+      inputs:
+      - name: repo
+      - name: home-infra
+      - name: runner-image-metadata
+      run:
+        path: sh
+        args:
+        - -euc
+        - |
+          set +x
+          test "$(wc -l < runner-image-metadata/verified-image.env | tr -d ' ')" = 3
+          test "$(sed -n 's/^CONCOURSE_AGENT_STEP_IMAGE=//p' runner-image-metadata/verified-image.env | wc -l | tr -d ' ')" = 1
+          test "$(sed -n 's/^SOURCE_COMMIT=//p' runner-image-metadata/verified-image.env | wc -l | tr -d ' ')" = 1
+          test "$(sed -n 's/^RUNNER_VERSION=//p' runner-image-metadata/verified-image.env | wc -l | tr -d ' ')" = 1
+          CONCOURSE_AGENT_STEP_IMAGE=$(sed -n 's/^CONCOURSE_AGENT_STEP_IMAGE=//p' runner-image-metadata/verified-image.env)
+          SOURCE_COMMIT=$(sed -n 's/^SOURCE_COMMIT=//p' runner-image-metadata/verified-image.env)
+          RUNNER_VERSION=$(sed -n 's/^RUNNER_VERSION=//p' runner-image-metadata/verified-image.env)
+          printf '%s\n' "$CONCOURSE_AGENT_STEP_IMAGE" | grep -Eq '^ghcr.io/tdmtrader/agent-runner@sha256:[a-f0-9]{64}$'
+          printf '%s\n' "$SOURCE_COMMIT" | grep -Eq '^[a-f0-9]{40}$'
+          printf '%s\n' "$RUNNER_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'
+          test "$SOURCE_COMMIT" = "$(git -C repo rev-parse HEAD)"
+          sh repo/deploy/write-agent-runner-home-infra.sh "$CONCOURSE_AGENT_STEP_IMAGE" "$SOURCE_COMMIT" "$RUNNER_VERSION" home-infra
+  - put: home-infra
+    timeout: 5m
+    params:
+      repository: home-infra
+      rebase: true
 
 # Builds the pinned multi-harness broker companion for linux/amd64 and prints
 # the registry-reported immutable digest. This remains manual because updating
@@ -932,7 +981,7 @@ jobs:
   - get: repo
     trigger: true
     params: {depth: 0, fetch_tags: true}
-    passed: [build-image]
+    passed: [build-image, build-agent-runner-image]
   - task: trigger-rollout
     attempts: 2
     config:

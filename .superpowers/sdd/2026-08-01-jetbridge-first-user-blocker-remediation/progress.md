@@ -294,6 +294,22 @@
 - No task silently changes external deployment state, pushes Git, opens a pull
   request, or releases a node outside Task 6's explicit evidence gate.
 
+## Task 6A addendum — verified runner GitOps writeback
+
+- RED: the required focused deploy suite failed because the real-Git helper,
+  verified metadata output, native Git resource, unprivileged update, rebase
+  put, and Argo-ordered runbook did not exist.
+- GREEN: seven real-Git behavioral subtests plus three pipeline/runbook
+  contracts, shell syntax, full `go test ./deploy`, and `git diff --check`
+  passed. The helper validates clean checked-out Git state, edits exactly one
+  mapping, and leaves push authority to the native resource. The builder emits
+  validated metadata after immutable verification; update parses it before a
+  rebase-only five-minute put; self-upgrade requires both image jobs.
+- Isolated home-infra comment-only commit (not pushed; digest unchanged):
+  `f185d35266f4352b009eb5e8c9bcea552b2b7f68`.
+- Blocking-only self-review round 1: no correctness, credential-boundary,
+  data-loss, required-behavior, or GitOps-concurrency blocker.
+
 ## Completion gate
 
 The track is complete only when Tasks 1–6 are checked, the final blocking
