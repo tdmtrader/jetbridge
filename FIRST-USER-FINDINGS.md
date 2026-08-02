@@ -32,6 +32,34 @@ two remain open and block other users:
 | **F7** | **deployed web image has no `git`, so no `repository/v1` can ever seal → every flagship seed is unrunnable on this deployment** | **OPEN** |
 | **F12/F17** | **guide examples (`model: claude-sonnet`, `budget_slice_usd`) fail against the deployed runner** | **OPEN** |
 
+## Remediation status (2026-08-01)
+
+A follow-on effort took the findings with unambiguous fixes and executed them
+as ten reviewed tasks; the plan and its corrections are in
+[the remediation plan](docs/superpowers/plans/2026-08-01-first-user-findings-remediation.md).
+The table above describes the state **at the time of the dogfood** and is left
+intact as the record of what a first user actually met. Current state:
+
+| finding | now |
+|---|---|
+| F1 per-type content contract undocumented | fixed — documented in the agentic guide |
+| F2 sample prompt contradicted the contract | fixed — vocabulary documented, sample corrected |
+| F6 errors strip every actionable detail | **partly fixed** — an opt-in marked `detail` now reaches the caller for archive rejections and document-shaped contracts. `repository/v1` git checks and record *body* rules are still unmarked and still return an empty detail |
+| F7 no `git` in the shipped image | **partly fixed** — the pipeline's inline Dockerfile now installs it and a drift guard pins it, but this is inert until `build-image` runs, and three other runtime images (`Dockerfile.local`, two in `k8s-e2e-pipeline.yml`) still omit it, so no k8s tier can prove a `repository/v1` seal |
+| F9 parameters are env vars, not interpolation | fixed — documented |
+| F11 a failed run hides its reason | fixed — `show-run` reports the error, or the exit status for the plain-`failed` case, plus a `full log:` pointer |
+| F12 runner passes a flag the image lacks | **diagnosis fixed, cause open** — the runner now names image skew instead of surfacing `unknown option`. See F12b: the pinned CLI lacks the flag entirely, so budgeted steps still cannot run |
+| F16 fail-closed egress, no warning | fixed — chart NOTES plus a NetworkPolicy annotation that survives `helm template`, covering all three ways an agent runtime gets configured |
+| F17 `model: claude-sonnet` is not a model | fixed — guides, platform guide, and the shipped seed corrected |
+| F19 version numbers are racing state | fixed — `--json` on import and release; the rationale was also corrected (the sequence is per-name, and import is content-hash idempotent) |
+| F21 prompts must not hardcode the output mechanism | fixed — documented as a node-authoring rule |
+| F22 no way to cancel a node run | fixed — `fly agent nodes cancel-run` |
+| F27 write the record early | fixed — documented as a node-authoring rule |
+
+Still open and unaddressed by that effort, by design: F3, F8, F13, the
+platform half of F23/F27, F26/F35, F30/F34, and F28 — each needs a design
+decision rather than an implementation, and the plan records why.
+
 The recurring theme across F6, F11, F16, F17, F20 and F25 is **silent or
 distant failure**: nearly every mistake I made produced either a fixed opaque
 string, a status with no reason, or a plausible-looking empty result. The
