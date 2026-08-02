@@ -25,8 +25,11 @@ import (
 
 // Sidecar health-check cadence (§8.5: every MCP sidecar exposes GET /healthz).
 var (
-	sidecarHealthInterval = 2 * time.Second
-	sidecarHealthTimeout  = 60 * time.Second
+	sidecarHealthInterval  = 2 * time.Second
+	sidecarHealthTimeout   = 60 * time.Second
+	newLegacyClaudeAdapter = func(path string, args, env []string, stderr io.Writer, waitDelay time.Duration) provider.Adapter {
+		return legacyClaudeAdapter{path: path, args: args, env: env, stderr: stderr, waitDelay: waitDelay}
+	}
 )
 
 // claudeWaitDelay bounds how long cmd.Wait may block on claude's inherited
@@ -490,13 +493,9 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 	if adapter == nil {
 		claudePath := cfg.ClaudePath
 		if claudePath == "" {
-			claudePath = "claude"
+			claudePath = "/usr/local/bin/claude"
 		}
-		adapter = legacyClaudeAdapter{
-			path: claudePath, args: args,
-			env:    claudeEnv(os.Environ(), cfg.ModelTokenKind),
-			stderr: stderr, waitDelay: claudeWaitDelay,
-		}
+		adapter = newLegacyClaudeAdapter(claudePath, args, claudeEnv(os.Environ(), cfg.ModelTokenKind), stderr, claudeWaitDelay)
 	}
 	if err := adapter.Identity().Validate(); err != nil {
 		return 2, fmt.Errorf("invalid provider adapter: %w", err)
