@@ -1,8 +1,6 @@
 package tests
 
 import (
-	"os/exec"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -370,33 +368,11 @@ func TestAgentSnapshotAndExperimentDependenciesFailAtChartRender(t *testing.T) {
 
 func renderChartFailure(t *testing.T, sets ...string) string {
 	t.Helper()
-	if _, err := exec.LookPath("helm"); err != nil {
-		t.Skip("helm not on PATH; skipping chart render test")
-	}
-	chartDir, err := filepath.Abs("..")
-	if err != nil {
-		t.Fatalf("resolve chart dir: %v", err)
-	}
-	args := []string{
-		"template", "test-release", chartDir,
-	}
-	helperConfigured := false
-	for _, set := range sets {
-		helperConfigured = helperConfigured ||
-			strings.HasPrefix(set, "kubernetes.artifactHelperImage=")
-	}
-	if !helperConfigured {
-		args = append(args,
-			"--set-string", "kubernetes.artifactHelperImage="+testArtifactHelperImage)
-	}
-	for _, set := range sets {
-		args = append(args, "--set", set)
-	}
-	output, err := exec.Command("helm", args...).CombinedOutput()
+	output, err := runHelmChart(t, "template", nil, sets...)
 	if err == nil {
 		t.Fatalf("helm template unexpectedly accepted invalid agentic configuration")
 	}
-	return string(output)
+	return output
 }
 
 type prometheusRuleDoc struct {

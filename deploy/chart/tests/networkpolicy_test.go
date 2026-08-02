@@ -13,8 +13,9 @@ type networkPolicy struct {
 	APIVersion string `json:"apiVersion"`
 	Kind       string `json:"kind"`
 	Metadata   struct {
-		Name      string `json:"name"`
-		Namespace string `json:"namespace"`
+		Name        string            `json:"name"`
+		Namespace   string            `json:"namespace"`
+		Annotations map[string]string `json:"annotations"`
 	} `json:"metadata"`
 	Spec struct {
 		PodSelector struct {

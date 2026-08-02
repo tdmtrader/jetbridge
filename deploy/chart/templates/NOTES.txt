@@ -1,0 +1,23 @@
+{{ .Chart.Name }} {{ .Chart.Version }} {{ if .Release.IsUpgrade }}upgraded{{ else }}installed{{ end }} into namespace {{ .Release.Namespace }}.
+
+{{- if and (include "concourse.agentStepConfigured" .) (not .Values.networkPolicy.hermeticEgressTo) }}
+
+WARNING: agent: steps are configured (agentSnapshots.enabled,
+--agent-step-image, or CONCOURSE_AGENT_STEP_IMAGE), and
+networkPolicy.hermeticEgressTo is empty.
+
+  Hermetic task and agent pods run under a deny-all egress NetworkPolicy
+  named {{ include "concourse.fullname" . }}-hermetic-egress
+  in namespace {{ include "concourse.kubernetesNamespace" . }}.
+
+  An agent: node cannot reach a model endpoint unless agentBroker is enabled
+  with agentBroker.networkPolicy.egress configured; otherwise the run fails
+  with only a client-side timeout and no explanation.
+
+  If this deployment runs agent: nodes without the broker,
+  set networkPolicy.hermeticEgressTo to complete NetworkPolicy egress rules
+  for your model endpoint or egress proxy (and DNS, if the endpoint is
+  resolved by name — see the example in values.yaml). A deployment that runs
+  only deterministic task: functions, or routes all agent traffic through
+  agentBroker, can leave it empty.
+{{- end }}

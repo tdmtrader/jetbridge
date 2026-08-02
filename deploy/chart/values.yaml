@@ -421,7 +421,10 @@ networkPolicy:
   # destination and ports can be constrained. Every allowed rule applies to
   # all containers in the pod, including the main process and sidecars.
   hermeticEgressTo: []
-  # Example: allow only an in-cluster model egress proxy on TCP 8443:
+  # Example: allow an in-cluster model egress proxy on TCP 8443, plus DNS to
+  # resolve it by name (omit the DNS rule only if the client addresses the
+  # endpoint by IP literal; a podSelector peer, as below, does not remove the
+  # need for DNS, since the client still resolves the Service name):
   #   - to:
   #       - podSelector:
   #           matchLabels:
@@ -429,6 +432,18 @@ networkPolicy:
   #     ports:
   #       - protocol: TCP
   #         port: 8443
+  #   - to:
+  #       - namespaceSelector:
+  #           matchLabels:
+  #             kubernetes.io/metadata.name: kube-system
+  #         podSelector:
+  #           matchLabels:
+  #             k8s-app: kube-dns
+  #     ports:
+  #       - protocol: UDP
+  #         port: 53
+  #       - protocol: TCP
+  #         port: 53
 
 # -- Pod Disruption Budget configuration
 pdb:
