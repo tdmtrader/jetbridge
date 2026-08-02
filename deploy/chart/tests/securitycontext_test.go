@@ -134,9 +134,13 @@ type volumeMount struct {
 	ReadOnly  bool   `json:"readOnly"`
 }
 
-// renderChart runs `helm template` against the chart (the parent dir of this
-// test package) with the given --set overrides, skipping if helm is missing.
-func renderChart(t *testing.T, sets ...string) string {
+// runHelmChart assembles and runs a `helm <verb> test-release <chartDir>
+// <extraFlags...>` invocation against the chart (the parent dir of this test
+// package), appending --set-string kubernetes.artifactHelperImage=... (unless
+// a set already overrides it) and --set for each of sets. It skips the test
+// if helm is missing and leaves error handling to the caller, since some
+// callers (renderChartFailure) expect a non-nil error.
+func runHelmChart(t *testing.T, verb string, extraFlags []string, sets ...string) (string, error) {
 	t.Helper()
 	if _, err := exec.LookPath("helm"); err != nil {
 		t.Skip("helm not on PATH; skipping chart render test")
@@ -145,18 +149,33 @@ func renderChart(t *testing.T, sets ...string) string {
 	if err != nil {
 		t.Fatalf("resolve chart dir: %v", err)
 	}
-	args := []string{
-		"template", "test-release", chartDir,
-		"--set-string", "kubernetes.artifactHelperImage=" + testArtifactHelperImage,
+	args := append([]string{verb, "test-release", chartDir}, extraFlags...)
+	helperConfigured := false
+	for _, s := range sets {
+		if strings.HasPrefix(s, "kubernetes.artifactHelperImage=") {
+			helperConfigured = true
+			break
+		}
+	}
+	if !helperConfigured {
+		args = append(args, "--set-string", "kubernetes.artifactHelperImage="+testArtifactHelperImage)
 	}
 	for _, s := range sets {
 		args = append(args, "--set", s)
 	}
 	out, err := exec.Command("helm", args...).CombinedOutput()
+	return string(out), err
+}
+
+// renderChart runs `helm template` against the chart with the given --set
+// overrides, skipping if helm is missing.
+func renderChart(t *testing.T, sets ...string) string {
+	t.Helper()
+	out, err := runHelmChart(t, "template", nil, sets...)
 	if err != nil {
 		t.Fatalf("helm template failed: %v\n%s", err, out)
 	}
-	return string(out)
+	return out
 }
 
 const testArtifactHelperImage = "registry.example/jetbridge/artifact-helper@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"

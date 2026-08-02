@@ -103,3 +103,23 @@ PostgreSQL port.
 {{- default "5432" .Values.postgresql.port | toString }}
 {{- end }}
 {{- end }}
+
+{{/*
+Whether this deployment configures agent: steps, via either the durable
+snapshot store (agentSnapshots.enabled) or a directly-set --agent-step-image
+(web.extraArgs; see atc/exec/agent_step.go). agentSnapshots is a good but
+incomplete proxy: hermetic: true also applies to plain agent: steps that
+never touch snapshots (atc/steps.go, atc/exec/task_step.go), and those still
+need --agent-step-image to run at all (atc/atccmd/command.go). Returns the
+non-empty string "true" when configured, "" otherwise, so callers can use it
+directly in an `and`/`if`.
+*/}}
+{{- define "concourse.agentStepConfigured" -}}
+{{- $configured := .Values.agentSnapshots.enabled -}}
+{{- range .Values.web.extraArgs -}}
+{{- if hasPrefix "--agent-step-image" . -}}
+{{- $configured = true -}}
+{{- end -}}
+{{- end -}}
+{{- if $configured }}true{{ end -}}
+{{- end -}}
