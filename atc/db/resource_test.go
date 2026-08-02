@@ -2162,8 +2162,15 @@ var _ = Describe("Resource", func() {
 		})
 
 		Context("when first check build starts, not set a scope yet", func() {
-			var build db.Build
-			var publicPlan atc.Plan
+			var (
+				build      db.Build
+				publicPlan atc.Plan
+
+				expectedStartEarliest int64
+				expectedStartLatest   int64
+				expectedEndEarliest   int64
+				expectedEndLatest     int64
+			)
 
 			BeforeEach(func() {
 				publicPlan = atc.Plan{
@@ -2178,8 +2185,10 @@ var _ = Describe("Resource", func() {
 				build, err = resource.CreateInMemoryBuild(context.Background(), publicPlan, seqGenerator)
 				Expect(err).ToNot(HaveOccurred())
 
+				expectedStartEarliest = time.Now().Unix()
 				err = build.OnCheckBuildStart()
 				Expect(err).ToNot(HaveOccurred())
+				expectedStartLatest = time.Now().Unix()
 			})
 
 			JustBeforeEach(func() {
@@ -2193,7 +2202,8 @@ var _ = Describe("Resource", func() {
 				Expect(bs.ID).ToNot(BeZero())
 				Expect(bs.ID).To(Equal(build.ID()))
 				Expect(bs.Status).To(Equal(atc.StatusStarted))
-				Expect(time.Unix(bs.StartTime, 0)).Should(BeTemporally("~", time.Now(), time.Second))
+				Expect(bs.StartTime).To(BeNumerically(">=", expectedStartEarliest))
+				Expect(bs.StartTime).To(BeNumerically("<=", expectedStartLatest))
 				Expect(bs.EndTime).To(BeZero())
 				Expect(bs.PublicPlan).To(Equal(build.PublicPlan()))
 			})
@@ -2203,8 +2213,15 @@ var _ = Describe("Resource", func() {
 					err := resource.SetResourceConfigScope(resourceConfigScope)
 					Expect(err).NotTo(HaveOccurred())
 
-					resourceConfigScope.UpdateLastCheckStartTime(build.ID(), build.PublicPlan())
-					resourceConfigScope.UpdateLastCheckEndTime(false)
+					expectedStartEarliest = time.Now().Unix()
+					_, err = resourceConfigScope.UpdateLastCheckStartTime(build.ID(), build.PublicPlan())
+					Expect(err).NotTo(HaveOccurred())
+					expectedStartLatest = time.Now().Unix()
+
+					expectedEndEarliest = time.Now().Unix()
+					_, err = resourceConfigScope.UpdateLastCheckEndTime(false)
+					Expect(err).NotTo(HaveOccurred())
+					expectedEndLatest = time.Now().Unix()
 				})
 
 				It("has build summary", func() {
@@ -2212,23 +2229,34 @@ var _ = Describe("Resource", func() {
 					Expect(bs.ID).ToNot(BeZero())
 					Expect(bs.ID).To(Equal(build.ID()))
 					Expect(bs.Status).To(Equal(atc.StatusFailed))
-					Expect(time.Unix(bs.StartTime, 0)).Should(BeTemporally("~", time.Now(), time.Second))
-					Expect(time.Unix(bs.EndTime, 0)).Should(BeTemporally("~", time.Now(), time.Second))
+					Expect(bs.StartTime).To(BeNumerically(">=", expectedStartEarliest))
+					Expect(bs.StartTime).To(BeNumerically("<=", expectedStartLatest))
+					Expect(bs.EndTime).To(BeNumerically(">=", expectedEndEarliest))
+					Expect(bs.EndTime).To(BeNumerically("<=", expectedEndLatest))
 					Expect(bs.PublicPlan).To(Equal(build.PublicPlan()))
 				})
 
 				Context("when other resource ran a check build for the scope", func() {
 					BeforeEach(func() {
-						resourceConfigScope.UpdateLastCheckStartTime(999999, build.PublicPlan())
-						resourceConfigScope.UpdateLastCheckEndTime(true)
+						expectedStartEarliest = time.Now().Unix()
+						_, err := resourceConfigScope.UpdateLastCheckStartTime(999999, build.PublicPlan())
+						Expect(err).NotTo(HaveOccurred())
+						expectedStartLatest = time.Now().Unix()
+
+						expectedEndEarliest = time.Now().Unix()
+						_, err = resourceConfigScope.UpdateLastCheckEndTime(true)
+						Expect(err).NotTo(HaveOccurred())
+						expectedEndLatest = time.Now().Unix()
 					})
 
 					It("has build summary", func() {
 						bs := resource.BuildSummary()
 						Expect(bs.ID).To(Equal(999999))
 						Expect(bs.Status).To(Equal(atc.StatusSucceeded))
-						Expect(time.Unix(bs.StartTime, 0)).Should(BeTemporally("~", time.Now(), time.Second))
-						Expect(time.Unix(bs.EndTime, 0)).Should(BeTemporally("~", time.Now(), time.Second))
+						Expect(bs.StartTime).To(BeNumerically(">=", expectedStartEarliest))
+						Expect(bs.StartTime).To(BeNumerically("<=", expectedStartLatest))
+						Expect(bs.EndTime).To(BeNumerically(">=", expectedEndEarliest))
+						Expect(bs.EndTime).To(BeNumerically("<=", expectedEndLatest))
 						Expect(bs.PublicPlan).To(Equal(build.PublicPlan()))
 					})
 
@@ -2239,8 +2267,10 @@ var _ = Describe("Resource", func() {
 							build2, err = resource.CreateInMemoryBuild(context.Background(), publicPlan, seqGenerator)
 							Expect(err).ToNot(HaveOccurred())
 
+							expectedStartEarliest = time.Now().Unix()
 							err = build2.OnCheckBuildStart()
 							Expect(err).ToNot(HaveOccurred())
+							expectedStartLatest = time.Now().Unix()
 						})
 
 						It("has build summary", func() {
@@ -2248,7 +2278,8 @@ var _ = Describe("Resource", func() {
 							Expect(bs.ID).ToNot(BeZero())
 							Expect(bs.ID).To(Equal(build2.ID()))
 							Expect(bs.Status).To(Equal(atc.StatusStarted))
-							Expect(time.Unix(bs.StartTime, 0)).Should(BeTemporally("~", time.Now(), time.Second))
+							Expect(bs.StartTime).To(BeNumerically(">=", expectedStartEarliest))
+							Expect(bs.StartTime).To(BeNumerically("<=", expectedStartLatest))
 							Expect(bs.EndTime).To(BeZero())
 							Expect(bs.PublicPlan).To(Equal(build.PublicPlan()))
 						})
