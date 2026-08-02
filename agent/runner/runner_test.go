@@ -20,10 +20,18 @@ import (
 	schema "github.com/concourse/concourse/agent/schema"
 )
 
+// stubClaudeHelp is the --help response our stub `claude` scripts give. It
+// stands in for the real CLI's flag listing, so it must name every flag the
+// runner conditionally passes (currently just --max-budget-usd) or the
+// image-skew preflight in Run() will treat a healthy stub as a stale image.
+const stubClaudeHelp = "Usage: claude [options]\n  --model <m>\n  --max-turns <n>\n  --max-budget-usd <usd>\n"
+
 func writeStubClaude(t *testing.T, dir, envelope string) string {
 	t.Helper()
 	path := filepath.Join(dir, "claude")
-	script := "#!/bin/sh\necho '" + envelope + "'\n"
+	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = \"--help\" ]; then printf '%s' '" + stubClaudeHelp + "'; exit 0; fi\n" +
+		"echo '" + envelope + "'\n"
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +134,9 @@ func TestRunHardCapsClaudeAtTheAuthoredBudgetSlice(t *testing.T) {
 	argsFile := filepath.Join(dir, "claude-args")
 	claude := filepath.Join(dir, "claude")
 	envelope := `{"type":"result","subtype":"success","result":"\"done\"","model":"m1","cost_usd":0.25,"num_turns":1,"is_error":false,"usage":{"input_tokens":1,"output_tokens":1}}`
-	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > '" + argsFile + "'\necho '" + envelope + "'\n"
+	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = \"--help\" ]; then printf '%s' '" + stubClaudeHelp + "'; exit 0; fi\n" +
+		"printf '%s\\n' \"$@\" > '" + argsFile + "'\necho '" + envelope + "'\n"
 	if err := os.WriteFile(claude, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}

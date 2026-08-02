@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -43,6 +44,34 @@ var (
 var claudeWaitDelay = 5 * time.Second
 
 const maxSummaryChars = 500
+
+// maxBudgetFlag is the CLI flag the runner passes when a step declares a
+// positive budget slice. It is the one flag known to have caused agent-runner
+// image skew in practice (a dispatched step died with `error: unknown option
+// '--max-budget-usd'` after a full pod launch), so it is also the one
+// verifyCLISupportsFlags checks for before invoking the CLI.
+const maxBudgetFlag = "--max-budget-usd"
+
+// verifyCLISupportsFlags reports a flag the runner intends to pass that the
+// CLI in this image does not accept, per the CLI's own --help output.
+//
+// The failure it prevents is image skew: agent-runner is built from this
+// repository but the claude CLI inside it is pinned separately
+// (deploy/agent-runner/Dockerfile), so a runner change can start passing a
+// flag the deployed image has never heard of. The raw failure is one line of
+// CLI stderr after a full pod launch and a budget round trip, and it looks
+// nothing like "your image is old".
+func verifyCLISupportsFlags(help string, flags []string) error {
+	for _, flag := range flags {
+		if !strings.Contains(help, flag) {
+			return fmt.Errorf(
+				"the claude CLI in this agent-runner image does not support %s; "+
+					"rebuild the agent-runner image from this commit (build-agent-runner-image) "+
+					"or remove the setting that requires the flag", flag)
+		}
+	}
+	return nil
+}
 
 const (
 	outputBuilderMarkerEnv = "CONCOURSE_OUTPUT_BUILDER_MCP"
@@ -493,7 +522,7 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 		args = append(args, "--max-turns", strconv.Itoa(cfg.MaxTurns))
 	}
 	if cfg.BudgetSliceUSD > 0 {
-		args = append(args, "--max-budget-usd", strconv.FormatFloat(cfg.BudgetSliceUSD, 'f', -1, 64))
+		args = append(args, maxBudgetFlag, strconv.FormatFloat(cfg.BudgetSliceUSD, 'f', -1, 64))
 	}
 	if systemPrompt != "" {
 		args = append(args, "--append-system-prompt", systemPrompt)
@@ -520,6 +549,25 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 		claudePath := cfg.ClaudePath
 		if claudePath == "" {
 			claudePath = "claude"
+		}
+		// agent-runner is built from this repository but the claude CLI
+		// inside the image is pinned separately (deploy/agent-runner/Dockerfile).
+		// A runner change can start passing a flag the deployed image has
+		// never heard of; the raw failure is one line of CLI stderr —
+		// "error: unknown option '--max-budget-usd'" — after a full pod
+		// launch and a budget round trip, and it says nothing about the
+		// image being stale. Only check flags that are conditional on step
+		// configuration, and only when they will actually be passed, so a
+		// run that doesn't need the flag never pays for the check.
+		if cfg.BudgetSliceUSD > 0 {
+			if helpOutput, helpErr := exec.CommandContext(ctx, claudePath, "--help").CombinedOutput(); helpErr == nil {
+				if err := verifyCLISupportsFlags(string(helpOutput), []string{maxBudgetFlag}); err != nil {
+					return 2, err
+				}
+			}
+			// A --help failure (missing binary, non-zero exit, timeout) is
+			// deliberately ignored here: this check exists to improve a
+			// diagnosis and must never be the thing that fails a healthy run.
 		}
 		adapter = legacyClaudeAdapter{
 			path: claudePath, args: args,
