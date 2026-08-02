@@ -40,6 +40,7 @@ func newHomeInfraFixture(t *testing.T, image string) *homeInfraFixture {
 	runGit(t, seed, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "seed")
 	runGit(t, seed, "remote", "add", "origin", origin)
 	runGit(t, seed, "push", "origin", "HEAD:main")
+	runGit(t, origin, "symbolic-ref", "HEAD", "refs/heads/main")
 	runGit(t, dir, "clone", origin, clone)
 	return &homeInfraFixture{t: t, dir: dir, origin: origin, clone: clone, initial: gitOutput(t, origin, "rev-parse", "refs/heads/main")}
 }
@@ -99,6 +100,16 @@ func (f *homeInfraFixture) assertUnchanged(t *testing.T) {
 }
 
 func TestWriteAgentRunnerHomeInfra(t *testing.T) {
+	t.Run("fixture_clone_checks_out_declared_main_branch", func(t *testing.T) {
+		fixture := newHomeInfraFixture(t, seedRunnerImage)
+		if got := gitOutput(t, fixture.clone, "symbolic-ref", "--short", "HEAD"); got != "main" {
+			t.Fatalf("fixture clone HEAD branch = %q, want main", got)
+		}
+		if _, err := os.Stat(filepath.Join(fixture.clone, "apps", "concourse.yaml")); err != nil {
+			t.Fatalf("fixture clone must check out the main target file: %v", err)
+		}
+	})
+
 	t.Run("success_changes_only_target_and_commits", func(t *testing.T) {
 		fixture := newHomeInfraFixture(t, seedRunnerImage)
 		if output, err := fixture.runHelper(bRunnerImage, sourceCommit, runnerVersion, ""); err != nil {
