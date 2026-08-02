@@ -151,6 +151,103 @@ chart, so it would need to hang off the namespace default ServiceAccount and
 would be a credential that must exist and stay valid for a pod to start at all;
 pulling from the registry already inside the cluster needs no credential.
 
+### Deploying the fix exposed a second, more general defect — OPEN
+
+`set-self` rewrites the pipeline from the branch tip, but every job in the
+chain gets `repo` through a `passed:` gate, so its **checkout lags the config
+that drives it**. A job therefore routinely runs new inline task script against
+an old source tree, and nothing anywhere declares that skew.
+
+It bit twice within an hour of pushing the fix above:
+
+- **Build #18** was triggered seconds before `set-self` landed the new config.
+  It ran the *old* script against the *old* source, wrote the GHCR value back to
+  home-infra (`9af0bc9`), and Argo synced it — reintroducing exactly the
+  `ErrImagePull` this item was fixing. It reported `succeeded`.
+- **Build #19** ran the *new* inline script against source still pinned at
+  `6f0e4f08` by `passed: [unit-tests]`. The new script correctly produced
+  `registry.home/agent-runner@sha256:8b782d7a…`, then handed it to that
+  commit's `write-agent-runner-home-infra.sh`, which still enforced
+  `^ghcr\.io/…` and aborted with
+  `FATAL: image must be an immutable ghcr.io/tdmtrader/agent-runner sha256 digest`.
+
+Note the asymmetry, which is the actual finding: #19 **failed loudly and
+changed nothing**, because the assertion lived in a file that travels with the
+source. #18 **succeeded and did damage**, because the only thing standing
+between it and a bad write was inline script that had already been replaced.
+A cross-file invariant split between pipeline config and repo content is
+checked only when the repo half happens to be the stricter one.
+
+The fix that worked was simply to wait: once `unit-tests` went green at the new
+commit, config and source agreed and the job did the right thing unattended.
+That is the clean path, and it is not written down anywhere.
+
+Do, in rough order of value: make the writeback task assert that
+`SOURCE_COMMIT` equals the commit whose `write-agent-runner-home-infra.sh` it
+is about to invoke, so skew fails closed instead of depending on which half is
+stricter; document in the promotion runbook that a manual
+`trigger-job` after a push must wait for `set-self` **and** for the job's
+`passed:` gate to admit the new version, and that `fly trigger-job` returning a
+build number is not evidence either has happened; and consider whether a job
+that writes to another repository should take its own `repo` ungated, so its
+script and its source are always the same commit.
+
+## 5b. `capture-resource` cannot succeed for any snapshot type — OPEN, blocking
+
+Putting `git` in the web image (item 5 / the `62c5d5ae8b` work) unblocked
+`repository/v1` capture only as far as the **next** defect. Verified live on
+2026-08-02 against a web pod with `git version 2.34.1`:
+
+```sh
+fly -t home agent snapshots capture-resource \
+  --pipeline=jetbridge --resource=repo \
+  --version=ref:c526b68916… --type=repository/v1
+# pipeline run 70, status: errored
+```
+
+The `check` and the `get` both succeed — the repo is fetched, the resource
+cache registers, the daemon records the artifact. The generated `seal-snapshot`
+task then errors with:
+
+```text
+every declared task input must be typed: declared=[source] typed=[]
+```
+
+This is the server rejecting a pipeline the server itself generated:
+
+- `agent/resourcecapture/capture.go:708` renders the capture task with an
+  ordinary input `source` (fed by the preceding `get`) and a typed
+  `SnapshotOutputs[outputPort]`, and never sets `SnapshotInputs`.
+- `atc/exec/task_step.go:1190` enters exact-coverage validation when **either**
+  `SnapshotInputs` or `SnapshotOutputs` is non-empty, so it then requires the
+  ordinary inputs to equal the typed inputs — `[source]` vs `[]`.
+
+A capture task exists precisely to turn untyped resource bytes into the first
+typed snapshot, so its input can never be typed. As written the rule makes
+resource capture unconstructible, for every `--type`, not just `repository/v1`.
+
+Why no test caught it: `capture.go:718-723` validates the rendered `TaskConfig`
+and the `SnapshotOutputConfig`, but the coverage rule lives in `atc/exec` and
+is exercised only by `atc/exec/task_step_test.go` against hand-built plans.
+Nothing runs a renderer-produced capture plan through the validator that will
+judge it. That is the same shape as the `git` defect: both halves tested, the
+seam between them not.
+
+Do **not** just relax the guard without deciding the invariant. The rule exists
+to stop untyped bytes entering a snapshot-participating task, and the two
+candidate fixes differ in what they promise:
+
+- Scope each direction independently — check inputs only when
+  `len(SnapshotInputs) > 0`, outputs only when `len(SnapshotOutputs) > 0`.
+  Smallest change, but it silently permits *any* task to mix an untyped input
+  with a typed output, not just capture.
+- Give capture an explicit, named exemption (e.g. keyed off the
+  `resource-version-capture/v1` FunctionID) so the general rule stays absolute
+  and the one legitimate exception is visible at the point of exception.
+
+Whichever is chosen, the regression test should be the missing seam: render a
+capture config via `capture.go` and assert it passes `atc/exec` validation.
+
 ## 6. Reviewer finds the right code and misjudges it — OPEN, experiment not fix
 
 Across five graded passes on `review-jb-004`, the code-review node's location
