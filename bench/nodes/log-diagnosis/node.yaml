@@ -1,0 +1,22 @@
+schema_version: 1
+name: log-diagnosis
+description: Diagnose a failure from captured logs and the source tree, producing a ranked diagnosis/v1 record
+# repository SHOULD be repository/v1; it travels as opaque/v1 until the web
+# image carries git (see FIRST-USER-FINDINGS.md F7).
+inputs:
+  - {name: repository, type: opaque/v1}
+  - {name: work-item, type: work-item/v1}
+  - {name: log-bundle, type: log-bundle/v1}
+outputs:
+  - {name: diagnosis, type: diagnosis/v1}
+step:
+  agent: diagnose
+  prompt_file: prompts/diagnose.md
+  # "claude-sonnet" (the guide example) is not a real model ID — the API answers
+  # 404 not_found_error. The CLI alias "sonnet" resolves per CLI version.
+  model: sonnet
+  max_turns: 80
+  # Restored once the agent-runner CLI pin moved to a version implementing
+  # --max-budget-usd (F12/F12b). Diagnosis explores widely before it
+  # concludes, so the cap matters more here than anywhere.
+  budget_slice_usd: 5.0
