@@ -36,6 +36,7 @@ type AgentNodesCommand struct {
 	Run       NodesRunCommand       `command:"run" description:"Run an exact reusable node version"`
 	Runs      NodesRunsCommand      `command:"runs" description:"List runs for an exact reusable node version"`
 	ShowRun   NodesShowRunCommand   `command:"show-run" description:"Show one reusable node run"`
+	CancelRun NodesCancelRunCommand `command:"cancel-run" description:"Request cancellation of a reusable node run"`
 	Consumers NodesConsumersCommand `command:"consumers" description:"List consumers of an exact node version"`
 	Upgrade   NodesUpgradeCommand   `command:"upgrade" description:"Upgrade selected workflows to an exact node version"`
 }
@@ -426,6 +427,34 @@ func (command *NodesShowRunCommand) Execute([]string) error {
 		return err
 	}
 	response, err := agentAPIRequest(target, http.MethodGet, nodeRunPath(command.Args.Name, runID), nil)
+	if err != nil {
+		return err
+	}
+	var detail workflowrunsapi.RunDetail
+	if err := decodeOrError(response, &detail); err != nil {
+		return err
+	}
+	return printAgentWorkflowRunDetail(Fly.Target, detail, command.Json)
+}
+
+type NodesCancelRunCommand struct {
+	Args struct {
+		Name  string `positional-arg-name:"NAME" required:"true" description:"Node definition name"`
+		RunID string `positional-arg-name:"RUN-ID" required:"true" description:"Durable node run ID"`
+	} `positional-args:"yes"`
+	Json bool `long:"json" description:"Print command result as JSON"`
+}
+
+func (command *NodesCancelRunCommand) Execute([]string) error {
+	runID, err := snapshot.ParseWorkflowRunID(command.Args.RunID)
+	if err != nil {
+		return fmt.Errorf("agent node run: %w", err)
+	}
+	target, err := loadAgentTarget()
+	if err != nil {
+		return err
+	}
+	response, err := agentAPIRequest(target, http.MethodPost, nodeRunPath(command.Args.Name, runID)+"/cancel", nil)
 	if err != nil {
 		return err
 	}

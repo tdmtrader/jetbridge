@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -33,6 +34,7 @@ type Config struct {
 	Identity  workflowrunsapi.IdentityFunc
 	Binder    workflowrunsapi.Binder
 	Runs      RunStore
+	Canceler  workflowrunsapi.Canceler
 	Manifests workflowrunsapi.ManifestStore
 }
 
@@ -42,6 +44,7 @@ type Handler struct {
 	identity  workflowrunsapi.IdentityFunc
 	binder    workflowrunsapi.Binder
 	runs      RunStore
+	canceler  workflowrunsapi.Canceler
 	presenter *workflowrunsapi.RunPresenter
 }
 
@@ -52,7 +55,7 @@ type CreateRequest struct {
 }
 
 func NewHandler(config Config) (*Handler, error) {
-	if config.Team.ID <= 0 || config.Team.Name != atc.DefaultTeamName || config.Identity == nil || config.Binder == nil || config.Runs == nil || config.Manifests == nil {
+	if config.Team.ID <= 0 || config.Team.Name != atc.DefaultTeamName || config.Identity == nil || config.Binder == nil || config.Runs == nil || config.Canceler == nil || config.Manifests == nil {
 		return nil, fmt.Errorf("node runs API: trusted dependencies are required")
 	}
 	presenter, err := workflowrunsapi.NewRunPresenter(config.Team, config.Runs, config.Manifests)
@@ -63,7 +66,10 @@ func NewHandler(config Config) (*Handler, error) {
 	if logger == nil {
 		logger = lager.NewLogger("node-runs")
 	}
-	return &Handler{logger: logger, team: config.Team, identity: config.Identity, binder: config.Binder, runs: config.Runs, presenter: presenter}, nil
+	return &Handler{
+		logger: logger, team: config.Team, identity: config.Identity, binder: config.Binder,
+		runs: config.Runs, canceler: config.Canceler, presenter: presenter,
+	}, nil
 }
 
 func (handler *Handler) Create(w http.ResponseWriter, r *http.Request) {
@@ -173,13 +179,8 @@ func (handler *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	run, found, err := handler.runs.GetKind(r.Context(), handler.team.ID, workflow.DefinitionKindNode, runID)
-	if err != nil {
-		writeInternalError(w)
-		return
-	}
-	if !found || run.ID != runID || run.DefinitionKind != workflow.DefinitionKindNode || run.TeamID != handler.team.ID || run.TeamName != handler.team.Name || run.WorkflowName != name {
-		workflowrunsapi.WriteNotFound(w)
+	run, ok := handler.loadNodeRun(w, r, name, runID)
+	if !ok {
 		return
 	}
 	detail, err := handler.presenter.Detail(r, name, run)
@@ -188,6 +189,71 @@ func (handler *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	workflowrunsapi.WriteJSON(w, http.StatusOK, detail)
+}
+
+// Cancel terminates one node run. The kind check inside loadNodeRun is the
+// point of this handler: node and workflow runs share the durable run table
+// and the ID space, and a node route must never reach a workflow run. Only
+// once that check has passed do we hand the run off to the shared kind-blind
+// Canceler, which resolves purely by team ID and run ID.
+func (handler *Handler) Cancel(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodPost) || !requireNoBody(w, r) {
+		return
+	}
+	name, _, runID, ok := parseRoute(w, r, true, false)
+	if !ok {
+		return
+	}
+	if _, ok := handler.loadNodeRun(w, r, name, runID); !ok {
+		return
+	}
+	run, found, err := handler.canceler.Cancel(r.Context(), handler.team.ID, runID)
+	if errors.Is(err, workflowrunsapi.ErrCancelConflict) {
+		workflowrunsapi.WriteError(w, http.StatusConflict, "conflict", "node run cannot be canceled in its current state")
+		return
+	}
+	if err != nil {
+		writeInternalError(w)
+		return
+	}
+	if !found {
+		workflowrunsapi.WriteNotFound(w)
+		return
+	}
+	status := 0
+	switch run.Status {
+	case db.AgentWorkflowRunStatusCanceling:
+		status = http.StatusAccepted
+	case db.AgentWorkflowRunStatusAborted:
+		status = http.StatusOK
+	default:
+		writeInternalError(w)
+		return
+	}
+	detail, err := handler.presenter.Detail(r, name, run)
+	if err != nil {
+		writeInternalError(w)
+		return
+	}
+	workflowrunsapi.WriteJSON(w, status, detail)
+}
+
+// loadNodeRun resolves and validates the exact team-owned node run addressed
+// by the route. The DefinitionKind, team, and name comparisons below are the
+// safety boundary shared by every node-run route: node and workflow runs
+// live in the same durable run table and ID space, so an ID alone is not
+// enough to prove a route reached the kind of run it asked for.
+func (handler *Handler) loadNodeRun(w http.ResponseWriter, r *http.Request, name string, runID snapshot.WorkflowRunID) (db.AgentWorkflowRun, bool) {
+	run, found, err := handler.runs.GetKind(r.Context(), handler.team.ID, workflow.DefinitionKindNode, runID)
+	if err != nil {
+		writeInternalError(w)
+		return db.AgentWorkflowRun{}, false
+	}
+	if !found || run.ID != runID || run.DefinitionKind != workflow.DefinitionKindNode || run.TeamID != handler.team.ID || run.TeamName != handler.team.Name || run.WorkflowName != name {
+		workflowrunsapi.WriteNotFound(w)
+		return db.AgentWorkflowRun{}, false
+	}
+	return run, true
 }
 
 func parseRoute(w http.ResponseWriter, r *http.Request, withRunID, allowFilters bool) (string, int, snapshot.WorkflowRunID, bool) {

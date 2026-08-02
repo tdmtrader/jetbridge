@@ -3763,7 +3763,8 @@ func (cmd *RunCommand) constructAPIHandler(
 		Identity: func(r *http.Request) (string, error) {
 			return workflowRunCreatorIdentity(accessor.GetAccessor(r).UserInfo())
 		},
-		Binder: dispatchGraph.binder, Runs: workflowRunStore, Manifests: snapshotStore,
+		Binder: dispatchGraph.binder, Runs: workflowRunStore,
+		Canceler: dispatchGraph.canceler, Manifests: snapshotStore,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("construct node-run API: %w", err)

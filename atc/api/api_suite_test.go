@@ -294,7 +294,8 @@ var _ = BeforeEach(func() {
 	nodeRunHandlers, err := noderunsapi.NewHandler(noderunsapi.Config{
 		Team:     workflowrunsapi.TrustedTeam{ID: 1, Name: atc.DefaultTeamName},
 		Identity: func(*http.Request) (string, error) { return "api-suite", nil },
-		Binder:   workflowRunBackend, Runs: workflowRunBackend, Manifests: workflowRunBackend,
+		Binder:   workflowRunBackend, Runs: workflowRunBackend,
+		Canceler: workflowRunBackend, Manifests: workflowRunBackend,
 	})
 	Expect(err).NotTo(HaveOccurred())
 	workflowOverviewHandlers, err := workflowoverviewapi.NewHandler(workflowoverviewapi.Config{

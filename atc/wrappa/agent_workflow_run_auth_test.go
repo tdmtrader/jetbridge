@@ -27,6 +27,7 @@ func TestAgentNodeAndWorkflowRunRoutesUseHumanMainTeamAuthorization(t *testing.T
 		atc.CreateAgentNodeRun,
 		atc.ListAgentNodeRuns,
 		atc.GetAgentNodeRun,
+		atc.CancelAgentNodeRun,
 		atc.ListAgentNodeConsumers,
 		atc.UpgradeAgentNodeConsumers,
 		atc.CreateAgentWorkflowRun,

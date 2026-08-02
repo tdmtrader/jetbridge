@@ -175,6 +175,7 @@ func (a *auditor) ValidateAction(action string) bool {
 		atc.CreateAgentNodeRun,
 		atc.ListAgentNodeRuns,
 		atc.GetAgentNodeRun,
+		atc.CancelAgentNodeRun,
 		atc.ListAgentNodeConsumers,
 		atc.UpgradeAgentNodeConsumers,
 		atc.CreateAgentWorkflowRun,

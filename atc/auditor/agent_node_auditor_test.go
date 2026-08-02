@@ -2,6 +2,7 @@ package auditor_test
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
@@ -10,18 +11,18 @@ import (
 )
 
 func TestAgentNodeRoutesAreSystemAuditActions(t *testing.T) {
-	routes := []string{
-		atc.ListAgentNodes,
-		atc.ListAgentNodeVersions,
-		atc.GetAgentNodeVersion,
-		atc.CreateAgentNodeVersion,
-		atc.ReleaseAgentNodeVersion,
-		atc.DeprecateAgentNodeVersion,
-		atc.CreateAgentNodeRun,
-		atc.ListAgentNodeRuns,
-		atc.GetAgentNodeRun,
-		atc.ListAgentNodeConsumers,
-		atc.UpgradeAgentNodeConsumers,
+	// Derived from the route table rather than hand-listed. A hand-listed
+	// version of this test silently stopped covering CancelAgentNodeRun the
+	// moment that route was added — which is precisely the claim the test
+	// exists to make, so it has to enumerate itself.
+	var routes []string
+	for _, route := range atc.Routes {
+		if strings.HasPrefix(route.Path, "/api/v1/agent/nodes") {
+			routes = append(routes, route.Name)
+		}
+	}
+	if len(routes) == 0 {
+		t.Fatal("no agent node routes found in the route table")
 	}
 	req, err := http.NewRequest(http.MethodGet, "http://example.test", nil)
 	if err != nil {
