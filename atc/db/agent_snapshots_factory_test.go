@@ -1541,6 +1541,50 @@ plan:
 		Expect(claims).To(Equal(1), "unpinning the other team must preserve the default team's same-actor claim")
 	})
 
+	It("does not revive another team’s expired equal-digest snapshot", func() {
+		value := digest("d")
+		staged := stage(value, defaultTeam.ID(), "default-owner")
+		ref := seal(newBuild(defaultTeam.ID()), "default-owner", nil, nil, []snapshot.SealCommitOutput{
+			output("default", "value", "opaque/v1", value, staged),
+		})["default"].Snapshot
+
+		other, err := teamFactory.CreateTeam(structTeam("other-revival-team"))
+		Expect(err).NotTo(HaveOccurred())
+		otherStage := stage(value, other.ID(), "other-owner")
+		otherOutput := output("other", "value", "opaque/v1", value, otherStage)
+		otherSealed, err := factory.CommitSealBatch(ctx, lease, snapshot.SealCommit{
+			Context: snapshot.SealCommitContext{
+				TeamID: other.ID(), TeamName: other.Name(), CreatedBy: "alice",
+				Build: &snapshot.BuildOccurrence{
+					BuildID: newBuild(other.ID()), PlanID: "plan-other", Attempt: "other-owner",
+					StepKind: "task", StepName: "produce",
+				},
+				Inputs: map[string]snapshot.SnapshotRef{}, InputOrder: []string{},
+				ExpectedOutputs: []snapshot.Port{otherOutput.Port},
+			},
+			Outputs: []snapshot.SealCommitOutput{otherOutput},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		otherRef := otherSealed["other"].Snapshot
+
+		_, err = dbConn.Exec(`UPDATE agent_snapshots SET content_state = 'expired' WHERE id IN ($1, $2)`, int64(ref.ID), int64(otherRef.ID))
+		Expect(err).NotTo(HaveOccurred())
+		reupload := stage(value, defaultTeam.ID(), "default-revive")
+		seal(newBuild(defaultTeam.ID()), "default-revive", nil, nil, []snapshot.SealCommitOutput{
+			output("revive", "value", "opaque/v1", value, reupload),
+		})
+
+		var defaultState, otherState string
+		Expect(dbConn.QueryRow(`SELECT content_state FROM agent_snapshots WHERE id = $1`, int64(ref.ID)).Scan(&defaultState)).To(Succeed())
+		Expect(dbConn.QueryRow(`SELECT content_state FROM agent_snapshots WHERE id = $1`, int64(otherRef.ID)).Scan(&otherState)).To(Succeed())
+		Expect(defaultState).To(Equal("available"))
+		Expect(otherState).To(Equal("expired"))
+		persisted, found, err := factory.GetAuthorized(ctx, other.ID(), otherRef.ID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(persisted.ContentState).To(Equal(snapshot.ContentStateExpired))
+	})
+
 	It("allows an actor to release its pin after expiry while rejecting a new expired pin", func() {
 		value := digest("c")
 		staged := stage(value, defaultTeam.ID(), "expired-pin")

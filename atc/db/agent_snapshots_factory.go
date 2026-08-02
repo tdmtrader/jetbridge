@@ -218,8 +218,8 @@ func (factory *agentSnapshotsFactory) CommitSealBatch(
 	for _, digest := range orderedDigests {
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE agent_snapshots SET content_state = 'available'
-			WHERE digest = $1 AND content_state = 'expired'
-		`, digest.String()); err != nil {
+			WHERE digest = $1 AND team_id = $2 AND content_state = 'expired'
+		`, digest.String(), commit.Context.TeamID); err != nil {
 			return nil, err
 		}
 	}
