@@ -88,12 +88,37 @@ func TestWebServiceMonitorScrapesAPortTheWebNodeActuallyServes(t *testing.T) {
 // TestWebServiceMonitorRefusesAnEndpointTheATCDoesNotServe pins the loud
 // failure. Prometheus reports a target that returns the web UI as a scrape
 // parse error and nothing else, so the broken combination must not render.
+//
+// It is scoped to an operator who ASKS for the web scrape. Failing the default
+// too froze an entire GitOps deployment on 2026-08-03 over a metrics gap: Argo
+// could not render any manifest, so unrelated changes stopped syncing while the
+// cluster kept running the last good revision.
 func TestWebServiceMonitorRefusesAnEndpointTheATCDoesNotServe(t *testing.T) {
-	output := renderChartFailure(t, "serviceMonitor.enabled=true")
+	output := renderChartFailure(t, "serviceMonitor.enabled=true", "serviceMonitor.web.enabled=true")
 	for _, want := range []string{"web.metrics.enabled", "serviceMonitor.web.enabled=false"} {
 		if !strings.Contains(output, want) {
 			t.Errorf("render failure does not mention %q:\n%s", want, output)
 		}
+	}
+}
+
+// TestWebServiceMonitorFollowsMetricsWhenUnset is the other half of that
+// contract: left alone, the web scrape tracks web.metrics.enabled, so enabling
+// metrics is the only step an operator takes and leaving them off yields the
+// daemon monitor by itself rather than a failed render.
+func TestWebServiceMonitorFollowsMetricsWhenUnset(t *testing.T) {
+	off := renderChart(t, "serviceMonitor.enabled=true", "artifactDaemon.enabled=true")
+	if _, found := lookupServiceMonitor(off, "test-release-concourse-jetbridge"); found {
+		t.Error("the web ServiceMonitor rendered while web.metrics.enabled was false")
+	}
+	if _, found := lookupServiceMonitor(off, "-artifact-daemon"); !found {
+		t.Error("the artifact-daemon ServiceMonitor must still render when the web scrape is off")
+	}
+
+	on := renderChart(t, "serviceMonitor.enabled=true", "artifactDaemon.enabled=true", "web.metrics.enabled=true")
+	monitor := findServiceMonitor(t, on, "test-release-concourse-jetbridge")
+	if len(monitor.Spec.Endpoints) != 1 || monitor.Spec.Endpoints[0].Port != "metrics" {
+		t.Errorf("web ServiceMonitor endpoints = %+v, want a single port named metrics", monitor.Spec.Endpoints)
 	}
 }
 

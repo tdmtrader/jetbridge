@@ -489,11 +489,13 @@ serviceMonitor:
   labels: {}
   # -- Namespace for the ServiceMonitor (defaults to release namespace)
   namespace: ""
-  # -- Scrape the web node's Prometheus endpoint. Requires web.metrics.enabled;
-  # rendering fails otherwise rather than emitting a monitor that points at a
-  # port serving no exposition format. Set to false to scrape only the daemon.
+  # -- Scrape the web node's Prometheus endpoint. Unset, this follows
+  # web.metrics.enabled, so enabling metrics is the only step needed and leaving
+  # them off yields the daemon monitor alone. Setting it true while
+  # web.metrics.enabled is false fails the render rather than emitting a monitor
+  # aimed at a port that serves no exposition format.
   web:
-    enabled: true
+    enabled: null
   # -- Scrape the artifact daemon's own /metrics endpoint (resolve latency,
   # peer fetches, snapshot operation counts and bytes) in addition to web.
   # Only rendered when artifactDaemon.enabled is also true.
