@@ -4,7 +4,7 @@
 
 **Goal:** Make reusable agent nodes declare an operator-known exact model and tested budget floor, bind an explicit `latest` selection once to immutable node identity, let callers raise that floor for one durable run, and expose the public model catalog through Fly.
 
-**Architecture:** An operator-owned, deployment-loaded catalog distinguishes a known model ID from its current availability. Node import freezes a known exact model into the immutable node version even if it is temporarily unavailable; fresh direct-node admission checks availability immediately before allocating the durable run. A workflow `name@latest` reference or direct-run convenience is resolved server-side once to exact version and content hash before allocation; only those exact facts persist. The direct-run budget override is applied to the rendered agent leaf, so the existing canonical parameterized configuration, immutable template hash, resume path, and global daily budget reservation remain the sole durable authority.
+**Architecture:** An operator-owned, deployment-loaded catalog distinguishes a known model ID from its current availability. Node import freezes a known exact model into the immutable node version even if it is temporarily unavailable; fresh direct-node admission checks availability immediately before allocating the durable run. A workflow `name@latest` reference or direct-run convenience is resolved **server-side** once to the highest released version and its content hash before allocation; only those exact facts persist. Unreleased node versions remain available only to an author's explicit exact-version direct run. The direct-run budget override is applied to the rendered agent leaf, so the existing canonical parameterized configuration, immutable template hash, resume path, and global daily budget reservation remain the sole durable authority.
 
 **Tech Stack:** Go, PostgreSQL-backed Concourse ATC APIs, Go flags/Fly CLI, Helm templates, Ginkgo and Go unit tests.
 
@@ -12,7 +12,7 @@
 
 - Work in the assigned implementation worktree; preserve concurrent and user changes, and never revert them.
 - Do not read benchmark `case.yaml`, ground-truth, rubric, or notes material.
-- Nodes are first-class direct-run units. Workflow/catalog authoring may use `name@latest`, and direct invocation may omit a version or use `latest`, but the server resolves that convenience once to exact version plus content hash before durable binding/run allocation. Persisted bindings, retries, reruns, and execution plans carry only exact facts and never auto-update.
+- Nodes are first-class direct-run units. Workflow/catalog authoring may use `name@latest`, and direct invocation may omit a version or use `latest`, but the server resolves that convenience once to the **highest released** version plus content hash before durable binding/run allocation. If no released version exists, return a bounded `node_version_not_found` error; do not fall back to an unreleased version. Persisted bindings, retries, reruns, and execution plans carry only exact facts and never auto-update. An unreleased version is runnable only when the caller supplies that positive exact version for author testing.
 - An agent node must declare a nonempty exact model ID and a finite, positive `budget_slice_usd` with at most six decimal places. Active reference nodes, seeded fixtures, and acceptance checks use a tested/default floor of `$100`; observed normal runs consume roughly `$3–4`, so that floor is deliberately non-interfering. Task and `publish_snapshot` nodes do not receive model or budget requirements.
 - Import requires catalog membership, not availability. A known catalog entry with `available: false` may be frozen into an immutable/releasable node version.
 - Fresh direct-node admission requires the frozen model to be currently available. An idempotent request for an already allocated run returns its durable result without re-admission.
@@ -33,7 +33,7 @@
 | Deployment loading | `atc/atccmd/agent_node_model_catalog.go`, `*_internal_test.go`, `atc/atccmd/command.go` | Strict operator file loading and server composition. |
 | Helm | `deploy/chart/values.yaml`, `templates/agent-model-catalog-configmap.yaml`, `templates/web-deployment.yaml`, `deploy/chart/tests/agent_model_catalog_test.go` | Operator values, web-only ConfigMap/mount/flag, high daily cap. |
 | Node import contract | `agent/workflow/node_definition.go`, `node_definition_test.go`, `node_store.go`; `atc/db/agent_nodes_factory.go`, `agent_nodes_factory_test.go` | Agent-node model/floor validation, catalog membership, release compatibility. |
-| Bind-once latest | `agent/workflow/node_reference.go`, `node_reference_test.go`, `node_store.go`; `agent/workflowrun/binder.go`, `binder_test.go`; `agent/api/noderuns/handler.go`, `handler_test.go`; `fly/commands/agent_nodes.go`, `agent_nodes_test.go`; DB store tests | Resolve `latest` once before durable workflow binding or direct allocation, then retain only exact version/hash. |
+| Bind-once latest | `agent/workflow/node_reference.go`, `node_reference_test.go`, `node_store.go`, upgrade/test resolvers; `agent/workflow/workflowtest/memory_node_store.go`; `atc/db/agent_nodes_factory.go`, `agent_workflows_factory_test.go`; `agent/api/noderuns/handler.go`, `handler_test.go`; `atc/atccmd/command.go`, `atc/api/handler.go`, `atc/routes.go`, accessor/wrappa tests; `fly/commands/agent_nodes.go`, `agent_nodes_test.go`, `agent_workflows.go`, `agent_workflows_test.go` | Resolve omitted/`latest` once, **from released versions only**, before durable workflow binding or direct allocation, then retain only exact version/hash. |
 | Run admission | `agent/workflowrun/types.go`, `binder.go`, `binder_test.go`, `admission_adapters_test.go`, fakes | Model availability and effective budget reconstruction before existing admission/reservation paths. |
 | HTTP APIs | `agent/api/models/handler.go`, `handler_test.go`, `route_registration_test.go`; `agent/api/nodes/handler.go`, `handler_test.go`; `agent/api/noderuns/handler.go`, `handler_test.go`; `agent/api/workflowruns/handler.go` | Public model listing, import classification, strict budget request decoding, bounded errors. |
 | ATC routing/auth | `atc/routes.go`, `atc/api/handler.go`, `atc/api/api_suite_test.go`, accessor/wrappa route tests | Route registration, viewer authorization, handler construction. |
@@ -70,6 +70,8 @@ type NodeModelAdmitter interface {
 type BindRequest struct {
 	// existing fields unchanged
 	NodeBudgetSliceUSD *float64
+	// Server-derived only; never decoded from a direct-run request.
+	ExpectedDefinitionContentHash string
 }
 ```
 
@@ -82,6 +84,8 @@ type BindRequest struct {
   "idempotency_key": "review-001"
 }
 ```
+
+`POST /api/v1/agent/nodes/:node_name/runs` accepts that same body with no version selector. It is the only direct omitted/`latest` endpoint, and the server binds it to the highest released version before calling the binder; a positive numeric version continues to use the versioned route.
 
 ```json
 // GET /api/v1/agent/models
@@ -241,7 +245,7 @@ func TestReferenceNodeFixturesUseOpaqueExactModelAndHighBudgetFloor(t *testing.T
 }
 ```
 
-Include node validation cases for blank model, whitespace-surrounded model, zero, negative, NaN, infinity, and seven-decimal budget values. Include task and `publish_snapshot` nodes to prove they do not require either field. Before this task's GREEN checkpoint, update both seeded reference `node.yaml` files, `seed_test.go`, `vertical_slice_test.go`, and every affected inline manifest to use `model-test-exact-v1` with `budget_slice_usd: 100`; this makes the stricter import contract testable in the same task that introduces it.
+Include node validation cases for blank model, whitespace-surrounded model, zero, negative, NaN, infinity, and seven-decimal budget values. Include task and `publish_snapshot` nodes to prove they do not require either field. Before this task's GREEN checkpoint, update both seeded reference `node.yaml` files, `seed_test.go`, `vertical_slice_test.go`, and every affected **test-only** inline manifest to use `model-test-exact-v1` with `budget_slice_usd: 100`; the seed value is an explicit temporary hermetic value, replaced with the deployed exact ID by task 6.
 
 - [ ] **Step 2: Run node-contract RED tests**
 
@@ -292,63 +296,102 @@ git commit -m "feat(agent): freeze node model and budget contract"
 - Modify: `agent/workflow/node_reference.go`
 - Modify: `agent/workflow/node_reference_test.go`
 - Modify: `agent/workflow/node_store.go`
+- Modify: `agent/workflow/node_upgrade.go`
+- Modify: `agent/workflow/node_upgrade_test.go`
+- Modify: `agent/workflow/node_upgrade_budget_test.go`
+- Modify: `agent/workflow/broker_profiles_test.go`
 - Modify: `agent/workflow/workflowtest/memory_node_store.go`
 - Modify: `atc/db/agent_nodes_factory.go`
 - Modify: `atc/db/agent_nodes_factory_test.go`
+- Modify: `atc/db/agent_workflows_factory.go`
+- Modify: `atc/db/agent_workflows_factory_test.go`
 - Modify: `agent/workflowrun/types.go`
 - Modify: `agent/workflowrun/binder.go`
 - Modify: `agent/workflowrun/binder_test.go`
 - Modify: `agent/api/noderuns/handler.go`
 - Modify: `agent/api/noderuns/handler_test.go`
+- Modify: `atc/atccmd/command.go`
+- Modify: `atc/api/handler.go`
+- Modify: `atc/api/api_suite_test.go`
 - Modify: `atc/routes.go`
+- Modify: `atc/api/accessor/roles.go`
+- Modify: `atc/api/accessor/agent_workflow_run_roles_test.go`
+- Modify: `atc/wrappa/api_auth_wrappa.go`
+- Modify: `atc/wrappa/api_auth_wrappa_test.go`
+- Modify: `atc/wrappa/reject_archived_wrappa.go`
+- Modify: `atc/wrappa/agent_workflow_run_archive_test.go`
 - Modify: `fly/commands/agent_nodes.go`
 - Modify: `fly/commands/agent_nodes_test.go`
+- Modify: `fly/commands/agent_workflows.go`
+- Modify: `fly/commands/agent_workflows_test.go`
 
 **Consumes:** Immutable node versions and content hashes from the node store.
 
-**Produces:** Server-side `latest` resolution that freezes exact version/content hash before workflow binding or direct-run allocation. Retries and reruns use the persisted exact facts and do not consult `Latest`.
+**Produces:** Server-authoritative `latest` resolution that chooses the highest **released** node version and freezes its exact version/content hash before workflow binding or direct-run allocation. Retries and reruns use the persisted exact facts and never consult `LatestReleased`.
 
 - [ ] **Step 1: Write bind-once RED tests**
 
 ```go
 func TestWorkflowLatestReferenceFreezesExactNodeBinding(t *testing.T) {
-	compiled, bindings, err := workflow.CompileDefinitionWithNodes(manifestUsing("review@latest"), resolverWithLatest(node("review", 7, "hash-7")))
+	resolver := resolverWithReleased(node("review", 7, "hash-7"), node("review", 8, "hash-8"))
+	resolver.MarkReleased(7) // v8 intentionally remains unreleased.
+	compiled, bindings, err := workflow.CompileDefinitionWithNodes(manifestUsing("review@latest"), resolver)
 	if err != nil { t.Fatal(err) }
 	if compiled == nil || bindings[0].NodeVersion != 7 || bindings[0].NodeContentHash != "hash-7" { t.Fatalf("bindings=%+v", bindings) }
-	resolver.Add(node("review", 8, "hash-8"))
 	assertPersistedWorkflowBindingStillEquals(t, bindings[0], 7, "hash-7")
 }
 
 func TestDirectLatestRunPersistsResolvedExactVersion(t *testing.T) {
-	result, err := handler.CreateLatest(nodeNamed("review", 7, "hash-7"), requestWithLatest())
+	resolver := resolverWithReleased(node("review", 7, "hash-7"), node("review", 8, "hash-8"))
+	resolver.MarkReleased(7)
+	result, err := handler.CreateLatest(resolver, requestWithLatest())
 	if err != nil { t.Fatal(err) }
 	if result.Run.WorkflowVersion != 7 || result.Run.DefinitionContentHash != "hash-7" { t.Fatalf("run=%+v", result.Run) }
 }
 ```
 
-Add cases for omitted direct version and literal `latest`, exact numeric versions, an empty catalog, concurrent insertion of version 8 after resolution, retry/rerun not calling `Latest`, and idempotency replay retaining the originally allocated version/hash.
+Add cases for (a) released v7 plus unreleased v8 selecting v7 for both workflow and direct `latest`, (b) no released version returning the bounded `node_version_not_found` error, (c) omitted direct version and literal `latest`, (d) explicit numeric v8 executing the unreleased author-test version, (e) concurrent insertion of v9 after latest resolution, (f) retry/rerun not calling `LatestReleased`, and (g) idempotency replay retaining the originally allocated version/hash. Add DB and memory-store tests proving `LatestReleased` filters `Release.ReleasedAt > 0` and orders by version descending.
+
+Add Fly workflow-import tests proving Fly sends the authored `name@latest` source unchanged and does not list or choose a node version locally; server import is the only selector authority. Update every workflow upgrade/test resolver that implements `NodeResolver` so the new latest-released capability is explicit and no test double silently returns an unreleased `Latest` record.
 
 - [ ] **Step 2: Run bind-once RED tests**
 
-Run: `go test ./agent/workflow ./agent/workflowrun ./agent/api/noderuns ./fly/commands ./atc/db -run 'Test(WorkflowLatestReferenceFreezesExactNodeBinding|DirectLatestRunPersistsResolvedExactVersion|.*Latest.*Node)' -count=1`
+Run: `go test ./agent/workflow ./agent/workflowrun ./agent/api/noderuns ./fly/commands ./atc/db ./atc/api ./atc/api/accessor ./atc/wrappa -run 'Test(WorkflowLatestReferenceFreezesExactNodeBinding|DirectLatestRunPersistsResolvedExactVersion|.*LatestReleased.*|.*Latest.*Node)' -count=1`
 
-Expected: FAIL because `parseExactNodeUse` rejects `latest`, direct routes require an integer version, and no server-side selector resolution exists.
+Expected: FAIL because `parseExactNodeUse` rejects `latest`, the node resolver has no released-only latest capability, direct routes require an integer version, and no server-side selector resolution exists.
 
 - [ ] **Step 3: Implement workflow/catalog `latest` binding**
 
-Extend `workflow.NodeResolver` with `Latest(name string) (*NodeDefinition, bool, error)` and update the DB and memory stores. Replace the current integer-only parser with a typed selector that accepts either a positive exact integer or the literal `latest`; reject all other aliases. In the workflow expander, resolve `latest` through `NodeResolver.Latest` exactly once, then create the existing `ResolvedNodeBinding` with the returned immutable `NodeDefinitionID`, `NodeVersion`, and `NodeContentHash`. Leave only the resolved leaf in the compiled definition.
+Define a narrow trusted capability and make it part of the resolver supplied to workflow import:
+
+```go
+type LatestReleasedNodeResolver interface {
+	LatestReleased(name string) (NodeDefinition, bool, error)
+}
+
+type NodeResolver interface {
+	Released(name string, version int) (NodeDefinition, bool, error)
+	LatestReleasedNodeResolver
+}
+```
+
+Implement `LatestReleased` in the DB transaction resolver and `workflowtest.MemoryNodeStore` using only `Release.ReleasedAt > 0`, selecting the greatest version. Update all existing workflow upgrade and test resolvers to satisfy the expanded interface. Replace the integer-only parser with a typed selector that accepts either a positive exact integer or literal `latest`; reject all other aliases. In the workflow expander, resolve `latest` through `LatestReleased` exactly once, then create the existing `ResolvedNodeBinding` with the returned immutable `NodeDefinitionID`, `NodeVersion`, and `NodeContentHash`. On a missing released version, return the bounded `node_version_not_found` source/import error; never call the broad `NodeStore.Latest` fallback. Leave only the resolved leaf in the compiled definition.
 
 The source manifest may retain its authoring spelling `name@latest`; the compiled workflow definition and durable binding must contain no `latest` token. Reimporting identical source remains idempotent and therefore retains its prior exact binding. An author intentionally rebinds by creating a new workflow definition version, not by background reconciliation.
 
 - [ ] **Step 4: Implement direct latest convenience server-side**
 
-Add a separate create route `POST /api/v1/agent/nodes/:node_name/runs` for omitted/latest direct execution. Its strict body contains the existing inputs, params, budget, and idempotency key; it never accepts a caller model or numeric version field. The handler resolves `NodeStore.Latest` once, then invokes the existing binder with that returned exact integer version. Keep the existing versioned route for exact execution. Change `fly agent nodes run NAME [VERSION]` so omitted VERSION and literal `latest` use the new route; a positive numeric VERSION uses the existing exact route.
+Add `LatestReleasedNodes workflow.LatestReleasedNodeResolver` to `noderuns.Config`; `NewHandler` must fail closed if it is absent. Wire the ATC's DB-backed released-only resolver through `atc/atccmd/command.go` into `atc/api/handler.go`, and add a route constant/handler for `POST /api/v1/agent/nodes/:node_name/runs`. Give it the same `MemberRole`, authenticated-route and reject-archived classification as the existing exact `CreateAgentNodeRun`; cover the route, accessor, and both wrappa allowlists in their focused tests.
 
-The binder persists `WorkflowVersion` and `DefinitionContentHash` from the exact node it resolves. It must compare the persisted content hash during resume/idempotency as it already does for exact node requests. Do not add a mutable selector column or a background updater.
+Its strict body initially contains the existing inputs, params, and idempotency key (Task 5 extends the shared request body with `budget_slice_usd`); it never accepts a caller model or numeric version field. The handler calls `LatestReleasedNodes.LatestReleased(name)` exactly once, maps no result to bounded `404 node_version_not_found`, and passes that returned exact `Version`, `ID` (`ExpectedWorkflowDefinitionID`), and `ContentHash` (`ExpectedDefinitionContentHash`) into the binder before allocation. The binder resolves only that exact version and rejects a changed ID/hash before it creates or idempotently matches a run. Keep the existing versioned route for explicit exact execution, including unreleased author-test versions.
+
+Change the Fly run positional from required `int` to optional `string`, so `fly agent nodes run NAME [VERSION]` can accept omitted VERSION or literal `latest` and call only this new server endpoint; parse a positive numeric VERSION locally only to select the existing exact endpoint. Do not use `resolveDefaultNodeVersion`, list endpoints, or a local Fly cache for run selection. Update `fly/commands/agent_workflows.go` likewise: it forwards source containing `name@latest` to server import without calling `CompileDefinitionWithNodes` or `agentWorkflowNodeResolver`; the ATC DB factory is the only component that resolves the selector.
+
+The binder persists `WorkflowVersion` and `DefinitionContentHash` from the resolved exact node. It compares those expected facts during fresh allocation, idempotency, and resume; retry/rerun begins from the existing durable run and must not re-resolve `latest`. Do not add a mutable selector column or a background updater.
 
 - [ ] **Step 5: Run bind-once GREEN tests**
 
-Run: `go test ./agent/workflow ./agent/workflowrun ./agent/api/noderuns ./fly/commands ./atc/db -count=1`
+Run: `go test ./agent/workflow ./agent/workflowrun ./agent/api/noderuns ./fly/commands ./atc/db ./atc/atccmd ./atc/api ./atc/api/accessor ./atc/wrappa -count=1`
 
 Expected: PASS.
 
@@ -356,11 +399,16 @@ Expected: PASS.
 
 ```bash
 git add agent/workflow/node_reference.go agent/workflow/node_reference_test.go \
-  agent/workflow/node_store.go agent/workflow/workflowtest/memory_node_store.go \
+  agent/workflow/node_store.go agent/workflow/node_upgrade.go \
+  agent/workflow/node_upgrade_test.go agent/workflow/node_upgrade_budget_test.go \
+  agent/workflow/broker_profiles_test.go agent/workflow/workflowtest/memory_node_store.go \
   atc/db/agent_nodes_factory.go atc/db/agent_nodes_factory_test.go \
+  atc/db/agent_workflows_factory.go atc/db/agent_workflows_factory_test.go \
   agent/workflowrun/types.go agent/workflowrun/binder.go agent/workflowrun/binder_test.go \
   agent/api/noderuns/handler.go agent/api/noderuns/handler_test.go \
-  fly/commands/agent_nodes.go fly/commands/agent_nodes_test.go atc/routes.go
+  atc/atccmd/command.go atc/api/handler.go atc/api/api_suite_test.go atc/routes.go atc/api/accessor \
+  atc/wrappa fly/commands/agent_nodes.go fly/commands/agent_nodes_test.go \
+  fly/commands/agent_workflows.go fly/commands/agent_workflows_test.go
 git commit -m "feat(agent): bind latest node selections once"
 ```
 
@@ -467,6 +515,7 @@ git commit -m "feat(agent): admit node models and raised budgets"
 - Modify: `agent/api/nodes/handler_test.go`
 - Modify: `agent/api/workflowruns/handler.go`
 - Modify: `agent/api/workflowruns/handler_test.go`
+- Modify: `atc/atccmd/command.go`
 - Modify: `atc/routes.go`
 - Modify: `atc/api/handler.go`
 - Modify: `atc/api/api_suite_test.go`
@@ -480,7 +529,7 @@ git commit -m "feat(agent): admit node models and raised budgets"
 - Modify: `fly/commands/agent_nodes.go`
 - Modify: `fly/commands/agent_nodes_test.go`
 
-**Consumes:** `modelcatalog.Reader` and binder error taxonomy from tasks 1–3.
+**Consumes:** `modelcatalog.Reader`, the released-only latest endpoint from task 3, and binder error taxonomy/budget derivation from task 4.
 
 **Produces:** Authenticated `GET /api/v1/agent/models`, `fly agent models list --json`, and strict direct-run JSON/flag support for `budget_slice_usd`.
 
@@ -500,7 +549,7 @@ func TestNodeRunCreateForwardsBudgetButRejectsModel(t *testing.T) {
 }
 ```
 
-Add route tests for exactly one `GET /api/v1/agent/models`, viewer authorization tests, an unavailable-model `422` error envelope test, and Fly tests that `--json` emits the public array while `nodes run --budget-slice-usd=100` emits only the new approved body field.
+Add route tests for exactly one `GET /api/v1/agent/models`, viewer authorization tests, an unavailable-model `422` error envelope test, and Fly tests that `--json` emits the public array while both exact and released-only latest `nodes run --budget-slice-usd=100` calls emit only the new approved body field.
 
 - [ ] **Step 2: Run API/CLI RED tests**
 
@@ -523,7 +572,7 @@ case errors.Is(err, workflowrun.ErrModelUnavailable):
 
 - [ ] **Step 4: Implement request/CLI support without model override**
 
-Add `BudgetSliceUSD *float64 `json:"budget_slice_usd,omitempty"`` to `noderuns.CreateRequest`, decode it as a JSON number once, and pass a defensive copy to `workflowrun.BindRequest.NodeBudgetSliceUSD`. Keep the decoder’s unknown-key path unchanged, so `model` is rejected.
+Add `BudgetSliceUSD *float64 `json:"budget_slice_usd,omitempty"`` to the shared `noderuns.CreateRequest`, decode it as a JSON number once, and pass a defensive copy to `workflowrun.BindRequest.NodeBudgetSliceUSD` from both exact and released-only latest handlers. Keep the decoder’s unknown-key path unchanged, so `model` is rejected.
 
 Add:
 
@@ -548,7 +597,7 @@ Expected: PASS.
 git add agent/api/models agent/api/nodes/handler.go agent/api/nodes/handler_test.go \
   agent/api/noderuns/handler.go agent/api/noderuns/handler_test.go \
   agent/api/workflowruns/handler.go agent/api/workflowruns/handler_test.go \
-  atc/routes.go atc/api atc/wrappa fly/commands
+  atc/atccmd/command.go atc/routes.go atc/api atc/wrappa fly/commands
 git commit -m "feat(agent): expose node model catalog and budget flag"
 ```
 
@@ -556,38 +605,79 @@ git commit -m "feat(agent): expose node model catalog and budget flag"
 
 **Files:**
 - Modify: `docs/agentic/README.md`
+- Modify: `agent/workflow/seeds/code-review-node-v1/node.yaml`
+- Modify: `agent/workflow/seeds/log-diagnosis-node-v1/node.yaml`
+- Modify: `agent/workflow/seed_test.go`
+- Modify: `agent/reusablenode/vertical_slice_test.go`
 
 **Consumes:** All prior task interfaces and the $100 reference-node contract established in task 2.
 
-**Produces:** Accurate operator/runbook documentation and rollout acceptance evidence without guessed provider IDs.
+**Produces:** Accurate operator/runbook documentation plus two materialized active reference sources/runs using an exact ID returned by the deployed catalog, never a guessed provider or hermetic fixture ID.
 
 - [ ] **Step 1: Write the documentation acceptance checklist**
 
-Add a checked command sequence that first obtains the deployed ID and then imports or updates active reference nodes with that returned exact value. The document must not contain a provider-looking model literal:
+Task 2 may use `model-test-exact-v1` only as its checked-in hermetic intermediate. Before this task's final checkpoint, materialize both active seed sources with an actual exact deployed ID and update `seed_test.go` and `vertical_slice_test.go` to compare the source model to the imported/bound node's model without hard-coding any provider ID. The document must not contain a provider-looking model literal.
+
+Add this checked sequence, using real snapshot IDs supplied by the rollout operator:
 
 ```sh
-MODEL_ID="$(fly -t home agent models list --json | jq -r '.[] | select(.available) | .id' | head -n 1)"
-test -n "$MODEL_ID"
+MODEL_ID="$(fly -t home agent models list --json | jq -er '[.[] | select(.available) | .id] | first')"
+: "${MODEL_ID:?no deployed available agent model}"
+: "${BEFORE_SNAPSHOT_ID:?set the repository/v1 before snapshot ID}"
+: "${AFTER_SNAPSHOT_ID:?set the repository/v1 after snapshot ID}"
+: "${LOGS_SNAPSHOT_ID:?set the log-bundle/v1 snapshot ID}"
 ```
 
-- [ ] **Step 2: Update operator documentation and execute rollout acceptance**
+- [ ] **Step 2: Materialize both source packages and make assertions ID-agnostic**
+
+Replace the Task 2 intermediate model in exactly both checked-in seed YAMLs with the selected `$MODEL_ID`; retain `budget_slice_usd: 100`. Use a literal-safe YAML patch (not a provider-name substitution), for example:
 
 ```sh
-fly -t home agent models list --json
-fly -t home agent nodes run code-review 10 \
-  --input before-repository=41 --input after-repository=42 \
-  --budget-slice-usd=100 --idempotency-key=review-001
+for seed in agent/workflow/seeds/code-review-node-v1/node.yaml agent/workflow/seeds/log-diagnosis-node-v1/node.yaml; do
+  MODEL_ID="$MODEL_ID" perl -0pi -e 's/^(\s*model:\s*)model-test-exact-v1\s*$/${1}$ENV{MODEL_ID}/m' "$seed"
+done
+! rg -n 'model-test-' \
+  agent/workflow/seeds/code-review-node-v1/node.yaml \
+  agent/workflow/seeds/log-diagnosis-node-v1/node.yaml
 ```
 
-State that active reference-node versions use `budget_slice_usd: 100`, model identity is chosen by the node author from the deployed available list, is frozen in the node version, and is never a run flag. State that a temporarily unavailable known model can be imported for portable/reference catalog use but a fresh run fails before execution. State that `latest` is resolved once and persisted exact, never auto-updates. State that the high daily cap remains an operator Helm value and no cost estimate is shown.
+Replace Task 2's opaque-literal assertion in `seed_test.go` with a helper that compiles each source and returns its nonempty model/floor. In `vertical_slice_test.go`, compare each imported definition's agent model and floor to that helper's source values, then assert the durable direct run preserves the imported definition ID/version/content hash and agent model. These checks must not contain a real provider ID or `model-test-*` expectation.
 
-- [ ] **Step 3: Run focused GREEN verification**
+- [ ] **Step 3: Import both materialized sources, capture exact versions, and run them**
 
-Run: `go test ./agent/reusablenode ./agent/workflow ./agent/workflowrun ./atc/db ./agent/api/models ./agent/api/nodes ./agent/api/noderuns ./fly/commands -count=1`
+```sh
+CODE_REVIEW_IMPORT="$(fly -t home agent nodes import --json agent/workflow/seeds/code-review-node-v1)"
+CODE_REVIEW_VERSION="$(jq -er '.version | select(type == "number" and . > 0)' <<<"$CODE_REVIEW_IMPORT")"
+LOG_DIAGNOSIS_IMPORT="$(fly -t home agent nodes import --json agent/workflow/seeds/log-diagnosis-node-v1)"
+LOG_DIAGNOSIS_VERSION="$(jq -er '.version | select(type == "number" and . > 0)' <<<"$LOG_DIAGNOSIS_IMPORT")"
+
+fly -t home agent nodes run code-review "$CODE_REVIEW_VERSION" \
+  --input before="$BEFORE_SNAPSHOT_ID" --input after="$AFTER_SNAPSHOT_ID" \
+  --budget-slice-usd=100 --idempotency-key=rollout-code-review-"$CODE_REVIEW_VERSION"
+fly -t home agent nodes run log-diagnosis "$LOG_DIAGNOSIS_VERSION" \
+  --input logs="$LOGS_SNAPSHOT_ID" \
+  --budget-slice-usd=100 --idempotency-key=rollout-log-diagnosis-"$LOG_DIAGNOSIS_VERSION"
+```
+
+The log-diagnosis `deployment` input is optional. Record both JSON import responses and the two returned exact versions in the rollout evidence. Do not use a hard-coded version such as `10`; the explicit returned versions intentionally permit author testing even before the new versions are released.
+
+State that active reference-node versions use `budget_slice_usd: 100`, model identity is chosen by the node author from the deployed available list, is frozen in the node version, and is never a run flag. State that a temporarily unavailable known model can be imported for portable/reference catalog use but a fresh run fails before execution. State that `latest` resolves only the highest released version once and persists that exact identity; it never auto-updates or falls back to an unreleased version. State that the high daily cap remains an operator Helm value and no cost estimate is shown.
+
+- [ ] **Step 4: Run source/binding and focused GREEN verification**
+
+Run:
+
+```sh
+! rg -n 'model-test-' \
+  agent/workflow/seeds/code-review-node-v1/node.yaml \
+  agent/workflow/seeds/log-diagnosis-node-v1/node.yaml
+go test ./agent/reusablenode ./agent/workflow ./agent/workflowrun ./atc/db \
+  ./agent/api/models ./agent/api/nodes ./agent/api/noderuns ./fly/commands -count=1
+```
 
 Expected: PASS.
 
-- [ ] **Step 4: Run final broad checkpoint once**
+- [ ] **Step 5: Run final broad checkpoint once**
 
 Run:
 
@@ -601,20 +691,23 @@ git diff --check
 
 Expected: PostgreSQL readiness, both repository suites, Helm lint, and diff check pass. Record one external-infrastructure failure without retrying it when the narrower package evidence is green.
 
-- [ ] **Step 5: Conduct one independent focused review**
+- [ ] **Step 6: Conduct one independent focused review**
 
-Review only the task range for: mutable model selection, catalog-known versus unavailable confusion, caller model override, lower-budget bypass, canonical-config/reservation mismatch, idempotency/resume drift, secret disclosure, route authorization, and accidental workflow auto-upgrade. Fix only Critical, High, or acceptance-blocking findings. If a blocker is found, run a focused re-review; stop after three total review rounds and mark the track Human Review Required if a blocker remains.
+Review only the task range for: released-only latest selection, mutable model selection, catalog-known versus unavailable confusion, caller model override, lower-budget bypass, canonical-config/reservation mismatch, idempotency/resume drift, source/bound-model drift, secret disclosure, route authorization, and accidental workflow auto-upgrade. Fix only Critical, High, or acceptance-blocking findings. If a blocker is found, run a focused re-review; stop after three total review rounds and mark the track Human Review Required if a blocker remains.
 
-- [ ] **Step 6: Commit task 6**
+- [ ] **Step 7: Commit task 6**
 
 ```bash
-git add docs/agentic/README.md
+git add docs/agentic/README.md \
+  agent/workflow/seeds/code-review-node-v1/node.yaml \
+  agent/workflow/seeds/log-diagnosis-node-v1/node.yaml \
+  agent/workflow/seed_test.go agent/reusablenode/vertical_slice_test.go
 git commit -m "docs(agent): document node model and budget contract"
 ```
 
 ## Explicit exclusions
 
-- No workflow node auto-upgrade, mutable persisted selector, or background catalog reconciliation is added. `name@latest` is an authoring convenience resolved once to the existing exact `ResolvedNodeBinding` facts; those persisted facts remain authoritative.
+- No workflow node auto-upgrade, mutable persisted selector, or background catalog reconciliation is added. `name@latest` is an authoring convenience resolved once to the highest released version's exact `ResolvedNodeBinding` facts; those persisted facts remain authoritative. It never falls back to the highest imported/unreleased version.
 - No caller-selected provider, model, credentials, runtime image, output schema, or skill injection surface is added.
 - No database migration or duplicate budget field is added.
 - No estimated-versus-actual cost endpoint, cost UI, or pricing calculation is added.
