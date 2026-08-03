@@ -425,6 +425,265 @@ step:
 	}
 }
 
+// nodeExperimentBindFixture builds the smallest binder that can admit a
+// reusable node, plus the exact target config hash an experiment would have
+// frozen for the given parameters.
+func nodeExperimentBindFixture(
+	t *testing.T,
+	parameters map[string]string,
+	inspect func(db.AgentWorkflowRunCreateRequest),
+) (*Binder, *workflow.NodeDefinition, string) {
+	t.Helper()
+	nodes := workflowtest.NewMemoryNodeStore()
+	node, err := nodes.ImportManifest("code-review", workflow.Manifest{workflow.NodeFileName: `schema_version: 1
+name: code-review
+parameters:
+  - {name: MINIMUM_SEVERITY, default: medium}
+inputs: []
+outputs: []
+step:
+  agent: review
+  prompt: review
+`}, "alice")
+	if err != nil {
+		t.Fatalf("import node: %v", err)
+	}
+	frozenDefinition, found, err := executableNodeDefinition(*node, parameters)
+	if err != nil || !found {
+		t.Fatalf("instantiate node: found=%v err=%v", found, err)
+	}
+	frozenTarget, err := workflow.FullFunctionTarget(frozenDefinition)
+	if err != nil {
+		t.Fatalf("freeze node target: %v", err)
+	}
+	frozenRender, err := workflow.RenderFunction(frozenTarget)
+	if err != nil {
+		t.Fatalf("render frozen node target: %v", err)
+	}
+
+	runID := snapshot.WorkflowRunID(9007199254741003)
+	admitting := db.AgentWorkflowRun{
+		ID: runID, DefinitionKind: workflow.DefinitionKindNode, TeamID: 7, TeamName: "research",
+		WorkflowDefinitionID: node.ID, WorkflowName: node.Name, WorkflowVersion: node.Version,
+		SchemaVersion: 3, SignatureVersion: node.Compiled.Function.SignatureVersion,
+		DefinitionContentHash: node.ContentHash,
+		IdempotencyKey:        "experiment:11:cell:13:candidate",
+		OriginKind:            "experiment", OriginReference: "experiment:11:cell:13",
+		CreatedBy: "alice", Status: db.AgentWorkflowRunStatusAdmitting,
+	}
+	settled := admitting
+	settled.Status = db.AgentWorkflowRunStatusSucceeded
+	store := &storeStub{
+		find: func(context.Context, int, string) (db.AgentWorkflowRun, bool, error) {
+			return settled, true, nil
+		},
+		create: func(_ context.Context, request db.AgentWorkflowRunCreateRequest) (db.AgentWorkflowRun, bool, error) {
+			if inspect != nil {
+				inspect(request)
+			}
+			admitting.ParameterizedConfig = append(json.RawMessage(nil), request.ParameterizedConfig...)
+			admitting.ParameterizedConfigHash = request.ParameterizedConfigHash
+			settled.ParameterizedConfig = append(json.RawMessage(nil), request.ParameterizedConfig...)
+			settled.ParameterizedConfigHash = request.ParameterizedConfigHash
+			return admitting, true, nil
+		},
+		snapshots: func(context.Context, snapshot.WorkflowRunID) ([]db.AgentWorkflowRunSnapshotBinding, error) {
+			return nil, nil
+		},
+		transition: func(context.Context, snapshot.WorkflowRunID, db.AgentWorkflowRunStatus, db.AgentWorkflowRunStatus, string) (bool, error) {
+			return true, nil
+		},
+	}
+	binder, err := NewBinder(
+		resumeResolver(binderTestDefinition()),
+		&rendererStub{full: workflow.FullFunctionTarget, render: workflow.RenderFunction},
+		&authorizerStub{}, store, &budgetStub{},
+		&saverStub{save: func(_ context.Context, _ AdmissionContext, spec ImmutableTemplateSpec) (WorkflowRunTemplateRef, error) {
+			return WorkflowRunTemplateRef{PipelineID: 1, TeamID: 7, Name: spec.Name, FullHash: spec.FullHash}, nil
+		}},
+		&creatorStub{create: func(context.Context, snapshot.WorkflowRunID, WorkflowRunTemplateRef, map[string]any, string, BeforeWorkflowRunCommit) (WorkflowRunExecution, bool, error) {
+			return WorkflowRunExecution{}, true, nil
+		}},
+		&credentialStub{admit: func(context.Context) error { return nil }}, WithNodeStore(nodes),
+	)
+	if err != nil {
+		t.Fatalf("NewBinder: %v", err)
+	}
+	return binder, node, frozenRender.TargetConfigHash
+}
+
+func nodeExperimentAdmission() AdmissionContext {
+	return AdmissionContext{
+		TeamID: 7, TeamName: "research", CreatedBy: "alice",
+		Origin: Origin{Kind: "experiment", Reference: "experiment:11:cell:13"},
+	}
+}
+
+func TestBindAndCreateAdmitsAFrozenNodeExperimentTarget(t *testing.T) {
+	parameters := map[string]string{"MINIMUM_SEVERITY": "high"}
+	var durable db.AgentWorkflowRunCreateRequest
+	binder, node, frozenHash := nodeExperimentBindFixture(t, parameters, func(request db.AgentWorkflowRunCreateRequest) {
+		durable = request
+	})
+	version := node.Version
+	provenance := ""
+
+	result, err := binder.BindExperimentWithReadySourceAdmission(
+		context.Background(), nodeExperimentAdmission(), BindRequest{
+			DefinitionKind: workflow.DefinitionKindNode, WorkflowName: node.Name, Version: &version,
+			NodeParameters: parameters, IdempotencyKey: "experiment:11:cell:13:candidate",
+			ExpectedWorkflowDefinitionID:        int64(node.ID),
+			ExpectedTargetConfigHash:            frozenHash,
+			ExpectedDevValidationProvenanceHash: &provenance,
+			ExperimentAdmission: &ExperimentAdmissionGate{
+				ExperimentID: 11, CellID: 13, Phase: "candidate",
+			},
+		}, nil)
+	if err != nil {
+		t.Fatalf("frozen node experiment bind: %v", err)
+	}
+	if !result.Created || result.Run.DefinitionKind != workflow.DefinitionKindNode {
+		t.Fatalf("frozen node experiment result = %+v", result)
+	}
+	// The run the runner will later match against the cell must carry the
+	// frozen coordinates, not merely have been allowed past validation.
+	if durable.DefinitionKind != workflow.DefinitionKindNode ||
+		durable.WorkflowDefinitionID != node.ID ||
+		durable.ParameterizedConfigHash != frozenHash ||
+		durable.FunctionID != nil ||
+		durable.ResourceSourceAdmissionID != nil ||
+		durable.ExperimentAdmission == nil ||
+		durable.ExperimentAdmission.CellID != 13 {
+		t.Fatalf("durable node experiment request = %+v", durable)
+	}
+}
+
+func TestBindAndCreateRejectsADriftedFrozenNodeExperimentTarget(t *testing.T) {
+	parameters := map[string]string{"MINIMUM_SEVERITY": "high"}
+	binder, node, frozenHash := nodeExperimentBindFixture(t, parameters, nil)
+	version := node.Version
+	provenance := ""
+	gate := func() *ExperimentAdmissionGate {
+		return &ExperimentAdmissionGate{ExperimentID: 11, CellID: 13, Phase: "candidate"}
+	}
+	base := func() BindRequest {
+		return BindRequest{
+			DefinitionKind: workflow.DefinitionKindNode, WorkflowName: node.Name, Version: &version,
+			NodeParameters: parameters, IdempotencyKey: "experiment:11:cell:13:candidate",
+			ExpectedWorkflowDefinitionID:        int64(node.ID),
+			ExpectedTargetConfigHash:            frozenHash,
+			ExpectedDevValidationProvenanceHash: &provenance,
+			ExperimentAdmission:                 gate(),
+		}
+	}
+	for _, test := range []struct {
+		name    string
+		mutate  func(*BindRequest)
+		wantErr error
+	}{
+		{
+			name:    "a node still cannot select a function",
+			mutate:  func(request *BindRequest) { request.FunctionID = "review" },
+			wantErr: ErrInvalidRequest,
+		},
+		{
+			name:    "an implicit version is still refused",
+			mutate:  func(request *BindRequest) { request.Version = nil },
+			wantErr: ErrInvalidRequest,
+		},
+		{
+			name: "an experiment node bind without a frozen definition ID fails closed",
+			mutate: func(request *BindRequest) {
+				request.ExpectedWorkflowDefinitionID = 0
+			},
+			wantErr: ErrInvalidRequest,
+		},
+		{
+			name: "an experiment node bind without a frozen config hash fails closed",
+			mutate: func(request *BindRequest) {
+				request.ExpectedTargetConfigHash = ""
+			},
+			wantErr: ErrInvalidRequest,
+		},
+		{
+			name: "the frozen definition ID must be the node actually resolved",
+			mutate: func(request *BindRequest) {
+				request.ExpectedWorkflowDefinitionID = int64(node.ID) + 1
+			},
+			wantErr: ErrInvalidRequest,
+		},
+		{
+			name: "the frozen config hash must be the config actually rendered",
+			mutate: func(request *BindRequest) {
+				request.ExpectedTargetConfigHash = strings.Repeat("f", 64)
+			},
+			wantErr: ErrInvalidRequest,
+		},
+		{
+			name: "parameters that would render a different config are refused",
+			mutate: func(request *BindRequest) {
+				request.NodeParameters = map[string]string{"MINIMUM_SEVERITY": "low"}
+			},
+			wantErr: ErrInvalidRequest,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := base()
+			test.mutate(&request)
+			_, err := binder.BindExperimentWithReadySourceAdmission(
+				context.Background(), nodeExperimentAdmission(), request, nil)
+			if !errors.Is(err, test.wantErr) {
+				t.Fatalf("bind error = %v, want %v", err, test.wantErr)
+			}
+		})
+	}
+}
+
+// An ordinary node request has no frozen record behind it, so the relaxation
+// must not leak out of the experiment path. This goes through BindAndCreate
+// rather than the experiment entry point: that entry point rejects a missing
+// admission gate on its own, which would mask the rule under test.
+func TestBindAndCreateRefusesAFrozenIdentityOnANonExperimentNodeRequest(t *testing.T) {
+	parameters := map[string]string{"MINIMUM_SEVERITY": "high"}
+	binder, node, frozenHash := nodeExperimentBindFixture(t, parameters, nil)
+	version := node.Version
+	provenance := ""
+	admission := AdmissionContext{
+		TeamID: 7, TeamName: "research", CreatedBy: "alice", Origin: Origin{Kind: "manual"},
+	}
+	for _, test := range []struct {
+		name   string
+		mutate func(*BindRequest)
+	}{
+		{"definition ID", func(request *BindRequest) {
+			request.ExpectedWorkflowDefinitionID = int64(node.ID)
+		}},
+		{"target config hash", func(request *BindRequest) {
+			request.ExpectedTargetConfigHash = frozenHash
+		}},
+		{"dev validation provenance hash", func(request *BindRequest) {
+			request.ExpectedDevValidationProvenanceHash = &provenance
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := BindRequest{
+				DefinitionKind: workflow.DefinitionKindNode, WorkflowName: node.Name,
+				Version: &version, NodeParameters: parameters, IdempotencyKey: "plain-node",
+			}
+			test.mutate(&request)
+			_, err := binder.BindAndCreate(context.Background(), admission, request)
+			// The message matters as much as the sentinel here: several later
+			// checks also return ErrInvalidRequest for a request that got past
+			// this rule, so a sentinel-only assertion would pass even with the
+			// rule deleted.
+			if !errors.Is(err, ErrInvalidRequest) ||
+				!strings.Contains(err.Error(), "cannot pin a frozen workflow identity outside an experiment") {
+				t.Fatalf("bind error = %v, want a refusal to pin outside an experiment", err)
+			}
+		})
+	}
+}
+
 func TestWorkflowTargetRendererBindsMergePreflightToPersistedIdentity(t *testing.T) {
 	compiled, err := workflow.CompileDefinition(workflow.Manifest{workflow.WorkflowFileName: `schema_version: 3
 name: merge-preflight-render

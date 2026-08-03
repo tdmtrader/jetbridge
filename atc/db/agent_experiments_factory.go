@@ -118,16 +118,20 @@ func (factory *agentExperimentsFactory) Create(
 	if err != nil {
 		return experiment.StoredExperiment{}, err
 	}
+	evaluatorNodeParameters, err := marshalExperimentNodeParameters(definition.Evaluator.Target)
+	if err != nil {
+		return experiment.StoredExperiment{}, err
+	}
 	var id, createdRevision int64
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO agent_experiments
 			(team_id, team_name, name, state, candidate_signature, repetitions,
 			 per_cell_budget_usd, total_budget_usd, max_tokens_per_cell,
 			 evaluator_target_kind, evaluator_workflow_name, evaluator_definition_id,
-			 evaluator_workflow_version, evaluator_function_id, evaluator_signature,
-			 evaluator_measurements_port, created_by)
+			 evaluator_workflow_version, evaluator_function_id, evaluator_node_parameters,
+			 evaluator_signature, evaluator_measurements_port, created_by)
 		SELECT t.id, t.name, $3, 'draft', $4, $5, $6, $7, $8,
-		       $9, $10, $11, $12, $13, $14, $15, $16
+		       $9, $10, $11, $12, $13, $14, $15, $16, $17
 		FROM teams t
 		WHERE t.id = $1 AND t.name = $2
 		RETURNING id, revision
@@ -135,8 +139,8 @@ func (factory *agentExperimentsFactory) Create(
 		definition.Budget.PerCellUSD, definition.Budget.TotalUSD, definition.Budget.MaxTokensPerCell,
 		string(definition.Evaluator.Target.Kind), definition.Evaluator.Target.WorkflowName,
 		definition.Evaluator.Target.DefinitionID, definition.Evaluator.Target.Version,
-		nullableString(definition.Evaluator.Target.FunctionID), evaluatorSignature,
-		definition.Evaluator.MeasurementsPort, actor).Scan(&id, &createdRevision)
+		nullableString(definition.Evaluator.Target.FunctionID), evaluatorNodeParameters,
+		evaluatorSignature, definition.Evaluator.MeasurementsPort, actor).Scan(&id, &createdRevision)
 	if errors.Is(err, sql.ErrNoRows) {
 		return experiment.StoredExperiment{}, experiment.ErrNotFound
 	}
@@ -210,21 +214,26 @@ func (factory *agentExperimentsFactory) Update(
 	if err != nil {
 		return experiment.StoredExperiment{}, err
 	}
+	evaluatorNodeParameters, err := marshalExperimentNodeParameters(definition.Evaluator.Target)
+	if err != nil {
+		return experiment.StoredExperiment{}, err
+	}
 	result, err := tx.ExecContext(ctx, `
 		UPDATE agent_experiments
 		SET name = $3, candidate_signature = $4, repetitions = $5,
 		    per_cell_budget_usd = $6, total_budget_usd = $7, max_tokens_per_cell = $8,
 		    evaluator_target_kind = $9, evaluator_workflow_name = $10,
 		    evaluator_definition_id = $11, evaluator_workflow_version = $12,
-		    evaluator_function_id = $13, evaluator_signature = $14,
-		    evaluator_measurements_port = $15, revision = revision + 1, updated_at = now()
-		WHERE id = $1 AND team_id = $2 AND state = 'draft' AND revision = $16
+		    evaluator_function_id = $13, evaluator_node_parameters = $14,
+		    evaluator_signature = $15,
+		    evaluator_measurements_port = $16, revision = revision + 1, updated_at = now()
+		WHERE id = $1 AND team_id = $2 AND state = 'draft' AND revision = $17
 	`, int64(id), teamID, definition.Name, candidateSignature, definition.Repetitions,
 		definition.Budget.PerCellUSD, definition.Budget.TotalUSD, definition.Budget.MaxTokensPerCell,
 		string(definition.Evaluator.Target.Kind), definition.Evaluator.Target.WorkflowName,
 		definition.Evaluator.Target.DefinitionID, definition.Evaluator.Target.Version,
-		nullableString(definition.Evaluator.Target.FunctionID), evaluatorSignature,
-		definition.Evaluator.MeasurementsPort, revision)
+		nullableString(definition.Evaluator.Target.FunctionID), evaluatorNodeParameters,
+		evaluatorSignature, definition.Evaluator.MeasurementsPort, revision)
 	if err != nil {
 		return experiment.StoredExperiment{}, err
 	}
@@ -1164,6 +1173,14 @@ func recordCandidateRun(
 		  AND experiment.state IN ('running', 'canceling', 'canceled')
 		  AND cell.status IN ('pending', 'running', 'canceled')
 		  AND linked_run.team_id = experiment.team_id
+		  -- The runner's bindResultMatchesTarget verifies the executable kind
+		  -- because none of the other compared coordinates is guaranteed to
+		  -- differ between a node run and a same-named workflow run. This
+		  -- durable association must verify it too, or the database would
+		  -- adopt the wrong run before the runner ever inspected the result.
+		  -- Absent is read as 'workflow', matching that helper.
+		  AND COALESCE(NULLIF(btrim(linked_run.definition_kind), ''), 'workflow') =
+		      CASE WHEN variant.target_kind = 'node' THEN 'node' ELSE 'workflow' END
 		  AND linked_run.workflow_definition_id = variant.definition_id
 		  AND linked_run.workflow_name = variant.workflow_name
 		  AND linked_run.workflow_version = variant.workflow_version
@@ -1398,6 +1415,11 @@ func recordEvaluatorRun(
 		WHERE cell.id = $1 AND cell.status IN ('running', 'canceled')
 		  AND experiment.state IN ('running', 'canceling', 'canceled')
 		  AND linked_run.team_id = experiment.team_id
+		  -- Same rule as the candidate association: the evaluator target
+		  -- carries a kind the runner checks, so the durable association has
+		  -- to agree before it adopts a run. Absent is read as 'workflow'.
+		  AND COALESCE(NULLIF(btrim(linked_run.definition_kind), ''), 'workflow') =
+		      CASE WHEN experiment.evaluator_target_kind = 'node' THEN 'node' ELSE 'workflow' END
 		  AND linked_run.workflow_definition_id = experiment.evaluator_definition_id
 		  AND linked_run.workflow_name = experiment.evaluator_workflow_name
 		  AND linked_run.workflow_version = experiment.evaluator_workflow_version
@@ -1832,14 +1854,19 @@ func insertExperimentDefinition(
 	definition experiment.Definition,
 ) error {
 	for _, variant := range definition.Variants {
+		nodeParameters, err := marshalExperimentNodeParameters(variant.Target)
+		if err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO agent_experiment_variants
 				(experiment_id, label, is_control, target_kind, workflow_name,
-				 definition_id, workflow_version, function_id, signature_hash)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+				 definition_id, workflow_version, function_id, node_parameters, signature_hash)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		`, int64(experimentID), variant.Label, variant.Control, string(variant.Target.Kind),
 			variant.Target.WorkflowName, variant.Target.DefinitionID, variant.Target.Version,
-			nullableString(variant.Target.FunctionID), variant.SignatureHash); err != nil {
+			nullableString(variant.Target.FunctionID), nodeParameters,
+			variant.SignatureHash); err != nil {
 			return err
 		}
 	}
@@ -1971,6 +1998,7 @@ func loadStoredExperiment(
 	var evaluatorDefinitionID int64
 	var evaluatorVersion int
 	var evaluatorFunctionID, evaluatorTargetConfigHash, evaluatorDevValidationProvenanceHash sql.NullString
+	var evaluatorNodeParameters []byte
 	var evaluatorMeasurementsPort string
 	var startedAt, completedAt sql.NullTime
 	err := queryer.QueryRowContext(ctx, `
@@ -1978,7 +2006,8 @@ func loadStoredExperiment(
 		       per_cell_budget_usd::double precision, total_budget_usd::double precision,
 		       max_tokens_per_cell, evaluator_target_kind, evaluator_workflow_name,
 		       evaluator_definition_id, evaluator_workflow_version, evaluator_function_id,
-		       evaluator_signature, evaluator_target_config_hash, evaluator_dev_validation_provenance_hash,
+		       evaluator_node_parameters, evaluator_signature, evaluator_target_config_hash,
+		       evaluator_dev_validation_provenance_hash,
 		       evaluator_measurements_port, created_by,
 		       created_at, updated_at, started_at, completed_at
 		FROM agent_experiments
@@ -1988,7 +2017,8 @@ func loadStoredExperiment(
 		&candidateSignature, &stored.Definition.Repetitions, &stored.Definition.Budget.PerCellUSD,
 		&stored.Definition.Budget.TotalUSD, &stored.Definition.Budget.MaxTokensPerCell,
 		&evaluatorKind, &evaluatorWorkflowName, &evaluatorDefinitionID, &evaluatorVersion,
-		&evaluatorFunctionID, &evaluatorSignature, &evaluatorTargetConfigHash, &evaluatorDevValidationProvenanceHash,
+		&evaluatorFunctionID, &evaluatorNodeParameters, &evaluatorSignature, &evaluatorTargetConfigHash,
+		&evaluatorDevValidationProvenanceHash,
 		&evaluatorMeasurementsPort, &stored.CreatedBy,
 		&stored.CreatedAt, &stored.UpdatedAt, &startedAt, &completedAt,
 	)
@@ -2005,6 +2035,11 @@ func loadStoredExperiment(
 	}
 	if evaluatorFunctionID.Valid {
 		stored.Definition.Evaluator.Target.FunctionID = evaluatorFunctionID.String
+	}
+	if err := scanExperimentNodeParameters(
+		evaluatorNodeParameters, &stored.Definition.Evaluator.Target,
+	); err != nil {
+		return experiment.StoredExperiment{}, err
 	}
 	if evaluatorTargetConfigHash.Valid {
 		stored.Definition.Evaluator.TargetConfigHash = evaluatorTargetConfigHash.String
@@ -2025,7 +2060,8 @@ func loadStoredExperiment(
 
 	variantRows, err := queryer.QueryContext(ctx, `
 		SELECT label, is_control, target_kind, workflow_name, definition_id,
-		       workflow_version, function_id, signature_hash, target_config_hash, dev_validation_provenance_hash
+		       workflow_version, function_id, node_parameters, signature_hash,
+		       target_config_hash, dev_validation_provenance_hash
 		FROM agent_experiment_variants
 		WHERE experiment_id = $1 ORDER BY id
 	`, int64(id))
@@ -2035,16 +2071,21 @@ func loadStoredExperiment(
 	for variantRows.Next() {
 		var variant experiment.Variant
 		var kind string
+		var nodeParameters []byte
 		var functionID, targetConfigHash, devValidationProvenanceHash sql.NullString
 		if err := variantRows.Scan(&variant.Label, &variant.Control, &kind, &variant.Target.WorkflowName,
-			&variant.Target.DefinitionID, &variant.Target.Version, &functionID, &variant.SignatureHash,
-			&targetConfigHash, &devValidationProvenanceHash); err != nil {
+			&variant.Target.DefinitionID, &variant.Target.Version, &functionID, &nodeParameters,
+			&variant.SignatureHash, &targetConfigHash, &devValidationProvenanceHash); err != nil {
 			_ = variantRows.Close()
 			return experiment.StoredExperiment{}, err
 		}
 		variant.Target.Kind = experiment.TargetKind(kind)
 		if functionID.Valid {
 			variant.Target.FunctionID = functionID.String
+		}
+		if err := scanExperimentNodeParameters(nodeParameters, &variant.Target); err != nil {
+			_ = variantRows.Close()
+			return experiment.StoredExperiment{}, err
 		}
 		if targetConfigHash.Valid {
 			variant.TargetConfigHash = targetConfigHash.String
@@ -2161,6 +2202,7 @@ func loadStoredExperiment(
 func loadCandidateCell(ctx context.Context, queryer agentExperimentQueryer, cellID experiment.CellID) (experiment.CandidateCell, error) {
 	var cell experiment.CandidateCell
 	var kind string
+	var nodeParameters []byte
 	var functionID, targetConfigHash, devValidationProvenanceHash sql.NullString
 	var resourceSourceAdmissionID sql.NullInt64
 	var resourceSourceAssociationCount int
@@ -2170,6 +2212,7 @@ func loadCandidateCell(ctx context.Context, queryer agentExperimentQueryer, cell
 		       experiment.team_id, experiment.team_name, experiment.created_by,
 		       cell.repetition, variant.target_kind, variant.workflow_name,
 		       variant.definition_id, variant.workflow_version, variant.function_id,
+		       variant.node_parameters,
 		       variant.target_config_hash, variant.dev_validation_provenance_hash,
 		       experiment.per_cell_budget_usd::double precision,
 		       experiment.total_budget_usd::double precision,
@@ -2190,6 +2233,7 @@ func loadCandidateCell(ctx context.Context, queryer agentExperimentQueryer, cell
 		&resourceSourceAdmissionID, &resourceSourceAssociationCount,
 		&cell.TeamID, &cell.TeamName, &cell.CreatedBy, &cell.Repetition, &kind,
 		&cell.Target.WorkflowName, &cell.Target.DefinitionID, &cell.Target.Version, &functionID,
+		&nodeParameters,
 		&targetConfigHash, &devValidationProvenanceHash, &cell.Budget.PerCellUSD, &cell.Budget.TotalUSD,
 		&cell.Budget.MaxTokensPerCell)
 	if err != nil {
@@ -2213,6 +2257,12 @@ func loadCandidateCell(ctx context.Context, queryer agentExperimentQueryer, cell
 	if functionID.Valid {
 		cell.Target.FunctionID = functionID.String
 	}
+	// The dispatch seam: this is the value the binder instantiates the node
+	// with. Dropping it here would launch every node variant with defaults and
+	// grade two identical cells against each other.
+	if err := scanExperimentNodeParameters(nodeParameters, &cell.Target); err != nil {
+		return experiment.CandidateCell{}, err
+	}
 	if targetConfigHash.Valid {
 		cell.TargetConfigHash = targetConfigHash.String
 	}
@@ -2227,6 +2277,7 @@ func loadEvaluationCell(ctx context.Context, queryer agentExperimentQueryer, cel
 	var cell experiment.EvaluationCell
 	var candidateSignature, evaluatorSignature []byte
 	var evaluatorKind string
+	var evaluatorNodeParameters []byte
 	var evaluatorFunctionID, evaluatorTargetConfigHash, evaluatorDevValidationProvenanceHash sql.NullString
 	var evaluatorRunID, resourceSourceAdmissionID sql.NullInt64
 	var resourceSourceAssociationCount int
@@ -2238,7 +2289,8 @@ func loadEvaluationCell(ctx context.Context, queryer agentExperimentQueryer, cel
 		       evaluation.evaluator_workflow_run_id, experiment.candidate_signature,
 		       experiment.evaluator_target_kind, experiment.evaluator_workflow_name,
 		       experiment.evaluator_definition_id, experiment.evaluator_workflow_version,
-		       experiment.evaluator_function_id, experiment.evaluator_signature,
+		       experiment.evaluator_function_id, experiment.evaluator_node_parameters,
+		       experiment.evaluator_signature,
 		       experiment.evaluator_target_config_hash, experiment.evaluator_dev_validation_provenance_hash,
 		       experiment.evaluator_measurements_port, fixture.id, fixture.role,
 		       experiment.per_cell_budget_usd::double precision,
@@ -2261,7 +2313,8 @@ func loadEvaluationCell(ctx context.Context, queryer agentExperimentQueryer, cel
 		&cell.CreatedBy, &cell.CandidateWorkflowRunID, &resourceSourceAdmissionID,
 		&resourceSourceAssociationCount, &evaluatorRunID, &candidateSignature,
 		&evaluatorKind, &cell.Evaluator.Target.WorkflowName, &cell.Evaluator.Target.DefinitionID,
-		&cell.Evaluator.Target.Version, &evaluatorFunctionID, &evaluatorSignature,
+		&cell.Evaluator.Target.Version, &evaluatorFunctionID, &evaluatorNodeParameters,
+		&evaluatorSignature,
 		&evaluatorTargetConfigHash, &evaluatorDevValidationProvenanceHash,
 		&cell.Evaluator.MeasurementsPort, new(int64), &role,
 		&cell.Budget.PerCellUSD, &cell.Budget.TotalUSD, &cell.Budget.MaxTokensPerCell)
@@ -2285,6 +2338,11 @@ func loadEvaluationCell(ctx context.Context, queryer agentExperimentQueryer, cel
 	cell.Evaluator.Target.Kind = experiment.TargetKind(evaluatorKind)
 	if evaluatorFunctionID.Valid {
 		cell.Evaluator.Target.FunctionID = evaluatorFunctionID.String
+	}
+	if err := scanExperimentNodeParameters(
+		evaluatorNodeParameters, &cell.Evaluator.Target,
+	); err != nil {
+		return experiment.EvaluationCell{}, err
 	}
 	if evaluatorTargetConfigHash.Valid {
 		cell.Evaluator.TargetConfigHash = evaluatorTargetConfigHash.String
@@ -2632,6 +2690,13 @@ func loadAuthoritativeExperimentTarget(
 	queryer agentExperimentQueryer,
 	target experiment.Target,
 ) (workflow.FunctionTarget, error) {
+	// A node target binds a node definition, which the workflow branch below
+	// cannot load: it filters definition_kind = 'workflow' and compiles a
+	// workflow manifest. Branching here rather than widening that filter keeps
+	// a node from ever being resolved through the workflow compiler.
+	if target.Kind == experiment.TargetNode {
+		return loadAuthoritativeExperimentNodeTarget(ctx, queryer, target)
+	}
 	var definition workflow.Definition
 	var rawYAML string
 	var manifestJSON sql.NullString
@@ -2689,6 +2754,117 @@ func loadAuthoritativeExperimentTarget(
 	return resolved, nil
 }
 
+// loadAuthoritativeExperimentNodeTarget freezes a reusable node target from
+// durable authority. It deliberately mirrors workflowrun's
+// executableNodeDefinition rather than sharing it: that function lives behind
+// the binder's node store, and the freeze must read the same row the runner
+// will later bind, in this transaction, under this queryer.
+//
+// The instantiated function -- and therefore the target config hash frozen
+// from it -- depends on target.NodeParameters, which is exactly why two node
+// variants that differ only in a parameter are distinguishable at all.
+func loadAuthoritativeExperimentNodeTarget(
+	ctx context.Context,
+	queryer agentExperimentQueryer,
+	target experiment.Target,
+) (workflow.FunctionTarget, error) {
+	var (
+		id                              int
+		name                            string
+		version                         int
+		contentHash                     string
+		schemaVersion, signatureVersion int
+		manifestJSON                    sql.NullString
+		compiledJSON                    sql.NullString
+	)
+	err := queryer.QueryRowContext(ctx, `
+		SELECT id, name, version, content_hash, schema_version, signature_version,
+		       source_manifest, compiled_definition
+		FROM agent_workflow_definitions
+		WHERE id = $1 AND definition_kind = 'node'
+	`, target.DefinitionID).Scan(&id, &name, &version, &contentHash,
+		&schemaVersion, &signatureVersion, &manifestJSON, &compiledJSON)
+	if errors.Is(err, sql.ErrNoRows) {
+		return workflow.FunctionTarget{}, fmt.Errorf("node definition_id %d does not exist", target.DefinitionID)
+	}
+	if err != nil {
+		return workflow.FunctionTarget{}, err
+	}
+	if name != target.WorkflowName || version != target.Version {
+		return workflow.FunctionTarget{}, fmt.Errorf(
+			"node definition_id %d is %s/v%d, not %s/v%d",
+			target.DefinitionID, name, version, target.WorkflowName, target.Version,
+		)
+	}
+	if schemaVersion != nodeRuntimeSchemaVersion {
+		return workflow.FunctionTarget{}, fmt.Errorf(
+			"node definition_id %d is schema_version %d, not %d",
+			target.DefinitionID, schemaVersion, nodeRuntimeSchemaVersion,
+		)
+	}
+	// A node with no persisted compiled form cannot be frozen. Recompiling it
+	// here would silently substitute today's broker authority for the one it
+	// was imported under, which is the opposite of a frozen identity.
+	if !compiledJSON.Valid || !manifestJSON.Valid {
+		return workflow.FunctionTarget{}, fmt.Errorf(
+			"node definition_id %d has no persisted compiled source to freeze", target.DefinitionID,
+		)
+	}
+	var source workflow.Manifest
+	if err := json.Unmarshal([]byte(manifestJSON.String), &source); err != nil {
+		return workflow.FunctionTarget{}, fmt.Errorf(
+			"node definition_id %d has an undecodable source manifest: %w", target.DefinitionID, err,
+		)
+	}
+	compiled, err := workflow.ParseCompiledNodeDefinition([]byte(compiledJSON.String))
+	if err != nil {
+		return workflow.FunctionTarget{}, fmt.Errorf(
+			"node definition_id %d has an invalid compiled definition: %w", target.DefinitionID, err,
+		)
+	}
+	if compiled.Name != name || source.Hash() != contentHash ||
+		signatureVersion != compiled.Function.SignatureVersion {
+		return workflow.FunctionTarget{}, fmt.Errorf(
+			"stored node metadata for definition_id %d does not match its compiled source",
+			target.DefinitionID,
+		)
+	}
+	function, err := compiled.Instantiate(target.NodeParameters)
+	if err != nil {
+		return workflow.FunctionTarget{}, fmt.Errorf(
+			"node definition_id %d cannot be instantiated with the requested parameters: %w",
+			target.DefinitionID, err,
+		)
+	}
+	if function.SignatureVersion != signatureVersion {
+		return workflow.FunctionTarget{}, fmt.Errorf(
+			"instantiated node definition_id %d does not match its durable signature version",
+			target.DefinitionID,
+		)
+	}
+	resolved, err := workflow.FullFunctionTarget(workflow.Definition{
+		ID: id, Name: name, Version: version, ContentHash: contentHash,
+		SchemaVersion: schemaVersion, SignatureVersion: signatureVersion,
+		Compiled: workflow.CompiledDefinition{
+			SchemaVersion: schemaVersion, Name: name, Function: function,
+		},
+	})
+	if err != nil {
+		return workflow.FunctionTarget{}, err
+	}
+	// A node instantiates as the whole executable surface of its definition,
+	// so it renders through the same full-workflow path a workflow target does
+	// and carries no function ID. The kinds are checked against that mapping
+	// rather than compared as strings, which would reject every node target.
+	if resolved.WorkflowDefinitionID != int(target.DefinitionID) ||
+		resolved.WorkflowName != target.WorkflowName || resolved.WorkflowVersion != target.Version ||
+		resolved.FunctionID != "" || target.FunctionID != "" ||
+		resolved.Kind != workflow.TargetWorkflow {
+		return workflow.FunctionTarget{}, fmt.Errorf("resolved node target identity does not match the requested immutable identity")
+	}
+	return resolved, nil
+}
+
 func validateStoredExperimentFixturesAvailable(
 	ctx context.Context,
 	queryer agentExperimentQueryer,
@@ -2722,6 +2898,39 @@ func marshalExperimentSignatures(definition experiment.Definition) ([]byte, []by
 	}
 	evaluator, err := json.Marshal(definition.Evaluator.Signature)
 	return candidate, evaluator, err
+}
+
+// marshalExperimentNodeParameters renders a target's frozen node parameters
+// for durable storage. The column is NOT NULL, so an absent map stores as the
+// empty object rather than SQL NULL: "this target declares no parameters" and
+// "this target's parameters were never written" must not share a durable
+// representation, because only the second is a bug and it is the one that
+// silently degrades an A/B into a comparison of two identical cells.
+func marshalExperimentNodeParameters(target experiment.Target) ([]byte, error) {
+	values := target.NodeParameters
+	if values == nil {
+		values = map[string]string{}
+	}
+	return json.Marshal(values)
+}
+
+// scanExperimentNodeParameters restores them onto a target read back from the
+// database. An empty object decodes to a nil map so that a round trip is
+// value-identical to a target that never carried parameters; nothing in the
+// experiment or binder contracts distinguishes nil from empty.
+func scanExperimentNodeParameters(raw []byte, target *experiment.Target) error {
+	if len(raw) == 0 {
+		return nil
+	}
+	var values map[string]string
+	if err := json.Unmarshal(raw, &values); err != nil {
+		return fmt.Errorf("db: stored experiment node parameters are not a string map: %w", err)
+	}
+	if len(values) == 0 {
+		return nil
+	}
+	target.NodeParameters = values
+	return nil
 }
 
 func nullableString(value string) any {

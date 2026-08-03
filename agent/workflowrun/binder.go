@@ -1429,13 +1429,36 @@ func validateAndClone(admission AdmissionContext, request BindRequest) (Admissio
 		return AdmissionContext{}, BindRequest{}, fmt.Errorf("%w: version must be positive", ErrInvalidRequest)
 	}
 	if request.DefinitionKind == workflow.DefinitionKindNode {
+		// Kept: a node's whole executable surface is one leaf step. There is
+		// no function to select between, so a function ID is meaningless for
+		// every caller, frozen or not.
+		if request.FunctionID != "" {
+			return AdmissionContext{}, BindRequest{}, fmt.Errorf("%w: node requests cannot select a workflow function", ErrInvalidRequest)
+		}
+		// Kept: a node has no live pointer, so an implicit version would bind
+		// whichever version happened to be newest at admission time.
 		if request.Version == nil {
 			return AdmissionContext{}, BindRequest{}, fmt.Errorf("%w: node version must be explicit", ErrInvalidRequest)
 		}
-		if request.FunctionID != "" || request.ExpectedWorkflowDefinitionID != 0 ||
-			request.ExpectedTargetConfigHash != "" || request.ExpectedDevValidationProvenanceHash != nil ||
-			request.ExperimentAdmission != nil {
-			return AdmissionContext{}, BindRequest{}, fmt.Errorf("%w: node requests cannot select workflow implementation", ErrInvalidRequest)
+		// Relaxed for one caller. An experiment cell binds a target the
+		// experiment froze at Start, and the freeze is what makes the graded
+		// A/B trustworthy: without pinning the definition and the rendered
+		// config, a node redefined mid-run would be compared against its own
+		// replacement. An ordinary node request has no frozen record to pin
+		// against, so these expectations stay rejected there -- accepting them
+		// would let a caller assert an identity nobody recorded.
+		if request.ExperimentAdmission == nil &&
+			(request.ExpectedWorkflowDefinitionID != 0 ||
+				request.ExpectedTargetConfigHash != "" ||
+				request.ExpectedDevValidationProvenanceHash != nil) {
+			return AdmissionContext{}, BindRequest{}, fmt.Errorf("%w: node requests cannot pin a frozen workflow identity outside an experiment", ErrInvalidRequest)
+		}
+		// Fail closed the other way too: an experiment node bind that lost its
+		// frozen coordinates must error rather than run unfrozen and be graded
+		// as if it had not.
+		if request.ExperimentAdmission != nil &&
+			(request.ExpectedWorkflowDefinitionID == 0 || request.ExpectedTargetConfigHash == "") {
+			return AdmissionContext{}, BindRequest{}, fmt.Errorf("%w: experiment node requests must carry their frozen definition ID and target config hash", ErrInvalidRequest)
 		}
 	}
 	if request.ExpectedWorkflowDefinitionID < 0 {

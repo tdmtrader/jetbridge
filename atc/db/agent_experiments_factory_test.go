@@ -2,9 +2,11 @@ package db_test
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -1723,5 +1725,289 @@ plan:
 		Expect(err).NotTo(HaveOccurred())
 		Expect(right).To(MatchJSON(left))
 		Expect(stored.CreatedAt).To(BeTemporally("<=", time.Now()))
+	})
+
+	Context("reusable node targets", func() {
+		var nodeDefinition *workflow.NodeDefinition
+
+		// insertKindRun is insertRun with the durable executable kind under the
+		// caller's control. The kind is the one frozen coordinate that a node
+		// run and a same-named workflow run need not otherwise differ on, so
+		// the association matchers can only be exercised by seeding a run whose
+		// kind disagrees with its cell.
+		insertKindRun := func(
+			kind workflow.DefinitionKind,
+			target experiment.Target,
+			originReference, targetConfigHash string,
+		) snapshot.WorkflowRunID {
+			runSequence++
+			var id snapshot.WorkflowRunID
+			Expect(dbConn.QueryRow(`
+				INSERT INTO agent_workflow_runs
+					(definition_kind, team_id, team_name, workflow_definition_id, workflow_name,
+					 workflow_version, schema_version, signature_version, definition_content_hash,
+					 idempotency_key, parameterized_config, parameterized_config_hash,
+					 origin_kind, origin_reference, created_by, status)
+				SELECT $1, $2, $3, definition.id, definition.name, definition.version,
+				       definition.schema_version, definition.signature_version,
+				       definition.content_hash, $5, '{}', $6, 'experiment', $7, 'alice', 'running'
+				FROM agent_workflow_definitions definition
+				WHERE definition.id = $4
+				RETURNING id
+			`, string(kind), defaultTeam.ID(), defaultTeam.Name(), target.DefinitionID,
+				fmt.Sprintf("experiment-node-%d-%d", time.Now().UnixNano(), runSequence),
+				targetConfigHash, originReference).Scan(&id)).To(Succeed())
+			return id
+		}
+
+		nodeSignature := func() workflow.PublicSignature {
+			return workflow.PublicSignature{
+				Inputs:  []workflow.SignaturePort{{Name: "repo", Type: "repository/v1"}},
+				Outputs: []workflow.SignaturePort{{Name: "review", Type: "review/v1"}},
+			}
+		}
+
+		nodeTarget := func(parameters map[string]string) experiment.Target {
+			return experiment.Target{
+				Kind: experiment.TargetNode, WorkflowName: nodeDefinition.Name,
+				DefinitionID: int64(nodeDefinition.ID), Version: nodeDefinition.Version,
+				NodeParameters: parameters,
+			}
+		}
+
+		nodeExperimentDefinition := func(input snapshot.SnapshotID) experiment.Definition {
+			signature := nodeSignature()
+			hash, err := experiment.HashSignature(signature)
+			Expect(err).NotTo(HaveOccurred())
+			return experiment.Definition{
+				Name: "graded-node-prompts", State: experiment.StateDraft, Signature: signature,
+				Variants: []experiment.Variant{
+					{
+						Label: "control", Control: true, SignatureHash: hash,
+						Target: nodeTarget(map[string]string{"MINIMUM_SEVERITY": "medium"}),
+					},
+					{
+						Label: "candidate", SignatureHash: hash,
+						Target: nodeTarget(map[string]string{"MINIMUM_SEVERITY": "high"}),
+					},
+				},
+				Fixtures: []experiment.Fixture{{
+					Label: "small", Role: experiment.FixtureNormal,
+					Inputs: map[string]snapshot.SnapshotID{"repo": input},
+				}},
+				Evaluator: experiment.Evaluator{
+					Target: experiment.Target{
+						Kind: experiment.TargetWorkflow, WorkflowName: evaluatorDefinition.Name,
+						DefinitionID: int64(evaluatorDefinition.ID), Version: evaluatorDefinition.Version,
+					},
+					Signature: workflow.PublicSignature{
+						Inputs: []workflow.SignaturePort{
+							{Name: "candidate", Type: "review/v1"},
+							{Name: "repo", Type: "repository/v1"},
+						},
+						Outputs: []workflow.SignaturePort{{Name: "measurements", Type: "measurements/v1"}},
+					},
+					Mappings: []experiment.EvaluatorMapping{
+						{EvaluatorPort: "candidate", SourceDirection: experiment.SourceCandidateOutput, SourcePort: "review"},
+						{EvaluatorPort: "repo", SourceDirection: experiment.SourceFixtureInput, SourcePort: "repo"},
+					},
+					MeasurementsPort: "measurements",
+				},
+				Repetitions: 1,
+			}
+		}
+
+		BeforeEach(func() {
+			var err error
+			nodeDefinition, err = db.NewAgentNodesFactory(dbConn).ImportManifest(
+				"graded-review",
+				workflow.Manifest{workflow.NodeFileName: `schema_version: 1
+name: graded-review
+description: graded reusable review node
+inputs:
+  - {name: repo, type: repository/v1}
+outputs:
+  - {name: review, type: review/v1}
+parameters:
+  - {name: MINIMUM_SEVERITY, default: medium}
+step:
+  agent: review
+  prompt: Review the immutable repository snapshot.
+`},
+				"alice",
+			)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("round-trips a node variant with its frozen parameters intact", func() {
+			value := nodeExperimentDefinition(fixtureSnapshot)
+			created, err := factory.Create(ctx, defaultTeam.ID(), defaultTeam.Name(), "alice", value)
+			Expect(err).NotTo(HaveOccurred())
+
+			stored, found, err := factory.Get(ctx, defaultTeam.ID(), created.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(stored.Definition.Variants).To(HaveLen(2))
+			Expect(stored.Definition.Variants[0].Target.Kind).To(Equal(experiment.TargetNode))
+			Expect(stored.Definition.Variants[0].Target.NodeParameters).To(
+				Equal(map[string]string{"MINIMUM_SEVERITY": "medium"}))
+			Expect(stored.Definition.Variants[1].Target.NodeParameters).To(
+				Equal(map[string]string{"MINIMUM_SEVERITY": "high"}))
+			// Nothing is dropped on the way through the durable row: the whole
+			// semantic definition survives byte-for-byte.
+			left, err := json.Marshal(value)
+			Expect(err).NotTo(HaveOccurred())
+			right, err := json.Marshal(stored.Definition)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(right).To(MatchJSON(left))
+		})
+
+		It("keeps node parameters off a workflow variant", func() {
+			value := nodeExperimentDefinition(fixtureSnapshot)
+			value.Variants[1].Target = experiment.Target{
+				Kind: experiment.TargetWorkflow, WorkflowName: nodeDefinition.Name,
+				DefinitionID: int64(nodeDefinition.ID), Version: nodeDefinition.Version,
+				NodeParameters: map[string]string{"MINIMUM_SEVERITY": "high"},
+			}
+			_, err := factory.Create(ctx, defaultTeam.ID(), defaultTeam.Name(), "alice", value)
+			Expect(errors.Is(err, experiment.ErrInvalidDefinition)).To(BeTrue())
+			Expect(err.Error()).To(ContainSubstring("only a node target may set node_parameters"))
+		})
+
+		It("freezes a distinct authoritative target per node parameter set", func() {
+			created, err := factory.Create(
+				ctx, defaultTeam.ID(), defaultTeam.Name(), "alice", nodeExperimentDefinition(fixtureSnapshot))
+			Expect(err).NotTo(HaveOccurred())
+
+			started, err := factory.Start(ctx, defaultTeam.ID(), created.ID, created.Revision, "alice")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(started.Definition.State).To(Equal(experiment.StateRunning))
+
+			var hashes []string
+			rows, err := dbConn.Query(`
+				SELECT target_config_hash FROM agent_experiment_variants
+				WHERE experiment_id = $1 ORDER BY id
+			`, int64(created.ID))
+			Expect(err).NotTo(HaveOccurred())
+			defer rows.Close()
+			for rows.Next() {
+				var hash sql.NullString
+				Expect(rows.Scan(&hash)).To(Succeed())
+				Expect(hash.Valid).To(BeTrue(), "a started node variant must be frozen")
+				hashes = append(hashes, hash.String)
+			}
+			Expect(hashes).To(HaveLen(2))
+			// The parameter is the independent variable: if it did not reach
+			// the frozen render, both cells would grade the same target.
+			Expect(hashes[0]).NotTo(Equal(hashes[1]))
+		})
+
+		It("refuses to freeze a node target whose durable identity does not match", func() {
+			value := nodeExperimentDefinition(fixtureSnapshot)
+			value.Variants[1].Target.Version = nodeDefinition.Version + 1
+			_, err := factory.Create(ctx, defaultTeam.ID(), defaultTeam.Name(), "alice", value)
+			Expect(errors.Is(err, experiment.ErrInvalidDefinition)).To(BeTrue())
+			Expect(err.Error()).To(ContainSubstring("not graded-review/v2"))
+
+			value = nodeExperimentDefinition(fixtureSnapshot)
+			value.Variants[1].Target.NodeParameters = map[string]string{"UNDECLARED": "1"}
+			_, err = factory.Create(ctx, defaultTeam.ID(), defaultTeam.Name(), "alice", value)
+			Expect(errors.Is(err, experiment.ErrInvalidDefinition)).To(BeTrue())
+			Expect(err.Error()).To(ContainSubstring("unknown parameter"))
+
+			// A workflow target may not borrow a node's definition ID either:
+			// the workflow branch filters definition_kind and finds nothing.
+			value = nodeExperimentDefinition(fixtureSnapshot)
+			value.Variants[1].Target = experiment.Target{
+				Kind: experiment.TargetWorkflow, WorkflowName: nodeDefinition.Name,
+				DefinitionID: int64(nodeDefinition.ID), Version: nodeDefinition.Version,
+			}
+			_, err = factory.Create(ctx, defaultTeam.ID(), defaultTeam.Name(), "alice", value)
+			Expect(errors.Is(err, experiment.ErrInvalidDefinition)).To(BeTrue())
+			Expect(err.Error()).To(ContainSubstring("does not exist"))
+		})
+
+		It("carries the frozen node parameters to the dispatched candidate cell", func() {
+			created, err := factory.Create(
+				ctx, defaultTeam.ID(), defaultTeam.Name(), "alice", nodeExperimentDefinition(fixtureSnapshot))
+			Expect(err).NotTo(HaveOccurred())
+			_, err = factory.Start(ctx, defaultTeam.ID(), created.ID, created.Revision, "alice")
+			Expect(err).NotTo(HaveOccurred())
+
+			claimed, err := factory.ClaimCandidateCells(ctx, 10)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(claimed).To(HaveLen(2))
+			observed := make(map[string]string, len(claimed))
+			for _, cell := range claimed {
+				Expect(cell.Target.Kind).To(Equal(experiment.TargetNode))
+				Expect(cell.Target.DefinitionKind()).To(Equal(workflow.DefinitionKindNode))
+				Expect(cell.ResourceSourceAdmissionID).To(BeNil(),
+					"a node declares no resource sources, so an experiment node bind is never blocked by the node source rule")
+				observed[cell.TargetConfigHash] = cell.Target.NodeParameters["MINIMUM_SEVERITY"]
+			}
+			Expect(observed).To(HaveLen(2))
+			values := []string{}
+			for _, value := range observed {
+				values = append(values, value)
+			}
+			sort.Strings(values)
+			Expect(values).To(Equal([]string{"high", "medium"}))
+		})
+
+		It("refuses to associate a workflow run with a node cell", func() {
+			created, err := factory.Create(
+				ctx, defaultTeam.ID(), defaultTeam.Name(), "alice", nodeExperimentDefinition(fixtureSnapshot))
+			Expect(err).NotTo(HaveOccurred())
+			started, err := factory.Start(ctx, defaultTeam.ID(), created.ID, created.Revision, "alice")
+			Expect(err).NotTo(HaveOccurred())
+			claimed, err := factory.ClaimCandidateCells(ctx, 1)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(claimed).To(HaveLen(1))
+			cell := claimed[0]
+
+			origin := fmt.Sprintf("experiment:%s:cell:%s", started.ID.String(), cell.ID.String())
+			// Identical on every other compared coordinate -- team, definition
+			// ID, name, version, function ID, config hash, provenance, origin.
+			// Only the durable executable kind differs.
+			workflowKindRun := insertKindRun(
+				workflow.DefinitionKindWorkflow, cell.Target, origin, cell.TargetConfigHash)
+			Expect(factory.RecordCandidateRun(ctx, cell.ID, workflowKindRun)).To(BeFalse())
+
+			nodeKindRun := insertKindRun(
+				workflow.DefinitionKindNode, cell.Target, origin, cell.TargetConfigHash)
+			Expect(factory.RecordCandidateRun(ctx, cell.ID, nodeKindRun)).To(BeTrue())
+		})
+
+		It("refuses to associate a node run with a workflow evaluator cell", func() {
+			created, err := factory.Create(
+				ctx, defaultTeam.ID(), defaultTeam.Name(), "alice", nodeExperimentDefinition(fixtureSnapshot))
+			Expect(err).NotTo(HaveOccurred())
+			started, err := factory.Start(ctx, defaultTeam.ID(), created.ID, created.Revision, "alice")
+			Expect(err).NotTo(HaveOccurred())
+			claimed, err := factory.ClaimCandidateCells(ctx, 1)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(claimed).To(HaveLen(1))
+			cell := claimed[0]
+			origin := fmt.Sprintf("experiment:%s:cell:%s", started.ID.String(), cell.ID.String())
+			Expect(factory.RecordCandidateRun(ctx, cell.ID, insertKindRun(
+				workflow.DefinitionKindNode, cell.Target, origin, cell.TargetConfigHash))).To(BeTrue())
+
+			evaluations, err := factory.ClaimEvaluationCells(ctx, 10)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(evaluations).To(HaveLen(1))
+			evaluation := evaluations[0]
+			Expect(evaluation.Evaluator.Target.Kind).To(Equal(experiment.TargetWorkflow))
+
+			evaluatorOrigin := origin + ":evaluator"
+			nodeKindRun := insertKindRun(
+				workflow.DefinitionKindNode, evaluation.Evaluator.Target,
+				evaluatorOrigin, evaluation.Evaluator.TargetConfigHash)
+			Expect(factory.RecordEvaluatorRun(ctx, evaluation.ID, nodeKindRun)).To(BeFalse())
+
+			workflowKindRun := insertKindRun(
+				workflow.DefinitionKindWorkflow, evaluation.Evaluator.Target,
+				evaluatorOrigin, evaluation.Evaluator.TargetConfigHash)
+			Expect(factory.RecordEvaluatorRun(ctx, evaluation.ID, workflowKindRun)).To(BeTrue())
+		})
 	})
 })
