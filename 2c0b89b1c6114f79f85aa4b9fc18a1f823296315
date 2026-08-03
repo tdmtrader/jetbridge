@@ -1,0 +1,17 @@
+## Ship Summary
+
+Message: fix(agent): bind restore receipts and recover projections
+
+Files Changed: 16
+
+Timestamp: 2026-08-03T08:50:23Z
+
+Key Changes:
+
+- Bind checkpoint readiness to a validated request and Pod UID, quarantine poisoned partial state, and replay crash-safe restores
+
+- Scope workflow callbacks by durable workflow/run identity and retry stale terminal projections
+
+- Package and validate the Windows CLI for RC and stable releases
+
+- Prevent the exact findings-only document from triggering a release and stamp downstream JetBridge versions
