@@ -234,6 +234,115 @@ var _ = Describe("Worker", func() {
 				Expect(found).To(BeFalse())
 			})
 		})
+
+		// fly intercept -j my-pipeline/unit-test: the DB handle is an opaque
+		// UUID, but the pod the step created is named from its metadata. The
+		// looked-up Container has to resolve to that pod, not to the handle.
+		Context("when the pod was named from build-step metadata", func() {
+			const (
+				buildStepHandle  = "550e8400-e29b-41d4-a716-446655440000"
+				buildStepPodName = "my-pipeline-unit-test-b42-task-550e8400"
+			)
+
+			var (
+				interceptExecutor  *fakeExecExecutor
+				interceptWorker    *jetbridge.Worker
+				interceptContainer runtime.Container
+			)
+
+			BeforeEach(func() {
+				metadata := db.ContainerMetadata{
+					Type:         db.ContainerTypeTask,
+					PipelineName: "my-pipeline",
+					JobName:      "unit-test",
+					BuildName:    "42",
+					StepName:     "unit-test",
+					BuildID:      653430,
+				}
+
+				By("sanity-checking that the handle is not the pod name")
+				Expect(jetbridge.GeneratePodName(metadata, buildStepHandle)).To(Equal(buildStepPodName))
+				Expect(buildStepPodName).ToNot(Equal(buildStepHandle))
+
+				pod := &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      buildStepPodName,
+						Namespace: "test-namespace",
+						Labels: map[string]string{
+							"concourse.ci/worker": "k8s-worker-1",
+							"concourse.ci/handle": buildStepHandle,
+						},
+					},
+					Status: corev1.PodStatus{Phase: corev1.PodRunning},
+				}
+				_, err := fakeClientset.CoreV1().Pods("test-namespace").Create(ctx, pod, metav1.CreateOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
+				fakeCreatedContainer := new(dbfakes.FakeCreatedContainer)
+				fakeCreatedContainer.HandleReturns(buildStepHandle)
+				fakeCreatedContainer.MetadataReturns(metadata)
+				fakeDBWorker.FindContainerReturns(nil, fakeCreatedContainer, nil)
+
+				interceptExecutor = &fakeExecExecutor{}
+				interceptWorker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+				interceptWorker.SetExecutor(interceptExecutor)
+
+				var found bool
+				interceptContainer, found, err = interceptWorker.LookupContainer(ctx, buildStepHandle)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(found).To(BeTrue())
+			})
+
+			It("execs into the pod the step actually created, not the raw handle", func() {
+				process, err := interceptContainer.Run(ctx, runtime.ProcessSpec{
+					Path: "/bin/sh",
+				}, runtime.ProcessIO{})
+				Expect(err).ToNot(HaveOccurred())
+
+				result, err := process.Wait(ctx)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(result.ExitStatus).To(Equal(0))
+
+				Expect(interceptExecutor.execCalls).ToNot(BeEmpty())
+				Expect(interceptExecutor.execCalls[0].podName).To(Equal(buildStepPodName))
+
+				By("not creating a replacement pod named after the handle")
+				pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+				Expect(err).ToNot(HaveOccurred())
+				Expect(pods.Items).To(HaveLen(1))
+				Expect(pods.Items[0].Name).To(Equal(buildStepPodName))
+			})
+
+			It("refuses to fabricate a pod when the step's pod is gone", func() {
+				err := fakeClientset.CoreV1().Pods("test-namespace").Delete(ctx, buildStepPodName, metav1.DeleteOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
+				_, err = interceptContainer.Run(ctx, runtime.ProcessSpec{Path: "/bin/sh"}, runtime.ProcessIO{})
+				Expect(err).To(MatchError(ContainSubstring("has no pod to intercept")))
+
+				By("not leaving a pod behind")
+				pods, listErr := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+				Expect(listErr).ToNot(HaveOccurred())
+				Expect(pods.Items).To(BeEmpty())
+			})
+
+			It("refuses to replace a pod that has already exited", func() {
+				pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, buildStepPodName, metav1.GetOptions{})
+				Expect(err).ToNot(HaveOccurred())
+				pod.Status.Phase = corev1.PodSucceeded
+				pod.Annotations = map[string]string{"concourse.ci/exit-status": "0"}
+				_, err = fakeClientset.CoreV1().Pods("test-namespace").Update(ctx, pod, metav1.UpdateOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
+				_, err = interceptContainer.Run(ctx, runtime.ProcessSpec{Path: "/bin/sh"}, runtime.ProcessIO{})
+				Expect(err).To(MatchError(ContainSubstring("already exited")))
+
+				By("leaving the completed pod (and its exit-status annotation) intact")
+				survivor, getErr := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, buildStepPodName, metav1.GetOptions{})
+				Expect(getErr).ToNot(HaveOccurred())
+				Expect(survivor.Annotations).To(HaveKeyWithValue("concourse.ci/exit-status", "0"))
+			})
+		})
 	})
 
 	Describe("CreateVolumeForArtifact", func() {

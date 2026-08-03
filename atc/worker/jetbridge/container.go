@@ -87,6 +87,10 @@ type Container struct {
 	// in the DB (crash-recovery path). In DaemonSet mode this means the
 	// hostPath directory may contain stale data and needs cleanup.
 	reused bool
+	// lookedUp is true when the Container was built by LookupContainer
+	// (fly hijack/intercept). Such a Container has no ContainerSpec — it can
+	// only attach to a pod some step already created, never build one.
+	lookedUp bool
 	// privateMountSecretNames are allocated afresh for each new Pod. They are
 	// deliberately retained only long enough to put the exact names in that
 	// Pod's spec. Trusted, immutable Secrets are created before that Pod is
@@ -157,7 +161,7 @@ func (c *Container) Run(ctx context.Context, spec runtime.ProcessSpec, io runtim
 		"namespace": c.config.Namespace,
 		"exec-mode": fmt.Sprintf("%t", execMode),
 		"build_id":  strconv.Itoa(c.metadata.BuildID),
-		"pod_name":  c.handle,
+		"pod_name":  c.podName,
 	})
 	var err error
 	defer func() { tracing.End(span, err) }()
@@ -185,6 +189,21 @@ func (c *Container) Run(ctx context.Context, spec runtime.ProcessSpec, io runtim
 		podName := c.podName
 		existingPod, getErr := c.clientset.CoreV1().Pods(c.config.Namespace).Get(ctx, c.podName, metav1.GetOptions{})
 		needsCreate := getErr != nil // pod doesn't exist
+
+		// A looked-up Container (fly hijack/intercept) carries no
+		// ContainerSpec, so it must never fabricate or replace a pod:
+		// building from the empty spec fails with a misleading "empty image
+		// for resource type (unknown)" error, and replacing a completed pod
+		// would destroy the exit-status annotation a restarted web needs to
+		// resume the step. Say plainly that there is nothing to intercept.
+		if c.lookedUp {
+			if needsCreate {
+				return nil, fmt.Errorf("container %q has no pod to intercept: pod %q does not exist", c.handle, c.podName)
+			}
+			if existingPod.Status.Phase == corev1.PodSucceeded || existingPod.Status.Phase == corev1.PodFailed {
+				return nil, fmt.Errorf("container %q has no pod to intercept: pod %q already exited (%s)", c.handle, c.podName, existingPod.Status.Phase)
+			}
+		}
 
 		if getErr == nil && (existingPod.Status.Phase == corev1.PodSucceeded || existingPod.Status.Phase == corev1.PodFailed) {
 			if c.containerSpec.CheckpointRestore != nil {
@@ -216,6 +235,9 @@ func (c *Container) Run(ctx context.Context, spec runtime.ProcessSpec, io runtim
 
 	// Fallback direct mode: only used when no executor is configured
 	// (e.g. tests that don't set up SPDY). Bakes command into Pod spec.
+	if c.lookedUp {
+		return nil, fmt.Errorf("container %q cannot be intercepted: worker %q has no exec transport configured", c.handle, c.workerName)
+	}
 	var pod *corev1.Pod
 	pod, err = c.createPod(ctx, spec)
 	if err != nil {

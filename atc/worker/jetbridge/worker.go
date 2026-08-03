@@ -274,7 +274,17 @@ func (w *Worker) LookupContainer(ctx context.Context, handle string) (runtime.Co
 		return nil, false, nil
 	}
 
-	return newContainer(handle, db.ContainerMetadata{}, runtime.ContainerSpec{}, dbContainer, w.clientset, w.config, w.Name(), w.executor, nil, w.storageBackend, false), true, nil
+	// The DB row carries the metadata the step was created with, and
+	// GeneratePodName is a pure function of that metadata plus the handle.
+	// Passing it through is what makes the looked-up Container point at the
+	// pod the step actually created (<pipeline>-<job>-b<n>-<type>-<suffix>)
+	// rather than the raw handle, which is only ever a real pod name when the
+	// metadata was too sparse to generate a readable one.
+	container := newContainer(handle, dbContainer.Metadata(), runtime.ContainerSpec{}, dbContainer, w.clientset, w.config, w.Name(), w.executor, nil, w.storageBackend, false)
+	// There is no ContainerSpec behind a lookup, so this Container must never
+	// create or replace a pod — it exists only to attach to one.
+	container.lookedUp = true
+	return container, true, nil
 }
 
 func (w *Worker) LookupVolume(ctx context.Context, handle string) (runtime.Volume, bool, error) {
