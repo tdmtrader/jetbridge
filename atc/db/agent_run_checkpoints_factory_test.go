@@ -195,7 +195,15 @@ var _ = Describe("AgentRunCheckpointsFactory", func() {
 			SELECT EXTRACT(EPOCH FROM (upload_expires_at - created_at))
 			FROM agent_checkpoint_objects WHERE id = $1
 		`, ticket.ObjectID).Scan(&uploadTTLSeconds)).To(Succeed())
-		Expect(uploadTTLSeconds).To(BeNumerically("~", time.Hour.Seconds(), 0.001),
+		// The expiry is one hour from clock_timestamp(), which advances during
+		// the transaction, while created_at defaults to now(), which is fixed at
+		// transaction start. The difference is therefore an hour plus however
+		// long this transaction had already been running — never less, and never
+		// more than by that elapsed time. A caller-supplied window would miss by
+		// hours, not by the milliseconds a loaded machine adds here.
+		Expect(uploadTTLSeconds).To(BeNumerically(">=", time.Hour.Seconds()),
+			"the upload window is measured from database time, not caller time")
+		Expect(uploadTTLSeconds).To(BeNumerically("<", (time.Hour + time.Minute).Seconds()),
 			"the caller cannot lengthen the upload authority window")
 	})
 
