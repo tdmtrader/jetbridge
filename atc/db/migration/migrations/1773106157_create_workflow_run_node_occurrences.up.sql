@@ -63,9 +63,22 @@ CREATE INDEX agent_workflow_run_node_occurrences_run
 -- A frozen occurrence is immutable history. Correcting one means the
 -- derivation was wrong, which is a code fix plus a deliberate re-freeze, never
 -- an in-place UPDATE.
+--
+-- The one exception is wait_id's own ON DELETE SET NULL. PostgreSQL implements
+-- that referential action as an internal UPDATE, and a BEFORE ROW UPDATE
+-- trigger fires for it, so an unconditional refusal makes the declared action
+-- unexecutable: deleting a referenced agent_workflow_waits row aborts with
+-- "agent workflow run node occurrences are immutable once frozen". Permit
+-- exactly that clearing — the live reference goes, every durable fact stays —
+-- and nothing else. This is the same carve-out
+-- enforce_agent_workflow_run_ticket_immutability makes for the same reason.
 CREATE FUNCTION enforce_agent_workflow_run_node_occurrence_immutability()
 RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
+    IF OLD.wait_id IS NOT NULL AND NEW.wait_id IS NULL
+       AND (to_jsonb(NEW) - 'wait_id') = (to_jsonb(OLD) - 'wait_id') THEN
+        RETURN NEW;
+    END IF;
     RAISE EXCEPTION 'agent workflow run node occurrences are immutable once frozen';
 END;
 $$;

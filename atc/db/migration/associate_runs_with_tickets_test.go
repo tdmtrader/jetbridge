@@ -3,6 +3,7 @@ package migration_test
 import (
 	"database/sql"
 	"fmt"
+	"strconv"
 
 	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc/db/lock"
@@ -52,7 +53,7 @@ var _ = Describe("associate runs with tickets migration", func() {
 
 	// seedRun inserts a workflow run through raw SQL so the spec exercises the
 	// schema rather than the factory that reads it.
-	seedRun := func(key string) int64 {
+	seedRunForTicket := func(key string, ticketID int64) int64 {
 		var teamID int
 		Expect(database.QueryRow(
 			`INSERT INTO teams (name) VALUES ($1) RETURNING id`, "team-"+key).Scan(&teamID)).To(Succeed())
@@ -71,12 +72,15 @@ var _ = Describe("associate runs with tickets migration", func() {
 				 idempotency_key, parameterized_config, parameterized_config_hash,
 				 origin_kind, origin_reference, created_by, status)
 			VALUES ('workflow', $1, $2, $3, $4, 1, 3, 1, $5, $6, '{}', $5,
-			        'ticket', '1', 'alice', 'admitting')
+			        'ticket', $7, 'alice', 'admitting')
 			RETURNING id
 		`, teamID, "team-"+key, definitionID, "wf-"+key,
-			fmt.Sprintf("%064d", len(key)), "idem-"+key).Scan(&runID)).To(Succeed())
+			fmt.Sprintf("%064d", len(key)), "idem-"+key,
+			strconv.FormatInt(ticketID, 10)).Scan(&runID)).To(Succeed())
 		return runID
 	}
+
+	seedRun := func(key string) int64 { return seedRunForTicket(key, 1) }
 
 	seedTicket := func(externalRef string) int64 {
 		var id int64
@@ -132,8 +136,68 @@ var _ = Describe("associate runs with tickets migration", func() {
 		Expect(reference).To(Equal(fmt.Sprintf("ticket-%d", ticketID)))
 	})
 
+	// The dropped column named at most ONE run, and the pre-migration
+	// Transition code cleared it on every unqueue and requeue — so on a real
+	// database it holds the CURRENT dispatch's run at best, and NULL for any
+	// ticket sitting in draft or queued. Backfilling from it alone orphaned
+	// every earlier dispatch of every requeued ticket, permanently: the
+	// immutability trigger below forbids adoption after the fact. Dispatch
+	// stamps origin_kind 'ticket' plus the ticket ID on every one of those runs,
+	// so the evidence to adopt them exactly is right there in the same table.
+	It("adopts every earlier run of a requeued ticket from its origin evidence", func() {
+		ticketID := seedTicket("PROJ-22")
+		first := seedRunForTicket("requeue-first", ticketID)
+		second := seedRunForTicket("requeue-second", ticketID)
+		// The ticket is queued for a third dispatch, so the dropped column is
+		// NULL and names nothing at all.
+
+		Expect(migrator.Migrate(nil, nil, targetVersion)).To(Succeed())
+
+		for _, runID := range []int64{first, second} {
+			var adopted sql.NullInt64
+			var reference string
+			Expect(database.QueryRow(
+				`SELECT ticket_id, ticket_reference FROM agent_workflow_runs WHERE id = $1`, runID,
+			).Scan(&adopted, &reference)).To(Succeed())
+			Expect(adopted.Valid).To(BeTrue(), "run %d was orphaned", runID)
+			Expect(adopted.Int64).To(Equal(ticketID))
+			Expect(reference).To(Equal("PROJ-22"))
+		}
+	})
+
+	It("does not adopt a run whose ticket origin names a ticket that no longer exists", func() {
+		runID := seedRunForTicket("dangling", 4242)
+
+		Expect(migrator.Migrate(nil, nil, targetVersion)).To(Succeed())
+
+		var adopted sql.NullInt64
+		var reference string
+		Expect(database.QueryRow(
+			`SELECT ticket_id, ticket_reference FROM agent_workflow_runs WHERE id = $1`, runID,
+		).Scan(&adopted, &reference)).To(Succeed())
+		Expect(adopted.Valid).To(BeFalse())
+		Expect(reference).To(BeEmpty())
+	})
+
+	// The run list's only ticket search is `ticket_reference LIKE $1`, and
+	// PostgreSQL can turn a LIKE prefix into an index range scan only under a
+	// pattern-aware operator class or a C collation. The deployed cluster runs
+	// initdb with en_US.utf8, so the default class would leave this index dead
+	// for the one query it exists to serve.
+	It("indexes the ticket reference for the prefix search it was created for", func() {
+		Expect(migrator.Migrate(nil, nil, targetVersion)).To(Succeed())
+
+		var definition string
+		Expect(database.QueryRow(`
+			SELECT indexdef FROM pg_indexes
+			WHERE tablename = 'agent_workflow_runs'
+			  AND indexname = 'agent_workflow_runs_ticket_reference'
+		`).Scan(&definition)).To(Succeed())
+		Expect(definition).To(ContainSubstring("text_pattern_ops"))
+	})
+
 	It("leaves a run with no ticket unattached", func() {
-		runID := seedRun("standalone")
+		runID := seedRunForTicket("standalone", 4242)
 
 		Expect(migrator.Migrate(nil, nil, targetVersion)).To(Succeed())
 
