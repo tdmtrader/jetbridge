@@ -452,6 +452,18 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 		}
 	}
 
+	// 3b. Prove the model endpoint is reachable. A hermetic pod runs under a
+	// deny-all egress NetworkPolicy, and with networkPolicy.hermeticEgressTo
+	// unset the CLI's first call hung ~5 minutes and died with a bare client
+	// timeout that named neither the network nor the policy. Failing here
+	// takes seconds and says which egress rule is missing. Skipped behind a
+	// proxy, where a direct probe would prove nothing about the real path.
+	if !proxyConfigured(os.Environ()) {
+		if err := modelEgressPreflight(ctx, modelEndpointHostPort(os.Environ())); err != nil {
+			return finishBeforeModelPlatformError(events, cfg.FlightDir, cfg.StepName, start, err)
+		}
+	}
+
 	// 4. Invoke the claude CLI. stream-json emits the turn-by-turn NDJSON
 	// (system init, assistant tool_use, user tool_result, final result) that
 	// becomes flight/transcript.ndjson — the actual tool-call transcript.
