@@ -104,7 +104,7 @@ occurrencesForNode : RunGraph -> String -> List Occurrence
 occurrencesForNode runGraph nodeId =
     runGraph.occurrences
         |> List.filter (\occurrence -> occurrence.nodeId == nodeId)
-        |> List.sortBy .attempt
+        |> List.sortBy (\occurrence -> ( occurrence.retryAttempt, occurrence.attempt ))
 
 
 {-| This run's node state, in the shape the shared renderer already takes.
@@ -119,6 +119,7 @@ erase the recovery.
 it for the canvas: a live occurrence always asks for action, and a terminal
 failure asks unless something later in the same node's history resolved it.
 Within one run, "something later" is a success at the same node.
+
 -}
 nodeStateLookup : RunGraph -> (String -> AgentGraph.View.NodeState)
 nodeStateLookup runGraph =

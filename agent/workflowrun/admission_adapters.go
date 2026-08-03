@@ -198,27 +198,17 @@ func (a *PlatformCredentialAdmitter) AdmitModelCredential(ctx context.Context) e
 		return ErrModelCredentialCheckFailure
 	}
 
-	now := a.now()
-	for _, kind := range []string{credentials.KindAnthropicOAuth, credentials.KindAnthropicAPIKey} {
-		credential, found, err := a.vault.Resolve(userID, kind)
-		if err != nil {
-			return ErrModelCredentialCheckFailure
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if !found {
-			continue
-		}
-		if credential == nil || credential.UserID != userID || credential.Kind != kind {
-			return ErrModelCredentialCheckFailure
-		}
-		if credential.ExpiresAt > 0 && credential.ExpiresAt <= now.Unix() {
-			continue
-		}
-		return nil
+	_, found, err = credentials.ResolveUsableAnthropicCredential(a.vault, userID, a.now())
+	if err != nil {
+		return ErrModelCredentialCheckFailure
 	}
-	return ErrRunCredentialUnavailable
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !found {
+		return ErrRunCredentialUnavailable
+	}
+	return nil
 }
 
 var _ ModelCredentialAdmitter = (*PlatformCredentialAdmitter)(nil)

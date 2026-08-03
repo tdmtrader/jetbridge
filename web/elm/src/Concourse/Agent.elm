@@ -25,6 +25,8 @@ import Time
 type alias WorkflowSummary =
     { name : String
     , description : String
+    , annotation : String
+    , hidden : Bool
     , latestVersion : Int
     , schemaVersion : Int
     , signatureVersion : Int
@@ -208,6 +210,8 @@ decodeWorkflowSummary =
     Json.Decode.succeed WorkflowSummary
         |> andMap (defaultTo "" <| Json.Decode.field "name" Json.Decode.string)
         |> andMap (defaultTo "" <| Json.Decode.field "description" Json.Decode.string)
+        |> andMap (defaultTo "" <| Json.Decode.field "annotation" Json.Decode.string)
+        |> andMap (defaultTo False <| Json.Decode.field "hidden" Json.Decode.bool)
         |> andMap (defaultTo 0 <| Json.Decode.field "latest_version" Json.Decode.int)
         |> andMap (defaultTo 0 <| Json.Decode.field "schema_version" Json.Decode.int)
         |> andMap (defaultTo 0 <| Json.Decode.field "signature_version" Json.Decode.int)

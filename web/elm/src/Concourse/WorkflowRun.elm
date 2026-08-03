@@ -38,6 +38,8 @@ type alias Summary =
     , executionStatus : Maybe String
     , originKind : String
     , originReference : String
+    , ticketId : Maybe Int
+    , ticketReference : String
     , createdBy : String
     , retryOf : Maybe String
     , createdAt : String
@@ -162,6 +164,8 @@ decodeSummary =
         |> andMap (Json.Decode.maybe (Json.Decode.field "execution_status" Json.Decode.string))
         |> andMap (Json.Decode.field "origin_kind" Json.Decode.string)
         |> andMap (defaultTo "" (Json.Decode.field "origin_reference" Json.Decode.string))
+        |> andMap (Json.Decode.maybe (Json.Decode.field "ticket_id" Json.Decode.int))
+        |> andMap (defaultTo "" (Json.Decode.field "ticket_reference" Json.Decode.string))
         |> andMap (Json.Decode.field "created_by" Json.Decode.string)
         |> andMap (Snapshot.decodeOptionalIdField "retry_of_workflow_run_id")
         |> andMap (Json.Decode.field "created_at" Json.Decode.string)

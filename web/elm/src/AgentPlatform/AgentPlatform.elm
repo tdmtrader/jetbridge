@@ -839,6 +839,13 @@ workflowRow model w =
                 [ style "font-size" "12px", style "color" mutedColor ]
                 [ Html.text w.description ]
             , Html.div
+                [ class "agent-workflow-annotation"
+                , style "font-size" "12px"
+                , style "color" subtleColor
+                , style "font-style" "italic"
+                ]
+                [ Html.text w.annotation ]
+            , Html.div
                 [ class "agent-workflow-signature"
                 , style "font-size" "11px"
                 , style "font-family" "monospace"
@@ -911,6 +918,16 @@ workflowRow model w =
 workflowPills : Agent.WorkflowSummary -> List (Html Message)
 workflowPills w =
     let
+        deprecatedPill =
+            if w.hidden then
+                [ pill "agent-workflow-deprecated"
+                    { bg = "#5a3d24", fg = "#f0c078" }
+                    "deprecated"
+                ]
+
+            else
+                []
+
         livePill =
             if w.liveVersion > 0 then
                 [ pill "agent-workflow-live"
@@ -931,7 +948,7 @@ workflowPills w =
             else
                 []
     in
-    livePill ++ candidatePill
+    deprecatedPill ++ livePill ++ candidatePill
 
 
 liveVersionLine : Agent.WorkflowSummary -> Html Message

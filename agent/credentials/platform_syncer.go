@@ -3,6 +3,7 @@ package credentials
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"code.cloudfoundry.org/lager/v3"
 	corev1 "k8s.io/api/core/v1"
@@ -48,15 +49,9 @@ func (s *PlatformSecretSyncer) Run(ctx context.Context) error {
 		return nil
 	}
 
-	cred, found, err := s.backend.Resolve(userID, KindAnthropicOAuth)
+	cred, found, err := ResolveUsableAnthropicCredential(s.backend, userID, time.Now())
 	if err != nil {
 		return fmt.Errorf("resolving platform credential: %w", err)
-	}
-	if !found {
-		cred, found, err = s.backend.Resolve(userID, KindAnthropicAPIKey)
-		if err != nil {
-			return fmt.Errorf("resolving platform credential: %w", err)
-		}
 	}
 	if !found {
 		// Not an error: the platform credential is provisioned by an admin
@@ -116,7 +111,14 @@ func (s *PlatformSecretSyncer) Run(ctx context.Context) error {
 		existing.StringData[SecretKeyModelTokenKind] == cred.Kind {
 		return nil // fake-clientset path: StringData not converted
 	}
-	if _, err := s.client.CoreV1().Secrets(s.namespace).Update(ctx, secret, metav1.UpdateOptions{}); err != nil {
+	updated := existing.DeepCopy()
+	if updated.Labels == nil {
+		updated.Labels = map[string]string{}
+	}
+	updated.Labels["concourse/agent-platform-credential"] = "true"
+	updated.Type = secret.Type
+	updated.StringData = secret.StringData
+	if _, err := s.client.CoreV1().Secrets(s.namespace).Update(ctx, updated, metav1.UpdateOptions{}); err != nil {
 		s.logger.Error("failed-to-update-platform-secret", err)
 		return err
 	}

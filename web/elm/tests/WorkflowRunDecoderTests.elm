@@ -22,6 +22,8 @@ runJson =
     , "execution_status":"succeeded"
     , "origin_kind":"experiment"
     , "origin_reference":"experiment:7:cell:9"
+    , "ticket_id":42
+    , "ticket_reference":"ticket-42"
     , "created_by":"alice"
     , "retry_of_workflow_run_id":null
     , "created_at":"2026-07-22T12:00:00Z"
@@ -41,11 +43,27 @@ runJson =
 all : Test
 all =
     describe "Concourse.WorkflowRun"
-        [ test "decodes durable run identity without coercing it to Int" <|
+        [ test "decodes durable run and ticket identity without conflating them with origin" <|
             \_ ->
                 Json.Decode.decodeString WorkflowRun.decodeDetail runJson
-                    |> Result.map (\run -> ( run.summary.id, run.summary.originKind, run.summary.actualPlanHash ))
-                    |> Expect.equal (Ok ( "9007199254740995", "experiment", Just "plan-hash" ))
+                    |> Result.map
+                        (\run ->
+                            { id = run.summary.id
+                            , originKind = run.summary.originKind
+                            , ticketId = run.summary.ticketId
+                            , ticketReference = run.summary.ticketReference
+                            , actualPlanHash = run.summary.actualPlanHash
+                            }
+                        )
+                    |> Expect.equal
+                        (Ok
+                            { id = "9007199254740995"
+                            , originKind = "experiment"
+                            , ticketId = Just 42
+                            , ticketReference = "ticket-42"
+                            , actualPlanHash = Just "plan-hash"
+                            }
+                        )
         , test "rejects numeric workflow run IDs" <|
             \_ ->
                 Json.Decode.decodeString WorkflowRun.decodeDetail

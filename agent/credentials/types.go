@@ -60,6 +60,34 @@ type Credential struct {
 	Token string `json:"-"` // decrypted; in-memory only
 }
 
+// ResolveUsableAnthropicCredential returns the first unexpired platform
+// credential in the common OAuth-then-API-key preference order.
+func ResolveUsableAnthropicCredential(
+	resolver interface {
+		Resolve(int, string) (*Credential, bool, error)
+	},
+	userID int,
+	now time.Time,
+) (*Credential, bool, error) {
+	for _, kind := range []string{KindAnthropicOAuth, KindAnthropicAPIKey} {
+		credential, found, err := resolver.Resolve(userID, kind)
+		if err != nil {
+			return nil, false, err
+		}
+		if !found {
+			continue
+		}
+		if credential == nil || credential.UserID != userID || credential.Kind != kind {
+			return nil, false, fmt.Errorf("resolved %s credential has invalid identity", kind)
+		}
+		if credential.ExpiresAt > 0 && credential.ExpiresAt <= now.Unix() {
+			continue
+		}
+		return credential, true, nil
+	}
+	return nil, false, nil
+}
+
 //counterfeiter:generate . Store
 type Store interface {
 	Put(userID int, userName, kind, token string, expiresAt time.Time) error

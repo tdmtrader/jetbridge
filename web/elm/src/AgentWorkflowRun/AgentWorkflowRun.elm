@@ -587,6 +587,7 @@ The flat cards this page used to lead with are not gone. When the graph is
 drawn, each one renders only what the canvas could not place; when it is not,
 they render in full. Either way nothing durable becomes unreachable, which is
 the property that makes this a relocation rather than a redesign.
+
 -}
 runContent : Session -> Model -> WorkflowRun.Detail -> Html Message
 runContent session model detail =
@@ -652,6 +653,7 @@ runHeader model run =
 The summary's version says the same thing, but the graph response is the thing
 that was actually built, so the header reports what is on screen rather than a
 second source that could disagree with it.
+
 -}
 executedRevision : Model -> WorkflowRun.Summary -> Int
 executedRevision model run =
@@ -684,16 +686,21 @@ effectiveState run =
 
 Tickets are optional throughout the platform: a standalone run renders no slot
 at all rather than an empty one that reads as a missing association.
+
 -}
 ticketLink : WorkflowRun.Summary -> Html Message
 ticketLink run =
-    if run.originKind /= "ticket" then
+    if run.ticketReference == "" then
         Html.text ""
 
     else
-        case String.toInt run.originReference of
+        case run.ticketId of
             Nothing ->
-                Html.text ""
+                Html.span
+                    [ class "agent-run-header-ticket"
+                    , style "color" "#7a9ac0"
+                    ]
+                    [ Html.text run.ticketReference ]
 
             Just ticketId ->
                 Html.a
@@ -701,7 +708,7 @@ ticketLink run =
                     , href (Routes.toString (Routes.AgentTicket { id = ticketId }))
                     , style "color" "#7a9ac0"
                     ]
-                    [ Html.text ("ticket #" ++ run.originReference) ]
+                    [ Html.text run.ticketReference ]
 
 
 timingLine : WorkflowRun.Summary -> String
@@ -735,6 +742,7 @@ attentionCue run =
 
 A graph that could not be derived is a fact to render, not an error to hide: the
 run and its evidence are unaffected, and the flat cards below carry them.
+
 -}
 graphSection : Model -> Html Message
 graphSection model =
@@ -965,6 +973,7 @@ nodePublication node occurrences =
 A wait whose durable ID matches no occurrence is still a human decision this run
 is holding. Dropping it because the graph could not attribute it would be a
 silent loss of exactly the thing a reader came for.
+
 -}
 residualWaitsCard : Model -> Html Message
 residualWaitsCard model =
@@ -1057,7 +1066,8 @@ transcriptIsAttributed model ref =
                     >> List.any
                         (\occurrence ->
                             (occurrence.planId /= "" && occurrence.planId == ref.planId)
-                                || occurrence.nodeId == ref.functionId
+                                || occurrence.nodeId
+                                == ref.functionId
                         )
                 )
             |> Maybe.withDefault False
@@ -1338,25 +1348,26 @@ waitView model wait =
 They are extracted so the flat card and the selected-node detail share one
 implementation: a wait that can be answered in one place and not the other is
 worse than a wait that can be answered in neither.
+
 -}
 waitResolutionControls : Model -> WorkflowRun.Wait -> List (Html Message)
 waitResolutionControls model wait =
     [ if List.isEmpty wait.options then
-                    Html.input
-                        [ placeholder "answer"
-                        , value (Dict.get wait.id model.answerSnapshots |> Maybe.withDefault "")
-                        , onInput (AgentWaitAnswerChanged wait.id)
-                        ]
-                        []
+        Html.input
+            [ placeholder "answer"
+            , value (Dict.get wait.id model.answerSnapshots |> Maybe.withDefault "")
+            , onInput (AgentWaitAnswerChanged wait.id)
+            ]
+            []
 
-                  else
-                    Html.div
-                        [ class "agent-run-wait-options"
-                        , style "display" "flex"
-                        , style "gap" "8px"
-                        , style "flex-wrap" "wrap"
-                        ]
-                        (List.map (waitOption model wait) wait.options)
+      else
+        Html.div
+            [ class "agent-run-wait-options"
+            , style "display" "flex"
+            , style "gap" "8px"
+            , style "flex-wrap" "wrap"
+            ]
+            (List.map (waitOption model wait) wait.options)
     , Html.button
         [ type_ "button"
         , style "margin-top" "8px"

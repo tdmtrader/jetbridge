@@ -42,6 +42,8 @@ type AgentWorkflowsCommand struct {
 type workflowSummary struct {
 	Name             string `json:"name"`
 	Description      string `json:"description"`
+	Annotation       string `json:"annotation,omitempty"`
+	Hidden           bool   `json:"hidden"`
 	LatestVersion    int    `json:"latest_version"`
 	SchemaVersion    int    `json:"schema_version"`
 	SignatureVersion int    `json:"signature_version"`
@@ -121,6 +123,9 @@ func (command *WorkflowsListCommand) Execute([]string) error {
 		{Contents: "description", Color: color.New(color.Bold)},
 	}}
 	for _, s := range summaries {
+		if s.Hidden {
+			continue
+		}
 		live := "none"
 		if s.LiveVersion > 0 {
 			live = strconv.Itoa(s.LiveVersion)

@@ -1,7 +1,7 @@
 module AgentWorkflowRunPageTests exposing (all)
 
-import AgenticData
 import AgentGraph.Model
+import AgenticData
 import Application.Application as Application
 import Common
 import Concourse.Agent
@@ -19,7 +19,7 @@ import Message.Subscription exposing (Delivery(..), Interval(..))
 import Message.TopLevelMessage as Msgs
 import Test exposing (Test, describe, test)
 import Test.Html.Query as Query
-import Test.Html.Selector exposing (attribute, class, containing, text)
+import Test.Html.Selector exposing (attribute, class, containing, tag, text)
 import Time
 
 
@@ -398,18 +398,25 @@ all =
                             , Query.has [ class "agent-run-telemetry" ]
                             , Query.has [ class "agent-run-identity" ]
                             ]
-            , test "links back to the associated ticket when one exists" <|
+            , test "links the durable ticket reference through its live ticket ID" <|
                 \_ ->
                     initializedWithTicket
                         |> Common.queryView
                         |> Query.find [ class "agent-run-header-ticket" ]
-                        |> Query.has [ attribute (Attr.href "/agent-tickets/42") ]
-            , test "renders a run with no ticket without an empty ticket slot" <|
+                        |> Expect.all
+                            [ Query.has [ text "ticket-42" ]
+                            , Query.has [ attribute (Attr.href "/agent-tickets/42") ]
+                            ]
+            , test "shows the inherited ticket on a retry even though its origin names the source run" <|
                 \_ ->
-                    initializedWithGraph
+                    initializedWithTicketRetry
                         |> Common.queryView
-                        |> Query.hasNot [ class "agent-run-header-ticket" ]
-            , test "never reads a non-ticket origin reference as a ticket" <|
+                        |> Query.find [ class "agent-run-header-ticket" ]
+                        |> Expect.all
+                            [ Query.has [ text "ticket-42" ]
+                            , Query.has [ attribute (Attr.href "/agent-tickets/42") ]
+                            ]
+            , test "keeps a standalone retry free of ticket context" <|
                 \_ ->
                     -- A retry's origin reference is the run it retried. Linking
                     -- it to /agent-tickets/<run id> would point at an unrelated
@@ -417,6 +424,15 @@ all =
                     initializedWithRetryOrigin
                         |> Common.queryView
                         |> Query.hasNot [ class "agent-run-header-ticket" ]
+            , test "retains deleted-ticket evidence without linking to a ticket that is no longer live" <|
+                \_ ->
+                    initializedWithDeletedTicket
+                        |> Common.queryView
+                        |> Query.find [ class "agent-run-header-ticket" ]
+                        |> Expect.all
+                            [ Query.has [ text "ticket-42" ]
+                            , Query.hasNot [ tag "a" ]
+                            ]
             , test "does not attribute a run-level binding to a node fed by an intermediate of the same name" <|
                 \_ ->
                     -- The edge into `review` carries an intermediate snapshot
@@ -705,6 +721,7 @@ initializedWithRetryOrigin =
                             { summary
                                 | originKind = "retry"
                                 , originReference = "9007199254740991"
+                                , retryOf = Just "9007199254740991"
                             }
                     }
                 )
@@ -742,9 +759,48 @@ initializedWithTicket =
     Common.init "/agent/workflows/review-api/runs/9007199254740993"
         |> Application.handleCallback
             (Callback.AgentWorkflowRunFetched AgenticData.runSummary.id
-                (Ok { detail | summary = { summary | originKind = "ticket", originReference = "42" } })
+                (Ok
+                    { detail
+                        | summary =
+                            { summary
+                                | originKind = "ticket"
+                                , originReference = "42"
+                                , ticketId = Just 42
+                                , ticketReference = "ticket-42"
+                            }
+                    }
+                )
             )
         |> Tuple.first
+        |> withRunGraph sampleRunGraph
+
+
+initializedWithTicketRetry : Application.Model
+initializedWithTicketRetry =
+    withSummary
+        (\summary ->
+            { summary
+                | originKind = "retry"
+                , originReference = "9007199254740991"
+                , retryOf = Just "9007199254740991"
+                , ticketId = Just 42
+                , ticketReference = "ticket-42"
+            }
+        )
+        |> withRunGraph sampleRunGraph
+
+
+initializedWithDeletedTicket : Application.Model
+initializedWithDeletedTicket =
+    withSummary
+        (\summary ->
+            { summary
+                | originKind = "ticket"
+                , originReference = "42"
+                , ticketId = Nothing
+                , ticketReference = "ticket-42"
+            }
+        )
         |> withRunGraph sampleRunGraph
 
 

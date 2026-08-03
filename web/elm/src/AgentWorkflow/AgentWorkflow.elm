@@ -896,6 +896,7 @@ The distinction now reports a server answer rather than a client one. The rows
 are whatever the lens returned, so an empty list under `all` really is an empty
 window, and an empty list under `attention` really is nothing unresolved —
 across the whole population, not just the newest page.
+
 -}
 emptyMessage : Filters.Status -> String
 emptyMessage status =
@@ -920,12 +921,7 @@ runRow workflowName summary =
     , workflowVersion = summary.workflowVersion
     , startedAt = summary.startedAt |> Maybe.andThen Timestamp.fromIso8601
     , completedAt = summary.completedAt |> Maybe.andThen Timestamp.fromIso8601
-    , ticketReference =
-        if summary.originKind == "ticket" then
-            summary.originReference
-
-        else
-            ""
+    , ticketReference = summary.ticketReference
     , attentionCue = attentionCue summary
     }
 

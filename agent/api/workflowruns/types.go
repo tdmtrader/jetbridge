@@ -182,6 +182,8 @@ type RunSummary struct {
 	OriginReference         string                              `json:"origin_reference"`
 	CreatedBy               string                              `json:"created_by"`
 	RetryOfWorkflowRunID    *snapshot.WorkflowRunID             `json:"retry_of_workflow_run_id"`
+	TicketID                *int64                              `json:"ticket_id"`
+	TicketReference         string                              `json:"ticket_reference"`
 	CreatedAt               time.Time                           `json:"created_at"`
 	UpdatedAt               time.Time                           `json:"updated_at"`
 	StartedAt               *time.Time                          `json:"started_at"`

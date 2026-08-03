@@ -357,6 +357,39 @@ all =
                                 (Attr.href "/agent/workflows/review-api/runs/9007199254740993")
                             , containing [ text "running" ]
                             ]
+            , test "shows the durable ticket reference instead of the direct origin reference" <|
+                \_ ->
+                    let
+                        summary =
+                            AgenticData.runSummary
+                    in
+                    initializedWithRun
+                        { summary
+                            | originKind = "ticket"
+                            , originReference = "42"
+                            , ticketId = Just 42
+                            , ticketReference = "ticket-42"
+                        }
+                        |> Common.queryView
+                        |> Query.find [ class "agent-run-row-ticket" ]
+                        |> Query.has [ text "ticket-42" ]
+            , test "shows an inherited ticket reference on a retry row" <|
+                \_ ->
+                    let
+                        summary =
+                            AgenticData.runSummary
+                    in
+                    initializedWithRun
+                        { summary
+                            | originKind = "retry"
+                            , originReference = "9007199254740991"
+                            , retryOf = Just "9007199254740991"
+                            , ticketId = Just 42
+                            , ticketReference = "ticket-42"
+                        }
+                        |> Common.queryView
+                        |> Query.find [ class "agent-run-row-ticket" ]
+                        |> Query.has [ text "ticket-42" ]
             , test "the empty attention list says nothing is unresolved, not that nothing ran" <|
                 \_ ->
                     initializedWith overview
@@ -536,6 +569,13 @@ initializedWithOverview =
             (Callback.AgentWorkflowRunsFetched "review-api"
                 (Ok [ AgenticData.runSummary, failedRunSummary ])
             )
+        |> Tuple.first
+
+
+initializedWithRun summary =
+    initializedWith overview
+        |> Application.handleCallback
+            (Callback.AgentWorkflowRunsFetched "review-api" (Ok [ summary ]))
         |> Tuple.first
 
 

@@ -619,6 +619,84 @@ func TestListUsesStrictCombinedFiltersAndReturnsAnEmptyArray(t *testing.T) {
 	}
 }
 
+func TestListPresentsDurableTicketAssociationIndependentOfOrigin(t *testing.T) {
+	ticketID := int64(42)
+	tests := []struct {
+		name            string
+		originKind      string
+		originReference string
+		ticketID        *int64
+		ticketReference string
+		wantTicketID    string
+		wantReference   string
+	}{
+		{
+			name: "direct ticket run", originKind: "ticket", originReference: "42",
+			ticketID: &ticketID, ticketReference: "ticket-42",
+			wantTicketID: "42", wantReference: `"ticket-42"`,
+		},
+		{
+			name: "retry inheriting a ticket", originKind: "retry", originReference: "9007199254740991",
+			ticketID: &ticketID, ticketReference: "ticket-42",
+			wantTicketID: "42", wantReference: `"ticket-42"`,
+		},
+		{
+			name: "standalone retry", originKind: "retry", originReference: "9007199254740991",
+			wantTicketID: "null", wantReference: `""`,
+		},
+		{
+			name: "deleted ticket retains evidence", originKind: "ticket", originReference: "42",
+			ticketReference: "ticket-42",
+			wantTicketID:    "null", wantReference: `"ticket-42"`,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			deps := defaultDeps()
+			deps.runs.list = func(_ context.Context, filter db.AgentWorkflowRunListFilter) ([]db.AgentWorkflowRun, error) {
+				run := runFixture(exactLargeRunID, filter.WorkflowName, db.AgentWorkflowRunStatusFailed)
+				run.OriginKind = test.originKind
+				run.OriginReference = test.originReference
+				run.TicketID = test.ticketID
+				run.TicketReference = test.ticketReference
+				if test.originKind != "retry" {
+					run.RetryOfWorkflowRunID = nil
+				}
+				return []db.AgentWorkflowRun{run}, nil
+			}
+
+			recorder := httptest.NewRecorder()
+			mustHandler(t, deps).List(recorder, request(
+				http.MethodGet, "/api/v1/agent/workflows/deploy/runs", "deploy", "", nil, "",
+			))
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+			}
+
+			var response []map[string]json.RawMessage
+			if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+				t.Fatal(err)
+			}
+			if len(response) != 1 {
+				t.Fatalf("run count = %d, want 1", len(response))
+			}
+			for key, want := range map[string]string{
+				"ticket_id": test.wantTicketID, "ticket_reference": test.wantReference,
+			} {
+				got, present := response[0][key]
+				if !present {
+					t.Errorf("response omitted %s: %s", key, recorder.Body.String())
+					continue
+				}
+				if string(got) != want {
+					t.Errorf("%s = %s, want %s", key, got, want)
+				}
+			}
+		})
+	}
+}
+
 // The lens must reach the store rather than being applied to a returned page:
 // the list is paginated, and an unresolved failure older than one page is
 // exactly the run the default lens exists to surface.

@@ -595,19 +595,55 @@ var _ = Describe("fly agent workflows", func() {
 				ghttp.CombineHandlers(
 					ghttp.VerifyRequest("GET", "/api/v1/agent/workflows"),
 					ghttp.RespondWithJSONEncoded(http.StatusOK, []map[string]any{
-						{"name": "standard-dev", "description": "the seed", "latest_version": 3, "schema_version": 3, "signature_version": 2, "live_version": 2, "content_hash": "abc123", "created_at": 1751900000},
+						{"name": "standard-dev", "description": "the seed", "annotation": "preferred workflow", "hidden": false, "latest_version": 3, "schema_version": 3, "signature_version": 2, "live_version": 2, "content_hash": "abc123", "created_at": 1751900000},
+						{"name": "legacy-dev", "description": "the old flow", "annotation": "migrate to standard-dev", "hidden": true, "latest_version": 1, "schema_version": 3, "signature_version": 1, "live_version": 1, "content_hash": "def456", "created_at": 1751800000},
 					}),
 				),
 			)
 		})
 
-		It("prints name, latest, schema, signature, live, and description", func() {
+		It("prints active workflows and hides deprecated workflows from the default table", func() {
 			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "workflows", "list")
 			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
 			Expect(err).NotTo(HaveOccurred())
 			<-sess.Exited
 			Expect(sess.ExitCode()).To(Equal(0))
 			Expect(sess.Out).To(gbytes.Say(`standard-dev\s+3\s+3\s+2\s+2\s+the seed`))
+			Expect(sess.Out.Contents()).NotTo(ContainSubstring("legacy-dev"))
+		})
+
+		It("preserves workflow lifecycle fields and deprecated workflows in JSON", func() {
+			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "workflows", "list", "--json")
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			<-sess.Exited
+			Expect(sess.ExitCode()).To(Equal(0))
+			Expect(sess.Out.Contents()).To(MatchJSON(`[
+				{
+					"name": "standard-dev",
+					"description": "the seed",
+					"annotation": "preferred workflow",
+					"hidden": false,
+					"latest_version": 3,
+					"schema_version": 3,
+					"signature_version": 2,
+					"content_hash": "abc123",
+					"live_version": 2,
+					"created_at": 1751900000
+				},
+				{
+					"name": "legacy-dev",
+					"description": "the old flow",
+					"annotation": "migrate to standard-dev",
+					"hidden": true,
+					"latest_version": 1,
+					"schema_version": 3,
+					"signature_version": 1,
+					"content_hash": "def456",
+					"live_version": 1,
+					"created_at": 1751800000
+				}
+			]`))
 		})
 	})
 

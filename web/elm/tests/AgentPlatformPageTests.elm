@@ -21,6 +21,8 @@ import Time
 sampleWorkflow :
     { name : String
     , description : String
+    , annotation : String
+    , hidden : Bool
     , latestVersion : Int
     , schemaVersion : Int
     , signatureVersion : Int
@@ -31,6 +33,8 @@ sampleWorkflow :
 sampleWorkflow =
     { name = "standard-dev"
     , description = "the five-phase dev flow"
+    , annotation = ""
+    , hidden = False
     , latestVersion = 2
     , schemaVersion = 3
     , signatureVersion = 1
@@ -53,6 +57,8 @@ sampleWorkflowRun =
     , executionStatus = Just "failed"
     , originKind = "manual"
     , originReference = ""
+    , ticketId = Nothing
+    , ticketReference = ""
     , createdBy = "alice"
     , retryOf = Nothing
     , createdAt = "2026-07-22T12:00:00Z"
@@ -276,6 +282,26 @@ all =
                         [ containing [ text "standard-dev" ]
                         , containing [ class "agent-workflow-live", text "live" ]
                         , containing [ text "candidate v2" ]
+                        ]
+        , test "renders a deprecated workflow indicator and operator note" <|
+            \_ ->
+                Common.init "/agent"
+                    |> Application.handleCallback
+                        (Callback.AgentWorkflowsFetched
+                            (Ok
+                                [ { sampleWorkflow
+                                    | annotation = "migrate to standard-dev"
+                                    , hidden = True
+                                  }
+                                ]
+                            )
+                        )
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.find [ class "agent-workflow-row" ]
+                    |> Query.has
+                        [ containing [ class "agent-workflow-deprecated", text "deprecated" ]
+                        , containing [ class "agent-workflow-annotation", text "migrate to standard-dev" ]
                         ]
         , test "fetches each workflow's durable runs and exact operational counts after loading definitions" <|
             \_ ->

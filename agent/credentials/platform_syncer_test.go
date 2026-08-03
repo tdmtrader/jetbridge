@@ -2,16 +2,22 @@ package credentials_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/agent/credentials"
 	"github.com/concourse/concourse/agent/credentials/credentialstest"
+	"github.com/concourse/concourse/agent/workflowrun"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/fake"
+	ktesting "k8s.io/client-go/testing"
 )
 
 func newSyncerFixture(withCred bool) (*credentials.PlatformSecretSyncer, *credentialstest.MemoryBackend, *fake.Clientset) {
@@ -91,6 +97,115 @@ func TestSyncerRefreshesChangedToken(t *testing.T) {
 	}
 }
 
+func TestSyncerRefreshesChangedTokenWithObservedResourceVersion(t *testing.T) {
+	backend := credentialstest.NewMemoryBackend()
+	backend.AddUser(credentials.PlatformUserSub, 99, "platform")
+	_ = backend.Put(99, "platform", credentials.KindAnthropicOAuth, "sk-rotated", time.Now().Add(time.Hour))
+
+	createdAt := metav1.NewTime(time.Date(2026, time.August, 2, 12, 0, 0, 0, time.UTC))
+	existing := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              credentials.PlatformSecretName,
+			Namespace:         "concourse-workers",
+			UID:               types.UID("platform-secret-uid"),
+			ResourceVersion:   "7",
+			Generation:        4,
+			CreationTimestamp: createdAt,
+			Annotations:       map[string]string{"owned-by": "cluster-admin"},
+		},
+		Type: corev1.SecretTypeOpaque,
+		StringData: map[string]string{
+			credentials.SecretKeyAnthropicToken: "sk-before-rotation",
+			credentials.SecretKeyModelTokenKind: credentials.KindAnthropicOAuth,
+		},
+	}
+	clientset := fake.NewSimpleClientset(existing)
+	clientset.PrependReactor("update", "secrets", func(action ktesting.Action) (bool, runtime.Object, error) {
+		updated := action.(ktesting.UpdateAction).GetObject().(*corev1.Secret)
+		stored, err := clientset.Tracker().Get(
+			corev1.SchemeGroupVersion.WithResource("secrets"),
+			updated.Namespace,
+			updated.Name,
+		)
+		if err != nil {
+			return true, nil, err
+		}
+		want := stored.(*corev1.Secret)
+		if updated.ResourceVersion == "" || updated.ResourceVersion != want.ResourceVersion {
+			return true, nil, apierrors.NewConflict(
+				schema.GroupResource{Resource: "secrets"},
+				updated.Name,
+				fmt.Errorf("resourceVersion = %q, want %q", updated.ResourceVersion, want.ResourceVersion),
+			)
+		}
+		if updated.UID != want.UID ||
+			!updated.CreationTimestamp.Equal(&want.CreationTimestamp) ||
+			updated.Generation != want.Generation {
+			return true, nil, apierrors.NewInvalid(
+				corev1.SchemeGroupVersion.WithKind("Secret").GroupKind(),
+				updated.Name,
+				nil,
+			)
+		}
+		return false, nil, nil
+	})
+	syncer := credentials.NewPlatformSecretSyncer(
+		lagertest.NewTestLogger("syncer"), backend, clientset, "concourse-workers",
+	)
+
+	if err := syncer.Run(context.Background()); err != nil {
+		t.Fatalf("rotate platform Secret: %v", err)
+	}
+
+	secret, err := clientset.CoreV1().Secrets("concourse-workers").
+		Get(context.Background(), credentials.PlatformSecretName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secret.StringData[credentials.SecretKeyAnthropicToken] != "sk-rotated" {
+		t.Fatalf("token not refreshed: %q", secret.StringData[credentials.SecretKeyAnthropicToken])
+	}
+	if secret.Annotations["owned-by"] != "cluster-admin" {
+		t.Fatalf("unmanaged annotation was not preserved: %#v", secret.Annotations)
+	}
+}
+
+func TestSyncerMaterializesTheCredentialAcceptedByPlatformAdmission(t *testing.T) {
+	backend := credentialstest.NewMemoryBackend()
+	backend.AddUser(credentials.PlatformUserSub, 99, "platform")
+	_ = backend.Put(99, "platform", credentials.KindAnthropicOAuth, "sk-expired", time.Now().Add(-time.Hour))
+	_ = backend.Put(99, "platform", credentials.KindAnthropicAPIKey, "sk-usable", time.Now().Add(time.Hour))
+
+	admitter, err := workflowrun.NewPlatformCredentialAdmitter(backend, credentials.PlatformSecretName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := admitter.AdmitModelCredential(context.Background()); err != nil {
+		t.Fatalf("admit credential: %v", err)
+	}
+
+	clientset := fake.NewSimpleClientset()
+	syncer := credentials.NewPlatformSecretSyncer(
+		lagertest.NewTestLogger("syncer"), backend, clientset, "concourse-workers",
+	)
+	if err := syncer.Run(context.Background()); err != nil {
+		t.Fatalf("synchronize admitted credential: %v", err)
+	}
+
+	secret, err := clientset.CoreV1().Secrets("concourse-workers").
+		Get(context.Background(), credentials.PlatformSecretName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secret.StringData[credentials.SecretKeyAnthropicToken] != "sk-usable" ||
+		secret.StringData[credentials.SecretKeyModelTokenKind] != credentials.KindAnthropicAPIKey {
+		t.Fatalf("synchronized credential = (%q, %q), want usable API key",
+			secret.StringData[credentials.SecretKeyAnthropicToken],
+			secret.StringData[credentials.SecretKeyModelTokenKind],
+		)
+	}
+}
+
 func TestSyncerNoopsWithoutPlatformCredential(t *testing.T) {
 	syncer, _, clientset := newSyncerFixture(false)
 	if err := syncer.Run(context.Background()); err != nil {
@@ -129,5 +244,34 @@ func TestSyncerDeletesSecretWhenCredentialUnvaulted(t *testing.T) {
 	if _, err := clientset.CoreV1().Secrets("concourse-workers").
 		Get(context.Background(), credentials.PlatformSecretName, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("stale platform secret must be deleted after the credential is unvaulted, got err=%v", err)
+	}
+}
+
+func TestSyncerDeletesSecretWhenAllCredentialsAreExpired(t *testing.T) {
+	syncer, backend, clientset := newSyncerFixture(false)
+	_ = backend.Put(99, "platform", credentials.KindAnthropicOAuth, "sk-expired", time.Now().Add(-time.Hour))
+	seed := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      credentials.PlatformSecretName,
+			Namespace: "concourse-workers",
+		},
+		Type: corev1.SecretTypeOpaque,
+		StringData: map[string]string{
+			credentials.SecretKeyAnthropicToken: "sk-stale",
+			credentials.SecretKeyModelTokenKind: credentials.KindAnthropicOAuth,
+		},
+	}
+	if _, err := clientset.CoreV1().Secrets("concourse-workers").
+		Create(context.Background(), seed, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := syncer.Run(context.Background()); err != nil {
+		t.Fatalf("expire platform credential: %v", err)
+	}
+
+	if _, err := clientset.CoreV1().Secrets("concourse-workers").
+		Get(context.Background(), credentials.PlatformSecretName, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("stale platform secret must be deleted after all credentials expire, got err=%v", err)
 	}
 }

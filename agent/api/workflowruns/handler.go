@@ -558,6 +558,8 @@ func presentRunSummary(team TrustedTeam, workflowName string, run db.AgentWorkfl
 		Status: run.Status, ExecutionStatus: cloneExecutionStatus(run.ExecutionStatus),
 		OriginKind: run.OriginKind, OriginReference: run.OriginReference, CreatedBy: run.CreatedBy,
 		RetryOfWorkflowRunID: cloneWorkflowRunID(run.RetryOfWorkflowRunID),
+		TicketID:             cloneInt64(run.TicketID),
+		TicketReference:      run.TicketReference,
 		CreatedAt:            run.CreatedAt, UpdatedAt: run.UpdatedAt,
 		StartedAt: cloneTime(run.StartedAt), CompletedAt: cloneTime(run.CompletedAt),
 		ParameterizedConfigHash: run.ParameterizedConfigHash,
