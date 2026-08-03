@@ -61,6 +61,53 @@ The `hangar.scratchPath` default is a daemon-local directory under
 workspace, not durable content. Size it for one maximum snapshot transfer per
 active daemon operation and keep it on local disk rather than tmpfs.
 
+### Size the emulator for your largest snapshot
+
+`fake-gcs-server` holds an object in memory while it is written, so a snapshot
+larger than the container's memory limit OOMKills it mid-upload. On this lab
+cluster a ~225MB repository snapshot did exactly that, twice, against a 1Gi
+limit. The upload then fails with `no replica acknowledgements` — the daemon
+never answered because the store died under it.
+
+Give the emulator a limit comfortably above the largest snapshot you intend to
+capture. Small captures are unaffected, which is why the failure looks
+size-dependent rather than broken.
+
+### The emulator loses custom metadata on restart
+
+`fake-gcs-server`'s filesystem backend persists object *content* to its volume
+but keeps custom metadata in memory only — there are no metadata sidecar files
+on disk. Every restart therefore returns objects whose bytes are intact and
+whose metadata is empty, and each one fails
+`object metadata vocabulary is not exact` on read.
+
+The repair pass now restores this automatically: it re-derives the three keys
+and writes them back only when the content proves itself, so an emulator
+restart heals on the next tick instead of failing forever. A genuinely corrupt
+object still fails loudly and is never rewritten.
+
+Nothing is lost in this state, and it is worth understanding why repair is safe
+rather than a guess. All three keys are derivable: the representation is the
+constant `zstd`, the uncompressed SHA-256 *is* the object key, and the
+uncompressed byte count is recomputed by decompressing. The digest recomputed
+from the decompressed bytes must equal the one in the key — that equality is
+the whole safety argument, because it proves the content is what the platform
+believes it stored before any metadata is written.
+
+`hack/hangar-repair-metadata.py` performs the same repair by hand, for a
+deployment running a build from before the repair pass could do it, or to
+recover without waiting for a tick. It dry-runs by default and reports what it
+would change:
+
+```bash
+kubectl -n cicd port-forward svc/fake-gcs 14443:4443 &
+python3 hack/hangar-repair-metadata.py            # dry run
+python3 hack/hangar-repair-metadata.py --apply
+```
+
+It refuses any object whose recomputed digest disagrees with its key, and never
+deletes.
+
 ## Monitoring and recovery
 
 Scrape the artifact-daemon ServiceMonitor. The existing
