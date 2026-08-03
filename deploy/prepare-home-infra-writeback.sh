@@ -20,8 +20,8 @@ if [ ! -d "$source_repository/.git" ] || [ -L "$source_repository/.git" ]; then
 	exit 1
 fi
 
-if [ ! -d "$output_repository" ]; then
-	echo "output repository directory must exist" >&2
+if [ ! -d "$output_repository" ] || [ -L "$output_repository" ]; then
+	echo "output repository must be a physical directory" >&2
 	exit 1
 fi
 

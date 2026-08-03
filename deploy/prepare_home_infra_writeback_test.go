@@ -131,6 +131,33 @@ func TestPrepareHomeInfraWritebackRejectsMalformedInputs(t *testing.T) {
 	}
 }
 
+func TestPrepareHomeInfraWritebackRejectsSymlinkDestinationWithoutMutatingTarget(t *testing.T) {
+	fixture := newHomeInfraFixture(t, seedRunnerImage)
+	target := filepath.Join(fixture.dir, "writeback-target")
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sentinel := filepath.Join(target, "must-not-change")
+	if err := os.WriteFile(sentinel, []byte("preserve destination target\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	output := filepath.Join(fixture.dir, "home-infra-updated")
+	if err := os.Symlink(target, output); err != nil {
+		t.Fatal(err)
+	}
+
+	commandOutput, err := runPrepareHomeInfraWriteback(t, fixture.clone, output)
+	if err == nil {
+		t.Fatalf("prepare accepted symlink destination and copied into its target:\n%s", commandOutput)
+	}
+	if got, readErr := os.ReadFile(sentinel); readErr != nil || string(got) != "preserve destination target\n" {
+		t.Fatalf("symlink destination target sentinel = %q, %v", got, readErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(target, ".git")); !os.IsNotExist(statErr) {
+		t.Fatalf("symlink destination target was mutated with copied repository: %v", statErr)
+	}
+}
+
 func TestPrepareHomeInfraWritebackRejectsMissingArguments(t *testing.T) {
 	root, err := filepath.Abs("..")
 	if err != nil {
