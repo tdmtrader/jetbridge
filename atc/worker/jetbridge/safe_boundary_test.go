@@ -168,6 +168,22 @@ func TestSafeBoundaryShellPinsPIDStarttimeAndNeverSignalsAGroup(t *testing.T) {
 	}
 }
 
+func TestSafeBoundaryLeaseExitsAfterResumingOnTerminationSignals(t *testing.T) {
+	if strings.Contains(safeBoundaryLeaseShell, "trap 'resume' EXIT HUP INT TERM") {
+		t.Fatal("safe boundary signal trap resumes the child but leaves the lease helper running")
+	}
+	for _, required := range []string{
+		"trap 'resume' EXIT",
+		"trap 'exit 129' HUP",
+		"trap 'exit 130' INT",
+		"trap 'exit 143' TERM",
+	} {
+		if !strings.Contains(safeBoundaryLeaseShell, required) {
+			t.Errorf("safe boundary lease signal handling lacks %q", required)
+		}
+	}
+}
+
 func safeBoundaryTestProcess(executor PodExecutor) *execProcess {
 	p := checkpointTestProcess(fake.NewClientset(checkpointTestPod("agent-42", "uid-42", "main")), executor)
 	p.id = "agent"

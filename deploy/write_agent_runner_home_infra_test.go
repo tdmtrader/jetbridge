@@ -56,6 +56,35 @@ func writeFixtureFile(t *testing.T, path, contents string) {
 	}
 }
 
+func TestHomeInfraWriteHelpersExitOnTerminationSignals(t *testing.T) {
+	for _, helper := range []string{
+		"write-web-image-home-infra.sh",
+		"write-live-tested-image-home-infra.sh",
+		"write-agent-runner-home-infra.sh",
+	} {
+		t.Run(helper, func(t *testing.T) {
+			raw, err := os.ReadFile(helper)
+			if err != nil {
+				t.Fatal(err)
+			}
+			script := string(raw)
+			if strings.Contains(script, "EXIT HUP INT TERM") {
+				t.Fatal("helper cleanup trap handles termination signals without exiting")
+			}
+			for _, required := range []string{
+				"trap cleanup EXIT",
+				"trap 'exit 129' HUP",
+				"trap 'exit 130' INT",
+				"trap 'exit 143' TERM",
+			} {
+				if !strings.Contains(script, required) {
+					t.Errorf("helper signal handling lacks %q", required)
+				}
+			}
+		})
+	}
+}
+
 func TestWriteWebImageHomeInfra(t *testing.T) {
 	const webImage = "registry.home/jetbridge@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
 	const finalImage = "registry.home/jetbridge@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"

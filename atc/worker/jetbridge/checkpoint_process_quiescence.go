@@ -619,9 +619,12 @@ read_start() { START=""; [ -r "$1" ] || return 1; read -r line < "$1" || return 
 read_state() { STATE=""; [ -r "$1" ] || return 1; while read -r label state rest; do case "$label" in State:) STATE=$state; return 0;; esac; done < "$1"; return 1; }
 resume() { [ "$RELEASED" = 1 ] && return; RELEASED=1; for pair in $PAIRS; do pid=${pair%%:*}; start=${pair#*:}; stat=/proc/$pid/stat; if read_start "$stat" && [ "$START" = "$start" ]; then kill -CONT "$pid" 2>/dev/null || :; fi; done; }
 fail() { resume; exit 1; }
-trap 'resume' 0 HUP INT TERM
+trap 'resume' 0
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 pass=0
-while [ "$pass" -lt 4 ]; do added=0; for stat in /proc/[0-9]*/stat; do pid=${stat#/proc/}; pid=${pid%/stat}; [ "$pid" = "$$" ] && continue; read_start "$stat" || fail; pair=$pid:$START; case " $PAIRS " in *" $pair "*) continue;; esac; [ "$COUNT" -lt "$MAX" ] || fail; kill -STOP "$pid" 2>/dev/null || fail; read_state "${stat%/stat}/status" || fail; [ "$STATE" = T ] || fail; PAIRS="$PAIRS $pair"; COUNT=$((COUNT + 1)); added=1; done; [ "$added" = 0 ] && break; pass=$((pass + 1)); done
+while [ "$pass" -lt 4 ]; do added=0; for stat in /proc/[0-9]*/stat; do pid=${stat#/proc/}; pid=${pid%/stat}; [ "$pid" = "$$" ] && continue; read_start "$stat" || fail; pair=$pid:$START; case " $PAIRS " in *" $pair "*) continue;; esac; [ "$COUNT" -lt "$MAX" ] || fail; PAIRS="$PAIRS $pair"; COUNT=$((COUNT + 1)); kill -STOP "$pid" 2>/dev/null || fail; read_state "${stat%/stat}/status" || fail; [ "$STATE" = T ] || fail; added=1; done; [ "$added" = 0 ] && break; pass=$((pass + 1)); done
 [ "$COUNT" -gt 0 ] || fail
 [ "$pass" -lt 4 ] || fail
 for stat in /proc/[0-9]*/stat; do pid=${stat#/proc/}; pid=${pid%/stat}; [ "$pid" = "$$" ] && continue; read_start "$stat" || fail; pair=$pid:$START; case " $PAIRS " in *" $pair "*) ;; *) fail;; esac; read_state "${stat%/stat}/status" || fail; [ "$STATE" = T ] || fail; done

@@ -20,13 +20,16 @@ historical agent data needs to be preserved.
 
 ## Order of operations
 
-### 1. Rebuild the agent-runner image — required, do this first
+### 1. Reserve the version, then rebuild the agent-runner image — required, do this first
 
 The image now ships a **second binary**, `function-runner`, which every v3 task
 function runs as. Without it, `merge-preflight` / `merge-prepare` steps fail at
 exec with "executable file not found".
 
-Trigger the manual `build-agent-runner-image` job in `deploy/concourse-pipeline.yml`
+Wait for `tag-rc` to succeed for the exact commit being deployed, then verify
+that the immutable RC tag points at that commit. Trigger the manual
+`build-agent-runner-image` job in `deploy/concourse-pipeline.yml` and confirm
+its selected `repo` input is that same commit before allowing the build task to run
 (builds `deploy/agent-runner/Dockerfile`, pushes the deployable commit tag to
 `registry.home/agent-runner`, and attempts a best-effort GHCR mirror only after
 the local immutable digest has been pulled, platform-checked, smoked, and

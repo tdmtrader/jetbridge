@@ -48,7 +48,13 @@ digest=${image#*@}
 
 image_tmp=$(mktemp "$repo/.web-image-values.XXXXXX")
 tmp=$(mktemp "$repo/.web-image.XXXXXX")
-trap 'rm -f "$image_tmp" "$tmp"' EXIT HUP INT TERM
+cleanup() {
+  rm -f -- "$image_tmp" "$tmp"
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 awk -v image_indent="$image_indent" -v child_indent="$child_indent" -v digest="$digest" -v source="$source_commit" '
   function indent_of(line) { sub(/[^[:space:]].*$/, "", line); return line }
   $0 == image_indent "image:" { in_image = 1; print; next }

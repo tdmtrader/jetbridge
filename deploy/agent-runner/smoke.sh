@@ -55,11 +55,13 @@ cleanup() {
   rm -f -- "$authority_file"
   rm -rf -- "$smoke_dir"
 }
-trap cleanup EXIT HUP INT TERM
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
-mkdir -p "$smoke_dir/work/review"
+mkdir -p "$smoke_dir/work/review" "$smoke_dir/claude-config"
 printf '%s\n' "{\"work_root\":\"$smoke_dir/work\",\"inputs\":{},\"outputs\":{\"review\":{\"port\":{\"name\":\"review\",\"type\":\"review/v1\"},\"mount_root\":\"$smoke_dir/work/review\"}}}" | install -D -m 0444 /dev/stdin "$authority_file"
-printf '%s\n' '{"mcpServers":{"output-builder":{"type":"http","url":"http://127.0.0.1:7783/mcp"}}}' > "$smoke_dir/mcp.json"
 
 agent-output serve > "$smoke_dir/agent-output.log" 2>&1 &
 sidecar_pid=$!
@@ -78,13 +80,20 @@ if ! curl --fail --silent --show-error http://127.0.0.1:7783/healthz >/dev/null 
   exit 1
 fi
 
+mcp_add_output="$smoke_dir/mcp-add.txt"
+if ! (ulimit -f 16; CLAUDE_CONFIG_DIR="$smoke_dir/claude-config" claude mcp add --scope user --transport http output-builder http://127.0.0.1:7783/mcp > "$mcp_add_output" 2>&1); then
+  printf 'ERROR: Claude failed to register managed output builder MCP\n' >&2
+  head -c 8192 "$mcp_add_output" >&2 || :
+  exit 1
+fi
+
 mcp_output="$smoke_dir/mcp-list.txt"
-if ! (ulimit -f 16; claude --mcp-config "$smoke_dir/mcp.json" --strict-mcp-config mcp list > "$mcp_output" 2>&1); then
+if ! (ulimit -f 16; CLAUDE_CONFIG_DIR="$smoke_dir/claude-config" claude mcp list > "$mcp_output" 2>&1); then
   printf 'ERROR: Claude failed to list managed output builder MCP\n' >&2
   head -c 8192 "$mcp_output" >&2 || :
   exit 1
 fi
-if ! head -c 8192 "$mcp_output" | grep -E -x -- 'output-builder: .+ - ✓ Connected' >/dev/null; then
+if ! head -c 8192 "$mcp_output" | grep -E -x -- 'output-builder: .+ - (✓|✔) Connected' >/dev/null; then
   printf 'ERROR: managed output builder MCP is not connected\n' >&2
   head -c 8192 "$mcp_output" >&2 || :
   exit 1

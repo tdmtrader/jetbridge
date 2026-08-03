@@ -32,7 +32,13 @@ new_line="${indent}- { name: CONCOURSE_AGENT_STEP_IMAGE, value: \"${image}\" }"
 test "$old_line" = "$new_line" && exit 0
 
 tmp=$(mktemp "$repo/.agent-runner-image.XXXXXX")
-trap 'rm -f "$tmp"' EXIT HUP INT TERM
+cleanup() {
+  rm -f -- "$tmp"
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 awk -v old="$old_line" -v new="$new_line" '{ if ($0 == old) print new; else print }' "$repo/$file" > "$tmp"
 mv "$tmp" "$repo/$file"
 test "$(git -C "$repo" diff --name-only)" = "$file"

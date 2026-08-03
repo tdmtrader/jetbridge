@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -235,6 +236,33 @@ func TestExecProcessCheckpointCaptureRequiresDeadlineAndAutoReleases(t *testing.
 	}
 	if err := lease.Release(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCheckpointQuiescenceExitsAfterResumingOnTerminationSignals(t *testing.T) {
+	if strings.Contains(checkpointQuiescenceShell, "trap 'resume' 0 HUP INT TERM") {
+		t.Fatal("checkpoint signal trap resumes processes but leaves the quiescence helper running")
+	}
+	for _, required := range []string{
+		"trap 'resume' 0",
+		"trap 'exit 129' HUP",
+		"trap 'exit 130' INT",
+		"trap 'exit 143' TERM",
+	} {
+		if !strings.Contains(checkpointQuiescenceShell, required) {
+			t.Errorf("checkpoint quiescence signal handling lacks %q", required)
+		}
+	}
+}
+
+func TestCheckpointQuiescenceEnrollsProcessBeforeStoppingIt(t *testing.T) {
+	enroll := strings.Index(checkpointQuiescenceShell, `PAIRS="$PAIRS $pair"`)
+	stop := strings.Index(checkpointQuiescenceShell, `kill -STOP "$pid"`)
+	if enroll < 0 || stop < 0 {
+		t.Fatal("checkpoint quiescence shell lacks process enrollment or STOP")
+	}
+	if enroll > stop {
+		t.Fatal("checkpoint quiescence can stop a process before EXIT cleanup knows to resume it")
 	}
 }
 

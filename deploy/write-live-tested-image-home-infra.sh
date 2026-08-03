@@ -22,7 +22,13 @@ test -d "$repo/apps"
 test -z "$(git -C "$repo" status --porcelain)"
 
 tmp=$(mktemp "$repo/.live-tested-image.XXXXXX")
-trap 'rm -f "$tmp"' EXIT HUP INT TERM
+cleanup() {
+  rm -f -- "$tmp"
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 printf 'SOURCE_COMMIT=%s\nTESTED_IMAGE=%s\n' "$source_commit" "$image" > "$tmp"
 
 if test -f "$repo/$file" && cmp -s "$repo/$file" "$tmp"; then

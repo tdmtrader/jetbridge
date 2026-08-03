@@ -388,7 +388,7 @@ jobs:
           ASKPASS_EOF
           chmod 700 "${ASKPASS}"
           GIT_ASKPASS="${ASKPASS}" GIT_TERMINAL_PROMPT=0 \
-            git fetch --tags --force origin
+            git fetch --tags --force --prune --prune-tags origin
 
           SOURCE_STABLE_TAGS=$(git tag --points-at "${SOURCE_COMMIT}" --list 'v0.2.*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true)
           SOURCE_RC_TAGS=$(git tag --points-at "${SOURCE_COMMIT}" --list 'v0.2.*-rc' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+-rc$' || true)
@@ -541,7 +541,7 @@ jobs:
         - -exc
         - |
           cd repo
-          git fetch --tags --force origin
+          git fetch --tags --force --prune --prune-tags origin
 
           SOURCE_COMMIT=$(git rev-parse HEAD)
           RC_RELEASE_TAGS=$(git tag --points-at "${SOURCE_COMMIT}" --list 'v0.2.*-rc' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+-rc$' || true)
@@ -725,7 +725,7 @@ jobs:
         - -exc
         - |
           cd repo
-          git fetch --tags --force origin
+          git fetch --tags --force --prune --prune-tags origin
 
           SOURCE_COMMIT=$(git rev-parse HEAD)
           RC_RELEASE_TAGS=$(git tag --points-at "${SOURCE_COMMIT}" --list 'v0.2.*-rc' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+-rc$' || true)
@@ -1274,7 +1274,7 @@ jobs:
         - -exc
         - |
           cd repo
-          git fetch --tags --force origin
+          git fetch --tags --force --prune --prune-tags origin
           SOURCE_COMMIT=$(git rev-parse HEAD)
           RC_RELEASE_TAGS=$(git tag --points-at "${SOURCE_COMMIT}" --list 'v0.2.*-rc' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+-rc$' || true)
           RC_RELEASE_COUNT=$(printf '%s\n' "${RC_RELEASE_TAGS}" | grep -c . || true)
@@ -1598,7 +1598,7 @@ jobs:
           printf '%s\n' "${ATTESTED_SOURCE}" | grep -Eq '^[a-f0-9]{40}$'
 
           cd repo
-          git fetch --tags --force origin
+          git fetch --tags --force --prune --prune-tags origin
 
           SOURCE_COMMIT=$(git rev-parse HEAD)
           test "${ATTESTED_SOURCE}" = "${SOURCE_COMMIT}"

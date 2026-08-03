@@ -323,7 +323,10 @@ resume() {
   kill -CONT "$pid" 2>/dev/null || true
   kill -USR2 "$pid" 2>/dev/null || true
 }
-trap 'resume' EXIT HUP INT TERM
+trap 'resume' EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 verify || exit 1
 initial="$(state)"
 case "$initial" in T|t|"") exit 1;; esac

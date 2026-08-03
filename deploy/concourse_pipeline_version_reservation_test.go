@@ -61,15 +61,29 @@ func TestConcourseRCTagsReserveDistinctImmutableVersions(t *testing.T) {
 		t.Fatalf("first RC reservation = %s, want source %s", got, firstSource)
 	}
 
+	// A resource cache can retain an RC tag after it has been deleted remotely.
+	// Once the corresponding stable version exists, that stale local tag must
+	// not be treated as remote authority or resurrected by an old source.
+	runGit(t, repo, "push", "origin", ":refs/tags/v0.2.224-rc")
+	runGit(t, repo, "tag", "v0.2.224", stableSource)
+	runGit(t, repo, "push", "origin", "refs/tags/v0.2.224")
+	runTagTask("candidate with deleted cached reservation")
+	if output, err := exec.Command("git", "--git-dir", origin, "rev-parse", "--verify", "refs/tags/v0.2.224-rc").CombinedOutput(); err == nil {
+		t.Fatalf("deleted RC reservation was resurrected as %s", strings.TrimSpace(string(output)))
+	}
+	if got := gitOutput(t, origin, "rev-parse", "refs/tags/v0.2.225-rc"); got != firstSource {
+		t.Fatalf("replacement RC reservation = %s, want source %s", got, firstSource)
+	}
+
 	writeReleaseFixtureFile(t, filepath.Join(repo, "version.txt"), "candidate two\n", 0o644)
 	runGit(t, repo, "add", "version.txt")
 	runGit(t, repo, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "candidate two")
 	secondSource := gitOutput(t, repo, "rev-parse", "HEAD")
 	runTagTask("second candidate")
-	if got := gitOutput(t, origin, "rev-parse", "refs/tags/v0.2.224-rc"); got != firstSource {
-		t.Fatalf("second candidate moved v0.2.224-rc to %s, want preserved %s", got, firstSource)
+	if got := gitOutput(t, origin, "rev-parse", "refs/tags/v0.2.225-rc"); got != firstSource {
+		t.Fatalf("second candidate moved v0.2.225-rc to %s, want preserved %s", got, firstSource)
 	}
-	if got := gitOutput(t, origin, "rev-parse", "refs/tags/v0.2.225-rc"); got != secondSource {
+	if got := gitOutput(t, origin, "rev-parse", "refs/tags/v0.2.226-rc"); got != secondSource {
 		t.Fatalf("second RC reservation = %s, want source %s", got, secondSource)
 	}
 
@@ -81,17 +95,17 @@ func TestConcourseRCTagsReserveDistinctImmutableVersions(t *testing.T) {
 
 	// A reservation that appeared since the candidate's prior view is never
 	// moved. A fresh attempt observes it and allocates the next patch instead.
-	runGit(t, repo, "tag", "v0.2.226-rc", firstSource)
-	runGit(t, repo, "push", "origin", "refs/tags/v0.2.226-rc")
+	runGit(t, repo, "tag", "v0.2.227-rc", firstSource)
+	runGit(t, repo, "push", "origin", "refs/tags/v0.2.227-rc")
 	writeReleaseFixtureFile(t, filepath.Join(repo, "version.txt"), "candidate three\n", 0o644)
 	runGit(t, repo, "add", "version.txt")
 	runGit(t, repo, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "candidate three")
 	thirdSource := gitOutput(t, repo, "rev-parse", "HEAD")
 	runTagTask("candidate after conflicting reservation")
-	if got := gitOutput(t, origin, "rev-parse", "refs/tags/v0.2.226-rc"); got != firstSource {
-		t.Fatalf("allocator moved conflicting v0.2.226-rc to %s, want preserved %s", got, firstSource)
+	if got := gitOutput(t, origin, "rev-parse", "refs/tags/v0.2.227-rc"); got != firstSource {
+		t.Fatalf("allocator moved conflicting v0.2.227-rc to %s, want preserved %s", got, firstSource)
 	}
-	if got := gitOutput(t, origin, "rev-parse", "refs/tags/v0.2.227-rc"); got != thirdSource {
+	if got := gitOutput(t, origin, "rev-parse", "refs/tags/v0.2.228-rc"); got != thirdSource {
 		t.Fatalf("post-conflict RC reservation = %s, want source %s", got, thirdSource)
 	}
 
@@ -120,7 +134,7 @@ func TestConcourseVersionedBuildsUseExactSourceRCTag(t *testing.T) {
 	}
 	for label, script := range map[string]string{"build-image": build, "agent-runner": runner} {
 		requireTextOrder(t, script,
-			`git fetch --tags --force origin`,
+			`git fetch --tags --force --prune --prune-tags origin`,
 			`SOURCE_COMMIT=$(git rev-parse HEAD)`,
 			`git tag --points-at "${SOURCE_COMMIT}" --list 'v0.2.*-rc'`,
 		)
@@ -150,7 +164,7 @@ func TestConcourseVersionedBuildsUseExactSourceRCTag(t *testing.T) {
 		}
 	}
 	requireTextOrder(t, verify,
-		`git fetch --tags --force origin`,
+		`git fetch --tags --force --prune --prune-tags origin`,
 		`SOURCE_COMMIT=$(git rev-parse HEAD)`,
 		`git tag --points-at "${SOURCE_COMMIT}" --list 'v0.2.*-rc'`,
 	)

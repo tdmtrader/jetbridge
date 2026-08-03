@@ -120,9 +120,19 @@ case "$1" in
         ;;
     esac
     ;;
-  --mcp-config)
-    test "$#" = 5 && test "$3" = "--strict-mcp-config" && test "$4" = "mcp" && test "$5" = "list" || exit 64
-    printf '%s\n' 'output-builder: http://127.0.0.1:7783/mcp (HTTP) - ✓ Connected'
+  mcp)
+    case "$2" in
+      add)
+        test "$#" = 8 && test "$3" = "--scope" && test "$4" = "user" && test "$5" = "--transport" && test "$6" = "http" && test "$7" = "output-builder" && test "$8" = "http://127.0.0.1:7783/mcp" || exit 64
+        test -n "${CLAUDE_CONFIG_DIR-}" || exit 65
+        printf '%s\n' configured > "$CLAUDE_CONFIG_DIR/.claude.json"
+        ;;
+      list)
+        test "$#" = 2 && test -s "$CLAUDE_CONFIG_DIR/.claude.json" || exit 64
+        printf '%s\n' 'output-builder: http://127.0.0.1:7783/mcp (HTTP) - ✔ Connected'
+        ;;
+      *) exit 64 ;;
+    esac
     ;;
   *)
     exit 64
@@ -168,10 +178,23 @@ case "$1" in
   --version) printf '%s\n' '2.1.212 (Claude Code)' ;;
   --help) printf '%s\n' '--max-budget-usd --mcp-config --strict-mcp-config --append-system-prompt --output-format --verbose --dangerously-skip-permissions' ;;
   --print) printf '%s\n' "error: option '--max-turns <turns>' argument missing" >&2; exit 1 ;;
-  --mcp-config)
-    test "$#" = 5 && test "$3" = "--strict-mcp-config" && test "$4" = "mcp" && test "$5" = "list" || exit 64
-    cat "$2" > "$MCP_CONFIG_LOG"
-    printf '%s\n' "$MCP_STATUS"
+  mcp)
+    case "$2" in
+      add)
+        test "$#" = 8 && test "$3" = "--scope" && test "$4" = "user" && test "$5" = "--transport" && test "$6" = "http" && test "$7" = "output-builder" && test "$8" = "http://127.0.0.1:7783/mcp" || exit 64
+        case "${CLAUDE_CONFIG_DIR-}" in
+          "$TMPDIR"/agent-output-smoke.*/claude-config) ;;
+          *) exit 65 ;;
+        esac
+        printf '%s\n' "$*" > "$MCP_CONFIG_LOG"
+        printf '%s\n' configured > "$CLAUDE_CONFIG_DIR/.claude.json"
+        ;;
+      list)
+        test "$#" = 2 && test -s "$CLAUDE_CONFIG_DIR/.claude.json" || exit 64
+        printf '%s\n' "$MCP_STATUS"
+        ;;
+      *) exit 64 ;;
+    esac
     exit 0
     ;;
   *) exit 64 ;;
@@ -211,7 +234,7 @@ exit 64
 		status      string
 		wantSuccess bool
 	}{
-		{name: "connected", status: "output-builder: http://127.0.0.1:7783/mcp (HTTP) - ✓ Connected", wantSuccess: true},
+		{name: "connected", status: "output-builder: http://127.0.0.1:7783/mcp (HTTP) - ✔ Connected", wantSuccess: true},
 		{name: "disconnected", status: "output-builder: http://127.0.0.1:7783/mcp (HTTP) - ✗ Failed to connect"},
 		{name: "negative multiword", status: "output-builder: http://127.0.0.1:7783/mcp (HTTP) - Not Connected"},
 	} {
@@ -247,8 +270,8 @@ exit 64
 				t.Fatalf("authority = %q, %v", authority, err)
 			}
 			config, err := os.ReadFile(mcpConfigLog)
-			if err != nil || string(config) != `{"mcpServers":{"output-builder":{"type":"http","url":"http://127.0.0.1:7783/mcp"}}}`+"\n" {
-				t.Fatalf("MCP config = %q, %v", config, err)
+			if err != nil || string(config) != "mcp add --scope user --transport http output-builder http://127.0.0.1:7783/mcp\n" {
+				t.Fatalf("MCP registration = %q, %v", config, err)
 			}
 			if entries, err := os.ReadDir(tmpDir); err != nil || len(entries) != 0 {
 				t.Fatalf("smoke temp cleanup = %#v, %v", entries, err)
@@ -257,6 +280,27 @@ exit 64
 				t.Fatalf("authority residue remains after sidecar cleanup: %v", err)
 			}
 		})
+	}
+}
+
+func TestAgentRunnerImageSmokeExitsOnTerminationSignals(t *testing.T) {
+	smoke, err := os.ReadFile("agent-runner/smoke.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(smoke)
+	if strings.Contains(script, "trap cleanup EXIT HUP INT TERM") {
+		t.Fatal("smoke cleanup trap handles termination signals without exiting")
+	}
+	for _, required := range []string{
+		"trap cleanup EXIT",
+		"trap 'exit 129' HUP",
+		"trap 'exit 130' INT",
+		"trap 'exit 143' TERM",
+	} {
+		if !strings.Contains(script, required) {
+			t.Errorf("smoke signal handling lacks %q", required)
+		}
 	}
 }
 
@@ -316,7 +360,7 @@ func TestAgentRunnerPipelinePublishesVerifiedImmutableImage(t *testing.T) {
 			t.Fatalf("privileged runner builder must not handle GitOps operation %q", forbidden)
 		}
 	}
-	if got := strings.Count(script, "git fetch --tags --force origin"); got != 1 {
+	if got := strings.Count(script, "git fetch --tags --force --prune --prune-tags origin"); got != 1 {
 		t.Fatalf("privileged runner builder public tag refresh count = %d, want exactly 1", got)
 	}
 	for _, input := range task.Config.Inputs {
@@ -392,6 +436,26 @@ func TestAgentRunnerWritebackRunbookOrdersArgoActivation(t *testing.T) {
 			t.Errorf("writeback runbook lacks %q", required)
 		}
 	}
+}
+
+func TestAgentRunnerCutoverRunbookReservesExactSourceBeforeManualBuild(t *testing.T) {
+	raw, err := os.ReadFile("../docs/agentic/V3_CUTOVER_DEPLOY.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runbook := string(raw)
+	sectionStart := strings.Index(runbook, "## Order of operations")
+	sectionEnd := strings.Index(runbook, "### 2.")
+	if sectionStart < 0 || sectionEnd <= sectionStart {
+		t.Fatal("deployment runbook lacks its first cutover operation")
+	}
+	section := runbook[sectionStart:sectionEnd]
+	requireTextOrder(t, section,
+		"tag-rc",
+		"exact commit",
+		"build-agent-runner-image",
+		"selected `repo` input",
+	)
 }
 
 func TestAgentRunnerDeploymentRunbookOrdersCompatibilityWindow(t *testing.T) {
