@@ -40,7 +40,7 @@ import Concourse.WorkflowRun as WorkflowRun
 import DateFormat
 import EffectTransformer exposing (ET)
 import Html exposing (Html)
-import Html.Attributes exposing (href, id, style, value)
+import Html.Attributes exposing (class, href, id, style, value)
 import Html.Events exposing (onClick, onInput)
 import Html.Lazy
 import Login.Login as Login
@@ -76,9 +76,16 @@ type alias Model =
            cannot express — that link is the CURRENT dispatch attempt, this is
            the whole story.
         -}
-        , journal : List AgentTicket.JournalEntry
+        , journal : JournalState
         , now : Maybe Time.Posix
         }
+
+
+type JournalState
+    = JournalLoading
+    | JournalFailed
+    | JournalLoaded (List AgentTicket.JournalEntry)
+    | JournalStale (List AgentTicket.JournalEntry)
 
 
 {-| What a dispatch that could NOT simply hand the user to its run has to say.
@@ -111,7 +118,7 @@ init { id } =
       , dispatchConfirm = False
       , dispatchNotice = Nothing
       , pendingTransition = Nothing
-      , journal = []
+      , journal = JournalLoading
       , now = Nothing
       , isUserMenuExpanded = False
       }
@@ -132,133 +139,179 @@ documentTitle model =
 handleCallback : Callback -> ET Model
 handleCallback callback ( model, effects ) =
     case callback of
-        AgentTicketFetched (Ok fresh) ->
-            -- Only replace fetched data. The edit buffers are deliberately
-            -- not written here: they are seeded when the user clicks Edit
-            -- (see ClickAgentTicketEdit), so the 5s self-heal refetch cannot
-            -- silently revert unsaved typing — a guard this callback once
-            -- forgot, clobbering an open edit every few seconds.
-            let
-                -- Keep the previously installed record when the refetch decoded
-                -- identical data: Html.Lazy compares arguments by reference, so
-                -- installing an equal-but-fresh record every 5s would defeat
-                -- every lazy view below.
-                detail =
-                    case model.detail of
-                        Just old ->
-                            if old == fresh then
-                                old
+        AgentTicketFetched ticketId (Ok fresh) ->
+            if ticketId /= model.ticketId || fresh.ticket.id /= model.ticketId then
+                ( model, effects )
 
-                            else
-                                fresh
-
-                        Nothing ->
-                            fresh
-
-                stateChanged =
-                    model.detail
-                        |> Maybe.map (\old -> old.ticket.state /= detail.ticket.state)
-                        |> Maybe.withDefault False
-
-                -- The edit form is suppressed for terminal states, so if the
-                -- ticket goes terminal under an open edit the form would
-                -- silently vanish with `editing` stuck True and no Cancel left
-                -- to reach — exit the edit explicitly and say why.
-                editKilledByTerminal =
-                    model.editing && isTerminal detail.ticket.state
-
-                currentDurableKey =
-                    model.detail
-                        |> Maybe.andThen (.ticket >> durableKey)
-
-                freshDurableKey =
-                    durableKey detail.ticket
-
-                durableRun =
-                    if currentDurableKey == freshDurableKey then
-                        case ( freshDurableKey, model.durableRun ) of
-                            ( Just ( workflowName, workflowRunId ), Just run ) ->
-                                if
-                                    run.summary.workflowName
-                                        == workflowName
-                                        && run.summary.id
-                                        == workflowRunId
-                                then
-                                    model.durableRun
+            else
+                -- Only replace fetched data. The edit buffers are deliberately
+                -- not written here: they are seeded when the user clicks Edit
+                -- (see ClickAgentTicketEdit), so the 5s self-heal refetch cannot
+                -- silently revert unsaved typing — a guard this callback once
+                -- forgot, clobbering an open edit every few seconds.
+                let
+                    -- Keep the previously installed record when the refetch decoded
+                    -- identical data: Html.Lazy compares arguments by reference, so
+                    -- installing an equal-but-fresh record every 5s would defeat
+                    -- every lazy view below.
+                    detail =
+                        case model.detail of
+                            Just old ->
+                                if old == fresh then
+                                    old
 
                                 else
+                                    fresh
+
+                            Nothing ->
+                                fresh
+
+                    stateChanged =
+                        model.detail
+                            |> Maybe.map (\old -> old.ticket.state /= detail.ticket.state)
+                            |> Maybe.withDefault False
+
+                    -- The edit form is suppressed for terminal states, so if the
+                    -- ticket goes terminal under an open edit the form would
+                    -- silently vanish with `editing` stuck True and no Cancel left
+                    -- to reach — exit the edit explicitly and say why.
+                    editKilledByTerminal =
+                        model.editing && isTerminal detail.ticket.state
+
+                    currentDurableKey =
+                        model.detail
+                            |> Maybe.andThen (.ticket >> durableKey)
+
+                    freshDurableKey =
+                        durableKey detail.ticket
+
+                    durableRun =
+                        if currentDurableKey == freshDurableKey then
+                            case ( freshDurableKey, model.durableRun ) of
+                                ( Just ( workflowName, workflowRunId ), Just run ) ->
+                                    if
+                                        run.summary.workflowName
+                                            == workflowName
+                                            && run.summary.id
+                                            == workflowRunId
+                                    then
+                                        model.durableRun
+
+                                    else
+                                        Nothing
+
+                                _ ->
                                     Nothing
+
+                        else
+                            Nothing
+                in
+                ( { model
+                    | detail = Just detail
+                    , durableRun = durableRun
+                    , loaded = True
+                    , loadError = False
+
+                    -- An armed-but-unconfirmed transition (or dispatch) was a
+                    -- decision about the PREVIOUS state; if the state changed
+                    -- underneath it, disarm so the user re-decides against the
+                    -- fresh state. (Confirm racing ahead of this refetch is safe:
+                    -- it posts the old state as `from`, which the server's CAS
+                    -- rejects with a 409.)
+                    , pendingTransition =
+                        if stateChanged then
+                            Nothing
+
+                        else
+                            model.pendingTransition
+                    , dispatchConfirm = model.dispatchConfirm && not stateChanged
+                    , editing = model.editing && not editKilledByTerminal
+                    , actionError =
+                        if editKilledByTerminal then
+                            Just
+                                ("Ticket moved to \""
+                                    ++ detail.ticket.state
+                                    ++ "\" while you were editing — unsaved changes were discarded."
+                                )
+
+                        else
+                            model.actionError
+                  }
+                , effects
+                    ++ (case freshDurableKey of
+                            Just ( workflowName, workflowRunId ) ->
+                                [ FetchAgentWorkflowRun workflowName workflowRunId ]
+
+                            Nothing ->
+                                []
+                       )
+                )
+
+        AgentTicketFetched ticketId (Err _) ->
+            if ticketId /= model.ticketId then
+                ( model, effects )
+
+            else
+                ( { model | loaded = True, loadError = True }, effects )
+
+        AgentTicketRunsFetched ticketId (Ok journal) ->
+            if ticketId /= model.ticketId then
+                ( model, effects )
+
+            else
+                let
+                    previous =
+                        case model.journal of
+                            JournalLoaded old ->
+                                Just old
+
+                            JournalStale old ->
+                                Just old
 
                             _ ->
                                 Nothing
 
-                    else
-                        Nothing
-            in
-            ( { model
-                | detail = Just detail
-                , durableRun = durableRun
-                , loaded = True
-                , loadError = False
+                    installed =
+                        case previous of
+                            Just old ->
+                                if old == journal then
+                                    old
 
-                -- An armed-but-unconfirmed transition (or dispatch) was a
-                -- decision about the PREVIOUS state; if the state changed
-                -- underneath it, disarm so the user re-decides against the
-                -- fresh state. (Confirm racing ahead of this refetch is safe:
-                -- it posts the old state as `from`, which the server's CAS
-                -- rejects with a 409.)
-                , pendingTransition =
-                    if stateChanged then
-                        Nothing
+                                else
+                                    journal
 
-                    else
-                        model.pendingTransition
-                , dispatchConfirm = model.dispatchConfirm && not stateChanged
-                , editing = model.editing && not editKilledByTerminal
-                , actionError =
-                    if editKilledByTerminal then
-                        Just
-                            ("Ticket moved to \""
-                                ++ detail.ticket.state
-                                ++ "\" while you were editing — unsaved changes were discarded."
-                            )
+                            Nothing ->
+                                journal
+                in
+                ( { model | journal = JournalLoaded installed }
+                , effects
+                )
 
-                    else
-                        model.actionError
-              }
-            , effects
-                ++ (case freshDurableKey of
-                        Just ( workflowName, workflowRunId ) ->
-                            [ FetchAgentWorkflowRun workflowName workflowRunId ]
-
-                        Nothing ->
-                            []
-                   )
-            )
-
-        AgentTicketFetched (Err _) ->
-            ( { model | loaded = True, loadError = True }, effects )
-
-        AgentTicketRunsFetched (Ok journal) ->
-            -- Keep the installed list when a refetch decoded identical data:
-            -- Html.Lazy compares by reference, so replacing an equal list
-            -- every 5s would defeat the lazy journal view.
-            ( { model
-                | journal =
-                    if model.journal == journal then
-                        model.journal
-
-                    else
-                        journal
-              }
-            , effects
-            )
-
-        AgentTicketRunsFetched (Err _) ->
+        AgentTicketRunsFetched ticketId (Err _) ->
             -- The journal is supporting context, not the page. A failed
             -- journal read leaves the last good history on screen rather than
             -- blanking a ticket that loaded perfectly well.
-            ( model, effects )
+            if ticketId /= model.ticketId then
+                ( model, effects )
+
+            else
+                ( { model
+                    | journal =
+                        case model.journal of
+                            JournalLoaded journal ->
+                                JournalStale journal
+
+                            JournalStale journal ->
+                                JournalStale journal
+
+                            JournalLoading ->
+                                JournalFailed
+
+                            JournalFailed ->
+                                JournalFailed
+                  }
+                , effects
+                )
 
         AgentWorkflowRunFetched workflowRunId (Ok detail) ->
             case model.detail |> Maybe.andThen (.ticket >> durableKey) of
@@ -282,55 +335,73 @@ handleCallback callback ( model, effects ) =
         AgentWorkflowRunFetched _ (Err _) ->
             ( model, effects )
 
-        AgentTicketSaved _ (Ok ()) ->
-            ( { model | editing = False, actionError = Nothing }
-            , effects ++ [ FetchAgentTicket model.ticketId ]
-            )
+        AgentTicketSaved ticketId result ->
+            if ticketId /= model.ticketId then
+                ( model, effects )
 
-        AgentTicketSaved _ (Err _) ->
-            ( { model | actionError = Just "Couldn't save changes." }, effects )
+            else
+                case result of
+                    Ok () ->
+                        ( { model | editing = False, actionError = Nothing }
+                        , effects ++ [ FetchAgentTicket model.ticketId ]
+                        )
 
-        AgentTicketTransitioned _ (Ok ()) ->
-            ( { model | actionError = Nothing }
-            , effects ++ [ FetchAgentTicket model.ticketId ]
-            )
+                    Err _ ->
+                        ( { model | actionError = Just "Couldn't save changes." }, effects )
 
-        AgentTicketTransitioned _ (Err _) ->
-            ( { model | actionError = Just "Transition rejected — the ticket state may have changed. Refreshing…" }
-            , effects ++ [ FetchAgentTicket model.ticketId ]
-            )
+        AgentTicketTransitioned ticketId result ->
+            if ticketId /= model.ticketId then
+                ( model, effects )
+
+            else
+                case result of
+                    Ok () ->
+                        ( { model | actionError = Nothing }
+                        , effects ++ [ FetchAgentTicket model.ticketId ]
+                        )
+
+                    Err _ ->
+                        ( { model | actionError = Just "Transition rejected — the ticket state may have changed. Refreshing…" }
+                        , effects ++ [ FetchAgentTicket model.ticketId ]
+                        )
 
         -- Dispatch's one product is a durable workflow run, and the run page is
         -- where every subsequent truth about it lives. The old code decoded the
         -- response and threw it away (`Ok _`), leaving the user on an unchanged
         -- ticket with no clue what had just been created, so take them there.
-        AgentTicketDispatched _ (Ok result) ->
-            let
-                workflowName =
-                    model.detail
-                        |> Maybe.map (.ticket >> .workflowName >> String.trim)
-                        |> Maybe.withDefault ""
-
-                notice =
-                    { workflowRunId = result.workflowRunId
-                    , workflowName = workflowName
-                    , warnings = result.warnings
-                    }
-            in
-            if List.isEmpty result.warnings && workflowName /= "" then
-                ( { model | actionError = Nothing, dispatchNotice = Nothing }
-                , effects ++ [ NavigateTo (Routes.toString (dispatchedRunRoute notice)) ]
-                )
+        AgentTicketDispatched ticketId result ->
+            if ticketId /= model.ticketId then
+                ( model, effects )
 
             else
-                -- Warnings (or a ticket with no workflow name to route with)
-                -- must not be swallowed by a navigation the user never sees.
-                ( { model | actionError = Nothing, dispatchNotice = Just notice }
-                , effects ++ [ FetchAgentTicket model.ticketId ]
-                )
+                case result of
+                    Ok dispatchResult ->
+                        let
+                            workflowName =
+                                model.detail
+                                    |> Maybe.map (.ticket >> .workflowName >> String.trim)
+                                    |> Maybe.withDefault ""
 
-        AgentTicketDispatched _ (Err _) ->
-            ( { model | actionError = Just "Dispatch failed." }, effects )
+                            notice =
+                                { workflowRunId = dispatchResult.workflowRunId
+                                , workflowName = workflowName
+                                , warnings = dispatchResult.warnings
+                                }
+                        in
+                        if List.isEmpty dispatchResult.warnings && workflowName /= "" then
+                            ( { model | actionError = Nothing, dispatchNotice = Nothing }
+                            , effects ++ [ NavigateTo (Routes.toString (dispatchedRunRoute notice)) ]
+                            )
+
+                        else
+                            -- Warnings (or a ticket with no workflow name to route with)
+                            -- must not be swallowed by a navigation the user never sees.
+                            ( { model | actionError = Nothing, dispatchNotice = Just notice }
+                            , effects ++ [ FetchAgentTicket model.ticketId ]
+                            )
+
+                    Err _ ->
+                        ( { model | actionError = Just "Dispatch failed." }, effects )
 
         _ ->
             ( model, effects )
@@ -1086,8 +1157,34 @@ journalSection model =
             , style "margin" "0 0 6px 0"
             ]
             [ Html.text "Runs for this ticket" ]
-        , Html.Lazy.lazy2 viewJournal (Maybe.withDefault (Time.millisToPosix 0) model.now) model.journal
+        , viewJournalState (Maybe.withDefault (Time.millisToPosix 0) model.now) model.journal
         ]
+
+
+viewJournalState : Time.Posix -> JournalState -> Html Message
+viewJournalState now state =
+    case state of
+        JournalLoading ->
+            Html.div [ class "agent-journal-loading", style "color" "#9aa39b" ]
+                [ Html.text "Loading run history…" ]
+
+        JournalFailed ->
+            Html.div [ class "agent-journal-error", style "color" "#f0a0a0" ]
+                [ Html.text "Couldn't load run history." ]
+
+        JournalLoaded journal ->
+            Html.Lazy.lazy2 viewJournal now journal
+
+        JournalStale journal ->
+            Html.div []
+                [ Html.div
+                    [ class "agent-journal-stale"
+                    , style "color" "#d7b46a"
+                    , style "margin-bottom" "6px"
+                    ]
+                    [ Html.text "Run history may be stale — couldn't refresh." ]
+                , Html.Lazy.lazy2 viewJournal now journal
+                ]
 
 
 viewJournal : Time.Posix -> List AgentTicket.JournalEntry -> Html Message

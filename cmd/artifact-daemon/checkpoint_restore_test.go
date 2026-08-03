@@ -123,6 +123,15 @@ func TestCheckpointRestoreMarkerIsPrivateAndBoundToHandleMaterializationAndUID(t
 	if err != nil || !found || got != marker {
 		t.Fatalf("read marker = %#v, %t, %v", got, found, err)
 	}
+	replacement := marker
+	replacement.PodUID = "other-pod"
+	if err := server.writeCheckpointRestoreMarker("agent-42", marker.MaterializationID, replacement); !errors.Is(err, os.ErrExist) {
+		t.Fatalf("replace published marker error = %v, want file exists", err)
+	}
+	got, found, err = server.readCheckpointRestoreMarker("agent-42", marker.MaterializationID)
+	if err != nil || !found || got != marker {
+		t.Fatalf("marker after no-replace publication = %#v, %t, %v", got, found, err)
+	}
 	if _, found, err := server.readCheckpointRestoreMarker("agent-other", marker.MaterializationID); err != nil || found {
 		t.Fatalf("other handle marker = %t, %v", found, err)
 	}
@@ -215,6 +224,81 @@ func TestCheckpointRestoreCopiesExactCanonicalArchivePreservingRootsAndReplaysMa
 	}
 	if calls := durable.OpenCalls(); len(calls) != 1 {
 		t.Fatalf("mismatch replay reopened Hangar %d times", len(calls))
+	}
+}
+
+func TestCheckpointRestoreReplaysAfterInterruptedMarkerPublication(t *testing.T) {
+	for name, contents := range map[string]string{
+		"empty marker": "",
+		"truncated marker after both complete identifiers": `{"materialization_id":"materialization-2","request_hash":"` + strings.Repeat("a", 64) + `","object":{},"pod_uid":"pod-uid-2"`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			server, durable, request, storage, _ := checkpointRestoreFixture(t)
+			precreateCheckpointGate(t, storage, request)
+			markerPath := filepath.Join(storage, checkpointRestoreGatesDirectory, request.ContainerHandle, checkpointRestoreMarkerName(request.MaterializationID), "ready")
+			if err := os.WriteFile(markerPath, []byte(contents), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			if _, err := server.restoreCheckpoint(context.Background(), request); err != nil {
+				t.Fatalf("restore after interrupted marker publication: %v", err)
+			}
+			if calls := durable.OpenCalls(); len(calls) != 1 {
+				t.Fatalf("restore after interrupted marker opened Hangar %d times, want 1", len(calls))
+			}
+			if _, found, err := server.readCheckpointRestoreMarker(request.ContainerHandle, request.MaterializationID); err != nil || !found {
+				t.Fatalf("replayed restore marker = %t, %v", found, err)
+			}
+		})
+	}
+}
+
+func TestCheckpointRestoreDoesNotRemoveUnsafeMarkerEntry(t *testing.T) {
+	server, durable, request, storage, _ := checkpointRestoreFixture(t)
+	precreateCheckpointGate(t, storage, request)
+	external := filepath.Join(t.TempDir(), "external")
+	if err := os.WriteFile(external, []byte("untouched"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	markerPath := filepath.Join(storage, checkpointRestoreGatesDirectory, request.ContainerHandle, checkpointRestoreMarkerName(request.MaterializationID), "ready")
+	if err := os.Symlink(external, markerPath); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := server.restoreCheckpoint(context.Background(), request); err == nil {
+		t.Fatal("restore removed an unsafe marker entry")
+	}
+	if calls := durable.OpenCalls(); len(calls) != 0 {
+		t.Fatalf("unsafe marker reached Hangar: %#v", calls)
+	}
+	info, err := os.Lstat(markerPath)
+	if err != nil {
+		t.Fatalf("unsafe marker was removed: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("unsafe marker type changed: mode=%v", info.Mode())
+	}
+	if contents, err := os.ReadFile(external); err != nil || string(contents) != "untouched" {
+		t.Fatalf("external marker target = %q, %v", contents, err)
+	}
+}
+
+func TestCheckpointRestoreDoesNotRemoveNonRegularMarkerEntry(t *testing.T) {
+	server, durable, request, storage, _ := checkpointRestoreFixture(t)
+	precreateCheckpointGate(t, storage, request)
+	markerPath := filepath.Join(storage, checkpointRestoreGatesDirectory, request.ContainerHandle, checkpointRestoreMarkerName(request.MaterializationID), "ready")
+	if err := os.Mkdir(markerPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := server.restoreCheckpoint(context.Background(), request); err == nil {
+		t.Fatal("restore removed a non-regular marker entry")
+	}
+	if calls := durable.OpenCalls(); len(calls) != 0 {
+		t.Fatalf("non-regular marker reached Hangar: %#v", calls)
+	}
+	if info, err := os.Lstat(markerPath); err != nil || !info.IsDir() {
+		t.Fatalf("non-regular marker changed: info=%v err=%v", info, err)
 	}
 }
 

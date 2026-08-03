@@ -61,16 +61,20 @@ type alias Model =
         , workflows : Maybe (List Agent.WorkflowSummary)
         , workflowRuns : Dict String (List WorkflowRun.Summary)
         , workflowRunStatusCounts : Dict String (Dict String Int)
-        , workflowRunsError : Maybe String
+        , workflowRunsErrors : Dict String String
+        , workflowRunStatusCountsErrors : Dict String String
         , experiments : Maybe (List Experiment.Experiment)
         , experimentsError : Maybe String
-        , costByWorkflow : Dict String Float
+        , costByWorkflow : Maybe (Dict String Float)
+        , workflowCostsError : Maybe String
         , costRollup : Maybe Agent.CostRollup
         , workflowsError : Maybe String
         , costError : Maybe String
         , credentials : Maybe (List Agent.CredentialStatus)
         , credentialsError : Maybe String
         , platformCredentials : Maybe (List Agent.CredentialStatus)
+        , platformCredentialsError : Maybe String
+        , platformCredentialsForbidden : Bool
         , expandedRuns : Set String
         }
 
@@ -82,16 +86,20 @@ init =
       , workflows = Nothing
       , workflowRuns = Dict.empty
       , workflowRunStatusCounts = Dict.empty
-      , workflowRunsError = Nothing
+      , workflowRunsErrors = Dict.empty
+      , workflowRunStatusCountsErrors = Dict.empty
       , experiments = Nothing
       , experimentsError = Nothing
-      , costByWorkflow = Dict.empty
+      , costByWorkflow = Nothing
+      , workflowCostsError = Nothing
       , costRollup = Nothing
       , workflowsError = Nothing
       , costError = Nothing
       , credentials = Nothing
       , credentialsError = Nothing
       , platformCredentials = Nothing
+      , platformCredentialsError = Nothing
+      , platformCredentialsForbidden = False
       , expandedRuns = Set.empty
       , isUserMenuExpanded = False
       }
@@ -147,16 +155,29 @@ handleCallback callback ( model, effects ) =
         AgentWorkflowsFetched (Err err) ->
             ( { model | workflowsError = Just (errorMessage "workflows" err) }, effects )
 
-        AgentWorkflowRunsFetched workflowName (Ok runs) ->
-            ( { model
-                | workflowRuns = Dict.insert workflowName runs model.workflowRuns
-                , workflowRunsError = Nothing
-              }
-            , effects
-            )
+        AgentWorkflowRunsFetched workflowName requestQuery (Ok runs) ->
+            if requestQuery == [] then
+                ( { model
+                    | workflowRuns = Dict.insert workflowName runs model.workflowRuns
+                    , workflowRunsErrors = Dict.remove workflowName model.workflowRunsErrors
+                  }
+                , effects
+                )
 
-        AgentWorkflowRunsFetched _ (Err err) ->
-            ( { model | workflowRunsError = Just (errorMessage "workflow runs" err) }, effects )
+            else
+                ( model, effects )
+
+        AgentWorkflowRunsFetched workflowName requestQuery (Err err) ->
+            if requestQuery == [] then
+                ( { model
+                    | workflowRunsErrors =
+                        Dict.insert workflowName (errorMessage "workflow runs" err) model.workflowRunsErrors
+                  }
+                , effects
+                )
+
+            else
+                ( model, effects )
 
         AgentWorkflowRunOperationalStatusCountsFetched workflowName (Ok aggregate) ->
             if aggregate.workflowName /= workflowName then
@@ -166,13 +187,19 @@ handleCallback callback ( model, effects ) =
                 ( { model
                     | workflowRunStatusCounts =
                         Dict.insert workflowName aggregate.counts model.workflowRunStatusCounts
-                    , workflowRunsError = Nothing
+                    , workflowRunStatusCountsErrors =
+                        Dict.remove workflowName model.workflowRunStatusCountsErrors
                   }
                 , effects
                 )
 
-        AgentWorkflowRunOperationalStatusCountsFetched _ (Err err) ->
-            ( { model | workflowRunsError = Just (errorMessage "workflow run status" err) }, effects )
+        AgentWorkflowRunOperationalStatusCountsFetched workflowName (Err err) ->
+            ( { model
+                | workflowRunStatusCountsErrors =
+                    Dict.insert workflowName (errorMessage "workflow run status" err) model.workflowRunStatusCountsErrors
+              }
+            , effects
+            )
 
         AgentExperimentsFetched (Ok experiments) ->
             ( { model | experiments = Just experiments, experimentsError = Nothing }, effects )
@@ -181,24 +208,29 @@ handleCallback callback ( model, effects ) =
             ( { model | experimentsError = Just (errorMessage "experiments" err) }, effects )
 
         AgentCostRollupFetched (Ok costRollup) ->
-            -- The console fires both the by-day rollup (the Costs table) and
-            -- the by-workflow rollup (the per-workflow spend column); they
-            -- share one callback and are told apart by the response's group_by.
+            ( { model | costRollup = Just costRollup, costError = Nothing }, effects )
+
+        AgentCostRollupFetched (Err err) ->
+            ( { model | costError = Just (errorMessage "costs" err) }, effects )
+
+        AgentWorkflowCostsFetched (Ok costRollup) ->
             if costRollup.groupBy == "workflow" then
                 ( { model
                     | costByWorkflow =
                         costRollup.rows
                             |> List.map (\row -> ( row.key, row.costUsd ))
                             |> Dict.fromList
+                            |> Just
+                    , workflowCostsError = Nothing
                   }
                 , effects
                 )
 
             else
-                ( { model | costRollup = Just costRollup, costError = Nothing }, effects )
+                ( { model | workflowCostsError = Just "couldn't load workflow costs" }, effects )
 
-        AgentCostRollupFetched (Err err) ->
-            ( { model | costError = Just (errorMessage "costs" err) }, effects )
+        AgentWorkflowCostsFetched (Err err) ->
+            ( { model | workflowCostsError = Just (errorMessage "workflow costs" err) }, effects )
 
         AgentCredentialsFetched (Ok credentials) ->
             ( { model | credentials = Just credentials, credentialsError = Nothing }, effects )
@@ -207,11 +239,43 @@ handleCallback callback ( model, effects ) =
             ( { model | credentialsError = Just (errorMessage "credentials" err) }, effects )
 
         AgentPlatformCredentialsFetched (Ok credentials) ->
-            ( { model | platformCredentials = Just credentials }, effects )
+            ( { model
+                | platformCredentials = Just credentials
+                , platformCredentialsError = Nothing
+                , platformCredentialsForbidden = False
+              }
+            , effects
+            )
 
-        AgentPlatformCredentialsFetched (Err _) ->
-            -- Non-admins get a 403 here; the platform row is simply omitted.
-            ( { model | platformCredentials = Nothing }, effects )
+        AgentPlatformCredentialsFetched (Err err) ->
+            case err of
+                Http.BadStatus { status } ->
+                    if status.code == 403 then
+                        -- Non-admins cannot inspect the shared platform slot;
+                        -- only this exact authorization result hides it.
+                        ( { model
+                            | platformCredentials = Nothing
+                            , platformCredentialsError = Nothing
+                            , platformCredentialsForbidden = True
+                          }
+                        , effects
+                        )
+
+                    else
+                        ( { model
+                            | platformCredentialsError = Just (errorMessage "platform credentials" err)
+                            , platformCredentialsForbidden = False
+                          }
+                        , effects
+                        )
+
+                _ ->
+                    ( { model
+                        | platformCredentialsError = Just (errorMessage "platform credentials" err)
+                        , platformCredentialsForbidden = False
+                      }
+                    , effects
+                    )
 
         _ ->
             ( model, effects )
@@ -758,17 +822,28 @@ workflowsSection model =
 
             Just workflows ->
                 staleDataWarning model.workflowsError
-                    ++ staleDataWarning model.workflowRunsError
-                    ++ staleDataWarning model.experimentsError
+                    ++ (case model.experiments of
+                            Just _ ->
+                                staleDataWarning model.experimentsError
+
+                            Nothing ->
+                                []
+                       )
                     ++ [ Html.div [ class "agent-workflows" ] (List.map (workflowRow model) workflows) ]
 
 
 workflowRow : Model -> Agent.WorkflowSummary -> Html Message
 workflowRow model w =
     let
-        runs =
+        maybeRuns =
             Dict.get w.name model.workflowRuns
+
+        runs =
+            maybeRuns
                 |> Maybe.withDefault []
+
+        maybeStatusCounts =
+            Dict.get w.name model.workflowRunStatusCounts
 
         queued =
             workflowStatusCount w.name "admitting" model
@@ -781,39 +856,107 @@ workflowRow model w =
             List.filter (\run -> run.originKind /= "experiment") runs
 
         latestStatus =
-            operational
-                |> List.head
-                |> Maybe.map .status
-                |> Maybe.withDefault "no operational runs"
+            case maybeRuns of
+                Nothing ->
+                    if Dict.member w.name model.workflowRunsErrors then
+                        "unavailable"
+
+                    else
+                        "loading…"
+
+                Just _ ->
+                    operational
+                        |> List.head
+                        |> Maybe.map .status
+                        |> Maybe.withDefault "no operational runs"
 
         attention =
             workflowStatusCount w.name "failed" model
                 + workflowStatusCount w.name "errored" model
 
         needsAttention =
-            attention > 0
+            maybeStatusCounts /= Nothing && attention > 0
 
-        experimentStates =
-            model.experiments
-                |> Maybe.withDefault []
-                |> List.filter
-                    (\experiment ->
-                        List.any
-                            (\variant -> variant.target.workflowName == w.name)
-                            experiment.definition.variants
-                    )
-                |> List.map (.definition >> .state)
+        statusCountsSummary =
+            case maybeStatusCounts of
+                Nothing ->
+                    if Dict.member w.name model.workflowRunStatusCountsErrors then
+                        "status counts unavailable"
+
+                    else
+                        "status counts loading…"
+
+                Just _ ->
+                    String.fromInt queued
+                        ++ " queued · "
+                        ++ String.fromInt running
+                        ++ " running · "
+                        ++ String.fromInt attention
+                        ++ " attention"
+
+        staleSummary =
+            (if maybeRuns /= Nothing && Dict.member w.name model.workflowRunsErrors then
+                " · recent runs stale"
+
+             else
+                ""
+            )
+                ++ (if maybeStatusCounts /= Nothing && Dict.member w.name model.workflowRunStatusCountsErrors then
+                        " · status counts stale"
+
+                    else
+                        ""
+                   )
 
         experimentLabel =
-            case experimentStates of
-                [] ->
-                    "no experiments"
+            case model.experiments of
+                Nothing ->
+                    case model.experimentsError of
+                        Just _ ->
+                            "unavailable"
 
-                states ->
-                    String.join ", " states
+                        Nothing ->
+                            "loading…"
 
-        cost =
-            Dict.get w.name model.costByWorkflow |> Maybe.withDefault 0
+                Just experiments ->
+                    let
+                        states =
+                            experiments
+                                |> List.filter
+                                    (\experiment ->
+                                        List.any
+                                            (\variant -> variant.target.workflowName == w.name)
+                                            experiment.definition.variants
+                                    )
+                                |> List.map (.definition >> .state)
+                    in
+                    case states of
+                        [] ->
+                            "no experiments"
+
+                        _ ->
+                            String.join ", " states
+
+        costLabel =
+            case model.costByWorkflow of
+                Nothing ->
+                    case model.workflowCostsError of
+                        Just _ ->
+                            "cost unavailable"
+
+                        Nothing ->
+                            "cost loading…"
+
+                Just costs ->
+                    "cost $"
+                        ++ formatUsd (Dict.get w.name costs |> Maybe.withDefault 0)
+                        ++ (case model.workflowCostsError of
+                                Just _ ->
+                                    " (stale)"
+
+                                Nothing ->
+                                    ""
+                           )
     in
     Html.div
         [ class "agent-workflow-row"
@@ -869,12 +1012,8 @@ workflowRow model w =
                     ("latest operational: "
                         ++ latestStatus
                         ++ " · "
-                        ++ String.fromInt queued
-                        ++ " queued · "
-                        ++ String.fromInt running
-                        ++ " running · "
-                        ++ String.fromInt attention
-                        ++ " attention"
+                        ++ statusCountsSummary
+                        ++ staleSummary
                     )
                  ]
                     ++ (if needsAttention then
@@ -896,8 +1035,8 @@ workflowRow model w =
                 [ Html.text
                     ("experiments: "
                         ++ experimentLabel
-                        ++ " · cost $"
-                        ++ formatUsd cost
+                        ++ " · "
+                        ++ costLabel
                     )
                 ]
             ]
@@ -1192,7 +1331,7 @@ credentialsSection zone model =
     -- viewer's OWN interactive credential. Keeping them apart stops an empty
     -- personal slot from reading as "the platform auth is missing".
     sectionBlock "agent-credentials" "Credentials" <|
-        platformCredentialsBlock zone model.platformCredentials
+        platformCredentialsBlock zone model
             ++ personalCredentialsBlock zone model
 
 
@@ -1216,35 +1355,50 @@ with. Fetched with `?user=platform` (admin-only; a 403 hides the block), so
 the section no longer claims "no credentials stored" while dispatch works.
 Rendered under its own "Platform credential" header.
 -}
-platformCredentialsBlock : Time.Zone -> Maybe (List Agent.CredentialStatus) -> List (Html Message)
-platformCredentialsBlock zone maybeCreds =
-    case maybeCreds of
-        Just (cred :: rest) ->
-            [ credentialSlotLabel "Platform credential (used by dispatched runs)"
-            , Html.div
-                [ class "agent-platform-credential"
-                , style "font-family" "monospace"
-                , style "font-size" "12px"
-                , style "color" Colors.text
-                , style "margin" "0 0 8px 0"
-                ]
-                (List.map
-                    (\c ->
-                        Html.div []
-                            [ Html.text
-                                (c.kind
-                                    ++ " (expires "
-                                    ++ formatPosix zone c.expiresAt
-                                    ++ ") — active"
-                                )
-                            ]
-                    )
-                    (cred :: rest)
-                )
-            ]
+platformCredentialsBlock : Time.Zone -> Model -> List (Html Message)
+platformCredentialsBlock zone model =
+    if model.platformCredentialsForbidden then
+        []
 
-        _ ->
-            []
+    else
+        credentialSlotLabel "Platform credential (used by dispatched runs)"
+            :: (case model.platformCredentials of
+                    Nothing ->
+                        case model.platformCredentialsError of
+                            Just message ->
+                                [ errorLine message ]
+
+                            Nothing ->
+                                [ mutedLine "loading…" ]
+
+                    Just [] ->
+                        staleDataWarning model.platformCredentialsError
+                            ++ [ errorLine "no platform credential stored — dispatched runs cannot authenticate" ]
+
+                    Just credentials ->
+                        staleDataWarning model.platformCredentialsError
+                            ++ [ Html.div
+                                    [ class "agent-platform-credential"
+                                    , style "font-family" "monospace"
+                                    , style "font-size" "12px"
+                                    , style "color" Colors.text
+                                    , style "margin" "0 0 8px 0"
+                                    ]
+                                    (List.map
+                                        (\credential ->
+                                            Html.div []
+                                                [ Html.text
+                                                    (credential.kind
+                                                        ++ " (expires "
+                                                        ++ formatPosix zone credential.expiresAt
+                                                        ++ ") — active"
+                                                    )
+                                                ]
+                                        )
+                                        credentials
+                                    )
+                               ]
+               )
 
 
 {-| The viewer's own credential, set via `fly agent auth`. Kept under its own

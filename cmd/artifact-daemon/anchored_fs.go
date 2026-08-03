@@ -316,6 +316,40 @@ func writeExclusiveFileAt(directory *os.File, name string, contents []byte, mode
 	return unix.Fsync(int(directory.Fd()))
 }
 
+// writeAtomicNoReplaceFileAt prepares a complete, fsynced file under an
+// unguessable private name before publishing it with linkat. A hard-link
+// publication is atomic and, unlike rename, cannot replace an existing commit
+// marker. The temporary link is removed only after the final name exists.
+func writeAtomicNoReplaceFileAt(directory *os.File, name string, contents []byte, mode uint32) error {
+	if name == "" || name == "." || name == ".." || filepath.Base(name) != name || strings.ContainsRune(name, '\x00') {
+		return fmt.Errorf("file name is not a single safe component")
+	}
+	temporaryName, temporary, err := randomFileAt(directory, "."+name+".tmp-", mode)
+	if err != nil {
+		return err
+	}
+	temporaryPresent := true
+	defer func() {
+		if temporaryPresent {
+			_ = unix.Unlinkat(int(directory.Fd()), temporaryName, 0)
+		}
+	}()
+	_, writeErr := temporary.Write(contents)
+	syncErr := temporary.Sync()
+	closeErr := temporary.Close()
+	if writeErr != nil || syncErr != nil || closeErr != nil {
+		return errors.Join(writeErr, syncErr, closeErr)
+	}
+	if err := unix.Linkat(int(directory.Fd()), temporaryName, int(directory.Fd()), name, 0); err != nil {
+		return err
+	}
+	if err := unix.Unlinkat(int(directory.Fd()), temporaryName, 0); err != nil {
+		return err
+	}
+	temporaryPresent = false
+	return unix.Fsync(int(directory.Fd()))
+}
+
 // publishPreparedDirectoryAt publishes a complete private directory into a
 // destination. If the destination does not yet exist, publication is one
 // rename. If it already exists (the Kubernetes hostPath case), its directory

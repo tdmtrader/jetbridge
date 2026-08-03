@@ -502,12 +502,12 @@ view model =
 
 subscriptions : Model -> List Subscription
 subscriptions model =
-    [ OnNonHrefLinkClicked
-    , OnLocalStorageReceived
-    , OnCacheReceived
-    , OnWindowResize
-    , OnClockTick Message.Subscription.FiveSeconds
-    ]
+    ([ OnNonHrefLinkClicked
+     , OnLocalStorageReceived
+     , OnCacheReceived
+     , OnWindowResize
+     , OnClockTick Message.Subscription.FiveSeconds
+     ]
         ++ (if model.session.draggingSideBar then
                 [ OnMouse
                 , OnMouseUp
@@ -517,6 +517,28 @@ subscriptions model =
                 []
            )
         ++ SubPage.subscriptions model.subModel
+    )
+        |> uniqueSubscriptions
+
+
+{-| `elm/time` shares the underlying timer for equal intervals, but retains
+every tagger and delivers one message for each. The application owns a global
+five-second wall poll while several pages use the same cadence, so allowing the
+same custom subscription through twice fires both handlers twice and launches
+duplicate request batches. One delivery already flows through the application,
+sidebar, and current subpage; retain only the first declaration of each source.
+-}
+uniqueSubscriptions : List Subscription -> List Subscription
+uniqueSubscriptions =
+    List.foldl
+        (\subscription unique ->
+            if List.member subscription unique then
+                unique
+
+            else
+                unique ++ [ subscription ]
+        )
+        []
 
 
 routeMatchesModel : Routes.Route -> Model -> Bool
@@ -541,8 +563,8 @@ routeMatchesModel route model =
         -- change is a route change. Re-initializing the page for one would
         -- refetch the graph, drop the scroll position, and close the panel
         -- the reader just opened, so it reconciles instead.
-        ( Routes.AgentWorkflow _, SubPage.AgentWorkflowModel _ ) ->
-            True
+        ( Routes.AgentWorkflow { name }, SubPage.AgentWorkflowModel workflowModel ) ->
+            name == workflowModel.workflowName
 
         ( Routes.Dashboard _, SubPage.DashboardModel _ ) ->
             True

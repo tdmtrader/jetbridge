@@ -313,6 +313,167 @@ all =
                         [ Common.contains (Effects.FetchAgentWorkflowRuns "standard-dev")
                         , Common.contains (Effects.FetchAgentWorkflowRunOperationalStatusCounts "standard-dev")
                         ]
+        , test "does not present missing workflow summaries as authoritative zeroes while they load" <|
+            \_ ->
+                Common.init "/agent"
+                    |> Application.handleCallback
+                        (Callback.AgentWorkflowsFetched (Ok [ sampleWorkflow ]))
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.find [ class "agent-workflow-row" ]
+                    |> Expect.all
+                        [ Query.has [ text "latest operational: loading…" ]
+                        , Query.has [ text "status counts loading…" ]
+                        , Query.has [ text "experiments: loading…" ]
+                        , Query.has [ text "cost loading…" ]
+                        , Query.hasNot [ text "0 queued" ]
+                        , Query.hasNot [ text "$0.00" ]
+                        ]
+        , test "a different workflow's run success cannot hide this workflow's failed summary" <|
+            \_ ->
+                let
+                    healthyWorkflow =
+                        { sampleWorkflow | name = "healthy" }
+                in
+                Common.init "/agent"
+                    |> Application.handleCallback
+                        (Callback.AgentWorkflowsFetched (Ok [ sampleWorkflow, healthyWorkflow ]))
+                    |> Tuple.first
+                    |> Application.handleCallback
+                        (Callback.AgentWorkflowRunsFetched "standard-dev" [] (Err Http.NetworkError))
+                    |> Tuple.first
+                    |> Application.handleCallback
+                        (Callback.AgentWorkflowRunsFetched "healthy" [] (Ok []))
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.findAll [ class "agent-workflow-row" ]
+                    |> Query.index 0
+                    |> Query.has [ text "latest operational: unavailable" ]
+        , test "the platform ignores filtered run callbacks left behind by a workflow page" <|
+            \_ ->
+                let
+                    workflowPageQuery =
+                        [ ( "window", "7d" ), ( "scope", "operational" ), ( "lens", "attention" ) ]
+                in
+                Common.init "/agent"
+                    |> Application.handleCallback
+                        (Callback.AgentWorkflowsFetched (Ok [ sampleWorkflow ]))
+                    |> Tuple.first
+                    |> Application.handleCallback
+                        (Callback.AgentWorkflowRunsFetched
+                            "standard-dev"
+                            workflowPageQuery
+                            (Ok [ sampleWorkflowRun ])
+                        )
+                    |> Tuple.first
+                    |> Application.handleCallback
+                        (Callback.AgentWorkflowRunsFetched
+                            "standard-dev"
+                            workflowPageQuery
+                            (Err Http.NetworkError)
+                        )
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.find [ class "agent-workflow-row" ]
+                    |> Query.has [ text "latest operational: loading…" ]
+        , test "a different workflow's status success cannot turn this workflow's failed counts into zeroes" <|
+            \_ ->
+                let
+                    healthyWorkflow =
+                        { sampleWorkflow | name = "healthy" }
+                in
+                Common.init "/agent"
+                    |> Application.handleCallback
+                        (Callback.AgentWorkflowsFetched (Ok [ sampleWorkflow, healthyWorkflow ]))
+                    |> Tuple.first
+                    |> Application.handleCallback
+                        (Callback.AgentWorkflowRunOperationalStatusCountsFetched "standard-dev" (Err Http.NetworkError))
+                    |> Tuple.first
+                    |> Application.handleCallback
+                        (Callback.AgentWorkflowRunOperationalStatusCountsFetched
+                            "healthy"
+                            (Ok { workflowName = "healthy", counts = Dict.empty })
+                        )
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.findAll [ class "agent-workflow-row" ]
+                    |> Query.index 0
+                    |> Expect.all
+                        [ Query.has [ text "status counts unavailable" ]
+                        , Query.hasNot [ text "0 queued" ]
+                        ]
+        , test "an experiments failure does not masquerade as no experiments" <|
+            \_ ->
+                Common.init "/agent"
+                    |> Application.handleCallback
+                        (Callback.AgentWorkflowsFetched (Ok [ sampleWorkflow ]))
+                    |> Tuple.first
+                    |> Application.handleCallback
+                        (Callback.AgentExperimentsFetched (Err Http.NetworkError))
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Expect.all
+                        [ Query.find [ class "agent-workflow-row" ]
+                            >> Query.has [ text "experiments: unavailable" ]
+                        , Query.hasNot [ class "agent-section-stale" ]
+                        ]
+        , test "an experiments refresh failure is stale only after data was loaded" <|
+            \_ ->
+                Common.init "/agent"
+                    |> Application.handleCallback
+                        (Callback.AgentWorkflowsFetched (Ok [ sampleWorkflow ]))
+                    |> Tuple.first
+                    |> Application.handleCallback
+                        (Callback.AgentExperimentsFetched (Ok []))
+                    |> Tuple.first
+                    |> Application.handleCallback
+                        (Callback.AgentExperimentsFetched (Err Http.NetworkError))
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Expect.all
+                        [ Query.has [ class "agent-section-stale" ]
+                        , Query.find [ class "agent-workflow-row" ]
+                            >> Query.has [ text "experiments: no experiments" ]
+                        ]
+        , test "a daily cost success cannot hide a failed workflow-cost summary" <|
+            \_ ->
+                Common.init "/agent"
+                    |> Application.handleCallback
+                        (Callback.AgentWorkflowsFetched (Ok [ sampleWorkflow ]))
+                    |> Tuple.first
+                    |> Application.handleCallback
+                        (Callback.AgentWorkflowCostsFetched (Err Http.NetworkError))
+                    |> Tuple.first
+                    |> Application.handleCallback
+                        (Callback.AgentCostRollupFetched (Ok sampleRollup))
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.find [ class "agent-workflow-row" ]
+                    |> Query.has [ text "cost unavailable" ]
+        , test "a successful workflow-cost response renders the workflow's actual spend" <|
+            \_ ->
+                let
+                    workflowCostRows =
+                        sampleRollup.rows
+                            |> List.map (\row -> { row | key = "standard-dev" })
+                in
+                Common.init "/agent"
+                    |> Application.handleCallback
+                        (Callback.AgentWorkflowsFetched (Ok [ sampleWorkflow ]))
+                    |> Tuple.first
+                    |> Application.handleCallback
+                        (Callback.AgentWorkflowCostsFetched
+                            (Ok
+                                { sampleRollup
+                                    | groupBy = "workflow"
+                                    , rows = workflowCostRows
+                                }
+                            )
+                        )
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.find [ class "agent-workflow-row" ]
+                    |> Query.has [ text "cost $3.50" ]
         , test "workflow cards link to detail and summarize operational attention" <|
             \_ ->
                 Common.init "/agent"
@@ -320,7 +481,7 @@ all =
                         (Callback.AgentWorkflowsFetched (Ok [ sampleWorkflow ]))
                     |> Tuple.first
                     |> Application.handleCallback
-                        (Callback.AgentWorkflowRunsFetched "standard-dev" (Ok [ sampleWorkflowRun ]))
+                        (Callback.AgentWorkflowRunsFetched "standard-dev" [] (Ok [ sampleWorkflowRun ]))
                     |> Tuple.first
                     |> Application.handleCallback
                         (Callback.AgentWorkflowRunOperationalStatusCountsFetched
@@ -348,7 +509,7 @@ all =
                         (Callback.AgentWorkflowsFetched (Ok [ sampleWorkflow ]))
                     |> Tuple.first
                     |> Application.handleCallback
-                        (Callback.AgentWorkflowRunsFetched "standard-dev" (Ok [ sampleWorkflowRun ]))
+                        (Callback.AgentWorkflowRunsFetched "standard-dev" [] (Ok [ sampleWorkflowRun ]))
                     |> Tuple.first
                     |> Application.handleCallback
                         (Callback.AgentWorkflowRunOperationalStatusCountsFetched
@@ -441,7 +602,7 @@ all =
                         (Callback.AgentCostRollupFetched (Ok sampleRollup))
                     |> Tuple.first
                     |> Application.handleCallback
-                        (Callback.AgentCostRollupFetched
+                        (Callback.AgentWorkflowCostsFetched
                             (Ok { sampleRollup | groupBy = "workflow", rows = [] })
                         )
                     |> Tuple.first
@@ -467,6 +628,42 @@ all =
                         , Query.find [ class "agent-platform-credential" ]
                             >> Query.has [ text "anthropic_oauth" ]
                         ]
+        , test "shows platform credential loading until the admin status request resolves" <|
+            \_ ->
+                Common.init "/agent"
+                    |> Common.queryView
+                    |> Query.find [ attribute (Attr.id "agent-credentials") ]
+                    |> Query.has
+                        [ text "Platform credential (used by dispatched runs)"
+                        , text "loading…"
+                        ]
+        , test "shows that a successful empty platform credential slot blocks dispatched auth" <|
+            \_ ->
+                Common.init "/agent"
+                    |> Application.handleCallback
+                        (Callback.AgentPlatformCredentialsFetched (Ok []))
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.find [ attribute (Attr.id "agent-credentials") ]
+                    |> Query.has
+                        [ text "no platform credential stored — dispatched runs cannot authenticate" ]
+        , test "shows a platform credential status failure instead of hiding the slot" <|
+            \_ ->
+                Common.init "/agent"
+                    |> Application.handleCallback
+                        (Callback.AgentPlatformCredentialsFetched (Err Http.NetworkError))
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.find [ attribute (Attr.id "agent-credentials") ]
+                    |> Query.has [ text "couldn't load platform credentials" ]
+        , test "hides the admin-only platform credential slot only after a forbidden response" <|
+            \_ ->
+                Common.init "/agent"
+                    |> Application.handleCallback
+                        (Callback.AgentPlatformCredentialsFetched Data.httpForbidden)
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.hasNot [ text "Platform credential (used by dispatched runs)" ]
         , test "shows an admin-only message when workflows fetch is forbidden" <|
             \_ ->
                 Common.init "/agent"

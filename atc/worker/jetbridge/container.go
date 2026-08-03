@@ -848,10 +848,11 @@ func (c *Container) checkpointRestoreGate() (*corev1.Volume, *corev1.Container, 
 
 const checkpointRestoreGateShell = `
 while :; do
-  if [ -f /checkpoint-restore-gate/ready ]; then
-    marker="$(tr -d '\n' </checkpoint-restore-gate/ready)"
+  ready=/checkpoint-restore-gate/ready
+  if [ -f "$ready" ] && [ ! -L "$ready" ]; then
+    marker="$(tr -d '\n' <"$ready")"
     case "$marker" in
-      *'"materialization_id":"'"$CHECKPOINT_MATERIALIZATION_ID"'"'*'"pod_uid":"'"$CHECKPOINT_POD_UID"'"'*) exit 0 ;;
+      '{"materialization_id":"'"$CHECKPOINT_MATERIALIZATION_ID"'","request_hash":"'*'","object":{'*'},"pod_uid":"'"$CHECKPOINT_POD_UID"'"}') exit 0 ;;
     esac
   fi
   sleep 1

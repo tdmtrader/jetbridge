@@ -1,5 +1,6 @@
 module ApplicationTests exposing (all)
 
+import AgenticData
 import Application.Application as Application
 import Browser
 import Common exposing (queryView)
@@ -11,12 +12,12 @@ import HoverState
 import Message.Callback as Callback
 import Message.Effects as Effects
 import Message.Message exposing (DomID(..), Message(..))
-import Message.Subscription as Subscription exposing (Delivery(..))
+import Message.Subscription as Subscription exposing (Delivery(..), Interval(..))
 import Message.TopLevelMessage as Msgs
 import Routes
 import Test exposing (..)
 import Test.Html.Query as Query
-import Test.Html.Selector exposing (id, style)
+import Test.Html.Selector exposing (class, id, style)
 import Url
 
 
@@ -38,6 +39,32 @@ all =
                 Common.init "/teams/t/pipelines/p/"
                     |> Application.subscriptions
                     |> Common.contains Subscription.OnCacheReceived
+        , describe "clock subscription ownership"
+            [ test "an agent ticket has one five-second timer despite its page poll" <|
+                \_ ->
+                    Common.init "/agent-tickets/12"
+                        |> Application.subscriptions
+                        |> clockCount FiveSeconds
+                        |> Expect.equal 1
+            , test "an agent workflow has one five-second timer despite its page poll" <|
+                \_ ->
+                    Common.init "/agent/workflows/review-api"
+                        |> Application.subscriptions
+                        |> clockCount FiveSeconds
+                        |> Expect.equal 1
+            , test "an agent workflow run has one five-second timer despite its page poll" <|
+                \_ ->
+                    Common.init "/agent/workflows/review-api/runs/42"
+                        |> Application.subscriptions
+                        |> clockCount FiveSeconds
+                        |> Expect.equal 1
+            , test "deduplicating the shared timer preserves the ticket's one-second clock" <|
+                \_ ->
+                    Common.init "/agent-tickets/12"
+                        |> Application.subscriptions
+                        |> clockCount OneSecond
+                        |> Expect.equal 1
+            ]
         , test "loads favorited pipelines/instance groups on init" <|
             \_ ->
                 Application.init Data.flags
@@ -140,6 +167,67 @@ all =
                     |> .session
                     |> .hovered
                     |> Expect.equal HoverState.NoHover
+        , describe "agent workflow route identity"
+            [ test "navigating to another workflow reinitializes that workflow" <|
+                \_ ->
+                    let
+                        destination =
+                            Routes.AgentWorkflow { name = "bar", query = [] }
+                    in
+                    Common.init "/agent/workflows/foo"
+                        |> Application.handleDelivery (RouteChanged destination)
+                        |> Expect.all
+                            [ Tuple.first
+                                >> Application.view
+                                >> .title
+                                >> Expect.equal "bar workflow - Concourse"
+                            , Tuple.second
+                                >> Expect.all
+                                    [ Common.contains
+                                        (Effects.FetchAgentWorkflowOverview "bar"
+                                            [ ( "window", "7d" ) ]
+                                        )
+                                    , Common.contains
+                                        (Effects.FetchAgentWorkflowRunsFiltered "bar"
+                                            [ ( "window", "7d" )
+                                            , ( "scope", "operational" )
+                                            , ( "lens", "attention" )
+                                            ]
+                                        )
+                                    , Common.contains (Effects.FetchAgentWorkflowVersions "bar")
+                                    ]
+                            ]
+            , test "the reinitialized workflow accepts its own callbacks" <|
+                \_ ->
+                    let
+                        destination =
+                            Routes.AgentWorkflow { name = "bar", query = [] }
+
+                        baseOverview =
+                            AgenticData.workflowOverview
+
+                        baseWorkflow =
+                            baseOverview.workflow
+
+                        unavailableOverview =
+                            { baseOverview
+                                | workflow = { baseWorkflow | name = "bar" }
+                                , graphUnavailable = True
+                                , graph = { nodes = [], edges = [] }
+                            }
+                    in
+                    Common.init "/agent/workflows/foo"
+                        |> Application.handleDelivery (RouteChanged destination)
+                        |> Tuple.first
+                        |> Application.handleCallback
+                            (Callback.AgentWorkflowOverviewFetched "bar"
+                                [ ( "window", "7d" ) ]
+                                (Ok unavailableOverview)
+                            )
+                        |> Tuple.first
+                        |> Common.queryView
+                        |> Query.has [ class "agent-graph-unavailable" ]
+            ]
         , describe "pipeline groups propagation"
             [ test "navigating through sub routes of a pipeline persists the groups" <|
                 \_ ->
@@ -288,3 +376,8 @@ all =
                         |> Query.count (Expect.equal 0)
             ]
         ]
+
+
+clockCount : Interval -> List Subscription.Subscription -> Int
+clockCount interval =
+    List.filter ((==) (Subscription.OnClockTick interval)) >> List.length

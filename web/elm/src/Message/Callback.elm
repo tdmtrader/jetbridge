@@ -11,8 +11,8 @@ import Concourse.Pagination exposing (Page, Paginated)
 import Concourse.Snapshot
 import Concourse.Transcript
 import Concourse.WorkflowOverview
-import Concourse.WorkflowRunGraph
 import Concourse.WorkflowRun
+import Concourse.WorkflowRunGraph
 import Http
 import Message.Message
     exposing
@@ -78,24 +78,26 @@ type Callback
     | BuildAgentReviewsFetched (Fetched (List Concourse.AgentReview.BuildReview))
     | TeamAgentReviewsFetched (Fetched (List Concourse.AgentReview.Summary))
     | AgentReviewVerdictSubmitted String (Fetched ())
+    | AgentWorkflowRunReviewVerdictSubmitted String String (Fetched ())
     | AgentRunMetricsFetched (Fetched (List Concourse.Agent.RunMetric))
     | BuildAgentMetricsFetched (Fetched (List Concourse.Agent.RunMetric))
     | AgentWorkflowsFetched (Fetched (List Concourse.Agent.WorkflowSummary))
     | AgentCostRollupFetched (Fetched Concourse.Agent.CostRollup)
+    | AgentWorkflowCostsFetched (Fetched Concourse.Agent.CostRollup)
     | AgentDispatcherFetched (Fetched Concourse.AgentDispatcher.Status)
     | AgentDispatcherSet (Fetched Concourse.AgentDispatcher.Status)
     | AgentCredentialsFetched (Fetched (List Concourse.Agent.CredentialStatus))
     | AgentPlatformCredentialsFetched (Fetched (List Concourse.Agent.CredentialStatus))
     | AgentTicketsFetched (Fetched (List Concourse.AgentTicket.Ticket))
-    | AgentTicketFetched (Fetched Concourse.AgentTicket.Detail)
-    | AgentTicketRunsFetched (Fetched (List Concourse.AgentTicket.JournalEntry))
+    | AgentTicketFetched Int (Fetched Concourse.AgentTicket.Detail)
+    | AgentTicketRunsFetched Int (Fetched (List Concourse.AgentTicket.JournalEntry))
     | AgentTicketSaved Int (Fetched ())
     | AgentTicketTransitioned Int (Fetched ())
     | AgentTicketDispatched Int (Fetched Concourse.AgentTicket.DispatchResult)
     | AgentWorkflowVersionsFetched String (Fetched (List Concourse.Agent.WorkflowVersion))
     | AgentWorkflowVersionPromoted String (Fetched ())
-    | AgentWorkflowRunsFetched String (Fetched (List Concourse.WorkflowRun.Summary))
-    | AgentWorkflowOverviewFetched String (Fetched Concourse.WorkflowOverview.Overview)
+    | AgentWorkflowRunsFetched String (List ( String, String )) (Fetched (List Concourse.WorkflowRun.Summary))
+    | AgentWorkflowOverviewFetched String (List ( String, String )) (Fetched Concourse.WorkflowOverview.Overview)
     | AgentWorkflowRunGraphFetched String (Fetched Concourse.WorkflowRunGraph.RunGraph)
     | AgentWorkflowRunOperationalStatusCountsFetched String (Fetched Concourse.WorkflowRun.OperationalStatusCounts)
     | AgentWorkflowRunFetched String (Fetched Concourse.WorkflowRun.Detail)
@@ -107,7 +109,7 @@ type Callback
     | AgentWorkflowRunCanceled String (Fetched Concourse.WorkflowRun.Detail)
     | AgentWorkflowRunRetried String (Fetched Concourse.WorkflowRun.Detail)
     | AgentWorkflowWaitsFetched String (Fetched (List Concourse.WorkflowRun.Wait))
-    | AgentWorkflowWaitResolved String (Fetched Concourse.WorkflowRun.Wait)
+    | AgentWorkflowWaitResolved String String (Fetched Concourse.WorkflowRun.Wait)
     | AgentWorkflowOutcomesFetched String (Fetched (List Concourse.WorkflowRun.Outcome))
     | AgentWorkflowReviewsFetched String (Fetched (List Concourse.AgentReview.BuildReview))
     | AgentSnapshotFetched String (Fetched Concourse.Snapshot.Detail)

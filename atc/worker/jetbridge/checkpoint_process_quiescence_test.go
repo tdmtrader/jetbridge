@@ -209,28 +209,74 @@ func TestExecProcessCheckpointCaptureCanceledAndBoundedRelease(t *testing.T) {
 	}
 }
 
+func TestExecProcessCheckpointCaptureReleaseUsesOwnBoundedResumeWindow(t *testing.T) {
+	releaseStarted := make(chan struct{}, 1)
+	releaseGate := make(chan struct{})
+	executor := &checkpointTestExecutor{releaseStarted: releaseStarted, releaseGate: releaseGate}
+	process := checkpointTestProcess(fake.NewClientset(checkpointTestPod("agent-42", "uid-42", "main")), executor)
+	acquireCtx, cancelAcquire := context.WithTimeout(context.Background(), time.Second)
+	defer cancelAcquire()
+	lease, err := process.AcquireCheckpointCapture(acquireCtx, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expiredCtx, cancelExpired := context.WithTimeout(context.Background(), time.Nanosecond)
+	defer cancelExpired()
+	<-expiredCtx.Done()
+	released := make(chan error, 1)
+	go func() { released <- lease.Release(expiredCtx) }()
+	select {
+	case <-releaseStarted:
+	case <-time.After(time.Second):
+		t.Fatal("release did not close the checkpoint helper input")
+	}
+	close(releaseGate)
+	select {
+	case err := <-released:
+		if err != nil {
+			t.Fatalf("release reused the expired caller context: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("release did not finish within its own bound")
+	}
+}
+
 func TestExecProcessCheckpointCaptureRequiresDeadlineAndAutoReleases(t *testing.T) {
 	pod := checkpointTestPod("agent-42", "uid-42", "main")
-	executor := &checkpointTestExecutor{}
+	releaseStarted := make(chan struct{}, 1)
+	releaseGate := make(chan struct{})
+	executor := &checkpointTestExecutor{releaseStarted: releaseStarted, releaseGate: releaseGate}
 	process := checkpointTestProcess(fake.NewClientset(pod), executor)
 	if _, err := process.AcquireCheckpointCapture(context.Background(), 4096); err == nil {
 		t.Fatal("accepted checkpoint capture without a deadline")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	if _, err := process.AcquireCheckpointCapture(ctx, 4096); err != nil {
+	lease, err := process.AcquireCheckpointCapture(ctx, 4096)
+	if err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(time.Second)
-	for executor.released() != 1 {
-		if time.Now().After(deadline) {
-			t.Fatal("deadline did not release checkpoint helper")
-		}
-		time.Sleep(time.Millisecond)
+	concrete := lease.(*checkpointCaptureLease)
+	select {
+	case <-releaseStarted:
+	case <-time.After(time.Second):
+		t.Fatal("deadline did not begin releasing checkpoint helper")
+	}
+	close(releaseGate)
+	select {
+	case <-concrete.done:
+	case <-time.After(time.Second):
+		t.Fatal("deadline release did not finish")
+	}
+	if concrete.releaseErr != nil {
+		t.Fatalf("deadline release reused the expired acquisition context: %v", concrete.releaseErr)
+	}
+	if got := executor.released(); got != 1 {
+		t.Fatalf("deadline released helpers = %d, want 1", got)
 	}
 	ctx, nextCancel := context.WithTimeout(context.Background(), time.Second)
 	defer nextCancel()
-	lease, err := process.AcquireCheckpointCapture(ctx, 4096)
+	lease, err = process.AcquireCheckpointCapture(ctx, 4096)
 	if err != nil {
 		t.Fatalf("automatic release retained active handle: %v", err)
 	}
@@ -291,6 +337,8 @@ type checkpointTestExecutor struct {
 	protocol                            string
 	afterReady                          func()
 	holdUntil                           <-chan struct{}
+	releaseStarted                      chan<- struct{}
+	releaseGate                         <-chan struct{}
 }
 
 func (executor *checkpointTestExecutor) ExecInPod(_ context.Context, _ string, _ string, container string, _ []string, stdin io.Reader, stdout, _ io.Writer, _ bool, _ ExecAttrs) error {
@@ -300,6 +348,8 @@ func (executor *checkpointTestExecutor) ExecInPod(_ context.Context, _ string, _
 	protocol := executor.protocol
 	afterReady := executor.afterReady
 	holdUntil := executor.holdUntil
+	releaseStarted := executor.releaseStarted
+	releaseGate := executor.releaseGate
 	if holdUntil != nil {
 		executor.holdUntil = nil
 	}
@@ -325,6 +375,12 @@ func (executor *checkpointTestExecutor) ExecInPod(_ context.Context, _ string, _
 		return nil
 	}
 	_, err := io.Copy(io.Discard, stdin)
+	if releaseStarted != nil {
+		releaseStarted <- struct{}{}
+	}
+	if releaseGate != nil {
+		<-releaseGate
+	}
 	executor.mutex.Lock()
 	executor.releasedCount++
 	executor.mutex.Unlock()

@@ -135,7 +135,7 @@ all =
                 withDetail sampleDetailJson <|
                     \detail ->
                         Common.init "/agent-tickets/12"
-                            |> Application.handleCallback (Callback.AgentTicketFetched (Ok detail))
+                            |> Application.handleCallback (Callback.AgentTicketFetched 12 (Ok detail))
                             |> Tuple.second
                             |> Expect.all
                                 [ Common.contains
@@ -149,7 +149,7 @@ all =
                 withDetail sampleDetailJson <|
                     \detail ->
                         Common.init "/agent-tickets/12"
-                            |> Application.handleCallback (Callback.AgentTicketFetched (Ok detail))
+                            |> Application.handleCallback (Callback.AgentTicketFetched 12 (Ok detail))
                             |> Tuple.first
                             |> Application.handleCallback
                                 (Callback.AgentWorkflowRunFetched
@@ -180,7 +180,7 @@ all =
             \_ ->
                 withDetail sampleDetailJson
                     (\d ->
-                        renderWith "/agent-tickets/12" (Callback.AgentTicketFetched (Ok d))
+                        renderWith "/agent-tickets/12" (Callback.AgentTicketFetched 12 (Ok d))
                             |> Expect.all
                                 [ Query.has
                                     [ containing [ text "ship fly archives" ]
@@ -199,7 +199,7 @@ all =
                                 d.ticket
                         in
                         renderWith "/agent-tickets/12"
-                            (Callback.AgentTicketFetched
+                            (Callback.AgentTicketFetched 12
                                 (Ok { d | ticket = { ticket | createdAt = 1784385000 } })
                             )
                             |> Query.find [ id "ticket-timestamps" ]
@@ -212,7 +212,7 @@ all =
                 -- outcome, never a ticket state.
                 withDetail sampleDetailJson
                     (\d ->
-                        renderWith "/agent-tickets/12" (Callback.AgentTicketFetched (Ok d))
+                        renderWith "/agent-tickets/12" (Callback.AgentTicketFetched 12 (Ok d))
                             |> Expect.all
                                 [ Query.has
                                     [ containing [ text "Close" ]
@@ -229,7 +229,7 @@ all =
                 withDetail sampleDetailJson
                     (\d ->
                         Common.init "/agent-tickets/12"
-                            |> Application.handleCallback (Callback.AgentTicketFetched (Ok d))
+                            |> Application.handleCallback (Callback.AgentTicketFetched 12 (Ok d))
                             |> Tuple.first
                             |> Application.handleCallback
                                 (Callback.AgentWorkflowRunFetched
@@ -247,14 +247,14 @@ all =
                 -- this page exists to stop showing
                 withDetail sampleDetailJson
                     (\d ->
-                        renderWith "/agent-tickets/12" (Callback.AgentTicketFetched (Ok d))
+                        renderWith "/agent-tickets/12" (Callback.AgentTicketFetched 12 (Ok d))
                             |> Query.hasNot [ id "ticket-run-outcome" ]
                     )
         , test "offers a dispatch button for a queued ticket" <|
             \_ ->
                 withDetail queuedDetailJson
                     (\d ->
-                        renderWith "/agent-tickets/12" (Callback.AgentTicketFetched (Ok d))
+                        renderWith "/agent-tickets/9" (Callback.AgentTicketFetched 9 (Ok d))
                             |> Query.has [ containing [ text "Dispatch run" ] ]
                     )
         , test "a clean dispatch navigates to the durable run it created" <|
@@ -265,7 +265,7 @@ all =
                 withDetail queuedDetailJson
                     (\d ->
                         Common.init "/agent-tickets/9"
-                            |> Application.handleCallback (Callback.AgentTicketFetched (Ok d))
+                            |> Application.handleCallback (Callback.AgentTicketFetched 9 (Ok d))
                             |> Tuple.first
                             |> Application.handleCallback
                                 (Callback.AgentTicketDispatched 9
@@ -282,7 +282,7 @@ all =
                 withDetail queuedDetailJson
                     (\d ->
                         Common.init "/agent-tickets/9"
-                            |> Application.handleCallback (Callback.AgentTicketFetched (Ok d))
+                            |> Application.handleCallback (Callback.AgentTicketFetched 9 (Ok d))
                             |> Tuple.first
                             |> Application.handleCallback
                                 (Callback.AgentTicketDispatched 9
@@ -317,7 +317,7 @@ all =
                 withDetail queuedDetailJson
                     (\d ->
                         Common.init "/agent-tickets/9"
-                            |> Application.handleCallback (Callback.AgentTicketFetched (Ok d))
+                            |> Application.handleCallback (Callback.AgentTicketFetched 9 (Ok d))
                             |> Tuple.first
                             |> Application.handleCallback
                                 (Callback.AgentTicketDispatched 9
@@ -341,7 +341,7 @@ all =
                 withDetail namelessDetailJson
                     (\d ->
                         Common.init "/agent-tickets/9"
-                            |> Application.handleCallback (Callback.AgentTicketFetched (Ok d))
+                            |> Application.handleCallback (Callback.AgentTicketFetched 9 (Ok d))
                             |> Tuple.first
                             |> Application.handleCallback
                                 (Callback.AgentTicketDispatched 9
@@ -361,14 +361,14 @@ all =
                     )
         , test "shows an error notice when the ticket fails to load" <|
             \_ ->
-                renderWith "/agent-tickets/12" (Callback.AgentTicketFetched Data.httpUnauthorized)
+                renderWith "/agent-tickets/12" (Callback.AgentTicketFetched 12 Data.httpUnauthorized)
                     |> Query.has [ text "Couldn't load ticket." ]
         , test "linked ticket renders canonical workflow evidence without legacy actions" <|
             \_ ->
                 withDetail sampleDetailJson
                     (\d ->
                         Common.init "/agent-tickets/12"
-                            |> Application.handleCallback (Callback.AgentTicketFetched (Ok d))
+                            |> Application.handleCallback (Callback.AgentTicketFetched 12 (Ok d))
                             |> Tuple.first
                             |> Application.handleCallback
                                 (Callback.AgentWorkflowRunFetched
@@ -394,14 +394,14 @@ all =
             \_ ->
                 withDetail sampleDetailJson
                     (\d ->
-                        renderWith "/agent-tickets/12" (Callback.AgentTicketFetched (Ok d))
+                        renderWith "/agent-tickets/12" (Callback.AgentTicketFetched 12 (Ok d))
                             |> Query.hasNot [ class "agent-ticket-compare-link" ]
                     )
         , test "a ticket without a durable run shows no evidence line" <|
             \_ ->
                 withDetail queuedDetailJson
                     (\detail ->
-                        renderWith "/agent-tickets/12" (Callback.AgentTicketFetched (Ok detail))
+                        renderWith "/agent-tickets/9" (Callback.AgentTicketFetched 9 (Ok detail))
                             |> Query.hasNot [ id "ticket-durable-evidence" ]
                     )
         , test "a same durable pair keeps matching output detail while refreshing it" <|
@@ -409,7 +409,7 @@ all =
                 withDetail sampleDetailJson
                     (\detail ->
                         Common.init "/agent-tickets/12"
-                            |> Application.handleCallback (Callback.AgentTicketFetched (Ok detail))
+                            |> Application.handleCallback (Callback.AgentTicketFetched 12 (Ok detail))
                             |> Tuple.first
                             |> Application.handleCallback
                                 (Callback.AgentWorkflowRunFetched
@@ -417,7 +417,7 @@ all =
                                     (Ok (runDetailFor "develop" "9007199254740993"))
                                 )
                             |> Tuple.first
-                            |> Application.handleCallback (Callback.AgentTicketFetched (Ok detail))
+                            |> Application.handleCallback (Callback.AgentTicketFetched 12 (Ok detail))
                             |> Expect.all
                                 [ Tuple.second
                                     >> Common.contains
@@ -448,7 +448,7 @@ all =
 
                             afterRefetch =
                                 Common.init "/agent-tickets/12"
-                                    |> Application.handleCallback (Callback.AgentTicketFetched (Ok detail))
+                                    |> Application.handleCallback (Callback.AgentTicketFetched 12 (Ok detail))
                                     |> Tuple.first
                                     |> Application.handleCallback
                                         (Callback.AgentWorkflowRunFetched
@@ -456,7 +456,7 @@ all =
                                             (Ok (runDetailFor "develop" "9007199254740993"))
                                         )
                                     |> Tuple.first
-                                    |> Application.handleCallback (Callback.AgentTicketFetched (Ok withoutRun))
+                                    |> Application.handleCallback (Callback.AgentTicketFetched 12 (Ok withoutRun))
                         in
                         afterRefetch
                             |> Expect.all
@@ -503,7 +503,7 @@ all =
 
                             afterRefetch =
                                 Common.init "/agent-tickets/12"
-                                    |> Application.handleCallback (Callback.AgentTicketFetched (Ok detail))
+                                    |> Application.handleCallback (Callback.AgentTicketFetched 12 (Ok detail))
                                     |> Tuple.first
                                     |> Application.handleCallback
                                         (Callback.AgentWorkflowRunFetched
@@ -511,7 +511,7 @@ all =
                                             (Ok (runDetailFor "develop" "9007199254740993"))
                                         )
                                     |> Tuple.first
-                                    |> Application.handleCallback (Callback.AgentTicketFetched (Ok blankName))
+                                    |> Application.handleCallback (Callback.AgentTicketFetched 12 (Ok blankName))
                         in
                         afterRefetch
                             |> Expect.all
@@ -562,7 +562,7 @@ all =
                                 }
                         in
                         Common.init "/agent-tickets/12"
-                            |> Application.handleCallback (Callback.AgentTicketFetched (Ok detail))
+                            |> Application.handleCallback (Callback.AgentTicketFetched 12 (Ok detail))
                             |> Tuple.first
                             |> Application.handleCallback
                                 (Callback.AgentWorkflowRunFetched
@@ -570,7 +570,7 @@ all =
                                     (Ok (runDetailFor "develop" "9007199254740993"))
                                 )
                             |> Tuple.first
-                            |> Application.handleCallback (Callback.AgentTicketFetched (Ok newRun))
+                            |> Application.handleCallback (Callback.AgentTicketFetched 12 (Ok newRun))
                             |> Expect.all
                                 [ Tuple.second
                                     >> Common.contains
@@ -607,7 +607,7 @@ all =
 
                             afterRefetch =
                                 Common.init "/agent-tickets/12"
-                                    |> Application.handleCallback (Callback.AgentTicketFetched (Ok detail))
+                                    |> Application.handleCallback (Callback.AgentTicketFetched 12 (Ok detail))
                                     |> Tuple.first
                                     |> Application.handleCallback
                                         (Callback.AgentWorkflowRunFetched
@@ -615,7 +615,7 @@ all =
                                             (Ok (runDetailFor "develop" "9007199254740993"))
                                         )
                                     |> Tuple.first
-                                    |> Application.handleCallback (Callback.AgentTicketFetched (Ok renamed))
+                                    |> Application.handleCallback (Callback.AgentTicketFetched 12 (Ok renamed))
                         in
                         afterRefetch
                             |> Expect.all
@@ -656,7 +656,7 @@ all =
                         let
                             loaded =
                                 Common.init "/agent-tickets/12"
-                                    |> Application.handleCallback (Callback.AgentTicketFetched (Ok detail))
+                                    |> Application.handleCallback (Callback.AgentTicketFetched 12 (Ok detail))
                                     |> Tuple.first
 
                             mismatchedId =
@@ -704,14 +704,14 @@ all =
                 withDetail sampleDetailJson
                     (\d ->
                         Common.init "/agent-tickets/12"
-                            |> Application.handleCallback (Callback.AgentTicketFetched (Ok d))
+                            |> Application.handleCallback (Callback.AgentTicketFetched 12 (Ok d))
                             |> Tuple.first
                             |> Application.update (Msgs.Update Message.Message.ClickAgentTicketEdit)
                             |> Tuple.first
                             |> Application.update (Msgs.Update (Message.Message.AgentTicketBodyChanged "MY UNSAVED EDIT"))
                             |> Tuple.first
                             -- the 5s refetch lands while the user is still editing:
-                            |> Application.handleCallback (Callback.AgentTicketFetched (Ok d))
+                            |> Application.handleCallback (Callback.AgentTicketFetched 12 (Ok d))
                             |> Tuple.first
                             |> Common.queryView
                             |> Query.has
@@ -724,13 +724,13 @@ all =
                 withDetail sampleDetailJson
                     (\d ->
                         Common.init "/agent-tickets/12"
-                            |> Application.handleCallback (Callback.AgentTicketFetched (Ok d))
+                            |> Application.handleCallback (Callback.AgentTicketFetched 12 (Ok d))
                             |> Tuple.first
                             |> Application.update (Msgs.Update Message.Message.ClickAgentTicketEdit)
                             |> Tuple.first
                             |> Application.update (Msgs.Update (Message.Message.AgentTicketBodyChanged "MY UNSAVED EDIT"))
                             |> Tuple.first
-                            |> Application.handleCallback (Callback.AgentTicketFetched (Ok d))
+                            |> Application.handleCallback (Callback.AgentTicketFetched 12 (Ok d))
                             |> Tuple.first
                             |> Application.update (Msgs.Update Message.Message.ClickAgentTicketSave)
                             |> Tuple.second
@@ -747,7 +747,7 @@ all =
                 withDetail sampleDetailJson
                     (\d ->
                         Common.init "/agent-tickets/12"
-                            |> Application.handleCallback (Callback.AgentTicketFetched (Ok d))
+                            |> Application.handleCallback (Callback.AgentTicketFetched 12 (Ok d))
                             |> Tuple.first
                             |> Application.update (Msgs.Update Message.Message.ClickAgentTicketEdit)
                             |> Tuple.first
@@ -765,13 +765,13 @@ all =
                         withDetail closedDetailJson
                             (\closed ->
                                 Common.init "/agent-tickets/12"
-                                    |> Application.handleCallback (Callback.AgentTicketFetched (Ok d))
+                                    |> Application.handleCallback (Callback.AgentTicketFetched 12 (Ok d))
                                     |> Tuple.first
                                     |> Application.update (Msgs.Update Message.Message.ClickAgentTicketEdit)
                                     |> Tuple.first
                                     |> Application.update (Msgs.Update (Message.Message.AgentTicketBodyChanged "MY UNSAVED EDIT"))
                                     |> Tuple.first
-                                    |> Application.handleCallback (Callback.AgentTicketFetched (Ok closed))
+                                    |> Application.handleCallback (Callback.AgentTicketFetched 12 (Ok closed))
                                     |> Tuple.first
                                     |> Common.queryView
                                     |> Expect.all
@@ -786,12 +786,12 @@ all =
                     (\queued ->
                         withDetail runningDetailJson
                             (\running ->
-                                Common.init "/agent-tickets/12"
-                                    |> Application.handleCallback (Callback.AgentTicketFetched (Ok queued))
+                                Common.init "/agent-tickets/9"
+                                    |> Application.handleCallback (Callback.AgentTicketFetched 9 (Ok queued))
                                     |> Tuple.first
                                     |> Application.update (Msgs.Update (Message.Message.ClickAgentTicketTransition "closed"))
                                     |> Tuple.first
-                                    |> Application.handleCallback (Callback.AgentTicketFetched (Ok running))
+                                    |> Application.handleCallback (Callback.AgentTicketFetched 9 (Ok running))
                                     |> Tuple.first
                                     |> Common.queryView
                                     |> Query.hasNot [ text "Confirm close" ]
@@ -801,12 +801,12 @@ all =
             \_ ->
                 withDetail queuedDetailJson
                     (\queued ->
-                        Common.init "/agent-tickets/12"
-                            |> Application.handleCallback (Callback.AgentTicketFetched (Ok queued))
+                        Common.init "/agent-tickets/9"
+                            |> Application.handleCallback (Callback.AgentTicketFetched 9 (Ok queued))
                             |> Tuple.first
                             |> Application.update (Msgs.Update (Message.Message.ClickAgentTicketTransition "closed"))
                             |> Tuple.first
-                            |> Application.handleCallback (Callback.AgentTicketFetched (Ok queued))
+                            |> Application.handleCallback (Callback.AgentTicketFetched 9 (Ok queued))
                             |> Tuple.first
                             |> Common.queryView
                             |> Query.has [ text "Confirm close" ]
@@ -816,7 +816,7 @@ all =
                 withDetail sampleDetailJson
                     (\d ->
                         Common.init "/agent-tickets/12"
-                            |> Application.handleCallback (Callback.AgentTicketFetched (Ok d))
+                            |> Application.handleCallback (Callback.AgentTicketFetched 12 (Ok d))
                             |> Tuple.first
                             |> Application.update
                                 (Msgs.DeliveryReceived (ClockTicked FiveSeconds <| Time.millisToPosix 0))
@@ -835,13 +835,266 @@ all =
                 withDetail closedDetailJson
                     (\closed ->
                         Common.init "/agent-tickets/12"
-                            |> Application.handleCallback (Callback.AgentTicketFetched (Ok closed))
+                            |> Application.handleCallback (Callback.AgentTicketFetched 12 (Ok closed))
                             |> Tuple.first
                             |> Application.update
                                 (Msgs.DeliveryReceived (ClockTicked FiveSeconds <| Time.millisToPosix 0))
                             |> Tuple.second
                             |> Common.notContains (Effects.FetchAgentTicket 12)
                     )
+        , describe "callback ticket ownership"
+            [ test "ignores a late detail success from another ticket request" <|
+                \_ ->
+                    withDetail sampleDetailJson
+                        (\detail ->
+                            let
+                                ticket =
+                                    detail.ticket
+
+                                staleDetail =
+                                    { detail | ticket = { ticket | title = "stale ticket response" } }
+                            in
+                            Common.init "/agent-tickets/12"
+                                |> Application.handleCallback (Callback.AgentTicketFetched 12 (Ok detail))
+                                |> Tuple.first
+                                |> Application.handleCallback
+                                    (Callback.AgentTicketFetched 9 (Ok staleDetail))
+                                |> Tuple.first
+                                |> Common.queryView
+                                |> Expect.all
+                                    [ Query.has [ text "ship fly archives" ]
+                                    , Query.hasNot [ text "stale ticket response" ]
+                                    ]
+                        )
+            , test "ignores a late detail error from another ticket request" <|
+                \_ ->
+                    withDetail sampleDetailJson
+                        (\detail ->
+                            Common.init "/agent-tickets/12"
+                                |> Application.handleCallback (Callback.AgentTicketFetched 12 (Ok detail))
+                                |> Tuple.first
+                                |> Application.handleCallback
+                                    (Callback.AgentTicketFetched 9 (Err Http.NetworkError))
+                                |> Tuple.first
+                                |> Common.queryView
+                                |> Expect.all
+                                    [ Query.has [ text "ship fly archives" ]
+                                    , Query.hasNot [ text "Couldn't load ticket." ]
+                                    ]
+                        )
+            , test "ignores a late journal success from another ticket request" <|
+                \_ ->
+                    journalModel
+                        |> Tuple.first
+                        |> Application.handleCallback
+                            (Callback.AgentTicketRunsFetched 9 (Ok []))
+                        |> Tuple.first
+                        |> Common.queryView
+                        |> Query.findAll [ class "agent-journal-entry" ]
+                        |> Query.count (Expect.equal 3)
+            , test "ignores a late journal error from another ticket request" <|
+                \_ ->
+                    journalModel
+                        |> Tuple.first
+                        |> Application.handleCallback
+                            (Callback.AgentTicketRunsFetched 9 (Err Http.NetworkError))
+                        |> Tuple.first
+                        |> Common.queryView
+                        |> Query.findAll [ class "agent-journal-entry" ]
+                        |> Query.count (Expect.equal 3)
+            , test "rejects a successful detail payload that names another ticket" <|
+                \_ ->
+                    withDetail queuedDetailJson
+                        (\detail ->
+                            Common.init "/agent-tickets/12"
+                                |> Application.handleCallback (Callback.AgentTicketFetched 12 (Ok detail))
+                                |> Tuple.first
+                                |> Common.queryView
+                                |> Expect.all
+                                    [ Query.has [ text "Loading…" ]
+                                    , Query.hasNot [ text "queued work" ]
+                                    ]
+                        )
+            , test "ignores late save success and error from another ticket" <|
+                \_ ->
+                    withDetail sampleDetailJson
+                        (\detail ->
+                            let
+                                editing =
+                                    Common.init "/agent-tickets/12"
+                                        |> Application.handleCallback (Callback.AgentTicketFetched 12 (Ok detail))
+                                        |> Tuple.first
+                                        |> Application.update (Msgs.Update Message.Message.ClickAgentTicketEdit)
+                                        |> Tuple.first
+
+                                lateSuccess =
+                                    editing
+                                        |> Application.handleCallback (Callback.AgentTicketSaved 9 (Ok ()))
+
+                                lateError =
+                                    editing
+                                        |> Application.handleCallback
+                                            (Callback.AgentTicketSaved 9 (Err Http.NetworkError))
+                            in
+                            Expect.all
+                                [ \_ ->
+                                    lateSuccess
+                                        |> Tuple.first
+                                        |> Common.queryView
+                                        |> Query.has [ tag "textarea" ]
+                                , \_ ->
+                                    lateSuccess
+                                        |> Tuple.second
+                                        |> Common.notContains (Effects.FetchAgentTicket 12)
+                                , \_ ->
+                                    lateError
+                                        |> Tuple.first
+                                        |> Common.queryView
+                                        |> Query.hasNot [ text "Couldn't save changes." ]
+                                ]
+                                ()
+                        )
+            , test "ignores late transition success and error from another ticket" <|
+                \_ ->
+                    withDetail sampleDetailJson
+                        (\detail ->
+                            let
+                                loaded =
+                                    Common.init "/agent-tickets/12"
+                                        |> Application.handleCallback (Callback.AgentTicketFetched 12 (Ok detail))
+                                        |> Tuple.first
+
+                                lateSuccess =
+                                    loaded
+                                        |> Application.handleCallback (Callback.AgentTicketTransitioned 9 (Ok ()))
+
+                                lateError =
+                                    loaded
+                                        |> Application.handleCallback
+                                            (Callback.AgentTicketTransitioned 9 (Err Http.NetworkError))
+                            in
+                            Expect.all
+                                [ \_ ->
+                                    lateSuccess
+                                        |> Tuple.second
+                                        |> Common.notContains (Effects.FetchAgentTicket 12)
+                                , \_ ->
+                                    lateError
+                                        |> Tuple.second
+                                        |> Common.notContains (Effects.FetchAgentTicket 12)
+                                , \_ ->
+                                    lateError
+                                        |> Tuple.first
+                                        |> Common.queryView
+                                        |> Query.hasNot [ text "Transition rejected" ]
+                                ]
+                                ()
+                        )
+            , test "ignores late dispatch navigation and warning notice from another ticket" <|
+                \_ ->
+                    withDetail sampleDetailJson
+                        (\detail ->
+                            let
+                                loaded =
+                                    Common.init "/agent-tickets/12"
+                                        |> Application.handleCallback (Callback.AgentTicketFetched 12 (Ok detail))
+                                        |> Tuple.first
+
+                                lateNavigation =
+                                    loaded
+                                        |> Application.handleCallback
+                                            (Callback.AgentTicketDispatched 9
+                                                (Ok { workflowRunId = "9007199254740993", warnings = [] })
+                                            )
+
+                                lateNotice =
+                                    loaded
+                                        |> Application.handleCallback
+                                            (Callback.AgentTicketDispatched 9
+                                                (Ok
+                                                    { workflowRunId = "9007199254740993"
+                                                    , warnings = [ "auto-dispatch is paused" ]
+                                                    }
+                                                )
+                                            )
+                            in
+                            Expect.all
+                                [ \_ ->
+                                    lateNavigation
+                                        |> Tuple.second
+                                        |> Common.notContains
+                                            (Effects.NavigateTo
+                                                "/agent/workflows/develop/runs/9007199254740993"
+                                            )
+                                , \_ ->
+                                    lateNotice
+                                        |> Tuple.first
+                                        |> Common.queryView
+                                        |> Query.hasNot [ id "ticket-dispatch-notice" ]
+                                , \_ ->
+                                    lateNotice
+                                        |> Tuple.second
+                                        |> Common.notContains (Effects.FetchAgentTicket 12)
+                                ]
+                                ()
+                        )
+            , test "ignores a late dispatch error from another ticket" <|
+                \_ ->
+                    withDetail sampleDetailJson
+                        (\detail ->
+                            Common.init "/agent-tickets/12"
+                                |> Application.handleCallback (Callback.AgentTicketFetched 12 (Ok detail))
+                                |> Tuple.first
+                                |> Application.handleCallback
+                                    (Callback.AgentTicketDispatched 9 (Err Http.NetworkError))
+                                |> Tuple.first
+                                |> Common.queryView
+                                |> Query.hasNot [ text "Dispatch failed." ]
+                        )
+            , test "matching save and transition callbacks retain their behavior" <|
+                \_ ->
+                    withDetail sampleDetailJson
+                        (\detail ->
+                            let
+                                loaded =
+                                    Common.init "/agent-tickets/12"
+                                        |> Application.handleCallback (Callback.AgentTicketFetched 12 (Ok detail))
+                                        |> Tuple.first
+
+                                saved =
+                                    loaded
+                                        |> Application.update (Msgs.Update Message.Message.ClickAgentTicketEdit)
+                                        |> Tuple.first
+                                        |> Application.handleCallback (Callback.AgentTicketSaved 12 (Ok ()))
+
+                                rejected =
+                                    loaded
+                                        |> Application.handleCallback
+                                            (Callback.AgentTicketTransitioned 12 (Err Http.NetworkError))
+                            in
+                            Expect.all
+                                [ \_ ->
+                                    saved
+                                        |> Tuple.first
+                                        |> Common.queryView
+                                        |> Query.hasNot [ tag "textarea" ]
+                                , \_ ->
+                                    saved
+                                        |> Tuple.second
+                                        |> Common.contains (Effects.FetchAgentTicket 12)
+                                , \_ ->
+                                    rejected
+                                        |> Tuple.first
+                                        |> Common.queryView
+                                        |> Query.has [ text "Transition rejected" ]
+                                , \_ ->
+                                    rejected
+                                        |> Tuple.second
+                                        |> Common.contains (Effects.FetchAgentTicket 12)
+                                ]
+                                ()
+                        )
+            ]
         , describe "cross-workflow journal"
             [ test "fetches the ticket's whole run history on load" <|
                 \_ ->
@@ -855,6 +1108,35 @@ all =
                             (Msgs.DeliveryReceived (ClockTicked FiveSeconds <| Time.millisToPosix 0))
                         |> Tuple.second
                         |> Common.contains (Effects.FetchAgentTicketRuns 12)
+            , test "shows journal loading without claiming the history is empty" <|
+                \_ ->
+                    withDetail sampleDetailJson
+                        (\detail ->
+                            Common.init "/agent-tickets/12"
+                                |> Application.handleCallback (Callback.AgentTicketFetched 12 (Ok detail))
+                                |> Tuple.first
+                                |> Common.queryView
+                                |> Expect.all
+                                    [ Query.has [ text "Loading run history…" ]
+                                    , Query.hasNot [ text "No runs yet" ]
+                                    ]
+                        )
+            , test "an initial journal failure reports an error without claiming no runs" <|
+                \_ ->
+                    withDetail sampleDetailJson
+                        (\detail ->
+                            Common.init "/agent-tickets/12"
+                                |> Application.handleCallback (Callback.AgentTicketFetched 12 (Ok detail))
+                                |> Tuple.first
+                                |> Application.handleCallback
+                                    (Callback.AgentTicketRunsFetched 12 (Err Http.NetworkError))
+                                |> Tuple.first
+                                |> Common.queryView
+                                |> Expect.all
+                                    [ Query.has [ text "Couldn't load run history." ]
+                                    , Query.hasNot [ text "No runs yet" ]
+                                    ]
+                        )
             , test "renders every associated run occurrence in the order given" <|
                 \_ ->
                     journalView
@@ -893,22 +1175,28 @@ all =
                     withDetail sampleDetailJson
                         (\detail ->
                             Common.init "/agent-tickets/12"
-                                |> Application.handleCallback (Callback.AgentTicketFetched (Ok detail))
+                                |> Application.handleCallback (Callback.AgentTicketFetched 12 (Ok detail))
+                                |> Tuple.first
+                                |> Application.handleCallback
+                                    (Callback.AgentTicketRunsFetched 12 (Ok []))
                                 |> Tuple.first
                                 |> Common.queryView
                                 |> Query.find [ class "agent-journal-empty" ]
                                 |> Query.has [ text "No runs yet" ]
                         )
-            , test "a failed journal read leaves the last good history on screen" <|
+            , test "a failed journal refresh preserves the last good history with a stale warning" <|
                 \_ ->
                     journalModel
                         |> Tuple.first
                         |> Application.handleCallback
-                            (Callback.AgentTicketRunsFetched (Err Http.NetworkError))
+                            (Callback.AgentTicketRunsFetched 12 (Err Http.NetworkError))
                         |> Tuple.first
                         |> Common.queryView
-                        |> Query.findAll [ class "agent-journal-entry" ]
-                        |> Query.count (Expect.equal 3)
+                        |> Expect.all
+                            [ Query.findAll [ class "agent-journal-entry" ]
+                                >> Query.count (Expect.equal 3)
+                            , Query.has [ text "Run history may be stale — couldn't refresh." ]
+                            ]
             ]
         ]
 
@@ -961,7 +1249,7 @@ journalModel =
             case Json.Decode.decodeString AgentTicket.decodeDetail sampleDetailJson of
                 Ok detail ->
                     Common.init "/agent-tickets/12"
-                        |> Application.handleCallback (Callback.AgentTicketFetched (Ok detail))
+                        |> Application.handleCallback (Callback.AgentTicketFetched 12 (Ok detail))
                         |> Tuple.first
 
                 Err _ ->
@@ -969,7 +1257,7 @@ journalModel =
     in
     loaded
         |> Application.handleCallback
-            (Callback.AgentTicketRunsFetched (Ok journalFixture))
+            (Callback.AgentTicketRunsFetched 12 (Ok journalFixture))
 
 
 journalView : Query.Single Msgs.TopLevelMessage

@@ -5,6 +5,7 @@ import Application.Application as Application
 import Common exposing (initCustomOpts)
 import Expect
 import Html.Attributes as Attr
+import Http
 import Message.Callback as Callback
 import Message.Effects as Effects
 import Message.Message as Message
@@ -68,6 +69,19 @@ all =
                             [ containing [ text "agent" ]
                             , containing [ text "review-api" ]
                             ]
+            , test "a successful run-list response does not erase an overview load failure" <|
+                \_ ->
+                    initializedWithOverview
+                        |> Application.handleCallback
+                            (Callback.AgentWorkflowOverviewFetched "review-api" defaultOverviewQuery (Err Http.NetworkError))
+                        |> Tuple.first
+                        |> Application.handleCallback
+                            (Callback.AgentWorkflowRunsFetched "review-api" defaultRunsQuery (Ok [ AgenticData.runSummary ]))
+                        |> Tuple.first
+                        |> Common.queryView
+                        |> Query.has
+                            [ text "Some workflow data could not be loaded; available durable data is still shown."
+                            ]
             ]
         , describe "definition management stays behind header actions"
             [ test "offers Start and Versions and nothing else on the canvas" <|
@@ -100,6 +114,82 @@ all =
                             [ containing [ text "repository : repository/v1" ]
                             , containing [ text "review : review/v1" ]
                             , containing [ text "schema v3 · signature v1 · #abcdef0123456789" ]
+                            ]
+            , test "the start panel loads versions without claiming none were imported" <|
+                \_ ->
+                    Common.init "/agent/workflows/review-api"
+                        |> Application.update
+                            (Msgs.Update (Message.AgentWorkflowPanelOpened "start"))
+                        |> Tuple.first
+                        |> Common.queryView
+                        |> Expect.all
+                            [ Query.has [ text "loading imported versions…" ]
+                            , Query.hasNot [ text "This workflow has no imported version to run." ]
+                            ]
+            , test "the start panel reports a versions failure without claiming none were imported" <|
+                \_ ->
+                    Common.init "/agent/workflows/review-api"
+                        |> Application.update
+                            (Msgs.Update (Message.AgentWorkflowPanelOpened "start"))
+                        |> Tuple.first
+                        |> Application.handleCallback
+                            (Callback.AgentWorkflowVersionsFetched "review-api" (Err Http.NetworkError))
+                        |> Tuple.first
+                        |> Common.queryView
+                        |> Expect.all
+                            [ Query.has [ text "Imported versions could not be loaded." ]
+                            , Query.hasNot [ text "This workflow has no imported version to run." ]
+                            ]
+            , test "a newly imported version replaces an obsolete empty-state selection" <|
+                \_ ->
+                    Common.init "/agent/workflows/review-api"
+                        |> Application.handleCallback
+                            (Callback.AgentWorkflowVersionsFetched "review-api" (Ok []))
+                        |> Tuple.first
+                        |> Application.handleCallback
+                            (Callback.AgentWorkflowVersionsFetched
+                                "review-api"
+                                (Ok [ AgenticData.workflowVersion ])
+                            )
+                        |> Tuple.first
+                        |> Application.update
+                            (Msgs.Update (Message.AgentWorkflowPanelOpened "start"))
+                        |> Tuple.first
+                        |> Common.queryView
+                        |> Expect.all
+                            [ Query.has [ class "agent-workflow-start-form" ]
+                            , Query.hasNot [ text "The selected imported version is unavailable." ]
+                            ]
+            , test "the versions panel reports an initial versions failure instead of loading forever" <|
+                \_ ->
+                    Common.init "/agent/workflows/review-api"
+                        |> Application.update
+                            (Msgs.Update (Message.AgentWorkflowPanelOpened "versions"))
+                        |> Tuple.first
+                        |> Application.handleCallback
+                            (Callback.AgentWorkflowVersionsFetched "review-api" (Err Http.NetworkError))
+                        |> Tuple.first
+                        |> Common.queryView
+                        |> Expect.all
+                            [ Query.has [ text "Imported versions could not be loaded." ]
+                            , Query.hasNot [ text "loading versions…" ]
+                            ]
+            , test "a failed refresh after an empty versions response does not reassert an authoritative empty" <|
+                \_ ->
+                    Common.init "/agent/workflows/review-api"
+                        |> Application.handleCallback
+                            (Callback.AgentWorkflowVersionsFetched "review-api" (Ok []))
+                        |> Tuple.first
+                        |> Application.handleCallback
+                            (Callback.AgentWorkflowVersionsFetched "review-api" (Err Http.NetworkError))
+                        |> Tuple.first
+                        |> Application.update
+                            (Msgs.Update (Message.AgentWorkflowPanelOpened "start"))
+                        |> Tuple.first
+                        |> Common.queryView
+                        |> Expect.all
+                            [ Query.has [ text "Imported versions could not be loaded." ]
+                            , Query.hasNot [ text "This workflow has no imported version to run." ]
                             ]
             , test "an open panel is linkable, so it goes in the URL" <|
                 \_ ->
@@ -151,6 +241,23 @@ all =
                             (Msgs.Update <| Message.AgentWorkflowPromoteClicked 3)
                         |> Tuple.second
                         |> Common.contains (Effects.PromoteAgentWorkflowVersion "review-api" 3)
+            , test "a normal versions refresh does not erase a failed promotion" <|
+                \_ ->
+                    initializedWithOverview
+                        |> Application.update
+                            (Msgs.Update (Message.AgentWorkflowPanelOpened "versions"))
+                        |> Tuple.first
+                        |> Application.handleCallback
+                            (Callback.AgentWorkflowVersionPromoted "review-api" (Err Http.NetworkError))
+                        |> Tuple.first
+                        |> Application.handleCallback
+                            (Callback.AgentWorkflowVersionsFetched
+                                "review-api"
+                                (Ok [ AgenticData.workflowVersion ])
+                            )
+                        |> Tuple.first
+                        |> Common.queryView
+                        |> Query.has [ text "Version promotion failed." ]
             ]
         , describe "node selection couples the graph to the list"
             [ test "selecting a node refetches the run list filtered to that node" <|
@@ -214,6 +321,39 @@ all =
                                     [ ( "window", "30d" ), ( "scope", "operational" ), ( "lens", "attention" ) ]
                                 )
                             ]
+            , test "a late overview from the previous window cannot replace the current graph" <|
+                \_ ->
+                    initializedWithOverview
+                        |> Application.update
+                            (Msgs.Update (Message.AgentWorkflowWindowChanged "30d"))
+                        |> Tuple.first
+                        |> Application.handleCallback
+                            (Callback.AgentWorkflowOverviewFetched
+                                "review-api"
+                                defaultOverviewQuery
+                                (Ok unavailableOverview)
+                            )
+                        |> Tuple.first
+                        |> Common.queryView
+                        |> Expect.all
+                            [ Query.has [ class "agent-graph" ]
+                            , Query.hasNot [ class "agent-graph-unavailable" ]
+                            ]
+            , test "a late run list from the previous lens cannot replace the current list" <|
+                \_ ->
+                    initializedWith overview
+                        |> Application.update
+                            (Msgs.Update (Message.AgentWorkflowStatusFilterChanged "all"))
+                        |> Tuple.first
+                        |> Application.handleCallback
+                            (Callback.AgentWorkflowRunsFetched
+                                "review-api"
+                                defaultRunsQuery
+                                (Ok [ failedRunSummary ])
+                            )
+                        |> Tuple.first
+                        |> Common.queryView
+                        |> Query.hasNot [ class "agent-run-row" ]
             , test "the attention lens is a server request, not a page filter" <|
                 \_ ->
                     initializedWithOverview
@@ -307,6 +447,48 @@ all =
                         |> Expect.all
                             [ Query.has [ class "agent-graph" ]
                             , Query.has [ class "agent-run-row" ]
+                            , Query.has
+                                [ class "agent-workflow-filter-stale"
+                                , text "Updating workflow data for the selected filters; previous results remain visible."
+                                ]
+                            ]
+            , test "a previous-filter error is cleared when a new filter request starts" <|
+                \_ ->
+                    initializedWithOverview
+                        |> Application.handleCallback
+                            (Callback.AgentWorkflowRunsFetched
+                                "review-api"
+                                defaultRunsQuery
+                                (Err Http.NetworkError)
+                            )
+                        |> Tuple.first
+                        |> Application.update
+                            (Msgs.Update (Message.AgentWorkflowStatusFilterChanged "all"))
+                        |> Tuple.first
+                        |> Common.queryView
+                        |> Expect.all
+                            [ Query.has [ class "agent-workflow-filter-stale" ]
+                            , Query.hasNot
+                                [ text "Some workflow data could not be loaded; available durable data is still shown."
+                                ]
+                            ]
+            , test "a failed current-filter request labels retained rows as previous-filter data" <|
+                \_ ->
+                    initializedWithOverview
+                        |> Application.update
+                            (Msgs.Update (Message.AgentWorkflowStatusFilterChanged "all"))
+                        |> Tuple.first
+                        |> Application.handleCallback
+                            (Callback.AgentWorkflowRunsFetched
+                                "review-api"
+                                allRunsQuery
+                                (Err Http.NetworkError)
+                            )
+                        |> Tuple.first
+                        |> Common.queryView
+                        |> Query.has
+                            [ class "agent-workflow-filter-stale"
+                            , text "Current-filter workflow data could not be loaded; previous-filter data remains visible."
                             ]
             ]
         , describe "revision and degraded states"
@@ -331,7 +513,7 @@ all =
                 \_ ->
                     initializedWith unavailableOverview
                         |> Application.handleCallback
-                            (Callback.AgentWorkflowRunsFetched "review-api" (Ok [ failedRunSummary ]))
+                            (Callback.AgentWorkflowRunsFetched "review-api" defaultRunsQuery (Ok [ failedRunSummary ]))
                         |> Tuple.first
                         |> Common.queryView
                         |> Expect.all
@@ -394,7 +576,7 @@ all =
                 \_ ->
                     initializedWith overview
                         |> Application.handleCallback
-                            (Callback.AgentWorkflowRunsFetched "review-api" (Ok []))
+                            (Callback.AgentWorkflowRunsFetched "review-api" defaultRunsQuery (Ok []))
                         |> Tuple.first
                         |> Common.queryView
                         |> Query.find [ class "agent-run-list-empty" ]
@@ -403,7 +585,7 @@ all =
                 \_ ->
                     initializedWith overview
                         |> Application.handleCallback
-                            (Callback.AgentWorkflowRunsFetched "review-api" (Ok [ terminalRunSummary ]))
+                            (Callback.AgentWorkflowRunsFetched "review-api" defaultRunsQuery (Ok [ terminalRunSummary ]))
                         |> Tuple.first
                         |> Common.queryView
                         |> Expect.all
@@ -414,7 +596,7 @@ all =
                 \_ ->
                     initializedWith overview
                         |> Application.handleCallback
-                            (Callback.AgentWorkflowRunsFetched "review-api" (Ok [ failedRunSummary ]))
+                            (Callback.AgentWorkflowRunsFetched "review-api" defaultRunsQuery (Ok [ failedRunSummary ]))
                         |> Tuple.first
                         |> Common.queryView
                         |> Query.find [ class "agent-run-row-attention" ]
@@ -426,7 +608,7 @@ all =
                             (Msgs.Update (Message.AgentWorkflowStatusFilterChanged "active"))
                         |> Tuple.first
                         |> Application.handleCallback
-                            (Callback.AgentWorkflowRunsFetched "review-api" (Ok []))
+                            (Callback.AgentWorkflowRunsFetched "review-api" activeRunsQuery (Ok []))
                         |> Tuple.first
                         |> Common.queryView
                         |> Query.find [ class "agent-run-list-empty" ]
@@ -436,6 +618,7 @@ all =
                     initializedWith overview
                         |> Application.handleCallback
                             (Callback.AgentWorkflowRunsFetched "review-api"
+                                defaultRunsQuery
                                 (Ok [ AgenticData.runSummary ])
                             )
                         |> Tuple.first
@@ -451,7 +634,7 @@ all =
                             (Msgs.Update (Message.AgentWorkflowStatusFilterChanged "all"))
                         |> Tuple.first
                         |> Application.handleCallback
-                            (Callback.AgentWorkflowRunsFetched "review-api" (Ok []))
+                            (Callback.AgentWorkflowRunsFetched "review-api" allRunsQuery (Ok []))
                         |> Tuple.first
                         |> Common.queryView
                         |> Query.find [ class "agent-run-list-empty" ]
@@ -461,6 +644,7 @@ all =
                     initializedWith overview
                         |> Application.handleCallback
                             (Callback.AgentWorkflowRunsFetched "review-api"
+                                defaultRunsQuery
                                 (Ok [ succeededButFailedRunSummary ])
                             )
                         |> Tuple.first
@@ -475,6 +659,7 @@ all =
                         |> Tuple.first
                         |> Application.handleCallback
                             (Callback.AgentWorkflowRunsFetched "review-api"
+                                defaultRunsQuery
                                 (Ok [ AgenticData.runSummary ])
                             )
                         |> Tuple.second
@@ -498,11 +683,57 @@ all =
                                     [ ( "window", "7d" ), ( "scope", "operational" ), ( "lens", "attention" ) ]
                                 )
                             ]
-            , test "removes the workflow refresh timer after all visible runs settle" <|
+            , test "keeps polling when the attention lens omits runs that the overview says are active" <|
                 \_ ->
                     initializedWith overview
                         |> Application.handleCallback
-                            (Callback.AgentWorkflowRunsFetched "review-api" (Ok [ terminalRunSummary ]))
+                            (Callback.AgentWorkflowRunsFetched
+                                "review-api"
+                                defaultRunsQuery
+                                (Ok [])
+                            )
+                        |> Tuple.first
+                        |> Application.update
+                            (Msgs.DeliveryReceived (ClockTicked FiveSeconds (Time.millisToPosix 0)))
+                        |> Tuple.second
+                        |> Expect.all
+                            [ Common.contains
+                                (Effects.FetchAgentWorkflowOverview "review-api"
+                                    [ ( "window", "7d" ) ]
+                                )
+                            , Common.contains
+                                (Effects.FetchAgentWorkflowRunsFiltered "review-api" defaultRunsQuery)
+                            ]
+            , test "a failed selected-filter request keeps polling until it can self-heal" <|
+                \_ ->
+                    initializedWith settledOverview
+                        |> Application.handleCallback
+                            (Callback.AgentWorkflowRunsFetched
+                                "review-api"
+                                defaultRunsQuery
+                                (Ok [ terminalRunSummary ])
+                            )
+                        |> Tuple.first
+                        |> Application.update
+                            (Msgs.Update (Message.AgentWorkflowStatusFilterChanged "all"))
+                        |> Tuple.first
+                        |> Application.handleCallback
+                            (Callback.AgentWorkflowRunsFetched
+                                "review-api"
+                                allRunsQuery
+                                (Err Http.NetworkError)
+                            )
+                        |> Tuple.first
+                        |> Application.update
+                            (Msgs.DeliveryReceived (ClockTicked FiveSeconds (Time.millisToPosix 0)))
+                        |> Tuple.second
+                        |> Common.contains
+                            (Effects.FetchAgentWorkflowRunsFiltered "review-api" allRunsQuery)
+            , test "removes the workflow refresh timer after all visible runs settle" <|
+                \_ ->
+                    initializedWith settledOverview
+                        |> Application.handleCallback
+                            (Callback.AgentWorkflowRunsFetched "review-api" defaultRunsQuery (Ok [ terminalRunSummary ]))
                         |> Tuple.first
                         |> Application.update
                             (Msgs.DeliveryReceived (ClockTicked FiveSeconds (Time.millisToPosix 0)))
@@ -521,6 +752,26 @@ all =
         ]
 
 
+defaultOverviewQuery : List ( String, String )
+defaultOverviewQuery =
+    [ ( "window", "7d" ) ]
+
+
+defaultRunsQuery : List ( String, String )
+defaultRunsQuery =
+    [ ( "window", "7d" ), ( "scope", "operational" ), ( "lens", "attention" ) ]
+
+
+activeRunsQuery : List ( String, String )
+activeRunsQuery =
+    [ ( "window", "7d" ), ( "scope", "operational" ), ( "lens", "active" ) ]
+
+
+allRunsQuery : List ( String, String )
+allRunsQuery =
+    [ ( "window", "7d" ), ( "scope", "operational" ), ( "lens", "all" ) ]
+
+
 overview =
     AgenticData.workflowOverview
 
@@ -535,6 +786,15 @@ unpromotedOverview =
 
 unavailableOverview =
     { overview | graphUnavailable = True, graph = { nodes = [], edges = [] } }
+
+
+settledOverview =
+    { overview
+        | nodeState =
+            List.map
+                (\state -> { state | running = 0, waiting = 0, pending = 0 })
+                overview.nodeState
+    }
 
 
 routeWithQuery query =
@@ -554,7 +814,7 @@ initializedWith fixture =
             (Callback.AgentWorkflowVersionsFetched "review-api" (Ok [ AgenticData.workflowVersion ]))
         |> Tuple.first
         |> Application.handleCallback
-            (Callback.AgentWorkflowOverviewFetched "review-api" (Ok fixture))
+            (Callback.AgentWorkflowOverviewFetched "review-api" defaultOverviewQuery (Ok fixture))
         |> Tuple.first
 
 
@@ -567,6 +827,7 @@ initializedWithOverview =
     initializedWith overview
         |> Application.handleCallback
             (Callback.AgentWorkflowRunsFetched "review-api"
+                defaultRunsQuery
                 (Ok [ AgenticData.runSummary, failedRunSummary ])
             )
         |> Tuple.first
@@ -575,7 +836,7 @@ initializedWithOverview =
 initializedWithRun summary =
     initializedWith overview
         |> Application.handleCallback
-            (Callback.AgentWorkflowRunsFetched "review-api" (Ok [ summary ]))
+            (Callback.AgentWorkflowRunsFetched "review-api" defaultRunsQuery (Ok [ summary ]))
         |> Tuple.first
 
 

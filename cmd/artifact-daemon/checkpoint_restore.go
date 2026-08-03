@@ -21,6 +21,8 @@ import (
 
 const checkpointRestoreGatesDirectory = ".checkpoint-restore-gates"
 
+var errInvalidCheckpointRestoreMarker = errors.New("invalid checkpoint restore marker")
+
 type checkpointRestoreMarker struct {
 	MaterializationID string            `json:"materialization_id"`
 	RequestHash       string            `json:"request_hash"`
@@ -116,7 +118,12 @@ func (s *Server) restoreCheckpoint(ctx context.Context, request checkpoint.Resto
 		return checkpoint.RestoreResult{}, err
 	}
 	if marker, found, err := s.readCheckpointRestoreMarker(request.ContainerHandle, request.MaterializationID); err != nil {
-		return checkpoint.RestoreResult{}, err
+		if !errors.Is(err, errInvalidCheckpointRestoreMarker) {
+			return checkpoint.RestoreResult{}, err
+		}
+		if err := s.quarantineInvalidCheckpointRestoreMarker(request.ContainerHandle, request.MaterializationID); err != nil {
+			return checkpoint.RestoreResult{}, fmt.Errorf("quarantine invalid checkpoint restore marker: %w", err)
+		}
 	} else if found {
 		if marker.MaterializationID != request.MaterializationID || marker.RequestHash != requestHash || marker.PodUID != request.PodUID || marker.Object.Ref != request.Archive.Ref {
 			return checkpoint.RestoreResult{}, errors.New("checkpoint restore marker does not match request")
@@ -482,32 +489,125 @@ func (s *Server) readCheckpointRestoreMarker(containerHandle, materializationID 
 		return checkpointRestoreMarker{}, false, err
 	}
 	defer leaf.Close()
-	fd, err := unix.Openat(int(leaf.Fd()), "ready", unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	file, found, err := openCheckpointRestoreMarkerAt(leaf)
+	if err != nil || !found {
+		return checkpointRestoreMarker{}, found, err
+	}
+	marker, readErr := decodeCheckpointRestoreMarker(file)
+	closeErr := file.Close()
+	if closeErr != nil {
+		return checkpointRestoreMarker{}, false, fmt.Errorf("close checkpoint restore marker after read (%v): %w", readErr, closeErr)
+	}
+	if readErr != nil {
+		return checkpointRestoreMarker{}, false, readErr
+	}
+	return marker, true, nil
+}
+
+func openCheckpointRestoreMarkerAt(leaf *os.File) (*os.File, bool, error) {
+	fd, err := unix.Openat(int(leaf.Fd()), "ready", unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if errors.Is(err, unix.ENOENT) {
-		return checkpointRestoreMarker{}, false, nil
+		return nil, false, nil
 	}
 	if err != nil {
-		return checkpointRestoreMarker{}, false, err
+		return nil, false, err
 	}
 	file := os.NewFile(uintptr(fd), "ready")
-	raw, readErr := io.ReadAll(io.LimitReader(file, checkpointCaptureRequestLimit+1))
-	closeErr := file.Close()
-	if readErr != nil || closeErr != nil {
-		return checkpointRestoreMarker{}, false, errors.Join(readErr, closeErr)
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil {
+		return nil, false, errors.Join(err, file.Close())
+	}
+	if stat.Mode&unix.S_IFMT != unix.S_IFREG {
+		return nil, false, errors.Join(errors.New("checkpoint restore marker is not a regular file"), file.Close())
+	}
+	return file, true, nil
+}
+
+func decodeCheckpointRestoreMarker(file *os.File) (checkpointRestoreMarker, error) {
+	raw, err := io.ReadAll(io.LimitReader(file, checkpointCaptureRequestLimit+1))
+	if err != nil {
+		return checkpointRestoreMarker{}, err
 	}
 	if len(raw) > checkpointCaptureRequestLimit {
-		return checkpointRestoreMarker{}, false, errors.New("checkpoint restore marker exceeds size limit")
+		return checkpointRestoreMarker{}, fmt.Errorf("%w: marker exceeds size limit", errInvalidCheckpointRestoreMarker)
 	}
 	var marker checkpointRestoreMarker
 	decoder := json.NewDecoder(strings.NewReader(string(raw)))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&marker); err != nil {
-		return checkpointRestoreMarker{}, false, err
+		return checkpointRestoreMarker{}, fmt.Errorf("%w: %v", errInvalidCheckpointRestoreMarker, err)
 	}
 	if decoder.Decode(&struct{}{}) != io.EOF || marker.MaterializationID == "" || marker.RequestHash == "" || marker.PodUID == "" {
-		return checkpointRestoreMarker{}, false, errors.New("invalid checkpoint restore marker")
+		return checkpointRestoreMarker{}, errInvalidCheckpointRestoreMarker
 	}
-	return marker, true, nil
+	return marker, nil
+}
+
+func (s *Server) quarantineInvalidCheckpointRestoreMarker(containerHandle, materializationID string) (err error) {
+	gates, err := s.checkpointRestoreGates()
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, gates.Close()) }()
+	leaf, err := checkpointRestoreMarkerDirectory(gates, containerHandle, materializationID)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, leaf.Close()) }()
+	file, found, err := openCheckpointRestoreMarkerAt(leaf)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return errors.New("invalid checkpoint restore marker changed before quarantine")
+	}
+	defer func() { err = errors.Join(err, file.Close()) }()
+	if _, err := decodeCheckpointRestoreMarker(file); !errors.Is(err, errInvalidCheckpointRestoreMarker) {
+		if err == nil {
+			return errors.New("checkpoint restore marker became valid before quarantine")
+		}
+		return fmt.Errorf("checkpoint restore marker could not be safely revalidated: %w", err)
+	}
+
+	quarantineName, quarantine, err := randomDirectoryAt(leaf, ".invalid-ready-")
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, quarantine.Close()) }()
+	quarantined := false
+	defer func() {
+		if !quarantined {
+			err = errors.Join(err, removeTreeAt(leaf, quarantineName))
+		}
+	}()
+	if err := unix.Linkat(int(leaf.Fd()), "ready", int(quarantine.Fd()), "ready", 0); err != nil {
+		return err
+	}
+	if err := unix.Fsync(int(quarantine.Fd())); err != nil {
+		return err
+	}
+	unchanged, err := sameOpenEntryAt(quarantine, "ready", file)
+	if err != nil {
+		return fmt.Errorf("inspect quarantined checkpoint restore marker: %w", err)
+	}
+	if !unchanged {
+		return errors.New("quarantined checkpoint restore marker changed")
+	}
+	unchanged, err = sameOpenEntryAt(leaf, "ready", file)
+	if err != nil {
+		return fmt.Errorf("inspect checkpoint restore marker before removal: %w", err)
+	}
+	if !unchanged {
+		return errors.New("checkpoint restore marker changed before removal")
+	}
+	if err := unix.Unlinkat(int(leaf.Fd()), "ready", 0); err != nil {
+		return err
+	}
+	if err := unix.Fsync(int(leaf.Fd())); err != nil {
+		return err
+	}
+	quarantined = true
+	return nil
 }
 
 func (s *Server) writeCheckpointRestoreMarker(containerHandle, materializationID string, marker checkpointRestoreMarker) error {
@@ -525,5 +625,5 @@ func (s *Server) writeCheckpointRestoreMarker(containerHandle, materializationID
 	if err != nil {
 		return err
 	}
-	return writeExclusiveFileAt(leaf, "ready", raw, 0600)
+	return writeAtomicNoReplaceFileAt(leaf, "ready", raw, 0600)
 }

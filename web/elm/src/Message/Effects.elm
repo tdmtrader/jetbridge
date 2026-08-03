@@ -25,8 +25,8 @@ import Concourse.Pagination exposing (Page)
 import Concourse.Snapshot
 import Concourse.Transcript
 import Concourse.WorkflowOverview
-import Concourse.WorkflowRunGraph
 import Concourse.WorkflowRun
+import Concourse.WorkflowRunGraph
 import Json.Decode
 import Json.Encode
 import Maybe exposing (Maybe)
@@ -235,6 +235,15 @@ type Effect
     | FetchAgentCredentials
     | FetchAgentPlatformCredentials
     | SubmitAgentReviewVerdict
+        { teamName : String
+        , reviewSnapshotId : String
+        , findingId : String
+        , verdict : String
+        , notes : String
+        , reviewer : String
+        }
+    | SubmitAgentWorkflowRunReviewVerdict
+        String
         { teamName : String
         , reviewSnapshotId : String
         , findingId : String
@@ -869,7 +878,7 @@ runEffect effect key csrfToken =
             { base | query = [ Url.Builder.string "group_by" "workflow" ] }
                 |> Api.expectJson Concourse.Agent.decodeCostRollup
                 |> Api.request
-                |> Task.attempt AgentCostRollupFetched
+                |> Task.attempt AgentWorkflowCostsFetched
 
         FetchAgentDispatcher ->
             Api.get Endpoints.AgentDispatcher
@@ -919,6 +928,22 @@ runEffect effect key csrfToken =
                 |> Api.request
                 |> Task.attempt (AgentReviewVerdictSubmitted params.findingId)
 
+        SubmitAgentWorkflowRunReviewVerdict workflowRunId params ->
+            Api.post (Endpoints.AgentFeedback params.teamName) csrfToken
+                |> Api.withJsonBody
+                    (Json.Encode.object
+                        [ ( "review_snapshot_id", Json.Encode.string params.reviewSnapshotId )
+                        , ( "finding_id", Json.Encode.string params.findingId )
+                        , ( "verdict", Json.Encode.string params.verdict )
+                        , ( "notes", Json.Encode.string params.notes )
+                        , ( "reviewer", Json.Encode.string params.reviewer )
+                        , ( "source", Json.Encode.string "interactive" )
+                        ]
+                    )
+                |> Api.request
+                |> Task.attempt
+                    (AgentWorkflowRunReviewVerdictSubmitted workflowRunId params.findingId)
+
         FetchAgentTickets ->
             Api.get Endpoints.AgentTicketsList
                 |> Api.expectJson (Json.Decode.list Concourse.AgentTicket.decodeTicket)
@@ -929,13 +954,13 @@ runEffect effect key csrfToken =
             Api.get (Endpoints.AgentTicket ticketId)
                 |> Api.expectJson Concourse.AgentTicket.decodeDetail
                 |> Api.request
-                |> Task.attempt AgentTicketFetched
+                |> Task.attempt (AgentTicketFetched ticketId)
 
         FetchAgentTicketRuns ticketId ->
             Api.get (Endpoints.AgentTicketRuns ticketId)
                 |> Api.expectJson Concourse.AgentTicket.decodeJournal
                 |> Api.request
-                |> Task.attempt AgentTicketRunsFetched
+                |> Task.attempt (AgentTicketRunsFetched ticketId)
 
         SaveAgentTicket params ->
             Api.put (Endpoints.AgentTicket params.id) csrfToken
@@ -975,19 +1000,19 @@ runEffect effect key csrfToken =
             Api.get (Endpoints.AgentWorkflowRuns workflowName)
                 |> Api.expectJson (Json.Decode.list Concourse.WorkflowRun.decodeSummary)
                 |> Api.request
-                |> Task.attempt (AgentWorkflowRunsFetched workflowName)
+                |> Task.attempt (AgentWorkflowRunsFetched workflowName [])
 
         FetchAgentWorkflowRunsFiltered workflowName query ->
             Api.get (Endpoints.AgentWorkflowRunsFiltered workflowName query)
                 |> Api.expectJson (Json.Decode.list Concourse.WorkflowRun.decodeSummary)
                 |> Api.request
-                |> Task.attempt (AgentWorkflowRunsFetched workflowName)
+                |> Task.attempt (AgentWorkflowRunsFetched workflowName query)
 
         FetchAgentWorkflowOverview workflowName query ->
             Api.get (Endpoints.AgentWorkflowOverview workflowName query)
                 |> Api.expectJson Concourse.WorkflowOverview.decodeOverview
                 |> Api.request
-                |> Task.attempt (AgentWorkflowOverviewFetched workflowName)
+                |> Task.attempt (AgentWorkflowOverviewFetched workflowName query)
 
         FetchAgentWorkflowRunGraph workflowName workflowRunId ->
             Api.get (Endpoints.AgentWorkflowRunGraph workflowName workflowRunId)
@@ -1099,7 +1124,7 @@ runEffect effect key csrfToken =
                     (Json.Encode.object [ ( "answer", Json.Encode.string answer ) ])
                 |> Api.expectJson Concourse.WorkflowRun.decodeWait
                 |> Api.request
-                |> Task.attempt (AgentWorkflowWaitResolved waitId)
+                |> Task.attempt (AgentWorkflowWaitResolved workflowRunId waitId)
 
         FetchAgentWorkflowOutcomes workflowName workflowRunId ->
             Api.get (Endpoints.AgentWorkflowRunOutcomes workflowName workflowRunId)

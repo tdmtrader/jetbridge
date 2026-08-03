@@ -459,26 +459,22 @@ func (lease *checkpointCaptureLease) Release(ctx context.Context) error {
 	return lease.releaseErr
 }
 
-// releaseContext bounds the sync.Once body even for a caller that supplies an
-// unbounded context. If the caller did supply a deadline, retain the earlier
-// of that deadline and the platform release timeout.
+// releaseContext bounds the sync.Once body without inheriting a cancelled
+// caller. Releasing the remote helper is a safety operation and must always get
+// a fresh bounded opportunity to resume the stopped processes.
 func (lease *checkpointCaptureLease) releaseContext(caller context.Context) (context.Context, context.CancelFunc) {
 	timeout := lease.releaseTimeout
 	if timeout <= 0 {
 		timeout = checkpointLeaseReleaseTimeout
 	}
-	deadline := time.Now().Add(timeout)
-	if callerDeadline, hasDeadline := caller.Deadline(); hasDeadline && callerDeadline.Before(deadline) {
-		deadline = callerDeadline
-	}
-	return context.WithDeadline(context.Background(), deadline)
+	return context.WithTimeout(context.Background(), timeout)
 }
 
 func (lease *checkpointCaptureLease) releaseOnDeadline(ctx context.Context) {
 	select {
 	case <-lease.done:
 	case <-ctx.Done():
-		_ = lease.Release(ctx)
+		_ = lease.Release(context.Background())
 	}
 }
 

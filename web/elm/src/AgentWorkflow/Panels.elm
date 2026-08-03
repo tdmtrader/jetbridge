@@ -90,7 +90,8 @@ toQueryPairs panel =
 
 
 type alias StartConfig =
-    { versions : List Agent.WorkflowVersion
+    { versions : Maybe (List Agent.WorkflowVersion)
+    , versionsLoadError : Bool
     , selectedVersion : Maybe Agent.WorkflowVersion
     , selectedVersionRaw : String
     , inputValues : Dict String String
@@ -103,6 +104,7 @@ type alias StartConfig =
 type alias VersionsConfig =
     { zone : Time.Zone
     , versions : Maybe (List Agent.WorkflowVersion)
+    , versionsLoadError : Bool
     , promotionError : Bool
     , hasPromotedVersion : Bool
     , graphVersion : Int
@@ -131,31 +133,64 @@ viewStart : StartConfig -> Html Message
 viewStart config =
     shell "agent-workflow-start-panel"
         "Start a durable run"
-        (case config.selectedVersion of
+        (case config.versions of
             Nothing ->
                 [ Html.p [ class "agent-workflow-panel-note" ]
-                    [ Html.text "This workflow has no imported version to run." ]
+                    [ Html.text
+                        (if config.versionsLoadError then
+                            "Imported versions could not be loaded."
+
+                         else
+                            "loading imported versions…"
+                        )
+                    ]
                 ]
 
-            Just version ->
-                [ Html.section [ class "agent-workflow-signature-detail" ]
-                    [ Html.p [ class "agent-workflow-signature-hashes" ]
-                        [ Html.text
-                            ("schema v"
-                                ++ String.fromInt version.schemaVersion
-                                ++ " · signature v"
-                                ++ String.fromInt version.signatureVersion
-                                ++ " · #"
-                                ++ String.left 16 version.contentHash
-                            )
-                        ]
-                    , Html.div [ class "agent-workflow-signature-ports" ]
-                        [ portList "inputs" version.signature.inputs
-                        , portList "outputs" version.signature.outputs
-                        ]
+            Just [] ->
+                [ Html.p [ class "agent-workflow-panel-note" ]
+                    [ Html.text
+                        (if config.versionsLoadError then
+                            "Imported versions could not be loaded."
+
+                         else
+                            "This workflow has no imported version to run."
+                        )
                     ]
-                , startForm config version
                 ]
+
+            Just _ ->
+                (if config.versionsLoadError then
+                    [ errorLine "Version refresh failed; showing stale imported versions." ]
+
+                 else
+                    []
+                )
+                    ++ (case config.selectedVersion of
+                            Nothing ->
+                                [ Html.p [ class "agent-workflow-panel-note" ]
+                                    [ Html.text "The selected imported version is unavailable." ]
+                                ]
+
+                            Just version ->
+                                [ Html.section [ class "agent-workflow-signature-detail" ]
+                                    [ Html.p [ class "agent-workflow-signature-hashes" ]
+                                        [ Html.text
+                                            ("schema v"
+                                                ++ String.fromInt version.schemaVersion
+                                                ++ " · signature v"
+                                                ++ String.fromInt version.signatureVersion
+                                                ++ " · #"
+                                                ++ String.left 16 version.contentHash
+                                            )
+                                        ]
+                                    , Html.div [ class "agent-workflow-signature-ports" ]
+                                        [ portList "inputs" version.signature.inputs
+                                        , portList "outputs" version.signature.outputs
+                                        ]
+                                    ]
+                                , startForm config version
+                                ]
+                       )
         )
 
 
@@ -197,6 +232,7 @@ startForm config version =
             , Html.select
                 [ onInput AgentWorkflowVersionSelected, value config.selectedVersionRaw ]
                 (config.versions
+                    |> Maybe.withDefault []
                     |> List.sortBy (negate << .version)
                     |> List.map
                         (\candidate ->
@@ -280,13 +316,33 @@ viewVersions config =
             , Just
                 (case config.versions of
                     Nothing ->
-                        Html.p [ class "agent-workflow-panel-note" ] [ Html.text "loading versions…" ]
+                        if config.versionsLoadError then
+                            errorLine "Imported versions could not be loaded."
+
+                        else
+                            Html.p [ class "agent-workflow-panel-note" ] [ Html.text "loading versions…" ]
+
+                    Just [] ->
+                        if config.versionsLoadError then
+                            errorLine "Imported versions could not be loaded."
+
+                        else
+                            Html.p [ class "agent-workflow-panel-note" ] [ Html.text "No imported versions." ]
 
                     Just versions ->
-                        Html.div [ class "agent-workflow-version-timeline" ]
-                            (versions
-                                |> List.sortBy (negate << .version)
-                                |> List.map (versionRow config.zone)
+                        Html.div []
+                            ((if config.versionsLoadError then
+                                [ errorLine "Version refresh failed; showing stale imported versions." ]
+
+                              else
+                                []
+                             )
+                                ++ [ Html.div [ class "agent-workflow-version-timeline" ]
+                                        (versions
+                                            |> List.sortBy (negate << .version)
+                                            |> List.map (versionRow config.zone)
+                                        )
+                                   ]
                             )
                 )
             , if config.promotionError then

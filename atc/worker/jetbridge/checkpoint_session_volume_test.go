@@ -2,7 +2,11 @@ package jetbridge
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -120,6 +124,133 @@ func TestCheckpointRecoveryGateStateUsesVerificationOnlyAfterGateSuccess(t *test
 	if _, err := checkpointRecoveryGateState(pod); err == nil {
 		t.Fatal("running gate accepted started regular container")
 	}
+}
+
+func TestCheckpointRestoreGateKeepsTruncatedPublishedMarkerInRestoreMode(t *testing.T) {
+	const (
+		materializationID = "materialization-2"
+		podUID            = "pod-uid"
+	)
+	// This is the legacy crash shape: both identifiers were completely
+	// written, but the directly-created JSON marker was truncated before its
+	// closing delimiter. The gate must keep waiting so the daemon's restore
+	// endpoint can quarantine and replay it; releasing the gate would select
+	// read-only verification forever.
+	truncated := `{"materialization_id":"` + materializationID + `","request_hash":"` + strings.Repeat("a", 64) + `","object":{},"pod_uid":"` + podUID + `"`
+	gateCompleted := checkpointRestoreGateReleased(t, materializationID, podUID, truncated)
+
+	clientset := fake.NewSimpleClientset()
+	config := Config{Namespace: "test", PodStartupTimeout: time.Second, ArtifactDaemonHostPath: "/artifacts", ArtifactHelperImage: "helper"}
+	backend := NewDaemonSetBackend(config, nil, nil)
+	backend.daemonClient = &DaemonClient{scheme: "https"}
+	restore := &checkpointRestoreFake{}
+	backend.restoreClient = restore
+	c := checkpointRestoreTestContainer(t, clientset, config, backend, true)
+	pod := checkpointRestoreTestPod(c, gateCompleted)
+	if _, err := clientset.CoreV1().Pods(config.Namespace).Create(context.Background(), pod, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	restore.after = func() {
+		if !gateCompleted {
+			go checkpointRestoreCompletePod(clientset, c, 25*time.Millisecond)
+		}
+	}
+
+	if err := c.MaterializeBeforeLaunch(context.Background(), runtime.ProcessSpec{Dir: "/tmp/build"}); err != nil {
+		t.Fatal(err)
+	}
+	if gateCompleted || restore.restoreCalls != 1 || restore.verifyCalls != 0 {
+		t.Fatalf("truncated marker released=%t restore=%d verify=%d, want waiting gate and one replay", gateCompleted, restore.restoreCalls, restore.verifyCalls)
+	}
+}
+
+func TestCheckpointRestoreGateReleasesOnlyCanonicalRegularMarker(t *testing.T) {
+	const (
+		materializationID = "materialization-2"
+		podUID            = "pod-uid"
+	)
+	ref, err := hangar.NewObjectRef(hangar.KindCheckpoint, hangar.Digest("sha256:"+strings.Repeat("b", 64)), 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(struct {
+		MaterializationID string            `json:"materialization_id"`
+		RequestHash       string            `json:"request_hash"`
+		Object            hangar.Attributes `json:"object"`
+		PodUID            string            `json:"pod_uid"`
+	}{materializationID, strings.Repeat("a", 64), hangar.Attributes{Ref: ref, CompressedBytes: 1, UncompressedBytes: 2}, podUID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	valid := string(encoded)
+	if !checkpointRestoreGateReleased(t, materializationID, podUID, valid) {
+		t.Fatal("canonical daemon marker did not release checkpoint restore gate")
+	}
+	for name, marker := range map[string]string{
+		"trailing content": valid + "garbage",
+		"wrong schema":     strings.Replace(valid, `"object":`, `"unknown":`, 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if checkpointRestoreGateReleased(t, materializationID, podUID, marker) {
+				t.Fatal("non-canonical marker released checkpoint restore gate")
+			}
+		})
+	}
+	t.Run("symlink", func(t *testing.T) {
+		target := filepath.Join(t.TempDir(), "marker")
+		if err := os.WriteFile(target, []byte(valid), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if checkpointRestoreGateReleasedAfter(t, materializationID, podUID, func(directory string) {
+			if err := os.Symlink(target, filepath.Join(directory, "ready")); err != nil {
+				t.Fatal(err)
+			}
+		}) {
+			t.Fatal("symlink marker released checkpoint restore gate")
+		}
+	})
+	t.Run("directory", func(t *testing.T) {
+		if checkpointRestoreGateReleasedAfter(t, materializationID, podUID, func(directory string) {
+			if err := os.Mkdir(filepath.Join(directory, "ready"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}) {
+			t.Fatal("non-regular marker released checkpoint restore gate")
+		}
+	})
+}
+
+func checkpointRestoreGateReleased(t *testing.T, materializationID, podUID, marker string) bool {
+	t.Helper()
+	return checkpointRestoreGateReleasedAfter(t, materializationID, podUID, func(directory string) {
+		if err := os.WriteFile(filepath.Join(directory, "ready"), []byte(marker), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+func checkpointRestoreGateReleasedAfter(t *testing.T, materializationID, podUID string, prepare func(string)) bool {
+	t.Helper()
+	directory := t.TempDir()
+	prepare(directory)
+	script := strings.ReplaceAll(checkpointRestoreGateShell, "/checkpoint-restore-gate", `"$CHECKPOINT_RESTORE_GATE_PATH"`)
+	script = strings.Replace(script, "sleep 1", "exit 42", 1)
+	command := exec.Command("sh", "-ceu", script)
+	command.Env = append(os.Environ(),
+		"CHECKPOINT_RESTORE_GATE_PATH="+directory,
+		"CHECKPOINT_MATERIALIZATION_ID="+materializationID,
+		"CHECKPOINT_POD_UID="+podUID,
+	)
+	err := command.Run()
+	if err == nil {
+		return true
+	}
+	var exitError *exec.ExitError
+	if errors.As(err, &exitError) && exitError.ExitCode() == 42 {
+		return false
+	}
+	t.Fatalf("run checkpoint restore gate: %v", err)
+	return false
 }
 
 func TestCheckpointMaterializerPinsOnePodAndUsesVerificationOnlyOnCompletedGate(t *testing.T) {

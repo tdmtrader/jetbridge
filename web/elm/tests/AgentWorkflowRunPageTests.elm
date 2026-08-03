@@ -12,11 +12,13 @@ import Data
 import Dict
 import Expect
 import Html.Attributes as Attr
+import Http
 import Message.Callback as Callback
 import Message.Effects as Effects
 import Message.Message as Message
 import Message.Subscription exposing (Delivery(..), Interval(..))
 import Message.TopLevelMessage as Msgs
+import SubPage.SubPage as SubPage
 import Test exposing (Test, describe, test)
 import Test.Html.Query as Query
 import Test.Html.Selector exposing (attribute, class, containing, tag, text)
@@ -112,6 +114,18 @@ all =
                             AgenticData.wait.id
                             "approve"
                         )
+        , test "a delayed wait resolution from another run cannot refresh this run" <|
+            \_ ->
+                initialized
+                    |> Application.handleCallback
+                        (Callback.AgentWorkflowWaitResolved
+                            "another-run"
+                            AgenticData.wait.id
+                            (Ok AgenticData.wait)
+                        )
+                    |> Tuple.second
+                    |> Common.notContains
+                        (Effects.FetchAgentWorkflowWaits "review-api" AgenticData.runSummary.id)
         , test "attributes review feedback to the exact review snapshot" <|
             \_ ->
                 initialized
@@ -127,7 +141,7 @@ all =
                         )
                     |> Tuple.second
                     |> Common.contains
-                        (Effects.SubmitAgentReviewVerdict
+                        (Effects.SubmitAgentWorkflowRunReviewVerdict AgenticData.runSummary.id
                             { teamName = "research"
                             , reviewSnapshotId = "9007199254740997"
                             , findingId = "finding-1"
@@ -136,6 +150,202 @@ all =
                             , reviewer = "alice"
                             }
                         )
+        , test "a delayed review verdict from another run cannot refresh this run" <|
+            \_ ->
+                initialized
+                    |> Application.handleCallback
+                        (Callback.AgentWorkflowRunReviewVerdictSubmitted
+                            "another-run"
+                            "finding-1"
+                            (Ok ())
+                        )
+                    |> Tuple.second
+                    |> Common.notContains
+                        (Effects.FetchAgentWorkflowReviews "review-api" AgenticData.runSummary.id)
+        , test "ignores a repository projection that is not bound to this run" <|
+            \_ ->
+                initialized
+                    |> Application.handleCallback
+                        (Callback.AgentSnapshotRepositoryChangeFetched
+                            "another-run-snapshot"
+                            (Ok AgenticData.repositoryChange)
+                        )
+                    |> Tuple.first
+                    |> .subModel
+                    |> (\subModel ->
+                            case subModel of
+                                SubPage.AgentWorkflowRunModel runModel ->
+                                    Dict.member "another-run-snapshot" runModel.repositoryChanges
+                                        |> Expect.equal False
+
+                                _ ->
+                                    Expect.fail "expected the workflow-run page model"
+                       )
+        , test "ignores a repository projection error that is not bound to this run" <|
+            \_ ->
+                initialized
+                    |> Application.handleCallback
+                        (Callback.AgentSnapshotRepositoryChangeFetched
+                            "another-run-snapshot"
+                            (Err Http.NetworkError)
+                        )
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.hasNot [ text "Some run projections could not be loaded" ]
+        , describe "projection errors are independent"
+            [ test "a waits success cannot hide a detail failure" <|
+                \_ ->
+                    Common.init "/agent/workflows/review-api/runs/9007199254740993"
+                        |> Application.handleCallback
+                            (Callback.AgentWorkflowRunFetched
+                                AgenticData.runSummary.id
+                                (Err Http.NetworkError)
+                            )
+                        |> Tuple.first
+                        |> Application.handleCallback
+                            (Callback.AgentWorkflowWaitsFetched AgenticData.runSummary.id (Ok []))
+                        |> Tuple.first
+                        |> Common.queryView
+                        |> Query.has [ text "The durable run could not be loaded" ]
+            , test "a detail success cannot hide a waits failure" <|
+                \_ ->
+                    initialized
+                        |> Application.handleCallback
+                            (Callback.AgentWorkflowWaitsFetched
+                                AgenticData.runSummary.id
+                                (Err Http.NetworkError)
+                            )
+                        |> Tuple.first
+                        |> Application.handleCallback
+                            (Callback.AgentWorkflowRunFetched
+                                AgenticData.runSummary.id
+                                (Ok AgenticData.runDetail)
+                            )
+                        |> Tuple.first
+                        |> Common.queryView
+                        |> Query.find [ class "agent-run-waits" ]
+                        |> Query.has [ text "Human waits could not be loaded" ]
+            , test "a detail success cannot hide an outcomes failure" <|
+                \_ ->
+                    initialized
+                        |> Application.handleCallback
+                            (Callback.AgentWorkflowOutcomesFetched
+                                AgenticData.runSummary.id
+                                (Err Http.NetworkError)
+                            )
+                        |> Tuple.first
+                        |> Application.handleCallback
+                            (Callback.AgentWorkflowRunFetched
+                                AgenticData.runSummary.id
+                                (Ok AgenticData.runDetail)
+                            )
+                        |> Tuple.first
+                        |> Common.queryView
+                        |> Query.find [ class "agent-run-outcomes" ]
+                        |> Query.has [ text "Outcomes could not be loaded" ]
+            , test "a detail success cannot hide a repository projection failure" <|
+                \_ ->
+                    initialized
+                        |> Application.handleCallback
+                            (Callback.AgentSnapshotRepositoryChangeFetched
+                                AgenticData.repositoryChange.snapshotId
+                                (Err Http.NetworkError)
+                            )
+                        |> Tuple.first
+                        |> Application.handleCallback
+                            (Callback.AgentWorkflowRunFetched
+                                AgenticData.runSummary.id
+                                (Ok AgenticData.runDetail)
+                            )
+                        |> Tuple.first
+                        |> Common.queryView
+                        |> Query.find [ class "agent-run-output" ]
+                        |> Query.has [ text "Repository-change projection could not be loaded" ]
+            ]
+        , describe "truthful projection states"
+            [ describe "human waits"
+                [ test "shows loading before the waits request resolves" <|
+                    \_ ->
+                        initialized
+                            |> Common.queryView
+                            |> Query.find [ class "agent-run-waits" ]
+                            |> Expect.all
+                                [ Query.has [ text "Loading human waits" ]
+                                , Query.hasNot [ text "no human intervention points" ]
+                                ]
+                , test "only a successful empty waits response claims there are no waits" <|
+                    \_ ->
+                        initialized
+                            |> Application.handleCallback
+                                (Callback.AgentWorkflowWaitsFetched AgenticData.runSummary.id (Ok []))
+                            |> Tuple.first
+                            |> Common.queryView
+                            |> Query.find [ class "agent-run-waits" ]
+                            |> Query.has [ text "no human intervention points" ]
+                , test "keeps last-good waits visible when their refresh fails" <|
+                    \_ ->
+                        initialized
+                            |> Application.handleCallback
+                                (Callback.AgentWorkflowWaitsFetched
+                                    AgenticData.runSummary.id
+                                    (Ok [ AgenticData.wait ])
+                                )
+                            |> Tuple.first
+                            |> Application.handleCallback
+                                (Callback.AgentWorkflowWaitsFetched
+                                    AgenticData.runSummary.id
+                                    (Err Http.NetworkError)
+                                )
+                            |> Tuple.first
+                            |> Common.queryView
+                            |> Query.find [ class "agent-run-waits" ]
+                            |> Expect.all
+                                [ Query.has [ text "Ship this change?" ]
+                                , Query.has [ text "Wait refresh failed — showing stale data" ]
+                                ]
+                ]
+            , describe "outcomes"
+                [ test "shows loading before the outcomes request resolves" <|
+                    \_ ->
+                        initialized
+                            |> Common.queryView
+                            |> Query.find [ class "agent-run-outcomes" ]
+                            |> Expect.all
+                                [ Query.has [ text "Loading outcomes" ]
+                                , Query.hasNot [ text "no output dispositions" ]
+                                ]
+                , test "only a successful empty outcomes response claims there are no outcomes" <|
+                    \_ ->
+                        initialized
+                            |> Application.handleCallback
+                                (Callback.AgentWorkflowOutcomesFetched AgenticData.runSummary.id (Ok []))
+                            |> Tuple.first
+                            |> Common.queryView
+                            |> Query.find [ class "agent-run-outcomes" ]
+                            |> Query.has [ text "no output dispositions have been recorded" ]
+                , test "keeps last-good outcomes visible when their refresh fails" <|
+                    \_ ->
+                        initialized
+                            |> Application.handleCallback
+                                (Callback.AgentWorkflowOutcomesFetched
+                                    AgenticData.runSummary.id
+                                    (Ok [ sampleOutcome ])
+                                )
+                            |> Tuple.first
+                            |> Application.handleCallback
+                                (Callback.AgentWorkflowOutcomesFetched
+                                    AgenticData.runSummary.id
+                                    (Err Http.NetworkError)
+                                )
+                            |> Tuple.first
+                            |> Common.queryView
+                            |> Query.find [ class "agent-run-outcomes" ]
+                            |> Expect.all
+                                [ Query.has [ text "accepted" ]
+                                , Query.has [ text "Outcome refresh failed — showing stale data" ]
+                                ]
+                ]
+            ]
         , test "refreshes every mutable run projection while the run is active" <|
             \_ ->
                 initialized
@@ -201,6 +411,39 @@ all =
                     |> Common.queryView
                     |> Query.find [ class "agent-run-telemetry" ]
                     |> Query.has [ text "1 steps" ]
+        , test "does not present zero telemetry before metrics load" <|
+            \_ ->
+                initialized
+                    |> Common.queryView
+                    |> Query.find [ class "agent-run-telemetry" ]
+                    |> Expect.all
+                        [ Query.has [ text "Loading invocation telemetry" ]
+                        , Query.hasNot [ text "0 steps" ]
+                        ]
+        , test "shows metrics as unavailable when the exact run request fails" <|
+            \_ ->
+                initialized
+                    |> Application.handleCallback
+                        (Callback.AgentWorkflowRunMetricsFetched
+                            AgenticData.runSummary.id
+                            (Err Http.NetworkError)
+                        )
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.find [ class "agent-run-telemetry" ]
+                    |> Expect.all
+                        [ Query.has [ text "Invocation telemetry could not be loaded" ]
+                        , Query.hasNot [ text "0 steps" ]
+                        ]
+        , test "renders authoritative zero telemetry after a successful empty response" <|
+            \_ ->
+                initialized
+                    |> Application.handleCallback
+                        (Callback.AgentWorkflowRunMetricsFetched AgenticData.runSummary.id (Ok []))
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.find [ class "agent-run-telemetry" ]
+                    |> Query.has [ text "0 steps" ]
         , test "the run-qualified callback ignores another run's metrics" <|
             \_ ->
                 initialized
@@ -211,7 +454,7 @@ all =
                     |> Tuple.first
                     |> Common.queryView
                     |> Query.find [ class "agent-run-telemetry" ]
-                    |> Query.has [ text "0 steps" ]
+                    |> Query.has [ text "Loading invocation telemetry" ]
         , test "bounds terminal projection refresh attempts" <|
             \_ ->
                 let
@@ -242,9 +485,24 @@ all =
                     |> Common.notContains
                         (Effects.FetchAgentWorkflowRun "review-api" AgenticData.runSummary.id)
         , describe "agent transcripts"
-            [ test "says so when the run captured no transcript" <|
+            [ test "shows loading before the transcript index resolves" <|
                 \_ ->
                     initialized
+                        |> Common.queryView
+                        |> Query.find [ class "agent-run-transcripts" ]
+                        |> Expect.all
+                            [ Query.has [ text "Loading transcript index" ]
+                            , Query.hasNot [ text "no agent transcript captured for this run" ]
+                            ]
+            , test "only a successful empty index claims the run captured no transcript" <|
+                \_ ->
+                    initialized
+                        |> Application.handleCallback
+                            (Callback.AgentWorkflowRunTranscriptsFetched
+                                AgenticData.runSummary.id
+                                (Ok [])
+                            )
+                        |> Tuple.first
                         |> Common.queryView
                         |> Query.find [ class "agent-run-transcripts" ]
                         |> Query.has [ text "no agent transcript captured for this run" ]
@@ -317,6 +575,21 @@ all =
                         |> Expect.all
                             [ Query.has [ text "index could not be loaded" ]
                             , Query.hasNot [ text "no agent transcript captured" ]
+                            ]
+            , test "keeps the last-good transcript index when its refresh fails" <|
+                \_ ->
+                    withTranscriptIndex
+                        |> Application.handleCallback
+                            (Callback.AgentWorkflowRunTranscriptsFetched
+                                AgenticData.runSummary.id
+                                (Err Http.NetworkError)
+                            )
+                        |> Tuple.first
+                        |> Common.queryView
+                        |> Query.find [ class "agent-run-transcripts" ]
+                        |> Expect.all
+                            [ Query.has [ class "agent-run-transcript" ]
+                            , Query.has [ text "Transcript index refresh failed — showing stale data" ]
                             ]
             , test "surfaces a transcript that could not be loaded" <|
                 \_ ->
@@ -488,6 +761,23 @@ sampleTranscriptRef =
     , buildId = 42
     , byteLen = 2048
     , truncated = False
+    }
+
+
+sampleOutcome : Concourse.WorkflowRun.Outcome
+sampleOutcome =
+    { workflowRunId = AgenticData.runSummary.id
+    , outputSnapshotId = AgenticData.repositoryChange.snapshotId
+    , disposition = "accepted"
+    , publicationState = "published"
+    , publicationId = Just "7"
+    , humanModified = False
+    , modificationSnapshotId = Nothing
+    , interventionCount = 0
+    , labels = []
+    , actor = "alice"
+    , revision = 1
+    , auditedAt = "2026-07-22T12:05:00Z"
     }
 
 

@@ -47,10 +47,15 @@ type alias Model =
         , workflowRunId : String
         , detail : Maybe WorkflowRun.Detail
         , waits : List WorkflowRun.Wait
+        , waitsLoaded : Bool
         , outcomes : List WorkflowRun.Outcome
+        , outcomesLoaded : Bool
         , repositoryChanges : Dict String WorkflowRun.RepositoryChange
         , metrics : List Agent.RunMetric
+        , metricsLoaded : Bool
+        , metricsError : Bool
         , transcripts : List Transcript.Ref
+        , transcriptIndexLoaded : Bool
         , transcriptEntries : Dict String (List Transcript.Entry)
         , expandedTranscripts : Set String
         , expandedTranscriptEntries : Set String
@@ -60,7 +65,10 @@ type alias Model =
         , runGraphError : Bool
         , selectedNode : Maybe String
         , answerSnapshots : Dict String String
-        , loadError : Bool
+        , detailError : Bool
+        , waitsError : Bool
+        , outcomesError : Bool
+        , repositoryChangeErrors : Set String
         , actionError : Bool
         , agentReviews : List BuildReview
         , agentReviewLoadError : Bool
@@ -80,10 +88,15 @@ init { workflowName, id } =
       , workflowRunId = id
       , detail = Nothing
       , waits = []
+      , waitsLoaded = False
       , outcomes = []
+      , outcomesLoaded = False
       , repositoryChanges = Dict.empty
       , metrics = []
+      , metricsLoaded = False
+      , metricsError = False
       , transcripts = []
+      , transcriptIndexLoaded = False
       , transcriptEntries = Dict.empty
       , expandedTranscripts = Set.empty
       , expandedTranscriptEntries = Set.empty
@@ -93,7 +106,10 @@ init { workflowName, id } =
       , runGraphError = False
       , selectedNode = Nothing
       , answerSnapshots = Dict.empty
-      , loadError = False
+      , detailError = False
+      , waitsError = False
+      , outcomesError = False
+      , repositoryChangeErrors = Set.empty
       , actionError = False
       , agentReviews = []
       , agentReviewLoadError = False
@@ -132,7 +148,7 @@ handleCallback callback ( model, effects ) =
     case callback of
         AgentWorkflowRunFetched runId (Ok detail) ->
             if runId == model.workflowRunId then
-                ( { model | detail = Just detail, loadError = False }
+                ( { model | detail = Just detail, detailError = False }
                 , effects
                     ++ (detail.outputs
                             |> List.filter (\output -> output.snapshot.typeRef == "repository-change/v1")
@@ -148,7 +164,7 @@ handleCallback callback ( model, effects ) =
 
         AgentWorkflowRunFetched runId (Err _) ->
             if runId == model.workflowRunId then
-                ( { model | loadError = True }, effects )
+                ( { model | detailError = True }, effects )
 
             else
                 ( model, effects )
@@ -173,36 +189,44 @@ handleCallback callback ( model, effects ) =
 
         AgentWorkflowWaitsFetched runId (Ok waits) ->
             if runId == model.workflowRunId then
-                ( { model | waits = waits }, effects )
+                ( { model | waits = waits, waitsLoaded = True, waitsError = False }, effects )
 
             else
                 ( model, effects )
 
         AgentWorkflowWaitsFetched runId (Err _) ->
             if runId == model.workflowRunId then
-                ( { model | loadError = True }, effects )
+                ( { model | waitsError = True }, effects )
 
             else
                 ( model, effects )
 
-        AgentWorkflowWaitResolved _ (Ok _) ->
-            ( { model | actionError = False }
-            , effects ++ [ FetchAgentWorkflowWaits model.workflowName model.workflowRunId ]
-            )
+        AgentWorkflowWaitResolved runId _ (Ok _) ->
+            if runId == model.workflowRunId then
+                ( { model | actionError = False }
+                , effects ++ [ FetchAgentWorkflowWaits model.workflowName model.workflowRunId ]
+                )
 
-        AgentWorkflowWaitResolved _ (Err _) ->
-            ( { model | actionError = True }, effects )
+            else
+                ( model, effects )
+
+        AgentWorkflowWaitResolved runId _ (Err _) ->
+            if runId == model.workflowRunId then
+                ( { model | actionError = True }, effects )
+
+            else
+                ( model, effects )
 
         AgentWorkflowOutcomesFetched runId (Ok outcomes) ->
             if runId == model.workflowRunId then
-                ( { model | outcomes = outcomes }, effects )
+                ( { model | outcomes = outcomes, outcomesLoaded = True, outcomesError = False }, effects )
 
             else
                 ( model, effects )
 
         AgentWorkflowOutcomesFetched runId (Err _) ->
             if runId == model.workflowRunId then
-                ( { model | loadError = True }, effects )
+                ( { model | outcomesError = True }, effects )
 
             else
                 ( model, effects )
@@ -222,18 +246,31 @@ handleCallback callback ( model, effects ) =
                 ( model, effects )
 
         AgentSnapshotRepositoryChangeFetched snapshotId (Ok projection) ->
-            ( { model
-                | repositoryChanges = Dict.insert snapshotId projection model.repositoryChanges
-              }
-            , effects
-            )
+            if repositoryChangeSnapshotIsBound snapshotId model then
+                ( { model
+                    | repositoryChanges = Dict.insert snapshotId projection model.repositoryChanges
+                    , repositoryChangeErrors = Set.remove snapshotId model.repositoryChangeErrors
+                  }
+                , effects
+                )
 
-        AgentSnapshotRepositoryChangeFetched _ (Err _) ->
-            ( { model | loadError = True }, effects )
+            else
+                ( model, effects )
+
+        AgentSnapshotRepositoryChangeFetched snapshotId (Err _) ->
+            if repositoryChangeSnapshotIsBound snapshotId model then
+                ( { model
+                    | repositoryChangeErrors = Set.insert snapshotId model.repositoryChangeErrors
+                  }
+                , effects
+                )
+
+            else
+                ( model, effects )
 
         AgentWorkflowRunCanceled runId (Ok detail) ->
             if runId == model.workflowRunId then
-                ( { model | detail = Just detail, actionError = False }, effects )
+                ( { model | detail = Just detail, detailError = False, actionError = False }, effects )
 
             else
                 ( model, effects )
@@ -274,7 +311,16 @@ handleCallback callback ( model, effects ) =
             -- run-qualified: a second open run page must not accept this run's
             -- metrics (the global recent-metrics feed is the operator dashboard's)
             if runId == model.workflowRunId then
-                ( { model | metrics = metrics }, effects )
+                ( { model | metrics = metrics, metricsLoaded = True, metricsError = False }, effects )
+
+            else
+                ( model, effects )
+
+        AgentWorkflowRunMetricsFetched runId (Err _) ->
+            if runId == model.workflowRunId then
+                -- Preserve any last-good metrics, but never let an initial
+                -- failure masquerade as an authoritative all-zero result.
+                ( { model | metricsLoaded = True, metricsError = True }, effects )
 
             else
                 ( model, effects )
@@ -283,7 +329,13 @@ handleCallback callback ( model, effects ) =
             -- run-qualified for the same reason metrics are: a second open run
             -- page must not accept this run's transcript index
             if runId == model.workflowRunId then
-                ( { model | transcripts = refs, transcriptIndexError = False }, effects )
+                ( { model
+                    | transcripts = refs
+                    , transcriptIndexLoaded = True
+                    , transcriptIndexError = False
+                  }
+                , effects
+                )
 
             else
                 ( model, effects )
@@ -317,13 +369,21 @@ handleCallback callback ( model, effects ) =
             else
                 ( model, effects )
 
-        AgentReviewVerdictSubmitted findingId (Ok ()) ->
-            ( { model | verdictErrors = Set.remove findingId model.verdictErrors }
-            , effects ++ [ FetchAgentWorkflowReviews model.workflowName model.workflowRunId ]
-            )
+        AgentWorkflowRunReviewVerdictSubmitted runId findingId (Ok ()) ->
+            if runId == model.workflowRunId then
+                ( { model | verdictErrors = Set.remove findingId model.verdictErrors }
+                , effects ++ [ FetchAgentWorkflowReviews model.workflowName model.workflowRunId ]
+                )
 
-        AgentReviewVerdictSubmitted findingId (Err _) ->
-            ( { model | verdictErrors = Set.insert findingId model.verdictErrors }, effects )
+            else
+                ( model, effects )
+
+        AgentWorkflowRunReviewVerdictSubmitted runId findingId (Err _) ->
+            if runId == model.workflowRunId then
+                ( { model | verdictErrors = Set.insert findingId model.verdictErrors }, effects )
+
+            else
+                ( model, effects )
 
         _ ->
             ( model, effects )
@@ -421,7 +481,7 @@ update message ( model, effects ) =
         AgentReviewVerdictClicked params ->
             ( model
             , effects
-                ++ [ SubmitAgentReviewVerdict
+                ++ [ SubmitAgentWorkflowRunReviewVerdict model.workflowRunId
                         { teamName = params.teamName
                         , reviewSnapshotId = params.reviewSnapshotId
                         , findingId = params.findingId
@@ -443,6 +503,22 @@ toggleSet value values =
 
     else
         Set.insert value values
+
+
+repositoryChangeSnapshotIsBound : String -> Model -> Bool
+repositoryChangeSnapshotIsBound snapshotId model =
+    model.detail
+        |> Maybe.map
+            (.outputs
+                >> List.any
+                    (\output ->
+                        output.snapshot.id
+                            == snapshotId
+                            && output.snapshot.typeRef
+                            == "repository-change/v1"
+                    )
+            )
+        |> Maybe.withDefault False
 
 
 polls : List (Polling.Poll Model)
@@ -562,17 +638,23 @@ view session model =
         route
         (model.workflowName ++ " run #" ++ model.workflowRunId)
         "immutable admission, execution, outputs, and interventions"
-        [ if model.loadError then
-            errorLine "Some run projections could not be loaded. The durable run identity remains available."
-
-          else
-            Html.text ""
-        , case model.detail of
+        [ case model.detail of
             Nothing ->
-                loading "loading durable run…"
+                if model.detailError then
+                    errorLine "The durable run could not be loaded."
+
+                else
+                    loading "loading durable run…"
 
             Just detail ->
-                runContent session model detail
+                if model.detailError then
+                    Html.div []
+                        [ staleWarning "Durable run refresh failed — showing stale run data."
+                        , runContent session model detail
+                        ]
+
+                else
+                    runContent session model detail
         ]
 
 
@@ -919,7 +1001,11 @@ nodeOutput model binding =
 
             Nothing ->
                 if binding.snapshot.typeRef == "repository-change/v1" then
-                    Just (loading "loading bounded repository-change projection…")
+                    if Set.member binding.snapshot.id model.repositoryChangeErrors then
+                        Just (errorLine "Repository-change projection could not be loaded.")
+
+                    else
+                        Just (loading "loading bounded repository-change projection…")
 
                 else
                     Nothing
@@ -981,7 +1067,7 @@ residualWaitsCard model =
         residual =
             List.filter (\wait -> not (Set.member wait.id (attributedWaitIds model))) model.waits
     in
-    if graphIsDrawn model && List.isEmpty residual then
+    if graphIsDrawn model && model.waitsLoaded && List.isEmpty residual && not model.waitsError then
         Html.text ""
 
     else
@@ -994,7 +1080,7 @@ residualTranscriptsCard model =
         residual =
             List.filter (\ref -> not (transcriptIsAttributed model ref)) model.transcripts
     in
-    if graphIsDrawn model && List.isEmpty residual && not model.transcriptIndexError then
+    if graphIsDrawn model && model.transcriptIndexLoaded && List.isEmpty residual && not model.transcriptIndexError then
         Html.text ""
 
     else
@@ -1256,7 +1342,11 @@ outputBinding model binding =
 
             Nothing ->
                 if binding.snapshot.typeRef == "repository-change/v1" then
-                    loading "loading bounded repository-change projection…"
+                    if Set.member binding.snapshot.id model.repositoryChangeErrors then
+                        errorLine "Repository-change projection could not be loaded."
+
+                    else
+                        loading "loading bounded repository-change projection…"
 
                 else
                     Html.text ""
@@ -1274,14 +1364,30 @@ snapshotRef snapshot =
 
 waitsCard : Model -> Html Message
 waitsCard model =
-    Html.section [ class "agent-run-waits", cardStyle ]
-        [ heading "Human waits"
-        , if List.isEmpty model.waits then
-            loading "no human intervention points"
+    Html.section [ class "agent-run-waits", cardStyle ] <|
+        [ heading "Human waits" ]
+            ++ (if not model.waitsLoaded then
+                    [ if model.waitsError then
+                        errorLine "Human waits could not be loaded."
 
-          else
-            Html.div [] (List.map (waitView model) model.waits)
-        ]
+                      else
+                        loading "Loading human waits…"
+                    ]
+
+                else
+                    (if model.waitsError then
+                        [ staleWarning "Wait refresh failed — showing stale data." ]
+
+                     else
+                        []
+                    )
+                        ++ [ if List.isEmpty model.waits then
+                                loading "no human intervention points"
+
+                             else
+                                Html.div [] (List.map (waitView model) model.waits)
+                           ]
+               )
 
 
 waitView : Model -> WorkflowRun.Wait -> Html Message
@@ -1411,14 +1517,30 @@ waitOption model wait option =
 
 outcomesCard : Model -> Html Message
 outcomesCard model =
-    Html.section [ class "agent-run-outcomes", cardStyle ]
-        [ heading "Outcomes and interventions"
-        , if List.isEmpty model.outcomes then
-            loading "no output dispositions have been recorded"
+    Html.section [ class "agent-run-outcomes", cardStyle ] <|
+        [ heading "Outcomes and interventions" ]
+            ++ (if not model.outcomesLoaded then
+                    [ if model.outcomesError then
+                        errorLine "Outcomes could not be loaded."
 
-          else
-            Html.div [] (List.map outcomeRow model.outcomes)
-        ]
+                      else
+                        loading "Loading outcomes…"
+                    ]
+
+                else
+                    (if model.outcomesError then
+                        [ staleWarning "Outcome refresh failed — showing stale data." ]
+
+                     else
+                        []
+                    )
+                        ++ [ if List.isEmpty model.outcomes then
+                                loading "no output dispositions have been recorded"
+
+                             else
+                                Html.div [] (List.map outcomeRow model.outcomes)
+                           ]
+               )
 
 
 outcomeRow : WorkflowRun.Outcome -> Html Message
@@ -1478,21 +1600,38 @@ telemetryCard model run =
             relevant
                 |> List.map (\metric -> metric.usage.inputTokens + metric.usage.outputTokens)
                 |> List.sum
+
+        summary =
+            Html.p [ style "font-family" "monospace" ]
+                [ Html.text
+                    (String.fromInt (List.length relevant)
+                        ++ " steps · "
+                        ++ String.fromInt turns
+                        ++ " turns · "
+                        ++ String.fromInt tokens
+                        ++ " tokens · $"
+                        ++ String.fromFloat cost
+                    )
+                ]
     in
     Html.section [ class "agent-run-telemetry", cardStyle ]
-        [ heading "Invocation telemetry"
-        , Html.p [ style "font-family" "monospace" ]
-            [ Html.text
-                (String.fromInt (List.length relevant)
-                    ++ " steps · "
-                    ++ String.fromInt turns
-                    ++ " turns · "
-                    ++ String.fromInt tokens
-                    ++ " tokens · $"
-                    ++ String.fromFloat cost
-                )
-            ]
-        ]
+        ([ heading "Invocation telemetry" ]
+            ++ (if model.metricsError then
+                    [ errorLine "Invocation telemetry could not be loaded."
+                    , if List.isEmpty model.metrics then
+                        Html.text ""
+
+                      else
+                        summary
+                    ]
+
+                else if not model.metricsLoaded then
+                    [ loading "Loading invocation telemetry…" ]
+
+                else
+                    [ summary ]
+               )
+        )
 
 
 {-| What the agent actually did, per step: the tool-call transcript the runner
@@ -1501,17 +1640,30 @@ when its step is opened.
 -}
 transcriptsCard : Model -> Html Message
 transcriptsCard model =
-    Html.section [ class "agent-run-transcripts", cardStyle ]
-        [ heading "Agent transcripts"
-        , if not (List.isEmpty model.transcripts) then
-            Html.div [] (List.map (transcriptRow model) model.transcripts)
+    Html.section [ class "agent-run-transcripts", cardStyle ] <|
+        [ heading "Agent transcripts" ]
+            ++ (if not model.transcriptIndexLoaded then
+                    [ if model.transcriptIndexError then
+                        errorLine "The transcript index could not be loaded."
 
-          else if model.transcriptIndexError then
-            errorLine "The transcript index could not be loaded."
+                      else
+                        loading "Loading transcript index…"
+                    ]
 
-          else
-            loading "no agent transcript captured for this run"
-        ]
+                else
+                    (if model.transcriptIndexError then
+                        [ staleWarning "Transcript index refresh failed — showing stale data." ]
+
+                     else
+                        []
+                    )
+                        ++ [ if List.isEmpty model.transcripts then
+                                loading "no agent transcript captured for this run"
+
+                             else
+                                Html.div [] (List.map (transcriptRow model) model.transcripts)
+                           ]
+               )
 
 
 transcriptRow : Model -> Transcript.Ref -> Html Message
@@ -1731,3 +1883,8 @@ loading message =
 errorLine : String -> Html Message
 errorLine message =
     Html.p [ class "agent-page-error", style "color" "#e0a44e" ] [ Html.text message ]
+
+
+staleWarning : String -> Html Message
+staleWarning message =
+    Html.p [ class "agent-projection-stale", style "color" "#e0a44e" ] [ Html.text message ]

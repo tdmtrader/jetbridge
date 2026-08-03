@@ -79,7 +79,9 @@ type alias Model =
         , filters : Filters.Filters
         , openPanel : Maybe Panels.Panel
         , overview : Maybe Overview.Overview
+        , overviewDataQuery : Maybe (List ( String, String ))
         , runs : Maybe (List WorkflowRun.Summary)
+        , runsDataQuery : Maybe (List ( String, String ))
         , versions : Maybe (List Agent.WorkflowVersion)
         , selectedVersion : String
         , inputValues : Dict String String
@@ -87,7 +89,9 @@ type alias Model =
         , now : Maybe Time.Posix
         , starting : Bool
         , startError : Bool
-        , loadError : Bool
+        , overviewLoadError : Bool
+        , runsLoadError : Bool
+        , versionsLoadError : Bool
         , promotionError : Bool
         }
 
@@ -102,7 +106,9 @@ init { name, query } =
       , filters = filters
       , openPanel = Panels.fromQuery query
       , overview = Nothing
+      , overviewDataQuery = Nothing
       , runs = Nothing
+      , runsDataQuery = Nothing
       , versions = Nothing
       , selectedVersion = ""
       , inputValues = Dict.empty
@@ -110,7 +116,9 @@ init { name, query } =
       , now = Nothing
       , starting = False
       , startError = False
-      , loadError = False
+      , overviewLoadError = False
+      , runsLoadError = False
+      , versionsLoadError = False
       , promotionError = False
       , isUserMenuExpanded = False
       }
@@ -166,6 +174,18 @@ changeRoute query ( model, effects ) =
     ( { model
         | filters = filters
         , openPanel = Panels.fromQuery query
+        , overviewLoadError =
+            if overviewChanged then
+                False
+
+            else
+                model.overviewLoadError
+        , runsLoadError =
+            if runsChanged then
+                False
+
+            else
+                model.runsLoadError
         , scrollTop =
             if runsChanged then
                 0
@@ -196,16 +216,22 @@ changeRoute query ( model, effects ) =
 handleCallback : Callback -> ET Model
 handleCallback callback ( model, effects ) =
     case callback of
-        AgentWorkflowOverviewFetched workflowName (Ok overview) ->
-            if workflowName == model.workflowName then
-                ( { model | overview = Just overview, loadError = False }, effects )
+        AgentWorkflowOverviewFetched workflowName requestQuery (Ok overview) ->
+            if workflowName == model.workflowName && requestQuery == Filters.overviewQuery model.filters then
+                ( { model
+                    | overview = Just overview
+                    , overviewDataQuery = Just requestQuery
+                    , overviewLoadError = False
+                  }
+                , effects
+                )
 
             else
                 ( model, effects )
 
-        AgentWorkflowOverviewFetched workflowName (Err _) ->
-            if workflowName == model.workflowName then
-                ( { model | loadError = True }, effects )
+        AgentWorkflowOverviewFetched workflowName requestQuery (Err _) ->
+            if workflowName == model.workflowName && requestQuery == Filters.overviewQuery model.filters then
+                ( { model | overviewLoadError = True }, effects )
 
             else
                 ( model, effects )
@@ -216,49 +242,76 @@ handleCallback callback ( model, effects ) =
 
             else
                 let
+                    preferred =
+                        case versions |> List.filter .live |> List.head of
+                            Just live ->
+                                Just live
+
+                            Nothing ->
+                                latestVersion versions
+
+                    current =
+                        model.selectedVersion
+                            |> String.toInt
+                            |> Maybe.andThen
+                                (\version ->
+                                    versions
+                                        |> List.filter (\candidate -> candidate.version == version)
+                                        |> List.head
+                                )
+
                     chosen =
-                        versions
-                            |> List.filter .live
-                            |> List.head
-                            |> Maybe.withDefault (latestVersion versions)
+                        case current of
+                            Just existing ->
+                                Just existing
+
+                            Nothing ->
+                                preferred
 
                     selected =
-                        if model.selectedVersion == "" then
-                            String.fromInt chosen.version
+                        chosen
+                            |> Maybe.map (.version >> String.fromInt)
+                            |> Maybe.withDefault ""
 
-                        else
-                            model.selectedVersion
+                    inputValues =
+                        chosen
+                            |> Maybe.map (\version -> seedInputs version.signature model.inputValues)
+                            |> Maybe.withDefault model.inputValues
                 in
                 ( { model
                     | versions = Just versions
                     , selectedVersion = selected
-                    , inputValues = seedInputs chosen.signature model.inputValues
-                    , promotionError = False
+                    , inputValues = inputValues
+                    , versionsLoadError = False
                   }
                 , effects
                 )
 
         AgentWorkflowVersionsFetched workflowName (Err _) ->
             if workflowName == model.workflowName then
-                ( { model | loadError = True }, effects )
+                ( { model | versionsLoadError = True }, effects )
 
             else
                 ( model, effects )
 
-        AgentWorkflowRunsFetched workflowName (Ok fetched) ->
-            if workflowName == model.workflowName then
+        AgentWorkflowRunsFetched workflowName requestQuery (Ok fetched) ->
+            if workflowName == model.workflowName && requestQuery == Filters.runsQuery model.filters then
                 -- The list re-renders from scratch on every poll, which would
                 -- otherwise throw the reader back to the top mid-read.
-                ( { model | runs = Just fetched, loadError = False }
+                ( { model
+                    | runs = Just fetched
+                    , runsDataQuery = Just requestQuery
+                    , runsLoadError = False
+                  }
                 , effects ++ [ Scroll (ToOffset model.scrollTop) runListId ]
                 )
 
             else
                 ( model, effects )
 
-        AgentWorkflowRunsFetched workflowName (Err _) ->
-            if workflowName == model.workflowName then
-                ( { model | loadError = True }, effects )
+        AgentWorkflowRunsFetched workflowName requestQuery (Err _) ->
+            if workflowName == model.workflowName && requestQuery == Filters.runsQuery model.filters then
+                ( { model | runsLoadError = True }, effects )
 
             else
                 ( model, effects )
@@ -443,6 +496,18 @@ applyFilters change ( model, effects ) =
     navigate
         { model
             | filters = filters
+            , overviewLoadError =
+                if overviewChanged then
+                    False
+
+                else
+                    model.overviewLoadError
+            , runsLoadError =
+                if runsChanged then
+                    False
+
+                else
+                    model.runsLoadError
             , scrollTop =
                 if runsChanged then
                     0
@@ -471,26 +536,11 @@ navigate model effects =
     ( model, effects ++ [ ModifyUrl (Routes.toString (route model)) ] )
 
 
-latestVersion : List Agent.WorkflowVersion -> Agent.WorkflowVersion
+latestVersion : List Agent.WorkflowVersion -> Maybe Agent.WorkflowVersion
 latestVersion versions =
     versions
         |> List.sortBy (negate << .version)
         |> List.head
-        |> Maybe.withDefault
-            { id = 0
-            , name = ""
-            , version = 0
-            , schemaVersion = 0
-            , signatureVersion = 0
-            , contentHash = ""
-            , live = False
-            , description = ""
-            , createdBy = ""
-            , createdAt = Time.millisToPosix 0
-            , promotedAt = Nothing
-            , promotedBy = ""
-            , signature = Agent.WorkflowSignature [] []
-            }
 
 
 selectedVersion : String -> Model -> Maybe Agent.WorkflowVersion
@@ -562,12 +612,29 @@ polls =
 
 hasActiveRuns : Model -> Bool
 hasActiveRuns model =
-    case model.runs of
-        Nothing ->
-            True
+    let
+        overviewActive =
+            model.overview
+                |> Maybe.map
+                    (.nodeState
+                        >> List.any
+                            (\state -> state.running > 0 || state.waiting > 0 || state.pending > 0)
+                    )
+                |> Maybe.withDefault False
 
-        Just fetched ->
-            List.any (\run -> isActiveStatus run.status) fetched
+        visibleRunActive =
+            model.runs
+                |> Maybe.map (List.any (\run -> isActiveStatus run.status))
+                |> Maybe.withDefault False
+    in
+    model.overview
+        == Nothing
+        || overviewActive
+        || visibleRunActive
+        || filterDataStale model
+        || model.overviewLoadError
+        || model.runsLoadError
+        || model.versionsLoadError
 
 
 isActiveStatus : String -> Bool
@@ -621,7 +688,8 @@ view session model =
         model.workflowName
         "versioned workflow function"
         (List.filterMap identity
-            [ if model.loadError then
+            [ filterDataNotice model
+            , if currentFilterLoadError model || model.versionsLoadError then
                 Just (errorLine "Some workflow data could not be loaded; available durable data is still shown.")
 
               else
@@ -632,6 +700,61 @@ view session model =
             , Just (body model)
             ]
         )
+
+
+filterDataNotice : Model -> Maybe (Html Message)
+filterDataNotice model =
+    if filterDataStale model then
+        Just <|
+            Html.div [ class "agent-workflow-filter-stale" ]
+                [ Html.text
+                    (if staleFilterLoadError model then
+                        "Current-filter workflow data could not be loaded; previous-filter data remains visible."
+
+                     else
+                        "Updating workflow data for the selected filters; previous results remain visible."
+                    )
+                ]
+
+    else
+        Nothing
+
+
+filterDataStale : Model -> Bool
+filterDataStale model =
+    overviewDataStale model || runsDataStale model
+
+
+overviewDataStale : Model -> Bool
+overviewDataStale model =
+    case ( model.overview, model.overviewDataQuery ) of
+        ( Just _, Just dataQuery ) ->
+            dataQuery /= Filters.overviewQuery model.filters
+
+        _ ->
+            False
+
+
+runsDataStale : Model -> Bool
+runsDataStale model =
+    case ( model.runs, model.runsDataQuery ) of
+        ( Just _, Just dataQuery ) ->
+            dataQuery /= Filters.runsQuery model.filters
+
+        _ ->
+            False
+
+
+staleFilterLoadError : Model -> Bool
+staleFilterLoadError model =
+    (overviewDataStale model && model.overviewLoadError)
+        || (runsDataStale model && model.runsLoadError)
+
+
+currentFilterLoadError : Model -> Bool
+currentFilterLoadError model =
+    (model.overviewLoadError && not (overviewDataStale model))
+        || (model.runsLoadError && not (runsDataStale model))
 
 
 headerBar : Model -> Html Message
@@ -785,7 +908,8 @@ viewPanel session model panel =
     case panel of
         Panels.Start ->
             Panels.viewStart
-                { versions = Maybe.withDefault [] model.versions
+                { versions = model.versions
+                , versionsLoadError = model.versionsLoadError
                 , selectedVersion = selectedVersion model.selectedVersion model
                 , selectedVersionRaw = model.selectedVersion
                 , inputValues = model.inputValues
@@ -801,6 +925,7 @@ viewPanel session model panel =
             Panels.viewVersions
                 { zone = session.timeZone
                 , versions = model.versions
+                , versionsLoadError = model.versionsLoadError
                 , promotionError = model.promotionError
                 , hasPromotedVersion =
                     model.overview
