@@ -57,7 +57,10 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 awk -v image_indent="$image_indent" -v child_indent="$child_indent" -v digest="$digest" -v source="$source_commit" '
   function indent_of(line) { sub(/[^[:space:]].*$/, "", line); return line }
-  $0 == image_indent "image:" { in_image = 1; print; next }
+  # Matched as a regex, not by string equality. The validation above accepts
+  # trailing whitespace after the key, so exact equality silently skipped the
+  # whole block for a line like "  image:   " and substituted nothing.
+  $0 ~ ("^" image_indent "image:[[:space:]]*$") { in_image = 1; print; next }
   in_image && indent_of($0) == image_indent && $0 !~ /^[[:space:]]*$/ {
     if (!wrote_digest) print child_indent "digest: " digest
     if (!wrote_source) print child_indent "sourceCommit: " source
@@ -84,6 +87,18 @@ awk -v image_indent="$image_indent" -v child_indent="$child_indent" -v digest="$
     }
   }
 ' "$repo/$file" > "$image_tmp"
+
+# Fail closed on zero replacements. Everything downstream reads success as
+# "the digest is now pinned": the self-upgrade job continues, `put: home-infra`
+# pushes nothing, and trigger-rollout polls for five minutes before blaming
+# ArgoCD. A writer that changed nothing must say so here, at the point where
+# the cause is still visible.
+written_digest=$(grep -Ec "^${child_indent}digest: ${digest}$" "$image_tmp" || true)
+written_source=$(grep -Ec "^${child_indent}sourceCommit: ${source_commit}$" "$image_tmp" || true)
+if test "$written_digest" != 1 || test "$written_source" != 1; then
+  echo "FATAL: image mapping was not updated (digest lines=${written_digest}, sourceCommit lines=${written_source}); refusing to report success" >&2
+  exit 1
+fi
 
 # The old imperative self-upgrade path left Argo configured to ignore the web
 # container image. Once image.digest is GitOps-owned, that exact exception

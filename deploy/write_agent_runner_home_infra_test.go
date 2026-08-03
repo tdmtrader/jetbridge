@@ -141,6 +141,89 @@ func TestWriteWebImageHomeInfra(t *testing.T) {
 		t.Fatalf("equal image/source created commit %s, want %s", got, before)
 	}
 
+	// The validation regexes tolerate whitespace around the `image:` key, so a
+	// stray trailing space passed every check while the substitution matched
+	// the key by exact string equality and did nothing. The script exited 0
+	// having written no digest and made no commit; `put: home-infra` pushed
+	// nothing, and the failure only surfaced five minutes later in
+	// trigger-rollout as "ArgoCD did not apply the immutable shared image",
+	// pointing the operator at ArgoCD instead of at the writer.
+	for name, imageLine := range map[string]string{
+		"trailing_spaces": "image:   \n",
+		"trailing_tab":    "image:\t\n",
+	} {
+		t.Run("writes_through_"+name+"_on_the_image_key", func(t *testing.T) {
+			padded := newHomeInfraFixture(t, seedRunnerImage)
+			manifest := strings.Replace(runnerManifest(seedRunnerImage), "image:\n", imageLine, 1)
+			writeFixtureFile(t, filepath.Join(padded.clone, "apps", "concourse.yaml"), manifest)
+			runGit(t, padded.clone, "add", "apps/concourse.yaml")
+			runGit(t, padded.clone, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "pad the image key")
+
+			if output, err := exec.Command("sh", helper, webImage, sourceCommit, padded.clone).CombinedOutput(); err != nil {
+				t.Fatalf("helper: %v\n%s", err, output)
+			}
+			written := gitOutput(t, padded.clone, "show", "HEAD:apps/concourse.yaml")
+			for _, want := range []string{
+				"digest: sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+				"sourceCommit: " + sourceCommit,
+			} {
+				if !strings.Contains(written, want) {
+					t.Fatalf("helper exited 0 without writing %q:\n%s", want, written)
+				}
+			}
+			if subject := gitOutput(t, padded.clone, "log", "-1", "--format=%s"); subject != "chore(deploy): pin web image" {
+				t.Fatalf("helper made no commit; HEAD subject = %q", subject)
+			}
+		})
+	}
+
+	// The invariant that outlives any particular mismatch between the
+	// validation regexes and the substitution: exit 0 must mean the digest is
+	// pinned. Anything the writer cannot handle has to say so loudly here,
+	// where the cause is visible, rather than five minutes later in
+	// trigger-rollout as an apparent ArgoCD fault.
+	t.Run("never_reports_success_without_pinning_the_digest", func(t *testing.T) {
+		for name, mutate := range map[string]func(string) string{
+			"crlf_line_endings": func(manifest string) string {
+				return strings.ReplaceAll(manifest, "\n", "\r\n")
+			},
+			"four_space_child_indent": func(manifest string) string {
+				return strings.Replace(manifest,
+					"image:\n  repository: registry.home/jetbridge\n  tag: rc-old\n",
+					"image:\n    repository: registry.home/jetbridge\n    tag: rc-old\n", 1)
+			},
+			"image_key_with_padding_and_no_children": func(manifest string) string {
+				return strings.Replace(manifest,
+					"image:\n  repository: registry.home/jetbridge\n  tag: rc-old\n",
+					"image:  \n", 1)
+			},
+		} {
+			t.Run(name, func(t *testing.T) {
+				odd := newHomeInfraFixture(t, seedRunnerImage)
+				writeFixtureFile(t, filepath.Join(odd.clone, "apps", "concourse.yaml"), mutate(runnerManifest(seedRunnerImage)))
+				runGit(t, odd.clone, "add", "apps/concourse.yaml")
+				runGit(t, odd.clone, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "unusual manifest shape")
+				before := gitOutput(t, odd.clone, "rev-parse", "HEAD")
+
+				output, err := exec.Command("sh", helper, webImage, sourceCommit, odd.clone).CombinedOutput()
+				written := gitOutput(t, odd.clone, "show", "HEAD:apps/concourse.yaml")
+				pinned := strings.Contains(written, "digest: sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd")
+
+				if err == nil && !pinned {
+					t.Fatalf("helper exited 0 without pinning the digest:\n%s\n%s", output, written)
+				}
+				if err != nil {
+					if got := gitOutput(t, odd.clone, "rev-parse", "HEAD"); got != before {
+						t.Fatalf("rejected update created commit %s, want %s", got, before)
+					}
+					if got := gitOutput(t, odd.clone, "status", "--porcelain"); got != "" {
+						t.Fatalf("rejected update left the checkout dirty:\n%s", got)
+					}
+				}
+			})
+		}
+	})
+
 	t.Run("removes_only_the_target_pointer_from_a_shared_rule", func(t *testing.T) {
 		shared := newHomeInfraFixture(t, seedRunnerImage)
 		manifest := runnerManifest(seedRunnerImage)
