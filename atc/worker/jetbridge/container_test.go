@@ -3,11 +3,15 @@ package jetbridge_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
 	"sync"
 
+	"code.cloudfoundry.org/lager/v3"
+	"code.cloudfoundry.org/lager/v3/lagerctx"
+	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/compression"
 	"github.com/concourse/concourse/atc/db"
@@ -2504,6 +2508,47 @@ var _ = Describe("Container", func() {
 				_, err := execContainer.Attach(ctx, "some-process", runtime.ProcessIO{})
 				Expect(err).To(HaveOccurred())
 				Expect(err.Error()).To(ContainSubstring("no completion status"))
+			})
+		})
+
+		// Every step Attaches before it Runs, and pods are created lazily in
+		// Run, so a missing pod here is the ordinary first-run path. Logging
+		// it at error level produced one ERROR per step in the web log.
+		Context("when the pod has not been created yet", func() {
+			var (
+				testLogger *lagertest.TestLogger
+				loggedCtx  context.Context
+			)
+
+			BeforeEach(func() {
+				testLogger = lagertest.NewTestLogger("attach")
+				loggedCtx = lagerctx.NewContext(ctx, testLogger)
+			})
+
+			It("still errors so attachOrRun falls through to Run, but does not log at error level", func() {
+				_, err := container.Attach(loggedCtx, "some-process", runtime.ProcessIO{})
+				Expect(err).To(MatchError(ContainSubstring("not found")))
+
+				for _, entry := range testLogger.Logs() {
+					Expect(entry.LogLevel).ToNot(Equal(lager.ERROR), fmt.Sprintf("unexpected error log %q", entry.Message))
+				}
+				Expect(testLogger.Logs()).ToNot(BeEmpty())
+				Expect(testLogger.Logs()[0].LogLevel).To(Equal(lager.DEBUG))
+			})
+
+			It("still logs at error level when the lookup fails for a real reason", func() {
+				fakeClientset.PrependReactor("get", "pods", func(k8stesting.Action) (bool, apiruntime.Object, error) {
+					return true, nil, errors.New("apiserver is unreachable")
+				})
+
+				_, err := container.Attach(loggedCtx, "some-process", runtime.ProcessIO{})
+				Expect(err).To(MatchError(ContainSubstring("apiserver is unreachable")))
+
+				var levels []lager.LogLevel
+				for _, entry := range testLogger.Logs() {
+					levels = append(levels, entry.LogLevel)
+				}
+				Expect(levels).To(ContainElement(lager.ERROR))
 			})
 		})
 	})

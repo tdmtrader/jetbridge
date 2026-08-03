@@ -349,8 +349,19 @@ func (c *Container) Attach(ctx context.Context, processID string, io runtime.Pro
 	// Check whether the Pod actually exists in K8s. If it does not, return
 	// an error so that attachOrRun falls through to Run() which creates
 	// the Pod.
+	//
+	// A NotFound here is the ordinary first-run path, not a failure: every
+	// step Attaches before it Runs, and pods are created lazily in Run.
+	// Logging it at error level put one ERROR line in the web log per step,
+	// which is exactly the volume that teaches operators to ignore the level
+	// and so hides a real attach failure. Any other error (RBAC, apiserver
+	// timeout) still deserves the error level and a failed span.
 	pod, err := c.clientset.CoreV1().Pods(c.config.Namespace).Get(ctx, c.podName, metav1.GetOptions{})
 	if err != nil {
+		if apierrors.IsNotFound(err) {
+			logger.Debug("pod-not-created-yet", lager.Data{"pod": c.podName})
+			return nil, fmt.Errorf("attach: pod %q not found: %w", c.podName, err)
+		}
 		logger.Error("failed-to-get-pod", err)
 		spanErr = err
 		return nil, fmt.Errorf("attach: pod %q not found: %w", c.podName, err)
