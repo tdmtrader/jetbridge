@@ -47,6 +47,11 @@ type Server struct {
 	hangar           hangar.Store
 	snapshotCacheMu  sync.Mutex
 
+	// snapshotRepairSlots bounds concurrent durable-metadata repairs. Each one
+	// downloads and decompresses a whole object to prove it, so admission is
+	// capped and excess requests are refused rather than queued.
+	snapshotRepairSlots chan struct{}
+
 	// Injected only by package-internal durability tests. Production always
 	// uses syncRootDirectory so a successful convergence response means the
 	// namespace mutation (or observed steady state) was re-synchronized.
@@ -197,6 +202,11 @@ var defaultSnapshotMaxBytes = func() int64 {
 const (
 	defaultResolveMaxConcurrent = 32
 	defaultResolveTimeout       = 30 * time.Minute
+
+	// Durable-metadata repair is background recovery, not request serving. One
+	// at a time is enough to drain a bucket over successive repair passes and
+	// keeps the proving cost off the path of live snapshot reads.
+	defaultSnapshotRepairMaxConcurrent = 1
 )
 
 // NewServer creates a new artifact-daemon server.
@@ -211,6 +221,7 @@ func NewServer(logger lager.Logger, storagePath, nodeName string) *Server {
 		snapshotMaxBytes:           defaultSnapshotMaxBytes,
 		resolveSlots:               make(chan struct{}, defaultResolveMaxConcurrent),
 		resolveTimeout:             defaultResolveTimeout,
+		snapshotRepairSlots:        make(chan struct{}, defaultSnapshotRepairMaxConcurrent),
 		syncSnapshotDirectory:      syncRootDirectory,
 		checkpointPrepared:         map[string]*preparedCheckpointCapture{},
 		checkpointMaxBytes:         10 << 30,
@@ -340,6 +351,10 @@ func (s *Server) Handler(opts ...HandlerOption) http.Handler {
 	mux.HandleFunc("POST /checkpoints/v1/restore", protect(s.handleCheckpointRestore))
 	mux.HandleFunc("POST /checkpoints/v1/restore/verify", protect(s.handleCheckpointRestoreVerify))
 	mux.HandleFunc("GET /checkpoints/v1/preemption-notice", protect(s.handlePreemptionNotice))
+	mux.HandleFunc(
+		"POST /snapshots/v1/repair-durable-metadata/{digest}",
+		protect(s.handleRepairSnapshotDurableMetadata),
+	)
 
 	// net/http's ServeMux canonicalizes traversal-looking paths before route
 	// selection. Validate artifact paths first so malformed paths receive the
@@ -1018,6 +1033,80 @@ func (s *Server) handleDeleteSnapshot(w http.ResponseWriter, r *http.Request, di
 	}
 	status = "ok"
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleRepairSnapshotDurableMetadata restores the durable object's metadata
+// vocabulary on behalf of the ATC's snapshot repair pass. Only the durable
+// store can do this — it holds the object — but the decision to attempt it
+// belongs upstream, in the component whose job is fixing snapshot state, so
+// this is exposed as an explicit request and never runs off an ordinary read.
+//
+// Proving an object requires decompressing it, so the daemon admits a bounded
+// number at a time and answers 429 rather than letting a repair pass turn into
+// unbounded background work.
+func (s *Server) handleRepairSnapshotDurableMetadata(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	status := "error"
+	defer func() { s.metrics.recordSnapshot("repair-metadata", status, 0, time.Since(start)) }()
+
+	digest := r.PathValue("digest")
+	if _, err := snapshotDigestFromKey(snapshotKey(digest)); err != nil {
+		http.Error(w, "malformed snapshot digest", http.StatusBadRequest)
+		return
+	}
+	if s.hangar == nil {
+		status = "not_found"
+		http.Error(w, "durable snapshot store is not configured", http.StatusNotFound)
+		return
+	}
+
+	select {
+	case s.snapshotRepairSlots <- struct{}{}:
+		defer func() { <-s.snapshotRepairSlots }()
+	default:
+		status = "busy"
+		http.Error(w, "durable snapshot metadata repair is busy", http.StatusTooManyRequests)
+		return
+	}
+
+	attributes, err := s.hangar.RepairDerivableMetadata(
+		r.Context(),
+		hangar.KindSnapshot,
+		hangar.Digest("sha256:"+digest),
+		s.snapshotMaxBytes,
+	)
+	switch {
+	case err == nil:
+	case errors.Is(err, hangar.ErrNotFound):
+		status = "not_found"
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	case errors.Is(err, hangar.ErrConflict):
+		status = "conflict"
+		http.Error(w, "durable snapshot changed during metadata repair", http.StatusConflict)
+		return
+	case errors.Is(err, hangar.ErrCorrupt), errors.Is(err, hangar.ErrUnrepairable):
+		// The stored bytes did not prove themselves against the digest in the
+		// key, or the object carries metadata this build cannot derive. Either
+		// way the object is left exactly as it is and a human is needed; saying
+		// so with a terminal status keeps the repair pass from thrashing.
+		status = "unrepairable"
+		s.logger.Error("repair-snapshot-durable-metadata-refused", err, lager.Data{"digest": digest})
+		http.Error(w, "durable snapshot metadata is not repairable", http.StatusUnprocessableEntity)
+		return
+	default:
+		s.logger.Error("repair-snapshot-durable-metadata-failed", err, lager.Data{"digest": digest})
+		http.Error(w, "durable snapshot metadata repair failed", http.StatusBadGateway)
+		return
+	}
+
+	status = "ok"
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"digest":             string(attributes.Ref.Digest),
+		"uncompressed_bytes": attributes.UncompressedBytes,
+	})
 }
 
 func (s *Server) deleteSnapshotFromHangar(ctx context.Context, digest string) error {

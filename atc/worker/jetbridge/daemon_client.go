@@ -195,6 +195,24 @@ func (d *DaemonClient) snapshotHTTPClient() (*http.Client, error) {
 	return d.streamingClient, nil
 }
 
+// snapshotRepairHTTPClient returns a client for durable-metadata repair. The
+// daemon proves a whole object before it answers, which can outlast both the
+// probe client's short whole-request timeout and the streaming transport's
+// response-header budget, so repair borrows the probe transport without either
+// deadline and relies on the caller's context instead.
+func (d *DaemonClient) snapshotRepairHTTPClient() (*http.Client, error) {
+	if d == nil {
+		return nil, fmt.Errorf("daemon client is required")
+	}
+	if d.initializationErr != nil {
+		return nil, d.initializationErr
+	}
+	if d.client == nil || d.client.Transport == nil {
+		return nil, fmt.Errorf("daemon probe transport is required")
+	}
+	return &http.Client{Transport: d.client.Transport}, nil
+}
+
 func (d *DaemonClient) snapshotURL(endpoint DaemonEndpoint, key string) (*url.URL, error) {
 	if d == nil {
 		return nil, fmt.Errorf("daemon client is required")

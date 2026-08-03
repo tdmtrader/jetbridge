@@ -929,12 +929,15 @@ type memoryObjectClient struct {
 
 	writeConditions  []storage.Conditions
 	deleteConditions []storage.Conditions
+	updateConditions []storage.Conditions
+	updates          []map[string]string
 	readGenerations  []int64
 
 	writeErr       error
 	closeErr       error
 	attrsErr       error
 	deleteErr      error
+	updateErr      error
 	readCloseErr   error
 	blockRead      bool
 	blockReadBody  bool
@@ -1135,6 +1138,39 @@ func (client *memoryObjectClient) lookupLocked(key string, generation int64) (me
 	}
 	version, found := client.versions[key][generation]
 	return version, found
+}
+
+func (handle *memoryObjectHandle) Update(
+	_ context.Context,
+	update storage.ObjectAttrsToUpdate,
+) (objectAttrs, error) {
+	handle.client.mu.Lock()
+	defer handle.client.mu.Unlock()
+	handle.client.updateConditions = append(handle.client.updateConditions, handle.conditions)
+	handle.client.updates = append(handle.client.updates, cloneMetadata(update.Metadata))
+	if handle.client.updateErr != nil {
+		return objectAttrs{}, handle.client.updateErr
+	}
+	object, found := handle.client.objects[handle.key]
+	if !found {
+		return objectAttrs{}, &googleapi.Error{Code: 404, Message: "missing"}
+	}
+	if handle.conditions.GenerationMatch != 0 && handle.conditions.GenerationMatch != object.generation {
+		return objectAttrs{}, &googleapi.Error{Code: 412, Message: "generation mismatch"}
+	}
+	if handle.conditions.MetagenerationMatch != 0 && handle.conditions.MetagenerationMatch != object.metaGen {
+		return objectAttrs{}, &googleapi.Error{Code: 412, Message: "metageneration mismatch"}
+	}
+	object.metadata = cloneMetadata(update.Metadata)
+	object.metaGen++
+	handle.client.objects[handle.key] = object
+	return objectAttrs{
+		Generation:     object.generation,
+		Metageneration: object.metaGen,
+		Size:           object.size,
+		Created:        object.created,
+		Metadata:       cloneMetadata(object.metadata),
+	}, nil
 }
 
 func (handle *memoryObjectHandle) Delete(context.Context) error {

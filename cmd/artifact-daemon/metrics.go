@@ -104,12 +104,15 @@ func (m *metrics) recordSnapshot(operation, status string, bytes int64, duration
 		return
 	}
 	switch operation {
-	case "put", "get", "head", "delete":
+	case "put", "get", "head", "delete", "repair-metadata":
 	default:
 		operation = "unknown"
 	}
 	switch status {
-	case "ok", "created", "identical", "conflict", "digest_mismatch", "not_found":
+	case "ok", "created", "identical", "conflict", "digest_mismatch", "not_found",
+		// Repair outcomes. "unrepairable" is the one that needs a human: the
+		// object's bytes did not prove themselves, so nothing was rewritten.
+		"unrepairable", "busy":
 	default:
 		status = "error"
 	}

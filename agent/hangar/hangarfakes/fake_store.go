@@ -34,6 +34,13 @@ type DeleteCall struct {
 	Ref     hangar.ObjectRef
 }
 
+type RepairDerivableMetadataCall struct {
+	Context              context.Context
+	Kind                 hangar.Kind
+	Digest               hangar.Digest
+	MaxUncompressedBytes int64
+}
+
 type FakeStore struct {
 	mutex sync.Mutex
 
@@ -42,10 +49,13 @@ type FakeStore struct {
 	OpenStub    func(context.Context, hangar.ObjectRef, int64) (io.ReadCloser, hangar.Attributes, error)
 	DeleteStub  func(context.Context, hangar.ObjectRef) error
 
+	RepairDerivableMetadataStub func(context.Context, hangar.Kind, hangar.Digest, int64) (hangar.Attributes, error)
+
 	ensureCalls  []EnsureCall
 	inspectCalls []InspectCall
 	openCalls    []OpenCall
 	deleteCalls  []DeleteCall
+	repairCalls  []RepairDerivableMetadataCall
 
 	ensureResult struct {
 		attributes hangar.Attributes
@@ -61,6 +71,10 @@ type FakeStore struct {
 		err        error
 	}
 	deleteResult error
+	repairResult struct {
+		attributes hangar.Attributes
+		err        error
+	}
 }
 
 var _ hangar.Store = (*FakeStore)(nil)
@@ -147,6 +161,29 @@ func (fake *FakeStore) Delete(ctx context.Context, ref hangar.ObjectRef) error {
 	return result
 }
 
+func (fake *FakeStore) RepairDerivableMetadata(
+	ctx context.Context,
+	kind hangar.Kind,
+	digest hangar.Digest,
+	maxUncompressedBytes int64,
+) (hangar.Attributes, error) {
+	fake.mutex.Lock()
+	fake.repairCalls = append(fake.repairCalls, RepairDerivableMetadataCall{
+		Context:              ctx,
+		Kind:                 kind,
+		Digest:               digest,
+		MaxUncompressedBytes: maxUncompressedBytes,
+	})
+	stub := fake.RepairDerivableMetadataStub
+	result := fake.repairResult
+	fake.mutex.Unlock()
+
+	if stub != nil {
+		return stub(ctx, kind, digest, maxUncompressedBytes)
+	}
+	return result.attributes, result.err
+}
+
 func (fake *FakeStore) EnsureCalls() []EnsureCall {
 	fake.mutex.Lock()
 	defer fake.mutex.Unlock()
@@ -169,6 +206,12 @@ func (fake *FakeStore) DeleteCalls() []DeleteCall {
 	fake.mutex.Lock()
 	defer fake.mutex.Unlock()
 	return append([]DeleteCall(nil), fake.deleteCalls...)
+}
+
+func (fake *FakeStore) RepairDerivableMetadataCalls() []RepairDerivableMetadataCall {
+	fake.mutex.Lock()
+	defer fake.mutex.Unlock()
+	return append([]RepairDerivableMetadataCall(nil), fake.repairCalls...)
 }
 
 func (fake *FakeStore) SetEnsureStub(
@@ -199,6 +242,22 @@ func (fake *FakeStore) SetDeleteStub(stub func(context.Context, hangar.ObjectRef
 	fake.mutex.Lock()
 	defer fake.mutex.Unlock()
 	fake.DeleteStub = stub
+}
+
+func (fake *FakeStore) SetRepairDerivableMetadataStub(
+	stub func(context.Context, hangar.Kind, hangar.Digest, int64) (hangar.Attributes, error),
+) {
+	fake.mutex.Lock()
+	defer fake.mutex.Unlock()
+	fake.RepairDerivableMetadataStub = stub
+}
+
+func (fake *FakeStore) RepairDerivableMetadataReturns(attributes hangar.Attributes, err error) {
+	fake.mutex.Lock()
+	defer fake.mutex.Unlock()
+	fake.RepairDerivableMetadataStub = nil
+	fake.repairResult.attributes = attributes
+	fake.repairResult.err = err
 }
 
 func (fake *FakeStore) EnsureReturns(attributes hangar.Attributes, err error) {

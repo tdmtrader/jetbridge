@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/concourse/concourse/agent/hangar"
 	"github.com/concourse/concourse/agent/snapshot"
@@ -22,7 +23,35 @@ const (
 	SnapshotDaemonDriver          = "jetbridge-daemon-v1"
 	SnapshotHangarDriver          = "hangar-v1"
 	snapshotDurableLocationHeader = "X-Concourse-Snapshot-Durable-Location"
+	snapshotMetadataRepairRoute   = "/snapshots/v1/repair-durable-metadata/"
+
+	// defaultDurableMetadataRepairsPerPass bounds how many durable objects one
+	// repair pass may ask a daemon to prove. Proving downloads and decompresses
+	// a whole object, so an object that can never prove itself must not be able
+	// to spend the entire pass; the lifecycle cursor moves on and the remaining
+	// candidates get their turn on the next one.
+	defaultDurableMetadataRepairsPerPass = 4
+
+	// defaultDurableMetadataRepairTimeout bounds one proving request. The
+	// daemon has no whole-request write deadline, so this context is what stops
+	// a stuck repair from outliving the pass that asked for it.
+	defaultDurableMetadataRepairTimeout = 5 * time.Minute
+
+	// defaultDurableMetadataRepairWindow matches the default repair-pass
+	// interval so the budget refills once per pass. Deployments that change the
+	// interval pass their own window.
+	defaultDurableMetadataRepairWindow = 10 * time.Minute
 )
+
+// errDurableMetadataRepairDeferred reports that a repair was not attempted
+// because the pass had already spent its proving budget. It is deliberately
+// not an error about the object: the object is simply next in line.
+var errDurableMetadataRepairDeferred = errors.New("durable metadata repair deferred to the next pass")
+
+// errDurableMetadataUnrepairable reports an object whose stored bytes failed to
+// prove themselves against the digest in its key, or whose metadata this build
+// cannot derive. The object was left untouched and needs a human.
+var errDurableMetadataUnrepairable = errors.New("durable snapshot metadata is not repairable")
 
 type SnapshotLocationResolver interface {
 	LocationsForDigest(context.Context, snapshot.Digest) ([]snapshot.Location, error)
@@ -38,6 +67,41 @@ type SnapshotContentStore struct {
 	maxBytes          int64
 	archiveLimits     snapshot.ArchiveLimits
 	tempDir           string
+	repairBudget      *durableMetadataRepairBudget
+}
+
+// durableMetadataRepairBudget rations proving work across repair passes. The
+// window tracks the pass interval, so each pass gets its own allowance and an
+// object that cannot be proved cannot starve the ones behind it.
+type durableMetadataRepairBudget struct {
+	mu        sync.Mutex
+	limit     int
+	window    time.Duration
+	now       func() time.Time
+	windowEnd time.Time
+	spent     int
+}
+
+func newDurableMetadataRepairBudget(limit int, window time.Duration) *durableMetadataRepairBudget {
+	return &durableMetadataRepairBudget{limit: limit, window: window, now: time.Now}
+}
+
+func (budget *durableMetadataRepairBudget) take() bool {
+	if budget == nil {
+		return false
+	}
+	budget.mu.Lock()
+	defer budget.mu.Unlock()
+	now := budget.now()
+	if !now.Before(budget.windowEnd) {
+		budget.windowEnd = now.Add(budget.window)
+		budget.spent = 0
+	}
+	if budget.spent >= budget.limit {
+		return false
+	}
+	budget.spent++
+	return true
 }
 
 var _ snapshot.ContentStore = (*SnapshotContentStore)(nil)
@@ -56,6 +120,22 @@ func WithSnapshotContentTempDir(tempDir string) SnapshotContentStoreOption {
 			return err
 		}
 		store.tempDir = tempDir
+		return nil
+	}
+}
+
+// WithSnapshotDurableMetadataRepairBudget sets how many durable objects one
+// repair pass may prove, and the window the allowance refills over. Callers
+// pass their configured repair interval so the budget tracks real passes.
+func WithSnapshotDurableMetadataRepairBudget(limit int, window time.Duration) SnapshotContentStoreOption {
+	return func(store *SnapshotContentStore) error {
+		if limit <= 0 {
+			return fmt.Errorf("durable metadata repair budget must be positive")
+		}
+		if window <= 0 {
+			return fmt.Errorf("durable metadata repair window must be positive")
+		}
+		store.repairBudget = newDurableMetadataRepairBudget(limit, window)
 		return nil
 	}
 }
@@ -86,6 +166,10 @@ func NewSnapshotContentStore(
 		replicationFactor: replicationFactor,
 		maxBytes:          maxBytes,
 		archiveLimits:     archiveLimits,
+		repairBudget: newDurableMetadataRepairBudget(
+			defaultDurableMetadataRepairsPerPass,
+			defaultDurableMetadataRepairWindow,
+		),
 	}
 	for _, option := range options {
 		if option == nil {
@@ -576,21 +660,105 @@ func (store *SnapshotContentStore) RepairReplicas(
 // repairHangarSnapshot deliberately treats the durable object as one
 // authority, not a daemon replica. Any live daemon can restore its on-use
 // cache, so repair verifies one read and never reintroduces peer locations.
+//
+// A durable object can also fail verification while its bytes are perfectly
+// intact: the deployment's object store keeps content on disk but custom
+// metadata only in memory, so a restart leaves every object readable as bytes
+// and unreadable as a snapshot. The read path is right to reject those — an
+// object that cannot state its own identity is not trustworthy — which is why
+// putting the metadata back is this component's job and not the reader's.
 func (store *SnapshotContentStore) repairHangarSnapshot(
 	ctx context.Context,
 	value snapshot.Snapshot,
 	location snapshot.Location,
 ) (snapshot.ReplicaRepairResult, error) {
 	result := snapshot.ReplicaRepairResult{Desired: 1, LiveCapacity: 1}
-	exists, err := store.Exists(ctx, location)
+	exists, existsErr := store.Exists(ctx, location)
+	if existsErr == nil && exists {
+		result.Verified = 1
+		return result, nil
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return result, ctxErr
+	}
+
+	// Nothing is ever copied for a durable object, so every unresolved outcome
+	// here is a verification outcome: report ErrNoReadableReplica and carry the
+	// specific cause alongside it rather than reclassifying the phase.
+	repairErr := store.repairDurableSnapshotMetadata(ctx, value.Digest)
+	if repairErr != nil {
+		return result, errors.Join(snapshot.ErrNoReadableReplica, existsErr, repairErr)
+	}
+
+	// Re-verify rather than trusting the repair report. The object only counts
+	// as recovered once the ordinary read path accepts it.
+	exists, existsErr = store.Exists(ctx, location)
+	if exists && existsErr == nil {
+		result.Verified = 1
+		return result, nil
+	}
+	return result, errors.Join(snapshot.ErrNoReadableReplica, existsErr)
+}
+
+// repairDurableSnapshotMetadata asks a live daemon to restore the durable
+// object's metadata vocabulary. The daemon owns the durable store and does the
+// proving; this side decides only whether it is worth asking.
+func (store *SnapshotContentStore) repairDurableSnapshotMetadata(
+	ctx context.Context,
+	digest snapshot.Digest,
+) error {
+	if err := digest.Validate(); err != nil {
+		return err
+	}
+	if !store.repairBudget.take() {
+		return errDurableMetadataRepairDeferred
+	}
+	endpoint, err := store.endpointForLocation(ctx, hangarSnapshotLocation(digest))
 	if err != nil {
-		return result, err
+		return err
 	}
-	if !exists {
-		return result, snapshot.ErrNoReadableReplica
+	client, err := store.daemon.snapshotRepairHTTPClient()
+	if err != nil {
+		return err
 	}
-	result.Verified = 1
-	return result, nil
+
+	ctx, cancel := context.WithTimeout(ctx, defaultDurableMetadataRepairTimeout)
+	defer cancel()
+	target := store.daemon.routeURL(
+		endpoint.Address,
+		snapshotMetadataRepairRoute+strings.TrimPrefix(digest.String(), "sha256:"),
+	)
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, target, nil)
+	if err != nil {
+		return err
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return fmt.Errorf("repair durable snapshot metadata on %s: %w", endpoint.NodeName, err)
+	}
+	_, drainErr := io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+	closeErr := response.Body.Close()
+	if drainErr != nil || closeErr != nil {
+		return errors.Join(drainErr, closeErr)
+	}
+	switch response.StatusCode {
+	case http.StatusOK:
+		return nil
+	case http.StatusUnprocessableEntity:
+		// The daemon proved the object against the digest in its key and the
+		// bytes did not match, so nothing was rewritten. Repeating this cannot
+		// help; surface it as its own condition so it reads as a data-integrity
+		// alarm rather than a transient replica failure.
+		return fmt.Errorf("%w: %s", errDurableMetadataUnrepairable, digest)
+	case http.StatusTooManyRequests:
+		return errDurableMetadataRepairDeferred
+	default:
+		return fmt.Errorf(
+			"repair durable snapshot metadata on %s: daemon status %d",
+			endpoint.NodeName,
+			response.StatusCode,
+		)
+	}
 }
 
 // verifyRepairEndpoint reaches verified EOF. When spool is true it returns a

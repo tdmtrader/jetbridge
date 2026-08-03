@@ -34,6 +34,43 @@ const (
 	decoderMaxMemory = 64 << 20
 )
 
+// storedMetadataVocabulary is the exact set of custom metadata keys a
+// committed Hangar object carries. validateStoredMetadata demands precisely
+// these keys and nothing else, and repair may restore only these keys.
+var storedMetadataVocabulary = []string{
+	metadataRepresentation,
+	metadataUncompressedSHA256,
+	metadataUncompressedBytes,
+}
+
+// provenContent carries the facts repair is allowed to build metadata from:
+// the digest embedded in the object key, and the byte count measured by
+// decompressing the stored object and re-deriving that same digest. Nothing
+// else is available, which is the point — a derivation cannot reach for a
+// value that the object itself does not establish.
+type provenContent struct {
+	digest            Digest
+	uncompressedBytes int64
+}
+
+// metadataDerivations proves each vocabulary key from provenContent. A key
+// that appears in storedMetadataVocabulary without an entry here is, by
+// construction, not recoverable from the object, so RepairDerivableMetadata
+// refuses the whole object rather than fabricating that key. Adding a future
+// metadata key therefore fails closed by default: it must be given a real
+// derivation before repair will touch any object again.
+var metadataDerivations = map[string]func(provenContent) string{
+	metadataRepresentation: func(provenContent) string {
+		return representationZstd
+	},
+	metadataUncompressedSHA256: func(proven provenContent) string {
+		return string(proven.digest)
+	},
+	metadataUncompressedBytes: func(proven provenContent) string {
+		return strconv.FormatInt(proven.uncompressedBytes, 10)
+	},
+}
+
 type GCSConfig struct {
 	Bucket       string
 	ScratchDir   string
@@ -315,6 +352,275 @@ func (store *GCSStore) Open(
 	defer cancel()
 	handle := store.objects.Object(store.config.Bucket, ref.Key).Generation(ref.Generation)
 	return store.openVerified(ctx, handle, ref, maxUncompressedBytes, false)
+}
+
+// RepairDerivableMetadata restores the exact metadata vocabulary of an object
+// whose custom metadata was lost while its bytes survived.
+//
+// This exists because the deployment's object store keeps object content on
+// disk but custom metadata only in memory, so a restart returns every object
+// with intact bytes and empty metadata. validateStoredMetadata then rejects
+// every read — correctly, because an object that cannot state its own identity
+// is not trustworthy — and the outage is total and permanent.
+//
+// Repair is safe here only because it never decides anything. Every key is
+// derived: the representation is the one constant Hangar writes, the digest is
+// already spelled out in the object key, and the uncompressed byte count is
+// measured by decompressing the object. The decisive step is that the sha256
+// recomputed over those decompressed bytes must equal the digest in the key.
+// An object that clears that bar has proved it is exactly the object the key
+// names, so restoring the metadata asserts nothing that the content did not
+// already establish. An object that fails it is genuinely corrupt: it is
+// reported and left untouched, never rewritten and never deleted.
+//
+// The strict read path is unchanged. Nothing here makes reads tolerant of bad
+// metadata; this only puts metadata back where it can be proved.
+func (store *GCSStore) RepairDerivableMetadata(
+	ctx context.Context,
+	kind Kind,
+	digest Digest,
+	maxUncompressedBytes int64,
+) (Attributes, error) {
+	key, err := Key(kind, digest)
+	if err != nil {
+		return Attributes{}, fmt.Errorf("hangar: repair object identity: %w", err)
+	}
+	if err := validateLimit(maxUncompressedBytes); err != nil {
+		return Attributes{}, err
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, store.config.WriteTimeout)
+	defer cancel()
+
+	handle := store.objects.Object(store.config.Bucket, key)
+	stored, err := handle.Attrs(ctx)
+	if err != nil {
+		if isNotFound(err) {
+			return Attributes{}, wrapSentinel(ErrNotFound, "repair object", err)
+		}
+		return Attributes{}, fmt.Errorf("hangar: repair object attributes: %w", err)
+	}
+	ref, err := NewObjectRef(kind, digest, stored.Generation)
+	if err != nil {
+		return Attributes{}, fmt.Errorf("%w: invalid stored generation: %v", ErrCorrupt, err)
+	}
+
+	// Proving an object costs a full download and decompression, so only an
+	// object that actually fails the vocabulary check may pay it. A healthy
+	// object is answered from its attributes alone and is never rewritten.
+	if uncompressedBytes, validateErr := validateStoredMetadata(
+		stored.Metadata,
+		digest,
+		maxUncompressedBytes,
+	); validateErr == nil {
+		return Attributes{
+			Ref:               ref,
+			CompressedBytes:   stored.Size,
+			UncompressedBytes: uncompressedBytes,
+			CreatedAt:         stored.Created,
+		}, nil
+	}
+
+	if err := checkMetadataIsDerivable(
+		storedMetadataVocabulary,
+		metadataDerivations,
+		stored.Metadata,
+	); err != nil {
+		return Attributes{}, err
+	}
+
+	uncompressedBytes, err := store.proveStoredObject(ctx, handle, ref, stored, maxUncompressedBytes)
+	if err != nil {
+		return Attributes{}, err
+	}
+
+	repaired := make(map[string]string, len(storedMetadataVocabulary))
+	proven := provenContent{digest: digest, uncompressedBytes: uncompressedBytes}
+	for _, name := range storedMetadataVocabulary {
+		repaired[name] = metadataDerivations[name](proven)
+	}
+	// Repair may only ever write metadata that the unmodified strict reader
+	// accepts. If the derived vocabulary cannot clear the read contract, the
+	// write would replace one unreadable object with another.
+	if _, err := validateStoredMetadata(repaired, digest, maxUncompressedBytes); err != nil {
+		return Attributes{}, fmt.Errorf(
+			"%w: derived metadata does not satisfy the read contract: %v",
+			ErrUnrepairable,
+			err,
+		)
+	}
+	maxCompressedBytes, err := maxCompressedRepresentation(uncompressedBytes)
+	if err != nil {
+		return Attributes{}, fmt.Errorf(
+			"%w: derive compressed representation limit: %v",
+			ErrCorrupt,
+			err,
+		)
+	}
+	if stored.Size > maxCompressedBytes {
+		return Attributes{}, fmt.Errorf(
+			"%w: compressed object size %d exceeds %d-byte representation limit",
+			ErrCorrupt,
+			stored.Size,
+			maxCompressedBytes,
+		)
+	}
+
+	// Generation and metageneration pin the exact object that was proved. Any
+	// concurrent write or metadata change between the proof and the commit
+	// fails the precondition rather than stamping a stale measurement onto
+	// bytes nobody verified.
+	updated, err := handle.
+		If(storage.Conditions{
+			GenerationMatch:     stored.Generation,
+			MetagenerationMatch: stored.Metageneration,
+		}).
+		Update(ctx, storage.ObjectAttrsToUpdate{Metadata: repaired})
+	if err != nil {
+		if isNotFound(err) {
+			return Attributes{}, wrapSentinel(ErrNotFound, "commit repaired object metadata", err)
+		}
+		if isPreconditionFailed(err) {
+			return Attributes{}, wrapSentinel(
+				ErrConflict,
+				"object changed during metadata repair",
+				err,
+			)
+		}
+		return Attributes{}, fmt.Errorf("hangar: commit repaired object metadata: %w", err)
+	}
+	if updated.Generation != stored.Generation || updated.Size != stored.Size {
+		return Attributes{}, fmt.Errorf(
+			"%w: repaired object changed from generation %d/%d bytes to generation %d/%d bytes",
+			ErrConflict,
+			stored.Generation,
+			stored.Size,
+			updated.Generation,
+			updated.Size,
+		)
+	}
+	return Attributes{
+		Ref:               ref,
+		CompressedBytes:   updated.Size,
+		UncompressedBytes: uncompressedBytes,
+		CreatedAt:         updated.Created,
+	}, nil
+}
+
+// checkMetadataIsDerivable refuses every case where restoring the vocabulary
+// would mean inventing something. Two ways that happens: the object already
+// carries a key outside the vocabulary, so repair could only guess whether to
+// keep or drop it; or the vocabulary itself has grown a key with no
+// derivation, so repair has no proof to offer for it.
+func checkMetadataIsDerivable(
+	vocabulary []string,
+	derivations map[string]func(provenContent) string,
+	stored map[string]string,
+) error {
+	known := make(map[string]struct{}, len(vocabulary))
+	for _, name := range vocabulary {
+		known[name] = struct{}{}
+		if _, derivable := derivations[name]; !derivable {
+			return fmt.Errorf(
+				"%w: metadata key %q cannot be derived from the object key and content",
+				ErrUnrepairable,
+				name,
+			)
+		}
+	}
+	for name := range stored {
+		if _, expected := known[name]; !expected {
+			return fmt.Errorf(
+				"%w: object carries metadata key %q outside the stored vocabulary",
+				ErrUnrepairable,
+				name,
+			)
+		}
+	}
+	return nil
+}
+
+// proveStoredObject decompresses the stored object and returns the uncompressed
+// byte count only when the sha256 of those bytes equals the digest named by the
+// object key. The decompressed bytes are hashed and discarded: repair needs the
+// proof, not the content, so this never spends scratch disk.
+func (store *GCSStore) proveStoredObject(
+	ctx context.Context,
+	handle objectHandle,
+	ref ObjectRef,
+	stored objectAttrs,
+	maxUncompressedBytes int64,
+) (bytesProved int64, err error) {
+	if stored.Size < 0 {
+		return 0, fmt.Errorf("%w: compressed object has negative size", ErrCorrupt)
+	}
+	compressed, err := handle.Generation(stored.Generation).NewReader(ctx)
+	if err != nil {
+		if isNotFound(err) {
+			return 0, wrapSentinel(ErrNotFound, "read object for metadata repair", err)
+		}
+		if isPreconditionFailed(err) {
+			return 0, wrapSentinel(ErrConflict, "generation-pinned repair read failed", err)
+		}
+		return 0, fmt.Errorf("hangar: open compressed object for repair: %w", err)
+	}
+	defer func() {
+		if closeErr := compressed.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("hangar: close compressed object: %w", closeErr))
+			bytesProved = 0
+		}
+	}()
+
+	countedCompressed := &countingReader{reader: contextReader{ctx: ctx, reader: compressed}}
+	decoder, err := zstd.NewReader(
+		countedCompressed,
+		zstd.WithDecoderConcurrency(1),
+		zstd.WithDecoderMaxMemory(decoderMaxMemory),
+	)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return 0, ctxErr
+		}
+		return 0, wrapSentinel(ErrCorrupt, "initialize zstd decoder for repair", err)
+	}
+	defer decoder.Close()
+
+	hasher := sha256.New()
+	actualBytes, err := io.Copy(hasher, io.LimitReader(decoder, maxUncompressedBytes+1))
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return 0, ctxErr
+		}
+		return 0, wrapSentinel(ErrCorrupt, "decompress object for repair", err)
+	}
+	if actualBytes > maxUncompressedBytes {
+		return 0, fmt.Errorf(
+			"%w: uncompressed object exceeds %d-byte limit",
+			ErrCorrupt,
+			maxUncompressedBytes,
+		)
+	}
+	if countedCompressed.bytes != stored.Size {
+		return 0, fmt.Errorf(
+			"%w: compressed byte count %d does not match object size %d",
+			ErrCorrupt,
+			countedCompressed.bytes,
+			stored.Size,
+		)
+	}
+	actualDigest := Digest(fmt.Sprintf("sha256:%x", hasher.Sum(nil)))
+	if actualDigest != ref.Digest {
+		return 0, fmt.Errorf(
+			"%w: object digest %s does not match key digest %s",
+			ErrCorrupt,
+			actualDigest,
+			ref.Digest,
+		)
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	return actualBytes, nil
 }
 
 func (store *GCSStore) Delete(ctx context.Context, ref ObjectRef) error {
@@ -618,7 +924,7 @@ func (store *GCSStore) openVerified(
 }
 
 func validateStoredMetadata(metadata map[string]string, digest Digest, maxUncompressedBytes int64) (int64, error) {
-	if len(metadata) != 3 {
+	if len(metadata) != len(storedMetadataVocabulary) {
 		return 0, fmt.Errorf("%w: object metadata vocabulary is not exact", ErrCorrupt)
 	}
 	if metadata[metadataRepresentation] != representationZstd {
@@ -804,6 +1110,10 @@ type objectHandle interface {
 	NewWriter(context.Context) objectWriter
 	NewReader(context.Context) (io.ReadCloser, error)
 	Attrs(context.Context) (objectAttrs, error)
+	// Update patches metadata without touching content. Repair uses it so a
+	// restored vocabulary neither re-uploads the bytes nor creates a new
+	// generation that already-recorded references would no longer name.
+	Update(context.Context, storage.ObjectAttrsToUpdate) (objectAttrs, error)
 	Delete(context.Context) error
 }
 
@@ -852,6 +1162,17 @@ func (handle storageObjectHandle) NewReader(ctx context.Context) (io.ReadCloser,
 
 func (handle storageObjectHandle) Attrs(ctx context.Context) (objectAttrs, error) {
 	attrs, err := handle.handle.Attrs(ctx)
+	if err != nil {
+		return objectAttrs{}, err
+	}
+	return attrsFromStorage(attrs), nil
+}
+
+func (handle storageObjectHandle) Update(
+	ctx context.Context,
+	update storage.ObjectAttrsToUpdate,
+) (objectAttrs, error) {
+	attrs, err := handle.handle.Update(ctx, update)
 	if err != nil {
 		return objectAttrs{}, err
 	}

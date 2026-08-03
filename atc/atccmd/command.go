@@ -2323,6 +2323,9 @@ func (cmd *RunCommand) buildAgentSnapshotComponents(
 		cmd.AgentSnapshots.ReplicationFactor,
 		archiveLimits,
 		jetbridge.WithSnapshotContentTempDir(cmd.AgentSnapshots.TempDir),
+		// The durable-metadata repair budget refills once per repair pass, so
+		// it has to track the interval the repair component actually runs at.
+		jetbridge.WithSnapshotDurableMetadataRepairBudget(4, cmd.AgentSnapshots.RepairInterval),
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("construct snapshot content store: %w", err)
