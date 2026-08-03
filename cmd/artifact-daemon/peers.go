@@ -22,6 +22,26 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
+// Peer fetches stream whole artifact tars, so they are bounded by how long
+// the peer can go silent, never by how long the transfer takes in total. A
+// whole-request cap (http.Client.Timeout) covers reading the body, so it
+// severs a large or slow transfer mid-tar and surfaces at the step as a
+// missing artifact rather than a timeout.
+//
+// These are vars so tests can shrink the windows; nothing else writes them.
+var (
+	// peerFetchResponseHeaderTimeout bounds the wait for a peer's response
+	// headers, so a dead or wedged peer fails fast. Connect and TLS handshake
+	// are bounded by the cloned default transport.
+	peerFetchResponseHeaderTimeout = 30 * time.Second
+
+	// peerFetchStallTimeout bounds how long a fetch will wait for the *next*
+	// bytes of the body. It resets on every read that makes progress, so a
+	// transfer may run as long as it needs while a peer that stops sending is
+	// still cut loose.
+	peerFetchStallTimeout = 2 * time.Minute
+)
+
 // PeerResolver discovers peer artifact-daemon pods via EndpointSlices
 // and fetches artifacts from them for cross-node resolution.
 type PeerResolver struct {
@@ -86,7 +106,13 @@ func (f failingRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
 // communication uses HTTPS with mTLS.
 func NewPeerResolver(logger lager.Logger, clientset kubernetes.Interface, namespace, service string, port int, myPodIP string, tlsCfg *PeerTLSConfig) *PeerResolver {
 	scheme := "http"
-	var probeTransport, fetchTransport http.RoundTripper
+	// Clone rather than share http.DefaultTransport: the fetch transport
+	// carries a ResponseHeaderTimeout, and mutating the process-wide default
+	// would impose it on every other client here.
+	fetchHTTPTransport := http.DefaultTransport.(*http.Transport).Clone()
+	fetchHTTPTransport.ResponseHeaderTimeout = peerFetchResponseHeaderTimeout
+	var probeTransport http.RoundTripper
+	var fetchTransport http.RoundTripper = fetchHTTPTransport
 
 	if tlsCfg != nil {
 		scheme = "https"
@@ -103,10 +129,8 @@ func NewPeerResolver(logger lager.Logger, clientset kubernetes.Interface, namesp
 		} else {
 			probeHTTPTransport := http.DefaultTransport.(*http.Transport).Clone()
 			probeHTTPTransport.TLSClientConfig = tlsConfig
-			fetchHTTPTransport := http.DefaultTransport.(*http.Transport).Clone()
 			fetchHTTPTransport.TLSClientConfig = tlsConfig.Clone()
 			probeTransport = probeHTTPTransport
-			fetchTransport = fetchHTTPTransport
 			logger.Info("peer-mtls-enabled", lager.Data{"server-name": effective.ServerName})
 		}
 	}
@@ -123,8 +147,10 @@ func NewPeerResolver(logger lager.Logger, clientset kubernetes.Interface, namesp
 			Timeout:   10 * time.Second,
 			Transport: probeTransport,
 		},
+		// Deliberately no Timeout: it would cap the whole exchange including
+		// the body read. fetchTarget bounds each attempt on stalled progress
+		// instead.
 		fetchClient: &http.Client{
-			Timeout:   3 * time.Minute,
 			Transport: fetchTransport,
 		},
 	}
@@ -337,29 +363,46 @@ func (p *PeerResolver) fetchTarget(
 ) error {
 	logger := p.logger.Session("peer-fetch", lager.Data{"key": identity, "peer": peerIP})
 
+	base, err := http.NewRequest(http.MethodGet, target, nil)
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
+
 	var lastErr error
 	for attempt := 1; attempt <= 3; attempt++ {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
-		if err != nil {
-			return fmt.Errorf("create request: %w", err)
-		}
-		resp, err := p.fetchClient.Do(req)
-		if err != nil {
-			lastErr = err
-			logger.Error("fetch-attempt-failed", err, lager.Data{"attempt": attempt})
-		} else if resp.StatusCode != http.StatusOK {
-			resp.Body.Close()
-			lastErr = fmt.Errorf("peer returned %d", resp.StatusCode)
-			logger.Error("fetch-bad-status", lastErr, lager.Data{"attempt": attempt})
-		} else {
-			extractErr := extract(resp.Body)
+		// Each attempt gets its own cancellable context so the stall guard
+		// can abort a peer that has gone quiet mid-body without touching the
+		// caller's context or the other attempts.
+		fetched := func() bool {
+			attemptCtx, cancel := context.WithCancel(ctx)
+			defer cancel()
+
+			resp, err := p.fetchClient.Do(base.Clone(attemptCtx))
+			if err != nil {
+				lastErr = err
+				logger.Error("fetch-attempt-failed", err, lager.Data{"attempt": attempt})
+				return false
+			}
+			if resp.StatusCode != http.StatusOK {
+				resp.Body.Close()
+				lastErr = fmt.Errorf("peer returned %d", resp.StatusCode)
+				logger.Error("fetch-bad-status", lastErr, lager.Data{"attempt": attempt})
+				return false
+			}
+			body := newStallGuardedReader(resp.Body, peerFetchStallTimeout, cancel)
+			extractErr := extract(body)
+			body.stop()
 			closeErr := resp.Body.Close()
 			if extractErr == nil && closeErr == nil {
 				logger.Info("fetched", lager.Data{"attempt": attempt})
-				return nil
+				return true
 			}
 			lastErr = errors.Join(extractErr, closeErr)
 			logger.Error("extract-failed", lastErr, lager.Data{"attempt": attempt})
+			return false
+		}()
+		if fetched {
+			return nil
 		}
 		if attempt < 3 {
 			select {
@@ -370,6 +413,39 @@ func (p *PeerResolver) fetchTarget(
 		}
 	}
 	return fmt.Errorf("peer fetch failed after 3 attempts: %w", lastErr)
+}
+
+// stallGuardedReader cancels the in-flight request when the body goes quiet
+// for longer than the stall window. It is the body-side half of the timeout
+// policy: the transport bounds connect, TLS and headers, and this bounds the
+// gap between bytes, so a transfer is limited by the peer falling silent
+// rather than by how much data it has to send.
+type stallGuardedReader struct {
+	inner  io.Reader
+	timer  *time.Timer
+	window time.Duration
+}
+
+func newStallGuardedReader(inner io.Reader, window time.Duration, cancel context.CancelFunc) *stallGuardedReader {
+	return &stallGuardedReader{
+		inner:  inner,
+		timer:  time.AfterFunc(window, cancel),
+		window: window,
+	}
+}
+
+func (s *stallGuardedReader) Read(p []byte) (int, error) {
+	n, err := s.inner.Read(p)
+	if n > 0 {
+		s.timer.Reset(s.window)
+	}
+	return n, err
+}
+
+// stop releases the guard once the body has been consumed. The attempt's
+// context is cancelled by the caller's defer either way.
+func (s *stallGuardedReader) stop() {
+	s.timer.Stop()
 }
 
 func (p *PeerResolver) artifactURL(peerIP, key string) string {
