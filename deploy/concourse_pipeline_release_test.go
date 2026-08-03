@@ -650,6 +650,203 @@ func TestConcoursePipelineDeploysResolvedDigestToEveryRuntime(t *testing.T) {
 	}
 }
 
+func TestConcourseFinalReleaseRolloutAllowsTenMinutesForExactGitOpsState(t *testing.T) {
+	pipeline := readDeployPipeline(t, "concourse-pipeline.yml")
+	rollout := findDeployPipelineTask(t, pipeline, "release", "verify-release-rollout")
+	script := deployPipelineTaskScript(t, rollout)
+
+	run := func(t *testing.T, convergeAfter string) ([]byte, error, string) {
+		t.Helper()
+		fixtureDir := t.TempDir()
+		metadataDir := filepath.Join(fixtureDir, "release-image-metadata")
+		fakeBin := filepath.Join(fixtureDir, "bin")
+		if err := os.MkdirAll(metadataDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(fakeBin, 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		const sourceCommit = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		const webImage = "registry.home/jetbridge@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+		writeReleaseFixtureFile(t, filepath.Join(metadataDir, "verified-image.env"),
+			"CONCOURSE_WEB_IMAGE="+webImage+"\nSOURCE_COMMIT="+sourceCommit+"\n", 0o600)
+		writeReleaseFixtureFile(t, filepath.Join(fakeBin, "sleep"), `#!/bin/sh
+set -eu
+printf '%s\n' "${1-}" >> "${TEST_STATE_DIR:?}/sleeps"
+`, 0o755)
+		writeReleaseFixtureFile(t, filepath.Join(fakeBin, "kubectl"), `#!/bin/sh
+set -eu
+cycle_file="${TEST_STATE_DIR:?}/cycle"
+cycle=0
+if test -f "${cycle_file}"; then
+  cycle=$(cat "${cycle_file}")
+fi
+
+if test "${1-}" = get; then
+  case "${2-}" in
+    deployment/concourse-web|daemonset/concourse-artifact-daemon) ;;
+    *) echo "unexpected workload: ${2-}" >&2; exit 90 ;;
+  esac
+  case "${6-}" in
+    *'.image'*)
+      if test "${2-}" = deployment/concourse-web; then
+        cycle=$((cycle + 1))
+        printf '%s\n' "${cycle}" > "${cycle_file}"
+      fi
+      printf '%s' "${TEST_WEB_IMAGE:?}"
+      ;;
+    *'source-commit'*)
+      if test "${cycle}" -ge "${TEST_CONVERGE_AFTER:?}" || test $((cycle % 2)) -eq 0; then
+        printf '%s' "${TEST_SOURCE_COMMIT:?}"
+      else
+        printf '%s' cccccccccccccccccccccccccccccccccccccccc
+      fi
+      ;;
+    *'image-digest'*)
+      if test "${cycle}" -ge "${TEST_CONVERGE_AFTER:?}" || test $((cycle % 2)) -eq 1; then
+        printf '%s' "${TEST_WEB_IMAGE:?}"
+      else
+        printf '%s' registry.home/jetbridge@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+      fi
+      ;;
+    *) echo "unexpected template: ${6-}" >&2; exit 91 ;;
+  esac
+  exit 0
+fi
+
+if test "${1-}" = rollout && test "${2-}" = status; then
+  if test "${cycle}" -lt "${TEST_CONVERGE_AFTER:?}"; then
+    echo "rollout accepted before source and digest both converged at poll ${cycle}" >&2
+    exit 92
+  fi
+  printf '%s\n' "$*" >> "${TEST_STATE_DIR:?}/rollouts"
+  exit 0
+fi
+
+echo "unexpected kubectl command: $*" >&2
+exit 93
+`, 0o755)
+
+		cmd := exec.Command("sh", "-euc", script)
+		cmd.Dir = fixtureDir
+		cmd.Env = append(os.Environ(),
+			"PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"),
+			"TEST_CONVERGE_AFTER="+convergeAfter,
+			"TEST_SOURCE_COMMIT="+sourceCommit,
+			"TEST_STATE_DIR="+fixtureDir,
+			"TEST_WEB_IMAGE="+webImage,
+		)
+		output, err := cmd.CombinedOutput()
+		return output, err, fixtureDir
+	}
+
+	t.Run("accepts convergence after the observed two-stage Argo lag", func(t *testing.T) {
+		output, err, fixtureDir := run(t, "71")
+		if err != nil {
+			t.Fatalf("release rollout rejected exact state after 70 five-second delays: %v\n%s", err, output)
+		}
+		if got := strings.TrimSpace(readReleaseFixtureFile(t, filepath.Join(fixtureDir, "cycle"))); got != "71" {
+			t.Fatalf("release rollout polls = %s, want convergence on poll 71", got)
+		}
+		for poll, delay := range strings.Fields(readReleaseFixtureFile(t, filepath.Join(fixtureDir, "sleeps"))) {
+			if delay != "5" {
+				t.Fatalf("release rollout delay %d = %q, want five seconds", poll+1, delay)
+			}
+		}
+		if got := len(strings.Fields(readReleaseFixtureFile(t, filepath.Join(fixtureDir, "sleeps")))); got != 70 {
+			t.Fatalf("release rollout delays = %d, want 70 (5m50s)", got)
+		}
+		if got := len(strings.Split(strings.TrimSpace(readReleaseFixtureFile(t, filepath.Join(fixtureDir, "rollouts"))), "\n")); got != 2 {
+			t.Fatalf("rollout status checks = %d, want web and artifact daemon", got)
+		}
+	})
+
+	t.Run("stops after the ten-minute polling window", func(t *testing.T) {
+		output, err, fixtureDir := run(t, "1000")
+		if err == nil {
+			t.Fatalf("release rollout accepted state that never converged:\n%s", output)
+		}
+		if !strings.Contains(string(output), "ArgoCD did not apply the final immutable shared image") {
+			t.Fatalf("release rollout failed for the wrong reason: %v\n%s", err, output)
+		}
+		if got := strings.TrimSpace(readReleaseFixtureFile(t, filepath.Join(fixtureDir, "cycle"))); got != "120" {
+			t.Fatalf("release rollout polls = %s, want bounded 120-poll window", got)
+		}
+		if got := len(strings.Fields(readReleaseFixtureFile(t, filepath.Join(fixtureDir, "sleeps")))); got != 120 {
+			t.Fatalf("release rollout delays = %d, want bounded ten-minute window", got)
+		}
+	})
+}
+
+func TestConcourseVerifyUpgradeIgnoresTerminatingOldPodsAfterControllerRollout(t *testing.T) {
+	pipeline := readDeployPipeline(t, "concourse-pipeline.yml")
+	verify := findDeployPipelineTask(t, pipeline, "verify-upgrade", "check-running-version")
+	script := deployPipelineTaskScript(t, verify)
+
+	fixtureDir := t.TempDir()
+	origin := filepath.Join(fixtureDir, "origin.git")
+	seed := filepath.Join(fixtureDir, "seed")
+	repo := filepath.Join(fixtureDir, "repo")
+	runGit(t, fixtureDir, "-c", "init.defaultBranch=main", "init", "--bare", origin)
+	runGit(t, fixtureDir, "init", "-b", "main", seed)
+	writeReleaseFixtureFile(t, filepath.Join(seed, "release-source.txt"), "release source\n", 0o644)
+	runGit(t, seed, "add", "release-source.txt")
+	runGit(t, seed, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "release source")
+	sourceCommit := gitOutput(t, seed, "rev-parse", "HEAD")
+	runGit(t, seed, "tag", "v0.2.300-rc")
+	runGit(t, seed, "remote", "add", "origin", origin)
+	runGit(t, seed, "push", "origin", "HEAD:jetbridge", "refs/tags/v0.2.300-rc")
+	runGit(t, fixtureDir, "clone", "--branch", "jetbridge", origin, repo)
+
+	fakeBin := filepath.Join(fixtureDir, "bin")
+	if err := os.Mkdir(fakeBin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeReleaseFixtureFile(t, filepath.Join(fakeBin, "sleep"), "#!/bin/sh\nexit 0\n", 0o755)
+	writeReleaseFixtureFile(t, filepath.Join(fakeBin, "curl"), `#!/bin/sh
+printf '%s\n' '{"version":"0.2.300-rc"}'
+`, 0o755)
+	writeReleaseFixtureFile(t, filepath.Join(fakeBin, "kubectl"), `#!/bin/sh
+set -eu
+if test "${1-}" = get; then
+  case "${6-}" in
+    *'.image'*) printf '%s' "${TEST_WEB_IMAGE:?}" ;;
+    *'source-commit'*) printf '%s' "${TEST_SOURCE_COMMIT:?}" ;;
+    *'image-digest'*) printf '%s' "${TEST_WEB_IMAGE:?}" ;;
+    *) echo "unexpected template: ${6-}" >&2; exit 90 ;;
+  esac
+  exit 0
+fi
+if test "${1-}" = rollout && test "${2-}" = status; then
+  printf '%s\n' "$*" >> "${TEST_STATE_DIR:?}/rollouts"
+  exit 0
+fi
+if test "${1-}" = wait; then
+  echo 'selector included a terminating old web pod' >&2
+  exit 42
+fi
+echo "unexpected kubectl command: $*" >&2
+exit 91
+`, 0o755)
+
+	const webImage = "registry.home/jetbridge@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	cmd := exec.Command("sh", "-euc", script)
+	cmd.Dir = fixtureDir
+	cmd.Env = append(os.Environ(),
+		"PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"TEST_SOURCE_COMMIT="+sourceCommit,
+		"TEST_STATE_DIR="+fixtureDir,
+		"TEST_WEB_IMAGE="+webImage,
+	)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("verify-upgrade rejected a complete controller rollout because an old pod was terminating: %v\n%s", err, output)
+	}
+	if got := len(strings.Split(strings.TrimSpace(readReleaseFixtureFile(t, filepath.Join(fixtureDir, "rollouts"))), "\n")); got != 2 {
+		t.Fatalf("controller rollout checks = %d, want deployment and daemonset", got)
+	}
+}
+
 func TestConcourseReleasePublishesMainFailClosed(t *testing.T) {
 	pipeline := readDeployPipeline(t, "concourse-pipeline.yml")
 	releaseScript := deployPipelineTaskScript(t, findDeployPipelineTask(t, pipeline, "release", "tag-push-release"))

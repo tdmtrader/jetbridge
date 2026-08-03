@@ -1320,10 +1320,6 @@ jobs:
           kubectl rollout status deployment/concourse-web -n cicd --timeout=180s
           kubectl rollout status daemonset/concourse-artifact-daemon -n cicd --timeout=180s
 
-          echo "=== Waiting for pods to be ready ==="
-          kubectl wait --for=condition=ready pod -l app.kubernetes.io/component=web -n cicd --timeout=120s
-          kubectl wait --for=condition=ready pod -l app.kubernetes.io/component=artifact-daemon -n cicd --timeout=120s
-
           echo "=== Letting service endpoints settle (15s) ==="
           sleep 15
 
@@ -2004,7 +2000,7 @@ jobs:
         - |
           WEB_IMAGE=$(sed -n 's/^CONCOURSE_WEB_IMAGE=//p' release-image-metadata/verified-image.env)
           SOURCE_COMMIT=$(sed -n 's/^SOURCE_COMMIT=//p' release-image-metadata/verified-image.env)
-          for i in $(seq 1 60); do
+          for i in $(seq 1 120); do
             web_image=$(kubectl get deployment/concourse-web -n cicd -o go-template='{{range .spec.template.spec.containers}}{{if eq .name "concourse-web"}}{{.image}}{{end}}{{end}}')
             daemon_image=$(kubectl get daemonset/concourse-artifact-daemon -n cicd -o go-template='{{range .spec.template.spec.containers}}{{if eq .name "artifact-daemon"}}{{.image}}{{end}}{{end}}')
             web_source=$(kubectl get deployment/concourse-web -n cicd -o go-template='{{index .metadata.annotations "concourse.ci/source-commit"}}')
