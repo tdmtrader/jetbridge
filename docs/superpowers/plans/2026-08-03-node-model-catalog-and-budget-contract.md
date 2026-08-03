@@ -2,17 +2,38 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-> **Status: Human Review Required.** The permitted review cap has been reached. Do not treat this track as accepted or request another agent review.
+> **Status: Human Review Required.** The permitted review cap has been reached.
+> The draft now adopts the binder-owned idempotency-first resolution below, but
+> that correction was made after the final permitted agent review. Do not treat
+> this track as accepted or request another agent review; a human checkpoint is
+> required before implementation.
 >
-> **Remaining acceptance blocker — idempotent latest replay:** Task 3 currently specifies handler-side `LatestReleased` lookup before the binder. If a newer released version appears between the original `latest` request and an idempotency-key replay, that lookup can resolve the new version before the binder's early existing-run path, violating bind-once replay.
+> **Unreviewed blocker resolution:** Direct-run released-latest resolution lives
+> in the binder immediately after its early existing-run lookup. For an existing
+> team/kind/idempotency key, the binder uses the stored exact v7 and never calls
+> `LatestReleased`; only a new key resolves and persists v8. Workflow import
+> likewise returns an existing identical authored source and its stored binding
+> before compiling/resolving `latest`; only a genuinely new definition import
+> resolves once.
 >
-> **Preferred choice:** Move released-latest resolution into a binder-owned path immediately after its early existing-run lookup. For an existing team/kind/idempotency key, return the stored exact v7 without calling `LatestReleased`; for a new key, resolve and persist v8 once. The handler forwards only the latest intent to this trusted binder path.
+> **Required regression:** create v7 through `latest` with idempotency key K;
+> release v8; replay K and assert it returns v7 with resolver call count zero;
+> submit a new key and assert it resolves and persists v8 once. Repeat the same
+> shape for identical workflow-source reimport versus a genuinely new workflow
+> definition.
 >
-> **Alternative:** Keep handler resolution only after a trusted preflight lookup for an existing team/kind/idempotency run. On a replay, that preflight returns the durable v7 before any `LatestReleased` call; only a new key proceeds to handler lookup and exact binding.
->
-> **Required regression for either choice:** create v7 through `latest` with idempotency key K; release v8; replay K and assert it returns v7 with resolver call count zero on replay; submit a new key and assert it resolves and persists v8 once.
+> **Additional human checkpoint:** Exact replay already freezes the concrete
+> prompt, skill tree, runtime, and tool bytes/digests in immutable content. The
+> product decision also makes declared schema, bundled-skill,
+> platform-required-skill, runtime, and tool/protocol IDs/versions release
+> compatibility surfaces. Their manifest representation and migration must be
+> approved before this track may claim generalized node compatibility; Task 2's
+> model/default-budget check is only one incremental part of that contract.
 
-**Goal:** Make reusable agent nodes declare an operator-known exact model and tested budget floor, bind an explicit `latest` selection once to immutable node identity, let callers raise that floor for one durable run, and expose the public model catalog through Fly.
+**Goal:** Make reusable agent nodes declare an operator-known exact model and a
+tested, deliberately non-interfering default budget, bind an explicit `latest`
+selection once to immutable node identity, let callers override the budget for
+one durable run, and expose the public model catalog through Fly.
 
 **Architecture:** An operator-owned, deployment-loaded catalog distinguishes a known model ID from its current availability. Node import freezes a known exact model into the immutable node version even if it is temporarily unavailable; fresh direct-node admission checks availability immediately before allocating the durable run. A workflow `name@latest` reference or direct-run convenience is resolved **server-side** once to the highest released version and its content hash before allocation; only those exact facts persist. Unreleased node versions remain available only to an author's explicit exact-version direct run. The direct-run budget override is applied to the rendered agent leaf, so the existing canonical parameterized configuration, immutable template hash, resume path, and global daily budget reservation remain the sole durable authority.
 
@@ -23,10 +44,14 @@
 - Work in the assigned implementation worktree; preserve concurrent and user changes, and never revert them.
 - Do not read benchmark `case.yaml`, ground-truth, rubric, or notes material.
 - Nodes are first-class direct-run units. Workflow/catalog authoring may use `name@latest`, and direct invocation may omit a version or use `latest`, but the server resolves that convenience once to the **highest released** version plus content hash before durable binding/run allocation. If no released version exists, return a bounded `node_version_not_found` error; do not fall back to an unreleased version. Persisted bindings, retries, reruns, and execution plans carry only exact facts and never auto-update. An unreleased version is runnable only when the caller supplies that positive exact version for author testing.
-- An agent node must declare a nonempty exact model ID and a finite, positive `budget_slice_usd` with at most six decimal places. Active reference nodes, seeded fixtures, and acceptance checks use a tested/default floor of `$100`; observed normal runs consume roughly `$3–4`, so that floor is deliberately non-interfering. Task and `publish_snapshot` nodes do not receive model or budget requirements.
+- An agent node must declare a nonempty exact model ID and a finite, positive `budget_slice_usd` with at most six decimal places. Active reference nodes, seeded fixtures, and acceptance checks target a `$100` default, chosen to be deliberately non-interfering in ordinary operation; Task 6 must validate it live before documentation calls it tested. Task and `publish_snapshot` nodes do not receive model or budget requirements.
 - Import requires catalog membership, not availability. A known catalog entry with `available: false` may be frozen into an immutable/releasable node version.
 - Fresh direct-node admission requires the frozen model to be currently available. An idempotent request for an already allocated run returns its durable result without re-admission.
-- Callers cannot override a node model. The only new caller execution control is `budget_slice_usd`; it may be omitted or supplied as a finite six-decimal value greater than or equal to the node floor. Equality is a semantically identical no-op.
+- Callers cannot override a node model. The only new caller execution control is `budget_slice_usd`; it may be omitted or supplied as any finite, positive six-decimal value. A supplied value may be higher or lower than the node default and becomes explicit durable run configuration. Equality is a semantically identical no-op.
+- This plan records the chosen interpretation of “budget override”: any finite,
+  positive value is allowed, including one below the default. The high default
+  keeps ordinary operation non-interfering; a lower explicit override is a
+  caller-owned constraint and remains part of the durable run hash.
 - Global daily cost admission remains mechanically enforced. Helm configures a deliberately high `10000` USD daily cap so ordinary operation is not constrained; this track adds no estimated-versus-actual cost reporting or UI.
 - Hermetic tests use opaque catalog fixture IDs such as `model-test-exact-v1`; never use real-looking provider model IDs. The final active reference node ID is selected from deployed `fly agent models list --json` during rollout, never guessed or copied from this plan.
 - Do not duplicate the effective budget in a new database column. `agent_workflow_runs.parameterized_config` and its hash are the durable executable authority and must remain the one value used for replay and reservation.
@@ -42,7 +67,7 @@
 | Catalog core | `agent/modelcatalog/catalog.go`, `catalog_test.go` | Immutable catalog, membership and availability checks, deterministic public records. |
 | Deployment loading | `atc/atccmd/agent_node_model_catalog.go`, `*_internal_test.go`, `atc/atccmd/command.go` | Strict operator file loading and server composition. |
 | Helm | `deploy/chart/values.yaml`, `templates/agent-model-catalog-configmap.yaml`, `templates/web-deployment.yaml`, `deploy/chart/tests/agent_model_catalog_test.go` | Operator values, web-only ConfigMap/mount/flag, high daily cap. |
-| Node import contract | `agent/workflow/node_definition.go`, `node_definition_test.go`, `node_store.go`; `atc/db/agent_nodes_factory.go`, `agent_nodes_factory_test.go` | Agent-node model/floor validation, catalog membership, release compatibility. |
+| Node import contract | `agent/workflow/node_definition.go`, `node_definition_test.go`, `node_store.go`; `atc/db/agent_nodes_factory.go`, `agent_nodes_factory_test.go` | Agent-node model/default-budget validation, catalog membership, release compatibility. |
 | Bind-once latest | `agent/workflow/node_reference.go`, `node_reference_test.go`, `node_store.go`, upgrade/test resolvers; `agent/workflow/workflowtest/memory_node_store.go`; `atc/db/agent_nodes_factory.go`, `agent_workflows_factory_test.go`; `agent/api/noderuns/handler.go`, `handler_test.go`; `atc/atccmd/command.go`, `atc/api/handler.go`, `atc/routes.go`, accessor/wrappa tests; `fly/commands/agent_nodes.go`, `agent_nodes_test.go`, `agent_workflows.go`, `agent_workflows_test.go` | Resolve omitted/`latest` once, **from released versions only**, before durable workflow binding or direct allocation, then retain only exact version/hash. |
 | Run admission | `agent/workflowrun/types.go`, `binder.go`, `binder_test.go`, `admission_adapters_test.go`, fakes | Model availability and effective budget reconstruction before existing admission/reservation paths. |
 | HTTP APIs | `agent/api/models/handler.go`, `handler_test.go`, `route_registration_test.go`; `agent/api/nodes/handler.go`, `handler_test.go`; `agent/api/noderuns/handler.go`, `handler_test.go`; `agent/api/workflowruns/handler.go` | Public model listing, import classification, strict budget request decoding, bounded errors. |
@@ -80,6 +105,9 @@ type NodeModelAdmitter interface {
 type BindRequest struct {
 	// existing fields unchanged
 	NodeBudgetSliceUSD *float64
+	// Server-derived from the unversioned direct-node route; never decoded from
+	// request JSON. The binder resolves it only after its existing-run lookup.
+	NodeLatestReleased bool
 	// Server-derived only; never decoded from a direct-run request.
 	ExpectedDefinitionContentHash string
 }
@@ -211,7 +239,7 @@ git add agent/modelcatalog atc/atccmd/agent_node_model_catalog.go \
 git commit -m "feat(agent): add operator node model catalog"
 ```
 
-### Task 2: Freeze known model and tested floor in node versions
+### Task 2: Freeze known model and target default budget in node versions
 
 **Files:**
 - Modify: `agent/workflow/node_definition.go`
@@ -228,7 +256,9 @@ git commit -m "feat(agent): add operator node model catalog"
 
 **Consumes:** `modelcatalog.Reader` from task 1.
 
-**Produces:** A catalog-aware node factory that imports only known models, immutable compatible-release checks for model/floor, and catalog-independent validation of persisted node records.
+**Produces:** A catalog-aware node factory that imports only known models,
+immutable compatible-release checks for model/default budget, and
+catalog-independent validation of persisted node records.
 
 - [ ] **Step 1: Write node-contract RED tests**
 
@@ -244,7 +274,7 @@ It("accepts a known unavailable model but rejects an unknown model", func() {
 
 func TestCompatibleNodeReleaseRejectsModelOrFloorChange(t *testing.T) {
 	if workflow.NodeDefinitionsStructurallyCompatible(agentNode("model-test-exact-v1", 100), agentNode("model-test-other-v1", 100)) { t.Fatal("model change is breaking") }
-	if workflow.NodeDefinitionsStructurallyCompatible(agentNode("model-test-exact-v1", 100), agentNode("model-test-exact-v1", 101)) { t.Fatal("floor change is breaking") }
+	if workflow.NodeDefinitionsStructurallyCompatible(agentNode("model-test-exact-v1", 100), agentNode("model-test-exact-v1", 101)) { t.Fatal("default budget change is breaking") }
 }
 
 func TestReferenceNodeFixturesUseOpaqueExactModelAndHighBudgetFloor(t *testing.T) {
@@ -358,9 +388,35 @@ func TestDirectLatestRunPersistsResolvedExactVersion(t *testing.T) {
 	if err != nil { t.Fatal(err) }
 	if result.Run.WorkflowVersion != 7 || result.Run.DefinitionContentHash != "hash-7" { t.Fatalf("run=%+v", result.Run) }
 }
+
+func TestDirectLatestReplayDoesNotResolveAfterNewRelease(t *testing.T) {
+	resolver := countingResolverWithReleased(node("review", 7, "hash-7"))
+	first := bindLatestWithKey(t, resolver, "K")
+	resolver.AddReleased(node("review", 8, "hash-8"))
+	resolver.ResetCallCount()
+	replay := bindLatestWithKey(t, resolver, "K")
+	if replay.Run.WorkflowVersion != 7 || resolver.LatestReleasedCallCount() != 0 {
+		t.Fatalf("replay=%+v resolver calls=%d", replay, resolver.LatestReleasedCallCount())
+	}
+	newRun := bindLatestWithKey(t, resolver, "new-key")
+	if newRun.Run.WorkflowVersion != 8 || resolver.LatestReleasedCallCount() != 1 {
+		t.Fatalf("new run=%+v resolver calls=%d", newRun, resolver.LatestReleasedCallCount())
+	}
+}
 ```
 
-Add cases for (a) released v7 plus unreleased v8 selecting v7 for both workflow and direct `latest`, (b) no released version returning the bounded `node_version_not_found` error, (c) omitted direct version and literal `latest`, (d) explicit numeric v8 executing the unreleased author-test version, (e) concurrent insertion of v9 after latest resolution, (f) retry/rerun not calling `LatestReleased`, and (g) idempotency replay retaining the originally allocated version/hash. Add DB and memory-store tests proving `LatestReleased` filters `Release.ReleasedAt > 0` and orders by version descending.
+Add cases for (a) released v7 plus unreleased v8 selecting v7 for both workflow
+and direct `latest`, (b) no released version returning the bounded
+`node_version_not_found` error, (c) omitted direct version and literal `latest`,
+(d) explicit numeric v8 executing the unreleased author-test version, (e)
+concurrent insertion of v9 after latest resolution, (f) retry/rerun not calling
+`LatestReleased`, and (g) idempotency replay retaining the originally allocated
+version/hash with resolver call count zero. Add the workflow analogue: import
+source S containing `review@latest` at v7, release v8, reimport byte-identical S
+and return the stored v7 binding without a resolver call; importing genuinely
+new source S2 resolves and persists v8 exactly once. Add DB and memory-store
+tests proving `LatestReleased` filters `Release.ReleasedAt > 0` and orders by
+version descending.
 
 Add Fly workflow-import tests proving Fly sends the authored `name@latest` source unchanged and does not list or choose a node version locally; server import is the only selector authority. Update every workflow upgrade/test resolver that implements `NodeResolver` so the new latest-released capability is explicit and no test double silently returns an unreleased `Latest` record.
 
@@ -385,19 +441,65 @@ type NodeResolver interface {
 }
 ```
 
-Implement `LatestReleased` in the DB transaction resolver and `workflowtest.MemoryNodeStore` using only `Release.ReleasedAt > 0`, selecting the greatest version. Update all existing workflow upgrade and test resolvers to satisfy the expanded interface. Replace the integer-only parser with a typed selector that accepts either a positive exact integer or literal `latest`; reject all other aliases. In the workflow expander, resolve `latest` through `LatestReleased` exactly once, then create the existing `ResolvedNodeBinding` with the returned immutable `NodeDefinitionID`, `NodeVersion`, and `NodeContentHash`. On a missing released version, return the bounded `node_version_not_found` source/import error; never call the broad `NodeStore.Latest` fallback. Leave only the resolved leaf in the compiled definition.
+Implement `LatestReleased` in the DB transaction resolver and
+`workflowtest.MemoryNodeStore` using only `Release.ReleasedAt > 0`, selecting
+the greatest version. Update all existing workflow upgrade and test resolvers
+to satisfy the expanded interface. Replace the integer-only parser with a typed
+selector that accepts either a positive exact integer or literal `latest`;
+reject all other aliases.
 
-The source manifest may retain its authoring spelling `name@latest`; the compiled workflow definition and durable binding must contain no `latest` token. Reimporting identical source remains idempotent and therefore retains its prior exact binding. An author intentionally rebinds by creating a new workflow definition version, not by background reconciliation.
+The DB workflow-import boundary first computes/uses the existing immutable
+identity of the authored source and checks for a byte-identical previously
+imported definition. If found, return that definition and its stored exact
+bindings without compiling the source or calling `LatestReleased`. Only a new
+definition import reaches the workflow expander, which resolves each `latest`
+through `LatestReleased` exactly once and creates the existing
+`ResolvedNodeBinding` with the returned immutable `NodeDefinitionID`,
+`NodeVersion`, and `NodeContentHash`. On a missing released version, return the
+bounded `node_version_not_found` source/import error; never call the broad
+`NodeStore.Latest` fallback. Leave only the resolved leaf in the compiled
+definition.
+
+The source manifest may retain its authoring spelling `name@latest`; the
+compiled workflow definition and durable binding must contain no `latest`
+token. Reimporting identical source remains idempotent because the early source
+identity lookup returns its prior exact binding before resolution. An author
+intentionally rebinds by creating a new workflow definition source/version, not
+by background reconciliation.
 
 - [ ] **Step 4: Implement direct latest convenience server-side**
 
-Add `LatestReleasedNodes workflow.LatestReleasedNodeResolver` to `noderuns.Config`; `NewHandler` must fail closed if it is absent. Wire the ATC's DB-backed released-only resolver through `atc/atccmd/command.go` into `atc/api/handler.go`, and add a route constant/handler for `POST /api/v1/agent/nodes/:node_name/runs`. Give it the same `MemberRole`, authenticated-route and reject-archived classification as the existing exact `CreateAgentNodeRun`; cover the route, accessor, and both wrappa allowlists in their focused tests.
+Add `LatestReleasedNodes workflow.LatestReleasedNodeResolver` as a required
+binder dependency; binder construction fails closed if it is absent. Wire the
+ATC's DB-backed released-only resolver into that binder, and add a route
+constant/handler for `POST /api/v1/agent/nodes/:node_name/runs`. Give it the
+same `MemberRole`, authenticated-route and reject-archived classification as
+the existing exact `CreateAgentNodeRun`; cover the route, accessor, and both
+wrappa allowlists in their focused tests.
 
-Its strict body initially contains the existing inputs, params, and idempotency key (Task 5 extends the shared request body with `budget_slice_usd`); it never accepts a caller model or numeric version field. The handler calls `LatestReleasedNodes.LatestReleased(name)` exactly once, maps no result to bounded `404 node_version_not_found`, and passes that returned exact `Version`, `ID` (`ExpectedWorkflowDefinitionID`), and `ContentHash` (`ExpectedDefinitionContentHash`) into the binder before allocation. The binder resolves only that exact version and rejects a changed ID/hash before it creates or idempotently matches a run. Keep the existing versioned route for explicit exact execution, including unreleased author-test versions.
+Its strict body initially contains the existing inputs, params, and idempotency
+key (Task 5 extends the shared request body with `budget_slice_usd`); it never
+accepts a caller model or numeric version field. The handler passes only a
+server-owned `NodeLatestReleased` intent into the binder; request JSON cannot
+set that field.
+
+The binder performs its existing team/kind/idempotency-key lookup before any
+node resolution. When a run already exists, use its stored exact definition
+version/ID/content hash for idempotency comparison and return it without
+calling `LatestReleased`. For a new key, call `LatestReleased(name)` exactly
+once, map no result to bounded `node_version_not_found`, copy the returned exact
+facts into the trusted bind request, and continue allocation. The binder
+rejects a changed ID/hash before persistence. Keep the existing versioned route
+for explicit exact execution, including unreleased author-test versions.
 
 Change the Fly run positional from required `int` to optional `string`, so `fly agent nodes run NAME [VERSION]` can accept omitted VERSION or literal `latest` and call only this new server endpoint; parse a positive numeric VERSION locally only to select the existing exact endpoint. Do not use `resolveDefaultNodeVersion`, list endpoints, or a local Fly cache for run selection. Update `fly/commands/agent_workflows.go` likewise: it forwards source containing `name@latest` to server import without calling `CompileDefinitionWithNodes` or `agentWorkflowNodeResolver`; the ATC DB factory is the only component that resolves the selector.
 
-The binder persists `WorkflowVersion` and `DefinitionContentHash` from the resolved exact node. It compares those expected facts during fresh allocation, idempotency, and resume; retry/rerun begins from the existing durable run and must not re-resolve `latest`. Do not add a mutable selector column or a background updater.
+The binder persists `WorkflowVersion` and `DefinitionContentHash` from the
+resolved exact node. It compares those expected facts during fresh allocation,
+idempotency, and resume; retry/rerun begins from the existing durable run and
+must not re-resolve `latest`. A new idempotency key after a release resolves the
+new highest released version exactly once. Do not add a mutable selector column
+or a background updater.
 
 - [ ] **Step 5: Run bind-once GREEN tests**
 
@@ -440,21 +542,21 @@ git commit -m "feat(agent): bind latest node selections once"
 - [ ] **Step 1: Write binder RED tests**
 
 ```go
-func TestDirectNodeRunUsesRaisedBudgetForCanonicalConfigAndAdmission(t *testing.T) {
+func TestDirectNodeRunUsesOverriddenBudgetForCanonicalConfigAndAdmission(t *testing.T) {
 	budget := 150.0
 	result, err := binder.BindAndCreate(ctx, manualAdmission(), workflowrun.BindRequest{
 		DefinitionKind: workflow.DefinitionKindNode, WorkflowName: "review", Version: intPtr(1),
-		NodeBudgetSliceUSD: &budget, IdempotencyKey: "raised-budget",
+		NodeBudgetSliceUSD: &budget, IdempotencyKey: "overridden-budget",
 	})
 	if err != nil || !result.Created { t.Fatalf("result=%+v err=%v", result, err) }
 	if got := onlyAgentBudget(t, savedParameterizedConfig(t)); got != 150 { t.Fatalf("budget=%v", got) }
 	if got := reservedAmount(t); got != 150 { t.Fatalf("reservation=%v", got) }
 }
 
-func TestDirectNodeBudgetEqualToFloorIsIdempotentNoOp(t *testing.T) {
-	floor := 100.0
-	// A request with floor=100.0 produces the same canonical config as omission.
-	assertSameRunForOmittedAndEqualOverride(t, floor)
+func TestDirectNodeBudgetEqualToDefaultIsIdempotentNoOp(t *testing.T) {
+	defaultBudget := 100.0
+	// An override equal to the default produces the same canonical config as omission.
+	assertSameRunForOmittedAndEqualOverride(t, defaultBudget)
 }
 
 func TestDirectNodeRunFailsBeforeAllocationWhenModelUnavailable(t *testing.T) {
@@ -465,11 +567,15 @@ func TestDirectNodeRunFailsBeforeAllocationWhenModelUnavailable(t *testing.T) {
 }
 ```
 
-Add cases for lower budget, NaN/infinity, seven-decimal precision, override on a task node, retry/resume reconstruction of the raised value, and the same idempotency key with a different effective budget returning `ErrIdempotencyConflict`.
+Add accepted cases for both a lower positive budget and a higher budget. Add
+rejection cases for zero, negative, NaN/infinity, seven-decimal precision, and
+an override on a task node. Prove retry/resume reconstructs either overridden
+value, and that the same idempotency key with a different effective budget
+returns `ErrIdempotencyConflict`.
 
 - [ ] **Step 2: Run binder RED tests**
 
-Run: `go test ./agent/workflowrun -run 'TestDirectNode(RunUsesRaisedBudget|BudgetEqualToFloor|RunFailsBeforeAllocation)' -count=1`
+Run: `go test ./agent/workflowrun -run 'TestDirectNode(RunUsesOverriddenBudget|BudgetEqualToDefault|RunFailsBeforeAllocation)' -count=1`
 
 Expected: FAIL because `NodeBudgetSliceUSD`, model admission, and durable re-rendering do not exist.
 
@@ -488,7 +594,6 @@ func applyNodeBudgetOverride(function *workflow.FunctionConfig, override *float6
 	if !ok { return nil }
 	if override == nil { return nil }
 	if err := validateNodeBudgetUSD(*override); err != nil { return fmt.Errorf("%w: invalid node budget override", ErrInvalidRequest) }
-	if *override < agent.BudgetSliceUSD { return fmt.Errorf("%w: budget override is below node floor", ErrInvalidRequest) }
 	agent.BudgetSliceUSD = *override
 	return nil
 }
@@ -508,7 +613,7 @@ Expected: PASS.
 git add agent/workflowrun/types.go agent/workflowrun/binder.go \
   agent/workflowrun/binder_test.go agent/workflowrun/admission_adapters.go \
   agent/workflowrun/admission_adapters_test.go atc/atccmd/command.go
-git commit -m "feat(agent): admit node models and raised budgets"
+git commit -m "feat(agent): admit node models and budget overrides"
 ```
 
 ### Task 5: Expose model availability and direct-run budget control
@@ -593,7 +698,7 @@ type AgentModelsCommand struct {
 type AgentModelsListCommand struct { Json bool `long:"json" description:"Print command result as JSON"` }
 ```
 
-to `fly agent`. Add `BudgetSliceUSD *float64 `long:"budget-slice-usd" description:"Raise the node's declared agent budget floor for this run"`` to `NodesRunCommand`; do local finite/precision validation, then marshal the existing request type. Never add a model flag.
+to `fly agent`. Add `BudgetSliceUSD *float64 `long:"budget-slice-usd" description:"Override the node's declared agent budget for this run"`` to `NodesRunCommand`; do local positive/finite/precision validation, then marshal the existing request type. Never add a model flag.
 
 - [ ] **Step 5: Run focused GREEN tests**
 
@@ -620,9 +725,13 @@ git commit -m "feat(agent): expose node model catalog and budget flag"
 - Modify: `agent/workflow/seed_test.go`
 - Modify: `agent/reusablenode/vertical_slice_test.go`
 
-**Consumes:** All prior task interfaces and the $100 reference-node contract established in task 2.
+**Consumes:** All prior task interfaces and the $100 target reference-node
+default established in task 2.
 
-**Produces:** Accurate operator/runbook documentation plus two materialized active reference sources/runs using an exact ID returned by the deployed catalog, never a guessed provider or hermetic fixture ID.
+**Produces:** Accurate operator/runbook documentation plus two materialized
+active reference sources/runs using an exact ID returned by the deployed
+catalog, never a guessed provider or hermetic fixture ID, and live evidence
+that promotes the $100 target default to a tested default.
 
 - [ ] **Step 1: Write the documentation acceptance checklist**
 
@@ -651,7 +760,7 @@ done
   agent/workflow/seeds/log-diagnosis-node-v1/node.yaml
 ```
 
-Replace Task 2's opaque-literal assertion in `seed_test.go` with a helper that compiles each source and returns its nonempty model/floor. In `vertical_slice_test.go`, compare each imported definition's agent model and floor to that helper's source values, then assert the durable direct run preserves the imported definition ID/version/content hash and agent model. These checks must not contain a real provider ID or `model-test-*` expectation.
+Replace Task 2's opaque-literal assertion in `seed_test.go` with a helper that compiles each source and returns its nonempty model/default budget. In `vertical_slice_test.go`, compare each imported definition's agent model and default budget to that helper's source values, then assert the durable direct run preserves the imported definition ID/version/content hash and agent model. These checks must not contain a real provider ID or `model-test-*` expectation.
 
 - [ ] **Step 3: Import both materialized sources, capture exact versions, and run them**
 
@@ -671,7 +780,16 @@ fly -t home agent nodes run log-diagnosis "$LOG_DIAGNOSIS_VERSION" \
 
 The log-diagnosis `deployment` input is optional. Record both JSON import responses and the two returned exact versions in the rollout evidence. Do not use a hard-coded version such as `10`; the explicit returned versions intentionally permit author testing even before the new versions are released.
 
-State that active reference-node versions use `budget_slice_usd: 100`, model identity is chosen by the node author from the deployed available list, is frozen in the node version, and is never a run flag. State that a temporarily unavailable known model can be imported for portable/reference catalog use but a fresh run fails before execution. State that `latest` resolves only the highest released version once and persists that exact identity; it never auto-updates or falls back to an unreleased version. State that the high daily cap remains an operator Helm value and no cost estimate is shown.
+State that active reference-node versions use a deliberately non-interfering
+default `budget_slice_usd: 100`; callers may explicitly override that budget
+up or down for one durable run. Model identity is chosen by the node author
+from the deployed available list, frozen in the node version, and is never a
+run flag. State that a temporarily unavailable known model can be imported for
+portable/reference catalog use but a fresh run fails before execution. State
+that `latest` resolves only the highest released version once and persists
+that exact identity; it never auto-updates or falls back to an unreleased
+version. State that the high daily cap remains an operator Helm value and no
+estimated-versus-actual cost detail is shown.
 
 - [ ] **Step 4: Run source/binding and focused GREEN verification**
 
@@ -703,7 +821,14 @@ Expected: PostgreSQL readiness, both repository suites, Helm lint, and diff chec
 
 - [ ] **Step 6: Conduct one independent focused review**
 
-Review only the task range for: released-only latest selection, mutable model selection, catalog-known versus unavailable confusion, caller model override, lower-budget bypass, canonical-config/reservation mismatch, idempotency/resume drift, source/bound-model drift, secret disclosure, route authorization, and accidental workflow auto-upgrade. Fix only Critical, High, or acceptance-blocking findings. If a blocker is found, run a focused re-review; stop after three total review rounds and mark the track Human Review Required if a blocker remains.
+Review only the task range for: released-only latest selection, mutable model
+selection, catalog-known versus unavailable confusion, caller model override,
+invalid budget acceptance, canonical-config/reservation mismatch,
+idempotency/resume drift, source/bound-model drift, secret disclosure, route
+authorization, and accidental workflow auto-upgrade. Fix only Critical, High,
+or acceptance-blocking findings. If a blocker is found, run a focused
+re-review; stop after three total review rounds and mark the track Human Review
+Required if a blocker remains.
 
 - [ ] **Step 7: Commit task 6**
 

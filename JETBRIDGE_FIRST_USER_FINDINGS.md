@@ -1,7 +1,7 @@
 # Jetbridge First-User Findings
 
-Status: first-user trial and rollout complete; final dogfood blockers under repair
-Date: 2026-08-02
+Status: `v0.2.227` rollout complete; reference-node reasoning accepted, typed publication blockers fixed locally and awaiting rollout
+Date: 2026-08-03
 Target: `home` / team `main`
 
 This is a running record from authoring, importing, executing, and iterating on
@@ -138,6 +138,15 @@ inferences and proposed follow-ups are labeled as such.
   emits `TypeDir` headers without the suffix now passes a real
   Fly-archiver/server-canonicalizer regression test and advances the live
   request past archive admission.
+- The same canonical-path contract had a second producer mismatch on output:
+  artifact-daemon serialized valid `TypeDir` entries as `candidate-1/`, while
+  the snapshot canonicalizer accepts only the bare name `candidate-1` plus the
+  type bit. Both final reference nodes reached this seam after good model work,
+  and both terminal runs correctly errored without publishing a partial output.
+  Commit `377e88983b` changes the real daemon `GET /artifacts` producer to bare
+  directory names and preserves nested-file coverage; its focused and package
+  tests plus independent review passed. This is distinct from the earlier Fly
+  upload-side fix: every tar producer must honor the same canonical dialect.
 - After that compatibility fix, the same clean repository reached typed
   validation but the then-live server rejected it as `422 validation_failed:
   snapshot does not satisfy its declared type`. The local current
@@ -172,6 +181,23 @@ inferences and proposed follow-ups are labeled as such.
   negotiates the pinned client's MCP version, and derives readiness from the
   provider-visible initialization event rather than the runner's private
   preflight alone.
+- After version negotiation was deployed, Claude 2.1.212 could discover all
+  three output-builder tools but every real call still returned MCP `-32602`.
+  The logical arguments (`{"output":"diagnosis"}` and
+  `{"output":"review"}`) were correct; strict decoding rejected the client's
+  standards-compatible outer `params._meta.progressToken`/`params.task`
+  envelope before arguments were examined. Commit `b5c7982d4f` makes only
+  transport envelopes lenient while keeping tool arguments and CLI write input
+  strict; real-builder regressions prove valid calls reach the builder and an
+  unknown authority-bearing argument remains rejected. Its full package suite
+  and independent security review passed.
+- Provider-visible readiness had a separate exact-name mismatch. The runner
+  allowed only `mcp__output_builder__...`, while the pinned provider emitted
+  `mcp__output-builder__...`; runs therefore used the tools but recorded no
+  `mcp.ready`. Commit `1ed9ef0a2b` recognizes exactly the three observed
+  hyphenated tool names, retains legacy underscore forms, rejects lookalikes,
+  and emits at most one event. Its full runner suite and independent review
+  passed.
 - In the initial CLI, a failed direct run could be `failed` (CLI invocation) or
   `errored` (output sealing), but `nodes show-run --json` exposed neither the
   cause nor a suggested command. That diagnostic gap was later closed; the
@@ -348,6 +374,77 @@ inferences and proposed follow-ups are labeled as such.
   No manual metadata repair or upload retry was performed; the observation is
   preserved as a durability defect rather than hidden by operator mutation.
 
+### Source-bound `v0.2.227` and reference-node acceptance — 2026-08-03
+
+- The final source-bound pipeline consumed exact commit
+  `f0254d48c4ac5f473503f95e5f79bd4a103cf5c3`. Unit build `940`, Kubernetes
+  runtime build `796`, runner-image build `#28` / global `654147`, web-image
+  build `496` / global `654181`, self-upgrade `291`, verify-upgrade `264`, and
+  live-test build `687` all succeeded before release build `#156` / global
+  `654254` succeeded in 10m17s.
+- Release `v0.2.227` deployed
+  `registry.home/jetbridge@sha256:2e8ca0837ea16ecb31d97e6bc4a4909078dd69fc5d0be3072a3f341353ad9af6`.
+  Both `concourse-web` and `concourse-artifact-daemon` carry that immutable
+  image plus source annotation `f0254d48...`. The configured node runner is
+  `registry.home/agent-runner@sha256:8434a0b74af80d8905050a2654035fa63021e20abaaa3bb3c6613bcafbf48e3a`.
+  Argo applications `root` and `concourse` were independently observed
+  `Synced/Healthy`.
+- The release task restarted with the final ATC rollout, reattached, recognized
+  the already-published stable tag/image, revalidated the source-addressed
+  artifact, found Git main/tag and home-infra writeback already current, and
+  completed successfully. This is the desired idempotent replay behavior for a
+  deployment job that can outlive the server process coordinating it.
+- Code-review input preparation produced real Git snapshots: `before` snapshot
+  `17`, digest
+  `sha256:030de599ca6d4ba5ee70f257e385259d2014c0c939080ca14c2c79b489bd14dd`,
+  and `after` snapshot `18`, digest
+  `sha256:db4478b725e91d1cc7a146be212002969609c97b8bff4ac0e14105bc8663faee`.
+  The sole change replaces exact team equality with an unanchored prefix test,
+  allowing team `dev` to administer `dev-prod`; existing tests intentionally
+  remain green.
+- `log-diagnosis@9` run `24` / build `654317` consumed snapshot `15` and exact
+  definition hash
+  `2b2c6824feda0a9d76728aeb6e91a4265885925b24d98bc202fe93aadaca41ea`.
+  The model loaded the required diagnosis skill, completed 17 turns in 177s
+  for `$0.558532`, separated the cache-hit failure chain from retries, anchored
+  evidence/counterevidence, and identified the pod-IP-as-node-name mechanism at
+  confidence `0.8` with bounded next actions. That is an appropriate scoped
+  proximal diagnosis under the accepted product definition; it does not claim
+  a repository-level RCA.
+- The log agent discovered the managed tools but their calls returned `-32602`,
+  so it used the documented fallback and authored a structurally strong
+  `diagnosis/v1` record under `candidate-1/record.json`. Platform capture then
+  rejected the directory header `candidate-1/`. The agent metric row says its
+  reasoning step passed, while the enclosing build and durable node run say
+  `errored` and expose no outputs. That split is accurate: useful model work is
+  not a published typed result.
+- `code-review@9` run `25` / build `654337` consumed snapshots `17`/`18` and
+  exact definition hash
+  `abdabc1c464e69fd3c38cbb8270d120ef4f9604433defa1a9a6b9b6d45761b12`.
+  In 17 turns / 105s / `$0.427366`, it found the seeded authorization bypass,
+  classified it critical and blocking, cited `after/access/access.go:4-8`,
+  explained the trigger and impact, and recommended delimiter-aware matching
+  plus positive/negative regression cases. This is a high-quality node result.
+  Its fallback record then hit the identical `finding-broken-access-control/`
+  capture failure, so the durable run correctly errored with no output.
+- Run `25` also exposed parameter ergonomics: the API bound
+  `MINIMUM_SEVERITY=medium` into the durable parameterized configuration and
+  agent environment, but the initial context did not render it and the sample
+  discouraged environment discovery. The model therefore said no threshold
+  was supplied. The result was unaffected because its finding was critical,
+  but parameter presentation is still a platform contract defect. The
+  implementation track at
+  `docs/superpowers/plans/2026-08-03-agent-readable-node-parameters.md`
+  projects resolved parameters as canonical JSON into the durably hashed
+  initial context while retaining environment compatibility and public-value
+  redaction.
+- The archive, MCP-envelope, and provider-readiness corrections are committed
+  as `377e88983b`, `b5c7982d4f`, and `1ed9ef0a2b`. Fresh combined verification
+  passed `go test ./agent/outputbuilder`, `go test ./agent/runner`, and
+  `go test ./cmd/artifact-daemon`; each commit also passed its own distinct
+  Terra review. They are not described as deployed until a new source-bound
+  rollout and successful typed-output reruns prove that state.
+
 ## Post-Trial Blocker Trace
 
 The remediation-track audit converted four deployment symptoms into exact
@@ -405,24 +502,26 @@ and
 
 ## Effective Node-Authoring Patterns
 
-- Keep typed-output mechanics in the prompt and reasoning method in a bundled
-  skill. However, a bundled skill is advisory: in two live runs the model did
-  not read the selected skill before authoring output. Load-bearing record shape
-  cannot live only in `SKILL.md`; either the managed builder must be reliable or
-  the exact fallback shape must be in the initial prompt/otherwise guaranteed.
+- Keep reasoning method in a bundled skill, but keep typed-output mechanics in
+  the platform. A bundled skill is advisory: in two live runs the model did not
+  read the selected skill before authoring output. Load-bearing record shape
+  therefore cannot live only in `SKILL.md`, and node authors must not duplicate
+  an inline JSON schema in prompts. The managed builder/validator (or another
+  platform-injected schema-building tool) must supply that authority, expose
+  safe validation errors to the agent, and own the bounded final repair pass.
 - Use an unreleased exact version for direct testing; release only after a
   successful typed output has been inspected.
 - Tell agents that record-authority names in the initial platform preamble are
   literal prompt values, not shell environment variables. Without that warning,
   one earlier run spent 40 turns searching `env` and the filesystem for values
   the runner intentionally surfaces in the prompt.
-- Log-only diagnosis should distinguish a strongly supported symptom-level
-  mechanism from a code-level root cause. The tested model correctly inferred
-  pod-IP/node-name confusion, but without repository input it overclaimed
-  `identified` and could not name the write/read seam required by the benchmark.
-  For this corpus, a useful log node should emit `suspected` plus a bounded code
-  inspection action; a deeper RCA node needs an optional or required repository
-  input.
+- Log-only diagnosis should distinguish a strongly supported proximal
+  mechanism from a repository-level root cause. `identified` is appropriate
+  when immutable logs directly support a bounded causal claim such as a
+  deadlock, a panic site, or the pod-IP/node-name mechanism seen here; it must
+  not imply that an unobserved code write/read seam has been proven. A deeper
+  RCA node needs a disposable writable checkout and may leave a failing
+  reproducer plus a proposed repository change.
 
 ## Accepted Product Defaults
 
@@ -437,10 +536,12 @@ defaults, not speculative follow-ups:
   that exact version; there is no automatic update when a newer node appears.
 - Schemas are platform-owned and versioned. Node packages reference a known
   schema/type and cannot embed an inline schema. Extensibility is limited to a
-  bounded `extra_details` field. Validation returns structured, safe reason
-  codes; the platform may offer one bounded final repair pass, but publication
-  is atomic and the whole output fails if the repaired candidate is still
-  invalid.
+  bounded `extra_details` field so relevant evidence always has a legitimate
+  home. A platform tool exposes the current schema and helps construct valid
+  records. Validation returns structured, safe reason codes to the agent; the
+  platform may invoke one bounded stop/final-repair pass, but publication is
+  atomic and the run fails unless every declared output validates after that
+  pass. Schema evolution creates a new schema version.
 - There are two skill classes: immutable node/function skills bundled with the
   definition, and platform-required execution/policy skills. Required skills
   are injected automatically and cannot be silently omitted by a caller. The
@@ -449,19 +550,33 @@ defaults, not speculative follow-ups:
 - Platform snapshots are passed explicitly to nodes. IDs are immutable, team
   scoped, and authorized through the owning team/resource boundary; the server
   stores the exact input bindings and uses them for exact rerun rather than
-  accepting caller substitutions.
+  accepting caller substitutions. A node run does not create snapshots
+  automatically: callers supply existing IDs through explicit input flags.
+  The UI must at least expose immutable IDs; repository pickers are optional.
+  Private Git inputs inherit the same protections as a team-owned Concourse Git
+  resource. Exact rerun inputs remain server-side authority and need not be
+  conveniently downloadable to a local workstation.
 - Code review should take two explicit `repository/v1` snapshots (`before` and
   `after`) and use a server-produced diff as a convenience/index, never as a
   replacement for either immutable repository authority.
 - A diagnosis node may identify a scoped proximal cause supported by its
   immutable evidence. A deeper RCA node receives a disposable writable checkout
-  derived from a repository snapshot and may emit a `repository-change/v1` plus
-  a failing reproducer; it never mutates the source snapshot itself.
-- Model selection resolves to one exact model. If that model is unavailable,
-  execution fails rather than silently substituting another. A node declares
-  its tested minimum/default budget and a caller may only raise it. Budget and
-  cost ceilings remain mechanically hard, enforced, and deliberately
-  high-salience.
+  derived from a repository snapshot, may write tests and leave a failing
+  reproducer, and may emit a `repository-change/v1`; it never mutates the source
+  snapshot itself.
+- The node author chooses one exact model and that identity is part of the
+  immutable, tested node contract. Callers cannot override it; if it is
+  unavailable, execution fails rather than silently substituting another. The
+  node also declares a deliberately high, non-interfering default budget, which
+  a caller may explicitly override up or down for one durable run. Compatibility
+  includes model identity, schema versions, bundled advisory and
+  platform-required skill contracts, runtime compatibility, and tool/protocol
+  surfaces. Exact replay freezes the concrete prompt, skill tree, runtime, and
+  tool hashes/digests; release compatibility compares their declared contract
+  IDs/versions so a prose-only prompt/skill refinement creates a new immutable
+  hash without automatically becoming breaking. Cost enforcement remains
+  mechanically available, but ordinary defaults should not constrain normal
+  operation and the product does not need estimated-versus-actual cost detail.
 - Diagnostics are agent-first: terminal surfaces expose safe structured reason
   codes and the exact next diagnostic command/tool, so an agent does not need
   private DB access or tribal knowledge to discover the underlying build.
@@ -480,8 +595,9 @@ defaults, not speculative follow-ups:
   now proves Fly and server canonicalization agree on directory headers; retain
   that behavior in user examples.
 - Update model documentation to the accepted exact-selection default above:
-  omitted selection resolves through platform policy, while an exact declared
-  model fails if unavailable rather than being silently substituted.
+  an agent node must declare the exact tested model, callers cannot override it,
+  and an unavailable declared model fails rather than being silently
+  substituted.
 - Closed in the CLI: `show-run` now exposes the terminal reason/build
   correlation. Documentation should still show the direct
   `fly watch -b BUILD-ID` path as the next diagnostic tool.
@@ -491,6 +607,9 @@ defaults, not speculative follow-ups:
 - Replace the old ambiguity about skill discovery with the two accepted skill
   classes above. Required injection is platform behavior; proof that the model
   read a skill is not durable run authority.
+- Document the platform-owned schema-builder/validator and its single bounded
+  repair opportunity. Node examples should name output types and the optional
+  `extra_details` home, not carry a second inline JSON schema.
 
 ## Corpus and Evaluation Findings
 
@@ -507,18 +626,42 @@ defaults, not speculative follow-ups:
   failures and keep resource-capture terminal errors similarly actionable.
 - Add a deployment readiness check covering: nested snapshot upload,
   `repository/v1` admission, managed output-builder health, Claude CLI budget
-  flag compatibility, and one sealed record output.
+  flag compatibility, provider-visible `mcp.ready`, directory-valued output
+  capture, and one sealed record output.
+- Execute the approved snapshot durability track in
+  `docs/superpowers/plans/2026-08-03-snapshot-upload-durability.md`; it preserves
+  caller cancellation and team-scoped immutable authority while repairing only
+  the exact metadata-less interrupted-upload state.
+- Implement the agent-readable parameter track in
+  `docs/superpowers/plans/2026-08-03-agent-readable-node-parameters.md`; its live
+  acceptance probe requires an unpredictable bound value in the model's first
+  actionable response before any tool call.
+- Resolve the bind-once `latest` idempotency blocker recorded in
+  `docs/superpowers/plans/2026-08-03-node-model-catalog-and-budget-contract.md`.
+  The corrected draft now checks existing direct-run and identical
+  workflow-import identities before any released-latest lookup. That track
+  remains marked Human Review Required because this correction and the broader
+  declared schema/skill/runtime/tool compatibility representation were not
+  approved before its three-round review cap; no fourth agent review may
+  substitute for the required human checkpoint.
 
 ## Verification and disposition
 
-- `go test ./agent/workflow ./fly/commands -count=1` passed.
-- `go test ./agent/runner -count=1` passed outside the filesystem/network
-  sandbox required by its localhost HTTP tests.
+- `go test ./agent/workflow ./fly/commands -count=1` passed in the earlier
+  authoring checkpoint.
+- Fresh blocker-fix verification passed `go test ./agent/outputbuilder
+  -count=1`, `go test ./agent/runner -count=1`, and `go test
+  ./cmd/artifact-daemon -count=1`; each production fix also passed a distinct
+  blocking review.
 - `git diff --check` passed.
 - No reusable-node version was released. Exact imports `code-review@9` and
   `log-diagnosis@9` remain the final dogfood authorities. The bounded $5 slice
-  is now supported by the deployed Claude 2.1.212 runner; the latest run failed
-  for missing managed authority/readiness, not budget-version skew.
-- Release `v0.2.223` and its exact web/runner authorities converged as recorded
-  above. The post-deploy replay failure and the upload orphan are retained as
-  product findings; neither was hidden by a manual repair or retry.
+  is supported by the deployed Claude 2.1.212 runner. Runs `24` and `25`
+  completed high-quality model work but correctly ended `errored` with no
+  outputs because the managed-tool envelope failed and the fallback output tar
+  used a non-canonical trailing-separator directory header.
+- Release `v0.2.227` and its exact web/runner authorities converged as recorded
+  above. The three reviewed output-publication/readiness corrections remain
+  local until the next source-bound rollout and successful typed-output reruns
+  prove them deployed. The interrupted-upload orphan remains a preserved
+  durability finding; it was not hidden by manual repair or retry.
