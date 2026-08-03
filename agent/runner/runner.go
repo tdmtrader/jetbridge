@@ -754,7 +754,6 @@ func managedMCPReadyFromProviderStream(stream []byte, server string) bool {
 		} `json:"message"`
 	}
 
-	toolPrefix := "mcp__" + strings.ReplaceAll(server, "-", "_") + "__"
 	for len(stream) > 0 {
 		line := stream
 		if newline := bytes.IndexByte(stream, '\n'); newline >= 0 {
@@ -780,7 +779,11 @@ func managedMCPReadyFromProviderStream(stream []byte, server string) bool {
 		}
 		if event.Type == "assistant" {
 			for _, content := range event.Message.Content {
-				if content.Type == "tool_use" && strings.HasPrefix(content.Name, toolPrefix) && len(content.Name) > len(toolPrefix) {
+				if content.Type != "tool_use" {
+					continue
+				}
+				switch content.Name {
+				case "mcp__output_builder__describe_output", "mcp__output_builder__validate_output", "mcp__output_builder__write_output":
 					return true
 				}
 			}

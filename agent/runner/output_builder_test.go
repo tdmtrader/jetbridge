@@ -175,7 +175,10 @@ func TestManagedMCPReadyFromProviderStream(t *testing.T) {
 		{name: "failed", stream: `{"type":"system","subtype":"init","mcp_servers":[{"name":"output-builder","status":"failed"}]}` + "\n", want: false},
 		{name: "oversized line", stream: strings.Repeat(" ", int(managedOutputBuilderResponseLimit)+1) + "\n", want: false},
 		{name: "connected", stream: `{"type":"system","subtype":"init","mcp_servers":[{"name":"output-builder","status":"connected"}]}` + "\n", want: true},
-		{name: "managed builder tool use", stream: `{"type":"assistant","message":{"content":[{"type":"tool_use","name":"mcp__output_builder__write_output"}]}}` + "\n", want: true},
+		{name: "managed describe tool use", stream: `{"type":"assistant","message":{"content":[{"type":"tool_use","name":"mcp__output_builder__describe_output"}]}}` + "\n", want: true},
+		{name: "managed validate tool use", stream: `{"type":"assistant","message":{"content":[{"type":"tool_use","name":"mcp__output_builder__validate_output"}]}}` + "\n", want: true},
+		{name: "managed write tool use", stream: `{"type":"assistant","message":{"content":[{"type":"tool_use","name":"mcp__output_builder__write_output"}]}}` + "\n", want: true},
+		{name: "forged managed tool name", stream: `{"type":"assistant","message":{"content":[{"type":"tool_use","name":"mcp__output_builder__forged"}]}}` + "\n", want: false},
 		{name: "tool name without tool use", stream: `{"type":"assistant","message":{"content":[{"type":"text","name":"mcp__output_builder__write_output"}]}}` + "\n", want: false},
 	}
 	for _, test := range tests {
