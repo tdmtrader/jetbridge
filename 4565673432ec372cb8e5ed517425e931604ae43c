@@ -1,0 +1,12 @@
+## Ship Summary
+
+Message: fix Jetbridge typed-output readiness and rollout writeback blockers
+Files Changed: 18
+Timestamp: 2026-08-03T05:29:11Z
+
+Key Changes:
+- Preserve platform-owned fallback authority with managed output builder
+- Negotiate pinned Claude MCP and report provider-visible readiness only
+- Add real image MCP smoke and exact cleanup
+- Sanitize inherited Git locks while preserving supervised replay-safe pushes
+- Record first-user evidence and accepted product defaults
