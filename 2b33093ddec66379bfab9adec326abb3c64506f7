@@ -1,0 +1,15 @@
+## Ship Summary
+
+Message: fix(deploy): tolerate GitOps rollout lag
+
+Files Changed: 2
+
+Timestamp: 2026-08-03T09:25:54Z
+
+Key Changes:
+
+- Extend final exact source/digest rollout convergence from five to ten minutes after an observed valid two-stage Argo delay
+
+- Stop selector-wide readiness waits from treating terminating old Pods as failed current rollouts
+
+- Preserve controller rollout, exact image/source/digest, and running-version gates with executable regressions
