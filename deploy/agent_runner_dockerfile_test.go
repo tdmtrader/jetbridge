@@ -152,9 +152,9 @@ esac
 	}
 }
 
-// This catches smoke cleanup that leaves its temporary writable authority
-// tree behind when Claude rejects the managed MCP configuration.
-func TestAgentRunnerImageSmokeCleansManagedMCPProbeOnFailure(t *testing.T) {
+// This catches smoke cleanup that leaves its exact writable authority file
+// behind or removes it before the managed sidecar has terminated.
+func TestAgentRunnerImageSmokeCleansManagedMCPProbe(t *testing.T) {
 	binDir := t.TempDir()
 	writeExecutable := func(name, contents string) {
 		t.Helper()
@@ -176,24 +176,66 @@ case "$1" in
   *) exit 64 ;;
 esac
 `)
-	writeExecutable("agent-output", "#!/bin/sh\nwhile :; do sleep 1; done\n")
+	writeExecutable("agent-output", `#!/bin/sh
+printf '%s\n' "$$" > "$SIDECAR_PID_LOG"
+while :; do sleep 1; done
+`)
 	for _, binary := range []string{"agent-runner", "function-runner"} {
 		writeExecutable(binary, "#!/bin/sh\nexit 0\n")
 	}
 	writeExecutable("install", `#!/bin/sh
 test "$1" = "-D" && test "$2" = "-m" && test "$3" = "0444" && test "$4" = "/dev/stdin" && test "$5" = "/run/concourse/output-builder/authority.json" || exit 64
-cat > "$INSTALL_LOG"
+tee "$INSTALL_LOG" > "$AUTHORITY_STATE"
 `)
-	writeExecutable("curl", "#!/bin/sh\nexit 0\n")
+	writeExecutable("rm", `#!/bin/sh
+if test "$#" = 3 && test "$1" = "-f" && test "$2" = "--" && test "$3" = "/run/concourse/output-builder/authority.json"; then
+  test -s "$SIDECAR_PID_LOG" || exit 64
+  if kill -0 "$(cat "$SIDECAR_PID_LOG")" 2>/dev/null; then
+    exit 65
+  fi
+  exec /bin/rm -f -- "$AUTHORITY_STATE"
+fi
+if test "$#" = 3 && test "$1" = "-rf" && test "$2" = "--"; then
+  case "$3" in
+    "$TMPDIR"/agent-output-smoke.*) exec /bin/rm "$@" ;;
+    *) exit 66 ;;
+  esac
+fi
+exit 64
+`)
+	writeExecutable("curl", "#!/bin/sh\ntest -s \"$SIDECAR_PID_LOG\"\n")
 
-	for _, status := range []string{"output-builder: disconnected", "output-builder: Not Connected"} {
-		t.Run(status, func(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		status      string
+		wantSuccess bool
+	}{
+		{name: "connected", status: "output-builder: Connected", wantSuccess: true},
+		{name: "disconnected", status: "output-builder: disconnected"},
+		{name: "negative multiword", status: "output-builder: Not Connected"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			tmpDir := t.TempDir()
 			installLog := filepath.Join(t.TempDir(), "authority.json")
+			authorityState := filepath.Join(t.TempDir(), "authority.json")
 			mcpConfigLog := filepath.Join(t.TempDir(), "mcp.json")
+			sidecarPIDLog := filepath.Join(t.TempDir(), "sidecar.pid")
 			cmd := exec.Command("sh", "agent-runner/smoke.sh")
-			cmd.Env = append(os.Environ(), "PATH="+binDir+":"+os.Getenv("PATH"), "TMPDIR="+tmpDir, "INSTALL_LOG="+installLog, "MCP_CONFIG_LOG="+mcpConfigLog, "MCP_STATUS="+status)
-			if output, err := cmd.CombinedOutput(); err == nil || !strings.Contains(string(output), "managed output builder MCP is not connected") {
+			cmd.Env = append(os.Environ(),
+				"PATH="+binDir+":"+os.Getenv("PATH"),
+				"TMPDIR="+tmpDir,
+				"INSTALL_LOG="+installLog,
+				"AUTHORITY_STATE="+authorityState,
+				"MCP_CONFIG_LOG="+mcpConfigLog,
+				"MCP_STATUS="+tc.status,
+				"SIDECAR_PID_LOG="+sidecarPIDLog,
+			)
+			output, err := cmd.CombinedOutput()
+			if tc.wantSuccess {
+				if err != nil {
+					t.Fatalf("smoke success = %v\n%s", err, output)
+				}
+			} else if err == nil || !strings.Contains(string(output), "managed output builder MCP is not connected") {
 				t.Fatalf("smoke failure = %v\n%s", err, output)
 			}
 			if _, err := os.Stat(installLog); err != nil {
@@ -209,6 +251,9 @@ cat > "$INSTALL_LOG"
 			}
 			if entries, err := os.ReadDir(tmpDir); err != nil || len(entries) != 0 {
 				t.Fatalf("smoke temp cleanup = %#v, %v", entries, err)
+			}
+			if _, err := os.Stat(authorityState); !os.IsNotExist(err) {
+				t.Fatalf("authority residue remains after sidecar cleanup: %v", err)
 			}
 		})
 	}

@@ -45,18 +45,20 @@ for binary in agent-runner function-runner agent-output; do
 done
 
 smoke_dir=$(mktemp -d "${TMPDIR:-/tmp}/agent-output-smoke.XXXXXX")
+authority_file=/run/concourse/output-builder/authority.json
 sidecar_pid=
 cleanup() {
   if test -n "$sidecar_pid"; then
     kill "$sidecar_pid" 2>/dev/null || :
     wait "$sidecar_pid" 2>/dev/null || :
   fi
+  rm -f -- "$authority_file"
   rm -rf -- "$smoke_dir"
 }
 trap cleanup EXIT HUP INT TERM
 
 mkdir -p "$smoke_dir/work/review"
-printf '%s\n' "{\"work_root\":\"$smoke_dir/work\",\"inputs\":{},\"outputs\":{\"review\":{\"port\":{\"name\":\"review\",\"type\":\"review/v1\"},\"mount_root\":\"$smoke_dir/work/review\"}}}" | install -D -m 0444 /dev/stdin /run/concourse/output-builder/authority.json
+printf '%s\n' "{\"work_root\":\"$smoke_dir/work\",\"inputs\":{},\"outputs\":{\"review\":{\"port\":{\"name\":\"review\",\"type\":\"review/v1\"},\"mount_root\":\"$smoke_dir/work/review\"}}}" | install -D -m 0444 /dev/stdin "$authority_file"
 printf '%s\n' '{"mcpServers":{"output-builder":{"type":"http","url":"http://127.0.0.1:7783/mcp"}}}' > "$smoke_dir/mcp.json"
 
 agent-output serve > "$smoke_dir/agent-output.log" 2>&1 &
