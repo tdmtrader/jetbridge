@@ -210,7 +210,10 @@ func TestAgentCheckpointAlertsUseOnlyClosedFailureOutcomes(t *testing.T) {
 		},
 		{
 			name:        "ConcourseAgentCheckpointRestoreFailures",
-			expr:        `increase(concourse_agent_recovery_restore_duration_count{outcome="failed"}[5m]) > 0`,
+			// The instrument is a Float64Histogram WithUnit("s"), so the
+			// exported count of observations carries the unit suffix. The two
+			// alerts above are unit-less Int64Counters and keep a bare _total.
+			expr:        `increase(concourse_agent_recovery_restore_duration_seconds_count{outcome="failed"}[5m]) > 0`,
 			severity:    "warning",
 			description: "Inspect the checkpoint object and recovery logs before retrying restore for the affected run.",
 		},

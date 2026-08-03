@@ -63,10 +63,32 @@ spec:
         - port: {{ .Values.web.tls.bindPort }}
           protocol: TCP
         {{- end }}
+        {{- if .Values.web.metrics.enabled }}
+        # Unlike the daemon port, this one serves only the Prometheus
+        # exposition format, so it follows the same peers as the API.
+        - port: {{ .Values.web.metrics.port }}
+          protocol: TCP
+        {{- end }}
       {{- with .Values.networkPolicy.ingressFrom }}
       from:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+    {{- if and .Values.web.metrics.enabled .Values.networkPolicy.ingressFrom }}
+    {{- if and .Values.serviceMonitor.enabled .Values.serviceMonitor.web.enabled }}
+    {{- with .Values.serviceMonitor.scrapeFrom }}
+    # networkPolicy.ingressFrom narrows the rule above to named peers, which
+    # normally excludes the Prometheus namespace. Without this the scrape is
+    # dropped with no error anywhere: the target simply never succeeds.
+    - from:
+        {{- toYaml . | nindent 8 }}
+      ports:
+        - port: {{ $.Values.web.metrics.port }}
+          protocol: TCP
+    {{- else }}
+    {{- fail "serviceMonitor.scrapeFrom must list the Prometheus NetworkPolicyPeers when networkPolicy.ingressFrom restricts web ingress and the web ServiceMonitor is enabled — otherwise every scrape of the web metrics port is silently dropped." }}
+    {{- end }}
+    {{- end }}
+    {{- end }}
 {{- if .Values.postgresql.enabled }}
 ---
 apiVersion: networking.k8s.io/v1

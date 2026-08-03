@@ -17,6 +17,22 @@
 {{- if and .Values.agentExperiments.runnerEnabled (not .Values.agentSnapshots.enabled) }}
 {{- fail "agentExperiments.runnerEnabled requires agentSnapshots.enabled" }}
 {{- end }}
+{{- if .Values.web.metrics.enabled }}
+{{- $metricsPort := int .Values.web.metrics.port }}
+{{- if or (lt $metricsPort 1) (gt $metricsPort 65535) }}
+{{- fail "web.metrics.port must be a TCP port between 1 and 65535" }}
+{{- end }}
+{{- if empty (.Values.web.metrics.bindIP | toString) }}
+{{- fail "web.metrics.bindIP is required: the ATC starts its Prometheus listener only when both --prometheus-bind-ip and --prometheus-bind-port are set" }}
+{{- end }}
+{{- $reservedPorts := list 8080 2222 }}
+{{- if .Values.web.tls.enabled }}
+{{- $reservedPorts = append $reservedPorts (int .Values.web.tls.bindPort) }}
+{{- end }}
+{{- if has $metricsPort $reservedPorts }}
+{{- fail "web.metrics.port collides with the API, TSA, or TLS port; the ATC's Prometheus listener is a separate net.Listen and would fail to bind" }}
+{{- end }}
+{{- end }}
 {{- if .Values.agentBroker.enabled }}
 {{- if not .Values.agentSnapshots.enabled }}
 {{- fail "agentBroker.enabled requires agentSnapshots.enabled" }}
@@ -738,6 +754,14 @@ spec:
             {{- range $key, $val := .Values.otelMetrics.otlpHeaders }}
             - --otel-metrics-otlp-header={{ $key }}:{{ $val }}
             {{- end }}
+            # Prometheus exposition endpoint. Both flags are required: the ATC
+            # registers its Prometheus emitter only when BindIP and BindPort
+            # are non-empty, and it listens on a dedicated socket rather than
+            # adding a route to the API port.
+            {{- if .Values.web.metrics.enabled }}
+            - --prometheus-bind-ip={{ .Values.web.metrics.bindIP }}
+            - --prometheus-bind-port={{ .Values.web.metrics.port }}
+            {{- end }}
             # Connection pool sizing
             {{- if .Values.web.apiMaxConns }}
             - --api-max-conns={{ .Values.web.apiMaxConns }}
@@ -772,6 +796,10 @@ spec:
             {{- if .Values.web.tls.enabled }}
             - containerPort: {{ .Values.web.tls.bindPort }}
               name: https
+            {{- end }}
+            {{- if .Values.web.metrics.enabled }}
+            - containerPort: {{ .Values.web.metrics.port }}
+              name: metrics
             {{- end }}
             - containerPort: 2222
               name: tsa

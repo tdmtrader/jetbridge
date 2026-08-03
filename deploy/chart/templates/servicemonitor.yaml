@@ -1,4 +1,7 @@
-{{- if .Values.serviceMonitor.enabled }}
+{{- if and .Values.serviceMonitor.enabled .Values.serviceMonitor.web.enabled }}
+{{- if not .Values.web.metrics.enabled }}
+{{- fail "serviceMonitor.web.enabled requires web.metrics.enabled: the ATC serves the Prometheus text format only from the dedicated --prometheus-bind-ip/--prometheus-bind-port listener, and the API port answers every unmatched path with the web UI (HTTP 200, text/html), so a scrape aimed at it yields a permanently failing target instead of an error. Set web.metrics.enabled=true, or serviceMonitor.web.enabled=false to scrape only the artifact daemon." }}
+{{- end }}
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
@@ -20,7 +23,10 @@ spec:
     matchLabels:
       {{- include "concourse.selectorLabels" . | nindent 6 }}
   endpoints:
-    - port: http
+    # `metrics`, not `http`: the ATC's Prometheus listener is a separate socket
+    # from the API/UI port. Both the Service port and the container port of this
+    # name render only under web.metrics.enabled, which the guard above requires.
+    - port: metrics
       interval: {{ .Values.serviceMonitor.interval }}
       path: /metrics
 {{- end }}

@@ -63,6 +63,28 @@ web:
   # Backend pool is used by scheduler, build tracker, and other internal components.
   backendMaxConns: 50
 
+  # -- Prometheus exposition endpoint for the web node.
+  # The ATC serves the Prometheus text format ONLY from a dedicated listener it
+  # starts when both --prometheus-bind-ip and --prometheus-bind-port are set
+  # (atc/metric/emitter/prometheus.go PrometheusConfig.IsConfigured). The API
+  # port serves no /metrics route at all: an unmatched path there renders the
+  # web UI with HTTP 200, so a scrape aimed at it fails to parse rather than
+  # 404ing. Leave this disabled and no concourse_* series exist anywhere, and
+  # the alerting rules below can never fire.
+  #
+  # The endpoint is unauthenticated, which is why it is off by default and
+  # bound to its own port. serviceMonitor.enabled with serviceMonitor.web
+  # enabled requires it and fails the render otherwise.
+  metrics:
+    # -- Serve Prometheus metrics on a dedicated container port
+    enabled: false
+    # -- Listen address. 0.0.0.0 is required for an in-cluster scraper to
+    # reach the pod; the port is still governed by the web NetworkPolicy.
+    bindIP: 0.0.0.0
+    # -- Metrics port. 9391 is the registered Prometheus default port for
+    # Concourse. Must not collide with 8080, 2222, or web.tls.bindPort.
+    port: 9391
+
   # -- Startup probe configuration. Allows extra time for DB migration on first boot.
   startupProbe:
     httpGet:
@@ -467,6 +489,11 @@ serviceMonitor:
   labels: {}
   # -- Namespace for the ServiceMonitor (defaults to release namespace)
   namespace: ""
+  # -- Scrape the web node's Prometheus endpoint. Requires web.metrics.enabled;
+  # rendering fails otherwise rather than emitting a monitor that points at a
+  # port serving no exposition format. Set to false to scrape only the daemon.
+  web:
+    enabled: true
   # -- Scrape the artifact daemon's own /metrics endpoint (resolve latency,
   # peer fetches, snapshot operation counts and bytes) in addition to web.
   # Only rendered when artifactDaemon.enabled is also true.

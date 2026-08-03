@@ -220,10 +220,13 @@ func TestArtifactDaemonMetricsAreScraped(t *testing.T) {
 		wantScheme string
 		wantTLS    bool
 	}{
-		{name: "plaintext", sets: []string{"serviceMonitor.enabled=true"}},
+		// serviceMonitor.web.enabled=false keeps these cases about the daemon:
+		// the web monitor requires web.metrics.enabled and is covered on its
+		// own in TestWebServiceMonitorScrapesAPortTheWebNodeActuallyServes.
+		{name: "plaintext", sets: []string{"serviceMonitor.enabled=true", "serviceMonitor.web.enabled=false"}},
 		{
 			name:       "mtls",
-			sets:       []string{"serviceMonitor.enabled=true", "artifactDaemon.tls.enabled=true"},
+			sets:       []string{"serviceMonitor.enabled=true", "serviceMonitor.web.enabled=false", "artifactDaemon.tls.enabled=true"},
 			wantScheme: "https",
 			wantTLS:    true,
 		},
@@ -259,7 +262,7 @@ func TestArtifactDaemonMetricsAreScraped(t *testing.T) {
 }
 
 func TestArtifactDaemonServiceMonitorIsOptional(t *testing.T) {
-	manifests := renderChart(t, "serviceMonitor.enabled=true", "serviceMonitor.artifactDaemon.enabled=false")
+	manifests := renderChart(t, "serviceMonitor.enabled=true", "web.metrics.enabled=true", "serviceMonitor.artifactDaemon.enabled=false")
 	// Asserted on the parsed objects, not on the "# Source:" template path, so
 	// renaming the template file cannot make this pass while the daemon
 	// ServiceMonitor still renders.
@@ -277,7 +280,7 @@ func TestArtifactDaemonServiceMonitorIsOptional(t *testing.T) {
 // monitors relocated to a Prometheus namespace match zero Services — no error,
 // no targets, no metrics.
 func TestServiceMonitorsSelectTheReleaseNamespace(t *testing.T) {
-	manifests := renderChart(t, "serviceMonitor.enabled=true", "serviceMonitor.namespace=monitoring")
+	manifests := renderChart(t, "serviceMonitor.enabled=true", "web.metrics.enabled=true", "serviceMonitor.namespace=monitoring")
 	for _, nameSuffix := range []string{"test-release-concourse-jetbridge", "-artifact-daemon"} {
 		monitor := findServiceMonitor(t, manifests, nameSuffix)
 		// renderChart does not pass -n, so the release namespace is "default"
@@ -304,6 +307,16 @@ type serviceDoc struct {
 		Name   string            `json:"name"`
 		Labels map[string]string `json:"labels"`
 	} `json:"metadata"`
+	Spec struct {
+		Ports []struct {
+			Name string `json:"name"`
+			Port int    `json:"port"`
+			// targetPort is an IntOrString: either a port number or a
+			// container port name, so it cannot be typed more narrowly
+			// without making findService skip the document entirely.
+			TargetPort any `json:"targetPort"`
+		} `json:"ports"`
+	} `json:"spec"`
 }
 
 type serviceMonitorDoc struct {

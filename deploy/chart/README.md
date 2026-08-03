@@ -549,20 +549,60 @@ hermetic pods in the release namespace.
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
+| `web.metrics.enabled` | `false` | Start the ATC's Prometheus exposition listener on its own container port. Required by the web ServiceMonitor. |
+| `web.metrics.bindIP` | `0.0.0.0` | Listen address for that listener. |
+| `web.metrics.port` | `9391` | Metrics port. Must not collide with 8080, 2222, or `web.tls.bindPort`. |
 | `serviceMonitor.enabled` | `false` | Create ServiceMonitor CRD (requires prometheus-operator). |
 | `serviceMonitor.interval` | `30s` | Scrape interval. |
 | `serviceMonitor.labels` | `{}` | Labels for Prometheus discovery. |
 | `serviceMonitor.namespace` | `""` | Namespace for ServiceMonitor. |
+| `serviceMonitor.web.enabled` | `true` | Scrape the web node. Requires `web.metrics.enabled`; rendering fails otherwise. |
 | `serviceMonitor.artifactDaemon.enabled` | `true` | Also scrape the artifact daemon's `/metrics`. Requires `serviceMonitor.enabled` and `artifactDaemon.enabled`. |
 | `serviceMonitor.artifactDaemon.interval` | `""` (inherits) | Scrape interval override for the daemon. |
 | `serviceMonitor.artifactDaemon.tlsConfig` | `{}` | Endpoint `tlsConfig`, used only when `artifactDaemon.tls.enabled=true`. |
-| `serviceMonitor.scrapeFrom` | `[]` | NetworkPolicy peers allowed to scrape the daemon port. Required when a NetworkPolicy and the daemon ServiceMonitor are both enabled. |
+| `serviceMonitor.scrapeFrom` | `[]` | NetworkPolicy peers allowed to scrape the daemon and web metrics ports. Required when a NetworkPolicy and the corresponding ServiceMonitor are both enabled. |
 | `alertingRules.enabled` | `false` | Create PrometheusRule CRD. |
 | `alertingRules.labels` | `{}` | Labels for alert rule discovery. |
 
 Two ServiceMonitors are rendered: one selecting the web Service and one
 selecting the artifact-daemon headless Service, whose per-node pods export
 resolve latency, peer-fetch counts, and snapshot operation counts and bytes.
+
+**The web node serves no `/metrics` on its API port.** Concourse exposes the
+Prometheus text format only from a dedicated listener that the ATC starts when
+it is given *both* `--prometheus-bind-ip` and `--prometheus-bind-port`; there is
+no `/metrics` route on 8080. Worse, an unmatched path on 8080 falls through to
+the web UI handler, which answers HTTP 200 with `text/html` — so a scrape aimed
+there is not a clean 404 but a target that fails to parse, and `curl`ing it
+looks healthy. Set `web.metrics.enabled=true` to render those flags, a `metrics`
+container port, and a matching `metrics` Service port; the web ServiceMonitor
+selects that port by name and refuses to render without it. Set
+`serviceMonitor.web.enabled=false` to scrape only the daemon.
+
+The endpoint is unauthenticated, which is why it is opt-in and on its own port.
+When `networkPolicy.enabled` is set, the metrics port is opened to the same
+peers as the API; if `networkPolicy.ingressFrom` narrows those peers, the chart
+requires `serviceMonitor.scrapeFrom` to name the Prometheus peers as well,
+rather than letting every scrape be dropped silently.
+
+The `alertingRules` PrometheusRule draws on three different pipelines, and an
+alert pointed at the wrong one evaluates over an empty vector forever with no
+error anywhere. `concourse_k8s_*`, `concourse_db_*` and `concourse_workers_*`
+come from the web listener above and need `web.metrics.enabled`.
+`concourse_agent_*` are OTel instruments the ATC only pushes over OTLP, so they
+need `otelMetrics.otlpAddress` (or a collector wired outside the chart); their
+names carry the unit suffix the OTLP-to-Prometheus translation appends.
+`artifact_daemon_*` come from the daemon scrape. `helm install`/`upgrade` prints
+a warning when `alertingRules.enabled` is set without the corresponding source.
+
+Two alerts have no directly equivalent instrument.
+`ConcourseDBConnectionPoolExhausted` compares `concourse_db_connections` against
+the values that size the pools (`web.apiMaxConns`, `web.backendMaxConns`, or the
+binary's own defaults when those are unset), because nothing publishes a pool
+maximum series. `ConcourseWorkerStalled` replaces an alert on
+`concourse_worker_heartbeat_age`, a declared OTel gauge with no production call
+site: it fires on `concourse_workers_registered{state="stalled"}`, which the
+worker collector really does emit when a worker stops re-registering.
 
 Under `artifactDaemon.tls.enabled=true` the daemon serves that same port over
 HTTPS, so the daemon endpoint switches to `scheme: https`. `/metrics` is one of
@@ -582,8 +622,10 @@ the daemon port, which would silently drop every scrape. Because that port also
 serves the artifact API, the chart refuses to open it to all peers: rendering
 fails until `serviceMonitor.scrapeFrom` names the Prometheus peers (e.g. a
 `namespaceSelector` for the monitoring namespace) — or the daemon
-ServiceMonitor is disabled. The web ServiceMonitor is unaffected (the web
-policy's metrics ingress is open by default).
+ServiceMonitor is disabled. The web metrics port is a dedicated port serving
+only the exposition format, so it simply follows `networkPolicy.ingressFrom`;
+the same `serviceMonitor.scrapeFrom` peers are added when that list is
+non-empty (and required, for the same reason).
 
 ## Architecture
 

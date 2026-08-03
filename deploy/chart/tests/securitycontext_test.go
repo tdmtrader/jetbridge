@@ -42,10 +42,14 @@ type deployment struct {
 					VolumeMounts []volumeMount `json:"volumeMounts"`
 				} `json:"initContainers"`
 				Containers []struct {
-					Name            string        `json:"name"`
-					Image           string        `json:"image"`
-					Args            []string      `json:"args"`
-					Env             []envVar      `json:"env"`
+					Name  string   `json:"name"`
+					Image string   `json:"image"`
+					Args  []string `json:"args"`
+					Env   []envVar `json:"env"`
+					Ports []struct {
+						Name          string `json:"name"`
+						ContainerPort int    `json:"containerPort"`
+					} `json:"ports"`
 					VolumeMounts    []volumeMount `json:"volumeMounts"`
 					SecurityContext struct {
 						AllowPrivilegeEscalation *bool  `json:"allowPrivilegeEscalation"`

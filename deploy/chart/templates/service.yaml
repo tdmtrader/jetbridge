@@ -32,6 +32,13 @@ spec:
       port: {{ .Values.web.tls.bindPort }}
       targetPort: {{ .Values.web.tls.bindPort }}
     {{- end }}
+    {{- if .Values.web.metrics.enabled }}
+    # The web ServiceMonitor selects this port by name. It exists only when
+    # the ATC is actually started with --prometheus-bind-ip/--prometheus-bind-port.
+    - name: metrics
+      port: {{ .Values.web.metrics.port }}
+      targetPort: metrics
+    {{- end }}
     - name: tsa
       port: {{ .Values.service.tsaPort }}
       targetPort: 2222

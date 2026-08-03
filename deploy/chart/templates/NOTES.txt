@@ -21,3 +21,29 @@ networkPolicy.hermeticEgressTo is empty.
   only deterministic task: functions, or routes all agent traffic through
   agentBroker, can leave it empty.
 {{- end }}
+
+{{- if and .Values.alertingRules.enabled (not .Values.web.metrics.enabled) }}
+
+WARNING: alertingRules.enabled is true but web.metrics.enabled is false.
+
+  The concourse_k8s_*, concourse_db_* and concourse_workers_* alerts in
+  {{ include "concourse.fullname" . }} read series that exist only on the web
+  node's Prometheus listener, which the ATC starts only when it is given
+  --prometheus-bind-ip and --prometheus-bind-port. With web.metrics.enabled
+  false those flags are not rendered, no exporter publishes the series, and
+  those alerts evaluate over an empty vector forever. Prometheus reports no
+  error for that, so they read as healthy while the conditions they describe
+  go unnoticed.
+
+  Set web.metrics.enabled=true (and serviceMonitor.enabled=true to scrape it),
+  or disable alertingRules.
+{{- end }}
+
+{{- if and .Values.alertingRules.enabled (not .Values.otelMetrics.otlpAddress) }}
+
+WARNING: alertingRules.enabled is true but otelMetrics.otlpAddress is empty.
+
+  The concourse_agent_* alerts read OTel instruments the ATC exports only over
+  OTLP. Unless a collector is wired outside this chart, those series never
+  reach Prometheus and the agent checkpoint/recovery alerts cannot fire.
+{{- end }}

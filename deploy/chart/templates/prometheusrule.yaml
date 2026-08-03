@@ -1,4 +1,29 @@
 {{- if .Values.alertingRules.enabled }}
+{{/*
+  Every expression below must select a series some exporter actually emits.
+  Three independent pipelines feed this rule group, and an expression written
+  against the wrong one evaluates over an empty vector forever — Prometheus
+  reports no error, so the operator sees a green alert that is structurally
+  incapable of firing.
+
+    concourse_k8s_*, concourse_db_*, concourse_workers_*
+      atc/metric/emitter/prometheus.go, scraped from the web node's dedicated
+      Prometheus listener. Requires web.metrics.enabled (see values.yaml).
+
+    concourse_agent_*
+      OTel instruments (atc/metric/otel_agent_checkpoint.go) pushed over OTLP.
+      Requires otelMetrics.otlpAddress, or an equivalent collector configured
+      outside the chart. Names carry the unit suffix the OTLP-to-Prometheus
+      translation appends: a Float64Histogram WithUnit("s") becomes
+      ..._seconds_bucket/_sum/_count, while a unit-less Int64Counter becomes
+      ..._total.
+
+    artifact_daemon_*
+      cmd/artifact-daemon/metrics.go, scraped by the artifact-daemon
+      ServiceMonitor.
+*/}}
+{{- $apiMaxConns := int (.Values.web.apiMaxConns | default 10) }}
+{{- $backendMaxConns := int (.Values.web.backendMaxConns | default 50) }}
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
@@ -21,30 +46,44 @@ spec:
           annotations:
             summary: "High image pull failure rate"
             description: "More than 5 image pull failures in the last 5 minutes."
+        # The Prometheus histogram is registered as
+        # pod_startup_duration_milliseconds with buckets up to 120000, so both
+        # the series name and the millisecond threshold follow the instrument.
         - alert: ConcoursePodStartupSlow
-          expr: histogram_quantile(0.95, rate(concourse_k8s_pod_startup_duration_bucket[5m])) > 60000
+          expr: histogram_quantile(0.95, rate(concourse_k8s_pod_startup_duration_milliseconds_bucket[5m])) > 60000
           for: 5m
           labels:
             severity: warning
           annotations:
             summary: "Slow pod startup (p95 > 60s)"
             description: "95th percentile pod startup duration exceeds 60 seconds."
+        # No exporter publishes a pool maximum, so the limit is taken from the
+        # same values that render --api-max-conns/--backend-max-conns onto the
+        # web container (falling back to the binary's own defaults when those
+        # values are unset, exactly as the Deployment does). The emitted gauge
+        # is concourse_db_connections{dbname=...}; the api and backend pools
+        # are the two an operator can size and the two that stall the ATC.
         - alert: ConcourseDBConnectionPoolExhausted
-          expr: concourse_db_connections_open >= concourse_db_connections_max
+          expr: concourse_db_connections{dbname="api"} >= {{ $apiMaxConns }} or concourse_db_connections{dbname="backend"} >= {{ $backendMaxConns }}
           for: 2m
           labels:
             severity: critical
           annotations:
             summary: "Database connection pool exhausted"
-            description: "Active DB connections have reached the maximum pool size."
-        - alert: ConcourseWorkerHeartbeatStale
-          expr: concourse_worker_heartbeat_age > 60
+            description: "Active DB connections have reached the configured maximum pool size (api {{ $apiMaxConns }}, backend {{ $backendMaxConns }})."
+        # Replaces an alert on concourse_worker_heartbeat_age: that OTel gauge
+        # is declared but never recorded by any production call site, so it is
+        # emitted under no name at all. A worker that stops heartbeating past
+        # its TTL is moved to the `stalled` state by the worker collector,
+        # which does publish concourse_workers_registered{state=...}.
+        - alert: ConcourseWorkerStalled
+          expr: concourse_workers_registered{state="stalled"} > 0
           for: 2m
           labels:
             severity: warning
           annotations:
-            summary: "Worker heartbeat stale (>60s)"
-            description: "A worker has not re-registered in over 60 seconds (heartbeat TTL is 30s); it may be unhealthy or partitioned."
+            summary: "Worker stalled"
+            description: "A worker stopped re-registering and was marked stalled (heartbeat TTL is 30s); it may be unhealthy or partitioned."
         - alert: ConcourseHangarSnapshotFailures
           expr: increase(artifact_daemon_snapshot_operations_total{operation=~"put|get",status="error"}[5m]) > 0
           for: 5m
@@ -69,8 +108,11 @@ spec:
           annotations:
             summary: "Agent recovery requires manual review"
             description: "Review the interrupted agent run for ambiguous effects or an unusable checkpoint before resuming it."
+        # concourse.agent.recovery.restore.duration is WithUnit("s"), so the
+        # exported counter of observations is ..._duration_seconds_count. The
+        # two alerts above are unit-less Int64Counters and keep the bare _total.
         - alert: ConcourseAgentCheckpointRestoreFailures
-          expr: increase(concourse_agent_recovery_restore_duration_count{outcome="failed"}[5m]) > 0
+          expr: increase(concourse_agent_recovery_restore_duration_seconds_count{outcome="failed"}[5m]) > 0
           for: 5m
           labels:
             severity: warning
