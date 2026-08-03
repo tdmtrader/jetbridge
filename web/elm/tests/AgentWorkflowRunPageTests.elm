@@ -56,6 +56,46 @@ all =
                 withSummary (\s -> { s | pipelineRunId = Nothing })
                     |> Common.queryView
                     |> Query.hasNot [ class "agent-run-pipeline-diagnostic" ]
+        , test "a durably failed run whose build exited zero does not read as green" <|
+            \_ ->
+                -- Finalize recomputes the terminal status from output evidence
+                -- after the build ended and writes `status` alone, so a run
+                -- that delivered nothing settles as status=failed with
+                -- execution_status=succeeded, permanently.
+                withSummary (\s -> { s | status = "failed", executionStatus = Just "succeeded" })
+                    |> Common.queryView
+                    |> Query.find [ class "agent-run-header-state" ]
+                    |> Query.has [ text "failed" ]
+        , test "a durably failed run whose build exited zero still says it did not deliver" <|
+            \_ ->
+                withSummary (\s -> { s | status = "failed", executionStatus = Just "succeeded" })
+                    |> Common.queryView
+                    |> Query.find [ class "agent-run-header-attention" ]
+                    |> Query.has [ text "ended without delivering" ]
+        , test "a durably errored run whose build exited zero reads as errored" <|
+            \_ ->
+                withSummary (\s -> { s | status = "errored", executionStatus = Just "succeeded" })
+                    |> Common.queryView
+                    |> Query.find [ class "agent-run-header-state" ]
+                    |> Query.has [ text "errored" ]
+        , test "the execution diagnostic never contradicts the header it sits under" <|
+            \_ ->
+                -- The header used to say "failed" while the execution card
+                -- stayed silent, and the reverse pair produced the opposite
+                -- contradiction. Both now read one effective state.
+                withSummary (\s -> { s | status = "succeeded", executionStatus = Just "failed" })
+                    |> Common.queryView
+                    |> Expect.all
+                        [ Query.find [ class "agent-run-header-state" ]
+                            >> Query.has [ text "failed" ]
+                        , Query.has [ class "agent-run-contract-diagnostic" ]
+                        ]
+        , test "a run still being finalized reports the finished execution" <|
+            \_ ->
+                withSummary (\s -> { s | status = "running", executionStatus = Just "succeeded" })
+                    |> Common.queryView
+                    |> Query.find [ class "agent-run-header-state" ]
+                    |> Query.has [ text "succeeded" ]
         , test "links a retry back to the run it retried" <|
             \_ ->
                 -- Without this a retry was indistinguishable from an original

@@ -17,6 +17,7 @@ module Concourse.WorkflowRun exposing
     , decodeSummary
     , decodeWait
     , decodeWaitList
+    , effectiveState
     )
 
 import Concourse.Snapshot as Snapshot
@@ -51,6 +52,90 @@ type alias Summary =
     , actualPlanHash : Maybe String
     , plannedBuildId : Maybe Int
     }
+
+
+{-| The one state a run should be rendered as, derived from the two the server
+carries.
+
+`status` is the DURABLE outcome; `execution_status` is the Concourse build's.
+They are not two views of one fact, and the durable one is not the weaker
+copy: `agentWorkflowRunsFactory.Finalize` recomputes the terminal status from
+the run's output evidence AFTER the execution ended, then writes `status`
+alone — `execution_status` is `COALESCE`-immutable once set and no later write
+repairs it. A run whose every step exited zero but whose declared outputs
+failed evidence validation, or whose public port contract did not match,
+therefore settles permanently as `status = "failed"` with
+`execution_status = "succeeded"`. `agent/workflowrun/reconciler.go` produces
+that pair on four distinct paths, so it is the normal shape of an
+"all green, nothing delivered" run rather than a corner case.
+
+The rule is therefore worst-truth-wins over the pair, not "the fresher column
+wins":
+
+  - while the durable status is still non-terminal the execution status really
+    is fresher — the build has ended and finalization has not run yet — so it
+    is reported;
+  - once both are terminal the worse of the two is reported, which stops a
+    durably failed run from reading as green AND stops a run that ended
+    cleanly around a failed execution from reading as green;
+  - an execution status this UI does not understand never overrides anything,
+    because a value that is not a state must not become the state.
+
+-}
+effectiveState : { a | status : String, executionStatus : Maybe String } -> String
+effectiveState run =
+    case run.executionStatus of
+        Nothing ->
+            run.status
+
+        Just execution ->
+            if not (isTerminalState execution) then
+                run.status
+
+            else if isTerminalState run.status then
+                worseState run.status execution
+
+            else
+                execution
+
+
+{-| The four terminal values `db.AgentWorkflowRunStatus` and
+`db.AgentWorkflowRunExecutionStatus` share. Anything else is either still in
+flight or a value this UI does not understand; both are treated the same way,
+which is that they never win.
+-}
+isTerminalState : String -> Bool
+isTerminalState state =
+    List.member state [ "succeeded", "failed", "errored", "aborted" ]
+
+
+{-| Rank the terminal states by how much a reader should be alarmed. This
+invents no outcome: both operands are states the server actually wrote, and
+the worse of the two is always literally true of the run.
+-}
+worseState : String -> String -> String
+worseState left right =
+    if severity right > severity left then
+        right
+
+    else
+        left
+
+
+severity : String -> Int
+severity state =
+    case state of
+        "errored" ->
+            3
+
+        "failed" ->
+            2
+
+        "aborted" ->
+            1
+
+        _ ->
+            0
 
 
 type alias InputBinding =

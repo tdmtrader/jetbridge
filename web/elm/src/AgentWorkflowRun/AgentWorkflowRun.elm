@@ -807,21 +807,16 @@ executedRevision model run =
             run.workflowVersion
 
 
-{-| A finished run's execution status is the truth about what happened; the
-durable status only says the run reached an end.
+{-| The state this page reports for the run.
+
+One definition, shared with the workflow overview, so the run list and the run
+header cannot disagree about the same run. See
+`Concourse.WorkflowRun.effectiveState` for why the durable status is not the
+weaker of the two columns.
 -}
 effectiveState : WorkflowRun.Summary -> String
-effectiveState run =
-    case run.executionStatus of
-        Just execution ->
-            if List.member execution [ "succeeded", "failed", "errored", "aborted" ] then
-                execution
-
-            else
-                run.status
-
-        Nothing ->
-            run.status
+effectiveState =
+    WorkflowRun.effectiveState
 
 
 {-| The ticket thread this run belongs to, when it belongs to one.
@@ -1351,7 +1346,11 @@ executionCard model run =
 
           else
             Html.text ""
-        , if List.member run.status [ "failed", "errored" ] then
+        , -- The diagnostic reads the same effective state the header does. The
+          -- two columns printed above it are the raw record and may legitimately
+          -- disagree; the sentence a reader takes away must not disagree with
+          -- the state at the top of the page.
+          if List.member (effectiveState run) [ "failed", "errored" ] then
             Html.p [ class "agent-run-contract-diagnostic", style "color" "#e0a44e" ]
                 [ Html.text
                     "Execution failed. Private task output remains redacted here; inspect the linked Concourse build and typed output projections."

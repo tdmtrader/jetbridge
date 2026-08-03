@@ -651,6 +651,61 @@ all =
                         |> Common.queryView
                         |> Query.find [ class "agent-run-row-status" ]
                         |> Query.has [ text "failed" ]
+            , test "a durably failed run whose build exited zero does not read as green" <|
+                \_ ->
+                    -- Finalize recomputes the terminal status from output
+                    -- evidence AFTER the build ends and writes `status` alone,
+                    -- so "every step green, nothing delivered" settles as
+                    -- status=failed with execution_status=succeeded. This is
+                    -- the direction production actually emits.
+                    initializedWith overview
+                        |> Application.handleCallback
+                            (Callback.AgentWorkflowRunsFetched "review-api"
+                                (Ok [ failedButSucceededRunSummary ])
+                            )
+                        |> Tuple.first
+                        |> Common.queryView
+                        |> Query.find [ class "agent-run-row-status" ]
+                        |> Query.has [ text "failed" ]
+            , test "a durably failed run whose build exited zero still raises the attention cue" <|
+                \_ ->
+                    initializedWith overview
+                        |> Application.handleCallback
+                            (Callback.AgentWorkflowRunsFetched "review-api"
+                                (Ok [ failedButSucceededRunSummary ])
+                            )
+                        |> Tuple.first
+                        |> Common.queryView
+                        |> Query.find [ class "agent-run-row-attention" ]
+                        |> Query.has [ text "failed" ]
+            , test "a durably errored run whose build exited zero reads as errored" <|
+                \_ ->
+                    initializedWith overview
+                        |> Application.handleCallback
+                            (Callback.AgentWorkflowRunsFetched "review-api"
+                                (Ok [ erroredButSucceededRunSummary ])
+                            )
+                        |> Tuple.first
+                        |> Common.queryView
+                        |> Query.find [ class "agent-run-row-status" ]
+                        |> Query.has [ text "errored" ]
+            , test "a run still being finalized reports the finished execution rather than the stale durable status" <|
+                \_ ->
+                    -- The one direction where the execution status is genuinely
+                    -- the fresher fact: the build has ended and Finalize has
+                    -- not run yet.
+                    initializedWith overview
+                        |> Application.update
+                            (Msgs.Update (Message.AgentWorkflowStatusFilterChanged "all"))
+                        |> Tuple.first
+                        |> Application.handleCallback
+                            (Callback.AgentWorkflowRunsFetched "review-api"
+                                (Ok [ runningButSucceededRunSummary ])
+                            )
+                        |> Tuple.first
+                        |> Common.queryView
+                        |> Query.find [ class "agent-run-row-status" ]
+                        |> Query.has [ text "succeeded" ]
             , test "restores the remembered scroll position after a refetch" <|
                 \_ ->
                     initializedWithOverview
@@ -862,3 +917,32 @@ succeededButFailedRunSummary =
             AgenticData.runSummary
     in
     { summary | status = "succeeded", executionStatus = Just "failed" }
+
+
+{-| The pair `agentWorkflowRunsFactory.Finalize` actually writes when the
+execution succeeded but the run's output evidence or public port contract did
+not hold: `execution_status` stays `succeeded` forever (it is
+`COALESCE`-immutable) while `status` becomes the recomputed terminal outcome.
+-}
+failedButSucceededRunSummary =
+    let
+        summary =
+            AgenticData.runSummary
+    in
+    { summary | status = "failed", executionStatus = Just "succeeded" }
+
+
+erroredButSucceededRunSummary =
+    let
+        summary =
+            AgenticData.runSummary
+    in
+    { summary | status = "errored", executionStatus = Just "succeeded" }
+
+
+runningButSucceededRunSummary =
+    let
+        summary =
+            AgenticData.runSummary
+    in
+    { summary | status = "running", executionStatus = Just "succeeded" }

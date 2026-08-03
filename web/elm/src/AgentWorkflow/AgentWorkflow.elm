@@ -1042,7 +1042,7 @@ runRow workflowName summary =
     , url =
         Routes.toString
             (Routes.AgentWorkflowRun { workflowName = workflowName, id = summary.id })
-    , status = effectiveState summary
+    , status = WorkflowRun.effectiveState summary
     , workflowVersion = summary.workflowVersion
     , startedAt = summary.startedAt |> Maybe.andThen Timestamp.fromIso8601
     , completedAt = summary.completedAt |> Maybe.andThen Timestamp.fromIso8601
@@ -1051,43 +1051,18 @@ runRow workflowName summary =
     }
 
 
-{-| A finished run's execution status is the truth about what happened; the
-durable status only says the run reached an end. Where both exist the
-execution status wins, so a run that ended cleanly around a failed execution
-does not read as green.
--}
-effectiveState : WorkflowRun.Summary -> String
-effectiveState summary =
-    case summary.executionStatus of
-        Just execution ->
-            if isTerminalExecution execution then
-                execution
-
-            else
-                summary.status
-
-        Nothing ->
-            summary.status
-
-
-{-| `db.AgentWorkflowRunExecutionStatus` is terminal-only: succeeded, failed,
-errored, aborted. Anything else in that column is a value this UI does not
-understand, and a value it does not understand must not be allowed to
-overwrite the durable status — that is how a running run ends up rendered as
-something that is not a state at all.
--}
-isTerminalExecution : String -> Bool
-isTerminalExecution execution =
-    List.member execution [ "succeeded", "failed", "errored", "aborted" ]
-
-
 {-| The cue is derived from what a run summary actually carries. Richer cues —
 "waiting at approval" — need the wait projection, which this endpoint does not
 return; inventing one from status alone would be a guess presented as a fact.
+
+It reads `WorkflowRun.effectiveState`, which resolves the durable status
+against the execution status by worst-truth-wins. A durably failed run whose
+build exited zero is exactly the run this cue exists for, and the previous
+"terminal execution wins" rule silenced it.
 -}
 attentionCue : WorkflowRun.Summary -> String
 attentionCue summary =
-    case effectiveState summary of
+    case WorkflowRun.effectiveState summary of
         "failed" ->
             "failed"
 
