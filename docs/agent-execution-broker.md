@@ -90,10 +90,28 @@ make build-agent-broker-image \
   AGENT_BROKER_IMAGE=registry.example/concourse/agent-broker:reviewed-build
 ```
 
-The manual `build-agent-broker-image` pipeline job builds and pushes a
-commit-addressed image and prints the registry-reported digest. Put that exact
-`repository@sha256:...` value in `agentBroker.image` and every profile's
-`worker_image`.
+The manual `build-agent-broker-image` pipeline job builds a commit-addressed
+image, pushes it to both the in-cluster registry and `registry.home`, verifies
+that both registries report the same `sha256:` digest, and prints:
+
+```
+AGENT_BROKER_IMAGE=registry.home/agent-broker@sha256:<64-lowercase-hex>
+```
+
+Put that exact value in `agentBroker.image` and every profile's `worker_image`.
+
+Use the `registry.home` reference, not the in-cluster
+`*.svc.cluster.local:5000` push destination. The broker runs as a sidecar of an
+ATC-created task pod, so the **kubelet** pulls it — and the kubelet resolves
+image names with the node's resolver rather than cluster DNS, so a
+`svc.cluster.local` host does not resolve on any node, and the plain-HTTP
+registry would additionally need a containerd insecure-registry entry for that
+host:port. Nothing downstream catches the mistake: the chart's
+`agentBroker.image` regex, the profile-equality check, and the ATC's
+`ValidatePinnedOCIImage` all validate digest *shape*, and a host with dots and a
+port is a perfectly valid OCI reference. The first and only symptom is
+`ErrImagePull` on every companion pod, visible as a pod event and nothing else,
+so `request_review` and `consult_agent` simply never execute.
 
 The initial `linux/amd64` image contains:
 

@@ -123,7 +123,23 @@ func TestAgentBrokerPackagingTargetsUseTheDedicatedDockerfile(t *testing.T) {
 		"-f /tmp/src/deploy/agent-broker/Dockerfile",
 		`sed -n 's/.*digest: \(sha256:[a-f0-9]\{64\}\).*/\1/p'`,
 		`grep -Eq '^sha256:[a-f0-9]{64}$'`,
-		"AGENT_BROKER_IMAGE=${IMAGE_REPOSITORY}@${DIGEST}",
+		// Broker companions are sidecars of ATC-created task pods, so the
+		// kubelet pulls them. It resolves names with the node resolver, not
+		// cluster DNS, so the in-cluster Service address is unpullable on
+		// every node. The image must exist under registry.home, the DinD
+		// daemon must be allowed to push there over plain HTTP, and the
+		// operator-facing value must be the registry.home reference.
+		`"--insecure-registry=registry.home"`,
+		`EXTERNAL_REPOSITORY="registry.home/agent-broker"`,
+		`EXTERNAL_IMAGE="${EXTERNAL_REPOSITORY}:${SHORT_SHA}"`,
+		`-t "${EXTERNAL_IMAGE}"`,
+		`docker push "${EXTERNAL_IMAGE}"`,
+		// The two registries are separate endpoints; content addressing is
+		// the only proof they hold the same image.
+		`if test "${DIGEST}" != "${EXTERNAL_DIGEST}"; then`,
+		"AGENT_BROKER_IMAGE=${EXTERNAL_REPOSITORY}@${DIGEST}",
+		`grep -Eq '^registry.home/agent-broker@sha256:[a-f0-9]{64}$'`,
+		`echo "AGENT_BROKER_IMAGE=${AGENT_BROKER_IMAGE}"`,
 	} {
 		if !strings.Contains(string(pipeline), want) {
 			t.Errorf("pipeline does not contain broker packaging contract %q", want)
@@ -131,5 +147,37 @@ func TestAgentBrokerPackagingTargetsUseTheDedicatedDockerfile(t *testing.T) {
 	}
 	if strings.Contains(string(pipeline), "RepoDigests") {
 		t.Fatal("pipeline relies on local RepoDigests instead of the registry push digest")
+	}
+	// The regression this replaces: the printed value was built from the
+	// in-cluster repository, so an operator pasted an unpullable reference
+	// into agentBroker.image and every profile's worker_image and got
+	// ErrImagePull on every companion pod, with no platform-level diagnostic.
+	if strings.Contains(string(pipeline), "AGENT_BROKER_IMAGE=${IMAGE_REPOSITORY}@${DIGEST}") {
+		t.Error("broker job still hands out the cluster-internal Service address as the operator worker_image")
+	}
+}
+
+// TestAgentBrokerGuideNamesThePullableReference keeps the operator-facing
+// instruction and the pipeline's printed value from drifting apart: the guide
+// is where an operator learns what to paste, and it previously described only
+// a generic placeholder while the job printed an unpullable host.
+func TestAgentBrokerGuideNamesThePullableReference(t *testing.T) {
+	raw, err := os.ReadFile("../docs/agent-execution-broker.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	guide := string(raw)
+	for _, want := range []string{
+		"AGENT_BROKER_IMAGE=registry.home/agent-broker@sha256:",
+		"registry.home",
+	} {
+		if !strings.Contains(guide, want) {
+			t.Errorf("broker guide does not mention %q", want)
+		}
+	}
+	// Prose explaining why the in-cluster address is wrong is welcome; an
+	// actual agent-broker reference under that host is not.
+	if strings.Contains(guide, "svc.cluster.local:5000/agent-broker") {
+		t.Error("broker guide hands out a cluster-internal Service address the kubelet cannot resolve")
 	}
 }
