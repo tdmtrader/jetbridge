@@ -15,7 +15,7 @@ was resolved by that convergence it is marked closed, with what closed it.
 
 ---
 
-## 1. Three runtime images still ship without `git` — OPEN, highest value
+## 1. Three runtime images still ship without `git` — CLOSED 2026-08-03
 
 `deploy/concourse-pipeline.yml`'s `build-image` job installs a pinned
 `git=1:2.34.1-1ubuntu1.17`, and `deploy/runtime_image_parity_test.go` guards it
@@ -35,14 +35,30 @@ defect ship — every unit test passed on dev hosts where git happens to exist.
 `deploy/test-pipeline.yml` is a fourth copy but builds a web-only image; judge
 whether it needs the same treatment.
 
-Do: add the pinned package to those images; widen the parity guard to a table
-of (file, extraction) pairs so it covers every copy; and, if feasible, add a
-k8s-tier assertion that actually seals a `repository/v1` snapshot, so the
-capability is proven on a shipped image rather than inferred from a package
-list. Note the exact apt pin will eventually vanish from the Ubuntu 22.04
-archive and fail every build — decide deliberately whether to keep pinning.
+**Fixed 2026-08-03** (`b315e2402c`, `c5b9918c17`). All three images install
+git and the parity guard became a table over all four sources.
 
-## 2. Record *body* validation failures are still opaque — OPEN
+The pin differs by base image, because byte-identical parity across distros was
+never achievable: the k8s-e2e copies are `debian:bookworm-slim`, where the
+Ubuntu version string does not resolve at all. The `ubuntu:22.04` copies —
+including the one that ships — keep the exact pin so a rebuild is reproducible;
+the Debian copies require presence only. The enforced invariant is therefore
+"no runtime image silently lacks git, and the shipped one is reproducible".
+The exact pin will still eventually vanish from the archive and fail the build,
+which is the deliberate choice: a loud failure beats silent version drift.
+
+Two things the old guard got wrong, both now fixed and mutation-verified:
+matching was substring-based, so **`git-lfs` would have satisfied `git`**; and
+it read only two of the five places a runtime image is defined.
+
+The k8s-tier proof also landed, and this is the part that matters: asserting a
+package list only proves a string appears in a file. `topgun/k8s_behavioral`
+now seals a real `repository/v1` and requires the git-derived `head_sha`.
+Verified live ahead of CI — the same command sealed snapshot 16 on v0.2.222-rc
+with `head_sha` matching the fixture commit, the first time a `repository/v1`
+has ever been sealed on a deployed image.
+
+## 2. Record *body* validation failures are still opaque — CLOSED 2026-08-03
 
 `PublicValidationFailure` (`agent/snapshot/validator.go`) now carries a closed
 enum of disclosable reasons, and `writeSnapshotError` returns them as
@@ -62,13 +78,36 @@ Two layers still do not, verified 2026-08-02:
   duplicate canonical path, or an escaping symlink comes back as
   `snapshot archive is invalid` with nothing else — the original F5/F6 class.
 
-Do: extend the enum to cover both. Keep the discipline that makes the existing
-mechanism safe — the disclosed value is a fixed constant from a closed set, and
-the detailed cause stays in the server log. For archive rejections the
-offending entry name is caller-submitted and would be genuinely useful in the
-message; if you want it, that is a deliberate widening of the contract, not a
-free addition, and it needs a length bound because `MaxSnapshotPathBytes` is
-4096.
+**Fixed 2026-08-03** (`93d0bc7aca`): 11 archive reasons and 19 record/tree
+reasons, each mapping to a rule the validator actually enforces, including the
+severity vocabulary, the severity/blocking coupling, accept/changes-required
+and id sorting. The disclosed reason stays a compile-time constant and the
+detailed cause still goes only to the server log.
+
+The entry name was included, as the deliberate widening it is: bounded to 256
+bytes with a visible ellipsis, cut on a rune boundary, and sanitized — invalid
+UTF-8 and every Unicode C-category rune (NUL, the ESC that begins ANSI
+sequences, bidi overrides) become U+FFFD. They are **replaced rather than
+dropped**, so two distinct archives cannot publish the same name and an escape
+sequence cannot shrink into a path that looks legitimate. This is load-bearing,
+not defence in depth: the canonicalizer accepts control characters in paths
+today.
+
+One trap worth recording: `writeSnapshotError`'s `ErrInvalidArchive` case
+precedes the `PublicValidationFailure` case, so a joined error would have had
+its reason silently discarded. The archive branch reads the public failure
+itself rather than being reordered — reordering would answer 422
+`validation_failed`, which claims the bytes were understood and judged when
+they were never parsed as an archive. Status stays 400.
+
+**Still open, discovered while doing this:** record contracts are unreachable
+over HTTP *upload*. `BatchSealer.Upload` builds its context with
+`NewValidationContext(nil, nil)` and every record type requires at least one
+subject bound to a declared input, so an uploaded `review/v1` dies at subject
+rebinding before its body is judged. The 19 record reasons are proven against
+the real registry validators and their HTTP mapping is proven, but end-to-end
+reachability holds only for the archive class and the document contracts. Worth
+reconciling against what the node-authoring guide tells users to do.
 
 ## 3. `fly agent workflows import` has no `--json` — OPEN
 
@@ -88,7 +127,7 @@ endpoint actually decodes into before assuming, and prove it with a real
 While there, check whether `workflows set-live` and the other workflow
 subcommands lack `--json` too, and report rather than fixing them all.
 
-## 4. Hermetic egress failures are still unexplained at runtime — OPEN
+## 4. Hermetic egress failures are still unexplained at runtime — CLOSED 2026-08-03
 
 Hermetic pods run under a deny-all egress NetworkPolicy the chart emits
 unconditionally. With `networkPolicy.hermeticEgressTo` empty, an agent's first
@@ -99,14 +138,24 @@ cost a live debugging session.
 hermetic NetworkPolicy that survives `helm template` on the ArgoCD path — but
 both are *install-time*. Neither reaches the user during the failure.
 
-Do: surface it at runtime, on the build page. `atc/exec/agent_step.go` already
-carries `step.plan.Hermetic`. When a hermetic step terminates without output on
-a timeout-shaped failure, say so. Two constraints: do not claim the cause when
-you do not know it — gate on the failure shape (timeout / no output / zero
-tokens), because a confidently wrong explanation is worse than none; and the
-same reasoning applies to hermetic `task:` steps, not only agent steps. A
-wrapped error would also improve `fly agent nodes show-run`, which now reads
-the terminating error event.
+**Fixed 2026-08-03** (`06edd4649b`), by preflight rather than the postmortem
+hint sketched here — which sidesteps the "do not claim a cause you do not know"
+problem entirely, because the probe *is* the diagnosis.
+
+`agent/runner` proves the model endpoint is reachable before invoking the CLI,
+bounded at 10s. DNS and the endpoint are reported separately, because they are
+separate rules in `hermeticEgressTo` (cluster DNS on 53, the endpoint on 443)
+and collapsing them would send an operator to edit the wrong one.
+
+It stops at TCP: no TLS, no HTTP, no credential — so it costs no tokens, needs
+no valid key, and cannot fail for any reason other than the one it tests for.
+It is skipped when a proxy is configured, where the CLI would talk to the proxy
+and a direct probe would prove nothing.
+
+A defect introduced and caught while doing this, worth remembering: wiring the
+probe in made `go test ./agent/runner/` depend on reaching `api.anthropic.com`
+— a unit suite passing or failing on host network, the same hidden-environment
+class as the missing-git gap. It now sits behind a seam disabled by `TestMain`.
 
 ## 5. The agent-runner writeback pins an image the cluster cannot pull — CLOSED 2026-08-02
 
@@ -151,7 +200,7 @@ chart, so it would need to hang off the namespace default ServiceAccount and
 would be a credential that must exist and stay valid for a pod to start at all;
 pulling from the registry already inside the cluster needs no credential.
 
-### Deploying the fix exposed a second, more general defect — OPEN
+### Deploying the fix exposed a second, more general defect — CLOSED 2026-08-03
 
 `set-self` rewrites the pipeline from the branch tip, but every job in the
 chain gets `repo` through a `passed:` gate, so its **checkout lags the config
@@ -182,17 +231,28 @@ The fix that worked was simply to wait: once `unit-tests` went green at the new
 commit, config and source agreed and the job did the right thing unattended.
 That is the clean path, and it is not written down anywhere.
 
-Do, in rough order of value: make the writeback task assert that
-`SOURCE_COMMIT` equals the commit whose `write-agent-runner-home-infra.sh` it
-is about to invoke, so skew fails closed instead of depending on which half is
-stricter; document in the promotion runbook that a manual
-`trigger-job` after a push must wait for `set-self` **and** for the job's
-`passed:` gate to admit the new version, and that `fly trigger-job` returning a
-build number is not evidence either has happened; and consider whether a job
-that writes to another repository should take its own `repo` ungated, so its
-script and its source are always the same commit.
+**Fixed 2026-08-03** (`1b62f34988`), with a correction to the plan above: the
+`SOURCE_COMMIT` assertion suggested here would not have caught it. That check
+already existed, and passed in both builds — the metadata and the checkout
+always agree, because the same builder produces them. The half that can
+disagree is the *config*.
 
-## 5b. `capture-resource` cannot succeed for any snapshot type — OPEN, blocking
+So the writeback task now pins the exact `write-agent-runner-home-infra.sh` it
+was written against and aborts before writing when the checkout disagrees, in
+either direction. A unit test keeps the pin equal to the real file, so editing
+the script without updating the pin fails locally rather than mid-deployment —
+verified by mutating the script and watching the test fail with the correct
+replacement digest.
+
+The runbook now states that a manual trigger must wait for `set-self` **and**
+for the `passed:` gate, and that a build number from `fly trigger-job` is
+evidence of neither.
+
+The third suggestion — giving the job its own ungated `repo` — was not taken.
+It would decouple the writeback from the test gates that currently precede it,
+which is a worse trade than failing closed on skew.
+
+## 5b. `capture-resource` cannot succeed for any snapshot type — CLOSED 2026-08-03
 
 Putting `git` in the web image (item 5 / the `62c5d5ae8b` work) unblocked
 `repository/v1` capture only as far as the **next** defect. Verified live on
@@ -245,8 +305,44 @@ candidate fixes differ in what they promise:
   `resource-version-capture/v1` FunctionID) so the general rule stays absolute
   and the one legitimate exception is visible at the point of exception.
 
-Whichever is chosen, the regression test should be the missing seam: render a
-capture config via `capture.go` and assert it passes `atc/exec` validation.
+**Fixed 2026-08-03** with a third option, because investigation showed the
+proposed exemption was weaker than it looked. `FunctionID` is a plain
+source-authorable field (`atc/steps.go:379`) and `atc/configvalidate` does not
+reject authority fields on ordinary pipelines, so an exemption keyed on
+`resource-version-capture/v1` could be claimed by any pipeline author while
+appearing narrow.
+
+What the investigation also established, and what makes the change safe:
+
+- The rule's stated intent (`docs/superpowers/specs/2026-07-21-agentic-workflows-as-functions-design.md:304`)
+  is scoped to **v3 function nodes**, where `agent/workflow/extract.go` enforces
+  coverage unconditionally and independently at admission. The `atc/exec` guard
+  is a scope selector, not a second threat model.
+- Snapshot **smuggling is already blocked separately** at
+  `atc/exec/task_step.go:576`: an undeclared artifact carrying a sealed ref
+  fails closed regardless. The OR guard's only residual value was preventing
+  silently incomplete lineage on non-function pipeline steps.
+- The DB layer already treated the capture shape as legitimate
+  (`atc/db/agent_snapshots_factory_test.go:505-511` seals a capture output with
+  empty input lineage and passes), so exec was the sole dissenter.
+
+The fix follows the `MergePreflightAuthority` precedent: a server-minted
+`ResourceCaptureAuthority` waives **only** input coverage, anchored to
+server-set build metadata — the authenticated name of the capture template
+owning the build's pipeline run, derived from `agent_workflow_run_templates`,
+which only trusted server composition writes. A hand-authored pipeline cannot
+enter that table, so its metadata stays empty and any authority it carries is
+inert. The name embeds the operation-key prefix, binding the authority to *this*
+capture rather than to server templates in general.
+
+The regression test is the missing seam, as prescribed: a rendered capture
+config goes through `MaterializeRunConfig` and the planner and executes to a
+successful seal. Previously the renderer test asserted the exact shape exec
+rejected, and passed.
+
+**Deployment note:** capture template names embed `TargetConfigHash(config)[:12]`
+and the config now carries the authority, so existing capture templates get new
+names. Old ones orphan rather than being reused; the operation key is unchanged.
 
 ## 6. Reviewer finds the right code and misjudges it — OPEN, experiment not fix
 
@@ -268,7 +364,7 @@ callers of everything the diff touches, feeding a review node required to
 anchor into that surface. Either is a node-composition experiment and wants a
 graded A/B, which brings up the next item.
 
-## 7. `agent/experiment` cannot target a node — OPEN
+## 7. `agent/experiment` cannot target a node — IN PROGRESS 2026-08-03
 
 `TargetKind` is `workflow` or `function` only, so every prompt or model change
 to a reusable node has to be A/B'd by hand against a corpus case. That is how
