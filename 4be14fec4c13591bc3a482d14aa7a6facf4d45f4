@@ -1,0 +1,15 @@
+## Ship Summary
+
+Message: fix(deploy): verify current rollout pods
+
+Files Changed: 2
+
+Timestamp: 2026-08-03T10:45:53Z
+
+Key Changes:
+
+- Break the release/old-ATC drain circular wait by verifying current-revision readiness without waiting for surplus terminating replicas
+
+- Require positive observed controller capacity and exact non-deleting Ready Pods for the final image, source, and digest
+
+- Use full controller selectors and fail closed for stale, incomplete, malformed, zero-capacity, old-only, and decoy Pod states
