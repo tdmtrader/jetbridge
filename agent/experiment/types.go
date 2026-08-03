@@ -87,6 +87,11 @@ type TargetKind string
 const (
 	TargetWorkflow TargetKind = "workflow"
 	TargetFunction TargetKind = "function"
+	// TargetNode grades a reusable atomic node. A node run is an ordinary
+	// workflow run discriminated by workflow.DefinitionKindNode, so a node
+	// target selects no function implementation and instead varies the node's
+	// own parameters between variants.
+	TargetNode TargetKind = "node"
 )
 
 type Target struct {
@@ -95,11 +100,25 @@ type Target struct {
 	DefinitionID int64      `json:"definition_id"`
 	Version      int        `json:"version"`
 	FunctionID   string     `json:"function_id,omitempty"`
+	// NodeParameters is the frozen parameter set of a node variant. It lives on
+	// the target, not the experiment, because a node A/B legitimately varies a
+	// parameter (a turn cap, a model) while holding the definition fixed.
+	NodeParameters map[string]string `json:"node_parameters,omitempty"`
+}
+
+// DefinitionKind is the durable executable object this target binds. Workflow
+// and function targets both select an implementation inside one workflow
+// definition; only a node target binds a node definition.
+func (target Target) DefinitionKind() workflow.DefinitionKind {
+	if target.Kind == TargetNode {
+		return workflow.DefinitionKindNode
+	}
+	return workflow.DefinitionKindWorkflow
 }
 
 func (target Target) Validate() error {
-	if target.Kind != TargetWorkflow && target.Kind != TargetFunction {
-		return fmt.Errorf("experiment: target kind must be workflow or function")
+	if target.Kind != TargetWorkflow && target.Kind != TargetFunction && target.Kind != TargetNode {
+		return fmt.Errorf("experiment: target kind must be workflow, function, or node")
 	}
 	if strings.TrimSpace(target.WorkflowName) == "" {
 		return fmt.Errorf("experiment: target workflow_name is required")
@@ -119,6 +138,15 @@ func (target Target) Validate() error {
 		if strings.TrimSpace(target.FunctionID) == "" {
 			return fmt.Errorf("experiment: function target requires function_id")
 		}
+	case TargetNode:
+		if target.FunctionID != "" {
+			return fmt.Errorf("experiment: node target must not set function_id")
+		}
+	}
+	// Mirrors the durable binder, which refuses node parameters on any request
+	// that is not a node request.
+	if target.Kind != TargetNode && len(target.NodeParameters) != 0 {
+		return fmt.Errorf("experiment: only a node target may set node_parameters")
 	}
 	return nil
 }

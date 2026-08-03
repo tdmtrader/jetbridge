@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"reflect"
 	"strings"
 	"sync"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/concourse/concourse/agent/experiment"
 	"github.com/concourse/concourse/agent/snapshot"
+	"github.com/concourse/concourse/agent/workflow"
 )
 
 type experimentRunnerStore struct {
@@ -494,6 +496,93 @@ func TestRunnerRejectsAWorkflowRunForDifferentFrozenRuntimeDependencies(t *testi
 	}
 }
 
+func TestRunnerBindsANodeCellAsANodeRunWithItsFrozenParameters(t *testing.T) {
+	cell := nodeCandidateCell(1)
+	store := &experimentRunnerStore{claim: func(context.Context, int) ([]experiment.CandidateCell, error) {
+		return []experiment.CandidateCell{cell}, nil
+	}}
+	var bound experiment.BindRequest
+	var boundParameters map[string]string
+	binder := &experimentBinder{bind: func(_ context.Context, _ experiment.AdmissionContext, request experiment.BindRequest) (experiment.BindResult, error) {
+		bound = request
+		boundParameters = maps.Clone(request.NodeParameters)
+		// A binder that mutates its request must not reach back into the
+		// claimed cell, the same rule the input snapshot map already follows.
+		request.NodeParameters["max_turns"] = "mutated"
+		return successfulBind(request, 101), nil
+	}}
+	runner, err := experiment.NewRunner(store, binder, experiment.RunnerConfig{MaxConcurrency: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runner.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if bound.DefinitionKind != workflow.DefinitionKindNode {
+		t.Fatalf("bound definition kind = %q, want %q", bound.DefinitionKind, workflow.DefinitionKindNode)
+	}
+	if bound.FunctionID != "" {
+		t.Fatalf("bound function ID = %q, want empty for a node target", bound.FunctionID)
+	}
+	if !reflect.DeepEqual(boundParameters, map[string]string{"max_turns": "12", "model": "opus"}) {
+		t.Fatalf("bound node parameters = %#v", boundParameters)
+	}
+	if cell.Target.NodeParameters["max_turns"] != "12" {
+		t.Fatalf("binder mutated the claimed cell parameters: %#v", cell.Target.NodeParameters)
+	}
+	if store.recorded[cell.ID] != 101 || len(store.failures) != 0 {
+		t.Fatalf("node cell not admitted: recorded=%v failures=%v", store.recorded, store.failures)
+	}
+}
+
+func TestRunnerRejectsAWorkflowRunForANodeTarget(t *testing.T) {
+	cell := nodeCandidateCell(1)
+	store := &experimentRunnerStore{claim: func(context.Context, int) ([]experiment.CandidateCell, error) {
+		return []experiment.CandidateCell{cell}, nil
+	}}
+	binder := &experimentBinder{bind: func(_ context.Context, _ experiment.AdmissionContext, request experiment.BindRequest) (experiment.BindResult, error) {
+		// Every other frozen coordinate matches: only the executable kind
+		// differs, so a run of the same-named workflow would otherwise pass.
+		result := successfulBind(request, 101)
+		result.DefinitionKind = workflow.DefinitionKindWorkflow
+		return result, nil
+	}}
+	runner, err := experiment.NewRunner(store, binder, experiment.RunnerConfig{MaxConcurrency: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runner.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// The durable association matcher does not compare the executable kind, so
+	// the run is associated first; the runner is the layer that must refuse it.
+	if store.failures[cell.ID] != "invalid_admission" {
+		t.Fatalf("workflow run satisfied a node target: failures=%v recorded=%v", store.failures, store.recorded)
+	}
+}
+
+func TestRunnerTreatsAnUnsetResultKindAsAWorkflowRun(t *testing.T) {
+	cell := candidateCell(1)
+	store := &experimentRunnerStore{claim: func(context.Context, int) ([]experiment.CandidateCell, error) {
+		return []experiment.CandidateCell{cell}, nil
+	}}
+	binder := &experimentBinder{bind: func(_ context.Context, _ experiment.AdmissionContext, request experiment.BindRequest) (experiment.BindResult, error) {
+		result := successfulBind(request, 101)
+		result.DefinitionKind = ""
+		return result, nil
+	}}
+	runner, err := experiment.NewRunner(store, binder, experiment.RunnerConfig{MaxConcurrency: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runner.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if store.recorded[cell.ID] != 101 || len(store.failures) != 0 {
+		t.Fatalf("unset result kind broke an existing function experiment: recorded=%v failures=%v", store.recorded, store.failures)
+	}
+}
+
 func candidateCell(id experiment.CellID) experiment.CandidateCell {
 	return experiment.CandidateCell{
 		ID: id, ExperimentID: 50, FixtureID: 60 + int64(id), VariantID: 70 + int64(id),
@@ -502,6 +591,15 @@ func candidateCell(id experiment.CellID) experiment.CandidateCell {
 		TargetConfigHash: fmt.Sprintf("%064d", 1),
 		Inputs:           map[string]snapshot.SnapshotID{"repo": snapshot.SnapshotID(80 + id)},
 	}
+}
+
+func nodeCandidateCell(id experiment.CellID) experiment.CandidateCell {
+	cell := candidateCell(id)
+	cell.Target = experiment.Target{
+		Kind: experiment.TargetNode, WorkflowName: "code-review", DefinitionID: 41, Version: 3,
+		NodeParameters: map[string]string{"max_turns": "12", "model": "opus"},
+	}
+	return cell
 }
 
 func cellIDFromRequest(t *testing.T, key string) experiment.CellID {
@@ -520,7 +618,7 @@ func successfulBind(request experiment.BindRequest, id snapshot.WorkflowRunID) e
 		version = *request.Version
 	}
 	return experiment.BindResult{
-		WorkflowRunID: id, WorkflowDefinitionID: request.DefinitionID,
+		WorkflowRunID: id, DefinitionKind: request.DefinitionKind, WorkflowDefinitionID: request.DefinitionID,
 		WorkflowName: request.WorkflowName, WorkflowVersion: version, FunctionID: request.FunctionID,
 		TargetConfigHash:            request.ExpectedTargetConfigHash,
 		DevValidationProvenanceHash: request.ExpectedDevValidationProvenanceHash,

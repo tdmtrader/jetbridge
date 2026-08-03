@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/concourse/concourse/agent/snapshot"
+	"github.com/concourse/concourse/agent/workflow"
 )
 
 var (
@@ -142,10 +143,12 @@ type AdmissionContext struct {
 }
 
 type BindRequest struct {
+	DefinitionKind                      workflow.DefinitionKind
 	WorkflowName                        string
 	DefinitionID                        int64
 	Version                             *int
 	FunctionID                          string
+	NodeParameters                      map[string]string
 	Inputs                              map[string]snapshot.SnapshotID
 	IdempotencyKey                      string
 	ExpectedTargetConfigHash            string
@@ -155,7 +158,12 @@ type BindRequest struct {
 }
 
 type BindResult struct {
-	WorkflowRunID               snapshot.WorkflowRunID
+	WorkflowRunID snapshot.WorkflowRunID
+	// DefinitionKind is the executable kind the platform actually created. It
+	// is the only frozen coordinate that distinguishes a node run from a
+	// same-named workflow run, so the runner verifies it. An empty value is
+	// read as a workflow run.
+	DefinitionKind              workflow.DefinitionKind
 	WorkflowDefinitionID        int64
 	WorkflowName                string
 	WorkflowVersion             int
@@ -295,10 +303,12 @@ func (runner *Runner) reserveCellBudget(ctx context.Context, cell CandidateCell)
 func (runner *Runner) runCell(ctx context.Context, cell CandidateCell) error {
 	version := cell.Target.Version
 	request := BindRequest{
+		DefinitionKind:                      cell.Target.DefinitionKind(),
 		WorkflowName:                        cell.Target.WorkflowName,
 		DefinitionID:                        cell.Target.DefinitionID,
 		Version:                             &version,
 		FunctionID:                          cell.Target.FunctionID,
+		NodeParameters:                      cloneNodeParameters(cell.Target.NodeParameters),
 		Inputs:                              cloneSnapshotIDs(cell.Inputs),
 		ExpectedTargetConfigHash:            cell.TargetConfigHash,
 		ExpectedDevValidationProvenanceHash: cell.DevValidationProvenanceHash,
@@ -365,7 +375,12 @@ func (runner *Runner) runCell(ctx context.Context, cell CandidateCell) error {
 }
 
 func bindResultMatchesTarget(result BindResult, target Target, targetConfigHash string, devValidationProvenanceHash string) bool {
-	return result.WorkflowDefinitionID == target.DefinitionID &&
+	resultKind := result.DefinitionKind
+	if resultKind == "" {
+		resultKind = workflow.DefinitionKindWorkflow
+	}
+	return resultKind == target.DefinitionKind() &&
+		result.WorkflowDefinitionID == target.DefinitionID &&
 		result.WorkflowName == target.WorkflowName &&
 		result.WorkflowVersion == target.Version &&
 		result.FunctionID == target.FunctionID &&
@@ -387,7 +402,24 @@ func terminalBinderFailureCategory(err error) (string, bool) {
 func cloneCandidateCell(cell CandidateCell) CandidateCell {
 	cell.Inputs = cloneSnapshotIDs(cell.Inputs)
 	cell.ResourceSourceAdmissionID = cloneOptionalInt64(cell.ResourceSourceAdmissionID)
+	cell.Target = cloneTarget(cell.Target)
 	return cell
+}
+
+func cloneTarget(target Target) Target {
+	target.NodeParameters = cloneNodeParameters(target.NodeParameters)
+	return target
+}
+
+func cloneNodeParameters(values map[string]string) map[string]string {
+	if values == nil {
+		return nil
+	}
+	result := make(map[string]string, len(values))
+	for key, value := range values {
+		result[key] = value
+	}
+	return result
 }
 
 func cloneOptionalInt64(value *int64) *int64 {

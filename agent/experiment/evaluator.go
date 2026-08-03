@@ -263,10 +263,12 @@ func (evaluator *EvaluatorRunner) bind(ctx context.Context, cell EvaluationCell)
 	}
 	version := cell.Evaluator.Target.Version
 	request := BindRequest{
+		DefinitionKind:                      cell.Evaluator.Target.DefinitionKind(),
 		WorkflowName:                        cell.Evaluator.Target.WorkflowName,
 		DefinitionID:                        cell.Evaluator.Target.DefinitionID,
 		Version:                             &version,
 		FunctionID:                          cell.Evaluator.Target.FunctionID,
+		NodeParameters:                      cloneNodeParameters(cell.Evaluator.Target.NodeParameters),
 		Inputs:                              inputs,
 		ExpectedTargetConfigHash:            cell.Evaluator.TargetConfigHash,
 		ExpectedDevValidationProvenanceHash: cell.Evaluator.DevValidationProvenanceHash,

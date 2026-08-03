@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -321,6 +322,127 @@ func TestExperimentAndCellIDsUseQuotedDecimalJSON(t *testing.T) {
 	}
 	if err := json.Unmarshal([]byte(`{"experiment_id":1,"cell_id":"2"}`), &decoded); err == nil {
 		t.Fatal("numeric experiment ID was accepted")
+	}
+}
+
+func TestTargetAdmitsAReusableNodeAsAGradedKind(t *testing.T) {
+	target := experiment.Target{
+		Kind: experiment.TargetNode, WorkflowName: "code-review", DefinitionID: 41, Version: 3,
+		NodeParameters: map[string]string{"max_turns": "12"},
+	}
+	if err := target.Validate(); err != nil {
+		t.Fatalf("well-formed node target: %v", err)
+	}
+	if kind := target.DefinitionKind(); kind != workflow.DefinitionKindNode {
+		t.Fatalf("node target definition kind = %q, want %q", kind, workflow.DefinitionKindNode)
+	}
+	for _, other := range []experiment.Target{
+		{Kind: experiment.TargetWorkflow, WorkflowName: "review", DefinitionID: 41, Version: 3},
+		{Kind: experiment.TargetFunction, WorkflowName: "review", DefinitionID: 41, Version: 3, FunctionID: "review"},
+	} {
+		if kind := other.DefinitionKind(); kind != workflow.DefinitionKindWorkflow {
+			t.Fatalf("%s target definition kind = %q, want %q", other.Kind, kind, workflow.DefinitionKindWorkflow)
+		}
+	}
+}
+
+func TestTargetRejectsCrossKindSelectorsAndParameters(t *testing.T) {
+	tests := []struct {
+		name   string
+		target experiment.Target
+		want   string
+	}{
+		{
+			name: "node with function",
+			target: experiment.Target{
+				Kind: experiment.TargetNode, WorkflowName: "code-review", DefinitionID: 41, Version: 3, FunctionID: "review",
+			},
+			want: "node target must not set function_id",
+		},
+		{
+			name: "workflow with node parameters",
+			target: experiment.Target{
+				Kind: experiment.TargetWorkflow, WorkflowName: "review", DefinitionID: 41, Version: 3,
+				NodeParameters: map[string]string{"max_turns": "12"},
+			},
+			want: "only a node target may set node_parameters",
+		},
+		{
+			name: "function with node parameters",
+			target: experiment.Target{
+				Kind: experiment.TargetFunction, WorkflowName: "review", DefinitionID: 41, Version: 3, FunctionID: "review",
+				NodeParameters: map[string]string{"max_turns": "12"},
+			},
+			want: "only a node target may set node_parameters",
+		},
+		{
+			name: "unknown kind",
+			target: experiment.Target{
+				Kind: "step", WorkflowName: "review", DefinitionID: 41, Version: 3,
+			},
+			want: "target kind must be workflow, function, or node",
+		},
+		{
+			name: "unpinned node",
+			target: experiment.Target{
+				Kind: experiment.TargetNode, WorkflowName: "code-review", DefinitionID: 0, Version: 3,
+			},
+			want: "definition_id must be positive",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := test.target.Validate(); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Validate() = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestNodeTargetSurvivesADurableJSONRoundTrip(t *testing.T) {
+	target := experiment.Target{
+		Kind: experiment.TargetNode, WorkflowName: "code-review", DefinitionID: 41, Version: 3,
+		NodeParameters: map[string]string{"max_turns": "12", "model": "opus"},
+	}
+	payload, err := json.Marshal(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"kind":"node","workflow_name":"code-review","definition_id":41,"version":3,` +
+		`"node_parameters":{"max_turns":"12","model":"opus"}}`
+	if string(payload) != want {
+		t.Fatalf("JSON = %s, want %s", payload, want)
+	}
+	var decoded experiment.Target
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(decoded, target) {
+		t.Fatalf("decoded = %#v, want %#v", decoded, target)
+	}
+	if err := decoded.Validate(); err != nil {
+		t.Fatalf("decoded node target: %v", err)
+	}
+
+	bare, err := json.Marshal(experiment.Target{
+		Kind: experiment.TargetWorkflow, WorkflowName: "review", DefinitionID: 41, Version: 3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(bare), "node_parameters") {
+		t.Fatalf("workflow target JSON = %s, want no node_parameters key", bare)
+	}
+}
+
+func TestDefinitionAcceptsANodeVariantAgainstAWorkflowControl(t *testing.T) {
+	definition := validDefinition(t)
+	definition.Variants[1].Target = experiment.Target{
+		Kind: experiment.TargetNode, WorkflowName: "code-review", DefinitionID: 42, Version: 4,
+		NodeParameters: map[string]string{"max_turns": "12"},
+	}
+	if err := definition.Validate(); err != nil {
+		t.Fatalf("node variant: %v", err)
 	}
 }
 

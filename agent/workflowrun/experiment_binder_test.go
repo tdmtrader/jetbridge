@@ -90,6 +90,90 @@ func TestExperimentBinderPreservesFrozenTargetIdentity(t *testing.T) {
 	}
 }
 
+func TestExperimentBinderTranslatesNodeKindAndParameters(t *testing.T) {
+	version := 3
+	parameters := map[string]string{"max_turns": "12", "model": "opus"}
+	adapter, err := NewExperimentBinderAdapter(&experimentNativeBinderStub{bind: func(
+		_ context.Context,
+		_ AdmissionContext,
+		request BindRequest,
+		_ *int64,
+	) (BindResult, error) {
+		if request.DefinitionKind != workflow.DefinitionKindNode {
+			t.Fatalf("definition kind = %q, want %q", request.DefinitionKind, workflow.DefinitionKindNode)
+		}
+		if !reflect.DeepEqual(request.NodeParameters, parameters) {
+			t.Fatalf("node parameters = %#v, want %#v", request.NodeParameters, parameters)
+		}
+		if request.FunctionID != "" {
+			t.Fatalf("function ID = %q, want empty for a node", request.FunctionID)
+		}
+		return BindResult{Run: db.AgentWorkflowRun{
+			ID: 9007199254741001, DefinitionKind: workflow.DefinitionKindNode,
+			WorkflowDefinitionID: 41, WorkflowName: "code-review", WorkflowVersion: version,
+		}}, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := adapter.BindAndCreate(context.Background(), experiment.AdmissionContext{
+		TeamID: 7, TeamName: "research", CreatedBy: "alice",
+		Origin: experiment.Origin{Kind: "experiment", Reference: "experiment:11:cell:13"},
+	}, experiment.BindRequest{
+		DefinitionKind: workflow.DefinitionKindNode, WorkflowName: "code-review", DefinitionID: 41,
+		Version: &version, NodeParameters: parameters,
+		IdempotencyKey: "experiment:11:cell:13:candidate",
+		AdmissionGate: experiment.AdmissionGate{
+			ExperimentID: 11, CellID: 13, Phase: experiment.AdmissionCandidate,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.DefinitionKind != workflow.DefinitionKindNode {
+		t.Fatalf("result definition kind = %q, want %q", result.DefinitionKind, workflow.DefinitionKindNode)
+	}
+	if result.WorkflowRunID != 9007199254741001 || result.WorkflowName != "code-review" {
+		t.Fatalf("bind result = %+v", result)
+	}
+}
+
+func TestExperimentBinderReportsAWorkflowRunKindForOrdinaryTargets(t *testing.T) {
+	adapter, err := NewExperimentBinderAdapter(&experimentNativeBinderStub{bind: func(
+		_ context.Context,
+		_ AdmissionContext,
+		request BindRequest,
+		_ *int64,
+	) (BindResult, error) {
+		if request.DefinitionKind != workflow.DefinitionKindWorkflow || request.NodeParameters != nil {
+			t.Fatalf("ordinary experiment request drifted: %+v", request)
+		}
+		return BindResult{Run: db.AgentWorkflowRun{
+			ID: 101, DefinitionKind: workflow.DefinitionKindWorkflow,
+		}}, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := adapter.BindAndCreate(context.Background(), experiment.AdmissionContext{
+		TeamID: 7, TeamName: "research", CreatedBy: "alice",
+		Origin: experiment.Origin{Kind: "experiment", Reference: "experiment:11:cell:13"},
+	}, experiment.BindRequest{
+		DefinitionKind: workflow.DefinitionKindWorkflow, WorkflowName: "review-flow", DefinitionID: 41,
+		IdempotencyKey: "experiment:11:cell:13:candidate",
+		AdmissionGate: experiment.AdmissionGate{
+			ExperimentID: 11, CellID: 13, Phase: experiment.AdmissionCandidate,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.DefinitionKind != workflow.DefinitionKindWorkflow {
+		t.Fatalf("result definition kind = %q, want %q", result.DefinitionKind, workflow.DefinitionKindWorkflow)
+	}
+}
+
 func TestExperimentBinderPassesServerDerivedReadySourceAdmissionPrivately(t *testing.T) {
 	sourceAdmissionID := int64(71)
 	adapter, err := NewExperimentBinderAdapter(&experimentNativeBinderStub{bind: func(

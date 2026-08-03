@@ -48,8 +48,10 @@ func (adapter *ExperimentBinderAdapter) BindAndCreate(
 		TeamID: admission.TeamID, TeamName: admission.TeamName, CreatedBy: admission.CreatedBy,
 		Origin: Origin{Kind: admission.Origin.Kind, Reference: admission.Origin.Reference},
 	}, BindRequest{
-		WorkflowName: request.WorkflowName, Version: request.Version, FunctionID: request.FunctionID,
-		Inputs: request.Inputs, IdempotencyKey: request.IdempotencyKey,
+		DefinitionKind: request.DefinitionKind,
+		WorkflowName:   request.WorkflowName, Version: request.Version, FunctionID: request.FunctionID,
+		NodeParameters: cloneNodeParameters(request.NodeParameters),
+		Inputs:         request.Inputs, IdempotencyKey: request.IdempotencyKey,
 		ExpectedWorkflowDefinitionID:        request.DefinitionID,
 		ExpectedTargetConfigHash:            request.ExpectedTargetConfigHash,
 		ExpectedDevValidationProvenanceHash: &expectedDevValidationProvenanceHash,
@@ -80,8 +82,9 @@ func (adapter *ExperimentBinderAdapter) BindAndCreate(
 		functionID = *result.Run.FunctionID
 	}
 	return experiment.BindResult{
-		WorkflowRunID: result.Run.ID, WorkflowDefinitionID: int64(result.Run.WorkflowDefinitionID),
-		WorkflowName: result.Run.WorkflowName, WorkflowVersion: result.Run.WorkflowVersion,
+		WorkflowRunID: result.Run.ID, DefinitionKind: result.Run.DefinitionKind,
+		WorkflowDefinitionID: int64(result.Run.WorkflowDefinitionID),
+		WorkflowName:         result.Run.WorkflowName, WorkflowVersion: result.Run.WorkflowVersion,
 		FunctionID: functionID, TargetConfigHash: result.Run.ParameterizedConfigHash,
 		DevValidationProvenanceHash: result.Run.DevValidationProvenanceHash,
 	}, nil
