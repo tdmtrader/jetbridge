@@ -200,8 +200,10 @@ type RunCommand struct {
 
 	varSourcePool creds.VarSourcePool
 
-	// k8sArtifactLocator is shared between the Reaper and Worker factory
-	// for DaemonSet mode. Created in backendComponents, used in constructPool.
+	// k8sArtifactLocator is shared between the Reaper and Worker factory for
+	// DaemonSet mode: workers record artifact locations into it and the Reaper
+	// reads and reclaims them, so both must hold the same instance. Reach it
+	// through artifactLocator(), never by assigning this field.
 	k8sArtifactLocator *jetbridge.ArtifactLocator
 
 	// Snapshot daemon transport and content storage are command-scoped so API
@@ -1083,11 +1085,9 @@ func (cmd *RunCommand) constructAPIMembers(
 
 	dbResourceConfigFactory := db.NewResourceConfigFactory(dbConn, lockFactory)
 
-	// Create shared ArtifactLocator for DaemonSet mode BEFORE constructPool,
-	// so the pool's worker factory receives the locator.
-	if cmd.k8sArtifactLocator == nil {
-		cmd.k8sArtifactLocator = jetbridge.NewArtifactLocator()
-	}
+	// Materialize the shared ArtifactLocator BEFORE constructPool, so the
+	// pool's worker factory receives it.
+	cmd.artifactLocator()
 
 	pool, err := cmd.constructPool(dbConn, lockFactory, workerCache)
 	if err != nil {
@@ -1401,12 +1401,10 @@ func (cmd *RunCommand) backendComponents(
 
 	alg := algorithm.New(db.NewVersionsDB(dbConn, algorithmLimitRows, schedulerCache))
 
-	// Create shared ArtifactLocator for DaemonSet mode BEFORE constructPool,
-	// so the pool's worker factory receives the locator. Without this, workers
-	// have a nil locator and recordOutputLocations silently skips.
-	if cmd.k8sArtifactLocator == nil {
-		cmd.k8sArtifactLocator = jetbridge.NewArtifactLocator()
-	}
+	// Materialize the shared ArtifactLocator BEFORE constructPool, so the
+	// pool's worker factory receives it. Without this, workers have a nil
+	// locator and recordOutputLocations silently skips.
+	cmd.artifactLocator()
 
 	pool, err := cmd.constructPool(dbConn, lockFactory, workerCache)
 	if err != nil {
@@ -1593,10 +1591,11 @@ func (cmd *RunCommand) backendComponents(
 		f.SetSigningKeyFactory(dbSigningKeyFactory)
 	})
 
-	// Create shared ArtifactLocator for DaemonSet mode — used by both
-	// Reaper (here) and Worker factory (constructPool).
-	cmd.k8sArtifactLocator = jetbridge.NewArtifactLocator()
-
+	// The shared ArtifactLocator for DaemonSet mode is created above, before
+	// constructPool, and is reused here for the Reaper. Do not re-create it:
+	// constructPool has already handed the existing instance to the worker
+	// factory, so a fresh one here would leave the Reaper reading an empty map
+	// that no worker ever writes to, and artifact cleanup would never run.
 	if cmd.Kubernetes.Namespace != "" {
 		resolveCapabilityKey, err := cmd.loadArtifactResolveCapabilityKey()
 		if err != nil {
@@ -1652,9 +1651,7 @@ func (cmd *RunCommand) backendComponents(
 		// only thing that lets a restarted web resume the plan instead of
 		// re-executing the step.
 		k8sReaper.SetBuildLookup(dbBuildFactory)
-		if cmd.k8sArtifactLocator != nil {
-			k8sReaper.SetArtifactLocator(cmd.k8sArtifactLocator)
-		}
+		k8sReaper.SetArtifactLocator(cmd.artifactLocator())
 		components = append(components, RunnableComponent{
 			Component: atc.Component{
 				Name: atc.ComponentK8sWorkerReaper,
@@ -2493,6 +2490,21 @@ func (cmd *RunCommand) agentCheckpointCoreStepFactoryOptions() ([]engine.CoreSte
 	return []engine.CoreStepFactoryOption{engine.WithAgentCheckpointCapture(config)}, true
 }
 
+// artifactLocator returns the process-wide DaemonSet ArtifactLocator, creating
+// it on first use.
+//
+// It exists so the single-instance invariant cannot be broken by a later
+// assignment. It was: constructPool captured the locator the workers write to,
+// and a subsequent `cmd.k8sArtifactLocator = NewArtifactLocator()` handed the
+// Reaper a fresh empty one, leaving the two components on disjoint maps. The
+// Reaper then found nothing to clean up, and nothing ever reclaimed an entry.
+func (cmd *RunCommand) artifactLocator() *jetbridge.ArtifactLocator {
+	if cmd.k8sArtifactLocator == nil {
+		cmd.k8sArtifactLocator = jetbridge.NewArtifactLocator()
+	}
+	return cmd.k8sArtifactLocator
+}
+
 func (cmd *RunCommand) constructPool(dbConn db.DbConn, lockFactory lock.LockFactory, workerCache *db.WorkerCache) (worker.Pool, error) {
 	dbResourceCacheFactory := db.NewResourceCacheFactory(dbConn, lockFactory)
 	dbWorkerBaseResourceTypeFactory := db.NewWorkerBaseResourceTypeFactory(dbConn)
@@ -2560,7 +2572,7 @@ func (cmd *RunCommand) constructPool(dbConn db.DbConn, lockFactory lock.LockFact
 		factory.K8sClientset = k8sClientset
 		factory.K8sConfig = &k8sCfg
 		factory.K8sExecutor = jetbridge.NewSPDYExecutor(k8sClientset, k8sRestConfig)
-		factory.K8sArtifactLocator = cmd.k8sArtifactLocator
+		factory.K8sArtifactLocator = cmd.artifactLocator()
 
 		if k8sCfg.ArtifactDaemonService != "" {
 			daemonPort := k8sCfg.ArtifactDaemonPort

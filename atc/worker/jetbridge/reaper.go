@@ -384,9 +384,10 @@ func (r *Reaper) cleanupDaemonSetArtifacts(ctx context.Context, logger lager.Log
 		if strings.HasPrefix(handle, "/") || strings.Contains(handle, "..") || handle == "" {
 			continue
 		}
-		key := ArtifactKey(handle)
-		sourceNode, found := r.artifactLocator.LocateNode(key)
-		if !found {
+		// The locator is keyed by volume handle, not by the container handle GC
+		// hands us, so the step's entries are found via their recorded HostDir.
+		keysByNode := r.artifactLocator.LocateStep(handle)
+		if len(keysByNode) == 0 {
 			continue
 		}
 
@@ -395,29 +396,35 @@ func (r *Reaper) cleanupDaemonSetArtifacts(ctx context.Context, logger lager.Log
 			continue
 		}
 
-		nodeIP, err := r.nodeIPResolver.Resolve(ctx, sourceNode)
-		if err != nil {
-			logger.Error("failed-to-resolve-node-ip", err, lager.Data{"node": sourceNode, "handle": handle})
-			continue
+		for sourceNode, keys := range keysByNode {
+			nodeIP, err := r.nodeIPResolver.Resolve(ctx, sourceNode)
+			if err != nil {
+				logger.Error("failed-to-resolve-node-ip", err, lager.Data{"node": sourceNode, "handle": handle})
+				continue
+			}
+
+			// DELETE the step directory (not a tar file).
+			url := fmt.Sprintf("%s://%s:%d/artifacts/steps/%s",
+				daemonURLScheme(r.cfg), nodeIP, port, handle)
+
+			req, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
+			if err != nil {
+				logger.Error("failed-to-create-delete-request", err, lager.Data{"handle": handle})
+				continue
+			}
+
+			resp, err := r.httpClient.Do(req)
+			if err != nil {
+				logger.Error("failed-to-delete-artifact", err, lager.Data{"handle": handle, "node": sourceNode})
+			} else {
+				resp.Body.Close()
+			}
+
+			// Drop the entries regardless: the container is gone, so they can
+			// only ever be stale, and this is the locator's sole reclaim path.
+			for _, key := range keys {
+				r.artifactLocator.Remove(key)
+			}
 		}
-
-		// DELETE the step directory (not a tar file).
-		url := fmt.Sprintf("%s://%s:%d/artifacts/steps/%s",
-			daemonURLScheme(r.cfg), nodeIP, port, handle)
-
-		req, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
-		if err != nil {
-			logger.Error("failed-to-create-delete-request", err, lager.Data{"handle": handle})
-			continue
-		}
-
-		resp, err := r.httpClient.Do(req)
-		if err != nil {
-			logger.Error("failed-to-delete-artifact", err, lager.Data{"handle": handle, "node": sourceNode})
-		} else {
-			resp.Body.Close()
-		}
-
-		r.artifactLocator.Remove(key)
 	}
 }

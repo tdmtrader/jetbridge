@@ -1,6 +1,9 @@
 package jetbridge
 
-import "sync"
+import (
+	"strings"
+	"sync"
+)
 
 // ArtifactLocation holds the node name and daemon key for an artifact.
 type ArtifactLocation struct {
@@ -53,4 +56,36 @@ func (l *ArtifactLocator) Remove(key string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	delete(l.locations, key)
+}
+
+// LocateStep returns the artifact keys recorded for a container's step
+// directory, grouped by the node holding them.
+//
+// Entries are keyed by VOLUME handle ("<container handle>-output-result",
+// "<container handle>-dir", ...), while GC works in bare CONTAINER handles, so
+// a direct lookup by container handle never matches. The association runs
+// through HostDir instead, which RecordOutputs writes as
+// "<container handle>/<output name>" — the same key the daemon stores under
+// steps/. Resource-cache entries record a HostDir with no "/" in it and are
+// deliberately not matched: a cache outlives the container that populated it.
+func (l *ArtifactLocator) LocateStep(handle string) map[string][]string {
+	if handle == "" {
+		return nil
+	}
+	prefix := handle + "/"
+
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+
+	var byNode map[string][]string
+	for key, location := range l.locations {
+		if !strings.HasPrefix(location.HostDir, prefix) {
+			continue
+		}
+		if byNode == nil {
+			byNode = make(map[string][]string, 1)
+		}
+		byNode[location.NodeName] = append(byNode[location.NodeName], key)
+	}
+	return byNode
 }
