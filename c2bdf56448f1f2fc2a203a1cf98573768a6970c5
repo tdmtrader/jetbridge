@@ -1,0 +1,15 @@
+## Ship Summary
+
+Message: fix(agent): freeze server-owned capture runs
+
+Files Changed: 2
+
+Timestamp: 2026-08-03T11:22:30Z
+
+Key Changes:
+
+- Treat instances materialized from registered server templates as owned for ordinary config writes
+
+- Reject public manual build, rerun, and one-off execution for those instances
+
+- Preserve ordinary user template-run semantics while preventing capture-authority input substitution
