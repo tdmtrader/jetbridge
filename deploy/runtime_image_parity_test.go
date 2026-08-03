@@ -72,6 +72,15 @@ func runtimeImageSources() []runtimeImageSource {
 			extract:  k8sE2EInlineDockerfiles,
 			packages: debianRuntimePackages(),
 		},
+		{
+			// Currently an inert template — the job writes the Dockerfile and
+			// stops short of building it. Held to the same set anyway: that is
+			// exactly the copy that drifts unnoticed and is wired up later.
+			name:     "test-pipeline.yml inline Dockerfile",
+			path:     "test-pipeline.yml",
+			extract:  func(t *testing.T, c string) []string { return []string{inlineDockerfile(t, c)} },
+			packages: ubuntuRuntimePackages(),
+		},
 	}
 }
 
@@ -181,7 +190,7 @@ func inlineDockerfile(t *testing.T, pipeline string) string {
 	block := regexp.MustCompile(`(?s)cat <<'DOCKERFILE' > /tmp/Dockerfile\n(.*?)\n\s*DOCKERFILE\n`)
 	matches := block.FindAllStringSubmatch(pipeline, -1)
 	if len(matches) != 1 {
-		t.Fatalf("expected exactly one inline Dockerfile heredoc in concourse-pipeline.yml, found %d", len(matches))
+		t.Fatalf("expected exactly one inline Dockerfile heredoc, found %d", len(matches))
 	}
 	return matches[0][1]
 }

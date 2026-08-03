@@ -159,8 +159,12 @@ jobs:
           # loads the image into the cluster's image cache.
           cat <<'DOCKERFILE' > /tmp/Dockerfile
           FROM ubuntu:22.04
+          # git is a runtime dependency of the ATC this image runs, not a
+          # convenience: repository/v1 validation and the direct-Git publisher
+          # exec it in-process. deploy/runtime_image_parity_test.go holds every
+          # copy of the runtime image to the same package set.
           RUN apt-get update && \
-              apt-get install -y ca-certificates dumb-init && \
+              apt-get install -y ca-certificates dumb-init git=1:2.34.1-1ubuntu1.17 && \
               rm -rf /var/lib/apt/lists/*
           COPY concourse-linux-amd64 /usr/local/concourse/bin/concourse
           RUN chmod +x /usr/local/concourse/bin/concourse
