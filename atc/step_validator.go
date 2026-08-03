@@ -355,6 +355,25 @@ func (validator *StepValidator) VisitAgent(step *AgentStep) error {
 		seenOutputEnv[mangled] = output
 	}
 
+	// Reserving only the literal output name is not enough. The exec resolves
+	// each output's mount path through the REVERSE mapping, so any
+	// output_mapping value of "flight" -- whether or not its logical name is a
+	// declared output -- moves the flight-recorder mount to that logical name's
+	// path while AGENT_FLIGHT_DIR still points at <workdir>/flight. Nothing is
+	// mounted there, so results.json, events.ndjson and the whole tool-call
+	// transcript are discarded with the pod and the run is ingested as
+	// "incomplete" despite having succeeded.
+	mappedLogicalNames := make([]string, 0, len(step.OutputMapping))
+	for logical, mapped := range step.OutputMapping {
+		if mapped == "flight" {
+			mappedLogicalNames = append(mappedLogicalNames, logical)
+		}
+	}
+	sort.Strings(mappedLogicalNames)
+	for _, logical := range mappedLogicalNames {
+		validator.recordErrorf("output_mapping maps %q to 'flight', which is reserved for the flight recorder", logical)
+	}
+
 	// Agent env is static-only (shared-contracts §2.8): values resolve at
 	// render/dispatch time — run materialization interpolates bare refs
 	// like ((run_id)) and params — and the exec never threads them through

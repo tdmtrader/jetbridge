@@ -867,9 +867,23 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 		result, runErr = process.Wait(ctx)
 		checkpointIntents.Stop()
 
-		step.registerLegacyOutputs(logger, repository, chosenWorker, outputNames, volumeMounts)
 		var interruption runtime.InterruptionError
 		interrupted := runErr != nil && errors.As(runErr, &interruption)
+
+		// An attempt that is about to be replaced must not register its
+		// outputs. In a local artifact scope -- which is exactly what retry:
+		// and across: run their substeps in -- the FIRST registration of a
+		// name wins and every later one is silently dropped, because
+		// RegisterArtifact cannot return the ErrArtifactAlreadyRegistered it
+		// gets back. The repository would then keep pointing at the
+		// interrupted attempt's volume, whose pod the reaper deletes, and a
+		// downstream consumer would stream from a dead pod or read the partial
+		// content the interrupted attempt left behind instead of the
+		// successful attempt's output.
+		if !(interrupted && checkpointEnabled && checkpointRecovery != nil) {
+			step.registerLegacyOutputs(logger, repository, chosenWorker, outputNames, volumeMounts)
+		}
+
 		var durableAttempt *checkpoint.Attempt
 		if checkpointEnabled {
 			attempt := checkpointAttempt.Clone()

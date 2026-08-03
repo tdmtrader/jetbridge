@@ -1301,6 +1301,52 @@ var _ = Describe("ValidateConfig", func() {
 				})
 			})
 
+			// Reserving the literal name is not enough: the exec resolves each
+			// output's mount path through the REVERSE mapping, so mapping
+			// anything to "flight" moves the flight-recorder mount off
+			// <workdir>/flight while AGENT_FLIGHT_DIR still points there. The
+			// transcript is then written to an unmounted path and discarded
+			// with the pod, and the run ingests as "incomplete" despite having
+			// succeeded.
+			Context("when an agent step maps a declared output to the reserved flight name", func() {
+				BeforeEach(func() {
+					job.PlanSequence = append(job.PlanSequence, atc.Step{
+						Config: &atc.AgentStep{
+							Name: "a", Prompt: "p", Outputs: []string{"report"},
+							OutputMapping: map[string]string{"report": "flight"},
+						},
+					})
+
+					config.Jobs = append(config.Jobs, job)
+				})
+
+				It("returns an error", func() {
+					Expect(errorMessages).To(HaveLen(1))
+					Expect(errorMessages[0]).To(ContainSubstring("reserved for the flight recorder"))
+				})
+			})
+
+			// The hijack does not require the logical name to be a declared
+			// output: logicalOutputName scans the whole mapping for a value of
+			// "flight", so an undeclared entry relocates the mount just the same.
+			Context("when an agent step maps an undeclared output to the reserved flight name", func() {
+				BeforeEach(func() {
+					job.PlanSequence = append(job.PlanSequence, atc.Step{
+						Config: &atc.AgentStep{
+							Name: "a", Prompt: "p",
+							OutputMapping: map[string]string{"report": "flight"},
+						},
+					})
+
+					config.Jobs = append(config.Jobs, job)
+				})
+
+				It("returns an error", func() {
+					Expect(errorMessages).To(HaveLen(1))
+					Expect(errorMessages[0]).To(ContainSubstring("reserved for the flight recorder"))
+				})
+			})
+
 			// Native review findings (agent-review-native #5): the exec
 			// exports AGENT_OUTPUT_<NAME> per output (uppercased, -→_).
 			// AGENT_OUTPUT_SCHEMA stays reserved — the runner excludes that

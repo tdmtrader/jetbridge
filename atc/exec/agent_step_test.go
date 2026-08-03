@@ -616,6 +616,88 @@ var _ = Describe("AgentStep", func() {
 			}
 		})
 
+		// registerLegacyOutputs used to run before the interruption was
+		// classified, so an interrupted attempt registered its outputs and the
+		// replay registered them again. Inside a local artifact scope -- which
+		// is exactly what retry: and across: run their substeps in -- the first
+		// registration of a name wins and every later one is silently dropped,
+		// because RegisterArtifact cannot return the
+		// ErrArtifactAlreadyRegistered it gets back. The repository was then
+		// left pointing at the dead attempt's volume.
+		It("registers the surviving attempt's outputs, not the interrupted one's, inside an artifact scope", func() {
+			state = state.NewArtifactScope()
+			repo = state.ArtifactRepository()
+
+			agentPlan.Timeout = "10m"
+			chosenContainer.ProcessDefs[0].Stub.Call = func(context.Context, *runtimetest.Process) (runtime.ProcessResult, error) {
+				return runtime.ProcessResult{}, runtime.NewInterruptionError(runtime.InterruptionPreempted, errors.New("pod preempted"))
+			}
+			recoveryController := &checkpointRecoveryStepController{
+				execution: checkpointController,
+				launch: exec.AgentCheckpointRecoveryLaunch{
+					Attempt: checkpoint.Attempt{
+						ID:                     102,
+						ExecutionAttempt:       2,
+						SourceExecutionAttempt: 1,
+						Mode:                   checkpoint.FallbackCheckpointZero,
+						State:                  checkpoint.AttemptMaterializing,
+					},
+					RecoverySpec: `{"mode":"checkpoint_zero","attempt":2}`,
+				},
+			}
+			agentStepOptions = append(agentStepOptions, exec.WithAgentCheckpointCapture(exec.AgentCheckpointStepConfig{
+				Factory:           checkpointFactory,
+				RecoveryFactory:   &checkpointRecoveryStepFactory{controller: recoveryController},
+				Provider:          "anthropic",
+				Adapter:           provider.Identity{Name: "claude-cli", Version: "legacy-stream-json"},
+				ElapsedInterval:   time.Hour,
+				MaxArchiveBytes:   4096,
+				MaxArchiveEntries: 16,
+				RecoveryMetrics:   recoveryMetrics,
+			}))
+			step = exec.NewAgentStep(
+				planID,
+				agentPlan,
+				atc.ContainerLimits{},
+				atc.ContainerLimits{},
+				stepMetadata,
+				containerMetadata,
+				fakePool,
+				fakeStreamer,
+				fakeDelegateFactory,
+				0,
+				agentImage,
+				agentStepOptions...,
+			)
+
+			secondContainer := runtimetest.NewContainer().WithProcess(
+				agentProcessSpec,
+				runtimetest.ProcessStub{Attachable: true},
+			)
+			secondContainer.ProcessDefs[0].Spec.Dir = "/work"
+			secondContainer.DBContainer_.HandleReturns("agent-container-2")
+
+			survivingWorkspace := runtimetest.NewVolume("workspace-volume-attempt-2")
+			chosenWorker.AddContainer(
+				db.NewAgentAttemptContainerOwner(stepMetadata.BuildID, planID, stepMetadata.TeamID, 2),
+				secondContainer,
+				[]runtime.VolumeMount{
+					{Volume: survivingWorkspace, MountPath: "/work/workspace"},
+					{Volume: runtimetest.NewVolume("flight-volume-attempt-2"), MountPath: "/work/flight"},
+				},
+			)
+
+			ok, err := step.Run(ctx, state)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(ok).To(BeTrue())
+			Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(2))
+
+			entry, found := repo.ArtifactEntryFor("workspace")
+			Expect(found).To(BeTrue())
+			Expect(entry.Artifact).To(Equal(runtime.Artifact(survivingWorkspace)),
+				"the repository kept the interrupted attempt's volume, whose pod the reaper deletes")
+		})
+
 		It("launches nothing when durable recovery requires manual review", func() {
 			manual := exec.AgentCheckpointRecoveryLaunch{
 				Attempt:      checkpoint.Attempt{ID: 101, ExecutionAttempt: 1, State: checkpoint.AttemptManualReview},
