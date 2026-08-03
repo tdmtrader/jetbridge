@@ -251,6 +251,93 @@ plan:
 		Expect(err).To(MatchError(db.ErrWorkflowRunOwnedPipeline))
 	})
 
+	Describe("server-owned resource-capture run instances", func() {
+		var (
+			captureConfig   atc.Config
+			captureInstance db.Pipeline
+			captureJob      db.Job
+			entryBuild      db.Build
+		)
+
+		BeforeEach(func() {
+			captureConfig = atc.Config{
+				Template: true,
+				Jobs: atc.JobConfigs{{
+					Name: "capture",
+					PlanSequence: []atc.Step{{Config: &atc.TaskStep{
+						Name:   "seal-snapshot",
+						Config: &atc.TaskConfig{Platform: "linux", Run: atc.TaskRunConfig{Path: "/bin/true"}},
+					}}},
+				}},
+			}
+			captureTemplate, created, err := db.NewWorkflowRunTemplateFactory(dbConn, lockFactory).SaveWorkflowRunTemplate(
+				context.Background(), defaultTeam.ID(),
+				atc.PipelineRef{Name: "agent-resource-capture-1234567890abcdef12345678"}, captureConfig,
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(created).To(BeTrue())
+			fullHash, err := workflow.TargetConfigHash(captureConfig)
+			Expect(err).NotTo(HaveOccurred())
+			serverFactory, ok := factory.(interface {
+				CreateRunForServerTemplate(context.Context, db.WorkflowRunTemplateRef, map[string]any, string) (db.PipelineRun, error)
+			})
+			Expect(ok).To(BeTrue())
+			run, err := serverFactory.CreateRunForServerTemplate(context.Background(), db.WorkflowRunTemplateRef{
+				PipelineID: captureTemplate.ID(), TeamID: defaultTeam.ID(), Name: captureTemplate.Name(),
+				ConfigVersion: int(captureTemplate.ConfigVersion()), FullHash: fullHash,
+			}, nil, "alice")
+			Expect(err).NotTo(HaveOccurred())
+			var found bool
+			captureInstance, found, err = run.InstancePipeline()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			captureJob, found, err = captureInstance.Job("capture")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			pending, err := captureJob.GetPendingBuilds()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(pending).To(HaveLen(1))
+			entryBuild = pending[0]
+		})
+
+		It("rejects config mutation of a server-owned resource-capture run instance", func() {
+			mutatedConfig := captureConfig
+			mutatedConfig.Jobs[0].PlanSequence[0].Config.(*atc.TaskStep).Config.Run.Path = "/bin/false"
+
+			_, created, err := defaultTeam.SavePipeline(
+				atc.PipelineRef{Name: captureInstance.Name(), InstanceVars: captureInstance.InstanceVars()},
+				mutatedConfig, captureInstance.ConfigVersion(), false,
+			)
+			Expect(created).To(BeFalse())
+			Expect(errors.Is(err, db.ErrWorkflowRunOwnedPipeline)).To(BeTrue())
+
+			found, err := captureInstance.Reload()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			config, err := captureInstance.Config()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(config.Jobs[0].PlanSequence[0].Config.(*atc.TaskStep).Config.Run.Path).To(Equal("/bin/true"))
+		})
+
+		It("rejects public manual builds, reruns, and one-off builds for a server-owned resource-capture run instance", func() {
+			created, err := captureJob.CreateBuild("mallory")
+			Expect(created).To(BeNil())
+			Expect(errors.Is(err, db.ErrWorkflowRunOwnedPipeline)).To(BeTrue())
+
+			rerun, err := captureJob.RerunBuild(entryBuild, "mallory")
+			Expect(rerun).To(BeNil())
+			Expect(errors.Is(err, db.ErrWorkflowRunOwnedPipeline)).To(BeTrue())
+
+			oneOff, err := captureInstance.CreateStartedBuild(atc.Plan{ID: "manual"})
+			Expect(oneOff).To(BeNil())
+			Expect(errors.Is(err, db.ErrWorkflowRunOwnedPipeline)).To(BeTrue())
+
+			pending, err := captureJob.GetPendingBuilds()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(pending).To(ConsistOf(entryBuild))
+		})
+	})
+
 	It("rejects durable execution through an exact but unowned template", func() {
 		durable, _, _ := createDurable()
 		unowned, _, err := defaultTeam.SavePipeline(

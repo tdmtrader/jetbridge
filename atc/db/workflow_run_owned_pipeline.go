@@ -35,7 +35,8 @@ func rejectWorkflowResourceSourceMutation(ctx context.Context, tx Tx, pipelineID
 
 // rejectWorkflowRunConfigMutation protects server-owned base templates,
 // standing source pipelines, and materialized workflow-run instances from
-// ordinary config writes.
+// ordinary config writes. Instances created from a server-owned template are
+// owned even when they have no durable workflow-run row of their own.
 func rejectWorkflowRunConfigMutation(ctx context.Context, tx Tx, pipelineID int) error {
 	if pipelineID <= 0 {
 		return nil
@@ -44,7 +45,15 @@ func rejectWorkflowRunConfigMutation(ctx context.Context, tx Tx, pipelineID int)
 	if err := tx.QueryRowContext(ctx, `
 		SELECT
 		  EXISTS (SELECT 1 FROM agent_workflow_run_templates WHERE pipeline_id = $1),
-		  EXISTS (SELECT 1 FROM agent_workflow_runs WHERE instance_pipeline_id = $1),
+		  EXISTS (
+			SELECT 1 FROM agent_workflow_runs WHERE instance_pipeline_id = $1
+			UNION ALL
+			SELECT 1
+			FROM pipeline_runs run
+			JOIN agent_workflow_run_templates template
+			  ON template.pipeline_id = run.template_pipeline_id
+			WHERE run.instance_pipeline_id = $1
+		  ),
 		  EXISTS (SELECT 1 FROM agent_workflow_resource_source_pipelines WHERE pipeline_id = $1)
 	`, pipelineID).Scan(&templateOwned, &instanceOwned, &sourceOwned); err != nil {
 		return err
@@ -86,8 +95,9 @@ func rejectWorkflowRunTemplateMutation(ctx context.Context, tx Tx, pipelineID in
 }
 
 // rejectWorkflowRunOwnedPipeline is called inside the same transaction as a
-// public manual execution write. Durable workflow and standing source
-// ownership are authoritative; caller-supplied pipeline shape is irrelevant.
+// public manual execution write. Durable workflow, server-template instance,
+// and standing source ownership are authoritative; caller-supplied pipeline
+// shape is irrelevant.
 func rejectWorkflowRunOwnedPipeline(ctx context.Context, tx Tx, pipelineID int) error {
 	if pipelineID <= 0 {
 		return nil
@@ -99,6 +109,12 @@ func rejectWorkflowRunOwnedPipeline(ctx context.Context, tx Tx, pipelineID int) 
 			SELECT 1 FROM agent_workflow_runs WHERE instance_pipeline_id = $1
 			UNION ALL
 			SELECT 1 FROM agent_workflow_run_templates WHERE pipeline_id = $1
+			UNION ALL
+			SELECT 1
+			FROM pipeline_runs run
+			JOIN agent_workflow_run_templates template
+			  ON template.pipeline_id = run.template_pipeline_id
+			WHERE run.instance_pipeline_id = $1
 		  ),
 		  EXISTS (SELECT 1 FROM agent_workflow_resource_source_pipelines WHERE pipeline_id = $1)
 	`, pipelineID).Scan(&owned, &sourceOwned); err != nil {
