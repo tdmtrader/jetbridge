@@ -65,10 +65,12 @@ func TestConcourseReleaseWritebackRefreshesBeforeApplyingReplayedDigest(t *testi
 	runGit(t, fixture.dir, "clone", fixture.origin, earlier)
 	helper := filepath.Join(".", "write-web-image-home-infra.sh")
 	helperSource := readReleaseFixtureFile(t, helper)
+	prepareHelperSource := readReleaseFixtureFile(t, "prepare-home-infra-writeback.sh")
 	if err := os.MkdirAll(filepath.Join(fixture.dir, "repo", "deploy"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	writeReleaseFixtureFile(t, filepath.Join(fixture.dir, "repo", "deploy", "write-web-image-home-infra.sh"), helperSource, 0o755)
+	writeReleaseFixtureFile(t, filepath.Join(fixture.dir, "repo", "deploy", "prepare-home-infra-writeback.sh"), prepareHelperSource, 0o755)
 	if output, err := exec.Command("sh", helper, finalImage, sourceCommit, earlier).CombinedOutput(); err != nil {
 		t.Fatalf("earlier release writeback: %v\n%s", err, output)
 	}
@@ -106,26 +108,37 @@ func TestConcourseReleaseWritebackRefreshesBeforeApplyingReplayedDigest(t *testi
 	}
 }
 
-func TestConcourseHomeInfraOutputsAreClearedBeforeReplayCopy(t *testing.T) {
+func TestConcoursePipelinePreparesEachGitOpsWritebackRepository(t *testing.T) {
 	pipeline := readDeployPipeline(t, "concourse-pipeline.yml")
-	tasks := []struct {
-		job        string
-		task       string
-		outputPath string
-		sourcePath string
+	for _, test := range []struct {
+		job, task, helper, source, output, writer string
 	}{
-		{"build-agent-runner-image", "update-home-infra-agent-runner-image", "home-infra-updated", "home-infra"},
-		{"self-upgrade", "resolve-and-write-home-infra-web-image", "../home-infra-updated", "../home-infra"},
-		{"k8s-live-tests", "write-home-infra-live-tested-image", "home-infra-updated", "home-infra"},
-		{"release", "update-home-infra-release-image", "home-infra-updated", "home-infra"},
-	}
-
-	for _, tt := range tasks {
-		t.Run(tt.job+"/"+tt.task, func(t *testing.T) {
-			script := deployPipelineTaskScript(t, findDeployPipelineTask(t, pipeline, tt.job, tt.task))
-			clearOutput := "find " + tt.outputPath + " -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +"
-			copyInput := "cp -a " + tt.sourcePath + "/. " + tt.outputPath + "/"
-			requireTextOrder(t, script, clearOutput, copyInput)
+		{"build-agent-runner-image", "update-home-infra-agent-runner-image", "sh repo/deploy/prepare-home-infra-writeback.sh", "home-infra", "home-infra-updated", "sh repo/deploy/write-agent-runner-home-infra.sh"},
+		{"self-upgrade", "resolve-and-write-home-infra-web-image", "sh deploy/prepare-home-infra-writeback.sh", "../home-infra", "../home-infra-updated", "sh deploy/write-web-image-home-infra.sh"},
+		{"k8s-live-tests", "write-home-infra-live-tested-image", "sh repo/deploy/prepare-home-infra-writeback.sh", "home-infra", "home-infra-updated", "sh repo/deploy/write-live-tested-image-home-infra.sh"},
+		{"release", "update-home-infra-release-image", "sh repo/deploy/prepare-home-infra-writeback.sh", "home-infra", "home-infra-updated", "sh repo/deploy/write-web-image-home-infra.sh"},
+	} {
+		t.Run(test.task, func(t *testing.T) {
+			step := findDeployPipelineTask(t, pipeline, test.job, test.task)
+			script := deployPipelineTaskScript(t, step)
+			clearOutput := "find " + test.output + " -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +"
+			call := test.helper + " " + test.source + " " + test.output
+			if got := strings.Count(script, call); got != 1 {
+				t.Fatalf("prepare helper call count = %d, want 1 for %q", got, call)
+			}
+			requireTextOrder(t, script, clearOutput, call, test.writer)
+			if strings.Contains(script, "cp -a "+test.source) {
+				t.Fatalf("writeback script still copies home-infra directly:\n%s", script)
+			}
+			if strings.Contains(script, ".lock") {
+				t.Fatalf("writeback script has inline lock cleanup:\n%s", script)
+			}
+			for _, input := range step.Config.Inputs {
+				if input.Name == "repo" {
+					return
+				}
+			}
+			t.Fatal("writeback task must receive repo input containing the shared helper")
 		})
 	}
 }

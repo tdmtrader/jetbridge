@@ -839,8 +839,7 @@ jobs:
           # the immutable input so stale Git locks or files cannot leak into
           # the next supervised push.
           find home-infra-updated -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
-          cp -a home-infra/. home-infra-updated/
-          test -e home-infra-updated/.git
+          sh repo/deploy/prepare-home-infra-writeback.sh home-infra home-infra-updated
           sh repo/deploy/write-agent-runner-home-infra.sh "$CONCOURSE_AGENT_STEP_IMAGE" "$SOURCE_COMMIT" "$RUNNER_VERSION" home-infra-updated
   - task: push-home-infra-agent-runner-image
     timeout: 5m
@@ -1096,8 +1095,7 @@ jobs:
           # the immutable input so stale Git locks or files cannot leak into
           # the next supervised push.
           find ../home-infra-updated -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
-          cp -a ../home-infra/. ../home-infra-updated/
-          test -e ../home-infra-updated/.git
+          sh deploy/prepare-home-infra-writeback.sh ../home-infra ../home-infra-updated
           sh deploy/write-web-image-home-infra.sh "${WEB_IMAGE}" "${SOURCE_COMMIT}" ../home-infra-updated
           umask 077
           printf 'CONCOURSE_WEB_IMAGE=%s\nSOURCE_COMMIT=%s\nRC_IMAGE=%s\n' \
@@ -1401,8 +1399,7 @@ jobs:
           # the immutable input so stale Git locks or files cannot leak into
           # the next supervised push.
           find home-infra-updated -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
-          cp -a home-infra/. home-infra-updated/
-          test -e home-infra-updated/.git
+          sh repo/deploy/prepare-home-infra-writeback.sh home-infra home-infra-updated
           sh repo/deploy/write-live-tested-image-home-infra.sh \
             "${TESTED_IMAGE}" "${ATTESTED_SOURCE}" home-infra-updated
   - task: push-home-infra-live-tested-image
@@ -1815,8 +1812,7 @@ jobs:
           # the immutable input so stale Git locks or files cannot leak into
           # the next supervised push.
           find home-infra-updated -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
-          cp -a home-infra/. home-infra-updated/
-          test -e home-infra-updated/.git
+          sh repo/deploy/prepare-home-infra-writeback.sh home-infra home-infra-updated
           ASKPASS=$(mktemp)
           cleanup_askpass() {
             rm -f "${ASKPASS}"
