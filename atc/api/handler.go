@@ -474,18 +474,20 @@ func NewHandler(
 		atc.CaptureAgentResourceSnapshot: teamHandlerFactory.HandlerFor(snapshotTeamHandler(func(team snapshotsapi.TrustedTeam) http.Handler {
 			return snapshotHandlers.CaptureResource(team, resourceCapturer)
 		})),
-		atc.ListAgentSnapshots:                 teamHandlerFactory.HandlerFor(snapshotTeamHandler(snapshotHandlers.List)),
-		atc.GetAgentSnapshot:                   teamHandlerFactory.HandlerFor(snapshotTeamHandler(snapshotHandlers.Show)),
-		atc.GetAgentRepositoryChangeProjection: teamHandlerFactory.HandlerFor(snapshotTeamHandler(snapshotHandlers.RepositoryChangeProjection)),
-		atc.DownloadAgentSnapshot:              teamHandlerFactory.HandlerFor(snapshotTeamHandler(snapshotHandlers.Content)),
-		atc.PinAgentSnapshot:                   teamHandlerFactory.HandlerFor(snapshotTeamHandler(snapshotHandlers.Pin)),
-		atc.UnpinAgentSnapshot:                 teamHandlerFactory.HandlerFor(snapshotTeamHandler(snapshotHandlers.Unpin)),
-		atc.AdmitAgentChildExecution:           authorityHandler,
-		atc.PhaseAgentChildExecution:           authorityHandler,
-		atc.UpdateAgentChildExecution:          authorityHandler,
-		atc.TerminalAgentChildExecution:        authorityHandler,
-		atc.SealAgentChildExecution:            authorityHandler,
-		atc.GetAgentChildExecution:             inspectionHandler,
+		atc.ListAgentSnapshots:                         teamHandlerFactory.HandlerFor(snapshotTeamHandler(snapshotHandlers.List)),
+		atc.GetAgentSnapshot:                           teamHandlerFactory.HandlerFor(snapshotTeamHandler(snapshotHandlers.Show)),
+		atc.GetAgentRepositoryChangeProjection:         teamHandlerFactory.HandlerFor(snapshotTeamHandler(snapshotHandlers.RepositoryChangeProjection)),
+		atc.DownloadAgentSnapshot:                      teamHandlerFactory.HandlerFor(snapshotTeamHandler(snapshotHandlers.Content)),
+		atc.PinAgentSnapshot:                           teamHandlerFactory.HandlerFor(snapshotTeamHandler(snapshotHandlers.Pin)),
+		atc.UnpinAgentSnapshot:                         teamHandlerFactory.HandlerFor(snapshotTeamHandler(snapshotHandlers.Unpin)),
+		atc.AdmitAgentChildExecution:                   authorityHandler,
+		atc.PhaseAgentChildExecution:                   authorityHandler,
+		atc.UpdateAgentChildExecution:                  authorityHandler,
+		atc.TerminalAgentChildExecution:                authorityHandler,
+		atc.SealAgentChildExecution:                    authorityHandler,
+		atc.CaptureWorkspaceAgentChildExecution:        authorityHandler,
+		atc.CaptureWorkspaceFailureAgentChildExecution: authorityHandler,
+		atc.GetAgentChildExecution:                     inspectionHandler,
 	}
 
 	return rata.NewRouter(atc.Routes, wrapper.Wrap(handlers))

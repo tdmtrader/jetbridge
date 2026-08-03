@@ -228,6 +228,8 @@ func (a *auditor) ValidateAction(action string) bool {
 		atc.UpdateAgentChildExecution,
 		atc.TerminalAgentChildExecution,
 		atc.SealAgentChildExecution,
+		atc.CaptureWorkspaceAgentChildExecution,
+		atc.CaptureWorkspaceFailureAgentChildExecution,
 		atc.GetAgentChildExecution:
 		return a.EnableSystemAuditLog
 	case atc.ListTeams,

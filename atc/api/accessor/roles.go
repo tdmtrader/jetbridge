@@ -181,4 +181,9 @@ var DefaultRoles = map[string]string{
 	atc.UpdateAgentTicket:     MemberRole,
 	atc.TransitionAgentTicket: MemberRole,
 	atc.DispatchAgentTicket:   MemberRole,
+
+	// Managed-broker child execution inspection. Read-only and team-bound
+	// (atc/api/agentchildexecutions/inspection.go); the internal authority
+	// routes are capability-authorized instead and deliberately have no entry.
+	atc.GetAgentChildExecution: ViewerRole,
 }

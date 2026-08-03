@@ -121,7 +121,9 @@ func (wrappa *APIAuthWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 			atc.PhaseAgentChildExecution,
 			atc.UpdateAgentChildExecution,
 			atc.TerminalAgentChildExecution,
-			atc.SealAgentChildExecution:
+			atc.SealAgentChildExecution,
+			atc.CaptureWorkspaceAgentChildExecution,
+			atc.CaptureWorkspaceFailureAgentChildExecution:
 
 		// admin
 		case atc.GetLogLevel,

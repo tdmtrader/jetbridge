@@ -201,12 +201,14 @@ const (
 	PinAgentSnapshot                   = "PinAgentSnapshot"
 	UnpinAgentSnapshot                 = "UnpinAgentSnapshot"
 
-	AdmitAgentChildExecution    = "AdmitAgentChildExecution"
-	PhaseAgentChildExecution    = "PhaseAgentChildExecution"
-	UpdateAgentChildExecution   = "UpdateAgentChildExecution"
-	TerminalAgentChildExecution = "TerminalAgentChildExecution"
-	SealAgentChildExecution     = "SealAgentChildExecution"
-	GetAgentChildExecution      = "GetAgentChildExecution"
+	AdmitAgentChildExecution                   = "AdmitAgentChildExecution"
+	PhaseAgentChildExecution                   = "PhaseAgentChildExecution"
+	UpdateAgentChildExecution                  = "UpdateAgentChildExecution"
+	TerminalAgentChildExecution                = "TerminalAgentChildExecution"
+	SealAgentChildExecution                    = "SealAgentChildExecution"
+	CaptureWorkspaceAgentChildExecution        = "CaptureWorkspaceAgentChildExecution"
+	CaptureWorkspaceFailureAgentChildExecution = "CaptureWorkspaceFailureAgentChildExecution"
+	GetAgentChildExecution                     = "GetAgentChildExecution"
 
 	GetAgentDispatcher = "GetAgentDispatcher"
 	SetAgentDispatcher = "SetAgentDispatcher"
@@ -422,6 +424,8 @@ var Routes = rata.Routes([]rata.Route{
 	{Path: "/api/v1/internal/agent-child-executions/:execution_id/update", Method: "POST", Name: UpdateAgentChildExecution},
 	{Path: "/api/v1/internal/agent-child-executions/:execution_id/terminal", Method: "POST", Name: TerminalAgentChildExecution},
 	{Path: "/api/v1/internal/agent-child-executions/:execution_id/seal", Method: "POST", Name: SealAgentChildExecution},
+	{Path: "/api/v1/internal/agent-child-executions/:execution_id/workspace-capture", Method: "POST", Name: CaptureWorkspaceAgentChildExecution},
+	{Path: "/api/v1/internal/agent-child-executions/:execution_id/workspace-capture-failed", Method: "POST", Name: CaptureWorkspaceFailureAgentChildExecution},
 	{Path: "/api/v1/teams/:team_name/agent-child-executions/:execution_id", Method: "GET", Name: GetAgentChildExecution},
 
 	{Path: "/api/v1/agent/dispatcher", Method: "GET", Name: GetAgentDispatcher},
