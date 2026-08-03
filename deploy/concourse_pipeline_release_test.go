@@ -650,12 +650,125 @@ func TestConcoursePipelineDeploysResolvedDigestToEveryRuntime(t *testing.T) {
 	}
 }
 
-func TestConcourseFinalReleaseRolloutAllowsTenMinutesForExactGitOpsState(t *testing.T) {
+func TestConcourseFinalReleaseRolloutAllowsTenMinutesForExactReadyGitOpsState(t *testing.T) {
 	pipeline := readDeployPipeline(t, "concourse-pipeline.yml")
 	rollout := findDeployPipelineTask(t, pipeline, "release", "verify-release-rollout")
 	script := deployPipelineTaskScript(t, rollout)
+	const sourceCommit = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	const webImage = "registry.home/jetbridge@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	renderPodFixture := strings.NewReplacer(
+		"__SOURCE_COMMIT__", sourceCommit,
+		"__WEB_IMAGE__", webImage,
+	).Replace
+	readyPodsWithTerminatingOldWeb := renderPodFixture(`{
+  "apiVersion": "v1",
+  "kind": "PodList",
+  "metadata": {},
+  "items": [
+    {
+      "metadata": {
+        "name": "old-rc-web",
+        "labels": {"app.kubernetes.io/component": "web", "app.kubernetes.io/name": "concourse-jetbridge"},
+        "deletionTimestamp": "2026-08-03T12:00:00Z",
+        "annotations": {
+          "concourse.ci/source-commit": "cccccccccccccccccccccccccccccccccccccccc",
+          "concourse.ci/image-digest": "registry.home/jetbridge@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        }
+      },
+      "spec": {"containers": [{"name": "concourse-web", "image": "registry.home/jetbridge@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}]},
+      "status": {"conditions": [{"type": "Ready", "status": "True"}]}
+    },
+    {
+      "metadata": {
+        "name": "final-web",
+        "labels": {"app.kubernetes.io/component": "web", "app.kubernetes.io/name": "concourse-jetbridge"},
+        "annotations": {
+          "concourse.ci/source-commit": "__SOURCE_COMMIT__",
+          "concourse.ci/image-digest": "__WEB_IMAGE__"
+        }
+      },
+      "spec": {"containers": [{"name": "concourse-web", "image": "__WEB_IMAGE__"}]},
+      "status": {"conditions": [{"type": "Ready", "status": "True"}]}
+    }
+  ]
+}`)
+	unreadyCurrentWebPods := renderPodFixture(`{
+  "apiVersion": "v1",
+  "kind": "PodList",
+  "metadata": {},
+  "items": [
+    {
+      "metadata": {
+        "name": "old-ready-rc-web",
+        "labels": {"app.kubernetes.io/component": "web", "app.kubernetes.io/name": "concourse-jetbridge"},
+        "annotations": {
+          "concourse.ci/source-commit": "cccccccccccccccccccccccccccccccccccccccc",
+          "concourse.ci/image-digest": "registry.home/jetbridge@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        }
+      },
+      "spec": {"containers": [{"name": "concourse-web", "image": "registry.home/jetbridge@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}]},
+      "status": {"conditions": [{"type": "Ready", "status": "True"}]}
+    },
+    {
+      "metadata": {
+        "name": "final-web",
+        "labels": {"app.kubernetes.io/component": "web", "app.kubernetes.io/name": "concourse-jetbridge"},
+        "annotations": {
+          "concourse.ci/source-commit": "__SOURCE_COMMIT__",
+          "concourse.ci/image-digest": "__WEB_IMAGE__"
+        }
+      },
+      "spec": {"containers": [{"name": "concourse-web", "image": "__WEB_IMAGE__"}]},
+      "status": {"conditions": [{"type": "Ready", "status": "False"}]}
+    }
+  ]
+}`)
+	readyDaemonPods := renderPodFixture(`{
+  "apiVersion": "v1",
+  "kind": "PodList",
+  "metadata": {},
+  "items": [{
+    "metadata": {
+      "name": "final-artifact-daemon",
+      "labels": {"app.kubernetes.io/component": "artifact-daemon", "app.kubernetes.io/name": "concourse-jetbridge"},
+      "annotations": {
+        "concourse.ci/source-commit": "__SOURCE_COMMIT__",
+        "concourse.ci/image-digest": "__WEB_IMAGE__"
+      }
+    },
+    "spec": {"containers": [{"name": "artifact-daemon", "image": "__WEB_IMAGE__"}]},
+    "status": {"conditions": [{"type": "Ready", "status": "True"}]}
+  }]
+}`)
+	decoyPodFixture := func(component, container string) string {
+		return renderPodFixture(strings.NewReplacer(
+			"__COMPONENT__", component,
+			"__CONTAINER__", container,
+		).Replace(`{
+  "apiVersion": "v1",
+  "kind": "PodList",
+  "metadata": {},
+  "items": [{
+    "metadata": {
+      "name": "unrelated-exact-ready-decoy",
+      "labels": {
+        "app.kubernetes.io/component": "__COMPONENT__",
+        "app.kubernetes.io/name": "unrelated"
+      },
+      "annotations": {
+        "concourse.ci/source-commit": "__SOURCE_COMMIT__",
+        "concourse.ci/image-digest": "__WEB_IMAGE__"
+      }
+    },
+    "spec": {"containers": [{"name": "__CONTAINER__", "image": "__WEB_IMAGE__"}]},
+    "status": {"conditions": [{"type": "Ready", "status": "True"}]}
+  }]
+}`))
+	}
+	decoyWebPods := decoyPodFixture("web", "concourse-web")
+	decoyDaemonPods := decoyPodFixture("artifact-daemon", "artifact-daemon")
 
-	run := func(t *testing.T, convergeAfter string) ([]byte, error, string) {
+	run := func(t *testing.T, convergeAfter, webState, daemonState, webPods, daemonPods string) ([]byte, error, string) {
 		t.Helper()
 		fixtureDir := t.TempDir()
 		metadataDir := filepath.Join(fixtureDir, "release-image-metadata")
@@ -667,8 +780,6 @@ func TestConcourseFinalReleaseRolloutAllowsTenMinutesForExactGitOpsState(t *test
 			t.Fatal(err)
 		}
 
-		const sourceCommit = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-		const webImage = "registry.home/jetbridge@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 		writeReleaseFixtureFile(t, filepath.Join(metadataDir, "verified-image.env"),
 			"CONCOURSE_WEB_IMAGE="+webImage+"\nSOURCE_COMMIT="+sourceCommit+"\n", 0o600)
 		writeReleaseFixtureFile(t, filepath.Join(fakeBin, "sleep"), `#!/bin/sh
@@ -685,7 +796,19 @@ fi
 
 if test "${1-}" = get; then
   case "${2-}" in
-    deployment/concourse-web|daemonset/concourse-artifact-daemon) ;;
+    pods)
+      printf '%s\n' "${6-}" >> "${TEST_STATE_DIR:?}/pod-selectors"
+      case "${6-}" in
+        app.kubernetes.io/component=web,app.kubernetes.io/name=concourse-jetbridge) printf '%s' "${TEST_WEB_PODS:?}" ;;
+        app.kubernetes.io/component=artifact-daemon,app.kubernetes.io/name=concourse-jetbridge) printf '%s' "${TEST_DAEMON_PODS:?}" ;;
+        app.kubernetes.io/component=web) printf '%s' "${TEST_DECOY_WEB_PODS:?}" ;;
+        app.kubernetes.io/component=artifact-daemon) printf '%s' "${TEST_DECOY_DAEMON_PODS:?}" ;;
+        *) echo "unexpected pod selector: ${6-}" >&2; exit 90 ;;
+      esac
+      exit 0
+      ;;
+    deployment/concourse-web|daemonset/concourse-artifact-daemon)
+      ;;
     *) echo "unexpected workload: ${2-}" >&2; exit 90 ;;
   esac
   case "${6-}" in
@@ -710,18 +833,21 @@ if test "${1-}" = get; then
         printf '%s' registry.home/jetbridge@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
       fi
       ;;
+    *'.metadata.generation'*)
+      if test "${2-}" = deployment/concourse-web; then
+        printf '%s' "${TEST_WEB_STATE:?}"
+      else
+        printf '%s' "${TEST_DAEMON_STATE:?}"
+      fi
+      ;;
     *) echo "unexpected template: ${6-}" >&2; exit 91 ;;
   esac
   exit 0
 fi
 
 if test "${1-}" = rollout && test "${2-}" = status; then
-  if test "${cycle}" -lt "${TEST_CONVERGE_AFTER:?}"; then
-    echo "rollout accepted before source and digest both converged at poll ${cycle}" >&2
-    exit 92
-  fi
-  printf '%s\n' "$*" >> "${TEST_STATE_DIR:?}/rollouts"
-  exit 0
+  echo 'old ATC replica is still terminating while it drains this release build' >&2
+  exit 92
 fi
 
 echo "unexpected kubectl command: $*" >&2
@@ -733,18 +859,24 @@ exit 93
 		cmd.Env = append(os.Environ(),
 			"PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"),
 			"TEST_CONVERGE_AFTER="+convergeAfter,
+			"TEST_DECOY_DAEMON_PODS="+decoyDaemonPods,
+			"TEST_DECOY_WEB_PODS="+decoyWebPods,
+			"TEST_DAEMON_PODS="+daemonPods,
+			"TEST_DAEMON_STATE="+daemonState,
 			"TEST_SOURCE_COMMIT="+sourceCommit,
 			"TEST_STATE_DIR="+fixtureDir,
+			"TEST_WEB_PODS="+webPods,
+			"TEST_WEB_STATE="+webState,
 			"TEST_WEB_IMAGE="+webImage,
 		)
 		output, err := cmd.CombinedOutput()
 		return output, err, fixtureDir
 	}
 
-	t.Run("accepts convergence after the observed two-stage Argo lag", func(t *testing.T) {
-		output, err, fixtureDir := run(t, "71")
+	t.Run("accepts the ready current revision despite an old terminating replica", func(t *testing.T) {
+		output, err, fixtureDir := run(t, "71", "583:583:1:1:2:2", "146:146:1:1:1:1", readyPodsWithTerminatingOldWeb, readyDaemonPods)
 		if err != nil {
-			t.Fatalf("release rollout rejected exact state after 70 five-second delays: %v\n%s", err, output)
+			t.Fatalf("release rollout rejected ready current revisions after 70 five-second delays: %v\n%s", err, output)
 		}
 		if got := strings.TrimSpace(readReleaseFixtureFile(t, filepath.Join(fixtureDir, "cycle"))); got != "71" {
 			t.Fatalf("release rollout polls = %s, want convergence on poll 71", got)
@@ -757,26 +889,74 @@ exit 93
 		if got := len(strings.Fields(readReleaseFixtureFile(t, filepath.Join(fixtureDir, "sleeps")))); got != 70 {
 			t.Fatalf("release rollout delays = %d, want 70 (5m50s)", got)
 		}
-		if got := len(strings.Split(strings.TrimSpace(readReleaseFixtureFile(t, filepath.Join(fixtureDir, "rollouts"))), "\n")); got != 2 {
-			t.Fatalf("rollout status checks = %d, want web and artifact daemon", got)
+		wantSelectors := strings.Join([]string{
+			"app.kubernetes.io/component=web,app.kubernetes.io/name=concourse-jetbridge",
+			"app.kubernetes.io/component=artifact-daemon,app.kubernetes.io/name=concourse-jetbridge",
+		}, "\n")
+		if got := strings.TrimSpace(readReleaseFixtureFile(t, filepath.Join(fixtureDir, "pod-selectors"))); got != wantSelectors {
+			t.Fatalf("release rollout pod selectors = %q, want controller selectors %q", got, wantSelectors)
 		}
 	})
 
-	t.Run("stops after the ten-minute polling window", func(t *testing.T) {
-		output, err, fixtureDir := run(t, "1000")
-		if err == nil {
-			t.Fatalf("release rollout accepted state that never converged:\n%s", output)
-		}
-		if !strings.Contains(string(output), "ArgoCD did not apply the final immutable shared image") {
-			t.Fatalf("release rollout failed for the wrong reason: %v\n%s", err, output)
-		}
-		if got := strings.TrimSpace(readReleaseFixtureFile(t, filepath.Join(fixtureDir, "cycle"))); got != "120" {
-			t.Fatalf("release rollout polls = %s, want bounded 120-poll window", got)
-		}
-		if got := len(strings.Fields(readReleaseFixtureFile(t, filepath.Join(fixtureDir, "sleeps")))); got != 120 {
-			t.Fatalf("release rollout delays = %d, want bounded ten-minute window", got)
-		}
-	})
+	for _, test := range []struct {
+		name        string
+		webState    string
+		daemonState string
+		webPods     string
+		daemonPods  string
+	}{
+		{
+			name:        "aggregate readiness comes only from the old revision",
+			webState:    "583:583:1:1:1:1",
+			daemonState: "146:146:1:1:1:1",
+			webPods:     unreadyCurrentWebPods,
+			daemonPods:  readyDaemonPods,
+		},
+		{
+			name:        "desired revision is not fully ready",
+			webState:    "583:583:1:1:0:1",
+			daemonState: "146:146:1:1:1:1",
+			webPods:     readyPodsWithTerminatingOldWeb,
+			daemonPods:  readyDaemonPods,
+		},
+		{
+			name:        "controller generations are stale",
+			webState:    "583:582:1:1:1:1",
+			daemonState: "146:145:1:1:1:1",
+			webPods:     readyPodsWithTerminatingOldWeb,
+			daemonPods:  readyDaemonPods,
+		},
+		{
+			name:        "controllers have zero desired replicas",
+			webState:    "583:583:0:0:0:0",
+			daemonState: "146:146:0:0:0:0",
+			webPods:     readyPodsWithTerminatingOldWeb,
+			daemonPods:  readyDaemonPods,
+		},
+		{
+			name:        "daemon pod JSON cannot be verified",
+			webState:    "583:583:1:1:1:1",
+			daemonState: "146:146:1:1:1:1",
+			webPods:     readyPodsWithTerminatingOldWeb,
+			daemonPods:  "not-json",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			output, err, fixtureDir := run(t, "1", test.webState, test.daemonState, test.webPods, test.daemonPods)
+			if err == nil {
+				t.Fatalf("release rollout accepted non-current controller state:\n%s", output)
+			}
+			if !strings.Contains(string(output), "ArgoCD did not apply the final immutable shared image") {
+				t.Fatalf("release rollout failed for the wrong reason: %v\n%s", err, output)
+			}
+			if got := strings.TrimSpace(readReleaseFixtureFile(t, filepath.Join(fixtureDir, "cycle"))); got != "120" {
+				t.Fatalf("release rollout polls = %s, want bounded 120-poll window", got)
+			}
+			if got := len(strings.Fields(readReleaseFixtureFile(t, filepath.Join(fixtureDir, "sleeps")))); got != 120 {
+				t.Fatalf("release rollout delays = %d, want bounded ten-minute window", got)
+			}
+		})
+	}
 }
 
 func TestConcourseVerifyUpgradeIgnoresTerminatingOldPodsAfterControllerRollout(t *testing.T) {

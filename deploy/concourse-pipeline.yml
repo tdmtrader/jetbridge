@@ -2030,6 +2030,37 @@ jobs:
         - |
           WEB_IMAGE=$(sed -n 's/^CONCOURSE_WEB_IMAGE=//p' release-image-metadata/verified-image.env)
           SOURCE_COMMIT=$(sed -n 's/^SOURCE_COMMIT=//p' release-image-metadata/verified-image.env)
+          current_revision_ready() {
+            state=$1
+            printf '%s\n' "${state}" | grep -Eq '^[0-9]+:[0-9]+:[0-9]+:[0-9]+:[0-9]+:[0-9]+$' || return 1
+            saved_ifs=$IFS
+            IFS=:
+            set -- ${state}
+            IFS=$saved_ifs
+            test "$3" -gt 0 && test "$1" = "$2" && test "$3" = "$4" && test "$5" -ge "$3" && test "$6" -ge "$3" || return 1
+            printf '%s\n' "$3"
+          }
+          exact_ready_pods() {
+            selector=$1
+            container=$2
+            desired=$3
+            pod_json=$(kubectl get pods -n cicd -l "${selector}" -o json) || return 1
+            printf '%s\n' "${pod_json}" | jq -e \
+              --arg image "${WEB_IMAGE}" \
+              --arg source "${SOURCE_COMMIT}" \
+              --arg container "${container}" \
+              --argjson desired "${desired}" '
+                [
+                  .items[]?
+                  | select(.metadata.deletionTimestamp == null)
+                  | select(.metadata.annotations["concourse.ci/source-commit"] == $source)
+                  | select(.metadata.annotations["concourse.ci/image-digest"] == $image)
+                  | select(any(.spec.containers[]?; .name == $container and .image == $image))
+                  | select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))
+                ]
+                | length >= $desired
+              ' >/dev/null
+          }
           for i in $(seq 1 120); do
             web_image=$(kubectl get deployment/concourse-web -n cicd -o go-template='{{range .spec.template.spec.containers}}{{if eq .name "concourse-web"}}{{.image}}{{end}}{{end}}')
             daemon_image=$(kubectl get daemonset/concourse-artifact-daemon -n cicd -o go-template='{{range .spec.template.spec.containers}}{{if eq .name "artifact-daemon"}}{{.image}}{{end}}{{end}}')
@@ -2038,9 +2069,14 @@ jobs:
             web_digest=$(kubectl get deployment/concourse-web -n cicd -o go-template='{{index .metadata.annotations "concourse.ci/image-digest"}}')
             daemon_digest=$(kubectl get daemonset/concourse-artifact-daemon -n cicd -o go-template='{{index .metadata.annotations "concourse.ci/image-digest"}}')
             if test "${web_image}" = "${WEB_IMAGE}" && test "${daemon_image}" = "${WEB_IMAGE}" && test "${web_source}" = "${SOURCE_COMMIT}" && test "${daemon_source}" = "${SOURCE_COMMIT}" && test "${web_digest}" = "${WEB_IMAGE}" && test "${daemon_digest}" = "${WEB_IMAGE}"; then
-              kubectl rollout status deployment/concourse-web -n cicd --timeout=180s
-              kubectl rollout status daemonset/concourse-artifact-daemon -n cicd --timeout=180s
-              exit 0
+              web_state=$(kubectl get deployment/concourse-web -n cicd -o jsonpath='{.metadata.generation}:{.status.observedGeneration}:{.spec.replicas}:{.status.updatedReplicas}:{.status.readyReplicas}:{.status.availableReplicas}')
+              daemon_state=$(kubectl get daemonset/concourse-artifact-daemon -n cicd -o jsonpath='{.metadata.generation}:{.status.observedGeneration}:{.status.desiredNumberScheduled}:{.status.updatedNumberScheduled}:{.status.numberReady}:{.status.numberAvailable}')
+              if web_desired=$(current_revision_ready "${web_state}") && \
+                daemon_desired=$(current_revision_ready "${daemon_state}") && \
+                exact_ready_pods 'app.kubernetes.io/component=web,app.kubernetes.io/name=concourse-jetbridge' 'concourse-web' "${web_desired}" && \
+                exact_ready_pods 'app.kubernetes.io/component=artifact-daemon,app.kubernetes.io/name=concourse-jetbridge' 'artifact-daemon' "${daemon_desired}"; then
+                exit 0
+              fi
             fi
             sleep 5
           done
