@@ -61,7 +61,7 @@ func TestRunManagedOutputBuilderPreflightBlocksBrokenServerBeforeClaude(t *testi
 	}
 }
 
-func TestRunManagedOutputBuilderPreflightEmitsReadyBeforeClaude(t *testing.T) {
+func TestRunManagedOutputBuilderDoesNotEmitReadyForRunnerOnlyPreflight(t *testing.T) {
 	var methods []string
 	listener, err := net.Listen("tcp", DefaultMCPAddressForTest())
 	if err != nil {
@@ -92,26 +92,27 @@ func TestRunManagedOutputBuilderPreflightEmitsReadyBeforeClaude(t *testing.T) {
 	go server.Serve(listener)
 	dir := t.TempDir()
 	flight := filepath.Join(dir, "flight")
-	marker := filepath.Join(dir, "started")
 	claude := filepath.Join(dir, "claude")
-	os.WriteFile(claude, []byte("#!/bin/sh\n: > '"+marker+"'\necho '{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"done\",\"model\":\"m\",\"cost_usd\":0,\"num_turns\":1,\"usage\":{}}'\n"), 0755)
+	claudeBody := "#!/bin/sh\n" +
+		"echo '{\"type\":\"system\",\"subtype\":\"init\",\"mcp_servers\":[{\"name\":\"output-builder\",\"status\":\"pending\"}]}'\n" +
+		"echo '{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"done\",\"model\":\"m\",\"cost_usd\":0,\"num_turns\":1,\"usage\":{}}'\n"
+	if err := os.WriteFile(claude, []byte(claudeBody), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	exit, err := Run(context.Background(), Config{Prompt: "p", FlightDir: flight, WorkDir: dir, StepName: "s", ClaudePath: claude, OutputBuilderMarker: "1"})
 	if err != nil || exit != 0 {
 		t.Fatalf("run=%d,%v", exit, err)
-	}
-	if _, err := os.Stat(marker); err != nil {
-		t.Fatal("claude did not start")
 	}
 	if strings.Join(methods, ",") != "initialize,notifications/initialized,tools/list" {
 		t.Fatalf("methods=%v", methods)
 	}
 	events := string(mustRead(t, filepath.Join(flight, "events.ndjson")))
-	if strings.Count(events, "mcp.ready") != 1 || strings.Index(events, "mcp.ready") < strings.Index(events, "step.start") {
-		t.Fatalf("events=%s", events)
+	if strings.Contains(events, "mcp.ready") {
+		t.Fatalf("runner-only preflight claimed provider readiness: %s", events)
 	}
 }
 
-func TestRunManagedOutputBuilderPreflightReadyBeforeProvider(t *testing.T) {
+func TestRunManagedOutputBuilderEmitsReadyAfterProviderEvidence(t *testing.T) {
 	var methods []string
 	listener, err := net.Listen("tcp", DefaultMCPAddressForTest())
 	if err != nil {
@@ -141,28 +142,48 @@ func TestRunManagedOutputBuilderPreflightReadyBeforeProvider(t *testing.T) {
 	go server.Serve(listener)
 	dir := t.TempDir()
 	flight := filepath.Join(dir, "flight")
-	starts := 0
 	adapter := &provider.FakeAdapter{IdentityValue: provider.Identity{Name: "test", Version: "1"}, StartFunc: func(context.Context, provider.StartRequest, provider.BoundaryControl) (provider.RunningSession, error) {
-		starts++
-		events := readOutputEvents(t, flight)
-		if len(events) != 2 || events[0].Type != schema.EventStepStart || events[1].Type != schema.EventMCPReady {
-			t.Fatalf("events=%#v", events)
-		}
-		var ready schema.MCPReadyData
-		json.Unmarshal(events[1].Data, &ready)
-		if ready.Server != "output-builder" || ready.ProtocolVersion != "2024-11-05" || strings.Join(ready.Tools, ",") != "describe_output,validate_output,write_output" {
-			t.Fatalf("ready=%#v", ready)
-		}
 		return outputBuilderSession(func(context.Context) (provider.Result, error) {
-			return provider.Result{Stream: []byte(`{"type":"result","subtype":"success","result":"done","is_error":false}` + "\n")}, nil
+			return provider.Result{Stream: []byte(
+				`{"type":"system","subtype":"init","mcp_servers":[{"name":"output-builder","status":"connected"}]}` + "\n" +
+					`{"type":"result","subtype":"success","result":"done","is_error":false}` + "\n",
+			)}, nil
 		}), nil
 	}}
 	exit, err := Run(context.Background(), Config{Prompt: "p", FlightDir: flight, WorkDir: dir, StepName: "s", OutputBuilderMarker: "1", Adapter: adapter})
-	if err != nil || exit != 0 || starts != 1 {
-		t.Fatalf("run=%d,%v starts=%d", exit, err, starts)
+	if err != nil || exit != 0 {
+		t.Fatalf("run=%d,%v", exit, err)
 	}
 	if strings.Join(methods, ",") != "initialize,notifications/initialized,tools/list" {
 		t.Fatal(methods)
+	}
+	events := string(mustRead(t, filepath.Join(flight, "events.ndjson")))
+	if strings.Count(events, "mcp.ready") != 1 {
+		t.Fatalf("provider-visible readiness count is not one: %s", events)
+	}
+}
+
+func TestManagedMCPReadyFromProviderStream(t *testing.T) {
+	tests := []struct {
+		name   string
+		stream string
+		want   bool
+	}{
+		{name: "malformed line", stream: "{\n", want: false},
+		{name: "another server", stream: `{"type":"system","subtype":"init","mcp_servers":[{"name":"other","status":"connected"}]}` + "\n", want: false},
+		{name: "pending", stream: `{"type":"system","subtype":"init","mcp_servers":[{"name":"output-builder","status":"pending"}]}` + "\n", want: false},
+		{name: "failed", stream: `{"type":"system","subtype":"init","mcp_servers":[{"name":"output-builder","status":"failed"}]}` + "\n", want: false},
+		{name: "oversized line", stream: strings.Repeat(" ", int(managedOutputBuilderResponseLimit)+1) + "\n", want: false},
+		{name: "connected", stream: `{"type":"system","subtype":"init","mcp_servers":[{"name":"output-builder","status":"connected"}]}` + "\n", want: true},
+		{name: "managed builder tool use", stream: `{"type":"assistant","message":{"content":[{"type":"tool_use","name":"mcp__output_builder__write_output"}]}}` + "\n", want: true},
+		{name: "tool name without tool use", stream: `{"type":"assistant","message":{"content":[{"type":"text","name":"mcp__output_builder__write_output"}]}}` + "\n", want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := managedMCPReadyFromProviderStream([]byte(test.stream), "output-builder"); got != test.want {
+				t.Fatalf("ready=%v, want %v", got, test.want)
+			}
+		})
 	}
 }
 

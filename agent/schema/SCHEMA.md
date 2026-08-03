@@ -51,7 +51,7 @@ with `step.end`:
 | Event Type | Payload Go type | When |
 |------------|------------------|------|
 | `step.start` | `StepStartData` | Once, before the claude CLI is invoked. |
-| `mcp.ready` | `MCPReadyData` | Once after successful managed output-builder protocol preflight; only server name, protocol version, and tool names. |
+| `mcp.ready` | `MCPReadyData` | At most once, after provider-visible evidence that the managed output builder is connected or used; it is distinct from runner protocol preflight. The payload contains only server name, protocol version, and tool names. |
 | `error` | `map[string]string{"message": ...}` | Zero or more times — a non-fatal condition the runner handled (e.g. an MCP sidecar failed its health wait). |
 | `cost.record` | `CostRecordData` | Once, after the claude CLI invocation returns (parsed from its `CLIEnvelope`). |
 | `step.end` | `StepEndData` | Once, always — the step contract requires the stream to end with `step.end`; a stream that doesn't is treated as `error` on ingestion regardless of what `results.json` says. |

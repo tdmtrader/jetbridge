@@ -1714,8 +1714,8 @@ var _ = Describe("AgentStep", func() {
 	Context("flight-recorder ingestion", func() {
 		const (
 			flightEventStepStart = iota
-			flightEventMCPReady
 			flightEventToolCall
+			flightEventMCPReady
 			flightEventCostRecord
 			flightEventStepEnd
 		)
@@ -1740,8 +1740,8 @@ var _ = Describe("AgentStep", func() {
 			resultsJSON = `{"schema_version":"1.0","status":"pass","confidence":1,"summary":"done","artifacts":[]}`
 			eventLines = []string{
 				`{"ts":"2026-07-10T12:00:00Z","event":"step.start","data":{"step_name":"write-spec","build_id":1,"plan_id":"p"}}`,
-				`{"ts":"2026-07-10T12:00:00Z","event":"mcp.ready","data":{"server":"output-builder","protocol_version":"2024-11-05","tools":["describe_output","validate_output","write_output"]}}`,
 				`{"ts":"2026-07-10T12:00:01Z","event":"tool.call","data":{"tool":"run_tests"}}`,
+				`{"ts":"2026-07-10T12:00:01Z","event":"mcp.ready","data":{"server":"output-builder","protocol_version":"2024-11-05","tools":["describe_output","validate_output","write_output"]}}`,
 				`{"ts":"2026-07-10T12:00:02Z","event":"cost.record","data":{"source":"agent_step","provider":"anthropic","model":"m1","input_tokens":100,"output_tokens":50,"cache_read_tokens":1,"cache_creation_tokens":2,"turns":9,"cost_usd":0.42}}`,
 				`{"ts":"2026-07-10T12:01:01Z","event":"step.end","data":{"step_name":"write-spec","status":"ok","summary":"done","wall_time_seconds":61,"cost_usd":0.42,"turns":9}}`,
 			}
@@ -1826,8 +1826,8 @@ var _ = Describe("AgentStep", func() {
 					strings.Repeat("x", 5<<20) + `"}}`
 				eventLines = []string{
 					eventLines[flightEventStepStart], // step.start
-					eventLines[flightEventMCPReady],  // mcp.ready
 					oversized,
+					eventLines[flightEventMCPReady],   // mcp.ready
 					eventLines[flightEventCostRecord], // cost.record
 					eventLines[flightEventStepEnd],    // step.end
 				}
@@ -1852,7 +1852,7 @@ var _ = Describe("AgentStep", func() {
 		Context("when the stream has no step.end", func() {
 			BeforeEach(func() {
 				resultsJSON = `{"schema_version":"1.0","status":"pass","confidence":1,"summary":"all good","artifacts":[]}`
-				eventLines = eventLines[:flightEventStepEnd] // step.start, mcp.ready, tool.call, cost.record — no step.end
+				eventLines = eventLines[:flightEventStepEnd] // step.start, tool.call, mcp.ready, cost.record — no step.end
 			})
 
 			It("records error, whatever results.json claimed", func() {

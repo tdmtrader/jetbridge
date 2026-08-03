@@ -450,7 +450,6 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 		if err := preflightManagedOutputBuilder(ctx, client, mcpServers[outputBuilderMCPName]); err != nil {
 			return finishBeforeModelPlatformError(events, cfg.FlightDir, cfg.StepName, start, fmt.Errorf("managed output builder protocol preflight failed: %w", err))
 		}
-		writeEvent(events, schema.EventMCPReady, schema.MCPReadyData{Server: outputBuilderMCPName, ProtocolVersion: managedOutputBuilderProtocolVersion, Tools: []string{"describe_output", "validate_output", "write_output"}})
 	}
 
 	// 4. Invoke the claude CLI. stream-json emits the turn-by-turn NDJSON
@@ -560,6 +559,9 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 	// log it and continue.
 	if err := writeTranscript(cfg.FlightDir, stream); err != nil {
 		fmt.Fprintf(stderr, "agent-runner: write transcript: %v\n", err)
+	}
+	if outputBuilderEnabled && managedMCPReadyFromProviderStream(stream, outputBuilderMCPName) {
+		writeEvent(events, schema.EventMCPReady, schema.MCPReadyData{Server: outputBuilderMCPName, ProtocolVersion: managedOutputBuilderProtocolVersion, Tools: []string{"describe_output", "validate_output", "write_output"}})
 	}
 
 	// 5. Parse the last non-empty stdout line as the CLI envelope,
@@ -732,6 +734,59 @@ func finishBeforeModelPlatformError(events *schema.EventWriter, flightDir, stepN
 	writeResults(flightDir, schema.StatusError, summary)
 	writeEvent(events, schema.EventStepEnd, schema.StepEndData{StepName: stepName, Status: schema.RunStatusError, Summary: summary, WallTimeSeconds: int(time.Since(start).Seconds())})
 	return 2, nil
+}
+
+func managedMCPReadyFromProviderStream(stream []byte, server string) bool {
+	type mcpServerStatus struct {
+		Name   string `json:"name"`
+		Status string `json:"status"`
+	}
+	type toolUse struct {
+		Type string `json:"type"`
+		Name string `json:"name"`
+	}
+	type providerStreamEvent struct {
+		Type       string            `json:"type"`
+		Subtype    string            `json:"subtype"`
+		MCPServers []mcpServerStatus `json:"mcp_servers"`
+		Message    struct {
+			Content []toolUse `json:"content"`
+		} `json:"message"`
+	}
+
+	toolPrefix := "mcp__" + strings.ReplaceAll(server, "-", "_") + "__"
+	for len(stream) > 0 {
+		line := stream
+		if newline := bytes.IndexByte(stream, '\n'); newline >= 0 {
+			line, stream = stream[:newline], stream[newline+1:]
+		} else {
+			stream = nil
+		}
+		line = bytes.TrimSuffix(line, []byte{'\r'})
+		if len(line) == 0 || int64(len(line)) > managedOutputBuilderResponseLimit {
+			continue
+		}
+
+		var event providerStreamEvent
+		if err := json.Unmarshal(line, &event); err != nil {
+			continue
+		}
+		if event.Type == "system" && event.Subtype == "init" {
+			for _, mcpServer := range event.MCPServers {
+				if mcpServer.Name == server && mcpServer.Status == "connected" {
+					return true
+				}
+			}
+		}
+		if event.Type == "assistant" {
+			for _, content := range event.Message.Content {
+				if content.Type == "tool_use" && strings.HasPrefix(content.Name, toolPrefix) && len(content.Name) > len(toolPrefix) {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func preflightManagedOutputBuilder(ctx context.Context, client *http.Client, endpoint string) error {

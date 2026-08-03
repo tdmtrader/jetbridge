@@ -19,9 +19,10 @@ func TestStepEndDataMarshalsSnakeCase(t *testing.T) {
 	requireNoErr(t, e.Validate())
 }
 
-func TestMCPReadyDataRoundTripsSafeFields(t *testing.T) {
+func TestProviderVisibleMCPReadyDataRoundTripsSafeFields(t *testing.T) {
 	data, err := json.Marshal(schema.MCPReadyData{Server: "output-builder", ProtocolVersion: "2024-11-05", Tools: []string{"describe_output", "validate_output", "write_output"}})
 	requireNoErr(t, err)
+	requireJSONEqual(t, data, `{"server":"output-builder","protocol_version":"2024-11-05","tools":["describe_output","validate_output","write_output"]}`)
 	var got schema.MCPReadyData
 	requireNoErr(t, json.Unmarshal(data, &got))
 	if got.Server != "output-builder" || got.ProtocolVersion != "2024-11-05" || len(got.Tools) != 3 {
