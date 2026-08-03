@@ -1400,10 +1400,12 @@ jobs:
           RC_RELEASE_TAG=${RC_RELEASE_TAGS}
           if test "${STABLE_RELEASE_COUNT}" = 1; then
             NEXT_VERSION="${STABLE_RELEASE_TAG#v}"
+            REUSE_PUBLISHED_RELEASE=true
           elif test "${RC_RELEASE_COUNT}" = 1; then
             RC_VERSION="${RC_RELEASE_TAG#v}"
             RC_VERSION="${RC_VERSION%-rc}"
             NEXT_VERSION="${RC_VERSION}"
+            REUSE_PUBLISHED_RELEASE=false
           else
             echo "FATAL: tested source has neither one RC tag nor one stable release tag" >&2
             exit 1
@@ -1488,92 +1490,117 @@ jobs:
             sleep 2
           done
 
-          echo "=== Building fly CLI for all platforms ==="
-          FLY_LDFLAGS="-s -w -X github.com/concourse/concourse.Version=${NEXT_VERSION}"
-          mkdir -p fly-assets fly-bin
-          for pair in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
-            OS="${pair%%/*}"
-            ARCH="${pair##*/}"
-            echo "  fly-${OS}-${ARCH}"
-            CGO_ENABLED=0 GOOS=${OS} GOARCH=${ARCH} go build -ldflags "${FLY_LDFLAGS}" -o fly-bin/fly ./fly
-            tar czf fly-assets/fly-${OS}-${ARCH}.tgz -C fly-bin fly
-            rm -f fly-bin/fly
-          done
-          rm -rf fly-bin
-          ls -lh fly-assets/
-
-          # --- 2. Pull the exact digest that self-upgrade deployed and live tests passed ---
-          if ! kubectl exec -n cicd ${BUILDER_POD} -- docker pull "${RC_IMMUTABLE_IMAGE}"; then
-            echo "FATAL: RC image ${RC_IMMUTABLE_IMAGE} not found."
-            echo "Refusing to rebuild from an untested tag or publish v${NEXT_VERSION}."
-            exit 1
-          fi
-
-          echo "=== Copying fly assets into builder pod ==="
-          kubectl cp fly-assets cicd/${BUILDER_POD}:/tmp/fly-assets
-
-          echo "=== Rebuilding image with all fly platform assets ==="
-          cat <<'DOCKERFILE' > /tmp/Dockerfile.release
-          FROM __RC_IMAGE__
-          RUN mv /usr/local/concourse/bin/concourse-final /usr/local/concourse/bin/concourse
-          COPY fly-assets /usr/local/concourse/fly-assets
-          DOCKERFILE
-          sed -i "s|__RC_IMAGE__|${RC_IMMUTABLE_IMAGE}|g" /tmp/Dockerfile.release
-          kubectl cp /tmp/Dockerfile.release cicd/${BUILDER_POD}:/tmp/Dockerfile.release
-          kubectl exec -n cicd ${BUILDER_POD} -- \
-            docker build \
-              -t "${FINAL_TAG}" \
-              -t registry.home/jetbridge:v${NEXT_VERSION} \
-              -t ${GHCR}:${SHORT_SHA} \
-              -t ${GHCR}:v${NEXT_VERSION} \
-              -t ${GHCR}:latest \
-              -f /tmp/Dockerfile.release /tmp/
-
-          echo "=== Verifying the exact final image before any push or release mutation ==="
           UPSTREAM_VERSION=$(sed -n 's/^var ConcourseVersion = "\(.*\)"/\1/p' versions.go)
           if test -z "${UPSTREAM_VERSION}"; then
             echo "FATAL: could not read ConcourseVersion from versions.go"
             exit 1
           fi
-          FINAL_VERSION_OUTPUT=$(kubectl exec -n cicd "${BUILDER_POD}" -- \
-            docker run --rm --entrypoint /usr/local/concourse/bin/concourse \
-              "${FINAL_TAG}" --version)
-          printf '%s\n' "${FINAL_VERSION_OUTPUT}"
-          if printf '%s\n' "${FINAL_VERSION_OUTPUT}" | grep -Fq -- "-rc"; then
-            echo "FATAL: final image still reports an RC server version"
-            exit 1
-          fi
           EXPECTED_FINAL_VERSION="JetBridge ${NEXT_VERSION} (Concourse ${UPSTREAM_VERSION})"
-          if ! test "${FINAL_VERSION_OUTPUT}" = "${EXPECTED_FINAL_VERSION}"; then
-            echo "FATAL: final image version is ${FINAL_VERSION_OUTPUT}; want ${EXPECTED_FINAL_VERSION}"
-            exit 1
+
+          if test "${REUSE_PUBLISHED_RELEASE}" = true; then
+            echo "=== Reusing source-addressed release image for stable v${NEXT_VERSION} ==="
+            PULL_OUTPUT=$(kubectl exec -n cicd ${BUILDER_POD} -- docker pull "${FINAL_TAG}")
+            printf '%s\n' "${PULL_OUTPUT}"
+            FINAL_DIGEST=$(printf '%s\n' "${PULL_OUTPUT}" | sed -n 's/.*Digest: \(sha256:[a-f0-9]\{64\}\).*/\1/p' | tail -1)
+            if ! printf '%s\n' "${FINAL_DIGEST}" | grep -Eq '^sha256:[a-f0-9]{64}$'; then
+              echo "FATAL: source-addressed release pull returned no exact lowercase sha256 digest"
+              exit 1
+            fi
+            FINAL_IMAGE="registry.home/jetbridge@${FINAL_DIGEST}"
+          else
+            echo "=== Building fly CLI for all platforms ==="
+            FLY_LDFLAGS="-s -w -X github.com/concourse/concourse.Version=${NEXT_VERSION}"
+            mkdir -p fly-assets fly-bin
+            for pair in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+              OS="${pair%%/*}"
+              ARCH="${pair##*/}"
+              echo "  fly-${OS}-${ARCH}"
+              CGO_ENABLED=0 GOOS=${OS} GOARCH=${ARCH} go build -ldflags "${FLY_LDFLAGS}" -o fly-bin/fly ./fly
+              tar czf fly-assets/fly-${OS}-${ARCH}.tgz -C fly-bin fly
+              rm -f fly-bin/fly
+            done
+            rm -rf fly-bin
+            ls -lh fly-assets/
+
+            # --- 2. Pull the exact digest that self-upgrade deployed and live tests passed ---
+            if ! kubectl exec -n cicd ${BUILDER_POD} -- docker pull "${RC_IMMUTABLE_IMAGE}"; then
+              echo "FATAL: RC image ${RC_IMMUTABLE_IMAGE} not found."
+              echo "Refusing to rebuild from an untested tag or publish v${NEXT_VERSION}."
+              exit 1
+            fi
+
+            echo "=== Copying fly assets into builder pod ==="
+            kubectl cp fly-assets cicd/${BUILDER_POD}:/tmp/fly-assets
+
+            echo "=== Rebuilding image with all fly platform assets ==="
+            cat <<'DOCKERFILE' > /tmp/Dockerfile.release
+          FROM __RC_IMAGE__
+          RUN mv /usr/local/concourse/bin/concourse-final /usr/local/concourse/bin/concourse
+          COPY fly-assets /usr/local/concourse/fly-assets
+          DOCKERFILE
+            sed -i "s|__RC_IMAGE__|${RC_IMMUTABLE_IMAGE}|g" /tmp/Dockerfile.release
+            kubectl cp /tmp/Dockerfile.release cicd/${BUILDER_POD}:/tmp/Dockerfile.release
+            kubectl exec -n cicd ${BUILDER_POD} -- \
+              docker build \
+                -t "${FINAL_TAG}" \
+                -t registry.home/jetbridge:v${NEXT_VERSION} \
+                -t ${GHCR}:${SHORT_SHA} \
+                -t ${GHCR}:v${NEXT_VERSION} \
+                -t ${GHCR}:latest \
+                -f /tmp/Dockerfile.release /tmp/
+
+            echo "=== Verifying the exact final image before any push or release mutation ==="
+            FINAL_VERSION_OUTPUT=$(kubectl exec -n cicd "${BUILDER_POD}" -- \
+              docker run --rm --entrypoint /usr/local/concourse/bin/concourse \
+                "${FINAL_TAG}" --version)
+            printf '%s\n' "${FINAL_VERSION_OUTPUT}"
+            if printf '%s\n' "${FINAL_VERSION_OUTPUT}" | grep -Fq -- "-rc"; then
+              echo "FATAL: final image still reports an RC server version"
+              exit 1
+            fi
+            if ! test "${FINAL_VERSION_OUTPUT}" = "${EXPECTED_FINAL_VERSION}"; then
+              echo "FATAL: final image version is ${FINAL_VERSION_OUTPUT}; want ${EXPECTED_FINAL_VERSION}"
+              exit 1
+            fi
+
+            echo "=== Pushing source-addressed release image and resolving its digest ==="
+            PUSH_OUTPUT=$(kubectl exec -n cicd ${BUILDER_POD} -- docker push "${FINAL_TAG}")
+            printf '%s\n' "${PUSH_OUTPUT}"
+            FINAL_DIGEST=$(printf '%s\n' "${PUSH_OUTPUT}" | sed -n 's/.*digest: \(sha256:[a-f0-9]\{64\}\).*/\1/p' | tail -1)
+            if ! printf '%s\n' "${FINAL_DIGEST}" | grep -Eq '^sha256:[a-f0-9]{64}$'; then
+              echo "FATAL: release push returned no exact lowercase sha256 digest"
+              exit 1
+            fi
+            FINAL_IMAGE="registry.home/jetbridge@${FINAL_DIGEST}"
           fi
 
-          echo "=== Pushing source-addressed release image and resolving its digest ==="
-          PUSH_OUTPUT=$(kubectl exec -n cicd ${BUILDER_POD} -- docker push "${FINAL_TAG}")
-          printf '%s\n' "${PUSH_OUTPUT}"
-          FINAL_DIGEST=$(printf '%s\n' "${PUSH_OUTPUT}" | sed -n 's/.*digest: \(sha256:[a-f0-9]\{64\}\).*/\1/p' | tail -1)
-          if ! printf '%s\n' "${FINAL_DIGEST}" | grep -Eq '^sha256:[a-f0-9]{64}$'; then
-            echo "FATAL: release push returned no exact lowercase sha256 digest"
-            exit 1
-          fi
-          FINAL_IMAGE="registry.home/jetbridge@${FINAL_DIGEST}"
           kubectl exec -n cicd ${BUILDER_POD} -- docker pull "${FINAL_IMAGE}"
           FINAL_VERSION_OUTPUT=$(kubectl exec -n cicd "${BUILDER_POD}" -- \
             docker run --rm --entrypoint /usr/local/concourse/bin/concourse \
               "${FINAL_IMAGE}" --version)
-          test "${FINAL_VERSION_OUTPUT}" = "${EXPECTED_FINAL_VERSION}"
-          kubectl exec -n cicd ${BUILDER_POD} -- docker push registry.home/jetbridge:v${NEXT_VERSION}
+          printf '%s\n' "${FINAL_VERSION_OUTPUT}"
+          if printf '%s\n' "${FINAL_VERSION_OUTPUT}" | grep -Fq -- "-rc"; then
+            echo "FATAL: verified release image still reports an RC server version"
+            exit 1
+          fi
+          if ! test "${FINAL_VERSION_OUTPUT}" = "${EXPECTED_FINAL_VERSION}"; then
+            echo "FATAL: verified release image version is ${FINAL_VERSION_OUTPUT}; want ${EXPECTED_FINAL_VERSION}"
+            exit 1
+          fi
 
-          echo "=== Logging into GHCR ==="
-          set +x
-          printf '%s\n' "${GITHUB_TOKEN}" | kubectl exec -i -n cicd ${BUILDER_POD} -- docker login ghcr.io -u tdmtrader --password-stdin
-          set -x
+          if test "${REUSE_PUBLISHED_RELEASE}" = false; then
+            kubectl exec -n cicd ${BUILDER_POD} -- docker push registry.home/jetbridge:v${NEXT_VERSION}
 
-          echo "=== Pushing to GHCR ==="
-          kubectl exec -n cicd ${BUILDER_POD} -- docker push ${GHCR}:${SHORT_SHA}
-          kubectl exec -n cicd ${BUILDER_POD} -- docker push ${GHCR}:v${NEXT_VERSION}
-          kubectl exec -n cicd ${BUILDER_POD} -- docker push ${GHCR}:latest
+            echo "=== Logging into GHCR ==="
+            set +x
+            printf '%s\n' "${GITHUB_TOKEN}" | kubectl exec -i -n cicd ${BUILDER_POD} -- docker login ghcr.io -u tdmtrader --password-stdin
+            set -x
+
+            echo "=== Pushing to GHCR ==="
+            kubectl exec -n cicd ${BUILDER_POD} -- docker push ${GHCR}:${SHORT_SHA}
+            kubectl exec -n cicd ${BUILDER_POD} -- docker push ${GHCR}:v${NEXT_VERSION}
+            kubectl exec -n cicd ${BUILDER_POD} -- docker push ${GHCR}:latest
+          fi
 
           # --- 3. Image published — NOW create the release tag ---
           # (Deferred from the top: only tag/push once the image actually exists.)
@@ -1624,6 +1651,8 @@ jobs:
       - name: release-image-metadata
       outputs:
       - name: home-infra-updated
+      params:
+        GITHUB_TOKEN: ((github-token))
       run:
         path: sh
         args:
@@ -1636,6 +1665,21 @@ jobs:
           printf '%s\n' "${SOURCE_COMMIT}" | grep -Eq '^[a-f0-9]{40}$'
           cp -a home-infra/. home-infra-updated/
           test -e home-infra-updated/.git
+          ASKPASS=$(mktemp)
+          trap 'rm -f "${ASKPASS}"' EXIT HUP INT TERM
+          cat <<'ASKPASS_EOF' > "${ASKPASS}"
+          #!/bin/sh
+          case "${1-}" in
+            *Username*) printf '%s\n' x-access-token ;;
+            *Password*) printf '%s\n' "${GITHUB_TOKEN}" ;;
+            *) exit 1 ;;
+          esac
+          ASKPASS_EOF
+          chmod 700 "${ASKPASS}"
+          GIT_ASKPASS="${ASKPASS}" GIT_TERMINAL_PROMPT=0 \
+            git -C home-infra-updated fetch --no-tags origin refs/heads/main
+          git -C home-infra-updated reset --hard FETCH_HEAD
+          rm -f "${ASKPASS}"
           sh repo/deploy/write-web-image-home-infra.sh "${WEB_IMAGE}" "${SOURCE_COMMIT}" home-infra-updated
   - put: home-infra
     timeout: 5m

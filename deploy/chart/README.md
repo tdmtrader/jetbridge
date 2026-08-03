@@ -83,6 +83,18 @@ fly -t local unpause-pipeline -p hello
 
 ## Quickstart (ArgoCD)
 
+ArgoCD renders Helm charts without a live-cluster `lookup`, so generated keys
+would change on every reconciliation. Create the two shared Secrets once before
+syncing the Application:
+
+```bash
+kubectl create namespace concourse --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n concourse create secret generic concourse-web-signing-key \
+  --from-file=session_signing_key=<(openssl genrsa 4096)
+kubectl -n concourse create secret generic concourse-artifact-daemon-resolve-capability \
+  --from-literal=resolve.key="$(openssl rand -base64 24)"
+```
+
 Create an ArgoCD `Application` pointing at the chart directory:
 
 ```yaml
@@ -107,6 +119,10 @@ spec:
           value: latest
         - name: web.externalUrl
           value: https://concourse.example.com
+        - name: secrets.signingKeySecret
+          value: concourse-web-signing-key
+        - name: artifactDaemon.resolveCapability.existingSecret
+          value: concourse-artifact-daemon-resolve-capability
         # Replace this placeholder with a compatible helper resolved to its
         # exact OCI digest before syncing.
         - name: kubernetes.artifactHelperImage
@@ -125,6 +141,10 @@ spec:
     syncOptions:
       - CreateNamespace=true
 ```
+
+If daemon TLS is enabled, also provision its five documented certificate keys
+outside the chart and set `artifactDaemon.tls.existingSecret`; otherwise a
+clusterless render generates a different CA and certificates on every refresh.
 
 ## Configuration Reference
 

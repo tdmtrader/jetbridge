@@ -38,16 +38,14 @@ type deployment struct {
 				InitContainers []struct {
 					Name         string        `json:"name"`
 					Command      []string      `json:"command"`
+					Env          []envVar      `json:"env"`
 					VolumeMounts []volumeMount `json:"volumeMounts"`
 				} `json:"initContainers"`
 				Containers []struct {
-					Name  string   `json:"name"`
-					Image string   `json:"image"`
-					Args  []string `json:"args"`
-					Env   []struct {
-						Name  string `json:"name"`
-						Value string `json:"value"`
-					} `json:"env"`
+					Name            string        `json:"name"`
+					Image           string        `json:"image"`
+					Args            []string      `json:"args"`
+					Env             []envVar      `json:"env"`
 					VolumeMounts    []volumeMount `json:"volumeMounts"`
 					SecurityContext struct {
 						AllowPrivilegeEscalation *bool  `json:"allowPrivilegeEscalation"`
@@ -64,6 +62,17 @@ type deployment struct {
 			} `json:"spec"`
 		} `json:"template"`
 	} `json:"spec"`
+}
+
+type envVar struct {
+	Name      string `json:"name"`
+	Value     string `json:"value"`
+	ValueFrom *struct {
+		SecretKeyRef *struct {
+			Name string `json:"name"`
+			Key  string `json:"key"`
+		} `json:"secretKeyRef"`
+	} `json:"valueFrom"`
 }
 
 type daemonSet struct {

@@ -35,7 +35,14 @@ spec:
             - name: POSTGRES_USER
               value: {{ .Values.postgresql.user }}
             - name: POSTGRES_PASSWORD
+              {{- if .Values.postgresql.existingSecret }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.postgresql.existingSecret }}
+                  key: {{ .Values.postgresql.passwordSecretKey }}
+              {{- else }}
               value: {{ .Values.postgresql.password }}
+              {{- end }}
           ports:
             - containerPort: 5432
           readinessProbe:
