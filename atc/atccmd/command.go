@@ -1338,6 +1338,10 @@ func (cmd *RunCommand) backendComponents(
 	nodeOccurrenceFreezer, err := occurrence.NewFreezer(
 		db.NewAgentWorkflowRunEvidenceFactory(dbConn),
 		dispatchGraph.workflows,
+		// A reusable-node run names a NODE definition, which the workflow
+		// store's definition_kind = 'workflow' reads cannot see. Without this
+		// the freeze failed — loudly, in the log — on every healthy node run.
+		dispatchGraph.nodes,
 		db.NewAgentWorkflowRunNodeOccurrencesFactory(dbConn),
 	)
 	if err != nil {
@@ -3747,6 +3751,7 @@ func (cmd *RunCommand) constructAPIHandler(
 		db.NewAgentWorkflowRunNodeOccurrencesFactory(dbConn),
 		db.NewAgentWorkflowRunEvidenceFactory(dbConn),
 		workflowStore,
+		nodeStore,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("construct workflow-run node occurrence reader: %w", err)

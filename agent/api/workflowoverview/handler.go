@@ -302,6 +302,7 @@ func (handler *Handler) aggregate(
 				entries = append(entries, occurrence.ChainEntry{
 					RunID:        int64(run.ID),
 					RunCreatedAt: run.CreatedAt,
+					RunTerminal:  runIsTerminal(run.Status),
 					Occurrence:   entry,
 				})
 			}

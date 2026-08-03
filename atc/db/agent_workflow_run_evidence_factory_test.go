@@ -542,7 +542,8 @@ var _ = Describe("NodeOccurrence freeze end to end", func() {
 
 		occurrences := db.NewAgentWorkflowRunNodeOccurrencesFactory(dbConn)
 		freezer, err := occurrence.NewFreezer(
-			db.NewAgentWorkflowRunEvidenceFactory(dbConn), workflows, occurrences,
+			db.NewAgentWorkflowRunEvidenceFactory(dbConn), workflows,
+			db.NewAgentNodesFactory(dbConn), occurrences,
 		)
 		Expect(err).ToNot(HaveOccurred())
 
@@ -551,6 +552,10 @@ var _ = Describe("NodeOccurrence freeze end to end", func() {
 			lagertest.NewTestLogger("freeze-e2e"),
 			15*time.Minute, time.Minute,
 			workflowrun.WithNodeOccurrenceFreezer(freezer),
+			// The wait canceler is part of the finalization, not an optional
+			// extra: the freeze reads wait rows, and a wait cancelled AFTER the
+			// freeze leaves 'waiting' in immutable history forever.
+			workflowrun.WithWaitCanceler(db.NewAgentWorkflowWaitsFactory(dbConn)),
 		)
 		Expect(err).ToNot(HaveOccurred())
 		Expect(reconciler.Run(context.Background())).To(Succeed())
@@ -583,9 +588,19 @@ var _ = Describe("NodeOccurrence freeze end to end", func() {
 		Expect(task.PlanID).To(Equal(taskPlanID))
 		Expect(task.Status).To(Equal("succeeded"))
 
+		// The wait outlived the build that would have answered it. The
+		// finalization cancels it BEFORE the freeze, so the durable row and the
+		// immutable projection agree that it ended rather than one of them
+		// claiming work is still in flight on a finished run.
+		var waitStatus string
+		Expect(dbConn.QueryRow(
+			`SELECT status FROM agent_workflow_waits WHERE workflow_run_id = $1`, int64(runID),
+		).Scan(&waitStatus)).To(Succeed())
+		Expect(waitStatus).To(Equal("cancelled"))
+
 		await := byNode["approval"]
 		Expect(await.NodeKind).To(Equal("await"))
-		Expect(await.Status).To(Equal("waiting"))
+		Expect(await.Status).To(Equal("aborted"))
 		Expect(await.WaitID).ToNot(BeNil())
 
 		// Every row describes the revision that executed, not the live one.

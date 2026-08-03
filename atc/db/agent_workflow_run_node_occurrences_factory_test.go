@@ -41,27 +41,56 @@ var _ = Describe("AgentWorkflowRunNodeOccurrencesFactory", func() {
 	}
 
 	Describe("Freeze", func() {
-		It("persists one row per node attempt and reads them back in plan order", func() {
+		It("persists one row per node attempt and groups them by node identity", func() {
 			runID, name := createRun()
 
 			implement := occurrence(runID, name, "implement", "agent", "1/1", "succeeded")
 			implement.CostUSD = 1.25
 			approval := occurrence(runID, name, "approval", "await", "1/2", "waiting")
 
-			// Written out of plan order on purpose, so the read proves an
-			// ordering rather than echoing the insertion sequence.
-			Expect(factory.Freeze(ctx, []db.AgentWorkflowRunNodeOccurrence{approval, implement})).To(Succeed())
+			// Written in the reverse of the read order on purpose, so the read
+			// proves an ordering rather than echoing the insertion sequence.
+			Expect(factory.Freeze(ctx, []db.AgentWorkflowRunNodeOccurrence{implement, approval})).To(Succeed())
 
 			stored, err := factory.ForRun(ctx, runID)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(stored).To(HaveLen(2))
-			Expect(stored[0].NodeID).To(Equal("implement"))
-			Expect(stored[0].Status).To(Equal("succeeded"))
-			Expect(stored[0].NodeKind).To(Equal("agent"))
-			Expect(stored[0].CostUSD).To(Equal(1.25))
-			Expect(stored[0].FrozenAt).ToNot(BeZero())
-			Expect(stored[1].NodeID).To(Equal("approval"))
-			Expect(stored[1].Status).To(Equal("waiting"))
+			Expect(stored[0].NodeID).To(Equal("approval"))
+			Expect(stored[0].Status).To(Equal("waiting"))
+			Expect(stored[1].NodeID).To(Equal("implement"))
+			Expect(stored[1].Status).To(Equal("succeeded"))
+			Expect(stored[1].NodeKind).To(Equal("agent"))
+			Expect(stored[1].CostUSD).To(Equal(1.25))
+			Expect(stored[1].FrozenAt).ToNot(BeZero())
+		})
+
+		// occurrence.ResolveEffective keeps the LAST terminal entry per node in
+		// the order it is handed them, so the copies of one node must arrive in
+		// execution order. Leading the sort with plan_id ordered them as TEXT —
+		// copy "10" ahead of copy "2" — handing the resolution a superseded
+		// attempt as the latest one.
+		It("orders one node's copies by attempt rather than by plan ID text", func() {
+			runID, name := createRun()
+
+			var rows []db.AgentWorkflowRunNodeOccurrence
+			for copyIndex := 1; copyIndex <= 11; copyIndex++ {
+				row := occurrence(runID, name, "implement", "agent",
+					fmt.Sprintf("1/%d", copyIndex), "failed")
+				row.RetryAttempt = copyIndex
+				if copyIndex == 11 {
+					row.Status = "succeeded"
+				}
+				rows = append(rows, row)
+			}
+			Expect(factory.Freeze(ctx, rows)).To(Succeed())
+
+			stored, err := factory.ForRun(ctx, runID)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(stored).To(HaveLen(11))
+			for index, row := range stored {
+				Expect(row.RetryAttempt).To(Equal(index + 1))
+			}
+			Expect(stored[10].Status).To(Equal("succeeded"))
 		})
 
 		It("carries every projected field through the round trip", func() {
@@ -177,6 +206,26 @@ var _ = Describe("AgentWorkflowRunNodeOccurrencesFactory", func() {
 			// that never reached the remaining nodes.
 			stored, err := factory.ForRun(ctx, runID)
 			Expect(err).ToNot(HaveOccurred())
+			Expect(stored).To(BeEmpty())
+		})
+
+		// ON CONFLICT DO NOTHING exists so a RETRIED finalization cannot
+		// double-write. It cannot tell that apart from two rows of ONE freeze
+		// colliding, which is a derivation bug — and swallowing those discarded
+		// real, unrecoverable history with no error and no log line. A nested
+		// retry closure produced exactly that collision.
+		It("refuses a projection whose own rows collide, rather than dropping them", func() {
+			runID, name := createRun()
+
+			first := occurrence(runID, name, "implement", "agent", "1/1/1", "failed")
+			collides := occurrence(runID, name, "implement", "agent", "1/2/1", "succeeded")
+
+			err := factory.Freeze(ctx, []db.AgentWorkflowRunNodeOccurrence{first, collides})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("implement"))
+
+			stored, readErr := factory.ForRun(ctx, runID)
+			Expect(readErr).ToNot(HaveOccurred())
 			Expect(stored).To(BeEmpty())
 		})
 

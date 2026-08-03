@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sort"
 	"time"
+
+	"github.com/concourse/concourse/agent/workflow"
 )
 
 // Derive maps authoritative execution records onto one occurrence per
@@ -89,15 +91,29 @@ func groupByNode(nodes []PlanNode) [][]PlanNode {
 // leave a finished workflow showing attention-worthy pending nodes for
 // attempts that never happened. When no copy ran, the node is still in the
 // plan, so it is projected exactly once as pending.
+//
+// RetryAttempt is assigned here, as the copy's 1-based ordinal within its node
+// group in plan order, rather than taken from PlanNode.RetryAttempt. The two
+// agree exactly for a single-level retry closure, which is every retry the
+// planner has ever materialized for a shipped workflow. They diverge for
+// NESTED retry: atc/builds/planner.go materializes outer*inner copies of the
+// leaf while walkPlan numbers each copy by its innermost index alone, so
+// several distinct plan copies would share one number — and the projection's
+// PRIMARY KEY (workflow_run_id, node_id, retry_attempt, attempt) would collide,
+// silently discarding real history. The ordinal is injective over the group by
+// construction, so every materialized copy keeps its own durable row.
 func deriveNode(sources Sources, group []PlanNode, metricsByPlan map[string][]AttemptMetric) []NodeOccurrence {
 	var result []NodeOccurrence
-	for _, node := range group {
+	for ordinal, node := range group {
+		node.RetryAttempt = ordinal + 1
 		result = append(result, deriveCopy(sources, node, metricsByPlan[node.PlanID])...)
 	}
 	if len(result) > 0 {
 		return result
 	}
-	return []NodeOccurrence{baseOccurrence(sources, group[0])}
+	unreached := group[0]
+	unreached.RetryAttempt = 1
+	return []NodeOccurrence{baseOccurrence(sources, unreached)}
 }
 
 // deriveCopy projects the evidence attached to one plan ID, returning nothing
@@ -111,7 +127,14 @@ func deriveCopy(sources Sources, node PlanNode, metrics []AttemptMetric) []NodeO
 	case KindAwait:
 		wait, found := findWait(sources.Waits, node.PlanID)
 		if !found {
-			return nil
+			// The step can fail — or finish early — long before it creates its
+			// wait row: atc/exec/await_snapshot_step.go returns on validation,
+			// authorization, snapshot availability and the
+			// reapproval-not-required fast path, all ahead of waits.CreateOrGet.
+			// The engine still recorded the step's outcome, so falling through
+			// to it is what keeps the node that killed the run from freezing as
+			// 'pending' — which is the projection's word for "never reached".
+			return fallbackFromBuildStep(sources, base, node)
 		}
 		base.Status = waitStatus(wait)
 		base.WaitID = int64Ref(wait.ID)
@@ -120,12 +143,18 @@ func deriveCopy(sources Sources, node PlanNode, metrics []AttemptMetric) []NodeO
 			base.CompletedAt = wait.ResolvedAt
 			base.DurationSeconds = durationSeconds(wait.CreatedAt, *wait.ResolvedAt)
 		}
+		base.Status = settleAgainstRun(sources, base.Status)
 		return []NodeOccurrence{base}
 
 	case KindPublish:
 		publication, found := findPublication(sources.Publications, node.PlanID)
 		if !found {
-			return nil
+			// Same reasoning as the await arm: atc/exec/publish_snapshot_step.go
+			// has many error returns — a rejected merge approval among them —
+			// ahead of the agent_publication_occurrences insert. This is also
+			// the build-step fallback migration 1773106157 promises for
+			// publications whose plan_id is NULL.
+			return fallbackFromBuildStep(sources, base, node)
 		}
 		base.Status = publicationStatus(publication.Status)
 		base.PublicationID = int64Ref(publication.ID)
@@ -134,6 +163,7 @@ func deriveCopy(sources Sources, node PlanNode, metrics []AttemptMetric) []NodeO
 			base.CompletedAt = timePtr(publication.UpdatedAt)
 			base.DurationSeconds = durationSeconds(publication.CreatedAt, publication.UpdatedAt)
 		}
+		base.Status = settleAgainstRun(sources, base.Status)
 		return []NodeOccurrence{base}
 	}
 
@@ -141,11 +171,7 @@ func deriveCopy(sources Sources, node PlanNode, metrics []AttemptMetric) []NodeO
 		// Deterministic task steps have no durable metrics row of their own,
 		// so the freeze reads their terminal state from build step state while
 		// the build still exists.
-		if status, found := sources.BuildStepStatus[node.PlanID]; found {
-			base.Status = status
-			return []NodeOccurrence{base}
-		}
-		return nil
+		return fallbackFromBuildStep(sources, base, node)
 	}
 
 	result := make([]NodeOccurrence, 0, len(metrics))
@@ -159,13 +185,50 @@ func deriveCopy(sources Sources, node PlanNode, metrics []AttemptMetric) []NodeO
 			occurrence.CompletedAt = timePtr(metric.UpdatedAt)
 			occurrence.DurationSeconds = durationSeconds(metric.CreatedAt, metric.UpdatedAt)
 		}
+		occurrence.Status = settleAgainstRun(sources, occurrence.Status)
 		result = append(result, occurrence)
 	}
 	return result
 }
 
+// fallbackFromBuildStep is the one place a node's status comes from the build's
+// own step events. Every node kind reaches it: it is a deterministic task's
+// only durable evidence, and for await and publish it is what the engine
+// recorded when the step died before writing its own row. A copy with no build
+// step evidence either returns nothing, so the node stays pending exactly when
+// nothing at all is known about it.
+func fallbackFromBuildStep(sources Sources, base NodeOccurrence, node PlanNode) []NodeOccurrence {
+	status, found := sources.BuildStepStatus[node.PlanID]
+	if !found {
+		return nil
+	}
+	base.Status = status
+	return []NodeOccurrence{base}
+}
+
+// settleAgainstRun refuses to project an in-flight status onto a run that has
+// already finished.
+//
+// A wait left 'waiting' or a publication left 'pending' by a build that was
+// aborted, errored or drained is not work still in flight — the process that
+// would have advanced it is gone. Freezing the live value would pin the run in
+// the attention lens permanently, because the frozen row is immutable and no
+// retry supersedes a live occurrence. The run's own terminal status is a
+// durable fact, so this reads a second fact against a first rather than
+// originating one. Pending is untouched: it means "never reached", which stays
+// true on a finished run.
+func settleAgainstRun(sources Sources, status Status) Status {
+	if status != StatusRunning && status != StatusWaiting {
+		return status
+	}
+	if !runIsTerminal(sources.Run.Status) {
+		return status
+	}
+	return StatusAborted
+}
+
 func baseOccurrence(sources Sources, node PlanNode) NodeOccurrence {
-	return NodeOccurrence{
+	occurrence := NodeOccurrence{
 		WorkflowRunID:        sources.Run.ID,
 		TeamID:               sources.Run.TeamID,
 		WorkflowName:         sources.Run.WorkflowName,
@@ -178,6 +241,16 @@ func baseOccurrence(sources Sources, node PlanNode) NodeOccurrence {
 		Attempt:              1,
 		Status:               StatusPending,
 	}
+	// A run OF a reusable node is the one case where the run itself names the
+	// node version that executed, which is what the projection's
+	// reusable_node_name/reusable_node_version columns exist to record. Inside
+	// an ordinary workflow run the node has been expanded away and there is
+	// nothing here to read.
+	if sources.Run.DefinitionKind == workflow.DefinitionKindNode {
+		occurrence.ReusableNodeName = sources.Run.WorkflowName
+		occurrence.ReusableNodeVersion = sources.Run.WorkflowVersion
+	}
+	return occurrence
 }
 
 // agentMetricStatus maps agent_run_metrics.status onto occurrence status.

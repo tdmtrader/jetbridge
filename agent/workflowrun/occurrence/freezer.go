@@ -23,6 +23,20 @@ type DefinitionSource interface {
 	Get(name string, version int) (*workflow.Definition, bool, error)
 }
 
+// NodeDefinitionSource resolves an exact stored reusable-node version, the
+// same way DefinitionSource resolves a workflow one.
+//
+// A run of a reusable node carries definition_kind 'node' and names a NODE
+// definition in workflow_name/workflow_version. The workflow store's reads are
+// scoped to definition_kind = 'workflow', so resolving a node run through it
+// can only ever miss — which turned every node run's freeze into an error on a
+// completely healthy path. The two kinds live in one table under
+// UNIQUE (definition_kind, name, version), so the kind must select the reader
+// rather than being left to a lookup that might match the wrong one.
+type NodeDefinitionSource interface {
+	Get(name string, version int) (*workflow.NodeDefinition, bool, error)
+}
+
 // ProjectionStore writes the frozen rows.
 type ProjectionStore interface {
 	Freeze(context.Context, []db.AgentWorkflowRunNodeOccurrence) error
@@ -39,12 +53,14 @@ type ProjectionStore interface {
 type Freezer struct {
 	evidence    EvidenceSource
 	definitions DefinitionSource
+	nodes       NodeDefinitionSource
 	store       ProjectionStore
 }
 
 func NewFreezer(
 	evidence EvidenceSource,
 	definitions DefinitionSource,
+	nodes NodeDefinitionSource,
 	store ProjectionStore,
 ) (*Freezer, error) {
 	if evidence == nil {
@@ -53,10 +69,13 @@ func NewFreezer(
 	if definitions == nil {
 		return nil, fmt.Errorf("occurrence: freezer requires a definition source")
 	}
+	if nodes == nil {
+		return nil, fmt.Errorf("occurrence: freezer requires a node definition source")
+	}
 	if store == nil {
 		return nil, fmt.Errorf("occurrence: freezer requires a projection store")
 	}
-	return &Freezer{evidence: evidence, definitions: definitions, store: store}, nil
+	return &Freezer{evidence: evidence, definitions: definitions, nodes: nodes, store: store}, nil
 }
 
 // FreezeRun projects one terminal run and writes the result.
@@ -98,13 +117,50 @@ func (freezer *Freezer) FreezeRun(ctx context.Context, run db.AgentWorkflowRun) 
 // plausible-looking projection of the wrong workflow for exactly the runs a
 // human most wants to inspect — old ones, whose workflow has since moved on.
 func (freezer *Freezer) executionNodes(run db.AgentWorkflowRun) (map[string]string, error) {
-	return executionNodesFor(freezer.definitions, run)
+	return executionNodesFor(freezer.definitions, freezer.nodes, run)
 }
 
 // executionNodesFor is shared by the freeze and the live read so both project
 // against the same node set. Two copies of this resolution would be two chances
 // for the frozen history and the live view of the same run to disagree.
-func executionNodesFor(definitions DefinitionSource, run db.AgentWorkflowRun) (map[string]string, error) {
+//
+// The run's own definition_kind selects which store answers: a reusable-node
+// run names a node definition, and the workflow store cannot see one.
+func executionNodesFor(
+	definitions DefinitionSource,
+	nodes NodeDefinitionSource,
+	run db.AgentWorkflowRun,
+) (map[string]string, error) {
+	function, err := runFunction(definitions, nodes, run)
+	if err != nil {
+		return nil, err
+	}
+	built, err := graph.Build(function)
+	if err != nil {
+		return nil, fmt.Errorf("occurrence: deriving graph for %s %q version %d: %w",
+			runDefinitionKind(run), run.WorkflowName, run.WorkflowVersion, err)
+	}
+	return ExecutionNodesOf(built), nil
+}
+
+func runFunction(
+	definitions DefinitionSource,
+	nodes NodeDefinitionSource,
+	run db.AgentWorkflowRun,
+) (*workflow.FunctionConfig, error) {
+	if run.DefinitionKind == workflow.DefinitionKindNode {
+		definition, found, err := nodes.Get(run.WorkflowName, run.WorkflowVersion)
+		if err != nil {
+			return nil, fmt.Errorf("occurrence: loading node %q version %d: %w",
+				run.WorkflowName, run.WorkflowVersion, err)
+		}
+		if !found || definition == nil {
+			return nil, fmt.Errorf("occurrence: node %q has no version %d",
+				run.WorkflowName, run.WorkflowVersion)
+		}
+		function := definition.Compiled.Function
+		return &function, nil
+	}
 	definition, found, err := definitions.Get(run.WorkflowName, run.WorkflowVersion)
 	if err != nil {
 		return nil, fmt.Errorf("occurrence: loading workflow %q version %d: %w",
@@ -114,12 +170,14 @@ func executionNodesFor(definitions DefinitionSource, run db.AgentWorkflowRun) (m
 		return nil, fmt.Errorf("occurrence: workflow %q has no version %d",
 			run.WorkflowName, run.WorkflowVersion)
 	}
-	built, err := graph.Build(definition.Compiled.Function)
-	if err != nil {
-		return nil, fmt.Errorf("occurrence: deriving graph for workflow %q version %d: %w",
-			run.WorkflowName, run.WorkflowVersion, err)
+	return definition.Compiled.Function, nil
+}
+
+func runDefinitionKind(run db.AgentWorkflowRun) string {
+	if run.DefinitionKind == workflow.DefinitionKindNode {
+		return "node"
 	}
-	return ExecutionNodesOf(built), nil
+	return "workflow"
 }
 
 func sourcesFrom(
@@ -190,12 +248,23 @@ func buildStepStatus(status string) (Status, bool) {
 }
 
 // projectionRow converts a derived occurrence into the row shape the table
-// stores. ReusableNodeName and ReusableNodeVersion stay empty: a reusable node
-// is expanded away before compilation, so graph.Build cannot see it and this
-// call site must not invent it. The table's CHECK requires the name and the
-// version to be absent together, which is exactly what an unset pair is.
+// stores.
+//
+// ReusableNodeName and ReusableNodeVersion are set only for a run OF a
+// reusable node, where the run itself names the node version that executed.
+// Inside an ordinary workflow run they stay empty, because a reusable node is
+// expanded away before compilation and graph.Build cannot see it — this call
+// site must not invent it. The table's CHECK requires the name and the version
+// to be present or absent together, which both cases satisfy.
 func projectionRow(occurrence NodeOccurrence) db.AgentWorkflowRunNodeOccurrence {
+	var reusableVersion *int
+	if occurrence.ReusableNodeName != "" && occurrence.ReusableNodeVersion > 0 {
+		version := occurrence.ReusableNodeVersion
+		reusableVersion = &version
+	}
 	return db.AgentWorkflowRunNodeOccurrence{
+		ReusableNodeName:    occurrence.ReusableNodeName,
+		ReusableNodeVersion: reusableVersion,
 		WorkflowRunID:        int64(occurrence.WorkflowRunID),
 		NodeID:               occurrence.NodeID,
 		RetryAttempt:         occurrence.RetryAttempt,

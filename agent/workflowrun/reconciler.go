@@ -294,12 +294,13 @@ func (reconciler *Reconciler) reconcileRow(
 		return reconciler.reconcileCanceling(ctx, view, now)
 	case db.AgentWorkflowRunStatusSucceeded,
 		db.AgentWorkflowRunStatusFailed,
-		db.AgentWorkflowRunStatusErrored:
+		db.AgentWorkflowRunStatusErrored,
+		db.AgentWorkflowRunStatusAborted:
 		// Already terminal (another node finalized it, or this row was
-		// re-claimed): re-project so a projection that failed once still lands.
-		reconciler.projectOwningTicket(ctx, view.Run)
-		return metric.WorkflowRunReconcilerRowAdvanced, nil
-	case db.AgentWorkflowRunStatusAborted:
+		// re-claimed): repair what the finalizing pass may have failed to
+		// finish. A wait left open by ANY terminal outcome is orphaned — the
+		// build that would have answered it is gone — so the repair is not
+		// specific to abortion.
 		if err := reconciler.cancelOpenWaits(ctx, view.Run, now); err != nil {
 			return "", err
 		}
@@ -480,7 +481,7 @@ func (reconciler *Reconciler) finalize(
 	message string,
 	outputs []db.AgentWorkflowRunExpectedOutput,
 ) (metric.WorkflowRunReconcilerRowResult, error) {
-	_, applied, err := reconciler.store.Finalize(ctx, db.AgentWorkflowRunFinalization{
+	result, applied, err := reconciler.store.Finalize(ctx, db.AgentWorkflowRunFinalization{
 		WorkflowRunID:           run.ID,
 		ExpectedStatus:          run.Status,
 		ExpectedExecutionStatus: run.ExecutionStatus,
@@ -496,13 +497,48 @@ func (reconciler *Reconciler) finalize(
 		// This node's CAS won, so this node owns the projection. A lost CAS
 		// means another node finalized the run and projects it itself.
 		//
-		// The node-occurrence freeze goes first. It is the only consumer that
+		// The run IS this status now, and the projection must describe the run
+		// that finished rather than the row this pass started from. Finalize
+		// may also settle on a different terminal status than the one asked
+		// for, when output evidence contradicts a claimed success.
+		finalized := run
+		finalized.Status = result.Status
+		if !result.CompletedAt.IsZero() {
+			completedAt := result.CompletedAt
+			finalized.CompletedAt = &completedAt
+		}
+
+		// Open waits are terminated BEFORE the freeze, not after. A wait row
+		// left 'waiting' is what the projection would read, and the frozen row
+		// is immutable — so freezing first pins a finished run in the attention
+		// lens permanently, with no way for an operator to clear it. Cancelling
+		// first makes the wait's own row say what actually happened.
+		reconciler.settleOpenWaits(ctx, finalized)
+
+		// The node-occurrence freeze goes next. It is the only consumer that
 		// races GC for the run's evidence, and the ticket projection is a
 		// cross-aggregate write that may block on another table.
-		reconciler.freezeNodeOccurrences(ctx, run)
-		reconciler.projectOwningTicket(ctx, run)
+		reconciler.freezeNodeOccurrences(ctx, finalized)
+		reconciler.projectOwningTicket(ctx, finalized)
 	}
 	return metric.WorkflowRunReconcilerRowAdvanced, nil
+}
+
+// settleOpenWaits cancels the run's still-open human waits at finalization.
+//
+// Like the freeze and the ticket projection it is deliberately not a row
+// failure: the run IS finalized, and a wait that could not be cancelled must
+// not strand it. ClaimForReconciliation re-claims any terminal run that still
+// has an open wait, so a failure here is repaired on a later pass.
+func (reconciler *Reconciler) settleOpenWaits(ctx context.Context, run db.AgentWorkflowRun) {
+	if err := reconciler.cancelOpenWaits(ctx, run, reconciler.now()); err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		reconciler.logger.Error("cancel-open-waits-at-finalization-failed", err, lager.Data{
+			"workflow_run_id": run.ID.String(),
+		})
+	}
 }
 
 // freezeNodeOccurrences writes the run's durable per-node history. Like the

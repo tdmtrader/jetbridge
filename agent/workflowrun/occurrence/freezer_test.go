@@ -33,6 +33,21 @@ func definitionKey(name string, version int) string {
 	return fmt.Sprintf("%s@%d", name, version)
 }
 
+type nodeDefinitionSourceFake struct {
+	definitions map[string]*workflow.NodeDefinition
+	requested   []string
+	err         error
+}
+
+func (fake *nodeDefinitionSourceFake) Get(name string, version int) (*workflow.NodeDefinition, bool, error) {
+	fake.requested = append(fake.requested, definitionKey(name, version))
+	if fake.err != nil {
+		return nil, false, fake.err
+	}
+	definition, found := fake.definitions[definitionKey(name, version)]
+	return definition, found, nil
+}
+
 type evidenceSourceFake struct {
 	evidence db.AgentWorkflowRunEvidence
 	runs     []db.AgentWorkflowRun
@@ -74,6 +89,7 @@ type harness struct {
 	freezer     *Freezer
 	run         db.AgentWorkflowRun
 	definitions *definitionSourceFake
+	nodes       *nodeDefinitionSourceFake
 	evidence    *evidenceSourceFake
 	store       *projectionStoreFake
 	compiled    *workflow.CompiledDefinition
@@ -102,14 +118,15 @@ func harnessFor(t *testing.T, compiled *workflow.CompiledDefinition) *harness {
 			ID: 41, Name: compiled.Name, Version: theRunsOwnVersion, Compiled: *compiled,
 		},
 	}}
+	nodes := &nodeDefinitionSourceFake{definitions: map[string]*workflow.NodeDefinition{}}
 	evidence := &evidenceSourceFake{}
 	store := &projectionStoreFake{}
-	freezer, err := NewFreezer(evidence, definitions, store)
+	freezer, err := NewFreezer(evidence, definitions, nodes, store)
 	if err != nil {
 		t.Fatalf("NewFreezer: %v", err)
 	}
 	return &harness{
-		freezer: freezer, run: run, definitions: definitions,
+		freezer: freezer, run: run, definitions: definitions, nodes: nodes,
 		evidence: evidence, store: store, compiled: compiled,
 	}
 }
@@ -535,12 +552,15 @@ func TestFreezerReportsStoreFailures(t *testing.T) {
 	}
 }
 
-// A reusable node is expanded away before compilation, so graph.Build cannot
-// see it and this call site must not invent it. The table's CHECK requires the
-// name and version to be absent together; a half-filled pair would make every
-// freeze fail at the database.
+// Inside an ordinary WORKFLOW run a reusable node is expanded away before
+// compilation, so graph.Build cannot see it and this call site must not invent
+// it. The table's CHECK requires the name and version to be absent together; a
+// half-filled pair would make every freeze fail at the database. (A run OF a
+// reusable node is the other case, and it does carry the pair — see
+// TestFreezerProjectsAReusableNodeRun.)
 func TestFreezerLeavesReusableNodeProvenanceUnset(t *testing.T) {
-	rows := newHarness(t, "small-fix-v3").freeze(t)
+	harness := newHarness(t, "small-fix-v3")
+	rows := harness.freeze(t)
 
 	for _, row := range rows {
 		if row.ReusableNodeName != "" || row.ReusableNodeVersion != nil {
@@ -548,20 +568,25 @@ func TestFreezerLeavesReusableNodeProvenanceUnset(t *testing.T) {
 				row.NodeID, row.ReusableNodeName, row.ReusableNodeVersion)
 		}
 	}
+	if len(harness.nodes.requested) != 0 {
+		t.Errorf("a workflow run consulted the node store: %v", harness.nodes.requested)
+	}
 }
 
 func TestNewFreezerRejectsMissingDependencies(t *testing.T) {
 	evidence := &evidenceSourceFake{}
 	definitions := &definitionSourceFake{}
+	nodes := &nodeDefinitionSourceFake{}
 	store := &projectionStoreFake{}
 
 	for name, construct := range map[string]func() (*Freezer, error){
-		"evidence":   func() (*Freezer, error) { return NewFreezer(nil, definitions, store) },
-		"definition": func() (*Freezer, error) { return NewFreezer(evidence, nil, store) },
-		"projection": func() (*Freezer, error) { return NewFreezer(evidence, definitions, nil) },
-		"everything": func() (*Freezer, error) { return NewFreezer(nil, nil, nil) },
+		"evidence":   func() (*Freezer, error) { return NewFreezer(nil, definitions, nodes, store) },
+		"definition": func() (*Freezer, error) { return NewFreezer(evidence, nil, nodes, store) },
+		"node":       func() (*Freezer, error) { return NewFreezer(evidence, definitions, nil, store) },
+		"projection": func() (*Freezer, error) { return NewFreezer(evidence, definitions, nodes, nil) },
+		"everything": func() (*Freezer, error) { return NewFreezer(nil, nil, nil, nil) },
 		"none missing": func() (*Freezer, error) {
-			return NewFreezer(evidence, definitions, store)
+			return NewFreezer(evidence, definitions, nodes, store)
 		},
 	} {
 		freezer, err := construct()

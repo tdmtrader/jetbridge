@@ -65,6 +65,27 @@ func (factory *agentWorkflowRunNodeOccurrencesFactory) Freeze(ctx context.Contex
 		return nil
 	}
 
+	// ON CONFLICT DO NOTHING below exists so a RETRIED finalization cannot
+	// double-write. It cannot tell that apart from two rows of ONE freeze
+	// colliding, which is a derivation bug, and swallowing those would discard
+	// real history with no error and no log line. Reject the batch instead:
+	// the projection is written once and must be written whole.
+	seen := make(map[[4]any]struct{}, len(occurrences))
+	for _, occurrence := range occurrences {
+		key := [4]any{
+			occurrence.WorkflowRunID, occurrence.NodeID,
+			occurrence.RetryAttempt, occurrence.Attempt,
+		}
+		if _, duplicate := seen[key]; duplicate {
+			return fmt.Errorf(
+				"db: node-occurrence freeze for run %d has two occurrences keyed (%s, retry %d, attempt %d)",
+				occurrence.WorkflowRunID, occurrence.NodeID,
+				occurrence.RetryAttempt, occurrence.Attempt,
+			)
+		}
+		seen[key] = struct{}{}
+	}
+
 	tx, err := factory.conn.Begin()
 	if err != nil {
 		return fmt.Errorf("db: beginning node-occurrence freeze: %w", err)
@@ -109,7 +130,13 @@ func (factory *agentWorkflowRunNodeOccurrencesFactory) ForRun(ctx context.Contex
 		SELECT `+agentWorkflowRunNodeOccurrenceColumns+`
 		FROM agent_workflow_run_node_occurrences
 		WHERE workflow_run_id = $1
-		ORDER BY plan_id, retry_attempt, attempt`, workflowRunID)
+		-- occurrence.ResolveEffective keeps the LAST terminal entry per node in
+		-- the order it is handed them, so the rows of one node must arrive in
+		-- execution order. plan_id led that ordering before, and plan IDs sort
+		-- as text — copy "10" ahead of copy "2" — which handed the resolution a
+		-- superseded attempt as the latest one. The attempt axes carry the real
+		-- order.
+		ORDER BY node_id, retry_attempt, attempt, plan_id`, workflowRunID)
 	if err != nil {
 		return nil, fmt.Errorf("db: reading node occurrences: %w", err)
 	}

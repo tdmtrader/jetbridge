@@ -8,9 +8,18 @@ import (
 // ChainEntry is one occurrence located within a retry closure. RunCreatedAt is
 // the creating run's timestamp, which supplies the deterministic ordering the
 // resolution depends on.
+//
+// RunTerminal says whether the OWNING RUN has finished. It is part of the
+// entry because a live occurrence status is not by itself evidence of live
+// work: a wait or publication left open by a build that was aborted, errored or
+// drained keeps its in-flight status, and the run's frozen projection is
+// immutable, so reading the status alone pinned finished runs in the attention
+// view permanently — while the resulting phantom "retry in flight" also
+// suppressed the genuine failure beside it.
 type ChainEntry struct {
 	RunID        int64
 	RunCreatedAt time.Time
+	RunTerminal  bool
 	Occurrence   NodeOccurrence
 }
 
@@ -83,7 +92,7 @@ func ResolveEffective(entries []ChainEntry) []Effective {
 
 		var liveRetry bool
 		for _, entry := range current.active {
-			attention := activeNeedsAttention(entry.Occurrence.Status)
+			attention := !entry.RunTerminal && activeNeedsAttention(entry.Occurrence.Status)
 			liveRetry = liveRetry || attention
 			result = append(result, Effective{
 				NodeID:         key.id,
@@ -134,8 +143,9 @@ func RunsNeedingAttention(entries []ChainEntry) map[int64]bool {
 }
 
 // activeNeedsAttention is true for in-flight states a human should be looking
-// at. Pending is deliberately excluded: Derive projects one pending occurrence
-// for every node a run never reached, and treating no-data as a call to action
+// at, on a run that is actually still in flight — see ChainEntry.RunTerminal.
+// Pending is deliberately excluded: Derive projects one pending occurrence for
+// every node a run never reached, and treating no-data as a call to action
 // would drown the attention view.
 func activeNeedsAttention(status Status) bool {
 	switch status {

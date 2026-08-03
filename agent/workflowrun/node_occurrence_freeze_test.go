@@ -248,3 +248,125 @@ func TestWithNodeOccurrenceFreezerRejectsNil(t *testing.T) {
 		t.Fatalf("error = %v, want a node-occurrence-freezer requirement", err)
 	}
 }
+
+// orderedWaitCanceler records where wait cancellation sits relative to the
+// freeze. The order is the whole defect: the freeze reads the run's wait rows,
+// and the row it writes is immutable, so freezing first records a wait that
+// outlived its build as still 'waiting' — permanently pinning a finished run
+// in the attention lens with nothing an operator can do to clear it.
+type orderedWaitCanceler struct {
+	order *[]string
+	calls *int
+	err   error
+}
+
+func (canceler orderedWaitCanceler) CancelRun(
+	_ context.Context, _ int, _ snapshot.WorkflowRunID, _ string, _ time.Time,
+) (int, error) {
+	*canceler.order = append(*canceler.order, "cancel")
+	*canceler.calls++
+	if canceler.err != nil {
+		return 0, canceler.err
+	}
+	return 1, nil
+}
+
+// Nothing on the running -> aborted/failed/errored path cancelled open waits at
+// all: cancelOpenWaits was reachable only from the 'canceling' and
+// already-'aborted' arms, both of which run on a LATER pass than the freeze.
+func TestReconcilerCancelsOpenWaitsBeforeFreezingTheProjection(t *testing.T) {
+	for _, execution := range []db.AgentWorkflowRunExecutionStatus{
+		db.AgentWorkflowRunExecutionStatusAborted,
+		db.AgentWorkflowRunExecutionStatusFailed,
+		db.AgentWorkflowRunExecutionStatusErrored,
+	} {
+		t.Run(string(execution), func(t *testing.T) {
+			var order []string
+			calls := 0
+			inner := &nodeOccurrenceFreezerFake{}
+			run := terminalizingRun(t, execution)
+			now := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
+			store := storeForSingleRun(run)
+			reconciler := mustReconciler(t, store, now, 15*time.Minute, time.Minute,
+				&reconciliationReporterFake{}, nil,
+				WithNodeOccurrenceFreezer(orderedFreezer{order: &order, inner: inner}),
+				WithWaitCanceler(orderedWaitCanceler{order: &order, calls: &calls}))
+			if err := reconciler.Run(context.Background()); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+
+			if len(order) != 2 || order[0] != "cancel" || order[1] != "freeze" {
+				t.Fatalf("order = %v, want the open waits cancelled before the freeze", order)
+			}
+			if len(inner.runs) != 1 {
+				t.Fatalf("freezes = %+v, want exactly one", inner.runs)
+			}
+			// The projection must describe the run that finished, not the row
+			// this pass started from — otherwise Derive cannot tell that a wait
+			// still marked 'waiting' has outlived its build.
+			if inner.runs[0].Status != db.AgentWorkflowRunStatus(execution) {
+				t.Fatalf("froze status %q, want the terminal status %q",
+					inner.runs[0].Status, execution)
+			}
+		})
+	}
+}
+
+// A wait that could not be cancelled must not strand the run or re-classify a
+// finalization that already applied; ClaimForReconciliation re-claims the run
+// and repairs it on a later pass.
+func TestReconcilerFinalizesEvenWhenWaitCancellationFails(t *testing.T) {
+	var order []string
+	calls := 0
+	freezer := &nodeOccurrenceFreezerFake{}
+	run := terminalizingRun(t, db.AgentWorkflowRunExecutionStatusFailed)
+	now := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
+	store := storeForSingleRun(run)
+	reporter := &reconciliationReporterFake{}
+	reconciler := mustReconciler(t, store, now, 15*time.Minute, time.Minute, reporter, nil,
+		WithNodeOccurrenceFreezer(freezer),
+		WithWaitCanceler(orderedWaitCanceler{
+			order: &order, calls: &calls, err: errors.New("wait store unavailable"),
+		}))
+	if err := reconciler.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if len(store.finalizations) != 1 {
+		t.Fatalf("finalizations = %d, want 1", len(store.finalizations))
+	}
+	if len(freezer.runs) != 1 {
+		t.Fatalf("freezes = %+v, want the projection written anyway", freezer.runs)
+	}
+	if reporter.rowCount(metric.WorkflowRunReconcilerRowFailed) != 0 {
+		t.Fatalf("rows = %+v, want no row failure", reporter.rows)
+	}
+}
+
+// A wait left open by ANY terminal outcome is orphaned — the build that would
+// have answered it is gone — so the re-claim repair must not be specific to
+// abortion, which is all the terminal arm used to cover.
+func TestReconcilerRepairsOpenWaitsForEveryTerminalStatus(t *testing.T) {
+	now := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
+	for _, status := range []db.AgentWorkflowRunStatus{
+		db.AgentWorkflowRunStatusSucceeded,
+		db.AgentWorkflowRunStatusFailed,
+		db.AgentWorkflowRunStatusErrored,
+		db.AgentWorkflowRunStatusAborted,
+	} {
+		t.Run(string(status), func(t *testing.T) {
+			var order []string
+			calls := 0
+			run := reconciliationRun(snapshot.WorkflowRunID(7), status, now)
+			reconciler := mustReconciler(t, storeForSingleRun(run), now, 15*time.Minute, time.Minute,
+				&reconciliationReporterFake{}, nil,
+				WithWaitCanceler(orderedWaitCanceler{order: &order, calls: &calls}))
+			if err := reconciler.Run(context.Background()); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if calls != 1 {
+				t.Fatalf("CancelRun calls = %d, want the open wait repaired", calls)
+			}
+		})
+	}
+}

@@ -499,7 +499,13 @@ func (factory *agentWorkflowWaitsFactory) CancelRun(
 		  AND EXISTS (
 		      SELECT 1 FROM agent_workflow_runs run
 		      WHERE run.id = w.workflow_run_id AND run.team_id = w.team_id
-		        AND run.status IN ('canceling', 'aborted')
+		        -- Every terminal outcome orphans an open wait, not just an
+		        -- abort: the build that would have answered it is gone whether
+		        -- it was aborted, errored, failed, or drained mid-approval.
+		        -- Restricting this to 'canceling'/'aborted' left those waits
+		        -- 'waiting' forever, and the node-occurrence freeze then wrote
+		        -- that live status into immutable history.
+		        AND run.status IN ('canceling', 'aborted', 'failed', 'errored', 'succeeded')
 		  )
 	`, teamID, int64(runID), actor)
 	if err != nil {

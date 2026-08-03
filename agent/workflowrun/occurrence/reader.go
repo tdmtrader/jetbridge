@@ -31,12 +31,14 @@ type Reader struct {
 	frozen      FrozenSource
 	evidence    EvidenceSource
 	definitions DefinitionSource
+	nodes       NodeDefinitionSource
 }
 
 func NewReader(
 	frozen FrozenSource,
 	evidence EvidenceSource,
 	definitions DefinitionSource,
+	nodes NodeDefinitionSource,
 ) (*Reader, error) {
 	if frozen == nil {
 		return nil, fmt.Errorf("occurrence: reader requires a frozen projection source")
@@ -47,7 +49,10 @@ func NewReader(
 	if definitions == nil {
 		return nil, fmt.Errorf("occurrence: reader requires a definition source")
 	}
-	return &Reader{frozen: frozen, evidence: evidence, definitions: definitions}, nil
+	if nodes == nil {
+		return nil, fmt.Errorf("occurrence: reader requires a node definition source")
+	}
+	return &Reader{frozen: frozen, evidence: evidence, definitions: definitions, nodes: nodes}, nil
 }
 
 // OccurrencesForRun returns one run's occurrences.
@@ -80,7 +85,7 @@ func (reader *Reader) OccurrencesForRun(
 	// The definition is loaded by the run's OWN workflow version, never the
 	// promoted one, for the same reason the freezer does: a run's occurrences
 	// describe the revision that actually executed.
-	executionNodes, err := executionNodesFor(reader.definitions, run)
+	executionNodes, err := executionNodesFor(reader.definitions, reader.nodes, run)
 	if err != nil {
 		return nil, err
 	}

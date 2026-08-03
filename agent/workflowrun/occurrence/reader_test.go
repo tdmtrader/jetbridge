@@ -30,19 +30,20 @@ type readerHarness struct {
 	frozen      *frozenSourceFake
 	evidence    *evidenceSourceFake
 	definitions *definitionSourceFake
+	nodes       *nodeDefinitionSourceFake
 }
 
 func newReaderHarness(t *testing.T, seed string) *readerHarness {
 	t.Helper()
 	base := newHarness(t, seed)
 	frozen := &frozenSourceFake{}
-	reader, err := NewReader(frozen, base.evidence, base.definitions)
+	reader, err := NewReader(frozen, base.evidence, base.definitions, base.nodes)
 	if err != nil {
 		t.Fatalf("NewReader: %v", err)
 	}
 	return &readerHarness{
 		reader: reader, run: base.run, frozen: frozen,
-		evidence: base.evidence, definitions: base.definitions,
+		evidence: base.evidence, definitions: base.definitions, nodes: base.nodes,
 	}
 }
 
@@ -59,10 +60,12 @@ func TestNewReaderRequiresEverySource(t *testing.T) {
 	frozen := &frozenSourceFake{}
 	evidence := &evidenceSourceFake{}
 	definitions := &definitionSourceFake{}
+	nodes := &nodeDefinitionSourceFake{}
 	for name, construct := range map[string]func() (*Reader, error){
-		"frozen":      func() (*Reader, error) { return NewReader(nil, evidence, definitions) },
-		"evidence":    func() (*Reader, error) { return NewReader(frozen, nil, definitions) },
-		"definitions": func() (*Reader, error) { return NewReader(frozen, evidence, nil) },
+		"frozen":      func() (*Reader, error) { return NewReader(nil, evidence, definitions, nodes) },
+		"evidence":    func() (*Reader, error) { return NewReader(frozen, nil, definitions, nodes) },
+		"definitions": func() (*Reader, error) { return NewReader(frozen, evidence, nil, nodes) },
+		"nodes":       func() (*Reader, error) { return NewReader(frozen, evidence, definitions, nil) },
 	} {
 		if _, err := construct(); err == nil {
 			t.Fatalf("%s: expected a construction error", name)

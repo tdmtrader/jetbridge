@@ -33,12 +33,16 @@ const (
 // binding name for await, publish, and load nodes. It is deliberately bare,
 // because that is what agent/workflow/graph emits for execution nodes.
 //
-// RetryAttempt is which copy of a retry closure this node belongs to, counted
-// from one. atc/builds/planner.go materializes one full copy of the wrapped
-// step per configured attempt, each with its own plan ID, and
-// atc/engine/builder.go numbers those copies by their index at execution time.
-// Deriving the same number here keeps the two attempts of one node distinct
-// without inventing an ordering the engine does not already use.
+// RetryAttempt is the index of the NEAREST ENCLOSING retry closure this node
+// belongs to, counted from one. atc/builds/planner.go materializes one full
+// copy of the wrapped step per configured attempt, each with its own plan ID,
+// and atc/engine/builder.go numbers those copies by their index at execution
+// time, so this is the engine's own number for a single-level closure.
+//
+// It is NOT the projection's key. Nested retry multiplies the copies while
+// this number repeats once per outer copy, so deriveNode renumbers each copy
+// by its ordinal within its node group before projecting it. Read this field
+// as "which turn of the innermost closure", not as "which copy".
 type PlanNode struct {
 	PlanID       string
 	NodeID       string

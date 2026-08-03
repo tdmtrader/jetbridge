@@ -1542,21 +1542,33 @@ func (factory *agentWorkflowRunsFactory) ListKind(
 	//                             occurrence per node in the retry closure, and
 	//                             suppresses it entirely while a retry is live.
 	//                             So: a later terminal occurrence of the same
-	//                             node in the same closure, a live occurrence of
-	//                             that node anywhere in the closure, or a retry
-	//                             still in flight. An active run has no frozen
-	//                             projection — freeze happens at finalization —
-	//                             so the run row itself is the only evidence of
-	//                             liveRetry available here. Retries are whole-run
-	//                             by construction (workflowruns.Handler.Retry
-	//                             rebinds every input at the same revision), so
-	//                             an in-flight retry is addressing every node of
-	//                             the run it retries.
+	//                             node — in a sibling run OR in a later copy of
+	//                             an authored retry closure within this same run
+	//                             — a live occurrence of that node anywhere in
+	//                             the closure, or a retry still in flight.
+	//                             Retries are whole-run by construction
+	//                             (workflowruns.Handler.Retry rebinds every
+	//                             input at the same revision), so an in-flight
+	//                             retry is addressing every node of the run it
+	//                             retries.
 	//
-	// A terminal run with no projection at all — one that predates the table, or
-	// whose freeze failed — is treated as a single unresolved unit rather than
-	// dropped, because a failure that GC made invisible is precisely the failure
-	// this lens exists to surface.
+	// An unresolved terminal run whose projection contains no occurrence that
+	// ACCOUNTS FOR the failure is treated as a single unresolved unit. That is
+	// the run with no projection at all — one predating the table, or whose
+	// freeze failed — but it is equally the run whose every node froze pending
+	// because it died before any node reported, and the run that failed at the
+	// run level with a projection of nothing but successes (an output-contract
+	// mismatch). Testing for zero ROWS instead of zero EVIDENCE dropped all but
+	// the first from the one surface whose job is answering "is anything
+	// unresolved?".
+	//
+	// There is deliberately no arm admitting a TERMINAL run for carrying a live
+	// occurrence. An active run is already admitted by its own status, and a
+	// finished run's frozen projection cannot describe work in flight: the
+	// reconciler cancels open waits before freezing and occurrence.Derive
+	// settles any remaining live status against the run's terminal one. An arm
+	// that admitted them anyway pinned finished runs here permanently, because
+	// the frozen row is immutable and nothing supersedes a live occurrence.
 	needsRetryClosure := false
 	switch filter.Lens {
 	case AgentWorkflowRunLensActive:
@@ -1589,26 +1601,33 @@ func (factory *agentWorkflowRunsFactory) ListKind(
 			}
 			return clause + `)`
 		}
+		// An authored `attempts:` closure puts several copies of one node in ONE
+		// run, and ResolveEffective buckets purely by node identity — it does not
+		// care which run or which plan copy an entry came from. A lens that only
+		// ever let a SIBLING RUN supersede therefore listed a run whose retried
+		// node had already succeeded, contradicting the canvas for every retried
+		// node. The attempt axes carry the order; plan_id does not.
+		supersedingCopy := `SELECT 1
+			FROM agent_workflow_run_node_occurrences later
+			WHERE later.workflow_run_id = agent_workflow_runs.id
+				AND later.node_id = o.node_id
+				AND (
+					later.status IN (` + placeholders(liveNodeOccurrenceStatuses) + `)
+					OR (later.status IN (` + placeholders(terminalNodeOccurrenceStatuses) + `)
+						AND (later.retry_attempt, later.attempt) > (o.retry_attempt, o.attempt))
+				)`
+		unresolvedOccurrence := `SELECT 1 FROM agent_workflow_run_node_occurrences o
+				WHERE o.workflow_run_id = agent_workflow_runs.id
+					AND o.status IN (` + placeholders(UnresolvedAgentWorkflowRunStatuses) + `)
+					AND NOT EXISTS (` + supersedingSibling(true) + `)
+					AND NOT EXISTS (` + supersedingCopy + `)`
 		query += `
 			AND (
 				agent_workflow_runs.status IN (` + placeholders(ActiveAgentWorkflowRunStatuses) + `)
-				OR EXISTS (
-					SELECT 1 FROM agent_workflow_run_node_occurrences o
-					WHERE o.workflow_run_id = agent_workflow_runs.id
-						AND (
-							o.status IN (` + placeholders(liveNodeOccurrenceStatuses) + `)
-							OR (
-								o.status IN (` + placeholders(UnresolvedAgentWorkflowRunStatuses) + `)
-								AND NOT EXISTS (` + supersedingSibling(true) + `)
-							)
-						)
-				)
+				OR EXISTS (` + unresolvedOccurrence + `)
 				OR (
 					agent_workflow_runs.status IN (` + placeholders(UnresolvedAgentWorkflowRunStatuses) + `)
-					AND NOT EXISTS (
-						SELECT 1 FROM agent_workflow_run_node_occurrences o
-						WHERE o.workflow_run_id = agent_workflow_runs.id
-					)
+					AND NOT EXISTS (` + unresolvedOccurrence + `)
 					AND NOT EXISTS (` + supersedingSibling(false) + `)
 				)
 			)`
@@ -2466,7 +2485,11 @@ func (factory *agentWorkflowRunsFactory) ClaimForReconciliation(
 			WHERE (
 				run.status IN ('admitting', 'running', 'canceling')
 				OR (
-					run.status = 'aborted'
+					-- A wait left open by ANY terminal outcome is orphaned: the
+					-- build that would have answered it is gone. Keeping this
+					-- arm to 'aborted' alone left a failed or errored run's
+					-- waits 'waiting' forever, with nothing due to repair them.
+					run.status IN ('succeeded', 'failed', 'errored', 'aborted')
 					AND EXISTS (
 						SELECT 1
 						FROM agent_workflow_waits wait

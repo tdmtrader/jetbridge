@@ -2269,6 +2269,30 @@ plan:
 			Expect(err).NotTo(HaveOccurred())
 		}
 
+		terminalRunStatus := func(status db.AgentWorkflowRunStatus) bool {
+			switch status {
+			case db.AgentWorkflowRunStatusSucceeded, db.AgentWorkflowRunStatusFailed,
+				db.AgentWorkflowRunStatusErrored, db.AgentWorkflowRunStatusAborted:
+				return true
+			default:
+				return false
+			}
+		}
+
+		// seedRetryCopy seeds one copy of an authored `attempts:` closure: the
+		// same node identity at a different retry_attempt inside ONE run.
+		seedRetryCopy := func(run db.AgentWorkflowRun, nodeID string, retryAttempt int, status string) {
+			_, err := dbConn.Exec(`
+				INSERT INTO agent_workflow_run_node_occurrences
+					(workflow_run_id, node_id, retry_attempt, attempt, team_id,
+					 workflow_name, workflow_definition_id, workflow_version,
+					 node_kind, plan_id, status)
+				VALUES ($1, $2, $3, 1, $4, $5, $6, 1, 'agent', $7, $8)
+			`, int64(run.ID), nodeID, retryAttempt, defaultTeam.ID(), definitionName, definitionID,
+				fmt.Sprintf("plan-%s-%d", nodeID, retryAttempt), status)
+			Expect(err).NotTo(HaveOccurred())
+		}
+
 		linkRetry := func(child, parent db.AgentWorkflowRun) {
 			_, err := dbConn.Exec(`
 				UPDATE agent_workflow_runs
@@ -2363,15 +2387,28 @@ plan:
 			Expect(lensIDs(db.AgentWorkflowRunLensAttention)).To(ContainElement(failed.ID))
 		})
 
-		It("treats an unresolved wait as needing attention regardless of run status", func() {
-			waiting := seedRun(6*time.Hour, db.AgentWorkflowRunStatusSucceeded)
-			seedOccurrence(waiting, "approve", "waiting")
-			retry := seedRun(time.Hour, db.AgentWorkflowRunStatusSucceeded)
-			seedOccurrence(retry, "approve", "succeeded")
-			linkRetry(retry, waiting)
+		// A finished run's frozen projection cannot describe work in flight:
+		// the reconciler cancels open waits before freezing and
+		// occurrence.Derive settles any remaining live status against the run's
+		// terminal one. Admitting a terminal run for carrying a live occurrence
+		// pinned it here forever — the frozen row is immutable and nothing
+		// supersedes a live occurrence, so not even a successful retry cleared
+		// it.
+		It("does not pin a finished run for a live occurrence it can no longer be doing", func() {
+			stale := seedRun(6*time.Hour, db.AgentWorkflowRunStatusSucceeded)
+			seedOccurrence(stale, "approve", "waiting")
 
-			Expect(lensIDs(db.AgentWorkflowRunLensAttention)).To(ContainElement(waiting.ID),
-				"a live occurrence always asks for action; supersession applies to terminals")
+			Expect(lensIDs(db.AgentWorkflowRunLensAttention)).ToNot(ContainElement(stale.ID))
+		})
+
+		// An unresolved terminal run is still surfaced when nothing in its
+		// projection accounts for the failure, which is the case a stale live
+		// occurrence used to mask.
+		It("surfaces an unresolved run whose only occurrence is a stale live one", func() {
+			aborted := seedRun(6*time.Hour, db.AgentWorkflowRunStatusAborted)
+			seedOccurrence(aborted, "approve", "waiting")
+
+			Expect(lensIDs(db.AgentWorkflowRunLensAttention)).To(ContainElement(aborted.ID))
 		})
 
 		It("suppresses an earlier failure while a retry is still in flight", func() {
@@ -2391,6 +2428,81 @@ plan:
 
 			Expect(lensIDs(db.AgentWorkflowRunLensAttention)).To(ContainElement(ungrouped.ID),
 				"a failure GC made invisible is exactly what this lens exists to surface")
+		})
+
+		// The escape hatch used to test for zero ROWS rather than zero
+		// EVIDENCE. A run that died before any node reported — an input
+		// materialization failure, an abort, the web draining mid-build —
+		// freezes an all-pending projection, which is rows without evidence, so
+		// the whole class dropped out of the lens whose one job is answering
+		// "is anything unresolved?".
+		It("surfaces a terminal failure whose whole projection froze pending", func() {
+			errored := seedRun(6*time.Hour, db.AgentWorkflowRunStatusErrored)
+			seedOccurrence(errored, "implement", "pending")
+			seedOccurrence(errored, "review", "pending")
+
+			Expect(lensIDs(db.AgentWorkflowRunLensAttention)).To(ContainElement(errored.ID))
+		})
+
+		// A run-level failure with a projection of nothing but successes is the
+		// output-contract mismatch: the build succeeded, so every node froze
+		// succeeded, and the run failed on the sealed outputs. No node carries
+		// that failure, so the run itself is the unresolved unit.
+		It("surfaces a run-level failure whose nodes all succeeded", func() {
+			mismatched := seedRun(6*time.Hour, db.AgentWorkflowRunStatusFailed)
+			seedOccurrence(mismatched, "implement", "succeeded")
+			seedOccurrence(mismatched, "review", "succeeded")
+
+			Expect(lensIDs(db.AgentWorkflowRunLensAttention)).To(ContainElement(mismatched.ID))
+		})
+
+		It("leaves a succeeded run alone even when it reached nothing", func() {
+			succeeded := seedRun(6*time.Hour, db.AgentWorkflowRunStatusSucceeded)
+			seedOccurrence(succeeded, "implement", "pending")
+
+			Expect(lensIDs(db.AgentWorkflowRunLensAttention)).ToNot(ContainElement(succeeded.ID))
+		})
+
+		It("resolves an all-pending failure through a later successful retry", func() {
+			errored := seedRun(6*time.Hour, db.AgentWorkflowRunStatusErrored)
+			seedOccurrence(errored, "implement", "pending")
+			retry := seedRun(time.Hour, db.AgentWorkflowRunStatusSucceeded)
+			seedOccurrence(retry, "implement", "succeeded")
+			linkRetry(retry, errored)
+
+			Expect(lensIDs(db.AgentWorkflowRunLensAttention)).ToNot(ContainElement(errored.ID))
+		})
+
+		// occurrence.ResolveEffective buckets purely by node identity — it does
+		// not care which run or which plan copy an entry came from — so an
+		// authored `attempts:` closure whose second copy succeeded resolves the
+		// first copy's failure. Letting only a SIBLING RUN supersede listed the
+		// successful run as needing attention for every retried node, which is
+		// the canvas and the list contradicting each other.
+		It("resolves a failure through a later retry copy inside the same run", func() {
+			retried := seedRun(6*time.Hour, db.AgentWorkflowRunStatusSucceeded)
+			seedRetryCopy(retried, "implement", 1, "failed")
+			seedRetryCopy(retried, "implement", 2, "succeeded")
+
+			Expect(lensIDs(db.AgentWorkflowRunLensAttention)).ToNot(ContainElement(retried.ID))
+		})
+
+		It("keeps a failure whose later retry copy also failed", func() {
+			retried := seedRun(6*time.Hour, db.AgentWorkflowRunStatusFailed)
+			seedRetryCopy(retried, "implement", 1, "failed")
+			seedRetryCopy(retried, "implement", 2, "failed")
+
+			Expect(lensIDs(db.AgentWorkflowRunLensAttention)).To(ContainElement(retried.ID))
+		})
+
+		// Supersession is directional: an EARLIER copy succeeding does not
+		// resolve a later copy's failure.
+		It("keeps a failure that a later copy did not supersede", func() {
+			retried := seedRun(6*time.Hour, db.AgentWorkflowRunStatusFailed)
+			seedRetryCopy(retried, "implement", 1, "succeeded")
+			seedRetryCopy(retried, "implement", 2, "failed")
+
+			Expect(lensIDs(db.AgentWorkflowRunLensAttention)).To(ContainElement(retried.ID))
 		})
 
 		It("resolves a projection-less failure through a later successful retry", func() {
@@ -2462,6 +2574,12 @@ plan:
 		// needs attention. This runs both definitions over one seeded corpus of
 		// terminal runs — where the frozen projection is the complete truth, so
 		// both see identical evidence — and requires them to agree exactly.
+		//
+		// The corpus is deliberately NODE-level: every run in it has a
+		// projection that accounts for its own state. The lens's third branch
+		// answers a question occurrence.ResolveEffective does not ask — "this
+		// run failed and NOTHING in its projection says why" — and is covered by
+		// the specs above rather than here.
 		It("agrees with occurrence.ResolveEffective over a seeded corpus", func() {
 			type seeded struct {
 				run         db.AgentWorkflowRun
@@ -2501,6 +2619,12 @@ plan:
 			add(seedRun(4*time.Hour, db.AgentWorkflowRunStatusAborted),
 				map[string]string{"implement": "aborted", "review": "skipped"})
 
+			// Closure 4: a run whose live occurrence outlived it. The list and
+			// the canvas must agree that a finished run is not doing anything,
+			// which is the half of the resolution ChainEntry.RunTerminal owns.
+			add(seedRun(3*time.Hour, db.AgentWorkflowRunStatusSucceeded),
+				map[string]string{"approve": "waiting", "implement": "succeeded"})
+
 			closures := map[snapshot.WorkflowRunID][]occurrence.ChainEntry{}
 			root := map[snapshot.WorkflowRunID]snapshot.WorkflowRunID{
 				first.ID: first.ID, second.ID: first.ID,
@@ -2515,6 +2639,7 @@ plan:
 					closures[key] = append(closures[key], occurrence.ChainEntry{
 						RunID:        int64(entry.run.ID),
 						RunCreatedAt: entry.run.CreatedAt,
+						RunTerminal:  terminalRunStatus(entry.run.Status),
 						Occurrence:   node,
 					})
 				}
