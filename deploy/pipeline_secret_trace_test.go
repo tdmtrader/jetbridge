@@ -32,6 +32,7 @@ type deployPipelineStep struct {
 	Task       string         `yaml:"task"`
 	Privileged bool           `yaml:"privileged"`
 	Timeout    string         `yaml:"timeout"`
+	Attempts   int            `yaml:"attempts"`
 	Params     map[string]any `yaml:"params"`
 	Passed     []string       `yaml:"passed"`
 	Config     struct {

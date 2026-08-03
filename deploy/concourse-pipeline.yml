@@ -835,14 +835,55 @@ jobs:
           printf '%s\n' "$SOURCE_COMMIT" | grep -Eq '^[a-f0-9]{40}$'
           printf '%s\n' "$RUNNER_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'
           test "$SOURCE_COMMIT" = "$(git -C repo rev-parse HEAD)"
+          # Output volumes survive an interrupted ATC task replay. Start from
+          # the immutable input so stale Git locks or files cannot leak into
+          # the next supervised push.
+          find home-infra-updated -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
           cp -a home-infra/. home-infra-updated/
           test -e home-infra-updated/.git
           sh repo/deploy/write-agent-runner-home-infra.sh "$CONCOURSE_AGENT_STEP_IMAGE" "$SOURCE_COMMIT" "$RUNNER_VERSION" home-infra-updated
-  - put: home-infra
+  - task: push-home-infra-agent-runner-image
     timeout: 5m
-    params:
-      repository: home-infra-updated
-      rebase: true
+    attempts: 2
+    config:
+      platform: linux
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v5
+      inputs:
+      - name: home-infra-updated
+      params:
+        GITHUB_TOKEN: ((github-token))
+      run:
+        path: sh
+        args:
+        - -euc
+        - |
+          PUSH_REPO=$(mktemp -d)
+          ASKPASS=$(mktemp)
+          cleanup_push() {
+            rm -rf "${PUSH_REPO}"
+            rm -f "${ASKPASS}"
+          }
+          trap cleanup_push EXIT
+          trap 'exit 129' HUP
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+          cp -a home-infra-updated/. "${PUSH_REPO}/"
+          test -e "${PUSH_REPO}/.git"
+          set +x
+          cat <<'ASKPASS_EOF' > "${ASKPASS}"
+          #!/bin/sh
+          case "${1-}" in
+            *Username*) printf '%s\n' x-access-token ;;
+            *Password*) printf '%s\n' "${GITHUB_TOKEN}" ;;
+            *) exit 1 ;;
+          esac
+          ASKPASS_EOF
+          chmod 700 "${ASKPASS}"
+          GIT_ASKPASS="${ASKPASS}" GIT_TERMINAL_PROMPT=0 \
+            git -C "${PUSH_REPO}" fetch --no-tags origin refs/heads/main
+          git -C "${PUSH_REPO}" -c user.name="Concourse CI" -c user.email="ci@concourse.home" rebase --rebase-merges FETCH_HEAD
+          GIT_ASKPASS="${ASKPASS}" GIT_TERMINAL_PROMPT=0 \
+            git -C "${PUSH_REPO}" push origin HEAD:refs/heads/main
 
 # Builds the pinned multi-harness broker companion for linux/amd64 and prints
 # the registry-reported immutable digest. This remains manual because updating
@@ -1051,6 +1092,10 @@ jobs:
           fi
           WEB_IMAGE="registry.home/jetbridge@${DIGEST}"
 
+          # Output volumes survive an interrupted ATC task replay. Start from
+          # the immutable input so stale Git locks or files cannot leak into
+          # the next supervised push.
+          find ../home-infra-updated -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
           cp -a ../home-infra/. ../home-infra-updated/
           test -e ../home-infra-updated/.git
           sh deploy/write-web-image-home-infra.sh "${WEB_IMAGE}" "${SOURCE_COMMIT}" ../home-infra-updated
@@ -1060,11 +1105,48 @@ jobs:
           grep -Eq '^CONCOURSE_WEB_IMAGE=registry.home/jetbridge@sha256:[a-f0-9]{64}$' ../web-image-metadata/verified-image.env
           grep -Eq '^SOURCE_COMMIT=[a-f0-9]{40}$' ../web-image-metadata/verified-image.env
           grep -Eq '^RC_IMAGE=registry.home/jetbridge:rc-[a-f0-9]{40}$' ../web-image-metadata/verified-image.env
-  - put: home-infra
+  - task: push-home-infra-self-upgrade-image
     timeout: 5m
-    params:
-      repository: home-infra-updated
-      rebase: true
+    attempts: 2
+    config:
+      platform: linux
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v5
+      inputs:
+      - name: home-infra-updated
+      params:
+        GITHUB_TOKEN: ((github-token))
+      run:
+        path: sh
+        args:
+        - -euc
+        - |
+          PUSH_REPO=$(mktemp -d)
+          ASKPASS=$(mktemp)
+          cleanup_push() {
+            rm -rf "${PUSH_REPO}"
+            rm -f "${ASKPASS}"
+          }
+          trap cleanup_push EXIT
+          trap 'exit 129' HUP
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+          cp -a home-infra-updated/. "${PUSH_REPO}/"
+          test -e "${PUSH_REPO}/.git"
+          set +x
+          cat <<'ASKPASS_EOF' > "${ASKPASS}"
+          #!/bin/sh
+          case "${1-}" in
+            *Username*) printf '%s\n' x-access-token ;;
+            *Password*) printf '%s\n' "${GITHUB_TOKEN}" ;;
+            *) exit 1 ;;
+          esac
+          ASKPASS_EOF
+          chmod 700 "${ASKPASS}"
+          GIT_ASKPASS="${ASKPASS}" GIT_TERMINAL_PROMPT=0 \
+            git -C "${PUSH_REPO}" fetch --no-tags origin refs/heads/main
+          git -C "${PUSH_REPO}" -c user.name="Concourse CI" -c user.email="ci@concourse.home" rebase --rebase-merges FETCH_HEAD
+          GIT_ASKPASS="${ASKPASS}" GIT_TERMINAL_PROMPT=0 \
+            git -C "${PUSH_REPO}" push origin HEAD:refs/heads/main
   - task: trigger-rollout
     attempts: 2
     config:
@@ -1315,15 +1397,56 @@ jobs:
           printf '%s\n' "${ATTESTED_SOURCE}" | grep -Eq '^[a-f0-9]{40}$'
           printf '%s\n' "${TESTED_IMAGE}" | grep -Eq '^registry.home/jetbridge@sha256:[a-f0-9]{64}$'
           test "${ATTESTED_SOURCE}" = "$(git -C repo rev-parse HEAD)"
+          # Output volumes survive an interrupted ATC task replay. Start from
+          # the immutable input so stale Git locks or files cannot leak into
+          # the next supervised push.
+          find home-infra-updated -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
           cp -a home-infra/. home-infra-updated/
           test -e home-infra-updated/.git
           sh repo/deploy/write-live-tested-image-home-infra.sh \
             "${TESTED_IMAGE}" "${ATTESTED_SOURCE}" home-infra-updated
-  - put: home-infra
+  - task: push-home-infra-live-tested-image
     timeout: 5m
-    params:
-      repository: home-infra-updated
-      rebase: true
+    attempts: 2
+    config:
+      platform: linux
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v5
+      inputs:
+      - name: home-infra-updated
+      params:
+        GITHUB_TOKEN: ((github-token))
+      run:
+        path: sh
+        args:
+        - -euc
+        - |
+          PUSH_REPO=$(mktemp -d)
+          ASKPASS=$(mktemp)
+          cleanup_push() {
+            rm -rf "${PUSH_REPO}"
+            rm -f "${ASKPASS}"
+          }
+          trap cleanup_push EXIT
+          trap 'exit 129' HUP
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+          cp -a home-infra-updated/. "${PUSH_REPO}/"
+          test -e "${PUSH_REPO}/.git"
+          set +x
+          cat <<'ASKPASS_EOF' > "${ASKPASS}"
+          #!/bin/sh
+          case "${1-}" in
+            *Username*) printf '%s\n' x-access-token ;;
+            *Password*) printf '%s\n' "${GITHUB_TOKEN}" ;;
+            *) exit 1 ;;
+          esac
+          ASKPASS_EOF
+          chmod 700 "${ASKPASS}"
+          GIT_ASKPASS="${ASKPASS}" GIT_TERMINAL_PROMPT=0 \
+            git -C "${PUSH_REPO}" fetch --no-tags origin refs/heads/main
+          git -C "${PUSH_REPO}" -c user.name="Concourse CI" -c user.email="ci@concourse.home" rebase --rebase-merges FETCH_HEAD
+          GIT_ASKPASS="${ASKPASS}" GIT_TERMINAL_PROMPT=0 \
+            git -C "${PUSH_REPO}" push origin HEAD:refs/heads/main
 
 - name: release
   serial_groups: [pipeline]
@@ -1343,11 +1466,36 @@ jobs:
       - name: home-infra
       outputs:
       - name: release-tested-image
+      params:
+        GITHUB_TOKEN: ((github-token))
       run:
         path: sh
         args:
         - -euc
         - |
+          ASKPASS=$(mktemp)
+          cleanup_askpass() {
+            rm -f "${ASKPASS}"
+          }
+          trap cleanup_askpass EXIT
+          trap 'exit 129' HUP
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+          set +x
+          cat <<'ASKPASS_EOF' > "${ASKPASS}"
+          #!/bin/sh
+          case "${1-}" in
+            *Username*) printf '%s\n' x-access-token ;;
+            *Password*) printf '%s\n' "${GITHUB_TOKEN}" ;;
+            *) exit 1 ;;
+          esac
+          ASKPASS_EOF
+          chmod 700 "${ASKPASS}"
+          GIT_ASKPASS="${ASKPASS}" GIT_TERMINAL_PROMPT=0 \
+            git -C home-infra fetch --no-tags origin refs/heads/main
+          git -C home-infra reset --hard FETCH_HEAD
+          git -C home-infra clean -ffdqx
+
           ATTESTATION=home-infra/apps/concourse-live-tested-image.env
           test -f "${ATTESTATION}"
           test "$(wc -l < "${ATTESTATION}" | tr -d ' ')" = 2
@@ -1663,10 +1811,20 @@ jobs:
           SOURCE_COMMIT=$(sed -n 's/^SOURCE_COMMIT=//p' release-image-metadata/verified-image.env)
           printf '%s\n' "${WEB_IMAGE}" | grep -Eq '^registry.home/jetbridge@sha256:[a-f0-9]{64}$'
           printf '%s\n' "${SOURCE_COMMIT}" | grep -Eq '^[a-f0-9]{40}$'
+          # Output volumes survive an interrupted ATC task replay. Start from
+          # the immutable input so stale Git locks or files cannot leak into
+          # the next supervised push.
+          find home-infra-updated -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
           cp -a home-infra/. home-infra-updated/
           test -e home-infra-updated/.git
           ASKPASS=$(mktemp)
-          trap 'rm -f "${ASKPASS}"' EXIT HUP INT TERM
+          cleanup_askpass() {
+            rm -f "${ASKPASS}"
+          }
+          trap cleanup_askpass EXIT
+          trap 'exit 129' HUP
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
           cat <<'ASKPASS_EOF' > "${ASKPASS}"
           #!/bin/sh
           case "${1-}" in
@@ -1681,11 +1839,48 @@ jobs:
           git -C home-infra-updated reset --hard FETCH_HEAD
           rm -f "${ASKPASS}"
           sh repo/deploy/write-web-image-home-infra.sh "${WEB_IMAGE}" "${SOURCE_COMMIT}" home-infra-updated
-  - put: home-infra
+  - task: push-home-infra-release-image
     timeout: 5m
-    params:
-      repository: home-infra-updated
-      rebase: true
+    attempts: 2
+    config:
+      platform: linux
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v5
+      inputs:
+      - name: home-infra-updated
+      params:
+        GITHUB_TOKEN: ((github-token))
+      run:
+        path: sh
+        args:
+        - -euc
+        - |
+          PUSH_REPO=$(mktemp -d)
+          ASKPASS=$(mktemp)
+          cleanup_push() {
+            rm -rf "${PUSH_REPO}"
+            rm -f "${ASKPASS}"
+          }
+          trap cleanup_push EXIT
+          trap 'exit 129' HUP
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+          cp -a home-infra-updated/. "${PUSH_REPO}/"
+          test -e "${PUSH_REPO}/.git"
+          set +x
+          cat <<'ASKPASS_EOF' > "${ASKPASS}"
+          #!/bin/sh
+          case "${1-}" in
+            *Username*) printf '%s\n' x-access-token ;;
+            *Password*) printf '%s\n' "${GITHUB_TOKEN}" ;;
+            *) exit 1 ;;
+          esac
+          ASKPASS_EOF
+          chmod 700 "${ASKPASS}"
+          GIT_ASKPASS="${ASKPASS}" GIT_TERMINAL_PROMPT=0 \
+            git -C "${PUSH_REPO}" fetch --no-tags origin refs/heads/main
+          git -C "${PUSH_REPO}" -c user.name="Concourse CI" -c user.email="ci@concourse.home" rebase --rebase-merges FETCH_HEAD
+          GIT_ASKPASS="${ASKPASS}" GIT_TERMINAL_PROMPT=0 \
+            git -C "${PUSH_REPO}" push origin HEAD:refs/heads/main
   - task: verify-release-rollout
     config:
       platform: linux

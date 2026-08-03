@@ -81,9 +81,10 @@ func TestConcourseReleaseWritebackRefreshesBeforeApplyingReplayedDigest(t *testi
 	}
 	writeReleaseFixtureFile(t, filepath.Join(metadataDir, "verified-image.env"),
 		"CONCOURSE_WEB_IMAGE="+finalImage+"\nSOURCE_COMMIT="+sourceCommit+"\n", 0o600)
-	if err := os.Mkdir(filepath.Join(fixture.dir, "home-infra-updated"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	updated := filepath.Join(fixture.dir, "home-infra-updated")
+	runGit(t, fixture.dir, "clone", fixture.origin, updated)
+	configLock := filepath.Join(updated, ".git", "config.lock")
+	writeReleaseFixtureFile(t, configLock, "interrupted git-resource put\n", 0o600)
 
 	cmd := exec.Command("sh", "-euc", deployPipelineTaskScript(t, writeback))
 	cmd.Dir = fixture.dir
@@ -91,12 +92,284 @@ func TestConcourseReleaseWritebackRefreshesBeforeApplyingReplayedDigest(t *testi
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("replayed release writeback: %v\n%s", err, output)
 	}
-	updated := filepath.Join(fixture.dir, "home-infra-updated")
 	if got := gitOutput(t, updated, "rev-parse", "HEAD"); got != remoteHead {
 		t.Fatalf("replayed writeback HEAD = %s, want refreshed remote head %s", got, remoteHead)
 	}
+	if _, statErr := os.Stat(configLock); !os.IsNotExist(statErr) {
+		t.Fatalf("replayed writeback retained interrupted put lock %s: %v", configLock, statErr)
+	}
+	if output, configErr := exec.Command("git", "-C", updated, "remote", "add", "push-target", fixture.origin).CombinedOutput(); configErr != nil {
+		t.Fatalf("replayed output is incompatible with git-resource put: %v\n%s", configErr, output)
+	}
 	if got := gitOutput(t, updated, "status", "--porcelain"); got != "" {
 		t.Fatalf("replayed writeback left refreshed checkout dirty:\n%s", got)
+	}
+}
+
+func TestConcourseHomeInfraOutputsAreClearedBeforeReplayCopy(t *testing.T) {
+	pipeline := readDeployPipeline(t, "concourse-pipeline.yml")
+	tasks := []struct {
+		job        string
+		task       string
+		outputPath string
+		sourcePath string
+	}{
+		{"build-agent-runner-image", "update-home-infra-agent-runner-image", "home-infra-updated", "home-infra"},
+		{"self-upgrade", "resolve-and-write-home-infra-web-image", "../home-infra-updated", "../home-infra"},
+		{"k8s-live-tests", "write-home-infra-live-tested-image", "home-infra-updated", "home-infra"},
+		{"release", "update-home-infra-release-image", "home-infra-updated", "home-infra"},
+	}
+
+	for _, tt := range tasks {
+		t.Run(tt.job+"/"+tt.task, func(t *testing.T) {
+			script := deployPipelineTaskScript(t, findDeployPipelineTask(t, pipeline, tt.job, tt.task))
+			clearOutput := "find " + tt.outputPath + " -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +"
+			copyInput := "cp -a " + tt.sourcePath + "/. " + tt.outputPath + "/"
+			requireTextOrder(t, script, clearOutput, copyInput)
+		})
+	}
+}
+
+func TestConcourseHomeInfraWritesUseSupervisedPushTasks(t *testing.T) {
+	pipeline := readDeployPipeline(t, "concourse-pipeline.yml")
+	writes := []struct {
+		job      string
+		producer string
+		push     string
+		next     string
+	}{
+		{"build-agent-runner-image", "update-home-infra-agent-runner-image", "push-home-infra-agent-runner-image", ""},
+		{"self-upgrade", "resolve-and-write-home-infra-web-image", "push-home-infra-self-upgrade-image", "trigger-rollout"},
+		{"k8s-live-tests", "write-home-infra-live-tested-image", "push-home-infra-live-tested-image", ""},
+		{"release", "update-home-infra-release-image", "push-home-infra-release-image", "verify-release-rollout"},
+	}
+
+	for _, job := range pipeline.Jobs {
+		for _, step := range job.Plan {
+			if step.Put == "home-infra" {
+				t.Errorf("job %q still uses an unsupervised home-infra resource put", job.Name)
+			}
+		}
+	}
+
+	seenPushTasks := make(map[string]bool)
+	for _, write := range writes {
+		t.Run(write.job, func(t *testing.T) {
+			var producerIndex, pushIndex, nextIndex = -1, -1, -1
+			var push deployPipelineStep
+			for _, job := range pipeline.Jobs {
+				if job.Name != write.job {
+					continue
+				}
+				for stepIndex, step := range job.Plan {
+					switch step.Task {
+					case write.producer:
+						producerIndex = stepIndex
+					case write.push:
+						push, pushIndex = step, stepIndex
+					case write.next:
+						if write.next != "" {
+							nextIndex = stepIndex
+						}
+					}
+				}
+			}
+			if producerIndex < 0 || pushIndex != producerIndex+1 {
+				t.Fatalf("producer/push ordering = %d/%d, want adjacent supervised push after producer", producerIndex, pushIndex)
+			}
+			if write.next != "" && nextIndex != pushIndex+1 {
+				t.Fatalf("push/next ordering = %d/%d, want preserved adjacent ordering", pushIndex, nextIndex)
+			}
+			if seenPushTasks[push.Task] {
+				t.Fatalf("supervised push task name %q is reused", push.Task)
+			}
+			seenPushTasks[push.Task] = true
+			if push.Privileged {
+				t.Fatal("home-infra push task is privileged")
+			}
+			if push.Timeout != "5m" {
+				t.Fatalf("home-infra push timeout = %q, want 5m", push.Timeout)
+			}
+			if push.Attempts != 2 {
+				t.Fatalf("home-infra push attempts = %d, want one bounded retry", push.Attempts)
+			}
+			if len(push.Config.Inputs) != 1 || push.Config.Inputs[0].Name != "home-infra-updated" {
+				t.Fatalf("home-infra push inputs = %#v, want only home-infra-updated", push.Config.Inputs)
+			}
+			if len(push.Config.Outputs) != 0 {
+				t.Fatalf("home-infra push outputs = %#v, want none", push.Config.Outputs)
+			}
+			if len(push.Config.Params) != 1 || push.Config.Params["GITHUB_TOKEN"] != "((github-token))" {
+				t.Fatalf("home-infra push params = %#v, want only GITHUB_TOKEN", push.Config.Params)
+			}
+			if push.Params != nil {
+				t.Fatalf("home-infra push step params = %#v, want none", push.Params)
+			}
+			if push.Config.Run.Path != "sh" || len(push.Config.Run.Args) < 2 || push.Config.Run.Args[0] != "-euc" {
+				t.Fatalf("home-infra push run = %#v, want supervised sh -euc task", push.Config.Run)
+			}
+
+			script := deployPipelineTaskScript(t, push)
+			requireTextOrder(t, script,
+				`PUSH_REPO=$(mktemp -d)`,
+				`trap cleanup_push EXIT`,
+				`trap 'exit 129' HUP`,
+				`trap 'exit 130' INT`,
+				`trap 'exit 143' TERM`,
+				`cp -a home-infra-updated/. "${PUSH_REPO}/"`,
+				`set +x`,
+				`GIT_ASKPASS="${ASKPASS}" GIT_TERMINAL_PROMPT=0`,
+				`git -C "${PUSH_REPO}" fetch --no-tags origin refs/heads/main`,
+				`git -C "${PUSH_REPO}" -c user.name="Concourse CI" -c user.email="ci@concourse.home" rebase --rebase-merges FETCH_HEAD`,
+				`GIT_ASKPASS="${ASKPASS}" GIT_TERMINAL_PROMPT=0`,
+				`git -C "${PUSH_REPO}" push origin HEAD:refs/heads/main`,
+			)
+			if strings.Contains(script, "--force") {
+				t.Fatal("home-infra push task can force-push main")
+			}
+			if strings.Contains(script, "trap cleanup_push EXIT HUP INT TERM") {
+				t.Fatal("home-infra push task cleanup trap can swallow cancellation signals")
+			}
+		})
+	}
+
+	if len(seenPushTasks) != len(writes) {
+		t.Fatalf("supervised home-infra push tasks = %d, want %d distinct tasks", len(seenPushTasks), len(writes))
+	}
+}
+
+func TestConcourseSupervisedHomeInfraPushStopsOnSignal(t *testing.T) {
+	pipeline := readDeployPipeline(t, "concourse-pipeline.yml")
+	push := findDeployPipelineTask(t, pipeline, "build-agent-runner-image", "push-home-infra-agent-runner-image")
+	dir := t.TempDir()
+	updated := filepath.Join(dir, "home-infra-updated")
+	if err := os.MkdirAll(filepath.Join(updated, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	signalLog := filepath.Join(dir, "git-calls.log")
+
+	script := `
+git() {
+  printf '%s\n' "$*" >> "${SIGNAL_LOG}"
+  case "$*" in
+    *" fetch --no-tags origin refs/heads/main") kill -TERM "$$" ;;
+  esac
+  return 0
+}
+` + deployPipelineTaskScript(t, push)
+	cmd := exec.Command("sh", "-euc", script)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GITHUB_TOKEN=test-token", "SIGNAL_LOG="+signalLog)
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("supervised push swallowed TERM and exited successfully:\n%s", output)
+	}
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok || exitErr.ExitCode() != 143 {
+		t.Fatalf("supervised push TERM exit = %v, want status 143:\n%s", err, output)
+	}
+	calls := strings.TrimSpace(readReleaseFixtureFile(t, signalLog))
+	if !strings.Contains(calls, "fetch --no-tags origin refs/heads/main") {
+		t.Fatalf("signal fixture did not reach fetch: %q", calls)
+	}
+	if strings.Contains(calls, " rebase ") || strings.Contains(calls, " push ") {
+		t.Fatalf("supervised push continued after TERM: %q", calls)
+	}
+}
+
+func TestConcourseReleaseValidationRefreshesStaleHomeInfraAttestation(t *testing.T) {
+	pipeline := readDeployPipeline(t, "concourse-pipeline.yml")
+	validation := findDeployPipelineTask(t, pipeline, "release", "validate-live-tested-image")
+	if len(validation.Config.Params) != 1 || validation.Config.Params["GITHUB_TOKEN"] != "((github-token))" {
+		t.Fatalf("release validation params = %#v, want only GITHUB_TOKEN", validation.Config.Params)
+	}
+	fixture := newHomeInfraFixture(t, seedRunnerImage)
+
+	repo := filepath.Join(fixture.dir, "repo")
+	runGit(t, fixture.dir, "init", "-b", "main", repo)
+	writeReleaseFixtureFile(t, filepath.Join(repo, "source.txt"), "tested source\n", 0o644)
+	runGit(t, repo, "add", "source.txt")
+	runGit(t, repo, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "tested source")
+	testedSource := gitOutput(t, repo, "rev-parse", "HEAD")
+	wantAttestation := "SOURCE_COMMIT=" + testedSource + "\nTESTED_IMAGE=" + replayedTestedImage + "\n"
+
+	newer := filepath.Join(fixture.dir, "newer-home-infra")
+	runGit(t, fixture.dir, "clone", fixture.origin, newer)
+	writeReleaseFixtureFile(t, filepath.Join(newer, "apps", "concourse-live-tested-image.env"), wantAttestation, 0o600)
+	runGit(t, newer, "add", "apps/concourse-live-tested-image.env")
+	runGit(t, newer, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "attest live-tested image")
+	runGit(t, newer, "push", "origin", "HEAD:main")
+	remoteHead := gitOutput(t, fixture.origin, "rev-parse", "refs/heads/main")
+	if got := gitOutput(t, fixture.clone, "rev-parse", "HEAD"); got == remoteHead {
+		t.Fatal("release validation fixture home-infra input is not stale")
+	}
+	if err := os.Mkdir(filepath.Join(fixture.dir, "release-tested-image"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command("sh", "-euc", deployPipelineTaskScript(t, validation))
+	cmd.Dir = fixture.dir
+	cmd.Env = append(os.Environ(), "GITHUB_TOKEN=test-token")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("release validation with stale home-infra input: %v\n%s", err, output)
+	}
+	if got := gitOutput(t, fixture.clone, "rev-parse", "HEAD"); got != remoteHead {
+		t.Fatalf("release validation home-infra HEAD = %s, want refreshed remote %s", got, remoteHead)
+	}
+	if got := readReleaseFixtureFile(t, filepath.Join(fixture.dir, "release-tested-image", "attestation.env")); got != wantAttestation {
+		t.Fatalf("release validation attestation = %q, want %q", got, wantAttestation)
+	}
+}
+
+func TestConcourseSupervisedHomeInfraPushRebasesAndIsIdempotent(t *testing.T) {
+	pipeline := readDeployPipeline(t, "concourse-pipeline.yml")
+	push := findDeployPipelineTask(t, pipeline, "build-agent-runner-image", "push-home-infra-agent-runner-image")
+	fixture := newHomeInfraFixture(t, seedRunnerImage)
+
+	updated := filepath.Join(fixture.dir, "home-infra-updated")
+	runGit(t, fixture.dir, "clone", fixture.origin, updated)
+	writeReleaseFixtureFile(t, filepath.Join(updated, "pipeline-change.txt"), "pipeline\n", 0o644)
+	runGit(t, updated, "add", "pipeline-change.txt")
+	runGit(t, updated, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "pipeline change")
+	inputHead := gitOutput(t, updated, "rev-parse", "HEAD")
+
+	concurrent := filepath.Join(fixture.dir, "concurrent")
+	runGit(t, fixture.dir, "clone", fixture.origin, concurrent)
+	writeReleaseFixtureFile(t, filepath.Join(concurrent, "operator-change.txt"), "operator\n", 0o644)
+	runGit(t, concurrent, "add", "operator-change.txt")
+	runGit(t, concurrent, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "operator change")
+	runGit(t, concurrent, "push", "origin", "HEAD:main")
+	concurrentHead := gitOutput(t, fixture.origin, "rev-parse", "refs/heads/main")
+
+	runPush := func(label string) {
+		t.Helper()
+		cmd := exec.Command("sh", "-euc", deployPipelineTaskScript(t, push))
+		cmd.Dir = fixture.dir
+		cmd.Env = append(os.Environ(), "GITHUB_TOKEN=test-token")
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%s supervised push: %v\n%s", label, err, output)
+		}
+	}
+
+	runPush("first")
+	firstPushHead := gitOutput(t, fixture.origin, "rev-parse", "refs/heads/main")
+	if firstPushHead == concurrentHead {
+		t.Fatal("supervised push did not publish the pipeline commit")
+	}
+	runGit(t, fixture.origin, "merge-base", "--is-ancestor", concurrentHead, firstPushHead)
+	if got := gitOutput(t, fixture.origin, "show", "main:pipeline-change.txt"); got != "pipeline" {
+		t.Fatalf("published pipeline change = %q, want pipeline", got)
+	}
+	if got := gitOutput(t, fixture.origin, "show", "main:operator-change.txt"); got != "operator" {
+		t.Fatalf("concurrent operator change = %q, want operator", got)
+	}
+	if got := gitOutput(t, updated, "rev-parse", "HEAD"); got != inputHead {
+		t.Fatalf("supervised push mutated input artifact HEAD = %s, want %s", got, inputHead)
+	}
+
+	runPush("idempotent replay")
+	if got := gitOutput(t, fixture.origin, "rev-parse", "refs/heads/main"); got != firstPushHead {
+		t.Fatalf("idempotent replay advanced main to %s, want unchanged %s", got, firstPushHead)
 	}
 }
 

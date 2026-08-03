@@ -443,7 +443,7 @@ func TestAgentRunnerPipelineWritesVerifiedHomeInfraDigest(t *testing.T) {
 		t.Fatalf("runner builder outputs = %#v, want verified metadata output", builder.Config.Outputs)
 	}
 	var update deployPipelineStep
-	updateIndex, putIndex := -1, -1
+	updateIndex, pushIndex := -1, -1
 	for jobIndex := range pipeline.Jobs {
 		job := &pipeline.Jobs[jobIndex]
 		if job.Name != "build-agent-runner-image" {
@@ -453,16 +453,13 @@ func TestAgentRunnerPipelineWritesVerifiedHomeInfraDigest(t *testing.T) {
 			if step.Task == "update-home-infra-agent-runner-image" {
 				update, updateIndex = step, stepIndex
 			}
-			if step.Put == "home-infra" {
-				putIndex = stepIndex
-				if step.Timeout != "5m" || step.Params["repository"] != "home-infra-updated" || step.Params["rebase"] != true || len(step.Params) != 2 {
-					t.Errorf("home-infra put = %#v, want rebase-only 5m put", step)
-				}
+			if step.Task == "push-home-infra-agent-runner-image" {
+				pushIndex = stepIndex
 			}
 		}
 	}
-	if updateIndex < 0 || putIndex <= updateIndex {
-		t.Fatalf("writeback ordering update=%d put=%d, want update before put", updateIndex, putIndex)
+	if updateIndex < 0 || pushIndex != updateIndex+1 {
+		t.Fatalf("writeback ordering update=%d push=%d, want supervised push immediately after update", updateIndex, pushIndex)
 	}
 	if update.Privileged || update.Config.Params != nil || update.Params != nil {
 		t.Fatalf("writeback task privilege/params = privileged:%t config:%#v step:%#v", update.Privileged, update.Config.Params, update.Params)
