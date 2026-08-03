@@ -1,7 +1,7 @@
 # Jetbridge First-User Findings
 
-Status: completed first-user node trial; live blockers documented  
-Date: 2026-08-01  
+Status: first-user trial and rollout complete; final dogfood blockers under repair
+Date: 2026-08-02
 Target: `home` / team `main`
 
 This is a running record from authoring, importing, executing, and iterating on
@@ -93,14 +93,18 @@ inferences and proposed follow-ups are labeled as such.
   cache hits. Against the withheld rubric, that is a useful symptom-level
   diagnosis but not the complete root cause: the log-only exposure cannot prove
   which code writes the pod IP into a node-name field or trace its read-back.
-- No version was released. Import/freeze behavior is proven, but releasing a
+- No version was released during this initial pass. Import/freeze behavior was
+  proven, but releasing a
   version that has never produced a valid typed output would violate the trial's
   lifecycle rule.
 - After restoring the bounded slice, the final packages imported immutably as
-  `code-review@9` (`abdabc1c464e…`) and `log-diagnosis@9`
-  (`2b2c6824feda…`). These exact final versions remain unreleased and were not
-  rerun because the same deployment-level budget flag would deterministically
-  fail before inference.
+  `code-review@9`
+  (`abdabc1c464e69fd3c38cbb8270d120ef4f9604433defa1a9a6b9b6d45761b12`)
+  and `log-diagnosis@9`
+  (`2b2c6824feda0a9d76728aeb6e91a4265885925b24d98bc202fe93aadaca41ea`).
+  These exact final versions remained unreleased. They were not rerun in this
+  initial pass because the then-deployed budget flag would deterministically
+  fail before inference; later rollout and dogfood evidence is recorded below.
 
 ## What Works Well
 
@@ -123,8 +127,9 @@ inferences and proposed follow-ups are labeled as such.
 - Import success is weaker than runnable-version readiness: an obviously
   placeholder capability registry/image is accepted and frozen without a
   warning.
-- The shipped `fly agent snapshots create --from=<ordinary-directory>` is
-  broken for nested trees. The Fly archiver writes directory headers with names
+- In the initial trial, the shipped
+  `fly agent snapshots create --from=<ordinary-directory>` was broken for
+  nested trees. The Fly archiver wrote directory headers with names
   such as `.claude/`; the server canonicalizer rejects that exact header as
   `snapshot: archive path ".claude/" has a trailing separator`. The public CLI
   collapses the cause to `400 invalid_archive: snapshot archive is invalid`, so
@@ -133,8 +138,8 @@ inferences and proposed follow-ups are labeled as such.
   emits `TypeDir` headers without the suffix now passes a real
   Fly-archiver/server-canonicalizer regression test and advances the live
   request past archive admission.
-- After that compatibility fix, the same clean repository reaches typed
-  validation but the live server rejects it as `422 validation_failed:
+- After that compatibility fix, the same clean repository reached typed
+  validation but the then-live server rejected it as `422 validation_failed:
   snapshot does not satisfy its declared type`. The local current
   `repository/v1` validator accepts both the source and its canonicalized Fly
   archive, including after reducing `.git/config` to the three core settings
@@ -142,32 +147,35 @@ inferences and proposed follow-ups are labeled as such.
   first user cannot tell whether the deployed validator differs from the client
   checkout or which repository invariant failed.
 - The documented fallback, exact resource capture, found the requested retained
-  Git version but terminated with only `500 internal_error`. Together with the
+  Git version but then terminated with only `500 internal_error`. At that
+  point, together with the
   opaque 422 above, both documented doors to a `repository/v1` input can fail
   without actionable diagnostics, blocking live code-review execution even
   though the node itself imported successfully.
-- Adding `budget_slice_usd: 5` produced a valid imported node but its live run
-  failed before the first model turn: the deployed Claude CLI rejects the
+- Adding `budget_slice_usd: 5` produced a valid imported node but its initial
+  live run failed before the first model turn: the deployed Claude CLI rejected the
   runner's `--max-budget-usd` option. The node/run summary reported only
   `failed`; the actionable `unknown option '--max-budget-usd'` existed only in
   the underlying build log. Omitting the optional slice let the same node run
   under the deployment's existing max-turn/account controls and exposed the
-  next failure, but zero means uncapped to the runner, so the final packages
-  restore the $5 slice and remain unrunnable until the deployment is corrected.
-  This is a runtime image/runner version-skew defect, not a safe authoring
-  workaround or a reasoning failure.
-- The managed `output-builder` MCP reported `status: failed` in every observed
-  agent run. More seriously, when its server-owned activation bit is present,
+  next failure, but zero meant uncapped to the runner, so the final packages
+  restored the $5 slice rather than silently weakening the limit. This was a
+  runtime image/runner version-skew defect, not a safe authoring workaround or
+  a reasoning failure; the later 2.1.212 runner rollout closed it.
+- The managed `output-builder` MCP reported `status: failed` in every initial
+  agent run. More seriously, when its server-owned activation bit was present,
   the runner previously replaced the sealed-record authority preamble with the
   builder instructions. A failed builder therefore left the model with neither
   the tool nor the exact input digest/output schema required for a valid
   fallback. The agent invented placeholders and sealing correctly rejected
-  them. The local fix always includes exact authority and treats it as the
-  builder's fallback.
-- A failed direct run can be `failed` (CLI invocation) or `errored` (output
-  sealing) but `nodes show-run --json` exposes neither the cause nor a link or
-  suggested command for logs. A first user must know to take `planned_build_id`
-  and run `fly watch -b`.
+  them. The current fix track retains exact authority as the builder fallback,
+  negotiates the pinned client's MCP version, and derives readiness from the
+  provider-visible initialization event rather than the runner's private
+  preflight alone.
+- In the initial CLI, a failed direct run could be `failed` (CLI invocation) or
+  `errored` (output sealing), but `nodes show-run --json` exposed neither the
+  cause nor a suggested command. That diagnostic gap was later closed; the
+  historical workaround was to take `planned_build_id` and run `fly watch -b`.
 
 ## Remediation Rollout Gate
 
@@ -191,9 +199,9 @@ inferences and proposed follow-ups are labeled as such.
   dependency.
 - The repository pipeline can publish and verify the immutable runner digest,
   but external home-infra/ArgoCD owns its activation. Same-commit node
-  acceptance cannot begin until that reviewed handoff completes. The dispatcher
-  remains paused; the corrected commit, push, and pipeline retry are pending,
-  and no rollout success is claimed.
+  acceptance cannot begin until that reviewed handoff completes. At this point
+  in the historical sequence, the dispatcher remained paused and the corrected
+  commit/pipeline retry was pending; later digest evidence is recorded below.
 - The corrected CI-fixture commit
   `ae40bf0d2b0ac4e7268260c9388c7f80e4375e72` was subsequently pushed. Set-self
   `645323`, build-and-vet `645324`, unit `645338`, k8s-runtime `645353`, tag-rc
@@ -202,7 +210,7 @@ inferences and proposed follow-ups are labeled as such.
   `0.2.221-rc`, but manual runner-image build `645354` checksum-verified and
   downloaded Claude `2.1.212` and built the required binaries before its
   build-time smoke exited 1. It did not push an image or publish a digest, so
-  the runner remains old and the dispatcher remains paused.
+  at that point the runner remained old and the dispatcher remained paused.
 - The runner failure was an instruction-order defect: its root smoke ran before
   `ENV IS_SANDBOX=1`, and `set -e` with captured Claude help made the root
   refusal silent. The repair first observed a RED Dockerfile-ordering test,
@@ -220,8 +228,15 @@ inferences and proposed follow-ups are labeled as such.
   `claude --print --max-turns </dev/null` probe does zero work and distinguishes
   the registered missing-argument diagnostic from an unknown option without
   printing captured output. Shell syntax, focused regression, full deploy, and
-  diff checks passed; independent final Task 4 review round 3 passed. The exact
-  amd64 retry/digest evidence remains pending.
+  diff checks passed; independent final Task 4 review round 3 passed. This
+  historical retry/digest gap was closed by the subsequent successful build.
+- The subsequent runner-image build `645573` consumed exact commit
+  `e8fe3fe2aa19ce3304c6f3329c7bb16b6814f847`, passed its Dockerfile and exact
+  commit-tagged linux/amd64 smoke, then completed registry push, immutable pull,
+  and platform-equality proof. It printed
+  `CONCOURSE_AGENT_STEP_IMAGE=ghcr.io/tdmtrader/agent-runner@sha256:b677c8dd12efaaac383dafd38784988b5df8862c71bf9eec9b5b33f062d6beb7`.
+  This closed the runner image capability gate; activating that digest remained
+  outside the repository and inside the pending compatibility window.
 - Pipeline orchestration is also a platform pain point: runner-image is manual
   and not a dependency of self-upgrade or release, so the web RC advanced while
   the matching runner failed. Manual compatibility-window controls prevented a
@@ -231,14 +246,114 @@ inferences and proposed follow-ups are labeled as such.
   smoke-fix RC from deploying before matching runner activation. Pipeline
   dependency wiring is a follow-up candidate, not silently changed in this
   scoped remediation.
-- Promotion gates remain paused. Web RC build `645496` for the now-superseded
-  commit succeeded but was not promoted.
+- At that point promotion gates remained paused. Web RC build `645496` for the
+  now-superseded commit succeeded but was not promoted.
+- On the digest-producing exact commit, set-self `645540`, build-and-vet
+  `645541`, unit `645556`, and k8s-runtime `645572` succeeded; matching web
+  build `645591` succeeded, and `v0.2.221-rc` pointed at that exact commit.
+  Self-upgrade and release were still paused. The deployment-commit package
+  gate and focused serial DB spec (1/1) were green outside the sandbox because
+  they required, respectively, loopback and shared memory.
+- Read-only live evidence then showed Argo app `concourse` Synced/Healthy at
+  chart revision `e8fe3fe...`, while the deployment still used old runner
+  `registry.home/agent-runner@sha256:5551b...` and web tag `v0.2.221-rc`.
+  Home-infra main `8dc7550...` owned that runner value. No direct `kubectl`
+  mutation was made; the normal reviewed home-infra writeback remained the
+  rollout authority.
+
+## Rollout Writeback Iteration — 2026-08-01
+
+- Live unit failures `646858` and `646895` exposed a test-fixture portability
+  defect: a bare Git remote depended on its local default `HEAD` branch. The
+  regression now explicitly reproduces a `master` default, advertises `main`,
+  and asserts the resulting checkout; the correction was independently
+  reviewed and passed its test suite.
+- Runner build `646969` built, smoked, and pushed the runner image. Its helper
+  committed home-infra change `3df501c`, but authoritative `home-infra/main`
+  remained `f185d35`: the update task changed only an input and declared no
+  modified repository output, so the native `put` consumed the original input
+  and correctly reported `Everything up-to-date`.
+- This was a useful safety result, not a successful promotion. Paused
+  `self-upgrade` and `release` gates, together with checking the authoritative
+  remote rather than task-local state, prevented a false-green rollout.
+- The corrected design gave `home-infra-updated` its own output: it copied the
+  checkout (including `.git`), the helper committed in that output, and a
+  rebase-only native `put` consumed it.
+- The deployable code commit was
+  `a11caa172a422f48a5ed36b54e6c260bbd4b21fa`; `ccffd367e57e` was a docs-only
+  audit head and was intentionally ignored by the repository resource. Local
+  and final hermetic deploy tests, the broader deployment gate, and serial DB
+  regressions passed. Automatic live build/vet, unit, runtime, and web-image
+  gates also cleared.
+- The final runner rerun was runner job build `#17`, global build `647509`, at
+  that exact `a11caa...` source. Its image build/smoke, registry publication,
+  and immutable digest verification succeeded at
+  `sha256:41601273383151c877c9ca3a8586da80d26f130d3b9d371dd66795c0e5ba4bf4`;
+  the reviewed writeback then converged `home-infra` at `113abb...`. This
+  closes the earlier pending claim.
+- Operational friction included a Fly token expiring mid-monitor while browser
+  login required user-owned local credentials. Linked worktrees kept concurrent
+  edits isolated. Reusable patterns were to reproduce CI-default assumptions
+  hermetically, treat task output and the authoritative remote as distinct
+  states, preserve paused gates until both agree, and use isolated worktrees
+  for external-repository changes.
+
+## Final Rollout and Renewed Dogfood — 2026-08-02
+
+- Release replay job build `#152` (global build `653259`) deployed the already
+  tested `v0.2.223` artifact from exact source
+  `5240e3341a12a1f2a27a8a1d993e44fecdd46cad`. Its post-deploy writeback failed
+  while replaying a stale home-infra checkout, even though the separately
+  authoritative deployment converged. This is a truthful deployed-with-failed-
+  replay result, not a failed release artifact. `origin/jetbridge` now contains
+  the replay-safe correction at
+  `76d4d0400f4bc17a253724dd69ab8df20c79519d`; the live `v0.2.223` deployment
+  remains on the earlier tested source.
+- Read-only deployment evidence confirms the current web source annotation is
+  that exact `5240e334...` commit, the web image is
+  `registry.home/jetbridge@sha256:d5584dc11df417f21d8d36c5b6605f31f2a2540d500d38cee771e57c7951ce18`,
+  and the configured runner image is
+  `registry.home/agent-runner@sha256:23f35a3ad9525afcfab50a04b45de517e8928984fb5d6ae9f24947310b516995`.
+  These exact authorities supersede the historical RC and pending-digest
+  statements above.
+- Final dogfood deliberately reused the immutable imports `code-review@9`
+  (`abdabc1c464e69fd3c38cbb8270d120ef4f9604433defa1a9a6b9b6d45761b12`)
+  and `log-diagnosis@9`
+  (`2b2c6824feda0a9d76728aeb6e91a4265885925b24d98bc202fe93aadaca41ea`).
+  A new `log-bundle/v1` upload became snapshot ID `15`, digest
+  `sha256:588a4b55b3bb3b932d735a27d559d220ae48681e9b7f7043ab1d372a9270f386`.
+- `log-diagnosis` run `23` / build `653297` errored. The execution image no
+  longer received the managed sealed-record authority, the provider reported
+  `output-builder` as `pending`, and the runner nevertheless emitted its own
+  readiness event. The model correctly refused to invent missing type, digest,
+  and schema values; final sealing then failed because `record.json` was
+  absent. This disproved the private-preflight-as-readiness assumption.
+- The bounded repair track addresses all three root causes together: fallback
+  authority is retained even with managed output-builder enabled
+  (`acfbce576e`), the pinned Claude 2.1.212 initialize request negotiates down
+  to the implemented MCP version (`d046eee3c4`, tightened by `29edfb3dd4`),
+  and readiness is emitted only after the provider-visible initialization
+  event (`806a5f1570`, with the bounded readiness-tool allow-list correction
+  `d8d5645f11`). None of
+  these later fixes is claimed as deployed by the `v0.2.223` evidence above.
+- `repository/v1` dogfood established that the snapshot must contain a real
+  Git working tree, including `.git`; a clone-generated
+  `remote.origin.tagOpt` entry is rejected by the typed validator. This is a
+  useful strictness boundary, but the user-facing reason must remain visible.
+- Two concurrent direct uploads of roughly 225 MiB each exceeded the web
+  request's 30-second response window while the 1 GiB fake-GCS pod was OOM
+  killed. One content-addressed Hangar object with digest prefix `d53...`
+  survived without its corresponding metadata. A later `Ensure` observes the
+  object as already present and does not repair that missing metadata edge.
+  No manual metadata repair or upload retry was performed; the observation is
+  preserved as a durability defect rather than hidden by operator mutation.
 
 ## Post-Trial Blocker Trace
 
-The remediation-track audit converted four of the deployment symptoms into
-exact repository defects and narrowed the remaining live 422 without claiming
-an unproven cause:
+The remediation-track audit converted four deployment symptoms into exact
+repository defects and narrowed the then-live 422 without claiming an unproven
+cause. The bullets preserve what was true at audit time; current disposition is
+added where later evidence closed or refined a claim:
 
 - The exact resource capture did not fail while finding the Git version. It
   failed before creating its build because both the public `Capture` path and
@@ -248,37 +363,36 @@ an unproven cause:
   `agent/workflowrun.TemplateSaver.SaveOrReuse` admits an immutable template
   only when its name ends in `-<target-config-hash[:12]>`. The permissive fake
   behind the capture unit test did not exercise that generic saver invariant.
-  `FindResourceCaptureOutput` and the background finalizer also reconstruct the
-  old name in SQL, so both constructors and both authorization queries must
-  move together.
-- The output-builder's `/healthz` endpoint proves only that its HTTP process is
-  listening. Its MCP adapter handles `tools/list`, `tools/call`, and `ping`, but
-  not `initialize` or `notifications/initialized`; its tool declarations also
-  have neither descriptions nor input schemas. A real Claude MCP client can
-  therefore mark the server failed even while the runner's health poll passes.
-  The runner needs a managed-builder protocol preflight before starting a paid
-  model session.
-- The budget failure is an image contract mismatch, not an argument-construction
-  bug. `agent/runner/runner.go` correctly emits `--max-budget-usd` for every
-  positive slice, while `deploy/agent-runner/Dockerfile` installs Claude Code
-  2.0.1. The repository already checksum-pins a native Claude 2.1.212 binary in
-  the broker image. Converging on that artifact and smoking every load-bearing
-  runner flag is safer than either dropping the cap or checking Dockerfile text
-  alone.
-- The live direct-upload 422 still has no proven semantic cause. The current
-  local validator accepts both the clean source and the real Fly archive after
-  server canonicalization, which makes deployed-code/runtime skew plausible but
-  not established. The sealer retains the validator cause internally;
+  `FindResourceCaptureOutput` and the background finalizer also reconstructed
+  the old name in SQL, so both constructors and both authorization queries had
+  to move together. The subsequent capture path fixes advanced dogfood to the
+  typed-input coverage seam, which is now repaired on `jetbridge` at
+  `6de633e6e1`.
+- At audit time, output-builder `/healthz` proved only that its HTTP process was
+  listening. Its MCP adapter lacked `initialize`,
+  `notifications/initialized`, descriptions, and input schemas, so the real
+  client could mark it failed while the runner health poll passed. Protocol
+  preflight and initialize negotiation now exist; final run 23 proved that
+  provider-visible readiness and retained prompt authority are also required.
+- The budget failure was an image contract mismatch, not an
+  argument-construction bug. `agent/runner/runner.go` correctly emitted
+  `--max-budget-usd` while the old runner image installed Claude Code 2.0.1.
+  Convergence on the checksummed 2.1.212 artifact plus executable smoke closed
+  that mismatch; dropping the cap was never accepted as a workaround.
+- The initial direct-upload 422 had no proven semantic cause. The local
+  validator accepted both the clean source and real Fly archive after server
+  canonicalization, making deployed-code/runtime skew plausible but not
+  established. The sealer retained the validator cause internally;
   `HandlerFactory.writeSnapshotError` intentionally replaces it with a fixed
   generic message. The safe repair is a closed allow-list of repository failure
   categories plus a full Fly-archive-to-real-validator regression, never raw Git
-  stderr or configuration text.
-- The log-correlation data already exists. `RunSummary.PlannedBuildID` is on the
-  API response, and both node and workflow `show-run` commands share
-  `printAgentWorkflowRunDetail`; that plain renderer simply omits the field.
-  Printing the build ID and exact selected-target `fly watch -b` command is a
-  bounded diagnostic improvement that does not expose the deliberately
-  redacted database error message.
+  stderr or configuration text. Later structured reasons exposed the concrete
+  `.git` and `remote.origin.tagOpt` repository invariants described above.
+- The log-correlation data already existed. `RunSummary.PlannedBuildID` was on
+  the API response, while both node and workflow `show-run` commands shared a
+  plain renderer that omitted it. Printing the build ID and exact
+  selected-target `fly watch -b` command was the bounded diagnostic improvement
+  later implemented without exposing the deliberately redacted database error.
 - `fly targets` does not authenticate before printing expiry. It labels any
   token format its local JWT expiry parser cannot decode as `invalid token`, so
   an opaque but usable bearer token is misreported. The honest local result is
@@ -310,29 +424,73 @@ and
   inspection action; a deeper RCA node needs an optional or required repository
   input.
 
+## Accepted Product Defaults
+
+The dogfood findings produced the following product decisions. These are
+defaults, not speculative follow-ups:
+
+- Reusable nodes are first-class platform objects and directly runnable. The
+  product ships reference samples and a deliberately minimal team-visible
+  catalog rather than hiding node execution behind workflows.
+- `latest` is an authoring convenience resolved once, server-side, to one exact
+  immutable version. A run, workflow import, retry, or rerun stores and reuses
+  that exact version; there is no automatic update when a newer node appears.
+- Schemas are platform-owned and versioned. Node packages reference a known
+  schema/type and cannot embed an inline schema. Extensibility is limited to a
+  bounded `extra_details` field. Validation returns structured, safe reason
+  codes; the platform may offer one bounded final repair pass, but publication
+  is atomic and the whole output fails if the repaired candidate is still
+  invalid.
+- There are two skill classes: immutable node/function skills bundled with the
+  definition, and platform-required execution/policy skills. Required skills
+  are injected automatically and cannot be silently omitted by a caller. The
+  durable contract is the frozen definition plus result, not evidence that the
+  model opened or quoted a particular skill file.
+- Platform snapshots are passed explicitly to nodes. IDs are immutable, team
+  scoped, and authorized through the owning team/resource boundary; the server
+  stores the exact input bindings and uses them for exact rerun rather than
+  accepting caller substitutions.
+- Code review should take two explicit `repository/v1` snapshots (`before` and
+  `after`) and use a server-produced diff as a convenience/index, never as a
+  replacement for either immutable repository authority.
+- A diagnosis node may identify a scoped proximal cause supported by its
+  immutable evidence. A deeper RCA node receives a disposable writable checkout
+  derived from a repository snapshot and may emit a `repository-change/v1` plus
+  a failing reproducer; it never mutates the source snapshot itself.
+- Model selection resolves to one exact model. If that model is unavailable,
+  execution fails rather than silently substituting another. A node declares
+  its tested minimum/default budget and a caller may only raise it. Budget and
+  cost ceilings remain mechanically hard, enforced, and deliberately
+  high-salience.
+- Diagnostics are agent-first: terminal surfaces expose safe structured reason
+  codes and the exact next diagnostic command/tool, so an agent does not need
+  private DB access or tribal knowledge to discover the underlying build.
+
 ## Documentation Findings
 
-- Add a visible reusable-node section or link to the platform guide. The current
+- Still open: add a visible reusable-node section or link to the platform
+  guide. The current
   “undocumented capability” wording conflicts with the complete supported CLI
   lifecycle in the operations guide.
-- State how to obtain or create suitable typed input snapshots for a node run.
+- Still open: state how to obtain or create suitable typed input snapshots for
+  a node run.
   The node guide starts from snapshot IDs `101` and `102`, but a first user must
   discover `fly agent snapshots create` or `capture-resource` elsewhere.
-- Add an end-to-end nested-directory case for `fly agent snapshots create`.
-  Current Fly archive tests and server canonicalization tests cover their own
-  formats but do not prove they agree on directory-header spelling.
-- Explain whether a node author should normally omit `model`, rely on an
-  operator-selected broker profile, or pin a model selector. The sample uses
-  `claude-sonnet` without explaining portability across deployments.
-- Document the failure-diagnosis path from `show-run.planned_build_id` to
-  `fly watch -b BUILD-ID`, or surface the terminal build error directly in the
-  node-run response.
-- Document whether `budget_slice_usd` requires a minimum Claude CLI version and
-  add runtime-image compatibility verification before a deployment advertises
-  agent nodes as ready.
-- State whether selected skills are automatically invoked or merely made
-  discoverable. The live model did not reliably read them, which materially
-  changes where an author must place contract-critical instructions.
+- Closed in implementation: an end-to-end nested-directory archive regression
+  now proves Fly and server canonicalization agree on directory headers; retain
+  that behavior in user examples.
+- Update model documentation to the accepted exact-selection default above:
+  omitted selection resolves through platform policy, while an exact declared
+  model fails if unavailable rather than being silently substituted.
+- Closed in the CLI: `show-run` now exposes the terminal reason/build
+  correlation. Documentation should still show the direct
+  `fly watch -b BUILD-ID` path as the next diagnostic tool.
+- Closed as an image gate: the runner pins Claude 2.1.212 and executes a smoke
+  for every load-bearing budget/MCP flag. Document that runtime compatibility
+  requirement alongside `budget_slice_usd`.
+- Replace the old ambiguity about skill discovery with the two accepted skill
+  classes above. Required injection is platform behavior; proof that the model
+  read a skill is not durable run authority.
 
 ## Corpus and Evaluation Findings
 
@@ -344,8 +502,9 @@ and
 
 ## Follow-Up Opportunities
 
-- Make direct snapshot validation return the validator's safe reason instead of
-  a generic 422, and make resource-capture terminal errors similarly actionable.
+- Repository validation now returns a closed safe reason instead of a generic
+  422. Extend the same structured treatment to remaining record-body/archive
+  failures and keep resource-capture terminal errors similarly actionable.
 - Add a deployment readiness check covering: nested snapshot upload,
   `repository/v1` admission, managed output-builder health, Claude CLI budget
   flag compatibility, and one sealed record output.
@@ -356,6 +515,10 @@ and
 - `go test ./agent/runner -count=1` passed outside the filesystem/network
   sandbox required by its localhost HTTP tests.
 - `git diff --check` passed.
-- No reusable-node version was released. The final source packages retain a
-  bounded $5 slice and therefore correctly fail on the version-skewed live
-  runtime rather than silently running uncapped.
+- No reusable-node version was released. Exact imports `code-review@9` and
+  `log-diagnosis@9` remain the final dogfood authorities. The bounded $5 slice
+  is now supported by the deployed Claude 2.1.212 runner; the latest run failed
+  for missing managed authority/readiness, not budget-version skew.
+- Release `v0.2.223` and its exact web/runner authorities converged as recorded
+  above. The post-deploy replay failure and the upload orphan are retained as
+  product findings; neither was hidden by a manual repair or retry.
