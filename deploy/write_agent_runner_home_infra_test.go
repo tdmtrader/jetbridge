@@ -484,7 +484,7 @@ func TestAgentRunnerPipelineWritesVerifiedHomeInfraDigest(t *testing.T) {
 		}
 	}
 	requireTextOrder(t, updateScript,
-		"sh repo/deploy/prepare-home-infra-writeback.sh home-infra home-infra-updated",
+		"find home-infra-updated/.git -type f -name '*.lock' -exec rm -f -- {} +",
 		"sh repo/deploy/write-agent-runner-home-infra.sh \"$CONCOURSE_AGENT_STEP_IMAGE\" \"$SOURCE_COMMIT\" \"$RUNNER_VERSION\" home-infra-updated",
 	)
 	for _, forbidden := range []string{"source ", ". runner-image-metadata", "set -x", "git push", "--force", "TOKEN", "http://", "https://"} {

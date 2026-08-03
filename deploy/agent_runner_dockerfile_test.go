@@ -310,10 +310,13 @@ func TestAgentRunnerPipelinePublishesVerifiedImmutableImage(t *testing.T) {
 	if strings.Contains(script, "RepoDigests") {
 		t.Fatal("agent-runner pipeline trusts local RepoDigests instead of the registry push response")
 	}
-	for _, forbidden := range []string{"git clone", "git fetch", "git push", "GIT_ASKPASS"} {
+	for _, forbidden := range []string{"git clone", "git push", "GIT_ASKPASS"} {
 		if strings.Contains(script, forbidden) {
 			t.Fatalf("privileged runner builder must not handle GitOps operation %q", forbidden)
 		}
+	}
+	if got := strings.Count(script, "git fetch --tags --force origin"); got != 1 {
+		t.Fatalf("privileged runner builder public tag refresh count = %d, want exactly 1", got)
 	}
 	for _, input := range task.Config.Inputs {
 		if input.Name == "home-infra" {
@@ -368,17 +371,18 @@ func TestAgentRunnerWritebackRunbookOrdersArgoActivation(t *testing.T) {
 	section := runbook[sectionStart:sectionEnd]
 	requireTextOrder(t, section,
 		"Pause new agent dispatch",
+		"tag-rc",
 		"build-agent-runner-image",
 		"verified-image.env",
-		"put: home-infra",
+		"supervised, unprivileged task",
 		"ArgoCD",
 		"self-upgrade",
 		"Verify the running configuration",
 		"Resume agent dispatch",
 	)
 	for _, required := range []string{
-		"rebase: true",
-		"force push",
+		"fresh fetch/rebase",
+		"non-force push",
 		"^registry.home/agent-runner@sha256:[a-f0-9]{64}$",
 		"argocd app get concourse --refresh --hard -n argocd -o json",
 		"kubectl -n cicd rollout status deploy/concourse-web --timeout=10m",

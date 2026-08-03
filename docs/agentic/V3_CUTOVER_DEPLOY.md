@@ -196,8 +196,11 @@ this sequence, **in this order**:
 1. **Pause new agent dispatch, `self-upgrade`, and `release`.** Do not admit
    work or start a web promotion while the web and pod-side runtime can
    temporarily disagree.
-2. **Build and smoke the same-commit runner.** Trigger the manual
-   `build-agent-runner-image` job for the exact commit being deployed. Require
+2. **Reserve the version, then build and smoke the same-commit runner.** Wait
+   for `tag-rc` to succeed for the exact commit being deployed and verify that
+   its immutable RC tag points at that commit. Only then trigger the manual
+   `build-agent-runner-image` job, and confirm its selected `repo` input is the
+   same SHA before allowing it to run. Require
    `/usr/local/bin/agent-runner-image-smoke` to pass in the exact commit-tagged
    image. Its final `verified-image.env` is the authority: it must contain one
    `CONCOURSE_AGENT_STEP_IMAGE=registry.home/agent-runner@sha256:<64 lowercase hex>`
@@ -205,10 +208,10 @@ this sequence, **in this order**:
    is unsupported unless this smoke has proved the packaged Claude CLI accepts
    `--max-budget-usd`.
 3. **Require the bounded GitOps digest write.** The unprivileged update task
-   parses `verified-image.env`, makes the single manifest commit, then the
-   native resource performs `put: home-infra` with `rebase: true`. This is not
-   a force push: a rebase conflict or non-fast-forward refusal leaves
-   promotion paused for an operator retrigger.
+   parses `verified-image.env` and makes the single manifest commit. A separate
+   supervised, unprivileged task refreshes remote `main`, rebases that commit,
+   and performs an ordinary non-force push. A conflict or non-fast-forward
+   refusal leaves promotion paused for an operator retrigger.
 4. **Require ArgoCD activation before promotion.** The same unprivileged,
    fail-closed GitOps path records the source commit and the resolved
    `registry.home/jetbridge@sha256:...` shared image under `image.digest` and
@@ -246,8 +249,9 @@ this sequence, **in this order**:
    version, and repeats the same checks after the tests pass. Only then does it
    create a two-field `SOURCE_COMMIT`/`TESTED_IMAGE` attestation. An
    unprivileged task commits that attestation to
-   `apps/concourse-live-tested-image.env` in `home-infra`, and the native Git
-   resource publishes it with `rebase: true` before the job can succeed.
+   `apps/concourse-live-tested-image.env` in `home-infra`, and a supervised,
+   unprivileged Git task publishes it with a fresh fetch/rebase and non-force
+   push before the job can succeed.
    `release` transports that file through an unprivileged validation task,
    compares its source with the exact repository input, and builds the final
    artifact only from its immutable tested digest; it never re-resolves the
@@ -256,7 +260,9 @@ this sequence, **in this order**:
    a historically tested digest with an untested one. Release-version selection
    is also source-bound: the RC tag on that commit supplies the initial version,
    and a stable tag already on the same commit is reused on a partial-publication
-   retry instead of incrementing to the next version.
+   retry instead of incrementing to the next version. RC tags are immutable
+   reservations: overlapping candidates receive distinct patch versions rather
+   than moving an already live-tested source's tag.
 6. **Verify the running configuration.** Inspect the running web arguments or
    Pod specification and require the configured runner image to equal the
    recorded immutable digest. Require authenticated Fly status to succeed.

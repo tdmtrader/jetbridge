@@ -368,29 +368,75 @@ jobs:
         - -ec
         - |
           cd repo
-          git fetch --tags --force origin
+          SOURCE_COMMIT=$(git rev-parse HEAD)
+          ASKPASS=$(mktemp)
+          cleanup_askpass() {
+            rm -f "${ASKPASS}"
+          }
+          trap cleanup_askpass EXIT
+          trap 'exit 129' HUP
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+          set +x
+          cat <<'ASKPASS_EOF' > "${ASKPASS}"
+          #!/bin/sh
+          case "${1-}" in
+            *Username*) printf '%s\n' x-access-token ;;
+            *Password*) printf '%s\n' "${GITHUB_TOKEN}" ;;
+            *) exit 1 ;;
+          esac
+          ASKPASS_EOF
+          chmod 700 "${ASKPASS}"
+          GIT_ASKPASS="${ASKPASS}" GIT_TERMINAL_PROMPT=0 \
+            git fetch --tags --force origin
 
-          echo "=== Computing next version from tags ==="
-          LATEST_TAG=$(git tag -l 'v0.2.*' --sort=-v:refname | grep -v '\-rc' | head -1)
-          if [ -z "$LATEST_TAG" ]; then
-            echo "No release tags found, starting at v0.1.0"
-            NEXT_VERSION="0.1.0"
+          SOURCE_STABLE_TAGS=$(git tag --points-at "${SOURCE_COMMIT}" --list 'v0.2.*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true)
+          SOURCE_RC_TAGS=$(git tag --points-at "${SOURCE_COMMIT}" --list 'v0.2.*-rc' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+-rc$' || true)
+          SOURCE_STABLE_COUNT=$(printf '%s\n' "${SOURCE_STABLE_TAGS}" | grep -c . || true)
+          SOURCE_RC_COUNT=$(printf '%s\n' "${SOURCE_RC_TAGS}" | grep -c . || true)
+          test "${SOURCE_STABLE_COUNT}" -le 1
+          test "${SOURCE_RC_COUNT}" -le 1
+          if test "${SOURCE_STABLE_COUNT}" = 1; then
+            if test "${SOURCE_RC_COUNT}" = 1; then
+              STABLE_VERSION=${SOURCE_STABLE_TAGS#v}
+              RC_VERSION=${SOURCE_RC_TAGS#v}
+              RC_VERSION=${RC_VERSION%-rc}
+              test "${STABLE_VERSION}" = "${RC_VERSION}"
+            fi
+            echo "FATAL: source ${SOURCE_COMMIT} is already released as ${SOURCE_STABLE_TAGS}" >&2
+            exit 1
+          fi
+
+          if test "${SOURCE_RC_COUNT}" = 1; then
+            RC_TAG=${SOURCE_RC_TAGS}
+            NEXT_VERSION=${RC_TAG#v}
+            NEXT_VERSION=${NEXT_VERSION%-rc}
+            echo "Reusing source-bound RC reservation ${RC_TAG}"
           else
-            VERSION="${LATEST_TAG#v}"
+            echo "=== Reserving the next unused version across stable and RC tags ==="
+            LATEST_RESERVED_TAG=$(git tag -l 'v0.2.*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+(-rc)?$' | head -1 || true)
+            if [ -z "${LATEST_RESERVED_TAG}" ]; then
+              echo "No release tags found, starting at v0.2.0"
+              NEXT_VERSION="0.2.0"
+            else
+              VERSION="${LATEST_RESERVED_TAG#v}"
+              VERSION="${VERSION%-rc}"
             MAJOR=$(echo "$VERSION" | cut -d. -f1)
             MINOR=$(echo "$VERSION" | cut -d. -f2)
             PATCH=$(echo "$VERSION" | cut -d. -f3)
             NEXT_VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))"
-            echo "Latest release: ${LATEST_TAG} -> next: v${NEXT_VERSION}"
+              echo "Latest reserved version: ${LATEST_RESERVED_TAG} -> next: v${NEXT_VERSION}"
+            fi
+            RC_TAG="v${NEXT_VERSION}-rc"
+            git tag "${RC_TAG}" "${SOURCE_COMMIT}"
           fi
 
+          printf '%s\n' "${NEXT_VERSION}" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'
           SHORT_SHA=$(git rev-parse --short HEAD)
-          RC_TAG="v${NEXT_VERSION}-rc"
           echo "=== Tagging ${RC_TAG} at ${SHORT_SHA} ==="
 
-          git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/tdmtrader/jetbridge.git"
-          git tag -f "${RC_TAG}"
-          git push -f origin "${RC_TAG}"
+          GIT_ASKPASS="${ASKPASS}" GIT_TERMINAL_PROMPT=0 \
+            git push origin "refs/tags/${RC_TAG}:refs/tags/${RC_TAG}"
           echo "=== Release candidate tagged: ${RC_TAG} (${SHORT_SHA}) ==="
 
 - name: build-image
@@ -497,15 +543,15 @@ jobs:
           cd repo
           git fetch --tags --force origin
 
-          echo "=== Computing version from tags ==="
-          LATEST_TAG=$(git tag -l 'v0.2.*' --sort=-v:refname | grep -v '\-rc' | head -1)
-          VERSION="${LATEST_TAG#v}"
-          MAJOR=$(echo "$VERSION" | cut -d. -f1)
-          MINOR=$(echo "$VERSION" | cut -d. -f2)
-          PATCH=$(echo "$VERSION" | cut -d. -f3)
-          NEXT_VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))"
-
           SOURCE_COMMIT=$(git rev-parse HEAD)
+          RC_RELEASE_TAGS=$(git tag --points-at "${SOURCE_COMMIT}" --list 'v0.2.*-rc' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+-rc$' || true)
+          RC_RELEASE_COUNT=$(printf '%s\n' "${RC_RELEASE_TAGS}" | grep -c . || true)
+          test "${RC_RELEASE_COUNT}" = 1
+          RC_RELEASE_TAG=${RC_RELEASE_TAGS}
+          NEXT_VERSION="${RC_RELEASE_TAG#v}"
+          NEXT_VERSION="${NEXT_VERSION%-rc}"
+          printf '%s\n' "${NEXT_VERSION}" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'
+
           SHORT_SHA=$(git rev-parse --short HEAD)
           RC_IMAGE="registry.home/jetbridge:rc-${SOURCE_COMMIT}"
           echo "Version: ${NEXT_VERSION}-rc (${SHORT_SHA}, ${RC_IMAGE})"
@@ -651,15 +697,16 @@ jobs:
 
 # Builds the agent: step runner image (claude CLI + agent-runner supervisor)
 # from deploy/agent-runner/Dockerfile with the repo as build context.
-# Manual trigger: the image changes rarely (claude-code pin bumps, agent-runner
-# changes) and must not ride the per-commit release chain.
+# Manual trigger: run this explicit release gate only after tag-rc is green for
+# the intended source. The source-bound RC tag supplies the runner version and
+# the exact repo version must pass this job before self-upgrade can consume it.
 - name: build-agent-runner-image
   serial_groups: [pipeline]
   plan:
   - get: repo
     trigger: false
     params: {depth: 0, fetch_tags: true}
-    passed: [unit-tests]
+    passed: [tag-rc]
   - task: build-and-push-agent-runner
     privileged: true
     attempts: 2
@@ -678,16 +725,17 @@ jobs:
         - -exc
         - |
           cd repo
-
-          echo "=== Computing version from tags ==="
-          LATEST_TAG=$(git tag -l 'v0.2.*' --sort=-v:refname | grep -v '\-rc' | head -1)
-          VERSION="${LATEST_TAG#v}"
-          MAJOR=$(echo "$VERSION" | cut -d. -f1)
-          MINOR=$(echo "$VERSION" | cut -d. -f2)
-          PATCH=$(echo "$VERSION" | cut -d. -f3)
-          NEXT_VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))"
+          git fetch --tags --force origin
 
           SOURCE_COMMIT=$(git rev-parse HEAD)
+          RC_RELEASE_TAGS=$(git tag --points-at "${SOURCE_COMMIT}" --list 'v0.2.*-rc' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+-rc$' || true)
+          RC_RELEASE_COUNT=$(printf '%s\n' "${RC_RELEASE_TAGS}" | grep -c . || true)
+          test "${RC_RELEASE_COUNT}" = 1
+          RC_RELEASE_TAG=${RC_RELEASE_TAGS}
+          NEXT_VERSION="${RC_RELEASE_TAG#v}"
+          NEXT_VERSION="${NEXT_VERSION%-rc}"
+          printf '%s\n' "${NEXT_VERSION}" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'
+
           SHORT_SHA=$(git rev-parse --short=12 HEAD)
           echo "Version: ${NEXT_VERSION} (${SHORT_SHA})"
 
@@ -839,7 +887,15 @@ jobs:
           # the immutable input so stale Git locks or files cannot leak into
           # the next supervised push.
           find home-infra-updated -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
-          sh repo/deploy/prepare-home-infra-writeback.sh home-infra home-infra-updated
+          test -d home-infra/.git
+          test ! -L home-infra/.git
+          test -d home-infra-updated
+          test ! -L home-infra-updated
+          test -z "$(find home-infra-updated -mindepth 1 -maxdepth 1 -print -quit)"
+          cp -a home-infra/. home-infra-updated/
+          test -d home-infra-updated/.git
+          test ! -L home-infra-updated/.git
+          find home-infra-updated/.git -type f -name '*.lock' -exec rm -f -- {} +
           sh repo/deploy/write-agent-runner-home-infra.sh "$CONCOURSE_AGENT_STEP_IMAGE" "$SOURCE_COMMIT" "$RUNNER_VERSION" home-infra-updated
   - task: push-home-infra-agent-runner-image
     timeout: 5m
@@ -1095,7 +1151,15 @@ jobs:
           # the immutable input so stale Git locks or files cannot leak into
           # the next supervised push.
           find ../home-infra-updated -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
-          sh deploy/prepare-home-infra-writeback.sh ../home-infra ../home-infra-updated
+          test -d ../home-infra/.git
+          test ! -L ../home-infra/.git
+          test -d ../home-infra-updated
+          test ! -L ../home-infra-updated
+          test -z "$(find ../home-infra-updated -mindepth 1 -maxdepth 1 -print -quit)"
+          cp -a ../home-infra/. ../home-infra-updated/
+          test -d ../home-infra-updated/.git
+          test ! -L ../home-infra-updated/.git
+          find ../home-infra-updated/.git -type f -name '*.lock' -exec rm -f -- {} +
           sh deploy/write-web-image-home-infra.sh "${WEB_IMAGE}" "${SOURCE_COMMIT}" ../home-infra-updated
           umask 077
           printf 'CONCOURSE_WEB_IMAGE=%s\nSOURCE_COMMIT=%s\nRC_IMAGE=%s\n' \
@@ -1192,8 +1256,7 @@ jobs:
   # Triggered once per upgraded commit. No settle timer: in-flight builds
   # survive the self-upgrade web rollout (engine drain releases job builds
   # and the task supervisor resumes them — build_survival track), and a
-  # timer trigger re-fires forever, failing after every release because
-  # "latest tag + 1"-rc only exists once the NEXT commit builds it.
+  # timer trigger would re-verify the same source-bound RC forever.
   - get: repo
     trigger: true
     params: {depth: 0, fetch_tags: true}
@@ -1212,14 +1275,13 @@ jobs:
         - |
           cd repo
           git fetch --tags --force origin
-
-          LATEST_TAG=$(git tag -l 'v0.2.*' --sort=-v:refname | grep -v '\-rc' | head -1)
-          VERSION="${LATEST_TAG#v}"
-          MAJOR=$(echo "$VERSION" | cut -d. -f1)
-          MINOR=$(echo "$VERSION" | cut -d. -f2)
-          PATCH=$(echo "$VERSION" | cut -d. -f3)
-          EXPECTED="${MAJOR}.${MINOR}.$((PATCH + 1))-rc"
           SOURCE_COMMIT=$(git rev-parse HEAD)
+          RC_RELEASE_TAGS=$(git tag --points-at "${SOURCE_COMMIT}" --list 'v0.2.*-rc' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+-rc$' || true)
+          RC_RELEASE_COUNT=$(printf '%s\n' "${RC_RELEASE_TAGS}" | grep -c . || true)
+          test "${RC_RELEASE_COUNT}" = 1
+          RC_RELEASE_TAG=${RC_RELEASE_TAGS}
+          EXPECTED="${RC_RELEASE_TAG#v}"
+          printf '%s\n' "${EXPECTED}" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+-rc$'
           EXPECTED_RC_IMAGE="registry.home/jetbridge:rc-${SOURCE_COMMIT}"
 
           web_image=$(kubectl get deployment/concourse-web -n cicd -o go-template='{{range .spec.template.spec.containers}}{{if eq .name "concourse-web"}}{{.image}}{{end}}{{end}}')
@@ -1399,7 +1461,15 @@ jobs:
           # the immutable input so stale Git locks or files cannot leak into
           # the next supervised push.
           find home-infra-updated -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
-          sh repo/deploy/prepare-home-infra-writeback.sh home-infra home-infra-updated
+          test -d home-infra/.git
+          test ! -L home-infra/.git
+          test -d home-infra-updated
+          test ! -L home-infra-updated
+          test -z "$(find home-infra-updated -mindepth 1 -maxdepth 1 -print -quit)"
+          cp -a home-infra/. home-infra-updated/
+          test -d home-infra-updated/.git
+          test ! -L home-infra-updated/.git
+          find home-infra-updated/.git -type f -name '*.lock' -exec rm -f -- {} +
           sh repo/deploy/write-live-tested-image-home-infra.sh \
             "${TESTED_IMAGE}" "${ATTESTED_SOURCE}" home-infra-updated
   - task: push-home-infra-live-tested-image
@@ -1778,8 +1848,9 @@ jobs:
           grep -Eq '^CONCOURSE_WEB_IMAGE=registry.home/jetbridge@sha256:[a-f0-9]{64}$' ../release-image-metadata/verified-image.env
           grep -Eq '^SOURCE_COMMIT=[a-f0-9]{40}$' ../release-image-metadata/verified-image.env
 
-          # Clean up the RC tag
-          git push origin --delete "v${NEXT_VERSION}-rc" 2>/dev/null || true
+          # Keep the source-bound RC tag as an immutable version reservation
+          # and audit record. Later candidates allocate a new patch version;
+          # they never move or recycle this tag.
 
           echo "=== Release complete: v${NEXT_VERSION} (${SHORT_SHA}) ==="
           echo "  Tagged: v${NEXT_VERSION}"
@@ -1812,7 +1883,15 @@ jobs:
           # the immutable input so stale Git locks or files cannot leak into
           # the next supervised push.
           find home-infra-updated -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
-          sh repo/deploy/prepare-home-infra-writeback.sh home-infra home-infra-updated
+          test -d home-infra/.git
+          test ! -L home-infra/.git
+          test -d home-infra-updated
+          test ! -L home-infra-updated
+          test -z "$(find home-infra-updated -mindepth 1 -maxdepth 1 -print -quit)"
+          cp -a home-infra/. home-infra-updated/
+          test -d home-infra-updated/.git
+          test ! -L home-infra-updated/.git
+          find home-infra-updated/.git -type f -name '*.lock' -exec rm -f -- {} +
           ASKPASS=$(mktemp)
           cleanup_askpass() {
             rm -f "${ASKPASS}"
