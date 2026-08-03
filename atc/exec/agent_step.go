@@ -458,17 +458,15 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 			return false, fmt.Errorf("agent %q: %w", step.plan.Name, err)
 		}
 	}
-	if managedOutputBuilder == nil {
-		outputTypes := make(map[string]snapshot.TypeRef, len(step.plan.SnapshotOutputs))
-		for name, declaration := range step.plan.SnapshotOutputs {
-			outputTypes[name] = declaration.Type
-		}
-		authorityEnv, err := recordAuthorityEnv(snapshotInputs, outputTypes, containerSpec.Env)
-		if err != nil {
-			return false, fmt.Errorf("agent %q: %w", step.plan.Name, err)
-		}
-		containerSpec.Env = append(containerSpec.Env, authorityEnv...)
+	outputTypes := make(map[string]snapshot.TypeRef, len(step.plan.SnapshotOutputs))
+	for name, declaration := range step.plan.SnapshotOutputs {
+		outputTypes[name] = declaration.Type
 	}
+	authorityEnv, err := recordAuthorityEnv(snapshotInputs, outputTypes, containerSpec.Env)
+	if err != nil {
+		return false, fmt.Errorf("agent %q: %w", step.plan.Name, err)
+	}
+	containerSpec.Env = append(containerSpec.Env, authorityEnv...)
 
 	// Declared outputs plus the implicit flight recorder output.
 	outputNames := step.outputNames()

@@ -1050,6 +1050,36 @@ var _ = Describe("AgentStep", func() {
 			Expect(flight.Snapshot).To(BeNil())
 		})
 
+		Context("with the managed output builder", func() {
+			BeforeEach(func() {
+				agentPlan.RuntimeImage = "registry.example/agent@sha256:" + strings.Repeat("a", 64)
+				containerMetadata.WorkingDirectory = "/work"
+				chosenContainer.ProcessDefs[0].Spec.Dir = "/work"
+				for index := range chosenContainer.Mounts {
+					chosenContainer.Mounts[index].MountPath = strings.Replace(
+						chosenContainer.Mounts[index].MountPath,
+						"some-artifact-root",
+						"/work",
+						1,
+					)
+				}
+			})
+
+			It("keeps sealed-record authority in the main env when the managed output builder is injected", func() {
+				ok, err := step.Run(ctx, state)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(ok).To(BeTrue())
+				Expect(chosenContainer.Spec.ManagedOutputBuilder).NotTo(BeNil())
+				Expect(chosenContainer.Spec.Env).To(ContainElements(
+					"CONCOURSE_OUTPUT_BUILDER_MCP=1",
+					"AGENT_INPUT_REPOSITORY_SNAPSHOT_TYPE=repository/v1",
+					"AGENT_INPUT_REPOSITORY_SNAPSHOT_DIGEST="+inputRef.Digest.String(),
+					"AGENT_OUTPUT_WORKSPACE_RECORD_TYPE=repository-change/v1",
+					HavePrefix("AGENT_OUTPUT_WORKSPACE_RECORD_SCHEMA=sha256:"),
+				))
+			})
+		})
+
 		It("captures full-tree exposure lineage at mount time for every typed input", func() {
 			ok, err := step.Run(ctx, state)
 			Expect(err).NotTo(HaveOccurred())
