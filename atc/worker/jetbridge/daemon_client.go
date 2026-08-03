@@ -29,6 +29,9 @@ type DaemonClient struct {
 	port                int
 	client              *http.Client
 	streamingClient     *http.Client
+	uploadClient        *http.Client
+	uploadAcceptTimeout time.Duration
+	uploadStallTimeout  time.Duration
 	scheme              string // "http" or "https"
 	initializationErr   error
 	checkpointEndpoints func(context.Context) ([]DaemonEndpoint, error)
@@ -99,8 +102,23 @@ func NewDaemonClient(logger lager.Logger, clientset kubernetes.Interface, namesp
 			logger.Error("failed-to-load-daemon-client-tls", initializationErr)
 		}
 	}
+	// Snapshot reads answer before they do their work: the daemon writes the
+	// tar headers and then streams, so the gap between request and first
+	// response header really is the handshake and really is bounded.
 	streamingTransport := transport.Clone()
 	streamingTransport.ResponseHeaderTimeout = 30 * time.Second
+
+	// Snapshot writes do not. PUT /artifacts/snapshots/... answers only after
+	// the archive has been read, digest-verified, linked, and durably committed
+	// to Hangar, so its first response byte trails the last request byte by a
+	// margin that scales with snapshot size. ResponseHeaderTimeout measures
+	// precisely that margin, so on this endpoint it is not a handshake bound at
+	// all — it is a whole-request deadline in disguise, and any snapshot whose
+	// commit outlasts it can never be uploaded. Uploads get their own transport
+	// with no such bound; snapshotUploadGuard supplies liveness bounds that are
+	// derived from actual daemon behaviour instead of elapsed time.
+	uploadTransport := transport.Clone()
+	uploadTransport.ResponseHeaderTimeout = 0
 
 	return &DaemonClient{
 		logger:            logger,
@@ -114,7 +132,10 @@ func NewDaemonClient(logger lager.Logger, clientset kubernetes.Interface, namesp
 			Timeout:   5 * time.Second,
 			Transport: transport,
 		},
-		streamingClient: &http.Client{Transport: streamingTransport},
+		streamingClient:     &http.Client{Transport: streamingTransport},
+		uploadClient:        &http.Client{Transport: uploadTransport},
+		uploadAcceptTimeout: defaultSnapshotUploadAcceptTimeout,
+		uploadStallTimeout:  defaultSnapshotUploadStallTimeout,
 	}
 }
 
@@ -211,6 +232,30 @@ func (d *DaemonClient) snapshotRepairHTTPClient() (*http.Client, error) {
 		return nil, fmt.Errorf("daemon probe transport is required")
 	}
 	return &http.Client{Transport: d.client.Transport}, nil
+}
+
+// snapshotUploadHTTPClient returns the transport reserved for snapshot writes.
+// It is deliberately distinct from the streaming client: sharing one would
+// force the deferred-response upload to live under a response-header bound that
+// only the immediate-response read path can honour.
+func (d *DaemonClient) snapshotUploadHTTPClient() (*http.Client, error) {
+	if d == nil {
+		return nil, fmt.Errorf("daemon client is required")
+	}
+	if d.initializationErr != nil {
+		return nil, d.initializationErr
+	}
+	if d.uploadClient == nil {
+		return nil, fmt.Errorf("daemon upload client is required")
+	}
+	return d.uploadClient, nil
+}
+
+func (d *DaemonClient) snapshotUploadBounds() snapshotUploadBounds {
+	if d == nil {
+		return snapshotUploadBounds{}.withDefaults()
+	}
+	return snapshotUploadBounds{accept: d.uploadAcceptTimeout, stall: d.uploadStallTimeout}.withDefaults()
 }
 
 func (d *DaemonClient) snapshotURL(endpoint DaemonEndpoint, key string) (*url.URL, error) {

@@ -9,6 +9,7 @@ import (
 	"hash"
 	"io"
 	"net/http"
+	"net/http/httptrace"
 	"os"
 	"sort"
 	"strings"
@@ -152,6 +153,9 @@ func NewSnapshotContentStore(
 	}
 	if _, err := daemon.snapshotHTTPClient(); err != nil {
 		return nil, fmt.Errorf("snapshot daemon transport: %w", err)
+	}
+	if _, err := daemon.snapshotUploadHTTPClient(); err != nil {
+		return nil, fmt.Errorf("snapshot daemon upload transport: %w", err)
 	}
 	if replicationFactor <= 0 {
 		return nil, fmt.Errorf("snapshot replication factor must be positive")
@@ -372,6 +376,20 @@ func (store *SnapshotContentStore) putEndpointRequest(
 	if err != nil {
 		return 0, false, err
 	}
+	client, err := store.daemon.snapshotUploadHTTPClient()
+	if err != nil {
+		return 0, false, err
+	}
+
+	// The daemon answers this PUT only after a durable Hangar commit, so no
+	// transport-level response-header bound can distinguish a healthy large
+	// upload from a hung daemon. The guard bounds the two things that are
+	// genuinely observable — that a live handler accepted the upload, and that
+	// it keeps consuming it — and stands down once the archive is delivered.
+	expectContinue := size > 0
+	guarded, guard := guardSnapshotUpload(ctx, store.daemon.snapshotUploadBounds(), expectContinue)
+	defer guard.stop()
+
 	// NopCloser keeps ownership of the spool file here. *os.File is an
 	// io.ReadCloser, so handing it over directly makes it the request body, and
 	// the transport closes a request body it is given — "even on errors", per
@@ -383,19 +401,26 @@ func (store *SnapshotContentStore) putEndpointRequest(
 	// zero replicas acknowledged, so the snapshot reported content_unavailable
 	// and every consumer saw a 503. Losing the race looked perfectly healthy,
 	// which is why it presented as flakiness rather than a defect.
-	request, err := http.NewRequestWithContext(ctx, http.MethodPut, target.String(), io.NopCloser(file))
+	request, err := http.NewRequestWithContext(
+		httptrace.WithClientTrace(guarded, guard.clientTrace()),
+		http.MethodPut,
+		target.String(),
+		io.NopCloser(guard.body(file, size)),
+	)
 	if err != nil {
 		return 0, false, err
 	}
 	request.ContentLength = size
 	request.Header.Set("Content-Type", "application/x-tar")
-	client, err := store.daemon.snapshotHTTPClient()
-	if err != nil {
-		return 0, false, err
+	if expectContinue {
+		// Go's HTTP server emits 100 Continue only when the handler itself
+		// begins reading the body, which makes it an acknowledgement that the
+		// upload path is live — obtained before the archive is transmitted.
+		request.Header.Set("Expect", "100-continue")
 	}
 	response, err := client.Do(request)
 	if err != nil {
-		return 0, false, err
+		return 0, false, guard.explain(err)
 	}
 	_, drainErr := io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
 	closeErr := response.Body.Close()

@@ -109,9 +109,17 @@ func newDaemonHTTPClient(cfg Config, timeout time.Duration) *http.Client {
 // data to/from the daemon. Unlike newDaemonHTTPClient, it sets no
 // whole-request timeout: http.Client.Timeout covers reading the entire
 // response body, which would sever long-running tar streams mid-read
-// (surfacing as "unexpected EOF" at the consumer). The handshake is still
-// bounded via the transport's ResponseHeaderTimeout, so a dead daemon fails
-// fast while an active stream can run as long as it needs.
+// (surfacing as "unexpected EOF" at the consumer).
+//
+// It bounds liveness with the transport's ResponseHeaderTimeout instead, which
+// measures one specific interval: from "request fully written" to "first
+// response header". That is a handshake bound only for endpoints that answer
+// before doing their work — GET /artifacts/<key>, which writes headers and then
+// streams, and PUT /stream-in/<key>, which extracts as it reads and answers
+// after a bounded rename. On an endpoint that defers its response until the
+// work is done, the same setting silently becomes a whole-request deadline that
+// scales with payload size; see snapshotUploadGuard for the write path that
+// cannot use it.
 func newDaemonStreamingHTTPClient(cfg Config) *http.Client {
 	client := newDaemonHTTPClient(cfg, 0)
 	client.Transport.(*http.Transport).ResponseHeaderTimeout = 30 * time.Second

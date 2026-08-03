@@ -97,6 +97,7 @@ func snapshotDaemonClient(t *testing.T, nodes []string, transport http.RoundTrip
 		nil,
 	)
 	client.streamingClient = &http.Client{Transport: transport}
+	client.uploadClient = &http.Client{Transport: transport}
 	client.client = &http.Client{Transport: transport, Timeout: 5 * time.Second}
 	return client
 }
