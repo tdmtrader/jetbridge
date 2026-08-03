@@ -2,6 +2,7 @@ package builds_test
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -2305,6 +2306,47 @@ func (s *PlannerSuite) TestTypedSnapshotDeclarations() {
 	agent.Capabilities = []string{"dev"}
 	_, err = planner.Create(agent, resources, defaultResourceTypes, prototypes, nil, false)
 	s.EqualError(err, "agent step review has unresolved capabilities; compile them before planning")
+}
+
+func (s *PlannerSuite) TestResourceCaptureAuthorityIsClonedIntoThePlan() {
+	planner := builds.NewPlanner(atc.NewPlanFactory(0))
+	operationKey := strings.Repeat("a", 64)
+	task := &atc.TaskStep{
+		Name:       atc.ResourceCaptureTaskName,
+		FunctionID: atc.ResourceCaptureFunctionID,
+		Hermetic:   true,
+		ResourceCaptureAuthority: &atc.ResourceCaptureAuthority{
+			OperationKey: operationKey,
+			SourceInput:  atc.ResourceCaptureInput,
+			OutputPort:   atc.ResourceCaptureOutput,
+			SnapshotType: snapshot.TypeRef("repository/v1"),
+		},
+		Config: &atc.TaskConfig{
+			Platform: "linux",
+			Run:      atc.TaskRunConfig{Path: atc.ResourceCaptureRunPath, Args: atc.ResourceCaptureRunArgs("source", "snapshot")},
+			Inputs:   []atc.TaskInputConfig{{Name: "source"}},
+			Outputs:  []atc.TaskOutputConfig{{Name: "snapshot"}},
+		},
+		SnapshotOutputs: map[string]atc.SnapshotOutputConfig{
+			"snapshot": {Type: snapshot.TypeRef("repository/v1"), Retention: snapshot.RetentionClassBinding},
+		},
+	}
+	plan, err := planner.Create(task, resources, defaultResourceTypes, prototypes, nil, false)
+	s.NoError(err)
+	s.NotNil(plan.Task)
+	s.NotNil(plan.Task.ResourceCaptureAuthority)
+	s.Equal(*task.ResourceCaptureAuthority, *plan.Task.ResourceCaptureAuthority)
+
+	// Planning freezes the authority: later authoring mutations must not reach
+	// a persisted execution plan.
+	task.ResourceCaptureAuthority.OperationKey = strings.Repeat("b", 64)
+	s.Equal(operationKey, plan.Task.ResourceCaptureAuthority.OperationKey)
+
+	// A task with no authority must not acquire one.
+	task.ResourceCaptureAuthority = nil
+	plan, err = planner.Create(task, resources, defaultResourceTypes, prototypes, nil, false)
+	s.NoError(err)
+	s.Nil(plan.Task.ResourceCaptureAuthority)
 }
 
 func newCPULimit(cpuLimit uint64) *atc.CPULimit {

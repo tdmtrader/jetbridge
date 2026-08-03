@@ -310,6 +310,12 @@ func (b *inMemoryCheckBuild) AgentWorkflowRunAssociation() (AgentWorkflowRunBuil
 	return AgentWorkflowRunBuildAssociation{}, false, nil
 }
 
+// An in-memory check build has no persisted row, so it can never be the entry
+// build of a resource-capture run. Fail closed rather than query.
+func (b *inMemoryCheckBuild) ResourceCaptureTemplateAssociation() (ResourceCaptureBuildAssociation, bool, error) {
+	return ResourceCaptureBuildAssociation{}, false, nil
+}
+
 func (b *inMemoryCheckBuild) IsRunning() bool           { return b.endTime.IsZero() }
 func (b *inMemoryCheckBuild) IsManuallyTriggered() bool { return false }
 func (b *inMemoryCheckBuild) CreateTime() time.Time     { return b.createTime }

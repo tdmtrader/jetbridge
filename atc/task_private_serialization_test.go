@@ -59,3 +59,33 @@ func TestTaskPlanKeepsValidationAuthorityForResumeButNeverPublicizesIt(t *testin
 		}
 	}
 }
+
+func TestTaskPlanKeepsResourceCaptureAuthorityForResumeButNeverPublicizesIt(t *testing.T) {
+	operationKey := strings.Repeat("a", 64)
+	plan := atc.TaskPlan{
+		Name:       atc.ResourceCaptureTaskName,
+		FunctionID: atc.ResourceCaptureFunctionID,
+		Hermetic:   true,
+		ResourceCaptureAuthority: &atc.ResourceCaptureAuthority{
+			OperationKey: operationKey, SourceInput: atc.ResourceCaptureInput,
+			OutputPort: atc.ResourceCaptureOutput, SnapshotType: snapshot.TypeRef("repository/v1"),
+		},
+	}
+	encoded, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reloaded atc.TaskPlan
+	if err := json.Unmarshal(encoded, &reloaded); err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.ResourceCaptureAuthority == nil || reloaded.ResourceCaptureAuthority.OperationKey != operationKey {
+		t.Fatal("private resource capture authority was not retained for a resumed task")
+	}
+	public := string(*plan.Public())
+	for _, private := range []string{"resource_capture_authority", "operation_key"} {
+		if strings.Contains(public, private) {
+			t.Fatalf("public task plan leaked capture authority %q: %s", private, public)
+		}
+	}
+}

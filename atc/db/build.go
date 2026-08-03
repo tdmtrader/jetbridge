@@ -164,6 +164,7 @@ type Build interface {
 	RerunNumber() int
 	CreatedBy() *string
 	AgentWorkflowRunAssociation() (AgentWorkflowRunBuildAssociation, bool, error)
+	ResourceCaptureTemplateAssociation() (ResourceCaptureBuildAssociation, bool, error)
 
 	LagerData() lager.Data
 	TracingAttrs() tracing.Attrs

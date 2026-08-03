@@ -29,6 +29,17 @@ type StepMetadata struct {
 	WorkflowDefinitionID *int
 	WorkflowVersion      *int
 	WorkflowRunID        *snapshot.WorkflowRunID
+	// ResourceCaptureTemplate is the authenticated name of the server-owned
+	// resource-capture template that owns this build's pipeline run. It is the
+	// trust anchor for atc.ResourceCaptureAuthority and is set only by the
+	// engine, from db.Build.ResourceCaptureTemplateAssociation. It is never
+	// exported to step env.
+	//
+	// The template name, not the run or pipeline id, is the narrowest correct
+	// signal: it is the same value the DB's capture-output authorization binds
+	// the operation key to, so exec can prove the authority in the plan belongs
+	// to *this* capture operation rather than merely to some server template.
+	ResourceCaptureTemplate string
 }
 
 func (metadata StepMetadata) Env() []string {

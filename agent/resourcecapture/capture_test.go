@@ -149,6 +149,27 @@ func TestCaptureBuildsExactPinnedGetAndTypedPassThrough(t *testing.T) {
 	if !found || declaration.Type != snapshot.TypeRef("repository/v1") || declaration.Retention != snapshot.RetentionClassBinding {
 		t.Fatalf("snapshot declaration = %#v", declaration)
 	}
+	// The capture task's input can never be typed, so the renderer mints the
+	// server authority that waives exact typed input coverage. It is inert
+	// until exec matches it against the authenticated capture template.
+	authority := task.ResourceCaptureAuthority
+	if authority == nil || authority.OperationKey != result.OperationKey ||
+		authority.SourceInput != "source" || authority.OutputPort != "snapshot" ||
+		authority.SnapshotType != snapshot.TypeRef("repository/v1") {
+		t.Fatalf("resource capture authority = %#v", authority)
+	}
+	if err := authority.Validate(); err != nil {
+		t.Fatalf("rendered authority is invalid: %v", err)
+	}
+	if !authority.BoundToTemplate(spec.Name) {
+		t.Fatalf("rendered authority is not bound to its own template %q", spec.Name)
+	}
+	if authority.BoundToTemplate("agent-resource-capture-" + strings.Repeat("b", 24) + "-" + strings.Repeat("b", 12)) {
+		t.Fatal("rendered authority accepted a template for a different operation")
+	}
+	if len(task.SnapshotInputs) != 0 {
+		t.Fatalf("capture task declared typed inputs: %#v", task.SnapshotInputs)
+	}
 	var metadata resourcecapture.SourceMetadata
 	if err := json.Unmarshal(declaration.SourceMetadata, &metadata); err != nil {
 		t.Fatalf("source metadata: %v", err)

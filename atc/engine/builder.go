@@ -77,6 +77,9 @@ type stepperFactory struct {
 	workflowDefinitionID  *int
 	workflowVersion       *int
 	workflowRunID         *snapshot.WorkflowRunID
+	// resourceCaptureTemplate is set only when the build is authenticated as
+	// the entry build of a server-owned resource-capture run.
+	resourceCaptureTemplate string
 }
 
 func (factory *stepperFactory) StepperForBuild(build db.Build) (exec.Stepper, error) {
@@ -99,6 +102,20 @@ func (factory *stepperFactory) StepperForBuild(build db.Build) (exec.Stepper, er
 		scopedFactory.workflowDefinitionID = &definitionID
 		scopedFactory.workflowVersion = &version
 		scopedFactory.workflowRunID = &runID
+	}
+
+	// A resource-capture run is not a durable workflow run, so it never has the
+	// association above. Its authority anchor is the server-owned capture
+	// template that owns this build's pipeline run.
+	capture, captureFound, err := build.ResourceCaptureTemplateAssociation()
+	if err != nil {
+		return nil, fmt.Errorf("load build resource-capture association: %w", err)
+	}
+	if captureFound {
+		if found {
+			return nil, fmt.Errorf("load build resource-capture association: build is both a workflow run and a resource capture")
+		}
+		scopedFactory.resourceCaptureTemplate = capture.TemplateName
 	}
 	return func(plan atc.Plan) exec.Step {
 		return scopedFactory.buildStep(build, plan)
@@ -594,18 +611,19 @@ func (factory *stepperFactory) stepMetadata(
 		snapshotCreatedBy = *createdBy
 	}
 	meta := exec.StepMetadata{
-		BuildID:              build.ID(),
-		BuildName:            build.Name(),
-		TeamID:               build.TeamID(),
-		TeamName:             build.TeamName(),
-		JobID:                build.JobID(),
-		JobName:              build.JobName(),
-		PipelineID:           build.PipelineID(),
-		PipelineName:         build.PipelineName(),
-		PipelineInstanceVars: build.PipelineInstanceVars(),
-		InstanceVarsQuery:    build.PipelineRef().QueryParams(),
-		ExternalURL:          externalURL,
-		SnapshotCreatedBy:    snapshotCreatedBy,
+		BuildID:                 build.ID(),
+		BuildName:               build.Name(),
+		TeamID:                  build.TeamID(),
+		TeamName:                build.TeamName(),
+		JobID:                   build.JobID(),
+		JobName:                 build.JobName(),
+		PipelineID:              build.PipelineID(),
+		PipelineName:            build.PipelineName(),
+		PipelineInstanceVars:    build.PipelineInstanceVars(),
+		InstanceVarsQuery:       build.PipelineRef().QueryParams(),
+		ExternalURL:             externalURL,
+		SnapshotCreatedBy:       snapshotCreatedBy,
+		ResourceCaptureTemplate: factory.resourceCaptureTemplate,
 	}
 	if factory.workflowDefinitionID != nil {
 		value := *factory.workflowDefinitionID

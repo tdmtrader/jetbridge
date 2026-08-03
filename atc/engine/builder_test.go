@@ -2,6 +2,7 @@ package engine_test
 
 import (
 	"errors"
+	"strings"
 
 	"github.com/concourse/concourse/agent/publisher"
 	"github.com/concourse/concourse/agent/snapshot"
@@ -143,6 +144,46 @@ var _ = Describe("Builder", func() {
 				})
 			})
 
+			Context("when the resource-capture association lookup fails", func() {
+				BeforeEach(func() {
+					fakeBuild.SchemaReturns("exec.v2")
+					fakeBuild.ResourceCaptureTemplateAssociationReturns(
+						db.ResourceCaptureBuildAssociation{},
+						false,
+						errors.New("capture association unavailable"),
+					)
+				})
+
+				It("fails closed before constructing a stepper", func() {
+					_, err := stepperFactory.StepperForBuild(fakeBuild)
+					Expect(err).To(MatchError(ContainSubstring("capture association unavailable")))
+					Expect(fakeCoreStepFactory.TaskStepCallCount()).To(Equal(0))
+				})
+			})
+
+			Context("when a build claims to be both a workflow run and a resource capture", func() {
+				BeforeEach(func() {
+					fakeBuild.SchemaReturns("exec.v2")
+					fakeBuild.AgentWorkflowRunAssociationReturns(db.AgentWorkflowRunBuildAssociation{
+						WorkflowDefinitionID: 77, WorkflowVersion: 3,
+						WorkflowRunID: snapshot.WorkflowRunID(9007199254740993),
+					}, true, nil)
+					fakeBuild.ResourceCaptureTemplateAssociationReturns(
+						db.ResourceCaptureBuildAssociation{
+							TemplatePipelineID: 41,
+							TemplateName:       "agent-resource-capture-" + strings.Repeat("a", 24) + "-" + strings.Repeat("b", 12),
+						},
+						true, nil,
+					)
+				})
+
+				It("refuses to build a stepper at all", func() {
+					_, err := stepperFactory.StepperForBuild(fakeBuild)
+					Expect(err).To(MatchError(ContainSubstring("both a workflow run and a resource capture")))
+					Expect(fakeCoreStepFactory.TaskStepCallCount()).To(Equal(0))
+				})
+			})
+
 			Context("when the build has the right schema", func() {
 				BeforeEach(func() {
 					fakeBuild.SchemaReturns("exec.v2")
@@ -229,6 +270,38 @@ var _ = Describe("Builder", func() {
 						Expect(*agentMetadata.WorkflowVersion).To(Equal(3))
 						Expect(agentMetadata.WorkflowRunID).NotTo(BeNil())
 						Expect(*agentMetadata.WorkflowRunID).To(Equal(snapshot.WorkflowRunID(9007199254740993)))
+					})
+				})
+
+				Context("with an authenticated resource-capture template association", func() {
+					templateName := "agent-resource-capture-" + strings.Repeat("a", 24) + "-" + strings.Repeat("b", 12)
+
+					BeforeEach(func() {
+						fakeBuild.ResourceCaptureTemplateAssociationReturns(
+							db.ResourceCaptureBuildAssociation{TemplatePipelineID: 41, TemplateName: templateName},
+							true, nil,
+						)
+						expectedPlan = planFactory.NewPlan(atc.TaskPlan{Name: "seal-snapshot"})
+					})
+
+					It("copies the server-owned capture template into step metadata without re-querying", func() {
+						Expect(fakeBuild.ResourceCaptureTemplateAssociationCallCount()).To(Equal(1))
+						Expect(fakeCoreStepFactory.TaskStepCallCount()).To(Equal(1))
+						_, taskMetadata, _, _ := fakeCoreStepFactory.TaskStepArgsForCall(0)
+						Expect(taskMetadata.ResourceCaptureTemplate).To(Equal(templateName))
+						Expect(taskMetadata.WorkflowDefinitionID).To(BeNil())
+					})
+				})
+
+				Context("without a resource-capture association", func() {
+					BeforeEach(func() {
+						expectedPlan = planFactory.NewPlan(atc.TaskPlan{Name: "seal-snapshot"})
+					})
+
+					It("leaves the capture anchor empty so any authority in the plan stays inert", func() {
+						Expect(fakeCoreStepFactory.TaskStepCallCount()).To(Equal(1))
+						_, taskMetadata, _, _ := fakeCoreStepFactory.TaskStepArgsForCall(0)
+						Expect(taskMetadata.ResourceCaptureTemplate).To(BeEmpty())
 					})
 				})
 

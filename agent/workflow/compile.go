@@ -325,6 +325,11 @@ func (compiler *functionAssetCompiler) preflightTask(step *atc.TaskStep) error {
 	if step.MergePreflightAuthority != nil {
 		return fmt.Errorf("workflow: task %q: merge_preflight_authority is server-owned", step.Name)
 	}
+	// The capture adapter is the only minter, and it never compiles a workflow
+	// function. Authored workflow source must never carry this waiver.
+	if step.ResourceCaptureAuthority != nil {
+		return fmt.Errorf("workflow: task %q: resource_capture_authority is server-owned", step.Name)
+	}
 	if step.Privileged {
 		return fmt.Errorf("workflow: task %q: privileged execution is not allowed for a transformation node", step.Name)
 	}

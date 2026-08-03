@@ -384,23 +384,29 @@ type TaskStep struct {
 	DevValidationAuthority *DevValidationAuthority `json:"dev_validation_authority,omitempty"`
 	// MergePreflightAuthority is renderer-only authority for the fixed delivery
 	// merge report task. function_id is the sole source selector.
-	MergePreflightAuthority *MergePreflightAuthority        `json:"merge_preflight_authority,omitempty"`
-	Privileged              bool                            `json:"privileged,omitempty"`
-	Hermetic                bool                            `json:"hermetic,omitempty"`
-	ConfigPath              string                          `json:"file,omitempty"`
-	Limits                  *ContainerLimits                `json:"container_limits,omitempty"`
-	Requests                *ContainerLimits                `json:"container_requests,omitempty"`
-	Config                  *TaskConfig                     `json:"config,omitempty"`
-	Params                  TaskEnv                         `json:"params,omitempty"`
-	Vars                    Params                          `json:"vars,omitempty"`
-	Tags                    Tags                            `json:"tags,omitempty"`
-	InputMapping            map[string]string               `json:"input_mapping,omitempty"`
-	OutputMapping           map[string]string               `json:"output_mapping,omitempty"`
-	SnapshotInputs          map[string]SnapshotInputConfig  `json:"input_types,omitempty"`
-	SnapshotOutputs         map[string]SnapshotOutputConfig `json:"output_types,omitempty"`
-	ImageArtifactName       string                          `json:"image,omitempty"`
-	Timeout                 string                          `json:"timeout,omitempty"`
-	Sidecars                []SidecarSource                 `json:"sidecars,omitempty"`
+	MergePreflightAuthority *MergePreflightAuthority `json:"merge_preflight_authority,omitempty"`
+	// ResourceCaptureAuthority is minted only by the server-side resource
+	// capture adapter, which saves it into the server-owned one-shot capture
+	// template. It is decodable here because that template is an ordinary
+	// pipeline; execution refuses to honor it unless the build's pipeline run
+	// is authenticated as belonging to that template.
+	ResourceCaptureAuthority *ResourceCaptureAuthority       `json:"resource_capture_authority,omitempty"`
+	Privileged               bool                            `json:"privileged,omitempty"`
+	Hermetic                 bool                            `json:"hermetic,omitempty"`
+	ConfigPath               string                          `json:"file,omitempty"`
+	Limits                   *ContainerLimits                `json:"container_limits,omitempty"`
+	Requests                 *ContainerLimits                `json:"container_requests,omitempty"`
+	Config                   *TaskConfig                     `json:"config,omitempty"`
+	Params                   TaskEnv                         `json:"params,omitempty"`
+	Vars                     Params                          `json:"vars,omitempty"`
+	Tags                     Tags                            `json:"tags,omitempty"`
+	InputMapping             map[string]string               `json:"input_mapping,omitempty"`
+	OutputMapping            map[string]string               `json:"output_mapping,omitempty"`
+	SnapshotInputs           map[string]SnapshotInputConfig  `json:"input_types,omitempty"`
+	SnapshotOutputs          map[string]SnapshotOutputConfig `json:"output_types,omitempty"`
+	ImageArtifactName        string                          `json:"image,omitempty"`
+	Timeout                  string                          `json:"timeout,omitempty"`
+	Sidecars                 []SidecarSource                 `json:"sidecars,omitempty"`
 }
 
 func (step *TaskStep) Visit(v StepVisitor) error {

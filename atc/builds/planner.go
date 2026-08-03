@@ -76,9 +76,12 @@ func (visitor *planVisitor) VisitTask(step *atc.TaskStep) error {
 		SnapshotOutputs:         maps.Clone(step.SnapshotOutputs),
 		DevValidationAuthority:  step.DevValidationAuthority.Clone(),
 		MergePreflightAuthority: step.MergePreflightAuthority.Clone(),
-		ImageArtifactName:       step.ImageArtifactName,
-		Timeout:                 step.Timeout,
-		Sidecars:                step.Sidecars,
+
+		ResourceCaptureAuthority: step.ResourceCaptureAuthority.Clone(),
+
+		ImageArtifactName: step.ImageArtifactName,
+		Timeout:           step.Timeout,
+		Sidecars:          step.Sidecars,
 
 		ResourceTypes:     visitor.resourceTypes,
 		CheckSkipInterval: visitor.manuallyTriggered,

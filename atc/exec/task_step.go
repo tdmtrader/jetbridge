@@ -267,7 +267,18 @@ func (step *TaskStep) run(ctx context.Context, state RunState, delegate TaskDele
 	if err != nil {
 		return false, err
 	}
-	if err := step.validateSnapshotDeclarations(config); err != nil {
+	// The capture trust boundary is settled first so a forged authority never
+	// reaches the coverage rules it is trying to escape. The fixed task shape
+	// is then re-checked below, after coverage, so an authorized capture is
+	// still held to every ordinary typed-artifact rule it did not waive.
+	waiveInputCoverage, err := step.authorizeResourceCapture()
+	if err != nil {
+		return false, err
+	}
+	if err := step.validateSnapshotDeclarations(config, waiveInputCoverage); err != nil {
+		return false, err
+	}
+	if err := step.validateResourceCaptureTask(config); err != nil {
 		return false, err
 	}
 	if err := step.validateDevValidationTask(config); err != nil {
@@ -1024,6 +1035,94 @@ func (step *TaskStep) validateMergePreflightTask(config atc.TaskConfig) error {
 	return nil
 }
 
+// authorizeResourceCapture settles the capture trust boundary and returns
+// whether exact typed INPUT coverage may be waived for this task. Output
+// coverage is never waived, here or anywhere else.
+//
+// Like validateMergePreflightTask this is deliberately repeated at execution
+// rather than trusted from render: private plans can be resumed and must not
+// gain authority merely by having once passed source compilation.
+//
+// The trust anchor is step.metadata.ResourceCaptureTemplate, not FunctionID and
+// not the authority struct. Both of those are ordinary source-authorable fields
+// on atc.TaskStep, so a pipeline author can write them verbatim; what they
+// cannot produce is a build whose pipeline run belongs to a template registered
+// in agent_workflow_run_templates, which is the only thing that populates that
+// metadata.
+func (step *TaskStep) authorizeResourceCapture() (bool, error) {
+	a := step.plan.ResourceCaptureAuthority
+	if a == nil {
+		return false, nil
+	}
+	if err := a.Validate(); err != nil {
+		return false, fmt.Errorf("task %q %w", step.plan.Name, err)
+	}
+	if !a.BoundToTemplate(step.metadata.ResourceCaptureTemplate) {
+		return false, fmt.Errorf("task %q resource capture authority is not bound to a server-owned capture template", step.plan.Name)
+	}
+	if step.plan.DevValidationAuthority != nil || step.plan.MergePreflightAuthority != nil {
+		return false, fmt.Errorf("task %q authoritative resource capture cannot also claim validation authority", step.plan.Name)
+	}
+	return true, nil
+}
+
+// validateResourceCaptureTask holds an authorized capture to the single fixed
+// adapter shape. It runs after coverage so that the waiver buys the capture
+// exactly one thing — an untyped input — and nothing else.
+func (step *TaskStep) validateResourceCaptureTask(config atc.TaskConfig) error {
+	a := step.plan.ResourceCaptureAuthority
+	if a == nil {
+		return nil
+	}
+	if authorized, err := step.authorizeResourceCapture(); err != nil || !authorized {
+		if err == nil {
+			err = fmt.Errorf("task %q resource capture authority is not authorized", step.plan.Name)
+		}
+		return err
+	}
+	if step.plan.Name != atc.ResourceCaptureTaskName || step.plan.FunctionID != atc.ResourceCaptureFunctionID ||
+		step.plan.Privileged || !step.plan.Hermetic || step.plan.ConfigPath != "" || step.plan.ImageArtifactName != "" ||
+		step.plan.Timeout != "" || len(step.plan.Params) != 0 || len(step.plan.Vars) != 0 || len(step.plan.Tags) != 0 ||
+		len(step.plan.Sidecars) != 0 || len(step.plan.InputMapping) != 0 || len(step.plan.OutputMapping) != 0 ||
+		len(step.plan.ReadOnlyInputs) != 0 || step.plan.Limits != nil || step.plan.Requests != nil {
+		return fmt.Errorf("task %q authoritative resource capture has authored controls", step.plan.Name)
+	}
+	// The waiver exists because a capture input can never be typed. Anything
+	// beyond exactly one untyped source and one typed output is not a capture.
+	if len(step.plan.SnapshotInputs) != 0 || len(step.plan.SnapshotOutputs) != 1 {
+		return fmt.Errorf("task %q authoritative resource capture has invalid typed ports", step.plan.Name)
+	}
+	output, found := step.plan.SnapshotOutputs[a.OutputPort]
+	if !found || output.Optional || output.Type != a.SnapshotType ||
+		output.Retention != snapshot.RetentionClassBinding || output.WorkflowPort != "" ||
+		output.WorkflowDefinitionID != 0 || output.WorkflowRunID != "" {
+		return fmt.Errorf("task %q authoritative resource capture must emit exactly one bound %s snapshot", step.plan.Name, a.SnapshotType)
+	}
+	var metadata struct {
+		Adapter      string           `json:"adapter"`
+		OperationKey string           `json:"operation_key"`
+		SnapshotType snapshot.TypeRef `json:"snapshot_type"`
+	}
+	if err := json.Unmarshal(output.SourceMetadata, &metadata); err != nil {
+		return fmt.Errorf("task %q authoritative resource capture has undecodable source metadata: %w", step.plan.Name, err)
+	}
+	if metadata.Adapter != atc.ResourceCaptureAdapter || metadata.OperationKey != a.OperationKey || metadata.SnapshotType != a.SnapshotType {
+		return fmt.Errorf("task %q authoritative resource capture source metadata does not match its authority", step.plan.Name)
+	}
+	if config.ImageResource == nil || config.RootfsURI != "" || config.Platform != "linux" ||
+		len(config.Inputs) != 1 || len(config.Outputs) != 1 || len(config.Caches) != 0 ||
+		len(config.ScratchPaths) != 0 || len(config.Params) != 0 ||
+		config.Run.Path != atc.ResourceCaptureRunPath || config.Run.Dir != "" || config.Run.User != "" ||
+		!equalTaskStrings(config.Run.Args, atc.ResourceCaptureRunArgs(a.SourceInput, a.OutputPort)) {
+		return fmt.Errorf("task %q authoritative resource capture is not the fixed task shape", step.plan.Name)
+	}
+	if config.Inputs[0].Name != a.SourceInput || config.Inputs[0].Optional || config.Inputs[0].Path != "" ||
+		config.Outputs[0].Name != a.OutputPort || config.Outputs[0].Path != "" {
+		return fmt.Errorf("task %q authoritative resource capture has invalid mounts", step.plan.Name)
+	}
+	return nil
+}
+
 func equalTaskStrings(left, right []string) bool {
 	if len(left) != len(right) {
 		return false
@@ -1156,7 +1255,12 @@ func (step *TaskStep) collectTypedOutputs(
 	return outputs, declarations, workflowDefinitionID, workflowRunID, nil
 }
 
-func (step *TaskStep) validateSnapshotDeclarations(config atc.TaskConfig) error {
+// validateSnapshotDeclarations enforces that a typed task's artifact surface is
+// exactly its typed surface. waiveInputCoverage is granted only by an
+// authenticated resource capture (see validateResourceCaptureTask); output
+// coverage is never waived, and the typed-snapshot smuggling guard in
+// containerInputs is independent of both.
+func (step *TaskStep) validateSnapshotDeclarations(config atc.TaskConfig, waiveInputCoverage bool) error {
 	inputs := make(map[string]struct{}, len(config.Inputs))
 	for _, input := range config.Inputs {
 		name := input.Name
@@ -1188,8 +1292,10 @@ func (step *TaskStep) validateSnapshotDeclarations(config atc.TaskConfig) error 
 		}
 	}
 	if len(step.plan.SnapshotInputs) > 0 || len(step.plan.SnapshotOutputs) > 0 {
-		if err := validateExactArtifactCoverage("task", "input", inputs, sortedSnapshotKeys(step.plan.SnapshotInputs)); err != nil {
-			return err
+		if !waiveInputCoverage {
+			if err := validateExactArtifactCoverage("task", "input", inputs, sortedSnapshotKeys(step.plan.SnapshotInputs)); err != nil {
+				return err
+			}
 		}
 		if err := validateExactArtifactCoverage("task", "output", outputs, sortedSnapshotKeys(step.plan.SnapshotOutputs)); err != nil {
 			return err

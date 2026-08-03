@@ -549,6 +549,20 @@ type FakeBuild struct {
 	resourceCacheUserReturnsOnCall map[int]struct {
 		result1 db.ResourceCacheUser
 	}
+	ResourceCaptureTemplateAssociationStub        func() (db.ResourceCaptureBuildAssociation, bool, error)
+	resourceCaptureTemplateAssociationMutex       sync.RWMutex
+	resourceCaptureTemplateAssociationArgsForCall []struct {
+	}
+	resourceCaptureTemplateAssociationReturns struct {
+		result1 db.ResourceCaptureBuildAssociation
+		result2 bool
+		result3 error
+	}
+	resourceCaptureTemplateAssociationReturnsOnCall map[int]struct {
+		result1 db.ResourceCaptureBuildAssociation
+		result2 bool
+		result3 error
+	}
 	ResourceIDStub        func() int
 	resourceIDMutex       sync.RWMutex
 	resourceIDArgsForCall []struct {
@@ -3476,6 +3490,65 @@ func (fake *FakeBuild) ResourceCacheUserReturnsOnCall(i int, result1 db.Resource
 	fake.resourceCacheUserReturnsOnCall[i] = struct {
 		result1 db.ResourceCacheUser
 	}{result1}
+}
+
+func (fake *FakeBuild) ResourceCaptureTemplateAssociation() (db.ResourceCaptureBuildAssociation, bool, error) {
+	fake.resourceCaptureTemplateAssociationMutex.Lock()
+	ret, specificReturn := fake.resourceCaptureTemplateAssociationReturnsOnCall[len(fake.resourceCaptureTemplateAssociationArgsForCall)]
+	fake.resourceCaptureTemplateAssociationArgsForCall = append(fake.resourceCaptureTemplateAssociationArgsForCall, struct {
+	}{})
+	stub := fake.ResourceCaptureTemplateAssociationStub
+	fakeReturns := fake.resourceCaptureTemplateAssociationReturns
+	fake.recordInvocation("ResourceCaptureTemplateAssociation", []interface{}{})
+	fake.resourceCaptureTemplateAssociationMutex.Unlock()
+	if stub != nil {
+		return stub()
+	}
+	if specificReturn {
+		return ret.result1, ret.result2, ret.result3
+	}
+	return fakeReturns.result1, fakeReturns.result2, fakeReturns.result3
+}
+
+func (fake *FakeBuild) ResourceCaptureTemplateAssociationCallCount() int {
+	fake.resourceCaptureTemplateAssociationMutex.RLock()
+	defer fake.resourceCaptureTemplateAssociationMutex.RUnlock()
+	return len(fake.resourceCaptureTemplateAssociationArgsForCall)
+}
+
+func (fake *FakeBuild) ResourceCaptureTemplateAssociationCalls(stub func() (db.ResourceCaptureBuildAssociation, bool, error)) {
+	fake.resourceCaptureTemplateAssociationMutex.Lock()
+	defer fake.resourceCaptureTemplateAssociationMutex.Unlock()
+	fake.ResourceCaptureTemplateAssociationStub = stub
+}
+
+func (fake *FakeBuild) ResourceCaptureTemplateAssociationReturns(result1 db.ResourceCaptureBuildAssociation, result2 bool, result3 error) {
+	fake.resourceCaptureTemplateAssociationMutex.Lock()
+	defer fake.resourceCaptureTemplateAssociationMutex.Unlock()
+	fake.ResourceCaptureTemplateAssociationStub = nil
+	fake.resourceCaptureTemplateAssociationReturns = struct {
+		result1 db.ResourceCaptureBuildAssociation
+		result2 bool
+		result3 error
+	}{result1, result2, result3}
+}
+
+func (fake *FakeBuild) ResourceCaptureTemplateAssociationReturnsOnCall(i int, result1 db.ResourceCaptureBuildAssociation, result2 bool, result3 error) {
+	fake.resourceCaptureTemplateAssociationMutex.Lock()
+	defer fake.resourceCaptureTemplateAssociationMutex.Unlock()
+	fake.ResourceCaptureTemplateAssociationStub = nil
+	if fake.resourceCaptureTemplateAssociationReturnsOnCall == nil {
+		fake.resourceCaptureTemplateAssociationReturnsOnCall = make(map[int]struct {
+			result1 db.ResourceCaptureBuildAssociation
+			result2 bool
+			result3 error
+		})
+	}
+	fake.resourceCaptureTemplateAssociationReturnsOnCall[i] = struct {
+		result1 db.ResourceCaptureBuildAssociation
+		result2 bool
+		result3 error
+	}{result1, result2, result3}
 }
 
 func (fake *FakeBuild) ResourceID() int {

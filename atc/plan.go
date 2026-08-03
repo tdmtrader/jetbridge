@@ -390,6 +390,10 @@ type TaskPlan struct {
 	// TaskPlan.Public.
 	DevValidationAuthority  *DevValidationAuthority  `json:"dev_validation_authority,omitempty"`
 	MergePreflightAuthority *MergePreflightAuthority `json:"merge_preflight_authority,omitempty"`
+	// ResourceCaptureAuthority waives exact typed input coverage for the one
+	// fixed adapter task that turns untyped resource bytes into the first typed
+	// snapshot. Retained in the private plan for retries; omitted by Public.
+	ResourceCaptureAuthority *ResourceCaptureAuthority `json:"resource_capture_authority,omitempty"`
 
 	// A timeout to enforce on the task's process. Note that fetching the task's
 	// image does not count towards the timeout.

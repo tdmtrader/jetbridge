@@ -26,10 +26,12 @@ import (
 )
 
 const (
-	AdapterResourceVersion = "resource-version"
-	templateNamePrefix     = "agent-resource-capture-"
-	outputPort             = "snapshot"
-	captureJob             = "capture"
+	AdapterResourceVersion = atc.ResourceCaptureAdapter
+	templateNamePrefix     = atc.ResourceCaptureTemplatePrefix
+	sourcePort             = atc.ResourceCaptureInput
+	outputPort             = atc.ResourceCaptureOutput
+	captureJob             = atc.ResourceCaptureJobName
+	captureTask            = atc.ResourceCaptureTaskName
 )
 
 var (
@@ -400,7 +402,7 @@ func (capturer *Capturer) Capture(ctx context.Context, request Request) (Capture
 	if err != nil {
 		return CaptureResult{}, fmt.Errorf("resource capture: encode source metadata: %w", err)
 	}
-	config, err := captureConfig(resolved, snapshotType, metadata, capturer.taskImage)
+	config, err := captureConfig(resolved, snapshotType, operationKey, metadata, capturer.taskImage)
 	if err != nil {
 		return CaptureResult{}, err
 	}
@@ -520,7 +522,7 @@ func (capturer *Capturer) CapturePersistedSelection(ctx context.Context, selecti
 	if err != nil {
 		return CaptureResult{}, fmt.Errorf("resource capture: encode persisted source metadata: %w", err)
 	}
-	config, err := captureConfig(resolved, selection.SnapshotType, metadata, capturer.taskImage)
+	config, err := captureConfig(resolved, selection.SnapshotType, selection.CaptureOperationKey, metadata, capturer.taskImage)
 	if err != nil {
 		return CaptureResult{}, err
 	}
@@ -676,7 +678,7 @@ func captureIdentity(resolved ResolvedResource, snapshotType snapshot.TypeRef, t
 	return hex.EncodeToString(digest[:]), resourceHash, nil
 }
 
-func captureConfig(resolved ResolvedResource, snapshotType snapshot.TypeRef, metadata json.RawMessage, taskImage string) (atc.Config, error) {
+func captureConfig(resolved ResolvedResource, snapshotType snapshot.TypeRef, operationKey string, metadata json.RawMessage, taskImage string) (atc.Config, error) {
 	image, err := registryImage(taskImage)
 	if err != nil {
 		return atc.Config{}, fmt.Errorf("resource capture: agent step image: %w", err)
@@ -689,6 +691,17 @@ func captureConfig(resolved ResolvedResource, snapshotType snapshot.TypeRef, met
 	if err != nil {
 		return atc.Config{}, fmt.Errorf("resource capture: clone resource types: %w", err)
 	}
+	// The sealing task consumes untyped resource bytes and emits the first
+	// typed snapshot, so its input can never be typed. That is exactly what
+	// atc.ResourceCaptureAuthority sanctions; execution honors it only for a
+	// build inside this server-owned template's pipeline run.
+	authority := &atc.ResourceCaptureAuthority{
+		OperationKey: operationKey, SourceInput: sourcePort,
+		OutputPort: outputPort, SnapshotType: snapshotType,
+	}
+	if err := authority.Validate(); err != nil {
+		return atc.Config{}, fmt.Errorf("resource capture: %w", err)
+	}
 	config := atc.Config{
 		Template:      true,
 		Resources:     atc.ResourceConfigs{resourceCopy.(atc.ResourceConfig)},
@@ -697,15 +710,19 @@ func captureConfig(resolved ResolvedResource, snapshotType snapshot.TypeRef, met
 			Name: captureJob, Serial: true, RawMaxInFlight: 1,
 			PlanSequence: []atc.Step{
 				{Config: &atc.GetStep{
-					Name: "source", Resource: resolved.Resource.Name,
+					Name: sourcePort, Resource: resolved.Resource.Name,
 					Version: &atc.VersionConfig{Pinned: cloneVersion(resolved.Version)},
 				}},
 				{Config: &atc.TaskStep{
-					Name: "seal-snapshot", FunctionID: "resource-version-capture/v1", Hermetic: true,
+					Name: captureTask, FunctionID: atc.ResourceCaptureFunctionID, Hermetic: true,
+					ResourceCaptureAuthority: authority,
 					Config: &atc.TaskConfig{
 						Platform: "linux", ImageResource: image,
-						Run:    atc.TaskRunConfig{Path: "/bin/sh", Args: []string{"-ec", `cp -a source/. snapshot/`}},
-						Inputs: []atc.TaskInputConfig{{Name: "source"}}, Outputs: []atc.TaskOutputConfig{{Name: outputPort}},
+						Run: atc.TaskRunConfig{
+							Path: atc.ResourceCaptureRunPath,
+							Args: atc.ResourceCaptureRunArgs(sourcePort, outputPort),
+						},
+						Inputs: []atc.TaskInputConfig{{Name: sourcePort}}, Outputs: []atc.TaskOutputConfig{{Name: outputPort}},
 					},
 					SnapshotOutputs: map[string]atc.SnapshotOutputConfig{outputPort: {
 						Type: snapshotType, Retention: snapshot.RetentionClassBinding,
