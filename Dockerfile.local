@@ -1,7 +1,13 @@
 FROM ubuntu:22.04
 
+# git is a runtime dependency, not a convenience: repository/v1 snapshot
+# validation and the ATC direct-Git publisher both exec it inside the web
+# process. Omitting it makes those fail only on a deployed cluster, while every
+# test stays green on dev hosts that happen to have git — exactly how the
+# defect fixed on 2026-08-01 reached production. deploy/runtime_image_parity_test.go
+# pins this list against every other copy of the runtime image.
 RUN apt-get update && \
-    apt-get install -y ca-certificates dumb-init && \
+    apt-get install -y ca-certificates dumb-init git=1:2.34.1-1ubuntu1.17 && \
     rm -rf /var/lib/apt/lists/*
 
 COPY concourse-linux-arm64 /usr/local/concourse/bin/concourse

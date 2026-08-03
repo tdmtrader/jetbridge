@@ -212,7 +212,12 @@ jobs:
           cp concourse-linux-amd64 artifact-daemon-linux-amd64 /tmp/docker-build/
           cat <<'DOCKERFILE' > /tmp/docker-build/Dockerfile
           FROM debian:bookworm-slim
-          RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates dumb-init && rm -rf /var/lib/apt/lists/*
+          # git is a runtime dependency: repository/v1 validation and the ATC
+          # direct-Git publisher exec it inside the web process. Unpinned here
+          # because this base is debian:bookworm-slim, whose git version differs
+          # from the ubuntu:22.04 images; the parity guard requires presence on
+          # Debian and the exact pin on Ubuntu.
+          RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates dumb-init git && rm -rf /var/lib/apt/lists/*
           COPY concourse-linux-amd64 /usr/local/concourse/bin/concourse
           COPY artifact-daemon-linux-amd64 /usr/local/concourse/bin/artifact-daemon
           RUN chmod +x /usr/local/concourse/bin/concourse /usr/local/concourse/bin/artifact-daemon
@@ -319,7 +324,12 @@ jobs:
           cp concourse-linux-amd64 artifact-daemon-linux-amd64 /tmp/docker-build/
           cat <<'DOCKERFILE' > /tmp/docker-build/Dockerfile
           FROM debian:bookworm-slim
-          RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates dumb-init && rm -rf /var/lib/apt/lists/*
+          # git is a runtime dependency: repository/v1 validation and the ATC
+          # direct-Git publisher exec it inside the web process. Unpinned here
+          # because this base is debian:bookworm-slim, whose git version differs
+          # from the ubuntu:22.04 images; the parity guard requires presence on
+          # Debian and the exact pin on Ubuntu.
+          RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates dumb-init git && rm -rf /var/lib/apt/lists/*
           COPY concourse-linux-amd64 /usr/local/concourse/bin/concourse
           COPY artifact-daemon-linux-amd64 /usr/local/concourse/bin/artifact-daemon
           RUN chmod +x /usr/local/concourse/bin/concourse /usr/local/concourse/bin/artifact-daemon
