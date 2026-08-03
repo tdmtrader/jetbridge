@@ -783,7 +783,8 @@ func managedMCPReadyFromProviderStream(stream []byte, server string) bool {
 					continue
 				}
 				switch content.Name {
-				case "mcp__output_builder__describe_output", "mcp__output_builder__validate_output", "mcp__output_builder__write_output":
+				case "mcp__output_builder__describe_output", "mcp__output_builder__validate_output", "mcp__output_builder__write_output",
+					"mcp__output-builder__describe_output", "mcp__output-builder__validate_output", "mcp__output-builder__write_output":
 					return true
 				}
 			}

@@ -112,7 +112,7 @@ func TestRunManagedOutputBuilderDoesNotEmitReadyForRunnerOnlyPreflight(t *testin
 	}
 }
 
-func TestRunManagedOutputBuilderEmitsReadyAfterProviderEvidence(t *testing.T) {
+func TestRunManagedOutputBuilderEmitsReadyAfterHyphenatedProviderToolUse(t *testing.T) {
 	var methods []string
 	listener, err := net.Listen("tcp", DefaultMCPAddressForTest())
 	if err != nil {
@@ -145,7 +145,9 @@ func TestRunManagedOutputBuilderEmitsReadyAfterProviderEvidence(t *testing.T) {
 	adapter := &provider.FakeAdapter{IdentityValue: provider.Identity{Name: "test", Version: "1"}, StartFunc: func(context.Context, provider.StartRequest, provider.BoundaryControl) (provider.RunningSession, error) {
 		return outputBuilderSession(func(context.Context) (provider.Result, error) {
 			return provider.Result{Stream: []byte(
-				`{"type":"system","subtype":"init","mcp_servers":[{"name":"output-builder","status":"connected"}]}` + "\n" +
+				`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"mcp__output-builder__describe_output"}]}}` + "\n" +
+					`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"mcp__output-builder__validate_output"}]}}` + "\n" +
+					`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"mcp__output-builder__write_output"}]}}` + "\n" +
 					`{"type":"result","subtype":"success","result":"done","is_error":false}` + "\n",
 			)}, nil
 		}), nil
@@ -178,7 +180,12 @@ func TestManagedMCPReadyFromProviderStream(t *testing.T) {
 		{name: "managed describe tool use", stream: `{"type":"assistant","message":{"content":[{"type":"tool_use","name":"mcp__output_builder__describe_output"}]}}` + "\n", want: true},
 		{name: "managed validate tool use", stream: `{"type":"assistant","message":{"content":[{"type":"tool_use","name":"mcp__output_builder__validate_output"}]}}` + "\n", want: true},
 		{name: "managed write tool use", stream: `{"type":"assistant","message":{"content":[{"type":"tool_use","name":"mcp__output_builder__write_output"}]}}` + "\n", want: true},
+		{name: "hyphenated managed describe tool use", stream: `{"type":"assistant","message":{"content":[{"type":"tool_use","name":"mcp__output-builder__describe_output"}]}}` + "\n", want: true},
+		{name: "hyphenated managed validate tool use", stream: `{"type":"assistant","message":{"content":[{"type":"tool_use","name":"mcp__output-builder__validate_output"}]}}` + "\n", want: true},
+		{name: "hyphenated managed write tool use", stream: `{"type":"assistant","message":{"content":[{"type":"tool_use","name":"mcp__output-builder__write_output"}]}}` + "\n", want: true},
 		{name: "forged managed tool name", stream: `{"type":"assistant","message":{"content":[{"type":"tool_use","name":"mcp__output_builder__forged"}]}}` + "\n", want: false},
+		{name: "forged hyphenated managed tool name", stream: `{"type":"assistant","message":{"content":[{"type":"tool_use","name":"mcp__output-builder__forged"}]}}` + "\n", want: false},
+		{name: "other server tool name", stream: `{"type":"assistant","message":{"content":[{"type":"tool_use","name":"mcp__other__describe_output"}]}}` + "\n", want: false},
 		{name: "tool name without tool use", stream: `{"type":"assistant","message":{"content":[{"type":"text","name":"mcp__output_builder__write_output"}]}}` + "\n", want: false},
 	}
 	for _, test := range tests {
