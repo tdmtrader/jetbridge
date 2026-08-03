@@ -8,6 +8,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -504,6 +505,133 @@ func waitFromRequest(id workflowwait.ID, request workflowwait.CreateRequest, sta
 		wait.ResolvedBy, wait.ResolutionSource, wait.ResolvedAt = "system:timeout", "timeout", &now
 	}
 	return wait
+}
+
+// The durable wait's deadline is the step context's own deadline, so the final
+// poll and the context expiry come due at the same instant and `select` picks
+// between them at random. Whichever branch wins, the loop still has to expire
+// the wait row and authorize the answer it holds -- and the real stores run
+// those through the database, which refuses an expired context outright. These
+// two specs pin that the outcome survives the deadline it was produced at; the
+// stubs deliberately honour ctx the way BeginTx and QueryRowContext do, and
+// each scenario is repeated so both halves of the race are exercised.
+func TestAwaitSnapshotStepPublishesTerminalAnswersProducedAtTheDeadline(t *testing.T) {
+	for _, scenario := range []struct {
+		name   string
+		policy atc.AwaitSnapshotOnTimeout
+		status workflowwait.Status
+	}{
+		{name: "on_timeout default substitutes its answer", policy: atc.AwaitSnapshotOnTimeoutDefault, status: workflowwait.StatusTimedOut},
+		{name: "a human answer landing in the final poll window", policy: atc.AwaitSnapshotOnTimeoutFail, status: workflowwait.StatusResolved},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			for attempt := 0; attempt < 8; attempt++ {
+				question := awaitManifest(21, "question/v1", 'a')
+				answer := awaitManifest(22, "human-answer/v1", 'b')
+				content := new(snapshotfakes.FakeContentStore)
+				content.OpenReturns(io.NopCloser(strings.NewReader("unused")), nil)
+				repository, state, delegates := awaitHarness(t, question, content)
+
+				// Plan-time validation runs before the wait exists and is not
+				// what this spec is about; enforcing ctx only once the durable
+				// wait is created keeps the spec free of any dependence on how
+				// long the setup phase happens to take.
+				var waitCreated atomic.Bool
+				metadata := new(snapshotfakes.FakeMetadataStore)
+				metadata.GetAuthorizedCalls(func(ctx context.Context, _ int, id snapshot.SnapshotID) (snapshot.Snapshot, bool, error) {
+					// QueryRowContext fails before touching the pool.
+					if err := ctx.Err(); err != nil && waitCreated.Load() {
+						return snapshot.Snapshot{}, false, err
+					}
+					switch id {
+					case question.ID:
+						return question, true, nil
+					case answer.ID:
+						return answer, true, nil
+					}
+					return snapshot.Snapshot{}, false, nil
+				})
+
+				store := &waitStoreStub{}
+				var request workflowwait.CreateRequest
+				store.create = func(_ context.Context, value workflowwait.CreateRequest) (workflowwait.Wait, bool, error) {
+					request = value
+					waitCreated.Store(true)
+					return waitFromRequest(31, value, workflowwait.StatusWaiting, nil), true, nil
+				}
+				store.expire = func(ctx context.Context, _ workflowwait.ExecutionKey, now time.Time) (workflowwait.Wait, bool, error) {
+					// BeginTx fails before opening a transaction.
+					if err := ctx.Err(); err != nil {
+						return workflowwait.Wait{}, false, err
+					}
+					if now.Before(request.Deadline) {
+						return waitFromRequest(31, request, workflowwait.StatusWaiting, nil), true, nil
+					}
+					ref := awaitRef(answer)
+					return waitFromRequest(31, request, scenario.status, &ref), true, nil
+				}
+
+				plan := atc.AwaitSnapshotPlan{
+					Name: "answer", Question: "question", Type: "human-answer/v1",
+					OnTimeout: scenario.policy, WorkflowRunID: "19",
+				}
+				if scenario.policy == atc.AwaitSnapshotOnTimeoutDefault {
+					plan.DefaultSnapshotID = answer.ID.String()
+				}
+
+				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
+				step := exec.NewAwaitSnapshotStep("plan-1", nil, plan,
+					exec.StepMetadata{TeamID: 17, BuildID: 29}, delegates, store, nil, metadata, content, 5*time.Millisecond)
+				ok, err := step.Run(ctx, state)
+				cancel()
+
+				require.NoErrorf(t, err, "attempt %d: the answer the durable wait already holds was lost at the deadline", attempt)
+				require.Truef(t, ok, "attempt %d: step did not succeed", attempt)
+				require.Containsf(t, repository.AsMap(), build.ArtifactName("answer"),
+					"attempt %d: the answer was never published downstream", attempt)
+			}
+		})
+	}
+}
+
+// A genuine abort must still interrupt the wait rather than be finalized
+// around: only a deadline expiry earns the detached finalization budget.
+func TestAwaitSnapshotStepPropagatesAbortRatherThanFinalizing(t *testing.T) {
+	question := awaitManifest(21, "question/v1", 'a')
+	content := new(snapshotfakes.FakeContentStore)
+	_, state, delegates := awaitHarness(t, question, content)
+
+	metadata := new(snapshotfakes.FakeMetadataStore)
+	metadata.GetAuthorizedReturns(question, true, nil)
+
+	store := &waitStoreStub{}
+	var request workflowwait.CreateRequest
+	store.create = func(_ context.Context, value workflowwait.CreateRequest) (workflowwait.Wait, bool, error) {
+		request = value
+		return waitFromRequest(31, value, workflowwait.StatusWaiting, nil), true, nil
+	}
+	store.expire = func(ctx context.Context, _ workflowwait.ExecutionKey, _ time.Time) (workflowwait.Wait, bool, error) {
+		if err := ctx.Err(); err != nil {
+			return workflowwait.Wait{}, false, err
+		}
+		return waitFromRequest(31, request, workflowwait.StatusWaiting, nil), true, nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
+	defer cancel()
+	aborted, abort := context.WithCancel(ctx)
+	time.AfterFunc(20*time.Millisecond, abort)
+	defer abort()
+
+	step := exec.NewAwaitSnapshotStep("plan-1", nil, atc.AwaitSnapshotPlan{
+		Name: "answer", Question: "question", Type: "human-answer/v1",
+		OnTimeout: atc.AwaitSnapshotOnTimeoutFail, WorkflowRunID: "19",
+	}, exec.StepMetadata{TeamID: 17, BuildID: 29}, delegates, store, nil, metadata, content, 5*time.Millisecond)
+
+	ok, err := step.Run(aborted, state)
+	require.False(t, ok)
+	require.ErrorIs(t, err, context.Canceled)
+	require.NotErrorIs(t, err, context.DeadlineExceeded)
 }
 
 func validWaitCreate(key workflowwait.ExecutionKey, question snapshot.SnapshotRef, deadline time.Time) workflowwait.CreateRequest {

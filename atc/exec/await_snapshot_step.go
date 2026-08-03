@@ -226,8 +226,11 @@ func (step *AwaitSnapshotStep) run(ctx context.Context, state RunState, delegate
 	}
 
 	for {
-		if finished, ok, err := step.finish(ctx, state, delegate, logger, wait); finished {
-			return ok, err
+		finishCtx, releaseFinish := step.storeContext(ctx, wait.Deadline)
+		finished, ok, finishErr := step.finish(finishCtx, state, delegate, logger, wait)
+		releaseFinish()
+		if finished {
+			return ok, finishErr
 		}
 		delay := step.pollInterval
 		untilDeadline := time.Until(wait.Deadline)
@@ -239,7 +242,11 @@ func (step *AwaitSnapshotStep) run(ctx context.Context, state RunState, delegate
 		timer := time.NewTimer(delay)
 		select {
 		case <-timer.C:
-			wait, err = step.refresh(ctx, key, time.Now().UTC())
+			// The final poll is armed to fire exactly at the deadline, so this
+			// branch routinely runs with the step context already expired.
+			refreshCtx, releaseRefresh := step.storeContext(ctx, wait.Deadline)
+			wait, err = step.refresh(refreshCtx, key, time.Now().UTC())
+			releaseRefresh()
 			if err != nil {
 				return false, err
 			}
@@ -253,7 +260,7 @@ func (step *AwaitSnapshotStep) run(ctx context.Context, state RunState, delegate
 			if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
 				return false, ctx.Err()
 			}
-			detached, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			detached, cancel := context.WithTimeout(context.WithoutCancel(ctx), awaitSnapshotFinalizeGrace)
 			wait, err = step.refresh(detached, key, time.Now().UTC())
 			cancel()
 			if err != nil {
@@ -266,10 +273,42 @@ func (step *AwaitSnapshotStep) run(ctx context.Context, state RunState, delegate
 	}
 }
 
+// awaitSnapshotFinalizeGrace bounds the durable-store work that necessarily
+// happens after the step's own deadline has passed: expiring the wait row and
+// authorizing whatever answer it ended up holding. It is deliberately short --
+// this is finalization, not more waiting.
+const awaitSnapshotFinalizeGrace = 5 * time.Second
+
+// storeContext picks the context for a durable-store call.
+//
+// The durable wait's deadline is the step context's own deadline, so the last
+// poll and the context expiry come due at the same instant and the loop keeps
+// running for one more pass afterwards. Handing the expired context to the
+// store throws away exactly the outcome that pass exists to publish: a human's
+// answer that landed inside the final poll window, or the on_timeout: default
+// substitute the store just materialized. Once the deadline has elapsed the
+// remaining work runs on a short detached budget instead.
+//
+// Cancellation that is not a deadline expiry is a genuine abort and is passed
+// through untouched, so aborting a build still interrupts the wait at once.
+func (step *AwaitSnapshotStep) storeContext(ctx context.Context, deadline time.Time) (context.Context, context.CancelFunc) {
+	noop := func() {}
+	err := ctx.Err()
+	if err != nil && !errors.Is(err, context.DeadlineExceeded) {
+		return ctx, noop
+	}
+	if err == nil && time.Now().Before(deadline) {
+		return ctx, noop
+	}
+	return context.WithTimeout(context.WithoutCancel(ctx), awaitSnapshotFinalizeGrace)
+}
+
 func (step *AwaitSnapshotStep) refresh(ctx context.Context, key workflowwait.ExecutionKey, now time.Time) (workflowwait.Wait, error) {
 	wait, found, err := step.waits.Expire(ctx, key, now)
 	if err != nil {
-		return workflowwait.Wait{}, fmt.Errorf("await_snapshot: durable wait refresh failed")
+		// Wrapped, not swallowed: TimeoutStep only converts a context deadline
+		// into a clean failure when it can still see one through the chain.
+		return workflowwait.Wait{}, fmt.Errorf("await_snapshot: durable wait refresh failed: %w", err)
 	}
 	if !found {
 		return workflowwait.Wait{}, fmt.Errorf("await_snapshot: durable wait disappeared")
@@ -305,7 +344,7 @@ func (step *AwaitSnapshotStep) finish(
 	}
 	manifest, found, err := step.metadataStore.GetAuthorized(ctx, step.metadata.TeamID, wait.Answer.ID)
 	if err != nil {
-		return true, false, fmt.Errorf("await_snapshot: answer snapshot authorization failed")
+		return true, false, fmt.Errorf("await_snapshot: answer snapshot authorization failed: %w", err)
 	}
 	if !found || !usableAwaitManifest(manifest, wait.Answer.ID, step.plan.Type) ||
 		manifest.Digest != wait.Answer.Digest || manifest.Type != wait.Answer.Type {
