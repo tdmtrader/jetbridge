@@ -120,8 +120,9 @@ case "$1" in
         ;;
     esac
     ;;
-  mcp)
-    printf '%s\n' 'output-builder: Connected'
+  --mcp-config)
+    test "$#" = 5 && test "$3" = "--strict-mcp-config" && test "$4" = "mcp" && test "$5" = "list" || exit 64
+    printf '%s\n' 'output-builder: http://127.0.0.1:7783/mcp (HTTP) - ✓ Connected'
     ;;
   *)
     exit 64
@@ -167,9 +168,9 @@ case "$1" in
   --version) printf '%s\n' '2.1.212 (Claude Code)' ;;
   --help) printf '%s\n' '--max-budget-usd --mcp-config --strict-mcp-config --append-system-prompt --output-format --verbose --dangerously-skip-permissions' ;;
   --print) printf '%s\n' "error: option '--max-turns <turns>' argument missing" >&2; exit 1 ;;
-  mcp)
-    test "$2" = "list" && test "$3" = "--mcp-config" && test "$5" = "--strict-mcp-config" || exit 64
-    cat "$4" > "$MCP_CONFIG_LOG"
+  --mcp-config)
+    test "$#" = 5 && test "$3" = "--strict-mcp-config" && test "$4" = "mcp" && test "$5" = "list" || exit 64
+    cat "$2" > "$MCP_CONFIG_LOG"
     printf '%s\n' "$MCP_STATUS"
     exit 0
     ;;
@@ -210,9 +211,9 @@ exit 64
 		status      string
 		wantSuccess bool
 	}{
-		{name: "connected", status: "output-builder: Connected", wantSuccess: true},
-		{name: "disconnected", status: "output-builder: disconnected"},
-		{name: "negative multiword", status: "output-builder: Not Connected"},
+		{name: "connected", status: "output-builder: http://127.0.0.1:7783/mcp (HTTP) - ✓ Connected", wantSuccess: true},
+		{name: "disconnected", status: "output-builder: http://127.0.0.1:7783/mcp (HTTP) - ✗ Failed to connect"},
+		{name: "negative multiword", status: "output-builder: http://127.0.0.1:7783/mcp (HTTP) - Not Connected"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tmpDir := t.TempDir()

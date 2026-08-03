@@ -79,12 +79,12 @@ if ! curl --fail --silent --show-error http://127.0.0.1:7783/healthz >/dev/null 
 fi
 
 mcp_output="$smoke_dir/mcp-list.txt"
-if ! (ulimit -f 16; claude mcp list --mcp-config "$smoke_dir/mcp.json" --strict-mcp-config > "$mcp_output" 2>&1); then
+if ! (ulimit -f 16; claude --mcp-config "$smoke_dir/mcp.json" --strict-mcp-config mcp list > "$mcp_output" 2>&1); then
   printf 'ERROR: Claude failed to list managed output builder MCP\n' >&2
   head -c 8192 "$mcp_output" >&2 || :
   exit 1
 fi
-if ! head -c 8192 "$mcp_output" | grep -F -x -- 'output-builder: Connected' >/dev/null; then
+if ! head -c 8192 "$mcp_output" | grep -E -x -- 'output-builder: .+ - ✓ Connected' >/dev/null; then
   printf 'ERROR: managed output builder MCP is not connected\n' >&2
   head -c 8192 "$mcp_output" >&2 || :
   exit 1
