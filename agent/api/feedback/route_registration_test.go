@@ -7,8 +7,8 @@ import (
 )
 
 // TestFeedbackRoutesRegistered verifies that the agent feedback API routes
-// are defined in the main ATC route table. Without these routes, the feedback
-// endpoints are unreachable in production even though the handlers exist.
+// are defined in the main ATC route table. Without the team-scoped route, the
+// feedback endpoint is unreachable in production even though the handler exists.
 func TestFeedbackRoutesRegistered(t *testing.T) {
 	routeNames := map[string]bool{}
 	for _, route := range atc.Routes {
@@ -20,12 +20,13 @@ func TestFeedbackRoutesRegistered(t *testing.T) {
 		method string
 		path   string
 	}{
-		{atc.SubmitAgentFeedback, "POST", "/api/v1/agent/feedback"},
+		{atc.SubmitAgentFeedback, "POST", "/api/v1/teams/:team_name/agent/feedback"},
 	}
 
 	// The v1 read/classify surface is gone: verdicts are read back through the
 	// review projection, and the keyword classifier went with ci-agent.
 	for _, path := range []string{
+		"/api/v1/agent/feedback",
 		"/api/v1/agent/feedback/summary",
 		"/api/v1/agent/feedback/classify",
 		"/api/v1/agent/reviews/:commit/findings",
@@ -34,12 +35,6 @@ func TestFeedbackRoutesRegistered(t *testing.T) {
 			if route.Path == path {
 				t.Errorf("route %q (%s %s) must not be registered", route.Name, route.Method, path)
 			}
-		}
-	}
-
-	for _, route := range atc.Routes {
-		if route.Path == "/api/v1/agent/feedback" && route.Method != "POST" {
-			t.Errorf("only POST /api/v1/agent/feedback survives; found %s", route.Method)
 		}
 	}
 

@@ -55,9 +55,52 @@ all =
                     |> Tuple.second
                     |> Common.contains
                         (Effects.CancelAgentExperiment AgenticData.experiment.id AgenticData.experiment.revision)
+        , test "distinguishes cancellation conflicts from service failures" <|
+            \_ ->
+                Expect.all
+                    [ \_ ->
+                        cancelErrorModel (Http.BadStatus (httpResponse 409))
+                            |> Common.queryView
+                            |> Query.has
+                                [ class "agent-page-error"
+                                , containing [ text "conflicted with a newer revision or terminal state" ]
+                                ]
+                    , \_ ->
+                        cancelErrorModel (Http.BadStatus (httpResponse 500))
+                            |> Common.queryView
+                            |> Query.has
+                                [ class "agent-page-error"
+                                , containing [ text "couldn't be canceled" ]
+                                ]
+                    , \_ ->
+                        cancelErrorModel Http.NetworkError
+                            |> Common.queryView
+                            |> Query.has
+                                [ class "agent-page-error"
+                                , containing [ text "couldn't be canceled" ]
+                                ]
+                    ]
+                    ()
         , test "refreshes the definition, matrix, and scorecard while the experiment is active" <|
             \_ ->
                 initialized
+                    |> Application.update
+                        (Msgs.DeliveryReceived (ClockTicked FiveSeconds (Time.millisToPosix 0)))
+                    |> Tuple.second
+                    |> Expect.all
+                        [ Common.contains (Effects.FetchAgentExperiment AgenticData.experiment.id)
+                        , Common.contains (Effects.FetchAgentExperimentCells AgenticData.experiment.id)
+                        , Common.contains (Effects.FetchAgentExperimentScorecard AgenticData.experiment.id)
+                        ]
+        , test "keeps polling a draft so an external start becomes visible" <|
+            \_ ->
+                Common.init "/agent/experiments/9007199254741011"
+                    |> Application.handleCallback
+                        (Callback.AgentExperimentFetched
+                            AgenticData.experiment.id
+                            (Ok draftExperiment)
+                        )
+                    |> Tuple.first
                     |> Application.update
                         (Msgs.DeliveryReceived (ClockTicked FiveSeconds (Time.millisToPosix 0)))
                     |> Tuple.second
@@ -123,6 +166,17 @@ terminalExperiment =
     { experiment | definition = { definition | state = "completed" } }
 
 
+draftExperiment =
+    let
+        experiment =
+            AgenticData.experiment
+
+        definition =
+            experiment.definition
+    in
+    { experiment | definition = { definition | state = "draft" } }
+
+
 scorecardErrorModel : Int -> Application.Model
 scorecardErrorModel statusCode =
     Common.init "/agent/experiments/9007199254741011"
@@ -145,3 +199,20 @@ scorecardErrorModel statusCode =
                 )
             )
         |> Tuple.first
+
+
+cancelErrorModel : Http.Error -> Application.Model
+cancelErrorModel httpError =
+    initialized
+        |> Application.handleCallback
+            (Callback.AgentExperimentCanceled AgenticData.experiment.id (Err httpError))
+        |> Tuple.first
+
+
+httpResponse : Int -> Http.Response String
+httpResponse statusCode =
+    { url = "http://example.com"
+    , status = { code = statusCode, message = "" }
+    , headers = Dict.empty
+    , body = ""
+    }

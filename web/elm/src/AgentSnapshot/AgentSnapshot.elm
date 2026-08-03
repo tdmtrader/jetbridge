@@ -198,7 +198,8 @@ update message ( model, effects ) =
             ( model
             , effects
                 ++ [ SubmitAgentReviewVerdict
-                        { reviewSnapshotId = model.snapshotId
+                        { teamName = params.teamName
+                        , reviewSnapshotId = model.snapshotId
                         , findingId = params.findingId
                         , verdict = params.verdict
                         , notes = Dict.get params.findingId model.agentReviewNotes |> Maybe.withDefault ""

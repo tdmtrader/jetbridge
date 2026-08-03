@@ -134,13 +134,33 @@ var _ = Describe("Agent Tickets", func() {
 
 		It("puts the update and decodes the updated ticket", func() {
 			name := "deploy"
-			ver := 3
 			updated, err := client.UpdateAgentTicket(7, tickets.UpdateRequest{
 				WorkflowName:    &name,
-				WorkflowVersion: &ver,
+				WorkflowVersion: tickets.SetField(3),
 			})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(updated.WorkflowName).To(Equal("deploy"))
+		})
+	})
+
+	Describe("ClearAgentTicketSelections", func() {
+		BeforeEach(func() {
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("PUT", "/api/v1/agent/tickets/7"),
+					ghttp.VerifyJSON(`{"workflow_version":null,"repository_snapshot_id":null}`),
+					ghttp.RespondWithJSONEncoded(http.StatusOK, tickets.Ticket{ID: 7}),
+				),
+			)
+		})
+
+		It("preserves explicit nulls on the wire", func() {
+			updated, err := client.UpdateAgentTicket(7, tickets.UpdateRequest{
+				WorkflowVersion:      tickets.ClearField[int](),
+				RepositorySnapshotID: tickets.ClearField[snapshot.SnapshotID](),
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(updated.ID).To(Equal(7))
 		})
 	})
 

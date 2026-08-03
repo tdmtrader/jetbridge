@@ -1,9 +1,11 @@
 package api
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"code.cloudfoundry.org/clock"
@@ -208,21 +210,24 @@ func NewHandler(
 	artifactServer := artifactserver.NewServer(logger, workerPool)
 	usersServer := usersserver.NewServer(logger, dbUserFactory)
 	wallServer := wallserver.NewServer(dbWall, logger)
-	feedbackServer := feedback.NewHandler(
-		feedbackStore,
-		feedback.WithSnapshotTeam(atc.DefaultTeamName),
-		feedback.WithIdentity(func(r *http.Request) string {
-			claims := accessor.GetAccessor(r).Claims()
-			if claims.PreferredUsername != "" {
-				return claims.PreferredUsername
-			}
-			return claims.UserName
-		}),
-	)
+	feedbackHandlerForTeam := func(team db.Team) http.Handler {
+		server := feedback.NewHandler(
+			feedbackStore,
+			feedback.WithSnapshotTeam(team.Name()),
+			feedback.WithIdentity(func(r *http.Request) string {
+				return accessor.GetAccessor(r).UserInfo().DisplayUserId
+			}),
+		)
+		return http.HandlerFunc(server.SubmitFeedback)
+	}
 	reviewsServer := reviewsapi.NewHandler(reviewsStore, feedbackStore, atc.DefaultTeamName)
 	metricsServer := metricsapi.NewHandler(metricsStore)
-	ticketsServer := ticketsapi.NewHandler(ticketsStore, func(r *http.Request) string {
-		return accessor.GetAccessor(r).Claims().UserName
+	ticketsServer := ticketsapi.NewHandler(ticketsStore, func(r *http.Request) (string, error) {
+		identity := accessor.GetAccessor(r).UserInfo().DisplayUserId
+		if strings.TrimSpace(identity) == "" {
+			return "", errors.New("authenticated ticket creator is unavailable")
+		}
+		return identity, nil
 	})
 	ticketJournalServer := ticketjournalapi.NewHandler(ticketsStore, ticketRunJournal, ticketJournalTeam)
 	transcriptServer := transcriptserver.NewServer(logger, agentRunTranscriptStore)
@@ -394,7 +399,7 @@ func NewHandler(
 		atc.GetOpenIDConfiguration: http.HandlerFunc(idTokenServer.OpenIDConfiguration),
 		atc.GetSigningKeys:         http.HandlerFunc(idTokenServer.SigningKeys),
 
-		atc.SubmitAgentFeedback: http.HandlerFunc(feedbackServer.SubmitFeedback),
+		atc.SubmitAgentFeedback: teamHandlerFactory.HandlerFor(feedbackHandlerForTeam),
 
 		atc.GetBuildAgentReviews:        http.HandlerFunc(reviewsServer.GetByBuild),
 		atc.ListTeamAgentReviews:        http.HandlerFunc(reviewsServer.ListByTeam),

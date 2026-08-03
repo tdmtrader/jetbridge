@@ -33,6 +33,7 @@ cannot accidentally change what they draw.
 
 import Html exposing (Html)
 import Html.Attributes exposing (class, href, style)
+import Routes
 
 
 type alias Attempt =
@@ -270,7 +271,9 @@ outputRow output =
 snapshotRef : { a | snapshotId : String, typeRef : String } -> Html msg
 snapshotRef ref =
     Html.a
-        [ class "agent-snapshot-link", href ("/agent-snapshots/" ++ ref.snapshotId) ]
+        [ class "agent-snapshot-link"
+        , href (Routes.toString (Routes.AgentSnapshot { id = ref.snapshotId }))
+        ]
         [ Html.text (ref.typeRef ++ " #" ++ ref.snapshotId) ]
 
 

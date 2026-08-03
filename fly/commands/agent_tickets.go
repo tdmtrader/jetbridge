@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/concourse/concourse/agent/api/tickets"
+	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/fly/rc"
 	"github.com/concourse/concourse/fly/ui"
 	"github.com/concourse/concourse/go-concourse/concourse"
@@ -35,74 +36,98 @@ func printDispatchWarnings(warnings []string) {
 	}
 }
 
-// assignWorkflow realizes the documented "decided at dispatch" semantics
-// (WF-5): a ticket created with an empty workflow can have one assigned via
-// --workflow / --workflow-version on queue or dispatch, closing the
-// empty-workflow dead-end (DispatchOne's ErrNoWorkflow). It is a no-op (and
-// returns a no-op restore) when neither flag is set.
+func parseAgentTicketRepositorySnapshot(raw string) (*snapshot.SnapshotID, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	id, err := snapshot.ParseSnapshotID(raw)
+	if err != nil {
+		return nil, fmt.Errorf("agent ticket: --repository-snapshot: %w", err)
+	}
+	return &id, nil
+}
+
+// assignTicketDispatchInputs realizes the documented "decided at dispatch"
+// semantics (WF-5): queue and dispatch may assign a workflow and select the
+// exact repository snapshot that the ticket adapter binds. It is a no-op (and
+// returns a no-op restore) when none of those inputs is supplied.
 //
-// The assignment is COMPENSATING so a failed follow-up action never leaves the
-// ticket worse than before: it first reads the ticket's current workflow, then
-// applies the requested one, and returns restore() that reverts to the prior
-// value. Callers invoke restore() when the subsequent dispatch/queue fails, so
-// a bad --workflow value (e.g. a typo that DispatchOne cannot resolve) does not
-// clobber a previously valid assignment — the ticket is returned to exactly its
-// prior workflow, and the user can retry with a correct name. restore() is a
-// no-op when nothing was changed.
-func assignWorkflow(client concourse.Client, id int, workflow string, workflowVer int) (restore func(), err error) {
+// The assignment is COMPENSATING: it reads the current ticket before updating
+// it, then returns restore() so a failed queue/dispatch can reinstate previous
+// concrete selections. restore() is a no-op when nothing was changed.
+func assignTicketDispatchInputs(
+	client concourse.Client,
+	id int,
+	workflow string,
+	workflowVer int,
+	repositorySnapshotID *snapshot.SnapshotID,
+) (restore func(), err error) {
 	noop := func() {}
-	if workflow == "" && workflowVer <= 0 {
+	if workflow == "" && workflowVer <= 0 && repositorySnapshotID == nil {
 		return noop, nil
 	}
 
-	// Capture the prior workflow so a failed follow-up can be rolled back.
+	// Capture prior selections so a failed follow-up can be rolled back.
 	prior, found, err := client.GetAgentTicket(id)
 	if err != nil {
-		return noop, fmt.Errorf("read ticket #%d before assigning workflow: %w", id, err)
+		return noop, fmt.Errorf("read ticket #%d before assigning dispatch inputs: %w", id, err)
 	}
 	if !found {
 		return noop, fmt.Errorf("ticket #%d not found", id)
 	}
 	priorName := prior.Ticket.WorkflowName
 	priorVersion := prior.Ticket.WorkflowVersion
+	priorRepositorySnapshotID := prior.Ticket.RepositorySnapshotID
 
 	var req tickets.UpdateRequest
 	if workflow != "" {
 		req.WorkflowName = &workflow
+		// A version belongs to a workflow definition. Selecting another workflow
+		// without a new pin means "use that workflow's live version", not "reuse
+		// the previous workflow's numeric version".
+		if workflowVer <= 0 {
+			req.WorkflowVersion = tickets.ClearField[int]()
+		}
 	}
 	if workflowVer > 0 {
-		req.WorkflowVersion = &workflowVer
+		req.WorkflowVersion = tickets.SetField(workflowVer)
+	}
+	if repositorySnapshotID != nil {
+		req.RepositorySnapshotID = tickets.SetField(*repositorySnapshotID)
 	}
 	if _, err := client.UpdateAgentTicket(id, req); err != nil {
-		return noop, fmt.Errorf("assign workflow to #%d failed: %w", id, err)
+		return noop, fmt.Errorf("assign dispatch inputs to #%d failed: %w", id, err)
 	}
 	switch {
 	case workflow != "" && workflowVer > 0:
 		fmt.Printf("assigned workflow %q (version %d) to ticket #%d\n", workflow, workflowVer, id)
 	case workflow != "":
 		fmt.Printf("assigned workflow %q to ticket #%d\n", workflow, id)
-	default:
+	case workflowVer > 0:
 		fmt.Printf("pinned workflow version %d on ticket #%d\n", workflowVer, id)
+	}
+	if repositorySnapshotID != nil {
+		fmt.Printf("selected repository snapshot %s on ticket #%d\n", repositorySnapshotID.String(), id)
 	}
 
 	restore = func() {
-		// Revert only the fields we changed. WorkflowName is always a settable
-		// string (an empty prior restores the un-assigned state). A pin we added
-		// can be reverted to a concrete prior pin; a prior "live" (nil) pin cannot
-		// be re-expressed through the partial UpdateRequest, so a pin we added on
-		// top of a live prior is left in place — inert without a resolvable name.
+		// Revert only the fields we changed. Tri-state updates preserve both
+		// concrete prior selections and a prior "live/unselected" nil.
 		var rb tickets.UpdateRequest
 		if req.WorkflowName != nil {
 			rb.WorkflowName = &priorName
 		}
-		if req.WorkflowVersion != nil && priorVersion != nil {
-			rb.WorkflowVersion = priorVersion
+		if req.WorkflowVersion.Present() {
+			rb.WorkflowVersion = tickets.FieldFromPointer(priorVersion)
 		}
-		if rb.WorkflowName == nil && rb.WorkflowVersion == nil {
+		if req.RepositorySnapshotID.Present() {
+			rb.RepositorySnapshotID = tickets.FieldFromPointer(priorRepositorySnapshotID)
+		}
+		if rb.WorkflowName == nil && !rb.WorkflowVersion.Present() && !rb.RepositorySnapshotID.Present() {
 			return
 		}
 		if _, err := client.UpdateAgentTicket(id, rb); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: could not restore ticket #%d workflow after a failed action: %v\n", id, err)
+			fmt.Fprintf(os.Stderr, "warning: could not restore ticket #%d dispatch inputs after a failed action: %v\n", id, err)
 		}
 	}
 	return restore, nil
@@ -163,17 +188,26 @@ func agentTicketWorkflowRunCell(ticket tickets.Ticket) string {
 }
 
 type AgentTicketsCreateCommand struct {
-	Title        string `long:"title" required:"true" description:"Ticket title"`
-	Body         string `long:"body" short:"m" description:"Markdown problem statement"`
-	Repo         string `long:"repo" required:"true" description:"Target repo slug (e.g. tdmtrader/concourse)"`
-	TargetBranch string `long:"target-branch" default:"main" description:"Branch the work targets"`
-	Workflow     string `long:"workflow" description:"Workflow definition name (empty = decided at dispatch)"`
-	WorkflowVer  int    `long:"workflow-version" description:"Pin a workflow definition version (0 = live version)"`
-	Queue        bool   `long:"queue" description:"Queue the ticket immediately after creating it"`
-	Dispatch     bool   `long:"dispatch" description:"Queue and dispatch the ticket immediately (implies --queue)"`
+	Title              string `long:"title" required:"true" description:"Ticket title"`
+	Body               string `long:"body" short:"m" description:"Markdown problem statement"`
+	Repo               string `long:"repo" required:"true" description:"Target repo slug (e.g. tdmtrader/concourse)"`
+	TargetBranch       string `long:"target-branch" default:"main" description:"Branch the work targets"`
+	Workflow           string `long:"workflow" description:"Workflow definition name (empty = decided at dispatch)"`
+	WorkflowVer        int    `long:"workflow-version" description:"Pin a workflow definition version (0 = live version)"`
+	RepositorySnapshot string `long:"repository-snapshot" description:"Exact repository/v1 snapshot ID (required with --dispatch)"`
+	Queue              bool   `long:"queue" description:"Queue the ticket immediately after creating it"`
+	Dispatch           bool   `long:"dispatch" description:"Queue and dispatch the ticket immediately (implies --queue)"`
 }
 
 func (command *AgentTicketsCreateCommand) Execute([]string) error {
+	repositorySnapshotID, err := parseAgentTicketRepositorySnapshot(command.RepositorySnapshot)
+	if err != nil {
+		return err
+	}
+	if command.Dispatch && repositorySnapshotID == nil {
+		return fmt.Errorf("agent ticket: --repository-snapshot is required with --dispatch")
+	}
+
 	target, err := rc.LoadTarget(Fly.Target, Fly.Verbose)
 	if err != nil {
 		return err
@@ -183,12 +217,13 @@ func (command *AgentTicketsCreateCommand) Execute([]string) error {
 	}
 
 	req := tickets.CreateRequest{
-		Title:        command.Title,
-		Body:         command.Body,
-		Origin:       "fly",
-		Repo:         command.Repo,
-		TargetBranch: command.TargetBranch,
-		WorkflowName: command.Workflow,
+		Title:                command.Title,
+		Body:                 command.Body,
+		Origin:               "fly",
+		Repo:                 command.Repo,
+		TargetBranch:         command.TargetBranch,
+		WorkflowName:         command.Workflow,
+		RepositorySnapshotID: repositorySnapshotID,
 	}
 	if command.WorkflowVer > 0 {
 		req.WorkflowVersion = &command.WorkflowVer
@@ -229,12 +264,18 @@ func (command *AgentTicketsCreateCommand) Execute([]string) error {
 }
 
 type AgentTicketsQueueCommand struct {
-	ID          int    `long:"id" required:"true" description:"Ticket id"`
-	Workflow    string `long:"workflow" description:"Assign this workflow before queueing (fixes an empty-workflow ticket)"`
-	WorkflowVer int    `long:"workflow-version" description:"Pin a specific workflow definition version (omit to use the live version)"`
+	ID                 int    `long:"id" required:"true" description:"Ticket id"`
+	Workflow           string `long:"workflow" description:"Assign this workflow before queueing (fixes an empty-workflow ticket)"`
+	WorkflowVer        int    `long:"workflow-version" description:"Pin a specific workflow definition version (omit to use the live version)"`
+	RepositorySnapshot string `long:"repository-snapshot" description:"Select an exact repository/v1 snapshot before queueing"`
 }
 
 func (command *AgentTicketsQueueCommand) Execute([]string) error {
+	repositorySnapshotID, err := parseAgentTicketRepositorySnapshot(command.RepositorySnapshot)
+	if err != nil {
+		return err
+	}
+
 	target, err := rc.LoadTarget(Fly.Target, Fly.Verbose)
 	if err != nil {
 		return err
@@ -244,7 +285,9 @@ func (command *AgentTicketsQueueCommand) Execute([]string) error {
 	}
 	client := target.Client()
 
-	restore, err := assignWorkflow(client, command.ID, command.Workflow, command.WorkflowVer)
+	restore, err := assignTicketDispatchInputs(
+		client, command.ID, command.Workflow, command.WorkflowVer, repositorySnapshotID,
+	)
 	if err != nil {
 		return err
 	}
@@ -253,8 +296,8 @@ func (command *AgentTicketsQueueCommand) Execute([]string) error {
 		From: tickets.StateDraft, To: tickets.StateQueued,
 	})
 	if err != nil {
-		// Roll back a workflow we just assigned so a failed queue transition
-		// never leaves the ticket worse than before (WF-5).
+		// Roll back dispatch inputs we just assigned so a failed queue transition
+		// does not replace previous concrete selections (WF-5).
 		restore()
 		return err
 	}
@@ -306,12 +349,18 @@ func (command *AgentTicketsTransitionCommand) Execute([]string) error {
 }
 
 type AgentTicketsDispatchCommand struct {
-	ID          int    `long:"id" required:"true" description:"Ticket id (must be queued)"`
-	Workflow    string `long:"workflow" description:"Assign this workflow before dispatch (fixes an empty-workflow ticket)"`
-	WorkflowVer int    `long:"workflow-version" description:"Pin a specific workflow definition version (omit to use the live version)"`
+	ID                 int    `long:"id" required:"true" description:"Ticket id (must be queued)"`
+	Workflow           string `long:"workflow" description:"Assign this workflow before dispatch (fixes an empty-workflow ticket)"`
+	WorkflowVer        int    `long:"workflow-version" description:"Pin a specific workflow definition version (omit to use the live version)"`
+	RepositorySnapshot string `long:"repository-snapshot" description:"Select an exact repository/v1 snapshot before dispatch"`
 }
 
 func (command *AgentTicketsDispatchCommand) Execute([]string) error {
+	repositorySnapshotID, err := parseAgentTicketRepositorySnapshot(command.RepositorySnapshot)
+	if err != nil {
+		return err
+	}
+
 	target, err := rc.LoadTarget(Fly.Target, Fly.Verbose)
 	if err != nil {
 		return err
@@ -321,16 +370,17 @@ func (command *AgentTicketsDispatchCommand) Execute([]string) error {
 	}
 	client := target.Client()
 
-	restore, err := assignWorkflow(client, command.ID, command.Workflow, command.WorkflowVer)
+	restore, err := assignTicketDispatchInputs(
+		client, command.ID, command.Workflow, command.WorkflowVer, repositorySnapshotID,
+	)
 	if err != nil {
 		return err
 	}
 
 	res, err := client.DispatchAgentTicket(command.ID)
 	if err != nil {
-		// A workflow we just assigned must not outlive a failed dispatch (e.g. a
-		// typo the server cannot resolve): roll it back so the ticket is never
-		// left worse than before (WF-5).
+		// Dispatch inputs we just assigned must not replace previous concrete
+		// selections after a failed dispatch (WF-5).
 		restore()
 		// Actionable hint for the empty-workflow dead-end: the ticket names no
 		// workflow and none was supplied here (WF-5). Never rewrites other errors.

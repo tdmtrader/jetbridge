@@ -2,7 +2,6 @@ package dispatch
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"github.com/concourse/concourse/agent/api/tickets"
@@ -39,27 +38,12 @@ func NewTicketProjector(store tickets.Store) (*TicketProjector, error) {
 // writer won the race: this is a safety net projecting a fact, not an
 // authority over the board.
 func (projector *TicketProjector) ProjectFinalizedRun(
-	_ context.Context,
+	ctx context.Context,
 	ticketID int,
 	runID snapshot.WorkflowRunID,
 ) error {
-	ticket, found, err := projector.tickets.Get(ticketID)
-	if err != nil {
-		return fmt.Errorf("read ticket %d for terminal workflow run %s: %w", ticketID, runID, err)
+	if err := projector.tickets.TransitionCurrentRunToNeedsReview(ctx, ticketID, runID); err != nil {
+		return fmt.Errorf("project terminal workflow run %s onto ticket %d: %w", runID, ticketID, err)
 	}
-	if !found || ticket.State != tickets.StateRunning {
-		return nil
-	}
-	if ticket.WorkflowRunID == nil || *ticket.WorkflowRunID != runID {
-		// The ticket is running some OTHER run (or was moved to running by
-		// hand). Only the run a ticket is durably linked to may terminalize it.
-		return nil
-	}
-	err = projector.tickets.Transition(
-		ticketID, tickets.StateRunning, tickets.StateNeedsReview, tickets.TransitionMeta{},
-	)
-	if err == nil || errors.Is(err, tickets.ErrStaleTransition) || errors.Is(err, tickets.ErrTicketNotFound) {
-		return nil
-	}
-	return fmt.Errorf("project terminal workflow run %s onto ticket %d: %w", runID, ticketID, err)
+	return nil
 }

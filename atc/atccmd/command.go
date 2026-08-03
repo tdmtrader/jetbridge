@@ -3903,8 +3903,8 @@ func (cmd *RunCommand) constructAPIHandler(
 		workflowStore,
 		nodeStore,
 		// The SAME Deps the dispatcher component runs on.
-		dispatch.NewHTTPHandler(dispatchGraph.deps, func(r *http.Request) string {
-			return accessor.GetAccessor(r).Claims().UserName
+		dispatch.NewHTTPHandler(dispatchGraph.deps, func(r *http.Request) (string, error) {
+			return workflowRunCreatorIdentity(accessor.GetAccessor(r).UserInfo())
 		}),
 		db.NewAgentSettingsFactory(dbConn),
 		snapshotHandlers,

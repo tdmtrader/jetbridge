@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/concourse/concourse/agent/api/tickets"
 )
@@ -13,9 +14,11 @@ import (
 // manual dispatch trigger, on the SAME Deps the dispatcher component runs.
 // Auth is the wrappa's member tier (human-only, deliberately no principal
 // tier: an agent must not be able to spend the cluster's budget by calling
-// this). userName resolves the authenticated username for run attribution
-// (created_by).
-func NewHTTPHandler(deps Deps, userName func(*http.Request) string) http.Handler {
+// this). IdentityFunc resolves the canonical authenticated display identity
+// used for run attribution (created_by).
+type IdentityFunc func(*http.Request) (string, error)
+
+func NewHTTPHandler(deps Deps, identity IdentityFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id, err := strconv.Atoi(r.FormValue(":ticket_id"))
 		if err != nil || id <= 0 {
@@ -23,7 +26,13 @@ func NewHTTPHandler(deps Deps, userName func(*http.Request) string) http.Handler
 			return
 		}
 
-		res, err := DispatchOne(r.Context(), deps, id, userName(r))
+		dispatchedBy, err := identity(r)
+		if err != nil || strings.TrimSpace(dispatchedBy) == "" {
+			http.Error(w, "authenticated ticket dispatcher is unavailable", http.StatusInternalServerError)
+			return
+		}
+
+		res, err := DispatchOne(r.Context(), deps, id, dispatchedBy)
 		switch {
 		case errors.Is(err, tickets.ErrTicketNotFound):
 			http.Error(w, "ticket not found", http.StatusNotFound)

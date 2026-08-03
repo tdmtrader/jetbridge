@@ -2475,6 +2475,20 @@ func (factory *agentWorkflowRunsFactory) ClaimForReconciliation(
 						  AND wait.status = 'waiting'
 					)
 				)
+				OR (
+					-- Ticket projection happens after the finalization CAS. Keep a
+					-- terminal row due only while this exact current dispatch still
+					-- needs its ticket moved to needs_review.
+					run.status IN ('succeeded', 'failed', 'errored', 'aborted')
+					AND EXISTS (
+						SELECT 1
+						FROM agent_tickets ticket
+						WHERE ticket.id = run.ticket_id
+						  AND ticket.state = 'running'
+						  AND ticket.dispatch_reservation_key <> ''
+						  AND ticket.dispatch_reservation_key = run.idempotency_key
+					)
+				)
 			  )
 			  AND run.reconcile_after <= $1
 			ORDER BY reconcile_after, id

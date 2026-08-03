@@ -156,7 +156,7 @@ func (fixture *agentDispatchFixture) queueTicket() int {
 	Expect(err).NotTo(HaveOccurred())
 	repositoryID := fixture.repositorySnapshot.ID
 	Expect(fixture.tickets.Update(id, tickets.Update{
-		RepositorySnapshotID: &repositoryID,
+		RepositorySnapshotID: tickets.SetField(repositoryID),
 	})).To(Succeed())
 	selected, found, err := fixture.tickets.Get(id)
 	Expect(err).NotTo(HaveOccurred())
@@ -260,7 +260,7 @@ var _ = Describe("dispatching a ticket end-to-end", func() {
 		)
 		replacementID := fixture.secondRepository.ID
 		err = fixture.tickets.Update(ticketID, tickets.Update{
-			RepositorySnapshotID: &replacementID,
+			RepositorySnapshotID: tickets.SetField(replacementID),
 		})
 		Expect(errors.Is(err, tickets.ErrDispatchConflict)).To(BeTrue())
 		got, found, err = fixture.tickets.Get(ticketID)

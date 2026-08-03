@@ -74,6 +74,51 @@ var _ = Describe("fly agent tickets", func() {
 			Expect(sess.ExitCode()).To(Equal(0))
 			Expect(sess.Out).To(gbytes.Say("created ticket #8"))
 		})
+
+		It("preserves an exact repository snapshot ID in the create request", func() {
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("POST", "/api/v1/agent/tickets"),
+					ghttp.VerifyJSON(`{"title":"fix X","body":"","origin":"fly","repo":"tdmtrader/concourse","target_branch":"main","repository_snapshot_id":"9007199254740993"}`),
+					ghttp.RespondWithJSONEncoded(201, tickets.Ticket{ID: 8, State: tickets.StateDraft}),
+				),
+			)
+
+			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "tickets", "create",
+				"--title", "fix X", "--repo", "tdmtrader/concourse",
+				"--repository-snapshot", "9007199254740993")
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			<-sess.Exited
+			Expect(sess.ExitCode()).To(Equal(0))
+			Expect(sess.Out).To(gbytes.Say("created ticket #8"))
+		})
+
+		It("rejects a malformed repository snapshot ID before sending a request", func() {
+			before := len(atcServer.ReceivedRequests())
+			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "tickets", "create",
+				"--title", "fix X", "--repo", "tdmtrader/concourse",
+				"--repository-snapshot", "01")
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			<-sess.Exited
+			Expect(sess.ExitCode()).To(Equal(1))
+			Expect(sess.Err.Contents()).To(ContainSubstring("snapshot ID"))
+			Expect(atcServer.ReceivedRequests()[before:]).To(BeEmpty())
+		})
+
+		It("rejects create --dispatch without a repository snapshot before creating a ticket", func() {
+			before := len(atcServer.ReceivedRequests())
+			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "tickets", "create",
+				"--title", "one shot", "--repo", "tdmtrader/concourse",
+				"--workflow", "analyze", "--dispatch")
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			<-sess.Exited
+			Expect(sess.ExitCode()).To(Equal(1))
+			Expect(sess.Err.Contents()).To(ContainSubstring("--repository-snapshot is required with --dispatch"))
+			Expect(atcServer.ReceivedRequests()[before:]).To(BeEmpty())
+		})
 	})
 
 	Describe("show", func() {
@@ -166,7 +211,7 @@ var _ = Describe("fly agent tickets", func() {
 				),
 				ghttp.CombineHandlers(
 					ghttp.VerifyRequest("PUT", "/api/v1/agent/tickets/7"),
-					ghttp.VerifyJSON(`{"workflow_name":"foo"}`),
+					ghttp.VerifyJSON(`{"workflow_name":"foo","workflow_version":null}`),
 					ghttp.RespondWithJSONEncoded(200, tickets.Ticket{ID: 7, WorkflowName: "foo", State: tickets.StateDraft}),
 				),
 				ghttp.CombineHandlers(
@@ -183,6 +228,69 @@ var _ = Describe("fly agent tickets", func() {
 			Expect(sess.ExitCode()).To(Equal(0))
 			Expect(sess.Out).To(gbytes.Say(`assigned workflow "foo" to ticket #7`))
 			Expect(sess.Out).To(gbytes.Say("ticket #7 is now queued"))
+		})
+
+		It("selects an exact repository snapshot before transitioning", func() {
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("GET", "/api/v1/agent/tickets/7"),
+					ghttp.RespondWithJSONEncoded(200, tickets.TicketDetail{Ticket: tickets.Ticket{ID: 7, State: tickets.StateDraft}}),
+				),
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("PUT", "/api/v1/agent/tickets/7"),
+					ghttp.VerifyJSON(`{"repository_snapshot_id":"9007199254740993"}`),
+					ghttp.RespondWithJSONEncoded(200, tickets.Ticket{ID: 7, State: tickets.StateDraft}),
+				),
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("PUT", "/api/v1/agent/tickets/7/state"),
+					ghttp.VerifyJSON(`{"from":"draft","to":"queued"}`),
+					ghttp.RespondWithJSONEncoded(200, tickets.Ticket{ID: 7, State: tickets.StateQueued}),
+				),
+			)
+
+			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "tickets", "queue",
+				"--id", "7", "--repository-snapshot", "9007199254740993")
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			<-sess.Exited
+			Expect(sess.ExitCode()).To(Equal(0))
+			Expect(sess.Out).To(gbytes.Say("ticket #7 is now queued"))
+		})
+
+		It("clears newly assigned nullable inputs when queueing fails", func() {
+			restored := false
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("GET", "/api/v1/agent/tickets/7"),
+					ghttp.RespondWithJSONEncoded(200, tickets.TicketDetail{Ticket: tickets.Ticket{
+						ID: 7, WorkflowName: "deploy", State: tickets.StateDraft,
+					}}),
+				),
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("PUT", "/api/v1/agent/tickets/7"),
+					ghttp.VerifyJSON(`{"workflow_version":9,"repository_snapshot_id":"9007199254740993"}`),
+					ghttp.RespondWithJSONEncoded(200, tickets.Ticket{ID: 7, WorkflowName: "deploy", State: tickets.StateDraft}),
+				),
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("PUT", "/api/v1/agent/tickets/7/state"),
+					ghttp.VerifyJSON(`{"from":"draft","to":"queued"}`),
+					ghttp.RespondWith(409, "state changed concurrently"),
+				),
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("PUT", "/api/v1/agent/tickets/7"),
+					ghttp.VerifyJSON(`{"workflow_version":null,"repository_snapshot_id":null}`),
+					func(w http.ResponseWriter, r *http.Request) { restored = true },
+					ghttp.RespondWithJSONEncoded(200, tickets.Ticket{ID: 7, WorkflowName: "deploy", State: tickets.StateDraft}),
+				),
+			)
+
+			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "tickets", "queue",
+				"--id", "7", "--workflow-version", "9", "--repository-snapshot", "9007199254740993")
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			<-sess.Exited
+			Expect(sess.ExitCode()).NotTo(Equal(0))
+			Expect(restored).To(BeTrue(), "a failed queue must restore prior nil selections with explicit null")
 		})
 	})
 
@@ -304,7 +412,7 @@ var _ = Describe("fly agent tickets", func() {
 				),
 				ghttp.CombineHandlers(
 					ghttp.VerifyRequest("PUT", "/api/v1/agent/tickets/7"),
-					ghttp.VerifyJSON(`{"workflow_name":"foo"}`),
+					ghttp.VerifyJSON(`{"workflow_name":"foo","workflow_version":null}`),
 					ghttp.RespondWithJSONEncoded(200, tickets.Ticket{ID: 7, WorkflowName: "foo", State: tickets.StateQueued}),
 				),
 				ghttp.CombineHandlers(
@@ -324,18 +432,85 @@ var _ = Describe("fly agent tickets", func() {
 			Expect(sess.Out).To(gbytes.Say(`dispatched ticket #7 as workflow run 9007199254740993 \(pipeline run 321\)`))
 		})
 
-		It("rolls the assigned workflow back to its prior value when dispatch fails (WF-5 no-worse-than-before)", func() {
-			restored := false
+		It("selects an exact repository snapshot before dispatching", func() {
+			workflowRunID := snapshot.WorkflowRunID(9007199254740993)
 			atcServer.AppendHandlers(
-				// Ticket already has a valid workflow "deploy".
 				ghttp.CombineHandlers(
 					ghttp.VerifyRequest("GET", "/api/v1/agent/tickets/7"),
-					ghttp.RespondWithJSONEncoded(200, tickets.TicketDetail{Ticket: tickets.Ticket{ID: 7, WorkflowName: "deploy", State: tickets.StateQueued}}),
+					ghttp.RespondWithJSONEncoded(200, tickets.TicketDetail{Ticket: tickets.Ticket{ID: 7, State: tickets.StateQueued}}),
 				),
-				// User assigns a typo'd workflow.
 				ghttp.CombineHandlers(
 					ghttp.VerifyRequest("PUT", "/api/v1/agent/tickets/7"),
-					ghttp.VerifyJSON(`{"workflow_name":"deploi"}`),
+					ghttp.VerifyJSON(`{"repository_snapshot_id":"9007199254740993"}`),
+					ghttp.RespondWithJSONEncoded(200, tickets.Ticket{ID: 7, State: tickets.StateQueued}),
+				),
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("POST", "/api/v1/agent/tickets/7/dispatch"),
+					ghttp.RespondWithJSONEncoded(201, tickets.DispatchResponse{WorkflowRunID: workflowRunID}),
+				),
+			)
+
+			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "tickets", "dispatch",
+				"--id", "7", "--repository-snapshot", "9007199254740993")
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			<-sess.Exited
+			Expect(sess.ExitCode()).To(Equal(0))
+			Expect(sess.Out).To(gbytes.Say("dispatched ticket #7 as workflow run 9007199254740993"))
+		})
+
+		It("restores the prior repository snapshot when dispatch fails", func() {
+			priorSnapshotID := snapshot.SnapshotID(9007199254740993)
+			restored := false
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("GET", "/api/v1/agent/tickets/7"),
+					ghttp.RespondWithJSONEncoded(200, tickets.TicketDetail{Ticket: tickets.Ticket{
+						ID: 7, State: tickets.StateQueued, RepositorySnapshotID: &priorSnapshotID,
+					}}),
+				),
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("PUT", "/api/v1/agent/tickets/7"),
+					ghttp.VerifyJSON(`{"repository_snapshot_id":"9007199254740995"}`),
+					ghttp.RespondWithJSONEncoded(200, tickets.Ticket{ID: 7, State: tickets.StateQueued}),
+				),
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("POST", "/api/v1/agent/tickets/7/dispatch"),
+					ghttp.RespondWith(422, "workflow definition not found"),
+				),
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("PUT", "/api/v1/agent/tickets/7"),
+					ghttp.VerifyJSON(`{"repository_snapshot_id":"9007199254740993"}`),
+					func(w http.ResponseWriter, r *http.Request) { restored = true },
+					ghttp.RespondWithJSONEncoded(200, tickets.Ticket{ID: 7, State: tickets.StateQueued}),
+				),
+			)
+
+			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "tickets", "dispatch",
+				"--id", "7", "--repository-snapshot", "9007199254740995")
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			<-sess.Exited
+			Expect(sess.ExitCode()).NotTo(Equal(0))
+			Expect(restored).To(BeTrue())
+		})
+
+		It("clears an obsolete pin while changing workflows and restores both when dispatch fails", func() {
+			priorVersion := 3
+			restored := false
+			atcServer.AppendHandlers(
+				// Ticket already has a valid workflow "deploy" pinned to version 3.
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("GET", "/api/v1/agent/tickets/7"),
+					ghttp.RespondWithJSONEncoded(200, tickets.TicketDetail{Ticket: tickets.Ticket{
+						ID: 7, WorkflowName: "deploy", WorkflowVersion: &priorVersion, State: tickets.StateQueued,
+					}}),
+				),
+				// User assigns a typo'd workflow without a version. The old workflow's
+				// pin must not leak into the new workflow selection.
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("PUT", "/api/v1/agent/tickets/7"),
+					ghttp.VerifyJSON(`{"workflow_name":"deploi","workflow_version":null}`),
 					ghttp.RespondWithJSONEncoded(200, tickets.Ticket{ID: 7, WorkflowName: "deploi", State: tickets.StateQueued}),
 				),
 				// Dispatch cannot resolve it.
@@ -343,12 +518,14 @@ var _ = Describe("fly agent tickets", func() {
 					ghttp.VerifyRequest("POST", "/api/v1/agent/tickets/7/dispatch"),
 					ghttp.RespondWith(422, "workflow definition not found: deploi live"),
 				),
-				// Compensating rollback restores the prior "deploy".
+				// Compensating rollback restores the prior workflow and its pin.
 				ghttp.CombineHandlers(
 					ghttp.VerifyRequest("PUT", "/api/v1/agent/tickets/7"),
-					ghttp.VerifyJSON(`{"workflow_name":"deploy"}`),
+					ghttp.VerifyJSON(`{"workflow_name":"deploy","workflow_version":3}`),
 					func(w http.ResponseWriter, r *http.Request) { restored = true },
-					ghttp.RespondWithJSONEncoded(200, tickets.Ticket{ID: 7, WorkflowName: "deploy", State: tickets.StateQueued}),
+					ghttp.RespondWithJSONEncoded(200, tickets.Ticket{
+						ID: 7, WorkflowName: "deploy", WorkflowVersion: &priorVersion, State: tickets.StateQueued,
+					}),
 				),
 			)
 
@@ -390,6 +567,7 @@ var _ = Describe("fly agent tickets", func() {
 			atcServer.AppendHandlers(
 				ghttp.CombineHandlers(
 					ghttp.VerifyRequest("POST", "/api/v1/agent/tickets"),
+					ghttp.VerifyJSON(`{"title":"one shot","body":"","origin":"fly","repo":"tdmtrader/concourse","target_branch":"main","workflow_name":"analyze","repository_snapshot_id":"9007199254740993"}`),
 					ghttp.RespondWithJSONEncoded(201, tickets.Ticket{ID: 9, State: tickets.StateDraft}),
 				),
 				ghttp.CombineHandlers(
@@ -406,7 +584,8 @@ var _ = Describe("fly agent tickets", func() {
 			)
 
 			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "tickets", "create",
-				"--title", "one shot", "--repo", "tdmtrader/concourse", "--workflow", "analyze", "--dispatch")
+				"--title", "one shot", "--repo", "tdmtrader/concourse", "--workflow", "analyze",
+				"--repository-snapshot", "9007199254740993", "--dispatch")
 			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
 			Expect(err).NotTo(HaveOccurred())
 			<-sess.Exited
@@ -420,6 +599,7 @@ var _ = Describe("fly agent tickets", func() {
 			atcServer.AppendHandlers(
 				ghttp.CombineHandlers(
 					ghttp.VerifyRequest("POST", "/api/v1/agent/tickets"),
+					ghttp.VerifyJSON(`{"title":"one shot","body":"","origin":"fly","repo":"tdmtrader/concourse","target_branch":"main","workflow_name":"analyze","repository_snapshot_id":"9007199254740993"}`),
 					ghttp.RespondWithJSONEncoded(201, tickets.Ticket{ID: 9, State: tickets.StateDraft}),
 				),
 				ghttp.CombineHandlers(
@@ -435,7 +615,8 @@ var _ = Describe("fly agent tickets", func() {
 			before := len(atcServer.ReceivedRequests())
 
 			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "tickets", "create",
-				"--title", "one shot", "--repo", "tdmtrader/concourse", "--workflow", "analyze", "--dispatch")
+				"--title", "one shot", "--repo", "tdmtrader/concourse", "--workflow", "analyze",
+				"--repository-snapshot", "9007199254740993", "--dispatch")
 			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
 			Expect(err).NotTo(HaveOccurred())
 			<-sess.Exited
@@ -500,6 +681,42 @@ var _ = Describe("fly agent tickets", func() {
 			Expect(strings.Join(paths, "\n")).NotTo(ContainSubstring("builds"))
 			Expect(strings.Join(paths, "\n")).NotTo(ContainSubstring("events"))
 			Expect(string(sess.Out.Contents()) + string(sess.Err.Contents())).NotTo(ContainSubstring("agent-ticket-"))
+		})
+
+		It("returns failure after printing the ticket's failed terminal run", func() {
+			workflowRunID := snapshot.WorkflowRunID(9007199254740993)
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("GET", "/api/v1/agent/tickets/7"),
+					ghttp.RespondWithJSONEncoded(200, tickets.TicketDetail{
+						Ticket: tickets.Ticket{
+							ID: 7, WorkflowName: "review-source", WorkflowRunID: &workflowRunID,
+						},
+					}),
+				),
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("GET", "/api/v1/agent/workflows/review-source/runs/9007199254740993"),
+					ghttp.RespondWithJSONEncoded(200, workflowrunsapi.RunDetail{RunSummary: workflowrunsapi.RunSummary{
+						WorkflowRunID: workflowRunID, WorkflowName: "review-source", WorkflowVersion: 3,
+						Status: db.AgentWorkflowRunStatusRunning,
+					}}),
+				),
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("GET", "/api/v1/agent/workflows/review-source/runs/9007199254740993"),
+					ghttp.RespondWithJSONEncoded(200, workflowrunsapi.RunDetail{RunSummary: workflowrunsapi.RunSummary{
+						WorkflowRunID: workflowRunID, WorkflowName: "review-source", WorkflowVersion: 3,
+						Status: db.AgentWorkflowRunStatusFailed,
+					}}),
+				),
+			)
+
+			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "tickets", "watch", "--id", "7")
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			<-sess.Exited
+			Expect(sess.ExitCode()).To(Equal(1))
+			Expect(sess.Out).To(gbytes.Say(`status: failed`))
+			Expect(sess.Err).To(gbytes.Say(`workflow run 9007199254740993 finished with status failed`))
 		})
 
 		It("rejects a ticket without a durable workflow run before any build or event request", func() {

@@ -99,10 +99,11 @@ var DefaultRoles = map[string]string{
 	atc.GetArtifact:                    MemberRole,
 	atc.ListBuildArtifacts:             ViewerRole,
 	atc.GetWall:                        ViewerRole,
-	// Agent review/feedback routes. Team-less /api/v1/agent/* routes are
+	// Agent review routes. Team-less /api/v1/agent/* routes are
 	// wrapped in CheckAgentAuthorizationHandler, which authorizes against
 	// the main team using these entries. Every route in that wrappa case
-	// (and every :team_name-scoped route in CheckAuthorizationHandler)
+	// (and every :team_name-scoped route, including feedback, in
+	// CheckAuthorizationHandler)
 	// needs an entry here: a missing entry resolves to requiredRole ""
 	// and hasRequiredRole's default case, making the route admin-only.
 	atc.SubmitAgentFeedback:         MemberRole,

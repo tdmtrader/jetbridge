@@ -18,8 +18,9 @@ type ticketProjectionCall struct {
 }
 
 type ticketProjectorFake struct {
-	calls []ticketProjectionCall
-	err   error
+	calls      []ticketProjectionCall
+	err        error
+	errForCall func(int) error
 }
 
 func (fake *ticketProjectorFake) ProjectFinalizedRun(
@@ -28,6 +29,9 @@ func (fake *ticketProjectorFake) ProjectFinalizedRun(
 	runID snapshot.WorkflowRunID,
 ) error {
 	fake.calls = append(fake.calls, ticketProjectionCall{ticketID: ticketID, runID: runID})
+	if fake.errForCall != nil {
+		return fake.errForCall(len(fake.calls))
+	}
 	return fake.err
 }
 
@@ -131,6 +135,55 @@ func TestReconcilerProjectionFaultDoesNotFailTheRow(t *testing.T) {
 		t.Errorf("rows = %+v, want no row failure", reporter.rows)
 	}
 	reporter.requirePasses(t, metric.WorkflowRunReconcilerPassSuccess)
+}
+
+// A projection fault happens after the durable finalization CAS commits. The
+// next reconciliation claim must therefore revisit the terminal run while its
+// ticket's current reservation still names that exact run; otherwise a brief
+// ticket-store outage strands the ticket in running forever.
+func TestReconcilerRetriesTerminalTicketProjectionAfterTransientFailure(t *testing.T) {
+	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	run := failedTicketRun(t, "42")
+	run.UpdatedAt = now
+
+	claimCalls := 0
+	store := &reconciliationStoreFake{
+		claimFn: func(context.Context, time.Time, time.Duration, int) ([]snapshot.WorkflowRunID, error) {
+			claimCalls++
+			if claimCalls == 1 || run.Status == db.AgentWorkflowRunStatusFailed {
+				return []snapshot.WorkflowRunID{run.ID}, nil
+			}
+			return nil, nil
+		},
+		inspectFn: func(context.Context, snapshot.WorkflowRunID) (db.AgentWorkflowRunReconciliationView, bool, error) {
+			return db.AgentWorkflowRunReconciliationView{Run: run}, true, nil
+		},
+		finalizeFn: func(_ context.Context, finalization db.AgentWorkflowRunFinalization) (db.AgentWorkflowRunFinalizationResult, bool, error) {
+			run.Status = finalization.TerminalStatus
+			return db.AgentWorkflowRunFinalizationResult{Status: finalization.TerminalStatus}, true, nil
+		},
+	}
+	projector := &ticketProjectorFake{errForCall: func(call int) error {
+		if call == 1 {
+			return errors.New("tickets unavailable")
+		}
+		return nil
+	}}
+	reporter := &reconciliationReporterFake{}
+	reconciler := mustReconciler(t, store, now, 15*time.Minute, time.Minute, reporter, nil, WithTicketProjector(projector))
+
+	if err := reconciler.Run(context.Background()); err != nil {
+		t.Fatalf("first Run: %v", err)
+	}
+	if len(projector.calls) != 1 || run.Status != db.AgentWorkflowRunStatusFailed {
+		t.Fatalf("first pass projections/status = %+v/%s", projector.calls, run.Status)
+	}
+	if err := reconciler.Run(context.Background()); err != nil {
+		t.Fatalf("retry Run: %v", err)
+	}
+	if len(projector.calls) != 2 || projector.calls[1].ticketID != 42 || projector.calls[1].runID != run.ID {
+		t.Fatalf("projections = %+v, want a retry for ticket 42 / run %s", projector.calls, run.ID)
+	}
 }
 
 // An already-terminal row gives a projection that failed once another chance.

@@ -302,6 +302,11 @@ testEndpoints =
                 Logout
                     |> toPath
                     |> Expect.equal "/sky/logout"
+        , test "AgentFeedback is scoped to the review team" <|
+            \_ ->
+                AgentFeedback "research"
+                    |> toPath
+                    |> Expect.equal "/api/v1/teams/research/agent/feedback"
         , describe "AgentTickets"
             [ test "list" <|
                 \_ ->

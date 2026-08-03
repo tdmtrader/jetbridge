@@ -13,6 +13,7 @@ import Message.Effects as Effects
 import Message.Message
 import Message.TopLevelMessage as Msgs
 import Test exposing (Test, describe, test)
+import Test.Html.Event as Event
 import Test.Html.Query as Query
 import Test.Html.Selector exposing (attribute, class, containing, id, tag, text)
 
@@ -219,7 +220,8 @@ all =
                     |> Application.update
                         (Msgs.Update <|
                             Message.Message.AgentReviewVerdictClicked
-                                { reviewSnapshotId = "9007199254740993"
+                                { teamName = "t"
+                                , reviewSnapshotId = "9007199254740993"
                                 , findingId = "PI-1"
                                 , verdict = "accurate"
                                 , reviewer = "anonymous"
@@ -228,12 +230,33 @@ all =
                     |> Tuple.second
                     |> Common.contains
                         (Effects.SubmitAgentReviewVerdict
-                            { reviewSnapshotId = "9007199254740993"
+                            { teamName = "t"
+                            , reviewSnapshotId = "9007199254740993"
                             , findingId = "PI-1"
                             , verdict = "accurate"
                             , notes = "my note"
                             , reviewer = "anonymous"
                             }
+                        )
+        , test "the verdict control carries the team from the rendered review" <|
+            \_ ->
+                Common.init "/builds/1"
+                    |> withBuildLoaded
+                    |> Application.handleCallback (Callback.BuildAgentReviewsFetched (Ok [ sampleReview ]))
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.find [ class "agent-review-verdicts" ]
+                    |> Query.find [ tag "button", containing [ text "accurate" ] ]
+                    |> Event.simulate Event.click
+                    |> Event.expect
+                        (Msgs.Update <|
+                            Message.Message.AgentReviewVerdictClicked
+                                { teamName = "t"
+                                , reviewSnapshotId = "9007199254740993"
+                                , findingId = "PI-1"
+                                , verdict = "accurate"
+                                , reviewer = "anonymous"
+                                }
                         )
         , test "a verdict click with an empty findingId is dropped, never submitted" <|
             \_ ->
@@ -244,7 +267,8 @@ all =
                     |> Application.update
                         (Msgs.Update <|
                             Message.Message.AgentReviewVerdictClicked
-                                { reviewSnapshotId = "9007199254740993"
+                                { teamName = "t"
+                                , reviewSnapshotId = "9007199254740993"
                                 , findingId = ""
                                 , verdict = "accurate"
                                 , reviewer = "anonymous"
@@ -253,7 +277,8 @@ all =
                     |> Tuple.second
                     |> Common.notContains
                         (Effects.SubmitAgentReviewVerdict
-                            { reviewSnapshotId = "9007199254740993"
+                            { teamName = "t"
+                            , reviewSnapshotId = "9007199254740993"
                             , findingId = ""
                             , verdict = "accurate"
                             , notes = ""
@@ -269,7 +294,8 @@ all =
                     |> Application.update
                         (Msgs.Update <|
                             Message.Message.AgentReviewVerdictClicked
-                                { reviewSnapshotId = ""
+                                { teamName = "t"
+                                , reviewSnapshotId = ""
                                 , findingId = "PI-1"
                                 , verdict = "accurate"
                                 , reviewer = "anonymous"
@@ -278,7 +304,8 @@ all =
                     |> Tuple.second
                     |> Common.notContains
                         (Effects.SubmitAgentReviewVerdict
-                            { reviewSnapshotId = ""
+                            { teamName = "t"
+                            , reviewSnapshotId = ""
                             , findingId = "PI-1"
                             , verdict = "accurate"
                             , notes = ""

@@ -338,7 +338,7 @@ var Routes = rata.Routes([]rata.Route{
 	{Path: "/api/v1/wall", Method: "PUT", Name: SetWall},
 	{Path: "/api/v1/wall", Method: "DELETE", Name: ClearWall},
 
-	{Path: "/api/v1/agent/feedback", Method: "POST", Name: SubmitAgentFeedback},
+	{Path: "/api/v1/teams/:team_name/agent/feedback", Method: "POST", Name: SubmitAgentFeedback},
 
 	{Path: "/api/v1/agent/user-credentials", Method: "PUT", Name: SetAgentUserCredential},
 	{Path: "/api/v1/agent/user-credentials", Method: "GET", Name: GetAgentUserCredentialStatus},

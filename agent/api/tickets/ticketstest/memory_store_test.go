@@ -184,6 +184,68 @@ func TestMemoryStoreCreateGetListUpdate(t *testing.T) {
 	}
 }
 
+func TestMemoryStoreNullableUpdatesAreOmittedSetOrCleared(t *testing.T) {
+	store := ticketstest.NewMemoryStore()
+	initialVersion := 3
+	initialRepository := snapshot.SnapshotID(101)
+	id, err := store.Create(&tickets.Ticket{
+		Title: "fix", Repo: "example/repo", WorkflowName: "deploy",
+		WorkflowVersion: &initialVersion, RepositorySnapshotID: &initialRepository,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	title := "updated"
+	if err := store.Update(id, tickets.Update{Title: &title}); err != nil {
+		t.Fatalf("omitted nullable update: %v", err)
+	}
+	got, _, _ := store.Get(id)
+	if got.WorkflowVersion == nil || *got.WorkflowVersion != initialVersion ||
+		got.RepositorySnapshotID == nil || *got.RepositorySnapshotID != initialRepository {
+		t.Fatalf("omitted nullable fields changed selections: %+v", got)
+	}
+
+	if err := store.Update(id, tickets.Update{
+		WorkflowVersion:      tickets.ClearField[int](),
+		RepositorySnapshotID: tickets.ClearField[snapshot.SnapshotID](),
+	}); err != nil {
+		t.Fatalf("clear nullable fields: %v", err)
+	}
+	got, _, _ = store.Get(id)
+	if got.WorkflowVersion != nil || got.RepositorySnapshotID != nil {
+		t.Fatalf("explicit clears did not persist: %+v", got)
+	}
+
+	repository := snapshot.SnapshotID(202)
+	if err := store.Update(id, tickets.Update{
+		WorkflowVersion:      tickets.SetField(5),
+		RepositorySnapshotID: tickets.SetField(repository),
+	}); err != nil {
+		t.Fatalf("set nullable fields: %v", err)
+	}
+	if err := store.Transition(id, tickets.StateDraft, tickets.StateQueued, tickets.TransitionMeta{}); err != nil {
+		t.Fatal(err)
+	}
+	queued, _, _ := store.Get(id)
+	if _, err := store.ReserveDispatch(context.Background(), id, tickets.DispatchReservationRequest{
+		ExpectedRevision: queued.Revision, WorkflowVersion: 7, WorkflowDefinitionID: 41,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Update(id, tickets.Update{WorkflowVersion: tickets.ClearField[int]()}); !errors.Is(err, tickets.ErrDispatchConflict) {
+		t.Fatalf("clear reserved workflow version = %v, want ErrDispatchConflict", err)
+	}
+	if err := store.Update(id, tickets.Update{RepositorySnapshotID: tickets.ClearField[snapshot.SnapshotID]()}); !errors.Is(err, tickets.ErrDispatchConflict) {
+		t.Fatalf("clear reserved repository snapshot = %v, want ErrDispatchConflict", err)
+	}
+	got, _, _ = store.Get(id)
+	if got.WorkflowVersion == nil || *got.WorkflowVersion != 7 ||
+		got.RepositorySnapshotID == nil || *got.RepositorySnapshotID != repository {
+		t.Fatalf("failed reserved clears mutated bindings: %+v", got)
+	}
+}
+
 func TestMemoryStoreTransition(t *testing.T) {
 	s := ticketstest.NewMemoryStore()
 	id, _ := s.Create(newTicket())

@@ -78,6 +78,46 @@ func TestTicketProjectorLeavesTicketsItDoesNotOwn(t *testing.T) {
 	}
 }
 
+func TestTicketProjectorCannotTerminalizeANewerDispatchThatWinsTheOwnershipRace(t *testing.T) {
+	deps, store, _, binder := v3DispatchDeps(t)
+	id := queuedTicket(t, store, "smoke")
+	setRepositorySnapshot(t, store, id, snapshot.SnapshotID(101))
+	first, err := dispatch.DispatchOne(context.Background(), deps, id, "admin")
+	if err != nil {
+		t.Fatalf("first DispatchOne: %v", err)
+	}
+
+	var secondRunID snapshot.WorkflowRunID
+	racingStore := &projectionOwnershipRaceStore{Store: store}
+	racingStore.race = func() {
+		if err := store.Transition(id, tickets.StateRunning, tickets.StateQueued, tickets.TransitionMeta{}); err != nil {
+			t.Fatalf("requeue current dispatch: %v", err)
+		}
+		binder.mu.Lock()
+		binder.result.Run.ID = snapshot.WorkflowRunID(304)
+		binder.mu.Unlock()
+		second, err := dispatch.DispatchOne(context.Background(), deps, id, "admin")
+		if err != nil {
+			t.Fatalf("second DispatchOne: %v", err)
+		}
+		secondRunID = second.WorkflowRunID
+	}
+
+	if err := mustProjector(t, racingStore).ProjectFinalizedRun(context.Background(), id, first.WorkflowRunID); err != nil {
+		t.Fatalf("ProjectFinalizedRun: %v", err)
+	}
+	got, found, err := store.Get(id)
+	if err != nil || !found {
+		t.Fatalf("Get ticket = (%t, %v)", found, err)
+	}
+	if secondRunID.Validate() != nil || secondRunID == first.WorkflowRunID {
+		t.Fatalf("second workflow run = %s, first = %s", secondRunID, first.WorkflowRunID)
+	}
+	if got.State != tickets.StateRunning || got.WorkflowRunID == nil || *got.WorkflowRunID != secondRunID {
+		t.Fatalf("ticket after stale projection = %+v, want newer run %s left running", got, secondRunID)
+	}
+}
+
 func TestTicketProjectorIgnoresTicketsThatMovedOn(t *testing.T) {
 	store, id, runID := dispatchedTicket(t)
 	if err := store.Transition(id, tickets.StateRunning, tickets.StateNeedsReview, tickets.TransitionMeta{}); err != nil {
@@ -127,6 +167,39 @@ type failingTransitionStore struct {
 	err error
 }
 
-func (s failingTransitionStore) Transition(int, tickets.State, tickets.State, tickets.TransitionMeta) error {
+func (s failingTransitionStore) TransitionCurrentRunToNeedsReview(
+	context.Context,
+	int,
+	snapshot.WorkflowRunID,
+) error {
 	return s.err
+}
+
+type projectionOwnershipRaceStore struct {
+	tickets.Store
+	raced bool
+	race  func()
+}
+
+func (store *projectionOwnershipRaceStore) triggerRace() {
+	if store.raced {
+		return
+	}
+	store.raced = true
+	store.race()
+}
+
+func (store *projectionOwnershipRaceStore) Get(id int) (*tickets.Ticket, bool, error) {
+	ticket, found, err := store.Store.Get(id)
+	store.triggerRace()
+	return ticket, found, err
+}
+
+func (store *projectionOwnershipRaceStore) TransitionCurrentRunToNeedsReview(
+	ctx context.Context,
+	id int,
+	runID snapshot.WorkflowRunID,
+) error {
+	store.triggerRace()
+	return store.Store.TransitionCurrentRunToNeedsReview(ctx, id, runID)
 }

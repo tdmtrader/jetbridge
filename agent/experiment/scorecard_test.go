@@ -60,6 +60,47 @@ func TestBuildScorecardOrientsLowerIsBetterMetrics(t *testing.T) {
 	}
 }
 
+func TestBuildScorecardOrientsTargetMetricsByDistanceFromTarget(t *testing.T) {
+	target := 10.0
+	for _, test := range []struct {
+		name, wantWinner string
+		controlValue     float64
+		candidateValue   float64
+		wantDelta        float64
+	}{
+		{name: "control is closer", controlValue: 9, candidateValue: 12, wantWinner: "control", wantDelta: -1},
+		{name: "candidate is closer", controlValue: 12, candidateValue: 9, wantWinner: "candidate", wantDelta: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cells := pairedCells("higher", 5, 0)
+			for index := range cells {
+				measurement := &cells[index].Measurements[0]
+				measurement.Direction = "target"
+				measurement.Target = &target
+				if cells[index].Role == experiment.FixtureNormal {
+					if cells[index].Variant == "control" {
+						measurement.Value = test.controlValue
+					} else {
+						measurement.Value = test.candidateValue
+					}
+				}
+			}
+
+			scorecard, err := experiment.BuildScorecard(experiment.ScorecardRequest{
+				ExperimentID: 84, ControlLabel: "control", ExpectedCellsPerVariant: 15, Cells: cells,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			comparison := scorecard.Comparisons["candidate"]["quality"]
+			if comparison.Direction != "target" || comparison.MeanDelta != test.wantDelta ||
+				comparison.Winner != test.wantWinner || comparison.Recommendation != experiment.RecommendationWinner {
+				t.Fatalf("target comparison = %+v", comparison)
+			}
+		})
+	}
+}
+
 func TestBuildScorecardReportsInsufficientEvidenceConditions(t *testing.T) {
 	tests := []struct {
 		name   string

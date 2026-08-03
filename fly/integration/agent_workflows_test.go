@@ -484,6 +484,46 @@ var _ = Describe("fly agent workflows", func() {
 			Expect(sess.Out).To(gbytes.Say(`status: succeeded`))
 			Expect(string(sess.Out.Contents())).NotTo(ContainSubstring(`status: running`))
 		})
+
+		It("returns failure after printing a failed terminal result", func() {
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("GET", "/api/v1/agent/workflows/standard-dev/runs/9007199254740997"),
+					ghttp.RespondWithJSONEncoded(http.StatusOK, map[string]any{
+						"workflow_run_id":  "9007199254740997",
+						"pipeline_run_id":  73,
+						"workflow_name":    "standard-dev",
+						"workflow_version": 3,
+						"status":           "running",
+						"inputs":           []any{},
+						"outputs":          []any{},
+					}),
+				),
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("GET", "/api/v1/agent/workflows/standard-dev/runs/9007199254740997"),
+					ghttp.RespondWithJSONEncoded(http.StatusOK, map[string]any{
+						"workflow_run_id":  "9007199254740997",
+						"pipeline_run_id":  73,
+						"workflow_name":    "standard-dev",
+						"workflow_version": 3,
+						"status":           "failed",
+						"inputs":           []any{},
+						"outputs":          []any{},
+					}),
+				),
+			)
+
+			flyCmd := exec.Command(
+				flyPath, "-t", targetName, "agent", "workflows", "show-run",
+				"standard-dev", "9007199254740997", "--wait",
+			)
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			<-sess.Exited
+			Expect(sess.ExitCode()).To(Equal(1))
+			Expect(sess.Out).To(gbytes.Say(`status: failed`))
+			Expect(sess.Err).To(gbytes.Say(`workflow run 9007199254740997 finished with status failed`))
+		})
 	})
 
 	Describe("cancel-run", func() {

@@ -10,6 +10,7 @@
 package tickets
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -160,19 +161,56 @@ type ListFilter struct {
 	Limit  int
 }
 
+// FieldUpdate is a tri-state partial-update value. Its zero value is omitted;
+// SetField carries a concrete replacement; ClearField carries explicit null.
+// The value is kept private so callers cannot construct contradictory states.
+type FieldUpdate[T any] struct {
+	present bool
+	value   *T
+}
+
+func SetField[T any](value T) FieldUpdate[T] {
+	return FieldUpdate[T]{present: true, value: &value}
+}
+
+func ClearField[T any]() FieldUpdate[T] {
+	return FieldUpdate[T]{present: true}
+}
+
+func FieldFromPointer[T any](value *T) FieldUpdate[T] {
+	if value == nil {
+		return ClearField[T]()
+	}
+	return SetField(*value)
+}
+
+func (update FieldUpdate[T]) Present() bool {
+	return update.present
+}
+
+func (update FieldUpdate[T]) Value() *T {
+	if update.value == nil {
+		return nil
+	}
+	value := *update.value
+	return &value
+}
+
 // Update is the non-state mutation set (title/body/workflow ref/target
-// branch). nil = leave unchanged. State is NEVER here — Transition is the
-// only state writer.
+// branch). Nullable values are tri-state FieldUpdates: omitted, concrete, or
+// clear. State is NEVER here — Transition is the only state writer.
 type Update struct {
-	Title           *string
-	Body            *string
-	WorkflowName    *string
-	WorkflowVersion *int
+	Title        *string
+	Body         *string
+	WorkflowName *string
+	// WorkflowVersion selects a pinned immutable version. Explicit clear means
+	// resolve the workflow's live version at the next dispatch.
+	WorkflowVersion FieldUpdate[int]
 	TargetBranch    *string
 	// RepositorySnapshotID selects the exact immutable repository value the
 	// ticket adapter will bind. Once a dispatch reservation exists, a missing
 	// value may be filled exactly once and an existing value is immutable.
-	RepositorySnapshotID *snapshot.SnapshotID
+	RepositorySnapshotID FieldUpdate[snapshot.SnapshotID]
 	// UserID resolves the triggering user (co-signed dispatch remainder,
 	// 2026-07-17): dispatch looks up users.id from UserName at dispatch
 	// time and records it here — the wave-4 leg the create handler's
@@ -203,12 +241,13 @@ type TransitionMeta struct {
 	PipelineRunID *int // recorded on → running (set by dispatch)
 }
 
-// Store is the single-writer contract. Transition is THE ONLY way any
-// code path (API handler, dispatcher — including its run-completion
-// reconciler — HITL) changes Ticket.State. It enforces the queue
-// state machine, records timestamps, and returns ErrInvalidTransition
-// otherwise. It uses optimistic concurrency: the UPDATE is guarded by the
-// expected `from` state.
+// Store is the single-writer contract. Transition is the general state
+// writer; TransitionCurrentRunToNeedsReview is the reconciler-only atomic
+// specialization needed to guard the running -> needs_review edge by both
+// state and exact dispatch ownership. No other code path writes Ticket.State.
+// Transition enforces the queue state machine, records timestamps, and returns
+// ErrInvalidTransition otherwise. It uses optimistic concurrency: the UPDATE
+// is guarded by the expected `from` state.
 //
 //counterfeiter:generate . Store
 type Store interface {
@@ -217,6 +256,10 @@ type Store interface {
 	List(filter ListFilter) ([]Ticket, error)
 	Update(id int, upd Update) error // title/body/workflow ref; never state
 	Transition(id int, from, to State, meta TransitionMeta) error
+	// TransitionCurrentRunToNeedsReview is a safe no-op when the ticket is
+	// missing, no longer running, or no longer owned by workflowRunID. The
+	// ownership check and state write must be atomic.
+	TransitionCurrentRunToNeedsReview(context.Context, int, snapshot.WorkflowRunID) error
 	ReserveDispatch(context.Context, int, DispatchReservationRequest) (DispatchReservation, error)
 	RecordDispatchWorkItem(context.Context, int, string, int64, snapshot.SnapshotID) error
 	RecordDispatchRun(context.Context, int, string, snapshot.WorkflowRunID, int) error
@@ -242,12 +285,80 @@ type CreateRequest struct {
 }
 
 type UpdateRequest struct {
-	Title                *string              `json:"title,omitempty"`
-	Body                 *string              `json:"body,omitempty"`
-	WorkflowName         *string              `json:"workflow_name,omitempty"`
-	WorkflowVersion      *int                 `json:"workflow_version,omitempty"`
-	TargetBranch         *string              `json:"target_branch,omitempty"`
-	RepositorySnapshotID *snapshot.SnapshotID `json:"repository_snapshot_id,omitempty"`
+	Title                *string                          `json:"title,omitempty"`
+	Body                 *string                          `json:"body,omitempty"`
+	WorkflowName         *string                          `json:"workflow_name,omitempty"`
+	WorkflowVersion      FieldUpdate[int]                 `json:"-"`
+	TargetBranch         *string                          `json:"target_branch,omitempty"`
+	RepositorySnapshotID FieldUpdate[snapshot.SnapshotID] `json:"-"`
+}
+
+func (request UpdateRequest) MarshalJSON() ([]byte, error) {
+	fields := make(map[string]any, 6)
+	if request.Title != nil {
+		fields["title"] = request.Title
+	}
+	if request.Body != nil {
+		fields["body"] = request.Body
+	}
+	if request.WorkflowName != nil {
+		fields["workflow_name"] = request.WorkflowName
+	}
+	if request.WorkflowVersion.Present() {
+		fields["workflow_version"] = request.WorkflowVersion.Value()
+	}
+	if request.TargetBranch != nil {
+		fields["target_branch"] = request.TargetBranch
+	}
+	if request.RepositorySnapshotID.Present() {
+		fields["repository_snapshot_id"] = request.RepositorySnapshotID.Value()
+	}
+	return json.Marshal(fields)
+}
+
+func (request *UpdateRequest) UnmarshalJSON(data []byte) error {
+	type ordinaryFields struct {
+		Title        *string `json:"title"`
+		Body         *string `json:"body"`
+		WorkflowName *string `json:"workflow_name"`
+		TargetBranch *string `json:"target_branch"`
+	}
+	var ordinary ordinaryFields
+	if err := json.Unmarshal(data, &ordinary); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	decoded := UpdateRequest{
+		Title: ordinary.Title, Body: ordinary.Body,
+		WorkflowName: ordinary.WorkflowName, TargetBranch: ordinary.TargetBranch,
+	}
+	if raw, present := fields["workflow_version"]; present {
+		if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			decoded.WorkflowVersion = ClearField[int]()
+		} else {
+			var value int
+			if err := json.Unmarshal(raw, &value); err != nil {
+				return err
+			}
+			decoded.WorkflowVersion = SetField(value)
+		}
+	}
+	if raw, present := fields["repository_snapshot_id"]; present {
+		if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			decoded.RepositorySnapshotID = ClearField[snapshot.SnapshotID]()
+		} else {
+			var value snapshot.SnapshotID
+			if err := json.Unmarshal(raw, &value); err != nil {
+				return err
+			}
+			decoded.RepositorySnapshotID = SetField(value)
+		}
+	}
+	*request = decoded
+	return nil
 }
 
 type TransitionRequest struct {

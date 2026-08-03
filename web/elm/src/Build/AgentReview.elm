@@ -480,7 +480,8 @@ verdictRow reviewer review finding recorded model =
                                         )
                                    , onClick
                                         (AgentReviewVerdictClicked
-                                            { reviewSnapshotId =
+                                            { teamName = review.info.teamName
+                                            , reviewSnapshotId =
                                                 review.info.snapshotId |> Maybe.withDefault ""
                                             , findingId = finding.id
                                             , verdict = verdict

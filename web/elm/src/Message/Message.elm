@@ -49,7 +49,8 @@ type Message
     | ToggleAgentReviewFindingBody String
     | ToggleAgentReviewObservations Bool
     | AgentReviewVerdictClicked
-        { reviewSnapshotId : String
+        { teamName : String
+        , reviewSnapshotId : String
         , findingId : String
         , verdict : String
         , reviewer : String

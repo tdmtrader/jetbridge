@@ -116,7 +116,8 @@ func NewHandler(store Store, opts ...HandlerOption) *Handler {
 	return h
 }
 
-// SubmitFeedback handles POST /api/v1/agent/feedback.
+// SubmitFeedback handles POST /api/v1/teams/:team_name/agent/feedback after
+// ATC has resolved and authorized the team used to configure this handler.
 func (h *Handler) SubmitFeedback(w http.ResponseWriter, r *http.Request) {
 	var req FeedbackRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

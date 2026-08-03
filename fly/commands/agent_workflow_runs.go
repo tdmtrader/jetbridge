@@ -315,7 +315,13 @@ func (command *WorkflowsShowRunCommand) executePreparedWithTarget(
 			return err
 		}
 	}
-	return printAgentWorkflowRunDetail(Fly.Target, detail, prepared.json)
+	if err := printAgentWorkflowRunDetail(Fly.Target, detail, prepared.json); err != nil {
+		return err
+	}
+	if prepared.wait || prepared.follow {
+		return agentWorkflowRunOutcomeError(detail)
+	}
+	return nil
 }
 
 func waitForAgentWorkflowRun(

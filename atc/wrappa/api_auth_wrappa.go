@@ -181,6 +181,7 @@ func (wrappa *APIAuthWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 			atc.ScheduleJob,
 			atc.GetArtifact,
 			atc.ListTeamAgentReviews,
+			atc.SubmitAgentFeedback,
 			atc.CreateAgentSnapshot,
 			atc.CaptureAgentResourceSnapshot,
 			atc.ListAgentSnapshots,
@@ -200,8 +201,7 @@ func (wrappa *APIAuthWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 		// team-less /api/v1/agent/* routes: authorized against the main
 		// team via their accessor DefaultRoles entries (decision 21 in
 		// docs/superpowers/plans/agentic-platform/00-shared-contracts.md)
-		case atc.SubmitAgentFeedback,
-			atc.GetAgentSnapshotReview,
+		case atc.GetAgentSnapshotReview,
 			atc.ListAgentWorkflowRunReviews,
 			atc.ListRecentAgentRunMetrics,
 			atc.ListAgentWorkflows,

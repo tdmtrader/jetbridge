@@ -9,16 +9,16 @@ import Test exposing (Test, describe, test)
 all : Test
 all =
     describe "Concourse.Experiment"
-        [ test "decodes experiment and cell IDs as exact strings" <|
+        [ test "decodes experiment, cell, and measurement IDs from the real wire shape" <|
             \_ ->
                 Json.Decode.decodeString Experiment.decodeCell
-                    """{"id":"9007199254741001","experiment_id":"9007199254740999","variant":"candidate","fixture":"repo-a","role":"normal","repetition":5,"status":"valid_measurement","negative_control_passed":false,"cost_usd":1.25,"latency_seconds":12.5,"input_tokens":1000,"output_tokens":200,"human_interventions":1,"measurements":[{"name":"quality","value":8.5,"unit":"score/10","direction":"higher"}]}"""
+                    """{"id":"9007199254741001","experiment_id":"9007199254740999","variant":"candidate","fixture":"repo-a","role":"normal","repetition":5,"status":"valid_measurement","negative_control_passed":false,"cost_usd":1.25,"latency_seconds":12.5,"input_tokens":1000,"output_tokens":200,"human_interventions":1,"measurements":[{"id":"quality","value":8.5,"unit":"score/10","direction":"higher-is-better"}]}"""
                     |> Result.map
                         (\cell ->
                             { id = cell.id
                             , experimentId = cell.experimentId
                             , status = cell.status
-                            , measurements = List.length cell.measurements
+                            , measurementNames = List.map .name cell.measurements
                             }
                         )
                     |> Expect.equal
@@ -26,7 +26,7 @@ all =
                             { id = "9007199254741001"
                             , experimentId = "9007199254740999"
                             , status = "valid_measurement"
-                            , measurements = 1
+                            , measurementNames = [ "quality" ]
                             }
                         )
         , test "rejects numeric experiment IDs" <|

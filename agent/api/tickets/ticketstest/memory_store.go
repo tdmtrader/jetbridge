@@ -111,25 +111,29 @@ func (m *MemoryStore) Update(id int, upd tickets.Update) error {
 		}
 		t.WorkflowName = *upd.WorkflowName
 	}
-	if upd.WorkflowVersion != nil {
-		if t.DispatchReservationKey != "" && (t.WorkflowVersion == nil || *upd.WorkflowVersion != *t.WorkflowVersion) {
+	if upd.WorkflowVersion.Present() {
+		value := upd.WorkflowVersion.Value()
+		if t.DispatchReservationKey != "" &&
+			((value == nil) != (t.WorkflowVersion == nil) ||
+				(value != nil && t.WorkflowVersion != nil && *value != *t.WorkflowVersion)) {
 			return tickets.ErrDispatchConflict
 		}
-		v := *upd.WorkflowVersion
-		t.WorkflowVersion = &v
+		t.WorkflowVersion = value
 	}
 	if upd.TargetBranch != nil {
 		t.TargetBranch = *upd.TargetBranch
 	}
-	if upd.RepositorySnapshotID != nil {
-		if err := upd.RepositorySnapshotID.Validate(); err != nil {
+	if upd.RepositorySnapshotID.Present() {
+		value := upd.RepositorySnapshotID.Value()
+		if value != nil && value.Validate() != nil {
 			return tickets.ErrDispatchConflict
 		}
-		if t.DispatchReservationKey != "" && t.RepositorySnapshotID != nil && *t.RepositorySnapshotID != *upd.RepositorySnapshotID {
-			return tickets.ErrDispatchConflict
+		if t.DispatchReservationKey != "" && t.RepositorySnapshotID != nil {
+			if value == nil || *t.RepositorySnapshotID != *value {
+				return tickets.ErrDispatchConflict
+			}
 		}
-		v := *upd.RepositorySnapshotID
-		t.RepositorySnapshotID = &v
+		t.RepositorySnapshotID = value
 	}
 	m.bump(t)
 	return nil
@@ -307,6 +311,30 @@ func (m *MemoryStore) Transition(id int, from, to tickets.State, meta tickets.Tr
 	case tickets.StateClosed:
 		t.CompletedAt = time.Now().Unix()
 	}
+	return nil
+}
+
+func (m *MemoryStore) TransitionCurrentRunToNeedsReview(
+	ctx context.Context,
+	id int,
+	workflowRunID snapshot.WorkflowRunID,
+) error {
+	if ctx == nil {
+		return context.Canceled
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ticket, found := m.byID[id]
+	if !found || ticket.State != tickets.StateRunning || ticket.DispatchReservationKey == "" ||
+		ticket.WorkflowRunID == nil || *ticket.WorkflowRunID != workflowRunID {
+		return nil
+	}
+	ticket.State = tickets.StateNeedsReview
+	m.bump(ticket)
 	return nil
 }
 

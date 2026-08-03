@@ -2,6 +2,7 @@ package tickets_test
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -10,11 +11,12 @@ import (
 
 	"github.com/concourse/concourse/agent/api/tickets"
 	"github.com/concourse/concourse/agent/api/tickets/ticketstest"
+	"github.com/concourse/concourse/agent/snapshot"
 )
 
 func newTestHandler(username string) (*tickets.Handler, *ticketstest.MemoryStore) {
 	store := ticketstest.NewMemoryStore()
-	h := tickets.NewHandler(store, func(*http.Request) string { return username })
+	h := tickets.NewHandler(store, func(*http.Request) (string, error) { return username, nil })
 	return h, store
 }
 
@@ -41,6 +43,30 @@ func TestCreateTicketAsHuman(t *testing.T) {
 	}
 	if got, _, _ := store.Get(1); got.Title != "fix X" {
 		t.Errorf("stored ticket = %+v", got)
+	}
+}
+
+func TestCreateTicketRejectsUnavailableIdentityBeforeMutation(t *testing.T) {
+	for name, identity := range map[string]tickets.IdentityFunc{
+		"blank": func(*http.Request) (string, error) { return "  ", nil },
+		"error": func(*http.Request) (string, error) { return "", errors.New("display identity unavailable") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			store := ticketstest.NewMemoryStore()
+			h := tickets.NewHandler(store, identity)
+			req := httptest.NewRequest("POST", "/api/v1/agent/tickets",
+				strings.NewReader(`{"title":"fix X","repo":"tdmtrader/concourse","origin":"fly"}`))
+			rec := httptest.NewRecorder()
+
+			h.CreateTicket(rec, req)
+
+			if rec.Code != http.StatusInternalServerError {
+				t.Fatalf("code = %d body %s, want 500", rec.Code, rec.Body)
+			}
+			if list, err := store.List(tickets.ListFilter{}); err != nil || len(list) != 0 {
+				t.Fatalf("identity failure mutated tickets: list=%+v err=%v", list, err)
+			}
+		})
 	}
 }
 
@@ -174,6 +200,78 @@ func TestUpdateTicket(t *testing.T) {
 	h.UpdateTicket(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("empty update = %d, want 400", rec.Code)
+	}
+}
+
+func TestUpdateTicketOmittedNullableFieldsRetainExistingSelections(t *testing.T) {
+	h, store := newTestHandler("tdm")
+	version := 3
+	repositorySnapshotID := snapshot.SnapshotID(123)
+	store.Create(&tickets.Ticket{
+		Title: "t", Repo: "r", WorkflowVersion: &version,
+		RepositorySnapshotID: &repositorySnapshotID,
+	})
+
+	req := withParams(httptest.NewRequest("PUT", "/api/v1/agent/tickets/1",
+		strings.NewReader(`{"body":"updated"}`)), url.Values{":ticket_id": {"1"}})
+	rec := httptest.NewRecorder()
+	h.UpdateTicket(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code = %d body %s, want 200", rec.Code, rec.Body)
+	}
+	got, _, _ := store.Get(1)
+	if got.WorkflowVersion == nil || *got.WorkflowVersion != version ||
+		got.RepositorySnapshotID == nil || *got.RepositorySnapshotID != repositorySnapshotID {
+		t.Fatalf("omitted nullable fields changed existing selections: %+v", got)
+	}
+}
+
+func TestUpdateTicketExplicitNullClearsWorkflowAndRepositorySelections(t *testing.T) {
+	h, store := newTestHandler("tdm")
+	version := 3
+	repositorySnapshotID := snapshot.SnapshotID(123)
+	store.Create(&tickets.Ticket{
+		Title: "t", Repo: "r", WorkflowVersion: &version,
+		RepositorySnapshotID: &repositorySnapshotID,
+	})
+
+	req := withParams(httptest.NewRequest("PUT", "/api/v1/agent/tickets/1",
+		strings.NewReader(`{"workflow_version":null,"repository_snapshot_id":null}`)),
+		url.Values{":ticket_id": {"1"}})
+	rec := httptest.NewRecorder()
+	h.UpdateTicket(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code = %d body %s, want 200", rec.Code, rec.Body)
+	}
+	got, _, _ := store.Get(1)
+	if got.WorkflowVersion != nil || got.RepositorySnapshotID != nil {
+		t.Fatalf("explicit null did not clear nullable selections: %+v", got)
+	}
+}
+
+func TestUpdateRequestRoundTripsExplicitNullWithoutCollapsingToOmitted(t *testing.T) {
+	var request tickets.UpdateRequest
+	if err := json.Unmarshal(
+		[]byte(`{"workflow_version":null,"repository_snapshot_id":null}`),
+		&request,
+	); err != nil {
+		t.Fatal(err)
+	}
+	wire, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(wire, &fields); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"workflow_version", "repository_snapshot_id"} {
+		value, present := fields[name]
+		if !present || string(value) != "null" {
+			t.Fatalf("%s after round trip = %s, present=%t; want explicit null", name, value, present)
+		}
 	}
 }
 

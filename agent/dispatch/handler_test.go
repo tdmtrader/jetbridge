@@ -2,6 +2,7 @@ package dispatch_test
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -25,7 +26,7 @@ func TestDispatchHandlerHappyPath(t *testing.T) {
 	deps, store, _, _ := v3DispatchDeps(t)
 	id := queuedTicket(t, store, "smoke")
 	setRepositorySnapshot(t, store, id, 101)
-	h := dispatch.NewHTTPHandler(deps, func(*http.Request) string { return "tdm" })
+	h := dispatch.NewHTTPHandler(deps, func(*http.Request) (string, error) { return "tdm", nil })
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, dispatchRequest("1"))
@@ -48,7 +49,7 @@ func TestDispatchHandlerHappyPath(t *testing.T) {
 func TestDispatchHandlerErrorMapping(t *testing.T) {
 	deps, store, _, _ := v3DispatchDeps(t)
 
-	h := dispatch.NewHTTPHandler(deps, func(*http.Request) string { return "tdm" })
+	h := dispatch.NewHTTPHandler(deps, func(*http.Request) (string, error) { return "tdm", nil })
 
 	// missing ticket -> 404
 	rec := httptest.NewRecorder()
@@ -84,7 +85,7 @@ func TestDispatchHandlerErrorMapping(t *testing.T) {
 	// a workflow whose signature cannot carry a ticket -> 422, not 500
 	deps.Workflows.(*fakeWorkflows).byName["no-repo"] =
 		definitionWithInputs(t, portSpec{"work-item", "work-item/v1"})
-	h = dispatch.NewHTTPHandler(deps, func(*http.Request) string { return "tdm" })
+	h = dispatch.NewHTTPHandler(deps, func(*http.Request) (string, error) { return "tdm", nil })
 	id = queuedTicket(t, store, "no-repo")
 	setRepositorySnapshot(t, store, id, 101)
 	rec = httptest.NewRecorder()
@@ -108,7 +109,7 @@ func TestDispatchHandlerBudgetExhaustedMapsTo409(t *testing.T) {
 	binder.err = workflowrun.ErrBudgetDenied
 	id := queuedTicket(t, store, "smoke")
 	setRepositorySnapshot(t, store, id, 101)
-	h := dispatch.NewHTTPHandler(deps, func(*http.Request) string { return "tdm" })
+	h := dispatch.NewHTTPHandler(deps, func(*http.Request) (string, error) { return "tdm", nil })
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, dispatchRequest(itoa(id)))
@@ -128,7 +129,7 @@ func TestDispatchHandlerBudgetExhaustedMapsTo409(t *testing.T) {
 func TestDispatchHandlerV3InputsPendingMapsToSanitizedConflict(t *testing.T) {
 	deps, store, _, _ := v3DispatchDeps(t)
 	id := queuedTicket(t, store, "smoke")
-	h := dispatch.NewHTTPHandler(deps, func(*http.Request) string { return "tdm" })
+	h := dispatch.NewHTTPHandler(deps, func(*http.Request) (string, error) { return "tdm", nil })
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, dispatchRequest(itoa(id)))
@@ -151,7 +152,7 @@ func TestDispatchHandlerBodyIsTheDispatchContract(t *testing.T) {
 	deps, store, _, _ := v3DispatchDeps(t)
 	id := queuedTicket(t, store, "smoke")
 	setRepositorySnapshot(t, store, id, 101)
-	h := dispatch.NewHTTPHandler(deps, func(*http.Request) string { return "tdm" })
+	h := dispatch.NewHTTPHandler(deps, func(*http.Request) (string, error) { return "tdm", nil })
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, dispatchRequest(itoa(id)))
@@ -190,7 +191,7 @@ func TestDispatchHandlerMissingPipelineRunIsNotABadRequest(t *testing.T) {
 	binder.result.Run.PipelineRunID = nil
 	id := queuedTicket(t, store, "smoke")
 	setRepositorySnapshot(t, store, id, 101)
-	h := dispatch.NewHTTPHandler(deps, func(*http.Request) string { return "tdm" })
+	h := dispatch.NewHTTPHandler(deps, func(*http.Request) (string, error) { return "tdm", nil })
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, dispatchRequest(itoa(id)))
@@ -200,6 +201,34 @@ func TestDispatchHandlerMissingPipelineRunIsNotABadRequest(t *testing.T) {
 	got, _, _ := store.Get(id)
 	if got.State != tickets.StateQueued {
 		t.Errorf("ticket must stay queued for the retry, got %s", got.State)
+	}
+}
+
+func TestDispatchHandlerRejectsUnavailableIdentityBeforeMutation(t *testing.T) {
+	for name, identity := range map[string]dispatch.IdentityFunc{
+		"blank": func(*http.Request) (string, error) { return "  ", nil },
+		"error": func(*http.Request) (string, error) { return "", errors.New("display identity unavailable") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			deps, store, _, _ := v3DispatchDeps(t)
+			id := queuedTicket(t, store, "smoke")
+			setRepositorySnapshot(t, store, id, 101)
+			h := dispatch.NewHTTPHandler(deps, identity)
+
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, dispatchRequest(itoa(id)))
+
+			if rec.Code != http.StatusInternalServerError {
+				t.Fatalf("code = %d body %s, want 500", rec.Code, rec.Body)
+			}
+			got, _, err := store.Get(id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.State != tickets.StateQueued || got.DispatchReservationKey != "" {
+				t.Fatalf("identity failure mutated ticket: %+v", got)
+			}
+		})
 	}
 }
 

@@ -584,7 +584,8 @@ update msg ( model, effects ) =
                 ( model
                 , effects
                     ++ [ SubmitAgentReviewVerdict
-                            { reviewSnapshotId = params.reviewSnapshotId
+                            { teamName = params.teamName
+                            , reviewSnapshotId = params.reviewSnapshotId
                             , findingId = params.findingId
                             , verdict = params.verdict
                             , notes = Dict.get params.findingId model.agentReviewNotes |> Maybe.withDefault ""

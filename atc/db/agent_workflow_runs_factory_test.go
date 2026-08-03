@@ -446,6 +446,63 @@ plan:
 		Expect(reconcilable).NotTo(ContainElement(run.ID))
 	})
 
+	It("reclaims a terminal ticket run only while its current dispatch reservation still owns it", func() {
+		var ticketID int64
+		Expect(dbConn.QueryRow(`
+			INSERT INTO agent_tickets (title, repo, external_ref)
+			VALUES ('projection retry', 'org/repo', 'PROJ-RETRY')
+			RETURNING id
+		`).Scan(&ticketID)).To(Succeed())
+
+		candidate := request("terminal-ticket-projection-retry")
+		candidate.TicketID = &ticketID
+		candidate.TicketReference = "PROJ-RETRY"
+		run, created, err := factory.CreateWithInputs(ctx, candidate)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(created).To(BeTrue())
+
+		now := time.Now().UTC().Truncate(time.Microsecond)
+		_, err = dbConn.Exec(`
+			UPDATE agent_workflow_runs
+			SET status = 'failed', completed_at = now(), reconcile_after = $2
+			WHERE id = $1
+		`, int64(run.ID), now.Add(-time.Minute))
+		Expect(err).NotTo(HaveOccurred())
+		_, err = dbConn.Exec(`
+			UPDATE agent_tickets
+			SET state = 'running', dispatch_reservation_key = $2
+			WHERE id = $1
+		`, ticketID, run.IdempotencyKey)
+		Expect(err).NotTo(HaveOccurred())
+
+		claimed, err := factory.ClaimForReconciliation(ctx, now, time.Minute, 10)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(claimed).To(ContainElement(run.ID), "a ticket left running by a projection outage must be retried")
+
+		_, err = dbConn.Exec(`
+			UPDATE agent_tickets SET state = 'needs_review' WHERE id = $1
+		`, ticketID)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = dbConn.Exec(`
+			UPDATE agent_workflow_runs SET reconcile_after = $2 WHERE id = $1
+		`, int64(run.ID), now.Add(-time.Minute))
+		Expect(err).NotTo(HaveOccurred())
+
+		claimed, err = factory.ClaimForReconciliation(ctx, now, time.Minute, 10)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(claimed).NotTo(ContainElement(run.ID), "a successfully projected ticket must not be scanned forever")
+
+		_, err = dbConn.Exec(`
+			UPDATE agent_tickets
+			SET state = 'running', dispatch_reservation_key = 'a-newer-dispatch'
+			WHERE id = $1
+		`, ticketID)
+		Expect(err).NotTo(HaveOccurred())
+		claimed, err = factory.ClaimForReconciliation(ctx, now, time.Minute, 10)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(claimed).NotTo(ContainElement(run.ID), "an older terminal run must not terminalize a newer dispatch")
+	})
+
 	It("keyset-pages equal-timestamp history without gaps or duplicates", func() {
 		createdAt := time.Date(2026, time.July, 22, 12, 34, 56, 123456000, time.UTC)
 		var want []snapshot.WorkflowRunID

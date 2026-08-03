@@ -37,7 +37,7 @@ type alias Model =
         , scorecard : Maybe Experiment.Scorecard
         , scorecardUnavailable : Bool
         , loadError : Bool
-        , actionError : Bool
+        , actionError : Maybe String
         }
 
 
@@ -49,7 +49,7 @@ init { id } =
       , scorecard = Nothing
       , scorecardUnavailable = False
       , loadError = False
-      , actionError = False
+      , actionError = Nothing
       , isUserMenuExpanded = False
       }
     , [ FetchAgentExperiment id
@@ -122,7 +122,7 @@ handleCallback callback ( model, effects ) =
 
         AgentExperimentCanceled experimentId (Ok experiment) ->
             if experimentId == model.experimentId then
-                ( { model | experiment = Just experiment, actionError = False }
+                ( { model | experiment = Just experiment, actionError = Nothing }
                 , effects
                     ++ [ FetchAgentExperimentCells experimentId
                        , FetchAgentExperimentScorecard experimentId
@@ -132,9 +132,27 @@ handleCallback callback ( model, effects ) =
             else
                 ( model, effects )
 
+        AgentExperimentCanceled experimentId (Err (Http.BadStatus { status })) ->
+            if experimentId == model.experimentId then
+                ( { model
+                    | actionError =
+                        Just
+                            (if status.code == 409 then
+                                "Experiment cancellation conflicted with a newer revision or terminal state."
+
+                             else
+                                "Experiment couldn't be canceled. Try again."
+                            )
+                  }
+                , effects
+                )
+
+            else
+                ( model, effects )
+
         AgentExperimentCanceled experimentId (Err _) ->
             if experimentId == model.experimentId then
-                ( { model | actionError = True }, effects )
+                ( { model | actionError = Just "Experiment couldn't be canceled. Try again." }, effects )
 
             else
                 ( model, effects )
@@ -147,7 +165,7 @@ update : Message -> ET Model
 update message ( model, effects ) =
     case ( message, model.experiment ) of
         ( AgentExperimentCancelClicked, Just experiment ) ->
-            ( { model | actionError = False }
+            ( { model | actionError = Nothing }
             , effects ++ [ CancelAgentExperiment experiment.id experiment.revision ]
             )
 
@@ -175,7 +193,7 @@ experimentIsActive model =
             True
 
         Just experiment ->
-            List.member experiment.definition.state [ "running", "canceling" ]
+            List.member experiment.definition.state [ "draft", "running", "canceling" ]
 
 
 handleDelivery : Delivery -> ET Model
@@ -290,11 +308,9 @@ identityCard model experiment =
                 ]
                 [ Html.text "cancel experiment" ]
             ]
-        , if model.actionError then
-            errorLine "Experiment cancellation conflicted with a newer revision or terminal state."
-
-          else
-            Html.text ""
+        , model.actionError
+            |> Maybe.map errorLine
+            |> Maybe.withDefault (Html.text "")
         ]
 
 

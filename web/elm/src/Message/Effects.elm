@@ -235,7 +235,8 @@ type Effect
     | FetchAgentCredentials
     | FetchAgentPlatformCredentials
     | SubmitAgentReviewVerdict
-        { reviewSnapshotId : String
+        { teamName : String
+        , reviewSnapshotId : String
         , findingId : String
         , verdict : String
         , notes : String
@@ -904,7 +905,7 @@ runEffect effect key csrfToken =
             -- is no repo/commit review_ref to send: the platform stopped
             -- writing those coordinates onto reviews, so a verdict that
             -- travelled under them named no review at all.
-            Api.post Endpoints.AgentFeedback csrfToken
+            Api.post (Endpoints.AgentFeedback params.teamName) csrfToken
                 |> Api.withJsonBody
                     (Json.Encode.object
                         [ ( "review_snapshot_id", Json.Encode.string params.reviewSnapshotId )

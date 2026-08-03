@@ -311,7 +311,7 @@ func BuildScorecard(request ScorecardRequest) (Scorecard, error) {
 			metrics[metric] = struct{}{}
 		}
 		for metric := range metrics {
-			comparisons[metric] = comparePaired(request, label, metric, globalDirections[metric], control, accumulator, scorecard.Variants, matrixBudgetSkipped)
+			comparisons[metric] = comparePaired(request, label, metric, globalDefinitions[metric], control, accumulator, scorecard.Variants, matrixBudgetSkipped)
 		}
 		scorecard.Comparisons[label] = comparisons
 	}
@@ -320,7 +320,8 @@ func BuildScorecard(request ScorecardRequest) (Scorecard, error) {
 
 func comparePaired(
 	request ScorecardRequest,
-	variantLabel, metric, direction string,
+	variantLabel, metric string,
+	definition metricDefinition,
 	control, variant *variantAccumulator,
 	scores map[string]VariantScore,
 	matrixBudgetSkipped bool,
@@ -344,14 +345,22 @@ func comparePaired(
 	})
 	deltas := make([]float64, 0, len(keys))
 	comparison := PairedComparison{
-		Variant: variantLabel, Control: request.ControlLabel, Metric: metric, Direction: direction,
+		Variant: variantLabel, Control: request.ControlLabel, Metric: metric, Direction: definition.direction,
 		ControlCount: len(control.metricValues[metric]), VariantCount: len(variant.metricValues[metric]),
 		Recommendation: RecommendationInsufficient,
 	}
 	for _, key := range keys {
-		delta := variant.metricByCell[key][metric] - control.metricByCell[key][metric]
-		if direction == "lower-is-better" {
-			delta = -delta
+		controlValue := control.metricByCell[key][metric]
+		variantValue := variant.metricByCell[key][metric]
+		delta := variantValue - controlValue
+		switch definition.direction {
+		case "lower-is-better":
+			delta = controlValue - variantValue
+		case "target":
+			// Positive always means the variant improved over control. For a
+			// target-directed metric that is a reduction in absolute error,
+			// not an increase in the raw measurement.
+			delta = math.Abs(controlValue-definition.target) - math.Abs(variantValue-definition.target)
 		}
 		deltas = append(deltas, delta)
 		switch {

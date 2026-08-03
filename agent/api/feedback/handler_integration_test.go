@@ -11,37 +11,36 @@ import (
 	"github.com/concourse/concourse/agent/snapshot"
 )
 
-// setupServer creates an httptest.Server with a real ServeMux wiring the one
-// surviving feedback endpoint. This validates the full HTTP round-trip
-// (routing, serialization, status codes) rather than testing handler methods
-// directly. The GET/summary/classify routes were deleted with the rest of the
-// v1 HTTP surface — feedback is read back through the review projection.
-func setupServer() (*httptest.Server, *feedback.MemoryStore) {
+// setupRouter creates a real ServeMux wiring the one
+// surviving feedback endpoint. This validates HTTP dispatch, serialization,
+// and status codes rather than testing handler methods directly. The
+// GET/summary/classify routes were deleted with the rest of the v1 HTTP surface
+// — feedback is read back through the review projection.
+func setupRouter() (http.Handler, *feedback.MemoryStore) {
 	store := feedback.NewMemoryStore()
-	handler := feedback.NewHandler(store, feedback.WithSnapshotTeam("main"))
+	handler := feedback.NewHandler(store, feedback.WithSnapshotTeam("research"))
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /api/v1/agent/feedback", handler.SubmitFeedback)
+	mux.HandleFunc("POST /api/v1/teams/research/agent/feedback", handler.SubmitFeedback)
 
-	return httptest.NewServer(mux), store
+	return mux, store
 }
 
-func submitFeedback(t *testing.T, serverURL string, req feedback.FeedbackRequest) *http.Response {
+func submitFeedback(t *testing.T, router http.Handler, req feedback.FeedbackRequest) *httptest.ResponseRecorder {
 	t.Helper()
 	data, err := json.Marshal(req)
 	if err != nil {
 		t.Fatalf("marshal request: %v", err)
 	}
-	resp, err := http.Post(serverURL+"/api/v1/agent/feedback", "application/json", bytes.NewReader(data))
-	if err != nil {
-		t.Fatalf("POST feedback: %v", err)
-	}
-	return resp
+	httpRequest := httptest.NewRequest(http.MethodPost, "/api/v1/teams/research/agent/feedback", bytes.NewReader(data))
+	httpRequest.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httpRequest)
+	return response
 }
 
 func TestRoundTripSubmitStoresEveryFinding(t *testing.T) {
-	server, store := setupServer()
-	defer server.Close()
+	router, store := setupRouter()
 
 	reviewID := snapshot.SnapshotID(4242)
 	records := []feedback.FeedbackRequest{
@@ -50,14 +49,13 @@ func TestRoundTripSubmitStoresEveryFinding(t *testing.T) {
 		{ReviewSnapshotID: reviewID, FindingID: "ISS-003", Verdict: "accurate", Reviewer: "bob"},
 	}
 	for _, rec := range records {
-		resp := submitFeedback(t, server.URL, rec)
-		if resp.StatusCode != http.StatusCreated {
-			t.Fatalf("expected 201, got %d", resp.StatusCode)
+		resp := submitFeedback(t, router, rec)
+		if resp.Code != http.StatusCreated {
+			t.Fatalf("expected 201, got %d", resp.Code)
 		}
-		resp.Body.Close()
 	}
 
-	stored, err := store.GetByReviewSnapshot(reviewID, "main")
+	stored, err := store.GetByReviewSnapshot(reviewID, "research")
 	if err != nil {
 		t.Fatalf("read back: %v", err)
 	}
@@ -67,24 +65,22 @@ func TestRoundTripSubmitStoresEveryFinding(t *testing.T) {
 }
 
 func TestRoundTripUpsertBehavior(t *testing.T) {
-	server, store := setupServer()
-	defer server.Close()
+	router, store := setupRouter()
 
 	reviewID := snapshot.SnapshotID(4343)
 
 	// Same reviewer + finding submitted twice with different verdicts.
 	for _, verdict := range []string{"false_positive", "accurate"} {
-		resp := submitFeedback(t, server.URL, feedback.FeedbackRequest{
+		resp := submitFeedback(t, router, feedback.FeedbackRequest{
 			ReviewSnapshotID: reviewID, FindingID: "ISS-010",
 			Verdict: verdict, Reviewer: "alice",
 		})
-		resp.Body.Close()
-		if resp.StatusCode != http.StatusCreated {
-			t.Fatalf("submit %q: expected 201, got %d", verdict, resp.StatusCode)
+		if resp.Code != http.StatusCreated {
+			t.Fatalf("submit %q: expected 201, got %d", verdict, resp.Code)
 		}
 	}
 
-	stored, err := store.GetByReviewSnapshot(reviewID, "main")
+	stored, err := store.GetByReviewSnapshot(reviewID, "research")
 	if err != nil {
 		t.Fatalf("read back: %v", err)
 	}

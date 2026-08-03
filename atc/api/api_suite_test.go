@@ -100,6 +100,7 @@ var (
 	dbSigningKeyFactory     *dbfakes.FakeSigningKeyFactory
 
 	fakeAgentRunTranscriptFactory *dbfakes.FakeAgentRunTranscriptFactory
+	apiFeedbackStore              *feedback.MemoryStore
 
 	constructedEventHandler *fakeEventHandlerFactory
 
@@ -207,6 +208,7 @@ var _ = BeforeEach(func() {
 	dbWall = new(dbfakes.FakeWall)
 	dbSigningKeyFactory = new(dbfakes.FakeSigningKeyFactory)
 	fakeAgentRunTranscriptFactory = new(dbfakes.FakeAgentRunTranscriptFactory)
+	apiFeedbackStore = feedback.NewMemoryStore()
 
 	interceptTimeoutFactory = new(containerserverfakes.FakeInterceptTimeoutFactory)
 	interceptTimeout = new(containerserverfakes.FakeInterceptTimeout)
@@ -214,6 +216,7 @@ var _ = BeforeEach(func() {
 
 	dbTeam = new(dbfakes.FakeTeam)
 	dbTeam.IDReturns(734)
+	dbTeam.NameReturns("some-team")
 	dbTeamFactory.FindTeamReturns(dbTeam, true, nil)
 	dbTeamFactory.GetByIDReturns(dbTeam)
 	dbWorkerTeamFactory.FindTeamReturns(dbTeam, true, nil)
@@ -369,7 +372,7 @@ var _ = BeforeEach(func() {
 		fakeClock,
 		dbSigningKeyFactory,
 		nil,
-		feedback.NewMemoryStore(),
+		apiFeedbackStore,
 		reviewstest.NewMemoryStore(),
 		metricstest.NewMemoryStore(),
 		apiTicketStore,

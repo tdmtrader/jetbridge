@@ -233,7 +233,7 @@ type alias Scorecard =
 decodeMeasurement : Decoder Measurement
 decodeMeasurement =
     Json.Decode.succeed Measurement
-        |> andMap (Json.Decode.field "name" Json.Decode.string)
+        |> andMap (Json.Decode.field "id" Json.Decode.string)
         |> andMap (Json.Decode.field "value" Json.Decode.float)
         |> andMap (Json.Decode.field "unit" Json.Decode.string)
         |> andMap (Json.Decode.field "direction" Json.Decode.string)

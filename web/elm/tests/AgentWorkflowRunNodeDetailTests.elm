@@ -6,7 +6,7 @@ import Html
 import Html.Attributes
 import Test exposing (Test, describe, test)
 import Test.Html.Query as Query
-import Test.Html.Selector exposing (class, text)
+import Test.Html.Selector exposing (attribute, class, text)
 
 
 all : Test
@@ -59,6 +59,18 @@ all =
                         [ Query.has [ class "agent-node-detail-outputs" ]
                         , Query.has [ text "$1.25" ]
                         ]
+        , test "links node input and output evidence through the registered snapshot route" <|
+            \_ ->
+                render agentDetail
+                    |> Query.has
+                        [ attribute (Html.Attributes.href "/agent/snapshots/9007199254740993")
+                        , attribute (Html.Attributes.href "/agent/snapshots/9007199254740995")
+                        ]
+        , test "links a human answer through the registered snapshot route" <|
+            \_ ->
+                render waitDetail
+                    |> Query.has
+                        [ attribute (Html.Attributes.href "/agent/snapshots/9007199254740997") ]
         , test "renders a whole-dollar cost with its cents rather than as a bare integer" <|
             \_ ->
                 render wholeDollarDetail

@@ -6,25 +6,26 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 )
 
-// UserNameFunc resolves the authenticated human username for a request
-// ("" when anonymous). Injected because this package must not import
+// IdentityFunc resolves the authenticated human display identity for a
+// request. Injected because this package must not import
 // atc/api/accessor (accessor imports atc/db, which imports this
 // package via AgentTicketsFactory — a cycle). atc/api/handler.go wires
-// accessor.GetAccessor(r).Claims().UserName.
-type UserNameFunc func(r *http.Request) string
+// accessor.GetAccessor(r).UserInfo().DisplayUserId.
+type IdentityFunc func(r *http.Request) (string, error)
 
 // Handler serves the /api/v1/agent/tickets* routes. Auth is
 // enforced by the wrappa tiers (00-shared-contracts.md §4.2); this
 // handler only reads WHO the verified writer is.
 type Handler struct {
 	store    Store
-	userName UserNameFunc
+	identity IdentityFunc
 }
 
-func NewHandler(store Store, userName UserNameFunc) *Handler {
-	return &Handler{store: store, userName: userName}
+func NewHandler(store Store, identity IdentityFunc) *Handler {
+	return &Handler{store: store, identity: identity}
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -80,7 +81,11 @@ func (h *Handler) CreateTicket(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid origin", http.StatusBadRequest)
 		return
 	}
-	name := h.userName(r)
+	name, err := h.identity(r)
+	if err != nil || strings.TrimSpace(name) == "" {
+		http.Error(w, "authenticated ticket creator is unavailable", http.StatusInternalServerError)
+		return
+	}
 
 	t := &Ticket{
 		Title:                req.Title,
@@ -172,8 +177,8 @@ func (h *Handler) UpdateTicket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Title == nil && req.Body == nil &&
-		req.WorkflowName == nil && req.WorkflowVersion == nil && req.TargetBranch == nil &&
-		req.RepositorySnapshotID == nil {
+		req.WorkflowName == nil && !req.WorkflowVersion.Present() && req.TargetBranch == nil &&
+		!req.RepositorySnapshotID.Present() {
 		http.Error(w, "no fields to update", http.StatusBadRequest)
 		return
 	}

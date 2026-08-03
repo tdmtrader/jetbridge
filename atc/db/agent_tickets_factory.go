@@ -217,10 +217,16 @@ func (f *agentTicketsFactory) Update(id int, upd tickets.Update) error {
 		q = q.Where(sq.Or{sq.Eq{"dispatch_reservation_key": ""}, sq.Eq{"workflow_name": *upd.WorkflowName}})
 		q = q.Set("workflow_name", *upd.WorkflowName)
 	}
-	if upd.WorkflowVersion != nil {
+	if upd.WorkflowVersion.Present() {
 		protected = true
-		q = q.Where(sq.Or{sq.Eq{"dispatch_reservation_key": ""}, sq.Eq{"workflow_version": *upd.WorkflowVersion}})
-		q = q.Set("workflow_version", *upd.WorkflowVersion)
+		value := upd.WorkflowVersion.Value()
+		if value == nil {
+			q = q.Where(sq.Or{sq.Eq{"dispatch_reservation_key": ""}, sq.Expr("workflow_version IS NULL")})
+			q = q.Set("workflow_version", nil)
+		} else {
+			q = q.Where(sq.Or{sq.Eq{"dispatch_reservation_key": ""}, sq.Eq{"workflow_version": *value}})
+			q = q.Set("workflow_version", *value)
+		}
 	}
 	if upd.UserID != nil {
 		q = q.Set("user_id", *upd.UserID)
@@ -228,17 +234,26 @@ func (f *agentTicketsFactory) Update(id int, upd tickets.Update) error {
 	if upd.TargetBranch != nil {
 		q = q.Set("target_branch", *upd.TargetBranch)
 	}
-	if upd.RepositorySnapshotID != nil {
-		if err := upd.RepositorySnapshotID.Validate(); err != nil {
-			return tickets.ErrDispatchConflict
-		}
+	if upd.RepositorySnapshotID.Present() {
 		protected = true
-		q = q.Where(sq.Or{
-			sq.Eq{"dispatch_reservation_key": ""},
-			sq.Expr("repository_snapshot_id IS NULL"),
-			sq.Eq{"repository_snapshot_id": int64(*upd.RepositorySnapshotID)},
-		})
-		q = q.Set("repository_snapshot_id", int64(*upd.RepositorySnapshotID))
+		value := upd.RepositorySnapshotID.Value()
+		if value == nil {
+			q = q.Where(sq.Or{
+				sq.Eq{"dispatch_reservation_key": ""},
+				sq.Expr("repository_snapshot_id IS NULL"),
+			})
+			q = q.Set("repository_snapshot_id", nil)
+		} else {
+			if err := value.Validate(); err != nil {
+				return tickets.ErrDispatchConflict
+			}
+			q = q.Where(sq.Or{
+				sq.Eq{"dispatch_reservation_key": ""},
+				sq.Expr("repository_snapshot_id IS NULL"),
+				sq.Eq{"repository_snapshot_id": int64(*value)},
+			})
+			q = q.Set("repository_snapshot_id", int64(*value))
+		}
 	}
 
 	res, err := q.RunWith(f.conn).Exec()
@@ -511,6 +526,40 @@ func (f *agentTicketsFactory) Transition(id int, from, to tickets.State, meta ti
 		return tickets.ErrStaleTransition
 	}
 	return nil
+}
+
+// TransitionCurrentRunToNeedsReview is the run-completion reconciler's
+// atomic projection edge. The workflow-run identity, its durable ticket
+// association, the live reservation, and the running state are checked in the
+// same UPDATE that changes state. A stale run therefore cannot terminalize a
+// newer dispatch even when ownership changes immediately before this query
+// acquires the ticket row lock.
+func (f *agentTicketsFactory) TransitionCurrentRunToNeedsReview(
+	ctx context.Context,
+	id int,
+	workflowRunID snapshot.WorkflowRunID,
+) error {
+	if ctx == nil {
+		return context.Canceled
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	_, err := f.conn.ExecContext(ctx, `
+		UPDATE agent_tickets AS ticket
+		SET state = 'needs_review',
+		    updated_at = now(),
+		    revision = ticket.revision + 1
+		FROM agent_workflow_runs AS run
+		WHERE ticket.id = $1
+		  AND ticket.state = 'running'
+		  AND ticket.dispatch_reservation_key <> ''
+		  AND run.id = $2
+		  AND run.ticket_id = ticket.id
+		  AND run.idempotency_key = ticket.dispatch_reservation_key
+	`, id, int64(workflowRunID))
+	return err
 }
 
 // captureTicketRevisionSQL reads exactly what work-item/v1 freezes: the

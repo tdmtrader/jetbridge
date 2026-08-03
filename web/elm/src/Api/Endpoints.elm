@@ -37,7 +37,7 @@ type Endpoint
     | BuildAgentReviews Concourse.BuildId
     | BuildAgentMetrics Concourse.BuildId
     | TeamAgentReviews Concourse.TeamName
-    | AgentFeedback
+    | AgentFeedback Concourse.TeamName
     | AgentMetrics
     | AgentWorkflowsList
     | AgentCostRollup
@@ -257,8 +257,8 @@ builder endpoint =
         TeamAgentReviews teamName ->
             base |> appendPath [ "teams", teamName, "agent-reviews" ]
 
-        AgentFeedback ->
-            base |> appendPath [ "agent", "feedback" ]
+        AgentFeedback teamName ->
+            base |> appendPath [ "teams", teamName, "agent", "feedback" ]
 
         AgentMetrics ->
             base |> appendPath [ "agent", "metrics" ]

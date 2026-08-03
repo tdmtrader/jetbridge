@@ -276,7 +276,7 @@ func v3DispatchDeps(t *testing.T) (dispatch.Deps, *ticketstest.MemoryStore, *fak
 
 func setRepositorySnapshot(t *testing.T, store *ticketstest.MemoryStore, ticketID int, id snapshot.SnapshotID) {
 	t.Helper()
-	if err := store.Update(ticketID, tickets.Update{RepositorySnapshotID: &id}); err != nil {
+	if err := store.Update(ticketID, tickets.Update{RepositorySnapshotID: tickets.SetField(id)}); err != nil {
 		t.Fatalf("select repository snapshot: %v", err)
 	}
 }
@@ -477,7 +477,7 @@ func TestDispatchOneSchemaThreeReservesAndDefersUntilRepositorySnapshotSelected(
 
 	setRepositorySnapshot(t, store, id, snapshot.SnapshotID(101))
 	other := snapshot.SnapshotID(102)
-	if err := store.Update(id, tickets.Update{RepositorySnapshotID: &other}); !errors.Is(err, tickets.ErrDispatchConflict) {
+	if err := store.Update(id, tickets.Update{RepositorySnapshotID: tickets.SetField(other)}); !errors.Is(err, tickets.ErrDispatchConflict) {
 		t.Fatalf("changing a reserved repository snapshot = %v, want ErrDispatchConflict", err)
 	}
 	if _, err := dispatch.DispatchOne(context.Background(), deps, id, "admin"); err != nil {
@@ -660,7 +660,7 @@ func TestDispatchOnePinnedVersion(t *testing.T) {
 	deps, store, _, _ := v3DispatchDeps(t)
 	id := queuedTicket(t, store, "smoke")
 	pin := 7
-	if err := store.Update(id, tickets.Update{WorkflowVersion: &pin}); err != nil {
+	if err := store.Update(id, tickets.Update{WorkflowVersion: tickets.SetField(pin)}); err != nil {
 		t.Fatal(err)
 	}
 	setRepositorySnapshot(t, store, id, 101)
@@ -672,7 +672,7 @@ func TestDispatchOnePinnedVersion(t *testing.T) {
 	deps2, store2, _, _ := v3DispatchDeps(t)
 	id2 := queuedTicket(t, store2, "smoke")
 	missing := 9
-	if err := store2.Update(id2, tickets.Update{WorkflowVersion: &missing}); err != nil {
+	if err := store2.Update(id2, tickets.Update{WorkflowVersion: tickets.SetField(missing)}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := dispatch.DispatchOne(context.Background(), deps2, id2, "admin"); !errors.Is(err, dispatch.ErrWorkflowNotFound) {

@@ -128,6 +128,19 @@ type FakeAgentTicketsFactory struct {
 	transitionReturnsOnCall map[int]struct {
 		result1 error
 	}
+	TransitionCurrentRunToNeedsReviewStub        func(context.Context, int, snapshot.WorkflowRunID) error
+	transitionCurrentRunToNeedsReviewMutex       sync.RWMutex
+	transitionCurrentRunToNeedsReviewArgsForCall []struct {
+		arg1 context.Context
+		arg2 int
+		arg3 snapshot.WorkflowRunID
+	}
+	transitionCurrentRunToNeedsReviewReturns struct {
+		result1 error
+	}
+	transitionCurrentRunToNeedsReviewReturnsOnCall map[int]struct {
+		result1 error
+	}
 	UpdateStub        func(int, tickets.Update) error
 	updateMutex       sync.RWMutex
 	updateArgsForCall []struct {
@@ -663,6 +676,69 @@ func (fake *FakeAgentTicketsFactory) TransitionReturnsOnCall(i int, result1 erro
 		})
 	}
 	fake.transitionReturnsOnCall[i] = struct {
+		result1 error
+	}{result1}
+}
+
+func (fake *FakeAgentTicketsFactory) TransitionCurrentRunToNeedsReview(arg1 context.Context, arg2 int, arg3 snapshot.WorkflowRunID) error {
+	fake.transitionCurrentRunToNeedsReviewMutex.Lock()
+	ret, specificReturn := fake.transitionCurrentRunToNeedsReviewReturnsOnCall[len(fake.transitionCurrentRunToNeedsReviewArgsForCall)]
+	fake.transitionCurrentRunToNeedsReviewArgsForCall = append(fake.transitionCurrentRunToNeedsReviewArgsForCall, struct {
+		arg1 context.Context
+		arg2 int
+		arg3 snapshot.WorkflowRunID
+	}{arg1, arg2, arg3})
+	stub := fake.TransitionCurrentRunToNeedsReviewStub
+	fakeReturns := fake.transitionCurrentRunToNeedsReviewReturns
+	fake.recordInvocation("TransitionCurrentRunToNeedsReview", []interface{}{arg1, arg2, arg3})
+	fake.transitionCurrentRunToNeedsReviewMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2, arg3)
+	}
+	if specificReturn {
+		return ret.result1
+	}
+	return fakeReturns.result1
+}
+
+func (fake *FakeAgentTicketsFactory) TransitionCurrentRunToNeedsReviewCallCount() int {
+	fake.transitionCurrentRunToNeedsReviewMutex.RLock()
+	defer fake.transitionCurrentRunToNeedsReviewMutex.RUnlock()
+	return len(fake.transitionCurrentRunToNeedsReviewArgsForCall)
+}
+
+func (fake *FakeAgentTicketsFactory) TransitionCurrentRunToNeedsReviewCalls(stub func(context.Context, int, snapshot.WorkflowRunID) error) {
+	fake.transitionCurrentRunToNeedsReviewMutex.Lock()
+	defer fake.transitionCurrentRunToNeedsReviewMutex.Unlock()
+	fake.TransitionCurrentRunToNeedsReviewStub = stub
+}
+
+func (fake *FakeAgentTicketsFactory) TransitionCurrentRunToNeedsReviewArgsForCall(i int) (context.Context, int, snapshot.WorkflowRunID) {
+	fake.transitionCurrentRunToNeedsReviewMutex.RLock()
+	defer fake.transitionCurrentRunToNeedsReviewMutex.RUnlock()
+	argsForCall := fake.transitionCurrentRunToNeedsReviewArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3
+}
+
+func (fake *FakeAgentTicketsFactory) TransitionCurrentRunToNeedsReviewReturns(result1 error) {
+	fake.transitionCurrentRunToNeedsReviewMutex.Lock()
+	defer fake.transitionCurrentRunToNeedsReviewMutex.Unlock()
+	fake.TransitionCurrentRunToNeedsReviewStub = nil
+	fake.transitionCurrentRunToNeedsReviewReturns = struct {
+		result1 error
+	}{result1}
+}
+
+func (fake *FakeAgentTicketsFactory) TransitionCurrentRunToNeedsReviewReturnsOnCall(i int, result1 error) {
+	fake.transitionCurrentRunToNeedsReviewMutex.Lock()
+	defer fake.transitionCurrentRunToNeedsReviewMutex.Unlock()
+	fake.TransitionCurrentRunToNeedsReviewStub = nil
+	if fake.transitionCurrentRunToNeedsReviewReturnsOnCall == nil {
+		fake.transitionCurrentRunToNeedsReviewReturnsOnCall = make(map[int]struct {
+			result1 error
+		})
+	}
+	fake.transitionCurrentRunToNeedsReviewReturnsOnCall[i] = struct {
 		result1 error
 	}{result1}
 }

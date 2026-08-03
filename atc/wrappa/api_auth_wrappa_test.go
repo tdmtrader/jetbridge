@@ -332,7 +332,7 @@ var _ = Describe("APIAuthWrappa", func() {
 			serve := func(routeName, authorization string) *http.Response {
 				server := httptest.NewServer(accessor.NewHandler(
 					lagertest.NewTestLogger("api-auth-wrappa"),
-					"some-action",
+					routeName,
 					wrapped[routeName],
 					fakeAccessor,
 					new(auditorfakes.FakeAuditor),
@@ -350,7 +350,7 @@ var _ = Describe("APIAuthWrappa", func() {
 				return resp
 			}
 
-			for _, route := range []string{atc.CreateAgentTicket, atc.TransitionAgentTicket, atc.GetAgentTicket, atc.SubmitAgentFeedback} {
+			for _, route := range []string{atc.CreateAgentTicket, atc.TransitionAgentTicket, atc.GetAgentTicket} {
 				route := route
 				Describe(route, func() {
 					It("401s anonymous requests", func() {
@@ -388,6 +388,48 @@ var _ = Describe("APIAuthWrappa", func() {
 					})
 				})
 			}
+
+			Describe("SubmitAgentFeedback", func() {
+				serveFeedback := func() *httptest.ResponseRecorder {
+					handler := accessor.NewHandler(
+						lagertest.NewTestLogger("api-auth-wrappa"),
+						atc.SubmitAgentFeedback,
+						wrapped[atc.SubmitAgentFeedback],
+						fakeAccessor,
+						new(auditorfakes.FakeAuditor),
+						map[string]string{},
+					)
+
+					req := httptest.NewRequest(http.MethodPost, "/?:team_name=research", nil)
+					resp := httptest.NewRecorder()
+					handler.ServeHTTP(resp, req)
+					return resp
+				}
+
+				It("401s anonymous requests", func() {
+					fakeaccess.IsAuthenticatedReturns(false)
+					Expect(serveFeedback().Code).To(Equal(http.StatusUnauthorized))
+					Expect(delegateHit).To(BeFalse())
+				})
+
+				It("403s a user outside the requested team", func() {
+					fakeaccess.IsAuthenticatedReturns(true)
+					fakeaccess.IsAuthorizedReturns(false)
+					Expect(serveFeedback().Code).To(Equal(http.StatusForbidden))
+					Expect(delegateHit).To(BeFalse())
+					Expect(fakeaccess.IsAuthorizedArgsForCall(0)).To(Equal("research"))
+				})
+
+				It("admits a member of the requested team with the member role", func() {
+					fakeaccess.IsAuthenticatedReturns(true)
+					fakeaccess.IsAuthorizedReturns(true)
+					Expect(serveFeedback().Code).To(Equal(http.StatusOK))
+					Expect(delegateHit).To(BeTrue())
+					Expect(fakeaccess.IsAuthorizedArgsForCall(0)).To(Equal("research"))
+					_, role := fakeAccessor.CreateArgsForCall(0)
+					Expect(role).To(Equal(accessor.MemberRole))
+				})
+			})
 		})
 
 		// Dispatcher runtime-control tier pinning (dispatcher-runtime-control

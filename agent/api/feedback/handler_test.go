@@ -18,7 +18,7 @@ func submit(t *testing.T, handler *feedback.Handler, body feedback.FeedbackReque
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/agent/feedback", bytes.NewReader(data))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/teams/main/agent/feedback", bytes.NewReader(data))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	handler.SubmitFeedback(w, req)
@@ -93,7 +93,7 @@ func TestSubmitFeedbackRejectsABodyWithNoReviewSnapshot(t *testing.T) {
 		"unquoted":   {[]byte(`{"review_snapshot_id":7,"finding_id":"ISS-001","verdict":"accurate","reviewer":"tdm"}`), "snapshot ID"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodPost, "/api/v1/agent/feedback", bytes.NewReader(tc.body))
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/teams/main/agent/feedback", bytes.NewReader(tc.body))
 			req.Header.Set("Content-Type", "application/json")
 			w := httptest.NewRecorder()
 			handler.SubmitFeedback(w, req)
@@ -161,7 +161,7 @@ func TestSubmitFeedbackMissingFields(t *testing.T) {
 	handler := feedback.NewHandler(store)
 
 	body := []byte(`{"review_snapshot_id":"77","verdict":"accurate"}`)
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/agent/feedback", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/teams/main/agent/feedback", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	handler.SubmitFeedback(w, req)

@@ -126,6 +126,54 @@ var _ = Describe("AgentTicketsFactory", func() {
 		Expect(got.WorkflowName).To(Equal("standard-dev")) // untouched
 	})
 
+	It("persists nullable workflow and repository updates as omitted, set, and clear", func() {
+		var repositorySnapshotID snapshot.SnapshotID
+		digest := fmt.Sprintf("sha256:%064x", time.Now().UnixNano())
+		Expect(dbConn.QueryRow(`
+			INSERT INTO agent_snapshots
+				(team_id, type_name, type_version, digest, byte_size, file_count, representation)
+			VALUES ($1, 'repository', 1, $2, 1, 1, 'filesystem-tree-v1')
+			RETURNING id
+		`, defaultTeam.ID(), digest).Scan(&repositorySnapshotID)).To(Succeed())
+
+		id, err := factory.Create(newTicket("tri-state update", "repo"))
+		Expect(err).NotTo(HaveOccurred())
+		body := "omitted fields stay pinned"
+		Expect(factory.Update(id, tickets.Update{Body: &body})).To(Succeed())
+		got, _, err := factory.Get(id)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(got.WorkflowVersion).NotTo(BeNil())
+		Expect(*got.WorkflowVersion).To(Equal(3))
+		Expect(got.RepositorySnapshotID).To(BeNil())
+
+		Expect(factory.Update(id, tickets.Update{
+			WorkflowVersion:      tickets.SetField(5),
+			RepositorySnapshotID: tickets.SetField(repositorySnapshotID),
+		})).To(Succeed())
+		got, _, err = factory.Get(id)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(got.WorkflowVersion).NotTo(BeNil())
+		Expect(*got.WorkflowVersion).To(Equal(5))
+		Expect(got.RepositorySnapshotID).NotTo(BeNil())
+		Expect(*got.RepositorySnapshotID).To(Equal(repositorySnapshotID))
+
+		Expect(factory.Update(id, tickets.Update{
+			WorkflowVersion:      tickets.ClearField[int](),
+			RepositorySnapshotID: tickets.ClearField[snapshot.SnapshotID](),
+		})).To(Succeed())
+		got, _, err = factory.Get(id)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(got.WorkflowVersion).To(BeNil())
+		Expect(got.RepositorySnapshotID).To(BeNil())
+		var workflowVersionNull, repositorySnapshotNull bool
+		Expect(dbConn.QueryRow(`
+			SELECT workflow_version IS NULL, repository_snapshot_id IS NULL
+			FROM agent_tickets WHERE id = $1
+		`, id).Scan(&workflowVersionNull, &repositorySnapshotNull)).To(Succeed())
+		Expect(workflowVersionNull).To(BeTrue())
+		Expect(repositorySnapshotNull).To(BeTrue())
+	})
+
 	It("Update returns ErrTicketNotFound for a missing id", func() {
 		title := "x"
 		Expect(factory.Update(424242, tickets.Update{Title: &title})).
@@ -197,10 +245,16 @@ var _ = Describe("AgentTicketsFactory", func() {
 
 		reserved, _, err := factory.Get(ticketID)
 		Expect(err).NotTo(HaveOccurred())
+		Expect(factory.Update(ticketID, tickets.Update{
+			WorkflowVersion: tickets.ClearField[int](),
+		})).To(MatchError(tickets.ErrDispatchConflict))
+		Expect(factory.Update(ticketID, tickets.Update{
+			RepositorySnapshotID: tickets.ClearField[snapshot.SnapshotID](),
+		})).To(MatchError(tickets.ErrDispatchConflict))
 		Expect(factory.RecordDispatchWorkItem(context.Background(), ticketID, reservationKey, reserved.Revision, workItemID)).To(Succeed())
 		Expect(factory.RecordDispatchWorkItem(context.Background(), ticketID, reservationKey, reserved.Revision, workItemID)).To(Succeed())
 		otherRepository := insertSnapshot("repository", "d")
-		Expect(factory.Update(ticketID, tickets.Update{RepositorySnapshotID: &otherRepository})).To(MatchError(tickets.ErrDispatchConflict))
+		Expect(factory.Update(ticketID, tickets.Update{RepositorySnapshotID: tickets.SetField(otherRepository)})).To(MatchError(tickets.ErrDispatchConflict))
 
 		var workflowRunID snapshot.WorkflowRunID
 		Expect(dbConn.QueryRow(`
@@ -322,6 +376,64 @@ var _ = Describe("AgentTicketsFactory", func() {
 
 		Expect(factory.RecordDispatchRun(context.Background(), ticketID, reservation.Key, foreign, 1)).
 			To(MatchError(tickets.ErrDispatchConflict))
+	})
+
+	It("atomically projects only the workflow run that owns the current dispatch reservation", func() {
+		var definitionID int
+		definitionName := fmt.Sprintf("ticket-projection-%d", time.Now().UnixNano())
+		Expect(dbConn.QueryRow(`
+			INSERT INTO agent_workflow_definitions
+				(name, version, content_hash, definition, created_by, schema_version, signature_version)
+			VALUES ($1, 7, $2, 'schema_version: 3', 'alice', 3, 1)
+			RETURNING id
+		`, definitionName, strings.Repeat("f", 64)).Scan(&definitionID)).To(Succeed())
+
+		ticketID, err := factory.Create(&tickets.Ticket{
+			Title: "projection race", Body: "captured", Repo: "example/repo", WorkflowName: definitionName,
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		insertRun := func(reservationKey string) snapshot.WorkflowRunID {
+			var runID snapshot.WorkflowRunID
+			Expect(dbConn.QueryRow(`
+				INSERT INTO agent_workflow_runs
+					(team_id, team_name, workflow_definition_id, workflow_name, workflow_version,
+					 schema_version, signature_version, definition_content_hash, idempotency_key,
+					 parameterized_config, parameterized_config_hash, origin_kind, origin_reference,
+					 created_by, status, ticket_id, ticket_reference)
+				VALUES ($1, $2, $3, $4, 7, 3, 1, $5, $6, '{}', $7, 'ticket', $8,
+				        'alice', 'succeeded', $9, $8)
+				RETURNING id
+			`, defaultTeam.ID(), defaultTeam.Name(), definitionID, definitionName,
+				strings.Repeat("f", 64), reservationKey, strings.Repeat("e", 64),
+				fmt.Sprintf("ticket-%d", ticketID), ticketID).Scan(&runID)).To(Succeed())
+			return runID
+		}
+
+		oldReservation := fmt.Sprintf("projection-old-%d", time.Now().UnixNano())
+		currentReservation := fmt.Sprintf("projection-current-%d", time.Now().UnixNano())
+		oldRunID := insertRun(oldReservation)
+		currentRunID := insertRun(currentReservation)
+		_, err = dbConn.Exec(`
+			UPDATE agent_tickets
+			SET state = 'running', dispatch_reservation_key = $2
+			WHERE id = $1
+		`, ticketID, currentReservation)
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(factory.TransitionCurrentRunToNeedsReview(context.Background(), ticketID, oldRunID)).To(Succeed())
+		got, found, err := factory.Get(ticketID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(got.State).To(Equal(tickets.StateRunning), "the stale run must not terminalize its successor")
+		Expect(got.WorkflowRunID).NotTo(BeNil())
+		Expect(*got.WorkflowRunID).To(Equal(currentRunID))
+
+		Expect(factory.TransitionCurrentRunToNeedsReview(context.Background(), ticketID, currentRunID)).To(Succeed())
+		got, found, err = factory.Get(ticketID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(got.State).To(Equal(tickets.StateNeedsReview))
 	})
 
 	Describe("Transition (the single writer)", func() {
