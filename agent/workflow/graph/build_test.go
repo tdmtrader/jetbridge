@@ -109,7 +109,11 @@ func TestBuildLinksProducerToConsumer(t *testing.T) {
 	want := []Edge{
 		{From: "input:repository", To: "implement", PortName: "repository", TypeRef: "repository/v1"},
 		{From: "implement", To: "review", PortName: "draft", TypeRef: "repository-change/v1"},
-		{From: "review", To: "output:change", PortName: "candidate", TypeRef: "repository-change/v1"},
+		// The public output edge is labelled "change" (the port), not
+		// "candidate" (the binding it consumed). The durable run-level binding
+		// is keyed by the port, so this is the only label the run page can
+		// join on. The producer is still selected through the binding.
+		{From: "review", To: "output:change", PortName: "change", TypeRef: "repository-change/v1"},
 	}
 	for _, edge := range want {
 		if !hasEdge(g, edge) {
@@ -962,5 +966,93 @@ func TestBuildPRMonitorSeedMarksTheConditionalReapproval(t *testing.T) {
 	want := Edge{From: "reapproval", To: "publish-revision", PortName: "reapproval", TypeRef: "human-answer/v1", Optional: true}
 	if !hasEdge(g, want) {
 		t.Fatalf("expected the conditional approval edge %+v in %+v", want, edgesInto(g, "publish-revision"))
+	}
+}
+
+// A PR-reapproval step may legally name ONE binding for both the candidate's
+// authoritative validation (AwaitSnapshotStep.Validation) and the accepted
+// review's (PRApproval.AcceptedReview.Validation): the type checker constrains
+// them independently — requireValidation proves the step's validation is
+// authoritative dev validation dominating the candidate, requireExactAwaitArtifact
+// only proves the accepted validation is a non-conditional validation/v1 — and
+// nothing requires the two names to differ. Both used to be linked in their own
+// loop with no de-duplication, so one binding satisfying both produced two
+// byte-identical edges.
+//
+// The walk methods are exercised directly rather than through a mutated seed:
+// the reachable configuration is a property of the two independent constraints
+// above, not of any shipped workflow, and Build already documents that it
+// assumes a type-checked function.
+func TestWalkAwaitSnapshotDrawsOneEdgePerSharedValidationBinding(t *testing.T) {
+	b := &builder{graph: Graph{Nodes: []Node{}, Edges: []Edge{}}, seen: map[string]bool{}}
+	env := environment{
+		"pull-request": typedBinding("observe", "pull-request/v1", false),
+		"candidate":    typedBinding("merge-prepare", "repository-change/v1", false),
+		"impact":       typedBinding("assess-impact", "publish-impact/v1", false),
+		"response":     typedBinding("compose", "pull-request-response/v1", false),
+		"review":       typedBinding("load-review", "review/v1", false),
+		"validation":   typedBinding("dev-validation-pr-revision-gates", "validation/v1", false),
+	}
+
+	if _, err := b.walkAwaitSnapshot(&atc.AwaitSnapshotStep{
+		Name: "reapproval",
+		Type: "human-answer/v1",
+		// Both validation slots name the same binding.
+		Validation: "validation",
+		PRApproval: &atc.PRApprovalIntent{
+			Observation: "pull-request",
+			Candidate:   "candidate",
+			Impact:      "impact",
+			Response:    "response",
+			AcceptedReview: &atc.PRAcceptedReviewIntent{
+				Review:     "review",
+				Candidate:  "candidate",
+				Validation: "validation",
+			},
+		},
+	}, env, nil); err != nil {
+		t.Fatalf("walkAwaitSnapshot returned an error: %v", err)
+	}
+
+	// Six distinct bindings: pull-request, candidate, impact, response, review,
+	// validation. `candidate` is named twice (the intent's and the accepted
+	// review's) and `validation` twice, and each draws exactly one edge.
+	assertNoDuplicateEdges(t, b.graph)
+	if got := len(edgesInto(b.graph, "reapproval")); got != 6 {
+		t.Fatalf("expected one edge per distinct consumed binding, got %d: %+v",
+			got, edgesInto(b.graph, "reapproval"))
+	}
+}
+
+func TestWalkPublishSnapshotDrawsOneEdgePerSharedValidationBinding(t *testing.T) {
+	b := &builder{graph: Graph{Nodes: []Node{}, Edges: []Edge{}}, seen: map[string]bool{}}
+	env := environment{
+		"candidate":  typedBinding("merge-prepare", "repository-change/v1", false),
+		"reapproval": typedBinding("reapproval", "human-answer/v1", true),
+		"review":     typedBinding("load-review", "review/v1", false),
+		"validation": typedBinding("dev-validation-pr-revision-gates", "validation/v1", false),
+	}
+
+	if _, err := b.walkPublishSnapshot(&atc.PublishSnapshotStep{
+		Name:       "publish-revision",
+		Input:      "candidate",
+		InputType:  "repository-change/v1",
+		Approval:   "reapproval",
+		Validation: "validation",
+		PRApproval: &atc.PRApprovalPublicationIntent{
+			AcceptedReview: &atc.PRAcceptedReviewIntent{
+				Review:     "review",
+				Candidate:  "candidate",
+				Validation: "validation",
+			},
+		},
+	}, env, nil); err != nil {
+		t.Fatalf("walkPublishSnapshot returned an error: %v", err)
+	}
+
+	assertNoDuplicateEdges(t, b.graph)
+	if got := len(edgesInto(b.graph, "publish-revision")); got != 4 {
+		t.Fatalf("expected one edge per distinct consumed binding, got %d: %+v",
+			got, edgesInto(b.graph, "publish-revision"))
 	}
 }

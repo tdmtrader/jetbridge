@@ -71,6 +71,18 @@ type Node struct {
 
 // Edge runs from a producing node to a consuming node, labelled with the
 // snapshot binding that connects them.
+//
+// An edge that touches an ENDPOINT node is labelled with that endpoint's
+// public port name — which is exactly its DisplayName, and exactly the
+// port_name the durable run-level binding is keyed by. That is what lets a run
+// page join `run.inputs`/`run.outputs` onto the node that consumed or produced
+// them. It falls out for free on the input side (a public input seeds the
+// environment under its own port name) and is stated explicitly on the output
+// side, where the consumed binding is `outputs[].from` and may be named
+// anything (see Build).
+//
+// An edge between two execution nodes is labelled with the internal binding
+// name, which is the only name that intermediate snapshot has.
 type Edge struct {
 	From     string `json:"from"`
 	To       string `json:"to"`

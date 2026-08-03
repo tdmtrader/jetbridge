@@ -108,7 +108,23 @@ func Build(function *workflow.FunctionConfig) (Graph, error) {
 		}); err != nil {
 			return Graph{}, err
 		}
-		if err := builder.link(result.env, output.From, nodeID); err != nil {
+		// The edge is labelled with the PUBLIC port name, not with the binding
+		// it consumed. Everything downstream of this graph identifies a
+		// run-level output by the public port: typecheck.go's
+		// AnnotatePublicOutputs writes output.Port.Name into the producer's
+		// WorkflowPort, that becomes agent_workflow_run_snapshots.port_name at
+		// seal time, and workflowruns.OutputManifest.Port serves it. Labelling
+		// the edge with output.From instead put the two names in different
+		// namespaces whenever a workflow declares `from:` different from the
+		// port name — which every shipped seed that produces a
+		// repository-change does (`{name: change, from: candidate}`) — so the
+		// run page could never attribute a workflow's own deliverable to the
+		// node that produced it.
+		//
+		// The producer is still resolved through output.From: that is the
+		// binding the type checker proved, and it is what decides WHICH node
+		// the edge leaves. Only the label changes.
+		if err := builder.linkAs(result.env, output.From, nodeID, output.Port.Name); err != nil {
 			return Graph{}, err
 		}
 	}
@@ -192,6 +208,43 @@ func (b *builder) addNode(node Node) error {
 // a future node kind that violates the invariant fails loudly instead of
 // silently mislinking the graph.
 func (b *builder) link(env environment, bindingName, nodeID string) error {
+	return b.linkAs(env, bindingName, nodeID, bindingName)
+}
+
+// linkAll is link over several consumed bindings, with the two guards a
+// hand-written loop kept getting wrong: an empty name is skipped rather than
+// looked up, and a name consumed twice by the same node draws one edge rather
+// than two.
+//
+// The duplicate is reachable, not defensive. walkAwaitSnapshot and
+// walkPublishSnapshot both consume config.Validation AND
+// config.PRApproval.AcceptedReview.Validation, and the type checker constrains
+// those two independently (requireValidation vs requireExactAwaitArtifact) —
+// nothing requires them to be different bindings. One binding satisfying both
+// used to produce two byte-identical Edges, which is a contradiction of what an
+// Edge means (Edge has no identity beyond From/To/PortName/TypeRef/Optional,
+// so "the labelled connection between a producer and a consumer" cannot occur
+// twice) and doubles the line every consumer of the contract draws.
+func (b *builder) linkAll(env environment, bindingNames []string, nodeID string) error {
+	linked := make(map[string]bool, len(bindingNames))
+	for _, name := range bindingNames {
+		if name == "" || linked[name] {
+			continue
+		}
+		linked[name] = true
+		if err := b.link(env, name, nodeID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// linkAs is link with an explicit edge label. The binding still selects the
+// producer; portName is what the edge is called. It exists for the public
+// output boundary, where the consumed binding and the port a reader (and every
+// durable record) knows the value by are two different names. See the call
+// site in Build.
+func (b *builder) linkAs(env environment, bindingName, nodeID, portName string) error {
 	source, found := env[bindingName]
 	if !found || !source.typed {
 		return nil
@@ -207,7 +260,7 @@ func (b *builder) link(env environment, bindingName, nodeID string) error {
 		b.graph.Edges = append(b.graph.Edges, Edge{
 			From:     producer,
 			To:       nodeID,
-			PortName: bindingName,
+			PortName: portName,
 			TypeRef:  source.typeRef,
 			Optional: optional,
 		})
@@ -475,49 +528,30 @@ func (b *builder) walkAwaitSnapshot(config *atc.AwaitSnapshotStep, env environme
 		return flow{}, err
 	}
 
+	var consumed []string
 	switch {
 	case config.PRApproval != nil:
-		for _, name := range []string{
+		consumed = []string{
 			config.PRApproval.Observation,
 			config.PRApproval.Candidate,
 			config.PRApproval.Impact,
 			config.PRApproval.Response,
-		} {
-			if err := b.link(env, name, config.Name); err != nil {
-				return flow{}, err
-			}
 		}
 		if config.PRApproval.AcceptedReview != nil {
-			for _, name := range []string{
+			consumed = append(consumed,
 				config.PRApproval.AcceptedReview.Review,
 				config.PRApproval.AcceptedReview.Candidate,
 				config.PRApproval.AcceptedReview.Validation,
-			} {
-				if err := b.link(env, name, config.Name); err != nil {
-					return flow{}, err
-				}
-			}
+			)
 		}
-		if config.Validation != "" {
-			if err := b.link(env, config.Validation, config.Name); err != nil {
-				return flow{}, err
-			}
-		}
+		consumed = append(consumed, config.Validation)
 	case config.MergeApproval != nil:
-		if err := b.link(env, config.MergeApproval.Input, config.Name); err != nil {
-			return flow{}, err
-		}
-		if config.Validation != "" {
-			if err := b.link(env, config.Validation, config.Name); err != nil {
-				return flow{}, err
-			}
-		}
+		consumed = []string{config.MergeApproval.Input, config.Validation}
 	default:
-		if config.Question != "" {
-			if err := b.link(env, config.Question, config.Name); err != nil {
-				return flow{}, err
-			}
-		}
+		consumed = []string{config.Question}
+	}
+	if err := b.linkAll(env, consumed, config.Name); err != nil {
+		return flow{}, err
 	}
 
 	write := typedBinding(config.Name, string(config.Type), conditional)
@@ -547,13 +581,7 @@ func (b *builder) walkPublishSnapshot(config *atc.PublishSnapshotStep, env envir
 		return flow{}, err
 	}
 
-	consumed := []string{config.Input}
-	if config.Approval != "" {
-		consumed = append(consumed, config.Approval)
-	}
-	if config.Validation != "" {
-		consumed = append(consumed, config.Validation)
-	}
+	consumed := []string{config.Input, config.Approval, config.Validation}
 	if config.PRApproval != nil && config.PRApproval.AcceptedReview != nil {
 		consumed = append(consumed,
 			config.PRApproval.AcceptedReview.Review,
@@ -561,10 +589,8 @@ func (b *builder) walkPublishSnapshot(config *atc.PublishSnapshotStep, env envir
 			config.PRApproval.AcceptedReview.Validation,
 		)
 	}
-	for _, name := range consumed {
-		if err := b.link(env, name, config.Name); err != nil {
-			return flow{}, err
-		}
+	if err := b.linkAll(env, consumed, config.Name); err != nil {
+		return flow{}, err
 	}
 	return emptyFlow(env), nil
 }

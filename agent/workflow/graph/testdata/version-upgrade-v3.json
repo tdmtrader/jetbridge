@@ -106,7 +106,7 @@
     {
       "from": "review",
       "to": "output:change",
-      "port_name": "candidate",
+      "port_name": "change",
       "type_ref": "repository-change/v1"
     },
     {

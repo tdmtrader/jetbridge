@@ -99,7 +99,7 @@
     {
       "from": "assess-impact",
       "to": "output:impact",
-      "port_name": "publish-impact",
+      "port_name": "impact",
       "type_ref": "publish-impact/v1"
     },
     {
@@ -261,7 +261,7 @@
     {
       "from": "merge-prepare",
       "to": "output:change",
-      "port_name": "candidate",
+      "port_name": "change",
       "type_ref": "repository-change/v1"
     },
     {

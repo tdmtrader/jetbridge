@@ -42,6 +42,13 @@ func TestSeedGraphs(t *testing.T) {
 				t.Fatalf("Build returned an error: %v", err)
 			}
 
+			// Two contract invariants a golden file cannot state on its own.
+			// The golden pins WHAT this seed's graph is; these pin WHY it is
+			// allowed to be that, so a future seed cannot quietly reintroduce
+			// either defect by shipping a new golden alongside it.
+			assertEndpointEdgesCarryPublicPortNames(t, built)
+			assertNoDuplicateEdges(t, built)
+
 			actual, err := json.MarshalIndent(built, "", "  ")
 			if err != nil {
 				t.Fatalf("marshalling graph: %v", err)
@@ -67,5 +74,54 @@ func TestSeedGraphs(t *testing.T) {
 				t.Fatalf("graph for %s changed.\nwant:\n%s\ngot:\n%s", name, expected, actual)
 			}
 		})
+	}
+}
+
+// assertEndpointEdgesCarryPublicPortNames pins the join the run page depends
+// on: an edge touching an endpoint node must be labelled with that endpoint's
+// public port name.
+//
+// The durable run-level binding is keyed by the public port
+// (agent_workflow_run_snapshots.port_name, served as OutputManifest.Port), and
+// an endpoint node's DisplayName is that same port. Labelling a public-output
+// edge with `outputs[].from` instead — which small-fix-v3, version-upgrade-v3
+// and pr-monitor-v3 all declare differently from the port name — put the graph
+// and the run's own bindings in disjoint namespaces, so a node could never be
+// shown to have produced the workflow's deliverable.
+func assertEndpointEdgesCarryPublicPortNames(t *testing.T, built Graph) {
+	t.Helper()
+	for _, edge := range built.Edges {
+		for _, endpoint := range []string{edge.From, edge.To} {
+			node, found := built.Node(endpoint)
+			if !found {
+				t.Fatalf("edge %+v names node %q, which the graph does not contain", edge, endpoint)
+			}
+			switch node.Kind {
+			case KindInput, KindOutput, KindResourceSource:
+				if edge.PortName != node.DisplayName {
+					t.Fatalf(
+						"edge %+v touches endpoint %q (public port %q) but is labelled %q; "+
+							"a run-level binding could never be joined onto it",
+						edge, node.ID, node.DisplayName, edge.PortName,
+					)
+				}
+			}
+		}
+	}
+}
+
+// assertNoDuplicateEdges pins Edge's own meaning. An Edge carries no identity
+// beyond (From, To, PortName, TypeRef, Optional), so "the labelled connection
+// between this producer and this consumer" cannot legitimately occur twice.
+// Any consumer that draws one line per edge, or builds an adjacency multiset,
+// would otherwise double the dependency.
+func assertNoDuplicateEdges(t *testing.T, built Graph) {
+	t.Helper()
+	seen := make(map[Edge]bool, len(built.Edges))
+	for _, edge := range built.Edges {
+		if seen[edge] {
+			t.Fatalf("duplicate edge %+v", edge)
+		}
+		seen[edge] = true
 	}
 }
