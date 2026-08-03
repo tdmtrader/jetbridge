@@ -1647,6 +1647,11 @@ func (cmd *RunCommand) backendComponents(
 		k8sVolumeRepo := db.NewVolumeRepository(dbConn)
 		k8sDestroyer := gc.NewDestroyer(logger, k8sContainerRepo, k8sVolumeRepo)
 		k8sReaper := jetbridge.NewReaper(logger.Session(atc.ComponentK8sWorkerReaper), k8sClientset, k8sCfg, k8sContainerRepo, k8sDestroyer)
+		// The reaper reaps a completed step's pod only once its build is no
+		// longer running: until then the pod's exit-status annotation is the
+		// only thing that lets a restarted web resume the plan instead of
+		// re-executing the step.
+		k8sReaper.SetBuildLookup(dbBuildFactory)
 		if cmd.k8sArtifactLocator != nil {
 			k8sReaper.SetArtifactLocator(cmd.k8sArtifactLocator)
 		}

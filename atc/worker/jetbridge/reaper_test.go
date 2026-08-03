@@ -2,10 +2,12 @@ package jetbridge_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
+	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/gc/gcfakes"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
@@ -169,6 +171,130 @@ var _ = Describe("Reaper", func() {
 			pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
 			Expect(err).ToNot(HaveOccurred())
 			Expect(pods.Items).To(HaveLen(1))
+		})
+	})
+
+	// A completed step's pod carries concourse.ci/exit-status, which is the
+	// only record of its result that survives a web restart: Container.Attach
+	// reads it so the resumed plan skips the step instead of running it
+	// again. The reaper may only reap that pod once its build is done.
+	Describe("completed pod reaping", func() {
+		var fakeBuildFactory *dbfakes.FakeBuildFactory
+
+		// createCompletedPod builds a pod as Container.buildPodLabels would:
+		// a readable name plus the handle and (for job builds) build-id
+		// labels, annotated as a finished step.
+		createCompletedPod := func(podName, handle, buildID string) {
+			labels := map[string]string{
+				"concourse.ci/worker": fmt.Sprintf("k8s-%s", cfg.Namespace),
+				"concourse.ci/handle": handle,
+			}
+			if buildID != "" {
+				labels["concourse.ci/build-id"] = buildID
+			}
+			pod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        podName,
+					Namespace:   "test-namespace",
+					Labels:      labels,
+					Annotations: map[string]string{"concourse.ci/exit-status": "0"},
+				},
+				Status: corev1.PodStatus{Phase: corev1.PodRunning},
+			}
+			_, err := fakeClientset.CoreV1().Pods("test-namespace").Create(ctx, pod, metav1.CreateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+		}
+
+		startedBuild := func(id int) db.Build {
+			build := new(dbfakes.FakeBuild)
+			build.IDReturns(id)
+			return build
+		}
+
+		livePodNames := func() []string {
+			pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			names := make([]string, len(pods.Items))
+			for i, p := range pods.Items {
+				names[i] = p.Name
+			}
+			return names
+		}
+
+		BeforeEach(func() {
+			fakeBuildFactory = new(dbfakes.FakeBuildFactory)
+			reaper.SetBuildLookup(fakeBuildFactory)
+		})
+
+		It("keeps a completed step's pod while its build is still running", func() {
+			createCompletedPod("my-pipeline-unit-test-b42-task-550e8400", "550e8400-e29b-41d4-a716-446655440000", "653430")
+			fakeBuildFactory.GetAllStartedBuildsReturns([]db.Build{startedBuild(653430)}, nil)
+
+			Expect(reaper.Run(ctx)).To(Succeed())
+
+			By("leaving the pod and its exit-status annotation in place")
+			Expect(livePodNames()).To(ConsistOf("my-pipeline-unit-test-b42-task-550e8400"))
+			pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "my-pipeline-unit-test-b42-task-550e8400", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(pod.Annotations).To(HaveKeyWithValue("concourse.ci/exit-status", "0"))
+
+			By("reporting it as active so its DB row is not marked missing")
+			_, reported := fakeContainerRepository.UpdateContainersMissingSinceArgsForCall(0)
+			Expect(reported).To(ConsistOf("550e8400-e29b-41d4-a716-446655440000"))
+		})
+
+		It("reaps a completed step's pod once its build is no longer running", func() {
+			createCompletedPod("my-pipeline-unit-test-b42-task-550e8400", "550e8400-e29b-41d4-a716-446655440000", "653430")
+			fakeBuildFactory.GetAllStartedBuildsReturns([]db.Build{startedBuild(999999)}, nil)
+
+			Expect(reaper.Run(ctx)).To(Succeed())
+
+			Expect(livePodNames()).To(BeEmpty())
+		})
+
+		It("fast-reaps a completed check pod, which has no build to resume", func() {
+			createCompletedPod("chk-my-resource-aabbccdd", "aabbccdd-e29b-41d4-a716-446655440000", "")
+			createCompletedPod("my-pipeline-unit-test-b42-task-550e8400", "550e8400-e29b-41d4-a716-446655440000", "653430")
+			fakeBuildFactory.GetAllStartedBuildsReturns([]db.Build{startedBuild(653430)}, nil)
+
+			Expect(reaper.Run(ctx)).To(Succeed())
+
+			By("reaping the check pod while the running build's pod stays")
+			Expect(livePodNames()).To(ConsistOf("my-pipeline-unit-test-b42-task-550e8400"))
+		})
+
+		It("keeps completed pods when the running-build set cannot be read", func() {
+			createCompletedPod("my-pipeline-unit-test-b42-task-550e8400", "550e8400-e29b-41d4-a716-446655440000", "653430")
+			fakeBuildFactory.GetAllStartedBuildsReturns(nil, errors.New("database is down"))
+
+			Expect(reaper.Run(ctx)).To(Succeed())
+
+			By("failing closed rather than deleting an annotation it cannot prove is stale")
+			Expect(livePodNames()).To(ConsistOf("my-pipeline-unit-test-b42-task-550e8400"))
+		})
+
+		It("keeps completed pods when no build lookup is configured", func() {
+			unwiredReaper := jetbridge.NewReaper(
+				lagertest.NewTestLogger("reaper"), fakeClientset, cfg, fakeContainerRepository, fakeDestroyer,
+			)
+			createCompletedPod("my-pipeline-unit-test-b42-task-550e8400", "550e8400-e29b-41d4-a716-446655440000", "653430")
+
+			Expect(unwiredReaper.Run(ctx)).To(Succeed())
+
+			Expect(livePodNames()).To(ConsistOf("my-pipeline-unit-test-b42-task-550e8400"))
+		})
+
+		It("still deletes a retained pod through the DB destroying path", func() {
+			createCompletedPod("my-pipeline-unit-test-b42-task-550e8400", "550e8400-e29b-41d4-a716-446655440000", "653430")
+			fakeBuildFactory.GetAllStartedBuildsReturns([]db.Build{startedBuild(653430)}, nil)
+			fakeContainerRepository.FindDestroyingContainersReturns(
+				[]string{"550e8400-e29b-41d4-a716-446655440000"}, nil,
+			)
+
+			Expect(reaper.Run(ctx)).To(Succeed())
+
+			By("resolving the readable pod name from the handle label")
+			Expect(livePodNames()).To(BeEmpty())
 		})
 	})
 

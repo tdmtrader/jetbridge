@@ -41,6 +41,11 @@ const (
 	// (UUID). With readable pod names, this label maps back to the DB row.
 	handleLabelKey = "concourse.ci/handle"
 
+	// buildIDLabelKey is the Pod label that stores the owning build's DB id.
+	// It is absent for containers with no persisted build (in-memory check
+	// builds and the resource-type get/put steps they spawn).
+	buildIDLabelKey = "concourse.ci/build-id"
+
 	// hermeticLabelKey is the server-owned Pod label selected by the Helm
 	// chart's fail-closed egress policy. Keep this value in sync with
 	// deploy/chart/templates/networkpolicy.yaml.
