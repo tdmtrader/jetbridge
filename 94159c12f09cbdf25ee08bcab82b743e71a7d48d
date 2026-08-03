@@ -1,0 +1,11 @@
+## Ship Summary
+
+**Message:** docs(jetbridge): record typed node acceptance
+**Files Changed:** 1
+**Timestamp:** 2026-08-03T09:43:29Z
+
+### Key Changes
+- Record v0.2.230 source-bound rollout evidence
+- Record successful code-review and log-diagnosis typed outputs
+- Reconcile accepted node, schema, snapshot, model, skill, and diagnostic defaults
+- Capture output-builder repair and node-metrics ergonomics findings
