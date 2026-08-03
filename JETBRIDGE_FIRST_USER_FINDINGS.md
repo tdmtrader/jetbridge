@@ -1,6 +1,6 @@
 # Jetbridge First-User Findings
 
-Status: `v0.2.227` rollout complete; reference-node reasoning accepted, typed publication blockers fixed locally and awaiting rollout
+Status: `v0.2.230` rollout and durable typed-output dogfood complete
 Date: 2026-08-03
 Target: `home` / team `main`
 
@@ -445,6 +445,72 @@ inferences and proposed follow-ups are labeled as such.
   Terra review. They are not described as deployed until a new source-bound
   rollout and successful typed-output reruns prove that state.
 
+### Source-bound `v0.2.230` and typed-output acceptance — 2026-08-03
+
+- The final runtime-bearing pipeline consumed exact commit
+  `2c0b89b1c6114f79f85aa4b9fc18a1f823296315`. Build-and-vet `2073`, unit
+  build `944`, Kubernetes runtime build `799`, release-candidate tag build
+  `225`, web-image build `499`, runner-image build `#32`, self-upgrade `294`,
+  verify-upgrade `267`, live-test build `690`, and release build `#160` / global
+  `655080` all succeeded. Release completed in 8m19s.
+- Release `v0.2.230` deployed web and artifact-daemon image
+  `registry.home/jetbridge@sha256:1d307d89813269d75825d284d9b2292506400f557be81510d6282f38c9878b08`
+  and runner image
+  `registry.home/agent-runner@sha256:e48d349fc1a0e7b29f704e34c5d6352428e0da8ae8f97c13adb6e2c2b3f17eaa`.
+  The API reported `0.2.230`; the root and Concourse Argo applications were
+  independently observed `Synced/Healthy`, and web plus artifact-daemon carried
+  the same stable digest and exact source annotation.
+- The preceding `v0.2.229` release reached the final GitOps gate before Argo's
+  repository cache observed the new pin. A hard refresh converged the already
+  written authority, while a concurrent pipeline reconfiguration interrupted a
+  manual recovery build. The follow-up pipeline-only commit `2b33093dde`
+  lengthens the bounded GitOps wait and removes a redundant raw-pod readiness
+  check. This was rollout-control friction, not a failure of the deployed
+  `v0.2.230` runtime.
+- Exact `code-review@9` run `26` / build `655142` consumed repository snapshots
+  `17` and `18`, completed in 18 turns / 103s / `$0.407626`, and succeeded with
+  output snapshot `19` (`review/v1`, digest
+  `sha256:0c6b72933171662e2cbcdd86f4e7f2b545545ed683db1f18b154a659c1a0d8a5`).
+  The managed builder accepted the first candidate and explicit validation
+  returned valid. The sealed record correctly reports `changes-required`, with
+  a high/blocking authorization-bypass finding, a live
+  `pay`/`payroll-secrets` reproducer, before/after line anchors, a
+  delimiter-aware fix, and a low/non-blocking regression-test gap.
+- Exact `log-diagnosis@9` run `27` / build `655141` consumed log snapshot `15`,
+  completed in 13 turns / 195s / `$0.609542`, and succeeded with output snapshot
+  `20` (`diagnosis/v1`, digest
+  `sha256:cd2d43cae67520eb3fd3b57b6cc97bb9a8ca91ab206747516d20e8f6de4ecd0c`).
+  Its sealed record identifies the cache-hit pod-IP-as-node-name mechanism at
+  confidence `0.85`, preserves a lower-ranked alternative and counterevidence,
+  and proposes bounded immediate, next, and optional actions without
+  overclaiming a repository-level RCA.
+- Persisted metrics for each build contain exactly one `mcp.ready` event. Both
+  agents discovered `describe_output`, `write_output`, and `validate_output`
+  through the real provider path; no filesystem fallback was needed. This is
+  the first live evidence that the repaired MCP and directory-capture path
+  publishes durable typed node outputs rather than merely completing useful
+  model reasoning.
+- The durable evidence is discoverable only by correlating the planned build
+  ID and calling `/api/v1/builds/<id>/agent-metrics`. The analogous
+  workflow-run metrics and transcript routes return an empty list for reusable
+  node runs because their persistence query admits only workflow definitions;
+  `nodes show-run` also omits the event counts and flight-artifact
+  handle. A first-class node needs a node-scoped metrics/transcript route, or
+  `show-run` must link to this evidence, so agent-led debugging does not depend
+  on knowing an implementation-specific build endpoint.
+- The log agent's first two `write_output` attempts supplied platform-owned
+  subject `type` and then `digest` fields. Strict logical-argument decoding
+  returned bounded `-32602` errors naming each unknown field; the agent removed
+  them, produced a valid candidate on its third attempt, and passed explicit
+  validation. This is successful agent-visible repair behavior, but it is also
+  schema-tool ergonomics evidence: `describe_output` should make the writable
+  subject shape or a valid minimal request example unmistakable. It is not a
+  reason to make record arguments permissive.
+- A second runner-image build was briefly started at the manual gate while the
+  first was already active, then safely aborted. Manual gates need a visible
+  claim/ownership state or an idempotent trigger response so agent-led rollout
+  automation can distinguish “waiting for me” from “already claimed.”
+
 ## Post-Trial Blocker Trace
 
 The remediation-track audit converted four deployment symptoms into exact
@@ -538,10 +604,11 @@ defaults, not speculative follow-ups:
   schema/type and cannot embed an inline schema. Extensibility is limited to a
   bounded `extra_details` field so relevant evidence always has a legitimate
   home. A platform tool exposes the current schema and helps construct valid
-  records. Validation returns structured, safe reason codes to the agent; the
-  platform may invoke one bounded stop/final-repair pass, but publication is
-  atomic and the run fails unless every declared output validates after that
-  pass. Schema evolution creates a new schema version.
+  records. Validation returns structured, safe reason codes to the agent. The
+  platform provides one bounded stop/final-repair hook through which the agent
+  may correct a rejected candidate; publication remains atomic and the run
+  fails unless every declared output validates after that pass. Schema
+  evolution creates a new schema version.
 - There are two skill classes: immutable node/function skills bundled with the
   definition, and platform-required execution/policy skills. Required skills
   are injected automatically and cannot be silently omitted by a caller. The
@@ -555,7 +622,9 @@ defaults, not speculative follow-ups:
   The UI must at least expose immutable IDs; repository pickers are optional.
   Private Git inputs inherit the same protections as a team-owned Concourse Git
   resource. Exact rerun inputs remain server-side authority and need not be
-  conveniently downloadable to a local workstation.
+  conveniently downloadable to a local workstation. Authorized Git-resource
+  capture and snapshot upload are supported ways to create those existing
+  snapshot IDs; node execution itself never creates an implicit input snapshot.
 - Code review should take two explicit `repository/v1` snapshots (`before` and
   `after`) and use a server-produced diff as a convenience/index, never as a
   replacement for either immutable repository authority.
@@ -580,6 +649,8 @@ defaults, not speculative follow-ups:
 - Diagnostics are agent-first: terminal surfaces expose safe structured reason
   codes and the exact next diagnostic command/tool, so an agent does not need
   private DB access or tribal knowledge to discover the underlying build.
+  Diagnostics are designed for agent-led debugging by default; human escalation
+  is reserved for authority, rollout, or policy decisions.
 
 ## Documentation Findings
 
@@ -655,13 +726,13 @@ defaults, not speculative follow-ups:
   blocking review.
 - `git diff --check` passed.
 - No reusable-node version was released. Exact imports `code-review@9` and
-  `log-diagnosis@9` remain the final dogfood authorities. The bounded $5 slice
-  is supported by the deployed Claude 2.1.212 runner. Runs `24` and `25`
-  completed high-quality model work but correctly ended `errored` with no
-  outputs because the managed-tool envelope failed and the fallback output tar
-  used a non-canonical trailing-separator directory header.
-- Release `v0.2.227` and its exact web/runner authorities converged as recorded
-  above. The three reviewed output-publication/readiness corrections remain
-  local until the next source-bound rollout and successful typed-output reruns
-  prove them deployed. The interrupted-upload orphan remains a preserved
-  durability finding; it was not hidden by manual repair or retry.
+  `log-diagnosis@9` remain the dogfood definitions. Runs `24` and `25` preserve
+  the historical distinction between good reasoning and failed publication;
+  successful runs `26` and `27`, with sealed snapshots `19` and `20`, supersede
+  them as the current typed-publication acceptance authorities.
+- Release `v0.2.230` and its exact web/runner authorities converged as recorded
+  above. The reviewed output-publication/readiness corrections are now deployed
+  and proven through real managed-tool use, strict agent-visible repair,
+  validation, canonical directory capture, durable snapshot publication, and
+  snapshot download/inspection. The interrupted-upload orphan remains a
+  preserved durability finding; it was not hidden by manual repair or retry.
