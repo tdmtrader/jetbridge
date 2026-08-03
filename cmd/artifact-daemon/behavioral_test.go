@@ -78,6 +78,7 @@ func TestGetDirectory_TarContainsCorrectEntries(t *testing.T) {
 
 	tr := tar.NewReader(resp.Body)
 	files := map[string]string{}
+	directories := map[string]struct{}{}
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -90,8 +91,14 @@ func TestGetDirectory_TarContainsCorrectEntries(t *testing.T) {
 			data, _ := io.ReadAll(tr)
 			files[hdr.Name] = string(data)
 		}
+		if hdr.Typeflag == tar.TypeDir {
+			directories[hdr.Name] = struct{}{}
+		}
 	}
 
+	if _, ok := directories["sub"]; !ok {
+		t.Errorf("expected nested directory header named %q, got %v", "sub", directories)
+	}
 	if files["root.txt"] != "root-content" {
 		t.Errorf("root.txt: expected 'root-content', got %q", files["root.txt"])
 	}

@@ -139,7 +139,7 @@ func writeOpenedTarTree(tw *tar.Writer, directory *os.File, prefix string) error
 				child.Close()
 				return statErr
 			}
-			if err := tw.WriteHeader(&tar.Header{Name: entryPath + "/", Typeflag: tar.TypeDir, Mode: int64(info.Mode().Perm()), ModTime: info.ModTime()}); err != nil {
+			if err := tw.WriteHeader(&tar.Header{Name: entryPath, Typeflag: tar.TypeDir, Mode: int64(info.Mode().Perm()), ModTime: info.ModTime()}); err != nil {
 				child.Close()
 				return err
 			}
