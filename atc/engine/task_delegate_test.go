@@ -1074,5 +1074,222 @@ var _ = Describe("TaskDelegate", func() {
 			Expect(imgSpec.ImageURL).To(Equal("docker:///my-org/no-factory@sha256:nofactory"))
 			Expect(imgSpec.ImageArtifact).ToNot(BeNil(), "without factories, always uses plan-based path")
 		})
+
+		Describe("pinned image versions", func() {
+			// A pinned digest is already the exact answer any resolution would
+			// compute. Requiring a DB scope lookup or a registry round-trip to
+			// confirm it defeats the point of pinning — and fails closed when
+			// the registry is unreachable (the registry.home TLS failure that
+			// broke `fly agent snapshots capture-resource`).
+			const pinnedDigest = "sha256:4866878ca7324e5c3d1fb9f250ce16e0ef6d9505166b4b57e7a59cc6b86dba74"
+
+			var fakeResolver *imageresolvertesting.FakeResolver
+
+			// Builds a delegate through the production factory path with an
+			// image resolver attached. The stepper fails the spec if any
+			// check/get plan is executed, so pod-spawning is caught too.
+			buildResolvingTaskDelegate := func() exec.TaskDelegate {
+				failStepper := func(p atc.Plan) exec.Step {
+					Fail("no check/get plans should run on the metadata path")
+					return nil
+				}
+
+				df := DelegateFactory{
+					build:                 fakeBuild,
+					plan:                  atc.Plan{ID: planID},
+					policyChecker:         fakePolicyChecker,
+					dbWorkerFactory:       fakeWorkerFactory,
+					lockFactory:           fakeLockFactory,
+					resourceConfigFactory: fakeResourceConfigFactory,
+					resourceCacheFactory:  fakeResourceCacheFactory,
+					imageResolver:         fakeResolver,
+				}
+				return df.TaskDelegate(exec.NewRunState(failStepper, nil))
+			}
+
+			BeforeEach(func() {
+				fakeResolver = new(imageresolvertesting.FakeResolver)
+				fakeResolver.ResolveReturns("sha256:resolver-must-not-be-used", nil)
+
+				// Park a *different* version in the DB cache so that a passing
+				// spec can only be reading the pin, never the cached value.
+				fakeVersion.VersionReturns(db.Version{"digest": "sha256:stale-cached"})
+			})
+
+			It("uses the pinned digest without calling the image resolver", func() {
+				td := buildResolvingTaskDelegate()
+
+				imgSpec, err := td.FetchImage(
+					context.TODO(),
+					atc.ImageResource{
+						Name:    "image",
+						Type:    "registry-image",
+						Source:  atc.Source{"repository": "registry.home/agent-runner"},
+						Version: atc.Version{"digest": pinnedDigest},
+					},
+					atc.ResourceTypes{}, false, nil, false,
+				)
+				Expect(err).ToNot(HaveOccurred())
+
+				By("never reaching out to the registry")
+				Expect(fakeResolver.ResolveCallCount()).To(Equal(0))
+
+				By("returning an image URL pinned to the requested digest")
+				Expect(imgSpec.ImageURL).To(Equal("docker:///registry.home/agent-runner@" + pinnedDigest))
+				Expect(imgSpec.ImageArtifact).To(BeNil(), "no volume artifact on the metadata path")
+			})
+
+			It("succeeds on a cold cache even when the registry is unreachable", func() {
+				// Exactly the live failure: nothing cached for
+				// registry.home/agent-runner, so the pre-fix code did an
+				// on-demand resolve of ":latest" and died on the registry's
+				// TLS certificate. A pinned digest needs no registry at all.
+				fakeScope.LatestVersionReturns(nil, false, nil)
+				fakeResolver.ResolveReturns("", fmt.Errorf(
+					`Get "https://registry.home/v2/": tls: failed to verify certificate`))
+
+				td := buildResolvingTaskDelegate()
+
+				imgSpec, err := td.FetchImage(
+					context.TODO(),
+					atc.ImageResource{
+						Name:    "image",
+						Type:    "registry-image",
+						Source:  atc.Source{"repository": "registry.home/agent-runner"},
+						Version: atc.Version{"digest": pinnedDigest},
+					},
+					atc.ResourceTypes{}, false, nil, false,
+				)
+				Expect(err).ToNot(HaveOccurred())
+
+				Expect(fakeResolver.ResolveCallCount()).To(Equal(0), "a pinned digest must never hit the registry")
+				Expect(imgSpec.ImageURL).To(Equal("docker:///registry.home/agent-runner@" + pinnedDigest))
+			})
+
+			It("neither reads nor writes the resource config scope when pinned", func() {
+				td := buildResolvingTaskDelegate()
+
+				_, err := td.FetchImage(
+					context.TODO(),
+					atc.ImageResource{
+						Name:    "image",
+						Type:    "registry-image",
+						Source:  atc.Source{"repository": "registry.home/agent-runner"},
+						Version: atc.Version{"digest": pinnedDigest},
+					},
+					atc.ResourceTypes{}, false, nil, false,
+				)
+				Expect(err).ToNot(HaveOccurred())
+
+				By("skipping the resource config/scope lookup entirely")
+				Expect(fakeResourceConfigFactory.FindOrCreateResourceConfigCallCount()).To(Equal(0))
+				Expect(fakeResourceConfig.FindOrCreateScopeCallCount()).To(Equal(0))
+				Expect(fakeScope.LatestVersionCallCount()).To(Equal(0))
+
+				By("not publishing the pin as the scope's latest version")
+				Expect(fakeScope.SaveVersionsCallCount()).To(Equal(0))
+			})
+
+			It("still builds and saves a resource cache for the pinned version", func() {
+				td := buildResolvingTaskDelegate()
+
+				_, err := td.FetchImage(
+					context.TODO(),
+					atc.ImageResource{
+						Name:    "image",
+						Type:    "registry-image",
+						Source:  atc.Source{"repository": "registry.home/agent-runner"},
+						Params:  atc.Params{"some": "param"},
+						Version: atc.Version{"digest": pinnedDigest},
+					},
+					atc.ResourceTypes{}, false, nil, false,
+				)
+				Expect(err).ToNot(HaveOccurred())
+
+				By("keying the cache on the pinned version")
+				Expect(fakeResourceCacheFactory.FindOrCreateResourceCacheCallCount()).To(Equal(1))
+				user, typeName, version, source, params, parentCache := fakeResourceCacheFactory.FindOrCreateResourceCacheArgsForCall(0)
+				Expect(user).To(Equal(db.ForBuild(42)), "cache must stay anchored to the build for GC")
+				Expect(typeName).To(Equal("registry-image"))
+				Expect(version).To(Equal(atc.Version{"digest": pinnedDigest}))
+				Expect(source).To(Equal(atc.Source{"repository": "registry.home/agent-runner"}))
+				Expect(params).To(Equal(atc.Params{"some": "param"}))
+				Expect(parentCache).To(BeNil())
+
+				By("recording the image resource version on the build")
+				Expect(fakeBuild.SaveImageResourceVersionCallCount()).To(Equal(1))
+				Expect(fakeBuild.SaveImageResourceVersionArgsForCall(0).ID()).To(Equal(999))
+			})
+
+			It("uses the cached DB version, not the resolver, when nothing is pinned", func() {
+				td := buildResolvingTaskDelegate()
+
+				imgSpec, err := td.FetchImage(
+					context.TODO(),
+					atc.ImageResource{
+						Name:   "image",
+						Type:   "registry-image",
+						Source: atc.Source{"repository": "registry.home/agent-runner"},
+					},
+					atc.ResourceTypes{}, false, nil, false,
+				)
+				Expect(err).ToNot(HaveOccurred())
+
+				Expect(fakeScope.LatestVersionCallCount()).To(Equal(1))
+				Expect(fakeResolver.ResolveCallCount()).To(Equal(0), "a warm cache must not hit the registry")
+				Expect(imgSpec.ImageURL).To(Equal("docker:///registry.home/agent-runner@sha256:stale-cached"))
+			})
+
+			It("falls back to an on-demand resolve when nothing is pinned and nothing is cached", func() {
+				fakeScope.LatestVersionReturns(nil, false, nil)
+				fakeResolver.ResolveReturns("sha256:resolved-on-demand", nil)
+
+				td := buildResolvingTaskDelegate()
+
+				imgSpec, err := td.FetchImage(
+					context.TODO(),
+					atc.ImageResource{
+						Name:   "image",
+						Type:   "registry-image",
+						Source: atc.Source{"repository": "registry.home/agent-runner", "tag": "v1"},
+					},
+					atc.ResourceTypes{}, false, nil, false,
+				)
+				Expect(err).ToNot(HaveOccurred())
+
+				Expect(fakeResolver.ResolveCallCount()).To(Equal(1))
+				_, repo, tag, _ := fakeResolver.ResolveArgsForCall(0)
+				Expect(repo).To(Equal("registry.home/agent-runner"))
+				Expect(tag).To(Equal("v1"))
+				Expect(fakeScope.SaveVersionsCallCount()).To(Equal(1), "resolved versions are still cached back")
+				Expect(imgSpec.ImageURL).To(Equal("docker:///registry.home/agent-runner@sha256:resolved-on-demand"))
+			})
+
+			It("resolves on demand when the pin carries no digest", func() {
+				// atc.FetchImagePlan pins a non-nil but *empty* version whenever
+				// the ImageResource carries one, which is what
+				// agent/resourcecapture produces for a tag-based reference.
+				// An empty pin identifies nothing, so it must not short-circuit.
+				fakeScope.LatestVersionReturns(nil, false, nil)
+				fakeResolver.ResolveReturns("sha256:tag-resolved", nil)
+
+				td := buildResolvingTaskDelegate()
+
+				imgSpec, err := td.FetchImage(
+					context.TODO(),
+					atc.ImageResource{
+						Name:    "image",
+						Type:    "registry-image",
+						Source:  atc.Source{"repository": "registry.home/agent-runner", "tag": "latest"},
+						Version: atc.Version{},
+					},
+					atc.ResourceTypes{}, false, nil, false,
+				)
+				Expect(err).ToNot(HaveOccurred())
+
+				Expect(fakeResolver.ResolveCallCount()).To(Equal(1))
+				Expect(imgSpec.ImageURL).To(Equal("docker:///registry.home/agent-runner@sha256:tag-resolved"))
+			})
+		})
 	})
 })
