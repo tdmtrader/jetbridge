@@ -146,6 +146,45 @@ documentTitle model =
 handleCallback : Callback -> ET Model
 handleCallback callback ( model, effects ) =
     case callback of
+        AgentWorkflowRunScopedFetched workflowName runId result ->
+            handleScoped workflowName runId (AgentWorkflowRunFetched runId result) model effects
+
+        AgentWorkflowRunScopedGraphFetched workflowName runId result ->
+            handleScoped workflowName runId (AgentWorkflowRunGraphFetched runId result) model effects
+
+        AgentWorkflowRunScopedMetricsFetched workflowName runId result ->
+            handleScoped workflowName runId (AgentWorkflowRunMetricsFetched runId result) model effects
+
+        AgentWorkflowRunScopedTranscriptsFetched workflowName runId result ->
+            handleScoped workflowName runId (AgentWorkflowRunTranscriptsFetched runId result) model effects
+
+        AgentWorkflowRunScopedTranscriptFetched workflowName runId planId result ->
+            handleScoped workflowName runId (AgentWorkflowRunTranscriptFetched runId planId result) model effects
+
+        AgentWorkflowRunScopedWaitsFetched workflowName runId result ->
+            handleScoped workflowName runId (AgentWorkflowWaitsFetched runId result) model effects
+
+        AgentWorkflowRunScopedWaitResolved workflowName runId waitId result ->
+            handleScoped workflowName runId (AgentWorkflowWaitResolved runId waitId result) model effects
+
+        AgentWorkflowRunScopedOutcomesFetched workflowName runId result ->
+            handleScoped workflowName runId (AgentWorkflowOutcomesFetched runId result) model effects
+
+        AgentWorkflowRunScopedReviewsFetched workflowName runId result ->
+            handleScoped workflowName runId (AgentWorkflowReviewsFetched runId result) model effects
+
+        AgentWorkflowRunScopedCanceled workflowName runId result ->
+            handleScoped workflowName runId (AgentWorkflowRunCanceled runId result) model effects
+
+        AgentWorkflowRunScopedRetried workflowName runId result ->
+            handleScoped workflowName runId (AgentWorkflowRunRetried runId result) model effects
+
+        AgentWorkflowRunScopedReviewVerdictSubmitted workflowName runId findingId result ->
+            handleScoped workflowName runId (AgentWorkflowRunReviewVerdictSubmitted runId findingId result) model effects
+
+        AgentWorkflowRunRepositoryChangeFetched workflowName runId snapshotId result ->
+            handleScoped workflowName runId (AgentSnapshotRepositoryChangeFetched snapshotId result) model effects
+
         AgentWorkflowRunFetched runId (Ok detail) ->
             if runId == model.workflowRunId then
                 ( { model | detail = Just detail, detailError = False }
@@ -154,7 +193,7 @@ handleCallback callback ( model, effects ) =
                             |> List.filter (\output -> output.snapshot.typeRef == "repository-change/v1")
                             |> List.map
                                 (\output ->
-                                    FetchAgentSnapshotRepositoryChange "main" output.snapshot.id
+                                    FetchAgentWorkflowRunRepositoryChange model.workflowName model.workflowRunId output.snapshot.id
                                 )
                        )
                 )
@@ -389,6 +428,14 @@ handleCallback callback ( model, effects ) =
             ( model, effects )
 
 
+handleScoped workflowName runId callback model effects =
+    if workflowName == model.workflowName && runId == model.workflowRunId then
+        handleCallback callback ( model, effects )
+
+    else
+        ( model, effects )
+
+
 update : Message -> ET Model
 update message ( model, effects ) =
     case message of
@@ -481,7 +528,8 @@ update message ( model, effects ) =
         AgentReviewVerdictClicked params ->
             ( model
             , effects
-                ++ [ SubmitAgentWorkflowRunReviewVerdict model.workflowRunId
+                ++ [ SubmitAgentWorkflowRunReviewVerdict model.workflowName
+                        model.workflowRunId
                         { teamName = params.teamName
                         , reviewSnapshotId = params.reviewSnapshotId
                         , findingId = params.findingId
@@ -580,8 +628,20 @@ shouldPoll model =
     runIsActive model
         || (model.terminalProjectionPollsRemaining
                 > 0
-                && hasPendingOutputProjection model
+                && (hasPendingOutputProjection model || hasRecoverableProjectionError model)
            )
+
+
+hasRecoverableProjectionError : Model -> Bool
+hasRecoverableProjectionError model =
+    model.detailError
+        || model.waitsError
+        || model.outcomesError
+        || model.metricsError
+        || model.transcriptIndexError
+        || model.runGraphError
+        || model.agentReviewLoadError
+        || not (Set.isEmpty model.repositoryChangeErrors)
 
 
 handleDelivery : Delivery -> ET Model
@@ -997,7 +1057,16 @@ nodeOutput model binding =
     , projection =
         case Dict.get binding.snapshot.id model.repositoryChanges of
             Just projection ->
-                Just (RepositoryChange.view projection)
+                Just
+                    (if Set.member binding.snapshot.id model.repositoryChangeErrors then
+                        Html.div []
+                            [ staleWarning "Repository-change projection refresh failed — showing stale projection."
+                            , RepositoryChange.view projection
+                            ]
+
+                     else
+                        RepositoryChange.view projection
+                    )
 
             Nothing ->
                 if binding.snapshot.typeRef == "repository-change/v1" then
@@ -1338,7 +1407,14 @@ outputBinding model binding =
             ]
         , case Dict.get binding.snapshot.id model.repositoryChanges of
             Just projection ->
-                RepositoryChange.view projection
+                if Set.member binding.snapshot.id model.repositoryChangeErrors then
+                    Html.div []
+                        [ staleWarning "Repository-change projection refresh failed — showing stale projection."
+                        , RepositoryChange.view projection
+                        ]
+
+                else
+                    RepositoryChange.view projection
 
             Nothing ->
                 if binding.snapshot.typeRef == "repository-change/v1" then

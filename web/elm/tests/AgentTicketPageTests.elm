@@ -837,6 +837,8 @@ all =
                         Common.init "/agent-tickets/12"
                             |> Application.handleCallback (Callback.AgentTicketFetched 12 (Ok closed))
                             |> Tuple.first
+                            |> Application.handleCallback (Callback.AgentTicketRunsFetched 12 (Ok journalFixture))
+                            |> Tuple.first
                             |> Application.update
                                 (Msgs.DeliveryReceived (ClockTicked FiveSeconds <| Time.millisToPosix 0))
                             |> Tuple.second
@@ -1136,6 +1138,20 @@ all =
                                     [ Query.has [ text "Couldn't load run history." ]
                                     , Query.hasNot [ text "No runs yet" ]
                                     ]
+                        )
+            , test "a terminal ticket retries an initially failed journal until it is authoritative" <|
+                \_ ->
+                    withDetail closedDetailJson
+                        (\closed ->
+                            Common.init "/agent-tickets/12"
+                                |> Application.handleCallback (Callback.AgentTicketFetched 12 (Ok closed))
+                                |> Tuple.first
+                                |> Application.handleCallback (Callback.AgentTicketRunsFetched 12 (Err Http.NetworkError))
+                                |> Tuple.first
+                                |> Application.update
+                                    (Msgs.DeliveryReceived (ClockTicked FiveSeconds (Time.millisToPosix 0)))
+                                |> Tuple.second
+                                |> Common.contains (Effects.FetchAgentTicketRuns 12)
                         )
             , test "renders every associated run occurrence in the order given" <|
                 \_ ->

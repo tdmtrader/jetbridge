@@ -139,6 +139,18 @@ documentTitle model =
 handleCallback : Callback -> ET Model
 handleCallback callback ( model, effects ) =
     case callback of
+        AgentWorkflowRunScopedFetched workflowName workflowRunId result ->
+            case model.detail |> Maybe.andThen (.ticket >> durableKey) of
+                Just ( expectedWorkflowName, expectedWorkflowRunId ) ->
+                    if workflowName == expectedWorkflowName && workflowRunId == expectedWorkflowRunId then
+                        handleCallback (AgentWorkflowRunFetched workflowRunId result) ( model, effects )
+
+                    else
+                        ( model, effects )
+
+                Nothing ->
+                    ( model, effects )
+
         AgentTicketFetched ticketId (Ok fresh) ->
             if ticketId /= model.ticketId || fresh.ticket.id /= model.ticketId then
                 ( model, effects )
@@ -424,13 +436,23 @@ polls =
                             |> Maybe.map (\d -> isTerminal d.ticket.state)
                             |> Maybe.withDefault False
                 in
-                if settled then
+                if settled && journalIsAuthoritative model.journal then
                     []
 
                 else
                     [ FetchAgentTicket model.ticketId, FetchAgentTicketRuns model.ticketId ]
       }
     ]
+
+
+journalIsAuthoritative : JournalState -> Bool
+journalIsAuthoritative journal =
+    case journal of
+        JournalLoaded _ ->
+            True
+
+        _ ->
+            False
 
 
 {-| The one-second clock is not a poll: it only moves "now" so the journal's

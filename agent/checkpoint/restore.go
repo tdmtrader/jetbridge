@@ -3,6 +3,7 @@ package checkpoint
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -11,6 +12,8 @@ import (
 	"github.com/concourse/concourse/agent/hangar"
 	"github.com/concourse/concourse/agent/snapshot"
 )
+
+const restoreReceiptPrefix = "checkpoint-restore-v1:"
 
 // RestoreRequest carries only server-derived recovery authority. In
 // particular, it contains no host destination path, prior pod identity, or
@@ -31,6 +34,37 @@ func (request RestoreRequest) Clone() RestoreRequest {
 	cloned.WorkspaceRoots = append([]string(nil), request.WorkspaceRoots...)
 	cloned.SessionRoots = append([]string(nil), request.SessionRoots...)
 	return cloned
+}
+
+// RestoreReceiptSeed is the descriptor-bound portion of a gate receipt. The
+// Pod UID is intentionally omitted because kubelet assigns it after Pod
+// construction; the init gate appends its downward-API UID before comparing.
+func RestoreReceiptSeed(request RestoreRequest) (string, error) {
+	request.PodUID = "receipt"
+	if err := request.Validate(); err != nil {
+		return "", err
+	}
+	encoded, err := json.Marshal(request)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(encoded)
+	return restoreReceiptPrefix + hex.EncodeToString(sum[:]), nil
+}
+
+// RestoreReceipt is the fixed-format gate acknowledgement for one exact
+// server-derived restore request. It is deliberately independent of the
+// private daemon marker: the Pod gate needs only this opaque value and cannot
+// accidentally accept a syntactically similar marker envelope.
+func RestoreReceipt(request RestoreRequest) (string, error) {
+	if err := request.Validate(); err != nil {
+		return "", err
+	}
+	seed, err := RestoreReceiptSeed(request)
+	if err != nil {
+		return "", err
+	}
+	return seed + ":" + request.PodUID, nil
 }
 
 func (request RestoreRequest) Validate() error {

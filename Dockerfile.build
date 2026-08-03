@@ -65,7 +65,7 @@ COPY --from=frontend /src/web/public/ web/public/
 # the binary, so no separate asset directory is needed at runtime.
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
     go build \
-      -ldflags "-s -w -X github.com/concourse/concourse.Version=${CONCOURSE_VERSION}" \
+      -ldflags "-s -w -X github.com/concourse/concourse.Version=${CONCOURSE_VERSION} -X github.com/concourse/concourse.JetBridgeVersion=${CONCOURSE_VERSION}" \
       -o /concourse \
       ./cmd/concourse
 

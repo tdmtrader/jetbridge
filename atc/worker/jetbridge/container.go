@@ -831,6 +831,17 @@ func (c *Container) checkpointRestoreGate() (*corev1.Volume, *corev1.Container, 
 	if !checkpointCaptureHandle(c.handle) {
 		return nil, nil, fmt.Errorf("checkpoint restore requires a fresh canonical container handle")
 	}
+	topology, err := runtime.CheckpointRestoreTopologyForSpec(c.containerSpec)
+	if err != nil {
+		return nil, nil, err
+	}
+	receiptSeed, err := checkpoint.RestoreReceiptSeed(checkpoint.RestoreRequest{
+		ContainerHandle: c.handle, MaterializationID: descriptor.MaterializationID, PodUID: "receipt", Archive: descriptor.Archive,
+		WorkspaceRoots: topology.WorkspaceRoots, SessionRoots: topology.SessionRoots, MaxBytes: descriptor.MaxBytes, MaxEntries: descriptor.MaxEntries,
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("derive checkpoint restore receipt: %w", err)
+	}
 	dirType := corev1.HostPathDirectoryOrCreate
 	volume := corev1.Volume{Name: checkpointRestoreGateVolumeName, VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{
 		Path: filepath.Join(backend.config.ArtifactDaemonHostPath, checkpointRestoreGatesDirectoryName, c.handle, checkpoint.RestoreGateLeafName(descriptor.MaterializationID)), Type: &dirType,
@@ -839,7 +850,7 @@ func (c *Container) checkpointRestoreGate() (*corev1.Volume, *corev1.Container, 
 	gate := corev1.Container{
 		Name: checkpointRestoreGateInitName, Image: backend.helperImage(), ImagePullPolicy: corev1.PullIfNotPresent,
 		Command:         []string{"sh", "-ceu", checkpointRestoreGateShell},
-		Env:             []corev1.EnvVar{{Name: "CHECKPOINT_MATERIALIZATION_ID", Value: descriptor.MaterializationID}, {Name: "CHECKPOINT_POD_UID", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.uid"}}}},
+		Env:             []corev1.EnvVar{{Name: "CHECKPOINT_RESTORE_RECEIPT_SEED", Value: receiptSeed}, {Name: "CHECKPOINT_POD_UID", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.uid"}}}},
 		VolumeMounts:    []corev1.VolumeMount{{Name: checkpointRestoreGateVolumeName, MountPath: "/checkpoint-restore-gate", ReadOnly: true}},
 		SecurityContext: &corev1.SecurityContext{RunAsUser: &root, AllowPrivilegeEscalation: &allowEscalation, Capabilities: &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}}},
 	}
@@ -850,10 +861,11 @@ const checkpointRestoreGateShell = `
 while :; do
   ready=/checkpoint-restore-gate/ready
   if [ -f "$ready" ] && [ ! -L "$ready" ]; then
-    marker="$(tr -d '\n' <"$ready")"
-    case "$marker" in
-      '{"materialization_id":"'"$CHECKPOINT_MATERIALIZATION_ID"'","request_hash":"'*'","object":{'*'},"pod_uid":"'"$CHECKPOINT_POD_UID"'"}') exit 0 ;;
-    esac
+    receipt="$CHECKPOINT_RESTORE_RECEIPT_SEED:$CHECKPOINT_POD_UID"
+    marker="$(cat "$ready")"
+    if [ "$(wc -c <"$ready")" -eq "${#receipt}" ] && [ "$marker" = "$receipt" ]; then
+      exit 0
+    fi
   fi
   sleep 1
 done

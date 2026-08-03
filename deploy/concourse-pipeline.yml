@@ -12,6 +12,7 @@ resources:
     - docs/**
     - notes/**
     - forge/**
+    - JETBRIDGE_FIRST_USER_FINDINGS.md
 - name: home-infra
   type: git
   source:
@@ -458,7 +459,7 @@ jobs:
   # JetBridgeVersion (the jetbridge_version in /api/v1/info and `concourse
   # --version`) — and would re-download the module graph that the
   # concourse-test-runner image already has warm. It does match its fly
-  # cross-compile set (minus windows), since `fly sync` needs those archives
+  # full cross-compile set, since `fly sync` needs those archives
   # present in whatever image is actually deployed.
   - task: build-frontend
     attempts: 2
@@ -586,15 +587,32 @@ jobs:
           # since the cluster tracks rc images that break was permanent rather
           # than deferred to the next release.
           echo "=== Building fly CLI for all platforms ==="
+          if ! command -v zip >/dev/null 2>&1; then
+            apt-get update
+            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends zip
+            rm -rf /var/lib/apt/lists/*
+          fi
+          command -v unzip >/dev/null
           FLY_LDFLAGS="-s -w -X github.com/concourse/concourse.Version=${NEXT_VERSION}-rc"
           mkdir -p fly-assets fly-bin
-          for pair in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+          for pair in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
             OS="${pair%%/*}"
             ARCH="${pair##*/}"
             echo "  fly-${OS}-${ARCH}"
-            CGO_ENABLED=0 GOOS=${OS} GOARCH=${ARCH} go build -ldflags "${FLY_LDFLAGS}" -o fly-bin/fly ./fly
-            tar czf fly-assets/fly-${OS}-${ARCH}.tgz -C fly-bin fly
-            rm -f fly-bin/fly
+            EXT=""
+            if test "${OS}" = windows; then EXT=".exe"; fi
+            CGO_ENABLED=0 GOOS=${OS} GOARCH=${ARCH} go build -ldflags "${FLY_LDFLAGS}" -o "fly-bin/fly${EXT}" ./fly
+            if test "${OS}" = windows; then
+              zip -q -j "fly-assets/fly-${OS}-${ARCH}.zip" "fly-bin/fly${EXT}"
+              test -s "fly-assets/fly-${OS}-${ARCH}.zip"
+              unzip -Z1 "fly-assets/fly-${OS}-${ARCH}.zip" | grep -Fx 'fly.exe'
+              unzip -p "fly-assets/fly-${OS}-${ARCH}.zip" fly.exe > /tmp/fly-windows-amd64.exe
+              test -s /tmp/fly-windows-amd64.exe
+              rm -f /tmp/fly-windows-amd64.exe
+            else
+              tar czf "fly-assets/fly-${OS}-${ARCH}.tgz" -C fly-bin fly
+            fi
+            rm -f "fly-bin/fly${EXT}"
           done
           rm -rf fly-bin
           ls -lh fly-assets/
@@ -1724,15 +1742,32 @@ jobs:
             FINAL_IMAGE="registry.home/jetbridge@${FINAL_DIGEST}"
           else
             echo "=== Building fly CLI for all platforms ==="
+            if ! command -v zip >/dev/null 2>&1; then
+              apt-get update
+              DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends zip
+              rm -rf /var/lib/apt/lists/*
+            fi
+            command -v unzip >/dev/null
             FLY_LDFLAGS="-s -w -X github.com/concourse/concourse.Version=${NEXT_VERSION}"
             mkdir -p fly-assets fly-bin
-            for pair in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            for pair in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
               OS="${pair%%/*}"
               ARCH="${pair##*/}"
               echo "  fly-${OS}-${ARCH}"
-              CGO_ENABLED=0 GOOS=${OS} GOARCH=${ARCH} go build -ldflags "${FLY_LDFLAGS}" -o fly-bin/fly ./fly
-              tar czf fly-assets/fly-${OS}-${ARCH}.tgz -C fly-bin fly
-              rm -f fly-bin/fly
+              EXT=""
+              if test "${OS}" = windows; then EXT=".exe"; fi
+              CGO_ENABLED=0 GOOS=${OS} GOARCH=${ARCH} go build -ldflags "${FLY_LDFLAGS}" -o "fly-bin/fly${EXT}" ./fly
+              if test "${OS}" = windows; then
+                zip -q -j "fly-assets/fly-${OS}-${ARCH}.zip" "fly-bin/fly${EXT}"
+                test -s "fly-assets/fly-${OS}-${ARCH}.zip"
+                unzip -Z1 "fly-assets/fly-${OS}-${ARCH}.zip" | grep -Fx 'fly.exe'
+                unzip -p "fly-assets/fly-${OS}-${ARCH}.zip" fly.exe > /tmp/fly-windows-amd64.exe
+                test -s /tmp/fly-windows-amd64.exe
+                rm -f /tmp/fly-windows-amd64.exe
+              else
+                tar czf "fly-assets/fly-${OS}-${ARCH}.tgz" -C fly-bin fly
+              fi
+              rm -f "fly-bin/fly${EXT}"
             done
             rm -rf fly-bin
             ls -lh fly-assets/

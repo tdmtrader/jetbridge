@@ -36,3 +36,13 @@ func TestATCRuntimeImageContainsControlledGitWithoutPublisherCredentials(t *test
 		}
 	}
 }
+
+func TestDockerfileBuildStampsJetBridgeVersionWithConcourseVersion(t *testing.T) {
+	dockerfile, err := os.ReadFile("../Dockerfile.build")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(dockerfile), "-X github.com/concourse/concourse.JetBridgeVersion=${CONCOURSE_VERSION}") {
+		t.Fatal("Dockerfile.build stamps concourse.Version but not concourse.JetBridgeVersion")
+	}
+}

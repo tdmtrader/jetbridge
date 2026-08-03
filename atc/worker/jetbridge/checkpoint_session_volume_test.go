@@ -2,7 +2,6 @@ package jetbridge
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -164,31 +163,51 @@ func TestCheckpointRestoreGateKeepsTruncatedPublishedMarkerInRestoreMode(t *test
 	}
 }
 
+func TestCheckpointMaterializerKeepsLegacyFullEnvelopeInRestoreMode(t *testing.T) {
+	const (
+		materializationID = "materialization-2"
+		podUID            = "pod-uid"
+	)
+	// A complete legacy marker must not release the Pod-side gate: only the
+	// daemon's exact receipt can select read-only verification after a crash.
+	legacyEnvelope := `{"materialization_id":"` + materializationID + `","request_hash":"` + strings.Repeat("a", 64) + `","object":{"unknown":true},"pod_uid":"` + podUID + `"}`
+	gateCompleted := checkpointRestoreGateReleased(t, materializationID, podUID, legacyEnvelope)
+
+	clientset := fake.NewSimpleClientset()
+	config := Config{Namespace: "test", PodStartupTimeout: time.Second, ArtifactDaemonHostPath: "/artifacts", ArtifactHelperImage: "helper"}
+	backend := NewDaemonSetBackend(config, nil, nil)
+	backend.daemonClient = &DaemonClient{scheme: "https"}
+	restore := &checkpointRestoreFake{}
+	backend.restoreClient = restore
+	c := checkpointRestoreTestContainer(t, clientset, config, backend, true)
+	pod := checkpointRestoreTestPod(c, gateCompleted)
+	if _, err := clientset.CoreV1().Pods(config.Namespace).Create(context.Background(), pod, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	restore.after = func() { go checkpointRestoreCompletePod(clientset, c, 25*time.Millisecond) }
+
+	if err := c.MaterializeBeforeLaunch(context.Background(), runtime.ProcessSpec{Dir: "/tmp/build"}); err != nil {
+		t.Fatal(err)
+	}
+	if gateCompleted || restore.restoreCalls != 1 || restore.verifyCalls != 0 {
+		t.Fatalf("legacy envelope released=%t restore=%d verify=%d, want waiting gate and one restore", gateCompleted, restore.restoreCalls, restore.verifyCalls)
+	}
+}
+
 func TestCheckpointRestoreGateReleasesOnlyCanonicalRegularMarker(t *testing.T) {
 	const (
 		materializationID = "materialization-2"
 		podUID            = "pod-uid"
 	)
-	ref, err := hangar.NewObjectRef(hangar.KindCheckpoint, hangar.Digest("sha256:"+strings.Repeat("b", 64)), 3)
-	if err != nil {
-		t.Fatal(err)
-	}
-	encoded, err := json.Marshal(struct {
-		MaterializationID string            `json:"materialization_id"`
-		RequestHash       string            `json:"request_hash"`
-		Object            hangar.Attributes `json:"object"`
-		PodUID            string            `json:"pod_uid"`
-	}{materializationID, strings.Repeat("a", 64), hangar.Attributes{Ref: ref, CompressedBytes: 1, UncompressedBytes: 2}, podUID})
-	if err != nil {
-		t.Fatal(err)
-	}
-	valid := string(encoded)
+	valid := "checkpoint-restore-v1:test:" + podUID
 	if !checkpointRestoreGateReleased(t, materializationID, podUID, valid) {
 		t.Fatal("canonical daemon marker did not release checkpoint restore gate")
 	}
 	for name, marker := range map[string]string{
-		"trailing content": valid + "garbage",
-		"wrong schema":     strings.Replace(valid, `"object":`, `"unknown":`, 1),
+		"trailing content":      valid + "garbage",
+		"wrong receipt":         "checkpoint-restore-v1:other:" + podUID,
+		"unknown nested object": `{"materialization_id":"` + materializationID + `","request_hash":"` + strings.Repeat("a", 64) + `","object":{"unknown":true},"pod_uid":"` + podUID + `"}`,
+		"newline appended":      valid + "\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			if checkpointRestoreGateReleased(t, materializationID, podUID, marker) {
@@ -238,7 +257,7 @@ func checkpointRestoreGateReleasedAfter(t *testing.T, materializationID, podUID 
 	command := exec.Command("sh", "-ceu", script)
 	command.Env = append(os.Environ(),
 		"CHECKPOINT_RESTORE_GATE_PATH="+directory,
-		"CHECKPOINT_MATERIALIZATION_ID="+materializationID,
+		"CHECKPOINT_RESTORE_RECEIPT_SEED=checkpoint-restore-v1:test",
 		"CHECKPOINT_POD_UID="+podUID,
 	)
 	err := command.Run()

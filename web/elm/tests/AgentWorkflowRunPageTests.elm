@@ -93,6 +93,24 @@ all =
                         [ containing [ text "1 files · +3 −1" ]
                         , containing [ class "agent-unified-diff", text "diff --git a/src/a.go b/src/a.go\n+fixed" ]
                         ]
+        , test "labels last-good repository-change data stale when its refresh fails" <|
+            \_ ->
+                initialized
+                    |> Application.handleCallback
+                        (Callback.AgentSnapshotRepositoryChangeFetched
+                            AgenticData.repositoryChange.snapshotId
+                            (Ok AgenticData.repositoryChange)
+                        )
+                    |> Tuple.first
+                    |> Application.handleCallback
+                        (Callback.AgentSnapshotRepositoryChangeFetched
+                            AgenticData.repositoryChange.snapshotId
+                            (Err Http.NetworkError)
+                        )
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.find [ class "agent-run-output" ]
+                    |> Query.has [ text "Repository-change projection refresh failed — showing stale projection." ]
         , test "resolves a sealed human question without requiring a manual snapshot upload" <|
             \_ ->
                 initialized
@@ -141,7 +159,8 @@ all =
                         )
                     |> Tuple.second
                     |> Common.contains
-                        (Effects.SubmitAgentWorkflowRunReviewVerdict AgenticData.runSummary.id
+                        (Effects.SubmitAgentWorkflowRunReviewVerdict "review-api"
+                            AgenticData.runSummary.id
                             { teamName = "research"
                             , reviewSnapshotId = "9007199254740997"
                             , findingId = "finding-1"
@@ -382,6 +401,33 @@ all =
                     |> Tuple.second
                     |> Common.contains
                         (Effects.FetchAgentWorkflowRun "review-api" AgenticData.runSummary.id)
+        , test "keeps refreshing a terminal run while a projection request has failed" <|
+            \_ ->
+                initialized
+                    |> Application.handleCallback
+                        (Callback.AgentWorkflowRunFetched AgenticData.runSummary.id (Ok terminalRunDetail))
+                    |> Tuple.first
+                    |> Application.handleCallback
+                        (Callback.AgentWorkflowRunMetricsFetched AgenticData.runSummary.id (Err Http.NetworkError))
+                    |> Tuple.first
+                    |> Application.update
+                        (Msgs.DeliveryReceived (ClockTicked FiveSeconds (Time.millisToPosix 0)))
+                    |> Tuple.second
+                    |> Common.contains
+                        (Effects.FetchAgentWorkflowRunMetrics "review-api" AgenticData.runSummary.id)
+        , test "a scoped callback from another workflow with the same run id cannot repaint this run" <|
+            \_ ->
+                initialized
+                    |> Application.handleCallback
+                        (Callback.AgentWorkflowRunScopedMetricsFetched
+                            "other-workflow"
+                            AgenticData.runSummary.id
+                            (Ok [ sampleMetric ])
+                        )
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.find [ class "agent-run-telemetry" ]
+                    |> Query.has [ text "Loading invocation telemetry" ]
         , test "removes the run refresh timer once terminal output projections settle" <|
             \_ ->
                 initialized

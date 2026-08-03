@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -110,12 +111,17 @@ func TestCheckpointRestoreMarkerIsPrivateAndBoundToHandleMaterializationAndUID(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	marker := checkpointRestoreMarker{MaterializationID: "materialization-2", RequestHash: strings.Repeat("a", 64), PodUID: "pod-uid-2", Object: hangar.Attributes{Ref: ref, CompressedBytes: 100, UncompressedBytes: 200}}
-	precreateCheckpointGate(t, storage, checkpoint.RestoreRequest{ContainerHandle: "agent-42", MaterializationID: marker.MaterializationID})
-	if err := server.writeCheckpointRestoreMarker("agent-42", marker.MaterializationID, marker); err != nil {
+	request := checkpoint.RestoreRequest{ContainerHandle: "agent-42", MaterializationID: "materialization-2", PodUID: "pod-uid-2", Archive: checkpoint.Archive{Ref: ref}, WorkspaceRoots: []string{"workspace"}, SessionRoots: []string{"session"}, MaxBytes: 1024, MaxEntries: 16}
+	hash, err := checkpointRestoreRequestHash(request)
+	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(storage, checkpointRestoreGatesDirectory, "agent-42", checkpointRestoreMarkerName(marker.MaterializationID), "ready")
+	marker := checkpointRestoreMarker{MaterializationID: request.MaterializationID, RequestHash: hash, PodUID: request.PodUID, Object: hangar.Attributes{Ref: ref, CompressedBytes: 100, UncompressedBytes: 200}}
+	precreateCheckpointGate(t, storage, request)
+	if err := server.writeCheckpointRestoreMarker(request, marker); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(storage, checkpointRestoreGatesDirectory, "agent-42", checkpointRestoreMarkerName(marker.MaterializationID), checkpointRestoreMarkerFileName)
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("marker path %q: %v", path, err)
 	}
@@ -124,8 +130,8 @@ func TestCheckpointRestoreMarkerIsPrivateAndBoundToHandleMaterializationAndUID(t
 		t.Fatalf("read marker = %#v, %t, %v", got, found, err)
 	}
 	replacement := marker
-	replacement.PodUID = "other-pod"
-	if err := server.writeCheckpointRestoreMarker("agent-42", marker.MaterializationID, replacement); !errors.Is(err, os.ErrExist) {
+	replacement.Object.CompressedBytes++
+	if err := server.writeCheckpointRestoreMarker(request, replacement); !errors.Is(err, os.ErrExist) {
 		t.Fatalf("replace published marker error = %v, want file exists", err)
 	}
 	got, found, err = server.readCheckpointRestoreMarker("agent-42", marker.MaterializationID)
@@ -134,6 +140,25 @@ func TestCheckpointRestoreMarkerIsPrivateAndBoundToHandleMaterializationAndUID(t
 	}
 	if _, found, err := server.readCheckpointRestoreMarker("agent-other", marker.MaterializationID); err != nil || found {
 		t.Fatalf("other handle marker = %t, %v", found, err)
+	}
+}
+
+func TestCheckpointRestoreMarkerPublicationRejectsMismatchBeforeWritingReceipt(t *testing.T) {
+	server, _, request, storage, _ := checkpointRestoreFixture(t)
+	precreateCheckpointGate(t, storage, request)
+	hash, err := checkpointRestoreRequestHash(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := checkpointRestoreMarker{MaterializationID: request.MaterializationID, RequestHash: hash, PodUID: "other-pod", Object: hangar.Attributes{Ref: request.Archive.Ref, CompressedBytes: 1, UncompressedBytes: 1024}}
+	if err := server.writeCheckpointRestoreMarker(request, marker); err == nil {
+		t.Fatal("mismatched marker published")
+	}
+	leaf := filepath.Join(storage, checkpointRestoreGatesDirectory, request.ContainerHandle, checkpointRestoreMarkerName(request.MaterializationID))
+	for _, name := range []string{checkpointRestoreMarkerFileName, checkpointRestoreReceiptFileName} {
+		if _, err := os.Stat(filepath.Join(leaf, name)); !os.IsNotExist(err) {
+			t.Fatalf("mismatched marker wrote %q: %v", name, err)
+		}
 	}
 }
 
@@ -161,7 +186,7 @@ func TestCheckpointRestoreVerificationReadsOnlyAnExactExistingMarker(t *testing.
 		t.Fatal(err)
 	}
 	marker := checkpointRestoreMarker{MaterializationID: request.MaterializationID, RequestHash: hash, PodUID: request.PodUID, Object: hangar.Attributes{Ref: request.Archive.Ref, CompressedBytes: 1, UncompressedBytes: 1024}}
-	if err := server.writeCheckpointRestoreMarker(request.ContainerHandle, request.MaterializationID, marker); err != nil {
+	if err := server.writeCheckpointRestoreMarker(request, marker); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := server.verifyCheckpointRestore(request); err != nil {
@@ -217,6 +242,15 @@ func TestCheckpointRestoreCopiesExactCanonicalArchivePreservingRootsAndReplaysMa
 	if calls := durable.OpenCalls(); len(calls) != 1 {
 		t.Fatalf("exact marker replay reopened Hangar %d times", len(calls))
 	}
+	leaf := filepath.Join(storage, checkpointRestoreGatesDirectory, request.ContainerHandle, checkpointRestoreMarkerName(request.MaterializationID))
+	markerBefore, err := os.ReadFile(filepath.Join(leaf, checkpointRestoreMarkerFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiptBefore, err := os.ReadFile(filepath.Join(leaf, checkpointRestoreReceiptFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
 	changed := request.Clone()
 	changed.PodUID = "other-pod"
 	if _, err := server.restoreCheckpoint(context.Background(), changed); err == nil {
@@ -224,6 +258,14 @@ func TestCheckpointRestoreCopiesExactCanonicalArchivePreservingRootsAndReplaysMa
 	}
 	if calls := durable.OpenCalls(); len(calls) != 1 {
 		t.Fatalf("mismatch replay reopened Hangar %d times", len(calls))
+	}
+	markerAfter, err := os.ReadFile(filepath.Join(leaf, checkpointRestoreMarkerFileName))
+	if err != nil || !bytes.Equal(markerAfter, markerBefore) {
+		t.Fatalf("Pod UID mismatch mutated private marker = %q, %v", markerAfter, err)
+	}
+	receiptAfter, err := os.ReadFile(filepath.Join(leaf, checkpointRestoreReceiptFileName))
+	if err != nil || !bytes.Equal(receiptAfter, receiptBefore) {
+		t.Fatalf("Pod UID mismatch mutated receipt = %q, %v", receiptAfter, err)
 	}
 }
 
@@ -250,6 +292,120 @@ func TestCheckpointRestoreReplaysAfterInterruptedMarkerPublication(t *testing.T)
 				t.Fatalf("replayed restore marker = %t, %v", found, err)
 			}
 		})
+	}
+}
+
+func TestCheckpointRestoreQuarantinesMismatchedPublishedMarkerBeforeReplay(t *testing.T) {
+	server, durable, request, storage, _ := checkpointRestoreFixture(t)
+	precreateCheckpointGate(t, storage, request)
+	hash, err := checkpointRestoreRequestHash(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	poison := checkpointRestoreMarker{MaterializationID: request.MaterializationID, RequestHash: hash, PodUID: "other-pod", Object: hangar.Attributes{Ref: request.Archive.Ref, CompressedBytes: 1, UncompressedBytes: 1024}}
+	poisonRaw, err := json.Marshal(poison)
+	if err != nil {
+		t.Fatal(err)
+	}
+	markerPath := filepath.Join(storage, checkpointRestoreGatesDirectory, request.ContainerHandle, checkpointRestoreMarkerName(request.MaterializationID), checkpointRestoreMarkerFileName)
+	if err := os.WriteFile(markerPath, poisonRaw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := server.restoreCheckpoint(context.Background(), request); err != nil {
+		t.Fatalf("restore did not quarantine mismatched marker: %v", err)
+	}
+	if calls := durable.OpenCalls(); len(calls) != 1 {
+		t.Fatalf("restore opened Hangar %d times, want 1", len(calls))
+	}
+	marker, found, err := server.readCheckpointRestoreMarker(request.ContainerHandle, request.MaterializationID)
+	if err != nil || !found || marker.PodUID != request.PodUID {
+		t.Fatalf("replayed marker = %#v, found=%t, err=%v", marker, found, err)
+	}
+}
+
+func TestCheckpointRestoreReplaysCrashAfterPrivateMarkerBeforeReceipt(t *testing.T) {
+	server, durable, request, storage, _ := checkpointRestoreFixture(t)
+	precreateCheckpointGate(t, storage, request)
+	hash, err := checkpointRestoreRequestHash(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := checkpointRestoreMarker{MaterializationID: request.MaterializationID, RequestHash: hash, PodUID: request.PodUID, Object: hangar.Attributes{Ref: request.Archive.Ref, CompressedBytes: 1, UncompressedBytes: 1024}}
+	raw, err := json.Marshal(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	markerPath := filepath.Join(storage, checkpointRestoreGatesDirectory, request.ContainerHandle, checkpointRestoreMarkerName(request.MaterializationID), checkpointRestoreMarkerFileName)
+	if err := os.WriteFile(markerPath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := server.restoreCheckpoint(context.Background(), request); err != nil {
+		t.Fatalf("restore did not replay marker-before-receipt crash: %v", err)
+	}
+	if calls := durable.OpenCalls(); len(calls) != 1 {
+		t.Fatalf("restore opened Hangar %d times, want 1", len(calls))
+	}
+	if found, err := server.readCheckpointRestoreReceipt(request); err != nil || !found {
+		t.Fatalf("replayed receipt = %t, %v", found, err)
+	}
+}
+
+func TestCheckpointRestoreQuarantinesArbitraryReceiptMarkerPairBeforeReplay(t *testing.T) {
+	server, durable, request, storage, _ := checkpointRestoreFixture(t)
+	precreateCheckpointGate(t, storage, request)
+	leaf := filepath.Join(storage, checkpointRestoreGatesDirectory, request.ContainerHandle, checkpointRestoreMarkerName(request.MaterializationID))
+	marker := checkpointRestoreMarker{MaterializationID: request.MaterializationID, RequestHash: strings.Repeat("a", 64), PodUID: "other-pod", Object: hangar.Attributes{Ref: request.Archive.Ref, CompressedBytes: 1, UncompressedBytes: 1024}}
+	raw, err := json.Marshal(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(leaf, checkpointRestoreMarkerFileName), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(leaf, checkpointRestoreReceiptFileName), []byte("checkpoint-restore-v1:"+strings.Repeat("b", 64)+":other-pod"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := server.restoreCheckpoint(context.Background(), request); err != nil {
+		t.Fatalf("restore did not quarantine arbitrary receipt/marker pair: %v", err)
+	}
+	if calls := durable.OpenCalls(); len(calls) != 1 {
+		t.Fatalf("restore opened Hangar %d times, want 1", len(calls))
+	}
+}
+
+func TestCheckpointRestoreQuarantinesUnknownPrivateMarkerFieldsBeforeReplay(t *testing.T) {
+	server, durable, request, storage, _ := checkpointRestoreFixture(t)
+	precreateCheckpointGate(t, storage, request)
+	markerPath := filepath.Join(storage, checkpointRestoreGatesDirectory, request.ContainerHandle, checkpointRestoreMarkerName(request.MaterializationID), checkpointRestoreMarkerFileName)
+	if err := os.WriteFile(markerPath, []byte(`{"materialization_id":"materialization-2","request_hash":"`+strings.Repeat("a", 64)+`","object":{"unknown":true},"pod_uid":"pod-uid-2"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := server.restoreCheckpoint(context.Background(), request); err != nil {
+		t.Fatalf("restore did not quarantine unknown private marker fields: %v", err)
+	}
+	if calls := durable.OpenCalls(); len(calls) != 1 {
+		t.Fatalf("restore opened Hangar %d times, want 1", len(calls))
+	}
+}
+
+func TestCheckpointRestoreVerificationFailsClosedWithoutChangingMismatchedReceipt(t *testing.T) {
+	server, _, request, storage, _ := checkpointRestoreFixture(t)
+	precreateCheckpointGate(t, storage, request)
+	readyPath := filepath.Join(storage, checkpointRestoreGatesDirectory, request.ContainerHandle, checkpointRestoreMarkerName(request.MaterializationID), checkpointRestoreReceiptFileName)
+	if err := os.WriteFile(readyPath, []byte("checkpoint-restore-v1:wrong:"+request.PodUID), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := server.verifyCheckpointRestore(request); err == nil {
+		t.Fatal("mismatched receipt verified")
+	}
+	got, err := os.ReadFile(readyPath)
+	if err != nil || string(got) != "checkpoint-restore-v1:wrong:"+request.PodUID {
+		t.Fatalf("verify changed mismatched receipt = %q, %v", got, err)
 	}
 }
 

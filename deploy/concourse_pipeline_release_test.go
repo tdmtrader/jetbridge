@@ -446,6 +446,51 @@ func TestConcourseReleaseImageUsesFinalStampedServer(t *testing.T) {
 	)
 }
 
+func TestConcoursePipelineShipsValidatedWindowsFlyArchive(t *testing.T) {
+	pipeline := readDeployPipeline(t, "concourse-pipeline.yml")
+	for _, task := range []struct {
+		job, name string
+	}{
+		{"build-image", "build-and-push-local"},
+		{"release", "tag-push-release"},
+	} {
+		t.Run(task.job, func(t *testing.T) {
+			script := deployPipelineTaskScript(t, findDeployPipelineTask(t, pipeline, task.job, task.name))
+			for _, required := range []string{
+				"windows/amd64",
+				`fly-${OS}-${ARCH}.zip`,
+				`fly.exe`,
+				`unzip -Z1`,
+				`unzip -p`,
+			} {
+				if !strings.Contains(script, required) {
+					t.Errorf("%s fly build lacks Windows archive contract %q", task.job, required)
+				}
+			}
+		})
+	}
+}
+
+func TestConcoursePipelineIgnoresRootFirstUserFindingsDocument(t *testing.T) {
+	pipeline := readDeployPipeline(t, "concourse-pipeline.yml")
+	for _, resource := range pipeline.Resources {
+		if resource.Name != "repo" {
+			continue
+		}
+		paths, ok := resource.Source["ignore_paths"].([]interface{})
+		if !ok {
+			t.Fatalf("repo ignore_paths = %#v, want parsed YAML sequence", resource.Source["ignore_paths"])
+		}
+		for _, path := range paths {
+			if path == "JETBRIDGE_FIRST_USER_FINDINGS.md" {
+				return
+			}
+		}
+		t.Fatal("repo ignore_paths omits root JETBRIDGE_FIRST_USER_FINDINGS.md")
+	}
+	t.Fatal("pipeline has no repo resource")
+}
+
 func TestConcourseReleaseVersionIsBoundToTheTestedSource(t *testing.T) {
 	pipeline := readDeployPipeline(t, "concourse-pipeline.yml")
 	release := deployPipelineTaskScript(t, findDeployPipelineTask(t, pipeline, "release", "tag-push-release"))
