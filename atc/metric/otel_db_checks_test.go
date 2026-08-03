@@ -65,14 +65,50 @@ var _ = Describe("OTel DB and Checks Metrics", func() {
 			m := findMetric(rm, "concourse.db.connections")
 			Expect(m).NotTo(BeNil(), "expected to find concourse.db.connections metric")
 
-			sum, ok := m.Data.(metricdata.Sum[float64])
-			Expect(ok).To(BeTrue())
-			Expect(sum.DataPoints).NotTo(BeEmpty())
+			gauge, ok := m.Data.(metricdata.Gauge[float64])
+			Expect(ok).To(BeTrue(), "connection depth must export as a gauge, not a sum")
+			Expect(gauge.DataPoints).NotTo(BeEmpty())
 
-			dp := sum.DataPoints[0]
+			dp := gauge.DataPoints[0]
 			dbName, ok := dp.Attributes.Value("db.name")
 			Expect(ok).To(BeTrue())
 			Expect(dbName.AsString()).To(Equal("api"))
+		})
+
+		// The caller samples the pool every tick and reports the absolute
+		// depth, so an accumulating instrument exported the sum of every
+		// sample ever taken: a pool sitting steady at 5 read 10, then 15,
+		// climbing forever and tripping any threshold eventually.
+		It("reports the latest depth rather than the sum of every sample", func() {
+			metric.RecordDBConnections(context.Background(), 5, "api")
+			metric.RecordDBConnections(context.Background(), 5, "api")
+			metric.RecordDBConnections(context.Background(), 3, "api")
+
+			var rm metricdata.ResourceMetrics
+			Expect(reader.Collect(context.Background(), &rm)).To(Succeed())
+
+			gauge, ok := findMetric(rm, "concourse.db.connections").Data.(metricdata.Gauge[float64])
+			Expect(ok).To(BeTrue())
+			Expect(gauge.DataPoints).To(HaveLen(1))
+			Expect(gauge.DataPoints[0].Value).To(Equal(3.0))
+		})
+
+		It("keeps each database's depth separate", func() {
+			metric.RecordDBConnections(context.Background(), 7, "api")
+			metric.RecordDBConnections(context.Background(), 2, "backend")
+
+			var rm metricdata.ResourceMetrics
+			Expect(reader.Collect(context.Background(), &rm)).To(Succeed())
+
+			gauge, ok := findMetric(rm, "concourse.db.connections").Data.(metricdata.Gauge[float64])
+			Expect(ok).To(BeTrue())
+			depths := map[string]float64{}
+			for _, dp := range gauge.DataPoints {
+				name, found := dp.Attributes.Value("db.name")
+				Expect(found).To(BeTrue())
+				depths[name.AsString()] = dp.Value
+			}
+			Expect(depths).To(Equal(map[string]float64{"api": 7, "backend": 2}))
 		})
 	})
 

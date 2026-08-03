@@ -17,7 +17,6 @@ var (
 	volumesCreatedCounter       otelmetric.Float64Counter
 	k8sPodFailuresCounter       otelmetric.Int64Counter
 	resourceCheckDurationHist   otelmetric.Float64Histogram
-	workerHeartbeatAgeGauge     otelmetric.Float64Gauge
 	volumeOperationDurationHist otelmetric.Float64Histogram
 )
 
@@ -83,15 +82,6 @@ func InitOTelMetrics() {
 	)
 	if err == nil {
 		resourceCheckDurationHist = h
-	}
-
-	g, err := meter.Float64Gauge(
-		"concourse.worker.heartbeat_age",
-		otelmetric.WithDescription("Seconds since last successful worker heartbeat"),
-		otelmetric.WithUnit("s"),
-	)
-	if err == nil {
-		workerHeartbeatAgeGauge = g
 	}
 
 	h, err = meter.Float64Histogram(
@@ -178,18 +168,6 @@ func RecordResourceCheckDuration(ctx context.Context, duration time.Duration, re
 		otelmetric.WithAttributes(
 			attribute.String("resource_type", resourceType),
 			attribute.String("pipeline", pipeline),
-		),
-	)
-}
-
-// RecordWorkerHeartbeatAge records how long since the last successful worker heartbeat.
-func RecordWorkerHeartbeatAge(ctx context.Context, age time.Duration, workerName string) {
-	if workerHeartbeatAgeGauge == nil {
-		return
-	}
-	workerHeartbeatAgeGauge.Record(ctx, age.Seconds(),
-		otelmetric.WithAttributes(
-			attribute.String("worker", workerName),
 		),
 	)
 }

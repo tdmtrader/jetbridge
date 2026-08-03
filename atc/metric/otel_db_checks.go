@@ -10,7 +10,7 @@ import (
 
 var (
 	dbQueriesCounter      otelmetric.Float64Counter
-	dbConnectionsUpDown   otelmetric.Float64UpDownCounter
+	dbConnectionsGauge    otelmetric.Float64Gauge
 	checksStartedCounter  otelmetric.Float64Counter
 	checksFinishedCounter otelmetric.Float64Counter
 	checksEnqueuedCounter otelmetric.Float64Counter
@@ -28,12 +28,15 @@ func InitOTelDBChecks() {
 		dbQueriesCounter = c
 	}
 
-	ud, err := meter.Float64UpDownCounter(
+	// A gauge, not an up-down counter: the caller samples OpenConnections and
+	// reports the absolute value, so adding it to a running total would export
+	// the sum of every sample ever taken rather than the pool's current depth.
+	g, err := meter.Float64Gauge(
 		"concourse.db.connections",
 		otelmetric.WithDescription("Number of open database connections"),
 	)
 	if err == nil {
-		dbConnectionsUpDown = ud
+		dbConnectionsGauge = g
 	}
 
 	c, err = meter.Float64Counter(
@@ -69,12 +72,14 @@ func RecordDBQueries(ctx context.Context, count float64) {
 	dbQueriesCounter.Add(ctx, count)
 }
 
-// RecordDBConnections records the number of open database connections as an OTel up-down counter.
+// RecordDBConnections records the number of open database connections as an
+// OTel gauge. count is the absolute pool depth observed at this moment, and
+// each call replaces the last reading rather than accumulating.
 func RecordDBConnections(ctx context.Context, count float64, dbName string) {
-	if dbConnectionsUpDown == nil {
+	if dbConnectionsGauge == nil {
 		return
 	}
-	dbConnectionsUpDown.Add(ctx, count,
+	dbConnectionsGauge.Record(ctx, count,
 		otelmetric.WithAttributes(
 			attribute.String("db.name", dbName),
 		),
