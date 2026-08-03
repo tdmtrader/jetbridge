@@ -82,7 +82,7 @@ if ! (ulimit -f 16; claude mcp list --mcp-config "$smoke_dir/mcp.json" --strict-
   head -c 8192 "$mcp_output" >&2 || :
   exit 1
 fi
-if ! head -c 8192 "$mcp_output" | grep -E 'output-builder.*[[:space:]][Cc]onnected([[:space:]]|$)' >/dev/null; then
+if ! head -c 8192 "$mcp_output" | grep -F -x -- 'output-builder: Connected' >/dev/null; then
   printf 'ERROR: managed output builder MCP is not connected\n' >&2
   head -c 8192 "$mcp_output" >&2 || :
   exit 1

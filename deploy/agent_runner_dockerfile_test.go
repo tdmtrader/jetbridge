@@ -156,9 +156,6 @@ esac
 // tree behind when Claude rejects the managed MCP configuration.
 func TestAgentRunnerImageSmokeCleansManagedMCPProbeOnFailure(t *testing.T) {
 	binDir := t.TempDir()
-	tmpDir := t.TempDir()
-	installLog := filepath.Join(t.TempDir(), "authority.json")
-	mcpConfigLog := filepath.Join(t.TempDir(), "mcp.json")
 	writeExecutable := func(name, contents string) {
 		t.Helper()
 		if err := os.WriteFile(filepath.Join(binDir, name), []byte(contents), 0o755); err != nil {
@@ -173,7 +170,7 @@ case "$1" in
   mcp)
     test "$2" = "list" && test "$3" = "--mcp-config" && test "$5" = "--strict-mcp-config" || exit 64
     cat "$4" > "$MCP_CONFIG_LOG"
-    printf '%s\n' 'output-builder: disconnected'
+    printf '%s\n' "$MCP_STATUS"
     exit 0
     ;;
   *) exit 64 ;;
@@ -189,24 +186,31 @@ cat > "$INSTALL_LOG"
 `)
 	writeExecutable("curl", "#!/bin/sh\nexit 0\n")
 
-	cmd := exec.Command("sh", "agent-runner/smoke.sh")
-	cmd.Env = append(os.Environ(), "PATH="+binDir+":"+os.Getenv("PATH"), "TMPDIR="+tmpDir, "INSTALL_LOG="+installLog, "MCP_CONFIG_LOG="+mcpConfigLog)
-	if output, err := cmd.CombinedOutput(); err == nil || !strings.Contains(string(output), "managed output builder MCP is not connected") {
-		t.Fatalf("smoke failure = %v\n%s", err, output)
-	}
-	if _, err := os.Stat(installLog); err != nil {
-		t.Fatalf("smoke did not install authority: %v", err)
-	}
-	authority, err := os.ReadFile(installLog)
-	if err != nil || !strings.Contains(string(authority), `"inputs":{}`) || !strings.Contains(string(authority), `"type":"review/v1"`) || !strings.Contains(string(authority), `"mount_root":"`+tmpDir+`/agent-output-smoke.`) {
-		t.Fatalf("authority = %q, %v", authority, err)
-	}
-	config, err := os.ReadFile(mcpConfigLog)
-	if err != nil || string(config) != `{"mcpServers":{"output-builder":{"type":"http","url":"http://127.0.0.1:7783/mcp"}}}`+"\n" {
-		t.Fatalf("MCP config = %q, %v", config, err)
-	}
-	if entries, err := os.ReadDir(tmpDir); err != nil || len(entries) != 0 {
-		t.Fatalf("smoke temp cleanup = %#v, %v", entries, err)
+	for _, status := range []string{"output-builder: disconnected", "output-builder: Not Connected"} {
+		t.Run(status, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			installLog := filepath.Join(t.TempDir(), "authority.json")
+			mcpConfigLog := filepath.Join(t.TempDir(), "mcp.json")
+			cmd := exec.Command("sh", "agent-runner/smoke.sh")
+			cmd.Env = append(os.Environ(), "PATH="+binDir+":"+os.Getenv("PATH"), "TMPDIR="+tmpDir, "INSTALL_LOG="+installLog, "MCP_CONFIG_LOG="+mcpConfigLog, "MCP_STATUS="+status)
+			if output, err := cmd.CombinedOutput(); err == nil || !strings.Contains(string(output), "managed output builder MCP is not connected") {
+				t.Fatalf("smoke failure = %v\n%s", err, output)
+			}
+			if _, err := os.Stat(installLog); err != nil {
+				t.Fatalf("smoke did not install authority: %v", err)
+			}
+			authority, err := os.ReadFile(installLog)
+			if err != nil || !strings.Contains(string(authority), `"inputs":{}`) || !strings.Contains(string(authority), `"type":"review/v1"`) || !strings.Contains(string(authority), `"mount_root":"`+tmpDir+`/agent-output-smoke.`) {
+				t.Fatalf("authority = %q, %v", authority, err)
+			}
+			config, err := os.ReadFile(mcpConfigLog)
+			if err != nil || string(config) != `{"mcpServers":{"output-builder":{"type":"http","url":"http://127.0.0.1:7783/mcp"}}}`+"\n" {
+				t.Fatalf("MCP config = %q, %v", config, err)
+			}
+			if entries, err := os.ReadDir(tmpDir); err != nil || len(entries) != 0 {
+				t.Fatalf("smoke temp cleanup = %#v, %v", entries, err)
+			}
+		})
 	}
 }
 
