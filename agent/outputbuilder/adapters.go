@@ -227,7 +227,7 @@ func (server *mcpServer) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var request mcpRequest
-	if err := strictJSON(raw, &request); err != nil || request.JSONRPC != "2.0" {
+	if err := json.Unmarshal(raw, &request); err != nil || request.JSONRPC != "2.0" {
 		writeMCP(w, mcpResponse{JSONRPC: "2.0", ID: json.RawMessage("null"), Error: &mcpError{Code: -32600, Message: "invalid request"}})
 		return
 	}
@@ -263,7 +263,7 @@ func (server *mcpServer) serve(w http.ResponseWriter, r *http.Request) {
 
 func (server *mcpServer) call(w http.ResponseWriter, ctx context.Context, request mcpRequest) {
 	var call mcpToolCall
-	if err := strictJSON(request.Params, &call); err != nil || call.Name == "" {
+	if err := json.Unmarshal(request.Params, &call); err != nil || call.Name == "" {
 		writeMCP(w, mcpResponse{JSONRPC: "2.0", ID: request.ID, Error: &mcpError{Code: -32602, Message: "invalid tool parameters"}})
 		return
 	}
