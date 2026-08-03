@@ -6,4 +6,12 @@ Files Changed: 20
 
 Timestamp: 2026-08-03T07:35:11Z
 
-Key Changes:\n- Make checkpoint release independent of expired caller contexts\n- Atomically publish and safely quarantine restore markers\n- Scope asynchronous UI callbacks and render truthful loading/error/stale states\n- Deduplicate shared polling subscriptions and preserve route identity
+Key Changes:
+
+- Make checkpoint release independent of expired caller contexts
+
+- Atomically publish and safely quarantine restore markers
+
+- Scope asynchronous UI callbacks and render truthful loading/error/stale states
+
+- Deduplicate shared polling subscriptions and preserve route identity
