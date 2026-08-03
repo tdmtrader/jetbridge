@@ -2,6 +2,16 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Status: Human Review Required.** The permitted review cap has been reached. Do not treat this track as accepted or request another agent review.
+>
+> **Remaining acceptance blocker — idempotent latest replay:** Task 3 currently specifies handler-side `LatestReleased` lookup before the binder. If a newer released version appears between the original `latest` request and an idempotency-key replay, that lookup can resolve the new version before the binder's early existing-run path, violating bind-once replay.
+>
+> **Preferred choice:** Move released-latest resolution into a binder-owned path immediately after its early existing-run lookup. For an existing team/kind/idempotency key, return the stored exact v7 without calling `LatestReleased`; for a new key, resolve and persist v8 once. The handler forwards only the latest intent to this trusted binder path.
+>
+> **Alternative:** Keep handler resolution only after a trusted preflight lookup for an existing team/kind/idempotency run. On a replay, that preflight returns the durable v7 before any `LatestReleased` call; only a new key proceeds to handler lookup and exact binding.
+>
+> **Required regression for either choice:** create v7 through `latest` with idempotency key K; release v8; replay K and assert it returns v7 with resolver call count zero on replay; submit a new key and assert it resolves and persists v8 once.
+
 **Goal:** Make reusable agent nodes declare an operator-known exact model and tested budget floor, bind an explicit `latest` selection once to immutable node identity, let callers raise that floor for one durable run, and expose the public model catalog through Fly.
 
 **Architecture:** An operator-owned, deployment-loaded catalog distinguishes a known model ID from its current availability. Node import freezes a known exact model into the immutable node version even if it is temporarily unavailable; fresh direct-node admission checks availability immediately before allocating the durable run. A workflow `name@latest` reference or direct-run convenience is resolved **server-side** once to the highest released version and its content hash before allocation; only those exact facts persist. Unreleased node versions remain available only to an author's explicit exact-version direct run. The direct-run budget override is applied to the rendered agent leaf, so the existing canonical parameterized configuration, immutable template hash, resume path, and global daily budget reservation remain the sole durable authority.
