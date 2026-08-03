@@ -551,13 +551,20 @@ artifactDaemon:
   # Default (when empty): <release-fullname>-artifact-daemon
   serviceName: ""
   # -- Shared signing key for short-lived, source-and-destination-bound
-  # artifact resolve capabilities. The generated Secret is persisted across
-  # Helm upgrades with lookup. To rotate, replace the Secret and restart both
-  # web and artifact-daemon pods; in-flight tokens signed by the old key then
-  # fail closed.
+  # artifact resolve capabilities. The generated Secret is reused across
+  # `helm upgrade` via Helm's lookup, which requires a live cluster
+  # connection. A plain `helm template` — the default Argo CD path — gets an
+  # empty lookup and mints a NEW key on every render. Both the ATC and the
+  # daemon read the key once at process start, so the re-applied Secret is
+  # harmless until the first asymmetric restart, after which resolve fails
+  # closed until both sides have rolled. Set existingSecret under GitOps.
+  # To rotate, replace the Secret and restart both web and artifact-daemon
+  # pods; in-flight tokens signed by the old key then fail closed.
   resolveCapability:
     # -- Existing Secret containing exactly 32 raw bytes at key resolve.key.
-    # When empty, the chart creates and preserves a dedicated Secret.
+    # When empty, the chart creates a dedicated Secret and reuses it on later
+    # renders ONLY when it can reach the cluster (see above). Required for any
+    # pipeline that renders manifests without a cluster connection.
     existingSecret: ""
     # -- Token lifetime. Keep this above pod scheduling timeout + startup
     # timeout + the bounded init retry window (31m) + clock-skew margin (5m).
@@ -636,7 +643,14 @@ artifactDaemon:
     enabled: false
     # -- Name of an existing Secret containing TLS certs. Keys expected:
     # ca.crt, tls.crt, tls.key, client.crt, client.key.
-    # When empty and tls.enabled=true, certs are auto-generated.
+    # When empty and tls.enabled=true, certs are auto-generated and the CA is
+    # reused on later renders via Helm's lookup — which needs a live cluster
+    # connection. A plain `helm template` (the default Argo CD path) gets an
+    # empty lookup and mints a NEW CA and leaf certs every time. Neither the
+    # ATC nor the daemon reloads TLS material, so the re-applied Secret splits
+    # trust the moment either side restarts and every mTLS call fails until
+    # both have rolled. Set this in any pipeline that renders without a
+    # cluster, and manage the material outside the chart.
     existingSecret: ""
   # -- NetworkPolicy configuration for the artifact daemon
   networkPolicy:

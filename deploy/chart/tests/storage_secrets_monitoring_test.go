@@ -296,7 +296,8 @@ func TestServiceMonitorsSelectTheReleaseNamespace(t *testing.T) {
 type secretDoc struct {
 	Kind     string `json:"kind"`
 	Metadata struct {
-		Name string `json:"name"`
+		Name        string            `json:"name"`
+		Annotations map[string]string `json:"annotations"`
 	} `json:"metadata"`
 	Data map[string]string `json:"data"`
 }
