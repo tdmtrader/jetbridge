@@ -95,6 +95,22 @@ func (handler *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Scope is read for the same reason the window is: the canvas and the run
+	// list below it are one shared population by design. Without it the page
+	// could ask the list for experiment runs while the DAG kept painting
+	// operational node state, so a reader saw an experiment list under a graph
+	// marked "2 failed" by runs that are not in it. The vocabulary is
+	// db.AgentWorkflowRunScope's, validated by the same Validate the run list
+	// uses, so the two endpoints cannot accept different words.
+	scope := db.AgentWorkflowRunScopeOperational
+	if raw, present := query["scope"]; present {
+		scope = db.AgentWorkflowRunScope(raw[0])
+		if scope.Validate() != nil {
+			writeError(w, http.StatusBadRequest, "invalid_scope", "workflow overview scope is invalid")
+			return
+		}
+	}
+
 	now := handler.now()
 	window := Window{
 		Kind:                       kind,
@@ -103,7 +119,7 @@ func (handler *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 		IncludesActiveBeforeWindow: true,
 	}
 
-	response, found, err := handler.build(r.Context(), name, window)
+	response, found, err := handler.build(r.Context(), name, window, scope)
 	if err != nil {
 		handler.logger.Error("build-overview-failed", err, lager.Data{"workflow": name})
 		writeError(w, http.StatusInternalServerError, "internal_error", "workflow overview service failed")
@@ -122,6 +138,7 @@ func (handler *Handler) build(
 	ctx context.Context,
 	name string,
 	window Window,
+	scope db.AgentWorkflowRunScope,
 ) (Response, bool, error) {
 	definition, hasPromoted, found, err := handler.graphDefinition(name)
 	if err != nil {
@@ -162,7 +179,7 @@ func (handler *Handler) build(
 	runs, err := handler.runs.List(ctx, db.AgentWorkflowRunListFilter{
 		TeamID:            handler.team.ID,
 		WorkflowName:      name,
-		Scope:             db.AgentWorkflowRunScopeOperational,
+		Scope:             scope,
 		CompletedSince:    &window.From,
 		IncludeActiveRuns: true,
 		Limit:             overviewRunLimit,
@@ -182,8 +199,13 @@ func (handler *Handler) build(
 	}
 	response.NodeState = aggregate.nodeState(response.GraphUnavailable, response.Graph, executionNodes)
 	if !response.GraphUnavailable {
-		for nodeID := range aggregate.nodes {
-			if _, present := executionNodes[nodeID]; !present {
+		// Both halves of the identity are compared, exactly as
+		// occurrence.retainGraphNodes does. A retired `await_snapshot: approval`
+		// whose ID a later revision reused for an agent is historical-only even
+		// though the ID is still on the canvas, and reporting it is the whole
+		// point of the flag.
+		for identity := range aggregate.nodes {
+			if executionNodes[identity.id] != identity.kind {
 				response.HasHistoricalOnlyNodes = true
 				break
 			}
@@ -223,15 +245,32 @@ type nodeAggregate struct {
 	needsAttention bool
 }
 
+// nodeIdentity is what one node's facts are aggregated under.
+//
+// The kind travels with the ID because the ID alone is not unique across kinds
+// and this page reads runs from EVERY revision in the window: revision 4's
+// `await_snapshot: approval` and revision 5's agent with `function_id:
+// approval` are two different nodes that happen to share a name.
+// occurrence.ExecutionNodesOf states that contract explicitly, and
+// occurrence.retainGraphNodes already honours it, so per-run derivation was
+// kind-correct and this cross-run aggregation was the one place the pair came
+// apart — attributing the retired gate's six timeouts to an agent that has
+// never failed, and suppressing the historical-only affordance that would have
+// pointed at the gate.
+type nodeIdentity struct {
+	id   string
+	kind string
+}
+
 type aggregation struct {
-	nodes map[string]*nodeAggregate
+	nodes map[nodeIdentity]*nodeAggregate
 }
 
 func (handler *Handler) aggregate(
 	ctx context.Context,
 	runs []db.AgentWorkflowRun,
 ) (aggregation, error) {
-	result := aggregation{nodes: map[string]*nodeAggregate{}}
+	result := aggregation{nodes: map[nodeIdentity]*nodeAggregate{}}
 
 	byRun := make(map[int64][]occurrence.NodeOccurrence, len(runs))
 	for _, run := range runs {
@@ -243,7 +282,7 @@ func (handler *Handler) aggregate(
 
 		active := !runIsTerminal(run.Status)
 		for _, entry := range occurrences {
-			node := result.node(entry.NodeID)
+			node := result.node(entry.NodeID, entry.NodeKind)
 			switch {
 			case entry.Status.Terminal():
 				node.history.add(entry.Status)
@@ -269,7 +308,7 @@ func (handler *Handler) aggregate(
 		}
 		for _, effective := range occurrence.ResolveEffective(entries) {
 			if effective.NeedsAttention {
-				result.node(effective.NodeID).needsAttention = true
+				result.node(effective.NodeID, effective.Occurrence.NodeKind).needsAttention = true
 			}
 		}
 	}
@@ -277,11 +316,12 @@ func (handler *Handler) aggregate(
 	return result, nil
 }
 
-func (result aggregation) node(nodeID string) *nodeAggregate {
-	existing, found := result.nodes[nodeID]
+func (result aggregation) node(nodeID, nodeKind string) *nodeAggregate {
+	identity := nodeIdentity{id: nodeID, kind: nodeKind}
+	existing, found := result.nodes[identity]
 	if !found {
 		existing = &nodeAggregate{}
-		result.nodes[nodeID] = existing
+		result.nodes[identity] = existing
 	}
 	return existing
 }
@@ -296,22 +336,40 @@ func (result aggregation) nodeState(
 	executionNodes map[string]string,
 ) []NodeState {
 	var order []string
+	byID := map[string]*nodeAggregate{}
 	if graphUnavailable {
-		for nodeID := range result.nodes {
-			order = append(order, nodeID)
+		// No canvas to key on, so the observed nodes are reported. NodeState is
+		// keyed by ID on the wire, so kinds that share an ID are summed here
+		// rather than emitted as two entries under one node_id — the client
+		// looks state up by ID, and a duplicate key would silently discard one.
+		for identity, entry := range result.nodes {
+			existing, found := byID[identity.id]
+			if !found {
+				existing = &nodeAggregate{}
+				byID[identity.id] = existing
+				order = append(order, identity.id)
+			}
+			existing.merge(entry)
 		}
 		sort.Strings(order)
 	} else {
+		// The canvas is the promoted revision's, so a node is reported for the
+		// kind that revision gives it. History carried by a retired node of the
+		// same name and a different kind is NOT folded in here; it is reported
+		// through HasHistoricalOnlyNodes instead.
 		for _, node := range built.Nodes {
-			if _, execution := executionNodes[node.ID]; execution {
+			if kind, execution := executionNodes[node.ID]; execution {
 				order = append(order, node.ID)
+				if entry, found := result.nodes[nodeIdentity{id: node.ID, kind: kind}]; found {
+					byID[node.ID] = entry
+				}
 			}
 		}
 	}
 
 	states := make([]NodeState, 0, len(order))
 	for _, nodeID := range order {
-		entry := result.nodes[nodeID]
+		entry := byID[nodeID]
 		if entry == nil {
 			entry = &nodeAggregate{}
 		}
@@ -324,6 +382,20 @@ func (result aggregation) nodeState(
 		})
 	}
 	return states
+}
+
+// merge folds another kind's facts for the same node ID into this aggregate. It
+// is used only when there is no graph to disambiguate kinds against.
+func (aggregate *nodeAggregate) merge(other *nodeAggregate) {
+	aggregate.active.Running += other.active.Running
+	aggregate.active.Waiting += other.active.Waiting
+	aggregate.active.Pending += other.active.Pending
+	aggregate.history.Succeeded += other.history.Succeeded
+	aggregate.history.Failed += other.history.Failed
+	aggregate.history.Errored += other.history.Errored
+	aggregate.history.Aborted += other.history.Aborted
+	aggregate.history.Skipped += other.history.Skipped
+	aggregate.needsAttention = aggregate.needsAttention || other.needsAttention
 }
 
 func (counts *ActiveCounts) add(status occurrence.Status) {
@@ -474,7 +546,7 @@ func parseRoute(w http.ResponseWriter, r *http.Request) (string, url.Values, boo
 		return "", nil, false
 	}
 	for key, values := range query {
-		if key != ":workflow_name" && key != "window" {
+		if key != ":workflow_name" && key != "window" && key != "scope" {
 			writeError(w, http.StatusBadRequest, "invalid_query", "request query contains unsupported fields")
 			return "", nil, false
 		}

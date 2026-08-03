@@ -151,7 +151,7 @@ all =
                         |> Expect.equal (Just "inputs")
             ]
         , describe "the overview API query"
-            [ test "carries only the window, which is all the endpoint accepts" <|
+            [ test "carries only the window and scope, which is all the endpoint accepts" <|
                 \_ ->
                     Filters.overviewQuery
                         { default
@@ -160,11 +160,25 @@ all =
                             , selectedNode = Just "implement"
                             , search = "x"
                         }
-                        |> Expect.equal [ ( "window", "30d" ) ]
-            , test "states the window explicitly even at the default" <|
+                        |> Expect.equal [ ( "window", "30d" ), ( "scope", "experiment" ) ]
+            , test "states the window and scope explicitly even at their defaults" <|
                 \_ ->
                     Filters.overviewQuery default
-                        |> Expect.equal [ ( "window", "7d" ) ]
+                        |> Expect.equal [ ( "window", "7d" ), ( "scope", "operational" ) ]
+            , test "the canvas and the run list agree about the population they describe" <|
+                \_ ->
+                    -- The overview accepted no scope at all, so the experiments
+                    -- toggle narrowed the list while the DAG kept aggregating
+                    -- operational runs that were not in it.
+                    let
+                        experiment =
+                            { default | scope = Filters.Experiment }
+                    in
+                    ( Filters.overviewQuery experiment, Filters.runsQuery experiment )
+                        |> Expect.equal
+                            ( [ ( "window", "7d" ), ( "scope", "experiment" ) ]
+                            , [ ( "window", "7d" ), ( "scope", "experiment" ), ( "lens", "attention" ) ]
+                            )
             ]
         , describe "the run list API query"
             [ test "states window, scope, and lens explicitly" <|

@@ -31,8 +31,8 @@ why they get three functions rather than one:
 1.  `toQueryPairs` — the page URL. Its names are the design's
     (`window`, `scope`, `q`, `node`, `node_status`, `status`, `origin`,
     `version`), and defaults are omitted.
-2.  `overviewQuery` — `GET .../overview`, which accepts **only** `window`.
-    Anything else is rejected with 400 by
+2.  `overviewQuery` — `GET .../overview`, which accepts **only** `window` and
+    `scope`. Anything else is rejected with 400 by
     `workflowoverview.parseRoute`, so nothing else may be sent.
 3.  `runsQuery` — `GET .../runs`, which accepts `window`, `scope`, `lens`,
     `node`, `node_status`, `q`, `status`, `origin_kind`, `origin_reference`,
@@ -173,14 +173,23 @@ toQuery filters =
     toQueryPairs filters |> List.map (\( key, value ) -> Url.Builder.string key value)
 
 
-{-| The overview endpoint's entire accepted query. The window is stated even at
-the default: the response echoes the window it aggregated over, and asking for
-it explicitly keeps the page and the server from disagreeing about what "the
-default" means.
+{-| The overview endpoint's entire accepted query. Both values are stated even
+at their defaults: the response echoes the window it aggregated over, and
+asking explicitly keeps the page and the server from disagreeing about what
+"the default" means.
+
+The scope is here for the reason stated under `runsQuery`, and it was missing
+for long enough to prove the point. The endpoint took no scope and always
+aggregated `operational`, so the experiments toggle refetched the list and not
+the canvas: a reader saw an experiment run list under a DAG marked "2 failed"
+by operational runs that were not in the list below it.
+
 -}
 overviewQuery : Filters -> List ( String, String )
 overviewQuery filters =
-    [ ( "window", windowParam filters.window ) ]
+    [ ( "window", windowParam filters.window )
+    , ( "scope", scopeParam filters.scope )
+    ]
 
 
 {-| The run list endpoint's query. Window and scope are stated explicitly for

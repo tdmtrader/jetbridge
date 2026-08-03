@@ -25,7 +25,11 @@ type Effective struct {
 
 // ResolveEffective collapses one retry closure onto the state the overview
 // should show. Callers supply the entries of a single closure; the resolution
-// buckets them by node identity.
+// buckets them by node identity, which is the (ID, kind) PAIR and not the ID
+// alone — see ExecutionNodesOf on why the ID is not unique across kinds. A
+// closure can span revisions, so a retired await and the agent that later took
+// its name are two nodes here, and resolving them as one would let one node's
+// success clear the other's failure.
 //
 // For each node the effective set is the last terminal occurrence unioned with
 // every currently-active occurrence, ordered by (run created at, run ID) so
@@ -48,16 +52,22 @@ func ResolveEffective(entries []ChainEntry) []Effective {
 		active         []ChainEntry
 	}
 
-	buckets := map[string]*bucket{}
-	var nodeOrder []string
+	type nodeKey struct {
+		id   string
+		kind string
+	}
+
+	buckets := map[nodeKey]*bucket{}
+	var nodeOrder []nodeKey
 
 	for index := range ordered {
 		entry := ordered[index]
-		current, found := buckets[entry.Occurrence.NodeID]
+		key := nodeKey{id: entry.Occurrence.NodeID, kind: entry.Occurrence.NodeKind}
+		current, found := buckets[key]
 		if !found {
 			current = &bucket{}
-			buckets[entry.Occurrence.NodeID] = current
-			nodeOrder = append(nodeOrder, entry.Occurrence.NodeID)
+			buckets[key] = current
+			nodeOrder = append(nodeOrder, key)
 		}
 		if entry.Occurrence.Status.Terminal() {
 			copied := entry
@@ -68,15 +78,15 @@ func ResolveEffective(entries []ChainEntry) []Effective {
 	}
 
 	var result []Effective
-	for _, nodeID := range nodeOrder {
-		current := buckets[nodeID]
+	for _, key := range nodeOrder {
+		current := buckets[key]
 
 		var liveRetry bool
 		for _, entry := range current.active {
 			attention := activeNeedsAttention(entry.Occurrence.Status)
 			liveRetry = liveRetry || attention
 			result = append(result, Effective{
-				NodeID:         nodeID,
+				NodeID:         key.id,
 				RunID:          entry.RunID,
 				Status:         entry.Occurrence.Status,
 				NeedsAttention: attention,
@@ -92,7 +102,7 @@ func ResolveEffective(entries []ChainEntry) []Effective {
 			// the one that asks for action.
 			attention := !liveRetry && terminalNeedsAttention(entry.Occurrence.Status)
 			result = append(result, Effective{
-				NodeID:         nodeID,
+				NodeID:         key.id,
 				RunID:          entry.RunID,
 				Status:         entry.Occurrence.Status,
 				NeedsAttention: attention,

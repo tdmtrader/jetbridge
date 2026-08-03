@@ -185,7 +185,7 @@ all =
                                 >> Expect.all
                                     [ Common.contains
                                         (Effects.FetchAgentWorkflowOverview "bar"
-                                            [ ( "window", "7d" ) ]
+                                            [ ( "window", "7d" ), ( "scope", "operational" ) ]
                                         )
                                     , Common.contains
                                         (Effects.FetchAgentWorkflowRunsFiltered "bar"
@@ -221,7 +221,7 @@ all =
                         |> Tuple.first
                         |> Application.handleCallback
                             (Callback.AgentWorkflowOverviewFetched "bar"
-                                [ ( "window", "7d" ) ]
+                                [ ( "window", "7d" ), ( "scope", "operational" ) ]
                                 (Ok unavailableOverview)
                             )
                         |> Tuple.first

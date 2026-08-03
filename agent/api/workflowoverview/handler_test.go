@@ -9,12 +9,14 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/concourse/concourse/agent/api/workflowoverview"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/workflow"
+	"github.com/concourse/concourse/agent/workflow/graph"
 	"github.com/concourse/concourse/agent/workflowrun/occurrence"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
@@ -179,11 +181,47 @@ func runFixture(id int64, version int, status db.AgentWorkflowRunStatus, created
 	return run
 }
 
+// seedNodeKinds is the promoted seed's execution-node kinds, derived through
+// the real builder.
+//
+// Occurrence fixtures take their kind from it rather than hardcoding "agent":
+// node identity is the (ID, kind) PAIR, so a fixture claiming the wrong kind
+// describes a node the canvas does not contain — small-fix-v3's `approval` is
+// an await, not an agent — and would silently assert the opposite of what the
+// test means.
+var seedNodeKinds = sync.OnceValue(func() map[string]string {
+	manifest, err := workflow.ManifestFromDir(
+		filepath.Join("..", "..", "workflow", "seeds", seedWorkflow),
+	)
+	if err != nil {
+		panic(err)
+	}
+	compiled, err := workflow.CompileDefinition(manifest)
+	if err != nil {
+		panic(err)
+	}
+	built, err := graph.Build(compiled.Function)
+	if err != nil {
+		panic(err)
+	}
+	return occurrence.ExecutionNodesOf(built)
+})
+
 func occurrenceFixture(runID int64, nodeID string, status occurrence.Status) occurrence.NodeOccurrence {
+	kind, onCanvas := seedNodeKinds()[nodeID]
+	if !onCanvas {
+		// A node the promoted revision does not contain, which some fixtures
+		// deliberately need. Its kind is unconstrained; agent is the stand-in.
+		kind = "agent"
+	}
+	return occurrenceFixtureOfKind(runID, nodeID, kind, status)
+}
+
+func occurrenceFixtureOfKind(runID int64, nodeID, nodeKind string, status occurrence.Status) occurrence.NodeOccurrence {
 	return occurrence.NodeOccurrence{
 		WorkflowRunID: snapshot.WorkflowRunID(runID), TeamID: 1,
 		WorkflowName: seedWorkflow, WorkflowVersion: 4, WorkflowDefinitionID: 4,
-		NodeID: nodeID, NodeKind: "agent", RetryAttempt: 1, Attempt: 1,
+		NodeID: nodeID, NodeKind: nodeKind, RetryAttempt: 1, Attempt: 1,
 		PlanID: fmt.Sprintf("%d/%s", runID, nodeID), Status: status,
 	}
 }
@@ -261,10 +299,53 @@ func TestOverviewRejectsUnknownWindow(t *testing.T) {
 func TestOverviewRejectsUnsupportedQueryFields(t *testing.T) {
 	handler := newHandler(t, defaultDeps(t))
 
-	recorder := doOverview(t, handler, url.Values{"scope": {"all"}})
+	// `lens` is the run list's, not this endpoint's. Unsupported fields are
+	// rejected rather than ignored, so a caller cannot believe it narrowed
+	// something it did not.
+	recorder := doOverview(t, handler, url.Values{"lens": {"attention"}})
 
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for an unsupported query field, got %d", recorder.Code)
+	}
+}
+
+// The canvas and the run list below it are one population by design. Without a
+// scope here the experiments toggle repainted the list while the DAG kept
+// painting operational node state, so a reader saw an experiment list under a
+// graph marked "2 failed" by runs that were not in it.
+func TestOverviewAggregatesTheRequestedScope(t *testing.T) {
+	dependencies := defaultDeps(t)
+	handler := newHandler(t, dependencies)
+
+	if recorder := doOverview(t, handler, url.Values{"scope": {"experiment"}}); recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", recorder.Code)
+	}
+
+	if got := dependencies.runs.lastFilter.Scope; got != db.AgentWorkflowRunScopeExperiment {
+		t.Fatalf("expected the experiment scope to bound the aggregation, got %q", got)
+	}
+}
+
+func TestOverviewDefaultsToTheOperationalScope(t *testing.T) {
+	dependencies := defaultDeps(t)
+	handler := newHandler(t, dependencies)
+
+	if recorder := doOverview(t, handler, nil); recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", recorder.Code)
+	}
+
+	if got := dependencies.runs.lastFilter.Scope; got != db.AgentWorkflowRunScopeOperational {
+		t.Fatalf("expected the operational scope by default, got %q", got)
+	}
+}
+
+func TestOverviewRejectsAnUnknownScope(t *testing.T) {
+	handler := newHandler(t, defaultDeps(t))
+
+	recorder := doOverview(t, handler, url.Values{"scope": {"everything"}})
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for an unsupported scope, got %d", recorder.Code)
 	}
 }
 
@@ -661,6 +742,34 @@ func TestOverviewFlagsNodesThePromotedGraphNoLongerContains(t *testing.T) {
 		if state.NodeID == "retired-node" {
 			t.Fatal("a node outside the promoted graph must not join the canvas")
 		}
+	}
+}
+
+// The window spans revisions, and node identity is only unique within one. A
+// revision that replaced `await_snapshot: approval` with an agent of the same
+// function_id leaves occurrences whose ID is on the canvas and whose KIND is
+// not. Bucketing on the ID alone credited the retired gate's failures to an
+// agent that never failed, and left HasHistoricalOnlyNodes false so the UI
+// offered nothing pointing at the gate.
+func TestOverviewDoesNotFuseNodeHistoryAcrossKindsThatShareAnID(t *testing.T) {
+	dependencies := defaultDeps(t)
+	run := runFixture(93, 3, db.AgentWorkflowRunStatusFailed, referenceNow.Add(-time.Hour))
+	dependencies.runs.runs = []db.AgentWorkflowRun{run}
+	dependencies.occurrences.byRun[93] = []occurrence.NodeOccurrence{
+		// The promoted revision's `approval` is an await (seedNodeKinds says
+		// so). This occurrence is the retired agent that once held the name.
+		occurrenceFixtureOfKind(93, "approval", "agent", occurrence.StatusFailed),
+	}
+	handler := newHandler(t, dependencies)
+
+	response := decodeOK(t, doOverview(t, handler, nil))
+
+	state := stateFor(t, response, "approval")
+	if state.History.Failed != 0 || state.NeedsAttention || state.HasWindowActivity {
+		t.Fatalf("a different node's failure was credited to the canvas await: %+v", state)
+	}
+	if !response.HasHistoricalOnlyNodes {
+		t.Fatal("expected the retired node of the same name to be reported as historical-only")
 	}
 }
 

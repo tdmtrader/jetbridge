@@ -57,7 +57,7 @@ all =
                                 )
                             , Common.notContains
                                 (Effects.FetchAgentWorkflowOverview "review-api"
-                                    [ ( "window", "7d" ) ]
+                                    [ ( "window", "7d" ), ( "scope", "operational" ) ]
                                 )
                             ]
             , test "keeps the agent product identity in the global breadcrumb" <|
@@ -320,7 +320,9 @@ all =
                             (Msgs.Update (Message.AgentWorkflowNodeSelected "implement"))
                         |> Tuple.second
                         |> Common.notContains
-                            (Effects.FetchAgentWorkflowOverview "review-api" [ ( "window", "7d" ) ])
+                            (Effects.FetchAgentWorkflowOverview "review-api"
+                                [ ( "window", "7d" ), ( "scope", "operational" ) ]
+                            )
             , test "the selection is in the URL, so it can be shared" <|
                 \_ ->
                     initializedWithOverview
@@ -353,7 +355,7 @@ all =
                         |> Expect.all
                             [ Common.contains
                                 (Effects.FetchAgentWorkflowOverview "review-api"
-                                    [ ( "window", "30d" ) ]
+                                    [ ( "window", "30d" ), ( "scope", "operational" ) ]
                                 )
                             , Common.contains
                                 (Effects.FetchAgentWorkflowRunsFiltered "review-api"
@@ -437,7 +439,7 @@ all =
                                 )
                             , Common.notContains
                                 (Effects.FetchAgentWorkflowOverview "review-api"
-                                    [ ( "window", "7d" ) ]
+                                    [ ( "window", "7d" ), ( "scope", "operational" ) ]
                                 )
                             ]
             , test "arriving back on a different window refetches both" <|
@@ -448,7 +450,7 @@ all =
                         |> Expect.all
                             [ Common.contains
                                 (Effects.FetchAgentWorkflowOverview "review-api"
-                                    [ ( "window", "30d" ) ]
+                                    [ ( "window", "30d" ), ( "scope", "operational" ) ]
                                 )
                             , Common.contains
                                 (Effects.FetchAgentWorkflowRunsFiltered "review-api"
@@ -463,7 +465,7 @@ all =
                         |> Expect.all
                             [ Common.notContains
                                 (Effects.FetchAgentWorkflowOverview "review-api"
-                                    [ ( "window", "7d" ) ]
+                                    [ ( "window", "7d" ), ( "scope", "operational" ) ]
                                 )
                             , Common.notContains
                                 (Effects.FetchAgentWorkflowRunsFiltered "review-api"
@@ -699,7 +701,7 @@ all =
                     -- the direction production actually emits.
                     initializedWith overview
                         |> Application.handleCallback
-                            (Callback.AgentWorkflowRunsFetched "review-api"
+                            (Callback.AgentWorkflowRunsFetched "review-api" defaultRunsQuery
                                 (Ok [ failedButSucceededRunSummary ])
                             )
                         |> Tuple.first
@@ -710,7 +712,7 @@ all =
                 \_ ->
                     initializedWith overview
                         |> Application.handleCallback
-                            (Callback.AgentWorkflowRunsFetched "review-api"
+                            (Callback.AgentWorkflowRunsFetched "review-api" defaultRunsQuery
                                 (Ok [ failedButSucceededRunSummary ])
                             )
                         |> Tuple.first
@@ -721,7 +723,7 @@ all =
                 \_ ->
                     initializedWith overview
                         |> Application.handleCallback
-                            (Callback.AgentWorkflowRunsFetched "review-api"
+                            (Callback.AgentWorkflowRunsFetched "review-api" defaultRunsQuery
                                 (Ok [ erroredButSucceededRunSummary ])
                             )
                         |> Tuple.first
@@ -734,11 +736,8 @@ all =
                     -- the fresher fact: the build has ended and Finalize has
                     -- not run yet.
                     initializedWith overview
-                        |> Application.update
-                            (Msgs.Update (Message.AgentWorkflowStatusFilterChanged "all"))
-                        |> Tuple.first
                         |> Application.handleCallback
-                            (Callback.AgentWorkflowRunsFetched "review-api"
+                            (Callback.AgentWorkflowRunsFetched "review-api" defaultRunsQuery
                                 (Ok [ runningButSucceededRunSummary ])
                             )
                         |> Tuple.first
@@ -770,7 +769,7 @@ all =
                         |> Expect.all
                             [ Common.contains
                                 (Effects.FetchAgentWorkflowOverview "review-api"
-                                    [ ( "window", "7d" ) ]
+                                    [ ( "window", "7d" ), ( "scope", "operational" ) ]
                                 )
                             , Common.contains
                                 (Effects.FetchAgentWorkflowRunsFiltered "review-api"
@@ -793,7 +792,7 @@ all =
                         |> Expect.all
                             [ Common.contains
                                 (Effects.FetchAgentWorkflowOverview "review-api"
-                                    [ ( "window", "7d" ) ]
+                                    [ ( "window", "7d" ), ( "scope", "operational" ) ]
                                 )
                             , Common.contains
                                 (Effects.FetchAgentWorkflowRunsFiltered "review-api" defaultRunsQuery)
@@ -834,21 +833,70 @@ all =
                         |> Tuple.second
                         |> Expect.all
                             [ Common.notContains
-                                (Effects.FetchAgentWorkflowOverview "review-api"
-                                    [ ( "window", "7d" ) ]
-                                )
+                                (Effects.FetchAgentWorkflowOverview "review-api" defaultOverviewQuery)
                             , Common.notContains
-                                (Effects.FetchAgentWorkflowRunsFiltered "review-api"
-                                    [ ( "window", "7d" ), ( "scope", "operational" ), ( "lens", "attention" ) ]
-                                )
+                                (Effects.FetchAgentWorkflowRunsFiltered "review-api" defaultRunsQuery)
                             ]
+            , test "a settled page keeps looking on a slower cadence, so new work still appears" <|
+                \_ ->
+                    -- Gating the subscription made the gate a one-way latch:
+                    -- nothing outside a poll can flip it back, so a run
+                    -- dispatched from a ticket, from fly, or by the dispatcher
+                    -- never appeared without a manual reload.
+                    initializedWith settledOverview
+                        |> Application.handleCallback
+                            (Callback.AgentWorkflowRunsFetched "review-api" defaultRunsQuery (Ok [ terminalRunSummary ]))
+                        |> Tuple.first
+                        |> Application.update
+                            (Msgs.DeliveryReceived (ClockTicked OneMinute (Time.millisToPosix 0)))
+                        |> Tuple.second
+                        |> Expect.all
+                            [ Common.contains
+                                (Effects.FetchAgentWorkflowOverview "review-api" defaultOverviewQuery)
+                            , Common.contains
+                                (Effects.FetchAgentWorkflowRunsFiltered "review-api" defaultRunsQuery)
+                            ]
+            , test "an empty run list is not the end of the page's life either" <|
+                \_ ->
+                    initializedWith settledOverview
+                        |> Application.handleCallback
+                            (Callback.AgentWorkflowRunsFetched "review-api" defaultRunsQuery (Ok []))
+                        |> Tuple.first
+                        |> Application.update
+                            (Msgs.DeliveryReceived (ClockTicked OneMinute (Time.millisToPosix 0)))
+                        |> Tuple.second
+                        |> Common.contains
+                            (Effects.FetchAgentWorkflowRunsFiltered "review-api" defaultRunsQuery)
+            , test "an active workflow does not refetch twice a minute" <|
+                \_ ->
+                    initializedWithOverview
+                        |> Application.update
+                            (Msgs.DeliveryReceived (ClockTicked OneMinute (Time.millisToPosix 0)))
+                        |> Tuple.second
+                        |> Common.notContains
+                            (Effects.FetchAgentWorkflowRunsFiltered "review-api" defaultRunsQuery)
+            ]
+        , describe "the scope reaches the canvas, not only the list"
+            [ test "changing scope refetches the overview, which aggregates that population" <|
+                \_ ->
+                    -- The overview took no scope and always aggregated
+                    -- operational, so the experiments toggle repainted the run
+                    -- list under a DAG still marked by operational failures.
+                    initializedWithOverview
+                        |> Application.update
+                            (Msgs.Update (Message.AgentWorkflowScopeChanged "experiment"))
+                        |> Tuple.second
+                        |> Common.contains
+                            (Effects.FetchAgentWorkflowOverview "review-api"
+                                [ ( "window", "7d" ), ( "scope", "experiment" ) ]
+                            )
             ]
         ]
 
 
 defaultOverviewQuery : List ( String, String )
 defaultOverviewQuery =
-    [ ( "window", "7d" ) ]
+    [ ( "window", "7d" ), ( "scope", "operational" ) ]
 
 
 defaultRunsQuery : List ( String, String )

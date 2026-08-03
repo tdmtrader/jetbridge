@@ -615,10 +615,38 @@ canonicalId value =
 -- POLLING
 
 
+{-| Two cadences, exactly one of which does anything on a given tick.
+
+A settled page must keep looking, just slowly. Gating the subscription on
+`hasActiveRuns` made the gate a one-way latch: nothing outside a poll can flip
+it back to True, so the first fetch returning an empty or fully terminal list
+stopped the page permanently. A run dispatched afterwards — from a ticket, from
+fly, or by the dispatcher — never appeared, including for the reader watching
+this page precisely to see the run they just triggered elsewhere.
+
+The gate now lives in `fetch`, which `Polling` explicitly supports (return `[]`
+to skip a beat), so it is re-evaluated on every tick instead of deciding once.
+
+-}
 polls : List (Polling.Poll Model)
 polls =
     [ { interval = FiveSeconds
-      , fetch = \model -> fetchAll model.workflowName model.filters
+      , fetch =
+            \model ->
+                if hasActiveRuns model then
+                    fetchAll model.workflowName model.filters
+
+                else
+                    []
+      }
+    , { interval = OneMinute
+      , fetch =
+            \model ->
+                if hasActiveRuns model then
+                    []
+
+                else
+                    fetchAll model.workflowName model.filters
       }
     ]
 
@@ -666,22 +694,12 @@ handleDelivery delivery (( model, effects ) as state) =
             ( { model | now = Just time }, effects )
 
         _ ->
-            if hasActiveRuns model then
-                Polling.handleDelivery polls delivery state
-
-            else
-                state
+            Polling.handleDelivery polls delivery state
 
 
 subscriptions : Model -> List Subscription
-subscriptions model =
-    OnClockTick OneSecond
-        :: (if hasActiveRuns model then
-                Polling.subscriptions polls
-
-            else
-                []
-           )
+subscriptions _ =
+    OnClockTick OneSecond :: Polling.subscriptions polls
 
 
 tooltip : Model -> a -> Maybe Tooltip.Tooltip
