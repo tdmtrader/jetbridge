@@ -1452,6 +1452,28 @@
 
 - [ ] **Step 3: Capture the immutable runner/web deployment pair**
 
+  **Before triggering this job by hand after a push, wait for two separate
+  things, and confirm each.** `set-self` rewrites the pipeline from the branch
+  tip, while this job's `repo` is admitted by `passed: [unit-tests]`. Those
+  advance independently, so a manual trigger can run a new inline task script
+  against an older checkout.
+
+  1. `set-self` has applied the new config — confirm by reading the live config
+     (`fly -t home get-pipeline -p jetbridge`), not by the age of the last
+     `set-self` build. A `succeeded` row may be a previous run.
+  2. The job's `passed:` gate has admitted the new commit — confirm
+     `fly -t home resource-versions -r jetbridge/repo` lists it and that
+     `unit-tests` has gone green *for that version*.
+
+  **`fly trigger-job` returning a build number proves neither.** On 2026-08-02
+  a trigger issued seconds before `set-self` landed produced build #18, which
+  ran the old script, wrote an unpullable `ghcr.io` reference to home-infra,
+  reported `succeeded`, and broke every agent pod once Argo synced it. The
+  writeback task now pins the exact `write-agent-runner-home-infra.sh` it was
+  written against and fails closed on that skew, so a repeat aborts before
+  writing — but the wait is still the correct operating procedure, because
+  failing closed costs a full rebuild cycle.
+
   Use Task 6A's exact successful `build-agent-runner-image` build; do not
   trigger an unpaired replacement build. Require its log to show a successful
   `/usr/local/bin/agent-runner-image-smoke` and capture the printed line:

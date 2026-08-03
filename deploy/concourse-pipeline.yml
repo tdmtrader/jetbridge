@@ -901,6 +901,36 @@ jobs:
           printf '%s\n' "$SOURCE_COMMIT" | grep -Eq '^[a-f0-9]{40}$'
           printf '%s\n' "$RUNNER_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'
           test "$SOURCE_COMMIT" = "$(git -C repo rev-parse HEAD)"
+          # This inline script and repo/deploy/write-agent-runner-home-infra.sh
+          # enforce ONE contract between them, but they travel separately:
+          # set-self rewrites this config from the branch tip while `repo` is
+          # pinned by `passed:`, so the job can run a new inline script against
+          # an older checkout. On 2026-08-02 that skew hit twice in an hour.
+          # Build #18 ran the old config against the old tree and SUCCEEDED
+          # while writing a ghcr.io reference the cluster cannot pull, breaking
+          # every agent pod; #19 ran the new config against that same old tree
+          # and failed closed only because that commit's copy of the script
+          # happened to be the stricter half. Nothing detected the skew itself.
+          #
+          # The SOURCE_COMMIT check above passed in BOTH of those builds: the
+          # metadata and the checkout always agree, because the same builder
+          # produced them. The half that can disagree is this config versus the
+          # checkout, so pin the exact script this config was written against.
+          # deploy/write_agent_runner_home_infra_test.go keeps the pin honest,
+          # so editing the script without updating the pin fails in unit tests
+          # rather than mid-deployment.
+          EXPECTED_WRITEBACK_SHA256=e9a457227cc254f8e7f61fe240068acc012cd551c27bfa647123345d349015c9
+          ACTUAL_WRITEBACK_SHA256=$(sha256sum repo/deploy/write-agent-runner-home-infra.sh | cut -d' ' -f1)
+          if test "${ACTUAL_WRITEBACK_SHA256}" != "${EXPECTED_WRITEBACK_SHA256}"; then
+            echo "FATAL: pipeline config and repo checkout disagree."
+            echo "  this config expects write-agent-runner-home-infra.sh ${EXPECTED_WRITEBACK_SHA256}"
+            echo "  the ${SOURCE_COMMIT} checkout has                     ${ACTUAL_WRITEBACK_SHA256}"
+            echo "Wait for set-self AND for this job's passed: gate to admit"
+            echo "the same commit, then re-run. A build number from"
+            echo "'fly trigger-job' proves neither has happened."
+            exit 1
+          fi
+
           # Output volumes survive an interrupted ATC task replay. Start from
           # the immutable input so stale Git locks or files cannot leak into
           # the next supervised push.

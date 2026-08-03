@@ -1,6 +1,8 @@
 package deploy
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -429,6 +431,37 @@ func TestWriteAgentRunnerHomeInfra(t *testing.T) {
 	})
 }
 
+// requirePinnedWritebackScript keeps the writeback task's pinned digest equal
+// to the script it actually invokes.
+//
+// The pin exists because the pipeline config and the repo checkout travel
+// separately — set-self rewrites the config from the branch tip while `repo`
+// is gated by `passed:`, so the job can run a new inline script against an
+// older tree. Without the pin that skew is undetectable, and on 2026-08-02 it
+// produced a build that reported success while writing an unpullable image
+// reference. The pin only fails closed if it stays current, so assert it here
+// rather than discovering a stale constant during a deployment.
+func requirePinnedWritebackScript(t *testing.T, updateScript string) {
+	t.Helper()
+	script, err := os.ReadFile(filepath.Join("write-agent-runner-home-infra.sh"))
+	if err != nil {
+		t.Fatalf("read writeback script: %v", err)
+	}
+	want := fmt.Sprintf("%x", sha256.Sum256(script))
+	if !strings.Contains(updateScript, "EXPECTED_WRITEBACK_SHA256="+want) {
+		t.Errorf("writeback task does not pin the current write-agent-runner-home-infra.sh (%s).\n"+
+			"If you edited that script, update EXPECTED_WRITEBACK_SHA256 in deploy/concourse-pipeline.yml to match.", want)
+	}
+	for _, required := range []string{
+		`ACTUAL_WRITEBACK_SHA256=$(sha256sum repo/deploy/write-agent-runner-home-infra.sh | cut -d' ' -f1)`,
+		`if test "${ACTUAL_WRITEBACK_SHA256}" != "${EXPECTED_WRITEBACK_SHA256}"; then`,
+	} {
+		if !strings.Contains(updateScript, required) {
+			t.Errorf("writeback task lacks skew guard %q", required)
+		}
+	}
+}
+
 func TestAgentRunnerPipelineWritesVerifiedHomeInfraDigest(t *testing.T) {
 	pipeline := readDeployPipeline(t, "concourse-pipeline.yml")
 	var resource deployPipelineResource
@@ -521,6 +554,7 @@ func TestAgentRunnerPipelineWritesVerifiedHomeInfraDigest(t *testing.T) {
 			t.Errorf("writeback task contains forbidden %q", forbidden)
 		}
 	}
+	requirePinnedWritebackScript(t, updateScript)
 	for _, job := range pipeline.Jobs {
 		if job.Name != "self-upgrade" {
 			continue
