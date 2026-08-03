@@ -8,6 +8,8 @@ import (
 	"path"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/concourse/concourse/agent/snapshot"
 )
 
 func validatePOSIXPath(label, value string) error {
@@ -39,12 +41,12 @@ func requireRegularPayload(root *os.Root, label, name string) error {
 	info, err := root.Lstat(name)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("%s %q is missing", label, name)
+			return publicRecordFailure(snapshot.SnapshotTreeInvalid, "%s %q is missing", label, name)
 		}
 		return fmt.Errorf("inspect %s %q: %w", label, name, err)
 	}
 	if !info.Mode().IsRegular() {
-		return fmt.Errorf("%s %q must be a regular file", label, name)
+		return publicRecordFailure(snapshot.SnapshotTreeInvalid, "%s %q must be a regular file", label, name)
 	}
 	return nil
 }

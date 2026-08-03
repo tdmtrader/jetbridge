@@ -86,13 +86,14 @@ func ValidateArchiveLimits(ctx context.Context, source io.Reader, limits Archive
 			return fmt.Errorf("snapshot: inspect archive terminator: %w", trailingErr)
 		}
 		if err != nil {
-			return fmt.Errorf("snapshot: read admitted archive: %w", err)
+			return publicArchiveFailure(ArchiveStreamUnreadable, "", "snapshot: read admitted archive: %w", err)
 		}
 		if err := validateHeader(header); err != nil {
 			return err
 		}
 		if _, exists := seenHeaders[header.Name]; exists {
-			return fmt.Errorf("snapshot: duplicate canonical path %q", header.Name)
+			return publicArchiveFailure(ArchivePathDuplicate, header.Name,
+				"snapshot: duplicate canonical path %q", header.Name)
 		}
 		seenHeaders[header.Name] = struct{}{}
 		kind := headerKind(header.Typeflag)
@@ -125,7 +126,8 @@ func ValidateArchiveLimits(ctx context.Context, source io.Reader, limits Archive
 			return fmt.Errorf("snapshot: read regular content for %q: %w", header.Name, err)
 		}
 		if copied != header.Size {
-			return fmt.Errorf("snapshot: regular file %q is truncated: copied %d of %d bytes", header.Name, copied, header.Size)
+			return publicArchiveFailure(ArchiveEntrySizeInvalid, header.Name,
+				"snapshot: regular file %q is truncated: copied %d of %d bytes", header.Name, copied, header.Size)
 		}
 	}
 }
@@ -730,14 +732,15 @@ func extractTar(
 			return index, nil
 		}
 		if err != nil {
-			return nil, fmt.Errorf("snapshot: read tar header: %w", err)
+			return nil, publicArchiveFailure(ArchiveStreamUnreadable, "", "snapshot: read tar header: %w", err)
 		}
 		if err := validateHeader(hdr); err != nil {
 			return nil, err
 		}
 		name := hdr.Name
 		if _, exists := seenHeaders[name]; exists {
-			return nil, fmt.Errorf("snapshot: duplicate canonical path %q", name)
+			return nil, publicArchiveFailure(ArchivePathDuplicate, name,
+				"snapshot: duplicate canonical path %q", name)
 		}
 		seenHeaders[name] = struct{}{}
 		kind := headerKind(hdr.Typeflag)
@@ -851,10 +854,12 @@ func planMaterialization(name string, kind extractedKind, materialized map[strin
 		parent := strings.Join(segments[:i], "/")
 		if existing, found := materialized[parent]; found {
 			if existing.kind == extractedSymlink {
-				return nil, fmt.Errorf("snapshot: path %q has symlink parent %q", name, parent)
+				return nil, publicArchiveFailure(ArchivePathParentInvalid, name,
+					"snapshot: path %q has symlink parent %q", name, parent)
 			}
 			if existing.kind != extractedDirectory {
-				return nil, fmt.Errorf("snapshot: path %q has non-directory parent %q", name, parent)
+				return nil, publicArchiveFailure(ArchivePathParentInvalid, name,
+					"snapshot: path %q has non-directory parent %q", name, parent)
 			}
 			continue
 		}
@@ -864,9 +869,21 @@ func planMaterialization(name string, kind extractedKind, materialized map[strin
 		if existing.kind == extractedDirectory && kind == extractedDirectory {
 			return planned, nil
 		}
-		return nil, fmt.Errorf("snapshot: path %q conflicts with an already materialized path", name)
+		return nil, publicArchiveFailure(ArchivePathDuplicate, name,
+			"snapshot: path %q conflicts with an already materialized path", name)
 	}
 	return append(planned, materialization{name: name}), nil
+}
+
+// publicArchiveFailure attaches one closed archive-rejection reason, plus the
+// name of the offending entry, to a canonicalizer rejection.
+//
+// The reason is always a compile-time constant. The entry is the only
+// caller-derived value that survives to a client, and it survives sanitized and
+// bounded — see sanitizePublicEntry. The formatted cause stays private: it is
+// what reaches the server log, and it is free to quote the raw bytes.
+func publicArchiveFailure(reason ValidationFailureReason, entry, format string, args ...any) error {
+	return NewPublicValidationFailureForEntry(reason, entry, fmt.Errorf(format, args...))
 }
 
 func validateHeader(hdr *tar.Header) error {
@@ -874,7 +891,8 @@ func validateHeader(hdr *tar.Header) error {
 		return err
 	}
 	if len(hdr.Xattrs) != 0 {
-		return fmt.Errorf("snapshot: PAX and extended metadata are not supported for %q", hdr.Name)
+		return publicArchiveFailure(ArchiveEntryMetadataUnsupported, hdr.Name,
+			"snapshot: PAX and extended metadata are not supported for %q", hdr.Name)
 	}
 	for key, value := range hdr.PAXRecords {
 		switch key {
@@ -884,59 +902,73 @@ func validateHeader(hdr *tar.Header) error {
 			// the hidden base header contained. The effective Name was validated
 			// above and is the only name we materialize.
 			if value != hdr.Name {
-				return fmt.Errorf("snapshot: inconsistent PAX path metadata for %q", hdr.Name)
+				return publicArchiveFailure(ArchiveEntryMetadataUnsupported, hdr.Name,
+					"snapshot: inconsistent PAX path metadata for %q", hdr.Name)
 			}
 		case "linkpath":
 			if hdr.Typeflag != tar.TypeSymlink {
-				return fmt.Errorf("snapshot: PAX linkpath is only permitted for symlink entries")
+				return publicArchiveFailure(ArchiveEntryMetadataUnsupported, hdr.Name,
+					"snapshot: PAX linkpath is only permitted for symlink entries")
 			}
 			if value != hdr.Linkname {
-				return fmt.Errorf("snapshot: inconsistent PAX link metadata for %q", hdr.Name)
+				return publicArchiveFailure(ArchiveEntryMetadataUnsupported, hdr.Name,
+					"snapshot: inconsistent PAX link metadata for %q", hdr.Name)
 			}
 		default:
-			return fmt.Errorf("snapshot: unsupported PAX metadata %q for %q", key, hdr.Name)
+			return publicArchiveFailure(ArchiveEntryMetadataUnsupported, hdr.Name,
+				"snapshot: unsupported PAX metadata %q for %q", key, hdr.Name)
 		}
 	}
 	if hdr.Mode&06000 != 0 {
-		return fmt.Errorf("snapshot: setuid or setgid bits are not permitted for %q", hdr.Name)
+		return publicArchiveFailure(ArchiveEntryMetadataUnsupported, hdr.Name,
+			"snapshot: setuid or setgid bits are not permitted for %q", hdr.Name)
 	}
 	switch hdr.Typeflag {
 	case tar.TypeReg, tar.TypeRegA:
 		if hdr.Size < 0 {
-			return fmt.Errorf("snapshot: regular file %q has negative size", hdr.Name)
+			return publicArchiveFailure(ArchiveEntrySizeInvalid, hdr.Name,
+				"snapshot: regular file %q has negative size", hdr.Name)
 		}
 	case tar.TypeDir, tar.TypeSymlink:
 		if hdr.Size != 0 {
-			return fmt.Errorf("snapshot: non-regular entry %q declares content", hdr.Name)
+			return publicArchiveFailure(ArchiveEntrySizeInvalid, hdr.Name,
+				"snapshot: non-regular entry %q declares content", hdr.Name)
 		}
 	default:
-		return fmt.Errorf("snapshot: unsupported tar entry type %q for %q", hdr.Typeflag, hdr.Name)
+		return publicArchiveFailure(ArchiveEntryTypeUnsupported, hdr.Name,
+			"snapshot: unsupported tar entry type %q for %q", hdr.Typeflag, hdr.Name)
 	}
 	return nil
 }
 
 func validateArchivePath(name string) error {
 	if name == "" {
-		return fmt.Errorf("snapshot: archive path is empty")
+		return publicArchiveFailure(ArchivePathNotCanonical, name, "snapshot: archive path is empty")
 	}
 	if int64(len(name)) > MaxSnapshotPathBytes {
-		return fmt.Errorf("snapshot: archive path exceeds %d bytes", MaxSnapshotPathBytes)
+		return publicArchiveFailure(ArchivePathTooLong, name,
+			"snapshot: archive path exceeds %d bytes", MaxSnapshotPathBytes)
 	}
 	if strings.Contains(name, `\`) {
-		return fmt.Errorf("snapshot: archive path %q contains a backslash", name)
+		return publicArchiveFailure(ArchivePathNotCanonical, name,
+			"snapshot: archive path %q contains a backslash", name)
 	}
 	if path.IsAbs(name) {
-		return fmt.Errorf("snapshot: archive path %q is absolute", name)
+		return publicArchiveFailure(ArchivePathNotCanonical, name,
+			"snapshot: archive path %q is absolute", name)
 	}
 	if containsDriveLikeSegment(name) {
-		return fmt.Errorf("snapshot: archive path %q is drive-like", name)
+		return publicArchiveFailure(ArchivePathNotCanonical, name,
+			"snapshot: archive path %q is drive-like", name)
 	}
 	if strings.HasSuffix(name, "/") {
-		return fmt.Errorf("snapshot: archive path %q has a trailing separator", name)
+		return publicArchiveFailure(ArchivePathNotCanonical, name,
+			"snapshot: archive path %q has a trailing separator", name)
 	}
 	for _, segment := range strings.Split(name, "/") {
 		if segment == "" || segment == "." || segment == ".." {
-			return fmt.Errorf("snapshot: archive path %q contains an empty, dot, or traversal segment", name)
+			return publicArchiveFailure(ArchivePathNotCanonical, name,
+				"snapshot: archive path %q contains an empty, dot, or traversal segment", name)
 		}
 	}
 	return nil
@@ -963,7 +995,8 @@ func ensureUnmaterialized(root *os.Root, name string) error {
 }
 
 func hostEquivalentCollision(name string, err error) error {
-	return fmt.Errorf("snapshot: host-equivalent collision at POSIX path %q: %w", name, err)
+	return publicArchiveFailure(ArchivePathCollides, name,
+		"snapshot: host-equivalent collision at POSIX path %q: %w", name, err)
 }
 
 func materializeDirectory(root *os.Root, name string, beforeMaterialize func(*os.Root, string) error) (capturedEntry, error) {
@@ -1000,10 +1033,12 @@ func validateHostParents(root *os.Root, name string) error {
 			return fmt.Errorf("snapshot: inspect parent %q for %q: %w", parent, name, err)
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("snapshot: path %q has symlink parent %q", name, parent)
+			return publicArchiveFailure(ArchivePathParentInvalid, name,
+				"snapshot: path %q has symlink parent %q", name, parent)
 		}
 		if !info.IsDir() {
-			return fmt.Errorf("snapshot: path %q has non-directory parent %q", name, parent)
+			return publicArchiveFailure(ArchivePathParentInvalid, name,
+				"snapshot: path %q has non-directory parent %q", name, parent)
 		}
 	}
 	return nil
@@ -1111,7 +1146,8 @@ func extractRegular(
 		return capturedEntry{}, fmt.Errorf("%w: archive exceeds regular content limit of %d bytes", ErrLimitExceeded, maxContent)
 	}
 	if written != hdr.Size {
-		return capturedEntry{}, fmt.Errorf("snapshot: regular file %q is truncated: copied %d of %d bytes", hdr.Name, written, hdr.Size)
+		return capturedEntry{}, publicArchiveFailure(ArchiveEntrySizeInvalid, hdr.Name,
+			"snapshot: regular file %q is truncated: copied %d of %d bytes", hdr.Name, written, hdr.Size)
 	}
 	entry := capturedEntry{
 		name: hdr.Name, kind: extractedRegular, mode: int64(mode), size: written,
@@ -1285,26 +1321,35 @@ func sortSpoolEntries(regulars []capturedEntry) {
 	})
 }
 
+// cleanSymlinkTarget publishes the SYMLINK's own name, never its target. The
+// target is caller data too, and the entry a caller has to go and fix is the
+// link, so republishing both would double the exposure for no extra help.
 func cleanSymlinkTarget(name, target string) (string, error) {
 	if target == "" {
-		return "", fmt.Errorf("snapshot: symlink %q has an empty target", name)
+		return "", publicArchiveFailure(ArchiveSymlinkTargetInvalid, name,
+			"snapshot: symlink %q has an empty target", name)
 	}
 	if int64(len(target)) > MaxSnapshotSymlinkTargetBytes {
-		return "", fmt.Errorf("snapshot: symlink %q target exceeds %d bytes", name, MaxSnapshotSymlinkTargetBytes)
+		return "", publicArchiveFailure(ArchiveSymlinkTargetInvalid, name,
+			"snapshot: symlink %q target exceeds %d bytes", name, MaxSnapshotSymlinkTargetBytes)
 	}
 	if strings.Contains(target, `\`) {
-		return "", fmt.Errorf("snapshot: symlink %q target contains a backslash", name)
+		return "", publicArchiveFailure(ArchiveSymlinkTargetInvalid, name,
+			"snapshot: symlink %q target contains a backslash", name)
 	}
 	if path.IsAbs(target) {
-		return "", fmt.Errorf("snapshot: symlink %q target is absolute", name)
+		return "", publicArchiveFailure(ArchiveSymlinkTargetInvalid, name,
+			"snapshot: symlink %q target is absolute", name)
 	}
 	if containsDriveLikeSegment(target) {
-		return "", fmt.Errorf("snapshot: symlink %q target is drive-like", name)
+		return "", publicArchiveFailure(ArchiveSymlinkTargetInvalid, name,
+			"snapshot: symlink %q target is drive-like", name)
 	}
 	cleaned := path.Clean(target)
 	resolved := path.Clean(path.Join(path.Dir(name), cleaned))
 	if resolved == ".." || strings.HasPrefix(resolved, "../") {
-		return "", fmt.Errorf("snapshot: symlink %q target escapes the archive root", name)
+		return "", publicArchiveFailure(ArchiveSymlinkEscapesRoot, name,
+			"snapshot: symlink %q target escapes the archive root", name)
 	}
 	return cleaned, nil
 }

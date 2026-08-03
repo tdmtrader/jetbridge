@@ -35,18 +35,18 @@ type WorkItemDocument struct {
 
 func (d WorkItemDocument) Validate() error {
 	if d.SchemaVersion != "1.0.0" {
-		return fmt.Errorf("schema_version must be exactly 1.0.0")
+		return publicRecordFailure(snapshot.RecordFieldValueNotAllowed, "schema_version must be exactly 1.0.0")
 	}
 	for name, value := range map[string]string{
 		"adapter": d.Adapter, "external_id": d.ExternalID, "revision": d.Revision,
 		"captured_at": d.CapturedAt, "title": d.Title, "body": d.Body,
 	} {
 		if strings.TrimSpace(value) == "" {
-			return fmt.Errorf("%s is required", name)
+			return publicRecordFailure(snapshot.RecordFieldMissing, "%s is required", name)
 		}
 	}
 	if _, err := time.Parse(time.RFC3339, d.CapturedAt); err != nil {
-		return fmt.Errorf("captured_at must be RFC3339: %w", err)
+		return publicRecordFailure(snapshot.RecordFieldTypeInvalid, "captured_at must be RFC3339: %w", err)
 	}
 	return nil
 }

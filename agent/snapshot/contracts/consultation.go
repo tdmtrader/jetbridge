@@ -32,7 +32,7 @@ func (body ConsultationBody) Validate(subjects []Subject) error {
 		return err
 	}
 	if strings.TrimSpace(body.Answer) == "" {
-		return fmt.Errorf("answer is required")
+		return publicRecordFailure(snapshot.RecordFieldMissing, "answer is required")
 	}
 	claimIDs := make([]string, len(body.Claims))
 	for index, claim := range body.Claims {
@@ -51,7 +51,7 @@ func (body ConsultationBody) Validate(subjects []Subject) error {
 	} {
 		for index, value := range values {
 			if strings.TrimSpace(value) == "" {
-				return fmt.Errorf("%s[%d] must not be blank", name, index)
+				return publicRecordFailure(snapshot.RecordFieldMissing, "%s[%d] must not be blank", name, index)
 			}
 		}
 	}
@@ -63,7 +63,7 @@ func (claim ConsultationClaim) Validate(subjects map[string]struct{}) error {
 		return err
 	}
 	if strings.TrimSpace(claim.Statement) == "" {
-		return fmt.Errorf("claim statement is required")
+		return publicRecordFailure(snapshot.RecordFieldMissing, "claim statement is required")
 	}
 	for index, anchor := range claim.Evidence {
 		if err := anchor.Validate(subjects); err != nil {

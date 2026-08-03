@@ -25,9 +25,12 @@ func (d DatabaseSnapshotDocument) Validate() error {
 		return err
 	}
 	if _, err := time.Parse(time.RFC3339, d.CapturedAt); err != nil {
-		return fmt.Errorf("captured_at must be RFC3339: %w", err)
+		return publicRecordFailure(snapshot.RecordFieldTypeInvalid, "captured_at must be RFC3339: %w", err)
 	}
-	return validatePOSIXPath("data_path", d.DataPath)
+	if err := validatePOSIXPath("data_path", d.DataPath); err != nil {
+		return publicRecordCause(snapshot.RecordFieldTypeInvalid, err)
+	}
+	return nil
 }
 
 type DeploymentSnapshotDocument struct {
@@ -46,9 +49,12 @@ func (d DeploymentSnapshotDocument) Validate() error {
 		return err
 	}
 	if _, err := time.Parse(time.RFC3339, d.CapturedAt); err != nil {
-		return fmt.Errorf("captured_at must be RFC3339: %w", err)
+		return publicRecordFailure(snapshot.RecordFieldTypeInvalid, "captured_at must be RFC3339: %w", err)
 	}
-	return validatePOSIXPath("manifest_path", d.ManifestPath)
+	if err := validatePOSIXPath("manifest_path", d.ManifestPath); err != nil {
+		return publicRecordCause(snapshot.RecordFieldTypeInvalid, err)
+	}
+	return nil
 }
 
 type AuditFindingsDocument struct {
@@ -83,7 +89,8 @@ func (d AuditFindingsDocument) Validate() error {
 		switch finding.Severity {
 		case "critical", "high", "medium", "low":
 		default:
-			return fmt.Errorf("findings[%d].severity must be one of critical, high, medium, low", i)
+			return publicRecordFailure(snapshot.RecordFieldValueNotAllowed,
+				"findings[%d].severity must be one of critical, high, medium, low", i)
 		}
 		if finding.Path != "" {
 			if err := validatePOSIXPath("path", finding.Path); err != nil {
@@ -91,13 +98,13 @@ func (d AuditFindingsDocument) Validate() error {
 			}
 		}
 		if finding.Line < 0 {
-			return fmt.Errorf("findings[%d].line must be positive when present", i)
+			return publicRecordFailure(snapshot.RecordFieldOutOfRange, "findings[%d].line must be positive when present", i)
 		}
 		if finding.Line > 0 && finding.Path == "" {
-			return fmt.Errorf("findings[%d].path is required when line is present", i)
+			return publicRecordFailure(snapshot.RecordFieldMissing, "findings[%d].path is required when line is present", i)
 		}
 		if _, found := seen[finding.ID]; found {
-			return fmt.Errorf("findings[%d].id %q is duplicate", i, finding.ID)
+			return publicRecordFailure(snapshot.RecordEntityIDDuplicate, "findings[%d].id %q is duplicate", i, finding.ID)
 		}
 		seen[finding.ID] = struct{}{}
 	}
@@ -119,7 +126,8 @@ func (v auditValidator) Validate(ctx context.Context, root *os.Root, _ snapshot.
 			return snapshot.ValidationResult{}, fmt.Errorf("snapshot contracts: database-snapshot.json: %w", err)
 		}
 		if document.DataPath == "database-snapshot.json" {
-			return snapshot.ValidationResult{}, fmt.Errorf("snapshot contracts: data_path must name snapshot payload")
+			return snapshot.ValidationResult{}, publicRecordFailure(snapshot.RecordFieldTypeInvalid,
+				"snapshot contracts: data_path must name snapshot payload")
 		}
 		if err := requireRegularPayload(root, "data_path", document.DataPath); err != nil {
 			return snapshot.ValidationResult{}, fmt.Errorf("snapshot contracts: database-snapshot.json: %w", err)
@@ -133,7 +141,8 @@ func (v auditValidator) Validate(ctx context.Context, root *os.Root, _ snapshot.
 			return snapshot.ValidationResult{}, fmt.Errorf("snapshot contracts: deployment-snapshot.json: %w", err)
 		}
 		if document.ManifestPath == "deployment-snapshot.json" {
-			return snapshot.ValidationResult{}, fmt.Errorf("snapshot contracts: manifest_path must name snapshot payload")
+			return snapshot.ValidationResult{}, publicRecordFailure(snapshot.RecordFieldTypeInvalid,
+				"snapshot contracts: manifest_path must name snapshot payload")
 		}
 		if err := requireRegularPayload(root, "manifest_path", document.ManifestPath); err != nil {
 			return snapshot.ValidationResult{}, fmt.Errorf("snapshot contracts: deployment-snapshot.json: %w", err)

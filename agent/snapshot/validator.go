@@ -18,6 +18,18 @@ import (
 var canonicalSnapshotPortName = regexp.MustCompile(`^[\p{Ll}\p{Lt}\p{Lm}\p{Lo}\d][\p{Ll}\p{Lt}\p{Lm}\p{Lo}\d\-_.]*$`)
 var numericSnapshotPortName = regexp.MustCompile(`^\d+$`)
 
+// ValidationFailureReason is a CLOSED set. A reason is a compile-time constant
+// with a fixed public message: nothing derived from caller-submitted bytes ever
+// becomes a reason, which is what makes it safe to publish one verbatim.
+//
+// The three families below are not interchangeable, and the HTTP layer maps them
+// to different statuses:
+//
+//   - Repository* is one snapshot type's git-level judgment.
+//   - Archive* is a rejection by the canonicalizer, BEFORE any type-specific
+//     validator runs. These reach a client as 400 invalid_archive.
+//   - Record*/Snapshot* are contract-body judgments, and reach a client as 422
+//     validation_failed.
 type ValidationFailureReason string
 
 const (
@@ -30,12 +42,122 @@ const (
 	RepositoryInvalid                 ValidationFailureReason = "repository_invalid"
 )
 
-// PublicValidationFailure carries one closed, safe-to-publish repository
-// validation category while preserving its detailed cause exclusively for
-// structured server logging.
+// Archive rejection categories. Each one is a family of rules the canonicalizer
+// actually enforces in archive.go; none of them is a rule that does not exist.
+const (
+	// ArchivePathNotCanonical covers validateArchivePath's shape rules: an empty
+	// name, a backslash, an absolute path, a drive-like segment, a trailing
+	// separator, and any empty, "." or ".." segment. A "./" entry and a "dir/"
+	// entry both land here.
+	ArchivePathNotCanonical ValidationFailureReason = "archive_path_not_canonical"
+
+	// ArchivePathTooLong is validateArchivePath's MaxSnapshotPathBytes bound. It
+	// is separated from the shape rules because a too-long path is the one
+	// non-canonical path whose ONLY defect is length, and the caller's fix is
+	// different.
+	ArchivePathTooLong ValidationFailureReason = "archive_path_too_long"
+
+	// ArchivePathDuplicate is one canonical path appearing twice, and the related
+	// planMaterialization rejection where a path conflicts with something already
+	// materialized at that name.
+	ArchivePathDuplicate ValidationFailureReason = "archive_path_duplicate"
+
+	// ArchivePathParentInvalid is an entry whose parent is a symlink or is not a
+	// directory, from either planMaterialization or validateHostParents.
+	ArchivePathParentInvalid ValidationFailureReason = "archive_path_parent_invalid"
+
+	// ArchivePathCollides is hostEquivalentCollision: two DISTINCT POSIX names
+	// that the extraction filesystem aliases onto one another. It is deliberately
+	// not ArchivePathDuplicate — the archive is self-consistent and the host is
+	// what cannot represent it.
+	ArchivePathCollides ValidationFailureReason = "archive_path_collides"
+
+	// ArchiveEntryTypeUnsupported is a typeflag outside {regular, directory,
+	// symlink}: hard links, devices, FIFOs, sockets.
+	ArchiveEntryTypeUnsupported ValidationFailureReason = "archive_entry_type_unsupported"
+
+	// ArchiveEntryMetadataUnsupported is validateHeader's metadata rules: xattrs,
+	// unsupported or inconsistent PAX records, and setuid/setgid bits.
+	ArchiveEntryMetadataUnsupported ValidationFailureReason = "archive_entry_metadata_unsupported"
+
+	// ArchiveEntrySizeInvalid is a negative regular size, a non-regular entry
+	// that declares content, or a regular entry whose content is truncated
+	// relative to its header.
+	ArchiveEntrySizeInvalid ValidationFailureReason = "archive_entry_size_invalid"
+
+	// ArchiveSymlinkTargetInvalid is cleanSymlinkTarget's shape rules: an empty,
+	// over-long, backslashed, absolute, or drive-like target.
+	ArchiveSymlinkTargetInvalid ValidationFailureReason = "archive_symlink_target_invalid"
+
+	// ArchiveSymlinkEscapesRoot is the containment rule: a target that resolves
+	// outside the archive root.
+	ArchiveSymlinkEscapesRoot ValidationFailureReason = "archive_symlink_escapes_root"
+
+	// ArchiveStreamUnreadable is the tar stream itself failing to parse.
+	ArchiveStreamUnreadable ValidationFailureReason = "archive_stream_unreadable"
+)
+
+// Record and tree contract categories. These are cross-contract on purpose: the
+// generic core validator in agent/snapshot/contracts enforces the declared half
+// of every record type in one place, so a reason attached there covers review,
+// diagnosis, consultation, validation, measurements, repository-change,
+// pull-request, pull-request-response, and publish-impact at once.
+const (
+	RecordDocumentMissing        ValidationFailureReason = "record_document_missing"
+	RecordDocumentMalformed      ValidationFailureReason = "record_document_malformed"
+	RecordEnvelopeInvalid        ValidationFailureReason = "record_envelope_invalid"
+	RecordSubjectsInvalid        ValidationFailureReason = "record_subjects_invalid"
+	RecordFieldMissing           ValidationFailureReason = "record_field_missing"
+	RecordFieldForbidden         ValidationFailureReason = "record_field_forbidden"
+	RecordFieldTypeInvalid       ValidationFailureReason = "record_field_type_invalid"
+	RecordFieldValueNotAllowed   ValidationFailureReason = "record_field_value_not_allowed"
+	RecordFieldOutOfRange        ValidationFailureReason = "record_field_out_of_range"
+	RecordIdentifierInvalid      ValidationFailureReason = "record_identifier_invalid"
+	RecordEntityIDDuplicate      ValidationFailureReason = "record_entity_id_duplicate"
+	RecordEntityIDsUnsorted      ValidationFailureReason = "record_entity_ids_unsorted"
+	RecordAnchorInvalid          ValidationFailureReason = "record_anchor_invalid"
+	RecordConclusionInconsistent ValidationFailureReason = "record_conclusion_inconsistent"
+	RecordBlockingInconsistent   ValidationFailureReason = "record_blocking_inconsistent"
+	RecordEvidenceMissing        ValidationFailureReason = "record_evidence_missing"
+	RecordRankInvalid            ValidationFailureReason = "record_rank_invalid"
+	RecordReferenceUnknown       ValidationFailureReason = "record_reference_unknown"
+	SnapshotTreeInvalid          ValidationFailureReason = "snapshot_tree_invalid"
+)
+
+const (
+	// MaxPublicEntryBytes bounds the ONE caller-derived string this package
+	// republishes to a client: the name of the archive entry a rejection is
+	// about.
+	//
+	// It is deliberately far below MaxSnapshotPathBytes. A 4KiB path in an error
+	// envelope is a log-flooding and rendering hazard rather than extra help;
+	// what a caller needs is enough of the name to find the file. 256 bytes is
+	// the bound this package already applies to the other caller-derived string
+	// it retains (maxValidationToolchainBytes), and holding the two together
+	// means there is one number to reason about instead of two.
+	MaxPublicEntryBytes = 256
+
+	// PublicEntryTruncationMarker terminates a truncated entry name. Truncation
+	// is never silent: a prefix of a path and a path are different claims about
+	// what the archive contains, and a reader has to be able to tell which one
+	// they were handed. U+2026 is one rune and is far rarer in real paths than
+	// three ASCII dots.
+	PublicEntryTruncationMarker = "…"
+)
+
+// PublicValidationFailure carries one closed, safe-to-publish validation
+// category while preserving its detailed cause exclusively for structured
+// server logging.
+//
+// It may additionally carry the archive entry the rejection is about. That is
+// the single deliberate widening of the envelope: the reason stays a
+// compile-time constant, and only the entry is caller-derived — bounded to
+// MaxPublicEntryBytes and sanitized by sanitizePublicEntry before it is stored,
+// never at read time, so no accessor can hand out an unsanitized value.
 type PublicValidationFailure struct {
 	reason  ValidationFailureReason
 	message string
+	entry   string
 	cause   error
 }
 
@@ -50,6 +172,22 @@ func NewPublicValidationFailure(reason ValidationFailureReason, cause error) err
 	return &PublicValidationFailure{reason: reason, message: message, cause: cause}
 }
 
+// NewPublicValidationFailureForEntry is NewPublicValidationFailure plus the one
+// detail a closed reason cannot express: WHICH entry was rejected.
+//
+// It routes through NewPublicValidationFailure rather than constructing the
+// struct, so the fail-safe for an unregistered reason or a nil cause has exactly
+// one implementation and cannot be bypassed by using the newer door.
+func NewPublicValidationFailureForEntry(reason ValidationFailureReason, entry string, cause error) error {
+	failure := NewPublicValidationFailure(reason, cause)
+	public, ok := failure.(*PublicValidationFailure)
+	if !ok {
+		return failure
+	}
+	public.entry = sanitizePublicEntry(entry)
+	return public
+}
+
 func (failure *PublicValidationFailure) Error() string {
 	return failure.message + ": " + failure.cause.Error()
 }
@@ -59,6 +197,48 @@ func (failure *PublicValidationFailure) Unwrap() error { return failure.cause }
 func (failure *PublicValidationFailure) Reason() ValidationFailureReason { return failure.reason }
 
 func (failure *PublicValidationFailure) PublicMessage() string { return failure.message }
+
+// Entry is the sanitized, bounded name of the archive entry this failure is
+// about, or "" when the failure is not about one entry.
+func (failure *PublicValidationFailure) Entry() string { return failure.entry }
+
+// sanitizePublicEntry makes a caller-submitted path safe to place in a JSON
+// error body and in a terminal that renders it.
+//
+// Every byte that is not a printable rune is REPLACED with U+FFFD rather than
+// dropped. Dropping would let two different archives produce the same published
+// name, and would let a name containing an escape sequence shrink into a
+// different, legitimate-looking path; replacing keeps the position of the damage
+// visible and keeps the result the same shape as the original. Three classes go:
+//
+//   - invalid UTF-8, one replacement per invalid byte, so the result is always
+//     valid UTF-8 and can be marshalled without encoding/json substituting its
+//     own replacements;
+//   - Cc and Cf, which covers NUL, the ESC that begins an ANSI sequence, and the
+//     bidi overrides (U+202E and friends) that reorder a rendered path;
+//   - Cs and Co, surrogates and private use, which no real snapshot path needs
+//     and which render unpredictably.
+//
+// The result is at most MaxPublicEntryBytes bytes and is cut on a rune boundary,
+// so truncation can never emit a partial rune.
+func sanitizePublicEntry(entry string) string {
+	budget := MaxPublicEntryBytes - len(PublicEntryTruncationMarker)
+	var sanitized strings.Builder
+	for index := 0; index < len(entry); {
+		character, width := utf8.DecodeRuneInString(entry[index:])
+		if character == utf8.RuneError && width <= 1 {
+			width = 1
+		} else if unicode.In(character, unicode.C) {
+			character = utf8.RuneError
+		}
+		if sanitized.Len()+utf8.RuneLen(character) > budget {
+			return sanitized.String() + PublicEntryTruncationMarker
+		}
+		sanitized.WriteRune(character)
+		index += width
+	}
+	return sanitized.String()
+}
 
 func publicValidationMessage(reason ValidationFailureReason) (string, bool) {
 	switch reason {
@@ -76,6 +256,69 @@ func publicValidationMessage(reason ValidationFailureReason) (string, bool) {
 		return "repository work tree and index must be clean", true
 	case RepositoryInvalid:
 		return "repository object graph is invalid or incomplete", true
+
+	case ArchivePathNotCanonical:
+		return "snapshot archive entry path is not canonical", true
+	case ArchivePathTooLong:
+		return "snapshot archive entry path is too long", true
+	case ArchivePathDuplicate:
+		return "snapshot archive declares one entry path more than once", true
+	case ArchivePathParentInvalid:
+		return "snapshot archive entry has a symlinked or non-directory parent", true
+	case ArchivePathCollides:
+		return "snapshot archive entry paths collide on the extraction filesystem", true
+	case ArchiveEntryTypeUnsupported:
+		return "snapshot archive entry type is unsupported", true
+	case ArchiveEntryMetadataUnsupported:
+		return "snapshot archive entry carries unsupported or unsafe metadata", true
+	case ArchiveEntrySizeInvalid:
+		return "snapshot archive entry declares an invalid content size", true
+	case ArchiveSymlinkTargetInvalid:
+		return "snapshot archive symlink target is not canonical", true
+	case ArchiveSymlinkEscapesRoot:
+		return "snapshot archive symlink target escapes the archive root", true
+	case ArchiveStreamUnreadable:
+		return "snapshot archive stream is not a readable tar", true
+
+	case RecordDocumentMissing:
+		return "a required snapshot document is missing or is not a regular file", true
+	case RecordDocumentMalformed:
+		return "a snapshot document is not strict, well-formed JSON", true
+	case RecordEnvelopeInvalid:
+		return "record envelope version, type, or schema digest is not accepted", true
+	case RecordSubjectsInvalid:
+		return "record subject set does not satisfy its contract", true
+	case RecordFieldMissing:
+		return "a required record field is missing or blank", true
+	case RecordFieldForbidden:
+		return "a record field is present where its contract forbids it", true
+	case RecordFieldTypeInvalid:
+		return "a record field does not have the shape its contract declares", true
+	case RecordFieldValueNotAllowed:
+		return "a record field value is outside the closed set its contract allows", true
+	case RecordFieldOutOfRange:
+		return "a record field value is outside the range its contract allows", true
+	case RecordIdentifierInvalid:
+		return "a record identifier does not match the identifier grammar", true
+	case RecordEntityIDDuplicate:
+		return "a record entity set contains a duplicate id", true
+	case RecordEntityIDsUnsorted:
+		return "a record entity set is not lexicographically sorted by id", true
+	case RecordAnchorInvalid:
+		return "a record anchor does not resolve to a declared subject and locator", true
+	case RecordConclusionInconsistent:
+		return "the record conclusion contradicts the rest of the record", true
+	case RecordBlockingInconsistent:
+		return "a finding severity and its blocking flag contradict each other", true
+	case RecordEvidenceMissing:
+		return "the record omits evidence its contract requires", true
+	case RecordRankInvalid:
+		return "record ranks are not unique and contiguous from one", true
+	case RecordReferenceUnknown:
+		return "the record references an entity it does not contain", true
+	case SnapshotTreeInvalid:
+		return "the snapshot tree does not have the shape its type requires", true
+
 	default:
 		return "", false
 	}

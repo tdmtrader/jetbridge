@@ -31,7 +31,7 @@ func validateDeclaredBody(ref snapshot.TypeRef, subjects []Subject, body any) er
 		return fmt.Errorf("snapshot contracts: %q has no declared schema", ref)
 	}
 	if err := document.validateDecodedRecord(subjects, body); err != nil {
-		return fmt.Errorf("snapshot contracts: record.json body: %w", err)
+		return publishClassifiedRule(fmt.Errorf("snapshot contracts: record.json body: %w", err))
 	}
 	return nil
 }
@@ -70,31 +70,38 @@ func (document SchemaDocument) validateDecodedRecord(subjects []Subject, body an
 func (document SchemaDocument) validateDeclaredSubjectSet(subjects []Subject) error {
 	shape := document.SubjectShape
 	if len(subjects) < shape.Minimum {
-		return fmt.Errorf("subjects: %q requires at least %d subject(s), got %d", document.Contract, shape.Minimum, len(subjects))
+		return classifiedRuleFailure(snapshot.RecordSubjectsInvalid,
+			"subjects: %q requires at least %d subject(s), got %d", document.Contract, shape.Minimum, len(subjects))
 	}
 	if shape.Maximum != nil && len(subjects) > *shape.Maximum {
-		return fmt.Errorf("subjects: %q allows at most %d subject(s), got %d", document.Contract, *shape.Maximum, len(subjects))
+		return classifiedRuleFailure(snapshot.RecordSubjectsInvalid,
+			"subjects: %q allows at most %d subject(s), got %d", document.Contract, *shape.Maximum, len(subjects))
 	}
 	counts := make(map[SubjectRole]int, len(shape.Roles))
 	for _, subject := range subjects {
 		if _, allowed := shape.Roles[subject.Role]; !allowed {
-			return fmt.Errorf("subjects/*/role: %q does not allow the %q role", document.Contract, subject.Role)
+			return classifiedRuleFailure(snapshot.RecordSubjectsInvalid,
+				"subjects/*/role: %q does not allow the %q role", document.Contract, subject.Role)
 		}
 		counts[subject.Role]++
 		if shape.SubjectType != nil && subject.Type != *shape.SubjectType {
-			return fmt.Errorf("subjects/*/type: %q requires every subject to be %q, got %q", document.Contract, *shape.SubjectType, subject.Type)
+			return classifiedRuleFailure(snapshot.RecordSubjectsInvalid,
+				"subjects/*/type: %q requires every subject to be %q, got %q", document.Contract, *shape.SubjectType, subject.Type)
 		}
 		if shape.UniformSubjectType && subject.Type != subjects[0].Type {
-			return fmt.Errorf("subjects/*/type: %q requires every subject to share one snapshot type", document.Contract)
+			return classifiedRuleFailure(snapshot.RecordSubjectsInvalid,
+				"subjects/*/type: %q requires every subject to share one snapshot type", document.Contract)
 		}
 	}
 	for _, role := range sortedRoles(shape.Roles) {
 		bounds := shape.Roles[role]
 		if counts[role] < bounds.Minimum {
-			return fmt.Errorf("subjects/*/role: %q requires at least %d subject(s) with the %q role, got %d", document.Contract, bounds.Minimum, role, counts[role])
+			return classifiedRuleFailure(snapshot.RecordSubjectsInvalid,
+				"subjects/*/role: %q requires at least %d subject(s) with the %q role, got %d", document.Contract, bounds.Minimum, role, counts[role])
 		}
 		if bounds.Maximum != nil && counts[role] > *bounds.Maximum {
-			return fmt.Errorf("subjects/*/role: %q allows at most %d subject(s) with the %q role, got %d", document.Contract, *bounds.Maximum, role, counts[role])
+			return classifiedRuleFailure(snapshot.RecordSubjectsInvalid,
+				"subjects/*/role: %q allows at most %d subject(s) with the %q role, got %d", document.Contract, *bounds.Maximum, role, counts[role])
 		}
 	}
 	return nil
@@ -127,11 +134,12 @@ func (document SchemaDocument) validateDeclaredValue(path string, value reflect.
 	switch declaration.Presence {
 	case PresenceRequired:
 		if absent {
-			return fmt.Errorf("%s: is required%s", path, blankNote(declaration))
+			return classifiedRuleFailure(snapshot.RecordFieldMissing, "%s: is required%s", path, blankNote(declaration))
 		}
 	case PresenceForbidden:
 		if !absent {
-			return fmt.Errorf("%s: is forbidden here; the pinning on this field's declaration closes its domain to absence", path)
+			return classifiedRuleFailure(snapshot.RecordFieldForbidden,
+				"%s: is forbidden here; the pinning on this field's declaration closes its domain to absence", path)
 		}
 	}
 	if absent {
@@ -149,7 +157,7 @@ func (document SchemaDocument) validateDeclaredPresentValue(
 	switch declaration.Kind {
 	case KindString, KindMarkdown:
 		if declaration.PathPrefix != "" && !strings.HasPrefix(value.String(), declaration.PathPrefix) {
-			return fmt.Errorf("%s: must be beneath %s", path, declaration.PathPrefix)
+			return classifiedRuleFailure(snapshot.RecordFieldTypeInvalid, "%s: must be beneath %s", path, declaration.PathPrefix)
 		}
 		return nil
 	case KindIdentifier:
@@ -157,14 +165,14 @@ func (document SchemaDocument) validateDeclaredPresentValue(
 		// the message is restated, so that every core rejection LEADS with the field
 		// path in the frozen grammar rather than embedding it mid-sentence.
 		if !recordIdentifierPattern.MatchString(value.String()) {
-			return fmt.Errorf(
+			return classifiedRuleFailure(snapshot.RecordIdentifierInvalid,
 				"%s: %q must be a non-empty identifier containing only letters, digits, dot, underscore, colon, or hyphen",
 				path, value.String(),
 			)
 		}
 		if declaration.resolvesSubject {
 			if _, found := subjects[value.String()]; !found {
-				return fmt.Errorf("%s: %q is not declared by this record", path, value.String())
+				return classifiedRuleFailure(snapshot.RecordAnchorInvalid, "%s: %q is not declared by this record", path, value.String())
 			}
 		}
 		return nil
@@ -175,14 +183,14 @@ func (document SchemaDocument) validateDeclaredPresentValue(
 	case KindFloat:
 		number := dereference(value).Float()
 		if math.IsNaN(number) || math.IsInf(number, 0) {
-			return fmt.Errorf("%s: must be a finite number", path)
+			return classifiedRuleFailure(snapshot.RecordFieldOutOfRange, "%s: must be a finite number", path)
 		}
 		return nil
 	case KindBool:
 		return nil
 	case KindTimestamp:
 		if _, err := time.Parse(time.RFC3339, value.String()); err != nil {
-			return fmt.Errorf("%s: must be an RFC 3339 timestamp with an offset", path)
+			return classifiedRuleFailure(snapshot.RecordFieldTypeInvalid, "%s: must be an RFC 3339 timestamp with an offset", path)
 		}
 		return nil
 	case KindDuration:
@@ -211,7 +219,7 @@ func (document SchemaDocument) validateDeclaredPresentValue(
 func (document SchemaDocument) descendStruct(prefix string, value reflect.Value, subjects map[string]struct{}) error {
 	structValue := dereference(value)
 	if structValue.Kind() != reflect.Struct {
-		return fmt.Errorf("%s: must be an object", prefix)
+		return classifiedRuleFailure(snapshot.RecordFieldTypeInvalid, "%s: must be an object", prefix)
 	}
 	structType := structValue.Type()
 	for index := 0; index < structType.NumField(); index++ {
@@ -267,9 +275,9 @@ func (document SchemaDocument) validateEntitySet(
 		if index > 0 {
 			switch strings.Compare(previous, id) {
 			case 0:
-				return fmt.Errorf("%s: %q is duplicate", idPath, id)
+				return classifiedRuleFailure(snapshot.RecordEntityIDDuplicate, "%s: %q is duplicate", idPath, id)
 			case 1:
-				return fmt.Errorf("%s: must be lexicographically sorted by %s", path, declaration.IDField)
+				return classifiedRuleFailure(snapshot.RecordEntityIDsUnsorted, "%s: must be lexicographically sorted by %s", path, declaration.IDField)
 			}
 		}
 		previous = id
@@ -285,7 +293,7 @@ func (document SchemaDocument) validateArray(
 ) error {
 	slice := dereference(value)
 	if slice.Kind() != reflect.Slice && slice.Kind() != reflect.Array {
-		return fmt.Errorf("%s: must be an array", path)
+		return classifiedRuleFailure(snapshot.RecordFieldTypeInvalid, "%s: must be an array", path)
 	}
 	if !isScalarKind(declaration.Element) {
 		return document.descendElements(path, slice, subjects)
@@ -306,12 +314,12 @@ func (document SchemaDocument) validateArray(
 		}
 		if declaration.Unique {
 			if _, duplicate := seen[element.String()]; duplicate {
-				return fmt.Errorf("%s: %q is duplicate", path, element.String())
+				return classifiedRuleFailure(snapshot.RecordEntityIDDuplicate, "%s: %q is duplicate", path, element.String())
 			}
 			seen[element.String()] = struct{}{}
 		}
 		if declaration.Sorted && index > 0 && strings.Compare(previous, element.String()) > 0 {
-			return fmt.Errorf("%s: must be lexicographically sorted", path)
+			return classifiedRuleFailure(snapshot.RecordEntityIDsUnsorted, "%s: must be lexicographically sorted", path)
 		}
 		previous = element.String()
 	}
@@ -341,7 +349,7 @@ func checkEnumMembership(path string, declaration FieldDeclaration, value string
 	for _, allowed := range declaration.Values {
 		permitted = append(permitted, allowed.Value)
 	}
-	return fmt.Errorf("%s: %q is not one of %s", path, value, strings.Join(permitted, ", "))
+	return classifiedRuleFailure(snapshot.RecordFieldValueNotAllowed, "%s: %q is not one of %s", path, value, strings.Join(permitted, ", "))
 }
 
 func checkIntegerBounds(path string, declaration FieldDeclaration, value reflect.Value) error {
@@ -349,13 +357,13 @@ func checkIntegerBounds(path string, declaration FieldDeclaration, value reflect
 	if declaration.Minimum != nil {
 		minimum, err := strconv.ParseInt(strings.TrimSpace(string(declaration.Minimum)), 10, 64)
 		if err == nil && number < minimum {
-			return fmt.Errorf("%s: %d is below the declared minimum %d", path, number, minimum)
+			return classifiedRuleFailure(snapshot.RecordFieldOutOfRange, "%s: %d is below the declared minimum %d", path, number, minimum)
 		}
 	}
 	if declaration.Maximum != nil {
 		maximum, err := strconv.ParseInt(strings.TrimSpace(string(declaration.Maximum)), 10, 64)
 		if err == nil && number > maximum {
-			return fmt.Errorf("%s: %d is above the declared maximum %d", path, number, maximum)
+			return classifiedRuleFailure(snapshot.RecordFieldOutOfRange, "%s: %d is above the declared maximum %d", path, number, maximum)
 		}
 	}
 	return nil
@@ -364,16 +372,16 @@ func checkIntegerBounds(path string, declaration FieldDeclaration, value reflect
 func checkDurationBounds(path string, declaration FieldDeclaration, value string) error {
 	duration, err := time.ParseDuration(value)
 	if err != nil {
-		return fmt.Errorf("%s: %q is not a Go duration", path, value)
+		return classifiedRuleFailure(snapshot.RecordFieldTypeInvalid, "%s: %q is not a Go duration", path, value)
 	}
 	if minimum, err := durationAttribute("", path, "minimum", declaration.Minimum); err == nil && minimum != nil {
 		if int64(duration) < *minimum {
-			return fmt.Errorf("%s: %q is below the declared minimum %s", path, value, time.Duration(*minimum))
+			return classifiedRuleFailure(snapshot.RecordFieldOutOfRange, "%s: %q is below the declared minimum %s", path, value, time.Duration(*minimum))
 		}
 	}
 	if maximum, err := durationAttribute("", path, "maximum", declaration.Maximum); err == nil && maximum != nil {
 		if int64(duration) > *maximum {
-			return fmt.Errorf("%s: %q is above the declared maximum %s", path, value, time.Duration(*maximum))
+			return classifiedRuleFailure(snapshot.RecordFieldOutOfRange, "%s: %q is above the declared maximum %s", path, value, time.Duration(*maximum))
 		}
 	}
 	return nil
@@ -417,7 +425,7 @@ func blankNote(declaration FieldDeclaration) string {
 
 func checkDeclaredGoKind(path string, declaration FieldDeclaration, value reflect.Value) error {
 	if !value.IsValid() {
-		return fmt.Errorf("%s: has no value", path)
+		return classifiedRuleFailure(snapshot.RecordFieldTypeInvalid, "%s: has no value", path)
 	}
 	kind := value.Kind()
 	if kind == reflect.Pointer {
@@ -428,7 +436,7 @@ func checkDeclaredGoKind(path string, declaration FieldDeclaration, value reflec
 			return nil
 		}
 	}
-	return fmt.Errorf("%s: is declared %q but holds a %s", path, declaration.Kind, kind)
+	return classifiedRuleFailure(snapshot.RecordFieldTypeInvalid, "%s: is declared %q but holds a %s", path, declaration.Kind, kind)
 }
 
 func dereference(value reflect.Value) reflect.Value {

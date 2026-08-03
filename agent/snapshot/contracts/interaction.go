@@ -1,9 +1,10 @@
 package contracts
 
 import (
-	"fmt"
 	"strings"
 	"time"
+
+	"github.com/concourse/concourse/agent/snapshot"
 )
 
 type QuestionDocument struct {
@@ -24,16 +25,16 @@ func (d QuestionDocument) Validate() error {
 	seen := make(map[string]struct{}, len(d.Options))
 	for i, option := range d.Options {
 		if strings.TrimSpace(option) == "" {
-			return fmt.Errorf("options[%d] is required", i)
+			return publicRecordFailure(snapshot.RecordFieldMissing, "options[%d] is required", i)
 		}
 		if _, found := seen[option]; found {
-			return fmt.Errorf("options[%d] %q is duplicate", i, option)
+			return publicRecordFailure(snapshot.RecordEntityIDDuplicate, "options[%d] %q is duplicate", i, option)
 		}
 		seen[option] = struct{}{}
 	}
 	if d.Default != "" {
 		if _, found := seen[d.Default]; !found {
-			return fmt.Errorf("default must match one of options")
+			return publicRecordFailure(snapshot.RecordReferenceUnknown, "default must match one of options")
 		}
 	}
 	return nil
@@ -57,10 +58,10 @@ func (d HumanAnswerDocument) Validate() error {
 		return err
 	}
 	if !d.TimedOut && strings.TrimSpace(d.Answer) == "" {
-		return fmt.Errorf("answer is required when timed_out is false")
+		return publicRecordFailure(snapshot.RecordFieldMissing, "answer is required when timed_out is false")
 	}
 	if _, err := time.Parse(time.RFC3339, d.AnsweredAt); err != nil {
-		return fmt.Errorf("answered_at must be RFC3339: %w", err)
+		return publicRecordFailure(snapshot.RecordFieldTypeInvalid, "answered_at must be RFC3339: %w", err)
 	}
 	return nil
 }

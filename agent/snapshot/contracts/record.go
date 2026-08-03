@@ -83,16 +83,17 @@ func (subject Subject) Validate() error {
 	case SubjectRolePrimary, SubjectRoleBase, SubjectRoleEvidence,
 		SubjectRoleContext, SubjectRoleCandidate, SubjectRoleReference:
 	default:
-		return fmt.Errorf("subject %q role must be one of primary, base, evidence, context, candidate, reference", subject.ID)
+		return publicRecordFailure(snapshot.RecordSubjectsInvalid,
+			"subject %q role must be one of primary, base, evidence, context, candidate, reference", subject.ID)
 	}
 	if strings.TrimSpace(subject.Input) == "" {
-		return fmt.Errorf("subject %q input is required", subject.ID)
+		return publicRecordFailure(snapshot.RecordSubjectsInvalid, "subject %q input is required", subject.ID)
 	}
 	if err := subject.Type.Validate(); err != nil {
-		return fmt.Errorf("subject %q type: %w", subject.ID, err)
+		return publicRecordFailure(snapshot.RecordSubjectsInvalid, "subject %q type: %w", subject.ID, err)
 	}
 	if err := subject.Digest.Validate(); err != nil {
-		return fmt.Errorf("subject %q digest: %w", subject.ID, err)
+		return publicRecordFailure(snapshot.RecordSubjectsInvalid, "subject %q digest: %w", subject.ID, err)
 	}
 	return nil
 }
@@ -157,13 +158,16 @@ func (record Record[T]) RebindSubjectsToExposedInputs(validationContext snapshot
 	for _, subject := range record.Subjects {
 		ref, found := validationContext.Input(subject.Input)
 		if !found {
-			return fmt.Errorf("record subject %q input %q is not an exact declared input", subject.ID, subject.Input)
+			return publicRecordFailure(snapshot.RecordSubjectsInvalid,
+				"record subject %q input %q is not an exact declared input", subject.ID, subject.Input)
 		}
 		if subject.Type != ref.Type {
-			return fmt.Errorf("record subject %q type %q does not match input %q type %q", subject.ID, subject.Type, subject.Input, ref.Type)
+			return publicRecordFailure(snapshot.RecordSubjectsInvalid,
+				"record subject %q type %q does not match input %q type %q", subject.ID, subject.Type, subject.Input, ref.Type)
 		}
 		if subject.Digest != ref.Digest {
-			return fmt.Errorf("record subject %q digest does not match input %q digest", subject.ID, subject.Input)
+			return publicRecordFailure(snapshot.RecordSubjectsInvalid,
+				"record subject %q digest does not match input %q digest", subject.ID, subject.Input)
 		}
 	}
 	return nil
@@ -206,14 +210,15 @@ func (admission schemaAdmission) admit(expected snapshot.TypeRef, schema snapsho
 	switch admission {
 	case currentSchemaDigestOnly:
 		if schema != current {
-			return fmt.Errorf(
+			return publicRecordFailure(snapshot.RecordEnvelopeInvalid,
 				"record schema must be exactly the current schema digest %q for %q at seal time, got %q",
 				current, expected, schema,
 			)
 		}
 	case anyAcceptedSchemaDigest:
 		if !IsAcceptedSchemaDigest(expected, schema) {
-			return fmt.Errorf("record schema %q is not an accepted schema digest for %q (current is %q)", schema, expected, current)
+			return publicRecordFailure(snapshot.RecordEnvelopeInvalid,
+				"record schema %q is not an accepted schema digest for %q (current is %q)", schema, expected, current)
 		}
 	default:
 		return fmt.Errorf("snapshot contracts: record schema admission for %q did not state a gate", expected)
@@ -223,13 +228,13 @@ func (admission schemaAdmission) admit(expected snapshot.TypeRef, schema snapsho
 
 func (record Record[T]) validateEnvelopeShape(expected snapshot.TypeRef, admission schemaAdmission) error {
 	if record.RecordVersion != RecordVersion {
-		return fmt.Errorf("record_version must be exactly %s", RecordVersion)
+		return publicRecordFailure(snapshot.RecordEnvelopeInvalid, "record_version must be exactly %s", RecordVersion)
 	}
 	if err := expected.Validate(); err != nil {
 		return fmt.Errorf("expected record type: %w", err)
 	}
 	if record.Type != expected {
-		return fmt.Errorf("record type must be exactly %q", expected)
+		return publicRecordFailure(snapshot.RecordEnvelopeInvalid, "record type must be exactly %q", expected)
 	}
 	if err := admission.admit(expected, record.Schema); err != nil {
 		return err
@@ -242,7 +247,7 @@ func (record Record[T]) validateEnvelopeShape(expected snapshot.TypeRef, admissi
 		}
 		ids[index] = subject.ID
 		if _, found := inputs[subject.Input]; found {
-			return fmt.Errorf("subjects[%d].input %q is duplicate", index, subject.Input)
+			return publicRecordFailure(snapshot.RecordSubjectsInvalid, "subjects[%d].input %q is duplicate", index, subject.Input)
 		}
 		inputs[subject.Input] = struct{}{}
 	}
@@ -268,14 +273,14 @@ func decodeRecord[T any](data []byte, expected snapshot.TypeRef, target *Record[
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
-		return fmt.Errorf("snapshot contracts: decode record.json: %w", err)
+		return publicRecordFailure(snapshot.RecordDocumentMalformed, "snapshot contracts: decode record.json: %w", err)
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		if err == nil {
-			return fmt.Errorf("snapshot contracts: record.json contains trailing JSON")
+			return publicRecordFailure(snapshot.RecordDocumentMalformed, "snapshot contracts: record.json contains trailing JSON")
 		}
-		return fmt.Errorf("snapshot contracts: decode trailing record.json data: %w", err)
+		return publicRecordFailure(snapshot.RecordDocumentMalformed, "snapshot contracts: decode trailing record.json data: %w", err)
 	}
 	if err := target.validateEnvelopeShape(expected, admission); err != nil {
 		return fmt.Errorf("snapshot contracts: record.json: %w", err)
@@ -313,7 +318,8 @@ var recordIdentifierPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]*$`
 
 func ValidateIdentifier(label, value string) error {
 	if !recordIdentifierPattern.MatchString(value) {
-		return fmt.Errorf("%s must be a non-empty identifier containing only letters, digits, dot, underscore, colon, or hyphen", label)
+		return publicRecordFailure(snapshot.RecordIdentifierInvalid,
+			"%s must be a non-empty identifier containing only letters, digits, dot, underscore, colon, or hyphen", label)
 	}
 	return nil
 }
@@ -328,9 +334,9 @@ func ValidateEntityIDs(label string, ids []string) error {
 		}
 		switch strings.Compare(ids[index-1], id) {
 		case 0:
-			return fmt.Errorf("%s[%d].id %q is duplicate", label, index, id)
+			return publicRecordFailure(snapshot.RecordEntityIDDuplicate, "%s[%d].id %q is duplicate", label, index, id)
 		case 1:
-			return fmt.Errorf("%s must be lexicographically sorted by id", label)
+			return publicRecordFailure(snapshot.RecordEntityIDsUnsorted, "%s must be lexicographically sorted by id", label)
 		}
 	}
 	return nil
@@ -345,7 +351,7 @@ const (
 
 func validateRecordSubjects(subjects []Subject, shape subjectShape) (map[string]struct{}, error) {
 	if len(subjects) == 0 {
-		return nil, fmt.Errorf("record requires at least one subject")
+		return nil, publicRecordFailure(snapshot.RecordSubjectsInvalid, "record requires at least one subject")
 	}
 	ids := make(map[string]struct{}, len(subjects))
 	primaryCount := 0
@@ -359,15 +365,17 @@ func validateRecordSubjects(subjects []Subject, shape subjectShape) (map[string]
 			case SubjectRoleEvidence, SubjectRoleContext, SubjectRoleReference:
 			case SubjectRoleBase:
 				if shape != onePrimaryWithBaseSubjects {
-					return nil, fmt.Errorf("subject %q role %q is not valid for this record", subject.ID, subject.Role)
+					return nil, publicRecordFailure(snapshot.RecordSubjectsInvalid,
+						"subject %q role %q is not valid for this record", subject.ID, subject.Role)
 				}
 			default:
-				return nil, fmt.Errorf("subject %q role %q is not valid for this record", subject.ID, subject.Role)
+				return nil, publicRecordFailure(snapshot.RecordSubjectsInvalid,
+					"subject %q role %q is not valid for this record", subject.ID, subject.Role)
 			}
 		}
 	}
 	if (shape == onePrimaryWithSupportingSubjects || shape == onePrimaryWithBaseSubjects) && primaryCount != 1 {
-		return nil, fmt.Errorf("record requires exactly one primary subject")
+		return nil, publicRecordFailure(snapshot.RecordSubjectsInvalid, "record requires exactly one primary subject")
 	}
 	return ids, nil
 }
@@ -388,7 +396,7 @@ type Locator struct {
 
 func (anchor Anchor) Validate(subjects map[string]struct{}) error {
 	if _, found := subjects[anchor.Subject]; !found {
-		return fmt.Errorf("anchor subject %q is not declared", anchor.Subject)
+		return publicRecordFailure(snapshot.RecordAnchorInvalid, "anchor subject %q is not declared", anchor.Subject)
 	}
 	return anchor.Locator.Validate()
 }
@@ -397,40 +405,43 @@ func (locator Locator) Validate() error {
 	switch locator.Kind {
 	case "file-lines", "log-lines":
 		if err := validatePOSIXPath("anchor path", locator.Path); err != nil {
-			return err
+			return publicRecordCause(snapshot.RecordAnchorInvalid, err)
 		}
 		if locator.Start == nil || locator.End == nil || *locator.Start < 1 || *locator.End < *locator.Start {
-			return fmt.Errorf("%s anchor requires positive start and end lines with end >= start", locator.Kind)
+			return publicRecordFailure(snapshot.RecordAnchorInvalid,
+				"%s anchor requires positive start and end lines with end >= start", locator.Kind)
 		}
 		if locator.Pointer != "" || locator.Value != "" {
-			return fmt.Errorf("%s anchor contains fields for another locator kind", locator.Kind)
+			return publicRecordFailure(snapshot.RecordAnchorInvalid,
+				"%s anchor contains fields for another locator kind", locator.Kind)
 		}
 	case "json-pointer":
 		if !validJSONPointer(locator.Pointer) {
-			return fmt.Errorf("json-pointer anchor pointer must be a valid non-root JSON pointer")
+			return publicRecordFailure(snapshot.RecordAnchorInvalid, "json-pointer anchor pointer must be a valid non-root JSON pointer")
 		}
 		if locator.Path != "" || locator.Start != nil || locator.End != nil || locator.Value != "" {
-			return fmt.Errorf("json-pointer anchor contains fields for another locator kind")
+			return publicRecordFailure(snapshot.RecordAnchorInvalid, "json-pointer anchor contains fields for another locator kind")
 		}
 	case "byte-range":
 		if err := validatePOSIXPath("anchor path", locator.Path); err != nil {
-			return err
+			return publicRecordCause(snapshot.RecordAnchorInvalid, err)
 		}
 		if locator.Start == nil || locator.End == nil || *locator.Start < 0 || *locator.End <= *locator.Start {
-			return fmt.Errorf("byte-range anchor requires nonnegative start and end > start")
+			return publicRecordFailure(snapshot.RecordAnchorInvalid, "byte-range anchor requires nonnegative start and end > start")
 		}
 		if locator.Pointer != "" || locator.Value != "" {
-			return fmt.Errorf("byte-range anchor contains fields for another locator kind")
+			return publicRecordFailure(snapshot.RecordAnchorInvalid, "byte-range anchor contains fields for another locator kind")
 		}
 	case "opaque":
 		if strings.TrimSpace(locator.Value) == "" {
-			return fmt.Errorf("opaque anchor value is required")
+			return publicRecordFailure(snapshot.RecordAnchorInvalid, "opaque anchor value is required")
 		}
 		if locator.Path != "" || locator.Start != nil || locator.End != nil || locator.Pointer != "" {
-			return fmt.Errorf("opaque anchor contains fields for another locator kind")
+			return publicRecordFailure(snapshot.RecordAnchorInvalid, "opaque anchor contains fields for another locator kind")
 		}
 	default:
-		return fmt.Errorf("anchor locator kind must be one of file-lines, log-lines, json-pointer, byte-range, opaque")
+		return publicRecordFailure(snapshot.RecordAnchorInvalid,
+			"anchor locator kind must be one of file-lines, log-lines, json-pointer, byte-range, opaque")
 	}
 	return nil
 }
@@ -462,46 +473,47 @@ type Score struct {
 
 func (score Score) Validate() error {
 	if !finiteNumber(score.Value) {
-		return fmt.Errorf("score value must be finite")
+		return publicRecordFailure(snapshot.RecordFieldOutOfRange, "score value must be finite")
 	}
 	switch score.Direction {
 	case "higher-is-better", "lower-is-better":
 		if score.Target != nil {
-			return fmt.Errorf("score target is valid only for target direction")
+			return publicRecordFailure(snapshot.RecordFieldOutOfRange, "score target is valid only for target direction")
 		}
 	case "target":
 		if score.Target == nil || !finiteNumber(*score.Target) {
-			return fmt.Errorf("score target direction requires a finite target")
+			return publicRecordFailure(snapshot.RecordFieldOutOfRange, "score target direction requires a finite target")
 		}
 	default:
-		return fmt.Errorf("score direction must be one of higher-is-better, lower-is-better, target")
+		return publicRecordFailure(snapshot.RecordFieldValueNotAllowed,
+			"score direction must be one of higher-is-better, lower-is-better, target")
 	}
 	switch score.Scale {
 	case "unit-interval":
 		if score.Value < 0 || score.Value > 1 {
-			return fmt.Errorf("unit-interval score value must be within 0..1")
+			return publicRecordFailure(snapshot.RecordFieldOutOfRange, "unit-interval score value must be within 0..1")
 		}
 		if score.Minimum != nil || score.Maximum != nil {
-			return fmt.Errorf("unit-interval score must not declare bounds")
+			return publicRecordFailure(snapshot.RecordFieldOutOfRange, "unit-interval score must not declare bounds")
 		}
 	case "bounded":
 		if score.Minimum == nil || score.Maximum == nil ||
 			!finiteNumber(*score.Minimum) || !finiteNumber(*score.Maximum) ||
 			*score.Minimum > *score.Maximum {
-			return fmt.Errorf("bounded score requires finite ordered minimum and maximum")
+			return publicRecordFailure(snapshot.RecordFieldOutOfRange, "bounded score requires finite ordered minimum and maximum")
 		}
 		if score.Value < *score.Minimum || score.Value > *score.Maximum {
-			return fmt.Errorf("bounded score value must be within minimum and maximum")
+			return publicRecordFailure(snapshot.RecordFieldOutOfRange, "bounded score value must be within minimum and maximum")
 		}
 		if score.Target != nil && (*score.Target < *score.Minimum || *score.Target > *score.Maximum) {
-			return fmt.Errorf("bounded score target must be within minimum and maximum")
+			return publicRecordFailure(snapshot.RecordFieldOutOfRange, "bounded score target must be within minimum and maximum")
 		}
 	case "unbounded":
 		if score.Minimum != nil || score.Maximum != nil {
-			return fmt.Errorf("unbounded score must not declare bounds")
+			return publicRecordFailure(snapshot.RecordFieldOutOfRange, "unbounded score must not declare bounds")
 		}
 	default:
-		return fmt.Errorf("score scale must be one of unit-interval, bounded, unbounded")
+		return publicRecordFailure(snapshot.RecordFieldValueNotAllowed, "score scale must be one of unit-interval, bounded, unbounded")
 	}
 	return nil
 }
@@ -514,16 +526,16 @@ type ContentRef struct {
 
 func (ref ContentRef) Validate() error {
 	if err := validatePOSIXPath("content path", ref.Path); err != nil {
-		return err
+		return publicRecordCause(snapshot.RecordFieldTypeInvalid, err)
 	}
 	if !strings.HasPrefix(ref.Path, "content/") {
-		return fmt.Errorf("content path must be beneath content/")
+		return publicRecordFailure(snapshot.RecordFieldTypeInvalid, "content path must be beneath content/")
 	}
 	if err := ref.Digest.Validate(); err != nil {
-		return fmt.Errorf("content digest: %w", err)
+		return publicRecordFailure(snapshot.RecordFieldTypeInvalid, "content digest: %w", err)
 	}
 	if strings.TrimSpace(ref.MediaType) == "" {
-		return fmt.Errorf("content media_type is required")
+		return publicRecordFailure(snapshot.RecordFieldMissing, "content media_type is required")
 	}
 	return nil
 }

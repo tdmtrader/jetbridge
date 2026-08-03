@@ -25,7 +25,7 @@ func (d LogBundleMetadata) Validate() error {
 		return err
 	}
 	if _, err := time.Parse(time.RFC3339, d.CapturedAt); err != nil {
-		return fmt.Errorf("captured_at must be RFC3339: %w", err)
+		return publicRecordFailure(snapshot.RecordFieldTypeInvalid, "captured_at must be RFC3339: %w", err)
 	}
 	return nil
 }
@@ -44,7 +44,8 @@ func (opaqueValidator) Validate(ctx context.Context, root *os.Root, _ snapshot.V
 		return snapshot.ValidationResult{}, fmt.Errorf("snapshot contracts: inspect opaque tree: %w", err)
 	}
 	if len(entries) == 0 {
-		return snapshot.ValidationResult{}, fmt.Errorf("snapshot contracts: opaque tree must be non-empty")
+		return snapshot.ValidationResult{}, publicRecordFailure(snapshot.SnapshotTreeInvalid,
+			"snapshot contracts: opaque tree must be non-empty")
 	}
 	return snapshot.ValidationResult{}, nil
 }
@@ -76,7 +77,7 @@ func (logBundleValidator) Validate(ctx context.Context, root *os.Root, _ snapsho
 		}
 		if name == "metadata.json" {
 			if !info.Mode().IsRegular() {
-				return fmt.Errorf("metadata.json must be a regular file")
+				return publicRecordFailure(snapshot.RecordDocumentMissing, "metadata.json must be a regular file")
 			}
 			metadataFound = true
 			return nil
@@ -90,7 +91,8 @@ func (logBundleValidator) Validate(ctx context.Context, root *os.Root, _ snapsho
 		return snapshot.ValidationResult{}, fmt.Errorf("snapshot contracts: inspect log bundle: %w", err)
 	}
 	if logFiles == 0 {
-		return snapshot.ValidationResult{}, fmt.Errorf("snapshot contracts: log bundle must contain at least one log regular file")
+		return snapshot.ValidationResult{}, publicRecordFailure(snapshot.SnapshotTreeInvalid,
+			"snapshot contracts: log bundle must contain at least one log regular file")
 	}
 	if metadataFound {
 		var metadata LogBundleMetadata

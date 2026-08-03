@@ -53,7 +53,7 @@ func (d UpgradeReportDocument) Validate() error {
 		}
 	}
 	if len(d.Changes) == 0 {
-		return fmt.Errorf("changes must contain at least one upgrade")
+		return publicRecordFailure(snapshot.RecordFieldMissing, "changes must contain at least one upgrade")
 	}
 	seen := make(map[string]struct{}, len(d.Changes))
 	for i, change := range d.Changes {
@@ -61,7 +61,7 @@ func (d UpgradeReportDocument) Validate() error {
 			return fmt.Errorf("changes[%d]: %w", i, err)
 		}
 		if _, found := seen[change.Component]; found {
-			return fmt.Errorf("changes[%d].component %q is duplicate", i, change.Component)
+			return publicRecordFailure(snapshot.RecordEntityIDDuplicate, "changes[%d].component %q is duplicate", i, change.Component)
 		}
 		seen[change.Component] = struct{}{}
 	}
@@ -73,7 +73,7 @@ func validateResultStatus(status string) error {
 	case "ok", "failed", "error":
 		return nil
 	default:
-		return fmt.Errorf("must be one of ok, failed, error")
+		return publicRecordFailure(snapshot.RecordFieldValueNotAllowed, "must be one of ok, failed, error")
 	}
 }
 
@@ -84,7 +84,7 @@ type namedString struct {
 
 func validateDocumentVersion(version string) error {
 	if version != "1.0.0" {
-		return fmt.Errorf("schema_version must be exactly 1.0.0")
+		return publicRecordFailure(snapshot.RecordFieldValueNotAllowed, "schema_version must be exactly 1.0.0")
 	}
 	return nil
 }
@@ -92,7 +92,7 @@ func validateDocumentVersion(version string) error {
 func requireStrings(values []namedString) error {
 	for _, value := range values {
 		if strings.TrimSpace(value.value) == "" {
-			return fmt.Errorf("%s is required", value.name)
+			return publicRecordFailure(snapshot.RecordFieldMissing, "%s is required", value.name)
 		}
 	}
 	return nil

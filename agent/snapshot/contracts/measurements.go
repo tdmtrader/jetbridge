@@ -48,24 +48,24 @@ func (body MeasurementsBody) Validate(subjects []Subject) error {
 	switch body.Conclusion {
 	case "measured":
 		if len(body.Metrics) == 0 {
-			return fmt.Errorf("measured conclusion requires at least one metric")
+			return publicRecordFailure(snapshot.RecordConclusionInconsistent, "measured conclusion requires at least one metric")
 		}
 	case "partial":
 		if len(body.Metrics) == 0 {
-			return fmt.Errorf("partial conclusion requires at least one metric")
+			return publicRecordFailure(snapshot.RecordConclusionInconsistent, "partial conclusion requires at least one metric")
 		}
 		if strings.TrimSpace(body.Explanation) == "" {
-			return fmt.Errorf("partial conclusion requires an explanation")
+			return publicRecordFailure(snapshot.RecordConclusionInconsistent, "partial conclusion requires an explanation")
 		}
 	case "not-applicable":
 		if len(body.Metrics) != 0 {
-			return fmt.Errorf("not-applicable conclusion requires no metrics")
+			return publicRecordFailure(snapshot.RecordConclusionInconsistent, "not-applicable conclusion requires no metrics")
 		}
 		if strings.TrimSpace(body.Explanation) == "" {
-			return fmt.Errorf("not-applicable conclusion requires an explanation")
+			return publicRecordFailure(snapshot.RecordConclusionInconsistent, "not-applicable conclusion requires an explanation")
 		}
 	default:
-		return fmt.Errorf("conclusion must be one of measured, partial, not-applicable")
+		return publicRecordFailure(snapshot.RecordFieldValueNotAllowed, "conclusion must be one of measured, partial, not-applicable")
 	}
 	return nil
 }
@@ -90,32 +90,34 @@ func (measurement Measurement) Validate(subjects map[string]struct{}) error {
 		return err
 	}
 	if !finiteNumber(measurement.Value) {
-		return fmt.Errorf("measurement value must be finite")
+		return publicRecordFailure(snapshot.RecordFieldOutOfRange, "measurement value must be finite")
 	}
 	switch measurement.Direction {
 	case "higher-is-better", "lower-is-better":
 		if measurement.Target != nil {
-			return fmt.Errorf("measurement target is valid only for target direction")
+			return publicRecordFailure(snapshot.RecordFieldOutOfRange, "measurement target is valid only for target direction")
 		}
 	case "target":
 		if measurement.Target == nil || !finiteNumber(*measurement.Target) {
-			return fmt.Errorf("target direction requires a finite target")
+			return publicRecordFailure(snapshot.RecordFieldOutOfRange, "target direction requires a finite target")
 		}
 	default:
-		return fmt.Errorf("measurement direction must be one of higher-is-better, lower-is-better, target")
+		return publicRecordFailure(snapshot.RecordFieldValueNotAllowed,
+			"measurement direction must be one of higher-is-better, lower-is-better, target")
 	}
 	if (measurement.Minimum == nil) != (measurement.Maximum == nil) {
-		return fmt.Errorf("measurement minimum and maximum must be declared together")
+		return publicRecordFailure(snapshot.RecordFieldOutOfRange, "measurement minimum and maximum must be declared together")
 	}
 	if measurement.Minimum != nil {
 		if !finiteNumber(*measurement.Minimum) || !finiteNumber(*measurement.Maximum) || *measurement.Minimum > *measurement.Maximum {
-			return fmt.Errorf("measurement bounds must be finite and minimum must not exceed maximum")
+			return publicRecordFailure(snapshot.RecordFieldOutOfRange,
+				"measurement bounds must be finite and minimum must not exceed maximum")
 		}
 		if measurement.Value < *measurement.Minimum || measurement.Value > *measurement.Maximum {
-			return fmt.Errorf("measurement value must be within its declared bounds")
+			return publicRecordFailure(snapshot.RecordFieldOutOfRange, "measurement value must be within its declared bounds")
 		}
 		if measurement.Target != nil && (*measurement.Target < *measurement.Minimum || *measurement.Target > *measurement.Maximum) {
-			return fmt.Errorf("measurement target must be within its declared bounds")
+			return publicRecordFailure(snapshot.RecordFieldOutOfRange, "measurement target must be within its declared bounds")
 		}
 	}
 	for index, anchor := range measurement.Evidence {

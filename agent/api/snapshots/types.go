@@ -14,10 +14,23 @@ import (
 // ErrorResponse is the bounded public error envelope used by every handler.
 // Handler code supplies stable messages rather than serializing dependency
 // errors, which may contain tenant or storage details.
+//
+// Error, Message and Reason are entirely server-authored: Reason is a
+// compile-time constant from snapshot.ValidationFailureReason and Message is the
+// fixed text that constant maps to.
+//
+// Entry is the one exception, and a deliberate one. An archive rejection is
+// unactionable without knowing WHICH entry was rejected, and no closed enum can
+// carry that. It is therefore echoed from the caller's own archive — never from
+// the server's filesystem — after snapshot.sanitizePublicEntry has bounded it to
+// snapshot.MaxPublicEntryBytes, replaced every control, format and invalid-UTF-8
+// byte, and marked any truncation. It is absent unless the failure is about one
+// named entry.
 type ErrorResponse struct {
 	Error   string `json:"error"`
 	Message string `json:"message"`
 	Reason  string `json:"reason,omitempty"`
+	Entry   string `json:"entry,omitempty"`
 }
 
 // PinRequest is the only JSON body accepted by the snapshot API. Actor and

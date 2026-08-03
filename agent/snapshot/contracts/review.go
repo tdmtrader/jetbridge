@@ -34,10 +34,11 @@ func (body ReviewBody) Validate(subjects []Subject) error {
 	switch body.Conclusion {
 	case "accept", "changes-required", "inconclusive":
 	default:
-		return fmt.Errorf("conclusion must be one of accept, changes-required, inconclusive")
+		return publicRecordFailure(snapshot.RecordFieldValueNotAllowed,
+			"conclusion must be one of accept, changes-required, inconclusive")
 	}
 	if strings.TrimSpace(body.Summary) == "" {
-		return fmt.Errorf("summary is required")
+		return publicRecordFailure(snapshot.RecordFieldMissing, "summary is required")
 	}
 	ids := make([]string, len(body.Findings))
 	hasBlocking := false
@@ -52,10 +53,11 @@ func (body ReviewBody) Validate(subjects []Subject) error {
 		return err
 	}
 	if body.Conclusion == "changes-required" && !hasBlocking {
-		return fmt.Errorf("changes-required conclusion requires at least one blocking finding")
+		return publicRecordFailure(snapshot.RecordConclusionInconsistent,
+			"changes-required conclusion requires at least one blocking finding")
 	}
 	if body.Conclusion == "accept" && hasBlocking {
-		return fmt.Errorf("accept conclusion cannot contain a blocking finding")
+		return publicRecordFailure(snapshot.RecordConclusionInconsistent, "accept conclusion cannot contain a blocking finding")
 	}
 	return nil
 }
@@ -67,27 +69,28 @@ func (finding Finding) Validate(subjects map[string]struct{}) error {
 	switch finding.Severity {
 	case "observation":
 		if finding.Blocking {
-			return fmt.Errorf("observation finding cannot be blocking")
+			return publicRecordFailure(snapshot.RecordBlockingInconsistent, "observation finding cannot be blocking")
 		}
 	case "low", "medium":
 	case "high", "critical":
 		if !finding.Blocking {
-			return fmt.Errorf("%s finding must be blocking", finding.Severity)
+			return publicRecordFailure(snapshot.RecordBlockingInconsistent, "%s finding must be blocking", finding.Severity)
 		}
 	default:
-		return fmt.Errorf("severity must be one of observation, low, medium, high, critical")
+		return publicRecordFailure(snapshot.RecordFieldValueNotAllowed,
+			"severity must be one of observation, low, medium, high, critical")
 	}
 	if err := ValidateIdentifier("finding category", finding.Category); err != nil {
 		return err
 	}
 	if strings.TrimSpace(finding.Title) == "" {
-		return fmt.Errorf("finding title is required")
+		return publicRecordFailure(snapshot.RecordFieldMissing, "finding title is required")
 	}
 	if strings.TrimSpace(finding.Description) == "" {
-		return fmt.Errorf("finding description is required")
+		return publicRecordFailure(snapshot.RecordFieldMissing, "finding description is required")
 	}
 	if finding.Severity != "observation" && len(finding.Evidence) == 0 {
-		return fmt.Errorf("non-observation finding evidence is required")
+		return publicRecordFailure(snapshot.RecordEvidenceMissing, "non-observation finding evidence is required")
 	}
 	for index, anchor := range finding.Evidence {
 		if err := anchor.Validate(subjects); err != nil {

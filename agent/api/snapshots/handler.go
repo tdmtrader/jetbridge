@@ -933,6 +933,26 @@ func (factory *HandlerFactory) writeSnapshotError(w http.ResponseWriter, err err
 	case errors.As(err, &maxBytesError), errors.Is(err, snapshot.ErrLimitExceeded):
 		writeError(w, http.StatusRequestEntityTooLarge, "limit_exceeded", "snapshot archive exceeds the configured limit")
 	case errors.Is(err, snapshot.ErrInvalidArchive):
+		// This branch is deliberately ahead of the errors.As branch below, and
+		// therefore has to read the public failure ITSELF.
+		//
+		// A canonicalizer rejection arrives here as ErrInvalidArchive joined with
+		// a PublicValidationFailure. Falling through was never possible — the
+		// switch stops at the first true case — so before this, every archive
+		// rejection silently discarded its reason. Swapping the two branches
+		// instead would answer 422 validation_failed, which is a different claim:
+		// it says the bytes were understood and judged, when in fact they were
+		// never parsed as an archive. The status stays 400 invalid_archive and the
+		// classification rides along.
+		if errors.As(err, &publicValidationFailure) {
+			writeJSON(w, http.StatusBadRequest, ErrorResponse{
+				Error:   "invalid_archive",
+				Message: publicValidationFailure.PublicMessage(),
+				Reason:  string(publicValidationFailure.Reason()),
+				Entry:   publicValidationFailure.Entry(),
+			})
+			return
+		}
 		writeError(w, http.StatusBadRequest, "invalid_archive", "snapshot archive is invalid")
 	case errors.Is(err, snapshot.ErrUnsupportedType):
 		writeError(w, http.StatusBadRequest, "invalid_type", "snapshot type is unsupported")
@@ -941,6 +961,7 @@ func (factory *HandlerFactory) writeSnapshotError(w http.ResponseWriter, err err
 			Error:   "validation_failed",
 			Message: publicValidationFailure.PublicMessage(),
 			Reason:  string(publicValidationFailure.Reason()),
+			Entry:   publicValidationFailure.Entry(),
 		})
 	case errors.Is(err, snapshot.ErrValidation):
 		writeError(w, http.StatusUnprocessableEntity, "validation_failed", "snapshot does not satisfy its declared type")

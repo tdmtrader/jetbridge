@@ -39,16 +39,17 @@ func (body DiagnosisBody) Validate(subjects []Subject) error {
 		return err
 	}
 	if strings.TrimSpace(body.Summary) == "" {
-		return fmt.Errorf("summary is required")
+		return publicRecordFailure(snapshot.RecordFieldMissing, "summary is required")
 	}
 	switch body.Conclusion {
 	case "identified", "suspected":
 		if len(body.Hypotheses) == 0 {
-			return fmt.Errorf("%s conclusion requires hypotheses", body.Conclusion)
+			return publicRecordFailure(snapshot.RecordConclusionInconsistent, "%s conclusion requires hypotheses", body.Conclusion)
 		}
 	case "inconclusive":
 	default:
-		return fmt.Errorf("conclusion must be one of identified, suspected, inconclusive")
+		return publicRecordFailure(snapshot.RecordFieldValueNotAllowed,
+			"conclusion must be one of identified, suspected, inconclusive")
 	}
 
 	hypothesisIDs := make([]string, len(body.Hypotheses))
@@ -62,7 +63,7 @@ func (body DiagnosisBody) Validate(subjects []Subject) error {
 			return fmt.Errorf("hypotheses[%d]: %w", index, err)
 		}
 		if _, found := ranks[hypothesis.Rank]; found {
-			return fmt.Errorf("hypotheses[%d].rank %d is duplicate", index, hypothesis.Rank)
+			return publicRecordFailure(snapshot.RecordRankInvalid, "hypotheses[%d].rank %d is duplicate", index, hypothesis.Rank)
 		}
 		ranks[hypothesis.Rank] = struct{}{}
 		hypotheses[hypothesis.ID] = struct{}{}
@@ -75,11 +76,11 @@ func (body DiagnosisBody) Validate(subjects []Subject) error {
 	}
 	for rank := 1; rank <= len(body.Hypotheses); rank++ {
 		if _, found := ranks[rank]; !found {
-			return fmt.Errorf("hypothesis ranks must be unique and contiguous from 1")
+			return publicRecordFailure(snapshot.RecordRankInvalid, "hypothesis ranks must be unique and contiguous from 1")
 		}
 	}
 	if body.Conclusion == "identified" && (rankOne == nil || len(rankOne.Evidence) == 0) {
-		return fmt.Errorf("identified conclusion requires evidence for the rank-1 hypothesis")
+		return publicRecordFailure(snapshot.RecordEvidenceMissing, "identified conclusion requires evidence for the rank-1 hypothesis")
 	}
 
 	actionIDs := make([]string, len(body.Actions))
@@ -97,17 +98,18 @@ func (hypothesis Hypothesis) Validate(subjects map[string]struct{}) error {
 		return err
 	}
 	if hypothesis.Rank < 1 {
-		return fmt.Errorf("hypothesis rank must be positive")
+		return publicRecordFailure(snapshot.RecordRankInvalid, "hypothesis rank must be positive")
 	}
 	if strings.TrimSpace(hypothesis.Statement) == "" {
-		return fmt.Errorf("hypothesis statement is required")
+		return publicRecordFailure(snapshot.RecordFieldMissing, "hypothesis statement is required")
 	}
 	if err := hypothesis.Confidence.Validate(); err != nil {
 		return fmt.Errorf("hypothesis confidence: %w", err)
 	}
 	if hypothesis.Confidence.Scale != "unit-interval" ||
 		hypothesis.Confidence.Direction != "higher-is-better" {
-		return fmt.Errorf("hypothesis confidence must be a higher-is-better unit-interval score")
+		return publicRecordFailure(snapshot.RecordFieldValueNotAllowed,
+			"hypothesis confidence must be a higher-is-better unit-interval score")
 	}
 	for index, anchor := range hypothesis.Evidence {
 		if err := anchor.Validate(subjects); err != nil {
@@ -129,17 +131,17 @@ func (action DiagnosisAction) Validate(hypotheses map[string]struct{}) error {
 	switch action.Priority {
 	case "immediate", "next", "optional":
 	default:
-		return fmt.Errorf("action priority must be one of immediate, next, optional")
+		return publicRecordFailure(snapshot.RecordFieldValueNotAllowed, "action priority must be one of immediate, next, optional")
 	}
 	if strings.TrimSpace(action.Description) == "" {
-		return fmt.Errorf("action description is required")
+		return publicRecordFailure(snapshot.RecordFieldMissing, "action description is required")
 	}
 	if err := ValidateEntityIDs("action addresses", action.Addresses); err != nil {
 		return err
 	}
 	for _, addressed := range action.Addresses {
 		if _, found := hypotheses[addressed]; !found {
-			return fmt.Errorf("action addresses unknown hypothesis %q", addressed)
+			return publicRecordFailure(snapshot.RecordReferenceUnknown, "action addresses unknown hypothesis %q", addressed)
 		}
 	}
 	return nil
