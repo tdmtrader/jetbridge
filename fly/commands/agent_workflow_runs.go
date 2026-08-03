@@ -541,28 +541,59 @@ func failureReasonFromTarget(target rc.Target, run workflowrunsapi.RunSummary) s
 		return ""
 	}
 	defer source.Close()
-	var errorEvents []event.Error
-	var finishEvents []event.FinishTask
-	// Bounded: an agent step's stdout becomes event.Log, so a transcript-heavy
-	// build can carry a very large stream. This scans a large-but-fast stream,
-	// not a stalled read — a terminal run's build is always complete, and a
-	// complete build's stream ends rather than parking.
-	for scanned := 0; scanned < runFailureReasonEventScanLimit; scanned++ {
-		streamEvent, err := source.NextEvent()
-		if err != nil {
-			break
+
+	// Bounded twice over.
+	//
+	// In events, because an agent step's stdout becomes event.Log and a
+	// transcript-heavy build can carry a very large stream.
+	//
+	// And in time, because a terminal run's build is NOT always complete. The
+	// reconciler finalizes a run to `errored` once the admission timeout
+	// elapses — "admission could not advance", or "admission state is corrupt"
+	// — and both paths can carry a planned_build_id whose build is still
+	// pending or running. /api/v1/builds/:id/events is a live SSE stream that
+	// only ends when the build itself does, and fly's HTTP client has no
+	// request timeout, so scanning one of those runs would park here forever.
+	// This is a diagnostic layered on an already-successful show-run: giving up
+	// silently is correct, hanging the CLI is not.
+	scanned := make(chan failureReasonScan, 1)
+	go func() {
+		var found failureReasonScan
+		for count := 0; count < runFailureReasonEventScanLimit; count++ {
+			streamEvent, err := source.NextEvent()
+			if err != nil {
+				break
+			}
+			switch typed := streamEvent.(type) {
+			case event.Error:
+				found.errorEvents = append(found.errorEvents, typed)
+			case event.FinishTask:
+				found.finishEvents = append(found.finishEvents, typed)
+			}
 		}
-		switch typed := streamEvent.(type) {
-		case event.Error:
-			errorEvents = append(errorEvents, typed)
-		case event.FinishTask:
-			finishEvents = append(finishEvents, typed)
-		}
+		scanned <- found
+	}()
+
+	var found failureReasonScan
+	select {
+	case found = <-scanned:
+	case <-time.After(runFailureReasonTimeout):
+		// The deferred Close unblocks the reader, so the goroutine finishes
+		// into the buffered channel rather than leaking.
+		return ""
 	}
-	if reason := failureReasonFromErrorEvents(errorEvents); reason != "" {
+
+	if reason := failureReasonFromErrorEvents(found.errorEvents); reason != "" {
 		return reason
 	}
-	return exitStatusReasonFromFinishTaskEvents(finishEvents)
+	return exitStatusReasonFromFinishTaskEvents(found.finishEvents)
+}
+
+// failureReasonScan carries the scan's findings back from the reader goroutine
+// so nothing is shared with the timeout path.
+type failureReasonScan struct {
+	errorEvents  []event.Error
+	finishEvents []event.FinishTask
 }
 
 // agentWorkflowRunNeedsFailureDiagnosis names the terminal-unsuccessful
@@ -578,6 +609,12 @@ func agentWorkflowRunNeedsFailureDiagnosis(status db.AgentWorkflowRunStatus) boo
 }
 
 var runFailureReasonEventScanLimit = 20000
+
+// runFailureReasonTimeout bounds the whole diagnostic read. It only has to be
+// generous enough for a large-but-complete stream; a stream that has not ended
+// by now belongs to a build that has not finished, and waiting on it cannot
+// produce an answer.
+var runFailureReasonTimeout = 30 * time.Second
 
 // runFailureReasonFn is the printer's seam onto runFailureReason. The printer
 // takes a target NAME (all it needs for the "inspect logs" hint) and resolves

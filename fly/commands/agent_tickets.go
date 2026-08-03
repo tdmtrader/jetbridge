@@ -133,6 +133,11 @@ func assignTicketDispatchInputs(
 	return restore, nil
 }
 
+// agentTicketsListMaxLimit mirrors the server's accepted ceiling in
+// agent/api/tickets/handler.go ListTickets. Anything above it is ignored there
+// rather than clamped, so it must be enforced before the request is sent.
+const agentTicketsListMaxLimit = 500
+
 type AgentTicketsListCommand struct {
 	State  string `long:"state" description:"Filter by queue state (draft, queued, running, needs_review, closed)"`
 	Repo   string `long:"repo" description:"Filter by repo slug (e.g. tdmtrader/concourse)"`
@@ -141,6 +146,15 @@ type AgentTicketsListCommand struct {
 }
 
 func (command *AgentTicketsListCommand) Execute([]string) error {
+	// The server accepts 1..500 and silently falls back to its own default of
+	// 100 for anything outside that range — 200 OK, no warning, no cursor. So
+	// `--limit 1000` used to print exactly 100 rows and exit 0, and an operator
+	// inventorying a 300-ticket queue would conclude there were 100. Rejecting
+	// the value client-side is what `fly agent workflow runs` already does.
+	if command.Limit < 1 || command.Limit > agentTicketsListMaxLimit {
+		return fmt.Errorf("agent tickets list: --limit must be between 1 and %d", agentTicketsListMaxLimit)
+	}
+
 	target, err := rc.LoadTarget(Fly.Target, Fly.Verbose)
 	if err != nil {
 		return err

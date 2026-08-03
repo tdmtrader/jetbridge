@@ -169,3 +169,21 @@ func TestAgentTicketsShowRunValidatesBeforeLoadingTarget(t *testing.T) {
 func workflowRunIDPtr(id snapshot.WorkflowRunID) *snapshot.WorkflowRunID {
 	return &id
 }
+
+// The server accepts 1..500 and, for anything outside that range, silently
+// falls back to its own default of 100 — HTTP 200, no warning, no cursor. So
+// `--limit 1000` printed exactly 100 rows and exited 0, and an operator
+// inventorying a 300-ticket queue had no way to tell 200 were missing. The
+// request must be rejected before it is sent.
+func TestAgentTicketsListRejectsLimitsTheServerWouldSilentlyIgnore(t *testing.T) {
+	for _, limit := range []int{0, -1, agentTicketsListMaxLimit + 1, 1000} {
+		command := &AgentTicketsListCommand{Limit: limit}
+		err := command.Execute(nil)
+		if err == nil {
+			t.Fatalf("--limit %d was accepted; the server would have ignored it and returned its own default", limit)
+		}
+		if !strings.Contains(err.Error(), "--limit must be between 1 and 500") {
+			t.Fatalf("--limit %d error = %q, want the accepted range", limit, err)
+		}
+	}
+}

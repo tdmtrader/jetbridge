@@ -5,7 +5,10 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	workflowrunsapi "github.com/concourse/concourse/agent/api/workflowruns"
 	"github.com/concourse/concourse/atc"
@@ -398,3 +401,67 @@ func stubFailureReason(t *testing.T, fn func(rc.TargetName, workflowrunsapi.RunS
 }
 
 func ptrInt64(value int64) *int64 { return &value }
+
+// parkingEventSource models the real SSE stream for a build that has not
+// finished: NextEvent blocks until the stream is closed.
+// /api/v1/builds/:id/events only terminates when the build itself completes,
+// and fly's HTTP client has no request timeout.
+type parkingEventSource struct {
+	release chan struct{}
+	once    sync.Once
+	closed  atomic.Bool
+}
+
+func (source *parkingEventSource) NextEvent() (atc.Event, error) {
+	<-source.release
+	return nil, io.EOF
+}
+
+func (source *parkingEventSource) NextEventRaw() (sse.Event, error) {
+	<-source.release
+	return sse.Event{}, io.EOF
+}
+
+func (source *parkingEventSource) Close() error {
+	source.closed.Store(true)
+	source.once.Do(func() { close(source.release) })
+	return nil
+}
+
+// A terminal run's build is not always complete: the reconciler finalizes a run
+// to `errored` once the admission timeout elapses, and that run can carry a
+// planned_build_id whose build is still pending or running. Scanning it used to
+// park forever, hanging `show-run`, `--wait`, `nodes show-run` and
+// `tickets watch` with no way out but Ctrl-C.
+func TestFailureReasonFromTargetGivesUpOnABuildThatHasNotFinished(t *testing.T) {
+	original := runFailureReasonTimeout
+	runFailureReasonTimeout = 50 * time.Millisecond
+	defer func() { runFailureReasonTimeout = original }()
+
+	source := &parkingEventSource{release: make(chan struct{})}
+	client := new(concoursefakes.FakeClient)
+	client.BuildEventsReturns(source, nil)
+	target := new(rcfakes.FakeTarget)
+	target.ClientReturns(client)
+
+	run := workflowrunsapi.RunSummary{
+		Status:         db.AgentWorkflowRunStatusErrored,
+		PlannedBuildID: ptrInt64(42),
+	}
+
+	done := make(chan string, 1)
+	go func() { done <- failureReasonFromTarget(target, run) }()
+
+	select {
+	case reason := <-done:
+		if reason != "" {
+			t.Fatalf("reason = %q, want empty", reason)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("failureReasonFromTarget never returned: the diagnostic parked on a build that has not finished, which hangs the CLI")
+	}
+
+	if !source.closed.Load() {
+		t.Fatal("event source was left open, so the reader goroutine leaks")
+	}
+}
