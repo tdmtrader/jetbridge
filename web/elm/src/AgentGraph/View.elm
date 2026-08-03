@@ -27,7 +27,9 @@ than as a grey that reads as green.
 **Only execution nodes carry state.** Inputs, outputs, and resource sources
 never run and never have an occurrence, so they render neutral. Showing them
 as no-data would fill the canvas with dashed boxes that look like missing
-history.
+history. For the same reason they are not selectable: a node with no
+occurrence has nothing a selection could ask about, and both pages turned the
+click into a statement that was false. See `viewNode`.
 
 Nodes are HTML positioned over an SVG edge layer rather than SVG text. Long
 display names have to truncate to a tooltip (the design's scale section), and
@@ -112,14 +114,32 @@ view config laidOut =
         ]
 
 
+{-| One node.
+
+**An endpoint is not selectable.** Selection means "tell me about this node's
+occurrences", and an endpoint has none by construction — `ExecutionNodesOf`
+admits only agent/task/await/publish/load into the projection, and endpoint ids
+are kind-qualified so they can never appear in it. Both consumers turned a
+selected endpoint into a statement that was false: the overview sent
+`?node=input:repository` as a run-list filter whose SQL predicate no row can
+satisfy, so the list came back empty under "No runs need attention in this
+window" while the DAG above still showed nodes that did; and the run page
+opened a detail panel reporting "this node was never reached in this run"
+about a port the run demonstrably bound. There is no third reading of the
+click to preserve, so the affordance goes rather than being guarded twice.
+
+-}
 viewNode : Config msg -> Layout.LaidOutNode -> Html msg
 viewNode config item =
     let
         node =
             item.node
 
+        endpoint =
+            Model.isEndpoint node.kind
+
         state =
-            if Model.isEndpoint node.kind then
+            if endpoint then
                 Nothing
 
             else
@@ -127,18 +147,27 @@ viewNode config item =
 
         isSelected =
             config.selected == Just node.id
+
+        interaction =
+            if endpoint then
+                [ Html.Attributes.disabled True ]
+
+            else
+                [ Html.Attributes.attribute "aria-pressed" (boolean isSelected)
+                , Html.Events.onClick (config.onSelect node.id)
+                ]
     in
     Html.button
-        [ class (String.join " " (nodeClasses node state isSelected))
-        , Html.Attributes.type_ "button"
-        , Html.Attributes.attribute "aria-pressed" (boolean isSelected)
-        , Html.Attributes.attribute "aria-label" (accessibleName node state)
-        , style "left" (px item.x)
-        , style "top" (px item.y)
-        , style "width" (px Layout.nodeWidth)
-        , style "height" (px Layout.nodeHeight)
-        , Html.Events.onClick (config.onSelect node.id)
-        ]
+        ([ class (String.join " " (nodeClasses node state isSelected))
+         , Html.Attributes.type_ "button"
+         , Html.Attributes.attribute "aria-label" (accessibleName node state)
+         , style "left" (px item.x)
+         , style "top" (px item.y)
+         , style "width" (px Layout.nodeWidth)
+         , style "height" (px Layout.nodeHeight)
+         ]
+            ++ interaction
+        )
         (Html.div [ class "agent-graph-node-head" ]
             [ Html.div [ class "agent-graph-node-name", Html.Attributes.title node.displayName ]
                 [ Html.text node.displayName ]

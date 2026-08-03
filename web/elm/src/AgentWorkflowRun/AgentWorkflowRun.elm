@@ -963,16 +963,10 @@ nodeDetailFor model detail runGraph node =
             occurrences |> List.filterMap .waitId |> Set.fromList
 
         inputPorts =
-            runGraph.graph.edges
-                |> List.filter (\edge -> edge.to == node.id && isEndpointNode runGraph edge.from)
-                |> List.map .portName
-                |> Set.fromList
+            boundaryPorts runGraph (\edge -> edge.to == node.id) .from
 
         outputPorts =
-            runGraph.graph.edges
-                |> List.filter (\edge -> edge.from == node.id && isEndpointNode runGraph edge.to)
-                |> List.map .portName
-                |> Set.fromList
+            boundaryPorts runGraph (\edge -> edge.from == node.id) .to
 
         stepMetrics =
             model.metrics
@@ -1018,17 +1012,50 @@ nodeDetailFor model detail runGraph node =
     }
 
 
-{-| An endpoint node — an input, output, or resource source — is where a
-run-level snapshot binding actually enters or leaves the workflow. Only edges
-touching one of those name a port the run's bindings can be looked up by; an
-edge between two execution nodes carries an intermediate snapshot that has no
-run-level binding at all.
+{-| The run-level port names on the workflow boundary that a set of edges
+touches.
+
+An endpoint node — an input, output, or resource source — is where a run-level
+snapshot binding actually enters or leaves the workflow. Only edges touching
+one of those name a port the run's bindings can be looked up by; an edge
+between two execution nodes carries an intermediate snapshot with no run-level
+binding at all.
+
+The port is read from the ENDPOINT NODE's own identity, never from the edge
+label, and that distinction is the whole point. `graph.Build` now labels an
+endpoint edge with the public port, but the node's `displayName` IS that port
+— it is set from `output.Port.Name` / `port.Name`, the same value that becomes
+`agent_workflow_run_snapshots.port_name` — so reading it here means this join
+cannot silently come apart again if the edge label ever drifts. Before, the
+label was the consumed binding (`outputs[].from`), and every workflow whose
+`from:` differs from its port name — all three seeds that produce a
+repository-change — had its own deliverable dropped from the node that sealed
+it.
+
 -}
-isEndpointNode : RunGraph.RunGraph -> String -> Bool
-isEndpointNode runGraph nodeId =
+boundaryPorts :
+    RunGraph.RunGraph
+    -> (GraphModel.Edge -> Bool)
+    -> (GraphModel.Edge -> String)
+    -> Set String
+boundaryPorts runGraph touchesNode endpointOf =
+    runGraph.graph.edges
+        |> List.filter touchesNode
+        |> List.filterMap (endpointOf >> endpointPortName runGraph)
+        |> Set.fromList
+
+
+endpointPortName : RunGraph.RunGraph -> String -> Maybe String
+endpointPortName runGraph nodeId =
     GraphModel.findNode nodeId runGraph.graph
-        |> Maybe.map (.kind >> GraphModel.isEndpoint)
-        |> Maybe.withDefault False
+        |> Maybe.andThen
+            (\found ->
+                if GraphModel.isEndpoint found.kind then
+                    Just found.displayName
+
+                else
+                    Nothing
+            )
 
 
 nodeAttempt : RunGraph.Occurrence -> NodeDetail.Attempt
@@ -1158,11 +1185,11 @@ residualBindingsCard model detail =
             { detail
                 | inputs =
                     List.filter
-                        (\binding -> not (Set.member binding.portName (attributedPorts model)))
+                        (\binding -> not (Set.member binding.portName (attributedInputPorts model)))
                         detail.inputs
                 , outputs =
                     List.filter
-                        (\binding -> not (Set.member binding.portName (attributedPorts model)))
+                        (\binding -> not (Set.member binding.portName (attributedOutputPorts model)))
                         detail.outputs
             }
     in
@@ -1184,8 +1211,28 @@ attributedWaitIds model =
             |> Maybe.withDefault Set.empty
 
 
-attributedPorts : Model -> Set String
-attributedPorts model =
+{-| The ports the canvas already placed, so the residual card can show what it
+did not.
+
+Inputs and outputs are answered separately rather than from one union. An
+input port and an output port are different namespaces — nothing stops a
+workflow declaring an input `report` and an output `report` — and a shared set
+would let one direction's attribution hide the other direction's binding from
+BOTH the node and the residual card, which is the one outcome this card exists
+to prevent.
+-}
+attributedInputPorts : Model -> Set String
+attributedInputPorts model =
+    attributedPorts model .from
+
+
+attributedOutputPorts : Model -> Set String
+attributedOutputPorts model =
+    attributedPorts model .to
+
+
+attributedPorts : Model -> (GraphModel.Edge -> String) -> Set String
+attributedPorts model endpointOf =
     if not (graphIsDrawn model) then
         Set.empty
 
@@ -1194,11 +1241,7 @@ attributedPorts model =
             |> Maybe.map
                 (\runGraph ->
                     runGraph.graph.edges
-                        |> List.filter
-                            (\edge ->
-                                isEndpointNode runGraph edge.from || isEndpointNode runGraph edge.to
-                            )
-                        |> List.map .portName
+                        |> List.filterMap (endpointOf >> endpointPortName runGraph)
                         |> Set.fromList
                 )
             |> Maybe.withDefault Set.empty

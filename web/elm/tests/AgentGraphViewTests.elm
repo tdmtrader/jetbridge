@@ -288,6 +288,36 @@ endpoints =
             renderGraph endpointGraph emptyState Nothing
                 |> Query.find [ class "agent-graph-node-kind" ]
                 |> Query.has [ text "input" ]
+    , test "an endpoint node reports no click, because there is nothing to select it for" <|
+        \_ ->
+            -- An endpoint carries no occurrence by construction
+            -- (ExecutionNodesOf admits only agent/task/await/publish/load, and
+            -- endpoint ids are kind-qualified), so both consumers turned the
+            -- click into a false statement: an unsatisfiable run-list filter on
+            -- the overview, and "this node was never reached in this run" on
+            -- the run page about a port the run did bind.
+            renderGraph endpointGraph emptyState Nothing
+                |> Query.find [ class "agent-graph-node" ]
+                |> Event.simulate Event.click
+                |> Event.toResult
+                |> Expect.err
+    , test "an endpoint node is disabled, so keyboard and assistive users are not offered it either" <|
+        \_ ->
+            renderGraph endpointGraph emptyState Nothing
+                |> Query.find [ class "agent-graph-node" ]
+                |> Expect.all
+                    [ Query.has [ attribute (Html.Attributes.disabled True) ]
+
+                    -- aria-pressed announces a toggle. An endpoint is not one.
+                    , Query.hasNot
+                        [ attribute (Html.Attributes.attribute "aria-pressed" "false") ]
+                    ]
+    , test "an endpoint node still names itself to assistive technology" <|
+        \_ ->
+            renderGraph endpointGraph emptyState Nothing
+                |> Query.find [ class "agent-graph-node" ]
+                |> Query.has
+                    [ attribute (Html.Attributes.attribute "aria-label" "repository, input") ]
     ]
 
 

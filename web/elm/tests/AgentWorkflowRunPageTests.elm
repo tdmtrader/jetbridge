@@ -20,6 +20,7 @@ import Message.Subscription exposing (Delivery(..), Interval(..))
 import Message.TopLevelMessage as Msgs
 import SubPage.SubPage as SubPage
 import Test exposing (Test, describe, test)
+import Test.Html.Event as Event
 import Test.Html.Query as Query
 import Test.Html.Selector exposing (attribute, class, containing, tag, text)
 import Time
@@ -802,6 +803,39 @@ all =
                         |> Common.queryView
                         |> Query.find [ class "agent-node-detail-inputs" ]
                         |> Query.has [ text "no inputs" ]
+            , test "attributes a public output by the port the endpoint node names, not by the edge label" <|
+                \_ ->
+                    -- graph.Build used to label a public-output edge with the
+                    -- binding it consumed (`outputs[].from`), which every seed
+                    -- producing a repository-change names differently from the
+                    -- port (`{name: change, from: candidate}`). The durable
+                    -- binding is keyed by the port, so the join dropped the
+                    -- run's own deliverable from the node that sealed it. The
+                    -- port is now read from the endpoint node's identity, so
+                    -- an edge labelled either way attributes correctly.
+                    selectedImplementWithInternallyLabelledOutput
+                        |> Common.queryView
+                        |> Query.find [ class "agent-node-detail-outputs" ]
+                        |> Expect.all
+                            [ Query.has [ text "change" ]
+                            , Query.hasNot [ text "outputs have not materialized" ]
+                            ]
+            , test "does not repeat an attributed output in the residual bindings card" <|
+                \_ ->
+                    selectedImplementWithInternallyLabelledOutput
+                        |> Common.queryView
+                        |> Query.hasNot [ class "agent-run-bindings" ]
+            , test "an endpoint node offers no selection, so its ports cannot become a false claim" <|
+                \_ ->
+                    -- An endpoint has no occurrence by construction, so the
+                    -- detail panel would report "never reached in this run"
+                    -- about a port the run demonstrably bound.
+                    initializedWithGraph
+                        |> Common.queryView
+                        |> Query.find [ class "agent-graph-node--endpoint" ]
+                        |> Event.simulate Event.click
+                        |> Event.toResult
+                        |> Expect.err
             , test "falls back to the flat cards when the graph could not be derived" <|
                 \_ ->
                     initializedWithUnavailableGraph
@@ -1109,6 +1143,37 @@ initializedWithRetryOrigin =
 selectedImplement : Application.Model
 selectedImplement =
     initializedWithGraph
+        |> Application.update (Msgs.Update (Message.AgentWorkflowNodeSelected "implement"))
+        |> Tuple.first
+
+
+{-| The same run, with the public-output edge labelled the way graph.Build
+labelled it before the endpoint-edge contract was fixed: with the internal
+binding `candidate` rather than the public port `change`. The node's sealed
+output must still be attributed, because the port is read from the endpoint
+node's own identity.
+-}
+selectedImplementWithInternallyLabelledOutput : Application.Model
+selectedImplementWithInternallyLabelledOutput =
+    let
+        graph =
+            sampleRunGraph.graph
+
+        relabelled =
+            { graph
+                | edges =
+                    List.map
+                        (\edge ->
+                            if edge.to == "output:change" then
+                                { edge | portName = "candidate" }
+
+                            else
+                                edge
+                        )
+                        graph.edges
+            }
+    in
+    withRunGraph { sampleRunGraph | graph = relabelled } initializedSucceeded
         |> Application.update (Msgs.Update (Message.AgentWorkflowNodeSelected "implement"))
         |> Tuple.first
 

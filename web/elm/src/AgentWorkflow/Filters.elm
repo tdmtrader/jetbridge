@@ -56,6 +56,7 @@ exists to find.
 
 -}
 
+import AgentGraph.Model
 import Url.Builder
 
 
@@ -233,7 +234,7 @@ fromQuery pairs =
                 |> Maybe.map Tuple.second
 
         selectedNode =
-            find "node"
+            find "node" |> Maybe.andThen occurrenceBearingNode
     in
     { window =
         case find "window" of
@@ -277,6 +278,28 @@ fromQuery pairs =
     , version = find "version" |> Maybe.andThen String.toInt
     , origin = find "origin" |> Maybe.withDefault ""
     }
+
+
+{-| Only an execution node can narrow the run list, so an endpoint id is
+dropped rather than forwarded — for the same reason an unknown node status is.
+
+The server's node filter is `EXISTS (… agent_workflow_run_node_occurrences …
+o.node_id = $n)`, and that projection contains only occurrence-bearing nodes
+with bare ids (`occurrence.ExecutionNodesOf`). `?node=input:repository` is
+therefore an unsatisfiable predicate, not a narrow one: it returns an empty
+list that the page then captions as a server fact ("No runs need attention in
+this window") about a population it never examined. The value is
+URL-addressable and survives sharing, so a shared link would reproduce the
+false statement for a reader who never made the click.
+
+-}
+occurrenceBearingNode : String -> Maybe String
+occurrenceBearingNode nodeId =
+    if AgentGraph.Model.isEndpointId nodeId then
+        Nothing
+
+    else
+        Just nodeId
 
 
 {-| The occurrence status vocabulary `workflowruns.validateNodeStatus`

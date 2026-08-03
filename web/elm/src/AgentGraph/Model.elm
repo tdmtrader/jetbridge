@@ -7,6 +7,7 @@ module AgentGraph.Model exposing
     , decorationName
     , findNode
     , isEndpoint
+    , isEndpointId
     , isExecution
     , kindName
     )
@@ -138,6 +139,25 @@ kind-qualified and they never carry state.
 isEndpoint : NodeKind -> Bool
 isEndpoint kind =
     not (isExecution kind)
+
+
+{-| True for an id that is an endpoint's, read from the id alone.
+
+The kind-qualified prefixes are a contract, not a formatting choice:
+`agent/workflow/graph/build.go` reserves `input:`, `output:` and `source:` for
+endpoints and `addNode` hard-errors if an execution node ever claims one, so a
+bare id and a prefixed id can never mean the same node.
+
+This exists for the places that hold a node id with no graph in hand — a query
+parameter off the URL, most of all. `?node=input:repository` names something
+the occurrence projection cannot contain by construction, so a filter built
+from it is unsatisfiable rather than merely empty.
+
+-}
+isEndpointId : String -> Bool
+isEndpointId nodeId =
+    List.any (\prefix -> String.startsWith prefix nodeId)
+        [ "input:", "output:", "source:" ]
 
 
 {-| The wire name of a kind. Kept beside the type so the decoder, the view, and

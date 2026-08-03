@@ -274,6 +274,45 @@ all =
                                 , ( "node", "implement" )
                                 ]
                             )
+            , test "selecting an endpoint node filters nothing, because no occurrence can carry its id" <|
+                \_ ->
+                    -- The canvas no longer offers the click, but the message is
+                    -- still reachable and `?node=input:repository` is still
+                    -- typeable. The server's node filter is an EXISTS over
+                    -- agent_workflow_run_node_occurrences, which holds only
+                    -- execution nodes with bare ids, so the predicate is
+                    -- unsatisfiable and the empty list would be captioned as a
+                    -- server fact about a population never examined.
+                    initializedWithOverview
+                        |> Application.update
+                            (Msgs.Update (Message.AgentWorkflowNodeSelected "input:repository"))
+                        |> Tuple.second
+                        |> Expect.all
+                            [ Common.notContains
+                                (Effects.FetchAgentWorkflowRunsFiltered "review-api"
+                                    [ ( "window", "7d" )
+                                    , ( "scope", "operational" )
+                                    , ( "lens", "attention" )
+                                    , ( "node", "input:repository" )
+                                    ]
+                                )
+                            , Common.notContains
+                                (Effects.ModifyUrl
+                                    "/agent/workflows/review-api?node=input%3Arepository"
+                                )
+                            ]
+            , test "a shared link naming an endpoint node lists runs rather than nothing" <|
+                \_ ->
+                    Common.initCustom
+                        { initCustomOpts | query = Just "node=output%3Achange" }
+                        "/agent/workflows/review-api"
+                        |> Application.update
+                            (Msgs.DeliveryReceived (ClockTicked FiveSeconds (Time.millisToPosix 0)))
+                        |> Tuple.second
+                        |> Common.contains
+                            (Effects.FetchAgentWorkflowRunsFiltered "review-api"
+                                [ ( "window", "7d" ), ( "scope", "operational" ), ( "lens", "attention" ) ]
+                            )
             , test "selecting a node does not refetch the DAG, which did not change" <|
                 \_ ->
                     initializedWithOverview

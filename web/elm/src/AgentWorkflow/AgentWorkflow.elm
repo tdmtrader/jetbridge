@@ -36,6 +36,7 @@ other affordance still work.
 -}
 
 import AgentGraph.Layout as Layout
+import AgentGraph.Model as GraphModel
 import AgentGraph.View as GraphView
 import AgentPage.Chrome as Chrome
 import AgentWorkflow.Filters as Filters
@@ -369,15 +370,27 @@ update : Message -> ET Model
 update message ( model, effects ) =
     case message of
         AgentWorkflowNodeSelected nodeId ->
-            applyFilters
-                (\filters ->
-                    if filters.selectedNode == Just nodeId then
-                        { filters | selectedNode = Nothing, selectedNodeStatus = Nothing }
-
-                    else
-                        { filters | selectedNode = Just nodeId, selectedNodeStatus = Nothing }
-                )
+            -- The canvas no longer offers the click for an endpoint, so this
+            -- guard is for the message arriving any other way. `?node=input:x`
+            -- is URL-addressable and survives sharing, and the run-list filter
+            -- is an EXISTS over agent_workflow_run_node_occurrences, which
+            -- holds only execution nodes with bare ids. An endpoint id makes
+            -- the predicate unsatisfiable rather than merely unmatched, so the
+            -- list would report "nothing needs attention" about a population
+            -- it never looked at.
+            if GraphModel.isEndpointId nodeId then
                 ( model, effects )
+
+            else
+                applyFilters
+                    (\filters ->
+                        if filters.selectedNode == Just nodeId then
+                            { filters | selectedNode = Nothing, selectedNodeStatus = Nothing }
+
+                        else
+                            { filters | selectedNode = Just nodeId, selectedNodeStatus = Nothing }
+                    )
+                    ( model, effects )
 
         AgentWorkflowNodeCleared ->
             applyFilters

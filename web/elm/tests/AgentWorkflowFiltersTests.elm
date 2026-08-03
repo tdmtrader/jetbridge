@@ -123,6 +123,32 @@ all =
                     Filters.fromQuery [ ( "node", "implement" ), ( "node_status", "sideways" ) ]
                         |> .selectedNodeStatus
                         |> Expect.equal Nothing
+            , test "drops an endpoint node, whose filter no occurrence can satisfy" <|
+                \_ ->
+                    -- The server's node filter is an EXISTS over
+                    -- agent_workflow_run_node_occurrences, and that projection
+                    -- holds only execution nodes with bare ids. Forwarding
+                    -- `input:repository` returns an empty list the page then
+                    -- captions as "No runs need attention in this window" — a
+                    -- server fact about a population it never examined. The
+                    -- value is URL-addressable, so a shared link would
+                    -- reproduce that for a reader who never made the click.
+                    [ "input:repository", "output:change", "source:git" ]
+                        |> List.map (\nodeId -> Filters.fromQuery [ ( "node", nodeId ) ] |> .selectedNode)
+                        |> Expect.equal [ Nothing, Nothing, Nothing ]
+            , test "drops the node status of a dropped endpoint node too" <|
+                \_ ->
+                    Filters.fromQuery
+                        [ ( "node", "input:repository" ), ( "node_status", "failed" ) ]
+                        |> .selectedNodeStatus
+                        |> Expect.equal Nothing
+            , test "keeps an execution node whose name merely starts like a port" <|
+                \_ ->
+                    -- The prefixes are `input:`, not the word "input". An
+                    -- agent legitimately called `inputs` must still filter.
+                    Filters.fromQuery [ ( "node", "inputs" ) ]
+                        |> .selectedNode
+                        |> Expect.equal (Just "inputs")
             ]
         , describe "the overview API query"
             [ test "carries only the window, which is all the endpoint accepts" <|

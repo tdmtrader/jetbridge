@@ -130,12 +130,25 @@
 }
 
 /* Endpoint nodes never execute, so they carry no state at all. They read as
- * quieter than execution nodes without reading as failed or as missing. */
+ * quieter than execution nodes without reading as failed or as missing.
+ *
+ * They are also not selectable (View.elm renders them disabled): with no
+ * occurrence there is nothing a selection could ask about, and both pages
+ * turned the click into a false statement. So they must not offer the
+ * pointer or the hover the base rule gives every node, or the canvas would
+ * advertise an interaction that no longer exists. The disabled default of
+ * dimming is overridden: quieter is the intent, faded-out is not. */
 .agent-graph-node--endpoint {
   background: transparent;
   border-style: solid;
   border-color: @grey70;
   color: @grey40;
+  cursor: default;
+  opacity: 1;
+}
+
+.agent-graph-node--endpoint:hover {
+  border-color: @grey70;
 }
 
 /* No activity in the window. Dashed, not grey-that-reads-as-green, and
