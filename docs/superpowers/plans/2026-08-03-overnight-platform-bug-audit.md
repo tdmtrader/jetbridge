@@ -171,7 +171,12 @@ head. Every fixer ran its own focused suites green, including the full migration
 (228 specs) and focused DB specs for the projection work. The frontend bundle was
 regenerated for the UI changes.
 
-The pre-existing baseline had two load-shaped failures unrelated to any of this work: a
-checkpoint expiry assertion with a 1ms tolerance that mixes clock sources, and a
-`cmd/concourse` spec with a 1-second timeout. Both are timing-fragile under a loaded
-machine and are worth tightening independently.
+`make test-unit` on the merged head finished with one failure, the same checkpoint expiry
+spec that failed on the pre-existing baseline. It turned out to be a defect in the test
+rather than flakiness: it compared `upload_expires_at` against `created_at` with a 1ms
+tolerance, but the expiry is an hour past `clock_timestamp()` (which advances during the
+transaction) while `created_at` defaults to `now()` (fixed at transaction start), so it
+only ever held on an idle machine. The assertion now states the invariant it means —
+mutation-verified by widening the TTL to two hours and watching it fail. The other
+baseline failure, a `cmd/concourse` spec with a one-second timeout, did not recur and
+passes on rerun; it is timing-fragile under load and worth tightening independently.
