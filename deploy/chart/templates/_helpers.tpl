@@ -54,8 +54,30 @@ ServiceAccount name for the web pod.
 Container image reference.
 */}}
 {{- define "concourse.image" -}}
-{{- $tag := default .Chart.AppVersion .Values.image.tag }}
-{{- printf "%s:%s" .Values.image.repository $tag }}
+{{- $digest := .Values.image.digest | default "" -}}
+{{- if $digest -}}
+{{- if not (regexMatch "^sha256:[a-f0-9]{64}$" $digest) -}}
+{{- fail "image.digest must be an exact lowercase sha256 digest" -}}
+{{- end -}}
+{{- if not (regexMatch "^[a-f0-9]{40}$" (.Values.image.sourceCommit | default "")) -}}
+{{- fail "image.sourceCommit must be the full lowercase Git commit when image.digest is set" -}}
+{{- end -}}
+{{- printf "%s@%s" .Values.image.repository $digest -}}
+{{- else -}}
+{{- if .Values.image.sourceCommit -}}
+{{- fail "image.sourceCommit requires image.digest" -}}
+{{- end -}}
+{{- $tag := default .Chart.AppVersion .Values.image.tag -}}
+{{- printf "%s:%s" .Values.image.repository $tag -}}
+{{- end -}}
+{{- end }}
+
+{{/* Immutable image provenance annotations; empty for development tags. */}}
+{{- define "concourse.imageProvenanceAnnotations" -}}
+{{- if .Values.image.digest }}
+concourse.ci/source-commit: {{ .Values.image.sourceCommit | quote }}
+concourse.ci/image-digest: {{ include "concourse.image" . | quote }}
+{{- end }}
 {{- end }}
 
 {{/*

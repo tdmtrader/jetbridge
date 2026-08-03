@@ -173,32 +173,22 @@ func TestAgentRunnerPipelinePublishesVerifiedImmutableImage(t *testing.T) {
 	script := deployPipelineTaskScript(t, task)
 
 	for _, required := range []string{
-		`SHORT_SHA=$(git rev-parse --short=12 HEAD)`,
-		`IMAGE="${GHCR}:${SHORT_SHA}"`,
+		`SOURCE_COMMIT=$(git rev-parse HEAD)`,
+		`LOCAL_IMAGE="registry.home/agent-runner:${SOURCE_COMMIT}"`,
 		`docker build --platform linux/amd64`,
-		`--tag "${IMAGE}"`,
+		`--tag "${LOCAL_IMAGE}"`,
 		`docker run --rm --platform linux/amd64`,
-		`--entrypoint /usr/local/bin/agent-runner-image-smoke "${IMAGE}"`,
-		`PUSH_OUTPUT=$(kubectl exec -n cicd "${BUILDER_POD}" -- docker push "${IMAGE}")`,
+		`--entrypoint /usr/local/bin/agent-runner-image-smoke "${LOCAL_IMAGE}"`,
+		`PUSH_OUTPUT=$(kubectl exec -n cicd "${BUILDER_POD}" -- docker push "${LOCAL_IMAGE}")`,
 		`sed -n 's/.*digest: \(sha256:[a-f0-9]\{64\}\).*/\1/p'`,
 		`grep -Eq '^sha256:[a-f0-9]{64}$'`,
-		`IMMUTABLE_IMAGE="${IMAGE_REPOSITORY}@${DIGEST}"`,
+		`IMMUTABLE_IMAGE="registry.home/agent-runner@${DIGEST}"`,
 		`docker pull --platform linux/amd64 "${IMMUTABLE_IMAGE}"`,
+		`--entrypoint /usr/local/bin/agent-runner-image-smoke "${IMMUTABLE_IMAGE}"`,
 		`docker image inspect --format '{{.Os}}/{{.Architecture}}' "${IMMUTABLE_IMAGE}"`,
-		// The deployed reference names the in-cluster registry, but the digest
-		// is verified through GHCR. Mirroring the same commit tag and requiring
-		// both registries to return the same digest is the only thing that
-		// makes the pullable reference provably the image just verified.
-		`LOCAL_IMAGE="registry.home/agent-runner:${SHORT_SHA}"`,
-		`LOCAL_PUSH_OUTPUT=$(kubectl exec -n cicd "${BUILDER_POD}" -- docker push "${LOCAL_IMAGE}")`,
-		`if test "${LOCAL_DIGEST}" != "${DIGEST}"; then`,
-		`DEPLOYABLE_IMAGE="registry.home/agent-runner@${DIGEST}"`,
 		`printf 'CONCOURSE_AGENT_STEP_IMAGE=%s\nSOURCE_COMMIT=%s\nRUNNER_VERSION=%s\n' \`,
 		`> ../runner-image-metadata/verified-image.env`,
-		// The promotion runbook has an operator copy this printed line and then
-		// asserts it against ^registry.home/… — it must be the deployable
-		// reference, not the GHCR one the digest was verified through.
-		`CONCOURSE_AGENT_STEP_IMAGE=${DEPLOYABLE_IMAGE}`,
+		`CONCOURSE_AGENT_STEP_IMAGE=${IMMUTABLE_IMAGE}`,
 	} {
 		if !strings.Contains(script, required) {
 			t.Errorf("agent-runner pipeline lacks immutable-image contract %q", required)
@@ -223,20 +213,31 @@ func TestAgentRunnerPipelinePublishesVerifiedImmutableImage(t *testing.T) {
 	requireTextOrder(t, script,
 		`docker build --platform linux/amd64`,
 		`docker run --rm --platform linux/amd64`,
-		`set +x`,
-		`docker login ghcr.io`,
-		`set -x`,
-		`PUSH_OUTPUT=$(kubectl exec -n cicd "${BUILDER_POD}" -- docker push "${IMAGE}")`,
+		`PUSH_OUTPUT=$(kubectl exec -n cicd "${BUILDER_POD}" -- docker push "${LOCAL_IMAGE}")`,
 		`DIGEST=$(printf`,
 		`docker pull --platform linux/amd64 "${IMMUTABLE_IMAGE}"`,
 		`docker image inspect --format '{{.Os}}/{{.Architecture}}' "${IMMUTABLE_IMAGE}"`,
-		`docker push ${GHCR}:v${NEXT_VERSION}`,
-		`if test "${LOCAL_DIGEST}" != "${DIGEST}"; then`,
 		`verified-image.env`,
-		`CONCOURSE_AGENT_STEP_IMAGE=${DEPLOYABLE_IMAGE}`,
+		`docker push registry.home/agent-runner:v${NEXT_VERSION}`,
+		`set +x`,
+		`docker login ghcr.io`,
+		`set -x`,
+		`CONCOURSE_AGENT_STEP_IMAGE=${IMMUTABLE_IMAGE}`,
 	)
 	if !strings.Contains(script, "done\nkubectl exec -n cicd \"${BUILDER_POD}\" -- docker info >/dev/null") {
 		t.Fatal("agent-runner pipeline does not fail closed after its Docker readiness loop")
+	}
+	requireTextOrder(t, script,
+		`> ../runner-image-metadata/verified-image.env`,
+		`docker login ghcr.io`,
+	)
+	for _, required := range []string{
+		`if printf '%s\n' "${GITHUB_TOKEN}" | kubectl exec`,
+		`WARNING: GHCR runner mirror`,
+	} {
+		if !strings.Contains(script, required) {
+			t.Errorf("runner GHCR mirror is not explicitly best-effort; missing %q", required)
+		}
 	}
 }
 

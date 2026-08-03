@@ -20,10 +20,14 @@ import (
 type deployment struct {
 	Kind     string `json:"kind"`
 	Metadata struct {
-		Name string `json:"name"`
+		Name        string            `json:"name"`
+		Annotations map[string]string `json:"annotations"`
 	} `json:"metadata"`
 	Spec struct {
 		Template struct {
+			Metadata struct {
+				Annotations map[string]string `json:"annotations"`
+			} `json:"metadata"`
 			Spec struct {
 				AutomountServiceAccountToken *bool `json:"automountServiceAccountToken"`
 				SecurityContext              struct {
@@ -37,9 +41,10 @@ type deployment struct {
 					VolumeMounts []volumeMount `json:"volumeMounts"`
 				} `json:"initContainers"`
 				Containers []struct {
-					Name string   `json:"name"`
-					Args []string `json:"args"`
-					Env  []struct {
+					Name  string   `json:"name"`
+					Image string   `json:"image"`
+					Args  []string `json:"args"`
+					Env   []struct {
 						Name  string `json:"name"`
 						Value string `json:"value"`
 					} `json:"env"`
@@ -64,10 +69,14 @@ type deployment struct {
 type daemonSet struct {
 	Kind     string `json:"kind"`
 	Metadata struct {
-		Name string `json:"name"`
+		Name        string            `json:"name"`
+		Annotations map[string]string `json:"annotations"`
 	} `json:"metadata"`
 	Spec struct {
 		Template struct {
+			Metadata struct {
+				Annotations map[string]string `json:"annotations"`
+			} `json:"metadata"`
 			Spec struct {
 				SecurityContext struct {
 					RunAsNonRoot *bool  `json:"runAsNonRoot"`
@@ -75,6 +84,7 @@ type daemonSet struct {
 				} `json:"securityContext"`
 				Containers []struct {
 					Name            string   `json:"name"`
+					Image           string   `json:"image"`
 					Command         []string `json:"command"`
 					SecurityContext struct {
 						RunAsNonRoot             *bool  `json:"runAsNonRoot"`

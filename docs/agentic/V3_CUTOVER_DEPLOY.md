@@ -27,7 +27,11 @@ function runs as. Without it, `merge-preflight` / `merge-prepare` steps fail at
 exec with "executable file not found".
 
 Trigger the manual `build-agent-runner-image` job in `deploy/concourse-pipeline.yml`
-(builds `deploy/agent-runner/Dockerfile`, pushes `ghcr.io/tdmtrader/agent-runner`).
+(builds `deploy/agent-runner/Dockerfile`, pushes the deployable commit tag to
+`registry.home/agent-runner`, and attempts a best-effort GHCR mirror only after
+the local immutable digest has been pulled, platform-checked, smoked, and
+written to verified metadata). A GHCR login or push failure warns but does not
+block the local deployment authority.
 Require its `agent-runner-image-smoke` step to pass, then record the printed
 `CONCOURSE_AGENT_STEP_IMAGE=<repository>@sha256:<digest>` only after the job
 pulls that immutable reference and verifies it is `linux/amd64`.
@@ -205,10 +209,19 @@ this sequence, **in this order**:
    native resource performs `put: home-infra` with `rebase: true`. This is not
    a force push: a rebase conflict or non-fast-forward refusal leaves
    promotion paused for an operator retrigger.
-4. **Require ArgoCD activation before promotion.** Capture the image from the
-   verified metadata and require both healthy sync and that the deployment
-   carries the same digest. An Argo sync alone is insufficient if the
-   deployment value differs; promotion stays paused in that case.
+4. **Require ArgoCD activation before promotion.** The same unprivileged,
+   fail-closed GitOps path records the source commit and the resolved
+   `registry.home/jetbridge@sha256:...` shared image under `image.digest` and
+   `image.sourceCommit`. These fields describe the current candidate; they do
+   not claim that it passed live tests. The chart applies those exact
+   identities as provenance annotations to both the web Deployment and
+   artifact-daemon DaemonSet. In the same bounded manifest commit, the writer
+   removes the legacy ArgoCD `ignoreDifferences` entry for the
+   `apps/Deployment/cicd/concourse-web` pointer
+   `/spec/template/spec/containers/0/image`. It preserves every unrelated
+   ignore item and pointer and fails closed if the target is duplicated or
+   structurally ambiguous. An Argo sync alone is insufficient if either
+   workload value differs; promotion stays paused in that case.
 
    ```bash
    WANT_IMAGE=$(sed -n 's/^CONCOURSE_AGENT_STEP_IMAGE=//p' verified-image.env)
@@ -228,6 +241,22 @@ this sequence, **in this order**:
    pod-side binaries (`agent-runner`, `function-runner`) are two halves of one
    contract: record schema descriptors, gate wording, and contract types are
    compiled into both.
+   The `k8s-live-tests` task reads both workloads before testing, requires their
+   source and immutable image annotations to agree with the exact repository
+   version, and repeats the same checks after the tests pass. Only then does it
+   create a two-field `SOURCE_COMMIT`/`TESTED_IMAGE` attestation. An
+   unprivileged task commits that attestation to
+   `apps/concourse-live-tested-image.env` in `home-infra`, and the native Git
+   resource publishes it with `rebase: true` before the job can succeed.
+   `release` transports that file through an unprivileged validation task,
+   compares its source with the exact repository input, and builds the final
+   artifact only from its immutable tested digest; it never re-resolves the
+   mutable `rc-<commit>` tag. On an initial release, the current live candidate
+   must equal the attested digest, so rebuilding the same commit cannot replace
+   a historically tested digest with an untested one. Release-version selection
+   is also source-bound: the RC tag on that commit supplies the initial version,
+   and a stable tag already on the same commit is reused on a partial-publication
+   retry instead of incrementing to the next version.
 6. **Verify the running configuration.** Inspect the running web arguments or
    Pod specification and require the configured runner image to equal the
    recorded immutable digest. Require authenticated Fly status to succeed.
@@ -300,6 +329,16 @@ and does not expire.
 
 ## Rollback
 
-`git checkout v3-prototype-verified-20260724` restores the pre-merge branch state.
+Before using a rollback tag, verify the named remote tag exists and resolves to
+a commit; do not rely on an unverified local tag:
+
+```bash
+ROLLBACK_TAG=v3-prototype-verified-20260724
+git ls-remote --exit-code --refs origin "refs/tags/${ROLLBACK_TAG}"
+git fetch --no-tags origin "refs/tags/${ROLLBACK_TAG}:refs/tags/${ROLLBACK_TAG}"
+git rev-parse --verify "${ROLLBACK_TAG}^{commit}"
+git checkout "${ROLLBACK_TAG}"
+```
+
 There is no in-place database downgrade path worth trusting across 36 migrations —
 roll back by restoring the previous image and dropping the database again.

@@ -46,13 +46,164 @@ func newHomeInfraFixture(t *testing.T, image string) *homeInfraFixture {
 }
 
 func runnerManifest(image string) string {
-	return "web:\n  env:\n      - { name: CONCOURSE_AGENT_STEP_IMAGE, value: \"" + image + "\" }\n"
+	return "image:\n  repository: registry.home/jetbridge\n  tag: rc-old\nweb:\n  env:\n      - { name: CONCOURSE_AGENT_STEP_IMAGE, value: \"" + image + "\" }\nspec:\n  ignoreDifferences:\n    - group: apps\n      kind: Deployment\n      name: concourse-web\n      namespace: cicd\n      jsonPointers:\n        - /spec/template/spec/containers/0/image\n    - group: apps\n      kind: StatefulSet\n      name: unrelated\n      namespace: cicd\n      jsonPointers:\n        - /spec/template/spec/containers/0/image\n        - /spec/replicas\n  syncPolicy:\n    automated:\n      selfHeal: true\n"
 }
 
 func writeFixtureFile(t *testing.T, path, contents string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestWriteWebImageHomeInfra(t *testing.T) {
+	const webImage = "registry.home/jetbridge@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+	const finalImage = "registry.home/jetbridge@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	fixture := newHomeInfraFixture(t, seedRunnerImage)
+	root, err := filepath.Abs("..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	helper := filepath.Join(root, "deploy", "write-web-image-home-infra.sh")
+	output, err := exec.Command("sh", helper, webImage, sourceCommit, fixture.clone).CombinedOutput()
+	if err != nil {
+		t.Fatalf("helper: %v\n%s", err, output)
+	}
+	manifest := gitOutput(t, fixture.clone, "show", "HEAD:apps/concourse.yaml")
+	for _, want := range []string{"repository: registry.home/jetbridge", "digest: sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "sourceCommit: " + sourceCommit} {
+		if !strings.Contains(manifest, want) {
+			t.Errorf("GitOps manifest lacks %q:\n%s", want, manifest)
+		}
+	}
+	if strings.Contains(manifest, "testedDigest:") {
+		t.Fatalf("candidate image writer created pre-test authority:\n%s", manifest)
+	}
+	if strings.Contains(manifest, "name: concourse-web") {
+		t.Fatalf("candidate image writer preserved the legacy web image ignore rule:\n%s", manifest)
+	}
+	for _, preserved := range []string{"ignoreDifferences:", "name: unrelated", "/spec/template/spec/containers/0/image", "/spec/replicas", "syncPolicy:"} {
+		if !strings.Contains(manifest, preserved) {
+			t.Fatalf("candidate image writer removed unrelated Argo configuration %q:\n%s", preserved, manifest)
+		}
+	}
+	message := gitOutput(t, fixture.clone, "log", "-1", "--format=%B")
+	for _, want := range []string{"chore(deploy): pin web image", sourceCommit, webImage} {
+		if !strings.Contains(message, want) {
+			t.Errorf("commit message lacks %q:\n%s", want, message)
+		}
+	}
+	if _, err := exec.Command("sh", helper, "registry.home/jetbridge:latest", sourceCommit, fixture.clone).CombinedOutput(); err == nil {
+		t.Fatal("helper accepted mutable web image")
+	}
+	if output, err := exec.Command("sh", helper, finalImage, sourceCommit, fixture.clone).CombinedOutput(); err != nil {
+		t.Fatalf("final helper update: %v\n%s", err, output)
+	}
+	manifest = gitOutput(t, fixture.clone, "show", "HEAD:apps/concourse.yaml")
+	if !strings.Contains(manifest, "digest: sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee") || strings.Contains(manifest, "testedDigest:") {
+		t.Fatalf("final update did not pin only the current image:\n%s", manifest)
+	}
+	before := gitOutput(t, fixture.clone, "rev-parse", "HEAD")
+	if output, err := exec.Command("sh", helper, finalImage, sourceCommit, fixture.clone).CombinedOutput(); err != nil {
+		t.Fatalf("equal image/source no-op: %v\n%s", err, output)
+	}
+	if got := gitOutput(t, fixture.clone, "rev-parse", "HEAD"); got != before {
+		t.Fatalf("equal image/source created commit %s, want %s", got, before)
+	}
+
+	t.Run("removes_only_the_target_pointer_from_a_shared_rule", func(t *testing.T) {
+		shared := newHomeInfraFixture(t, seedRunnerImage)
+		manifest := runnerManifest(seedRunnerImage)
+		manifest = strings.Replace(manifest,
+			"        - /spec/template/spec/containers/0/image\n    - group: apps\n      kind: StatefulSet",
+			"        - /spec/template/spec/containers/0/image\n        - /spec/replicas\n    - group: apps\n      kind: StatefulSet", 1)
+		writeFixtureFile(t, filepath.Join(shared.clone, "apps", "concourse.yaml"), manifest)
+		runGit(t, shared.clone, "add", "apps/concourse.yaml")
+		runGit(t, shared.clone, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "add shared ignore pointer")
+
+		if output, err := exec.Command("sh", helper, webImage, sourceCommit, shared.clone).CombinedOutput(); err != nil {
+			t.Fatalf("helper: %v\n%s", err, output)
+		}
+		manifest = gitOutput(t, shared.clone, "show", "HEAD:apps/concourse.yaml")
+		if !strings.Contains(manifest, "name: concourse-web") || strings.Count(manifest, "/spec/template/spec/containers/0/image") != 1 || strings.Count(manifest, "/spec/replicas") != 2 {
+			t.Fatalf("helper did not preserve unrelated pointers while removing only the web image pointer:\n%s", manifest)
+		}
+	})
+
+	for name, mutate := range map[string]func(string) string{
+		"duplicate_target": func(manifest string) string {
+			target := "    - group: apps\n      kind: Deployment\n      name: concourse-web\n      namespace: cicd\n      jsonPointers:\n        - /spec/template/spec/containers/0/image\n"
+			return strings.Replace(manifest, target, target+target, 1)
+		},
+		"incomplete_target": func(manifest string) string {
+			return strings.Replace(manifest, "      name: concourse-web\n      namespace: cicd\n", "      name: concourse-web\n", 1)
+		},
+	} {
+		t.Run("rejects_"+name, func(t *testing.T) {
+			ambiguous := newHomeInfraFixture(t, seedRunnerImage)
+			writeFixtureFile(t, filepath.Join(ambiguous.clone, "apps", "concourse.yaml"), mutate(runnerManifest(seedRunnerImage)))
+			runGit(t, ambiguous.clone, "add", "apps/concourse.yaml")
+			runGit(t, ambiguous.clone, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "make ignore rule ambiguous")
+			before := gitOutput(t, ambiguous.clone, "rev-parse", "HEAD")
+			if output, err := exec.Command("sh", helper, webImage, sourceCommit, ambiguous.clone).CombinedOutput(); err == nil {
+				t.Fatalf("helper accepted ambiguous legacy rule: %s", output)
+			}
+			if got := gitOutput(t, ambiguous.clone, "rev-parse", "HEAD"); got != before {
+				t.Fatalf("rejected update created commit %s, want %s", got, before)
+			}
+			if got := gitOutput(t, ambiguous.clone, "status", "--porcelain"); got != "" {
+				t.Fatalf("rejected update dirtied checkout:\n%s", got)
+			}
+		})
+	}
+}
+
+func TestWriteLiveTestedImageHomeInfra(t *testing.T) {
+	const testedImage = "registry.home/jetbridge@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+	const retestedImage = "registry.home/jetbridge@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	fixture := newHomeInfraFixture(t, seedRunnerImage)
+	root, err := filepath.Abs("..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	helper := filepath.Join(root, "deploy", "write-live-tested-image-home-infra.sh")
+	if output, err := exec.Command("sh", helper, testedImage, sourceCommit, fixture.clone).CombinedOutput(); err != nil {
+		t.Fatalf("helper: %v\n%s", err, output)
+	}
+	want := "SOURCE_COMMIT=" + sourceCommit + "\nTESTED_IMAGE=" + testedImage
+	if got := gitOutput(t, fixture.clone, "show", "HEAD:apps/concourse-live-tested-image.env"); got != want {
+		t.Fatalf("attestation = %q, want %q", got, want)
+	}
+	message := gitOutput(t, fixture.clone, "log", "-1", "--format=%B")
+	for _, value := range []string{"chore(deploy): attest live-tested web image", sourceCommit, testedImage} {
+		if !strings.Contains(message, value) {
+			t.Errorf("commit message lacks %q:\n%s", value, message)
+		}
+	}
+	before := gitOutput(t, fixture.clone, "rev-parse", "HEAD")
+	if output, err := exec.Command("sh", helper, testedImage, sourceCommit, fixture.clone).CombinedOutput(); err != nil {
+		t.Fatalf("equal attestation no-op: %v\n%s", err, output)
+	}
+	if got := gitOutput(t, fixture.clone, "rev-parse", "HEAD"); got != before {
+		t.Fatalf("equal attestation created commit %s, want %s", got, before)
+	}
+	if output, err := exec.Command("sh", helper, retestedImage, sourceCommit, fixture.clone).CombinedOutput(); err != nil {
+		t.Fatalf("same-source retest update: %v\n%s", err, output)
+	}
+	want = "SOURCE_COMMIT=" + sourceCommit + "\nTESTED_IMAGE=" + retestedImage
+	if got := gitOutput(t, fixture.clone, "show", "HEAD:apps/concourse-live-tested-image.env"); got != want {
+		t.Fatalf("retest attestation = %q, want %q", got, want)
+	}
+
+	for _, args := range [][]string{
+		{"registry.home/jetbridge:latest", sourceCommit},
+		{"registry.home/jetbridge@sha256:DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD", sourceCommit},
+		{testedImage, "0123"},
+	} {
+		rejected := newHomeInfraFixture(t, seedRunnerImage)
+		if output, err := exec.Command("sh", helper, args[0], args[1], rejected.clone).CombinedOutput(); err == nil {
+			t.Fatalf("helper accepted malformed attestation %q: %s", args, output)
+		}
+		rejected.assertUnchanged(t)
 	}
 }
 
@@ -157,6 +308,8 @@ func TestWriteAgentRunnerHomeInfra(t *testing.T) {
 		cases := []struct{ image, source, version string }{
 			{"ghcr.io/tdmtrader/agent-runner:latest", sourceCommit, runnerVersion},
 			{"ghcr.io/example/agent-runner@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", sourceCommit, runnerVersion},
+			{"registry.home/agent-runner:latest", sourceCommit, runnerVersion},
+			{"registry.home/other-runner@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", sourceCommit, runnerVersion},
 			{"registry.home/agent-runner@sha256:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB", sourceCommit, runnerVersion},
 			{"registry.home/agent-runner@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", sourceCommit, runnerVersion},
 			{bRunnerImage, "0123", runnerVersion},
@@ -328,7 +481,7 @@ func TestAgentRunnerPipelineWritesVerifiedHomeInfraDigest(t *testing.T) {
 		t.Fatalf("writeback outputs = %#v, want distinct modified repository artifact", update.Config.Outputs)
 	}
 	updateScript := deployPipelineTaskScript(t, update)
-	for _, required := range []string{"sed -n 's/^CONCOURSE_AGENT_STEP_IMAGE=//p'", "SOURCE_COMMIT", "RUNNER_VERSION", "test \"$SOURCE_COMMIT\" = \"$(git -C repo rev-parse HEAD)\""} {
+	for _, required := range []string{"sed -n 's/^CONCOURSE_AGENT_STEP_IMAGE=//p'", "SOURCE_COMMIT", "RUNNER_VERSION", "^registry.home/agent-runner@sha256:[a-f0-9]{64}$", "test \"$SOURCE_COMMIT\" = \"$(git -C repo rev-parse HEAD)\""} {
 		if !strings.Contains(updateScript, required) {
 			t.Errorf("writeback task lacks %q", required)
 		}

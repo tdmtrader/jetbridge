@@ -7,6 +7,11 @@ image:
   repository: concourse-local
   # -- Image tag (defaults to appVersion from Chart.yaml)
   tag: ""
+  # -- Exact manifest digest. When set, it overrides tag and is coupled to
+  # sourceCommit so the web and artifact daemon use one durable release image.
+  digest: ""
+  # -- Full Git commit which produced image.digest (required with digest).
+  sourceCommit: ""
   # -- Image pull policy. Use "Never" for locally built images on k3s/kind.
   pullPolicy: IfNotPresent
   # -- Image pull secrets for private registries

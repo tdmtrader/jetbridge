@@ -465,6 +465,10 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "concourse.labels" . | nindent 4 }}
+  {{- if .Values.image.digest }}
+  annotations:
+    {{- include "concourse.imageProvenanceAnnotations" . | nindent 4 }}
+  {{- end }}
 spec:
   replicas: {{ .Values.web.replicas }}
   selector:
@@ -474,9 +478,14 @@ spec:
     metadata:
       labels:
         {{- include "concourse.selectorLabels" . | nindent 8 }}
-      {{- if .Values.agentBroker.enabled }}
+      {{- if or .Values.agentBroker.enabled .Values.image.digest }}
       annotations:
+        {{- if .Values.image.digest }}
+        {{- include "concourse.imageProvenanceAnnotations" . | nindent 8 }}
+        {{- end }}
+        {{- if .Values.agentBroker.enabled }}
         checksum/agent-broker-config: {{ toJson .Values.agentBroker | sha256sum | quote }}
+        {{- end }}
       {{- end }}
     spec:
       serviceAccountName: {{ include "concourse.serviceAccountName" . }}

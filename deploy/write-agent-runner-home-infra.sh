@@ -7,12 +7,9 @@ source_commit=${2-}
 runner_version=${3-}
 repo=${4-home-infra}
 file=apps/concourse.yaml
-# The deployed reference must name a registry the cluster can pull. GHCR is
-# where the image is verified, but that package is private and neither the
-# web pod nor the ServiceAccount ATC-created agent pods inherit holds a
-# credential for it, so a ghcr.io value here puts every agent pod into
-# ErrImagePull. The pipeline proves both registries carry the same digest
-# before calling this.
+# The deployment authority is the exact digest pulled, platform-checked, and
+# smoked through the in-cluster registry. GHCR is only a best-effort mirror;
+# writing it here would make ATC-created agent pods fail to pull the image.
 image_re='^registry.home/agent-runner@sha256:[a-f0-9]{64}$'
 source_re='^[a-f0-9]{40}$'
 version_re='^[0-9]+\.[0-9]+\.[0-9]+$'

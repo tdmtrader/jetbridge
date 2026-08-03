@@ -34,6 +34,10 @@ metadata:
   labels:
     {{- include "concourse.labels" . | nindent 4 }}
     app.kubernetes.io/component: artifact-daemon
+  {{- if .Values.image.digest }}
+  annotations:
+    {{- include "concourse.imageProvenanceAnnotations" . | nindent 4 }}
+  {{- end }}
 spec:
   selector:
     matchLabels:
@@ -44,6 +48,10 @@ spec:
       labels:
         app.kubernetes.io/name: {{ include "concourse.name" . }}
         app.kubernetes.io/component: artifact-daemon
+      {{- if .Values.image.digest }}
+      annotations:
+        {{- include "concourse.imageProvenanceAnnotations" . | nindent 8 }}
+      {{- end }}
     spec:
       serviceAccountName: {{ include "concourse.fullname" . }}-artifact-daemon
       subdomain: {{ include "concourse.artifactDaemonServiceName" . }}

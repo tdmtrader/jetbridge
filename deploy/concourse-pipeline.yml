@@ -505,8 +505,10 @@ jobs:
           PATCH=$(echo "$VERSION" | cut -d. -f3)
           NEXT_VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))"
 
+          SOURCE_COMMIT=$(git rev-parse HEAD)
           SHORT_SHA=$(git rev-parse --short HEAD)
-          echo "Version: ${NEXT_VERSION}-rc (${SHORT_SHA})"
+          RC_IMAGE="registry.home/jetbridge:rc-${SOURCE_COMMIT}"
+          echo "Version: ${NEXT_VERSION}-rc (${SHORT_SHA}, ${RC_IMAGE})"
 
           RC_LDFLAGS="-s -w -X github.com/concourse/concourse.Version=${NEXT_VERSION}-rc -X github.com/concourse/concourse.JetBridgeVersion=${NEXT_VERSION}-rc"
           FINAL_LDFLAGS="-s -w -X github.com/concourse/concourse.Version=${NEXT_VERSION} -X github.com/concourse/concourse.JetBridgeVersion=${NEXT_VERSION}"
@@ -629,19 +631,23 @@ jobs:
           echo "=== Building Docker image ==="
           kubectl exec -n cicd ${BUILDER_POD} -- \
             docker build \
+              -t "${RC_IMAGE}" \
               -t registry.home/jetbridge:latest \
               -t registry.home/jetbridge:v${NEXT_VERSION}-rc \
               -t ${REGISTRY}/jetbridge:latest \
               -t ${REGISTRY}/jetbridge:v${NEXT_VERSION}-rc \
               -f /tmp/Dockerfile /tmp/
 
-          echo "=== Pushing to local registries ==="
+          echo "=== Pushing the source-addressed RC image first ==="
+          kubectl exec -n cicd ${BUILDER_POD} -- docker push "${RC_IMAGE}"
+
+          echo "=== Pushing mutable convenience tags to local registries ==="
           kubectl exec -n cicd ${BUILDER_POD} -- docker push registry.home/jetbridge:latest
           kubectl exec -n cicd ${BUILDER_POD} -- docker push registry.home/jetbridge:v${NEXT_VERSION}-rc
           kubectl exec -n cicd ${BUILDER_POD} -- docker push ${REGISTRY}/jetbridge:latest
           kubectl exec -n cicd ${BUILDER_POD} -- docker push ${REGISTRY}/jetbridge:v${NEXT_VERSION}-rc
 
-          echo "=== Image built and pushed to local registries: v${NEXT_VERSION}-rc (${SHORT_SHA}) ==="
+          echo "=== Image built and pushed to local registries: ${RC_IMAGE} ==="
 
 # Builds the agent: step runner image (claude CLI + agent-runner supervisor)
 # from deploy/agent-runner/Dockerfile with the repo as build context.
@@ -681,12 +687,14 @@ jobs:
           PATCH=$(echo "$VERSION" | cut -d. -f3)
           NEXT_VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))"
 
+          SOURCE_COMMIT=$(git rev-parse HEAD)
           SHORT_SHA=$(git rev-parse --short=12 HEAD)
           echo "Version: ${NEXT_VERSION} (${SHORT_SHA})"
 
           REGISTRY="registry-docker-registry.cicd.svc.cluster.local:5000"
           GHCR="ghcr.io/tdmtrader/agent-runner"
-          IMAGE="${GHCR}:${SHORT_SHA}"
+          LOCAL_IMAGE="registry.home/agent-runner:${SOURCE_COMMIT}"
+          MIRROR_IMAGE="${GHCR}:${SOURCE_COMMIT}"
           BUILDER_POD="agent-runner-builder-$$"
 
           cleanup_builder() { kubectl delete pod -n cicd ${BUILDER_POD} --grace-period=0 --force 2>/dev/null || true; }
@@ -739,9 +747,10 @@ jobs:
           echo "=== Building agent-runner image ==="
           kubectl exec -n cicd "${BUILDER_POD}" -- \
             docker build --platform linux/amd64 \
-              --tag "${IMAGE}" \
+              --tag "${LOCAL_IMAGE}" \
               --tag registry.home/agent-runner:latest \
               --tag registry.home/agent-runner:v${NEXT_VERSION} \
+              --tag "${MIRROR_IMAGE}" \
               --tag ${GHCR}:latest \
               --tag ${GHCR}:v${NEXT_VERSION} \
               --file /tmp/src/deploy/agent-runner/Dockerfile /tmp/src
@@ -749,73 +758,54 @@ jobs:
           echo "=== Smoking the exact commit-tagged linux/amd64 image ==="
           kubectl exec -n cicd "${BUILDER_POD}" -- \
             docker run --rm --platform linux/amd64 \
-              --entrypoint /usr/local/bin/agent-runner-image-smoke "${IMAGE}"
+              --entrypoint /usr/local/bin/agent-runner-image-smoke "${LOCAL_IMAGE}"
 
-          echo "=== Logging into GHCR ==="
-          set +x
-          printf '%s\n' "${GITHUB_TOKEN}" | kubectl exec -i -n cicd "${BUILDER_POD}" -- docker login ghcr.io -u tdmtrader --password-stdin
-          set -x
-
-          echo "=== Pushing the commit tag and resolving its registry digest ==="
-          PUSH_OUTPUT=$(kubectl exec -n cicd "${BUILDER_POD}" -- docker push "${IMAGE}")
+          echo "=== Pushing the in-cluster commit tag and resolving its registry digest ==="
+          PUSH_OUTPUT=$(kubectl exec -n cicd "${BUILDER_POD}" -- docker push "${LOCAL_IMAGE}")
           printf '%s\n' "${PUSH_OUTPUT}"
           DIGEST=$(printf '%s\n' "${PUSH_OUTPUT}" | sed -n 's/.*digest: \(sha256:[a-f0-9]\{64\}\).*/\1/p' | tail -1)
           if ! printf '%s\n' "${DIGEST}" | grep -Eq '^sha256:[a-f0-9]{64}$'; then
-            echo "FATAL: registry push returned no exact lowercase sha256 digest"
+            echo "FATAL: registry.home push returned no exact lowercase sha256 digest"
             exit 1
           fi
-          IMAGE_REPOSITORY=${IMAGE%:*}
-          IMMUTABLE_IMAGE="${IMAGE_REPOSITORY}@${DIGEST}"
+          IMMUTABLE_IMAGE="registry.home/agent-runner@${DIGEST}"
           kubectl exec -n cicd "${BUILDER_POD}" -- docker pull --platform linux/amd64 "${IMMUTABLE_IMAGE}"
           PUSHED_PLATFORM=$(kubectl exec -n cicd "${BUILDER_POD}" -- docker image inspect --format '{{.Os}}/{{.Architecture}}' "${IMMUTABLE_IMAGE}")
           if test "${PUSHED_PLATFORM}" != "linux/amd64"; then
             echo "FATAL: pushed runner platform is ${PUSHED_PLATFORM}, want linux/amd64"
             exit 1
           fi
-
-          echo "=== Pushing optional mutable convenience tags after immutable verification ==="
-          kubectl exec -n cicd "${BUILDER_POD}" -- docker push registry.home/agent-runner:latest
-          kubectl exec -n cicd "${BUILDER_POD}" -- docker push registry.home/agent-runner:v${NEXT_VERSION}
-          kubectl exec -n cicd "${BUILDER_POD}" -- docker push ${GHCR}:latest
-          kubectl exec -n cicd "${BUILDER_POD}" -- docker push ${GHCR}:v${NEXT_VERSION}
-
-          # The deployed reference must name a registry THIS CLUSTER CAN PULL.
-          # GHCR is where the image is verified above, but the package is
-          # private and neither the web pod nor the default ServiceAccount that
-          # ATC-created agent pods inherit carries a credential for it — on
-          # 2026-08-01 a ghcr.io writeback put every agent pod into
-          # ErrImagePull, and it took a hand override of this row in home-infra
-          # to recover. Push the same commit tag to the in-cluster registry,
-          # prove the two registries agree on the digest, and write the
-          # in-cluster reference. GHCR remains the offsite mirror; the digest
-          # is content-addressed, so equality is the whole proof that the
-          # pullable reference is the byte-identical image just verified.
-          echo "=== Mirroring the exact commit tag to the in-cluster registry ==="
-          LOCAL_IMAGE="registry.home/agent-runner:${SHORT_SHA}"
-          kubectl exec -n cicd "${BUILDER_POD}" -- docker tag "${IMAGE}" "${LOCAL_IMAGE}"
-          LOCAL_PUSH_OUTPUT=$(kubectl exec -n cicd "${BUILDER_POD}" -- docker push "${LOCAL_IMAGE}")
-          printf '%s\n' "${LOCAL_PUSH_OUTPUT}"
-          LOCAL_DIGEST=$(printf '%s\n' "${LOCAL_PUSH_OUTPUT}" | sed -n 's/.*digest: \(sha256:[a-f0-9]\{64\}\).*/\1/p' | tail -1)
-          if test "${LOCAL_DIGEST}" != "${DIGEST}"; then
-            echo "FATAL: in-cluster digest ${LOCAL_DIGEST} does not match verified ${DIGEST}"
-            exit 1
-          fi
-          DEPLOYABLE_IMAGE="registry.home/agent-runner@${DIGEST}"
-          kubectl exec -n cicd "${BUILDER_POD}" -- docker pull --platform linux/amd64 "${DEPLOYABLE_IMAGE}"
+          kubectl exec -n cicd "${BUILDER_POD}" -- \
+            docker run --rm --platform linux/amd64 \
+              --entrypoint /usr/local/bin/agent-runner-image-smoke "${IMMUTABLE_IMAGE}"
 
           umask 077
           printf 'CONCOURSE_AGENT_STEP_IMAGE=%s\nSOURCE_COMMIT=%s\nRUNNER_VERSION=%s\n' \
-            "${DEPLOYABLE_IMAGE}" "$(git rev-parse HEAD)" "${NEXT_VERSION}" \
+            "${IMMUTABLE_IMAGE}" "${SOURCE_COMMIT}" "${NEXT_VERSION}" \
             > ../runner-image-metadata/verified-image.env
           grep -Eq '^CONCOURSE_AGENT_STEP_IMAGE=registry.home/agent-runner@sha256:[a-f0-9]{64}$' ../runner-image-metadata/verified-image.env
           grep -Eq '^SOURCE_COMMIT=[a-f0-9]{40}$' ../runner-image-metadata/verified-image.env
           grep -Eq '^RUNNER_VERSION=[0-9]+\.[0-9]+\.[0-9]+$' ../runner-image-metadata/verified-image.env
-          # Print the deployable reference, not the GHCR one. The promotion
-          # runbook tells an operator to capture this exact line and then
-          # asserts it matches ^registry.home/… — printing IMMUTABLE_IMAGE here
-          # would hand them a value that fails their own gate.
-          echo "VERIFIED_GHCR_IMAGE=${IMMUTABLE_IMAGE}"
-          echo "CONCOURSE_AGENT_STEP_IMAGE=${DEPLOYABLE_IMAGE}"
+          echo "=== Pushing optional local convenience tags ==="
+          kubectl exec -n cicd "${BUILDER_POD}" -- docker push registry.home/agent-runner:latest
+          kubectl exec -n cicd "${BUILDER_POD}" -- docker push registry.home/agent-runner:v${NEXT_VERSION}
+
+          echo "=== Best-effort GHCR runner mirror ==="
+          set +x
+          if printf '%s\n' "${GITHUB_TOKEN}" | kubectl exec -i -n cicd "${BUILDER_POD}" -- docker login ghcr.io -u tdmtrader --password-stdin; then
+            set -x
+            for mirror in "${MIRROR_IMAGE}" "${GHCR}:latest" "${GHCR}:v${NEXT_VERSION}"; do
+              if ! kubectl exec -n cicd "${BUILDER_POD}" -- docker push "${mirror}"; then
+                echo "WARNING: GHCR runner mirror push failed for ${mirror}; registry.home digest remains authoritative" >&2
+              fi
+            done
+          else
+            set -x
+            echo "WARNING: GHCR runner mirror login failed; registry.home digest remains authoritative" >&2
+          fi
+          # The runbook captures this exact deployable, cluster-pullable
+          # reference. GHCR remains an optional offsite mirror only.
+          echo "CONCOURSE_AGENT_STEP_IMAGE=${IMMUTABLE_IMAGE}"
   - get: home-infra
     trigger: false
   - task: update-home-infra-agent-runner-image
@@ -1025,6 +1015,56 @@ jobs:
     trigger: true
     params: {depth: 0, fetch_tags: true}
     passed: [build-image, build-agent-runner-image]
+  - get: home-infra
+    trigger: false
+  - task: resolve-and-write-home-infra-web-image
+    attempts: 2
+    config:
+      platform: linux
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v5
+      inputs:
+      - name: repo
+      - name: home-infra
+      outputs:
+      - name: home-infra-updated
+      - name: web-image-metadata
+      run:
+        path: sh
+        args:
+        - -euc
+        - |
+          cd repo
+          SOURCE_COMMIT=$(git rev-parse HEAD)
+          RC_IMAGE="registry.home/jetbridge:rc-${SOURCE_COMMIT}"
+          PROBE_POD="jetbridge-image-probe-$(git rev-parse --short=12 HEAD)-$$"
+          cleanup_probe() { kubectl delete pod -n cicd "${PROBE_POD}" --grace-period=0 --force 2>/dev/null || true; }
+          trap cleanup_probe EXIT
+
+          kubectl run "${PROBE_POD}" -n cicd --restart=Never \
+            --image="${RC_IMAGE}" --image-pull-policy=Always --command -- sh -c 'sleep 300'
+          kubectl wait --for=condition=ready "pod/${PROBE_POD}" -n cicd --timeout=180s
+          IMAGE_ID=$(kubectl get pod "${PROBE_POD}" -n cicd -o jsonpath='{.status.containerStatuses[0].imageID}')
+          DIGEST=$(printf '%s\n' "${IMAGE_ID}" | sed -n 's/.*@\(sha256:[a-f0-9]\{64\}\)$/\1/p')
+          if ! printf '%s\n' "${DIGEST}" | grep -Eq '^sha256:[a-f0-9]{64}$'; then
+            echo "FATAL: probe imageID did not resolve ${RC_IMAGE} to an exact lowercase sha256 digest: ${IMAGE_ID}" >&2
+            exit 1
+          fi
+          WEB_IMAGE="registry.home/jetbridge@${DIGEST}"
+
+          cp -a ../home-infra/. ../home-infra-updated/
+          test -e ../home-infra-updated/.git
+          sh deploy/write-web-image-home-infra.sh "${WEB_IMAGE}" "${SOURCE_COMMIT}" ../home-infra-updated
+          umask 077
+          printf 'CONCOURSE_WEB_IMAGE=%s\nSOURCE_COMMIT=%s\nRC_IMAGE=%s\n' \
+            "${WEB_IMAGE}" "${SOURCE_COMMIT}" "${RC_IMAGE}" > ../web-image-metadata/verified-image.env
+          grep -Eq '^CONCOURSE_WEB_IMAGE=registry.home/jetbridge@sha256:[a-f0-9]{64}$' ../web-image-metadata/verified-image.env
+          grep -Eq '^SOURCE_COMMIT=[a-f0-9]{40}$' ../web-image-metadata/verified-image.env
+          grep -Eq '^RC_IMAGE=registry.home/jetbridge:rc-[a-f0-9]{40}$' ../web-image-metadata/verified-image.env
+  - put: home-infra
+    timeout: 5m
+    params:
+      repository: home-infra-updated
+      rebase: true
   - task: trigger-rollout
     attempts: 2
     config:
@@ -1032,31 +1072,39 @@ jobs:
       rootfs_uri: docker:///registry.home/concourse-test-runner:v5
       inputs:
       - name: repo
+      - name: web-image-metadata
       run:
         path: sh
         args:
         - -exc
         - |
-          cd repo
-          git fetch --tags --force origin
+          test "$(wc -l < web-image-metadata/verified-image.env | tr -d ' ')" = 3
+          WEB_IMAGE=$(sed -n 's/^CONCOURSE_WEB_IMAGE=//p' web-image-metadata/verified-image.env)
+          SOURCE_COMMIT=$(sed -n 's/^SOURCE_COMMIT=//p' web-image-metadata/verified-image.env)
+          RC_IMAGE=$(sed -n 's/^RC_IMAGE=//p' web-image-metadata/verified-image.env)
+          printf '%s\n' "${WEB_IMAGE}" | grep -Eq '^registry.home/jetbridge@sha256:[a-f0-9]{64}$'
+          printf '%s\n' "${SOURCE_COMMIT}" | grep -Eq '^[a-f0-9]{40}$'
+          test "${RC_IMAGE}" = "registry.home/jetbridge:rc-${SOURCE_COMMIT}"
 
-          LATEST_TAG=$(git tag -l 'v0.2.*' --sort=-v:refname | grep -v '\-rc' | head -1)
-          VERSION="${LATEST_TAG#v}"
-          MAJOR=$(echo "$VERSION" | cut -d. -f1)
-          MINOR=$(echo "$VERSION" | cut -d. -f2)
-          PATCH=$(echo "$VERSION" | cut -d. -f3)
-          NEXT_VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))"
-
-          IMAGE="registry.home/jetbridge:v${NEXT_VERSION}-rc"
-          echo "=== Self-upgrade: deploying ${IMAGE} ==="
-          echo "Triggering rollout and exiting immediately."
-          echo ""
-
-          kubectl set image deployment/concourse-web concourse-web=${IMAGE} -n cicd
-          kubectl rollout restart deployment/concourse-web -n cicd
-          kubectl rollout restart daemonset/concourse-artifact-daemon -n cicd
-
-          echo "=== Rollout triggered. ==="
+          echo "=== Waiting for GitOps to deploy ${WEB_IMAGE} from ${RC_IMAGE} ==="
+          for i in $(seq 1 60); do
+            web_image=$(kubectl get deployment/concourse-web -n cicd -o go-template='{{range .spec.template.spec.containers}}{{if eq .name "concourse-web"}}{{.image}}{{end}}{{end}}')
+            daemon_image=$(kubectl get daemonset/concourse-artifact-daemon -n cicd -o go-template='{{range .spec.template.spec.containers}}{{if eq .name "artifact-daemon"}}{{.image}}{{end}}{{end}}')
+            web_source=$(kubectl get deployment/concourse-web -n cicd -o go-template='{{index .metadata.annotations "concourse.ci/source-commit"}}')
+            daemon_source=$(kubectl get daemonset/concourse-artifact-daemon -n cicd -o go-template='{{index .metadata.annotations "concourse.ci/source-commit"}}')
+            web_digest=$(kubectl get deployment/concourse-web -n cicd -o go-template='{{index .metadata.annotations "concourse.ci/image-digest"}}')
+            daemon_digest=$(kubectl get daemonset/concourse-artifact-daemon -n cicd -o go-template='{{index .metadata.annotations "concourse.ci/image-digest"}}')
+            if test "${web_image}" = "${WEB_IMAGE}" && test "${daemon_image}" = "${WEB_IMAGE}" && \
+              test "${web_source}" = "${SOURCE_COMMIT}" && test "${daemon_source}" = "${SOURCE_COMMIT}" && \
+              test "${web_digest}" = "${WEB_IMAGE}" && test "${daemon_digest}" = "${WEB_IMAGE}"; then
+              kubectl rollout status deployment/concourse-web -n cicd --timeout=180s
+              kubectl rollout status daemonset/concourse-artifact-daemon -n cicd --timeout=180s
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "FATAL: ArgoCD did not apply the immutable shared image and matching source annotations" >&2
+          exit 1
 
 - name: verify-upgrade
   serial_groups: [pipeline]
@@ -1091,6 +1139,22 @@ jobs:
           MINOR=$(echo "$VERSION" | cut -d. -f2)
           PATCH=$(echo "$VERSION" | cut -d. -f3)
           EXPECTED="${MAJOR}.${MINOR}.$((PATCH + 1))-rc"
+          SOURCE_COMMIT=$(git rev-parse HEAD)
+          EXPECTED_RC_IMAGE="registry.home/jetbridge:rc-${SOURCE_COMMIT}"
+
+          web_image=$(kubectl get deployment/concourse-web -n cicd -o go-template='{{range .spec.template.spec.containers}}{{if eq .name "concourse-web"}}{{.image}}{{end}}{{end}}')
+          daemon_image=$(kubectl get daemonset/concourse-artifact-daemon -n cicd -o go-template='{{range .spec.template.spec.containers}}{{if eq .name "artifact-daemon"}}{{.image}}{{end}}{{end}}')
+          web_source=$(kubectl get deployment/concourse-web -n cicd -o go-template='{{index .metadata.annotations "concourse.ci/source-commit"}}')
+          daemon_source=$(kubectl get daemonset/concourse-artifact-daemon -n cicd -o go-template='{{index .metadata.annotations "concourse.ci/source-commit"}}')
+          web_digest=$(kubectl get deployment/concourse-web -n cicd -o go-template='{{index .metadata.annotations "concourse.ci/image-digest"}}')
+          daemon_digest=$(kubectl get daemonset/concourse-artifact-daemon -n cicd -o go-template='{{index .metadata.annotations "concourse.ci/image-digest"}}')
+          printf '%s\n' "${web_image}" | grep -Eq '^registry.home/jetbridge@sha256:[a-f0-9]{64}$'
+          test "${web_image}" = "${daemon_image}"
+          test "${web_source}" = "${SOURCE_COMMIT}"
+          test "${daemon_source}" = "${SOURCE_COMMIT}"
+          test "${web_digest}" = "${web_image}"
+          test "${daemon_digest}" = "${daemon_image}"
+          echo "=== Verified GitOps source/image coupling: ${EXPECTED_RC_IMAGE} -> ${web_image} ==="
 
           echo "=== Waiting for rollout to complete ==="
           kubectl rollout status deployment/concourse-web -n cicd --timeout=180s
@@ -1133,6 +1197,8 @@ jobs:
     trigger: true
     params: {depth: 1}
     passed: [verify-upgrade]
+  - get: home-infra
+    trigger: false
   - task: k8s-live-integration-tests
     attempts: 2
     config:
@@ -1140,6 +1206,8 @@ jobs:
       rootfs_uri: docker:///registry.home/concourse-test-runner:v5
       inputs:
       - name: repo
+      outputs:
+      - name: live-tested-image-metadata
       params:
         # The deployed artifact daemon's resolve key, so the init containers
         # these tests create sign capabilities the daemon will actually accept.
@@ -1185,12 +1253,77 @@ jobs:
           export ARTIFACT_HELPER_IMAGE=index.docker.io/library/alpine@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
 
           cd repo
+          SOURCE_COMMIT=$(git rev-parse HEAD)
+          web_image=$(kubectl get deployment/concourse-web -n cicd -o go-template='{{range .spec.template.spec.containers}}{{if eq .name "concourse-web"}}{{.image}}{{end}}{{end}}')
+          daemon_image=$(kubectl get daemonset/concourse-artifact-daemon -n cicd -o go-template='{{range .spec.template.spec.containers}}{{if eq .name "artifact-daemon"}}{{.image}}{{end}}{{end}}')
+          web_source=$(kubectl get deployment/concourse-web -n cicd -o go-template='{{index .metadata.annotations "concourse.ci/source-commit"}}')
+          daemon_source=$(kubectl get daemonset/concourse-artifact-daemon -n cicd -o go-template='{{index .metadata.annotations "concourse.ci/source-commit"}}')
+          web_digest=$(kubectl get deployment/concourse-web -n cicd -o go-template='{{index .metadata.annotations "concourse.ci/image-digest"}}')
+          daemon_digest=$(kubectl get daemonset/concourse-artifact-daemon -n cicd -o go-template='{{index .metadata.annotations "concourse.ci/image-digest"}}')
+          printf '%s\n' "${web_image}" | grep -Eq '^registry.home/jetbridge@sha256:[a-f0-9]{64}$'
+          test "${web_image}" = "${daemon_image}"
+          test "${web_source}" = "${SOURCE_COMMIT}"
+          test "${daemon_source}" = "${SOURCE_COMMIT}"
+          test "${web_image}" = "${web_digest}"
+          test "${daemon_image}" = "${daemon_digest}"
+          TESTED_IMAGE=${web_image}
+
           echo "=== Running jetbridge live integration tests ==="
           echo "These tests create real K8s pods against the live cluster."
           echo "Artifact daemon: hostPath=$ARTIFACT_DAEMON_HOST_PATH port=$ARTIFACT_DAEMON_PORT"
           echo ""
           go test -tags live -v -count=1 -timeout 15m ./atc/worker/jetbridge/...
           echo "=== Live integration tests passed ==="
+
+          post_web_image=$(kubectl get deployment/concourse-web -n cicd -o go-template='{{range .spec.template.spec.containers}}{{if eq .name "concourse-web"}}{{.image}}{{end}}{{end}}')
+          post_daemon_image=$(kubectl get daemonset/concourse-artifact-daemon -n cicd -o go-template='{{range .spec.template.spec.containers}}{{if eq .name "artifact-daemon"}}{{.image}}{{end}}{{end}}')
+          post_web_source=$(kubectl get deployment/concourse-web -n cicd -o go-template='{{index .metadata.annotations "concourse.ci/source-commit"}}')
+          post_daemon_source=$(kubectl get daemonset/concourse-artifact-daemon -n cicd -o go-template='{{index .metadata.annotations "concourse.ci/source-commit"}}')
+          post_web_digest=$(kubectl get deployment/concourse-web -n cicd -o go-template='{{index .metadata.annotations "concourse.ci/image-digest"}}')
+          post_daemon_digest=$(kubectl get daemonset/concourse-artifact-daemon -n cicd -o go-template='{{index .metadata.annotations "concourse.ci/image-digest"}}')
+          test "${post_web_image}" = "${TESTED_IMAGE}"
+          test "${post_daemon_image}" = "${TESTED_IMAGE}"
+          test "${post_web_source}" = "${SOURCE_COMMIT}"
+          test "${post_daemon_source}" = "${SOURCE_COMMIT}"
+          test "${post_web_digest}" = "${TESTED_IMAGE}"
+          test "${post_daemon_digest}" = "${TESTED_IMAGE}"
+
+          umask 077
+          printf 'SOURCE_COMMIT=%s\nTESTED_IMAGE=%s\n' \
+            "${SOURCE_COMMIT}" "${TESTED_IMAGE}" \
+            > ../live-tested-image-metadata/attestation.env
+  - task: write-home-infra-live-tested-image
+    config:
+      platform: linux
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v5
+      inputs:
+      - name: repo
+      - name: home-infra
+      - name: live-tested-image-metadata
+      outputs:
+      - name: home-infra-updated
+      run:
+        path: sh
+        args:
+        - -euc
+        - |
+          test "$(wc -l < live-tested-image-metadata/attestation.env | tr -d ' ')" = 2
+          ATTESTED_SOURCE=$(sed -n 's/^SOURCE_COMMIT=//p' live-tested-image-metadata/attestation.env)
+          TESTED_IMAGE=$(sed -n 's/^TESTED_IMAGE=//p' live-tested-image-metadata/attestation.env)
+          test "$(sed -n '1p' live-tested-image-metadata/attestation.env)" = "SOURCE_COMMIT=${ATTESTED_SOURCE}"
+          test "$(sed -n '2p' live-tested-image-metadata/attestation.env)" = "TESTED_IMAGE=${TESTED_IMAGE}"
+          printf '%s\n' "${ATTESTED_SOURCE}" | grep -Eq '^[a-f0-9]{40}$'
+          printf '%s\n' "${TESTED_IMAGE}" | grep -Eq '^registry.home/jetbridge@sha256:[a-f0-9]{64}$'
+          test "${ATTESTED_SOURCE}" = "$(git -C repo rev-parse HEAD)"
+          cp -a home-infra/. home-infra-updated/
+          test -e home-infra-updated/.git
+          sh repo/deploy/write-live-tested-image-home-infra.sh \
+            "${TESTED_IMAGE}" "${ATTESTED_SOURCE}" home-infra-updated
+  - put: home-infra
+    timeout: 5m
+    params:
+      repository: home-infra-updated
+      rebase: true
 
 - name: release
   serial_groups: [pipeline]
@@ -1199,6 +1332,34 @@ jobs:
     trigger: true
     params: {depth: 0, fetch_tags: true}
     passed: [k8s-live-tests]
+  - get: home-infra
+    trigger: false
+  - task: validate-live-tested-image
+    config:
+      platform: linux
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v5
+      inputs:
+      - name: repo
+      - name: home-infra
+      outputs:
+      - name: release-tested-image
+      run:
+        path: sh
+        args:
+        - -euc
+        - |
+          ATTESTATION=home-infra/apps/concourse-live-tested-image.env
+          test -f "${ATTESTATION}"
+          test "$(wc -l < "${ATTESTATION}" | tr -d ' ')" = 2
+          ATTESTED_SOURCE=$(sed -n 's/^SOURCE_COMMIT=//p' "${ATTESTATION}")
+          TESTED_IMAGE=$(sed -n 's/^TESTED_IMAGE=//p' "${ATTESTATION}")
+          test "$(sed -n '1p' "${ATTESTATION}")" = "SOURCE_COMMIT=${ATTESTED_SOURCE}"
+          test "$(sed -n '2p' "${ATTESTATION}")" = "TESTED_IMAGE=${TESTED_IMAGE}"
+          printf '%s\n' "${ATTESTED_SOURCE}" | grep -Eq '^[a-f0-9]{40}$'
+          printf '%s\n' "${TESTED_IMAGE}" | grep -Eq '^registry.home/jetbridge@sha256:[a-f0-9]{64}$'
+          test "${ATTESTED_SOURCE}" = "$(git -C repo rev-parse HEAD)"
+          umask 077
+          cp "${ATTESTATION}" release-tested-image/attestation.env
   - task: tag-push-release
     privileged: true
     config:
@@ -1206,6 +1367,9 @@ jobs:
       rootfs_uri: docker:///registry.home/concourse-test-runner:v5
       inputs:
       - name: repo
+      - name: release-tested-image
+      outputs:
+      - name: release-image-metadata
       params:
         GITHUB_TOKEN: ((github-token))
       run:
@@ -1213,19 +1377,70 @@ jobs:
         args:
         - -exc
         - |
+          ATTESTED_IMAGE=$(sed -n 's/^TESTED_IMAGE=//p' release-tested-image/attestation.env)
+          ATTESTED_SOURCE=$(sed -n 's/^SOURCE_COMMIT=//p' release-tested-image/attestation.env)
+          printf '%s\n' "${ATTESTED_IMAGE}" | grep -Eq '^registry.home/jetbridge@sha256:[a-f0-9]{64}$'
+          printf '%s\n' "${ATTESTED_SOURCE}" | grep -Eq '^[a-f0-9]{40}$'
+
           cd repo
           git fetch --tags --force origin
 
-          echo "=== Computing release version from tags ==="
-          LATEST_TAG=$(git tag -l 'v0.2.*' --sort=-v:refname | grep -v '\-rc' | head -1)
-          VERSION="${LATEST_TAG#v}"
-          MAJOR=$(echo "$VERSION" | cut -d. -f1)
-          MINOR=$(echo "$VERSION" | cut -d. -f2)
-          PATCH=$(echo "$VERSION" | cut -d. -f3)
-          NEXT_VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))"
+          SOURCE_COMMIT=$(git rev-parse HEAD)
+          test "${ATTESTED_SOURCE}" = "${SOURCE_COMMIT}"
           SHORT_SHA=$(git rev-parse --short HEAD)
 
+          echo "=== Binding release version to tags on tested source ${SOURCE_COMMIT} ==="
+          STABLE_RELEASE_TAGS=$(git tag --points-at "${SOURCE_COMMIT}" --list 'v0.2.*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true)
+          RC_RELEASE_TAGS=$(git tag --points-at "${SOURCE_COMMIT}" --list 'v0.2.*-rc' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+-rc$' || true)
+          STABLE_RELEASE_COUNT=$(printf '%s\n' "${STABLE_RELEASE_TAGS}" | grep -c . || true)
+          RC_RELEASE_COUNT=$(printf '%s\n' "${RC_RELEASE_TAGS}" | grep -c . || true)
+          test "${STABLE_RELEASE_COUNT}" -le 1
+          test "${RC_RELEASE_COUNT}" -le 1
+          STABLE_RELEASE_TAG=${STABLE_RELEASE_TAGS}
+          RC_RELEASE_TAG=${RC_RELEASE_TAGS}
+          if test "${STABLE_RELEASE_COUNT}" = 1; then
+            NEXT_VERSION="${STABLE_RELEASE_TAG#v}"
+          elif test "${RC_RELEASE_COUNT}" = 1; then
+            RC_VERSION="${RC_RELEASE_TAG#v}"
+            RC_VERSION="${RC_VERSION%-rc}"
+            NEXT_VERSION="${RC_VERSION}"
+          else
+            echo "FATAL: tested source has neither one RC tag nor one stable release tag" >&2
+            exit 1
+          fi
+          if test "${RC_RELEASE_COUNT}" = 1; then
+            RC_VERSION="${RC_RELEASE_TAG#v}"
+            RC_VERSION="${RC_VERSION%-rc}"
+            test "${RC_VERSION}" = "${NEXT_VERSION}"
+          fi
+          printf '%s\n' "${NEXT_VERSION}" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'
+          if git rev-parse "v${NEXT_VERSION}" >/dev/null 2>&1 && \
+            test "$(git rev-parse "v${NEXT_VERSION}^{commit}")" != "${SOURCE_COMMIT}"; then
+            echo "FATAL: v${NEXT_VERSION} already exists on a different source commit" >&2
+            exit 1
+          fi
+          FINAL_TAG="registry.home/jetbridge:release-${SOURCE_COMMIT}"
+
           echo "Releasing: v${NEXT_VERSION} (${SHORT_SHA})"
+
+          echo "=== Reading exact live-tested source and image authority ==="
+          web_image=$(kubectl get deployment/concourse-web -n cicd -o go-template='{{range .spec.template.spec.containers}}{{if eq .name "concourse-web"}}{{.image}}{{end}}{{end}}')
+          daemon_image=$(kubectl get daemonset/concourse-artifact-daemon -n cicd -o go-template='{{range .spec.template.spec.containers}}{{if eq .name "artifact-daemon"}}{{.image}}{{end}}{{end}}')
+          web_source=$(kubectl get deployment/concourse-web -n cicd -o go-template='{{index .metadata.annotations "concourse.ci/source-commit"}}')
+          daemon_source=$(kubectl get daemonset/concourse-artifact-daemon -n cicd -o go-template='{{index .metadata.annotations "concourse.ci/source-commit"}}')
+          web_digest=$(kubectl get deployment/concourse-web -n cicd -o go-template='{{index .metadata.annotations "concourse.ci/image-digest"}}')
+          daemon_digest=$(kubectl get daemonset/concourse-artifact-daemon -n cicd -o go-template='{{index .metadata.annotations "concourse.ci/image-digest"}}')
+          test "${web_source}" = "${SOURCE_COMMIT}"
+          test "${daemon_source}" = "${SOURCE_COMMIT}"
+          test "${web_image}" = "${daemon_image}"
+          test "${web_image}" = "${web_digest}"
+          test "${daemon_image}" = "${daemon_digest}"
+          printf '%s\n' "${web_image}" | grep -Eq '^registry.home/jetbridge@sha256:[a-f0-9]{64}$'
+          if test "${STABLE_RELEASE_COUNT}" = 0 && test "${web_image}" != "${ATTESTED_IMAGE}"; then
+            echo "FATAL: current candidate ${web_image} is not the live-tested image ${ATTESTED_IMAGE}" >&2
+            exit 1
+          fi
+          RC_IMMUTABLE_IMAGE="${ATTESTED_IMAGE}"
 
           # NOTE: the git tag and main publication are DEFERRED to the end
           # of this task, after the RC image is verified and the release image is
@@ -1287,12 +1502,10 @@ jobs:
           rm -rf fly-bin
           ls -lh fly-assets/
 
-          # --- 2. Verify the RC image exists BEFORE any git mutation ---
-          echo "=== Verifying RC image registry.home/jetbridge:v${NEXT_VERSION}-rc exists ==="
-          if ! kubectl exec -n cicd ${BUILDER_POD} -- docker pull registry.home/jetbridge:v${NEXT_VERSION}-rc; then
-            echo "FATAL: RC image v${NEXT_VERSION}-rc not found."
-            echo "The RC pipeline (tag-rc/build-image) has not produced it — refusing"
-            echo "to tag v${NEXT_VERSION} or push main. Fix the RC build, then re-run."
+          # --- 2. Pull the exact digest that self-upgrade deployed and live tests passed ---
+          if ! kubectl exec -n cicd ${BUILDER_POD} -- docker pull "${RC_IMMUTABLE_IMAGE}"; then
+            echo "FATAL: RC image ${RC_IMMUTABLE_IMAGE} not found."
+            echo "Refusing to rebuild from an untested tag or publish v${NEXT_VERSION}."
             exit 1
           fi
 
@@ -1301,14 +1514,15 @@ jobs:
 
           echo "=== Rebuilding image with all fly platform assets ==="
           cat <<'DOCKERFILE' > /tmp/Dockerfile.release
-          FROM registry.home/jetbridge:v__VERSION__-rc
+          FROM __RC_IMAGE__
           RUN mv /usr/local/concourse/bin/concourse-final /usr/local/concourse/bin/concourse
           COPY fly-assets /usr/local/concourse/fly-assets
           DOCKERFILE
-          sed -i "s/__VERSION__/${NEXT_VERSION}/g" /tmp/Dockerfile.release
+          sed -i "s|__RC_IMAGE__|${RC_IMMUTABLE_IMAGE}|g" /tmp/Dockerfile.release
           kubectl cp /tmp/Dockerfile.release cicd/${BUILDER_POD}:/tmp/Dockerfile.release
           kubectl exec -n cicd ${BUILDER_POD} -- \
             docker build \
+              -t "${FINAL_TAG}" \
               -t registry.home/jetbridge:v${NEXT_VERSION} \
               -t ${GHCR}:${SHORT_SHA} \
               -t ${GHCR}:v${NEXT_VERSION} \
@@ -1323,7 +1537,7 @@ jobs:
           fi
           FINAL_VERSION_OUTPUT=$(kubectl exec -n cicd "${BUILDER_POD}" -- \
             docker run --rm --entrypoint /usr/local/concourse/bin/concourse \
-              "registry.home/jetbridge:v${NEXT_VERSION}" --version)
+              "${FINAL_TAG}" --version)
           printf '%s\n' "${FINAL_VERSION_OUTPUT}"
           if printf '%s\n' "${FINAL_VERSION_OUTPUT}" | grep -Fq -- "-rc"; then
             echo "FATAL: final image still reports an RC server version"
@@ -1335,7 +1549,20 @@ jobs:
             exit 1
           fi
 
-          echo "=== Pushing release to local registry ==="
+          echo "=== Pushing source-addressed release image and resolving its digest ==="
+          PUSH_OUTPUT=$(kubectl exec -n cicd ${BUILDER_POD} -- docker push "${FINAL_TAG}")
+          printf '%s\n' "${PUSH_OUTPUT}"
+          FINAL_DIGEST=$(printf '%s\n' "${PUSH_OUTPUT}" | sed -n 's/.*digest: \(sha256:[a-f0-9]\{64\}\).*/\1/p' | tail -1)
+          if ! printf '%s\n' "${FINAL_DIGEST}" | grep -Eq '^sha256:[a-f0-9]{64}$'; then
+            echo "FATAL: release push returned no exact lowercase sha256 digest"
+            exit 1
+          fi
+          FINAL_IMAGE="registry.home/jetbridge@${FINAL_DIGEST}"
+          kubectl exec -n cicd ${BUILDER_POD} -- docker pull "${FINAL_IMAGE}"
+          FINAL_VERSION_OUTPUT=$(kubectl exec -n cicd "${BUILDER_POD}" -- \
+            docker run --rm --entrypoint /usr/local/concourse/bin/concourse \
+              "${FINAL_IMAGE}" --version)
+          test "${FINAL_VERSION_OUTPUT}" = "${EXPECTED_FINAL_VERSION}"
           kubectl exec -n cicd ${BUILDER_POD} -- docker push registry.home/jetbridge:v${NEXT_VERSION}
 
           echo "=== Logging into GHCR ==="
@@ -1357,7 +1584,11 @@ jobs:
           set -x
           echo "=== Tagging v${NEXT_VERSION} ==="
           if git rev-parse "v${NEXT_VERSION}" >/dev/null 2>&1; then
-            echo "Tag v${NEXT_VERSION} already exists — skipping"
+            if test "$(git rev-parse "v${NEXT_VERSION}^{commit}")" != "${SOURCE_COMMIT}"; then
+              echo "FATAL: existing v${NEXT_VERSION} does not identify tested source ${SOURCE_COMMIT}" >&2
+              exit 1
+            fi
+            echo "Tag v${NEXT_VERSION} already identifies tested source — reusing it"
           else
             git tag -a "v${NEXT_VERSION}" -m "Release v${NEXT_VERSION}"
             git push origin "v${NEXT_VERSION}"
@@ -1369,11 +1600,11 @@ jobs:
           sh deploy/push-jetbridge-main.sh .
           echo "=== Pushed ${SHORT_SHA} to main ==="
 
-          # --- 5. Redeploy with final release version (includes all fly assets) ---
-          echo "=== Redeploying with release image ==="
-          IMAGE="registry.home/jetbridge:v${NEXT_VERSION}"
-          kubectl set image deployment/concourse-web concourse-web=${IMAGE} -n cicd
-          kubectl rollout restart deployment/concourse-web -n cicd
+          umask 077
+          printf 'CONCOURSE_WEB_IMAGE=%s\nSOURCE_COMMIT=%s\n' \
+            "${FINAL_IMAGE}" "${SOURCE_COMMIT}" > ../release-image-metadata/verified-image.env
+          grep -Eq '^CONCOURSE_WEB_IMAGE=registry.home/jetbridge@sha256:[a-f0-9]{64}$' ../release-image-metadata/verified-image.env
+          grep -Eq '^SOURCE_COMMIT=[a-f0-9]{40}$' ../release-image-metadata/verified-image.env
 
           # Clean up the RC tag
           git push origin --delete "v${NEXT_VERSION}-rc" 2>/dev/null || true
@@ -1382,4 +1613,61 @@ jobs:
           echo "  Tagged: v${NEXT_VERSION}"
           echo "  Main:   pushed"
           echo "  GHCR:   ${GHCR}:v${NEXT_VERSION}"
-          echo "  Local:  ${IMAGE}"
+          echo "  Local:  ${FINAL_IMAGE}"
+  - task: update-home-infra-release-image
+    config:
+      platform: linux
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v5
+      inputs:
+      - name: repo
+      - name: home-infra
+      - name: release-image-metadata
+      outputs:
+      - name: home-infra-updated
+      run:
+        path: sh
+        args:
+        - -euc
+        - |
+          test "$(wc -l < release-image-metadata/verified-image.env | tr -d ' ')" = 2
+          WEB_IMAGE=$(sed -n 's/^CONCOURSE_WEB_IMAGE=//p' release-image-metadata/verified-image.env)
+          SOURCE_COMMIT=$(sed -n 's/^SOURCE_COMMIT=//p' release-image-metadata/verified-image.env)
+          printf '%s\n' "${WEB_IMAGE}" | grep -Eq '^registry.home/jetbridge@sha256:[a-f0-9]{64}$'
+          printf '%s\n' "${SOURCE_COMMIT}" | grep -Eq '^[a-f0-9]{40}$'
+          cp -a home-infra/. home-infra-updated/
+          test -e home-infra-updated/.git
+          sh repo/deploy/write-web-image-home-infra.sh "${WEB_IMAGE}" "${SOURCE_COMMIT}" home-infra-updated
+  - put: home-infra
+    timeout: 5m
+    params:
+      repository: home-infra-updated
+      rebase: true
+  - task: verify-release-rollout
+    config:
+      platform: linux
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v5
+      inputs:
+      - name: release-image-metadata
+      run:
+        path: sh
+        args:
+        - -euc
+        - |
+          WEB_IMAGE=$(sed -n 's/^CONCOURSE_WEB_IMAGE=//p' release-image-metadata/verified-image.env)
+          SOURCE_COMMIT=$(sed -n 's/^SOURCE_COMMIT=//p' release-image-metadata/verified-image.env)
+          for i in $(seq 1 60); do
+            web_image=$(kubectl get deployment/concourse-web -n cicd -o go-template='{{range .spec.template.spec.containers}}{{if eq .name "concourse-web"}}{{.image}}{{end}}{{end}}')
+            daemon_image=$(kubectl get daemonset/concourse-artifact-daemon -n cicd -o go-template='{{range .spec.template.spec.containers}}{{if eq .name "artifact-daemon"}}{{.image}}{{end}}{{end}}')
+            web_source=$(kubectl get deployment/concourse-web -n cicd -o go-template='{{index .metadata.annotations "concourse.ci/source-commit"}}')
+            daemon_source=$(kubectl get daemonset/concourse-artifact-daemon -n cicd -o go-template='{{index .metadata.annotations "concourse.ci/source-commit"}}')
+            web_digest=$(kubectl get deployment/concourse-web -n cicd -o go-template='{{index .metadata.annotations "concourse.ci/image-digest"}}')
+            daemon_digest=$(kubectl get daemonset/concourse-artifact-daemon -n cicd -o go-template='{{index .metadata.annotations "concourse.ci/image-digest"}}')
+            if test "${web_image}" = "${WEB_IMAGE}" && test "${daemon_image}" = "${WEB_IMAGE}" && test "${web_source}" = "${SOURCE_COMMIT}" && test "${daemon_source}" = "${SOURCE_COMMIT}" && test "${web_digest}" = "${WEB_IMAGE}" && test "${daemon_digest}" = "${WEB_IMAGE}"; then
+              kubectl rollout status deployment/concourse-web -n cicd --timeout=180s
+              kubectl rollout status daemonset/concourse-artifact-daemon -n cicd --timeout=180s
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "FATAL: ArgoCD did not apply the final immutable shared image" >&2
+          exit 1
