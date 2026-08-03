@@ -17,6 +17,18 @@ const (
 	mcpProtocolVersion           = "2024-11-05"
 )
 
+var compatibleMCPClientVersions = map[string]struct{}{
+	"2024-11-05": {},
+	"2025-03-26": {},
+	"2025-06-18": {},
+	"2025-11-25": {},
+}
+
+func negotiateMCPProtocolVersion(requested string) (string, bool) {
+	_, known := compatibleMCPClientVersions[requested]
+	return mcpProtocolVersion, known
+}
+
 // CLI is a transport adapter only. It has no authority flags and always acts
 // through the Builder passed by the platform process.
 type CLI struct {
@@ -175,12 +187,9 @@ type mcpOutput struct {
 	Output string `json:"output"`
 }
 type mcpInitializeParams struct {
-	ProtocolVersion string         `json:"protocolVersion"`
-	Capabilities    map[string]any `json:"capabilities"`
-	ClientInfo      struct {
-		Name    string `json:"name"`
-		Version string `json:"version"`
-	} `json:"clientInfo"`
+	ProtocolVersion string          `json:"protocolVersion"`
+	Capabilities    json.RawMessage `json:"capabilities"`
+	ClientInfo      json.RawMessage `json:"clientInfo"`
 }
 type mcpTool struct {
 	Name        string         `json:"name"`
@@ -225,11 +234,16 @@ func (server *mcpServer) serve(w http.ResponseWriter, r *http.Request) {
 	switch request.Method {
 	case "initialize":
 		var params mcpInitializeParams
-		if err := strictJSON(request.Params, &params); err != nil || params.ProtocolVersion != mcpProtocolVersion {
+		if err := json.Unmarshal(request.Params, &params); err != nil {
 			writeMCP(w, mcpResponse{JSONRPC: "2.0", ID: request.ID, Error: &mcpError{Code: -32602, Message: "unsupported protocol version"}})
 			return
 		}
-		writeMCP(w, mcpResponse{JSONRPC: "2.0", ID: request.ID, Result: map[string]any{"protocolVersion": mcpProtocolVersion, "capabilities": map[string]any{"tools": map[string]any{}}, "serverInfo": map[string]string{"name": "concourse-output-builder", "version": "1"}}})
+		negotiated, ok := negotiateMCPProtocolVersion(params.ProtocolVersion)
+		if !ok {
+			writeMCP(w, mcpResponse{JSONRPC: "2.0", ID: request.ID, Error: &mcpError{Code: -32602, Message: "unsupported protocol version"}})
+			return
+		}
+		writeMCP(w, mcpResponse{JSONRPC: "2.0", ID: request.ID, Result: map[string]any{"protocolVersion": negotiated, "capabilities": map[string]any{"tools": map[string]any{}}, "serverInfo": map[string]string{"name": "concourse-output-builder", "version": "1"}}})
 	case "notifications/initialized":
 		if len(request.ID) != 0 {
 			writeMCP(w, mcpResponse{JSONRPC: "2.0", ID: request.ID, Error: &mcpError{Code: -32600, Message: "invalid request"}})

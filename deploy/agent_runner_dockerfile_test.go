@@ -3,6 +3,7 @@ package deploy
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -119,6 +120,9 @@ case "$1" in
         ;;
     esac
     ;;
+  mcp)
+    printf '%s\n' 'output-builder: Connected'
+    ;;
   *)
     exit 64
     ;;
@@ -127,6 +131,8 @@ esac
 	for _, binary := range []string{"agent-runner", "function-runner", "agent-output"} {
 		writeExecutable(binary, "#!/bin/sh\nexit 0\n")
 	}
+	writeExecutable("curl", "#!/bin/sh\nexit 0\n")
+	writeExecutable("install", "#!/bin/sh\ncat >/dev/null\n")
 
 	maxTurnsProbe := exec.Command(binDir+"/claude", "--print", "--max-turns")
 	maxTurnsOutput, maxTurnsErr := maxTurnsProbe.CombinedOutput()
@@ -143,6 +149,64 @@ esac
 	cmd.Env = append(os.Environ(), "PATH="+binDir+":"+os.Getenv("PATH"))
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("smoke must accept a registered max-turns parser diagnostic when top-level help omits --max-turns: %v\n%s", err, output)
+	}
+}
+
+// This catches smoke cleanup that leaves its temporary writable authority
+// tree behind when Claude rejects the managed MCP configuration.
+func TestAgentRunnerImageSmokeCleansManagedMCPProbeOnFailure(t *testing.T) {
+	binDir := t.TempDir()
+	tmpDir := t.TempDir()
+	installLog := filepath.Join(t.TempDir(), "authority.json")
+	mcpConfigLog := filepath.Join(t.TempDir(), "mcp.json")
+	writeExecutable := func(name, contents string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(binDir, name), []byte(contents), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeExecutable("claude", `#!/bin/sh
+case "$1" in
+  --version) printf '%s\n' '2.1.212 (Claude Code)' ;;
+  --help) printf '%s\n' '--max-budget-usd --mcp-config --strict-mcp-config --append-system-prompt --output-format --verbose --dangerously-skip-permissions' ;;
+  --print) printf '%s\n' "error: option '--max-turns <turns>' argument missing" >&2; exit 1 ;;
+  mcp)
+    test "$2" = "list" && test "$3" = "--mcp-config" && test "$5" = "--strict-mcp-config" || exit 64
+    cat "$4" > "$MCP_CONFIG_LOG"
+    printf '%s\n' 'output-builder: disconnected'
+    exit 0
+    ;;
+  *) exit 64 ;;
+esac
+`)
+	writeExecutable("agent-output", "#!/bin/sh\nwhile :; do sleep 1; done\n")
+	for _, binary := range []string{"agent-runner", "function-runner"} {
+		writeExecutable(binary, "#!/bin/sh\nexit 0\n")
+	}
+	writeExecutable("install", `#!/bin/sh
+test "$1" = "-D" && test "$2" = "-m" && test "$3" = "0444" && test "$4" = "/dev/stdin" && test "$5" = "/run/concourse/output-builder/authority.json" || exit 64
+cat > "$INSTALL_LOG"
+`)
+	writeExecutable("curl", "#!/bin/sh\nexit 0\n")
+
+	cmd := exec.Command("sh", "agent-runner/smoke.sh")
+	cmd.Env = append(os.Environ(), "PATH="+binDir+":"+os.Getenv("PATH"), "TMPDIR="+tmpDir, "INSTALL_LOG="+installLog, "MCP_CONFIG_LOG="+mcpConfigLog)
+	if output, err := cmd.CombinedOutput(); err == nil || !strings.Contains(string(output), "managed output builder MCP is not connected") {
+		t.Fatalf("smoke failure = %v\n%s", err, output)
+	}
+	if _, err := os.Stat(installLog); err != nil {
+		t.Fatalf("smoke did not install authority: %v", err)
+	}
+	authority, err := os.ReadFile(installLog)
+	if err != nil || !strings.Contains(string(authority), `"inputs":{}`) || !strings.Contains(string(authority), `"type":"review/v1"`) || !strings.Contains(string(authority), `"mount_root":"`+tmpDir+`/agent-output-smoke.`) {
+		t.Fatalf("authority = %q, %v", authority, err)
+	}
+	config, err := os.ReadFile(mcpConfigLog)
+	if err != nil || string(config) != `{"mcpServers":{"output-builder":{"type":"http","url":"http://127.0.0.1:7783/mcp"}}}`+"\n" {
+		t.Fatalf("MCP config = %q, %v", config, err)
+	}
+	if entries, err := os.ReadDir(tmpDir); err != nil || len(entries) != 0 {
+		t.Fatalf("smoke temp cleanup = %#v, %v", entries, err)
 	}
 }
 

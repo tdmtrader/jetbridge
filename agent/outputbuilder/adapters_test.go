@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -165,5 +166,103 @@ func TestMCPLoopbackOnlyServesBuilderTools(t *testing.T) {
 	_, _ = buffer.ReadFrom(response.Body)
 	if response.StatusCode != http.StatusOK || !strings.Contains(buffer.String(), `\"valid\":true`) {
 		t.Fatalf("MCP write response = status %d body %q", response.StatusCode, buffer.String())
+	}
+}
+
+// This catches a pinned Claude client becoming unable to discover the managed
+// output tools when its descriptive initialize metadata evolves.
+func TestMCPInitializeNegotiatesClaudeCode212(t *testing.T) {
+	authority := validAuthority(t)
+	registry, err := contracts.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	builder, err := New(authority, registry, snapshot.Canonicalizer{TempDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(NewMCPServer(builder))
+	defer server.Close()
+	post := func(raw string) (int, string) {
+		response, err := http.Post(server.URL+"/mcp", "application/json", strings.NewReader(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer response.Body.Close()
+		body, err := io.ReadAll(response.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return response.StatusCode, string(body)
+	}
+
+	initialize := `{
+  "jsonrpc":"2.0",
+  "id":21,
+  "method":"initialize",
+  "params":{
+    "protocolVersion":"2025-11-25",
+    "capabilities":{},
+    "clientInfo":{
+      "name":"claude-code",
+      "title":"Claude Code",
+      "version":"2.1.212",
+      "description":"Anthropic coding agent",
+      "websiteUrl":"https://claude.com/claude-code"
+    }
+  }
+}`
+	status, body := post(initialize)
+	var initialized struct {
+		JSONRPC string `json:"jsonrpc"`
+		ID      int    `json:"id"`
+		Result  struct {
+			ProtocolVersion string `json:"protocolVersion"`
+		} `json:"result"`
+		Error *mcpError `json:"error"`
+	}
+	if status != http.StatusOK || json.Unmarshal([]byte(body), &initialized) != nil || initialized.JSONRPC != "2.0" || initialized.ID != 21 || initialized.Error != nil || initialized.Result.ProtocolVersion != "2024-11-05" {
+		t.Fatalf("initialize = %d %q", status, body)
+	}
+	if status, body := post(`{"jsonrpc":"2.0","method":"notifications/initialized"}`); status != http.StatusNoContent || body != "" {
+		t.Fatalf("initialized = %d %q", status, body)
+	}
+	status, body = post(`{"jsonrpc":"2.0","id":22,"method":"tools/list"}`)
+	var listed struct {
+		Result struct {
+			Tools []struct {
+				Name        string `json:"name"`
+				InputSchema struct {
+					Type string `json:"type"`
+				} `json:"inputSchema"`
+			} `json:"tools"`
+		} `json:"result"`
+	}
+	if status != http.StatusOK || json.Unmarshal([]byte(body), &listed) != nil || len(listed.Result.Tools) != 3 {
+		t.Fatalf("tools/list = %d %q", status, body)
+	}
+	for i, name := range []string{"describe_output", "validate_output", "write_output"} {
+		if listed.Result.Tools[i].Name != name || listed.Result.Tools[i].InputSchema.Type != "object" {
+			t.Fatalf("tool[%d] = %#v", i, listed.Result.Tools[i])
+		}
+	}
+
+	for _, tc := range []struct {
+		name, raw string
+	}{
+		{name: "unknown protocol", raw: `{"jsonrpc":"2.0","id":23,"method":"initialize","params":{"protocolVersion":"bad"}}`},
+		{name: "malformed JSON", raw: `{"jsonrpc":"2.0",`},
+		{name: "authority field", raw: `{"jsonrpc":"2.0","id":24,"method":"tools/call","params":{"authority":"forged","name":"write_output","arguments":{}}}`},
+		{name: "unknown tool", raw: `{"jsonrpc":"2.0","id":25,"method":"tools/call","params":{"name":"forged","arguments":{}}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			status, body := post(tc.raw)
+			var response struct {
+				Error *mcpError `json:"error"`
+			}
+			if status != http.StatusOK || json.Unmarshal([]byte(body), &response) != nil || response.Error == nil || response.Error.Code != -32602 && response.Error.Code != -32600 {
+				t.Fatalf("response = %d %q", status, body)
+			}
+		})
 	}
 }

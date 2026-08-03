@@ -47,8 +47,9 @@ var claudeWaitDelay = 5 * time.Second
 
 const maxSummaryChars = 500
 const (
-	managedOutputBuilderProtocolVersion       = "2024-11-05"
-	managedOutputBuilderResponseLimit   int64 = 1 << 20
+	managedOutputBuilderClientProtocolVersion       = "2025-11-25"
+	managedOutputBuilderProtocolVersion             = "2024-11-05"
+	managedOutputBuilderResponseLimit         int64 = 1 << 20
 )
 
 const (
@@ -777,7 +778,7 @@ func preflightManagedOutputBuilder(ctx context.Context, client *http.Client, end
 			ProtocolVersion string `json:"protocolVersion"`
 		} `json:"result"`
 	}
-	if err := post(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": map[string]any{"protocolVersion": managedOutputBuilderProtocolVersion, "capabilities": map[string]any{}, "clientInfo": map[string]string{"name": "concourse-agent-runner", "version": "1"}}}, http.StatusOK, &initialized); err != nil {
+	if err := post(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": map[string]any{"protocolVersion": managedOutputBuilderClientProtocolVersion, "capabilities": map[string]any{}, "clientInfo": map[string]string{"name": "concourse-agent-runner", "version": "1"}}}, http.StatusOK, &initialized); err != nil {
 		return err
 	}
 	if initialized.Result.ProtocolVersion != managedOutputBuilderProtocolVersion {

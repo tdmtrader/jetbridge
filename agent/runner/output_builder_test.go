@@ -236,6 +236,44 @@ func TestPreflightManagedOutputBuilderRequiresExactLifecycle(t *testing.T) {
 	}
 }
 
+// This catches the runner reverting to the server's old protocol version and
+// thereby failing to exercise the pinned Claude client's negotiation path.
+func TestPreflightManagedOutputBuilderNegotiatesPinnedClaudeProtocol(t *testing.T) {
+	var requestedVersion string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Method string `json:"method"`
+			Params struct {
+				ProtocolVersion string `json:"protocolVersion"`
+			} `json:"params"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		if request.Method == "notifications/initialized" {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch request.Method {
+		case "initialize":
+			requestedVersion = request.Params.ProtocolVersion
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05"}}`))
+		case "tools/list":
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"describe_output","inputSchema":{"type":"object"}},{"name":"validate_output","inputSchema":{"type":"object"}},{"name":"write_output","inputSchema":{"type":"object"}}]}}`))
+		default:
+			http.Error(w, "unexpected method", http.StatusBadRequest)
+		}
+	}))
+	defer server.Close()
+	if err := preflightManagedOutputBuilder(context.Background(), server.Client(), server.URL+"/mcp"); err != nil {
+		t.Fatal(err)
+	}
+	if requestedVersion != "2025-11-25" {
+		t.Fatalf("requested protocol = %q", requestedVersion)
+	}
+}
+
 func TestPreflightManagedOutputBuilderBoundsInitializedNotificationBody(t *testing.T) {
 	requests := 0
 	client := &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {

@@ -43,3 +43,47 @@ for binary in agent-runner function-runner agent-output; do
     exit 1
   fi
 done
+
+smoke_dir=$(mktemp -d "${TMPDIR:-/tmp}/agent-output-smoke.XXXXXX")
+sidecar_pid=
+cleanup() {
+  if test -n "$sidecar_pid"; then
+    kill "$sidecar_pid" 2>/dev/null || :
+    wait "$sidecar_pid" 2>/dev/null || :
+  fi
+  rm -rf -- "$smoke_dir"
+}
+trap cleanup EXIT HUP INT TERM
+
+mkdir -p "$smoke_dir/work/review"
+printf '%s\n' "{\"work_root\":\"$smoke_dir/work\",\"inputs\":{},\"outputs\":{\"review\":{\"port\":{\"name\":\"review\",\"type\":\"review/v1\"},\"mount_root\":\"$smoke_dir/work/review\"}}}" | install -D -m 0444 /dev/stdin /run/concourse/output-builder/authority.json
+printf '%s\n' '{"mcpServers":{"output-builder":{"type":"http","url":"http://127.0.0.1:7783/mcp"}}}' > "$smoke_dir/mcp.json"
+
+agent-output serve > "$smoke_dir/agent-output.log" 2>&1 &
+sidecar_pid=$!
+for attempt in 1 2 3 4 5 6 7 8 9 10; do
+  if curl --fail --silent --show-error http://127.0.0.1:7783/healthz >/dev/null 2>&1; then
+    break
+  fi
+  if ! kill -0 "$sidecar_pid" 2>/dev/null; then
+    printf 'ERROR: managed output builder sidecar exited before becoming healthy\n' >&2
+    exit 1
+  fi
+  sleep 1
+done
+if ! curl --fail --silent --show-error http://127.0.0.1:7783/healthz >/dev/null 2>&1; then
+  printf 'ERROR: managed output builder sidecar did not become healthy\n' >&2
+  exit 1
+fi
+
+mcp_output="$smoke_dir/mcp-list.txt"
+if ! (ulimit -f 16; claude mcp list --mcp-config "$smoke_dir/mcp.json" --strict-mcp-config > "$mcp_output" 2>&1); then
+  printf 'ERROR: Claude failed to list managed output builder MCP\n' >&2
+  head -c 8192 "$mcp_output" >&2 || :
+  exit 1
+fi
+if ! head -c 8192 "$mcp_output" | grep -E 'output-builder.*[[:space:]][Cc]onnected([[:space:]]|$)' >/dev/null; then
+  printf 'ERROR: managed output builder MCP is not connected\n' >&2
+  head -c 8192 "$mcp_output" >&2 || :
+  exit 1
+fi
