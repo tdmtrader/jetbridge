@@ -643,9 +643,15 @@ artifactDaemon:
     # the load on the store is this interval divided by the node count. Raise it
     # on large clusters or very large buckets. Residency moves slowly and the
     # alerts read hours of history, so a coarse interval costs nothing.
-    inventoryInterval: "5m"
-    # -- Maximum time for one residency enumeration.
-    inventoryTimeout: "2m"
+    # Empty deliberately: the flag is then not rendered at all and the daemon
+    # binary applies its own default (5m). Emitting it unconditionally breaks
+    # any image that predates the flag, which is how every daemon
+    # CrashLoopBackOff'd on 2026-08-03 when the chart synced ahead of the image.
+    # Set this only to override the binary default.
+    inventoryInterval: ""
+    # -- Maximum time for one residency enumeration. Empty uses the binary
+    # default (2m); see inventoryInterval for why empty is the default.
+    inventoryTimeout: ""
     # -- Provisioned capacity of the operator-managed Hangar store, in bytes.
     #
     # The chart does not deploy the object store, so it cannot discover this;

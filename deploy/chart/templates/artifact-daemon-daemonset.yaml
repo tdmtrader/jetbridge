@@ -95,8 +95,20 @@ spec:
             - --hangar-scratch-dir={{ .Values.artifactDaemon.hangar.scratchPath | default (printf "%s/.hangar-scratch" (.Values.artifactDaemon.hostPath | default "/var/concourse/artifacts")) }}
             - --hangar-read-timeout={{ .Values.artifactDaemon.hangar.readTimeout | default "5m" }}
             - --hangar-write-timeout={{ .Values.artifactDaemon.hangar.writeTimeout | default "5m" }}
-            - --hangar-inventory-interval={{ .Values.artifactDaemon.hangar.inventoryInterval | default "5m" }}
-            - --hangar-inventory-timeout={{ .Values.artifactDaemon.hangar.inventoryTimeout | default "2m" }}
+            {{- /*
+              Rendered only when explicitly configured. An image predating these
+              flags exits on an unknown flag, so emitting them unconditionally
+              CrashLoopBackOffs every daemon the moment the chart syncs ahead of
+              the image — which is exactly what happened on 2026-08-03. Left
+              unset, the binary applies its own defaults (5m/2m), so the sweep
+              still runs on an image that has it and an older image still boots.
+            */}}
+            {{- with .Values.artifactDaemon.hangar.inventoryInterval }}
+            - --hangar-inventory-interval={{ . }}
+            {{- end }}
+            {{- with .Values.artifactDaemon.hangar.inventoryTimeout }}
+            - --hangar-inventory-timeout={{ . }}
+            {{- end }}
             {{- if .Values.artifactDaemon.hangar.endpoint }}
             - --hangar-gcs-endpoint={{ .Values.artifactDaemon.hangar.endpoint }}
             {{- end }}
