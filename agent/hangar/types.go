@@ -58,4 +58,13 @@ type Store interface {
 	// and because the bytes must prove themselves against the key's digest
 	// first. Reads stay fail-closed; this never relaxes them.
 	RepairDerivableMetadata(context.Context, Kind, Digest, int64) (Attributes, error)
+
+	// List enumerates the durable objects of one kind. It exists because
+	// storage is the only authority on what storage actually holds: an object
+	// whose database row was never written, or was later removed, is
+	// unreachable from metadata by construction and can be found no other way.
+	// Entries whose key is not canonical for the requested kind are skipped
+	// rather than reported, so a caller that deletes from this listing can
+	// never be handed something it does not fully understand.
+	List(context.Context, Kind, func(Attributes) error) error
 }

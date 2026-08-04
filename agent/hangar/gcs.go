@@ -17,6 +17,7 @@ import (
 	"cloud.google.com/go/storage"
 	"github.com/klauspost/compress/zstd"
 	"google.golang.org/api/googleapi"
+	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -641,6 +642,62 @@ func (store *GCSStore) Delete(ctx context.Context, ref ObjectRef) error {
 	return fmt.Errorf("hangar: delete object: %w", err)
 }
 
+// List walks the canonical prefix for one kind. It reports only what storage
+// says, and performs no digest verification: verifying every object would read
+// the whole bucket, and the reclamation caller must be able to see a truncated
+// or half-written object precisely so it can reclaim it. Metadata is therefore
+// parsed leniently — an object with absent or malformed metadata still appears,
+// with UncompressedBytes left at zero.
+func (store *GCSStore) List(ctx context.Context, kind Kind, visit func(Attributes) error) error {
+	if err := kind.Validate(); err != nil {
+		return err
+	}
+	if visit == nil {
+		return fmt.Errorf("hangar: list visitor is required")
+	}
+	prefix := "hangar/v1/" + string(kind) + "/sha256/"
+	iterator := store.objects.Objects(ctx, store.config.Bucket, prefix)
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		attrs, err := iterator.Next()
+		if errors.Is(err, errIterationDone) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("hangar: list objects: %w", err)
+		}
+		listedKind, digest, parseErr := ParseKey(attrs.Name)
+		if parseErr != nil || listedKind != kind {
+			// Not a canonical object of this kind. Never surface it: the
+			// caller's only action is deletion.
+			continue
+		}
+		if attrs.Generation <= 0 {
+			continue
+		}
+		ref, refErr := NewObjectRef(kind, digest, attrs.Generation)
+		if refErr != nil {
+			continue
+		}
+		uncompressed := int64(0)
+		if raw, found := attrs.Metadata[metadataUncompressedBytes]; found {
+			if parsed, convErr := strconv.ParseInt(raw, 10, 64); convErr == nil && parsed >= 0 {
+				uncompressed = parsed
+			}
+		}
+		if err := visit(Attributes{
+			Ref:               ref,
+			CompressedBytes:   attrs.Size,
+			UncompressedBytes: uncompressed,
+			CreatedAt:         attrs.Created,
+		}); err != nil {
+			return err
+		}
+	}
+}
+
 func (store *GCSStore) inspectAfterCreateConflict(
 	ctx context.Context,
 	kind Kind,
@@ -1102,6 +1159,15 @@ func (reader *scratchReadCloser) Close() error {
 
 type objectClient interface {
 	Object(bucket, key string) objectHandle
+	Objects(ctx context.Context, bucket, prefix string) objectIterator
+}
+
+// errIterationDone is the store-local terminator so neither this package's
+// callers nor its fakes need to depend on the GCS iterator package.
+var errIterationDone = errors.New("hangar: object iteration done")
+
+type objectIterator interface {
+	Next() (objectAttrs, error)
 }
 
 type objectHandle interface {
@@ -1125,6 +1191,7 @@ type objectWriter interface {
 }
 
 type objectAttrs struct {
+	Name           string
 	Generation     int64
 	Metageneration int64
 	Size           int64
@@ -1138,6 +1205,27 @@ type storageObjectClient struct {
 
 func (client storageObjectClient) Object(bucket, key string) objectHandle {
 	return storageObjectHandle{handle: client.client.Bucket(bucket).Object(key)}
+}
+
+func (client storageObjectClient) Objects(ctx context.Context, bucket, prefix string) objectIterator {
+	return &storageObjectIterator{
+		iterator: client.client.Bucket(bucket).Objects(ctx, &storage.Query{Prefix: prefix}),
+	}
+}
+
+type storageObjectIterator struct {
+	iterator *storage.ObjectIterator
+}
+
+func (it *storageObjectIterator) Next() (objectAttrs, error) {
+	attrs, err := it.iterator.Next()
+	if errors.Is(err, iterator.Done) {
+		return objectAttrs{}, errIterationDone
+	}
+	if err != nil {
+		return objectAttrs{}, err
+	}
+	return attrsFromStorage(attrs), nil
 }
 
 type storageObjectHandle struct {
@@ -1212,6 +1300,7 @@ func attrsFromStorage(attrs *storage.ObjectAttrs) objectAttrs {
 		return objectAttrs{}
 	}
 	return objectAttrs{
+		Name:           attrs.Name,
 		Generation:     attrs.Generation,
 		Metageneration: attrs.Metageneration,
 		Size:           attrs.Size,

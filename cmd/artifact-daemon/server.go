@@ -355,6 +355,8 @@ func (s *Server) Handler(opts ...HandlerOption) http.Handler {
 		"POST /snapshots/v1/repair-durable-metadata/{digest}",
 		protect(s.handleRepairSnapshotDurableMetadata),
 	)
+	mux.HandleFunc("GET /snapshots/v1/durable-objects", protect(s.handleDurableSnapshotInventory))
+	mux.HandleFunc("DELETE /snapshots/v1/durable-objects/{digest}", protect(s.handleDeleteDurableSnapshotObject))
 
 	// net/http's ServeMux canonicalizes traversal-looking paths before route
 	// selection. Validate artifact paths first so malformed paths receive the

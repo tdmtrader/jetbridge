@@ -696,6 +696,22 @@ agentSnapshots:
   orphanGracePeriod: 1h
   gcInterval: 5m
   repairInterval: 10m
+  # -- Reclamation of durable objects that no database row references. A failed
+  # upload can leave bytes in the object store that metadata never learned
+  # about, and nothing else can find them: every other collection path
+  # discovers work by querying the database, so an unrecorded object is
+  # unreachable by construction and accumulates until the store fills.
+  orphanSweep:
+    # -- off | report | reclaim. Defaults to off because this pass deletes
+    # durable content. Run "report" first: it logs exactly what "reclaim" would
+    # remove, without removing anything.
+    mode: "off"
+    # -- Minimum age before an unreferenced object may be reclaimed. Must be at
+    # least 1h; the web node refuses to start below that floor. The default is
+    # far longer than any legitimate upload window, so an in-flight upload is
+    # never eaten even if its row is not yet visible.
+    minAge: 24h
+    interval: 1h
   # -- Disk-backed scratch used while sealing, canonicalizing, and uploading
   # snapshots. The default emptyDir is explicitly bounded and never tmpfs.
   # At peak, one seal can hold an extracted tree, spool, canonical archive,

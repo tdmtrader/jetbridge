@@ -27,6 +27,7 @@ const (
 	ComponentAgentDispatcher               = "agent_dispatcher"
 	ComponentAgentSnapshotGC               = "agent_snapshot_gc"
 	ComponentAgentSnapshotRepair           = "agent_snapshot_repair"
+	ComponentAgentSnapshotOrphanSweep      = "agent_snapshot_orphan_sweep"
 	ComponentAgentSnapshotProjection       = "agent_snapshot_projection"
 	ComponentAgentResourceCaptureFinalizer = "agent_resource_capture_finalizer"
 	ComponentAgentWorkflowRunReconciler    = "agent_workflow_run_reconciler"

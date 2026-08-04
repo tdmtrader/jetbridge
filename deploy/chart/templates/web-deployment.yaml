@@ -688,6 +688,9 @@ spec:
             - --agent-snapshot-orphan-grace-period={{ .Values.agentSnapshots.orphanGracePeriod }}
             - --agent-snapshot-gc-interval={{ .Values.agentSnapshots.gcInterval }}
             - --agent-snapshot-repair-interval={{ .Values.agentSnapshots.repairInterval }}
+            - --agent-snapshot-orphan-sweep-mode={{ .Values.agentSnapshots.orphanSweep.mode }}
+            - --agent-snapshot-orphan-sweep-age={{ .Values.agentSnapshots.orphanSweep.minAge }}
+            - --agent-snapshot-orphan-sweep-interval={{ .Values.agentSnapshots.orphanSweep.interval }}
             - --agent-snapshot-temp-dir=/var/concourse/snapshot-scratch/web
             {{- end }}
             {{- if .Values.agentExperiments.runnerEnabled }}

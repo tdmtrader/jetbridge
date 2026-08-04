@@ -610,6 +610,37 @@ func TestSnapshotContentStoreDeleteAllBroadcastsAndAggregates(t *testing.T) {
 	}
 }
 
+// DeleteAll is the only reclamation the lifecycle performs for a digest that
+// never reached a manifest, so it must release the durable Hangar object too.
+// While it broadcast a cache-only delete, every failed upload leaked its bytes
+// forever: the collect pass removed the staged row, the DB forgot the digest,
+// and the durable object became unreachable by construction.
+func TestSnapshotContentStoreDeleteAllRequestsDurableDeletion(t *testing.T) {
+	content := []byte("archive")
+	var cacheOnly []string
+	var mutex sync.Mutex
+	client := snapshotDaemonClient(t, []string{"node-a", "node-b"}, roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		mutex.Lock()
+		cacheOnly = append(cacheOnly, request.Header.Get("X-Concourse-Snapshot-Delete-Cache-Only"))
+		mutex.Unlock()
+		return response(http.StatusNoContent, nil), nil
+	}))
+	store, _ := NewSnapshotContentStore(client, &locationResolverStub{}, 2, testSnapshotArchiveLimits)
+	if err := store.DeleteAll(context.Background(), digestFor(content)); err != nil {
+		t.Fatalf("DeleteAll: %v", err)
+	}
+	mutex.Lock()
+	defer mutex.Unlock()
+	if len(cacheOnly) != 2 {
+		t.Fatalf("delete requests = %d, want 2", len(cacheOnly))
+	}
+	for _, value := range cacheOnly {
+		if value == "true" {
+			t.Fatal("DeleteAll requested a cache-only delete, which orphans the durable Hangar object forever")
+		}
+	}
+}
+
 func TestSnapshotContentStoreHonorsCancellation(t *testing.T) {
 	content := testSnapshotArchive(t, "archive")
 	started := make(chan struct{})

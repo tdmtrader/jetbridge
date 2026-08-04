@@ -40,6 +40,47 @@ func Key(kind Kind, digest Digest) (string, error) {
 		strings.TrimPrefix(string(digest), digestPrefix) + ".tar.zst", nil
 }
 
+// ParseKey inverts Key. It is deliberately exact rather than tolerant: the
+// reclamation sweep decides what to delete from the result, so anything this
+// function does not fully recognize must be reported as unparseable and left
+// alone. It accepts a key only when re-encoding the recovered kind and digest
+// reproduces the input byte for byte.
+func ParseKey(key string) (Kind, Digest, error) {
+	const prefix = "hangar/v1/"
+	const infix = "/sha256/"
+	const suffix = ".tar.zst"
+	if !strings.HasPrefix(key, prefix) {
+		return "", "", fmt.Errorf("hangar: key %q is not a Hangar v1 object key", key)
+	}
+	rest := strings.TrimPrefix(key, prefix)
+	index := strings.Index(rest, infix)
+	if index < 0 {
+		return "", "", fmt.Errorf("hangar: key %q is not a Hangar v1 object key", key)
+	}
+	kind := Kind(rest[:index])
+	if err := kind.Validate(); err != nil {
+		return "", "", err
+	}
+	encoded := rest[index+len(infix):]
+	if !strings.HasSuffix(encoded, suffix) {
+		return "", "", fmt.Errorf("hangar: key %q is not a Hangar v1 object key", key)
+	}
+	digest := Digest(digestPrefix + strings.TrimSuffix(encoded, suffix))
+	if err := digest.Validate(); err != nil {
+		return "", "", err
+	}
+	// Round-trip so no alternate encoding of the same object can be mistaken
+	// for a canonical key.
+	canonical, err := Key(kind, digest)
+	if err != nil {
+		return "", "", err
+	}
+	if canonical != key {
+		return "", "", fmt.Errorf("hangar: key %q is not canonical", key)
+	}
+	return kind, digest, nil
+}
+
 func NewObjectRef(kind Kind, digest Digest, generation int64) (ObjectRef, error) {
 	key, err := Key(kind, digest)
 	if err != nil {

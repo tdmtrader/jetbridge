@@ -654,7 +654,9 @@ func (store *SnapshotContentStore) RepairReplicas(
 		location := recordedByNode[node]
 		if errors.Is(suspect[node], snapshot.ErrReplicaCorrupt) && !cleaned[node] {
 			endpoint := liveByNode[node]
-			status, deleteErr := store.locationRequest(ctx, http.MethodDelete, endpoint, location)
+			// A corrupt daemon replica is one bad cached copy; the
+			// durable object remains authoritative here.
+			status, deleteErr := store.locationRequest(ctx, http.MethodDelete, endpoint, location, true)
 			if deleteErr != nil || (status != http.StatusNoContent && status != http.StatusNotFound) {
 				if deleteErr == nil {
 					deleteErr = fmt.Errorf("DELETE snapshot on %s returned status %d", node, status)
@@ -1035,7 +1037,7 @@ func (store *SnapshotContentStore) DeleteLocation(ctx context.Context, location 
 	if err != nil {
 		return err
 	}
-	status, err := store.locationRequest(ctx, http.MethodDelete, endpoint, location)
+	status, err := store.locationRequest(ctx, http.MethodDelete, endpoint, location, cacheOnlyForLocation(location))
 	if err != nil {
 		return err
 	}
@@ -1066,7 +1068,12 @@ func (store *SnapshotContentStore) DeleteAll(ctx context.Context, digest snapsho
 			defer wait.Done()
 			locationForNode := location
 			locationForNode.Node = endpoint.NodeName
-			status, requestErr := store.locationRequest(ctx, http.MethodDelete, endpoint, locationForNode)
+			// Durable, not cache-only. DeleteAll reclaims the digest
+			// itself, and for a digest that never reached a manifest it is
+			// the only reclamation that ever runs: the collect pass then
+			// drops the staged row, so a cache-only delete here would strip
+			// the last reference to bytes that remain in the Hangar.
+			status, requestErr := store.locationRequest(ctx, http.MethodDelete, endpoint, locationForNode, false)
 			if requestErr != nil {
 				errorsByNode <- fmt.Errorf("delete snapshot from %s: %w", endpoint.NodeName, requestErr)
 				return
@@ -1130,7 +1137,25 @@ func validateSnapshotLocation(location snapshot.Location, digest snapshot.Digest
 	return nil
 }
 
-func (store *SnapshotContentStore) locationRequest(ctx context.Context, method string, endpoint DaemonEndpoint, location snapshot.Location) (int, error) {
+// cacheOnlyForLocation is the default scope for a single recorded location: a
+// daemon replica is one cached copy of an object the Hangar still owns, so
+// deleting it must not disturb durable content. Callers that are reclaiming the
+// digest itself pass their own scope instead.
+func cacheOnlyForLocation(location snapshot.Location) bool {
+	return location.Driver == SnapshotDaemonDriver
+}
+
+// locationRequest takes cacheOnly explicitly because the two scopes are not
+// interchangeable and the wrong one is silent in both directions: a durable
+// delete where cache-only was meant destroys live content, and a cache-only
+// delete where durable was meant leaks the object forever.
+func (store *SnapshotContentStore) locationRequest(
+	ctx context.Context,
+	method string,
+	endpoint DaemonEndpoint,
+	location snapshot.Location,
+	cacheOnly bool,
+) (int, error) {
 	if err := validateSnapshotLocation(location, location.Digest); err != nil {
 		return 0, err
 	}
@@ -1146,7 +1171,7 @@ func (store *SnapshotContentStore) locationRequest(ctx context.Context, method s
 	if err != nil {
 		return 0, err
 	}
-	if method == http.MethodDelete && location.Driver == SnapshotDaemonDriver {
+	if method == http.MethodDelete && cacheOnly {
 		request.Header.Set("X-Concourse-Snapshot-Delete-Cache-Only", "true")
 	}
 	if store.daemon.initializationErr != nil {

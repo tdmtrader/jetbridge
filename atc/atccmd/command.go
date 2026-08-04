@@ -165,6 +165,19 @@ type snapshotLifecycle interface {
 	Repair(context.Context) (snapshot.LifecycleReport, error)
 }
 
+// snapshotOrphanSweeper is an optional capability rather than part of
+// snapshotLifecycle: the sweep needs a storage-side inventory that not every
+// composition supplies, and a deployment without one must degrade to no sweep
+// rather than fail to compose.
+type snapshotOrphanSweeper interface {
+	SweepOrphans(
+		context.Context,
+		snapshot.DurableInventory,
+		snapshot.OrphanSweepMode,
+		time.Duration,
+	) (snapshot.LifecycleReport, error)
+}
+
 type snapshotLifecycleComposer func(
 	snapshot.MetadataStore,
 	snapshot.ContentStore,
@@ -328,6 +341,12 @@ type RunCommand struct {
 		OrphanGracePeriod time.Duration `long:"agent-snapshot-orphan-grace-period" default:"1h" description:"Lease period protecting an in-progress snapshot upload from orphan collection."`
 		GCInterval        time.Duration `long:"agent-snapshot-gc-interval" default:"5m" description:"Interval between bounded snapshot garbage-collection passes."`
 		RepairInterval    time.Duration `long:"agent-snapshot-repair-interval" default:"10m" description:"Interval between bounded snapshot replica-repair passes."`
+		// Defaults to off because this pass deletes durable content. "report"
+		// logs exactly what "reclaim" would remove, so an operator can inspect a
+		// real inventory before authorizing any deletion.
+		OrphanSweepMode     string        `long:"agent-snapshot-orphan-sweep-mode" default:"off" choice:"off" choice:"report" choice:"reclaim" description:"Reclaim durable snapshot objects that no database row references: off disables the pass, report only logs what would be reclaimed, reclaim deletes them."`
+		OrphanSweepAge      time.Duration `long:"agent-snapshot-orphan-sweep-age" default:"24h" description:"Minimum age before an unreferenced durable snapshot object may be reclaimed; must be at least 1h so an in-flight upload is never eaten."`
+		OrphanSweepInterval time.Duration `long:"agent-snapshot-orphan-sweep-interval" default:"1h" description:"Interval between durable snapshot orphan sweeps."`
 	} `group:"Agent Snapshots"`
 
 	AgentCheckpoints struct {
@@ -2397,6 +2416,11 @@ func (cmd *RunCommand) agentSnapshotLifecycleComponents() ([]RunnableComponent, 
 			Interval: cmd.AgentSnapshots.RepairInterval,
 		},
 	)
+	if sweepComponent, err := cmd.agentSnapshotOrphanSweepComponent(lifecycle); err != nil {
+		return nil, err
+	} else if sweepComponent != nil {
+		components = append(components, *sweepComponent)
+	}
 	if projectionRegistry != nil {
 		projectionInterval := min(cmd.AgentSnapshots.RepairInterval, time.Minute)
 		components = append(components, RunnableComponent{
@@ -2412,6 +2436,58 @@ func (cmd *RunCommand) agentSnapshotLifecycleComponents() ([]RunnableComponent, 
 		})
 	}
 	return components, nil
+}
+
+// agentSnapshotOrphanSweepComponent returns nil when the sweep is not
+// configured or cannot be supported, so an unsupported deployment simply does
+// not run the pass. A configured-but-unsupportable sweep is an error: silently
+// not reclaiming is what allowed the store to fill in the first place.
+func (cmd *RunCommand) agentSnapshotOrphanSweepComponent(
+	lifecycle snapshotLifecycle,
+) (*RunnableComponent, error) {
+	// An unset mode is "not configured", which is off. Only a non-empty value
+	// the flag parser did not produce is a real misconfiguration.
+	configured := strings.TrimSpace(cmd.AgentSnapshots.OrphanSweepMode)
+	if configured == "" {
+		return nil, nil
+	}
+	mode := snapshot.OrphanSweepMode(configured)
+	if err := mode.Validate(); err != nil {
+		return nil, err
+	}
+	if mode == snapshot.OrphanSweepOff {
+		return nil, nil
+	}
+	if cmd.AgentSnapshots.OrphanSweepAge < snapshot.MinOrphanSweepAge {
+		return nil, fmt.Errorf(
+			"--agent-snapshot-orphan-sweep-age must be at least %s", snapshot.MinOrphanSweepAge,
+		)
+	}
+	if cmd.AgentSnapshots.OrphanSweepInterval <= 0 {
+		return nil, fmt.Errorf("--agent-snapshot-orphan-sweep-interval must be positive")
+	}
+	sweeper, ok := lifecycle.(snapshotOrphanSweeper)
+	if !ok {
+		return nil, fmt.Errorf("snapshot lifecycle does not support durable orphan sweeping")
+	}
+	cmd.agentSnapshotMu.Lock()
+	contentStore := cmd.agentSnapshotContentStore
+	cmd.agentSnapshotMu.Unlock()
+	inventory, ok := contentStore.(snapshot.DurableInventory)
+	if !ok {
+		return nil, fmt.Errorf("snapshot content store does not expose a durable inventory")
+	}
+	age := cmd.AgentSnapshots.OrphanSweepAge
+	return &RunnableComponent{
+		Component: atc.Component{Name: atc.ComponentAgentSnapshotOrphanSweep},
+		Runnable: component.RunFunc(func(ctx context.Context) error {
+			return runAgentSnapshotLifecyclePass(ctx, "orphan-sweep",
+				func(ctx context.Context) (snapshot.LifecycleReport, error) {
+					return sweeper.SweepOrphans(ctx, inventory, mode, age)
+				})
+		}),
+		Interval: cmd.AgentSnapshots.OrphanSweepInterval,
+	}, nil
 }
 
 var errAgentSnapshotLifecyclePass = errors.New("agent snapshot lifecycle pass failed")
@@ -2433,6 +2509,11 @@ func runAgentSnapshotLifecyclePass(
 		"locations_deleted": report.LocationsDeleted,
 		"locations_added":   report.LocationsAdded,
 		"stale_pruned":      report.StalePruned,
+		// Reclamation of durable content is never silent: every pass reports
+		// what it found and what it removed, including a zero.
+		"orphans_reclaimable": report.OrphansReclaimable,
+		"orphans_reclaimed":   report.OrphansReclaimed,
+		"orphan_bytes":        report.OrphanBytes,
 	}
 	logger := lagerctx.FromContext(ctx).Session("agent-snapshot-lifecycle")
 	if err != nil {

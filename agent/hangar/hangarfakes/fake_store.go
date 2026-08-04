@@ -41,6 +41,11 @@ type RepairDerivableMetadataCall struct {
 	MaxUncompressedBytes int64
 }
 
+type ListCall struct {
+	Context context.Context
+	Kind    hangar.Kind
+}
+
 type FakeStore struct {
 	mutex sync.Mutex
 
@@ -48,6 +53,7 @@ type FakeStore struct {
 	InspectStub func(context.Context, hangar.Kind, hangar.Digest, int64) (hangar.Attributes, error)
 	OpenStub    func(context.Context, hangar.ObjectRef, int64) (io.ReadCloser, hangar.Attributes, error)
 	DeleteStub  func(context.Context, hangar.ObjectRef) error
+	ListStub    func(context.Context, hangar.Kind, func(hangar.Attributes) error) error
 
 	RepairDerivableMetadataStub func(context.Context, hangar.Kind, hangar.Digest, int64) (hangar.Attributes, error)
 
@@ -56,6 +62,7 @@ type FakeStore struct {
 	openCalls    []OpenCall
 	deleteCalls  []DeleteCall
 	repairCalls  []RepairDerivableMetadataCall
+	listCalls    []ListCall
 
 	ensureResult struct {
 		attributes hangar.Attributes
@@ -74,6 +81,10 @@ type FakeStore struct {
 	repairResult struct {
 		attributes hangar.Attributes
 		err        error
+	}
+	listResult struct {
+		listed []hangar.Attributes
+		err    error
 	}
 }
 
@@ -182,6 +193,50 @@ func (fake *FakeStore) RepairDerivableMetadata(
 		return stub(ctx, kind, digest, maxUncompressedBytes)
 	}
 	return result.attributes, result.err
+}
+
+func (fake *FakeStore) List(ctx context.Context, kind hangar.Kind, visit func(hangar.Attributes) error) error {
+	fake.mutex.Lock()
+	fake.listCalls = append(fake.listCalls, ListCall{Context: ctx, Kind: kind})
+	stub := fake.ListStub
+	result := fake.listResult
+	fake.mutex.Unlock()
+
+	if stub != nil {
+		return stub(ctx, kind, visit)
+	}
+	if result.err != nil {
+		return result.err
+	}
+	for _, attributes := range result.listed {
+		if attributes.Ref.Kind != kind {
+			continue
+		}
+		if err := visit(attributes); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (fake *FakeStore) ListCalls() []ListCall {
+	fake.mutex.Lock()
+	defer fake.mutex.Unlock()
+	return append([]ListCall(nil), fake.listCalls...)
+}
+
+func (fake *FakeStore) SetListStub(stub func(context.Context, hangar.Kind, func(hangar.Attributes) error) error) {
+	fake.mutex.Lock()
+	defer fake.mutex.Unlock()
+	fake.ListStub = stub
+}
+
+func (fake *FakeStore) ListReturns(listed []hangar.Attributes, err error) {
+	fake.mutex.Lock()
+	defer fake.mutex.Unlock()
+	fake.ListStub = nil
+	fake.listResult.listed = append([]hangar.Attributes(nil), listed...)
+	fake.listResult.err = err
 }
 
 func (fake *FakeStore) EnsureCalls() []EnsureCall {

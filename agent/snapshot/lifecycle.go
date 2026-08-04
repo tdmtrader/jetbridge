@@ -95,6 +95,12 @@ type LifecycleReport struct {
 	LocationsDeleted int
 	LocationsAdded   int
 	StalePruned      int
+	// OrphansReclaimable counts durable objects the sweep judged unreferenced,
+	// whether or not it was authorized to delete them, so a report-only pass
+	// still tells an operator exactly what a reclaiming pass would remove.
+	OrphansReclaimable int
+	OrphansReclaimed   int
+	OrphanBytes        int64
 }
 
 type Lifecycle struct {
@@ -109,6 +115,11 @@ type Lifecycle struct {
 	collectCursor LifecycleCursor
 	repairMu      sync.Mutex
 	repairCursor  LifecycleCursor
+	sweepMu       sync.Mutex
+}
+
+func joinLifecycleFailures(failures []error) error {
+	return errors.Join(failures...)
 }
 
 type LifecycleOption func(*Lifecycle)

@@ -14,7 +14,9 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -934,6 +936,7 @@ type memoryObjectClient struct {
 	readGenerations  []int64
 
 	writeErr       error
+	listErr        error
 	closeErr       error
 	attrsErr       error
 	deleteErr      error
@@ -966,6 +969,53 @@ func newMemoryObjectClient() *memoryObjectClient {
 
 func (client *memoryObjectClient) Object(bucket, key string) objectHandle {
 	return &memoryObjectHandle{client: client, bucket: bucket, key: key}
+}
+
+func (client *memoryObjectClient) Objects(ctx context.Context, bucket, prefix string) objectIterator {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	keys := make([]string, 0, len(client.objects))
+	for key := range client.objects {
+		if strings.HasPrefix(key, prefix) {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	listed := make([]objectAttrs, 0, len(keys))
+	for _, key := range keys {
+		object := client.objects[key]
+		listed = append(listed, objectAttrs{
+			Name:           key,
+			Generation:     object.generation,
+			Metageneration: object.metaGen,
+			Size:           object.size,
+			Created:        object.created,
+			Metadata:       cloneMetadata(object.metadata),
+		})
+	}
+	return &memoryObjectIterator{ctx: ctx, listed: listed, err: client.listErr}
+}
+
+type memoryObjectIterator struct {
+	ctx    context.Context
+	listed []objectAttrs
+	index  int
+	err    error
+}
+
+func (it *memoryObjectIterator) Next() (objectAttrs, error) {
+	if it.err != nil {
+		return objectAttrs{}, it.err
+	}
+	if err := it.ctx.Err(); err != nil {
+		return objectAttrs{}, err
+	}
+	if it.index >= len(it.listed) {
+		return objectAttrs{}, errIterationDone
+	}
+	attrs := it.listed[it.index]
+	it.index++
+	return attrs, nil
 }
 
 func (client *memoryObjectClient) object(key string) memoryObject {
