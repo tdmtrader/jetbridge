@@ -348,6 +348,8 @@ func (s *Server) Handler(opts ...HandlerOption) http.Handler {
 	mux.HandleFunc("GET /resource-caches/", protect(s.handleGetResourceCache))
 	mux.HandleFunc("POST /checkpoints/v1/prepare", protect(s.handleCheckpointPrepare))
 	mux.HandleFunc("POST /checkpoints/v1/upload/{preparedHandle}", protect(s.handleCheckpointUpload))
+	mux.HandleFunc("POST /checkpoints/v1/objects/inspect", protect(s.handleInspectCheckpointObject))
+	mux.HandleFunc("POST /checkpoints/v1/objects/delete", protect(s.handleDeleteCheckpointObject))
 	mux.HandleFunc("POST /checkpoints/v1/restore", protect(s.handleCheckpointRestore))
 	mux.HandleFunc("POST /checkpoints/v1/restore/verify", protect(s.handleCheckpointRestoreVerify))
 	mux.HandleFunc("GET /checkpoints/v1/preemption-notice", protect(s.handlePreemptionNotice))

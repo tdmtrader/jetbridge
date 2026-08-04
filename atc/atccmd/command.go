@@ -246,6 +246,7 @@ type RunCommand struct {
 	// daemon transport. It reuses the one command-scoped checked-mTLS client.
 	agentCheckpointMu         sync.Mutex
 	agentCheckpointStepConfig *exec.AgentCheckpointStepConfig
+	agentCheckpointReclaimer  *checkpoint.Reclaimer
 
 	agentChildAuthorityMu sync.Mutex
 	agentChildSigner      *agentchildexecutions.CapabilitySigner
@@ -356,6 +357,7 @@ type RunCommand struct {
 		FenceTTL        time.Duration `long:"agent-checkpoint-fence-ttl" default:"15m" description:"Database authority lease for one checkpoint capture; must outlast the capture timeout."`
 		MaxBytes        int64         `long:"agent-checkpoint-max-bytes" default:"10737418240" description:"Maximum regular-file content bytes admitted by one checkpoint archive."`
 		MaxAttempts     int           `long:"agent-checkpoint-max-attempts" default:"3" description:"Maximum durable execution attempts retained for one agent workflow function."`
+		GCInterval      time.Duration `long:"agent-checkpoint-gc-interval" default:"5m" description:"Interval between bounded passes that expire finished checkpoints and release their durable Hangar objects."`
 	} `group:"Agent Checkpoints"`
 
 	AgentWorkflowRuns struct {
@@ -1756,6 +1758,12 @@ func (cmd *RunCommand) backendComponents(
 	}
 	components = append(components, snapshotLifecycleComponents...)
 
+	checkpointReclamationComponents, err := cmd.agentCheckpointReclamationComponents()
+	if err != nil {
+		return nil, err
+	}
+	components = append(components, checkpointReclamationComponents...)
+
 	experimentComponents, err := cmd.agentExperimentComponents(
 		dbConn,
 		lockFactory,
@@ -2266,9 +2274,69 @@ func (cmd *RunCommand) composeAgentCheckpoints(connection db.DbConn) error {
 		RecoveryMetrics:   recoveryMetrics,
 	}
 
+	// Reclamation is composed with capture, not beside it. Capture is the only
+	// writer of durable checkpoint objects and nothing else deletes them, so a
+	// deployment that can capture and cannot reclaim fills its object store
+	// until it fails. Building both here makes that pairing structural.
+	reclaimer, err := checkpoint.NewReclaimer(checkpoints, jetbridge.NewCheckpointObjectStore(sharedDaemon))
+	if err != nil {
+		return err
+	}
+
 	// Publish only the fully assembled policy. Errors above therefore leave no
 	// half-configured path that an AgentStep could accidentally observe.
 	cmd.agentCheckpointStepConfig = config
+	cmd.agentCheckpointReclaimer = reclaimer
+	return nil
+}
+
+var errAgentCheckpointReclamationPass = errors.New("agent checkpoint reclamation pass failed")
+
+// agentCheckpointReclamationComponents schedules the pass that releases the
+// durable footprint of finished runs. It is the only production caller of the
+// checkpoint expiration and object-deletion authority.
+func (cmd *RunCommand) agentCheckpointReclamationComponents() ([]RunnableComponent, error) {
+	if !cmd.AgentCheckpoints.Enabled {
+		return nil, nil
+	}
+	cmd.agentCheckpointMu.Lock()
+	reclaimer := cmd.agentCheckpointReclaimer
+	cmd.agentCheckpointMu.Unlock()
+	if reclaimer == nil {
+		return nil, errors.New("agent checkpoint reclamation is not composed")
+	}
+	return []RunnableComponent{{
+		Component: atc.Component{Name: atc.ComponentAgentCheckpointGC},
+		Runnable: component.RunFunc(func(ctx context.Context) error {
+			return runAgentCheckpointReclamationPass(ctx, reclaimer)
+		}),
+		Interval: cmd.AgentCheckpoints.GCInterval,
+	}}, nil
+}
+
+func runAgentCheckpointReclamationPass(ctx context.Context, reclaimer *checkpoint.Reclaimer) error {
+	report, err := reclaimer.Collect(ctx)
+	// Every pass reports what it reclaimed, including nothing. A store that is
+	// filling while the pass logs zeroes is a different problem from a pass
+	// that is not running, and only a log that always speaks tells them apart.
+	data := lager.Data{
+		"checkpoints_expired": report.CheckpointsExpired,
+		"objects_scanned":     report.ObjectsScanned,
+		"objects_deleted":     report.ObjectsDeleted,
+		"uploads_adopted":     report.UploadsAdopted,
+		"uploads_forgotten":   report.UploadsForgotten,
+		"uploads_deferred":    report.UploadsDeferred,
+		"metadata_removed":    report.MetadataRemoved,
+		"failed":              report.Failed,
+	}
+	logger := lagerctx.FromContext(ctx).Session("agent-checkpoint-reclamation")
+	if err != nil {
+		// Pass errors carry digests, object keys, and transport detail. Keep
+		// those out of component logs while preserving the bounded counts.
+		logger.Info("pass-failed", data)
+		return errAgentCheckpointReclamationPass
+	}
+	logger.Info("pass-complete", data)
 	return nil
 }
 
@@ -3302,6 +3370,12 @@ func (cmd *RunCommand) validateAgentCheckpoints() error {
 	}
 	if cmd.AgentCheckpoints.MaxAttempts <= 0 {
 		errs = multierror.Append(errs, errors.New("--agent-checkpoint-max-attempts must be positive"))
+	}
+	// Capture has no counterpart that deletes what it wrote, so a deployment
+	// that captures without reclaiming grows its durable store without bound.
+	// There is no "off" value; the interval only chooses how often.
+	if cmd.AgentCheckpoints.GCInterval <= 0 {
+		errs = multierror.Append(errs, errors.New("--agent-checkpoint-gc-interval must be positive"))
 	}
 	if cmd.AgentCheckpoints.CaptureTimeout > 0 &&
 		cmd.AgentCheckpoints.FenceTTL > 0 &&

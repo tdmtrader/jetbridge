@@ -128,6 +128,11 @@ func (s *CommandSuite) TestAgentCheckpointFlagDefaults() {
 	maxAttempts := runCmd.FindOptionByLongName("agent-checkpoint-max-attempts")
 	s.NotNil(maxAttempts)
 	s.Equal([]string{"3"}, maxAttempts.Default)
+	// Capture has no counterpart that deletes what it wrote, so reclamation
+	// runs by default rather than being something an operator must discover.
+	gcInterval := runCmd.FindOptionByLongName("agent-checkpoint-gc-interval")
+	s.NotNil(gcInterval)
+	s.Equal([]string{"5m"}, gcInterval.Default)
 }
 
 func (s *CommandSuite) TestAgentCheckpointBoundsAreAlwaysValid() {
@@ -146,6 +151,9 @@ func (s *CommandSuite) TestAgentCheckpointBoundsAreAlwaysValid() {
 		},
 		"max attempts": func(command *atccmd.RunCommand) {
 			command.AgentCheckpoints.MaxAttempts = 0
+		},
+		"gc interval": func(command *atccmd.RunCommand) {
+			command.AgentCheckpoints.GCInterval = 0
 		},
 	} {
 		s.Run(name, func() {
@@ -189,6 +197,7 @@ func validAgentCheckpointCommand() *atccmd.RunCommand {
 	command.AgentCheckpoints.FenceTTL = 15 * time.Minute
 	command.AgentCheckpoints.MaxBytes = snapshot.DefaultMaxSnapshotContentBytes
 	command.AgentCheckpoints.MaxAttempts = 3
+	command.AgentCheckpoints.GCInterval = 5 * time.Minute
 	command.AgentSnapshots.MaxBytes = snapshot.DefaultMaxSnapshotContentBytes
 	return command
 }
