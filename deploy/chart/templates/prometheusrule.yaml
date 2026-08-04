@@ -91,7 +91,68 @@ spec:
             severity: warning
           annotations:
             summary: "Hangar-backed snapshot operation failures"
-            description: "Artifact daemons are unable to commit or restore durable agent snapshots."
+            description: "Artifact daemons are unable to commit or restore durable agent snapshots. This is a trailing signal: by the time it fires, snapshot reads or writes are already failing. ConcourseHangarStoreNearCapacity and ConcourseHangarStoreWillFill are the leading indicators for the full-store cause."
+{{- if .Values.agentSnapshots.enabled }}
+        # Residency alerts. artifact_daemon_hangar_bytes describes the whole
+        # store, and the daemon is a DaemonSet, so every node reports the same
+        # total. Deduplicate with `max by (kind)` and only then sum across
+        # kinds; sum() over the raw series would multiply the store by the node
+        # count and make a healthy store look full.
+        - alert: ConcourseHangarResidencyStale
+          expr: time() - max(artifact_daemon_hangar_inventory_timestamp_seconds > 0) > 3600
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Hangar residency has not been observed for over an hour"
+            description: "The residency gauges are cached between sweeps, so they hold their last values when refreshes stop. Every capacity and growth alert below is therefore evaluating stale numbers and cannot be trusted to fire. Check daemon logs for hangar-inventory-refresh-failed and confirm the daemons can still list the bucket."
+        - alert: ConcourseHangarResidencyRefreshFailing
+          expr: increase(artifact_daemon_hangar_inventory_refreshes_total{status="error"}[30m]) > 0
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Hangar residency enumeration is failing"
+            description: "Daemons cannot enumerate the Hangar bucket. This also covers the case where no sweep has ever succeeded, which ConcourseHangarResidencyStale cannot see because it has no successful timestamp to age."
+        - alert: ConcourseHangarStoreGrowthAbnormal
+          expr: |-
+            sum(max by (kind) (artifact_daemon_hangar_bytes))
+              / sum(max by (kind) (artifact_daemon_hangar_bytes offset 24h)) > 2
+            and sum(max by (kind) (artifact_daemon_hangar_bytes offset 24h)) > 0
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: "Hangar store has more than doubled in 24h"
+            description: "Durable storage is growing far faster than workload alone explains. Unreferenced objects accumulate silently when a snapshot upload or commit fails, and nothing bounds them. Compare artifact_daemon_hangar_objects against live snapshot rows, and consider the orphan sweep in report mode. This alert needs no configured capacity, which is why it is the only growth signal available when artifactDaemon.hangar.capacityBytes is unset."
+{{- $capacity := int64 (.Values.artifactDaemon.hangar.capacityBytes | default 0) }}
+{{- if gt $capacity 0 }}
+        - alert: ConcourseHangarStoreNearCapacity
+          expr: sum(max by (kind) (artifact_daemon_hangar_bytes)) / {{ $capacity }} > 0.75
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Hangar store is over 75% full"
+            description: "Durable snapshot storage is filling. A full store fails every snapshot write and then every snapshot read that misses local cache. Reclaim unreferenced objects or raise the provisioned capacity before it is exhausted."
+        - alert: ConcourseHangarStoreCriticallyFull
+          expr: sum(max by (kind) (artifact_daemon_hangar_bytes)) / {{ $capacity }} > 0.9
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Hangar store is over 90% full"
+            description: "Durable snapshot storage is nearly exhausted and agent snapshot writes are about to start failing. Reclaim space now."
+        - alert: ConcourseHangarStoreWillFill
+          expr: predict_linear(sum(max by (kind) (artifact_daemon_hangar_bytes))[6h:10m], 24 * 3600) > {{ $capacity }}
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: "Hangar store is projected to fill within 24h"
+            description: "Extrapolating the last 6 hours of growth, durable snapshot storage reaches its configured capacity of {{ $capacity }} bytes within a day. This is the earliest warning available: it fires while the store still has room, unlike ConcourseHangarSnapshotFailures which only reports after writes have already failed."
+{{- end }}
+{{- end }}
         - alert: ConcourseAgentCheckpointCaptureFailures
           expr: increase(concourse_agent_checkpoint_captures_total{outcome="failed"}[5m]) > 0
           for: 5m

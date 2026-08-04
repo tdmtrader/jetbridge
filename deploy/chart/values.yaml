@@ -635,6 +635,31 @@ artifactDaemon:
     scratchPath: ""
     readTimeout: "5m"
     writeTimeout: "5m"
+    # -- How often each daemon enumerates the Hangar bucket to publish its
+    # aggregate residency (artifact_daemon_hangar_bytes / _objects). 0 disables
+    # the sweep and, with it, every capacity and growth alert.
+    #
+    # This is a DaemonSet: one listing per node against one shared bucket, so
+    # the load on the store is this interval divided by the node count. Raise it
+    # on large clusters or very large buckets. Residency moves slowly and the
+    # alerts read hours of history, so a coarse interval costs nothing.
+    inventoryInterval: "5m"
+    # -- Maximum time for one residency enumeration.
+    inventoryTimeout: "2m"
+    # -- Provisioned capacity of the operator-managed Hangar store, in bytes.
+    #
+    # The chart does not deploy the object store, so it cannot discover this;
+    # set it to the size the store was actually provisioned with (e.g. the
+    # backing volume). It is the threshold the leading capacity alerts compare
+    # against.
+    #
+    # Optional. Left at 0, the store is still observed and the growth and
+    # staleness alerts still fire, but ConcourseHangarStoreNearCapacity and
+    # ConcourseHangarStoreWillFill cannot be evaluated and are not rendered —
+    # nothing will warn you that the store is approaching full, only that it is
+    # growing unusually fast. Setting it is strongly recommended wherever
+    # agentSnapshots is enabled.
+    capacityBytes: 0
   # -- TLS/mTLS configuration for encrypted and authenticated daemon communication
   tls:
     # -- Enable TLS (HTTPS + mTLS) for the artifact daemon.

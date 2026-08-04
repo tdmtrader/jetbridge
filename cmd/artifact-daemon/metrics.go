@@ -22,6 +22,16 @@ type metrics struct {
 	checkpointOps      *prometheus.CounterVec
 	checkpointBytes    *prometheus.CounterVec
 	checkpointDuration *prometheus.HistogramVec
+
+	// Residency, as distinct from throughput. Every collector above counts
+	// bytes and operations that moved; none of them can answer "how much does
+	// the store hold right now", because a counter that rises on PUT, GET and
+	// DELETE alike describes traffic, not occupancy. These four express the
+	// aggregate the store is actually bounded by.
+	hangarObjects            *prometheus.GaugeVec
+	hangarBytes              *prometheus.GaugeVec
+	hangarInventoryRefreshes *prometheus.CounterVec
+	hangarInventoryTimestamp prometheus.Gauge
 }
 
 // newMetrics builds and registers the daemon metric collectors.
@@ -77,6 +87,26 @@ func newMetrics() *metrics {
 			Help:      "Checkpoint archive and durable upload duration by bounded operation.",
 			Buckets:   prometheus.DefBuckets,
 		}, []string{"operation", "status"}),
+		hangarObjects: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: "artifact_daemon",
+			Name:      "hangar_objects",
+			Help:      "Durable objects currently resident in the Hangar store, by kind. Store-wide, so every daemon reports the same total: aggregate with max(), never sum().",
+		}, []string{"kind"}),
+		hangarBytes: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: "artifact_daemon",
+			Name:      "hangar_bytes",
+			Help:      "Compressed bytes currently resident in the Hangar store, by kind. Store-wide, so every daemon reports the same total: aggregate with max(), never sum().",
+		}, []string{"kind"}),
+		hangarInventoryRefreshes: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "artifact_daemon",
+			Name:      "hangar_inventory_refreshes_total",
+			Help:      "Hangar residency refresh passes by outcome (ok/error).",
+		}, []string{"status"}),
+		hangarInventoryTimestamp: prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: "artifact_daemon",
+			Name:      "hangar_inventory_timestamp_seconds",
+			Help:      "Unix time of the last successful Hangar residency refresh. The residency gauges are cached, so without this a stalled refresh is indistinguishable from a store of steady size.",
+		}),
 	}
 	reg.MustRegister(
 		m.resolveRequests,
@@ -88,6 +118,10 @@ func newMetrics() *metrics {
 		m.checkpointOps,
 		m.checkpointBytes,
 		m.checkpointDuration,
+		m.hangarObjects,
+		m.hangarBytes,
+		m.hangarInventoryRefreshes,
+		m.hangarInventoryTimestamp,
 	)
 
 	// Initialize peer-fetch series to 0 so the family is always scrapeable and
@@ -95,6 +129,17 @@ func newMetrics() *metrics {
 	// label set is observed).
 	m.peerFetch.WithLabelValues("ok")
 	m.peerFetch.WithLabelValues("error")
+
+	// Same reasoning for the refresh outcomes: the staleness alert has to be
+	// able to evaluate before the first failure ever happens.
+	m.hangarInventoryRefreshes.WithLabelValues("ok")
+	m.hangarInventoryRefreshes.WithLabelValues("error")
+
+	// The residency gauges are deliberately NOT initialized. A daemon deployed
+	// without Hangar holds nothing, and publishing 0 there would be a claim
+	// about a store it has no view of — max() across a mixed fleet would then
+	// still be correct, but a fleet where every daemon lost its store would
+	// read as a genuinely empty store rather than as absent data.
 
 	return m
 }
@@ -140,6 +185,34 @@ func (m *metrics) recordCheckpoint(operation, status string, bytes int64, durati
 		m.checkpointBytes.WithLabelValues(operation, status).Add(float64(bytes))
 	}
 	m.checkpointDuration.WithLabelValues(operation, status).Observe(duration.Seconds())
+}
+
+// recordHangarResidency publishes one kind's aggregate occupancy. It is called
+// only for a pass that enumerated the whole kind, so a zero here means the kind
+// is genuinely empty rather than that listing stopped early.
+func (m *metrics) recordHangarResidency(kind string, objects, bytes int64) {
+	if m == nil {
+		return
+	}
+	m.hangarObjects.WithLabelValues(kind).Set(float64(objects))
+	m.hangarBytes.WithLabelValues(kind).Set(float64(bytes))
+}
+
+// recordHangarInventoryRefresh records the outcome of a residency pass. Only a
+// successful pass advances the freshness timestamp: a failed pass leaves the
+// previous totals in place, and the unchanged timestamp is what distinguishes
+// those retained values from freshly observed ones.
+func (m *metrics) recordHangarInventoryRefresh(status string, at time.Time) {
+	if m == nil {
+		return
+	}
+	if status != "ok" {
+		status = "error"
+	}
+	m.hangarInventoryRefreshes.WithLabelValues(status).Inc()
+	if status == "ok" {
+		m.hangarInventoryTimestamp.Set(float64(at.Unix()))
+	}
 }
 
 // recordResolve records the outcome of a single resolveOne call. A nil receiver

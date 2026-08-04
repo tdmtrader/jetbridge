@@ -42,6 +42,8 @@ func main() {
 	hangarScratchDir := flag.String("hangar-scratch-dir", "", "Absolute daemon-local scratch directory for Hangar compression and verified reads; defaults under storage-path")
 	hangarReadTimeout := flag.Duration("hangar-read-timeout", 5*time.Minute, "Maximum time to read and verify one durable Hangar object")
 	hangarWriteTimeout := flag.Duration("hangar-write-timeout", 5*time.Minute, "Maximum time to compress and commit one durable Hangar object")
+	hangarInventoryInterval := flag.Duration("hangar-inventory-interval", DefaultHangarInventoryInterval, "How often to enumerate the Hangar store and publish its aggregate residency; 0 disables. Every daemon lists the same bucket, so raise this on large clusters")
+	hangarInventoryTimeout := flag.Duration("hangar-inventory-timeout", DefaultHangarInventoryTimeout, "Maximum time for one Hangar residency enumeration")
 
 	flag.Parse()
 
@@ -218,6 +220,19 @@ func main() {
 	// node-local metadata notice; mirroring is optional follow-up work.
 	preemptCtx, preemptCancel := context.WithCancel(context.Background())
 	defer preemptCancel()
+
+	// Publish how much the durable store holds. Nothing else does: the snapshot
+	// counters measure bytes in motion, so the store's own occupancy — the
+	// quantity it is actually bounded by — is otherwise unobserved until a write
+	// fails against a full store.
+	server.StartHangarInventory(preemptCtx, *hangarInventoryInterval, *hangarInventoryTimeout)
+	if *hangarGCSBucket != "" && *hangarInventoryInterval > 0 {
+		logger.Info("hangar-inventory-started", lager.Data{
+			"interval": hangarInventoryInterval.String(),
+			"timeout":  hangarInventoryTimeout.String(),
+		})
+	}
+
 	if *preemptionWatch {
 		startPreemptionWatcher(
 			preemptCtx,

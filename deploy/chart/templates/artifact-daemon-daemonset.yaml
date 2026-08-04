@@ -95,6 +95,8 @@ spec:
             - --hangar-scratch-dir={{ .Values.artifactDaemon.hangar.scratchPath | default (printf "%s/.hangar-scratch" (.Values.artifactDaemon.hostPath | default "/var/concourse/artifacts")) }}
             - --hangar-read-timeout={{ .Values.artifactDaemon.hangar.readTimeout | default "5m" }}
             - --hangar-write-timeout={{ .Values.artifactDaemon.hangar.writeTimeout | default "5m" }}
+            - --hangar-inventory-interval={{ .Values.artifactDaemon.hangar.inventoryInterval | default "5m" }}
+            - --hangar-inventory-timeout={{ .Values.artifactDaemon.hangar.inventoryTimeout | default "2m" }}
             {{- if .Values.artifactDaemon.hangar.endpoint }}
             - --hangar-gcs-endpoint={{ .Values.artifactDaemon.hangar.endpoint }}
             {{- end }}
