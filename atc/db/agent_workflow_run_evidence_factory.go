@@ -19,8 +19,11 @@ import (
 // inverts. Each field names the table it comes from, and nothing else about
 // that table travels with it.
 type AgentWorkflowRunEvidence struct {
-	// AttemptMetrics is agent_run_attempt_metrics for the run's planned build,
-	// the durable record of every agent step.
+	// AttemptMetrics is agent_run_metrics for the run's planned build, the
+	// durable record of every agent step. It is named for the per-attempt
+	// table it used to read; that table is only written when checkpoints are
+	// enabled, which no deployment has ever done, so reading it reported every
+	// agent node as having cost nothing and the freeze made that permanent.
 	AttemptMetrics []AgentNodeAttemptMetric
 	// Waits is agent_workflow_waits for the run.
 	Waits []AgentNodeWait
@@ -30,15 +33,27 @@ type AgentWorkflowRunEvidence struct {
 	Publications []AgentNodePublication
 	// BuildStepStatus maps plan ID to terminal build step status for the run's
 	// planned build. It is the ONLY durable evidence a deterministic task step
-	// ever has: agent steps have attempt metrics, awaits have waits, publishes
+	// ever has: agent steps have run metrics, awaits have waits, publishes
 	// have publication occurrences, and tasks have nothing but build events,
 	// which Concourse GC reclaims. Values are 'succeeded', 'failed', or
 	// 'errored'.
 	BuildStepStatus map[string]string
 }
 
-// AgentNodeAttemptMetric is the projection of agent_run_attempt_metrics the
+// AgentNodeAttemptMetric is the projection of agent_run_metrics the
 // node-occurrence derivation reads.
+//
+// agent_run_metrics is unique on (build_id, plan_id) and carries no attempt
+// dimension, so ExecutionAttempt is pinned to 1. The projection's key still
+// varies on retry_attempt, so nothing collides.
+//
+// CreatedAt and UpdatedAt are derived, not columns. agent_run_metrics has a
+// single created_at, defaulted to now() on a row written after the agent
+// process exits — it stamps COMPLETION. UpdatedAt is that stamp; CreatedAt is
+// it minus wall_time_seconds. Reading created_at as the start would place
+// every agent node one full run duration into the future. When wall time was
+// never recorded the span collapses to a point, which reads as "unknown
+// duration" rather than as a confidently wrong number.
 type AgentNodeAttemptMetric struct {
 	PlanID           string
 	ExecutionAttempt int
@@ -138,10 +153,15 @@ func (factory *agentWorkflowRunEvidenceFactory) attemptMetricsForBuild(
 	buildID int64,
 ) ([]AgentNodeAttemptMetric, error) {
 	rows, err := factory.conn.QueryContext(ctx, `
-		SELECT plan_id, execution_attempt, status, cost_usd::float8, created_at, updated_at
-		FROM agent_run_attempt_metrics
+		SELECT plan_id,
+		       1,
+		       status,
+		       cost_usd::float8,
+		       created_at - (wall_time_seconds * INTERVAL '1 second'),
+		       created_at
+		FROM agent_run_metrics
 		WHERE build_id = $1
-		ORDER BY plan_id, execution_attempt`, buildID)
+		ORDER BY plan_id`, buildID)
 	if err != nil {
 		return nil, fmt.Errorf("db: reading node attempt metrics: %w", err)
 	}

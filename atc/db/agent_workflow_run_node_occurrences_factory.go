@@ -13,7 +13,7 @@ import (
 // RetryAttempt and Attempt are independent axes and both belong to the key.
 // RetryAttempt is which copy of an authored retry closure the row describes,
 // read from the plan's structure; Attempt is which recovery attempt of that
-// copy it is, read from agent_run_attempt_metrics.execution_attempt.
+// copy it is. Pinned to 1: agent_run_metrics carries no attempt dimension.
 type AgentWorkflowRunNodeOccurrence struct {
 	WorkflowRunID        int64
 	NodeID               string

@@ -15,8 +15,6 @@ import (
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
 
-	"github.com/concourse/concourse/agent/api/metrics"
-	"github.com/concourse/concourse/agent/budget"
 	"github.com/concourse/concourse/agent/publisher"
 	schema "github.com/concourse/concourse/agent/schema"
 	"github.com/concourse/concourse/agent/snapshot"
@@ -271,84 +269,110 @@ var _ = Describe("AgentWorkflowRunEvidenceFactory NodeOccurrence sources", func(
 		// same evidence struct. Reading them for the wrong identifier returns
 		// an empty set that is indistinguishable from a run whose agent steps
 		// never ran.
-		It("reads every recovery attempt of an agent step for the run's own build", func() {
+		It("reads only the run's own build, not every build that ran an agent", func() {
 			build, err := defaultTeam.CreateOneOffBuild()
 			Expect(err).ToNot(HaveOccurred())
+			other, err := defaultTeam.CreateOneOffBuild()
+			Expect(err).ToNot(HaveOccurred())
 			run := newRun(build)
+
 			metricsFactory := db.NewAgentRunMetricsFactory(dbConn)
-
-			var headID int64
-			Expect(dbConn.QueryRow(`
-				INSERT INTO agent_run_checkpoint_heads (build_id, plan_id, function_id)
-				VALUES ($1, '1/2', 'implement') RETURNING id
-			`, build.ID()).Scan(&headID)).To(Succeed())
-
-			recordMetrics := func(attemptID int64, attemptNumber int, status string, cost float64) {
-				_, err := metricsFactory.UpsertExecutionAttempt(metrics.ExecutionAttemptRequest{
-					Key: metrics.ExecutionAttemptKey{
-						AttemptID: attemptID, BuildID: build.ID(),
-						PlanID: "1/2", ExecutionAttempt: attemptNumber,
-					},
-					Metrics: &schema.RunMetrics{
-						BuildID: build.ID(), PlanID: "1/2", StepName: "implement",
-						Status: status, CostUSD: cost,
-					},
-					FinalPresentation: attemptNumber == 2,
-					Attribution: metrics.ExecutionAttemptAttribution{
-						Source: budget.SourceAgentStep, Provider: "anthropic", Model: "claude-sonnet-4-5",
-					},
+			for _, seed := range []struct {
+				buildID int
+				planID  string
+				cost    float64
+			}{
+				{build.ID(), "1/2", 0.25},
+				{build.ID(), "1/3", 0.75},
+				{other.ID(), "1/2", 9.99},
+			} {
+				_, _, err := metricsFactory.UpsertReturningInserted(&schema.RunMetrics{
+					BuildID: seed.buildID, PlanID: seed.planID, StepName: "implement",
+					Status: "ok", CostUSD: seed.cost, WallTimeSeconds: 30,
 				})
 				Expect(err).ToNot(HaveOccurred())
 			}
 
-			var firstID, secondID int64
-			Expect(dbConn.QueryRow(`
-				INSERT INTO agent_run_attempts
-					(head_id, attempt_number, state, is_current, materialization_id)
-				VALUES ($1, 1, 'scheduling', TRUE, 'evidence-1') RETURNING id
-			`, headID).Scan(&firstID)).To(Succeed())
-			recordMetrics(firstID, 1, "error", 0.25)
-
-			// The interrupted first attempt is the recovery authority for the
-			// second, exactly as the attempt factory records it.
-			_, err = dbConn.Exec(`
-				UPDATE agent_run_attempts
-				SET state = 'interrupted', is_current = FALSE,
-				    interruption_reason = 'preempted', interrupted_at = clock_timestamp()
-				WHERE id = $1`, firstID)
+			evidence, err := factory.EvidenceForRun(ctx, run)
 			Expect(err).ToNot(HaveOccurred())
-			Expect(dbConn.QueryRow(`
-				INSERT INTO agent_run_attempts
-					(head_id, attempt_number, state, is_current, materialization_id,
-					 source_attempt_number, source_checkpoint_generation, recovery_mode,
-					 source_interruption_reason)
-				VALUES ($1, 2, 'scheduling', TRUE, 'evidence-2', 1, 0, 'checkpoint_zero', 'preempted')
-				RETURNING id
-			`, headID).Scan(&secondID)).To(Succeed())
-			recordMetrics(secondID, 2, "ok", 0.75)
+			Expect(evidence.AttemptMetrics).To(HaveLen(2))
+			Expect(evidence.AttemptMetrics[0].PlanID).To(Equal("1/2"))
+			Expect(evidence.AttemptMetrics[0].CostUSD).To(BeNumerically("~", 0.25, 1e-9))
+			Expect(evidence.AttemptMetrics[1].PlanID).To(Equal("1/3"))
+			Expect(evidence.AttemptMetrics[1].CostUSD).To(BeNumerically("~", 0.75, 1e-9))
+		})
 
-			// The derivation subtracts these two to get the node's duration, so
-			// a reader that transposed them would report every agent step as
-			// having taken no time at all — or negative time.
-			_, err = dbConn.Exec(`
-				UPDATE agent_run_attempt_metrics
-				SET updated_at = created_at + interval '90 seconds'
-				WHERE attempt_id = $1`, secondID)
+		// The production composition has never enabled checkpoints, so no
+		// attempt row is ever written and agent_run_attempt_metrics is empty.
+		// A reader that only knows that table reports every agent node as
+		// having cost nothing, and the freeze makes that permanent.
+		It("reads an agent step whose only record is the aggregate production actually writes", func() {
+			build, err := defaultTeam.CreateOneOffBuild()
+			Expect(err).ToNot(HaveOccurred())
+			run := newRun(build)
+
+			_, _, err = db.NewAgentRunMetricsFactory(dbConn).UpsertReturningInserted(&schema.RunMetrics{
+				BuildID: build.ID(), PlanID: "1/2", StepName: "implement",
+				Status: "ok", CostUSD: 1.70, WallTimeSeconds: 392,
+			})
 			Expect(err).ToNot(HaveOccurred())
 
 			evidence, err := factory.EvidenceForRun(ctx, run)
 			Expect(err).ToNot(HaveOccurred())
-			Expect(evidence.AttemptMetrics).To(HaveLen(2))
-			Expect(evidence.AttemptMetrics[1].UpdatedAt.Sub(evidence.AttemptMetrics[1].CreatedAt)).
-				To(Equal(90 * time.Second))
+			Expect(evidence.AttemptMetrics).To(HaveLen(1))
 			Expect(evidence.AttemptMetrics[0].PlanID).To(Equal("1/2"))
+			Expect(evidence.AttemptMetrics[0].Status).To(Equal("ok"))
+			Expect(evidence.AttemptMetrics[0].CostUSD).To(BeNumerically("~", 1.70, 1e-9))
 			Expect(evidence.AttemptMetrics[0].ExecutionAttempt).To(Equal(1))
-			Expect(evidence.AttemptMetrics[0].Status).To(Equal("error"))
-			Expect(evidence.AttemptMetrics[0].CostUSD).To(BeNumerically("~", 0.25, 1e-9))
-			Expect(evidence.AttemptMetrics[0].CreatedAt).ToNot(BeZero())
-			Expect(evidence.AttemptMetrics[1].ExecutionAttempt).To(Equal(2))
-			Expect(evidence.AttemptMetrics[1].Status).To(Equal("ok"))
-			Expect(evidence.AttemptMetrics[1].CostUSD).To(BeNumerically("~", 0.75, 1e-9))
+		})
+
+		// agent_run_metrics has no updated_at, and its created_at defaults to
+		// now() on a row written after the agent process exits — so it stamps
+		// COMPLETION, not start. Reading it as the start and adding wall time
+		// would place the whole node one full run duration into the future.
+		It("derives the start backwards from wall time, because the metrics row is stamped at completion", func() {
+			build, err := defaultTeam.CreateOneOffBuild()
+			Expect(err).ToNot(HaveOccurred())
+			run := newRun(build)
+
+			_, _, err = db.NewAgentRunMetricsFactory(dbConn).UpsertReturningInserted(&schema.RunMetrics{
+				BuildID: build.ID(), PlanID: "1/2", StepName: "implement",
+				Status: "ok", CostUSD: 1.70, WallTimeSeconds: 392,
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			var completedAt time.Time
+			Expect(dbConn.QueryRow(
+				`SELECT created_at FROM agent_run_metrics WHERE build_id = $1 AND plan_id = '1/2'`,
+				build.ID()).Scan(&completedAt)).To(Succeed())
+
+			evidence, err := factory.EvidenceForRun(ctx, run)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(evidence.AttemptMetrics).To(HaveLen(1))
+			Expect(evidence.AttemptMetrics[0].UpdatedAt).To(BeTemporally("==", completedAt))
+			Expect(evidence.AttemptMetrics[0].UpdatedAt.Sub(evidence.AttemptMetrics[0].CreatedAt)).
+				To(Equal(392 * time.Second))
+		})
+
+		// Degraded ingestion writes wall_time_seconds = 0. Collapsing to a
+		// point reads as "unknown duration"; the alternative — inventing a
+		// span — would be a confidently wrong number on the permanent record.
+		It("collapses the span to a point when wall time was never recorded", func() {
+			build, err := defaultTeam.CreateOneOffBuild()
+			Expect(err).ToNot(HaveOccurred())
+			run := newRun(build)
+
+			_, _, err = db.NewAgentRunMetricsFactory(dbConn).UpsertReturningInserted(&schema.RunMetrics{
+				BuildID: build.ID(), PlanID: "1/2", StepName: "implement",
+				Status: "ok", CostUSD: 1.70, WallTimeSeconds: 0,
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			evidence, err := factory.EvidenceForRun(ctx, run)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(evidence.AttemptMetrics).To(HaveLen(1))
+			Expect(evidence.AttemptMetrics[0].CreatedAt).
+				To(BeTemporally("==", evidence.AttemptMetrics[0].UpdatedAt))
 		})
 	})
 

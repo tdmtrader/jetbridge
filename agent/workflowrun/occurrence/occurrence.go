@@ -48,7 +48,9 @@ func (status Status) Terminal() bool {
 // than fused, because they answer different questions and come from different
 // records. RetryAttempt is which copy of an authored retry closure this is,
 // read from the plan's structure. Attempt is which recovery attempt of that
-// copy this is, read from agent_run_attempt_metrics.execution_attempt. A
+// copy this is. Pinned to 1 since agent_run_metrics carries no attempt
+// dimension; the per-attempt table it once read is written only under
+// checkpoints, which no deployment enables. A
 // durable projection keyed on only one of them would collide.
 type NodeOccurrence struct {
 	WorkflowRunID        snapshot.WorkflowRunID
@@ -72,7 +74,7 @@ type NodeOccurrence struct {
 	CostUSD              float64
 }
 
-// AttemptMetric is the narrow projection of agent_run_attempt_metrics the
+// AttemptMetric is the narrow projection of agent_run_metrics the
 // derivation needs. It is a local type so the derivation does not depend on
 // the full DB row shape.
 type AttemptMetric struct {
