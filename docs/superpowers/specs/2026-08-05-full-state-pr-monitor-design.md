@@ -1,7 +1,7 @@
 # Full-State PR Monitor — design
 
 **Date:** 2026-08-05
-**Status:** Draft — awaiting review. Two open decisions marked **OPEN** below.
+**Status:** Draft — awaiting review. Both previously-open decisions are resolved below.
 **Supersedes (in part):** the action-derivation half of `2026-07-29-provider-native-pr-publish-design.md`.
 **Prior art:** [PR interface cleanup audit](../plans/2026-08-05-pr-interface-cleanup-audit.md).
 
@@ -66,7 +66,7 @@ This also removes the need for `binding_revision` in the version, and removes th
 
 | Field | In digest? | Why |
 |---|---|---|
-| Threads, comments, review states | **yes** | the signal the feature exists for |
+| Threads, comments, review states | **yes** | the signal the feature exists for; over the activity-ordered window (RESOLVED-1) |
 | Head SHA | **yes** | a push is a real change |
 | Target SHA | **no** — *revised* | see below |
 | Mergeability | **no** — *revised* | see below |
@@ -105,15 +105,23 @@ Three further cost fixes are prerequisites, not nice-to-haves:
 
 Three carried blockers must be handled in the plan: the per-instance config hash must be produced by the *same* render function the generic path recomputes; `origin_kind='pr-monitor'` is hard-coded in five SQL statements; and `BindPRMonitorAuthority` must remain reachable or the seed's typed sentinels strand (it fails closed, but every run fails).
 
-## OPEN decisions
+## Resolved decisions (were OPEN)
 
-**OPEN-1 — the 512-thread bound.** `maxThreads=512` and `maxReviewBatches=128` (`types.go:24`, `contracts/pull_request.go:108`) **reject rather than truncate**, and `observe.go:140-142` turns rejection into a permanent `Observe` failure. Full state on a long-lived PR reaches ~1,312 threads against a 512 limit. Options: (a) raise the bounds — a `pull-request/v1` schema revision, and a descriptor-digest bump is a data-loss event; (b) **bounded-full** — all threads with unresolved or recent activity plus the last N reviews, with an explicit truncation marker so the agent knows its view is partial. (b) is recommended and avoids the schema bump, but it makes "every observation is complete" false as stated, and the skip guard's set-equality must then be defined over the truncated window — which is exactly where a fail-toward-skipping bug would hide.
+**RESOLVED-1 — observation window.** A *thread* is one root review comment plus its reply chain, or a synthetic `review-<id>-body` thread per review with body text (`observe.go:365`). Full state on a long-lived PR therefore accumulates without limit, against `maxThreads = 512` (`types.go:24`) and `maxPullRequestThreads = 512` (`contracts/pull_request.go:108`) — which **reject rather than truncate**, and `observe.go:140-142` turns rejection into a permanent `Observe` failure.
 
-**OPEN-2 — thread resolution.** Whether a human resolved a thread is not available from the REST endpoints used (`observe.go:253`, `:281`); it needs GraphQL. Without it, a human resolving a thread without commenting is invisible and the guard records a skip. Either add a GraphQL call or accept the gap explicitly.
+**Decision: an activity-ordered window, not a raised bound.** Sort threads by last activity and emit the most recent N (default 150), with an explicit truncation marker in the record so the agent knows its view is partial. Activity-ordering is the safety property: any thread receiving a new comment sorts into the window by construction, so a human replying on an ancient thread is always visible. At N = 150 neither bound binds and no schema revision is needed.
+
+Note the deciding argument is *not* the schema. Raising the bound is cheap — `record_schema.go` models revisions as `current` + `superseded[]`, append-only, and `pull-request/v1` has already gone rev2 → rev3; the data-loss hazard is rewriting a frozen descriptor in place, not adding a revision. The window wins because **the agent is the consumer**: handing an LLM every thread a PR ever had costs tokens and degrades its judgement.
+
+The skip guard's set-equality is defined over the window. Because the window is activity-ordered, an item that changed is always inside it, so the comparison cannot silently exclude a human change.
+
+**RESOLVED-2 — thread resolution stays invisible; no GraphQL.** Resolution state is unavailable from the REST endpoints used (`observe.go:253`, `:281`). This is a blind spot, not a fail-toward-skipping bug: resolution is not an item in the set-equality comparison, so it cannot make that comparison falsely true. The one consequence is that the "human thread with no agent reply" trigger still fires for a thread a human resolved to mean *never mind*, so the agent replies once to withdrawn feedback and the skip guard then settles it.
+
+Human-triggered merge needs nothing extra: PR state `active → completed` comes from `GET /pulls/{n}` and is already carried in the observation.
 
 ## Testing
 
-- **Unit/integration:** full-state `Observe` against the existing fixtures, extended with a cross-review-reply case (currently a hard failure) and a bound-exceeded case.
+- **Unit/integration:** full-state `Observe` against the existing fixtures, extended with a cross-review-reply case (currently a hard failure), a window-truncation case asserting the truncation marker, and a case proving a new comment on an old thread sorts *into* the window.
 - **Server path:** fake-forge integration test driving promotion → admit build → capture → admission → run → acknowledge → next check skips, as the CI gate.
 - **Live proof (acceptance):** deploy to theborg, drive one PR end to end on a throwaway repo — agent opens it, human comments, monitor observes, workflow revises and replies, instance acknowledges, next check does *not* re-run. This is the only evidence that credentials, Helm, image pinning and the real GitHub API work; `PR_PUBLISH_LIVE_PROOF.md` still reads "Current result: not run."
 
