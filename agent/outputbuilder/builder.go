@@ -38,6 +38,11 @@ type InputDescription struct {
 	Type      snapshot.TypeRef `json:"type"`
 	Digest    snapshot.Digest  `json:"digest"`
 	Candidate bool             `json:"candidate"`
+	// IntrinsicMetadata is the sealed snapshot's server-derived metadata,
+	// forwarded verbatim from the authority - see InputAuthority.
+	// IntrinsicMetadata. A type with none (or an authority built before this
+	// field existed) simply omits it.
+	IntrinsicMetadata json.RawMessage `json:"intrinsic_metadata,omitempty"`
 }
 type Description struct {
 	Port   snapshot.Port            `json:"port"`
@@ -120,7 +125,10 @@ func (builder *Builder) DescribeOutput(ctx context.Context, output string) (Desc
 	inputs := make([]InputDescription, 0, len(builder.authority.Inputs))
 	for _, name := range sortedNames(builder.authority.Inputs) {
 		input := builder.authority.Inputs[name]
-		inputs = append(inputs, InputDescription{Name: name, Type: input.Ref.Type, Digest: input.Ref.Digest, Candidate: input.Candidate})
+		inputs = append(inputs, InputDescription{
+			Name: name, Type: input.Ref.Type, Digest: input.Ref.Digest, Candidate: input.Candidate,
+			IntrinsicMetadata: input.IntrinsicMetadata,
+		})
 	}
 	return Description{Port: declaration.Port, Schema: schema, Inputs: inputs}, nil
 }

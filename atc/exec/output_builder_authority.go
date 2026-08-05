@@ -1,6 +1,7 @@
 package exec
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
@@ -23,8 +24,12 @@ const (
 
 // outputBuilderAuthority derives the builder's only authority document from
 // frozen typed declarations and their resolved bindings. It has no input from
-// prompt, environment, or authored MCP configuration.
-func outputBuilderAuthority(workRoot string, inputs snapshotInputBindings, inputDecls map[string]atc.SnapshotInputConfig, outputDecls map[string]atc.SnapshotOutputConfig) (*runtime.ManagedOutputBuilder, error) {
+// prompt, environment, or authored MCP configuration. teamID and metadata are
+// platform-internal: they let it forward each bound input's sealed intrinsic
+// metadata (e.g. repository_id) from the manifest ATC already holds, exactly
+// once per input, alongside the ref that is already being resolved here -
+// never re-derived from the mounted (writable) tree.
+func outputBuilderAuthority(ctx context.Context, teamID int, metadata snapshot.MetadataStore, workRoot string, inputs snapshotInputBindings, inputDecls map[string]atc.SnapshotInputConfig, outputDecls map[string]atc.SnapshotOutputConfig) (*runtime.ManagedOutputBuilder, error) {
 	hasBuiltinRecordOutput := false
 	for _, declaration := range outputDecls {
 		if _, builtin := contracts.BuiltinRawRecordCodec(declaration.Type); builtin {
@@ -34,6 +39,9 @@ func outputBuilderAuthority(workRoot string, inputs snapshotInputBindings, input
 	}
 	if !hasBuiltinRecordOutput {
 		return nil, nil
+	}
+	if metadata == nil {
+		return nil, fmt.Errorf("output builder authority: snapshot metadata store is required")
 	}
 	if !filepath.IsAbs(workRoot) || filepath.Clean(workRoot) != workRoot || workRoot == "/" {
 		return nil, fmt.Errorf("output builder authority: work root must be absolute, clean, and non-root")
@@ -76,7 +84,11 @@ func outputBuilderAuthority(workRoot string, inputs snapshotInputBindings, input
 		if !outputBuilderDirectChild(workRoot, name, mount) || exposure.MountPath != mount {
 			return nil, fmt.Errorf("output builder authority: input %q mount does not match typed path", name)
 		}
-		authority.Inputs[name] = outputbuilder.InputAuthority{Ref: ref, MountRoot: mount, Exposure: exposure.Clone()}
+		intrinsicMetadata, err := loadInputIntrinsicMetadata(ctx, teamID, metadata, ref)
+		if err != nil {
+			return nil, fmt.Errorf("output builder authority: input %q: %w", name, err)
+		}
+		authority.Inputs[name] = outputbuilder.InputAuthority{Ref: ref, MountRoot: mount, Exposure: exposure.Clone(), IntrinsicMetadata: intrinsicMetadata}
 		inputPaths = append(inputPaths, mount)
 	}
 	for name := range inputs.refs {
@@ -128,6 +140,16 @@ func outputBuilderAuthority(workRoot string, inputs snapshotInputBindings, input
 	if err != nil {
 		return nil, fmt.Errorf("output builder authority: encode: %w", err)
 	}
+	// root_commits is the only unbounded field in sealed intrinsic metadata
+	// (an enormous repository can carry unboundedly many roots), so an
+	// oversized document is attributed to whichever input's forwarded
+	// metadata is largest. This must fail here, at build time - LoadAuthority
+	// enforces the same cap again on mount, but by then the failure can only
+	// surface as an opaque node-side error naming no input at all.
+	if len(raw) > outputbuilder.MaxAuthorityFileBytes {
+		return nil, fmt.Errorf("output builder authority: encoded document is %d bytes, exceeding the %d byte mount cap; input %q's intrinsic metadata is the largest contributor",
+			len(raw), outputbuilder.MaxAuthorityFileBytes, largestIntrinsicMetadataInput(authority.Inputs))
+	}
 	sort.Strings(inputPaths)
 	sort.Strings(outputPaths)
 	return &runtime.ManagedOutputBuilder{
@@ -138,6 +160,37 @@ func outputBuilderAuthority(workRoot string, inputs snapshotInputBindings, input
 
 func outputBuilderDirectChild(workRoot, name, path string) bool {
 	return name != "" && name != "." && name != ".." && filepath.Base(name) == name && filepath.Dir(path) == workRoot
+}
+
+// loadInputIntrinsicMetadata reloads the exact sealed manifest ATC already
+// holds for ref and returns its intrinsic metadata verbatim. The manifest is
+// reverified against ref's id, type, and digest before its metadata is
+// trusted - the same recheck materializeSealedSnapshotArtifact and
+// authorizedRequirementArtifact already perform before trusting a fetched
+// manifest. A type with no intrinsic metadata (e.g. a non-repository input)
+// returns a nil result, which the caller forwards and the wire format omits.
+func loadInputIntrinsicMetadata(ctx context.Context, teamID int, metadata snapshot.MetadataStore, ref snapshot.SnapshotRef) (json.RawMessage, error) {
+	manifest, found, err := metadata.GetAuthorized(ctx, teamID, ref.ID)
+	if err != nil {
+		return nil, fmt.Errorf("load sealed snapshot metadata: %w", err)
+	}
+	if !found || manifest.Validate() != nil || manifest.ID != ref.ID || manifest.Type != ref.Type || manifest.Digest != ref.Digest {
+		return nil, fmt.Errorf("sealed snapshot metadata does not match the committed immutable reference")
+	}
+	return manifest.IntrinsicMetadata, nil
+}
+
+// largestIntrinsicMetadataInput names the input most likely responsible for
+// an oversized authority document, for the size-guard error above.
+func largestIntrinsicMetadataInput(inputs map[string]outputbuilder.InputAuthority) string {
+	var name string
+	var largest int
+	for _, candidate := range sortedSnapshotKeys(inputs) {
+		if size := len(inputs[candidate].IntrinsicMetadata); size > largest {
+			name, largest = candidate, size
+		}
+	}
+	return name
 }
 
 func reserveOutputBuilder(sidecars []atc.SidecarConfig, env []string) error {

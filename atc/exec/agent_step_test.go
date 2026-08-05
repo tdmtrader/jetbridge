@@ -1083,7 +1083,7 @@ var _ = Describe("AgentStep", func() {
 					Snapshot: snapshot.SnapshotRef{ID: 92, Type: snapshot.TypeRef("repository-change/v1"), Digest: outputDigest},
 				},
 			}}
-			snapshotMetadata, snapshotContent := snapshotStoresForSealedOutputs(outputSealer.result)
+			snapshotMetadata, snapshotContent := snapshotStoresForSealedOutputs(outputSealer.result, inputRef)
 			agentStepOptions = append(agentStepOptions, exec.WithAgentOutputSealer(outputSealer))
 			agentStepOptions = append(agentStepOptions, exec.WithAgentSnapshotStores(snapshotMetadata, snapshotContent))
 		})

@@ -299,6 +299,61 @@ func TestFinalValidatorIndependentlyRejectsPostBuilderMutation(t *testing.T) {
 	}
 }
 
+// This catches a regression where describe_output tells the node its
+// declared inputs but drops the sealed intrinsic metadata a type like
+// repository-change/v1 must carry as repository_id - forcing the private
+// server-side hash to be re-implemented in the node's own prompt.
+func TestDescribeOutputReturnsEachInputsIntrinsicMetadata(t *testing.T) {
+	authority := validAuthority(t)
+	base := authority.Inputs["base"]
+	base.IntrinsicMetadata = json.RawMessage(`{"repository_id":"sha256:deadbeef"}`)
+	authority.Inputs["base"] = base
+
+	registry, err := contracts.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	builder, err := New(authority, registry, snapshot.Canonicalizer{TempDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	description, err := builder.DescribeOutput(context.Background(), "review")
+	if err != nil {
+		t.Fatalf("DescribeOutput() error = %v", err)
+	}
+	if len(description.Inputs) != 1 || description.Inputs[0].Name != "base" {
+		t.Fatalf("DescribeOutput().Inputs = %+v, want exactly the declared base input", description.Inputs)
+	}
+	if string(description.Inputs[0].IntrinsicMetadata) != string(base.IntrinsicMetadata) {
+		t.Fatalf("DescribeOutput().Inputs[0].IntrinsicMetadata = %s, want %s verbatim", description.Inputs[0].IntrinsicMetadata, base.IntrinsicMetadata)
+	}
+}
+
+// This catches a regression where an input type with no intrinsic metadata
+// (or an authority built before this field existed) fails DescribeOutput
+// instead of omitting the field cleanly.
+func TestDescribeOutputOmitsIntrinsicMetadataWhenAbsent(t *testing.T) {
+	authority := validAuthority(t)
+	registry, err := contracts.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	builder, err := New(authority, registry, snapshot.Canonicalizer{TempDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	description, err := builder.DescribeOutput(context.Background(), "review")
+	if err != nil {
+		t.Fatalf("DescribeOutput() error = %v", err)
+	}
+	if len(description.Inputs) != 1 {
+		t.Fatalf("DescribeOutput().Inputs = %+v, want exactly one input", description.Inputs)
+	}
+	if description.Inputs[0].IntrinsicMetadata != nil {
+		t.Fatalf("DescribeOutput().Inputs[0].IntrinsicMetadata = %s, want it omitted cleanly", description.Inputs[0].IntrinsicMetadata)
+	}
+}
+
 func validAuthority(t *testing.T) NodeAuthority {
 	t.Helper()
 	work := t.TempDir()

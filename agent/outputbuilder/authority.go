@@ -16,7 +16,11 @@ import (
 	"github.com/concourse/concourse/agent/snapshot"
 )
 
-const maxAuthorityFileBytes = 1 << 20
+// MaxAuthorityFileBytes bounds the platform-mounted authority document.
+// LoadAuthority enforces it on read; ATC's builder (atc/exec) must enforce
+// the same cap at authority-construction time so an oversized document fails
+// the build instead of being silently truncated or discovered at mount time.
+const MaxAuthorityFileBytes = 1 << 20
 
 type NodeAuthority struct {
 	WorkRoot string                     `json:"work_root"`
@@ -29,6 +33,12 @@ type InputAuthority struct {
 	MountRoot string                 `json:"mount_root"`
 	Candidate bool                   `json:"candidate,omitempty"`
 	Exposure  snapshot.InputExposure `json:"exposure"`
+	// IntrinsicMetadata is the sealed snapshot's server-derived metadata,
+	// forwarded verbatim. It is propagated rather than re-derived here on
+	// purpose: the mount is writable, so deriving it from the tree would hand
+	// back a value computed from a mutated repository - wrong in exactly the case
+	// that matters, and it would hide the mistake the seal gate exists to catch.
+	IntrinsicMetadata json.RawMessage `json:"intrinsic_metadata,omitempty"`
 }
 
 type OutputAuthority struct {
@@ -46,7 +56,7 @@ func LoadAuthority(name string) (NodeAuthority, error) {
 	if err != nil {
 		return NodeAuthority{}, fmt.Errorf("output builder authority: inspect file: %w", err)
 	}
-	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() > maxAuthorityFileBytes {
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() > MaxAuthorityFileBytes {
 		return NodeAuthority{}, fmt.Errorf("output builder authority: file must be a bounded regular file")
 	}
 	if info.Mode().Perm()&0o222 != 0 {
@@ -56,12 +66,12 @@ func LoadAuthority(name string) (NodeAuthority, error) {
 	if err != nil {
 		return NodeAuthority{}, err
 	}
-	contents, readErr := io.ReadAll(io.LimitReader(file, maxAuthorityFileBytes+1))
+	contents, readErr := io.ReadAll(io.LimitReader(file, MaxAuthorityFileBytes+1))
 	closeErr := file.Close()
 	if err := errors.Join(readErr, closeErr); err != nil {
 		return NodeAuthority{}, err
 	}
-	if len(contents) > maxAuthorityFileBytes {
+	if len(contents) > MaxAuthorityFileBytes {
 		return NodeAuthority{}, fmt.Errorf("output builder authority: file is too large")
 	}
 	after, err := os.Lstat(name)

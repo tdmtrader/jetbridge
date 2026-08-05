@@ -23,8 +23,13 @@ func (s *recordingOutputSealer) Seal(ctx context.Context, request snapshot.SealR
 	return s.result, s.err
 }
 
+// snapshotStoresForSealedOutputs fabricates authorized manifests for each
+// sealed output, plus - via the variadic knownInputs - for any already-bound
+// typed input ref a test also needs GetAuthorized to recognize (e.g. the
+// managed output builder's forwarded intrinsic-metadata lookup).
 func snapshotStoresForSealedOutputs(
 	outputs map[string]snapshot.SealedOutput,
+	knownInputs ...snapshot.SnapshotRef,
 ) (*snapshotfakes.FakeMetadataStore, *snapshotfakes.FakeContentStore) {
 	metadata := new(snapshotfakes.FakeMetadataStore)
 	metadata.GetAuthorizedStub = func(_ context.Context, _ int, id snapshot.SnapshotID) (snapshot.Snapshot, bool, error) {
@@ -34,6 +39,16 @@ func snapshotStoresForSealedOutputs(
 			}
 			return snapshot.Snapshot{
 				ID: output.Snapshot.ID, Type: output.Snapshot.Type, Digest: output.Snapshot.Digest,
+				Representation: "application/x-tar", ContentState: snapshot.ContentStateAvailable,
+				CreatedAt: time.Now().UTC(),
+			}, true, nil
+		}
+		for _, ref := range knownInputs {
+			if ref.ID != id {
+				continue
+			}
+			return snapshot.Snapshot{
+				ID: ref.ID, Type: ref.Type, Digest: ref.Digest,
 				Representation: "application/x-tar", ContentState: snapshot.ContentStateAvailable,
 				CreatedAt: time.Now().UTC(),
 			}, true, nil

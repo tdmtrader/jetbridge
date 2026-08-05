@@ -453,7 +453,7 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 		agentBrokerProfiles = brokerRequest.Profiles
 	}
 	if step.plan.RuntimeImage != "" {
-		managedOutputBuilder, err = outputBuilderAuthority(workdir, snapshotInputs, step.plan.SnapshotInputs, step.plan.SnapshotOutputs)
+		managedOutputBuilder, err = outputBuilderAuthority(ctx, step.metadata.TeamID, step.snapshotMetadataStore, workdir, snapshotInputs, step.plan.SnapshotInputs, step.plan.SnapshotOutputs)
 		if err != nil {
 			return false, fmt.Errorf("agent %q: %w", step.plan.Name, err)
 		}
