@@ -10,8 +10,6 @@ import (
 	"time"
 )
 
-//go:generate go run github.com/maxbrunsfeld/counterfeiter/v6 -generate
-
 const (
 	KindAnthropicOAuth  = "anthropic_oauth"
 	KindAnthropicAPIKey = "anthropic_api_key"
@@ -88,7 +86,6 @@ func ResolveUsableAnthropicCredential(
 	return nil, false, nil
 }
 
-//counterfeiter:generate . Store
 type Store interface {
 	Put(userID int, userName, kind, token string, expiresAt time.Time) error
 	Status(userID int) ([]Credential, error)                    // no tokens

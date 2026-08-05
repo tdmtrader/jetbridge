@@ -710,7 +710,6 @@ func (volume *createdVolume) Destroying() (DestroyingVolume, error) {
 	}, nil
 }
 
-//counterfeiter:generate . DestroyingVolume
 type DestroyingVolume interface {
 	Handle() string
 	Destroy() (bool, error)

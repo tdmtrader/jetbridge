@@ -248,8 +248,6 @@ type TransitionMeta struct {
 // Transition enforces the queue state machine, records timestamps, and returns
 // ErrInvalidTransition otherwise. It uses optimistic concurrency: the UPDATE
 // is guarded by the expected `from` state.
-//
-//counterfeiter:generate . Store
 type Store interface {
 	Create(t *Ticket) (int, error)
 	Get(id int) (*Ticket, bool, error)

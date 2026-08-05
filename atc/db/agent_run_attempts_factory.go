@@ -12,8 +12,6 @@ import (
 
 // AgentRunAttemptsFactory is PostgreSQL's execution-attempt and mutation-fence
 // authority.
-//
-//counterfeiter:generate . AgentRunAttemptsFactory
 type AgentRunAttemptsFactory interface {
 	checkpoint.AttemptStore
 }

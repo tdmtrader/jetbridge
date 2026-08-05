@@ -1,6 +1,5 @@
 package db
 
-//counterfeiter:generate . WorkerTaskCacheFactory
 type WorkerTaskCacheFactory interface {
 	FindOrCreate(WorkerTaskCache) (*UsedWorkerTaskCache, error)
 	Find(WorkerTaskCache) (*UsedWorkerTaskCache, bool, error)

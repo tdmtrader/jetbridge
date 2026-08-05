@@ -44,8 +44,6 @@ var ErrInvalidDispatcherMode = errors.New("dispatcher_mode must be one of off|pa
 // Migration 1773106137 seeds the singleton row, so found=true on every
 // migrated cluster; a missing row means someone deleted it, and every reader
 // fails safe to off.
-//
-//counterfeiter:generate . AgentSettingsFactory
 type AgentSettingsFactory interface {
 	// GetDispatcherMode is the dispatcher loop's hot read.
 	GetDispatcherMode() (mode string, found bool, err error)

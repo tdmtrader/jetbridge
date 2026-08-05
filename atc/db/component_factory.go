@@ -7,7 +7,6 @@ import (
 	"github.com/concourse/concourse/atc"
 )
 
-//counterfeiter:generate . ComponentFactory
 type ComponentFactory interface {
 	CreateOrUpdate(atc.Component) (Component, error)
 	Find(string) (Component, bool, error)

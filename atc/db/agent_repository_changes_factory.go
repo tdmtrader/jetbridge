@@ -15,7 +15,6 @@ import (
 
 //go:generate go run github.com/maxbrunsfeld/counterfeiter/v6 -generate
 
-//counterfeiter:generate . AgentRepositoryChangesFactory
 type AgentRepositoryChangesFactory interface {
 	projection.RepositoryChangeStore
 	GetRepositoryChangeProjection(context.Context, snapshot.SnapshotID) (projection.RepositoryChange, bool, error)

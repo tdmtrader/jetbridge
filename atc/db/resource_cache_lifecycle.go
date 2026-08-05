@@ -10,7 +10,6 @@ import (
 	sq "github.com/Masterminds/squirrel"
 )
 
-//counterfeiter:generate . ResourceCacheLifecycle
 type ResourceCacheLifecycle interface {
 	CleanUsesForFinishedBuilds(lager.Logger) error
 	CleanBuildImageResourceCaches(lager.Logger) error

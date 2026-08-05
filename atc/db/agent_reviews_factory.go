@@ -15,7 +15,6 @@ import (
 
 //go:generate go run github.com/maxbrunsfeld/counterfeiter/v6 -generate
 
-//counterfeiter:generate . AgentReviewsFactory
 type AgentReviewsFactory interface {
 	reviews.Store
 	reviews.ProjectionReader

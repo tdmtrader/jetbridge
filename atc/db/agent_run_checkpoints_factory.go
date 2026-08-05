@@ -29,8 +29,6 @@ const (
 // AgentRunCheckpointsFactory is PostgreSQL's checkpoint authority. Hangar I/O
 // is intentionally outside its transactions, bounded by the opaque upload and
 // deletion tickets this factory issues.
-//
-//counterfeiter:generate . AgentRunCheckpointsFactory
 type AgentRunCheckpointsFactory interface {
 	checkpoint.Store
 	checkpoint.EffectJournal

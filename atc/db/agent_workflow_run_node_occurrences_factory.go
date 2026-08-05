@@ -37,7 +37,6 @@ type AgentWorkflowRunNodeOccurrence struct {
 	FrozenAt             time.Time
 }
 
-//counterfeiter:generate . AgentWorkflowRunNodeOccurrencesFactory
 type AgentWorkflowRunNodeOccurrencesFactory interface {
 	// Freeze writes the projection for one terminal run. It is idempotent so a
 	// retried finalization cannot double-write, and it never overwrites an

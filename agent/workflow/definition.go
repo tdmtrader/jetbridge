@@ -243,7 +243,6 @@ func (e UnsupportedSchemaVersionError) Error() string {
 	)
 }
 
-//counterfeiter:generate . Store
 type Store interface {
 	// Import wraps rawYAML into the single-file manifest
 	// {"workflow.yml": rawYAML} and delegates to ImportManifest — the

@@ -8,7 +8,6 @@ import (
 	"github.com/concourse/concourse/agent/credentials"
 )
 
-//counterfeiter:generate . AgentUserCredentialsFactory
 type AgentUserCredentialsFactory interface {
 	credentials.Backend
 }

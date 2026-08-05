@@ -13,7 +13,6 @@ import (
 	"github.com/concourse/concourse/agent/workitem"
 )
 
-//counterfeiter:generate . AgentTicketsFactory
 type AgentTicketsFactory interface {
 	tickets.Store
 }

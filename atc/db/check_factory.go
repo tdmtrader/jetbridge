@@ -14,7 +14,6 @@ import (
 	"github.com/concourse/concourse/atc/util"
 )
 
-//counterfeiter:generate . Checkable
 type Checkable interface {
 	PipelineRef
 

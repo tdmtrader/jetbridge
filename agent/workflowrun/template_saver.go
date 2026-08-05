@@ -13,7 +13,6 @@ import (
 
 const templateVersionReadAttempts = 3
 
-//counterfeiter:generate -o workflowrunfakes/fake_template_team_finder.go . TemplateTeamFinder
 type TemplateTeamFinder interface {
 	FindTeam(string) (db.Team, bool, error)
 }

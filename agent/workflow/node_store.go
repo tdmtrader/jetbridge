@@ -134,7 +134,6 @@ func NodeDefinitionsStructurallyCompatible(previous, candidate CompiledNodeDefin
 	return true
 }
 
-//counterfeiter:generate . NodeStore
 type NodeStore interface {
 	ImportManifest(name string, source Manifest, createdBy string) (*NodeDefinition, error)
 	Get(name string, version int) (*NodeDefinition, bool, error)

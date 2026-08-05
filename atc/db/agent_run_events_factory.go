@@ -13,8 +13,6 @@ import (
 // AgentRunEventsFactory owns the bounded, append-only operational history for
 // one recovery head. It is intentionally separate from the checkpoint store so
 // event ingestion cannot make a checkpoint transaction depend on telemetry.
-//
-//counterfeiter:generate . AgentRunEventsFactory
 type AgentRunEventsFactory interface {
 	checkpoint.EventRecorder
 	List(context.Context, checkpoint.Identity) ([]checkpoint.RunEvent, error)

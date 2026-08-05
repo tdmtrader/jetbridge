@@ -96,8 +96,6 @@ type Checker interface {
 // Ledger is the persistence seam implemented by
 // atc/db.NewAgentCostLedgerFactory. Rollups are queries, never
 // materialized mutations; rows are append-only.
-//
-//counterfeiter:generate . Ledger
 type Ledger interface {
 	Insert(entry LedgerEntry) error
 	// SpentSince sums ALL sources (the global daily cap includes platform

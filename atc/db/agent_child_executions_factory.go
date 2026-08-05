@@ -15,7 +15,6 @@ import (
 	"github.com/google/uuid"
 )
 
-//counterfeiter:generate . AgentChildExecutionsFactory
 type AgentChildExecutionsFactory interface {
 	Create(context.Context, string, broker.ExecutionIdentity) (AgentChildExecution, error)
 	Advance(context.Context, AdvanceAgentChildExecution) (AgentChildExecution, error)

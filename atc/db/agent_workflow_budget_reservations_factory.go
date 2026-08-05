@@ -11,7 +11,6 @@ import (
 	"github.com/concourse/concourse/agent/snapshot"
 )
 
-//counterfeiter:generate . AgentWorkflowBudgetReservationsFactory
 type AgentWorkflowBudgetReservationsFactory interface {
 	ReserveWorkflowBudget(context.Context, snapshot.WorkflowRunID, float64) (bool, error)
 }

@@ -297,7 +297,6 @@ func (container *destroyingContainer) Destroy() (bool, error) {
 	return true, nil
 }
 
-//counterfeiter:generate . FailedContainer
 type FailedContainer interface {
 	Container
 

@@ -14,7 +14,6 @@ import (
 	"github.com/concourse/concourse/agent/snapshot"
 )
 
-//counterfeiter:generate . AgentWorkflowOutcomesFactory
 type AgentWorkflowOutcomesFactory interface {
 	workflowoutcomes.Store
 	workflowoutcomes.Authorizer

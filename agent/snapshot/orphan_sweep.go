@@ -87,8 +87,6 @@ func (object DurableObject) Validate() error {
 // DurableInventory is the storage-side authority the sweep needs. Metadata
 // cannot answer "what does storage hold" for an object it never recorded, which
 // is precisely the class of object this exists to find.
-//
-//counterfeiter:generate . DurableInventory
 type DurableInventory interface {
 	ListDurableObjects(context.Context, func(DurableObject) error) error
 	// DeleteDurableObject must honor the supplied generation.

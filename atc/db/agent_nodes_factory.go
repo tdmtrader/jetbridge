@@ -12,7 +12,6 @@ import (
 	"github.com/concourse/concourse/agent/workflow"
 )
 
-//counterfeiter:generate . AgentNodesFactory
 type AgentNodesFactory interface{ workflow.NodeStore }
 
 func NewAgentNodesFactory(conn DbConn) AgentNodesFactory { return &agentNodesFactory{conn: conn} }

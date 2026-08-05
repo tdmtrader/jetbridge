@@ -81,7 +81,6 @@ const (
 	AgentNodeBuildStepErrored   = "errored"
 )
 
-//counterfeiter:generate . AgentWorkflowRunEvidenceFactory
 type AgentWorkflowRunEvidenceFactory interface {
 	EvidenceForRun(context.Context, AgentWorkflowRun) (AgentWorkflowRunEvidence, error)
 }

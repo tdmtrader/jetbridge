@@ -18,8 +18,6 @@ import (
 // §1.8/§2.4). It is exactly agent/api/metrics.Store
 // (UpsertReturningInserted, InsertIfAbsent, GetByBuild, ListByWorkflowRun) —
 // embedded now that both packages live on the same branch.
-//
-//counterfeiter:generate . AgentRunMetricsFactory
 type AgentRunMetricsFactory interface {
 	metrics.Store
 	metrics.AttemptStore
