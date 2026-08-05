@@ -120,8 +120,11 @@ type Store interface {
 	// least once".
 	UpsertReturningInserted(rm *schema.RunMetrics) (inserted bool, prev *schema.RunMetrics, err error)
 	// InsertIfAbsent writes the row only when no (BuildID, PlanID) row exists
-	// yet (ON CONFLICT (build_id, plan_id) DO NOTHING) and reports whether it
-	// inserted. This is the DEGRADED-ingestion write (finding F24, 2026-07-09):
+	// yet, and reports whether it inserted. On conflict it leaves every data
+	// column untouched but still advances the durable ingestion sequence, and
+	// both paths write that sequence back to rm.IngestionSeq — the agent step
+	// reads it to bound interruption restarts, so an implementation that
+	// leaves it zero makes those restarts unbounded. This is the DEGRADED-ingestion write (finding F24, 2026-07-09):
 	// when a re-ingestion read no flight data — a web-restart resume whose
 	// in-memory volume locator is gone, or a reaped-pod rerun — its zero-cost
 	// status=error row must never clobber a real row written by an earlier,

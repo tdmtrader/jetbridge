@@ -342,7 +342,6 @@ back only `DAC_OVERRIDE`, with privilege escalation disabled.
 | `artifactDaemon.mirror.replicas` | `2` | Total desired copies, including the local copy; `all` mirrors to every peer. |
 | `artifactDaemon.mirror.concurrency` | `4` | Maximum concurrent mirror jobs per daemon. |
 | `artifactDaemon.mirror.timeout` | `5m` | Per-peer mirror timeout. |
-| `artifactDaemon.preemption.enabled` | `false` | Watch GCP spot-preemption metadata and evacuate artifacts before shutdown. |
 | `artifactDaemon.tls.enabled` | `false` | Enable HTTPS and mutual TLS between web and daemon peers. |
 | `artifactDaemon.networkPolicy.enabled` | `false` | Restrict daemon ingress to Concourse components. |
 
@@ -561,9 +560,7 @@ operators configure destination-specific NetworkPolicy peers in
 `artifactDaemon.networkPolicy.kubernetesAPIEgressTo`; port-only rules,
 all-destination CIDRs (`0.0.0.0/0` and `::/0`), and empty selectors are
 rejected. For the API, configure the destination seen by your CNI—service
-traffic can be matched before or after DNAT. When the GCP preemption watcher is
-enabled, the policy additionally allows only
-`169.254.169.254/32` on TCP port 80 for the metadata probe. Runtime ingress
+traffic can be matched before or after DNAT. Runtime ingress
 selects the actual `concourse.ci/worker` label, covering pipeline, one-off, and
 hermetic pods in the release namespace.
 

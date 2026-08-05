@@ -169,8 +169,10 @@ var _ = Describe("AgentStep", func() {
 		cancel()
 	})
 
-	JustBeforeEach(func() {
-		step = exec.NewAgentStep(
+	// newStep rebuilds the step from the current agentStepOptions, for specs
+	// that need to append an option after the JustBeforeEach has already run.
+	newStep := func() exec.Step {
+		return exec.NewAgentStep(
 			planID,
 			agentPlan,
 			atc.ContainerLimits{},
@@ -184,6 +186,10 @@ var _ = Describe("AgentStep", func() {
 			agentImage,
 			agentStepOptions...,
 		)
+	}
+
+	JustBeforeEach(func() {
+		step = newStep()
 	})
 
 	It("errors clearly when no agent image is configured", func() {
@@ -1871,7 +1877,9 @@ var _ = Describe("AgentStep", func() {
 		// agent whose pod is gone, every cycle would wipe the workspace and
 		// start a fresh agent at full token spend until a human aborted the
 		// build. The durable ingestion sequence is what bounds it.
-		DescribeTable("when process.Wait reports an interruption", func(reason runtime.InterruptionReason) {
+		DescribeTable("when process.Wait reports an interruption and retry is wired", func(reason runtime.InterruptionReason) {
+			agentStepOptions = append(agentStepOptions, exec.WithAgentInterruptionRetry())
+			step = newStep()
 			chosenContainer.ProcessDefs[0].Stub.Call = func(context.Context, *runtimetest.Process) (runtime.ProcessResult, error) {
 				return runtime.ProcessResult{}, runtime.NewInterruptionError(reason, errors.New("pod lifecycle ended"))
 			}
@@ -1892,7 +1900,29 @@ var _ = Describe("AgentStep", func() {
 			Entry("preemption", runtime.InterruptionPreempted),
 		)
 
+		// exec.RetryError only wraps a step when the default-off
+		// EnableBuildRerunWhenWorkerDisappears flag is set. Returning an
+		// InterruptionError without that wrapper does not produce a retry: it
+		// errors the build with a raw runtime error, which is strictly worse
+		// than the diagnostic this replaced. Fail closed unless retry is
+		// actually wired.
+		It("fails closed on an interruption when retry is not wired", func() {
+			chosenContainer.ProcessDefs[0].Stub.Call = func(context.Context, *runtimetest.Process) (runtime.ProcessResult, error) {
+				return runtime.ProcessResult{}, runtime.NewInterruptionError(runtime.InterruptionPreempted, errors.New("pod lifecycle ended"))
+			}
+
+			ok, err := step.Run(ctx, state)
+			Expect(ok).To(BeFalse())
+			Expect(err).ToNot(HaveOccurred(), "an unwrapped error would error the build instead of retrying")
+			Expect(fakeDelegate.FinishedCallCount()).To(BeZero())
+			Expect(fakeDelegate.ErroredCallCount()).To(Equal(1))
+			_, message := fakeDelegate.ErroredArgsForCall(0)
+			Expect(message).To(ContainSubstring("preempted"))
+		})
+
 		It("stops retrying an interruption once the step has burned its restart cap", func() {
+			agentStepOptions = append(agentStepOptions, exec.WithAgentInterruptionRetry())
+			step = newStep()
 			chosenContainer.ProcessDefs[0].Stub.Call = func(context.Context, *runtimetest.Process) (runtime.ProcessResult, error) {
 				return runtime.ProcessResult{}, runtime.NewInterruptionError(runtime.InterruptionPreempted, errors.New("pod lifecycle ended"))
 			}

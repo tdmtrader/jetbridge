@@ -149,11 +149,14 @@ func (f *agentRunMetricsFactory) UpsertReturningInserted(rm *agentschema.RunMetr
 }
 
 // InsertIfAbsent is the degraded-ingestion write (finding F24): identical
-// column/value construction to UpsertReturningInserted, but the conflict
-// clause is DO NOTHING, so an existing (build_id, plan_id) row — a real row
-// from an earlier, successful ingestion — is never overwritten. With
-// DO NOTHING, RETURNING yields no row when the conflict fires, which scans
-// as sql.ErrNoRows ⇒ inserted=false, nothing written.
+// column/value construction to UpsertReturningInserted, but on conflict it
+// leaves every data column alone, so a real row from an earlier successful
+// ingestion is never overwritten by a partial one. It is NOT DO NOTHING: the
+// conflict path still advances ingestion_seq, because a degraded ingestion is
+// an execution — an interrupted agent writes no flight output and lands
+// exactly here, and the interruption cap has nothing to count if the
+// collision silently absorbs it. Reports inserted=false on that path and
+// writes the resulting sequence back to rm.IngestionSeq.
 func (f *agentRunMetricsFactory) InsertIfAbsent(rm *agentschema.RunMetrics) (bool, error) {
 	var eventCounts, results any
 	if rm.EventCounts != nil {

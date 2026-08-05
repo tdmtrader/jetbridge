@@ -147,14 +147,5 @@ spec:
         - protocol: TCP
           port: 443
     {{- end }}
-    {{- if .Values.artifactDaemon.preemption.enabled }}
-    # GCP metadata endpoint used only by the opt-in spot-preemption watcher.
-    - to:
-        - ipBlock:
-            cidr: 169.254.169.254/32
-      ports:
-        - protocol: TCP
-          port: 80
-    {{- end }}
   {{- end }}
 {{- end }}

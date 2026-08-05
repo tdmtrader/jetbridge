@@ -34,17 +34,6 @@ type FakeAgentRunTranscriptFactory struct {
 	upsertReturnsOnCall map[int]struct {
 		result1 error
 	}
-	UpsertExecutionAttemptStub        func(db.AgentRunAttemptTranscript) error
-	upsertExecutionAttemptMutex       sync.RWMutex
-	upsertExecutionAttemptArgsForCall []struct {
-		arg1 db.AgentRunAttemptTranscript
-	}
-	upsertExecutionAttemptReturns struct {
-		result1 error
-	}
-	upsertExecutionAttemptReturnsOnCall map[int]struct {
-		result1 error
-	}
 	invocations      map[string][][]interface{}
 	invocationsMutex sync.RWMutex
 }
@@ -171,67 +160,6 @@ func (fake *FakeAgentRunTranscriptFactory) UpsertReturnsOnCall(i int, result1 er
 		})
 	}
 	fake.upsertReturnsOnCall[i] = struct {
-		result1 error
-	}{result1}
-}
-
-func (fake *FakeAgentRunTranscriptFactory) UpsertExecutionAttempt(arg1 db.AgentRunAttemptTranscript) error {
-	fake.upsertExecutionAttemptMutex.Lock()
-	ret, specificReturn := fake.upsertExecutionAttemptReturnsOnCall[len(fake.upsertExecutionAttemptArgsForCall)]
-	fake.upsertExecutionAttemptArgsForCall = append(fake.upsertExecutionAttemptArgsForCall, struct {
-		arg1 db.AgentRunAttemptTranscript
-	}{arg1})
-	stub := fake.UpsertExecutionAttemptStub
-	fakeReturns := fake.upsertExecutionAttemptReturns
-	fake.recordInvocation("UpsertExecutionAttempt", []interface{}{arg1})
-	fake.upsertExecutionAttemptMutex.Unlock()
-	if stub != nil {
-		return stub(arg1)
-	}
-	if specificReturn {
-		return ret.result1
-	}
-	return fakeReturns.result1
-}
-
-func (fake *FakeAgentRunTranscriptFactory) UpsertExecutionAttemptCallCount() int {
-	fake.upsertExecutionAttemptMutex.RLock()
-	defer fake.upsertExecutionAttemptMutex.RUnlock()
-	return len(fake.upsertExecutionAttemptArgsForCall)
-}
-
-func (fake *FakeAgentRunTranscriptFactory) UpsertExecutionAttemptCalls(stub func(db.AgentRunAttemptTranscript) error) {
-	fake.upsertExecutionAttemptMutex.Lock()
-	defer fake.upsertExecutionAttemptMutex.Unlock()
-	fake.UpsertExecutionAttemptStub = stub
-}
-
-func (fake *FakeAgentRunTranscriptFactory) UpsertExecutionAttemptArgsForCall(i int) db.AgentRunAttemptTranscript {
-	fake.upsertExecutionAttemptMutex.RLock()
-	defer fake.upsertExecutionAttemptMutex.RUnlock()
-	argsForCall := fake.upsertExecutionAttemptArgsForCall[i]
-	return argsForCall.arg1
-}
-
-func (fake *FakeAgentRunTranscriptFactory) UpsertExecutionAttemptReturns(result1 error) {
-	fake.upsertExecutionAttemptMutex.Lock()
-	defer fake.upsertExecutionAttemptMutex.Unlock()
-	fake.UpsertExecutionAttemptStub = nil
-	fake.upsertExecutionAttemptReturns = struct {
-		result1 error
-	}{result1}
-}
-
-func (fake *FakeAgentRunTranscriptFactory) UpsertExecutionAttemptReturnsOnCall(i int, result1 error) {
-	fake.upsertExecutionAttemptMutex.Lock()
-	defer fake.upsertExecutionAttemptMutex.Unlock()
-	fake.UpsertExecutionAttemptStub = nil
-	if fake.upsertExecutionAttemptReturnsOnCall == nil {
-		fake.upsertExecutionAttemptReturnsOnCall = make(map[int]struct {
-			result1 error
-		})
-	}
-	fake.upsertExecutionAttemptReturnsOnCall[i] = struct {
 		result1 error
 	}{result1}
 }

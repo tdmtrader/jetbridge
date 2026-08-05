@@ -113,10 +113,6 @@ spec:
             - --hangar-gcs-endpoint={{ .Values.artifactDaemon.hangar.endpoint }}
             {{- end }}
             {{- end }}
-            {{- if .Values.artifactDaemon.preemption.enabled }}
-            - --preemption-watch
-            - --preemption-budget={{ .Values.artifactDaemon.preemption.budget | default "25s" }}
-            {{- end }}
           env:
             - name: NODE_NAME
               valueFrom:

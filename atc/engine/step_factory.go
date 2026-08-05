@@ -337,6 +337,11 @@ func (factory *coreStepFactory) AgentStep(
 	if factory.agentBrokerAuthority != nil {
 		agentOpts = append(agentOpts, exec.WithAgentBrokerAuthorityFactory(factory.agentBrokerAuthority))
 	}
+	// Only tell the step its interruptions are retriable when RetryError is
+	// actually going to wrap it; the same flag gates both.
+	if atc.EnableBuildRerunWhenWorkerDisappears {
+		agentOpts = append(agentOpts, exec.WithAgentInterruptionRetry())
+	}
 
 	agentStep := exec.NewAgentStep(
 		plan.ID,

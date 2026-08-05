@@ -202,7 +202,12 @@ func TestArtifactDaemonNetworkPolicyHasOneIdentityUnderEveryToggleCombination(t 
 	}
 }
 
-func TestArtifactDaemonEgressAllowsMetadataOnlyForEnabledPreemptionWatcher(t *testing.T) {
+// The GCP metadata endpoint was reachable only for the spot-preemption
+// watcher, which went with the checkpoint subsystem. Nothing in the daemon
+// dials it now, so the egress must stay closed under every values combination
+// -- an open hole to the metadata service is a credential-theft path, not
+// merely unused.
+func TestArtifactDaemonEgressNeverAllowsMetadata(t *testing.T) {
 	hasMetadataRule := func(policy networkPolicy) bool {
 		for _, rule := range policy.Spec.Egress {
 			if len(rule.To) != 1 || rule.To[0].IPBlock == nil ||
@@ -218,19 +223,11 @@ func TestArtifactDaemonEgressAllowsMetadataOnlyForEnabledPreemptionWatcher(t *te
 		return false
 	}
 
-	disabled := findNetworkPolicy(t, renderChart(t,
+	policy := findNetworkPolicy(t, renderChart(t,
 		"artifactDaemon.networkPolicy.enabled=true",
 	), "-artifact-daemon")
-	if hasMetadataRule(disabled) {
-		t.Fatal("artifact daemon metadata egress must remain closed while preemption watch is disabled")
-	}
-
-	enabled := findNetworkPolicy(t, renderChart(t,
-		"artifactDaemon.networkPolicy.enabled=true",
-		"artifactDaemon.preemption.enabled=true",
-	), "-artifact-daemon")
-	if !hasMetadataRule(enabled) {
-		t.Fatalf("preemption watcher cannot reach GCP metadata through artifact daemon egress policy: %+v", enabled.Spec.Egress)
+	if hasMetadataRule(policy) {
+		t.Fatalf("artifact daemon egress must not reach the GCP metadata endpoint: %+v", policy.Spec.Egress)
 	}
 }
 

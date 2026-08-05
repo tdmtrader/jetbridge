@@ -101,10 +101,6 @@ type AgentTranscriptStore interface {
 	Upsert(t db.AgentRunTranscript) error
 }
 
-type AgentAttemptTranscriptStore interface {
-	UpsertExecutionAttempt(db.AgentRunAttemptTranscript) error
-}
-
 // WithAgentStepTranscriptStore sets the store the agent step's own
 // server-side flight ingestion upserts the runner-captured tool-call
 // transcript (flight/transcript.ndjson) into (agent_run_transcripts). The
@@ -129,6 +125,17 @@ func WithAgentSnapshotStores(metadata snapshot.MetadataStore, content snapshot.C
 		s.snapshotMetadataStore = metadata
 		s.snapshotContentStore = content
 	}
+}
+
+// WithAgentInterruptionRetry makes a pod interruption retriable instead of
+// terminal. It is set by the step factory only when exec.RetryError actually
+// wraps the step -- that wrapper is gated on the default-off
+// EnableBuildRerunWhenWorkerDisappears flag, and without it a returned
+// InterruptionError is not converted to exec.Retriable: the engine finishes
+// the build as errored with a raw runtime error, which is strictly worse than
+// the diagnostic it replaced. The step must not assume the wrapper is there.
+func WithAgentInterruptionRetry() AgentStepOption {
+	return func(s *AgentStep) { s.interruptionRetry = true }
 }
 
 // WithAgentBrokerAuthorityFactory supplies the command-scoped authority
@@ -160,6 +167,7 @@ type AgentStep struct {
 	snapshotMetadataStore snapshot.MetadataStore
 	snapshotContentStore  snapshot.ContentStore
 	agentBrokerAuthority  AgentBrokerAuthorityFactory
+	interruptionRetry     bool
 
 	// transcriptStore is the transcript ingestion seam — optional,
 	// nil-guarded. Wired via WithAgentStepTranscriptStore.
@@ -678,16 +686,6 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 		var interruption runtime.InterruptionError
 		interrupted := runErr != nil && errors.As(runErr, &interruption)
 
-		// An attempt that is about to be replaced must not register its
-		// outputs. In a local artifact scope -- which is exactly what retry:
-		// and across: run their substeps in -- the FIRST registration of a
-		// name wins and every later one is silently dropped, because
-		// RegisterArtifact cannot return the ErrArtifactAlreadyRegistered it
-		// gets back. The repository would then keep pointing at the
-		// interrupted attempt's volume, whose pod the reaper deletes, and a
-		// downstream consumer would stream from a dead pod or read the partial
-		// content the interrupted attempt left behind instead of the
-		// successful attempt's output.
 		step.registerLegacyOutputs(logger, repository, chosenWorker, outputNames, volumeMounts)
 
 		ingestionSeq := step.ingestFlightRecorder(
@@ -697,17 +695,23 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 			volumeMounts,
 			time.Since(processStart),
 			costObserver.Observed(),
-			!interrupted,
 		)
 
 		if !interrupted {
 			break
 		}
-		if ingestionSeq > maxAgentInterruptionRestarts {
-			delegate.Errored(logger, fmt.Sprintf(
-				"agent execution interrupted (%s) after %d executions; refusing a further restart",
-				interruption.InterruptionReason(), ingestionSeq,
-			))
+		if !step.interruptionRetry || ingestionSeq > maxAgentInterruptionRestarts {
+			if !step.interruptionRetry {
+				delegate.Errored(logger, fmt.Sprintf(
+					"agent execution interrupted (%s); automatic restart is not enabled on this deployment",
+					interruption.InterruptionReason(),
+				))
+			} else {
+				delegate.Errored(logger, fmt.Sprintf(
+					"agent execution interrupted (%s) after %d executions; refusing a further restart",
+					interruption.InterruptionReason(), ingestionSeq,
+				))
+			}
 			return false, nil
 		}
 		// Retriable: RetryError wraps this, the engine leaves the build
@@ -778,7 +782,6 @@ func (step *AgentStep) ingestFlightRecorder(
 	volumeMounts []runtime.VolumeMount,
 	wallTime time.Duration,
 	observed observedAgentCost,
-	finalPresentation bool,
 ) int {
 	if step.metricsStore == nil {
 		return 0
