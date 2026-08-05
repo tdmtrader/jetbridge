@@ -67,11 +67,6 @@ func (w *Worker) SetArtifactLocator(locator *ArtifactLocator) {
 	w.storageBackend = NewDaemonSetBackend(w.config, locator, w.nodeIPResolver)
 }
 
-// SetStorageBackend sets the storage backend directly.
-func (w *Worker) SetStorageBackend(backend StorageBackend) {
-	w.storageBackend = backend
-}
-
 // SetDaemonClient configures the DaemonClient on the storage backend for
 // probing daemon pods for cached resources.
 func (w *Worker) SetDaemonClient(client *DaemonClient) {
