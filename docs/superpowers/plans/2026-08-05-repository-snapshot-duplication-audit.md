@@ -4,9 +4,28 @@
 **Scope:** what it costs to materialize and seal a repository, found while investigating why `forge-pr` fetches the same remote twice.
 **Status:** findings only. No remediation proposed here — the fix touches a sealed contract and deserves its own design.
 
-## Why this is not urgent, and why it still matters
+## Live evidence (theborg, 2026-08-05)
 
-**Nothing is accumulating today.** The PR monitor has never run: `--agent-publisher-pull-requests-enabled` fails boot validation (`atc/atccmd/agent_publisher.go:20`, `:83`, `:156`) and no production code constructs the monitor coordinator. There are zero pinned `pull-request/v1` observations on any cluster. Everything below is what happens *on enablement*.
+Verified against the running deployment rather than inferred:
+
+```
+snapshot 22  repository/v1  258,360,320 B  claims: binding->2026-08-11 | pin subject:... | pin system:resource-capture (NULL expiry)
+snapshot 21  repository/v1    2,567,680 B  claims: binding->2026-08-10 | pin subject:... | pin system:resource-capture (NULL expiry)
+snapshot 32  repository/v1  226,557,440 B  4,635 files, downstream consumers: 3
+snapshot 26  repository/v1  223,054,336 B
+snapshot 23  repository/v1  221,725,696 B
+```
+
+Two things this settles:
+
+1. **The permanent pin is live, not hypothetical.** `system:resource-capture` — the finalizer's actor — holds NULL-expiry pins on real snapshots today, reached through `fly agent snapshots capture-resource`, which needs no boot flag. An earlier draft of this audit said "nothing is accumulating today"; that was wrong. What remains pre-enablement is only the 4x PR-observation multiplier.
+2. **The whole-tree cost is real in production.** Four `repository/v1` snapshots at 221-258 MB each, from ordinary agentic workflows. Total store: 0.96 GB across 37 snapshots, 0.87 GB of it eight `repository/v1` blobs.
+
+Absolute volume is small today and nothing needs reclaiming — the three largest are user-pinned and carry downstream consumers. The concern is the growth rate once anything runs at scale.
+
+## Why the PR half is not urgent, and why it still matters
+
+**No PR observations exist.** The PR monitor has never run: `--agent-publisher-pull-requests-enabled` fails boot validation (`atc/atccmd/agent_publisher.go:20`, `:83`, `:156`) and no production code constructs the monitor coordinator. There are zero pinned `pull-request/v1` observations on any cluster. Everything below is what happens *on enablement*.
 
 It matters because the numbers decide whether the PR monitor is affordable at all, and because the root cause is not specific to pull requests — it is how `repository/v1` represents a repository.
 
