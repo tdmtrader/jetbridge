@@ -13,6 +13,11 @@ empty. Bind the daemon ServiceAccount to only the bucket permissions required
 to create, inspect, read, and generation-delete Hangar objects; do not mount a
 long-lived JSON key into the pod.
 
+The metadata repair pass additionally needs `storage.objects.update`. It patches
+metadata on an already-committed object and never rewrites content, so grant it
+only if you rely on repair to restore durable metadata lost to an interrupted
+upload; without it, repair fails closed with a permission error.
+
 ```yaml
 agentSnapshots:
   enabled: true

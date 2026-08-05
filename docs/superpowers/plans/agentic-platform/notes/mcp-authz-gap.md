@@ -1,6 +1,6 @@
 # MCP authorization gap (for gateway-mcp / wave-3)
 
-> **SUPERSEDED — historical implementation record (not executable).** The approved [Agentic Workflows as Functions over Snapshots design](../../../specs/2026-07-21-agentic-workflows-as-functions-design.md) and [Agentic Functions program plan](../../2026-07-21-agentic-functions-program.md) are authoritative. This gap was tracked against the ticket-centric gateway-mcp plan; check the current platform-mcp/gateway auth surfaces for whether it was resolved.
+> **SUPERSEDED — historical implementation record (not executable).** The approved [Agentic Workflows as Functions over Snapshots design](../../../specs/2026-07-21-agentic-workflows-as-functions-design.md) is authoritative. This gap was tracked against the ticket-centric gateway-mcp plan; check the current platform-mcp/gateway auth surfaces for whether it was resolved.
 
 Status: **known gap, tracked** — surfaced by the parity review 2026-07-12.
 

@@ -561,10 +561,9 @@ added where later evidence closed or refined a claim:
   an opaque but usable bearer token is misreported. The honest local result is
   “expiry unavailable” with `fly -t <target> status` as the authenticated check.
 
-The implementation design and task-by-task plan are recorded at
-`docs/superpowers/specs/2026-08-01-jetbridge-first-user-blocker-remediation-design.md`
-and
-`docs/superpowers/plans/2026-08-01-jetbridge-first-user-blocker-remediation.md`.
+All nine repairs landed. The implementation design and task-by-task plan were
+removed once the track completed; recover them from git history under
+`docs/superpowers/` if the reasoning is ever needed again.
 
 ## Effective Node-Authoring Patterns
 
@@ -699,10 +698,12 @@ defaults, not speculative follow-ups:
   `repository/v1` admission, managed output-builder health, Claude CLI budget
   flag compatibility, provider-visible `mcp.ready`, directory-valued output
   capture, and one sealed record output.
-- Execute the approved snapshot durability track in
-  `docs/superpowers/plans/2026-08-03-snapshot-upload-durability.md`; it preserves
-  caller cancellation and team-scoped immutable authority while repairing only
-  the exact metadata-less interrupted-upload state.
+- Snapshot upload durability landed (`109d5905a5`, `e91a02823d`). The metadata
+  restore ended up in the `agent_snapshot_repair` pass rather than in a
+  create-conflict branch of `GCSStore.Ensure`; it preserves caller cancellation
+  and team-scoped immutable authority while repairing only the exact
+  metadata-less interrupted-upload state. Operators must grant
+  `storage.objects.update` for the repair pass — see `docs/operations/hangar.md`.
 - Implement the agent-readable parameter track in
   `docs/superpowers/plans/2026-08-03-agent-readable-node-parameters.md`; its live
   acceptance probe requires an unpredictable bound value in the model's first

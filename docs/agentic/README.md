@@ -311,8 +311,10 @@ Review, diagnosis, and validation use anchored evidence. Measurement records
 contain stable metric definitions; evaluator identity/version remains
 provenance.
 
-The detailed contract and prototype boundary are specified in
-[Prototype-Informed Sealed Record Contracts](../superpowers/specs/2026-07-24-prototype-sealed-record-contracts-design.md).
+The authoritative shape of each record type is the registry in
+`agent/snapshot/contracts/record.go` and the descriptor schemas under
+`agent/snapshot/contracts/schemas/`, governed by the
+[record schema dialect](../superpowers/specs/2026-07-25-record-schema-dialect.md).
 
 ## Optional output presence
 

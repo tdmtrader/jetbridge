@@ -386,8 +386,6 @@ rule.
 
 Before ending a session:
 
-- Update the local SDD `progress.md` with commits, focused test evidence, review
-  round count, and accepted/human-review-required state.
 - Update the deferred-item catalog for every intentionally deferred finding.
 - Leave a precise dirty-worktree note if uncommitted work remains.
 - Do not claim completion without current verification evidence.

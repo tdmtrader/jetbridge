@@ -6,10 +6,9 @@ version-upgrade, log-diagnosis, and the not-yet-seeded feedback-loop and triage
 shapes). Format: [`schema/benchmark-case-v1.md`](schema/benchmark-case-v1.md).
 Case list: [`corpus/INDEX.md`](corpus/INDEX.md).
 
-Design lineage: the superseded bench plans'
-(`docs/superpowers/plans/agentic-platform/bench/`) surviving principles —
-fixtures, repetitions, versioned evaluators, controls, honest reporting — as
-rebased by the approved
+Design lineage: the surviving principles of the superseded ticket-era bench
+plans — fixtures, repetitions, versioned evaluators, controls, honest
+reporting — as rebased by the approved
 [workflows-as-functions design](../docs/superpowers/specs/2026-07-21-agentic-workflows-as-functions-design.md)
 §"Experiments and benchmarks" and §6 (bench rebased on generic snapshots and
 signatures). Fixtures in the running system are port→snapshot bindings

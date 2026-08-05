@@ -3,8 +3,7 @@
 - **Date:** 2026-07-25
 - **Status:** Approved for implementation
 - **Base:** `3e16271c28` — the six sealed-record contracts integrated onto the v3 platform
-- **Supersedes nothing.** Extends
-  [Prototype-Informed Sealed Record Contracts](2026-07-24-prototype-sealed-record-contracts-design.md)
+- **Supersedes nothing.** Extends the prototype-informed sealed record contracts
   and the record section of
   [Agentic Workflows as Functions](2026-07-21-agentic-workflows-as-functions-design.md).
 
