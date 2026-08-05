@@ -852,5 +852,5 @@ git commit -m "docs(agent): document node model and budget contract"
 ## Handoff checklist
 
 - [ ] Update the active local SDD progress record with each implementation commit, focused test evidence, and review round count without touching protected evidence outside the assigned worktree.
-- [ ] Record only nonblocking follow-ups in `docs/superpowers/plans/2026-07-28-agentic-foundations-semantic-rebase-deferred-items.md`.
+- [ ] Record only nonblocking follow-ups in `docs/superpowers/plans/2026-08-05-agent-foundations-followups.md`.
 - [ ] Before merge or rollout, verify that the deployed Helm values contain a nonempty model catalog before importing new reusable agent node versions.
