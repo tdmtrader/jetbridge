@@ -1259,7 +1259,7 @@ agentBroker:
   <section class="section" id="pr-publish">
     <span class="section-kicker kicker-agentic">Phase 2</span>
     <h2>Provider-native PR publishing <span class="pill pill-gated">Gated · unconditionally refuses to start</span></h2>
-    <p class="dek">A large, thoroughly tested, real subsystem for opening and maintaining a GitHub/Azure DevOps pull request — and, as of this writing, something you structurally cannot turn on.</p>
+    <p class="dek">A large, thoroughly tested, real subsystem for opening and maintaining a GitHub pull request — and, as of this writing, something you structurally cannot turn on.</p>
 
     <p>The design: <code class="flag">publish_snapshot</code> with <code class="flag">mode: pull-request</code> creates or updates a source branch and a PR idempotently; a separate, reusable <code class="flag">pr-monitor-v3</code> workflow then owns a genuinely <strong>standing</strong> Concourse pipeline per binding — a read-only <code class="flag">forge-pr</code> resource polling every 5 minutes by default — that reacts to submitted review batches by revising the branch, re-validating, and replying, all without Jetbridge ever completing or abandoning the PR itself; the forge and its branch policies remain the final merge authority.</p>
 
@@ -1293,7 +1293,7 @@ agentBroker:
 
     <p>Two things are worth being precise about since they're easy to conflate: first, the feature's own docs describe <code class="flag">publish-pr-v3</code> as a workflow boundary parallel to <code class="flag">pr-monitor-v3</code> — it isn't one. No such workflow YAML exists anywhere in the repo; the initial-publish side is implemented as a plain Go coordinator invoked directly from ATC, with no author-facing YAML at all. Second, <strong>direct-Git publishing (above) is completely unaffected by any of this</strong> — it's a separate, non-gated adapter mode through the same router, and it's the only "agent publisher" path that actually works in a real deployment right now.</p>
 
-    <p>What's genuinely new and useful even while gated: <code class="flag">publish-impact/v1</code> is a real sealed-record type computing changed files, validation deltas, and deterministic pass/fail rule results for a candidate versus a baseline — with a hard invariant that an agent's own impact assessment can only <em>escalate</em> a reapproval requirement, never waive one a deterministic rule already set. GitHub is the live, integration-tested provider; Azure DevOps is contract-tested against its REST API but has never been validated against a real tenant.</p>
+    <p>What's genuinely new and useful even while gated: <code class="flag">publish-impact/v1</code> is a real sealed-record type computing changed files, validation deltas, and deterministic pass/fail rule results for a candidate versus a baseline — with a hard invariant that an agent's own impact assessment can only <em>escalate</em> a reapproval requirement, never waive one a deterministic rule already set. GitHub is the only supported forge; the provider-neutral adapter seam is retained but no second adapter ships.</p>
   </section>
 
   <!-- ======================= EXPERIMENTS ======================= -->

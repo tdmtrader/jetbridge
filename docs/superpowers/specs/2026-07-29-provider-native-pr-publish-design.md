@@ -1,5 +1,11 @@
 # Provider-Native Pull Request Publish and Monitoring
 
+> **PARTIALLY SUPERSEDED (2026-08-05).** The Azure DevOps adapter and every
+> Azure-specific policy, Git-transport, and conformance decision in this design
+> were removed from the tree. GitHub is the only supported forge; the
+> provider-neutral `Observer`/`Mutator` seam is retained. Read the Azure
+> sections as historical record only.
+
 **Date:** 2026-07-29
 **Status:** Approved for implementation
 **Approvals:** Product design approved section-by-section on 2026-07-27; on

@@ -5,18 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"reflect"
-	"strings"
 	"time"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/concourse/concourse/agent/publisher"
 	"github.com/concourse/concourse/agent/publisher/directgit"
 	"github.com/concourse/concourse/agent/publisher/gittransport"
 	"github.com/concourse/concourse/agent/pullrequest"
-	"github.com/concourse/concourse/agent/pullrequest/azuredevops"
 	"github.com/concourse/concourse/agent/pullrequest/github"
 	"github.com/concourse/concourse/agent/snapshot"
 )
@@ -128,29 +123,6 @@ func (resolver *agentPRMutatorResolver) ResolvePRMutator(
 		if err != nil {
 			return nil, fmt.Errorf("agent PR mutator: GitHub adapter is unavailable")
 		}
-	case publisher.PRProviderAzureDevOps:
-		project, repositoryID, err := azureRepositoryIdentity(authorization.Repository())
-		if err != nil {
-			return nil, err
-		}
-		if err := validateAzureRepositoryURL(authorization.APIBaseURL(), authorization.RepositoryURL(), project, repositoryID); err != nil {
-			return nil, err
-		}
-		authentication = gittransport.AuthenticationBearer
-		branches, err := resolver.branchWriter(action, authorization, token, authentication)
-		if err != nil {
-			return nil, err
-		}
-		rest, err := azuredevops.NewMutator(
-			authorization.APIBaseURL(), project, repositoryID, token, resolver.httpClient,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("agent PR mutator: Azure DevOps adapter is unavailable")
-		}
-		// Azure REST ref updates cannot publish a newly materialized local
-		// object. All branch requests are therefore routed through the same
-		// verified Git writer while REST remains responsible for PR/status/reply.
-		delegate = providerBranchWriter{branches: branches, rest: rest}
 	default:
 		return nil, fmt.Errorf("agent PR mutator: provider is unsupported")
 	}
@@ -197,78 +169,15 @@ func adapterForProvider(provider publisher.PRProvider) publisher.AdapterKind {
 	switch provider {
 	case publisher.PRProviderGitHub:
 		return publisher.AdapterGitHub
-	case publisher.PRProviderAzureDevOps:
-		return publisher.AdapterAzureDevOps
 	default:
 		return ""
 	}
-}
-
-// Azure policy uses APIBaseURL as the organization URL and Repository as
-// exact project/repositoryID identity. This parser rejects a nested or empty
-// segment instead of accepting a provider URL with ambiguous routing.
-func azureRepositoryIdentity(repository string) (string, string, error) {
-	project, repositoryID, found := strings.Cut(repository, "/")
-	if !found || project == "" || repositoryID == "" || strings.Contains(repositoryID, "/") ||
-		!canonicalAzureSegment(project) || !canonicalAzureSegment(repositoryID) {
-		return "", "", fmt.Errorf("agent PR mutator: Azure DevOps repository must be exact project/repositoryID")
-	}
-	return project, repositoryID, nil
-}
-
-func canonicalAzureSegment(value string) bool {
-	if value == "" || strings.TrimSpace(value) != value || !utf8.ValidString(value) ||
-		value == "." || value == ".." || strings.ContainsAny(value, "/\\?#\x00") {
-		return false
-	}
-	for _, character := range value {
-		if unicode.IsControl(character) || unicode.IsSpace(character) {
-			return false
-		}
-	}
-	return true
-}
-
-func validateAzureRepositoryURL(apiBaseURL, repositoryURL, project, repositoryID string) error {
-	organization, err := url.Parse(apiBaseURL)
-	if err != nil || organization.Scheme == "" || organization.Host == "" || organization.User != nil ||
-		organization.RawQuery != "" || organization.ForceQuery || organization.Fragment != "" {
-		return fmt.Errorf("agent PR mutator: Azure DevOps organization URL is invalid")
-	}
-	repository, err := url.Parse(repositoryURL)
-	if err != nil || repository.Scheme == "" || repository.Host == "" || repository.User != nil ||
-		repository.RawQuery != "" || repository.ForceQuery || repository.Fragment != "" {
-		return fmt.Errorf("agent PR mutator: Azure DevOps repository URL is invalid")
-	}
-	expectedPath := strings.TrimRight(organization.Path, "/") + "/" + project + "/_git/" + repositoryID
-	if repository.Scheme != organization.Scheme || repository.Host != organization.Host || repository.Path != expectedPath {
-		return fmt.Errorf("agent PR mutator: Azure DevOps repository URL does not match organization/project/repository")
-	}
-	return nil
 }
 
 type unavailablePRBranchWriter struct{}
 
 func (unavailablePRBranchWriter) CompareAndSwapBranch(context.Context, pullrequest.BranchMutation) (pullrequest.BranchResult, error) {
 	return pullrequest.BranchResult{}, fmt.Errorf("agent PR mutator: branch mutation is not authorized by acquired action")
-}
-
-type providerBranchWriter struct {
-	branches github.BranchWriter
-	rest     pullrequest.Mutator
-}
-
-func (mutator providerBranchWriter) CompareAndSwapBranch(ctx context.Context, mutation pullrequest.BranchMutation) (pullrequest.BranchResult, error) {
-	return mutator.branches.CompareAndSwapBranch(ctx, mutation)
-}
-func (mutator providerBranchWriter) FindOrCreatePullRequest(ctx context.Context, request pullrequest.CreateRequest) (pullrequest.ExternalPullRequest, error) {
-	return mutator.rest.FindOrCreatePullRequest(ctx, request)
-}
-func (mutator providerBranchWriter) PublishValidationStatus(ctx context.Context, request pullrequest.StatusRequest) (pullrequest.ExternalResult, error) {
-	return mutator.rest.PublishValidationStatus(ctx, request)
-}
-func (mutator providerBranchWriter) PublishReviewResponse(ctx context.Context, request pullrequest.ResponseRequest) (pullrequest.ExternalResult, error) {
-	return mutator.rest.PublishReviewResponse(ctx, request)
 }
 
 // boundPRMutator makes the provider adapter single-use for the exact durable
@@ -428,9 +337,9 @@ func safePRMutatorError(ctx context.Context, err error) error {
 		}
 	}
 	switch {
-	case errors.Is(err, gittransport.ErrStaleSource), errors.Is(err, azuredevops.ErrStaleSource):
+	case errors.Is(err, gittransport.ErrStaleSource):
 		return publisher.ErrPRSourceStale
-	case errors.Is(err, gittransport.ErrStaleTarget), errors.Is(err, azuredevops.ErrStaleTarget):
+	case errors.Is(err, gittransport.ErrStaleTarget):
 		return publisher.ErrPRTargetStale
 	default:
 		return fmt.Errorf("agent PR mutator: provider operation failed")
@@ -487,4 +396,3 @@ func (token *redactedPRToken) GoString() string { return token.String() }
 
 var _ publisher.PRMutatorResolver = (*agentPRMutatorResolver)(nil)
 var _ publisher.PRMutator = (*boundPRMutator)(nil)
-var _ pullrequest.Mutator = providerBranchWriter{}

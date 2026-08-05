@@ -70,7 +70,7 @@ func TestBuildPRApprovalContextChangesForEveryBoundIntentField(t *testing.T) {
 		},
 		"source head": func(request *publisher.PRApprovalRequest) { request.SourceHead = strings.Repeat("c", 40) },
 		"target head": func(request *publisher.PRApprovalRequest) { request.TargetHead = strings.Repeat("d", 40) },
-		"destination": func(request *publisher.PRApprovalRequest) { request.Destination = "dev.azure.com/acme/widget" },
+		"destination": func(request *publisher.PRApprovalRequest) { request.Destination = "other-forge.example/acme/widget" },
 		"response": func(request *publisher.PRApprovalRequest) {
 			request.Response = approvalRef(28, "pull-request-response/v1", '8')
 		},
@@ -255,7 +255,7 @@ func TestBuildPRRevisionPublicationRequestCarriesExactHumanWaitAuthority(t *test
 			value.TargetHead = strings.Repeat("d", 40)
 		},
 		"destination": func(value *publisher.PRRevisionPublicationRequest) {
-			value.Destination = "dev.azure.com/acme/other"
+			value.Destination = "other-forge.example/acme/other"
 		},
 		"policy": func(value *publisher.PRRevisionPublicationRequest) {
 			value.ApprovalPolicyVersion = "engineering/v4"

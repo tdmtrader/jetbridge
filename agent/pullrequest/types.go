@@ -29,8 +29,7 @@ const (
 type Provider string
 
 const (
-	ProviderGitHub      Provider = "github"
-	ProviderAzureDevOps Provider = "azure-devops"
+	ProviderGitHub Provider = "github"
 )
 
 // Locator identifies a provider-native pull request. ExternalID is omitted
@@ -54,9 +53,9 @@ type Thread = contracts.PullRequestThread
 // Observation is one normalized provider observation. ReviewBatches is a
 // strict delta: it contains only ready batches not acknowledged by the Cursor
 // passed to Observer.Observe. The core cannot infer this by decoding Cursor,
-// because Cursor is deliberately opaque. GitHub and Azure adapter conformance
-// suites (plan Tasks 5 and 13) must prove that acknowledged batches are not
-// replayed and that each new batch advances the cursor.
+// because Cursor is deliberately opaque. The adapter conformance suite must
+// prove that acknowledged batches are not replayed and that each new batch
+// advances the cursor.
 //
 // Observation is not a sealed pull-request/v1 record yet: ActionFor selects
 // the platform-authored trigger without asking a provider adapter to fabricate
@@ -168,9 +167,9 @@ func (observation Observation) Validate() error {
 
 func (locator Locator) validate(state contracts.PullRequestState) error {
 	switch locator.Provider {
-	case ProviderGitHub, ProviderAzureDevOps:
+	case ProviderGitHub:
 	default:
-		return fmt.Errorf("provider must be github or azure-devops")
+		return fmt.Errorf("provider must be github")
 	}
 	if err := validateBoundedText("repository", locator.Repository, maxProviderRepositoryBytes); err != nil {
 		return err

@@ -7,16 +7,12 @@
 
 ## Scope
 
-The provider-neutral contract is exercised by the shared GitHub and Azure
-DevOps fixture/conformance suites. A future environment-gated test must perform
-the external proof only inside an explicitly authorized GitHub repository.
+The provider-neutral contract is exercised by the shared GitHub
+fixture/conformance suites. A future environment-gated test must perform the
+external proof only inside an explicitly authorized GitHub repository.
 
-Azure DevOps adapter: contract-tested against REST 7.1; not live-validated.
-
-No Azure DevOps organization or credential was available during this
-implementation. Do not interpret GitHub live results or Azure REST fixtures as
-evidence that Azure tenant policy, authentication, Git routing, or permission
-configuration has been validated.
+GitHub is the only supported forge. The provider-neutral `Observer`/`Mutator`
+seam is retained, but no second adapter ships.
 
 ## GitHub prerequisites
 

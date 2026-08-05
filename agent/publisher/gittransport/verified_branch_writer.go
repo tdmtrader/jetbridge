@@ -55,10 +55,6 @@ func NewVerifiedBranchWriter(
 		if config.Authentication != AuthenticationAskpass {
 			return nil, fmt.Errorf("git transport: GitHub branch publication requires explicit askpass authentication")
 		}
-	case publisher.PRProviderAzureDevOps:
-		if config.Authentication != AuthenticationBearer {
-			return nil, fmt.Errorf("git transport: Azure DevOps branch publication requires explicit bearer authentication")
-		}
 	default:
 		return nil, fmt.Errorf("git transport: branch publication provider is invalid")
 	}

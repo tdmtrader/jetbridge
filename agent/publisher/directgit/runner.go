@@ -33,7 +33,6 @@ type AuthenticationMode string
 const (
 	AuthenticationDefault AuthenticationMode = ""
 	AuthenticationAskpass AuthenticationMode = "askpass"
-	AuthenticationBearer  AuthenticationMode = "bearer"
 )
 
 // Command is one controlled Git invocation. Credential is an ephemeral copy
@@ -71,7 +70,7 @@ func (command Command) validate() error {
 	}
 	switch command.Authentication {
 	case AuthenticationDefault:
-	case AuthenticationAskpass, AuthenticationBearer:
+	case AuthenticationAskpass:
 		if len(command.Credential) == 0 {
 			return fmt.Errorf("direct git: selected authentication requires a credential")
 		}
@@ -165,7 +164,6 @@ func (runner *CommandRunner) Run(ctx context.Context, command Command) (result C
 	cmd.Env = controlledGitEnvironment(
 		invocation.credentialFile,
 		invocation.askpass,
-		invocation.gitConfig,
 		invocation.path,
 		noRepositoryGitDir,
 	)
@@ -315,7 +313,6 @@ type privateInvocation struct {
 	*privateScratch
 	credentialFile string
 	askpass        string
-	gitConfig      string
 }
 
 func (runner *CommandRunner) prepareInvocation(
@@ -327,21 +324,6 @@ func (runner *CommandRunner) prepareInvocation(
 		return nil, err
 	}
 	if len(secret) == 0 {
-		return invocation, nil
-	}
-	if authentication == AuthenticationBearer {
-		config, err := bearerGitConfig(secret)
-		if err != nil {
-			return nil, errors.Join(err, invocation.Close())
-		}
-		defer wipeBytes(config)
-		invocation.gitConfig = filepath.Join(invocation.path, "git-config")
-		if err := writePrivateFile(invocation.root, "git-config", config, 0600); err != nil {
-			return nil, errors.Join(
-				fmt.Errorf("direct git: write bearer configuration: %w", err),
-				invocation.Close(),
-			)
-		}
 		return invocation, nil
 	}
 	invocation.credentialFile = filepath.Join(invocation.path, "credential")
@@ -359,22 +341,6 @@ func (runner *CommandRunner) prepareInvocation(
 		)
 	}
 	return invocation, nil
-}
-
-func bearerGitConfig(secret []byte) ([]byte, error) {
-	config := make([]byte, 0, len(secret)+80)
-	config = append(config, "[http]\n\textraHeader = \"Authorization: Bearer "...)
-	for _, character := range secret {
-		switch {
-		case character < 0x20 || character == 0x7f ||
-			character == '\\' || character == '"':
-			wipeBytes(config)
-			return nil, fmt.Errorf("direct git: bearer credential contains an unsupported configuration character")
-		}
-		config = append(config, character)
-	}
-	config = append(config, "\"\n\tfollowRedirects = false\n"...)
-	return config, nil
 }
 
 func (parent trustedTempParent) createPrivateInvocation() (*privateInvocation, error) {
@@ -579,7 +545,7 @@ func controlledGitArguments() []string {
 }
 
 func controlledGitEnvironment(
-	credentialFile, askpass, gitConfig, neutralDirectory, noRepositoryGitDir string,
+	credentialFile, askpass, neutralDirectory, noRepositoryGitDir string,
 ) []string {
 	environment := make([]string, 0, len(os.Environ())+12)
 	for _, variable := range os.Environ() {
@@ -605,12 +571,9 @@ func controlledGitEnvironment(
 		}
 		environment = append(environment, variable)
 	}
-	if gitConfig == "" {
-		gitConfig = os.DevNull
-	}
 	environment = append(environment,
 		"GIT_CONFIG_NOSYSTEM=1",
-		"GIT_CONFIG_GLOBAL="+gitConfig,
+		"GIT_CONFIG_GLOBAL="+os.DevNull,
 		"GIT_TERMINAL_PROMPT=0",
 		"GIT_NO_REPLACE_OBJECTS=1",
 		"GIT_NO_LAZY_FETCH=1",

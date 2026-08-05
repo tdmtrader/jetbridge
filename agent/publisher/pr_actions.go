@@ -26,8 +26,7 @@ type HeadExpectation = contracts.PullRequestHeadExpectation
 type PRProvider string
 
 const (
-	PRProviderGitHub      PRProvider = "github"
-	PRProviderAzureDevOps PRProvider = "azure-devops"
+	PRProviderGitHub PRProvider = "github"
 )
 
 type PRLocator struct {
@@ -439,7 +438,7 @@ func validateSnapshotType(label string, reference snapshot.SnapshotRef, expected
 
 func validatePRLocator(locator PRLocator, requireExternalID, allowExternalID bool) error {
 	switch locator.Provider {
-	case PRProviderGitHub, PRProviderAzureDevOps:
+	case PRProviderGitHub:
 	default:
 		return fmt.Errorf("%w: PR provider is invalid", ErrInvalidRequest)
 	}

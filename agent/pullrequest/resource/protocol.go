@@ -180,7 +180,7 @@ func decodeRequest(reader io.Reader) (Request, error) {
 
 func (source Source) validate() (pullrequest.Locator, time.Duration, time.Duration, error) {
 	locator := pullrequest.Locator{Provider: pullrequest.Provider(source.Provider), Repository: source.Repository, ExternalID: source.ExternalID}
-	if source.Provider != string(pullrequest.ProviderGitHub) && source.Provider != string(pullrequest.ProviderAzureDevOps) {
+	if source.Provider != string(pullrequest.ProviderGitHub) {
 		return pullrequest.Locator{}, 0, 0, fmt.Errorf("forge-pr: unsupported provider")
 	}
 	// Validate through the observation boundary without permitting a fake state.
@@ -257,7 +257,7 @@ func parseDuration(raw string) (time.Duration, error) {
 }
 
 func (version Version) validate() error {
-	if version.Provider != string(pullrequest.ProviderGitHub) && version.Provider != string(pullrequest.ProviderAzureDevOps) {
+	if version.Provider != string(pullrequest.ProviderGitHub) {
 		return fmt.Errorf("forge-pr: version provider is invalid")
 	}
 	if strings.TrimSpace(version.ExternalID) == "" || !objectID(version.SourceSHA) || !objectID(version.TargetSHA) || !validActionKind(version.ActionKind) || !digest(version.ActionDigest) {

@@ -43,14 +43,9 @@ procedure; do not edit publication JSON or foreign keys to force the migration.
 
 ## Provider support
 
-GitHub is the live development and integration-test provider.
-
-Azure DevOps adapter: contract-tested against REST 7.1; not live-validated.
-
-Azure DevOps production configuration must therefore be introduced with a
-small, reversible canary. Begin with a dedicated repository, a non-protected
-source-branch prefix, and a reviewer who can compare the provider audit with
-Jetbridge's publication occurrences before enabling additional destinations.
+GitHub is the only supported forge. The provider-neutral `Observer`/`Mutator`
+seam in `agent/pullrequest` is retained so a second adapter can be added, but
+none ships today; a policy rule naming any other provider fails closed at boot.
 
 Day 1 supports same-repository pull requests only. Fork pull requests fail
 closed because they require separate source-repository authority.
@@ -73,17 +68,13 @@ in policy documents, pipeline configuration, repository URLs, command
 arguments, logs, publication details, or API responses.
 
 GitHub Git transport uses the configured destination credential through the
-private credential helper used for one invocation. Azure Git transport uses
-an explicitly provider-selected OAuth Bearer header from a private,
-scrubbed Git configuration. Jetbridge does not infer authentication mode from
-token text and does not use Azure PAT/Basic authentication in this path.
-Credential-bearing redirects are disabled.
+private credential helper used for one invocation. Jetbridge does not infer the
+authentication mode from token text; the askpass helper must be selected
+explicitly. Credential-bearing redirects are disabled.
 
-For Azure DevOps, grant only the scopes needed for Git repository reads and
-writes, pull-request reads and creation, status writes, and thread comment
-writes. Do not grant pull-request completion. Validate the exact scope names
-against the tenant's current Azure DevOps documentation before provisioning,
-because the adapter has not been live-validated here.
+Grant the write credential only the scopes needed for Git repository reads and
+writes, pull-request reads and creation, status writes, and review comment
+writes. Do not grant pull-request completion.
 
 ## Exact-head and object transport
 
@@ -101,13 +92,12 @@ compare-and-swap. A stale source or target produces a safe
 `rebase_required` reconciliation result; it is not retried as authority to
 overwrite a newer human or bot commit.
 
-Azure DevOps' REST ref-update API can move a ref only to an object the provider
-already has. It cannot upload the locally produced commit bytes. Consequently,
-both GitHub and Azure DevOps use verified Git smart HTTP for the branch
-object-upload-plus-CAS operation. Azure DevOps REST 7.1 remains the
-provider-native surface for pull-request creation, observation, statuses, and
-review responses, and its ref-update implementation is retained only as a
-contract-tested pre-existing-object seam.
+Branch writes never use a provider REST API: a forge ref-update endpoint can
+generally only move a ref to an object the provider already has, and cannot
+upload the locally produced commit bytes. The branch object-upload-plus-CAS
+operation therefore always uses verified Git smart HTTP. The provider REST API
+is used only for objects Git has no concept of: pull-request creation,
+observation, commit statuses, and review responses.
 
 ## Review batching, validation, and reapproval
 

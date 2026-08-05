@@ -18,7 +18,7 @@ func TestActionForTriggerPrecedenceAndAcknowledgedState(t *testing.T) {
 	}{
 		{"unchanged", baseObservation(), basePolicy(), "", false},
 		{"github submitted review", reviewObservation("github-review-2", "batch-2", "review-2"), basePolicy(), pullrequest.ActionReviewBatch, true},
-		{"azure ready vote", reviewObservation(`azure:{"vote":-5,"reviewer":"alice"}`, "batch-2", "vote-alice-2"), basePolicy(), pullrequest.ActionReviewBatch, true},
+		{"opaque provider cursor with a ready vote", reviewObservation(`forge:{"vote":-5,"reviewer":"alice"}`, "batch-2", "vote-alice-2"), basePolicy(), pullrequest.ActionReviewBatch, true},
 		{"unchanged conflict", conflictedObservation("cursor-1"), basePolicy(), "", false},
 		{"changed conflict signature", conflictedObservation("cursor-2"), basePolicy(), pullrequest.ActionConflict, true},
 		{"target movement before freshness", observationWithTarget(sha('c')), policyWithAge(5*time.Hour + 59*time.Minute), "", false},
@@ -50,7 +50,7 @@ func TestActionForTriggerPrecedenceAndAcknowledgedState(t *testing.T) {
 }
 
 func TestActionForDigestIsDeterministicOpaqueAndDetached(t *testing.T) {
-	observation := reviewObservation(`azure:{"opaque":"cursor"}`, "batch-2", "review-2")
+	observation := reviewObservation(`forge:{"opaque":"cursor"}`, "batch-2", "review-2")
 	policy := basePolicy()
 	first, actionable, err := pullrequest.ActionFor(observation, policy)
 	if err != nil || !actionable {
@@ -71,13 +71,13 @@ func TestActionForDigestIsDeterministicOpaqueAndDetached(t *testing.T) {
 		t.Fatal("invalid mutated observation must be rejected rather than normalized")
 	}
 
-	changedObservation := reviewObservation(`azure:{"opaque":"different"}`, "batch-3", "review-3")
+	changedObservation := reviewObservation(`forge:{"opaque":"different"}`, "batch-3", "review-3")
 	changed, actionable, err = pullrequest.ActionFor(changedObservation, policy)
 	if err != nil || !actionable || changed.Digest == first.Digest {
 		t.Fatalf("cursor mutation did not produce an exact distinct digest: %#v %v %v", changed, actionable, err)
 	}
 
-	headChanged := reviewObservation(`azure:{"opaque":"cursor"}`, "batch-2", "review-2")
+	headChanged := reviewObservation(`forge:{"opaque":"cursor"}`, "batch-2", "review-2")
 	headChanged.SourceSHA = sha('d')
 	headChanged.ReviewBatches[0].CommitSHA = sha('d')
 	headChanged.Threads[0].Comments[0].CommitSHA = sha('d')

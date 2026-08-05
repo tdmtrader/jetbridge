@@ -1,5 +1,11 @@
 # Provider-Native Pull Request Publish Implementation Plan
 
+> **PARTIALLY SUPERSEDED (2026-08-05).** The Azure DevOps adapter (Task 13)
+> and every Azure-specific policy, transport, and conformance concern described
+> below were removed from the tree. GitHub is the only supported forge; the
+> provider-neutral `Observer`/`Mutator` seam is retained. Read the Azure
+> sections as historical record only.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use
 > superpowers:subagent-driven-development (recommended) or
 > superpowers:executing-plans to implement this plan task-by-task. Steps use

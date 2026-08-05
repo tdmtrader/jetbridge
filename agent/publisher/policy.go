@@ -25,9 +25,8 @@ var ErrDestinationNotAllowed = errors.New("publisher: destination is not allowed
 type AdapterKind string
 
 const (
-	AdapterGateway     AdapterKind = "gateway"
-	AdapterGitHub      AdapterKind = "github"
-	AdapterAzureDevOps AdapterKind = "azure-devops"
+	AdapterGateway AdapterKind = "gateway"
+	AdapterGitHub  AdapterKind = "github"
 )
 
 // Policy is the complete startup-loaded publisher authorization policy. Each
@@ -190,7 +189,7 @@ func (rule PolicyRule) validateLegacy() error {
 		rule.WriteCredentialReference != "" {
 		return fmt.Errorf("provider-native PR fields are not valid for non-PR rules")
 	}
-	if rule.Adapter == AdapterGitHub || rule.Adapter == AdapterAzureDevOps {
+	if rule.Adapter == AdapterGitHub {
 		return fmt.Errorf("provider-native PR adapter is not valid for non-PR rules")
 	}
 	if !boundedText(rule.CredentialReference, 256, false) {
@@ -373,8 +372,6 @@ func adapterForPRProvider(provider PRProvider) (AdapterKind, bool) {
 	switch provider {
 	case PRProviderGitHub:
 		return AdapterGitHub, true
-	case PRProviderAzureDevOps:
-		return AdapterAzureDevOps, true
 	default:
 		return "", false
 	}

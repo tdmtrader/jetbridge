@@ -131,15 +131,6 @@ func TestAgentPublisherPolicyValidationSelectsOnlyEnabledAdapterLanes(t *testing
 		RepositoryURL:           "https://github.com/acme/widget.git",
 		ReadCredentialReference: "widget-read", WriteCredentialReference: "widget-write",
 	}
-	azure := publisher.PolicyRule{
-		Team: "engineering", Publisher: publisher.GitPublisher,
-		Mode: publisher.ModePullRequest, ApprovalPolicyVersion: "engineering/v1",
-		TargetBranch: "refs/heads/main", Destination: "dev.azure.com/acme/project/repository-id",
-		Adapter: publisher.AdapterAzureDevOps, Provider: publisher.PRProviderAzureDevOps,
-		Repository: "project/repository-id", APIBaseURL: "https://dev.azure.com/acme",
-		RepositoryURL:           "https://dev.azure.com/acme/project/_git/repository-id",
-		ReadCredentialReference: "widget-read", WriteCredentialReference: "widget-write",
-	}
 	for name, test := range map[string]struct {
 		directEnabled bool
 		prEnabled     bool
@@ -149,12 +140,9 @@ func TestAgentPublisherPolicyValidationSelectsOnlyEnabledAdapterLanes(t *testing
 		"PR only GitHub": {
 			prEnabled: true, rules: []publisher.PolicyRule{github},
 		},
-		"PR only Azure": {
-			prEnabled: true, rules: []publisher.PolicyRule{azure},
-		},
 		"mixed lanes": {
 			directEnabled: true, prEnabled: true,
-			rules: []publisher.PolicyRule{direct, github, azure},
+			rules: []publisher.PolicyRule{direct, github},
 		},
 		"PR rule while disabled": {
 			directEnabled: true, rules: []publisher.PolicyRule{github},

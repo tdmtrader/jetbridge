@@ -30,7 +30,6 @@ type AuthenticationMode = directgit.AuthenticationMode
 const (
 	AuthenticationDefault = directgit.AuthenticationDefault
 	AuthenticationAskpass = directgit.AuthenticationAskpass
-	AuthenticationBearer  = directgit.AuthenticationBearer
 )
 
 // RefLease binds the exact policy-authorized remote, materialized candidate
@@ -92,7 +91,7 @@ func newRefLease(
 		return nil, fmt.Errorf("git transport: runner and credential source are required")
 	}
 	switch authentication {
-	case AuthenticationDefault, AuthenticationAskpass, AuthenticationBearer:
+	case AuthenticationDefault, AuthenticationAskpass:
 	default:
 		return nil, fmt.Errorf("git transport: authentication mode is invalid")
 	}
@@ -295,7 +294,7 @@ func (transport *RefLease) observeHeads(
 
 func validateMutation(mutation pullrequest.BranchMutation) error {
 	switch mutation.Locator.Provider {
-	case pullrequest.ProviderGitHub, pullrequest.ProviderAzureDevOps:
+	case pullrequest.ProviderGitHub:
 	default:
 		return fmt.Errorf("git transport: provider is invalid")
 	}

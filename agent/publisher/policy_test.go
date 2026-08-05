@@ -402,19 +402,16 @@ func TestPolicySelectsExactPRProviderAndTargetAmongMultipleRules(t *testing.T) {
 	release := main
 	release.TargetBranch = "refs/heads/release"
 	release.WriteCredentialReference = "widget-release-write"
-	azure := main
-	azure.Destination = "dev.azure.example/project/widget"
-	azure.TargetBranch = "refs/heads/main"
-	azure.Adapter = publisher.AdapterAzureDevOps
-	azure.Provider = publisher.PRProviderAzureDevOps
-	azure.Repository = "project/widget"
-	azure.APIBaseURL = "https://dev.azure.example/organization/project"
-	azure.RepositoryURL = "https://dev.azure.example/organization/project/_git/widget"
-	azure.ReadCredentialReference = "widget-azure-read"
-	azure.WriteCredentialReference = "widget-azure-write"
+	other := main
+	other.Destination = "github.example/acme/other-widget"
+	other.TargetBranch = "refs/heads/main"
+	other.Repository = "acme/other-widget"
+	other.RepositoryURL = "https://github.example/acme/other-widget.git"
+	other.ReadCredentialReference = "other-widget-read"
+	other.WriteCredentialReference = "other-widget-write"
 	policy := publisher.Policy{
 		SchemaVersion: 1,
-		Rules:         []publisher.PolicyRule{main, release, azure},
+		Rules:         []publisher.PolicyRule{main, release, other},
 	}
 	if err := policy.Validate(); err != nil {
 		t.Fatalf("Validate: %v", err)
@@ -427,21 +424,20 @@ func TestPolicySelectsExactPRProviderAndTargetAmongMultipleRules(t *testing.T) {
 		t.Fatalf("release ResolvePR = (%+v, %v)", rule, err)
 	}
 
-	azureAction := policyPRAction()
-	azureAction.Branch.Destination = azure.Destination
-	azureAction.Branch.Locator.Provider = publisher.PRProviderAzureDevOps
-	azureAction.Branch.Locator.Repository = azure.Repository
-	rule, err = policy.ResolvePR(context.Background(), azureAction)
-	if err != nil || rule.WriteCredentialReference != "widget-azure-write" {
-		t.Fatalf("Azure ResolvePR = (%+v, %v)", rule, err)
+	otherAction := policyPRAction()
+	otherAction.Branch.Destination = other.Destination
+	otherAction.Branch.Locator.Repository = other.Repository
+	rule, err = policy.ResolvePR(context.Background(), otherAction)
+	if err != nil || rule.WriteCredentialReference != "other-widget-write" {
+		t.Fatalf("other-repository ResolvePR = (%+v, %v)", rule, err)
 	}
 }
 
 func TestPolicyPRResolutionRefusesCrossRoutingAndLegacyEntryPoints(t *testing.T) {
 	action := policyPRAction()
-	action.Branch.Locator.Provider = publisher.PRProviderAzureDevOps
+	action.Branch.Locator.Repository = "acme/other-widget"
 	if _, err := exactPRPolicy().ResolvePR(context.Background(), action); !errors.Is(err, publisher.ErrDestinationNotAllowed) {
-		t.Fatalf("cross-provider ResolvePR error = %v, want ErrDestinationNotAllowed", err)
+		t.Fatalf("cross-repository ResolvePR error = %v, want ErrDestinationNotAllowed", err)
 	}
 	if _, err := exactPolicy().ResolvePR(context.Background(), policyPRAction()); !errors.Is(err, publisher.ErrDestinationNotAllowed) {
 		t.Fatalf("direct-Git ResolvePR error = %v, want ErrDestinationNotAllowed", err)
@@ -496,7 +492,7 @@ func TestPolicyRequiresExactPRFieldsAndForbidsCrossLaneFields(t *testing.T) {
 			rule.RemoteURL = "https://github.example/acme/widget.git"
 		},
 		"adapter/provider mismatch": func(rule *publisher.PolicyRule) {
-			rule.Adapter = publisher.AdapterAzureDevOps
+			rule.Adapter = publisher.AdapterGateway
 		},
 	}
 	for name, mutate := range tests {

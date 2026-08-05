@@ -27,8 +27,7 @@ func RunMutationSuite(t *testing.T, subject MutationSubject) {
 	if subject.Mutator == nil {
 		t.Fatal("conformance mutator is required")
 	}
-	if subject.Provider != pullrequest.ProviderGitHub &&
-		subject.Provider != pullrequest.ProviderAzureDevOps {
+	if subject.Provider != pullrequest.ProviderGitHub {
 		t.Fatalf("conformance provider %q is unsupported", subject.Provider)
 	}
 	if subject.Repository == "" || subject.ExternalID == "" {
@@ -48,10 +47,10 @@ func RunMutationSuite(t *testing.T, subject MutationSubject) {
 	}
 	missingLocator := validLocator
 	missingLocator.ExternalID = ""
-	wrongProvider := pullrequest.ProviderGitHub
-	if subject.Provider == pullrequest.ProviderGitHub {
-		wrongProvider = pullrequest.ProviderAzureDevOps
-	}
+	// A synthetic provider the core does not accept. It must never equal
+	// subject.Provider, or the rejection assertions below would assert that a
+	// valid locator is refused.
+	wrongProvider := pullrequest.Provider("unsupported-provider")
 	wrongLocator := validLocator
 	wrongLocator.Provider = wrongProvider
 	wrongMissing := missingLocator

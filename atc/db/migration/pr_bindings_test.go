@@ -164,8 +164,8 @@ var _ = Describe("agent PR bindings migration", func() {
 				 monitor_workflow_definition_id, monitor_workflow_version,
 				 acknowledged_cursor, last_observation_snapshot_id,
 				 last_reconciled_source_sha, last_reconciled_target_sha, last_reconciled_at)
-			VALUES ($1, 'azure-devops', 'org/project/repository', '17',
-			        'https://dev.azure.com/org/project/_git/repository/pullrequest/17',
+			VALUES ($1, 'github', 'org/repository', '17',
+			        'https://github.example/org/repository/pull/17',
 			        'refs/heads/source', 'refs/heads/main', $2, $3, $4, 3,
 			        to_jsonb('opaque'::text), $5, $6, $7, now())
 			RETURNING id

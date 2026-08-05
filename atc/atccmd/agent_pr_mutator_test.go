@@ -33,12 +33,6 @@ func TestAgentPRMutatorResolverSelectsProviderSpecificVerifiedBranchAuthenticati
 			repositoryURL:  "https://github.example/acme/widget.git",
 			authentication: gittransport.AuthenticationAskpass,
 		},
-		{
-			name: "azure devops", provider: publisher.PRProviderAzureDevOps,
-			repository: "project/widget", apiBaseURL: "https://dev.azure.example/acme",
-			repositoryURL:  "https://dev.azure.example/acme/project/_git/widget",
-			authentication: gittransport.AuthenticationBearer,
-		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			action := validBridgeBranchAction(test.provider, test.repository)
@@ -66,7 +60,7 @@ func TestAgentPRMutatorResolverSelectsProviderSpecificVerifiedBranchAuthenticati
 	}
 }
 
-func TestAgentPRMutatorResolverFailsClosedForMismatchedProviderActionWithoutCredentialLeak(t *testing.T) {
+func TestAgentPRMutatorResolverFailsClosedForUnauthorizedActionWithoutCredentialLeak(t *testing.T) {
 	resolver := newBridgeResolver(
 		t,
 		publisher.PRProviderGitHub,
@@ -74,11 +68,11 @@ func TestAgentPRMutatorResolverFailsClosedForMismatchedProviderActionWithoutCred
 		"https://api.github.example",
 		"https://github.example/acme/widget.git",
 	)
-	action := validBridgeBranchAction(publisher.PRProviderAzureDevOps, "project/widget")
+	action := validBridgeBranchAction(publisher.PRProviderGitHub, "other/widget")
 
 	_, err := resolver.ResolvePRMutator(context.Background(), action)
 	if err == nil {
-		t.Fatal("accepted an Azure action through a GitHub policy")
+		t.Fatal("accepted an action the policy does not authorize")
 	}
 	for _, value := range []string{err.Error(), fmt.Sprintf("%+v", resolver)} {
 		if strings.Contains(value, bridgeSecret) {
@@ -144,39 +138,6 @@ func TestAgentPRMutatorResolverMapsExactPublisherMutations(t *testing.T) {
 	}
 }
 
-func TestAgentPRMutatorResolverRejectsInconsistentAzurePolicyRepositoryURL(t *testing.T) {
-	resolver := newBridgeResolver(
-		t,
-		publisher.PRProviderAzureDevOps,
-		"project/widget",
-		"https://dev.azure.example/acme",
-		"https://dev.azure.example/acme/other/_git/widget",
-	)
-	_, err := resolver.ResolvePRMutator(
-		context.Background(),
-		validBridgeBranchAction(publisher.PRProviderAzureDevOps, "project/widget"),
-	)
-	if err == nil || !strings.Contains(err.Error(), "repository URL") {
-		t.Fatalf("inconsistent Azure repository URL error = %v", err)
-	}
-	if strings.Contains(fmt.Sprint(err), bridgeSecret) {
-		t.Fatalf("credential leaked in Azure consistency error: %v", err)
-	}
-}
-
-func TestAzureRepositoryIdentityRequiresTwoCanonicalSegments(t *testing.T) {
-	for _, repository := range []string{
-		"", "project", "/widget", "project/", "project/widget/extra", "project//widget",
-		"project/../widget", "project/widget?query", "project/widget\n",
-	} {
-		t.Run(strings.ReplaceAll(repository, "/", "_"), func(t *testing.T) {
-			if _, _, err := azureRepositoryIdentity(repository); err == nil {
-				t.Fatalf("accepted malformed Azure repository %q", repository)
-			}
-		})
-	}
-}
-
 func TestAgentPRMutatorResolverPropagatesCancellation(t *testing.T) {
 	resolver := newBridgeResolver(
 		t,
@@ -234,10 +195,7 @@ func newBridgeResolver(
 	return resolver
 }
 
-func adapterForBridge(provider publisher.PRProvider) publisher.AdapterKind {
-	if provider == publisher.PRProviderAzureDevOps {
-		return publisher.AdapterAzureDevOps
-	}
+func adapterForBridge(publisher.PRProvider) publisher.AdapterKind {
 	return publisher.AdapterGitHub
 }
 

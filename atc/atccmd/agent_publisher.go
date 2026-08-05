@@ -231,8 +231,7 @@ func (cmd *RunCommand) validateAgentPublisherPolicy(policy publisher.Policy) err
 				return fmt.Errorf("agent publisher: pull request adapter is disabled")
 			}
 			if rule.Publisher != publisher.GitPublisher ||
-				rule.Adapter != publisher.AdapterGitHub &&
-					rule.Adapter != publisher.AdapterAzureDevOps {
+				rule.Adapter != publisher.AdapterGitHub {
 				return fmt.Errorf(
 					"agent publisher: policy rule %d uses unsupported provider-native PR adapter %q",
 					index,

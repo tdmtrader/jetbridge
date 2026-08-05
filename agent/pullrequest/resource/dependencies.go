@@ -29,8 +29,6 @@ func productionObserver(source Source) (pullrequest.Observer, error) {
 	switch pullrequest.Provider(source.Provider) {
 	case pullrequest.ProviderGitHub:
 		return github.NewObserver(source.APIBaseURL, staticToken(source.ReadToken), nil)
-	case pullrequest.ProviderAzureDevOps:
-		return nil, fmt.Errorf("forge-pr: azure-devops observer is not available in this image")
 	default:
 		return nil, fmt.Errorf("forge-pr: unsupported provider")
 	}

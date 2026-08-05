@@ -212,7 +212,7 @@ func TestRefLeaseAcceptsTheSafeTargetRaceAfterTheExactPreWriteCheck(t *testing.T
 
 func TestRefLeaseRepresentsExpectedAbsenceWithoutObservingALease(t *testing.T) {
 	const (
-		remote = "https://dev.azure.example/project/_git/widget"
+		remote = "https://github.example/acme/widget.git"
 		source = "refs/heads/agent/upgrade"
 		target = "refs/heads/main"
 	)
@@ -245,7 +245,7 @@ func TestRefLeaseRepresentsExpectedAbsenceWithoutObservingALease(t *testing.T) {
 		context.Background(),
 		pullrequest.BranchMutation{
 			Locator: pullrequest.Locator{
-				Provider: pullrequest.ProviderAzureDevOps, Repository: "project/widget",
+				Provider: pullrequest.ProviderGitHub, Repository: "acme/widget",
 			},
 			Ref: source, TargetRef: target,
 			ExpectedSource:    contracts.PullRequestHeadExpectation{Exists: false},
@@ -285,7 +285,7 @@ func TestRefLeaseDoesNotExposeCredentialFromRunnerFailures(t *testing.T) {
 
 func TestRefLeaseAuthenticationModeIsExplicitAndNeverInferredFromTokenText(t *testing.T) {
 	const (
-		remote = "https://dev.azure.example/project/_git/widget"
+		remote = "https://github.example/acme/widget.git"
 		source = "refs/heads/agent/upgrade"
 		target = "refs/heads/main"
 	)
@@ -296,16 +296,16 @@ func TestRefLeaseAuthenticationModeIsExplicitAndNeverInferredFromTokenText(t *te
 		want      directgit.AuthenticationMode
 	}{
 		{
-			name:  "default askpass compatibility with Azure-looking token",
-			token: "azure-oauth-looking-token",
+			name:  "default askpass compatibility with an opaque OAuth-looking token",
+			token: "opaque-oauth-looking-token",
 			construct: func(runner directgit.Runner, token pullrequest.TokenSource, repository string) (*gittransport.RefLease, error) {
 				return gittransport.NewRefLease(runner, remote, repository, token, time.Second)
 			},
 			want: directgit.AuthenticationDefault,
 		},
 		{
-			name:  "explicit askpass with Azure-looking token",
-			token: "azure-oauth-looking-token",
+			name:  "explicit askpass with an opaque OAuth-looking token",
+			token: "opaque-oauth-looking-token",
 			construct: func(runner directgit.Runner, token pullrequest.TokenSource, repository string) (*gittransport.RefLease, error) {
 				return gittransport.NewRefLeaseWithAuthentication(
 					runner, remote, repository, token,
@@ -313,17 +313,6 @@ func TestRefLeaseAuthenticationModeIsExplicitAndNeverInferredFromTokenText(t *te
 				)
 			},
 			want: directgit.AuthenticationAskpass,
-		},
-		{
-			name:  "explicit bearer with GitHub-looking token",
-			token: "ghp_github-looking-token",
-			construct: func(runner directgit.Runner, token pullrequest.TokenSource, repository string) (*gittransport.RefLease, error) {
-				return gittransport.NewRefLeaseWithAuthentication(
-					runner, remote, repository, token,
-					gittransport.AuthenticationBearer, time.Second,
-				)
-			},
-			want: directgit.AuthenticationBearer,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -353,7 +342,7 @@ func TestRefLeaseAuthenticationModeIsExplicitAndNeverInferredFromTokenText(t *te
 				context.Background(),
 				pullrequest.BranchMutation{
 					Locator: pullrequest.Locator{
-						Provider:   pullrequest.ProviderAzureDevOps,
+						Provider:   pullrequest.ProviderGitHub,
 						Repository: "project/widget",
 					},
 					Ref: source, TargetRef: target,

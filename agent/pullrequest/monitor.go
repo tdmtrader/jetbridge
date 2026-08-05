@@ -816,7 +816,7 @@ func parseMonitorSourceVersion(version atc.Version) (MonitorSourceVersion, error
 
 func validateMonitorSourceVersion(version MonitorSourceVersion) error {
 	switch Provider(version.Provider) {
-	case ProviderGitHub, ProviderAzureDevOps:
+	case ProviderGitHub:
 	default:
 		return fmt.Errorf(
 			"%w: provider is invalid", ErrStaleMonitorSourceVersion,

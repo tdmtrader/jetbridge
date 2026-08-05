@@ -525,7 +525,7 @@ func TestMonitorCoordinatorRejectsAlteredDirectTerminalEvidence(t *testing.T) {
 		{
 			name: "provider",
 			mutateBody: func(body *contracts.PullRequestBody) {
-				body.Provider = "azure-devops"
+				body.Provider = "other-forge"
 			},
 		},
 		{

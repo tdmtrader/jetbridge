@@ -69,7 +69,7 @@ func TestDecodeAgentPRMonitorSelectedVersionRequiresExactReservationAuthority(
 		{
 			name: "provider",
 			mutate: func(value map[string]string) {
-				value["provider"] = "azure-devops"
+				value["provider"] = "other-forge"
 			},
 		},
 		{

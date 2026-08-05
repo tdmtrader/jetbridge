@@ -163,8 +163,7 @@ func (factory *agentPRBindingsFactory) GetByExternal(
 		return pullrequest.Binding{}, false, fmt.Errorf("db: PR binding lookup requires context and team")
 	}
 	// A nonempty active-shaped locator is the only key persisted by this store.
-	if locator.Provider != pullrequest.ProviderGitHub &&
-		locator.Provider != pullrequest.ProviderAzureDevOps {
+	if locator.Provider != pullrequest.ProviderGitHub {
 		return pullrequest.Binding{}, false, fmt.Errorf("db: unsupported PR binding provider")
 	}
 	if strings.TrimSpace(locator.Repository) == "" || strings.TrimSpace(locator.ExternalID) == "" {

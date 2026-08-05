@@ -26,7 +26,7 @@ import (
 
 const verifiedTreeSHA = "dddddddddddddddddddddddddddddddddddddddd"
 
-func TestVerifiedBranchWriterPublishesOnlyTheVerifiedNestedRepositoryForBothProviders(t *testing.T) {
+func TestVerifiedBranchWriterPublishesOnlyTheVerifiedNestedRepository(t *testing.T) {
 	for _, test := range []struct {
 		name           string
 		provider       publisher.PRProvider
@@ -37,11 +37,6 @@ func TestVerifiedBranchWriterPublishesOnlyTheVerifiedNestedRepositoryForBothProv
 			name: "GitHub", provider: publisher.PRProviderGitHub,
 			remote:         "https://github.example/acme/widget.git",
 			authentication: gittransport.AuthenticationAskpass,
-		},
-		{
-			name: "Azure DevOps", provider: publisher.PRProviderAzureDevOps,
-			remote:         "https://dev.azure.example/project/_git/widget",
-			authentication: gittransport.AuthenticationBearer,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -210,16 +205,13 @@ func TestVerifiedBranchWriterRequiresProviderSelectedAuthentication(t *testing.T
 			provider: publisher.PRProviderGitHub,
 		},
 		{
-			name:     "GitHub does not accept bearer mode",
-			provider: publisher.PRProviderGitHub, authentication: gittransport.AuthenticationBearer,
+			name:     "GitHub does not accept an unknown mode",
+			provider: publisher.PRProviderGitHub, authentication: gittransport.AuthenticationMode("bearer"),
 		},
 		{
-			name:     "Azure DevOps does not infer default authentication",
-			provider: publisher.PRProviderAzureDevOps,
-		},
-		{
-			name:     "Azure DevOps does not accept askpass mode",
-			provider: publisher.PRProviderAzureDevOps, authentication: gittransport.AuthenticationAskpass,
+			name:           "unknown provider is refused outright",
+			provider:       publisher.PRProvider("unsupported-provider"),
+			authentication: gittransport.AuthenticationAskpass,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
