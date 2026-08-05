@@ -61,8 +61,8 @@ func (c *Container) materializeBeforeLaunch(ctx context.Context, spec runtime.Pr
 	if err := request.Validate(); err != nil {
 		return err
 	}
-	backend := c.storageBackend.(*DaemonSetBackend)
-	if backend.restoreClient == nil {
+	backend := c.storageBackend
+	if backend == nil || backend.restoreClient == nil {
 		return fmt.Errorf("checkpoint restore client is unavailable")
 	}
 	if mode == checkpointRecoveryGateVerify {

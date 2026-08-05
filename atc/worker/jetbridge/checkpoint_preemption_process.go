@@ -31,8 +31,8 @@ func (p *execProcess) WaitForCheckpointPreemption(ctx context.Context) (time.Tim
 	if _, _, err := checkpointPodIdentity(pod, p.container.handle, p.podName); err != nil {
 		return time.Time{}, err
 	}
-	backend, ok := p.container.storageBackend.(*DaemonSetBackend)
-	if !ok || backend == nil || backend.daemonClient == nil {
+	backend := p.container.storageBackend
+	if backend == nil || backend.daemonClient == nil {
 		return time.Time{}, errors.New("checkpoint preemption daemon client is unavailable")
 	}
 	source, err := NewCheckpointPreemptionNoticeSource(backend.daemonClient, pod.Spec.NodeName)

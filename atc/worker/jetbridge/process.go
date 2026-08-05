@@ -775,7 +775,7 @@ type execProcess struct {
 	executor       PodExecutor
 	processSpec    runtime.ProcessSpec
 	processIO      runtime.ProcessIO
-	storageBackend StorageBackend
+	storageBackend *DaemonSetBackend
 }
 
 func newExecProcess(
@@ -786,7 +786,7 @@ func newExecProcess(
 	executor PodExecutor,
 	spec runtime.ProcessSpec,
 	io runtime.ProcessIO,
-	storageBackend StorageBackend,
+	storageBackend *DaemonSetBackend,
 ) *execProcess {
 	return &execProcess{
 		id:             id,

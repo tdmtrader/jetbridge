@@ -52,7 +52,7 @@ func permEmptyDirConfig() Config {
 }
 
 func makeContainer(handle string, metadata db.ContainerMetadata, spec runtime.ContainerSpec, cfg Config, locator *ArtifactLocator, reused bool) *Container {
-	var backend StorageBackend
+	var backend *DaemonSetBackend
 	if cfg.ArtifactDaemonHostPath != "" {
 		backend = NewDaemonSetBackend(cfg, locator, nil)
 	}

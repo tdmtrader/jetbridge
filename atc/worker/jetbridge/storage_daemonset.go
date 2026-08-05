@@ -20,9 +20,6 @@ import (
 
 const artifactDaemonHostPathVolumeName = "artifact-daemon-hostpath"
 
-// Compile-time check that DaemonSetBackend satisfies StorageBackend.
-var _ StorageBackend = (*DaemonSetBackend)(nil)
-
 type DaemonSetBackend struct {
 	config          Config
 	artifactLocator *ArtifactLocator

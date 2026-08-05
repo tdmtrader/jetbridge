@@ -82,7 +82,7 @@ type Container struct {
 	loadAnnotations  sync.Once
 	executor         PodExecutor
 	volumes          []*Volume
-	storageBackend   StorageBackend
+	storageBackend   *DaemonSetBackend
 	// reused is true when FindOrCreateContainer found an existing container
 	// in the DB (crash-recovery path). In DaemonSet mode this means the
 	// hostPath directory may contain stale data and needs cleanup.
@@ -109,7 +109,7 @@ func newContainer(
 	workerName string,
 	executor PodExecutor,
 	volumes []*Volume,
-	storageBackend StorageBackend,
+	storageBackend *DaemonSetBackend,
 	reused bool,
 ) *Container {
 	if containerSpec.ManagedOutputBuilder != nil {
@@ -642,8 +642,8 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 		initContainers = append(initContainers, *gate)
 	}
 	if c.containerSpec.Hermetic {
-		if preparer, ok := c.storageBackend.(HermeticWorkspacePreparer); ok {
-			if prepare := preparer.BuildHermeticWorkspaceInitContainer(c.nonPrivateInputMounts(volumeMounts)); prepare != nil {
+		if c.storageBackend != nil {
+			if prepare := c.storageBackend.BuildHermeticWorkspaceInitContainer(c.nonPrivateInputMounts(volumeMounts)); prepare != nil {
 				initContainers = append(initContainers, *prepare)
 			}
 		}
@@ -857,8 +857,8 @@ func (c *Container) checkpointRestoreGate() (*corev1.Volume, *corev1.Container, 
 	if err := descriptor.ValidateForSpec(c.containerSpec); err != nil {
 		return nil, nil, err
 	}
-	backend, ok := c.storageBackend.(*DaemonSetBackend)
-	if !ok || backend == nil || backend.daemonClient == nil || backend.daemonClient.scheme != "https" || backend.daemonClient.initializationErr != nil || strings.TrimSpace(backend.helperImage()) == "" {
+	backend := c.storageBackend
+	if backend == nil || backend.daemonClient == nil || backend.daemonClient.scheme != "https" || backend.daemonClient.initializationErr != nil || strings.TrimSpace(backend.helperImage()) == "" {
 		return nil, nil, fmt.Errorf("checkpoint restore requires checked DaemonSet daemon storage and helper image")
 	}
 	if !checkpointCaptureHandle(c.handle) {
@@ -921,8 +921,8 @@ func (c *Container) checkpointSessionVolume() (*corev1.Volume, *corev1.VolumeMou
 	if err != nil {
 		return nil, nil, err
 	}
-	backend, ok := c.storageBackend.(*DaemonSetBackend)
-	if !ok || backend == nil {
+	backend := c.storageBackend
+	if backend == nil {
 		return nil, nil, fmt.Errorf("checkpoint capture requires DaemonSet hostPath storage")
 	}
 	storageRoot := filepath.Clean(backend.config.ArtifactDaemonHostPath)

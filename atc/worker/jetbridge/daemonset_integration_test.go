@@ -1077,7 +1077,7 @@ func TestDaemonSetMode_RecordOutputLocationRegistersAlias(t *testing.T) {
 	// for the K8s service name in unit tests).
 	volumeKey := ArtifactKey(vol.Handle())
 	diskPath := filepath.Join(cfg.ArtifactDaemonHostPath, "steps", "producer-handle", "out")
-	p.storageBackend.(*DaemonSetBackend).registerDaemonAlias("test-node", volumeKey, diskPath)
+	p.storageBackend.registerDaemonAlias("test-node", volumeKey, diskPath)
 
 	// The actual HTTP call fails (no real daemon running), but we can verify
 	// the method runs without panicking. In a real cluster, the daemon would

@@ -15,7 +15,7 @@ import (
 func TestExecProcessWaitForCheckpointPreemptionUsesItsExactScheduledNode(t *testing.T) {
 	pod := checkpointTestPod("agent-42", "uid-42", "main")
 	process := checkpointTestProcess(fake.NewClientset(pod), &checkpointTestExecutor{})
-	backend := process.container.storageBackend.(*DaemonSetBackend)
+	backend := process.container.storageBackend
 	observed := time.Date(2026, time.July, 29, 14, 0, 0, 0, time.UTC)
 	var requestedHost string
 	backend.SetDaemonClient(preemptionDaemonClient(
@@ -53,7 +53,7 @@ func TestExecProcessWaitForCheckpointPreemptionFailsClosedWithoutAuthenticatedDa
 		t.Fatal("preemption watch succeeded without a daemon client")
 	}
 
-	backend := process.container.storageBackend.(*DaemonSetBackend)
+	backend := process.container.storageBackend
 	backend.SetDaemonClient(&DaemonClient{scheme: "http"})
 	if _, err := process.WaitForCheckpointPreemption(context.Background()); err == nil {
 		t.Fatal("preemption watch accepted an unauthenticated daemon client")

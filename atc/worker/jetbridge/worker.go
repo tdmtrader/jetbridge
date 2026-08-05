@@ -18,12 +18,16 @@ var _ runtime.Worker = (*Worker)(nil)
 // Worker implements runtime.Worker using Kubernetes Pods as the execution
 // backend instead of Garden containers.
 type Worker struct {
-	dbWorker       db.Worker
-	clientset      kubernetes.Interface
-	config         Config
-	executor       PodExecutor
-	volumeRepo     db.VolumeRepository
-	storageBackend StorageBackend
+	dbWorker   db.Worker
+	clientset  kubernetes.Interface
+	config     Config
+	executor   PodExecutor
+	volumeRepo db.VolumeRepository
+	// storageBackend is nil for non-DaemonSet deployments. Container
+	// orchestration then falls back to emptyDir volumes with no init
+	// containers, no affinity, and no output recording; every read of this
+	// field guards for nil on that path.
+	storageBackend *DaemonSetBackend
 	nodeIPResolver *NodeIPResolver
 }
 
@@ -31,7 +35,7 @@ type Worker struct {
 func NewWorker(dbWorker db.Worker, clientset kubernetes.Interface, config Config) *Worker {
 	nodeIPResolver := NewNodeIPResolver(clientset)
 
-	var backend StorageBackend
+	var backend *DaemonSetBackend
 	if config.ArtifactDaemonHostPath != "" {
 		backend = NewDaemonSetBackend(config, NewArtifactLocator(), nodeIPResolver)
 	}
@@ -70,8 +74,8 @@ func (w *Worker) SetArtifactLocator(locator *ArtifactLocator) {
 // SetDaemonClient configures the DaemonClient on the storage backend for
 // probing daemon pods for cached resources.
 func (w *Worker) SetDaemonClient(client *DaemonClient) {
-	if dsb, ok := w.storageBackend.(*DaemonSetBackend); ok {
-		dsb.SetDaemonClient(client)
+	if w.storageBackend != nil {
+		w.storageBackend.SetDaemonClient(client)
 	}
 }
 
@@ -327,8 +331,8 @@ func (w *Worker) RegisterResourceCache(ctx context.Context, cacheID int, volume 
 	// Look up which node the artifact lives on via the locator (for affinity
 	// recording). RecordOutputs has already been called by this point.
 	var nodeName string
-	if dsb, ok := w.storageBackend.(*DaemonSetBackend); ok && dsb.artifactLocator != nil {
-		nodeName, _ = dsb.artifactLocator.LocateNode(ArtifactKey(handle))
+	if w.storageBackend != nil && w.storageBackend.artifactLocator != nil {
+		nodeName, _ = w.storageBackend.artifactLocator.LocateNode(ArtifactKey(handle))
 	}
 
 	logger.Info("registering", lager.Data{"node": nodeName})
