@@ -80,7 +80,7 @@ REPOSITORY_ID="sha256:$( { printf 'concourse.repository/v1\n%s\n' "$OBJECT_FORMA
 It works — every run produced the right ID first try — but a private identity
 derivation copied into user-land prompts is a contract that will silently break.
 
-**Fixed in code, awaiting deploy** (`f784092a6b`, `bee0aee262`). ATC already had
+**Fixed in code, awaiting deploy** (`9225c0baf3`). ATC already had
 the value: every sealed snapshot carries `intrinsic_metadata` computed at seal
 time. It is now forwarded into the output-builder authority and returned by
 `describe_output` per declared input, so a prompt takes `repository_id` rather
@@ -302,23 +302,23 @@ proofs behind them are still outstanding.
 1. **Return derived input facts from `describe_output`** (§3) — **landed,
    awaiting deploy.** ATC forwards each declared input's sealed
    `intrinsic_metadata` into the output-builder authority
-   (`f784092a6b`, `bee0aee262`), so `describe_output` hands back
+   (`9225c0baf3`), so `describe_output` hands back
    `repository_id` and the prompt no longer has to reimplement the hash. The
    value is *forwarded*, never re-derived: the mount is writable, so deriving it
    from the tree would return a value computed from a mutated repository —
    wrong in exactly the case that matters.
-2. **Document input mutability** (§4) — **done** (`1ab1bb42c4`), plus the
-   sealing procedure (`7dfaf8c7e0`, `405be44d74`).
+2. **Document input mutability** (§4) — **done**, together with the
+   historical-revision sealing procedure (`30df941554`).
 3. **A second provider adapter** (§1) — **still open.** Needs an adapter plus an
    agent-runner image change; deliberately its own spec.
 4. **Let `fly agent snapshots create` declare a base** (§2) — **landed, awaiting
-   deploy** (`f5c6cd6e34`, `a28e4ad615`). The direct-create path built an empty
+   deploy** (`eca08edd50`). The direct-create path built an empty
    validation context, so no contract that reopens an input could ever be
    created there. It now accepts authorized declared bases. This turned out to
    generalize: every record type's `AdmitForSeal` calls
    `RebindSubjectsToExposedInputs`, so this fixes direct-create for *any*
    subject-bearing record type, not only `repository-change/v1`.
-5. **Document the pre-state prune procedure** (§7) — **done** (`7dfaf8c7e0`).
+5. **Document the pre-state prune procedure** (§7) — **done** (`30df941554`).
 
 Two items were added by the work itself and remain open:
 
