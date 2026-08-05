@@ -1,11 +1,9 @@
 package db
 
 import (
-	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 
 	sq "github.com/Masterminds/squirrel"
 	"github.com/concourse/concourse/agent/api/metrics"
@@ -20,7 +18,6 @@ import (
 // embedded now that both packages live on the same branch.
 type AgentRunMetricsFactory interface {
 	metrics.Store
-	metrics.AttemptStore
 }
 
 func NewAgentRunMetricsFactory(conn DbConn) AgentRunMetricsFactory {
@@ -29,416 +26,6 @@ func NewAgentRunMetricsFactory(conn DbConn) AgentRunMetricsFactory {
 
 type agentRunMetricsFactory struct {
 	conn DbConn
-}
-
-// UpsertExecutionAttempt persists cumulative recorder counters under the
-// exact durable recovery attempt selected by the server. Provider counters
-// reset when recovery creates a fresh process, so the legacy aggregate adds
-// this attempt's monotonic delta rather than taking a GREATEST across attempts.
-// The attempt, aggregate, and cost-ledger delta share one transaction.
-func (f *agentRunMetricsFactory) UpsertExecutionAttempt(request metrics.ExecutionAttemptRequest) (metrics.ExecutionAttemptUpdate, error) {
-	key, incoming := request.Key, request.Metrics
-	if err := validateExecutionAttempt(key, incoming); err != nil {
-		return metrics.ExecutionAttemptUpdate{}, err
-	}
-	if !metrics.ValidExecutionAttemptAttribution(request.Attribution) {
-		return metrics.ExecutionAttemptUpdate{}, fmt.Errorf("%w: source, provider, and model must be server-owned canonical values", metrics.ErrExecutionAttemptInvalid)
-	}
-	if incoming.Model != "" && incoming.Model != request.Attribution.Model {
-		return metrics.ExecutionAttemptUpdate{}, fmt.Errorf("%w: telemetry model conflicts with server attribution", metrics.ErrExecutionAttemptIdentityDrift)
-	}
-
-	tx, err := f.conn.Begin()
-	if err != nil {
-		return metrics.ExecutionAttemptUpdate{}, err
-	}
-	defer Rollback(tx)
-	if _, err := tx.Exec(`SELECT pg_advisory_xact_lock(hashtextextended($1, 1773106146))`, fmt.Sprintf("%d:%s", key.BuildID, key.PlanID)); err != nil {
-		return metrics.ExecutionAttemptUpdate{}, err
-	}
-
-	durable, err := readDurableMetricAttempt(tx, key)
-	if err != nil {
-		return metrics.ExecutionAttemptUpdate{}, err
-	}
-	if durable.buildID != key.BuildID || durable.planID != key.PlanID || durable.executionAttempt != key.ExecutionAttempt {
-		return metrics.ExecutionAttemptUpdate{}, fmt.Errorf("%w: attempt_id=%d does not match build_id=%d plan_id=%q execution_attempt=%d", metrics.ErrExecutionAttemptInvalid, key.AttemptID, key.BuildID, key.PlanID, key.ExecutionAttempt)
-	}
-	if incoming.FunctionID != "" && incoming.FunctionID != durable.functionID {
-		return metrics.ExecutionAttemptUpdate{}, fmt.Errorf("%w: telemetry function conflicts with durable attempt", metrics.ErrExecutionAttemptIdentityDrift)
-	}
-	if incoming.WorkflowRunID != nil && (durable.workflowRunID == nil || *incoming.WorkflowRunID != *durable.workflowRunID) {
-		return metrics.ExecutionAttemptUpdate{}, fmt.Errorf("%w: telemetry workflow run conflicts with durable attempt", metrics.ErrExecutionAttemptIdentityDrift)
-	}
-	serverMetrics := *incoming
-	serverMetrics.FunctionID = durable.functionID
-	serverMetrics.WorkflowRunID = durable.workflowRunID
-	serverMetrics.Model = request.Attribution.Model
-	rm := &serverMetrics
-
-	previous, previousAttribution, found, err := readExecutionAttemptMetric(tx, key.AttemptID)
-	if err != nil {
-		return metrics.ExecutionAttemptUpdate{}, err
-	}
-	if found && (!sameAttemptMetricIdentity(previous, rm) || !sameExecutionAttemptAttribution(previousAttribution, request.Attribution)) {
-		return metrics.ExecutionAttemptUpdate{}, fmt.Errorf("%w: attempt_id=%d", metrics.ErrExecutionAttemptIdentityDrift, key.AttemptID)
-	}
-
-	delta := counterValues(rm)
-	stored := *rm
-	if found {
-		delta = counterDelta(previous, rm)
-		stored.EventCounts = mergeAttemptEventCounts(previous.EventCounts, rm.EventCounts)
-	}
-
-	aggregate, aggregateFound, err := readAggregateForUpdate(tx, key.BuildID, key.PlanID)
-	if err != nil {
-		return metrics.ExecutionAttemptUpdate{}, err
-	}
-	if aggregateFound && !sameAggregateMetricIdentity(aggregate, rm) {
-		return metrics.ExecutionAttemptUpdate{}, fmt.Errorf("%w: aggregate build_id=%d plan_id=%q", metrics.ErrExecutionAttemptIdentityDrift, key.BuildID, key.PlanID)
-	}
-	if aggregateFound && !found {
-		hasAttempt, err := hasAttemptMetrics(tx, key.BuildID, key.PlanID)
-		if err != nil {
-			return metrics.ExecutionAttemptUpdate{}, err
-		}
-		if !hasAttempt {
-			return metrics.ExecutionAttemptUpdate{}, fmt.Errorf("%w: build_id=%d plan_id=%q", metrics.ErrExecutionAttemptAggregateAmbiguous, key.BuildID, key.PlanID)
-		}
-	}
-	if request.FinalPresentation {
-		finalAttemptID, hasFinal, err := finalizedAttemptMetric(tx, key.BuildID, key.PlanID)
-		if err != nil {
-			return metrics.ExecutionAttemptUpdate{}, err
-		}
-		if hasFinal && finalAttemptID != key.AttemptID {
-			return metrics.ExecutionAttemptUpdate{}, fmt.Errorf("%w: build_id=%d plan_id=%q", metrics.ErrExecutionAttemptPresentationFinalized, key.BuildID, key.PlanID)
-		}
-	}
-
-	if err := upsertExecutionAttemptMetric(tx, key.AttemptID, key.ExecutionAttempt, request.Attribution, &stored, request.FinalPresentation); err != nil {
-		return metrics.ExecutionAttemptUpdate{}, err
-	}
-	if aggregateFound {
-		if err := applyAttemptAggregateDelta(tx, key.BuildID, key.PlanID, rm, delta, addEventCounts(aggregate.EventCounts, delta.EventCounts), request.FinalPresentation); err != nil {
-			return metrics.ExecutionAttemptUpdate{}, err
-		}
-	} else if err := insertAttemptAggregate(tx, rm); err != nil {
-		return metrics.ExecutionAttemptUpdate{}, err
-	}
-	if hasLedgerCounters(delta) {
-		if err := lockAgentBudgetAccounting(context.Background(), tx); err != nil {
-			return metrics.ExecutionAttemptUpdate{}, err
-		}
-		if err := insertExecutionAttemptLedger(tx, request.Attribution, key, rm, delta); err != nil {
-			return metrics.ExecutionAttemptUpdate{}, err
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return metrics.ExecutionAttemptUpdate{}, err
-	}
-	if found {
-		return metrics.ExecutionAttemptUpdate{Previous: previous, Delta: delta}, nil
-	}
-	return metrics.ExecutionAttemptUpdate{Inserted: true, Delta: delta}, nil
-}
-
-type durableMetricAttempt struct {
-	buildID          int
-	planID           string
-	executionAttempt int
-	functionID       string
-	workflowRunID    *agentschema.WorkflowRunID
-}
-
-func readDurableMetricAttempt(tx Tx, key metrics.ExecutionAttemptKey) (durableMetricAttempt, error) {
-	var durable durableMetricAttempt
-	var workflowRunID sql.NullInt64
-	err := tx.QueryRow(`SELECT h.build_id, h.plan_id, a.attempt_number, h.function_id, h.workflow_run_provenance_id
-		FROM agent_run_attempts a
-		JOIN agent_run_checkpoint_heads h ON h.id = a.head_id
-		WHERE a.id = $1 FOR UPDATE`, key.AttemptID).Scan(
-		&durable.buildID, &durable.planID, &durable.executionAttempt, &durable.functionID, &workflowRunID,
-	)
-	if errors.Is(err, sql.ErrNoRows) {
-		return durableMetricAttempt{}, fmt.Errorf("%w: durable attempt does not exist", metrics.ErrExecutionAttemptInvalid)
-	}
-	if err != nil {
-		return durableMetricAttempt{}, err
-	}
-	if workflowRunID.Valid {
-		value := agentschema.WorkflowRunID(workflowRunID.Int64)
-		durable.workflowRunID = &value
-	}
-	return durable, nil
-}
-
-func validateExecutionAttempt(key metrics.ExecutionAttemptKey, rm *agentschema.RunMetrics) error {
-	if key.AttemptID <= 0 || key.BuildID <= 0 || key.PlanID == "" || key.ExecutionAttempt <= 0 || rm == nil || rm.BuildID != key.BuildID || rm.PlanID != key.PlanID {
-		return fmt.Errorf("%w: exact attempt, build, plan, and execution identity is required", metrics.ErrExecutionAttemptInvalid)
-	}
-	if rm.Usage.InputTokens < 0 || rm.Usage.OutputTokens < 0 || rm.Usage.CacheReadInputTokens < 0 || rm.Usage.CacheCreationInputTokens < 0 || rm.Turns < 0 || rm.WallTimeSeconds < 0 || rm.CostUSD < 0 {
-		return fmt.Errorf("%w: provider counters must be non-negative", metrics.ErrExecutionAttemptInvalid)
-	}
-	for name, count := range rm.EventCounts {
-		if name == "" || count < 0 {
-			return fmt.Errorf("%w: event counts must be named and non-negative", metrics.ErrExecutionAttemptInvalid)
-		}
-	}
-	return nil
-}
-
-func counterValues(rm *agentschema.RunMetrics) metrics.CounterDelta {
-	return metrics.CounterDelta{Usage: rm.Usage, Turns: rm.Turns, WallTimeSeconds: rm.WallTimeSeconds, CostUSD: rm.CostUSD, EventCounts: cloneEventCounts(rm.EventCounts)}
-}
-
-func counterDelta(previous, incoming *agentschema.RunMetrics) metrics.CounterDelta {
-	delta := metrics.CounterDelta{}
-	delta.Usage.InputTokens = maxInt64(0, incoming.Usage.InputTokens-previous.Usage.InputTokens)
-	delta.Usage.OutputTokens = maxInt64(0, incoming.Usage.OutputTokens-previous.Usage.OutputTokens)
-	delta.Usage.CacheReadInputTokens = maxInt64(0, incoming.Usage.CacheReadInputTokens-previous.Usage.CacheReadInputTokens)
-	delta.Usage.CacheCreationInputTokens = maxInt64(0, incoming.Usage.CacheCreationInputTokens-previous.Usage.CacheCreationInputTokens)
-	delta.Turns = maxInt(0, incoming.Turns-previous.Turns)
-	delta.WallTimeSeconds = maxInt(0, incoming.WallTimeSeconds-previous.WallTimeSeconds)
-	if incoming.CostUSD > previous.CostUSD {
-		delta.CostUSD = incoming.CostUSD - previous.CostUSD
-	}
-	for name, count := range incoming.EventCounts {
-		if count > previous.EventCounts[name] {
-			if delta.EventCounts == nil {
-				delta.EventCounts = map[string]int{}
-			}
-			delta.EventCounts[name] = count - previous.EventCounts[name]
-		}
-	}
-	return delta
-}
-
-func cloneEventCounts(in map[string]int) map[string]int {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make(map[string]int, len(in))
-	for name, count := range in {
-		out[name] = count
-	}
-	return out
-}
-
-func mergeAttemptEventCounts(previous, incoming map[string]int) map[string]int {
-	out := cloneEventCounts(previous)
-	if out == nil {
-		out = map[string]int{}
-	}
-	for name, count := range incoming {
-		if count > out[name] {
-			out[name] = count
-		}
-	}
-	return out
-}
-
-func addEventCounts(previous, delta map[string]int) map[string]int {
-	out := cloneEventCounts(previous)
-	if out == nil {
-		out = map[string]int{}
-	}
-	for name, count := range delta {
-		out[name] += count
-	}
-	return out
-}
-
-func maxInt64(a, b int64) int64 {
-	if a > b {
-		return a
-	}
-	return b
-}
-func maxInt(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
-
-func sameAttemptMetricIdentity(a, b *agentschema.RunMetrics) bool {
-	return sameAggregateMetricIdentity(a, b) && a.Model == b.Model
-}
-
-func sameAggregateMetricIdentity(a, b *agentschema.RunMetrics) bool {
-	if a == nil || b == nil || a.BuildID != b.BuildID || a.PlanID != b.PlanID || a.FunctionID != b.FunctionID || a.StepName != b.StepName {
-		return false
-	}
-	return (a.WorkflowRunID == nil) == (b.WorkflowRunID == nil) && (a.WorkflowRunID == nil || *a.WorkflowRunID == *b.WorkflowRunID)
-}
-
-func sameExecutionAttemptAttribution(a, b metrics.ExecutionAttemptAttribution) bool {
-	return nullableIntEqual(a.UserID, b.UserID) && a.UserName == b.UserName && a.Source == b.Source && a.Provider == b.Provider && a.Model == b.Model
-}
-
-func nullableIntEqual(a, b *int) bool { return (a == nil) == (b == nil) && (a == nil || *a == *b) }
-
-func readExecutionAttemptMetric(tx Tx, attemptID int64) (*agentschema.RunMetrics, metrics.ExecutionAttemptAttribution, bool, error) {
-	var rm agentschema.RunMetrics
-	var attribution metrics.ExecutionAttemptAttribution
-	var workflowRunID, userID sql.NullInt64
-	var eventCounts []byte
-	err := tx.QueryRow(`SELECT workflow_run_id, function_id, build_id, plan_id, step_name, model,
-		input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, turns, wall_time_seconds, cost_usd, event_counts,
-		user_id, user_name, source, provider
-		FROM agent_run_attempt_metrics WHERE attempt_id = $1 FOR UPDATE`, attemptID).Scan(
-		&workflowRunID, &rm.FunctionID, &rm.BuildID, &rm.PlanID, &rm.StepName, &rm.Model,
-		&rm.Usage.InputTokens, &rm.Usage.OutputTokens, &rm.Usage.CacheReadInputTokens, &rm.Usage.CacheCreationInputTokens, &rm.Turns, &rm.WallTimeSeconds, &rm.CostUSD, &eventCounts,
-		&userID, &attribution.UserName, &attribution.Source, &attribution.Provider,
-	)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, metrics.ExecutionAttemptAttribution{}, false, nil
-	}
-	if err != nil {
-		return nil, metrics.ExecutionAttemptAttribution{}, false, err
-	}
-	if workflowRunID.Valid {
-		value := agentschema.WorkflowRunID(workflowRunID.Int64)
-		rm.WorkflowRunID = &value
-	}
-	if len(eventCounts) > 0 {
-		if err := json.Unmarshal(eventCounts, &rm.EventCounts); err != nil {
-			return nil, metrics.ExecutionAttemptAttribution{}, false, err
-		}
-	}
-	if userID.Valid {
-		value := int(userID.Int64)
-		attribution.UserID = &value
-	}
-	attribution.Model = rm.Model
-	return &rm, attribution, true, nil
-}
-
-func readAggregateForUpdate(tx Tx, buildID int, planID string) (*agentschema.RunMetrics, bool, error) {
-	var rm agentschema.RunMetrics
-	var workflowRunID sql.NullInt64
-	var eventCounts []byte
-	err := tx.QueryRow(`SELECT workflow_run_id, function_id, build_id, plan_id, step_name, model,
-		input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, turns, wall_time_seconds, cost_usd, event_counts
-		FROM agent_run_metrics WHERE build_id = $1 AND plan_id = $2 FOR UPDATE`, buildID, planID).Scan(
-		&workflowRunID, &rm.FunctionID, &rm.BuildID, &rm.PlanID, &rm.StepName, &rm.Model,
-		&rm.Usage.InputTokens, &rm.Usage.OutputTokens, &rm.Usage.CacheReadInputTokens, &rm.Usage.CacheCreationInputTokens, &rm.Turns, &rm.WallTimeSeconds, &rm.CostUSD, &eventCounts,
-	)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, false, nil
-	}
-	if err != nil {
-		return nil, false, err
-	}
-	if workflowRunID.Valid {
-		value := agentschema.WorkflowRunID(workflowRunID.Int64)
-		rm.WorkflowRunID = &value
-	}
-	if len(eventCounts) > 0 {
-		if err := json.Unmarshal(eventCounts, &rm.EventCounts); err != nil {
-			return nil, false, err
-		}
-	}
-	return &rm, true, nil
-}
-
-func hasAttemptMetrics(tx Tx, buildID int, planID string) (bool, error) {
-	var exists bool
-	err := tx.QueryRow(`SELECT EXISTS (SELECT 1 FROM agent_run_attempt_metrics WHERE build_id = $1 AND plan_id = $2)`, buildID, planID).Scan(&exists)
-	return exists, err
-}
-
-func finalizedAttemptMetric(tx Tx, buildID int, planID string) (int64, bool, error) {
-	var attemptID int64
-	err := tx.QueryRow(`SELECT attempt_id FROM agent_run_attempt_metrics WHERE build_id = $1 AND plan_id = $2 AND display_finalized FOR UPDATE`, buildID, planID).Scan(&attemptID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return 0, false, nil
-	}
-	return attemptID, err == nil, err
-}
-
-func attemptMetricPayload(rm *agentschema.RunMetrics) (results, eventCounts any, err error) {
-	eventCounts = []byte(`{}`)
-	if len(rm.Results) > 0 {
-		results = []byte(rm.Results)
-	}
-	if rm.EventCounts != nil {
-		eventCounts, err = json.Marshal(rm.EventCounts)
-	}
-	return results, eventCounts, err
-}
-
-func upsertExecutionAttemptMetric(tx Tx, attemptID int64, executionAttempt int, attribution metrics.ExecutionAttemptAttribution, rm *agentschema.RunMetrics, finalPresentation bool) error {
-	results, eventCounts, err := attemptMetricPayload(rm)
-	if err != nil {
-		return err
-	}
-	_, err = psql.Insert("agent_run_attempt_metrics").
-		Columns("attempt_id", "build_id", "plan_id", "execution_attempt", "workflow_run_id", "function_id", "step_name", "user_id", "user_name", "source", "provider", "model", "status", "summary", "input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens", "turns", "wall_time_seconds", "cost_usd", "results", "events_artifact", "event_counts", "display_finalized").
-		Values(attemptID, rm.BuildID, rm.PlanID, executionAttempt, workflowRunIDValue(rm), rm.FunctionID, rm.StepName, attribution.UserID, attribution.UserName, attribution.Source, attribution.Provider, rm.Model, rm.Status, rm.Summary, rm.Usage.InputTokens, rm.Usage.OutputTokens, rm.Usage.CacheReadInputTokens, rm.Usage.CacheCreationInputTokens, rm.Turns, rm.WallTimeSeconds, rm.CostUSD, results, rm.EventsArtifact, eventCounts, finalPresentation).
-		Suffix(`ON CONFLICT (attempt_id) DO UPDATE SET
-			status = CASE WHEN EXCLUDED.display_finalized THEN EXCLUDED.status ELSE agent_run_attempt_metrics.status END,
-			summary = CASE WHEN EXCLUDED.display_finalized THEN EXCLUDED.summary ELSE agent_run_attempt_metrics.summary END,
-			input_tokens = GREATEST(agent_run_attempt_metrics.input_tokens, EXCLUDED.input_tokens),
-			output_tokens = GREATEST(agent_run_attempt_metrics.output_tokens, EXCLUDED.output_tokens),
-			cache_read_tokens = GREATEST(agent_run_attempt_metrics.cache_read_tokens, EXCLUDED.cache_read_tokens),
-			cache_creation_tokens = GREATEST(agent_run_attempt_metrics.cache_creation_tokens, EXCLUDED.cache_creation_tokens),
-			turns = GREATEST(agent_run_attempt_metrics.turns, EXCLUDED.turns),
-			wall_time_seconds = GREATEST(agent_run_attempt_metrics.wall_time_seconds, EXCLUDED.wall_time_seconds),
-			cost_usd = GREATEST(agent_run_attempt_metrics.cost_usd, EXCLUDED.cost_usd),
-			results = CASE WHEN EXCLUDED.display_finalized THEN EXCLUDED.results ELSE agent_run_attempt_metrics.results END,
-			events_artifact = CASE WHEN EXCLUDED.display_finalized THEN EXCLUDED.events_artifact ELSE agent_run_attempt_metrics.events_artifact END,
-			event_counts = EXCLUDED.event_counts,
-			display_finalized = agent_run_attempt_metrics.display_finalized OR EXCLUDED.display_finalized,
-			updated_at = clock_timestamp()`).RunWith(tx).Exec()
-	return err
-}
-
-func insertAttemptAggregate(tx Tx, rm *agentschema.RunMetrics) error {
-	results, eventCounts, err := attemptMetricPayload(rm)
-	if err != nil {
-		return err
-	}
-	_, err = psql.Insert("agent_run_metrics").Columns("workflow_run_id", "function_id", "build_id", "plan_id", "step_name", "status", "summary", "model", "input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens", "turns", "wall_time_seconds", "cost_usd", "results", "events_artifact", "event_counts").
-		Values(workflowRunIDValue(rm), rm.FunctionID, rm.BuildID, rm.PlanID, rm.StepName, rm.Status, rm.Summary, rm.Model, rm.Usage.InputTokens, rm.Usage.OutputTokens, rm.Usage.CacheReadInputTokens, rm.Usage.CacheCreationInputTokens, rm.Turns, rm.WallTimeSeconds, rm.CostUSD, results, rm.EventsArtifact, eventCounts).RunWith(tx).Exec()
-	return err
-}
-
-func applyAttemptAggregateDelta(tx Tx, buildID int, planID string, rm *agentschema.RunMetrics, delta metrics.CounterDelta, aggregateEvents map[string]int, finalPresentation bool) error {
-	_, eventCounts, err := attemptMetricPayload(&agentschema.RunMetrics{EventCounts: aggregateEvents})
-	if err != nil {
-		return err
-	}
-	if !finalPresentation {
-		_, err = tx.Exec(`UPDATE agent_run_metrics SET input_tokens = input_tokens + $1, output_tokens = output_tokens + $2, cache_read_tokens = cache_read_tokens + $3, cache_creation_tokens = cache_creation_tokens + $4, turns = turns + $5, wall_time_seconds = wall_time_seconds + $6, cost_usd = cost_usd + $7, event_counts = $8 WHERE build_id = $9 AND plan_id = $10`, delta.Usage.InputTokens, delta.Usage.OutputTokens, delta.Usage.CacheReadInputTokens, delta.Usage.CacheCreationInputTokens, delta.Turns, delta.WallTimeSeconds, delta.CostUSD, eventCounts, buildID, planID)
-		return err
-	}
-	results, _, err := attemptMetricPayload(rm)
-	if err != nil {
-		return err
-	}
-	_, err = tx.Exec(`UPDATE agent_run_metrics SET status = $1, summary = $2, model = $3, results = $4, events_artifact = $5, event_counts = $6, input_tokens = input_tokens + $7, output_tokens = output_tokens + $8, cache_read_tokens = cache_read_tokens + $9, cache_creation_tokens = cache_creation_tokens + $10, turns = turns + $11, wall_time_seconds = wall_time_seconds + $12, cost_usd = cost_usd + $13 WHERE build_id = $14 AND plan_id = $15`, rm.Status, rm.Summary, rm.Model, results, rm.EventsArtifact, eventCounts, delta.Usage.InputTokens, delta.Usage.OutputTokens, delta.Usage.CacheReadInputTokens, delta.Usage.CacheCreationInputTokens, delta.Turns, delta.WallTimeSeconds, delta.CostUSD, buildID, planID)
-	return err
-}
-
-func hasLedgerCounters(delta metrics.CounterDelta) bool {
-	return delta.Usage.InputTokens > 0 || delta.Usage.OutputTokens > 0 || delta.Usage.CacheReadInputTokens > 0 || delta.Usage.CacheCreationInputTokens > 0 || delta.Turns > 0 || delta.CostUSD > 0
-}
-
-func insertExecutionAttemptLedger(tx Tx, attribution metrics.ExecutionAttemptAttribution, key metrics.ExecutionAttemptKey, rm *agentschema.RunMetrics, delta metrics.CounterDelta) error {
-	metadata, err := json.Marshal(map[string]any{"attempt_id": key.AttemptID, "execution_attempt": key.ExecutionAttempt, "function_id": rm.FunctionID})
-	if err != nil {
-		return err
-	}
-	var workflowRunID any
-	if rm.WorkflowRunID != nil {
-		workflowRunID = int64(*rm.WorkflowRunID)
-	}
-	_, err = psql.Insert("agent_cost_ledger").Columns("occurred_at", "user_id", "user_name", "workflow_run_id", "function_id", "build_id", "step_name", "source", "provider", "model", "input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens", "turns", "cost_usd", "metadata").
-		Values(sq.Expr("now()"), attribution.UserID, attribution.UserName, workflowRunID, rm.FunctionID, rm.BuildID, rm.StepName, attribution.Source, attribution.Provider, attribution.Model, delta.Usage.InputTokens, delta.Usage.OutputTokens, delta.Usage.CacheReadInputTokens, delta.Usage.CacheCreationInputTokens, delta.Turns, delta.CostUSD, metadata).RunWith(tx).Exec()
-	return err
 }
 
 // UpsertReturningInserted performs the ON CONFLICT (build_id, plan_id) upsert,
@@ -479,13 +66,13 @@ func (f *agentRunMetricsFactory) UpsertReturningInserted(rm *agentschema.RunMetr
 
 	var prev *agentschema.RunMetrics
 	var p agentschema.RunMetrics
-	err = psql.Select("cost_usd", "input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens", "turns").
+	err = psql.Select("cost_usd", "input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens", "turns", "ingestion_seq").
 		From("agent_run_metrics").
 		Where(sq.Eq{"build_id": rm.BuildID, "plan_id": rm.PlanID}).
 		Suffix("FOR UPDATE").
 		RunWith(tx).
 		QueryRow().
-		Scan(&p.CostUSD, &p.Usage.InputTokens, &p.Usage.OutputTokens, &p.Usage.CacheReadInputTokens, &p.Usage.CacheCreationInputTokens, &p.Turns)
+		Scan(&p.CostUSD, &p.Usage.InputTokens, &p.Usage.OutputTokens, &p.Usage.CacheReadInputTokens, &p.Usage.CacheCreationInputTokens, &p.Turns, &p.IngestionSeq)
 	switch {
 	case err == nil:
 		prev = &p
@@ -545,11 +132,12 @@ func (f *agentRunMetricsFactory) UpsertReturningInserted(rm *agentschema.RunMetr
 			cost_usd = GREATEST(agent_run_metrics.cost_usd, EXCLUDED.cost_usd),
 			results = COALESCE(EXCLUDED.results, agent_run_metrics.results),
 			events_artifact = COALESCE(NULLIF(EXCLUDED.events_artifact, ''), agent_run_metrics.events_artifact),
-			event_counts = COALESCE(NULLIF(EXCLUDED.event_counts, '{}'::jsonb), agent_run_metrics.event_counts)
-		RETURNING (xmax = 0) AS inserted`).
+			event_counts = COALESCE(NULLIF(EXCLUDED.event_counts, '{}'::jsonb), agent_run_metrics.event_counts),
+			ingestion_seq = agent_run_metrics.ingestion_seq + 1
+		RETURNING (xmax = 0) AS inserted, ingestion_seq`).
 		RunWith(tx).
 		QueryRow().
-		Scan(&inserted)
+		Scan(&inserted, &rm.IngestionSeq)
 	if err != nil {
 		return false, nil, err
 	}
@@ -596,13 +184,19 @@ func (f *agentRunMetricsFactory) InsertIfAbsent(rm *agentschema.RunMetrics) (boo
 			rm.Turns, rm.WallTimeSeconds, rm.CostUSD,
 			results, rm.EventsArtifact, eventCounts,
 		).
-		Suffix(`ON CONFLICT (build_id, plan_id) DO NOTHING RETURNING true`).
+		// Every data column is left alone on conflict -- that is the whole
+		// point of this path -- but the sequence still advances. A degraded
+		// ingestion IS an execution: an interrupted agent writes no flight
+		// output and lands here, and the interruption cap has nothing to count
+		// if the row it collides with silently absorbs it. DO NOTHING cannot
+		// express "preserve but count", so this is a DO UPDATE that touches
+		// exactly one column.
+		Suffix(`ON CONFLICT (build_id, plan_id) DO UPDATE SET
+			ingestion_seq = agent_run_metrics.ingestion_seq + 1
+		RETURNING (xmax = 0) AS inserted, ingestion_seq`).
 		RunWith(f.conn).
 		QueryRow().
-		Scan(&inserted)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil // conflict fired — existing row preserved
-	}
+		Scan(&inserted, &rm.IngestionSeq)
 	return inserted, err
 }
 

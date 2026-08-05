@@ -63,7 +63,6 @@ var (
 //counterfeiter:generate . AgentRunTranscriptFactory
 type AgentRunTranscriptFactory interface {
 	Upsert(t AgentRunTranscript) error
-	UpsertExecutionAttempt(t AgentRunAttemptTranscript) error
 	// ListByWorkflowRun returns every transcript of one durable workflow run,
 	// oldest-first. Both the workflow name and the run id scope the query
 	// (identity + authz).
@@ -98,69 +97,6 @@ func (f *agentRunTranscriptFactory) Upsert(t AgentRunTranscript) error {
 		RunWith(f.conn).
 		Exec()
 	return err
-}
-
-// UpsertExecutionAttempt keeps a restarted runner's bytes under its own
-// durable attempt ID. The selected attempt and its legacy build/plan
-// presentation are written in one transaction; no later attempt can replace a
-// selected presentation.
-func (f *agentRunTranscriptFactory) UpsertExecutionAttempt(t AgentRunAttemptTranscript) error {
-	if t.AttemptID <= 0 || t.BuildID <= 0 || t.PlanID == "" || t.ExecutionAttempt <= 0 ||
-		t.ByteLen < 0 || t.ByteLen != len(t.NDJSON) {
-		return fmt.Errorf("%w: attempt ID, build ID, plan ID, execution attempt, and byte length are required", ErrAgentRunAttemptTranscriptInvalid)
-	}
-
-	tx, err := f.conn.Begin()
-	if err != nil {
-		return err
-	}
-	defer Rollback(tx)
-
-	if _, err := tx.Exec(`SELECT pg_advisory_xact_lock(hashtextextended($1, 1773106147))`, fmt.Sprintf("%d:%s", t.BuildID, t.PlanID)); err != nil {
-		return err
-	}
-	if err := verifyAgentRunAttemptTranscriptAuthority(tx, t); err != nil {
-		return err
-	}
-
-	existing, found, err := readAgentRunAttemptTranscript(tx, t.AttemptID)
-	if err != nil {
-		return err
-	}
-	if found && !sameAgentRunAttemptTranscriptIdentity(existing, t) {
-		return fmt.Errorf("%w: attempt_id=%d", ErrAgentRunAttemptTranscriptIdentity, t.AttemptID)
-	}
-
-	// A selected attempt remains presentation authority during byte refreshes,
-	// even if a resume path replays the request without this flag.
-	t.FinalPresentation = t.FinalPresentation || (found && existing.FinalPresentation)
-	if t.FinalPresentation {
-		finalAttemptID, hasFinal, err := finalizedAgentRunAttemptTranscript(tx, t.BuildID, t.PlanID)
-		if err != nil {
-			return err
-		}
-		if hasFinal && finalAttemptID != t.AttemptID {
-			return fmt.Errorf("%w: build_id=%d plan_id=%q", ErrAgentRunAttemptTranscriptFinalized, t.BuildID, t.PlanID)
-		}
-	}
-
-	if err := upsertAgentRunAttemptTranscript(tx, t); err != nil {
-		return err
-	}
-	if t.FinalPresentation {
-		aggregate, aggregateFound, err := readAgentRunTranscriptForUpdate(tx, t.BuildID, t.PlanID)
-		if err != nil {
-			return err
-		}
-		if aggregateFound && !sameAgentRunTranscriptIdentity(aggregate, t) {
-			return fmt.Errorf("%w: legacy aggregate build_id=%d plan_id=%q", ErrAgentRunAttemptTranscriptIdentity, t.BuildID, t.PlanID)
-		}
-		if err := upsertLegacyAgentRunTranscript(tx, t); err != nil {
-			return err
-		}
-	}
-
-	return tx.Commit()
 }
 
 func verifyAgentRunAttemptTranscriptAuthority(tx Tx, t AgentRunAttemptTranscript) error {

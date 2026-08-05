@@ -96,6 +96,12 @@ type RunMetrics struct {
 	EventsArtifact  string          `json:"events_artifact,omitempty"`
 	EventCounts     map[string]int  `json:"event_counts,omitempty"`
 	CreatedAt       int64           `json:"created_at,omitempty"` // epoch seconds; set by the DB on read
+	// IngestionSeq counts how many times this (BuildID, PlanID) has been
+	// ingested. The row is upserted on that key, so a step that executes more
+	// than once overwrites its own record; this is the only thing that survives
+	// to say it happened. Server-assigned on write and never accepted from the
+	// ingesting client.
+	IngestionSeq int `json:"ingestion_seq,omitempty"`
 }
 
 // Run outcome tokens — the vocabulary of RunMetrics.Outcome. A superset of

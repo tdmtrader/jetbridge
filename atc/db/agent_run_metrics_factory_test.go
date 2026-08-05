@@ -2,13 +2,10 @@ package db_test
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
 
-	"github.com/concourse/concourse/agent/api/metrics"
-	"github.com/concourse/concourse/agent/budget"
 	schema "github.com/concourse/concourse/agent/schema"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc/db"
@@ -36,151 +33,67 @@ var _ = Describe("AgentRunMetricsFactory", func() {
 		return err
 	}
 
-	allocateAttempt := func(buildID int, planID string, functionID string, executionAttempt int) int64 {
-		var headID, attemptID int64
-		Expect(dbConn.QueryRow(`
-			INSERT INTO agent_run_checkpoint_heads (build_id, plan_id, function_id)
-			VALUES ($1, $2, $3) RETURNING id
-		`, buildID, planID, functionID).Scan(&headID)).To(Succeed())
-		Expect(dbConn.QueryRow(`
-			INSERT INTO agent_run_attempts
-				(head_id, attempt_number, state, is_current, materialization_id)
-			VALUES ($1, $2, 'scheduling', TRUE, $3)
-			RETURNING id
-		`, headID, executionAttempt, fmt.Sprintf("metrics-%d", executionAttempt)).Scan(&attemptID)).To(Succeed())
-		return attemptID
-	}
-
-	attemptRequest := func(attemptID int64, buildID int, planID string, executionAttempt int, rm *schema.RunMetrics, final bool) metrics.ExecutionAttemptRequest {
-		return metrics.ExecutionAttemptRequest{
-			Key:     metrics.ExecutionAttemptKey{AttemptID: attemptID, BuildID: buildID, PlanID: planID, ExecutionAttempt: executionAttempt},
-			Metrics: rm, FinalPresentation: final,
-			Attribution: metrics.ExecutionAttemptAttribution{Source: budget.SourceAgentStep, Provider: "anthropic", Model: "claude-sonnet-4-5"},
+	// The row is upserted on (build_id, plan_id), so a step that executes more
+	// than once overwrites its own record. The sequence is the only thing that
+	// survives to say it happened -- and it is what bounds interruption
+	// restarts, which must survive the web process that was counting them.
+	It("counts each ingestion of the same step on the row it writes", func() {
+		rm := &schema.RunMetrics{
+			BuildID: 77, PlanID: "seq-1", StepName: "implement",
+			Status: "ok", CostUSD: 0.10, WallTimeSeconds: 30,
 		}
-	}
 
-	It("accounts recovery metrics against exact durable attempts without losing interrupted spend", func() {
-		firstID := allocateAttempt(801, "recover", "implement", 1)
-		first := &schema.RunMetrics{
-			BuildID: 801, PlanID: "recover", StepName: "implement", Status: "error", Summary: "interrupted",
-			Usage: schema.Usage{InputTokens: 100, OutputTokens: 20}, Turns: 3, WallTimeSeconds: 12, CostUSD: 0.30,
-			EventCounts: map[string]int{"tool.call": 4},
+		_, _, err := factory.UpsertReturningInserted(rm)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(rm.IngestionSeq).To(Equal(1), "a first ingestion is sequence 1, never 0")
+
+		_, _, err = factory.UpsertReturningInserted(rm)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(rm.IngestionSeq).To(Equal(2))
+
+		_, _, err = factory.UpsertReturningInserted(rm)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(rm.IngestionSeq).To(Equal(3))
+
+		By("not advancing another step's sequence")
+		other := &schema.RunMetrics{
+			BuildID: 77, PlanID: "seq-2", StepName: "implement",
+			Status: "ok", CostUSD: 0.10, WallTimeSeconds: 30,
 		}
-		update, err := factory.UpsertExecutionAttempt(attemptRequest(firstID, 801, "recover", 1, first, false))
-		Expect(err).NotTo(HaveOccurred())
-		Expect(update.Inserted).To(BeTrue())
-		Expect(update.Delta.CostUSD).To(BeNumerically("~", 0.30, 1e-9))
-
-		update, err = factory.UpsertExecutionAttempt(attemptRequest(firstID, 801, "recover", 1, first, false))
-		Expect(err).NotTo(HaveOccurred())
-		Expect(update.Inserted).To(BeFalse())
-		Expect(update.Delta.CostUSD).To(BeNumerically("~", 0, 1e-9))
-
-		// The row is durable recovery authority; create its direct successor
-		// exactly as the attempt factory does after an interruption.
-		var headID, secondID int64
-		Expect(dbConn.QueryRow(`SELECT head_id FROM agent_run_attempts WHERE id = $1`, firstID).Scan(&headID)).To(Succeed())
-		_, err = dbConn.Exec(`UPDATE agent_run_attempts SET state = 'interrupted', is_current = FALSE,
-			interruption_reason = 'preempted', interrupted_at = clock_timestamp() WHERE id = $1`, firstID)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(dbConn.QueryRow(`INSERT INTO agent_run_attempts
-			(head_id, attempt_number, state, is_current, materialization_id, source_attempt_number,
-			 source_checkpoint_generation, recovery_mode, source_interruption_reason)
-			VALUES ($1, 2, 'scheduling', TRUE, 'metrics-2', 1, 0, 'checkpoint_zero', 'preempted') RETURNING id`, headID).Scan(&secondID)).To(Succeed())
-		second := &schema.RunMetrics{
-			BuildID: 801, PlanID: "recover", StepName: "implement", Status: "ok", Summary: "completed after recovery",
-			Usage: schema.Usage{InputTokens: 70, OutputTokens: 40}, Turns: 4, WallTimeSeconds: 9, CostUSD: 0.25,
-			EventCounts: map[string]int{"tool.call": 3, "subagent.call": 1},
-		}
-		update, err = factory.UpsertExecutionAttempt(attemptRequest(secondID, 801, "recover", 2, second, true))
-		Expect(err).NotTo(HaveOccurred())
-		Expect(update.Delta.CostUSD).To(BeNumerically("~", 0.25, 1e-9))
-
-		rows, err := factory.GetByBuild(801)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(rows).To(HaveLen(1))
-		Expect(rows[0].CostUSD).To(BeNumerically("~", 0.55, 1e-9))
-		Expect(rows[0].Usage.InputTokens).To(Equal(int64(170)))
-		Expect(rows[0].Turns).To(Equal(7))
-		Expect(rows[0].Status).To(Equal(schema.RunStatusOK))
-		Expect(rows[0].Summary).To(Equal("completed after recovery"))
-		Expect(rows[0].Model).To(Equal("claude-sonnet-4-5"))
-
-		var ledgerEntries int
-		var ledgerCost float64
-		Expect(dbConn.QueryRow(`SELECT COUNT(*), COALESCE(SUM(cost_usd), 0)::float8
-			FROM agent_cost_ledger WHERE build_id = 801 AND step_name = 'implement'`).Scan(&ledgerEntries, &ledgerCost)).To(Succeed())
-		Expect(ledgerEntries).To(Equal(2))
-		Expect(ledgerCost).To(BeNumerically("~", 0.55, 1e-9))
+		_, _, err = factory.UpsertReturningInserted(other)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(other.IngestionSeq).To(Equal(1))
 	})
 
-	It("rejects telemetry whose durable attempt binding or server attribution drifts", func() {
-		attemptID := allocateAttempt(802, "identity", "implement", 1)
-		rm := &schema.RunMetrics{BuildID: 802, PlanID: "identity", StepName: "implement", FunctionID: "forged", Status: "error", Model: "other"}
-		_, err := factory.UpsertExecutionAttempt(attemptRequest(attemptID, 802, "identity", 1, rm, false))
-		Expect(errors.Is(err, metrics.ErrExecutionAttemptIdentityDrift)).To(BeTrue())
-
-		rm.FunctionID, rm.Model = "", ""
-		request := attemptRequest(attemptID, 802, "identity", 1, rm, false)
-		request.Key.ExecutionAttempt = 2
-		_, err = factory.UpsertExecutionAttempt(request)
-		Expect(errors.Is(err, metrics.ErrExecutionAttemptInvalid)).To(BeTrue())
-	})
-
-	It("fails closed on a legacy aggregate and permits only one final presentation", func() {
-		legacy := &schema.RunMetrics{
-			BuildID: 803, PlanID: "mixed", FunctionID: "implement", StepName: "implement",
-			Status: "error", CostUSD: 0.40,
+	// An interrupted agent writes no flight output, so its ingestion takes the
+	// degraded InsertIfAbsent path. That path must not overwrite a real row --
+	// but it must still record that another execution happened, or the
+	// interruption cap has nothing to count and retries are unbounded.
+	It("counts a degraded ingestion without overwriting the row it found", func() {
+		real := &schema.RunMetrics{
+			BuildID: 78, PlanID: "degraded", StepName: "implement",
+			Status: "ok", Summary: "real", CostUSD: 1.70, WallTimeSeconds: 392,
 		}
-		Expect(upsert(legacy)).To(Succeed())
-		attemptID := allocateAttempt(803, "mixed", "implement", 1)
-		_, err := factory.UpsertExecutionAttempt(attemptRequest(attemptID, 803, "mixed", 1, legacy, false))
-		Expect(errors.Is(err, metrics.ErrExecutionAttemptAggregateAmbiguous)).To(BeTrue())
+		_, _, err := factory.UpsertReturningInserted(real)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(real.IngestionSeq).To(Equal(1))
 
-		oneID := allocateAttempt(804, "final", "implement", 1)
-		one := &schema.RunMetrics{BuildID: 804, PlanID: "final", StepName: "implement", Status: "ok", Summary: "first"}
-		_, err = factory.UpsertExecutionAttempt(attemptRequest(oneID, 804, "final", 1, one, true))
-		Expect(err).NotTo(HaveOccurred())
-		var headID, twoID int64
-		Expect(dbConn.QueryRow(`SELECT head_id FROM agent_run_attempts WHERE id = $1`, oneID).Scan(&headID)).To(Succeed())
-		_, err = dbConn.Exec(`UPDATE agent_run_attempts SET state = 'interrupted', is_current = FALSE,
-			interruption_reason = 'preempted', interrupted_at = clock_timestamp() WHERE id = $1`, oneID)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(dbConn.QueryRow(`INSERT INTO agent_run_attempts
-			(head_id, attempt_number, state, is_current, materialization_id, source_attempt_number,
-			 source_checkpoint_generation, recovery_mode, source_interruption_reason)
-			VALUES ($1, 2, 'scheduling', TRUE, 'metrics-final-2', 1, 0, 'checkpoint_zero', 'preempted') RETURNING id`, headID).Scan(&twoID)).To(Succeed())
-		_, err = factory.UpsertExecutionAttempt(attemptRequest(twoID, 804, "final", 2, &schema.RunMetrics{BuildID: 804, PlanID: "final", StepName: "implement", Status: "ok", Summary: "second"}, true))
-		Expect(errors.Is(err, metrics.ErrExecutionAttemptPresentationFinalized)).To(BeTrue())
-	})
+		degraded := &schema.RunMetrics{
+			BuildID: 78, PlanID: "degraded", StepName: "implement",
+			Status: "error", Summary: "", CostUSD: 0, WallTimeSeconds: 0,
+		}
+		inserted, err := factory.InsertIfAbsent(degraded)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(inserted).To(BeFalse(), "the real row must survive")
+		Expect(degraded.IngestionSeq).To(Equal(2), "but the execution must still be counted")
 
-	It("rolls back attempt and aggregate metrics when their ledger delta cannot persist", func() {
-		const trigger = "reject_attempt_metric_ledger_test"
-		const function = "reject_attempt_metric_ledger_test_fn"
-		_, err := dbConn.Exec(`CREATE FUNCTION ` + function + `() RETURNS trigger AS $$
-			BEGIN RAISE EXCEPTION 'forced attempt ledger failure'; END;
-		$$ LANGUAGE plpgsql`)
-		Expect(err).NotTo(HaveOccurred())
-		_, err = dbConn.Exec(`CREATE TRIGGER ` + trigger + ` BEFORE INSERT ON agent_cost_ledger
-			FOR EACH ROW EXECUTE FUNCTION ` + function + `()`)
-		Expect(err).NotTo(HaveOccurred())
-		DeferCleanup(func() {
-			_, _ = dbConn.Exec(`DROP TRIGGER IF EXISTS ` + trigger + ` ON agent_cost_ledger`)
-			_, _ = dbConn.Exec(`DROP FUNCTION IF EXISTS ` + function + `()`)
-		})
-
-		attemptID := allocateAttempt(805, "atomic", "implement", 1)
-		_, err = factory.UpsertExecutionAttempt(attemptRequest(attemptID, 805, "atomic", 1, &schema.RunMetrics{
-			BuildID: 805, PlanID: "atomic", StepName: "implement", Status: "error", CostUSD: 0.10,
-		}, false))
-		Expect(err).To(HaveOccurred())
-		var aggregateRows, attemptRows, ledgerRows int
-		Expect(dbConn.QueryRow(`SELECT COUNT(*) FROM agent_run_metrics WHERE build_id = 805`).Scan(&aggregateRows)).To(Succeed())
-		Expect(dbConn.QueryRow(`SELECT COUNT(*) FROM agent_run_attempt_metrics WHERE attempt_id = $1`, attemptID).Scan(&attemptRows)).To(Succeed())
-		Expect(dbConn.QueryRow(`SELECT COUNT(*) FROM agent_cost_ledger WHERE build_id = 805`).Scan(&ledgerRows)).To(Succeed())
-		Expect(aggregateRows).To(BeZero())
-		Expect(attemptRows).To(BeZero())
-		Expect(ledgerRows).To(BeZero())
+		By("leaving the real row's data intact")
+		stored, err := factory.GetByBuild(78)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(stored).To(HaveLen(1))
+		Expect(stored[0].Status).To(Equal("ok"))
+		Expect(stored[0].Summary).To(Equal("real"))
+		Expect(stored[0].CostUSD).To(BeNumerically("~", 1.70, 1e-9))
 	})
 
 	It("upserts on (build_id, plan_id), returning replaced ledger counters", func() {
