@@ -2174,8 +2174,6 @@ func (cmd *RunCommand) composeAgentSnapshots(connection db.DbConn, logger lager.
 	return nil
 }
 
-var errAgentCheckpointReclamationPass = errors.New("agent checkpoint reclamation pass failed")
-
 func agentSnapshotStreamErrorReporter(logger lager.Logger) snapshotsapi.ErrorReporter {
 	apiLogger := logger.Session("agent-snapshot-api")
 	return func(_ context.Context, category string) {

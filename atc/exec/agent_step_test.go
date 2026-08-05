@@ -2073,24 +2073,3 @@ func (s *stubTranscriptStore) Upsert(t db.AgentRunTranscript) error {
 	s.upserted = append(s.upserted, t)
 	return s.err
 }
-
-type checkpointMaterializingContainer struct {
-	*runtimetest.Container
-	events *[]string
-	err    error
-}
-
-func (container *checkpointMaterializingContainer) MaterializeBeforeLaunch(context.Context, runtime.ProcessSpec) error {
-	*container.events = append(*container.events, "materialize")
-	return container.err
-}
-
-func (container *checkpointMaterializingContainer) Attach(ctx context.Context, id string, processIO runtime.ProcessIO) (runtime.Process, error) {
-	*container.events = append(*container.events, "attach")
-	return container.Container.Attach(ctx, id, processIO)
-}
-
-func (container *checkpointMaterializingContainer) Run(ctx context.Context, spec runtime.ProcessSpec, processIO runtime.ProcessIO) (runtime.Process, error) {
-	*container.events = append(*container.events, "run")
-	return container.Container.Run(ctx, spec, processIO)
-}

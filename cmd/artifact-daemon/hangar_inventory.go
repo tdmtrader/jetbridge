@@ -32,7 +32,12 @@ const (
 // hangar.Kind on purpose: a kind omitted here would hold bytes that the
 // capacity alert never counts, which is precisely the blind spot this metric
 // exists to remove.
-var hangarInventoryKinds = []hangar.Kind{hangar.KindSnapshot}
+// KindCheckpoint stays in the inventory even though nothing writes it any
+// more. The checkpoint subsystem was removed, but a deployment that ran it
+// may still hold objects under that prefix and nothing sweeps them now --
+// dropping the kind here would make those bytes invisible to the residency
+// gauges and to the alerts that fire before the store fills.
+var hangarInventoryKinds = []hangar.Kind{hangar.KindSnapshot, hangar.KindCheckpoint}
 
 // hangarResidency is one kind's aggregate occupancy.
 type hangarResidency struct {

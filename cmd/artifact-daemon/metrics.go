@@ -19,9 +19,6 @@ type metrics struct {
 	snapshotOperations *prometheus.CounterVec
 	snapshotBytes      *prometheus.CounterVec
 	snapshotDuration   *prometheus.HistogramVec
-	checkpointOps      *prometheus.CounterVec
-	checkpointBytes    *prometheus.CounterVec
-	checkpointDuration *prometheus.HistogramVec
 
 	// Residency, as distinct from throughput. Every collector above counts
 	// bytes and operations that moved; none of them can answer "how much does
@@ -71,22 +68,6 @@ func newMetrics() *metrics {
 			Help:      "Immutable snapshot operation duration by operation and bounded status.",
 			Buckets:   prometheus.DefBuckets,
 		}, []string{"operation", "status"}),
-		checkpointOps: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Namespace: "artifact_daemon",
-			Name:      "checkpoint_capture_operations_total",
-			Help:      "Checkpoint archive and durable upload operations by bounded outcome.",
-		}, []string{"operation", "status"}),
-		checkpointBytes: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Namespace: "artifact_daemon",
-			Name:      "checkpoint_capture_bytes_total",
-			Help:      "Checkpoint archive and durable upload bytes by bounded outcome.",
-		}, []string{"operation", "status"}),
-		checkpointDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
-			Namespace: "artifact_daemon",
-			Name:      "checkpoint_capture_duration_seconds",
-			Help:      "Checkpoint archive and durable upload duration by bounded operation.",
-			Buckets:   prometheus.DefBuckets,
-		}, []string{"operation", "status"}),
 		hangarObjects: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Namespace: "artifact_daemon",
 			Name:      "hangar_objects",
@@ -115,9 +96,6 @@ func newMetrics() *metrics {
 		m.snapshotOperations,
 		m.snapshotBytes,
 		m.snapshotDuration,
-		m.checkpointOps,
-		m.checkpointBytes,
-		m.checkpointDuration,
 		m.hangarObjects,
 		m.hangarBytes,
 		m.hangarInventoryRefreshes,
@@ -166,25 +144,6 @@ func (m *metrics) recordSnapshot(operation, status string, bytes int64, duration
 		m.snapshotBytes.WithLabelValues(operation, status).Add(float64(bytes))
 	}
 	m.snapshotDuration.WithLabelValues(operation, status).Observe(duration.Seconds())
-}
-
-func (m *metrics) recordCheckpoint(operation, status string, bytes int64, duration time.Duration) {
-	if m == nil {
-		return
-	}
-	if operation != "prepare" && operation != "upload" {
-		operation = "unknown"
-	}
-	switch status {
-	case "ok", "rejected", "expired", "unavailable", "failed":
-	default:
-		status = "failed"
-	}
-	m.checkpointOps.WithLabelValues(operation, status).Inc()
-	if bytes > 0 {
-		m.checkpointBytes.WithLabelValues(operation, status).Add(float64(bytes))
-	}
-	m.checkpointDuration.WithLabelValues(operation, status).Observe(duration.Seconds())
 }
 
 // recordHangarResidency publishes one kind's aggregate occupancy. It is called
