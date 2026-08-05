@@ -923,8 +923,6 @@ type ContentStore interface {
 }
 
 // DigestLease is a session-scoped lease whose coverage is testable.
-//
-//counterfeiter:generate . DigestLease
 type DigestLease interface {
 	Covers(Digest) bool
 	Close() error

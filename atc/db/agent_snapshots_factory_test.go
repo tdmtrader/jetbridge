@@ -13,7 +13,6 @@ import (
 
 	"github.com/concourse/concourse/agent/pagination"
 	"github.com/concourse/concourse/agent/snapshot"
-	"github.com/concourse/concourse/agent/snapshot/snapshotfakes"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbfakes"
@@ -329,9 +328,7 @@ plan:
 	})
 
 	It("rejects a forged digest lease even when it claims coverage", func() {
-		forged := new(snapshotfakes.FakeDigestLease)
-		forged.CoversReturns(true)
-		_, err := factory.StageUpload(ctx, forged, snapshot.StageUploadRequest{
+		_, err := factory.StageUpload(ctx, forgedDigestLease{}, snapshot.StageUploadRequest{
 			Digest: digest("1"), TeamID: defaultTeam.ID(), Attempt: "forged",
 			LeaseExpiresAt: time.Now().Add(time.Hour),
 		})
@@ -2112,3 +2109,11 @@ func receiveDigestLease(results <-chan observedDigestLeaseResult) snapshot.Diges
 	Expect(result.lease).NotTo(BeNil())
 	return result.lease
 }
+
+// forgedDigestLease is a lease the database lock manager never issued. It
+// claims to cover every digest, which is the point: coverage it asserts about
+// itself must not be enough to stage an upload.
+type forgedDigestLease struct{}
+
+func (forgedDigestLease) Covers(snapshot.Digest) bool { return true }
+func (forgedDigestLease) Close() error                { return nil }
