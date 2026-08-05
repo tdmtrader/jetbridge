@@ -1865,24 +1865,60 @@ var _ = Describe("AgentStep", func() {
 			})
 		})
 
+		// An interruption is retriable, but only so far. Nothing on the
+		// Retriable path counts anything -- the engine returns without
+		// finishing and the build tracker re-picks the build up -- so for an
+		// agent whose pod is gone, every cycle would wipe the workspace and
+		// start a fresh agent at full token spend until a human aborted the
+		// build. The durable ingestion sequence is what bounds it.
 		DescribeTable("when process.Wait reports an interruption", func(reason runtime.InterruptionReason) {
 			chosenContainer.ProcessDefs[0].Stub.Call = func(context.Context, *runtimetest.Process) (runtime.ProcessResult, error) {
 				return runtime.ProcessResult{}, runtime.NewInterruptionError(reason, errors.New("pod lifecycle ended"))
 			}
 
 			ok, err := step.Run(ctx, state)
-			Expect(err).ToNot(HaveOccurred())
 			Expect(ok).To(BeFalse())
+
+			By("surfacing the interruption so RetryError can mark the step retriable")
+			Expect(err).To(HaveOccurred())
+			var interruption runtime.InterruptionError
+			Expect(errors.As(err, &interruption)).To(BeTrue())
+			Expect(interruption.InterruptionReason()).To(Equal(reason))
 			Expect(fakeDelegate.FinishedCallCount()).To(BeZero())
-			Expect(fakeDelegate.ErroredCallCount()).To(Equal(1))
-			_, message := fakeDelegate.ErroredArgsForCall(0)
-			Expect(message).To(Equal(fmt.Sprintf("manual_review_required: agent execution interrupted (%s); automatic replay is disabled until durable recovery proves safety", reason)))
 		},
 			Entry("pod deletion", runtime.InterruptionPodDeleted),
 			Entry("eviction", runtime.InterruptionEvicted),
 			Entry("node loss", runtime.InterruptionNodeLost),
 			Entry("preemption", runtime.InterruptionPreempted),
 		)
+
+		It("stops retrying an interruption once the step has burned its restart cap", func() {
+			chosenContainer.ProcessDefs[0].Stub.Call = func(context.Context, *runtimetest.Process) (runtime.ProcessResult, error) {
+				return runtime.ProcessResult{}, runtime.NewInterruptionError(runtime.InterruptionPreempted, errors.New("pod lifecycle ended"))
+			}
+			// The durable row says this step has already been ingested three
+			// times: the original execution plus two restarts. Which write
+			// path records that is an ingestion detail, so both report it.
+			fakeMetricsStore.InsertIfAbsentStub = func(rm *schema.RunMetrics) (bool, error) {
+				rm.IngestionSeq = 3
+				return false, nil
+			}
+			fakeMetricsStore.UpsertReturningInsertedStub = func(rm *schema.RunMetrics) (bool, *schema.RunMetrics, error) {
+				rm.IngestionSeq = 3
+				return false, nil, nil
+			}
+
+			ok, err := step.Run(ctx, state)
+			Expect(ok).To(BeFalse())
+
+			By("failing closed rather than starting a fourth agent")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(fakeDelegate.FinishedCallCount()).To(BeZero())
+			Expect(fakeDelegate.ErroredCallCount()).To(Equal(1))
+			_, message := fakeDelegate.ErroredArgsForCall(0)
+			Expect(message).To(ContainSubstring("preempted"))
+			Expect(message).To(ContainSubstring("restart"))
+		})
 
 		// The runner-captured transcript (flight/transcript.ndjson) is produced
 		// by THIS step's own runner: the agent step's flight volume is the only

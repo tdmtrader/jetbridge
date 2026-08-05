@@ -36,6 +36,23 @@ import (
 
 const agentProcessID = "agent"
 
+// maxAgentInterruptionRestarts bounds how many times an interrupted agent step
+// may be restarted before it fails closed.
+//
+// An interruption is returned as a runtime.InterruptionError so exec.RetryError
+// marks the step Retriable, which is what makes agent steps behave like the
+// other eight step types. But nothing on that path counts retries: the engine
+// returns without finishing the build, the build tracker re-picks it up, and
+// where the pod is gone -- the eviction case this exists for -- each cycle
+// wipes the workspace and starts a fresh agent at full token spend, forever.
+//
+// The count has to outlive the web process doing the counting, so it comes
+// from the durable ingestion sequence on agent_run_metrics rather than from
+// memory. Three total executions is the bound: the original plus two
+// restarts. At the measured $1.70 mean that caps an interrupted step near $5
+// instead of leaving it unbounded.
+const maxAgentInterruptionRestarts = 2
+
 // agentFlightArtifact is the implicit output every agent step produces: the
 // flight recorder directory (results.json + events.ndjson), ingested
 // server-side before the step returns (docs/agentic/README.md, "Sealed
@@ -673,7 +690,7 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 		// successful attempt's output.
 		step.registerLegacyOutputs(logger, repository, chosenWorker, outputNames, volumeMounts)
 
-		step.ingestFlightRecorder(
+		ingestionSeq := step.ingestFlightRecorder(
 			ctx,
 			logger,
 			chosenWorker,
@@ -686,11 +703,18 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 		if !interrupted {
 			break
 		}
-		delegate.Errored(logger, fmt.Sprintf(
-			"manual_review_required: agent execution interrupted (%s); automatic replay is disabled until durable recovery proves safety",
-			interruption.InterruptionReason(),
-		))
-		return false, nil
+		if ingestionSeq > maxAgentInterruptionRestarts {
+			delegate.Errored(logger, fmt.Sprintf(
+				"agent execution interrupted (%s) after %d executions; refusing a further restart",
+				interruption.InterruptionReason(), ingestionSeq,
+			))
+			return false, nil
+		}
+		// Retriable: RetryError wraps this, the engine leaves the build
+		// started, and the tracker re-runs the plan. A surviving pod is
+		// reattached by attachOrRun at no token cost; a lost one starts a
+		// fresh agent, which is what the cap above bounds.
+		return false, interruption
 	}
 
 	if runErr != nil {
@@ -755,9 +779,9 @@ func (step *AgentStep) ingestFlightRecorder(
 	wallTime time.Duration,
 	observed observedAgentCost,
 	finalPresentation bool,
-) {
+) int {
 	if step.metricsStore == nil {
-		return
+		return 0
 	}
 
 	// Detach from the step deadline. `ctx` is the timeout-scoped context from
@@ -1034,6 +1058,7 @@ func (step *AgentStep) ingestFlightRecorder(
 	} else {
 		inserted, err = step.metricsStore.InsertIfAbsent(&rm)
 	}
+	ingestionSeq := rm.IngestionSeq
 	if err != nil {
 		logger.Error("failed-to-ingest-run-metrics", err)
 	}
@@ -1078,6 +1103,8 @@ func (step *AgentStep) ingestFlightRecorder(
 			logger.Error("failed-to-record-cost-ledger", err) // fire-and-forget
 		}
 	}
+
+	return ingestionSeq
 }
 
 // maxTranscriptBytes bounds a persisted transcript to its last 512KiB — the
