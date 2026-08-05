@@ -105,6 +105,36 @@ Verified consumer by consumer:
 
 `in` validates **each** checkout against `DefaultMaxSnapshotEntries` (100,000) and `DefaultMaxSnapshotContentBytes` (10 GiB) independently (`in.go:155`). The seal-time Canonicalizer applies **those same limits** to the combined observation tree, which is ~2× either repository (`archive.go:21-26`, `:751-753`, `:1085-1088`). A repository with 50k–100k entries, or 5–10 GiB of content, passes both per-directory checks and then fails the seal with `ErrLimitExceeded` — after both full fetches have already been paid for. This repo (5,535 entries, 240 MiB) is far from the cliff; a monorepo is not.
 
+## The cheap fix is not the one I proposed
+
+Five mechanisms were tested empirically against the real validator:
+
+| option | verdict | why |
+|---|---|---|
+| `git clone --local` from repo A into B | **passes** — the only listed option that does | `git remote remove origin` deletes the whole `[remote "origin"]` section, so `config --get-regexp '^remote\.'` exits 1 and the refusal is skipped |
+| second fetch via a local filesystem path | fails | `safeURL` at `dependencies.go:55` requires http/https — and only that |
+| one repository, two worktrees | fails | `RevalidateSealed`: *"repository .git must be a real contained directory"* — not the refusal list |
+| `--filter=blob:none` partial clone | fails | three gates; `repository.go:300-315` permits only `url`/`fetch` under `remote`, and rejects `remote.<url>.promisor` |
+| `--depth` / shallow | fails | four gates. Note `fsck --full --strict` **exits 0** on a shallow repo; only the explicit checks catch it |
+
+**But the best option was not on the list: one repository holding both refs in one directory.** Measured — a single `git init` plus one `git fetch <remote> +head:… +base:…` yields 178,419,256 B transferred, 6.41 s, 5,493 entries, and `RevalidateSealed` **OK**, with `head_sha` at the PR head and the base reachable as a ref. Against the two-directory baseline that is **−50% on network, node disk, sealed content bytes, bounds entries and fsck CPU** — the only option that touches storage at all.
+
+Nothing in git or in the security checks blocks it. Three hardcoded interface facts do: the claimed directory set at `in.go:112` and its completion assertion at `:309-313`, the membership assertion at `materialize.go:445`, and `repository/v1` advertising one `head_sha`.
+
+**`clone --local` should be rejected despite passing.** Hardlinked packs mean the two outputs share inodes, while `verifyOwnedDirectory` (`in.go:286-302`) checks directory identity via `os.SameFile` and never file inodes. A single write through either path would mutate both sealed candidates inside the TOCTOU window between `validateRepositoryEvidence` and stream-out — which cuts directly against the independence rationale that motivates the alternates/gitlink refusals. It buys zero storage; the single-directory reshape buys 50% of everything.
+
+## Blocking defect: `in`'s materialization has never worked
+
+Found while replicating `dependencies.go:74`, and independently reproduced.
+
+`directgit.Command{NoRepository: true}` sets `GIT_DIR=<invocation>/no-repository` (`runner.go:160-168`, `:589-590`), and **`git init <dir>` honours `GIT_DIR` over its directory argument**. The repository is therefore created inside the ephemeral credential scratch that `privateScratch.Close()` destroys, the checkout destination stays empty, and the fetch at `dependencies.go:82` fails with `fatal: not a git repository`.
+
+Production reaches this unconditionally: `cmd/forge-pr-resource/main.go:19` passes `resource.Dependencies{}`, so `in.go` falls through to `defaultGitRunner()`.
+
+No test catches it because `dependencies_internal_test.go:19-30` stubs the runner and *emulates* `init` with `os.MkdirAll(filepath.Join(directory, ".git"), 0700)` — real `git init` semantics are never exercised. `git clone` is unaffected; only `init` is hijacked.
+
+Tracked separately.
+
 ## Method
 
 Two parallel investigators over the capture → snapshot → Hangar path and the consumer graph, each conclusion then put to an adversarial verifier. Every claim above is `CONFIRMED`, with one exception recorded honestly: an earlier framing that "nothing requires two directories" was **refuted** — `merge-prepare --target` genuinely needs a mutable worktree. A third probe covering cheaper git mechanisms (`clone --local`, partial clone) errored and is being re-run; its results are not folded in here.
