@@ -64,12 +64,16 @@ grading:
   # mechanical verdict alone does not cover it.
   fail_to_pass:
     - cmd: "go test ./internal/eos/ -run '^TestActiveChannelsSalvagesTruncatedSelection$' -count=1"
-      withheld_test_paths: [ground_truth/withheld_tests/stage_truncated_selection_test.go]
+      withheld_tests:
+        - source: ground_truth/withheld_tests/stage_truncated_selection_test.go
+          destination: internal/eos/stage_truncated_selection_test.go
   pass_to_pass:
     # Negative guard shipped in the same withheld file: leniency must stay scoped to the
     # trailing fragment. Passes at pre_state AND with the reference change.
     - cmd: "go test ./internal/eos/ -run '^TestActiveChannelsMidSelectionGarbageStillErrors$' -count=1"
-      withheld_test_paths: [ground_truth/withheld_tests/stage_truncated_selection_test.go]
+      withheld_tests:
+        - source: ground_truth/withheld_tests/stage_truncated_selection_test.go
+          destination: internal/eos/stage_truncated_selection_test.go
     - {cmd: "go test ./internal/eos/ ./internal/mcp/ -count=1"}
     - {cmd: "go test -race ./... -count=1"}   # project's `make test`; hermetic, ~15s, no services
 withheld: []

@@ -58,8 +58,9 @@ grading:
   # artifact the validation run in notes.md was measured against.
   fail_to_pass:
     - cmd: "cd ci-agent && go test ./devmcp/ -count=1"
-      withheld_test_paths:
-        - ci-agent/devmcp/server_test.go
+      withheld_tests:
+        - source: ground_truth/withheld_tests/ci-agent/devmcp/server_test.go
+          destination: ci-agent/devmcp/server_test.go
       focus_spec: "survives a panicking tool handler on the SSE path and keeps serving"
   pass_to_pass:
     # Run WITHOUT the withheld spec restored, on the agent's tree as delivered;

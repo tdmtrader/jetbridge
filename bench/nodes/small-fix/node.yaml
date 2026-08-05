@@ -1,0 +1,35 @@
+schema_version: 1
+name: small-fix
+description: Implement one small, well-specified repository change and produce a validated repository-change/v1
+# Unlike code-review and log-diagnosis, this node uses the REAL typed ports on
+# both sides. repository/v1 seals correctly on the deployed web image now (it
+# did not when those two nodes were written), and repository-change/v1 is
+# authorable as a node OUTPUT because the node binds `repository` as a declared
+# input, which is exactly the base subject its seal gate demands.
+inputs:
+  - {name: repository, type: repository/v1}
+  - {name: work-item, type: work-item/v1}
+outputs:
+  - {name: change, type: repository-change/v1}
+parameters:
+  # Behavioral knobs. These become ordinary environment variables in the agent
+  # pod, so a configuration can be A/B'd with `--param` against ONE imported
+  # node version. Only prompt/model/turn/budget changes need a new version.
+  #
+  # EARLY_CHANGE: true  -> write a candidate patch as soon as one exists, then refine.
+  #               false -> write the change only once it is believed final.
+  - {name: EARLY_CHANGE, default: "true"}
+  # VERIFY_LEVEL: none  -> reason about correctness, do not run anything.
+  #               build -> the touched package must compile.
+  #               test  -> the touched package's tests must run and pass.
+  - {name: VERIFY_LEVEL, default: test}
+step:
+  agent: fix
+  prompt_file: prompts/fix.md
+  # "sonnet" is a CLI alias, not a model ID. The guides' `claude-sonnet` is not
+  # a real model and the API answers 404 for it.
+  model: sonnet
+  max_turns: 80
+  # A fix that has to build and test a Go package is the shape most able to
+  # burn turns on a compile loop, so it gets a real cap.
+  budget_slice_usd: 5.0

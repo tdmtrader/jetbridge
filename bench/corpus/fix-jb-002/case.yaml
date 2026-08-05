@@ -46,7 +46,9 @@ grading:
     "Scoring guidance for the grader".
   fail_to_pass:
     - cmd: "cd ci-agent && go test ./llm/"
-      withheld_test_paths: [ci-agent/llm/client_test.go]
+      withheld_tests:
+        - source: ground_truth/withheld_tests/ci-agent/llm/client_test.go
+          destination: ci-agent/llm/client_test.go
       note: >-
         client_test.go exists at pre_state with 12 passing specs; the reference
         commit ADDS 3 specs to it. Grading replaces the file with the post-state

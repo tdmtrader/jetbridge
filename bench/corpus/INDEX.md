@@ -6,12 +6,12 @@ jetbridge-era history of this repo (private, post-cutoff), `ld` = LightingDesign
 (private, post-cutoff), `cc` = upstream Concourse (public, pre-cutoff —
 `memorization_risk: high`, never headline results on these).
 
-**Counts.** Workflow: small-fix 13 · log-diagnosis 7 · code-review 6 ·
+**Counts.** Workflow: small-fix 14 · log-diagnosis 6 · code-review 6 ·
 feedback-loop 3 · version-upgrade 3 · triage 2 (negatives are distributed inside
 those shapes — 6 cases whose correct answer is decline/no-change; they must not
 be distinguishable from the exposure, which is why there is no `negative`
 workflow value). Rubric: mechanical 14 · judge 10 · reference 5 · outcome 5.
-Difficulty: trivial 2 · moderate 21 · hard 11. Validation: validated 22 ·
+Difficulty: trivial 2 · moderate 22 · hard 10. Validation: validated 22 ·
 partial 4 · unvalidated 8 (judge/outcome cases with no mechanical leg).
 
 **Audit legend.** Each case carries 2–3 leakage-audit entries: independent Opus
@@ -126,3 +126,36 @@ priced-deflator decisions, not open leaks.
 5. Replay harnesses need a refs-suppression option for cases whose answer key
    is reachable from branch refs (neg-jb-001), and a way to seal non-git
    working files as inputs (review-ld-001).
+
+## Corpus revisions
+
+**v0.1 — 2026-08-04.** Grading normalization. Every withheld spec now names both
+its case-relative `source` and its repository-relative `destination` under
+`withheld_tests:`, replacing six incompatible spellings of
+`withheld_test_paths:` — mirrored repo-relative; case-relative with the
+destination implied; restored by the leg's own cmd via `$CASE_DIR`; restored
+from a git SHA; restored by applying a patch whose name differs from the file it
+modifies; and declared but shipped nowhere at all. Four specs that were only
+referenced are now included, extracted from their cases' terminal commits.
+
+`bench/harness/corpus_shape_test.go` pins the shape so the dialects cannot grow
+back. `bench/nodes/FIXGRADE-CALIBRATION.md` records the calibration run that
+followed: nine of ten mechanical small-fix cases score `pass` against their own
+reference fix.
+
+**No task, pre-state, exposure, or ground-truth answer changed** — verified
+semantically, not just by inspection: every `case.yaml` parses identically apart
+from the withheld declarations, and every comment is preserved. Results citing
+the v0 seal `03c0982a88` remain comparable. The small-fix count is also
+corrected from 13 to 14; v0 undercounted (log-diagnosis was correspondingly
+overcounted at 7 instead of 6, and difficulty misstated 11 hard / 21 moderate
+instead of 10 / 22 — both fixed above; each sums to the same 34-case total, so
+neither surfaced as a discrepancy until recounted directly against every
+case.yaml).
+
+**Known gap, unchanged by this revision:** `fix-ld-002`'s `reference.diff` does
+not build on its own — the human change was split across it and the prose-only
+companion `ground_truth/withheld_tests/human_stage_internal_test.diff`, which no
+grading leg references. This affects only calibration, where the reference fix
+stands in for an agent's patch; a real solver must make the tree build for
+itself, so the case still grades correctly in ordinary use.

@@ -128,8 +128,9 @@ grading:
     wrong diagnosis. Record which of the two happened alongside the result.
   fail_to_pass:
     - cmd: "go test ./atc/worker/jetbridge/ -count=1"
-      withheld_test_paths:
-        - atc/worker/jetbridge/worker_test.go
+      withheld_tests:
+        - source: ground_truth/withheld_tests/atc/worker/jetbridge/worker_test.go
+          destination: atc/worker/jetbridge/worker_test.go
       restore: >-
         cp ground_truth/withheld_tests/atc/worker/jetbridge/worker_test.go
         atc/worker/jetbridge/worker_test.go

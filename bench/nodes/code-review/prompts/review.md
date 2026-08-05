@@ -6,8 +6,15 @@ You are reviewing one change to a repository.
 
 Directories in your working directory:
 
-- `repository/` — the full source tree at the tip of the change. The change is
-  already applied; read any file at its post-change state.
+- `repository/` — the full source tree at the tip of the change, as a real git
+  repository with its complete history. The change is already applied; read any
+  file at its post-change state. Because it is a real repository you can also
+  ask git questions the diff cannot answer — `git log -S<symbol>` for who
+  introduced a value, `git log -- <path>` for how a file got this way, `git
+  blame` for whether a line the change relies on is older than it looks. The
+  directory is a writable per-run copy, so building or running tests in it is
+  fine; just keep in mind that your findings anchor to line numbers *as they
+  exist here*, so an edit you leave behind will shift your own evidence.
 - `change/change.diff` — the change under review, as a unified diff.
 - `work-item/work-item.json` — the review request. Its `body` field is the
   reviewer brief; read it first and honor what it asks for.
@@ -110,10 +117,28 @@ but the remedy is to check and re-rate, not to stay silent.
 The defects worth the most are rarely inside the diff hunks. A change inherits
 assumptions from the code it attaches to: who else writes the values it reads,
 what the callers of a function it changes expect, what state a UI holds across
-the transition it introduces. Follow several of those threads out of the diff
-and into the surrounding tree before concluding, and say in the summary which
-ones you followed. Treat a naming convention, a comment, or a test as a claim
-to verify, never as proof.
+the transition it introduces. Treat a naming convention, a comment, or a test
+as a claim to verify, never as proof.
+
+**Writer tracing is mandatory, not optional.** Following those threads is the
+step reviews skip, so it is a required deliverable rather than advice. Before
+you write your final record you must, for **at least two** distinct values the
+change READS but does not itself write — a database column, a struct field, a
+model field, a config key — find every place that WRITES it and check that the
+change's assumption about it holds. The repository is a real git repository;
+use it:
+
+```sh
+git -C repository log -S'<column_or_field>' --oneline    # who introduced writes
+git -C repository grep -n '<column_or_field>'            # every mention today
+git -C repository blame -L <start>,<end> -- <path>       # when a relied-on line landed
+```
+
+`git log --oneline -- <path>` is not writer tracing; it lists commits, not
+writes. Name each traced value in your summary along with what you concluded
+about it. A value whose only writer is the change itself is a finding in its
+own right: nothing else populates it, so every existing row or record reads
+empty.
 
 If you believe the change is correct, say so with `conclusion: accept` and no
 blocking findings — a review that invents defects to look thorough is worse

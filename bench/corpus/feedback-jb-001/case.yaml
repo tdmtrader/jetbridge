@@ -74,8 +74,9 @@ grading:
     Never apply an overlay to the archived copy from (1).
   fail_to_pass:
     - cmd: "go test ./agent/api/tickets/ -run TestValidTransitionMatrix -count=1"
-      withheld_test_paths:
-        - agent/api/tickets/types_test.go
+      withheld_tests:
+        - source: ground_truth/withheld_tests/agent/api/tickets/types_test.go
+          destination: agent/api/tickets/types_test.go
       grades: [F9]
       restore: >-
         cp ground_truth/withheld_tests/agent/api/tickets/types_test.go
@@ -89,9 +90,11 @@ grading:
         real module — see notes.md#validation. Covers only F9's SERVER half;
         the Elm mirror is judge-scored (rubric A3).
     - cmd: "cd web/elm && elm-test tests/AgentBadgeTests.elm tests/BuildStepTests.elm"
-      withheld_test_paths:
-        - web/elm/tests/AgentBadgeTests.elm
-        - web/elm/tests/BuildStepTests.elm
+      withheld_tests:
+        - source: ground_truth/withheld_tests/web/elm/tests/AgentBadgeTests.elm
+          destination: web/elm/tests/AgentBadgeTests.elm
+        - source: ground_truth/withheld_tests/web/elm/tests/BuildStepTests.elm
+          destination: web/elm/tests/BuildStepTests.elm
       grades: [F1, F8]
       restore: >-
         cp ground_truth/withheld_tests/web/elm/tests/AgentBadgeTests.elm

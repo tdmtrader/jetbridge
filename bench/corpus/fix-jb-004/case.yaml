@@ -32,14 +32,19 @@ grading:
     # Verified 2026-07-25: FAILs at pre_state with
     # "bufio.Scanner: token too long"; PASSes at the terminal sha.
     - cmd: "cp $CASE_DIR/ground_truth/withheld_tests/event_reader_bigline_test.go agent/schema/ && go test -C agent/schema ./... -count=1"
-      withheld_test_paths: [agent/schema/event_reader_bigline_test.go]
+      withheld_tests:
+        - source: ground_truth/withheld_tests/event_reader_bigline_test.go
+          destination: agent/schema/event_reader_bigline_test.go
+          self_restoring: true
       role: primary
     # FALLBACK ONLY — do not run by default. Injects the historical spec that
     # lives only in the post-cut commit. Use if and only if the additive file
     # fails to COMPILE (e.g. the agent converted the package's test style, as
     # 3294f724ef does later upstream). Also validated 2026-07-25.
     - cmd: "git show 6e113b067b10bc6b426108fffac8297dd75e6151:agent/schema/event_io_test.go > agent/schema/event_io_test.go && go test -C agent/schema ./... -count=1"
-      withheld_test_paths: [agent/schema/event_io_test.go]
+      withheld_tests:
+        - destination: agent/schema/event_io_test.go
+          self_restoring: true
       role: fallback-only
       destructive: true
       note: >-

@@ -1,16 +1,17 @@
 schema_version: 1
 name: code-review
 description: Review one repository change and produce an anchored review/v1 record
-# repository and change SHOULD be repository/v1 and repository-change/v1, but:
-# - repository/v1 cannot be sealed on a web image without a git binary (the
-#   validator execs git; the deployed image has none), and
-# - repository-change/v1 cannot be created standalone by `fly agent snapshots
-#   create` at all (its seal gate requires the base repository as a bound
-#   declared input).
-# Until both gaps close, the tree and the diff travel as opaque/v1.
-# See FIRST-USER-FINDINGS.md (F3, F7).
+# repository is now the real repository/v1: the deployed web image carries git,
+# so the validator's `git` execs succeed and the type seals. That closes the
+# first of the two gaps recorded in FIRST-USER-FINDINGS.md (F3, F7) and gives
+# the reviewer a navigable history instead of an opaque directory.
+#
+# change SHOULD be repository-change/v1 and still cannot be: that type's seal
+# gate binds a base repository as a declared input, and `fly agent snapshots
+# create` has no way to declare one. A standalone reviewed diff therefore has
+# no honest typed home, and travels as opaque/v1.
 inputs:
-  - {name: repository, type: opaque/v1}
+  - {name: repository, type: repository/v1}
   - {name: change, type: opaque/v1}
   - {name: work-item, type: work-item/v1}
 outputs:

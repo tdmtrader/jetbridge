@@ -81,7 +81,10 @@ grading:
   # the fix half and doubles as the case's own environment validation.
   fail_to_pass:
     - cmd: "git apply ${CASE_DIR}/ground_truth/withheld_tests/agent_step_test.patch && go test ./atc/exec/ -count=1"
-      withheld_test_paths: [atc/exec/agent_step_test.go]
+      withheld_tests:
+        - source: ground_truth/withheld_tests/agent_step_test.patch
+          destination: atc/exec/agent_step_test.go
+          self_restoring: true
       note: >-
         The withheld specs live in a commit AFTER the fix (9b0049e7ed) and are
         stored here as a patch against the pre_state blob

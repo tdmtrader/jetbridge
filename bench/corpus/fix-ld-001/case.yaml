@@ -53,7 +53,9 @@ grading:
   # as a plain fail.
   fail_to_pass:
     - cmd: "go test ./internal/eos/ -run '^TestSetLookBlackoutIsReadFree$' -count=1"
-      withheld_test_paths: [ground_truth/withheld_tests/look_readfree_blackout_test.go]
+      withheld_tests:
+        - source: ground_truth/withheld_tests/look_readfree_blackout_test.go
+          destination: internal/eos/look_readfree_blackout_test.go
   pass_to_pass:
     - {cmd: "go test ./internal/eos/ -count=1"}
     - {cmd: "go test ./internal/mcp/ ./internal/osctest/ -count=1"}

@@ -73,7 +73,9 @@ grading:
        overlay restores all five originals, so it cannot."
   fail_to_pass:
     - cmd: "go test ./agent/harvest/ -run 'TestStampTrailerSetsItsOwnCommitterIdentity' -count=1"
-      withheld_test_paths: [ground_truth/grading_tests/trailer_test.go]
+      withheld_tests:
+        - source: ground_truth/grading_tests/trailer_test.go
+          destination: agent/harvest/trailer_test.go
       note: >-
         Fails at pre_state on ANY machine. Where an ambient git identity exists
         (developer laptop, ~/.gitconfig) the amend succeeds but stamps that
@@ -85,7 +87,9 @@ grading:
         agent@concourse.local in several test helpers) and is not graded.
   pass_to_pass:
     - cmd: "go test ./agent/harvest/ -run 'TestStampTrailerPreservesTheOriginalAuthor' -count=1"
-      withheld_test_paths: [ground_truth/grading_tests/trailer_test.go]
+      withheld_tests:
+        - source: ground_truth/grading_tests/trailer_test.go
+          destination: agent/harvest/trailer_test.go
       note: >-
         OVER-CORRECTION GUARD. Reclassified from fail_to_pass to pass_to_pass
         2026-07-25: on the reference (identity-having) host it passes at

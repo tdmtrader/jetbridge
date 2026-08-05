@@ -32,9 +32,11 @@ rubric: mechanical
 grading:
   fail_to_pass:
     - cmd: "go test ./atc/engine/ ./atc/builds/"
-      withheld_test_paths:
-        - atc/engine/engine_test.go
-        - atc/builds/tracker_test.go
+      withheld_tests:
+        - source: ground_truth/withheld_tests/atc/engine/engine_test.go
+          destination: atc/engine/engine_test.go
+        - source: ground_truth/withheld_tests/atc/builds/tracker_test.go
+          destination: atc/builds/tracker_test.go
       note: >-
         Materialize pre_state, overwrite the two test files with their
         post-state versions (from ground_truth/reference.diff), run the command:

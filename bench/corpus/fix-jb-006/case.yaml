@@ -40,8 +40,10 @@ grading:
   # Grade on exit code, not on absolute spec counts.
   fail_to_pass:
     - cmd: "cp $CASE_DIR/ground_truth/withheld_tests/zz_bench_fix_jb_006_test.go atc/configvalidate/ && go test ./atc/configvalidate/ -count=1 -ginkgo.focus='bench-graded: rejects negative run_retention values' -ginkgo.fail-on-empty"
-      withheld_test_paths:
-        - atc/configvalidate/zz_bench_fix_jb_006_test.go
+      withheld_tests:
+        - source: ground_truth/withheld_tests/zz_bench_fix_jb_006_test.go
+          destination: atc/configvalidate/zz_bench_fix_jb_006_test.go
+          self_restoring: true
       role: primary
       # -ginkgo.fail-on-empty makes a missing/renamed overlay FAIL rather than
       # vacuously pass; re-confirmed load-bearing 2026-07-25.

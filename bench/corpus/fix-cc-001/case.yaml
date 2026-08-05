@@ -83,8 +83,9 @@ grading:
   # compile-plus-behavior guard and as evidence for rubric item 4.
   fail_to_pass:
     - cmd: "go test ./atc/exec/ -count=1"
-      withheld_test_paths:
-        - atc/exec/set_pipeline_step_test.go
+      withheld_tests:
+        - source: ground_truth/withheld_tests/atc/exec/set_pipeline_step_test.go
+          destination: atc/exec/set_pipeline_step_test.go
       focus_spec: "SetPipelineStep when file is configured when pipeline file is good when specified pipeline exists already when no diff"
   pass_to_pass:
     # Run WITHOUT the overlay, on the agent's tree as delivered. The first leg

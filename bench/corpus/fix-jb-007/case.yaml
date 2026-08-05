@@ -41,7 +41,9 @@ grading:
     # Tier 1 + tier 2 live in one module and run in one command; the counts below
     # let a grader tell a hardcoded-tone fix from a correct one.
     - cmd: "cd web/elm && elm-test tests/AgentStepDagTests.elm"
-      withheld_test_paths: [web/elm/tests/AgentStepDagTests.elm]
+      withheld_tests:
+        - source: ground_truth/withheld_tests/web/elm/tests/AgentStepDagTests.elm
+          destination: web/elm/tests/AgentStepDagTests.elm
       expect: "17 passed"
       note: >-
         Observed counts (validated): pre_state 15 passed / 2 failed;

@@ -79,8 +79,9 @@ grading:
     tests on the basis of a post-overlay tree.
   fail_to_pass:
     - cmd: "go test ./agent/harvest/ -run 'TestElmGateNotApplicableForNonBundleElmPaths' -count=1"
-      withheld_test_paths:
-        - agent/harvest/gates_elm_test.go
+      withheld_tests:
+        - source: ground_truth/withheld_tests/agent/harvest/gates_elm_test.go
+          destination: agent/harvest/gates_elm_test.go
       finding: F1
       note: >-
         Restore the withheld post-fix spec over the pre_state one
@@ -92,8 +93,9 @@ grading:
         errors on the fixture), without it the outcome is `error` — neither is the `ok`
         the spec requires. Verified both ways.
     - cmd: "go test ./fly/integration/ -count=1 -args -ginkgo.focus='fly agent tickets'"
-      withheld_test_paths:
-        - fly/integration/agent_tickets_test.go
+      withheld_tests:
+        - source: ground_truth/withheld_tests/fly/integration/agent_tickets_test.go
+          destination: fly/integration/agent_tickets_test.go
       finding: F2
       note: >-
         Restore the withheld post-fix spec (`cp
@@ -109,8 +111,9 @@ grading:
         marked wrong by this command and right by the judge — reconcile via rubric F2-2.
   pass_to_pass:
     - cmd: "go test ./agent/harvest/ -run 'TestElmGateAppliesToElmJson' -count=1"
-      withheld_test_paths:
-        - agent/harvest/gates_elm_test.go
+      withheld_tests:
+        - source: ground_truth/withheld_tests/agent/harvest/gates_elm_test.go
+          destination: agent/harvest/gates_elm_test.go
       note: >-
         The over-narrowing guard, and the sharpest single check in the case. Green at
         pre_state AND at the terminal artifact, but RED for the most likely wrong answer

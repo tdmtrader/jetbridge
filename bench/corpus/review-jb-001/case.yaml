@@ -70,8 +70,9 @@ grading:
     separate clean materialization and grade the agent by reference+judge only.
   fail_to_pass:
     - cmd: "go test ./agent/api/tickets/ -run TestValidTransitionMatrix -count=1"
-      withheld_test_paths:
-        - agent/api/tickets/types_test.go
+      withheld_tests:
+        - source: ground_truth/withheld_tests/agent/api/tickets/types_test.go
+          destination: agent/api/tickets/types_test.go
       grades: ground_truth_only
       finding: F9
       note: >-
