@@ -38,45 +38,73 @@
 - Modify: `agent/pullrequest/resource/in.go:80-95`
 - Test: `agent/pullrequest/resource/in_test.go`
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Rewrite the test that asserts the behaviour being removed**
 
-Add to `agent/pullrequest/resource/in_test.go`:
+`agent/pullrequest/resource/in_test.go:20` currently has `TestForgePRInRejectsStaleVersionBeforeGit`, which asserts exactly the gate this task deletes — including `t.Fatal("git must not run")`. It must be inverted, not left alone. Replace it wholesale with:
 
 ```go
-func TestInMaterializesWhenObservationMovedSinceCheck(t *testing.T) {
-	fixture := newInFixture(t)
-	// The version was selected against an earlier observation; the provider has
-	// since gained another review. Materialization must still succeed.
-	fixture.observation.ReviewBatches = append(fixture.observation.ReviewBatches,
-		pullrequest.ReviewBatch{
-			ID: "review-99", ReviewID: "99", CommitSHA: fixture.observation.SourceSHA,
-			Reviewer: "carol", Ready: true, ThreadIDs: []string{},
-		})
-
-	err := resource.In(context.Background(), fixture.request(), fixture.destination, fixture.deps())
+func TestForgePRInMaterializesWhenTheObservationMovedSinceCheck(t *testing.T) {
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	source := testSource(now)
+	// A version selected against an earlier observation. The provider has since
+	// moved, so the recomputed cursor differs from the one recorded here.
+	version := resource.Version{
+		Provider: "github", ExternalID: "42", SourceSHA: sha('a'), TargetSHA: sha('b'),
+		ActionKind: "review_batch", ActionDigest: digest('d'), Cursor: "stale", BindingRevision: "7",
+	}
+	gitRan := false
+	var output bytes.Buffer
+	err := resource.In(
+		context.Background(),
+		t.TempDir(),
+		bytes.NewReader(checkInput(t, source, &version)),
+		&output,
+		&bytes.Buffer{},
+		resource.Dependencies{
+			ObserverFactory: fixedObserver(observerFunc(func(_ context.Context, l pullrequest.Locator, _ pullrequest.Cursor) (pullrequest.Observation, error) {
+				return activeObservation(l, "actual"), nil
+			})),
+			Clock:     func() time.Time { return now },
+			GitRunner: runnerFunc(func(context.Context, resource.GitCommand) error { gitRan = true; return nil }),
+		},
+	)
 
 	if err != nil {
-		t.Fatalf("In() with a moved observation = %v, want success", err)
+		t.Fatalf("In() with a moved observation = %v, want materialization to proceed", err)
 	}
+	if !gitRan {
+		t.Fatal("git did not run: the moved observation was rejected before materialization")
+	}
+	if strings.Contains(err2String(err), source.ReadToken) {
+		t.Fatal("error leaks token")
+	}
+}
+
+func err2String(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 ```
 
+**Leave `TestForgePRInRejectsStaleBindingBeforeObserver` (`in_test.go:526`) alone** — it covers the binding-revision fence, which this task does not touch.
+
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./agent/pullrequest/resource/ -run TestInMaterializesWhenObservationMovedSinceCheck -v`
-Expected: FAIL with `forge-pr: selected version does not match current pull request`
+Run: `go test ./agent/pullrequest/resource/ -run TestForgePRInMaterializesWhenTheObservationMovedSinceCheck -v`
+Expected: FAIL — `In()` returns `forge-pr: selected version does not match current pull request`.
 
 - [ ] **Step 3: Delete the gate**
 
-In `agent/pullrequest/resource/in.go`, replace the block that begins at the `pullrequest.ActionFor` call and ends after the `equalVersion` check with:
+In `agent/pullrequest/resource/in.go`, the block after the `observer.Observe` call currently derives an action, then computes `expected := versionFor(request.Source, action)` and rejects unless `equalVersion(expected, *request.Version)`. Keep the derivation; delete the comparison:
 
 ```go
 	// The version identifies which observation the server selected; it is not a
-	// promise the provider has stood still. A build may be queued behind others
-	// (the admit job is Serial), and Concourse consumes a version at build start
-	// regardless of outcome -- so failing here would burn the version and lose
-	// the event. Materialize the current observation and let the server reject
-	// it downstream if it no longer matches durable state.
+	// promise the provider stood still. The admit job is Serial, so builds queue,
+	// and Concourse consumes a version at build start regardless of outcome --
+	// failing here burns the event instead of retrying it. Materialize what is
+	// current and let the server reject it downstream against durable state.
 	action, actionable, err := pullrequest.ActionFor(observation, pullrequest.TriggerPolicy{
 		Now: now, PollInterval: poll, FreshnessInterval: fresh,
 		LastCursor:         pullrequest.Cursor(request.Source.Monitor.AcknowledgedCursor),
@@ -92,12 +120,12 @@ In `agent/pullrequest/resource/in.go`, replace the block that begins at the `pul
 	}
 ```
 
-Delete the two lines that computed `expected` and compared it with `equalVersion`.
+Delete the `expected := versionFor(...)` line and the `if !equalVersion(...)` block.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [ ] **Step 4: Run the package**
 
 Run: `go test ./agent/pullrequest/resource/ -v`
-Expected: PASS, including the new test. If `equalVersion` is now unused, the compiler will not complain (it is a function, not an import) — leave it; Task 6 removes it.
+Expected: PASS. If the compiler reports `equalVersion` or `versionFor` unused, leave them — `versionFor` is still used by `check.go`, and `equalVersion` is removed in Task 6.
 
 - [ ] **Step 5: Commit**
 
@@ -106,237 +134,259 @@ git add agent/pullrequest/resource/in.go agent/pullrequest/resource/in_test.go
 git commit -m "fix(forge-pr): stop failing a materialization because the PR moved
 
 in re-observed at get time and demanded byte-equality with the version check
-selected. A build queued behind others -- the admit job is Serial -- routinely
-sees a moved PR, and Concourse consumes the version at build start regardless
-of outcome, so the failure burned the event rather than retrying it."
+selected. The admit job is Serial so builds queue routinely, and Concourse
+consumes a version at build start regardless of outcome -- so the failure
+burned the event rather than retrying it. The test that asserted the old
+behaviour is inverted rather than deleted."
 ```
 
 ---
 
 ### Task 2: Conditional requests in the GitHub client
 
-At a 5-minute poll each watched PR issues ~288 polls/day × 3 endpoints against a 5,000/hr ceiling. GitHub returns `304 Not Modified` for free against an `ETag`, and does not charge it to the rate limit.
+At a 5-minute poll each watched PR issues ~288 polls/day across three endpoints against a 5,000/hr ceiling. GitHub answers `If-None-Match` with a `304` it does not bill.
+
+There is no `client` type — the HTTP surface is `Observer` (`client.go:25`), with unexported `get` (`:58`) and `getPage` (`:98`). Note `get` currently treats anything outside 2xx as an error (`:82`), so a 304 is a hard failure today.
 
 **Files:**
 - Modify: `agent/pullrequest/github/client.go`
-- Test: `agent/pullrequest/github/client_test.go`
+- Test: `agent/pullrequest/github/observe_test.go`
 
 - [ ] **Step 1: Write the failing test**
 
+Add to `agent/pullrequest/github/observe_test.go`, following the existing server style:
+
 ```go
-func TestClientReusesCachedBodyOnNotModified(t *testing.T) {
-	var requests int
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requests++
-		if r.Header.Get("If-None-Match") == `"etag-1"` {
-			w.WriteHeader(http.StatusNotModified)
+func TestObserveReusesCachedBodiesOnNotModified(t *testing.T) {
+	t.Parallel()
+	var serverURL string
+	conditional := 0
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Header.Get("If-None-Match") == `"etag-1"` {
+			conditional++
+			response.WriteHeader(http.StatusNotModified)
 			return
 		}
-		w.Header().Set("ETag", `"etag-1"`)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"number":7}`))
+		response.Header().Set("ETag", `"etag-1"`)
+		switch request.URL.Path {
+		case "/repos/acme/widget/pulls/42":
+			writeFixtureAt(t, response, "pull_request_active.json", serverURL)
+		case "/repos/acme/widget/pulls/42/reviews":
+			writeFixture(t, response, "reviews_page_1.json")
+		case "/repos/acme/widget/pulls/42/comments":
+			writeFixture(t, response, "review_comments_page_1.json")
+		default:
+			http.NotFound(response, request)
+		}
 	}))
 	defer server.Close()
+	serverURL = server.URL
 
-	client := newTestClient(t, server.URL)
-	first, err := client.getJSON(context.Background(), server.URL+"/x")
+	observer, err := github.NewObserver(server.URL, tokenFunc(func(context.Context) (string, error) {
+		return "token-1", nil
+	}), server.Client())
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := client.getJSON(context.Background(), server.URL+"/x")
+	locator := pullrequest.Locator{Provider: pullrequest.ProviderGitHub, Repository: "acme/widget", ExternalID: "42"}
+
+	first, err := observer.Observe(context.Background(), locator, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(first, second) {
-		t.Fatalf("304 response body = %s, want the cached %s", second, first)
+	second, err := observer.Observe(context.Background(), locator, "")
+	if err != nil {
+		t.Fatalf("second Observe = %v, want the cached bodies to be reused", err)
 	}
-	if requests != 2 {
-		t.Fatalf("requests = %d, want 2", requests)
+
+	if conditional == 0 {
+		t.Fatal("no conditional request was issued")
+	}
+	if first.SourceSHA != second.SourceSHA || len(first.Threads) != len(second.Threads) {
+		t.Fatalf("cached observation diverged: %+v vs %+v", first, second)
 	}
 }
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./agent/pullrequest/github/ -run TestClientReusesCachedBodyOnNotModified -v`
-Expected: FAIL — either the body is empty on the second call, or `getJSON` errors on a 304 status.
+Run: `go test ./agent/pullrequest/github/ -run TestObserveReusesCachedBodiesOnNotModified -v`
+Expected: FAIL — the second `Observe` errors, because a 304 falls through to `githubStatusError` at `client.go:82`.
 
-- [ ] **Step 3: Add a bounded ETag cache**
+- [ ] **Step 3: Add a bounded response cache to `Observer`**
 
-In `agent/pullrequest/github/client.go`, add to the client struct and its request path:
+Add to the `Observer` struct and a new block in `client.go`:
 
 ```go
+// maxCachedResponses bounds the cache. An observer watching one PR touches a
+// handful of URLs; the bound stops a paginated endpoint from growing it without
+// limit.
+const maxCachedResponses = 64
+
 type cachedResponse struct {
 	etag string
 	body []byte
 }
 
-// maxCachedResponses bounds the cache so a long-lived observer watching many
-// paginated endpoints cannot grow without limit.
-const maxCachedResponses = 64
-
-// cacheKey is the exact request URL. Bodies are immutable once stored.
-func (client *client) cachedFor(url string) (cachedResponse, bool) {
-	client.cacheMu.RLock()
-	defer client.cacheMu.RUnlock()
-	entry, found := client.cache[url]
+func (observer *Observer) cachedFor(key string) (cachedResponse, bool) {
+	observer.cacheMu.RLock()
+	defer observer.cacheMu.RUnlock()
+	entry, found := observer.cache[key]
 	return entry, found
 }
 
-func (client *client) storeCached(url, etag string, body []byte) {
+// storeCached retains an immutable copy. Bodies are already bounded by
+// maxBodyBytes before this is reached.
+func (observer *Observer) storeCached(key, etag string, body []byte) {
 	if etag == "" {
 		return
 	}
-	client.cacheMu.Lock()
-	defer client.cacheMu.Unlock()
-	if client.cache == nil {
-		client.cache = make(map[string]cachedResponse, maxCachedResponses)
+	observer.cacheMu.Lock()
+	defer observer.cacheMu.Unlock()
+	if observer.cache == nil {
+		observer.cache = make(map[string]cachedResponse, maxCachedResponses)
 	}
-	if len(client.cache) >= maxCachedResponses {
-		for key := range client.cache {
-			delete(client.cache, key)
+	if len(observer.cache) >= maxCachedResponses {
+		for existing := range observer.cache {
+			delete(observer.cache, existing)
 			break
 		}
 	}
-	client.cache[url] = cachedResponse{etag: etag, body: append([]byte(nil), body...)}
+	observer.cache[key] = cachedResponse{etag: etag, body: append([]byte(nil), body...)}
 }
 ```
 
-In the GET path, before issuing the request set `If-None-Match` from any cached entry; on `http.StatusNotModified` return the cached body; on `200` call `storeCached` with the response `ETag`.
+Add the fields `cacheMu sync.RWMutex` and `cache map[string]cachedResponse` to `Observer`.
 
-- [ ] **Step 4: Run tests to verify they pass**
+In **both** `get` and `getPage`, before `observer.client.Do(request)`:
+
+```go
+	cacheKey := target.String()
+	if entry, found := observer.cachedFor(cacheKey); found {
+		request.Header.Set("If-None-Match", entry.etag)
+	}
+```
+
+and immediately after the `Do`, before the 2xx check:
+
+```go
+	if response.StatusCode == http.StatusNotModified {
+		entry, found := observer.cachedFor(cacheKey)
+		if !found {
+			return fmt.Errorf("github returned 304 without a cached body")
+		}
+		return decodeJSON(entry.body, destination)
+	}
+```
+
+(in `getPage`, return `(nil, ...)` shapes to match its signature, and preserve its `Link`-header handling by caching the header alongside the body if pagination must survive a 304 — for the first cut, only cache single-page responses and skip the cache when a `Link` header is present.)
+
+After a successful read of `raw`, call `observer.storeCached(cacheKey, response.Header.Get("ETag"), raw)`.
+
+- [ ] **Step 4: Run the package**
 
 Run: `go test ./agent/pullrequest/github/ -v`
-Expected: PASS
+Expected: PASS. `TestObserveRejectsUnsafePaginationAndOversizedResponses` and `TestObserveClassifiesOnlyProvenRateLimits` must still pass — the 304 branch sits before the status check but after the transport error check, so neither is reordered.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add agent/pullrequest/github/client.go agent/pullrequest/github/client_test.go
+git add agent/pullrequest/github/client.go agent/pullrequest/github/observe_test.go
 git commit -m "perf(forge-pr): serve unchanged GitHub reads from an ETag cache
 
-At a 5m poll each watched PR spends ~864 requests/day against a 5,000/hr
-ceiling. GitHub answers If-None-Match with a 304 it does not bill."
+Each watched PR spends ~864 requests/day against a 5,000/hr ceiling. GitHub
+answers If-None-Match with a 304 it does not bill -- which the client
+previously treated as a hard error, since it is outside 2xx."
 ```
 
 ---
 
 ### Task 3: Materialize both worktrees from one fetch
 
-`in` claims `source-repository` and `target-repository` and runs a full, unshallow, unfiltered fetch for each — measured at **352 MiB and ~21s CPU per build**, with no object reuse even though both refs come from the same remote. One fetch into one object store with two worktrees halves the transfer.
+`in` materializes `source-repository` and `target-repository` with a separate full, unshallow, unfiltered fetch each — measured at **352 MiB and ~21s CPU per build** — even though both refs come from the same remote.
+
+`GitRunner` is a single-method interface (`Run(ctx, GitCommand)`) implemented by `runnerFunc` throughout the tests. **Do not add a method to it** — that breaks every existing fake. Extend `GitCommand` instead.
 
 **Files:**
-- Modify: `agent/pullrequest/resource/dependencies.go`
-- Modify: `agent/pullrequest/resource/in.go` (materialization loop)
-- Test: `agent/pullrequest/resource/materialization_test.go`
+- Modify: `agent/pullrequest/resource/protocol.go` (`GitCommand` fields)
+- Modify: `agent/pullrequest/resource/dependencies.go` (`controlledGit.Run`)
+- Modify: `agent/pullrequest/resource/in.go` (materialization)
+- Test: `agent/pullrequest/resource/in_test.go`
 
 - [ ] **Step 1: Write the failing test**
 
 ```go
-func TestMaterializeFetchesTheRemoteOnce(t *testing.T) {
-	fixture := newInFixture(t)
-	var fetches int
-	fixture.gitRunner = recordingGit{onRun: func(cmd resource.GitCommand) {
-		if cmd.Operation == "fetch" {
-			fetches++
-		}
-	}}
+func TestForgePRInFetchesTheRemoteOnceForBothWorktrees(t *testing.T) {
+	now, source, observation, version := currentInFixture(t)
+	commands := 0
+	var output bytes.Buffer
+	err := resource.In(
+		context.Background(),
+		t.TempDir(),
+		bytes.NewReader(checkInput(t, source, &version)),
+		&output,
+		&bytes.Buffer{},
+		resource.Dependencies{
+			ObserverFactory: fixedObserver(observerFunc(func(_ context.Context, l pullrequest.Locator, _ pullrequest.Cursor) (pullrequest.Observation, error) {
+				return observation, nil
+			})),
+			Clock: func() time.Time { return now },
+			GitRunner: runnerFunc(func(_ context.Context, command resource.GitCommand) error {
+				commands++
+				if command.SecondDirectory == "" || command.SecondSHA == "" {
+					t.Fatalf("expected a paired materialization, got %+v", command)
+				}
+				return nil
+			}),
+		},
+	)
+	_ = err // materialization validation runs after git; this test asserts the git shape only
 
-	if err := resource.In(context.Background(), fixture.request(), fixture.destination, fixture.deps()); err != nil {
-		t.Fatal(err)
-	}
-
-	if fetches != 1 {
-		t.Fatalf("fetch count = %d, want 1 for two worktrees from one remote", fetches)
+	if commands != 1 {
+		t.Fatalf("git invocations = %d, want 1 paired fetch for two worktrees", commands)
 	}
 }
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./agent/pullrequest/resource/ -run TestMaterializeFetchesTheRemoteOnce -v`
-Expected: FAIL with `fetch count = 2, want 1`
+Run: `go test ./agent/pullrequest/resource/ -run TestForgePRInFetchesTheRemoteOnceForBothWorktrees -v`
+Expected: FAIL with `git invocations = 2, want 1` (and the `SecondDirectory` fatal, since the field does not exist yet — add it first if the package will not compile).
 
-- [ ] **Step 3: Add a shared-object-store materialization**
+- [ ] **Step 3: Add pair fields and one paired materialization**
 
-In `agent/pullrequest/resource/dependencies.go`, add an operation that fetches both refs in one invocation and then creates two worktrees:
-
-```go
-// materializePair fetches both refs from one remote into a single private
-// object store, then checks out each into its own destination. Both refs come
-// from the same repository, so a second fetch re-transfers near-identical
-// history for no benefit.
-func (git controlledGit) materializePair(ctx context.Context, command GitPairCommand) error {
-	if command.RemoteURL == "" || command.SourceSHA == "" || command.TargetSHA == "" {
-		return fmt.Errorf("forge-pr: invalid paired materialization command")
-	}
-	if err := git.runner.Run(ctx, directgit.Command{
-		Dir: command.ObjectStore, Credential: command.Credential,
-		Args: []string{"init", "--bare", "--initial-branch=concourse-materialized"},
-	}); err != nil {
-		return fmt.Errorf("forge-pr: initialize object store")
-	}
-	if err := git.runner.Run(ctx, directgit.Command{
-		Dir: command.ObjectStore, Credential: command.Credential,
-		Args: []string{
-			"fetch", "--no-tags", "--no-recurse-submodules", command.RemoteURL,
-			"+" + command.SourceSHA + ":refs/concourse/materialized/source",
-			"+" + command.TargetSHA + ":refs/concourse/materialized/target",
-		},
-	}); err != nil {
-		return fmt.Errorf("forge-pr: fetch pull request objects")
-	}
-	for _, worktree := range []struct {
-		directory string
-		sha       string
-	}{
-		{command.SourceDirectory, command.SourceSHA},
-		{command.TargetDirectory, command.TargetSHA},
-	} {
-		if err := git.runner.Run(ctx, directgit.Command{
-			Dir: command.ObjectStore, Credential: nil,
-			Args: []string{"worktree", "add", "--detach", worktree.directory, worktree.sha},
-		}); err != nil {
-			return fmt.Errorf("forge-pr: materialize worktree")
-		}
-	}
-	return nil
-}
-```
-
-Add the matching typed command:
+In `protocol.go`, extend `GitCommand`:
 
 ```go
-type GitPairCommand struct {
-	ObjectStore     string
-	SourceDirectory string
-	TargetDirectory string
-	RemoteURL       string
-	SourceSHA       string
-	TargetSHA       string
-	Credential      []byte
-}
+	// SecondDirectory and SecondSHA carry the second worktree of a paired
+	// materialization. Both refs come from one remote, so fetching twice
+	// re-transfers near-identical history for no benefit.
+	SecondDirectory string
+	SecondSHA       string
 ```
 
-In `in.go`, replace the per-repository loop with one `materializePair` call, keeping every existing post-condition: `validateMaterializationRoot` and `validateRepositoryEvidence` still run per destination.
+In `dependencies.go`, `controlledGit.Run` gains a paired branch that validates both destinations exactly as the single one is validated today, then runs: `git init` in a private object store, one `fetch` carrying `+<sourceSHA>:refs/concourse/materialized/source` **and** `+<targetSHA>:refs/concourse/materialized/target`, then `git worktree add --detach` per destination — preserving every existing refusal (no saved remote, no shallow boundary, no alternates, no sparse-checkout, no `core.worktree`).
 
-- [ ] **Step 4: Run tests to verify they pass**
+In `in.go`, replace the two-iteration materialization loop with one `GitCommand` carrying both directories and both SHAs. `validateMaterializationRoot` and `validateRepositoryEvidence` still run **per destination** afterwards — unchanged.
+
+- [ ] **Step 4: Run the package**
 
 Run: `go test ./agent/pullrequest/resource/ -v`
-Expected: PASS
+Expected: PASS, including `TestForgePRInUsesExactObjectFetchForTerminalObservation` — the terminal fetch mode must still be honoured for both refs.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add agent/pullrequest/resource/dependencies.go agent/pullrequest/resource/in.go agent/pullrequest/resource/materialization_test.go
+git add agent/pullrequest/resource/protocol.go agent/pullrequest/resource/dependencies.go agent/pullrequest/resource/in.go agent/pullrequest/resource/in_test.go
 git commit -m "perf(forge-pr): fetch the remote once for both worktrees
 
-Measured 352 MiB and ~21s CPU per admit build, fetching near-identical
-history twice from the same remote. One bare object store plus two worktrees
-halves the transfer and keeps every existing validation post-condition."
+Measured 352 MiB and ~21s CPU per admit build, fetching near-identical history
+twice from one remote. A single bare object store plus two worktrees halves
+the transfer. GitCommand grows pair fields rather than GitRunner growing a
+method, so every existing runnerFunc fake keeps compiling."
 ```
 
-**Note for the implementer:** `git fsck --full --strict --no-reflogs` (`agent/snapshot/contracts/repository.go:146`) runs per checkout inside `repository/v1` resealing and costs ~5.7s of the ~21s. Removing or scoping it weakens a seal validation and is **deliberately out of scope here** — it needs its own security review.
+**Out of scope:** `git fsck --full --strict --no-reflogs` (`agent/snapshot/contracts/repository.go:146`) costs ~5.7s of the ~21s but removing or scoping it weakens a seal validation and needs its own security review.
 
 ---
 
@@ -348,32 +398,67 @@ halves the transfer and keeps every existing validation post-condition."
 - Modify: `agent/pullrequest/github/observe.go`
 - Test: `agent/pullrequest/github/observe_test.go`
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Add testdata for a cross-review reply, then write the failing test**
+
+Create `agent/pullrequest/github/testdata/reviews_cross_review.json`:
+
+```json
+[
+  {"id":10,"user":{"id":1,"login":"alice"},"body":"first pass","commit_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","submitted_at":"2026-08-01T10:00:00Z","state":"COMMENTED"},
+  {"id":20,"user":{"id":2,"login":"bob"},"body":"","commit_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","submitted_at":"2026-08-01T11:00:00Z","state":"COMMENTED"}
+]
+```
+
+Create `agent/pullrequest/github/testdata/review_comments_cross_review.json`:
+
+```json
+[
+  {"id":100,"pull_request_review_id":10,"user":{"id":1,"login":"alice"},"body":"root comment","commit_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","original_commit_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","path":"a.go","line":1,"original_line":1,"updated_at":"2026-08-01T10:00:00Z"},
+  {"id":101,"pull_request_review_id":20,"user":{"id":2,"login":"bob"},"body":"reply from another review","commit_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","original_commit_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","path":"a.go","line":1,"original_line":1,"in_reply_to_id":100,"updated_at":"2026-08-01T11:00:00Z"}
+]
+```
+
+Add to `agent/pullrequest/github/observe_test.go`:
 
 ```go
-func TestObserveResolvesRepliesAcrossReviews(t *testing.T) {
-	server := newObserveServer(t, observeFixture{
-		reviews: []string{
-			`{"id":10,"user":{"id":1,"login":"alice"},"body":"first","commit_id":"` + fortyHex('a') + `","submitted_at":"2026-08-01T10:00:00Z","state":"COMMENTED"}`,
-			`{"id":20,"user":{"id":2,"login":"bob"},"body":"","commit_id":"` + fortyHex('a') + `","submitted_at":"2026-08-01T11:00:00Z","state":"COMMENTED"}`,
-		},
-		comments: []string{
-			`{"id":100,"pull_request_review_id":10,"user":{"id":1,"login":"alice"},"body":"root","commit_id":"` + fortyHex('a') + `","path":"a.go","line":1}`,
-			`{"id":101,"pull_request_review_id":20,"user":{"id":2,"login":"bob"},"body":"reply","commit_id":"` + fortyHex('a') + `","path":"a.go","line":1,"in_reply_to_id":100}`,
-		},
-	})
+func TestObserveResolvesRepliesAcrossReviewsAndReturnsFullState(t *testing.T) {
+	t.Parallel()
+	var serverURL string
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/repos/acme/widget/pulls/42":
+			writeFixtureAt(t, response, "pull_request_active.json", serverURL)
+		case "/repos/acme/widget/pulls/42/reviews":
+			writeFixture(t, response, "reviews_cross_review.json")
+		case "/repos/acme/widget/pulls/42/comments":
+			writeFixture(t, response, "review_comments_cross_review.json")
+		default:
+			http.NotFound(response, request)
+		}
+	}))
 	defer server.Close()
+	serverURL = server.URL
 
-	observer, err := github.NewObserver(server.URL, staticToken("t"), server.Client())
+	observer, err := github.NewObserver(server.URL, tokenFunc(func(context.Context) (string, error) {
+		return "token-1", nil
+	}), server.Client())
 	if err != nil {
 		t.Fatal(err)
 	}
-	observation, err := observer.Observe(context.Background(), testLocator(), "")
+
+	observation, err := observer.Observe(context.Background(), pullrequest.Locator{
+		Provider: pullrequest.ProviderGitHub, Repository: "acme/widget", ExternalID: "42",
+	}, "")
 	if err != nil {
 		t.Fatalf("Observe with a cross-review reply = %v, want success", err)
 	}
 	if len(observation.ReviewBatches) != 2 {
-		t.Fatalf("review batches = %d, want 2 (full state)", len(observation.ReviewBatches))
+		t.Fatalf("review batches = %d, want 2 (full state, not one review)", len(observation.ReviewBatches))
+	}
+	// Both comments belong to one thread rooted at comment 100, plus one
+	// synthetic body thread for review 10 (review 20 has an empty body).
+	if len(observation.Threads) != 2 {
+		t.Fatalf("threads = %d, want 2", len(observation.Threads))
 	}
 }
 ```
@@ -548,18 +633,51 @@ threaded back-and-forth bricked the observer."
 
 - [ ] **Step 1: Write the failing test**
 
+The fixture is generated in the test rather than checked in, because 200 threads is not a reviewable testdata file. Add to `agent/pullrequest/github/observe_test.go`:
+
 ```go
 func TestObserveWindowKeepsRecentlyActiveThreadsAndMarksTruncation(t *testing.T) {
-	fixture := observeFixtureWithThreads(t, 200) // 200 root comments, oldest first
-	fixture.bumpActivity(threadIndex(0), "2026-08-05T12:00:00Z") // oldest thread, newest reply
-	server := newObserveServer(t, fixture)
-	defer server.Close()
+	t.Parallel()
+	const roots = 200
+	// Comment i is authored at 10:00 + i minutes, EXCEPT the oldest root, which
+	// receives a reply far later -- it must survive the window on activity.
+	comments := make([]string, 0, roots+1)
+	for index := 0; index < roots; index++ {
+		comments = append(comments, fmt.Sprintf(
+			`{"id":%d,"pull_request_review_id":10,"user":{"id":1,"login":"alice"},"body":"c%d","commit_id":%q,"original_commit_id":%q,"path":"a.go","line":1,"original_line":1,"updated_at":"2026-08-01T%02d:%02d:00Z"}`,
+			1000+index, index, sha('a'), sha('a'), 10+index/60, index%60))
+	}
+	comments = append(comments, fmt.Sprintf(
+		`{"id":9999,"pull_request_review_id":10,"user":{"id":2,"login":"bob"},"body":"late reply","commit_id":%q,"original_commit_id":%q,"path":"a.go","line":1,"original_line":1,"in_reply_to_id":1000,"updated_at":"2026-08-05T12:00:00Z"}`,
+		sha('a'), sha('a')))
 
-	observer, err := github.NewObserverWithWindow(server.URL, staticToken("t"), server.Client(), 150)
+	var serverURL string
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/repos/acme/widget/pulls/42":
+			writeFixtureAt(t, response, "pull_request_active.json", serverURL)
+		case "/repos/acme/widget/pulls/42/reviews":
+			response.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(response, `[{"id":10,"user":{"id":1,"login":"alice"},"body":"","commit_id":%q,"submitted_at":"2026-08-01T10:00:00Z","state":"COMMENTED"}]`, sha('a'))
+		case "/repos/acme/widget/pulls/42/comments":
+			response.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(response, "[%s]", strings.Join(comments, ","))
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+	serverURL = server.URL
+
+	observer, err := github.NewObserverWithWindow(server.URL, tokenFunc(func(context.Context) (string, error) {
+		return "token-1", nil
+	}), server.Client(), 150)
 	if err != nil {
 		t.Fatal(err)
 	}
-	observation, err := observer.Observe(context.Background(), testLocator(), "")
+	observation, err := observer.Observe(context.Background(), pullrequest.Locator{
+		Provider: pullrequest.ProviderGitHub, Repository: "acme/widget", ExternalID: "42",
+	}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -570,8 +688,15 @@ func TestObserveWindowKeepsRecentlyActiveThreadsAndMarksTruncation(t *testing.T)
 	if !observation.Truncated {
 		t.Fatal("Truncated = false, want true when threads were dropped")
 	}
-	if !containsThread(observation.Threads, threadIDFor(0)) {
-		t.Fatal("the oldest thread received the newest reply and must be inside the window")
+	oldestRoot := "thread-1000"
+	found := false
+	for _, thread := range observation.Threads {
+		if thread.ID == oldestRoot {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("%s received the newest reply and must be inside the window", oldestRoot)
 	}
 }
 ```
@@ -657,16 +782,19 @@ Six sites assume `ReviewBatches` holds exactly one element and index it position
 
 - [ ] **Step 1: Write the failing test**
 
-```go
-func TestRevisionExecutorPublishesTheNamedBatchNotTheFirst(t *testing.T) {
-	fixture := newRevisionFixture(t)
-	fixture.observation.ReviewBatches = []pullrequest.ReviewBatch{
-		{ID: "review-10", ReviewID: "10", CommitSHA: fixture.sourceSHA, Reviewer: "alice", Ready: true},
-		{ID: "review-20", ReviewID: "20", CommitSHA: fixture.sourceSHA, Reviewer: "bob", Ready: true},
-	}
-	fixture.response.BatchID = "review-20"
+The fixture is `newPRRevisionExecutorFixture(t, trigger)` returning `*prRevisionExecutorFixture` (`revision_executor_test.go:1021`). Read that constructor before writing the test — it builds the observation, candidate, validation, impact and response snapshot refs, and the assertions below must set the observation's batches through whatever it exposes. Add to `agent/pullrequest/revision_executor_test.go`:
 
-	published, err := fixture.executor.Execute(context.Background(), fixture.request())
+```go
+func TestPRRevisionExecutorPublishesTheNamedBatchNotTheFirst(t *testing.T) {
+	fixture := newPRRevisionExecutorFixture(t, contracts.PullRequestTriggerReviewBatch)
+	// Full state carries every batch; the response names which one it answers.
+	fixture.setObservationBatches(
+		pullrequest.ReviewBatch{ID: "review-10", ReviewID: "10", CommitSHA: revisionObjectID('a'), Reviewer: "alice", Ready: true},
+		pullrequest.ReviewBatch{ID: "review-20", ReviewID: "20", CommitSHA: revisionObjectID('a'), Reviewer: "bob", Ready: true},
+	)
+	fixture.setResponseBatchID("review-20")
+
+	published, err := fixture.execute(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -676,6 +804,8 @@ func TestRevisionExecutorPublishesTheNamedBatchNotTheFirst(t *testing.T) {
 	}
 }
 ```
+
+`setObservationBatches`, `setResponseBatchID` and `execute` are thin helpers on the existing fixture — add whichever the constructor does not already provide, matching its established style rather than inventing a parallel one.
 
 - [ ] **Step 2: Run test to verify it fails**
 
