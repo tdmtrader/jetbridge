@@ -545,3 +545,52 @@ exactly there, so the collision silently absorbed the executions the cap exists 
 - **Phase 0b** (repairing the nine `cost_usd = 0` rows) — a live mutation, still the owner's call.
 - **`ad1e70d27e`** on `codex/agentic-platform-rebase` still needs amending; it is not an ancestor of
   this branch, so it is a separate cross-branch commit.
+
+---
+
+## 10. Adversarial review (2026-08-05)
+
+Five lenses over the full diff (restart survival, excision residue, retry bound, migration safety,
+behavior delta), every finding sent to a separate agent instructed to refute it. **35 raised, 17
+refuted, 18 confirmed.** Two were real regressions introduced by this branch and are fixed in
+`70674bd412`.
+
+### Fixed
+
+**The chart rendered `--preemption-watch` / `--preemption-budget` onto a daemon that no longer defines
+them.** stdlib `flag` is `ExitOnError`, so any deployment with `artifactDaemon.preemption.enabled=true`
+would CrashLoopBackOff every artifact-daemon pod on rollout — taking the authoritative artifact cache
+down fleet-wide, and with it the web-restart survival this branch exists to protect. Same class as the
+one HEAD's parent `aad91a9911` fixed; the template's own comment ten lines above documents it happening
+on 2026-08-03. **Nothing in the test suite could catch it** — Helm renders the arg fine and the chart
+tests only assert NetworkPolicy egress. The verifier reproduced it end to end: built the binary at HEAD,
+ran it with the rendered args, `flag provided but not defined: -preemption-watch`, exit 2. Removed the
+args, values stanza, README rows, and the GCP metadata egress that existed only for the deleted watcher.
+
+**The retriable interruption was inert, and worse than what it replaced.** `exec.RetryError` only wraps a
+step when the default-off `EnableBuildRerunWhenWorkerDisappears` flag is set, so on a default deployment
+the returned `InterruptionError` was never converted to `exec.Retriable` — the engine finished the build
+as *errored* with a raw runtime error, replacing a clean diagnostic with a worse one. The step now takes
+`WithAgentInterruptionRetry`, passed by the factory only inside the same flag check, and fails closed
+without it. **Operational consequence: auto-retry requires `--enable-rerun-when-worker-disappears`.**
+
+Also cleaned up: dead SQL and six helpers still addressing dropped tables in the transcript factory, a
+dangling interface, a regenerated fake, an unread `finalPresentation` parameter, and stale doc comments
+claiming `DO NOTHING` semantics in two places.
+
+### Confirmed but deliberately not fixed
+
+**A restarted step's occurrence timestamps are wrong, and the freeze makes it permanent.**
+`agent_run_metrics.created_at` is not refreshed on conflict and `wall_time_seconds` is `GREATEST`, so a
+step ingested twice derives its window from the *first* execution's completion. Migration 1773106157
+freezes it. Fixing it means refreshing `created_at` when `ingestion_seq` advances — i.e. reading
+`prev.IngestionSeq`, which is plumbed and currently unread.
+
+**A restarted step under-charges the ledger.** Unchanged from §5's "quiet accounting hole", but the retry
+makes it reachable rather than hypothetical: ingestion 2 computes `ledgerCost = new - prev`, which is
+negative when the abandoned execution cost more, and the `ledgerCost > 0` gate drops it. Real spend
+disappears from both `cost_usd` and `agent_cost_ledger` — the two things `--agent-daily-budget-usd` and
+the node-occurrence cost read. **Same fix, same unread field.**
+
+These are one change, not two, and it is the change the `ingestion_seq` migration was written to enable.
+Worth doing before auto-retry is switched on with the flag.
