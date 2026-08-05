@@ -110,6 +110,78 @@ The command waits for the durable capture by default. Record both
 `.snapshot.id` and `.execution.pipeline_run_id`; use the snapshot ID as the
 node input.
 
+## Sealing a historical revision
+
+`repository/v1` requires complete, non-shallow history. For a clone that means
+**every ref**, so a naive clone of an old commit also ships every descendant of
+it — including work you may not intend the consumer to see. A sealed repository
+carries everything reachable from its refs; pruning is how you control that.
+
+To seal exactly one revision and nothing after it:
+
+```sh
+git clone --no-local <source> pre-state
+cd pre-state
+git branch -f pre-state <TARGET-SHA>
+git checkout pre-state
+for b in $(git branch --format='%(refname:short)' | grep -v '^pre-state$'); do
+  git branch -D "$b"
+done
+git remote remove origin
+git tag -l | xargs -r git tag -d
+git for-each-ref --format='%(refname)' refs/remotes | xargs -r -n1 git update-ref -d
+git reflog expire --expire=now --all
+git gc --prune=now
+```
+
+Then assert the prune worked. This check is the point of the procedure:
+
+```sh
+git cat-file -e <A-SHA-THAT-CAME-AFTER>   # MUST fail
+```
+
+Only then seal it:
+
+```sh
+fly -t TARGET agent snapshots create --type repository/v1 --from ./pre-state --json
+```
+
+`git clone` writes only `core.*`, `remote.*` and `branch.*` config keys, all of
+which the validator's allowlist accepts; removing the remote leaves a clean
+config. A 220 MB repository seals in roughly 40 seconds.
+
+## Writing to inputs
+
+Typed inputs are mounted **writable**, and that is deliberate. A node that
+cannot write to its repository input cannot build it, run its tests, or install
+anything.
+
+Editing an input cannot affect the sealed snapshot or any other run. The mount
+is a per-run copy at `<artifactDaemonHostPath>/steps/<handle>/<subdir>`, keyed
+by the step's own container handle, and the artifact daemon materializes it by
+byte copy — no hardlinks, so no shared inodes with the cache. (Contrast a `cache`
+volume, which is keyed stably by job and step precisely so that it *is* shared.)
+
+**One exception.** An input named as the base subject of a
+`repository-change/v1` output is re-read from its mount and re-canonicalized
+when the record is written — `repository-change/v1` is the only contract that
+reopens input content. If the tree no longer hashes to the digest it was given,
+the write fails:
+
+```
+output builder: input "repository" canonical digest does not match its authority
+```
+
+This is not corruption; the sealed snapshot is untouched and other runs are
+unaffected. It means the node broke *its own* output. A node that must both edit
+a repository and seal a `repository-change/v1` against it should work in a copy:
+
+```sh
+cp -a repository work
+chmod -R u+w work
+cd work
+```
+
 ## Import and record the exact version
 
 Import validates the complete directory and allocates the next integer version.
