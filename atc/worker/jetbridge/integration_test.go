@@ -194,6 +194,73 @@ var _ = Describe("Integration", func() {
 		})
 	})
 
+	// Web-restart survival is the one interruption property the platform keeps
+	// after the checkpoint subsystem is removed, and for an agent step it is
+	// the difference between re-attaching to a live agent and starting a fresh
+	// one at full token spend. It rests on three things that are easy to break
+	// without noticing: execProcess.supervised() covering ContainerTypeAgent,
+	// the process ID and command staying byte-stable so supervisorCommand
+	// resolves the same state dir, and Run reusing the surviving pod. Nothing
+	// else in the suite binds ContainerTypeAgent to that path.
+	Describe("agent reattach after web restart", func() {
+		It("re-execs the identical supervisor command against the surviving pod", func() {
+			spec := runtime.ContainerSpec{
+				TeamID: 1,
+				Dir:    "/tmp/build/workdir",
+				ImageSpec: runtime.ImageSpec{
+					ImageURL: "docker:///ubuntu:22.04",
+				},
+			}
+			// Mirrors atc/exec/agent_step.go: the constant process ID "agent"
+			// and a bare agent-runner with no args. Both feed the supervisor
+			// state-dir hash, so a change here silently breaks resume.
+			processSpec := runtime.ProcessSpec{
+				ID:   "agent",
+				Path: "agent-runner",
+				Dir:  "/tmp/build/workdir",
+			}
+
+			By("web 1: launching the agent")
+			container1 := createContainer("agent-reattach", db.ContainerTypeAgent, spec)
+			process1, err := container1.Run(ctx, processSpec, runtime.ProcessIO{})
+			Expect(err).ToNot(HaveOccurred())
+			simulatePodRunning("agent-reattach")
+			_, err = process1.Wait(ctx)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(fakeExecutor.execCalls).To(HaveLen(1))
+			web1Command := fakeExecutor.execCalls[0].command
+			expectSupervisedExec(web1Command, `'agent-runner'`)
+
+			By("simulating web 1 dying before the exit status was recorded")
+			pod, err := fakeClientset.CoreV1().Pods("ci-namespace").Get(ctx, "agent-reattach", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			pod.Annotations = nil
+			_, err = fakeClientset.CoreV1().Pods("ci-namespace").Update(ctx, pod, metav1.UpdateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			By("web 2: attach alone cannot resume an agent that never recorded completion")
+			container2 := createContainer("agent-reattach", db.ContainerTypeAgent, spec)
+			_, err = container2.Attach(ctx, "agent", runtime.ProcessIO{})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("no completion status"))
+
+			By("web 2: Run reuses the surviving pod rather than starting a second agent")
+			process2, err := container2.Run(ctx, processSpec, runtime.ProcessIO{})
+			Expect(err).ToNot(HaveOccurred())
+			_, err = process2.Wait(ctx)
+			Expect(err).ToNot(HaveOccurred())
+
+			pods, err := fakeClientset.CoreV1().Pods("ci-namespace").List(ctx, metav1.ListOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(pods.Items).To(HaveLen(1), "no second pod may be created on reattach")
+
+			Expect(fakeExecutor.execCalls).To(HaveLen(2))
+			Expect(fakeExecutor.execCalls[1].command).To(Equal(web1Command),
+				"re-exec must be byte-identical or the supervisor starts a second agent at full token spend")
+			expectSupervisedExec(fakeExecutor.execCalls[1].command, `'agent-runner'`)
+		})
+	})
+
 	Describe("pipeline with get/put resources", func() {
 		It("runs a get step followed by a put step with the resource protocol", func() {
 			By("running the get step")
