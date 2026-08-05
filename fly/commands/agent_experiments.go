@@ -175,20 +175,25 @@ type agentExperimentVariantReference struct {
 	WorkflowName string
 	Version      int
 	FunctionID   string
+	// Node is set when the target was spelled label=node:name@version. A node
+	// variant selects no function (it is a single leaf) and instead varies
+	// the node's own parameters between variants.
+	Node bool
 }
 
 type ExperimentsAddVariantCommand struct {
 	Args struct {
 		Experiment string `positional-arg-name:"EXPERIMENT" required:"true" description:"Quoted-decimal experiment ID"`
-		Variant    string `positional-arg-name:"VARIANT" required:"true" description:"label=workflow@version or label=workflow@version#function-id"`
+		Variant    string `positional-arg-name:"VARIANT" required:"true" description:"label=workflow@version, label=workflow@version#function-id, or label=node:name@version"`
 	} `positional-args:"yes"`
-	Control  bool  `long:"control" description:"Make this variant the explicit control (clears the prior control)"`
-	Revision int64 `long:"revision" description:"Expected positive draft revision (default: revision returned by GET)"`
-	Json     bool  `long:"json" description:"Print command result as JSON"`
+	Control  bool     `long:"control" description:"Make this variant the explicit control (clears the prior control)"`
+	Revision int64    `long:"revision" description:"Expected positive draft revision (default: revision returned by GET)"`
+	Param    []string `long:"param" description:"Set a node parameter as NAME=VALUE (repeatable; only valid for a node variant)"`
+	Json     bool     `long:"json" description:"Print command result as JSON"`
 }
 
 func (command *ExperimentsAddVariantCommand) Execute([]string) error {
-	id, reference, err := command.prepare()
+	id, reference, nodeParameters, err := command.prepare()
 	if err != nil {
 		return err
 	}
@@ -196,30 +201,37 @@ func (command *ExperimentsAddVariantCommand) Execute([]string) error {
 	if err != nil {
 		return err
 	}
-	return command.executePrepared(target, os.Stdout, id, reference)
+	return command.executePrepared(target, os.Stdout, id, reference, nodeParameters)
 }
 
 func (command *ExperimentsAddVariantCommand) execute(target rc.Target, output io.Writer) error {
-	id, reference, err := command.prepare()
+	id, reference, nodeParameters, err := command.prepare()
 	if err != nil {
 		return err
 	}
-	return command.executePrepared(target, output, id, reference)
+	return command.executePrepared(target, output, id, reference, nodeParameters)
 }
 
-func (command *ExperimentsAddVariantCommand) prepare() (experiment.ID, agentExperimentVariantReference, error) {
+func (command *ExperimentsAddVariantCommand) prepare() (experiment.ID, agentExperimentVariantReference, map[string]string, error) {
 	id, err := parseAgentExperimentID(command.Args.Experiment)
 	if err != nil {
-		return 0, agentExperimentVariantReference{}, err
+		return 0, agentExperimentVariantReference{}, nil, err
 	}
 	reference, err := parseAgentExperimentVariantReference(command.Args.Variant)
 	if err != nil {
-		return 0, agentExperimentVariantReference{}, err
+		return 0, agentExperimentVariantReference{}, nil, err
 	}
 	if command.Revision < 0 {
-		return 0, agentExperimentVariantReference{}, fmt.Errorf("experiment revision must be positive")
+		return 0, agentExperimentVariantReference{}, nil, fmt.Errorf("experiment revision must be positive")
 	}
-	return id, reference, nil
+	if !reference.Node && len(command.Param) != 0 {
+		return 0, agentExperimentVariantReference{}, nil, fmt.Errorf("variant --param is only valid for a node variant (label=node:name@version); %q is not a node target", command.Args.Variant)
+	}
+	nodeParameters, err := parseAgentExperimentNodeParameters(command.Param)
+	if err != nil {
+		return 0, agentExperimentVariantReference{}, nil, err
+	}
+	return id, reference, nodeParameters, nil
 }
 
 func (command *ExperimentsAddVariantCommand) executePrepared(
@@ -227,12 +239,13 @@ func (command *ExperimentsAddVariantCommand) executePrepared(
 	output io.Writer,
 	id experiment.ID,
 	reference agentExperimentVariantReference,
+	nodeParameters map[string]string,
 ) error {
 	stored, err := getAgentExperiment(target, id)
 	if err != nil {
 		return err
 	}
-	variant, err := resolveAgentExperimentVariant(target, reference, command.Control)
+	variant, err := resolveAgentExperimentVariant(target, reference, command.Control, nodeParameters)
 	if err != nil {
 		return err
 	}
@@ -651,11 +664,19 @@ func parseAgentExperimentPositiveID(raw, name string) (int64, error) {
 
 func parseAgentExperimentVariantReference(raw string) (agentExperimentVariantReference, error) {
 	if strings.Count(raw, "=") != 1 {
-		return agentExperimentVariantReference{}, fmt.Errorf("variant must be label=workflow@version or label=workflow@version#function-id")
+		return agentExperimentVariantReference{}, fmt.Errorf("variant must be label=workflow@version, label=workflow@version#function-id, or label=node:name@version")
 	}
 	label, target, _ := strings.Cut(raw, "=")
 	if strings.TrimSpace(label) == "" || label != strings.TrimSpace(label) {
 		return agentExperimentVariantReference{}, fmt.Errorf("variant label is required")
+	}
+	isNode := false
+	if rest, found := strings.CutPrefix(target, "node:"); found {
+		isNode = true
+		target = rest
+		if strings.Contains(target, "#") {
+			return agentExperimentVariantReference{}, fmt.Errorf("variant node target must not select a function: a node is one leaf, so label=node:name@version#function-id is meaningless")
+		}
 	}
 	if strings.Count(target, "#") > 1 {
 		return agentExperimentVariantReference{}, fmt.Errorf("variant function target must contain one function ID")
@@ -679,8 +700,35 @@ func parseAgentExperimentVariantReference(raw string) (agentExperimentVariantRef
 		return agentExperimentVariantReference{}, fmt.Errorf("variant workflow version must be a canonical positive integer")
 	}
 	return agentExperimentVariantReference{
-		Label: label, WorkflowName: workflowName, Version: int(version64), FunctionID: functionID,
+		Label: label, WorkflowName: workflowName, Version: int(version64), FunctionID: functionID, Node: isNode,
 	}, nil
+}
+
+// parseAgentExperimentNodeParameters parses repeatable --param NAME=VALUE
+// flags for a node variant. Unlike the looser `agent nodes run --param`
+// parser, this rejects an empty value outright: a node variant is meant to
+// pin an exact, comparable configuration, so a blank value almost certainly
+// means the caller forgot the "=value" half rather than intending an empty
+// string.
+func parseAgentExperimentNodeParameters(values []string) (map[string]string, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+	params := make(map[string]string, len(values))
+	for _, value := range values {
+		name, parameter, found := strings.Cut(value, "=")
+		if !found || strings.TrimSpace(name) == "" || name != strings.TrimSpace(name) {
+			return nil, fmt.Errorf("variant --param %q must be NAME=VALUE with a non-empty name", value)
+		}
+		if parameter == "" {
+			return nil, fmt.Errorf("variant --param %q must have a non-empty value", value)
+		}
+		if _, duplicate := params[name]; duplicate {
+			return nil, fmt.Errorf("variant --param %q was specified more than once", name)
+		}
+		params[name] = parameter
+	}
+	return params, nil
 }
 
 func parseAgentExperimentFixtureRole(raw string) (experiment.FixtureRole, error) {
@@ -789,7 +837,11 @@ func resolveAgentExperimentVariant(
 	target rc.Target,
 	reference agentExperimentVariantReference,
 	control bool,
+	nodeParameters map[string]string,
 ) (experiment.Variant, error) {
+	if reference.Node {
+		return resolveAgentExperimentNodeVariant(target, reference, control, nodeParameters)
+	}
 	path := "/api/v1/agent/workflows/" + url.PathEscape(reference.WorkflowName) + "/versions/" + strconv.Itoa(reference.Version)
 	response, err := agentAPIRequest(target, http.MethodGet, path, nil)
 	if err != nil {
@@ -824,6 +876,51 @@ func resolveAgentExperimentVariant(
 	}
 	return experiment.Variant{
 		Label: reference.Label, Control: control, Target: variantTarget, SignatureHash: hash,
+	}, nil
+}
+
+// resolveAgentExperimentNodeVariant fetches the exact reusable node version
+// and mirrors the durable binder's executableNodeDefinition: instantiate the
+// node's one leaf with the caller's parameters (defaults apply to the rest)
+// to derive the same public signature the server will bind against. This is
+// required, not cosmetic — Definition.Validate rejects a variant whose
+// signature_hash does not match the experiment's frozen signature.
+func resolveAgentExperimentNodeVariant(
+	target rc.Target,
+	reference agentExperimentVariantReference,
+	control bool,
+	nodeParameters map[string]string,
+) (experiment.Variant, error) {
+	path := "/api/v1/agent/nodes/" + url.PathEscape(reference.WorkflowName) + "/versions/" + strconv.Itoa(reference.Version)
+	response, err := agentAPIRequest(target, http.MethodGet, path, nil)
+	if err != nil {
+		return experiment.Variant{}, err
+	}
+	var node workflow.NodeDefinition
+	if err := decodeOrError(response, &node); err != nil {
+		return experiment.Variant{}, err
+	}
+	function, err := node.Compiled.Instantiate(nodeParameters)
+	if err != nil {
+		return experiment.Variant{}, err
+	}
+	compiled := workflow.CompiledDefinition{SchemaVersion: 3, Name: node.Name, Function: function}
+	signature, err := compiled.PublicSignature()
+	if err != nil {
+		return experiment.Variant{}, err
+	}
+	hash, err := experiment.HashSignature(signature)
+	if err != nil {
+		return experiment.Variant{}, err
+	}
+	return experiment.Variant{
+		Label: reference.Label, Control: control,
+		Target: experiment.Target{
+			Kind: experiment.TargetNode, WorkflowName: node.Name,
+			DefinitionID: int64(node.ID), Version: node.Version,
+			NodeParameters: nodeParameters,
+		},
+		SignatureHash: hash,
 	}, nil
 }
 

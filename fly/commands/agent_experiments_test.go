@@ -68,6 +68,27 @@ func TestParseAgentExperimentVariantReference(t *testing.T) {
 	}
 }
 
+func TestParseAgentExperimentVariantReferenceAcceptsANodeTarget(t *testing.T) {
+	reference, err := parseAgentExperimentVariantReference("early=node:small-fix@4")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if reference.Label != "early" || reference.WorkflowName != "small-fix" ||
+		reference.Version != 4 || !reference.Node {
+		t.Fatalf("reference = %+v", reference)
+	}
+	if reference.FunctionID != "" {
+		t.Fatalf("a node variant selects no function, got %q", reference.FunctionID)
+	}
+}
+
+func TestParseAgentExperimentVariantReferenceRejectsANodeFunction(t *testing.T) {
+	// A node is one leaf; naming a function inside it is meaningless.
+	if _, err := parseAgentExperimentVariantReference("early=node:small-fix@4#review"); err == nil {
+		t.Fatal("a node variant must not accept a function ID")
+	}
+}
+
 func TestParseAgentExperimentFixtureFlags(t *testing.T) {
 	inputs, err := parseAgentExperimentInputs([]string{
 		"repo=9007199254740993",
@@ -256,6 +277,100 @@ func TestExperimentsAddVariantResolvesPinnedWorkflowAndUsesFetchedRevision(t *te
 	}
 }
 
+func TestExperimentsAddVariantResolvesPinnedNodeAndSetsParameters(t *testing.T) {
+	stored := testStoredExperiment()
+	node := testAgentExperimentNodeDefinition(t)
+	var paths []string
+	handler := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		paths = append(paths, request.Method+" "+request.URL.Path)
+		switch request.Method + " " + request.URL.Path {
+		case "GET /api/v1/agent/experiments/" + largeAgentExperimentID:
+			writeAgentExperimentTestJSON(t, response, stored)
+		case "GET /api/v1/agent/nodes/small-fix/versions/4":
+			writeAgentExperimentTestJSON(t, response, node)
+		case "PUT /api/v1/agent/experiments/" + largeAgentExperimentID:
+			var mutation struct {
+				Revision   int64                 `json:"revision"`
+				Definition experiment.Definition `json:"definition"`
+			}
+			decodeAgentExperimentTestJSON(t, request, &mutation)
+			if len(mutation.Definition.Variants) != 2 {
+				t.Fatalf("variants = %#v", mutation.Definition.Variants)
+			}
+			variant := mutation.Definition.Variants[1]
+			if variant.Label != "early" || variant.Control || variant.Target.Kind != experiment.TargetNode ||
+				variant.Target.WorkflowName != "small-fix" || variant.Target.DefinitionID != int64(node.ID) ||
+				variant.Target.Version != node.Version || variant.Target.FunctionID != "" ||
+				variant.Target.NodeParameters["max_turns"] != "12" || len(variant.Target.NodeParameters) != 1 {
+				t.Fatalf("variant = %#v", variant)
+			}
+			wantHash, err := experiment.HashSignature(stored.Definition.Signature)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if variant.SignatureHash != wantHash {
+				t.Fatalf("signature hash = %q, want %q", variant.SignatureHash, wantHash)
+			}
+			stored.Definition = mutation.Definition
+			stored.Revision++
+			writeAgentExperimentTestJSON(t, response, stored)
+		default:
+			t.Fatalf("unexpected request %s %s", request.Method, request.URL.Path)
+		}
+	})
+
+	command := ExperimentsAddVariantCommand{Param: []string{"max_turns=12"}}
+	command.Args.Experiment = largeAgentExperimentID
+	command.Args.Variant = "early=node:small-fix@4"
+	if err := command.execute(agentExperimentTestTarget(handler), io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	wantPaths := []string{
+		"GET /api/v1/agent/experiments/" + largeAgentExperimentID,
+		"GET /api/v1/agent/nodes/small-fix/versions/4",
+		"PUT /api/v1/agent/experiments/" + largeAgentExperimentID,
+	}
+	if !reflect.DeepEqual(paths, wantPaths) {
+		t.Fatalf("paths = %#v, want %#v", paths, wantPaths)
+	}
+}
+
+func TestExperimentsAddVariantRejectsParamForNonNodeVariant(t *testing.T) {
+	var requestCount atomic.Int32
+	handler := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		requestCount.Add(1)
+	})
+
+	command := ExperimentsAddVariantCommand{Param: []string{"max_turns=12"}}
+	command.Args.Experiment = largeAgentExperimentID
+	command.Args.Variant = "candidate=review@4"
+	err := command.execute(agentExperimentTestTarget(handler), io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "--param") || !strings.Contains(err.Error(), "node") {
+		t.Fatalf("error = %v", err)
+	}
+	if requestCount.Load() != 0 {
+		t.Fatalf("rejected --param still sent %d requests", requestCount.Load())
+	}
+}
+
+func TestParseAgentExperimentNodeParametersRejectsMalformedValues(t *testing.T) {
+	params, err := parseAgentExperimentNodeParameters([]string{"max_turns=12", "model=opus"})
+	if err != nil || params["max_turns"] != "12" || params["model"] != "opus" || len(params) != 2 {
+		t.Fatalf("params = %#v, err = %v", params, err)
+	}
+	for _, values := range [][]string{
+		{"max_turns"},                    // no "="
+		{"=12"},                          // empty key
+		{"max_turns="},                   // empty value
+		{" max_turns=12"},                // key not trimmed
+		{"max_turns=12", "max_turns=13"}, // duplicate key
+	} {
+		if _, err := parseAgentExperimentNodeParameters(values); err == nil {
+			t.Fatalf("parseAgentExperimentNodeParameters(%q) succeeded", values)
+		}
+	}
+}
+
 func TestResolveAgentExperimentVariantExtractsPinnedFunctionSignature(t *testing.T) {
 	definition := testAgentExperimentWorkflowDefinition(t)
 	handler := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
@@ -268,7 +383,7 @@ func TestResolveAgentExperimentVariantExtractsPinnedFunctionSignature(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	variant, err := resolveAgentExperimentVariant(agentExperimentTestTarget(handler), reference, false)
+	variant, err := resolveAgentExperimentVariant(agentExperimentTestTarget(handler), reference, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -714,6 +829,36 @@ plan:
 	}
 	return workflow.Definition{
 		ID: 42, Name: "review", Version: 4, SchemaVersion: 3, SignatureVersion: 1,
+		Compiled: *compiled,
+	}
+}
+
+// testAgentExperimentNodeDefinition compiles a minimal reusable node whose
+// public signature (input "repo" repository/v1, output "review" review/v1)
+// intentionally matches testStoredExperiment's frozen experiment signature,
+// so a resolved node variant's signature hash can be compared directly
+// against it the same way the workflow-variant tests do.
+func testAgentExperimentNodeDefinition(t *testing.T) workflow.NodeDefinition {
+	t.Helper()
+	compiled, err := workflow.CompileNodeDefinition(workflow.Manifest{workflow.NodeFileName: `schema_version: 1
+name: small-fix
+inputs:
+  - {name: repo, type: repository/v1}
+outputs:
+  - {name: review, type: review/v1}
+parameters:
+  - {name: max_turns, default: "5"}
+step:
+  agent: fix
+  prompt: Fix the bug.
+  inputs: [repo]
+  outputs: [review]
+`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return workflow.NodeDefinition{
+		ID: 41, Name: "small-fix", Version: 4, ContentHash: "abc123",
 		Compiled: *compiled,
 	}
 }
