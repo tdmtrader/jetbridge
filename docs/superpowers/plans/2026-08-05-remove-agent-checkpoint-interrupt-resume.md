@@ -481,3 +481,67 @@ go test -tags live ./atc/worker/jetbridge/ -run TestLiveAgentProcessResume
 ```
 
 **Post-deploy smoke:** run one agent workflow to completion and confirm the run page shows a non-zero `cost_usd` per agent node — that is Phase 0's payoff and the single clearest signal that the evidence repoint landed correctly.
+
+---
+
+## 9. Execution log (2026-08-05)
+
+Landed on `claude/remove-agent-checkpoint-resume`, cut from `origin/jetbridge` at `57fae3a5fd`.
+Seven commits, net ≈ −22.9k lines. Not pushed.
+
+| Commit | Phase | What |
+|---|---|---|
+| `592054a353` | 0 | Read node cost from `agent_run_metrics` |
+| `cdac6d0023` | 1 | Agent reattach regression guard |
+| `d36e02edbb` | 2+3 | Remove the subsystem |
+| `419aa2b5b5` | 4 | Drop the schema |
+| `693f0e6640` | 5a | Ingestion counter; retire the attempt store |
+| `6e2cfacc0d` | 5b | Bounded auto-retry |
+| `a592b9f0ea` | 6 | Verification-sweep residue |
+
+### What the plan got wrong
+
+**`cmd/artifact-daemon/preemption.go` was on the keep list and should not have been.** It is a GCP
+spot-preemption watcher serving `GET /checkpoints/v1/preemption-notice`, whose only consumer was the
+checkpoint preemption client. With the client gone the endpoint has no caller.
+
+**The `Container.Attach` fast path is load-bearing for web-restart survival, and the first excision
+broke it.** Collapsing it to return the bare exit status looked safe — the branch was
+`CheckpointCapture`-gated, which is never true in production. It is not safe: a restarted web can
+preload the persisted exit status into properties, so the fast path fires and skips
+`republishOutputLocations`, leaving post-restart reads unable to reach the producer node's daemon.
+`container_test`'s "re-records output locations so post-restart reads can reach the producer node's
+daemon" caught it. The terminal-evidence path is kept minus only its `CheckpointCapture` condition,
+and `terminalSupervisorStateDirValid` moved into `container.go` with it. **This is the one place the
+removal could have silently destroyed the property the whole exercise exists to protect.**
+
+**`hangar.KindCheckpoint` must stay in the daemon inventory.** Narrowing it to `KindSnapshot` was the
+obvious cleanup and three inventory specs rejected it. Nothing writes the kind, but a deployment that
+ran checkpoints may still hold objects under that prefix with nothing sweeping them; dropping the kind
+makes exactly those bytes invisible to the residency alerts. §6's pre-flight bucket check is therefore
+not optional.
+
+**`DROP TABLE` had to be one statement, not nine.** `agent_run_checkpoint_heads.latest_checkpoint_id`
+and `agent_run_checkpoints.head_id` reference each other, so every sequential order raises 2BP01.
+
+**The drop needed a working down migration.** A refusing down was the first attempt; the suite requires
+migrating down from HEAD to v8.0.1 and `encryption_test` walks down past table drops. It is now a
+structural replay of 1773106144-47, which is faithful because the up refuses on non-empty tables.
+
+**`InsertIfAbsent` had to change semantics for the retry cap to work.** It was `DO NOTHING`, which is
+right about the data and wrong about the count — an interrupted agent writes no flight output and lands
+exactly there, so the collision silently absorbed the executions the cap exists to bound.
+
+### Deferred, with reasons
+
+- **Budget backstop on the retry.** The step records to the ledger but never gates on it, so this is a
+  new pre-launch check rather than a tweak. The cap alone bounds spend at three executions.
+- **`attempts:` × interruption cap compose multiplicatively.** `RetryStep` re-runs on `ok == false`,
+  `RetryErrorStep` on a Retriable error. The cap is per `(build_id, plan_id)` so the total is still
+  bounded, but the interaction deserves a decision (open question 2).
+- **`provider.Capabilities` still carries `SafeBoundary`/`EffectJournal`/`SessionExport`/`NativeResume`,
+  and `Adapter.Start` still takes a `BoundaryControl` nothing supplies.** Unwinding that changes the
+  provider adapter contract, not this subsystem.
+- **Phase 0b** (repairing the nine `cost_usd = 0` rows) — a live mutation, still the owner's call.
+- **`ad1e70d27e`** on `codex/agentic-platform-rebase` still needs amending; it is not an ancestor of
+  this branch, so it is a separate cross-branch commit.
