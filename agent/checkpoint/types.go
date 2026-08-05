@@ -273,16 +273,12 @@ type Capabilities struct {
 	Version       string
 }
 
-type EffectSafetyRegistry interface {
-	ReplaySafe(Effect) bool
-}
-
 // AutomaticRecoveryMode is deliberately conservative. Automatic recovery
 // requires the ATC-observed effect journal; a nonzero checkpoint additionally
 // requires a provider-declared safe boundary. External writes always require
 // manual review because neither a propagated key nor a registry entry proves
 // the remote receiver's state after process loss.
-func (manifest Manifest) AutomaticRecoveryMode(capabilities Capabilities, _ EffectSafetyRegistry) FallbackMode {
+func (manifest Manifest) AutomaticRecoveryMode(capabilities Capabilities) FallbackMode {
 	if !capabilities.EffectJournal {
 		return FallbackManualReview
 	}

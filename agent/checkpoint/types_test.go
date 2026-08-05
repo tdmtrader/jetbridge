@@ -115,19 +115,19 @@ func TestAutomaticRecoveryModeRequiresProvenEffectsAndCapabilities(t *testing.T)
 	}}
 	caps := checkpoint.Capabilities{SafeBoundary: true, EffectJournal: true, SessionExport: true, NativeResume: true, ReplaySafety: true, Version: "v1"}
 
-	if got := base.AutomaticRecoveryMode(caps, safetyRegistry{}); got != checkpoint.FallbackNativeResume {
+	if got := base.AutomaticRecoveryMode(caps); got != checkpoint.FallbackNativeResume {
 		t.Fatalf("effect-free native recovery = %q, want %q", got, checkpoint.FallbackNativeResume)
 	}
 
 	workspace := base
 	workspace.SessionID = ""
-	if got := workspace.AutomaticRecoveryMode(caps, safetyRegistry{}); got != checkpoint.FallbackWorkspaceOnly {
+	if got := workspace.AutomaticRecoveryMode(caps); got != checkpoint.FallbackWorkspaceOnly {
 		t.Fatalf("workspace-only recovery = %q, want %q", got, checkpoint.FallbackWorkspaceOnly)
 	}
 
 	checkpointZero := workspace
 	checkpointZero.Archive = nil
-	if got := checkpointZero.AutomaticRecoveryMode(caps, safetyRegistry{}); got != checkpoint.FallbackCheckpointZero {
+	if got := checkpointZero.AutomaticRecoveryMode(caps); got != checkpoint.FallbackCheckpointZero {
 		t.Fatalf("checkpoint-zero recovery = %q, want %q", got, checkpoint.FallbackCheckpointZero)
 	}
 
@@ -135,7 +135,7 @@ func TestAutomaticRecoveryModeRequiresProvenEffectsAndCapabilities(t *testing.T)
 	begun.Effects = append(begun.Effects, checkpoint.Effect{
 		ToolCallID: "begun", ToolName: "write_file", Provider: "claude", AdapterVersion: "v1", State: checkpoint.EffectBegun,
 	})
-	if got := begun.AutomaticRecoveryMode(caps, safetyRegistry{}); got != checkpoint.FallbackManualReview {
+	if got := begun.AutomaticRecoveryMode(caps); got != checkpoint.FallbackManualReview {
 		t.Fatalf("begun effect recovery = %q, want %q", got, checkpoint.FallbackManualReview)
 	}
 
@@ -170,7 +170,7 @@ func TestAutomaticRecoveryModeRequiresProvenEffectsAndCapabilities(t *testing.T)
 		}(),
 	} {
 		t.Run(name, func(t *testing.T) {
-			if got := candidate.AutomaticRecoveryMode(caps, safetyRegistry{safeContract: "proven-v1"}); got != checkpoint.FallbackManualReview {
+			if got := candidate.AutomaticRecoveryMode(caps); got != checkpoint.FallbackManualReview {
 				t.Fatalf("recovery = %q, want %q", got, checkpoint.FallbackManualReview)
 			}
 		})
@@ -178,16 +178,16 @@ func TestAutomaticRecoveryModeRequiresProvenEffectsAndCapabilities(t *testing.T)
 
 	withoutSafeBoundary := caps
 	withoutSafeBoundary.SafeBoundary = false
-	if got := workspace.AutomaticRecoveryMode(withoutSafeBoundary, safetyRegistry{}); got != checkpoint.FallbackManualReview {
+	if got := workspace.AutomaticRecoveryMode(withoutSafeBoundary); got != checkpoint.FallbackManualReview {
 		t.Fatalf("workspace recovery without safe-boundary capability = %q, want %q", got, checkpoint.FallbackManualReview)
 	}
 
 	withoutEffectJournal := caps
 	withoutEffectJournal.EffectJournal = false
-	if got := workspace.AutomaticRecoveryMode(withoutEffectJournal, safetyRegistry{}); got != checkpoint.FallbackManualReview {
+	if got := workspace.AutomaticRecoveryMode(withoutEffectJournal); got != checkpoint.FallbackManualReview {
 		t.Fatalf("workspace recovery without effect journal = %q, want %q", got, checkpoint.FallbackManualReview)
 	}
-	if got := checkpointZero.AutomaticRecoveryMode(withoutEffectJournal, safetyRegistry{}); got != checkpoint.FallbackManualReview {
+	if got := checkpointZero.AutomaticRecoveryMode(withoutEffectJournal); got != checkpoint.FallbackManualReview {
 		t.Fatalf("checkpoint-zero recovery without effect journal = %q, want %q", got, checkpoint.FallbackManualReview)
 	}
 }
@@ -221,12 +221,6 @@ func TestFinalizeSucceededRequestRequiresMatchingFenceAuthority(t *testing.T) {
 			}
 		})
 	}
-}
-
-type safetyRegistry struct{ safeContract string }
-
-func (r safetyRegistry) ReplaySafe(effect checkpoint.Effect) bool {
-	return effect.IdempotencyKey != "" && effect.IdempotencyContract == r.safeContract
 }
 
 func equalStrings(got, want []string) bool {

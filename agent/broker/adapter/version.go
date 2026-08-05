@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os/exec"
 	"regexp"
 	"strings"
 
@@ -22,20 +21,6 @@ var (
 type VersionProbe interface {
 	LookPath(string) (string, error)
 	Output(context.Context, string, []string, []string) ([]byte, error)
-}
-
-// SystemVersionProbe performs the local, argv-only harness inspection used by
-// broker-worker startup.
-type SystemVersionProbe struct{}
-
-func (SystemVersionProbe) LookPath(binary string) (string, error) {
-	return exec.LookPath(binary)
-}
-
-func (SystemVersionProbe) Output(ctx context.Context, binary string, args []string, env []string) ([]byte, error) {
-	command := exec.CommandContext(ctx, binary, args...)
-	command.Env = append([]string(nil), env...)
-	return command.Output()
 }
 
 func preflightEnvironment() []string {

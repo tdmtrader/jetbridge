@@ -41,12 +41,6 @@ type AgentBrokerAuthorityFactory interface {
 	BuildAgentBroker(AgentBrokerAuthorityRequest) (*runtime.ManagedAgentBroker, error)
 }
 
-type AgentBrokerAuthorityFactoryFunc func(AgentBrokerAuthorityRequest) (*runtime.ManagedAgentBroker, error)
-
-func (f AgentBrokerAuthorityFactoryFunc) BuildAgentBroker(request AgentBrokerAuthorityRequest) (*runtime.ManagedAgentBroker, error) {
-	return f(request)
-}
-
 func agentBrokerAuthorityRequest(
 	planID atc.PlanID,
 	plan atc.AgentPlan,
