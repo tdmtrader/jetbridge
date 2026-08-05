@@ -10,6 +10,38 @@
 
 **Spec:** [2026-08-05-full-state-pr-monitor-design.md](../specs/2026-08-05-full-state-pr-monitor-design.md)
 
+## Execution status (2026-08-05)
+
+**Landed:** Task 1 (`1286b9a5a3`), Task 2 (`1ac7996e0c`).
+
+**Task 3 — BLOCKED on a deliberate safety invariant.** Sharing objects between the
+two worktrees requires either `git worktree add` (which writes `.git` as a gitlink
+*file*) or `--shared`/`--reference` (which writes `.git/objects/info/alternates`).
+`dependencies.go:114` explicitly refuses both, and the destination check requires
+`.git` to be a directory. The invariant is that each materialized repository is
+independent and self-contained, which is what makes `repository/v1` resealing
+meaningful. Options: fetch once over the network then a second *local-path* fetch
+into the second repo (keeps independence, needs `safeURL` relaxed for an internal
+path), or accept two fetches and take the cost. **Needs a decision; do not relax
+the refusals casually.**
+
+**Tasks 4-6 — BLOCKED on a phasing error in this plan.** This plan claimed Task 4
+"changes observation shape without trigger semantics changing at the same time."
+That is false. `triggers.go:78-80` says in its own comment that *"ReviewBatches is
+an adapter-enforced unacknowledged delta"*, and `ActionFor` branches on
+`len(observation.ReviewBatches) > 0` (`:77`). Under full state that is true for any
+PR that has ever had a review, so `ActionReviewBatch` fires permanently and
+`ActionConflict`/`ActionFreshness` become unreachable.
+
+Making `ActionFor` full-state-aware needs to know which batches are
+unacknowledged -- i.e. the cursor, which full state removes. It is circular.
+**Full-state observation and `ActionFor` are mutually exclusive**: Task 4 cannot
+land until the server-side `SourcePolicy` from the spec replaces `ActionFor`, which
+is Phase 2 work. Re-plan Tasks 4-6 together with that, not before it.
+
+**Loose end:** `equalVersion` (`protocol.go:314`) is dead after Task 1 -- Task 6 was
+to remove it.
+
 **Out of scope — needs its own plan:** generic source instances, the skip guard, server-side re-launch, `resource_sources:` declaration, closing the authority-spine gaps, removing the boot gate.
 
 **Test environment note.** `postgresrunner` binds `5433 + GinkgoParallelProcess()`, i.e. ports **5434–5442**. Other worktrees running suites collide. Before any DB suite, drain that whole range with **SIGTERM** — `kill -9` leaks SysV shared-memory segments and eventually exhausts SHMMNI so `initdb` fails outright.
