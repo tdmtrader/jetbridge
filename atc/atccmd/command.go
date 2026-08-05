@@ -35,11 +35,9 @@ import (
 	workflowwaitsapi "github.com/concourse/concourse/agent/api/workflowwaits"
 	"github.com/concourse/concourse/agent/artifactcap"
 	"github.com/concourse/concourse/agent/budget"
-	"github.com/concourse/concourse/agent/checkpoint"
 	"github.com/concourse/concourse/agent/credentials"
 	"github.com/concourse/concourse/agent/dispatch"
 	"github.com/concourse/concourse/agent/projection"
-	"github.com/concourse/concourse/agent/provider"
 	"github.com/concourse/concourse/agent/publisher"
 	"github.com/concourse/concourse/agent/resourcecapture"
 	"github.com/concourse/concourse/agent/snapshot"
@@ -69,7 +67,6 @@ import (
 	"github.com/concourse/concourse/atc/db/lock"
 	"github.com/concourse/concourse/atc/db/migration"
 	"github.com/concourse/concourse/atc/engine"
-	"github.com/concourse/concourse/atc/exec"
 	"github.com/concourse/concourse/atc/gc"
 	"github.com/concourse/concourse/atc/imageresolver"
 	"github.com/concourse/concourse/atc/lidar"
@@ -242,12 +239,6 @@ type RunCommand struct {
 	agentSnapshotPublisherComposer  snapshotPublisherComposer
 	agentSnapshotPublisher          publisher.Executor
 
-	// Checkpoint capture is composed after snapshots and owns no additional
-	// daemon transport. It reuses the one command-scoped checked-mTLS client.
-	agentCheckpointMu         sync.Mutex
-	agentCheckpointStepConfig *exec.AgentCheckpointStepConfig
-	agentCheckpointReclaimer  *checkpoint.Reclaimer
-
 	agentChildAuthorityMu sync.Mutex
 	agentChildSigner      *agentchildexecutions.CapabilitySigner
 	agentChildVerifier    *agentchildexecutions.CapabilityVerifier
@@ -349,16 +340,6 @@ type RunCommand struct {
 		OrphanSweepAge      time.Duration `long:"agent-snapshot-orphan-sweep-age" default:"24h" description:"Minimum age before an unreferenced durable snapshot object may be reclaimed; must be at least 1h so an in-flight upload is never eaten."`
 		OrphanSweepInterval time.Duration `long:"agent-snapshot-orphan-sweep-interval" default:"1h" description:"Interval between durable snapshot orphan sweeps."`
 	} `group:"Agent Snapshots"`
-
-	AgentCheckpoints struct {
-		Enabled         bool          `long:"agent-checkpoint-enabled" description:"Enable durable safe-boundary workspace checkpoint capture for authenticated agent workflow runs."`
-		ElapsedInterval time.Duration `long:"agent-checkpoint-elapsed-interval" default:"5m" description:"Interval at which a running agent receives a pending checkpoint intent; capture still waits for a provider-declared safe boundary."`
-		CaptureTimeout  time.Duration `long:"agent-checkpoint-capture-timeout" default:"10m" description:"End-to-end timeout for one bounded checkpoint capture, including archive and Hangar upload."`
-		FenceTTL        time.Duration `long:"agent-checkpoint-fence-ttl" default:"15m" description:"Database authority lease for one checkpoint capture; must outlast the capture timeout."`
-		MaxBytes        int64         `long:"agent-checkpoint-max-bytes" default:"10737418240" description:"Maximum regular-file content bytes admitted by one checkpoint archive."`
-		MaxAttempts     int           `long:"agent-checkpoint-max-attempts" default:"3" description:"Maximum durable execution attempts retained for one agent workflow function."`
-		GCInterval      time.Duration `long:"agent-checkpoint-gc-interval" default:"5m" description:"Interval between bounded passes that expire finished checkpoints and release their durable Hangar objects."`
-	} `group:"Agent Checkpoints"`
 
 	AgentWorkflowRuns struct {
 		ReconcilerInterval time.Duration `long:"agent-workflow-run-reconciler-interval" default:"10s" description:"Interval between bounded durable workflow-run reconciliation passes."`
@@ -842,7 +823,6 @@ func (cmd *RunCommand) Runner(positionalArguments []string) (ifrit.Runner, error
 	metric.InitOTelDBChecks()
 	metric.InitOTelArtifactUpload()
 	metric.InitOTelWorkflowRunReconciler()
-	metric.InitOTelAgentCheckpoint()
 
 	// Connection tracker is off by default. Can be turned on/ff at runtime.
 	http.HandleFunc("/debug/connections", func(w http.ResponseWriter, r *http.Request) {
@@ -995,9 +975,6 @@ func (cmd *RunCommand) constructMembers(
 	// deliberately, compose once, and inject the exact daemon client into both
 	// API/backend pools below.
 	if err := cmd.composeAgentSnapshots(backendConn, logger); err != nil {
-		return nil, err
-	}
-	if err := cmd.composeAgentCheckpoints(backendConn); err != nil {
 		return nil, err
 	}
 	checkBuildsChan := make(chan db.Build, 2000)
@@ -1758,12 +1735,6 @@ func (cmd *RunCommand) backendComponents(
 	}
 	components = append(components, snapshotLifecycleComponents...)
 
-	checkpointReclamationComponents, err := cmd.agentCheckpointReclamationComponents()
-	if err != nil {
-		return nil, err
-	}
-	components = append(components, checkpointReclamationComponents...)
-
 	experimentComponents, err := cmd.agentExperimentComponents(
 		dbConn,
 		lockFactory,
@@ -2203,142 +2174,7 @@ func (cmd *RunCommand) composeAgentSnapshots(connection db.DbConn, logger lager.
 	return nil
 }
 
-// composeAgentCheckpoints builds the durable capture graph exactly once at
-// command scope. It deliberately shares the already-checked mTLS daemon
-// client created by snapshot composition: checkpoint capture must never build
-// a second transport with different credentials or trust roots.
-func (cmd *RunCommand) composeAgentCheckpoints(connection db.DbConn) error {
-	cmd.agentCheckpointMu.Lock()
-	defer cmd.agentCheckpointMu.Unlock()
-
-	if !cmd.AgentCheckpoints.Enabled {
-		return nil
-	}
-	if cmd.agentCheckpointStepConfig != nil {
-		return nil
-	}
-	if !cmd.AgentSnapshots.Enabled {
-		return errors.New("agent checkpoints require agent snapshots to be enabled")
-	}
-	if connection == nil {
-		return errors.New("agent checkpoint database connection is required")
-	}
-
-	cmd.agentSnapshotMu.Lock()
-	sharedDaemon := cmd.agentSnapshotDaemonClient
-	cmd.agentSnapshotMu.Unlock()
-	if sharedDaemon == nil {
-		return errors.New("agent checkpoints require the composed snapshot daemon client")
-	}
-
-	attempts := db.NewAgentRunAttemptsFactory(connection)
-	checkpoints := db.NewAgentRunCheckpointsFactory(connection)
-	capture := exec.NewAgentCheckpointCapture(
-		checkpoints,
-		attempts,
-		sharedDaemon,
-		exec.WithAgentCheckpointCaptureMetrics(exec.NewOTelCheckpointCaptureMetrics()),
-	)
-	maxAttempts := cmd.AgentCheckpoints.MaxAttempts
-	fenceTTL := cmd.AgentCheckpoints.FenceTTL
-	captureTimeout := cmd.AgentCheckpoints.CaptureTimeout
-	recoveryMetrics := exec.NewOTelAgentCheckpointRecoveryMetrics()
-	config := &exec.AgentCheckpointStepConfig{
-		Factory: exec.AgentCheckpointExecutionFactoryFunc(func(identity checkpoint.Identity) (exec.AgentCheckpointController, error) {
-			return exec.NewAgentCheckpointExecution(
-				exec.AgentCheckpointExecutionConfig{
-					Identity:         identity,
-					MaxTotalAttempts: maxAttempts,
-					FenceTTL:         fenceTTL,
-					CaptureTimeout:   captureTimeout,
-				},
-				attempts,
-				checkpoints,
-				capture,
-			)
-		}),
-		RecoveryFactory: exec.AgentCheckpointRecoveryFactoryFunc(func(provenance exec.AgentCheckpointImmutableProvenance) (exec.AgentCheckpointRecoveryStepController, error) {
-			return exec.NewAgentCheckpointRecoveryController(exec.AgentCheckpointRecoveryConfig{
-				Provenance: provenance, MaxArchiveBytes: cmd.AgentCheckpoints.MaxBytes, MaxArchiveEntries: cmd.AgentSnapshots.MaxFiles,
-				Metrics: recoveryMetrics,
-				// Production legacy adapters intentionally have no complete journal
-				// or recovery proof, so every interrupted source fails closed.
-				Authorities: nil,
-			}, attempts, checkpoints, checkpoints)
-		}),
-		Provider:          "anthropic",
-		Adapter:           provider.Identity{Name: "claude-cli", Version: "legacy-stream-json"},
-		ElapsedInterval:   cmd.AgentCheckpoints.ElapsedInterval,
-		MaxArchiveBytes:   cmd.AgentCheckpoints.MaxBytes,
-		MaxArchiveEntries: cmd.AgentSnapshots.MaxFiles,
-		RecoveryMetrics:   recoveryMetrics,
-	}
-
-	// Reclamation is composed with capture, not beside it. Capture is the only
-	// writer of durable checkpoint objects and nothing else deletes them, so a
-	// deployment that can capture and cannot reclaim fills its object store
-	// until it fails. Building both here makes that pairing structural.
-	reclaimer, err := checkpoint.NewReclaimer(checkpoints, jetbridge.NewCheckpointObjectStore(sharedDaemon))
-	if err != nil {
-		return err
-	}
-
-	// Publish only the fully assembled policy. Errors above therefore leave no
-	// half-configured path that an AgentStep could accidentally observe.
-	cmd.agentCheckpointStepConfig = config
-	cmd.agentCheckpointReclaimer = reclaimer
-	return nil
-}
-
 var errAgentCheckpointReclamationPass = errors.New("agent checkpoint reclamation pass failed")
-
-// agentCheckpointReclamationComponents schedules the pass that releases the
-// durable footprint of finished runs. It is the only production caller of the
-// checkpoint expiration and object-deletion authority.
-func (cmd *RunCommand) agentCheckpointReclamationComponents() ([]RunnableComponent, error) {
-	if !cmd.AgentCheckpoints.Enabled {
-		return nil, nil
-	}
-	cmd.agentCheckpointMu.Lock()
-	reclaimer := cmd.agentCheckpointReclaimer
-	cmd.agentCheckpointMu.Unlock()
-	if reclaimer == nil {
-		return nil, errors.New("agent checkpoint reclamation is not composed")
-	}
-	return []RunnableComponent{{
-		Component: atc.Component{Name: atc.ComponentAgentCheckpointGC},
-		Runnable: component.RunFunc(func(ctx context.Context) error {
-			return runAgentCheckpointReclamationPass(ctx, reclaimer)
-		}),
-		Interval: cmd.AgentCheckpoints.GCInterval,
-	}}, nil
-}
-
-func runAgentCheckpointReclamationPass(ctx context.Context, reclaimer *checkpoint.Reclaimer) error {
-	report, err := reclaimer.Collect(ctx)
-	// Every pass reports what it reclaimed, including nothing. A store that is
-	// filling while the pass logs zeroes is a different problem from a pass
-	// that is not running, and only a log that always speaks tells them apart.
-	data := lager.Data{
-		"checkpoints_expired": report.CheckpointsExpired,
-		"objects_scanned":     report.ObjectsScanned,
-		"objects_deleted":     report.ObjectsDeleted,
-		"uploads_adopted":     report.UploadsAdopted,
-		"uploads_forgotten":   report.UploadsForgotten,
-		"uploads_deferred":    report.UploadsDeferred,
-		"metadata_removed":    report.MetadataRemoved,
-		"failed":              report.Failed,
-	}
-	logger := lagerctx.FromContext(ctx).Session("agent-checkpoint-reclamation")
-	if err != nil {
-		// Pass errors carry digests, object keys, and transport detail. Keep
-		// those out of component logs while preserving the bounded counts.
-		logger.Info("pass-failed", data)
-		return errAgentCheckpointReclamationPass
-	}
-	logger.Info("pass-complete", data)
-	return nil
-}
 
 func agentSnapshotStreamErrorReporter(logger lager.Logger) snapshotsapi.ErrorReporter {
 	apiLogger := logger.Session("agent-snapshot-api")
@@ -2634,16 +2470,6 @@ func (cmd *RunCommand) agentSnapshotCoreStepFactoryOptions() ([]engine.CoreStepF
 		options = append(options, engine.WithSnapshotPublisher(cmd.agentSnapshotPublisher))
 	}
 	return options, true
-}
-
-func (cmd *RunCommand) agentCheckpointCoreStepFactoryOptions() ([]engine.CoreStepFactoryOption, bool) {
-	cmd.agentCheckpointMu.Lock()
-	defer cmd.agentCheckpointMu.Unlock()
-	if !cmd.AgentCheckpoints.Enabled || cmd.agentCheckpointStepConfig == nil {
-		return nil, false
-	}
-	config := *cmd.agentCheckpointStepConfig
-	return []engine.CoreStepFactoryOption{engine.WithAgentCheckpointCapture(config)}, true
 }
 
 // artifactLocator returns the process-wide DaemonSet ArtifactLocator, creating
@@ -3190,10 +3016,6 @@ func (cmd *RunCommand) validate() error {
 		errs = multierror.Append(errs, err)
 	}
 
-	if err := cmd.validateAgentCheckpoints(); err != nil {
-		errs = multierror.Append(errs, err)
-	}
-
 	if err := cmd.validateAgentWorkflowRuns(); err != nil {
 		errs = multierror.Append(errs, err)
 	}
@@ -3350,53 +3172,6 @@ func (cmd *RunCommand) validateAgentSnapshots() error {
 		cmd.Kubernetes.ArtifactDaemonTLSKey == "" ||
 		cmd.Kubernetes.ArtifactDaemonTLSCACert == "" {
 		errs = multierror.Append(errs, errors.New("artifact daemon mTLS certificate, key, and CA certificate are required when --agent-snapshot-enabled is set"))
-	}
-	return errs.ErrorOrNil()
-}
-
-func (cmd *RunCommand) validateAgentCheckpoints() error {
-	var errs *multierror.Error
-	if cmd.AgentCheckpoints.ElapsedInterval <= 0 {
-		errs = multierror.Append(errs, errors.New("--agent-checkpoint-elapsed-interval must be positive"))
-	}
-	if cmd.AgentCheckpoints.CaptureTimeout <= 0 {
-		errs = multierror.Append(errs, errors.New("--agent-checkpoint-capture-timeout must be positive"))
-	}
-	if cmd.AgentCheckpoints.FenceTTL <= 0 {
-		errs = multierror.Append(errs, errors.New("--agent-checkpoint-fence-ttl must be positive"))
-	}
-	if cmd.AgentCheckpoints.MaxBytes <= 0 {
-		errs = multierror.Append(errs, errors.New("--agent-checkpoint-max-bytes must be positive"))
-	}
-	if cmd.AgentCheckpoints.MaxAttempts <= 0 {
-		errs = multierror.Append(errs, errors.New("--agent-checkpoint-max-attempts must be positive"))
-	}
-	// Capture has no counterpart that deletes what it wrote, so a deployment
-	// that captures without reclaiming grows its durable store without bound.
-	// There is no "off" value; the interval only chooses how often.
-	if cmd.AgentCheckpoints.GCInterval <= 0 {
-		errs = multierror.Append(errs, errors.New("--agent-checkpoint-gc-interval must be positive"))
-	}
-	if cmd.AgentCheckpoints.CaptureTimeout > 0 &&
-		cmd.AgentCheckpoints.FenceTTL > 0 &&
-		cmd.AgentCheckpoints.FenceTTL <= cmd.AgentCheckpoints.CaptureTimeout {
-		errs = multierror.Append(
-			errs,
-			errors.New("--agent-checkpoint-fence-ttl must be greater than --agent-checkpoint-capture-timeout"),
-		)
-	}
-	if !cmd.AgentCheckpoints.Enabled {
-		return errs.ErrorOrNil()
-	}
-	if !cmd.AgentSnapshots.Enabled {
-		errs = multierror.Append(errs, errors.New("--agent-snapshot-enabled is required when --agent-checkpoint-enabled is set"))
-	}
-	if cmd.AgentSnapshots.MaxBytes > 0 &&
-		cmd.AgentCheckpoints.MaxBytes > cmd.AgentSnapshots.MaxBytes {
-		errs = multierror.Append(
-			errs,
-			errors.New("--agent-checkpoint-max-bytes must not exceed --agent-snapshot-max-bytes"),
-		)
 	}
 	return errs.ErrorOrNil()
 }
@@ -3589,9 +3364,6 @@ func (cmd *RunCommand) constructEngine(
 	}
 	if snapshotOptions, ok := cmd.agentSnapshotCoreStepFactoryOptions(); ok {
 		coreStepFactoryOptions = append(coreStepFactoryOptions, snapshotOptions...)
-	}
-	if checkpointOptions, ok := cmd.agentCheckpointCoreStepFactoryOptions(); ok {
-		coreStepFactoryOptions = append(coreStepFactoryOptions, checkpointOptions...)
 	}
 	if cmd.AgentChildExecutions.Enabled {
 		signer, _, runtimeConfig, err := cmd.composeAgentChildAuthority()

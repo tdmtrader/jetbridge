@@ -2404,10 +2404,9 @@ var _ = Describe("Container", func() {
 					db.NewFixedHandleContainerOwner("restart-attach-handle"),
 					db.ContainerMetadata{Type: db.ContainerTypeAgent},
 					runtime.ContainerSpec{
-						Type:              db.ContainerTypeAgent,
-						CheckpointCapture: true,
-						Dir:               "/workdir",
-						ImageSpec:         runtime.ImageSpec{ImageURL: "docker:///agent-runner"},
+						Type:      db.ContainerTypeAgent,
+						Dir:       "/workdir",
+						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///agent-runner"},
 						Outputs: runtime.OutputPaths{
 							"flight":    "/workdir/flight/",
 							"workspace": "/workdir/workspace/",

@@ -12,32 +12,6 @@ import (
 	"github.com/concourse/concourse/agent/runner"
 )
 
-func TestRunPassesBoundaryControlOnlyToSafeAdapter(t *testing.T) {
-	for _, safe := range []bool{false, true} {
-		t.Run(map[bool]string{false: "unsafe", true: "safe"}[safe], func(t *testing.T) {
-			var got provider.BoundaryControl
-			adapter := &provider.FakeAdapter{
-				IdentityValue:     provider.Identity{Name: "test", Version: "v1"},
-				CapabilitiesValue: provider.Capabilities{SafeBoundary: safe},
-				StartFunc: func(_ context.Context, _ provider.StartRequest, control provider.BoundaryControl) (provider.RunningSession, error) {
-					got = control
-					return providerSessionFunc(func(context.Context) (provider.Result, error) {
-						return provider.Result{Stream: []byte(`{"type":"result","subtype":"success","result":"\"done\"","is_error":false}` + "\n")}, nil
-					}), nil
-				},
-			}
-			dir := t.TempDir()
-			exit, err := runner.Run(context.Background(), runner.Config{Prompt: "p", FlightDir: filepath.Join(dir, "flight"), WorkDir: dir, Adapter: adapter, Stdout: io.Discard, Stderr: io.Discard, BoundaryStop: func() error { t.Fatal("unexpected stop"); return nil }})
-			if err != nil || exit != 0 {
-				t.Fatalf("Run() = %d, %v", exit, err)
-			}
-			if (got != nil) != safe {
-				t.Fatalf("control present = %t, safe = %t", got != nil, safe)
-			}
-		})
-	}
-}
-
 func TestRunValidatesReservedSessionDirectoryWithoutRedirectingClaudeConfig(t *testing.T) {
 	dir := t.TempDir()
 	flight := filepath.Join(dir, "flight")

@@ -903,9 +903,6 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 	// recreate the pod and retry. This handles the race where the pod
 	// transitions from Running → Succeeded between waitForRunning and exec.
 	maxExecRetries := 2
-	if p.container != nil && p.container.containerSpec.CheckpointRestore != nil {
-		maxExecRetries = 0
-	}
 	var err error
 	for attempt := 0; attempt <= maxExecRetries; attempt++ {
 		if p.supervised() && p.container != nil && p.container.metadata.Type == db.ContainerTypeAgent {
@@ -1075,9 +1072,6 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 }
 
 func checkpointRecoveryExecError(container *Container, cause error) error {
-	if container != nil && container.containerSpec.CheckpointRestore != nil {
-		return cause
-	}
 	return wrapIfTransient(cause)
 }
 
@@ -1196,9 +1190,6 @@ func (p *execProcess) SetTTY(_ runtime.TTYSpec) error {
 // Only PodSucceeded triggers recreation — PodFailed indicates a genuine
 // container failure (OOM, crash, etc.) that should not be retried.
 func (p *execProcess) recreatePausePodIfTerminal(ctx context.Context) error {
-	if p.container != nil && p.container.containerSpec.CheckpointRestore != nil {
-		return fmt.Errorf("checkpoint recovery pod cannot be recreated")
-	}
 	pod, err := p.clientset.CoreV1().Pods(p.config.Namespace).Get(ctx, p.podName, metav1.GetOptions{})
 	if err != nil {
 		// Pod doesn't exist — create a new one.
@@ -1333,10 +1324,6 @@ func (p *execProcess) waitForRunning(ctx context.Context) error {
 			return err
 		}
 		lastPod = pod
-		if p.container != nil && p.container.containerSpec.CheckpointRestore != nil && !p.container.matchesMaterializedRecoveryPod(pod) {
-			return fmt.Errorf("checkpoint recovery pod identity changed before launch")
-		}
-
 		// Set container count span attributes from pod spec on first event.
 		if !countsSet {
 			span := oteltrace.SpanFromContext(ctx)
@@ -1407,7 +1394,7 @@ func (p *execProcess) waitForRunning(ctx context.Context) error {
 			// recreate it once before giving up. Only recreate for PodFailed
 			// — PodSucceeded means the container ran to completion, which
 			// should not be retried.
-			if pod.Status.Phase == corev1.PodFailed && p.container != nil && p.container.containerSpec.CheckpointRestore == nil && !podRecreated {
+			if pod.Status.Phase == corev1.PodFailed && p.container != nil && !podRecreated {
 				logger := lagerctx.FromContext(ctx).Session("wait-for-running-recreate")
 				logger.Info("pod-terminal-recreating", lager.Data{
 					"pod":   p.podName,

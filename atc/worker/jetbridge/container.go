@@ -16,7 +16,6 @@ import (
 
 	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagerctx"
-	"github.com/concourse/concourse/agent/checkpoint"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/metric"
@@ -70,8 +69,6 @@ type Container struct {
 	config           Config
 	workerName       string
 	mu               sync.RWMutex
-	checkpointMu     sync.Mutex
-	checkpointActive bool
 	recoveryMu       sync.Mutex
 	recoveryPodUID   types.UID
 	recoveryNodeName string
@@ -178,14 +175,6 @@ func (c *Container) Run(ctx context.Context, spec runtime.ProcessSpec, io runtim
 	// the pause pod's sleep expired or it was evicted), delete it and
 	// create a fresh one. Otherwise create a new pause pod.
 	if execMode {
-		if c.containerSpec.CheckpointRestore != nil {
-			if err := c.requireMaterializedRecoveryPod(ctx); err != nil {
-				return nil, err
-			}
-			metric.Metrics.ContainersCreated.Inc()
-			c.bindVolumesToPod(c.podName)
-			return newExecProcess(processID, c.podName, c.clientset, c.config, c, c.executor, spec, io, c.storageBackend), nil
-		}
 		podName := c.podName
 		existingPod, getErr := c.clientset.CoreV1().Pods(c.config.Namespace).Get(ctx, c.podName, metav1.GetOptions{})
 		needsCreate := getErr != nil // pod doesn't exist
@@ -206,9 +195,6 @@ func (c *Container) Run(ctx context.Context, spec runtime.ProcessSpec, io runtim
 		}
 
 		if getErr == nil && (existingPod.Status.Phase == corev1.PodSucceeded || existingPod.Status.Phase == corev1.PodFailed) {
-			if c.containerSpec.CheckpointRestore != nil {
-				return nil, fmt.Errorf("checkpoint recovery Pod %q is terminal and cannot be recreated", c.podName)
-			}
 			// Pod exists but is terminal — delete it so we can create a fresh one.
 			logger.Info("deleting-terminal-pod", lager.Data{
 				"pod":   c.podName,
@@ -311,13 +297,6 @@ func (c *Container) Attach(ctx context.Context, processID string, io runtime.Pro
 	})
 	var spanErr error
 	defer func() { tracing.End(span, spanErr) }()
-	if c.containerSpec.CheckpointRestore != nil {
-		if err := c.requireMaterializedRecoveryPod(ctx); err != nil {
-			spanErr = err
-			return nil, err
-		}
-	}
-
 	// Check if the process has already exited (stored in properties).
 	c.mu.RLock()
 	statusStr, hasExit := c.properties[exitStatusPropertyName]
@@ -325,12 +304,15 @@ func (c *Container) Attach(ctx context.Context, processID string, io runtime.Pro
 	if hasExit {
 		status, err := strconv.Atoi(statusStr)
 		if err == nil {
-			// Preserve the historical fast path except for checkpoint-enabled agent
-			// exec containers. They recover persisted terminal evidence so a
-			// same-web retry can take its completion checkpoint. If that evidence
-			// is unavailable, still return the observed result: Attach must not make
-			// attachOrRun execute an already completed command again.
-			if c.executor == nil || c.metadata.Type != db.ContainerTypeAgent || !c.containerSpec.CheckpointCapture {
+			// A restarted web can preload the persisted exit status into
+			// properties before Attach. Returning the bare status there would
+			// skip republishing the output locations, and a post-restart read
+			// could not reach the producer node's daemon. Agent exec
+			// containers therefore take the terminal-evidence path first. If
+			// that evidence is unavailable, still return the observed result:
+			// Attach must not make attachOrRun execute a completed command
+			// again.
+			if c.executor == nil || c.metadata.Type != db.ContainerTypeAgent {
 				return &exitedProcess{id: processID, result: runtime.ProcessResult{ExitStatus: status}}, nil
 			}
 			pod, err := c.clientset.CoreV1().Pods(c.config.Namespace).Get(ctx, c.podName, metav1.GetOptions{})
@@ -398,6 +380,38 @@ func (c *Container) Attach(ctx context.Context, processID string, io runtime.Pro
 	return newProcess(processID, c.podName, c.clientset, c.config, c, io), nil
 }
 
+// terminalSupervisorStateDirValid reports whether a pod's recorded supervisor
+// state dir has the exact shape supervisorCommand derives for an agent step:
+// the task prefix, "agent-", and an 8-character lowercase hex digest. It is
+// the evidence that the annotation on the pod was written by the process this
+// container would itself have launched, rather than by anything else.
+func terminalSupervisorStateDirValid(stateDir string) bool {
+	prefix := taskStateDirPrefix + "agent-"
+	if !strings.HasPrefix(stateDir, prefix) || strings.TrimSpace(stateDir) != stateDir || strings.ContainsAny(stateDir, "\\\x00") {
+		return false
+	}
+	suffix := strings.TrimPrefix(stateDir, prefix)
+	if len(suffix) != 8 {
+		return false
+	}
+	for _, character := range suffix {
+		if !((character >= '0' && character <= '9') || (character >= 'a' && character <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
+
+// exitedProcessWithTerminalEvidence returns a persisted-exit process only when
+// the pod itself corroborates the status: same pod, matching exit annotation,
+// and a supervisor state dir of the exact shape this container would derive.
+func (c *Container) exitedProcessWithTerminalEvidence(processID string, status int, pod *corev1.Pod) (*exitedProcess, bool) {
+	if pod == nil || pod.Name != c.podName || pod.Annotations[exitStatusAnnotationKey] != strconv.Itoa(status) || !terminalSupervisorStateDirValid(pod.Annotations[supervisorStateAnnotationKey]) {
+		return nil, false
+	}
+	return c.newExitedProcess(processID, status, pod), true
+}
+
 func (c *Container) newExitedProcess(processID string, status int, pod *corev1.Pod) *exitedProcess {
 	return &exitedProcess{
 		id:            processID,
@@ -407,13 +421,6 @@ func (c *Container) newExitedProcess(processID string, status int, pod *corev1.P
 		stateDir:      pod.Annotations[supervisorStateAnnotationKey],
 		persistedExit: status,
 	}
-}
-
-func (c *Container) exitedProcessWithTerminalEvidence(processID string, status int, pod *corev1.Pod) (*exitedProcess, bool) {
-	if pod == nil || pod.Name != c.podName || pod.Annotations[exitStatusAnnotationKey] != strconv.Itoa(status) || !terminalSupervisorStateDirValid(pod.Annotations[supervisorStateAnnotationKey]) {
-		return nil, false
-	}
-	return c.newExitedProcess(processID, status, pod), true
 }
 
 // republishOutputLocations re-records this container's output artifact
@@ -604,13 +611,6 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 	env = applySecretRefs(env, c.containerSpec.SecretEnv)
 
 	volumes, volumeMounts := c.buildVolumeMounts()
-	checkpointVolume, checkpointMount, err := c.checkpointSessionVolume()
-	if err != nil {
-		return nil, err
-	}
-	if checkpointVolume != nil {
-		volumes = append(volumes, *checkpointVolume)
-	}
 	resources := buildResourceRequirements(c.containerSpec.Limits)
 	privileged := c.containerSpec.ImageSpec.Privileged
 	if c.containerSpec.Hermetic && privileged {
@@ -635,12 +635,6 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 		return nil, fmt.Errorf("build artifact init containers: %w", err)
 	}
 	initContainers = append(initContainers, artifactInits...)
-	if gateVolume, gate, err := c.checkpointRestoreGate(); err != nil {
-		return nil, err
-	} else if gateVolume != nil {
-		volumes = append(volumes, *gateVolume)
-		initContainers = append(initContainers, *gate)
-	}
 	if c.containerSpec.Hermetic {
 		if c.storageBackend != nil {
 			if prepare := c.storageBackend.BuildHermeticWorkspaceInitContainer(c.nonPrivateInputMounts(volumeMounts)); prepare != nil {
@@ -653,10 +647,6 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 	// containers below receive the original volumeMounts slice and can
 	// never see the mounted secret.
 	mainMounts := volumeMounts
-	if checkpointMount != nil {
-		mainMounts = append([]corev1.VolumeMount{}, mainMounts...)
-		mainMounts = append(mainMounts, *checkpointMount)
-	}
 	if len(c.containerSpec.SecretMounts) > 0 {
 		mainMounts = append([]corev1.VolumeMount{}, mainMounts...)
 		mode := int32(0400)
@@ -843,53 +833,6 @@ const (
 	checkpointRestoreGatesDirectoryName = ".checkpoint-restore-gates"
 )
 
-// checkpointRestoreGate is the only Pod-side release mechanism for fresh
-// recovery. Kubelet creates its exact leaf; the daemon independently requires
-// that proof before any durable read or restore copy.
-func (c *Container) checkpointRestoreGate() (*corev1.Volume, *corev1.Container, error) {
-	descriptor := c.containerSpec.CheckpointRestore
-	if descriptor == nil {
-		return nil, nil, nil
-	}
-	if c.executor == nil {
-		return nil, nil, fmt.Errorf("checkpoint restore requires exec mode")
-	}
-	if err := descriptor.ValidateForSpec(c.containerSpec); err != nil {
-		return nil, nil, err
-	}
-	backend := c.storageBackend
-	if backend == nil || backend.daemonClient == nil || backend.daemonClient.scheme != "https" || backend.daemonClient.initializationErr != nil || strings.TrimSpace(backend.helperImage()) == "" {
-		return nil, nil, fmt.Errorf("checkpoint restore requires checked DaemonSet daemon storage and helper image")
-	}
-	if !checkpointCaptureHandle(c.handle) {
-		return nil, nil, fmt.Errorf("checkpoint restore requires a fresh canonical container handle")
-	}
-	topology, err := runtime.CheckpointRestoreTopologyForSpec(c.containerSpec)
-	if err != nil {
-		return nil, nil, err
-	}
-	receiptSeed, err := checkpoint.RestoreReceiptSeed(checkpoint.RestoreRequest{
-		ContainerHandle: c.handle, MaterializationID: descriptor.MaterializationID, PodUID: "receipt", Archive: descriptor.Archive,
-		WorkspaceRoots: topology.WorkspaceRoots, SessionRoots: topology.SessionRoots, MaxBytes: descriptor.MaxBytes, MaxEntries: descriptor.MaxEntries,
-	})
-	if err != nil {
-		return nil, nil, fmt.Errorf("derive checkpoint restore receipt: %w", err)
-	}
-	dirType := corev1.HostPathDirectoryOrCreate
-	volume := corev1.Volume{Name: checkpointRestoreGateVolumeName, VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{
-		Path: filepath.Join(backend.config.ArtifactDaemonHostPath, checkpointRestoreGatesDirectoryName, c.handle, checkpoint.RestoreGateLeafName(descriptor.MaterializationID)), Type: &dirType,
-	}}}
-	root, allowEscalation := int64(0), false
-	gate := corev1.Container{
-		Name: checkpointRestoreGateInitName, Image: backend.helperImage(), ImagePullPolicy: corev1.PullIfNotPresent,
-		Command:         []string{"sh", "-ceu", checkpointRestoreGateShell},
-		Env:             []corev1.EnvVar{{Name: "CHECKPOINT_RESTORE_RECEIPT_SEED", Value: receiptSeed}, {Name: "CHECKPOINT_POD_UID", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.uid"}}}},
-		VolumeMounts:    []corev1.VolumeMount{{Name: checkpointRestoreGateVolumeName, MountPath: "/checkpoint-restore-gate", ReadOnly: true}},
-		SecurityContext: &corev1.SecurityContext{RunAsUser: &root, AllowPrivilegeEscalation: &allowEscalation, Capabilities: &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}}},
-	}
-	return &volume, &gate, nil
-}
-
 const checkpointRestoreGateShell = `
 while :; do
   ready=/checkpoint-restore-gate/ready
@@ -903,42 +846,6 @@ while :; do
   sleep 1
 done
 `
-
-// checkpointSessionVolume creates the only persistent provider-session mount
-// eligible for capture. This path is intentionally separate from private file
-// mounts: it neither reads nor changes their Secret lifecycle or filtering.
-func (c *Container) checkpointSessionVolume() (*corev1.Volume, *corev1.VolumeMount, error) {
-	if !c.containerSpec.CheckpointCapture {
-		return nil, nil, nil
-	}
-	if c.containerSpec.Type != db.ContainerTypeAgent {
-		return nil, nil, fmt.Errorf("checkpoint capture is only supported for agent containers")
-	}
-	if c.handle == "" || strings.TrimSpace(c.handle) != c.handle || strings.ContainsAny(c.handle, "/\\\x00") {
-		return nil, nil, fmt.Errorf("checkpoint capture requires a canonical container handle")
-	}
-	topology, err := runtime.CheckpointCaptureTopologyForSpec(c.containerSpec)
-	if err != nil {
-		return nil, nil, err
-	}
-	backend := c.storageBackend
-	if backend == nil {
-		return nil, nil, fmt.Errorf("checkpoint capture requires DaemonSet hostPath storage")
-	}
-	storageRoot := filepath.Clean(backend.config.ArtifactDaemonHostPath)
-	if backend.config.ArtifactDaemonHostPath == "" || !filepath.IsAbs(storageRoot) || storageRoot != backend.config.ArtifactDaemonHostPath {
-		return nil, nil, fmt.Errorf("checkpoint capture requires a canonical daemon hostPath")
-	}
-	// Topology validation rejects logical session-root collisions before the
-	// host path is built. This guards `steps/<handle>/session` from being
-	// aliased by a declared ordinary output.
-	if err := topology.Validate(); err != nil {
-		return nil, nil, err
-	}
-	volume := backend.CheckpointSessionVolume(checkpointSessionVolumeName, c.handle)
-	mount := corev1.VolumeMount{Name: checkpointSessionVolumeName, MountPath: topology.SessionMountPath}
-	return &volume, &mount, nil
-}
 
 // artifactVolumeName returns the volume name for the artifact store via the
 // storage backend, or empty string if no backend is configured.
@@ -1337,7 +1244,7 @@ func privateMountDataDigest(files map[string][]byte) string {
 // from the hostPath steps directory for this container handle. Delegates to
 // the storage backend. Returns nil when no backend is configured.
 func (c *Container) buildCleanupInitContainer() *corev1.Container {
-	if c.storageBackend == nil || c.containerSpec.CheckpointRestore != nil {
+	if c.storageBackend == nil {
 		return nil
 	}
 	return c.storageBackend.BuildCleanupInitContainer(c.handle, c.containerSpec.Type, c.reused)
@@ -1652,11 +1559,7 @@ func (c *Container) buildPodLabels() map[string]string {
 
 // buildPodAnnotations returns annotations for the pod.
 func (c *Container) buildPodAnnotations() map[string]string {
-	annotations := map[string]string{}
-	if c.containerSpec.CheckpointRestore != nil {
-		annotations[checkpointRestoreAnnotationKey] = checkpointRestoreAnnotation(c.handle, *c.containerSpec.CheckpointRestore)
-	}
-	return annotations
+	return map[string]string{}
 }
 
 // resolveImage extracts a Kubernetes-compatible image reference from the

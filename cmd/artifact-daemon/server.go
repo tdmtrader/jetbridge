@@ -59,20 +59,6 @@ type Server struct {
 	copyHooks             anchoredCopyHooks
 	serveHooks            anchoredServeHooks
 	mutationHooks         anchoredMutationHooks
-
-	checkpointMu            sync.Mutex
-	checkpointPrepared      map[string]*preparedCheckpointCapture
-	checkpointPreparedBytes int64
-	checkpointMaxBytes      int64
-	checkpointMaxEntries    int64
-	checkpointMaxPrepared   int
-	checkpointMaxStaged     int64
-	checkpointPreparedTTL   time.Duration
-	checkpointExclusions    []string
-	checkpointRestoreMu     sync.Mutex
-	// Test-only injection; production always uses normalizeCheckpointSessionTree.
-	normalizeCheckpointSession func(*os.File) error
-	preemptionNotices          *preemptionNoticeLatch
 }
 
 type anchoredCopyHooks struct {
@@ -212,25 +198,17 @@ const (
 // NewServer creates a new artifact-daemon server.
 func NewServer(logger lager.Logger, storagePath, nodeName string) *Server {
 	return &Server{
-		logger:                     logger,
-		storagePath:                storagePath,
-		nodeName:                   nodeName,
-		registry:                   NewRegistry(logger),
-		metrics:                    newMetrics(),
-		guard:                      NewReadGuard(),
-		snapshotMaxBytes:           defaultSnapshotMaxBytes,
-		resolveSlots:               make(chan struct{}, defaultResolveMaxConcurrent),
-		resolveTimeout:             defaultResolveTimeout,
-		snapshotRepairSlots:        make(chan struct{}, defaultSnapshotRepairMaxConcurrent),
-		syncSnapshotDirectory:      syncRootDirectory,
-		checkpointPrepared:         map[string]*preparedCheckpointCapture{},
-		checkpointMaxBytes:         10 << 30,
-		checkpointMaxEntries:       100000,
-		checkpointMaxPrepared:      16,
-		checkpointMaxStaged:        20 << 30,
-		checkpointPreparedTTL:      5 * time.Minute,
-		normalizeCheckpointSession: normalizeCheckpointSessionTree,
-		preemptionNotices:          newPreemptionNoticeLatch(),
+		logger:                logger,
+		storagePath:           storagePath,
+		nodeName:              nodeName,
+		registry:              NewRegistry(logger),
+		metrics:               newMetrics(),
+		guard:                 NewReadGuard(),
+		snapshotMaxBytes:      defaultSnapshotMaxBytes,
+		resolveSlots:          make(chan struct{}, defaultResolveMaxConcurrent),
+		resolveTimeout:        defaultResolveTimeout,
+		snapshotRepairSlots:   make(chan struct{}, defaultSnapshotRepairMaxConcurrent),
+		syncSnapshotDirectory: syncRootDirectory,
 	}
 }
 
@@ -346,13 +324,6 @@ func (s *Server) Handler(opts ...HandlerOption) http.Handler {
 	mux.HandleFunc("PUT /stream-in/", protect(s.handleStreamIn))
 	mux.HandleFunc("HEAD /resource-caches/", protect(s.handleHeadResourceCache))
 	mux.HandleFunc("GET /resource-caches/", protect(s.handleGetResourceCache))
-	mux.HandleFunc("POST /checkpoints/v1/prepare", protect(s.handleCheckpointPrepare))
-	mux.HandleFunc("POST /checkpoints/v1/upload/{preparedHandle}", protect(s.handleCheckpointUpload))
-	mux.HandleFunc("POST /checkpoints/v1/objects/inspect", protect(s.handleInspectCheckpointObject))
-	mux.HandleFunc("POST /checkpoints/v1/objects/delete", protect(s.handleDeleteCheckpointObject))
-	mux.HandleFunc("POST /checkpoints/v1/restore", protect(s.handleCheckpointRestore))
-	mux.HandleFunc("POST /checkpoints/v1/restore/verify", protect(s.handleCheckpointRestoreVerify))
-	mux.HandleFunc("GET /checkpoints/v1/preemption-notice", protect(s.handlePreemptionNotice))
 	mux.HandleFunc(
 		"POST /snapshots/v1/repair-durable-metadata/{digest}",
 		protect(s.handleRepairSnapshotDurableMetadata),

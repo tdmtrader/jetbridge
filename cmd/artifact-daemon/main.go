@@ -32,8 +32,6 @@ func main() {
 	mirrorReplicas := flag.Int("mirror-replicas", 2, "Replication factor for outbound mirror: 0=disabled, N=local + (N-1) peers, -1=all peers")
 	mirrorConcurrency := flag.Int("mirror-concurrency", 4, "Max concurrent in-flight mirror jobs")
 	mirrorTimeout := flag.Duration("mirror-timeout", 5*time.Minute, "Per-peer per-job mirror PUT timeout")
-	preemptionWatch := flag.Bool("preemption-watch", false, "Watch GCP metadata server for spot preemption notice and evacuate unmirrored artifacts before termination")
-	preemptionBudget := flag.Duration("preemption-budget", 25*time.Second, "Total time budget for synchronous evacuation on preemption")
 	resolveCapabilityKeyFile := flag.String("resolve-capability-key", "", "Path to the raw 32-byte key required to authorize resolve operations")
 	resolveMaxConcurrent := flag.Int("resolve-max-concurrent", defaultResolveMaxConcurrent, "Daemon-wide maximum number of concurrent artifact resolve operations")
 	resolveTimeout := flag.Duration("resolve-timeout", defaultResolveTimeout, "Maximum lifetime of one local or peer artifact resolve operation")
@@ -230,20 +228,6 @@ func main() {
 		logger.Info("hangar-inventory-started", lager.Data{
 			"interval": hangarInventoryInterval.String(),
 			"timeout":  hangarInventoryTimeout.String(),
-		})
-	}
-
-	if *preemptionWatch {
-		startPreemptionWatcher(
-			preemptCtx,
-			logger,
-			server,
-			mirror,
-			*preemptionBudget,
-			DefaultPreemptionMetadataURL,
-		)
-		logger.Info("preemption-watcher-started", lager.Data{
-			"budget": preemptionBudget.String(),
 		})
 	}
 

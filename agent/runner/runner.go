@@ -87,12 +87,9 @@ type Config struct {
 	// Current legacy Claude execution validates it but intentionally does not
 	// redirect CLAUDE_CONFIG_DIR until credential persistence is proven safe.
 	SessionDir string
-	// RecoverySpec is the strictly decoded, server-reserved recovery transport.
-	// AgentStep owns whether CONCOURSE_AGENT_RECOVERY may be injected.
-	RecoverySpec string
-	StepName     string
-	ClaudePath   string
-	MCPServers   map[string]string
+	StepName   string
+	ClaudePath string
+	MCPServers map[string]string
 	// OutputBuilderMarker is a server-created activation bit. The runner owns
 	// the managed name and endpoint; neither is accepted from authored MCP env.
 	OutputBuilderMarker string
@@ -128,8 +125,6 @@ type Config struct {
 	// Adapter is test/integration injection for a trusted provider. Nil keeps
 	// the existing Claude CLI behavior through the legacy adapter.
 	Adapter provider.Adapter
-	// BoundaryStop overrides self-SIGSTOP in tests. It has no stdin transport.
-	BoundaryStop func() error
 }
 
 type SnapshotAuthority struct {
@@ -165,7 +160,6 @@ func FromEnv() Config {
 		SkillsDir:           os.Getenv("AGENT_SKILLS_DIR"),
 		FlightDir:           os.Getenv("AGENT_FLIGHT_DIR"),
 		SessionDir:          os.Getenv("AGENT_SESSION_DIR"),
-		RecoverySpec:        os.Getenv(recoveryTransportEnv),
 		StepName:            os.Getenv("AGENT_STEP_NAME"),
 		WorkDir:             wd,
 		MCPServers:          map[string]string{},
@@ -353,14 +347,7 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 	if err != nil {
 		return 2, err
 	}
-	recovery, recovering, err := decodeRecoverySpec(cfg.RecoverySpec)
-	if err != nil {
-		return 2, err
-	}
 	systemPrompt := cfg.SystemPrompt
-	if recovering {
-		systemPrompt = appendRecoveryNotice(systemPrompt)
-	}
 
 	// Materialize the step's selected skills from the mounted "skills"
 	// artifact into <workdir>/.claude/skills — claude's CWD is WorkDir,
@@ -512,42 +499,13 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 	if err := adapter.Identity().Validate(); err != nil {
 		return 2, fmt.Errorf("invalid provider adapter: %w", err)
 	}
-	if recovering && recovery.Adapter != adapter.Identity() {
-		return 2, errors.New("recovery adapter does not match runner adapter")
-	}
-	control := newSignalBoundaryControl(cfg.BoundaryStop)
-	defer control.Close()
-	capabilities := adapter.Capabilities()
 	var adapterControl provider.BoundaryControl
-	if capabilities.SafeBoundary {
-		adapterControl = control
-	}
 	startRequest := provider.StartRequest{
 		Prompt: prompt, SystemPrompt: systemPrompt, WorkDir: cfg.WorkDir, SessionDir: sessionDir, Stdout: stdout,
 	}
 	var running provider.RunningSession
 	var startErr error
-	if recovering && recovery.Mode == recoveryNativeResume {
-		recoveryAdapter, ok := adapter.(provider.RecoveryAdapter)
-		if !ok {
-			startErr = errors.New("provider adapter does not implement native resume")
-		} else if err := recoveryAdapter.RecoveryProof().ValidateFor(adapter.Identity()); err != nil {
-			startErr = fmt.Errorf("provider native resume is not proven: %w", err)
-		} else if !capabilities.SafeBoundary || !capabilities.EffectJournal || !capabilities.SessionExport || !capabilities.NativeResume {
-			startErr = errors.New("provider adapter capabilities do not establish native resume safety")
-		} else {
-			running, startErr = recoveryAdapter.Resume(ctx, provider.ResumeRequest{
-				StartRequest:         startRequest,
-				SessionID:            recovery.SessionID,
-				ExecutionAttempt:     recovery.ExecutionAttempt,
-				CheckpointGeneration: recovery.CheckpointGeneration,
-				TranscriptCursor:     recovery.TranscriptCursor,
-				CompletedToolCallIDs: append([]string(nil), recovery.CompletedToolCallIDs...),
-			}, adapterControl)
-		}
-	} else {
-		running, startErr = adapter.Start(ctx, startRequest, adapterControl)
-	}
+	running, startErr = adapter.Start(ctx, startRequest, adapterControl)
 	var providerResult provider.Result
 	runErr := startErr
 	if startErr == nil {

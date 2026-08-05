@@ -263,8 +263,8 @@ func projectionRow(occurrence NodeOccurrence) db.AgentWorkflowRunNodeOccurrence 
 		reusableVersion = &version
 	}
 	return db.AgentWorkflowRunNodeOccurrence{
-		ReusableNodeName:    occurrence.ReusableNodeName,
-		ReusableNodeVersion: reusableVersion,
+		ReusableNodeName:     occurrence.ReusableNodeName,
+		ReusableNodeVersion:  reusableVersion,
 		WorkflowRunID:        int64(occurrence.WorkflowRunID),
 		NodeID:               occurrence.NodeID,
 		RetryAttempt:         occurrence.RetryAttempt,

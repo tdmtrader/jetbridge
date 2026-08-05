@@ -32,7 +32,7 @@ const (
 // hangar.Kind on purpose: a kind omitted here would hold bytes that the
 // capacity alert never counts, which is precisely the blind spot this metric
 // exists to remove.
-var hangarInventoryKinds = []hangar.Kind{hangar.KindSnapshot, hangar.KindCheckpoint}
+var hangarInventoryKinds = []hangar.Kind{hangar.KindSnapshot}
 
 // hangarResidency is one kind's aggregate occupancy.
 type hangarResidency struct {

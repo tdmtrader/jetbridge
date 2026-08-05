@@ -80,8 +80,7 @@ func snapshotNamespaceKey(key string) bool {
 }
 
 func daemonPrivateNamespaceKey(key string) bool {
-	return key == daemonStagingDirectory || strings.HasPrefix(key, daemonStagingDirectory+"/") ||
-		key == checkpointRestoreGatesDirectory || strings.HasPrefix(key, checkpointRestoreGatesDirectory+"/")
+	return key == daemonStagingDirectory || strings.HasPrefix(key, daemonStagingDirectory+"/")
 }
 
 func pathBelow(base, candidate string) (string, error) {

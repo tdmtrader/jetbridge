@@ -86,5 +86,5 @@ WARNING: alertingRules.enabled is true but otelMetrics.otlpAddress is empty.
 
   The concourse_agent_* alerts read OTel instruments the ATC exports only over
   OTLP. Unless a collector is wired outside this chart, those series never
-  reach Prometheus and the agent checkpoint/recovery alerts cannot fire.
+  reach Prometheus and the agent alerts cannot fire.
 {{- end }}

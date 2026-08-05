@@ -3,7 +3,6 @@ package engine
 import (
 	"context"
 	"crypto/sha256"
-	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -13,8 +12,6 @@ import (
 	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagerctx"
 	"code.cloudfoundry.org/lager/v3/lagertest"
-	"github.com/concourse/concourse/agent/checkpoint"
-	"github.com/concourse/concourse/agent/provider"
 	"github.com/concourse/concourse/agent/publisher"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/snapshot/contracts"
@@ -82,58 +79,6 @@ func TestCoreStepFactoryLeavesOutputSealerDisabledByDefault(t *testing.T) {
 	factory := &coreStepFactory{}
 	if factory.outputSealer != nil {
 		t.Fatalf("factory output sealer = %#v, want nil", factory.outputSealer)
-	}
-}
-
-func TestWithAgentCheckpointCaptureKeepsOneServerOwnedConfig(t *testing.T) {
-	var gotIdentity checkpoint.Identity
-	var gotProvenance exec.AgentCheckpointImmutableProvenance
-	wantErr := errors.New("factory invoked")
-	wantRecoveryErr := errors.New("recovery factory invoked")
-	config := exec.AgentCheckpointStepConfig{
-		Factory: exec.AgentCheckpointExecutionFactoryFunc(func(identity checkpoint.Identity) (exec.AgentCheckpointController, error) {
-			gotIdentity = identity
-			return nil, wantErr
-		}),
-		RecoveryFactory: exec.AgentCheckpointRecoveryFactoryFunc(func(provenance exec.AgentCheckpointImmutableProvenance) (exec.AgentCheckpointRecoveryStepController, error) {
-			gotProvenance = provenance
-			return nil, wantRecoveryErr
-		}),
-		Provider:          "anthropic",
-		Adapter:           provider.Identity{Name: "claude-cli", Version: "legacy-stream-json"},
-		ElapsedInterval:   5 * time.Minute,
-		MaxArchiveBytes:   1024,
-		MaxArchiveEntries: 32,
-	}
-
-	factory := &coreStepFactory{}
-	WithAgentCheckpointCapture(config)(factory)
-	if factory.agentCheckpointCapture == nil {
-		t.Fatal("checkpoint config was not retained")
-	}
-	if factory.agentCheckpointCapture.Provider != config.Provider ||
-		factory.agentCheckpointCapture.Adapter != config.Adapter ||
-		factory.agentCheckpointCapture.ElapsedInterval != config.ElapsedInterval ||
-		factory.agentCheckpointCapture.MaxArchiveBytes != config.MaxArchiveBytes ||
-		factory.agentCheckpointCapture.MaxArchiveEntries != config.MaxArchiveEntries {
-		t.Fatalf("checkpoint config = %#v, want retained server-owned policy", factory.agentCheckpointCapture)
-	}
-
-	identity := checkpoint.Identity{BuildID: 1, PlanID: "plan", FunctionID: "function"}
-	_, err := factory.agentCheckpointCapture.Factory.NewAgentCheckpointExecution(identity)
-	if !errors.Is(err, wantErr) || gotIdentity != identity {
-		t.Fatalf("retained factory = (%#v, %v), want exact server-owned factory", gotIdentity, err)
-	}
-	provenance := exec.AgentCheckpointImmutableProvenance{Identity: identity}
-	_, err = factory.agentCheckpointCapture.RecoveryFactory.NewAgentCheckpointRecovery(provenance)
-	if !errors.Is(err, wantRecoveryErr) || gotProvenance.Identity != identity {
-		t.Fatalf("retained recovery factory = (%#v, %v), want exact server-owned factory", gotProvenance, err)
-	}
-}
-
-func TestCoreStepFactoryLeavesAgentCheckpointCaptureDisabledByDefault(t *testing.T) {
-	if (&coreStepFactory{}).agentCheckpointCapture != nil {
-		t.Fatal("checkpoint capture should be disabled by default")
 	}
 }
 

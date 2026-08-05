@@ -100,6 +100,21 @@ Three distinct things share the word "checkpoint" in this tree. Do not conflate 
 
 ## 4. Phased plan
 
+> **Sequencing amendment (2026-08-05, during execution).** The bounded auto-retry from owner
+> decision 2 is split OUT of Phase 2b into its own phase after the drop migration. Removal and
+> behaviour change should not land in the same commit: the removal is mechanical and provably
+> behaviour-preserving, while auto-retry is new behaviour with its own migration, its own tests, and
+> its own rollback story. Phase 2b therefore keeps the fail-closed branch with the message reworded,
+> and Phase 5 introduces bounded retry against a tree that no longer has checkpoints in it.
+>
+> Verified during execution that this is safe: `step.ingestFlightRecorder(...)` is called
+> unconditionally *before* the `if !interrupted { break }` check, so an interrupted agent does write
+> an `agent_run_metrics` row. The `ingestion_seq` counter Phase 5 needs therefore does count
+> interruptions, which was the open risk in the design.
+>
+> Revised order: 0 cost fix · 1 reattach guard · 2 excise · 3 delete · 4 drop migration ·
+> **5 bounded auto-retry** · 6 verification sweep.
+
 Commit ladder is dependency-ordered so `go build ./...` and the affected suites pass at every commit. Where a mixed file and the wholly-owned files it references are mutually dependent (`atc/exec`, `atc/worker/jetbridge`), the excision and the deletion **must land in the same commit** — this is called out per phase.
 
 ---

@@ -183,65 +183,6 @@ func TestHangarSnapshotFailureAlertUsesDaemonMetrics(t *testing.T) {
 	}
 }
 
-// TestAgentCheckpointAlertsUseOnlyClosedFailureOutcomes ensures an operator
-// gets a concrete signal for the three recovery paths which require action:
-// failed captures, recoveries stopped for manual review, and failed restores.
-// The outcome matchers are intentionally exact rather than regexes so each
-// alert remains bounded to the dimensions the OTel instruments expose.
-func TestAgentCheckpointAlertsUseOnlyClosedFailureOutcomes(t *testing.T) {
-	rule := findPrometheusRule(t, renderChart(t, "alertingRules.enabled=true"))
-	for _, want := range []struct {
-		name        string
-		expr        string
-		severity    string
-		description string
-	}{
-		{
-			name:        "ConcourseAgentCheckpointCaptureFailures",
-			expr:        `increase(concourse_agent_checkpoint_captures_total{outcome="failed"}[5m]) > 0`,
-			severity:    "warning",
-			description: "Inspect agent checkpoint capture errors and durable snapshot storage before retrying the affected run.",
-		},
-		{
-			name:        "ConcourseAgentRecoveryManualReviewRequired",
-			expr:        `increase(concourse_agent_recovery_attempts_total{outcome="manual_review_required"}[5m]) > 0`,
-			severity:    "critical",
-			description: "Review the interrupted agent run for ambiguous effects or an unusable checkpoint before resuming it.",
-		},
-		{
-			name:        "ConcourseAgentCheckpointRestoreFailures",
-			// The instrument is a Float64Histogram WithUnit("s"), so the
-			// exported count of observations carries the unit suffix. The two
-			// alerts above are unit-less Int64Counters and keep a bare _total.
-			expr:        `increase(concourse_agent_recovery_restore_duration_seconds_count{outcome="failed"}[5m]) > 0`,
-			severity:    "warning",
-			description: "Inspect the checkpoint object and recovery logs before retrying restore for the affected run.",
-		},
-	} {
-		t.Run(want.name, func(t *testing.T) {
-			alert, found := rule.alert(want.name)
-			if !found {
-				t.Fatalf("PrometheusRule does not contain %q", want.name)
-			}
-			if alert.Expr != want.expr {
-				t.Errorf("%s expression = %q, want exact bounded selector %q", want.name, alert.Expr, want.expr)
-			}
-			if alert.For != "5m" {
-				t.Errorf("%s for = %q, want 5m", want.name, alert.For)
-			}
-			if alert.Labels["severity"] != want.severity {
-				t.Errorf("%s severity = %q, want %q", want.name, alert.Labels["severity"], want.severity)
-			}
-			if len(alert.Labels) != 1 {
-				t.Errorf("%s alert labels = %#v, want only bounded severity", want.name, alert.Labels)
-			}
-			if alert.Annotations["description"] != want.description {
-				t.Errorf("%s description = %q, want actionable guidance %q", want.name, alert.Annotations["description"], want.description)
-			}
-		})
-	}
-}
-
 func TestAgentSnapshotScratchSupportsExistingPVC(t *testing.T) {
 	manifests := renderChart(t,
 		"artifactDaemon.enabled=true",

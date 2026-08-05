@@ -26,7 +26,6 @@ const (
 	ComponentAgentPlatformCredentialSyncer = "agent_platform_credential_syncer"
 	ComponentAgentDispatcher               = "agent_dispatcher"
 	ComponentAgentSnapshotGC               = "agent_snapshot_gc"
-	ComponentAgentCheckpointGC             = "agent_checkpoint_gc"
 	ComponentAgentSnapshotRepair           = "agent_snapshot_repair"
 	ComponentAgentSnapshotOrphanSweep      = "agent_snapshot_orphan_sweep"
 	ComponentAgentSnapshotProjection       = "agent_snapshot_projection"

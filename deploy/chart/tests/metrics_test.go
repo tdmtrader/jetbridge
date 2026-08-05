@@ -190,18 +190,6 @@ var emittedSeries = map[string]struct{ file, registration string }{
 		"atc/metric/emitter/prometheus.go",
 		`Subsystem:\s+"workers",\s*\n\s*Name:\s+"registered"(?s:.*?)\[\]string\{"state"\}`,
 	},
-	"concourse_agent_checkpoint_captures_total": {
-		"atc/metric/otel_agent_checkpoint.go",
-		`Int64Counter\(\s*\n?\s*"concourse\.agent\.checkpoint\.captures"`,
-	},
-	"concourse_agent_recovery_attempts_total": {
-		"atc/metric/otel_agent_checkpoint.go",
-		`Int64Counter\(\s*\n?\s*"concourse\.agent\.recovery\.attempts"`,
-	},
-	"concourse_agent_recovery_restore_duration_seconds_count": {
-		"atc/metric/otel_agent_checkpoint.go",
-		`"concourse\.agent\.recovery\.restore\.duration",[^)]*\)?[^)]*WithUnit\("s"\)`,
-	},
 	"artifact_daemon_snapshot_operations_total": {
 		"cmd/artifact-daemon/metrics.go",
 		`Namespace:\s+"artifact_daemon",\s*\n\s*Name:\s+"snapshot_operations_total"`,

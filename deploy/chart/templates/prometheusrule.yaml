@@ -11,7 +11,7 @@
       Prometheus listener. Requires web.metrics.enabled (see values.yaml).
 
     concourse_agent_*
-      OTel instruments (atc/metric/otel_agent_checkpoint.go) pushed over OTLP.
+      OTel instruments pushed over OTLP.
       Requires otelMetrics.otlpAddress, or an equivalent collector configured
       outside the chart. Names carry the unit suffix the OTLP-to-Prometheus
       translation appends: a Float64Histogram WithUnit("s") becomes
@@ -153,31 +153,4 @@ spec:
             description: "Extrapolating the last 6 hours of growth, durable snapshot storage reaches its configured capacity of {{ $capacity }} bytes within a day. This is the earliest warning available: it fires while the store still has room, unlike ConcourseHangarSnapshotFailures which only reports after writes have already failed."
 {{- end }}
 {{- end }}
-        - alert: ConcourseAgentCheckpointCaptureFailures
-          expr: increase(concourse_agent_checkpoint_captures_total{outcome="failed"}[5m]) > 0
-          for: 5m
-          labels:
-            severity: warning
-          annotations:
-            summary: "Agent checkpoint capture failures"
-            description: "Inspect agent checkpoint capture errors and durable snapshot storage before retrying the affected run."
-        - alert: ConcourseAgentRecoveryManualReviewRequired
-          expr: increase(concourse_agent_recovery_attempts_total{outcome="manual_review_required"}[5m]) > 0
-          for: 5m
-          labels:
-            severity: critical
-          annotations:
-            summary: "Agent recovery requires manual review"
-            description: "Review the interrupted agent run for ambiguous effects or an unusable checkpoint before resuming it."
-        # concourse.agent.recovery.restore.duration is WithUnit("s"), so the
-        # exported counter of observations is ..._duration_seconds_count. The
-        # two alerts above are unit-less Int64Counters and keep the bare _total.
-        - alert: ConcourseAgentCheckpointRestoreFailures
-          expr: increase(concourse_agent_recovery_restore_duration_seconds_count{outcome="failed"}[5m]) > 0
-          for: 5m
-          labels:
-            severity: warning
-          annotations:
-            summary: "Agent checkpoint restore failures"
-            description: "Inspect the checkpoint object and recovery logs before retrying restore for the affected run."
 {{- end }}

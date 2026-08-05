@@ -18,7 +18,6 @@ import (
 	"github.com/concourse/concourse/agent/api/metrics"
 	"github.com/concourse/concourse/agent/broker"
 	"github.com/concourse/concourse/agent/budget"
-	"github.com/concourse/concourse/agent/checkpoint"
 	"github.com/concourse/concourse/agent/credentials"
 	"github.com/concourse/concourse/agent/schema"
 	"github.com/concourse/concourse/agent/snapshot"
@@ -115,17 +114,6 @@ func WithAgentSnapshotStores(metadata snapshot.MetadataStore, content snapshot.C
 	}
 }
 
-// WithAgentCheckpointCapture enables the authenticated v3 checkpoint capture
-// path when the supplied server-owned policy is complete. Plans cannot opt in
-// themselves: legacy and otherwise unqualified agent steps retain their
-// existing execution behavior.
-func WithAgentCheckpointCapture(config AgentCheckpointStepConfig) AgentStepOption {
-	return func(s *AgentStep) {
-		configCopy := config
-		s.checkpointCapture = &configCopy
-	}
-}
-
 // WithAgentBrokerAuthorityFactory supplies the command-scoped authority
 // factory that mints one already-scoped bootstrap credential and descriptor.
 func WithAgentBrokerAuthorityFactory(factory AgentBrokerAuthorityFactory) AgentStepOption {
@@ -154,7 +142,6 @@ type AgentStep struct {
 	outputSealer          snapshot.OutputSealer
 	snapshotMetadataStore snapshot.MetadataStore
 	snapshotContentStore  snapshot.ContentStore
-	checkpointCapture     *AgentCheckpointStepConfig
 	agentBrokerAuthority  AgentBrokerAuthorityFactory
 
 	// transcriptStore is the transcript ingestion seam — optional,
@@ -575,42 +562,6 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 
 	tracing.Inject(ctx, &containerSpec)
 
-	checkpointIdentity, checkpointEnabled, err := step.checkpointIdentity(runtimeImage, workdir)
-	if err != nil {
-		return false, fmt.Errorf("agent %q checkpoint capture: %w", step.plan.Name, err)
-	}
-	var checkpointController AgentCheckpointController
-	var checkpointRecovery AgentCheckpointRecoveryStepController
-	var checkpointImmutable AgentCheckpointImmutableProvenance
-	if checkpointEnabled {
-		if _, declared := planEnv["AGENT_SESSION_DIR"]; declared {
-			return false, fmt.Errorf("agent %q checkpoint capture: AGENT_SESSION_DIR is platform-owned", step.plan.Name)
-		}
-		checkpointImmutable, err = deriveAgentCheckpointImmutableProvenance(agentCheckpointImmutableProvenanceRequest{
-			PlanID: step.planID, Plan: step.plan, Metadata: step.metadata, RuntimeImage: runtimeImage,
-			Provider: step.checkpointCapture.Provider, Adapter: step.checkpointCapture.Adapter, Inputs: snapshotInputs.refs, Sidecars: sidecars,
-		})
-		if err != nil {
-			return false, fmt.Errorf("agent %q checkpoint provenance: %w", step.plan.Name, err)
-		}
-		if step.checkpointCapture.RecoveryFactory != nil {
-			checkpointRecovery, err = step.checkpointCapture.RecoveryFactory.NewAgentCheckpointRecovery(checkpointImmutable)
-			if err != nil {
-				return false, fmt.Errorf("agent %q checkpoint recovery controller: %w", step.plan.Name, err)
-			}
-			if checkpointRecovery == nil {
-				return false, fmt.Errorf("agent %q checkpoint recovery controller is nil", step.plan.Name)
-			}
-		}
-		checkpointController, err = step.checkpointCapture.Factory.NewAgentCheckpointExecution(checkpointIdentity)
-		if err != nil {
-			return false, fmt.Errorf("agent %q checkpoint controller: %w", step.plan.Name, err)
-		}
-		if checkpointController == nil {
-			return false, fmt.Errorf("agent %q checkpoint controller is nil", step.plan.Name)
-		}
-	}
-
 	ctx, cancel, err := MaybeTimeout(ctx, step.plan.Timeout, step.defaultTimeout)
 	if err != nil {
 		return false, err
@@ -634,105 +585,20 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 	}
 
 	var (
-		chosenWorker         runtime.Worker
-		volumeMounts         []runtime.VolumeMount
-		process              runtime.Process
-		result               runtime.ProcessResult
-		runErr               error
-		checkpointAttempt    checkpoint.Attempt
-		checkpointProvenance CheckpointCaptureProvenance
-		started              bool
+		chosenWorker runtime.Worker
+		volumeMounts []runtime.VolumeMount
+		process      runtime.Process
+		result       runtime.ProcessResult
+		runErr       error
+		started      bool
 	)
 
 	for {
 		owner := db.NewBuildStepContainerOwner(step.metadata.BuildID, step.planID, step.metadata.TeamID)
 		attemptSpec := containerSpec
 		attemptSpec.Env = append([]string{}, containerSpec.Env...)
-		attemptSpec.CheckpointRestore = nil
-		recoveryLaunch := AgentCheckpointRecoveryLaunch{}
-
-		if checkpointEnabled {
-			if checkpointRecovery != nil {
-				recoveryLaunch, err = checkpointRecovery.PrepareLaunch(ctx)
-				if err != nil && !errors.Is(err, ErrAgentCheckpointNotRecovery) {
-					recordAgentCheckpointRecovery(
-						ctx,
-						step.checkpointCapture.RecoveryMetrics,
-						checkpoint.FallbackManualReview,
-						AgentCheckpointRecoveryFailed,
-					)
-					return false, fmt.Errorf("agent %q checkpoint recovery preparation: %w", step.plan.Name, err)
-				}
-				if err == nil && recoveryLaunch.ManualReview {
-					recordAgentCheckpointRecovery(
-						ctx,
-						step.checkpointCapture.RecoveryMetrics,
-						agentCheckpointRecoveryMetricMode(recoveryLaunch.Attempt.Mode),
-						AgentCheckpointRecoveryManualReviewRequired,
-					)
-					delegate.Errored(logger, "manual_review_required: checkpoint recovery is not safe")
-					return false, nil
-				}
-				if err == nil && recoveryLaunch.RecoverySpec == "" {
-					return false, fmt.Errorf("agent %q checkpoint recovery returned an empty server transport", step.plan.Name)
-				}
-				if errors.Is(err, ErrAgentCheckpointNotRecovery) {
-					recoveryLaunch = AgentCheckpointRecoveryLaunch{}
-				}
-			}
-
-			checkpointAttempt, err = checkpointController.Prepare(ctx)
-			if err != nil {
-				return false, fmt.Errorf("agent %q checkpoint preparation: %w", step.plan.Name, err)
-			}
-			if checkpointAttempt.ID <= 0 ||
-				checkpointAttempt.ExecutionAttempt <= 0 ||
-				!sameAgentCheckpointIdentity(checkpointAttempt.Identity, checkpointIdentity) ||
-				(checkpointAttempt.State != checkpoint.AttemptMaterializing && checkpointAttempt.State != checkpoint.AttemptRunning) {
-				return false, fmt.Errorf("agent %q checkpoint preparation returned an unlaunchable attempt", step.plan.Name)
-			}
-			if recoveryLaunch.RecoverySpec != "" &&
-				!sameAgentCheckpointRecoveryAttempt(checkpointAttempt, recoveryLaunch.Attempt) {
-				return false, fmt.Errorf("agent %q checkpoint recovery launch differs from prepared attempt", step.plan.Name)
-			}
-
-			attemptSpec.CheckpointCapture = true
-			attemptSpec.Env = append(attemptSpec.Env, "AGENT_SESSION_DIR="+filepath.Join(workdir, ".concourse", "session"))
-			if recoveryLaunch.RecoverySpec != "" {
-				attemptSpec.Env = append(attemptSpec.Env, "CONCOURSE_AGENT_RECOVERY="+recoveryLaunch.RecoverySpec)
-			}
-			attemptSpec.CheckpointRestore = recoveryLaunch.Restore
-			owner = db.NewAgentAttemptContainerOwner(step.metadata.BuildID, step.planID, step.metadata.TeamID, checkpointAttempt.ExecutionAttempt)
-		}
-
-		recoveryMetricPending := recoveryLaunch.RecoverySpec != "" &&
-			checkpointAttempt.State != checkpoint.AttemptRunning
-		recoveryMetricRecorded := false
-		recordRecoveryOutcome := func(outcome AgentCheckpointRecoveryOutcome) {
-			if recoveryMetricPending && !recoveryMetricRecorded {
-				recordAgentCheckpointRecovery(
-					ctx,
-					step.checkpointCapture.RecoveryMetrics,
-					agentCheckpointRecoveryMetricMode(recoveryLaunch.Attempt.Mode),
-					outcome,
-				)
-				recoveryMetricRecorded = true
-			}
-		}
-		failRecoveryLaunch := func(cause error) error {
-			recordRecoveryOutcome(AgentCheckpointRecoveryFailed)
-			if checkpointRecovery == nil || recoveryLaunch.RecoverySpec == "" ||
-				checkpointAttempt.State != checkpoint.AttemptMaterializing {
-				return cause
-			}
-			failureCtx, cancelFailure := context.WithTimeout(context.WithoutCancel(ctx), agentCheckpointInterruptionTimeout)
-			_, markErr := checkpointRecovery.MarkMaterializationFailed(failureCtx, recoveryLaunch)
-			cancelFailure()
-			return errors.Join(cause, markErr)
-		}
-
 		if err := delegate.BeforeSelectWorker(logger); err != nil {
-			return false, failRecoveryLaunch(err)
+			return false, err
 		}
 		chosenWorker, err = step.workerPool.FindOrSelectWorker(
 			ctx,
@@ -741,17 +607,17 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 			worker.Spec{TeamID: step.metadata.TeamID},
 		)
 		if err != nil {
-			return false, failRecoveryLaunch(err)
+			return false, err
 		}
 		delegate.SelectedWorker(logger, chosenWorker.Name())
 		if frozenSkills != nil {
 			volume, _, materializeErr := chosenWorker.CreateVolumeForArtifact(ctx, step.metadata.TeamID)
 			if materializeErr != nil {
-				return false, failRecoveryLaunch(fmt.Errorf("agent %q materialize compiled skills volume: %w", step.plan.Name, materializeErr))
+				return false, fmt.Errorf("agent %q materialize compiled skills volume: %w", step.plan.Name, materializeErr)
 			}
 			stream, materializeErr := frozenSkills.StreamOut(ctx, ".", compression.NewGzipCompression())
 			if materializeErr != nil {
-				return false, failRecoveryLaunch(fmt.Errorf("agent %q stream compiled skills: %w", step.plan.Name, materializeErr))
+				return false, fmt.Errorf("agent %q stream compiled skills: %w", step.plan.Name, materializeErr)
 			}
 			materializeErr = volume.StreamIn(ctx, ".", compression.NewGzipCompression(), 0, stream)
 			closeErr := stream.Close()
@@ -759,7 +625,7 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 				materializeErr = closeErr
 			}
 			if materializeErr != nil {
-				return false, failRecoveryLaunch(fmt.Errorf("agent %q materialize compiled skills: %w", step.plan.Name, materializeErr))
+				return false, fmt.Errorf("agent %q materialize compiled skills: %w", step.plan.Name, materializeErr)
 			}
 			attemptSpec.Inputs = append(attemptSpec.Inputs, runtime.Input{
 				Artifact: chosenWorker.ArtifactFromVolume(volume), DestinationPath: artifactPath(workdir, "skills", ""), ReadOnly: true,
@@ -769,22 +635,7 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 		var container runtime.Container
 		container, volumeMounts, err = chosenWorker.FindOrCreateContainer(ctx, owner, step.containerMetadata, attemptSpec, delegate)
 		if err != nil {
-			return false, failRecoveryLaunch(err)
-		}
-
-		checkpointProvenance = CheckpointCaptureProvenance{}
-		if checkpointEnabled {
-			dbContainer := container.DBContainer()
-			if dbContainer == nil {
-				return false, failRecoveryLaunch(fmt.Errorf("agent %q checkpoint provenance: container has no durable handle", step.plan.Name))
-			}
-			checkpointProvenance, err = checkpointImmutable.BindCheckpointCaptureProvenance(
-				checkpointAttempt.ExecutionAttempt,
-				dbContainer.Handle(),
-			)
-			if err != nil {
-				return false, failRecoveryLaunch(fmt.Errorf("agent %q checkpoint provenance: %w", step.plan.Name, err))
-			}
+			return false, err
 		}
 
 		if !started {
@@ -800,72 +651,12 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 		costObserver := newAgentCostObserver(pio.Stdout)
 		pio.Stdout = costObserver
 
-		if checkpointEnabled && recoveryLaunch.Restore != nil {
-			materializer, ok := container.(runtime.PreLaunchMaterializer)
-			if !ok {
-				return false, failRecoveryLaunch(errors.New("agent checkpoint recovery container cannot materialize before launch"))
-			}
-			restoreStarted := time.Now()
-			if err := materializer.MaterializeBeforeLaunch(ctx, agentSpec); err != nil {
-				recordAgentCheckpointRestore(
-					ctx,
-					step.checkpointCapture.RecoveryMetrics,
-					AgentCheckpointRestoreFailed,
-					time.Since(restoreStarted),
-				)
-				return false, failRecoveryLaunch(fmt.Errorf("agent %q checkpoint materialization: %w", step.plan.Name, err))
-			}
-			recordAgentCheckpointRestore(
-				ctx,
-				step.checkpointCapture.RecoveryMetrics,
-				AgentCheckpointRestoreSucceeded,
-				time.Since(restoreStarted),
-			)
-		}
-
-		process, err = attachOrRunAgentAttempt(
-			ctx,
-			container,
-			agentSpec,
-			pio,
-			checkpointEnabled && checkpointAttempt.State == checkpoint.AttemptRunning,
-		)
+		process, err = attachOrRun(ctx, container, agentSpec, pio)
 		if err != nil {
-			if checkpointEnabled && checkpointAttempt.State == checkpoint.AttemptRunning {
-				return false, fmt.Errorf("agent %q cannot attach to durable running attempt: %w", step.plan.Name, err)
-			}
-			return false, failRecoveryLaunch(err)
-		}
-
-		var checkpointIntents *agentCheckpointLiveIntents
-		if checkpointEnabled {
-			preparedAttempt := checkpointAttempt
-			checkpointAttempt, err = checkpointController.MarkRunning(ctx)
-			if err != nil {
-				recordRecoveryOutcome(AgentCheckpointRecoveryFailed)
-				return false, fmt.Errorf("agent %q checkpoint running transition: %w", step.plan.Name, err)
-			}
-			if checkpointAttempt.ExecutionAttempt != preparedAttempt.ExecutionAttempt ||
-				!sameAgentCheckpointIdentity(checkpointAttempt.Identity, checkpointIdentity) {
-				return false, fmt.Errorf("agent %q checkpoint running transition returned a different attempt", step.plan.Name)
-			}
-			recordRecoveryOutcome(AgentCheckpointRecoverySucceeded)
-			checkpointIntents = startAgentCheckpointLiveIntents(
-				ctx,
-				checkpointController,
-				process,
-				AgentCheckpointCaptureRequest{
-					Provenance:      checkpointProvenance,
-					MaxArchiveBytes: step.checkpointCapture.MaxArchiveBytes,
-				},
-				step.checkpointCapture.ElapsedInterval,
-				step.checkpointCapture.ExplicitIntentSource,
-				logger,
-			)
+			return false, err
 		}
 
 		result, runErr = process.Wait(ctx)
-		checkpointIntents.Stop()
 
 		var interruption runtime.InterruptionError
 		interrupted := runErr != nil && errors.As(runErr, &interruption)
@@ -880,15 +671,8 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 		// downstream consumer would stream from a dead pod or read the partial
 		// content the interrupted attempt left behind instead of the
 		// successful attempt's output.
-		if !(interrupted && checkpointEnabled && checkpointRecovery != nil) {
-			step.registerLegacyOutputs(logger, repository, chosenWorker, outputNames, volumeMounts)
-		}
+		step.registerLegacyOutputs(logger, repository, chosenWorker, outputNames, volumeMounts)
 
-		var durableAttempt *checkpoint.Attempt
-		if checkpointEnabled {
-			attempt := checkpointAttempt.Clone()
-			durableAttempt = &attempt
-		}
 		step.ingestFlightRecorder(
 			ctx,
 			logger,
@@ -896,35 +680,11 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 			volumeMounts,
 			time.Since(processStart),
 			costObserver.Observed(),
-			durableAttempt,
 			!interrupted,
 		)
 
 		if !interrupted {
 			break
-		}
-		if checkpointEnabled {
-			if step.checkpointCapture.RecoveryMetrics != nil {
-				step.checkpointCapture.RecoveryMetrics.RecordInterruption(
-					ctx,
-					interruption.InterruptionReason(),
-				)
-			}
-			interruptionCtx, cancelInterruption := context.WithTimeout(context.WithoutCancel(ctx), agentCheckpointInterruptionTimeout)
-			_, markErr := checkpointController.MarkInterrupted(interruptionCtx, checkpointAttempt, interruption.InterruptionReason())
-			cancelInterruption()
-			if markErr != nil {
-				return false, fmt.Errorf("agent %q checkpoint interruption transition: %w", step.plan.Name, markErr)
-			}
-			if checkpointRecovery != nil {
-				continue
-			}
-			recordAgentCheckpointRecovery(
-				ctx,
-				step.checkpointCapture.RecoveryMetrics,
-				checkpoint.FallbackManualReview,
-				AgentCheckpointRecoveryManualReviewRequired,
-			)
 		}
 		delegate.Errored(logger, fmt.Sprintf(
 			"manual_review_required: agent execution interrupted (%s); automatic replay is disabled until durable recovery proves safety",
@@ -937,37 +697,16 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 		if errors.Is(runErr, context.DeadlineExceeded) {
 			oteltrace.SpanFromContext(ctx).AddEvent("step.errored")
 			delegate.Errored(logger, TimeoutLogMessage)
-			if checkpointEnabled {
-				return false, fmt.Errorf("agent %q checkpoint lifecycle cannot safely terminalize a timed-out process", step.plan.Name)
-			}
 			return false, nil
 		}
 
 		return false, runErr
-	}
-	if result.ExitStatus != 0 && checkpointEnabled {
-		return false, fmt.Errorf("agent %q checkpoint lifecycle cannot safely terminalize a non-zero process exit (%d)", step.plan.Name, result.ExitStatus)
 	}
 	if result.ExitStatus == 0 && len(step.plan.SnapshotOutputs) > 0 {
 		if err := step.sealTypedOutputs(ctx, repository, chosenWorker, volumeMounts, snapshotInputs); err != nil {
 			return false, err
 		}
 	}
-	if result.ExitStatus == 0 && checkpointEnabled {
-		terminal, _ := process.(runtime.TerminalCheckpointProcess)
-		finalized, finalizeErr := checkpointController.FinalizeSucceeded(ctx, AgentCheckpointCaptureRequest{
-			Provenance:         checkpointProvenance,
-			MaxArchiveBytes:    step.checkpointCapture.MaxArchiveBytes,
-			TerminalQuiescence: terminal,
-		})
-		if finalizeErr != nil {
-			return false, fmt.Errorf("agent %q checkpoint finalization: %w", step.plan.Name, finalizeErr)
-		}
-		if finalized.CaptureError != nil {
-			logger.Error("agent-checkpoint-completion-capture-failed", finalized.CaptureError)
-		}
-	}
-
 	oteltrace.SpanFromContext(ctx).AddEvent("step.finished")
 	delegate.Finished(logger, ExitStatus(result.ExitStatus))
 	return result.ExitStatus == 0, nil
@@ -1002,32 +741,6 @@ func agentValidationRequirement(plan atc.AgentPlan) (string, bool, error) {
 	return candidates[0], true, nil
 }
 
-func attachOrRunAgentAttempt(
-	ctx context.Context,
-	container runtime.Container,
-	spec runtime.ProcessSpec,
-	processIO runtime.ProcessIO,
-	durableRunning bool,
-) (runtime.Process, error) {
-	if durableRunning {
-		return container.Attach(ctx, spec.ID, processIO)
-	}
-	return attachOrRun(ctx, container, spec, processIO)
-}
-
-func sameAgentCheckpointRecoveryAttempt(prepared, selected checkpoint.Attempt) bool {
-	if !sameAgentCheckpointIdentity(prepared.Identity, selected.Identity) ||
-		prepared.ExecutionAttempt != selected.ExecutionAttempt ||
-		prepared.SourceExecutionAttempt != selected.SourceExecutionAttempt ||
-		prepared.SourceCheckpointGeneration != selected.SourceCheckpointGeneration ||
-		prepared.Mode != selected.Mode ||
-		prepared.MaterializationID != selected.MaterializationID ||
-		(prepared.SourceCheckpointID == nil) != (selected.SourceCheckpointID == nil) {
-		return false
-	}
-	return prepared.SourceCheckpointID == nil || *prepared.SourceCheckpointID == *selected.SourceCheckpointID
-}
-
 // ingestFlightRecorder reads flight/results.json and flight/events.ndjson
 // from the registered flight output and upserts an agent_run_metrics row.
 // It runs synchronously before Run returns — the build cannot complete (and
@@ -1041,7 +754,6 @@ func (step *AgentStep) ingestFlightRecorder(
 	volumeMounts []runtime.VolumeMount,
 	wallTime time.Duration,
 	observed observedAgentCost,
-	attempt *checkpoint.Attempt,
 	finalPresentation bool,
 ) {
 	if step.metricsStore == nil {
@@ -1222,32 +934,7 @@ func (step *AgentStep) ingestFlightRecorder(
 						tr.WorkflowRunID = &runID
 					}
 					tr.FunctionID = step.plan.FunctionID
-					if attempt != nil {
-						attemptStore, ok := step.transcriptStore.(AgentAttemptTranscriptStore)
-						if !ok {
-							logger.Error(
-								"failed-to-ingest-attempt-transcript",
-								errors.New("agent transcript store does not support durable attempts"),
-							)
-						} else {
-							err := attemptStore.UpsertExecutionAttempt(db.AgentRunAttemptTranscript{
-								AttemptID:         attempt.ID,
-								BuildID:           step.metadata.BuildID,
-								PlanID:            string(step.planID),
-								ExecutionAttempt:  attempt.ExecutionAttempt,
-								WorkflowRunID:     step.metadata.WorkflowRunID,
-								FunctionID:        step.plan.FunctionID,
-								StepName:          step.plan.Name,
-								NDJSON:            nd,
-								ByteLen:           byteLen,
-								Truncated:         truncated,
-								FinalPresentation: finalPresentation,
-							})
-							if err != nil {
-								logger.Error("failed-to-ingest-attempt-transcript", err)
-							}
-						}
-					} else if err := step.transcriptStore.Upsert(tr); err != nil {
+					if err := step.transcriptStore.Upsert(tr); err != nil {
 						logger.Error("failed-to-ingest-transcript", err)
 					}
 				}
@@ -1339,40 +1026,6 @@ func (step *AgentStep) ingestFlightRecorder(
 	// delivery-outcomes read that row). Write it insert-only instead: it lands
 	// when no row exists (genuinely crashed agent) and is a no-op when one
 	// does.
-	if attempt != nil {
-		attemptStore, ok := step.metricsStore.(metrics.AttemptStore)
-		if !ok {
-			logger.Error(
-				"failed-to-ingest-attempt-run-metrics",
-				errors.New("agent metrics store does not support durable attempts"),
-			)
-			return
-		}
-		_, err := attemptStore.UpsertExecutionAttempt(metrics.ExecutionAttemptRequest{
-			Key: metrics.ExecutionAttemptKey{
-				AttemptID:        attempt.ID,
-				BuildID:          step.metadata.BuildID,
-				PlanID:           string(step.planID),
-				ExecutionAttempt: attempt.ExecutionAttempt,
-			},
-			Metrics:           &rm,
-			FinalPresentation: finalPresentation,
-			Attribution: metrics.ExecutionAttemptAttribution{
-				UserName: step.metadata.CreatedBy,
-				Source:   budget.SourceAgentStep,
-				Provider: step.checkpointCapture.Provider,
-				Model:    step.plan.Model,
-			},
-		})
-		if err != nil {
-			logger.Error("failed-to-ingest-attempt-run-metrics", err)
-		}
-		// The attempt-aware store writes its non-negative counter delta and the
-		// cost ledger in one transaction. Falling through to the legacy
-		// budget checker would charge the same spend a second time.
-		return
-	}
-
 	var inserted bool
 	var prev *schema.RunMetrics
 	var err error

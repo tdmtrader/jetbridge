@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/concourse/concourse/agent/checkpoint"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/compression"
 	"github.com/concourse/concourse/atc/db"
@@ -193,15 +192,6 @@ type ContainerSpec struct {
 	// container: they are for task-scoped authority such as an authoritative
 	// validation profile. Callers must not derive these from task configuration.
 	PrivateFileMounts []PrivateFileMount
-	// CheckpointCapture enables the platform-owned, main-container-only
-	// checkpoint session volume for an agent step. It is intentionally a
-	// server-set bit: neither task configuration nor a provider may choose a
-	// capture path or add a host mount through this field.
-	CheckpointCapture bool
-	// CheckpointRestore is a server-owned, fresh-attempt-only recovery
-	// descriptor. It contains no host path, pod/node, process, or provider
-	// identity; the runtime derives those only after it creates the fresh Pod.
-	CheckpointRestore *CheckpointRestoreDescriptor
 	// Type is the type of step the Container is for (e.g. task, get, etc.).
 	Type db.ContainerType
 
@@ -260,22 +250,6 @@ type ContainerSpec struct {
 	// ManagedAgentBroker is the dedicated server-owned broker companion. It is
 	// intentionally not a generic trusted-sidecar facility.
 	ManagedAgentBroker *ManagedAgentBroker
-}
-
-// CheckpointRestoreDescriptor binds a fresh hermetic agent container to one
-// exact committed checkpoint archive and server-selected logical limits.
-type CheckpointRestoreDescriptor struct {
-	Archive           checkpoint.Archive
-	MaterializationID string
-	MaxBytes          int64
-	MaxEntries        int64
-}
-
-// PreLaunchMaterializer is an optional runtime extension for server-owned
-// materialization that must happen after Pod scheduling but before a process
-// is launched. Ordinary runtimes deliberately do not gain this authority.
-type PreLaunchMaterializer interface {
-	MaterializeBeforeLaunch(context.Context, ProcessSpec) error
 }
 
 type BuildStepDelegate interface {
