@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/concourse/concourse/agent/pullrequest"
@@ -18,6 +19,11 @@ const (
 	maxBodyBytes       = 1 << 20
 	maxPages           = 8
 	defaultHTTPTimeout = 30 * time.Second
+
+	// maxCachedResponses bounds the conditional-request cache. Observing one
+	// pull request touches a handful of URLs; the bound stops a deeply
+	// paginated endpoint from growing the map without limit.
+	maxCachedResponses = 64
 )
 
 // Observer translates only GitHub's read API into the provider-neutral
@@ -26,6 +32,45 @@ type Observer struct {
 	baseURL *url.URL
 	token   pullrequest.TokenSource
 	client  *http.Client
+
+	cacheMu sync.RWMutex
+	cache   map[string]cachedResponse
+}
+
+// cachedResponse retains one validated GitHub read. Link is stored alongside
+// the body so a 304 can replay pagination as faithfully as a 200.
+type cachedResponse struct {
+	etag string
+	body []byte
+	link string
+}
+
+func (observer *Observer) cachedFor(key string) (cachedResponse, bool) {
+	observer.cacheMu.RLock()
+	defer observer.cacheMu.RUnlock()
+	entry, found := observer.cache[key]
+	return entry, found
+}
+
+// storeCached retains an immutable copy. Bodies are already bounded by
+// maxBodyBytes before this is reached; maxCachedResponses bounds the map so a
+// deeply paginated endpoint cannot grow it without limit.
+func (observer *Observer) storeCached(key, etag string, body []byte, link string) {
+	if etag == "" {
+		return
+	}
+	observer.cacheMu.Lock()
+	defer observer.cacheMu.Unlock()
+	if observer.cache == nil {
+		observer.cache = make(map[string]cachedResponse, maxCachedResponses)
+	}
+	if len(observer.cache) >= maxCachedResponses {
+		for existing := range observer.cache {
+			delete(observer.cache, existing)
+			break
+		}
+	}
+	observer.cache[key] = cachedResponse{etag: etag, body: append([]byte(nil), body...), link: link}
 }
 
 func NewObserver(baseURL string, token pullrequest.TokenSource, client *http.Client) (*Observer, error) {
@@ -74,11 +119,25 @@ func (observer *Observer) get(ctx context.Context, target *url.URL, destination 
 	request.Header.Set("Authorization", "Bearer "+token)
 	request.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	request.Header.Set("User-Agent", userAgent)
+	cacheKey := target.String()
+	if entry, found := observer.cachedFor(cacheKey); found {
+		request.Header.Set("If-None-Match", entry.etag)
+	}
 	response, err := observer.client.Do(request)
 	if err != nil {
 		return fmt.Errorf("github request failed: %s", redact(err.Error(), token))
 	}
 	defer response.Body.Close()
+	if response.StatusCode == http.StatusNotModified {
+		entry, found := observer.cachedFor(cacheKey)
+		if !found {
+			return fmt.Errorf("github returned 304 without a cached body")
+		}
+		if err := decodeJSON(entry.body, destination); err != nil {
+			return fmt.Errorf("github response is invalid JSON")
+		}
+		return nil
+	}
 	if response.StatusCode < 200 || response.StatusCode > 299 {
 		return githubStatusError(response, token)
 	}
@@ -92,6 +151,7 @@ func (observer *Observer) get(ctx context.Context, target *url.URL, destination 
 	if err := decodeJSON(raw, destination); err != nil {
 		return fmt.Errorf("github response is invalid JSON")
 	}
+	observer.storeCached(cacheKey, response.Header.Get("ETag"), raw, "")
 	return nil
 }
 
@@ -114,11 +174,25 @@ func (observer *Observer) getPage(ctx context.Context, target *url.URL, destinat
 	request.Header.Set("Authorization", "Bearer "+token)
 	request.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	request.Header.Set("User-Agent", userAgent)
+	cacheKey := target.String()
+	if entry, found := observer.cachedFor(cacheKey); found {
+		request.Header.Set("If-None-Match", entry.etag)
+	}
 	response, err := observer.client.Do(request)
 	if err != nil {
 		return nil, fmt.Errorf("github request failed: %s", redact(err.Error(), token))
 	}
 	defer response.Body.Close()
+	if response.StatusCode == http.StatusNotModified {
+		entry, found := observer.cachedFor(cacheKey)
+		if !found {
+			return nil, fmt.Errorf("github returned 304 without a cached body")
+		}
+		if err := decodeJSON(entry.body, destination); err != nil {
+			return nil, fmt.Errorf("github response is invalid JSON")
+		}
+		return observer.nextURL(entry.link, target.Path)
+	}
 	if response.StatusCode < 200 || response.StatusCode > 299 {
 		return nil, githubStatusError(response, token)
 	}
@@ -132,10 +206,12 @@ func (observer *Observer) getPage(ctx context.Context, target *url.URL, destinat
 	if err := decodeJSON(raw, destination); err != nil {
 		return nil, fmt.Errorf("github response is invalid JSON")
 	}
-	next, err := observer.nextURL(response.Header.Get("Link"), target.Path)
+	link := response.Header.Get("Link")
+	next, err := observer.nextURL(link, target.Path)
 	if err != nil {
 		return nil, err
 	}
+	observer.storeCached(cacheKey, response.Header.Get("ETag"), raw, link)
 	return next, nil
 }
 

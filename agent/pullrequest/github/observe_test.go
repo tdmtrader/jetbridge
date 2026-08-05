@@ -464,3 +464,55 @@ func writeFixtureAt(t *testing.T, response http.ResponseWriter, name, host strin
 }
 
 func sha(character rune) string { return strings.Repeat(string(character), 40) }
+
+// GitHub answers If-None-Match with a 304 it does not bill against the rate
+// limit. At a 5m poll each watched PR spends ~864 requests/day against a
+// 5,000/hr ceiling, so unchanged reads should cost nothing.
+func TestObserveReusesCachedBodiesOnNotModified(t *testing.T) {
+	t.Parallel()
+	var serverURL string
+	conditional := 0
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Header.Get("If-None-Match") == `"etag-1"` {
+			conditional++
+			response.WriteHeader(http.StatusNotModified)
+			return
+		}
+		response.Header().Set("ETag", `"etag-1"`)
+		switch request.URL.Path {
+		case "/repos/acme/widget/pulls/42":
+			writeFixtureAt(t, response, "pull_request_active.json", serverURL)
+		case "/repos/acme/widget/pulls/42/reviews":
+			writeFixture(t, response, "reviews_page_1.json")
+		case "/repos/acme/widget/pulls/42/comments":
+			writeFixture(t, response, "review_comments_page_1.json")
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+	serverURL = server.URL
+
+	observer, err := NewObserver(server.URL, tokenFunc(func(context.Context) (string, error) {
+		return "token-1", nil
+	}), server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	locator := pullrequest.Locator{Provider: pullrequest.ProviderGitHub, Repository: "acme/widget", ExternalID: "42"}
+
+	first, err := observer.Observe(context.Background(), locator, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := observer.Observe(context.Background(), locator, "")
+	if err != nil {
+		t.Fatalf("second Observe = %v, want the cached bodies replayed", err)
+	}
+	if conditional == 0 {
+		t.Fatal("no conditional request was issued")
+	}
+	if first.SourceSHA != second.SourceSHA || len(first.Threads) != len(second.Threads) {
+		t.Fatalf("cached observation diverged: %+v vs %+v", first, second)
+	}
+}
