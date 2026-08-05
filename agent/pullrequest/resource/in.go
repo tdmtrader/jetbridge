@@ -85,13 +85,15 @@ func In(ctx context.Context, destination string, stdin io.Reader, stdout, _ io.W
 	if dependencies.Clock != nil {
 		now = dependencies.Clock().UTC()
 	}
+	// The version identifies which observation the server selected; it is not a
+	// promise the provider stood still. The admit job is Serial, so builds queue,
+	// and Concourse consumes a version at build start regardless of outcome --
+	// refusing a moved observation here burns the event instead of retrying it.
+	// Materialize what is current and let the server reject it downstream against
+	// durable state.
 	action, actionable, err := pullrequest.ActionFor(observation, pullrequest.TriggerPolicy{Now: now, PollInterval: poll, FreshnessInterval: fresh, LastCursor: pullrequest.Cursor(request.Source.Monitor.AcknowledgedCursor), LastTargetSHA: request.Source.Monitor.LastReconciledTarget, LastReconciledAt: request.Source.Monitor.LastReconciledAt, ActiveActionDigest: request.Source.Monitor.ActiveActionDigest})
 	if err != nil || !actionable {
-		return fmt.Errorf("forge-pr: selected version is stale")
-	}
-	expected := versionFor(request.Source, action)
-	if !equalVersion(expected, *request.Version) {
-		return fmt.Errorf("forge-pr: selected version does not match current pull request")
+		return fmt.Errorf("forge-pr: pull request has no actionable state")
 	}
 	if err := verifyDestination(destinationRoot, destination, destinationInfo); err != nil {
 		return err

@@ -17,18 +17,23 @@ import (
 	"github.com/concourse/concourse/agent/snapshot/contracts"
 )
 
-func TestForgePRInRejectsStaleVersionBeforeGit(t *testing.T) {
+// The version identifies which observation the server selected; it is not a
+// promise the provider stood still. The admit job is Serial so builds queue,
+// and Concourse consumes a version at build start regardless of outcome, so
+// refusing a moved observation here burned the event instead of retrying it.
+func TestForgePRInMaterializesWhenTheObservationMovedSinceCheck(t *testing.T) {
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
 	source := testSource(now)
 	version := resource.Version{Provider: "github", ExternalID: "42", SourceSHA: sha('a'), TargetSHA: sha('b'), ActionKind: "review_batch", ActionDigest: digest('d'), Cursor: "wrong", BindingRevision: "7"}
+	gitRan := false
 	var output bytes.Buffer
 	err := resource.In(context.Background(), t.TempDir(), bytes.NewReader(checkInput(t, source, &version)), &output, &bytes.Buffer{}, resource.Dependencies{ObserverFactory: fixedObserver(observerFunc(func(_ context.Context, l pullrequest.Locator, c pullrequest.Cursor) (pullrequest.Observation, error) {
 		return activeObservation(l, "actual"), nil
-	})), Clock: func() time.Time { return now }, GitRunner: runnerFunc(func(context.Context, resource.GitCommand) error { t.Fatal("git must not run"); return nil })})
-	if err == nil {
-		t.Fatal("expected stale selection error")
+	})), Clock: func() time.Time { return now }, GitRunner: runnerFunc(func(context.Context, resource.GitCommand) error { gitRan = true; return nil })})
+	if !gitRan {
+		t.Fatalf("git did not run: the moved observation was rejected before materialization (err = %v)", err)
 	}
-	if strings.Contains(err.Error(), source.ReadToken) {
+	if err != nil && strings.Contains(err.Error(), source.ReadToken) {
 		t.Fatal("error leaks token")
 	}
 }
