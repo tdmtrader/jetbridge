@@ -1,9 +1,11 @@
 package pgtest_test
 
 import (
+	"context"
 	"os"
 	"testing"
 
+	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/pgtest"
 )
 
@@ -58,5 +60,37 @@ func TestOpenTestDBIsolatesEachTestFromEveryOther(t *testing.T) {
 func TestPackagesPayNothingForTestsThatDoNotOpenADatabase(t *testing.T) {
 	if testing.Short() {
 		t.Skip("nothing to do")
+	}
+}
+
+// The seeding helpers exist so a caller outside atc/db can assert authorization
+// as behaviour rather than by reading a fake's recorded arguments. This proves
+// they produce a snapshot the real store actually scopes by team.
+func TestSeedSnapshotIsOwnedByItsTeamAndDeniedToOthers(t *testing.T) {
+	conn := pgtest.OpenTestDB(t)
+
+	owner := pgtest.SeedTeam(t, conn, "owning-team")
+	stranger := pgtest.SeedTeam(t, conn, "stranger-team")
+	ref := pgtest.SeedSnapshot(t, conn, owner, "a")
+
+	store := db.NewAgentSnapshotsFactory(conn)
+
+	found, ok, err := store.GetAuthorized(context.Background(), owner.ID(), ref.ID)
+	if err != nil {
+		t.Fatalf("GetAuthorized for owner: %v", err)
+	}
+	if !ok {
+		t.Fatal("owning team cannot read its own snapshot")
+	}
+	if found.ID != ref.ID {
+		t.Fatalf("owner got snapshot %d, want %d", found.ID, ref.ID)
+	}
+
+	_, ok, err = store.GetAuthorized(context.Background(), stranger.ID(), ref.ID)
+	if err != nil {
+		t.Fatalf("GetAuthorized for stranger: %v", err)
+	}
+	if ok {
+		t.Fatal("a team that does not own the snapshot was allowed to read it")
 	}
 }

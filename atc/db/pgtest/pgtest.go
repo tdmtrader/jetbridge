@@ -62,6 +62,9 @@ var (
 	once     sync.Once
 	shared   *instance
 	dbSerial atomic.Int64
+	// dsnByConn lets the seeding helpers open the extra raw connections a
+	// lock.LockFactory needs, without widening OpenTestDB's signature.
+	dsnByConn sync.Map
 )
 
 // Main runs the package's tests and then shuts the postmaster down. Without it
@@ -98,7 +101,10 @@ func OpenTestDB(t *testing.T) db.DbConn {
 		t.Fatalf("pgtest: open %s: %v", name, err)
 	}
 
+	dsnByConn.Store(conn, dsn(inst, name))
+
 	t.Cleanup(func() {
+		dsnByConn.Delete(conn)
 		_ = conn.Close()
 		dropAdmin, err := sql.Open("pgx", dsn(inst, "postgres"))
 		if err != nil {
