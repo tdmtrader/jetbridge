@@ -552,6 +552,114 @@ func TestCreateMapsPublicValidationFailureWithoutLeakingCause(t *testing.T) {
 	}
 }
 
+func TestCreateParsesRepeatedBaseQueryParametersIntoUploadRequest(t *testing.T) {
+	harness := newHandlerHarness(t)
+	harness.creator.upload = func(ctx context.Context, request snapshot.UploadRequest) (snapshot.Snapshot, error) {
+		reader, err := request.OpenTar(ctx)
+		if err != nil {
+			return snapshot.Snapshot{}, err
+		}
+		_, readErr := io.Copy(io.Discard, reader)
+		return harness.manifest, errors.Join(readErr, reader.Close())
+	}
+	query := url.Values{"type": {"repository-change/v1"}, "base": {"base=42", "context=7"}}
+	request := httptest.NewRequest(http.MethodPost, "/snapshots?"+query.Encode(), strings.NewReader("tar"))
+	request.Header.Set("Content-Type", "application/x-tar")
+	recorder := httptest.NewRecorder()
+	harness.factory.Create(harness.team).ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if len(harness.creator.calls) != 1 {
+		t.Fatalf("upload calls = %d", len(harness.creator.calls))
+	}
+	got := harness.creator.calls[0].Bases
+	if len(got) != 2 || got["base"] != 42 || got["context"] != 7 {
+		t.Fatalf("declared bases = %#v, want {base:42 context:7}", got)
+	}
+}
+
+func TestCreateOmitsBasesFromUploadRequestWhenNoneAreDeclared(t *testing.T) {
+	harness := newHandlerHarness(t)
+	harness.creator.upload = func(ctx context.Context, request snapshot.UploadRequest) (snapshot.Snapshot, error) {
+		reader, err := request.OpenTar(ctx)
+		if err != nil {
+			return snapshot.Snapshot{}, err
+		}
+		_, readErr := io.Copy(io.Discard, reader)
+		return harness.manifest, errors.Join(readErr, reader.Close())
+	}
+	request := httptest.NewRequest(http.MethodPost, "/snapshots?type=opaque%2Fv1", strings.NewReader("tar"))
+	request.Header.Set("Content-Type", "application/x-tar")
+	recorder := httptest.NewRecorder()
+	harness.factory.Create(harness.team).ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if len(harness.creator.calls) != 1 || len(harness.creator.calls[0].Bases) != 0 {
+		t.Fatalf("declared bases = %#v, want none", harness.creator.calls[0].Bases)
+	}
+}
+
+func TestCreateRejectsMalformedOrDuplicateDeclaredBaseQuery(t *testing.T) {
+	tests := []struct {
+		name  string
+		bases []string
+	}{
+		{name: "no equals sign", bases: []string{"badvalue"}},
+		{name: "empty name", bases: []string{"=42"}},
+		{name: "empty id", bases: []string{"name="}},
+		{name: "non-numeric id", bases: []string{"name=abc"}},
+		{name: "zero id", bases: []string{"name=0"}},
+		{name: "duplicate name", bases: []string{"name=1", "name=2"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			harness := newHandlerHarness(t)
+			query := url.Values{"type": {"repository-change/v1"}, "base": test.bases}
+			request := httptest.NewRequest(http.MethodPost, "/snapshots?"+query.Encode(), strings.NewReader("tar"))
+			request.Header.Set("Content-Type", "application/x-tar")
+			recorder := httptest.NewRecorder()
+			harness.factory.Create(harness.team).ServeHTTP(recorder, request)
+
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+			}
+			if len(harness.creator.calls) != 0 {
+				t.Fatalf("creator called %d times for a malformed declared base", len(harness.creator.calls))
+			}
+			response := decodeError(t, recorder)
+			if response.Error != "invalid_base" {
+				t.Fatalf("error code = %q, want invalid_base", response.Error)
+			}
+		})
+	}
+}
+
+func TestCreateMapsDeclaredBaseAuthorizationRejectionToNotFound(t *testing.T) {
+	harness := newHandlerHarness(t)
+	harness.creator.upload = func(_ context.Context, request snapshot.UploadRequest) (snapshot.Snapshot, error) {
+		if request.Bases["base"] != 999 {
+			t.Fatalf("upload request declared bases = %#v, want base:999", request.Bases)
+		}
+		return snapshot.Snapshot{}, errors.Join(
+			snapshot.ErrNotFound, errors.New("declared base 999 is absent, unavailable, or unauthorized"),
+		)
+	}
+	query := url.Values{"type": {"repository-change/v1"}, "base": {"base=999"}}
+	request := httptest.NewRequest(http.MethodPost, "/snapshots?"+query.Encode(), strings.NewReader("tar"))
+	request.Header.Set("Content-Type", "application/x-tar")
+	recorder := httptest.NewRecorder()
+	harness.factory.Create(harness.team).ServeHTTP(recorder, request)
+
+	response := decodeError(t, recorder)
+	if recorder.Code != http.StatusNotFound || response.Error != "not_found" {
+		t.Fatalf("status/error = %d/%q, want 404/not_found", recorder.Code, response.Error)
+	}
+}
+
 func TestListMapsStrictFiltersAndPreservesExactIDs(t *testing.T) {
 	harness := newHandlerHarness(t)
 	createdAfter, err := time.Parse(time.RFC3339, "2026-07-21T01:02:03-07:00")

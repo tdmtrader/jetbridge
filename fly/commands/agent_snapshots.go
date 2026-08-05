@@ -150,14 +150,18 @@ func agentResourceCaptureOutcomeError(result resourcecapture.CaptureResult) erro
 }
 
 type AgentSnapshotsCreateCommand struct {
-	Type string `long:"type" required:"true" description:"Versioned snapshot type (for example review/v1)"`
-	From string `long:"from" required:"true" description:"Directory to archive"`
-	Json bool   `long:"json" description:"Print command result as JSON"`
+	Type string   `long:"type" required:"true" description:"Versioned snapshot type (for example review/v1)"`
+	From string   `long:"from" required:"true" description:"Directory to archive"`
+	Base []string `long:"base" description:"Declare a base input as NAME=SNAPSHOT-ID (repeatable); required for types whose seal gate reopens an input, such as repository-change/v1"`
+	Json bool     `long:"json" description:"Print command result as JSON"`
 }
 
 func (command *AgentSnapshotsCreateCommand) Execute([]string) error {
 	typeRef, err := snapshot.ParseTypeRef(command.Type)
 	if err != nil {
+		return err
+	}
+	if err := validateAgentSnapshotBaseFlags(command.Base); err != nil {
 		return err
 	}
 	root, err := openAgentSnapshotDirectory(command.From)
@@ -184,7 +188,11 @@ func (command *AgentSnapshotsCreateCommand) Execute([]string) error {
 		tarResult <- tarErr
 	}()
 
-	path := agentSnapshotsPath(target) + "?" + url.Values{"type": []string{typeRef.String()}}.Encode()
+	query := url.Values{"type": []string{typeRef.String()}}
+	if len(command.Base) != 0 {
+		query["base"] = append([]string(nil), command.Base...)
+	}
+	path := agentSnapshotsPath(target) + "?" + query.Encode()
 	response, requestErr := agentSnapshotRequest(ctx, target, http.MethodPost, path, reader, map[string]string{
 		"Content-Type":    "application/x-tar",
 		"Idempotency-Key": idempotencyKey,
@@ -197,6 +205,29 @@ func (command *AgentSnapshotsCreateCommand) Execute([]string) error {
 		return err
 	}
 	return printAgentSnapshotManifest(manifest, command.Json)
+}
+
+// validateAgentSnapshotBaseFlags rejects a malformed --base before any
+// network call, directory walk, or archive build: the server authoritatively
+// re-validates the same NAME=SNAPSHOT-ID shape and duplicate-name rule, but a
+// caller who mistyped a flag should not pay for a full tar upload just to
+// learn that from a 400 response.
+func validateAgentSnapshotBaseFlags(bases []string) error {
+	seen := make(map[string]struct{}, len(bases))
+	for _, raw := range bases {
+		name, id, found := strings.Cut(raw, "=")
+		if !found || name == "" || id == "" {
+			return fmt.Errorf("agent snapshot: --base must be NAME=SNAPSHOT-ID, got %q", raw)
+		}
+		if _, err := snapshot.ParseSnapshotID(id); err != nil {
+			return fmt.Errorf("agent snapshot: --base %q: %w", raw, err)
+		}
+		if _, duplicate := seen[name]; duplicate {
+			return fmt.Errorf("agent snapshot: --base declares %q more than once", name)
+		}
+		seen[name] = struct{}{}
+	}
+	return nil
 }
 
 func openAgentSnapshotDirectory(directory string) (root *os.Root, err error) {

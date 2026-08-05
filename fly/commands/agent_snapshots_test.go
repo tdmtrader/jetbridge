@@ -36,6 +36,50 @@ func TestParseAgentSnapshotIDPreservesExactInt64Identity(t *testing.T) {
 	}
 }
 
+func TestValidateAgentSnapshotBaseFlagsAcceptsCanonicalRepeatableDeclarations(t *testing.T) {
+	for _, bases := range [][]string{nil, {}, {"base=42"}, {"base=42", "context=1"}} {
+		if err := validateAgentSnapshotBaseFlags(bases); err != nil {
+			t.Fatalf("validateAgentSnapshotBaseFlags(%v) error = %v", bases, err)
+		}
+	}
+}
+
+func TestValidateAgentSnapshotBaseFlagsRejectsMalformedAndDuplicateDeclarations(t *testing.T) {
+	tests := map[string][]string{
+		"no equals sign": {"badvalue"},
+		"empty name":     {"=42"},
+		"empty id":       {"name="},
+		"non-numeric id": {"name=abc"},
+		"zero id":        {"name=0"},
+		"negative id":    {"name=-1"},
+		"duplicate name": {"name=1", "name=2"},
+	}
+	for label, bases := range tests {
+		t.Run(label, func(t *testing.T) {
+			if err := validateAgentSnapshotBaseFlags(bases); err == nil {
+				t.Fatalf("validateAgentSnapshotBaseFlags(%v) succeeded, want an error", bases)
+			}
+		})
+	}
+}
+
+// TestAgentSnapshotsCreateExecuteRejectsMalformedBaseBeforeAnyNetworkCall
+// proves --base validation runs before the command even resolves a target or
+// walks --from: a malformed flag must fail fast with a clear client-side
+// error rather than costing a directory walk, a tar build, and a network
+// round trip only to be told the same thing by a 400 response.
+func TestAgentSnapshotsCreateExecuteRejectsMalformedBaseBeforeAnyNetworkCall(t *testing.T) {
+	command := AgentSnapshotsCreateCommand{
+		Type: "repository-change/v1",
+		From: filepath.Join(t.TempDir(), "does-not-exist"),
+		Base: []string{"badvalue"},
+	}
+	err := command.Execute(nil)
+	if err == nil || !strings.Contains(err.Error(), "--base") {
+		t.Fatalf("Execute() error = %v, want a --base validation error", err)
+	}
+}
+
 func TestWriteAgentSnapshotTarIsDeterministicAndNormalized(t *testing.T) {
 	first := t.TempDir()
 	second := t.TempDir()

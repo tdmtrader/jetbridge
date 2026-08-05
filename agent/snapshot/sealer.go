@@ -255,6 +255,15 @@ func (sealer *BatchSealer) Upload(ctx context.Context, request UploadRequest) (r
 		}
 		return Snapshot{}, fmt.Errorf("%w: %v", ErrUnsupportedType, lookupErr)
 	}
+	// Authorize every declared base before opening a producer stream or
+	// running the validator. A base the caller's team cannot read must be
+	// rejected at this trust boundary, not discovered lazily inside
+	// AdmitForSeal when (and only when) a particular validator happens to
+	// open it.
+	baseInputs, err := sealer.authorizeDeclaredBases(ctx, request.TeamID, request.Bases)
+	if err != nil {
+		return Snapshot{}, err
+	}
 	if err := ctx.Err(); err != nil {
 		return Snapshot{}, err
 	}
@@ -285,13 +294,14 @@ func (sealer *BatchSealer) Upload(ctx context.Context, request UploadRequest) (r
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("snapshot: open captured upload root: %w", err)
 	}
-	validationContext, contextErr := NewValidationContext(nil, nil)
+	validationContext, contextErr := NewValidationContext(baseInputs, sealer.inputOpener(request.TeamID))
 	if contextErr != nil {
 		closeErr = root.Close()
 		return Snapshot{}, errors.Join(contextErr, closeErr)
 	}
 	// An upload is a fresh candidate too: the uploader has authority over
-	// nothing, so it goes through seal-time admission.
+	// nothing but its authorized declared bases, so it goes through seal-time
+	// admission the same as every other candidate.
 	validation, validationErr := validator.AdmitForSeal(ctx, root, validationContext)
 	closeErr = root.Close()
 	if validationErr != nil || closeErr != nil {
@@ -482,6 +492,36 @@ func wrapCategory(category error, message string, err error) error {
 		return nil
 	}
 	return errors.Join(category, fmt.Errorf("%s: %w", message, err))
+}
+
+// authorizeDeclaredBases resolves every declared base to its exact immutable
+// reference, authorized for teamID, before a caller-declared name is ever
+// handed to a validator.
+//
+// This reuses the exact authorization GetAuthorized already performs for the
+// batch/build input opener rather than inventing a second mechanism: a base
+// is readable by this team if and only if GetAuthorized would return it, and
+// content must already be available for the same reason inputOpener requires
+// it — an expired or unavailable base cannot be reopened for verification.
+func (sealer *BatchSealer) authorizeDeclaredBases(ctx context.Context, teamID int, bases map[string]SnapshotID) (map[string]SnapshotRef, error) {
+	if len(bases) == 0 {
+		return nil, nil
+	}
+	resolved := make(map[string]SnapshotRef, len(bases))
+	for name, id := range bases {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		persisted, found, err := sealer.metadata.GetAuthorized(ctx, teamID, id)
+		if err != nil {
+			return nil, fmt.Errorf("snapshot: authorize declared base %q: %w", name, err)
+		}
+		if !found || persisted.ContentState != ContentStateAvailable {
+			return nil, fmt.Errorf("%w: declared base %q snapshot %s is absent, unavailable, or unauthorized", ErrNotFound, name, id)
+		}
+		resolved[name] = SnapshotRef{ID: persisted.ID, Type: persisted.Type, Digest: persisted.Digest}
+	}
+	return resolved, nil
 }
 
 func (sealer *BatchSealer) inputOpener(teamID int) InputOpener {

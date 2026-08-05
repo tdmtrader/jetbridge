@@ -134,7 +134,7 @@ func (factory *HandlerFactory) endpoint(team TrustedTeam, method string, endpoin
 }
 
 func (factory *HandlerFactory) create(w http.ResponseWriter, r *http.Request, team TrustedTeam) {
-	typeRef, ok := parseCreateQuery(w, r)
+	typeRef, bases, ok := parseCreateQuery(w, r)
 	if !ok {
 		return
 	}
@@ -192,6 +192,7 @@ func (factory *HandlerFactory) create(w http.ResponseWriter, r *http.Request, te
 		TeamID: team.ID, TeamName: team.Name, UploadedBy: identity.DisplayName,
 		Actor: identity.Actor, IdempotencyKey: key, Type: typeRef,
 		OpenTar: openTar, SourceMetadata: sourceMetadata,
+		Bases: bases,
 	})
 	if err != nil {
 		factory.writeSnapshotError(w, err)
@@ -824,39 +825,77 @@ func requireNoBody(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
-func parseCreateQuery(w http.ResponseWriter, r *http.Request) (snapshot.TypeRef, bool) {
+func parseCreateQuery(w http.ResponseWriter, r *http.Request) (snapshot.TypeRef, map[string]snapshot.SnapshotID, bool) {
 	query, ok := strictQuery(w, r)
 	if !ok {
-		return "", false
+		return "", nil, false
 	}
 	for key, values := range query {
 		switch key {
 		case "type":
 			if len(values) != 1 || values[0] == "" {
 				writeError(w, http.StatusBadRequest, "invalid_query", "type must be provided exactly once")
-				return "", false
+				return "", nil, false
 			}
+		case "base":
+			// Repeated and validated in detail below: the tar body carries the
+			// archive, so a declared base input has nowhere to travel except
+			// the query string.
 		case ":team_name":
 			if len(values) != 1 {
 				writeError(w, http.StatusBadRequest, "invalid_query", "request query is invalid")
-				return "", false
+				return "", nil, false
 			}
 		default:
 			writeError(w, http.StatusBadRequest, "invalid_query", "request query contains unsupported fields")
-			return "", false
+			return "", nil, false
 		}
 	}
 	values, present := query["type"]
 	if !present || len(values) != 1 || values[0] == "" {
 		writeError(w, http.StatusBadRequest, "invalid_query", "type must be provided exactly once")
-		return "", false
+		return "", nil, false
 	}
 	typeRef, err := snapshot.ParseTypeRef(values[0])
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_type", "snapshot type is invalid")
-		return "", false
+		return "", nil, false
 	}
-	return typeRef, true
+	bases, ok := parseDeclaredBaseQuery(w, query["base"])
+	if !ok {
+		return "", nil, false
+	}
+	return typeRef, bases, true
+}
+
+// parseDeclaredBaseQuery parses repeated base=NAME=SNAPSHOT-ID query values
+// into a port-name -> snapshot-ID map. Every value must split into a
+// non-empty name and a canonical positive decimal snapshot ID via the same
+// snapshot.ParseSnapshotID the rest of this API uses, and no name may repeat
+// — a caller cannot bind two different bases to the same declared input.
+func parseDeclaredBaseQuery(w http.ResponseWriter, values []string) (map[string]snapshot.SnapshotID, bool) {
+	if len(values) == 0 {
+		return nil, true
+	}
+	bases := make(map[string]snapshot.SnapshotID, len(values))
+	for _, raw := range values {
+		name, idRaw, found := strings.Cut(raw, "=")
+		if !found || name == "" || idRaw == "" {
+			writeError(w, http.StatusBadRequest, "invalid_base", "base must be NAME=SNAPSHOT-ID")
+			return nil, false
+		}
+		id, err := snapshot.ParseSnapshotID(idRaw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_base", "base must be NAME=SNAPSHOT-ID")
+			return nil, false
+		}
+		if _, duplicate := bases[name]; duplicate {
+			writeError(w, http.StatusBadRequest, "invalid_base", "base declares the same name more than once")
+			return nil, false
+		}
+		bases[name] = id
+	}
+	return bases, true
 }
 
 func strictQuery(w http.ResponseWriter, r *http.Request) (url.Values, bool) {

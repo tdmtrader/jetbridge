@@ -1066,6 +1066,22 @@ type UploadRequest struct {
 	Type           TypeRef
 	OpenTar        func(context.Context) (io.ReadCloser, error)
 	SourceMetadata json.RawMessage
+	// Bases declares named base inputs (port name -> exact snapshot ID) for a
+	// direct-create upload whose seal-time validator reopens a declared input
+	// to verify the candidate against it — for example repository-change/v1
+	// reopening its base repository to verify lineage. Every declared base is
+	// authorized for TeamID and resolved to its exact immutable reference
+	// before the validator ever runs; a name the caller's team cannot read is
+	// rejected up front rather than discovered lazily when the validator
+	// tries to open it.
+	//
+	// A type whose validator never opens its declared inputs simply never
+	// references a declared base: the seal still succeeds, and the base is
+	// inert rather than an error. This mirrors the batch/build seal path,
+	// where SealRequest.Inputs already tolerates a declared input no output
+	// validator consumes — declaring one is not itself a claim that every
+	// validator uses it.
+	Bases map[string]SnapshotID
 }
 
 func (r UploadRequest) Validate() error {
@@ -1094,11 +1110,26 @@ func (r UploadRequest) Validate() error {
 	if err := validateRawMessage(r.SourceMetadata); err != nil {
 		return fmt.Errorf("snapshot: upload source metadata: %w", err)
 	}
+	for name, id := range r.Bases {
+		if strings.TrimSpace(name) == "" {
+			return fmt.Errorf("snapshot: declared base name is required")
+		}
+		if err := id.Validate(); err != nil {
+			return fmt.Errorf("snapshot: declared base %q: %w", name, err)
+		}
+	}
 	return nil
 }
 
 func (r UploadRequest) Clone() UploadRequest {
 	r.SourceMetadata = cloneRaw(r.SourceMetadata)
+	if r.Bases != nil {
+		bases := make(map[string]SnapshotID, len(r.Bases))
+		for name, id := range r.Bases {
+			bases[name] = id
+		}
+		r.Bases = bases
+	}
 	return r
 }
 
