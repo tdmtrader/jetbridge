@@ -1,7 +1,7 @@
 package auth_test
 
 import (
-	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 
@@ -9,7 +9,7 @@ import (
 	"github.com/concourse/concourse/atc/api/accessor/accessorfakes"
 	"github.com/concourse/concourse/atc/api/auth"
 	"github.com/concourse/concourse/atc/auditor/auditorfakes"
-	"github.com/concourse/concourse/atc/db/dbfakes"
+	"github.com/concourse/concourse/atc/db"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -17,34 +17,36 @@ import (
 
 var _ = Describe("CheckBuildWriteAccessHandler", func() {
 	var (
-		response       *http.Response
-		server         *httptest.Server
-		delegate       *buildDelegateHandler
-		buildFactory   *dbfakes.FakeBuildFactory
-		handlerFactory auth.CheckBuildWriteAccessHandlerFactory
-		handler        http.Handler
-		fakeAccessor   *accessorfakes.FakeAccessFactory
-		fakeaccess     *accessorfakes.FakeAccess
-		build          *dbfakes.FakeBuild
-		pipeline       *dbfakes.FakePipeline
+		response     *http.Response
+		server       *httptest.Server
+		delegate     *buildDelegateHandler
+		factory      db.BuildFactory
+		handler      http.Handler
+		fakeAccessor *accessorfakes.FakeAccessFactory
+		fakeaccess   *accessorfakes.FakeAccess
+		build        db.Build
+		requestedID  int
 	)
 
 	BeforeEach(func() {
-		buildFactory = new(dbfakes.FakeBuildFactory)
-		handlerFactory = auth.NewCheckBuildWriteAccessHandlerFactory(buildFactory)
+		factory = buildFactory
 		fakeAccessor = new(accessorfakes.FakeAccessFactory)
 		fakeaccess = new(accessorfakes.FakeAccess)
 
 		delegate = &buildDelegateHandler{}
 
-		build = new(dbfakes.FakeBuild)
-		pipeline = new(dbfakes.FakePipeline)
-		build.PipelineReturns(pipeline, true, nil)
-		build.TeamNameReturns("some-team")
-		build.AllAssociatedTeamNamesReturns([]string{"some-team"})
-		build.JobNameReturns("some-job")
+		// A real build of a real job, owned by "some-team" -- which is the team
+		// the request claims, so the authorization decision is made against rows
+		// rather than against TeamNameReturns.
+		build = createJobBuild(createTeam("some-team"), "some-pipeline", "some-job")
+		requestedID = build.ID()
+	})
 
-		innerHandler := handlerFactory.HandlerFor(delegate, auth.UnauthorizedRejector{})
+	// JustBeforeEach so a Context can point the request at a different id, or
+	// swap the factory for a doomed one, before the handler is built.
+	JustBeforeEach(func() {
+		innerHandler := auth.NewCheckBuildWriteAccessHandlerFactory(factory).
+			HandlerFor(delegate, auth.UnauthorizedRejector{})
 
 		handler = accessor.NewHandler(
 			logger,
@@ -54,13 +56,12 @@ var _ = Describe("CheckBuildWriteAccessHandler", func() {
 			new(auditorfakes.FakeAuditor),
 			map[string]string{},
 		)
-	})
 
-	JustBeforeEach(func() {
 		fakeAccessor.CreateReturns(fakeaccess, nil)
 		server = httptest.NewServer(handler)
 
-		request, err := http.NewRequest("POST", server.URL+"?:team_name=some-team&:build_id=55", nil)
+		request, err := http.NewRequest("POST",
+			fmt.Sprintf("%s?:team_name=some-team&:build_id=%d", server.URL, requestedID), nil)
 		Expect(err).NotTo(HaveOccurred())
 
 		response, err = new(http.Client).Do(request)
@@ -78,23 +79,19 @@ var _ = Describe("CheckBuildWriteAccessHandler", func() {
 		})
 
 		Context("when build exists", func() {
-			BeforeEach(func() {
-				buildFactory.BuildForAPIReturns(build, true, nil)
-			})
-
 			It("returns 200 ok", func() {
 				Expect(response.StatusCode).To(Equal(http.StatusOK))
 			})
 
 			It("calls delegate with the build context", func() {
 				Expect(delegate.IsCalled).To(BeTrue())
-				Expect(delegate.ContextBuild).To(BeIdenticalTo(build))
+				Expect(delegate.ContextBuild.ID()).To(Equal(build.ID()))
 			})
 		})
 
 		Context("when build is not found", func() {
 			BeforeEach(func() {
-				buildFactory.BuildForAPIReturns(nil, false, nil)
+				requestedID = build.ID() + 1000
 			})
 
 			It("returns 404", func() {
@@ -104,10 +101,10 @@ var _ = Describe("CheckBuildWriteAccessHandler", func() {
 
 		Context("when getting build fails", func() {
 			BeforeEach(func() {
-				buildFactory.BuildForAPIReturns(nil, false, errors.New("disaster"))
+				factory = doomedBuildFactory()
 			})
 
-			It("returns 404", func() {
+			It("returns 500", func() {
 				Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
 			})
 		})
@@ -117,7 +114,6 @@ var _ = Describe("CheckBuildWriteAccessHandler", func() {
 		BeforeEach(func() {
 			fakeaccess.IsAuthenticatedReturns(true)
 			fakeaccess.IsAuthorizedReturns(false)
-			buildFactory.BuildForAPIReturns(build, true, nil)
 		})
 
 		It("returns 403", func() {
