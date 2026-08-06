@@ -2,88 +2,107 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace the consuming-delta observation and its resource-side action derivation with full-state observation plus a server-side policy — the smallest change that is internally consistent, because the two cannot coexist.
+**Goal:** Make the PR monitor capable of functioning at all. A live spike proved it bricks its own observer the first time it replies to a review comment; full-state observation is the fix, and it forces the removal of `ActionFor` in the same change.
 
-**Architecture:** Stage A is atomic: full-state `Observe`, deletion of `ActionFor`, a server-side policy, and repointing every consumer that assumed one review batch. Stages B–E are sequential and separately verifiable. Stage C is **not yet plannable** — see Prerequisites.
+**Architecture:** Stage A is atomic and is now a *repair*, not an improvement. Stages B–E are sequential and separately verifiable.
 
 **Tech Stack:** Go 1.25, plain `testing` in `agent/*`, Ginkgo/Gomega in `atc/db`, PostgreSQL for DB suites.
 
-**Spec:** [2026-08-05-full-state-pr-monitor-design.md](../specs/2026-08-05-full-state-pr-monitor-design.md) · **Audits:** [PR interface](2026-08-05-pr-interface-cleanup-audit.md), [snapshot duplication](2026-08-05-repository-snapshot-duplication-audit.md)
+**Spec:** [design](../specs/2026-08-05-full-state-pr-monitor-design.md) · **Audits:** [PR interface](2026-08-05-pr-interface-cleanup-audit.md), [snapshot duplication](2026-08-05-repository-snapshot-duplication-audit.md)
 
 ---
 
-## Prerequisites — do not start Stage A without these
+## The defect this plan repairs
 
-**P1. `forge-pr in` cannot run at all.** `NoRepository: true` sets `GIT_DIR` (`directgit/runner.go:160-168`, `:589-590`) and `git init <dir>` honours `GIT_DIR` over its argument, so the repository lands in the ephemeral credential scratch and the fetch fails. Filed separately. **Nothing in this plan can be verified end-to-end until it is fixed.**
+Proven live against real GitHub (`tdmtrader/jetbridge#3`, since closed):
 
-**P2. A GitHub behaviour spike, before Stage C can be written.** Two facts are unverified and the skip guard's design depends on both:
+```
+poll 1 (human's root review comment):            batches=1 threads=1   OK
+poll 2 (advances to the platform's own reply):   FAILED
+        github review reply has no root
+```
 
-- Does GitHub set `pull_request_review_id` on the platform's *own* reply comments? `normalizeReview` filters on `comment.ReviewID != nil && *comment.ReviewID == value.ID` (`observe.go:355-359`), so if replies arrive without a review id **the platform's own comments are silently absent from every observation** — and a guard that reasons about "items I published" cannot see them.
-- Does a standalone reply mint a new review? If it does, the platform's own action changes review state, which feeds the digest.
+A reply posted through `POST /pulls/{n}/comments/{id}/replies` is filed by GitHub under a **new review**, while its `in_reply_to_id` still names the root comment in the **previous** review. `normalizeReview` filters comments to one review (`observe.go:355-359`) and `normalizeThreads` builds its root index from only that subset (`:374-383`), so the reply is unresolvable and `Observe` fails at `:391` — permanently, since the cursor cannot advance past it.
 
-**P3. Self-identity does not exist.** `ghUser` decodes only `id` (`observe.go:54-56`), and `githubUser` renders `"github-user-<id>"` (`:451`) — login and the Bot flag are dropped. No identity field exists on `resource.Source` (`protocol.go:82-92`), `MonitorCheckState` (`protocol.go:30-40`, `pipeline.go:38-49`), or the rendered source map (`pipeline.go:284-294`). Repo-wide greps for bot/self-login/app_slug return zero hits. The only self-marking mechanism is `operationMarker`/`appendMarker`/`machineMarkerPattern` (`github/mutate.go:972-982`, `:28-31`), used **only inside `mutate.go`** — `observe.go` never inspects comment bodies.
+Poll 1 succeeds only because `selectReview` processes one review at a time and happened to pick the human's. **The delta hides the defect until the platform acts.**
+
+Three consequences that shape everything below:
+
+1. **Full state is the repair.** Grouping threads across all comments in one pass is what makes a reply resolvable. Nothing else fixes this.
+2. **The platform inflates its own batch count.** Every reply mints a review, so `ReviewBatches` grows on the platform's own actions — straight toward the 128 cliff. Batch windowing is load-bearing, not a nicety.
+3. **The platform triggers itself.** A new review changes review state, which is in the digest, which mints a version and a build. The skip guard is load-bearing for the same reason.
 
 ---
 
-## Stage A — full state and server-side policy (atomic)
+## Prerequisites
 
-These cannot be separated. `triggers.go:77-81` branches on `len(ReviewBatches) > 0` and its own comment (`:78-80`) calls that slice *"an adapter-enforced unacknowledged delta"*. Full state makes it permanently non-empty, so `ActionReviewBatch` would fire forever and conflict/freshness would go dead.
+**P1. `forge-pr in` cannot run at all.** `NoRepository: true` sets `GIT_DIR` (`directgit/runner.go:160-168`, `:589-590`) and `git init <dir>` honours it over the directory argument, so the repo lands in the ephemeral credential scratch and the fetch fails. Filed separately. **Blocks all end-to-end verification**, though Stage A's unit tests do not need it.
 
-### Four traps verified in the source
+**P2. RESOLVED by the live spike.** Both questions answered: a reply *does* carry `pull_request_review_id` (so platform comments are observable), and a reply *does* mint a new review (so the platform self-triggers). No further provider investigation is needed.
 
-Any implementation must handle all four. Each was found by reading, not by reasoning:
+**P3. Self-identity still does not exist.** `ghUser` decodes only `id` (`observe.go:54-56`); `githubUser` renders `"github-user-<id>"` (`:451`); login and the Bot flag are dropped. No identity field exists on `resource.Source` (`protocol.go:82-92`), `MonitorCheckState` (`protocol.go:30-40`, `pipeline.go:38-49`), or the rendered source map (`pipeline.go:284-294`). The only self-marking is `operationMarker`/`machineMarkerPattern` (`github/mutate.go:972-982`, `:28-31`), used only inside `mutate.go` — `observe.go` never inspects bodies. This is now a **code gap, not an unknown**, and Stage C must close it.
 
-1. **Windowing threads without pruning batch `ThreadIDs` bricks `Observe`.** `contracts.PullRequestReviewBatch.validate` (`contracts/pull_request.go:296-300`) errors `"thread id %q is not present in the observation"`, `Observation.Validate` calls it (`types.go:156`), and `observe.go:140-142` turns that into a hard error. **The window must prune every dropped thread ID from every batch.**
-2. **`maxReviewBatches = 128` is a separate cliff.** `reviews()` collects up to 1024 (`observe.go:271`), but `types.go:135-137` and `contracts/pull_request.go:182` reject more than 128 batches. A PR with 129 submitted reviews fails permanently. **Batches need windowing too, not just threads.**
-3. **`pullrequest.Thread` is a type ALIAS** — `type Thread = contracts.PullRequestThread` (`types.go:51`, `=` not a definition). You **cannot** add an unexported `lastActivity` field to it, and package `github` cannot set an unexported field declared in package `contracts`. Carry ordering state in a local `map[string]time.Time` or a local wrapper struct inside `observe.go`.
-4. **`anchorFor` returns two values** — `func anchorFor(comment reviewComment) (*contracts.PullRequestAnchor, error)` (`observe.go:437`). Calling it as a single-value expression will not compile.
+---
 
-### Two hazards that need an explicit decision
+## Stage A — full state and server-side policy (atomic, and the repair)
 
-- **Cursor migration.** `decodeCursor` uses `DisallowUnknownFields()` (`observe.go:485`) and rejects a mismatched `Version` (`:486`). Removing `Watermark`/`BatchDigest` from `githubCursor` (`:70-75`), or bumping `cursorVersion` (`:21`), makes every stored `AcknowledgedCursor` undecodable — and those are fed straight in at `check.go:34` and `in.go:80`. **Either add a tolerant path (unrecognised cursor ⇒ treat as empty) or write a migration.** Not optional.
-- **`Truncated` cannot reach the agent as drafted.** `contracts.PullRequestBody` (`contracts/pull_request.go:50-66`) has no such field and `in.go:200` copies field-by-field. Adding one is a **sealed-schema revision**. Either accept the revision (append-only, `rev3` → `rev4`, precedent exists) or convey truncation another way.
+Cannot be split. `triggers.go:77-81` branches on `len(ReviewBatches) > 0` and its own comment (`:78-80`) calls that slice *"an adapter-enforced unacknowledged delta"*. Full state makes it permanently non-empty, so `ActionReviewBatch` would fire forever and conflict/freshness would die.
 
-### What to delete, rewrite, keep
+### Five traps, all verified in source
 
-| | symbols (with current line numbers) |
+1. **Windowing threads without pruning batch `ThreadIDs` bricks `Observe`.** `contracts.PullRequestReviewBatch.validate` (`contracts/pull_request.go:296-300`) errors on any thread ID absent from the observation; `Observation.Validate` calls it (`types.go:156`); `observe.go:140-142` makes it fatal. **The window must prune dropped thread IDs from every batch.**
+2. **`maxReviewBatches = 128` is a separate cliff, and the platform drives toward it.** `reviews()` collects up to 1024 (`observe.go:271`) but `types.go:135-137` and `contracts/pull_request.go:182` reject >128. Each platform reply adds a review. **Batches need windowing too.**
+3. **`pullrequest.Thread` is a type ALIAS** — `type Thread = contracts.PullRequestThread` (`types.go:51`). You cannot add an unexported field to it, and package `github` cannot set an unexported field owned by `contracts`. Carry ordering state in a local `map[string]time.Time` or wrapper inside `observe.go`.
+4. **`anchorFor` returns two values** — `(*contracts.PullRequestAnchor, error)` (`observe.go:437`). A single-value call site will not compile.
+5. **Cursor migration.** `decodeCursor` uses `DisallowUnknownFields()` (`:485`) and rejects a mismatched `Version` (`:486`). Removing `Watermark`/`BatchDigest` (`:70-75`) or bumping `cursorVersion` (`:21`) makes every stored `AcknowledgedCursor` undecodable — and those feed straight in at `check.go:34` and `in.go:80`. **Add a tolerant path (unrecognised cursor ⇒ treat as empty) or write a migration.** Not optional.
+
+### One decision to make explicitly
+
+**`Truncated` cannot reach the agent as drafted.** `contracts.PullRequestBody` (`contracts/pull_request.go:50-66`) has no such field and `in.go:200` copies field-by-field. Either accept a sealed-schema revision (append-only, `rev3` → `rev4`, precedent exists) or convey truncation another way. Also note `Thread.Iteration` is currently the **review** id (`observe.go:411`), not the root-comment id — changing it is a semantic change to a sealed field, so decide rather than drift.
+
+### Delete / rewrite / keep
+
+| | symbols (current line numbers) |
 |---|---|
-| **delete** | `selectReview` (308-327), `afterWatermark` (329-341), `watermarkFor` (343-345), `digestBatch` (454-459), `reviewWatermark` (76-79), the `Watermark`/`BatchDigest` cursor fields (70-75), the cursor invariants at 489-491, `parseCursorTime` (499-505) |
-| **rewrite** | `normalizeReview` (347-371) — drop the per-review comment filter at 354-359; `normalizeThreads` (373-435) — build `byID` from **all** comments so a cross-review reply resolves |
+| **delete** | `selectReview` (308-327), `afterWatermark` (329-341), `watermarkFor` (343-345), `digestBatch` (454-459), `reviewWatermark` (76-79), the `Watermark`/`BatchDigest` cursor fields (70-75), the cursor invariants (489-491), `parseCursorTime` (499-505) |
+| **rewrite** | `normalizeReview` (347-371) — drop the per-review filter at 354-359; `normalizeThreads` (373-435) — build `byID` from **all** comments |
 | **keep** | `reviews` (252-278), `comments` (280-306), `anchorFor` (437-449), `githubUser` (451), `commentID` (452), `digestState` (460-468), `encodeCursor` (506-515) |
-
-**Also note:** `Thread.Iteration` is currently the **review** id (`observe.go:411`), not the root-comment id. Changing it is a semantic change to a sealed field — decide deliberately, do not drift.
 
 ### Consumers to repoint (all assume one batch)
 
-- `revision_executor.go:592` — publishes `ReviewBatches[0]` positionally
-- `revision_executor.go:693`, `:700`, `:705` — `len == 1` for review_batch, `== 0` for conflict/freshness
-- `monitor_run_inspector.go:307-310` (`exactMonitorObservation`), `:499-505` (`exactMonitorObservationBatch`) — both require `len == 1`; full state makes every succeeded review-batch run classify `MonitorOutcomeAmbiguous`
-- `classifySucceededMonitorRun` (`:257-263`) — hard-codes publication counts (3 for review-batch, 2 otherwise)
-- `ActionFor` callers: `in.go:94`, `check.go:43`
+`revision_executor.go:592` (positional `[0]`), `:693`/`:700`/`:705` (`len == 1` / `== 0`); `monitor_run_inspector.go:307-310` and `:499-505` (both `len == 1`, so full state makes every succeeded review-batch run classify `MonitorOutcomeAmbiguous`); `classifySucceededMonitorRun` `:257-263` (hard-coded publication counts); `ActionFor` callers `in.go:94` and `check.go:43`.
 
-**NO HELPER EXISTS** to select a batch by ID. The only ID-keyed scan is inside `contracts.ValidatePullRequestResponseAgainst` (`pull_request_response.go:133-147`), which returns only an error. Each site needs its own lookup, or one shared helper added.
+**NO HELPER EXISTS** to select a batch by ID — the only ID-keyed scan is inside `contracts.ValidatePullRequestResponseAgainst` (`pull_request_response.go:133-147`) and it returns only an error.
 
-### Test helpers that exist (verified — use these, invent nothing)
+### The regression fixture — now specifiable exactly
 
-`agent/pullrequest/github` (package `github`, internal):
-`writeFixture(t, response, name)` `observe_test.go:445` · `writeFixtureAt(t, response, name, host)` `:455` · `tokenFunc` `:441` · `roundTripFunc` `:435` · `int64Pointer` `:433` · `sha(rune)` `:466` · `rotatingToken` `:17` · `writeJSON` `mutate_test.go:637`
+The spike captured the real shape. A fixture reproducing it is the test that would have caught this defect, and it must exist before the fix:
 
-`agent/pullrequest` (package `pullrequest`):
-`monitorObservationBody(evidence)` `monitor_run_inspector_test.go:548` · `newTestDurableMonitorRunInspector` `:537` · `monitorSucceededEvidence(t)` `:593` · `monitorPublication(t, action, result)` `:740` · `monitorSnapshotDigest(byte)` `:768`
+```
+review A: id 4870141034, state COMMENTED
+review B: id 4870143605, state COMMENTED         <- minted by the platform's reply
+
+comment root:  id 3725191076, pull_request_review_id 4870141034, in_reply_to_id null
+comment reply: id 3725192857, pull_request_review_id 4870143605, in_reply_to_id 3725191076
+```
+
+Two testdata files are needed — `reviews_cross_review.json` and `review_comments_cross_review.json` — because **every existing fixture puts all comments under one `pull_request_review_id`**, which is precisely why the suite never caught this.
+
+**Assert both directions:** the fix resolves the reply into the root's thread, *and* a test pinned to the pre-fix behaviour would fail. Do not merely assert `Observe` succeeds.
+
+### Verified test helpers — use these, invent nothing
+
+`agent/pullrequest/github` (internal package): `writeFixture` `observe_test.go:445` · `writeFixtureAt` `:455` · `tokenFunc` `:441` · `roundTripFunc` `:435` · `int64Pointer` `:433` · `sha(rune)` `:466` · `rotatingToken` `:17` · `writeJSON` `mutate_test.go:637`
+
+`agent/pullrequest`: `monitorObservationBody` `monitor_run_inspector_test.go:548` · `newTestDurableMonitorRunInspector` `:537` · `monitorSucceededEvidence` `:593` · `monitorPublication` `:740` · `monitorSnapshotDigest` `:768`
 
 `testdata/`: `pull_request_active.json`, `pull_request_closed.json`, `pull_request_merged.json`, `reviews_page_1.json`, `reviews_page_2.json`, `review_comments_page_1.json`.
 
-### Scaffolding that must be built first (NO HELPER EXISTS)
+### Scaffolding that must be built (NO HELPER EXISTS)
 
-Each of these is a task in its own right — Phase 1 failed by assuming they existed:
+A GitHub test-server helper (every test inlines `httptest.NewServer`); a synthetic review/comment generator (a window test needs N > 150, testdata holds ≤ 3 reviews); the cross-review fixture above; a full-state observation builder (`reviewObservation` `triggers_test.go:137` and `activeObservation` `resource/check_test.go:137` both build single-batch deltas); an active-state `PullRequestBody` builder (`monitorDirectTerminalBody` `monitor_test.go:853` emits only terminal states).
 
-1. A GitHub test-server helper. Every existing test inlines `httptest.NewServer` with its own path switch; there is no shared builder.
-2. A synthetic review/comment JSON generator. `testdata/` holds at most 3 reviews and 2 comments; a window-truncation test needs N > 150 generated in-test.
-3. A cross-review-reply fixture. Both comments in `review_comments_page_1.json` carry `pull_request_review_id: 10`, so the currently-broken case has no fixture.
-4. A full-state observation builder. `reviewObservation` (`triggers_test.go:137`) and `activeObservation` (`resource/check_test.go:137`) both build single-batch deltas.
-5. An active-state `PullRequestBody` builder for `MonitorObservationInspector`. `monitorDirectTerminalBody` (`monitor_test.go:853`) emits only completed/abandoned with zero batches.
-
-**Warning:** `monitorDirectTerminalDigest` (`monitor_test.go:842-851`) hard-codes literal sha256 strings. They break silently if the `actionDigest` identity struct (`triggers.go:145-154`) or its domain prefix (`:159`) changes.
+**Warning:** `monitorDirectTerminalDigest` (`monitor_test.go:842-851`) hard-codes literal sha256 strings that break silently if `actionDigest`'s identity struct (`triggers.go:145-154`) or domain prefix (`:159`) changes.
 
 ---
 
@@ -91,38 +110,43 @@ Each of these is a task in its own right — Phase 1 failed by assuming they exi
 
 `agent_pr_bindings` → `agent_workflow_source_instances`; `pr_binding_id` → nullable `source_instance_id`; collapse the binding-scoped store twins.
 
-Independent of Stage A and separately verifiable. **NO COUNTERFEITER FAKE EXISTS** for `WorkflowResourceSourceAdmissionStore`, `WorkflowResourceSourceBindingAdmissionStore`, `WorkflowResourceSourceBuildStore`, `WorkflowResourceSourceBindingBuildStore`, `WorkflowResourceSourcePipelinesFactory` or `pullrequest.BindingStore` — no `//counterfeiter:generate` directive and nothing in `dbfakes/`. New unit tests must hand-roll stubs in the style of `source_build_reconciler_test.go`.
+**NO COUNTERFEITER FAKE EXISTS** for `WorkflowResourceSourceAdmissionStore`, `WorkflowResourceSourceBindingAdmissionStore`, `WorkflowResourceSourceBuildStore`, `WorkflowResourceSourceBindingBuildStore`, `WorkflowResourceSourcePipelinesFactory` or `pullrequest.BindingStore` — no `//counterfeiter:generate` directive, nothing in `dbfakes/`. Hand-roll stubs in the style of `source_build_reconciler_test.go`.
 
-Migration constraints: head is `1773106159`, two head constants move in lockstep (`legacy_upgrade_test.go:37`, `migrate-preflight.sh:82`), and `1773106154` hard-fails the upgrade if any `agent_pr_bindings` row exists — which is also the guarantee that no data migration is needed.
+Migration head is `1773106159`; two head constants move in lockstep (`legacy_upgrade_test.go:37`, `migrate-preflight.sh:82`); `1773106154` hard-fails if any `agent_pr_bindings` row exists — which is also the guarantee that no data migration is needed.
 
 ---
 
-## Stage C — skip guard — **NOT PLANNABLE YET**
+## Stage C — skip guard (now plannable, with two code gaps to close)
 
-Blocked on P2 and P3. The design assumes the platform can recognise its own comments; today it cannot, and it is unverified whether its replies even appear in observations. Additionally **NO durable per-batch state exists**: `pullrequest.Binding` (`store.go:58-94`) carries only scalars — `AcknowledgedCursor` (`:76`), `LastObservationSnapshotID` (`:77`), `LastAcknowledgedActionDigest` (`:78`) — and `AcknowledgeAction` advances one cursor plus one digest. A cursor-free "which batches have I answered" needs new durable state that does not exist.
+The spike unblocked the provider question: platform replies **are** observable. Two gaps remain, both in our code:
 
-Run the P2 spike, then plan this stage.
+1. **Self-identity (P3).** Decide the attribution mechanism: extend `ghUser` to decode `login` and the Bot flag, or scan bodies for `machineMarkerPattern` in `observe.go`. The marker already exists and is already written; it is simply never read on the observe side.
+2. **No durable per-batch state.** `pullrequest.Binding` (`store.go:58-94`) carries only scalars — `AcknowledgedCursor` `:76`, `LastObservationSnapshotID` `:77`, `LastAcknowledgedActionDigest` `:78` — and `AcknowledgeAction` advances one cursor plus one digest. "Which batches have I already answered" needs new durable state.
+
+Design constraints carried from the spec: the digest must be **server-derived** at acknowledge time (never workflow-supplied, or a buggy agent could silence its own checks); `GET /issues/{n}/comments` must be added to the observer (the platform writes there at `mutate.go:453` and never reads); and the guard must **fail toward re-running**.
+
+New from the spike: since each platform reply mints a review, the guard must treat *the platform's own review* as self-caused, or every reply re-triggers a run.
 
 ---
 
 ## Stage D — server-side re-launch
 
-Re-launch a failed or freshness-due run from the durable captured snapshot, with no new build or version. Removes the need for `binding_revision` in the version and the freshness-via-manual-build path (which is structurally closed and a cluster-wide poison pill — see the spec).
-
----
+Re-launch a failed or freshness-due run from the durable captured snapshot, with no new build or version. Removes `binding_revision` from the version and the freshness-via-manual-build path — which is structurally closed at five layers and a cluster-wide poison pill (see the spec).
 
 ## Stage E — `resource_sources:` declaration and mixed inputs
 
-`pr-monitor-v3` declares the observation as a source; `BindReadySourceAdmission` gains an `Inputs` map; `LaunchMonitor` is deleted. Carries three known blockers: the per-instance vs definition-scoped config-hash mismatch, `origin_kind='pr-monitor'` hard-coded in five SQL statements, and `BindPRMonitorAuthority` becoming unreachable (fails closed, but every run fails).
+`pr-monitor-v3` declares the observation as a source; `BindReadySourceAdmission` gains an `Inputs` map; `LaunchMonitor` is deleted. Three known blockers: the per-instance vs definition-scoped config-hash mismatch, `origin_kind='pr-monitor'` hard-coded in five SQL statements, and `BindPRMonitorAuthority` becoming unreachable (fails closed, but every run fails).
 
 ---
 
 ## Verification
 
-Per stage: `go build ./...`, `go vet ./...`, the affected package tests, and for Stage B the DB suites. **Drain ports 5434–5442 with SIGTERM first** — `postgresrunner` binds `5433 + GinkgoParallelProcess()`, other worktrees collide, and `kill -9` leaks SysV shared memory until `initdb` fails.
+Per stage: `go build ./...`, `go vet ./...`, affected package tests, plus DB suites for Stage B. **Drain ports 5434–5442 with SIGTERM first** — `postgresrunner` binds `5433 + GinkgoParallelProcess()`, other worktrees collide, and `kill -9` leaks SysV shared memory until `initdb` fails.
 
-**What green tests do not prove.** Most of this subsystem has never executed. Passing unit and integration tests mean the code is internally consistent, not that the feature works. The only evidence that it works is the live GitHub run on theborg — which needs P1 fixed, Stage A–E landed, and the four authority-spine gaps closed. `PR_PUBLISH_LIVE_PROOF.md` still reads "Current result: not run."
+**Add a live smoke test.** The spike proved that a whole class of defect is unreachable from fixtures, because every fixture encodes an assumption the real provider violates. An environment-gated test against a throwaway PR — post a root comment, reply, poll twice — would have caught this in seconds. It belongs in the suite, skipped without a token.
+
+**What green tests still do not prove.** Most of this subsystem has never executed. Passing tests mean internal consistency; only the live GitHub run on theborg proves the feature works, and that needs P1 fixed, Stages A–E landed, and the four authority-spine gaps closed. `PR_PUBLISH_LIVE_PROOF.md` reads "Current result: not run."
 
 ## Provenance
 
-Written against a ground-truth survey of five areas, each required to cite a declaration site for every symbol it named, followed by an independent pass that grepped for each claimed helper. All five helper sets verified. This process exists because the Phase 1 plan invented four test fixtures and two compile errors (`Thread` alias, `anchorFor` arity) that reached the executing agent.
+Written against a five-area ground-truth survey (every symbol cited to a declaration site, every claimed helper independently grep-verified) and a live GitHub spike. That process exists because the Phase 1 plan invented four test fixtures and two compile errors — `Thread` being an alias, `anchorFor`'s arity — that reached the executing agent, and because no amount of fixture-based reasoning could have found the cross-review defect.
