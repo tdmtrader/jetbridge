@@ -28,8 +28,11 @@ make test-fly-integration
 make test-integration  # real ATC + Postgres, ~12s
 ```
 
-Follow CLAUDE.md conventions (no `--race`; if `database "testdb_template"
-already exists`, another test run is active — wait, don't delete).
+Follow CLAUDE.md conventions (no `--race`). The named shared PostgreSQL test
+service stays running, and every database-backed spec owns a clone, so
+independent package commands may overlap safely. This only isolates
+PostgreSQL; identical integration suites may still contend on application HTTP
+ports.
 
 ## Tier 2 — Colima / Docker
 

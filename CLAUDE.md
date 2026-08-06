@@ -40,6 +40,14 @@ The `atc/db` suite is the largest (~1300 specs, ~2-3 min). It uses a
 suite-owned template and unique cloned database for each spec, so independent
 database-backed commands may run concurrently against the shared service.
 
+### Shared PostgreSQL concurrency regression
+
+`make test-postgres-concurrency` proves that two independent PostgreSQL-backed
+packages overlap safely: every spec owns a cloned database, and the named
+service deliberately remains running between commands. This only guarantees
+PostgreSQL isolation; identical integration suites can still contend on their
+application HTTP ports.
+
 ### Key Notes
 
 - Unit tests run in parallel (`-p` flag, 9 procs by default). Do not use `--race` — it causes parallel compilation failures (`fork/exec db.test: no such file or directory`).
