@@ -4,7 +4,6 @@ import (
 	sq "github.com/Masterminds/squirrel"
 )
 
-//counterfeiter:generate . TaskCacheLifecycle
 type TaskCacheLifecycle interface {
 	CleanUpInvalidTaskCaches() ([]int, error)
 }
