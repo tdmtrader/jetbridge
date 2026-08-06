@@ -5,6 +5,8 @@ import (
 	"errors"
 	"time"
 
+	sq "github.com/Masterminds/squirrel"
+	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/gc"
 
@@ -16,190 +18,183 @@ import (
 
 var _ = Describe("ContainerCollector", func() {
 	var (
-		fakeContainerRepository *dbfakes.FakeContainerRepository
-		creatingContainer       *dbfakes.FakeCreatingContainer
-		createdContainer        *dbfakes.FakeCreatedContainer
-		destroyingContainer     *dbfakes.FakeDestroyingContainer
+		containerRepository db.ContainerRepository
+		collector           GcCollector
 
-		collector GcCollector
+		team   db.Team
+		worker db.Worker
+		build  db.Build
 
 		missingContainerGracePeriod time.Duration
 		hijackContainerGracePeriod  time.Duration
 	)
 
-	BeforeEach(func() {
-		fakeContainerRepository = new(dbfakes.FakeContainerRepository)
-		creatingContainer = new(dbfakes.FakeCreatingContainer)
-		createdContainer = new(dbfakes.FakeCreatedContainer)
-		destroyingContainer = new(dbfakes.FakeDestroyingContainer)
+	// A container is orphaned once its build stops being interceptible
+	// (container_repository.go:234-237). Everything below builds a real
+	// container in that state and then varies only the column under test.
+	createdContainer := func(planID string) db.CreatedContainer {
+		creating, err := worker.CreateContainer(
+			db.NewBuildStepContainerOwner(build.ID(), atc.PlanID(planID), team.ID()),
+			db.ContainerMetadata{Type: "task", StepName: "some-task"},
+		)
+		Expect(err).NotTo(HaveOccurred())
+		created, err := creating.Created()
+		Expect(err).NotTo(HaveOccurred())
+		return created
+	}
 
+	orphan := func() {
+		Expect(build.SetInterceptible(false)).To(Succeed())
+	}
+
+	// last_hijack is set by the hijack path (container.go:215); these specs
+	// backdate the column directly rather than hijacking and then sleeping.
+	setColumn := func(handle, column string, value any) {
+		_, err := psql.Update("containers").
+			Set(column, value).
+			Where(sq.Eq{"handle": handle}).
+			RunWith(dbConn).Exec()
+		Expect(err).NotTo(HaveOccurred())
+	}
+
+	stateOf := func(handle string) string {
+		var state string
+		Expect(dbConn.QueryRow("SELECT state FROM containers WHERE handle = $1", handle).Scan(&state)).To(Succeed())
+		return state
+	}
+
+	exists := func(handle string) bool {
+		var n int
+		Expect(dbConn.QueryRow("SELECT count(*) FROM containers WHERE handle = $1", handle).Scan(&n)).To(Succeed())
+		return n > 0
+	}
+
+	BeforeEach(func() {
 		logger = lagertest.NewTestLogger("test")
 
-		missingContainerGracePeriod = 1 * time.Minute
-		hijackContainerGracePeriod = 1 * time.Minute
+		missingContainerGracePeriod = time.Minute
+		hijackContainerGracePeriod = time.Minute
 
+		containerRepository = db.NewContainerRepository(dbConn)
 		collector = gc.NewContainerCollector(
-			fakeContainerRepository,
+			containerRepository,
 			missingContainerGracePeriod,
 			hijackContainerGracePeriod,
 		)
+
+		var err error
+		team, err = teamFactory.CreateTeam(atc.Team{Name: "collector-team"})
+		Expect(err).NotTo(HaveOccurred())
+
+		build, err = team.CreateOneOffBuild()
+		Expect(err).NotTo(HaveOccurred())
+
+		worker, err = db.NewWorkerFactory(dbConn, db.NewStaticWorkerCache(logger, dbConn, 0)).
+			SaveWorker(atc.Worker{Name: "some-worker"}, 5*time.Minute)
+		Expect(err).NotTo(HaveOccurred())
 	})
 
 	Describe("Run", func() {
-		var (
-			err error
-		)
-
-		JustBeforeEach(func() {
-			err = collector.Run(context.TODO())
+		It("succeeds with nothing to collect", func() {
+			Expect(collector.Run(context.TODO())).To(Succeed())
 		})
 
-		It("succeeds", func() {
-			Expect(err).NotTo(HaveOccurred())
-		})
+		Describe("orphaned containers", func() {
+			It("marks a created orphan that was never hijacked as destroying", func() {
+				container := createdContainer("never-hijacked")
+				orphan()
 
-		It("always tries to delete expired containers", func() {
-			Expect(fakeContainerRepository.RemoveMissingContainersCallCount()).To(Equal(1))
-			Expect(fakeContainerRepository.RemoveMissingContainersArgsForCall(0)).To(Equal(missingContainerGracePeriod))
-		})
+				Expect(collector.Run(context.TODO())).To(Succeed())
 
-		Describe("Failed Containers", func() {
-			Context("when there are failed containers", func() {
-				It("tries to delete them from the database", func() {
-					Expect(fakeContainerRepository.DestroyFailedContainersCallCount()).To(Equal(1))
-				})
-
-				Context("when destroying failed containers fails", func() {
-					BeforeEach(func() {
-						fakeContainerRepository.DestroyFailedContainersReturns(
-							0, errors.New("You have to be able to accept failure to get better"),
-						)
-					})
-
-					It("still tries to remove the orphaned containers", func() {
-						Expect(fakeContainerRepository.FindOrphanedContainersCallCount()).To(Equal(1))
-					})
-				})
-			})
-		})
-
-		Describe("Excess Check Containers", func() {
-			It("calls DestroyExcessCheckContainers", func() {
-				Expect(fakeContainerRepository.DestroyExcessCheckContainersCallCount()).To(Equal(1))
-				maxPerResource, gracePeriod := fakeContainerRepository.DestroyExcessCheckContainersArgsForCall(0)
-				Expect(maxPerResource).To(Equal(1))
-				Expect(gracePeriod).To(Equal(hijackContainerGracePeriod))
+				Expect(stateOf(container.Handle())).To(Equal(string(atc.ContainerStateDestroying)))
 			})
 
-			Context("when DestroyExcessCheckContainers fails", func() {
-				BeforeEach(func() {
-					fakeContainerRepository.DestroyExcessCheckContainersReturns(
-						0, errors.New("excess check container error"),
-					)
-				})
+			It("marks a created orphan hijacked beyond the grace period as destroying", func() {
+				container := createdContainer("stale-hijack")
+				setColumn(container.Handle(), "last_hijack", sq.Expr("NOW() - '1 hour'::interval"))
+				orphan()
 
-				It("still tries to clean up other containers", func() {
-					Expect(fakeContainerRepository.FindOrphanedContainersCallCount()).To(Equal(1))
-					Expect(fakeContainerRepository.DestroyFailedContainersCallCount()).To(Equal(1))
-				})
+				Expect(collector.Run(context.TODO())).To(Succeed())
+
+				Expect(stateOf(container.Handle())).To(Equal(string(atc.ContainerStateDestroying)))
+			})
+
+			It("leaves a created orphan hijacked within the grace period alone", func() {
+				container := createdContainer("fresh-hijack")
+				setColumn(container.Handle(), "last_hijack", sq.Expr("NOW()"))
+				orphan()
+
+				Expect(collector.Run(context.TODO())).To(Succeed())
+
+				Expect(stateOf(container.Handle())).To(Equal(string(atc.ContainerStateCreated)),
+					"a recently hijacked container is still in use")
+			})
+
+			It("leaves a container whose build is still interceptible alone", func() {
+				container := createdContainer("live-build")
+
+				Expect(collector.Run(context.TODO())).To(Succeed())
+
+				Expect(stateOf(container.Handle())).To(Equal(string(atc.ContainerStateCreated)),
+					"a container belonging to an interceptible build is not an orphan")
 			})
 		})
 
-		Describe("Orphaned Containers", func() {
+		Describe("missing containers", func() {
+			It("removes a container missing for longer than the grace period", func() {
+				container := createdContainer("long-missing")
+				setColumn(container.Handle(), "missing_since", sq.Expr("NOW() - '1 hour'::interval"))
 
-			var (
-				destroyingContainerFromCreated *dbfakes.FakeDestroyingContainer
-			)
+				Expect(collector.Run(context.TODO())).To(Succeed())
 
-			BeforeEach(func() {
-				creatingContainer.HandleReturns("some-handle-1")
-				createdContainer.HandleReturns("some-handle-2")
-				createdContainer.WorkerNameReturns("foo")
-
-				destroyingContainerFromCreated = new(dbfakes.FakeDestroyingContainer)
-				createdContainer.DestroyingReturns(destroyingContainerFromCreated, nil)
-				destroyingContainerFromCreated.HandleReturns("some-handle-2")
-				destroyingContainerFromCreated.WorkerNameReturns("foo")
-
-				destroyingContainer.HandleReturns("some-handle-3")
-				destroyingContainer.WorkerNameReturns("bar")
-
-				fakeContainerRepository.FindOrphanedContainersReturns(
-					[]db.CreatingContainer{
-						creatingContainer,
-					},
-					[]db.CreatedContainer{
-						createdContainer,
-					},
-					[]db.DestroyingContainer{
-						destroyingContainer,
-					},
-					nil,
-				)
+				Expect(exists(container.Handle())).To(BeFalse())
 			})
 
-			Context("when there are created containers that haven't been hijacked", func() {
-				BeforeEach(func() {
-					createdContainer.LastHijackReturns(time.Time{})
-				})
+			It("keeps a container missing for less than the grace period", func() {
+				container := createdContainer("just-missing")
+				setColumn(container.Handle(), "missing_since", sq.Expr("NOW()"))
 
-				It("succeeds", func() {
-					Expect(err).ToNot(HaveOccurred())
-				})
+				Expect(collector.Run(context.TODO())).To(Succeed())
 
-				It("marks the container as destroying", func() {
-					Expect(createdContainer.DestroyingCallCount()).To(Equal(1))
-				})
+				Expect(exists(container.Handle())).To(BeTrue())
+			})
+		})
+
+		// The specs below keep a narrowly scoped fake. Each proves that a failure
+		// in one repository call does not stop the others from running -- error
+		// isolation between independent steps of Run(). A real database cannot be
+		// made to fail one of those calls and not the rest.
+		Describe("error isolation", func() {
+			It("still looks for orphans when destroying failed containers errors", func() {
+				failing := new(dbfakes.FakeContainerRepository)
+				failing.DestroyFailedContainersReturns(0, errors.New("nope"))
+
+				_ = gc.NewContainerCollector(failing, missingContainerGracePeriod, hijackContainerGracePeriod).
+					Run(context.TODO())
+
+				Expect(failing.FindOrphanedContainersCallCount()).To(Equal(1))
 			})
 
-			Context("when there are created containers that were hijacked beyond the grace period", func() {
-				BeforeEach(func() {
-					createdContainer.LastHijackReturns(time.Now().Add(-1 * time.Hour))
-				})
+			It("still cleans up other containers when DestroyExcessCheckContainers errors", func() {
+				failing := new(dbfakes.FakeContainerRepository)
+				failing.DestroyExcessCheckContainersReturns(0, errors.New("nope"))
 
-				It("succeeds", func() {
-					Expect(err).ToNot(HaveOccurred())
-				})
+				_ = gc.NewContainerCollector(failing, missingContainerGracePeriod, hijackContainerGracePeriod).
+					Run(context.TODO())
 
-				It("marks the container as destroying", func() {
-					Expect(createdContainer.DestroyingCallCount()).To(Equal(1))
-				})
+				Expect(failing.FindOrphanedContainersCallCount()).To(Equal(1))
+				Expect(failing.DestroyFailedContainersCallCount()).To(Equal(1))
 			})
 
-			Context("when there are created containers hijacked recently", func() {
+			It("returns the error when finding orphaned containers fails", func() {
+				failing := new(dbfakes.FakeContainerRepository)
+				failing.FindOrphanedContainersReturns(nil, nil, nil, errors.New("some error"))
 
-				BeforeEach(func() {
-					createdContainer.LastHijackReturns(time.Now())
-				})
+				err := gc.NewContainerCollector(failing, missingContainerGracePeriod, hijackContainerGracePeriod).
+					Run(context.TODO())
 
-				It("succeeds", func() {
-					Expect(err).ToNot(HaveOccurred())
-				})
-
-				It("does not destroy them", func() {
-					Expect(createdContainer.DestroyingCallCount()).To(Equal(0))
-				})
-			})
-
-			It("marks all found containers (created and destroying only, no creating) as destroying", func() {
-				Expect(fakeContainerRepository.FindOrphanedContainersCallCount()).To(Equal(1))
-
-				Expect(createdContainer.DestroyingCallCount()).To(Equal(1))
-
-				Expect(destroyingContainerFromCreated.DestroyCallCount()).To(Equal(0))
-
-				Expect(destroyingContainer.DestroyCallCount()).To(Equal(0))
-			})
-
-			Context("when finding containers for deletion fails", func() {
-				BeforeEach(func() {
-					fakeContainerRepository.FindOrphanedContainersReturns(nil, nil, nil, errors.New("some error"))
-				})
-
-				It("returns and logs the error", func() {
-					Expect(err.Error()).To(ContainSubstring("some error"))
-					Expect(fakeContainerRepository.FindOrphanedContainersCallCount()).To(Equal(1))
-				})
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("some error"))
 			})
 		})
 	})
