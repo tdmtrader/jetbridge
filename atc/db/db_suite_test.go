@@ -115,6 +115,12 @@ var _ = BeforeEach(func() {
 	postgresRunner.CreateTestDBFromTemplate()
 
 	dbConn = postgresRunner.OpenConn()
+	DeferCleanup(func() {
+		err := dbConn.Close()
+		// try dropping the db even if closing initially fails
+		postgresRunner.DropTestDB()
+		Expect(err).NotTo(HaveOccurred())
+	})
 	db.CleanupBaseResourceTypesCache()
 
 	var lockConns [lock.FactoryCount]*sql.DB
@@ -252,10 +258,3 @@ func destroy(d interface{ Destroy() error }) {
 	err := d.Destroy()
 	Expect(err).ToNot(HaveOccurred())
 }
-
-var _ = AfterEach(func() {
-	err := dbConn.Close()
-	// try dropping the db even if closing initially fails
-	postgresRunner.DropTestDB()
-	Expect(err).NotTo(HaveOccurred())
-})
