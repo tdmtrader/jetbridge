@@ -12,6 +12,15 @@ make test-all      # Everything including K8s tests (hours)
 The named `concourse-test-postgres` container stays up so independent test
 commands can run concurrently. Run `make test-postgres-down` only as explicit
 teardown after tests have finished; it is unsafe to run while tests are active.
+Each database-backed spec owns a clone, so separate PostgreSQL-backed package
+commands may overlap safely. Verify this contract with:
+
+```bash
+make test-postgres-concurrency
+```
+
+This guarantee is limited to PostgreSQL isolation. Identical integration
+suites may still contend on application HTTP ports.
 
 ## Test Tiers
 
