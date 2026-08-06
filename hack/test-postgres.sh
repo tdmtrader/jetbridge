@@ -23,7 +23,7 @@ require_colima() {
 }
 
 inspect_container() {
-  d container inspect --format '{{ index .Config.Labels "com.concourse.test-postgres" }}|{{ .State.Status }}|{{ .Config.Image }}|{{ (index (index .HostConfig.PortBindings "5432/tcp") 0).HostIp }}|{{ (index (index .HostConfig.PortBindings "5432/tcp") 0).HostPort }}|{{ json .Config.Cmd }}|{{ json .Config.Env }}' "${CONTAINER}" 2>/dev/null
+  d container inspect --format '{{ index .Config.Labels "com.concourse.test-postgres" }}|{{ .State.Status }}|{{ .Config.Image }}|{{ (index (index .HostConfig.PortBindings "5432/tcp") 0).HostIp }}|{{ (index (index .HostConfig.PortBindings "5432/tcp") 0).HostPort }}|{{ json .Config.Cmd }}|{{ json .Config.Env }}|{{ json .HostConfig.PortBindings }}' "${CONTAINER}" 2>/dev/null
 }
 
 wait_ready() {
@@ -36,7 +36,7 @@ wait_ready() {
 }
 
 parse_inspection() {
-  IFS='|' read -r INSPECT_OWNED INSPECT_STATE INSPECT_IMAGE INSPECT_HOST_IP INSPECT_HOST_PORT INSPECT_CMD INSPECT_ENV <<<"$1"
+  IFS='|' read -r INSPECT_OWNED INSPECT_STATE INSPECT_IMAGE INSPECT_HOST_IP INSPECT_HOST_PORT INSPECT_CMD INSPECT_ENV INSPECT_PORT_BINDINGS <<<"$1"
 }
 
 validate_ownership() {
@@ -57,6 +57,10 @@ validate_contract() {
   fi
   if [[ "${INSPECT_HOST_PORT}" != "${HOST_PORT}" ]]; then
     echo "ERROR: ${CONTAINER} host port differs (got ${INSPECT_HOST_PORT}, want ${HOST_PORT})" >&2
+    return 1
+  fi
+  if [[ "${INSPECT_PORT_BINDINGS}" != '{"5432/tcp":[{"HostIp":"127.0.0.1","HostPort":"15432"}]}' ]]; then
+    echo "ERROR: ${CONTAINER} port bindings differ; exactly 127.0.0.1:${HOST_PORT}:5432 is required" >&2
     return 1
   fi
   if [[ "${INSPECT_CMD}" != '["-c","fsync=off","-c","synchronous_commit=off","-c","full_page_writes=off","-c","max_connections=500"]' ]]; then
