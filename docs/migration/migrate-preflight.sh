@@ -79,7 +79,7 @@ v8.0.1:1765921815
 # policy and rejects merely same-run publication provenance; 1773106155 adds
 # the team-bound, immutable child-execution ledger used by the
 # agent broker without placing prompts or provider credentials in PostgreSQL.
-JETBRIDGE_VERSION=1773106162
+JETBRIDGE_VERSION=1773106165
 
 # Minimum supported source version (v6.x)
 MIN_SUPPORTED_VERSION=1601993582

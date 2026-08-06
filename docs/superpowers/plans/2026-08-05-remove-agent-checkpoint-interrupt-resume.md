@@ -300,13 +300,13 @@ Remaining standalone deletions: `atc/db/migration/agent_run_{checkpoints,attempt
 
 **Strategy is settled by live evidence: forward-only, never an in-place amendment.** Migrations `1773106144/45/46/47` are all recorded `dirty=f, direction=up` at **2026-07-30 03:20:08 UTC** on theborg/cicd, and all nine tables exist. The precedent someone will cite for amending in place is itself a demonstrated failure: commit `5073a67eff` amended `1773106157/58` on the premise that they *"have never been applied to any durable database"*, but `migrations_history` shows both applied at 2026-08-02 06:03:52 UTC — **~23.6 hours before that commit was authored** — and the live `enforce_agent_workflow_run_node_occurrence_immutability` still carries the original unconditional `RAISE EXCEPTION` body, not the amended `wait_id` carve-out. That fix never reached production and never will. It is evidence *against* amend-in-place.
 
-**Next free number is 1773106160** (head is `1773106159_admit_node_experiment_targets`).
+**Next free number is 1773106163** (head is `1773106159_admit_node_experiment_targets`).
 
 **Files.**
-- `atc/db/migration/migrations/1773106160_drop_agent_checkpoint_subsystem.up.sql` — drop in FK order: `agent_run_attempt_transcripts`, `agent_run_attempt_metrics`, `agent_run_attempt_fence_tokens`, `agent_run_attempts`, `agent_run_events`, `agent_run_effects`, `agent_run_checkpoints`, `agent_checkpoint_objects`, `agent_run_checkpoint_heads`. Then the **eight** functions — the earlier briefs said "six" and then listed eight; eight is right: `enforce_agent_run_checkpoint_head_identity`, `agent_run_checkpoint_head_cleanup_eligible(BIGINT)`, `enforce_agent_run_effect_transition`, `enforce_agent_run_event_append_only` (from 1773106144), `enforce_agent_run_attempt_insertion`, `enforce_agent_run_attempt_transition` (1773106145), `enforce_agent_run_attempt_metric_binding` (1773106146), `enforce_agent_run_attempt_transcript_identity` (1773106147). Indexes and triggers drop with their tables. Append a defensive, idempotent `DELETE FROM components WHERE name = 'agent_checkpoint_gc';` — `component_factory.go:63` upserts by name and the component was never registered, so this should be a no-op, but it costs nothing and closes the question permanently.
-- `1773106160_drop_agent_checkpoint_subsystem.down.sql` — **ship a real one.** Copy the DDL from `1773106144-47` verbatim (~400 lines). The tables are provably empty, so a structural recreate is a complete rollback. Two `up`-only precedents exist (`1537546150`, `1554469235`) so a non-reversible down would not break the runner, but symmetry is the convention and the copy is mechanical. Note `1773106145` also creates `agent_run_checkpoints_head_id_generation` and `ALTER`s `agent_run_attempts` — the down must respect that ordering.
+- `atc/db/migration/migrations/1773106163_drop_agent_checkpoint_subsystem.up.sql` — drop in FK order: `agent_run_attempt_transcripts`, `agent_run_attempt_metrics`, `agent_run_attempt_fence_tokens`, `agent_run_attempts`, `agent_run_events`, `agent_run_effects`, `agent_run_checkpoints`, `agent_checkpoint_objects`, `agent_run_checkpoint_heads`. Then the **eight** functions — the earlier briefs said "six" and then listed eight; eight is right: `enforce_agent_run_checkpoint_head_identity`, `agent_run_checkpoint_head_cleanup_eligible(BIGINT)`, `enforce_agent_run_effect_transition`, `enforce_agent_run_event_append_only` (from 1773106144), `enforce_agent_run_attempt_insertion`, `enforce_agent_run_attempt_transition` (1773106145), `enforce_agent_run_attempt_metric_binding` (1773106146), `enforce_agent_run_attempt_transcript_identity` (1773106147). Indexes and triggers drop with their tables. Append a defensive, idempotent `DELETE FROM components WHERE name = 'agent_checkpoint_gc';` — `component_factory.go:63` upserts by name and the component was never registered, so this should be a no-op, but it costs nothing and closes the question permanently.
+- `1773106163_drop_agent_checkpoint_subsystem.down.sql` — **ship a real one.** Copy the DDL from `1773106144-47` verbatim (~400 lines). The tables are provably empty, so a structural recreate is a complete rollback. Two `up`-only precedents exist (`1537546150`, `1554469235`) so a non-reversible down would not break the runner, but symmetry is the convention and the copy is mechanical. Note `1773106145` also creates `agent_run_checkpoints_head_id_generation` and `ALTER`s `agent_run_attempts` — the down must respect that ordering.
 - **Do NOT delete or edit `1773106144-47`.** They are durably applied, and `atc/db/migration/experiment_resource_source_admissions_test.go:15` pins `beforeVersion = 1773106147`. Leaving them on disk means the migration chain and that test are untouched.
-- New `atc/db/migration/drop_agent_checkpoint_subsystem_test.go` in the standard shape: migrate to `1773106159`, assert the nine tables and eight functions exist; migrate to `1773106160`, assert they are gone and that `agent_run_metrics`, `agent_run_transcripts`, `agent_snapshots`, `agent_workflow_run_node_occurrences` survive **with their rows**.
+- New `atc/db/migration/drop_agent_checkpoint_subsystem_test.go` in the standard shape: migrate to `1773106159`, assert the nine tables and eight functions exist; migrate to `1773106163`, assert they are gone and that `agent_run_metrics`, `agent_run_transcripts`, `agent_snapshots`, `agent_workflow_run_node_occurrences` survive **with their rows**.
 - Delete the four superseded migration tests (`agent_run_checkpoints_test.go`, `agent_run_attempts_test.go`, `agent_run_attempt_metrics_test.go`, `agent_run_attempt_transcripts_test.go`, 648 lines) in this same commit.
 
 A pure-SQL migration is also the only form that complies with `atc/db/migration/migration_isolation_test.go:29-33`, which forbids anything under `atc/db/migration` from importing `agent/`, `atc/exec`, or `atc/worker`.
@@ -403,11 +403,11 @@ done
 # 2. Schema-only dump of the nine tables + eight functions, archived off-cluster.
 pg_dump --schema-only -t 'agent_run_checkpoint*' -t 'agent_checkpoint_objects' \
         -t 'agent_run_effects' -t 'agent_run_events' -t 'agent_run_attempt*' \
-        > checkpoint-schema-pre-1773106160.sql
+        > checkpoint-schema-pre-1773106163.sql
 
 # 3. Full migrations_history snapshot.
 psql -c "SELECT version, dirty, direction, tstamp FROM migrations_history ORDER BY tstamp" \
-        > migrations-history-pre-1773106160.txt
+        > migrations-history-pre-1773106163.txt
 
 # 4. Hangar bucket listing — confirm no checkpoints/ prefix.
 kubectl exec -n cicd deploy/hangar-fake-gcs -- find /data -path '*checkpoints*'
@@ -580,7 +580,7 @@ claiming `DO NOTHING` semantics in two places.
 
 ### Fixed in a follow-up (2026-08-05)
 
-Both of the items below were closed by migration `1773106162` and the `restart_pending` flag, and
+Both of the items below were closed by migration `1773106165` and the `restart_pending` flag, and
 auto-retry was made unconditional at the owner's direction.
 
 **Auto-retry is no longer flag-gated.** Agent steps are wrapped in `exec.RetryError` unconditionally,
