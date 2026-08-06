@@ -351,13 +351,7 @@ func normalizeReview(value review, all []reviewComment) (pullrequest.ReviewBatch
 	if err := validateObjectID(value.CommitID); err != nil {
 		return pullrequest.ReviewBatch{}, nil, fmt.Errorf("github submitted review commit is invalid")
 	}
-	matching := make([]reviewComment, 0)
-	for _, comment := range all {
-		if comment.ReviewID != nil && *comment.ReviewID == value.ID {
-			matching = append(matching, comment)
-		}
-	}
-	threads, authority, err := normalizeThreads(value, matching)
+	threads, authority, err := normalizeThreads(value, all)
 	if err != nil {
 		return pullrequest.ReviewBatch{}, nil, err
 	}
@@ -370,9 +364,18 @@ func normalizeReview(value review, all []reviewComment) (pullrequest.ReviewBatch
 	return batch, threads, nil
 }
 
-func normalizeThreads(value review, matching []reviewComment) ([]pullrequest.Thread, []string, error) {
-	byID := make(map[int64]reviewComment, len(matching))
-	for _, comment := range matching {
+// normalizeThreads resolves reply chains against EVERY comment on the pull
+// request, not just those the selected review submitted, and then emits only
+// the threads that review touches.
+//
+// GitHub files a reply under the review that submitted it while in_reply_to_id
+// still names a root belonging to an earlier review, so an index built from one
+// review's comments cannot resolve it. That is not an edge case: the platform's
+// own reply creates exactly this shape, which used to brick the observer
+// permanently on the following poll.
+func normalizeThreads(value review, all []reviewComment) ([]pullrequest.Thread, []string, error) {
+	byID := make(map[int64]reviewComment, len(all))
+	for _, comment := range all {
 		if comment.ID <= 0 || comment.User.ID <= 0 || strings.TrimSpace(comment.Body) == "" {
 			return nil, nil, fmt.Errorf("github review comment is invalid")
 		}
@@ -382,7 +385,7 @@ func normalizeThreads(value review, matching []reviewComment) ([]pullrequest.Thr
 		byID[comment.ID] = comment
 	}
 	groups := make(map[int64][]reviewComment)
-	for _, original := range matching {
+	for _, original := range all {
 		current, root := original, original.ID
 		seen := map[int64]struct{}{original.ID: struct{}{}}
 		for current.InReplyToID != nil {
@@ -399,9 +402,21 @@ func normalizeThreads(value review, matching []reviewComment) ([]pullrequest.Thr
 		}
 		groups[root] = append(groups[root], original)
 	}
+	// Chains resolve against every comment, but this review only speaks for the
+	// threads it actually contributed to. A thread it never touched belongs to
+	// another batch and must not be claimed by this one.
 	roots := make([]int64, 0, len(groups))
-	for root := range groups {
-		roots = append(roots, root)
+	for root, group := range groups {
+		touched := false
+		for _, comment := range group {
+			if comment.ReviewID != nil && *comment.ReviewID == value.ID {
+				touched = true
+				break
+			}
+		}
+		if touched {
+			roots = append(roots, root)
+		}
 	}
 	threads := make([]pullrequest.Thread, 0, len(roots))
 	for _, rootID := range roots {

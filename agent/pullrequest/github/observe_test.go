@@ -516,3 +516,56 @@ func TestObserveReusesCachedBodiesOnNotModified(t *testing.T) {
 		t.Fatalf("cached observation diverged: %+v vs %+v", first, second)
 	}
 }
+
+// Reproduces the shape captured from real GitHub: a human's root comment sits
+// in review A, and the platform's reply is filed by GitHub under a NEW review B
+// while in_reply_to_id still names the root in A. Advancing the cursor past
+// review A used to fail permanently with "github review reply has no root",
+// because the reply-chain index was built from one review's comments only.
+// Every other fixture in testdata/ puts all comments under one review id, which
+// is why the suite never caught this.
+func TestObserveResolvesARepliesAcrossReviewBoundaries(t *testing.T) {
+	t.Parallel()
+	var serverURL string
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/repos/acme/widget/pulls/42":
+			writeFixtureAt(t, response, "pull_request_active.json", serverURL)
+		case "/repos/acme/widget/pulls/42/reviews":
+			writeFixture(t, response, "reviews_cross_review.json")
+		case "/repos/acme/widget/pulls/42/comments":
+			writeFixture(t, response, "review_comments_cross_review.json")
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+	serverURL = server.URL
+
+	observer, err := NewObserver(server.URL, tokenFunc(func(context.Context) (string, error) {
+		return "token-1", nil
+	}), server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	locator := pullrequest.Locator{Provider: pullrequest.ProviderGitHub, Repository: "acme/widget", ExternalID: "42"}
+
+	first, err := observer.Observe(context.Background(), locator, "")
+	if err != nil {
+		t.Fatalf("first Observe = %v, want the human's review", err)
+	}
+	// Advancing past review A lands on review B, which holds only the reply.
+	second, err := observer.Observe(context.Background(), locator, first.Cursor)
+	if err != nil {
+		t.Fatalf("Observe advancing to the cross-review reply = %v, want success", err)
+	}
+	if len(second.Threads) != 1 {
+		t.Fatalf("threads = %d, want the reply resolved into its root's thread", len(second.Threads))
+	}
+	if second.Threads[0].ID != "thread-3725191076" {
+		t.Fatalf("thread id = %q, want it rooted at the human's comment", second.Threads[0].ID)
+	}
+	if len(second.Threads[0].Comments) != 2 {
+		t.Fatalf("thread comments = %d, want the root and the reply together", len(second.Threads[0].Comments))
+	}
+}
