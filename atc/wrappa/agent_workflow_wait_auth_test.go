@@ -11,16 +11,12 @@ import (
 	"github.com/concourse/concourse/atc/api/accessor/accessorfakes"
 	"github.com/concourse/concourse/atc/api/auth"
 	"github.com/concourse/concourse/atc/auditor/auditorfakes"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/wrappa"
 	"github.com/tedsuo/rata"
 )
 
 func TestAgentWorkflowWaitRoutesUseHumanMainTeamAuthorization(t *testing.T) {
 	routes := []string{atc.ListAgentWorkflowRunWaits, atc.ResolveAgentWorkflowRunWait}
-	teamFactory := new(dbfakes.FakeTeamFactory)
-	workerFactory := new(dbfakes.FakeWorkerFactory)
-	buildFactory := new(dbfakes.FakeBuildFactory)
 	for _, route := range routes {
 		t.Run(route, func(t *testing.T) {
 			delegateHit := false
@@ -28,11 +24,14 @@ func TestAgentWorkflowWaitRoutesUseHumanMainTeamAuthorization(t *testing.T) {
 				delegateHit = true
 				response.WriteHeader(http.StatusOK)
 			})
+			// These routes authorize against the team named in the request, so the
+			// auth chain never reaches a db factory. nil is deliberate: if that ever
+			// changes, the test panics instead of quietly reading a zero value.
 			wrapped := wrappa.NewAPIAuthWrappa(
-				auth.NewCheckPipelineAccessHandlerFactory(teamFactory),
-				auth.NewCheckBuildReadAccessHandlerFactory(buildFactory),
-				auth.NewCheckBuildWriteAccessHandlerFactory(buildFactory),
-				auth.NewCheckWorkerTeamAccessHandlerFactory(workerFactory),
+				auth.NewCheckPipelineAccessHandlerFactory(nil),
+				auth.NewCheckBuildReadAccessHandlerFactory(nil),
+				auth.NewCheckBuildWriteAccessHandlerFactory(nil),
+				auth.NewCheckWorkerTeamAccessHandlerFactory(nil),
 			).Wrap(rata.Handlers{route: delegate})[route]
 
 			serve := func(authenticated, authorized bool, authorization string) int {

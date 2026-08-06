@@ -11,7 +11,6 @@ import (
 	"github.com/concourse/concourse/atc/api/accessor/accessorfakes"
 	"github.com/concourse/concourse/atc/api/auth"
 	"github.com/concourse/concourse/atc/auditor/auditorfakes"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/wrappa"
 	"github.com/tedsuo/rata"
 )
@@ -30,11 +29,14 @@ func TestAgentExperimentRoutesUseHumanMainTeamAuthorization(t *testing.T) {
 				delegateHit = true
 				w.WriteHeader(http.StatusOK)
 			})
+			// These routes authorize against the team named in the request, so the
+			// auth chain never reaches a db factory. nil is deliberate: if that ever
+			// changes, the test panics instead of quietly reading a zero value.
 			wrapped := wrappa.NewAPIAuthWrappa(
-				auth.NewCheckPipelineAccessHandlerFactory(new(dbfakes.FakeTeamFactory)),
-				auth.NewCheckBuildReadAccessHandlerFactory(new(dbfakes.FakeBuildFactory)),
-				auth.NewCheckBuildWriteAccessHandlerFactory(new(dbfakes.FakeBuildFactory)),
-				auth.NewCheckWorkerTeamAccessHandlerFactory(new(dbfakes.FakeWorkerFactory)),
+				auth.NewCheckPipelineAccessHandlerFactory(nil),
+				auth.NewCheckBuildReadAccessHandlerFactory(nil),
+				auth.NewCheckBuildWriteAccessHandlerFactory(nil),
+				auth.NewCheckWorkerTeamAccessHandlerFactory(nil),
 			).Wrap(rata.Handlers{route: delegate})[route]
 
 			accessFactory := new(accessorfakes.FakeAccessFactory)

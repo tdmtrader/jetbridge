@@ -5,7 +5,6 @@ import (
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/pipelineserver"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/wrappa"
 	"github.com/tedsuo/rata"
 )
@@ -33,7 +32,10 @@ func TestAgentNodeAndWorkflowRunRoutesAreNotRejectedForArchivedPipelines(t *test
 		atc.GetAgentWorkflowRunOutputs,
 		atc.GetAgentWorkflowRunGraph,
 	}
-	factory := pipelineserver.NewRejectArchivedHandlerFactory(new(dbfakes.FakeTeamFactory))
+	// This route authorizes against the team named in the request, so the handler
+	// never reaches a db factory. nil is deliberate: if that ever changes, the
+	// test panics instead of quietly reading a zero value.
+	factory := pipelineserver.NewRejectArchivedHandlerFactory(nil)
 	wrapper := wrappa.NewRejectArchivedWrappa(factory)
 	for _, route := range routes {
 		delegate := &stupidHandler{}
