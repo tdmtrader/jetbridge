@@ -77,6 +77,27 @@ func createPipeline(team db.Team, name string) db.Pipeline {
 	return pipeline
 }
 
+// createJobBuildWithConfig is createJobBuild with control over the job's
+// config, so a spec can make the job public -- atc.JobConfig.Public is real and
+// lands in jobs.public, unlike pipeline visibility which is Expose()/Hide().
+func createJobBuildWithConfig(team db.Team, pipelineName string, job atc.JobConfig) (db.Pipeline, db.Build) {
+	pipeline, _, err := team.SavePipeline(
+		atc.PipelineRef{Name: pipelineName},
+		atc.Config{Jobs: atc.JobConfigs{job}},
+		db.ConfigVersion(0),
+		false,
+	)
+	Expect(err).NotTo(HaveOccurred())
+
+	dbJob, found, err := pipeline.Job(job.Name)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(found).To(BeTrue())
+
+	build, err := dbJob.CreateBuild("some-user")
+	Expect(err).NotTo(HaveOccurred())
+	return pipeline, build
+}
+
 // createJobBuild gives a build that belongs to a job in a pipeline, which is
 // what the build-access handlers scope against.
 func createJobBuild(team db.Team, pipelineName, jobName string) db.Build {
