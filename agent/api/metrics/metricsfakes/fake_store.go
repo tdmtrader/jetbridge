@@ -63,6 +63,18 @@ type FakeStore struct {
 		result1 []schema.RunMetrics
 		result2 error
 	}
+	MarkRestartPendingStub        func(int, string) error
+	markRestartPendingMutex       sync.RWMutex
+	markRestartPendingArgsForCall []struct {
+		arg1 int
+		arg2 string
+	}
+	markRestartPendingReturns struct {
+		result1 error
+	}
+	markRestartPendingReturnsOnCall map[int]struct {
+		result1 error
+	}
 	UpsertReturningInsertedStub        func(*schema.RunMetrics) (bool, *schema.RunMetrics, error)
 	upsertReturningInsertedMutex       sync.RWMutex
 	upsertReturningInsertedArgsForCall []struct {
@@ -350,6 +362,68 @@ func (fake *FakeStore) ListRecentReturnsOnCall(i int, result1 []schema.RunMetric
 		result1 []schema.RunMetrics
 		result2 error
 	}{result1, result2}
+}
+
+func (fake *FakeStore) MarkRestartPending(arg1 int, arg2 string) error {
+	fake.markRestartPendingMutex.Lock()
+	ret, specificReturn := fake.markRestartPendingReturnsOnCall[len(fake.markRestartPendingArgsForCall)]
+	fake.markRestartPendingArgsForCall = append(fake.markRestartPendingArgsForCall, struct {
+		arg1 int
+		arg2 string
+	}{arg1, arg2})
+	stub := fake.MarkRestartPendingStub
+	fakeReturns := fake.markRestartPendingReturns
+	fake.recordInvocation("MarkRestartPending", []interface{}{arg1, arg2})
+	fake.markRestartPendingMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2)
+	}
+	if specificReturn {
+		return ret.result1
+	}
+	return fakeReturns.result1
+}
+
+func (fake *FakeStore) MarkRestartPendingCallCount() int {
+	fake.markRestartPendingMutex.RLock()
+	defer fake.markRestartPendingMutex.RUnlock()
+	return len(fake.markRestartPendingArgsForCall)
+}
+
+func (fake *FakeStore) MarkRestartPendingCalls(stub func(int, string) error) {
+	fake.markRestartPendingMutex.Lock()
+	defer fake.markRestartPendingMutex.Unlock()
+	fake.MarkRestartPendingStub = stub
+}
+
+func (fake *FakeStore) MarkRestartPendingArgsForCall(i int) (int, string) {
+	fake.markRestartPendingMutex.RLock()
+	defer fake.markRestartPendingMutex.RUnlock()
+	argsForCall := fake.markRestartPendingArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2
+}
+
+func (fake *FakeStore) MarkRestartPendingReturns(result1 error) {
+	fake.markRestartPendingMutex.Lock()
+	defer fake.markRestartPendingMutex.Unlock()
+	fake.MarkRestartPendingStub = nil
+	fake.markRestartPendingReturns = struct {
+		result1 error
+	}{result1}
+}
+
+func (fake *FakeStore) MarkRestartPendingReturnsOnCall(i int, result1 error) {
+	fake.markRestartPendingMutex.Lock()
+	defer fake.markRestartPendingMutex.Unlock()
+	fake.MarkRestartPendingStub = nil
+	if fake.markRestartPendingReturnsOnCall == nil {
+		fake.markRestartPendingReturnsOnCall = make(map[int]struct {
+			result1 error
+		})
+	}
+	fake.markRestartPendingReturnsOnCall[i] = struct {
+		result1 error
+	}{result1}
 }
 
 func (fake *FakeStore) UpsertReturningInserted(arg1 *schema.RunMetrics) (bool, *schema.RunMetrics, error) {

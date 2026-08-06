@@ -66,13 +66,14 @@ func (f *agentRunMetricsFactory) UpsertReturningInserted(rm *agentschema.RunMetr
 
 	var prev *agentschema.RunMetrics
 	var p agentschema.RunMetrics
-	err = psql.Select("cost_usd", "input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens", "turns", "ingestion_seq").
+	var restartPending bool
+	err = psql.Select("cost_usd", "input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens", "turns", "ingestion_seq", "restart_pending").
 		From("agent_run_metrics").
 		Where(sq.Eq{"build_id": rm.BuildID, "plan_id": rm.PlanID}).
 		Suffix("FOR UPDATE").
 		RunWith(tx).
 		QueryRow().
-		Scan(&p.CostUSD, &p.Usage.InputTokens, &p.Usage.OutputTokens, &p.Usage.CacheReadInputTokens, &p.Usage.CacheCreationInputTokens, &p.Turns, &p.IngestionSeq)
+		Scan(&p.CostUSD, &p.Usage.InputTokens, &p.Usage.OutputTokens, &p.Usage.CacheReadInputTokens, &p.Usage.CacheCreationInputTokens, &p.Turns, &p.IngestionSeq, &restartPending)
 	switch {
 	case err == nil:
 		prev = &p
@@ -123,13 +124,35 @@ func (f *agentRunMetricsFactory) UpsertReturningInserted(rm *agentschema.RunMetr
 			summary = CASE WHEN agent_run_metrics.status <> 'error' AND EXCLUDED.status = 'error'
 			               THEN agent_run_metrics.summary ELSE EXCLUDED.summary END,
 			model = COALESCE(NULLIF(EXCLUDED.model, ''), agent_run_metrics.model),
-			input_tokens = GREATEST(agent_run_metrics.input_tokens, EXCLUDED.input_tokens),
-			output_tokens = GREATEST(agent_run_metrics.output_tokens, EXCLUDED.output_tokens),
-			cache_read_tokens = GREATEST(agent_run_metrics.cache_read_tokens, EXCLUDED.cache_read_tokens),
-			cache_creation_tokens = GREATEST(agent_run_metrics.cache_creation_tokens, EXCLUDED.cache_creation_tokens),
-			turns = GREATEST(agent_run_metrics.turns, EXCLUDED.turns),
-			wall_time_seconds = GREATEST(agent_run_metrics.wall_time_seconds, EXCLUDED.wall_time_seconds),
-			cost_usd = GREATEST(agent_run_metrics.cost_usd, EXCLUDED.cost_usd),
+			input_tokens = CASE WHEN agent_run_metrics.restart_pending
+			                    THEN agent_run_metrics.input_tokens + EXCLUDED.input_tokens
+			                    ELSE GREATEST(agent_run_metrics.input_tokens, EXCLUDED.input_tokens) END,
+			output_tokens = CASE WHEN agent_run_metrics.restart_pending
+			                     THEN agent_run_metrics.output_tokens + EXCLUDED.output_tokens
+			                     ELSE GREATEST(agent_run_metrics.output_tokens, EXCLUDED.output_tokens) END,
+			cache_read_tokens = CASE WHEN agent_run_metrics.restart_pending
+			                         THEN agent_run_metrics.cache_read_tokens + EXCLUDED.cache_read_tokens
+			                         ELSE GREATEST(agent_run_metrics.cache_read_tokens, EXCLUDED.cache_read_tokens) END,
+			cache_creation_tokens = CASE WHEN agent_run_metrics.restart_pending
+			                             THEN agent_run_metrics.cache_creation_tokens + EXCLUDED.cache_creation_tokens
+			                             ELSE GREATEST(agent_run_metrics.cache_creation_tokens, EXCLUDED.cache_creation_tokens) END,
+			turns = CASE WHEN agent_run_metrics.restart_pending
+			             THEN agent_run_metrics.turns + EXCLUDED.turns
+			             ELSE GREATEST(agent_run_metrics.turns, EXCLUDED.turns) END,
+			-- The node occurrence derives its window as created_at minus
+			-- wall_time_seconds, so both must describe the SAME execution.
+			-- On a restart that is the new one: refresh created_at to this
+			-- completion and take its wall time verbatim rather than the
+			-- longest seen, or the frozen window describes a run that is over.
+			wall_time_seconds = CASE WHEN agent_run_metrics.restart_pending
+			                         THEN EXCLUDED.wall_time_seconds
+			                         ELSE GREATEST(agent_run_metrics.wall_time_seconds, EXCLUDED.wall_time_seconds) END,
+			created_at = CASE WHEN agent_run_metrics.restart_pending
+			                  THEN clock_timestamp() ELSE agent_run_metrics.created_at END,
+			cost_usd = CASE WHEN agent_run_metrics.restart_pending
+			                THEN agent_run_metrics.cost_usd + EXCLUDED.cost_usd
+			                ELSE GREATEST(agent_run_metrics.cost_usd, EXCLUDED.cost_usd) END,
+			restart_pending = FALSE,
 			results = COALESCE(EXCLUDED.results, agent_run_metrics.results),
 			events_artifact = COALESCE(NULLIF(EXCLUDED.events_artifact, ''), agent_run_metrics.events_artifact),
 			event_counts = COALESCE(NULLIF(EXCLUDED.event_counts, '{}'::jsonb), agent_run_metrics.event_counts),
@@ -145,7 +168,24 @@ func (f *agentRunMetricsFactory) UpsertReturningInserted(rm *agentschema.RunMetr
 	if err := tx.Commit(); err != nil {
 		return false, nil, err
 	}
+	// The stored row belonged to an abandoned agent, so its counters are not a
+	// baseline this ingestion continues from. The caller charges the full cost
+	// rather than a delta that would come out negative and be dropped.
+	rm.NewExecution = restartPending
 	return inserted, prev, nil
+}
+
+// MarkRestartPending declares that the next ingestion of this (BuildID,
+// PlanID) is a new execution. It is a plain UPDATE: when no row exists yet the
+// interruption happened before any ingestion, and there is nothing for a later
+// one to be reconciled against.
+func (f *agentRunMetricsFactory) MarkRestartPending(buildID int, planID string) error {
+	_, err := psql.Update("agent_run_metrics").
+		Set("restart_pending", true).
+		Where(sq.Eq{"build_id": buildID, "plan_id": planID}).
+		RunWith(f.conn).
+		Exec()
+	return err
 }
 
 // InsertIfAbsent is the degraded-ingestion write (finding F24): identical
@@ -194,12 +234,17 @@ func (f *agentRunMetricsFactory) InsertIfAbsent(rm *agentschema.RunMetrics) (boo
 		// if the row it collides with silently absorbs it. DO NOTHING cannot
 		// express "preserve but count", so this is a DO UPDATE that touches
 		// exactly one column.
+		// restart_pending is cleared here too. A new execution that produced no
+		// flight output lands on this path, writes none of its (zero) numbers,
+		// and must still consume the flag -- leaving it set would make the NEXT
+		// ingestion, an ordinary one, sum against an abandoned row.
 		Suffix(`ON CONFLICT (build_id, plan_id) DO UPDATE SET
-			ingestion_seq = agent_run_metrics.ingestion_seq + 1
-		RETURNING (xmax = 0) AS inserted, ingestion_seq`).
+			ingestion_seq = agent_run_metrics.ingestion_seq + 1,
+			restart_pending = FALSE
+		RETURNING (xmax = 0) AS inserted, ingestion_seq, agent_run_metrics.restart_pending`).
 		RunWith(f.conn).
 		QueryRow().
-		Scan(&inserted, &rm.IngestionSeq)
+		Scan(&inserted, &rm.IngestionSeq, &rm.NewExecution)
 	return inserted, err
 }
 

@@ -178,6 +178,7 @@ func (errStore) UpsertReturningInserted(*schema.RunMetrics) (bool, *schema.RunMe
 	return false, nil, errors.New("boom")
 }
 func (errStore) InsertIfAbsent(*schema.RunMetrics) (bool, error) { return false, errors.New("boom") }
+func (errStore) MarkRestartPending(int, string) error            { return errors.New("boom") }
 func (errStore) GetByBuild(int) ([]schema.RunMetrics, error)     { return nil, errors.New("boom") }
 func (errStore) ListByWorkflowRun(string, snapshot.WorkflowRunID) ([]schema.RunMetrics, error) {
 	return nil, errors.New("boom")

@@ -337,11 +337,6 @@ func (factory *coreStepFactory) AgentStep(
 	if factory.agentBrokerAuthority != nil {
 		agentOpts = append(agentOpts, exec.WithAgentBrokerAuthorityFactory(factory.agentBrokerAuthority))
 	}
-	// Only tell the step its interruptions are retriable when RetryError is
-	// actually going to wrap it; the same flag gates both.
-	if atc.EnableBuildRerunWhenWorkerDisappears {
-		agentOpts = append(agentOpts, exec.WithAgentInterruptionRetry())
-	}
 
 	agentStep := exec.NewAgentStep(
 		plan.ID,
@@ -359,9 +354,14 @@ func (factory *coreStepFactory) AgentStep(
 	)
 
 	agentStep = exec.LogError(agentStep, delegateFactory)
-	if atc.EnableBuildRerunWhenWorkerDisappears {
-		agentStep = exec.RetryError(agentStep, delegateFactory)
-	}
+	// Unconditional, unlike the other eight step types, which stay behind the
+	// default-off EnableBuildRerunWhenWorkerDisappears flag. An interrupted
+	// agent returns a runtime.InterruptionError, and without this wrapper that
+	// error is never converted to exec.Retriable: the engine finishes the
+	// build as errored with a raw runtime error instead of retrying. The step
+	// is written to depend on the wrapper being here, and its restart cap --
+	// not a feature flag -- is what bounds the retry.
+	agentStep = exec.RetryError(agentStep, delegateFactory)
 	return agentStep
 }
 

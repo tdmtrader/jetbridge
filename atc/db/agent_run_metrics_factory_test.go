@@ -25,6 +25,118 @@ var _ = Describe("AgentRunMetricsFactory", func() {
 		factory = db.NewAgentRunMetricsFactory(dbConn)
 	})
 
+	Describe("a restarted execution", func() {
+		// A fresh agent after an interruption arrives looking exactly like a
+		// partial re-read of the execution already stored: lower counters,
+		// because its provider counters started at zero. The non-regressing
+		// merge that protects the re-read case is wrong for this one -- it
+		// keeps the abandoned agent's numbers and the caller's ledger delta
+		// comes out negative and is dropped, so the second agent's spend
+		// vanishes from both the row and the ledger. The step declares the
+		// restart instead of the store guessing.
+		newRun := func(buildID int, cost float64, turns, wall int) *schema.RunMetrics {
+			return &schema.RunMetrics{
+				BuildID: buildID, PlanID: "1/2", StepName: "implement",
+				Status: "ok", CostUSD: cost, Turns: turns, WallTimeSeconds: wall,
+				Usage: schema.Usage{OutputTokens: int64(turns) * 10},
+			}
+		}
+
+		It("adds the new execution's spend instead of keeping the abandoned agent's", func() {
+			build, err := defaultTeam.CreateOneOffBuild()
+			Expect(err).ToNot(HaveOccurred())
+
+			first := newRun(build.ID(), 3.00, 90, 400)
+			_, _, err = factory.UpsertReturningInserted(first)
+			Expect(err).ToNot(HaveOccurred())
+
+			Expect(factory.MarkRestartPending(build.ID(), "1/2")).To(Succeed())
+
+			// Cheaper and shorter than the run it replaced -- the shape that
+			// is indistinguishable from a partial re-read.
+			second := newRun(build.ID(), 2.50, 60, 300)
+			inserted, prev, err := factory.UpsertReturningInserted(second)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(inserted).To(BeFalse())
+			Expect(prev).ToNot(BeNil())
+			Expect(second.NewExecution).To(BeTrue(), "the store must report the restart so the caller charges in full")
+
+			rows, err := factory.GetByBuild(build.ID())
+			Expect(err).ToNot(HaveOccurred())
+			Expect(rows).To(HaveLen(1))
+			stored := rows[0]
+			Expect(stored.CostUSD).To(BeNumerically("~", 5.50, 1e-9), "both agents really ran and both cost money")
+			Expect(stored.Turns).To(Equal(150))
+		})
+
+		It("takes the new execution's window, so the frozen occurrence is not the abandoned run's", func() {
+			build, err := defaultTeam.CreateOneOffBuild()
+			Expect(err).ToNot(HaveOccurred())
+
+			_, _, err = factory.UpsertReturningInserted(newRun(build.ID(), 3.00, 90, 400))
+			Expect(err).ToNot(HaveOccurred())
+			var firstCreatedAt time.Time
+			Expect(dbConn.QueryRow(`SELECT created_at FROM agent_run_metrics WHERE build_id = $1`, build.ID()).
+				Scan(&firstCreatedAt)).To(Succeed())
+
+			Expect(factory.MarkRestartPending(build.ID(), "1/2")).To(Succeed())
+			_, _, err = factory.UpsertReturningInserted(newRun(build.ID(), 2.50, 60, 300))
+			Expect(err).ToNot(HaveOccurred())
+
+			var createdAt time.Time
+			var wall int
+			Expect(dbConn.QueryRow(`SELECT created_at, wall_time_seconds FROM agent_run_metrics WHERE build_id = $1`, build.ID()).
+				Scan(&createdAt, &wall)).To(Succeed())
+			Expect(createdAt).To(BeTemporally(">", firstCreatedAt), "created_at must move to the new execution's completion")
+			Expect(wall).To(Equal(300), "wall time must be the new execution's, not the longest seen")
+		})
+
+		It("still refuses to regress an ordinary partial re-read", func() {
+			build, err := defaultTeam.CreateOneOffBuild()
+			Expect(err).ToNot(HaveOccurred())
+
+			_, _, err = factory.UpsertReturningInserted(newRun(build.ID(), 3.00, 90, 400))
+			Expect(err).ToNot(HaveOccurred())
+
+			// No restart declared: this is the severed-read case the
+			// non-regressing merge exists for.
+			partial := newRun(build.ID(), 1.00, 30, 100)
+			_, _, err = factory.UpsertReturningInserted(partial)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(partial.NewExecution).To(BeFalse())
+
+			rows, err := factory.GetByBuild(build.ID())
+			Expect(err).ToNot(HaveOccurred())
+			Expect(rows).To(HaveLen(1))
+			stored := rows[0]
+			Expect(stored.CostUSD).To(BeNumerically("~", 3.00, 1e-9), "a partial re-read must never sum or shrink")
+			Expect(stored.Turns).To(Equal(90))
+		})
+
+		It("consumes the flag once, so the ingestion after a restart is ordinary again", func() {
+			build, err := defaultTeam.CreateOneOffBuild()
+			Expect(err).ToNot(HaveOccurred())
+
+			_, _, err = factory.UpsertReturningInserted(newRun(build.ID(), 3.00, 90, 400))
+			Expect(err).ToNot(HaveOccurred())
+			Expect(factory.MarkRestartPending(build.ID(), "1/2")).To(Succeed())
+			_, _, err = factory.UpsertReturningInserted(newRun(build.ID(), 2.50, 60, 300))
+			Expect(err).ToNot(HaveOccurred())
+
+			// A re-read of the restarted execution, not a third agent.
+			third := newRun(build.ID(), 2.50, 60, 300)
+			_, _, err = factory.UpsertReturningInserted(third)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(third.NewExecution).To(BeFalse(), "the flag must not survive the ingestion it described")
+
+			rows, err := factory.GetByBuild(build.ID())
+			Expect(err).ToNot(HaveOccurred())
+			Expect(rows).To(HaveLen(1))
+			stored := rows[0]
+			Expect(stored.CostUSD).To(BeNumerically("~", 5.50, 1e-9), "a re-read after a restart must not sum again")
+		})
+	})
+
 	// upsert seeds a row the way the exec's in-process ingestion does. The
 	// unconditional Upsert shim went with POST /api/v1/agent/metrics; the
 	// discriminating write is the only one left.

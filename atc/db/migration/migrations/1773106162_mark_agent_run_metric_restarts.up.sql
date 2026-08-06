@@ -1,0 +1,30 @@
+-- Record that the next ingestion of a step is a NEW execution, not a re-read
+-- of the one already stored.
+--
+-- agent_run_metrics is upserted on (build_id, plan_id), and its DO UPDATE is
+-- deliberately non-regressing: ledger-relevant counters take GREATEST so a
+-- PARTIAL re-read of one execution -- a daemon/exec sever between the
+-- results.json and events.ndjson reads -- cannot corrupt the row downward or
+-- let a later full read re-charge the whole cost.
+--
+-- A genuinely new execution after an interruption restart arrives looking
+-- exactly the same: lower counters, because the fresh agent's provider
+-- counters started at zero. The two cases cannot be told apart by comparing
+-- counters, so the row keeps the abandoned execution's numbers (GREATEST),
+-- the ledger delta comes out negative and is dropped, and the second agent's
+-- spend disappears from both the row and agent_cost_ledger -- the two places
+-- the daily budget and the frozen node cost read. The same collapse leaves
+-- created_at describing the FIRST execution, so the node occurrence's window,
+-- which migration 1773106157 freezes permanently, describes the wrong run.
+--
+-- The distinction is not derivable, so it is declared. The step sets this flag
+-- at the moment it decides to return an interruption; the next upsert sees it,
+-- treats itself as a new execution -- summing spend rather than maxing it,
+-- refreshing the timestamps -- and clears it in the same statement. The flag
+-- has to be durable because the web that decides to retry is not necessarily
+-- the web that ingests next.
+--
+-- Default FALSE: every existing row was written by an ordinary ingestion, and
+-- an unset flag preserves exactly today's non-regressing behavior.
+ALTER TABLE agent_run_metrics
+    ADD COLUMN restart_pending BOOLEAN NOT NULL DEFAULT FALSE;

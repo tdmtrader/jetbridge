@@ -127,17 +127,6 @@ func WithAgentSnapshotStores(metadata snapshot.MetadataStore, content snapshot.C
 	}
 }
 
-// WithAgentInterruptionRetry makes a pod interruption retriable instead of
-// terminal. It is set by the step factory only when exec.RetryError actually
-// wraps the step -- that wrapper is gated on the default-off
-// EnableBuildRerunWhenWorkerDisappears flag, and without it a returned
-// InterruptionError is not converted to exec.Retriable: the engine finishes
-// the build as errored with a raw runtime error, which is strictly worse than
-// the diagnostic it replaced. The step must not assume the wrapper is there.
-func WithAgentInterruptionRetry() AgentStepOption {
-	return func(s *AgentStep) { s.interruptionRetry = true }
-}
-
 // WithAgentBrokerAuthorityFactory supplies the command-scoped authority
 // factory that mints one already-scoped bootstrap credential and descriptor.
 func WithAgentBrokerAuthorityFactory(factory AgentBrokerAuthorityFactory) AgentStepOption {
@@ -167,7 +156,6 @@ type AgentStep struct {
 	snapshotMetadataStore snapshot.MetadataStore
 	snapshotContentStore  snapshot.ContentStore
 	agentBrokerAuthority  AgentBrokerAuthorityFactory
-	interruptionRetry     bool
 
 	// transcriptStore is the transcript ingestion seam — optional,
 	// nil-guarded. Wired via WithAgentStepTranscriptStore.
@@ -700,19 +688,23 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 		if !interrupted {
 			break
 		}
-		if !step.interruptionRetry || ingestionSeq > maxAgentInterruptionRestarts {
-			if !step.interruptionRetry {
-				delegate.Errored(logger, fmt.Sprintf(
-					"agent execution interrupted (%s); automatic restart is not enabled on this deployment",
-					interruption.InterruptionReason(),
-				))
-			} else {
-				delegate.Errored(logger, fmt.Sprintf(
-					"agent execution interrupted (%s) after %d executions; refusing a further restart",
-					interruption.InterruptionReason(), ingestionSeq,
-				))
-			}
+		if ingestionSeq > maxAgentInterruptionRestarts {
+			delegate.Errored(logger, fmt.Sprintf(
+				"agent execution interrupted (%s) after %d executions; refusing a further restart",
+				interruption.InterruptionReason(), ingestionSeq,
+			))
 			return false, nil
+		}
+		// Declare the restart before yielding, so whichever web ingests next
+		// knows this row's counters belong to an agent that was abandoned
+		// rather than to an execution it is continuing. Durable because that
+		// may not be this web. A failure here is logged, not fatal: losing the
+		// flag under-reports the restart's spend, while failing the step would
+		// discard work that actually succeeded.
+		if step.metricsStore != nil {
+			if err := step.metricsStore.MarkRestartPending(step.metadata.BuildID, string(step.planID)); err != nil {
+				logger.Error("failed-to-mark-agent-restart-pending", err)
+			}
 		}
 		// Retriable: RetryError wraps this, the engine leaves the build
 		// started, and the tracker re-runs the plan. A surviving pod is
@@ -1072,9 +1064,17 @@ func (step *AgentStep) ingestFlightRecorder(
 	// at 0 — indeterminate, skip (see the comment above).
 	var ledgerCost float64
 	var prevBase schema.RunMetrics
-	if inserted {
+	switch {
+	case inserted:
 		ledgerCost = rm.CostUSD
-	} else if prev != nil {
+	case rm.NewExecution:
+		// The stored row belongs to an abandoned agent, so it is not a
+		// baseline this execution continues from: its counters would make
+		// every delta below negative, and the ledgerCost > 0 gate would drop
+		// the whole charge. Charge in full against a zero baseline -- the
+		// abandoned agent's own spend was charged when IT was ingested.
+		ledgerCost = rm.CostUSD
+	case prev != nil:
 		ledgerCost = rm.CostUSD - prev.CostUSD
 		prevBase = *prev
 	}

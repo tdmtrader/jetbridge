@@ -131,6 +131,15 @@ type Store interface {
 	// successful ingestion. inserted=false means a row already existed and
 	// nothing was written.
 	InsertIfAbsent(rm *schema.RunMetrics) (inserted bool, err error)
+	// MarkRestartPending records that the next ingestion of this
+	// (BuildID, PlanID) will be a NEW execution rather than a re-read of the
+	// one already stored. The agent step calls it at the moment it decides to
+	// return an interruption for retry. It must be durable: the web that
+	// decides to retry is not necessarily the web that ingests next. Both
+	// write paths clear it and report the verdict on rm.NewExecution. A no-op
+	// when no row exists yet -- an interruption before any ingestion leaves
+	// nothing to reconcile against.
+	MarkRestartPending(buildID int, planID string) error
 	// The list methods return rows with the server-derived display fields
 	// populated: BuildStatus (builds join) and Outcome (schema.RunMetrics
 	// DeriveOutcome — the U3 build/step fusion), so no API consumer has to

@@ -102,6 +102,15 @@ type RunMetrics struct {
 	// to say it happened. Server-assigned on write and never accepted from the
 	// ingesting client.
 	IngestionSeq int `json:"ingestion_seq,omitempty"`
+	// NewExecution is set by the store, never by an ingesting client. It
+	// reports that this ingestion was a genuinely new execution -- a fresh
+	// agent after an interruption restart -- rather than a re-read of the
+	// execution already stored. The two are indistinguishable by counters, so
+	// the step declares the restart durably and the store reports it back
+	// here. Callers charge the FULL cost to the append-only ledger when it is
+	// set, because the stored row's counters belong to a different, abandoned
+	// agent and the usual delta would be negative and dropped.
+	NewExecution bool `json:"-"`
 }
 
 // Run outcome tokens — the vocabulary of RunMetrics.Outcome. A superset of

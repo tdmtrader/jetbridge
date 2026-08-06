@@ -13,14 +13,16 @@ import (
 
 // MemoryStore is an in-memory Store for tests.
 type MemoryStore struct {
-	mu   sync.Mutex
-	rows map[[2]any]schema.RunMetrics // key: {buildID, planID}
-	seq  int
-	ord  map[[2]any]int
+	mu             sync.Mutex
+	rows           map[[2]any]schema.RunMetrics // key: {buildID, planID}
+	seq            int
+	ord            map[[2]any]int
+	restartPending map[[2]any]bool
 }
 
 func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{rows: map[[2]any]schema.RunMetrics{}, ord: map[[2]any]int{}}
+	return &MemoryStore{rows: map[[2]any]schema.RunMetrics{},
+		restartPending: map[[2]any]bool{}, ord: map[[2]any]int{}}
 }
 
 func (s *MemoryStore) UpsertReturningInserted(rm *schema.RunMetrics) (bool, *schema.RunMetrics, error) {
@@ -50,6 +52,16 @@ func (s *MemoryStore) InsertIfAbsent(rm *schema.RunMetrics) (bool, error) {
 	s.ord[key] = s.seq
 	s.rows[key] = *rm
 	return true, nil
+}
+
+// MarkRestartPending records that the next ingestion of this step is a new
+// execution. The memory store keeps the flag but does not model the additive
+// merge: the SQL factory owns that behavior and atc/db owns its coverage.
+func (s *MemoryStore) MarkRestartPending(buildID int, planID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.restartPending[[2]any{buildID, planID}] = true
+	return nil
 }
 
 func (s *MemoryStore) GetByBuild(buildID int) ([]schema.RunMetrics, error) {

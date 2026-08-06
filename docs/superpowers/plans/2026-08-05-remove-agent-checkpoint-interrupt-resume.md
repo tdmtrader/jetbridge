@@ -578,7 +578,29 @@ Also cleaned up: dead SQL and six helpers still addressing dropped tables in the
 dangling interface, a regenerated fake, an unread `finalPresentation` parameter, and stale doc comments
 claiming `DO NOTHING` semantics in two places.
 
-### Confirmed but deliberately not fixed
+### Fixed in a follow-up (2026-08-05)
+
+Both of the items below were closed by migration `1773106162` and the `restart_pending` flag, and
+auto-retry was made unconditional at the owner's direction.
+
+**Auto-retry is no longer flag-gated.** Agent steps are wrapped in `exec.RetryError` unconditionally,
+unlike the other eight types which stay behind `EnableBuildRerunWhenWorkerDisappears`. The restart cap,
+not a feature flag, is what bounds the retry, so the flag added nothing except a way to get the worse
+failure mode by default.
+
+**The signal had to be declared, not derived.** A fresh agent after an interruption arrives looking
+exactly like a partial re-read of the stored execution -- lower counters, because its provider counters
+started at zero. That is the case the non-regressing `GREATEST` merge exists to protect against, so no
+comparison of counters can separate them. The step now declares the restart durably at the moment it
+decides to return the interruption (`MarkRestartPending`), the next upsert sums instead of maxing,
+refreshes `created_at`, takes the new execution's wall time, and clears the flag in the same statement.
+Durability matters because the web that decides to retry need not be the web that ingests next.
+
+Four specs cover it, each mutation-verified: reverting the additive merge, dropping the `created_at`
+refresh, and never clearing the flag each fail a different one. A fourth pins the case the original
+design protects -- an ordinary partial re-read must still neither sum nor shrink.
+
+### Superseded — was "confirmed but deliberately not fixed"
 
 **A restarted step's occurrence timestamps are wrong, and the freeze makes it permanent.**
 `agent_run_metrics.created_at` is not refreshed on conflict and `wall_time_seconds` is `GREATEST`, so a

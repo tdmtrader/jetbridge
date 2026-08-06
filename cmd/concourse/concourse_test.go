@@ -75,7 +75,12 @@ var _ = Describe("Web Command", func() {
 		})
 
 		It("prints an error and exits", func() {
-			Eventually(concourseRunner.Err()).Should(gbytes.Say("'InvalidAction' is not a valid action"))
+			// Explicit timeout: Gomega's default is 1s, which is not enough for
+			// a freshly-exec'd binary to reach its flag validation on a loaded
+			// machine. It passes alone and fails under a full parallel
+			// make test-unit, which reads as a real regression every time.
+			// Matches the 30s the sibling spec above already uses.
+			Eventually(concourseRunner.Err(), "30s", "1s").Should(gbytes.Say("'InvalidAction' is not a valid action"))
 		})
 	})
 })
