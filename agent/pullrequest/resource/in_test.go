@@ -84,11 +84,20 @@ func TestForgePRInWritesCurrentRecordAndExactRepositories(t *testing.T) {
 	if len(calls) != 2 {
 		t.Fatalf("git calls = %#v", calls)
 	}
-	if calls[0].Ref != observation.SourceRef || calls[0].SHA != observation.SourceSHA || calls[1].Ref != observation.TargetRef || calls[1].SHA != observation.TargetSHA {
-		t.Fatalf("checkout commands = %#v", calls)
+	// The remote is contacted once and brings both revisions down; the second
+	// checkout copies what it needs from the first over the filesystem.
+	if calls[0].Ref != observation.SourceRef || calls[0].SHA != observation.SourceSHA ||
+		calls[0].SecondRef != observation.TargetRef || calls[0].SecondSHA != observation.TargetSHA {
+		t.Fatalf("remote fetch did not carry both revisions: %#v", calls[0])
 	}
-	if calls[0].FetchMode != resource.GitFetchNamedRef || calls[1].FetchMode != resource.GitFetchNamedRef {
-		t.Fatalf("active pull request did not retain named-ref lease: %#v", calls)
+	if calls[0].FetchMode != resource.GitFetchNamedRef {
+		t.Fatalf("active pull request did not retain named-ref lease: %#v", calls[0])
+	}
+	if calls[1].SHA != observation.TargetSHA || calls[1].LocalSource != filepath.Join(destination, "source-repository") {
+		t.Fatalf("second checkout did not draw from the first: %#v", calls[1])
+	}
+	if calls[1].RemoteURL != "" || calls[1].Credential != nil {
+		t.Fatalf("local checkout must carry no remote and no credential: %#v", calls[1])
 	}
 	if strings.Contains(string(raw), source.ReadToken) {
 		t.Fatal("record leaks token")
@@ -626,4 +635,30 @@ func currentInFixture(t *testing.T) (time.Time, resource.Source, pullrequest.Obs
 		BindingRevision: "7",
 	}
 	return now, source, observation, version
+}
+
+// The PR head and the PR base live in the same remote and their object sets
+// overlap by 99.98%, so fetching each separately re-transfers the same history
+// twice -- measured at 352 MiB and ~21s CPU per admit build. Exactly one
+// network fetch must occur; the second worktree is populated locally.
+func TestForgePRInFetchesTheRemoteOnlyOnce(t *testing.T) {
+	now, source, observation, version := currentInFixture(t)
+	remoteFetches := 0
+	var output bytes.Buffer
+	_ = resource.In(context.Background(), t.TempDir(), bytes.NewReader(checkInput(t, source, &version)), &output, &bytes.Buffer{}, resource.Dependencies{
+		ObserverFactory: fixedObserver(observerFunc(func(_ context.Context, l pullrequest.Locator, _ pullrequest.Cursor) (pullrequest.Observation, error) {
+			return observation, nil
+		})),
+		Clock: func() time.Time { return now },
+		GitRunner: runnerFunc(func(_ context.Context, command resource.GitCommand) error {
+			if command.RemoteURL == source.RepositoryURL {
+				remoteFetches++
+			}
+			return nil
+		}),
+	})
+
+	if remoteFetches != 1 {
+		t.Fatalf("network fetches of %s = %d, want exactly 1", source.RepositoryURL, remoteFetches)
+	}
 }

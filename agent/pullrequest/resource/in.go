@@ -128,6 +128,12 @@ func In(ctx context.Context, destination string, stdin io.Reader, stdout, _ io.W
 	}
 	credential := []byte(request.Source.ReadToken)
 	defer wipe(credential)
+	// Both revisions live in the same remote and share nearly all of their
+	// history, so the remote is contacted once. The second checkout copies what
+	// it needs from the first over the filesystem: no alternates, no hardlinks,
+	// no saved remote, so each materialized repository is still independently
+	// valid evidence.
+	sourceDirectory := filepath.Join(destination, "source-repository")
 	for index, checkout := range []struct{ name, ref, sha string }{{"source-repository", observation.SourceRef, observation.SourceSHA}, {"target-repository", observation.TargetRef, observation.TargetSHA}} {
 		mode, ref := GitFetchNamedRef, checkout.ref
 		if action.Kind == pullrequest.ActionCompleted || action.Kind == pullrequest.ActionAbandoned {
@@ -135,6 +141,18 @@ func In(ctx context.Context, destination string, stdin io.Reader, stdout, _ io.W
 		}
 		output := ownership.directories[index]
 		command := GitCommand{Operation: "checkout", FetchMode: mode, Directory: filepath.Join(destination, checkout.name), RemoteURL: request.Source.RepositoryURL, Ref: ref, SHA: checkout.sha, Credential: credential}
+		if index == 0 {
+			// Bring the other revision down in the same fetch so the second
+			// checkout has a local source for it.
+			command.SecondRef, command.SecondSHA = observation.TargetRef, observation.TargetSHA
+			if mode == GitFetchExactObject {
+				command.SecondRef = ""
+			}
+		} else {
+			command.RemoteURL, command.Ref, command.Credential = "", "", nil
+			command.FetchMode = GitFetchExactObject
+			command.LocalSource = sourceDirectory
+		}
 		command.verifyDirectory = func() error {
 			return verifyOwnedDirectory(destinationRoot, destination, destinationInfo, output)
 		}

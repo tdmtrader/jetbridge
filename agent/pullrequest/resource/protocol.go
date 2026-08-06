@@ -136,6 +136,20 @@ type GitCommand struct {
 	SHA        string
 	Credential []byte
 
+	// SecondRef and SecondSHA bring the other pull-request revision down in the
+	// same fetch. Both revisions live in one remote and their object sets overlap
+	// almost entirely, so fetching them separately re-transfers the same history.
+	SecondRef string
+	SecondSHA string
+
+	// LocalSource populates this checkout from an already-materialized repository
+	// instead of the remote, once that fetch has brought both revisions down.
+	// Objects are copied by an ordinary fetch over a filesystem path -- never
+	// shared through alternates and never hardlinked -- so each materialized
+	// repository remains independently valid evidence, which is what makes
+	// repository/v1 resealing mean anything.
+	LocalSource string
+
 	// verifyDirectory is installed by In when Directory is backed by a
 	// retained os.Root. The production runner calls it around each pathname-
 	// based Git process so a moved or replaced destination fails closed.

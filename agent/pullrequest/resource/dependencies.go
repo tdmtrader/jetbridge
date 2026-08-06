@@ -52,7 +52,20 @@ func (git controlledGit) Run(ctx context.Context, command GitCommand) error {
 	if git.runner == nil {
 		return fmt.Errorf("forge-pr: controlled git is unavailable")
 	}
-	if command.Operation != "checkout" || !validFetchAuthority(command) || !objectID(command.SHA) || safeURL(command.RemoteURL) != nil || command.Directory == "" || !filepath.IsAbs(command.Directory) || filepath.Clean(command.Directory) != command.Directory {
+	if command.Operation != "checkout" || !validFetchAuthority(command) || !objectID(command.SHA) || command.Directory == "" || !filepath.IsAbs(command.Directory) || filepath.Clean(command.Directory) != command.Directory {
+		return fmt.Errorf("forge-pr: invalid git materialization command")
+	}
+	// A checkout draws either from the policy-authorized remote or from a
+	// repository this same In call already materialized. Never both, and a local
+	// source must be an absolute clean path rather than a URL.
+	if command.LocalSource == "" {
+		if safeURL(command.RemoteURL) != nil {
+			return fmt.Errorf("forge-pr: invalid git materialization command")
+		}
+	} else if command.RemoteURL != "" || !filepath.IsAbs(command.LocalSource) || filepath.Clean(command.LocalSource) != command.LocalSource {
+		return fmt.Errorf("forge-pr: invalid git materialization command")
+	}
+	if command.SecondSHA != "" && !objectID(command.SecondSHA) {
 		return fmt.Errorf("forge-pr: invalid git materialization command")
 	}
 	if err := verifyGitDirectory(command); err != nil {
@@ -88,7 +101,23 @@ func (git controlledGit) Run(ctx context.Context, command GitCommand) error {
 	if command.FetchMode == GitFetchExactObject {
 		fetchAuthority = command.SHA
 	}
-	if err := git.run(ctx, command, directgit.Command{Dir: command.Directory, Args: []string{"fetch", "--no-tags", "--no-recurse-submodules", command.RemoteURL, "+" + fetchAuthority + ":" + internal}, Credential: command.Credential}, "fetch checkout"); err != nil {
+	origin := command.RemoteURL
+	if command.LocalSource != "" {
+		// Fetching a path copies objects into this repository's own store. It
+		// saves no remote, writes no alternates file, and creates no
+		// remote-tracking refs, so every refusal below still applies unchanged.
+		origin = command.LocalSource
+		fetchAuthority = command.SHA
+	}
+	fetchArgs := []string{"fetch", "--no-tags", "--no-recurse-submodules", origin, "+" + fetchAuthority + ":" + internal}
+	if command.SecondSHA != "" {
+		second := command.SecondRef
+		if second == "" {
+			second = command.SecondSHA
+		}
+		fetchArgs = append(fetchArgs, "+"+second+":refs/concourse/materialized/second")
+	}
+	if err := git.run(ctx, command, directgit.Command{Dir: command.Directory, Args: fetchArgs, Credential: command.Credential}, "fetch checkout"); err != nil {
 		return err
 	}
 	if err := git.expect(ctx, command, []string{"rev-parse", internal}, command.SHA); err != nil {
