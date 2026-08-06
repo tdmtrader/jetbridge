@@ -715,14 +715,20 @@ jobs:
 
 # Builds the agent: step runner image (claude CLI + agent-runner supervisor)
 # from deploy/agent-runner/Dockerfile with the repo as build context.
-# Manual trigger: run this explicit release gate only after tag-rc is green for
-# the intended source. The source-bound RC tag supplies the runner version and
-# the exact repo version must pass this job before self-upgrade can consume it.
+#
+# Auto-triggers off tag-rc. It was previously a manual release gate, which made
+# it the single point where the chain silently stalled: self-upgrade requires a
+# repo version that passed BOTH build-image and this job, so a commit that only
+# ever reached build-image left self-upgrade with no schedulable input and no
+# failed build to show for it -- the pipeline simply stopped after build-image
+# with everything green. The source-bound RC tag still supplies the runner
+# version, and the exact repo version must still pass this job before
+# self-upgrade can consume it; only the human gate is gone.
 - name: build-agent-runner-image
   serial_groups: [pipeline]
   plan:
   - get: repo
-    trigger: false
+    trigger: true
     params: {depth: 0, fetch_tags: true}
     passed: [tag-rc]
   - task: build-and-push-agent-runner
