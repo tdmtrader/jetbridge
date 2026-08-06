@@ -1,8 +1,11 @@
 package worker_test
 
 import (
+	"time"
+
 	"code.cloudfoundry.org/lager/v3/lagertest"
-	"github.com/concourse/concourse/atc/db/dbfakes"
+	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/worker"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	. "github.com/onsi/ginkgo/v2"
@@ -12,13 +15,22 @@ import (
 
 var _ = Describe("DefaultFactory", func() {
 	var (
-		logger       = lagertest.NewTestLogger("factory-test")
-		fakeDBWorker *dbfakes.FakeWorker
+		logger   = lagertest.NewTestLogger("factory-test")
+		dbWorker db.Worker
 	)
 
 	BeforeEach(func() {
-		fakeDBWorker = new(dbfakes.FakeWorker)
-		fakeDBWorker.NameReturns("test-worker")
+		// A registered worker row, not a stand-in for one. The suite has had a
+		// real conn and lockFactory since worker_suite_test.go:27-40.
+		var err error
+		dbWorker, err = db.NewWorkerFactory(dbConn, db.NewStaticWorkerCache(logger, dbConn, 0)).
+			SaveWorker(atc.Worker{
+				Name:             "test-worker",
+				Platform:         "linux",
+				ActiveContainers: 0,
+				StartTime:        55,
+			}, 5*time.Minute)
+		Expect(err).NotTo(HaveOccurred())
 	})
 
 	Context("when K8s config is set", func() {
@@ -31,7 +43,7 @@ var _ = Describe("DefaultFactory", func() {
 				K8sConfig:    &cfg,
 			}
 
-			w := factory.NewWorker(logger, fakeDBWorker)
+			w := factory.NewWorker(logger, dbWorker)
 			Expect(w).ToNot(BeNil())
 			Expect(w.Name()).To(Equal("test-worker"))
 
