@@ -1,7 +1,6 @@
 package api_test
 
 import (
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -9,35 +8,41 @@ import (
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
 
+	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api"
 	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/auditor/auditorfakes"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
 
 var _ = Describe("TeamScopedHandlerFactory", func() {
 	var (
-		response        *http.Response
-		server          *httptest.Server
-		delegate        *delegateHandler
-		fakeTeamFactory *dbfakes.FakeTeamFactory
-		fakeTeam        *dbfakes.FakeTeam
-		handler         http.Handler
+		response    *http.Response
+		server      *httptest.Server
+		delegate    *delegateHandler
+		realdb      *realDB
+		teamFactory db.TeamFactory
+		someTeam    db.Team
+		handler     http.Handler
 	)
 
 	BeforeEach(func() {
-		fakeTeamFactory = new(dbfakes.FakeTeamFactory)
-		fakeTeam = new(dbfakes.FakeTeam)
-		fakeTeamFactory.FindTeamReturns(fakeTeam, true, nil)
+		realdb = useRealDB()
+		teamFactory = realdb.Deps.teamFactory
+
+		// The handler looks the team up by the name in the request, so the row
+		// is what decides whether it is found.
+		var err error
+		someTeam, err = teamFactory.CreateTeam(atc.Team{Name: "some-team"})
+		Expect(err).NotTo(HaveOccurred())
 
 		delegate = &delegateHandler{}
 
 		logger := lagertest.NewTestLogger("test")
 
-		handlerFactory := api.NewTeamScopedHandlerFactory(logger, fakeTeamFactory)
+		handlerFactory := api.NewTeamScopedHandlerFactory(logger, teamFactory)
 		innerHandler := handlerFactory.HandlerFor(delegate.GetHandler)
 
 		handler = accessor.NewHandler(
@@ -71,7 +76,8 @@ var _ = Describe("TeamScopedHandlerFactory", func() {
 
 	Context("when the team is not found", func() {
 		BeforeEach(func() {
-			fakeTeamFactory.FindTeamReturns(nil, false, nil)
+			// The request asks for "some-team"; drop the row so the lookup misses.
+			Expect(someTeam.Delete()).To(Succeed())
 		})
 
 		It("returns 404", func() {
@@ -81,7 +87,17 @@ var _ = Describe("TeamScopedHandlerFactory", func() {
 
 	Context("when finding the team fails", func() {
 		BeforeEach(func() {
-			fakeTeamFactory.FindTeamReturns(nil, false, errors.New("what is a team?"))
+			// A closed connection is a real failure the database produces on
+			// demand; opened separately so the suite's own conn is untouched.
+			doomed := postgresRunner.OpenConn()
+			doomedFactory := db.NewTeamFactory(doomed, realdb.LockFactory)
+			Expect(doomed.Close()).To(Succeed())
+
+			handler = accessor.NewHandler(
+				logger, "some-action",
+				api.NewTeamScopedHandlerFactory(logger, doomedFactory).HandlerFor(delegate.GetHandler),
+				fakeAccessor, new(auditorfakes.FakeAuditor), map[string]string{},
+			)
 		})
 
 		It("returns 500", func() {
@@ -89,14 +105,10 @@ var _ = Describe("TeamScopedHandlerFactory", func() {
 		})
 	})
 
-	It("creates team with team name from context", func() {
-		Expect(fakeTeamFactory.FindTeamCallCount()).To(Equal(1))
-		Expect(fakeTeamFactory.FindTeamArgsForCall(0)).To(Equal("some-team"))
-	})
-
-	It("calls scoped handler with team from context", func() {
+	It("hands the scoped handler the team named in the request", func() {
 		Expect(delegate.IsCalled).To(BeTrue())
-		Expect(delegate.Team).To(BeIdenticalTo(fakeTeam))
+		Expect(delegate.Team.ID()).To(Equal(someTeam.ID()))
+		Expect(delegate.Team.Name()).To(Equal("some-team"))
 	})
 })
 
