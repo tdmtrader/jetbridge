@@ -2125,6 +2125,12 @@ var _ = Describe("Resource", func() {
 			resource            db.Resource
 			resourceConfigScope db.ResourceConfigScope
 		)
+		databaseUnixTime := func() int64 {
+			GinkgoHelper()
+			var timestamp int64
+			Expect(dbConn.QueryRow(`SELECT floor(extract(epoch FROM clock_timestamp()))::bigint`).Scan(&timestamp)).To(Succeed())
+			return timestamp
+		}
 
 		BeforeEach(func() {
 			scenario = dbtest.Setup(
@@ -2185,10 +2191,10 @@ var _ = Describe("Resource", func() {
 				build, err = resource.CreateInMemoryBuild(context.Background(), publicPlan, seqGenerator)
 				Expect(err).ToNot(HaveOccurred())
 
-				expectedStartEarliest = time.Now().Unix()
+				expectedStartEarliest = databaseUnixTime()
 				err = build.OnCheckBuildStart()
 				Expect(err).ToNot(HaveOccurred())
-				expectedStartLatest = time.Now().Unix()
+				expectedStartLatest = databaseUnixTime()
 			})
 
 			JustBeforeEach(func() {
@@ -2213,15 +2219,15 @@ var _ = Describe("Resource", func() {
 					err := resource.SetResourceConfigScope(resourceConfigScope)
 					Expect(err).NotTo(HaveOccurred())
 
-					expectedStartEarliest = time.Now().Unix()
+					expectedStartEarliest = databaseUnixTime()
 					_, err = resourceConfigScope.UpdateLastCheckStartTime(build.ID(), build.PublicPlan())
 					Expect(err).NotTo(HaveOccurred())
-					expectedStartLatest = time.Now().Unix()
+					expectedStartLatest = databaseUnixTime()
 
-					expectedEndEarliest = time.Now().Unix()
+					expectedEndEarliest = databaseUnixTime()
 					_, err = resourceConfigScope.UpdateLastCheckEndTime(false)
 					Expect(err).NotTo(HaveOccurred())
-					expectedEndLatest = time.Now().Unix()
+					expectedEndLatest = databaseUnixTime()
 				})
 
 				It("has build summary", func() {
@@ -2238,15 +2244,15 @@ var _ = Describe("Resource", func() {
 
 				Context("when other resource ran a check build for the scope", func() {
 					BeforeEach(func() {
-						expectedStartEarliest = time.Now().Unix()
+						expectedStartEarliest = databaseUnixTime()
 						_, err := resourceConfigScope.UpdateLastCheckStartTime(999999, build.PublicPlan())
 						Expect(err).NotTo(HaveOccurred())
-						expectedStartLatest = time.Now().Unix()
+						expectedStartLatest = databaseUnixTime()
 
-						expectedEndEarliest = time.Now().Unix()
+						expectedEndEarliest = databaseUnixTime()
 						_, err = resourceConfigScope.UpdateLastCheckEndTime(true)
 						Expect(err).NotTo(HaveOccurred())
-						expectedEndLatest = time.Now().Unix()
+						expectedEndLatest = databaseUnixTime()
 					})
 
 					It("has build summary", func() {
@@ -2267,10 +2273,10 @@ var _ = Describe("Resource", func() {
 							build2, err = resource.CreateInMemoryBuild(context.Background(), publicPlan, seqGenerator)
 							Expect(err).ToNot(HaveOccurred())
 
-							expectedStartEarliest = time.Now().Unix()
+							expectedStartEarliest = databaseUnixTime()
 							err = build2.OnCheckBuildStart()
 							Expect(err).ToNot(HaveOccurred())
-							expectedStartLatest = time.Now().Unix()
+							expectedStartLatest = databaseUnixTime()
 						})
 
 						It("has build summary", func() {
