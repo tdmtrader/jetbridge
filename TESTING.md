@@ -3,9 +3,15 @@
 ## Quick Start
 
 ```bash
-make test-quick    # Unit tests (~3 min, needs PostgreSQL)
+make test-postgres-up
+eval "$(./hack/test-postgres.sh env)"
+make test-quick
 make test-all      # Everything including K8s tests (hours)
 ```
+
+The named `concourse-test-postgres` container stays up so independent test
+commands can run concurrently. Run `make test-postgres-down` only as explicit
+teardown after tests have finished; it is unsafe to run while tests are active.
 
 ## Test Tiers
 
@@ -14,7 +20,7 @@ make test-all      # Everything including K8s tests (hours)
 Runs all Ginkgo test suites excluding integration/e2e. Uses parallel execution across packages.
 
 - **Time:** ~3 minutes
-- **Prerequisites:** PostgreSQL running on localhost (port 5432 or via `initdb`)
+- **Prerequisites:** the shared test PostgreSQL service (`make test-postgres-up`)
 - **What it covers:** 79 test suites across atc/, fly/, skymarshal/, go-concourse/, tracing/
 
 ```bash
@@ -41,7 +47,7 @@ ginkgo -r ./fly/integration/
 Starts a real ATC process and tests API behavior.
 
 - **Time:** ~12 seconds
-- **Prerequisites:** PostgreSQL running locally
+- **Prerequisites:** the shared test PostgreSQL service (`make test-postgres-up`)
 - **What it covers:** 21 specs covering full API request/response flows (1 pending: team migration)
 
 ```bash
@@ -91,7 +97,7 @@ ginkgo --procs=1 -v --timeout=3h --output-interceptor-mode=none ./topgun/k8s_beh
 |------|-------------|---------|
 | Go 1.25+ | All tests | [go.dev](https://go.dev/dl/) |
 | Ginkgo v2 | All Ginkgo suites | `go install github.com/onsi/ginkgo/v2/ginkgo@latest` |
-| PostgreSQL 14+ | Unit, integration tests | `brew install postgresql@14` |
+| PostgreSQL 14+ | Unit, integration tests | `make test-postgres-up` (existing Colima runtime) |
 | Docker | K8s tests | [docker.com](https://www.docker.com/products/docker-desktop/) |
 | KinD | K8s tests | `brew install kind` |
 | Helm | K8s tests | `brew install helm` |
@@ -101,7 +107,7 @@ ginkgo --procs=1 -v --timeout=3h --output-interceptor-mode=none ./topgun/k8s_beh
 
 ### Tests hang or timeout
 
-- **PostgreSQL not running:** Unit and integration tests need Postgres. Check with `pg_isready`.
+- **PostgreSQL not running:** Unit and integration tests need the shared service. Run `make test-postgres-up`, then check with `pg_isready -h 127.0.0.1 -p 15432 -U postgres`.
 - **Port conflicts:** ATC integration tests bind to ports `9090+N`. Kill any conflicting processes.
 - **K8s tests slow:** KinD cluster creation takes 2-5 minutes. First run is always slower.
 
