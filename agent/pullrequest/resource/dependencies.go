@@ -71,7 +71,16 @@ func (git controlledGit) Run(ctx context.Context, command GitCommand) error {
 	}
 	// Every command uses the controlled Runner, which supplies a private askpass
 	// secret and disables ambient/repository Git configuration.
-	if err := git.run(ctx, command, directgit.Command{Args: []string{"init", "--quiet", "--initial-branch=concourse-materialized", command.Directory}, NoRepository: true}, "initialize checkout"); err != nil {
+	//
+	// init deliberately does NOT set NoRepository. That flag exists to point
+	// GIT_DIR at a nonexistent path so a command cannot discover an ambient
+	// repository -- but `git init` honours GIT_DIR over its own path argument,
+	// so it would create the repository inside the ephemeral credential scratch
+	// and leave the destination empty, and the fetch below would then fail with
+	// "not a git repository". init creates rather than discovers, so there is no
+	// ambient repository for the flag to protect against; running it in the
+	// destination matches every other command in this function.
+	if err := git.run(ctx, command, directgit.Command{Dir: command.Directory, Args: []string{"init", "--quiet", "--initial-branch=concourse-materialized", "."}}, "initialize checkout"); err != nil {
 		return err
 	}
 	internal := "refs/concourse/materialized/head"

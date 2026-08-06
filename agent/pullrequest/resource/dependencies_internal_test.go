@@ -50,3 +50,36 @@ type directRunnerFunc func(context.Context, directgit.Command) (directgit.Comman
 func (function directRunnerFunc) Run(ctx context.Context, command directgit.Command) (directgit.CommandResult, error) {
 	return function(ctx, command)
 }
+
+// The materialization must create its repository AT THE DESTINATION. This
+// exercises the real git binary through the real controlled runner, because
+// the stubbed runner used elsewhere in this file emulates `init` with
+// os.MkdirAll and therefore cannot observe where git actually puts the
+// repository. The overall Run is expected to fail at the fetch (the remote is
+// unreachable from a test); what is asserted is the init side effect.
+func TestControlledGitInitCreatesTheRepositoryAtTheDestination(t *testing.T) {
+	if _, err := os.Stat("/usr/bin/git"); err != nil {
+		t.Skip("/usr/bin/git is required for this test")
+	}
+	runner, err := directgit.NewCommandRunner(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(t.TempDir(), "source-repository")
+	if err := os.Mkdir(destination, 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	// Failure here is expected and irrelevant: the remote is unreachable.
+	_ = controlledGit{runner: runner}.Run(context.Background(), GitCommand{
+		Operation: "checkout", FetchMode: GitFetchNamedRef, Directory: destination,
+		RemoteURL: "https://unreachable.invalid/acme/widget.git",
+		Ref:       "refs/heads/main", SHA: strings.Repeat("a", 40),
+		verifyDirectory: func() error { return nil },
+	})
+
+	if _, err := os.Stat(filepath.Join(destination, ".git")); err != nil {
+		entries, _ := os.ReadDir(destination)
+		t.Fatalf("git init did not create a repository at the destination: %v (destination contains %d entries)", err, len(entries))
+	}
+}
