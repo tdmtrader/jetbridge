@@ -12,7 +12,6 @@ type user struct {
 	lastLogin time.Time
 }
 
-//counterfeiter:generate . User
 type User interface {
 	ID() int
 	Sub() string
