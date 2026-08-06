@@ -67,6 +67,56 @@ func TestDSNForDatabaseReplacesExactlyOneKeywordDatabaseAndPreservesEscapes(t *t
 	}
 }
 
+func TestDSNForDatabaseAcceptsLibpqWhitespace(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			"spaces around equals",
+			"host = db dbname = postgres sslmode = disable",
+			"host = db dbname = cc_db_x_n1_s1 sslmode = disable",
+		},
+		{
+			"quoted values and spaces around equals",
+			"host = 'db host' dbname = 'old db' sslmode = disable",
+			"host = 'db host' dbname = cc_db_x_n1_s1 sslmode = disable",
+		},
+		{
+			"vertical tabs",
+			"host\v=\vdb\vdbname\v=\vpostgres\vsslmode\v=\vdisable",
+			"host\v=\vdb\vdbname\v=\vcc_db_x_n1_s1\vsslmode\v=\vdisable",
+		},
+		{
+			"form feeds",
+			"host\f=\fdb\fdbname\f=\fpostgres\fsslmode\f=\fdisable",
+			"host\f=\fdb\fdbname\f=\fcc_db_x_n1_s1\fsslmode\f=\fdisable",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := pgx.ParseConfig(tt.input); err != nil {
+				t.Fatalf("test input is not accepted by pgx: %v", err)
+			}
+			got, err := dsnForDatabase(tt.input, "cc_db_x_n1_s1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tt.want {
+				t.Fatalf("dsn = %q, want %q", got, tt.want)
+			}
+			config, err := pgx.ParseConfig(got)
+			if err != nil {
+				t.Fatalf("rewritten DSN is not accepted by pgx: %v", err)
+			}
+			if config.Database != "cc_db_x_n1_s1" {
+				t.Fatalf("rewritten database = %q", config.Database)
+			}
+		})
+	}
+}
+
 func TestAdoptSuiteConfigValidatesNamesNodeAndState(t *testing.T) {
 	valid := SuiteConfig{
 		AdminDSN:     DefaultAdminDSN,
@@ -394,7 +444,9 @@ func TestReapExpiredRunsDropsOnlyOwnedPrefixesOlderThan24Hours(t *testing.T) {
 	unrelated := "cc_unrelated_database"
 	overflowEpoch := "cc_tpl_t9999999999999999999_p1_cccccccc"
 	zeroPID := fmt.Sprintf("cc_tpl_t%d_p0_dddddddd", now.Add(-25*time.Hour).Unix())
-	for _, name := range []string{oldTemplate, oldClone, newTemplate, unrelated, overflowEpoch, zeroPID} {
+	overflowNode := "cc_db_" + oldRun + "_n9223372036854775808_s1"
+	overflowSerial := "cc_db_" + oldRun + "_n1_s18446744073709551616"
+	for _, name := range []string{oldTemplate, oldClone, newTemplate, unrelated, overflowEpoch, zeroPID, overflowNode, overflowSerial} {
 		createDatabase(t, adminDSN, name)
 		name := name
 		t.Cleanup(func() { dropDatabaseForTest(t, adminDSN, name) })
@@ -414,6 +466,89 @@ func TestReapExpiredRunsDropsOnlyOwnedPrefixesOlderThan24Hours(t *testing.T) {
 	}
 	if !databaseExists(t, adminDSN, overflowEpoch) || !databaseExists(t, adminDSN, zeroPID) {
 		t.Fatal("a name the runner could not generate was reaped")
+	}
+	if !databaseExists(t, adminDSN, overflowNode) || !databaseExists(t, adminDSN, overflowSerial) {
+		t.Fatal("a clone with an unrepresentable node or serial was reaped")
+	}
+}
+
+func TestCreateSuiteTemplateReportsSetupAndRollbackFailures(t *testing.T) {
+	adminDSN := requireSharedPostgres(t)
+	admin := openPGX(t, adminDSN)
+	adminConfig, err := pgx.ParseConfig(adminDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	role := fmt.Sprintf("cc_rollback_%d_%d", os.Getpid(), time.Now().UnixNano())
+	if err := validateIdentifier(role); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.Exec(context.Background(), "CREATE ROLE "+role+" LOGIN CREATEDB"); err != nil {
+		t.Fatal(err)
+	}
+	var templateName string
+	t.Cleanup(func() {
+		if templateName != "" {
+			dropDatabaseForTest(t, adminDSN, templateName)
+		}
+		if _, err := admin.Exec(context.Background(), "DROP ROLE IF EXISTS "+role); err != nil {
+			t.Errorf("drop rollback test role: %v", err)
+		}
+	})
+
+	restrictedDSN := fmt.Sprintf(
+		"host=%s port=%d user=%s dbname=postgres sslmode=disable",
+		adminConfig.Host,
+		adminConfig.Port,
+		role,
+	)
+	t.Setenv("CONCOURSE_TEST_POSTGRES_DSN", restrictedDSN)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := (&Runner{}).CreateSuiteTemplate(ctx)
+		errCh <- err
+	}()
+
+	deadline := time.Now().Add(10 * time.Second)
+	for templateName == "" {
+		select {
+		case err := <-errCh:
+			t.Fatalf("suite setup returned before rollback failure was installed: %v", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatalf("timed out waiting for suite template owned by %s", role)
+		}
+		err := admin.QueryRow(context.Background(), `
+			SELECT datname
+			FROM pg_database
+			WHERE datdba = (SELECT oid FROM pg_roles WHERE rolname = $1)
+			  AND left(datname, length('cc_tpl_')) = 'cc_tpl_'
+			ORDER BY datname
+			LIMIT 1`, role).Scan(&templateName)
+		if err != nil && err != pgx.ErrNoRows {
+			t.Fatal(err)
+		}
+		if templateName == "" {
+			time.Sleep(time.Millisecond)
+		}
+	}
+	if _, err := admin.Exec(context.Background(), "ALTER DATABASE "+templateName+" OWNER TO postgres"); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	err = <-errCh
+	if err == nil {
+		t.Fatal("expected suite setup and rollback to fail")
+	}
+	if !strings.Contains(err.Error(), "migrate suite template") || !strings.Contains(err.Error(), "permission denied to create extension") {
+		t.Fatalf("missing setup failure in %v", err)
+	}
+	if !strings.Contains(err.Error(), "rollback suite template") || !strings.Contains(err.Error(), "must be owner of database") {
+		t.Fatalf("missing rollback failure in %v", err)
 	}
 }
 
