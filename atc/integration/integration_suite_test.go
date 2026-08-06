@@ -42,10 +42,13 @@ var _ = BeforeEach(func() {
 	parser := flags.NewParser(cmd, flags.None)
 	_, _ = parser.ParseArgs([]string{})
 
-	cmd.Postgres.User = "postgres"
-	cmd.Postgres.Database = "testdb"
-	cmd.Postgres.Port = uint16(postgresRunner.Port)
-	cmd.Postgres.SSLMode = "disable"
+	postgresRunner.CreateTestDBFromTemplate()
+	cmd.Postgres = runnerPostgresConfig(&postgresRunner)
+	info := postgresRunner.ConnectionInfo()
+	Expect(cmd.Postgres.Database).To(Equal(postgresRunner.DatabaseName()))
+	Expect(cmd.Postgres.Database).To(HavePrefix("cc_db_"))
+	Expect(cmd.Postgres.Host).To(Equal(info.Host))
+	Expect(cmd.Postgres.Port).To(Equal(info.Port))
 	cmd.Auth.MainTeamFlags.LocalUsers = []string{"test"}
 	cmd.Auth.AuthFlags.LocalUsers = map[string]string{
 		"test":    "test",
@@ -68,8 +71,6 @@ var _ = BeforeEach(func() {
 	Expect(err).ToNot(HaveOccurred())
 
 	cmd.Auth.AuthFlags.SigningKey = &flag.PrivateKey{PrivateKey: signingKey}
-
-	postgresRunner.CreateTestDBFromTemplate()
 
 	// workaround to avoid panic due to registering http handlers multiple times
 	http.DefaultServeMux = new(http.ServeMux)
@@ -96,6 +97,18 @@ var _ = AfterEach(func() {
 
 	postgresRunner.DropTestDB()
 })
+
+func runnerPostgresConfig(r *postgresrunner.Runner) flag.PostgresConfig {
+	info := r.ConnectionInfo()
+	return flag.PostgresConfig{
+		Host:     info.Host,
+		Port:     info.Port,
+		User:     info.User,
+		Password: info.Password,
+		Database: info.Database,
+		SSLMode:  info.SSLMode,
+	}
+}
 
 func TestIntegration(t *testing.T) {
 	RegisterFailHandler(Fail)
