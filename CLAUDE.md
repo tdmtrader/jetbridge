@@ -2,7 +2,16 @@
 
 ## Running Tests
 
-PostgreSQL must be running locally for unit and integration tests. Check with `pg_isready`.
+PostgreSQL must be running locally for unit and integration tests. Provision the
+shared test service with `make test-postgres-up`, then check it with
+`pg_isready -h 127.0.0.1 -p 15432 -U postgres`.
+
+### Shared test PostgreSQL exception
+
+`hack/test-postgres.sh` is the narrow exception to the repository Docker
+provider rule: it uses the already-running local `colima` Docker context for
+the dedicated `concourse-test-postgres` test container. It never starts Colima.
+Every other Docker workflow retains the repository's documented provider rule.
 
 ### Quick Reference
 
@@ -27,7 +36,9 @@ ginkgo --focus="test name" ./atc/db/      # single test by name
 
 ### Running atc/db Tests
 
-The `atc/db` suite is the largest (~1300 specs, ~2-3 min). It uses a template database for fast setup. If you see `database "testdb_template" already exists`, another test process is still running — wait for it or kill it.
+The `atc/db` suite is the largest (~1300 specs, ~2-3 min). It uses a
+suite-owned template and unique cloned database for each spec, so independent
+database-backed commands may run concurrently against the shared service.
 
 ### Key Notes
 
