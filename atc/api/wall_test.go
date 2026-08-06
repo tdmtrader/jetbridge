@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"time"
 
 	"github.com/concourse/concourse/atc"
@@ -15,10 +16,21 @@ import (
 )
 
 var _ = Describe("Wall API", func() {
-	var response *http.Response
+	var (
+		response *http.Response
+		realdb   *realDB
+		server   *httptest.Server
+	)
+
+	BeforeEach(func() {
+		realdb = useRealDB()
+		server = realdb.Serve()
+	})
+
 	Context("Gets a wall message", func() {
 		BeforeEach(func() {
-			dbWall.GetWallReturns(atc.Wall{Message: "test message"}, nil)
+			// A real banner row, set through the same Wall the handler reads.
+			Expect(realdb.Deps.wall.SetWall(atc.Wall{Message: "test message"})).To(Succeed())
 		})
 
 		JustBeforeEach(func() {
@@ -43,7 +55,6 @@ var _ = Describe("Wall API", func() {
 		Context("the message does not expire", func() {
 
 			It("returns only message", func() {
-				Expect(dbWall.GetWallCallCount()).To(Equal(1))
 				Expect(io.ReadAll(response.Body)).To(MatchJSON(`{"message":"test message"}`))
 			})
 		})
@@ -53,21 +64,21 @@ var _ = Describe("Wall API", func() {
 				expectedDuration time.Duration
 			)
 			BeforeEach(func() {
-				expiresAt := time.Now().Add(time.Minute)
-				expectedDuration = time.Until(expiresAt)
-				dbWall.GetWallReturns(atc.Wall{Message: "test message", TTL: expectedDuration}, nil)
+				expectedDuration = time.Minute
+				Expect(realdb.Deps.wall.SetWall(atc.Wall{
+					Message: "test message", TTL: expectedDuration,
+				})).To(Succeed())
 			})
 
 			It("returns the expiration with the message", func() {
-				Expect(dbWall.GetWallCallCount()).To(Equal(1))
-
 				var msg atc.Wall
 				err := json.NewDecoder(response.Body).Decode(&msg)
 				Expect(err).ToNot(HaveOccurred())
-				Expect(msg).To(Equal(atc.Wall{
-					Message: "test message",
-					TTL:     expectedDuration,
-				}))
+				Expect(msg.Message).To(Equal("test message"))
+				// The TTL is recomputed from expires_at against the database's
+				// clock on each read, so it counts down rather than coming back
+				// as the literal that was stored.
+				Expect(msg.TTL).To(BeNumerically("~", expectedDuration, time.Second))
 			})
 		})
 	})
@@ -80,7 +91,6 @@ var _ = Describe("Wall API", func() {
 				TTL:     time.Minute,
 			}
 
-			dbWall.SetWallReturns(nil)
 		})
 
 		JustBeforeEach(func() {
@@ -110,8 +120,10 @@ var _ = Describe("Wall API", func() {
 				})
 
 				It("sets the message and expiration", func() {
-					Expect(dbWall.SetWallCallCount()).To(Equal(1))
-					Expect(dbWall.SetWallArgsForCall(0)).To(Equal(expectedWall))
+					stored, err := realdb.Deps.wall.GetWall()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(stored.Message).To(Equal(expectedWall.Message))
+					Expect(stored.TTL).To(BeNumerically("~", expectedWall.TTL, time.Second))
 				})
 
 				Context("when message is empty", func() {
@@ -128,8 +140,10 @@ var _ = Describe("Wall API", func() {
 						Expect(string(body)).To(Equal("Wall message cannot be empty"))
 					})
 
-					It("does not call SetWall", func() {
-						Expect(dbWall.SetWallCallCount()).To(Equal(0))
+					It("stores nothing", func() {
+						stored, err := realdb.Deps.wall.GetWall()
+						Expect(err).NotTo(HaveOccurred())
+						Expect(stored.Message).To(BeEmpty())
 					})
 				})
 			})
@@ -157,6 +171,10 @@ var _ = Describe("Wall API", func() {
 	})
 
 	Context("Clears the wall message", func() {
+		BeforeEach(func() {
+			Expect(realdb.Deps.wall.SetWall(atc.Wall{Message: "to be cleared"})).To(Succeed())
+		})
+
 		JustBeforeEach(func() {
 			req, err := http.NewRequest("DELETE", server.URL+"/api/v1/wall", nil)
 			Expect(err).NotTo(HaveOccurred())
@@ -179,8 +197,10 @@ var _ = Describe("Wall API", func() {
 					Expect(response.StatusCode).To(Equal(http.StatusOK))
 				})
 
-				It("makes the Clear database call", func() {
-					Expect(dbWall.ClearCallCount()).To(Equal(1))
+				It("clears the stored banner", func() {
+					stored, err := realdb.Deps.wall.GetWall()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(stored.Message).To(BeEmpty())
 				})
 			})
 			Context("is not an admin", func() {
