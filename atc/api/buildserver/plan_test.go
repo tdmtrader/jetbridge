@@ -4,66 +4,73 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings"
-	"testing"
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
+	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/buildserver"
+	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbfakes"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 )
 
-func TestGetBuildPlanServesTheStoredPublicPlan(t *testing.T) {
-	raw := json.RawMessage(`{"id":"0","do":[{"id":"8/task","task":{"name":"build"}}]}`)
-	build := new(dbfakes.FakeBuildForAPI)
-	build.HasPlanReturns(true)
-	build.SchemaReturns("exec.v2")
-	build.PublicPlanReturns(&raw)
-
-	response := requestBuildPlan(t, build)
-	if response.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+var _ = Describe("GetBuildPlan", func() {
+	requestPlan := func(build db.BuildForAPI) *httptest.ResponseRecorder {
+		server := buildserver.NewServer(lagertest.NewTestLogger("test"), "", nil, nil, nil)
+		response := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodGet, "/api/v1/builds/1/plan", nil)
+		server.GetBuildPlan(build).ServeHTTP(response, request)
+		return response
 	}
-	body := response.Body.String()
-	if !strings.Contains(body, `"plan":{"id":"0","do":[{"id":"8/task","task":{"name":"build"}}]}`) {
-		t.Fatalf("plan not served verbatim: %s", body)
-	}
-	if !strings.Contains(body, `"schema":"exec.v2"`) {
-		t.Fatalf("missing schema: %s", body)
-	}
-}
 
-func TestGetBuildPlanReturnsNotFoundWithoutAPlan(t *testing.T) {
-	build := new(dbfakes.FakeBuildForAPI)
-	build.HasPlanReturns(false)
+	It("serves the stored public plan", func() {
+		plan := atc.Plan{
+			ID: "0",
+			Do: &atc.DoPlan{
+				{ID: "8/task", Task: &atc.TaskPlan{Name: "build"}},
+			},
+		}
+		build := startedBuildForAPI(createTeam("some-team"), plan)
 
-	response := requestBuildPlan(t, build)
-	if response.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
-	}
-}
+		response := requestPlan(build)
 
-func TestGetBuildPlanPreservesNilPlan(t *testing.T) {
-	build := new(dbfakes.FakeBuildForAPI)
-	build.HasPlanReturns(true)
-	build.SchemaReturns("exec.v1")
-	build.PublicPlanReturns(nil)
+		Expect(response.Code).To(Equal(http.StatusOK))
 
-	response := requestBuildPlan(t, build)
-	if response.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
-	}
-	if !strings.Contains(response.Body.String(), `"plan":null`) {
-		t.Fatalf("response = %s", response.Body.String())
-	}
-}
+		var body struct {
+			Schema string          `json:"schema"`
+			Plan   json.RawMessage `json:"plan"`
+		}
+		Expect(json.Unmarshal(response.Body.Bytes(), &body)).To(Succeed())
+		Expect(body.Schema).To(Equal(build.Schema()))
+		// Served verbatim: the bytes the handler writes are the bytes the row
+		// holds, not a re-marshalled approximation of them.
+		Expect([]byte(body.Plan)).To(MatchJSON([]byte(*build.PublicPlan())))
+		Expect(string(body.Plan)).To(ContainSubstring(`"8/task"`))
+	})
 
-func requestBuildPlan(t *testing.T, build *dbfakes.FakeBuildForAPI) *httptest.ResponseRecorder {
-	t.Helper()
+	It("returns not found for a build that has no plan", func() {
+		// A one-off build that was never started carries no plan.
+		build := buildForAPI(createBuild(createTeam("some-team")))
 
-	server := buildserver.NewServer(lagertest.NewTestLogger("test"), "", nil, nil, nil)
-	response := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodGet, "/api/v1/builds/1/plan", nil)
-	server.GetBuildPlan(build).ServeHTTP(response, request)
+		Expect(requestPlan(build).Code).To(Equal(http.StatusNotFound))
+	})
 
-	return response
-}
+	It("preserves a nil plan", func() {
+		// db.build cannot reach this state: HasPlan() is
+		// `string(*b.publicPlan) != "{}"` (build.go:379), so a nil publicPlan
+		// panics before it can be reported as present. The handler still has to
+		// cope, because BuildForAPI is an interface with more than one
+		// implementation -- so this one spec keeps a narrow fake for a state no
+		// real row can hold.
+		build := new(dbfakes.FakeBuildForAPI)
+		build.HasPlanReturns(true)
+		build.SchemaReturns("exec.v1")
+		build.PublicPlanReturns(nil)
+
+		response := requestPlan(build)
+
+		Expect(response.Code).To(Equal(http.StatusOK))
+		Expect(response.Body.String()).To(ContainSubstring(`"plan":null`))
+	})
+})
