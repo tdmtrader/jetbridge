@@ -18,7 +18,6 @@ import (
 	"github.com/concourse/concourse/atc/db/encryption"
 )
 
-//counterfeiter:generate . AgentSnapshotsFactory
 type AgentSnapshotsFactory interface {
 	snapshot.MetadataStore
 	LocationsForDigest(context.Context, snapshot.Digest) ([]snapshot.Location, error)

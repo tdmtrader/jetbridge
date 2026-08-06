@@ -235,7 +235,6 @@ func (container *createdContainer) UpdateLastHijack() error {
 	return nil
 }
 
-//counterfeiter:generate . DestroyingContainer
 type DestroyingContainer interface {
 	Container
 

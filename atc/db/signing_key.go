@@ -13,7 +13,6 @@ type signingKey struct {
 	conn      DbConn
 }
 
-//counterfeiter:generate . SigningKey
 type SigningKey interface {
 	ID() string
 	KeyType() SigningKeyType
