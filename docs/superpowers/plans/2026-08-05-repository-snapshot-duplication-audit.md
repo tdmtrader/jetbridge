@@ -77,6 +77,28 @@ Not "does not today" — *cannot*.
 
 The two `repository/v1` blobs do expire — `binding` claims stamped `now + 168h` (`sealer.go:432`, `:455-465`), plus a `run` claim released on run finalization. They are not declared workflow outputs (`workflow.yaml:22-38`), so they never receive a permanent `workflow` claim.
 
+## Collapsing the step OUTPUTS is impossible without a contract revision (2026-08-05)
+
+A three-model panel plus two adversarial audits converged on this, and it is a proof rather than a preference.
+
+Three facts cannot hold at once:
+
+- **(a)** `respond`'s `draft-change` binds `source-repository` as its base subject, so its `BaseSHA` is the **PR head** (`prompts/respond.md:35`, seed-pinned at `agent/workflow/pr_monitor_seed_test.go:115`).
+- **(b)** `merge-prepare` runs `rebase --onto plan.Target plan.Base` (`repositorymerge/runner.go:165`) with `Target: targetMetadata.HeadSHA` (`:524`) and emits `BaseSHA: target.HeadSHA` (`:789`). `validateGitTreeChange` enforces descent with `merge-base --is-ancestor` (`contracts/repository_change.go:323`), as does the projection (`agent/projection/repository_change.go:428`). So its `BaseSHA` is the **base-branch tip** and cannot be otherwise.
+- **(c)** Both gates resolve the base with the literal `validateRepository(ctx, baseRoot, "HEAD")` (`repository_change.go:210`) and require `document.BaseSHA == baseMetadata.HeadSHA` (`:218`) — from `AdmitForSeal` (`:142`) and `RevalidateSealed` (`:163`).
+
+(a) ∧ (b) ∧ (c) ⟹ PR head == base-branch tip. One directory is one snapshot is one HEAD, so collapsing the **step outputs** requires relaxing (c). No ordering, port-renaming or ref-map trick avoids it.
+
+**Relaxing (c) is a governed contract event, not plumbing.** `base-sha-must-equal-the-base-repository-head` is a named `go_only_rule` inside the frozen `schemas/repository-change.v1.rev2.json`, and the descriptor digest is derived from that document (`record_schema.go:144`). The header at `record_schema.go:98` requires a semantic validator change to append a new revision as a new document file, and a new TypeRef version after release. Note the contrast with `repository/v1`, which is **not** a record type and needs no such revision — the two must not be conflated.
+
+**Correction to `22fec821be`.** `RepositoryMetadata.Refs` participates in **no gate**; it is advertisement only. It is necessary for any future revision-naming design but does not on its own unlock the collapse, which is how it was framed when landed.
+
+**What is achievable with no contract change**, and what this audit now recommends: one `git init` plus one fetch carrying two refspecs, with the forge-pr resource emitting **one** directory. That removes 100% of the network duplication and halves Blob A — the `pull-request/v1` observation, which is the blob held under the NULL-expiry `system:resource-capture` pin. Blobs B and C remain two, but they carry 7-day binding claims and expire. `prmonitor.Materialize` checks out each named ref into its own typed output, so `respond` and `merge-prepare` are untouched.
+
+Two preconditions: commit `4a7935b8fe` must be in the shipped agent-runner image before this lands, since it rewrites that exact fetch path; and the two-refspec fetch cannot be validated by `dependencies_internal_test.go:19-30`, which stubs the runner and emulates `init` with `os.MkdirAll` — it needs a test against real git.
+
+One trap recorded for whoever attempts the port collapse later: `cmd/function-runner/main.go:575` permits `basePort == targetPort`, but `bindInputs` (`:762-786`) captures per mount entry, so passing one port twice canonicalizes and fscks the tree **twice** and mints two snapshot ids before the last write wins. It must dedupe by port or the collapse pays the very cost it was meant to save.
+
 ## Root cause: a snapshot can be named, a revision cannot
 
 `repository/v1`'s gate hardcodes `validateRepository(ctx, root, "HEAD")` (`contracts/repository.go:55`) and its intrinsic metadata carries exactly one `head_sha` (`:23-29`). One directory therefore advertises exactly one head, so two heads require two directories, which require two full clones.
