@@ -10,7 +10,6 @@ import (
 	"github.com/concourse/concourse/atc/api/auth"
 	. "github.com/concourse/concourse/atc/api/buildserver"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -46,16 +45,19 @@ var _ = Describe("ScopedHandlerFactory", func() {
 	})
 
 	Context("build is in the context", func() {
-		var contextBuild *dbfakes.FakeBuildForAPI
+		var contextBuild db.BuildForAPI
 
 		BeforeEach(func() {
-			contextBuild = new(dbfakes.FakeBuildForAPI)
+			// The factory only passes this through, so what matters is that the
+			// handler receives the very build the context carried. A real row
+			// serves as the identity token as well as a fake did.
+			contextBuild = buildForAPI(createBuild(createTeam("some-team")))
 			handler = &wrapHandler{handler, contextBuild}
 		})
 
 		It("calls scoped handler with build from context", func() {
 			Expect(delegate.IsCalled).To(BeTrue())
-			Expect(delegate.Build).To(BeIdenticalTo(contextBuild))
+			Expect(delegate.Build.ID()).To(Equal(contextBuild.ID()))
 		})
 	})
 
