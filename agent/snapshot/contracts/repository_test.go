@@ -806,3 +806,32 @@ func digestBytes(contents []byte) string {
 	digest := sha256.Sum256(contents)
 	return "sha256:" + hex.EncodeToString(digest[:])
 }
+
+// A repository snapshot must be able to name revisions other than HEAD, so one
+// materialized tree can carry both sides of a pull request instead of being
+// cloned twice. Refs are derived from the sealed bytes -- .git/refs and
+// packed-refs are inside the canonical archive -- which is what keeps identical
+// content producing byte-identical intrinsic metadata, as the snapshot store
+// requires of any (type, digest) pair.
+func TestRepositoryMetadataNamesEveryRefInTheTree(t *testing.T) {
+	dir := newGitRepository(t, "")
+	head := runTestGit(t, dir, "rev-parse", "--verify", "HEAD")
+	writeTestFile(t, filepath.Join(dir, "second.md"), "second\n")
+	runTestGit(t, dir, "add", "second.md")
+	runTestGit(t, dir, "commit", "-q", "-m", "second")
+	second := runTestGit(t, dir, "rev-parse", "--verify", "HEAD")
+	// A second ref pointing at a commit that is deliberately NOT HEAD.
+	runTestGit(t, dir, "update-ref", "refs/concourse/materialized/base", head)
+
+	metadata := repositoryMetadataForDirectory(t, dir)
+
+	if metadata.HeadSHA != second {
+		t.Fatalf("head_sha = %q, want the checked-out commit %q", metadata.HeadSHA, second)
+	}
+	if metadata.Refs == nil {
+		t.Fatal("metadata carries no refs: a snapshot still cannot name a revision")
+	}
+	if got := metadata.Refs["refs/concourse/materialized/base"]; got != head {
+		t.Fatalf("refs[refs/concourse/materialized/base] = %q, want the non-HEAD commit %q", got, head)
+	}
+}

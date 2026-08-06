@@ -26,6 +26,18 @@ type RepositoryMetadata struct {
 	HeadSHA      string   `json:"head_sha"`
 	TreeSHA      string   `json:"tree_sha"`
 	RootCommits  []string `json:"root_commits"`
+
+	// Refs names every ref in the tree, so a snapshot can identify a revision
+	// other than the one checked out. Without it a repository advertises exactly
+	// one commit, which is why carrying both sides of a pull request has meant
+	// cloning the same history twice.
+	//
+	// It is derived from the sealed bytes -- .git/refs and packed-refs are inside
+	// the canonical archive -- never supplied by a caller. The snapshot store
+	// requires identical (type, digest) pairs to produce byte-identical intrinsic
+	// metadata, and a caller-supplied revision would break that. encoding/json
+	// sorts map keys, so the encoding is deterministic.
+	Refs map[string]string `json:"refs,omitempty"`
 }
 
 // DecodeRepositoryMetadata decodes the exact current intrinsic metadata shape
@@ -163,6 +175,11 @@ func validateRepository(ctx context.Context, root *os.Root, revision string) (Re
 		return RepositoryMetadata{}, publicRepositoryFailure(ctx, snapshot.RepositoryDirty, fmt.Errorf("snapshot contracts: repository work tree and index must be clean"))
 	}
 
+	refs, err := repositoryRefs(ctx, runner, objectFormat)
+	if err != nil {
+		return RepositoryMetadata{}, err
+	}
+
 	repositoryID := repositoryIdentity(objectFormat, rootCommits)
 	return RepositoryMetadata{
 		RepositoryID: repositoryID,
@@ -170,7 +187,54 @@ func validateRepository(ctx context.Context, root *os.Root, revision string) (Re
 		HeadSHA:      headSHA,
 		TreeSHA:      treeSHA,
 		RootCommits:  append([]string(nil), rootCommits...),
+		Refs:         refs,
 	}, nil
+}
+
+// maxRepositoryRefs bounds the named-revision map. A materialized tree carries a
+// handful of refs; a pathological one must not be able to grow the intrinsic
+// metadata without limit.
+const maxRepositoryRefs = 256
+
+// repositoryRefs reads every ref in the tree so the snapshot can name revisions
+// other than the checked-out one. Peeled tag targets are deliberately excluded:
+// show-ref emits them as a separate "^{}" entry, and a ref must resolve to a
+// single object for the map to mean anything.
+func repositoryRefs(ctx context.Context, runner controlledGit, objectFormat string) (map[string]string, error) {
+	listing, err := runner.run(ctx, "show-ref")
+	if err != nil {
+		// A repository with no refs at all is legitimate; show-ref exits non-zero
+		// for it, and there is nothing to name.
+		return nil, nil
+	}
+	if strings.TrimSpace(listing) == "" {
+		return nil, nil
+	}
+	refs := make(map[string]string)
+	for _, line := range strings.Split(listing, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 {
+			return nil, publicRepositoryFailure(ctx, snapshot.RepositoryInvalid, fmt.Errorf("snapshot contracts: repository ref listing is malformed"))
+		}
+		object, name := fields[0], fields[1]
+		if strings.HasSuffix(name, "^{}") {
+			continue
+		}
+		if err := validateObjectID(objectFormat, object); err != nil {
+			return nil, publicRepositoryFailure(ctx, snapshot.RepositoryInvalid, fmt.Errorf("snapshot contracts: repository ref %q: %w", name, err))
+		}
+		if _, duplicate := refs[name]; duplicate {
+			return nil, publicRepositoryFailure(ctx, snapshot.RepositoryInvalid, fmt.Errorf("snapshot contracts: repository ref %q is duplicated", name))
+		}
+		refs[name] = object
+		if len(refs) > maxRepositoryRefs {
+			return nil, publicRepositoryFailure(ctx, snapshot.RepositoryInvalid, fmt.Errorf("snapshot contracts: repository declares more than %d refs", maxRepositoryRefs))
+		}
+	}
+	if len(refs) == 0 {
+		return nil, nil
+	}
+	return refs, nil
 }
 
 // publicRepositoryFailure only exposes conditions established from the
