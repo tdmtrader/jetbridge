@@ -3,6 +3,7 @@ package postgresrunner
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -225,9 +226,13 @@ func (r *Runner) CreateSuiteTemplate(ctx context.Context) (config SuiteConfig, e
 	}
 
 	created := false
+	rollbackName := config.TemplateName
 	defer func() {
 		if err != nil && created {
-			_ = dropGeneratedDatabaseOnConn(context.Background(), admin, config.TemplateName)
+			rollbackErr := dropGeneratedDatabaseOnConn(context.Background(), admin, rollbackName)
+			if rollbackErr != nil {
+				err = errors.Join(err, fmt.Errorf("rollback suite template %s: %w", rollbackName, rollbackErr))
+			}
 		}
 	}()
 	if _, err = admin.Exec(ctx, "CREATE DATABASE "+config.TemplateName); err != nil {
@@ -474,11 +479,8 @@ func (r *Runner) CleanupSuite(ctx context.Context) error {
 }
 
 func validateRunDatabaseName(name, runID string) error {
-	if err := validateIdentifier(name); err != nil {
-		return err
-	}
-	match := clonePattern.FindStringSubmatch(name)
-	if match == nil || match[1] != runID {
+	parsedRunID, ok := generatedCloneRun(name)
+	if !ok || parsedRunID != runID {
 		return fmt.Errorf("database %q is outside run namespace %q", name, runID)
 	}
 	return nil
@@ -584,10 +586,8 @@ func reapExpiredRunsOnConn(ctx context.Context, admin *pgx.Conn, now time.Time) 
 }
 
 func generatedDatabaseRun(name string) (runID string, isTemplate bool, ok bool) {
-	if match := clonePattern.FindStringSubmatch(name); match != nil {
-		if _, err := generatedRunCreation(match[1]); err == nil {
-			return match[1], false, true
-		}
+	if runID, ok := generatedCloneRun(name); ok {
+		return runID, false, true
 	}
 	if match := templatePattern.FindStringSubmatch(name); match != nil {
 		if _, err := generatedRunCreation(match[1]); err == nil {
@@ -595,6 +595,35 @@ func generatedDatabaseRun(name string) (runID string, isTemplate bool, ok bool) 
 		}
 	}
 	return "", false, false
+}
+
+func generatedCloneRun(name string) (string, bool) {
+	if err := validateIdentifier(name); err != nil {
+		return "", false
+	}
+	match := clonePattern.FindStringSubmatch(name)
+	if match == nil {
+		return "", false
+	}
+	if _, err := generatedRunCreation(match[1]); err != nil {
+		return "", false
+	}
+	node, err := strconv.ParseInt(match[2], 10, strconv.IntSize)
+	if err != nil || node <= 0 {
+		return "", false
+	}
+	serial, err := strconv.ParseUint(match[3], 10, 64)
+	if err != nil || serial == 0 {
+		return "", false
+	}
+	generated := fmt.Sprintf("cc_db_%s_n%d_s%d", match[1], node, serial)
+	if generated != name {
+		return "", false
+	}
+	if err := validateIdentifier(generated); err != nil {
+		return "", false
+	}
+	return match[1], true
 }
 
 const markTablesAsUnloggedSQL = `
@@ -705,14 +734,24 @@ func keywordDSNTokens(dsn string) ([]keywordDSNToken, error) {
 			break
 		}
 		keyStart := pos
-		for pos < len(dsn) && dsn[pos] != '=' && !isDSNSpace(dsn[pos]) {
+		for pos < len(dsn) && dsn[pos] != '=' {
 			pos++
 		}
-		if pos == keyStart || pos == len(dsn) || dsn[pos] != '=' {
+		if pos == len(dsn) {
 			return nil, fmt.Errorf("invalid keyword DSN near %q", dsn[keyStart:])
 		}
-		key := dsn[keyStart:pos]
+		keyEnd := pos
+		for keyEnd > keyStart && isDSNSpace(dsn[keyEnd-1]) {
+			keyEnd--
+		}
+		if keyEnd == keyStart {
+			return nil, fmt.Errorf("empty keyword in DSN near %q", dsn[keyStart:])
+		}
+		key := dsn[keyStart:keyEnd]
 		pos++
+		for pos < len(dsn) && isDSNSpace(dsn[pos]) {
+			pos++
+		}
 		valueStart := pos
 		quoted := pos < len(dsn) && dsn[pos] == '\''
 		if quoted {
@@ -721,6 +760,9 @@ func keywordDSNTokens(dsn string) ([]keywordDSNToken, error) {
 		closed := !quoted
 		for pos < len(dsn) {
 			if dsn[pos] == '\\' {
+				if pos+1 == len(dsn) {
+					return nil, fmt.Errorf("invalid trailing backslash for %q", key)
+				}
 				pos += 2
 				continue
 			}
@@ -747,7 +789,7 @@ func keywordDSNTokens(dsn string) ([]keywordDSNToken, error) {
 }
 
 func isDSNSpace(char byte) bool {
-	return char == ' ' || char == '\t' || char == '\r' || char == '\n'
+	return char == ' ' || char == '\t' || char == '\r' || char == '\n' || char == '\v' || char == '\f'
 }
 
 func sslModeFromDSN(dsn string) string {
