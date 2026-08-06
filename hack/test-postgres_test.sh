@@ -20,20 +20,30 @@ printf '\n' >>"${FAKE_DOCKER_LOG}"
 shift 2
 
 state="$(cat "${FAKE_DOCKER_STATE}")"
+GOOD_COMMAND='["-c","fsync=off","-c","synchronous_commit=off","-c","full_page_writes=off","-c","max_connections=500"]'
+GOOD_ENV='["POSTGRES_HOST_AUTH_METHOD=trust"]'
+GOOD_BINDINGS='{"5432/tcp":[{"HostIp":"127.0.0.1","HostPort":"15432"}]}'
+EXTRA_BINDINGS='{"5432/tcp":[{"HostIp":"127.0.0.1","HostPort":"15432"},{"HostIp":"0.0.0.0","HostPort":"25432"}]}'
+
+owned() {
+  printf 'true|%s|%s|%s|%s|%s|%s|%s\n' "$@"
+}
+
 case "${1:-} ${2:-}" in
   "context inspect"|"info ") exit 0 ;;
   "container inspect")
     case "${state}" in
       missing|race) exit 1 ;;
       foreign) printf 'false|running\n' ;;
-      drifted) printf 'true|running|postgres:13|0.0.0.0|15432|["-c","max_connections=100"]|[]\n' ;;
-      drift-image) printf 'true|running|postgres:13|127.0.0.1|15432|["-c","fsync=off","-c","synchronous_commit=off","-c","full_page_writes=off","-c","max_connections=500"]|["POSTGRES_HOST_AUTH_METHOD=trust"]\n' ;;
-      drift-binding) printf 'true|running|postgres:14|0.0.0.0|15432|["-c","fsync=off","-c","synchronous_commit=off","-c","full_page_writes=off","-c","max_connections=500"]|["POSTGRES_HOST_AUTH_METHOD=trust"]\n' ;;
-      drift-port) printf 'true|running|postgres:14|127.0.0.1|25432|["-c","fsync=off","-c","synchronous_commit=off","-c","full_page_writes=off","-c","max_connections=500"]|["POSTGRES_HOST_AUTH_METHOD=trust"]\n' ;;
-      drift-command) printf 'true|running|postgres:14|127.0.0.1|15432|["-c","max_connections=100"]|["POSTGRES_HOST_AUTH_METHOD=trust"]\n' ;;
-      drift-env) printf 'true|running|postgres:14|127.0.0.1|15432|["-c","fsync=off","-c","synchronous_commit=off","-c","full_page_writes=off","-c","max_connections=500"]|[]\n' ;;
-      stopped|start-race) printf 'true|exited|postgres:14|127.0.0.1|15432|["-c","fsync=off","-c","synchronous_commit=off","-c","full_page_writes=off","-c","max_connections=500"]|["POSTGRES_HOST_AUTH_METHOD=trust"]\n' ;;
-      *)       printf 'true|running|postgres:14|127.0.0.1|15432|["-c","fsync=off","-c","synchronous_commit=off","-c","full_page_writes=off","-c","max_connections=500"]|["POSTGRES_HOST_AUTH_METHOD=trust"]\n' ;;
+      drifted) owned running postgres:13 0.0.0.0 15432 '["-c","max_connections=100"]' '[]' "${GOOD_BINDINGS}" ;;
+      drift-image) owned running postgres:13 127.0.0.1 15432 "${GOOD_COMMAND}" "${GOOD_ENV}" "${GOOD_BINDINGS}" ;;
+      drift-binding) owned running postgres:14 0.0.0.0 15432 "${GOOD_COMMAND}" "${GOOD_ENV}" "${GOOD_BINDINGS}" ;;
+      drift-port) owned running postgres:14 127.0.0.1 25432 "${GOOD_COMMAND}" "${GOOD_ENV}" "${GOOD_BINDINGS}" ;;
+      drift-command) owned running postgres:14 127.0.0.1 15432 '["-c","max_connections=100"]' "${GOOD_ENV}" "${GOOD_BINDINGS}" ;;
+      drift-env) owned running postgres:14 127.0.0.1 15432 "${GOOD_COMMAND}" '[]' "${GOOD_BINDINGS}" ;;
+      drift-extra-binding) owned running postgres:14 127.0.0.1 15432 "${GOOD_COMMAND}" "${GOOD_ENV}" "${EXTRA_BINDINGS}" ;;
+      stopped|start-race) owned exited postgres:14 127.0.0.1 15432 "${GOOD_COMMAND}" "${GOOD_ENV}" "${GOOD_BINDINGS}" ;;
+      *)       owned running postgres:14 127.0.0.1 15432 "${GOOD_COMMAND}" "${GOOD_ENV}" "${GOOD_BINDINGS}" ;;
     esac
     ;;
   "run --detach")
@@ -56,7 +66,17 @@ case "${1:-} ${2:-}" in
     [[ "${state}" != "missing" ]] || exit 1
     [[ "${FAKE_DOCKER_READY:-1}" == "1" ]]
     ;;
-  "rm --force") printf 'missing' >"${FAKE_DOCKER_STATE}" ;;
+  "rm --force")
+    if [[ "${state}" == "down-race" ]]; then
+      printf 'missing' >"${FAKE_DOCKER_STATE}"
+      exit 1
+    fi
+    if [[ "${state}" == "down-race-foreign" ]]; then
+      printf 'foreign' >"${FAKE_DOCKER_STATE}"
+      exit 1
+    fi
+    printf 'missing' >"${FAKE_DOCKER_STATE}"
+    ;;
   *) echo "unexpected docker arguments: $*" >&2; exit 91 ;;
 esac
 FAKE_DOCKER
@@ -199,7 +219,7 @@ expect_output_contains "not owned"
 expect_log_count "rm --force" 0
 
 # A labeled service with any immutable contract drift is unsafe to use.
-for drift in drift-image drift-binding drift-port drift-command drift-env; do
+for drift in drift-image drift-binding drift-port drift-command drift-env drift-extra-binding; do
   reset_fake "${drift}"
   run_helper up 1
   case "${drift}" in
@@ -208,6 +228,7 @@ for drift in drift-image drift-binding drift-port drift-command drift-env; do
     drift-port) expect_output_contains "host port" ;;
     drift-command) expect_output_contains "PostgreSQL command" ;;
     drift-env) expect_output_contains "trust environment" ;;
+    drift-extra-binding) expect_output_contains "port bindings" ;;
   esac
   run_helper status 1
 done
@@ -246,6 +267,19 @@ reset_fake running
 run_helper down 0
 run_helper down 0
 expect_log_count "--context colima rm --force concourse-test-postgres" 1
+
+# If another down wins the remove race, re-inspection observes absence and
+# succeeds without trying to remove a potentially foreign replacement.
+reset_fake down-race
+run_helper down 0
+expect_log_count "--context colima rm --force concourse-test-postgres" 1
+expect_log_count_at_least "container inspect" 2
+
+# A foreign replacement after a losing race is never removed.
+reset_fake down-race-foreign
+run_helper down 1
+expect_log_count "--context colima rm --force concourse-test-postgres" 1
+expect_log_count_at_least "container inspect" 2
 
 # env is machine-sourceable and does not require Docker.
 reset_fake missing
