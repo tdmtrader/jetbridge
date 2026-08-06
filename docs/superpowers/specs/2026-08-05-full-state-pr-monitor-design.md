@@ -24,6 +24,38 @@ Today's design survives (2) **only because of** the frozen acknowledged cursor: 
 
 **Also refuted:** freshness via `EnsureManualBuild` + `RequestPostDispatchChecks` — structurally closed to binding-scoped pipelines at five layers, and a manually-triggered build on a binding source pipeline is a cluster-wide poison pill that aborts the reconciler tick for every other instance (`agent/workflowrun/source_build_reconciler.go:252`, unbatched `ORDER BY source.pipeline_id`).
 
+## Live spike result (2026-08-05) — the feature is self-bricking today
+
+Run against real GitHub on a throwaway PR (`tdmtrader/jetbridge#3`, since closed and its branch deleted), driving the production `github.Observer`.
+
+**Both open questions are answered, and the second is worse than expected.**
+
+1. **A reply created via `POST /pulls/{n}/comments/{id}/replies` DOES carry `pull_request_review_id`.** Measured: `4870143605`. So platform-authored replies are visible to the observer — the skip guard is not blind by construction. Good news.
+2. **Every such reply MINTS A NEW REVIEW.** Reviews went 1 → 2. The root comment sat in review `4870141034`; the reply landed in a fresh review `4870143605` while its `in_reply_to_id` still pointed at the root in the *first* review.
+
+That second fact is fatal in the current design, and it was proven end to end:
+
+```
+poll 1 (sees the human root comment):        batches=1 threads=1   OK
+poll 2 (advances to the platform's own reply): FAILED
+        github review reply has no root
+```
+
+**The PR monitor bricks its own observer the first time it replies to a review comment.** The sequence is the feature's primary flow, not an edge case:
+
+1. A human leaves a review comment — root, in review A.
+2. The platform observes it and replies through the replies endpoint.
+3. GitHub files that reply under a *new* review B, with `in_reply_to_id` still naming the root in review A.
+4. The next poll advances the watermark past review A to review B.
+5. `normalizeReview` filters comments to review B — just the reply — and `normalizeThreads` cannot resolve its root, because the root belongs to review A (`observe.go:355-359`, `:374-383`, `:391`).
+6. `Observe` fails, and keeps failing: the condition is permanent and the cursor cannot advance past it.
+
+Poll 1 succeeds only because `selectReview` processes exactly one review at a time and happened to pick review A. The delta hides the defect until the platform acts.
+
+Why no test caught it: every fixture in `testdata/` puts all comments under one `pull_request_review_id`, so the cross-review shape has never existed in the suite. It is not reachable without a live provider.
+
+**Consequence for this design.** Full-state observation stops being an efficiency and consistency improvement and becomes the precondition for the feature working at all — grouping threads across every comment in one pass is what makes a reply resolvable. Any plan that defers it is deferring a feature that cannot function.
+
 ## Architecture
 
 ### 1. Full-state observation
