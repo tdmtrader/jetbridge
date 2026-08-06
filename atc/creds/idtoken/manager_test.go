@@ -5,7 +5,6 @@ import (
 
 	"github.com/concourse/concourse/atc/creds/idtoken"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/go-jose/go-jose/v4"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -18,7 +17,7 @@ var _ = Describe("IDToken Manager", func() {
 	var config map[string]any
 
 	BeforeEach(func() {
-		signingKeyFactory = &dbfakes.FakeSigningKeyFactory{}
+		signingKeyFactory = db.NewSigningKeyFactory(dbConn)
 		config = map[string]any{
 			"audience":      []any{"testaud"},
 			"subject_scope": string(idtoken.SubjectScopeTeam),
