@@ -3,6 +3,7 @@ package auth_test
 import (
 	"database/sql"
 	"testing"
+	"time"
 
 	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc"
@@ -26,6 +27,8 @@ var (
 	dbConn         db.DbConn
 	lockFactory    lock.LockFactory
 	teamFactory    db.TeamFactory
+	buildFactory   db.BuildFactory
+	workerFactory  db.WorkerFactory
 )
 
 var _ = postgresrunner.GinkgoRunner(&postgresRunner)
@@ -45,6 +48,8 @@ var _ = BeforeEach(func() {
 	lockFactory = lock.NewLockFactory(lockConns, ignore, ignore)
 
 	teamFactory = db.NewTeamFactory(dbConn, lockFactory)
+	buildFactory = db.NewBuildFactory(dbConn, lockFactory, 0, time.Hour)
+	workerFactory = db.NewWorkerFactory(dbConn, db.NewStaticWorkerCache(logger, dbConn, 0))
 })
 
 var _ = AfterEach(func() {
@@ -70,6 +75,42 @@ func createPipeline(team db.Team, name string) db.Pipeline {
 	)
 	Expect(err).NotTo(HaveOccurred())
 	return pipeline
+}
+
+// createJobBuild gives a build that belongs to a job in a pipeline, which is
+// what the build-access handlers scope against.
+func createJobBuild(team db.Team, pipelineName, jobName string) db.Build {
+	pipeline, _, err := team.SavePipeline(
+		atc.PipelineRef{Name: pipelineName},
+		atc.Config{Jobs: atc.JobConfigs{{Name: jobName}}},
+		db.ConfigVersion(0),
+		false,
+	)
+	Expect(err).NotTo(HaveOccurred())
+
+	job, found, err := pipeline.Job(jobName)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(found).To(BeTrue())
+
+	build, err := job.CreateBuild("some-user")
+	Expect(err).NotTo(HaveOccurred())
+	return build
+}
+
+// doomedWorkerFactory is the worker-side counterpart of doomedTeamFactory.
+func doomedWorkerFactory() db.WorkerFactory {
+	doomed := postgresRunner.OpenConn()
+	factory := db.NewWorkerFactory(doomed, db.NewStaticWorkerCache(logger, doomed, 0))
+	Expect(doomed.Close()).To(Succeed())
+	return factory
+}
+
+// doomedBuildFactory is the build-side counterpart of doomedTeamFactory.
+func doomedBuildFactory() db.BuildFactory {
+	doomed := postgresRunner.OpenConn()
+	factory := db.NewBuildFactory(doomed, lockFactory, 0, time.Hour)
+	Expect(doomed.Close()).To(Succeed())
+	return factory
 }
 
 // doomedTeamFactory returns a factory whose connection is already closed, so
