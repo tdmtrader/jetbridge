@@ -2,19 +2,19 @@ package idtoken_test
 
 import (
 	"github.com/concourse/concourse/atc/creds/idtoken"
-	"github.com/concourse/concourse/atc/db/dbfakes"
+	"github.com/concourse/concourse/atc/db"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
 
 var _ = Describe("ManagerFactory", func() {
 	var factory *idtoken.ManagerFactory
-	var signingKeyFactory *dbfakes.FakeSigningKeyFactory
+	var signingKeyFactory db.SigningKeyFactory
 	var config map[string]interface{}
 
 	BeforeEach(func() {
 		factory = idtoken.NewManagerFactory().(*idtoken.ManagerFactory)
-		signingKeyFactory = &dbfakes.FakeSigningKeyFactory{}
+		signingKeyFactory = db.NewSigningKeyFactory(dbConn)
 		factory.SetSigningKeyFactory(signingKeyFactory)
 
 		config = map[string]interface{}{

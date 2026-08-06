@@ -1,14 +1,12 @@
 package idtoken_test
 
 import (
-	"fmt"
 	"time"
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/creds"
 	"github.com/concourse/concourse/atc/creds/idtoken"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
 
@@ -31,28 +29,16 @@ var _ = Describe("IDToken TokenGenerator", func() {
 	var params creds.SecretLookupParams
 
 	BeforeEach(func() {
-		rsaSigningKey = createFakeSigningKey(*rsaJWK, time.Now())
-		ecSigningKey = createFakeSigningKey(*ecJWK, time.Now())
+		rsaSigningKey = saveSigningKey(*rsaJWK, 0)
+		ecSigningKey = saveSigningKey(*ecJWK, 0)
 
-		rsaVerificationKey = rsaJWK.Public()
-		ecVerificationKey = ecJWK.Public()
+		rsaStored, ecStored := rsaSigningKey.JWK(), ecSigningKey.JWK()
+		rsaVerificationKey = rsaStored.Public()
+		ecVerificationKey = ecStored.Public()
 
-		signingKeyFactoryFake := &dbfakes.FakeSigningKeyFactory{}
-		signingKeyFactoryFake.GetAllKeysReturns([]db.SigningKey{
-			rsaSigningKey,
-			ecSigningKey,
-		}, nil)
-
-		signingKeyFactoryFake.GetNewestKeyStub = func(skt db.SigningKeyType) (db.SigningKey, error) {
-			switch skt {
-			case db.SigningKeyTypeRSA:
-				return rsaSigningKey, nil
-			case db.SigningKeyTypeEC:
-				return ecSigningKey, nil
-			}
-			return nil, fmt.Errorf("not found")
-		}
-		signingKeyFactory = signingKeyFactoryFake
+		// The real factory reads the keys just saved; GetNewestKey picks per type
+		// from the rows rather than from a switch statement in the test.
+		signingKeyFactory = db.NewSigningKeyFactory(dbConn)
 
 		tokenGenerator = &idtoken.TokenGenerator{
 			Issuer:            testIssuer,
