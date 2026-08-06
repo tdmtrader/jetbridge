@@ -1,7 +1,6 @@
 package auth_test
 
 import (
-	"errors"
 	"net/http"
 	"net/http/httptest"
 
@@ -10,7 +9,6 @@ import (
 	"github.com/concourse/concourse/atc/api/auth"
 	"github.com/concourse/concourse/atc/auditor/auditorfakes"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -18,31 +16,35 @@ import (
 
 var _ = Describe("CheckPipelineAccessHandler", func() {
 	var (
-		response    *http.Response
-		server      *httptest.Server
-		delegate    *pipelineDelegateHandler
-		teamFactory *dbfakes.FakeTeamFactory
-		team        *dbfakes.FakeTeam
-		pipeline    *dbfakes.FakePipeline
-		handler     http.Handler
+		response *http.Response
+		server   *httptest.Server
+		delegate *pipelineDelegateHandler
+		factory  db.TeamFactory
+		team     db.Team
+		pipeline db.Pipeline
+		handler  http.Handler
 
 		fakeAccessor *accessorfakes.FakeAccessFactory
 		fakeaccess   *accessorfakes.FakeAccess
 	)
 
 	BeforeEach(func() {
-		teamFactory = new(dbfakes.FakeTeamFactory)
-		team = new(dbfakes.FakeTeam)
-		teamFactory.FindTeamReturns(team, true, nil)
+		// The handler resolves ?:team_name and ?:pipeline_name against rows, so
+		// each Context sets up (or omits) what those names should find.
+		factory = teamFactory
+		team = createTeam("some-team")
+		pipeline = nil
 
-		pipeline = new(dbfakes.FakePipeline)
-
-		handlerFactory := auth.NewCheckPipelineAccessHandlerFactory(teamFactory)
 		fakeAccessor = new(accessorfakes.FakeAccessFactory)
 		fakeaccess = new(accessorfakes.FakeAccess)
-
 		delegate = &pipelineDelegateHandler{}
-		innerHandler := handlerFactory.HandlerFor(delegate, auth.UnauthorizedRejector{})
+	})
+
+	// JustBeforeEach, so a Context can swap `factory` for a doomed one before
+	// the handler is built from it.
+	JustBeforeEach(func() {
+		innerHandler := auth.NewCheckPipelineAccessHandlerFactory(factory).
+			HandlerFor(delegate, auth.UnauthorizedRejector{})
 
 		handler = accessor.NewHandler(
 			logger,
@@ -52,9 +54,7 @@ var _ = Describe("CheckPipelineAccessHandler", func() {
 			new(auditorfakes.FakeAuditor),
 			map[string]string{},
 		)
-	})
 
-	JustBeforeEach(func() {
 		fakeAccessor.CreateReturns(fakeaccess, nil)
 		server = httptest.NewServer(handler)
 
@@ -72,15 +72,15 @@ var _ = Describe("CheckPipelineAccessHandler", func() {
 	Context("When team is not returned", func() {
 		Context("when it returns an error", func() {
 			BeforeEach(func() {
-				teamFactory.FindTeamReturns(nil, false, errors.New("some-error"))
+				factory = doomedTeamFactory()
 			})
-			It("returns an interneral server error", func() {
+			It("returns an internal server error", func() {
 				Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
 			})
 		})
 		Context("when team is not found", func() {
 			BeforeEach(func() {
-				teamFactory.FindTeamReturns(nil, false, nil)
+				Expect(team.Delete()).To(Succeed())
 			})
 			It("returns not found error", func() {
 				Expect(response.StatusCode).To(Equal(http.StatusNotFound))
@@ -91,18 +91,19 @@ var _ = Describe("CheckPipelineAccessHandler", func() {
 
 	Context("when pipeline exists", func() {
 		BeforeEach(func() {
-			pipeline.NameReturns("some-pipeline")
-			team.PipelineReturns(pipeline, true, nil)
+			pipeline = createPipeline(team, "some-pipeline")
 		})
 
 		Context("when pipeline is public", func() {
 			BeforeEach(func() {
-				pipeline.PublicReturns(true)
+				// Visibility is a column, not a config field: Expose() is what
+				// makes a pipeline public.
+				Expect(pipeline.Expose()).To(Succeed())
 			})
 
 			It("calls pipelineScopedHandler with pipelineDB in context", func() {
 				Expect(delegate.IsCalled).To(BeTrue())
-				Expect(delegate.ContextPipelineDB).To(BeIdenticalTo(pipeline))
+				Expect(delegate.ContextPipelineDB.ID()).To(Equal(pipeline.ID()))
 			})
 
 			It("returns 200 OK", func() {
@@ -112,7 +113,7 @@ var _ = Describe("CheckPipelineAccessHandler", func() {
 
 		Context("when pipeline is private", func() {
 			BeforeEach(func() {
-				pipeline.PublicReturns(false)
+				Expect(pipeline.Hide()).To(Succeed())
 			})
 
 			Context("and authorized", func() {
@@ -123,7 +124,7 @@ var _ = Describe("CheckPipelineAccessHandler", func() {
 
 				It("calls pipelineScopedHandler with pipelineDB in context", func() {
 					Expect(delegate.IsCalled).To(BeTrue())
-					Expect(delegate.ContextPipelineDB).To(BeIdenticalTo(pipeline))
+					Expect(delegate.ContextPipelineDB.ID()).To(Equal(pipeline.ID()))
 				})
 
 				It("returns 200 OK", func() {
@@ -161,7 +162,8 @@ var _ = Describe("CheckPipelineAccessHandler", func() {
 
 	Context("when pipeline does not exist", func() {
 		BeforeEach(func() {
-			team.PipelineReturns(nil, false, nil)
+			// The team owns a differently-named pipeline, so the lookup misses.
+			createPipeline(team, "some-other-pipeline")
 		})
 
 		It("returns 404", func() {
@@ -175,7 +177,7 @@ var _ = Describe("CheckPipelineAccessHandler", func() {
 
 	Context("when getting pipeline fails", func() {
 		BeforeEach(func() {
-			team.PipelineReturns(nil, false, errors.New("disaster"))
+			factory = doomedTeamFactory()
 		})
 
 		It("returns 500", func() {
