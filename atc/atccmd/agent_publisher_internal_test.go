@@ -12,7 +12,7 @@ import (
 	"github.com/concourse/concourse/agent/publisher/publishertest"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
+	"github.com/concourse/concourse/atc/db/pgtest"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 )
 
@@ -57,7 +57,7 @@ func TestAgentSnapshotCompositionBuildsConfiguredInProcessPublisher(t *testing.T
 		return &compositionLifecycle{}, nil
 	}
 
-	if err := command.composeAgentSnapshots(&dbfakes.FakeDbConn{}, lagertest.NewTestLogger("publisher-composition")); err != nil {
+	if err := command.composeAgentSnapshots(pgtest.OpenTestDB(t), lagertest.NewTestLogger("publisher-composition")); err != nil {
 		t.Fatal(err)
 	}
 	if command.agentSnapshotPublisher == nil {
@@ -104,7 +104,7 @@ func TestAgentPublisherCompositionRejectsUnsupportedConfiguredModesAndAdapters(t
 			command := configuredAgentPublisherCommand(t, policyDocument)
 			_, err := command.buildAgentPublisher(
 				publishertest.NewMemoryStore(time.Now),
-				&dbfakes.FakeAgentSnapshotsFactory{},
+				db.NewAgentSnapshotsFactory(pgtest.OpenTestDB(t)),
 				&compositionContentStore{},
 			)
 			if err == nil || !strings.Contains(err.Error(), "unsupported") {
@@ -199,7 +199,7 @@ func TestAgentPublisherCompositionUsesMountedCredentialProvider(t *testing.T) {
 
 	_, err := command.buildAgentPublisher(
 		publishertest.NewMemoryStore(time.Now),
-		&dbfakes.FakeAgentSnapshotsFactory{},
+		db.NewAgentSnapshotsFactory(pgtest.OpenTestDB(t)),
 		&compositionContentStore{},
 	)
 	if err == nil || !strings.Contains(err.Error(), "accessible by other users") {
@@ -211,7 +211,7 @@ func TestAgentPublisherBuilderFailsClosedWhenDisabled(t *testing.T) {
 	command := &RunCommand{}
 	_, err := command.buildAgentPublisher(
 		publishertest.NewMemoryStore(time.Now),
-		&dbfakes.FakeAgentSnapshotsFactory{},
+		db.NewAgentSnapshotsFactory(pgtest.OpenTestDB(t)),
 		&compositionContentStore{},
 	)
 	if err == nil || !strings.Contains(err.Error(), "disabled") {
@@ -228,7 +228,7 @@ func TestAgentPublisherBuilderFailsClosedWhenPRAuthoritySpineIsIncomplete(t *tes
 
 	_, err := command.buildAgentPublisher(
 		publishertest.NewMemoryStore(time.Now),
-		&dbfakes.FakeAgentSnapshotsFactory{},
+		db.NewAgentSnapshotsFactory(pgtest.OpenTestDB(t)),
 		&compositionContentStore{},
 	)
 	if err == nil || !strings.Contains(

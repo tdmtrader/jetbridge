@@ -16,7 +16,7 @@ import (
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc/component"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
+	"github.com/concourse/concourse/atc/db/pgtest"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 )
 
@@ -173,7 +173,7 @@ func TestAgentSnapshotComponentsAreComposedOnceWithExplicitConnection(t *testing
 		return wantLifecycle, nil
 	}
 
-	var explicitConnection db.DbConn = &dbfakes.FakeDbConn{}
+	var explicitConnection db.DbConn = pgtest.OpenTestDB(t)
 	logger := lagertest.NewTestLogger("snapshot-composition")
 	if err := command.composeAgentSnapshots(explicitConnection, logger); err != nil {
 		t.Fatal(err)
@@ -258,9 +258,9 @@ func TestAgentSnapshotPublisherIsAbsentWithoutExplicitDeploymentComposer(t *test
 	command := &RunCommand{}
 	command.AgentSnapshots.Enabled = true
 	command.agentSnapshotOutputSealer = &compositionOutputSealer{}
-	command.agentSnapshotMetadataStore = &dbfakes.FakeAgentSnapshotsFactory{}
+	command.agentSnapshotMetadataStore = db.NewAgentSnapshotsFactory(pgtest.OpenTestDB(t))
 	command.agentSnapshotContentStore = &compositionContentStore{}
-	command.agentSnapshotWorkflowRuns = &dbfakes.FakeAgentWorkflowRunsFactory{}
+	command.agentSnapshotWorkflowRuns = db.NewAgentWorkflowRunsFactory(pgtest.OpenTestDB(t))
 
 	options, ok := command.agentSnapshotCoreStepFactoryOptions()
 	if !ok {
@@ -304,7 +304,7 @@ func TestAgentSnapshotSealerCompositionFailurePublishesNothing(t *testing.T) {
 		return nil, failure
 	}
 
-	if err := command.composeAgentSnapshots(&dbfakes.FakeDbConn{}, lagertest.NewTestLogger("snapshot-composition")); !errors.Is(err, failure) {
+	if err := command.composeAgentSnapshots(pgtest.OpenTestDB(t), lagertest.NewTestLogger("snapshot-composition")); !errors.Is(err, failure) {
 		t.Fatalf("composeAgentSnapshots() error = %v", err)
 	}
 	if command.agentSnapshotDaemonClient != nil || command.agentSnapshotContentStore != nil || command.agentSnapshotMetadataStore != nil || command.agentSnapshotWorkflowRuns != nil || command.agentSnapshotDigestLocker != nil || command.agentSnapshotValidatorRegistry != nil || command.agentSnapshotOutputSealer != nil || command.agentSnapshotCreator != nil || command.agentSnapshotLifecycle != nil || command.agentSnapshotHandlerFactory != nil {
@@ -330,7 +330,7 @@ func TestAgentSnapshotTypedNilCompositionFailsClosed(t *testing.T) {
 		return creator, nil
 	}
 
-	if err := command.composeAgentSnapshots(&dbfakes.FakeDbConn{}, lagertest.NewTestLogger("snapshot-composition")); err == nil {
+	if err := command.composeAgentSnapshots(pgtest.OpenTestDB(t), lagertest.NewTestLogger("snapshot-composition")); err == nil {
 		t.Fatal("typed-nil creator was accepted")
 	}
 	if command.agentSnapshotDaemonClient != nil || command.agentSnapshotContentStore != nil || command.agentSnapshotMetadataStore != nil || command.agentSnapshotCreator != nil || command.agentSnapshotLifecycle != nil || command.agentSnapshotHandlerFactory != nil {

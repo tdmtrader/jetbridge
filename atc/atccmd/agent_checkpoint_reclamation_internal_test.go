@@ -6,8 +6,7 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/atc"
-	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
+	"github.com/concourse/concourse/atc/db/pgtest"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 )
 
@@ -24,7 +23,7 @@ func reclaimingCheckpointCommand() *RunCommand {
 func TestAgentCheckpointCompositionPublishesAReclaimer(t *testing.T) {
 	command := reclaimingCheckpointCommand()
 
-	if err := command.composeAgentCheckpoints(db.DbConn(&dbfakes.FakeDbConn{})); err != nil {
+	if err := command.composeAgentCheckpoints(pgtest.OpenTestDB(t)); err != nil {
 		t.Fatalf("compose checkpoints: %v", err)
 	}
 	if command.agentCheckpointReclaimer == nil {
@@ -34,7 +33,7 @@ func TestAgentCheckpointCompositionPublishesAReclaimer(t *testing.T) {
 
 func TestAgentCheckpointReclamationRunsAsAComponent(t *testing.T) {
 	command := reclaimingCheckpointCommand()
-	if err := command.composeAgentCheckpoints(db.DbConn(&dbfakes.FakeDbConn{})); err != nil {
+	if err := command.composeAgentCheckpoints(pgtest.OpenTestDB(t)); err != nil {
 		t.Fatalf("compose checkpoints: %v", err)
 	}
 
