@@ -1,4 +1,4 @@
-.PHONY: test-postgres-up test-postgres-status test-postgres-down test-postgres-helper test-postgres-concurrency test-unit test-dev-mcp test-bench-harness test-fly-integration test-integration test-hangar-integration test-k8s test-k8s-integration test-k8s-behavioral test-quick test-all build-agent-broker-image test-agent-broker-smoke
+.PHONY: test-postgres-up test-postgres-status test-postgres-down test-postgres-helper test-postgres-concurrency test-postgres-concurrency-signal test-unit test-dev-mcp test-bench-harness test-fly-integration test-integration test-hangar-integration test-k8s test-k8s-integration test-k8s-behavioral test-quick test-all build-agent-broker-image test-agent-broker-smoke
 
 AGENT_BROKER_IMAGE ?= concourse-agent-broker:dev
 
@@ -16,6 +16,9 @@ test-postgres-helper:
 
 test-postgres-concurrency:
 	bash ./hack/test-postgres-concurrency.sh
+
+test-postgres-concurrency-signal:
+	bash ./hack/test-postgres-concurrency_test.sh
 
 # Build the linux/amd64 managed broker companion. This packages the reviewed
 # inputs but does not waive the promotion blocker recorded in the operator

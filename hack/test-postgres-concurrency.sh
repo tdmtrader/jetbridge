@@ -13,10 +13,15 @@ CATALOG_SNAPSHOT="${LOG_DIR}/pg_stat_activity.log"
 PIPELINE_PID=""
 AUTH_PID=""
 OBSERVED=0
+CLEANUP_STARTED=0
 
 cleanup() {
-	local status=$?
-	trap - EXIT
+	local status=$1
+	if [[ "${CLEANUP_STARTED}" -eq 1 ]]; then
+		return
+	fi
+	CLEANUP_STARTED=1
+	trap - EXIT HUP INT TERM
 
 	for pid in "${PIPELINE_PID}" "${AUTH_PID}"; do
 		if [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
@@ -34,9 +39,23 @@ cleanup() {
 	else
 		echo "shared PostgreSQL concurrency: FAIL (logs and catalog snapshot preserved in ${LOG_DIR})" >&2
 	fi
+}
+
+on_exit() {
+	local status=$?
+	cleanup "${status}"
+}
+
+on_signal() {
+	local status=$1
+	cleanup "${status}"
 	exit "${status}"
 }
-trap cleanup EXIT
+
+trap on_exit EXIT
+trap 'on_signal 129' HUP
+trap 'on_signal 130' INT
+trap 'on_signal 143' TERM
 
 require_source_root() {
 	[[ -d "${SOURCE_ROOT}/atc/api/pipelineserver" ]] || {
@@ -101,7 +120,7 @@ start_suite() {
 	local repeat=$5
 	(
 		cd "${SOURCE_ROOT}"
-		CONCOURSE_TEST_POSTGRES_DSN="${admin_dsn} application_name=${application_name}" \
+		exec env "CONCOURSE_TEST_POSTGRES_DSN=${admin_dsn} application_name=${application_name}" \
 			ginkgo --procs=1 --no-color --repeat="${repeat}" "${package}"
 	) >"${log}" 2>&1 &
 	SUITE_PID=$!
