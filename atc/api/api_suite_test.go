@@ -104,6 +104,9 @@ var (
 
 	constructedEventHandler *fakeEventHandlerFactory
 
+	apiWorkflowStore *workflowtest.MemoryStore
+	apiNodeStore     *workflowtest.MemoryNodeStore
+
 	server *httptest.Server
 	client *http.Client
 )
@@ -194,6 +197,221 @@ func (f *fakeEventHandlerFactory) Construct(
 	})
 }
 
+// apiDBDeps is every db-typed collaborator the API handler is built from. The
+// suite's default is all fakes; a converted Describe passes real ones.
+type apiDBDeps struct {
+	teamFactory           db.TeamFactory
+	pipelineFactory       db.PipelineFactory
+	jobFactory            db.JobFactory
+	resourceFactory       db.ResourceFactory
+	workerFactory         db.WorkerFactory
+	workerTeamFactory     db.TeamFactory
+	volumeRepository      db.VolumeRepository
+	buildFactory          db.BuildFactory
+	checkFactory          db.CheckFactory
+	pipelineRunFactory    db.PipelineRunFactory
+	resourceConfigFactory db.ResourceConfigFactory
+	userFactory           db.UserFactory
+
+	wall              db.Wall
+	signingKeyFactory db.SigningKeyFactory
+	transcripts       db.AgentRunTranscriptFactory
+	workflowRuns      db.AgentWorkflowRunsFactory
+	experiments       experimentsapi.Store
+
+	// The agent handlers are configured with a trusted team. The suite
+	// hard-codes 1, which is safe only while nothing resolves it against a row.
+	trustedTeamID   int
+	trustedTeamName string
+}
+
+func fakeDBDeps() apiDBDeps {
+	return apiDBDeps{
+		teamFactory: dbTeamFactory, pipelineFactory: dbPipelineFactory,
+		jobFactory: dbJobFactory, resourceFactory: dbResourceFactory,
+		workerFactory: dbWorkerFactory, workerTeamFactory: dbWorkerTeamFactory,
+		volumeRepository: fakeVolumeRepository, buildFactory: dbBuildFactory,
+		checkFactory: dbCheckFactory, pipelineRunFactory: fakePipelineRunFactory,
+		resourceConfigFactory: dbResourceConfigFactory, userFactory: dbUserFactory,
+		wall: dbWall, signingKeyFactory: dbSigningKeyFactory,
+		transcripts:   fakeAgentRunTranscriptFactory,
+		workflowRuns:  new(dbfakes.FakeAgentWorkflowRunsFactory),
+		experiments:   new(dbfakes.FakeAgentExperimentsFactory),
+		trustedTeamID: 1, trustedTeamName: atc.DefaultTeamName,
+	}
+}
+
+// newAPIServer serves the production router over deps. Extracted verbatim
+// from the suite's BeforeEach so a single Describe can shadow `server` with
+// one built over real db factories, without disturbing the ~950 specs that
+// still run against fakes.
+func newAPIServer(deps apiDBDeps) *httptest.Server {
+	GinkgoHelper()
+
+	checkPipelineAccessHandlerFactory := auth.NewCheckPipelineAccessHandlerFactory(deps.teamFactory)
+
+	checkBuildReadAccessHandlerFactory := auth.NewCheckBuildReadAccessHandlerFactory(deps.buildFactory)
+
+	checkBuildWriteAccessHandlerFactory := auth.NewCheckBuildWriteAccessHandlerFactory(deps.buildFactory)
+
+	checkWorkerTeamAccessHandlerFactory := auth.NewCheckWorkerTeamAccessHandlerFactory(deps.workerFactory)
+
+	fakePolicyChecker = new(policycheckerfakes.FakePolicyChecker)
+	fakePolicyChecker.CheckReturns(policy.PassedPolicyCheck(), nil)
+
+	apiWrapper := wrappa.MultiWrappa{
+		wrappa.NewPolicyCheckWrappa(logger, fakePolicyChecker),
+		wrappa.NewAPIAuthWrappa(
+			checkPipelineAccessHandlerFactory,
+			checkBuildReadAccessHandlerFactory,
+			checkBuildWriteAccessHandlerFactory,
+			checkWorkerTeamAccessHandlerFactory,
+		),
+	}
+
+	snapshotHandlers, err := snapshotsapi.NewHandlerFactory(snapshotsapi.Config{Enabled: false})
+	Expect(err).NotTo(HaveOccurred())
+	workflowRunBackend := unavailableWorkflowRunBackend{}
+	apiWorkflowStore = workflowtest.NewMemoryStore()
+	apiNodeStore = workflowtest.NewMemoryNodeStore()
+	workflowRunHandlers, err := workflowrunsapi.NewHandler(workflowrunsapi.Config{
+		Team:     workflowrunsapi.TrustedTeam{ID: deps.trustedTeamID, Name: deps.trustedTeamName},
+		Identity: func(*http.Request) (string, error) { return "api-suite", nil },
+		Binder:   workflowRunBackend, Runs: workflowRunBackend,
+		Canceler: workflowRunBackend, Manifests: workflowRunBackend,
+		Definitions: apiWorkflowStore, Occurrences: workflowRunBackend,
+	})
+	Expect(err).NotTo(HaveOccurred())
+	nodeUpgradeHandlers, err := nodeupgradesapi.NewHandler(nodeupgradesapi.Config{
+		TeamID: deps.trustedTeamID, TeamName: deps.trustedTeamName, Store: apiNodeStore, Upgrader: workflowRunBackend,
+		Identity: func(*http.Request) (string, error) { return "api-suite", nil },
+	})
+	Expect(err).NotTo(HaveOccurred())
+	nodeRunHandlers, err := noderunsapi.NewHandler(noderunsapi.Config{
+		Team:     workflowrunsapi.TrustedTeam{ID: deps.trustedTeamID, Name: deps.trustedTeamName},
+		Identity: func(*http.Request) (string, error) { return "api-suite", nil },
+		Binder:   workflowRunBackend, Runs: workflowRunBackend,
+		Canceler: workflowRunBackend, Manifests: workflowRunBackend,
+	})
+	Expect(err).NotTo(HaveOccurred())
+	workflowOverviewHandlers, err := workflowoverviewapi.NewHandler(workflowoverviewapi.Config{
+		Team:        workflowoverviewapi.TrustedTeam{ID: deps.trustedTeamID, Name: deps.trustedTeamName},
+		Definitions: apiWorkflowStore, Runs: workflowRunBackend, Occurrences: workflowRunBackend,
+	})
+	Expect(err).NotTo(HaveOccurred())
+	workflowOutcomeHandlers, err := workflowoutcomesapi.NewHandler(workflowoutcomesapi.HandlerConfig{
+		TeamID: deps.trustedTeamID, TeamName: deps.trustedTeamName,
+		Identity:   func(*http.Request) (string, error) { return "api-suite", nil },
+		Store:      workflowoutcomesapi.NewMemoryStore(time.Now),
+		Authorizer: allowWorkflowOutcomeAuthorizer{},
+	})
+	Expect(err).NotTo(HaveOccurred())
+	workflowWaitHandlers, err := workflowwaitsapi.NewHandler(workflowwaitsapi.Config{
+		Team: workflowwaitsapi.TrustedTeam{ID: deps.trustedTeamID, Name: deps.trustedTeamName},
+		Identity: func(*http.Request) (workflowwaitsapi.RequestIdentity, error) {
+			return workflowwaitsapi.RequestIdentity{Actor: "subject:sha256:api-suite", DisplayName: "api-suite"}, nil
+		},
+		Runs: workflowRunBackend, Waits: workflowwaittest.NewMemoryStore(time.Now), Manifests: workflowRunBackend,
+	})
+	Expect(err).NotTo(HaveOccurred())
+	experimentHandlers, err := experimentsapi.NewHandler(experimentsapi.Config{
+		TeamID: deps.trustedTeamID, TeamName: deps.trustedTeamName,
+		Identity: func(*http.Request) (string, error) { return "api-suite", nil },
+		Store:    deps.experiments, RunnerAvailable: true,
+	})
+	Expect(err).NotTo(HaveOccurred())
+	apiTicketStore := ticketstest.NewMemoryStore()
+	handler, err := api.NewHandler(
+		logger,
+
+		externalURL,
+		"",
+		clusterName,
+
+		apiWrapper,
+
+		deps.teamFactory,
+		deps.pipelineFactory,
+		deps.jobFactory,
+		deps.resourceFactory,
+		deps.workerFactory,
+		deps.workerTeamFactory,
+		deps.volumeRepository,
+		deps.buildFactory,
+		deps.checkFactory,
+		deps.pipelineRunFactory,
+		deps.resourceConfigFactory,
+		deps.userFactory,
+
+		constructedEventHandler.Construct,
+
+		fakeWorkerPool,
+
+		sink,
+
+		isTLSEnabled,
+
+		cliDownloadsDir,
+		"1.2.3",
+		"4.5.6",
+		"0.1.0-test",
+		"8.0.1-test",
+		fakeSecretManager,
+		fakeVarSourcePool,
+		credsManagers,
+		interceptTimeoutFactory,
+		time.Second,
+		deps.wall,
+		fakeClock,
+		deps.signingKeyFactory,
+		nil,
+		apiFeedbackStore,
+		reviewstest.NewMemoryStore(),
+		metricstest.NewMemoryStore(),
+		apiTicketStore,
+		deps.workflowRuns,
+		ticketjournal.TrustedTeam{ID: deps.trustedTeamID},
+		credentialstest.NewMemoryBackend(),
+		budgettest.NewMemoryLedger(),
+		0,
+		deps.transcripts,
+		apiWorkflowStore,
+		apiNodeStore,
+		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNotImplemented) // dispatch handler stub
+		}),
+		dispatchertest.NewMemoryStore(),
+		snapshotHandlers,
+		nil, // resource capture disabled with the snapshot service in this suite
+		workflowRunHandlers,
+		workflowOverviewHandlers,
+		nodeRunHandlers,
+		nodeUpgradeHandlers,
+		workflowWaitHandlers,
+		workflowOutcomeHandlers,
+		experimentHandlers,
+	)
+
+	Expect(err).NotTo(HaveOccurred())
+
+	accessorHandler := accessor.NewHandler(
+		logger,
+		"some-action",
+		handler,
+		fakeAccessor,
+		new(auditorfakes.FakeAuditor),
+		map[string]string{},
+	)
+
+	handler = wrappa.LoggerHandler{
+		Logger:  logger,
+		Handler: accessorHandler,
+	}
+
+	return httptest.NewServer(handler)
+
+}
+
 var _ = BeforeEach(func() {
 	dbTeamFactory = new(dbfakes.FakeTeamFactory)
 	dbWorkerTeamFactory = new(dbfakes.FakeTeamFactory)
@@ -255,167 +473,7 @@ var _ = BeforeEach(func() {
 
 	build = new(dbfakes.FakeBuild)
 
-	checkPipelineAccessHandlerFactory := auth.NewCheckPipelineAccessHandlerFactory(dbTeamFactory)
-
-	checkBuildReadAccessHandlerFactory := auth.NewCheckBuildReadAccessHandlerFactory(dbBuildFactory)
-
-	checkBuildWriteAccessHandlerFactory := auth.NewCheckBuildWriteAccessHandlerFactory(dbBuildFactory)
-
-	checkWorkerTeamAccessHandlerFactory := auth.NewCheckWorkerTeamAccessHandlerFactory(dbWorkerFactory)
-
-	fakePolicyChecker = new(policycheckerfakes.FakePolicyChecker)
-	fakePolicyChecker.CheckReturns(policy.PassedPolicyCheck(), nil)
-
-	apiWrapper := wrappa.MultiWrappa{
-		wrappa.NewPolicyCheckWrappa(logger, fakePolicyChecker),
-		wrappa.NewAPIAuthWrappa(
-			checkPipelineAccessHandlerFactory,
-			checkBuildReadAccessHandlerFactory,
-			checkBuildWriteAccessHandlerFactory,
-			checkWorkerTeamAccessHandlerFactory,
-		),
-	}
-
-	snapshotHandlers, err := snapshotsapi.NewHandlerFactory(snapshotsapi.Config{Enabled: false})
-	Expect(err).NotTo(HaveOccurred())
-	workflowRunBackend := unavailableWorkflowRunBackend{}
-	apiWorkflowStore := workflowtest.NewMemoryStore()
-	apiNodeStore := workflowtest.NewMemoryNodeStore()
-	workflowRunHandlers, err := workflowrunsapi.NewHandler(workflowrunsapi.Config{
-		Team:     workflowrunsapi.TrustedTeam{ID: 1, Name: atc.DefaultTeamName},
-		Identity: func(*http.Request) (string, error) { return "api-suite", nil },
-		Binder:   workflowRunBackend, Runs: workflowRunBackend,
-		Canceler: workflowRunBackend, Manifests: workflowRunBackend,
-		Definitions: apiWorkflowStore, Occurrences: workflowRunBackend,
-	})
-	Expect(err).NotTo(HaveOccurred())
-	nodeUpgradeHandlers, err := nodeupgradesapi.NewHandler(nodeupgradesapi.Config{
-		TeamID: 1, TeamName: atc.DefaultTeamName, Store: apiNodeStore, Upgrader: workflowRunBackend,
-		Identity: func(*http.Request) (string, error) { return "api-suite", nil },
-	})
-	Expect(err).NotTo(HaveOccurred())
-	nodeRunHandlers, err := noderunsapi.NewHandler(noderunsapi.Config{
-		Team:     workflowrunsapi.TrustedTeam{ID: 1, Name: atc.DefaultTeamName},
-		Identity: func(*http.Request) (string, error) { return "api-suite", nil },
-		Binder:   workflowRunBackend, Runs: workflowRunBackend,
-		Canceler: workflowRunBackend, Manifests: workflowRunBackend,
-	})
-	Expect(err).NotTo(HaveOccurred())
-	workflowOverviewHandlers, err := workflowoverviewapi.NewHandler(workflowoverviewapi.Config{
-		Team:        workflowoverviewapi.TrustedTeam{ID: 1, Name: atc.DefaultTeamName},
-		Definitions: apiWorkflowStore, Runs: workflowRunBackend, Occurrences: workflowRunBackend,
-	})
-	Expect(err).NotTo(HaveOccurred())
-	workflowOutcomeHandlers, err := workflowoutcomesapi.NewHandler(workflowoutcomesapi.HandlerConfig{
-		TeamID: 1, TeamName: atc.DefaultTeamName,
-		Identity:   func(*http.Request) (string, error) { return "api-suite", nil },
-		Store:      workflowoutcomesapi.NewMemoryStore(time.Now),
-		Authorizer: allowWorkflowOutcomeAuthorizer{},
-	})
-	Expect(err).NotTo(HaveOccurred())
-	workflowWaitHandlers, err := workflowwaitsapi.NewHandler(workflowwaitsapi.Config{
-		Team: workflowwaitsapi.TrustedTeam{ID: 1, Name: atc.DefaultTeamName},
-		Identity: func(*http.Request) (workflowwaitsapi.RequestIdentity, error) {
-			return workflowwaitsapi.RequestIdentity{Actor: "subject:sha256:api-suite", DisplayName: "api-suite"}, nil
-		},
-		Runs: workflowRunBackend, Waits: workflowwaittest.NewMemoryStore(time.Now), Manifests: workflowRunBackend,
-	})
-	Expect(err).NotTo(HaveOccurred())
-	experimentHandlers, err := experimentsapi.NewHandler(experimentsapi.Config{
-		TeamID: 1, TeamName: atc.DefaultTeamName,
-		Identity: func(*http.Request) (string, error) { return "api-suite", nil },
-		Store:    new(dbfakes.FakeAgentExperimentsFactory), RunnerAvailable: true,
-	})
-	Expect(err).NotTo(HaveOccurred())
-	apiTicketStore := ticketstest.NewMemoryStore()
-	handler, err := api.NewHandler(
-		logger,
-
-		externalURL,
-		"",
-		clusterName,
-
-		apiWrapper,
-
-		dbTeamFactory,
-		dbPipelineFactory,
-		dbJobFactory,
-		dbResourceFactory,
-		dbWorkerFactory,
-		dbWorkerTeamFactory,
-		fakeVolumeRepository,
-		dbBuildFactory,
-		dbCheckFactory,
-		fakePipelineRunFactory,
-		dbResourceConfigFactory,
-		dbUserFactory,
-
-		constructedEventHandler.Construct,
-
-		fakeWorkerPool,
-
-		sink,
-
-		isTLSEnabled,
-
-		cliDownloadsDir,
-		"1.2.3",
-		"4.5.6",
-		"0.1.0-test",
-		"8.0.1-test",
-		fakeSecretManager,
-		fakeVarSourcePool,
-		credsManagers,
-		interceptTimeoutFactory,
-		time.Second,
-		dbWall,
-		fakeClock,
-		dbSigningKeyFactory,
-		nil,
-		apiFeedbackStore,
-		reviewstest.NewMemoryStore(),
-		metricstest.NewMemoryStore(),
-		apiTicketStore,
-		new(dbfakes.FakeAgentWorkflowRunsFactory),
-		ticketjournal.TrustedTeam{ID: 1},
-		credentialstest.NewMemoryBackend(),
-		budgettest.NewMemoryLedger(),
-		0,
-		fakeAgentRunTranscriptFactory,
-		apiWorkflowStore,
-		apiNodeStore,
-		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(http.StatusNotImplemented) // dispatch handler stub
-		}),
-		dispatchertest.NewMemoryStore(),
-		snapshotHandlers,
-		nil, // resource capture disabled with the snapshot service in this suite
-		workflowRunHandlers,
-		workflowOverviewHandlers,
-		nodeRunHandlers,
-		nodeUpgradeHandlers,
-		workflowWaitHandlers,
-		workflowOutcomeHandlers,
-		experimentHandlers,
-	)
-
-	Expect(err).NotTo(HaveOccurred())
-
-	accessorHandler := accessor.NewHandler(
-		logger,
-		"some-action",
-		handler,
-		fakeAccessor,
-		new(auditorfakes.FakeAuditor),
-		map[string]string{},
-	)
-
-	handler = wrappa.LoggerHandler{
-		Logger:  logger,
-		Handler: accessorHandler,
-	}
-
-	server = httptest.NewServer(handler)
+	server = newAPIServer(fakeDBDeps())
 
 	client = &http.Client{
 		Transport: &http.Transport{},
