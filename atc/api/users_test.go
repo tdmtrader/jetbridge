@@ -1,15 +1,15 @@
 package api_test
 
 import (
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
-	"time"
 
 	"github.com/concourse/concourse/atc"
 
-	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbfakes"
 	. "github.com/concourse/concourse/atc/testhelpers"
 
@@ -22,7 +22,15 @@ var _ = Describe("Users API", func() {
 	var (
 		response *http.Response
 		query    url.Values
+
+		realdb *realDB
+		server *httptest.Server
 	)
+
+	BeforeEach(func() {
+		realdb = useRealDB()
+		server = realdb.Serve()
+	})
 
 	Context("GET /api/v1/user", func() {
 
@@ -145,7 +153,16 @@ var _ = Describe("Users API", func() {
 
 				Context("failing to retrieve users", func() {
 					BeforeEach(func() {
-						dbUserFactory.GetAllUsersReturns(nil, errors.New("no db connection"))
+						// Narrowly scoped: only the user factory fails, so the 500
+						// is attributable to this handler's read. Everything else
+						// in the handler stays real, which is what the deps struct
+						// makes cheap.
+						failing := new(dbfakes.FakeUserFactory)
+						failing.GetAllUsersReturns(nil, errors.New("no db connection"))
+
+						deps := realdb.Deps
+						deps.userFactory = failing
+						server = newAPIServer(deps)
 					})
 
 					It("fails", func() {
@@ -153,44 +170,47 @@ var _ = Describe("Users API", func() {
 					})
 				})
 
-				Context("having no users", func() {
-					BeforeEach(func() {
-						dbUserFactory.GetAllUsersReturns([]db.User{}, nil)
-					})
-
-					It("returns an empty array", func() {
+				Context("having only the seeded platform user", func() {
+					It("returns just that user", func() {
 						body, err := io.ReadAll(response.Body)
 						Expect(err).NotTo(HaveOccurred())
 
-						Expect(body).To(MatchJSON(`[]`))
+						// Migration 1773106022 seeds a 'platform' user with
+						// last_login at the epoch. The old spec asserted `[]` here,
+						// which no real deployment ever returns.
+						var listed []struct {
+							Username  string `json:"username"`
+							Connector string `json:"connector"`
+							LastLogin int64  `json:"last_login"`
+						}
+						Expect(json.Unmarshal(body, &listed)).To(Succeed())
+						Expect(listed).To(HaveLen(1))
+						Expect(listed[0].Username).To(Equal("platform"))
+						Expect(listed[0].Connector).To(Equal("local"))
+						Expect(listed[0].LastLogin).To(BeZero())
 					})
 				})
 
 				Context("having users", func() {
-					var loginDate time.Time
 					BeforeEach(func() {
-						user1 := new(dbfakes.FakeUser)
-						user1.IDReturns(6)
-						user1.NameReturns("bob")
-						user1.ConnectorReturns("github")
-						user1.SubReturns("sub")
-
-						loginDate = time.Unix(10, 0)
-						user1.LastLoginReturns(loginDate)
-
-						dbUserFactory.GetAllUsersReturns([]db.User{user1}, nil)
+						Expect(realdb.Deps.userFactory.CreateOrUpdateUser("bob", "github", "sub")).To(Succeed())
 					})
 
 					It("returns all users logged in since table creation", func() {
 						body, err := io.ReadAll(response.Body)
 						Expect(err).NotTo(HaveOccurred())
 
-						Expect(body).To(MatchJSON(`[{
-							"id": 6,
-							"username": "bob",
-							"connector": "github",
-							"last_login": 10
-						}]`))
+						var listed []struct {
+							Username  string `json:"username"`
+							Connector string `json:"connector"`
+						}
+						Expect(json.Unmarshal(body, &listed)).To(Succeed())
+
+						var names []string
+						for _, u := range listed {
+							names = append(names, u.Username+"/"+u.Connector)
+						}
+						Expect(names).To(ConsistOf("platform/local", "bob/github"))
 					})
 
 				})
@@ -228,29 +248,28 @@ var _ = Describe("Users API", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 		Context("with correct date format", func() {
-			var loginDate time.Time
 			BeforeEach(func() {
-				date = "1969-12-30"
-
-				user1 := new(dbfakes.FakeUser)
-				user1.IDReturns(6)
-				user1.NameReturns("bob")
-				user1.ConnectorReturns("github")
-				user1.SubReturns("sub")
-				loginDate = time.Unix(10, 0)
-				user1.LastLoginReturns(loginDate)
-				dbUserFactory.GetAllUsersByLoginDateReturns([]db.User{user1}, nil)
+				// The seeded platform user logged in at the epoch, so a cutoff
+				// after 1970 excludes it and leaves only the user created here --
+				// which is the filter the endpoint exists to apply. The previous
+				// date, 1969-12-30, is before the epoch and excludes nothing.
+				date = "2000-01-01"
+				Expect(realdb.Deps.userFactory.CreateOrUpdateUser("bob", "github", "sub")).To(Succeed())
 			})
 			It("returns users", func() {
 				body, err := io.ReadAll(response.Body)
 				Expect(err).NotTo(HaveOccurred())
 
-				Expect(body).To(MatchJSON(`[{
-						"id": 6,
-						"username": "bob",
-						"connector": "github",
-						"last_login": 10
-					}]`))
+				var listed []struct {
+					Username string `json:"username"`
+				}
+				Expect(json.Unmarshal(body, &listed)).To(Succeed())
+
+				var names []string
+				for _, u := range listed {
+					names = append(names, u.Username)
+				}
+				Expect(names).To(ConsistOf("bob"))
 			})
 		})
 
@@ -270,15 +289,29 @@ var _ = Describe("Users API", func() {
 			})
 		})
 
-		Context("no users logged in since the given date", func() {
+		Context("without a since parameter", func() {
 			BeforeEach(func() {
 				date = ""
 			})
-			It("returns an empty array", func() {
+			It("lists every user", func() {
 				body, err := io.ReadAll(response.Body)
 				Expect(err).NotTo(HaveOccurred())
 
-				Expect(body).To(MatchJSON(`[]`))
+				// get_since.go:49-50 falls through to GetAllUsers when since is
+				// absent, so this returns everyone -- here, the seeded platform
+				// user. This Context was previously called "no users logged in
+				// since the given date" and asserted `[]`, which was true only
+				// because an unstubbed fake returns nil.
+				var listed []struct {
+					Username string `json:"username"`
+				}
+				Expect(json.Unmarshal(body, &listed)).To(Succeed())
+
+				var names []string
+				for _, u := range listed {
+					names = append(names, u.Username)
+				}
+				Expect(names).To(ConsistOf("platform"))
 			})
 		})
 	})
