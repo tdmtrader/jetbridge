@@ -20,10 +20,6 @@ import (
 	"github.com/tedsuo/ifrit/ginkgomon_v2"
 )
 
-type Runner struct {
-	Port int
-}
-
 func (runner Runner) Run(signals <-chan os.Signal, ready chan<- struct{}) error {
 	defer ginkgo.GinkgoRecover()
 
