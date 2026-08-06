@@ -1046,12 +1046,10 @@ func runPreflightAndExpectPass(dsn string) {
 	}
 	Expect(err).NotTo(HaveOccurred())
 
-	// Parse DSN fields: "host=/tmp user=postgres dbname=testdb sslmode=disable port=5432"
+	// Parse the dynamic TCP DSN; only dbname is replaced with the suite-owned cc_db_ clone.
 	dsnFields := parseDSN(dsn)
 
-	// The test postgres runner uses Unix sockets (host=/tmp). The preflight
-	// script uses psql via PGHOST/PGPORT/etc env vars. For Unix sockets,
-	// we pass the socket directory as PGHOST.
+	// The preflight script uses psql via the shared service's TCP host and port.
 	cmd := exec.Command("bash", scriptPath,
 		"--host", dsnFields["host"],
 		"--port", dsnFields["port"],

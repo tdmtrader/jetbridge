@@ -8,7 +8,6 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/tedsuo/ifrit"
 	"go.opentelemetry.io/otel/exporters/jaeger"
 
 	"github.com/concourse/concourse/atc/db"
@@ -20,7 +19,6 @@ import (
 
 var (
 	postgresRunner postgresrunner.Runner
-	dbProcess      ifrit.Process
 
 	lockFactory lock.LockFactory
 	teamFactory db.TeamFactory
@@ -35,7 +33,14 @@ func TestAlgorithm(t *testing.T) {
 	RunSpecs(t, "Algorithm Suite")
 }
 
-var _ = BeforeSuite(func() {
+var _ = SynchronizedBeforeSuite(func() []byte {
+	return postgresrunner.InitializeRunnerForGinkgo(&postgresRunner)
+}, func(data []byte) {
+	prepareTracingForGinkgo()
+	postgresrunner.SynchronizeRunnerForGinkgo(&postgresRunner, data)
+})
+
+func prepareTracingForGinkgo() {
 	jaegerURL := os.Getenv("JAEGER_URL")
 
 	if jaegerURL != "" {
@@ -49,9 +54,7 @@ var _ = BeforeSuite(func() {
 		err := c.Prepare()
 		Expect(err).ToNot(HaveOccurred())
 	}
-
-	postgresrunner.InitializeRunnerForGinkgo(&postgresRunner, &dbProcess)
-})
+}
 
 var _ = BeforeEach(func() {
 	postgresRunner.CreateTestDBFromTemplate()
@@ -74,10 +77,11 @@ var _ = AfterEach(func() {
 	postgresRunner.DropTestDB()
 })
 
-var _ = AfterSuite(func() {
-	postgresrunner.FinalizeRunnerForGinkgo(&postgresRunner, &dbProcess)
-
+var _ = SynchronizedAfterSuite(func() {
 	if exporter != nil {
 		exporter.Shutdown(context.Background())
 	}
+	postgresrunner.CleanupRunnerForGinkgo(&postgresRunner)
+}, func() {
+	postgresrunner.FinalizeRunnerForGinkgo(&postgresRunner)
 })

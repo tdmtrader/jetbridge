@@ -8,6 +8,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	"code.cloudfoundry.org/lager/v3"
+	"github.com/concourse/concourse/atc/postgresrunner"
 	"github.com/concourse/concourse/skymarshal/dexserver"
 	store "github.com/concourse/concourse/skymarshal/storage"
 	"github.com/concourse/dex/server"
@@ -27,13 +28,14 @@ var _ = Describe("Dex Server", func() {
 	BeforeEach(func() {
 		logger = lager.NewLogger("dex")
 
-		storage, err = store.NewPostgresStorage(logger, flag.PostgresConfig{
-			Host:     "127.0.0.1",
-			Port:     uint16(5433 + GinkgoParallelProcess()),
-			User:     "postgres",
-			SSLMode:  "disable",
-			Database: "testdb",
-		})
+		postgresConfig := runnerPostgresConfig(&postgresRunner)
+		info := postgresRunner.ConnectionInfo()
+		Expect(postgresConfig.Database).To(Equal(postgresRunner.DatabaseName()))
+		Expect(postgresConfig.Database).To(HavePrefix("cc_db_"))
+		Expect(postgresConfig.Host).To(Equal(info.Host))
+		Expect(postgresConfig.Port).To(Equal(info.Port))
+
+		storage, err = store.NewPostgresStorage(logger, postgresConfig)
 		Expect(err).ToNot(HaveOccurred())
 
 		config = &dexserver.DexConfig{
@@ -222,3 +224,15 @@ var _ = Describe("Dex Server", func() {
 		})
 	})
 })
+
+func runnerPostgresConfig(r *postgresrunner.Runner) flag.PostgresConfig {
+	info := r.ConnectionInfo()
+	return flag.PostgresConfig{
+		Host:     info.Host,
+		Port:     info.Port,
+		User:     info.User,
+		Password: info.Password,
+		Database: info.Database,
+		SSLMode:  info.SSLMode,
+	}
+}

@@ -5,7 +5,6 @@ import (
 	"os/exec"
 	"strconv"
 
-	"github.com/concourse/concourse/atc/postgresrunner"
 	"github.com/onsi/gomega/gbytes"
 	"github.com/tedsuo/ifrit"
 	ginkgomon "github.com/tedsuo/ifrit/ginkgomon_v2"
@@ -20,21 +19,21 @@ var _ = Describe("Web Command", func() {
 		concourseCommand *exec.Cmd
 		concourseProcess ifrit.Process
 		concourseRunner  *ginkgomon.Runner
-		postgresRunner   postgresrunner.Runner
-		dbProcess        ifrit.Process
 	)
 
 	BeforeEach(func() {
-		postgresrunner.InitializeRunnerForGinkgo(&postgresRunner, &dbProcess)
-
 		postgresRunner.CreateEmptyTestDB()
+		info := postgresRunner.ConnectionInfo()
 
 		concourseCommand = exec.Command(
 			concoursePath,
 			"web",
-			"--postgres-user", "postgres",
-			"--postgres-database", "testdb",
-			"--postgres-port", strconv.Itoa(5433+GinkgoParallelProcess()),
+			"--postgres-host", info.Host,
+			"--postgres-port", strconv.Itoa(int(info.Port)),
+			"--postgres-user", info.User,
+			"--postgres-password", info.Password,
+			"--postgres-database", info.Database,
+			"--postgres-sslmode", info.SSLMode,
 			"--main-team-local-user", "test",
 			"--add-local-user", "test:test",
 			"--debug-bind-port", strconv.Itoa(8000+GinkgoParallelProcess()),
@@ -42,6 +41,12 @@ var _ = Describe("Web Command", func() {
 			"--client-id", "client-id",
 			"--client-secret", "client-secret",
 		)
+
+		database := commandFlagValue(concourseCommand.Args, "--postgres-database")
+		Expect(database).To(Equal(postgresRunner.DatabaseName()))
+		Expect(database).To(HavePrefix("cc_db_"))
+		Expect(commandFlagValue(concourseCommand.Args, "--postgres-host")).To(Equal(info.Host))
+		Expect(commandFlagValue(concourseCommand.Args, "--postgres-port")).To(Equal(strconv.Itoa(int(info.Port))))
 	})
 
 	JustBeforeEach(func() {
@@ -61,8 +66,6 @@ var _ = Describe("Web Command", func() {
 		ginkgomon.Interrupt(concourseProcess)
 		<-concourseProcess.Wait()
 		postgresRunner.DropTestDB()
-
-		postgresrunner.FinalizeRunnerForGinkgo(&postgresRunner, &dbProcess)
 	})
 
 	It("starts atc", func() {
@@ -79,3 +82,12 @@ var _ = Describe("Web Command", func() {
 		})
 	})
 })
+
+func commandFlagValue(args []string, name string) string {
+	for i := range args {
+		if args[i] == name && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+	return ""
+}
