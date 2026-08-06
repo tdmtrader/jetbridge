@@ -15,7 +15,6 @@ import (
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -336,7 +335,13 @@ plan:
 	})
 
 	It("rejects a real digest lease owned by another database connection", func() {
-		otherFactory := db.NewAgentSnapshotsFactory(new(dbfakes.FakeDbConn))
+		// A second real connection, not a stand-in for one: the rejection is
+		// about connection identity, so the other connection has to be a genuine
+		// one for the check to mean anything.
+		otherConn := postgresRunner.OpenConn()
+		defer func() { Expect(otherConn.Close()).To(Succeed()) }()
+
+		otherFactory := db.NewAgentSnapshotsFactory(otherConn)
 		_, err := otherFactory.DigestState(ctx, lease, digest("1"), time.Now())
 		Expect(err).To(MatchError(ContainSubstring("belongs to another database connection")))
 	})
