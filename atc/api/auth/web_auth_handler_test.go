@@ -10,12 +10,11 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/auth"
 	"github.com/concourse/concourse/atc/api/auth/authfakes"
 	"github.com/concourse/concourse/atc/api/buildserver"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
-	"github.com/concourse/concourse/atc/event"
 	"github.com/concourse/concourse/skymarshal/token/tokenfakes"
 )
 
@@ -132,21 +131,27 @@ var _ = Describe("WebAuthHandler", func() {
 
 			Context("the nested handler returns an event stream", func() {
 				BeforeEach(func() {
-					build := new(dbfakes.FakeBuild)
-					fakeEventSource := new(dbfakes.FakeEventSource)
-					fakeEventSource.NextReturns(event.Envelope{}, db.ErrEndOfBuildEventStream)
-					build.EventsReturns(fakeEventSource, nil)
+					team := createTeam("event-stream-team")
+					build := createJobBuild(team, "event-stream-pipeline", "event-stream-job")
+					started, err := build.Start(atc.Plan{})
+					Expect(err).NotTo(HaveOccurred())
+					Expect(started).To(BeTrue())
+					Expect(build.Finish(db.BuildStatusSucceeded)).To(Succeed())
+					found, err := build.Reload()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(found).To(BeTrue())
+					Expect(build.IsCompleted()).To(BeTrue())
 
-					server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					eventServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 						defer GinkgoRecover()
 						auth.WebAuthHandler{
 							Handler:    buildserver.NewEventHandler(lager.NewLogger("test"), build),
 							Middleware: fakeMiddleware,
 						}.ServeHTTP(w, r)
 					}))
+					DeferCleanup(eventServer.Close)
 
-					var err error
-					request, err = http.NewRequest("GET", server.URL, bytes.NewBufferString("hello"))
+					request, err = http.NewRequest("GET", eventServer.URL, bytes.NewBufferString("hello"))
 					Expect(err).NotTo(HaveOccurred())
 				})
 

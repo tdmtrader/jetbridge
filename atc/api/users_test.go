@@ -2,15 +2,14 @@ package api_test
 
 import (
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 
 	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/db"
 
-	"github.com/concourse/concourse/atc/db/dbfakes"
 	. "github.com/concourse/concourse/atc/testhelpers"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -153,12 +152,12 @@ var _ = Describe("Users API", func() {
 
 				Context("failing to retrieve users", func() {
 					BeforeEach(func() {
-						// Narrowly scoped: only the user factory fails, so the 500
-						// is attributable to this handler's read. Everything else
-						// in the handler stays real, which is what the deps struct
-						// makes cheap.
-						failing := new(dbfakes.FakeUserFactory)
-						failing.GetAllUsersReturns(nil, errors.New("no db connection"))
+						// Use a real factory over a deliberately closed clone-local
+						// connection. This exercises the handler's database failure
+						// path without replacing the user domain object with a fake.
+						doomed := postgresRunner.OpenConn()
+						failing := db.NewUserFactory(doomed)
+						Expect(doomed.Close()).To(Succeed())
 
 						deps := realdb.Deps
 						deps.userFactory = failing
