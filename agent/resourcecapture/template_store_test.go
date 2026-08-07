@@ -12,7 +12,6 @@ import (
 	"github.com/concourse/concourse/agent/workflowrun"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 )
 
 type immutableTemplateSaverStub struct {
@@ -25,25 +24,6 @@ type immutableTemplateSaverStub struct {
 func (stub *immutableTemplateSaverStub) SaveOrReuse(_ context.Context, admission workflowrun.AdmissionContext, spec workflowrun.ImmutableTemplateSpec) (workflowrun.WorkflowRunTemplateRef, error) {
 	stub.admission, stub.spec = admission, spec
 	return stub.ref, stub.err
-}
-
-type captureTemplateTeamFinder struct{ team db.Team }
-
-func (finder *captureTemplateTeamFinder) FindTeam(string) (db.Team, bool, error) {
-	return finder.team, true, nil
-}
-
-type captureTemplateBackend struct {
-	pipeline db.Pipeline
-	err      error
-}
-
-func (backend *captureTemplateBackend) SaveWorkflowRunTemplate(context.Context, int, atc.PipelineRef, atc.Config) (db.Pipeline, bool, error) {
-	return backend.pipeline, backend.err == nil, backend.err
-}
-
-func (backend *captureTemplateBackend) IsWorkflowRunTemplate(context.Context, int) (bool, error) {
-	return true, nil
 }
 
 func TestTemplateStoreUsesImmutableServerRegistryAndCanonicalHash(t *testing.T) {
@@ -88,7 +68,13 @@ func TestTemplateStoreUsesImmutableServerRegistryAndCanonicalHash(t *testing.T) 
 }
 
 func TestTemplateStoreAcceptsCaptureSpecWithRealTemplateSaver(t *testing.T) {
+	database := useRealResourceCaptureDB(t)
+	team, err := database.Teams.CreateTeam(atc.Team{Name: "main"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	resolved := repositoryResource()
+	resolved.TeamID = team.ID()
 	coreTemplates := &fakeTemplates{save: func(_ context.Context, spec resourcecapture.TemplateSpec) (resourcecapture.TemplateRef, error) {
 		return resourcecapture.TemplateRef{ID: 1, Name: spec.Name}, nil
 	}}
@@ -97,11 +83,13 @@ func TestTemplateStoreAcceptsCaptureSpecWithRealTemplateSaver(t *testing.T) {
 	}}, coreTemplates, &fakeExecutions{start: func(_ context.Context, request resourcecapture.ExecutionRequest) (resourcecapture.Execution, bool, error) {
 		return resourcecapture.Execution{PipelineRunID: 1, TemplatePipelineID: request.Template.ID, InstancePipelineID: 2, Status: db.PipelineRunRunning}, true, nil
 	}}, &fakeOutputs{})
-	if _, err := capturer.Capture(context.Background(), validRequest()); err != nil {
+	request := validRequest()
+	request.TeamID = team.ID()
+	if _, err := capturer.Capture(context.Background(), request); err != nil {
 		t.Fatal(err)
 	}
 	capturedSpec := coreTemplates.calls[0]
-	core, err := workflowrun.NewTemplateSaver(captureTemplateSaverTeam(t, capturedSpec), captureTemplateSaverBackend(t, capturedSpec))
+	core, err := workflowrun.NewTemplateSaver(database.Teams, database.Templates)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,8 +97,46 @@ func TestTemplateStoreAcceptsCaptureSpecWithRealTemplateSaver(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.SaveOrReuse(context.Background(), capturedSpec); err != nil {
+	ref, err := store.SaveOrReuse(context.Background(), capturedSpec)
+	if err != nil {
 		t.Fatalf("real TemplateSaver rejected capture spec: %v", err)
+	}
+	if ref.ID <= 0 || ref.TeamID != team.ID() || ref.Name != capturedSpec.Name || ref.ConfigVersion <= 0 {
+		t.Fatalf("template ref = %#v", ref)
+	}
+	pipeline, found, err := team.Pipeline(atc.PipelineRef{Name: capturedSpec.Name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found {
+		t.Fatal("persisted capture template was not found through its owning team")
+	}
+	owned, err := database.Templates.IsWorkflowRunTemplate(context.Background(), pipeline.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pipeline.ID() != ref.ID || !owned || !pipeline.Template() || pipeline.InstanceVars() != nil || pipeline.Archived() ||
+		int(pipeline.ConfigVersion()) != ref.ConfigVersion {
+		t.Fatalf("persisted template = id %d, owned %v, template %v, instance vars %#v, archived %v, config version %d",
+			pipeline.ID(), owned, pipeline.Template(), pipeline.InstanceVars(), pipeline.Archived(), pipeline.ConfigVersion())
+	}
+	storedConfig, err := pipeline.Config()
+	if err != nil {
+		t.Fatal(err)
+	}
+	storedCanonical, err := storedConfig.CanonicalJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(storedCanonical) != string(capturedSpec.CanonicalJSON) {
+		t.Fatal("persisted template config differs from the captured canonical config")
+	}
+	reused, err := store.SaveOrReuse(context.Background(), capturedSpec)
+	if err != nil {
+		t.Fatalf("real TemplateSaver rejected exact reuse: %v", err)
+	}
+	if reused != ref {
+		t.Fatalf("reused ref = %#v, want %#v", reused, ref)
 	}
 
 	for _, name := range []string{
@@ -120,10 +146,6 @@ func TestTemplateStoreAcceptsCaptureSpecWithRealTemplateSaver(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			spec := capturedSpec.Clone()
 			spec.Name = name
-			core, err := workflowrun.NewTemplateSaver(captureTemplateSaverTeam(t, spec), captureTemplateSaverBackend(t, spec))
-			if err != nil {
-				t.Fatal(err)
-			}
 			targetHash, err := workflow.TargetConfigHash(spec.Config)
 			if err != nil {
 				t.Fatal(err)
@@ -169,32 +191,4 @@ func TestTemplateStoreMapsKnownImmutableSaverFailures(t *testing.T) {
 			}
 		})
 	}
-}
-
-func captureTemplateSaverTeam(t *testing.T, spec resourcecapture.TemplateSpec) *captureTemplateTeamFinder {
-	t.Helper()
-	team := new(dbfakes.FakeTeam)
-	team.IDReturns(spec.TeamID)
-	team.NameReturns(spec.TeamName)
-	team.PipelineReturns(nil, false, nil)
-	team.PipelineReturnsOnCall(1, captureTemplateSaverPipeline(spec), true, nil)
-	return &captureTemplateTeamFinder{team: team}
-}
-
-func captureTemplateSaverBackend(t *testing.T, spec resourcecapture.TemplateSpec) *captureTemplateBackend {
-	t.Helper()
-	return &captureTemplateBackend{pipeline: captureTemplateSaverPipeline(spec)}
-}
-
-func captureTemplateSaverPipeline(spec resourcecapture.TemplateSpec) *dbfakes.FakePipeline {
-	pipeline := new(dbfakes.FakePipeline)
-	pipeline.IDReturns(41)
-	pipeline.TeamIDReturns(spec.TeamID)
-	pipeline.NameReturns(spec.Name)
-	pipeline.TemplateReturns(true)
-	pipeline.InstanceVarsReturns(nil)
-	pipeline.ArchivedReturns(false)
-	pipeline.ConfigVersionReturns(1)
-	pipeline.ConfigReturns(spec.Config, nil)
-	return pipeline
 }
