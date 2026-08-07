@@ -41,34 +41,34 @@ corpus files. Do not push.
 
 ## Task 1: Add and prove the opt-in scheduler fixture
 
-- [ ] Register `postgresrunner.GinkgoRunner` once in the suite.
-- [ ] Define `schedulerDB` with clone `DbConn`, production `lock.LockFactory`,
+- [x] Register `postgresrunner.GinkgoRunner` once in the suite.
+- [x] Define `schedulerDB` with clone `DbConn`, production `lock.LockFactory`,
   `dbtest.Builder`, and team/pipeline/job/build factories.
-- [ ] Implement `useSchedulerDB` with drop registered before close cleanup so
+- [x] Implement `useSchedulerDB` with drop registered before close cleanup so
   Ginkgo LIFO order closes the primary and all lock connections before drop.
   No suite-wide `BeforeEach` may clone a database. Call
   `db.CleanupBaseResourceTypesCache()` for each new clone.
-- [ ] Add helpers for a persisted team/pipeline/job graph, schedule requests,
+- [x] Add helpers for a persisted team/pipeline/job graph, schedule requests,
   persisted reloads, secondary loaded-then-closed jobs/factories, and an
   independent lock session only where reused. Add a SQL helper that reads
   `schedule_requested` and `last_scheduled` by job ID; `db.Job` exposes no
   last-scheduled getter and its reload query does not select that column.
-- [ ] Run `pg_isready -h 127.0.0.1 -p 15432 -U postgres`, compile with
+- [x] Run `pg_isready -h 127.0.0.1 -p 15432 -U postgres`, compile with
   `go test ./atc/scheduler -run '^$'`, and prove one small opt-in fixture spec
   serially and with `ginkgo -p` before broader rewiring.
-- [ ] Independently inspect lifecycle/order and commit the fixture as
+- [x] Independently inspect lifecycle/order and commit the fixture as
   `test(scheduler): add isolated postgres fixture`.
 
 ## Task 2: Persist scheduler metrics and tracing state
 
-- [ ] Call `useSchedulerDB` only in the metrics Describes that need persisted
+- [x] Call `useSchedulerDB` only in the metrics Describes that need persisted
   jobs/builds; keep metric, tracing exporter, planner, algorithm, and build
   scheduler collaborators as their existing non-database seams.
-- [ ] Persist the jobs used for scheduling-gauge, scheduling-duration, and
+- [x] Persist the jobs used for scheduling-gauge, scheduling-duration, and
   schedule-job tracing cases. Request scheduling through the real job API,
   feed the real `JobFactory` to `Runner`, and join each scheduling goroutine
   before clone cleanup.
-- [ ] Persist an ordinary pending job build for `BuildsStarted` and the
+- [x] Persist an ordinary pending job build for `BuildsStarted` and the
   try-start-pending-build tracing case. Call
   `job.SaveNextInputMapping(nil, true)` before BuildStarter runs; persisted jobs
   otherwise default `inputs_determined=false` and decline to adopt/start the
@@ -76,32 +76,32 @@ corpus files. Do not push.
   Read scheduling timestamps with the fixture SQL helper and assert exact
   `schedule_requested`/`last_scheduled` outcomes in addition to metric/span
   observations.
-- [ ] Retain exactly one shared `FakeJob` and one shared `FakeBuild` for the
+- [x] Retain exactly one shared `FakeJob` and one shared `FakeBuild` for the
   check-build-name metric case, whose synthetic job pending-build result and
   special build name are the behavior under observation. Comment this exact
   boundary.
-- [ ] Add a representative persisted assertion before rewiring and capture
+- [x] Add a representative persisted assertion before rewiring and capture
   RED, then GREEN. Sensitivity-check a wrong job/build ID or timestamp and
   restore it.
-- [ ] Run the metrics focus serially and in parallel, format, vet, diff-check,
+- [x] Run the metrics focus serially and in parallel, format, vet, diff-check,
   recount 9 to 2, obtain independent review, and commit as
   `test(scheduler): persist metrics scheduling state`.
 
 ## Task 3: Persist runner job, reload, timestamp, and lock behavior
 
-- [ ] Replace ordinary `FakeJob`, `FakePipeline`, and `FakeJobFactory` setup
+- [x] Replace ordinary `FakeJob`, `FakePipeline`, and `FakeJobFactory` setup
   with persisted pipelines/jobs returned by the real job factory. Preserve
   exact scheduler resources, but do not assume result order:
   `JobsToSchedule` has no `ORDER BY` and scheduling is asynchronous. Key
   scheduler stub behavior by real job ID/name and make observations
   order-independent.
-- [ ] Assert successful runs by querying each job's persisted
+- [x] Assert successful runs by querying each job's persisted
   `schedule_requested`/`last_scheduled` timestamps with the fixture SQL helper,
   not generated call counts or `Job.Reload` alone.
-- [ ] Exercise lock refusal with a second production lock session holding the
+- [x] Exercise lock refusal with a second production lock session holding the
   same job scheduling lock. Release it and join every runner goroutine before
   clone cleanup.
-- [ ] Exercise direct SQL failures with objects loaded from secondary
+- [x] Exercise direct SQL failures with objects loaded from secondary
   connections that are closed only after loading and close each deliberately
   doomed `DbConn` exactly once. Exercise reload-not-found with a narrow
   real-`JobFactory` decorator that delegates `JobsToSchedule`, then
@@ -109,49 +109,69 @@ corpus files. Do not push.
   already-loaded real job. Propagate ordinary callback errors; never make
   Gomega assertions in Runner callbacks. Merely deactivating a job is
   insufficient because `Job.Reload` still finds inactive rows by ID.
-- [ ] Define a test-owned completion mechanism around each Runner invocation.
+- [x] Define a test-owned completion mechanism around each Runner invocation.
   Register failure-safe unblock/wait cleanup before `Run`; observe completion
   only after the scheduling lock is released or the last possible database
   operation. `Runner.Run` returns after launching goroutines and exposes no
   wait method, so no spec may rely on its return as completion. Never assert in
   scheduler callbacks because Runner recovers callback panics into logs.
-- [ ] Retain exactly one shared `FakeJobFactory` for the deliberately duplicated
+- [x] Retain exactly one shared `FakeJobFactory` for the deliberately duplicated
   same-real-job input. Comment that a production `JobsToSchedule` query cannot
   return this duplicate. Do not retain generated jobs or pipelines.
-- [ ] Keep `schedulerfakes.FakeBuildScheduler` and lock fakes only where they
+- [x] Keep `schedulerfakes.FakeBuildScheduler` and lock fakes only where they
   model the orchestration/runtime subject rather than database state.
-- [ ] Capture RED/GREEN on a persisted timestamp assertion and sensitivity on
+- [x] Capture RED/GREEN on a persisted timestamp assertion and sensitivity on
   the wrong job ID/time; then run the Runner focus serially and in parallel.
-- [ ] Format, vet, diff-check, recount 10 to 1, inspect all goroutine joins and
+- [x] Format, vet, diff-check, recount 10 to 1, inspect all goroutine joins and
   connection cleanup, obtain independent review, and commit as
   `test(scheduler): persist runner scheduling state`.
 
 ## Task 4: Delete dead pipeline setup and close the phase
 
-- [ ] Remove the unused `FakePipeline` declaration/setup from
+- [x] Remove the unused `FakePipeline` declaration/setup from
   `buildstarter_test.go` and `scheduler_test.go` without changing test
   behavior. Run their focused specs before and after and commit as
   `test(scheduler): remove dead pipeline doubles`.
-- [ ] Run all focused commands, `gofmt` on modified Go files,
+- [x] Run all focused commands, `gofmt` on modified Go files,
   `go test ./atc/scheduler -run '^$'`, full `ginkgo ./atc/scheduler`, uncached
   `go test ./atc/scheduler -count=1`, and full `ginkgo -p ./atc/scheduler`.
-- [ ] Run `go vet ./atc/scheduler`, live-tag compile/vet if the package has
+- [x] Run `go vet ./atc/scheduler`, live-tag compile/vet if the package has
   live-tagged files, `git diff --check`, `git status --short`, and exact
   constructor/import counts.
-- [ ] Confirm the scheduler census is exactly 39 to 21 and every retained
+- [x] Confirm the scheduler census is exactly 39 to 21 and every retained
   database fake is a documented synthetic/fault boundary.
-- [ ] Obtain independent final review with no unresolved Critical, Important,
+- [x] Obtain independent final review with no unresolved Critical, Important,
   or Minor finding; record observed evidence and commit plan closure as
   `docs: record scheduler postgres fixture phase`.
 
 ## Phase acceptance
 
-- [ ] The scheduler suite has one opt-in per-spec clone fixture and unrelated
+- [x] The scheduler suite has one opt-in per-spec clone fixture and unrelated
   specs do not create databases.
-- [ ] Metrics reaches 9 to 2, Runner reaches 10 to 1, and both dead pipeline
+- [x] Metrics reaches 9 to 2, Runner reaches 10 to 1, and both dead pipeline
   constructors are removed, for an exact scheduler total of 21.
-- [ ] Normal job/build/reload/timestamp/lock state is persisted and reread;
+- [x] Normal job/build/reload/timestamp/lock state is persisted and reread;
   retained generated database fakes model only the explicit synthetic inputs.
-- [ ] Serial and parallel full suites pass against isolated clones in one
+- [x] Serial and parallel full suites pass against isolated clones in one
   machine-wide PostgreSQL service with no goroutine using a dropped clone.
-- [ ] No production behavior or unrelated file changes, and nothing is pushed.
+- [x] No production behavior or unrelated file changes, and nothing is pushed.
+
+## Observed completion evidence
+
+- Constructor census: scheduler `39 -> 21`; Metrics `9 -> 2`; Runner `10 -> 1`;
+  the two dead `FakePipeline` constructors were removed. The retained census is
+  16 `FakeBuild`, 4 `FakeJob`, and 1 `FakeJobFactory` across the same five
+  importing files.
+- Focused converted coverage passed `18/18` serially and `18/18` across 9
+  processes. The complete package passed `127/127` serially and `127/127`
+  across 9 processes; uncached `go test ./atc/scheduler -count=1` also passed.
+- RED/sensitivity checks caught an incorrect fixture epoch, a persisted Runner
+  timestamp shifted by one second, and an expected pending status where the
+  real build was persisted as started; each assertion was restored afterward.
+- `gofmt -d`, compile-only test, `go vet ./atc/scheduler`, and
+  `git diff --check` passed. The package has no live-tagged test files.
+- Independent review passed after explicitly checking completion signaling,
+  advisory-lock release ordering, exact-once connection cleanup, and every
+  retained fake boundary; it reported no Critical, Important, or Minor finding.
+- Incremental implementation commits: `b73f620e9c`, `2a47d2d75b`,
+  `db50ef7dde`, and `e81f13bf3e`.
