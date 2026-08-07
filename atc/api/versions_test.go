@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,8 +11,10 @@ import (
 	"net/url"
 	"reflect"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbfakes"
@@ -82,6 +85,24 @@ func (resource versionsAPIVersionsNotFoundResource) Versions(
 	atc.Version,
 ) ([]atc.ResourceVersion, db.Pagination, bool, error) {
 	return nil, db.Pagination{}, false, nil
+}
+
+// versionsAPIPinNotFoundResource preserves the defensive handler branch that
+// production PostgreSQL cannot reach: pinning a nonexistent version violates
+// a constraint and returns an error instead of found=false with a nil error.
+type versionsAPIPinNotFoundResource struct {
+	db.Resource
+}
+
+func (resource versionsAPIPinNotFoundResource) PinVersion(int) (bool, error) {
+	return false, nil
+}
+
+type versionsAPIMutationVersions struct {
+	target   atc.Version
+	targetID int
+	decoy    atc.Version
+	decoyID  int
 }
 
 func newVersionsAPIFixture(ref atc.PipelineRef, config atc.Config) *versionsAPIFixture {
@@ -198,6 +219,124 @@ func (fixture *versionsAPIFixture) requestVersions(resourceName string, query ur
 	}
 	Expect(err).NotTo(HaveOccurred())
 	return response
+}
+
+func (fixture *versionsAPIFixture) requestVersionMutation(
+	resourceName string,
+	versionID int,
+	action string,
+) *http.Response {
+	GinkgoHelper()
+
+	if fixture.server == nil {
+		fixture.server = fixture.database.Serve()
+	}
+	path := fmt.Sprintf(
+		"/api/v1/teams/%s/pipelines/%s/resources/%s/versions/%d/%s",
+		fixture.team.Name(), fixture.pipeline.Name(), resourceName, versionID, action,
+	)
+	if encoded := fixture.ref.QueryParams().Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	request, err := http.NewRequest(http.MethodPut, fixture.server.URL+path, nil)
+	Expect(err).NotTo(HaveOccurred())
+	response, err := client.Do(request)
+	if response != nil {
+		DeferCleanup(func() { Expect(response.Body.Close()).To(Succeed()) })
+	}
+	Expect(err).NotTo(HaveOccurred())
+	return response
+}
+
+func newVersionsAPIMutationFixture() *versionsAPIFixture {
+	GinkgoHelper()
+
+	return newVersionsAPIFixture(atc.PipelineRef{Name: "a-pipeline"}, atc.Config{
+		Resources: atc.ResourceConfigs{{
+			Name: "resource-name", Type: dbtest.BaseResourceType,
+			Source: atc.Source{"repository": "versions-mutations"},
+		}},
+		Jobs: atc.JobConfigs{{
+			Name: "admit",
+			PlanSequence: []atc.Step{{Config: &atc.GetStep{
+				Name: "repository-source", Resource: "resource-name",
+			}}},
+		}},
+	})
+}
+
+func seedVersionsAPIMutations(fixture *versionsAPIFixture) versionsAPIMutationVersions {
+	GinkgoHelper()
+
+	versions := versionsAPIMutationVersions{
+		target: atc.Version{"ref": "target"},
+		decoy:  atc.Version{"ref": "decoy"},
+	}
+	fixture.scenario.Run(fixture.builder.WithResourceVersions(
+		"resource-name", versions.target, versions.decoy,
+	))
+	versions.targetID = fixture.scenario.ResourceVersion(
+		"resource-name", versions.target,
+	).ID()
+	versions.decoyID = fixture.scenario.ResourceVersion(
+		"resource-name", versions.decoy,
+	).ID()
+	return versions
+}
+
+func reloadVersionsAPIResource(fixture *versionsAPIFixture) db.Resource {
+	GinkgoHelper()
+
+	resource := fixture.resource("resource-name")
+	found, err := resource.Reload()
+	Expect(err).NotTo(HaveOccurred())
+	Expect(found).To(BeTrue())
+	return resource
+}
+
+func versionsAPIVersionByID(
+	fixture *versionsAPIFixture,
+	versionID int,
+) atc.ResourceVersion {
+	GinkgoHelper()
+
+	resource := reloadVersionsAPIResource(fixture)
+	versions, _, found, err := resource.Versions(db.Page{Limit: 100}, nil)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(found).To(BeTrue())
+	for _, version := range versions {
+		if version.ID == versionID {
+			return version
+		}
+	}
+	Fail(fmt.Sprintf("resource version %d not found", versionID))
+	return atc.ResourceVersion{}
+}
+
+func activateVersionsAPIWorkflowOwnership(fixture *versionsAPIFixture) {
+	GinkgoHelper()
+
+	var definitionID int
+	Expect(fixture.database.Conn.QueryRow(`
+		INSERT INTO agent_workflow_definitions
+			(name, version, content_hash, definition, created_by, schema_version, signature_version)
+		VALUES ('versions-api-workflow', 1, $1, 'schema_version: 3', 'api-test', 3, 1)
+		RETURNING id
+	`, strings.Repeat("a", 64)).Scan(&definitionID)).To(Succeed())
+	Expect(db.NewWorkflowResourceSourcePipelinesFactory(fixture.database.Conn).Activate(
+		context.Background(),
+		db.WorkflowResourceSourcePipeline{
+			PipelineID: fixture.pipeline.ID(), TeamID: fixture.team.ID(),
+			WorkflowDefinitionID: definitionID, WorkflowName: "versions-api-workflow",
+			WorkflowVersion:       1,
+			PipelineConfigVersion: int(fixture.pipeline.ConfigVersion()),
+			ConfigHash:            strings.Repeat("b", 64),
+			SourceDeclarations: []db.ResourceSourceDeclaration{{
+				SourceName: "repository-source", ResourceName: "resource-name",
+				SnapshotType: snapshot.TypeRef("repository/v1"),
+			}},
+		},
+	)).To(Succeed())
 }
 
 func decodeVersionsAPIResponse(response *http.Response) []atc.ResourceVersion {
@@ -722,17 +861,31 @@ var _ = Describe("Versions API", func() {
 	})
 
 	Describe("PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions/:resource_version_id/enable", func() {
-		var response *http.Response
-		var fakeResource *dbfakes.FakeResource
+		var (
+			response     *http.Response
+			fixture      *versionsAPIFixture
+			resourceName string
+			versions     versionsAPIMutationVersions
+			prepare      []func(*versionsAPIFixture)
+		)
+
+		BeforeEach(func() {
+			resourceName = "resource-name"
+			prepare = nil
+		})
 
 		JustBeforeEach(func() {
-			var err error
-
-			request, err := http.NewRequest("PUT", server.URL+"/api/v1/teams/a-team/pipelines/a-pipeline/resources/resource-name/versions/42/enable", nil)
-			Expect(err).NotTo(HaveOccurred())
-
-			response, err = client.Do(request)
-			Expect(err).NotTo(HaveOccurred())
+			fixture = newVersionsAPIMutationFixture()
+			versions = seedVersionsAPIMutations(fixture)
+			resource := fixture.resource("resource-name")
+			Expect(resource.DisableVersion(versions.targetID)).To(Succeed())
+			Expect(resource.DisableVersion(versions.decoyID)).To(Succeed())
+			for _, setup := range prepare {
+				setup(fixture)
+			}
+			response = fixture.requestVersionMutation(
+				resourceName, versions.targetID, "enable",
+			)
 		})
 
 		Context("when authenticated", func() {
@@ -745,28 +898,18 @@ var _ = Describe("Versions API", func() {
 					fakeAccess.IsAuthorizedReturns(true)
 				})
 
-				It("tries to find the resource", func() {
-					resourceName := fakePipeline.ResourceArgsForCall(0)
-					Expect(resourceName).To(Equal("resource-name"))
+				It("finds the configured resource", func() {
+					Expect(response.StatusCode).To(Equal(http.StatusOK))
 				})
 
 				Context("when finding the resource succeeds", func() {
-					BeforeEach(func() {
-						fakeResource = new(dbfakes.FakeResource)
-						fakeResource.IDReturns(1)
-						fakePipeline.ResourceReturns(fakeResource, true, nil)
-					})
-
-					It("tries to enable the right resource config version", func() {
-						resourceConfigVersionID := fakeResource.EnableVersionArgsForCall(0)
-						Expect(resourceConfigVersionID).To(Equal(42))
+					It("enables the exact persisted resource version from the URL", func() {
+						Expect(response.StatusCode).To(Equal(http.StatusOK))
+						Expect(versionsAPIVersionByID(fixture, versions.targetID).Enabled).To(BeTrue())
+						Expect(versionsAPIVersionByID(fixture, versions.decoyID).Enabled).To(BeFalse())
 					})
 
 					Context("when enabling the resource succeeds", func() {
-						BeforeEach(func() {
-							fakeResource.EnableVersionReturns(nil)
-						})
-
 						It("returns 200", func() {
 							Expect(response.StatusCode).To(Equal(http.StatusOK))
 						})
@@ -774,7 +917,12 @@ var _ = Describe("Versions API", func() {
 
 					Context("when enabling the resource fails", func() {
 						BeforeEach(func() {
-							fakeResource.EnableVersionReturns(errors.New("welp"))
+							prepare = append(prepare, func(fixture *versionsAPIFixture) {
+								fixture.overridePipeline(versionsAPIPipeline{
+									Pipeline: fixture.pipeline, resourceName: resourceName,
+									resource: fixture.doomedResource(resourceName),
+								})
+							})
 						})
 
 						It("returns 500", func() {
@@ -784,18 +932,22 @@ var _ = Describe("Versions API", func() {
 
 					Context("when the resource belongs to a server-owned source-selection pipeline", func() {
 						BeforeEach(func() {
-							fakeResource.EnableVersionReturns(db.ErrAgentWorkflowResourceSourceImmutable)
+							prepare = append(prepare, activateVersionsAPIWorkflowOwnership)
 						})
 
 						It("returns 409", func() {
 							Expect(response.StatusCode).To(Equal(http.StatusConflict))
+							Expect(versionsAPIVersionByID(fixture, versions.targetID).Enabled).To(BeFalse())
+							Expect(versionsAPIVersionByID(fixture, versions.decoyID).Enabled).To(BeFalse())
 						})
 					})
 				})
 
 				Context("when it fails to find the resource", func() {
 					BeforeEach(func() {
-						fakePipeline.ResourceReturns(nil, false, errors.New("welp"))
+						prepare = append(prepare, func(fixture *versionsAPIFixture) {
+							fixture.overridePipeline(fixture.doomedPipeline())
+						})
 					})
 
 					It("returns Internal Server Error", func() {
@@ -805,7 +957,7 @@ var _ = Describe("Versions API", func() {
 
 				Context("when the resource is not found", func() {
 					BeforeEach(func() {
-						fakePipeline.ResourceReturns(nil, false, nil)
+						resourceName = "missing-resource"
 					})
 
 					It("returns not found", func() {
@@ -836,17 +988,28 @@ var _ = Describe("Versions API", func() {
 	})
 
 	Describe("PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions/:resource_version_id/disable", func() {
-		var response *http.Response
-		var fakeResource *dbfakes.FakeResource
+		var (
+			response     *http.Response
+			fixture      *versionsAPIFixture
+			resourceName string
+			versions     versionsAPIMutationVersions
+			prepare      []func(*versionsAPIFixture)
+		)
+
+		BeforeEach(func() {
+			resourceName = "resource-name"
+			prepare = nil
+		})
 
 		JustBeforeEach(func() {
-			var err error
-
-			request, err := http.NewRequest("PUT", server.URL+"/api/v1/teams/a-team/pipelines/a-pipeline/resources/resource-name/versions/42/disable", nil)
-			Expect(err).NotTo(HaveOccurred())
-
-			response, err = client.Do(request)
-			Expect(err).NotTo(HaveOccurred())
+			fixture = newVersionsAPIMutationFixture()
+			versions = seedVersionsAPIMutations(fixture)
+			for _, setup := range prepare {
+				setup(fixture)
+			}
+			response = fixture.requestVersionMutation(
+				resourceName, versions.targetID, "disable",
+			)
 		})
 
 		Context("when authenticated ", func() {
@@ -859,28 +1022,18 @@ var _ = Describe("Versions API", func() {
 					fakeAccess.IsAuthorizedReturns(true)
 				})
 
-				It("tries to find the resource", func() {
-					resourceName := fakePipeline.ResourceArgsForCall(0)
-					Expect(resourceName).To(Equal("resource-name"))
+				It("finds the configured resource", func() {
+					Expect(response.StatusCode).To(Equal(http.StatusOK))
 				})
 
 				Context("when finding the resource succeeds", func() {
-					BeforeEach(func() {
-						fakeResource = new(dbfakes.FakeResource)
-						fakeResource.IDReturns(1)
-						fakePipeline.ResourceReturns(fakeResource, true, nil)
-					})
-
-					It("tries to disable the right resource config version", func() {
-						resourceConfigVersionID := fakeResource.DisableVersionArgsForCall(0)
-						Expect(resourceConfigVersionID).To(Equal(42))
+					It("disables the exact persisted resource version from the URL", func() {
+						Expect(response.StatusCode).To(Equal(http.StatusOK))
+						Expect(versionsAPIVersionByID(fixture, versions.targetID).Enabled).To(BeFalse())
+						Expect(versionsAPIVersionByID(fixture, versions.decoyID).Enabled).To(BeTrue())
 					})
 
 					Context("when disabling the resource version succeeds", func() {
-						BeforeEach(func() {
-							fakeResource.DisableVersionReturns(nil)
-						})
-
 						It("returns 200", func() {
 							Expect(response.StatusCode).To(Equal(http.StatusOK))
 						})
@@ -888,7 +1041,12 @@ var _ = Describe("Versions API", func() {
 
 					Context("when disabling the resource fails", func() {
 						BeforeEach(func() {
-							fakeResource.DisableVersionReturns(errors.New("welp"))
+							prepare = append(prepare, func(fixture *versionsAPIFixture) {
+								fixture.overridePipeline(versionsAPIPipeline{
+									Pipeline: fixture.pipeline, resourceName: resourceName,
+									resource: fixture.doomedResource(resourceName),
+								})
+							})
 						})
 
 						It("returns 500", func() {
@@ -898,18 +1056,22 @@ var _ = Describe("Versions API", func() {
 
 					Context("when the resource belongs to a server-owned source-selection pipeline", func() {
 						BeforeEach(func() {
-							fakeResource.DisableVersionReturns(db.ErrAgentWorkflowResourceSourceImmutable)
+							prepare = append(prepare, activateVersionsAPIWorkflowOwnership)
 						})
 
 						It("returns 409", func() {
 							Expect(response.StatusCode).To(Equal(http.StatusConflict))
+							Expect(versionsAPIVersionByID(fixture, versions.targetID).Enabled).To(BeTrue())
+							Expect(versionsAPIVersionByID(fixture, versions.decoyID).Enabled).To(BeTrue())
 						})
 					})
 				})
 
 				Context("when it fails to find the resource", func() {
 					BeforeEach(func() {
-						fakePipeline.ResourceReturns(nil, false, errors.New("welp"))
+						prepare = append(prepare, func(fixture *versionsAPIFixture) {
+							fixture.overridePipeline(fixture.doomedPipeline())
+						})
 					})
 
 					It("returns Internal Server Error", func() {
@@ -919,7 +1081,7 @@ var _ = Describe("Versions API", func() {
 
 				Context("when the resource is not found", func() {
 					BeforeEach(func() {
-						fakePipeline.ResourceReturns(nil, false, nil)
+						resourceName = "missing-resource"
 					})
 
 					It("returns not found", func() {
@@ -949,17 +1111,31 @@ var _ = Describe("Versions API", func() {
 	})
 
 	Describe("PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions/:resource_version_id/pin", func() {
-		var response *http.Response
-		var fakeResource *dbfakes.FakeResource
+		var (
+			response     *http.Response
+			fixture      *versionsAPIFixture
+			resourceName string
+			versions     versionsAPIMutationVersions
+			prepare      []func(*versionsAPIFixture)
+		)
+
+		BeforeEach(func() {
+			resourceName = "resource-name"
+			prepare = nil
+		})
 
 		JustBeforeEach(func() {
-			var err error
-
-			request, err := http.NewRequest("PUT", server.URL+"/api/v1/teams/a-team/pipelines/a-pipeline/resources/resource-name/versions/42/pin", nil)
+			fixture = newVersionsAPIMutationFixture()
+			versions = seedVersionsAPIMutations(fixture)
+			pinned, err := fixture.resource("resource-name").PinVersion(versions.decoyID)
 			Expect(err).NotTo(HaveOccurred())
-
-			response, err = client.Do(request)
-			Expect(err).NotTo(HaveOccurred())
+			Expect(pinned).To(BeTrue())
+			for _, setup := range prepare {
+				setup(fixture)
+			}
+			response = fixture.requestVersionMutation(
+				resourceName, versions.targetID, "pin",
+			)
 		})
 
 		Context("when authenticated", func() {
@@ -972,67 +1148,84 @@ var _ = Describe("Versions API", func() {
 					fakeAccess.IsAuthorizedReturns(true)
 				})
 
-				It("tries to find the resource", func() {
-					resourceName := fakePipeline.ResourceArgsForCall(0)
-					Expect(resourceName).To(Equal("resource-name"))
+				It("finds the configured resource", func() {
+					Expect(response.StatusCode).To(Equal(http.StatusOK))
 				})
 
 				Context("when finding the resource succeeds", func() {
-					BeforeEach(func() {
-						fakeResource = new(dbfakes.FakeResource)
-						fakeResource.IDReturns(1)
-						fakePipeline.ResourceReturns(fakeResource, true, nil)
-					})
-
-					It("tries to pin the right resource config version", func() {
-						resourceConfigVersionID := fakeResource.PinVersionArgsForCall(0)
-						Expect(resourceConfigVersionID).To(Equal(42))
+					It("pins the exact persisted resource version from the URL", func() {
+						Expect(response.StatusCode).To(Equal(http.StatusOK))
+						resource := reloadVersionsAPIResource(fixture)
+						Expect(resource.CurrentPinnedVersion()).To(Equal(versions.target))
 					})
 
 					Context("when pinning the resource succeeds", func() {
-						BeforeEach(func() {
-							fakeResource.PinVersionReturns(true, nil)
-						})
-
 						It("returns 200", func() {
 							Expect(response.StatusCode).To(Equal(http.StatusOK))
+
+							retry := fixture.requestVersionMutation(
+								resourceName, versions.targetID, "pin",
+							)
+							Expect(retry.StatusCode).To(Equal(http.StatusOK))
+							Expect(reloadVersionsAPIResource(fixture).CurrentPinnedVersion()).To(Equal(versions.target))
+
+							missing := fixture.requestVersionMutation(resourceName, -1, "pin")
+							Expect(missing.StatusCode).To(Equal(http.StatusInternalServerError))
+							Expect(reloadVersionsAPIResource(fixture).CurrentPinnedVersion()).To(Equal(versions.target))
 						})
 					})
 
 					Context("when pinning the resource fails by resource not exist", func() {
 						BeforeEach(func() {
-							fakeResource.PinVersionReturns(false, nil)
+							prepare = append(prepare, func(fixture *versionsAPIFixture) {
+								resource := versionsAPIPinNotFoundResource{
+									Resource: fixture.resource(resourceName),
+								}
+								fixture.overridePipeline(versionsAPIPipeline{
+									Pipeline: fixture.pipeline, resourceName: resourceName, resource: resource,
+								})
+							})
 						})
 
 						It("returns 404", func() {
 							Expect(response.StatusCode).To(Equal(http.StatusNotFound))
+							Expect(reloadVersionsAPIResource(fixture).CurrentPinnedVersion()).To(Equal(versions.decoy))
 						})
 					})
 
 					Context("when pinning the resource fails by error", func() {
 						BeforeEach(func() {
-							fakeResource.PinVersionReturns(false, errors.New("welp"))
+							prepare = append(prepare, func(fixture *versionsAPIFixture) {
+								fixture.overridePipeline(versionsAPIPipeline{
+									Pipeline: fixture.pipeline, resourceName: resourceName,
+									resource: fixture.doomedResource(resourceName),
+								})
+							})
 						})
 
 						It("returns 500", func() {
 							Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
+							Expect(reloadVersionsAPIResource(fixture).CurrentPinnedVersion()).To(Equal(versions.decoy))
 						})
 					})
 
 					Context("when the resource belongs to a server-owned source-selection pipeline", func() {
 						BeforeEach(func() {
-							fakeResource.PinVersionReturns(false, db.ErrAgentWorkflowResourceSourceImmutable)
+							prepare = append(prepare, activateVersionsAPIWorkflowOwnership)
 						})
 
 						It("returns 409", func() {
 							Expect(response.StatusCode).To(Equal(http.StatusConflict))
+							Expect(reloadVersionsAPIResource(fixture).CurrentPinnedVersion()).To(Equal(versions.decoy))
 						})
 					})
 				})
 
 				Context("when it fails to find the resource", func() {
 					BeforeEach(func() {
-						fakePipeline.ResourceReturns(nil, false, errors.New("welp"))
+						prepare = append(prepare, func(fixture *versionsAPIFixture) {
+							fixture.overridePipeline(fixture.doomedPipeline())
+						})
 					})
 
 					It("returns Internal Server Error", func() {
@@ -1042,7 +1235,7 @@ var _ = Describe("Versions API", func() {
 
 				Context("when the resource is not found", func() {
 					BeforeEach(func() {
-						fakePipeline.ResourceReturns(nil, false, nil)
+						resourceName = "missing-resource"
 					})
 
 					It("returns not found", func() {
