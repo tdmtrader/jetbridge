@@ -33,58 +33,58 @@ lifecycle, benchmarks, corpus files, or another agent's work. Do not push.
 
 ## Global constraints
 
-- [ ] Call `useRealDB()` exactly once per converted spec. Register every custom
+- [x] Call `useRealDB()` exactly once per converted spec. Register every custom
   server and non-nil response body for cleanup, and close every secondary
   connection exactly once before clone drop.
-- [ ] Persist all successful objects and outcomes. Decorators may route a real
+- [x] Persist all successful objects and outcomes. Decorators may route a real
   object, record arguments, or inject one exact failure/protocol result only;
   they may not fabricate successful versions, builds, pagination, mutations,
   or deletion counts.
-- [ ] Keep access/authentication seams in memory. Persist pipeline visibility
+- [x] Keep access/authentication seams in memory. Persist pipeline visibility
   with `Expose`/`Hide` and resource metadata visibility with the real resource
   config rather than stubbing `Public`.
-- [ ] Do not hard-code row IDs, check order, build names, timestamps, SQL
+- [x] Do not hard-code row IDs, check order, build names, timestamps, SQL
   ordering, or instance-var query encoding. Derive expectations from real
   objects and use `ConsistOf` when order is not contractual.
-- [ ] Keep every incremental commit green under the entire `Versions API`
+- [x] Keep every incremental commit green under the entire `Versions API`
   focus. Capture real RED/GREEN and a restored sensitivity failure for each
   task; compile errors and deliberately injected failures do not count.
-- [ ] Stage only exact owned paths and inspect the cached name list before each
+- [x] Stage only exact owned paths and inspect the cached name list before each
   commit so concurrent Resources/Jobs work cannot be included.
 
 ## Task 1: Persist resource-version listing and pagination
 
 **Payoff:** remove the list Describe's `FakeResource`; 13 to 12.
 
-- [ ] Add a file-local fixture that creates one real team and pipeline at the
+- [x] Add a file-local fixture that creates one real team and pipeline at the
   requested `PipelineRef`, initializes `dbtest.NewBuilder`, shadows the server,
   and exposes helpers for a real resource, doomed pipeline/resource routing,
   requests, JSON decoding, and pipeline updates at the current config version.
-- [ ] Seed versions with `dbtest.Builder.WithResourceVersions`, attach metadata
+- [x] Seed versions with `dbtest.Builder.WithResourceVersions`, attach metadata
   through `WithVersionMetadata`, disable one version through the real resource,
   reload, and compare the JSON to dynamic real version IDs and enabled state.
   Retain the successful response's `Content-Type: application/json` assertion.
-- [ ] Exercise metadata visibility with a real public pipeline and real
+- [x] Exercise metadata visibility with a real public pipeline and real
   resource `Public` configuration: unauthorized viewers receive metadata only
   when the resource is public; authorized viewers receive it for private
   resources. Preserve the existing 401/403 access matrix.
-- [ ] Replace fake argument assertions with behavioral filter and pagination
+- [x] Replace fake argument assertions with behavioral filter and pagination
   proofs. Seed enough ordered versions to exercise default limit, explicit
   `from`/`to`/`limit`, multiple filters, spaces, percent signs, and colon
   splitting. Derive cursor IDs from the persisted versions.
-- [ ] Persist an instanced pipeline and build RFC5988 links using
+- [x] Persist an instanced pipeline and build RFC5988 links using
   `PipelineRef.QueryParams()`. Do not assume query parameter order beyond the
   endpoint's actual header contract.
-- [ ] Exercise missing resource naturally. Use a doomed real pipeline for
+- [x] Exercise missing resource naturally. Use a doomed real pipeline for
   `Pipeline.Resource` failure and a doomed real resource routed through a
   one-method pipeline decorator for `Resource.Versions` failure.
-- [ ] The handler's `Versions(... found=false, err=nil)` 404 branch is not
+- [x] The handler's `Versions(... found=false, err=nil)` 404 branch is not
   produced by the real `resource.Versions` implementation once a resource row
   is found: an empty scope returns `found=true` with an empty slice. Preserve
   that defensive branch only through a named real-backed decorator overriding
   `Versions` with `(nil, db.Pagination{}, false, nil)`, and comment the exact
   boundary.
-- [ ] Capture RED/GREEN on a persisted version ID/metadata assertion and
+- [x] Capture RED/GREEN on a persisted version ID/metadata assertion and
   sensitivity by temporarily expecting the wrong persisted `Enabled` value,
   require that exact assertion to fail, then restore it. Run the list focus and
   complete Versions API focus serially and across 9 processes, format, compile,
@@ -112,32 +112,32 @@ lifecycle, benchmarks, corpus files, or another agent's work. Do not push.
 
 **Payoff:** remove three `FakeResource` sites; 12 to 9.
 
-- [ ] For disable success, seed a real version, issue the endpoint, reload, and
+- [x] For disable success, seed a real version, issue the endpoint, reload, and
   assert it is disabled in `Resource.Versions`. For enable success, disable it
   first, issue the endpoint, reload, and assert it is enabled. Assert the exact
   dynamic version ID targeted by the URL.
-- [ ] For pin success, seed a real version, issue the endpoint, reload, and
+- [x] For pin success, seed a real version, issue the endpoint, reload, and
   assert `CurrentPinnedVersion` equals it. Use a wrong/nonexistent ID for the
   natural failure behavior where production supports it.
-- [ ] Verify whether `PinVersion` can naturally return `found=false` for a
+- [x] Verify whether `PinVersion` can naturally return `found=false` for a
   nonexistent ID under current PostgreSQL semantics. If it instead returns a
   constraint/error result, retain the handler's defensive 404 branch only with
   a named decorator overriding `PinVersion` to `(false, nil)` and document why.
-- [ ] Exercise resource-not-found naturally and `Pipeline.Resource` failure
+- [x] Exercise resource-not-found naturally and `Pipeline.Resource` failure
   with a doomed real pipeline. Exercise each mutation's generic SQL failure by
   routing a doomed real resource through a healthy pipeline decorator.
-- [ ] Exercise enable, disable, and pin immutability conflicts with real
+- [x] Exercise enable, disable, and pin immutability conflicts with real
   source-selection ownership. Insert a valid workflow definition and call
   `db.NewWorkflowResourceSourcePipelinesFactory(...).Activate(...)` using the
   real team/pipeline/config version, valid hashes, and a matching configured
   resource declaration. Seed/disable versions before activation because the
   mutations themselves must be the rejected operations.
-- [ ] Preserve the complete status matrix separately for enable, disable, and
+- [x] Preserve the complete status matrix separately for enable, disable, and
   pin: unauthenticated `401`, authenticated-but-unauthorized `403`, authorized
   success `200`, missing configured resource `404`, pipeline resource lookup
   failure `500`, mutation SQL failure `500`, and immutable ownership `409`.
   Pin must additionally retain its defensive `(found=false, err=nil)` `404`.
-- [ ] Capture RED/GREEN on a persisted enabled/pinned outcome and sensitivity
+- [x] Capture RED/GREEN on a persisted enabled/pinned outcome and sensitivity
   by temporarily expecting the wrong dynamic target version/pin, require the
   persisted assertion to fail, then restore it. Run all mutation focuses and the complete
   Versions API focus serially and in parallel, format/compile/vet/diff-check,
@@ -164,34 +164,34 @@ lifecycle, benchmarks, corpus files, or another agent's work. Do not push.
 
 **Payoff:** remove two `FakeResource` and four `FakeBuild` sites; 9 to 3.
 
-- [ ] Save a real pipeline config with jobs and resources. Seed input versions,
+- [x] Save a real pipeline config with jobs and resources. Seed input versions,
   by running `dbtest.Builder.WithResourceVersions` for every version that will
   appear in an input mapping, then use `WithJobBuild` for the next-input
   mapping/adoption and output association. `WithJobBuild` does not itself
   create input `resource_config_versions` rows. Create at least two
   relationally valid builds for each endpoint and obtain the real
   resource-config-version IDs from the scenario.
-- [ ] Start/finish builds through public DB methods as needed, reload them, and
+- [x] Start/finish builds through public DB methods as needed, reload them, and
   compare decoded presentation to their real IDs, names, statuses, owners, and
   times. Do not preserve fake started builds with completion timestamps. Do not
   assume query order because `GetBuildsWithVersionAsInput/Output` has no
   `ORDER BY`.
-- [ ] Assert both a nonexistent numeric version ID and the existing nonnumeric
+- [x] Assert both a nonexistent numeric version ID and the existing nonnumeric
   literal `hello` return an empty `200` list naturally for each of `input_to`
   and `output_of`; this preserves the handler's `Atoi`-to-zero parse path.
   Exercise resource-not-found with a missing configured name and resource
   lookup failure with a doomed real pipeline.
-- [ ] Exercise the later `GetBuildsWithVersionAsInput` and
+- [x] Exercise the later `GetBuildsWithVersionAsInput` and
   `GetBuildsWithVersionAsOutput` failures through two one-method pipeline
   decorators embedding the healthy persisted pipeline; a wholly closed
   pipeline would fail at the earlier resource lookup and would not reach the
   intended branch.
-- [ ] Preserve the full visibility/status/header matrix for both endpoints:
+- [x] Preserve the full visibility/status/header matrix for both endpoints:
   private + unauthenticated is `401`, private + authenticated but unauthorized
   is `403`, public + unauthorized is `200`, and authorized success is `200`
   with `Content-Type: application/json`. Also retain missing resource `404`,
   resource lookup failure `500`, and the later relationship-query `500`.
-- [ ] Capture RED/GREEN on a persisted build/version association and
+- [x] Capture RED/GREEN on a persisted build/version association and
   sensitivity by temporarily expecting `build.ID()+1`, require that dynamic
   association assertion to fail, then restore it. Run both endpoint groups
   and the complete Versions API focus serially/across 9 processes, format,
@@ -219,31 +219,33 @@ lifecycle, benchmarks, corpus files, or another agent's work. Do not push.
 **Payoff:** remove the final `FakeResource`, `FakeResourceType`, and broad root
 `FakePipeline`; 3 to 0.
 
-- [ ] Seed three real resource versions, issue clear as an authenticated admin,
+- [x] Seed three real resource versions, issue clear as an authenticated admin,
   assert the dynamic deletion count, reload the resource, and prove its version
   list is empty. Seed a decoy resource/scope and prove its versions survive.
-- [ ] Seed three real resource-type versions through
+- [x] Seed three real resource-type versions through
   `dbtest.Builder.WithResourceTypeVersions`, issue clear, assert the deletion
   count, reload, and prove a different resource type's versions survive. The
   decoy type must use a distinct underlying type/source configuration, not
   merely a different name: resource-type scopes use `FindOrCreateScope(nil)`
   and identical configs intentionally share one scope.
-- [ ] Exercise missing resource/type naturally and lookup failures with a
-  doomed real pipeline. Exercise `ClearVersions` SQL failures with doomed real
-  resource/type objects routed through one-method healthy pipeline decorators.
-- [ ] Exercise resource-clear immutability with the real workflow resource
+- [x] Exercise missing resource/type naturally and lookup failures with a
+  doomed real pipeline. Exercise the resource `ClearVersions` SQL failure with
+  a doomed real resource; use a one-method real-backed type decorator only
+  because a closed real type panics before returning its SQL error. Route both
+  exact fault objects through healthy pipeline decorators.
+- [x] Exercise resource-clear immutability with the real workflow resource
   source activation graph. Confirm the versions remain after 409. Resource
   types have no corresponding ownership guard; do not invent one.
-- [ ] Preserve the clear-endpoint status/header matrices. Resource clear keeps
+- [x] Preserve the clear-endpoint status/header matrices. Resource clear keeps
   authenticated non-admin `403`, admin success `200` with
   `Content-Type: application/json`, missing `404`, lookup `500`, clear failure
   `500`, and immutable `409`. Resource-type clear keeps unauthenticated `401`,
   authenticated non-admin `403`, admin success `200` with JSON Content-Type,
   missing `404`, lookup `500`, and clear failure `500`.
-- [ ] Remove the broad fake root setup, `dbfakes`, and all suite-level
+- [x] Remove the broad fake root setup, `dbfakes`, and all suite-level
   `dbTeamFactory`/`dbTeam` references. Retain only access seams, closed real
   objects, and explicitly documented one-method decorators.
-- [ ] Capture RED/GREEN on a persisted deletion/survivor assertion and
+- [x] Capture RED/GREEN on a persisted deletion/survivor assertion and
   sensitivity by temporarily expecting two removals after seeding three,
   require the exact count assertion to fail, then restore it. Run clear focuses and the entire Versions API
   focus serially/across 9 processes, format/compile/vet/diff-check, prove 3 to
@@ -269,7 +271,7 @@ lifecycle, benchmarks, corpus files, or another agent's work. Do not push.
 
 ## Task 5: Full verification and closure
 
-- [ ] Run the exact final verification below. The converted Versions focus
+- [x] Run the exact final verification below. The converted Versions focus
   must still report all 95 behavior specs with one and nine processes.
 
   ```bash
@@ -288,28 +290,62 @@ lifecycle, benchmarks, corpus files, or another agent's work. Do not push.
   ! rg -n 'new\(dbfakes\.Fake|dbfakes\.Fake[A-Za-z0-9_]+\{' atc/api/versions_test.go
   ! rg -n 'atc/db/dbfakes|\b(dbTeamFactory|dbTeam)\b' atc/api/versions_test.go
   ```
-- [ ] Prove zero generated constructors/imports and zero suite-team-fake
+- [x] Prove zero generated constructors/imports and zero suite-team-fake
   references with exact `rg` searches. Inspect one clone per spec, dynamic IDs
   and ordering, body/server cleanup, exact-once doomed connection closes,
   decoy survival, ownership setup, and every decorator boundary.
-- [ ] Obtain independent final review with no unresolved Critical, Important,
+- [x] Obtain independent final review with no unresolved Critical, Important,
   or Minor finding. Record exact spec counts, commands, and sensitivity
   evidence; mark the plan complete and commit it as
   `docs: record api versions postgres conversion`.
 
 ## Phase acceptance
 
-- [ ] `versions_test.go` reaches exactly 13 to 0 generated database-fake
+- [x] `versions_test.go` reaches exactly 13 to 0 generated database-fake
   constructor sites, drops `dbfakes`, and no longer consumes `dbTeamFactory`
   or `dbTeam`.
-- [ ] Listing, filters, pagination, metadata visibility, enabled/pinned state,
+- [x] Listing, filters, pagination, metadata visibility, enabled/pinned state,
   build input/output relationships, and clear outcomes are persisted and
   asserted through real rows.
-- [ ] Natural missing/immutable states use production DB behavior; retained
+- [x] Natural missing/immutable states use production DB behavior; retained
   seams are limited to access, closed secondary real objects, and narrow
   real-backed decorators for exact later-call failures or unreachable defensive
   `found=false` branches.
-- [ ] Focused serial/9-process and full API verification pass against isolated
+- [x] Focused serial/9-process and full API verification pass against isolated
   clones in the single shared PostgreSQL service.
-- [ ] No production behavior, shared fixture, unrelated file, Docker service,
+- [x] No production behavior, shared fixture, unrelated file, Docker service,
   benchmark, or corpus change is included, and nothing is pushed.
+
+## Completion evidence (2026-08-07)
+
+- Constructor census: Tasks 1-3 landed as `86ff3a53c6`, `6501e81d59`, and
+  `cf4e9ecf9a`; Task 4 landed as `a1622480e2` and removed the remaining
+  `FakePipeline`, `FakeResource`, and `FakeResourceType`. Exact searches now report zero generated DB fake
+  constructors, zero `dbfakes` imports, and zero `dbTeamFactory`/`dbTeam`
+  references in `versions_test.go` (13 to 0 overall; 3 to 0 in Task 4).
+- Task 4 RED/GREEN: a persisted resource with three versions remained populated
+  while the handler was still fake-wired, so the new persisted-empty assertion
+  failed. After conversion, the two clear endpoint groups passed 20/20.
+- Task 4 sensitivity: temporarily expecting `versions_removed == 2` after
+  persisting three target versions failed with actual `3`, expected `2`.
+  Restoring the dynamic `int64(len(state.versions))` expectation passed 1/1.
+- Task 4 focused/full verification passed: clear endpoints 20/20; `Versions
+  API` 95/95 with `--procs=1`; and `Versions API` 95/95 with `--procs=9`.
+- Final verification passed: formatting and diff checks; compile and vet with
+  default and `live` tags; full API Ginkgo 825/825 with `--procs=1`; uncached
+  `go test ./atc/api -count=1`; and full API Ginkgo 825/825 with `--procs=9`.
+  The uncached serial run and nine-process run also passed while executing
+  concurrently against the single PostgreSQL service, using unique template
+  clones per spec.
+- Independent final review reported PASS with no Critical, Important, Minor,
+  or other actionable findings. It specifically confirmed per-spec clone
+  isolation, persisted target/decoy scopes, status/header/ownership coverage,
+  response cleanup, and the exact 3-to-0 Task 4 census.
+- Verified fault-boundary deviation: a closed real `ResourceType` cannot safely
+  model the handler's `ClearVersions` error today because production
+  `resourceType.ClearVersions` calls `RowsAffected` on the nil result returned
+  by a failed `Exec`, panicking before it can return the SQL error. The retained
+  decorator embeds a healthy persisted type and overrides only `ClearVersions`;
+  resource clearing still uses a doomed real resource. This is the narrowest
+  seam that reaches the intended handler branch without changing production
+  behavior.
