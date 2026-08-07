@@ -4,16 +4,14 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/concourse/concourse/atc/atcfakes"
-
 	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/api/accessor/accessorfakes"
-	"github.com/concourse/concourse/atc/db/dbfakes"
+	"github.com/concourse/concourse/atc/atcfakes"
+	"github.com/concourse/concourse/atc/db"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-
-	"github.com/concourse/concourse/atc/api/accessor"
-	"github.com/concourse/concourse/atc/db"
 )
 
 var _ = Describe("AccessorFactory", func() {
@@ -22,7 +20,8 @@ var _ = Describe("AccessorFactory", func() {
 		systemClaimValues []string
 
 		fakeTokenVerifier *accessorfakes.FakeTokenVerifier
-		fakeTeamFetcher   *accessorfakes.FakeTeamFetcher
+		teamFactory       db.TeamFactory
+		teamFetcher       accessor.TeamFetcher
 		dummyRequest      *http.Request
 
 		fakeDisplayUserIdGenerator *atcfakes.FakeDisplayUserIdGenerator
@@ -35,23 +34,23 @@ var _ = Describe("AccessorFactory", func() {
 		systemClaimValues = []string{"some-sub"}
 
 		fakeTokenVerifier = new(accessorfakes.FakeTokenVerifier)
-		fakeTeamFetcher = new(accessorfakes.FakeTeamFetcher)
+		teamFactory = useRealTeamFactory()
+		teamFetcher = teamFactory
 		dummyRequest, _ = http.NewRequest("GET", "/", nil)
 
 		fakeDisplayUserIdGenerator = new(atcfakes.FakeDisplayUserIdGenerator)
 
-		role = "viewer"
+		role = accessor.ViewerRole
 	})
 
 	Describe("Create", func() {
-
 		var (
 			access accessor.Access
 			err    error
 		)
 
 		JustBeforeEach(func() {
-			factory := accessor.NewAccessFactory(fakeTokenVerifier, fakeTeamFetcher, systemClaimKey, systemClaimValues, fakeDisplayUserIdGenerator)
+			factory := accessor.NewAccessFactory(fakeTokenVerifier, teamFetcher, systemClaimKey, systemClaimValues, fakeDisplayUserIdGenerator)
 			access, err = factory.Create(dummyRequest, role)
 		})
 
@@ -63,31 +62,32 @@ var _ = Describe("AccessorFactory", func() {
 						"connector_id": "github",
 					},
 				}, nil)
-				teamWithUsers := func(name string, authenticated bool) db.Team {
-					t := new(dbfakes.FakeTeam)
-					t.NameReturns(name)
-					if authenticated {
-						t.AuthReturns(atc.TeamAuth{"viewer": map[string][]string{
-							"users": {"github:user1"},
-						}})
-					}
-					return t
+
+				persistTeam := func(name, authenticatedUser string) {
+					_, err := teamFactory.CreateTeam(atc.Team{
+						Name: name,
+						Auth: atc.TeamAuth{
+							accessor.ViewerRole: {"users": {authenticatedUser}},
+						},
+					})
+					Expect(err).NotTo(HaveOccurred())
 				}
-				fakeTeamFetcher.GetTeamsReturns([]db.Team{
-					teamWithUsers("t1", true),
-					teamWithUsers("t2", false),
-					teamWithUsers("t3", true),
-				}, nil)
+
+				persistTeam("t1", "github:user1")
+				persistTeam("t2", "github:another-user")
+				persistTeam("t3", "github:user1")
 			})
 
-			It("returns an accessor with the correct teams", func() {
+			It("returns an accessor authorized for the matching persisted teams", func() {
 				Expect(access.TeamNames()).To(ConsistOf("t1", "t3"))
 			})
 		})
 
 		Context("when the team fetcher returns an error", func() {
 			BeforeEach(func() {
-				fakeTeamFetcher.GetTeamsReturns(nil, errors.New("nope"))
+				failingTeamFetcher := new(accessorfakes.FakeTeamFetcher)
+				failingTeamFetcher.GetTeamsReturns(nil, errors.New("nope"))
+				teamFetcher = failingTeamFetcher
 			})
 
 			It("returns an error", func() {
