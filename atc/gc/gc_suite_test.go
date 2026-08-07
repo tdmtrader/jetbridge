@@ -64,13 +64,23 @@ var _ = postgresrunner.GinkgoRunner(&postgresRunner)
 
 var _ = BeforeEach(func() {
 	postgresRunner.CreateTestDBFromTemplate()
+	DeferCleanup(func() {
+		postgresRunner.DropTestDB()
+	})
 
 	dbConn = postgresRunner.OpenConn()
+	DeferCleanup(func() {
+		Expect(dbConn.Close()).To(Succeed())
+	})
 	db.CleanupBaseResourceTypesCache()
 
 	var lockConns [lock.FactoryCount]*sql.DB
 	for i := 0; i < lock.FactoryCount; i++ {
-		lockConns[i] = postgresRunner.OpenSingleton()
+		lockConn := postgresRunner.OpenSingleton()
+		lockConns[i] = lockConn
+		DeferCleanup(func() {
+			Expect(lockConn.Close()).To(Succeed())
+		})
 	}
 	lockFactory = lock.NewLockFactory(lockConns, fakeLogFunc, fakeLogFunc)
 
@@ -144,9 +154,4 @@ var _ = BeforeEach(func() {
 	resourceCacheLifecycle = db.NewResourceCacheLifecycle(dbConn)
 	resourceCacheFactory = db.NewResourceCacheFactory(dbConn, lockFactory)
 	resourceConfigFactory = db.NewResourceConfigFactory(dbConn, lockFactory)
-})
-
-var _ = AfterEach(func() {
-	Expect(dbConn.Close()).To(Succeed())
-	postgresRunner.DropTestDB()
 })

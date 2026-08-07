@@ -36,16 +36,26 @@ var _ = Describe("Locks", func() {
 
 	BeforeEach(func() {
 		postgresRunner.CreateTestDBFromTemplate()
+		DeferCleanup(func() {
+			postgresRunner.DropTestDB()
+		})
 
 		logger = lagertest.NewTestLogger("test")
 
 		for i := 0; i < lock.FactoryCount; i++ {
-			lockConns[i] = postgresRunner.OpenSingleton()
+			lockConn := postgresRunner.OpenSingleton()
+			lockConns[i] = lockConn
+			DeferCleanup(func() {
+				Expect(lockConn.Close()).To(Succeed())
+			})
 		}
 
 		lockFactory = lock.NewLockFactory(lockConns, fakeLogFunc, fakeLogFunc)
 
 		dbConn = postgresRunner.OpenConn()
+		DeferCleanup(func() {
+			Expect(dbConn.Close()).To(Succeed())
+		})
 		teamFactory = db.NewTeamFactory(dbConn, lockFactory)
 
 		var err error
@@ -53,15 +63,15 @@ var _ = Describe("Locks", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	AfterEach(func() {
-		err := dbConn.Close()
-		Expect(err).NotTo(HaveOccurred())
-
-		if dbLock != nil {
-			_ = dbLock.Release()
-		}
-
-		postgresRunner.DropTestDB()
+	JustBeforeEach(func() {
+		// Register after all nested BeforeEach nodes so a held lock is released
+		// before any pool that may own it is closed. Some specs deliberately
+		// release or lose the lock first, so cleanup remains best-effort.
+		DeferCleanup(func() {
+			if dbLock != nil {
+				_ = dbLock.Release()
+			}
+		})
 	})
 
 	Describe("locks in general", func() {
@@ -123,7 +133,11 @@ var _ = Describe("Locks", func() {
 
 			BeforeEach(func() {
 				for i := 0; i < lock.FactoryCount; i++ {
-					lockConns2[i] = postgresRunner.OpenSingleton()
+					lockConn := postgresRunner.OpenSingleton()
+					lockConns2[i] = lockConn
+					DeferCleanup(func() {
+						Expect(lockConn.Close()).To(Succeed())
+					})
 				}
 				lockFactory2 = lock.NewLockFactory(lockConns2, fakeLogFunc, fakeLogFunc)
 			})

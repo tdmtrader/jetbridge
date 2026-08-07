@@ -58,23 +58,26 @@ func prepareTracingForGinkgo() {
 
 var _ = BeforeEach(func() {
 	postgresRunner.CreateTestDBFromTemplate()
+	DeferCleanup(func() {
+		postgresRunner.DropTestDB()
+	})
 
 	dbConn = postgresRunner.OpenConn()
+	DeferCleanup(func() {
+		Expect(dbConn.Close()).To(Succeed())
+	})
 	db.CleanupBaseResourceTypesCache()
 
 	var lockConns [lock.FactoryCount]*sql.DB
 	for i := 0; i < lock.FactoryCount; i++ {
-		lockConns[i] = postgresRunner.OpenSingleton()
+		lockConn := postgresRunner.OpenSingleton()
+		lockConns[i] = lockConn
+		DeferCleanup(func() {
+			Expect(lockConn.Close()).To(Succeed())
+		})
 	}
 	lockFactory = lock.NewLockFactory(lockConns, metric.LogLockAcquired, metric.LogLockReleased)
 	teamFactory = db.NewTeamFactory(dbConn, lockFactory)
-})
-
-var _ = AfterEach(func() {
-	err := dbConn.Close()
-	Expect(err).NotTo(HaveOccurred())
-
-	postgresRunner.DropTestDB()
 })
 
 var _ = SynchronizedAfterSuite(func() {
