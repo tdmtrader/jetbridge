@@ -1,78 +1,71 @@
 package syslog_test
 
 import (
-	"context"
-	"encoding/json"
+	"fmt"
 	"strconv"
+	"time"
 
+	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/event"
 	"github.com/concourse/concourse/atc/syslog"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
 
-func newFakeBuild(id int) db.Build {
-	fakeEventSource := new(dbfakes.FakeEventSource)
+func newDrainableBuild(team db.Team) db.Build {
+	GinkgoHelper()
 
-	msg1 := json.RawMessage(`{"time":1533744538,"payload":"build ` + strconv.Itoa(id) + ` log"}`)
-	fakeEventSource.NextReturnsOnCall(0, event.Envelope{
-		Data:    &msg1,
-		Event:   "log",
-		EventID: "1",
-	}, nil)
+	build, err := team.CreateOneOffBuild()
+	Expect(err).NotTo(HaveOccurred())
 
-	msg2 := json.RawMessage(`{"time":1533744538,"status":"build ` + strconv.Itoa(id) + ` status"}`)
-	fakeEventSource.NextReturnsOnCall(1, event.Envelope{
-		Data:    &msg2,
-		Event:   "status",
-		EventID: "2",
-	}, nil)
+	timestamp := int64(1533744538)
+	Expect(build.SaveEvent(event.Log{
+		Time:    timestamp,
+		Payload: fmt.Sprintf("build %d log", build.ID()),
+	})).To(Succeed())
+	Expect(build.SaveEvent(event.Status{
+		Time:   timestamp,
+		Status: atc.BuildStatus(fmt.Sprintf("build %d status", build.ID())),
+	})).To(Succeed())
+	Expect(build.SaveEvent(event.FinishGet{
+		Time:           timestamp,
+		FetchedVersion: atc.Version{"version": "0.0.1"},
+		FetchedMetadata: atc.Metadata{
+			{Name: "version", Value: "0.0.1"},
+		},
+	})).To(Succeed())
+	Expect(build.SaveEvent(event.SelectedWorker{
+		Time:       timestamp,
+		WorkerName: "example-worker",
+	})).To(Succeed())
+	Expect(build.SaveEvent(event.InitializeTask{Time: timestamp})).To(Succeed())
+	Expect(build.Finish(db.BuildStatusSucceeded)).To(Succeed())
 
-	msg3 := json.RawMessage(`{"time":1533744538,"version":{"version":"0.0.1"},"metadata":[{"name":"version","value":"0.0.1"}]}`)
-	fakeEventSource.NextReturnsOnCall(2, event.Envelope{
-		Data:    &msg3,
-		Event:   "finish-get",
-		EventID: "3",
-	}, nil)
-
-	msg4 := json.RawMessage(`{"time":1533744538,"selected_worker":"example-worker"}`)
-	fakeEventSource.NextReturnsOnCall(3, event.Envelope{
-		Data:    &msg4,
-		Event:   "selected-worker",
-		EventID: "4",
-	}, nil)
-
-	msg5 := json.RawMessage(`{"time":1533744538}`)
-	fakeEventSource.NextReturnsOnCall(4, event.Envelope{
-		Data:    &msg5,
-		Event:   "initialize-task",
-		EventID: "5",
-	}, nil)
-
-	fakeEventSource.NextReturnsOnCall(5, event.Envelope{}, db.ErrEndOfBuildEventStream)
-
-	fakeEventSource.NextReturns(event.Envelope{}, db.ErrEndOfBuildEventStream)
-
-	fakeBuild := new(dbfakes.FakeBuild)
-	fakeBuild.EventsReturns(fakeEventSource, nil)
-	fakeBuild.IDReturns(id)
-
-	return fakeBuild
+	return build
 }
 
 var _ = Describe("Drainer", func() {
-	var fakeBuildFactory *dbfakes.FakeBuildFactory
-	var server *testServer
+	var (
+		buildFactory db.BuildFactory
+		builds       []db.Build
+		server       *testServer
+	)
 
 	BeforeEach(func() {
-		fakeBuildFactory = new(dbfakes.FakeBuildFactory)
-		fakeBuildFactory.GetDrainableBuildsReturns([]db.Build{newFakeBuild(123), newFakeBuild(345)}, nil)
+		conn := useRealDB()
+		teamFactory := db.NewTeamFactory(conn, nil)
+		team, err := teamFactory.CreateTeam(atc.Team{Name: atc.DefaultTeamName})
+		Expect(err).NotTo(HaveOccurred())
+
+		buildFactory = db.NewBuildFactory(conn, nil, 0, time.Hour)
+		builds = []db.Build{newDrainableBuild(team), newDrainableBuild(team)}
 	})
 
 	AfterEach(func() {
-		server.Close()
+		if server != nil {
+			server.Close()
+		}
 	})
 
 	Context("when there are builds that have not been drained", func() {
@@ -81,20 +74,30 @@ var _ = Describe("Drainer", func() {
 				server = newTestServer(nil)
 			})
 
-			It("drains all build events by tcp", func() {
-				testDrainer := syslog.NewDrainer("tcp", server.Addr, "test", []string{}, fakeBuildFactory)
-				err := testDrainer.Run(context.TODO())
+			It("drains all build events by tcp", func(ctx SpecContext) {
+				testDrainer := syslog.NewDrainer("tcp", server.Addr, "test", []string{}, buildFactory)
+				err := testDrainer.Run(ctx)
 				Expect(err).NotTo(HaveOccurred())
 
 				got := <-server.Messages
-				Expect(got).To(ContainSubstring("build 123 log"))
-				Expect(got).To(ContainSubstring("build 345 log"))
+				Expect(got).To(ContainSubstring("build " + strconv.Itoa(builds[0].ID()) + " log"))
+				Expect(got).To(ContainSubstring("build " + strconv.Itoa(builds[1].ID()) + " log"))
 				Expect(got).To(ContainSubstring(`get {"version": {"version":"0.0.1"}, "metadata": [{"name":"version","value":"0.0.1"}]`))
-				Expect(got).To(ContainSubstring("build 123 status"))
-				Expect(got).To(ContainSubstring("build 345 status"))
+				Expect(got).To(ContainSubstring("build " + strconv.Itoa(builds[0].ID()) + " status"))
+				Expect(got).To(ContainSubstring("build " + strconv.Itoa(builds[1].ID()) + " status"))
 				Expect(got).To(ContainSubstring("selected worker: example-worker"))
 				Expect(got).To(ContainSubstring("task initializing"))
-			}, 0.2)
+
+				for _, build := range builds {
+					persisted, found, err := buildFactory.Build(build.ID())
+					Expect(err).NotTo(HaveOccurred())
+					Expect(found).To(BeTrue())
+					Expect(persisted.IsDrained()).To(BeTrue())
+				}
+				drainable, err := buildFactory.GetDrainableBuilds()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(drainable).To(BeEmpty())
+			}, NodeTimeout(5*time.Second))
 		})
 
 	})
