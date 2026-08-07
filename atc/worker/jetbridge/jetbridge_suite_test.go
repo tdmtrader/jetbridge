@@ -1,13 +1,55 @@
 package jetbridge_test
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
+	"code.cloudfoundry.org/lager/v3"
+	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbfakes"
+	"github.com/concourse/concourse/atc/postgresrunner"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
+
+var postgresRunner postgresrunner.Runner
+var _ = postgresrunner.GinkgoRunner(&postgresRunner)
+
+type jetbridgeDB struct {
+	WorkerFactory db.WorkerFactory
+}
+
+func useJetbridgeDB() jetbridgeDB {
+	GinkgoHelper()
+	postgresRunner.CreateTestDBFromTemplate()
+	DeferCleanup(postgresRunner.DropTestDB)
+	conn := postgresRunner.OpenConn()
+	DeferCleanup(func() { Expect(conn.Close()).To(Succeed()) })
+	return jetbridgeDB{WorkerFactory: db.NewWorkerFactory(
+		conn,
+		db.NewStaticWorkerCache(lager.NewLogger("jetbridge-test"), conn, 0),
+	)}
+}
+
+func persistNamedWorker(database jetbridgeDB, name string) (db.Worker, error) {
+	_, err := database.WorkerFactory.SaveWorker(atc.Worker{
+		Name: name, Platform: "linux", Version: "1.2.3",
+		State: string(db.WorkerStateRunning),
+	}, 0)
+	if err != nil {
+		return nil, fmt.Errorf("save worker %q: %w", name, err)
+	}
+	foundWorker, found, err := database.WorkerFactory.GetWorker(name)
+	if err != nil {
+		return nil, fmt.Errorf("get worker %q: %w", name, err)
+	}
+	if !found {
+		return nil, fmt.Errorf("worker %q not found after save", name)
+	}
+	return foundWorker, nil
+}
 
 func TestJetbridge(t *testing.T) {
 	RegisterFailHandler(Fail)

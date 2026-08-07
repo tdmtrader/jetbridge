@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	"k8s.io/client-go/kubernetes"
@@ -24,6 +23,7 @@ func setupLiveResilienceWorker(t *testing.T, handle string, podStartupTimeout ti
 	runtime.BuildStepDelegate,
 	kubernetes.Interface,
 	*jetbridge.Config,
+	jetbridgeDB,
 ) {
 	t.Helper()
 
@@ -35,17 +35,17 @@ func setupLiveResilienceWorker(t *testing.T, handle string, podStartupTimeout ti
 	if err != nil {
 		t.Fatalf("creating rest config: %v", err)
 	}
+	database := useLiveJetbridgeDB(t)
+	dbWorker, err := persistNamedWorker(database, "live-k8s-worker")
+	if err != nil {
+		t.Fatalf("persisting worker: %v", err)
+	}
 
-	fakeDBWorker := new(dbfakes.FakeWorker)
-	fakeDBWorker.NameReturns("live-k8s-worker")
-
-	setupFakeDBContainer(fakeDBWorker, handle)
-
-	worker := jetbridge.NewWorker(fakeDBWorker, clientset, *cfg)
+	worker := jetbridge.NewWorker(dbWorker, clientset, *cfg)
 	executor := jetbridge.NewSPDYExecutor(clientset, restConfig)
 	worker.SetExecutor(executor)
 
-	return worker, &noopDelegate{}, clientset, cfg
+	return worker, &noopDelegate{}, clientset, cfg, database
 }
 
 // TestLiveInvalidImageFailsFast verifies that a pod with a nonexistent image
@@ -53,7 +53,7 @@ func setupLiveResilienceWorker(t *testing.T, handle string, podStartupTimeout ti
 // indefinitely. Diagnostics should appear on stderr.
 func TestLiveInvalidImageFailsFast(t *testing.T) {
 	handle := "live-bad-img-" + time.Now().Format("150405")
-	worker, delegate, clientset, cfg := setupLiveResilienceWorker(t, handle, 2*time.Minute)
+	worker, delegate, clientset, cfg, database := setupLiveResilienceWorker(t, handle, 2*time.Minute)
 
 	cleanupPod(t, clientset, cfg.Namespace, handle)
 
@@ -73,6 +73,26 @@ func TestLiveInvalidImageFailsFast(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatalf("FindOrCreateContainer: %v", err)
+	}
+	persisted, found, err := database.WorkerFactory.GetWorker("live-k8s-worker")
+	if err != nil {
+		t.Fatalf("getting persisted worker: %v", err)
+	}
+	if !found {
+		t.Fatal("persisted worker not found")
+	}
+	creating, created, err := persisted.FindContainer(db.NewFixedHandleContainerOwner(handle))
+	if err != nil {
+		t.Fatalf("finding persisted container: %v", err)
+	}
+	if creating != nil {
+		t.Fatalf("expected no creating container, got %T", creating)
+	}
+	if created == nil {
+		t.Fatal("persisted created container not found")
+	}
+	if created.Handle() != handle {
+		t.Fatalf("persisted container handle = %q, want %q", created.Handle(), handle)
 	}
 
 	// Use exec mode (stdin provided) to exercise the waitForRunning path.
@@ -115,7 +135,7 @@ func TestLiveInvalidImageFailsFast(t *testing.T) {
 func TestLivePodStartupTimeout(t *testing.T) {
 	handle := "live-timeout-" + time.Now().Format("150405")
 	// Use an impossibly short timeout — the pod can't start in 1ms.
-	worker, delegate, clientset, cfg := setupLiveResilienceWorker(t, handle, 1*time.Millisecond)
+	worker, delegate, clientset, cfg, database := setupLiveResilienceWorker(t, handle, 1*time.Millisecond)
 
 	cleanupPod(t, clientset, cfg.Namespace, handle)
 
@@ -135,6 +155,26 @@ func TestLivePodStartupTimeout(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatalf("FindOrCreateContainer: %v", err)
+	}
+	persisted, found, err := database.WorkerFactory.GetWorker("live-k8s-worker")
+	if err != nil {
+		t.Fatalf("getting persisted worker: %v", err)
+	}
+	if !found {
+		t.Fatal("persisted worker not found")
+	}
+	creating, created, err := persisted.FindContainer(db.NewFixedHandleContainerOwner(handle))
+	if err != nil {
+		t.Fatalf("finding persisted container: %v", err)
+	}
+	if creating != nil {
+		t.Fatalf("expected no creating container, got %T", creating)
+	}
+	if created == nil {
+		t.Fatal("persisted created container not found")
+	}
+	if created.Handle() != handle {
+		t.Fatalf("persisted container handle = %q, want %q", created.Handle(), handle)
 	}
 
 	var stderr bytes.Buffer

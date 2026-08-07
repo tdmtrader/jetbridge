@@ -12,12 +12,30 @@ import (
 	"testing"
 	"time"
 
+	"code.cloudfoundry.org/lager/v3"
+	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/postgresrunner"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
+
+var livePostgresRunner postgresrunner.StandardTestRunner
+
+func TestMain(m *testing.M) {
+	os.Exit(livePostgresRunner.Main(m))
+}
+
+func useLiveJetbridgeDB(t *testing.T) jetbridgeDB {
+	t.Helper()
+	conn := livePostgresRunner.OpenConn(t)
+	return jetbridgeDB{WorkerFactory: db.NewWorkerFactory(
+		conn,
+		db.NewStaticWorkerCache(lager.NewLogger("live-jetbridge-test"), conn, 0),
+	)}
+}
 
 func liveTestNamespace() string {
 	if ns := os.Getenv("K8S_TEST_NAMESPACE"); ns != "" {
