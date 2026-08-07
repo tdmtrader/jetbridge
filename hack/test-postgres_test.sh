@@ -24,55 +24,72 @@ GOOD_COMMAND='["-c","fsync=off","-c","synchronous_commit=off","-c","full_page_wr
 GOOD_ENV='["POSTGRES_HOST_AUTH_METHOD=trust"]'
 GOOD_BINDINGS='{"5432/tcp":[{"HostIp":"127.0.0.1","HostPort":"15432"}]}'
 EXTRA_BINDINGS='{"5432/tcp":[{"HostIp":"127.0.0.1","HostPort":"15432"},{"HostIp":"0.0.0.0","HostPort":"25432"}]}'
+OWNED_ID='owned-container-id'
+FOREIGN_ID='foreign-container-id'
+GOOD_NAME='/concourse-test-postgres'
 
 owned() {
-  printf 'true|%s|%s|%s|%s|%s|%s|%s\n' "$@"
+	printf '%s|%s|true|%s|%s|%s|%s|%s|%s|%s|%s\n' "${OWNED_ID}" "${GOOD_NAME}" "$@"
 }
 
 case "${1:-} ${2:-}" in
   "context inspect"|"info ") exit 0 ;;
-  "container inspect")
-    case "${state}" in
-      missing|race) exit 1 ;;
-      foreign) printf 'false|running\n' ;;
-      drifted) owned running postgres:13 0.0.0.0 15432 '["-c","max_connections=100"]' '[]' "${GOOD_BINDINGS}" ;;
+	"container inspect")
+		case "${state}" in
+			missing|race) exit 1 ;;
+			foreign) printf '%s|%s|false|running\n' "${FOREIGN_ID}" "${GOOD_NAME}" ;;
+			drift-name) printf '%s|/renamed-test-postgres|true|running|postgres:14|127.0.0.1|15432|%s|%s|%s\n' "${OWNED_ID}" "${GOOD_COMMAND}" "${GOOD_ENV}" "${GOOD_BINDINGS}" ;;
+			drifted) owned running postgres:13 0.0.0.0 15432 '["-c","max_connections=100"]' '[]' "${GOOD_BINDINGS}" ;;
       drift-image) owned running postgres:13 127.0.0.1 15432 "${GOOD_COMMAND}" "${GOOD_ENV}" "${GOOD_BINDINGS}" ;;
       drift-binding) owned running postgres:14 0.0.0.0 15432 "${GOOD_COMMAND}" "${GOOD_ENV}" "${GOOD_BINDINGS}" ;;
       drift-port) owned running postgres:14 127.0.0.1 25432 "${GOOD_COMMAND}" "${GOOD_ENV}" "${GOOD_BINDINGS}" ;;
       drift-command) owned running postgres:14 127.0.0.1 15432 '["-c","max_connections=100"]' "${GOOD_ENV}" "${GOOD_BINDINGS}" ;;
       drift-env) owned running postgres:14 127.0.0.1 15432 "${GOOD_COMMAND}" '[]' "${GOOD_BINDINGS}" ;;
       drift-extra-binding) owned running postgres:14 127.0.0.1 15432 "${GOOD_COMMAND}" "${GOOD_ENV}" "${EXTRA_BINDINGS}" ;;
-      stopped|start-race) owned exited postgres:14 127.0.0.1 15432 "${GOOD_COMMAND}" "${GOOD_ENV}" "${GOOD_BINDINGS}" ;;
-      *)       owned running postgres:14 127.0.0.1 15432 "${GOOD_COMMAND}" "${GOOD_ENV}" "${GOOD_BINDINGS}" ;;
-    esac
+			stopped|start-race|swap-before-start) owned exited postgres:14 127.0.0.1 15432 "${GOOD_COMMAND}" "${GOOD_ENV}" "${GOOD_BINDINGS}" ;;
+			swap-before-exec|swap-after-ready|swap-before-rm) owned running postgres:14 127.0.0.1 15432 "${GOOD_COMMAND}" "${GOOD_ENV}" "${GOOD_BINDINGS}" ;;
+			*)       owned running postgres:14 127.0.0.1 15432 "${GOOD_COMMAND}" "${GOOD_ENV}" "${GOOD_BINDINGS}" ;;
+		esac
     ;;
   "run --detach")
     [[ "${state}" == "race" ]] && { printf 'running' >"${FAKE_DOCKER_STATE}"; exit 125; }
     printf 'running' >"${FAKE_DOCKER_STATE}"
-    printf 'container-id\n'
-    ;;
-  "start concourse-test-postgres")
-    if [[ "${state}" == "start-race" ]]; then
-      printf 'running' >"${FAKE_DOCKER_STATE}"
+		printf '%s\n' "${OWNED_ID}"
+		;;
+	"start owned-container-id")
+		if [[ "${state}" == "swap-before-start" ]]; then
+			printf 'foreign' >"${FAKE_DOCKER_STATE}"
+			exit 1
+		fi
+		if [[ "${state}" == "start-race" ]]; then
+			printf 'running' >"${FAKE_DOCKER_STATE}"
       exit 1
     fi
     printf 'running' >"${FAKE_DOCKER_STATE}"
     ;;
-  "exec concourse-test-postgres")
-    if [[ "${state}" == "disappearing" ]]; then
+	"exec owned-container-id")
+		if [[ "${state}" == "swap-before-exec" ]]; then
+			printf 'foreign' >"${FAKE_DOCKER_STATE}"
+			exit 1
+		fi
+		if [[ "${state}" == "swap-after-ready" ]]; then
+			printf 'foreign' >"${FAKE_DOCKER_STATE}"
+			exit 0
+		fi
+		if [[ "${state}" == "disappearing" ]]; then
       printf 'missing' >"${FAKE_DOCKER_STATE}"
       exit 1
     fi
     [[ "${state}" != "missing" ]] || exit 1
     [[ "${FAKE_DOCKER_READY:-1}" == "1" ]]
     ;;
-  "rm --force")
+	"rm --force")
     if [[ "${state}" == "down-race" ]]; then
       printf 'missing' >"${FAKE_DOCKER_STATE}"
       exit 1
     fi
-    if [[ "${state}" == "down-race-foreign" ]]; then
-      printf 'foreign' >"${FAKE_DOCKER_STATE}"
+		if [[ "${state}" == "down-race-foreign" || "${state}" == "swap-before-rm" ]]; then
+			printf 'foreign' >"${FAKE_DOCKER_STATE}"
       exit 1
     fi
     printf 'missing' >"${FAKE_DOCKER_STATE}"
@@ -192,14 +209,34 @@ expect_log_count "--context colima run --detach" 1
 # A stopped service is started, and racing start/run calls converge on the winner.
 reset_fake stopped
 run_helper up 0
-expect_log_contains "--context colima start concourse-test-postgres"
+expect_log_contains "--context colima start owned-container-id"
 reset_fake race
 run_helper up 0
 expect_log_count "--context colima run --detach" 1
 expect_log_count_at_least "container inspect" 2
 reset_fake start-race
 run_helper up 0
-expect_log_contains "--context colima start concourse-test-postgres"
+expect_log_contains "--context colima start owned-container-id"
+expect_log_count_at_least "container inspect" 2
+
+# Every operation after validation targets the immutable ID. A foreign
+# same-name replacement is never started, accepted as ready, or removed.
+reset_fake swap-before-start
+run_helper up 1
+expect_output_contains "not owned"
+expect_log_contains "--context colima start owned-container-id"
+expect_log_count "start concourse-test-postgres" 0
+
+reset_fake swap-before-exec
+run_helper up 1
+expect_output_contains "not owned"
+expect_log_contains "--context colima exec owned-container-id"
+expect_log_count "exec concourse-test-postgres" 0
+
+reset_fake swap-after-ready
+run_helper up 1
+expect_output_contains "not owned"
+expect_log_contains "--context colima exec owned-container-id"
 expect_log_count_at_least "container inspect" 2
 
 # If the winner vanishes while readiness is checked, re-inspection creates it again.
@@ -219,10 +256,11 @@ expect_output_contains "not owned"
 expect_log_count "rm --force" 0
 
 # A labeled service with any immutable contract drift is unsafe to use.
-for drift in drift-image drift-binding drift-port drift-command drift-env drift-extra-binding; do
+for drift in drift-name drift-image drift-binding drift-port drift-command drift-env drift-extra-binding; do
   reset_fake "${drift}"
   run_helper up 1
-  case "${drift}" in
+	case "${drift}" in
+		drift-name) expect_output_contains "name" ;;
     drift-image) expect_output_contains "image" ;;
     drift-binding) expect_output_contains "loopback binding" ;;
     drift-port) expect_output_contains "host port" ;;
@@ -236,15 +274,16 @@ done
 # A drifted but owned service is recoverably removable.
 reset_fake drifted
 run_helper down 0
-expect_log_contains "--context colima rm --force concourse-test-postgres"
+expect_log_contains "--context colima rm --force owned-container-id"
 
 # Status is read-only and succeeds only after the service is ready.
 reset_fake running
 run_helper status 0
 expect_output_equals "concourse-test-postgres: running (ready)"
 expect_log_count "run --detach" 0
-expect_log_count "start concourse-test-postgres" 0
+expect_log_count "start owned-container-id" 0
 expect_log_count "rm --force" 0
+expect_log_contains "--context colima exec owned-container-id"
 
 # Missing and stopped services have actionable, non-mutating status failures.
 reset_fake missing
@@ -253,33 +292,45 @@ expect_output_contains "absent"
 reset_fake stopped
 run_helper status 1
 expect_output_contains "exited"
-expect_log_count "start concourse-test-postgres" 0
+expect_log_count "start owned-container-id" 0
 
 # An unready service reports a bounded readiness failure without changing it.
 reset_fake running
 FAKE_DOCKER_READY=0 run_helper status 1
 expect_output_contains "PostgreSQL did not become ready"
 expect_log_count "run --detach" 0
-expect_log_count "start concourse-test-postgres" 0
+expect_log_count "start owned-container-id" 0
 
 # Teardown is idempotent. It is intentionally last-mutation-wins and unsafe while tests run.
 reset_fake running
 run_helper down 0
 run_helper down 0
-expect_log_count "--context colima rm --force concourse-test-postgres" 1
+expect_log_count "--context colima rm --force owned-container-id" 1
 
 # If another down wins the remove race, re-inspection observes absence and
 # succeeds without trying to remove a potentially foreign replacement.
 reset_fake down-race
 run_helper down 0
-expect_log_count "--context colima rm --force concourse-test-postgres" 1
+expect_log_count "--context colima rm --force owned-container-id" 1
 expect_log_count_at_least "container inspect" 2
 
 # A foreign replacement after a losing race is never removed.
 reset_fake down-race-foreign
 run_helper down 1
-expect_log_count "--context colima rm --force concourse-test-postgres" 1
+expect_log_count "--context colima rm --force owned-container-id" 1
 expect_log_count_at_least "container inspect" 2
+
+# A foreign replacement racing teardown survives because rm targets only the
+# previously validated immutable ID, and teardown refuses the replacement.
+reset_fake swap-before-rm
+run_helper down 1
+expect_output_contains "not owned"
+expect_log_contains "--context colima rm --force owned-container-id"
+expect_log_count "rm --force concourse-test-postgres" 0
+if [[ "$(cat "${TMP_ROOT}/state")" != "foreign" ]]; then
+	echo "foreign replacement did not survive teardown race" >&2
+	exit 1
+fi
 
 # env is machine-sourceable and does not require Docker.
 reset_fake missing
