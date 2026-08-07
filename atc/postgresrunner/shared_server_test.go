@@ -242,6 +242,108 @@ func TestConnectionInfoPreservesUnlimitedTimeoutAndDefaultsSSLNegotiation(t *tes
 	}
 }
 
+func TestConnectionSettingExplicitEmptyOverridesEnvironment(t *testing.T) {
+	tests := []struct {
+		name            string
+		dsn             string
+		setting         string
+		environmentName string
+	}{
+		{
+			name:            "URL TLS setting",
+			dsn:             "postgres://postgres@db/postgres?sslmode=disable&sslrootcert=",
+			setting:         "sslrootcert",
+			environmentName: "PGSSLROOTCERT",
+		},
+		{
+			name:            "keyword TLS setting",
+			dsn:             "host=db user=postgres dbname=postgres sslmode=disable sslrootcert=''",
+			setting:         "sslrootcert",
+			environmentName: "PGSSLROOTCERT",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(tt.environmentName, "environment-value")
+
+			got, present := connectionSetting(tt.dsn, tt.setting, tt.environmentName)
+
+			if !present {
+				t.Fatal("explicit empty setting was reported absent")
+			}
+			if got != "" {
+				t.Fatalf("setting = %q, want explicit empty value", got)
+			}
+		})
+	}
+}
+
+func TestConnectionSettingUsesEnvironmentOnlyWhenDSNSettingIsAbsent(t *testing.T) {
+	t.Setenv("PGSSLROOTCERT", "/environment/root.pem")
+
+	got, present := connectionSetting(
+		"host=db user=postgres dbname=postgres sslmode=disable",
+		"sslrootcert",
+		"PGSSLROOTCERT",
+	)
+
+	if !present || got != "/environment/root.pem" {
+		t.Fatalf("setting = %q, present %t", got, present)
+	}
+}
+
+func TestAdoptSuiteConfigRejectsEffectiveServiceBeforePGXParsing(t *testing.T) {
+	valid := SuiteConfig{
+		AdminDSN:     DefaultAdminDSN,
+		RunID:        "t1786000000_p4242_aabbccdd",
+		TemplateName: "cc_tpl_t1786000000_p4242_aabbccdd",
+		CreatedUnix:  1_786_000_000,
+	}
+
+	tests := []struct {
+		name      string
+		adminDSN  string
+		pgService string
+	}{
+		{
+			name:     "keyword service",
+			adminDSN: DefaultAdminDSN + " service=production",
+		},
+		{
+			name:     "URL service",
+			adminDSN: "postgres://postgres@127.0.0.1:15432/postgres?sslmode=disable&service=production",
+		},
+		{
+			name:     "empty keyword service",
+			adminDSN: DefaultAdminDSN + " service=''",
+		},
+		{
+			name:     "empty URL service",
+			adminDSN: "postgres://postgres@127.0.0.1:15432/postgres?sslmode=disable&service=",
+		},
+		{
+			name:      "environment service",
+			adminDSN:  DefaultAdminDSN,
+			pgService: "production",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("PGSERVICE", tt.pgService)
+			config := valid
+			config.AdminDSN = tt.adminDSN
+
+			err := (&Runner{}).AdoptSuiteConfig(config, 1)
+
+			if err == nil || !strings.Contains(err.Error(), "service") || !strings.Contains(err.Error(), "not supported") {
+				t.Fatalf("error = %v, want explicit unsupported-service error", err)
+			}
+		})
+	}
+}
+
 func copyPostgresTLSFixtures(t *testing.T) (string, string, string) {
 	t.Helper()
 	destination := t.TempDir()
