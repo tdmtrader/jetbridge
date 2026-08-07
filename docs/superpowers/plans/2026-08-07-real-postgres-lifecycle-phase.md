@@ -569,7 +569,7 @@ BuildForAPI(int) (db.BuildForAPI, bool, error)
 - Consumes: existing GC `dbConn`, `lockFactory`, `db.NewPipelineFactory`, `db.NewPipelineLifecycle`, `Job.CreateBuild`, `Build.Start`, `Build.Finish`, `Build.SetDrained`, `Pipeline.Pause`, and `Job.Pause`.
 - Produces: `runRetentionScenario(retentionScenario)` plus persisted build-event and `first_logged_build_id` assertions.
 
-- [ ] **Step 1: Define the real fixture records and event assertions.**
+- [x] **Step 1: Define the real fixture records and event assertions.**
 
   Define `retentionBuild` with `name`, `status db.BuildStatus`, `completed bool`, `drained bool`, `endAgo time.Duration`, and `reapAgo time.Duration`; define `retentionScenario` with job retention, calculator, drainer flag, paused pipeline/job flags, builds oldest-to-newest, expected deleted names, and expected first-logged name.
 
@@ -585,7 +585,7 @@ BuildForAPI(int) (db.BuildForAPI, bool, error)
 
   Query `pipeline_build_events_<pipeline.ID()>` with a parameterized `build_id`, and compare the set of build names whose event count became zero to `expectedDeleted`. Reload the job after the collector and compare `FirstLoggedBuildID()` to the ID mapped from `expectedFirstLogged`. For `expectedFirstLogged==""`, require zero. An already-reaped row must retain its seeded event while an eligible non-reaped row is deleted; that distinguishes filtering from deletion selection.
 
-- [ ] **Step 2: Implement this complete scenario table.**
+- [x] **Step 2: Implement this complete scenario table.**
 
   `end` and `reap` are ages relative to fixture time; `-` means the column remains zero. Status values use the matching `db.BuildStatus`. The order column is oldest to newest.
 
@@ -612,7 +612,7 @@ BuildForAPI(int) (db.BuildForAPI, bool, error)
 
   Use `pipeline.Pause("collector-test")` and `job.Pause("collector-test")`, then reload the affected value before running the collector. The `all eligible` expected cursor is deliberately `b1`: when every event is deleted the collector does not reset the persisted cursor to zero.
 
-- [ ] **Step 3: Add the first real assertion against the old collector and observe RED.**
+- [x] **Step 3: Add the first real assertion against the old collector and observe RED.**
 
   Instantiate the `count only` real scenario but initially run the current collector built with fake pipeline factory/lifecycle. Its b1 event count remains nonzero, so compare deleted names to `{b1}`.
 
@@ -620,7 +620,7 @@ BuildForAPI(int) (db.BuildForAPI, bool, error)
 
   Expected: FAIL because the old fake collaborators never enumerate or mutate the real pipeline.
 
-- [ ] **Step 4: Rewire the table and isolate four exact method-fault constructors.**
+- [x] **Step 4: Rewire the table and isolate four exact method-fault constructors.**
 
   Run all table entries through real `PipelineFactory`/`PipelineLifecycle`. Consolidate error-only contexts under `Describe("retained selective database method faults")` with exactly one `FakePipelineFactory`, one `FakePipelineLifecycle`, one `FakePipeline`, and one `FakeJob` lexical constructor. Reuse them to cover `RemoveBuildEventsForDeletedPipelines`, `AllPipelines`, `Pipeline.Jobs`, `DeleteBuildEventsByBuildIDs`, `Job.ChronoBuilds`, and `UpdateFirstLoggedBuildID` errors. Comment the pipeline/job fakes: a healthy persisted row cannot fail one selected interface method while preserving the surrounding row graph. Delete `sb`, `sbTime`, `sbDrained`, `runningBuild`, `reapedBuild`, and `successBuild`.
 
@@ -628,7 +628,7 @@ BuildForAPI(int) (db.BuildForAPI, bool, error)
 
   Expected: PASS.
 
-- [ ] **Step 5: Prove event deletion sensitivity and commit.**
+- [x] **Step 5: Prove event deletion sensitivity and commit.**
 
   Temporarily skip `pipeline.DeleteBuildEventsByBuildIDs(buildIDsToDelete)`, run the focused `count only` persisted spec, and confirm the expected-deleted set is empty rather than `{b1}`. Restore `build_log_collector.go`, rerun to PASS, then:
 
