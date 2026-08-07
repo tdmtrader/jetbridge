@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	"github.com/concourse/concourse/vars"
@@ -49,16 +48,18 @@ func TestLiveSecretEnvRef(t *testing.T) {
 	handle := "live-secret-env-" + time.Now().Format("150405")
 	cleanupPod(t, clientset, ns, handle)
 
-	fakeDBWorker := new(dbfakes.FakeWorker)
-	fakeDBWorker.NameReturns("live-k8s-worker")
-	setupFakeDBContainer(fakeDBWorker, handle)
+	database := useLiveJetbridgeDB(t)
+	dbWorker, err := persistNamedWorker(database, "live-k8s-worker")
+	if err != nil {
+		t.Fatalf("persisting worker: %v", err)
+	}
 
 	restConfig, err := jetbridge.RestConfig(*cfg)
 	if err != nil {
 		t.Fatalf("creating rest config: %v", err)
 	}
 
-	worker := jetbridge.NewWorker(fakeDBWorker, clientset, *cfg)
+	worker := jetbridge.NewWorker(dbWorker, clientset, *cfg)
 	executor := jetbridge.NewSPDYExecutor(clientset, restConfig)
 	worker.SetExecutor(executor)
 
@@ -87,6 +88,26 @@ func TestLiveSecretEnvRef(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatalf("creating container: %v", err)
+	}
+	persisted, found, err := database.WorkerFactory.GetWorker("live-k8s-worker")
+	if err != nil {
+		t.Fatalf("getting persisted worker: %v", err)
+	}
+	if !found {
+		t.Fatal("persisted worker not found")
+	}
+	creating, created, err := persisted.FindContainer(db.NewFixedHandleContainerOwner(handle))
+	if err != nil {
+		t.Fatalf("finding persisted container: %v", err)
+	}
+	if creating != nil {
+		t.Fatalf("expected no creating container, got %T", creating)
+	}
+	if created == nil {
+		t.Fatal("persisted created container not found")
+	}
+	if created.Handle() != handle {
+		t.Fatalf("persisted container handle = %q, want %q", created.Handle(), handle)
 	}
 
 	// 3. Run a command — this creates the pod and lets us verify the spec

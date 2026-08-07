@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	corev1 "k8s.io/api/core/v1"
@@ -19,7 +18,7 @@ import (
 // setupLiveWorkerWithConfig creates a Worker backed by a real K8s clientset
 // with a custom Config. Used for testing imagePullSecrets, service accounts,
 // and resource limits.
-func setupLiveWorkerWithConfig(t *testing.T, handle string, cfgMutator func(*jetbridge.Config)) (*jetbridge.Worker, runtime.BuildStepDelegate) {
+func setupLiveWorkerWithConfig(t *testing.T, cfgMutator func(*jetbridge.Config)) (*jetbridge.Worker, runtime.BuildStepDelegate, jetbridgeDB) {
 	t.Helper()
 
 	clientset, cfg := kubeClient(t)
@@ -32,16 +31,17 @@ func setupLiveWorkerWithConfig(t *testing.T, handle string, cfgMutator func(*jet
 		t.Fatalf("creating rest config: %v", err)
 	}
 
-	fakeDBWorker := new(dbfakes.FakeWorker)
-	fakeDBWorker.NameReturns("live-k8s-worker")
+	database := useLiveJetbridgeDB(t)
+	dbWorker, err := persistNamedWorker(database, "live-k8s-worker")
+	if err != nil {
+		t.Fatalf("persisting worker: %v", err)
+	}
 
-	setupFakeDBContainer(fakeDBWorker, handle)
-
-	worker := jetbridge.NewWorker(fakeDBWorker, clientset, *cfg)
+	worker := jetbridge.NewWorker(dbWorker, clientset, *cfg)
 	executor := jetbridge.NewSPDYExecutor(clientset, restConfig)
 	worker.SetExecutor(executor)
 
-	return worker, &noopDelegate{}
+	return worker, &noopDelegate{}, database
 }
 
 // TestLiveResourceLimitsQoS verifies that pods created with CPU/Memory limits
@@ -207,7 +207,7 @@ func TestLiveServiceAccount(t *testing.T) {
 	cleanupPod(t, clientset, cfg.Namespace, handle)
 
 	// Use the "default" service account since it always exists.
-	worker, delegate := setupLiveWorkerWithConfig(t, handle, func(c *jetbridge.Config) {
+	worker, delegate, database := setupLiveWorkerWithConfig(t, func(c *jetbridge.Config) {
 		c.ServiceAccount = "default"
 	})
 
@@ -223,6 +223,26 @@ func TestLiveServiceAccount(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatalf("FindOrCreateContainer: %v", err)
+	}
+	persisted, found, err := database.WorkerFactory.GetWorker("live-k8s-worker")
+	if err != nil {
+		t.Fatalf("getting persisted worker: %v", err)
+	}
+	if !found {
+		t.Fatal("persisted worker not found")
+	}
+	creating, created, err := persisted.FindContainer(db.NewFixedHandleContainerOwner(handle))
+	if err != nil {
+		t.Fatalf("finding persisted container: %v", err)
+	}
+	if creating != nil {
+		t.Fatalf("expected no creating container, got %T", creating)
+	}
+	if created == nil {
+		t.Fatal("persisted created container not found")
+	}
+	if created.Handle() != handle {
+		t.Fatalf("persisted container handle = %q, want %q", created.Handle(), handle)
 	}
 
 	_, err = container.Run(ctx, runtime.ProcessSpec{
