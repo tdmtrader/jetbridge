@@ -45,7 +45,7 @@ The fixed baseline is exactly 40 explicit constructors: Teams 7, Workers 6, Pipe
 - Consumes: `db.TeamFactory.CreateTeam(atc.Team) (db.Team, error)`, `db.Team.SavePipeline(atc.PipelineRef, atc.Config, db.ConfigVersion, bool) (db.Pipeline, bool, error)`, `db.Team.SaveWorker(atc.Worker, time.Duration) (db.Worker, error)`, `db.WorkerFactory.SaveWorker(atc.Worker, time.Duration) (db.Worker, error)`, `db.Job.CreateBuild(string) (db.Build, error)`, `db.Build.Start(atc.Plan) (bool, error)`, and `db.Build.Finish(db.BuildStatus) error`.
 - Produces: real success fixtures for Teams and Workers API routes, exact dynamic-object assertions, and only three retained constructors across the two files.
 
-- [ ] **Step 1: Add a lifecycle-correct Teams consumer assertion that is red against the fake server.**
+- [x] **Step 1: Add a lifecycle-correct Teams consumer assertion that is red against the fake server.**
 
   In the `PUT /api/v1/teams/:team_name` Describe, declare `realdb *realDB` in the Describe var block. In the authorized-update Context add a `BeforeEach` that runs before its `JustBeforeEach` request:
 
@@ -69,13 +69,13 @@ The fixed baseline is exactly 40 explicit constructors: Teams 7, Workers 6, Pipe
 
   Because the request still reaches `dbTeamFactory`, the clone has no `some-team` row and the assertion is red.
 
-- [ ] **Step 2: Run the Teams red node before real server wiring.**
+- [x] **Step 2: Run the Teams red node before real server wiring.**
 
   Run: `ginkgo --focus='persists team mutations through PostgreSQL' ./atc/api`
 
   Expected: FAIL with `found` false after the fake handler reports success.
 
-- [ ] **Step 3: Convert Teams list, detail, and builds reads.**
+- [x] **Step 3: Convert Teams list, detail, and builds reads.**
 
   In each converted Describe, declare `realdb *realDB` in its var block, assign `realdb = useRealDB()` in `BeforeEach`, and then set `server = realdb.Serve()` in that same `BeforeEach`, before `JustBeforeEach` builds the request. Reuse `realdb.Main`; do not create a second `main` team.
 
@@ -147,39 +147,39 @@ The fixed baseline is exactly 40 explicit constructors: Teams 7, Workers 6, Pipe
   DeferCleanup(server.Close)
   ```
 
-- [ ] **Step 4: Convert team creation with literal request and reread.**
+- [x] **Step 4: Convert team creation with literal request and reread.**
 
   In the admin/not-found Context, create the request body `atc.Team{Auth: teamAuth}` where `teamAuth` is the literal owner/users map from Step 1; send `PUT /api/v1/teams/some-team`; expect 201. Reread with `created, found, err := realdb.Deps.teamFactory.FindTeam("some-team")`; assert nil error, found true, `created.Name() == "some-team"`, and `created.Auth() == teamAuth`. The GREEN change to the RED setup is only `server = realdb.Serve()` in its `BeforeEach` before `JustBeforeEach`.
 
-- [ ] **Step 5: Convert team auth update with a preexisting row.**
+- [x] **Step 5: Convert team auth update with a preexisting row.**
 
   Persist `some-team` with `oldAuth := atc.TeamAuth{"owner": map[string][]string{"groups": {"old-group"}, "users": {}}}`. Send `PUT /api/v1/teams/some-team` with `newAuth := atc.TeamAuth{"owner": map[string][]string{"groups": {}, "users": {"local:username"}}}`; expect 200. Reread `some-team` and assert found, `Auth() == newAuth`, and `Auth() != oldAuth`.
 
-- [ ] **Step 6: Convert team deletion with a literal team name.**
+- [x] **Step 6: Convert team deletion with a literal team name.**
 
   Persist `team` with `atc.Team{Name: "team", Auth: atc.TeamAuth{"owner": map[string][]string{"groups": {}, "users": {"local:admin"}}}}`; set authenticated/admin/authorized true; send `DELETE /api/v1/teams/team`; expect 204. Call `FindTeam("team")` and assert `(nil, false, nil)`. Keep the sole-admin refusal in its state-specific context and the post-lookup `Team.Delete` error on the one retained `FakeTeam`.
 
-- [ ] **Step 7: Convert team rename with literal body and both-name rereads.**
+- [x] **Step 7: Convert team rename with literal body and both-name rereads.**
 
   Persist `a-team` with nonempty owner auth; send `PUT /api/v1/teams/a-team/rename` with body `{"name":"some-new-name"}`; expect 200. Assert `FindTeam("a-team")` returns not found and `FindTeam("some-new-name")` returns a row whose `Name()` is `some-new-name`. Keep invalid `_some-new-name` and empty-name validation requests unchanged.
 
-- [ ] **Step 8: Run Teams green verification.**
+- [x] **Step 8: Run Teams green verification.**
 
   Run: `ginkgo --focus='Teams API' ./atc/api`
 
   Expected: PASS; `teams_test.go` contains exactly one explicit `dbfakes` constructor.
 
-- [ ] **Step 9: Add a lifecycle-correct Workers consumer assertion that is red against the fake server.**
+- [x] **Step 9: Add a lifecycle-correct Workers consumer assertion that is red against the fake server.**
 
   Declare `realdb *realDB` in the POST Describe var block. In authenticated global POST, assign `realdb = useRealDB()` and `requestedAt = time.Now()` in `BeforeEach`, before `JustBeforeEach`, but leave the suite server unchanged. Add `It("persists worker registration through PostgreSQL")`; after the request, call `realdb.Deps.workerFactory.GetWorker("worker-name")`, expect found, and require `ExpiresAt()` between `requestedAt.Add(30*time.Second)` and `time.Now().Add(30*time.Second)`. The fake server returns 200 but writes no row, so this is red.
 
-- [ ] **Step 10: Run the Workers red node before real server wiring.**
+- [x] **Step 10: Run the Workers red node before real server wiring.**
 
   Run: `ginkgo --focus='persists worker registration through PostgreSQL' ./atc/api`
 
   Expected: FAIL with `found` false.
 
-- [ ] **Step 11: Convert worker list visibility with exactly three rows.**
+- [x] **Step 11: Convert worker list visibility with exactly three rows.**
 
   Declare `realdb *realDB` at Describe scope, assign it in `BeforeEach`, and set `server = realdb.Serve()` before `JustBeforeEach`. Create `some-team` and `other-team`, then persist exactly these three workers:
 
@@ -203,17 +203,17 @@ The fixed baseline is exactly 40 explicit constructors: Teams 7, Workers 6, Pipe
 
   Set `fakeAccess.TeamNamesReturns([]string{"some-team"})`. Decode the authorized response into `[]atc.Worker` and assert names `global.Name()` and `own.Name()` only. Set admin true and assert names `global.Name()`, `own.Name()`, and `other.Name()`.
 
-- [ ] **Step 12: Convert global and team worker POST separately.**
+- [x] **Step 12: Convert global and team worker POST separately.**
 
   For global POST, send the literal `atc.Worker{Name: "worker-name", ActiveContainers: 2, ActiveVolumes: 10, ActiveTasks: 42, ResourceTypes: []atc.WorkerResourceType{{Type: "some-resource", Image: "some-resource-image"}}, Platform: "haiku", Tags: []string{"not", "a", "limerick"}, Version: "1.2.3"}` with `ttl=30s`; expect 200. Reread `worker-name`, compare every listed field, assert `TeamName() == ""`, and bound expiry as in Step 9.
 
   For team POST, create `some-team`, set the same request's `Team` field to `some-team`, send POST with `ttl=30s`, expect 200, reread `worker-name`, and assert `TeamName() == "some-team"` and `TeamID() == someTeam.ID()` plus the same field/expiry checks. Keep `Team.SaveWorker` failure on the retained `FakeTeam` only.
 
-- [ ] **Step 13: Convert each worker DELETE authorization success separately.**
+- [x] **Step 13: Convert each worker DELETE authorization success separately.**
 
   For system DELETE, persist global `some-worker`, set authenticated/system true, send `DELETE /api/v1/workers/some-worker`, expect 200, and assert `GetWorker("some-worker")` returns `(nil, false, nil)`. Repeat from a fresh clone for admin with authenticated/admin true. For team authorization, create `some-team`, save `some-worker` through `someTeam.SaveWorker`, set authenticated/authorized true, send the same DELETE, expect 200, and assert absent through the global worker factory. Keep the post-lookup `Worker.Delete` failure on the retained `FakeWorker` only; use a missing real row for already-deleted behavior.
 
-- [ ] **Step 14: Narrow worker faults to two retained constructors and closed direct factories.**
+- [x] **Step 14: Narrow worker faults to two retained constructors and closed direct factories.**
 
   Keep exactly two constructor sites:
 
@@ -238,7 +238,7 @@ The fixed baseline is exactly 40 explicit constructors: Teams 7, Workers 6, Pipe
   DeferCleanup(server.Close)
   ```
 
-- [ ] **Step 15: Verify and commit Task 1.**
+- [x] **Step 15: Verify and commit Task 1.**
 
   Run: `ginkgo --focus='(Teams API|Workers API)' ./atc/api`
 
