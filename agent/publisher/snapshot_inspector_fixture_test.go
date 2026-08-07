@@ -99,7 +99,7 @@ func newPublisherSnapshotFixture(t *testing.T) publisherSnapshotFixture {
 
 func publisherGitRequest(ref snapshot.SnapshotRef) publisher.Request {
 	return publisher.Request{
-		Publisher: publisher.GitPublisher, Input: ref, Destination: "git.example/acme/widget", Mode: publisher.ModePullRequest,
+		Publisher: publisher.GitPublisher, Input: ref, Destination: "git.example/acme/widget", Mode: publisher.ModeBranch,
 		Parameters:            map[string]string{"source_branch": "agent/change", "target_branch": "main"},
 		ApprovalPolicyVersion: "engineering/v1",
 		Authority:             publisher.Authority{TeamID: 9, TeamName: "engineering", BuildID: 12, WorkflowRunID: 17, Actor: "build/12"},

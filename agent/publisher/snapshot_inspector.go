@@ -132,35 +132,10 @@ func (inspector *SnapshotChangeInspector) Inspect(ctx context.Context, request R
 	return inspector.inspectExactRepositoryChange(ctx, request.Authority.TeamID, request.Input)
 }
 
-// InspectPRCandidate reopens the exact repository-change/v1 candidate named by
-// a persisted branch-publication action. It deliberately validates that action
-// directly instead of synthesizing a legacy publisher Request, so every
-// authority and semantic input remains bound to its durable form.
-func (inspector *SnapshotChangeInspector) InspectPRCandidate(
-	ctx context.Context,
-	request BranchPublicationRequest,
-) (RepositoryChange, error) {
-	if ctx == nil {
-		return RepositoryChange{}, fmt.Errorf("%w: context is required", ErrInvalidRequest)
-	}
-	if err := ctx.Err(); err != nil {
-		return RepositoryChange{}, err
-	}
-	action := PRAction{Kind: OperationPublishPRBranch, Branch: &request}
-	if err := action.ValidatePersisted(); err != nil {
-		return RepositoryChange{}, err
-	}
-	return inspector.inspectExactRepositoryChange(
-		ctx,
-		request.Authority.TeamID,
-		request.Candidate,
-	)
-}
-
 // InspectExactPRCandidate reopens one exact repository-change/v1 value using
-// the team authority already carried by a durable PR workflow run. It is the
-// read-only precursor to constructing an action-bound BranchPublicationRequest;
-// mutation paths must still use InspectPRCandidate before writing.
+// the team authority already carried by a durable workflow run. It is a
+// read-only lookup: it asserts nothing about publication authority, so a
+// mutation path must derive its own authorization before writing.
 func (inspector *SnapshotChangeInspector) InspectExactPRCandidate(
 	ctx context.Context,
 	teamID int,

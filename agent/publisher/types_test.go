@@ -14,7 +14,7 @@ import (
 func TestOperationKeyIsCanonicalAndDistinguishesSemanticOperations(t *testing.T) {
 	base := publisher.Request{
 		Publisher: publisher.GitPublisher, Input: changeRef(),
-		Destination: "github.example/team/repo", Mode: publisher.ModePullRequest,
+		Destination: "github.example/team/repo", Mode: publisher.ModeBranch,
 		Parameters:            map[string]string{"target_branch": "main", "source_branch": "agent/upgrade"},
 		ApprovalPolicyVersion: "engineering/v2",
 		Authority:             publicationAuthority(),
@@ -37,7 +37,16 @@ func TestOperationKeyIsCanonicalAndDistinguishesSemanticOperations(t *testing.T)
 		func(request *publisher.Request) { request.Authority.TeamID++ },
 		func(request *publisher.Request) { request.Input.ID++ },
 		func(request *publisher.Request) { request.Destination += "-fork" },
-		func(request *publisher.Request) { request.Mode = publisher.ModeBranch },
+		// Branch and merge are the only Git modes left, so the one expressible
+		// mode change necessarily carries merge's mandatory base assertion and
+		// approval evidence with it.
+		func(request *publisher.Request) {
+			request.Mode = publisher.ModeMerge
+			delete(request.Parameters, "source_branch")
+			request.Parameters[publisher.MergeBaseParameter] = strings.Repeat("a", 40)
+			request.ApprovedBy = "alice"
+			request.Approval = approvalEvidence("alice", 11)
+		},
 		func(request *publisher.Request) { request.Parameters["target_branch"] = "stable" },
 		func(request *publisher.Request) { request.ApprovalPolicyVersion = "engineering/v3" },
 	}

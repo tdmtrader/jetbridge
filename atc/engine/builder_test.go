@@ -839,7 +839,7 @@ var _ = Describe("Builder", func() {
 							expectedPlan = planFactory.NewPlan(atc.PublishSnapshotPlan{
 								Name: "publish-change", Publisher: publisher.GitPublisher,
 								Input: "change", InputType: "repository-change/v1",
-								Destination: "github.example/team/repo", Mode: publisher.ModePullRequest,
+								Destination: "github.example/team/repo", Mode: publisher.ModeBranch,
 								Parameters:            map[string]string{"source_branch": "agent/change", "target_branch": "main"},
 								ApprovalPolicyVersion: "engineering/v2",
 							})

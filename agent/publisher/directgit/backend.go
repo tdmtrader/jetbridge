@@ -145,9 +145,6 @@ func (backend *Backend) Publish(
 	if err := validateContext(ctx); err != nil {
 		return publisher.GitResult{}, err
 	}
-	if operation.Mode == publisher.ModePullRequest {
-		return publisher.GitResult{}, ErrUnsupportedMode
-	}
 	if operation.Mode != publisher.ModeBranch && operation.Mode != publisher.ModeMerge {
 		return publisher.GitResult{}, ErrUnsupportedMode
 	}

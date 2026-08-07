@@ -1268,7 +1268,7 @@ var _ = Describe("PublishSnapshot public plan", func() {
 				Name: "publish-change", Publisher: publisher.GitPublisher, Input: "change",
 				InputType:             snapshot.TypeRef("repository-change/v1"),
 				Destination:           "https://person:credential@github.example/team/repo?token=secret",
-				Mode:                  publisher.ModePullRequest,
+				Mode:                  publisher.ModeBranch,
 				Parameters:            map[string]string{"body": "private", "credential": "literal-secret"},
 				ApprovalPolicyVersion: "engineering/v2",
 			},
@@ -1281,7 +1281,7 @@ var _ = Describe("PublishSnapshot public plan", func() {
 				"publisher":"git-publisher/v1",
 				"input":"change",
 				"input_type":"repository-change/v1",
-				"mode":"pull-request",
+				"mode":"branch",
 				"approval_policy_version":"engineering/v2",
 				"destination_configured":true
 			}

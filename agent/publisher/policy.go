@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"unicode"
 
 	"github.com/concourse/concourse/agent/snapshot"
 )
@@ -26,7 +25,6 @@ type AdapterKind string
 
 const (
 	AdapterGateway AdapterKind = "gateway"
-	AdapterGitHub  AdapterKind = "github"
 )
 
 // Policy is the complete startup-loaded publisher authorization policy. Each
@@ -37,25 +35,18 @@ type Policy struct {
 }
 
 // PolicyRule binds one exact publication request to its in-process adapter
-// and server-owned destination authority. Direct Git and work-item rules use
-// CredentialReference and RemoteURL. Provider-native PR rules use the
-// asymmetric provider, URL, and read/write reference fields instead.
+// and server-owned destination authority. Every rule names its destination
+// with CredentialReference and RemoteURL.
 type PolicyRule struct {
-	Team                     string           `json:"team"`
-	Publisher                snapshot.TypeRef `json:"publisher"`
-	Mode                     Mode             `json:"mode"`
-	ApprovalPolicyVersion    string           `json:"approval_policy_version"`
-	TargetBranch             string           `json:"target_branch,omitempty"`
-	Destination              string           `json:"destination"`
-	Adapter                  AdapterKind      `json:"adapter"`
-	CredentialReference      string           `json:"credential_reference,omitempty"`
-	RemoteURL                string           `json:"remote_url,omitempty"`
-	Provider                 PRProvider       `json:"provider,omitempty"`
-	Repository               string           `json:"repository,omitempty"`
-	APIBaseURL               string           `json:"api_base_url,omitempty"`
-	RepositoryURL            string           `json:"repository_url,omitempty"`
-	ReadCredentialReference  string           `json:"read_credential_reference,omitempty"`
-	WriteCredentialReference string           `json:"write_credential_reference,omitempty"`
+	Team                  string           `json:"team"`
+	Publisher             snapshot.TypeRef `json:"publisher"`
+	Mode                  Mode             `json:"mode"`
+	ApprovalPolicyVersion string           `json:"approval_policy_version"`
+	TargetBranch          string           `json:"target_branch,omitempty"`
+	Destination           string           `json:"destination"`
+	Adapter               AdapterKind      `json:"adapter"`
+	CredentialReference   string           `json:"credential_reference,omitempty"`
+	RemoteURL             string           `json:"remote_url,omitempty"`
 }
 
 // LoadPolicy reads and strictly decodes a bounded policy file.
@@ -118,8 +109,6 @@ func (policy Policy) Validate() error {
 		approvalPolicyVersion string
 		targetBranch          string
 		destination           string
-		provider              PRProvider
-		repository            string
 	}
 	seen := make(map[matcher]int, len(policy.Rules))
 	for index, rule := range policy.Rules {
@@ -131,8 +120,6 @@ func (policy Policy) Validate() error {
 			approvalPolicyVersion: rule.ApprovalPolicyVersion,
 			targetBranch:          rule.TargetBranch,
 			destination:           rule.Destination,
-			provider:              rule.Provider,
-			repository:            rule.Repository,
 		}
 		if previous, duplicate := seen[key]; duplicate {
 			return fmt.Errorf("publisher policy: rules %d and %d ambiguously match the same request", previous, index)
@@ -156,9 +143,6 @@ func (rule PolicyRule) validate() error {
 		return fmt.Errorf("approval_policy_version is invalid")
 	}
 	switch {
-	case rule.Mode == ModePullRequest:
-		// Provider-native target refs are validated with the rest of the PR
-		// lane below so a legacy PR rule is rejected as unsupported first.
 	case rule.Publisher == GitPublisher:
 		if !boundedText(rule.TargetBranch, 1024, false) {
 			return fmt.Errorf("target_branch is required for Git")
@@ -174,68 +158,11 @@ func (rule PolicyRule) validate() error {
 	if !boundedText(string(rule.Adapter), 128, false) {
 		return fmt.Errorf("adapter is invalid")
 	}
-	if rule.Mode == ModePullRequest {
-		return rule.validatePR()
-	}
-	return rule.validateLegacy()
-}
-
-func (rule PolicyRule) validateLegacy() error {
-	if rule.Provider != "" ||
-		rule.Repository != "" ||
-		rule.APIBaseURL != "" ||
-		rule.RepositoryURL != "" ||
-		rule.ReadCredentialReference != "" ||
-		rule.WriteCredentialReference != "" {
-		return fmt.Errorf("provider-native PR fields are not valid for non-PR rules")
-	}
-	if rule.Adapter == AdapterGitHub {
-		return fmt.Errorf("provider-native PR adapter is not valid for non-PR rules")
-	}
 	if !boundedText(rule.CredentialReference, 256, false) {
 		return fmt.Errorf("credential_reference is invalid")
 	}
 	if err := validatePolicyRemoteURL(rule.RemoteURL); err != nil {
 		return fmt.Errorf("remote_url is invalid: %w", err)
-	}
-	return nil
-}
-
-func (rule PolicyRule) validatePR() error {
-	if rule.CredentialReference != "" {
-		return fmt.Errorf("credential_reference is unsupported for PR rules")
-	}
-	if rule.RemoteURL != "" {
-		return fmt.Errorf("remote_url is unsupported for PR rules")
-	}
-	if !safePRRef(rule.TargetBranch) {
-		return fmt.Errorf("target_branch must be a fully qualified PR head ref")
-	}
-	expectedAdapter, found := adapterForPRProvider(rule.Provider)
-	if !found {
-		return fmt.Errorf("provider is invalid")
-	}
-	if rule.Adapter != expectedAdapter {
-		return fmt.Errorf("adapter does not match provider")
-	}
-	if !boundedText(rule.Repository, 512, false) ||
-		strings.ContainsAny(rule.Repository, " \t\r\n") {
-		return fmt.Errorf("repository is invalid")
-	}
-	if err := validatePRPolicyURL(rule.APIBaseURL, false); err != nil {
-		return fmt.Errorf("api_base_url is invalid: %w", err)
-	}
-	if err := validatePRPolicyURL(rule.RepositoryURL, true); err != nil {
-		return fmt.Errorf("repository_url is invalid: %w", err)
-	}
-	if !validPRCredentialReference(rule.ReadCredentialReference) {
-		return fmt.Errorf("read_credential_reference is invalid")
-	}
-	if !validPRCredentialReference(rule.WriteCredentialReference) {
-		return fmt.Errorf("write_credential_reference is invalid")
-	}
-	if rule.ReadCredentialReference == rule.WriteCredentialReference {
-		return fmt.Errorf("PR read and write credential references must be distinct")
 	}
 	return nil
 }
@@ -251,9 +178,6 @@ func (policy Policy) Resolve(ctx context.Context, request Request) (PolicyRule, 
 	}
 	if err := request.ValidatePersisted(); err != nil {
 		return PolicyRule{}, err
-	}
-	if request.Mode == ModePullRequest {
-		return PolicyRule{}, ErrDestinationNotAllowed
 	}
 	if err := policy.Validate(); err != nil {
 		return PolicyRule{}, err
@@ -272,160 +196,15 @@ func (policy Policy) Resolve(ctx context.Context, request Request) (PolicyRule, 
 	return PolicyRule{}, ErrDestinationNotAllowed
 }
 
-// ResolvePR returns the unique provider-native rule for an acquired,
-// persisted PR action. It matches only trusted action identity and never
-// accepts provider, repository, target, URL, or credential material from a
-// legacy publication request.
-func (policy Policy) ResolvePR(ctx context.Context, action PRAction) (PolicyRule, error) {
-	if ctx == nil {
-		return PolicyRule{}, fmt.Errorf("%w: context is required", ErrInvalidRequest)
-	}
-	if err := ctx.Err(); err != nil {
-		return PolicyRule{}, err
-	}
-	if err := action.ValidatePersisted(); err != nil {
-		return PolicyRule{}, err
-	}
-	if err := policy.Validate(); err != nil {
-		return PolicyRule{}, err
-	}
-	matcher := prPolicyMatcherFor(action)
-	for _, rule := range policy.Rules {
-		if rule.Mode == ModePullRequest &&
-			rule.Publisher == GitPublisher &&
-			rule.Team == matcher.team &&
-			rule.Destination == matcher.destination &&
-			rule.ApprovalPolicyVersion == matcher.approvalPolicyVersion &&
-			rule.Provider == matcher.provider &&
-			rule.Repository == matcher.repository &&
-			rule.TargetBranch == matcher.targetRef {
-			return rule, nil
-		}
-	}
-	return PolicyRule{}, ErrDestinationNotAllowed
-}
-
-type prPolicyMatcher struct {
-	team                  string
-	destination           string
-	approvalPolicyVersion string
-	provider              PRProvider
-	repository            string
-	targetRef             string
-}
-
-func prPolicyMatcherFor(action PRAction) prPolicyMatcher {
-	switch action.Kind {
-	case OperationPublishPRBranch:
-		return prPolicyMatcher{
-			team:                  action.Branch.Authority.TeamName,
-			destination:           action.Branch.Destination,
-			approvalPolicyVersion: action.Branch.ApprovalPolicyVersion,
-			provider:              action.Branch.Locator.Provider,
-			repository:            action.Branch.Locator.Repository,
-			targetRef:             action.Branch.TargetRef,
-		}
-	case OperationCreatePR:
-		return prPolicyMatcher{
-			team:                  action.PullRequest.Authority.TeamName,
-			destination:           action.PullRequest.Destination,
-			approvalPolicyVersion: action.PullRequest.ApprovalPolicyVersion,
-			provider:              action.PullRequest.Locator.Provider,
-			repository:            action.PullRequest.Locator.Repository,
-			targetRef:             action.PullRequest.TargetRef,
-		}
-	case OperationPublishPRStatus:
-		return prPolicyMatcher{
-			team:                  action.Status.Authority.TeamName,
-			destination:           action.Status.Destination,
-			approvalPolicyVersion: action.Status.ApprovalPolicyVersion,
-			provider:              action.Status.Locator.Provider,
-			repository:            action.Status.Locator.Repository,
-			targetRef:             action.Status.TargetRef,
-		}
-	case OperationRespondToReview:
-		return prPolicyMatcher{
-			team:                  action.Response.Authority.TeamName,
-			destination:           action.Response.Destination,
-			approvalPolicyVersion: action.Response.ApprovalPolicyVersion,
-			provider:              action.Response.Locator.Provider,
-			repository:            action.Response.Locator.Repository,
-			targetRef:             action.Response.TargetRef,
-		}
-	default:
-		return prPolicyMatcher{}
-	}
-}
-
 func policyModeMatchesPublisher(publisher snapshot.TypeRef, mode Mode) bool {
 	switch publisher {
 	case GitPublisher:
-		return mode == ModeBranch || mode == ModePullRequest || mode == ModeMerge
+		return mode == ModeBranch || mode == ModeMerge
 	case WorkItemPublisher:
 		return mode == ModeComment || mode == ModeState
 	default:
 		return false
 	}
-}
-
-func adapterForPRProvider(provider PRProvider) (AdapterKind, bool) {
-	switch provider {
-	case PRProviderGitHub:
-		return AdapterGitHub, true
-	default:
-		return "", false
-	}
-}
-
-func validPRCredentialReference(reference string) bool {
-	if !boundedText(reference, 256, false) ||
-		strings.Contains(reference, "((") ||
-		strings.Contains(reference, "))") {
-		return false
-	}
-	for _, character := range reference {
-		if unicode.IsSpace(character) {
-			return false
-		}
-	}
-	return true
-}
-
-func validatePRPolicyURL(raw string, requirePath bool) error {
-	if !boundedText(raw, 4096, false) || strings.Contains(raw, "\\") {
-		return fmt.Errorf("must be non-empty bounded text")
-	}
-	parsed, err := url.Parse(raw)
-	if err != nil {
-		return fmt.Errorf("could not be parsed")
-	}
-	if !parsed.IsAbs() || parsed.Opaque != "" ||
-		!strings.EqualFold(parsed.Scheme, "https") ||
-		parsed.Hostname() == "" {
-		return fmt.Errorf("must be an absolute HTTPS URL")
-	}
-	if parsed.User != nil {
-		return fmt.Errorf("must not contain user information")
-	}
-	if parsed.RawQuery != "" || parsed.ForceQuery {
-		return fmt.Errorf("must not contain a query")
-	}
-	if parsed.Fragment != "" || strings.Contains(raw, "#") {
-		return fmt.Errorf("must not contain a fragment")
-	}
-	if strings.HasSuffix(parsed.Host, ":") {
-		return fmt.Errorf("contains an invalid port")
-	}
-	if port := parsed.Port(); port != "" {
-		portNumber, err := strconv.Atoi(port)
-		if err != nil || portNumber < 1 || portNumber > 65535 {
-			return fmt.Errorf("contains an invalid port")
-		}
-	}
-	if requirePath && (parsed.Path == "" || parsed.Path == "/") {
-		return fmt.Errorf("requires a repository path")
-	}
-	return nil
 }
 
 func validatePolicyRemoteURL(raw string) error {
@@ -529,13 +308,7 @@ func isExactPolicyRuleJSONMember(member string) bool {
 		"destination",
 		"adapter",
 		"credential_reference",
-		"remote_url",
-		"provider",
-		"repository",
-		"api_base_url",
-		"repository_url",
-		"read_credential_reference",
-		"write_credential_reference":
+		"remote_url":
 		return true
 	default:
 		return false

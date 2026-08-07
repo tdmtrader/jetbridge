@@ -782,10 +782,10 @@ func TestPublishRejectsUnsupportedModeAndInvalidAuthorityBeforeRemoteEffects(t *
 	fixture := repositoryChangeFixture(t)
 	credential := resolvedCredential(t, "file:///srv/git/approved.git", []byte("secret"))
 
-	t.Run("pull request", func(t *testing.T) {
+	t.Run("mode outside the direct Git lane", func(t *testing.T) {
 		runner := &fakeRunner{}
 		backend := newTestBackend(t, runner)
-		operation := fixture.operation(publisher.ModePullRequest, map[string]string{
+		operation := fixture.operation(publisher.ModeComment, map[string]string{
 			"source_branch": "agent/change-7", "target_branch": "main",
 		})
 		if _, err := backend.Publish(context.Background(), credential, operation); !errors.Is(err, ErrUnsupportedMode) {

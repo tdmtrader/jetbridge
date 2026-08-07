@@ -85,30 +85,35 @@ func TestAgentPublisherUsesDedicatedSnapshotScratch(t *testing.T) {
 }
 
 func TestAgentPublisherCompositionRejectsUnsupportedConfiguredModesAndAdapters(t *testing.T) {
-	tests := map[string]string{
-		"pull request": `{
+	tests := map[string]struct {
+		policyDocument string
+		wantError      string
+	}{
+		// Provider-native pull requests were removed. A deployed policy that
+		// still names the mode must be refused outright, not quietly admitted.
+		"pull request": {policyDocument: `{
 			"schema_version":1,
 			"rules":[{"team":"engineering","publisher":"git-publisher/v1","mode":"pull-request","approval_policy_version":"engineering/v1","target_branch":"main","destination":"git.example/acme/widget","adapter":"direct-git","credential_reference":"widget-git","remote_url":"https://git.example/acme/widget.git"}]
-		}`,
-		"work item": `{
+		}`, wantError: "mode is invalid for publisher"},
+		"work item": {policyDocument: `{
 			"schema_version":1,
 			"rules":[{"team":"engineering","publisher":"work-item-publisher/v1","mode":"comment","approval_policy_version":"engineering/v1","destination":"tracker.example/acme/widget/17","adapter":"direct-git","credential_reference":"widget-git","remote_url":"https://tracker.example/acme/widget.git"}]
-		}`,
-		"gateway adapter": `{
+		}`, wantError: "unsupported"},
+		"gateway adapter": {policyDocument: `{
 			"schema_version":1,
 			"rules":[{"team":"engineering","publisher":"git-publisher/v1","mode":"branch","approval_policy_version":"engineering/v1","target_branch":"main","destination":"git.example/acme/widget","adapter":"gateway","credential_reference":"widget-git","remote_url":"https://git.example/acme/widget.git"}]
-		}`,
+		}`, wantError: "unsupported"},
 	}
-	for name, policyDocument := range tests {
+	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
-			command := configuredAgentPublisherCommand(t, policyDocument)
+			command := configuredAgentPublisherCommand(t, test.policyDocument)
 			_, err := command.buildAgentPublisher(
 				publishertest.NewMemoryStore(time.Now),
 				&dbfakes.FakeAgentSnapshotsFactory{},
 				&compositionContentStore{},
 			)
-			if err == nil || !strings.Contains(err.Error(), "unsupported") {
-				t.Fatalf("composition error = %v, want unsupported configuration", err)
+			if err == nil || !strings.Contains(err.Error(), test.wantError) {
+				t.Fatalf("composition error = %v, want %q", err, test.wantError)
 			}
 		})
 	}
@@ -122,16 +127,15 @@ func TestAgentPublisherPolicyValidationSelectsOnlyEnabledAdapterLanes(t *testing
 		Adapter: publisher.AdapterDirectGit, CredentialReference: "widget-git",
 		RemoteURL: "https://git.example/acme/widget.git",
 	}
-	// Provider-native pull requests were removed. A policy that still names the
-	// mode must be refused as an unsupported mode rather than quietly admitted.
-	github := publisher.PolicyRule{
-		Team: "engineering", Publisher: publisher.GitPublisher,
-		Mode: publisher.ModePullRequest, ApprovalPolicyVersion: "engineering/v1",
-		TargetBranch: "refs/heads/main", Destination: "github.com/acme/widget",
-		Adapter: publisher.AdapterGitHub, Provider: publisher.PRProviderGitHub,
-		Repository: "acme/widget", APIBaseURL: "https://api.github.com",
-		RepositoryURL:           "https://github.com/acme/widget.git",
-		ReadCredentialReference: "widget-read", WriteCredentialReference: "widget-write",
+	// Only the direct Git lane survives. Any other structurally valid mode --
+	// here a work-item comment -- must still be refused as unsupported rather
+	// than quietly admitted.
+	workItem := publisher.PolicyRule{
+		Team: "engineering", Publisher: publisher.WorkItemPublisher,
+		Mode: publisher.ModeComment, ApprovalPolicyVersion: "engineering/v1",
+		Destination: "tracker.example/acme/widget/17",
+		Adapter:     publisher.AdapterDirectGit, CredentialReference: "widget-tracker",
+		RemoteURL: "https://tracker.example/acme/widget.git",
 	}
 	for name, test := range map[string]struct {
 		directEnabled bool
@@ -141,8 +145,8 @@ func TestAgentPublisherPolicyValidationSelectsOnlyEnabledAdapterLanes(t *testing
 		"direct rule while enabled": {
 			directEnabled: true, rules: []publisher.PolicyRule{direct},
 		},
-		"pull request rule is unsupported": {
-			directEnabled: true, rules: []publisher.PolicyRule{github},
+		"non-direct-Git rule is unsupported": {
+			directEnabled: true, rules: []publisher.PolicyRule{workItem},
 			wantError: "unsupported mode",
 		},
 		"direct rule while disabled": {

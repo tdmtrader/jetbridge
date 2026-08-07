@@ -50,144 +50,6 @@ func TestFileCredentialProviderReturnsImmutableResolvedAuthorization(t *testing.
 	}
 }
 
-func TestFileCredentialProviderReturnsImmutableProviderNativePRAuthorization(t *testing.T) {
-	writeCredentialPath := writeCredentialForTest(t, "mounted-pr-write-secret")
-	provider, err := publisher.NewFileCredentialProvider(
-		exactPRPolicy(),
-		filepath.Dir(writeCredentialPath),
-		map[string]string{"widget-github-write": writeCredentialPath},
-	)
-	if err != nil {
-		t.Fatalf("NewFileCredentialProvider: %v", err)
-	}
-
-	authorization, err := provider.AuthorizePR(context.Background(), policyPRAction())
-	if err != nil {
-		t.Fatalf("AuthorizePR: %v", err)
-	}
-	if err := authorization.Validate(); err != nil {
-		t.Fatalf("PRAuthorization.Validate: %v", err)
-	}
-	if authorization.AdapterKind() != publisher.AdapterGitHub ||
-		authorization.Provider() != publisher.PRProviderGitHub ||
-		authorization.Repository() != "acme/widget" ||
-		authorization.APIBaseURL() != "https://api.github.example" ||
-		authorization.RepositoryURL() != "https://github.example/acme/widget.git" ||
-		authorization.ReadCredentialReference() != "widget-github-read" {
-		t.Fatalf("PR authorization metadata = %+v", authorization)
-	}
-
-	writeCredential := authorization.WriteCredential()
-	if writeCredential.Reference != "widget-github-write" ||
-		writeCredential.AdapterKind() != publisher.AdapterGitHub ||
-		writeCredential.RemoteURL() != "https://github.example/acme/widget.git" ||
-		string(writeCredential.Secret()) != "mounted-pr-write-secret" {
-		t.Fatalf("PR write credential = %+v", writeCredential)
-	}
-	writeSecret := writeCredential.Secret()
-	writeSecret[0] = 'X'
-	writeCredential.Reference = "mutated"
-	if got := authorization.WriteCredential(); got.Reference != "widget-github-write" ||
-		string(got.Secret()) != "mounted-pr-write-secret" {
-		t.Fatalf("PR authorization mutated through returned credential: %+v", got)
-	}
-	for _, rendered := range []string{
-		fmt.Sprintf("%+v", authorization),
-		fmt.Sprintf("%#v", authorization),
-	} {
-		if strings.Contains(rendered, "mounted-pr-write-secret") {
-			t.Fatalf("formatted PR authorization exposed write secret: %s", rendered)
-		}
-	}
-}
-
-func TestFileCredentialProviderMapsOnlyExactPRWriteCredentialReferences(t *testing.T) {
-	credentialRoot := canonicalTempDir(t)
-	writePath := filepath.Join(credentialRoot, "write-token")
-	readPath := filepath.Join(credentialRoot, "read-token")
-	if err := os.WriteFile(writePath, []byte("write-secret"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(readPath, []byte("read-secret"), 0600); err != nil {
-		t.Fatal(err)
-	}
-
-	for name, files := range map[string]map[string]string{
-		"missing write": nil,
-		"read only": {
-			"widget-github-read": readPath,
-		},
-		"read and write": {
-			"widget-github-read":  readPath,
-			"widget-github-write": writePath,
-		},
-		"unknown plus write": {
-			"widget-github-write": writePath,
-			"unused":              readPath,
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			if _, err := publisher.NewFileCredentialProvider(
-				exactPRPolicy(),
-				credentialRoot,
-				files,
-			); err == nil {
-				t.Fatalf("%s mapping was accepted", name)
-			}
-		})
-	}
-
-	provider, err := publisher.NewFileCredentialProvider(
-		exactPRPolicy(),
-		credentialRoot,
-		map[string]string{"widget-github-write": writePath},
-	)
-	if err != nil {
-		t.Fatalf("write-only mapping: %v", err)
-	}
-	if err := os.Chmod(readPath, 0644); err != nil {
-		t.Fatal(err)
-	}
-	authorization, err := provider.AuthorizePR(
-		context.Background(),
-		policyPRAction(),
-	)
-	if err != nil {
-		t.Fatalf("AuthorizePR with absent read mapping: %v", err)
-	}
-	if got := string(authorization.WriteCredential().Secret()); got != "write-secret" {
-		t.Fatalf("write credential = %q", got)
-	}
-}
-
-func TestFileCredentialProviderNeverMapsAReadReferenceThroughAnotherRule(t *testing.T) {
-	credentialRoot := canonicalTempDir(t)
-	writePath := filepath.Join(credentialRoot, "write-token")
-	collidingPath := filepath.Join(credentialRoot, "colliding-token")
-	if err := os.WriteFile(writePath, []byte("write-secret"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(collidingPath, []byte("must-not-open"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	policy := exactPRPolicy()
-	directRule := exactPolicy().Rules[0]
-	directRule.CredentialReference = policy.Rules[0].ReadCredentialReference
-	policy.Rules = append(policy.Rules, directRule)
-
-	_, err := publisher.NewFileCredentialProvider(
-		policy,
-		credentialRoot,
-		map[string]string{
-			"widget-github-write": writePath,
-			"widget-github-read":  collidingPath,
-		},
-	)
-	if err == nil || !strings.Contains(err.Error(), "must not be mapped") {
-		t.Fatalf("read-reference collision error = %v", err)
-	}
-}
-
 func TestFileCredentialProviderRejectsMissingAndUnknownCredentialMappings(t *testing.T) {
 	credentialRoot := canonicalTempDir(t)
 	for name, files := range map[string]map[string]string{
@@ -304,51 +166,6 @@ func TestFileCredentialProviderFollowsKubernetesAtomicWriterRotation(t *testing.
 	}
 	if got := string(credential.Secret()); got != "second-secret" {
 		t.Fatalf("secret after rotation = %q", got)
-	}
-}
-
-func TestFileCredentialProviderFollowsPRWriteCredentialRotation(t *testing.T) {
-	mountPath := canonicalTempDir(t)
-	credentialPath := filepath.Join(mountPath, "token")
-	writeAtomicWriterGeneration(t, mountPath, "..2026_07_29_01_02_03.000000001", "first-pr-write-secret")
-	if err := os.Symlink("..2026_07_29_01_02_03.000000001", filepath.Join(mountPath, "..data")); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink("..data/token", credentialPath); err != nil {
-		t.Fatal(err)
-	}
-
-	provider, err := publisher.NewFileCredentialProvider(
-		exactPRPolicy(),
-		mountPath,
-		map[string]string{"widget-github-write": credentialPath},
-	)
-	if err != nil {
-		t.Fatalf("NewFileCredentialProvider: %v", err)
-	}
-	authorization, err := provider.AuthorizePR(context.Background(), policyPRAction())
-	if err != nil {
-		t.Fatalf("AuthorizePR before rotation: %v", err)
-	}
-	if got := string(authorization.WriteCredential().Secret()); got != "first-pr-write-secret" {
-		t.Fatalf("write secret before rotation = %q", got)
-	}
-
-	writeAtomicWriterGeneration(t, mountPath, "..2026_07_29_01_03_04.000000002", "second-pr-write-secret")
-	nextDataLink := filepath.Join(mountPath, "..data-next")
-	if err := os.Symlink("..2026_07_29_01_03_04.000000002", nextDataLink); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Rename(nextDataLink, filepath.Join(mountPath, "..data")); err != nil {
-		t.Fatal(err)
-	}
-
-	authorization, err = provider.AuthorizePR(context.Background(), policyPRAction())
-	if err != nil {
-		t.Fatalf("AuthorizePR after rotation: %v", err)
-	}
-	if got := string(authorization.WriteCredential().Secret()); got != "second-pr-write-secret" {
-		t.Fatalf("write secret after rotation = %q", got)
 	}
 }
 
@@ -678,28 +495,6 @@ func TestFileCredentialProviderDeniesBeforeReadingCredentialFile(t *testing.T) {
 	}
 }
 
-func TestFileCredentialProviderDeniesPRBeforeReadingWriteCredentialFile(t *testing.T) {
-	credentialPath := writeCredentialForTest(t, "mounted-pr-write-secret")
-	provider, err := publisher.NewFileCredentialProvider(
-		exactPRPolicy(),
-		filepath.Dir(credentialPath),
-		map[string]string{"widget-github-write": credentialPath},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Remove(credentialPath); err != nil {
-		t.Fatal(err)
-	}
-	action := policyPRAction()
-	action.Branch.Locator.Repository = "acme/not-allowed"
-
-	_, err = provider.AuthorizePR(context.Background(), action)
-	if !errors.Is(err, publisher.ErrDestinationNotAllowed) {
-		t.Fatalf("PR denial error = %v, want ErrDestinationNotAllowed", err)
-	}
-}
-
 func TestFileCredentialProviderRejectsNilAndCancelledContexts(t *testing.T) {
 	credentialPath := writeCredentialForTest(t, "mounted-secret")
 	provider, err := publisher.NewFileCredentialProvider(
@@ -717,26 +512,6 @@ func TestFileCredentialProviderRejectsNilAndCancelledContexts(t *testing.T) {
 	cancel()
 	if _, err := provider.AuthorizeDestination(ctx, policyGitRequest()); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled context error = %v", err)
-	}
-}
-
-func TestFileCredentialProviderRejectsNilAndCancelledPRContexts(t *testing.T) {
-	credentialPath := writeCredentialForTest(t, "mounted-pr-write-secret")
-	provider, err := publisher.NewFileCredentialProvider(
-		exactPRPolicy(),
-		filepath.Dir(credentialPath),
-		map[string]string{"widget-github-write": credentialPath},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := provider.AuthorizePR(nil, policyPRAction()); !errors.Is(err, publisher.ErrInvalidRequest) {
-		t.Fatalf("nil PR context error = %v", err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if _, err := provider.AuthorizePR(ctx, policyPRAction()); !errors.Is(err, context.Canceled) {
-		t.Fatalf("cancelled PR context error = %v", err)
 	}
 }
 

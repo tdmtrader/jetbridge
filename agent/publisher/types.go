@@ -27,11 +27,10 @@ const (
 type Mode string
 
 const (
-	ModeBranch      Mode = "branch"
-	ModePullRequest Mode = "pull-request"
-	ModeMerge       Mode = "merge"
-	ModeComment     Mode = "comment"
-	ModeState       Mode = "state"
+	ModeBranch  Mode = "branch"
+	ModeMerge   Mode = "merge"
+	ModeComment Mode = "comment"
+	ModeState   Mode = "state"
 )
 
 var parameterNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
@@ -46,10 +45,9 @@ var parameterNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
 // what lets the durable node-occurrence projection join a publish node to the
 // occurrence it produced — agent_publication_occurrences is otherwise keyed
 // (publication_id, workflow_run_id, build_id) and carries no plan identity at
-// all. It is deliberately outside every operation identity: neither
-// Request.OperationKey nor PRAction.OperationKey (which strips authority down
-// to TeamID before hashing) sees it, so publishing the same effect from a
-// different plan position stays the same idempotent operation.
+// all. It is deliberately outside operation identity: Request.OperationKey
+// does not see it, so publishing the same effect from a different plan
+// position stays the same idempotent operation.
 type Authority struct {
 	TeamID        int                    `json:"team_id"`
 	TeamName      string                 `json:"team_name"`
@@ -317,7 +315,7 @@ func (request Request) Validate() error {
 			return fmt.Errorf("%w: git publisher requires repository-change/v1", ErrInvalidRequest)
 		}
 		switch request.Mode {
-		case ModeBranch, ModePullRequest:
+		case ModeBranch:
 			if !requiredParameter(request.Parameters, "source_branch") || !requiredParameter(request.Parameters, "target_branch") {
 				return fmt.Errorf("%w: branch publication requires source_branch and target_branch", ErrInvalidRequest)
 			}

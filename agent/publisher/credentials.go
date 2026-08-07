@@ -25,92 +25,6 @@ type FileCredentialProvider struct {
 	credentialFiles map[string]mountedFileBinding
 }
 
-// PRAuthorization is an immutable provider-native mutation authorization.
-// Its read reference is non-secret metadata for protected monitor rendering;
-// only the separately mapped write credential contains secret bytes.
-type PRAuthorization struct {
-	adapterKind             AdapterKind
-	provider                PRProvider
-	repository              string
-	apiBaseURL              string
-	repositoryURL           string
-	readCredentialReference string
-	writeCredential         Credential
-}
-
-func (authorization PRAuthorization) AdapterKind() AdapterKind {
-	return authorization.adapterKind
-}
-
-func (authorization PRAuthorization) Provider() PRProvider {
-	return authorization.provider
-}
-
-func (authorization PRAuthorization) Repository() string {
-	return authorization.repository
-}
-
-func (authorization PRAuthorization) APIBaseURL() string {
-	return authorization.apiBaseURL
-}
-
-func (authorization PRAuthorization) RepositoryURL() string {
-	return authorization.repositoryURL
-}
-
-func (authorization PRAuthorization) ReadCredentialReference() string {
-	return authorization.readCredentialReference
-}
-
-func (authorization PRAuthorization) WriteCredentialReference() string {
-	return authorization.writeCredential.Reference
-}
-
-// WriteCredential returns a detached copy of the destination-scoped write
-// handle. Secret() on that handle likewise returns only disposable copies.
-func (authorization PRAuthorization) WriteCredential() Credential {
-	credential := authorization.writeCredential
-	credential.secret = append([]byte(nil), authorization.writeCredential.secret...)
-	return credential
-}
-
-func (authorization PRAuthorization) String() string {
-	return fmt.Sprintf(
-		"publisher PR authorization (%s, %s, repository %q, API %s, remote %s, read reference %q, write credential redacted)",
-		authorization.adapterKind,
-		authorization.provider,
-		authorization.repository,
-		authorization.apiBaseURL,
-		authorization.repositoryURL,
-		authorization.readCredentialReference,
-	)
-}
-
-func (authorization PRAuthorization) GoString() string {
-	return authorization.String()
-}
-
-// Validate fails closed for a zero, cross-routed, or internally inconsistent
-// authorization without including credential contents in its error.
-func (authorization PRAuthorization) Validate() error {
-	expectedAdapter, found := adapterForPRProvider(authorization.provider)
-	if !found ||
-		authorization.adapterKind != expectedAdapter ||
-		!boundedText(authorization.repository, 512, false) ||
-		strings.ContainsAny(authorization.repository, " \t\r\n") ||
-		validatePRPolicyURL(authorization.apiBaseURL, false) != nil ||
-		validatePRPolicyURL(authorization.repositoryURL, true) != nil ||
-		!validPRCredentialReference(authorization.readCredentialReference) ||
-		!validPRCredentialReference(authorization.writeCredential.Reference) ||
-		authorization.readCredentialReference == authorization.writeCredential.Reference ||
-		authorization.writeCredential.AdapterKind() != authorization.adapterKind ||
-		authorization.writeCredential.RemoteURL() != authorization.repositoryURL ||
-		authorization.writeCredential.Validate() != nil {
-		return fmt.Errorf("publisher: resolved PR authorization is invalid")
-	}
-	return nil
-}
-
 type credentialAncestor struct {
 	path string
 	info os.FileInfo
@@ -142,22 +56,8 @@ func newFileCredentialProvider(
 	}
 
 	required := make(map[string]struct{}, len(policy.Rules))
-	readReferences := make(map[string]struct{}, len(policy.Rules))
 	for _, rule := range policy.Rules {
-		reference := rule.CredentialReference
-		if rule.Mode == ModePullRequest {
-			reference = rule.WriteCredentialReference
-			readReferences[rule.ReadCredentialReference] = struct{}{}
-		}
-		required[reference] = struct{}{}
-	}
-	for reference := range readReferences {
-		if _, mounted := required[reference]; mounted {
-			return nil, fmt.Errorf(
-				"publisher credentials: PR read reference %q must not be mapped in web",
-				reference,
-			)
-		}
+		required[rule.CredentialReference] = struct{}{}
 	}
 	if len(credentialFiles) != len(required) {
 		return nil, fmt.Errorf("publisher credentials: file mapping must exactly cover policy references")
@@ -205,41 +105,6 @@ func (provider *FileCredentialProvider) AuthorizeDestination(ctx context.Context
 		remoteURL:   rule.RemoteURL,
 		secret:      append([]byte(nil), secret...),
 	}, nil
-}
-
-// AuthorizePR resolves an acquired PR action and opens only its trusted write
-// credential. The read reference is returned as non-secret metadata and is
-// intentionally absent from the provider's mounted credential map.
-func (provider *FileCredentialProvider) AuthorizePR(
-	ctx context.Context,
-	action PRAction,
-) (PRAuthorization, error) {
-	rule, err := provider.policy.ResolvePR(ctx, action)
-	if err != nil {
-		return PRAuthorization{}, err
-	}
-	secret, err := provider.readCredential(rule.WriteCredentialReference)
-	if err != nil {
-		return PRAuthorization{}, err
-	}
-	authorization := PRAuthorization{
-		adapterKind:             rule.Adapter,
-		provider:                rule.Provider,
-		repository:              rule.Repository,
-		apiBaseURL:              rule.APIBaseURL,
-		repositoryURL:           rule.RepositoryURL,
-		readCredentialReference: rule.ReadCredentialReference,
-		writeCredential: Credential{
-			Reference:   rule.WriteCredentialReference,
-			adapterKind: rule.Adapter,
-			remoteURL:   rule.RepositoryURL,
-			secret:      append([]byte(nil), secret...),
-		},
-	}
-	if err := authorization.Validate(); err != nil {
-		return PRAuthorization{}, err
-	}
-	return authorization, nil
 }
 
 func (provider *FileCredentialProvider) readCredential(reference string) ([]byte, error) {

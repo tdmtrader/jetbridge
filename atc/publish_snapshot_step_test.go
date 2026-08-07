@@ -18,7 +18,7 @@ publisher: git-publisher/v1
 input: change
 input_type: repository-change/v1
 destination: github.example/team/repo
-mode: pull-request
+mode: branch
 parameters:
   source_branch: agent/change
   target_branch: main
@@ -31,7 +31,7 @@ approval_policy_version: engineering/v2
 	want := &atc.PublishSnapshotStep{
 		Name: "publish-change", Publisher: publisher.GitPublisher,
 		Input: "change", InputType: snapshot.TypeRef("repository-change/v1"),
-		Destination: "github.example/team/repo", Mode: publisher.ModePullRequest,
+		Destination: "github.example/team/repo", Mode: publisher.ModeBranch,
 		Parameters:            map[string]string{"source_branch": "agent/change", "target_branch": "main"},
 		ApprovalPolicyVersion: "engineering/v2",
 	}
@@ -131,7 +131,7 @@ workflow_run_id: ((workflow_run_id))
 		"missing approval": func(value map[string]any) { delete(value, "approval") },
 		"bad run template": func(value map[string]any) { value["workflow_run_id"] = "((build_id))" },
 		"nonmerge approval": func(value map[string]any) {
-			value["mode"] = "pull-request"
+			value["mode"] = "branch"
 			value["parameters"] = map[string]string{"source_branch": "agent/change", "target_branch": "main"}
 		},
 	} {

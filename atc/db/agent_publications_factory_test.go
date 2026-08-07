@@ -12,7 +12,6 @@ import (
 	"github.com/concourse/concourse/agent/api/workflowoutcomes"
 	"github.com/concourse/concourse/agent/publisher"
 	"github.com/concourse/concourse/agent/snapshot"
-	"github.com/concourse/concourse/agent/snapshot/contracts"
 	"github.com/concourse/concourse/agent/workflowwait"
 	"github.com/concourse/concourse/atc/db"
 
@@ -27,7 +26,6 @@ var _ = Describe("AgentPublicationsFactory", func() {
 	var buildID int64
 	var definitionID int
 	var newApproval func(actor, planID, questionDigestCharacter, answerDigestCharacter string, resolvedAt time.Time) *publisher.ApprovalEvidence
-	var newBoundSnapshot func(typeName, portName, digestCharacter string) snapshot.SnapshotRef
 
 	BeforeEach(func() {
 		factory = db.NewAgentPublicationsFactory(dbConn)
@@ -108,33 +106,12 @@ var _ = Describe("AgentPublicationsFactory", func() {
 				ResolvedBy: actor, ResolvedAt: resolvedAt,
 			}
 		}
-		newBoundSnapshot = func(typeName, portName, digestCharacter string) snapshot.SnapshotRef {
-			var id int64
-			digest := "sha256:" + strings.Repeat(digestCharacter, 64)
-			Expect(dbConn.QueryRow(`
-				INSERT INTO agent_snapshots
-					(team_id, type_name, type_version, digest, byte_size, file_count,
-					 representation, content_state)
-				VALUES ($1, $2, 1, $3, 1, 1, 'application/x-tar', 'available')
-				RETURNING id
-			`, defaultTeam.ID(), typeName, digest).Scan(&id)).To(Succeed())
-			_, err := dbConn.Exec(`
-				INSERT INTO agent_workflow_run_snapshots
-					(workflow_run_id, direction, port_name, snapshot_id, promoted_at)
-				VALUES ($1, 'output', $2, $3, now())
-			`, int64(workflowRunID), portName, id)
-			Expect(err).NotTo(HaveOccurred())
-			return snapshot.SnapshotRef{
-				ID: snapshot.SnapshotID(id), Type: snapshot.TypeRef(typeName + "/v1"),
-				Digest: snapshot.Digest(digest),
-			}
-		}
 	})
 
 	request := func() publisher.Request {
 		return publisher.Request{
 			Publisher: publisher.GitPublisher, Input: input, Destination: "github.example/team/repo",
-			Mode:                  publisher.ModePullRequest,
+			Mode:                  publisher.ModeBranch,
 			Parameters:            map[string]string{"source_branch": "agent/change", "target_branch": "main"},
 			ApprovalPolicyVersion: "engineering/v2",
 			Authority: publisher.Authority{
@@ -142,486 +119,6 @@ var _ = Describe("AgentPublicationsFactory", func() {
 			},
 		}
 	}
-
-	It("round-trips an exact PR action through occurrence leases, evidence, and its primary workflow output", func() {
-		observation := newBoundSnapshot("pull-request", "pr-observation", "1")
-		candidate := newBoundSnapshot("repository-change", "pr-candidate", "2")
-		validation := newBoundSnapshot("validation", "pr-validation", "3")
-		impact := newBoundSnapshot("publish-impact", "pr-impact", "4")
-		approval := newApproval(
-			"alice", "pr-publication-approval", "5", "6",
-			time.Date(2026, 7, 30, 8, 0, 0, 0, time.UTC),
-		)
-		action := publisher.PRAction{
-			Kind: publisher.OperationPublishPRBranch,
-			Branch: &publisher.BranchPublicationRequest{
-				Authority: publisher.Authority{
-					TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(),
-					BuildID: buildID, Actor: "alice",
-				},
-				Observation: observation, Candidate: candidate,
-				Validation: validation, Impact: impact,
-				Evidence: publisher.PublicationEvidence{
-					Kind: publisher.EvidenceHumanWait, HumanWait: approval,
-				},
-				Destination: "github.example/acme/widget", ApprovalPolicyVersion: "engineering/v3",
-				Locator:   publisher.PRLocator{Provider: publisher.PRProviderGitHub, Repository: "acme/widget"},
-				SourceRef: "refs/heads/agent/upgrade", TargetRef: "refs/heads/main",
-				ExpectedSource:    publisher.HeadExpectation{Exists: true, SHA: strings.Repeat("a", 40)},
-				ExpectedTargetSHA: strings.Repeat("b", 40),
-				NewSourceSHA:      strings.Repeat("c", 40),
-			},
-		}
-
-		first, execute, err := factory.AcquirePR(context.Background(), action, time.Minute)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(execute).To(BeTrue())
-		Expect(first.OperationKind).To(Equal(publisher.OperationPublishPRBranch))
-		Expect(first.PRAction).NotTo(BeNil())
-		expected := action.Clone()
-		expected.Branch.Authority.WorkflowRunID = workflowRunID
-		Expect(*first.PRAction).To(Equal(expected))
-		Expect(first.Request).To(Equal(publisher.Request{}),
-			"a provider-native operation must never be interpreted as a legacy request")
-
-		var (
-			storedKind string
-			primaryID  int64
-		)
-		Expect(dbConn.QueryRow(`
-			SELECT publication.operation_kind, occurrence.input_snapshot_id
-			FROM agent_publication_occurrences occurrence
-			JOIN agent_publications publication ON publication.id=occurrence.publication_id
-			WHERE occurrence.id=$1
-		`, first.ID).Scan(&storedKind, &primaryID)).To(Succeed())
-		Expect(storedKind).To(Equal(string(publisher.OperationPublishPRBranch)))
-		Expect(primaryID).To(Equal(int64(candidate.ID)))
-
-		rows, err := dbConn.Query(`
-			SELECT role, snapshot_id
-			FROM agent_publication_inputs
-			WHERE publication_id=$1
-		`, first.ID)
-		Expect(err).NotTo(HaveOccurred())
-		storedInputs := map[string]int64{}
-		for rows.Next() {
-			var role string
-			var id int64
-			Expect(rows.Scan(&role, &id)).To(Succeed())
-			storedInputs[role] = id
-		}
-		Expect(rows.Close()).To(Succeed())
-		Expect(storedInputs).To(Equal(map[string]int64{
-			"observation": int64(observation.ID),
-			"validation":  int64(validation.ID),
-			"impact":      int64(impact.ID),
-		}))
-		var evidenceKind string
-		var waitID int64
-		Expect(dbConn.QueryRow(`
-			SELECT evidence_kind, human_wait_id
-			FROM agent_publication_approval_evidence
-			WHERE publication_id=$1
-		`, first.ID).Scan(&evidenceKind, &waitID)).To(Succeed())
-		Expect(evidenceKind).To(Equal(string(publisher.EvidenceHumanWait)))
-		Expect(waitID).To(Equal(int64(approval.WaitID)))
-
-		duplicate, execute, err := factory.AcquirePR(context.Background(), action, time.Minute)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(execute).To(BeFalse())
-		Expect(duplicate).To(Equal(first))
-
-		_, err = dbConn.Exec(`
-			UPDATE agent_publications
-			SET lease_until=now() - interval '1 second'
-			WHERE operation_key=$1
-		`, first.OperationKey)
-		Expect(err).NotTo(HaveOccurred())
-		reclaimed, execute, err := factory.AcquirePR(context.Background(), action, time.Minute)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(execute).To(BeTrue())
-		Expect(reclaimed.Attempt).To(Equal(2))
-
-		_, err = factory.CompletePR(
-			context.Background(), reclaimed.OperationKey, 1,
-			publisher.Result{Status: publisher.StatusSucceeded},
-		)
-		Expect(errors.Is(err, publisher.ErrOperationConflict)).To(BeTrue())
-		result := publisher.Result{
-			Status: publisher.StatusSucceeded, ExternalID: "refs/heads/agent/upgrade",
-			HeadSHA: strings.Repeat("c", 40), BaseSHA: strings.Repeat("b", 40),
-		}
-		completed, err := factory.CompletePR(
-			context.Background(), reclaimed.OperationKey, reclaimed.Attempt, result,
-		)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(completed.Status).To(Equal(publisher.StatusSucceeded))
-		Expect(completed.PRAction).NotTo(BeNil())
-		Expect(*completed.PRAction).To(Equal(expected))
-
-		var linkedOutputID, linkedPublicationID int64
-		Expect(dbConn.QueryRow(`
-			SELECT output_snapshot_id, publication_id
-			FROM agent_workflow_outcomes
-			WHERE team_id=$1 AND workflow_run_id=$2
-		`, defaultTeam.ID(), int64(workflowRunID)).Scan(
-			&linkedOutputID, &linkedPublicationID,
-		)).To(Succeed())
-		Expect(linkedOutputID).To(Equal(int64(candidate.ID)))
-		Expect(linkedPublicationID).To(Equal(int64(completed.ID)))
-
-		replayed, execute, err := factory.AcquirePR(context.Background(), action, time.Minute)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(execute).To(BeFalse())
-		Expect(replayed).To(Equal(completed))
-		_, err = factory.Complete(
-			context.Background(), reclaimed.OperationKey, reclaimed.Attempt, result,
-		)
-		Expect(errors.Is(err, publisher.ErrOperationNotFound)).To(BeTrue(),
-			"legacy completion must not reinterpret a PR action")
-	})
-
-	It("selects and persists the exact primary output for every PR operation kind", func() {
-		observation := newBoundSnapshot("pull-request", "all-pr-observation", "1")
-		candidate := newBoundSnapshot("repository-change", "all-pr-candidate", "2")
-		validation := newBoundSnapshot("validation", "all-pr-validation", "3")
-		impact := newBoundSnapshot("publish-impact", "all-pr-impact", "4")
-		responseSnapshot := newBoundSnapshot("pull-request-response", "all-pr-response", "5")
-		approval := newApproval(
-			"alice", "all-pr-approval", "6", "7",
-			time.Date(2026, 7, 30, 8, 30, 0, 0, time.UTC),
-		)
-		authority := publisher.Authority{
-			TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(),
-			BuildID: buildID, Actor: "alice",
-		}
-		evidence := publisher.PublicationEvidence{
-			Kind: publisher.EvidenceHumanWait, HumanWait: approval,
-		}
-		locator := publisher.PRLocator{
-			Provider: publisher.PRProviderGitHub, Repository: "acme/widget",
-		}
-		create := publisher.PRAction{
-			Kind: publisher.OperationCreatePR,
-			PullRequest: &publisher.PullRequestPublicationRequest{
-				Authority: authority, Observation: observation, Candidate: candidate,
-				Validation: validation, Impact: impact, Evidence: evidence,
-				Destination: "github.example/acme/widget", ApprovalPolicyVersion: "engineering/v3",
-				Locator: locator, SourceRef: "refs/heads/agent/upgrade",
-				SourceSHA: strings.Repeat("c", 40), TargetRef: "refs/heads/main",
-				TargetSHA: strings.Repeat("b", 40), Title: "Upgrade widget",
-				Body: "Validated and ready for review.",
-			},
-		}
-		status := publisher.PRAction{
-			Kind: publisher.OperationPublishPRStatus,
-			Status: &publisher.StatusPublicationRequest{
-				Authority: authority, Observation: observation, Validation: validation,
-				Evidence: evidence, Destination: "github.example/acme/widget",
-				ApprovalPolicyVersion: "engineering/v3",
-				Locator: publisher.PRLocator{
-					Provider: publisher.PRProviderGitHub, Repository: "acme/widget", ExternalID: "42",
-				},
-				TargetRef: "refs/heads/main", SourceSHA: strings.Repeat("c", 40),
-				State: "success", Description: "Validation passed",
-				TargetURL: "https://ci.example/runs/42",
-			},
-		}
-		response := publisher.PRAction{
-			Kind: publisher.OperationRespondToReview,
-			Response: &publisher.ResponsePublicationRequest{
-				Authority: authority, Observation: observation, ResponseSnapshot: responseSnapshot,
-				Evidence: evidence, Destination: "github.example/acme/widget",
-				ApprovalPolicyVersion: "engineering/v3",
-				Locator: publisher.PRLocator{
-					Provider: publisher.PRProviderGitHub, Repository: "acme/widget", ExternalID: "42",
-				},
-				TargetRef: "refs/heads/main",
-				Batch: publisher.PRReviewBatch{
-					ID: "review-17", ReviewID: "17", CommitSHA: strings.Repeat("c", 40),
-					Reviewer: "github-user-9", Ready: true, ThreadIDs: []string{"thread-101"},
-				},
-				Response: contracts.PullRequestResponseBody{
-					BatchID: "review-17", Summary: "Addressed the requested changes.",
-					Replies: []contracts.PullRequestThreadResponse{{
-						ThreadID: "thread-101", Body: "Updated in the new revision.",
-					}},
-				},
-			},
-		}
-
-		for _, test := range []struct {
-			action  publisher.PRAction
-			primary snapshot.SnapshotRef
-			inputs  map[string]int64
-		}{
-			{
-				action: create, primary: candidate,
-				inputs: map[string]int64{
-					"observation": int64(observation.ID),
-					"validation":  int64(validation.ID),
-					"impact":      int64(impact.ID),
-				},
-			},
-			{
-				action: status, primary: validation,
-				inputs: map[string]int64{"observation": int64(observation.ID)},
-			},
-			{
-				action: response, primary: responseSnapshot,
-				inputs: map[string]int64{"observation": int64(observation.ID)},
-			},
-		} {
-			publication, execute, err := factory.AcquirePR(
-				context.Background(), test.action, time.Minute,
-			)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(execute).To(BeTrue())
-			expectedAction := test.action.Clone()
-			switch expectedAction.Kind {
-			case publisher.OperationCreatePR:
-				expectedAction.PullRequest.Authority.WorkflowRunID = workflowRunID
-			case publisher.OperationPublishPRStatus:
-				expectedAction.Status.Authority.WorkflowRunID = workflowRunID
-			case publisher.OperationRespondToReview:
-				expectedAction.Response.Authority.WorkflowRunID = workflowRunID
-			}
-			Expect(publication.PRAction).NotTo(BeNil())
-			Expect(*publication.PRAction).To(Equal(expectedAction))
-			var primaryID int64
-			Expect(dbConn.QueryRow(`
-				SELECT input_snapshot_id
-				FROM agent_publication_occurrences
-				WHERE id=$1
-			`, publication.ID).Scan(&primaryID)).To(Succeed())
-			Expect(primaryID).To(Equal(int64(test.primary.ID)))
-
-			rows, err := dbConn.Query(`
-				SELECT role, snapshot_id
-				FROM agent_publication_inputs
-				WHERE publication_id=$1
-			`, publication.ID)
-			Expect(err).NotTo(HaveOccurred())
-			stored := map[string]int64{}
-			for rows.Next() {
-				var role string
-				var id int64
-				Expect(rows.Scan(&role, &id)).To(Succeed())
-				stored[role] = id
-			}
-			Expect(rows.Close()).To(Succeed())
-			Expect(stored).To(Equal(test.inputs))
-
-			completed, err := factory.CompletePR(
-				context.Background(), publication.OperationKey, publication.Attempt,
-				publisher.Result{Status: publisher.StatusSucceeded},
-			)
-			Expect(err).NotTo(HaveOccurred())
-			var linkedPublicationID int64
-			Expect(dbConn.QueryRow(`
-				SELECT publication_id
-				FROM agent_workflow_outcomes
-				WHERE team_id=$1 AND workflow_run_id=$2 AND output_snapshot_id=$3
-			`, defaultTeam.ID(), int64(workflowRunID), int64(test.primary.ID)).Scan(
-				&linkedPublicationID,
-			)).To(Succeed())
-			Expect(linkedPublicationID).To(Equal(int64(completed.ID)))
-		}
-	})
-
-	It("authorizes and persists the exact accepted-review authority chain", func() {
-		observation := newBoundSnapshot("pull-request", "accepted-pr-observation", "1")
-		candidateChange := newBoundSnapshot("repository-change", "accepted-pr-candidate", "2")
-		validation := newBoundSnapshot("validation", "accepted-pr-validation", "3")
-		impact := newBoundSnapshot("publish-impact", "accepted-pr-impact", "4")
-
-		unique := time.Now().UnixNano()
-		contentHash := fmt.Sprintf("%064x", unique)
-		var reviewDefinitionID, reviewVersion int
-		Expect(dbConn.QueryRow(`
-			INSERT INTO agent_workflow_definitions
-				(name, version, content_hash, definition, created_by,
-				 schema_version, signature_version, definition_kind)
-			SELECT 'code-review', coalesce(max(version), 0) + 1, $1,
-			       'schema_version: 3', 'alice', 3, 1, 'workflow'
-			FROM agent_workflow_definitions
-			WHERE definition_kind='workflow' AND name='code-review'
-			RETURNING id, version
-		`, contentHash).Scan(&reviewDefinitionID, &reviewVersion)).To(Succeed())
-		var reviewBuildID int64
-		Expect(dbConn.QueryRow(`
-			INSERT INTO builds (name, status, team_id, created_by)
-			VALUES ($1, 'succeeded', $2, 'alice')
-			RETURNING id
-		`, fmt.Sprintf("accepted-pr-review-%d", unique), defaultTeam.ID()).Scan(
-			&reviewBuildID,
-		)).To(Succeed())
-		var reviewRunID snapshot.WorkflowRunID
-		Expect(dbConn.QueryRow(`
-			INSERT INTO agent_workflow_runs
-				(definition_kind, team_id, team_name, workflow_definition_id,
-				 workflow_name, workflow_version, schema_version, signature_version,
-				 definition_content_hash, idempotency_key, parameterized_config,
-				 parameterized_config_hash, origin_kind, origin_reference,
-				 created_by, status, planned_build_id, started_at, completed_at)
-			VALUES ('workflow', $1, $2, $3, 'code-review', $4, 3, 1,
-			        $5, $6, '{}', $7, 'manual', '', 'alice', 'succeeded',
-			        $8, now(), now())
-			RETURNING id
-		`, defaultTeam.ID(), defaultTeam.Name(), reviewDefinitionID, reviewVersion,
-			contentHash, fmt.Sprintf("accepted-pr-review-%d", unique),
-			fmt.Sprintf("%064x", unique+1), reviewBuildID).Scan(&reviewRunID)).To(Succeed())
-
-		var reviewCandidateID, reviewID int64
-		reviewCandidateDigest := "sha256:" + fmt.Sprintf("%064x", unique+2)
-		reviewDigest := "sha256:" + fmt.Sprintf("%064x", unique+3)
-		Expect(dbConn.QueryRow(`
-			INSERT INTO agent_snapshots
-				(team_id, type_name, type_version, digest, byte_size, file_count,
-				 representation, content_state)
-			VALUES ($1, 'repository', 1, $2, 1, 1, 'application/x-tar', 'available')
-			RETURNING id
-		`, defaultTeam.ID(), reviewCandidateDigest).Scan(&reviewCandidateID)).To(Succeed())
-		Expect(dbConn.QueryRow(`
-			INSERT INTO agent_snapshots
-				(team_id, type_name, type_version, digest, byte_size, file_count,
-				 representation, content_state)
-			VALUES ($1, 'review', 1, $2, 1, 1, 'application/x-tar', 'available')
-			RETURNING id
-		`, defaultTeam.ID(), reviewDigest).Scan(&reviewID)).To(Succeed())
-		_, err := dbConn.Exec(`
-			INSERT INTO agent_workflow_run_snapshots
-				(workflow_run_id, direction, port_name, snapshot_id, promoted_at)
-			VALUES ($1, 'input', 'after', $2, now()),
-			       ($1, 'output', 'review', $3, now())
-		`, int64(reviewRunID), reviewCandidateID, reviewID)
-		Expect(err).NotTo(HaveOccurred())
-		acceptedAt := time.Date(2026, 7, 30, 9, 0, 0, 0, time.UTC)
-		_, err = dbConn.Exec(`
-			INSERT INTO agent_workflow_outcomes
-				(team_id, workflow_run_id, output_snapshot_id, disposition,
-				 publication_state, human_modified, intervention_count, labels,
-				 actor, revision, audited_at)
-			VALUES ($1, $2, $3, 'accepted', 'not_requested',
-			        false, 0, '[]'::jsonb, 'alice', 3, $4)
-		`, defaultTeam.ID(), int64(reviewRunID), reviewID, acceptedAt)
-		Expect(err).NotTo(HaveOccurred())
-
-		evidence := publisher.AcceptedReviewEvidence{
-			Review: snapshot.SnapshotRef{
-				ID: snapshot.SnapshotID(reviewID), Type: "review/v1",
-				Digest: snapshot.Digest(reviewDigest),
-			},
-			Candidate: snapshot.SnapshotRef{
-				ID: snapshot.SnapshotID(reviewCandidateID), Type: "repository/v1",
-				Digest: snapshot.Digest(reviewCandidateDigest),
-			},
-			Validation: validation, ReviewWorkflowRunID: reviewRunID,
-			OutcomeRevision: 3, AcceptedBy: "alice", AcceptedAt: acceptedAt,
-		}
-		action := publisher.PRAction{
-			Kind: publisher.OperationPublishPRBranch,
-			Branch: &publisher.BranchPublicationRequest{
-				Authority: publisher.Authority{
-					TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(),
-					BuildID: buildID, Actor: "alice",
-				},
-				Observation: observation, Candidate: candidateChange,
-				Validation: validation, Impact: impact,
-				Evidence: publisher.PublicationEvidence{
-					Kind: publisher.EvidenceAcceptedReview, AcceptedReview: &evidence,
-				},
-				Destination: "github.example/acme/widget", ApprovalPolicyVersion: "engineering/v3",
-				Locator:   publisher.PRLocator{Provider: publisher.PRProviderGitHub, Repository: "acme/widget"},
-				SourceRef: "refs/heads/agent/upgrade", TargetRef: "refs/heads/main",
-				ExpectedSource:    publisher.HeadExpectation{Exists: true, SHA: strings.Repeat("a", 40)},
-				ExpectedTargetSHA: strings.Repeat("b", 40), NewSourceSHA: strings.Repeat("c", 40),
-			},
-		}
-
-		publication, execute, err := factory.AcquirePR(context.Background(), action, time.Minute)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(execute).To(BeTrue())
-		var storedReviewID, storedRunID, storedRevision int64
-		Expect(dbConn.QueryRow(`
-			SELECT review_snapshot_id, review_workflow_run_id, outcome_revision
-			FROM agent_publication_approval_evidence
-			WHERE publication_id=$1
-		`, publication.ID).Scan(
-			&storedReviewID, &storedRunID, &storedRevision,
-		)).To(Succeed())
-		Expect(storedReviewID).To(Equal(reviewID))
-		Expect(storedRunID).To(Equal(int64(reviewRunID)))
-		Expect(storedRevision).To(Equal(int64(3)))
-
-		var secondBuildID int64
-		Expect(dbConn.QueryRow(`
-			INSERT INTO builds (name, status, team_id, created_by)
-			VALUES ($1, 'started', $2, 'bob')
-			RETURNING id
-		`, fmt.Sprintf("accepted-pr-replay-%d", unique), defaultTeam.ID()).Scan(
-			&secondBuildID,
-		)).To(Succeed())
-		var secondRunID snapshot.WorkflowRunID
-		Expect(dbConn.QueryRow(`
-			INSERT INTO agent_workflow_runs
-				(team_id, team_name, workflow_definition_id, workflow_name, workflow_version,
-				 schema_version, signature_version, definition_content_hash, idempotency_key,
-				 parameterized_config, parameterized_config_hash, origin_kind, origin_reference,
-				 created_by, status, planned_build_id)
-			VALUES ($1, $2, $3, $4, 1, 3, 1, $5, $6, '{}', $7,
-			        'manual', '', 'bob', 'running', $8)
-			RETURNING id
-		`, defaultTeam.ID(), defaultTeam.Name(), definitionID,
-			fmt.Sprintf("accepted-pr-replay-%d", unique), strings.Repeat("d", 64),
-			fmt.Sprintf("accepted-pr-replay-%d", unique), strings.Repeat("e", 64),
-			secondBuildID).Scan(&secondRunID)).To(Succeed())
-		_, err = dbConn.Exec(`
-			INSERT INTO agent_workflow_run_snapshots
-				(workflow_run_id, direction, port_name, snapshot_id, promoted_at)
-			VALUES ($1, 'output', 'observation', $2, now()),
-			       ($1, 'output', 'candidate', $3, now()),
-			       ($1, 'output', 'validation', $4, now()),
-			       ($1, 'output', 'impact', $5, now())
-		`, int64(secondRunID), int64(observation.ID), int64(candidateChange.ID),
-			int64(validation.ID), int64(impact.ID))
-		Expect(err).NotTo(HaveOccurred())
-		secondAction := action.Clone()
-		secondAction.Branch.Authority = publisher.Authority{
-			TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(),
-			BuildID: secondBuildID, Actor: "bob",
-		}
-		second, execute, err := factory.AcquirePR(
-			context.Background(), secondAction, time.Minute,
-		)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(execute).To(BeFalse())
-		Expect(second.ID).NotTo(Equal(publication.ID))
-		Expect(second.OperationKey).To(Equal(publication.OperationKey))
-		Expect(second.PRAction.Branch.Authority.WorkflowRunID).To(Equal(secondRunID))
-		Expect(second.PRAction.Branch.Authority.Actor).To(Equal("bob"))
-
-		completed, err := factory.CompletePR(
-			context.Background(), publication.OperationKey, publication.Attempt,
-			publisher.Result{Status: publisher.StatusSucceeded, HeadSHA: strings.Repeat("c", 40)},
-		)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(completed.Status).To(Equal(publisher.StatusSucceeded))
-		var secondOutcomePublicationID int64
-		Expect(dbConn.QueryRow(`
-			SELECT publication_id
-			FROM agent_workflow_outcomes
-			WHERE team_id=$1 AND workflow_run_id=$2 AND output_snapshot_id=$3
-		`, defaultTeam.ID(), int64(secondRunID), int64(candidateChange.ID)).Scan(
-			&secondOutcomePublicationID,
-		)).To(Succeed())
-		Expect(secondOutcomePublicationID).To(Equal(int64(second.ID)))
-
-		forged := action.Clone()
-		forged.Branch.Evidence.AcceptedReview.OutcomeRevision++
-		_, _, err = factory.AcquirePR(context.Background(), forged, time.Minute)
-		Expect(errors.Is(err, publisher.ErrInvalidRequest)).To(BeTrue())
-	})
 
 	// The NodeOccurrence projection joins a publish node to its occurrence on
 	// nothing but this column: the occurrence's own key is (publication_id,
@@ -1102,6 +599,39 @@ var _ = Describe("AgentPublicationsFactory", func() {
 		_, _, err := factory.Acquire(cancelled, request(), time.Minute)
 		Expect(errors.Is(err, context.Canceled)).To(BeTrue())
 		_, err = factory.Complete(context.Background(), "sha256:"+strings.Repeat("0", 64), 1, publisher.Result{Status: publisher.StatusSucceeded})
+		Expect(errors.Is(err, publisher.ErrOperationNotFound)).To(BeTrue())
+	})
+
+	// The provider-native pull-request union that once shared agent_publications
+	// is gone, but its discriminator columns outlive it until the schema removal
+	// lands. A row that still carries one is not a publication this store can
+	// rehydrate, and it must read as absent rather than as a malformed
+	// publication -- exactly what the removed union produced.
+	It("reads a row still carrying the removed operation discriminator as absent", func() {
+		acquired, execute, err := factory.Acquire(context.Background(), request(), time.Minute)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(execute).To(BeTrue())
+
+		found, present, err := factory.Get(context.Background(), acquired.OperationKey)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(present).To(BeTrue())
+		Expect(found.ID).To(Equal(acquired.ID))
+
+		_, err = dbConn.Exec(`
+			UPDATE agent_publications
+			SET operation_kind = 'create_pr', operation_payload = '{"kind":"create_pr"}'::jsonb
+			WHERE id = $1
+		`, int64(acquired.ID))
+		Expect(err).NotTo(HaveOccurred())
+
+		_, present, err = factory.Get(context.Background(), acquired.OperationKey)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(present).To(BeFalse())
+
+		_, err = factory.Complete(
+			context.Background(), acquired.OperationKey, acquired.Attempt,
+			publisher.Result{Status: publisher.StatusSucceeded},
+		)
 		Expect(errors.Is(err, publisher.ErrOperationNotFound)).To(BeTrue())
 	})
 })

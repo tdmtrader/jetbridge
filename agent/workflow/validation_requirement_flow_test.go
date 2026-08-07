@@ -11,7 +11,7 @@ import (
 
 func TestAuthoritativeValidationFlowRejectsOrdinaryAndStaleBindings(t *testing.T) {
 	publish := func() atc.Step {
-		return atc.Step{Config: &atc.PublishSnapshotStep{Name: "publish", Publisher: publisher.GitPublisher, Input: "change", InputType: repositoryChangeV1, Validation: "validation", Destination: "git.example/acme/widget", Mode: publisher.ModePullRequest, Parameters: map[string]string{"target_branch": "main"}, ApprovalPolicyVersion: "engineering/v1"}}
+		return atc.Step{Config: &atc.PublishSnapshotStep{Name: "publish", Publisher: publisher.GitPublisher, Input: "change", InputType: repositoryChangeV1, Validation: "validation", Destination: "git.example/acme/widget", Mode: publisher.ModeBranch, Parameters: map[string]string{"target_branch": "main"}, ApprovalPolicyVersion: "engineering/v1"}}
 	}
 	overwrite := func(name string) atc.Step {
 		return atc.Step{Config: &atc.AgentStep{Name: name, FunctionID: name, Prompt: "replace", Outputs: []string{name}, SnapshotOutputs: map[string]atc.SnapshotOutputConfig{name: {Type: repositoryChangeV1}}}}

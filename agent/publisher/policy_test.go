@@ -288,7 +288,13 @@ func TestPolicyMatchesEveryExactFieldAndNeverUsesAuthoredRemoteMaterial(t *testi
 			request.Parameters = map[string]string{"body": "message"}
 		},
 		"mode": func(request *publisher.Request) {
-			request.Mode = publisher.ModePullRequest
+			request.Mode = publisher.ModeMerge
+			request.Parameters = map[string]string{
+				"target_branch":              "main",
+				publisher.MergeBaseParameter: strings.Repeat("a", 40),
+			}
+			request.ApprovedBy = "alice"
+			request.Approval = approvalEvidence("alice", 11)
 		},
 		"approval policy": func(request *publisher.Request) {
 			request.ApprovalPolicyVersion = "engineering/v2"
@@ -352,234 +358,6 @@ func TestPolicyRejectsUnknownFieldsAndTrailingDocuments(t *testing.T) {
 	}
 }
 
-func TestPolicyLoadsAndResolvesExactProviderNativePRDestination(t *testing.T) {
-	policy := loadPolicyForTest(t, `{
-		"schema_version": 1,
-		"rules": [{
-			"team": "engineering",
-			"publisher": "git-publisher/v1",
-			"mode": "pull-request",
-			"approval_policy_version": "engineering/v3",
-			"target_branch": "refs/heads/main",
-			"destination": "github.example/acme/widget",
-			"adapter": "github",
-			"provider": "github",
-			"repository": "acme/widget",
-			"api_base_url": "https://api.github.example",
-			"repository_url": "https://github.example/acme/widget.git",
-			"read_credential_reference": "widget-github-read",
-			"write_credential_reference": "widget-github-write"
-		}]
-	}`)
-
-	rule, err := policy.ResolvePR(context.Background(), policyPRAction())
-	if err != nil {
-		t.Fatalf("ResolvePR: %v", err)
-	}
-	if rule != exactPRPolicy().Rules[0] {
-		t.Fatalf("resolved PR rule = %+v", rule)
-	}
-}
-
-func TestPolicyResolvesEveryPRKindByExactProviderRepositoryAndTargetRef(t *testing.T) {
-	for name, action := range policyPRActions() {
-		t.Run(name, func(t *testing.T) {
-			rule, err := exactPRPolicy().ResolvePR(context.Background(), action)
-			if err != nil {
-				t.Fatalf("ResolvePR: %v", err)
-			}
-			if rule.TargetBranch != "refs/heads/main" ||
-				rule.Provider != publisher.PRProviderGitHub ||
-				rule.Repository != "acme/widget" {
-				t.Fatalf("resolved PR rule = %+v", rule)
-			}
-		})
-	}
-}
-
-func TestPolicySelectsExactPRProviderAndTargetAmongMultipleRules(t *testing.T) {
-	main := exactPRPolicy().Rules[0]
-	release := main
-	release.TargetBranch = "refs/heads/release"
-	release.WriteCredentialReference = "widget-release-write"
-	other := main
-	other.Destination = "github.example/acme/other-widget"
-	other.TargetBranch = "refs/heads/main"
-	other.Repository = "acme/other-widget"
-	other.RepositoryURL = "https://github.example/acme/other-widget.git"
-	other.ReadCredentialReference = "other-widget-read"
-	other.WriteCredentialReference = "other-widget-write"
-	policy := publisher.Policy{
-		SchemaVersion: 1,
-		Rules:         []publisher.PolicyRule{main, release, other},
-	}
-	if err := policy.Validate(); err != nil {
-		t.Fatalf("Validate: %v", err)
-	}
-
-	releaseAction := policyPRAction()
-	releaseAction.Branch.TargetRef = "refs/heads/release"
-	rule, err := policy.ResolvePR(context.Background(), releaseAction)
-	if err != nil || rule.WriteCredentialReference != "widget-release-write" {
-		t.Fatalf("release ResolvePR = (%+v, %v)", rule, err)
-	}
-
-	otherAction := policyPRAction()
-	otherAction.Branch.Destination = other.Destination
-	otherAction.Branch.Locator.Repository = other.Repository
-	rule, err = policy.ResolvePR(context.Background(), otherAction)
-	if err != nil || rule.WriteCredentialReference != "other-widget-write" {
-		t.Fatalf("other-repository ResolvePR = (%+v, %v)", rule, err)
-	}
-}
-
-func TestPolicyPRResolutionRefusesCrossRoutingAndLegacyEntryPoints(t *testing.T) {
-	action := policyPRAction()
-	action.Branch.Locator.Repository = "acme/other-widget"
-	if _, err := exactPRPolicy().ResolvePR(context.Background(), action); !errors.Is(err, publisher.ErrDestinationNotAllowed) {
-		t.Fatalf("cross-repository ResolvePR error = %v, want ErrDestinationNotAllowed", err)
-	}
-	if _, err := exactPolicy().ResolvePR(context.Background(), policyPRAction()); !errors.Is(err, publisher.ErrDestinationNotAllowed) {
-		t.Fatalf("direct-Git ResolvePR error = %v, want ErrDestinationNotAllowed", err)
-	}
-
-	legacyPR := policyGitRequest()
-	legacyPR.Mode = publisher.ModePullRequest
-	legacyPR.Parameters = map[string]string{
-		"source_branch": "agent/change",
-		"target_branch": "refs/heads/main",
-	}
-	legacyPR.Destination = "github.example/acme/widget"
-	legacyPR.ApprovalPolicyVersion = "engineering/v3"
-	if _, err := exactPRPolicy().Resolve(context.Background(), legacyPR); !errors.Is(err, publisher.ErrDestinationNotAllowed) {
-		t.Fatalf("legacy Resolve PR error = %v, want ErrDestinationNotAllowed", err)
-	}
-}
-
-func TestPolicyRequiresExactPRFieldsAndForbidsCrossLaneFields(t *testing.T) {
-	tests := map[string]func(*publisher.PolicyRule){
-		"fully qualified target ref": func(rule *publisher.PolicyRule) {
-			rule.TargetBranch = "main"
-		},
-		"PR adapter": func(rule *publisher.PolicyRule) {
-			rule.Adapter = publisher.AdapterDirectGit
-		},
-		"provider": func(rule *publisher.PolicyRule) {
-			rule.Provider = ""
-		},
-		"repository": func(rule *publisher.PolicyRule) {
-			rule.Repository = ""
-		},
-		"API base URL": func(rule *publisher.PolicyRule) {
-			rule.APIBaseURL = ""
-		},
-		"repository URL": func(rule *publisher.PolicyRule) {
-			rule.RepositoryURL = ""
-		},
-		"read credential reference": func(rule *publisher.PolicyRule) {
-			rule.ReadCredentialReference = ""
-		},
-		"write credential reference": func(rule *publisher.PolicyRule) {
-			rule.WriteCredentialReference = ""
-		},
-		"distinct credentials": func(rule *publisher.PolicyRule) {
-			rule.WriteCredentialReference = rule.ReadCredentialReference
-		},
-		"legacy credential": func(rule *publisher.PolicyRule) {
-			rule.CredentialReference = "legacy-write"
-		},
-		"legacy remote": func(rule *publisher.PolicyRule) {
-			rule.RemoteURL = "https://github.example/acme/widget.git"
-		},
-		"adapter/provider mismatch": func(rule *publisher.PolicyRule) {
-			rule.Adapter = publisher.AdapterGateway
-		},
-	}
-	for name, mutate := range tests {
-		t.Run(name, func(t *testing.T) {
-			policy := exactPRPolicy()
-			mutate(&policy.Rules[0])
-			if err := policy.Validate(); err == nil {
-				t.Fatal("invalid PR policy was accepted")
-			}
-		})
-	}
-
-	for name, mutate := range map[string]func(*publisher.PolicyRule){
-		"provider": func(rule *publisher.PolicyRule) {
-			rule.Provider = publisher.PRProviderGitHub
-		},
-		"repository": func(rule *publisher.PolicyRule) {
-			rule.Repository = "acme/widget"
-		},
-		"API base URL": func(rule *publisher.PolicyRule) {
-			rule.APIBaseURL = "https://api.github.example"
-		},
-		"repository URL": func(rule *publisher.PolicyRule) {
-			rule.RepositoryURL = "https://github.example/acme/widget.git"
-		},
-		"read credential": func(rule *publisher.PolicyRule) {
-			rule.ReadCredentialReference = "widget-read"
-		},
-		"write credential": func(rule *publisher.PolicyRule) {
-			rule.WriteCredentialReference = "widget-write"
-		},
-		"PR adapter": func(rule *publisher.PolicyRule) {
-			rule.Adapter = publisher.AdapterGitHub
-		},
-	} {
-		t.Run("direct Git with "+name, func(t *testing.T) {
-			policy := exactPolicy()
-			mutate(&policy.Rules[0])
-			if err := policy.Validate(); err == nil {
-				t.Fatal("direct-Git policy carrying PR-only fields was accepted")
-			}
-		})
-	}
-}
-
-func TestPolicyRejectsUnsafePRURLsWithoutExposingConfiguredContents(t *testing.T) {
-	for name, mutate := range map[string]func(*publisher.PolicyRule){
-		"insecure API URL": func(rule *publisher.PolicyRule) {
-			rule.APIBaseURL = "http://api.github.example"
-		},
-		"credentialed API URL": func(rule *publisher.PolicyRule) {
-			rule.APIBaseURL = "https://api-secret@api.github.example"
-		},
-		"queried API URL": func(rule *publisher.PolicyRule) {
-			rule.APIBaseURL = "https://api.github.example?token=api-secret"
-		},
-		"credentialed repository URL": func(rule *publisher.PolicyRule) {
-			rule.RepositoryURL = "https://repository-secret@github.example/acme/widget.git"
-		},
-		"fragmented repository URL": func(rule *publisher.PolicyRule) {
-			rule.RepositoryURL = "https://github.example/acme/widget.git#repository-secret"
-		},
-		"repository without path": func(rule *publisher.PolicyRule) {
-			rule.RepositoryURL = "https://github.example"
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			policy := exactPRPolicy()
-			mutate(&policy.Rules[0])
-			if err := policy.Validate(); err == nil {
-				t.Fatal("unsafe PR URL was accepted")
-			}
-		})
-	}
-
-	policy := exactPRPolicy()
-	policy.Rules[0].APIBaseURL = "https://api-secret@[::1"
-	err := policy.Validate()
-	if err == nil {
-		t.Fatal("malformed PR API URL was accepted")
-	}
-	if strings.Contains(err.Error(), "api-secret") ||
-		strings.Contains(err.Error(), policy.Rules[0].APIBaseURL) {
-		t.Fatalf("PR URL validation exposed configured contents: %v", err)
-	}
-}
-
 func exactPolicy() publisher.Policy {
 	return publisher.Policy{
 		SchemaVersion: 1,
@@ -589,24 +367,6 @@ func exactPolicy() publisher.Policy {
 			TargetBranch: "main", Destination: "git.example/acme/widget",
 			Adapter: publisher.AdapterDirectGit, CredentialReference: "widget-git",
 			RemoteURL: "https://git.example/acme/widget.git",
-		}},
-	}
-}
-
-func exactPRPolicy() publisher.Policy {
-	return publisher.Policy{
-		SchemaVersion: 1,
-		Rules: []publisher.PolicyRule{{
-			Team: "engineering", Publisher: publisher.GitPublisher,
-			Mode: publisher.ModePullRequest, ApprovalPolicyVersion: "engineering/v3",
-			TargetBranch: "refs/heads/main", Destination: "github.example/acme/widget",
-			Adapter:                  publisher.AdapterGitHub,
-			Provider:                 publisher.PRProviderGitHub,
-			Repository:               "acme/widget",
-			APIBaseURL:               "https://api.github.example",
-			RepositoryURL:            "https://github.example/acme/widget.git",
-			ReadCredentialReference:  "widget-github-read",
-			WriteCredentialReference: "widget-github-write",
 		}},
 	}
 }
@@ -628,39 +388,6 @@ func policyGitRequest() publisher.Request {
 		Authority: publisher.Authority{
 			TeamID: 9, TeamName: "engineering", BuildID: 12,
 			WorkflowRunID: 17, Actor: "build/12",
-		},
-	}
-}
-
-func policyPRAction() publisher.PRAction {
-	request := validBranchPublicationRequest()
-	return publisher.PRAction{
-		Kind:   publisher.OperationPublishPRBranch,
-		Branch: &request,
-	}
-}
-
-func policyPRActions() map[string]publisher.PRAction {
-	branch := validBranchPublicationRequest()
-	create := validPullRequestPublicationRequest()
-	status := validStatusPublicationRequest()
-	response := validResponsePublicationRequest()
-	return map[string]publisher.PRAction{
-		"branch": {
-			Kind:   publisher.OperationPublishPRBranch,
-			Branch: &branch,
-		},
-		"create": {
-			Kind:        publisher.OperationCreatePR,
-			PullRequest: &create,
-		},
-		"status": {
-			Kind:   publisher.OperationPublishPRStatus,
-			Status: &status,
-		},
-		"response": {
-			Kind:     publisher.OperationRespondToReview,
-			Response: &response,
 		},
 	}
 }

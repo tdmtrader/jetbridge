@@ -67,25 +67,19 @@ func (result Result) Validate() error {
 }
 
 type Publication struct {
-	ID            snapshot.DatabaseID `json:"id,omitempty"`
-	OperationKey  string              `json:"operation_key"`
-	OperationKind OperationKind       `json:"operation_kind,omitempty"`
-	PRAction      *PRAction           `json:"pr_action,omitempty"`
-	Request       Request             `json:"request"`
-	Status        Status              `json:"status"`
-	Attempt       int                 `json:"attempt"`
-	LeaseUntil    time.Time           `json:"lease_until,omitempty"`
-	Result        Result              `json:"result,omitempty"`
-	CreatedAt     time.Time           `json:"created_at"`
-	UpdatedAt     time.Time           `json:"updated_at"`
+	ID           snapshot.DatabaseID `json:"id,omitempty"`
+	OperationKey string              `json:"operation_key"`
+	Request      Request             `json:"request"`
+	Status       Status              `json:"status"`
+	Attempt      int                 `json:"attempt"`
+	LeaseUntil   time.Time           `json:"lease_until,omitempty"`
+	Result       Result              `json:"result,omitempty"`
+	CreatedAt    time.Time           `json:"created_at"`
+	UpdatedAt    time.Time           `json:"updated_at"`
 }
 
 func (publication Publication) Clone() Publication {
 	publication.Request = publication.Request.Clone()
-	if publication.PRAction != nil {
-		action := publication.PRAction.Clone()
-		publication.PRAction = &action
-	}
 	return publication
 }
 
@@ -93,14 +87,6 @@ type Store interface {
 	Acquire(context.Context, Request, time.Duration) (Publication, bool, error)
 	Complete(context.Context, string, int, Result) (Publication, error)
 	Get(context.Context, string) (Publication, bool, error)
-}
-
-// PRStore deliberately remains separate from Store until the ordered
-// operation-kind migration lands. It preserves the same acquire/lease/complete
-// discipline without claiming that the current DB store can persist PRAction.
-type PRStore interface {
-	AcquirePR(context.Context, PRAction, time.Duration) (Publication, bool, error)
-	CompletePR(context.Context, string, int, Result) (Publication, error)
 }
 
 var operationKeyPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)

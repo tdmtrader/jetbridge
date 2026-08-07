@@ -62,7 +62,7 @@ func namedPublishStep(name string, inputType snapshot.TypeRef) atc.Step {
 		Input:                 "change",
 		InputType:             inputType,
 		Destination:           "github.example/team/repo",
-		Mode:                  publisher.ModePullRequest,
+		Mode:                  publisher.ModeBranch,
 		Parameters:            map[string]string{"source_branch": "agent/change", "target_branch": "main"},
 		ApprovalPolicyVersion: "engineering/v2",
 		Validation:            "validation",

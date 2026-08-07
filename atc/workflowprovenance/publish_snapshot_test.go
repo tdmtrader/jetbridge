@@ -13,7 +13,7 @@ func TestFromPlanCapturesPublishSnapshotAsAVisibleNonProducer(t *testing.T) {
 	config := &atc.PublishSnapshotStep{
 		Name: "publish-change", Publisher: publisher.GitPublisher, Input: "change",
 		InputType: snapshot.TypeRef("repository-change/v1"), Destination: "github.example/team/repo",
-		Mode: publisher.ModePullRequest, Parameters: map[string]string{
+		Mode: publisher.ModeBranch, Parameters: map[string]string{
 			"source_branch": "agent/change", "target_branch": "main",
 		},
 		ApprovalPolicyVersion: "engineering/v2",
