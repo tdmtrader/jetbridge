@@ -1,6 +1,7 @@
 package auth_test
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 	"github.com/concourse/concourse/atc/api/auth"
 	"github.com/concourse/concourse/atc/auditor/auditorfakes"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/db/dbfakes"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -184,7 +186,7 @@ var _ = Describe("CheckBuildReadAccessHandler", func() {
 				})
 				Context("when fetching pipeline throws error", func() {
 					BeforeEach(func() {
-						factory = doomedBuildFactory()
+						factory = buildFactoryFailingPipelineLookup(errors.New("pipeline lookup failed"))
 					})
 					It("return 500", func() {
 						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
@@ -234,7 +236,7 @@ var _ = Describe("CheckBuildReadAccessHandler", func() {
 				})
 				Context("when fetching pipeline throws error", func() {
 					BeforeEach(func() {
-						factory = doomedBuildFactory()
+						factory = buildFactoryFailingPipelineLookup(errors.New("pipeline lookup failed"))
 					})
 					It("return 500", func() {
 						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
@@ -305,7 +307,7 @@ var _ = Describe("CheckBuildReadAccessHandler", func() {
 
 				Context("getting the job fails", func() {
 					BeforeEach(func() {
-						factory = doomedBuildFactory()
+						factory = buildFactoryFailingJobLookup(errors.New("job lookup failed"))
 					})
 
 					It("returns 500", func() {
@@ -361,6 +363,36 @@ var _ = Describe("CheckBuildReadAccessHandler", func() {
 		})
 	})
 })
+
+// These factories retain only the error seams that real PostgreSQL cannot
+// isolate: BuildForAPI succeeds, then the selected parent lookup fails. A
+// closed connection would fail BuildForAPI first and leave these branches
+// untested.
+func buildFactoryFailingPipelineLookup(err error) db.BuildFactory {
+	build := new(dbfakes.FakeBuildForAPI)
+	build.PipelineIDReturns(41)
+	build.PipelineReturns(nil, false, err)
+
+	factory := new(dbfakes.FakeBuildFactory)
+	factory.BuildForAPIReturns(build, true, nil)
+	return factory
+}
+
+func buildFactoryFailingJobLookup(err error) db.BuildFactory {
+	pipeline := new(dbfakes.FakePipeline)
+	pipeline.PublicReturns(true)
+	pipeline.JobReturns(nil, false, err)
+
+	build := new(dbfakes.FakeBuildForAPI)
+	build.PipelineIDReturns(41)
+	build.PipelineReturns(pipeline, true, nil)
+	build.JobIDReturns(43)
+	build.JobNameReturns("some-job")
+
+	factory := new(dbfakes.FakeBuildFactory)
+	factory.BuildForAPIReturns(build, true, nil)
+	return factory
+}
 
 type buildDelegateHandler struct {
 	IsCalled     bool
