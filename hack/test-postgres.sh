@@ -23,20 +23,22 @@ require_colima() {
 }
 
 inspect_container() {
-  d container inspect --format '{{ index .Config.Labels "com.concourse.test-postgres" }}|{{ .State.Status }}|{{ .Config.Image }}|{{ (index (index .HostConfig.PortBindings "5432/tcp") 0).HostIp }}|{{ (index (index .HostConfig.PortBindings "5432/tcp") 0).HostPort }}|{{ json .Config.Cmd }}|{{ json .Config.Env }}|{{ json .HostConfig.PortBindings }}' "${CONTAINER}" 2>/dev/null
+	local target="${1:-${CONTAINER}}"
+	d container inspect --format '{{ .Id }}|{{ .Name }}|{{ index .Config.Labels "com.concourse.test-postgres" }}|{{ .State.Status }}|{{ .Config.Image }}|{{ (index (index .HostConfig.PortBindings "5432/tcp") 0).HostIp }}|{{ (index (index .HostConfig.PortBindings "5432/tcp") 0).HostPort }}|{{ json .Config.Cmd }}|{{ json .Config.Env }}|{{ json .HostConfig.PortBindings }}' "${target}" 2>/dev/null
 }
 
 wait_ready() {
-  for _ in $(seq 1 60); do
-    d exec "${CONTAINER}" pg_isready -U postgres -d postgres >/dev/null 2>&1 && return 0
-    sleep 1
+	local container_id="$1"
+	for _ in $(seq 1 60); do
+		d exec "${container_id}" pg_isready -U postgres -d postgres >/dev/null 2>&1 && return 0
+		sleep 1
   done
   echo "ERROR: PostgreSQL did not become ready within 60 seconds" >&2
   return 1
 }
 
 parse_inspection() {
-  IFS='|' read -r INSPECT_OWNED INSPECT_STATE INSPECT_IMAGE INSPECT_HOST_IP INSPECT_HOST_PORT INSPECT_CMD INSPECT_ENV INSPECT_PORT_BINDINGS <<<"$1"
+	IFS='|' read -r INSPECT_ID INSPECT_NAME INSPECT_OWNED INSPECT_STATE INSPECT_IMAGE INSPECT_HOST_IP INSPECT_HOST_PORT INSPECT_CMD INSPECT_ENV INSPECT_PORT_BINDINGS <<<"$1"
 }
 
 validate_ownership() {
@@ -47,7 +49,11 @@ validate_ownership() {
 }
 
 validate_contract() {
-  if [[ "${INSPECT_IMAGE}" != "${IMAGE}" ]]; then
+	if [[ "${INSPECT_NAME}" != "/${CONTAINER}" ]]; then
+		echo "ERROR: ${CONTAINER} name differs (got ${INSPECT_NAME}, want /${CONTAINER})" >&2
+		return 1
+	fi
+	if [[ "${INSPECT_IMAGE}" != "${IMAGE}" ]]; then
     echo "ERROR: ${CONTAINER} image differs (got ${INSPECT_IMAGE}, want ${IMAGE})" >&2
     return 1
   fi
@@ -74,13 +80,25 @@ validate_contract() {
 }
 
 inspect_owned_contract() {
-  local inspection
-  if ! inspection="$(inspect_container)"; then
-    return 1
+	local inspection
+	local target="${1:-${CONTAINER}}"
+	if ! inspection="$(inspect_container "${target}")"; then
+		return 1
   fi
   parse_inspection "${inspection}"
   validate_ownership
-  validate_contract
+	validate_contract
+}
+
+revalidate_same_container() {
+	local expected_id="$1"
+	if ! inspect_owned_contract "${CONTAINER}"; then
+		return 1
+	fi
+	if [[ "${INSPECT_ID}" != "${expected_id}" ]]; then
+		echo "ERROR: ${CONTAINER} was replaced while it was being validated; refusing the replacement" >&2
+		return 1
+	fi
 }
 
 create_container() {
@@ -101,13 +119,17 @@ up() {
   local inspection
 
   require_colima
-  for attempt in $(seq 1 5); do
-    if inspect_owned_contract; then
-      case "${INSPECT_STATE}" in
-        running)
-          if wait_ready; then
-            return 0
-          fi
+	for attempt in $(seq 1 5); do
+		if inspect_owned_contract; then
+			local container_id="${INSPECT_ID}"
+			case "${INSPECT_STATE}" in
+				running)
+					if wait_ready "${container_id}"; then
+						if revalidate_same_container "${container_id}"; then
+							return 0
+						fi
+						return 1
+					fi
           # A container may have disappeared while readiness was being polled.
           # Re-inspect once before treating an existing but unready service as
           # an error, so a concurrent up can create its replacement.
@@ -116,8 +138,8 @@ up() {
             return 1
           fi
           ;;
-        exited|created)
-          d start "${CONTAINER}" >/dev/null 2>&1 || true
+				exited|created)
+					d start "${container_id}" >/dev/null 2>&1 || true
           ;;
         *)
           echo "ERROR: ${CONTAINER} is owned but has unsupported state ${INSPECT_STATE}" >&2
@@ -154,12 +176,14 @@ status() {
     echo "ERROR: ${CONTAINER} is absent or does not match the required test PostgreSQL contract" >&2
     return 1
   fi
-  if [[ "${INSPECT_STATE}" != "running" ]]; then
+	if [[ "${INSPECT_STATE}" != "running" ]]; then
     echo "ERROR: ${CONTAINER} is ${INSPECT_STATE}; run $0 up" >&2
     return 1
   fi
-  wait_ready
-  printf '%s: running (ready)\n' "${CONTAINER}"
+	local container_id="${INSPECT_ID}"
+	wait_ready "${container_id}"
+	revalidate_same_container "${container_id}"
+	printf '%s: running (ready)\n' "${CONTAINER}"
 }
 
 down() {
@@ -168,17 +192,38 @@ down() {
   require_colima
   if ! inspection="$(inspect_container)"; then
     return 0
-  fi
-  parse_inspection "${inspection}"
-  validate_ownership
-  d rm --force "${CONTAINER}" >/dev/null 2>&1 || {
-    # A concurrent teardown may already have removed it. Last mutation wins.
-    if ! inspect_container >/dev/null 2>&1; then
-      return 0
-    fi
-    echo "ERROR: failed to remove ${CONTAINER}" >&2
-    return 1
-  }
+	fi
+	parse_inspection "${inspection}"
+	validate_ownership
+	local container_id="${INSPECT_ID}"
+	d rm --force "${container_id}" >/dev/null 2>&1 || {
+		# A concurrent teardown may already have removed it. Last mutation wins.
+		if ! inspection="$(inspect_container)"; then
+			return 0
+		fi
+		parse_inspection "${inspection}"
+		validate_ownership
+		if [[ "${INSPECT_ID}" != "${container_id}" ]]; then
+			echo "ERROR: ${CONTAINER} was replaced during teardown; refusing the replacement" >&2
+			return 1
+		fi
+		echo "ERROR: failed to remove ${CONTAINER}" >&2
+		return 1
+	}
+
+	# A successful ID-targeted removal must leave the well-known name absent.
+	# If another container claimed it concurrently, never treat that replacement
+	# as the object whose ownership was validated above.
+	if inspection="$(inspect_container)"; then
+		parse_inspection "${inspection}"
+		validate_ownership
+		if [[ "${INSPECT_ID}" != "${container_id}" ]]; then
+			echo "ERROR: ${CONTAINER} was replaced during teardown; refusing the replacement" >&2
+			return 1
+		fi
+		echo "ERROR: ${CONTAINER} still exists after teardown" >&2
+		return 1
+	fi
 }
 
 case "${1:-}" in
