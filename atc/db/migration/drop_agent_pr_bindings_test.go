@@ -14,7 +14,7 @@ import (
 )
 
 var _ = Describe("drop agent PR bindings migration", func() {
-	const beforeVersion, targetVersion = 1773106159, 1773106160
+	const beforeVersion, targetVersion = 1773106165, 1773106166
 
 	var (
 		database *sql.DB

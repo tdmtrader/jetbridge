@@ -121,7 +121,7 @@ func (factory *agentPublicationsFactory) ResolveReviewRunEvidence(
 }
 
 const agentPublicationColumns = `
-	p.id, occurrence.id, p.operation_key, p.operation_kind, p.operation_payload, p.publisher,
+	p.id, occurrence.id, p.operation_key, p.publisher,
 	s.id, s.type_name, s.type_version, s.digest,
 	p.destination, p.mode, p.parameters, p.approval_policy_version, occurrence.approved_by,
 	occurrence.approval_wait_id, approval_question.id, approval_question.type_name, approval_question.type_version,
@@ -786,8 +786,6 @@ func getAgentPublicationOccurrence(
 func scanAgentPublication(row scannable) (agentPublicationRecord, error) {
 	var record agentPublicationRecord
 	publication := &record.publication
-	var operationKind sql.NullString
-	var operationPayload []byte
 	var publisherType string
 	var snapshotID int64
 	var snapshotTypeName string
@@ -809,7 +807,7 @@ func scanAgentPublication(row scannable) (agentPublicationRecord, error) {
 	var result []byte
 	err := row.Scan(
 		&record.operationID, &publication.ID, &publication.OperationKey,
-		&operationKind, &operationPayload, &publisherType,
+		&publisherType,
 		&snapshotID, &snapshotTypeName, &snapshotTypeVersion, &digest,
 		&destination, &mode, &parameters, &policyVersion, &approvedBy,
 		&approvalWaitID, &approvalQuestionID, &approvalQuestionTypeName, &approvalQuestionTypeVersion,
@@ -852,14 +850,6 @@ func scanAgentPublication(row scannable) (agentPublicationRecord, error) {
 		approvalAnswerID.Valid || approvalResolvedAt.Valid ||
 		approvalQuestionTypeName.Valid || approvalQuestionTypeVersion.Valid || approvalQuestionDigest.Valid ||
 		approvalAnswerTypeName.Valid || approvalAnswerTypeVersion.Valid || approvalAnswerDigest.Valid
-	// The provider-native pull-request union that once shared this table is
-	// gone. A row that still carries its discriminator is not a publication
-	// this store can rehydrate, so report it as absent — exactly what the
-	// removed union did once Get and Complete saw a PR action. The columns
-	// themselves are dropped by the schema removal that follows this change.
-	if operationKind.Valid || len(operationPayload) > 0 {
-		return agentPublicationRecord{}, sql.ErrNoRows
-	}
 	publication.Request = publisher.Request{
 		Publisher:             snapshot.TypeRef(publisherType),
 		Input:                 primary,

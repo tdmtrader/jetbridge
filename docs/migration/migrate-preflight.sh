@@ -84,7 +84,13 @@ v8.0.1:1765921815
 # definition-owned registration per workflow definition. It refuses to run
 # while any binding row exists; 1773106154 already proved every database at
 # or past it is empty, so no operator action is expected.
-JETBRIDGE_VERSION=1773106166
+# 1773106167 drops the operation_kind/operation_payload discriminator added by
+# 1773106153, retiring the provider-native arm of the agent_publications union.
+# Direct-Git publications always held NULL there, so the drop is lossless for
+# them. It refuses to run while any provider-native operation row survives;
+# if that fires, delete those publications and their occurrences deliberately
+# before retrying, since no binary can decode their stored payload any more.
+JETBRIDGE_VERSION=1773106167
 
 # Minimum supported source version (v6.x)
 MIN_SUPPORTED_VERSION=1601993582

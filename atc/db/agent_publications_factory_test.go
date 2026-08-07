@@ -602,36 +602,4 @@ var _ = Describe("AgentPublicationsFactory", func() {
 		Expect(errors.Is(err, publisher.ErrOperationNotFound)).To(BeTrue())
 	})
 
-	// The provider-native pull-request union that once shared agent_publications
-	// is gone, but its discriminator columns outlive it until the schema removal
-	// lands. A row that still carries one is not a publication this store can
-	// rehydrate, and it must read as absent rather than as a malformed
-	// publication -- exactly what the removed union produced.
-	It("reads a row still carrying the removed operation discriminator as absent", func() {
-		acquired, execute, err := factory.Acquire(context.Background(), request(), time.Minute)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(execute).To(BeTrue())
-
-		found, present, err := factory.Get(context.Background(), acquired.OperationKey)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(present).To(BeTrue())
-		Expect(found.ID).To(Equal(acquired.ID))
-
-		_, err = dbConn.Exec(`
-			UPDATE agent_publications
-			SET operation_kind = 'create_pr', operation_payload = '{"kind":"create_pr"}'::jsonb
-			WHERE id = $1
-		`, int64(acquired.ID))
-		Expect(err).NotTo(HaveOccurred())
-
-		_, present, err = factory.Get(context.Background(), acquired.OperationKey)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(present).To(BeFalse())
-
-		_, err = factory.Complete(
-			context.Background(), acquired.OperationKey, acquired.Attempt,
-			publisher.Result{Status: publisher.StatusSucceeded},
-		)
-		Expect(errors.Is(err, publisher.ErrOperationNotFound)).To(BeTrue())
-	})
 })
