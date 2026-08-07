@@ -186,7 +186,7 @@ var _ = Describe("CheckBuildReadAccessHandler", func() {
 				})
 				Context("when fetching pipeline throws error", func() {
 					BeforeEach(func() {
-						factory = buildFactoryFailingPipelineLookup(errors.New("pipeline lookup failed"))
+						factory = buildFactoryWithPipelineLookup(false, errors.New("pipeline lookup failed"))
 					})
 					It("return 500", func() {
 						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
@@ -203,11 +203,15 @@ var _ = Describe("CheckBuildReadAccessHandler", func() {
 						Expect(response.StatusCode).To(Equal(http.StatusForbidden))
 					})
 				})
-				// "when pipeline is not found" is dropped: it required a build
-				// whose pipeline_id points at a row that does not exist, and the
-				// foreign key makes that state unreachable. It was only
-				// expressible because a fake could return (nil, false, nil) for a
-				// build that claimed a pipeline id.
+				Context("when the pipeline disappears during the request", func() {
+					BeforeEach(func() {
+						factory = buildFactoryWithPipelineLookup(false, nil)
+					})
+
+					It("returns 404", func() {
+						Expect(response.StatusCode).To(Equal(http.StatusNotFound))
+					})
+				})
 			})
 		})
 
@@ -236,7 +240,7 @@ var _ = Describe("CheckBuildReadAccessHandler", func() {
 				})
 				Context("when fetching pipeline throws error", func() {
 					BeforeEach(func() {
-						factory = buildFactoryFailingPipelineLookup(errors.New("pipeline lookup failed"))
+						factory = buildFactoryWithPipelineLookup(false, errors.New("pipeline lookup failed"))
 					})
 					It("return 500", func() {
 						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
@@ -253,11 +257,15 @@ var _ = Describe("CheckBuildReadAccessHandler", func() {
 						Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
 					})
 				})
-				// "when pipeline is not found" is dropped: it required a build
-				// whose pipeline_id points at a row that does not exist, and the
-				// foreign key makes that state unreachable. It was only
-				// expressible because a fake could return (nil, false, nil) for a
-				// build that claimed a pipeline id.
+				Context("when the pipeline disappears during the request", func() {
+					BeforeEach(func() {
+						factory = buildFactoryWithPipelineLookup(false, nil)
+					})
+
+					It("returns 404", func() {
+						Expect(response.StatusCode).To(Equal(http.StatusNotFound))
+					})
+				})
 			})
 		})
 	})
@@ -307,7 +315,7 @@ var _ = Describe("CheckBuildReadAccessHandler", func() {
 
 				Context("getting the job fails", func() {
 					BeforeEach(func() {
-						factory = buildFactoryFailingJobLookup(errors.New("job lookup failed"))
+						factory = buildFactoryWithJobLookup(false, errors.New("job lookup failed"))
 					})
 
 					It("returns 500", func() {
@@ -315,10 +323,15 @@ var _ = Describe("CheckBuildReadAccessHandler", func() {
 					})
 				})
 
-				// "when the job is not found" is dropped alongside the pipeline
-				// equivalent: a build's job_id is a foreign key, so a build that
-				// names a job which does not exist is not a state real rows can
-				// hold.
+				Context("when the job disappears during the request", func() {
+					BeforeEach(func() {
+						factory = buildFactoryWithJobLookup(false, nil)
+					})
+
+					It("returns 404", func() {
+						Expect(response.StatusCode).To(Equal(http.StatusNotFound))
+					})
+				})
 			})
 
 			Context("when pipeline is private", func() {
@@ -364,24 +377,25 @@ var _ = Describe("CheckBuildReadAccessHandler", func() {
 	})
 })
 
-// These factories retain only the error seams that real PostgreSQL cannot
-// isolate: BuildForAPI succeeds, then the selected parent lookup fails. A
-// closed connection would fail BuildForAPI first and leave these branches
-// untested.
-func buildFactoryFailingPipelineLookup(err error) db.BuildFactory {
+// These factories retain only the late-lookup seams that real PostgreSQL
+// cannot trigger deterministically: BuildForAPI succeeds, then a concurrent
+// cascade can remove the selected parent before its lookup. They also isolate
+// errors to that second query; a closed connection would fail BuildForAPI
+// first and leave both branches untested.
+func buildFactoryWithPipelineLookup(found bool, err error) db.BuildFactory {
 	build := new(dbfakes.FakeBuildForAPI)
 	build.PipelineIDReturns(41)
-	build.PipelineReturns(nil, false, err)
+	build.PipelineReturns(nil, found, err)
 
 	factory := new(dbfakes.FakeBuildFactory)
 	factory.BuildForAPIReturns(build, true, nil)
 	return factory
 }
 
-func buildFactoryFailingJobLookup(err error) db.BuildFactory {
+func buildFactoryWithJobLookup(found bool, err error) db.BuildFactory {
 	pipeline := new(dbfakes.FakePipeline)
 	pipeline.PublicReturns(true)
-	pipeline.JobReturns(nil, false, err)
+	pipeline.JobReturns(nil, found, err)
 
 	build := new(dbfakes.FakeBuildForAPI)
 	build.PipelineIDReturns(41)
