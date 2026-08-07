@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/agent/snapshot"
+	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 )
 
 type waitCancelerStub struct {
@@ -45,6 +45,29 @@ func (s *cancellationStoreStub) ValidateCancellationTarget(ctx context.Context, 
 		return true, nil
 	}
 	return s.validateSelected(ctx, teamID, id, buildID)
+}
+
+type buildLookupStub struct {
+	lookup func(int) (db.BuildForAPI, bool, error)
+}
+
+func (stub buildLookupStub) BuildForAPI(id int) (db.BuildForAPI, bool, error) {
+	return stub.lookup(id)
+}
+
+type wrongIdentityBuild struct {
+	db.BuildForAPI
+	id int
+}
+
+func (build wrongIdentityBuild) ID() int { return build.id }
+
+func buildLookupMustNotRun(t *testing.T) BuildLookup {
+	t.Helper()
+	return buildLookupStub{lookup: func(int) (db.BuildForAPI, bool, error) {
+		t.Fatal("selected-build lookup must not run")
+		return nil, false, nil
+	}}
 }
 
 func TestCancelerImmediatelyFinalizesCancellationWonBeforeExecutionAllocation(t *testing.T) {
@@ -87,7 +110,7 @@ func TestCancelerImmediatelyFinalizesCancellationWonBeforeExecutionAllocation(t 
 			return db.AgentWorkflowRunFinalizationResult{Status: db.AgentWorkflowRunStatusAborted}, true, nil
 		},
 	}
-	canceler, err := NewCanceler(store, new(dbfakes.FakeBuildFactory))
+	canceler, err := NewCanceler(store, buildLookupMustNotRun(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +151,7 @@ func TestCancelerDurablyCancelsOpenWaitsAfterRunCancellationWins(t *testing.T) {
 		}
 		return 2, nil
 	}}
-	canceler, err := NewCancelerWithWaits(store, new(dbfakes.FakeBuildFactory), waits)
+	canceler, err := NewCancelerWithWaits(store, buildLookupMustNotRun(t), waits)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,105 +171,83 @@ func TestCancelerDurablyCancelsOpenWaitsAfterRunCancellationWins(t *testing.T) {
 
 func TestCancelerAbortsOnlyExactSelectedBuild(t *testing.T) {
 	ctx := context.Background()
-	runID := snapshot.WorkflowRunID(71)
-	running := cancellationRun(runID, 9, db.AgentWorkflowRunStatusRunning)
-	buildID := int64(313)
-	running.PlannedBuildID = &buildID
-	canceling := running
-	canceling.Status = db.AgentWorkflowRunStatusCanceling
-
-	gets := []db.AgentWorkflowRun{running, canceling, canceling}
-	store := &cancellationStoreStub{
-		get: func(_ context.Context, teamID int, id snapshot.WorkflowRunID) (db.AgentWorkflowRun, bool, error) {
-			if teamID != 9 || id != runID {
-				t.Fatalf("Get scope = (%d, %s)", teamID, id.String())
-			}
-			run := gets[0]
-			gets = gets[1:]
-			return run, true, nil
-		},
-		transition: func(_ context.Context, id snapshot.WorkflowRunID, from, to db.AgentWorkflowRunStatus, message string) (bool, error) {
-			if id != runID || from != db.AgentWorkflowRunStatusRunning || to != db.AgentWorkflowRunStatusCanceling || message != "" {
-				t.Fatalf("Transition = (%s, %s, %s, %q)", id.String(), from, to, message)
-			}
-			return true, nil
-		},
-		finalize: func(context.Context, db.AgentWorkflowRunFinalization) (db.AgentWorkflowRunFinalizationResult, bool, error) {
-			t.Fatal("selected execution must be finalized from build evidence")
-			return db.AgentWorkflowRunFinalizationResult{}, false, nil
-		},
-		validateSelected: func(got context.Context, teamID int, id snapshot.WorkflowRunID, gotBuildID int64) (bool, error) {
-			if got != ctx || teamID != 9 || id != runID || gotBuildID != buildID {
-				t.Fatalf("ValidateCancellationTarget = (%d, %s, %d)", teamID, id.String(), gotBuildID)
-			}
-			return true, nil
-		},
-	}
-	build := new(dbfakes.FakeBuildForAPI)
-	build.IDReturns(int(buildID))
-	build.TeamIDReturns(9)
-	builds := new(dbfakes.FakeBuildFactory)
-	builds.BuildForAPIReturns(build, true, nil)
-	canceler, err := NewCanceler(store, builds)
+	fixture := useRealWorkflowRunDB(t)
+	running, selected := createLinkedExecution(t, fixture)
+	canceler, err := NewCanceler(fixture.Runs, fixture.Builds)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	got, found, err := canceler.Cancel(ctx, 9, runID)
+	got, found, err := canceler.Cancel(ctx, fixture.Team.ID(), running.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !found || got.Status != db.AgentWorkflowRunStatusCanceling {
+	if !found || got.ID != running.ID || got.TeamID != fixture.Team.ID() || got.Status != db.AgentWorkflowRunStatusCanceling {
 		t.Fatalf("Cancel = (%+v, %t)", got, found)
 	}
-	if builds.BuildForAPICallCount() != 1 || builds.BuildForAPIArgsForCall(0) != int(buildID) {
-		t.Fatalf("BuildForAPI calls = %d", builds.BuildForAPICallCount())
+	var aborted bool
+	if err := fixture.Conn.QueryRow(`SELECT aborted FROM builds WHERE id = $1`, selected.ID()).Scan(&aborted); err != nil {
+		t.Fatal(err)
 	}
-	if build.MarkAsAbortedCallCount() != 1 {
-		t.Fatalf("MarkAsAborted calls = %d", build.MarkAsAbortedCallCount())
+	if !aborted {
+		t.Fatal("persisted selected build was not aborted")
 	}
 }
 
 func TestCancelerRejectsSelectedBuildWithoutDurableInstanceAndJobLinkage(t *testing.T) {
-	runID := snapshot.WorkflowRunID(72)
-	run := cancellationRun(runID, 9, db.AgentWorkflowRunStatusCanceling)
-	buildID := int64(314)
-	run.PlannedBuildID = &buildID
-	store := &cancellationStoreStub{
-		get: func(context.Context, int, snapshot.WorkflowRunID) (db.AgentWorkflowRun, bool, error) {
-			return run, true, nil
-		},
-		transition: func(context.Context, snapshot.WorkflowRunID, db.AgentWorkflowRunStatus, db.AgentWorkflowRunStatus, string) (bool, error) {
-			t.Fatal("canceling replay must not transition")
-			return false, nil
-		},
-		finalize: func(context.Context, db.AgentWorkflowRunFinalization) (db.AgentWorkflowRunFinalizationResult, bool, error) {
-			t.Fatal("selected execution must be finalized from build evidence")
-			return db.AgentWorkflowRunFinalizationResult{}, false, nil
-		},
-		validateSelected: func(_ context.Context, teamID int, id snapshot.WorkflowRunID, gotBuildID int64) (bool, error) {
-			if teamID != 9 || id != runID || gotBuildID != buildID {
-				t.Fatalf("ValidateCancellationTarget = (%d, %s, %d)", teamID, id.String(), gotBuildID)
-			}
-			return false, nil
-		},
+	ctx := context.Background()
+	fixture := useRealWorkflowRunDB(t)
+	durable, _ := createDurableRun(t, fixture)
+	build, err := fixture.Team.CreateStartedBuild(atc.Plan{ID: "unlinked-cancellation-target"})
+	if err != nil {
+		t.Fatal(err)
 	}
-	build := new(dbfakes.FakeBuildForAPI)
-	build.IDReturns(int(buildID))
-	build.TeamIDReturns(9)
-	builds := new(dbfakes.FakeBuildFactory)
-	builds.BuildForAPIReturns(build, true, nil)
-	canceler, err := NewCanceler(store, builds)
+	buildID := int64(build.ID())
+	result, err := fixture.Conn.Exec(`UPDATE agent_workflow_runs SET planned_build_id = $2 WHERE id = $1`, int64(durable.ID), buildID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil || affected != 1 {
+		t.Fatalf("set planned build: affected %d, err %v", affected, err)
+	}
+	run, found, err := fixture.Runs.Get(ctx, fixture.Team.ID(), durable.ID)
+	if err != nil || !found || run.PlannedBuildID == nil || *run.PlannedBuildID != buildID {
+		t.Fatalf("reload unlinked run = (%+v, %t, %v)", run, found, err)
+	}
+	changed, err := fixture.Runs.Transition(
+		ctx,
+		durable.ID,
+		db.AgentWorkflowRunStatusAdmitting,
+		db.AgentWorkflowRunStatusCanceling,
+		"",
+	)
+	if err != nil || !changed {
+		t.Fatalf("transition unlinked run = (%t, %v)", changed, err)
+	}
+	run, found, err = fixture.Runs.Get(ctx, fixture.Team.ID(), durable.ID)
+	if err != nil || !found || run.Status != db.AgentWorkflowRunStatusCanceling {
+		t.Fatalf("reload canceling run = (%+v, %t, %v)", run, found, err)
+	}
+	linked, err := fixture.Runs.ValidateCancellationTarget(ctx, fixture.Team.ID(), durable.ID, buildID)
+	if err != nil || linked {
+		t.Fatalf("ValidateCancellationTarget = (%t, %v)", linked, err)
+	}
+	canceler, err := NewCanceler(fixture.Runs, fixture.Builds)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	_, found, err := canceler.Cancel(context.Background(), 9, runID)
+	_, found, err = canceler.Cancel(ctx, fixture.Team.ID(), durable.ID)
+	var aborted bool
+	if err := fixture.Conn.QueryRow(`SELECT aborted FROM builds WHERE id = $1`, build.ID()).Scan(&aborted); err != nil {
+		t.Fatal(err)
+	}
+	if aborted {
+		t.Fatal("build without durable execution linkage was aborted")
+	}
 	if !found || !errors.Is(err, ErrCancelFailure) || err.Error() != ErrCancelFailure.Error() {
 		t.Fatalf("Cancel error = %v, found = %t", err, found)
-	}
-	if build.MarkAsAbortedCallCount() != 0 {
-		t.Fatal("build without durable execution linkage was aborted")
 	}
 }
 
@@ -272,7 +273,7 @@ func TestCancelerRetriesCASAgainstAdmissionAdvance(t *testing.T) {
 			return db.AgentWorkflowRunFinalizationResult{Status: db.AgentWorkflowRunStatusAborted}, true, nil
 		},
 	}
-	canceler, err := NewCanceler(store, new(dbfakes.FakeBuildFactory))
+	canceler, err := NewCanceler(store, buildLookupMustNotRun(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -324,7 +325,7 @@ func TestCancelerReplaysCancelingAndAbortedIdempotently(t *testing.T) {
 					return terminal, true, nil
 				}
 			}
-			canceler, err := NewCanceler(store, new(dbfakes.FakeBuildFactory))
+			canceler, err := NewCanceler(store, buildLookupMustNotRun(t))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -356,7 +357,7 @@ func TestCancelerConflictsWithNonAbortedTerminalHistory(t *testing.T) {
 					return db.AgentWorkflowRunFinalizationResult{}, false, nil
 				},
 			}
-			canceler, err := NewCanceler(store, new(dbfakes.FakeBuildFactory))
+			canceler, err := NewCanceler(store, buildLookupMustNotRun(t))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -369,76 +370,108 @@ func TestCancelerConflictsWithNonAbortedTerminalHistory(t *testing.T) {
 }
 
 func TestCancelerBoundsDependencyErrorsAndRejectsWrongBuildIdentity(t *testing.T) {
-	run := cancellationRun(101, 5, db.AgentWorkflowRunStatusCanceling)
-	buildID := int64(611)
-	run.PlannedBuildID = &buildID
-	store := &cancellationStoreStub{
-		get: func(context.Context, int, snapshot.WorkflowRunID) (db.AgentWorkflowRun, bool, error) {
-			return run, true, nil
-		},
-		transition: func(context.Context, snapshot.WorkflowRunID, db.AgentWorkflowRunStatus, db.AgentWorkflowRunStatus, string) (bool, error) {
-			t.Fatal("canceling replay must not transition")
-			return false, nil
-		},
-		finalize: func(context.Context, db.AgentWorkflowRunFinalization) (db.AgentWorkflowRunFinalizationResult, bool, error) {
-			t.Fatal("selected build must not finalize directly")
-			return db.AgentWorkflowRunFinalizationResult{}, false, nil
-		},
-	}
-	wrong := new(dbfakes.FakeBuildForAPI)
-	wrong.IDReturns(int(buildID) + 1)
-	wrong.TeamIDReturns(5)
-	builds := new(dbfakes.FakeBuildFactory)
-	builds.BuildForAPIReturns(wrong, true, nil)
-	canceler, err := NewCanceler(store, builds)
+	ctx := context.Background()
+	fixture := useRealWorkflowRunDB(t)
+	running, selected := createLinkedExecution(t, fixture)
+	wrong := wrongIdentityBuild{BuildForAPI: selected, id: selected.ID() + 1}
+	builds := buildLookupStub{lookup: func(id int) (db.BuildForAPI, bool, error) {
+		if id != selected.ID() {
+			t.Fatalf("BuildForAPI id = %d, want %d", id, selected.ID())
+		}
+		return wrong, true, nil
+	}}
+	canceler, err := NewCanceler(fixture.Runs, builds)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	_, found, err := canceler.Cancel(context.Background(), 5, 101)
+	_, found, err := canceler.Cancel(ctx, fixture.Team.ID(), running.ID)
 	if !found || !errors.Is(err, ErrCancelFailure) || err.Error() != ErrCancelFailure.Error() {
 		t.Fatalf("Cancel error = %v, found = %t", err, found)
 	}
-	if wrong.MarkAsAbortedCallCount() != 0 {
+	var aborted bool
+	if err := fixture.Conn.QueryRow(`SELECT aborted FROM builds WHERE id = $1`, selected.ID()).Scan(&aborted); err != nil {
+		t.Fatal(err)
+	}
+	if aborted {
 		t.Fatal("wrong build identity was aborted")
 	}
 
-	secret := errors.New("postgres password: swordfish")
-	store.get = func(context.Context, int, snapshot.WorkflowRunID) (db.AgentWorkflowRun, bool, error) {
-		return db.AgentWorkflowRun{}, false, secret
+	lookupSecret := errors.New("build lookup password: swordfish")
+	errorBuilds := buildLookupStub{lookup: func(id int) (db.BuildForAPI, bool, error) {
+		if id != selected.ID() {
+			t.Fatalf("BuildForAPI id = %d, want %d", id, selected.ID())
+		}
+		return nil, true, lookupSecret
+	}}
+	canceler, err = NewCanceler(fixture.Runs, errorBuilds)
+	if err != nil {
+		t.Fatal(err)
 	}
-	_, found, err = canceler.Cancel(context.Background(), 5, 101)
+	_, found, err = canceler.Cancel(ctx, fixture.Team.ID(), running.ID)
+	if !found || !errors.Is(err, ErrCancelFailure) || err.Error() != ErrCancelFailure.Error() || errors.Is(err, lookupSecret) || strings.Contains(err.Error(), lookupSecret.Error()) {
+		t.Fatalf("bounded build lookup error = %v, found = %t", err, found)
+	}
+	if err := fixture.Conn.QueryRow(`SELECT aborted FROM builds WHERE id = $1`, selected.ID()).Scan(&aborted); err != nil {
+		t.Fatal(err)
+	}
+	if aborted {
+		t.Fatal("selected build was aborted after lookup failure")
+	}
+
+	secret := errors.New("postgres password: swordfish")
+	store := &cancellationStoreStub{
+		get: func(context.Context, int, snapshot.WorkflowRunID) (db.AgentWorkflowRun, bool, error) {
+			return db.AgentWorkflowRun{}, false, secret
+		},
+	}
+	canceler, err = NewCanceler(store, buildLookupMustNotRun(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, found, err = canceler.Cancel(ctx, fixture.Team.ID(), running.ID)
 	if found || !errors.Is(err, ErrCancelFailure) || err.Error() != ErrCancelFailure.Error() || errors.Is(err, secret) {
 		t.Fatalf("bounded dependency error = %v, found = %t", err, found)
 	}
 }
 
 func TestCancelerLeavesCancelingRunForReconciliationWhenSelectedBuildIsGone(t *testing.T) {
-	run := cancellationRun(107, 5, db.AgentWorkflowRunStatusCanceling)
-	buildID := int64(613)
-	run.PlannedBuildID = &buildID
-	store := &cancellationStoreStub{
-		get: func(context.Context, int, snapshot.WorkflowRunID) (db.AgentWorkflowRun, bool, error) {
-			return run, true, nil
-		},
-		transition: func(context.Context, snapshot.WorkflowRunID, db.AgentWorkflowRunStatus, db.AgentWorkflowRunStatus, string) (bool, error) {
-			t.Fatal("canceling replay must not transition")
-			return false, nil
-		},
-		finalize: func(context.Context, db.AgentWorkflowRunFinalization) (db.AgentWorkflowRunFinalizationResult, bool, error) {
-			t.Fatal("a once-selected execution needs reconciliation evidence")
-			return db.AgentWorkflowRunFinalizationResult{}, false, nil
-		},
+	ctx := context.Background()
+	fixture := useRealWorkflowRunDB(t)
+	durable, _ := createDurableRun(t, fixture)
+	missingBuildID := int64(9007199254740991)
+	if _, found, err := fixture.Builds.BuildForAPI(int(missingBuildID)); err != nil || found {
+		t.Fatalf("missing build precondition = (found %t, %v)", found, err)
 	}
-	builds := new(dbfakes.FakeBuildFactory)
-	builds.BuildForAPIReturns(nil, false, nil)
-	canceler, err := NewCanceler(store, builds)
+	result, err := fixture.Conn.Exec(`UPDATE agent_workflow_runs SET planned_build_id = $2 WHERE id = $1`, int64(durable.ID), missingBuildID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil || affected != 1 {
+		t.Fatalf("set missing planned build: affected %d, err %v", affected, err)
+	}
+	changed, err := fixture.Runs.Transition(
+		ctx,
+		durable.ID,
+		db.AgentWorkflowRunStatusAdmitting,
+		db.AgentWorkflowRunStatusCanceling,
+		"",
+	)
+	if err != nil || !changed {
+		t.Fatalf("transition missing-build run = (%t, %v)", changed, err)
+	}
+	run, found, err := fixture.Runs.Get(ctx, fixture.Team.ID(), durable.ID)
+	if err != nil || !found || run.Status != db.AgentWorkflowRunStatusCanceling || run.PlannedBuildID == nil || *run.PlannedBuildID != missingBuildID {
+		t.Fatalf("reload missing-build run = (%+v, %t, %v)", run, found, err)
+	}
+	canceler, err := NewCanceler(fixture.Runs, fixture.Builds)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	got, found, err := canceler.Cancel(context.Background(), 5, 107)
-	if err != nil || !found || got.Status != db.AgentWorkflowRunStatusCanceling {
+	got, found, err := canceler.Cancel(ctx, fixture.Team.ID(), durable.ID)
+	if err != nil || !found || got.ID != durable.ID || got.TeamID != fixture.Team.ID() || got.Status != db.AgentWorkflowRunStatusCanceling {
 		t.Fatalf("Cancel = (%+v, %t, %v)", got, found, err)
 	}
 }
@@ -452,7 +485,7 @@ func TestCancelerReturnsTeamScopedAbsenceAndContextCancellation(t *testing.T) {
 			return db.AgentWorkflowRun{}, false, nil
 		},
 	}
-	canceler, err := NewCanceler(store, new(dbfakes.FakeBuildFactory))
+	canceler, err := NewCanceler(store, buildLookupMustNotRun(t))
 	if err != nil {
 		t.Fatal(err)
 	}
