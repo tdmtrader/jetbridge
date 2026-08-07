@@ -16,7 +16,6 @@ import (
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/mcpserver"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 )
 
 var _ = Describe("MCP tools PostgreSQL fixture", func() {
@@ -232,14 +231,57 @@ func callMCPToolJSON[T any](server *mcpserver.Server, name string, args map[stri
 	return decoded
 }
 
-func newFakeMCPPipelineRunServer(
+func persistMCPRunTemplate(fixture *mcpToolsDB, name string) db.Pipeline {
+	GinkgoHelper()
+	return persistMCPPipeline(fixture, name, atc.Config{
+		Template: true,
+		Params: []atc.ParamSchema{{
+			Name: "branch", Type: "string", Default: "main",
+		}},
+	})
+}
+
+func createMCPPipelineRun(
 	fixture *mcpToolsDB,
-) (*mcpserver.Server, db.Pipeline, *dbfakes.FakePipelineRunFactory) {
-	pipeline := persistMCPPipeline(fixture, "my-pipeline", atc.Config{Template: true})
-	factory := new(dbfakes.FakePipelineRunFactory)
-	deps := fixture.Deps
-	deps.PipelineRunFactory = factory
-	return newMCPToolsServer(deps), pipeline, factory
+	template db.Pipeline,
+	params map[string]any,
+	createdBy string,
+) db.PipelineRun {
+	GinkgoHelper()
+	run, err := fixture.Deps.PipelineRunFactory.CreateRun(template.ID(), params, createdBy)
+	Expect(err).NotTo(HaveOccurred())
+	return run
+}
+
+func finishMCPPipelineRun(
+	fixture *mcpToolsDB,
+	template db.Pipeline,
+	run db.PipelineRun,
+	status db.PipelineRunStatus,
+) db.PipelineRun {
+	GinkgoHelper()
+	Expect(run.Finish(status)).To(Succeed())
+	loaded, found, err := fixture.Deps.PipelineRunFactory.GetRun(template.ID(), run.Number())
+	Expect(err).NotTo(HaveOccurred())
+	Expect(found).To(BeTrue())
+	return loaded
+}
+
+func expectMCPPipelineRun(actual atc.PipelineRun, expected db.PipelineRun) {
+	GinkgoHelper()
+	Expect(actual.ID).To(Equal(expected.ID()))
+	Expect(actual.Number).To(Equal(expected.Number()))
+	Expect(actual.Status).To(Equal(string(expected.Status())))
+	Expect(actual.Params).To(Equal(expected.Params()))
+	Expect(actual.CreatedBy).To(Equal(expected.CreatedBy()))
+	Expect(actual.CreatedAt).To(Equal(expected.CreatedAt().Unix()))
+	completedAt, completed := expected.CompletedAt()
+	if completed {
+		Expect(actual.CompletedAt).To(Equal(completedAt.Unix()))
+	} else {
+		Expect(actual.CompletedAt).To(BeZero())
+	}
+	Expect(actual.Archived).To(Equal(expected.Archived()))
 }
 
 var _ = Describe("Tools", func() {
@@ -248,6 +290,7 @@ var _ = Describe("Tools", func() {
 			server := newMCPToolsServer(mcpToolDeps{})
 			body := jsonRPCBody("tools/list", 1, nil)
 			resp := doMCP(server, body)
+			defer func() { Expect(resp.Body.Close()).To(Succeed()) }()
 			result := decodeResult(resp)
 			tools := result["tools"].([]any)
 			Expect(tools).To(HaveLen(25))
@@ -1052,59 +1095,74 @@ var _ = Describe("Tools", func() {
 	})
 
 	Describe("list_pipeline_runs", func() {
-		var (
-			server             *mcpserver.Server
-			fixture            *mcpToolsDB
-			pipeline           db.Pipeline
-			pipelineRunFactory *dbfakes.FakePipelineRunFactory
-		)
-
-		BeforeEach(func() {
-			fixture = useMCPToolsDB()
-			server, pipeline, pipelineRunFactory = newFakeMCPPipelineRunServer(fixture)
-		})
-
 		It("returns runs for a template pipeline", func() {
-			run := new(dbfakes.FakePipelineRun)
-			run.IDReturns(900)
-			run.NumberReturns(3)
-			run.StatusReturns(db.PipelineRunSucceeded)
-			run.ParamsReturns(map[string]any{"branch": "main"})
-			run.CreatedByReturns("alice")
-			run.CreatedAtReturns(time.Unix(1000, 0))
-			run.CompletedAtReturns(time.Unix(1200, 0), true)
-			pipelineRunFactory.ListRunsReturns([]db.PipelineRun{run}, nil)
-
+			fixture := useMCPToolsDB()
+			template := persistMCPRunTemplate(fixture, "my-pipeline")
+			created := make([]db.PipelineRun, 0, 101)
+			for range 101 {
+				created = append(created, createMCPPipelineRun(
+					fixture, template, map[string]any{"branch": "main"}, "alice",
+				))
+			}
+			newest := finishMCPPipelineRun(
+				fixture, template, created[len(created)-1], db.PipelineRunSucceeded,
+			)
+			created[len(created)-1] = newest
+			server := newMCPToolsServer(fixture.Deps)
 			result := callTool(server, "list_pipeline_runs", map[string]any{
 				"team":     fixture.Main.Name(),
-				"pipeline": pipeline.Name(),
+				"pipeline": template.Name(),
 			})
-			var runs []map[string]any
+			var runs []atc.PipelineRun
 			Expect(json.Unmarshal([]byte(result), &runs)).To(Succeed())
-			Expect(runs).To(HaveLen(1))
-			Expect(runs[0]["number"]).To(BeEquivalentTo(3))
-			Expect(runs[0]["status"]).To(Equal("succeeded"))
-			Expect(runs[0]["params"].(map[string]any)["branch"]).To(Equal("main"))
-			Expect(runs[0]["completed_at"]).To(BeEquivalentTo(1200))
-
-			templateID, limit := pipelineRunFactory.ListRunsArgsForCall(0)
-			Expect(templateID).To(Equal(pipeline.ID()))
-			Expect(limit).To(Equal(100))
+			Expect(runs).To(HaveLen(100))
+			expectedNumbers := make([]int, 0, 100)
+			for i := len(created) - 1; i >= 1; i-- {
+				expectedNumbers = append(expectedNumbers, created[i].Number())
+			}
+			actualNumbers := make([]int, 0, len(runs))
+			for _, run := range runs {
+				actualNumbers = append(actualNumbers, run.Number)
+			}
+			Expect(actualNumbers).To(Equal(expectedNumbers))
+			Expect(actualNumbers).NotTo(ContainElement(created[0].Number()))
+			expectMCPPipelineRun(runs[0], newest)
 		})
 
-		It("passes a custom limit through", func() {
-			pipelineRunFactory.ListRunsReturns([]db.PipelineRun{}, nil)
-
-			callTool(server, "list_pipeline_runs", map[string]any{
+		It("returns the newest runs for a custom limit", func() {
+			fixture := useMCPToolsDB()
+			template := persistMCPRunTemplate(fixture, "my-pipeline")
+			created := make([]db.PipelineRun, 0, 6)
+			for range 6 {
+				created = append(created, createMCPPipelineRun(
+					fixture, template, nil, "custom-limit",
+				))
+			}
+			server := newMCPToolsServer(fixture.Deps)
+			result := callTool(server, "list_pipeline_runs", map[string]any{
 				"team":     fixture.Main.Name(),
-				"pipeline": pipeline.Name(),
+				"pipeline": template.Name(),
 				"limit":    5,
 			})
-			_, limit := pipelineRunFactory.ListRunsArgsForCall(0)
-			Expect(limit).To(Equal(5))
+			var runs []atc.PipelineRun
+			Expect(json.Unmarshal([]byte(result), &runs)).To(Succeed())
+			Expect(runs).To(HaveLen(5))
+			expectedNumbers := make([]int, 0, 5)
+			for i := len(created) - 1; i >= 1; i-- {
+				expectedNumbers = append(expectedNumbers, created[i].Number())
+			}
+			actualNumbers := make([]int, 0, len(runs))
+			for _, run := range runs {
+				actualNumbers = append(actualNumbers, run.Number)
+			}
+			Expect(actualNumbers).To(Equal(expectedNumbers))
+			Expect(actualNumbers).NotTo(ContainElement(created[0].Number()))
 		})
 
 		It("returns error for unknown pipeline", func() {
+			fixture := useMCPToolsDB()
+			persistMCPRunTemplate(fixture, "my-pipeline")
+			server := newMCPToolsServer(fixture.Deps)
 			_, isError := callToolRaw(server, "list_pipeline_runs", map[string]any{
 				"team":     fixture.Main.Name(),
 				"pipeline": "ghost",
@@ -1114,49 +1172,39 @@ var _ = Describe("Tools", func() {
 	})
 
 	Describe("get_pipeline_run", func() {
-		var (
-			server             *mcpserver.Server
-			fixture            *mcpToolsDB
-			pipeline           db.Pipeline
-			pipelineRunFactory *dbfakes.FakePipelineRunFactory
-		)
-
-		BeforeEach(func() {
-			fixture = useMCPToolsDB()
-			server, pipeline, pipelineRunFactory = newFakeMCPPipelineRunServer(fixture)
-		})
-
 		It("returns a single run by number", func() {
-			run := new(dbfakes.FakePipelineRun)
-			run.IDReturns(901)
-			run.NumberReturns(4)
-			run.StatusReturns(db.PipelineRunFailed)
-			run.CreatedByReturns("bob")
-			run.CreatedAtReturns(time.Unix(2000, 0))
-			pipelineRunFactory.GetRunReturns(run, true, nil)
-
+			fixture := useMCPToolsDB()
+			template := persistMCPRunTemplate(fixture, "my-pipeline")
+			run := createMCPPipelineRun(
+				fixture, template, map[string]any{"branch": "feature"}, "bob",
+			)
+			run = finishMCPPipelineRun(fixture, template, run, db.PipelineRunFailed)
+			server := newMCPToolsServer(fixture.Deps)
 			result := callTool(server, "get_pipeline_run", map[string]any{
 				"team":     fixture.Main.Name(),
-				"pipeline": pipeline.Name(),
-				"number":   4,
+				"pipeline": template.Name(),
+				"number":   run.Number(),
 			})
-			var out map[string]any
+			var out atc.PipelineRun
 			Expect(json.Unmarshal([]byte(result), &out)).To(Succeed())
-			Expect(out["number"]).To(BeEquivalentTo(4))
-			Expect(out["status"]).To(Equal("failed"))
-
-			templateID, number := pipelineRunFactory.GetRunArgsForCall(0)
-			Expect(templateID).To(Equal(pipeline.ID()))
-			Expect(number).To(Equal(4))
+			expectMCPPipelineRun(out, run)
 		})
 
 		It("returns a not-found error for a missing run", func() {
-			pipelineRunFactory.GetRunReturns(nil, false, nil)
-
+			fixture := useMCPToolsDB()
+			template := persistMCPRunTemplate(fixture, "my-pipeline")
+			existing := createMCPPipelineRun(fixture, template, nil, "existing")
+			missingNumber := existing.Number() + 1_000_000
+			_, found, err := fixture.Deps.PipelineRunFactory.GetRun(
+				template.ID(), missingNumber,
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeFalse())
+			server := newMCPToolsServer(fixture.Deps)
 			result, isError := callToolRaw(server, "get_pipeline_run", map[string]any{
 				"team":     fixture.Main.Name(),
-				"pipeline": pipeline.Name(),
-				"number":   999,
+				"pipeline": template.Name(),
+				"number":   missingNumber,
 			})
 			Expect(isError).To(BeTrue())
 			Expect(result).To(ContainSubstring("not found"))
@@ -1178,6 +1226,7 @@ func callToolRaw(server *mcpserver.Server, name string, args map[string]any) (st
 		"arguments": args,
 	})
 	resp := doMCP(server, body)
+	defer func() { Expect(resp.Body.Close()).To(Succeed()) }()
 	Expect(resp.StatusCode).To(Equal(http.StatusOK))
 
 	var rpcResp jsonRPCResponse
