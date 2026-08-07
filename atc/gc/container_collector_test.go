@@ -43,6 +43,19 @@ var _ = Describe("ContainerCollector", func() {
 		return created
 	}
 
+	createdCheckContainer := func(resourceConfig db.ResourceConfig) db.CreatedContainer {
+		owner := db.NewResourceConfigCheckSessionContainerOwner(
+			resourceConfig.ID(),
+			resourceConfig.OriginBaseResourceType().ID,
+			db.ContainerOwnerExpiries{Min: 5 * time.Minute, Max: time.Hour},
+		)
+		creating, err := worker.CreateContainer(owner, db.ContainerMetadata{Type: db.ContainerTypeCheck})
+		Expect(err).NotTo(HaveOccurred())
+		created, err := creating.Created()
+		Expect(err).NotTo(HaveOccurred())
+		return created
+	}
+
 	orphan := func() {
 		Expect(build.SetInterceptible(false)).To(Succeed())
 	}
@@ -90,7 +103,12 @@ var _ = Describe("ContainerCollector", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		worker, err = db.NewWorkerFactory(dbConn, db.NewStaticWorkerCache(logger, dbConn, 0)).
-			SaveWorker(atc.Worker{Name: "some-worker"}, 5*time.Minute)
+			SaveWorker(atc.Worker{
+				Name: "some-worker",
+				ResourceTypes: []atc.WorkerResourceType{
+					{Type: "some-base-type", Image: "/some-image", Version: "some-version"},
+				},
+			}, 5*time.Minute)
 		Expect(err).NotTo(HaveOccurred())
 	})
 
@@ -160,11 +178,58 @@ var _ = Describe("ContainerCollector", func() {
 			})
 		})
 
+		It("marks failed containers as destroying", func() {
+			creating, err := worker.CreateContainer(
+				db.NewBuildStepContainerOwner(build.ID(), atc.PlanID("failed"), team.ID()),
+				db.ContainerMetadata{Type: "task", StepName: "some-task"},
+			)
+			Expect(err).NotTo(HaveOccurred())
+			failed, err := creating.Failed()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(stateOf(failed.Handle())).To(Equal(string(atc.ContainerStateFailed)))
+
+			Expect(collector.Run(context.TODO())).To(Succeed())
+
+			Expect(stateOf(failed.Handle())).To(Equal(string(atc.ContainerStateDestroying)))
+		})
+
+		It("marks check containers beyond the per-resource cap as destroying", func() {
+			resourceConfig, err := resourceConfigFactory.FindOrCreateResourceConfig(
+				"some-base-type",
+				atc.Source{"repository": "some-check-image"},
+				nil,
+			)
+			Expect(err).NotTo(HaveOccurred())
+
+			oldest := createdCheckContainer(resourceConfig)
+			newest := createdCheckContainer(resourceConfig)
+
+			Expect(collector.Run(context.TODO())).To(Succeed())
+
+			Expect(stateOf(oldest.Handle())).To(Equal(string(atc.ContainerStateDestroying)))
+			Expect(stateOf(newest.Handle())).To(Equal(string(atc.ContainerStateCreated)))
+		})
+
 		// The specs below keep a narrowly scoped fake. Each proves that a failure
 		// in one repository call does not stop the others from running -- error
 		// isolation between independent steps of Run(). A real database cannot be
 		// made to fail one of those calls and not the rest.
 		Describe("error isolation", func() {
+			It("forwards the exact per-resource cap and hijack grace period", func() {
+				// Narrowly scoped wiring seam: the real outcome specs above prove
+				// cleanup behavior, while this fake observes the two policy values
+				// that are otherwise indistinguishable over a range of fixtures.
+				observing := new(dbfakes.FakeContainerRepository)
+
+				Expect(gc.NewContainerCollector(observing, missingContainerGracePeriod, hijackContainerGracePeriod).
+					Run(context.TODO())).To(Succeed())
+
+				Expect(observing.DestroyExcessCheckContainersCallCount()).To(Equal(1))
+				maxPerResource, gracePeriod := observing.DestroyExcessCheckContainersArgsForCall(0)
+				Expect(maxPerResource).To(Equal(1))
+				Expect(gracePeriod).To(Equal(hijackContainerGracePeriod))
+			})
+
 			It("still looks for orphans when destroying failed containers errors", func() {
 				failing := new(dbfakes.FakeContainerRepository)
 				failing.DestroyFailedContainersReturns(0, errors.New("nope"))

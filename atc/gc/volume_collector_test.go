@@ -118,25 +118,28 @@ var _ = Describe("VolumeCollector", func() {
 		})
 
 		Context("when there are failed volumes", func() {
+			var failedVolumeHandle string
+
 			JustBeforeEach(func() {
 				creatingVolume1, err := volumeRepository.CreateContainerVolume(team.ID(), worker.Name(), creatingContainer1, "some-path-1")
 				Expect(err).NotTo(HaveOccurred())
 
-				_, err = creatingVolume1.Failed()
+				failedVolume, err := creatingVolume1.Failed()
 				Expect(err).NotTo(HaveOccurred())
+				failedVolumeHandle = failedVolume.Handle()
 			})
 
 			It("deletes all the failed volumes from the database", func() {
-				failedVolumesLen, err := volumeRepository.DestroyFailedVolumes()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(failedVolumesLen).To(Equal(1))
+				var state string
+				Expect(dbConn.QueryRow("SELECT state FROM volumes WHERE handle = $1", failedVolumeHandle).Scan(&state)).To(Succeed())
+				Expect(state).To(Equal(string(db.VolumeStateFailed)))
 
-				err = volumeCollector.Run(context.TODO())
+				err := volumeCollector.Run(context.TODO())
 				Expect(err).NotTo(HaveOccurred())
 
-				failedVolumesLen, err = volumeRepository.DestroyFailedVolumes()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(failedVolumesLen).To(Equal(0))
+				var remaining int
+				Expect(dbConn.QueryRow("SELECT count(*) FROM volumes WHERE handle = $1", failedVolumeHandle).Scan(&remaining)).To(Succeed())
+				Expect(remaining).To(BeZero())
 			})
 		})
 

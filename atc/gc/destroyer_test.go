@@ -188,6 +188,9 @@ var _ = Describe("Destroyer", func() {
 		})
 
 		Context("when the volume repository fails", func() {
+			// Narrowly scoped: fail only this repository call so the
+			// destroyer's error passthrough can be observed without making the
+			// shared PostgreSQL service fail unrelated statements.
 			It("returns the error", func() {
 				failing := new(dbfakes.FakeVolumeRepository)
 				failing.RemoveDestroyingVolumesReturns(0, errors.New("I am le tired"))
@@ -217,6 +220,8 @@ var _ = Describe("Destroyer", func() {
 		})
 
 		Context("when the volume repository fails", func() {
+			// Narrowly scoped: fail only this read so the destroyer's error
+			// passthrough remains covered independently of database availability.
 			It("returns the error", func() {
 				failing := new(dbfakes.FakeVolumeRepository)
 				failing.GetDestroyingVolumesReturns(nil, errors.New("some-bad-err"))
