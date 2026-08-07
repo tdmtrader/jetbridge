@@ -264,7 +264,7 @@ The fixed baseline is exactly 40 explicit constructors: Teams 7, Workers 6, Pipe
 - Consumes: `db.Pipeline.CreateStartedBuild(atc.Plan) (db.Build, error)` for POST pipeline builds; `db.Job.CreateBuild(string) (db.Build, error)` for job badge and build-list fixtures; `db.Build.Start(atc.Plan) (bool, error)`; `db.Build.Finish(db.BuildStatus) error`; and pipeline visibility/mutation methods returning `error`.
 - Produces: four persisted pipeline rows per visibility spec, a five-state persisted badge matrix, real list/POST builds, real mutation assertions, and exactly two retained constructors.
 
-- [ ] **Step 1: Add a lifecycle-correct pipeline mutation assertion that is red against the fake server.**
+- [x] **Step 1: Add a lifecycle-correct pipeline mutation assertion that is red against the fake server.**
 
   In the pause Describe, declare `realdb *realDB` and `persistedPipeline db.Pipeline` in its var block. In the authorized-success Context, add a `BeforeEach` that runs before `JustBeforeEach`:
 
@@ -280,13 +280,13 @@ The fixed baseline is exactly 40 explicit constructors: Teams 7, Workers 6, Pipe
 
   Configure the suite fake lookup/pipeline to return 200, send the request from `JustBeforeEach`, and add `It("persists pipeline pause through PostgreSQL")` that reloads `persistedPipeline` and expects `Paused()` true. The fixture exists before the request, but the fake pipeline receives Pause, so the real row remains unpaused.
 
-- [ ] **Step 2: Run the Pipeline red node before replacing its fixtures.**
+- [x] **Step 2: Run the Pipeline red node before replacing its fixtures.**
 
   Run: `ginkgo --focus='persists pipeline pause through PostgreSQL' ./atc/api`
 
   Expected: FAIL because the real pipeline remains unpaused.
 
-- [ ] **Step 3: Persist the exact four-row visibility graph and dynamic response values.**
+- [x] **Step 3: Persist the exact four-row visibility graph and dynamic response values.**
 
   Set `server = realdb.Serve()`, reuse `mainTeam := realdb.Main`, and create only `anotherTeam`:
 
@@ -327,7 +327,7 @@ The fixed baseline is exactly 40 explicit constructors: Teams 7, Workers 6, Pipe
 
   In the archived-list context, record `archiveRequestedAt := time.Now()`, call `mainPrivate.Archive()`, and reload it. Expect `paused: true`, `paused_by: "automatic-pipeline-archiver"`, dynamic `paused_at` equal to reloaded `PausedAt().Unix()` and not before `archiveRequestedAt`, and `archived: true`. Preserve `Groups == mainPrivateConfig.Groups` and `Display == mainPrivateConfig.Display`; Archive retains those pipeline-row presentation fields. Do not retain the impossible fake state `archived: true, paused: false`.
 
-- [ ] **Step 4: Replace all nine badge constructors with progressive persisted status sets.**
+- [x] **Step 4: Replace all nine badge constructors with progressive persisted status sets.**
 
   Give every badge Context a fresh clone/pipeline rather than inserting every status in a common `BeforeEach`. Use these literal job sets:
 
@@ -350,7 +350,7 @@ The fixed baseline is exactly 40 explicit constructors: Teams 7, Workers 6, Pipe
 
   Use `db.BuildStatusSucceeded`, `db.BuildStatusAborted`, `db.BuildStatusErrored`, and `db.BuildStatusFailed`. The progressive contexts prove the production precedence `failed > errored > aborted > succeeded`; each expected badge names the highest-precedence status present. This removes five `FakeJob` and four `FakeBuild` constructor sites.
 
-- [ ] **Step 5: Replace build-list and POST success constructors with real builds.**
+- [x] **Step 5: Replace build-list and POST success constructors with real builds.**
 
   For GET pipeline builds, create two builds from a persisted job with `Job.CreateBuild("api-test")`. Start both with `Start(atc.Plan{})`; finish one with `Finish(db.BuildStatusSucceeded)` and leave one started. Decode `[]atc.Build` and compare IDs, names, status, team/pipeline/job name, start time, and end time to the reloaded rows. Build pagination links from the returned real IDs instead of 4/2.
 
@@ -367,47 +367,47 @@ The fixed baseline is exactly 40 explicit constructors: Teams 7, Workers 6, Pipe
 
   Serve over a persisted `a-pipeline`. The handler calls `Pipeline.CreateStartedBuild(plan) (db.Build, error)` directly; `Job.CreateBuild` is not used for this route. After POST, call `pipeline.Builds(db.Page{Limit: 1})`, assert one build, decode the response into `atc.Build`, and compare its ID, name, team, pipeline, started status, API URL, and start time to that database build. Assert its public plan equals `plan.Public()` after reload. Do not assert fake ID 42 or synthetic end/reap times.
 
-- [ ] **Step 6: Convert Pipeline.Destroy success.**
+- [x] **Step 6: Convert Pipeline.Destroy success.**
 
   Save `a-pipeline-name` under `realdb.Main` with `atc.Config{Jobs: atc.JobConfigs{{Name: "job"}}}`; set authenticated/authorized true; send `DELETE /api/v1/teams/main/pipelines/a-pipeline-name`; expect 204. Call `realdb.Main.Pipeline(atc.PipelineRef{Name: "a-pipeline-name"})` and assert `(nil, false, nil)`.
 
-- [ ] **Step 7: Convert Pipeline.Pause success and make the RED node green.**
+- [x] **Step 7: Convert Pipeline.Pause success and make the RED node green.**
 
   In Step 1's `BeforeEach`, make the sole GREEN change `server = realdb.Serve()`. Set `fakeAccess.UserNameReturns("api-user")`; send `PUT /api/v1/teams/main/pipelines/a-pipeline/pause`; expect 200. Reload and assert `Paused() == true`, `PausedBy() == "api-user"`, and `PausedAt()` is nonzero.
 
-- [ ] **Step 8: Convert Pipeline.Archive success with presentation fields preserved.**
+- [x] **Step 8: Convert Pipeline.Archive success with presentation fields preserved.**
 
   Save `a-pipeline` with `archiveConfig := atc.Config{Groups: atc.GroupConfigs{{Name: "release", Jobs: []string{"ship"}}}, Jobs: atc.JobConfigs{{Name: "ship"}}, Display: &atc.DisplayConfig{BackgroundImage: "archive.jpg"}}`. Record `requestedAt := time.Now()`, send `PUT /api/v1/teams/main/pipelines/a-pipeline/archive`, expect 200, reload, and assert `Archived()`, `Paused()`, `PausedBy() == "automatic-pipeline-archiver"`, `PausedAt()` is not before `requestedAt`, `Groups() == archiveConfig.Groups`, and `Display() == archiveConfig.Display`.
 
-- [ ] **Step 9: Convert Pipeline.Unpause success.**
+- [x] **Step 9: Convert Pipeline.Unpause success.**
 
   Save `a-pipeline`, call `pipeline.Pause("setup-user")`, then serve and send `PUT /api/v1/teams/main/pipelines/a-pipeline/unpause`; expect 200. Reload and assert `Paused() == false`, `PausedBy() == ""`, and `PausedAt().IsZero()`.
 
-- [ ] **Step 10: Convert Pipeline.Expose success.**
+- [x] **Step 10: Convert Pipeline.Expose success.**
 
   Save hidden `a-pipeline`; send `PUT /api/v1/teams/main/pipelines/a-pipeline/expose`; expect 200. Reread through `realdb.Main.Pipeline`, assert found and `Public() == true`.
 
-- [ ] **Step 11: Convert Pipeline.Hide success.**
+- [x] **Step 11: Convert Pipeline.Hide success.**
 
   Save `a-pipeline`, call `Expose()` during setup, assert it succeeds, then send `PUT /api/v1/teams/main/pipelines/a-pipeline/hide`; expect 200. Reread and assert `Public() == false`.
 
-- [ ] **Step 12: Convert team-wide pipeline ordering.**
+- [x] **Step 12: Convert team-wide pipeline ordering.**
 
   Create `a-team`, then save the five pipelines in this deliberately different insertion order: `just-kidding`, `a-pipeline`, `one-final-pipeline`, `yet-another-pipeline`, `another-pipeline`. Before the request, call `initialPipelines, err := team.Pipelines()`, assert no error, and assert their names equal `[]string{"just-kidding", "a-pipeline", "one-final-pipeline", "yet-another-pipeline", "another-pipeline"}`.
 
   Send `PUT /api/v1/teams/a-team/pipelines/ordering` with JSON `["a-pipeline","another-pipeline","yet-another-pipeline","one-final-pipeline","just-kidding"]` encoded from `requestedOrder := []string{"a-pipeline", "another-pipeline", "yet-another-pipeline", "one-final-pipeline", "just-kidding"}`. Expect 200. Reread with `orderedPipelines, err := team.Pipelines()`, assert no error, map the rows to names, and assert the result equals `requestedOrder` and does not equal the initial insertion order.
 
-- [ ] **Step 13: Convert within-group instance ordering.**
+- [x] **Step 13: Convert within-group instance ordering.**
 
   Create `a-team`; save three `a-pipeline` rows in this deliberately different insertion order: first `atc.PipelineRef{Name: "a-pipeline", InstanceVars: atc.InstanceVars{"branch": "test-2"}}`, then the uninstanced `atc.PipelineRef{Name: "a-pipeline"}` (nil `InstanceVars`, persisted as SQL `NULL`), then `atc.PipelineRef{Name: "a-pipeline", InstanceVars: atc.InstanceVars{"branch": "test"}}`. For each ref call `team.SavePipeline(ref, atc.Config{Jobs: atc.JobConfigs{{Name: "job"}}}, db.ConfigVersion(0), false)` and assert success.
 
   Before the request, call `initialPipelines, err := team.Pipelines()`, filter rows whose `Name() == "a-pipeline"`, and normalize each nil `InstanceVars()` to `atc.InstanceVars{}` before comparing. Assert the normalized initial sequence equals `[]atc.InstanceVars{{"branch": "test-2"}, {}, {"branch": "test"}}`. Send `PUT /api/v1/teams/a-team/pipelines/a-pipeline/ordering` with `requestedOrder := []atc.InstanceVars{{"branch": "test"}, {}, {"branch": "test-2"}}`; keep the empty map in the request so the endpoint exercises its zero-length-map-to-SQL-`NULL` normalization, and expect 200. Reread with `orderedPipelines, err := team.Pipelines()`, filter the same group, apply the same nil-to-empty-map normalization, and assert the normalized sequence equals `requestedOrder` and differs from the normalized initial sequence.
 
-- [ ] **Step 14: Convert Pipeline rename success.**
+- [x] **Step 14: Convert Pipeline rename success.**
 
   Create `a-team`, save `a-pipeline`, send `PUT /api/v1/teams/a-team/pipelines/a-pipeline/rename` with literal body `{"name":"some-new-name"}`, and expect 200. Assert `team.Pipeline(atc.PipelineRef{Name: "a-pipeline"})` is not found and `team.Pipeline(atc.PipelineRef{Name: "some-new-name"})` is found with `Name() == "some-new-name"`.
 
-- [ ] **Step 15: Enumerate every retained selective seam.**
+- [x] **Step 15: Enumerate every retained selective seam.**
 
   A closed `TeamFactory` represents only `FindTeam`/`GetTeams` failures:
 
@@ -436,7 +436,7 @@ The fixed baseline is exactly 40 explicit constructors: Teams 7, Workers 6, Pipe
   // conflict after Team.Pipeline succeeds; a closed TeamFactory fails earlier.
   ```
 
-- [ ] **Step 16: Run Pipeline green verification and commit.**
+- [x] **Step 16: Run Pipeline green verification and commit.**
 
   Run: `ginkgo --focus='Pipelines API' ./atc/api`
 
