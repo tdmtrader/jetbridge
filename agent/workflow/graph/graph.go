@@ -62,8 +62,8 @@ type Node struct {
 	DisplayName string   `json:"display_name"`
 	TypeRef     string   `json:"type_ref,omitempty"`
 	// Optional means this node's production is not guaranteed: an optional
-	// port, an optional load_snapshot, or a PR-reapproval await whose answer
-	// the server may prove unnecessary. It is the graph's rendering of
+	// port, an optional load_snapshot, an optional function output, or
+	// anything produced inside a try. It is the graph's rendering of
 	// typecheck.go's presence == snapshotConditional.
 	Optional    bool         `json:"optional,omitempty"`
 	Decorations []Decoration `json:"decorations,omitempty"`
@@ -90,7 +90,7 @@ type Edge struct {
 	TypeRef  string `json:"type_ref,omitempty"`
 	// Optional means this specific dataflow may not occur in a given run:
 	// either the binding itself is conditional (optional port, optional load,
-	// PR-reapproval answer, anything produced inside a try), or the binding
+	// optional function output, anything produced inside a try), or the binding
 	// has several possible producers and only one of them will have written
 	// it. A run page must be able to render an edge that carried nothing
 	// without implying the run was wrong, so this ships with the contract

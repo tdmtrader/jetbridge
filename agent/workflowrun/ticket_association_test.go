@@ -410,7 +410,7 @@ func TestInheritTicketFromAnAssociatedRun(t *testing.T) {
 		t.Fatalf("inheritTicketFrom: %v", err)
 	}
 	if association == nil || association.ID != 42 || association.Reference != "ticket-42" {
-		t.Fatalf("a publish or PR follow-up inherits from its publishing run, got %+v", association)
+		t.Fatalf("a publish follow-up inherits from its publishing run, got %+v", association)
 	}
 }
 

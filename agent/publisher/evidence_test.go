@@ -63,7 +63,9 @@ func TestPublicationEvidenceRequiresExactlyOneMatchingVariant(t *testing.T) {
 }
 
 func TestDurableApprovalVerifierBindsAnyTrustedIntentToExactSealedContext(t *testing.T) {
-	const intended = `{"schema_version":"1.0.0","kind":"pull_request","provider":"github","repository":"acme/widget","external_id":"81","source_head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","target_head":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","action_digest":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","policy_version":"engineering/v1","workflow_run_id":"17"}`
+	// Deliberately not the merge envelope: the verifier must bind whatever
+	// exact context a typed intent builder derives, without knowing its shape.
+	const intended = `{"schema_version":"1.0.0","kind":"unrelated_effect","destination":"effect.example/acme/widget","external_id":"81","action_digest":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","policy_version":"engineering/v1","workflow_run_id":"17"}`
 	fixture := newApprovalFixture(t, func(question *contracts.QuestionDocument) {
 		question.Context = intended
 	}, nil)

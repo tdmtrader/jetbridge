@@ -65,9 +65,9 @@ type MergeApprovalVerifier interface {
 
 // DurableApprovalRequest is the generic, server-owned half of a durable human
 // approval check. ExpectedContext must be the exact canonical machine-readable
-// context the operation being attempted derives. Typed intent builders (the
-// merge wrapper here and PR approval policy) remain responsible for deriving
-// and validating that context.
+// context the operation being attempted derives. Typed intent builders --
+// today only the merge wrapper here -- remain responsible for deriving and
+// validating that context.
 type DurableApprovalRequest struct {
 	TeamID          int                    `json:"team_id"`
 	WorkflowRunID   snapshot.WorkflowRunID `json:"workflow_run_id"`

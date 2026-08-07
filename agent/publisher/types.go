@@ -115,7 +115,7 @@ func (evidence AcceptedReviewEvidence) Validate() error {
 }
 
 // PublicationEvidence is a closed, mutually exclusive union. AcceptedReview
-// authorizes initial PR publication without manufacturing another approval;
+// authorizes the initial publication without manufacturing another approval;
 // HumanWait records a later exact durable approval when policy escalates.
 type PublicationEvidence struct {
 	Kind           EvidenceKind            `json:"kind"`
