@@ -110,7 +110,16 @@ var _ = Describe("Build", func() {
 	})
 
 	It("create_time is current time", func() {
-		Expect(build.CreateTime()).To(BeTemporally("<", time.Now(), 1*time.Second))
+		var dbBefore time.Time
+		Expect(dbConn.QueryRow(`SELECT clock_timestamp()`).Scan(&dbBefore)).To(Succeed())
+
+		createdBuild, err := job.CreateBuild(defaultBuildCreatedBy)
+		Expect(err).NotTo(HaveOccurred())
+
+		var dbAfter time.Time
+		Expect(dbConn.QueryRow(`SELECT clock_timestamp()`).Scan(&dbAfter)).To(Succeed())
+		Expect(createdBuild.CreateTime()).To(BeTemporally(">=", dbBefore))
+		Expect(createdBuild.CreateTime()).To(BeTemporally("<=", dbAfter))
 	})
 
 	It("can have it's comment updated", func() {

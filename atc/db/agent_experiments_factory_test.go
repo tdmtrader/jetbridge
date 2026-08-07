@@ -1597,17 +1597,22 @@ plan:
 
 	It("round-trips definitions as semantic JSON rather than mutable workflow rows", func() {
 		definition := definition(fixtureSnapshot)
+		var dbBefore time.Time
+		Expect(dbConn.QueryRow(`SELECT clock_timestamp()`).Scan(&dbBefore)).To(Succeed())
 		created, err := factory.Create(ctx, defaultTeam.ID(), defaultTeam.Name(), "alice", definition)
 		Expect(err).NotTo(HaveOccurred())
 		stored, found, err := factory.Get(ctx, defaultTeam.ID(), created.ID)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeTrue())
+		var dbAfter time.Time
+		Expect(dbConn.QueryRow(`SELECT clock_timestamp()`).Scan(&dbAfter)).To(Succeed())
 		left, err := json.Marshal(definition)
 		Expect(err).NotTo(HaveOccurred())
 		right, err := json.Marshal(stored.Definition)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(right).To(MatchJSON(left))
-		Expect(stored.CreatedAt).To(BeTemporally("<=", time.Now()))
+		Expect(stored.CreatedAt).To(BeTemporally(">=", dbBefore))
+		Expect(stored.CreatedAt).To(BeTemporally("<=", dbAfter))
 	})
 
 	Context("reusable node targets", func() {
