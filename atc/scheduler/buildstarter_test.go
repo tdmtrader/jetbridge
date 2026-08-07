@@ -18,7 +18,6 @@ import (
 
 var _ = Describe("BuildStarter", func() {
 	var (
-		fakePipeline  *dbfakes.FakePipeline
 		fakePlanner   *schedulerfakes.FakeBuildPlanner
 		pendingBuilds []db.Build
 		fakeAlgorithm *schedulerfakes.FakeAlgorithm
@@ -31,7 +30,6 @@ var _ = Describe("BuildStarter", func() {
 	)
 
 	BeforeEach(func() {
-		fakePipeline = new(dbfakes.FakePipeline)
 		fakePlanner = new(schedulerfakes.FakeBuildPlanner)
 		fakeAlgorithm = new(schedulerfakes.FakeAlgorithm)
 
@@ -489,7 +487,6 @@ var _ = Describe("BuildStarter", func() {
 					BeforeEach(func() {
 						job.PausedReturns(false)
 						job.ScheduleBuildReturns(true, nil)
-						fakePipeline.PausedReturns(false)
 					})
 
 					Context("when adopting inputs and pipes for a rerun build fails", func() {

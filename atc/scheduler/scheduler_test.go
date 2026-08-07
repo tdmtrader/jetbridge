@@ -43,15 +43,12 @@ var _ = Describe("Scheduler", func() {
 
 	Describe("Schedule", func() {
 		var (
-			fakePipeline *dbfakes.FakePipeline
-			fakeJob      *dbfakes.FakeJob
-			scheduleErr  error
+			fakeJob     *dbfakes.FakeJob
+			scheduleErr error
 		)
 
 		BeforeEach(func() {
 			fakeJob = new(dbfakes.FakeJob)
-			fakePipeline = new(dbfakes.FakePipeline)
-			fakePipeline.NameReturns("fake-pipeline")
 			ctx = context.Background()
 		})
 
