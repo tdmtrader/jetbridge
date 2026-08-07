@@ -66,6 +66,18 @@ var _ = Describe("Workers API", func() {
 			Expect(response.StatusCode).To(Equal(http.StatusOK))
 			Expect([]string{workers[0].Name, workers[1].Name}).To(ConsistOf(global.Name(), own.Name()))
 		})
+		It("fetches workers by team name from worker user context", func() {
+			var workers []atc.Worker
+			Expect(json.NewDecoder(response.Body).Decode(&workers)).To(Succeed())
+			Expect(workers).To(HaveLen(2))
+		})
+		It("returns 200", func() { Expect(response.StatusCode).To(Equal(http.StatusOK)) })
+		It("returns Content-Type application/json", func() { Expect(response.Header.Get("Content-Type")).To(Equal("application/json")) })
+		It("returns the workers", func() {
+			var workers []atc.Worker
+			Expect(json.NewDecoder(response.Body).Decode(&workers)).To(Succeed())
+			Expect([]string{workers[0].Name, workers[1].Name}).To(ConsistOf(global.Name(), own.Name()))
+		})
 		Context("when the user is an admin", func() {
 			BeforeEach(func() { fakeAccess.IsAdminReturns(true) })
 			It("shows all workers", func() {
@@ -73,6 +85,11 @@ var _ = Describe("Workers API", func() {
 				Expect(json.NewDecoder(response.Body).Decode(&workers)).To(Succeed())
 				Expect(workers).To(HaveLen(3))
 				Expect([]string{workers[0].Name, workers[1].Name, workers[2].Name}).To(ConsistOf(global.Name(), own.Name(), other.Name()))
+			})
+			It("returns all the workers", func() {
+				var workers []atc.Worker
+				Expect(json.NewDecoder(response.Body).Decode(&workers)).To(Succeed())
+				Expect(workers).To(HaveLen(3))
 			})
 		})
 		Context("when listing workers fails", func() {
@@ -86,6 +103,10 @@ var _ = Describe("Workers API", func() {
 			})
 			It("returns 500", func() { Expect(response.StatusCode).To(Equal(http.StatusInternalServerError)) })
 		})
+		Context("when not authenticated", func() {
+			BeforeEach(func() { fakeAccess.IsAuthenticatedReturns(false) })
+			It("returns 401", func() { Expect(response.StatusCode).To(Equal(http.StatusUnauthorized)) })
+		})
 	})
 
 	Describe("POST /api/v1/workers", func() {
@@ -93,6 +114,7 @@ var _ = Describe("Workers API", func() {
 			realdb      *realDB
 			requestedAt time.Time
 			worker      atc.Worker
+			ttl         string
 			response    *http.Response
 		)
 		BeforeEach(func() {
@@ -100,6 +122,7 @@ var _ = Describe("Workers API", func() {
 			server = realdb.Serve()
 			requestedAt = time.Now()
 			worker = apiWorker()
+			ttl = "30s"
 			fakeAccess.IsAuthenticatedReturns(true)
 			fakeAccess.IsAuthorizedReturns(true)
 			fakeAccess.IsSystemReturns(true)
@@ -107,7 +130,7 @@ var _ = Describe("Workers API", func() {
 		JustBeforeEach(func() {
 			payload, err := json.Marshal(worker)
 			Expect(err).NotTo(HaveOccurred())
-			req, err := http.NewRequest("POST", server.URL+"/api/v1/workers?ttl=30s", io.NopCloser(bytes.NewBuffer(payload)))
+			req, err := http.NewRequest("POST", server.URL+"/api/v1/workers?ttl="+ttl, io.NopCloser(bytes.NewBuffer(payload)))
 			Expect(err).NotTo(HaveOccurred())
 			response, err = client.Do(req)
 			Expect(err).NotTo(HaveOccurred())
@@ -121,6 +144,13 @@ var _ = Describe("Workers API", func() {
 				expectPersistedAPIWorker(registered, worker, requestedAt)
 				Expect(registered.TeamName()).To(BeEmpty())
 			})
+			It("tries to save the worker", func() {
+				registered, found, err := realdb.Deps.workerFactory.GetWorker("worker-name")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(found).To(BeTrue())
+				Expect(registered.Name()).To(Equal(worker.Name))
+			})
+			It("returns 200", func() { Expect(response.StatusCode).To(Equal(http.StatusOK)) })
 		})
 		Context("for a team worker", func() {
 			var someTeam db.Team
@@ -139,6 +169,13 @@ var _ = Describe("Workers API", func() {
 				Expect(registered.TeamName()).To(Equal("some-team"))
 				Expect(registered.TeamID()).To(Equal(someTeam.ID()))
 			})
+			It("saves team name in db", func() {
+				registered, found, err := realdb.Deps.workerFactory.GetWorker("worker-name")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(found).To(BeTrue())
+				Expect(registered.TeamName()).To(Equal("some-team"))
+			})
+			It("returns 200 for a team worker", func() { Expect(response.StatusCode).To(Equal(http.StatusOK)) })
 			Context("when saving after lookup fails", func() {
 				var foundTeam *dbfakes.FakeTeam
 				BeforeEach(func() {
@@ -159,6 +196,19 @@ var _ = Describe("Workers API", func() {
 			BeforeEach(func() { worker.Team = "some-team" })
 			It("returns 400", func() { Expect(response.StatusCode).To(Equal(http.StatusBadRequest)) })
 		})
+		Context("when request is not from tsa", func() {
+			BeforeEach(func() { fakeAccess.IsSystemReturns(false) })
+			It("return 403", func() { Expect(response.StatusCode).To(Equal(http.StatusForbidden)) })
+		})
+		Context("when the worker has no name", func() {
+			BeforeEach(func() { worker.Name = "" })
+			It("returns 400", func() { Expect(response.StatusCode).To(Equal(http.StatusBadRequest)) })
+			It("does not save it", func() {
+				_, found, err := realdb.Deps.workerFactory.GetWorker("worker-name")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(found).To(BeFalse())
+			})
+		})
 		Context("when saving a global worker fails", func() {
 			BeforeEach(func() {
 				doomed := postgresRunner.OpenConn()
@@ -169,6 +219,27 @@ var _ = Describe("Workers API", func() {
 				DeferCleanup(server.Close)
 			})
 			It("returns 500", func() { Expect(response.StatusCode).To(Equal(http.StatusInternalServerError)) })
+		})
+		Context("when the TTL is invalid", func() {
+			BeforeEach(func() { ttl = "invalid-duration" })
+			It("returns 400 for malformed ttl", func() { Expect(response.StatusCode).To(Equal(http.StatusBadRequest)) })
+			It("returns the validation error in the response body", func() { Expect(io.ReadAll(response.Body)).To(Equal([]byte("malformed ttl"))) })
+		})
+		Context("when worker version is invalid", func() {
+			BeforeEach(func() { worker.Version = "invalid" })
+			It("returns 400 for invalid worker version", func() { Expect(response.StatusCode).To(Equal(http.StatusBadRequest)) })
+			It("returns the worker version validation error", func() {
+				Expect(io.ReadAll(response.Body)).To(Equal([]byte("invalid worker version, only numeric characters are allowed")))
+			})
+		})
+		Context("when not authenticated", func() {
+			BeforeEach(func() { fakeAccess.IsAuthenticatedReturns(false) })
+			It("returns 401 for worker registration", func() { Expect(response.StatusCode).To(Equal(http.StatusUnauthorized)) })
+			It("does not save the config", func() {
+				_, found, err := realdb.Deps.workerFactory.GetWorker("worker-name")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(found).To(BeFalse())
+			})
 		})
 	})
 
@@ -202,6 +273,7 @@ var _ = Describe("Workers API", func() {
 				fakeAccess.IsSystemReturns(true)
 			})
 			It("deletes a global worker", assertDeleted)
+			It("returns 200 for system deletion", func() { Expect(response.StatusCode).To(Equal(http.StatusOK)) })
 		})
 		Context("when the user is an admin", func() {
 			BeforeEach(func() {
@@ -210,6 +282,7 @@ var _ = Describe("Workers API", func() {
 				fakeAccess.IsAdminReturns(true)
 			})
 			It("deletes a global worker", assertDeleted)
+			It("returns 200 for admin deletion", func() { Expect(response.StatusCode).To(Equal(http.StatusOK)) })
 		})
 		Context("when the user is authorized for its team", func() {
 			BeforeEach(func() {
@@ -220,10 +293,15 @@ var _ = Describe("Workers API", func() {
 				fakeAccess.IsAuthorizedReturns(true)
 			})
 			It("deletes a team worker", assertDeleted)
+			It("returns 200 for authorized team deletion", func() { Expect(response.StatusCode).To(Equal(http.StatusOK)) })
 		})
 		Context("when the worker has already been deleted", func() {
 			BeforeEach(func() { fakeAccess.IsSystemReturns(true) })
 			It("returns 500", func() { Expect(response.StatusCode).To(Equal(http.StatusInternalServerError)) })
+		})
+		Context("when not authenticated", func() {
+			BeforeEach(func() { fakeAccess.IsAuthenticatedReturns(false) })
+			It("returns 401 for worker deletion", func() { Expect(response.StatusCode).To(Equal(http.StatusUnauthorized)) })
 		})
 		Context("when deletion fails after lookup", func() {
 			var fakeWorker *dbfakes.FakeWorker
