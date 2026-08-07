@@ -1,77 +1,111 @@
-package accessor
+package accessor_test
 
 import (
-	"testing"
-
 	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 )
 
-func TestAgentSnapshotRoutesHaveExplicitTeamRoles(t *testing.T) {
-	want := map[string]string{
-		atc.CreateAgentSnapshot:                MemberRole,
-		atc.CaptureAgentResourceSnapshot:       MemberRole,
-		atc.ListAgentSnapshots:                 ViewerRole,
-		atc.GetAgentSnapshot:                   ViewerRole,
-		atc.GetAgentRepositoryChangeProjection: ViewerRole,
-		atc.DownloadAgentSnapshot:              ViewerRole,
-		atc.PinAgentSnapshot:                   MemberRole,
-		atc.UnpinAgentSnapshot:                 MemberRole,
-	}
-	for route, role := range want {
-		if got, found := DefaultRoles[route]; !found || got != role {
-			t.Errorf("DefaultRoles[%q] = %q, %v; want %q, true", route, got, found, role)
+var _ = Describe("Agent snapshot roles", func() {
+	It("has explicit viewer and member route mappings", func() {
+		want := map[string]string{
+			atc.CreateAgentSnapshot:                accessor.MemberRole,
+			atc.CaptureAgentResourceSnapshot:       accessor.MemberRole,
+			atc.ListAgentSnapshots:                 accessor.ViewerRole,
+			atc.GetAgentSnapshot:                   accessor.ViewerRole,
+			atc.GetAgentRepositoryChangeProjection: accessor.ViewerRole,
+			atc.DownloadAgentSnapshot:              accessor.ViewerRole,
+			atc.PinAgentSnapshot:                   accessor.MemberRole,
+			atc.UnpinAgentSnapshot:                 accessor.MemberRole,
 		}
-	}
-}
+		for route, role := range want {
+			Expect(accessor.DefaultRoles).To(HaveKeyWithValue(route, role), route)
+		}
+	})
 
-func TestAgentSnapshotRolesEnforceViewerAndMemberTiers(t *testing.T) {
-	readRoutes := []string{atc.ListAgentSnapshots, atc.GetAgentSnapshot, atc.GetAgentRepositoryChangeProjection, atc.DownloadAgentSnapshot}
-	writeRoutes := []string{atc.CreateAgentSnapshot, atc.CaptureAgentResourceSnapshot, atc.PinAgentSnapshot, atc.UnpinAgentSnapshot}
-	verification := Verification{
-		HasToken: true, IsTokenValid: true,
-		RawClaims: map[string]any{"federated_claims": map[string]any{
-			"connector_id": "test", "user_id": "alice",
-		}},
-	}
+	It("enforces viewer and member tiers with persisted team identities", func() {
+		teamFactory := useRealTeamFactory()
+		viewerTeamName := "snapshot-viewers"
+		memberTeamName := "snapshot-members"
+		ownerTeamName := "snapshot-owners"
+		viewerTeam := persistRoleTeam(teamFactory, viewerTeamName, accessor.ViewerRole, "snapshot-viewer")
+		memberTeam := persistRoleTeam(teamFactory, memberTeamName, accessor.MemberRole, "snapshot-member")
+		ownerTeam := persistRoleTeam(teamFactory, ownerTeamName, accessor.OwnerRole, "snapshot-owner")
 
-	accessFor := func(requiredRole, actualRole string, admin bool) Access {
-		t.Helper()
-		team := new(dbfakes.FakeTeam)
-		team.NameReturns("main")
-		team.AdminReturns(admin)
-		team.AuthReturns(atc.TeamAuth{actualRole: map[string][]string{
-			"users": {"test:alice"},
-		}})
-		return NewAccessor(verification, requiredRole, "sub", []string{"system"}, []db.Team{team}, nil)
-	}
+		readRoutes := []string{
+			atc.ListAgentSnapshots,
+			atc.GetAgentSnapshot,
+			atc.GetAgentRepositoryChangeProjection,
+			atc.DownloadAgentSnapshot,
+		}
+		viewerAccessFor := func(requiredRole string) accessor.Access {
+			return accessor.NewAccessor(
+				verificationForUser("snapshot-viewer"),
+				requiredRole,
+				"sub",
+				[]string{"system"},
+				[]db.Team{viewerTeam},
+				nil,
+			)
+		}
 
-	for _, route := range readRoutes {
-		if !accessFor(DefaultRoles[route], ViewerRole, false).IsAuthorized("main") {
-			t.Errorf("viewer was denied read route %q", route)
+		memberAccessFor := func(requiredRole string) accessor.Access {
+			return accessor.NewAccessor(
+				verificationForUser("snapshot-member"),
+				requiredRole,
+				"sub",
+				[]string{"system"},
+				[]db.Team{memberTeam},
+				nil,
+			)
 		}
-	}
-	for _, route := range writeRoutes {
-		if accessFor(DefaultRoles[route], ViewerRole, false).IsAuthorized("main") {
-			t.Errorf("viewer was admitted to mutation route %q", route)
-		}
-		if !accessFor(DefaultRoles[route], MemberRole, false).IsAuthorized("main") {
-			t.Errorf("member was denied mutation route %q", route)
-		}
-		if !accessFor(DefaultRoles[route], OwnerRole, true).IsAuthorized("main") {
-			t.Errorf("admin owner was denied mutation route %q", route)
-		}
-	}
 
-	anonymous := verification
-	anonymous.HasToken = false
-	anonymous.IsTokenValid = false
-	team := new(dbfakes.FakeTeam)
-	team.NameReturns("main")
-	team.AuthReturns(atc.TeamAuth{ViewerRole: map[string][]string{"users": {"test:alice"}}})
-	access := NewAccessor(anonymous, ViewerRole, "sub", []string{"system"}, []db.Team{team}, nil)
-	if access.IsAuthenticated() || access.IsAuthorized("main") {
-		t.Fatal("anonymous snapshot request was treated as authenticated or authorized")
-	}
-}
+		ownerAccessFor := func(requiredRole string) accessor.Access {
+			return accessor.NewAccessor(
+				verificationForUser("snapshot-owner"),
+				requiredRole,
+				"sub",
+				[]string{"system"},
+				[]db.Team{ownerTeam},
+				nil,
+			)
+		}
+
+		for _, route := range readRoutes {
+			Expect(viewerAccessFor(accessor.DefaultRoles[route]).IsAuthorized(viewerTeamName)).To(BeTrue(), route)
+		}
+
+		writeRoutes := []string{
+			atc.CreateAgentSnapshot,
+			atc.CaptureAgentResourceSnapshot,
+			atc.PinAgentSnapshot,
+			atc.UnpinAgentSnapshot,
+		}
+		for _, route := range writeRoutes {
+			requiredRole := accessor.DefaultRoles[route]
+			Expect(viewerAccessFor(requiredRole).IsAuthorized(viewerTeamName)).To(BeFalse(), route)
+			Expect(memberAccessFor(requiredRole).IsAuthorized(memberTeamName)).To(BeTrue(), route)
+			Expect(ownerAccessFor(requiredRole).IsAuthorized(ownerTeamName)).To(BeTrue(), route)
+		}
+
+		anonymousTeam := persistRoleTeam(
+			teamFactory,
+			"snapshot-anonymous",
+			accessor.ViewerRole,
+			"snapshot-anonymous-user",
+		)
+		anonymous := accessor.NewAccessor(
+			accessor.Verification{},
+			accessor.ViewerRole,
+			"sub",
+			[]string{"system"},
+			[]db.Team{anonymousTeam},
+			nil,
+		)
+		Expect(anonymous.IsAuthenticated()).To(BeFalse())
+		Expect(anonymous.IsAuthorized("snapshot-anonymous")).To(BeFalse())
+	})
+})

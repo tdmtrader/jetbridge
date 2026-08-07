@@ -1,46 +1,52 @@
-package accessor
+package accessor_test
 
 import (
-	"testing"
-
 	"github.com/concourse/concourse/atc"
-	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
+	"github.com/concourse/concourse/atc/api/accessor"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 )
 
-func TestAgentWorkflowOutcomeRoutesHaveExplicitMainTeamRoles(t *testing.T) {
-	want := map[string]string{
-		atc.ListAgentWorkflowRunOutcomes:     ViewerRole,
-		atc.SetAgentWorkflowRunOutputOutcome: MemberRole,
-	}
-	for route, role := range want {
-		if got, found := DefaultRoles[route]; !found || got != role {
-			t.Errorf("DefaultRoles[%q] = %q, %v; want %q, true", route, got, found, role)
+var _ = Describe("Agent workflow-outcome roles", func() {
+	It("has explicit viewer and member route mappings", func() {
+		want := map[string]string{
+			atc.ListAgentWorkflowRunOutcomes:     accessor.ViewerRole,
+			atc.SetAgentWorkflowRunOutputOutcome: accessor.MemberRole,
 		}
-	}
-}
+		for route, role := range want {
+			Expect(accessor.DefaultRoles).To(HaveKeyWithValue(route, role), route)
+		}
+	})
 
-func TestAgentWorkflowOutcomeRolesEnforceViewerAndMemberTiers(t *testing.T) {
-	verification := Verification{
-		HasToken: true, IsTokenValid: true,
-		RawClaims: map[string]any{"federated_claims": map[string]any{
-			"connector_id": "test", "user_id": "alice",
-		}},
-	}
-	accessFor := func(requiredRole, actualRole string) Access {
-		t.Helper()
-		team := new(dbfakes.FakeTeam)
-		team.NameReturns(atc.DefaultTeamName)
-		team.AuthReturns(atc.TeamAuth{actualRole: map[string][]string{"users": {"test:alice"}}})
-		return NewAccessor(verification, requiredRole, "sub", []string{"system"}, []db.Team{team}, nil)
-	}
-	if !accessFor(DefaultRoles[atc.ListAgentWorkflowRunOutcomes], ViewerRole).IsAuthorized(atc.DefaultTeamName) {
-		t.Fatal("viewer was denied workflow-outcome read route")
-	}
-	if accessFor(DefaultRoles[atc.SetAgentWorkflowRunOutputOutcome], ViewerRole).IsAuthorized(atc.DefaultTeamName) {
-		t.Fatal("viewer was admitted to workflow-outcome mutation route")
-	}
-	if !accessFor(DefaultRoles[atc.SetAgentWorkflowRunOutputOutcome], MemberRole).IsAuthorized(atc.DefaultTeamName) {
-		t.Fatal("member was denied workflow-outcome mutation route")
-	}
-}
+	It("enforces viewer and member tiers with persisted team identities", func() {
+		teamFactory := useRealTeamFactory()
+
+		viewerAccess := accessForPersistedRole(
+			teamFactory,
+			accessor.DefaultRoles[atc.ListAgentWorkflowRunOutcomes],
+			"workflow-outcome-viewers",
+			accessor.ViewerRole,
+			"workflow-outcome-viewer",
+		)
+		Expect(viewerAccess.IsAuthorized("workflow-outcome-viewers")).To(BeTrue())
+
+		viewerMutationAccess := accessForPersistedRole(
+			teamFactory,
+			accessor.DefaultRoles[atc.SetAgentWorkflowRunOutputOutcome],
+			"workflow-outcome-mutation-viewers",
+			accessor.ViewerRole,
+			"workflow-outcome-mutation-viewer",
+		)
+		Expect(viewerMutationAccess.IsAuthorized("workflow-outcome-mutation-viewers")).To(BeFalse())
+
+		memberAccess := accessForPersistedRole(
+			teamFactory,
+			accessor.DefaultRoles[atc.SetAgentWorkflowRunOutputOutcome],
+			"workflow-outcome-members",
+			accessor.MemberRole,
+			"workflow-outcome-member",
+		)
+		Expect(memberAccess.IsAuthorized("workflow-outcome-members")).To(BeTrue())
+	})
+})

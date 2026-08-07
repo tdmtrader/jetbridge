@@ -1,100 +1,102 @@
-package accessor
+package accessor_test
 
 import (
-	"testing"
-
 	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 )
 
-func TestAgentWorkflowRunRoutesHaveExplicitMainTeamRoles(t *testing.T) {
-	want := map[string]string{
-		atc.ListAgentNodes:                             ViewerRole,
-		atc.ListAgentNodeVersions:                      ViewerRole,
-		atc.GetAgentNodeVersion:                        ViewerRole,
-		atc.CreateAgentNodeVersion:                     MemberRole,
-		atc.ReleaseAgentNodeVersion:                    MemberRole,
-		atc.DeprecateAgentNodeVersion:                  MemberRole,
-		atc.CreateAgentNodeRun:                         MemberRole,
-		atc.ListAgentNodeRuns:                          ViewerRole,
-		atc.GetAgentNodeRun:                            ViewerRole,
-		atc.CancelAgentNodeRun:                         MemberRole,
-		atc.ListAgentNodeConsumers:                     ViewerRole,
-		atc.UpgradeAgentNodeConsumers:                  MemberRole,
-		atc.CreateAgentWorkflowRun:                     MemberRole,
-		atc.ListAgentWorkflowRuns:                      ViewerRole,
-		atc.GetAgentWorkflowRunOperationalStatusCounts: ViewerRole,
-		atc.GetAgentWorkflowRun:                        ViewerRole,
-		atc.CancelAgentWorkflowRun:                     MemberRole,
-		atc.RetryAgentWorkflowRun:                      MemberRole,
-		atc.GetAgentWorkflowRunOutputs:                 ViewerRole,
-		atc.GetAgentWorkflowRunGraph:                   ViewerRole,
-	}
-	for route, role := range want {
-		if got, found := DefaultRoles[route]; !found || got != role {
-			t.Errorf("DefaultRoles[%q] = %q, %v; want %q, true", route, got, found, role)
+var _ = Describe("Agent workflow-run roles", func() {
+	It("has explicit viewer and member route mappings", func() {
+		want := map[string]string{
+			atc.ListAgentNodes:                             accessor.ViewerRole,
+			atc.ListAgentNodeVersions:                      accessor.ViewerRole,
+			atc.GetAgentNodeVersion:                        accessor.ViewerRole,
+			atc.CreateAgentNodeVersion:                     accessor.MemberRole,
+			atc.ReleaseAgentNodeVersion:                    accessor.MemberRole,
+			atc.DeprecateAgentNodeVersion:                  accessor.MemberRole,
+			atc.CreateAgentNodeRun:                         accessor.MemberRole,
+			atc.ListAgentNodeRuns:                          accessor.ViewerRole,
+			atc.GetAgentNodeRun:                            accessor.ViewerRole,
+			atc.CancelAgentNodeRun:                         accessor.MemberRole,
+			atc.ListAgentNodeConsumers:                     accessor.ViewerRole,
+			atc.UpgradeAgentNodeConsumers:                  accessor.MemberRole,
+			atc.CreateAgentWorkflowRun:                     accessor.MemberRole,
+			atc.ListAgentWorkflowRuns:                      accessor.ViewerRole,
+			atc.GetAgentWorkflowRunOperationalStatusCounts: accessor.ViewerRole,
+			atc.GetAgentWorkflowRun:                        accessor.ViewerRole,
+			atc.CancelAgentWorkflowRun:                     accessor.MemberRole,
+			atc.RetryAgentWorkflowRun:                      accessor.MemberRole,
+			atc.GetAgentWorkflowRunOutputs:                 accessor.ViewerRole,
+			atc.GetAgentWorkflowRunGraph:                   accessor.ViewerRole,
 		}
-	}
-}
+		for route, role := range want {
+			Expect(accessor.DefaultRoles).To(HaveKeyWithValue(route, role), route)
+		}
+	})
 
-func TestAgentWorkflowRunRolesEnforceViewerAndMemberTiers(t *testing.T) {
-	readRoutes := []string{
-		atc.ListAgentNodes,
-		atc.ListAgentNodeVersions,
-		atc.GetAgentNodeVersion,
-		atc.ListAgentNodeRuns,
-		atc.GetAgentNodeRun,
-		atc.ListAgentNodeConsumers,
-		atc.ListAgentWorkflowRuns,
-		atc.GetAgentWorkflowRunOperationalStatusCounts,
-		atc.GetAgentWorkflowRun,
-		atc.GetAgentWorkflowRunOutputs,
-		atc.GetAgentWorkflowRunGraph,
-	}
-	writeRoutes := []string{
-		atc.CreateAgentNodeVersion,
-		atc.ReleaseAgentNodeVersion,
-		atc.DeprecateAgentNodeVersion,
-		atc.CreateAgentNodeRun,
-		atc.CancelAgentNodeRun,
-		atc.UpgradeAgentNodeConsumers,
-		atc.CreateAgentWorkflowRun,
-		atc.CancelAgentWorkflowRun,
-		atc.RetryAgentWorkflowRun,
-	}
-	verification := Verification{
-		HasToken: true, IsTokenValid: true,
-		RawClaims: map[string]any{"federated_claims": map[string]any{
-			"connector_id": "test", "user_id": "alice",
-		}},
-	}
+	It("enforces viewer and member tiers with persisted team identities", func() {
+		teamFactory := useRealTeamFactory()
+		viewerTeamName := "workflow-run-viewers"
+		memberTeamName := "workflow-run-members"
+		ownerTeamName := "workflow-run-owners"
 
-	accessFor := func(requiredRole, actualRole string, admin bool) Access {
-		t.Helper()
-		team := new(dbfakes.FakeTeam)
-		team.NameReturns(atc.DefaultTeamName)
-		team.AdminReturns(admin)
-		team.AuthReturns(atc.TeamAuth{actualRole: map[string][]string{
-			"users": {"test:alice"},
-		}})
-		return NewAccessor(verification, requiredRole, "sub", []string{"system"}, []db.Team{team}, nil)
-	}
+		viewerTeam := persistRoleTeam(teamFactory, viewerTeamName, accessor.ViewerRole, "workflow-run-viewer")
+		memberTeam := persistRoleTeam(teamFactory, memberTeamName, accessor.MemberRole, "workflow-run-member")
+		ownerTeam := persistRoleTeam(teamFactory, ownerTeamName, accessor.OwnerRole, "workflow-run-owner")
 
-	for _, route := range readRoutes {
-		if !accessFor(DefaultRoles[route], ViewerRole, false).IsAuthorized(atc.DefaultTeamName) {
-			t.Errorf("viewer was denied workflow-run read route %q", route)
+		accessFor := func(team db.Team, userID, requiredRole string) accessor.Access {
+			return accessor.NewAccessor(
+				verificationForUser(userID),
+				requiredRole,
+				"sub",
+				[]string{"system"},
+				[]db.Team{team},
+				nil,
+			)
 		}
-	}
-	for _, route := range writeRoutes {
-		if accessFor(DefaultRoles[route], ViewerRole, false).IsAuthorized(atc.DefaultTeamName) {
-			t.Errorf("viewer was admitted to workflow-run mutation route %q", route)
+
+		readRoutes := []string{
+			atc.ListAgentNodes,
+			atc.ListAgentNodeVersions,
+			atc.GetAgentNodeVersion,
+			atc.ListAgentNodeRuns,
+			atc.GetAgentNodeRun,
+			atc.ListAgentNodeConsumers,
+			atc.ListAgentWorkflowRuns,
+			atc.GetAgentWorkflowRunOperationalStatusCounts,
+			atc.GetAgentWorkflowRun,
+			atc.GetAgentWorkflowRunOutputs,
+			atc.GetAgentWorkflowRunGraph,
 		}
-		if !accessFor(DefaultRoles[route], MemberRole, false).IsAuthorized(atc.DefaultTeamName) {
-			t.Errorf("member was denied workflow-run mutation route %q", route)
+		for _, route := range readRoutes {
+			viewerAccess := accessFor(viewerTeam, "workflow-run-viewer", accessor.DefaultRoles[route])
+			Expect(viewerAccess.IsAuthorized(viewerTeamName)).To(BeTrue(), route)
 		}
-		if !accessFor(DefaultRoles[route], OwnerRole, true).IsAuthorized(atc.DefaultTeamName) {
-			t.Errorf("admin owner was denied workflow-run mutation route %q", route)
+
+		writeRoutes := []string{
+			atc.CreateAgentNodeVersion,
+			atc.ReleaseAgentNodeVersion,
+			atc.DeprecateAgentNodeVersion,
+			atc.CreateAgentNodeRun,
+			atc.CancelAgentNodeRun,
+			atc.UpgradeAgentNodeConsumers,
+			atc.CreateAgentWorkflowRun,
+			atc.CancelAgentWorkflowRun,
+			atc.RetryAgentWorkflowRun,
 		}
-	}
-}
+		for _, route := range writeRoutes {
+			requiredRole := accessor.DefaultRoles[route]
+			viewerAccess := accessFor(viewerTeam, "workflow-run-viewer", requiredRole)
+			memberAccess := accessFor(memberTeam, "workflow-run-member", requiredRole)
+			ownerAccess := accessFor(ownerTeam, "workflow-run-owner", requiredRole)
+
+			Expect(viewerAccess.IsAuthorized(viewerTeamName)).To(BeFalse(), route)
+			Expect(memberAccess.IsAuthorized(memberTeamName)).To(BeTrue(), route)
+			Expect(ownerAccess.IsAuthorized(ownerTeamName)).To(BeTrue(), route)
+		}
+	})
+})
