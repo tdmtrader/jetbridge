@@ -7,6 +7,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/postgresrunner"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -16,6 +18,24 @@ import (
 func TestSyslog(t *testing.T) {
 	RegisterFailHandler(Fail)
 	RunSpecs(t, "Syslog Suite")
+}
+
+var postgresRunner postgresrunner.Runner
+
+var _ = postgresrunner.GinkgoRunner(&postgresRunner)
+
+func useRealDB() db.DbConn {
+	GinkgoHelper()
+
+	postgresRunner.CreateTestDBFromTemplate()
+	DeferCleanup(postgresRunner.DropTestDB)
+
+	conn := postgresRunner.OpenConn()
+	DeferCleanup(func() {
+		Expect(conn.Close()).To(Succeed())
+	})
+
+	return conn
 }
 
 type testServer struct {
