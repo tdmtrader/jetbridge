@@ -443,7 +443,7 @@ func (volume runtimeVolumeWithDB) DBVolume() db.CreatedVolume {
 - Produces useExecDB() *execDBFixture, closedExecCloneConn() db.DbConn, createExecJobBuild.
 - Preserves fakePolicyAgentFactory as a process-local suite dependency without a second Ginkgo suite setup node.
 
-- [ ] **Step 1: Verify the fixed service and current non-DB leaves.**
+- [x] **Step 1: Verify the fixed service and current non-DB leaves.**
 
 Run: pg_isready -h 127.0.0.1 -p 15432 -U postgres
 
@@ -457,11 +457,11 @@ Run: ginkgo ./atc/exec/ --focus='PutStep'
 
 Expected: PASS.
 
-- [ ] **Step 2: Add the exact opt-in helpers and move exec policy registration.**
+- [x] **Step 2: Add the exact opt-in helpers and move exec policy registration.**
 
 Implement the fixture, job-build, event-consumer, and init code above. Do not add a package-level BeforeEach and do not add a permanent fixture-only spec.
 
-- [ ] **Step 3: Compile and prove no suite-node collision.**
+- [x] **Step 3: Compile and prove no suite-node collision.**
 
 Run: go test ./atc/engine ./atc/exec -run '^$'
 
@@ -471,7 +471,7 @@ Run: ginkgo ./atc/exec/ --focus='PutStep'
 
 Expected: PASS without “BeforeSuite can only be called once” or duplicate policy-agent behavior. Because PutStep does not call useExecDB, this focused run creates no per-spec clone.
 
-- [ ] **Step 4: Commit the harnesses.**
+- [x] **Step 4: Commit the harnesses.**
 
 ~~~bash
 git add atc/engine/engine_suite_test.go atc/exec/exec_suite_test.go
