@@ -12,7 +12,6 @@ import (
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 )
@@ -68,12 +67,13 @@ func TestLiveSidecarLogStreamTimeout(t *testing.T) {
 		// Cancel after the measurement so the still-blocked sidecar streaming
 		// goroutine (io.Copy on a never-ending follow stream) unwinds promptly.
 		defer cancel()
+		database := useLiveJetbridgeDB(t)
+		dbWorker, err := persistNamedWorker(database, "live-sc11-worker")
+		if err != nil {
+			t.Fatalf("persisting worker: %v", err)
+		}
 
-		fakeDBWorker := new(dbfakes.FakeWorker)
-		fakeDBWorker.NameReturns("live-sc11-worker")
-		setupFakeDBContainer(fakeDBWorker, handle)
-
-		worker := jetbridge.NewWorker(fakeDBWorker, clientset, *cfg)
+		worker := jetbridge.NewWorker(dbWorker, clientset, *cfg)
 		worker.SetExecutor(executor)
 		cleanupPod(t, clientset, ns, handle)
 
@@ -99,6 +99,7 @@ func TestLiveSidecarLogStreamTimeout(t *testing.T) {
 		if err != nil {
 			t.Fatalf("FindOrCreateContainer: %v", err)
 		}
+		requirePersistedContainer(t, database, "live-sc11-worker", handle)
 
 		pio := runtime.ProcessIO{
 			Stdout: &bytes.Buffer{},
@@ -128,33 +129,39 @@ func TestLiveSidecarLogStreamTimeout(t *testing.T) {
 		return elapsed
 	}
 
-	stamp := time.Now().Format("150405")
+	stamp := time.Now().Format("20060102-150405.000000000")
 
-	control := runOnce(t, "live-sc11-ctl-"+stamp, false)
-	t.Logf("control  (no SidecarWriter)        Wait() = %s  (≈ startup + exec)", control)
+	var controlDuration time.Duration
+	t.Run("control", func(t *testing.T) {
+		controlDuration = runOnce(t, "live-sc11-control-"+stamp, false)
+	})
+	t.Logf("control  (no SidecarWriter)        Wait() = %s  (≈ startup + exec)", controlDuration)
 
-	test := runOnce(t, "live-sc11-test-"+stamp, true)
-	t.Logf("test     (SidecarWriter, slow sc)   Wait() = %s  (≈ startup + exec + 5s bound)", test)
+	var writerDuration time.Duration
+	t.Run("with-sidecar-writer", func(t *testing.T) {
+		writerDuration = runOnce(t, "live-sc11-writer-"+stamp, true)
+	})
+	t.Logf("writer   (SidecarWriter, slow sc)   Wait() = %s  (≈ startup + exec + 5s bound)", writerDuration)
 
 	// Primary SC-11 contract: a sidecar that outlives main MUST NOT make
 	// Wait() block for the sidecar's lifetime. With the 5s bound this is
 	// ~startup+5s; without it, Wait() would block ~86400s.
 	const hangBudget = 25 * time.Second
-	if test >= hangBudget {
+	if writerDuration >= hangBudget {
 		t.Fatalf("SC-11 violated: Wait() took %s (>= %s) — it appears to wait for the sidecar instead of bounding to 5s",
-			test, hangBudget)
+			writerDuration, hangBudget)
 	}
 
 	// Secondary: the bounded wait actually engaged. Subtracting the control
 	// run factors out pod-startup time, isolating the ~5s bound.
-	delta := test - control
-	t.Logf("delta (test - control) = %s  (expected ≈ 5s bounded wait)", delta)
+	delta := writerDuration - controlDuration
+	t.Logf("delta (writer - control) = %s  (expected ≈ 5s bounded wait)", delta)
 	if delta < 3*time.Second {
 		t.Fatalf("expected the ~5s sidecar-log bounded wait to add >= 3s over the control run, but delta was %s "+
-			"(control=%s test=%s) — the bounded wait may not have engaged", delta, control, test)
+			"(control=%s writer=%s) — the bounded wait may not have engaged", delta, controlDuration, writerDuration)
 	}
 	if delta > 9*time.Second {
-		t.Fatalf("bounded-wait delta %s exceeds what the 5s bound allows (control=%s test=%s) — "+
-			"either the bound was not honored or pod-startup variance was unexpectedly high", delta, control, test)
+		t.Fatalf("bounded-wait delta %s exceeds what the 5s bound allows (control=%s writer=%s) — "+
+			"either the bound was not honored or pod-startup variance was unexpectedly high", delta, controlDuration, writerDuration)
 	}
 }

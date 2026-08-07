@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	"github.com/concourse/concourse/vars"
@@ -17,29 +16,30 @@ import (
 
 var _ = Describe("SecretEnv in Pod Spec", func() {
 	var (
-		fakeDBWorker  *dbfakes.FakeWorker
 		fakeClientset *fake.Clientset
 		worker        *jetbridge.Worker
 		ctx           context.Context
 		delegate      runtime.BuildStepDelegate
+		database      jetbridgeDB
 	)
 
 	BeforeEach(func() {
+		database = useJetbridgeDB()
 		ctx = context.Background()
-		fakeDBWorker = new(dbfakes.FakeWorker)
-		fakeDBWorker.NameReturns("k8s-worker-1")
+		dbWorker, err := persistNamedWorker(database, "k8s-worker-1")
+		Expect(err).NotTo(HaveOccurred())
 		fakeClientset = fake.NewSimpleClientset()
 		cfg := jetbridge.NewConfig("test-namespace", "")
 		delegate = &noopDelegate{}
-		worker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+		worker = jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
 	})
 
 	It("emits ValueFrom.SecretKeyRef for env vars in SecretEnv", func() {
-		setupFakeDBContainer(fakeDBWorker, "secret-env-handle")
+		handle := "secret-env-handle"
 
 		container, _, err := worker.FindOrCreateContainer(
 			ctx,
-			db.NewFixedHandleContainerOwner("secret-env-handle"),
+			db.NewFixedHandleContainerOwner(handle),
 			db.ContainerMetadata{Type: db.ContainerTypeTask},
 			runtime.ContainerSpec{
 				TeamID:   1,
@@ -56,6 +56,7 @@ var _ = Describe("SecretEnv in Pod Spec", func() {
 			delegate,
 		)
 		Expect(err).ToNot(HaveOccurred())
+		expectPersistedContainer(database, "k8s-worker-1", handle)
 
 		_, err = container.Run(ctx, runtime.ProcessSpec{
 			Path: "/bin/sh",
@@ -94,11 +95,11 @@ var _ = Describe("SecretEnv in Pod Spec", func() {
 	})
 
 	It("keeps all env vars as literal values when SecretEnv is nil", func() {
-		setupFakeDBContainer(fakeDBWorker, "no-secret-env-handle")
+		handle := "no-secret-env-handle"
 
 		container, _, err := worker.FindOrCreateContainer(
 			ctx,
-			db.NewFixedHandleContainerOwner("no-secret-env-handle"),
+			db.NewFixedHandleContainerOwner(handle),
 			db.ContainerMetadata{Type: db.ContainerTypeTask},
 			runtime.ContainerSpec{
 				TeamID:   1,
@@ -112,6 +113,7 @@ var _ = Describe("SecretEnv in Pod Spec", func() {
 			delegate,
 		)
 		Expect(err).ToNot(HaveOccurred())
+		expectPersistedContainer(database, "k8s-worker-1", handle)
 
 		_, err = container.Run(ctx, runtime.ProcessSpec{
 			Path: "/bin/sh",
