@@ -2179,10 +2179,32 @@ var _ = Describe("Pipelines API", func() {
 					)
 				})
 
-				It("applies from, to, and limit to persisted builds", func() {
+				It("applies each of from, to, and limit to persisted builds", func() {
+					By("using limit to truncate a wider inclusive range")
 					actual := decodeBuilds()
 					Expect(actual).To(HaveLen(3))
 					Expect([]int{actual[0].ID, actual[1].ID, actual[2].ID}).To(Equal([]int{
+						persistedBuilds[1].ID(),
+						persistedBuilds[2].ID(),
+						persistedBuilds[3].ID(),
+					}))
+
+					By("using from and to to bound a range narrower than limit")
+					boundedResponse, err := client.Get(fmt.Sprintf(
+						"%s/api/v1/teams/main/pipelines/some-pipeline/builds?from=%d&to=%d&limit=6",
+						server.URL,
+						persistedBuilds[1].ID(),
+						persistedBuilds[3].ID(),
+					))
+					Expect(err).NotTo(HaveOccurred())
+					Expect(boundedResponse.StatusCode).To(Equal(http.StatusOK))
+					DeferCleanup(boundedResponse.Body.Close)
+					body, err := io.ReadAll(boundedResponse.Body)
+					Expect(err).NotTo(HaveOccurred())
+					var bounded []atc.Build
+					Expect(json.Unmarshal(body, &bounded)).To(Succeed())
+					Expect(bounded).To(HaveLen(3))
+					Expect([]int{bounded[0].ID, bounded[1].ID, bounded[2].ID}).To(Equal([]int{
 						persistedBuilds[1].ID(),
 						persistedBuilds[2].ID(),
 						persistedBuilds[3].ID(),
