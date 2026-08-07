@@ -8,7 +8,6 @@ import (
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	. "github.com/onsi/ginkgo/v2"
@@ -23,36 +22,37 @@ import (
 // All task types now use exec-mode (pause pod + SPDY exec).
 var _ = Describe("Integration", func() {
 	var (
-		fakeDBWorker  *dbfakes.FakeWorker
+		database      jetbridgeDB
+		team          db.Team
+		dbWorker      db.Worker
 		fakeClientset *fake.Clientset
 		fakeExecutor  *fakeExecExecutor
 		worker        *jetbridge.Worker
 		ctx           context.Context
 		cfg           jetbridge.Config
 		delegate      runtime.BuildStepDelegate
-		containerSeq  int
 	)
 
 	BeforeEach(func() {
 		ctx = context.Background()
-		fakeDBWorker = new(dbfakes.FakeWorker)
-		fakeDBWorker.NameReturns("k8s-worker-1")
+		database = useJetbridgeDB()
+		var err error
+		team, err = database.TeamFactory.CreateTeam(atc.Team{Name: "main"})
+		Expect(err).ToNot(HaveOccurred())
+		dbWorker, err = persistNamedWorker(database, "k8s-worker-1")
+		Expect(err).ToNot(HaveOccurred())
 		fakeClientset = fake.NewSimpleClientset()
 		cfg = jetbridge.NewConfig("ci-namespace", "")
 		delegate = &noopDelegate{}
 		fakeExecutor = &fakeExecExecutor{}
-		containerSeq = 0
 
-		worker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+		worker = jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
 		worker.SetExecutor(fakeExecutor)
 	})
 
-	// createContainer is a helper that sets up DB fakes and calls
-	// FindOrCreateContainer with a unique handle.
+	// createContainer persists the container through the real worker before
+	// returning its runtime wrapper.
 	createContainer := func(handle string, containerType db.ContainerType, spec runtime.ContainerSpec) runtime.Container {
-		containerSeq++
-		setupFakeDBContainer(fakeDBWorker, handle)
-
 		container, _, err := worker.FindOrCreateContainer(
 			ctx,
 			db.NewFixedHandleContainerOwner(handle),
@@ -61,6 +61,15 @@ var _ = Describe("Integration", func() {
 			delegate,
 		)
 		Expect(err).ToNot(HaveOccurred())
+
+		var state, workerName string
+		err = database.Conn.QueryRow(
+			"SELECT state::text, worker_name FROM containers WHERE handle = $1",
+			handle,
+		).Scan(&state, &workerName)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(state).To(Equal("created"))
+		Expect(workerName).To(Equal(dbWorker.Name()))
 		return container
 	}
 
@@ -76,7 +85,7 @@ var _ = Describe("Integration", func() {
 		It("runs a task step end-to-end: create container → run → wait → exit", func() {
 			By("creating a container for the task step")
 			container := createContainer("task-abc123", db.ContainerTypeTask, runtime.ContainerSpec{
-				TeamID:   1,
+				TeamID:   team.ID(),
 				TeamName: "main",
 				Dir:      "/tmp/build/workdir",
 				ImageSpec: runtime.ImageSpec{
@@ -122,7 +131,7 @@ var _ = Describe("Integration", func() {
 			fakeExecutor.execErr = &jetbridge.ExecExitError{ExitCode: 2}
 
 			container := createContainer("task-fail", db.ContainerTypeTask, runtime.ContainerSpec{
-				TeamID:    1,
+				TeamID:    team.ID(),
 				ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 			})
 
@@ -142,7 +151,7 @@ var _ = Describe("Integration", func() {
 	Describe("task reattach after web restart", func() {
 		It("re-execs the identical supervisor command against the surviving pod", func() {
 			spec := runtime.ContainerSpec{
-				TeamID: 1,
+				TeamID: team.ID(),
 				Dir:    "/tmp/build/workdir",
 				ImageSpec: runtime.ImageSpec{
 					ImageURL: "docker:///ubuntu:22.04",
@@ -198,7 +207,7 @@ var _ = Describe("Integration", func() {
 		It("runs a get step followed by a put step with the resource protocol", func() {
 			By("running the get step")
 			getContainer := createContainer("get-repo", db.ContainerTypeGet, runtime.ContainerSpec{
-				TeamID:   1,
+				TeamID:   team.ID(),
 				TeamName: "main",
 				Dir:      "/tmp/build/get",
 				ImageSpec: runtime.ImageSpec{
@@ -242,7 +251,7 @@ var _ = Describe("Integration", func() {
 			fakeExecutor.execStdout = []byte(putStdout)
 
 			putContainer := createContainer("put-repo", db.ContainerTypePut, runtime.ContainerSpec{
-				TeamID:   1,
+				TeamID:   team.ID(),
 				TeamName: "main",
 				ImageSpec: runtime.ImageSpec{
 					ResourceType: "git",
@@ -285,7 +294,7 @@ var _ = Describe("Integration", func() {
 			fakeExecutor.execErr = context.Canceled
 
 			container := createContainer("cancel-task", db.ContainerTypeTask, runtime.ContainerSpec{
-				TeamID:    1,
+				TeamID:    team.ID(),
 				ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 			})
 
@@ -311,7 +320,7 @@ var _ = Describe("Integration", func() {
 
 		It("returns an error when the context is cancelled during an exec-mode resource step", func() {
 			container := createContainer("cancel-resource", db.ContainerTypeGet, runtime.ContainerSpec{
-				TeamID:    1,
+				TeamID:    team.ID(),
 				ImageSpec: runtime.ImageSpec{ResourceType: "git"},
 				Type:      db.ContainerTypeGet,
 			})
@@ -347,7 +356,7 @@ var _ = Describe("Integration", func() {
 	Describe("pipeline failure modes", func() {
 		It("detects ImagePullBackOff in a task step and returns a diagnostic error", func() {
 			container := createContainer("task-bad-image", db.ContainerTypeTask, runtime.ContainerSpec{
-				TeamID:    1,
+				TeamID:    team.ID(),
 				ImageSpec: runtime.ImageSpec{ImageURL: "docker:///nonexistent-image:bad-tag"},
 			})
 
@@ -389,7 +398,7 @@ var _ = Describe("Integration", func() {
 
 		It("detects pod eviction in a resource get step and returns a diagnostic error", func() {
 			container := createContainer("get-evicted", db.ContainerTypeGet, runtime.ContainerSpec{
-				TeamID:    1,
+				TeamID:    team.ID(),
 				ImageSpec: runtime.ImageSpec{ResourceType: "git"},
 				Type:      db.ContainerTypeGet,
 			})
@@ -429,7 +438,7 @@ var _ = Describe("Integration", func() {
 
 		It("detects CrashLoopBackOff in a task step during waitForRunning", func() {
 			container := createContainer("task-crashloop", db.ContainerTypeTask, runtime.ContainerSpec{
-				TeamID:    1,
+				TeamID:    team.ID(),
 				ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 			})
 
@@ -473,21 +482,44 @@ var _ = Describe("Integration", func() {
 	Describe("cache volume lifecycle", func() {
 		It("LookupVolume returns DaemonSetVolume", func() {
 			cacheCfg := jetbridge.NewConfig("ci-namespace", "")
-			fakeVolumeRepo := new(dbfakes.FakeVolumeRepository)
 
-			cacheWorker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cacheCfg)
+			cacheWorker := jetbridge.NewWorker(dbWorker, fakeClientset, cacheCfg)
 			cacheWorker.SetExecutor(fakeExecutor)
-			cacheWorker.SetVolumeRepo(fakeVolumeRepo)
+			cacheWorker.SetVolumeRepo(database.VolumeRepository)
 
-			fakeDBVolume := new(dbfakes.FakeCreatedVolume)
-			fakeDBVolume.HandleReturns("vol-cache-1")
-			fakeDBVolume.WorkerNameReturns("k8s-worker-1")
-			fakeVolumeRepo.FindVolumeReturns(fakeDBVolume, true, nil)
+			creatingVolume, err := database.VolumeRepository.CreateVolumeWithHandle(
+				"vol-cache-1",
+				team.ID(),
+				dbWorker.Name(),
+				db.VolumeTypeTaskCache,
+			)
+			Expect(err).ToNot(HaveOccurred())
+			createdVolume, err := creatingVolume.Created()
+			Expect(err).ToNot(HaveOccurred())
 
-			vol, found, err := cacheWorker.LookupVolume(ctx, "vol-cache-1")
+			pipeline, _, err := team.SavePipeline(
+				atc.PipelineRef{Name: "cache-pipeline"},
+				atc.Config{Jobs: atc.JobConfigs{{Name: "cache-job"}}},
+				0,
+				false,
+			)
+			Expect(err).ToNot(HaveOccurred())
+			job, found, err := pipeline.Job("cache-job")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(createdVolume.InitializeTaskCache(job.ID(), "cache-step", "/cache")).To(Succeed())
+
+			vol, found, err := cacheWorker.LookupVolume(ctx, createdVolume.Handle())
 			Expect(err).ToNot(HaveOccurred())
 			Expect(found).To(BeTrue())
 			Expect(vol.Handle()).To(Equal("vol-cache-1"))
+
+			wrappedVolume, ok := vol.(*jetbridge.DaemonSetVolume)
+			Expect(ok).To(BeTrue())
+			Expect(wrappedVolume.DBVolume().Handle()).To(Equal(createdVolume.Handle()))
+			Expect(wrappedVolume.DBVolume().WorkerName()).To(Equal(dbWorker.Name()))
+			Expect(wrappedVolume.DBVolume().TeamID()).To(Equal(team.ID()))
+			Expect(wrappedVolume.DBVolume().Type()).To(Equal(db.VolumeTypeTaskCache))
 		})
 	})
 
@@ -495,7 +527,7 @@ var _ = Describe("Integration", func() {
 		It("mounts input volumes from a get step and output volumes for a task", func() {
 			By("creating a task container with inputs from a previous get and outputs")
 			container := createContainer("task-with-io", db.ContainerTypeTask, runtime.ContainerSpec{
-				TeamID:   1,
+				TeamID:   team.ID(),
 				TeamName: "main",
 				Dir:      "/tmp/build/workdir",
 				ImageSpec: runtime.ImageSpec{
@@ -560,7 +592,7 @@ var _ = Describe("Integration", func() {
 		It("passes inputs from a get step to a put step via volume mounts", func() {
 			By("creating a put container with multiple inputs")
 			container := createContainer("put-multi-input", db.ContainerTypePut, runtime.ContainerSpec{
-				TeamID: 1,
+				TeamID: team.ID(),
 				ImageSpec: runtime.ImageSpec{
 					ResourceType: "s3",
 				},
@@ -616,7 +648,7 @@ var _ = Describe("Integration", func() {
 		It("creates a pod with sidecars that share volume mounts and runs the task via exec", func() {
 			By("creating a container with a sidecar")
 			container := createContainer("task-sidecar", db.ContainerTypeTask, runtime.ContainerSpec{
-				TeamID:   1,
+				TeamID:   team.ID(),
 				TeamName: "main",
 				Dir:      "/tmp/build/workdir",
 				ImageSpec: runtime.ImageSpec{
@@ -697,7 +729,7 @@ var _ = Describe("Integration", func() {
 
 		It("runs a task with multiple sidecars", func() {
 			container := createContainer("task-multi-sidecar", db.ContainerTypeTask, runtime.ContainerSpec{
-				TeamID:    1,
+				TeamID:    team.ID(),
 				Dir:       "/tmp/build/workdir",
 				ImageSpec: runtime.ImageSpec{ImageURL: "docker:///python:3.12"},
 				Sidecars: []atc.SidecarConfig{
