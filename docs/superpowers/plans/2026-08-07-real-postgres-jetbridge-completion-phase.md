@@ -215,13 +215,13 @@ Add a persisted reuse/association assertion before rewiring and capture RED.
 Reload exact containers/volumes after the operation; do not replace prior
 branch coverage with call-count-only assertions.
 
-- [ ] Run `ginkgo --focus='(Behavioral Worker Tests|Worker)' ./atc/worker/jetbridge`.
-- [ ] Sensitivity: change one expected owner/handle and prove the persisted
+- [x] Run `ginkgo --focus='(Behavioral Worker Tests|Worker)' ./atc/worker/jetbridge`.
+- [x] Sensitivity: change one expected owner/handle and prove the persisted
   reuse assertion fails; restore and pass.
-- [ ] Format, vet, diff-check, and confirm exact 35 to 5 payoff.
-- [ ] Obtain independent review of both success outcomes and every retained
+- [x] Format, vet, diff-check, and confirm exact 35 to 5 payoff.
+- [x] Obtain independent review of both success outcomes and every retained
   transition boundary.
-- [ ] Commit only these two files as
+- [x] Commit only these two files as
   `test(jetbridge): persist worker lifecycle state`.
 
 ## Task 5: Persist container reuse and concurrency, then delete the fake helper
