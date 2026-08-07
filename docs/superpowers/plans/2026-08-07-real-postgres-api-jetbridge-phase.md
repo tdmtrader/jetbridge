@@ -671,25 +671,25 @@ The fixed baseline is exactly 40 explicit constructors: Teams 7, Workers 6, Pipe
 - Consumes: all Task 1–4 fixtures and commands.
 - Produces: exact count evidence, command evidence, an independent review verdict, and plan bookkeeping without a push.
 
-- [ ] **Step 1: Check the shared service without managing it.**
+- [x] **Step 1: Check the shared service without managing it.**
 
   Run: `pg_isready -h 127.0.0.1 -p 15432 -U postgres`
 
   Expected: `accepting connections`. If unavailable, record the exact output and do not run a Docker, Colima, PostgreSQL, or Kubernetes lifecycle command.
 
-- [ ] **Step 2: Run all non-live converted suites.**
+- [x] **Step 2: Run all non-live converted suites.**
 
   Run: `ginkgo ./atc/api ./atc/worker/jetbridge/`
 
   Expected: PASS. Ginkgo specs clone per spec; API and jetbridge packages may run concurrently against the shared service.
 
-- [ ] **Step 3: Run the complete converted live set when cluster credentials exist.**
+- [x] **Step 3: Run the complete converted live set when cluster credentials exist.**
 
   Run: `go test -tags live ./atc/worker/jetbridge -run '^TestLive(InvalidImageFailsFast|PodStartupTimeout|SecretEnvRef|ServiceAccount|SidecarViaWorkerAPI|SidecarLogStreamTimeout|WorkerTaskExecution|WorkerNonZeroExit|WorkerExecMode|WorkerPodSurvivesCompletion|WorkerHijackExistingPod|ResourceLimitsQoS|SecureDefaults)$'`
 
   Expected: PASS with `KUBECONFIG` or in-cluster credentials. A Kubernetes prerequisite failure is recorded separately from PostgreSQL results and does not authorize a local cluster or Docker action.
 
-- [ ] **Step 4: Recount imports and constructors against the exact matrix.**
+- [x] **Step 4: Recount imports and constructors against the exact matrix.**
 
   Run:
 
@@ -710,7 +710,7 @@ The fixed baseline is exactly 40 explicit constructors: Teams 7, Workers 6, Pipe
 
   Expected explicit constructors: Teams 1 (`FakeTeam`), Workers 2 (`FakeTeam`, `FakeWorker`), Pipelines 2 (`FakeTeam`, `FakePipeline`), and all eight jetbridge files 0. Total remaining is exactly 5; total removed is exactly 35 from the baseline 40. Each jetbridge file has no `dbfakes` import. `rg -n 'setupFakeDBContainer'` does not list these eight files; the suite helper remains because out-of-scope tests still call it.
 
-- [ ] **Step 5: Run placeholder, type, command, formatting, and scope review.**
+- [x] **Step 5: Run placeholder, type, command, formatting, and scope review.**
 
   Check each retained fake use has a method-specific comment and each ordinary closed-connection context installs only the dependency field named in Tasks 1–2. Confirm `Pipeline.CreateStartedBuild(atc.Plan) (db.Build, error)` is used only for POST pipeline builds, `Job.CreateBuild(string)` is used for badges/listings, worker persistence assertions go through `WorkerFactory.GetWorker`, no jetbridge lock/cache-global setup exists, and logstream child tests own separate clones.
 
@@ -725,7 +725,7 @@ The fixed baseline is exactly 40 explicit constructors: Teams 7, Workers 6, Pipe
 
   Expected: placeholder scan prints nothing; `git diff --check` prints nothing; changed product/test paths are only the files declared by Tasks 1–4, and no benchmark/corpus file appears. Request an independent code review and require a PASS verdict before bookkeeping.
 
-- [ ] **Step 6: Commit bookkeeping without pushing.**
+- [x] **Step 6: Commit bookkeeping without pushing.**
 
   ```bash
   git add docs/superpowers/plans/2026-08-07-real-postgres-api-jetbridge-phase.md
