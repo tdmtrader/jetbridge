@@ -493,7 +493,7 @@ git commit -m "test: add opt-in engine and exec postgres fixtures"
 - Produces persisted delegate events, output rows, and dynamic StepMetadata assertions.
 - Retains one generated FakeBuild construction in engine_test.go only inside a Describe named retained runtime and fault matrix.
 
-- [ ] **Step 1: Add the persisted assertion before switching the delegate build.**
+- [x] **Step 1: Add the persisted assertion before switching the delegate build.**
 
 In set_pipeline_delegate_test.go add Describe("persisted PostgreSQL state"). Its BeforeEach calls useEngineDB once, creates config with job some-job, saves PipelineRef{Name: "some-pipeline", InstanceVars: {"branch": "master"}}, and creates the job build. Initially leave NewSetPipelineStepDelegate wired to the old fakeBuild. Add leaf “saves changed event” that calls SetPipelineChanged, finishes the real build so an empty real stream cannot block, consumes event zero, and expects event.SetPipelineChanged with Changed true.
 
@@ -505,13 +505,13 @@ Expect(consumeEngineBuildEvent(realBuild, 0)).To(Equal(event.SetPipelineChanged{
 }))
 ~~~
 
-- [ ] **Step 2: Run the assertion-first RED command.**
+- [x] **Step 2: Run the assertion-first RED command.**
 
 Run: ginkgo ./atc/engine/ --focus='SetPipelineStepDelegate persisted PostgreSQL state saves changed event'
 
 Expected: FAIL because event zero on realBuild is the status event; the delegate still saved SetPipelineChanged only on fakeBuild.
 
-- [ ] **Step 3: Implement the persisted-success Describes.**
+- [x] **Step 3: Implement the persisted-success Describes.**
 
 Wire the persisted SetPipelineStepDelegate Describe to realBuild. After every write call realBuild.Reload, assert found and no error, then consume and close the event source. Assert both warning log events by offsets zero and one and assert their concrete event.Log fields.
 
@@ -540,7 +540,7 @@ Move wrong-schema, workflow-association failure, resource-capture failure, and m
 
 In engine_test.go create a persisted job build for NewBuild and the ordinary successful construction assertion. Move the channel, abort, release, lock, panic, retry, and callback-order matrix under Describe("retained runtime and fault matrix") and keep its one FakeBuild. Add a comment that this fake controls non-persistable lock/listener/cancellation ordering.
 
-- [ ] **Step 4: Run GREEN and sensitivity checks.**
+- [x] **Step 4: Run GREEN and sensitivity checks.**
 
 Run: ginkgo ./atc/engine/ --focus='(Engine|SetPipelineStepDelegate|PutDelegate|Builder)'
 
@@ -552,7 +552,7 @@ Run: ginkgo ./atc/engine/ --focus='SetPipelineStepDelegate persisted PostgreSQL 
 
 Expected: FAIL on the concrete event value. Restore Changed true and rerun the command to PASS.
 
-- [ ] **Step 5: Verify payoff and commit.**
+- [x] **Step 5: Verify payoff and commit.**
 
 Run: rg -n 'new\(dbfakes\.(FakeBuild|FakePipeline|FakeResourceCache|FakeWorkerFactory)\)' atc/engine/engine_test.go atc/engine/set_pipeline_delegate_test.go atc/engine/put_delegate_test.go atc/engine/builder_test.go
 
