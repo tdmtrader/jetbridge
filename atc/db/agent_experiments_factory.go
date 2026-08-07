@@ -536,7 +536,6 @@ func bindExperimentResourceSourceAdmissions(
 		SELECT DISTINCT registered.workflow_definition_id, registered.config_hash
 		FROM agent_workflow_resource_source_pipelines registered
 		WHERE registered.team_id = $2
-		  AND registered.pr_binding_id IS NULL
 		  AND registered.workflow_definition_id IN (
 		    SELECT variant.definition_id
 		    FROM agent_experiment_variants variant

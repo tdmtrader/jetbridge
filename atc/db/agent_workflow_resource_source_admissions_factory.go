@@ -24,7 +24,6 @@ import (
 type WorkflowResourceSourcePipeline struct {
 	PipelineID            int
 	TeamID                int
-	PRBindingID           *int64
 	WorkflowDefinitionID  int
 	WorkflowName          string
 	WorkflowVersion       int
@@ -101,9 +100,6 @@ func NewWorkflowResourceSourcePipelinesFactory(conn DbConn) WorkflowResourceSour
 // one active source-selection pipeline for its workflow name, draining any
 // earlier revision inside the same transaction.
 func (factory *workflowResourceSourcePipelinesFactory) Activate(ctx context.Context, pipeline WorkflowResourceSourcePipeline) error {
-	if pipeline.PRBindingID != nil {
-		return fmt.Errorf("db: definition-owned source pipeline cannot carry a PR binding")
-	}
 	if pipeline.State != "" && pipeline.State != AgentWorkflowResourceSourcePipelineActive {
 		return fmt.Errorf("db: invalid workflow resource source pipeline activation state")
 	}
@@ -125,7 +121,7 @@ func (factory *workflowResourceSourcePipelinesFactory) Activate(ctx context.Cont
 	}
 	// Drain a previous revision before making this one active. This transaction
 	// leaves at most one active admission pipeline for the workflow name.
-	if _, err := tx.ExecContext(ctx, `UPDATE agent_workflow_resource_source_pipelines SET state='draining', updated_at=now() WHERE team_id=$1 AND workflow_name=$2 AND state='active' AND pipeline_id<>$3 AND pr_binding_id IS NULL`, pipeline.TeamID, pipeline.WorkflowName, pipeline.PipelineID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE agent_workflow_resource_source_pipelines SET state='draining', updated_at=now() WHERE team_id=$1 AND workflow_name=$2 AND state='active' AND pipeline_id<>$3`, pipeline.TeamID, pipeline.WorkflowName, pipeline.PipelineID); err != nil {
 		return err
 	}
 	declarations, err := json.Marshal(pipeline.SourceDeclarations)
@@ -143,7 +139,7 @@ func (factory *workflowResourceSourcePipelinesFactory) Activate(ctx context.Cont
 	if affected == 0 {
 		var stored WorkflowResourceSourcePipeline
 		var storedDeclarations []byte
-		err = tx.QueryRowContext(ctx, `SELECT pipeline_id, team_id, workflow_definition_id, workflow_name, workflow_version, pipeline_config_version, config_hash, source_declarations, state FROM agent_workflow_resource_source_pipelines WHERE pipeline_id=$1 AND pr_binding_id IS NULL FOR UPDATE`, pipeline.PipelineID).Scan(&stored.PipelineID, &stored.TeamID, &stored.WorkflowDefinitionID, &stored.WorkflowName, &stored.WorkflowVersion, &stored.PipelineConfigVersion, &stored.ConfigHash, &storedDeclarations, &stored.State)
+		err = tx.QueryRowContext(ctx, `SELECT pipeline_id, team_id, workflow_definition_id, workflow_name, workflow_version, pipeline_config_version, config_hash, source_declarations, state FROM agent_workflow_resource_source_pipelines WHERE pipeline_id=$1 FOR UPDATE`, pipeline.PipelineID).Scan(&stored.PipelineID, &stored.TeamID, &stored.WorkflowDefinitionID, &stored.WorkflowName, &stored.WorkflowVersion, &stored.PipelineConfigVersion, &stored.ConfigHash, &storedDeclarations, &stored.State)
 		if err != nil {
 			return err
 		}
@@ -243,7 +239,7 @@ func (factory *workflowResourceSourcePipelinesFactory) SaveAndActivateForPromoti
 		result, err := tx.ExecContext(ctx, `
 			UPDATE agent_workflow_resource_source_pipelines
 			SET state='draining', updated_at=now()
-			WHERE team_id=$1 AND pipeline_id=$2 AND state='active' AND pr_binding_id IS NULL
+			WHERE team_id=$1 AND pipeline_id=$2 AND state='active'
 		`, trustedTeamID, previous.PipelineID)
 		if err != nil {
 			return WorkflowResourceSourcePipeline{}, err
@@ -298,7 +294,7 @@ func (factory *workflowResourceSourcePipelinesFactory) DrainActiveForPromotion(
 	result, err := tx.ExecContext(ctx, `
 		UPDATE agent_workflow_resource_source_pipelines
 		SET state='draining', updated_at=now()
-		WHERE team_id=$1 AND workflow_name=$2 AND state='active' AND pr_binding_id IS NULL
+		WHERE team_id=$1 AND workflow_name=$2 AND state='active'
 	`, trustedTeamID, workflowName)
 	if err != nil {
 		return false, err
@@ -355,7 +351,7 @@ func (factory *workflowResourceSourcePipelinesFactory) Drain(ctx context.Context
 	if ctx == nil || teamID <= 0 || pipelineID <= 0 {
 		return fmt.Errorf("db: source pipeline drain requires context and positive identities")
 	}
-	result, err := factory.conn.ExecContext(ctx, `UPDATE agent_workflow_resource_source_pipelines SET state='draining', updated_at=now() WHERE team_id=$1 AND pipeline_id=$2 AND state='active' AND pr_binding_id IS NULL`, teamID, pipelineID)
+	result, err := factory.conn.ExecContext(ctx, `UPDATE agent_workflow_resource_source_pipelines SET state='draining', updated_at=now() WHERE team_id=$1 AND pipeline_id=$2 AND state='active'`, teamID, pipelineID)
 	if err != nil {
 		return err
 	}
@@ -379,7 +375,7 @@ func (factory *workflowResourceSourcePipelinesFactory) Archive(ctx context.Conte
 	}
 	defer Rollback(tx)
 	var state string
-	if err := tx.QueryRowContext(ctx, `SELECT state FROM agent_workflow_resource_source_pipelines WHERE team_id=$1 AND pipeline_id=$2 AND pr_binding_id IS NULL FOR UPDATE`, teamID, pipelineID).Scan(&state); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT state FROM agent_workflow_resource_source_pipelines WHERE team_id=$1 AND pipeline_id=$2 FOR UPDATE`, teamID, pipelineID).Scan(&state); err != nil {
 		return err
 	}
 	if state != "draining" {
@@ -392,7 +388,7 @@ func (factory *workflowResourceSourcePipelinesFactory) Archive(ctx context.Conte
 	if busy {
 		return fmt.Errorf("db: source pipeline has in-flight admissions")
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE agent_workflow_resource_source_pipelines SET state='archived', updated_at=now() WHERE team_id=$1 AND pipeline_id=$2 AND state='draining' AND pr_binding_id IS NULL`, teamID, pipelineID)
+	result, err := tx.ExecContext(ctx, `UPDATE agent_workflow_resource_source_pipelines SET state='archived', updated_at=now() WHERE team_id=$1 AND pipeline_id=$2 AND state='draining'`, teamID, pipelineID)
 	if err != nil {
 		return err
 	}
@@ -435,7 +431,7 @@ func (factory *workflowResourceSourcePipelinesFactory) ResourceSourcePipelineLif
 		return nil, fmt.Errorf("db: source pipeline lifecycle lookup requires context and trusted team")
 	}
 	rows, err := factory.conn.QueryContext(ctx, `
-		SELECT source.pipeline_id,source.team_id,source.pr_binding_id,
+		SELECT source.pipeline_id,source.team_id,
 		       source.workflow_definition_id,
 		       source.workflow_name,source.workflow_version,source.pipeline_config_version,
 		       source.config_hash,source.source_declarations,source.state,
@@ -457,20 +453,15 @@ func (factory *workflowResourceSourcePipelinesFactory) ResourceSourcePipelineLif
 	candidates := []AgentWorkflowResourceSourcePipelineLifecycle{}
 	for rows.Next() {
 		var candidate AgentWorkflowResourceSourcePipelineLifecycle
-		var bindingID sql.NullInt64
 		var declarations []byte
 		if err := rows.Scan(
-			&candidate.PipelineID, &candidate.TeamID, &bindingID,
+			&candidate.PipelineID, &candidate.TeamID,
 			&candidate.WorkflowDefinitionID,
 			&candidate.WorkflowName, &candidate.WorkflowVersion, &candidate.PipelineConfigVersion,
 			&candidate.ConfigHash, &declarations, &candidate.State,
 			&candidate.Paused, &candidate.Archived, &candidate.InFlightBuilds, &candidate.NonterminalAdmissions,
 		); err != nil {
 			return nil, err
-		}
-		if bindingID.Valid {
-			value := bindingID.Int64
-			candidate.PRBindingID = &value
 		}
 		if err := json.Unmarshal(declarations, &candidate.SourceDeclarations); err != nil {
 			return nil, fmt.Errorf("db: decode source pipeline lifecycle declarations: %w", err)
@@ -504,19 +495,13 @@ func (factory *workflowResourceSourcePipelinesFactory) UnpauseActiveResourceSour
 	if ctx == nil || trustedTeamID <= 0 {
 		return false, fmt.Errorf("db: source pipeline unpause requires context and trusted team")
 	}
-	if expected.PRBindingID != nil {
-		return false, fmt.Errorf(
-			"%w: binding source pipeline requires binding-scoped unpause",
-			ErrAgentWorkflowResourceSourceConflict,
-		)
-	}
 	tx, err := factory.conn.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err
 	}
 	defer Rollback(tx)
-	stored, found, err := findExpectedWorkflowResourceSourcePipeline(
-		ctx, tx, trustedTeamID, expected, true,
+	stored, found, err := findWorkflowResourceSourcePipeline(
+		ctx, tx, trustedTeamID, expected.PipelineID, true,
 	)
 	if err != nil {
 		return false, err
@@ -562,8 +547,8 @@ func (factory *workflowResourceSourcePipelinesFactory) PauseDrainedResourceSourc
 		return false, err
 	}
 	defer Rollback(tx)
-	stored, found, err := findExpectedWorkflowResourceSourcePipeline(
-		ctx, tx, trustedTeamID, expected, true,
+	stored, found, err := findWorkflowResourceSourcePipeline(
+		ctx, tx, trustedTeamID, expected.PipelineID, true,
 	)
 	if err != nil {
 		return false, err
@@ -624,8 +609,8 @@ func (factory *workflowResourceSourcePipelinesFactory) ArchiveDrainedResourceSou
 		return false, err
 	}
 	defer Rollback(tx)
-	stored, found, err := findExpectedWorkflowResourceSourcePipeline(
-		ctx, tx, trustedTeamID, expected, true,
+	stored, found, err := findWorkflowResourceSourcePipeline(
+		ctx, tx, trustedTeamID, expected.PipelineID, true,
 	)
 	if err != nil {
 		return false, err
@@ -693,8 +678,7 @@ func (factory *workflowResourceSourcePipelinesFactory) ArchiveDrainedResourceSou
 		UPDATE agent_workflow_resource_source_pipelines
 		SET state='archived',updated_at=now()
 		WHERE team_id=$1 AND pipeline_id=$2 AND state='draining'
-		  AND pr_binding_id IS NOT DISTINCT FROM $3::bigint
-	`, trustedTeamID, stored.PipelineID, nullablePRBindingID(stored.PRBindingID))
+	`, trustedTeamID, stored.PipelineID)
 	if err != nil {
 		return false, err
 	}
@@ -751,7 +735,7 @@ func (factory *workflowResourceSourceAdmissionsFactory) CreateCaptured(ctx conte
 	defer Rollback(tx)
 	var configVersion int
 	var declarationJSON []byte
-	err = tx.QueryRowContext(ctx, `SELECT pipeline_config_version, source_declarations FROM agent_workflow_resource_source_pipelines WHERE team_id=$1 AND pipeline_id=$2 AND workflow_definition_id=$3 AND config_hash=$4 AND state='active' AND pr_binding_id IS NULL FOR UPDATE`, request.TeamID, request.SourcePipelineID, request.WorkflowDefinitionID, request.SourceConfigHash).Scan(&configVersion, &declarationJSON)
+	err = tx.QueryRowContext(ctx, `SELECT pipeline_config_version, source_declarations FROM agent_workflow_resource_source_pipelines WHERE team_id=$1 AND pipeline_id=$2 AND workflow_definition_id=$3 AND config_hash=$4 AND state='active' FOR UPDATE`, request.TeamID, request.SourcePipelineID, request.WorkflowDefinitionID, request.SourceConfigHash).Scan(&configVersion, &declarationJSON)
 	if err != nil {
 		return 0, fmt.Errorf("db: source admission pipeline authority: %w", err)
 	}
@@ -917,7 +901,7 @@ func validResourceSourceVersionDigest(value string) bool {
 var lowerHex64 = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 func validateWorkflowResourceSourcePipeline(p WorkflowResourceSourcePipeline) error {
-	if p.TeamID <= 0 || p.PipelineID <= 0 || p.WorkflowDefinitionID <= 0 || p.WorkflowVersion <= 0 || p.PipelineConfigVersion <= 0 || (p.PRBindingID != nil && *p.PRBindingID <= 0) || strings.TrimSpace(p.WorkflowName) == "" || !lowerHex64.MatchString(p.ConfigHash) || (p.State != "" && p.State.Validate() != nil) || validateSourceDeclarations(p.SourceDeclarations) != nil {
+	if p.TeamID <= 0 || p.PipelineID <= 0 || p.WorkflowDefinitionID <= 0 || p.WorkflowVersion <= 0 || p.PipelineConfigVersion <= 0 || strings.TrimSpace(p.WorkflowName) == "" || !lowerHex64.MatchString(p.ConfigHash) || (p.State != "" && p.State.Validate() != nil) || validateSourceDeclarations(p.SourceDeclarations) != nil {
 		return fmt.Errorf("db: invalid workflow resource source pipeline")
 	}
 	return nil
@@ -957,7 +941,6 @@ func sameSourcePipelineIdentity(
 ) bool {
 	return left.PipelineID == right.PipelineID &&
 		left.TeamID == right.TeamID &&
-		sameOptionalPRBindingID(left.PRBindingID, right.PRBindingID) &&
 		left.WorkflowDefinitionID == right.WorkflowDefinitionID &&
 		left.WorkflowName == right.WorkflowName &&
 		left.WorkflowVersion == right.WorkflowVersion &&
@@ -966,13 +949,6 @@ func sameSourcePipelineIdentity(
 		reflect.DeepEqual(
 			left.SourceDeclarations, right.SourceDeclarations,
 		)
-}
-
-func sameOptionalPRBindingID(left, right *int64) bool {
-	if left == nil || right == nil {
-		return left == nil && right == nil
-	}
-	return *left == *right
 }
 
 func sameAdmissionRequest(left, right CreateWorkflowResourceSourceAdmissionRequest) bool {
@@ -985,7 +961,7 @@ func findWorkflowResourceSourcePipelineByDefinition(
 	teamID, definitionID int,
 	lock bool,
 ) (WorkflowResourceSourcePipeline, bool, error) {
-	query := `SELECT pipeline_id,team_id,workflow_definition_id,workflow_name,workflow_version,pipeline_config_version,config_hash,source_declarations,state FROM agent_workflow_resource_source_pipelines WHERE team_id=$1 AND workflow_definition_id=$2 AND pr_binding_id IS NULL`
+	query := `SELECT pipeline_id,team_id,workflow_definition_id,workflow_name,workflow_version,pipeline_config_version,config_hash,source_declarations,state FROM agent_workflow_resource_source_pipelines WHERE team_id=$1 AND workflow_definition_id=$2`
 	if lock {
 		query += ` FOR UPDATE`
 	}
@@ -999,23 +975,11 @@ func findActiveWorkflowResourceSourcePipeline(
 	workflowName string,
 	lock bool,
 ) (WorkflowResourceSourcePipeline, bool, error) {
-	query := `SELECT pipeline_id,team_id,workflow_definition_id,workflow_name,workflow_version,pipeline_config_version,config_hash,source_declarations,state FROM agent_workflow_resource_source_pipelines WHERE team_id=$1 AND workflow_name=$2 AND state='active' AND pr_binding_id IS NULL`
+	query := `SELECT pipeline_id,team_id,workflow_definition_id,workflow_name,workflow_version,pipeline_config_version,config_hash,source_declarations,state FROM agent_workflow_resource_source_pipelines WHERE team_id=$1 AND workflow_name=$2 AND state='active'`
 	if lock {
 		query += ` FOR UPDATE`
 	}
 	return scanWorkflowResourceSourcePipeline(queryer.QueryRowContext(ctx, query, teamID, workflowName))
-}
-
-func findExpectedWorkflowResourceSourcePipeline(
-	ctx context.Context,
-	queryer snapshotQueryer,
-	teamID int,
-	expected WorkflowResourceSourcePipeline,
-	lock bool,
-) (WorkflowResourceSourcePipeline, bool, error) {
-	return findWorkflowResourceSourcePipeline(
-		ctx, queryer, teamID, expected.PipelineID, lock,
-	)
 }
 
 func scanWorkflowResourceSourcePipeline(row interface{ Scan(...any) error }) (WorkflowResourceSourcePipeline, bool, error) {
@@ -1039,13 +1003,6 @@ func scanWorkflowResourceSourcePipeline(row interface{ Scan(...any) error }) (Wo
 		return WorkflowResourceSourcePipeline{}, false, err
 	}
 	return pipeline, true, nil
-}
-
-func nullablePRBindingID(value *int64) any {
-	if value == nil {
-		return nil
-	}
-	return *value
 }
 
 func snapshotTypeName(t snapshot.TypeRef) string { return strings.Split(string(t), "/v")[0] }

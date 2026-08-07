@@ -646,7 +646,7 @@ func scanWorkflowResourceSourceBindingWithExtra(row interface{ Scan(...any) erro
 }
 
 func findWorkflowResourceSourcePipeline(ctx context.Context, queryer snapshotQueryer, teamID, pipelineID int, lock bool) (WorkflowResourceSourcePipeline, bool, error) {
-	query := `SELECT pipeline_id,team_id,workflow_definition_id,workflow_name,workflow_version,pipeline_config_version,config_hash,source_declarations,state FROM agent_workflow_resource_source_pipelines WHERE team_id=$1 AND pipeline_id=$2 AND pr_binding_id IS NULL`
+	query := `SELECT pipeline_id,team_id,workflow_definition_id,workflow_name,workflow_version,pipeline_config_version,config_hash,source_declarations,state FROM agent_workflow_resource_source_pipelines WHERE team_id=$1 AND pipeline_id=$2`
 	if lock {
 		query += ` FOR UPDATE`
 	}
