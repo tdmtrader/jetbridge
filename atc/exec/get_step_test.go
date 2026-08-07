@@ -2,6 +2,8 @@ package exec_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -9,7 +11,6 @@ import (
 	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/db/lock"
 	"github.com/concourse/concourse/atc/db/lock/lockfakes"
 	"github.com/concourse/concourse/atc/exec"
@@ -41,8 +42,10 @@ var _ = Describe("GetStep", func() {
 		chosenContainer *runtimetest.WorkerContainer
 		getVolume       *runtimetest.Volume
 
-		fakeResourceCacheFactory *dbfakes.FakeResourceCacheFactory
-		fakeResourceCache        *dbfakes.FakeResourceCache
+		fixture              *execDBFixture
+		realBuild            db.Build
+		resourceCacheFactory db.ResourceCacheFactory
+		loadOwnedCache       func() db.ResourceCache
 
 		fakeDelegate        *execfakes.FakeGetDelegate
 		fakeDelegateFactory *execfakes.FakeGetDelegateFactory
@@ -85,6 +88,30 @@ var _ = Describe("GetStep", func() {
 
 	BeforeEach(func() {
 		ctx, cancel = context.WithCancel(context.Background())
+		fixture = useExecDB()
+		_, _, _, realBuild = createExecJobBuild(
+			fixture,
+			"some-team",
+			atc.PipelineRef{Name: "some-pipeline"},
+			atc.Config{
+				Resources: atc.ResourceConfigs{{Name: "some-resource", Type: "some-base-type", Source: atc.Source{"some": "super-secret-source"}}},
+				Jobs:      atc.JobConfigs{{Name: "some-job"}},
+			},
+			"some-user",
+		)
+		resourceCacheFactory = fixture.ResourceCacheFactory
+		loadOwnedCache = func() db.ResourceCache {
+			var resourceCacheID int
+			err := fixture.Conn.QueryRow(
+				"SELECT resource_cache_id FROM resource_cache_uses WHERE build_id = $1",
+				realBuild.ID(),
+			).Scan(&resourceCacheID)
+			Expect(err).NotTo(HaveOccurred())
+			cache, found, err := fixture.ResourceCacheFactory.FindResourceCacheByID(resourceCacheID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			return cache
+		}
 
 		chosenWorker = runtimetest.NewWorker("worker").
 			WithContainer(
@@ -113,9 +140,6 @@ var _ = Describe("GetStep", func() {
 
 		fakeLockFactory = lockOnAttempt(1)
 
-		fakeResourceCacheFactory = new(dbfakes.FakeResourceCacheFactory)
-		fakeResourceCache = new(dbfakes.FakeResourceCache)
-
 		runState = exec.NewRunState(noopStepper, vars.StaticVariables{
 			"source-var": "super-secret-source",
 			"params-var": "super-secret-params",
@@ -130,6 +154,7 @@ var _ = Describe("GetStep", func() {
 		spanCtx = context.Background()
 		fakeDelegate.StartSpanReturns(spanCtx, tracing.NoopSpan)
 		fakeDelegate.ContainerOwnerReturns(expectedOwner)
+		fakeDelegate.ResourceCacheUserReturns(db.ForBuild(realBuild.ID()))
 
 		fakeDelegateFactory = new(execfakes.FakeGetDelegateFactory)
 		fakeDelegateFactory.GetDelegateReturns(fakeDelegate)
@@ -157,15 +182,13 @@ var _ = Describe("GetStep", func() {
 			Get: getPlan,
 		}
 
-		fakeResourceCacheFactory.FindOrCreateResourceCacheReturns(fakeResourceCache, nil)
-
 		getStep = exec.NewGetStep(
 			plan.ID,
 			*plan.Get,
 			stepMetadata,
 			containerMetadata,
 			fakeLockFactory,
-			fakeResourceCacheFactory,
+			resourceCacheFactory,
 			fakeDelegateFactory,
 			fakePool,
 			defaultGetTimeout,
@@ -174,13 +197,39 @@ var _ = Describe("GetStep", func() {
 		stepOk, stepErr = getStep.Run(ctx, runState)
 	})
 
+	Describe("persisted PostgreSQL state", func() {
+		It("creates the resource cache row", func() {
+			var count int
+			err := fixture.Conn.QueryRow(
+				"SELECT count(*) FROM resource_cache_uses WHERE build_id = $1",
+				realBuild.ID(),
+			).Scan(&count)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(count).To(Equal(1))
+		})
+	})
+
 	It("constructs the resource cache correctly", func() {
-		_, typ, ver, source, params, imageResourceCache := fakeResourceCacheFactory.FindOrCreateResourceCacheArgsForCall(0)
-		Expect(typ).To(Equal("some-base-type"))
-		Expect(ver).To(Equal(atc.Version{"some": "version"}))
-		Expect(source).To(Equal(atc.Source{"some": "super-secret-source"}))
-		Expect(params).To(Equal(atc.Params{"some": "super-secret-params"}))
-		Expect(imageResourceCache).To(BeNil())
+		cache := loadOwnedCache()
+		Expect(cache.Version()).To(Equal(atc.Version{"some": "version"}))
+		config := cache.ResourceConfig()
+		Expect(config.OriginBaseResourceType().Name).To(Equal("some-base-type"))
+		Expect(config.CreatedByResourceCache()).To(BeNil())
+		sourceBytes, err := json.Marshal(atc.Source{"some": "super-secret-source"})
+		Expect(err).NotTo(HaveOccurred())
+		expectedSourceHash := fmt.Sprintf("%x", sha256.Sum256(sourceBytes))
+		var sourceHash string
+		err = fixture.Conn.QueryRow("SELECT source_hash FROM resource_configs WHERE id = $1", config.ID()).Scan(&sourceHash)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(sourceHash).To(Equal(expectedSourceHash))
+
+		paramsBytes, err := json.Marshal(atc.Params{"some": "super-secret-params"})
+		Expect(err).NotTo(HaveOccurred())
+		expectedParamsHash := fmt.Sprintf("%x", sha256.Sum256(paramsBytes))
+		var paramsHash string
+		err = fixture.Conn.QueryRow("SELECT params_hash FROM resource_caches WHERE id = $1", cache.ID()).Scan(&paramsHash)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(paramsHash).To(Equal(expectedParamsHash))
 	})
 
 	Context("when using a dynamic version source", func() {
@@ -200,9 +249,7 @@ var _ = Describe("GetStep", func() {
 			})
 
 			It("uses the version to create a resource cache", func() {
-				Expect(fakeResourceCacheFactory.FindOrCreateResourceCacheCallCount()).To(Equal(1))
-				_, _, ver, _, _, _ := fakeResourceCacheFactory.FindOrCreateResourceCacheArgsForCall(0)
-				Expect(ver).To(Equal(version))
+				Expect(loadOwnedCache().Version()).To(Equal(version))
 			})
 		})
 
@@ -280,7 +327,10 @@ var _ = Describe("GetStep", func() {
 		})
 
 		Context("when the cache is present on the selected worker", func() {
-			var cacheVolume *runtimetest.Volume
+			var (
+				cacheVolume *runtimetest.Volume
+				cached      db.ResourceCache
+			)
 
 			BeforeEach(func() {
 				fakeLockFactory = neverLock()
@@ -289,9 +339,20 @@ var _ = Describe("GetStep", func() {
 
 				cacheVolume = runtimetest.NewVolume("cache-volume")
 				fakePool.FindResourceCacheVolumeOnWorkerReturns(cacheVolume, true, nil)
-				fakeResourceCacheFactory.ResourceCacheMetadataReturns(db.ResourceConfigMetadataFields{
-					{Name: "some", Value: "metadata"},
-				}, nil)
+				var err error
+				cached, err = fixture.ResourceCacheFactory.FindOrCreateResourceCache(
+					db.ForBuild(realBuild.ID()),
+					"some-base-type",
+					atc.Version{"some": "version"},
+					atc.Source{"some": "super-secret-source"},
+					atc.Params{"some": "super-secret-params"},
+					nil,
+				)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(fixture.ResourceCacheFactory.UpdateResourceCacheMetadata(
+					cached,
+					atc.Metadata{{Name: "some", Value: "metadata"}},
+				)).To(Succeed())
 			})
 
 			It("succeeds", func() {
@@ -300,6 +361,14 @@ var _ = Describe("GetStep", func() {
 
 			It("logs a message to stderr", func() {
 				Expect(stderrBuf).To(gbytes.Say(`INFO.*found.*cache`))
+			})
+
+			It("loads metadata from the persisted cache row", func() {
+				cache := loadOwnedCache()
+				Expect(cache.ID()).To(Equal(cached.ID()))
+				metadata, err := fixture.ResourceCacheFactory.ResourceCacheMetadata(cache)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(metadata).To(Equal(db.ResourceConfigMetadataFields{{Name: "some", Value: "metadata"}}))
 			})
 
 			It("[GS-04] registers the cached artifact with fromCache=true", func() {
@@ -325,9 +394,10 @@ var _ = Describe("GetStep", func() {
 			})
 
 			It("stores the resource cache as the step result", func() {
-				var val any
-				Expect(runState.Result(planID, &val)).To(BeTrue())
-				Expect(val).To(Equal(exec.GetResult{Name: getPlan.Name, ResourceCache: fakeResourceCache}))
+				var result exec.GetResult
+				Expect(runState.Result(planID, &result)).To(BeTrue())
+				Expect(result.Name).To(Equal(getPlan.Name))
+				Expect(result.ResourceCache.ID()).To(Equal(loadOwnedCache().ID()))
 			})
 
 			It("finishes the step via the delegate", func() {
@@ -483,8 +553,8 @@ var _ = Describe("GetStep", func() {
 
 	Context("when using a custom resource type", func() {
 		var (
-			fetchedImageSpec       runtime.ImageSpec
-			fakeImageResourceCache *dbfakes.FakeResourceCache
+			fetchedImageSpec   runtime.ImageSpec
+			imageResourceCache db.ResourceCache
 		)
 
 		BeforeEach(func() {
@@ -514,15 +584,23 @@ var _ = Describe("GetStep", func() {
 				ImageArtifact: runtimetest.NewVolume("some-volume"),
 			}
 
-			fakeImageResourceCache = new(dbfakes.FakeResourceCache)
-			fakeImageResourceCache.IDReturns(123)
+			var err error
+			imageResourceCache, err = fixture.ResourceCacheFactory.FindOrCreateResourceCache(
+				db.ForInMemoryBuild(123, time.Unix(1, 0)),
+				"another-custom-type",
+				atc.Version{"some": "image-version"},
+				atc.Source{"some-custom": "super-secret-source"},
+				atc.Params{"some-custom": "super-secret-params"},
+				nil,
+			)
+			Expect(err).NotTo(HaveOccurred())
 
-			fakeDelegate.FetchImageReturns(fetchedImageSpec, fakeImageResourceCache, nil)
+			fakeDelegate.FetchImageReturns(fetchedImageSpec, imageResourceCache, nil)
 		})
 
 		It("uses the same imageResourceCache to create the resourceCache", func() {
-			_, _, _, _, _, rc := fakeResourceCacheFactory.FindOrCreateResourceCacheArgsForCall(0)
-			Expect(rc.ID()).To(Equal(123))
+			cache := loadOwnedCache()
+			Expect(cache.ResourceConfig().CreatedByResourceCache().ID()).To(Equal(imageResourceCache.ID()))
 		})
 
 		It("fetches the resource type image and uses it for the container", func() {
@@ -595,9 +673,10 @@ var _ = Describe("GetStep", func() {
 		})
 
 		It("stores the resource cache as the step result", func() {
-			var val any
-			Expect(runState.Result(planID, &val)).To(BeTrue())
-			Expect(val).To(Equal(exec.GetResult{Name: getPlan.Name, ResourceCache: fakeResourceCache}))
+			var result exec.GetResult
+			Expect(runState.Result(planID, &result)).To(BeTrue())
+			Expect(result.Name).To(Equal(getPlan.Name))
+			Expect(result.ResourceCache.ID()).To(Equal(loadOwnedCache().ID()))
 		})
 
 		It("marks the step as succeeded", func() {
