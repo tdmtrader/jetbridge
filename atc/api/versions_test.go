@@ -1,19 +1,249 @@
 package api_test
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"reflect"
+	"strconv"
 	"time"
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbfakes"
+	"github.com/concourse/concourse/atc/db/dbtest"
 	. "github.com/concourse/concourse/atc/testhelpers"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
+
+type versionsAPIFixture struct {
+	database *realDB
+	builder  dbtest.Builder
+	team     db.Team
+	pipeline db.Pipeline
+	ref      atc.PipelineRef
+	scenario *dbtest.Scenario
+	server   *httptest.Server
+}
+
+type versionsAPITeamFactory struct {
+	db.TeamFactory
+	teamName string
+	team     db.Team
+}
+
+func (factory versionsAPITeamFactory) FindTeam(name string) (db.Team, bool, error) {
+	if name == factory.teamName {
+		return factory.team, true, nil
+	}
+	return factory.TeamFactory.FindTeam(name)
+}
+
+type versionsAPITeam struct {
+	db.Team
+	ref      atc.PipelineRef
+	pipeline db.Pipeline
+}
+
+func (team versionsAPITeam) Pipeline(ref atc.PipelineRef) (db.Pipeline, bool, error) {
+	if ref.Name == team.ref.Name && reflect.DeepEqual(ref.InstanceVars, team.ref.InstanceVars) {
+		return team.pipeline, true, nil
+	}
+	return team.Team.Pipeline(ref)
+}
+
+type versionsAPIPipeline struct {
+	db.Pipeline
+	resourceName string
+	resource     db.Resource
+}
+
+func (pipeline versionsAPIPipeline) Resource(name string) (db.Resource, bool, error) {
+	if pipeline.resource != nil && name == pipeline.resourceName {
+		return pipeline.resource, true, nil
+	}
+	return pipeline.Pipeline.Resource(name)
+}
+
+// versionsAPIVersionsNotFoundResource preserves the defensive handler branch
+// that production SQL cannot reach after a configured resource has been found:
+// an empty real scope returns found=true with an empty version slice.
+type versionsAPIVersionsNotFoundResource struct {
+	db.Resource
+}
+
+func (resource versionsAPIVersionsNotFoundResource) Versions(
+	db.Page,
+	atc.Version,
+) ([]atc.ResourceVersion, db.Pagination, bool, error) {
+	return nil, db.Pagination{}, false, nil
+}
+
+func newVersionsAPIFixture(ref atc.PipelineRef, config atc.Config) *versionsAPIFixture {
+	GinkgoHelper()
+
+	database := useRealDB()
+	team, err := database.Deps.teamFactory.CreateTeam(atc.Team{Name: "a-team"})
+	Expect(err).NotTo(HaveOccurred())
+	pipeline, _, err := team.SavePipeline(ref, config, db.ConfigVersion(0), false)
+	Expect(err).NotTo(HaveOccurred())
+	builder := dbtest.NewBuilder(database.Conn, database.LockFactory)
+
+	return &versionsAPIFixture{
+		database: database,
+		builder:  builder,
+		team:     team,
+		pipeline: pipeline,
+		ref: atc.PipelineRef{
+			Name:         pipeline.Name(),
+			InstanceVars: pipeline.InstanceVars(),
+		},
+		scenario: &dbtest.Scenario{Team: team, Pipeline: pipeline},
+	}
+}
+
+func (fixture *versionsAPIFixture) updatePipeline(config atc.Config) {
+	GinkgoHelper()
+
+	pipeline, _, err := fixture.team.SavePipeline(
+		fixture.ref, config, fixture.pipeline.ConfigVersion(), false,
+	)
+	Expect(err).NotTo(HaveOccurred())
+	fixture.pipeline = pipeline
+	fixture.scenario.Pipeline = pipeline
+}
+
+func (fixture *versionsAPIFixture) resource(name string) db.Resource {
+	GinkgoHelper()
+
+	resource, found, err := fixture.pipeline.Resource(name)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(found).To(BeTrue(), "resource %q not found", name)
+	return resource
+}
+
+func (fixture *versionsAPIFixture) overridePipeline(pipeline db.Pipeline) {
+	fixture.database.Deps.teamFactory = versionsAPITeamFactory{
+		TeamFactory: fixture.database.Deps.teamFactory,
+		teamName:    fixture.team.Name(),
+		team: versionsAPITeam{
+			Team: fixture.team, ref: fixture.ref, pipeline: pipeline,
+		},
+	}
+}
+
+func (fixture *versionsAPIFixture) doomedPipeline() db.Pipeline {
+	GinkgoHelper()
+
+	conn := postgresRunner.OpenConn()
+	defer func() { Expect(conn.Close()).To(Succeed()) }()
+	teamFactory := db.NewTeamFactory(conn, fixture.database.LockFactory)
+	team, found, err := teamFactory.FindTeam(fixture.team.Name())
+	Expect(err).NotTo(HaveOccurred())
+	Expect(found).To(BeTrue())
+	pipeline, found, err := team.Pipeline(fixture.ref)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(found).To(BeTrue())
+	return pipeline
+}
+
+func (fixture *versionsAPIFixture) doomedResource(name string) db.Resource {
+	GinkgoHelper()
+
+	conn := postgresRunner.OpenConn()
+	defer func() { Expect(conn.Close()).To(Succeed()) }()
+	teamFactory := db.NewTeamFactory(conn, fixture.database.LockFactory)
+	team, found, err := teamFactory.FindTeam(fixture.team.Name())
+	Expect(err).NotTo(HaveOccurred())
+	Expect(found).To(BeTrue())
+	pipeline, found, err := team.Pipeline(fixture.ref)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(found).To(BeTrue())
+	resource, found, err := pipeline.Resource(name)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(found).To(BeTrue())
+	return resource
+}
+
+func (fixture *versionsAPIFixture) requestVersions(resourceName string, query url.Values) *http.Response {
+	GinkgoHelper()
+
+	if fixture.server == nil {
+		fixture.server = fixture.database.Serve()
+	}
+	merged := url.Values{}
+	for key, values := range fixture.ref.QueryParams() {
+		merged[key] = append(merged[key], values...)
+	}
+	for key, values := range query {
+		merged[key] = append(merged[key], values...)
+	}
+	path := fmt.Sprintf(
+		"/api/v1/teams/%s/pipelines/%s/resources/%s/versions",
+		fixture.team.Name(), fixture.pipeline.Name(), resourceName,
+	)
+	if encoded := merged.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	request, err := http.NewRequest(http.MethodGet, fixture.server.URL+path, nil)
+	Expect(err).NotTo(HaveOccurred())
+	response, err := client.Do(request)
+	if response != nil {
+		DeferCleanup(func() { Expect(response.Body.Close()).To(Succeed()) })
+	}
+	Expect(err).NotTo(HaveOccurred())
+	return response
+}
+
+func decodeVersionsAPIResponse(response *http.Response) []atc.ResourceVersion {
+	GinkgoHelper()
+
+	var versions []atc.ResourceVersion
+	Expect(json.NewDecoder(response.Body).Decode(&versions)).To(Succeed())
+	return versions
+}
+
+func seedVersionsAPIListing(fixture *versionsAPIFixture) []atc.ResourceVersion {
+	GinkgoHelper()
+
+	older := atc.Version{"some": "version", "ref": "blah"}
+	newer := atc.Version{"some": "version", "ref": "foo"}
+	metadata := atc.Metadata{{Name: "some", Value: "metadata"}}
+	fixture.scenario.Run(
+		fixture.builder.WithResourceVersions("some-resource", older, newer),
+		fixture.builder.WithVersionMetadata(
+			"some-resource", older, db.NewResourceConfigMetadataFields(metadata),
+		),
+		fixture.builder.WithVersionMetadata(
+			"some-resource", newer, db.NewResourceConfigMetadataFields(metadata),
+		),
+	)
+	olderRow := fixture.scenario.ResourceVersion("some-resource", older)
+	newerRow := fixture.scenario.ResourceVersion("some-resource", newer)
+	resource := fixture.resource("some-resource")
+	Expect(resource.DisableVersion(olderRow.ID())).To(Succeed())
+	found, err := resource.Reload()
+	Expect(err).NotTo(HaveOccurred())
+	Expect(found).To(BeTrue())
+
+	return []atc.ResourceVersion{
+		{ID: newerRow.ID(), Enabled: true, Version: newer, Metadata: metadata},
+		{ID: olderRow.ID(), Enabled: false, Version: older, Metadata: metadata},
+	}
+}
+
+func versionsAPIWithoutMetadata(versions []atc.ResourceVersion) []atc.ResourceVersion {
+	without := append([]atc.ResourceVersion(nil), versions...)
+	for i := range without {
+		without[i].Metadata = nil
+	}
+	return without
+}
 
 var _ = Describe("Versions API", func() {
 	var fakePipeline *dbfakes.FakePipeline
@@ -25,23 +255,44 @@ var _ = Describe("Versions API", func() {
 	})
 
 	Describe("GET /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions", func() {
-		var response *http.Response
-		var queryParams string
-		var fakeResource *dbfakes.FakeResource
+		var (
+			response         *http.Response
+			fixture          *versionsAPIFixture
+			queryParams      url.Values
+			pipelineRef      atc.PipelineRef
+			resourceName     string
+			resourcePublic   bool
+			pipelinePublic   bool
+			prepare          []func(*versionsAPIFixture)
+			expectedVersions []atc.ResourceVersion
+		)
 
 		BeforeEach(func() {
-			queryParams = ""
-			fakeResource = new(dbfakes.FakeResource)
+			queryParams = url.Values{}
+			pipelineRef = atc.PipelineRef{Name: "a-pipeline"}
+			resourceName = "some-resource"
+			resourcePublic = false
+			pipelinePublic = false
+			prepare = nil
+			expectedVersions = nil
 		})
 
 		JustBeforeEach(func() {
-			var err error
-
-			request, err := http.NewRequest("GET", server.URL+"/api/v1/teams/a-team/pipelines/a-pipeline/resources/some-resource/versions"+queryParams, nil)
-			Expect(err).NotTo(HaveOccurred())
-
-			response, err = client.Do(request)
-			Expect(err).NotTo(HaveOccurred())
+			fixture = newVersionsAPIFixture(pipelineRef, atc.Config{
+				Resources: atc.ResourceConfigs{{
+					Name:   "some-resource",
+					Type:   dbtest.BaseResourceType,
+					Source: atc.Source{"repository": "versions-api"},
+					Public: resourcePublic,
+				}},
+			})
+			if pipelinePublic {
+				Expect(fixture.pipeline.Expose()).To(Succeed())
+			}
+			for _, setup := range prepare {
+				setup(fixture)
+			}
+			response = fixture.requestVersions(resourceName, queryParams)
 		})
 
 		Context("when not authorized", func() {
@@ -50,10 +301,6 @@ var _ = Describe("Versions API", func() {
 			})
 
 			Context("and the pipeline is private", func() {
-				BeforeEach(func() {
-					fakePipeline.PublicReturns(false)
-				})
-
 				Context("user is not authenticated", func() {
 					BeforeEach(func() {
 						fakeAccess.IsAuthenticatedReturns(false)
@@ -77,39 +324,10 @@ var _ = Describe("Versions API", func() {
 
 			Context("and the pipeline is public", func() {
 				BeforeEach(func() {
-					fakePipeline.PublicReturns(true)
-					fakePipeline.ResourceReturns(fakeResource, true, nil)
-
-					returnedVersions := []atc.ResourceVersion{
-						{
-							ID:      4,
-							Enabled: true,
-							Version: atc.Version{
-								"some": "version",
-							},
-							Metadata: atc.Metadata{
-								{
-									Name:  "some",
-									Value: "metadata",
-								},
-							},
-						},
-						{
-							ID:      2,
-							Enabled: false,
-							Version: atc.Version{
-								"some": "version",
-							},
-							Metadata: atc.Metadata{
-								{
-									Name:  "some",
-									Value: "metadata",
-								},
-							},
-						},
-					}
-
-					fakeResource.VersionsReturns(returnedVersions, db.Pagination{}, true, nil)
+					pipelinePublic = true
+					prepare = append(prepare, func(fixture *versionsAPIFixture) {
+						expectedVersions = seedVersionsAPIListing(fixture)
+					})
 				})
 
 				It("returns 200 OK", func() {
@@ -125,58 +343,20 @@ var _ = Describe("Versions API", func() {
 
 				Context("when resource is public", func() {
 					BeforeEach(func() {
-						fakeResource.PublicReturns(true)
+						resourcePublic = true
 					})
 
 					It("returns the json", func() {
-						body, err := io.ReadAll(response.Body)
-						Expect(err).NotTo(HaveOccurred())
-
-						Expect(body).To(MatchJSON(`[
-					{
-						"id": 4,
-						"enabled": true,
-						"version": {"some":"version"},
-						"metadata": [
-							{
-								"name":"some",
-								"value":"metadata"
-							}
-						]
-					},
-					{
-						"id":2,
-						"enabled": false,
-						"version": {"some":"version"},
-						"metadata": [
-							{
-								"name":"some",
-								"value":"metadata"
-							}
-						]
-					}
-				]`))
+						Expect(decodeVersionsAPIResponse(response)).To(Equal(expectedVersions))
 					})
 				})
 
 				Context("when resource is not public", func() {
 					Context("when the user is not authenticated", func() {
 						It("returns the json without version metadata", func() {
-							body, err := io.ReadAll(response.Body)
-							Expect(err).NotTo(HaveOccurred())
-
-							Expect(body).To(MatchJSON(`[
-								{
-									"id": 4,
-									"enabled": true,
-									"version": {"some":"version"}
-								},
-								{
-									"id":2,
-									"enabled": false,
-									"version": {"some":"version"}
-								}
-							]`))
+							Expect(decodeVersionsAPIResponse(response)).To(Equal(
+								versionsAPIWithoutMetadata(expectedVersions),
+							))
 						})
 					})
 
@@ -186,21 +366,9 @@ var _ = Describe("Versions API", func() {
 						})
 
 						It("returns the json without version metadata", func() {
-							body, err := io.ReadAll(response.Body)
-							Expect(err).NotTo(HaveOccurred())
-
-							Expect(body).To(MatchJSON(`[
-								{
-									"id": 4,
-									"enabled": true,
-									"version": {"some":"version"}
-								},
-								{
-									"id":2,
-									"enabled": false,
-									"version": {"some":"version"}
-								}
-							]`))
+							Expect(decodeVersionsAPIResponse(response)).To(Equal(
+								versionsAPIWithoutMetadata(expectedVersions),
+							))
 						})
 					})
 				})
@@ -214,145 +382,214 @@ var _ = Describe("Versions API", func() {
 			})
 
 			It("finds the resource", func() {
-				Expect(fakePipeline.ResourceCallCount()).To(Equal(1))
-				Expect(fakePipeline.ResourceArgsForCall(0)).To(Equal("some-resource"))
+				Expect(response.StatusCode).To(Equal(http.StatusOK))
+				Expect(decodeVersionsAPIResponse(response)).To(BeEmpty())
 			})
 
 			Context("when finding the resource succeeds", func() {
-				BeforeEach(func() {
-					fakePipeline.ResourceReturns(fakeResource, true, nil)
-				})
-
 				Context("when no params are passed", func() {
-					It("does not set defaults for since and until", func() {
-						Expect(fakeResource.VersionsCallCount()).To(Equal(1))
+					BeforeEach(func() {
+						prepare = append(prepare, func(fixture *versionsAPIFixture) {
+							versions := make([]atc.Version, 101)
+							for i := range versions {
+								versions[i] = atc.Version{"ref": fmt.Sprintf("%03d", i)}
+							}
+							fixture.scenario.Run(
+								fixture.builder.WithResourceVersions("some-resource", versions...),
+							)
+						})
+					})
 
-						page, versionFilter := fakeResource.VersionsArgsForCall(0)
-						Expect(page).To(Equal(db.Page{
-							Limit: 100,
-						}))
-						Expect(versionFilter).To(Equal(atc.Version{}))
+					It("does not set defaults for since and until", func() {
+						actual := decodeVersionsAPIResponse(response)
+						Expect(actual).To(HaveLen(atc.PaginationAPIDefaultLimit))
+
+						expectedRefs := make([]string, 0, atc.PaginationAPIDefaultLimit)
+						for i := 1; i <= atc.PaginationAPIDefaultLimit; i++ {
+							expectedRefs = append(expectedRefs, fmt.Sprintf("%03d", i))
+						}
+						actualRefs := make([]string, 0, len(actual))
+						for _, version := range actual {
+							actualRefs = append(actualRefs, version.Version["ref"])
+						}
+						Expect(actualRefs).To(ConsistOf(expectedRefs))
 					})
 				})
 
 				Context("when all the params are passed", func() {
+					var (
+						match1 atc.Version
+						match2 atc.Version
+						match3 atc.Version
+						match4 atc.Version
+						fromID int
+						toID   int
+					)
+
 					BeforeEach(func() {
-						queryParams = "?from=5&to=7&limit=8&filter=ref:foo&filter=some-ref:blah"
+						match1 = atc.Version{"ref": "foo", "some-ref": "blah", "marker": "one"}
+						match2 = atc.Version{"ref": "foo", "some-ref": "blah", "marker": "two"}
+						match3 = atc.Version{"ref": "foo", "some-ref": "blah", "marker": "three"}
+						match4 = atc.Version{"ref": "foo", "some-ref": "blah", "marker": "four"}
+						prepare = append(prepare, func(fixture *versionsAPIFixture) {
+							fixture.scenario.Run(fixture.builder.WithResourceVersions(
+								"some-resource",
+								match1,
+								atc.Version{"ref": "foo", "some-ref": "wrong", "marker": "decoy-one"},
+								match2,
+								match3,
+								atc.Version{"ref": "wrong", "some-ref": "blah", "marker": "decoy-two"},
+								match4,
+							))
+							fromID = fixture.scenario.ResourceVersion("some-resource", match1).ID()
+							toID = fixture.scenario.ResourceVersion("some-resource", match4).ID()
+							queryParams.Set("from", strconv.Itoa(fromID))
+							queryParams.Set("to", strconv.Itoa(toID))
+							queryParams.Set("limit", "2")
+							queryParams.Add("filter", "ref:foo")
+							queryParams.Add("filter", "some-ref:blah")
+						})
 					})
 
 					It("passes them through", func() {
-						Expect(fakeResource.VersionsCallCount()).To(Equal(1))
-
-						page, versionFilter := fakeResource.VersionsArgsForCall(0)
-						Expect(page).To(Equal(db.Page{
-							From:  db.NewIntPtr(5),
-							To:    db.NewIntPtr(7),
-							Limit: 8,
+						Expect(decodeVersionsAPIResponse(response)).To(Equal([]atc.ResourceVersion{
+							{
+								ID:      fixture.scenario.ResourceVersion("some-resource", match2).ID(),
+								Enabled: true,
+								Version: match2,
+							},
+							{
+								ID:      fixture.scenario.ResourceVersion("some-resource", match1).ID(),
+								Enabled: true,
+								Version: match1,
+							},
 						}))
-						Expect(versionFilter).To(Equal(atc.Version{
-							"ref":      "foo",
-							"some-ref": "blah",
+
+						toOnly := url.Values{
+							"to":     []string{strconv.Itoa(toID)},
+							"limit":  []string{"2"},
+							"filter": []string{"ref:foo", "some-ref:blah"},
+						}
+						toResponse := fixture.requestVersions(resourceName, toOnly)
+						Expect(decodeVersionsAPIResponse(toResponse)).To(Equal([]atc.ResourceVersion{
+							{
+								ID:      fixture.scenario.ResourceVersion("some-resource", match4).ID(),
+								Enabled: true,
+								Version: match4,
+							},
+							{
+								ID:      fixture.scenario.ResourceVersion("some-resource", match3).ID(),
+								Enabled: true,
+								Version: match3,
+							},
 						}))
 					})
 				})
 
 				Context("when params includes version filter has special char", func() {
 					Context("space char", func() {
+						var matching atc.Version
+
 						BeforeEach(func() {
-							queryParams = "?filter=some%20ref:some%20value"
+							matching = atc.Version{"some ref": "some value", "marker": "match"}
+							queryParams.Set("filter", "some ref:some value")
+							prepare = append(prepare, func(fixture *versionsAPIFixture) {
+								fixture.scenario.Run(fixture.builder.WithResourceVersions(
+									"some-resource",
+									matching,
+									atc.Version{"some ref": "other", "marker": "decoy"},
+								))
+							})
 						})
 
 						It("passes them through", func() {
-							Expect(fakeResource.VersionsCallCount()).To(Equal(1))
-
-							_, versionFilter := fakeResource.VersionsArgsForCall(0)
-							Expect(versionFilter).To(Equal(atc.Version{
-								"some ref": "some value",
-							}))
+							Expect(decodeVersionsAPIResponse(response)).To(Equal([]atc.ResourceVersion{{
+								ID:      fixture.scenario.ResourceVersion("some-resource", matching).ID(),
+								Enabled: true,
+								Version: matching,
+							}}))
 						})
 					})
 
 					Context("% char", func() {
+						var matching atc.Version
+
 						BeforeEach(func() {
-							queryParams = "?filter=ref:some%25value"
+							matching = atc.Version{"ref": "some%value", "marker": "match"}
+							queryParams.Set("filter", "ref:some%value")
+							prepare = append(prepare, func(fixture *versionsAPIFixture) {
+								fixture.scenario.Run(fixture.builder.WithResourceVersions(
+									"some-resource",
+									matching,
+									atc.Version{"ref": "some-value", "marker": "decoy"},
+								))
+							})
 						})
 
 						It("passes them through", func() {
-							Expect(fakeResource.VersionsCallCount()).To(Equal(1))
-
-							_, versionFilter := fakeResource.VersionsArgsForCall(0)
-							Expect(versionFilter).To(Equal(atc.Version{
-								"ref": "some%value",
-							}))
+							Expect(decodeVersionsAPIResponse(response)).To(Equal([]atc.ResourceVersion{{
+								ID:      fixture.scenario.ResourceVersion("some-resource", matching).ID(),
+								Enabled: true,
+								Version: matching,
+							}}))
 						})
 					})
 
 					Context(": char", func() {
+						var matching atc.Version
+
 						BeforeEach(func() {
-							queryParams = "?filter=key%3Awith%3Acolon:abcdef"
+							matching = atc.Version{"key": "with:colon:abcdef", "marker": "match"}
+							queryParams.Set("filter", "key:with:colon:abcdef")
+							prepare = append(prepare, func(fixture *versionsAPIFixture) {
+								fixture.scenario.Run(fixture.builder.WithResourceVersions(
+									"some-resource",
+									matching,
+									atc.Version{"key:with:colon": "abcdef", "marker": "decoy"},
+								))
+							})
 						})
 
 						It("passes them through by splitting on first colon", func() {
-							Expect(fakeResource.VersionsCallCount()).To(Equal(1))
-
-							_, versionFilter := fakeResource.VersionsArgsForCall(0)
-							Expect(versionFilter).To(Equal(atc.Version{
-								"key": "with:colon:abcdef",
-							}))
+							Expect(decodeVersionsAPIResponse(response)).To(Equal([]atc.ResourceVersion{{
+								ID:      fixture.scenario.ResourceVersion("some-resource", matching).ID(),
+								Enabled: true,
+								Version: matching,
+							}}))
 						})
 					})
 
 					Context("if there is no : ", func() {
+						var versions []atc.Version
+
 						BeforeEach(func() {
-							queryParams = "?filter=abcdef"
+							versions = []atc.Version{{"ref": "one"}, {"ref": "two"}}
+							queryParams.Set("filter", "abcdef")
+							prepare = append(prepare, func(fixture *versionsAPIFixture) {
+								fixture.scenario.Run(
+									fixture.builder.WithResourceVersions("some-resource", versions...),
+								)
+							})
 						})
 
 						It("set no filter when fetching versions", func() {
-							Expect(fakeResource.VersionsCallCount()).To(Equal(1))
-
-							_, versionFilter := fakeResource.VersionsArgsForCall(0)
-							Expect(versionFilter).To(BeEmpty())
+							actual := decodeVersionsAPIResponse(response)
+							actualVersions := make([]atc.Version, 0, len(actual))
+							for _, version := range actual {
+								actualVersions = append(actualVersions, version.Version)
+							}
+							Expect(actualVersions).To(ConsistOf(versions))
 						})
 					})
 				})
 
 				Context("when getting the versions succeeds", func() {
-					var returnedVersions []atc.ResourceVersion
-
 					BeforeEach(func() {
-						queryParams = "?since=5&limit=2"
-						returnedVersions = []atc.ResourceVersion{
-							{
-								ID:      4,
-								Enabled: true,
-								Version: atc.Version{
-									"some": "version",
-									"ref":  "foo",
-								},
-								Metadata: atc.Metadata{
-									{
-										Name:  "some",
-										Value: "metadata",
-									},
-								},
-							},
-							{
-								ID:      2,
-								Enabled: false,
-								Version: atc.Version{
-									"some": "version",
-									"ref":  "blah",
-								},
-								Metadata: atc.Metadata{
-									{
-										Name:  "some",
-										Value: "metadata",
-									},
-								},
-							},
-						}
-
-						fakeResource.VersionsReturns(returnedVersions, db.Pagination{}, true, nil)
+						queryParams.Set("since", "5")
+						queryParams.Set("limit", "2")
+						prepare = append(prepare, func(fixture *versionsAPIFixture) {
+							expectedVersions = seedVersionsAPIListing(fixture)
+						})
 					})
 
 					It("returns 200 OK", func() {
@@ -367,61 +604,59 @@ var _ = Describe("Versions API", func() {
 					})
 
 					It("returns the json", func() {
-						body, err := io.ReadAll(response.Body)
-						Expect(err).NotTo(HaveOccurred())
-
-						Expect(body).To(MatchJSON(`[
-					{
-						"id": 4,
-						"enabled": true,
-						"version": {"some":"version", "ref":"foo"},
-						"metadata": [
-							{
-								"name":"some",
-								"value":"metadata"
-							}
-						]
-					},
-					{
-						"id":2,
-						"enabled": false,
-						"version": {"some":"version", "ref":"blah"},
-						"metadata": [
-							{
-								"name":"some",
-								"value":"metadata"
-							}
-						]
-					}
-				]`))
+						Expect(decodeVersionsAPIResponse(response)).To(Equal(expectedVersions))
 					})
 
 					Context("when next/previous pages are available", func() {
+						var (
+							olderCursorID int
+							newerCursorID int
+						)
+
 						BeforeEach(func() {
-							fakePipeline.NameReturns("some-pipeline")
-							fakeResource.VersionsReturns(returnedVersions, db.Pagination{
-								Newer: &db.Page{From: db.NewIntPtr(4), Limit: 2},
-								Older: &db.Page{To: db.NewIntPtr(2), Limit: 2},
-							}, true, nil)
+							pipelineRef.Name = "some-pipeline"
+							prepare = append(prepare, func(fixture *versionsAPIFixture) {
+								middle := atc.Version{"ref": "middle"}
+								pageNewer := atc.Version{"ref": "page-newer"}
+								newest := atc.Version{"ref": "newest"}
+								fixture.scenario.Run(fixture.builder.WithResourceVersions(
+									"some-resource", middle, pageNewer, newest,
+								))
+								queryParams.Del("since")
+								queryParams.Set(
+									"from",
+									strconv.Itoa(fixture.scenario.ResourceVersion("some-resource", middle).ID()),
+								)
+								olderCursorID = expectedVersions[0].ID
+								newerCursorID = fixture.scenario.ResourceVersion("some-resource", newest).ID()
+							})
 						})
 
 						It("returns Link headers per rfc5988", func() {
+							link := fmt.Sprintf(
+								`<%s/api/v1/teams/a-team/pipelines/%s/resources/some-resource/versions?`,
+								externalURL, fixture.ref.Name,
+							)
 							Expect(response.Header["Link"]).To(ConsistOf([]string{
-								fmt.Sprintf(`<%s/api/v1/teams/a-team/pipelines/some-pipeline/resources/some-resource/versions?from=4&limit=2>; rel="previous"`, externalURL),
-								fmt.Sprintf(`<%s/api/v1/teams/a-team/pipelines/some-pipeline/resources/some-resource/versions?to=2&limit=2>; rel="next"`, externalURL),
+								fmt.Sprintf(`%sfrom=%d&limit=2>; rel="previous"`, link, newerCursorID),
+								fmt.Sprintf(`%sto=%d&limit=2>; rel="next"`, link, olderCursorID),
 							}))
 						})
 
 						Context("and resource is on an instanced pipeline", func() {
 							BeforeEach(func() {
-								fakePipeline.InstanceVarsReturns(atc.InstanceVars{"branch": "master"})
+								pipelineRef.InstanceVars = atc.InstanceVars{"branch": "master"}
 							})
 
 							It("returns Link headers per rfc5988", func() {
-								link := fmt.Sprintf(`<%s/api/v1/teams/a-team/pipelines/some-pipeline/resources/some-resource/versions?`, externalURL)
+								link := fmt.Sprintf(
+									`<%s/api/v1/teams/a-team/pipelines/%s/resources/some-resource/versions?`,
+									externalURL, fixture.ref.Name,
+								)
+								vars := fixture.ref.QueryParams().Encode()
 								Expect(response.Header["Link"]).To(ConsistOf([]string{
-									link + `to=2&limit=2&vars.branch=%22master%22>; rel="next"`,
-									link + `from=4&limit=2&vars.branch=%22master%22>; rel="previous"`,
+									fmt.Sprintf(`%sto=%d&limit=2&%s>; rel="next"`, link, olderCursorID, vars),
+									fmt.Sprintf(`%sfrom=%d&limit=2&%s>; rel="previous"`, link, newerCursorID, vars),
 								}))
 							})
 						})
@@ -430,7 +665,14 @@ var _ = Describe("Versions API", func() {
 
 				Context("when the versions can't be found", func() {
 					BeforeEach(func() {
-						fakeResource.VersionsReturns(nil, db.Pagination{}, false, nil)
+						prepare = append(prepare, func(fixture *versionsAPIFixture) {
+							resource := versionsAPIVersionsNotFoundResource{
+								Resource: fixture.resource(resourceName),
+							}
+							fixture.overridePipeline(versionsAPIPipeline{
+								Pipeline: fixture.pipeline, resourceName: resourceName, resource: resource,
+							})
+						})
 					})
 
 					It("returns 404 not found", func() {
@@ -440,7 +682,13 @@ var _ = Describe("Versions API", func() {
 
 				Context("when getting the versions fails", func() {
 					BeforeEach(func() {
-						fakeResource.VersionsReturns(nil, db.Pagination{}, false, errors.New("oh no!"))
+						prepare = append(prepare, func(fixture *versionsAPIFixture) {
+							fixture.overridePipeline(versionsAPIPipeline{
+								Pipeline:     fixture.pipeline,
+								resourceName: resourceName,
+								resource:     fixture.doomedResource(resourceName),
+							})
+						})
 					})
 
 					It("returns 500 Internal Server Error", func() {
@@ -451,7 +699,9 @@ var _ = Describe("Versions API", func() {
 
 			Context("when finding the resource fails", func() {
 				BeforeEach(func() {
-					fakePipeline.ResourceReturns(nil, false, errors.New("oh no!"))
+					prepare = append(prepare, func(fixture *versionsAPIFixture) {
+						fixture.overridePipeline(fixture.doomedPipeline())
+					})
 				})
 
 				It("returns 500 Internal Server Error", func() {
@@ -461,7 +711,7 @@ var _ = Describe("Versions API", func() {
 
 			Context("when the resource is not found", func() {
 				BeforeEach(func() {
-					fakePipeline.ResourceReturns(nil, false, nil)
+					resourceName = "missing-resource"
 				})
 
 				It("returns 404 not found", func() {
