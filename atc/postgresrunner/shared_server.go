@@ -117,6 +117,12 @@ func (r *Runner) AdoptSuiteConfig(config SuiteConfig, node int) error {
 	if config.AdminDSN == "" {
 		return fmt.Errorf("admin DSN is empty")
 	}
+	if _, present := connectionSetting(config.AdminDSN, "service", ""); present {
+		return fmt.Errorf("admin DSN service setting is not supported")
+	}
+	if service, present := connectionSetting(config.AdminDSN, "service", "PGSERVICE"); present && service != "" {
+		return fmt.Errorf("PostgreSQL service %q from PGSERVICE is not supported by the shared runner", service)
+	}
 	parsed, err := pgx.ParseConfig(config.AdminDSN)
 	if err != nil {
 		return fmt.Errorf("parse admin DSN: %w", err)
@@ -180,6 +186,9 @@ func (r *Runner) ConnectionInfo() ConnectionInfo {
 	if err != nil {
 		return ConnectionInfo{}
 	}
+	sslRootCert, _ := connectionSetting(dsn, "sslrootcert", "PGSSLROOTCERT")
+	sslCert, _ := connectionSetting(dsn, "sslcert", "PGSSLCERT")
+	sslKey, _ := connectionSetting(dsn, "sslkey", "PGSSLKEY")
 	return ConnectionInfo{
 		Host:            host,
 		Port:            config.Port,
@@ -190,9 +199,9 @@ func (r *Runner) ConnectionInfo() ConnectionInfo {
 		ApplicationName: config.RuntimeParams["application_name"],
 		SSLMode:         sslMode,
 		SSLNegotiation:  sslNegotiation,
-		SSLRootCert:     connectionSetting(dsn, "sslrootcert", "PGSSLROOTCERT"),
-		SSLCert:         connectionSetting(dsn, "sslcert", "PGSSLCERT"),
-		SSLKey:          connectionSetting(dsn, "sslkey", "PGSSLKEY"),
+		SSLRootCert:     sslRootCert,
+		SSLCert:         sslCert,
+		SSLKey:          sslKey,
 		ConnectTimeout:  config.ConnectTimeout,
 	}
 }
@@ -832,7 +841,7 @@ func isDSNSpace(char byte) bool {
 }
 
 func childSSLMode(dsn string) (string, error) {
-	mode := connectionSetting(dsn, "sslmode", "PGSSLMODE")
+	mode, _ := connectionSetting(dsn, "sslmode", "PGSSLMODE")
 	if mode == "" {
 		return "", fmt.Errorf("sslmode must be explicit because PostgreSQL's prefer default cannot be represented by Concourse child configuration")
 	}
@@ -844,32 +853,37 @@ func childSSLMode(dsn string) (string, error) {
 	}
 }
 
-func connectionSetting(dsn, name, environmentName string) string {
+func connectionSetting(dsn, name, environmentName string) (string, bool) {
 	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
 		parsed, err := url.Parse(dsn)
 		if err == nil {
-			if value := parsed.Query().Get(name); value != "" {
-				return value
+			if values, present := parsed.Query()[name]; present {
+				if len(values) == 0 {
+					return "", true
+				}
+				return values[0], true
 			}
 		}
 	} else {
 		tokens, err := keywordDSNTokens(dsn)
 		if err == nil {
 			value := ""
+			present := false
 			for _, token := range tokens {
 				if token.key == name {
+					present = true
 					value = unquoteKeywordValue(dsn[token.valueStart:token.valueEnd])
 				}
 			}
-			if value != "" {
-				return value
+			if present {
+				return value, true
 			}
 		}
 	}
 	if environmentName != "" {
-		return os.Getenv(environmentName)
+		return os.LookupEnv(environmentName)
 	}
-	return ""
+	return "", false
 }
 
 func unquoteKeywordValue(value string) string {
