@@ -113,7 +113,7 @@ The required incremental ledger is exact: Task 1 `24 -> 24`, Task 2
 - Produces: one clone-local `Main db.Team` and the exact real factories
   consumed by Tasks 2-4.
 
-- [ ] **Step 1: Record the fake-backed baseline and exact census.**
+- [x] **Step 1: Record the fake-backed baseline and exact census.**
 
   Run:
 
@@ -126,7 +126,7 @@ The required incremental ledger is exact: Task 1 `24 -> 24`, Task 2
   Expected: package PASS; the type counts equal the 24-row census above; one
   `dbfakes` import is present.
 
-- [ ] **Step 2: Write the fixture smoke assertion before its helper and capture RED.**
+- [x] **Step 2: Write the fixture smoke assertion before its helper and capture RED.**
 
   Add this exact outer node to `tools_test.go`:
 
@@ -156,7 +156,7 @@ The required incremental ledger is exact: Task 1 `24 -> 24`, Task 2
 
   Expected: compile FAIL with `undefined: useMCPToolsDB`.
 
-- [ ] **Step 3: Implement the synchronized runner and fixture.**
+- [x] **Step 3: Implement the synchronized runner and fixture.**
 
   Register exactly once in `mcpserver_suite_test.go`:
 
@@ -229,7 +229,7 @@ The required incremental ledger is exact: Task 1 `24 -> 24`, Task 2
   valid only for `tools/list` and `get_info`, whose handlers do not dereference
   database dependencies.
 
-- [ ] **Step 4: Run GREEN and prove fixture sensitivity.**
+- [x] **Step 4: Run GREEN and prove fixture sensitivity.**
 
   Run:
 
@@ -247,7 +247,7 @@ The required incremental ledger is exact: Task 1 `24 -> 24`, Task 2
   correct expectation and rerun to PASS. Do not alter production code or a
   database row for this sensitivity check.
 
-- [ ] **Step 5: Verify lifecycle, review, and commit.**
+- [x] **Step 5: Verify lifecycle, review, and commit.**
 
   Confirm cleanup registration yields notification cleanup added by a spec,
   then singleton closes, primary close, and clone drop. Run:
@@ -281,7 +281,7 @@ The required incremental ledger is exact: Task 1 `24 -> 24`, Task 2
 - Produces: persisted pipeline/job/build/resource/scope helpers used only by
   tool specs; no new database interface wrapper.
 
-- [ ] **Step 1: Capture a persisted RED before fake teardown.**
+- [x] **Step 1: Capture a persisted RED before fake teardown.**
 
   While the existing broad fake-backed server still compiles, save the
   default-private `my-pipeline`, invoke that old server, and require both the
@@ -292,7 +292,7 @@ The required incremental ledger is exact: Task 1 `24 -> 24`, Task 2
   should Step 3 remove the broad fake setup and rewire the context to the clone
   dependencies for GREEN.
 
-- [ ] **Step 2: Add exact persisted helper operations.**
+- [x] **Step 2: Add exact persisted helper operations.**
 
   Add helpers that:
 
@@ -323,7 +323,7 @@ The required incremental ledger is exact: Task 1 `24 -> 24`, Task 2
   `v3`. Compare deprecated scope IDs with `ConsistOf`; timestamps may tie and
   must not be used to assume row order.
 
-- [ ] **Step 3: Isolate pure and not-yet-converted tool registration.**
+- [x] **Step 3: Isolate pure and not-yet-converted tool registration.**
 
   After Step 1's behavioral RED is recorded, remove the broad root fake setup.
   Let `tools/list` and `get_info` construct
@@ -341,7 +341,7 @@ The required incremental ledger is exact: Task 1 `24 -> 24`, Task 2
   dependencies first and rerun Step 1's assertion to GREEN before converting
   the other core contexts.
 
-- [ ] **Step 4: Convert every team/pipeline/job/build success and absence.**
+- [x] **Step 4: Convert every team/pipeline/job/build success and absence.**
 
   Convert `list_pipelines`, unknown team, `get_pipeline`, pause, unpause,
   `list_jobs`, `list_builds`, `get_build`, missing build, `trigger_job`,
@@ -367,7 +367,7 @@ The required incremental ledger is exact: Task 1 `24 -> 24`, Task 2
   - create `other` through `TeamFactory.CreateTeam` and compare team results by
     name/ID without relying on query order.
 
-- [ ] **Step 5: Convert every resource, notification, and scope outcome.**
+- [x] **Step 5: Convert every resource, notification, and scope outcome.**
 
   Convert `list_resources`, `check_resource`, both deprecated-scope specs, and
   both copy-version specs using the real pipeline resource graph.
@@ -402,7 +402,7 @@ The required incremental ledger is exact: Task 1 `24 -> 24`, Task 2
   not in the returned scope-ID set; assert error and unchanged current-scope
   version count.
 
-- [ ] **Step 6: Prove sensitivity, reconcile 24 to 5, review, and commit.**
+- [x] **Step 6: Prove sensitivity, reconcile 24 to 5, review, and commit.**
 
   Temporarily expect one reloaded build's ID to be `build.ID()+1` and one copy
   response to report two versions instead of three. Run their focused specs
@@ -439,7 +439,7 @@ The required incremental ledger is exact: Task 1 `24 -> 24`, Task 2
 - Produces: the sole `observedAgentWorkflowsFactory`, which remains through
   final acceptance as the only database-interface seam.
 
-- [ ] **Step 1: Define the sole real-backed observer/fault decorator.**
+- [x] **Step 1: Define the sole real-backed observer/fault decorator.**
 
   Define exactly one wrapper with an embedded real store:
 
@@ -508,7 +508,7 @@ The required incremental ledger is exact: Task 1 `24 -> 24`, Task 2
   no cross-spec global state. Do not add `Returns`, stubs, or alternate success
   fields.
 
-- [ ] **Step 2: Add valid workflow and ledger fixture helpers.**
+- [x] **Step 2: Add valid workflow and ledger fixture helpers.**
 
   Import workflows only through `AgentWorkflowsFactory.Import`. Use this exact
   valid schema-v3 source helper, changing `prompt` for each version:
@@ -538,7 +538,7 @@ The required incremental ledger is exact: Task 1 `24 -> 24`, Task 2
   boundaries, seed rows before, inside, exactly at, and after `[since, until)`
   and compare decoded rollups by key rather than row position.
 
-- [ ] **Step 3: Capture workflow and ledger RED before rewiring.**
+- [x] **Step 3: Capture workflow and ledger RED before rewiring.**
 
   Import at least two workflow names: for the first, import and promote its
   only version so latest equals live; for the second, import two versions and
@@ -552,7 +552,7 @@ The required incremental ledger is exact: Task 1 `24 -> 24`, Task 2
   neither fake reads clone state. Rebuild both servers from real dependencies
   and rerun to GREEN.
 
-- [ ] **Step 4: Convert all workflow outcomes without weakening query-shape coverage.**
+- [x] **Step 4: Convert all workflow outcomes without weakening query-shape coverage.**
 
   Convert workflow summary, configured list error, requested version, live
   default, latest fallback, unknown workflow, and unknown version specs.
@@ -576,7 +576,7 @@ The required incremental ledger is exact: Task 1 `24 -> 24`, Task 2
     `listErr: errors.New("boom")`; require the MCP error and one `List` call.
     No successful return override is permitted.
 
-- [ ] **Step 5: Convert all cost rollup and validation outcomes.**
+- [x] **Step 5: Convert all cost rollup and validation outcomes.**
 
   Replace fake rows and argument call counts with real inserts and decoded
   aggregation. Verify group-by-day totals, default `group_by=day`, and an
@@ -589,7 +589,7 @@ The required incremental ledger is exact: Task 1 `24 -> 24`, Task 2
   `bogus`, and expects validation failure without creating a clone; the handler
   rejects it before dereferencing the nil ledger.
 
-- [ ] **Step 6: Prove sensitivity, reconcile 5 to 3, review, and commit.**
+- [x] **Step 6: Prove sensitivity, reconcile 5 to 3, review, and commit.**
 
   Temporarily expect the wrong promoted live version and include the row exactly
   at `until` in the expected total. Require both focused specs to fail, restore,
@@ -628,7 +628,7 @@ The required incremental ledger is exact: Task 1 `24 -> 24`, Task 2
 - Produces: zero generated DB-fake constructors/imports and final serial plus
   nine-process evidence.
 
-- [ ] **Step 1: Add the production template-run helper.**
+- [x] **Step 1: Add the production template-run helper.**
 
   Save a resource-free pipeline with `Template: true` and a string `branch`
   parameter defaulting to `main`. Create runs only through
@@ -638,7 +638,7 @@ The required incremental ledger is exact: Task 1 `24 -> 24`, Task 2
   then reload through `GetRun` because the original object's `completed_at`
   snapshot is not refreshed by `Finish`.
 
-- [ ] **Step 2: Capture persisted RED and convert list behavior.**
+- [x] **Step 2: Capture persisted RED and convert list behavior.**
 
   Create and finish a real run, initially invoke the old fake-backed server,
   and require the decoded run ID/number/params/status/creator/timestamps to
@@ -655,7 +655,7 @@ The required incremental ledger is exact: Task 1 `24 -> 24`, Task 2
   contract and the production query's `number DESC`; derive every number from
   the created rows rather than literals.
 
-- [ ] **Step 3: Convert lookup and absence behavior.**
+- [x] **Step 3: Convert lookup and absence behavior.**
 
   Call `get_pipeline_run` with the dynamic number returned by `CreateRun` and
   compare every decoded field to the reloaded row. For a missing run, derive a
@@ -664,7 +664,7 @@ The required incremental ledger is exact: Task 1 `24 -> 24`, Task 2
   real absent pipeline for the unknown-pipeline list error. Remove the three
   remaining generated constructors and the `dbfakes` import.
 
-- [ ] **Step 4: Prove sensitivity and the exact zero census.**
+- [x] **Step 4: Prove sensitivity and the exact zero census.**
 
   Temporarily expect the completed run's number to be `run.Number()+1` and the
   custom-limit set to include the excluded oldest run. Require both focused
@@ -680,7 +680,7 @@ The required incremental ledger is exact: Task 1 `24 -> 24`, Task 2
   Expected: focused tests PASS serially and across nine processes; both census
   commands succeed at zero.
 
-- [ ] **Step 5: Run complete verification and lifecycle inspection.**
+- [x] **Step 5: Run complete verification and lifecycle inspection.**
 
   Run exactly:
 
@@ -718,7 +718,7 @@ The required incremental ledger is exact: Task 1 `24 -> 24`, Task 2
   - no full API/auth setup, production file, generated fake, service lifecycle,
     or unrelated concurrent edit changed.
 
-- [ ] **Step 6: Obtain final review, commit, and record evidence.**
+- [x] **Step 6: Obtain final review, commit, and record evidence.**
 
   Obtain independent review with no unresolved Critical, Important, or Minor
   finding. Commit the final test conversion:
@@ -735,26 +735,66 @@ The required incremental ledger is exact: Task 1 `24 -> 24`, Task 2
 
 ## Final Acceptance
 
-- [ ] `tools_test.go` reaches exactly 24 to 0 generated database-fake
+- [x] `tools_test.go` reaches exactly 24 to 0 generated database-fake
   constructors and removes `atc/db/dbfakes`.
-- [ ] The exact type census reconciles to zero, with no generated fake moved to
+- [x] The exact type census reconciles to zero, with no generated fake moved to
   another MCP test file and no successful state moved into a hand-written
   fake/decorator.
-- [ ] Every ordinary team, pipeline, job, build, resource, scope, workflow,
+- [x] Every ordinary team, pipeline, job, build, resource, scope, workflow,
   ledger, and pipeline-run result is persisted and asserted through real rows.
-- [ ] The sole workflow decorator delegates all successful reads, observes the
+- [x] The sole workflow decorator delegates all successful reads, observes the
   query-shape contract, and only synthesizes the configured `List` failure.
-- [ ] `check_resource` is proven by a real PostgreSQL notification that is
+- [x] `check_resource` is proven by a real PostgreSQL notification that is
   unlistened before clone teardown.
-- [ ] Pure MCP metadata/protocol specs create no clone; database-backed specs
+- [x] Pure MCP metadata/protocol specs create no clone; database-backed specs
   use one unique clone each.
-- [ ] Focused and full serial tests plus the full package across exactly nine
+- [x] Focused and full serial tests plus the full package across exactly nine
   Ginkgo processes pass against the one machine-wide PostgreSQL service.
-- [ ] No hard-coded database identity/order, production behavior, API/auth
+- [x] No hard-coded database identity/order, production behavior, API/auth
   scope expansion, service lifecycle change, unrelated file change, or push.
-- [ ] Independent final review reports no unresolved Critical, Important, or
+- [x] Independent final review reports no unresolved Critical, Important, or
   Minor finding.
 
 ## Observed Completion Evidence
 
-Record evidence here only after every Final Acceptance item is satisfied.
+- The incremental commits are `e2e63abc89` (fixture, 24 to 24),
+  `5fa84018a0` (core tools, 24 to 5), `212abb83c5` (workflow and cost tools,
+  5 to 3), and `1d827e6a9b` (pipeline-run tools, 3 to 0). The final exact
+  constructor search reports zero and `tools_test.go` no longer imports or
+  references `dbfakes`.
+- Task 1 captured the required undefined-helper RED, then proved a separately
+  constructed production team factory could read the committed team. Its
+  wrong-name sensitivity failed before restoration. The fixture focus passed
+  serially and across exactly nine Ginkgo processes.
+- Task 2's persisted private pipeline disagreed with the old fake's public
+  result before rewiring. After conversion, its 21-spec focus (19 converted
+  core-tool specs plus two not-yet-converted pipeline-run specs matched by the
+  focus expression) passed serially and across nine processes. Deliberately
+  expecting `build.ID()+1` and two rather than three copied versions failed
+  before restoration. Review confirmed real reloads, notification cleanup,
+  dynamic scope membership, and the exact 24-to-5 census.
+- Task 3's imported workflow definitions and real `17/7/3/0.75` ledger totals
+  disagreed with the old fake state before rewiring. The 11 workflow/cost
+  specs passed serially and across nine processes. Wrong-live-version and
+  inclusive-`until` sensitivities failed before restoration. Review confirmed
+  that the sole workflow decorator delegates every successful read and only
+  injects the configured `List` failure.
+- Task 4's persisted run initially disagreed with fake run ID `900`, providing
+  the required RED. After conversion, all five pipeline-run specs passed.
+  Custom-limit sensitivity failed with actual descending numbers
+  `[6, 5, 4, 3, 2]` versus the deliberately wrong `[6, 5, 4, 3, 1]`; lookup
+  sensitivity failed when expecting the real run number plus one. Both were
+  restored before final verification.
+- Final verification found PostgreSQL accepting connections at
+  `127.0.0.1:15432`; compile-only, the 38/38 converted focus, the uncached
+  54-spec package, the full 54/54 suite across exactly nine processes, vet,
+  formatting, and diff checks all passed. The zero-constructor and zero-import
+  searches passed.
+- Lifecycle inspection confirmed one synchronized runner, opt-in one-clone
+  fixtures, notification unlisten before connection teardown, singleton and
+  primary connection closes before clone drop, and checked exact-once response
+  body closes. Pure metadata and validation specs do not allocate clones.
+- Independent final review reported PASS with no Critical, Important, or
+  Minor finding. It confirmed the production `PipelineRunFactory` path,
+  dynamic 101-to-100 and 6-to-5 limit assertions, meaningful real absence,
+  full presentation checks, response cleanup, and the final zero census.
