@@ -1,6 +1,7 @@
 package wrappa_test
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 
@@ -10,7 +11,7 @@ import (
 	"github.com/concourse/concourse/atc/api/accessor/accessorfakes"
 	"github.com/concourse/concourse/atc/api/auth"
 	"github.com/concourse/concourse/atc/auditor/auditorfakes"
-	"github.com/concourse/concourse/atc/db/dbfakes"
+	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/wrappa"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -19,24 +20,20 @@ import (
 
 var _ = Describe("APIAuthWrappa", func() {
 	var (
-		fakeCheckPipelineAccessHandlerFactory   auth.CheckPipelineAccessHandlerFactory
-		fakeCheckBuildReadAccessHandlerFactory  auth.CheckBuildReadAccessHandlerFactory
-		fakeCheckBuildWriteAccessHandlerFactory auth.CheckBuildWriteAccessHandlerFactory
-		fakeCheckWorkerTeamAccessHandlerFactory auth.CheckWorkerTeamAccessHandlerFactory
-		fakeBuildFactory                        *dbfakes.FakeBuildFactory
+		checkPipelineAccessHandlerFactory   auth.CheckPipelineAccessHandlerFactory
+		checkBuildReadAccessHandlerFactory  auth.CheckBuildReadAccessHandlerFactory
+		checkBuildWriteAccessHandlerFactory auth.CheckBuildWriteAccessHandlerFactory
+		checkWorkerTeamAccessHandlerFactory auth.CheckWorkerTeamAccessHandlerFactory
 	)
 
 	BeforeEach(func() {
-		fakeTeamFactory := new(dbfakes.FakeTeamFactory)
-		workerFactory := new(dbfakes.FakeWorkerFactory)
-		fakeBuildFactory = new(dbfakes.FakeBuildFactory)
-		fakeCheckPipelineAccessHandlerFactory = auth.NewCheckPipelineAccessHandlerFactory(
-			fakeTeamFactory,
+		checkPipelineAccessHandlerFactory = auth.NewCheckPipelineAccessHandlerFactory(
+			teamFactory,
 		)
 
-		fakeCheckBuildReadAccessHandlerFactory = auth.NewCheckBuildReadAccessHandlerFactory(fakeBuildFactory)
-		fakeCheckBuildWriteAccessHandlerFactory = auth.NewCheckBuildWriteAccessHandlerFactory(fakeBuildFactory)
-		fakeCheckWorkerTeamAccessHandlerFactory = auth.NewCheckWorkerTeamAccessHandlerFactory(workerFactory)
+		checkBuildReadAccessHandlerFactory = auth.NewCheckBuildReadAccessHandlerFactory(buildFactory)
+		checkBuildWriteAccessHandlerFactory = auth.NewCheckBuildWriteAccessHandlerFactory(buildFactory)
+		checkWorkerTeamAccessHandlerFactory = auth.NewCheckWorkerTeamAccessHandlerFactory(workerFactory)
 	})
 
 	Describe("Wrap", func() {
@@ -48,10 +45,10 @@ var _ = Describe("APIAuthWrappa", func() {
 			}
 			Expect(func() {
 				wrappa.NewAPIAuthWrappa(
-					fakeCheckPipelineAccessHandlerFactory,
-					fakeCheckBuildReadAccessHandlerFactory,
-					fakeCheckBuildWriteAccessHandlerFactory,
-					fakeCheckWorkerTeamAccessHandlerFactory,
+					checkPipelineAccessHandlerFactory,
+					checkBuildReadAccessHandlerFactory,
+					checkBuildWriteAccessHandlerFactory,
+					checkWorkerTeamAccessHandlerFactory,
 				).Wrap(inputHandlers)
 			}).NotTo(Panic())
 		})
@@ -81,10 +78,10 @@ var _ = Describe("APIAuthWrappa", func() {
 				})
 
 				wrapped = wrappa.NewAPIAuthWrappa(
-					fakeCheckPipelineAccessHandlerFactory,
-					fakeCheckBuildReadAccessHandlerFactory,
-					fakeCheckBuildWriteAccessHandlerFactory,
-					fakeCheckWorkerTeamAccessHandlerFactory,
+					checkPipelineAccessHandlerFactory,
+					checkBuildReadAccessHandlerFactory,
+					checkBuildWriteAccessHandlerFactory,
+					checkWorkerTeamAccessHandlerFactory,
 				).Wrap(rata.Handlers{
 					atc.ListAgentWorkflowRunMetrics: delegate,
 				})
@@ -117,41 +114,46 @@ var _ = Describe("APIAuthWrappa", func() {
 			// BuildEvents: pipeline AND job public, or team access —
 			// not the pipeline-only AnyJobHandler tier.
 			Describe("build-scoped agent routes", func() {
-				var (
-					fakeJob *dbfakes.FakeJob
-				)
-
 				BeforeEach(func() {
-					build := new(dbfakes.FakeBuildForAPI)
-					fakePipeline := new(dbfakes.FakePipeline)
-					fakeJob = new(dbfakes.FakeJob)
-
-					build.PipelineIDReturns(41)
-					build.PipelineReturns(fakePipeline, true, nil)
-					build.AllAssociatedTeamNamesReturns([]string{"some-team"})
-					build.JobIDReturns(43)
-					build.JobNameReturns("some-job")
-					fakePipeline.PublicReturns(true)
-					fakePipeline.JobReturns(fakeJob, true, nil)
-					fakeBuildFactory.BuildForAPIReturns(build, true, nil)
-
 					delegate := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 						delegateHit = true
 						w.WriteHeader(http.StatusOK)
 					})
 
 					wrapped = wrappa.NewAPIAuthWrappa(
-						fakeCheckPipelineAccessHandlerFactory,
-						fakeCheckBuildReadAccessHandlerFactory,
-						fakeCheckBuildWriteAccessHandlerFactory,
-						fakeCheckWorkerTeamAccessHandlerFactory,
+						checkPipelineAccessHandlerFactory,
+						checkBuildReadAccessHandlerFactory,
+						checkBuildWriteAccessHandlerFactory,
+						checkWorkerTeamAccessHandlerFactory,
 					).Wrap(rata.Handlers{
 						atc.GetBuildAgentReviews:     delegate,
 						atc.ListBuildAgentRunMetrics: delegate,
 					})
 				})
 
-				serveBuild := func(routeName string) *http.Response {
+				createBuild := func(jobPublic bool) db.Build {
+					team, err := teamFactory.CreateTeam(atc.Team{Name: "some-team"})
+					Expect(err).NotTo(HaveOccurred())
+
+					pipeline, _, err := team.SavePipeline(
+						atc.PipelineRef{Name: "some-pipeline"},
+						atc.Config{Jobs: atc.JobConfigs{{Name: "some-job", Public: jobPublic}}},
+						db.ConfigVersion(0),
+						false,
+					)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(pipeline.Expose()).To(Succeed())
+
+					job, found, err := pipeline.Job("some-job")
+					Expect(err).NotTo(HaveOccurred())
+					Expect(found).To(BeTrue())
+
+					build, err := job.CreateBuild("some-user")
+					Expect(err).NotTo(HaveOccurred())
+					return build
+				}
+
+				serveBuild := func(routeName string, buildID int) *http.Response {
 					server := httptest.NewServer(accessor.NewHandler(
 						lagertest.NewTestLogger("api-auth-wrappa"),
 						"some-action",
@@ -162,7 +164,7 @@ var _ = Describe("APIAuthWrappa", func() {
 					))
 					defer server.Close()
 
-					req, err := http.NewRequest("GET", server.URL+"?:build_id=55", nil)
+					req, err := http.NewRequest("GET", fmt.Sprintf("%s?:build_id=%d", server.URL, buildID), nil)
 					Expect(err).NotTo(HaveOccurred())
 					resp, err := http.DefaultClient.Do(req)
 					Expect(err).NotTo(HaveOccurred())
@@ -175,18 +177,18 @@ var _ = Describe("APIAuthWrappa", func() {
 					Describe(routeName, func() {
 						It("401s anonymous requests when the job is private, even on a public pipeline", func() {
 							fakeaccess.IsAuthenticatedReturns(false)
-							fakeJob.PublicReturns(false)
+							build := createBuild(false)
 
-							resp := serveBuild(routeName)
+							resp := serveBuild(routeName, build.ID())
 							Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
 							Expect(delegateHit).To(BeFalse())
 						})
 
 						It("admits anonymous requests when the pipeline and job are both public", func() {
 							fakeaccess.IsAuthenticatedReturns(false)
-							fakeJob.PublicReturns(true)
+							build := createBuild(true)
 
-							resp := serveBuild(routeName)
+							resp := serveBuild(routeName, build.ID())
 							Expect(resp.StatusCode).To(Equal(http.StatusOK))
 							Expect(delegateHit).To(BeTrue())
 						})
@@ -194,9 +196,9 @@ var _ = Describe("APIAuthWrappa", func() {
 						It("admits team members regardless of job visibility", func() {
 							fakeaccess.IsAuthenticatedReturns(true)
 							fakeaccess.IsAuthorizedReturns(true)
-							fakeJob.PublicReturns(false)
+							build := createBuild(false)
 
-							resp := serveBuild(routeName)
+							resp := serveBuild(routeName, build.ID())
 							Expect(resp.StatusCode).To(Equal(http.StatusOK))
 							Expect(delegateHit).To(BeTrue())
 						})
@@ -217,10 +219,10 @@ var _ = Describe("APIAuthWrappa", func() {
 					})
 
 					wrapped = wrappa.NewAPIAuthWrappa(
-						fakeCheckPipelineAccessHandlerFactory,
-						fakeCheckBuildReadAccessHandlerFactory,
-						fakeCheckBuildWriteAccessHandlerFactory,
-						fakeCheckWorkerTeamAccessHandlerFactory,
+						checkPipelineAccessHandlerFactory,
+						checkBuildReadAccessHandlerFactory,
+						checkBuildWriteAccessHandlerFactory,
+						checkWorkerTeamAccessHandlerFactory,
 					).Wrap(rata.Handlers{
 						atc.GetAgentWorkflowStats: delegate,
 						atc.UpdateAgentWorkflow:   delegate,
@@ -317,10 +319,10 @@ var _ = Describe("APIAuthWrappa", func() {
 				})
 
 				wrapped = wrappa.NewAPIAuthWrappa(
-					fakeCheckPipelineAccessHandlerFactory,
-					fakeCheckBuildReadAccessHandlerFactory,
-					fakeCheckBuildWriteAccessHandlerFactory,
-					fakeCheckWorkerTeamAccessHandlerFactory,
+					checkPipelineAccessHandlerFactory,
+					checkBuildReadAccessHandlerFactory,
+					checkBuildWriteAccessHandlerFactory,
+					checkWorkerTeamAccessHandlerFactory,
 				).Wrap(rata.Handlers{
 					atc.CreateAgentTicket:     delegate,
 					atc.TransitionAgentTicket: delegate,
@@ -457,10 +459,10 @@ var _ = Describe("APIAuthWrappa", func() {
 				})
 
 				wrapped = wrappa.NewAPIAuthWrappa(
-					fakeCheckPipelineAccessHandlerFactory,
-					fakeCheckBuildReadAccessHandlerFactory,
-					fakeCheckBuildWriteAccessHandlerFactory,
-					fakeCheckWorkerTeamAccessHandlerFactory,
+					checkPipelineAccessHandlerFactory,
+					checkBuildReadAccessHandlerFactory,
+					checkBuildWriteAccessHandlerFactory,
+					checkWorkerTeamAccessHandlerFactory,
 				).Wrap(rata.Handlers{
 					atc.GetAgentDispatcher: delegate,
 					atc.SetAgentDispatcher: delegate,
