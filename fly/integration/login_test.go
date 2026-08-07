@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -236,9 +237,16 @@ var _ = Describe("login", func() {
 	})
 
 	Describe("with ca cert", func() {
+		var caCert []byte
+
 		BeforeEach(func() {
 			loginATCServer = ghttp.NewUnstartedServer()
-			cert, err := tls.X509KeyPair([]byte(serverCert), []byte(serverKey))
+			var serverCert, serverKey []byte
+			var err error
+			caCert, serverCert, serverKey, err = generateLocalhostTLSFixture(time.Now())
+			Expect(err).NotTo(HaveOccurred())
+
+			cert, err := tls.X509KeyPair(serverCert, serverKey)
 			Expect(err).NotTo(HaveOccurred())
 
 			loginATCServer.HTTPTestServer.TLS = &tls.Config{
@@ -265,7 +273,7 @@ var _ = Describe("login", func() {
 				Expect(err).NotTo(HaveOccurred())
 				caCertFilePath = caCertFile.Name()
 
-				err = os.WriteFile(caCertFilePath, []byte(serverCert), os.ModePerm)
+				err = os.WriteFile(caCertFilePath, caCert, os.ModePerm)
 				Expect(err).NotTo(HaveOccurred())
 
 				setupFlyCmd := exec.Command(flyPath, "-t", "some-target", "login", "-c", loginATCServer.URL(), "-n", "some-team", "--ca-cert", caCertFilePath, "-u", "user", "-p", "pass")
