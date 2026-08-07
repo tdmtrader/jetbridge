@@ -849,7 +849,7 @@ git commit -m "test(exec): persist resource and pipeline state"
 - Consumes Tasks 1–5 and the audit’s direct-import/explicit-constructor counting rule.
 - Produces observed counts and a retained-seam inventory; it does not claim an unverified global zero.
 
-- [ ] **Step 1: Format and type-check exact signatures.**
+- [x] **Step 1: Format and type-check exact signatures.**
 
 Run: gofmt -w atc/engine/engine_suite_test.go atc/engine/engine_test.go atc/engine/set_pipeline_delegate_test.go atc/engine/put_delegate_test.go atc/engine/builder_test.go atc/engine/get_delegate_test.go atc/engine/build_step_delegate_test.go atc/engine/check_delegate_test.go atc/exec/exec_suite_test.go atc/exec/put_step_test.go atc/exec/artifact_input_step_test.go atc/exec/artifact_output_step_test.go atc/exec/get_step_test.go atc/exec/check_step_test.go atc/exec/set_pipeline_step_test.go
 
@@ -857,7 +857,7 @@ Run: go test ./atc/engine ./atc/exec -run '^$'
 
 Expected: both packages compile, proving wrapper methods, InitializeArtifact arguments, runtime.Volume adapter, and factory signatures are correct.
 
-- [ ] **Step 2: Run focused and full package verification.**
+- [x] **Step 2: Run focused and full package verification.**
 
 Run: pg_isready -h 127.0.0.1 -p 15432 -U postgres
 
@@ -879,7 +879,7 @@ Run: ginkgo -p ./atc/engine/ ./atc/exec/
 
 Expected: PASS in parallel. Unrelated specs do not clone because only persisted-state Describes call the opt-in helpers.
 
-- [ ] **Step 3: Recount imports and explicit constructors.**
+- [x] **Step 3: Recount imports and explicit constructors.**
 
 Run:
 
@@ -890,7 +890,7 @@ rg -n 'new\(dbfakes\.Fake|dbfakes\.Fake[A-Za-z]+\{' atc/engine atc/exec --glob '
 
 Expected target-file payoff: 25 of 28 audited engine constructors removed, leaving one documented FakeBuild in each of engine_test.go, build_step_delegate_test.go, and check_delegate_test.go. All 21 audited exec constructors are removed, and the separate typed-nil dbfakes reference in put_step_test.go is also removed. Four target engine files and all six target exec files drop their dbfakes imports. Record observed counts if a narrower retained seam changes those exact targets.
 
-- [ ] **Step 4: Review lifecycle, assertions, and retained seams.**
+- [x] **Step 4: Review lifecycle, assertions, and retained seams.**
 
 Confirm from source and test output:
 
@@ -906,12 +906,15 @@ Confirm from source and test output:
 - Persisted-success Describes are separate from retained runtime/fault/authorization/validator Describes.
 - No product, benchmark, corpus, Docker, service lifecycle, phase6, or lifecycle-plan file changed.
 
-- [ ] **Step 5: Update audit bookkeeping and commit.**
+- [x] **Step 5: Update audit bookkeeping and commit.**
 
-Update only the engine/exec rows, totals, and batch recommendations in audit-remaining-core.md from the observed commands.
+Update only the engine/exec rows, totals, and batch recommendations in the
+ignored local `audit-remaining-core.md` from the observed commands. This SDD
+artifact is intentionally excluded by `.superpowers/sdd/.gitignore`; do not
+force-add it. Commit the tracked plan closure instead.
 
 ~~~bash
-git add .superpowers/sdd/2026-08-06-next-real-postgres-conversions/audit-remaining-core.md
+git add docs/superpowers/plans/2026-08-07-real-postgres-engine-exec-phase.md
 git commit -m "docs: recount engine and exec database fakes"
 ~~~
 
