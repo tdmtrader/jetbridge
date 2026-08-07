@@ -11,14 +11,10 @@ import (
 	"github.com/concourse/concourse/agent/publisher"
 	"github.com/concourse/concourse/agent/publisher/directgit"
 	"github.com/concourse/concourse/agent/snapshot"
-	containername "github.com/google/go-containerregistry/pkg/name"
 	"github.com/hashicorp/go-multierror"
 )
 
-const (
-	defaultAgentPublisherCredentialRoot = "/run/concourse-publisher"
-	incompletePRAuthoritySpineError     = "provider-native pull request production authority spine is incomplete; authoritative impact evaluation, action-bound initial publication composition, approved-baseline materialization and advancement, and lifecycle wiring must be composed before enablement"
-)
+const defaultAgentPublisherCredentialRoot = "/run/concourse-publisher"
 
 type agentPublisherCredentialFiles map[string]string
 
@@ -54,8 +50,6 @@ func (cmd *RunCommand) validateAgentPublisher() error {
 		if cmd.AgentPublisher.PolicyFile != "" ||
 			len(cmd.AgentPublisher.CredentialFiles) != 0 ||
 			cmd.AgentPublisher.DirectGitEnabled ||
-			cmd.AgentPublisher.PullRequestsEnabled ||
-			cmd.AgentPublisher.PRResourceImage != "" ||
 			(cmd.AgentPublisher.CredentialRoot != "" &&
 				cmd.AgentPublisher.CredentialRoot != defaultAgentPublisherCredentialRoot) {
 			errs = multierror.Append(errs, errors.New("--agent-publisher-enabled is required when publisher configuration is set"))
@@ -66,24 +60,8 @@ func (cmd *RunCommand) validateAgentPublisher() error {
 	if !cmd.AgentSnapshots.Enabled {
 		errs = multierror.Append(errs, errors.New("--agent-snapshot-enabled is required when --agent-publisher-enabled is set"))
 	}
-	if !cmd.AgentPublisher.DirectGitEnabled && !cmd.AgentPublisher.PullRequestsEnabled {
-		errs = multierror.Append(errs, errors.New("at least one of --agent-publisher-direct-git-enabled or --agent-publisher-pull-requests-enabled is required"))
-	}
-	if cmd.AgentPublisher.PullRequestsEnabled {
-		if !exactDigestImage(cmd.AgentPublisher.PRResourceImage) {
-			errs = multierror.Append(errs, errors.New("--agent-publisher-pr-resource-image must be an exact lowercase sha256 OCI digest reference"))
-		}
-		if cmd.AgentPublisher.PRPollInterval <= 0 {
-			errs = multierror.Append(errs, errors.New("--agent-publisher-pr-poll-interval must be positive"))
-		}
-		if cmd.AgentPublisher.PRFreshnessInterval < cmd.AgentPublisher.PRPollInterval {
-			errs = multierror.Append(errs, errors.New("--agent-publisher-pr-freshness-interval must be no shorter than --agent-publisher-pr-poll-interval"))
-		}
-		errs = multierror.Append(
-			errs, errors.New(incompletePRAuthoritySpineError),
-		)
-	} else if cmd.AgentPublisher.PRResourceImage != "" {
-		errs = multierror.Append(errs, errors.New("--agent-publisher-pull-requests-enabled is required when --agent-publisher-pr-resource-image is set"))
+	if !cmd.AgentPublisher.DirectGitEnabled {
+		errs = multierror.Append(errs, errors.New("--agent-publisher-direct-git-enabled is required"))
 	}
 	if !absoluteCleanPath(cmd.AgentPublisher.PolicyFile) {
 		errs = multierror.Append(errs, errors.New("--agent-publisher-policy-file must be an absolute clean path"))
@@ -121,18 +99,6 @@ func (cmd *RunCommand) validateAgentPublisher() error {
 	return errs.ErrorOrNil()
 }
 
-func exactDigestImage(image string) bool {
-	if image == "" || image != strings.TrimSpace(image) {
-		return false
-	}
-	parsed, err := containername.NewDigest(image, containername.StrictValidation)
-	if err != nil {
-		return false
-	}
-	_, err = snapshot.ParseDigest(parsed.DigestStr())
-	return err == nil
-}
-
 func absoluteCleanPath(path string) bool {
 	return path != "" && filepath.IsAbs(path) && filepath.Clean(path) == path
 }
@@ -152,9 +118,6 @@ func (cmd *RunCommand) buildAgentPublisher(
 ) (publisher.Executor, error) {
 	if !cmd.AgentPublisher.Enabled {
 		return nil, fmt.Errorf("agent publisher is disabled")
-	}
-	if cmd.AgentPublisher.PullRequestsEnabled {
-		return nil, errors.New(incompletePRAuthoritySpineError)
 	}
 	if isNilDependency(store) || isNilDependency(metadata) || isNilDependency(content) {
 		return nil, fmt.Errorf("agent publisher requires publication and snapshot stores")
@@ -224,18 +187,6 @@ func (cmd *RunCommand) validateAgentPublisherPolicy(policy publisher.Policy) err
 					"agent publisher: policy rule %d uses unsupported publisher %q",
 					index,
 					rule.Publisher,
-				)
-			}
-		case publisher.ModePullRequest:
-			if !cmd.AgentPublisher.PullRequestsEnabled {
-				return fmt.Errorf("agent publisher: pull request adapter is disabled")
-			}
-			if rule.Publisher != publisher.GitPublisher ||
-				rule.Adapter != publisher.AdapterGitHub {
-				return fmt.Errorf(
-					"agent publisher: policy rule %d uses unsupported provider-native PR adapter %q",
-					index,
-					rule.Adapter,
 				)
 			}
 		default:

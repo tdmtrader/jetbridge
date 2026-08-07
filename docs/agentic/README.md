@@ -9,14 +9,6 @@ another node may consume it.
 The product model and the assessment of the earlier ticket-centric work are
 documented in [Agentic Workflows as Functions over Snapshots](../superpowers/specs/2026-07-21-agentic-workflows-as-functions-design.md).
 
-Provider-native pull-request publication and its polling monitor are operated
-through the separate
-[PR publishing runbook](PR_PUBLISH_OPERATIONS.md), with live-provider evidence
-tracked separately in the
-[PR publishing proof record](PR_PUBLISH_LIVE_PROOF.md). The forge remains the
-final merge authority; Jetbridge publishes and revises the exact reviewed
-source branch but never completes the pull request.
-
 ## Runtime prerequisites
 
 The web node must enable durable snapshot storage and select the agent runtime

@@ -370,10 +370,6 @@ type RunCommand struct {
 		PolicyFile          string                        `long:"agent-publisher-policy-file" description:"Absolute path to the mounted exact-destination publisher policy JSON file."`
 		CredentialFiles     agentPublisherCredentialFiles `long:"agent-publisher-credential-file" description:"Map one policy credential reference to one mounted absolute file path. May be specified multiple times." value-name:"REFERENCE:ABSOLUTE-PATH"`
 		DirectGitEnabled    bool                          `long:"agent-publisher-direct-git-enabled" description:"Enable the in-process direct Git branch and trunk publication adapter."`
-		PullRequestsEnabled bool                          `long:"agent-publisher-pull-requests-enabled" description:"Enable provider-native pull request publication and monitoring."`
-		PRResourceImage     string                        `long:"agent-publisher-pr-resource-image" description:"Exact digest-pinned forge-pr resource image used by server-owned monitor pipelines."`
-		PRPollInterval      time.Duration                 `long:"agent-publisher-pr-poll-interval" default:"5m" description:"Polling interval for provider-native pull request observations."`
-		PRFreshnessInterval time.Duration                 `long:"agent-publisher-pr-freshness-interval" default:"6h" description:"Maximum interval before a pending pull request is refreshed against its moving target."`
 		RequestTimeout      time.Duration                 `long:"agent-publisher-request-timeout" default:"30s" description:"End-to-end timeout for one provider reconciliation or publication."`
 		LeaseDuration       time.Duration                 `long:"agent-publisher-lease-duration" default:"5m" description:"Durable publication lease before lookup-based retry reconciliation."`
 	} `group:"Agent Publisher"`

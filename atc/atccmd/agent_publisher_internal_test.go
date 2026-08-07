@@ -122,6 +122,8 @@ func TestAgentPublisherPolicyValidationSelectsOnlyEnabledAdapterLanes(t *testing
 		Adapter: publisher.AdapterDirectGit, CredentialReference: "widget-git",
 		RemoteURL: "https://git.example/acme/widget.git",
 	}
+	// Provider-native pull requests were removed. A policy that still names the
+	// mode must be refused as an unsupported mode rather than quietly admitted.
 	github := publisher.PolicyRule{
 		Team: "engineering", Publisher: publisher.GitPublisher,
 		Mode: publisher.ModePullRequest, ApprovalPolicyVersion: "engineering/v1",
@@ -133,23 +135,18 @@ func TestAgentPublisherPolicyValidationSelectsOnlyEnabledAdapterLanes(t *testing
 	}
 	for name, test := range map[string]struct {
 		directEnabled bool
-		prEnabled     bool
 		rules         []publisher.PolicyRule
 		wantError     string
 	}{
-		"PR only GitHub": {
-			prEnabled: true, rules: []publisher.PolicyRule{github},
+		"direct rule while enabled": {
+			directEnabled: true, rules: []publisher.PolicyRule{direct},
 		},
-		"mixed lanes": {
-			directEnabled: true, prEnabled: true,
-			rules: []publisher.PolicyRule{direct, github},
-		},
-		"PR rule while disabled": {
+		"pull request rule is unsupported": {
 			directEnabled: true, rules: []publisher.PolicyRule{github},
-			wantError: "pull request adapter is disabled",
+			wantError: "unsupported mode",
 		},
 		"direct rule while disabled": {
-			prEnabled: true, rules: []publisher.PolicyRule{direct},
+			rules:     []publisher.PolicyRule{direct},
 			wantError: "direct Git adapter is disabled",
 		},
 	} {
@@ -160,7 +157,6 @@ func TestAgentPublisherPolicyValidationSelectsOnlyEnabledAdapterLanes(t *testing
 			}
 			command := &RunCommand{}
 			command.AgentPublisher.DirectGitEnabled = test.directEnabled
-			command.AgentPublisher.PullRequestsEnabled = test.prEnabled
 			err := command.validateAgentPublisherPolicy(policy)
 			if test.wantError == "" {
 				if err != nil {
@@ -204,25 +200,6 @@ func TestAgentPublisherBuilderFailsClosedWhenDisabled(t *testing.T) {
 	)
 	if err == nil || !strings.Contains(err.Error(), "disabled") {
 		t.Fatalf("disabled builder error = %v", err)
-	}
-}
-
-func TestAgentPublisherBuilderFailsClosedWhenPRAuthoritySpineIsIncomplete(t *testing.T) {
-	command := configuredAgentPublisherCommand(t, `{
-		"schema_version":1,
-		"rules":[{"team":"engineering","publisher":"git-publisher/v1","mode":"branch","approval_policy_version":"engineering/v1","target_branch":"main","destination":"git.example/acme/widget","adapter":"direct-git","credential_reference":"widget-git","remote_url":"https://git.example/acme/widget.git"}]
-	}`)
-	command.AgentPublisher.PullRequestsEnabled = true
-
-	_, err := command.buildAgentPublisher(
-		publishertest.NewMemoryStore(time.Now),
-		&dbfakes.FakeAgentSnapshotsFactory{},
-		&compositionContentStore{},
-	)
-	if err == nil || !strings.Contains(
-		err.Error(), "production authority spine is incomplete",
-	) {
-		t.Fatalf("incomplete PR builder error = %v", err)
 	}
 }
 

@@ -22,10 +22,6 @@ func TestAgentPublisherFlagSurface(t *testing.T) {
 		"agent-publisher-policy-file":           nil,
 		"agent-publisher-credential-file":       nil,
 		"agent-publisher-direct-git-enabled":    nil,
-		"agent-publisher-pull-requests-enabled": nil,
-		"agent-publisher-pr-resource-image":     nil,
-		"agent-publisher-pr-poll-interval":      {"5m"},
-		"agent-publisher-pr-freshness-interval": {"6h"},
 		"agent-publisher-request-timeout":       {"30s"},
 		"agent-publisher-lease-duration":        {"5m"},
 	} {
@@ -40,6 +36,10 @@ func TestAgentPublisherFlagSurface(t *testing.T) {
 	}
 
 	oldFlags := []string{
+		"agent-publisher-pull-requests-enabled",
+		"agent-publisher-pr-resource-image",
+		"agent-publisher-pr-poll-interval",
+		"agent-publisher-pr-freshness-interval",
 		"agent-publisher-gateway-enabled",
 		"agent-publisher-gateway-endpoint",
 		"agent-publisher-gateway-credential-root",
@@ -61,80 +61,6 @@ func TestAgentPublisherFlagSurface(t *testing.T) {
 		if !errors.As(err, &flagError) || flagError.Type != flags.ErrUnknownFlag {
 			t.Errorf("legacy --%s parse error = %v, want unknown flag", name, err)
 		}
-	}
-}
-
-func TestAgentPublisherValidationSupportsProviderNativePullRequests(t *testing.T) {
-	valid := func() *atccmd.RunCommand {
-		command := &atccmd.RunCommand{}
-		command.AgentSnapshots.Enabled = true
-		command.AgentPublisher.Enabled = true
-		command.AgentPublisher.PolicyFile = "/run/concourse-publisher-policy/policy.json"
-		command.AgentPublisher.CredentialRoot = "/run/concourse-publisher"
-		command.AgentPublisher.CredentialFiles = map[string]string{
-			"widget-write": "/run/concourse-publisher/widget-write",
-		}
-		command.AgentPublisher.PullRequestsEnabled = true
-		command.AgentPublisher.PRResourceImage = "registry.example/forge-pr-resource@sha256:" +
-			strings.Repeat("a", 64)
-		command.AgentPublisher.PRPollInterval = 5 * time.Minute
-		command.AgentPublisher.PRFreshnessInterval = 6 * time.Hour
-		command.AgentPublisher.RequestTimeout = 30 * time.Second
-		command.AgentPublisher.LeaseDuration = 5 * time.Minute
-		return command
-	}
-
-	if err := atccmd.ValidateAgentPublisherForTest(valid()); err == nil ||
-		!strings.Contains(err.Error(), "production authority spine is incomplete") {
-		t.Fatalf("PR-only publisher must fail closed before production composition: %v", err)
-	}
-	tests := map[string]struct {
-		mutate func(*atccmd.RunCommand)
-		want   string
-	}{
-		"unpinned resource image": {
-			mutate: func(command *atccmd.RunCommand) {
-				command.AgentPublisher.PRResourceImage = "registry.example/forge-pr-resource:latest"
-			},
-			want: "pr-resource-image",
-		},
-		"uppercase digest": {
-			mutate: func(command *atccmd.RunCommand) {
-				command.AgentPublisher.PRResourceImage =
-					"registry.example/forge-pr-resource@sha256:" +
-						strings.Repeat("A", 64)
-			},
-			want: "pr-resource-image",
-		},
-		"zero poll": {
-			mutate: func(command *atccmd.RunCommand) {
-				command.AgentPublisher.PRPollInterval = 0
-			},
-			want: "pr-poll-interval",
-		},
-		"freshness before poll": {
-			mutate: func(command *atccmd.RunCommand) {
-				command.AgentPublisher.PRFreshnessInterval =
-					command.AgentPublisher.PRPollInterval - time.Nanosecond
-			},
-			want: "pr-freshness-interval",
-		},
-		"disabled with PR image": {
-			mutate: func(command *atccmd.RunCommand) {
-				command.AgentPublisher.PullRequestsEnabled = false
-			},
-			want: "pull-requests-enabled",
-		},
-	}
-	for name, test := range tests {
-		t.Run(name, func(t *testing.T) {
-			command := valid()
-			test.mutate(command)
-			err := atccmd.ValidateAgentPublisherForTest(command)
-			if err == nil || !strings.Contains(err.Error(), test.want) {
-				t.Fatalf("validation error = %v, want %q", err, test.want)
-			}
-		})
 	}
 }
 
