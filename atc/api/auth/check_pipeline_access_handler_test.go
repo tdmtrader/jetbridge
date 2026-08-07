@@ -1,6 +1,7 @@
 package auth_test
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 
@@ -9,6 +10,7 @@ import (
 	"github.com/concourse/concourse/atc/api/auth"
 	"github.com/concourse/concourse/atc/auditor/auditorfakes"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/db/dbfakes"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -177,7 +179,14 @@ var _ = Describe("CheckPipelineAccessHandler", func() {
 
 	Context("when getting pipeline fails", func() {
 		BeforeEach(func() {
-			factory = doomedTeamFactory()
+			// A real database cannot selectively fail only Team.Pipeline while
+			// leaving TeamFactory.FindTeam healthy. Keep this seam deliberately
+			// narrow so the request reaches the late lookup under test.
+			failingTeam := new(dbfakes.FakeTeam)
+			failingTeam.PipelineReturns(nil, false, errors.New("pipeline lookup failed"))
+			failingFactory := new(dbfakes.FakeTeamFactory)
+			failingFactory.FindTeamReturns(failingTeam, true, nil)
+			factory = failingFactory
 		})
 
 		It("returns 500", func() {
