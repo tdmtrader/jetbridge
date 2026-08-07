@@ -1,14 +1,18 @@
 package jetbridge_test
 
 import (
+	"database/sql"
 	"fmt"
 	"testing"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
+	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbfakes"
+	"github.com/concourse/concourse/atc/db/dbtest"
+	"github.com/concourse/concourse/atc/db/lock"
 	"github.com/concourse/concourse/atc/postgresrunner"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -18,19 +22,61 @@ var postgresRunner postgresrunner.Runner
 var _ = postgresrunner.GinkgoRunner(&postgresRunner)
 
 type jetbridgeDB struct {
-	WorkerFactory db.WorkerFactory
+	Conn                  db.DbConn
+	LockFactory           lock.LockFactory
+	Builder               dbtest.Builder
+	TeamFactory           db.TeamFactory
+	WorkerFactory         db.WorkerFactory
+	VolumeRepository      db.VolumeRepository
+	ContainerRepository   db.ContainerRepository
+	BuildFactory          db.BuildFactory
+	ResourceConfigFactory db.ResourceConfigFactory
+	ResourceCacheFactory  db.ResourceCacheFactory
 }
 
 func useJetbridgeDB() jetbridgeDB {
 	GinkgoHelper()
+
 	postgresRunner.CreateTestDBFromTemplate()
 	DeferCleanup(postgresRunner.DropTestDB)
+
 	conn := postgresRunner.OpenConn()
 	DeferCleanup(func() { Expect(conn.Close()).To(Succeed()) })
-	return jetbridgeDB{WorkerFactory: db.NewWorkerFactory(
-		conn,
-		db.NewStaticWorkerCache(lager.NewLogger("jetbridge-test"), conn, 0),
-	)}
+	db.CleanupBaseResourceTypesCache()
+
+	var lockConns [lock.FactoryCount]*sql.DB
+	for i := 0; i < lock.FactoryCount; i++ {
+		lockConn := postgresRunner.OpenSingleton()
+		lockConns[i] = lockConn
+		connToClose := lockConn
+		DeferCleanup(func() { Expect(connToClose.Close()).To(Succeed()) })
+	}
+
+	lockFactory := lock.NewLockFactory(
+		lockConns,
+		func(lager.Logger, lock.LockID) {},
+		func(lager.Logger, lock.LockID) {},
+	)
+
+	return jetbridgeDB{
+		Conn:                  conn,
+		LockFactory:           lockFactory,
+		Builder:               dbtest.NewBuilder(conn, lockFactory),
+		TeamFactory:           db.NewTeamFactory(conn, lockFactory),
+		WorkerFactory:         db.NewWorkerFactory(conn, db.NewStaticWorkerCache(lagertest.NewTestLogger("jetbridge-postgres-fixture"), conn, 0)),
+		VolumeRepository:      db.NewVolumeRepository(conn),
+		ContainerRepository:   db.NewContainerRepository(conn),
+		BuildFactory:          db.NewBuildFactory(conn, lockFactory, 0, time.Hour),
+		ResourceConfigFactory: db.NewResourceConfigFactory(conn, lockFactory),
+		ResourceCacheFactory:  db.NewResourceCacheFactory(conn, lockFactory),
+	}
+}
+
+func closedJetbridgeCloneConn() db.DbConn {
+	GinkgoHelper()
+	conn := postgresRunner.OpenConn()
+	Expect(conn.Close()).To(Succeed())
+	return conn
 }
 
 func persistNamedWorker(database jetbridgeDB, name string) (db.Worker, error) {
