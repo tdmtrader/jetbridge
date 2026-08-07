@@ -10,7 +10,7 @@ import (
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
+	"github.com/concourse/concourse/atc/db/dbtest"
 	"github.com/concourse/concourse/atc/engine"
 	"github.com/concourse/concourse/atc/event"
 	"github.com/concourse/concourse/atc/exec"
@@ -22,9 +22,10 @@ import (
 var _ = Describe("PutDelegate", func() {
 	var (
 		logger            *lagertest.TestLogger
-		fakeBuild         *dbfakes.FakeBuild
 		fakeClock         *fakeclock.FakeClock
 		fakePolicyChecker *policyfakes.FakeChecker
+		realBuild         db.Build
+		resourceCache     db.ResourceCache
 
 		state exec.RunState
 
@@ -33,12 +34,13 @@ var _ = Describe("PutDelegate", func() {
 		delegate   exec.PutDelegate
 		info       resource.VersionResult
 		exitStatus exec.ExitStatus
+		plan       atc.PutPlan
+		source     atc.Source
 	)
 
 	BeforeEach(func() {
 		logger = lagertest.NewTestLogger("test")
 
-		fakeBuild = new(dbfakes.FakeBuild)
 		fakeClock = fakeclock.NewFakeClock(now)
 		credVars := vars.StaticVariables{
 			"source-param": "super-secret-source",
@@ -50,10 +52,49 @@ var _ = Describe("PutDelegate", func() {
 			Version:  atc.Version{"foo": "bar"},
 			Metadata: atc.Metadata{{Name: "baz", Value: "shmaz"}},
 		}
+		plan = atc.PutPlan{
+			Name:     "some-name",
+			Type:     dbtest.BaseResourceType,
+			Resource: "some-resource",
+		}
+		source = atc.Source{"some": "source"}
+
+		fixture := useEngineDB()
+		_, pipeline, _, build := createEngineJobBuild(
+			fixture,
+			"some-team",
+			atc.PipelineRef{
+				Name:         "some-pipeline",
+				InstanceVars: atc.InstanceVars{"branch": "master"},
+			},
+			atc.Config{
+				Jobs: atc.JobConfigs{{Name: "some-job"}},
+				Resources: atc.ResourceConfigs{{
+					Name:   "some-resource",
+					Type:   dbtest.BaseResourceType,
+					Source: source,
+				}},
+			},
+			"some-user",
+		)
+		realBuild = build
+		scenario := &dbtest.Scenario{Pipeline: pipeline}
+		scenario.Run(fixture.Builder.WithResourceVersions("some-resource", info.Version))
+
+		var err error
+		resourceCache, err = fixture.ResourceCacheFactory.FindOrCreateResourceCache(
+			db.ForBuild(realBuild.ID()),
+			dbtest.BaseResourceType,
+			info.Version,
+			source,
+			nil,
+			nil,
+		)
+		Expect(err).NotTo(HaveOccurred())
 
 		fakePolicyChecker = new(policyfakes.FakeChecker)
 
-		delegate = engine.NewPutDelegate(fakeBuild, "some-plan-id", state, fakeClock, fakePolicyChecker)
+		delegate = engine.NewPutDelegate(realBuild, "some-plan-id", state, fakeClock, fakePolicyChecker)
 	})
 
 	Describe("Finished", func() {
@@ -62,8 +103,10 @@ var _ = Describe("PutDelegate", func() {
 		})
 
 		It("saves an event", func() {
-			Expect(fakeBuild.SaveEventCallCount()).To(Equal(1))
-			Expect(fakeBuild.SaveEventArgsForCall(0)).To(Equal(event.FinishPut{
+			found, err := realBuild.Reload()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(consumeEngineBuildEvent(realBuild, 0)).To(Equal(event.FinishPut{
 				Origin:          event.Origin{ID: event.OriginID("some-plan-id")},
 				Time:            now.Unix(),
 				ExitStatus:      int(exitStatus),
@@ -74,33 +117,20 @@ var _ = Describe("PutDelegate", func() {
 	})
 
 	Describe("SaveOutput", func() {
-		var plan atc.PutPlan
-		var source atc.Source
-		var resourceCache *dbfakes.FakeResourceCache
-
 		JustBeforeEach(func() {
-			plan = atc.PutPlan{
-				Name:     "some-name",
-				Type:     "some-type",
-				Resource: "some-resource",
-			}
-			source = atc.Source{"some": "source"}
-			resourceCache = new(dbfakes.FakeResourceCache)
-			resourceCache.IDReturns(123)
-
 			delegate.SaveOutput(logger, plan, source, resourceCache, info)
 		})
 
 		It("saves the build output", func() {
-			Expect(fakeBuild.SaveOutputCallCount()).To(Equal(1))
-			resourceType, rc, sourceArg, version, metadata, name, resource := fakeBuild.SaveOutputArgsForCall(0)
-			Expect(resourceType).To(Equal(plan.Type))
-			Expect(sourceArg).To(Equal(source))
-			Expect(rc.ID()).To(Equal(resourceCache.ID()))
-			Expect(version).To(Equal(info.Version))
-			Expect(metadata).To(Equal(db.NewResourceConfigMetadataFields(info.Metadata)))
-			Expect(name).To(Equal(plan.Name))
-			Expect(resource).To(Equal(plan.Resource))
+			found, err := realBuild.Reload()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			_, outputs, err := realBuild.Resources()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(outputs).To(Equal([]db.BuildOutput{{
+				Name:    "some-name",
+				Version: info.Version,
+			}}))
 		})
 	})
 })
