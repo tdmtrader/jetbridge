@@ -10,7 +10,6 @@ import (
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/skymarshal/token"
 	"github.com/concourse/concourse/skymarshal/token/tokenfakes"
 	"github.com/go-jose/go-jose/v4/jwt"
@@ -22,20 +21,22 @@ var _ = Describe("Access Tokens", func() {
 
 	Describe("StoreAccessToken", func() {
 		var (
+			realdb                 *realTokenDB
 			generator              *tokenfakes.FakeGenerator
 			claimsParser           *tokenfakes.FakeClaimsParser
-			accessTokenFactory     *dbfakes.FakeAccessTokenFactory
-			userFactory            *dbfakes.FakeUserFactory
+			accessTokenFactory     db.AccessTokenFactory
+			userFactory            db.UserFactory
 			displayUserIdGenerator *atcfakes.FakeDisplayUserIdGenerator
 
 			dummyLogger *lagertest.TestLogger
 		)
 
 		BeforeEach(func() {
+			realdb = useRealTokenDB()
 			generator = new(tokenfakes.FakeGenerator)
 			claimsParser = new(tokenfakes.FakeClaimsParser)
-			accessTokenFactory = new(dbfakes.FakeAccessTokenFactory)
-			userFactory = new(dbfakes.FakeUserFactory)
+			accessTokenFactory = realdb.AccessTokens
+			userFactory = realdb.Users
 			displayUserIdGenerator = new(atcfakes.FakeDisplayUserIdGenerator)
 
 			dummyLogger = lagertest.NewTestLogger("whatever")
@@ -55,6 +56,8 @@ var _ = Describe("Access Tokens", func() {
 
 			expectStatusCode int
 			expectBody       string
+			expectTokenDelta int
+			expectUserDelta  int
 		}
 
 		for _, t := range []testCase{
@@ -77,6 +80,8 @@ var _ = Describe("Access Tokens", func() {
 
 				expectStatusCode: 200,
 				expectBody:       `{"access_token":"123abc","token_type":"bearer","expires_in":1234,"id_token":"a.b.c"}`,
+				expectTokenDelta: 1,
+				expectUserDelta:  1,
 			},
 			{
 				it: "forwards failure response",
@@ -131,16 +136,44 @@ var _ = Describe("Access Tokens", func() {
 				storeUserErrors: true,
 
 				expectStatusCode: 500,
+				expectTokenDelta: 1,
 			},
 		} {
 			t := t
 
 			It(t.it, func() {
+				expiry := jwt.NumericDate(2000000000)
+				claims := db.Claims{
+					Claims: jwt.Claims{
+						Subject: "some-subject",
+						Expiry:  &expiry,
+					},
+					FederatedClaims: db.FederatedClaims{
+						UserID:    "some-user-id",
+						Connector: "some-connector",
+					},
+					Username:          "some-username",
+					PreferredUsername: "some-preferred-username",
+					Email:             "some@example.com",
+					RawClaims: map[string]any{
+						"sub":                "some-subject",
+						"exp":                expiry,
+						"name":               "some-username",
+						"preferred_username": "some-preferred-username",
+						"email":              "some@example.com",
+						"federated_claims": map[string]any{
+							"user_id":      "some-user-id",
+							"connector_id": "some-connector",
+						},
+					},
+				}
+				claimsParser.ParseClaimsReturns(claims, nil)
+				displayUserIdGenerator.DisplayUserIdReturns("some-display-user")
+
 				baseHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					w.WriteHeader(t.statusCode)
 					w.Write([]byte(t.body))
 				})
-				handler := token.StoreAccessToken(dummyLogger, baseHandler, generator, claimsParser, accessTokenFactory, userFactory, displayUserIdGenerator)
 				r, _ := http.NewRequest("GET", t.path, nil)
 				rec := httptest.NewRecorder()
 
@@ -155,18 +188,62 @@ var _ = Describe("Access Tokens", func() {
 				}
 
 				if t.storeTokenErrors {
-					accessTokenFactory.CreateAccessTokenReturns(errors.New("store token error"))
+					doomed := postgresRunner.OpenConn()
+					accessTokenFactory = db.NewAccessTokenFactory(doomed)
+					Expect(doomed.Close()).To(Succeed())
 				}
 
 				if t.storeUserErrors {
-					userFactory.CreateOrUpdateUserReturns(errors.New("upsert user error"))
+					doomed := postgresRunner.OpenConn()
+					userFactory = db.NewUserFactory(doomed)
+					Expect(doomed.Close()).To(Succeed())
 				}
 
+				var tokenCountBefore, userCountBefore int
+				Expect(realdb.Conn.QueryRow(`SELECT count(*) FROM access_tokens`).Scan(&tokenCountBefore)).To(Succeed())
+				Expect(realdb.Conn.QueryRow(`SELECT count(*) FROM users`).Scan(&userCountBefore)).To(Succeed())
+
+				handler := token.StoreAccessToken(dummyLogger, baseHandler, generator, claimsParser, accessTokenFactory, userFactory, displayUserIdGenerator)
 				handler.ServeHTTP(rec, r)
 
 				result := rec.Result()
 				Expect(result.StatusCode).To(Equal(t.expectStatusCode))
 				Expect(rec.Body.String()).To(Equal(t.expectBody))
+
+				var tokenCountAfter, userCountAfter int
+				Expect(realdb.Conn.QueryRow(`SELECT count(*) FROM access_tokens`).Scan(&tokenCountAfter)).To(Succeed())
+				Expect(realdb.Conn.QueryRow(`SELECT count(*) FROM users`).Scan(&userCountAfter)).To(Succeed())
+				Expect(tokenCountAfter - tokenCountBefore).To(Equal(t.expectTokenDelta))
+				Expect(userCountAfter - userCountBefore).To(Equal(t.expectUserDelta))
+
+				storedToken, tokenFound, err := realdb.AccessTokens.GetAccessToken("123abc")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(tokenFound).To(Equal(t.expectTokenDelta == 1))
+				if tokenFound {
+					Expect(storedToken.Token).To(Equal("123abc"))
+					Expect(storedToken.Claims.Subject).To(Equal("some-subject"))
+					Expect(storedToken.Claims.Expiry).NotTo(BeNil())
+					Expect(*storedToken.Claims.Expiry).To(Equal(expiry))
+					Expect(storedToken.Claims.FederatedClaims).To(Equal(db.FederatedClaims{
+						UserID:    "some-user-id",
+						Connector: "some-connector",
+					}))
+					Expect(storedToken.Claims.Username).To(Equal("some-username"))
+					Expect(storedToken.Claims.PreferredUsername).To(Equal("some-preferred-username"))
+					Expect(storedToken.Claims.Email).To(Equal("some@example.com"))
+				}
+
+				if t.expectUserDelta == 1 {
+					var username, connector, subject string
+					Expect(realdb.Conn.QueryRow(`
+						SELECT username, connector, sub
+						FROM users
+						WHERE sub = $1
+					`, "some-subject").Scan(&username, &connector, &subject)).To(Succeed())
+					Expect(username).To(Equal("some-display-user"))
+					Expect(connector).To(Equal("some-connector"))
+					Expect(subject).To(Equal("some-subject"))
+				}
 			})
 		}
 	})
