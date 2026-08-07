@@ -51,7 +51,7 @@ test-agent-broker-smoke:
 test-unit:
 	@echo "==> Running unit tests..."
 	ginkgo -r -p --keep-going --flake-attempts=1 \
-		--skip-package=./integration,testflight,topgun,./worker/integration,./worker/runtime/integration,./worker/baggageclaim,fly/integration,testhelpers/otel,agent/schema,ci-agent,bench
+		--skip-package=./integration,atc/integration,testflight,topgun,./worker/integration,./worker/runtime/integration,./worker/baggageclaim,fly/integration,testhelpers/otel,agent/schema,ci-agent,bench
 	cd agent/schema && go test ./... -count=1
 
 # Retained dev-mcp server (see ci-agent/RETAINED.md)
