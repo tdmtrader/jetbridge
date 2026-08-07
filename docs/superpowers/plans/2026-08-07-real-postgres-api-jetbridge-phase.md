@@ -464,17 +464,17 @@ The fixed baseline is exactly 40 explicit constructors: Teams 7, Workers 6, Pipe
 - Consumes: `postgresrunner.GinkgoRunner(*postgresrunner.Runner)`, `postgresrunner.StandardTestRunner.Main(*testing.M) int`, `StandardTestRunner.OpenConn(*testing.T) db.DbConn`, and `jetbridge.NewWorker(db.Worker, kubernetes.Interface, jetbridge.Config) *jetbridge.Worker`.
 - Produces: `useJetbridgeDB() jetbridgeDB`, `useLiveJetbridgeDB(*testing.T) jetbridgeDB`, and `persistNamedWorker(jetbridgeDB, string) (db.Worker, error)` with no lock factory or global cache cleanup.
 
-- [ ] **Step 1: Add a live consumer assertion before defining the helpers.**
+- [x] **Step 1: Add a live consumer assertion before defining the helpers.**
 
   Extend `setupLiveResilienceWorker` to return a fifth result, `jetbridgeDB`, add calls to the not-yet-defined `useLiveJetbridgeDB(t)` and `persistNamedWorker`, and update both callers to receive `worker, delegate, clientset, cfg, database`. For RED, persist the real worker but deliberately keep `jetbridge.NewWorker(fakeDBWorker, clientset, *cfg)`. Immediately after `FindOrCreateContainer` in `TestLiveInvalidImageFailsFast`, require `database.WorkerFactory.GetWorker("live-k8s-worker")` to find the real worker. Then call `persisted.FindContainer(db.NewFixedHandleContainerOwner(handle))` and require `creating == nil`, `created != nil`, and `created.Handle() == handle`. Do not add a helper-only persistence spec.
 
-- [ ] **Step 2: Run the first live consumer red command before helper implementation.**
+- [x] **Step 2: Run the first live consumer red command before helper implementation.**
 
   Run: `go test -tags live ./atc/worker/jetbridge -run '^TestLiveInvalidImageFailsFast$'`
 
   Expected: FAIL to compile because the clone helpers do not exist. This command precedes all harness implementation.
 
-- [ ] **Step 3: Implement the two runner adapters and named-worker helper.**
+- [x] **Step 3: Implement the two runner adapters and named-worker helper.**
 
   In `jetbridge_suite_test.go`, add:
 
@@ -542,13 +542,13 @@ The fixed baseline is exactly 40 explicit constructors: Teams 7, Workers 6, Pipe
   }
   ```
 
-- [ ] **Step 4: Run the consumer RED after the helpers compile but before conversion.**
+- [x] **Step 4: Run the consumer RED after the helpers compile but before conversion.**
 
   Run: `go test -tags live ./atc/worker/jetbridge -run '^TestLiveInvalidImageFailsFast$'`
 
   Expected: compile succeeds; `WorkerFactory.GetWorker` finds `live-k8s-worker`, but `persisted.FindContainer(fixedHandleOwner)` returns both container values nil because `FindOrCreateContainer` still ran through `FakeWorker`.
 
-- [ ] **Step 5: Convert the four first-batch constructors and satisfy the consumer assertion.**
+- [x] **Step 5: Convert the four first-batch constructors and satisfy the consumer assertion.**
 
   Replace `FakeWorker`, `NameReturns`, and `setupFakeDBContainer` in `setupLiveResilienceWorker`, `TestLiveSecretEnvRef`, `setupLiveWorkerWithConfig`, and `TestLiveSidecarViaWorkerAPI` with:
 
@@ -565,7 +565,7 @@ The fixed baseline is exactly 40 explicit constructors: Teams 7, Workers 6, Pipe
 
   Preserve these first-batch observations: invalid-image ErrImagePull/ImagePullBackOff diagnostics, pod startup timeout, live SecretKeyRef value, configured service account, and sidecar presence. `TestLiveResourceLimitsQoS` and `TestLiveSecureDefaults` call `setupLiveWorker` from `live_worker_test.go`; they are deliberately deferred to Task 4.
 
-- [ ] **Step 6: Run truthful Task 3 verification and commit.**
+- [x] **Step 6: Run truthful Task 3 verification and commit.**
 
   Run: `go test -tags live ./atc/worker/jetbridge -run '^TestLive(InvalidImageFailsFast|PodStartupTimeout|SecretEnvRef|ServiceAccount|SidecarViaWorkerAPI)$'`
 
