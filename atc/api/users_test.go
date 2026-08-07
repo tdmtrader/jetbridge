@@ -163,6 +163,7 @@ var _ = Describe("Users API", func() {
 						deps := realdb.Deps
 						deps.userFactory = failing
 						server = newAPIServer(deps)
+						DeferCleanup(server.Close)
 					})
 
 					It("fails", func() {

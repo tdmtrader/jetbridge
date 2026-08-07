@@ -47,20 +47,33 @@ func useRealDB() *realDB {
 
 	postgresRunner.CreateTestDBFromTemplate()
 
-	conn := postgresRunner.OpenConn()
+	var (
+		conn      db.DbConn
+		lockConns [lock.FactoryCount]*sql.DB
+	)
+	// Register cleanup as soon as the clone exists. The closure observes the
+	// pools assigned below, so a failure partway through setup still closes
+	// everything opened so far before attempting to drop the database.
+	DeferCleanup(func() {
+		for _, lockConn := range lockConns {
+			if lockConn != nil {
+				Expect(lockConn.Close()).To(Succeed())
+			}
+		}
+		if conn != nil {
+			Expect(conn.Close()).To(Succeed())
+		}
+		postgresRunner.DropTestDB()
+	})
+
+	conn = postgresRunner.OpenConn()
 	db.CleanupBaseResourceTypesCache()
 
-	var lockConns [lock.FactoryCount]*sql.DB
 	for i := 0; i < lock.FactoryCount; i++ {
 		lockConns[i] = postgresRunner.OpenSingleton()
 	}
 	ignore := func(lager.Logger, lock.LockID) {}
 	lockFactory := lock.NewLockFactory(lockConns, ignore, ignore)
-
-	DeferCleanup(func() {
-		Expect(conn.Close()).To(Succeed())
-		postgresRunner.DropTestDB()
-	})
 
 	teamFactory := db.NewTeamFactory(conn, lockFactory)
 

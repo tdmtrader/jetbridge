@@ -25,6 +25,7 @@ var (
 
 	postgresRunner postgresrunner.Runner
 	dbConn         db.DbConn
+	lockConns      [lock.FactoryCount]*sql.DB
 	lockFactory    lock.LockFactory
 	teamFactory    db.TeamFactory
 	buildFactory   db.BuildFactory
@@ -36,11 +37,24 @@ var _ = postgresrunner.GinkgoRunner(&postgresRunner)
 var _ = BeforeEach(func() {
 	logger = lager.NewLogger("test")
 
+	dbConn = nil
+	lockConns = [lock.FactoryCount]*sql.DB{}
 	postgresRunner.CreateTestDBFromTemplate()
+	DeferCleanup(func() {
+		for _, lockConn := range lockConns {
+			if lockConn != nil {
+				Expect(lockConn.Close()).To(Succeed())
+			}
+		}
+		if dbConn != nil {
+			Expect(dbConn.Close()).To(Succeed())
+		}
+		postgresRunner.DropTestDB()
+	})
+
 	dbConn = postgresRunner.OpenConn()
 	db.CleanupBaseResourceTypesCache()
 
-	var lockConns [lock.FactoryCount]*sql.DB
 	for i := 0; i < lock.FactoryCount; i++ {
 		lockConns[i] = postgresRunner.OpenSingleton()
 	}
@@ -50,11 +64,6 @@ var _ = BeforeEach(func() {
 	teamFactory = db.NewTeamFactory(dbConn, lockFactory)
 	buildFactory = db.NewBuildFactory(dbConn, lockFactory, 0, time.Hour)
 	workerFactory = db.NewWorkerFactory(dbConn, db.NewStaticWorkerCache(logger, dbConn, 0))
-})
-
-var _ = AfterEach(func() {
-	Expect(dbConn.Close()).To(Succeed())
-	postgresRunner.DropTestDB()
 })
 
 func createTeam(name string) db.Team {
