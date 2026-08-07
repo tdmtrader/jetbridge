@@ -723,7 +723,7 @@ git commit -m "test(exec): persist artifact step state"
 - Produces cache rows owned by db.ForBuild(realBuild.ID()), metadata read from those exact IDs, and persisted valid set-pipeline results.
 - Retains policy, authorization, validator, streamer, delegate, pool, runtime, lock, tracing, and resolver seams.
 
-- [ ] **Step 1: Add the GetStep row assertion before replacing the factory.**
+- [x] **Step 1: Add the GetStep row assertion before replacing the factory.**
 
 Add Describe("persisted PostgreSQL state") to get_step_test.go. Call useExecDB once, save config with some-job and some-resource, create the real job build, and set:
 
@@ -743,13 +743,13 @@ Expect(err).NotTo(HaveOccurred())
 Expect(count).To(Equal(1))
 ~~~
 
-- [ ] **Step 2: Run the assertion-first RED command.**
+- [x] **Step 2: Run the assertion-first RED command.**
 
 Run: ginkgo ./atc/exec/ --focus='GetStep persisted PostgreSQL state creates the resource cache row'
 
 Expected: FAIL with count zero because the generated fake factory did not write PostgreSQL.
 
-- [ ] **Step 3: Implement real GetStep and CheckStep state.**
+- [x] **Step 3: Implement real GetStep and CheckStep state.**
 
 Pass fixture.ResourceCacheFactory to NewGetStep. Keep fakeDelegate.ResourceCacheUserReturns(db.ForBuild(realBuild.ID())). After the step, select the cache ID from the ownership table, then load it through the factory:
 
@@ -769,7 +769,7 @@ Assert cache.Version, ResourceConfig source/type, and metadata. Cache-hit contex
 
 In check_step_test.go pass fixture.ResourceConfigFactory to NewCheckStep. Persist the base resource config, scope, and versions; reload the exact version before asserting run-state results. Persist custom-type image caches and compare IDs. Keep delegate/pool/runtime/lock/tracing/resolver seams. Use one-method wrappers around healthy config/scope only for deterministic method failures.
 
-- [ ] **Step 4: Implement valid SetPipelineStep state and retain external seams.**
+- [x] **Step 4: Implement valid SetPipelineStep state and retain external seams.**
 
 Create the current build with createExecJobBuild using config containing some-job and the exact current reference:
 
@@ -804,7 +804,7 @@ Keep set-pipeline self in its own context. Set spPlan.Name to "self", leave step
 
 Keep policy agent, delegate, streamer, parser/validator, and authorization seams. Use real current/target/admin teams for valid authorization states. Use pipelineLookupErrorTeam, configErrorPipeline, and savePipelineErrorBuild around healthy real state for the three DB method errors, each with its narrow-fault comment.
 
-- [ ] **Step 5: Run GREEN, the exact positive focus, and sensitivities.**
+- [x] **Step 5: Run GREEN, the exact positive focus, and sensitivities.**
 
 Run: ginkgo ./atc/exec/ --focus='(GetStep|CheckStep|SetPipelineStep)'
 
@@ -826,7 +826,7 @@ Run: ginkgo ./atc/exec/ --focus='SetPipelineStep persisted PostgreSQL success'
 
 Expected: FAIL on found or instance vars. Restore targetRef and rerun to PASS.
 
-- [ ] **Step 6: Verify payoff and commit.**
+- [x] **Step 6: Verify payoff and commit.**
 
 Run: rg -n 'new\(dbfakes\.(FakeResourceCache|FakeResourceCacheFactory|FakeResourceConfig|FakeResourceConfigFactory|FakeResourceConfigScope|FakeResourceConfigVersion|FakeTeamFactory|FakeBuildFactory|FakeBuild|FakeTeam|FakePipeline)\)' atc/exec/get_step_test.go atc/exec/check_step_test.go atc/exec/set_pipeline_step_test.go
 
