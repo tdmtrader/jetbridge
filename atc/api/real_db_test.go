@@ -46,31 +46,24 @@ func useRealDB() *realDB {
 	GinkgoHelper()
 
 	postgresRunner.CreateTestDBFromTemplate()
+	// Register the drop first so Ginkgo's LIFO cleanup order closes every
+	// connection below before dropping the clone. Keeping it as its own cleanup
+	// node also means a failed Close expectation cannot suppress the drop.
+	DeferCleanup(postgresRunner.DropTestDB)
 
-	var (
-		conn      db.DbConn
-		lockConns [lock.FactoryCount]*sql.DB
-	)
-	// Register cleanup as soon as the clone exists. The closure observes the
-	// pools assigned below, so a failure partway through setup still closes
-	// everything opened so far before attempting to drop the database.
+	conn := postgresRunner.OpenConn()
 	DeferCleanup(func() {
-		for _, lockConn := range lockConns {
-			if lockConn != nil {
-				Expect(lockConn.Close()).To(Succeed())
-			}
-		}
-		if conn != nil {
-			Expect(conn.Close()).To(Succeed())
-		}
-		postgresRunner.DropTestDB()
+		Expect(conn.Close()).To(Succeed())
 	})
-
-	conn = postgresRunner.OpenConn()
 	db.CleanupBaseResourceTypesCache()
 
+	var lockConns [lock.FactoryCount]*sql.DB
 	for i := 0; i < lock.FactoryCount; i++ {
 		lockConns[i] = postgresRunner.OpenSingleton()
+		lockConn := lockConns[i]
+		DeferCleanup(func() {
+			Expect(lockConn.Close()).To(Succeed())
+		})
 	}
 	ignore := func(lager.Logger, lock.LockID) {}
 	lockFactory := lock.NewLockFactory(lockConns, ignore, ignore)
