@@ -90,18 +90,18 @@ Keep `persistNamedWorker`, but make it return a worker loaded from the same
 fixture. Add small helpers only when reused by at least two tasks; file-local
 volume/container helpers are preferred.
 
-- [ ] Run `pg_isready -h 127.0.0.1 -p 15432 -U postgres`.
-- [ ] Compile with `go test ./atc/worker/jetbridge -run '^$'`.
-- [ ] Run the existing non-live opt-in specs sequentially and in parallel:
+- [x] Run `pg_isready -h 127.0.0.1 -p 15432 -U postgres`.
+- [x] Compile with `go test ./atc/worker/jetbridge -run '^$'`.
+- [x] Run the existing non-live opt-in specs sequentially and in parallel:
   `ginkgo --focus='(Pod Name Integration|SecretEnv in Pod Spec)' ./atc/worker/jetbridge`
   and
   `ginkgo -p --focus='(Pod Name Integration|SecretEnv in Pod Spec)' ./atc/worker/jetbridge`.
-- [ ] Compile and vet the build-tagged standard live tests with
+- [x] Compile and vet the build-tagged standard live tests with
   `go test -tags live ./atc/worker/jetbridge -run '^$'` and
   `go vet -tags live ./atc/worker/jetbridge`.
-- [ ] Confirm no suite-wide `BeforeEach` calls `useJetbridgeDB` and every
+- [x] Confirm no suite-wide `BeforeEach` calls `useJetbridgeDB` and every
   connection closes before the clone drops.
-- [ ] Commit only the suite file as
+- [x] Commit only the suite file as
   `test(jetbridge): expand postgres fixture`.
 
 ## Task 2: Persist resource, process, and behavioral-runtime workers
