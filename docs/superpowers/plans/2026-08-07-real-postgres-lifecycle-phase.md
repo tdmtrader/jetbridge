@@ -66,7 +66,7 @@ BuildForAPI(int) (db.BuildForAPI, bool, error)
 - Consumes: `postgresrunner.StandardTestRunner.Main(*testing.M) int`, `OpenConn(*testing.T) db.DbConn`, `db.Team.CreateStartedBuild`, `db.Resource.CreateBuild`, and `db.BuildFactory.GetAllStartedBuilds`.
 - Produces: `useRealTrackerDB(*testing.T) trackerDB`, `createTrackerStartedBuild`, and `createTrackerCheckBuild`.
 
-- [ ] **Step 1: Add `TestMain` and the clone-local tracker fixture.**
+- [x] **Step 1: Add `TestMain` and the clone-local tracker fixture.**
 
   Add a new package entry point, not a change to the existing `TestTracker` suite entry point:
 
@@ -86,7 +86,7 @@ BuildForAPI(int) (db.BuildForAPI, bool, error)
 
   `useRealTrackerDB(t)` calls `trackerPostgres.OpenConn(t)`, clears the base-resource cache, and builds `db.NewTeamFactory` and `db.NewBuildFactory(conn, locks, 0, time.Hour)`. Define `trackerLockDB` with `sync.Mutex` and `map[string]bool`; its exact `Acquire(lock.LockID) (bool, error)` and `Release(lock.LockID) (bool, error)` behavior is the mutex-backed implementation in `agent/resourcecapture/resourcecapture_suite_test.go`. This is in-memory lock coordination inside one test clone, not a transaction or a second SQL connection.
 
-- [ ] **Step 2: Add one assertion against the old fake dependency and observe RED.**
+- [x] **Step 2: Add one assertion against the old fake dependency and observe RED.**
 
   In `TestTrackRunsStartedBuilds`, create a real team and real started rows, but initially leave `s.tracker` constructed with `s.fakeBuildFactory`. Use a bounded receive so the failing test cannot hang:
 
@@ -103,7 +103,7 @@ BuildForAPI(int) (db.BuildForAPI, bool, error)
 
   Expected: FAIL with `real started build was not discovered`; the old `FakeBuildFactory` has no persisted rows.
 
-- [ ] **Step 3: Rewire real discovery and create genuine job and check builds.**
+- [x] **Step 3: Rewire real discovery and create genuine job and check builds.**
 
   Reconstruct the tracker in each converted test with `fixture.Builds`, the existing `buildsfakes.FakeEngine`, and the existing channel. Ordinary started rows may use `team.CreateStartedBuild(atc.Plan{ID: "tracker-one-off"})`; the released-job case must save `atc.Config{Jobs: atc.JobConfigs{{Name: "some-job"}}}`, call `job.CreateBuild("tracker")`, and call `build.Start(atc.Plan{ID: "tracker-job"})`.
 
@@ -134,7 +134,7 @@ BuildForAPI(int) (db.BuildForAPI, bool, error)
 
   Use this helper in orphaned-check finalization and the check gauge test. Keep only the three lexical `FakeBuild` constructors used by the in-memory tests (`ID()==0` plus `ResourceID()`) and one `FakeBuildFactory` in `TestTrackerReturnsStartedBuildLookupError`, commented: `// Retained: ordinary rows cannot make GetAllStartedBuilds return an error.`
 
-- [ ] **Step 4: Assert asynchronous persisted outcomes with reloads.**
+- [x] **Step 4: Assert asynchronous persisted outcomes with reloads.**
 
   Replace sleeps with `s.Eventually` and reload through `fixture.Builds.Build(id)` on every poll:
 
@@ -151,7 +151,7 @@ BuildForAPI(int) (db.BuildForAPI, bool, error)
 
   Expected: PASS.
 
-- [ ] **Step 5: Run a post-GREEN sensitivity mutation and commit.**
+- [x] **Step 5: Run a post-GREEN sensitivity mutation and commit.**
 
   Temporarily change `GetAllStartedBuilds` to select pending rather than started rows, run `go test ./atc/builds -run 'TestTracker/TestTrackRunsStartedBuilds' -count=1`, and confirm the bounded discovery assertion fails. Restore `atc/db/build_factory.go`, rerun the focused test to PASS, then commit only the test:
 
