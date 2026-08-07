@@ -113,13 +113,13 @@ var _ = BeforeEach(func() {
 	logger = lagertest.NewTestLogger("test")
 
 	postgresRunner.CreateTestDBFromTemplate()
+	DeferCleanup(func() {
+		postgresRunner.DropTestDB()
+	})
 
 	dbConn = postgresRunner.OpenConn()
 	DeferCleanup(func() {
-		err := dbConn.Close()
-		// try dropping the db even if closing initially fails
-		postgresRunner.DropTestDB()
-		Expect(err).NotTo(HaveOccurred())
+		Expect(dbConn.Close()).To(Succeed())
 	})
 	db.CleanupBaseResourceTypesCache()
 
