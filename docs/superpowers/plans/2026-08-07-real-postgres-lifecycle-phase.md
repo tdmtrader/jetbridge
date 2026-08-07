@@ -646,7 +646,7 @@ BuildForAPI(int) (db.BuildForAPI, bool, error)
 - Consumes: the five converted suites and the audit's explicit-constructor counting convention.
 - Produces: an exact 65-to-21 constructor reconciliation and clean committed diff, without a push.
 
-- [ ] **Step 1: Record baseline and after counts including new fixture files.**
+- [x] **Step 1: Record baseline and after counts including new fixture files.**
 
   Baseline is exactly `13/12/13/11/16 = 65` for tracker/lifecycler/canceler/template-saver/build-log-collector. After implementation run:
 
@@ -665,7 +665,7 @@ BuildForAPI(int) (db.BuildForAPI, bool, error)
 
   Expected survivors are tracker `4`, runlifecycle suite plus test `0+5`, workflowrun fixture plus canceler `0+0`, template saver `8`, and build-log collector `4`: exactly `21`. The wrong-identity case must embed a healthy real build in `wrongIdentityBuild` and prove the real selected row remains `aborted=false`; no generated `FakeBuildForAPI` fallback is permitted. No unclassified survivor is accepted.
 
-- [ ] **Step 2: Run focused and full package verification.**
+- [x] **Step 2: Run focused and full package verification.**
 
   ```bash
   pg_isready -h 127.0.0.1 -p 15432 -U postgres
@@ -677,7 +677,7 @@ BuildForAPI(int) (db.BuildForAPI, bool, error)
 
   Expected: PostgreSQL reports `accepting connections`; all four test commands PASS.
 
-- [ ] **Step 3: Run direct concurrent lifecycle commands.**
+- [x] **Step 3: Run direct concurrent lifecycle commands.**
 
   Do not use the obsolete Docker/Colima-backed concurrency target. Run the real packages against the named shared service concurrently:
 
@@ -697,7 +697,7 @@ BuildForAPI(int) (db.BuildForAPI, bool, error)
 
   Expected: all four commands overlap and PASS; each runner uses independent clone names and none starts or stops the service.
 
-- [ ] **Step 4: Review coverage, types, lifecycle, and scope.**
+- [x] **Step 4: Review coverage, types, lifecycle, and scope.**
 
   Run `gofmt` on changed Go test files, `git diff --check`, and `git diff HEAD -- atc/builds atc/runlifecycle agent/workflowrun atc/gc`. Confirm:
 
