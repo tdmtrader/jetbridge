@@ -1,6 +1,7 @@
 package mcpserver_test
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -119,16 +120,116 @@ func attachMCPResourceScope(
 	return scope
 }
 
+func mcpWorkflowYAML(name string, description string, prompt string) []byte {
+	return []byte(fmt.Sprintf(`schema_version: 3
+name: %q
+description: %q
+signature_version: 1
+inputs: []
+outputs: []
+plan:
+  - agent: work
+    function_id: work
+    prompt: %q
+`, name, description, prompt))
+}
+
+func importMCPWorkflow(
+	factory db.AgentWorkflowsFactory,
+	name string,
+	description string,
+	prompt string,
+) *workflow.Definition {
+	GinkgoHelper()
+	definition, err := factory.Import(
+		name, mcpWorkflowYAML(name, description, prompt), "mcp-fixture",
+	)
+	Expect(err).NotTo(HaveOccurred())
+	return definition
+}
+
+func promoteMCPWorkflow(
+	factory db.AgentWorkflowsFactory,
+	definition *workflow.Definition,
+) *workflow.Definition {
+	GinkgoHelper()
+	_, err := factory.Promote(definition.Name, definition.Version, "mcp-fixture")
+	Expect(err).NotTo(HaveOccurred())
+	promoted, found, err := factory.Get(definition.Name, definition.Version)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(found).To(BeTrue())
+	return promoted
+}
+
+func insertMCPCost(factory db.AgentCostLedgerFactory, entry budget.LedgerEntry) {
+	GinkgoHelper()
+	entry.Source = budget.SourceCIAgent
+	Expect(factory.Insert(entry)).To(Succeed())
+}
+
+type observedAgentWorkflowsFactory struct {
+	db.AgentWorkflowsFactory
+	listErr error
+
+	listCalls         int
+	liveVersionsCalls int
+	liveNames         []string
+	latestNames       []string
+	getArgs           []struct {
+		name    string
+		version int
+	}
+	versionsCalls int
+}
+
+func (factory *observedAgentWorkflowsFactory) List() ([]workflow.Definition, error) {
+	factory.listCalls++
+	if factory.listErr != nil {
+		return nil, factory.listErr
+	}
+	return factory.AgentWorkflowsFactory.List()
+}
+
+func (factory *observedAgentWorkflowsFactory) LiveVersions() (map[string]int, error) {
+	factory.liveVersionsCalls++
+	return factory.AgentWorkflowsFactory.LiveVersions()
+}
+
+func (factory *observedAgentWorkflowsFactory) Live(name string) (*workflow.Definition, bool, error) {
+	factory.liveNames = append(factory.liveNames, name)
+	return factory.AgentWorkflowsFactory.Live(name)
+}
+
+func (factory *observedAgentWorkflowsFactory) Latest(name string) (*workflow.Definition, bool, error) {
+	factory.latestNames = append(factory.latestNames, name)
+	return factory.AgentWorkflowsFactory.Latest(name)
+}
+
+func (factory *observedAgentWorkflowsFactory) Get(
+	name string,
+	version int,
+) (*workflow.Definition, bool, error) {
+	factory.getArgs = append(factory.getArgs, struct {
+		name    string
+		version int
+	}{name: name, version: version})
+	return factory.AgentWorkflowsFactory.Get(name, version)
+}
+
+func (factory *observedAgentWorkflowsFactory) Versions(
+	ctx context.Context,
+	name string,
+	request workflow.VersionPageRequest,
+) (workflow.VersionPage, error) {
+	factory.versionsCalls++
+	return factory.AgentWorkflowsFactory.Versions(ctx, name, request)
+}
+
 func callMCPToolJSON[T any](server *mcpserver.Server, name string, args map[string]any) T {
 	GinkgoHelper()
 	var decoded T
 	Expect(json.Unmarshal([]byte(callTool(server, name, args)), &decoded)).To(Succeed())
 	return decoded
-}
-
-func newFakeMCPWorkflowServer() (*mcpserver.Server, *dbfakes.FakeAgentWorkflowsFactory) {
-	factory := new(dbfakes.FakeAgentWorkflowsFactory)
-	return newMCPToolsServer(mcpToolDeps{WorkflowsFactory: factory}), factory
 }
 
 func newFakeMCPPipelineRunServer(
@@ -651,209 +752,302 @@ var _ = Describe("Tools", func() {
 	})
 
 	Describe("list_agent_workflows", func() {
-		var (
-			server           *mcpserver.Server
-			workflowsFactory *dbfakes.FakeAgentWorkflowsFactory
-		)
-
-		BeforeEach(func() {
-			server, workflowsFactory = newFakeMCPWorkflowServer()
-		})
-
 		It("returns workflow summaries with resolved live versions", func() {
-			workflowsFactory.ListReturns([]workflow.Definition{
-				{Name: "standard-dev", Description: "Standard dev flow", Version: 5, SchemaVersion: 3, SignatureVersion: 2, ContentHash: "abc123", Live: true, CreatedAt: 1700},
-				{Name: "test-first", Description: "TDD flow", Version: 3, SchemaVersion: 2, SignatureVersion: 0, ContentHash: "def456", Live: false, CreatedAt: 1800},
-			}, nil)
-			workflowsFactory.LiveVersionsReturns(map[string]int{
-				"standard-dev": 5,
-				"test-first":   2,
-			}, nil)
+			fixture := useMCPToolsDB()
+			standard := promoteMCPWorkflow(
+				fixture.Deps.WorkflowsFactory,
+				importMCPWorkflow(fixture.Deps.WorkflowsFactory, "standard-dev", "Standard dev flow", "first"),
+			)
+			testLive := promoteMCPWorkflow(
+				fixture.Deps.WorkflowsFactory,
+				importMCPWorkflow(fixture.Deps.WorkflowsFactory, "test-first", "TDD flow", "live"),
+			)
+			testLatest := importMCPWorkflow(
+				fixture.Deps.WorkflowsFactory, "test-first", "TDD flow", "latest",
+			)
+			observer := &observedAgentWorkflowsFactory{
+				AgentWorkflowsFactory: fixture.Deps.WorkflowsFactory,
+			}
+			deps := fixture.Deps
+			deps.WorkflowsFactory = observer
+			server := newMCPToolsServer(deps)
 
 			result := callTool(server, "list_agent_workflows", map[string]any{})
 			var summaries []map[string]any
 			Expect(json.Unmarshal([]byte(result), &summaries)).To(Succeed())
 			Expect(summaries).To(HaveLen(2))
-
-			Expect(summaries[0]["name"]).To(Equal("standard-dev"))
-			Expect(summaries[0]["latest_version"]).To(BeEquivalentTo(5))
-			Expect(summaries[0]["schema_version"]).To(BeEquivalentTo(3))
-			Expect(summaries[0]["signature_version"]).To(BeEquivalentTo(2))
-			Expect(summaries[0]["live_version"]).To(BeEquivalentTo(5))
-			Expect(summaries[0]["content_hash"]).To(Equal("abc123"))
-
-			// second workflow is not live itself; live version resolved via Live()
-			Expect(summaries[1]["name"]).To(Equal("test-first"))
-			Expect(summaries[1]["latest_version"]).To(BeEquivalentTo(3))
-			Expect(summaries[1]["live_version"]).To(BeEquivalentTo(2))
-			// live versions resolve via ONE LiveVersions lookup, never a
-			// per-name Live() fetch of the full definition
-			Expect(workflowsFactory.LiveVersionsCallCount()).To(Equal(1))
-			Expect(workflowsFactory.LiveCallCount()).To(BeZero())
+			byName := map[string]map[string]any{}
+			for _, summary := range summaries {
+				byName[summary["name"].(string)] = summary
+			}
+			Expect(byName[standard.Name]["latest_version"]).To(BeEquivalentTo(standard.Version))
+			Expect(byName[standard.Name]["live_version"]).To(BeEquivalentTo(standard.Version))
+			Expect(byName[standard.Name]["schema_version"]).To(BeEquivalentTo(standard.SchemaVersion))
+			Expect(byName[standard.Name]["signature_version"]).To(BeEquivalentTo(standard.SignatureVersion))
+			Expect(byName[standard.Name]["content_hash"]).To(Equal(standard.ContentHash))
+			Expect(byName[testLatest.Name]["latest_version"]).To(BeEquivalentTo(testLatest.Version))
+			Expect(byName[testLatest.Name]["live_version"]).To(BeEquivalentTo(testLive.Version))
+			Expect(byName[testLatest.Name]["schema_version"]).To(BeEquivalentTo(testLatest.SchemaVersion))
+			Expect(byName[testLatest.Name]["signature_version"]).To(BeEquivalentTo(testLatest.SignatureVersion))
+			Expect(byName[testLatest.Name]["content_hash"]).To(Equal(testLatest.ContentHash))
+			Expect(observer.listCalls).To(Equal(1))
+			Expect(observer.liveVersionsCalls).To(Equal(1))
+			Expect(observer.liveNames).To(BeEmpty())
 		})
 
 		It("returns error when listing fails", func() {
-			workflowsFactory.ListReturns(nil, errors.New("boom"))
+			fixture := useMCPToolsDB()
+			observer := &observedAgentWorkflowsFactory{
+				AgentWorkflowsFactory: fixture.Deps.WorkflowsFactory,
+				listErr:               errors.New("boom"),
+			}
+			deps := fixture.Deps
+			deps.WorkflowsFactory = observer
+			server := newMCPToolsServer(deps)
 			_, isError := callToolRaw(server, "list_agent_workflows", map[string]any{})
 			Expect(isError).To(BeTrue())
+			Expect(observer.listCalls).To(Equal(1))
 		})
 	})
 
 	Describe("get_agent_workflow", func() {
-		var (
-			server           *mcpserver.Server
-			workflowsFactory *dbfakes.FakeAgentWorkflowsFactory
-		)
-
-		BeforeEach(func() {
-			server, workflowsFactory = newFakeMCPWorkflowServer()
-		})
-
 		It("returns a specific version when requested", func() {
-			workflowsFactory.GetReturns(&workflow.Definition{
-				Name: "standard-dev", Version: 4, SchemaVersion: 3, SignatureVersion: 6,
-				ContentHash: "hash4", RawYAML: "name: standard-dev\n",
-			}, true, nil)
+			fixture := useMCPToolsDB()
+			definition := importMCPWorkflow(
+				fixture.Deps.WorkflowsFactory, "standard-dev", "Standard dev flow", "specific",
+			)
+			observer := &observedAgentWorkflowsFactory{
+				AgentWorkflowsFactory: fixture.Deps.WorkflowsFactory,
+			}
+			deps := fixture.Deps
+			deps.WorkflowsFactory = observer
+			server := newMCPToolsServer(deps)
 
 			result := callTool(server, "get_agent_workflow", map[string]any{
-				"workflow": "standard-dev",
-				"version":  4,
+				"workflow": definition.Name,
+				"version":  definition.Version,
 			})
 			var def map[string]any
 			Expect(json.Unmarshal([]byte(result), &def)).To(Succeed())
-			Expect(def["name"]).To(Equal("standard-dev"))
-			Expect(def["version"]).To(BeEquivalentTo(4))
-			Expect(def["schema_version"]).To(BeEquivalentTo(3))
-			Expect(def["signature_version"]).To(BeEquivalentTo(6))
-			Expect(def["raw_yaml"]).To(Equal("name: standard-dev\n"))
-
-			name, version := workflowsFactory.GetArgsForCall(0)
-			Expect(name).To(Equal("standard-dev"))
-			Expect(version).To(Equal(4))
+			Expect(def["name"]).To(Equal(definition.Name))
+			Expect(def["version"]).To(BeEquivalentTo(definition.Version))
+			Expect(def["schema_version"]).To(BeEquivalentTo(definition.SchemaVersion))
+			Expect(def["signature_version"]).To(BeEquivalentTo(definition.SignatureVersion))
+			Expect(def["content_hash"]).To(Equal(definition.ContentHash))
+			Expect(def["raw_yaml"]).To(Equal(definition.RawYAML))
+			Expect(observer.getArgs).To(HaveLen(1))
+			Expect(observer.getArgs[0].name).To(Equal(definition.Name))
+			Expect(observer.getArgs[0].version).To(Equal(definition.Version))
 		})
 
 		It("defaults to the live version when no version is given", func() {
-			workflowsFactory.LiveReturns(&workflow.Definition{
-				Name: "standard-dev", Version: 7, Live: true,
-			}, true, nil)
+			fixture := useMCPToolsDB()
+			definition := promoteMCPWorkflow(
+				fixture.Deps.WorkflowsFactory,
+				importMCPWorkflow(fixture.Deps.WorkflowsFactory, "standard-dev", "Standard dev flow", "live"),
+			)
+			observer := &observedAgentWorkflowsFactory{
+				AgentWorkflowsFactory: fixture.Deps.WorkflowsFactory,
+			}
+			deps := fixture.Deps
+			deps.WorkflowsFactory = observer
+			server := newMCPToolsServer(deps)
 
 			result := callTool(server, "get_agent_workflow", map[string]any{
-				"workflow": "standard-dev",
+				"workflow": definition.Name,
 			})
 			var def map[string]any
 			Expect(json.Unmarshal([]byte(result), &def)).To(Succeed())
-			Expect(def["version"]).To(BeEquivalentTo(7))
-			Expect(workflowsFactory.GetCallCount()).To(Equal(0))
+			Expect(def["version"]).To(BeEquivalentTo(definition.Version))
+			Expect(def["content_hash"]).To(Equal(definition.ContentHash))
+			Expect(observer.liveNames).To(Equal([]string{definition.Name}))
+			Expect(observer.getArgs).To(BeEmpty())
 		})
 
 		It("falls back to the latest version when none is live", func() {
-			workflowsFactory.LiveReturns(nil, false, nil)
-			workflowsFactory.LatestReturns(&workflow.Definition{
-				Name: "standard-dev", Version: 2,
-			}, true, nil)
+			fixture := useMCPToolsDB()
+			importMCPWorkflow(
+				fixture.Deps.WorkflowsFactory, "standard-dev", "Standard dev flow", "first",
+			)
+			latest := importMCPWorkflow(
+				fixture.Deps.WorkflowsFactory, "standard-dev", "Standard dev flow", "latest",
+			)
+			observer := &observedAgentWorkflowsFactory{
+				AgentWorkflowsFactory: fixture.Deps.WorkflowsFactory,
+			}
+			deps := fixture.Deps
+			deps.WorkflowsFactory = observer
+			server := newMCPToolsServer(deps)
 
 			result := callTool(server, "get_agent_workflow", map[string]any{
-				"workflow": "standard-dev",
+				"workflow": latest.Name,
 			})
 			var def map[string]any
 			Expect(json.Unmarshal([]byte(result), &def)).To(Succeed())
-			Expect(def["version"]).To(BeEquivalentTo(2))
+			Expect(def["version"]).To(BeEquivalentTo(latest.Version))
+			Expect(def["content_hash"]).To(Equal(latest.ContentHash))
 
 			// one lookup, not a full Versions scan plus a point Get
-			Expect(workflowsFactory.LatestArgsForCall(0)).To(Equal("standard-dev"))
-			Expect(workflowsFactory.VersionsCallCount()).To(BeZero())
-			Expect(workflowsFactory.GetCallCount()).To(BeZero())
+			Expect(observer.liveNames).To(Equal([]string{latest.Name}))
+			Expect(observer.latestNames).To(Equal([]string{latest.Name}))
+			Expect(observer.versionsCalls).To(BeZero())
+			Expect(observer.getArgs).To(BeEmpty())
 		})
 
 		It("returns a not-found error for an unknown workflow", func() {
-			workflowsFactory.LiveReturns(nil, false, nil)
-			workflowsFactory.LatestReturns(nil, false, nil)
+			fixture := useMCPToolsDB()
+			observer := &observedAgentWorkflowsFactory{
+				AgentWorkflowsFactory: fixture.Deps.WorkflowsFactory,
+			}
+			deps := fixture.Deps
+			deps.WorkflowsFactory = observer
+			server := newMCPToolsServer(deps)
 
 			result, isError := callToolRaw(server, "get_agent_workflow", map[string]any{
 				"workflow": "nope",
 			})
 			Expect(isError).To(BeTrue())
 			Expect(result).To(ContainSubstring("not found"))
+			Expect(observer.liveNames).To(Equal([]string{"nope"}))
+			Expect(observer.latestNames).To(Equal([]string{"nope"}))
 		})
 
 		It("returns a not-found error for an unknown version", func() {
-			workflowsFactory.GetReturns(nil, false, nil)
+			fixture := useMCPToolsDB()
+			definition := importMCPWorkflow(
+				fixture.Deps.WorkflowsFactory, "standard-dev", "Standard dev flow", "only",
+			)
+			missingVersion := definition.Version + 1_000_000
+			_, found, err := fixture.Deps.WorkflowsFactory.Get(definition.Name, missingVersion)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeFalse())
+			observer := &observedAgentWorkflowsFactory{
+				AgentWorkflowsFactory: fixture.Deps.WorkflowsFactory,
+			}
+			deps := fixture.Deps
+			deps.WorkflowsFactory = observer
+			server := newMCPToolsServer(deps)
 
 			result, isError := callToolRaw(server, "get_agent_workflow", map[string]any{
-				"workflow": "standard-dev",
-				"version":  99,
+				"workflow": definition.Name,
+				"version":  missingVersion,
 			})
 			Expect(isError).To(BeTrue())
 			Expect(result).To(ContainSubstring("not found"))
+			Expect(observer.getArgs).To(HaveLen(1))
+			Expect(observer.getArgs[0].name).To(Equal(definition.Name))
+			Expect(observer.getArgs[0].version).To(Equal(missingVersion))
 		})
 	})
 
 	Describe("agent_cost_rollup", func() {
-		var (
-			server            *mcpserver.Server
-			costLedgerFactory *dbfakes.FakeAgentCostLedgerFactory
-		)
-
-		BeforeEach(func() {
-			costLedgerFactory = new(dbfakes.FakeAgentCostLedgerFactory)
-			server = newMCPToolsServer(mcpToolDeps{CostLedgerFactory: costLedgerFactory})
-		})
-
 		It("rolls up ledger rows and totals them", func() {
-			costLedgerFactory.RollupReturns([]budget.RollupRow{
-				{Key: "2026-07-10", Entries: 3, InputTokens: 100, OutputTokens: 20, Turns: 6, CostUSD: 1.50},
-				{Key: "2026-07-11", Entries: 2, InputTokens: 50, OutputTokens: 10, Turns: 4, CostUSD: 0.50},
-			}, nil)
+			fixture := useMCPToolsDB()
+			insertMCPCost(fixture.Deps.CostLedgerFactory, budget.LedgerEntry{
+				OccurredAt: time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC), UserName: "alice",
+				Model: "model-a", StepName: "first", InputTokens: 10, OutputTokens: 3,
+				Turns: 1, CostUSD: 0.25,
+			})
+			insertMCPCost(fixture.Deps.CostLedgerFactory, budget.LedgerEntry{
+				OccurredAt: time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC), UserName: "bob",
+				Model: "model-b", StepName: "second", InputTokens: 7, OutputTokens: 4,
+				Turns: 2, CostUSD: 0.50,
+			})
+			server := newMCPToolsServer(fixture.Deps)
 
-			result := callTool(server, "agent_cost_rollup", map[string]any{"group_by": "day"})
+			result := callTool(server, "agent_cost_rollup", map[string]any{
+				"group_by": "day", "since": "2026-07-10", "until": "2026-07-12",
+			})
 			var output map[string]any
 			Expect(json.Unmarshal([]byte(result), &output)).To(Succeed())
 			Expect(output["group_by"]).To(Equal("day"))
 
 			rows := output["rows"].([]any)
 			Expect(rows).To(HaveLen(2))
+			byKey := map[string]map[string]any{}
+			for _, row := range rows {
+				decoded := row.(map[string]any)
+				byKey[decoded["key"].(string)] = decoded
+			}
+			Expect(byKey["2026-07-10"]["input_tokens"]).To(BeEquivalentTo(10))
+			Expect(byKey["2026-07-10"]["output_tokens"]).To(BeEquivalentTo(3))
+			Expect(byKey["2026-07-11"]["input_tokens"]).To(BeEquivalentTo(7))
+			Expect(byKey["2026-07-11"]["output_tokens"]).To(BeEquivalentTo(4))
 
 			summary := output["summary"].(map[string]any)
 			Expect(summary["rows"]).To(BeEquivalentTo(2))
-			Expect(summary["entries"]).To(BeEquivalentTo(5))
-			Expect(summary["input_tokens"]).To(BeEquivalentTo(150))
-			Expect(summary["turns"]).To(BeEquivalentTo(10))
-			Expect(summary["cost_usd"]).To(BeEquivalentTo(2.0))
-
-			groupBy, _, _ := costLedgerFactory.RollupArgsForCall(0)
-			Expect(groupBy).To(Equal("day"))
+			Expect(summary["entries"]).To(BeEquivalentTo(2))
+			Expect(summary["input_tokens"]).To(BeEquivalentTo(17))
+			Expect(summary["output_tokens"]).To(BeEquivalentTo(7))
+			Expect(summary["turns"]).To(BeEquivalentTo(3))
+			Expect(summary["cost_usd"]).To(BeEquivalentTo(0.75))
 		})
 
 		It("defaults group_by to day", func() {
-			costLedgerFactory.RollupReturns([]budget.RollupRow{}, nil)
-
-			result := callTool(server, "agent_cost_rollup", map[string]any{})
+			fixture := useMCPToolsDB()
+			for _, occurredAt := range []time.Time{
+				time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC),
+				time.Date(2026, 7, 4, 12, 0, 0, 0, time.UTC),
+			} {
+				insertMCPCost(fixture.Deps.CostLedgerFactory, budget.LedgerEntry{
+					OccurredAt:  occurredAt,
+					UserName:    "same-user",
+					Model:       "same-model",
+					StepName:    "same-step",
+					InputTokens: 1,
+					Turns:       1,
+					CostUSD:     0.1,
+				})
+			}
+			server := newMCPToolsServer(fixture.Deps)
+			result := callTool(server, "agent_cost_rollup", map[string]any{
+				"since": "2026-07-03", "until": "2026-07-05",
+			})
 			var output map[string]any
 			Expect(json.Unmarshal([]byte(result), &output)).To(Succeed())
 			Expect(output["group_by"]).To(Equal("day"))
-
-			groupBy, _, _ := costLedgerFactory.RollupArgsForCall(0)
-			Expect(groupBy).To(Equal(budget.GroupByDay))
+			rows := output["rows"].([]any)
+			Expect(rows).To(HaveLen(2))
+			keys := make([]string, 0, len(rows))
+			for _, row := range rows {
+				keys = append(keys, row.(map[string]any)["key"].(string))
+			}
+			Expect(keys).To(ConsistOf("2026-07-03", "2026-07-04"))
 		})
 
 		It("rejects an invalid group_by", func() {
+			server := newMCPToolsServer(mcpToolDeps{})
 			_, isError := callToolRaw(server, "agent_cost_rollup", map[string]any{"group_by": "bogus"})
 			Expect(isError).To(BeTrue())
-			Expect(costLedgerFactory.RollupCallCount()).To(Equal(0))
 		})
 
-		It("passes an explicit until through to the ledger", func() {
-			costLedgerFactory.RollupReturns([]budget.RollupRow{}, nil)
-
-			callTool(server, "agent_cost_rollup", map[string]any{
-				"group_by": "workflow",
+		It("applies an explicit half-open until boundary", func() {
+			fixture := useMCPToolsDB()
+			for _, entry := range []budget.LedgerEntry{
+				{OccurredAt: time.Date(2026, 6, 30, 23, 59, 0, 0, time.UTC), StepName: "before", InputTokens: 100, CostUSD: 10},
+				{OccurredAt: time.Date(2026, 7, 2, 12, 0, 0, 0, time.UTC), StepName: "inside", InputTokens: 11, OutputTokens: 5, Turns: 2, CostUSD: 0.5},
+				{OccurredAt: time.Date(2026, 7, 8, 0, 0, 0, 0, time.UTC), StepName: "boundary", InputTokens: 200, CostUSD: 20},
+				{OccurredAt: time.Date(2026, 7, 9, 0, 0, 0, 0, time.UTC), StepName: "after", InputTokens: 300, CostUSD: 30},
+			} {
+				insertMCPCost(fixture.Deps.CostLedgerFactory, entry)
+			}
+			server := newMCPToolsServer(fixture.Deps)
+			result := callTool(server, "agent_cost_rollup", map[string]any{
+				"group_by": "day",
 				"since":    "2026-07-01",
 				"until":    "2026-07-08",
 			})
-			groupBy, since, until := costLedgerFactory.RollupArgsForCall(0)
-			Expect(groupBy).To(Equal("workflow"))
-			Expect(since).To(Equal(time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)))
-			Expect(until).To(Equal(time.Date(2026, 7, 8, 0, 0, 0, 0, time.UTC)))
+			var output map[string]any
+			Expect(json.Unmarshal([]byte(result), &output)).To(Succeed())
+			rows := output["rows"].([]any)
+			Expect(rows).To(HaveLen(1))
+			row := rows[0].(map[string]any)
+			Expect(row["key"]).To(Equal("2026-07-02"))
+			Expect(row["entries"]).To(BeEquivalentTo(1))
+			Expect(row["input_tokens"]).To(BeEquivalentTo(11))
+			Expect(row["output_tokens"]).To(BeEquivalentTo(5))
+			Expect(row["turns"]).To(BeEquivalentTo(2))
+			Expect(row["cost_usd"]).To(BeEquivalentTo(0.5))
 		})
 	})
 
