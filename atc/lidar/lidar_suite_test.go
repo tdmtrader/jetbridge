@@ -381,6 +381,18 @@ func attachLidarResourceScope(fixture *lidarDB, resource db.Resource) db.Resourc
 	return scope
 }
 
+func attachLidarNativeResourceScope(fixture *lidarDB, resource db.Resource) db.ResourceConfigScope {
+	GinkgoHelper()
+	config, err := fixture.ResourceConfigFactory.FindOrCreateResourceConfig(
+		resource.Type(), resource.Source(), nil,
+	)
+	Expect(err).NotTo(HaveOccurred())
+	scope, err := config.FindOrCreateScope(nil)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(resource.SetResourceConfigScope(scope)).To(Succeed())
+	return scope
+}
+
 func attachLidarResourceTypeScope(fixture *lidarDB, resourceType db.ResourceType) db.ResourceConfigScope {
 	GinkgoHelper()
 	config, err := fixture.ResourceConfigFactory.FindOrCreateResourceConfig(
@@ -417,6 +429,22 @@ func resolvedLidarResourceTypeScope(fixture *lidarDB, resourceType db.ResourceTy
 	scope, err := config.FindOrCreateScope(nil)
 	Expect(err).NotTo(HaveOccurred())
 	Expect(scope.ID()).To(Equal(resourceType.ResourceConfigScopeID()))
+	return scope
+}
+
+func resolvedLidarResourceScope(fixture *lidarDB, resource db.Resource) db.ResourceConfigScope {
+	GinkgoHelper()
+	Expect(resource.ResourceConfigID()).NotTo(BeZero())
+	Expect(resource.ResourceConfigScopeID()).NotTo(BeZero())
+	config, found, err := fixture.ResourceConfigFactory.FindResourceConfigByID(resource.ResourceConfigID())
+	Expect(err).NotTo(HaveOccurred())
+	Expect(found).To(BeTrue())
+	Expect(config.CreatedByResourceCache()).To(BeNil())
+	Expect(config.CreatedByBaseResourceType()).NotTo(BeNil())
+	Expect(config.CreatedByBaseResourceType().Name).To(Equal("registry-image"))
+	scope, err := config.FindOrCreateScope(nil)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(scope.ID()).To(Equal(resource.ResourceConfigScopeID()))
 	return scope
 }
 
