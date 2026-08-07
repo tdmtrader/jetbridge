@@ -7,6 +7,7 @@ import (
 	"github.com/concourse/concourse/go-concourse/concourse/internal"
 )
 
+//counterfeiter:generate . Team
 type Team interface {
 	Name() string
 	ID() int
