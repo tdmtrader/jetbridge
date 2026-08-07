@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
@@ -16,15 +17,189 @@ import (
 	. "github.com/onsi/gomega"
 )
 
+type pipelineListingFixture struct {
+	pipelines map[string]db.Pipeline
+}
+
+func expectPersistedPipelineShape(pipeline db.Pipeline, expected atc.Config) {
+	GinkgoHelper()
+
+	Expect(pipeline.Groups()).To(Equal(expected.Groups))
+	Expect(pipeline.Display()).To(Equal(expected.Display))
+	jobs, err := pipeline.Jobs()
+	Expect(err).NotTo(HaveOccurred())
+	Expect(jobs).To(HaveLen(len(expected.Jobs)))
+	for _, expectedJob := range expected.Jobs {
+		job, found, err := pipeline.Job(expectedJob.Name)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue(), "job %q was absent", expectedJob.Name)
+		Expect(job.Name()).To(Equal(expectedJob.Name))
+	}
+	resources, err := pipeline.Resources()
+	Expect(err).NotTo(HaveOccurred())
+	Expect(resources).To(HaveLen(len(expected.Resources)))
+	for _, expectedResource := range expected.Resources {
+		resource, found, err := pipeline.Resource(expectedResource.Name)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue(), "resource %q was absent", expectedResource.Name)
+		Expect(resource.Name()).To(Equal(expectedResource.Name))
+	}
+	Expect(pipeline.LastUpdated()).NotTo(BeZero())
+}
+
+func persistPipelineListingFixture(realdb *realDB) pipelineListingFixture {
+	GinkgoHelper()
+
+	anotherTeam, err := realdb.Deps.teamFactory.CreateTeam(atc.Team{Name: "another"})
+	Expect(err).NotTo(HaveOccurred())
+
+	mainPublicConfig := atc.Config{
+		Groups: atc.GroupConfigs{{
+			Name:      "group2",
+			Jobs:      []string{"job3", "job4"},
+			Resources: []string{"resource3", "resource4"},
+		}},
+		Jobs: atc.JobConfigs{{Name: "job3"}, {Name: "job4"}},
+		Resources: atc.ResourceConfigs{
+			{Name: "resource3", Type: "mock", Source: atc.Source{"key": "three"}},
+			{Name: "resource4", Type: "mock", Source: atc.Source{"key": "four"}},
+		},
+		Display: &atc.DisplayConfig{BackgroundImage: "background.jpg"},
+	}
+	mainPrivateConfig := atc.Config{
+		Groups: atc.GroupConfigs{{
+			Name:      "group1",
+			Jobs:      []string{"job1", "job2"},
+			Resources: []string{"resource1", "resource2"},
+		}},
+		Jobs: atc.JobConfigs{{Name: "job1"}, {Name: "job2"}},
+		Resources: atc.ResourceConfigs{
+			{Name: "resource1", Type: "mock", Source: atc.Source{"key": "one"}},
+			{Name: "resource2", Type: "mock", Source: atc.Source{"key": "two"}},
+		},
+	}
+	anotherPublicConfig := atc.Config{Jobs: atc.JobConfigs{{Name: "public-job"}}}
+	anotherPrivateConfig := atc.Config{Jobs: atc.JobConfigs{{Name: "private-job"}}}
+
+	pipelines := map[string]db.Pipeline{
+		"public-main":   realdb.SavePipeline(realdb.Main, "public-pipeline", mainPublicConfig),
+		"private-main":  realdb.SavePipeline(realdb.Main, "private-pipeline", mainPrivateConfig),
+		"public-other":  realdb.SavePipeline(anotherTeam, "another-pipeline", anotherPublicConfig),
+		"private-other": realdb.SavePipeline(anotherTeam, "another-private-pipeline", anotherPrivateConfig),
+	}
+	configs := map[string]atc.Config{
+		"public-main":   mainPublicConfig,
+		"private-main":  mainPrivateConfig,
+		"public-other":  anotherPublicConfig,
+		"private-other": anotherPrivateConfig,
+	}
+	Expect(pipelines["public-main"].Expose()).To(Succeed())
+	Expect(pipelines["public-other"].Expose()).To(Succeed())
+	Expect(pipelines["public-main"].Pause("api-test")).To(Succeed())
+	Expect(pipelines["public-other"].Pause("api-test")).To(Succeed())
+
+	archiveRequestedAt := time.Now()
+	Expect(pipelines["private-main"].Archive()).To(Succeed())
+
+	for name, pipeline := range pipelines {
+		found, err := pipeline.Reload()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		expectPersistedPipelineShape(pipeline, configs[name])
+	}
+
+	Expect(pipelines["public-main"].Public()).To(BeTrue())
+	Expect(pipelines["public-main"].Paused()).To(BeTrue())
+	Expect(pipelines["public-main"].PausedBy()).To(Equal("api-test"))
+	Expect(pipelines["public-main"].Archived()).To(BeFalse())
+	Expect(pipelines["public-main"].Groups()).To(Equal(mainPublicConfig.Groups))
+	Expect(pipelines["public-main"].Display()).To(Equal(mainPublicConfig.Display))
+	Expect(pipelines["private-main"].Public()).To(BeFalse())
+	Expect(pipelines["private-main"].Archived()).To(BeTrue())
+	Expect(pipelines["private-main"].Paused()).To(BeTrue())
+	Expect(pipelines["private-main"].PausedAt()).To(BeTemporally(">=", archiveRequestedAt))
+	Expect(pipelines["private-main"].PausedBy()).To(Equal("automatic-pipeline-archiver"))
+	Expect(pipelines["private-main"].Groups()).To(Equal(mainPrivateConfig.Groups))
+	Expect(pipelines["private-main"].Display()).To(Equal(mainPrivateConfig.Display))
+	Expect(pipelines["public-other"].Public()).To(BeTrue())
+	Expect(pipelines["public-other"].Paused()).To(BeTrue())
+	Expect(pipelines["public-other"].PausedBy()).To(Equal("api-test"))
+	Expect(pipelines["public-other"].Archived()).To(BeFalse())
+	Expect(pipelines["private-other"].Public()).To(BeFalse())
+	Expect(pipelines["private-other"].Paused()).To(BeFalse())
+	Expect(pipelines["private-other"].Archived()).To(BeFalse())
+
+	return pipelineListingFixture{pipelines: pipelines}
+}
+
+func expectPresentedPipeline(actual atc.Pipeline, expected db.Pipeline) {
+	GinkgoHelper()
+
+	Expect(actual.ID).To(Equal(expected.ID()))
+	Expect(actual.Name).To(Equal(expected.Name()))
+	Expect(actual.InstanceVars).To(Equal(expected.InstanceVars()))
+	Expect(actual.TeamName).To(Equal(expected.TeamName()))
+	Expect(actual.Paused).To(Equal(expected.Paused()))
+	Expect(actual.PausedBy).To(Equal(expected.PausedBy()))
+	if expected.PausedAt().IsZero() {
+		Expect(actual.PausedAt).To(BeZero())
+	} else {
+		Expect(actual.PausedAt).To(Equal(expected.PausedAt().Unix()))
+	}
+	Expect(actual.Public).To(Equal(expected.Public()))
+	Expect(actual.Archived).To(Equal(expected.Archived()))
+	Expect(actual.Groups).To(Equal(expected.Groups()))
+	Expect(actual.Display).To(Equal(expected.Display()))
+	Expect(actual.LastUpdated).To(Equal(expected.LastUpdated().Unix()))
+}
+
+func expectPipelineResponse(response *http.Response, expected ...db.Pipeline) {
+	GinkgoHelper()
+
+	body, err := io.ReadAll(response.Body)
+	Expect(err).NotTo(HaveOccurred())
+	var actual []atc.Pipeline
+	Expect(json.Unmarshal(body, &actual)).To(Succeed())
+	Expect(actual).To(HaveLen(len(expected)))
+
+	actualByID := map[int]atc.Pipeline{}
+	for _, pipeline := range actual {
+		actualByID[pipeline.ID] = pipeline
+	}
+	Expect(actualByID).To(HaveLen(len(expected)))
+	for _, pipeline := range expected {
+		presented, found := actualByID[pipeline.ID()]
+		Expect(found).To(BeTrue(), "pipeline ID %d was absent", pipeline.ID())
+		expectPresentedPipeline(presented, pipeline)
+	}
+}
+
+func normalizedInstanceVars(pipelines []db.Pipeline, pipelineName string) []atc.InstanceVars {
+	GinkgoHelper()
+
+	var normalized []atc.InstanceVars
+	for _, pipeline := range pipelines {
+		if pipeline.Name() != pipelineName {
+			continue
+		}
+		instanceVars := pipeline.InstanceVars()
+		if instanceVars == nil {
+			instanceVars = atc.InstanceVars{}
+		}
+		normalized = append(normalized, instanceVars)
+	}
+	return normalized
+}
+
 var _ = Describe("Pipelines API", func() {
 	var (
 		dbPipeline *dbfakes.FakePipeline
 		fakeTeam   *dbfakes.FakeTeam
 	)
 	BeforeEach(func() {
-		// Retained for selective post-lookup mutation failure seams.
+		// Reused only by the method-specific post-lookup fault seams below.
 		dbPipeline = new(dbfakes.FakePipeline)
-		// Retained for selective team lookup/list failure seams.
+		// Reused only by the method-specific post-lookup team fault seams below.
 		fakeTeam = new(dbfakes.FakeTeam)
 	})
 
@@ -37,24 +212,8 @@ var _ = Describe("Pipelines API", func() {
 
 		BeforeEach(func() {
 			listingDB = useRealDB()
-			another, err := listingDB.Deps.teamFactory.CreateTeam(atc.Team{Name: "another"})
-			Expect(err).NotTo(HaveOccurred())
-			pipelines = map[string]db.Pipeline{
-				"public-main": listingDB.SavePipeline(listingDB.Main, "public-pipeline", atc.Config{
-					Groups:  atc.GroupConfigs{{Name: "group2", Jobs: []string{"job3", "job4"}, Resources: []string{"resource3", "resource4"}}},
-					Display: &atc.DisplayConfig{BackgroundImage: "background.jpg"},
-				}),
-				"private-main": listingDB.SavePipeline(listingDB.Main, "private-pipeline", atc.Config{
-					Groups: atc.GroupConfigs{{Name: "group1", Jobs: []string{"job1", "job2"}, Resources: []string{"resource1", "resource2"}}},
-				}),
-				"public-other":  listingDB.SavePipeline(another, "another-pipeline", atc.Config{}),
-				"private-other": listingDB.SavePipeline(another, "another-private-pipeline", atc.Config{}),
-			}
-			Expect(pipelines["public-main"].Expose()).To(Succeed())
-			Expect(pipelines["public-other"].Expose()).To(Succeed())
-			Expect(pipelines["public-main"].Pause("fixture")).To(Succeed())
-			Expect(pipelines["public-other"].Pause("fixture")).To(Succeed())
-			Expect(pipelines["private-main"].Archive()).To(Succeed())
+			fixture := persistPipelineListingFixture(listingDB)
+			pipelines = fixture.pipelines
 			server = listingDB.Serve()
 		})
 
@@ -80,27 +239,7 @@ var _ = Describe("Pipelines API", func() {
 		})
 
 		It("returns public pipeline objects from both teams", func() {
-			body, err := io.ReadAll(response.Body)
-			Expect(err).NotTo(HaveOccurred())
-			var actual []atc.Pipeline
-			Expect(json.Unmarshal(body, &actual)).To(Succeed())
-			Expect(actual).To(HaveLen(2))
-			byID := map[int]atc.Pipeline{}
-			for _, pipeline := range actual {
-				byID[pipeline.ID] = pipeline
-			}
-			main := byID[pipelines["public-main"].ID()]
-			Expect(main.Name).To(Equal("public-pipeline"))
-			Expect(main.TeamName).To(Equal("main"))
-			Expect(main.Paused).To(BeTrue())
-			Expect(main.Public).To(BeTrue())
-			Expect(main.Groups).To(Equal(pipelines["public-main"].Groups()))
-			Expect(main.Display).To(Equal(pipelines["public-main"].Display()))
-			other := byID[pipelines["public-other"].ID()]
-			Expect(other.Name).To(Equal("another-pipeline"))
-			Expect(other.TeamName).To(Equal("another"))
-			Expect(other.Paused).To(BeTrue())
-			Expect(other.Public).To(BeTrue())
+			expectPipelineResponse(response, pipelines["public-main"], pipelines["public-other"])
 		})
 
 		Context("when team is set in user context", func() {
@@ -109,26 +248,13 @@ var _ = Describe("Pipelines API", func() {
 			})
 
 			It("does not grant visibility to an unrelated team", func() {
-				body, err := io.ReadAll(response.Body)
-				Expect(err).NotTo(HaveOccurred())
-				var actual []atc.Pipeline
-				Expect(json.Unmarshal(body, &actual)).To(Succeed())
-				Expect(actual).To(HaveLen(2))
+				expectPipelineResponse(response, pipelines["public-main"], pipelines["public-other"])
 			})
 		})
 
 		Context("when not authenticated", func() {
 			It("returns only public pipelines", func() {
-				body, err := io.ReadAll(response.Body)
-				Expect(err).NotTo(HaveOccurred())
-
-				var actual []map[string]any
-				err = json.Unmarshal(body, &actual)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(actual).To(ConsistOf(
-					HaveKeyWithValue("id", BeNumerically("==", pipelines["public-main"].ID())),
-					HaveKeyWithValue("id", BeNumerically("==", pipelines["public-other"].ID())),
-				))
+				expectPipelineResponse(response, pipelines["public-main"], pipelines["public-other"])
 			})
 		})
 
@@ -138,17 +264,11 @@ var _ = Describe("Pipelines API", func() {
 			})
 
 			It("returns all pipelines of the team + all public pipelines", func() {
-				body, err := io.ReadAll(response.Body)
-				Expect(err).NotTo(HaveOccurred())
-
-				var actual []map[string]any
-				err = json.Unmarshal(body, &actual)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(actual).To(ConsistOf(
-					HaveKeyWithValue("id", BeNumerically("==", pipelines["public-main"].ID())),
-					HaveKeyWithValue("id", BeNumerically("==", pipelines["private-main"].ID())),
-					HaveKeyWithValue("id", BeNumerically("==", pipelines["public-other"].ID())),
-				))
+				expectPipelineResponse(response,
+					pipelines["public-main"],
+					pipelines["private-main"],
+					pipelines["public-other"],
+				)
 			})
 
 			Context("user has the Admin privilege", func() {
@@ -157,21 +277,23 @@ var _ = Describe("Pipelines API", func() {
 				})
 
 				It("user can see all private and public pipelines from all teams", func() {
-					body, err := io.ReadAll(response.Body)
-					Expect(err).NotTo(HaveOccurred())
-
-					var pipelinesResponse []atc.Pipeline
-					err = json.Unmarshal(body, &pipelinesResponse)
-					Expect(err).NotTo(HaveOccurred())
-					Expect(len(pipelinesResponse)).To(Equal(4))
+					expectPipelineResponse(response,
+						pipelines["public-main"],
+						pipelines["private-main"],
+						pipelines["public-other"],
+						pipelines["private-other"],
+					)
 				})
 			})
 
 			Context("when the call to get active pipelines fails", func() {
 				BeforeEach(func() {
-					server = newAPIServer(fakeDBDeps())
+					doomed := postgresRunner.OpenConn()
+					Expect(doomed.Close()).To(Succeed())
+					deps := listingDB.Deps
+					deps.pipelineFactory = db.NewPipelineFactory(doomed, listingDB.LockFactory)
+					server = newAPIServer(deps)
 					DeferCleanup(server.Close)
-					dbPipelineFactory.VisiblePipelinesReturns(nil, errors.New("disaster"))
 				})
 
 				It("returns 500 internal server error", func() {
@@ -190,24 +312,8 @@ var _ = Describe("Pipelines API", func() {
 
 		BeforeEach(func() {
 			listingDB = useRealDB()
-			another, err := listingDB.Deps.teamFactory.CreateTeam(atc.Team{Name: "another"})
-			Expect(err).NotTo(HaveOccurred())
-			pipelines = map[string]db.Pipeline{
-				"public-main": listingDB.SavePipeline(listingDB.Main, "public-pipeline", atc.Config{
-					Groups:  atc.GroupConfigs{{Name: "group2", Jobs: []string{"job3", "job4"}, Resources: []string{"resource3", "resource4"}}},
-					Display: &atc.DisplayConfig{BackgroundImage: "background.jpg"},
-				}),
-				"private-main": listingDB.SavePipeline(listingDB.Main, "private-pipeline", atc.Config{
-					Groups: atc.GroupConfigs{{Name: "group1", Jobs: []string{"job1", "job2"}, Resources: []string{"resource1", "resource2"}}},
-				}),
-				"public-other":  listingDB.SavePipeline(another, "another-pipeline", atc.Config{}),
-				"private-other": listingDB.SavePipeline(another, "another-private-pipeline", atc.Config{}),
-			}
-			Expect(pipelines["public-main"].Expose()).To(Succeed())
-			Expect(pipelines["public-other"].Expose()).To(Succeed())
-			Expect(pipelines["public-main"].Pause("fixture")).To(Succeed())
-			Expect(pipelines["public-other"].Pause("fixture")).To(Succeed())
-			Expect(pipelines["private-main"].Archive()).To(Succeed())
+			fixture := persistPipelineListingFixture(listingDB)
+			pipelines = fixture.pipelines
 			server = listingDB.Serve()
 		})
 
@@ -238,26 +344,9 @@ var _ = Describe("Pipelines API", func() {
 			})
 
 			It("returns the persisted team pipeline objects", func() {
-				body, err := io.ReadAll(response.Body)
-				Expect(err).NotTo(HaveOccurred())
-				var actual []atc.Pipeline
-				Expect(json.Unmarshal(body, &actual)).To(Succeed())
-				Expect(actual).To(HaveLen(2))
-				byID := map[int]atc.Pipeline{}
-				for _, pipeline := range actual {
-					byID[pipeline.ID] = pipeline
-				}
-				private := byID[pipelines["private-main"].ID()]
-				Expect(private.Name).To(Equal("private-pipeline"))
-				Expect(private.Archived).To(BeTrue())
-				Expect(private.Public).To(BeFalse())
-				Expect(private.Groups).To(Equal(pipelines["private-main"].Groups()))
-				public := byID[pipelines["public-main"].ID()]
-				Expect(public.Name).To(Equal("public-pipeline"))
-				Expect(public.Paused).To(BeTrue())
-				Expect(public.Public).To(BeTrue())
-				Expect(public.Groups).To(Equal(pipelines["public-main"].Groups()))
-				Expect(public.Display).To(Equal(pipelines["public-main"].Display()))
+				expectPipelineResponse(response, pipelines["public-main"], pipelines["private-main"])
+				Expect(pipelines["private-main"].PausedAt()).NotTo(BeZero())
+				Expect(pipelines["private-main"].PausedBy()).To(Equal("automatic-pipeline-archiver"))
 			})
 
 			It("returns all team's pipelines", func() {
@@ -277,6 +366,8 @@ var _ = Describe("Pipelines API", func() {
 					server = newAPIServer(fakeDBDeps())
 					DeferCleanup(server.Close)
 					dbTeamFactory.FindTeamReturns(fakeTeam, true, nil)
+					// Retained fault seam: Team.Pipelines must fail after FindTeam
+					// succeeds; a closed TeamFactory cannot reach the nested call.
 					fakeTeam.PipelinesReturns(nil, errors.New("disaster"))
 				})
 
@@ -288,18 +379,12 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when authenticated as another team", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				fakeAccess.IsAuthenticatedReturns(true)
+				fakeAccess.IsAuthorizedReturns(false)
 			})
 
 			It("returns only team's public pipelines", func() {
-				body, err := io.ReadAll(response.Body)
-				Expect(err).NotTo(HaveOccurred())
-				var actual []map[string]any
-				Expect(json.Unmarshal(body, &actual)).To(Succeed())
-
-				Expect(actual).To(ConsistOf(
-					HaveKeyWithValue("id", BeNumerically("==", pipelines["public-main"].ID())),
-				))
+				expectPipelineResponse(response, pipelines["public-main"])
 			})
 		})
 
@@ -309,14 +394,7 @@ var _ = Describe("Pipelines API", func() {
 			})
 
 			It("returns only team's public pipelines", func() {
-				body, err := io.ReadAll(response.Body)
-				Expect(err).NotTo(HaveOccurred())
-				var actual []map[string]any
-				Expect(json.Unmarshal(body, &actual)).To(Succeed())
-
-				Expect(actual).To(ConsistOf(
-					HaveKeyWithValue("id", BeNumerically("==", pipelines["public-main"].ID())),
-				))
+				expectPipelineResponse(response, pipelines["public-main"])
 			})
 		})
 	})
@@ -479,9 +557,6 @@ var _ = Describe("Pipelines API", func() {
 
 		BeforeEach(func() {
 			teamName = "some-team"
-			dbTeamFactory.FindTeamReturns(fakeTeam, true, nil)
-			dbPipeline.NameReturns("some-pipeline")
-			fakeTeam.PipelineReturns(dbPipeline, true, nil)
 		})
 
 		JustBeforeEach(func() {
@@ -498,7 +573,7 @@ var _ = Describe("Pipelines API", func() {
 
 			Context("and the pipeline is private", func() {
 				BeforeEach(func() {
-					dbPipeline.PublicReturns(false)
+					persistBadgePipeline(atc.Config{Jobs: atc.JobConfigs{{Name: "private-job"}}}, nil)
 				})
 
 				Context("when user is authenticated", func() {
@@ -523,7 +598,8 @@ var _ = Describe("Pipelines API", func() {
 
 			Context("and the pipeline is public", func() {
 				BeforeEach(func() {
-					dbPipeline.PublicReturns(true)
+					persistBadgePipeline(atc.Config{Jobs: atc.JobConfigs{{Name: "public-job"}}}, nil)
+					Expect(badgePipeline.Expose()).To(Succeed())
 				})
 
 				It("returns 200 OK", func() {
@@ -538,22 +614,22 @@ var _ = Describe("Pipelines API", func() {
 				fakeAccess.IsAuthorizedReturns(true)
 			})
 
-			It("returns 200 OK", func() {
-				Expect(response.StatusCode).To(Equal(http.StatusOK))
-			})
-
-			It("returns Content-Type as image/svg+xml and disables caching", func() {
-				expectedHeaderEntries := map[string]string{
-					"Content-Type":  "image/svg+xml",
-					"Cache-Control": "no-cache, no-store, must-revalidate",
-					"Expires":       "0",
-				}
-				Expect(response).Should(IncludeHeaderEntries(expectedHeaderEntries))
-			})
-
 			Context("when the pipeline has no finished builds", func() {
 				BeforeEach(func() {
 					persistBadgePipeline(atc.Config{Jobs: atc.JobConfigs{{Name: "no-build"}}}, nil)
+				})
+
+				It("returns 200 OK", func() {
+					Expect(response.StatusCode).To(Equal(http.StatusOK))
+				})
+
+				It("returns Content-Type as image/svg+xml and disables caching", func() {
+					expectedHeaderEntries := map[string]string{
+						"Content-Type":  "image/svg+xml",
+						"Cache-Control": "no-cache, no-store, must-revalidate",
+						"Expires":       "0",
+					}
+					Expect(response).Should(IncludeHeaderEntries(expectedHeaderEntries))
 				})
 
 				It("returns an unknown badge", func() {
@@ -719,11 +795,19 @@ var _ = Describe("Pipelines API", func() {
 	})
 
 	Describe("DELETE /api/v1/teams/:team_name/pipelines/:pipeline_name", func() {
-		var response *http.Response
+		var (
+			response    *http.Response
+			deleteDB    *realDB
+			requestTeam string
+		)
+
+		BeforeEach(func() {
+			requestTeam = "a-team"
+		})
 
 		JustBeforeEach(func() {
 			pipelineName := "a-pipeline-name"
-			req, err := http.NewRequest("DELETE", server.URL+"/api/v1/teams/a-team/pipelines/"+pipelineName, nil)
+			req, err := http.NewRequest("DELETE", server.URL+"/api/v1/teams/"+requestTeam+"/pipelines/"+pipelineName, nil)
 			Expect(err).NotTo(HaveOccurred())
 
 			req.Header.Set("Content-Type", "application/json")
@@ -740,35 +824,32 @@ var _ = Describe("Pipelines API", func() {
 			Context("when requester belongs to the team", func() {
 				BeforeEach(func() {
 					fakeAccess.IsAuthorizedReturns(true)
-
-					dbTeamFactory.FindTeamReturns(fakeTeam, true, nil)
-					dbPipeline.NameReturns("a-pipeline-name")
-					fakeTeam.PipelineReturns(dbPipeline, true, nil)
 				})
 
-				It("returns 204 No Content", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusNoContent))
-				})
+				Context("when deleting succeeds", func() {
+					BeforeEach(func() {
+						deleteDB = useRealDB()
+						deleteDB.SavePipeline(deleteDB.Main, "a-pipeline-name", atc.Config{Jobs: atc.JobConfigs{{Name: "job"}}})
+						server = deleteDB.Serve()
+						requestTeam = "main"
+					})
 
-				It("constructs team with provided team name", func() {
-					Expect(dbTeamFactory.FindTeamCallCount()).To(Equal(1))
-					Expect(dbTeamFactory.FindTeamArgsForCall(0)).To(Equal("a-team"))
-				})
-
-				It("injects the proper pipelineDB", func() {
-					pipelineRef := fakeTeam.PipelineArgsForCall(0)
-					Expect(pipelineRef).To(Equal(atc.PipelineRef{Name: "a-pipeline-name"}))
-				})
-
-				It("deletes the named pipeline from the database", func() {
-					Expect(dbPipeline.DestroyCallCount()).To(Equal(1))
+					It("returns 204 and removes the named pipeline from PostgreSQL", func() {
+						Expect(response.StatusCode).To(Equal(http.StatusNoContent))
+						pipeline, found, err := deleteDB.Main.Pipeline(atc.PipelineRef{Name: "a-pipeline-name"})
+						Expect(err).NotTo(HaveOccurred())
+						Expect(found).To(BeFalse())
+						Expect(pipeline).To(BeNil())
+					})
 				})
 
 				Context("when an error occurs destroying the pipeline", func() {
 					BeforeEach(func() {
+						dbTeamFactory.FindTeamReturns(fakeTeam, true, nil)
 						fakeTeam.PipelineReturns(dbPipeline, true, nil)
-						err := errors.New("disaster!")
-						dbPipeline.DestroyReturns(err)
+						// Retained fault seam: Pipeline.Destroy must fail after
+						// Team.Pipeline succeeds; a closed TeamFactory fails earlier.
+						dbPipeline.DestroyReturns(errors.New("disaster!"))
 					})
 
 					It("returns a 500 Internal Server Error", func() {
@@ -778,7 +859,11 @@ var _ = Describe("Pipelines API", func() {
 
 				Context("when the pipeline is an immutable workflow-run template", func() {
 					BeforeEach(func() {
+						dbTeamFactory.FindTeamReturns(fakeTeam, true, nil)
 						fakeTeam.PipelineReturns(dbPipeline, true, nil)
+						// Retained semantic seam: Pipeline.Destroy must return the
+						// template conflict after Team.Pipeline succeeds; a closed
+						// TeamFactory cannot reach the nested method.
 						dbPipeline.DestroyReturns(db.ErrWorkflowRunTemplateImmutable)
 					})
 
@@ -840,17 +925,6 @@ var _ = Describe("Pipelines API", func() {
 			Context("when requester belongs to the team", func() {
 				BeforeEach(func() {
 					fakeAccess.IsAuthorizedReturns(true)
-					dbTeamFactory.FindTeamReturns(fakeTeam, true, nil)
-				})
-
-				It("constructs team with provided team name", func() {
-					Expect(dbTeamFactory.FindTeamCallCount()).To(Equal(1))
-					Expect(dbTeamFactory.FindTeamArgsForCall(0)).To(Equal("a-team"))
-				})
-
-				It("injects the proper pipelineDB", func() {
-					pipelineRef := fakeTeam.PipelineArgsForCall(0)
-					Expect(pipelineRef).To(Equal(atc.PipelineRef{Name: "a-pipeline"}))
 				})
 
 				Context("when pausing the pipeline succeeds", func() {
@@ -880,7 +954,10 @@ var _ = Describe("Pipelines API", func() {
 
 				Context("when pausing the pipeline fails", func() {
 					BeforeEach(func() {
+						dbTeamFactory.FindTeamReturns(fakeTeam, true, nil)
 						fakeTeam.PipelineReturns(dbPipeline, true, nil)
+						// Retained fault seam: Pipeline.Pause must fail after
+						// Team.Pipeline succeeds; a closed TeamFactory fails earlier.
 						dbPipeline.PauseReturns(errors.New("welp"))
 					})
 
@@ -891,7 +968,11 @@ var _ = Describe("Pipelines API", func() {
 
 				Context("when the pipeline is an immutable workflow-run template", func() {
 					BeforeEach(func() {
+						dbTeamFactory.FindTeamReturns(fakeTeam, true, nil)
 						fakeTeam.PipelineReturns(dbPipeline, true, nil)
+						// Retained semantic seam: Pipeline.Pause must return the
+						// template conflict after Team.Pipeline succeeds; a closed
+						// TeamFactory cannot reach the nested method.
 						dbPipeline.PauseReturns(db.ErrWorkflowRunTemplateImmutable)
 					})
 
@@ -928,6 +1009,8 @@ var _ = Describe("Pipelines API", func() {
 			response         *http.Response
 			archiveDB        *realDB
 			archivedPipeline db.Pipeline
+			archiveConfig    atc.Config
+			requestedAt      time.Time
 			requestTeam      = "a-team"
 		)
 
@@ -935,8 +1018,6 @@ var _ = Describe("Pipelines API", func() {
 			requestTeam = "a-team"
 			fakeAccess.IsAuthenticatedReturns(true)
 			fakeAccess.IsAuthorizedReturns(true)
-			dbTeamFactory.FindTeamReturns(fakeTeam, true, nil)
-			fakeTeam.PipelineReturns(dbPipeline, true, nil)
 		})
 
 		JustBeforeEach(func() {
@@ -946,29 +1027,45 @@ var _ = Describe("Pipelines API", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 
-		It("returns 200", func() {
-			Expect(response.StatusCode).To(Equal(http.StatusOK))
-		})
-
 		Context("when archiving succeeds", func() {
 			BeforeEach(func() {
 				archiveDB = useRealDB()
-				archivedPipeline = archiveDB.SavePipeline(archiveDB.Main, "a-pipeline", atc.Config{Jobs: atc.JobConfigs{{Name: "job"}}})
+				archiveConfig = atc.Config{
+					Groups: atc.GroupConfigs{{Name: "release", Jobs: []string{"ship"}, Resources: []string{"artifact"}}},
+					Jobs:   atc.JobConfigs{{Name: "ship"}},
+					Resources: atc.ResourceConfigs{{
+						Name: "artifact", Type: "mock", Source: atc.Source{"uri": "archive://artifact"},
+					}},
+					Display: &atc.DisplayConfig{BackgroundImage: "archive.jpg"},
+				}
+				archivedPipeline = archiveDB.SavePipeline(archiveDB.Main, "a-pipeline", archiveConfig)
 				server = archiveDB.Serve()
 				requestTeam = "main"
+				requestedAt = time.Now()
 			})
 
-			It("archives the pipeline in PostgreSQL", func() {
+			It("returns 200 and archives the pipeline in PostgreSQL", func() {
+				Expect(response.StatusCode).To(Equal(http.StatusOK))
 				found, err := archivedPipeline.Reload()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(found).To(BeTrue())
 				Expect(archivedPipeline.Archived()).To(BeTrue())
 				Expect(archivedPipeline.Paused()).To(BeTrue())
+				Expect(archivedPipeline.PausedBy()).To(Equal("automatic-pipeline-archiver"))
+				Expect(archivedPipeline.PausedAt()).To(BeTemporally(">=", requestedAt))
+				Expect(archivedPipeline.LastUpdated()).To(BeTemporally(">=", requestedAt))
+				Expect(archivedPipeline.Groups()).To(Equal(archiveConfig.Groups))
+				Expect(archivedPipeline.Display()).To(Equal(archiveConfig.Display))
+				expectPersistedPipelineShape(archivedPipeline, archiveConfig)
 			})
 		})
 
 		Context("when archiving the pipeline fails due to the DB", func() {
 			BeforeEach(func() {
+				dbTeamFactory.FindTeamReturns(fakeTeam, true, nil)
+				fakeTeam.PipelineReturns(dbPipeline, true, nil)
+				// Retained fault seam: Pipeline.Archive must fail after
+				// Team.Pipeline succeeds; a closed TeamFactory fails earlier.
 				dbPipeline.ArchiveReturns(errors.New("pq: a db error"))
 			})
 
@@ -979,6 +1076,11 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when the pipeline is an immutable workflow-run template", func() {
 			BeforeEach(func() {
+				dbTeamFactory.FindTeamReturns(fakeTeam, true, nil)
+				fakeTeam.PipelineReturns(dbPipeline, true, nil)
+				// Retained semantic seam: Pipeline.Archive must return the
+				// template conflict after Team.Pipeline succeeds; a closed
+				// TeamFactory cannot reach the nested method.
 				dbPipeline.ArchiveReturns(db.ErrWorkflowRunTemplateImmutable)
 			})
 
@@ -1027,19 +1129,6 @@ var _ = Describe("Pipelines API", func() {
 			Context("when requester belongs to the team", func() {
 				BeforeEach(func() {
 					fakeAccess.IsAuthorizedReturns(true)
-
-					dbTeamFactory.FindTeamReturns(fakeTeam, true, nil)
-					fakeTeam.PipelineReturns(dbPipeline, true, nil)
-				})
-
-				It("constructs team with provided team name", func() {
-					Expect(dbTeamFactory.FindTeamCallCount()).To(Equal(1))
-					Expect(dbTeamFactory.FindTeamArgsForCall(0)).To(Equal("a-team"))
-				})
-
-				It("injects the proper pipelineDB", func() {
-					pipelineRef := fakeTeam.PipelineArgsForCall(0)
-					Expect(pipelineRef).To(Equal(atc.PipelineRef{Name: "a-pipeline"}))
 				})
 
 				Context("when unpausing the pipeline succeeds", func() {
@@ -1067,7 +1156,10 @@ var _ = Describe("Pipelines API", func() {
 
 				Context("when unpausing the pipeline fails for an unknown reason", func() {
 					BeforeEach(func() {
+						dbTeamFactory.FindTeamReturns(fakeTeam, true, nil)
 						fakeTeam.PipelineReturns(dbPipeline, true, nil)
+						// Retained fault seam: Pipeline.Unpause must fail after
+						// Team.Pipeline succeeds; a closed TeamFactory fails earlier.
 						dbPipeline.UnpauseReturns(errors.New("welp"))
 					})
 
@@ -1078,6 +1170,11 @@ var _ = Describe("Pipelines API", func() {
 
 				Context("when the pipeline is an immutable workflow-run template", func() {
 					BeforeEach(func() {
+						dbTeamFactory.FindTeamReturns(fakeTeam, true, nil)
+						fakeTeam.PipelineReturns(dbPipeline, true, nil)
+						// Retained semantic seam: Pipeline.Unpause must return the
+						// template conflict after Team.Pipeline succeeds; a closed
+						// TeamFactory cannot reach the nested method.
 						dbPipeline.UnpauseReturns(db.ErrWorkflowRunTemplateImmutable)
 					})
 
@@ -1139,18 +1236,6 @@ var _ = Describe("Pipelines API", func() {
 			Context("when requester belongs to the team", func() {
 				BeforeEach(func() {
 					fakeAccess.IsAuthorizedReturns(true)
-					dbTeamFactory.FindTeamReturns(fakeTeam, true, nil)
-				})
-
-				It("constructs team with provided team name", func() {
-					Expect(dbTeamFactory.FindTeamCallCount()).To(Equal(1))
-					Expect(dbTeamFactory.FindTeamArgsForCall(0)).To(Equal("a-team"))
-				})
-
-				It("injects the proper pipelineDB", func() {
-					Expect(fakeTeam.PipelineCallCount()).To(Equal(1))
-					pipelineRef := fakeTeam.PipelineArgsForCall(0)
-					Expect(pipelineRef).To(Equal(atc.PipelineRef{Name: "a-pipeline"}))
 				})
 
 				Context("when exposing the pipeline succeeds", func() {
@@ -1175,7 +1260,10 @@ var _ = Describe("Pipelines API", func() {
 
 				Context("when exposing the pipeline fails", func() {
 					BeforeEach(func() {
+						dbTeamFactory.FindTeamReturns(fakeTeam, true, nil)
 						fakeTeam.PipelineReturns(dbPipeline, true, nil)
+						// Retained fault seam: Pipeline.Expose must fail after
+						// Team.Pipeline succeeds; a closed TeamFactory fails earlier.
 						dbPipeline.ExposeReturns(errors.New("welp"))
 					})
 
@@ -1186,7 +1274,11 @@ var _ = Describe("Pipelines API", func() {
 
 				Context("when the pipeline is an immutable workflow-run template", func() {
 					BeforeEach(func() {
+						dbTeamFactory.FindTeamReturns(fakeTeam, true, nil)
 						fakeTeam.PipelineReturns(dbPipeline, true, nil)
+						// Retained semantic seam: Pipeline.Expose must return the
+						// template conflict after Team.Pipeline succeeds; a closed
+						// TeamFactory cannot reach the nested method.
 						dbPipeline.ExposeReturns(db.ErrWorkflowRunTemplateImmutable)
 					})
 
@@ -1247,17 +1339,6 @@ var _ = Describe("Pipelines API", func() {
 			Context("when requester belongs to the team", func() {
 				BeforeEach(func() {
 					fakeAccess.IsAuthorizedReturns(true)
-					dbTeamFactory.FindTeamReturns(fakeTeam, true, nil)
-				})
-
-				It("constructs team with provided team name", func() {
-					Expect(dbTeamFactory.FindTeamCallCount()).To(Equal(1))
-					Expect(dbTeamFactory.FindTeamArgsForCall(0)).To(Equal("a-team"))
-				})
-
-				It("injects the proper pipeline", func() {
-					pipelineRef := fakeTeam.PipelineArgsForCall(0)
-					Expect(pipelineRef).To(Equal(atc.PipelineRef{Name: "a-pipeline"}))
 				})
 
 				Context("when hiding the pipeline succeeds", func() {
@@ -1283,7 +1364,10 @@ var _ = Describe("Pipelines API", func() {
 
 				Context("when hiding the pipeline fails", func() {
 					BeforeEach(func() {
+						dbTeamFactory.FindTeamReturns(fakeTeam, true, nil)
 						fakeTeam.PipelineReturns(dbPipeline, true, nil)
+						// Retained fault seam: Pipeline.Hide must fail after
+						// Team.Pipeline succeeds; a closed TeamFactory fails earlier.
 						dbPipeline.HideReturns(errors.New("welp"))
 					})
 
@@ -1294,7 +1378,11 @@ var _ = Describe("Pipelines API", func() {
 
 				Context("when the pipeline is an immutable workflow-run template", func() {
 					BeforeEach(func() {
+						dbTeamFactory.FindTeamReturns(fakeTeam, true, nil)
 						fakeTeam.PipelineReturns(dbPipeline, true, nil)
+						// Retained semantic seam: Pipeline.Hide must return the
+						// template conflict after Team.Pipeline succeeds; a closed
+						// TeamFactory cannot reach the nested method.
 						dbPipeline.HideReturns(db.ErrWorkflowRunTemplateImmutable)
 					})
 
@@ -1331,6 +1419,8 @@ var _ = Describe("Pipelines API", func() {
 			response      *http.Response
 			pipelineNames []string
 			orderingDB    *realDB
+			orderingTeam  db.Team
+			initialNames  []string
 			requestTeam   = "a-team"
 		)
 
@@ -1364,32 +1454,48 @@ var _ = Describe("Pipelines API", func() {
 			Context("when requester belongs to the team", func() {
 				BeforeEach(func() {
 					fakeAccess.IsAuthorizedReturns(true)
-					dbTeamFactory.FindTeamReturns(fakeTeam, true, nil)
-				})
-
-				It("constructs team with provided team name", func() {
-					Expect(dbTeamFactory.FindTeamCallCount()).To(Equal(1))
-					Expect(dbTeamFactory.FindTeamArgsForCall(0)).To(Equal("a-team"))
 				})
 
 				Context("when ordering the pipelines succeeds", func() {
 					BeforeEach(func() {
 						orderingDB = useRealDB()
-						for _, name := range pipelineNames {
-							orderingDB.SavePipeline(orderingDB.Main, name, atc.Config{Jobs: atc.JobConfigs{{Name: "job"}}})
+						var err error
+						orderingTeam, err = orderingDB.Deps.teamFactory.CreateTeam(atc.Team{Name: "a-team"})
+						Expect(err).NotTo(HaveOccurred())
+						for _, name := range []string{
+							"just-kidding",
+							"a-pipeline",
+							"one-final-pipeline",
+							"yet-another-pipeline",
+							"another-pipeline",
+						} {
+							orderingDB.SavePipeline(orderingTeam, name, atc.Config{Jobs: atc.JobConfigs{{Name: "job"}}})
+						}
+						initialPipelines, err := orderingTeam.Pipelines()
+						Expect(err).NotTo(HaveOccurred())
+						initialNames = make([]string, len(initialPipelines))
+						for i, pipeline := range initialPipelines {
+							initialNames[i] = pipeline.Name()
 						}
 						server = orderingDB.Serve()
-						requestTeam = "main"
 					})
 
-					It("orders the pipelines", func() {
-						pipelines, err := orderingDB.Main.Pipelines()
+					It("persists the requested order from a deliberately different initial order", func() {
+						Expect(initialNames).To(Equal([]string{
+							"just-kidding",
+							"a-pipeline",
+							"one-final-pipeline",
+							"yet-another-pipeline",
+							"another-pipeline",
+						}))
+						pipelines, err := orderingTeam.Pipelines()
 						Expect(err).NotTo(HaveOccurred())
 						actualNames := make([]string, len(pipelines))
 						for i, pipeline := range pipelines {
 							actualNames[i] = pipeline.Name()
 						}
 						Expect(actualNames).To(Equal(pipelineNames))
+						Expect(actualNames).NotTo(Equal(initialNames))
 					})
 
 					It("returns 200", func() {
@@ -1399,6 +1505,10 @@ var _ = Describe("Pipelines API", func() {
 
 				Context("when a pipeline does not exist", func() {
 					BeforeEach(func() {
+						dbTeamFactory.FindTeamReturns(fakeTeam, true, nil)
+						// Retained semantic seam: Team.OrderPipelines must return
+						// ErrPipelineNotFound after FindTeam succeeds; a closed
+						// TeamFactory cannot reach the nested method.
 						fakeTeam.OrderPipelinesReturns(db.ErrPipelineNotFound{Name: "a-pipeline"})
 					})
 
@@ -1410,6 +1520,9 @@ var _ = Describe("Pipelines API", func() {
 
 				Context("when ordering the pipelines fails", func() {
 					BeforeEach(func() {
+						dbTeamFactory.FindTeamReturns(fakeTeam, true, nil)
+						// Retained fault seam: Team.OrderPipelines must fail after
+						// FindTeam succeeds; a closed TeamFactory fails earlier.
 						fakeTeam.OrderPipelinesReturns(errors.New("welp"))
 					})
 
@@ -1443,10 +1556,12 @@ var _ = Describe("Pipelines API", func() {
 
 	Describe("PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/ordering", func() {
 		var (
-			response     *http.Response
-			instanceVars []atc.InstanceVars
-			withinDB     *realDB
-			requestTeam  = "a-team"
+			response            *http.Response
+			instanceVars        []atc.InstanceVars
+			withinDB            *realDB
+			withinTeam          db.Team
+			initialInstanceVars []atc.InstanceVars
+			requestTeam         = "a-team"
 		)
 
 		BeforeEach(func() {
@@ -1477,33 +1592,35 @@ var _ = Describe("Pipelines API", func() {
 			Context("when requester belongs to the team", func() {
 				BeforeEach(func() {
 					fakeAccess.IsAuthorizedReturns(true)
-					dbTeamFactory.FindTeamReturns(fakeTeam, true, nil)
-				})
-
-				It("constructs team with provided team name", func() {
-					Expect(dbTeamFactory.FindTeamCallCount()).To(Equal(1))
-					Expect(dbTeamFactory.FindTeamArgsForCall(0)).To(Equal("a-team"))
 				})
 
 				Context("when ordering the pipelines succeeds", func() {
 					BeforeEach(func() {
 						withinDB = useRealDB()
+						var err error
+						withinTeam, err = withinDB.Deps.teamFactory.CreateTeam(atc.Team{Name: "a-team"})
+						Expect(err).NotTo(HaveOccurred())
 						for _, vars := range []atc.InstanceVars{{"branch": "test-2"}, nil, {"branch": "test"}} {
-							_, _, err := withinDB.Main.SavePipeline(atc.PipelineRef{Name: "a-pipeline", InstanceVars: vars}, atc.Config{Jobs: atc.JobConfigs{{Name: "job"}}}, db.ConfigVersion(0), false)
+							_, _, err := withinTeam.SavePipeline(atc.PipelineRef{Name: "a-pipeline", InstanceVars: vars}, atc.Config{Jobs: atc.JobConfigs{{Name: "job"}}}, db.ConfigVersion(0), false)
 							Expect(err).NotTo(HaveOccurred())
 						}
+						initialPipelines, err := withinTeam.Pipelines()
+						Expect(err).NotTo(HaveOccurred())
+						initialInstanceVars = normalizedInstanceVars(initialPipelines, "a-pipeline")
+						Expect(initialInstanceVars).To(Equal([]atc.InstanceVars{
+							{"branch": "test-2"},
+							{},
+							{"branch": "test"},
+						}))
 						server = withinDB.Serve()
-						requestTeam = "main"
 					})
 
-					It("orders the pipelines", func() {
-						pipelines, err := withinDB.Main.Pipelines()
+					It("persists the requested instance order from a deliberately different initial order", func() {
+						pipelines, err := withinTeam.Pipelines()
 						Expect(err).NotTo(HaveOccurred())
-						actualInstanceVars := make([]atc.InstanceVars, len(pipelines))
-						for i, pipeline := range pipelines {
-							actualInstanceVars[i] = pipeline.InstanceVars()
-						}
-						Expect(actualInstanceVars).To(Equal([]atc.InstanceVars{{"branch": "test"}, nil, {"branch": "test-2"}}))
+						actualInstanceVars := normalizedInstanceVars(pipelines, "a-pipeline")
+						Expect(actualInstanceVars).To(Equal(instanceVars))
+						Expect(actualInstanceVars).NotTo(Equal(initialInstanceVars))
 					})
 
 					It("returns 200", func() {
@@ -1513,6 +1630,10 @@ var _ = Describe("Pipelines API", func() {
 
 				Context("when a pipeline does not exist", func() {
 					BeforeEach(func() {
+						dbTeamFactory.FindTeamReturns(fakeTeam, true, nil)
+						// Retained semantic seam: Team.OrderPipelinesWithinGroup must
+						// return ErrPipelineNotFound after FindTeam succeeds; a closed
+						// TeamFactory cannot reach the nested method.
 						fakeTeam.OrderPipelinesWithinGroupReturns(db.ErrPipelineNotFound{Name: "a-pipeline"})
 					})
 
@@ -1524,6 +1645,9 @@ var _ = Describe("Pipelines API", func() {
 
 				Context("when ordering the pipelines fails", func() {
 					BeforeEach(func() {
+						dbTeamFactory.FindTeamReturns(fakeTeam, true, nil)
+						// Retained fault seam: Team.OrderPipelinesWithinGroup must fail
+						// after FindTeam succeeds; a closed TeamFactory fails earlier.
 						fakeTeam.OrderPipelinesWithinGroupReturns(errors.New("welp"))
 					})
 
@@ -1580,6 +1704,9 @@ var _ = Describe("Pipelines API", func() {
 				BeforeEach(func() {
 					scopeID := 789
 
+					// Retained data seam: Pipeline.LoadDebugVersionsDB returns this
+					// purpose-built graph after Team.Pipeline succeeds; a closed
+					// TeamFactory cannot reach the nested method.
 					dbPipeline.LoadDebugVersionsDBReturns(
 						&atc.DebugVersionsDB{
 							ResourceVersions: []atc.DebugResourceVersion{
@@ -1726,6 +1853,8 @@ var _ = Describe("Pipelines API", func() {
 
 			Context("when getting the debug versions db fails", func() {
 				BeforeEach(func() {
+					// Retained fault seam: Pipeline.LoadDebugVersionsDB must fail
+					// after Team.Pipeline succeeds; a closed TeamFactory fails earlier.
 					dbPipeline.LoadDebugVersionsDBReturns(nil, errors.New("nope"))
 				})
 
@@ -1763,6 +1892,7 @@ var _ = Describe("Pipelines API", func() {
 			response    *http.Response
 			requestBody string
 			renameDB    *realDB
+			renameTeam  db.Team
 			requestTeam = "a-team"
 		)
 
@@ -1788,41 +1918,36 @@ var _ = Describe("Pipelines API", func() {
 			Context("when authorized", func() {
 				BeforeEach(func() {
 					fakeAccess.IsAuthorizedReturns(true)
-
-					dbTeamFactory.FindTeamReturns(fakeTeam, true, nil)
-					fakeTeam.RenamePipelineReturns(true, nil)
-				})
-
-				It("finds the correct team", func() {
-					Expect(dbTeamFactory.FindTeamCallCount()).To(Equal(1))
-					Expect(dbTeamFactory.FindTeamArgsForCall(0)).To(Equal("a-team"))
 				})
 
 				Context("when renaming succeeds", func() {
 					BeforeEach(func() {
 						renameDB = useRealDB()
-						renameDB.SavePipeline(renameDB.Main, "a-pipeline", atc.Config{Jobs: atc.JobConfigs{{Name: "job"}}})
+						var err error
+						renameTeam, err = renameDB.Deps.teamFactory.CreateTeam(atc.Team{Name: "a-team"})
+						Expect(err).NotTo(HaveOccurred())
+						renameDB.SavePipeline(renameTeam, "a-pipeline", atc.Config{Jobs: atc.JobConfigs{{Name: "job"}}})
 						server = renameDB.Serve()
-						requestTeam = "main"
 					})
 
-					It("renames the pipeline in PostgreSQL", func() {
-						_, found, err := renameDB.Main.Pipeline(atc.PipelineRef{Name: "a-pipeline"})
+					It("returns 200 and renames the pipeline in PostgreSQL", func() {
+						Expect(response.StatusCode).To(Equal(http.StatusOK))
+						_, found, err := renameTeam.Pipeline(atc.PipelineRef{Name: "a-pipeline"})
 						Expect(err).NotTo(HaveOccurred())
 						Expect(found).To(BeFalse())
-						renamed, found, err := renameDB.Main.Pipeline(atc.PipelineRef{Name: "some-new-name"})
+						renamed, found, err := renameTeam.Pipeline(atc.PipelineRef{Name: "some-new-name"})
 						Expect(err).NotTo(HaveOccurred())
 						Expect(found).To(BeTrue())
 						Expect(renamed.Name()).To(Equal("some-new-name"))
 					})
 				})
 
-				It("returns 200", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusOK))
-				})
-
 				Context("when the pipeline does not exist", func() {
 					BeforeEach(func() {
+						dbTeamFactory.FindTeamReturns(fakeTeam, true, nil)
+						// Retained semantic seam: Team.RenamePipeline must report not
+						// found after FindTeam succeeds; a closed TeamFactory cannot
+						// reach the nested method.
 						fakeTeam.RenamePipelineReturns(false, nil)
 					})
 
@@ -1833,6 +1958,9 @@ var _ = Describe("Pipelines API", func() {
 
 				Context("when renaming the pipeline errors", func() {
 					BeforeEach(func() {
+						dbTeamFactory.FindTeamReturns(fakeTeam, true, nil)
+						// Retained fault seam: Team.RenamePipeline must fail after
+						// FindTeam succeeds; a closed TeamFactory fails earlier.
 						fakeTeam.RenamePipelineReturns(false, errors.New("whoops"))
 					})
 
@@ -1843,6 +1971,10 @@ var _ = Describe("Pipelines API", func() {
 
 				Context("when the pipeline is an immutable workflow-run template", func() {
 					BeforeEach(func() {
+						dbTeamFactory.FindTeamReturns(fakeTeam, true, nil)
+						// Retained semantic seam: Team.RenamePipeline must return the
+						// template conflict after FindTeam succeeds; a closed
+						// TeamFactory cannot reach the nested method.
 						fakeTeam.RenamePipelineReturns(false, db.ErrWorkflowRunTemplateImmutable)
 					})
 
@@ -1854,6 +1986,12 @@ var _ = Describe("Pipelines API", func() {
 				Context("when the new name is an invalid identifier", func() {
 					Context("and is a string", func() {
 						BeforeEach(func() {
+							renameDB = useRealDB()
+							var err error
+							renameTeam, err = renameDB.Deps.teamFactory.CreateTeam(atc.Team{Name: "a-team"})
+							Expect(err).NotTo(HaveOccurred())
+							renameDB.SavePipeline(renameTeam, "a-pipeline", atc.Config{Jobs: atc.JobConfigs{{Name: "job"}}})
+							server = renameDB.Serve()
 							requestBody = `{"name":"_some-new-name"}`
 						})
 
@@ -1867,6 +2005,10 @@ var _ = Describe("Pipelines API", func() {
 									}
 								]
 							}`))
+							renamed, found, err := renameTeam.Pipeline(atc.PipelineRef{Name: "_some-new-name"})
+							Expect(err).NotTo(HaveOccurred())
+							Expect(found).To(BeTrue())
+							Expect(renamed.Name()).To(Equal("_some-new-name"))
 						})
 					})
 					Context("and is an empty string", func() {
@@ -1921,9 +2063,45 @@ var _ = Describe("Pipelines API", func() {
 			listBuild2   db.Build
 		)
 
+		persistPipelineWithBuilds := func(pipelineRef atc.PipelineRef, count int) (db.Pipeline, []db.Build) {
+			GinkgoHelper()
+
+			listDB = useRealDB()
+			pipeline, _, err := listDB.Main.SavePipeline(
+				pipelineRef,
+				atc.Config{Jobs: atc.JobConfigs{{Name: "some-job"}}},
+				db.ConfigVersion(0),
+				false,
+			)
+			Expect(err).NotTo(HaveOccurred())
+			job, found, err := pipeline.Job("some-job")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			builds := make([]db.Build, 0, count)
+			for range count {
+				build, err := job.CreateBuild("api-test")
+				Expect(err).NotTo(HaveOccurred())
+				builds = append(builds, build)
+			}
+			server = listDB.Serve()
+			requestTeam = "main"
+			requestPipe = pipelineRef.Name
+			return pipeline, builds
+		}
+
+		decodeBuilds := func() []atc.Build {
+			GinkgoHelper()
+			body, err := io.ReadAll(response.Body)
+			Expect(err).NotTo(HaveOccurred())
+			var builds []atc.Build
+			Expect(json.Unmarshal(body, &builds)).To(Succeed())
+			return builds
+		}
+
 		BeforeEach(func() {
 			requestTeam = "some-team"
 			requestPipe = "some-pipeline"
+			queryParams = ""
 		})
 
 		JustBeforeEach(func() {
@@ -1940,7 +2118,7 @@ var _ = Describe("Pipelines API", func() {
 
 			Context("and the pipeline is private", func() {
 				BeforeEach(func() {
-					fakePipeline.PublicReturns(false)
+					persistPipelineWithBuilds(atc.PipelineRef{Name: "some-pipeline"}, 0)
 				})
 
 				It("returns 401", func() {
@@ -1950,7 +2128,8 @@ var _ = Describe("Pipelines API", func() {
 
 			Context("and the pipeline is public", func() {
 				BeforeEach(func() {
-					fakePipeline.PublicReturns(true)
+					pipeline, _ := persistPipelineWithBuilds(atc.PipelineRef{Name: "some-pipeline"}, 0)
+					Expect(pipeline.Expose()).To(Succeed())
 				})
 
 				It("returns 200 OK", func() {
@@ -1966,54 +2145,64 @@ var _ = Describe("Pipelines API", func() {
 			})
 
 			Context("when no params are passed", func() {
-				It("does not set defaults for since and until", func() {
-					Expect(fakePipeline.BuildsCallCount()).To(Equal(1))
+				var persistedBuilds []db.Build
 
-					page := fakePipeline.BuildsArgsForCall(0)
-					Expect(page).To(Equal(db.Page{
-						Limit: 100,
-					}))
+				BeforeEach(func() {
+					_, persistedBuilds = persistPipelineWithBuilds(atc.PipelineRef{Name: "some-pipeline"}, 101)
+				})
+
+				It("applies the default limit without implicit range boundaries", func() {
+					actual := decodeBuilds()
+					Expect(actual).To(HaveLen(atc.PaginationAPIDefaultLimit))
+					expectedIDs := make([]int, 0, atc.PaginationAPIDefaultLimit)
+					for i := len(persistedBuilds) - 1; i >= 1; i-- {
+						expectedIDs = append(expectedIDs, persistedBuilds[i].ID())
+					}
+					actualIDs := make([]int, len(actual))
+					for i, build := range actual {
+						actualIDs[i] = build.ID
+					}
+					Expect(actualIDs).To(Equal(expectedIDs))
+					Expect(actualIDs).NotTo(ContainElement(persistedBuilds[0].ID()))
 				})
 			})
 
 			Context("when all the params are passed", func() {
+				var persistedBuilds []db.Build
+
 				BeforeEach(func() {
-					queryParams = "?from=2&to=3&limit=8"
+					_, persistedBuilds = persistPipelineWithBuilds(atc.PipelineRef{Name: "some-pipeline"}, 7)
+					queryParams = fmt.Sprintf(
+						"?from=%d&to=%d&limit=3",
+						persistedBuilds[1].ID(),
+						persistedBuilds[5].ID(),
+					)
 				})
 
-				It("passes them through", func() {
-					Expect(fakePipeline.BuildsCallCount()).To(Equal(1))
-
-					page := fakePipeline.BuildsArgsForCall(0)
-					Expect(page).To(Equal(db.Page{
-						From:  db.NewIntPtr(2),
-						To:    db.NewIntPtr(3),
-						Limit: 8,
+				It("applies from, to, and limit to persisted builds", func() {
+					actual := decodeBuilds()
+					Expect(actual).To(HaveLen(3))
+					Expect([]int{actual[0].ID, actual[1].ID, actual[2].ID}).To(Equal([]int{
+						persistedBuilds[1].ID(),
+						persistedBuilds[2].ID(),
+						persistedBuilds[3].ID(),
 					}))
 				})
 			})
 
 			Context("when getting the builds succeeds", func() {
 				BeforeEach(func() {
-					listDB = useRealDB()
-					listPipeline = listDB.SavePipeline(listDB.Main, "some-pipeline", atc.Config{Jobs: atc.JobConfigs{{Name: "some-job"}}})
-					job, found, err := listPipeline.Job("some-job")
-					Expect(err).NotTo(HaveOccurred())
-					Expect(found).To(BeTrue())
-					listBuild1, err = job.CreateBuild("api-test")
-					Expect(err).NotTo(HaveOccurred())
+					var builds []db.Build
+					listPipeline, builds = persistPipelineWithBuilds(atc.PipelineRef{Name: "some-pipeline"}, 2)
+					listBuild1 = builds[0]
+					listBuild2 = builds[1]
 					started, err := listBuild1.Start(atc.Plan{})
 					Expect(err).NotTo(HaveOccurred())
 					Expect(started).To(BeTrue())
 					Expect(listBuild1.Finish(db.BuildStatusSucceeded)).To(Succeed())
-					listBuild2, err = job.CreateBuild("api-test")
-					Expect(err).NotTo(HaveOccurred())
 					started, err = listBuild2.Start(atc.Plan{})
 					Expect(err).NotTo(HaveOccurred())
 					Expect(started).To(BeTrue())
-					server = listDB.Serve()
-					requestTeam = "main"
-					requestPipe = "some-pipeline"
 					queryParams = "?limit=2"
 				})
 
@@ -2059,24 +2248,60 @@ var _ = Describe("Pipelines API", func() {
 				})
 
 				Context("when next/previous pages are available", func() {
+					var (
+						olderBuild  db.Build
+						middleBuild db.Build
+						newerBuild  db.Build
+					)
+
 					BeforeEach(func() {
-						queryParams = "?limit=1"
+						olderBuild = listBuild1
+						middleBuild = listBuild2
+						job, found, err := listPipeline.Job("some-job")
+						Expect(err).NotTo(HaveOccurred())
+						Expect(found).To(BeTrue())
+						newerBuild, err = job.CreateBuild("api-test")
+						Expect(err).NotTo(HaveOccurred())
+						queryParams = fmt.Sprintf("?from=%d&to=%d&limit=1", middleBuild.ID(), middleBuild.ID())
 					})
 
 					It("returns Link headers per rfc5988", func() {
 						Expect(response.Header["Link"]).To(ConsistOf([]string{
-							fmt.Sprintf(`<%s/api/v1/teams/main/pipelines/some-pipeline/builds?to=%d&limit=1>; rel="next"`, externalURL, listBuild1.ID()),
+							fmt.Sprintf(`<%s/api/v1/teams/main/pipelines/some-pipeline/builds?to=%d&limit=1>; rel="next"`, externalURL, olderBuild.ID()),
+							fmt.Sprintf(`<%s/api/v1/teams/main/pipelines/some-pipeline/builds?from=%d&limit=1>; rel="previous"`, externalURL, newerBuild.ID()),
 						}))
 					})
 
 					Context("and pipeline is instanced", func() {
 						BeforeEach(func() {
-							fakePipeline.InstanceVarsReturns(atc.InstanceVars{"branch": "master"})
+							instancedPipeline, _, err := listDB.Main.SavePipeline(
+								atc.PipelineRef{Name: "some-pipeline", InstanceVars: atc.InstanceVars{"branch": "master"}},
+								atc.Config{Jobs: atc.JobConfigs{{Name: "some-job"}}},
+								db.ConfigVersion(0),
+								false,
+							)
+							Expect(err).NotTo(HaveOccurred())
+							job, found, err := instancedPipeline.Job("some-job")
+							Expect(err).NotTo(HaveOccurred())
+							Expect(found).To(BeTrue())
+							olderBuild, err = job.CreateBuild("api-test")
+							Expect(err).NotTo(HaveOccurred())
+							middleBuild, err = job.CreateBuild("api-test")
+							Expect(err).NotTo(HaveOccurred())
+							newerBuild, err = job.CreateBuild("api-test")
+							Expect(err).NotTo(HaveOccurred())
+							queryParams = fmt.Sprintf(
+								"?from=%d&to=%d&limit=1&vars.branch=%%22master%%22",
+								middleBuild.ID(),
+								middleBuild.ID(),
+							)
 						})
 
 						It("returns Link headers per rfc5988", func() {
+							link := fmt.Sprintf(`<%s/api/v1/teams/main/pipelines/some-pipeline/builds?`, externalURL)
 							Expect(response.Header["Link"]).To(ConsistOf([]string{
-								fmt.Sprintf(`<%s/api/v1/teams/main/pipelines/some-pipeline/builds?to=%d&limit=1>; rel="next"`, externalURL, listBuild1.ID()),
+								fmt.Sprintf(`%sto=%d&limit=1&vars.branch=%%22master%%22>; rel="next"`, link, olderBuild.ID()),
+								fmt.Sprintf(`%sfrom=%d&limit=1&vars.branch=%%22master%%22>; rel="previous"`, link, newerBuild.ID()),
 							}))
 						})
 					})
@@ -2085,7 +2310,11 @@ var _ = Describe("Pipelines API", func() {
 
 			Context("when getting the build fails", func() {
 				BeforeEach(func() {
-					fakePipeline.BuildsReturns(nil, db.Pagination{}, errors.New("oh no!"))
+					dbTeamFactory.FindTeamReturns(fakeTeam, true, nil)
+					fakeTeam.PipelineReturns(dbPipeline, true, nil)
+					// Retained fault seam: Pipeline.Builds must fail after
+					// Team.Pipeline succeeds; a closed TeamFactory fails earlier.
+					dbPipeline.BuildsReturns(nil, db.Pagination{}, errors.New("oh no!"))
 				})
 
 				It("returns 404 Not Found", func() {
@@ -2134,14 +2363,17 @@ var _ = Describe("Pipelines API", func() {
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
 				fakeAccess.IsAuthenticatedReturns(false)
+				postDB = useRealDB()
+				postPipeline = postDB.SavePipeline(postDB.Main, "a-pipeline", atc.Config{Jobs: atc.JobConfigs{{Name: "job"}}})
+				server = postDB.Serve()
+				postTeam = "main"
 			})
 
-			It("returns 401", func() {
+			It("returns 401 without creating a build", func() {
 				Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
-			})
-
-			It("does not trigger a build", func() {
-				Expect(dbPipeline.CreateOneOffBuildCallCount()).To(BeZero())
+				builds, _, err := postPipeline.Builds(db.Page{Limit: 10})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(builds).To(BeEmpty())
 			})
 		})
 
@@ -2153,22 +2385,31 @@ var _ = Describe("Pipelines API", func() {
 			Context("when not authorized", func() {
 				BeforeEach(func() {
 					fakeAccess.IsAuthorizedReturns(false)
+					postDB = useRealDB()
+					postPipeline = postDB.SavePipeline(postDB.Main, "a-pipeline", atc.Config{Jobs: atc.JobConfigs{{Name: "job"}}})
+					server = postDB.Serve()
+					postTeam = "main"
 				})
 
-				It("returns 403", func() {
+				It("returns 403 without creating a build", func() {
 					Expect(response.StatusCode).To(Equal(http.StatusForbidden))
+					builds, _, err := postPipeline.Builds(db.Page{Limit: 10})
+					Expect(err).NotTo(HaveOccurred())
+					Expect(builds).To(BeEmpty())
 				})
 			})
 
 			Context("when authorized", func() {
 				BeforeEach(func() {
 					fakeAccess.IsAuthorizedReturns(true)
-					dbTeamFactory.FindTeamReturns(fakeTeam, true, nil)
-					fakeTeam.PipelineReturns(dbPipeline, true, nil)
 				})
 
 				Context("when creating a started build fails", func() {
 					BeforeEach(func() {
+						dbTeamFactory.FindTeamReturns(fakeTeam, true, nil)
+						fakeTeam.PipelineReturns(dbPipeline, true, nil)
+						// Retained fault seam: Pipeline.CreateStartedBuild must fail
+						// after Team.Pipeline succeeds; a closed TeamFactory fails earlier.
 						dbPipeline.CreateStartedBuildReturns(nil, errors.New("oh no!"))
 					})
 
@@ -2179,6 +2420,11 @@ var _ = Describe("Pipelines API", func() {
 
 				Context("when the pipeline is owned by a durable workflow run", func() {
 					BeforeEach(func() {
+						dbTeamFactory.FindTeamReturns(fakeTeam, true, nil)
+						fakeTeam.PipelineReturns(dbPipeline, true, nil)
+						// Retained semantic seam: Pipeline.CreateStartedBuild must
+						// return the durable-run conflict after Team.Pipeline succeeds;
+						// a closed TeamFactory cannot reach the nested method.
 						dbPipeline.CreateStartedBuildReturns(nil, fmt.Errorf("one-off build guard: %w", db.ErrWorkflowRunOwnedPipeline))
 					})
 
@@ -2210,7 +2456,14 @@ var _ = Describe("Pipelines API", func() {
 						builds, _, err := postPipeline.Builds(db.Page{Limit: 1})
 						Expect(err).NotTo(HaveOccurred())
 						Expect(builds).To(HaveLen(1))
-						Expect(builds[0].Status()).To(Equal(db.BuildStatusStarted))
+						build, found, err := postDB.Deps.buildFactory.Build(builds[0].ID())
+						Expect(err).NotTo(HaveOccurred())
+						Expect(found).To(BeTrue())
+						found, err = build.Reload()
+						Expect(err).NotTo(HaveOccurred())
+						Expect(found).To(BeTrue())
+						Expect(build.Status()).To(Equal(db.BuildStatusStarted))
+						Expect([]byte(*build.PublicPlan())).To(MatchJSON([]byte(*plan.Public())))
 					})
 
 					It("returns the created build", func() {
@@ -2222,7 +2475,12 @@ var _ = Describe("Pipelines API", func() {
 						builds, _, err := postPipeline.Builds(db.Page{Limit: 1})
 						Expect(err).NotTo(HaveOccurred())
 						Expect(builds).To(HaveLen(1))
-						build := builds[0]
+						build, found, err := postDB.Deps.buildFactory.Build(builds[0].ID())
+						Expect(err).NotTo(HaveOccurred())
+						Expect(found).To(BeTrue())
+						found, err = build.Reload()
+						Expect(err).NotTo(HaveOccurred())
+						Expect(found).To(BeTrue())
 						Expect(actual.ID).To(Equal(build.ID()))
 						Expect(actual.Name).To(Equal(build.Name()))
 						Expect(actual.TeamName).To(Equal(build.TeamName()))
@@ -2230,9 +2488,6 @@ var _ = Describe("Pipelines API", func() {
 						Expect(actual.Status).To(Equal(atc.BuildStatus(db.BuildStatusStarted)))
 						Expect(actual.APIURL).To(Equal(fmt.Sprintf("/api/v1/builds/%d", build.ID())))
 						Expect(actual.StartTime).To(Equal(build.StartTime().Unix()))
-						found, err := postPipeline.Reload()
-						Expect(err).NotTo(HaveOccurred())
-						Expect(found).To(BeTrue())
 						Expect([]byte(*build.PublicPlan())).To(MatchJSON([]byte(*plan.Public())))
 					})
 				})
