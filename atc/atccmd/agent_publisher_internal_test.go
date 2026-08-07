@@ -12,7 +12,6 @@ import (
 	"github.com/concourse/concourse/agent/publisher/publishertest"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/pgtest"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 )
 
@@ -57,7 +56,7 @@ func TestAgentSnapshotCompositionBuildsConfiguredInProcessPublisher(t *testing.T
 		return &compositionLifecycle{}, nil
 	}
 
-	if err := command.composeAgentSnapshots(pgtest.OpenTestDB(t), lagertest.NewTestLogger("publisher-composition")); err != nil {
+	if err := command.composeAgentSnapshots(openTestDB(t), lagertest.NewTestLogger("publisher-composition")); err != nil {
 		t.Fatal(err)
 	}
 	if command.agentSnapshotPublisher == nil {
@@ -109,7 +108,7 @@ func TestAgentPublisherCompositionRejectsUnsupportedConfiguredModesAndAdapters(t
 			command := configuredAgentPublisherCommand(t, test.policyDocument)
 			_, err := command.buildAgentPublisher(
 				publishertest.NewMemoryStore(time.Now),
-				db.NewAgentSnapshotsFactory(pgtest.OpenTestDB(t)),
+				db.NewAgentSnapshotsFactory(openTestDB(t)),
 				&compositionContentStore{},
 			)
 			if err == nil || !strings.Contains(err.Error(), test.wantError) {
@@ -187,7 +186,7 @@ func TestAgentPublisherCompositionUsesMountedCredentialProvider(t *testing.T) {
 
 	_, err := command.buildAgentPublisher(
 		publishertest.NewMemoryStore(time.Now),
-		db.NewAgentSnapshotsFactory(pgtest.OpenTestDB(t)),
+		db.NewAgentSnapshotsFactory(openTestDB(t)),
 		&compositionContentStore{},
 	)
 	if err == nil || !strings.Contains(err.Error(), "accessible by other users") {
@@ -199,7 +198,7 @@ func TestAgentPublisherBuilderFailsClosedWhenDisabled(t *testing.T) {
 	command := &RunCommand{}
 	_, err := command.buildAgentPublisher(
 		publishertest.NewMemoryStore(time.Now),
-		db.NewAgentSnapshotsFactory(pgtest.OpenTestDB(t)),
+		db.NewAgentSnapshotsFactory(openTestDB(t)),
 		&compositionContentStore{},
 	)
 	if err == nil || !strings.Contains(err.Error(), "disabled") {
