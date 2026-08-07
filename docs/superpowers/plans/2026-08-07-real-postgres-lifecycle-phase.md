@@ -520,7 +520,7 @@ BuildForAPI(int) (db.BuildForAPI, bool, error)
 - Consumes: `workflowRunDB.Teams`, `workflowRunDB.Team`, `workflowRunDB.Templates`, and the exact team/template interfaces in the inventory.
 - Produces: complete `WorkflowRunTemplateRef` comparisons against real pipeline identity/version/hash.
 
-- [ ] **Step 1: Add a persisted creation assertion against the old saver and observe RED.**
+- [x] **Step 1: Add a persisted creation assertion against the old saver and observe RED.**
 
   In `TestTemplateSaverCreatesWithCreateOnlyVersion`, allocate `fixture := useRealWorkflowRunDB(t)` but initially leave the saver on the current fake team/store. After `SaveOrReuse`, query `fixture.Team.Pipeline(atc.PipelineRef{Name: spec.Name})` and require `found==true`.
 
@@ -528,7 +528,7 @@ BuildForAPI(int) (db.BuildForAPI, bool, error)
 
   Expected: FAIL because the old stub reports a synthetic pipeline but creates no row in the clone.
 
-- [ ] **Step 2: Rewire create, exact reuse, and exact-unowned rejection.**
+- [x] **Step 2: Rewire create, exact reuse, and exact-unowned rejection.**
 
   Construct `NewTemplateSaver(fixture.Teams, fixture.Templates)`. For creation, load the resulting pipeline and compare the complete value:
 
@@ -551,7 +551,7 @@ BuildForAPI(int) (db.BuildForAPI, bool, error)
 
   Expected: PASS.
 
-- [ ] **Step 3: Prove the unowned assertion is sensitive and commit.**
+- [x] **Step 3: Prove the unowned assertion is sensitive and commit.**
 
   Temporarily force `owned = true` after `IsWorkflowRunTemplate` inside `validateImmutableTemplate`, run `go test ./agent/workflowrun -run TestTemplateSaverRejectsAnExactButUnownedPipeline -count=1`, and confirm the expected collision fails because the saver now returns a ref. Restore `template_saver.go`, rerun to PASS, then:
 
