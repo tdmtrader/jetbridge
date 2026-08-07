@@ -12,7 +12,6 @@ import (
 	"github.com/concourse/concourse/atc/api/auth"
 	"github.com/concourse/concourse/atc/api/pipelineserver"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -199,12 +198,25 @@ var _ = Describe("Handler", func() {
 // Team.Pipeline fails. Closing a real connection would fail FindTeam first and
 // leave the handler's distinct pipeline-error branch untested.
 func teamFactoryFailingPipelineLookup(err error) db.TeamFactory {
-	team := new(dbfakes.FakeTeam)
-	team.PipelineReturns(nil, false, err)
+	return pipelineLookupFailureFactory{err: err}
+}
 
-	factory := new(dbfakes.FakeTeamFactory)
-	factory.FindTeamReturns(team, true, nil)
-	return factory
+type pipelineLookupFailureFactory struct {
+	db.TeamFactory
+	err error
+}
+
+func (factory pipelineLookupFailureFactory) FindTeam(string) (db.Team, bool, error) {
+	return pipelineLookupFailureTeam{err: factory.err}, true, nil
+}
+
+type pipelineLookupFailureTeam struct {
+	db.Team
+	err error
+}
+
+func (team pipelineLookupFailureTeam) Pipeline(atc.PipelineRef) (db.Pipeline, bool, error) {
+	return nil, false, team.err
 }
 
 type delegateHandler struct {
