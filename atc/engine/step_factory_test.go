@@ -14,7 +14,6 @@ import (
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/agent/publisher"
 	"github.com/concourse/concourse/agent/snapshot"
-	"github.com/concourse/concourse/agent/snapshot/contracts"
 	"github.com/concourse/concourse/agent/snapshot/snapshotfakes"
 	"github.com/concourse/concourse/agent/workflowwait/workflowwaittest"
 	"github.com/concourse/concourse/atc"
@@ -134,67 +133,10 @@ func TestWithSnapshotPublisherKeepsExactCommandScopedDependency(t *testing.T) {
 	}
 }
 
-func TestWithPRRevisionExecutorKeepsExactCommandScopedDependency(t *testing.T) {
-	executor := prRevisionExecutorStub{}
-	factory := &coreStepFactory{}
-	WithPRRevisionExecutor(executor)(factory)
-	if factory.prRevisionExecutor != executor {
-		t.Fatal("PR revision executor did not retain the exact command-scoped dependency")
-	}
-	if (&coreStepFactory{}).prRevisionExecutor != nil {
-		t.Fatal("PR revision executor should be nil by default")
-	}
-}
-
-func TestWithPREvidenceVerifierKeepsExactCommandScopedDependency(t *testing.T) {
-	verifier := prEvidenceVerifierStub{}
-	factory := &coreStepFactory{}
-	WithPREvidenceVerifier(verifier)(factory)
-	if factory.prEvidenceVerifier != verifier {
-		t.Fatal("PR evidence verifier did not retain the exact command-scoped dependency")
-	}
-	if (&coreStepFactory{}).prEvidenceVerifier != nil {
-		t.Fatal("PR evidence verifier should be nil by default")
-	}
-}
-
-func TestWithPRImpactVerifierKeepsExactCommandScopedDependency(t *testing.T) {
-	verifier := prImpactVerifierStub{}
-	factory := &coreStepFactory{}
-	WithPRImpactVerifier(verifier)(factory)
-	if factory.prImpactVerifier != verifier {
-		t.Fatal("PR impact verifier did not retain the exact command-scoped dependency")
-	}
-	if (&coreStepFactory{}).prImpactVerifier != nil {
-		t.Fatal("PR impact verifier should be nil by default")
-	}
-}
-
 type publisherExecutorStub struct{}
 
 func (publisherExecutorStub) Execute(context.Context, publisher.Request) (publisher.Publication, error) {
 	return publisher.Publication{}, nil
-}
-
-type prRevisionExecutorStub struct{}
-
-func (prRevisionExecutorStub) ExecutePRRevision(context.Context, publisher.PRRevisionPublicationRequest) error {
-	return nil
-}
-
-type prEvidenceVerifierStub struct{}
-
-func (prEvidenceVerifierStub) Verify(context.Context, publisher.EvidenceRequest) (publisher.PublicationEvidence, error) {
-	return publisher.PublicationEvidence{}, nil
-}
-
-type prImpactVerifierStub struct{}
-
-func (prImpactVerifierStub) VerifyPRImpact(
-	context.Context,
-	publisher.PRImpactVerificationRequest,
-) (contracts.PublishImpactBody, error) {
-	return contracts.PublishImpactBody{}, nil
 }
 
 func TestCoreStepFactoryRunsTaskAndAgentWithTheSameOutputSealer(t *testing.T) {

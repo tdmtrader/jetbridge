@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -41,8 +40,6 @@ func (AwaitSnapshotCancelledError) Error() string {
 	return "await_snapshot: durable wait was cancelled"
 }
 
-var errPRReapprovalNotRequired = errors.New("await_snapshot: PR reapproval is not required")
-
 type AwaitSnapshotStep struct {
 	planID          atc.PlanID
 	attempt         string
@@ -54,19 +51,9 @@ type AwaitSnapshotStep struct {
 	metadataStore   snapshot.MetadataStore
 	contentStore    snapshot.ContentStore
 	pollInterval    time.Duration
-	prEvidence      publisher.EvidenceVerifier
-	prImpact        publisher.PRImpactVerifier
 }
 
 type AwaitSnapshotStepOption func(*AwaitSnapshotStep)
-
-func WithAwaitSnapshotPREvidenceVerifier(verifier publisher.EvidenceVerifier) AwaitSnapshotStepOption {
-	return func(step *AwaitSnapshotStep) { step.prEvidence = verifier }
-}
-
-func WithAwaitSnapshotPRImpactVerifier(verifier publisher.PRImpactVerifier) AwaitSnapshotStepOption {
-	return func(step *AwaitSnapshotStep) { step.prImpact = verifier }
-}
 
 func NewAwaitSnapshotStep(
 	planID atc.PlanID,
@@ -126,7 +113,7 @@ func (step *AwaitSnapshotStep) run(ctx context.Context, state RunState, delegate
 	if warning, err := atc.ValidateIdentifier(step.plan.Name); err != nil || warning != nil {
 		return false, fmt.Errorf("await_snapshot: invalid output artifact name")
 	}
-	if step.plan.MergeApproval == nil && step.plan.PRApproval == nil {
+	if step.plan.MergeApproval == nil {
 		if warning, err := atc.ValidateIdentifier(step.plan.Question); err != nil || warning != nil {
 			return false, fmt.Errorf("await_snapshot: invalid question artifact name")
 		}
@@ -159,29 +146,8 @@ func (step *AwaitSnapshotStep) run(ctx context.Context, state RunState, delegate
 			return false, err
 		}
 	}
-	if step.plan.PRApproval != nil {
-		if step.plan.PRApprovalValidation == nil {
-			return false, fmt.Errorf("await_snapshot: authoritative validation plan is unavailable")
-		}
-		if err := requireValidationRequirement(
-			ctx,
-			"await_snapshot",
-			state.ArtifactRepository(),
-			step.metadata,
-			step.metadataStore,
-			step.contentStore,
-			publishRequirement(*step.plan.PRApprovalValidation),
-			step.plan.PRApproval.Candidate,
-		); err != nil {
-			return false, err
-		}
-	}
 	questionName, question, err := step.questionRef(ctx, state.ArtifactRepository(), runID)
 	if err != nil {
-		if errors.Is(err, errPRReapprovalNotRequired) {
-			delegate.Finished(logger, true)
-			return true, nil
-		}
 		return false, err
 	}
 	var defaultRef *snapshot.SnapshotRef
@@ -378,12 +344,9 @@ func (step *AwaitSnapshotStep) questionRef(
 	repository *build.Repository,
 	runID snapshot.WorkflowRunID,
 ) (string, snapshot.SnapshotRef, error) {
-	if step.plan.MergeApproval == nil && step.plan.PRApproval == nil {
+	if step.plan.MergeApproval == nil {
 		ref, _, err := step.authorizedAwaitInput(ctx, repository, step.plan.Question, snapshot.TypeRef("question/v1"))
 		return step.plan.Question, ref, err
-	}
-	if step.plan.PRApproval != nil {
-		return step.prApprovalQuestionRef(ctx, repository, runID)
 	}
 	intent := step.plan.MergeApproval
 	if step.plan.WorkflowDefinitionID <= 0 || strings.TrimSpace(step.metadata.TeamName) == "" ||
@@ -461,275 +424,6 @@ func (step *AwaitSnapshotStep) questionRef(
 		return "", snapshot.SnapshotRef{}, fmt.Errorf("await_snapshot: merge approval question sealer returned an invalid output")
 	}
 	return step.plan.Name + "-merge-question", output.Snapshot, nil
-}
-
-func (step *AwaitSnapshotStep) prApprovalQuestionRef(
-	ctx context.Context,
-	repository *build.Repository,
-	runID snapshot.WorkflowRunID,
-) (string, snapshot.SnapshotRef, error) {
-	intent := step.plan.PRApproval
-	if intent == nil {
-		return "", snapshot.SnapshotRef{}, fmt.Errorf("await_snapshot: PR approval intent is unavailable")
-	}
-	if step.prEvidence == nil || step.prImpact == nil {
-		return "", snapshot.SnapshotRef{}, fmt.Errorf("await_snapshot: exact PR impact verification is unavailable")
-	}
-	if step.plan.WorkflowDefinitionID <= 0 ||
-		strings.TrimSpace(step.metadata.TeamName) == "" ||
-		strings.TrimSpace(step.metadata.SnapshotCreatedBy) == "" {
-		return "", snapshot.SnapshotRef{}, fmt.Errorf("await_snapshot: server workflow identity is unavailable")
-	}
-	observation, observationManifest, err := step.authorizedAwaitInput(
-		ctx, repository, intent.Observation, snapshot.TypeRef("pull-request/v1"),
-	)
-	if err != nil {
-		return "", snapshot.SnapshotRef{}, err
-	}
-	candidate, _, err := step.authorizedAwaitInput(
-		ctx, repository, intent.Candidate, snapshot.TypeRef("repository-change/v1"),
-	)
-	if err != nil {
-		return "", snapshot.SnapshotRef{}, err
-	}
-	validation, _, err := step.authorizedAwaitInput(
-		ctx, repository, step.plan.Validation, snapshot.TypeRef("validation/v1"),
-	)
-	if err != nil {
-		return "", snapshot.SnapshotRef{}, err
-	}
-	impact, impactManifest, err := step.authorizedAwaitInput(
-		ctx, repository, intent.Impact, snapshot.TypeRef("publish-impact/v1"),
-	)
-	if err != nil {
-		return "", snapshot.SnapshotRef{}, err
-	}
-	response, responseManifest, err := step.authorizedAwaitInput(
-		ctx, repository, intent.Response, snapshot.TypeRef("pull-request-response/v1"),
-	)
-	if err != nil {
-		return "", snapshot.SnapshotRef{}, err
-	}
-	acceptedRequest, err := step.acceptedReviewRequest(ctx, repository)
-	if err != nil {
-		return "", snapshot.SnapshotRef{}, err
-	}
-	acceptedEvidence, err := step.prEvidence.Verify(ctx, publisher.EvidenceRequest{
-		TeamID: step.metadata.TeamID, AcceptedReview: &acceptedRequest,
-	})
-	if err != nil || !acceptedRequest.Matches(acceptedEvidence) {
-		return "", snapshot.SnapshotRef{}, fmt.Errorf("await_snapshot: exact accepted review was rejected")
-	}
-	sourceHead, targetHead, impactBody, err := readExactPRApprovalRecords(
-		ctx, step.contentStore, observation, observationManifest, candidate,
-		impactManifest, responseManifest,
-	)
-	if err != nil {
-		return "", snapshot.SnapshotRef{}, fmt.Errorf("await_snapshot: PR approval evidence was rejected")
-	}
-	verificationRequest := publisher.PRImpactVerificationRequest{
-		TeamID: step.metadata.TeamID, BindingID: intent.BindingID,
-		ActionDigest:       snapshot.Digest(intent.ActionDigest),
-		PolicyVersion:      intent.ApprovalPolicyVersion,
-		Observation:        observation,
-		Baseline:           acceptedRequest.Candidate,
-		BaselineValidation: acceptedRequest.Validation,
-		Candidate:          candidate,
-		Validation:         validation,
-		Impact:             impact,
-		Response:           response,
-		AcceptedReview:     acceptedEvidence,
-		Body:               impactBody,
-	}
-	if err := verificationRequest.Validate(); err != nil {
-		return "", snapshot.SnapshotRef{}, fmt.Errorf("await_snapshot: exact PR impact authority is invalid")
-	}
-	verifiedImpact, err := step.prImpact.VerifyPRImpact(ctx, verificationRequest)
-	if err != nil || !reflect.DeepEqual(verifiedImpact, impactBody) {
-		return "", snapshot.SnapshotRef{}, fmt.Errorf("await_snapshot: exact PR impact verification failed")
-	}
-	if !verifiedImpact.ReapprovalRequired {
-		return "", snapshot.SnapshotRef{}, errPRReapprovalNotRequired
-	}
-	contextEnvelope, err := publisher.BuildPRApprovalContext(publisher.PRApprovalRequest{
-		TeamID: step.metadata.TeamID, WorkflowRunID: runID, BuildID: int64(step.metadata.BuildID),
-		BindingID: intent.BindingID, ActionDigest: intent.ActionDigest,
-		Observation: observation, Candidate: candidate,
-		SourceHead: sourceHead, TargetHead: targetHead,
-		Destination: intent.Destination,
-		Response:    response, Validation: validation, Impact: impact,
-		ApprovalPolicyVersion: intent.ApprovalPolicyVersion,
-	})
-	if err != nil {
-		return "", snapshot.SnapshotRef{}, fmt.Errorf("await_snapshot: invalid PR approval intent")
-	}
-	contextJSON, err := json.Marshal(contextEnvelope)
-	if err != nil {
-		return "", snapshot.SnapshotRef{}, fmt.Errorf("await_snapshot: encode PR approval context")
-	}
-	document := contracts.QuestionDocument{
-		SchemaVersion: "1.0.0", Prompt: intent.Prompt, Context: string(contextJSON),
-		Options: []string{"approve", "reject"}, Default: "reject",
-	}
-	if err := document.Validate(); err != nil {
-		return "", snapshot.SnapshotRef{}, fmt.Errorf("await_snapshot: invalid PR approval question")
-	}
-	archive, err := mergeApprovalQuestionArchive(document)
-	if err != nil {
-		return "", snapshot.SnapshotRef{}, err
-	}
-	definitionID := step.plan.WorkflowDefinitionID
-	runIDCopy := runID
-	port := snapshot.Port{Name: "question", Type: snapshot.TypeRef("question/v1")}
-	inputOrder := []string{
-		intent.Observation,
-		intent.Candidate,
-		step.plan.Validation,
-		intent.Impact,
-		intent.Response,
-		intent.AcceptedReview.Review,
-		intent.AcceptedReview.Candidate,
-		intent.AcceptedReview.Validation,
-	}
-	sealed, err := step.outputSealer.Seal(ctx, snapshot.SealRequest{
-		BuildID: step.metadata.BuildID, TeamID: step.metadata.TeamID, TeamName: step.metadata.TeamName,
-		CreatedBy: step.metadata.SnapshotCreatedBy, PlanID: step.planID.String(), Attempt: step.attempt,
-		StepKind: "await_snapshot", StepName: step.plan.Name,
-		WorkflowDefinitionID: &definitionID, WorkflowRunID: &runIDCopy,
-		InputOrder: inputOrder,
-		Inputs: map[string]snapshot.SnapshotRef{
-			intent.Observation:               observation,
-			intent.Candidate:                 candidate,
-			step.plan.Validation:             validation,
-			intent.Impact:                    impact,
-			intent.Response:                  response,
-			intent.AcceptedReview.Review:     acceptedRequest.Review,
-			intent.AcceptedReview.Candidate:  acceptedRequest.Candidate,
-			intent.AcceptedReview.Validation: acceptedRequest.Validation,
-		},
-		OutputDeclarations: []snapshot.Port{port}, Outputs: []snapshot.OutputSource{{
-			ClientKey: "question", Port: port,
-			OpenTar: func(context.Context) (io.ReadCloser, error) {
-				return io.NopCloser(bytes.NewReader(archive)), nil
-			},
-		}},
-	})
-	if err != nil {
-		return "", snapshot.SnapshotRef{}, fmt.Errorf("await_snapshot: seal PR approval question: %w", err)
-	}
-	output, found := sealed["question"]
-	if len(sealed) != 1 || !found || output.Validate() != nil || output.Port != port {
-		return "", snapshot.SnapshotRef{}, fmt.Errorf("await_snapshot: PR approval question sealer returned an invalid output")
-	}
-	return step.plan.Name + "-pr-question", output.Snapshot, nil
-}
-
-func (step *AwaitSnapshotStep) acceptedReviewRequest(
-	ctx context.Context,
-	repository *build.Repository,
-) (publisher.AcceptedReviewEvidenceRequest, error) {
-	if step.plan.PRApproval == nil || step.plan.PRApproval.AcceptedReview == nil {
-		return publisher.AcceptedReviewEvidenceRequest{}, fmt.Errorf("await_snapshot: accepted-review intent is unavailable")
-	}
-	intent := step.plan.PRApproval.AcceptedReview
-	review, _, err := step.authorizedAwaitInput(
-		ctx, repository, intent.Review, snapshot.TypeRef("review/v1"),
-	)
-	if err != nil {
-		return publisher.AcceptedReviewEvidenceRequest{}, err
-	}
-	candidate, _, err := step.authorizedAwaitInput(
-		ctx, repository, intent.Candidate, snapshot.TypeRef("repository/v1"),
-	)
-	if err != nil {
-		return publisher.AcceptedReviewEvidenceRequest{}, err
-	}
-	validation, _, err := step.authorizedAwaitInput(
-		ctx, repository, intent.Validation, snapshot.TypeRef("validation/v1"),
-	)
-	if err != nil {
-		return publisher.AcceptedReviewEvidenceRequest{}, err
-	}
-	runID, err := snapshot.ParseWorkflowRunID(intent.ReviewWorkflowRunID)
-	if err != nil {
-		return publisher.AcceptedReviewEvidenceRequest{}, fmt.Errorf("await_snapshot: accepted-review workflow run is invalid")
-	}
-	request := publisher.AcceptedReviewEvidenceRequest{
-		Review: review, Candidate: candidate, Validation: validation,
-		ReviewWorkflowRunID: runID, OutcomeRevision: intent.OutcomeRevision,
-	}
-	if err := request.Validate(); err != nil {
-		return publisher.AcceptedReviewEvidenceRequest{}, fmt.Errorf("await_snapshot: accepted-review intent is invalid")
-	}
-	return request, nil
-}
-
-func readExactPRApprovalRecords(
-	ctx context.Context,
-	content snapshot.ContentStore,
-	observationRef snapshot.SnapshotRef,
-	observationManifest snapshot.Snapshot,
-	candidate snapshot.SnapshotRef,
-	impactManifest snapshot.Snapshot,
-	responseManifest snapshot.Snapshot,
-) (string, string, contracts.PublishImpactBody, error) {
-	observation, err := readPRApprovalRecord[contracts.PullRequestBody](
-		ctx, content, observationManifest, snapshot.TypeRef("pull-request/v1"),
-	)
-	if err != nil || observation.Body.Validate(observation.Subjects) != nil ||
-		observation.Body.State != contracts.PullRequestActive {
-		return "", "", contracts.PublishImpactBody{}, fmt.Errorf("pull request observation is invalid")
-	}
-	impact, err := readPRApprovalRecord[contracts.PublishImpactBody](
-		ctx, content, impactManifest, snapshot.TypeRef("publish-impact/v1"),
-	)
-	if err != nil || impact.Body.Validate(impact.Subjects) != nil ||
-		impact.Body.CandidateDigest != candidate.Digest.String() {
-		return "", "", contracts.PublishImpactBody{}, fmt.Errorf("PR impact does not bind the exact candidate")
-	}
-	response, err := readPRApprovalRecord[contracts.PullRequestResponseBody](
-		ctx, content, responseManifest, snapshot.TypeRef("pull-request-response/v1"),
-	)
-	if err != nil ||
-		response.Body.Validate(response.Subjects) != nil ||
-		len(response.Subjects) != 1 ||
-		response.Subjects[0].Type != observationRef.Type ||
-		response.Subjects[0].Digest != observationRef.Digest ||
-		contracts.ValidatePullRequestResponseAgainst(response.Body, observation.Body) != nil {
-		return "", "", contracts.PublishImpactBody{}, fmt.Errorf("pull request response is invalid")
-	}
-	return observation.Body.SourceSHA, observation.Body.TargetSHA, impact.Body, nil
-}
-
-func readPRApprovalRecord[T any](
-	ctx context.Context,
-	content snapshot.ContentStore,
-	manifest snapshot.Snapshot,
-	typ snapshot.TypeRef,
-) (contracts.Record[T], error) {
-	if content == nil {
-		return contracts.Record[T]{}, fmt.Errorf("snapshot content is unavailable")
-	}
-	reader, err := content.Open(ctx, manifest)
-	if err != nil || reader == nil {
-		if reader != nil {
-			_ = reader.Close()
-		}
-		return contracts.Record[T]{}, fmt.Errorf("snapshot content is unavailable")
-	}
-	document, readErr := readValidationRequirementRecord(ctx, reader, manifest)
-	closeErr := reader.Close()
-	if readErr != nil || closeErr != nil {
-		return contracts.Record[T]{}, fmt.Errorf("snapshot content is invalid")
-	}
-	var record contracts.Record[T]
-	if err := contracts.DecodeSealedRecord(document, typ, &record); err != nil {
-		return contracts.Record[T]{}, err
-	}
-	if err := record.RevalidateSealed(typ); err != nil {
-		return contracts.Record[T]{}, err
-	}
-	return record, nil
 }
 
 func (step *AwaitSnapshotStep) authorizedAwaitInput(

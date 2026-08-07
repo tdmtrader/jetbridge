@@ -48,9 +48,6 @@ type coreStepFactory struct {
 	snapshotCanonicalizer snapshot.Canonicalizer
 	workflowWaits         workflowwait.Store
 	snapshotPublisher     publisher.Executor
-	prRevisionExecutor    publisher.PRRevisionExecutor
-	prEvidenceVerifier    publisher.EvidenceVerifier
-	prImpactVerifier      publisher.PRImpactVerifier
 }
 
 // CoreStepFactoryOption configures optional fields on coreStepFactory.
@@ -100,26 +97,6 @@ func WithWorkflowWaitStore(store workflowwait.Store) CoreStepFactoryOption {
 // inferred from an ordinary output or successful build.
 func WithSnapshotPublisher(executor publisher.Executor) CoreStepFactoryOption {
 	return func(f *coreStepFactory) { f.snapshotPublisher = executor }
-}
-
-// WithPRRevisionExecutor installs the binding-aware provider-native
-// publication seam. It is intentionally separate from WithSnapshotPublisher:
-// legacy direct Git cannot carry PR publication evidence.
-func WithPRRevisionExecutor(executor publisher.PRRevisionExecutor) CoreStepFactoryOption {
-	return func(f *coreStepFactory) { f.prRevisionExecutor = executor }
-}
-
-// WithPREvidenceVerifier installs the exact accepted-review resolver used by
-// the no-reapproval branch of provider-native PR publication.
-func WithPREvidenceVerifier(verifier publisher.EvidenceVerifier) CoreStepFactoryOption {
-	return func(f *coreStepFactory) { f.prEvidenceVerifier = verifier }
-}
-
-// WithPRImpactVerifier installs the server-owned policy resolver and
-// deterministic impact recomputation used at both the await and mutation
-// authority boundaries.
-func WithPRImpactVerifier(verifier publisher.PRImpactVerifier) CoreStepFactoryOption {
-	return func(f *coreStepFactory) { f.prImpactVerifier = verifier }
 }
 
 // WithAgentStepImage sets the main-container image for agent: steps
@@ -486,8 +463,6 @@ func (factory *coreStepFactory) AwaitSnapshotStep(
 		factory.snapshotMetadataStore,
 		factory.snapshotContentStore,
 		500*time.Millisecond,
-		exec.WithAwaitSnapshotPREvidenceVerifier(factory.prEvidenceVerifier),
-		exec.WithAwaitSnapshotPRImpactVerifier(factory.prImpactVerifier),
 	)
 	waitStep = exec.LogError(waitStep, delegateFactory)
 	return waitStep
@@ -499,7 +474,6 @@ func (factory *coreStepFactory) PublishSnapshotStep(
 	delegateFactory DelegateFactory,
 ) exec.Step {
 	var approvalVerifier publisher.MergeApprovalVerifier
-	var prApprovalVerifier publisher.PRApprovalVerifier
 	if factory.workflowWaits != nil && factory.snapshotMetadataStore != nil && factory.snapshotContentStore != nil {
 		durableVerifier, _ := publisher.NewDurableApprovalVerifier(
 			factory.workflowWaits,
@@ -508,7 +482,6 @@ func (factory *coreStepFactory) PublishSnapshotStep(
 			publisher.WithApprovalCanonicalizer(factory.snapshotCanonicalizer),
 		)
 		approvalVerifier = durableVerifier
-		prApprovalVerifier, _ = publisher.NewPRApprovalVerifier(durableVerifier)
 	}
 	publishStep := exec.NewPublishSnapshotStep(
 		plan.ID,
@@ -519,10 +492,6 @@ func (factory *coreStepFactory) PublishSnapshotStep(
 		factory.snapshotPublisher,
 		approvalVerifier,
 		exec.WithPublishSnapshotContentStore(factory.snapshotContentStore),
-		exec.WithPublishSnapshotPRApprovalVerifier(prApprovalVerifier),
-		exec.WithPublishSnapshotEvidenceVerifier(factory.prEvidenceVerifier),
-		exec.WithPublishSnapshotPRImpactVerifier(factory.prImpactVerifier),
-		exec.WithPublishSnapshotPRRevisionExecutor(factory.prRevisionExecutor),
 	)
 	return exec.LogError(publishStep, delegateFactory)
 }

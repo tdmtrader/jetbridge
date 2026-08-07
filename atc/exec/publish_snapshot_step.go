@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"maps"
-	"reflect"
 	"strings"
 
 	"code.cloudfoundry.org/lager/v3"
@@ -12,7 +11,6 @@ import (
 
 	"github.com/concourse/concourse/agent/publisher"
 	"github.com/concourse/concourse/agent/snapshot"
-	"github.com/concourse/concourse/agent/snapshot/contracts"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/exec/build"
 	"github.com/concourse/concourse/tracing"
@@ -27,32 +25,12 @@ type PublishSnapshotStep struct {
 	contentStore     snapshot.ContentStore
 	executor         publisher.Executor
 	approvalVerifier publisher.MergeApprovalVerifier
-	prApproval       publisher.PRApprovalVerifier
-	evidenceVerifier publisher.EvidenceVerifier
-	prImpact         publisher.PRImpactVerifier
-	prRevision       publisher.PRRevisionExecutor
 }
 
 type PublishSnapshotStepOption func(*PublishSnapshotStep)
 
 func WithPublishSnapshotContentStore(store snapshot.ContentStore) PublishSnapshotStepOption {
 	return func(step *PublishSnapshotStep) { step.contentStore = store }
-}
-
-func WithPublishSnapshotPRApprovalVerifier(verifier publisher.PRApprovalVerifier) PublishSnapshotStepOption {
-	return func(step *PublishSnapshotStep) { step.prApproval = verifier }
-}
-
-func WithPublishSnapshotEvidenceVerifier(verifier publisher.EvidenceVerifier) PublishSnapshotStepOption {
-	return func(step *PublishSnapshotStep) { step.evidenceVerifier = verifier }
-}
-
-func WithPublishSnapshotPRImpactVerifier(verifier publisher.PRImpactVerifier) PublishSnapshotStepOption {
-	return func(step *PublishSnapshotStep) { step.prImpact = verifier }
-}
-
-func WithPublishSnapshotPRRevisionExecutor(executor publisher.PRRevisionExecutor) PublishSnapshotStepOption {
-	return func(step *PublishSnapshotStep) { step.prRevision = executor }
 }
 
 func NewPublishSnapshotStep(
@@ -96,11 +74,7 @@ func (step *PublishSnapshotStep) run(ctx context.Context, state RunState, delega
 	if step.metadataStore == nil {
 		return false, fmt.Errorf("publish_snapshot: publication is disabled on the web node")
 	}
-	if step.plan.PRApproval != nil {
-		if step.prRevision == nil {
-			return false, fmt.Errorf("publish_snapshot: provider-native PR revision execution is unavailable")
-		}
-	} else if step.executor == nil {
+	if step.executor == nil {
 		return false, fmt.Errorf("publish_snapshot: publication is disabled on the web node")
 	}
 	if step.metadata.TeamID <= 0 || step.metadata.BuildID <= 0 ||
@@ -145,9 +119,6 @@ func (step *PublishSnapshotStep) run(ctx context.Context, state RunState, delega
 		if err != nil {
 			return false, fmt.Errorf("publish_snapshot: invalid publication plan")
 		}
-	}
-	if step.plan.PRApproval != nil {
-		return step.publishPRRevision(ctx, state.ArtifactRepository(), delegate, logger, ref)
 	}
 	request := publisher.Request{
 		Publisher: step.plan.Publisher, Input: ref, Destination: step.plan.Destination,
@@ -212,198 +183,6 @@ func (step *PublishSnapshotStep) run(ctx context.Context, state RunState, delega
 	default:
 		return false, fmt.Errorf("publish_snapshot: publication service returned an invalid response")
 	}
-}
-
-func (step *PublishSnapshotStep) publishPRRevision(
-	ctx context.Context,
-	repository *build.Repository,
-	delegate BuildStepDelegate,
-	logger lager.Logger,
-	candidate snapshot.SnapshotRef,
-) (bool, error) {
-	if step.plan.Mode != publisher.ModePullRequest ||
-		step.prRevision == nil {
-		return false, fmt.Errorf("publish_snapshot: provider-native PR revision execution is unavailable")
-	}
-	if step.evidenceVerifier == nil || step.prImpact == nil {
-		return false, fmt.Errorf("publish_snapshot: exact PR impact verification is unavailable")
-	}
-	runID, err := snapshot.ParseWorkflowRunID(step.plan.WorkflowRunID)
-	if err != nil {
-		return false, fmt.Errorf("publish_snapshot: invalid workflow run identifier")
-	}
-	accepted, err := step.buildAcceptedReviewRequest(ctx, repository)
-	if err != nil {
-		return false, err
-	}
-	acceptedEvidence, err := step.evidenceVerifier.Verify(ctx, publisher.EvidenceRequest{
-		TeamID: step.metadata.TeamID, AcceptedReview: &accepted,
-	})
-	if err != nil || !accepted.Matches(acceptedEvidence) {
-		return false, fmt.Errorf("publish_snapshot: exact accepted review was rejected")
-	}
-	prRequest, observation, response, impactBody, err := step.buildPRApprovalRequest(
-		ctx, repository, runID, candidate,
-	)
-	if err != nil {
-		return false, err
-	}
-	verificationRequest := publisher.PRImpactVerificationRequest{
-		TeamID: step.metadata.TeamID, BindingID: prRequest.BindingID,
-		ActionDigest:       snapshot.Digest(prRequest.ActionDigest),
-		PolicyVersion:      step.plan.ApprovalPolicyVersion,
-		Observation:        observation,
-		Baseline:           accepted.Candidate,
-		BaselineValidation: accepted.Validation,
-		Candidate:          candidate,
-		Validation:         prRequest.Validation,
-		Impact:             prRequest.Impact,
-		Response:           response,
-		AcceptedReview:     acceptedEvidence,
-		Body:               impactBody,
-	}
-	if err := verificationRequest.Validate(); err != nil {
-		return false, fmt.Errorf("publish_snapshot: exact PR impact authority is invalid")
-	}
-	verifiedImpact, err := step.prImpact.VerifyPRImpact(ctx, verificationRequest)
-	if err != nil || !reflect.DeepEqual(verifiedImpact, impactBody) {
-		return false, fmt.Errorf("publish_snapshot: exact PR impact verification failed")
-	}
-	authority := publisher.Authority{
-		TeamID: step.metadata.TeamID, TeamName: step.metadata.TeamName,
-		BuildID: int64(step.metadata.BuildID), WorkflowRunID: runID,
-		PlanID: string(step.planID), Actor: step.metadata.SnapshotCreatedBy,
-	}
-	var publication publisher.PRRevisionPublicationRequest
-	if verifiedImpact.ReapprovalRequired {
-		if step.prApproval == nil {
-			return false, fmt.Errorf("publish_snapshot: durable PR approval verification is unavailable")
-		}
-		approval, _, artifactErr := step.authorizedArtifact(
-			ctx, repository, step.plan.Approval, snapshot.TypeRef("human-answer/v1"),
-		)
-		if artifactErr != nil {
-			return false, artifactErr
-		}
-		prRequest.Approval = approval
-		evidence, verifyErr := step.prApproval.Verify(ctx, prRequest)
-		if verifyErr != nil {
-			return false, fmt.Errorf("publish_snapshot: durable PR approval was rejected")
-		}
-		if err := evidence.Validate(); err != nil || evidence.Answer != approval {
-			return false, fmt.Errorf("publish_snapshot: durable PR approval returned invalid evidence")
-		}
-		publication, err = publisher.BuildPRRevisionPublicationRequest(
-			authority, observation, response, prRequest, evidence,
-		)
-	} else {
-		publication, err = publisher.BuildAcceptedPRRevisionPublicationRequest(
-			authority, observation, response, prRequest, accepted, acceptedEvidence,
-		)
-	}
-	if err != nil {
-		return false, fmt.Errorf("publish_snapshot: invalid provider-native PR revision authority")
-	}
-
-	delegate.Starting(logger)
-	if err := step.prRevision.ExecutePRRevision(ctx, publication); err != nil {
-		if contextErr := ctx.Err(); contextErr != nil {
-			return false, contextErr
-		}
-		return false, fmt.Errorf("publish_snapshot: provider-native PR revision execution failed")
-	}
-	delegate.Finished(logger, true)
-	return true, nil
-}
-
-func (step *PublishSnapshotStep) buildPRApprovalRequest(
-	ctx context.Context,
-	repository *build.Repository,
-	runID snapshot.WorkflowRunID,
-	candidate snapshot.SnapshotRef,
-) (publisher.PRApprovalRequest, snapshot.SnapshotRef, snapshot.SnapshotRef, contracts.PublishImpactBody, error) {
-	intent := step.plan.PRApproval
-	if intent == nil {
-		return publisher.PRApprovalRequest{}, snapshot.SnapshotRef{}, snapshot.SnapshotRef{}, contracts.PublishImpactBody{}, fmt.Errorf("publish_snapshot: PR approval intent is unavailable")
-	}
-	observation, observationManifest, err := step.authorizedArtifact(
-		ctx, repository, intent.Observation, snapshot.TypeRef("pull-request/v1"),
-	)
-	if err != nil {
-		return publisher.PRApprovalRequest{}, snapshot.SnapshotRef{}, snapshot.SnapshotRef{}, contracts.PublishImpactBody{}, err
-	}
-	validation, _, err := step.authorizedArtifact(
-		ctx, repository, step.plan.Validation, snapshot.TypeRef("validation/v1"),
-	)
-	if err != nil {
-		return publisher.PRApprovalRequest{}, snapshot.SnapshotRef{}, snapshot.SnapshotRef{}, contracts.PublishImpactBody{}, err
-	}
-	impact, impactManifest, err := step.authorizedArtifact(
-		ctx, repository, intent.Impact, snapshot.TypeRef("publish-impact/v1"),
-	)
-	if err != nil {
-		return publisher.PRApprovalRequest{}, snapshot.SnapshotRef{}, snapshot.SnapshotRef{}, contracts.PublishImpactBody{}, err
-	}
-	response, responseManifest, err := step.authorizedArtifact(
-		ctx, repository, intent.Response, snapshot.TypeRef("pull-request-response/v1"),
-	)
-	if err != nil {
-		return publisher.PRApprovalRequest{}, snapshot.SnapshotRef{}, snapshot.SnapshotRef{}, contracts.PublishImpactBody{}, err
-	}
-	sourceHead, targetHead, impactBody, err := readExactPRApprovalRecords(
-		ctx, step.contentStore, observation, observationManifest, candidate,
-		impactManifest, responseManifest,
-	)
-	if err != nil {
-		return publisher.PRApprovalRequest{}, snapshot.SnapshotRef{}, snapshot.SnapshotRef{}, contracts.PublishImpactBody{}, fmt.Errorf("publish_snapshot: PR impact and response evidence were rejected")
-	}
-	request := publisher.PRApprovalRequest{
-		TeamID: step.metadata.TeamID, WorkflowRunID: runID, BuildID: int64(step.metadata.BuildID),
-		BindingID: intent.BindingID, ActionDigest: intent.ActionDigest,
-		Observation: observation, Candidate: candidate,
-		SourceHead: sourceHead, TargetHead: targetHead,
-		Destination: step.plan.Destination,
-		Response:    response, Validation: validation, Impact: impact,
-		ApprovalPolicyVersion: step.plan.ApprovalPolicyVersion,
-	}
-	if _, err := publisher.BuildPRApprovalContext(request); err != nil {
-		return publisher.PRApprovalRequest{}, snapshot.SnapshotRef{}, snapshot.SnapshotRef{}, contracts.PublishImpactBody{}, fmt.Errorf("publish_snapshot: invalid PR approval intent")
-	}
-	return request, observation, response, impactBody, nil
-}
-
-func (step *PublishSnapshotStep) buildAcceptedReviewRequest(
-	ctx context.Context,
-	repository *build.Repository,
-) (publisher.AcceptedReviewEvidenceRequest, error) {
-	if step.plan.PRApproval == nil || step.plan.PRApproval.AcceptedReview == nil {
-		return publisher.AcceptedReviewEvidenceRequest{}, fmt.Errorf("publish_snapshot: accepted-review intent is unavailable")
-	}
-	intent := step.plan.PRApproval.AcceptedReview
-	review, _, err := step.authorizedArtifact(ctx, repository, intent.Review, snapshot.TypeRef("review/v1"))
-	if err != nil {
-		return publisher.AcceptedReviewEvidenceRequest{}, err
-	}
-	candidate, _, err := step.authorizedArtifact(ctx, repository, intent.Candidate, snapshot.TypeRef("repository/v1"))
-	if err != nil {
-		return publisher.AcceptedReviewEvidenceRequest{}, err
-	}
-	validation, _, err := step.authorizedArtifact(ctx, repository, intent.Validation, snapshot.TypeRef("validation/v1"))
-	if err != nil {
-		return publisher.AcceptedReviewEvidenceRequest{}, err
-	}
-	runID, err := snapshot.ParseWorkflowRunID(intent.ReviewWorkflowRunID)
-	if err != nil {
-		return publisher.AcceptedReviewEvidenceRequest{}, fmt.Errorf("publish_snapshot: accepted-review workflow run is invalid")
-	}
-	request := publisher.AcceptedReviewEvidenceRequest{
-		Review: review, Candidate: candidate, Validation: validation,
-		ReviewWorkflowRunID: runID, OutcomeRevision: intent.OutcomeRevision,
-	}
-	if err := request.Validate(); err != nil {
-		return publisher.AcceptedReviewEvidenceRequest{}, fmt.Errorf("publish_snapshot: accepted-review intent is invalid")
-	}
-	return request, nil
 }
 
 func (step *PublishSnapshotStep) authorizedInput(ctx context.Context, repository *build.Repository) (snapshot.SnapshotRef, snapshot.Snapshot, error) {
