@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -16,7 +15,6 @@ import (
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/db/dbtest"
 	. "github.com/concourse/concourse/atc/testhelpers"
 	. "github.com/onsi/ginkgo/v2"
@@ -70,6 +68,32 @@ func (pipeline versionsAPIPipeline) Resource(name string) (db.Resource, bool, er
 		return pipeline.resource, true, nil
 	}
 	return pipeline.Pipeline.Resource(name)
+}
+
+type versionsAPIResourceTypePipeline struct {
+	db.Pipeline
+	resourceTypeName string
+	resourceType     db.ResourceType
+}
+
+func (pipeline versionsAPIResourceTypePipeline) ResourceType(name string) (db.ResourceType, bool, error) {
+	if pipeline.resourceType != nil && name == pipeline.resourceTypeName {
+		return pipeline.resourceType, true, nil
+	}
+	return pipeline.Pipeline.ResourceType(name)
+}
+
+// versionsAPIResourceTypeClearError preserves the handler's ClearVersions
+// error branch around a healthy persisted type. A closed real type cannot be
+// used here: resourceType.ClearVersions currently dereferences the nil SQL
+// result from a failed Exec before it can return that error to the handler.
+type versionsAPIResourceTypeClearError struct {
+	db.ResourceType
+	err error
+}
+
+func (resourceType versionsAPIResourceTypeClearError) ClearVersions() (int64, error) {
+	return 0, resourceType.err
 }
 
 type versionsAPIInputBuildsErrorPipeline struct {
@@ -169,6 +193,15 @@ func (fixture *versionsAPIFixture) resource(name string) db.Resource {
 	Expect(err).NotTo(HaveOccurred())
 	Expect(found).To(BeTrue(), "resource %q not found", name)
 	return resource
+}
+
+func (fixture *versionsAPIFixture) resourceType(name string) db.ResourceType {
+	GinkgoHelper()
+
+	resourceType, found, err := fixture.pipeline.ResourceType(name)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(found).To(BeTrue(), "resource type %q not found", name)
+	return resourceType
 }
 
 func (fixture *versionsAPIFixture) overridePipeline(pipeline db.Pipeline) {
@@ -298,6 +331,29 @@ func (fixture *versionsAPIFixture) requestVersionBuilds(
 	return response
 }
 
+func (fixture *versionsAPIFixture) requestClearVersions(collection string, name string) *http.Response {
+	GinkgoHelper()
+
+	if fixture.server == nil {
+		fixture.server = fixture.database.Serve()
+	}
+	path := fmt.Sprintf(
+		"/api/v1/teams/%s/pipelines/%s/%s/%s/versions",
+		fixture.team.Name(), fixture.pipeline.Name(), collection, name,
+	)
+	if encoded := fixture.ref.QueryParams().Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	request, err := http.NewRequest(http.MethodDelete, fixture.server.URL+path, nil)
+	Expect(err).NotTo(HaveOccurred())
+	response, err := client.Do(request)
+	if response != nil {
+		DeferCleanup(func() { Expect(response.Body.Close()).To(Succeed()) })
+	}
+	Expect(err).NotTo(HaveOccurred())
+	return response
+}
+
 func newVersionsAPIMutationFixture() *versionsAPIFixture {
 	GinkgoHelper()
 
@@ -387,6 +443,148 @@ func activateVersionsAPIWorkflowOwnership(fixture *versionsAPIFixture) {
 			}},
 		},
 	)).To(Succeed())
+}
+
+type versionsAPIResourceClearState struct {
+	fixture       *versionsAPIFixture
+	resourceName  string
+	decoyName     string
+	versions      []atc.Version
+	decoyVersions []atc.Version
+}
+
+func newVersionsAPIResourceClearState() *versionsAPIResourceClearState {
+	GinkgoHelper()
+
+	state := &versionsAPIResourceClearState{
+		resourceName: "resource-name",
+		decoyName:    "decoy-resource",
+		versions: []atc.Version{
+			{"ref": "target-v0"},
+			{"ref": "target-v1"},
+			{"ref": "target-v2"},
+		},
+		decoyVersions: []atc.Version{{"ref": "decoy-v0"}},
+	}
+	state.fixture = newVersionsAPIFixture(atc.PipelineRef{Name: "a-pipeline"}, atc.Config{
+		Resources: atc.ResourceConfigs{
+			{
+				Name: state.resourceName, Type: dbtest.BaseResourceType,
+				Source: atc.Source{"repository": "clear-target"},
+			},
+			{
+				Name: state.decoyName, Type: dbtest.BaseResourceType,
+				Source: atc.Source{"repository": "clear-decoy"},
+			},
+		},
+		Jobs: atc.JobConfigs{{
+			Name: "admit",
+			PlanSequence: []atc.Step{{Config: &atc.GetStep{
+				Name: "repository-source", Resource: state.resourceName,
+			}}},
+		}},
+	})
+	state.fixture.scenario.Run(
+		state.fixture.builder.WithResourceVersions(state.resourceName, state.versions...),
+		state.fixture.builder.WithResourceVersions(state.decoyName, state.decoyVersions...),
+	)
+	return state
+}
+
+type versionsAPIResourceTypeClearState struct {
+	fixture       *versionsAPIFixture
+	resourceType  string
+	decoyType     string
+	versions      []atc.Version
+	decoyVersions []atc.Version
+}
+
+func newVersionsAPIResourceTypeClearState() *versionsAPIResourceTypeClearState {
+	GinkgoHelper()
+
+	state := &versionsAPIResourceTypeClearState{
+		resourceType: "some-resource-type",
+		decoyType:    "decoy-resource-type",
+		versions: []atc.Version{
+			{"ref": "target-v0"},
+			{"ref": "target-v1"},
+			{"ref": "target-v2"},
+		},
+		decoyVersions: []atc.Version{{"ref": "decoy-v0"}},
+	}
+	state.fixture = newVersionsAPIFixture(atc.PipelineRef{Name: "a-pipeline"}, atc.Config{
+		ResourceTypes: atc.ResourceTypes{
+			{
+				Name: state.resourceType, Type: dbtest.BaseResourceType,
+				Source: atc.Source{"repository": "clear-type-target"},
+			},
+			{
+				Name: state.decoyType, Type: dbtest.BaseResourceType,
+				Source: atc.Source{"repository": "clear-type-decoy"},
+			},
+		},
+	})
+	state.fixture.scenario.Run(
+		state.fixture.builder.WithResourceTypeVersions(state.resourceType, state.versions...),
+		state.fixture.builder.WithResourceTypeVersions(state.decoyType, state.decoyVersions...),
+	)
+	target := state.fixture.resourceType(state.resourceType)
+	decoy := state.fixture.resourceType(state.decoyType)
+	Expect(target.ResourceConfigID()).NotTo(Equal(decoy.ResourceConfigID()))
+	Expect(target.ResourceConfigScopeID()).NotTo(Equal(decoy.ResourceConfigScopeID()))
+	return state
+}
+
+func versionsAPIResourceVersions(fixture *versionsAPIFixture, name string) []atc.ResourceVersion {
+	GinkgoHelper()
+
+	resource := fixture.resource(name)
+	found, err := resource.Reload()
+	Expect(err).NotTo(HaveOccurred())
+	Expect(found).To(BeTrue())
+	versions, _, found, err := resource.Versions(db.Page{Limit: 100}, nil)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(found).To(BeTrue())
+	return versions
+}
+
+func versionsAPIVersionValues(versions []atc.ResourceVersion) []atc.Version {
+	values := make([]atc.Version, len(versions))
+	for index, version := range versions {
+		values[index] = version.Version
+	}
+	return values
+}
+
+func versionsAPIResourceTypeVersionExists(
+	fixture *versionsAPIFixture,
+	name string,
+	version atc.Version,
+) bool {
+	GinkgoHelper()
+
+	resourceType := fixture.resourceType(name)
+	found, err := resourceType.Reload()
+	Expect(err).NotTo(HaveOccurred())
+	Expect(found).To(BeTrue())
+	resourceConfig, found, err := fixture.database.Deps.resourceConfigFactory.FindResourceConfigByID(
+		resourceType.ResourceConfigID(),
+	)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(found).To(BeTrue())
+	scope, err := resourceConfig.FindOrCreateScope(nil)
+	Expect(err).NotTo(HaveOccurred())
+	_, found, err = scope.FindVersion(version)
+	Expect(err).NotTo(HaveOccurred())
+	return found
+}
+
+func decodeVersionsAPIClearResponse(response *http.Response) atc.ClearVersionsResponse {
+	GinkgoHelper()
+
+	var decoded atc.ClearVersionsResponse
+	Expect(json.NewDecoder(response.Body).Decode(&decoded)).To(Succeed())
+	return decoded
 }
 
 func decodeVersionsAPIResponse(response *http.Response) []atc.ResourceVersion {
@@ -802,14 +1000,6 @@ func versionsAPIBuildRelationshipSpecs(relationship string) func() {
 }
 
 var _ = Describe("Versions API", func() {
-	var fakePipeline *dbfakes.FakePipeline
-
-	BeforeEach(func() {
-		fakePipeline = new(dbfakes.FakePipeline)
-		dbTeamFactory.FindTeamReturns(dbTeam, true, nil)
-		dbTeam.PipelineReturns(fakePipeline, true, nil)
-	})
-
 	Describe("GET /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions", func() {
 		var (
 			response         *http.Response
@@ -1686,33 +1876,30 @@ var _ = Describe("Versions API", func() {
 
 	Describe("GET /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions/:resource_version_id/output_of", versionsAPIBuildRelationshipSpecs("output_of"))
 	Describe("DELETE /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions", func() {
-		var response *http.Response
-		var fakeResource *dbfakes.FakeResource
+		var (
+			response     *http.Response
+			state        *versionsAPIResourceClearState
+			resourceName string
+			prepare      []func(*versionsAPIResourceClearState)
+		)
 
 		BeforeEach(func() {
-			fakeResource = new(dbfakes.FakeResource)
+			fakeAccess.IsAuthenticatedReturns(true)
+			fakeAccess.IsAdminReturns(false)
+			resourceName = "resource-name"
+			prepare = nil
 		})
 
 		JustBeforeEach(func() {
-			var err error
-
-			request, err := http.NewRequest("DELETE", server.URL+"/api/v1/teams/a-team/pipelines/a-pipeline/resources/some-resource/versions", nil)
-			Expect(err).NotTo(HaveOccurred())
-
-			response, err = client.Do(request)
-			Expect(err).NotTo(HaveOccurred())
+			state = newVersionsAPIResourceClearState()
+			for _, setup := range prepare {
+				setup(state)
+			}
+			response = state.fixture.requestClearVersions("resources", resourceName)
 		})
 
 		Context("when authenticated", func() {
-			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
-			})
-
 			Context("when the user is not admin", func() {
-				BeforeEach(func() {
-					fakeAccess.IsAdminReturns(false)
-				})
-
 				It("returns Forbidden", func() {
 					Expect(response.StatusCode).To(Equal(http.StatusForbidden))
 				})
@@ -1723,69 +1910,65 @@ var _ = Describe("Versions API", func() {
 					fakeAccess.IsAdminReturns(true)
 				})
 
-				It("tries to find the resource", func() {
-					Expect(fakePipeline.ResourceCallCount()).To(Equal(1))
-					Expect(fakePipeline.ResourceArgsForCall(0)).To(Equal("some-resource"))
+				It("returns 200", func() {
+					Expect(response.StatusCode).To(Equal(http.StatusOK))
 				})
 
-				Context("when the resource exists", func() {
+				It("returns Content-Type 'application/json'", func() {
+					Expect(response).To(IncludeHeaderEntries(map[string]string{
+						"Content-Type": "application/json",
+					}))
+				})
+
+				It("returns the persisted deletion count", func() {
+					Expect(decodeVersionsAPIClearResponse(response).VersionsRemoved).To(Equal(
+						int64(len(state.versions)),
+					))
+				})
+
+				It("clears the persisted resource versions", func() {
+					Expect(versionsAPIResourceVersions(state.fixture, state.resourceName)).To(BeEmpty())
+				})
+
+				It("preserves versions in a different resource scope", func() {
+					Expect(versionsAPIVersionValues(
+						versionsAPIResourceVersions(state.fixture, state.decoyName),
+					)).To(ConsistOf(state.decoyVersions))
+				})
+
+				Context("when deleting the resource versions fails", func() {
 					BeforeEach(func() {
-						fakePipeline.ResourceReturns(fakeResource, true, nil)
-					})
-
-					It("tries to delete the versions", func() {
-						Expect(fakeResource.ClearVersionsCallCount()).To(Equal(1))
-					})
-
-					Context("when deleting the resource versions succeeds", func() {
-						BeforeEach(func() {
-							fakeResource.ClearVersionsReturns(3, nil)
-						})
-
-						It("returns 200", func() {
-							Expect(response.StatusCode).To(Equal(http.StatusOK))
-						})
-
-						It("returns Content-Type 'application/json'", func() {
-							expectedHeaderEntries := map[string]string{
-								"Content-Type": "application/json",
-							}
-							Expect(response).Should(IncludeHeaderEntries(expectedHeaderEntries))
-						})
-
-						It("returns the number of rows deleted", func() {
-							body, err := io.ReadAll(response.Body)
-							Expect(err).NotTo(HaveOccurred())
-
-							Expect(body).To(MatchJSON(`{"versions_removed": 3}`))
+						prepare = append(prepare, func(state *versionsAPIResourceClearState) {
+							state.fixture.overridePipeline(versionsAPIPipeline{
+								Pipeline: state.fixture.pipeline, resourceName: state.resourceName,
+								resource: state.fixture.doomedResource(state.resourceName),
+							})
 						})
 					})
 
-					Context("when deleting the resource versions fail", func() {
-						BeforeEach(func() {
-							fakeResource.ClearVersionsReturns(0, errors.New("failed"))
-						})
+					It("returns 500", func() {
+						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
+					})
+				})
 
-						It("returns 500", func() {
-							Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-							Expect(io.ReadAll(response.Body)).To(Equal([]byte("failed")))
+				Context("when the resource belongs to a server-owned source-selection pipeline", func() {
+					BeforeEach(func() {
+						prepare = append(prepare, func(state *versionsAPIResourceClearState) {
+							activateVersionsAPIWorkflowOwnership(state.fixture)
 						})
 					})
 
-					Context("when the resource belongs to a server-owned source-selection pipeline", func() {
-						BeforeEach(func() {
-							fakeResource.ClearVersionsReturns(0, db.ErrAgentWorkflowResourceSourceImmutable)
-						})
-
-						It("returns 409", func() {
-							Expect(response.StatusCode).To(Equal(http.StatusConflict))
-						})
+					It("returns 409 without clearing the versions", func() {
+						Expect(response.StatusCode).To(Equal(http.StatusConflict))
+						Expect(versionsAPIVersionValues(
+							versionsAPIResourceVersions(state.fixture, state.resourceName),
+						)).To(ConsistOf(state.versions))
 					})
 				})
 
 				Context("when the resource is not found", func() {
 					BeforeEach(func() {
-						fakePipeline.ResourceReturns(nil, false, nil)
+						resourceName = "missing-resource"
 					})
 
 					It("returns 404", func() {
@@ -1795,7 +1978,9 @@ var _ = Describe("Versions API", func() {
 
 				Context("when finding the resource errors", func() {
 					BeforeEach(func() {
-						fakePipeline.ResourceReturns(nil, false, errors.New("woops"))
+						prepare = append(prepare, func(state *versionsAPIResourceClearState) {
+							state.fixture.overridePipeline(state.fixture.doomedPipeline())
+						})
 					})
 
 					It("returns 500", func() {
@@ -1807,21 +1992,26 @@ var _ = Describe("Versions API", func() {
 	})
 
 	Describe("DELETE /api/v1/teams/:team_name/pipelines/:pipeline_name/resource-types/:resource_type_name/versions", func() {
-		var response *http.Response
-		var fakeResourceType *dbfakes.FakeResourceType
+		var (
+			response         *http.Response
+			state            *versionsAPIResourceTypeClearState
+			resourceTypeName string
+			prepare          []func(*versionsAPIResourceTypeClearState)
+		)
 
 		BeforeEach(func() {
-			fakeResourceType = new(dbfakes.FakeResourceType)
+			fakeAccess.IsAuthenticatedReturns(true)
+			fakeAccess.IsAdminReturns(false)
+			resourceTypeName = "some-resource-type"
+			prepare = nil
 		})
 
 		JustBeforeEach(func() {
-			var err error
-
-			request, err := http.NewRequest("DELETE", server.URL+"/api/v1/teams/a-team/pipelines/a-pipeline/resource-types/some-resource-type/versions", nil)
-			Expect(err).NotTo(HaveOccurred())
-
-			response, err = client.Do(request)
-			Expect(err).NotTo(HaveOccurred())
+			state = newVersionsAPIResourceTypeClearState()
+			for _, setup := range prepare {
+				setup(state)
+			}
+			response = state.fixture.requestClearVersions("resource-types", resourceTypeName)
 		})
 
 		Context("when not authenticated", func() {
@@ -1835,15 +2025,7 @@ var _ = Describe("Versions API", func() {
 		})
 
 		Context("when authenticated", func() {
-			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
-			})
-
 			Context("when the user is not admin", func() {
-				BeforeEach(func() {
-					fakeAccess.IsAdminReturns(false)
-				})
-
 				It("returns Forbidden", func() {
 					Expect(response.StatusCode).To(Equal(http.StatusForbidden))
 				})
@@ -1854,59 +2036,60 @@ var _ = Describe("Versions API", func() {
 					fakeAccess.IsAdminReturns(true)
 				})
 
-				It("tries to find the resource type", func() {
-					Expect(fakePipeline.ResourceTypeCallCount()).To(Equal(1))
-					Expect(fakePipeline.ResourceTypeArgsForCall(0)).To(Equal("some-resource-type"))
+				It("returns 200", func() {
+					Expect(response.StatusCode).To(Equal(http.StatusOK))
 				})
 
-				Context("when the resource type exists", func() {
+				It("returns Content-Type 'application/json'", func() {
+					Expect(response).To(IncludeHeaderEntries(map[string]string{
+						"Content-Type": "application/json",
+					}))
+				})
+
+				It("returns the persisted deletion count", func() {
+					Expect(decodeVersionsAPIClearResponse(response).VersionsRemoved).To(Equal(
+						int64(len(state.versions)),
+					))
+				})
+
+				It("clears the persisted resource type versions", func() {
+					for _, version := range state.versions {
+						Expect(versionsAPIResourceTypeVersionExists(
+							state.fixture, state.resourceType, version,
+						)).To(BeFalse(), "target version %v survived", version)
+					}
+				})
+
+				It("preserves versions in a distinct resource type scope", func() {
+					for _, version := range state.decoyVersions {
+						Expect(versionsAPIResourceTypeVersionExists(
+							state.fixture, state.decoyType, version,
+						)).To(BeTrue(), "decoy version %v was removed", version)
+					}
+				})
+
+				Context("when deleting the resource type versions fails", func() {
 					BeforeEach(func() {
-						fakePipeline.ResourceTypeReturns(fakeResourceType, true, nil)
-					})
-
-					It("tries to delete the versions", func() {
-						Expect(fakeResourceType.ClearVersionsCallCount()).To(Equal(1))
-					})
-
-					Context("when deleting the resource type versions succeeds", func() {
-						BeforeEach(func() {
-							fakeResourceType.ClearVersionsReturns(3, nil)
-						})
-
-						It("returns 200", func() {
-							Expect(response.StatusCode).To(Equal(http.StatusOK))
-						})
-
-						It("returns Content-Type 'application/json'", func() {
-							expectedHeaderEntries := map[string]string{
-								"Content-Type": "application/json",
+						prepare = append(prepare, func(state *versionsAPIResourceTypeClearState) {
+							resourceType := versionsAPIResourceTypeClearError{
+								ResourceType: state.fixture.resourceType(state.resourceType),
+								err:          errors.New("clear resource type versions failed"),
 							}
-							Expect(response).Should(IncludeHeaderEntries(expectedHeaderEntries))
-						})
-
-						It("returns the number of rows deleted", func() {
-							body, err := io.ReadAll(response.Body)
-							Expect(err).NotTo(HaveOccurred())
-
-							Expect(body).To(MatchJSON(`{"versions_removed": 3}`))
+							state.fixture.overridePipeline(versionsAPIResourceTypePipeline{
+								Pipeline: state.fixture.pipeline, resourceTypeName: state.resourceType,
+								resourceType: resourceType,
+							})
 						})
 					})
 
-					Context("when deleting the resource type versions fail", func() {
-						BeforeEach(func() {
-							fakeResourceType.ClearVersionsReturns(0, errors.New("failed"))
-						})
-
-						It("returns 500", func() {
-							Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-							Expect(io.ReadAll(response.Body)).To(Equal([]byte("failed")))
-						})
+					It("returns 500", func() {
+						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
 					})
 				})
 
 				Context("when the resource type is not found", func() {
 					BeforeEach(func() {
-						fakePipeline.ResourceTypeReturns(nil, false, nil)
+						resourceTypeName = "missing-resource-type"
 					})
 
 					It("returns 404", func() {
@@ -1916,7 +2099,9 @@ var _ = Describe("Versions API", func() {
 
 				Context("when finding the resource type errors", func() {
 					BeforeEach(func() {
-						fakePipeline.ResourceTypeReturns(nil, false, errors.New("woops"))
+						prepare = append(prepare, func(state *versionsAPIResourceTypeClearState) {
+							state.fixture.overridePipeline(state.fixture.doomedPipeline())
+						})
 					})
 
 					It("returns 500", func() {
