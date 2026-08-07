@@ -590,13 +590,13 @@ The fixed baseline is exactly 40 explicit constructors: Teams 7, Workers 6, Pipe
 - Consumes: `useJetbridgeDB() jetbridgeDB`, `useLiveJetbridgeDB(*testing.T) jetbridgeDB`, `persistNamedWorker(jetbridgeDB, string) (db.Worker, error)`, `db.WorkerFactory.GetWorker(string) (db.Worker, bool, error)`, and `db.Worker.FindContainer(db.ContainerOwner) (db.CreatingContainer, db.CreatedContainer, error)`.
 - Produces: the remaining four worker constructors removed, distinct logstream child-test clones, and persisted worker/container assertions in fake-K8s and live-K8s consumers.
 
-- [ ] **Step 1: Add consumer-visible assertions while all four consumers still use FakeWorker.**
+- [x] **Step 1: Add consumer-visible assertions while all four consumers still use FakeWorker.**
 
   In both Ginkgo Describe var blocks, declare `database jetbridgeDB`. In each `BeforeEach`, assign `database = useJetbridgeDB()` before constructing the fake worker; do not short-declare it. After `FindOrCreateContainer`, call `database.WorkerFactory.GetWorker("k8s-worker-1")` and expect `found == true`; this is red because the consumer still uses `FakeWorker` and no real worker row exists.
 
   In `setupLiveWorkerWithLocator`, call `database := useLiveJetbridgeDB(t)` but leave `fakeDBWorker` in `jetbridge.NewWorker`; immediately require `database.WorkerFactory.GetWorker("live-k8s-worker")` to find a row. In logstream `runOnce`, make the same red assertion for `live-sc11-worker` while it still uses `FakeWorker`.
 
-- [ ] **Step 2: Run both red commands before converting the consumers.**
+- [x] **Step 2: Run both red commands before converting the consumers.**
 
   Run: `ginkgo --focus='uses GeneratePodName when metadata has pipeline/job/build|emits ValueFrom.SecretKeyRef for env vars in SecretEnv' ./atc/worker/jetbridge/`
 
@@ -606,7 +606,7 @@ The fixed baseline is exactly 40 explicit constructors: Teams 7, Workers 6, Pipe
 
   Expected: FAIL at the new worker lookup before pod execution.
 
-- [ ] **Step 3: Convert Ginkgo worker/container consumers.**
+- [x] **Step 3: Convert Ginkgo worker/container consumers.**
 
   In each Ginkgo `BeforeEach`, assign the Describe-scoped field with `database = useJetbridgeDB()`, persist `k8s-worker-1`, and build the jetbridge worker from the returned `db.Worker`. Remove `setupFakeDBContainer` calls in all specs in both files. After each `FindOrCreateContainer`, verify through `database.WorkerFactory.GetWorker`, then:
 
@@ -622,7 +622,7 @@ The fixed baseline is exactly 40 explicit constructors: Teams 7, Workers 6, Pipe
 
   Keep `fake.NewSimpleClientset`, `fakeExecExecutor`, pod-name/label/attach/volume-binding assertions, literal env assertions, and SecretKeyRef assertions unchanged.
 
-- [ ] **Step 4: Convert live worker and logstream consumers with accurate clone ownership.**
+- [x] **Step 4: Convert live worker and logstream consumers with accurate clone ownership.**
 
   In `setupLiveWorkerWithLocator`, persist `live-k8s-worker` once per calling `*testing.T`, then preserve SPDY, artifact daemon configuration, and `ArtifactLocator` sharing.
 
@@ -644,7 +644,7 @@ The fixed baseline is exactly 40 explicit constructors: Teams 7, Workers 6, Pipe
 
   The shared nanosecond-resolution stamp keeps the pair attributable to one measurement while the `control`/`writer` prefixes prevent collisions between the two pods and with leaked pods from earlier runs. Inside `runOnce`, call `useLiveJetbridgeDB(t)` once, persist `live-sc11-worker`, and build the worker from it. Do not claim two helper calls with the parent `t` would create two clones: repeated `OpenConn(parentT)` calls reuse the parent clone. Preserve the elapsed assertion comparing `writerDuration-controlDuration` to the five-second bound.
 
-- [ ] **Step 5: Run green verification and commit.**
+- [x] **Step 5: Run green verification and commit.**
 
   Run: `ginkgo --focus='(Pod Name Integration|SecretEnv in Pod Spec)' ./atc/worker/jetbridge/`
 
