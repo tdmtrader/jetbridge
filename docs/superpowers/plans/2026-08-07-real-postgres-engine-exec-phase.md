@@ -643,17 +643,17 @@ git commit -m "test(engine): persist resource cache and scope state"
 - Consumes useExecDB, real one-off builds, VolumeRepository.CreateVolumeWithHandle, CreatedVolume.InitializeArtifact(string, int), artifactErrorBuild, volumeResultArtifact, artifactResultBuild, initErrorVolume, and runtimeVolumeWithDB.
 - Produces real artifact-to-build and volume-to-artifact associations.
 
-- [ ] **Step 1: Add the output artifact assertion before installing the adapter.**
+- [x] **Step 1: Add the output artifact assertion before installing the adapter.**
 
 Add Describe("persisted PostgreSQL state") to artifact_output_step_test.go. Call useExecDB once, create team some-team, create a one-off build, save worker worker, and create/finalize an artifact volume with handle some-volume. Initially keep the step on fakeBuild and runtimetest.NewVolume. After Run, assert realBuild.Artifacts has one artifact named some-artifact-name.
 
-- [ ] **Step 2: Run the assertion-first RED command.**
+- [x] **Step 2: Run the assertion-first RED command.**
 
 Run: ginkgo ./atc/exec/ --focus='ArtifactOutputStep persisted PostgreSQL state initializes output artifact'
 
 Expected: FAIL with an empty realBuild.Artifacts result because the old runtimetest DBVolume is a FakeCreatedVolume and the step still uses fakeBuild.
 
-- [ ] **Step 3: Implement real artifact input/output state and precise failures.**
+- [x] **Step 3: Implement real artifact input/output state and precise failures.**
 
 Delete the typed dbfakes ResourceCache from put_step_test.go by declaring var imageResourceCache db.ResourceCache. Preserve the nil delegate-forwarding assertion.
 
@@ -686,7 +686,7 @@ For artifact output, wrap runtimetest.NewVolume in runtimeVolumeWithDB{Volume: r
 
 For initialization failure, replace only databaseVolume with initErrorVolume{CreatedVolume: created, err: errors.New("nope")}. Do not close a connection to fake Build.Artifact or CreatedVolume.InitializeArtifact errors.
 
-- [ ] **Step 4: Run GREEN and sensitivity checks.**
+- [x] **Step 4: Run GREEN and sensitivity checks.**
 
 Run: ginkgo ./atc/exec/ --focus='Artifact(Input|Output)Step'
 
@@ -698,7 +698,7 @@ Run: ginkgo ./atc/exec/ --focus='ArtifactInputStep persisted PostgreSQL state re
 
 Expected: FAIL because realBuild.Artifact cannot find that ID. Restore artifact.ID() and rerun to PASS.
 
-- [ ] **Step 5: Verify payoff and commit.**
+- [x] **Step 5: Verify payoff and commit.**
 
 Run: rg -n 'dbfakes|FakeCreatedVolume|FakeWorkerArtifact|FakeBuild' atc/exec/put_step_test.go atc/exec/artifact_input_step_test.go atc/exec/artifact_output_step_test.go
 
