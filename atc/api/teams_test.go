@@ -67,6 +67,8 @@ var _ = Describe("Teams API", func() {
 			Expect(found).To(BeTrue())
 			Expect(teams).To(Equal([]atc.Team{{ID: avengers.ID(), Name: avengers.Name(), Auth: listTeamAuth}, {ID: predators.ID(), Name: predators.Name(), Auth: listTeamAuth}}))
 		})
+		It("returns 200 for an authorized team list", func() { Expect(response.StatusCode).To(Equal(http.StatusOK)) })
+		It("returns application/json for an authorized team list", func() { Expect(response.Header.Get("Content-Type")).To(Equal("application/json")) })
 
 		Context("when listing teams fails", func() {
 			BeforeEach(func() {
@@ -112,6 +114,13 @@ var _ = Describe("Teams API", func() {
 			Expect(json.NewDecoder(response.Body).Decode(&returned)).To(Succeed())
 			Expect(returned).To(Equal(atc.Team{ID: team.ID(), Name: team.Name(), Auth: team.Auth()}))
 		})
+		It("returns 200 ok", func() { Expect(response.StatusCode).To(Equal(http.StatusOK)) })
+		It("returns application/json", func() { Expect(response.Header.Get("Content-Type")).To(Equal("application/json")) })
+		It("returns a team JSON", func() {
+			var returned atc.Team
+			Expect(json.NewDecoder(response.Body).Decode(&returned)).To(Succeed())
+			Expect(returned.Auth).To(Equal(team.Auth()))
+		})
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() { fakeAccess.IsAuthenticatedReturns(false) })
@@ -155,6 +164,19 @@ var _ = Describe("Teams API", func() {
 				Expect(created.Name()).To(Equal("some-team"))
 				Expect(created.Auth()).To(Equal(atc.TeamAuth{"owner": map[string][]string{"groups": {}, "users": {"local:username"}}}))
 			})
+			It("creates the team", func() { Expect(response.StatusCode).To(Equal(http.StatusCreated)) })
+			It("persists the requested team name", func() {
+				created, found, err := realdb.Deps.teamFactory.FindTeam("some-team")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(found).To(BeTrue())
+				Expect(created.Name()).To(Equal("some-team"))
+			})
+			It("persists the requested team auth", func() {
+				created, found, err := realdb.Deps.teamFactory.FindTeam("some-team")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(found).To(BeTrue())
+				Expect(created.Auth()).To(Equal(teamAuth))
+			})
 
 			Context("when creating the team fails", func() {
 				BeforeEach(func() {
@@ -185,6 +207,13 @@ var _ = Describe("Teams API", func() {
 				Expect(updated.Auth()).To(Equal(teamAuth))
 				Expect(updated.Auth()).NotTo(Equal(oldAuth))
 			})
+			It("updates provider auth", func() { Expect(response.StatusCode).To(Equal(http.StatusOK)) })
+			It("replaces old provider auth", func() {
+				updated, found, err := realdb.Deps.teamFactory.FindTeam("some-team")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(found).To(BeTrue())
+				Expect(updated.Auth()).NotTo(Equal(oldAuth))
+			})
 
 			Context("when updating provider auth fails", func() {
 				BeforeEach(func() {
@@ -206,6 +235,7 @@ var _ = Describe("Teams API", func() {
 		var (
 			realdb   *realDB
 			response *http.Response
+			teamName string
 		)
 		BeforeEach(func() {
 			realdb = useRealDB()
@@ -213,9 +243,10 @@ var _ = Describe("Teams API", func() {
 			fakeAccess.IsAuthenticatedReturns(true)
 			fakeAccess.IsAdminReturns(true)
 			fakeAccess.IsAuthorizedReturns(true)
+			teamName = "team"
 		})
 		JustBeforeEach(func() {
-			req, err := http.NewRequest("DELETE", server.URL+"/api/v1/teams/team", nil)
+			req, err := http.NewRequest("DELETE", server.URL+"/api/v1/teams/"+teamName, nil)
 			Expect(err).NotTo(HaveOccurred())
 			response, err = client.Do(req)
 			Expect(err).NotTo(HaveOccurred())
@@ -233,9 +264,37 @@ var _ = Describe("Teams API", func() {
 				Expect(team).To(BeNil())
 				Expect(found).To(BeFalse())
 			})
+			It("returns 204 No Content", func() { Expect(response.StatusCode).To(Equal(http.StatusNoContent)) })
+			It("receives the correct team name", func() {
+				_, found, err := realdb.Deps.teamFactory.FindTeam("team")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(found).To(BeFalse())
+			})
+			It("deletes the team from the DB", func() {
+				team, found, err := realdb.Deps.teamFactory.FindTeam("team")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(team).To(BeNil())
+				Expect(found).To(BeFalse())
+			})
 		})
 		Context("when the team does not exist", func() {
 			It("returns 404", func() { Expect(response.StatusCode).To(Equal(http.StatusNotFound)) })
+			It("returns 404 Not Found", func() { Expect(response.StatusCode).To(Equal(http.StatusNotFound)) })
+		})
+		Context("when deleting the sole admin team", func() {
+			BeforeEach(func() {
+				teamName = atc.DefaultTeamName
+				fakeTeam.NameReturns(atc.DefaultTeamName)
+				fakeTeam.AdminReturns(true)
+				dbTeamFactory.FindTeamReturns(fakeTeam, true, nil)
+				dbTeamFactory.GetTeamsReturns([]db.Team{fakeTeam}, nil)
+				deps := realdb.Deps
+				deps.teamFactory = dbTeamFactory
+				server = newAPIServer(deps)
+				DeferCleanup(server.Close)
+			})
+			It("returns 403", func() { Expect(response.StatusCode).To(Equal(http.StatusForbidden)) })
+			It("returns 403 Forbidden and backs off", func() { Expect(response.StatusCode).To(Equal(http.StatusForbidden)) })
 		})
 		Context("when deleting the team fails", func() {
 			BeforeEach(func() {
@@ -249,6 +308,7 @@ var _ = Describe("Teams API", func() {
 				DeferCleanup(server.Close)
 			})
 			It("returns 500", func() { Expect(response.StatusCode).To(Equal(http.StatusInternalServerError)) })
+			It("returns 500 Internal Server Error", func() { Expect(response.StatusCode).To(Equal(http.StatusInternalServerError)) })
 		})
 	})
 
@@ -287,6 +347,12 @@ var _ = Describe("Teams API", func() {
 				Expect(found).To(BeTrue())
 				Expect(renamed.Name()).To(Equal("some-new-name"))
 			})
+			It("renames the team to the name provided", func() {
+				_, found, err := realdb.Deps.teamFactory.FindTeam("some-new-name")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(found).To(BeTrue())
+			})
+			It("returns 200", func() { Expect(response.StatusCode).To(Equal(http.StatusOK)) })
 		})
 		Context("when the name is invalid", func() {
 			BeforeEach(func() {
@@ -298,6 +364,15 @@ var _ = Describe("Teams API", func() {
 				Expect(response.StatusCode).To(Equal(http.StatusOK))
 				Expect(io.ReadAll(response.Body)).To(MatchJSON(`{"warnings":[{"type":"invalid_identifier","message":"team: '_some-new-name' is not a valid identifier: must start with a lowercase letter or a number"}]}`))
 			})
+			It("returns a warning in the response body", func() { Expect(io.ReadAll(response.Body)).To(ContainSubstring("invalid_identifier")) })
+		})
+		Context("when the name is empty", func() {
+			BeforeEach(func() {
+				requestBody = `{"name":""}`
+				_, err := realdb.Deps.teamFactory.CreateTeam(atc.Team{Name: "a-team"})
+				Expect(err).NotTo(HaveOccurred())
+			})
+			It("returns 400", func() { Expect(response.StatusCode).To(Equal(http.StatusBadRequest)) })
 		})
 		Context("when renaming fails after lookup", func() {
 			BeforeEach(func() {
@@ -383,6 +458,18 @@ var _ = Describe("Teams API", func() {
 				Expect(startedBuild.EndTime()).To(BeZero())
 				Expect(succeededBuild.EndTime()).NotTo(BeZero())
 			})
+			It("returns 200 OK", func() { Expect(response.StatusCode).To(Equal(http.StatusOK)) })
+			It("returns Content-Type application/json", func() { Expect(response.Header.Get("Content-Type")).To(Equal("application/json")) })
+			It("returns a started build", func() {
+				var builds []atc.Build
+				Expect(json.NewDecoder(response.Body).Decode(&builds)).To(Succeed())
+				Expect(builds).To(ContainElement(HaveField("Status", atc.StatusStarted)))
+			})
+			It("returns a succeeded build", func() {
+				var builds []atc.Build
+				Expect(json.NewDecoder(response.Body).Decode(&builds)).To(Succeed())
+				Expect(builds).To(ContainElement(HaveField("Status", atc.StatusSucceeded)))
+			})
 		})
 		Context("when observing page translation", func() {
 			BeforeEach(func() {
@@ -396,6 +483,10 @@ var _ = Describe("Teams API", func() {
 			It("passes page arguments through", func() {
 				Expect(fakeTeam.BuildsCallCount()).To(Equal(1))
 				Expect(fakeTeam.BuildsArgsForCall(0)).To(Equal(db.Page{From: db.NewIntPtr(2), To: db.NewIntPtr(3), Limit: 8}))
+			})
+			Context("with no page parameters", func() {
+				BeforeEach(func() { queryParams = "" })
+				It("uses the default limit", func() { Expect(fakeTeam.BuildsArgsForCall(0)).To(Equal(db.Page{Limit: 100})) })
 			})
 		})
 		Context("when listing builds fails after lookup", func() {
