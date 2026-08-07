@@ -366,271 +366,338 @@ var _ = Describe("Scanner", func() {
 })
 
 var _ = Describe("Scanner Resource Type Resolution", func() {
-	var (
-		err error
-
-		fakeCheckFactory          *dbfakes.FakeCheckFactory
-		fakeResourceConfigFactory *dbfakes.FakeResourceConfigFactory
-		fakeResolver              *imageresolvertesting.FakeResolver
-		planFactory               atc.PlanFactory
-
-		scanner Scanner
-
-		logger *lagertest.TestLogger
-
-		ctx    context.Context
-		cancel context.CancelFunc
+	const (
+		teamName         = "resource-type-team"
+		pipelineName     = "resource-type-pipeline"
+		resourceTypeName = "my-custom-type"
 	)
 
-	BeforeEach(func() {
-		planFactory = atc.NewPlanFactory(0)
-		fakeCheckFactory = new(dbfakes.FakeCheckFactory)
-		fakeResourceConfigFactory = new(dbfakes.FakeResourceConfigFactory)
-		fakeResolver = new(imageresolvertesting.FakeResolver)
+	defaultResourceType := func() atc.ResourceType {
+		return atc.ResourceType{
+			Name: resourceTypeName,
+			Type: "registry-image",
+			Source: atc.Source{
+				"repository": "my-registry/my-image",
+				"tag":        "latest",
+			},
+		}
+	}
 
-		scanner = lidar.NewScanner(fakeCheckFactory, planFactory, 10, fakeResolver, fakeResourceConfigFactory)
-		logger = lagertest.NewTestLogger("test")
-		ctx, cancel = context.WithCancel(lagerctx.NewContext(context.Background(), logger))
-
-		fakeCheckFactory.ResourcesReturns(nil, nil)
-	})
-
-	AfterEach(func() {
-		cancel()
-	})
-
-	JustBeforeEach(func() {
-		err = scanner.Run(ctx)
-	})
-
-	Context("when there are resource types to resolve", func() {
-		var (
-			fakeResourceType        *dbfakes.FakeResourceType
-			fakeResourceConfig      *dbfakes.FakeResourceConfig
-			fakeResourceConfigScope *dbfakes.FakeResourceConfigScope
+	persistResourceType := func(fixture *lidarDB, team, pipeline string, config atc.ResourceType) (db.Pipeline, db.ResourceType) {
+		GinkgoHelper()
+		_, savedPipeline := persistLidarPipeline(
+			fixture, team, pipeline, atc.Config{ResourceTypes: atc.ResourceTypes{config}},
 		)
+		return savedPipeline, lidarPipelineResourceType(savedPipeline, config.Name)
+	}
 
-		BeforeEach(func() {
-			fakeResourceType = new(dbfakes.FakeResourceType)
-			fakeResourceType.IDReturns(1)
-			fakeResourceType.NameReturns("my-custom-type")
-			fakeResourceType.TypeReturns("registry-image")
-			fakeResourceType.TeamNameReturns("main")
-			fakeResourceType.PipelineNameReturns("my-pipeline")
-			fakeResourceType.PipelineIDReturns(1)
-			fakeResourceType.SourceReturns(atc.Source{
-				"repository": "my-registry/my-image",
-				"tag":        "latest",
-			})
+	runScanner := func(
+		fixture *lidarDB,
+		factory db.CheckFactory,
+		resolver *imageresolvertesting.FakeResolver,
+		resourceConfigFactory db.ResourceConfigFactory,
+		logger *lagertest.TestLogger,
+	) error {
+		GinkgoHelper()
+		return lidar.NewScanner(
+			factory, atc.NewPlanFactory(0), 10, resolver, resourceConfigFactory,
+		).Run(lagerctx.NewContext(context.Background(), logger))
+	}
 
-			fakeResourceConfig = new(dbfakes.FakeResourceConfig)
-			fakeResourceConfig.IDReturns(42)
-			fakeResourceConfigFactory.FindOrCreateResourceConfigReturns(fakeResourceConfig, nil)
+	It("persists the resolved digest, scope, and check end time", func() {
+		fixture := useLidarDB()
+		config := defaultResourceType()
+		pipeline, resourceType := persistResourceType(fixture, teamName, pipelineName, config)
+		resolver := new(imageresolvertesting.FakeResolver)
+		resolver.ResolveReturns("sha256:abc123", nil)
 
-			fakeResourceConfigScope = new(dbfakes.FakeResourceConfigScope)
-			fakeResourceConfigScope.IDReturns(99)
-			fakeResourceConfig.FindOrCreateScopeReturns(fakeResourceConfigScope, nil)
+		Expect(runScanner(
+			fixture, fixture.CheckFactory, resolver, fixture.ResourceConfigFactory,
+			lagertest.NewTestLogger("test"),
+		)).To(Succeed())
+		Expect(resolver.ResolveCallCount()).To(Equal(1))
+		_, repository, tag, auth := resolver.ResolveArgsForCall(0)
+		Expect(repository).To(Equal("my-registry/my-image"))
+		Expect(tag).To(Equal("latest"))
+		Expect(auth).To(BeNil())
 
-			fakeResolver.ResolveReturns("sha256:abc123", nil)
+		freshType := lidarPipelineResourceType(pipeline, resourceType.Name())
+		Expect(freshType.ID()).To(Equal(resourceType.ID()))
+		expectedConfig, err := fixture.ResourceConfigFactory.FindOrCreateResourceConfig(
+			"registry-image", config.Source, nil,
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(freshType.ResourceConfigID()).To(Equal(expectedConfig.ID()))
+		scope := resolvedLidarResourceTypeScope(fixture, freshType)
+		Expect(scope.ResourceID()).To(BeNil())
+		expectLidarLatestVersion(scope, atc.Version{"digest": "sha256:abc123"})
+		lastCheck, err := scope.LastCheck()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(lastCheck.EndTime).NotTo(BeZero())
+		Expect(lastCheck.Succeeded).To(BeTrue())
+		Expect(freshType.LastCheckEndTime()).To(Equal(lastCheck.EndTime))
+		Expect(freshType.ResolvedImage()).To(Equal("my-registry/my-image@sha256:abc123"))
+	})
 
-			fakeCheckFactory.ResourceTypesByPipelineReturns(map[int]db.ResourceTypes{
-				1: {fakeResourceType},
-			}, nil)
-		})
+	It("treats a scope deletion during version save as a debug-level race", func() {
+		fixture := useLidarDB()
+		config := defaultResourceType()
+		pipeline, _ := persistResourceType(fixture, teamName, pipelineName, config)
+		persistedConfig, err := fixture.ResourceConfigFactory.FindOrCreateResourceConfig(
+			config.Type, config.Source, nil,
+		)
+		Expect(err).NotTo(HaveOccurred())
+		baselineScope, err := persistedConfig.FindOrCreateScope(nil)
+		Expect(err).NotTo(HaveOccurred())
+		baselineLastCheck, err := baselineScope.LastCheck()
+		Expect(err).NotTo(HaveOccurred())
+		resolver := new(imageresolvertesting.FakeResolver)
+		resolver.ResolveReturns("sha256:ignored", nil)
+		logger := lagertest.NewTestLogger("test")
+		configFactory := lidarResourceConfigFactory{
+			ResourceConfigFactory: fixture.ResourceConfigFactory,
+			saveVersionsErr:       fkViolation("save versions"),
+		}
 
-		It("resolves the digest and saves it as a version", func() {
-			Expect(err).ToNot(HaveOccurred())
+		Expect(runScanner(fixture, fixture.CheckFactory, resolver, configFactory, logger)).To(Succeed())
+		Expect(loggedAt(logger.Logs(), lager.DEBUG, "scope-deleted-during-version-save")).To(BeTrue())
+		Expect(loggedAt(logger.Logs(), lager.ERROR, "failed-to-save-versions")).To(BeFalse())
+		scope := resolvedLidarResourceTypeScope(fixture, lidarPipelineResourceType(pipeline, resourceTypeName))
+		Expect(scope.ID()).To(Equal(baselineScope.ID()))
+		_, found, err := scope.LatestVersion()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeFalse())
+		lastCheck, err := scope.LastCheck()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(lastCheck.EndTime).To(Equal(baselineLastCheck.EndTime))
+	})
 
-			// Verify resolver was called with correct args.
-			Expect(fakeResolver.ResolveCallCount()).To(Equal(1))
-			_, repo, tag, auth := fakeResolver.ResolveArgsForCall(0)
-			Expect(repo).To(Equal("my-registry/my-image"))
-			Expect(tag).To(Equal("latest"))
-			Expect(auth).To(BeNil())
+	It("treats a scope deletion before attachment as a debug-level race", func() {
+		fixture := useLidarDB()
+		config := defaultResourceType()
+		pipeline, resourceType := persistResourceType(fixture, teamName, pipelineName, config)
+		persistedConfig, err := fixture.ResourceConfigFactory.FindOrCreateResourceConfig(
+			config.Type, config.Source, nil,
+		)
+		Expect(err).NotTo(HaveOccurred())
+		baselineScope, err := persistedConfig.FindOrCreateScope(nil)
+		Expect(err).NotTo(HaveOccurred())
+		baselineLastCheck, err := baselineScope.LastCheck()
+		Expect(err).NotTo(HaveOccurred())
+		factory := observeLidarCheckFactory(fixture.CheckFactory)
+		factory.FailResourceTypeScope(resourceType.ID(), fkViolation("set resource scope"))
+		resolver := new(imageresolvertesting.FakeResolver)
+		resolver.ResolveReturns("sha256:ignored", nil)
+		logger := lagertest.NewTestLogger("test")
 
-			// Verify resource config was created.
-			Expect(fakeResourceConfigFactory.FindOrCreateResourceConfigCallCount()).To(Equal(1))
-			resourceType, source, cache := fakeResourceConfigFactory.FindOrCreateResourceConfigArgsForCall(0)
-			Expect(resourceType).To(Equal("registry-image"))
-			Expect(source).To(Equal(atc.Source{
-				"repository": "my-registry/my-image",
-				"tag":        "latest",
-			}))
-			Expect(cache).To(BeNil())
+		Expect(runScanner(fixture, factory, resolver, fixture.ResourceConfigFactory, logger)).To(Succeed())
+		Expect(loggedAt(logger.Logs(), lager.DEBUG, "scope-deleted-before-version-save")).To(BeTrue())
+		Expect(loggedAt(logger.Logs(), lager.ERROR, "failed-to-set-resource-config-scope")).To(BeFalse())
+		freshType := lidarPipelineResourceType(pipeline, resourceTypeName)
+		Expect(freshType.ResourceConfigScopeID()).To(BeZero())
+		resourceConfig, err := fixture.ResourceConfigFactory.FindOrCreateResourceConfig(
+			config.Type, config.Source, nil,
+		)
+		Expect(err).NotTo(HaveOccurred())
+		scope, err := resourceConfig.FindOrCreateScope(nil)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(scope.ID()).To(Equal(baselineScope.ID()))
+		_, found, err := scope.LatestVersion()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeFalse())
+		lastCheck, err := scope.LastCheck()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(lastCheck.EndTime).To(Equal(baselineLastCheck.EndTime))
+	})
 
-			// Verify scope was created and pointed to.
-			Expect(fakeResourceConfig.FindOrCreateScopeCallCount()).To(Equal(1))
-			Expect(fakeResourceType.SetResourceConfigScopeCallCount()).To(Equal(1))
+	It("logs a non-FK version-save failure as an error", func() {
+		fixture := useLidarDB()
+		config := defaultResourceType()
+		pipeline, _ := persistResourceType(fixture, teamName, pipelineName, config)
+		persistedConfig, err := fixture.ResourceConfigFactory.FindOrCreateResourceConfig(
+			config.Type, config.Source, nil,
+		)
+		Expect(err).NotTo(HaveOccurred())
+		baselineScope, err := persistedConfig.FindOrCreateScope(nil)
+		Expect(err).NotTo(HaveOccurred())
+		baselineLastCheck, err := baselineScope.LastCheck()
+		Expect(err).NotTo(HaveOccurred())
+		resolver := new(imageresolvertesting.FakeResolver)
+		resolver.ResolveReturns("sha256:ignored", nil)
+		logger := lagertest.NewTestLogger("test")
+		configFactory := lidarResourceConfigFactory{
+			ResourceConfigFactory: fixture.ResourceConfigFactory,
+			saveVersionsErr:       errors.New("connection refused"),
+		}
 
-			// Verify version was saved.
-			Expect(fakeResourceConfigScope.SaveVersionsCallCount()).To(Equal(1))
-			_, versions := fakeResourceConfigScope.SaveVersionsArgsForCall(0)
-			Expect(versions).To(Equal([]atc.Version{{"digest": "sha256:abc123"}}))
+		Expect(runScanner(fixture, fixture.CheckFactory, resolver, configFactory, logger)).To(Succeed())
+		Expect(loggedAt(logger.Logs(), lager.ERROR, "failed-to-save-versions")).To(BeTrue())
+		scope := resolvedLidarResourceTypeScope(fixture, lidarPipelineResourceType(pipeline, resourceTypeName))
+		Expect(scope.ID()).To(Equal(baselineScope.ID()))
+		_, found, err := scope.LatestVersion()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeFalse())
+		lastCheck, err := scope.LastCheck()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(lastCheck.EndTime).To(Equal(baselineLastCheck.EndTime))
+	})
 
-			// Verify check end time was updated.
-			Expect(fakeResourceConfigScope.UpdateLastCheckEndTimeCallCount()).To(Equal(1))
-			succeeded := fakeResourceConfigScope.UpdateLastCheckEndTimeArgsForCall(0)
-			Expect(succeeded).To(BeTrue())
-		})
+	It("passes persisted basic-auth credentials to the resolver", func() {
+		fixture := useLidarDB()
+		config := defaultResourceType()
+		config.Source = atc.Source{
+			"repository": "private-registry/image",
+			"tag":        "v2",
+			"username":   "user",
+			"password":   "pass",
+		}
+		pipeline, _ := persistResourceType(fixture, teamName, pipelineName, config)
+		resolver := new(imageresolvertesting.FakeResolver)
+		resolver.ResolveReturns("sha256:private", nil)
 
-		Context("when SaveVersions hits an FK violation (scope deleted by GC)", func() {
-			BeforeEach(func() {
-				fakeResourceConfigScope.SaveVersionsReturns(fkViolation("save versions"))
-			})
+		Expect(runScanner(
+			fixture, fixture.CheckFactory, resolver, fixture.ResourceConfigFactory,
+			lagertest.NewTestLogger("test"),
+		)).To(Succeed())
+		Expect(resolver.ResolveCallCount()).To(Equal(1))
+		_, repository, tag, auth := resolver.ResolveArgsForCall(0)
+		Expect(repository).To(Equal("private-registry/image"))
+		Expect(tag).To(Equal("v2"))
+		Expect(auth).NotTo(BeNil())
+		Expect(auth.Username).To(Equal("user"))
+		Expect(auth.Password).To(Equal("pass"))
+		scope := resolvedLidarResourceTypeScope(fixture, lidarPipelineResourceType(pipeline, resourceTypeName))
+		expectLidarLatestVersion(scope, atc.Version{"digest": "sha256:private"})
+	})
 
-			It("does not error the whole scan", func() {
-				Expect(err).ToNot(HaveOccurred())
-			})
+	It("skips a persisted direct image reference", func() {
+		fixture := useLidarDB()
+		config := defaultResourceType()
+		config.Image = "direct-image:sha256"
+		pipeline, _ := persistResourceType(fixture, teamName, pipelineName, config)
+		resolver := new(imageresolvertesting.FakeResolver)
 
-			It("logs the race at debug, not error", func() {
-				Expect(loggedAt(logger.Logs(), lager.DEBUG, "scope-deleted-during-version-save")).To(BeTrue())
-				Expect(loggedAt(logger.Logs(), lager.ERROR, "failed-to-save-versions")).To(BeFalse())
-			})
+		Expect(runScanner(
+			fixture, fixture.CheckFactory, resolver, fixture.ResourceConfigFactory,
+			lagertest.NewTestLogger("test"),
+		)).To(Succeed())
+		Expect(resolver.ResolveCallCount()).To(BeZero())
+		Expect(lidarPipelineResourceType(pipeline, resourceTypeName).ResourceConfigScopeID()).To(BeZero())
+	})
 
-			It("skips the post-save check-end-time update", func() {
-				Expect(fakeResourceConfigScope.UpdateLastCheckEndTimeCallCount()).To(Equal(0))
-			})
-		})
+	It("skips a persisted check_every never resource type", func() {
+		fixture := useLidarDB()
+		config := defaultResourceType()
+		config.CheckEvery = &atc.CheckEvery{Never: true}
+		pipeline, _ := persistResourceType(fixture, teamName, pipelineName, config)
+		resolver := new(imageresolvertesting.FakeResolver)
 
-		Context("when SetResourceConfigScope hits an FK violation (scope deleted by GC)", func() {
-			BeforeEach(func() {
-				fakeResourceType.SetResourceConfigScopeReturns(fkViolation("set resource scope"))
-			})
+		Expect(runScanner(
+			fixture, fixture.CheckFactory, resolver, fixture.ResourceConfigFactory,
+			lagertest.NewTestLogger("test"),
+		)).To(Succeed())
+		Expect(resolver.ResolveCallCount()).To(BeZero())
+		Expect(lidarPipelineResourceType(pipeline, resourceTypeName).ResourceConfigScopeID()).To(BeZero())
+	})
 
-			It("does not error the whole scan", func() {
-				Expect(err).ToNot(HaveOccurred())
-			})
+	It("skips a persisted resource type whose nonzero interval has not elapsed", func() {
+		fixture := useLidarDB()
+		config := defaultResourceType()
+		config.CheckEvery = &atc.CheckEvery{Interval: time.Hour}
+		pipeline, resourceType := persistResourceType(fixture, teamName, pipelineName, config)
+		scope := attachLidarResourceTypeScope(fixture, resourceType)
+		updated, err := scope.UpdateLastCheckEndTime(true)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(updated).To(BeTrue())
+		resolver := new(imageresolvertesting.FakeResolver)
 
-			It("logs the race at debug, not error", func() {
-				Expect(loggedAt(logger.Logs(), lager.DEBUG, "scope-deleted-before-version-save")).To(BeTrue())
-				Expect(loggedAt(logger.Logs(), lager.ERROR, "failed-to-set-resource-config-scope")).To(BeFalse())
-			})
+		Expect(runScanner(
+			fixture, fixture.CheckFactory, resolver, fixture.ResourceConfigFactory,
+			lagertest.NewTestLogger("test"),
+		)).To(Succeed())
+		Expect(resolver.ResolveCallCount()).To(BeZero())
+		freshScope := resolvedLidarResourceTypeScope(fixture, lidarPipelineResourceType(pipeline, resourceTypeName))
+		_, found, err := freshScope.LatestVersion()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeFalse())
+		lastCheck, err := freshScope.LastCheck()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(lastCheck.EndTime).NotTo(BeZero())
+	})
 
-			It("does not attempt to save versions", func() {
-				Expect(fakeResourceConfigScope.SaveVersionsCallCount()).To(Equal(0))
-			})
-		})
+	It("does not persist a version when the resolver fails", func() {
+		fixture := useLidarDB()
+		pipeline, _ := persistResourceType(fixture, teamName, pipelineName, defaultResourceType())
+		resolver := new(imageresolvertesting.FakeResolver)
+		resolver.ResolveReturns("", errors.New("registry down"))
 
-		Context("when SaveVersions fails with a non-FK error", func() {
-			BeforeEach(func() {
-				fakeResourceConfigScope.SaveVersionsReturns(errors.New("connection refused"))
-			})
+		Expect(runScanner(
+			fixture, fixture.CheckFactory, resolver, fixture.ResourceConfigFactory,
+			lagertest.NewTestLogger("test"),
+		)).To(Succeed())
+		Expect(resolver.ResolveCallCount()).To(Equal(1))
+		Expect(lidarPipelineResourceType(pipeline, resourceTypeName).ResourceConfigScopeID()).To(BeZero())
+	})
 
-			It("still logs it as an error, not silently dropped", func() {
-				Expect(err).ToNot(HaveOccurred())
-				Expect(loggedAt(logger.Logs(), lager.ERROR, "failed-to-save-versions")).To(BeTrue())
-			})
-		})
+	It("does not call the resolver when persisted source has no repository", func() {
+		fixture := useLidarDB()
+		config := defaultResourceType()
+		config.Source = atc.Source{"tag": "latest"}
+		pipeline, _ := persistResourceType(fixture, teamName, pipelineName, config)
+		resolver := new(imageresolvertesting.FakeResolver)
 
-		Context("with basic auth credentials in source", func() {
-			BeforeEach(func() {
-				fakeResourceType.SourceReturns(atc.Source{
-					"repository": "private-registry/image",
-					"tag":        "v2",
-					"username":   "user",
-					"password":   "pass",
-				})
-			})
+		Expect(runScanner(
+			fixture, fixture.CheckFactory, resolver, fixture.ResourceConfigFactory,
+			lagertest.NewTestLogger("test"),
+		)).To(Succeed())
+		Expect(resolver.ResolveCallCount()).To(BeZero())
+		Expect(lidarPipelineResourceType(pipeline, resourceTypeName).ResourceConfigScopeID()).To(BeZero())
+	})
 
-			It("passes credentials to the resolver", func() {
-				Expect(err).ToNot(HaveOccurred())
-				Expect(fakeResolver.ResolveCallCount()).To(Equal(1))
-				_, _, _, auth := fakeResolver.ResolveArgsForCall(0)
-				Expect(auth).ToNot(BeNil())
-				Expect(auth.Username).To(Equal("user"))
-				Expect(auth.Password).To(Equal("pass"))
-			})
-		})
+	It("resolves persisted resource types across independent pipelines", func() {
+		fixture := useLidarDB()
+		firstConfig := defaultResourceType()
+		firstPipeline, _ := persistResourceType(fixture, teamName, pipelineName, firstConfig)
+		secondConfig := atc.ResourceType{
+			Name: "other-type", Type: "registry-image",
+			Source: atc.Source{"repository": "other-registry/other-image"},
+		}
+		secondPipeline, _ := persistResourceType(
+			fixture, "other-team", "other-pipeline", secondConfig,
+		)
+		resolver := new(imageresolvertesting.FakeResolver)
+		resolver.ResolveReturns("sha256:def456", nil)
 
-		Context("when the resource type has a direct image field", func() {
-			BeforeEach(func() {
-				fakeResourceType.ImageReturns("direct-image:sha256")
-			})
+		Expect(runScanner(
+			fixture, fixture.CheckFactory, resolver, fixture.ResourceConfigFactory,
+			lagertest.NewTestLogger("test"),
+		)).To(Succeed())
+		Expect(resolver.ResolveCallCount()).To(Equal(2))
+		repositories := make([]string, 0, 2)
+		for i := range 2 {
+			_, repository, _, _ := resolver.ResolveArgsForCall(i)
+			repositories = append(repositories, repository)
+		}
+		Expect(repositories).To(ConsistOf("my-registry/my-image", "other-registry/other-image"))
+		firstType := lidarPipelineResourceType(firstPipeline, resourceTypeName)
+		secondType := lidarPipelineResourceType(secondPipeline, secondConfig.Name)
+		expectedFirstConfig, err := fixture.ResourceConfigFactory.FindOrCreateResourceConfig(
+			"registry-image", firstConfig.Source, nil,
+		)
+		Expect(err).NotTo(HaveOccurred())
+		expectedSecondConfig, err := fixture.ResourceConfigFactory.FindOrCreateResourceConfig(
+			"registry-image", secondConfig.Source, nil,
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(firstType.ResourceConfigID()).To(Equal(expectedFirstConfig.ID()))
+		Expect(secondType.ResourceConfigID()).To(Equal(expectedSecondConfig.ID()))
+		Expect(firstType.ResourceConfigID()).NotTo(Equal(secondType.ResourceConfigID()))
 
-			It("skips resolution", func() {
-				Expect(err).ToNot(HaveOccurred())
-				Expect(fakeResolver.ResolveCallCount()).To(Equal(0))
-			})
-		})
-
-		Context("when check_every is never", func() {
-			BeforeEach(func() {
-				fakeResourceType.CheckEveryReturns(&atc.CheckEvery{Never: true})
-			})
-
-			It("skips resolution", func() {
-				Expect(err).ToNot(HaveOccurred())
-				Expect(fakeResolver.ResolveCallCount()).To(Equal(0))
-			})
-		})
-
-		Context("when check interval has not elapsed", func() {
-			BeforeEach(func() {
-				atc.DefaultResourceTypeInterval = 1 * time.Hour
-				fakeResourceType.LastCheckEndTimeReturns(time.Now())
-			})
-
-			AfterEach(func() {
-				atc.DefaultResourceTypeInterval = 0
-			})
-
-			It("skips resolution", func() {
-				Expect(err).ToNot(HaveOccurred())
-				Expect(fakeResolver.ResolveCallCount()).To(Equal(0))
-			})
-		})
-
-		Context("when the resolver fails", func() {
-			BeforeEach(func() {
-				fakeResolver.ResolveReturns("", errors.New("registry down"))
-			})
-
-			It("does not error the whole scan", func() {
-				Expect(err).ToNot(HaveOccurred())
-			})
-
-			It("does not save any versions", func() {
-				Expect(fakeResourceConfigScope.SaveVersionsCallCount()).To(Equal(0))
-			})
-		})
-
-		Context("when source has no repository", func() {
-			BeforeEach(func() {
-				fakeResourceType.SourceReturns(atc.Source{"tag": "latest"})
-			})
-
-			It("does not call the resolver", func() {
-				Expect(err).ToNot(HaveOccurred())
-				Expect(fakeResolver.ResolveCallCount()).To(Equal(0))
-			})
-		})
-
-		Context("when there are multiple resource types across pipelines", func() {
-			BeforeEach(func() {
-				fakeResourceType2 := new(dbfakes.FakeResourceType)
-				fakeResourceType2.IDReturns(2)
-				fakeResourceType2.NameReturns("other-type")
-				fakeResourceType2.TypeReturns("registry-image")
-				fakeResourceType2.TeamNameReturns("other-team")
-				fakeResourceType2.PipelineNameReturns("other-pipeline")
-				fakeResourceType2.PipelineIDReturns(2)
-				fakeResourceType2.SourceReturns(atc.Source{
-					"repository": "other-registry/other-image",
-				})
-
-				fakeCheckFactory.ResourceTypesByPipelineReturns(map[int]db.ResourceTypes{
-					1: {fakeResourceType},
-					2: {fakeResourceType2},
-				}, nil)
-
-				fakeResolver.ResolveReturns("sha256:def456", nil)
-			})
-
-			It("resolves all resource types", func() {
-				Expect(err).ToNot(HaveOccurred())
-				Expect(fakeResolver.ResolveCallCount()).To(Equal(2))
-			})
-		})
+		firstScope := resolvedLidarResourceTypeScope(fixture, firstType)
+		secondScope := resolvedLidarResourceTypeScope(fixture, secondType)
+		Expect(firstScope.ID()).NotTo(Equal(secondScope.ID()))
+		expectLidarLatestVersion(firstScope, atc.Version{"digest": "sha256:def456"})
+		expectLidarLatestVersion(secondScope, atc.Version{"digest": "sha256:def456"})
 	})
 })
 

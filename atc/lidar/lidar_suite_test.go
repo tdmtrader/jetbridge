@@ -404,6 +404,30 @@ func reloadLidarScope(fixture *lidarDB, scope db.ResourceConfigScope) db.Resourc
 	return freshScope
 }
 
+func resolvedLidarResourceTypeScope(fixture *lidarDB, resourceType db.ResourceType) db.ResourceConfigScope {
+	GinkgoHelper()
+	Expect(resourceType.ResourceConfigID()).NotTo(BeZero())
+	Expect(resourceType.ResourceConfigScopeID()).NotTo(BeZero())
+	config, found, err := fixture.ResourceConfigFactory.FindResourceConfigByID(resourceType.ResourceConfigID())
+	Expect(err).NotTo(HaveOccurred())
+	Expect(found).To(BeTrue())
+	Expect(config.CreatedByResourceCache()).To(BeNil())
+	Expect(config.CreatedByBaseResourceType()).NotTo(BeNil())
+	Expect(config.CreatedByBaseResourceType().Name).To(Equal("registry-image"))
+	scope, err := config.FindOrCreateScope(nil)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(scope.ID()).To(Equal(resourceType.ResourceConfigScopeID()))
+	return scope
+}
+
+func expectLidarLatestVersion(scope db.ResourceConfigScope, expected atc.Version) {
+	GinkgoHelper()
+	latest, found, err := scope.LatestVersion()
+	Expect(err).NotTo(HaveOccurred())
+	Expect(found).To(BeTrue())
+	Expect(atc.Version(latest.Version())).To(Equal(expected))
+}
+
 func drainLidarCheckBuilds(fixture *lidarDB, count int) []db.Build {
 	GinkgoHelper()
 	builds := make([]db.Build, 0, count)
