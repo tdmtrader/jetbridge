@@ -42,3 +42,16 @@
   - `Legacy Database Upgrade Pre-flight validation script [It] keeps fresh installs and exact 1773106138 upgrades pinned to the embedded JetBridge head`
   - `Legacy Database Upgrade Pre-flight validation script [It] targets the same migration as the JetBridge database head`
 - [ ] Leave the shared `concourse-test-postgres` container running and do not push.
+
+## Task 4: Remove database fakes from the next ten whole test files
+
+**Reviewed payoff:** Two independent audits converged on this batch. Completing it removes `dbfakes` imports from ten product test files and 22 explicit fake-constructor sites without adding a production seam.
+
+- [ ] Add one `postgresrunner.GinkgoRunner` to the existing `atc/api/accessor` suite and a per-spec clone/open/close/drop helper. Convert the five exported-only agent role test files to `accessor_test` Ginkgo specs backed by persisted teams: child execution, snapshots, workflow outcomes, workflow runs, and workflow waits. Preserve database-free route-map assertions and use distinct persisted identities for role cases. Expected payoff: five files and seven static constructors (about 65 runtime allocations through loops).
+- [ ] Convert `atc/api/runs_test.go` to existing `useRealDB` fixtures for persisted workflow-run templates and pipeline runs. Retain only the non-database access seam. Expected payoff: one file and three constructors.
+- [ ] Convert `atc/api/users_test.go` to the existing real `UserFactory`; express the failure case with a closed clone-local connection. Expected payoff: one file and one constructor.
+- [ ] Convert `atc/api/auth/web_auth_handler_test.go` to a persisted completed build and its real event source. Retain token middleware and nested HTTP handler fakes. Expected payoff: one file and two constructors.
+- [ ] Add per-spec clones to the syslog suite and convert `atc/syslog/drainer_test.go` to persisted builds/events plus the durable drained outcome. Expected payoff: one file and three constructors.
+- [ ] Add per-spec clones to the wrappa suite and convert `atc/wrappa/api_auth_wrappa_test.go` to persisted teams, pipelines, jobs, and builds. Retain accessor, auditor, and HTTP delegate seams. Expected payoff: one file and six constructors.
+- [ ] For every sub-batch: capture the focused baseline, make the new persisted outcome fail for the intended reason before implementation where practical, run focused parallel specs, remove the `dbfakes` import, run `git diff --check`, obtain independent review, and commit incrementally.
+- [ ] After all ten files, recount whole-file imports and explicit constructions against both merge base and pre-Task-4 HEAD; then re-run the directly affected packages concurrently against the one shared PostgreSQL instance.
