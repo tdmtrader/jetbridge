@@ -203,7 +203,7 @@ var _ = Describe("AgentRunCheckpointsFactory", func() {
 		// hours, not by the milliseconds a loaded machine adds here.
 		Expect(uploadTTLSeconds).To(BeNumerically(">=", time.Hour.Seconds()),
 			"the upload window is measured from database time, not caller time")
-		Expect(uploadTTLSeconds).To(BeNumerically("<", (time.Hour + time.Minute).Seconds()),
+		Expect(uploadTTLSeconds).To(BeNumerically("<", (time.Hour+time.Minute).Seconds()),
 			"the caller cannot lengthen the upload authority window")
 	})
 
@@ -231,16 +231,25 @@ var _ = Describe("AgentRunCheckpointsFactory", func() {
 	})
 
 	It("reserves generations once and commits only an available ticket through a CAS", func() {
-		first := stage(1)
+		fence := authorize(identity, 1)
+		var dbBefore time.Time
+		Expect(dbConn.QueryRow(`SELECT clock_timestamp()`).Scan(&dbBefore)).To(Succeed())
+		first, beginErr := factory.Begin(ctx, checkpoint.BeginRequest{
+			Identity: identity, Fence: fence, ExecutionAttempt: 1,
+		})
+		Expect(beginErr).NotTo(HaveOccurred())
 		Expect(first.Generation).To(Equal(1))
 		Expect(first.ExpectedPreviousGeneration).To(Equal(0))
-		var stageTTLSeconds float64
+		var persistedStageExpiresAt, dbAfter time.Time
 		Expect(dbConn.QueryRow(`
-			SELECT EXTRACT(EPOCH FROM (stage_expires_at - created_at))
+			SELECT stage_expires_at, clock_timestamp()
 			FROM agent_run_checkpoints WHERE id = $1
-		`, first.ID).Scan(&stageTTLSeconds)).To(Succeed())
-		Expect(stageTTLSeconds).To(BeNumerically("~", time.Hour.Seconds(), 0.001),
-			"the database authority must assign the one-hour stage deadline")
+		`, first.ID).Scan(&persistedStageExpiresAt, &dbAfter)).To(Succeed())
+		Expect(first.StageExpiresAt).To(BeTemporally("==", persistedStageExpiresAt))
+		Expect(persistedStageExpiresAt).To(BeTemporally(">=", dbBefore.Add(time.Hour)),
+			"the database authority must assign at least the one-hour stage deadline")
+		Expect(persistedStageExpiresAt).To(BeTemporally("<=", dbAfter.Add(time.Hour)),
+			"the stage deadline must be based on database time during Begin")
 		_, err := factory.Begin(ctx, checkpoint.BeginRequest{
 			Identity: identity, Fence: checkpoint.FenceClaim{ExecutionAttempt: 2, Token: uuid.NewString()}, ExecutionAttempt: 2,
 		})
