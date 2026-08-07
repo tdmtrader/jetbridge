@@ -610,7 +610,7 @@ func (b *inMemoryCheckBuild) initDbStuff(tx Tx) error {
 	if b.resourceId != 0 {
 		_, err := psql.Update("resources").
 			Set("in_memory_build_id", b.id).
-			Set("in_memory_build_start_time", sq.Expr("now()")).
+			Set("in_memory_build_start_time", b.StartTime()).
 			Set("in_memory_build_plan", b.PublicPlan()).
 			Set("in_memory_build_status", BuildStatusStarted).
 			Where(sq.Eq{"id": b.resourceId}).
