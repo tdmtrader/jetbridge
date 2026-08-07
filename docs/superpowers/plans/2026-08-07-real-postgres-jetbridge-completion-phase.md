@@ -177,14 +177,14 @@ Add a row assertion before rewiring one artifact leaf and capture RED. After
 GREEN, reload the exact artifact volume; do not infer success only from fake
 executor calls.
 
-- [ ] Run `ginkgo --focus='(Artifact Integration|Integration|Volume)' ./atc/worker/jetbridge`.
-- [ ] Run `go test ./atc/worker/jetbridge -run='^(TestVT|TestCO|TestArtifactKey|TestArtifactLocatorLocateStepMatchesOnlyTheStepsOwnEntries)'`
+- [x] Run `ginkgo --focus='(Artifact Integration|Integration|Volume)' ./atc/worker/jetbridge`.
+- [x] Run `go test ./atc/worker/jetbridge -run='^(TestVT|TestCO|TestArtifactKey|TestArtifactLocatorLocateStepMatchesOnlyTheStepsOwnEntries)'`
   for the remaining standard tests, including the neighbor of the migrated
   artifact-cleanup case.
-- [ ] Sensitivity: use a wrong persisted artifact or volume ID and prove the
+- [x] Sensitivity: use a wrong persisted artifact or volume ID and prove the
   focused row assertion fails; restore and pass.
-- [ ] Format, vet, diff-check, recount, and obtain independent review.
-- [ ] Commit only these four files as
+- [x] Format, vet, diff-check, recount, and obtain independent review.
+- [x] Commit only these four files as
   `test(jetbridge): persist artifact and volume state`.
 
 ## Task 4: Persist normal worker behavior and isolate transition faults
