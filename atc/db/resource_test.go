@@ -2172,6 +2172,7 @@ var _ = Describe("Resource", func() {
 				build      db.Build
 				publicPlan atc.Plan
 
+				expectedStart         int64
 				expectedStartEarliest int64
 				expectedStartLatest   int64
 				expectedEndEarliest   int64
@@ -2191,10 +2192,9 @@ var _ = Describe("Resource", func() {
 				build, err = resource.CreateInMemoryBuild(context.Background(), publicPlan, seqGenerator)
 				Expect(err).ToNot(HaveOccurred())
 
-				expectedStartEarliest = databaseUnixTime()
+				expectedStart = build.StartTime().Unix()
 				err = build.OnCheckBuildStart()
 				Expect(err).ToNot(HaveOccurred())
-				expectedStartLatest = databaseUnixTime()
 			})
 
 			JustBeforeEach(func() {
@@ -2208,8 +2208,7 @@ var _ = Describe("Resource", func() {
 				Expect(bs.ID).ToNot(BeZero())
 				Expect(bs.ID).To(Equal(build.ID()))
 				Expect(bs.Status).To(Equal(atc.StatusStarted))
-				Expect(bs.StartTime).To(BeNumerically(">=", expectedStartEarliest))
-				Expect(bs.StartTime).To(BeNumerically("<=", expectedStartLatest))
+				Expect(bs.StartTime).To(Equal(expectedStart))
 				Expect(bs.EndTime).To(BeZero())
 				Expect(bs.PublicPlan).To(Equal(build.PublicPlan()))
 			})
@@ -2273,10 +2272,9 @@ var _ = Describe("Resource", func() {
 							build2, err = resource.CreateInMemoryBuild(context.Background(), publicPlan, seqGenerator)
 							Expect(err).ToNot(HaveOccurred())
 
-							expectedStartEarliest = databaseUnixTime()
+							expectedStart = build2.StartTime().Unix()
 							err = build2.OnCheckBuildStart()
 							Expect(err).ToNot(HaveOccurred())
-							expectedStartLatest = databaseUnixTime()
 						})
 
 						It("has build summary", func() {
@@ -2284,8 +2282,7 @@ var _ = Describe("Resource", func() {
 							Expect(bs.ID).ToNot(BeZero())
 							Expect(bs.ID).To(Equal(build2.ID()))
 							Expect(bs.Status).To(Equal(atc.StatusStarted))
-							Expect(bs.StartTime).To(BeNumerically(">=", expectedStartEarliest))
-							Expect(bs.StartTime).To(BeNumerically("<=", expectedStartLatest))
+							Expect(bs.StartTime).To(Equal(expectedStart))
 							Expect(bs.EndTime).To(BeZero())
 							Expect(bs.PublicPlan).To(Equal(build.PublicPlan()))
 						})
