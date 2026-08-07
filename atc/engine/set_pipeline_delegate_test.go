@@ -11,7 +11,7 @@ import (
 	"code.cloudfoundry.org/lager/v3/lagertest"
 
 	"github.com/concourse/concourse/atc"
-	"github.com/concourse/concourse/atc/db/dbfakes"
+	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/engine"
 	"github.com/concourse/concourse/atc/event"
 	"github.com/concourse/concourse/atc/exec"
@@ -23,7 +23,6 @@ import (
 var _ = Describe("SetPipelineStepDelegate", func() {
 	var (
 		logger                *lagertest.TestLogger
-		fakeBuild             *dbfakes.FakeBuild
 		fakeClock             *fakeclock.FakeClock
 		fakePolicyChecker     *policyfakes.FakeChecker
 		fakePolicyCheckResult *policyfakes.FakePolicyCheckResult
@@ -37,9 +36,6 @@ var _ = Describe("SetPipelineStepDelegate", func() {
 	BeforeEach(func() {
 		logger = lagertest.NewTestLogger("test")
 
-		fakeBuild = new(dbfakes.FakeBuild)
-		fakeBuild.TeamNameReturns("some-team")
-		fakeBuild.PipelineNameReturns("some-pipeline")
 		fakeClock = fakeclock.NewFakeClock(now)
 		credVars := vars.StaticVariables{
 			"source-param": "super-secret-source",
@@ -51,17 +47,35 @@ var _ = Describe("SetPipelineStepDelegate", func() {
 		fakePolicyChecker = new(policyfakes.FakeChecker)
 		fakePolicyChecker.CheckReturns(fakePolicyCheckResult, nil)
 
-		delegate = engine.NewSetPipelineStepDelegate(fakeBuild, "some-plan-id", state, fakeClock, fakePolicyChecker)
 	})
 
-	Describe("SetPipelineChanged", func() {
-		JustBeforeEach(func() {
-			delegate.SetPipelineChanged(logger, true)
+	Describe("persisted PostgreSQL state", func() {
+		var realBuild db.Build
+
+		BeforeEach(func() {
+			fixture := useEngineDB()
+			_, _, _, realBuild = createEngineJobBuild(
+				fixture,
+				"some-team",
+				atc.PipelineRef{
+					Name:         "some-pipeline",
+					InstanceVars: atc.InstanceVars{"branch": "master"},
+				},
+				atc.Config{Jobs: atc.JobConfigs{{Name: "some-job"}}},
+				"some-user",
+			)
+			delegate = engine.NewSetPipelineStepDelegate(realBuild, "some-plan-id", state, fakeClock, fakePolicyChecker)
 		})
 
-		It("saves an event", func() {
-			Expect(fakeBuild.SaveEventCallCount()).To(Equal(1))
-			Expect(fakeBuild.SaveEventArgsForCall(0)).To(Equal(event.SetPipelineChanged{
+		It("saves changed event", func() {
+			delegate.SetPipelineChanged(logger, true)
+
+			found, err := realBuild.Reload()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+
+			Expect(realBuild.Finish(db.BuildStatusSucceeded)).To(Succeed())
+			Expect(consumeEngineBuildEvent(realBuild, 0)).To(Equal(event.SetPipelineChanged{
 				Origin:  event.Origin{ID: event.OriginID("some-plan-id")},
 				Changed: true,
 			}))
@@ -69,8 +83,28 @@ var _ = Describe("SetPipelineStepDelegate", func() {
 	})
 
 	Describe("CheckRunSetPipelinePolicy", func() {
-		var checkErr error
-		var pipelineConfig atc.Config
+		var (
+			checkErr       error
+			fixture        *engineDBFixture
+			pipelineConfig atc.Config
+			realBuild      db.Build
+		)
+
+		BeforeEach(func() {
+			fixture = useEngineDB()
+			_, _, _, realBuild = createEngineJobBuild(
+				fixture,
+				"some-team",
+				atc.PipelineRef{
+					Name:         "some-pipeline",
+					InstanceVars: atc.InstanceVars{"branch": "master"},
+				},
+				atc.Config{Jobs: atc.JobConfigs{{Name: "some-job"}}},
+				"some-user",
+			)
+			delegate = engine.NewSetPipelineStepDelegate(realBuild, "some-plan-id", state, fakeClock, fakePolicyChecker)
+		})
+
 		JustBeforeEach(func() {
 			pipelineConfig = atc.Config{
 				Groups: atc.GroupConfigs{
@@ -157,7 +191,11 @@ var _ = Describe("SetPipelineStepDelegate", func() {
 					})
 
 					It("should log warning", func() {
-						e := fakeBuild.SaveEventArgsForCall(0)
+						found, err := realBuild.Reload()
+						Expect(err).NotTo(HaveOccurred())
+						Expect(found).To(BeTrue())
+
+						e := consumeEngineBuildEvent(realBuild, 0)
 						Expect(e.EventType()).To(Equal(event.EventTypeLog))
 						Expect(e.(event.Log).Origin).To(Equal(event.Origin{
 							ID:     "some-plan-id",
@@ -167,7 +205,7 @@ var _ = Describe("SetPipelineStepDelegate", func() {
 						Expect(e.(event.Log).Payload).To(ContainSubstring("reasonA"))
 						Expect(e.(event.Log).Payload).To(ContainSubstring("reasonB"))
 
-						e = fakeBuild.SaveEventArgsForCall(1)
+						e = consumeEngineBuildEvent(realBuild, 1)
 						Expect(e.EventType()).To(Equal(event.EventTypeLog))
 						Expect(e.(event.Log).Origin).To(Equal(event.Origin{
 							ID:     "some-plan-id",
@@ -188,7 +226,12 @@ var _ = Describe("SetPipelineStepDelegate", func() {
 				})
 
 				It("should not log warning", func() {
-					Expect(fakeBuild.SaveEventCallCount()).To(Equal(0))
+					var count int
+					Expect(fixture.Conn.QueryRow(
+						"SELECT count(*) FROM build_events WHERE build_id = $1",
+						realBuild.ID(),
+					).Scan(&count)).To(Succeed())
+					Expect(count).To(BeZero())
 				})
 			})
 		})

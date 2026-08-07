@@ -29,7 +29,6 @@ import (
 
 var _ = Describe("Engine", func() {
 	var (
-		fakeBuild          *dbfakes.FakeBuild
 		fakeStepperFactory *enginefakes.FakeStepperFactory
 
 		fakeGlobalCreds   *credsfakes.FakeSecrets
@@ -37,9 +36,6 @@ var _ = Describe("Engine", func() {
 	)
 
 	BeforeEach(func() {
-		fakeBuild = new(dbfakes.FakeBuild)
-		fakeBuild.IDReturns(128)
-
 		fakeStepperFactory = new(enginefakes.FakeStepperFactory)
 
 		fakeGlobalCreds = new(credsfakes.FakeSecrets)
@@ -48,16 +44,28 @@ var _ = Describe("Engine", func() {
 
 	Describe("NewBuild", func() {
 		var (
-			build  builds.Runnable
-			engine Engine
+			build     builds.Runnable
+			engine    Engine
+			realBuild db.Build
 		)
 
 		BeforeEach(func() {
+			fixture := useEngineDB()
+			_, _, _, realBuild = createEngineJobBuild(
+				fixture,
+				"some-team",
+				atc.PipelineRef{
+					Name:         "some-pipeline",
+					InstanceVars: atc.InstanceVars{"branch": "master"},
+				},
+				atc.Config{Jobs: atc.JobConfigs{{Name: "some-job"}}},
+				"some-user",
+			)
 			engine = NewEngine(fakeStepperFactory, fakeGlobalCreds, fakeVarSourcePool)
 		})
 
 		JustBeforeEach(func() {
-			build = engine.NewBuild(fakeBuild)
+			build = engine.NewBuild(realBuild)
 		})
 
 		It("returns a build", func() {
@@ -65,14 +73,19 @@ var _ = Describe("Engine", func() {
 		})
 	})
 
-	Describe("Build", func() {
+	Describe("retained runtime and fault matrix", func() {
 		var (
 			build     builds.Runnable
+			fakeBuild *dbfakes.FakeBuild
 			release   chan bool
 			waitGroup *sync.WaitGroup
 		)
 
 		BeforeEach(func() {
+			// This fake controls non-persistable lock, listener, cancellation,
+			// panic, retry, and callback ordering in the engine runtime.
+			fakeBuild = new(dbfakes.FakeBuild)
+			fakeBuild.IDReturns(128)
 
 			release = make(chan bool)
 			trackedStates := new(sync.Map)
