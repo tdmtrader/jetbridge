@@ -1,1 +1,0 @@
-{"number":42,"html_url":"https://github.com/acme/widget/pull/42","state":"closed","merged":false,"mergeable":null,"mergeable_state":"unknown","head":{"ref":"feature/widget","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","repo":{"full_name":"acme/widget"}},"base":{"ref":"main","sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","repo":{"full_name":"acme/widget"}}}

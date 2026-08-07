@@ -72,46 +72,6 @@ func TestSourcePipelineLifecycleFailsClosedOnStoreFailure(t *testing.T) {
 	assertIntSlice(t, store.unpaused, []int{101})
 }
 
-func TestSourcePipelineLifecycleConvergesBindingPauseResumeAndTerminalDrain(t *testing.T) {
-	store := &sourcePipelineLifecycleStoreStub{
-		pipelines: []db.AgentWorkflowResourceSourcePipelineLifecycle{
-			{
-				AgentWorkflowResourceSourcePipeline: bindingSourcePipelineLifecycleRecord(401),
-			},
-			{
-				AgentWorkflowResourceSourcePipeline: bindingSourcePipelineLifecycleRecord(402),
-				Paused:                              true,
-			},
-			{
-				AgentWorkflowResourceSourcePipeline: bindingSourcePipelineLifecycleRecord(403),
-			},
-			{
-				AgentWorkflowResourceSourcePipeline: bindingSourcePipelineLifecycleRecord(404),
-			},
-		},
-		bindingPause:   map[int]bool{401: true},
-		bindingUnpause: map[int]bool{402: true},
-		bindingDrain:   map[int]bool{403: true, 404: true},
-	}
-	lifecycle, err := NewSourcePipelineLifecycle(7, store)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if err := lifecycle.Reconcile(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	assertIntSlice(t, store.bindingPaused, []int{401})
-	assertIntSlice(t, store.bindingUnpaused, []int{402})
-	assertIntSlice(t, store.bindingDrained, []int{403, 404})
-	if len(store.paused) != 0 || len(store.unpaused) != 0 {
-		t.Fatalf(
-			"binding pipelines reached ordinary lifecycle: pause %#v unpause %#v",
-			store.paused, store.unpaused,
-		)
-	}
-}
-
 func sourcePipelineLifecycleRecord(pipelineID int, state db.AgentWorkflowResourceSourcePipelineState) db.AgentWorkflowResourceSourcePipeline {
 	return db.AgentWorkflowResourceSourcePipeline{
 		PipelineID: pipelineID, TeamID: 7, WorkflowDefinitionID: pipelineID + 1000,
@@ -122,17 +82,6 @@ func sourcePipelineLifecycleRecord(pipelineID int, state db.AgentWorkflowResourc
 		}},
 		State: state,
 	}
-}
-
-func bindingSourcePipelineLifecycleRecord(
-	pipelineID int,
-) db.AgentWorkflowResourceSourcePipeline {
-	record := sourcePipelineLifecycleRecord(
-		pipelineID, db.AgentWorkflowResourceSourcePipelineActive,
-	)
-	bindingID := int64(pipelineID + 1000)
-	record.PRBindingID = &bindingID
-	return record
 }
 
 type sourcePipelineLifecycleStoreStub struct {
@@ -164,28 +113,6 @@ func (store *sourcePipelineLifecycleStoreStub) ArchiveDrainedResourceSourcePipel
 	store.archived = append(store.archived, pipeline.PipelineID)
 	return true, nil
 }
-func (store *sourcePipelineLifecycleStoreStub) PauseActiveBindingResourceSourcePipeline(_ context.Context, _ int, pipeline db.AgentWorkflowResourceSourcePipeline) (bool, error) {
-	if !store.bindingPause[pipeline.PipelineID] {
-		return false, nil
-	}
-	store.bindingPaused = append(store.bindingPaused, pipeline.PipelineID)
-	return true, nil
-}
-func (store *sourcePipelineLifecycleStoreStub) UnpauseActiveBindingResourceSourcePipeline(_ context.Context, _ int, pipeline db.AgentWorkflowResourceSourcePipeline) (bool, error) {
-	if !store.bindingUnpause[pipeline.PipelineID] {
-		return false, nil
-	}
-	store.bindingUnpaused = append(store.bindingUnpaused, pipeline.PipelineID)
-	return true, nil
-}
-func (store *sourcePipelineLifecycleStoreStub) DrainTerminalBindingResourceSourcePipeline(_ context.Context, _ int, pipeline db.AgentWorkflowResourceSourcePipeline) (bool, error) {
-	if !store.bindingDrain[pipeline.PipelineID] {
-		return false, nil
-	}
-	store.bindingDrained = append(store.bindingDrained, pipeline.PipelineID)
-	return true, nil
-}
-
 func assertIntSlice(t *testing.T, got, want []int) {
 	t.Helper()
 	if len(got) != len(want) {

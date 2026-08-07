@@ -12,10 +12,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/concourse/concourse/agent/pullrequest"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/workflow"
-	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db/encryption"
 )
 
@@ -52,63 +50,15 @@ type agentWorkflowRunsFactory struct {
 	conn DbConn
 }
 
-// AgentWorkflowRunPRMonitorAttachment is server-derived authority for one
-// binding reservation and its oldest ready standing-pipeline admission. It is
-// never accepted from a public workflow-run request.
-type AgentWorkflowRunPRMonitorAttachment struct {
-	BindingID                       int64
-	SourcePipelineID                int
-	SelectingBuildID                int64
-	SourceAdmissionID               int64
-	ExpectedBindingRevision         int64
-	BaseBindingRevision             int64
-	ActionDigest                    string
-	ReservationToken                string
-	ObservationSnapshotID           snapshot.SnapshotID
-	Cursor                          pullrequest.Cursor
-	SourceSHA                       string
-	TargetSHA                       string
-	AcceptedPublicationOccurrenceID int64
-	AcceptedReview                  snapshot.SnapshotRef
-	AcceptedCandidate               snapshot.SnapshotRef
-	AcceptedValidation              snapshot.SnapshotRef
-	AcceptedReviewWorkflowRunID     snapshot.WorkflowRunID
-	AcceptedOutcomeRevision         int64
-	SelectedVersion                 atc.Version
-}
-
 func (factory *agentWorkflowRunsFactory) CreateWithInputs(
 	ctx context.Context,
 	request AgentWorkflowRunCreateRequest,
-) (AgentWorkflowRun, bool, error) {
-	return factory.createWithInputs(ctx, request, nil)
-}
-
-// CreateWithInputsAndPRMonitorAttachment allocates or replays the workflow run
-// and attaches it to the exact PR reservation in the same transaction.
-func (factory *agentWorkflowRunsFactory) CreateWithInputsAndPRMonitorAttachment(
-	ctx context.Context,
-	request AgentWorkflowRunCreateRequest,
-	attachment AgentWorkflowRunPRMonitorAttachment,
-) (AgentWorkflowRun, bool, error) {
-	return factory.createWithInputs(ctx, request, &attachment)
-}
-
-func (factory *agentWorkflowRunsFactory) createWithInputs(
-	ctx context.Context,
-	request AgentWorkflowRunCreateRequest,
-	monitor *AgentWorkflowRunPRMonitorAttachment,
 ) (AgentWorkflowRun, bool, error) {
 	if request.DefinitionKind == "" {
 		request.DefinitionKind = workflow.DefinitionKindWorkflow
 	}
 	if err := request.Validate(); err != nil {
 		return AgentWorkflowRun{}, false, err
-	}
-	if monitor != nil {
-		if err := validateAgentWorkflowRunPRMonitorAttachment(request, *monitor); err != nil {
-			return AgentWorkflowRun{}, false, err
-		}
 	}
 	tx, err := factory.conn.BeginTx(ctx, nil)
 	if err != nil {
@@ -138,18 +88,6 @@ func (factory *agentWorkflowRunsFactory) createWithInputs(
 		if err := validateWorkflowRunBindings(ctx, tx, existing.ID, request.Inputs); err != nil {
 			return AgentWorkflowRun{}, false, err
 		}
-		if monitor != nil {
-			if err := validateAgentWorkflowRunPRMonitorAdmission(
-				ctx, tx, request, *monitor,
-			); err != nil {
-				return AgentWorkflowRun{}, false, err
-			}
-			if _, err := attachAgentPRBindingRun(
-				ctx, tx, monitor.attachRequest(request.TeamID, existing.ID),
-			); err != nil {
-				return AgentWorkflowRun{}, false, err
-			}
-		}
 		if err := tx.Commit(); err != nil {
 			return AgentWorkflowRun{}, false, err
 		}
@@ -162,13 +100,7 @@ func (factory *agentWorkflowRunsFactory) createWithInputs(
 	if err := validateWorkflowRunTarget(ctx, tx, request); err != nil {
 		return AgentWorkflowRun{}, false, err
 	}
-	if monitor == nil {
-		if err := validateWorkflowRunResourceSourceAdmission(ctx, tx, request); err != nil {
-			return AgentWorkflowRun{}, false, err
-		}
-	} else if err := validateAgentWorkflowRunPRMonitorAdmission(
-		ctx, tx, request, *monitor,
-	); err != nil {
+	if err := validateWorkflowRunResourceSourceAdmission(ctx, tx, request); err != nil {
 		return AgentWorkflowRun{}, false, err
 	}
 	if err := validateWorkflowRunInputs(ctx, tx, request); err != nil {
@@ -236,287 +168,11 @@ func (factory *agentWorkflowRunsFactory) createWithInputs(
 			return AgentWorkflowRun{}, false, err
 		}
 	}
-	if monitor != nil {
-		if _, err := attachAgentPRBindingRun(
-			ctx, tx, monitor.attachRequest(request.TeamID, run.ID),
-		); err != nil {
-			return AgentWorkflowRun{}, false, err
-		}
-	}
 
 	if err := tx.Commit(); err != nil {
 		return AgentWorkflowRun{}, false, err
 	}
 	return run, created, nil
-}
-
-func (attachment AgentWorkflowRunPRMonitorAttachment) attachRequest(
-	teamID int,
-	runID snapshot.WorkflowRunID,
-) pullrequest.AttachRun {
-	return pullrequest.AttachRun{
-		TeamID: teamID, BindingID: attachment.BindingID,
-		ExpectedRevision: attachment.ExpectedBindingRevision,
-		ActionDigest:     attachment.ActionDigest,
-		ReservationToken: attachment.ReservationToken,
-		WorkflowRunID:    runID,
-	}
-}
-
-func validateAgentWorkflowRunPRMonitorAttachment(
-	request AgentWorkflowRunCreateRequest,
-	attachment AgentWorkflowRunPRMonitorAttachment,
-) error {
-	if request.DefinitionKind != workflow.DefinitionKindWorkflow ||
-		request.OriginKind != "pr-monitor" ||
-		request.OriginReference != strconv.FormatInt(attachment.BindingID, 10) ||
-		request.ResourceSourceAdmissionID == nil ||
-		*request.ResourceSourceAdmissionID != attachment.SourceAdmissionID ||
-		attachment.BindingID <= 0 || attachment.SourcePipelineID <= 0 ||
-		attachment.SelectingBuildID <= 0 || attachment.SourceAdmissionID <= 0 ||
-		attachment.BaseBindingRevision <= 0 ||
-		attachment.ExpectedBindingRevision != attachment.BaseBindingRevision+1 ||
-		attachment.ObservationSnapshotID.Validate() != nil ||
-		strings.TrimSpace(attachment.ReservationToken) != attachment.ReservationToken ||
-		attachment.ReservationToken == "" ||
-		len(attachment.ReservationToken) > 128 ||
-		attachment.Cursor == "" || attachment.Cursor.Validate() != nil ||
-		!validAgentPRMonitorDigest(attachment.ActionDigest) ||
-		!validAgentPRMonitorObjectID(attachment.SourceSHA) ||
-		!validAgentPRMonitorObjectID(attachment.TargetSHA) ||
-		attachment.AcceptedPublicationOccurrenceID <= 0 ||
-		attachment.AcceptedReview.Validate() != nil ||
-		attachment.AcceptedReview.Type != snapshot.TypeRef("review/v1") ||
-		attachment.AcceptedCandidate.Validate() != nil ||
-		attachment.AcceptedCandidate.Type != snapshot.TypeRef("repository/v1") ||
-		attachment.AcceptedValidation.Validate() != nil ||
-		attachment.AcceptedValidation.Type != snapshot.TypeRef("validation/v1") ||
-		attachment.AcceptedReviewWorkflowRunID.Validate() != nil ||
-		attachment.AcceptedOutcomeRevision <= 0 {
-		return fmt.Errorf(
-			"%w: invalid PR monitor workflow-run attachment",
-			pullrequest.ErrReservationMismatch,
-		)
-	}
-	input, found := request.Inputs[pullrequest.MonitorSourceName]
-	if !found || len(request.Inputs) != 4 ||
-		input.ID != attachment.ObservationSnapshotID ||
-		input.Type != snapshot.TypeRef("pull-request/v1") ||
-		request.Inputs[pullrequest.MonitorAcceptedReviewInputName] !=
-			attachment.AcceptedReview ||
-		request.Inputs[pullrequest.MonitorAcceptedCandidateInputName] !=
-			attachment.AcceptedCandidate ||
-		request.Inputs[pullrequest.MonitorAcceptedValidationInputName] !=
-			attachment.AcceptedValidation {
-		return fmt.Errorf(
-			"%w: PR monitor authority inputs are not exact",
-			pullrequest.ErrReservationMismatch,
-		)
-	}
-	version := attachment.SelectedVersion
-	if len(version) != 8 ||
-		version["provider"] == "" || version["external_id"] == "" ||
-		version["source_sha"] != attachment.SourceSHA ||
-		version["target_sha"] != attachment.TargetSHA ||
-		version["action_kind"] == "" ||
-		version["action_digest"] != attachment.ActionDigest ||
-		version["cursor"] != string(attachment.Cursor) ||
-		version["binding_revision"] != strconv.FormatInt(
-			attachment.BaseBindingRevision, 10,
-		) {
-		return fmt.Errorf(
-			"%w: PR monitor selected version is not exact",
-			pullrequest.ErrReservationMismatch,
-		)
-	}
-	return nil
-}
-
-func validateAgentWorkflowRunPRMonitorAdmission(
-	ctx context.Context,
-	tx Tx,
-	request AgentWorkflowRunCreateRequest,
-	attachment AgentWorkflowRunPRMonitorAttachment,
-) error {
-	registered, found, err := findWorkflowResourceSourcePipelineByBinding(
-		ctx, tx, request.TeamID, attachment.BindingID, true,
-	)
-	if err != nil {
-		return err
-	}
-	if !found || registered.PipelineID != attachment.SourcePipelineID ||
-		registered.WorkflowDefinitionID != request.WorkflowDefinitionID ||
-		registered.WorkflowName != request.WorkflowName ||
-		registered.WorkflowVersion != request.WorkflowVersion ||
-		registered.State != AgentWorkflowResourceSourcePipelineActive {
-		return fmt.Errorf(
-			"%w: PR monitor pipeline authority drifted",
-			ErrAgentWorkflowResourceSourceConflict,
-		)
-	}
-	binding, found, err := lockAgentPRBindingForUpdate(
-		ctx, tx, request.TeamID, attachment.BindingID,
-	)
-	if err != nil {
-		return err
-	}
-	if !found {
-		return pullrequest.ErrBindingNotFound
-	}
-	if binding.PipelineID == nil ||
-		*binding.PipelineID != attachment.SourcePipelineID ||
-		binding.OriginatingPublicationOccurrence == nil ||
-		*binding.OriginatingPublicationOccurrence !=
-			attachment.AcceptedPublicationOccurrenceID ||
-		binding.MonitorWorkflowDefinitionID != request.WorkflowDefinitionID ||
-		binding.MonitorWorkflowVersion != request.WorkflowVersion ||
-		binding.Revision < attachment.ExpectedBindingRevision ||
-		binding.Revision > attachment.ExpectedBindingRevision+1 ||
-		binding.Active == nil ||
-		binding.Active.BaseRevision != attachment.BaseBindingRevision ||
-		binding.Active.BindingRevision != attachment.ExpectedBindingRevision ||
-		binding.Active.ActionDigest != attachment.ActionDigest ||
-		binding.Active.Token != attachment.ReservationToken ||
-		binding.Active.ObservationSnapshotID != attachment.ObservationSnapshotID ||
-		binding.Active.Cursor != attachment.Cursor ||
-		binding.Active.SourceSHA != attachment.SourceSHA ||
-		binding.Active.TargetSHA != attachment.TargetSHA {
-		return pullrequest.ErrReservationMismatch
-	}
-	accepted, found, err := resolveAcceptedReviewAuthority(
-		ctx, tx, request.TeamID,
-		attachment.AcceptedPublicationOccurrenceID,
-	)
-	if err != nil {
-		return err
-	}
-	if !found {
-		return pullrequest.ErrAcceptedReviewAuthority
-	}
-	protectedAccepted, err := accepted.Protected()
-	if err != nil ||
-		protectedAccepted.Review != attachment.AcceptedReview ||
-		protectedAccepted.Candidate != attachment.AcceptedCandidate ||
-		protectedAccepted.Validation != attachment.AcceptedValidation ||
-		protectedAccepted.ReviewWorkflowRunID !=
-			attachment.AcceptedReviewWorkflowRunID ||
-		protectedAccepted.OutcomeRevision !=
-			attachment.AcceptedOutcomeRevision {
-		return pullrequest.ErrAcceptedReviewAuthority
-	}
-
-	admission, found, err := findWorkflowResourceSourceAdmission(
-		ctx, tx, request.TeamID, attachment.SourceAdmissionID, true,
-	)
-	if err != nil {
-		return err
-	}
-	if !found || admission.WorkflowDefinitionID != request.WorkflowDefinitionID ||
-		admission.SourcePipelineID != attachment.SourcePipelineID ||
-		admission.SourceConfigHash != registered.ConfigHash ||
-		admission.Mode != AgentWorkflowResourceSourceAdmissionAutomatic ||
-		admission.Status != AgentWorkflowResourceSourceAdmissionReady ||
-		admission.SelectingBuildID == nil ||
-		*admission.SelectingBuildID != attachment.SelectingBuildID {
-		return fmt.Errorf(
-			"%w: PR monitor source admission is not exact and ready",
-			ErrAgentWorkflowResourceSourceConflict,
-		)
-	}
-	var existingRun sql.NullInt64
-	err = tx.QueryRowContext(ctx, `
-		SELECT min(id)
-		FROM agent_workflow_runs
-		WHERE resource_source_admission_id=$1
-	`, attachment.SourceAdmissionID).Scan(&existingRun)
-	if err != nil {
-		return err
-	}
-	if !existingRun.Valid {
-		var oldest int64
-		err = tx.QueryRowContext(ctx, `
-			SELECT admission.id
-			FROM agent_workflow_resource_source_admissions admission
-			WHERE admission.team_id=$1
-			  AND admission.source_pipeline_id=$2
-			  AND admission.mode='automatic'
-			  AND admission.status='ready'
-			  AND NOT EXISTS (
-			    SELECT 1 FROM agent_workflow_runs run
-			    WHERE run.resource_source_admission_id=admission.id
-			  )
-			ORDER BY admission.selecting_build_id,admission.id
-			LIMIT 1
-			FOR UPDATE OF admission
-		`, request.TeamID, attachment.SourcePipelineID).Scan(&oldest)
-		if errors.Is(err, sql.ErrNoRows) || err == nil && oldest != attachment.SourceAdmissionID {
-			return fmt.Errorf(
-				"%w: PR monitor source admission is not the oldest unlaunched admission",
-				ErrAgentWorkflowResourceSourceConflict,
-			)
-		}
-		if err != nil {
-			return err
-		}
-	}
-
-	var (
-		sourceName       string
-		selectingBuildID int64
-		sourcePipelineID int
-		versionJSON      []byte
-		snapshotID       sql.NullInt64
-		bindingCount     int
-	)
-	err = tx.QueryRowContext(ctx, `
-		SELECT source_name,selecting_build_id,source_pipeline_id,version,
-		       snapshot_id,
-		       (SELECT count(*)
-		        FROM agent_workflow_resource_source_bindings counted
-		        WHERE counted.admission_id=binding.admission_id)
-		FROM agent_workflow_resource_source_bindings binding
-		WHERE admission_id=$1
-		ORDER BY source_name
-		LIMIT 1
-	`, attachment.SourceAdmissionID).Scan(
-		&sourceName, &selectingBuildID, &sourcePipelineID, &versionJSON,
-		&snapshotID, &bindingCount,
-	)
-	if err != nil {
-		return err
-	}
-	var selected atc.Version
-	if bindingCount != 1 || sourceName != "pull-request" ||
-		selectingBuildID != attachment.SelectingBuildID ||
-		sourcePipelineID != attachment.SourcePipelineID ||
-		!snapshotID.Valid ||
-		snapshot.SnapshotID(snapshotID.Int64) != attachment.ObservationSnapshotID ||
-		json.Unmarshal(versionJSON, &selected) != nil ||
-		!sameWorkflowResourceSourceVersion(selected, attachment.SelectedVersion) {
-		return fmt.Errorf(
-			"%w: PR monitor captured source binding is not exact",
-			ErrAgentWorkflowResourceSourceConflict,
-		)
-	}
-	return nil
-}
-
-func validAgentPRMonitorDigest(value string) bool {
-	return strings.HasPrefix(value, "sha256:") &&
-		lowerHex64.MatchString(strings.TrimPrefix(value, "sha256:"))
-}
-
-func validAgentPRMonitorObjectID(value string) bool {
-	if len(value) != 40 && len(value) != 64 {
-		return false
-	}
-	for _, character := range value {
-		if character < '0' || character > '9' &&
-			(character < 'a' || character > 'f') {
-			return false
-		}
-	}
-	return true
 }
 
 func lockOpenExperimentWorkflowRunAdmission(

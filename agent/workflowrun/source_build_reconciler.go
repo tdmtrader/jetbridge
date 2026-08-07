@@ -7,8 +7,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/concourse/concourse/agent/pullrequest"
-	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/workflow"
 	"github.com/concourse/concourse/atc/db"
 )
@@ -46,24 +44,8 @@ type automaticSourceLaunch struct {
 	launcher ReadySourceAdmissionBinder
 }
 
-type monitorSourceLaunch struct {
-	teamName    string
-	captures    BindingSourceBuildCaptureCoordinator
-	snapshots   SnapshotAuthorizer
-	coordinator pullrequest.MonitorCoordinator
-}
-
 type SourceBuildCaptureCoordinator interface {
 	CaptureReady(context.Context, int, int64) (db.ReadySourceAdmission, error)
-}
-
-type BindingSourceBuildCaptureCoordinator interface {
-	CaptureBindingReady(
-		context.Context,
-		int,
-		int64,
-		int64,
-	) (db.ReadySourceAdmission, error)
 }
 
 type SourceBuildReconcilerOption func(*SourceBuildReconciler) error
@@ -92,31 +74,6 @@ func WithAutomaticSourceLaunch(
 	}
 }
 
-// WithPRMonitorSourceLaunch composes the binding-owned scheduler path. Its
-// explicit binding capture and coordinator interfaces prevent a monitor build
-// from falling through the definition-owned source admission path.
-func WithPRMonitorSourceLaunch(
-	trustedTeamName string,
-	captures BindingSourceBuildCaptureCoordinator,
-	snapshots SnapshotAuthorizer,
-	coordinator pullrequest.MonitorCoordinator,
-) SourceBuildReconcilerOption {
-	return func(reconciler *SourceBuildReconciler) error {
-		if strings.TrimSpace(trustedTeamName) == "" ||
-			nilInterface(captures) || nilInterface(snapshots) ||
-			nilInterface(coordinator) {
-			return fmt.Errorf(
-				"workflowrun: PR monitor source launch dependencies are required",
-			)
-		}
-		reconciler.monitor = &monitorSourceLaunch{
-			teamName: trustedTeamName, captures: captures,
-			snapshots: snapshots, coordinator: coordinator,
-		}
-		return nil
-	}
-}
-
 // SourceBuildReconciler claims ordinary successful source-pipeline builds and
 // persists their already-adopted input mapping. When automatic launch is
 // composed, selecting/capturing/ready claims remain retryable until the final
@@ -128,7 +85,6 @@ type SourceBuildReconciler struct {
 	admissions  db.WorkflowResourceSourceAdmissionStore
 	definitions SourceBuildDefinitionStore
 	launch      *automaticSourceLaunch
-	monitor     *monitorSourceLaunch
 }
 
 func NewSourceBuildReconciler(
@@ -187,29 +143,6 @@ func (reconciler *SourceBuildReconciler) Reconcile(ctx context.Context) error {
 		default:
 			return fmt.Errorf("workflowrun: invalid source pipeline state %q", pipeline.State)
 		}
-		if pipeline.PRBindingID != nil {
-			if reconciler.monitor == nil {
-				return fmt.Errorf(
-					"workflowrun: binding source pipeline has no monitor launch coordinator",
-				)
-			}
-			binding, err := reconciler.monitor.coordinator.
-				ReconcileTerminal(
-					ctx, reconciler.teamID, *pipeline.PRBindingID,
-				)
-			if err != nil {
-				return err
-			}
-			if err := validateMonitorPipelineBinding(
-				pipeline, binding,
-			); err != nil {
-				return err
-			}
-			if binding.State != pullrequest.BindingActive ||
-				binding.Paused || binding.OperatorTerminated {
-				continue
-			}
-		}
 		builds, err := reconciler.builds.SuccessfulUnclaimedBuilds(
 			ctx, reconciler.teamID, pipeline.PipelineID,
 		)
@@ -217,308 +150,10 @@ func (reconciler *SourceBuildReconciler) Reconcile(ctx context.Context) error {
 			return err
 		}
 		for _, build := range builds {
-			if pipeline.PRBindingID != nil {
-				stop, err := reconciler.reconcileMonitorBuild(
-					ctx, pipeline, build,
-				)
-				if err != nil {
-					return err
-				}
-				if stop {
-					break
-				}
-				continue
-			}
 			if err := reconciler.reconcileBuild(ctx, pipeline, build); err != nil {
 				return err
 			}
 		}
-	}
-	return nil
-}
-
-func (reconciler *SourceBuildReconciler) reconcileMonitorBuild(
-	ctx context.Context,
-	pipeline db.AgentWorkflowResourceSourcePipeline,
-	build db.SourceBuild,
-) (bool, error) {
-	if pipeline.PRBindingID == nil || *pipeline.PRBindingID <= 0 ||
-		build.ID <= 0 || build.TeamID != reconciler.teamID ||
-		build.PipelineID != pipeline.PipelineID || build.JobID <= 0 {
-		return false, fmt.Errorf(
-			"workflowrun: monitor source build is outside binding authority",
-		)
-	}
-	if build.ManuallyTriggered {
-		return false, fmt.Errorf(
-			"workflowrun: binding monitor source build cannot be manual",
-		)
-	}
-	builds, ok := reconciler.builds.(db.WorkflowResourceSourceBindingBuildStore)
-	if !ok || nilInterface(builds) {
-		return false, fmt.Errorf(
-			"workflowrun: binding source build store is unavailable",
-		)
-	}
-	admissions, ok := reconciler.admissions.(db.WorkflowResourceSourceBindingAdmissionStore)
-	if !ok || nilInterface(admissions) {
-		return false, fmt.Errorf(
-			"workflowrun: binding source admission store is unavailable",
-		)
-	}
-	bindingID := *pipeline.PRBindingID
-	var admission db.AgentWorkflowResourceSourceAdmission
-	if build.AdmissionID == nil {
-		if pipeline.State != db.AgentWorkflowResourceSourcePipelineActive {
-			return true, nil
-		}
-		claim := db.BuildClaim{
-			WorkflowDefinitionID: pipeline.WorkflowDefinitionID,
-			SourceConfigHash:     pipeline.ConfigHash,
-			IdempotencyKey: automaticSourceBuildIdempotencyKey(
-				pipeline.PipelineID, build.ID,
-			),
-		}
-		claimed, _, err := admissions.ClaimBindingBuild(
-			ctx, reconciler.teamID, bindingID, pipeline.PipelineID,
-			int64(build.ID), claim,
-		)
-		if err != nil {
-			return false, err
-		}
-		admission = claimed
-	} else {
-		if *build.AdmissionID <= 0 {
-			return false, fmt.Errorf(
-				"workflowrun: monitor source build has invalid admission",
-			)
-		}
-		admission = db.AgentWorkflowResourceSourceAdmission{
-			ID: *build.AdmissionID, TeamID: reconciler.teamID,
-			WorkflowDefinitionID: pipeline.WorkflowDefinitionID,
-			SourcePipelineID:     pipeline.PipelineID,
-			SourceConfigHash:     pipeline.ConfigHash,
-			Mode:                 build.AdmissionMode, Status: build.AdmissionStatus,
-		}
-	}
-	if err := validateSourceBuildAdmission(
-		admission, pipeline,
-	); err != nil {
-		return false, err
-	}
-	if admission.Mode !=
-		db.AgentWorkflowResourceSourceAdmissionAutomatic {
-		return false, fmt.Errorf(
-			"workflowrun: monitor source admission is not automatic",
-		)
-	}
-	if admission.Status ==
-		db.AgentWorkflowResourceSourceAdmissionSelecting {
-		mapping, found, err := builds.ExactBindingInputMapping(
-			ctx, reconciler.teamID, bindingID,
-			pipeline.PipelineID, build.ID,
-		)
-		if err != nil {
-			return false, err
-		}
-		if !found {
-			return true, nil
-		}
-		declared, err := monitorSourceDeclarations(pipeline)
-		if err != nil {
-			return false, err
-		}
-		selections, err := sourceBuildSelections(
-			admission, pipeline, build.ID, declared, mapping,
-		)
-		if err != nil {
-			return false, err
-		}
-		if _, err := admissions.BindBindingSelection(
-			ctx, reconciler.teamID, bindingID, admission.ID,
-			int64(build.ID), selections,
-		); err != nil {
-			return false, err
-		}
-	}
-	ready, err := reconciler.monitor.captures.CaptureBindingReady(
-		ctx, reconciler.teamID, bindingID, admission.ID,
-	)
-	if err != nil {
-		if errors.Is(err, ErrSourceCapturePending) {
-			return true, nil
-		}
-		return false, err
-	}
-	captured, snapshotID, err := validateReadyMonitorAdmission(
-		ready, admission, pipeline, build.ID,
-	)
-	if err != nil {
-		return false, err
-	}
-	value, found, err := reconciler.monitor.snapshots.GetAuthorized(
-		ctx, reconciler.teamID, snapshotID,
-	)
-	if err != nil {
-		return false, err
-	}
-	if !found || value.ID != snapshotID ||
-		value.Type != snapshot.TypeRef("pull-request/v1") ||
-		value.Digest.Validate() != nil ||
-		value.ContentState != snapshot.ContentStateAvailable {
-		return false, fmt.Errorf(
-			"workflowrun: captured PR observation is unavailable or drifted",
-		)
-	}
-	source, err := pullrequest.NewMonitorSourceBuild(
-		pullrequest.MonitorSourceBuildSpec{
-			TeamID:    reconciler.teamID,
-			TeamName:  reconciler.monitor.teamName,
-			BindingID: bindingID, PipelineID: pipeline.PipelineID,
-			BuildID: build.ID, AdmissionID: admission.ID,
-			WorkflowDefinitionID: pipeline.WorkflowDefinitionID,
-			WorkflowName:         pipeline.WorkflowName,
-			WorkflowVersion:      pipeline.WorkflowVersion,
-			Observation: snapshot.SnapshotRef{
-				ID: value.ID, Type: value.Type, Digest: value.Digest,
-			},
-			SelectedVersion: cloneSourceBuildVersion(
-				captured.Version,
-			),
-		},
-	)
-	if err != nil {
-		return false, err
-	}
-	protected, err := source.Protected()
-	if err != nil {
-		return false, err
-	}
-	if kind := pullrequest.ActionKind(
-		protected.Version.ActionKind,
-	); kind == pullrequest.ActionCompleted ||
-		kind == pullrequest.ActionAbandoned {
-		_, err = reconciler.monitor.coordinator.
-			ReconcileDirectTerminal(ctx, protected)
-		if errors.Is(err, pullrequest.ErrBindingBusy) {
-			return true, nil
-		}
-		if errors.Is(err, pullrequest.ErrStaleMonitorSourceVersion) {
-			if _, failErr := admissions.FailBindingAdmission(
-				ctx, reconciler.teamID, bindingID, admission.ID,
-				"stale projected binding revision",
-			); failErr != nil {
-				return false, errors.Join(err, failErr)
-			}
-			return false, nil
-		}
-		if err != nil {
-			return false, err
-		}
-		return true, nil
-	}
-	runID, launched, err := reconciler.monitor.coordinator.
-		ReserveAndLaunch(ctx, protected)
-	if errors.Is(err, pullrequest.ErrStaleMonitorSourceVersion) {
-		if _, failErr := admissions.FailBindingAdmission(
-			ctx, reconciler.teamID, bindingID, admission.ID,
-			"stale projected binding revision",
-		); failErr != nil {
-			return false, errors.Join(err, failErr)
-		}
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	if launched && runID.Validate() != nil {
-		return false, fmt.Errorf(
-			"workflowrun: monitor coordinator returned invalid run",
-		)
-	}
-	return true, nil
-}
-
-func monitorSourceDeclarations(
-	pipeline db.AgentWorkflowResourceSourcePipeline,
-) ([]workflow.ResourceSource, error) {
-	if len(pipeline.SourceDeclarations) != 1 {
-		return nil, fmt.Errorf(
-			"workflowrun: monitor pipeline must declare one source",
-		)
-	}
-	declaration := pipeline.SourceDeclarations[0]
-	if declaration.SourceName != pullrequest.MonitorSourceName ||
-		declaration.ResourceName != pullrequest.MonitorResourceName ||
-		declaration.SnapshotType != snapshot.TypeRef("pull-request/v1") {
-		return nil, fmt.Errorf(
-			"workflowrun: monitor pipeline source declaration drifted",
-		)
-	}
-	return []workflow.ResourceSource{{
-		Name: declaration.SourceName, Resource: declaration.ResourceName,
-		Type: declaration.SnapshotType,
-	}}, nil
-}
-
-func validateReadyMonitorAdmission(
-	ready db.ReadySourceAdmission,
-	admission db.AgentWorkflowResourceSourceAdmission,
-	pipeline db.AgentWorkflowResourceSourcePipeline,
-	buildID int,
-) (db.AgentWorkflowResourceSourceBinding, snapshot.SnapshotID, error) {
-	if ready.Admission.ID != admission.ID ||
-		ready.Admission.TeamID != admission.TeamID ||
-		ready.Admission.WorkflowDefinitionID !=
-			admission.WorkflowDefinitionID ||
-		ready.Admission.SourcePipelineID != admission.SourcePipelineID ||
-		ready.Admission.SourceConfigHash != admission.SourceConfigHash ||
-		ready.Admission.Mode !=
-			db.AgentWorkflowResourceSourceAdmissionAutomatic ||
-		ready.Admission.Status !=
-			db.AgentWorkflowResourceSourceAdmissionReady ||
-		len(ready.Bindings) != 1 {
-		return db.AgentWorkflowResourceSourceBinding{}, 0, fmt.Errorf(
-			"workflowrun: ready monitor source admission drifted",
-		)
-	}
-	binding := ready.Bindings[0]
-	if binding.AdmissionID != admission.ID ||
-		binding.SourceName != pullrequest.MonitorSourceName ||
-		binding.ResourceName != pullrequest.MonitorResourceName ||
-		binding.SelectingBuildID != int64(buildID) ||
-		binding.SourcePipelineID != pipeline.PipelineID ||
-		binding.PipelineConfigVersion !=
-			pipeline.PipelineConfigVersion ||
-		binding.SnapshotType != snapshot.TypeRef("pull-request/v1") ||
-		binding.SnapshotID == nil ||
-		binding.SnapshotID.Validate() != nil ||
-		len(binding.Version) != 8 {
-		return db.AgentWorkflowResourceSourceBinding{}, 0, fmt.Errorf(
-			"workflowrun: captured monitor source binding drifted",
-		)
-	}
-	return binding, *binding.SnapshotID, nil
-}
-
-func validateMonitorPipelineBinding(
-	pipeline db.AgentWorkflowResourceSourcePipeline,
-	binding pullrequest.Binding,
-) error {
-	if pipeline.PRBindingID == nil ||
-		binding.ID != *pipeline.PRBindingID ||
-		binding.TeamID != pipeline.TeamID ||
-		binding.MonitorWorkflowDefinitionID !=
-			pipeline.WorkflowDefinitionID ||
-		binding.MonitorWorkflowVersion != pipeline.WorkflowVersion ||
-		binding.PipelineID == nil ||
-		*binding.PipelineID != pipeline.PipelineID {
-		return fmt.Errorf(
-			"workflowrun: monitor binding no longer owns source pipeline",
-		)
-	}
-	if binding.State.Validate() != nil {
-		return fmt.Errorf("workflowrun: monitor binding state is invalid")
 	}
 	return nil
 }

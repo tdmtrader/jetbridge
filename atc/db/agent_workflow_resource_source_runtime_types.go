@@ -30,12 +30,11 @@ const (
 	AgentWorkflowResourceSourceAdmissionAutomatic AgentWorkflowResourceSourceAdmissionMode = "automatic"
 )
 
-// The resource-source registration is the durable pipeline identity. PR
-// monitor instances reuse it with PRBindingID set. Definition lookup and
-// admission paths remain explicitly definition-owned, while the shared
-// lifecycle projects both kinds so a newly committed monitor registration can
-// be activated by the existing tick. Keep this alias at the runtime seam so
-// consumers cannot accidentally introduce a second registration model.
+// The resource-source registration is the durable pipeline identity. Lookup
+// and admission paths are definition-owned, and the shared lifecycle projects
+// registrations so a newly committed one can be activated by the existing
+// tick. Keep this alias at the runtime seam so consumers cannot accidentally
+// introduce a second registration model.
 type AgentWorkflowResourceSourcePipeline = WorkflowResourceSourcePipeline
 
 type AgentWorkflowResourceSourcePipelineLifecycle struct {
@@ -189,19 +188,6 @@ type WorkflowResourceSourceBuildStore interface {
 	ExactInputMapping(context.Context, int, int, int) ([]SelectedSource, bool, error)
 }
 
-// WorkflowResourceSourceBindingBuildStore is the explicit binding-owned
-// extension. The ordinary ExactInputMapping path remains definition-owned and
-// continues to require pr_binding_id IS NULL.
-type WorkflowResourceSourceBindingBuildStore interface {
-	ExactBindingInputMapping(
-		context.Context,
-		int,
-		int64,
-		int,
-		int,
-	) ([]SelectedSource, bool, error)
-}
-
 type AgentWorkflowResourceSourceBinding struct {
 	AdmissionID             int64
 	SourceName              string
@@ -245,53 +231,4 @@ type WorkflowResourceSourceAdmissionStore interface {
 	BindCapture(context.Context, int, int64, string, snapshot.SnapshotID) (bool, error)
 	Ready(context.Context, int, int64) (ReadySourceAdmission, bool, error)
 	Capturing(context.Context, int, int64) (CapturingSourceAdmission, bool, error)
-}
-
-// WorkflowResourceSourceBindingAdmissionStore keeps monitor admissions
-// binding-scoped at every mutation/read boundary. It is intentionally
-// separate from the legacy definition-owned admission surface.
-type WorkflowResourceSourceBindingAdmissionStore interface {
-	ClaimBindingBuild(
-		context.Context,
-		int,
-		int64,
-		int,
-		int64,
-		BuildClaim,
-	) (AgentWorkflowResourceSourceAdmission, bool, error)
-	BindBindingSelection(
-		context.Context,
-		int,
-		int64,
-		int64,
-		int64,
-		[]SelectedSource,
-	) (bool, error)
-	BindBindingCapture(
-		context.Context,
-		int,
-		int64,
-		int64,
-		string,
-		snapshot.SnapshotID,
-	) (bool, error)
-	BindingReady(
-		context.Context,
-		int,
-		int64,
-		int64,
-	) (ReadySourceAdmission, bool, error)
-	BindingCapturing(
-		context.Context,
-		int,
-		int64,
-		int64,
-	) (CapturingSourceAdmission, bool, error)
-	FailBindingAdmission(
-		context.Context,
-		int,
-		int64,
-		int64,
-		string,
-	) (bool, error)
 }

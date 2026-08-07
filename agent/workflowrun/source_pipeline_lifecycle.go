@@ -13,9 +13,6 @@ import (
 type SourcePipelineLifecycleStore interface {
 	ResourceSourcePipelineLifecycle(context.Context, int) ([]db.AgentWorkflowResourceSourcePipelineLifecycle, error)
 	UnpauseActiveResourceSourcePipeline(context.Context, int, db.AgentWorkflowResourceSourcePipeline) (bool, error)
-	PauseActiveBindingResourceSourcePipeline(context.Context, int, db.AgentWorkflowResourceSourcePipeline) (bool, error)
-	UnpauseActiveBindingResourceSourcePipeline(context.Context, int, db.AgentWorkflowResourceSourcePipeline) (bool, error)
-	DrainTerminalBindingResourceSourcePipeline(context.Context, int, db.AgentWorkflowResourceSourcePipeline) (bool, error)
 	PauseDrainedResourceSourcePipeline(context.Context, int, db.AgentWorkflowResourceSourcePipeline) (bool, error)
 	ArchiveDrainedResourceSourcePipeline(context.Context, int, db.AgentWorkflowResourceSourcePipeline) (bool, error)
 }
@@ -54,35 +51,6 @@ func (lifecycle *SourcePipelineLifecycle) Reconcile(ctx context.Context) error {
 	for _, candidate := range candidates {
 		switch candidate.State {
 		case db.AgentWorkflowResourceSourcePipelineActive:
-			if candidate.PRBindingID != nil {
-				drained, err := lifecycle.store.
-					DrainTerminalBindingResourceSourcePipeline(
-						ctx, lifecycle.teamID,
-						candidate.AgentWorkflowResourceSourcePipeline,
-					)
-				if err != nil {
-					return err
-				}
-				if drained {
-					continue
-				}
-				if candidate.Paused {
-					if _, err := lifecycle.store.
-						UnpauseActiveBindingResourceSourcePipeline(
-							ctx, lifecycle.teamID,
-							candidate.AgentWorkflowResourceSourcePipeline,
-						); err != nil {
-						return err
-					}
-				} else if _, err := lifecycle.store.
-					PauseActiveBindingResourceSourcePipeline(
-						ctx, lifecycle.teamID,
-						candidate.AgentWorkflowResourceSourcePipeline,
-					); err != nil {
-					return err
-				}
-				continue
-			}
 			if candidate.Paused {
 				if _, err := lifecycle.store.UnpauseActiveResourceSourcePipeline(ctx, lifecycle.teamID, candidate.AgentWorkflowResourceSourcePipeline); err != nil {
 					return err

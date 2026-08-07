@@ -3,19 +3,14 @@ package atccmd
 import (
 	"context"
 	"errors"
-	"reflect"
 	"testing"
 )
 
-func TestWorkflowResourceSourceTickConvergesMonitorsBeforeLifecycle(t *testing.T) {
-	var order []string
+func TestWorkflowResourceSourceTickReconcilesTheLifecycle(t *testing.T) {
+	calls := 0
 	runnable, err := newWorkflowResourceSourceRunnable(
 		workflowResourceSourceReconcileFunc(func(context.Context) error {
-			order = append(order, "monitor")
-			return nil
-		}),
-		workflowResourceSourceReconcileFunc(func(context.Context) error {
-			order = append(order, "lifecycle")
+			calls++
 			return nil
 		}),
 	)
@@ -25,21 +20,16 @@ func TestWorkflowResourceSourceTickConvergesMonitorsBeforeLifecycle(t *testing.T
 	if err := runnable.Run(context.Background()); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if !reflect.DeepEqual(order, []string{"monitor", "lifecycle"}) {
-		t.Fatalf("reconciliation order = %v", order)
+	if calls != 1 {
+		t.Fatalf("lifecycle reconciliations = %d, want 1", calls)
 	}
 }
 
-func TestWorkflowResourceSourceTickDoesNotActivateAfterMonitorFailure(t *testing.T) {
-	want := errors.New("monitor convergence failed")
-	lifecycleCalled := false
+func TestWorkflowResourceSourceTickSurfacesLifecycleFailure(t *testing.T) {
+	want := errors.New("lifecycle convergence failed")
 	runnable, err := newWorkflowResourceSourceRunnable(
 		workflowResourceSourceReconcileFunc(func(context.Context) error {
 			return want
-		}),
-		workflowResourceSourceReconcileFunc(func(context.Context) error {
-			lifecycleCalled = true
-			return nil
 		}),
 	)
 	if err != nil {
@@ -48,8 +38,11 @@ func TestWorkflowResourceSourceTickDoesNotActivateAfterMonitorFailure(t *testing
 	if err := runnable.Run(context.Background()); !errors.Is(err, want) {
 		t.Fatalf("Run error = %v, want %v", err, want)
 	}
-	if lifecycleCalled {
-		t.Fatal("lifecycle activated a pipeline after monitor convergence failed")
+}
+
+func TestWorkflowResourceSourceRunnableRequiresALifecycle(t *testing.T) {
+	if _, err := newWorkflowResourceSourceRunnable(nil); err == nil {
+		t.Fatal("newWorkflowResourceSourceRunnable accepted a missing lifecycle")
 	}
 }
 

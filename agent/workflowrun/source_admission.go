@@ -7,7 +7,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/concourse/concourse/agent/pullrequest"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/workflow"
 	"github.com/concourse/concourse/atc"
@@ -23,29 +22,6 @@ type SourceCaptureAdmissionStore interface {
 	Ready(context.Context, int, int64) (db.ReadySourceAdmission, bool, error)
 	Capturing(context.Context, int, int64) (db.CapturingSourceAdmission, bool, error)
 	BindCapture(context.Context, int, int64, string, snapshot.SnapshotID) (bool, error)
-}
-
-type BindingSourceCaptureAdmissionStore interface {
-	BindingReady(
-		context.Context,
-		int,
-		int64,
-		int64,
-	) (db.ReadySourceAdmission, bool, error)
-	BindingCapturing(
-		context.Context,
-		int,
-		int64,
-		int64,
-	) (db.CapturingSourceAdmission, bool, error)
-	BindBindingCapture(
-		context.Context,
-		int,
-		int64,
-		int64,
-		string,
-		snapshot.SnapshotID,
-	) (bool, error)
 }
 
 type SourceCaptureDefinitionStore interface {
@@ -178,83 +154,6 @@ func (coordinator *SourceCaptureCoordinator) CaptureReady(
 	return ready, nil
 }
 
-// CaptureBindingReady is the binding-scoped monitor counterpart. It never
-// falls back to definition-owned Ready/Capturing/BindCapture methods, and it
-// derives capture configuration from the exact frozen physical pipeline.
-func (coordinator *SourceCaptureCoordinator) CaptureBindingReady(
-	ctx context.Context,
-	teamID int,
-	bindingID int64,
-	admissionID int64,
-) (db.ReadySourceAdmission, error) {
-	if ctx == nil || teamID != coordinator.teamID ||
-		bindingID <= 0 || admissionID <= 0 {
-		return db.ReadySourceAdmission{}, fmt.Errorf(
-			"workflowrun: binding source capture requires trusted identities",
-		)
-	}
-	admissions, ok := coordinator.admissions.(BindingSourceCaptureAdmissionStore)
-	if !ok || nilInterface(admissions) {
-		return db.ReadySourceAdmission{}, fmt.Errorf(
-			"workflowrun: binding source capture store is unavailable",
-		)
-	}
-	ready, found, err := admissions.BindingReady(
-		ctx, teamID, bindingID, admissionID,
-	)
-	if err != nil {
-		return db.ReadySourceAdmission{}, err
-	}
-	if found {
-		if err := validateCapturedReady(
-			ready, teamID, admissionID,
-		); err != nil {
-			return db.ReadySourceAdmission{}, err
-		}
-		return ready, nil
-	}
-	capturing, found, err := admissions.BindingCapturing(
-		ctx, teamID, bindingID, admissionID,
-	)
-	if err != nil {
-		return db.ReadySourceAdmission{}, err
-	}
-	if !found {
-		return db.ReadySourceAdmission{}, ErrSourceCapturePending
-	}
-	selections, err := coordinator.persistedBindingSelections(
-		bindingID, capturing,
-	)
-	if err != nil {
-		return db.ReadySourceAdmission{}, err
-	}
-	if err := coordinator.captureSelections(
-		ctx, selections,
-		func(sourceName string, snapshotID snapshot.SnapshotID) error {
-			_, err := admissions.BindBindingCapture(
-				ctx, teamID, bindingID, admissionID,
-				sourceName, snapshotID,
-			)
-			return err
-		},
-	); err != nil {
-		return db.ReadySourceAdmission{}, err
-	}
-	ready, found, err = admissions.BindingReady(
-		ctx, teamID, bindingID, admissionID,
-	)
-	if err != nil {
-		return db.ReadySourceAdmission{}, err
-	}
-	if !found {
-		return db.ReadySourceAdmission{}, ErrSourceCapturePending
-	}
-	if err := validateCapturedReady(ready, teamID, admissionID); err != nil {
-		return db.ReadySourceAdmission{}, err
-	}
-	return ready, nil
-}
-
 func (coordinator *SourceCaptureCoordinator) captureSelections(
 	ctx context.Context,
 	selections []persistedCaptureBinding,
@@ -286,133 +185,9 @@ func (coordinator *SourceCaptureCoordinator) captureSelections(
 	return nil
 }
 
-func validateCapturedReady(
-	ready db.ReadySourceAdmission,
-	teamID int,
-	admissionID int64,
-) error {
-	if ready.Admission.TeamID != teamID ||
-		ready.Admission.ID != admissionID ||
-		ready.Admission.Status !=
-			db.AgentWorkflowResourceSourceAdmissionReady {
-		return fmt.Errorf(
-			"workflowrun: ready source admission identity drifted",
-		)
-	}
-	return nil
-}
-
 type persistedCaptureBinding struct {
 	PersistedSourceCapture
 	snapshotID *snapshot.SnapshotID
-}
-
-func (coordinator *SourceCaptureCoordinator) persistedBindingSelections(
-	bindingID int64,
-	capturing db.CapturingSourceAdmission,
-) ([]persistedCaptureBinding, error) {
-	admission := capturing.Admission
-	registered := capturing.PipelineRegistration
-	if admission.ID <= 0 || admission.TeamID != coordinator.teamID ||
-		admission.Status !=
-			db.AgentWorkflowResourceSourceAdmissionCapturing ||
-		registered.TeamID != coordinator.teamID ||
-		registered.PRBindingID == nil ||
-		*registered.PRBindingID != bindingID ||
-		registered.PipelineID != admission.SourcePipelineID ||
-		registered.WorkflowDefinitionID != admission.WorkflowDefinitionID ||
-		registered.ConfigHash != admission.SourceConfigHash ||
-		registered.PipelineConfigVersion <= 0 ||
-		registered.State !=
-			db.AgentWorkflowResourceSourcePipelineActive ||
-		capturing.TeamName != coordinator.teamName ||
-		strings.TrimSpace(capturing.Pipeline.Name) == "" ||
-		len(registered.SourceDeclarations) != 1 ||
-		len(capturing.Bindings) != 1 ||
-		len(capturing.Resources) != 1 {
-		return nil, fmt.Errorf(
-			"workflowrun: capturing binding source admission identity drifted",
-		)
-	}
-	declaration := registered.SourceDeclarations[0]
-	if declaration.SourceName != pullrequest.MonitorSourceName ||
-		declaration.ResourceName != pullrequest.MonitorResourceName ||
-		declaration.SnapshotType != snapshot.TypeRef("pull-request/v1") {
-		return nil, fmt.Errorf(
-			"workflowrun: binding source declaration is not a PR monitor",
-		)
-	}
-	resource, found := capturing.Resources.Lookup(
-		declaration.ResourceName,
-	)
-	if !found || resource.Name != pullrequest.MonitorResourceName ||
-		resource.Type != pullrequest.MonitorResourceTypeName {
-		return nil, fmt.Errorf(
-			"workflowrun: binding source resource is unavailable or drifted",
-		)
-	}
-	declared := []workflow.ResourceSource{{
-		Name:     declaration.SourceName,
-		Resource: declaration.ResourceName,
-		Type:     declaration.SnapshotType,
-	}}
-	resourceTypes, err := workflow.ResourceSourceResourceTypes(
-		declared, capturing.Resources, capturing.ResourceTypes,
-	)
-	if err != nil {
-		return nil, err
-	}
-	binding := capturing.Bindings[0]
-	if binding.AdmissionID != admission.ID ||
-		binding.SourceName != declaration.SourceName ||
-		binding.ResourceName != declaration.ResourceName ||
-		binding.SelectingBuildID <= 0 ||
-		binding.SourcePipelineID != registered.PipelineID ||
-		binding.PipelineConfigVersion !=
-			registered.PipelineConfigVersion ||
-		binding.ResourceID <= 0 ||
-		binding.ResourceConfigVersionID <= 0 ||
-		binding.ResourceVersionID <= 0 ||
-		len(binding.Version) == 0 ||
-		strings.TrimSpace(binding.VersionDigest) == "" ||
-		binding.SnapshotType != declaration.SnapshotType ||
-		strings.TrimSpace(binding.CaptureOperationKey) == "" {
-		return nil, fmt.Errorf(
-			"workflowrun: persisted binding source selection drifted",
-		)
-	}
-	expectedOperation, err := db.WorkflowResourceSourceCaptureOperationKey(
-		coordinator.teamID, admission.WorkflowDefinitionID,
-		registered.PipelineID, registered.PipelineConfigVersion,
-		declaration.SourceName, declaration.ResourceName,
-		binding.VersionDigest, declaration.SnapshotType,
-	)
-	if err != nil || binding.CaptureOperationKey != expectedOperation {
-		return nil, fmt.Errorf(
-			"workflowrun: persisted binding capture operation identity drifted",
-		)
-	}
-	return []persistedCaptureBinding{{
-		PersistedSourceCapture: PersistedSourceCapture{
-			AdmissionID:          admission.ID,
-			WorkflowDefinitionID: admission.WorkflowDefinitionID,
-			SourceName:           declaration.SourceName,
-			TeamID:               coordinator.teamID, TeamName: coordinator.teamName,
-			SourcePipelineID:      registered.PipelineID,
-			PipelineID:            registered.PipelineID,
-			Pipeline:              capturing.Pipeline,
-			PipelineConfigVersion: registered.PipelineConfigVersion,
-			ResourceID:            binding.ResourceID, Resource: resource,
-			ResourceTypes:           resourceTypes,
-			ResourceConfigVersionID: binding.ResourceConfigVersionID,
-			ResourceVersionID:       binding.ResourceVersionID,
-			VersionDigest:           binding.VersionDigest,
-			Version:                 cloneSourceBuildVersion(binding.Version),
-			SnapshotType:            binding.SnapshotType,
-			CaptureOperationKey:     binding.CaptureOperationKey,
-		},
-		snapshotID: binding.SnapshotID,
-	}}, nil
 }
 
 func (coordinator *SourceCaptureCoordinator) persistedSelections(

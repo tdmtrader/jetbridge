@@ -1,4 +1,0 @@
-[
-  {"id":3725191076,"pull_request_review_id":4870141034,"user":{"id":20466853},"body":"root comment from the human","commit_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","original_commit_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","path":"SPIKE.md","line":1,"original_line":1},
-  {"id":3725192857,"pull_request_review_id":4870143605,"user":{"id":20466853},"body":"reply the platform posted","commit_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","original_commit_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","path":"SPIKE.md","line":1,"original_line":1,"in_reply_to_id":3725191076}
-]

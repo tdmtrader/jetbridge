@@ -10,7 +10,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/concourse/concourse/agent/pullrequest"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/workflow"
 	"github.com/concourse/concourse/agent/workflowrun"
@@ -126,107 +125,11 @@ func TestSourceCaptureCoordinatorRetryReusesExactPersistedSelection(t *testing.T
 	}
 }
 
-func TestSourceCaptureCoordinatorCapturesBindingAdmissionFromFrozenPipelineAuthority(t *testing.T) {
-	bindingID := int64(61)
-	version := atc.Version{"ref": "monitor"}
-	versionDigest := sourceCaptureVersionDigest(version)
-	operationKey, err := db.WorkflowResourceSourceCaptureOperationKey(
-		7, 91, 13, 4,
-		pullrequest.MonitorSourceName,
-		pullrequest.MonitorResourceName,
-		versionDigest,
-		snapshot.TypeRef("pull-request/v1"),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	admissions := &sourceCaptureAdmissionStoreStub{
-		bindingCapturing: db.CapturingSourceAdmission{
-			Admission: db.AgentWorkflowResourceSourceAdmission{
-				ID: 41, TeamID: 7, WorkflowDefinitionID: 91,
-				SourcePipelineID: 13, SourceConfigHash: strings.Repeat("c", 64),
-				Status: db.AgentWorkflowResourceSourceAdmissionCapturing,
-			},
-			PipelineRegistration: db.AgentWorkflowResourceSourcePipeline{
-				PipelineID: 13, TeamID: 7, PRBindingID: &bindingID,
-				WorkflowDefinitionID: 91, WorkflowName: "pr-monitor-v3",
-				WorkflowVersion: 3, PipelineConfigVersion: 4,
-				ConfigHash: strings.Repeat("c", 64),
-				SourceDeclarations: []db.ResourceSourceDeclaration{{
-					SourceName:   pullrequest.MonitorSourceName,
-					ResourceName: pullrequest.MonitorResourceName,
-					SnapshotType: snapshot.TypeRef("pull-request/v1"),
-				}},
-				State: db.AgentWorkflowResourceSourcePipelineActive,
-			},
-			TeamName: "main",
-			Pipeline: atc.PipelineRef{Name: "agent-pr-monitor"},
-			Resources: atc.ResourceConfigs{{
-				Name: pullrequest.MonitorResourceName, Type: pullrequest.MonitorResourceTypeName,
-				Source: atc.Source{"repository": "org/repo"},
-			}},
-			ResourceTypes: atc.ResourceTypes{{
-				Name:  pullrequest.MonitorResourceTypeName,
-				Type:  "registry-image",
-				Image: "registry.example/forge-pr@sha256:" + strings.Repeat("d", 64),
-			}},
-			Bindings: []db.AgentWorkflowResourceSourceBinding{{
-				AdmissionID: 41, SourceName: pullrequest.MonitorSourceName,
-				ResourceName:     pullrequest.MonitorResourceName,
-				SelectingBuildID: 301, SourcePipelineID: 13,
-				PipelineConfigVersion: 4, ResourceID: 71,
-				ResourceConfigVersionID: 81, ResourceVersionID: 81,
-				VersionDigest: versionDigest, Version: version,
-				SnapshotType:        snapshot.TypeRef("pull-request/v1"),
-				CaptureOperationKey: operationKey,
-			}},
-		},
-	}
-	executor := &sourceCaptureExecutorStub{}
-	coordinator, err := workflowrun.NewSourceCaptureCoordinator(
-		7, "main", admissions,
-		&sourceCaptureDefinitionStoreStub{},
-		executor,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	ready, err := coordinator.CaptureBindingReady(
-		context.Background(), 7, bindingID, 41,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ready.Admission.ID != 41 ||
-		ready.Admission.Status != db.AgentWorkflowResourceSourceAdmissionReady {
-		t.Fatalf("ready binding admission = %#v", ready)
-	}
-	if admissions.bindingReadyCalls != 2 ||
-		admissions.bindingCapturingCalls != 1 ||
-		!reflect.DeepEqual(admissions.bindingBoundNames, []string{pullrequest.MonitorSourceName}) {
-		t.Fatalf(
-			"binding-scoped calls = ready %d capturing %d bound %#v",
-			admissions.bindingReadyCalls,
-			admissions.bindingCapturingCalls,
-			admissions.bindingBoundNames,
-		)
-	}
-	if len(executor.sourceNames) != 1 ||
-		executor.sourceNames[0] != pullrequest.MonitorSourceName {
-		t.Fatalf("captured sources = %#v", executor.sourceNames)
-	}
-}
-
 type sourceCaptureAdmissionStoreStub struct {
-	ready                 db.ReadySourceAdmission
-	capturing             db.CapturingSourceAdmission
-	capturingCalls        int
-	boundNames            []string
-	bindingCapturing      db.CapturingSourceAdmission
-	bindingReadyCalls     int
-	bindingCapturingCalls int
-	bindingBoundNames     []string
+	ready          db.ReadySourceAdmission
+	capturing      db.CapturingSourceAdmission
+	capturingCalls int
+	boundNames     []string
 }
 
 func (store *sourceCaptureAdmissionStoreStub) Ready(_ context.Context, teamID int, admissionID int64) (db.ReadySourceAdmission, bool, error) {
@@ -263,53 +166,6 @@ func (store *sourceCaptureAdmissionStoreStub) BindCapture(_ context.Context, tea
 		return false, errors.New("unexpected capture binding")
 	}
 	store.boundNames = append(store.boundNames, sourceName)
-	return true, nil
-}
-
-func (store *sourceCaptureAdmissionStoreStub) BindingReady(
-	_ context.Context,
-	teamID int,
-	bindingID int64,
-	admissionID int64,
-) (db.ReadySourceAdmission, bool, error) {
-	store.bindingReadyCalls++
-	if teamID != 7 || bindingID != 61 || admissionID != 41 {
-		return db.ReadySourceAdmission{}, false, errors.New("unexpected binding ready authority")
-	}
-	if len(store.bindingBoundNames) == len(store.bindingCapturing.Bindings) {
-		return db.ReadySourceAdmission{Admission: db.AgentWorkflowResourceSourceAdmission{
-			ID: 41, TeamID: 7, Status: db.AgentWorkflowResourceSourceAdmissionReady,
-		}}, true, nil
-	}
-	return db.ReadySourceAdmission{}, false, nil
-}
-
-func (store *sourceCaptureAdmissionStoreStub) BindingCapturing(
-	_ context.Context,
-	teamID int,
-	bindingID int64,
-	admissionID int64,
-) (db.CapturingSourceAdmission, bool, error) {
-	store.bindingCapturingCalls++
-	if teamID != 7 || bindingID != 61 || admissionID != 41 {
-		return db.CapturingSourceAdmission{}, false, errors.New("unexpected binding capturing authority")
-	}
-	return store.bindingCapturing, store.bindingCapturing.Admission.ID != 0, nil
-}
-
-func (store *sourceCaptureAdmissionStoreStub) BindBindingCapture(
-	_ context.Context,
-	teamID int,
-	bindingID int64,
-	admissionID int64,
-	sourceName string,
-	snapshotID snapshot.SnapshotID,
-) (bool, error) {
-	if teamID != 7 || bindingID != 61 || admissionID != 41 ||
-		sourceName == "" || snapshotID <= 0 {
-		return false, errors.New("unexpected binding capture authority")
-	}
-	store.bindingBoundNames = append(store.bindingBoundNames, sourceName)
 	return true, nil
 }
 

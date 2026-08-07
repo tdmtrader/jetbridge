@@ -15,7 +15,6 @@ import (
 	"github.com/concourse/concourse/agent/experiment"
 	"github.com/concourse/concourse/agent/pagination"
 	"github.com/concourse/concourse/agent/publisher"
-	"github.com/concourse/concourse/agent/pullrequest"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/snapshot/contracts"
 	"github.com/concourse/concourse/agent/workflow"
@@ -532,122 +531,6 @@ plan:
 		rolledEvaluator, err := rolledRenderer.RenderFunction(fullEvaluator)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(rolledEvaluator.TargetConfigHash).NotTo(Equal(evaluatorRendered.TargetConfigHash))
-	})
-
-	It("ignores binding-owned source instances when locking experiment admissions", func() {
-		candidateHash := strings.Repeat("e", 64)
-		evaluatorHash := strings.Repeat("f", 64)
-		candidateAdmissionID := registerReadySourceAdmission(
-			defaultTeam.ID(), candidateDefinition, candidateHash, "candidate-binding-filter",
-		)
-		evaluatorAdmissionID := registerReadySourceAdmission(
-			defaultTeam.ID(), evaluatorDefinition, evaluatorHash, "evaluator-binding-filter",
-		)
-		publicationTarget := agentPRBindingPublicationTarget{
-			Locator: pullrequest.Locator{
-				Provider:   pullrequest.ProviderGitHub,
-				Repository: "example/experiment-binding",
-				ExternalID: fmt.Sprint(time.Now().UnixNano()),
-			},
-			URL:                   "https://github.example/example/experiment-binding/pull/1",
-			SourceRef:             "refs/heads/source",
-			SourceSHA:             strings.Repeat("8", 40),
-			TargetRef:             "refs/heads/main",
-			TargetSHA:             strings.Repeat("9", 40),
-			Destination:           "github.example/example/experiment-binding",
-			ApprovalPolicyVersion: "engineering/v3",
-		}
-		originRunID, acceptedOccurrenceID, creationOccurrenceID, observationID :=
-			insertAgentPRBindingEvidence(
-				defaultTeam.ID(), defaultTeam.Name(), candidateDefinition.ID,
-				fmt.Sprintf("experiment-binding-%d", time.Now().UnixNano()),
-				publicationTarget,
-			)
-		prBinding, bindingCreated, err := db.NewAgentPRBindingsFactory(dbConn).Create(
-			ctx,
-			pullrequest.CreateBinding{
-				TeamID:                           defaultTeam.ID(),
-				Locator:                          publicationTarget.Locator,
-				URL:                              publicationTarget.URL,
-				SourceRef:                        publicationTarget.SourceRef,
-				TargetRef:                        publicationTarget.TargetRef,
-				Destination:                      publicationTarget.Destination,
-				ApprovalPolicyVersion:            publicationTarget.ApprovalPolicyVersion,
-				OriginatingWorkflowRunID:         snapshot.WorkflowRunID(originRunID),
-				OriginatingPublicationOccurrence: acceptedOccurrenceID,
-				CreationPublicationOccurrenceID:  creationOccurrenceID,
-				MonitorWorkflowDefinitionID:      candidateDefinition.ID,
-				MonitorWorkflowVersion:           candidateDefinition.Version,
-				AcknowledgedCursor:               pullrequest.Cursor("experiment-binding-cursor"),
-				LastObservationSnapshotID:        snapshot.SnapshotID(observationID),
-				LastReconciledSourceSHA:          publicationTarget.SourceSHA,
-				LastReconciledTargetSHA:          publicationTarget.TargetSHA,
-				LastReconciledAt:                 time.Now().UTC(),
-			},
-		)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(bindingCreated).To(BeTrue())
-		var bindingPipelineID int
-		Expect(dbConn.QueryRow(`
-			INSERT INTO pipelines (name, team_id, secondary_ordering, paused, version)
-			VALUES ($1, $2, 1, true, 1) RETURNING id
-		`, fmt.Sprintf("experiment-binding-%d", prBinding.ID), defaultTeam.ID()).Scan(&bindingPipelineID)).To(Succeed())
-		_, err = dbConn.Exec(`
-			INSERT INTO agent_workflow_resource_source_pipelines
-				(pipeline_id, team_id, workflow_definition_id, workflow_name,
-				 workflow_version, pipeline_config_version, config_hash,
-				 source_declarations, state, pr_binding_id)
-			VALUES ($1,$2,$3,$4,$5,1,$6,'[]','active',$7)
-		`, bindingPipelineID, defaultTeam.ID(), candidateDefinition.ID,
-			candidateDefinition.Name, candidateDefinition.Version,
-			strings.Repeat("9", 64), prBinding.ID)
-		Expect(err).NotTo(HaveOccurred())
-
-		preparerCalls := 0
-		sourceFactory := db.NewAgentExperimentsFactory(
-			dbConn,
-			targetRenderer,
-			db.WithAgentExperimentResourceSourcePreparer(
-				experimentResourceSourcePreparerFunc(func(
-					context.Context,
-					experiment.ResourceSourcePreparation,
-				) ([]experiment.PreparedResourceSourceAdmission, error) {
-					preparerCalls++
-					return []experiment.PreparedResourceSourceAdmission{
-						{
-							WorkflowDefinitionID: int64(candidateDefinition.ID),
-							SourceConfigHash:     candidateHash,
-							AdmissionID:          candidateAdmissionID,
-						},
-						{
-							WorkflowDefinitionID: int64(evaluatorDefinition.ID),
-							SourceConfigHash:     evaluatorHash,
-							AdmissionID:          evaluatorAdmissionID,
-						},
-					}, nil
-				}),
-			),
-		)
-		experimentRecord, err := sourceFactory.Create(
-			ctx, defaultTeam.ID(), defaultTeam.Name(), "alice", definition(fixtureSnapshot),
-		)
-		Expect(err).NotTo(HaveOccurred())
-		_, err = sourceFactory.Start(
-			ctx, defaultTeam.ID(), experimentRecord.ID, experimentRecord.Revision, "alice",
-		)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(preparerCalls).To(Equal(1))
-
-		var storedCount, bindingHashCount int
-		Expect(dbConn.QueryRow(`
-			SELECT count(*), count(*) FILTER (WHERE source_config_hash=$3)
-			FROM agent_experiment_resource_source_admissions
-			WHERE experiment_id=$1 AND team_id=$2
-		`, int64(experimentRecord.ID), defaultTeam.ID(), strings.Repeat("9", 64)).Scan(
-			&storedCount, &bindingHashCount,
-		)).To(Succeed())
-		Expect(storedCount).To(Equal(2))
-		Expect(bindingHashCount).To(BeZero())
 	})
 
 	It("persists one prepared source admission per definition and binds every claimed child to it", func() {

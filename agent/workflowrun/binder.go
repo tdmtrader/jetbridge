@@ -16,7 +16,6 @@ import (
 
 	"github.com/mitchellh/copystructure"
 
-	"github.com/concourse/concourse/agent/pullrequest"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/workflow"
 	"github.com/concourse/concourse/atc"
@@ -164,118 +163,10 @@ func (b *Binder) BindReadySourceAdmission(
 	}, &trustedSourceAdmission{ready: &clonedReady})
 }
 
-// LaunchMonitor is the server-only handoff from a captured binding-owned
-// standing-pipeline build. The exact observation remains an ordinary workflow
-// input, while allocation and reservation attachment share one DB transaction.
-func (b *Binder) LaunchMonitor(
-	ctx context.Context,
-	launch pullrequest.MonitorLaunch,
-) (snapshot.WorkflowRunID, error) {
-	if ctx == nil {
-		return 0, fmt.Errorf("%w: monitor launch context is required", ErrInvalidRequest)
-	}
-	if err := launch.Validate(); err != nil {
-		return 0, err
-	}
-	source, err := launch.Source.Protected()
-	if err != nil {
-		return 0, err
-	}
-	accepted, err := launch.AcceptedReview.Protected()
-	if err != nil {
-		return 0, err
-	}
-	// A PR follow-up is the same ticket's work continued, so it inherits from
-	// the run that published the accepted review. The origin stays "pr-monitor"
-	// — how it was launched and whose work it is remain separate facts.
-	ticket, err := b.inheritTicketFrom(
-		ctx, source.TeamID, workflow.DefinitionKindWorkflow, accepted.ReviewWorkflowRunID,
-	)
-	if err != nil {
-		return 0, err
-	}
-	version := source.WorkflowVersion
-	result, err := b.bindAndCreate(
-		ctx,
-		AdmissionContext{
-			TeamID: source.TeamID, TeamName: source.TeamName,
-			CreatedBy: "workflow-resource-source-reconciler",
-			Origin: Origin{
-				Kind: "pr-monitor", Reference: fmt.Sprintf("%d", source.BindingID),
-			},
-			Ticket: ticket,
-		},
-		BindRequest{
-			WorkflowName: source.WorkflowName, Version: &version,
-			Inputs: map[string]snapshot.SnapshotID{
-				pullrequest.MonitorSourceName:                  source.Observation.ID,
-				pullrequest.MonitorAcceptedReviewInputName:     accepted.Review.ID,
-				pullrequest.MonitorAcceptedCandidateInputName:  accepted.Candidate.ID,
-				pullrequest.MonitorAcceptedValidationInputName: accepted.Validation.ID,
-			},
-			IdempotencyKey: fmt.Sprintf(
-				"pr-monitor:%d:%s", source.BindingID, source.Version.ActionDigest,
-			),
-			ExpectedWorkflowDefinitionID: int64(source.WorkflowDefinitionID),
-		},
-		&trustedSourceAdmission{monitor: &launch},
-	)
-	if err != nil {
-		return 0, err
-	}
-	return result.Run.ID, nil
-}
-
-func monitorRunAttachment(
-	launch pullrequest.MonitorLaunch,
-) (db.AgentWorkflowRunPRMonitorAttachment, error) {
-	if err := launch.Validate(); err != nil {
-		return db.AgentWorkflowRunPRMonitorAttachment{}, err
-	}
-	source, err := launch.Source.Protected()
-	if err != nil {
-		return db.AgentWorkflowRunPRMonitorAttachment{}, err
-	}
-	accepted, err := launch.AcceptedReview.Protected()
-	if err != nil {
-		return db.AgentWorkflowRunPRMonitorAttachment{}, err
-	}
-	return db.AgentWorkflowRunPRMonitorAttachment{
-		BindingID: source.BindingID, SourcePipelineID: source.PipelineID,
-		SelectingBuildID:                int64(source.BuildID),
-		SourceAdmissionID:               source.AdmissionID,
-		ExpectedBindingRevision:         launch.Reservation.BindingRevision,
-		BaseBindingRevision:             launch.Reservation.BaseRevision,
-		ActionDigest:                    launch.Reservation.ActionDigest,
-		ReservationToken:                launch.Reservation.Token,
-		ObservationSnapshotID:           launch.Reservation.ObservationSnapshotID,
-		Cursor:                          launch.Reservation.Cursor,
-		SourceSHA:                       launch.Reservation.SourceSHA,
-		TargetSHA:                       launch.Reservation.TargetSHA,
-		AcceptedPublicationOccurrenceID: accepted.PublicationOccurrenceID,
-		AcceptedReview:                  accepted.Review,
-		AcceptedCandidate:               accepted.Candidate,
-		AcceptedValidation:              accepted.Validation,
-		AcceptedReviewWorkflowRunID:     accepted.ReviewWorkflowRunID,
-		AcceptedOutcomeRevision:         accepted.OutcomeRevision,
-		SelectedVersion: atc.Version{
-			"provider":         source.Version.Provider,
-			"external_id":      source.Version.ExternalID,
-			"source_sha":       source.Version.SourceSHA,
-			"target_sha":       source.Version.TargetSHA,
-			"action_kind":      source.Version.ActionKind,
-			"action_digest":    source.Version.ActionDigest,
-			"cursor":           source.Version.Cursor,
-			"binding_revision": source.Version.BindingRevision,
-		},
-	}, nil
-}
-
 type trustedSourceAdmission struct {
 	ready                     *ReadySourceAdmission
 	experiment                bool
 	resourceSourceAdmissionID *int64
-	monitor                   *pullrequest.MonitorLaunch
 }
 
 func (trusted *trustedSourceAdmission) admissionID() *int64 {
@@ -284,10 +175,6 @@ func (trusted *trustedSourceAdmission) admissionID() *int64 {
 	}
 	if trusted.ready != nil {
 		return &trusted.ready.AdmissionID
-	}
-	if trusted.monitor != nil {
-		value := trusted.monitor.Source.AdmissionID
-		return &value
 	}
 	return trusted.resourceSourceAdmissionID
 }
@@ -313,8 +200,7 @@ func (b *Binder) bindAndCreate(
 	// Experiment children must pass through CreateWithInputs even when their
 	// idempotency key already exists. That store call is the short
 	// transaction which serializes child allocation with parent cancellation.
-	if request.ExperimentAdmission == nil &&
-		(trusted == nil || trusted.monitor == nil) {
+	if request.ExperimentAdmission == nil {
 		if existing, found, err := b.existing(ctx, admission, request); err != nil {
 			return BindResult{}, err
 		} else if found {
@@ -431,40 +317,6 @@ func (b *Binder) bindAndCreate(
 	if err != nil {
 		return BindResult{}, fmt.Errorf("%w: clone rendered target: %v", ErrPlatformFailure, err)
 	}
-	if trusted != nil && trusted.monitor != nil {
-		protected, protectErr := trusted.monitor.Source.Protected()
-		if protectErr != nil {
-			return BindResult{}, protectErr
-		}
-		accepted, protectErr := trusted.monitor.AcceptedReview.Protected()
-		if protectErr != nil {
-			return BindResult{}, protectErr
-		}
-		publicationTarget, protectErr :=
-			trusted.monitor.PublicationTarget.Protected()
-		if protectErr != nil {
-			return BindResult{}, protectErr
-		}
-		rendered, err = rendered.BindPRMonitorAuthority(
-			admission.Origin.Kind,
-			workflow.PRMonitorAuthority{
-				BindingID:               protected.BindingID,
-				ActionDigest:            protected.Version.ActionDigest,
-				ReviewWorkflowRunID:     accepted.ReviewWorkflowRunID,
-				AcceptedOutcomeRevision: accepted.OutcomeRevision,
-				Destination:             publicationTarget.Destination,
-				ApprovalPolicyVersion:   publicationTarget.ApprovalPolicyVersion,
-				SourceRef:               publicationTarget.SourceRef,
-				TargetRef:               publicationTarget.TargetRef,
-			},
-		)
-		if err != nil {
-			return BindResult{}, fmt.Errorf(
-				"%w: bind trusted PR monitor authority: %v",
-				ErrPlatformFailure, err,
-			)
-		}
-	}
 	canonical, err := validateRendered(target, rendered)
 	if err != nil {
 		return BindResult{}, err
@@ -486,28 +338,6 @@ func (b *Binder) bindAndCreate(
 	refs, err := b.authorizeInputs(ctx, admission.TeamID, target.Signature, request.Inputs)
 	if err != nil {
 		return BindResult{}, err
-	}
-	if trusted != nil && trusted.monitor != nil {
-		protected, protectErr := trusted.monitor.Source.Protected()
-		if protectErr != nil {
-			return BindResult{}, protectErr
-		}
-		accepted, protectErr := trusted.monitor.AcceptedReview.Protected()
-		if protectErr != nil {
-			return BindResult{}, protectErr
-		}
-		expected := map[string]snapshot.SnapshotRef{
-			pullrequest.MonitorSourceName:                  protected.Observation,
-			pullrequest.MonitorAcceptedReviewInputName:     accepted.Review,
-			pullrequest.MonitorAcceptedCandidateInputName:  accepted.Candidate,
-			pullrequest.MonitorAcceptedValidationInputName: accepted.Validation,
-		}
-		if !reflect.DeepEqual(refs, expected) {
-			return BindResult{}, fmt.Errorf(
-				"%w: monitor authority inputs changed during authorization",
-				ErrInvalidRequest,
-			)
-		}
 	}
 	if ready != nil {
 		refs, err = mergeSourceInputRefs(refs, ready.Inputs)
@@ -534,50 +364,14 @@ func (b *Binder) bindAndCreate(
 	applyTicketAssociation(&createRequest, admission.Ticket)
 	if ready != nil {
 		createRequest.ResourceSourceAdmissionID = cloneInt64(&ready.AdmissionID)
-	} else if trusted != nil && trusted.monitor != nil {
-		value := trusted.monitor.Source.AdmissionID
-		createRequest.ResourceSourceAdmissionID = &value
 	}
-	var (
-		run     db.AgentWorkflowRun
-		created bool
-	)
-	if trusted != nil && trusted.monitor != nil {
-		store, ok := b.runs.(interface {
-			CreateWithInputsAndPRMonitorAttachment(
-				context.Context,
-				db.AgentWorkflowRunCreateRequest,
-				db.AgentWorkflowRunPRMonitorAttachment,
-			) (db.AgentWorkflowRun, bool, error)
-		})
-		if !ok {
-			return BindResult{}, fmt.Errorf(
-				"%w: atomic PR monitor workflow-run store is unavailable",
-				ErrPlatformFailure,
-			)
-		}
-		attachment, attachmentErr := monitorRunAttachment(*trusted.monitor)
-		if attachmentErr != nil {
-			return BindResult{}, attachmentErr
-		}
-		run, created, err = store.CreateWithInputsAndPRMonitorAttachment(
-			ctx, createRequest, attachment,
-		)
-	} else {
-		run, created, err = b.runs.CreateWithInputs(ctx, createRequest)
-	}
+	run, created, err := b.runs.CreateWithInputs(ctx, createRequest)
 	if err != nil {
 		if errors.Is(err, db.ErrAgentWorkflowRunExperimentAdmissionClosed) {
 			return BindResult{}, ErrExperimentAdmissionClosed
 		}
 		if request.ExperimentAdmission != nil {
 			return BindResult{}, fmt.Errorf("%w: allocate durable experiment workflow run", ErrPlatformFailure)
-		}
-		if trusted != nil && trusted.monitor != nil {
-			return BindResult{}, fmt.Errorf(
-				"%w: allocate and attach durable PR monitor run: %v",
-				ErrPlatformFailure, err,
-			)
 		}
 		if winner, found, readErr := b.resolvedWinner(ctx, createRequest, effectiveInputs); readErr == nil && found {
 			return b.handleExisting(ctx, admission, request, winner)

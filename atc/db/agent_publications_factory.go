@@ -12,7 +12,6 @@ import (
 
 	"github.com/concourse/concourse/agent/api/workflowoutcomes"
 	"github.com/concourse/concourse/agent/publisher"
-	"github.com/concourse/concourse/agent/pullrequest"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/workflowwait"
 )
@@ -21,7 +20,6 @@ type AgentPublicationsFactory interface {
 	publisher.Store
 	publisher.PRStore
 	publisher.ReviewRunEvidenceResolver
-	pullrequest.AcceptedReviewAuthorityResolver
 }
 
 func NewAgentPublicationsFactory(conn DbConn) AgentPublicationsFactory {
@@ -30,136 +28,6 @@ func NewAgentPublicationsFactory(conn DbConn) AgentPublicationsFactory {
 
 type agentPublicationsFactory struct {
 	conn DbConn
-}
-
-func (factory *agentPublicationsFactory) ResolveAcceptedReviewAuthority(
-	ctx context.Context,
-	teamID int,
-	publicationOccurrenceID int64,
-) (pullrequest.AcceptedReviewAuthority, bool, error) {
-	return resolveAcceptedReviewAuthority(
-		ctx, factory.conn, teamID, publicationOccurrenceID,
-	)
-}
-
-func resolveAcceptedReviewAuthority(
-	ctx context.Context,
-	queryer snapshotQueryer,
-	teamID int,
-	publicationOccurrenceID int64,
-) (pullrequest.AcceptedReviewAuthority, bool, error) {
-	if ctx == nil || teamID <= 0 || publicationOccurrenceID <= 0 {
-		return pullrequest.AcceptedReviewAuthority{}, false, fmt.Errorf(
-			"db: accepted review authority requires context, team, and publication occurrence",
-		)
-	}
-	var (
-		reviewID, candidateID, validationID int64
-		reviewTypeName, candidateTypeName   string
-		validationTypeName                  string
-		reviewTypeVersion                   int
-		candidateTypeVersion                int
-		validationTypeVersion               int
-		reviewDigest, candidateDigest       string
-		validationDigest                    string
-		reviewWorkflowRunID                 int64
-		outcomeRevision                     int64
-		acceptedBy                          string
-		acceptedAt                          time.Time
-	)
-	err := queryer.QueryRowContext(ctx, `
-		SELECT review.id,review.type_name,review.type_version,review.digest,
-		       candidate.id,candidate.type_name,candidate.type_version,candidate.digest,
-		       validation.id,validation.type_name,validation.type_version,validation.digest,
-		       evidence.review_workflow_run_id,evidence.outcome_revision,
-		       evidence.accepted_by,evidence.accepted_at
-		FROM agent_publication_occurrences occurrence
-		JOIN agent_publications publication
-		  ON publication.id=occurrence.publication_id
-		JOIN agent_publication_approval_evidence evidence
-		  ON evidence.publication_id=occurrence.id
-		 AND evidence.team_id=occurrence.team_id
-		 AND evidence.evidence_kind='accepted_review'
-		JOIN agent_snapshots review
-		  ON review.id=evidence.review_snapshot_id
-		 AND review.team_id=evidence.team_id
-		JOIN agent_snapshots candidate
-		  ON candidate.id=evidence.candidate_snapshot_id
-		 AND candidate.team_id=evidence.team_id
-		JOIN agent_snapshots validation
-		  ON validation.id=evidence.validation_snapshot_id
-		 AND validation.team_id=evidence.team_id
-		WHERE occurrence.id=$1 AND occurrence.team_id=$2
-		  AND publication.status='succeeded'
-	`, publicationOccurrenceID, teamID).Scan(
-		&reviewID, &reviewTypeName, &reviewTypeVersion, &reviewDigest,
-		&candidateID, &candidateTypeName, &candidateTypeVersion,
-		&candidateDigest,
-		&validationID, &validationTypeName, &validationTypeVersion,
-		&validationDigest,
-		&reviewWorkflowRunID, &outcomeRevision,
-		&acceptedBy, &acceptedAt,
-	)
-	if errors.Is(err, sql.ErrNoRows) {
-		return pullrequest.AcceptedReviewAuthority{}, false, nil
-	}
-	if err != nil {
-		return pullrequest.AcceptedReviewAuthority{}, false, err
-	}
-	reviewType, err := joinSnapshotType(
-		reviewTypeName, reviewTypeVersion,
-	)
-	if err != nil {
-		return pullrequest.AcceptedReviewAuthority{}, false, err
-	}
-	candidateType, err := joinSnapshotType(
-		candidateTypeName, candidateTypeVersion,
-	)
-	if err != nil {
-		return pullrequest.AcceptedReviewAuthority{}, false, err
-	}
-	validationType, err := joinSnapshotType(
-		validationTypeName, validationTypeVersion,
-	)
-	if err != nil {
-		return pullrequest.AcceptedReviewAuthority{}, false, err
-	}
-	evidence := publisher.AcceptedReviewEvidence{
-		Review: snapshot.SnapshotRef{
-			ID: snapshot.SnapshotID(reviewID), Type: reviewType,
-			Digest: snapshot.Digest(reviewDigest),
-		},
-		Candidate: snapshot.SnapshotRef{
-			ID: snapshot.SnapshotID(candidateID), Type: candidateType,
-			Digest: snapshot.Digest(candidateDigest),
-		},
-		Validation: snapshot.SnapshotRef{
-			ID: snapshot.SnapshotID(validationID), Type: validationType,
-			Digest: snapshot.Digest(validationDigest),
-		},
-		ReviewWorkflowRunID: snapshot.WorkflowRunID(reviewWorkflowRunID),
-		OutcomeRevision:     outcomeRevision,
-		AcceptedBy:          acceptedBy, AcceptedAt: acceptedAt.UTC(),
-	}
-	if err := authorizeAcceptedReviewEvidence(
-		ctx, queryer, teamID, evidence,
-	); err != nil {
-		return pullrequest.AcceptedReviewAuthority{}, false, err
-	}
-	authority, err := pullrequest.NewAcceptedReviewAuthority(
-		pullrequest.AcceptedReviewAuthoritySpec{
-			TeamID:                  teamID,
-			PublicationOccurrenceID: publicationOccurrenceID,
-			Review:                  evidence.Review, Candidate: evidence.Candidate,
-			Validation:          evidence.Validation,
-			ReviewWorkflowRunID: evidence.ReviewWorkflowRunID,
-			OutcomeRevision:     evidence.OutcomeRevision,
-		},
-	)
-	if err != nil {
-		return pullrequest.AcceptedReviewAuthority{}, false, err
-	}
-	return authority, true, nil
 }
 
 func (factory *agentPublicationsFactory) ResolveReviewRunEvidence(

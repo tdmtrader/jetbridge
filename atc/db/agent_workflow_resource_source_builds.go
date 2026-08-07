@@ -203,48 +203,6 @@ func (store *workflowResourceSourceBuildStore) ExactInputMapping(ctx context.Con
 	return selections, selected, nil
 }
 
-func (store *workflowResourceSourceBuildStore) ExactBindingInputMapping(
-	ctx context.Context,
-	teamID int,
-	bindingID int64,
-	sourcePipelineID int,
-	buildID int,
-) ([]SelectedSource, bool, error) {
-	if ctx == nil || teamID <= 0 || bindingID <= 0 ||
-		sourcePipelineID <= 0 || buildID <= 0 {
-		return nil, false, fmt.Errorf(
-			"db: binding source input mapping requires context and identities",
-		)
-	}
-	tx, err := store.conn.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, false, err
-	}
-	defer Rollback(tx)
-	registered, found, err := findWorkflowResourceSourcePipelineByBinding(
-		ctx, tx, teamID, bindingID, false,
-	)
-	if err != nil {
-		return nil, false, err
-	}
-	if !found || registered.PipelineID != sourcePipelineID {
-		return nil, false, fmt.Errorf(
-			"%w: binding source pipeline is not registered",
-			ErrAgentWorkflowResourceSourceConflict,
-		)
-	}
-	selections, selected, err := exactWorkflowResourceSourceInputMapping(
-		ctx, tx, registered, buildID,
-	)
-	if err != nil {
-		return nil, false, err
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, false, err
-	}
-	return selections, selected, nil
-}
-
 func exactWorkflowResourceSourceInputMapping(
 	ctx context.Context,
 	tx Tx,
