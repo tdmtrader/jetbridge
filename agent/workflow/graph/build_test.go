@@ -947,90 +947,41 @@ func TestBuildSmallFixSeedAwaitCarriesTimeoutDecoration(t *testing.T) {
 	}
 }
 
-// A PR-reapproval step may legally name ONE binding for both the candidate's
-// authoritative validation (AwaitSnapshotStep.Validation) and the accepted
-// review's (PRApproval.AcceptedReview.Validation): the type checker constrains
-// them independently — requireValidation proves the step's validation is
-// authoritative dev validation dominating the candidate, requireExactAwaitArtifact
-// only proves the accepted validation is a non-conditional validation/v1 — and
-// nothing requires the two names to differ. Both used to be linked in their own
-// loop with no de-duplication, so one binding satisfying both produced two
-// byte-identical edges.
+// linkAll de-duplicates: a binding name consumed twice by the same node draws
+// one edge, not two. An Edge carries no identity beyond
+// From/To/PortName/TypeRef/Optional, so "the labelled connection between a
+// producer and a consumer" cannot legitimately occur twice, and a duplicate
+// would double the line every consumer of the contract draws. It also skips
+// empty names rather than looking them up — the reachable case, since
+// Validation and Approval are both optional on the steps that consume them.
 //
-// The walk methods are exercised directly rather than through a mutated seed:
-// the reachable configuration is a property of the two independent constraints
-// above, not of any shipped workflow, and Build already documents that it
-// assumes a type-checked function.
-func TestWalkAwaitSnapshotDrawsOneEdgePerSharedValidationBinding(t *testing.T) {
-	b := &builder{graph: Graph{Nodes: []Node{}, Edges: []Edge{}}, seen: map[string]bool{}}
-	env := environment{
-		"pull-request": typedBinding("observe", "pull-request/v1", false),
-		"candidate":    typedBinding("merge-prepare", "repository-change/v1", false),
-		"impact":       typedBinding("assess-impact", "publish-impact/v1", false),
-		"response":     typedBinding("compose", "pull-request-response/v1", false),
-		"review":       typedBinding("load-review", "review/v1", false),
-		"validation":   typedBinding("dev-validation-pr-revision-gates", "validation/v1", false),
-	}
-
-	if _, err := b.walkAwaitSnapshot(&atc.AwaitSnapshotStep{
-		Name: "reapproval",
-		Type: "human-answer/v1",
-		// Both validation slots name the same binding.
-		Validation: "validation",
-		PRApproval: &atc.PRApprovalIntent{
-			Observation: "pull-request",
-			Candidate:   "candidate",
-			Impact:      "impact",
-			Response:    "response",
-			AcceptedReview: &atc.PRAcceptedReviewIntent{
-				Review:     "review",
-				Candidate:  "candidate",
-				Validation: "validation",
-			},
-		},
-	}, env, nil); err != nil {
-		t.Fatalf("walkAwaitSnapshot returned an error: %v", err)
-	}
-
-	// Six distinct bindings: pull-request, candidate, impact, response, review,
-	// validation. `candidate` is named twice (the intent's and the accepted
-	// review's) and `validation` twice, and each draws exactly one edge.
-	assertNoDuplicateEdges(t, b.graph)
-	if got := len(edgesInto(b.graph, "reapproval")); got != 6 {
-		t.Fatalf("expected one edge per distinct consumed binding, got %d: %+v",
-			got, edgesInto(b.graph, "reapproval"))
-	}
-}
-
-func TestWalkPublishSnapshotDrawsOneEdgePerSharedValidationBinding(t *testing.T) {
+// linkAll is exercised directly: the walk methods that call it now build their
+// consumed lists from step shapes whose bindings are constrained to distinct
+// snapshot types, so no shipped workflow can reach the duplicate. The guard is
+// still part of linkAll's contract.
+func TestLinkAllDrawsOneEdgePerDistinctBindingAndSkipsEmptyNames(t *testing.T) {
 	b := &builder{graph: Graph{Nodes: []Node{}, Edges: []Edge{}}, seen: map[string]bool{}}
 	env := environment{
 		"candidate":  typedBinding("merge-prepare", "repository-change/v1", false),
-		"reapproval": typedBinding("reapproval", "human-answer/v1", true),
-		"review":     typedBinding("load-review", "review/v1", false),
-		"validation": typedBinding("dev-validation-pr-revision-gates", "validation/v1", false),
+		"approval":   typedBinding("approval", "human-answer/v1", false),
+		"validation": typedBinding("dev-validation-repository-gates", "validation/v1", false),
+	}
+	if err := b.addNode(Node{
+		ID: "publish", Kind: KindPublish, DisplayName: "publish",
+		TypeRef: "repository-change/v1",
+	}); err != nil {
+		t.Fatalf("addNode returned an error: %v", err)
 	}
 
-	if _, err := b.walkPublishSnapshot(&atc.PublishSnapshotStep{
-		Name:       "publish-revision",
-		Input:      "candidate",
-		InputType:  "repository-change/v1",
-		Approval:   "reapproval",
-		Validation: "validation",
-		PRApproval: &atc.PRApprovalPublicationIntent{
-			AcceptedReview: &atc.PRAcceptedReviewIntent{
-				Review:     "review",
-				Candidate:  "candidate",
-				Validation: "validation",
-			},
-		},
-	}, env, nil); err != nil {
-		t.Fatalf("walkPublishSnapshot returned an error: %v", err)
+	if err := b.linkAll(env, []string{
+		"candidate", "approval", "validation", "candidate", "", "validation",
+	}, "publish"); err != nil {
+		t.Fatalf("linkAll returned an error: %v", err)
 	}
 
 	assertNoDuplicateEdges(t, b.graph)
-	if got := len(edgesInto(b.graph, "publish-revision")); got != 4 {
+	if got := len(edgesInto(b.graph, "publish")); got != 3 {
 		t.Fatalf("expected one edge per distinct consumed binding, got %d: %+v",
-			got, edgesInto(b.graph, "publish-revision"))
+			got, edgesInto(b.graph, "publish"))
 	}
 }

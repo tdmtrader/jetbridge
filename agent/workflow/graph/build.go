@@ -216,15 +216,11 @@ func (b *builder) link(env environment, bindingName, nodeID string) error {
 // looked up, and a name consumed twice by the same node draws one edge rather
 // than two.
 //
-// The duplicate is reachable, not defensive. walkAwaitSnapshot and
-// walkPublishSnapshot both consume config.Validation AND
-// config.PRApproval.AcceptedReview.Validation, and the type checker constrains
-// those two independently (requireValidation vs requireExactAwaitArtifact) —
-// nothing requires them to be different bindings. One binding satisfying both
-// used to produce two byte-identical Edges, which is a contradiction of what an
-// Edge means (Edge has no identity beyond From/To/PortName/TypeRef/Optional,
-// so "the labelled connection between a producer and a consumer" cannot occur
-// twice) and doubles the line every consumer of the contract draws.
+// The dedup is not cosmetic. Two byte-identical Edges are a contradiction of
+// what an Edge means (Edge has no identity beyond
+// From/To/PortName/TypeRef/Optional, so "the labelled connection between a
+// producer and a consumer" cannot occur twice) and would double the line every
+// consumer of the contract draws.
 func (b *builder) linkAll(env environment, bindingNames []string, nodeID string) error {
 	linked := make(map[string]bool, len(bindingNames))
 	for _, name := range bindingNames {
@@ -504,57 +500,31 @@ func (b *builder) walkParallel(config *atc.InParallelStep, entry environment, de
 // An await is an execution node: it has a durable wait record and is often
 // exactly where attention is required. It consumes exactly one of three
 // shapes (checkAwaitSnapshot dispatches the same way): a plain question
-// binding, a merge-approval intent over one repository-change/v1 input plus
-// its authoritative validation, or a PR-reapproval intent over four named
-// artifacts plus the accepted-review authority's own three bindings and its
-// validation. It always produces its own name.
-//
-// A PR-reapproval await binds conditionally: checkAwaitSnapshot sets
-// presence = snapshotConditional because the server may prove from the exact
-// impact record that no new human wait is required. The node is marked
-// Optional to carry that forward — Node.Optional means "this node's
-// production is not guaranteed", the same meaning it already has for optional
-// ports.
+// binding, or a merge-approval intent over one repository-change/v1 input plus
+// its authoritative validation. It always produces its own name, and always
+// produces it — an await is never conditional.
 func (b *builder) walkAwaitSnapshot(config *atc.AwaitSnapshotStep, env environment, decorations []Decoration) (flow, error) {
-	conditional := config.PRApproval != nil
 	if err := b.addNode(Node{
 		ID:          config.Name,
 		Kind:        KindAwait,
 		DisplayName: config.Name,
 		TypeRef:     string(config.Type),
-		Optional:    conditional,
 		Decorations: copyDecorations(decorations),
 	}); err != nil {
 		return flow{}, err
 	}
 
 	var consumed []string
-	switch {
-	case config.PRApproval != nil:
-		consumed = []string{
-			config.PRApproval.Observation,
-			config.PRApproval.Candidate,
-			config.PRApproval.Impact,
-			config.PRApproval.Response,
-		}
-		if config.PRApproval.AcceptedReview != nil {
-			consumed = append(consumed,
-				config.PRApproval.AcceptedReview.Review,
-				config.PRApproval.AcceptedReview.Candidate,
-				config.PRApproval.AcceptedReview.Validation,
-			)
-		}
-		consumed = append(consumed, config.Validation)
-	case config.MergeApproval != nil:
+	if config.MergeApproval != nil {
 		consumed = []string{config.MergeApproval.Input, config.Validation}
-	default:
+	} else {
 		consumed = []string{config.Question}
 	}
 	if err := b.linkAll(env, consumed, config.Name); err != nil {
 		return flow{}, err
 	}
 
-	write := typedBinding(config.Name, string(config.Type), conditional)
+	write := typedBinding(config.Name, string(config.Type), false)
 	outgoing := env.clone()
 	outgoing[config.Name] = write
 	return leafFlow(outgoing, bindings{config.Name: write}), nil
@@ -564,12 +534,9 @@ func (b *builder) walkAwaitSnapshot(config *atc.AwaitSnapshotStep, env environme
 //
 // A publish is an execution node: it is an explicit external side-effect
 // boundary. checkPublishSnapshot always consumes Input, and consumes
-// Approval/Validation whenever they are set (merge mode and the PR-reapproval
-// fast path both key off the same Approval binding name). When a PR-reapproval
-// intent is present, it also consumes the three accepted-review bindings that
-// prove no new human wait was required. Publish produces nothing — it is a
-// terminal side effect, not a snapshot producer — so it returns
-// emptySnapshotFlow's graph equivalent.
+// Approval/Validation whenever they are set (merge mode keys off the Approval
+// binding name). Publish produces nothing — it is a terminal side effect, not
+// a snapshot producer — so it returns emptySnapshotFlow's graph equivalent.
 func (b *builder) walkPublishSnapshot(config *atc.PublishSnapshotStep, env environment, decorations []Decoration) (flow, error) {
 	if err := b.addNode(Node{
 		ID:          config.Name,
@@ -582,13 +549,6 @@ func (b *builder) walkPublishSnapshot(config *atc.PublishSnapshotStep, env envir
 	}
 
 	consumed := []string{config.Input, config.Approval, config.Validation}
-	if config.PRApproval != nil && config.PRApproval.AcceptedReview != nil {
-		consumed = append(consumed,
-			config.PRApproval.AcceptedReview.Review,
-			config.PRApproval.AcceptedReview.Candidate,
-			config.PRApproval.AcceptedReview.Validation,
-		)
-	}
 	if err := b.linkAll(env, consumed, config.Name); err != nil {
 		return flow{}, err
 	}

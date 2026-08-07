@@ -680,7 +680,7 @@ func (builder *provenanceBuilder) walkPlan(plan *atc.Plan, context walkContext, 
 		if err := validatePublishSnapshotPlan(plan.PublishSnapshot); err != nil {
 			return invalidError("publish_snapshot plan %q: %v", plan.ID, err)
 		}
-		if plan.PublishSnapshot.Mode == publisher.ModeMerge || plan.PublishSnapshot.PRApproval != nil {
+		if plan.PublishSnapshot.Mode == publisher.ModeMerge {
 			runID, err := snapshot.ParseWorkflowRunID(plan.PublishSnapshot.WorkflowRunID)
 			if err != nil || runID != builder.input.WorkflowRunID {
 				return invalidError("publish_snapshot plan %q has invalid workflow run identity", plan.ID)
@@ -737,18 +737,12 @@ func validatePublishSnapshotPlan(plan *atc.PublishSnapshotPlan) error {
 	if plan == nil || strings.TrimSpace(plan.Name) == "" || strings.TrimSpace(plan.Input) == "" {
 		return fmt.Errorf("name and input are required")
 	}
-	if plan.PRApproval != nil {
-		if plan.Mode != publisher.ModePullRequest ||
-			strings.TrimSpace(plan.Approval) == "" ||
-			strings.TrimSpace(plan.WorkflowRunID) == "" {
-			return fmt.Errorf("PR reapproval intent, approval, and workflow run identity are required")
-		}
-	} else if plan.Mode == publisher.ModeMerge {
+	if plan.Mode == publisher.ModeMerge {
 		if strings.TrimSpace(plan.Approval) == "" || strings.TrimSpace(plan.WorkflowRunID) == "" {
 			return fmt.Errorf("merge approval and workflow run identity are required")
 		}
 	} else if plan.Approval != "" || plan.WorkflowRunID != "" {
-		return fmt.Errorf("approval linkage requires merge or PR reapproval")
+		return fmt.Errorf("approval linkage requires merge")
 	}
 	request := publisher.Request{
 		Publisher: plan.Publisher,

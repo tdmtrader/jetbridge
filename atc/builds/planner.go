@@ -371,16 +371,10 @@ func (visitor *planVisitor) VisitAwaitSnapshot(step *atc.AwaitSnapshotStep) erro
 		copy.Parameters = maps.Clone(step.MergeApproval.Parameters)
 		mergeApproval = &copy
 	}
-	var prApproval *atc.PRApprovalIntent
-	if step.PRApproval != nil {
-		copy := *step.PRApproval
-		copy.AcceptedReview = step.PRApproval.AcceptedReview.Clone()
-		prApproval = &copy
-	}
 	visitor.plan = visitor.planFactory.NewPlan(atc.AwaitSnapshotPlan{
-		Name: step.Name, Question: step.Question, MergeApproval: mergeApproval, PRApproval: prApproval,
+		Name: step.Name, Question: step.Question, MergeApproval: mergeApproval,
 		Validation: step.Validation, MergeApprovalValidation: step.MergeApprovalValidation.Clone(),
-		PRApprovalValidation: step.PRApprovalValidation.Clone(), Type: step.Type, OnTimeout: step.OnTimeout,
+		Type: step.Type, OnTimeout: step.OnTimeout,
 		DefaultSnapshotID: step.DefaultSnapshotID, WorkflowPort: step.WorkflowPort,
 		WorkflowDefinitionID: step.WorkflowDefinitionID, WorkflowRunID: step.WorkflowRunID,
 	})
@@ -388,18 +382,12 @@ func (visitor *planVisitor) VisitAwaitSnapshot(step *atc.AwaitSnapshotStep) erro
 }
 
 func (visitor *planVisitor) VisitPublishSnapshot(step *atc.PublishSnapshotStep) error {
-	var prApproval *atc.PRApprovalPublicationIntent
-	if step.PRApproval != nil {
-		copy := *step.PRApproval
-		copy.AcceptedReview = step.PRApproval.AcceptedReview.Clone()
-		prApproval = &copy
-	}
 	visitor.plan = visitor.planFactory.NewPlan(atc.PublishSnapshotPlan{
 		Name: step.Name, Publisher: step.Publisher, Input: step.Input, InputType: step.InputType,
 		Destination: step.Destination, Mode: step.Mode, Parameters: maps.Clone(step.Parameters),
 		ApprovalPolicyVersion: step.ApprovalPolicyVersion,
 		Approval:              step.Approval, WorkflowRunID: step.WorkflowRunID,
-		Validation: step.Validation, PublishValidation: step.PublishValidation.Clone(), PRApproval: prApproval,
+		Validation: step.Validation, PublishValidation: step.PublishValidation.Clone(),
 	})
 	return nil
 }

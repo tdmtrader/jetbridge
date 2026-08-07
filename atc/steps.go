@@ -10,7 +10,6 @@ import (
 	"regexp"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/concourse/concourse/agent/publisher"
 	"github.com/concourse/concourse/agent/snapshot"
@@ -717,138 +716,12 @@ func (intent MergeApprovalIntent) validateWire() error {
 	return nil
 }
 
-// PRApprovalIntent is the authored half of a provider-native pull-request
-// reapproval. It names exact typed artifacts; the web node reopens them and
-// derives source/target heads plus snapshot identities before synthesizing the
-// question. The context itself is never authored.
-type PRApprovalIntent struct {
-	BindingID             int64                   `json:"binding_id"`
-	ActionDigest          string                  `json:"action_digest"`
-	Observation           string                  `json:"observation"`
-	Candidate             string                  `json:"candidate"`
-	Impact                string                  `json:"impact"`
-	Response              string                  `json:"response"`
-	Destination           string                  `json:"destination"`
-	ApprovalPolicyVersion string                  `json:"approval_policy_version"`
-	Prompt                string                  `json:"prompt"`
-	AcceptedReview        *PRAcceptedReviewIntent `json:"accepted_review"`
-}
-
-func (intent PRApprovalIntent) validateWire() error {
-	if intent.BindingID <= 0 || snapshot.Digest(intent.ActionDigest).Validate() != nil {
-		return fmt.Errorf("await_snapshot: pr_approval binding is invalid")
-	}
-	for label, value := range map[string]string{
-		"observation": intent.Observation,
-		"candidate":   intent.Candidate,
-		"impact":      intent.Impact,
-		"response":    intent.Response,
-	} {
-		if warning, err := ValidateIdentifier(value); err != nil || warning != nil {
-			return fmt.Errorf("await_snapshot: pr_approval %s is invalid", label)
-		}
-	}
-	if strings.TrimSpace(intent.ApprovalPolicyVersion) != intent.ApprovalPolicyVersion ||
-		intent.ApprovalPolicyVersion == "" || len(intent.ApprovalPolicyVersion) > 128 {
-		return fmt.Errorf("await_snapshot: pr_approval policy is invalid")
-	}
-	if strings.TrimSpace(intent.Destination) != intent.Destination ||
-		intent.Destination == "" || len(intent.Destination) > 2048 ||
-		strings.IndexByte(intent.Destination, 0) >= 0 {
-		return fmt.Errorf("await_snapshot: pr_approval destination is invalid")
-	}
-	for _, character := range intent.Destination {
-		if unicode.IsControl(character) {
-			return fmt.Errorf("await_snapshot: pr_approval destination is invalid")
-		}
-	}
-	if strings.TrimSpace(intent.Prompt) != intent.Prompt || intent.Prompt == "" ||
-		len(intent.Prompt) > 4096 || strings.IndexByte(intent.Prompt, 0) >= 0 {
-		return fmt.Errorf("await_snapshot: pr_approval prompt is invalid")
-	}
-	if intent.AcceptedReview == nil || intent.AcceptedReview.validateWire() != nil {
-		return fmt.Errorf("await_snapshot: accepted review authority is required")
-	}
-	return nil
-}
-
-// PRAcceptedReviewIntent names the immutable accepted-review authority used
-// when the server-derived impact record says another human wait is
-// unnecessary. These are lookup keys only: the web node reopens the exact
-// code-review-v3 run, accepted outcome revision, and sealed records.
-type PRAcceptedReviewIntent struct {
-	Review              string `json:"review"`
-	Candidate           string `json:"candidate"`
-	Validation          string `json:"validation"`
-	ReviewWorkflowRunID string `json:"review_workflow_run_id"`
-	OutcomeRevision     int64  `json:"outcome_revision"`
-}
-
-func (intent PRAcceptedReviewIntent) validateWire() error {
-	for label, value := range map[string]string{
-		"review": intent.Review, "candidate": intent.Candidate, "validation": intent.Validation,
-	} {
-		if warning, err := ValidateIdentifier(value); err != nil || warning != nil {
-			return fmt.Errorf("publish_snapshot: accepted review %s is invalid", label)
-		}
-	}
-	if _, err := snapshot.ParseWorkflowRunID(intent.ReviewWorkflowRunID); err != nil ||
-		intent.OutcomeRevision <= 0 {
-		return fmt.Errorf("publish_snapshot: accepted review authority is invalid")
-	}
-	return nil
-}
-
-func (intent *PRAcceptedReviewIntent) Clone() *PRAcceptedReviewIntent {
-	if intent == nil {
-		return nil
-	}
-	copy := *intent
-	return &copy
-}
-
-// PRApprovalPublicationIntent is the publication-side half of the same exact
-// conditional intent. Candidate, final validation, policy, optional answer,
-// and current workflow run are carried by the enclosing publish_snapshot
-// fields and matched by workflow typecheck. AcceptedReview is mandatory so a
-// no-reapproval decision remains a typed provider-native publication rather
-// than falling through to legacy direct Git.
-type PRApprovalPublicationIntent struct {
-	BindingID      int64                   `json:"binding_id"`
-	ActionDigest   string                  `json:"action_digest"`
-	Observation    string                  `json:"observation"`
-	Impact         string                  `json:"impact"`
-	Response       string                  `json:"response"`
-	AcceptedReview *PRAcceptedReviewIntent `json:"accepted_review"`
-}
-
-func (intent PRApprovalPublicationIntent) validateWire() error {
-	if intent.BindingID <= 0 || snapshot.Digest(intent.ActionDigest).Validate() != nil {
-		return fmt.Errorf("publish_snapshot: pr_approval binding is invalid")
-	}
-	for label, value := range map[string]string{
-		"observation": intent.Observation,
-		"impact":      intent.Impact,
-		"response":    intent.Response,
-	} {
-		if warning, err := ValidateIdentifier(value); err != nil || warning != nil {
-			return fmt.Errorf("publish_snapshot: pr_approval %s is invalid", label)
-		}
-	}
-	if intent.AcceptedReview == nil || intent.AcceptedReview.validateWire() != nil {
-		return fmt.Errorf("publish_snapshot: accepted review authority is required")
-	}
-	return nil
-}
-
 type AwaitSnapshotStep struct {
 	Name                    string                              `json:"await_snapshot"`
 	Question                string                              `json:"question,omitempty"`
 	MergeApproval           *MergeApprovalIntent                `json:"merge_approval,omitempty"`
-	PRApproval              *PRApprovalIntent                   `json:"pr_approval,omitempty"`
 	Validation              string                              `json:"validation,omitempty"`
 	MergeApprovalValidation *MergeApprovalValidationRequirement `json:"merge_approval_validation,omitempty"`
-	PRApprovalValidation    *PublishValidationRequirement       `json:"pr_approval_validation,omitempty"`
 	Type                    snapshot.TypeRef                    `json:"type"`
 	OnTimeout               AwaitSnapshotOnTimeout              `json:"on_timeout"`
 	DefaultSnapshotID       string                              `json:"default_snapshot_id,omitempty"`
@@ -863,15 +736,14 @@ func (step AwaitSnapshotStep) validateWire() error {
 	}
 	hasQuestion := strings.TrimSpace(step.Question) != ""
 	hasMergeApproval := step.MergeApproval != nil
-	hasPRApproval := step.PRApproval != nil
 	selected := 0
-	for _, present := range []bool{hasQuestion, hasMergeApproval, hasPRApproval} {
+	for _, present := range []bool{hasQuestion, hasMergeApproval} {
 		if present {
 			selected++
 		}
 	}
 	if selected != 1 {
-		return fmt.Errorf("await_snapshot: exactly one of question, merge_approval, or pr_approval is required")
+		return fmt.Errorf("await_snapshot: exactly one of question or merge_approval is required")
 	}
 	if hasMergeApproval {
 		if err := step.MergeApproval.validateWire(); err != nil {
@@ -880,25 +752,8 @@ func (step AwaitSnapshotStep) validateWire() error {
 		if step.OnTimeout != AwaitSnapshotOnTimeoutFail || step.DefaultSnapshotID != "" {
 			return fmt.Errorf("await_snapshot: merge approval must fail on timeout without a default")
 		}
-		if step.PRApprovalValidation != nil {
-			return fmt.Errorf("await_snapshot: PR approval validation is only valid for pr_approval")
-		}
 	}
-	if hasPRApproval {
-		if err := step.PRApproval.validateWire(); err != nil {
-			return err
-		}
-		if step.OnTimeout != AwaitSnapshotOnTimeoutFail || step.DefaultSnapshotID != "" {
-			return fmt.Errorf("await_snapshot: PR approval must fail on timeout without a default")
-		}
-		if warning, err := ValidateIdentifier(step.Validation); err != nil || warning != nil {
-			return fmt.Errorf("await_snapshot: pr_approval validation is invalid")
-		}
-		if step.MergeApprovalValidation != nil {
-			return fmt.Errorf("await_snapshot: merge approval validation is only valid for merge_approval")
-		}
-	}
-	if hasQuestion && (step.Validation != "" || step.MergeApprovalValidation != nil || step.PRApprovalValidation != nil) {
+	if hasQuestion && (step.Validation != "" || step.MergeApprovalValidation != nil) {
 		return fmt.Errorf("await_snapshot: validation is only valid for a server-bound approval")
 	}
 	if err := step.Type.Validate(); err != nil || step.Type != snapshot.TypeRef("human-answer/v1") {
@@ -989,7 +844,6 @@ type PublishSnapshotStep struct {
 	WorkflowRunID         string                        `json:"workflow_run_id,omitempty"`
 	Validation            string                        `json:"validation,omitempty"`
 	PublishValidation     *PublishValidationRequirement `json:"publish_validation,omitempty"`
-	PRApproval            *PRApprovalPublicationIntent  `json:"pr_approval,omitempty"`
 }
 
 func (step PublishSnapshotStep) validateWire() error {
@@ -1014,27 +868,7 @@ func (step PublishSnapshotStep) validateWire() error {
 		// replaces this sentinel with authenticated build identity.
 		Authority: publisher.Authority{TeamID: 1, TeamName: "server-verified", BuildID: 1, Actor: "server-verified"},
 	}
-	if step.PRApproval != nil {
-		if step.Mode != publisher.ModePullRequest {
-			return fmt.Errorf("publish_snapshot: pr_approval is only valid for pull-request mode")
-		}
-		if err := step.PRApproval.validateWire(); err != nil {
-			return err
-		}
-		if warning, err := ValidateIdentifier(step.Approval); strings.TrimSpace(step.Approval) == "" || err != nil || warning != nil {
-			return fmt.Errorf("publish_snapshot: PR approval artifact is invalid")
-		}
-		if step.WorkflowRunID == "" {
-			return fmt.Errorf("publish_snapshot: PR approval workflow run is required")
-		}
-		if parameter, templated := loadSnapshotParameterName(step.WorkflowRunID); templated {
-			if parameter != "workflow_run_id" {
-				return fmt.Errorf("publish_snapshot: workflow_run_id uses an invalid template parameter")
-			}
-		} else if _, err := snapshot.ParseWorkflowRunID(step.WorkflowRunID); err != nil {
-			return fmt.Errorf("publish_snapshot: workflow_run_id is invalid")
-		}
-	} else if step.Mode == publisher.ModeMerge {
+	if step.Mode == publisher.ModeMerge {
 		if warning, err := ValidateIdentifier(step.Approval); strings.TrimSpace(step.Approval) == "" || err != nil || warning != nil {
 			return fmt.Errorf("publish_snapshot: merge approval artifact is invalid")
 		}
@@ -1063,7 +897,7 @@ func (step PublishSnapshotStep) validateWire() error {
 			ResolvedBy: "server-verified", ResolvedAt: time.Unix(1, 0).UTC(),
 		}
 	} else if step.Approval != "" || step.WorkflowRunID != "" {
-		return fmt.Errorf("publish_snapshot: approval linkage requires merge or pr_approval")
+		return fmt.Errorf("publish_snapshot: approval linkage requires merge")
 	}
 	if err := request.Validate(); err != nil {
 		return fmt.Errorf("publish_snapshot: %w", err)

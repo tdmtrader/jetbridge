@@ -19,30 +19,6 @@ import (
 
 const targetConfigHashDomain = "workflow-target-config/v1\x00"
 
-const (
-	PRMonitorBindingIDSentinel               int64 = 1
-	PRMonitorActionDigestSentinel                  = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
-	PRMonitorReviewWorkflowRunIDSentinel           = "1"
-	PRMonitorAcceptedOutcomeRevisionSentinel int64 = 1
-	PRMonitorDestinationSentinel                   = "github.example/acme/widget"
-	PRMonitorApprovalPolicyVersionSentinel         = "engineering/v3"
-	PRMonitorSourceRefSentinel                     = "refs/heads/agent/pr-revision"
-	PRMonitorTargetRefSentinel                     = "refs/heads/main"
-)
-
-// PRMonitorAuthority is injected only by the binding-owned monitor launcher.
-// Reusable workflow source carries sentinels, never a literal PR identity.
-type PRMonitorAuthority struct {
-	BindingID               int64
-	ActionDigest            string
-	ReviewWorkflowRunID     snapshot.WorkflowRunID
-	AcceptedOutcomeRevision int64
-	Destination             string
-	ApprovalPolicyVersion   string
-	SourceRef               string
-	TargetRef               string
-}
-
 type TargetKind string
 
 const (
@@ -182,200 +158,6 @@ func (rendered RenderedFunction) Clone() (RenderedFunction, error) {
 	value.templateWorkflowVersion = rendered.templateWorkflowVersion
 	value.templateFunctionID = rendered.templateFunctionID
 	return value, nil
-}
-
-// BindPRMonitorAuthority replaces only the typed sentinel identities in
-// PR-approval waits/publications and then seals a per-action template hash.
-// Generic/manual rendering cannot select this path.
-func (rendered RenderedFunction) BindPRMonitorAuthority(
-	originKind string,
-	authority PRMonitorAuthority,
-) (RenderedFunction, error) {
-	if originKind != "pr-monitor" {
-		return RenderedFunction{}, fmt.Errorf(
-			"workflow: PR monitor authority requires monitor origin",
-		)
-	}
-	if authority.BindingID <= 0 ||
-		snapshot.Digest(authority.ActionDigest).Validate() != nil ||
-		authority.ReviewWorkflowRunID.Validate() != nil ||
-		authority.AcceptedOutcomeRevision <= 0 ||
-		!validPRMonitorAuthorityText(authority.Destination, 2048) ||
-		!validPRMonitorAuthorityText(authority.ApprovalPolicyVersion, 128) ||
-		!validPRMonitorAuthorityRef(authority.SourceRef) ||
-		!validPRMonitorAuthorityRef(authority.TargetRef) ||
-		authority.SourceRef == authority.TargetRef {
-		return RenderedFunction{}, fmt.Errorf(
-			"workflow: PR monitor authority is invalid",
-		)
-	}
-	if len(rendered.executionCanonicalConfig) == 0 ||
-		rendered.executionTargetConfigHash == "" ||
-		rendered.templateKind == "" ||
-		rendered.templateWorkflowName == "" ||
-		rendered.templateWorkflowVersion <= 0 {
-		return RenderedFunction{}, fmt.Errorf(
-			"workflow: rendered function has no trusted monitor authority",
-		)
-	}
-	publicCanonical, err := rendered.Config.CanonicalJSON()
-	if err != nil ||
-		!bytes.Equal(publicCanonical, rendered.executionCanonicalConfig) ||
-		rendered.TargetConfigHash != rendered.executionTargetConfigHash {
-		return RenderedFunction{}, fmt.Errorf(
-			"workflow: rendered monitor config changed before authority binding",
-		)
-	}
-	bound, err := rendered.Clone()
-	if err != nil {
-		return RenderedFunction{}, fmt.Errorf(
-			"workflow: clone PR monitor render: %w", err,
-		)
-	}
-	bindAcceptedReview := func(
-		accepted *atc.PRAcceptedReviewIntent,
-	) error {
-		if accepted == nil ||
-			accepted.Review != "accepted-review" ||
-			accepted.Candidate != "accepted-candidate" ||
-			accepted.Validation != "accepted-validation" ||
-			accepted.ReviewWorkflowRunID !=
-				PRMonitorReviewWorkflowRunIDSentinel ||
-			accepted.OutcomeRevision !=
-				PRMonitorAcceptedOutcomeRevisionSentinel {
-			return fmt.Errorf(
-				"workflow: authored accepted-review identity is not the monitor sentinel",
-			)
-		}
-		accepted.ReviewWorkflowRunID =
-			authority.ReviewWorkflowRunID.String()
-		accepted.OutcomeRevision =
-			authority.AcceptedOutcomeRevision
-		return nil
-	}
-	bindIntent := func(
-		bindingID *int64,
-		actionDigest *string,
-		accepted *atc.PRAcceptedReviewIntent,
-	) error {
-		if *bindingID != PRMonitorBindingIDSentinel ||
-			*actionDigest != PRMonitorActionDigestSentinel {
-			return fmt.Errorf(
-				"workflow: authored PR approval identity is not the monitor sentinel",
-			)
-		}
-		*bindingID = authority.BindingID
-		*actionDigest = authority.ActionDigest
-		return bindAcceptedReview(accepted)
-	}
-	bindTarget := func(destination, approvalPolicyVersion *string) error {
-		if *destination != PRMonitorDestinationSentinel ||
-			*approvalPolicyVersion !=
-				PRMonitorApprovalPolicyVersionSentinel {
-			return fmt.Errorf(
-				"workflow: authored PR publication target is not the monitor sentinel",
-			)
-		}
-		*destination = authority.Destination
-		*approvalPolicyVersion = authority.ApprovalPolicyVersion
-		return nil
-	}
-	for jobIndex := range bound.Config.Jobs {
-		for stepIndex := range bound.Config.Jobs[jobIndex].PlanSequence {
-			config := bound.Config.Jobs[jobIndex].PlanSequence[stepIndex].Config
-			if config == nil {
-				return RenderedFunction{}, fmt.Errorf(
-					"workflow: PR monitor render has an invalid step",
-				)
-			}
-			err := config.Visit(atc.StepRecursor{
-				OnAwaitSnapshot: func(step *atc.AwaitSnapshotStep) error {
-					if step.PRApproval == nil {
-						return nil
-					}
-					if err := bindTarget(
-						&step.PRApproval.Destination,
-						&step.PRApproval.ApprovalPolicyVersion,
-					); err != nil {
-						return err
-					}
-					return bindIntent(
-						&step.PRApproval.BindingID,
-						&step.PRApproval.ActionDigest,
-						step.PRApproval.AcceptedReview,
-					)
-				},
-				OnPublishSnapshot: func(step *atc.PublishSnapshotStep) error {
-					if step.PRApproval == nil {
-						return nil
-					}
-					if err := bindTarget(
-						&step.Destination,
-						&step.ApprovalPolicyVersion,
-					); err != nil {
-						return err
-					}
-					if step.Parameters == nil ||
-						step.Parameters["source_branch"] !=
-							PRMonitorSourceRefSentinel ||
-						step.Parameters["target_branch"] !=
-							PRMonitorTargetRefSentinel {
-						return fmt.Errorf(
-							"workflow: authored PR publication refs are not the monitor sentinels",
-						)
-					}
-					step.Parameters["source_branch"] =
-						authority.SourceRef
-					step.Parameters["target_branch"] =
-						authority.TargetRef
-					return bindIntent(
-						&step.PRApproval.BindingID,
-						&step.PRApproval.ActionDigest,
-						step.PRApproval.AcceptedReview,
-					)
-				},
-			})
-			if err != nil {
-				return RenderedFunction{}, err
-			}
-		}
-	}
-	hash, err := RenderedTargetConfigHash(
-		bound.Config,
-		bound.DevValidationProfiles,
-		bound.DevValidationProvenanceHash,
-	)
-	if err != nil {
-		return RenderedFunction{}, err
-	}
-	templateName, err := TemplateName(
-		bound.templateKind,
-		bound.templateWorkflowName,
-		bound.templateWorkflowVersion,
-		bound.templateFunctionID,
-		hash,
-	)
-	if err != nil {
-		return RenderedFunction{}, err
-	}
-	bound.TargetConfigHash = hash
-	bound.TemplateName = templateName
-	if err := bound.refreshExecutionAuthority(); err != nil {
-		return RenderedFunction{}, err
-	}
-	return bound, nil
-}
-
-func validPRMonitorAuthorityText(value string, maximum int) bool {
-	return value != "" && value == strings.TrimSpace(value) &&
-		len(value) <= maximum && !strings.ContainsRune(value, '\x00')
-}
-
-func validPRMonitorAuthorityRef(value string) bool {
-	return strings.HasPrefix(value, "refs/heads/") &&
-		value == strings.TrimSpace(value) &&
-		len(value) <= 512 &&
-		!strings.ContainsAny(value, "\x00\r\n \t")
 }
 
 func (rendered *RenderedFunction) refreshExecutionAuthority() error {
@@ -1130,11 +912,6 @@ func validateImmutableRuntimeStep(step atc.Step, path string, acrossVars map[str
 		if copy.WorkflowRunID == "((workflow_run_id))" {
 			copy.WorkflowRunID = "1"
 		}
-		if copy.PRApproval != nil && copy.WorkflowRunID == "" {
-			// PR approval requires a workflow-run identity on the wire, but
-			// reusable source cannot author the renderer-owned token.
-			copy.WorkflowRunID = "1"
-		}
 		if err := rejectRuntimeInterpolationExcept(copy, path+".publish_snapshot", acrossVars); err != nil {
 			return fmt.Errorf("workflow: %w", err)
 		}
@@ -1352,9 +1129,6 @@ func rejectReservedTokenInjection(function *FunctionConfig, signature PublicSign
 			if leaf.WorkflowRunID == "((workflow_run_id))" {
 				leaf.WorkflowRunID = "1"
 			}
-			if leaf.PRApproval != nil && leaf.WorkflowRunID == "" {
-				leaf.WorkflowRunID = "1"
-			}
 		}
 		return nil
 	}); err != nil {
@@ -1449,8 +1223,7 @@ func annotateAwaitExecution(function *FunctionConfig, workflowDefinitionID int) 
 func annotatePublishExecution(function *FunctionConfig) error {
 	return walkFunctionSteps(function.Plan, func(step atc.Step, path string, _ bool) error {
 		publish, ok := step.Config.(*atc.PublishSnapshotStep)
-		if !ok || publish.Mode != publisher.ModeMerge &&
-			publish.PRApproval == nil {
+		if !ok || publish.Mode != publisher.ModeMerge {
 			return nil
 		}
 		if publish.WorkflowRunID != "" && publish.WorkflowRunID != "((workflow_run_id))" {

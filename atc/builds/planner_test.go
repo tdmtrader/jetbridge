@@ -1620,57 +1620,6 @@ var factoryTests = []PlannerTest{
 		}`,
 	},
 	{
-		Title: "await_snapshot provider-native PR approval step",
-
-		Config: &atc.AwaitSnapshotStep{
-			Name: "reapproval",
-			PRApproval: &atc.PRApprovalIntent{
-				BindingID: 41, ActionDigest: "sha256:1111111111111111111111111111111111111111111111111111111111111111",
-				Observation: "pull-request", Candidate: "candidate",
-				Impact: "publish-impact", Response: "response",
-				Destination:           "github.example/team/repo",
-				ApprovalPolicyVersion: "engineering/v3", Prompt: "Approve this exact revision?",
-				AcceptedReview: &atc.PRAcceptedReviewIntent{
-					Review: "accepted-review", Candidate: "accepted-candidate", Validation: "accepted-validation",
-					ReviewWorkflowRunID: "7", OutcomeRevision: 2,
-				},
-			},
-			Validation: "validation", Type: snapshot.TypeRef("human-answer/v1"),
-			OnTimeout:            atc.AwaitSnapshotOnTimeoutFail,
-			WorkflowDefinitionID: 7, WorkflowRunID: "19",
-		},
-
-		PlanJSON: `{
-			"id": "(unique)",
-			"await_snapshot": {
-				"name": "reapproval",
-				"pr_approval": {
-					"binding_id": 41,
-					"action_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
-					"observation": "pull-request",
-					"candidate": "candidate",
-					"impact": "publish-impact",
-					"response": "response",
-					"destination": "github.example/team/repo",
-					"approval_policy_version": "engineering/v3",
-					"prompt": "Approve this exact revision?",
-					"accepted_review": {
-						"review": "accepted-review",
-						"candidate": "accepted-candidate",
-						"validation": "accepted-validation",
-						"review_workflow_run_id": "7",
-						"outcome_revision": 2
-					}
-				},
-				"validation": "validation",
-				"type": "human-answer/v1",
-				"on_timeout": "fail",
-				"workflow_definition_id": 7,
-				"workflow_run_id": "19"
-			}
-		}`,
-	},
-	{
 		Title: "publish_snapshot step",
 
 		Config: &atc.PublishSnapshotStep{
@@ -1693,58 +1642,6 @@ var factoryTests = []PlannerTest{
 				"mode": "pull-request",
 				"parameters": {"source_branch":"agent/change","target_branch":"main"},
 				"approval_policy_version": "engineering/v2"
-			}
-		}`,
-	},
-	{
-		Title: "publish_snapshot provider-native PR approval step",
-
-		Config: &atc.PublishSnapshotStep{
-			Name: "publish-change", Publisher: publisher.GitPublisher, Input: "change",
-			InputType: snapshot.TypeRef("repository-change/v1"), Destination: "github.example/team/repo",
-			Mode: publisher.ModePullRequest, Parameters: map[string]string{
-				"source_branch": "agent/change", "target_branch": "main",
-			},
-			ApprovalPolicyVersion: "engineering/v3", Approval: "reapproval",
-			WorkflowRunID: "19", Validation: "validation",
-			PRApproval: &atc.PRApprovalPublicationIntent{
-				BindingID: 41, ActionDigest: "sha256:1111111111111111111111111111111111111111111111111111111111111111",
-				Observation: "pull-request", Impact: "publish-impact", Response: "response",
-				AcceptedReview: &atc.PRAcceptedReviewIntent{
-					Review: "accepted-review", Candidate: "accepted-candidate", Validation: "accepted-validation",
-					ReviewWorkflowRunID: "7", OutcomeRevision: 2,
-				},
-			},
-		},
-
-		PlanJSON: `{
-			"id": "(unique)",
-			"publish_snapshot": {
-				"name": "publish-change",
-				"publisher": "git-publisher/v1",
-				"input": "change",
-				"input_type": "repository-change/v1",
-				"destination": "github.example/team/repo",
-				"mode": "pull-request",
-				"parameters": {"source_branch":"agent/change","target_branch":"main"},
-				"approval_policy_version": "engineering/v3",
-				"approval": "reapproval",
-				"workflow_run_id": "19",
-				"validation": "validation",
-				"pr_approval": {
-					"binding_id": 41,
-					"action_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
-					"observation": "pull-request",
-					"impact": "publish-impact",
-					"response": "response",
-					"accepted_review": {
-						"review": "accepted-review",
-						"candidate": "accepted-candidate",
-						"validation": "accepted-validation",
-						"review_workflow_run_id": "7",
-						"outcome_revision": 2
-					}
-				}
 			}
 		}`,
 	},

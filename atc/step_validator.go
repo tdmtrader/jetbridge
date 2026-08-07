@@ -621,19 +621,6 @@ func (validator *StepValidator) VisitAwaitSnapshot(step *AwaitSnapshotStep) erro
 	names := map[string]string{"output": step.Name}
 	if step.MergeApproval != nil {
 		names["merge approval input"] = step.MergeApproval.Input
-	} else if step.PRApproval != nil {
-		names["PR approval observation"] = step.PRApproval.Observation
-		names["PR approval candidate"] = step.PRApproval.Candidate
-		names["PR approval impact"] = step.PRApproval.Impact
-		names["PR approval response"] = step.PRApproval.Response
-		names["PR approval validation"] = step.Validation
-		if step.PRApproval.AcceptedReview == nil {
-			validator.recordError("accepted review authority is required")
-		} else {
-			names["accepted review"] = step.PRApproval.AcceptedReview.Review
-			names["accepted review candidate"] = step.PRApproval.AcceptedReview.Candidate
-			names["accepted review validation"] = step.PRApproval.AcceptedReview.Validation
-		}
 	} else {
 		names["question"] = step.Question
 	}
@@ -664,20 +651,6 @@ func (validator *StepValidator) VisitPublishSnapshot(step *PublishSnapshotStep) 
 	defer validator.popContext()
 
 	names := map[string]string{"name": step.Name, "input": step.Input}
-	if step.PRApproval != nil {
-		names["PR approval artifact"] = step.Approval
-		names["PR approval observation"] = step.PRApproval.Observation
-		names["PR approval impact"] = step.PRApproval.Impact
-		names["PR approval response"] = step.PRApproval.Response
-		names["PR approval validation"] = step.Validation
-		if step.PRApproval.AcceptedReview == nil {
-			validator.recordError("accepted review authority is required")
-		} else {
-			names["accepted review"] = step.PRApproval.AcceptedReview.Review
-			names["accepted review candidate"] = step.PRApproval.AcceptedReview.Candidate
-			names["accepted review validation"] = step.PRApproval.AcceptedReview.Validation
-		}
-	}
 	for label, name := range names {
 		warning, err := ValidateIdentifier(name, validator.context...)
 		if err != nil {
