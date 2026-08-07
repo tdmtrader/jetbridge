@@ -296,7 +296,7 @@ BuildForAPI(int) (db.BuildForAPI, bool, error)
 - Consumes: all exact interfaces in the inventory, `db.AgentWorkflowRunsFactory.Transition`, `Get`, and `ValidateCancellationTarget`.
 - Produces: `useRealWorkflowRunDB(*testing.T) workflowRunDB`, `createDurableRun`, and `createLinkedExecution(*testing.T, workflowRunDB) (db.AgentWorkflowRun, db.BuildForAPI)`.
 
-- [ ] **Step 1: Add `TestMain`, the mutex lock DB, and the complete fixture.**
+- [x] **Step 1: Add `TestMain`, the mutex lock DB, and the complete fixture.**
 
   `agent/workflowrun` has no package `TestMain`; add it in `real_db_test.go`:
 
@@ -333,7 +333,7 @@ BuildForAPI(int) (db.BuildForAPI, bool, error)
 
   Create `Team` through the same `Teams` factory returned in the struct. No factory or row comes from another connection or clone.
 
-- [ ] **Step 2: Implement a fully linked durable execution helper.**
+- [x] **Step 2: Implement a fully linked durable execution helper.**
 
   `createDurableRun(t, fixture)` returns `(db.AgentWorkflowRun, workflow.RenderedFunction)`. Insert the definition first, then render with that exact database ID and create the durable row:
 
@@ -454,7 +454,7 @@ BuildForAPI(int) (db.BuildForAPI, bool, error)
 
   Transition `admitting -> running` with `fixture.Runs.Transition`, require `changed==true`, reload again, require `StatusRunning`, load the selected row with `fixture.Builds.BuildForAPI`, and return the reloaded run plus real selected build. `CreateRunForWorkflowRun` commits the link and entry build in one transaction; the later status transition is a separate durable operation and must not be described as part of that transaction.
 
-- [ ] **Step 3: Add selected-build assertions against the old dependencies and observe RED.**
+- [x] **Step 3: Add selected-build assertions against the old dependencies and observe RED.**
 
   In `TestCancelerAbortsOnlyExactSelectedBuild`, create the linked real execution but initially invoke the current stub store/fake lookup canceler. Parameterize that old arrangement from the real fixture rather than retaining its literal `teamID=9`, `runID=71`, and `buildID=313`: copy the reloaded linked run into `running`, copy it again with `StatusCanceling`, make every store callback validate `fixture.Team.ID()`, `running.ID`, and `*running.PlannedBuildID`, and configure the fake lookup/build to return those same real build and team IDs. Call `Cancel(ctx, fixture.Team.ID(), running.ID)`. Assert the real selected row's persisted `aborted` column is true. The old dependencies mark only their fake value, so this assertion fails for the claimed reason rather than at scope validation or against an unrelated synthetic run.
 
@@ -462,7 +462,7 @@ BuildForAPI(int) (db.BuildForAPI, bool, error)
 
   Expected: FAIL because the persisted selected build remains unaborted.
 
-- [ ] **Step 4: Rewire the linked and unlinked ownership tests.**
+- [x] **Step 4: Rewire the linked and unlinked ownership tests.**
 
   For the linked case pass `fixture.Runs` and `fixture.Builds` to `NewCanceler`. The helper returns a `running` durable row; `Canceler.Cancel` itself must perform `running -> canceling`, validate the full ownership join, mark the selected build aborted, reload the durable run, and return `canceling`. Assert the persisted `builds.aborted` column and full returned run ID/team/status.
 
@@ -477,7 +477,7 @@ BuildForAPI(int) (db.BuildForAPI, bool, error)
 
   This proves rejection comes from the missing pipeline-run/instance/job ownership chain, not from a pending-build abort rollback.
 
-- [ ] **Step 5: Replace generated lookup-only fakes with exact local adapters.**
+- [x] **Step 5: Replace generated lookup-only fakes with exact local adapters.**
 
   Define:
 
@@ -498,7 +498,7 @@ BuildForAPI(int) (db.BuildForAPI, bool, error)
 
   Use a healthy real build embedded in `wrongIdentityBuild` for the identity mismatch and `buildLookupStub` only for the deterministic lookup error. A missing selected build is ordinary persisted state: create an admitting durable row, SQL-set a positive nonexistent `planned_build_id` (the live schema intentionally dropped that FK), transition it to canceling, and use the real `fixture.Builds`; require Cancel returns the unchanged canceling run. Keep `cancellationStoreStub` for CAS ordering, terminal conflicts, durable dependency errors, and waits. No generated `dbfakes` constructor is needed in `canceler_test.go`.
 
-- [ ] **Step 6: Run GREEN, linkage sensitivity, and commit.**
+- [x] **Step 6: Run GREEN, linkage sensitivity, and commit.**
 
   Run: `go test ./agent/workflowrun -run TestCanceler -count=1`
 
