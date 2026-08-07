@@ -171,7 +171,9 @@ var _ = Describe("Migration", func() {
 				Context("when the migrations_history table already exists", func() {
 					It("does not repopulate the migrations_history table", func() {
 						SetupMigrationsHistoryTableToExistAtVersion(db, 8878)
-						startTime := time.Now()
+						var originalTimeStamp sql.NullTime
+						err = db.QueryRow("SELECT tstamp FROM migrations_history WHERE version=8878").Scan(&originalTimeStamp)
+						Expect(err).NotTo(HaveOccurred())
 						migrator := migration.NewMigrator(db, lockFactory)
 
 						err = migrator.Up(nil, nil)
@@ -187,7 +189,7 @@ var _ = Describe("Migration", func() {
 							numRows++
 						}
 						Expect(numRows).To(Equal(1))
-						Expect(timeStamp.Time.Before(startTime)).To(Equal(true))
+						Expect(timeStamp).To(Equal(originalTimeStamp))
 					})
 				})
 			})
