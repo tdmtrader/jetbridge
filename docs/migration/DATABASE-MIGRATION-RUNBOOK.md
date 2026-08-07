@@ -181,6 +181,10 @@ The appended block is operationally significant throughout:
 - `1773106157` creates the immutable workflow-run node-occurrence projection,
   frozen at run finalization so per-node history survives build and template
   GC, and adds the plan identity that joins a publication to its node.
+- `1773106160` removes the `1773106151`–`1773106154` pull-request bindings and
+  the `pr_binding_id` discriminator, restoring
+  `UNIQUE (team_id, workflow_definition_id)` on the resource-source pipeline
+  registry. It refuses to run while any binding row exists.
 
 ### Option B: Automatic on Startup
 

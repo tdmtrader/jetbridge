@@ -79,7 +79,12 @@ v8.0.1:1765921815
 # policy and rejects merely same-run publication provenance; 1773106155 adds
 # the team-bound, immutable child-execution ledger used by the
 # agent broker without placing prompts or provider credentials in PostgreSQL.
-JETBRIDGE_VERSION=1773106165
+# 1773106166 removes the provider-native pull-request bindings added by
+# 1773106151-54 along with the pr_binding_id discriminator, restoring one
+# definition-owned registration per workflow definition. It refuses to run
+# while any binding row exists; 1773106154 already proved every database at
+# or past it is empty, so no operator action is expected.
+JETBRIDGE_VERSION=1773106166
 
 # Minimum supported source version (v6.x)
 MIN_SUPPORTED_VERSION=1601993582
