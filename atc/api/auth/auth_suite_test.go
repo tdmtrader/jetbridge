@@ -40,23 +40,21 @@ var _ = BeforeEach(func() {
 	dbConn = nil
 	lockConns = [lock.FactoryCount]*sql.DB{}
 	postgresRunner.CreateTestDBFromTemplate()
-	DeferCleanup(func() {
-		for _, lockConn := range lockConns {
-			if lockConn != nil {
-				Expect(lockConn.Close()).To(Succeed())
-			}
-		}
-		if dbConn != nil {
-			Expect(dbConn.Close()).To(Succeed())
-		}
-		postgresRunner.DropTestDB()
-	})
+	DeferCleanup(postgresRunner.DropTestDB)
 
 	dbConn = postgresRunner.OpenConn()
+	conn := dbConn
+	DeferCleanup(func() {
+		Expect(conn.Close()).To(Succeed())
+	})
 	db.CleanupBaseResourceTypesCache()
 
 	for i := 0; i < lock.FactoryCount; i++ {
 		lockConns[i] = postgresRunner.OpenSingleton()
+		lockConn := lockConns[i]
+		DeferCleanup(func() {
+			Expect(lockConn.Close()).To(Succeed())
+		})
 	}
 	ignore := func(lager.Logger, lock.LockID) {}
 	lockFactory = lock.NewLockFactory(lockConns, ignore, ignore)
