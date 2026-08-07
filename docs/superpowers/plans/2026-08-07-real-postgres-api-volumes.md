@@ -65,7 +65,8 @@ corpus files. Do not push.
   `db.NewVolumeRepository` from it, close it, install that repository into a
   copied API dependency set, and assert the request returns 500. Close this
   deliberately doomed connection exactly once: `db.DbConn.Close` also closes
-  its listener and a second close can panic.
+  its listener and a second close can panic. Register cleanup for every custom
+  `newAPIServer(copiedDeps)` instance.
 - [ ] Add a narrow test-only repository decorator that embeds
   `db.VolumeRepository`, delegates `GetTeamVolumes`, then synchronously invokes
   an `afterGet` callback before returning the scanned real volumes.
@@ -96,8 +97,9 @@ corpus files. Do not push.
 - [ ] Inspect clone lifecycle, secondary-connection cleanup, transaction
   completion, cross-team exclusion, persisted reloads, and response assertions.
 - [ ] Run `git diff --check`, independently review the implementation with no
-  unresolved Critical, Important, or Minor findings, and record exact evidence
-  here.
+  unresolved Critical, Important, or Minor findings, run
+  `git status --short` to expose untracked/unrelated files, and record exact
+  evidence here.
 - [ ] Commit the implementation as
   `test(api): persist volume listing state`, then commit plan closure as
   `docs: record api volumes postgres conversion`.
