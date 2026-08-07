@@ -10,7 +10,6 @@ import (
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/db/dbtest"
 	"github.com/concourse/concourse/atc/db/lock"
 	"github.com/concourse/concourse/atc/postgresrunner"
@@ -107,19 +106,6 @@ func TestJetbridge(t *testing.T) {
 type noopDelegate struct{}
 
 func (d *noopDelegate) BuildStartTime() time.Time { return time.Time{} }
-
-// setupFakeDBContainer wires up a FakeWorker so that FindOrCreateContainer
-// creates a container with the given handle. This pattern is repeated in
-// nearly every test and extracted here for reuse.
-func setupFakeDBContainer(fakeDBWorker *dbfakes.FakeWorker, handle string) {
-	fakeCreatingContainer := new(dbfakes.FakeCreatingContainer)
-	fakeCreatingContainer.HandleReturns(handle)
-	fakeCreatedContainer := new(dbfakes.FakeCreatedContainer)
-	fakeCreatedContainer.HandleReturns(handle)
-	fakeCreatingContainer.CreatedReturns(fakeCreatedContainer, nil)
-	fakeDBWorker.FindContainerReturns(nil, nil, nil)
-	fakeDBWorker.CreateContainerReturns(fakeCreatingContainer, nil)
-}
 
 // expectSupervisedExec asserts that a task exec command was wrapped in the
 // in-pod task supervisor, embedding the original command as quoted words.
