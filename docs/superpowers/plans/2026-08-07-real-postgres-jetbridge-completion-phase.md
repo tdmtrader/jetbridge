@@ -131,16 +131,16 @@ and container metadata type after `FindOrCreateContainer`.
 Do not replace fake clientsets, `fakeExecExecutor`, pod status mutation,
 runtime delegate, tracing, or command/stream failure controls.
 
-- [ ] Record the assertion-first RED result.
-- [ ] Run focused GREEN:
+- [x] Record the assertion-first RED result.
+- [x] Run focused GREEN:
   `ginkgo --focus='(Resource Step Execution|Process|\[PE-|\[SC-|\[RF-|\[OE|\[P3])' ./atc/worker/jetbridge`.
-- [ ] Sensitivity: temporarily query the representative container with a
+- [x] Sensitivity: temporarily query the representative container with a
   different handle and prove the persisted assertion fails; restore and pass.
-- [ ] Run `gofmt`, `go vet ./atc/worker/jetbridge`, and `git diff --check` on
+- [x] Run `gofmt`, `go vet ./atc/worker/jetbridge`, and `git diff --check` on
   the three files.
-- [ ] Confirm the exact constructor/import/helper payoff and obtain an
+- [x] Confirm the exact constructor/import/helper payoff and obtain an
   independent review.
-- [ ] Commit only these files as
+- [x] Commit only these files as
   `test(jetbridge): persist runtime workers and containers`.
 
 ## Task 3: Persist artifact and volume lifecycles
