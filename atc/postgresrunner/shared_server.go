@@ -20,7 +20,10 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-const DefaultAdminDSN = "host=127.0.0.1 port=15432 user=postgres dbname=postgres sslmode=disable"
+const (
+	DefaultAdminDSN      = "host=127.0.0.1 port=15432 user=postgres dbname=postgres sslmode=disable"
+	reaperAdvisoryLockID = int64(18932900154397524)
+)
 
 var (
 	identifierPattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,62}$`)
@@ -194,11 +197,11 @@ func (r *Runner) CreateSuiteTemplate(ctx context.Context) (config SuiteConfig, e
 	if err := admin.Ping(ctx); err != nil {
 		return SuiteConfig{}, fmt.Errorf("shared PostgreSQL unavailable: %w; run make test-postgres-up", err)
 	}
-	if _, err := admin.Exec(ctx, `SELECT pg_advisory_lock(18932900154397524)`); err != nil {
+	if _, err := admin.Exec(ctx, `SELECT pg_advisory_lock($1)`, reaperAdvisoryLockID); err != nil {
 		return SuiteConfig{}, fmt.Errorf("acquire shared PostgreSQL reaper lock: %w", err)
 	}
 	defer func() {
-		_, unlockErr := admin.Exec(context.Background(), `SELECT pg_advisory_unlock(18932900154397524)`)
+		_, unlockErr := admin.Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, reaperAdvisoryLockID)
 		if err == nil && unlockErr != nil {
 			err = fmt.Errorf("release shared PostgreSQL reaper lock: %w", unlockErr)
 		}
@@ -536,10 +539,10 @@ func reapExpiredRuns(ctx context.Context, adminDSN string, now time.Time) error 
 		return fmt.Errorf("connect shared PostgreSQL admin: %w", err)
 	}
 	defer admin.Close(context.Background())
-	if _, err := admin.Exec(ctx, `SELECT pg_advisory_lock(18932900154397524)`); err != nil {
+	if _, err := admin.Exec(ctx, `SELECT pg_advisory_lock($1)`, reaperAdvisoryLockID); err != nil {
 		return fmt.Errorf("acquire shared PostgreSQL reaper lock: %w", err)
 	}
-	defer admin.Exec(context.Background(), `SELECT pg_advisory_unlock(18932900154397524)`)
+	defer admin.Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, reaperAdvisoryLockID)
 	return reapExpiredRunsOnConn(ctx, admin, now)
 }
 

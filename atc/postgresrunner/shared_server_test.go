@@ -3,6 +3,7 @@ package postgresrunner
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"fmt"
 	"os"
@@ -435,15 +436,33 @@ func TestCleanupSuiteDiscoversResidualClonesBeforeDroppingTemplate(t *testing.T)
 
 func TestReapExpiredRunsDropsOnlyOwnedPrefixesOlderThan24Hours(t *testing.T) {
 	adminDSN := requireSharedPostgres(t)
+	admin := openPGX(t, adminDSN)
+	if _, err := admin.Exec(context.Background(), `SELECT pg_advisory_lock($1)`, reaperAdvisoryLockID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if _, err := admin.Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, reaperAdvisoryLockID); err != nil {
+			t.Errorf("unlock production reaper fixture: %v", err)
+		}
+	})
+
 	now := time.Unix(1_786_000_000, 0)
-	oldRun := fmt.Sprintf("t%d_p1_aaaaaaaa", now.Add(-25*time.Hour).Unix())
-	newRun := fmt.Sprintf("t%d_p1_bbbbbbbb", now.Add(-23*time.Hour).Unix())
+	pid := os.Getpid()
+	oldRun, err := newRunID(now.Add(-25*time.Hour), pid, rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newRun, err := newRunID(now.Add(-23*time.Hour), pid, rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	processSuffix := oldRun[len(oldRun)-8:]
 	oldTemplate := "cc_tpl_" + oldRun
 	oldClone := "cc_db_" + oldRun + "_n1_s1"
 	newTemplate := "cc_tpl_" + newRun
-	unrelated := "cc_unrelated_database"
-	overflowEpoch := "cc_tpl_t9999999999999999999_p1_cccccccc"
-	zeroPID := fmt.Sprintf("cc_tpl_t%d_p0_dddddddd", now.Add(-25*time.Hour).Unix())
+	unrelated := fmt.Sprintf("cc_unrelated_database_%d", pid)
+	overflowEpoch := fmt.Sprintf("cc_tpl_t9999999999999999999_p%d_%s", pid, processSuffix)
+	zeroPID := fmt.Sprintf("cc_tpl_t%d_p0_%s", now.Add(-25*time.Hour).Unix(), processSuffix)
 	overflowNode := "cc_db_" + oldRun + "_n9223372036854775808_s1"
 	overflowSerial := "cc_db_" + oldRun + "_n1_s18446744073709551616"
 	for _, name := range []string{oldTemplate, oldClone, newTemplate, unrelated, overflowEpoch, zeroPID, overflowNode, overflowSerial} {
@@ -452,7 +471,7 @@ func TestReapExpiredRunsDropsOnlyOwnedPrefixesOlderThan24Hours(t *testing.T) {
 		t.Cleanup(func() { dropDatabaseForTest(t, adminDSN, name) })
 	}
 
-	if err := reapExpiredRuns(context.Background(), adminDSN, now); err != nil {
+	if err := reapExpiredRunsOnConn(context.Background(), admin, now); err != nil {
 		t.Fatal(err)
 	}
 	if databaseExists(t, adminDSN, oldClone) || databaseExists(t, adminDSN, oldTemplate) {
@@ -590,7 +609,7 @@ func TestCleanupDoesNotTreatUnderscoresInRunIDAsWildcards(t *testing.T) {
 func TestReaperWaitsForTheMachineWideAdvisoryLock(t *testing.T) {
 	adminDSN := requireSharedPostgres(t)
 	locker := openPGX(t, adminDSN)
-	if _, err := locker.Exec(context.Background(), `SELECT pg_advisory_lock(18932900154397524)`); err != nil {
+	if _, err := locker.Exec(context.Background(), `SELECT pg_advisory_lock($1)`, reaperAdvisoryLockID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -599,7 +618,7 @@ func TestReaperWaitsForTheMachineWideAdvisoryLock(t *testing.T) {
 	if err := reapExpiredRuns(short, adminDSN, time.Now()); err == nil {
 		t.Fatal("reaper entered while advisory lock was held")
 	}
-	if _, err := locker.Exec(context.Background(), `SELECT pg_advisory_unlock(18932900154397524)`); err != nil {
+	if _, err := locker.Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, reaperAdvisoryLockID); err != nil {
 		t.Fatal(err)
 	}
 	if err := reapExpiredRuns(context.Background(), adminDSN, time.Now()); err != nil {

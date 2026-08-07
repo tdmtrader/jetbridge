@@ -1,14 +1,15 @@
 package postgresrunner_test
 
 import (
+	"reflect"
+	"sort"
+	"testing"
+
 	"github.com/concourse/concourse/atc/postgresrunner"
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
 )
 
-var _ = Describe("ExtractQueries", func() {
-	It("parses queries out of a top-level query", func() {
-		query := `WITH abc AS (
+func TestExtractQueriesParsesTopLevelQuery(t *testing.T) {
+	query := `WITH abc AS (
   SELECT def FROM (SELECT 1)
 ), ghi AS (
   SELECT blah
@@ -21,17 +22,22 @@ JOIN other ON col1 = (SELECT other_col FROM something)
 	union
 SELECT something_else FROM a_table`
 
-		Expect(postgresrunner.ExtractQueries(query)).To(ConsistOf(
-			`WITH abc AS (...), ghi AS (...)
+	want := []string{
+		`WITH abc AS (...), ghi AS (...)
 SELECT who, cares
 FROM something
 JOIN other ON col1 = (...)`,
-			`SELECT something_else FROM a_table`,
-			`SELECT other_col FROM something`,
-			`SELECT def FROM (...)`,
-			`SELECT blah`,
-			`SELECT bloo`,
-			`SELECT 1`,
-		))
-	})
-})
+		`SELECT something_else FROM a_table`,
+		`SELECT other_col FROM something`,
+		`SELECT def FROM (...)`,
+		`SELECT blah`,
+		`SELECT bloo`,
+		`SELECT 1`,
+	}
+	got := postgresrunner.ExtractQueries(query)
+	sort.Strings(got)
+	sort.Strings(want)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("queries = %#v, want %#v", got, want)
+	}
+}
