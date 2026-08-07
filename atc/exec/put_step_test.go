@@ -16,7 +16,6 @@ import (
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/exec"
 	"github.com/concourse/concourse/atc/exec/build"
 	"github.com/concourse/concourse/atc/exec/execfakes"
@@ -430,8 +429,8 @@ var _ = Describe("PutStep", func() {
 
 	Context("when using a custom resource type", func() {
 		var (
-			fetchedImageSpec       runtime.ImageSpec
-			fakeImageResourceCache *dbfakes.FakeResourceCache
+			fetchedImageSpec   runtime.ImageSpec
+			imageResourceCache db.ResourceCache
 		)
 
 		BeforeEach(func() {
@@ -461,7 +460,7 @@ var _ = Describe("PutStep", func() {
 				ImageArtifact: runtimetest.NewVolume("some-volume"),
 			}
 
-			fakeDelegate.FetchImageReturns(fetchedImageSpec, fakeImageResourceCache, nil)
+			fakeDelegate.FetchImageReturns(fetchedImageSpec, imageResourceCache, nil)
 		})
 
 		It("fetches the resource type image and uses it for the container", func() {
@@ -489,7 +488,7 @@ var _ = Describe("PutStep", func() {
 			Expect(fakeDelegate.SaveOutputCallCount()).To(Equal(1))
 
 			_, _, _, irc, _ := fakeDelegate.SaveOutputArgsForCall(0)
-			Expect(irc).To(Equal(fakeImageResourceCache))
+			Expect(irc).To(BeNil())
 		})
 
 		Context("when the resource type is privileged", func() {
