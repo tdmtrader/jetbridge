@@ -346,13 +346,15 @@ var _ = Describe("WorkerFactory", func() {
 			}
 			build, err = defaultTeam.CreateOneOffBuild()
 			Expect(err).ToNot(HaveOccurred())
+			otherTeam, err := teamFactory.CreateTeam(atc.Team{Name: "other-team"})
+			Expect(err).ToNot(HaveOccurred())
 
 			// buildStepContainerOwner.Find/Create return exactly the
 			// build_id/plan_id/team_id map the fakes were stubbed to return
 			// (container_owner.go:123-136), so these are the same rows with the
 			// real type deciding the columns.
-			owner = db.NewBuildStepContainerOwner(build.ID(), "simple-plan", 1)
-			otherTeamOwner = db.NewBuildStepContainerOwner(build.ID(), "simple-plan", 2)
+			owner = db.NewBuildStepContainerOwner(build.ID(), "simple-plan", defaultTeam.ID())
+			otherTeamOwner = db.NewBuildStepContainerOwner(build.ID(), "simple-plan", otherTeam.ID())
 		})
 
 		Context("when there are check containers", func() {
@@ -483,7 +485,7 @@ var _ = Describe("WorkerFactory", func() {
 
 			Context("when there is no container", func() {
 				It("returns nil", func() {
-					bogusOwner := db.NewBuildStepContainerOwner(build.ID()+1, "how-could-this-happen-to-me", 1)
+					bogusOwner := db.NewBuildStepContainerOwner(build.ID()+1, "how-could-this-happen-to-me", defaultTeam.ID())
 
 					workers, err := workerFactory.FindWorkersForContainerByOwner(bogusOwner)
 					Expect(err).ToNot(HaveOccurred())
@@ -521,7 +523,7 @@ var _ = Describe("WorkerFactory", func() {
 			// that carries a build_id and one that does not. In production the
 			// second is a check container, owned by a resource config check
 			// session -- which is where the fake's `"build_id": nil` came from.
-			buildOwner = db.NewBuildStepContainerOwner(build.ID(), "simple-plan", 1)
+			buildOwner = db.NewBuildStepContainerOwner(build.ID(), "simple-plan", defaultTeam.ID())
 
 			rc, err := resourceConfigFactory.FindOrCreateResourceConfig(
 				defaultResource.Type(), defaultResource.Source(), nil,
