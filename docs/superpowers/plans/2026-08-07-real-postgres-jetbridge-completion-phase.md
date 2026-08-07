@@ -306,12 +306,12 @@ team data. For the direct SaveWorker failure use a production factory backed
 by `closedJetbridgeCloneConn()`. Keep `gcfakes.FakeDestroyer`; it is a non-DB
 policy/runtime seam.
 
-- [ ] Add one persisted reaper/registrar outcome assertion and capture RED.
-- [ ] Run `ginkgo --focus='(Reaper|Registrar)' ./atc/worker/jetbridge`.
-- [ ] Sensitivity: change a persisted worker/container handle and prove the
+- [x] Add one persisted reaper/registrar outcome assertion and capture RED.
+- [x] Run `ginkgo --focus='(Reaper|Registrar)' ./atc/worker/jetbridge`.
+- [x] Sensitivity: change a persisted worker/container handle and prove the
   row-selection assertion fails; restore and pass.
-- [ ] Format, vet, diff-check, recount, and obtain independent review.
-- [ ] Commit only these files as
+- [x] Format, vet, diff-check, recount, and obtain independent review.
+- [x] Commit only these files as
   `test(jetbridge): persist reaper and registrar state`.
 
 ## Task 7: Full verification, exact recount, and phase closure
