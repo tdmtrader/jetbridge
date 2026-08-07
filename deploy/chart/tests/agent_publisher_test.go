@@ -29,17 +29,6 @@ func publisherSettings(overrides ...string) []string {
 	return append(settings, overrides...)
 }
 
-func pullRequestPublisherSettings(overrides ...string) []string {
-	settings := publisherSettings(
-		"agentPublisher.directGit.enabled=false",
-		"agentPublisher.pullRequests.enabled=true",
-		"agentPublisher.pullRequests.resourceImage=ghcr.io/concourse/forge-pr-resource@sha256:"+strings.Repeat("a", 64),
-		"agentPublisher.pullRequests.pollInterval=7m",
-		"agentPublisher.pullRequests.freshnessInterval=8h",
-	)
-	return append(settings, overrides...)
-}
-
 func TestAgentPublisherIsDisabledByDefault(t *testing.T) {
 	manifests := renderChart(t)
 	if strings.Contains(manifests, "agent-publisher-policy") ||
@@ -142,27 +131,6 @@ func TestAgentPublisherRendersNarrowATCOwnedConfiguration(t *testing.T) {
 	}
 }
 
-func TestAgentPublisherRendersProviderNativePullRequestConfiguration(t *testing.T) {
-	manifests := renderChart(t, pullRequestPublisherSettings()...)
-	web := findDeployment(t, manifests, "-web")
-	args := web.Spec.Template.Spec.Containers[0].Args
-
-	for _, want := range []string{
-		"--agent-publisher-enabled",
-		"--agent-publisher-pull-requests-enabled",
-		"--agent-publisher-pr-resource-image=ghcr.io/concourse/forge-pr-resource@sha256:" + strings.Repeat("a", 64),
-		"--agent-publisher-pr-poll-interval=7m",
-		"--agent-publisher-pr-freshness-interval=8h",
-	} {
-		if !slices.Contains(args, want) {
-			t.Errorf("web args do not contain %q: %v", want, args)
-		}
-	}
-	if slices.Contains(args, "--agent-publisher-direct-git-enabled") {
-		t.Fatalf("PR-only configuration unexpectedly enables direct Git: %v", args)
-	}
-}
-
 func TestAgentPublisherRejectsIncompleteOrAmbiguousConfiguration(t *testing.T) {
 	for name, test := range map[string]struct {
 		settings []string
@@ -224,57 +192,9 @@ func TestAgentPublisherRejectsIncompleteOrAmbiguousConfiguration(t *testing.T) {
 			settings: publisherSettings("agentPublisher.endpoint=https://gateway.example"),
 			want:     "agentPublisher contains unsupported field",
 		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			output := renderChartFailure(t, test.settings...)
-			if !strings.Contains(output, test.want) {
-				t.Fatalf("Helm error does not contain %q:\n%s", test.want, output)
-			}
-		})
-	}
-}
-
-func TestAgentPublisherRejectsInvalidPullRequestConfiguration(t *testing.T) {
-	for name, test := range map[string]struct {
-		settings []string
-		want     string
-	}{
-		"unpinned resource image": {
-			settings: pullRequestPublisherSettings(
-				"agentPublisher.pullRequests.resourceImage=ghcr.io/concourse/forge-pr-resource:latest",
-			),
-			want: "agentPublisher.pullRequests.resourceImage must be an exact lowercase @sha256 image reference",
-		},
-		"uppercase digest": {
-			settings: pullRequestPublisherSettings(
-				"agentPublisher.pullRequests.resourceImage=ghcr.io/concourse/forge-pr-resource@sha256:" + strings.Repeat("A", 64),
-			),
-			want: "agentPublisher.pullRequests.resourceImage must be an exact lowercase @sha256 image reference",
-		},
-		"malformed poll interval": {
-			settings: pullRequestPublisherSettings(
-				"agentPublisher.pullRequests.pollInterval=eventually",
-			),
-			want: "agentPublisher.pullRequests intervals must be positive Go durations",
-		},
-		"zero freshness interval": {
-			settings: pullRequestPublisherSettings(
-				"agentPublisher.pullRequests.freshnessInterval=0s",
-			),
-			want: "agentPublisher.pullRequests intervals must be positive Go durations",
-		},
-		"freshness shorter than poll": {
-			settings: pullRequestPublisherSettings(
-				"agentPublisher.pullRequests.pollInterval=7m",
-				"agentPublisher.pullRequests.freshnessInterval=6m",
-			),
-			want: "agentPublisher.pullRequests.freshnessInterval must be no shorter than pollInterval",
-		},
-		"unknown field": {
-			settings: pullRequestPublisherSettings(
-				"agentPublisher.pullRequests.provider=github",
-			),
-			want: "agentPublisher configuration must be well-formed",
+		"rejects retired pull request values": {
+			settings: publisherSettings("agentPublisher.pullRequests.enabled=true"),
+			want:     "agentPublisher contains unsupported field",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -694,7 +614,7 @@ func TestAgentPublisherOperatorDocsDescribeTheATCOwnedSurface(t *testing.T) {
 	}
 	chartDocumentation := string(chartReadme)
 	normalizedChartDocumentation := strings.Join(strings.Fields(chartDocumentation), " ")
-	for _, forbidden := range []string{"agentPublisherGateway", "publisher gateway"} {
+	for _, forbidden := range []string{"agentPublisherGateway", "publisher gateway", "agentPublisher.pullRequests"} {
 		if strings.Contains(chartDocumentation, forbidden) {
 			t.Errorf("chart README still documents retired publisher topology %q", forbidden)
 		}
@@ -705,12 +625,7 @@ func TestAgentPublisherOperatorDocsDescribeTheATCOwnedSurface(t *testing.T) {
 		"agentPublisher.credentialSecret",
 		"agentPublisher.credentials",
 		"agentPublisher.directGit.enabled",
-		"agentPublisher.pullRequests.enabled",
-		"agentPublisher.pullRequests.resourceImage",
-		"agentPublisher.pullRequests.pollInterval",
-		"agentPublisher.pullRequests.freshnessInterval",
 		"Kubernetes AtomicWriter",
-		"PR-only",
 		"credential-manager namespace prefix must be nonempty",
 		"<namespacePrefix><team>",
 	} {

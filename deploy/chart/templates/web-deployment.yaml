@@ -86,7 +86,7 @@
 {{- if not (kindIs "map" .Values.agentPublisher) }}
 {{- fail $publisherConfigurationError }}
 {{- end }}
-{{- $publisherKeys := dict "enabled" true "policySecret" true "credentialSecret" true "credentials" true "directGit" true "pullRequests" true "requestTimeout" true "leaseDuration" true }}
+{{- $publisherKeys := dict "enabled" true "policySecret" true "credentialSecret" true "credentials" true "directGit" true "requestTimeout" true "leaseDuration" true }}
 {{- range $key, $_ := .Values.agentPublisher }}
 {{- if not (hasKey $publisherKeys $key) }}
 {{- fail (printf "agentPublisher contains unsupported field %q" $key) }}
@@ -312,49 +312,8 @@
 {{- if or (not (kindIs "map" .Values.agentPublisher.directGit)) (not (kindIs "bool" .Values.agentPublisher.directGit.enabled)) }}
 {{- fail $publisherConfigurationError }}
 {{- end }}
-{{- if or
-  (not (kindIs "map" .Values.agentPublisher.pullRequests))
-  (ne (len .Values.agentPublisher.pullRequests) 4)
-  (not (hasKey .Values.agentPublisher.pullRequests "enabled"))
-  (not (hasKey .Values.agentPublisher.pullRequests "resourceImage"))
-  (not (hasKey .Values.agentPublisher.pullRequests "pollInterval"))
-  (not (hasKey .Values.agentPublisher.pullRequests "freshnessInterval"))
-}}
-{{- fail $publisherConfigurationError }}
-{{- end }}
-{{- if or
-  (not (kindIs "bool" .Values.agentPublisher.pullRequests.enabled))
-  (not (kindIs "string" .Values.agentPublisher.pullRequests.resourceImage))
-  (not (kindIs "string" .Values.agentPublisher.pullRequests.pollInterval))
-  (not (kindIs "string" .Values.agentPublisher.pullRequests.freshnessInterval))
-}}
-{{- fail $publisherConfigurationError }}
-{{- end }}
-{{- if and (not .Values.agentPublisher.directGit.enabled) (not .Values.agentPublisher.pullRequests.enabled) }}
+{{- if not .Values.agentPublisher.directGit.enabled }}
 {{- fail "agentPublisher requires at least one publisher adapter" }}
-{{- end }}
-{{- if .Values.agentPublisher.pullRequests.enabled }}
-{{- if not (regexMatch "^[^@[:space:]]+@sha256:[a-f0-9]{64}$" .Values.agentPublisher.pullRequests.resourceImage) }}
-{{- fail "agentPublisher.pullRequests.resourceImage must be an exact lowercase @sha256 image reference" }}
-{{- end }}
-{{- $publisherDurationPattern := "^([0-9]+([.][0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$" }}
-{{- if or
-  (not (regexMatch $publisherDurationPattern .Values.agentPublisher.pullRequests.pollInterval))
-  (not (regexMatch $publisherDurationPattern .Values.agentPublisher.pullRequests.freshnessInterval))
-}}
-{{- fail "agentPublisher.pullRequests intervals must be positive Go durations" }}
-{{- end }}
-{{- $publisherPRDurationBase := toDate "2006-01-02T15:04:05Z07:00" "2000-01-01T00:00:00Z" }}
-{{- $publisherPRPollDeadline := dateModify .Values.agentPublisher.pullRequests.pollInterval $publisherPRDurationBase }}
-{{- $publisherPRFreshnessDeadline := dateModify .Values.agentPublisher.pullRequests.freshnessInterval $publisherPRDurationBase }}
-{{- $publisherPRPollNanos := sub $publisherPRPollDeadline.UnixNano $publisherPRDurationBase.UnixNano }}
-{{- $publisherPRFreshnessNanos := sub $publisherPRFreshnessDeadline.UnixNano $publisherPRDurationBase.UnixNano }}
-{{- if or (le $publisherPRPollNanos 0) (le $publisherPRFreshnessNanos 0) }}
-{{- fail "agentPublisher.pullRequests intervals must be positive Go durations" }}
-{{- end }}
-{{- if lt $publisherPRFreshnessNanos $publisherPRPollNanos }}
-{{- fail "agentPublisher.pullRequests.freshnessInterval must be no shorter than pollInterval" }}
-{{- end }}
 {{- end }}
 {{- if or (not (kindIs "slice" .Values.agentPublisher.credentials)) (empty .Values.agentPublisher.credentials) }}
 {{- fail "agentPublisher.credentials must contain at least one mapping" }}
@@ -717,12 +676,6 @@ spec:
             {{- end }}
             {{- if .Values.agentPublisher.directGit.enabled }}
             - --agent-publisher-direct-git-enabled
-            {{- end }}
-            {{- if .Values.agentPublisher.pullRequests.enabled }}
-            - --agent-publisher-pull-requests-enabled
-            - --agent-publisher-pr-resource-image={{ .Values.agentPublisher.pullRequests.resourceImage }}
-            - --agent-publisher-pr-poll-interval={{ .Values.agentPublisher.pullRequests.pollInterval }}
-            - --agent-publisher-pr-freshness-interval={{ .Values.agentPublisher.pullRequests.freshnessInterval }}
             {{- end }}
             - --agent-publisher-request-timeout={{ .Values.agentPublisher.requestTimeout }}
             - --agent-publisher-lease-duration={{ .Values.agentPublisher.leaseDuration }}

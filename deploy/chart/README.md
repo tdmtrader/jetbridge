@@ -288,10 +288,6 @@ ServiceAccount; hermetic pods disable token automount.
 | `agentPublisher.credentialSecret.name` | `""` | Dedicated Secret containing only the destination-scoped credentials mapped below. |
 | `agentPublisher.credentials` | `[]` | Exact `reference`, Secret `key`, and clean relative `path` mappings beneath the credential root. |
 | `agentPublisher.directGit.enabled` | `false` | Enable direct branch and trunk publication. |
-| `agentPublisher.pullRequests.enabled` | `false` | Enable provider-native PR publication and the server-owned polling monitor; PR-only configuration is supported. |
-| `agentPublisher.pullRequests.resourceImage` | `""` | Exact lowercase digest-pinned `forge-pr` resource image; required when pull requests are enabled. |
-| `agentPublisher.pullRequests.pollInterval` | `5m` | Positive provider observation polling cadence. |
-| `agentPublisher.pullRequests.freshnessInterval` | `6h` | Positive pending-review refresh cadence; must be no shorter than the polling cadence. |
 | `agentPublisher.requestTimeout` | `30s` | Positive Go duration no greater than one hour. |
 | `agentPublisher.leaseDuration` | `5m` | Go duration greater than `requestTimeout` and no greater than 24 hours. |
 
@@ -315,12 +311,10 @@ must obey Kubernetes AtomicWriter path bounds. The publisher Secrets cannot be
 aliased through extra volumes, environment references, image-pull settings,
 Ingress TLS, PostgreSQL, artifact-daemon, web TLS, or signing configuration.
 
-Direct Git can publish branches or already-rebased changes to trunk.
-Provider-native pull requests can be enabled independently, so a PR-only
-publisher does not require direct Git. Provider, destination, and credential
-reference authority stays solely in the mounted publisher policy; chart values
-only enable the adapter, pin its resource image, and set polling/freshness
-cadences. With the Kubernetes credential manager enabled, the
+Direct Git can publish branches or already-rebased changes to trunk. Provider,
+destination, and credential reference authority stays solely in the mounted
+publisher policy; chart values only enable the adapter. With the Kubernetes
+credential manager enabled, the
 credential-manager namespace prefix must be nonempty and the release namespace
 must be outside the `<namespacePrefix><team>` pipeline-variable namespace set.
 

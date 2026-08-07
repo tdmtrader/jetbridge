@@ -850,16 +850,5 @@ agentPublisher:
     # -- Enable the in-process direct Git adapter. Direct branch and trunk
     # publication are supported; unconfigured adapters fail closed.
     enabled: false
-  pullRequests:
-    # -- Enable provider-native pull request publication and the server-owned
-    # polling monitor workflow. Provider/destination authority remains in the
-    # mounted publisher policy.
-    enabled: false
-    # -- Exact digest-pinned forge-pr resource image. Required when enabled.
-    resourceImage: ""
-    # -- Provider observation polling cadence.
-    pollInterval: 5m
-    # -- Maximum pending-review age before refreshing against the moving base.
-    freshnessInterval: 6h
   requestTimeout: 30s
   leaseDuration: 5m
