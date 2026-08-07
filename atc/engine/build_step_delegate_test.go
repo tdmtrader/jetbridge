@@ -33,6 +33,43 @@ import (
 	"github.com/concourse/concourse/vars"
 )
 
+// latestVersionErrorScope preserves a healthy persisted scope while injecting
+// the one LatestVersion failure that PostgreSQL cannot produce selectively.
+type latestVersionErrorScope struct {
+	db.ResourceConfigScope
+	err error
+}
+
+func (scope latestVersionErrorScope) LatestVersion() (db.ResourceConfigVersion, bool, error) {
+	return nil, false, scope.err
+}
+
+// fixedScopeResourceConfig routes the healthy resource config to the
+// selectively failing scope without replacing any other config behavior.
+type fixedScopeResourceConfig struct {
+	db.ResourceConfig
+	scope db.ResourceConfigScope
+}
+
+func (config fixedScopeResourceConfig) FindOrCreateScope(*int) (db.ResourceConfigScope, error) {
+	return config.scope, nil
+}
+
+// fixedResourceConfigFactory routes only this lookup through the decorated
+// healthy config; all other factory behavior remains real PostgreSQL behavior.
+type fixedResourceConfigFactory struct {
+	db.ResourceConfigFactory
+	resourceConfig db.ResourceConfig
+}
+
+func (factory fixedResourceConfigFactory) FindOrCreateResourceConfig(
+	string,
+	atc.Source,
+	db.ResourceCache,
+) (db.ResourceConfig, error) {
+	return factory.resourceConfig, nil
+}
+
 var _ = Describe("BuildStepDelegate", func() {
 	var (
 		logger            *lagertest.TestLogger
@@ -687,6 +724,38 @@ var _ = Describe("BuildStepDelegate", func() {
 				spec, _, err := nativeDelegate.FetchImage(context.TODO(), *registryGetPlan, registryCheckPlan, true)
 				Expect(err).ToNot(HaveOccurred())
 				Expect(spec.Privileged).To(BeTrue())
+			})
+
+			Context("when loading the latest resource config version fails", func() {
+				BeforeEach(func() {
+					fakeResolver := new(imageresolvertesting.FakeResolver)
+					wrappedScope := latestVersionErrorScope{
+						ResourceConfigScope: scope,
+						err:                 errors.New("latest version failed"),
+					}
+					wrappedConfig := fixedScopeResourceConfig{
+						ResourceConfig: resourceConfig,
+						scope:          wrappedScope,
+					}
+					wrappedFactory := fixedResourceConfigFactory{
+						ResourceConfigFactory: fixture.ResourceConfigFactory,
+						resourceConfig:        wrappedConfig,
+					}
+
+					nativeDelegate = engine.NewBuildStepDelegateWithFactories(
+						realBuild, planID, exec.NewRunState(func(p atc.Plan) exec.Step {
+							runPlans = append(runPlans, p)
+							return new(execfakes.FakeStep)
+						}, nil), fakeClock, fakePolicyChecker, false,
+						wrappedFactory, fixture.ResourceCacheFactory, fakeResolver,
+					)
+				})
+
+				It("returns the database error without running fallback plans", func() {
+					_, _, err := nativeDelegate.FetchImage(context.TODO(), *registryGetPlan, registryCheckPlan, false)
+					Expect(err).To(MatchError("get latest version: latest version failed"))
+					Expect(runPlans).To(BeEmpty())
+				})
 			})
 
 			Context("when no cached version exists in DB but resolver is available", func() {
