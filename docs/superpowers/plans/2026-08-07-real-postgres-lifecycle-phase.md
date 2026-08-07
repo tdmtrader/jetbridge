@@ -170,7 +170,7 @@ BuildForAPI(int) (db.BuildForAPI, bool, error)
 - Consumes: `db.NewCheckFactory(db.DbConn, lock.LockFactory, creds.Secrets, creds.VarSourcePool, chan<- db.Build, util.SequenceGenerator) db.CheckFactory` and `db.NewPipelineRunFactory(lager.Logger, db.DbConn, lock.LockFactory, db.CheckFactory) db.PipelineRunFactory`.
 - Produces: `useLifecycleDB() *lifecycleDB`, `quiesceRun`, and `completeRun`.
 
-- [ ] **Step 1: Add the opt-in clone API and all six CheckFactory collaborators.**
+- [x] **Step 1: Add the opt-in clone API and all six CheckFactory collaborators.**
 
   Keep `TestRunLifecycle` unchanged and add:
 
@@ -228,7 +228,7 @@ BuildForAPI(int) (db.BuildForAPI, bool, error)
 
   Only the persisted-state `Describe` calls this helper from its `BeforeEach`; the selective fault `Describe` creates no clone.
 
-- [ ] **Step 2: Define exact quiescent and completed run helpers.**
+- [x] **Step 2: Define exact quiescent and completed run helpers.**
 
   Save a template config with `Template: true` and entry/second jobs. `quiesceRun(run, terminalBuildStatus)` must load the instance pipeline, enumerate `instance.Jobs()`, finish every build returned by each job's `GetPendingBuilds()`, and then execute:
 
@@ -240,7 +240,7 @@ BuildForAPI(int) (db.BuildForAPI, bool, error)
 
   Assert `run.CheckComplete()` returns `(expectedPipelineRunStatus, true, nil)` but leave the run status `running`; this is the fixture used to prove `Lifecycler.Run` performs `Finish`. `completeRun` calls `quiesceRun` and then `run.Finish(expectedPipelineRunStatus)`. It never marks a run complete while an entry build remains pending.
 
-- [ ] **Step 3: Add persisted assertions against the old fake factory and observe RED.**
+- [x] **Step 3: Add persisted assertions against the old fake factory and observe RED.**
 
   Create a real quiescent failed run and initially leave `lifecycler` constructed with `FakePipelineRunFactory`. Run it, reload with `fixture.Runs.GetRun(template.ID(), run.Number())`, and assert `Status()==db.PipelineRunFailed`.
 
@@ -248,7 +248,7 @@ BuildForAPI(int) (db.BuildForAPI, bool, error)
 
   Expected: FAIL because the old fake factory never discovers the real running row.
 
-- [ ] **Step 4: Rewire and cover completion, reopen, archive, and retirement.**
+- [x] **Step 4: Rewire and cover completion, reopen, archive, and retirement.**
 
   Construct `runlifecycle.NewLifecycler(fixture.Runs, 720*time.Hour)`. Cover:
 
@@ -277,7 +277,7 @@ BuildForAPI(int) (db.BuildForAPI, bool, error)
 
   Expected: PASS.
 
-- [ ] **Step 5: Prove status sensitivity and commit.**
+- [x] **Step 5: Prove status sensitivity and commit.**
 
   Temporarily pass `db.PipelineRunSucceeded` rather than the aggregate returned by `CheckComplete` to `run.Finish`, run the focused failed-completion spec, and confirm its reload reports the wrong status. Restore `atc/runlifecycle/lifecycler.go`, rerun to PASS, then:
 
