@@ -102,6 +102,15 @@ var _ = Describe("Destroyer", func() {
 			Expect(containerHandles()).NotTo(ContainElement(gone.Handle()))
 		})
 
+		It("removes every destroying container when the worker reports an empty list", func() {
+			gone := destroyingContainer("gone-empty-plan")
+
+			Expect(destroyer.DestroyContainers(worker.Name(), []string{})).To(Succeed())
+
+			Expect(containerHandles()).NotTo(ContainElement(gone.Handle()),
+				"a non-nil empty list means the worker reported no containers")
+		})
+
 		It("leaves containers on a different worker alone", func() {
 			other, err := db.NewWorkerFactory(dbConn, db.NewStaticWorkerCache(logger, dbConn, 0)).
 				SaveWorker(atc.Worker{Name: "other-worker"}, 5*time.Minute)
@@ -162,6 +171,17 @@ var _ = Describe("Destroyer", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(remaining).To(ContainElement(kept.Handle()))
 			Expect(remaining).NotTo(ContainElement(gone.Handle()))
+		})
+
+		It("removes every destroying volume when the worker reports an empty list", func() {
+			gone := destroyingVolume("gone-empty-path")
+
+			Expect(destroyer.DestroyVolumes(worker.Name(), []string{})).To(Succeed())
+
+			remaining, err := volumeRepository.GetDestroyingVolumes(worker.Name())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(remaining).NotTo(ContainElement(gone.Handle()),
+				"a non-nil empty list means the worker reported no volumes")
 		})
 
 		It("does nothing when the handle list is nil", func() {
