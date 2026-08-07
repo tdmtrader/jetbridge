@@ -261,13 +261,13 @@ After Tasks 2–4 have removed all other callers, verify
 `rg -n 'setupFakeDBContainer' atc/worker/jetbridge` reports only its definition,
 then delete the helper and the suite's `dbfakes` import.
 
-- [ ] Add a persisted concurrent/reuse row assertion and capture RED before
+- [x] Add a persisted concurrent/reuse row assertion and capture RED before
   rewiring the representative leaf.
-- [ ] Run `ginkgo --focus='(Container|Concurrent container operations|Run with sidecar containers)' ./atc/worker/jetbridge`.
-- [ ] Sensitivity: intentionally reuse a handle where the spec expects unique
+- [x] Run `ginkgo --focus='(Container|Concurrent container operations|Run with sidecar containers)' ./atc/worker/jetbridge`.
+- [x] Sensitivity: intentionally reuse a handle where the spec expects unique
   rows and prove the assertion fails; restore and pass.
-- [ ] Format, vet, diff-check, recount, and obtain independent review.
-- [ ] Commit only these files as
+- [x] Format, vet, diff-check, recount, and obtain independent review.
+- [x] Commit only these files as
   `test(jetbridge): persist container lifecycle state`.
 
 ## Task 6: Persist reaper and registrar database outcomes
