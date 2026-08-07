@@ -30,7 +30,6 @@ import (
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
@@ -53,7 +52,7 @@ import (
 
 var _ = Describe("[PE-03] ImagePullPolicy for main container", func() {
 	var (
-		fakeDBWorker  *dbfakes.FakeWorker
+		dbWorker      db.Worker
 		fakeClientset *fake.Clientset
 		worker        *jetbridge.Worker
 		ctx           context.Context
@@ -63,16 +62,17 @@ var _ = Describe("[PE-03] ImagePullPolicy for main container", func() {
 
 	BeforeEach(func() {
 		ctx = context.Background()
-		fakeDBWorker = new(dbfakes.FakeWorker)
-		fakeDBWorker.NameReturns("k8s-worker-1")
+		database := useJetbridgeDB()
+		persistedWorker, persistErr := persistNamedWorker(database, "k8s-worker-1")
+		Expect(persistErr).NotTo(HaveOccurred())
+		dbWorker = persistedWorker
 		fakeClientset = fake.NewSimpleClientset()
 		cfg = jetbridge.NewConfig("test-namespace", "")
 		delegate = &noopDelegate{}
-		worker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+		worker = jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
 	})
 
 	It("[PE-03] sets ImagePullPolicy to PullIfNotPresent on the main container", func() {
-		setupFakeDBContainer(fakeDBWorker, "pe03-handle")
 
 		container, _, err := worker.FindOrCreateContainer(
 			ctx,
@@ -104,7 +104,7 @@ var _ = Describe("[PE-03] ImagePullPolicy for main container", func() {
 
 var _ = Describe("[PE-05] Image URL prefix stripping for main container", func() {
 	var (
-		fakeDBWorker  *dbfakes.FakeWorker
+		dbWorker      db.Worker
 		fakeClientset *fake.Clientset
 		worker        *jetbridge.Worker
 		ctx           context.Context
@@ -114,18 +114,19 @@ var _ = Describe("[PE-05] Image URL prefix stripping for main container", func()
 
 	BeforeEach(func() {
 		ctx = context.Background()
-		fakeDBWorker = new(dbfakes.FakeWorker)
-		fakeDBWorker.NameReturns("k8s-worker-1")
+		database := useJetbridgeDB()
+		persistedWorker, persistErr := persistNamedWorker(database, "k8s-worker-1")
+		Expect(persistErr).NotTo(HaveOccurred())
+		dbWorker = persistedWorker
 		fakeClientset = fake.NewSimpleClientset()
 		cfg = jetbridge.NewConfig("test-namespace", "")
 		delegate = &noopDelegate{}
-		worker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+		worker = jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
 	})
 
 	DescribeTable("[PE-05] strips Concourse image URL prefixes from main container image",
 		func(rawImage, expectedImage string) {
 			handle := "pe05-" + expectedImage[:min(8, len(expectedImage))]
-			setupFakeDBContainer(fakeDBWorker, handle)
 
 			container, _, err := worker.FindOrCreateContainer(
 				ctx,
@@ -161,7 +162,7 @@ var _ = Describe("[PE-05] Image URL prefix stripping for main container", func()
 
 var _ = Describe("[PE-06] Environment variable merging", func() {
 	var (
-		fakeDBWorker  *dbfakes.FakeWorker
+		dbWorker      db.Worker
 		fakeClientset *fake.Clientset
 		worker        *jetbridge.Worker
 		ctx           context.Context
@@ -171,16 +172,17 @@ var _ = Describe("[PE-06] Environment variable merging", func() {
 
 	BeforeEach(func() {
 		ctx = context.Background()
-		fakeDBWorker = new(dbfakes.FakeWorker)
-		fakeDBWorker.NameReturns("k8s-worker-1")
+		database := useJetbridgeDB()
+		persistedWorker, persistErr := persistNamedWorker(database, "k8s-worker-1")
+		Expect(persistErr).NotTo(HaveOccurred())
+		dbWorker = persistedWorker
 		fakeClientset = fake.NewSimpleClientset()
 		cfg = jetbridge.NewConfig("test-namespace", "")
 		delegate = &noopDelegate{}
-		worker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+		worker = jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
 	})
 
 	It("[PE-06] merges env vars from both ContainerSpec and ProcessSpec into the pod", func() {
-		setupFakeDBContainer(fakeDBWorker, "pe06-handle")
 
 		container, _, err := worker.FindOrCreateContainer(
 			ctx,
@@ -220,7 +222,6 @@ var _ = Describe("[PE-06] Environment variable merging", func() {
 	})
 
 	It("[PE-06] ProcessSpec env vars take precedence over ContainerSpec on key collision", func() {
-		setupFakeDBContainer(fakeDBWorker, "pe06-override-handle")
 
 		container, _, err := worker.FindOrCreateContainer(
 			ctx,
@@ -266,7 +267,7 @@ var _ = Describe("[PE-06] Environment variable merging", func() {
 
 var _ = Describe("[PE-08] TTY flag in exec mode", func() {
 	var (
-		fakeDBWorker  *dbfakes.FakeWorker
+		dbWorker      db.Worker
 		fakeClientset *fake.Clientset
 		execWorker    *jetbridge.Worker
 		execExecutor  *fakeExecExecutor
@@ -277,18 +278,19 @@ var _ = Describe("[PE-08] TTY flag in exec mode", func() {
 
 	BeforeEach(func() {
 		ctx = context.Background()
-		fakeDBWorker = new(dbfakes.FakeWorker)
-		fakeDBWorker.NameReturns("k8s-worker-1")
+		database := useJetbridgeDB()
+		persistedWorker, persistErr := persistNamedWorker(database, "k8s-worker-1")
+		Expect(persistErr).NotTo(HaveOccurred())
+		dbWorker = persistedWorker
 		fakeClientset = fake.NewSimpleClientset()
 		cfg = jetbridge.NewConfig("test-namespace", "")
 		delegate = &noopDelegate{}
 		execExecutor = &fakeExecExecutor{}
-		execWorker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+		execWorker = jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
 		execWorker.SetExecutor(execExecutor)
 	})
 
 	It("[PE-08] passes TTY=true to ExecInPod when ProcessSpec.TTY is set", func() {
-		setupFakeDBContainer(fakeDBWorker, "pe08-tty-handle")
 
 		container, _, err := execWorker.FindOrCreateContainer(
 			ctx,
@@ -333,7 +335,6 @@ var _ = Describe("[PE-08] TTY flag in exec mode", func() {
 	})
 
 	It("[PE-08] passes TTY=false to ExecInPod when ProcessSpec.TTY is nil", func() {
-		setupFakeDBContainer(fakeDBWorker, "pe08-notty-handle")
 
 		container, _, err := execWorker.FindOrCreateContainer(
 			ctx,
@@ -381,7 +382,7 @@ var _ = Describe("[PE-08] TTY flag in exec mode", func() {
 
 var _ = Describe("[SC-07] Sidecar log streaming routing (direct mode)", func() {
 	var (
-		fakeDBWorker  *dbfakes.FakeWorker
+		dbWorker      db.Worker
 		fakeClientset *fake.Clientset
 		worker        *jetbridge.Worker
 		ctx           context.Context
@@ -391,16 +392,17 @@ var _ = Describe("[SC-07] Sidecar log streaming routing (direct mode)", func() {
 
 	BeforeEach(func() {
 		ctx = context.Background()
-		fakeDBWorker = new(dbfakes.FakeWorker)
-		fakeDBWorker.NameReturns("k8s-worker-1")
+		database := useJetbridgeDB()
+		persistedWorker, persistErr := persistNamedWorker(database, "k8s-worker-1")
+		Expect(persistErr).NotTo(HaveOccurred())
+		dbWorker = persistedWorker
 		fakeClientset = fake.NewSimpleClientset()
 		cfg = jetbridge.NewConfig("test-namespace", "")
 		delegate = &noopDelegate{}
-		worker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+		worker = jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
 	})
 
 	It("[SC-07] when SidecarWriters contains an entry, GetLogs is requested for the sidecar container by name", func() {
-		setupFakeDBContainer(fakeDBWorker, "sc07-dedicated-handle")
 
 		container, _, err := worker.FindOrCreateContainer(
 			ctx,
@@ -464,7 +466,6 @@ var _ = Describe("[SC-07] Sidecar log streaming routing (direct mode)", func() {
 	})
 
 	It("[SC-07] when SidecarWriters is empty, GetLogs is still requested for the sidecar (prefix fallback path)", func() {
-		setupFakeDBContainer(fakeDBWorker, "sc07-prefix-handle")
 
 		container, _, err := worker.FindOrCreateContainer(
 			ctx,
@@ -525,7 +526,7 @@ var _ = Describe("[SC-07] Sidecar log streaming routing (direct mode)", func() {
 
 var _ = Describe("[RF-04] Additional terminal waiting states", func() {
 	var (
-		fakeDBWorker  *dbfakes.FakeWorker
+		dbWorker      db.Worker
 		fakeClientset *fake.Clientset
 		worker        *jetbridge.Worker
 		ctx           context.Context
@@ -535,18 +536,19 @@ var _ = Describe("[RF-04] Additional terminal waiting states", func() {
 
 	BeforeEach(func() {
 		ctx = context.Background()
-		fakeDBWorker = new(dbfakes.FakeWorker)
-		fakeDBWorker.NameReturns("k8s-worker-1")
+		database := useJetbridgeDB()
+		persistedWorker, persistErr := persistNamedWorker(database, "k8s-worker-1")
+		Expect(persistErr).NotTo(HaveOccurred())
+		dbWorker = persistedWorker
 		fakeClientset = fake.NewSimpleClientset()
 		cfg = jetbridge.NewConfig("test-namespace", "")
 		delegate = &noopDelegate{}
-		worker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+		worker = jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
 	})
 
 	DescribeTable("[RF-04] fails the pod immediately when a container enters a terminal waiting state",
 		func(reason, expectedErrSubstring string) {
 			handle := "rf04-" + reason[:min(12, len(reason))]
-			setupFakeDBContainer(fakeDBWorker, handle)
 
 			container, _, err := worker.FindOrCreateContainer(
 				ctx,
@@ -603,7 +605,7 @@ var _ = Describe("[RF-04] Additional terminal waiting states", func() {
 
 var _ = Describe("[RF-09] Failure detection priority order", func() {
 	var (
-		fakeDBWorker  *dbfakes.FakeWorker
+		dbWorker      db.Worker
 		fakeClientset *fake.Clientset
 		worker        *jetbridge.Worker
 		ctx           context.Context
@@ -613,18 +615,19 @@ var _ = Describe("[RF-09] Failure detection priority order", func() {
 
 	BeforeEach(func() {
 		ctx = context.Background()
-		fakeDBWorker = new(dbfakes.FakeWorker)
-		fakeDBWorker.NameReturns("k8s-worker-1")
+		database := useJetbridgeDB()
+		persistedWorker, persistErr := persistNamedWorker(database, "k8s-worker-1")
+		Expect(persistErr).NotTo(HaveOccurred())
+		dbWorker = persistedWorker
 		fakeClientset = fake.NewSimpleClientset()
 		cfg = jetbridge.NewConfig("test-namespace", "")
 		delegate = &noopDelegate{}
-		worker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+		worker = jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
 	})
 
 	It("[RF-09] reports OOMKilled rather than CrashLoopBackOff when both conditions are present", func() {
 		// OOMKilled containers often restart and enter CrashLoopBackOff.
 		// The system MUST report OOMKilled (most actionable) first.
-		setupFakeDBContainer(fakeDBWorker, "rf09-oom-vs-crash")
 
 		container, _, err := worker.FindOrCreateContainer(
 			ctx,
@@ -686,7 +689,6 @@ var _ = Describe("[RF-09] Failure detection priority order", func() {
 	It("[RF-09] reports ImagePullBackOff before checking exit code when both are present", func() {
 		// If a container is in ImagePullBackOff, the exit code check should not
 		// take precedence.
-		setupFakeDBContainer(fakeDBWorker, "rf09-pull-vs-exit")
 
 		container, _, err := worker.FindOrCreateContainer(
 			ctx,
@@ -739,7 +741,7 @@ var _ = Describe("[RF-09] Failure detection priority order", func() {
 
 var _ = Describe("[OE] Observability span events", func() {
 	var (
-		fakeDBWorker  *dbfakes.FakeWorker
+		dbWorker      db.Worker
 		fakeClientset *fake.Clientset
 		execWorker    *jetbridge.Worker
 		execContainer runtime.Container
@@ -759,13 +761,15 @@ var _ = Describe("[OE] Observability span events", func() {
 		tracing.ConfigureTraceProvider(tp)
 
 		ctx = context.Background()
-		fakeDBWorker = new(dbfakes.FakeWorker)
-		fakeDBWorker.NameReturns("k8s-worker-1")
+		database := useJetbridgeDB()
+		persistedWorker, persistErr := persistNamedWorker(database, "k8s-worker-1")
+		Expect(persistErr).NotTo(HaveOccurred())
+		dbWorker = persistedWorker
 		fakeClientset = fake.NewSimpleClientset()
 		cfg = jetbridge.NewConfig("test-namespace", "")
 		delegate = &noopDelegate{}
 		fakeExecutor = &fakeExecExecutor{}
-		execWorker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+		execWorker = jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
 		execWorker.SetExecutor(fakeExecutor)
 	})
 
@@ -794,7 +798,6 @@ var _ = Describe("[OE] Observability span events", func() {
 
 	Context("exec mode (waitForRunning span)", func() {
 		BeforeEach(func() {
-			setupFakeDBContainer(fakeDBWorker, "oe-span-handle")
 
 			var err error
 			execContainer, _, err = execWorker.FindOrCreateContainer(
@@ -905,7 +908,6 @@ var _ = Describe("[OE] Observability span events", func() {
 
 	Context("init container failure events", func() {
 		BeforeEach(func() {
-			setupFakeDBContainer(fakeDBWorker, "oe-init-fail-handle")
 
 			var err error
 			execContainer, _, err = execWorker.FindOrCreateContainer(
@@ -984,7 +986,7 @@ var _ = Describe("[OE] Observability span events", func() {
 
 var _ = Describe("[OE-06] init.container.failed span event (dedicated test)", func() {
 	var (
-		fakeDBWorker  *dbfakes.FakeWorker
+		dbWorker      db.Worker
 		fakeClientset *fake.Clientset
 		execWorker    *jetbridge.Worker
 		fakeExecutor  *fakeExecExecutor
@@ -1003,13 +1005,15 @@ var _ = Describe("[OE-06] init.container.failed span event (dedicated test)", fu
 		tracing.ConfigureTraceProvider(tp)
 
 		ctx = context.Background()
-		fakeDBWorker = new(dbfakes.FakeWorker)
-		fakeDBWorker.NameReturns("k8s-worker-1")
+		database := useJetbridgeDB()
+		persistedWorker, persistErr := persistNamedWorker(database, "k8s-worker-1")
+		Expect(persistErr).NotTo(HaveOccurred())
+		dbWorker = persistedWorker
 		fakeClientset = fake.NewSimpleClientset()
 		cfg = jetbridge.NewConfig("test-namespace", "")
 		delegate = &noopDelegate{}
 		fakeExecutor = &fakeExecExecutor{}
-		execWorker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+		execWorker = jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
 		execWorker.SetExecutor(fakeExecutor)
 	})
 
@@ -1018,7 +1022,6 @@ var _ = Describe("[OE-06] init.container.failed span event (dedicated test)", fu
 	})
 
 	It("[OE-06] emits init.container.failed event and then transitions to Running succeeds", func() {
-		setupFakeDBContainer(fakeDBWorker, "oe06-init-fail-run")
 
 		execContainer, _, err := execWorker.FindOrCreateContainer(
 			ctx,
@@ -1109,7 +1112,7 @@ var _ = Describe("[OE-06] init.container.failed span event (dedicated test)", fu
 
 var _ = Describe("[OE-09] Observability event deduplication", func() {
 	var (
-		fakeDBWorker  *dbfakes.FakeWorker
+		dbWorker      db.Worker
 		fakeClientset *fake.Clientset
 		execWorker    *jetbridge.Worker
 		fakeExecutor  *fakeExecExecutor
@@ -1128,13 +1131,15 @@ var _ = Describe("[OE-09] Observability event deduplication", func() {
 		tracing.ConfigureTraceProvider(tp)
 
 		ctx = context.Background()
-		fakeDBWorker = new(dbfakes.FakeWorker)
-		fakeDBWorker.NameReturns("k8s-worker-1")
+		database := useJetbridgeDB()
+		persistedWorker, persistErr := persistNamedWorker(database, "k8s-worker-1")
+		Expect(persistErr).NotTo(HaveOccurred())
+		dbWorker = persistedWorker
 		fakeClientset = fake.NewSimpleClientset()
 		cfg = jetbridge.NewConfig("test-namespace", "")
 		delegate = &noopDelegate{}
 		fakeExecutor = &fakeExecExecutor{}
-		execWorker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+		execWorker = jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
 		execWorker.SetExecutor(fakeExecutor)
 	})
 
@@ -1143,7 +1148,6 @@ var _ = Describe("[OE-09] Observability event deduplication", func() {
 	})
 
 	It("[OE-09] emits pod.scheduled event only once even when pod is observed in Scheduled state multiple times", func() {
-		setupFakeDBContainer(fakeDBWorker, "oe09-dedup-handle")
 
 		execContainer, _, err := execWorker.FindOrCreateContainer(
 			ctx,
@@ -1219,7 +1223,6 @@ var _ = Describe("[OE-09] Observability event deduplication", func() {
 	})
 
 	It("[OE-09] emits sidecar.started event only once even when sidecar is observed Running multiple times", func() {
-		setupFakeDBContainer(fakeDBWorker, "oe09-sidecar-dedup")
 
 		execContainer, _, err := execWorker.FindOrCreateContainer(
 			ctx,
@@ -1303,7 +1306,7 @@ var _ = Describe("[OE-09] Observability event deduplication", func() {
 
 var _ = Describe("[OE] Remaining observability coverage (OE-01, OE-05, OE-07, OE-08, OE-10)", func() {
 	var (
-		fakeDBWorker  *dbfakes.FakeWorker
+		dbWorker      db.Worker
 		fakeClientset *fake.Clientset
 		execWorker    *jetbridge.Worker
 		execContainer runtime.Container
@@ -1323,13 +1326,15 @@ var _ = Describe("[OE] Remaining observability coverage (OE-01, OE-05, OE-07, OE
 		tracing.ConfigureTraceProvider(tp)
 
 		ctx = context.Background()
-		fakeDBWorker = new(dbfakes.FakeWorker)
-		fakeDBWorker.NameReturns("k8s-worker-1")
+		database := useJetbridgeDB()
+		persistedWorker, persistErr := persistNamedWorker(database, "k8s-worker-1")
+		Expect(persistErr).NotTo(HaveOccurred())
+		dbWorker = persistedWorker
 		fakeClientset = fake.NewSimpleClientset()
 		cfg = jetbridge.NewConfig("test-namespace", "")
 		delegate = &noopDelegate{}
 		fakeExecutor = &fakeExecExecutor{}
-		execWorker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+		execWorker = jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
 		execWorker.SetExecutor(fakeExecutor)
 	})
 
@@ -1376,7 +1381,6 @@ var _ = Describe("[OE] Remaining observability coverage (OE-01, OE-05, OE-07, OE
 
 	// startContainer creates a DB-backed exec container ready to Run().
 	startContainer := func(handle string) {
-		setupFakeDBContainer(fakeDBWorker, handle)
 		var err error
 		execContainer, _, err = execWorker.FindOrCreateContainer(
 			ctx,
@@ -1699,7 +1703,7 @@ var _ = Describe("[OE] Remaining observability coverage (OE-01, OE-05, OE-07, OE
 
 var _ = Describe("[P3] Runtime edge cases (PE-02, PE-09, RF-14, RF-15)", func() {
 	var (
-		fakeDBWorker  *dbfakes.FakeWorker
+		dbWorker      db.Worker
 		fakeClientset *fake.Clientset
 		ctx           context.Context
 		cfg           jetbridge.Config
@@ -1708,8 +1712,10 @@ var _ = Describe("[P3] Runtime edge cases (PE-02, PE-09, RF-14, RF-15)", func() 
 
 	BeforeEach(func() {
 		ctx = context.Background()
-		fakeDBWorker = new(dbfakes.FakeWorker)
-		fakeDBWorker.NameReturns("k8s-worker-1")
+		database := useJetbridgeDB()
+		persistedWorker, persistErr := persistNamedWorker(database, "k8s-worker-1")
+		Expect(persistErr).NotTo(HaveOccurred())
+		dbWorker = persistedWorker
 		fakeClientset = fake.NewSimpleClientset()
 		cfg = jetbridge.NewConfig("test-namespace", "")
 		delegate = &noopDelegate{}
@@ -1728,8 +1734,7 @@ var _ = Describe("[P3] Runtime edge cases (PE-02, PE-09, RF-14, RF-15)", func() 
 	// directContainer builds a container on a worker WITHOUT an executor, so
 	// Run() takes the direct-mode path (command baked into the pod spec).
 	directContainer := func(handle string) runtime.Container {
-		setupFakeDBContainer(fakeDBWorker, handle)
-		worker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+		worker := jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
 		container, _, err := worker.FindOrCreateContainer(
 			ctx,
 			db.NewFixedHandleContainerOwner(handle),
@@ -1749,8 +1754,7 @@ var _ = Describe("[P3] Runtime edge cases (PE-02, PE-09, RF-14, RF-15)", func() 
 	// execContainerWith builds a container on a worker WITH the given executor,
 	// so Run() takes the exec (pause-pod) path.
 	execContainerWith := func(handle string, executor jetbridge.PodExecutor) runtime.Container {
-		setupFakeDBContainer(fakeDBWorker, handle)
-		worker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+		worker := jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
 		worker.SetExecutor(executor)
 		container, _, err := worker.FindOrCreateContainer(
 			ctx,
