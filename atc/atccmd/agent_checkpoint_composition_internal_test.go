@@ -8,7 +8,6 @@ import (
 	"github.com/concourse/concourse/agent/checkpoint"
 	"github.com/concourse/concourse/agent/provider"
 	"github.com/concourse/concourse/agent/snapshot"
-	"github.com/concourse/concourse/atc/db/pgtest"
 	"github.com/concourse/concourse/atc/exec"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 )
@@ -35,7 +34,7 @@ func TestAgentCheckpointCompositionFailsClosedWithoutSharedDependencies(t *testi
 		t.Fatal("missing connection published a partial checkpoint config")
 	}
 
-	if err := command.composeAgentCheckpoints(pgtest.OpenTestDB(t)); err == nil {
+	if err := command.composeAgentCheckpoints(openTestDB(t)); err == nil {
 		t.Fatal("expected missing shared snapshot daemon to fail")
 	}
 	if command.agentCheckpointStepConfig != nil {
@@ -44,7 +43,7 @@ func TestAgentCheckpointCompositionFailsClosedWithoutSharedDependencies(t *testi
 
 	command.AgentSnapshots.Enabled = false
 	command.agentSnapshotDaemonClient = &jetbridge.DaemonClient{}
-	if err := command.composeAgentCheckpoints(pgtest.OpenTestDB(t)); err == nil {
+	if err := command.composeAgentCheckpoints(openTestDB(t)); err == nil {
 		t.Fatal("expected disabled snapshots to fail closed")
 	}
 }
@@ -52,7 +51,7 @@ func TestAgentCheckpointCompositionFailsClosedWithoutSharedDependencies(t *testi
 func TestAgentCheckpointCompositionRetainsStaticPolicyAndIsIdempotent(t *testing.T) {
 	command := configuredCheckpointCommand()
 	command.agentSnapshotDaemonClient = &jetbridge.DaemonClient{}
-	connection := pgtest.OpenTestDB(t)
+	connection := openTestDB(t)
 
 	if err := command.composeAgentCheckpoints(connection); err != nil {
 		t.Fatal(err)

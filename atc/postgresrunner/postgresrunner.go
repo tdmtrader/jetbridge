@@ -70,9 +70,17 @@ func (runner *Runner) OpenDB() *sql.DB {
 }
 
 func (runner *Runner) OpenConn() db.DbConn {
-	dsn, err := runner.activeDSN()
+	dbConn, err := runner.openConn()
 	ExpectWithOffset(1, err).NotTo(HaveOccurred())
-	dbConn, err := db.Open(
+	return joinLimitValidatorConn{dbConn}
+}
+
+func (runner *Runner) openConn() (db.DbConn, error) {
+	dsn, err := runner.activeDSN()
+	if err != nil {
+		return nil, err
+	}
+	connection, err := db.Open(
 		lagertest.NewTestLogger("postgres-runner"),
 		"pgx",
 		dsn,
@@ -81,14 +89,16 @@ func (runner *Runner) OpenConn() db.DbConn {
 		"postgresrunner",
 		nil,
 	)
-	ExpectWithOffset(1, err).NotTo(HaveOccurred())
+	if err != nil {
+		return nil, err
+	}
 
 	// only allow one connection so that we can detect any code paths that
 	// require more than one, which will deadlock if it's at the limit
-	dbConn.SetMaxOpenConns(1)
-	dbConn.SetMaxIdleConns(1)
+	connection.SetMaxOpenConns(1)
+	connection.SetMaxIdleConns(1)
 
-	return joinLimitValidatorConn{dbConn}
+	return connection, nil
 }
 
 func (runner *Runner) OpenSingleton() *sql.DB {

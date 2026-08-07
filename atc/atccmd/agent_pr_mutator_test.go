@@ -16,7 +16,6 @@ import (
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/snapshot/contracts"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/pgtest"
 )
 
 func TestAgentPRMutatorResolverSelectsProviderSpecificVerifiedBranchAuthentication(t *testing.T) {
@@ -223,7 +222,7 @@ func newBridgeResolver(
 	}
 	resolver, err := newAgentPRMutatorResolver(
 		credentials,
-		db.NewAgentSnapshotsFactory(pgtest.OpenTestDB(t)),
+		db.NewAgentSnapshotsFactory(openTestDB(t)),
 		&compositionContentStore{},
 		snapshot.Canonicalizer{MaxContentBytes: 1 << 20, MaxEntries: 100, TempDir: t.TempDir()},
 		bridgeRunner{},
