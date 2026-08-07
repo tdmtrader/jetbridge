@@ -322,17 +322,17 @@ policy/runtime seam.
 - Update the ignored local SDD audit with observed JetBridge counts
 - Test all of `atc/worker/jetbridge`
 
-- [ ] Run `gofmt` on every modified Go file and `go test ./atc/worker/jetbridge -run '^$'`.
-- [ ] Run `pg_isready -h 127.0.0.1 -p 15432 -U postgres`.
-- [ ] Run all task-focused commands.
-- [ ] Run `ginkgo ./atc/worker/jetbridge` and
+- [x] Run `gofmt` on every modified Go file and `go test ./atc/worker/jetbridge -run '^$'`.
+- [x] Run `pg_isready -h 127.0.0.1 -p 15432 -U postgres`.
+- [x] Run all task-focused commands.
+- [x] Run `ginkgo ./atc/worker/jetbridge` and
   `go test ./atc/worker/jetbridge -count=1`.
-- [ ] Run `ginkgo -p ./atc/worker/jetbridge` to prove all unique clones remain
+- [x] Run `ginkgo -p ./atc/worker/jetbridge` to prove all unique clones remain
   isolated in one PostgreSQL service.
-- [ ] Run `go vet ./atc/worker/jetbridge`,
+- [x] Run `go vet ./atc/worker/jetbridge`,
   `go test -tags live ./atc/worker/jetbridge -run '^$'`, and
   `go vet -tags live ./atc/worker/jetbridge`.
-- [ ] Recount with:
+- [x] Recount with:
 
 ```bash
 rg -l 'github.com/concourse/concourse/atc/db/dbfakes' \
@@ -345,26 +345,41 @@ rg -n 'setupFakeDBContainer' atc/worker/jetbridge
 Expected: exactly three importing files, eight explicit constructors with the
 type/file mapping at the top of this plan, and no fake setup helper.
 
-- [ ] Inspect lifecycle/order: one opt-in clone per converted spec; every
+- [x] Inspect lifecycle/order: one opt-in clone per converted spec; every
   connection closes before drop; no repository crosses clones; persisted
   mutations are reread; fixed handles are unique within a clone; every retained
   fake carries an exact boundary comment.
-- [ ] Run `git diff --check` and `git status --short`; confirm only planned
+- [x] Run `git diff --check` and `git status --short`; confirm only planned
   files and tracked bookkeeping are present.
-- [ ] Obtain an independent final review with no Critical, Important, or Minor
+- [x] Obtain an independent final review with no Critical, Important, or Minor
   findings.
-- [ ] Record observed evidence and close the plan in a tracked docs commit:
+- [x] Record observed evidence and close the plan in a tracked docs commit:
   `docs: record real postgres jetbridge completion`.
 
 ## Phase acceptance
 
-- [ ] PostgreSQL is one machine-wide service, with a unique template clone per
+- [x] PostgreSQL is one machine-wide service, with a unique template clone per
   converted spec and verified parallel execution.
-- [ ] JetBridge reaches the exact 82 to 8 constructor target and 14 to 3 import
+- [x] JetBridge reaches the exact 82 to 8 constructor target and 14 to 3 import
   target, or a reviewer-approved narrower retained seam is explicitly counted.
-- [ ] Successful worker/container/volume/artifact/build/registrar/reaper state
+- [x] Successful worker/container/volume/artifact/build/registrar/reaper state
   is asserted through real persisted rows.
-- [ ] The eight retained generated database fakes are selective runtime or
+- [x] The eight retained generated database fakes are selective runtime or
   post-success transition fault seams, not ordinary success fixtures.
-- [ ] No production, benchmark, corpus, Docker, or service-lifecycle file is
+- [x] No production, benchmark, corpus, Docker, or service-lifecycle file is
   changed, and nothing is pushed.
+
+## Observed closure evidence
+
+- `pg_isready` reported the shared PostgreSQL service at
+  `127.0.0.1:15432` accepting connections.
+- The full suite passed 396/396 sequentially and 396/396 across nine Ginkgo
+  processes; uncached `go test ./atc/worker/jetbridge -count=1` also passed.
+- Standard compile/vet and `-tags live` compile/vet all passed.
+- The exact final census is 3 importing files / 8 constructors with the type
+  map stated at the top of this plan; `setupFakeDBContainer` has no occurrence.
+- Independent final review reported no Critical, Important, or Minor findings
+  and independently verified clone lifecycle, disconnected-worker cleanup,
+  retained-boundary comments, counts, and fresh parallel execution.
+- `gofmt -d`, `git diff --check`, and worktree status were clean before this
+  documentation-only closure.
