@@ -17,6 +17,18 @@ import (
 	"github.com/concourse/concourse/atc/db/dbfakes"
 )
 
+var _ = Describe("MCP tools PostgreSQL fixture", func() {
+	It("reads committed state through separately constructed production factories", func() {
+		fixture := useMCPToolsDB()
+		loaded, found, err := db.NewTeamFactory(fixture.Conn, fixture.LockFactory).
+			FindTeam(fixture.Main.Name())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(loaded.ID()).To(Equal(fixture.Main.ID()))
+		Expect(loaded.Name()).To(Equal(fixture.Main.Name()))
+	})
+})
+
 var _ = Describe("Tools", func() {
 	var (
 		server             *mcpserver.Server
