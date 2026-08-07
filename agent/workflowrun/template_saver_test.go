@@ -14,6 +14,7 @@ import (
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbfakes"
+	"github.com/stretchr/testify/require"
 )
 
 func TestTemplateSaverBrokerAuthorityPreventsConfigOnlyReuse(t *testing.T) {
@@ -21,6 +22,7 @@ func TestTemplateSaverBrokerAuthorityPreventsConfigOnlyReuse(t *testing.T) {
 	second := brokerTemplateSpec(t, "gpt-5.7")
 	second.Name = first.Name
 	pipeline := exactTemplatePipeline(first, 81, 7, 13)
+	// Retained: synthetic broker authority must collide at one public pipeline name.
 	team := new(dbfakes.FakeTeam)
 	team.IDReturns(7)
 	team.NameReturns("research")
@@ -42,6 +44,7 @@ func TestTemplateSaverValidationAuthorityPreventsConfigOnlyReuse(t *testing.T) {
 	}
 	second.Name = first.Name // model an attempted collision at the same public ATC config.
 	pipeline := exactTemplatePipeline(first, 81, 7, 13)
+	// Retained: synthetic validation authority must collide at one public pipeline name.
 	team := new(dbfakes.FakeTeam)
 	team.IDReturns(7)
 	team.NameReturns("research")
@@ -56,87 +59,82 @@ func TestTemplateSaverValidationAuthorityPreventsConfigOnlyReuse(t *testing.T) {
 }
 
 func TestTemplateSaverCreatesWithCreateOnlyVersion(t *testing.T) {
+	ctx := context.Background()
+	fixture := useRealWorkflowRunDB(t)
 	spec := templateSaverSpec(t)
-	pipeline := exactTemplatePipeline(spec, 81, 7, 13)
-	team := new(dbfakes.FakeTeam)
-	team.IDReturns(7)
-	team.NameReturns("research")
-	team.PipelineReturns(nil, false, nil)
-	team.PipelineReturnsOnCall(1, pipeline, true, nil)
-	store := &templateStoreStub{save: func(ctx context.Context, teamID int, ref atc.PipelineRef, config atc.Config) (db.Pipeline, bool, error) {
-		if ctx == nil || teamID != 7 || ref.Name != spec.Name || ref.InstanceVars != nil || !configsEqual(config, spec.Config) {
-			t.Fatalf("Save args = (%v, %d, %+v, %+v)", ctx, teamID, ref, config)
-		}
-		return pipeline, true, nil
-	}, owns: func(context.Context, int) (bool, error) { return true, nil }}
-	finder := &teamFinderStub{find: func(name string) (db.Team, bool, error) {
-		if name != "research" {
-			t.Fatalf("team lookup = %q", name)
-		}
-		return team, true, nil
-	}}
-	saver, err := NewTemplateSaver(finder, store)
-	if err != nil {
-		t.Fatalf("NewTemplateSaver: %v", err)
-	}
+	saver, err := NewTemplateSaver(fixture.Teams, fixture.Templates)
+	require.NoError(t, err)
 
-	ref, err := saver.SaveOrReuse(context.Background(), AdmissionContext{
-		TeamID: 7, TeamName: "research", CreatedBy: "alice", Origin: Origin{Kind: "manual"},
+	ref, err := saver.SaveOrReuse(ctx, AdmissionContext{
+		TeamID: fixture.Team.ID(), TeamName: fixture.Team.Name(), CreatedBy: "alice", Origin: Origin{Kind: "manual"},
 	}, spec)
-	if err != nil {
-		t.Fatalf("SaveOrReuse: %v", err)
+	require.NoError(t, err)
+	pipeline, found, err := fixture.Team.Pipeline(atc.PipelineRef{Name: spec.Name})
+	require.NoError(t, err)
+	require.True(t, found)
+	want := WorkflowRunTemplateRef{
+		PipelineID: pipeline.ID(), TeamID: fixture.Team.ID(), Name: spec.Name,
+		ConfigVersion: int(pipeline.ConfigVersion()), FullHash: spec.FullHash,
 	}
-	if ref.PipelineID != 81 || ref.TeamID != 7 || ref.Name != spec.Name || ref.ConfigVersion != 13 || ref.FullHash != spec.FullHash {
-		t.Fatalf("ref = %+v", ref)
-	}
-	if store.saveCalls != 1 {
-		t.Fatalf("Save calls = %d", store.saveCalls)
-	}
+	require.Equal(t, want, ref)
+	owned, err := fixture.Templates.IsWorkflowRunTemplate(ctx, pipeline.ID())
+	require.NoError(t, err)
+	require.True(t, owned)
 }
 
 func TestTemplateSaverReusesOnlyAnExactImmutableTemplate(t *testing.T) {
+	ctx := context.Background()
+	fixture := useRealWorkflowRunDB(t)
 	spec := templateSaverSpec(t)
-	pipeline := exactTemplatePipeline(spec, 81, 7, 13)
-	team := new(dbfakes.FakeTeam)
-	team.IDReturns(7)
-	team.NameReturns("research")
-	team.PipelineReturns(pipeline, true, nil)
-	store := alwaysOwnedTemplateStore()
-	saver, err := NewTemplateSaver(&teamFinderStub{find: func(string) (db.Team, bool, error) {
-		return team, true, nil
-	}}, store)
-	if err != nil {
-		t.Fatal(err)
+	pipeline, created, err := fixture.Templates.SaveWorkflowRunTemplate(
+		ctx,
+		fixture.Team.ID(),
+		atc.PipelineRef{Name: spec.Name},
+		spec.Config,
+	)
+	require.NoError(t, err)
+	require.True(t, created)
+	saver, err := NewTemplateSaver(fixture.Teams, fixture.Templates)
+	require.NoError(t, err)
+	want := WorkflowRunTemplateRef{
+		PipelineID: pipeline.ID(), TeamID: fixture.Team.ID(), Name: spec.Name,
+		ConfigVersion: int(pipeline.ConfigVersion()), FullHash: spec.FullHash,
 	}
-
-	ref, err := saver.SaveOrReuse(context.Background(), AdmissionContext{TeamID: 7, TeamName: "research"}, spec)
-	if err != nil {
-		t.Fatalf("SaveOrReuse: %v", err)
+	admission := AdmissionContext{TeamID: fixture.Team.ID(), TeamName: fixture.Team.Name()}
+	for range 2 {
+		ref, err := saver.SaveOrReuse(ctx, admission, spec)
+		require.NoError(t, err)
+		require.Equal(t, want, ref)
 	}
-	if ref.PipelineID != pipeline.ID() || store.saveCalls != 0 {
-		t.Fatalf("reuse = %+v, save calls = %d", ref, store.saveCalls)
-	}
+	owned, err := fixture.Templates.IsWorkflowRunTemplate(ctx, pipeline.ID())
+	require.NoError(t, err)
+	require.True(t, owned)
 }
 
 func TestTemplateSaverRejectsAnExactButUnownedPipeline(t *testing.T) {
+	ctx := context.Background()
+	fixture := useRealWorkflowRunDB(t)
 	spec := templateSaverSpec(t)
-	pipeline := exactTemplatePipeline(spec, 81, 7, 13)
-	team := new(dbfakes.FakeTeam)
-	team.IDReturns(7)
-	team.NameReturns("research")
-	team.PipelineReturns(pipeline, true, nil)
-	store := &templateStoreStub{owns: func(context.Context, int) (bool, error) { return false, nil }}
-	saver, err := NewTemplateSaver(&teamFinderStub{find: func(string) (db.Team, bool, error) {
-		return team, true, nil
-	}}, store)
-	if err != nil {
-		t.Fatal(err)
-	}
+	pipeline, created, err := fixture.Team.SavePipeline(
+		atc.PipelineRef{Name: spec.Name},
+		spec.Config,
+		db.ConfigVersion(0),
+		false,
+	)
+	require.NoError(t, err)
+	require.True(t, created)
+	owned, err := fixture.Templates.IsWorkflowRunTemplate(ctx, pipeline.ID())
+	require.NoError(t, err)
+	require.False(t, owned)
+	saver, err := NewTemplateSaver(fixture.Teams, fixture.Templates)
+	require.NoError(t, err)
 
-	_, err = saver.SaveOrReuse(context.Background(), AdmissionContext{TeamID: 7, TeamName: "research"}, spec)
-	if !errors.Is(err, ErrImmutableTemplateCollision) {
-		t.Fatalf("error = %v", err)
-	}
+	ref, err := saver.SaveOrReuse(ctx, AdmissionContext{TeamID: fixture.Team.ID(), TeamName: fixture.Team.Name()}, spec)
+	require.Equal(t, WorkflowRunTemplateRef{}, ref)
+	require.ErrorIs(t, err, ErrImmutableTemplateCollision)
+	owned, err = fixture.Templates.IsWorkflowRunTemplate(ctx, pipeline.ID())
+	require.NoError(t, err)
+	require.False(t, owned)
 }
 
 func TestTemplateSaverRejectsEveryMutableOrCollidingShape(t *testing.T) {
@@ -158,6 +156,7 @@ func TestTemplateSaverRejectsEveryMutableOrCollidingShape(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			pipeline := exactTemplatePipeline(spec, 81, 7, 13)
 			test.mutate(pipeline)
+			// Retained: the mutation matrix needs selectively invalid pipeline shapes.
 			team := new(dbfakes.FakeTeam)
 			team.IDReturns(7)
 			team.NameReturns("research")
@@ -179,6 +178,7 @@ func TestTemplateSaverRejectsEveryMutableOrCollidingShape(t *testing.T) {
 func TestTemplateSaverConvergesWithConcurrentExactCreator(t *testing.T) {
 	spec := templateSaverSpec(t)
 	pipeline := exactTemplatePipeline(spec, 81, 7, 13)
+	// Retained: deterministic creator-race rereads require per-call pipeline results.
 	team := new(dbfakes.FakeTeam)
 	team.IDReturns(7)
 	team.NameReturns("research")
@@ -209,6 +209,7 @@ func TestTemplateSaverRetriesVersionDriftAndBoundsPersistentMutation(t *testing.
 	t.Run("converges", func(t *testing.T) {
 		version10 := exactTemplatePipeline(spec, 81, 7, 10)
 		version11 := exactTemplatePipeline(spec, 81, 7, 11)
+		// Retained: deterministic version drift needs two synthetic reread snapshots.
 		team := new(dbfakes.FakeTeam)
 		team.IDReturns(7)
 		team.NameReturns("research")
@@ -231,6 +232,7 @@ func TestTemplateSaverRetriesVersionDriftAndBoundsPersistentMutation(t *testing.
 	})
 
 	t.Run("persistent drift", func(t *testing.T) {
+		// Retained: persistent mutation synthesizes a new version on every reread.
 		team := new(dbfakes.FakeTeam)
 		team.IDReturns(7)
 		team.NameReturns("research")
@@ -268,6 +270,7 @@ func TestTemplateSaverRequiresAuthoritativeTeamIdentity(t *testing.T) {
 		{name: "renamed", teamID: 7, teamName: "renamed", found: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			// Retained: the authority matrix needs missing or mismatched team identities.
 			team := new(dbfakes.FakeTeam)
 			team.IDReturns(test.teamID)
 			team.NameReturns(test.teamName)
@@ -385,6 +388,7 @@ func brokerTemplateSpec(t *testing.T, model string) ImmutableTemplateSpec {
 }
 
 func exactTemplatePipeline(spec ImmutableTemplateSpec, id, teamID, version int) *dbfakes.FakePipeline {
+	// Retained: authority, mutation, race, and reread seams need a synthetic pipeline.
 	pipeline := new(dbfakes.FakePipeline)
 	pipeline.IDReturns(id)
 	pipeline.TeamIDReturns(teamID)
@@ -395,12 +399,6 @@ func exactTemplatePipeline(spec ImmutableTemplateSpec, id, teamID, version int) 
 	pipeline.ArchivedReturns(false)
 	pipeline.ConfigReturns(spec.Config, nil)
 	return pipeline
-}
-
-func configsEqual(left, right atc.Config) bool {
-	leftBytes, leftErr := left.CanonicalJSON()
-	rightBytes, rightErr := right.CanonicalJSON()
-	return leftErr == nil && rightErr == nil && string(leftBytes) == string(rightBytes)
 }
 
 type teamFinderStub struct {
