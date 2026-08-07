@@ -13,6 +13,7 @@ import (
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbfakes"
+	"github.com/concourse/concourse/atc/db/dbtest"
 	"github.com/concourse/concourse/atc/imageresolver/imageresolvertesting"
 	"github.com/concourse/concourse/atc/lidar"
 	"github.com/concourse/concourse/atc/metric"
@@ -44,198 +45,323 @@ func loggedAt(logs []lager.LogFormat, level lager.LogLevel, suffix string) bool 
 	return false
 }
 
+var _ = Describe("Lidar PostgreSQL fixture", func() {
+	It("reads persisted pipeline state through a separately constructed factory", func() {
+		fixture := useLidarDB()
+		team, pipeline := persistLidarPipeline(
+			fixture,
+			"fixture-team",
+			"fixture-pipeline",
+			atc.Config{Resources: atc.ResourceConfigs{{
+				Name: "fixture-resource", Type: dbtest.BaseResourceType,
+				Source: atc.Source{"repository": "fixture"},
+			}}},
+		)
+
+		loadedTeam, found, err := db.NewTeamFactory(fixture.Conn, fixture.LockFactory).FindTeam(team.Name())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(loadedTeam.ID()).To(Equal(team.ID()))
+		loadedPipeline, found, err := loadedTeam.Pipeline(atc.PipelineRef{
+			Name:         pipeline.Name(),
+			InstanceVars: pipeline.InstanceVars(),
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(loadedPipeline.ID()).To(Equal(pipeline.ID()))
+	})
+})
+
 var _ = Describe("Scanner", func() {
-	var (
-		err error
-
-		fakeCheckFactory *dbfakes.FakeCheckFactory
-		planFactory      atc.PlanFactory
-
-		scanner Scanner
-
-		ctx    context.Context
-		cancel context.CancelFunc
-
-		maxConcurrency = 10
+	const (
+		teamName     = "scanner-team"
+		pipelineName = "scanner-pipeline"
 	)
 
-	BeforeEach(func() {
-		planFactory = atc.NewPlanFactory(0)
-		fakeCheckFactory = new(dbfakes.FakeCheckFactory)
+	newScanner := func(factory db.CheckFactory, maxConcurrency int) Scanner {
+		return lidar.NewScanner(factory, atc.NewPlanFactory(0), maxConcurrency, nil, nil)
+	}
 
-		scanner = lidar.NewScanner(fakeCheckFactory, planFactory, maxConcurrency, nil, nil)
-		ctx, cancel = context.WithCancel(context.Background())
+	It("returns the real-backed enumeration failure", func() {
+		fixture := useLidarDB()
+		factory := observeLidarCheckFactory(fixture.CheckFactory)
+		factory.FailResources(errors.New("nope"))
+
+		Expect(newScanner(factory, 10).Run(context.Background())).To(MatchError("nope"))
+		Expect(factory.Calls()).To(BeEmpty())
 	})
 
-	JustBeforeEach(func() {
-		err = scanner.Run(ctx)
+	It("does not schedule a check for an already-cancelled empty enumeration", func() {
+		fixture := useLidarDB()
+		factory := observeLidarCheckFactory(fixture.CheckFactory)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		Expect(newScanner(factory, 10).Run(ctx)).To(Succeed())
+		Expect(factory.Calls()).To(BeEmpty())
+		Consistently(fixture.CheckBuilds).WithTimeout(100 * time.Millisecond).ShouldNot(Receive())
 	})
 
-	Describe("Run", func() {
-		Context("when fetching resources fails", func() {
-			BeforeEach(func() {
-				fakeCheckFactory.ResourcesReturns(nil, errors.New("nope"))
-			})
+	It("returns the resource-type enumeration failure after loading real resources", func() {
+		fixture := useLidarDB()
+		_, _ = persistLidarPipeline(fixture, teamName, pipelineName, lidarConfigWithGets(
+			atc.ResourceConfigs{{
+				Name: "enumerated-resource", Type: dbtest.BaseResourceType,
+				Source: atc.Source{"repository": "enumerated"},
+			}}, nil,
+		))
+		factory := observeLidarCheckFactory(fixture.CheckFactory)
+		factory.FailResourceTypes(errors.New("nope"))
 
-			It("errors", func() {
-				Expect(err).To(HaveOccurred())
-			})
+		Expect(newScanner(factory, 10).Run(context.Background())).To(MatchError("nope"))
+		Expect(factory.Calls()).To(BeEmpty())
+	})
+
+	It("naturally excludes a persisted check_every never resource", func() {
+		fixture := useLidarDB()
+		_, _ = persistLidarPipeline(fixture, teamName, pipelineName, lidarConfigWithGets(
+			atc.ResourceConfigs{{
+				Name: "never-resource", Type: dbtest.BaseResourceType,
+				Source:     atc.Source{"repository": "never"},
+				CheckEvery: &atc.CheckEvery{Never: true},
+			}}, nil,
+		))
+		factory := observeLidarCheckFactory(fixture.CheckFactory)
+
+		Expect(newScanner(factory, 10).Run(context.Background())).To(Succeed())
+		Expect(factory.Calls()).To(BeEmpty())
+		Consistently(fixture.CheckBuilds).WithTimeout(100 * time.Millisecond).ShouldNot(Receive())
+	})
+
+	It("creates an in-memory check from a persisted base-type resource", func() {
+		fixture := useLidarDB()
+		resourceSource := atc.Source{"repository": "base-resource"}
+		_, pipeline := persistLidarPipeline(fixture, teamName, pipelineName, lidarConfigWithGets(
+			atc.ResourceConfigs{{
+				Name: "base-resource", Type: dbtest.BaseResourceType,
+				Source: resourceSource, Tags: atc.Tags{"tag-a", "tag-b"},
+				CheckEvery:   &atc.CheckEvery{Interval: 23 * time.Minute},
+				CheckTimeout: "7m",
+			}}, nil,
+		))
+		resource := lidarPipelineResource(pipeline, "base-resource")
+		factory := observeLidarCheckFactory(fixture.CheckFactory)
+
+		Expect(newScanner(factory, 10).Run(context.Background())).To(Succeed())
+		Expect(factory.Calls()).To(HaveLen(1))
+		call := factory.Calls()[0]
+		Expect(call.checkable.Name()).To(Equal(resource.Name()))
+		Expect(call.resourceTypes).To(BeNil())
+		Expect(call.from).To(BeNil())
+		Expect(call.manuallyTriggered).To(BeFalse())
+		Expect(call.skipIntervalRecursively).To(BeFalse())
+		Expect(call.toDB).To(BeFalse())
+
+		build := drainLidarCheckBuilds(fixture, 1)[0]
+		Expect(build.ResourceID()).To(Equal(resource.ID()))
+		plan := build.PrivatePlan()
+		Expect(plan.Check).NotTo(BeNil())
+		Expect(plan.Check.Name).To(Equal("base-resource"))
+		Expect(plan.Check.Resource).To(Equal("base-resource"))
+		Expect(plan.Check.Type).To(Equal(dbtest.BaseResourceType))
+		Expect(plan.Check.Source).To(Equal(resourceSource))
+		Expect(plan.Check.Tags).To(Equal(atc.Tags{"tag-a", "tag-b"}))
+		Expect(plan.Check.Timeout).To(Equal("7m"))
+		Expect(plan.Check.Interval).To(Equal(atc.CheckEvery{Interval: 23 * time.Minute}))
+		Expect(plan.Check.TypeImage.BaseType).To(Equal(dbtest.BaseResourceType))
+		Expect(build.Finish(db.BuildStatusSucceeded)).To(Succeed())
+	})
+
+	It("creates a real check plan with its persisted custom parent type", func() {
+		fixture := useLidarDB()
+		_, pipeline := persistLidarPipeline(fixture, teamName, pipelineName, lidarConfigWithGets(
+			atc.ResourceConfigs{{
+				Name: "custom-resource", Type: "custom-type",
+				Source: atc.Source{"repository": "custom-resource"},
+			}},
+			atc.ResourceTypes{{
+				Name: "custom-type", Type: dbtest.BaseResourceType,
+				Source: atc.Source{"repository": "custom-image"},
+				Tags:   atc.Tags{"type-tag"},
+			}},
+		))
+		resource := lidarPipelineResource(pipeline, "custom-resource")
+		resourceType := lidarPipelineResourceType(pipeline, "custom-type")
+		factory := observeLidarCheckFactory(fixture.CheckFactory)
+
+		Expect(newScanner(factory, 10).Run(context.Background())).To(Succeed())
+		Expect(factory.Calls()).To(HaveLen(1))
+		call := factory.Calls()[0]
+		Expect(call.checkable.Name()).To(Equal(resource.Name()))
+		Expect(call.resourceTypes).To(HaveLen(1))
+		Expect(call.resourceTypes[0].ID()).To(Equal(resourceType.ID()))
+
+		build := drainLidarCheckBuilds(fixture, 1)[0]
+		Expect(build.ResourceID()).To(Equal(resource.ID()))
+		plan := build.PrivatePlan()
+		Expect(plan.Check).NotTo(BeNil())
+		Expect(plan.Check.Name).To(Equal("custom-resource"))
+		Expect(plan.Check.Resource).To(Equal("custom-resource"))
+		Expect(plan.Check.Type).To(Equal("custom-type"))
+		Expect(plan.Check.Source).To(Equal(atc.Source{"repository": "custom-resource"}))
+		Expect(plan.Check.TypeImage.BaseType).To(Equal(dbtest.BaseResourceType))
+		Expect(plan.Check.TypeImage.CheckPlan).NotTo(BeNil())
+		Expect(plan.Check.TypeImage.CheckPlan.Check.Name).To(Equal("custom-type"))
+		Expect(plan.Check.TypeImage.CheckPlan.Check.Source).To(Equal(atc.Source{"repository": "custom-image"}))
+		Expect(plan.Check.TypeImage.CheckPlan.Check.Tags).To(Equal(atc.Tags{"type-tag"}))
+		Expect(plan.Check.TypeImage.GetPlan).NotTo(BeNil())
+		Expect(plan.Check.TypeImage.GetPlan.Get.Name).To(Equal("custom-type"))
+		Expect(plan.Check.TypeImage.GetPlan.Get.Type).To(Equal(dbtest.BaseResourceType))
+		Expect(plan.Check.TypeImage.GetPlan.Get.Source).To(Equal(atc.Source{"repository": "custom-image"}))
+		Expect(build.Finish(db.BuildStatusSucceeded)).To(Succeed())
+	})
+
+	It("recovers when real resource scheduling crosses the explicit panic seam", func() {
+		fixture := useLidarDB()
+		_, _ = persistLidarPipeline(fixture, teamName, pipelineName, lidarConfigWithGets(
+			atc.ResourceConfigs{{
+				Name: "panic-resource", Type: dbtest.BaseResourceType,
+				Source: atc.Source{"repository": "panic"},
+			}}, nil,
+		))
+		factory := observeLidarCheckFactory(fixture.CheckFactory)
+		factory.PanicOnTryCreate()
+
+		Expect(newScanner(factory, 10).Run(context.Background())).To(Succeed())
+		Expect(factory.Calls()).To(HaveLen(1))
+		Consistently(fixture.CheckBuilds).WithTimeout(100 * time.Millisecond).ShouldNot(Receive())
+	})
+
+	It("forwards a persisted API pin to the production CheckFactory", func() {
+		fixture := useLidarDB()
+		team, pipeline := persistLidarPipeline(fixture, teamName, pipelineName, lidarConfigWithGets(
+			atc.ResourceConfigs{{
+				Name: "pinned-resource", Type: dbtest.BaseResourceType,
+				Source: atc.Source{"repository": "pinned"},
+			}}, nil,
+		))
+		version := atc.Version{"ref": "pinned-version"}
+		scenario := &dbtest.Scenario{Team: team, Pipeline: pipeline}
+		scenario.Run(fixture.Builder.WithResourceVersions("pinned-resource", version))
+		resource := scenario.Resource("pinned-resource")
+		persistedVersion := scenario.ResourceVersion("pinned-resource", version)
+		changed, err := resource.PinVersion(persistedVersion.ID())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(changed).To(BeTrue())
+		factory := observeLidarCheckFactory(fixture.CheckFactory)
+
+		Expect(newScanner(factory, 10).Run(context.Background())).To(Succeed())
+		Expect(factory.Calls()).To(HaveLen(1))
+		call := factory.Calls()[0]
+		Expect(call.resource().ID()).To(Equal(resource.ID()))
+		Expect(call.resourceTypes).To(BeNil())
+		Expect(call.from).To(Equal(version))
+		Expect(call.manuallyTriggered).To(BeFalse())
+		Expect(call.skipIntervalRecursively).To(BeFalse())
+		Expect(call.toDB).To(BeFalse())
+		build := drainLidarCheckBuilds(fixture, 1)[0]
+		Expect(build.ResourceID()).To(Equal(resource.ID()))
+		Expect(build.PrivatePlan().Check.FromVersion).To(Equal(version))
+		Expect(build.Finish(db.BuildStatusSucceeded)).To(Succeed())
+	})
+
+	It("forwards a nil pin from an unpinned persisted resource", func() {
+		fixture := useLidarDB()
+		_, pipeline := persistLidarPipeline(fixture, teamName, pipelineName, lidarConfigWithGets(
+			atc.ResourceConfigs{{
+				Name: "unpinned-resource", Type: dbtest.BaseResourceType,
+				Source: atc.Source{"repository": "unpinned"},
+			}}, nil,
+		))
+		resource := lidarPipelineResource(pipeline, "unpinned-resource")
+		factory := observeLidarCheckFactory(fixture.CheckFactory)
+
+		Expect(newScanner(factory, 10).Run(context.Background())).To(Succeed())
+		Expect(factory.Calls()).To(HaveLen(1))
+		Expect(factory.Calls()[0].resource().ID()).To(Equal(resource.ID()))
+		Expect(factory.Calls()[0].from).To(BeNil())
+		build := drainLidarCheckBuilds(fixture, 1)[0]
+		Expect(build.Finish(db.BuildStatusSucceeded)).To(Succeed())
+	})
+
+	It("excludes a steady-state put-only resource after a successful scoped check", func() {
+		fixture := useLidarDB()
+		team, pipeline := persistLidarPipeline(fixture, teamName, pipelineName, atc.Config{
+			Resources: atc.ResourceConfigs{
+				{Name: "input-resource", Type: dbtest.BaseResourceType, Source: atc.Source{"repository": "input"}},
+				{Name: "put-only-resource", Type: dbtest.BaseResourceType, Source: atc.Source{"repository": "put-only"}},
+			},
+			Jobs: atc.JobConfigs{{
+				Name: "scan-job",
+				PlanSequence: []atc.Step{
+					{Config: &atc.GetStep{Name: "input-resource"}},
+					{Config: &atc.PutStep{Name: "put-only-resource"}},
+				},
+			}},
 		})
+		scenario := &dbtest.Scenario{Team: team, Pipeline: pipeline}
+		scenario.Run(fixture.Builder.WithResourceVersions("put-only-resource", atc.Version{"ref": "complete"}))
+		input := scenario.Resource("input-resource")
+		putOnly := scenario.Resource("put-only-resource")
+		Expect(putOnly.ResourceConfigScopeID()).NotTo(BeZero())
+		factory := observeLidarCheckFactory(fixture.CheckFactory)
 
-		Context("when context is cancelled", func() {
-			BeforeEach(func() {
-				cancel()
+		Expect(newScanner(factory, 10).Run(context.Background())).To(Succeed())
+		Expect(factory.Calls()).To(HaveLen(1))
+		Expect(factory.Calls()[0].resource().ID()).To(Equal(input.ID()))
+		Expect(factory.Calls()[0].resource().ID()).NotTo(Equal(putOnly.ID()))
+		build := drainLidarCheckBuilds(fixture, 1)[0]
+		Expect(build.ResourceID()).To(Equal(input.ID()))
+		Expect(build.Finish(db.BuildStatusSucceeded)).To(Succeed())
+	})
+
+	It("checks all persisted resources beyond the worker concurrency limit", func() {
+		fixture := useLidarDB()
+		resources := make(atc.ResourceConfigs, 0, 20)
+		for i := range 20 {
+			resources = append(resources, atc.ResourceConfig{
+				Name:   fmt.Sprintf("resource-%02d", i),
+				Type:   dbtest.BaseResourceType,
+				Source: atc.Source{"index": fmt.Sprintf("%02d", i)},
 			})
+		}
+		_, pipeline := persistLidarPipeline(
+			fixture, teamName, pipelineName, lidarConfigWithGets(resources, nil),
+		)
+		persisted, err := pipeline.Resources()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(persisted).To(HaveLen(20))
+		scopeIDs := make(map[int]struct{}, 20)
+		for _, resource := range persisted {
+			scope := attachLidarResourceScope(fixture, resource)
+			Expect(scope.ID()).NotTo(BeZero())
+			scopeIDs[scope.ID()] = struct{}{}
+		}
+		Expect(scopeIDs).To(HaveLen(20))
+		factory := observeLidarCheckFactory(fixture.CheckFactory)
 
-			It("does not check any resources", func() {
-				Expect(fakeCheckFactory.TryCreateCheckCallCount()).To(Equal(0))
-			})
-		})
-
-		Context("when fetching resources succeeds", func() {
-			var fakeResource *dbfakes.FakeResource
-
-			BeforeEach(func() {
-				fakeResource = new(dbfakes.FakeResource)
-				fakeResource.NameReturns("some-name")
-				fakeResource.TagsReturns([]string{"tag-a", "tag-b"})
-				fakeResource.SourceReturns(atc.Source{"some": "source"})
-
-				fakeCheckFactory.ResourcesReturns([]db.Resource{fakeResource}, nil)
-			})
-
-			Context("when fetching resource types fails", func() {
-				BeforeEach(func() {
-					fakeCheckFactory.ResourceTypesByPipelineReturns(nil, errors.New("nope"))
-				})
-
-				It("errors", func() {
-					Expect(err).To(HaveOccurred())
-				})
-			})
-
-			Context("when CheckEvery is never", func() {
-				BeforeEach(func() {
-					fakeResource.CheckEveryReturns(&atc.CheckEvery{Never: true})
-					fakeResource.TypeReturns("parent")
-					fakeResource.PipelineIDReturns(1)
-					fakeResourceType := new(dbfakes.FakeResourceType)
-					fakeResourceType.NameReturns("parent")
-					fakeResourceType.PipelineIDReturns(1)
-					fakeCheckFactory.ResourceTypesByPipelineReturns(map[int]db.ResourceTypes{
-						1: {fakeResourceType},
-					}, nil)
-				})
-
-				It("does not check the resource", func() {
-					Expect(fakeCheckFactory.TryCreateCheckCallCount()).To(Equal(0))
-				})
-			})
-
-			Context("when fetching resources types succeeds", func() {
-				var fakeResourceType *dbfakes.FakeResourceType
-
-				BeforeEach(func() {
-					fakeResourceType = new(dbfakes.FakeResourceType)
-					fakeResourceType.NameReturns("some-type")
-					fakeResourceType.TypeReturns("some-base-type")
-					fakeResourceType.TagsReturns([]string{"some-tag"})
-					fakeResourceType.SourceReturns(atc.Source{"some": "type-source"})
-
-					fakeCheckFactory.ResourceTypesByPipelineReturns(map[int]db.ResourceTypes{1: {fakeResourceType}}, nil)
-				})
-
-				Context("when there are more resouces than maxConcurrency", func() {
-					BeforeEach(func() {
-						maxConcurrency = 5
-						var resources []db.Resource
-						for range 20 {
-							rs := new(dbfakes.FakeResource)
-							rs.NameReturns("some-name-")
-							rs.SourceReturns(atc.Source{"some": "source"})
-							resources = append(resources, rs)
-						}
-						fakeCheckFactory.ResourcesReturns(resources, nil)
-					})
-
-					It("successfully checks all resources", func() {
-						Expect(fakeCheckFactory.TryCreateCheckCallCount()).To(Equal(20))
-					})
-				})
-
-				Context("when the resource parent type is a base type", func() {
-					BeforeEach(func() {
-						fakeCheckFactory.ResourceTypesByPipelineReturns(map[int]db.ResourceTypes{}, nil)
-						fakeResource.TypeReturns("some-type")
-					})
-
-					It("creates a check with empty resource types list", func() {
-						_, _, resourceTypes, _, _, _, toDb := fakeCheckFactory.TryCreateCheckArgsForCall(0)
-						var nilResourceTypes db.ResourceTypes
-						Expect(resourceTypes).To(Equal(nilResourceTypes))
-						Expect(toDb).To(BeFalse())
-					})
-
-					Context("when the last check end time is past our interval", func() {
-						It("creates a check", func() {
-							Expect(fakeCheckFactory.TryCreateCheckCallCount()).To(Equal(1))
-						})
-
-						Context("when try creating a check panics", func() {
-							BeforeEach(func() {
-								fakeCheckFactory.TryCreateCheckStub = func(context.Context, db.Checkable, db.ResourceTypes, atc.Version, bool, bool, bool) (db.Build, bool, error) {
-									panic("something went wrong")
-								}
-							})
-
-							It("recovers from the panic", func() {
-								Expect(err).ToNot(HaveOccurred())
-							})
-						})
-					})
-
-					Context("when the checkable has a pinned version", func() {
-						BeforeEach(func() {
-							fakeResource.CurrentPinnedVersionReturns(atc.Version{"some": "version"})
-						})
-
-						It("creates a check with that pinned version", func() {
-							Expect(fakeCheckFactory.TryCreateCheckCallCount()).To(Equal(1))
-							_, _, _, fromVersion, manuallyTriggered, _, toDb := fakeCheckFactory.TryCreateCheckArgsForCall(0)
-							Expect(fromVersion).To(Equal(atc.Version{"some": "version"}))
-							Expect(manuallyTriggered).To(BeFalse())
-							Expect(toDb).To(BeFalse())
-						})
-					})
-
-					Context("when the checkable does not have a pinned version", func() {
-						BeforeEach(func() {
-							fakeResource.CurrentPinnedVersionReturns(nil)
-						})
-
-						It("creates a check with a nil pinned version", func() {
-							Expect(fakeCheckFactory.TryCreateCheckCallCount()).To(Equal(1))
-							_, _, _, fromVersion, _, _, toDb := fakeCheckFactory.TryCreateCheckArgsForCall(0)
-							Expect(fromVersion).To(BeNil())
-							Expect(toDb).To(BeFalse())
-						})
-					})
-				})
-
-				Context("when there's a put-only resource", func() {
-					BeforeEach(func() {
-						By("checkFactory.Resources should not return any put-only resources")
-						fakeResourceType.NameReturns("put-only-custom-type")
-						fakeResourceType.PipelineIDReturns(1)
-					})
-
-					It("does not check the put-only resource", func() {
-						Expect(fakeCheckFactory.TryCreateCheckCallCount()).To(Equal(1),
-							"one check created for the unrelated fakeResource")
-					})
-				})
-			})
-		})
+		Expect(newScanner(factory, 5).Run(context.Background())).To(Succeed())
+		Expect(factory.Calls()).To(HaveLen(20))
+		builds := drainLidarCheckBuilds(fixture, 20)
+		seenIDs := make(map[int]struct{}, 20)
+		seenNames := make(map[string]struct{}, 20)
+		for _, build := range builds {
+			seenIDs[build.ResourceID()] = struct{}{}
+			seenNames[build.ResourceName()] = struct{}{}
+			Expect(build.PrivatePlan().Check.Resource).To(Equal(build.ResourceName()))
+			Expect(build.Finish(db.BuildStatusSucceeded)).To(Succeed())
+		}
+		Expect(seenIDs).To(HaveLen(20))
+		Expect(seenNames).To(HaveLen(20))
+		persisted, err = pipeline.Resources()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(persisted).To(HaveLen(20))
+		freshScopeIDs := make(map[int]struct{}, 20)
+		for _, resource := range persisted {
+			Expect(resource.ResourceConfigScopeID()).NotTo(BeZero())
+			freshScopeIDs[resource.ResourceConfigScopeID()] = struct{}{}
+		}
+		Expect(freshScopeIDs).To(Equal(scopeIDs))
 	})
 })
 
