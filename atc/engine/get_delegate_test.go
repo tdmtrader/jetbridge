@@ -11,7 +11,7 @@ import (
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
+	"github.com/concourse/concourse/atc/db/dbtest"
 	"github.com/concourse/concourse/atc/engine"
 	"github.com/concourse/concourse/atc/event"
 	"github.com/concourse/concourse/atc/exec"
@@ -20,12 +20,43 @@ import (
 	"github.com/concourse/concourse/vars"
 )
 
+// A healthy clone cannot make Pipeline fail on demand while preserving the
+// build row needed by the rest of this delegate test.
+type pipelineErrorBuild struct {
+	db.Build
+	err error
+}
+
+func (build pipelineErrorBuild) Pipeline() (db.Pipeline, bool, error) {
+	return nil, false, build.err
+}
+
+// A healthy pipeline cannot fail only Resource while its other persisted
+// fields remain readable.
+type resourceErrorPipeline struct {
+	db.Pipeline
+	err error
+}
+
+func (pipeline resourceErrorPipeline) Resource(string) (db.Resource, bool, error) {
+	return nil, false, pipeline.err
+}
+
+// pipelineResultBuild injects a wrapped persisted pipeline into GetDelegate;
+// every other Build method remains backed by the healthy real build.
+type pipelineResultBuild struct {
+	db.Build
+	pipeline db.Pipeline
+	found    bool
+}
+
+func (build pipelineResultBuild) Pipeline() (db.Pipeline, bool, error) {
+	return build.pipeline, build.found, nil
+}
+
 var _ = Describe("GetDelegate", func() {
 	var (
 		logger            *lagertest.TestLogger
-		fakeBuild         *dbfakes.FakeBuild
-		fakePipeline      *dbfakes.FakePipeline
-		fakeResource      *dbfakes.FakeResource
 		fakeClock         *fakeclock.FakeClock
 		fakePolicyChecker *policyfakes.FakeChecker
 
@@ -40,9 +71,6 @@ var _ = Describe("GetDelegate", func() {
 	BeforeEach(func() {
 		logger = lagertest.NewTestLogger("test")
 
-		fakeBuild = new(dbfakes.FakeBuild)
-		fakePipeline = new(dbfakes.FakePipeline)
-		fakeResource = new(dbfakes.FakeResource)
 		fakeClock = fakeclock.NewFakeClock(now)
 		credVars := vars.StaticVariables{
 			"source-param": "super-secret-source",
@@ -56,18 +84,47 @@ var _ = Describe("GetDelegate", func() {
 		}
 
 		fakePolicyChecker = new(policyfakes.FakeChecker)
-
-		delegate = engine.NewGetDelegate(fakeBuild, "some-plan-id", state, fakeClock, fakePolicyChecker)
 	})
 
-	Describe("Finished", func() {
-		JustBeforeEach(func() {
-			delegate.Finished(logger, exitStatus, info)
+	Describe("persisted PostgreSQL state", func() {
+		var (
+			fixture   *engineDBFixture
+			team      db.Team
+			pipeline  db.Pipeline
+			realBuild db.Build
+			version   db.ResourceConfigVersion
+		)
+
+		BeforeEach(func() {
+			fixture = useEngineDB()
+			var job db.Job
+			team, pipeline, job, realBuild = createEngineJobBuild(
+				fixture,
+				"get-delegate-team",
+				atc.PipelineRef{Name: "some-pipeline"},
+				atc.Config{
+					Jobs: atc.JobConfigs{{Name: "some-job"}},
+					Resources: atc.ResourceConfigs{{
+						Name:   "some-resource",
+						Type:   dbtest.BaseResourceType,
+						Source: atc.Source{"some": "source"},
+					}},
+				},
+				"some-user",
+			)
+			Expect(job.Name()).To(Equal("some-job"))
+			scenario := &dbtest.Scenario{Team: team, Pipeline: pipeline}
+			scenario.Run(fixture.Builder.WithResourceVersions("some-resource", info.Version))
+			version = scenario.ResourceVersion("some-resource", info.Version)
+			delegate = engine.NewGetDelegate(realBuild, "some-plan-id", state, fakeClock, fakePolicyChecker)
 		})
 
-		It("saves an event", func() {
-			Expect(fakeBuild.SaveEventCallCount()).To(Equal(1))
-			Expect(fakeBuild.SaveEventArgsForCall(0)).To(Equal(event.FinishGet{
+		It("saves the finish event", func() {
+			delegate.Finished(logger, exitStatus, info)
+			found, err := realBuild.Reload()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(consumeEngineBuildEvent(realBuild, 0)).To(Equal(event.FinishGet{
 				Origin:          event.Origin{ID: event.OriginID("some-plan-id")},
 				Time:            now.Unix(),
 				ExitStatus:      int(exitStatus),
@@ -75,86 +132,58 @@ var _ = Describe("GetDelegate", func() {
 				FetchedMetadata: info.Metadata,
 			}))
 		})
-	})
 
-	Describe("UpdateResourceVersion", func() {
-		var resourceName string
+		It("updates resource version metadata", func() {
+			delegate.UpdateResourceVersion(logger, "some-resource", info)
 
-		JustBeforeEach(func() {
-			delegate.UpdateResourceVersion(logger, resourceName, info)
+			found, err := version.Reload()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(version.Metadata()).To(Equal(db.NewResourceConfigMetadataFields(info.Metadata)))
 		})
 
-		BeforeEach(func() {
-			resourceName = "some-resource"
+		It("leaves metadata unchanged when retrieving the pipeline fails", func() {
+			delegate = engine.NewGetDelegate(
+				pipelineErrorBuild{Build: realBuild, err: errors.New("nope")},
+				"some-plan-id", state, fakeClock, fakePolicyChecker,
+			)
+			delegate.UpdateResourceVersion(logger, "some-resource", info)
+			found, err := version.Reload()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(version.Metadata()).To(BeEmpty())
 		})
 
-		Context("when retrieving the pipeline fails", func() {
-			BeforeEach(func() {
-				fakeBuild.PipelineReturns(nil, false, errors.New("nope"))
-			})
-
-			It("doesn't update the metadata", func() {
-				Expect(fakeResource.UpdateMetadataCallCount()).To(Equal(0))
-			})
+		It("leaves metadata unchanged when the real one-off build has no pipeline", func() {
+			oneOff, err := team.CreateOneOffBuild()
+			Expect(err).NotTo(HaveOccurred())
+			delegate = engine.NewGetDelegate(oneOff, "some-plan-id", state, fakeClock, fakePolicyChecker)
+			delegate.UpdateResourceVersion(logger, "some-resource", info)
+			found, err := version.Reload()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(version.Metadata()).To(BeEmpty())
 		})
 
-		Context("when retrieving the pipeline succeeds", func() {
+		It("leaves metadata unchanged when retrieving the resource fails", func() {
+			wrappedPipeline := resourceErrorPipeline{Pipeline: pipeline, err: errors.New("nope")}
+			delegate = engine.NewGetDelegate(
+				pipelineResultBuild{Build: realBuild, pipeline: wrappedPipeline, found: true},
+				"some-plan-id", state, fakeClock, fakePolicyChecker,
+			)
+			delegate.UpdateResourceVersion(logger, "some-resource", info)
+			found, err := version.Reload()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(version.Metadata()).To(BeEmpty())
+		})
 
-			Context("when the pipeline is not found", func() {
-				BeforeEach(func() {
-					fakeBuild.PipelineReturns(nil, false, nil)
-				})
-
-				It("doesn't update the metadata", func() {
-					Expect(fakeResource.UpdateMetadataCallCount()).To(Equal(0))
-				})
-			})
-
-			Context("when the pipeline is found", func() {
-				BeforeEach(func() {
-					fakeBuild.PipelineReturns(fakePipeline, true, nil)
-				})
-
-				Context("when retrieving the resource fails", func() {
-					BeforeEach(func() {
-						fakePipeline.ResourceReturns(nil, false, errors.New("nope"))
-					})
-
-					It("doesn't update the metadata", func() {
-						Expect(fakeResource.UpdateMetadataCallCount()).To(Equal(0))
-					})
-				})
-
-				Context("when retrieving the resource succeeds", func() {
-
-					It("retrives the resource by name", func() {
-						Expect(fakePipeline.ResourceArgsForCall(0)).To(Equal("some-resource"))
-					})
-
-					Context("when the resource is not found", func() {
-						BeforeEach(func() {
-							fakePipeline.ResourceReturns(nil, false, nil)
-						})
-
-						It("doesn't update the metadata", func() {
-							Expect(fakeResource.UpdateMetadataCallCount()).To(Equal(0))
-						})
-					})
-
-					Context("when the resource is found", func() {
-						BeforeEach(func() {
-							fakePipeline.ResourceReturns(fakeResource, true, nil)
-						})
-
-						It("updates the metadata", func() {
-							Expect(fakeResource.UpdateMetadataCallCount()).To(Equal(1))
-							version, metadata := fakeResource.UpdateMetadataArgsForCall(0)
-							Expect(version).To(Equal(info.Version))
-							Expect(metadata).To(Equal(db.NewResourceConfigMetadataFields(info.Metadata)))
-						})
-					})
-				})
-			})
+		It("leaves metadata unchanged when the named resource is absent", func() {
+			delegate.UpdateResourceVersion(logger, "absent-resource", info)
+			found, err := version.Reload()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(version.Metadata()).To(BeEmpty())
 		})
 	})
 })

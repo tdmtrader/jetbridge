@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -15,6 +14,7 @@ import (
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbfakes"
+	"github.com/concourse/concourse/atc/db/dbtest"
 	"github.com/concourse/concourse/atc/db/lock"
 	"github.com/concourse/concourse/atc/db/lock/lockfakes"
 	"github.com/concourse/concourse/atc/engine"
@@ -24,783 +24,652 @@ import (
 	"github.com/concourse/concourse/vars"
 )
 
+// A healthy resource config cannot fail only FindOrCreateScope while retaining
+// its persisted identity and origin fields.
+type scopeErrorResourceConfig struct {
+	db.ResourceConfig
+	err error
+}
+
+func (config scopeErrorResourceConfig) FindOrCreateScope(*int) (db.ResourceConfigScope, error) {
+	return nil, config.err
+}
+
+// checkTimingScope is the narrow timing/fault seam for WaitToRun and update
+// error ordering. Persisted scope creation, attachment, and timestamps are
+// covered separately below against real PostgreSQL rows.
+type checkTimingScope struct {
+	db.ResourceConfigScope
+
+	lastCheck       func() (db.LastCheck, error)
+	acquire         func(lager.Logger) (lock.Lock, bool, error)
+	updateStart     func(int, *json.RawMessage) (bool, error)
+	updateEnd       func(bool) (bool, error)
+	lastCheckCalls  int
+	acquireCalls    int
+	updateStartArgs []struct {
+		buildID int
+		plan    *json.RawMessage
+	}
+	updateEndArgs []bool
+}
+
+func (scope *checkTimingScope) LastCheck() (db.LastCheck, error) {
+	scope.lastCheckCalls++
+	return scope.lastCheck()
+}
+
+func (scope *checkTimingScope) AcquireResourceCheckingLock(logger lager.Logger) (lock.Lock, bool, error) {
+	scope.acquireCalls++
+	return scope.acquire(logger)
+}
+
+func (scope *checkTimingScope) UpdateLastCheckStartTime(buildID int, plan *json.RawMessage) (bool, error) {
+	scope.updateStartArgs = append(scope.updateStartArgs, struct {
+		buildID int
+		plan    *json.RawMessage
+	}{buildID: buildID, plan: plan})
+	return scope.updateStart(buildID, plan)
+}
+
+func (scope *checkTimingScope) UpdateLastCheckEndTime(succeeded bool) (bool, error) {
+	scope.updateEndArgs = append(scope.updateEndArgs, succeeded)
+	return scope.updateEnd(succeeded)
+}
+
 var _ = Describe("CheckDelegate", func() {
 	var (
-		fakeBuild         *dbfakes.FakeBuild
+		now               time.Time
 		fakeClock         *fakeclock.FakeClock
 		fakeRateLimiter   *enginefakes.FakeRateLimiter
 		fakePolicyChecker *policyfakes.FakeChecker
-
-		state exec.RunState
-
-		now = time.Date(1991, 6, 3, 5, 30, 0, 0, time.UTC)
-
-		plan     atc.Plan
-		delegate exec.CheckDelegate
-
-		fakeResourceConfig      *dbfakes.FakeResourceConfig
-		fakeResourceConfigScope *dbfakes.FakeResourceConfigScope
+		state             exec.RunState
 	)
 
 	BeforeEach(func() {
-		fakeBuild = new(dbfakes.FakeBuild)
+		now = time.Date(1991, 6, 3, 5, 30, 0, 0, time.UTC)
 		fakeClock = fakeclock.NewFakeClock(now)
 		fakeRateLimiter = new(enginefakes.FakeRateLimiter)
-		credVars := vars.StaticVariables{
+		fakePolicyChecker = new(policyfakes.FakeChecker)
+		state = exec.NewRunState(noopStepper, vars.StaticVariables{
 			"source-param": "super-secret-source",
 			"git-key":      "{\n123\n456\n789\n}\n",
-		}
-		state = exec.NewRunState(noopStepper, credVars)
-
-		plan = atc.Plan{
-			ID:    "some-plan-id",
-			Check: &atc.CheckPlan{},
-		}
-
-		fakePolicyChecker = new(policyfakes.FakeChecker)
-
-		fakeBuild.NameReturns(db.CheckBuildName)
-		fakeBuild.ResourceIDReturns(88)
-
-		delegate = engine.NewCheckDelegate(fakeBuild, plan, state, fakeClock, fakeRateLimiter, fakePolicyChecker)
-
-		fakeResourceConfig = new(dbfakes.FakeResourceConfig)
-		fakeResourceConfigScope = new(dbfakes.FakeResourceConfigScope)
-		fakeResourceConfig.FindOrCreateScopeReturns(fakeResourceConfigScope, nil)
-	})
-
-	Describe("FindOrCreateScope", func() {
-		var saveErr error
-		var scope db.ResourceConfigScope
-
-		BeforeEach(func() {
-			saveErr = nil
-		})
-
-		JustBeforeEach(func() {
-			scope, saveErr = delegate.FindOrCreateScope(fakeResourceConfig)
-		})
-
-		Context("without a resource", func() {
-			BeforeEach(func() {
-				plan.Check.Resource = ""
-
-				fakePipeline := new(dbfakes.FakePipeline)
-				fakeBuild.PipelineReturns(fakePipeline, true, nil)
-			})
-
-			It("succeeds", func() {
-				Expect(saveErr).ToNot(HaveOccurred())
-			})
-
-			It("finds or creates a global scope", func() {
-				Expect(fakeResourceConfig.FindOrCreateScopeCallCount()).To(Equal(1))
-				resource := fakeResourceConfig.FindOrCreateScopeArgsForCall(0)
-				Expect(resource).To(BeNil())
-			})
-
-			It("returns the scope", func() {
-				Expect(scope).To(Equal(fakeResourceConfigScope))
-			})
-		})
-
-		Context("with a resource", func() {
-			var (
-				fakePipeline *dbfakes.FakePipeline
-			)
-
-			BeforeEach(func() {
-				plan.Check.Resource = "some-resource"
-
-				fakePipeline = new(dbfakes.FakePipeline)
-				fakeBuild.PipelineReturns(fakePipeline, true, nil)
-
-				fakePipeline.ResourceIDReturns(123, true, nil)
-			})
-
-			It("succeeds", func() {
-				Expect(saveErr).ToNot(HaveOccurred())
-			})
-
-			It("finds or creates a scope for the resource", func() {
-				Expect(fakeResourceConfig.FindOrCreateScopeCallCount()).To(Equal(1))
-				resourceID := fakeResourceConfig.FindOrCreateScopeArgsForCall(0)
-				Expect(*resourceID).To(Equal(123))
-			})
-
-			It("returns the scope", func() {
-				Expect(scope).To(Equal(fakeResourceConfigScope))
-			})
-
-			Context("when the pipeline is not found", func() {
-				BeforeEach(func() {
-					fakeBuild.PipelineReturns(nil, false, nil)
-				})
-
-				It("returns an error", func() {
-					Expect(saveErr).To(HaveOccurred())
-				})
-
-				It("does not create a scope", func() {
-					Expect(fakeResourceConfig.FindOrCreateScopeCallCount()).To(BeZero())
-				})
-			})
-
-			Context("when the resource is not found", func() {
-				BeforeEach(func() {
-					fakePipeline.ResourceIDReturns(0, false, nil)
-				})
-
-				It("returns an error", func() {
-					Expect(saveErr).To(HaveOccurred())
-				})
-
-				It("does not create a scope", func() {
-					Expect(fakeResourceConfig.FindOrCreateScopeCallCount()).To(BeZero())
-				})
-			})
 		})
 	})
 
-	Describe("WaitToRun", func() {
-		var runLock lock.Lock
-		var run bool
-		var runErr error
-
-		BeforeEach(func() {
-			run = false
-		})
-
-		JustBeforeEach(func() {
-			runLock, run, runErr = delegate.WaitToRun(context.TODO(), fakeResourceConfigScope)
-		})
-
-		Context("when running for a resource", func() {
-			var fakeLock *lockfakes.FakeLock
-
-			BeforeEach(func() {
-				plan.Check.Resource = "some-resource"
-
-				fakeLock = new(lockfakes.FakeLock)
-				fakeResourceConfigScope.AcquireResourceCheckingLockReturns(fakeLock, true, nil)
-			})
-
-			It("returns a lock", func() {
-				Expect(runLock).To(Equal(fakeLock))
-			})
-
-			Context("before acquiring the lock", func() {
-				BeforeEach(func() {
-					fakeResourceConfigScope.AcquireResourceCheckingLockStub = func(lager.Logger) (lock.Lock, bool, error) {
-						Expect(fakeRateLimiter.WaitCallCount()).To(Equal(1))
-						return fakeLock, true, nil
-					}
-				})
-
-				It("rate limits", func() {
-					Expect(fakeRateLimiter.WaitCallCount()).To(Equal(1))
-				})
-			})
-
-			Context("when the check plan is configured to skip interval", func() {
-				BeforeEach(func() {
-					plan.Check.SkipInterval = true
-				})
-
-				It("does not rate limit", func() {
-					Expect(fakeRateLimiter.WaitCallCount()).To(Equal(0))
-				})
-
-				Context("when fail to get scope last start time", func() {
-					BeforeEach(func() {
-						fakeResourceConfigScope.LastCheckReturns(db.LastCheck{}, errors.New("some-error"))
-					})
-
-					It("return the error", func() {
-						Expect(runErr).To(HaveOccurred())
-						Expect(runErr).To(Equal(errors.New("some-error")))
-					})
-				})
-
-				Context("when from version is given", func() {
-					BeforeEach(func() {
-						plan.Check.FromVersion = atc.Version{"some": "version"}
-					})
-
-					It("returns true", func() {
-						Expect(run).To(BeTrue())
-					})
-				})
-
-				Context("when the interval is set to never on the plan", func() {
-					It("does not exit early and attempts to fetch the last check value", func() {
-						Expect(fakeResourceConfigScope.LastCheckCallCount()).To(Equal(2))
-					})
-				})
-
-				Context("when the build create time earlier than last check start time", func() {
-					BeforeEach(func() {
-						fakeBuild.CreateTimeReturns(time.Now().Add(-5 * time.Second))
-						fakeResourceConfigScope.LastCheckReturns(db.LastCheck{
-							StartTime: time.Now(),
-							Succeeded: true,
-						}, nil)
-					})
-
-					It("returns false", func() {
-						Expect(run).To(BeFalse())
-					})
-				})
-
-				Context("when the build create time after last check start time", func() {
-					BeforeEach(func() {
-						fakeBuild.CreateTimeReturns(time.Now().Add(5 * time.Second))
-						fakeResourceConfigScope.LastCheckReturns(db.LastCheck{
-							StartTime: time.Now(),
-							Succeeded: true,
-						}, nil)
-					})
-
-					It("returns true", func() {
-						Expect(run).To(BeTrue())
-					})
-				})
-
-				Context("when the build fails with the create time earlier the last check start time", func() {
-					BeforeEach(func() {
-						fakeBuild.CreateTimeReturns(time.Now().Add(-5 * time.Second))
-						fakeResourceConfigScope.LastCheckReturns(db.LastCheck{
-							StartTime: time.Now(),
-							Succeeded: false,
-						}, nil)
-					})
-
-					It("returns true", func() {
-						Expect(run).To(BeTrue())
-					})
-				})
-			})
-
-			Context("when getting the last check end time errors", func() {
-				BeforeEach(func() {
-					fakeResourceConfigScope.LastCheckReturns(db.LastCheck{}, errors.New("oh no"))
-				})
-
-				It("returns an error", func() {
-					Expect(runErr).To(HaveOccurred())
-				})
-			})
-
-			Context("with an interval configured", func() {
-				var interval time.Duration = time.Minute
-
-				BeforeEach(func() {
-					plan.Check.Interval = atc.CheckEvery{
-						Interval: interval,
-					}
-				})
-
-				Context("when the interval has not elapsed since the last check", func() {
-					BeforeEach(func() {
-						fakeResourceConfigScope.LastCheckReturns(db.LastCheck{
-							StartTime: now.Add(-(interval + 10)),
-							EndTime:   now.Add(-(interval - 1)),
-							Succeeded: true,
-						}, nil)
-					})
-
-					It("returns false", func() {
-						Expect(run).To(BeFalse())
-					})
-
-					It("never attempts to acquire the lock", func() {
-						Expect(fakeResourceConfigScope.AcquireResourceCheckingLockCallCount()).To(Equal(0))
-					})
-				})
-
-				Context("when the interval has elapsed since the last check", func() {
-					BeforeEach(func() {
-						fakeResourceConfigScope.LastCheckReturns(db.LastCheck{
-							StartTime: now.Add(-(interval + 10)),
-							EndTime:   now.Add(-(interval + 1)),
-							Succeeded: true,
-						}, nil)
-					})
-
-					It("returns true", func() {
-						Expect(run).To(BeTrue())
-					})
-				})
-
-				Context("when the last check value gets updated after the first loop of attempting to acquire lock", func() {
-					BeforeEach(func() {
-						fakeResourceConfigScope.LastCheckReturnsOnCall(0, db.LastCheck{
-							StartTime: now.Add(-(interval + 10)),
-							EndTime:   now.Add(-(interval + 1)),
-							Succeeded: true,
-						}, nil)
-						fakeResourceConfigScope.LastCheckReturnsOnCall(1, db.LastCheck{
-							StartTime: now.Add(time.Second).Add(-(interval + 10)),
-							EndTime:   now.Add(time.Second).Add(-(interval - 1)),
-							Succeeded: true,
-						}, nil)
-						fakeResourceConfigScope.AcquireResourceCheckingLockReturns(nil, false, nil)
-						go fakeClock.WaitForWatcherAndIncrement(time.Second)
-					})
-
-					It("exits out of loop after last check gets updated in second loop and does not run", func() {
-						Expect(run).To(BeFalse())
-					})
-
-					It("only attempts to acquire lock in first loop", func() {
-						Expect(fakeResourceConfigScope.AcquireResourceCheckingLockCallCount()).To(Equal(1))
-					})
-
-					It("rechecks the last check value in both loops", func() {
-						Expect(fakeResourceConfigScope.LastCheckCallCount()).To(Equal(2))
-					})
-				})
-			})
-
-			Context("when the interval is never", func() {
-				BeforeEach(func() {
-					plan.Check.Interval = atc.CheckEvery{
-						Never: true,
-					}
-				})
-
-				It("returns false", func() {
-					Expect(run).To(BeFalse())
-				})
-
-				It("does not attempt to fetch the last check", func() {
-					Expect(fakeResourceConfigScope.LastCheckCallCount()).To(Equal(0))
-				})
-			})
-		})
-
-		Context("when not running for a resource", func() {
-			BeforeEach(func() {
-				plan.Check.Resource = ""
-				plan.Check.ResourceType = "some-resource-type"
-			})
-
-			It("does not rate limit", func() {
-				Expect(fakeRateLimiter.WaitCallCount()).To(Equal(0))
-			})
-
-			It("does not acquire a lock", func() {
-				Expect(fakeResourceConfigScope.AcquireResourceCheckingLockCallCount()).To(Equal(0))
-			})
-
-			It("returns a no-op lock", func() {
-				Expect(runLock).To(Equal(lock.NoopLock{}))
-			})
-
-			Context("when last check failed", func() {
-				BeforeEach(func() {
-					fakeResourceConfigScope.LastCheckReturns(db.LastCheck{
-						StartTime: now.Add(-10),
-						EndTime:   now.Add(-1),
-						Succeeded: false,
-					}, nil)
-				})
-
-				It("returns true", func() {
-					Expect(run).To(BeTrue())
-				})
-			})
-
-			Context("when last check ended before build start time", func() {
-				BeforeEach(func() {
-					fakeResourceConfigScope.LastCheckReturns(db.LastCheck{
-						StartTime: now.Add(-10 * time.Second),
-						EndTime:   now.Add(-time.Second),
-						Succeeded: true,
-					}, nil)
-					fakeBuild.StartTimeReturns(now.Add(time.Second))
-				})
-
-				It("returns true", func() {
-					Expect(run).To(BeTrue())
-				})
-			})
-
-			Context("when last check succeeds after build starts", func() {
-				BeforeEach(func() {
-					fakeResourceConfigScope.LastCheckReturns(db.LastCheck{
-						StartTime: now.Add(-10 * time.Second),
-						EndTime:   now.Add(-time.Second),
-						Succeeded: true,
-					}, nil)
-					fakeBuild.StartTimeReturns(now.Add(-5 * time.Second))
-				})
-
-				It("returns false", func() {
-					Expect(run).To(BeFalse())
-				})
-			})
-
-			Context("when the checking interval has elapsed since the last check end time", func() {
-				BeforeEach(func() {
-					fakeResourceConfigScope.LastCheckReturns(db.LastCheck{
-						StartTime: now.Add(-6 * time.Minute),
-						EndTime:   now.Add(-5 * time.Minute),
-						Succeeded: true,
-					}, nil)
-					fakeBuild.StartTimeReturns(now)
-				})
-
-				It("returns true", func() {
-					Expect(run).To(BeTrue())
-				})
-			})
-
-			Context("when the checking interval has elapsed since the last check end time and it is a manual check", func() {
-				BeforeEach(func() {
-					plan.Check.SkipInterval = true
-					fakeResourceConfigScope.LastCheckReturns(db.LastCheck{
-						StartTime: now.Add(-6 * time.Minute),
-						EndTime:   now.Add(-5 * time.Minute),
-						Succeeded: true,
-					}, nil)
-					fakeBuild.StartTimeReturns(now)
-				})
-
-				It("returns true", func() {
-					Expect(run).To(BeTrue())
-				})
-			})
-
-			Context("when the checking interval has not elapsed since the last check end time", func() {
-				BeforeEach(func() {
-					plan.Check.Interval.Interval = time.Hour
-					plan.Check.SkipInterval = false
-					fakeResourceConfigScope.LastCheckReturns(db.LastCheck{
-						StartTime: now,
-						EndTime:   now,
-						Succeeded: true,
-					}, nil)
-					fakeBuild.StartTimeReturns(now.Add(1 * time.Minute))
-				})
-
-				It("returns false", func() {
-					Expect(run).To(BeFalse())
-				})
-			})
-
-			Context("when the checking interval has not elapsed since the last check end time but it is a manual check", func() {
-				BeforeEach(func() {
-					plan.Check.Interval.Interval = time.Hour
-					plan.Check.SkipInterval = true
-					fakeResourceConfigScope.LastCheckReturns(db.LastCheck{
-						StartTime: now,
-						EndTime:   now,
-						Succeeded: true,
-					}, nil)
-					fakeBuild.StartTimeReturns(now.Add(1 * time.Minute))
-				})
-
-				It("returns true", func() {
-					Expect(run).To(BeTrue())
-				})
-			})
-
-			Context("when the last check is not successful and checking interval has not elapsed since the last check end time", func() {
-				BeforeEach(func() {
-					plan.Check.Interval.Interval = time.Hour
-					fakeResourceConfigScope.LastCheckReturns(db.LastCheck{
-						StartTime: now,
-						EndTime:   now,
-						Succeeded: false,
-					}, nil)
-					fakeBuild.StartTimeReturns(now.Add(1 * time.Minute))
-				})
-
-				It("returns true", func() {
-					Expect(run).To(BeTrue())
-				})
-			})
-		})
-	})
-
-	Describe("PointToCheckedConfig", func() {
-		var pointErr error
-
-		BeforeEach(func() {
-			pointErr = nil
-		})
-
-		JustBeforeEach(func() {
-			pointErr = delegate.PointToCheckedConfig(fakeResourceConfigScope)
-		})
-
-		Context("when not checking for a resource or resource type", func() {
-			It("succeeds", func() {
-				Expect(pointErr).ToNot(HaveOccurred())
-			})
-		})
-
-		Context("when checking for a resource", func() {
-			var (
-				fakePipeline *dbfakes.FakePipeline
-			)
-
-			BeforeEach(func() {
-				plan.Check.Resource = "some-resource"
-
-				fakePipeline = new(dbfakes.FakePipeline)
-				fakeBuild.PipelineReturns(fakePipeline, true, nil)
-			})
-
-			It("succeeds", func() {
-				Expect(pointErr).ToNot(HaveOccurred())
-			})
-
-			It("sets the resource config scope", func() {
-				Expect(fakePipeline.SetResourceConfigScopeForResourceCallCount()).To(Equal(1))
-				name, scope := fakePipeline.SetResourceConfigScopeForResourceArgsForCall(0)
-				Expect(name).To(Equal("some-resource"))
-				Expect(scope).To(Equal(fakeResourceConfigScope))
-			})
-
-			Context("when the pipeline is not found", func() {
-				BeforeEach(func() {
-					fakeBuild.PipelineReturns(nil, false, nil)
-				})
-
-				It("returns an error", func() {
-					Expect(pointErr).To(HaveOccurred())
-				})
-			})
-		})
-
-		Context("when checking for a resource type", func() {
-			var (
-				fakePipeline *dbfakes.FakePipeline
-			)
-
-			BeforeEach(func() {
-				plan.Check.ResourceType = "some-resource-type"
-
-				fakePipeline = new(dbfakes.FakePipeline)
-				fakeBuild.PipelineReturns(fakePipeline, true, nil)
-			})
-
-			It("succeeds", func() {
-				Expect(pointErr).ToNot(HaveOccurred())
-			})
-
-			It("assigns the scope to the resource type", func() {
-				Expect(fakePipeline.SetResourceConfigScopeForResourceTypeCallCount()).To(Equal(1))
-				name, scope := fakePipeline.SetResourceConfigScopeForResourceTypeArgsForCall(0)
-				Expect(name).To(Equal("some-resource-type"))
-				Expect(scope).To(Equal(fakeResourceConfigScope))
-			})
-
-			Context("when the pipeline is not found", func() {
-				BeforeEach(func() {
-					fakeBuild.PipelineReturns(nil, false, nil)
-				})
-
-				It("returns an error", func() {
-					Expect(pointErr).To(HaveOccurred())
-				})
-			})
-		})
-
-		Context("when checking for a prototype", func() {
-			var (
-				fakePipeline *dbfakes.FakePipeline
-			)
-
-			BeforeEach(func() {
-				plan.Check.Prototype = "some-prototype"
-
-				fakePipeline = new(dbfakes.FakePipeline)
-				fakeBuild.PipelineReturns(fakePipeline, true, nil)
-			})
-
-			It("succeeds", func() {
-				Expect(pointErr).ToNot(HaveOccurred())
-			})
-
-			It("assigns the scope to the prototype", func() {
-				Expect(fakePipeline.SetResourceConfigScopeForPrototypeCallCount()).To(Equal(1))
-				name, scope := fakePipeline.SetResourceConfigScopeForPrototypeArgsForCall(0)
-				Expect(name).To(Equal("some-prototype"))
-				Expect(scope).To(Equal(fakeResourceConfigScope))
-			})
-
-			Context("when the pipeline is not found", func() {
-				BeforeEach(func() {
-					fakeBuild.PipelineReturns(nil, false, nil)
-				})
-
-				It("returns an error", func() {
-					Expect(pointErr).To(HaveOccurred())
-				})
-			})
-		})
-	})
-
-	Describe("UpdateScopeLastCheckStartTime", func() {
+	Describe("persisted PostgreSQL state", func() {
 		var (
-			found        bool
-			buildId      int
-			nestedCheck  bool
-			err          error
-			expectedPlan json.RawMessage
+			fixture       *engineDBFixture
+			team          db.Team
+			pipeline      db.Pipeline
+			jobBuild      db.Build
+			checkBuild    db.Build
+			resource      db.Resource
+			resourceType  db.ResourceType
+			prototype     db.Prototype
+			config        db.ResourceConfig
+			globalScope   db.ResourceConfigScope
+			resourceScope db.ResourceConfigScope
 		)
 
-		BeforeEach(func() {
-			fakeResourceConfigScope.UpdateLastCheckStartTimeReturns(true, nil)
-			expectedPlan = json.RawMessage(`{"id": 99}`)
-			fakeBuild.IDReturns(9999)
-			fakeBuild.PublicPlanReturns(&expectedPlan)
-		})
-
-		JustBeforeEach(func() {
-			found, buildId, err = delegate.UpdateScopeLastCheckStartTime(fakeResourceConfigScope, nestedCheck)
-		})
-
-		Context("Resource check", func() {
-			BeforeEach(func() {
-				nestedCheck = false
-			})
-
-			Context("OnCheckBuildStart", func() {
-				It("should call build.OnCheckBuildStart", func() {
-					Expect(fakeBuild.OnCheckBuildStartCallCount()).To(Equal(1))
-				})
-
-				Context("when fails", func() {
-					BeforeEach(func() {
-						fakeBuild.OnCheckBuildStartReturns(fmt.Errorf("some-error"))
-					})
-
-					It("should fail", func() {
-						Expect(err).To(HaveOccurred())
-						Expect(err.Error()).To(Equal("some-error"))
-						Expect(found).To(BeFalse())
-					})
-				})
-			})
-
-			Context("delegate to scope", func() {
-				It("should succeeded", func() {
-					Expect(err).ToNot(HaveOccurred())
-					Expect(found).To(BeTrue())
-					Expect(buildId).To(Equal(9999))
-				})
-
-				It("should delegate to scope", func() {
-					Expect(fakeResourceConfigScope.UpdateLastCheckStartTimeCallCount()).To(Equal(1))
-					b, p := fakeResourceConfigScope.UpdateLastCheckStartTimeArgsForCall(0)
-					Expect(b).To(Equal(9999))
-					Expect(p).To(Equal(&expectedPlan))
-				})
-
-				It("Build id and public plan should not be nil", func() {
-					buildId, publicPlan := fakeResourceConfigScope.UpdateLastCheckStartTimeArgsForCall(0)
-					Expect(buildId).To(Equal(9999))
-					Expect(publicPlan).To(Equal(&expectedPlan))
-				})
-
-				Context("when update fails", func() {
-					BeforeEach(func() {
-						fakeResourceConfigScope.UpdateLastCheckStartTimeReturns(false, fmt.Errorf("some-error"))
-					})
-
-					It("should fail", func() {
-						Expect(err).To(HaveOccurred())
-						Expect(err.Error()).To(Equal("some-error"))
-						Expect(found).To(BeFalse())
-						Expect(buildId).To(Equal(9999))
-					})
-				})
-			})
-		})
-
-		Context("Step nested check", func() {
-			BeforeEach(func() {
-				nestedCheck = true
-			})
-
-			It("should not call build.OnCheckBuildStart", func() {
-				Expect(fakeBuild.OnCheckBuildStartCallCount()).To(Equal(0))
-			})
-
-			Context("delegate to scope", func() {
-				It("should succeeded", func() {
-					Expect(err).ToNot(HaveOccurred())
-					Expect(found).To(BeTrue())
-					Expect(buildId).To(Equal(0))
-				})
-
-				It("should delegate to scope", func() {
-					Expect(fakeResourceConfigScope.UpdateLastCheckStartTimeCallCount()).To(Equal(1))
-				})
-
-				It("Build id and public plan should be nil", func() {
-					buildId, publicPlan := fakeResourceConfigScope.UpdateLastCheckStartTimeArgsForCall(0)
-					Expect(buildId).To(Equal(0))
-					Expect(publicPlan).To(BeNil())
-				})
-
-				Context("when update fails", func() {
-					BeforeEach(func() {
-						fakeResourceConfigScope.UpdateLastCheckStartTimeReturns(false, fmt.Errorf("some-error"))
-					})
-
-					It("should fail", func() {
-						Expect(err).To(HaveOccurred())
-						Expect(err.Error()).To(Equal("some-error"))
-						Expect(found).To(BeFalse())
-						Expect(buildId).To(Equal(0))
-					})
-				})
-			})
-		})
-	})
-
-	Describe("UpdateScopeLastCheckEndTime", func() {
-		var (
-			found bool
-			err   error
-		)
+		newDelegate := func(build db.Build, check atc.CheckPlan) exec.CheckDelegate {
+			return engine.NewCheckDelegate(
+				build,
+				atc.Plan{ID: "some-plan-id", Check: &check},
+				state,
+				fakeClock,
+				fakeRateLimiter,
+				fakePolicyChecker,
+			)
+		}
 
 		BeforeEach(func() {
-			fakeResourceConfigScope.UpdateLastCheckEndTimeReturns(true, nil)
-		})
+			fixture = useEngineDB()
+			var job db.Job
+			team, pipeline, job, jobBuild = createEngineJobBuild(
+				fixture,
+				"check-delegate-team",
+				atc.PipelineRef{Name: "some-pipeline"},
+				atc.Config{
+					Jobs: atc.JobConfigs{{Name: "some-job"}},
+					Resources: atc.ResourceConfigs{{
+						Name: "some-resource", Type: dbtest.BaseResourceType,
+						Source: atc.Source{"some": "source"},
+					}},
+					ResourceTypes: atc.ResourceTypes{{
+						Name: "some-resource-type", Type: dbtest.BaseResourceType,
+						Source: atc.Source{"some": "type-source"},
+					}},
+					Prototypes: atc.Prototypes{{
+						Name: "some-prototype", Type: dbtest.BaseResourceType,
+						Source: atc.Source{"some": "prototype-source"},
+					}},
+				},
+				"some-user",
+			)
+			Expect(job.Name()).To(Equal("some-job"))
 
-		JustBeforeEach(func() {
-			found, err = delegate.UpdateScopeLastCheckEndTime(fakeResourceConfigScope, true)
-		})
-
-		It("should succeeded", func() {
-			Expect(err).ToNot(HaveOccurred())
+			var found bool
+			var err error
+			resource, found, err = pipeline.Resource("some-resource")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			resourceType, found, err = pipeline.ResourceType("some-resource-type")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			prototype, found, err = pipeline.Prototype("some-prototype")
+			Expect(err).NotTo(HaveOccurred())
 			Expect(found).To(BeTrue())
 
+			checkPlan := atc.Plan{ID: "resource-check", Check: &atc.CheckPlan{
+				Name: resource.Name(), Type: resource.Type(), Source: resource.Source(), Resource: resource.Name(),
+			}}
+			checkBuild, found, err = resource.CreateBuild(context.Background(), false, checkPlan)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+
+			config, err = fixture.ResourceConfigFactory.FindOrCreateResourceConfig(
+				resource.Type(), resource.Source(), nil,
+			)
+			Expect(err).NotTo(HaveOccurred())
+			globalScope, err = config.FindOrCreateScope(nil)
+			Expect(err).NotTo(HaveOccurred())
+			resourceID := resource.ID()
+			resourceScope, err = config.FindOrCreateScope(&resourceID)
+			Expect(err).NotTo(HaveOccurred())
 		})
 
-		It("should delegate to scope", func() {
-			Expect(fakeResourceConfigScope.UpdateLastCheckEndTimeCallCount()).To(Equal(1))
-			s := fakeResourceConfigScope.UpdateLastCheckEndTimeArgsForCall(0)
-			Expect(s).To(BeTrue())
+		It("finds the real global and named-resource scopes", func() {
+			global, err := newDelegate(jobBuild, atc.CheckPlan{ResourceType: "some-resource-type"}).FindOrCreateScope(config)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(global.ID()).To(Equal(globalScope.ID()))
+			Expect(global.ResourceID()).To(BeNil())
+
+			named, err := newDelegate(checkBuild, atc.CheckPlan{Resource: "some-resource"}).FindOrCreateScope(config)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(named.ID()).To(Equal(resourceScope.ID()))
+			Expect(named.ResourceID()).ToNot(BeNil())
+			Expect(*named.ResourceID()).To(Equal(resource.ID()))
 		})
 
-		Context("when update fails", func() {
-			BeforeEach(func() {
-				fakeResourceConfigScope.UpdateLastCheckEndTimeReturns(false, fmt.Errorf("some-error"))
-			})
-
-			It("should fail", func() {
-				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(Equal("some-error"))
-				Expect(found).To(BeFalse())
-			})
+		It("bounds a selective scope lookup failure around the healthy config", func() {
+			_, err := newDelegate(jobBuild, atc.CheckPlan{}).FindOrCreateScope(
+				scopeErrorResourceConfig{ResourceConfig: config, err: errors.New("nope")},
+			)
+			Expect(err).To(MatchError(ContainSubstring("find or create scope: nope")))
 		})
 
+		It("rejects a deleted named resource before creating a scope", func() {
+			_, err := newDelegate(jobBuild, atc.CheckPlan{Resource: "missing-resource"}).FindOrCreateScope(config)
+			Expect(err).To(MatchError(ContainSubstring("resource 'missing-resource' deleted")))
+		})
+
+		It("persists resource, resource-type, and prototype scope attachment", func() {
+			Expect(newDelegate(jobBuild, atc.CheckPlan{Resource: "some-resource"}).PointToCheckedConfig(resourceScope)).To(Succeed())
+			found, err := resource.Reload()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(resource.ResourceConfigScopeID()).To(Equal(resourceScope.ID()))
+			var attachedResourceID int
+			Expect(fixture.Conn.QueryRow(`
+				SELECT scope.resource_id
+				FROM resources resource
+				JOIN resource_config_scopes scope
+				  ON scope.id = resource.resource_config_scope_id
+				WHERE resource.id = $1
+			`, resource.ID()).Scan(&attachedResourceID)).To(Succeed())
+			Expect(attachedResourceID).To(Equal(resource.ID()))
+
+			Expect(newDelegate(jobBuild, atc.CheckPlan{ResourceType: "some-resource-type"}).PointToCheckedConfig(globalScope)).To(Succeed())
+			found, err = resourceType.Reload()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(resourceType.ResourceConfigScopeID()).To(Equal(globalScope.ID()))
+
+			Expect(newDelegate(jobBuild, atc.CheckPlan{Prototype: "some-prototype"}).PointToCheckedConfig(globalScope)).To(Succeed())
+			found, err = prototype.Reload()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(prototype.ResourceConfigScopeID()).To(Equal(globalScope.ID()))
+
+			found, err = pipeline.Reload()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			persistedResource, found, err := pipeline.Resource("some-resource")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(persistedResource.ResourceConfigScopeID()).To(Equal(resourceScope.ID()))
+		})
+
+		It("persists last-check start and end evidence", func() {
+			delegate := newDelegate(checkBuild, atc.CheckPlan{Resource: "some-resource"})
+			found, buildID, err := delegate.UpdateScopeLastCheckStartTime(resourceScope, false)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(buildID).To(Equal(checkBuild.ID()))
+			started, err := resourceScope.LastCheck()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(started.StartTime).To(BeTemporally("~", time.Now(), 2*time.Second))
+
+			found, err = delegate.UpdateScopeLastCheckEndTime(resourceScope, true)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			finished, err := resourceScope.LastCheck()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(finished.EndTime).To(BeTemporally(">=", started.StartTime))
+			Expect(finished.Succeeded).To(BeTrue())
+		})
+
+		It("treats an empty checked-config target as a no-op", func() {
+			oneOff, err := team.CreateOneOffBuild()
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(newDelegate(oneOff, atc.CheckPlan{}).PointToCheckedConfig(globalScope)).To(Succeed())
+		})
+
+		It("uses a real one-off build for the genuine missing-pipeline state", func() {
+			oneOff, err := team.CreateOneOffBuild()
+			Expect(err).NotTo(HaveOccurred())
+			err = newDelegate(oneOff, atc.CheckPlan{Resource: "some-resource"}).PointToCheckedConfig(resourceScope)
+			Expect(err).To(MatchError(ContainSubstring("pipeline not found")))
+		})
+	})
+
+	Describe("retained timing and fault matrix", func() {
+		var fakeBuild *dbfakes.FakeBuild
+
+		newDelegate := func(check atc.CheckPlan) exec.CheckDelegate {
+			return engine.NewCheckDelegate(
+				fakeBuild,
+				atc.Plan{ID: "some-plan-id", Check: &check},
+				state,
+				fakeClock,
+				fakeRateLimiter,
+				fakePolicyChecker,
+			)
+		}
+
+		BeforeEach(func() {
+			// Retained: build timestamps, selective pipeline errors, and callback
+			// ordering cannot be represented as ordinary persisted success state.
+			fakeBuild = new(dbfakes.FakeBuild)
+		})
+
+		It("rate limits before locking a due resource check", func() {
+			last := db.LastCheck{StartTime: now.Add(-2 * time.Hour), EndTime: now.Add(-2 * time.Hour), Succeeded: true}
+			fakeLock := new(lockfakes.FakeLock)
+			scope := &checkTimingScope{
+				lastCheck: func() (db.LastCheck, error) { return last, nil },
+				acquire: func(lager.Logger) (lock.Lock, bool, error) {
+					Expect(fakeRateLimiter.WaitCallCount()).To(Equal(1))
+					return fakeLock, true, nil
+				},
+			}
+			gotLock, run, err := newDelegate(atc.CheckPlan{
+				Resource: "some-resource", Interval: atc.CheckEvery{Interval: time.Hour},
+			}).WaitToRun(context.Background(), scope)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(run).To(BeTrue())
+			Expect(gotLock).To(Equal(fakeLock))
+			Expect(fakeRateLimiter.WaitCallCount()).To(Equal(1))
+			Expect(scope.acquireCalls).To(Equal(1))
+			Expect(scope.lastCheckCalls).To(Equal(2))
+		})
+
+		It("forces a manual resource check when a from-version is configured", func() {
+			fakeBuild.CreateTimeReturns(now.Add(-time.Minute))
+			fakeLock := new(lockfakes.FakeLock)
+			scope := &checkTimingScope{
+				lastCheck: func() (db.LastCheck, error) {
+					return db.LastCheck{StartTime: now, Succeeded: true}, nil
+				},
+				acquire: func(lager.Logger) (lock.Lock, bool, error) { return fakeLock, true, nil },
+			}
+
+			gotLock, run, err := newDelegate(atc.CheckPlan{
+				Resource:     "some-resource",
+				SkipInterval: true,
+				FromVersion:  atc.Version{"some": "version"},
+			}).WaitToRun(context.Background(), scope)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(run).To(BeTrue())
+			Expect(gotLock).To(Equal(fakeLock))
+			Expect(fakeRateLimiter.WaitCallCount()).To(BeZero())
+			Expect(scope.acquireCalls).To(Equal(1))
+			Expect(scope.lastCheckCalls).To(Equal(2))
+		})
+
+		It("lets SkipInterval override Interval.Never for a resource check", func() {
+			fakeLock := new(lockfakes.FakeLock)
+			scope := &checkTimingScope{
+				lastCheck: func() (db.LastCheck, error) { return db.LastCheck{}, nil },
+				acquire:   func(lager.Logger) (lock.Lock, bool, error) { return fakeLock, true, nil },
+			}
+
+			gotLock, run, err := newDelegate(atc.CheckPlan{
+				Resource:     "some-resource",
+				SkipInterval: true,
+				Interval:     atc.CheckEvery{Never: true},
+			}).WaitToRun(context.Background(), scope)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(run).To(BeTrue())
+			Expect(gotLock).To(Equal(fakeLock))
+			Expect(fakeRateLimiter.WaitCallCount()).To(BeZero())
+			Expect(scope.acquireCalls).To(Equal(1))
+			Expect(scope.lastCheckCalls).To(Equal(2))
+		})
+
+		It("runs a manual resource check created after the last successful check started", func() {
+			fakeBuild.CreateTimeReturns(now.Add(time.Minute))
+			fakeLock := new(lockfakes.FakeLock)
+			scope := &checkTimingScope{
+				lastCheck: func() (db.LastCheck, error) {
+					return db.LastCheck{StartTime: now, Succeeded: true}, nil
+				},
+				acquire: func(lager.Logger) (lock.Lock, bool, error) { return fakeLock, true, nil },
+			}
+
+			gotLock, run, err := newDelegate(atc.CheckPlan{
+				Resource: "some-resource", SkipInterval: true,
+			}).WaitToRun(context.Background(), scope)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(run).To(BeTrue())
+			Expect(gotLock).To(Equal(fakeLock))
+			Expect(scope.acquireCalls).To(Equal(1))
+		})
+
+		It("runs a manual resource check when the last check failed", func() {
+			fakeBuild.CreateTimeReturns(now.Add(-time.Minute))
+			fakeLock := new(lockfakes.FakeLock)
+			scope := &checkTimingScope{
+				lastCheck: func() (db.LastCheck, error) {
+					return db.LastCheck{StartTime: now, Succeeded: false}, nil
+				},
+				acquire: func(lager.Logger) (lock.Lock, bool, error) { return fakeLock, true, nil },
+			}
+
+			gotLock, run, err := newDelegate(atc.CheckPlan{
+				Resource: "some-resource", SkipInterval: true,
+			}).WaitToRun(context.Background(), scope)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(run).To(BeTrue())
+			Expect(gotLock).To(Equal(fakeLock))
+			Expect(scope.acquireCalls).To(Equal(1))
+		})
+
+		It("retries after losing the resource lock and re-evaluates LastCheck", func() {
+			interval := time.Minute
+			scope := &checkTimingScope{}
+			scope.lastCheck = func() (db.LastCheck, error) {
+				if scope.lastCheckCalls == 1 {
+					return db.LastCheck{EndTime: now.Add(-interval - time.Second), Succeeded: true}, nil
+				}
+				return db.LastCheck{EndTime: now, Succeeded: true}, nil
+			}
+			scope.acquire = func(lager.Logger) (lock.Lock, bool, error) {
+				return nil, false, nil
+			}
+			go fakeClock.WaitForWatcherAndIncrement(time.Second)
+
+			gotLock, run, err := newDelegate(atc.CheckPlan{
+				Resource: "some-resource", Interval: atc.CheckEvery{Interval: interval},
+			}).WaitToRun(context.Background(), scope)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(run).To(BeFalse())
+			Expect(gotLock).To(BeNil())
+			Expect(scope.acquireCalls).To(Equal(1))
+			Expect(scope.lastCheckCalls).To(Equal(2))
+		})
+
+		It("skips a nonmanual Interval.Never resource check without reading LastCheck", func() {
+			scope := &checkTimingScope{
+				lastCheck: func() (db.LastCheck, error) {
+					Fail("Interval.Never must return before reading LastCheck")
+					return db.LastCheck{}, nil
+				},
+				acquire: func(lager.Logger) (lock.Lock, bool, error) {
+					Fail("Interval.Never must return before acquiring a lock")
+					return nil, false, nil
+				},
+			}
+
+			gotLock, run, err := newDelegate(atc.CheckPlan{
+				Resource: "some-resource", Interval: atc.CheckEvery{Never: true},
+			}).WaitToRun(context.Background(), scope)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(run).To(BeFalse())
+			Expect(gotLock).To(BeNil())
+			Expect(scope.lastCheckCalls).To(BeZero())
+			Expect(scope.acquireCalls).To(BeZero())
+			Expect(fakeRateLimiter.WaitCallCount()).To(BeZero())
+		})
+
+		It("skips an interval-blocked resource check before acquiring the lock", func() {
+			scope := &checkTimingScope{
+				lastCheck: func() (db.LastCheck, error) {
+					return db.LastCheck{EndTime: now, Succeeded: true}, nil
+				},
+				acquire: func(lager.Logger) (lock.Lock, bool, error) {
+					Fail("interval-blocked checks must not acquire a lock")
+					return nil, false, nil
+				},
+			}
+			_, run, err := newDelegate(atc.CheckPlan{
+				Resource: "some-resource", Interval: atc.CheckEvery{Interval: time.Hour},
+			}).WaitToRun(context.Background(), scope)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(run).To(BeFalse())
+			Expect(scope.acquireCalls).To(BeZero())
+		})
+
+		It("reuses a successful manual check created after this build", func() {
+			fakeBuild.CreateTimeReturns(now.Add(-time.Minute))
+			scope := &checkTimingScope{
+				lastCheck: func() (db.LastCheck, error) {
+					return db.LastCheck{StartTime: now, Succeeded: true}, nil
+				},
+				acquire: func(lager.Logger) (lock.Lock, bool, error) {
+					Fail("reused manual checks must not acquire a lock")
+					return nil, false, nil
+				},
+			}
+			_, run, err := newDelegate(atc.CheckPlan{
+				Resource: "some-resource", SkipInterval: true,
+			}).WaitToRun(context.Background(), scope)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(run).To(BeFalse())
+			Expect(fakeRateLimiter.WaitCallCount()).To(BeZero())
+		})
+
+		It("reuses a successful nested check completed after the build started", func() {
+			fakeBuild.StartTimeReturns(now.Add(-time.Minute))
+			scope := &checkTimingScope{lastCheck: func() (db.LastCheck, error) {
+				return db.LastCheck{EndTime: now, Succeeded: true}, nil
+			}}
+			gotLock, run, err := newDelegate(atc.CheckPlan{
+				ResourceType: "some-resource-type", Interval: atc.CheckEvery{Interval: time.Hour},
+			}).WaitToRun(context.Background(), scope)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(run).To(BeFalse())
+			Expect(gotLock).To(BeNil())
+			Expect(fakeRateLimiter.WaitCallCount()).To(BeZero())
+		})
+
+		It("blocks a successful non-resource check solely while its interval is unelapsed", func() {
+			fakeBuild.StartTimeReturns(now.Add(time.Minute))
+			scope := &checkTimingScope{lastCheck: func() (db.LastCheck, error) {
+				return db.LastCheck{EndTime: now, Succeeded: true}, nil
+			}}
+
+			gotLock, run, err := newDelegate(atc.CheckPlan{
+				ResourceType: "some-resource-type",
+				Interval:     atc.CheckEvery{Interval: time.Hour},
+				SkipInterval: false,
+			}).WaitToRun(context.Background(), scope)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(run).To(BeFalse())
+			Expect(gotLock).To(BeNil())
+			Expect(scope.lastCheckCalls).To(Equal(1))
+			Expect(fakeRateLimiter.WaitCallCount()).To(BeZero())
+		})
+
+		DescribeTable("runs a non-resource check with a no-op lock",
+			func(check atc.CheckPlan, lastEndOffset time.Duration, succeeded bool, buildStartOffset time.Duration) {
+				fakeBuild.StartTimeReturns(now.Add(buildStartOffset))
+				scope := &checkTimingScope{
+					lastCheck: func() (db.LastCheck, error) {
+						return db.LastCheck{EndTime: now.Add(lastEndOffset), Succeeded: succeeded}, nil
+					},
+					acquire: func(lager.Logger) (lock.Lock, bool, error) {
+						Fail("non-resource checks must not acquire a resource lock")
+						return nil, false, nil
+					},
+				}
+
+				gotLock, run, err := newDelegate(check).WaitToRun(context.Background(), scope)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(run).To(BeTrue())
+				Expect(gotLock).To(Equal(lock.NoopLock{}))
+				Expect(scope.lastCheckCalls).To(Equal(1))
+				Expect(scope.acquireCalls).To(BeZero())
+				Expect(fakeRateLimiter.WaitCallCount()).To(BeZero())
+			},
+			Entry("after a prior failure",
+				atc.CheckPlan{ResourceType: "some-resource-type"},
+				time.Duration(0), false, -time.Minute,
+			),
+			Entry("when the last check ended before this build started",
+				atc.CheckPlan{ResourceType: "some-resource-type"},
+				-time.Minute, true, time.Duration(0),
+			),
+			Entry("after the configured interval elapsed",
+				atc.CheckPlan{ResourceType: "some-resource-type", Interval: atc.CheckEvery{Interval: time.Hour}},
+				-2*time.Hour, true, time.Duration(0),
+			),
+			Entry("when a manual check overrides an unelapsed interval",
+				atc.CheckPlan{ResourceType: "some-resource-type", SkipInterval: true, Interval: atc.CheckEvery{Interval: time.Hour}},
+				time.Duration(0), true, time.Minute,
+			),
+			Entry("when a failed check overrides an unelapsed interval",
+				atc.CheckPlan{ResourceType: "some-resource-type", Interval: atc.CheckEvery{Interval: time.Hour}},
+				time.Duration(0), false, time.Minute,
+			),
+		)
+
+		It("propagates the selected timing lookup error", func() {
+			scope := &checkTimingScope{lastCheck: func() (db.LastCheck, error) {
+				return db.LastCheck{}, errors.New("some-error")
+			}}
+			_, _, err := newDelegate(atc.CheckPlan{ResourceType: "some-resource-type"}).WaitToRun(context.Background(), scope)
+			Expect(err).To(MatchError("some-error"))
+		})
+
+		It("propagates resource LastCheck errors for periodic and manual checks", func() {
+			for _, check := range []atc.CheckPlan{
+				{Resource: "some-resource"},
+				{Resource: "some-resource", SkipInterval: true},
+			} {
+				waitsBefore := fakeRateLimiter.WaitCallCount()
+				scope := &checkTimingScope{
+					lastCheck: func() (db.LastCheck, error) {
+						return db.LastCheck{}, errors.New("some-error")
+					},
+					acquire: func(lager.Logger) (lock.Lock, bool, error) {
+						Fail("a LastCheck error must return before acquiring the lock")
+						return nil, false, nil
+					},
+				}
+
+				gotLock, run, err := newDelegate(check).WaitToRun(context.Background(), scope)
+				Expect(err).To(MatchError("some-error"))
+				Expect(run).To(BeFalse())
+				Expect(gotLock).To(BeNil())
+				Expect(scope.lastCheckCalls).To(Equal(1))
+				Expect(scope.acquireCalls).To(BeZero())
+				if check.SkipInterval {
+					Expect(fakeRateLimiter.WaitCallCount()).To(Equal(waitsBefore))
+				} else {
+					Expect(fakeRateLimiter.WaitCallCount()).To(Equal(waitsBefore + 1))
+				}
+			}
+		})
+
+		It("does not update the scope when OnCheckBuildStart fails", func() {
+			fakeBuild.OnCheckBuildStartReturns(errors.New("some-error"))
+			scope := &checkTimingScope{updateStart: func(int, *json.RawMessage) (bool, error) {
+				Fail("scope must not update after OnCheckBuildStart fails")
+				return false, nil
+			}}
+			found, buildID, err := newDelegate(atc.CheckPlan{Resource: "some-resource"}).UpdateScopeLastCheckStartTime(scope, false)
+			Expect(err).To(MatchError("some-error"))
+			Expect(found).To(BeFalse())
+			Expect(buildID).To(BeZero())
+			Expect(scope.updateStartArgs).To(BeEmpty())
+		})
+
+		It("preserves nonnested build evidence when the scope start update fails", func() {
+			publicPlan := json.RawMessage(`{"id":"some-plan"}`)
+			fakeBuild.IDReturns(9999)
+			fakeBuild.PublicPlanReturns(&publicPlan)
+			scope := &checkTimingScope{updateStart: func(buildID int, plan *json.RawMessage) (bool, error) {
+				Expect(buildID).To(Equal(9999))
+				Expect(plan).To(Equal(&publicPlan))
+				return false, errors.New("some-error")
+			}}
+
+			found, buildID, err := newDelegate(atc.CheckPlan{Resource: "some-resource"}).UpdateScopeLastCheckStartTime(scope, false)
+			Expect(err).To(MatchError("some-error"))
+			Expect(found).To(BeFalse())
+			Expect(buildID).To(Equal(9999))
+			Expect(scope.updateStartArgs).To(HaveLen(1))
+			Expect(fakeBuild.OnCheckBuildStartCallCount()).To(Equal(1))
+		})
+
+		It("updates nested-check start evidence once without touching the build", func() {
+			scope := &checkTimingScope{updateStart: func(buildID int, plan *json.RawMessage) (bool, error) {
+				Expect(buildID).To(BeZero())
+				Expect(plan).To(BeNil())
+				return true, nil
+			}}
+
+			found, buildID, err := newDelegate(atc.CheckPlan{ResourceType: "some-resource-type"}).UpdateScopeLastCheckStartTime(scope, true)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(buildID).To(BeZero())
+			Expect(scope.updateStartArgs).To(HaveLen(1))
+			Expect(fakeBuild.OnCheckBuildStartCallCount()).To(BeZero())
+		})
+
+		It("passes nested-check nil build evidence and bounds a scope update failure", func() {
+			scope := &checkTimingScope{updateStart: func(buildID int, plan *json.RawMessage) (bool, error) {
+				Expect(buildID).To(BeZero())
+				Expect(plan).To(BeNil())
+				return false, errors.New("some-error")
+			}}
+			found, buildID, err := newDelegate(atc.CheckPlan{ResourceType: "some-resource-type"}).UpdateScopeLastCheckStartTime(scope, true)
+			Expect(err).To(MatchError("some-error"))
+			Expect(found).To(BeFalse())
+			Expect(buildID).To(BeZero())
+			Expect(fakeBuild.OnCheckBuildStartCallCount()).To(BeZero())
+		})
+
+		It("passes end status and bounds a scope completion failure", func() {
+			scope := &checkTimingScope{updateEnd: func(succeeded bool) (bool, error) {
+				Expect(succeeded).To(BeTrue())
+				return false, errors.New("some-error")
+			}}
+			found, err := newDelegate(atc.CheckPlan{}).UpdateScopeLastCheckEndTime(scope, true)
+			Expect(err).To(MatchError("some-error"))
+			Expect(found).To(BeFalse())
+			Expect(scope.updateEndArgs).To(Equal([]bool{true}))
+		})
+
+		It("bounds pipeline lookup errors", func() {
+			fakeBuild.PipelineReturns(nil, false, errors.New("nope"))
+			_, err := newDelegate(atc.CheckPlan{Resource: "some-resource"}).FindOrCreateScope(
+				scopeErrorResourceConfig{err: errors.New("scope must not be reached")},
+			)
+			Expect(err).To(MatchError(ContainSubstring("get build pipeline: nope")))
+		})
 	})
 })
