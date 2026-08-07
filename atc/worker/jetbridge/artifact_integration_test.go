@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"context"
 
+	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	. "github.com/onsi/ginkgo/v2"
@@ -17,54 +17,60 @@ import (
 
 // Integration tests for artifact passing through the JetBridge runtime.
 // These exercise the full CreateVolumeForArtifact → LookupVolume → step
-// passing workflow using the fake K8s clientset and DB fakes.
+// passing workflow using the fake K8s clientset and real PostgreSQL state.
 var _ = Describe("Artifact Integration", func() {
 	var (
-		fakeDBWorker   *dbfakes.FakeWorker
-		fakeClientset  *fake.Clientset
-		fakeExecutor   *fakeExecExecutor
-		fakeVolumeRepo *dbfakes.FakeVolumeRepository
-		worker         *jetbridge.Worker
-		ctx            context.Context
-		cfg            jetbridge.Config
-		delegate       runtime.BuildStepDelegate
+		database      jetbridgeDB
+		team          db.Team
+		dbWorker      db.Worker
+		fakeClientset *fake.Clientset
+		fakeExecutor  *fakeExecExecutor
+		worker        *jetbridge.Worker
+		ctx           context.Context
+		cfg           jetbridge.Config
+		delegate      runtime.BuildStepDelegate
 	)
 
 	BeforeEach(func() {
 		ctx = context.Background()
-		fakeDBWorker = new(dbfakes.FakeWorker)
-		fakeDBWorker.NameReturns("k8s-worker-1")
+		database = useJetbridgeDB()
+		var err error
+		team, err = database.TeamFactory.CreateTeam(atc.Team{Name: "main"})
+		Expect(err).ToNot(HaveOccurred())
+		dbWorker, err = persistNamedWorker(database, "k8s-worker-1")
+		Expect(err).ToNot(HaveOccurred())
 		fakeClientset = fake.NewSimpleClientset()
 		fakeExecutor = &fakeExecExecutor{}
-		fakeVolumeRepo = new(dbfakes.FakeVolumeRepository)
 		delegate = &noopDelegate{}
 
 		cfg = jetbridge.NewConfig("ci-namespace", "")
 
-		worker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+		worker = jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
 		worker.SetExecutor(fakeExecutor)
-		worker.SetVolumeRepo(fakeVolumeRepo)
+		worker.SetVolumeRepo(database.VolumeRepository)
 	})
 
-	// setupArtifactVolumeFakes configures the volume repo fakes to simulate
-	// a successful CreateVolumeForArtifact call and returns the fakes for
-	// further configuration.
-	setupArtifactVolumeFakes := func(handle string, artifactID int) (*dbfakes.FakeCreatingVolume, *dbfakes.FakeCreatedVolume, *dbfakes.FakeWorkerArtifact) {
-		fakeCreatingVolume := new(dbfakes.FakeCreatingVolume)
-		fakeCreatingVolume.HandleReturns(handle)
+	createArtifactVolume := func(teamID int) (*jetbridge.DaemonSetVolume, db.WorkerArtifact) {
+		vol, artifact, err := worker.CreateVolumeForArtifact(ctx, teamID)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(artifact.ID()).To(BeNumerically(">", 0))
+		Expect(artifact.Name()).To(BeEmpty())
+		Expect(artifact.BuildID()).To(BeZero())
 
-		fakeCreatedVolume := new(dbfakes.FakeCreatedVolume)
-		fakeCreatedVolume.HandleReturns(handle)
-		fakeCreatedVolume.WorkerNameReturns("k8s-worker-1")
+		daemonSetVolume, ok := vol.(*jetbridge.DaemonSetVolume)
+		Expect(ok).To(BeTrue(), "expected DaemonSetVolume, got %T", vol)
+		return daemonSetVolume, artifact
+	}
 
-		fakeArtifact := new(dbfakes.FakeWorkerArtifact)
-		fakeArtifact.IDReturns(artifactID)
-
-		fakeVolumeRepo.CreateVolumeReturns(fakeCreatingVolume, nil)
-		fakeCreatingVolume.CreatedReturns(fakeCreatedVolume, nil)
-		fakeCreatedVolume.InitializeArtifactReturns(fakeArtifact, nil)
-
-		return fakeCreatingVolume, fakeCreatedVolume, fakeArtifact
+	expectContainerPersisted := func(handle string) {
+		var state, workerName string
+		err := database.Conn.QueryRow(
+			"SELECT state::text, worker_name FROM containers WHERE handle = $1",
+			handle,
+		).Scan(&state, &workerName)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(state).To(Equal("created"))
+		Expect(workerName).To(Equal(dbWorker.Name()))
 	}
 
 	simulatePodRunning := func(podName string) {
@@ -78,41 +84,43 @@ var _ = Describe("Artifact Integration", func() {
 	Describe("multi-step pipeline with artifact passing", func() {
 		It("creates an artifact in step 1 and passes it as input to step 2", func() {
 			By("step 1: creating an artifact volume (simulating fly execute upload)")
-			_, fakeCreatedVolume, _ := setupArtifactVolumeFakes("artifact-vol-1", 10)
+			vol, artifact := createArtifactVolume(team.ID())
 
-			vol, artifact, err := worker.CreateVolumeForArtifact(ctx, 1)
+			By("verifying the artifact volume was persisted")
+			persistedVolume, found, err := database.VolumeRepository.FindVolume(vol.Handle())
 			Expect(err).ToNot(HaveOccurred())
-			Expect(vol).ToNot(BeNil())
-			Expect(artifact).ToNot(BeNil())
-			Expect(artifact.ID()).To(Equal(10))
+			Expect(found).To(BeTrue())
+			Expect(persistedVolume.Handle()).To(Equal(vol.Handle()))
+			Expect(persistedVolume.WorkerName()).To(Equal(dbWorker.Name()))
+			Expect(persistedVolume.TeamID()).To(Equal(team.ID()))
+			Expect(persistedVolume.Type()).To(Equal(db.VolumeTypeArtifact))
 
-			By("verifying the volume is an DaemonSetVolume with correct key")
-			asVol, ok := vol.(*jetbridge.DaemonSetVolume)
-			Expect(ok).To(BeTrue(), "expected DaemonSetVolume, got %T", vol)
-			Expect(asVol.Key()).To(Equal("artifact-vol-1"))
-			Expect(asVol.Handle()).To(Equal("artifact-vol-1"))
+			artifactVolume, found, err := artifact.Volume(team.ID())
+			Expect(err).ToNot(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(artifactVolume.Handle()).To(Equal(vol.Handle()))
+
+			By("verifying the volume is a DaemonSetVolume with a stable key")
+			Expect(vol.Key()).To(Equal(vol.Handle()))
 
 			By("step 2: looking up the artifact volume for the next step")
-			fakeVolumeRepo.FindVolumeReturns(fakeCreatedVolume, true, nil)
-
-			lookedUpVol, found, err := worker.LookupVolume(ctx, "artifact-vol-1")
+			lookedUpVol, found, err := worker.LookupVolume(ctx, vol.Handle())
 			Expect(err).ToNot(HaveOccurred())
 			Expect(found).To(BeTrue())
 
 			lookedUpASV, ok := lookedUpVol.(*jetbridge.DaemonSetVolume)
 			Expect(ok).To(BeTrue(), "LookupVolume should return DaemonSetVolume when artifact store is configured")
-			Expect(lookedUpASV.Key()).To(Equal("artifact-vol-1"))
+			Expect(lookedUpASV.Key()).To(Equal(vol.Handle()))
+			Expect(lookedUpASV.DBVolume().Handle()).To(Equal(persistedVolume.Handle()))
 
 			By("step 3: creating a task container that receives the artifact as input")
-			setupFakeDBContainer(fakeDBWorker, "task-consume-artifact")
-
 			fakeExecutor.execStdout = []byte("artifact data received\n")
 			container, mounts, err := worker.FindOrCreateContainer(
 				ctx,
 				db.NewFixedHandleContainerOwner("task-consume-artifact"),
 				db.ContainerMetadata{Type: db.ContainerTypeTask},
 				runtime.ContainerSpec{
-					TeamID:   1,
+					TeamID:   team.ID(),
 					TeamName: "main",
 					Dir:      "/tmp/build/workdir",
 					ImageSpec: runtime.ImageSpec{
@@ -129,6 +137,7 @@ var _ = Describe("Artifact Integration", func() {
 			)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(container).ToNot(BeNil())
+			expectContainerPersisted("task-consume-artifact")
 
 			By("verifying the input mount is present")
 			var inputMountFound bool
@@ -169,26 +178,20 @@ var _ = Describe("Artifact Integration", func() {
 
 		It("passes artifacts through get → task → put pipeline steps", func() {
 			By("step 1: get step produces an artifact (resource version)")
-			_, getCreatedVolume, _ := setupArtifactVolumeFakes("get-output-vol", 20)
-
-			getVol, getArtifact, err := worker.CreateVolumeForArtifact(ctx, 1)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(getArtifact.ID()).To(Equal(20))
+			getVol, getArtifact := createArtifactVolume(team.ID())
+			Expect(getArtifact.ID()).To(BeNumerically(">", 0))
 
 			By("step 2: task step receives get output as input and produces its own output")
-			fakeVolumeRepo.FindVolumeReturns(getCreatedVolume, true, nil)
-
-			lookedUpGetVol, found, err := worker.LookupVolume(ctx, "get-output-vol")
+			lookedUpGetVol, found, err := worker.LookupVolume(ctx, getVol.Handle())
 			Expect(err).ToNot(HaveOccurred())
 			Expect(found).To(BeTrue())
 
-			setupFakeDBContainer(fakeDBWorker, "task-build-step")
 			container, mounts, err := worker.FindOrCreateContainer(
 				ctx,
 				db.NewFixedHandleContainerOwner("task-build-step"),
 				db.ContainerMetadata{Type: db.ContainerTypeTask},
 				runtime.ContainerSpec{
-					TeamID:   1,
+					TeamID:   team.ID(),
 					TeamName: "main",
 					Dir:      "/tmp/build/workdir",
 					ImageSpec: runtime.ImageSpec{
@@ -207,6 +210,7 @@ var _ = Describe("Artifact Integration", func() {
 				delegate,
 			)
 			Expect(err).ToNot(HaveOccurred())
+			expectContainerPersisted("task-build-step")
 
 			By("verifying both input and output mounts exist")
 			mountPaths := make([]string, len(mounts))
@@ -235,13 +239,12 @@ var _ = Describe("Artifact Integration", func() {
 			putStdout := `{"version":{"ref":"v1.0.0"}}`
 			fakeExecutor.execStdout = []byte(putStdout)
 
-			setupFakeDBContainer(fakeDBWorker, "put-upload-step")
 			putContainer, putMounts, err := worker.FindOrCreateContainer(
 				ctx,
 				db.NewFixedHandleContainerOwner("put-upload-step"),
 				db.ContainerMetadata{Type: db.ContainerTypePut},
 				runtime.ContainerSpec{
-					TeamID:   1,
+					TeamID:   team.ID(),
 					TeamName: "main",
 					ImageSpec: runtime.ImageSpec{
 						ResourceType: "s3",
@@ -254,6 +257,7 @@ var _ = Describe("Artifact Integration", func() {
 				delegate,
 			)
 			Expect(err).ToNot(HaveOccurred())
+			expectContainerPersisted("put-upload-step")
 
 			By("verifying the put step has the input mount")
 			putMountPaths := make([]string, len(putMounts))
@@ -281,9 +285,8 @@ var _ = Describe("Artifact Integration", func() {
 			Expect(putStdoutBuf.String()).To(Equal(putStdout))
 
 			By("verifying the complete get→task→put chain used artifact store volumes")
-			_, isASV := getVol.(*jetbridge.DaemonSetVolume)
-			Expect(isASV).To(BeTrue(), "get output should be DaemonSetVolume")
-			_, isASV = lookedUpGetVol.(*jetbridge.DaemonSetVolume)
+			Expect(getVol).ToNot(BeNil(), "get output should be DaemonSetVolume")
+			_, isASV := lookedUpGetVol.(*jetbridge.DaemonSetVolume)
 			Expect(isASV).To(BeTrue(), "looked up get output should be DaemonSetVolume")
 		})
 	})
@@ -291,17 +294,12 @@ var _ = Describe("Artifact Integration", func() {
 	Describe("artifact persistence across pod restarts", func() {
 		It("returns the same DaemonSetVolume key across multiple lookups", func() {
 			By("creating an artifact volume")
-			_, fakeCreatedVolume, _ := setupArtifactVolumeFakes("persistent-artifact", 30)
-
-			vol, _, err := worker.CreateVolumeForArtifact(ctx, 1)
-			Expect(err).ToNot(HaveOccurred())
-			originalKey := vol.(*jetbridge.DaemonSetVolume).Key()
-			Expect(originalKey).To(Equal("persistent-artifact"))
+			vol, _ := createArtifactVolume(team.ID())
+			originalKey := vol.Key()
+			Expect(originalKey).To(Equal(vol.Handle()))
 
 			By("looking up the volume (simulating a new step after pod restart)")
-			fakeVolumeRepo.FindVolumeReturns(fakeCreatedVolume, true, nil)
-
-			vol2, found, err := worker.LookupVolume(ctx, "persistent-artifact")
+			vol2, found, err := worker.LookupVolume(ctx, vol.Handle())
 			Expect(err).ToNot(HaveOccurred())
 			Expect(found).To(BeTrue())
 
@@ -310,7 +308,7 @@ var _ = Describe("Artifact Integration", func() {
 				"artifact key should be deterministic and survive pod restarts")
 
 			By("looking up the volume again (simulating another step)")
-			vol3, found, err := worker.LookupVolume(ctx, "persistent-artifact")
+			vol3, found, err := worker.LookupVolume(ctx, vol.Handle())
 			Expect(err).ToNot(HaveOccurred())
 			Expect(found).To(BeTrue())
 			Expect(vol3.(*jetbridge.DaemonSetVolume).Key()).To(Equal(originalKey),
@@ -319,80 +317,86 @@ var _ = Describe("Artifact Integration", func() {
 
 		It("preserves DB volume association through lookup", func() {
 			By("creating an artifact volume with DB state")
-			_, fakeCreatedVolume, _ := setupArtifactVolumeFakes("db-tracked-artifact", 40)
-
-			fakeUsedCache := &db.UsedWorkerResourceCache{ID: 77}
-			fakeCreatedVolume.InitializeResourceCacheReturns(fakeUsedCache, nil)
-
-			_, _, err := worker.CreateVolumeForArtifact(ctx, 1)
-			Expect(err).ToNot(HaveOccurred())
+			createdVolume, artifact := createArtifactVolume(team.ID())
 
 			By("looking up the volume and verifying DB operations still work")
-			fakeVolumeRepo.FindVolumeReturns(fakeCreatedVolume, true, nil)
-
-			vol, found, err := worker.LookupVolume(ctx, "db-tracked-artifact")
+			vol, found, err := worker.LookupVolume(ctx, createdVolume.Handle())
 			Expect(err).ToNot(HaveOccurred())
 			Expect(found).To(BeTrue())
 
-			By("initializing a resource cache on the looked-up volume")
-			usedCache, err := vol.InitializeResourceCache(ctx, nil)
+			lookedUpVolume, ok := vol.(*jetbridge.DaemonSetVolume)
+			Expect(ok).To(BeTrue())
+			Expect(lookedUpVolume.DBVolume()).ToNot(BeNil())
+			Expect(lookedUpVolume.DBVolume().Handle()).To(Equal(createdVolume.Handle()))
+			Expect(lookedUpVolume.DBVolume().WorkerName()).To(Equal(dbWorker.Name()))
+
+			By("reloading the exact volume through its artifact association")
+			artifactVolume, found, err := artifact.Volume(team.ID())
 			Expect(err).ToNot(HaveOccurred())
-			Expect(usedCache).ToNot(BeNil())
-			Expect(usedCache.ID).To(Equal(77))
+			Expect(found).To(BeTrue())
+			Expect(artifactVolume.Handle()).To(Equal(createdVolume.Handle()))
+			Expect(artifactVolume.WorkerArtifactID()).To(Equal(artifact.ID()))
 		})
 	})
 
 	Describe("artifact cleanup", func() {
 		It("artifact volumes are created as VolumeTypeArtifact for Reaper identification", func() {
-			By("creating multiple artifact volumes")
-			setupArtifactVolumeFakes("artifact-cleanup-1", 50)
-			_, _, err := worker.CreateVolumeForArtifact(ctx, 1)
-			Expect(err).ToNot(HaveOccurred())
+			By("creating an artifact volume")
+			vol, _ := createArtifactVolume(team.ID())
 
 			By("verifying the volume was created with VolumeTypeArtifact")
-			Expect(fakeVolumeRepo.CreateVolumeCallCount()).To(Equal(1))
-			teamID, workerName, volType := fakeVolumeRepo.CreateVolumeArgsForCall(0)
-			Expect(teamID).To(Equal(1))
-			Expect(workerName).To(Equal("k8s-worker-1"))
-			Expect(volType).To(Equal(db.VolumeTypeArtifact),
+			persistedVolume, found, err := database.VolumeRepository.FindVolume(vol.Handle())
+			Expect(err).ToNot(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(persistedVolume.TeamID()).To(Equal(team.ID()))
+			Expect(persistedVolume.WorkerName()).To(Equal(dbWorker.Name()))
+			Expect(persistedVolume.Type()).To(Equal(db.VolumeTypeArtifact),
 				"artifact volumes must be VolumeTypeArtifact so the Reaper can identify and clean orphans")
 		})
 
 		It("orphaned artifacts return not-found when DB record is removed", func() {
 			By("creating an artifact volume")
-			setupArtifactVolumeFakes("orphan-artifact", 60)
-			_, _, err := worker.CreateVolumeForArtifact(ctx, 1)
+			vol, _ := createArtifactVolume(team.ID())
+
+			By("removing the persisted DB record as the Reaper would")
+			destroyingVolume, err := vol.DBVolume().Destroying()
 			Expect(err).ToNot(HaveOccurred())
+			destroyed, err := destroyingVolume.Destroy()
+			Expect(err).ToNot(HaveOccurred())
+			Expect(destroyed).To(BeTrue())
 
-			By("simulating the Reaper removing the DB record (orphan cleanup)")
-			fakeVolumeRepo.FindVolumeReturns(nil, false, nil)
-
-			_, found, err := worker.LookupVolume(ctx, "orphan-artifact")
+			_, found, err := worker.LookupVolume(ctx, vol.Handle())
 			Expect(err).ToNot(HaveOccurred())
 			Expect(found).To(BeFalse(),
 				"after Reaper removes the DB record, LookupVolume should return not-found")
 		})
 
 		It("artifact volumes from different teams are isolated", func() {
-			By("creating artifact for team 1")
-			setupArtifactVolumeFakes("team1-artifact", 70)
-			_, artifact1, err := worker.CreateVolumeForArtifact(ctx, 1)
+			team2, err := database.TeamFactory.CreateTeam(atc.Team{Name: "artifact-team-2"})
 			Expect(err).ToNot(HaveOccurred())
-			Expect(artifact1.ID()).To(Equal(70))
 
-			By("verifying team ID was passed correctly")
-			teamID, _, _ := fakeVolumeRepo.CreateVolumeArgsForCall(0)
-			Expect(teamID).To(Equal(1))
+			By("creating artifact for team 1")
+			vol1, artifact1 := createArtifactVolume(team.ID())
+
+			team1Volume, found, err := artifact1.Volume(team.ID())
+			Expect(err).ToNot(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(team1Volume.Handle()).To(Equal(vol1.Handle()))
+			_, found, err = artifact1.Volume(team2.ID())
+			Expect(err).ToNot(HaveOccurred())
+			Expect(found).To(BeFalse())
 
 			By("creating artifact for team 2")
-			setupArtifactVolumeFakes("team2-artifact", 71)
-			_, artifact2, err := worker.CreateVolumeForArtifact(ctx, 2)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(artifact2.ID()).To(Equal(71))
+			vol2, artifact2 := createArtifactVolume(team2.ID())
+			Expect(artifact2.ID()).ToNot(Equal(artifact1.ID()))
 
-			By("verifying team 2's ID was passed correctly")
-			teamID, _, _ = fakeVolumeRepo.CreateVolumeArgsForCall(1)
-			Expect(teamID).To(Equal(2))
+			team2Volume, found, err := artifact2.Volume(team2.ID())
+			Expect(err).ToNot(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(team2Volume.Handle()).To(Equal(vol2.Handle()))
+			_, found, err = artifact2.Volume(team.ID())
+			Expect(err).ToNot(HaveOccurred())
+			Expect(found).To(BeFalse())
 		})
 	})
 
@@ -401,20 +405,25 @@ var _ = Describe("Artifact Integration", func() {
 
 		BeforeEach(func() {
 			noCfg := jetbridge.NewConfig("ci-namespace", "")
-			noArtifactWorker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, noCfg)
+			noArtifactWorker = jetbridge.NewWorker(dbWorker, fakeClientset, noCfg)
 			noArtifactWorker.SetExecutor(fakeExecutor)
-			noArtifactWorker.SetVolumeRepo(fakeVolumeRepo)
+			noArtifactWorker.SetVolumeRepo(database.VolumeRepository)
 		})
 
 		It("returns a DaemonSetVolume", func() {
-			setupArtifactVolumeFakes("deferred-artifact", 80)
-			vol, _, err := noArtifactWorker.CreateVolumeForArtifact(ctx, 1)
+			vol, artifact, err := noArtifactWorker.CreateVolumeForArtifact(ctx, team.ID())
 			Expect(err).ToNot(HaveOccurred())
+			Expect(artifact.ID()).To(BeNumerically(">", 0))
 
 			_, isDaemonSet := vol.(*jetbridge.DaemonSetVolume)
 			Expect(isDaemonSet).To(BeTrue(),
 				"should always return DaemonSetVolume, got %T", vol)
-			Expect(vol.Handle()).To(Equal("deferred-artifact"))
+			Expect(vol.Handle()).ToNot(BeEmpty())
+
+			persistedVolume, found, err := database.VolumeRepository.FindVolume(vol.Handle())
+			Expect(err).ToNot(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(persistedVolume.WorkerArtifactID()).To(Equal(artifact.ID()))
 		})
 	})
 })
