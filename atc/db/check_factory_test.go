@@ -377,38 +377,62 @@ var _ = Describe("CheckFactory", func() {
 		})
 
 		Context("when it is run for a resource type", func() {
+			var resourceTypes db.ResourceTypes
+
 			BeforeEach(func() {
-				fakeResourceType.CheckPlanReturns(checkPlan)
-				fakeResourceType.CreateBuildReturns(fakeBuild, true, nil)
-				fakeResourceType.CreateInMemoryBuildReturns(fakeBuild, nil)
+				resourceTypes, err = defaultPipeline.ResourceTypes()
+				Expect(err).NotTo(HaveOccurred())
 			})
 
 			JustBeforeEach(func() {
-				build, created, err = checkFactory.TryCreateCheck(context.TODO(), fakeResourceType, fakeResourceTypes, fromVersion, manuallyTriggered, false, toDb)
+				build, created, err = checkFactory.TryCreateCheck(context.TODO(), defaultResourceType, resourceTypes, fromVersion, manuallyTriggered, false, toDb)
 			})
 
 			Context("when build is created in db", func() {
-				It("creates a check plan", func() {
-					var rts atc.ResourceTypes
-					Expect(fakeResourceType.CheckPlanCallCount()).To(Equal(1))
-					_, types, version, interval, defaults, _, _ := fakeResourceType.CheckPlanArgsForCall(0)
-					Expect(version).To(Equal(atc.Version{"from": "version"}))
-					Expect(interval.Interval).To(Equal(defaultResourceTypeInterval))
-					Expect(types).To(Equal(rts))
-					Expect(defaults).To(Equal(atc.Source{}))
-				})
-
-				It("returns the build", func() {
+				It("persists one started check with the resource type plan", func() {
 					Expect(err).NotTo(HaveOccurred())
 					Expect(created).To(BeTrue())
-					Expect(build).To(Equal(fakeBuild))
-				})
+					Expect(build).NotTo(BeNil())
 
-				It("starts the build with the check plan", func() {
-					Expect(fakeResourceType.CreateBuildCallCount()).To(Equal(1))
-					_, manuallyTriggered, plan := fakeResourceType.CreateBuildArgsForCall(0)
-					Expect(manuallyTriggered).To(BeFalse())
-					Expect(plan).To(Equal(checkPlan))
+					found, err := build.Reload()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(found).To(BeTrue())
+					Expect(build.ResourceTypeID()).To(Equal(defaultResourceType.ID()))
+					Expect(build.Status()).To(Equal(db.BuildStatusStarted))
+					Expect(build.IsCompleted()).To(BeFalse())
+					Expect(build.IsManuallyTriggered()).To(BeFalse())
+					Expect(build.PrivatePlan().ID).NotTo(BeEmpty())
+					Expect(build.PrivatePlan().Check).To(Equal(&atc.CheckPlan{
+						Name:         "some-type",
+						Type:         "some-base-resource-type",
+						Source:       atc.Source{"some-type": "source"},
+						TypeImage:    atc.TypeImage{BaseType: "some-base-resource-type"},
+						FromVersion:  atc.Version{"from": "version"},
+						ResourceType: "some-type",
+						Interval:     atc.CheckEvery{Interval: defaultResourceTypeInterval},
+					}))
+
+					var unfinishedBuilds int
+					err = dbConn.QueryRow(
+						`SELECT count(*) FROM builds WHERE resource_type_id = $1 AND completed = false`,
+						defaultResourceType.ID(),
+					).Scan(&unfinishedBuilds)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(unfinishedBuilds).To(Equal(1))
+
+					duplicateBuild, duplicateCreated, err := checkFactory.TryCreateCheck(
+						context.TODO(), defaultResourceType, resourceTypes, fromVersion, manuallyTriggered, false, true,
+					)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(duplicateCreated).To(BeFalse())
+					Expect(duplicateBuild).To(BeNil())
+
+					err = dbConn.QueryRow(
+						`SELECT count(*) FROM builds WHERE resource_type_id = $1 AND completed = false`,
+						defaultResourceType.ID(),
+					).Scan(&unfinishedBuilds)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(unfinishedBuilds).To(Equal(1))
 				})
 			})
 
@@ -417,28 +441,11 @@ var _ = Describe("CheckFactory", func() {
 					toDb = false
 				})
 
-				It("creates a check plan", func() {
-					var rts atc.ResourceTypes
-					Expect(fakeResourceType.CheckPlanCallCount()).To(Equal(1))
-					_, types, version, interval, defaults, _, _ := fakeResourceType.CheckPlanArgsForCall(0)
-					Expect(version).To(Equal(atc.Version{"from": "version"}))
-					Expect(interval.Interval).To(Equal(defaultResourceTypeInterval))
-					Expect(types).To(Equal(rts))
-					Expect(defaults).To(Equal(atc.Source{}))
-				})
-
-				It("returns the build", func() {
-					Expect(err).NotTo(HaveOccurred())
-					Expect(created).To(BeTrue())
-					Expect(build).To(Equal(fakeBuild))
-				})
-
-				It("starts the build with the check plan", func() {
-					Expect(fakeResourceType.CreateInMemoryBuildCallCount()).To(Equal(1))
-					_, plan, seqGen := fakeResourceType.CreateInMemoryBuildArgsForCall(0)
-					Expect(manuallyTriggered).To(BeFalse())
-					Expect(plan).To(Equal(checkPlan))
-					Expect(seqGen).To(Equal(seqGenerator))
+				It("rejects the impossible in-memory resource type check without enqueueing", func() {
+					Expect(err).To(MatchError("resource type not supporting in-memory check build as lidar no longer checking resource types"))
+					Expect(created).To(BeFalse())
+					Expect(build).To(BeNil())
+					Expect(checkBuildChan).NotTo(Receive())
 				})
 			})
 		})
