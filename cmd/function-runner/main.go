@@ -19,13 +19,6 @@
 //	merge-prepare    compute the same merge and emit the merged
 //	                 repository-change/v1. Exits non-zero on conflict, because a
 //	                 typed output only exists when the step succeeded.
-//	authorize-pr-response
-//	                 derive semantic no-response for non-review observations,
-//	                 or reopen an agent draft and emit it only when every reply
-//	                 is authorized by the exact completed review batch.
-//	pr-monitor-materialize
-//	                 verify one forge-pr observation against its exact source
-//	                 and target repositories and emit two repository/v1 values.
 package main
 
 import (
@@ -41,8 +34,6 @@ import (
 	"unicode"
 
 	"github.com/concourse/concourse/agent/functions/judge"
-	"github.com/concourse/concourse/agent/functions/prmonitor"
-	"github.com/concourse/concourse/agent/functions/pullrequestresponse"
 	"github.com/concourse/concourse/agent/functions/repositorymerge"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/snapshot/contracts"
@@ -63,7 +54,7 @@ func main() {
 
 func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "function-runner: a mode is required (judge, merge-preflight, merge-prepare, pr-monitor-materialize, authorize-pr-response, dev-validate)")
+		fmt.Fprintln(stderr, "function-runner: a mode is required (judge, merge-preflight, merge-prepare, dev-validate)")
 		return exitUsage
 	}
 	mode := args[0]
@@ -74,269 +65,13 @@ func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return runMergeMode(ctx, mode, args[1:], stdout, stderr)
 	case "dev-validate":
 		return runDevValidate(ctx, args[1:], stdout, stderr)
-	case "authorize-pr-response":
-		return runAuthorizePRResponseMode(ctx, args[1:], stdout, stderr)
-	case "pr-monitor-materialize":
-		return runPRMonitorMaterializeMode(ctx, args[1:], stdout, stderr)
 	case "-h", "--help", "help":
-		fmt.Fprintln(stdout, "usage: function-runner <judge|merge-preflight|merge-prepare|pr-monitor-materialize|authorize-pr-response|dev-validate> [flags]")
+		fmt.Fprintln(stdout, "usage: function-runner <judge|merge-preflight|merge-prepare|dev-validate> [flags]")
 		return exitOK
 	default:
 		fmt.Fprintf(stderr, "function-runner: unknown mode %q\n", mode)
 		return exitUsage
 	}
-}
-
-type prMonitorMaterializeOptions struct {
-	root         string
-	observation  string
-	sourceOutput string
-	targetOutput string
-}
-
-func runPRMonitorMaterializeMode(
-	ctx context.Context,
-	args []string,
-	stdout,
-	stderr io.Writer,
-) int {
-	options := prMonitorMaterializeOptions{}
-	flags := flag.NewFlagSet("function-runner pr-monitor-materialize", flag.ContinueOnError)
-	flags.SetOutput(stderr)
-	flags.StringVar(&options.root, "root", ".", "directory the task mounts are relative to")
-	flags.StringVar(&options.observation, "observation", "", "forge-pr pull-request/v1 input mount")
-	flags.StringVar(&options.sourceOutput, "source-output", "", "source repository/v1 output mount")
-	flags.StringVar(&options.targetOutput, "target-output", "", "target repository/v1 output mount")
-	if err := flags.Parse(args); err != nil {
-		return exitUsage
-	}
-	if flags.NArg() > 0 {
-		fmt.Fprintf(stderr, "function-runner: unexpected argument %q\n", flags.Arg(0))
-		return exitUsage
-	}
-	rejected, err := executePRMonitorMaterialize(ctx, options, stdout)
-	if err != nil {
-		fmt.Fprintf(stderr, "function-runner: pr-monitor-materialize: %v\n", err)
-		if rejected {
-			return exitRejects
-		}
-		return exitUsage
-	}
-	return exitOK
-}
-
-func executePRMonitorMaterialize(
-	ctx context.Context,
-	options prMonitorMaterializeOptions,
-	stdout io.Writer,
-) (bool, error) {
-	for name, value := range map[string]string{
-		"observation":   options.observation,
-		"source-output": options.sourceOutput,
-		"target-output": options.targetOutput,
-	} {
-		if strings.TrimSpace(value) == "" {
-			return false, fmt.Errorf("-%s is required", name)
-		}
-	}
-	observationPort, observationPath, err := parseMount(
-		options.root,
-		options.observation,
-	)
-	if err != nil {
-		return false, err
-	}
-	sourcePort, sourcePath, err := parseMount(options.root, options.sourceOutput)
-	if err != nil {
-		return false, err
-	}
-	targetPort, targetPath, err := parseMount(options.root, options.targetOutput)
-	if err != nil {
-		return false, err
-	}
-	if observationPort == sourcePort ||
-		observationPort == targetPort ||
-		sourcePort == targetPort ||
-		observationPath == sourcePath ||
-		observationPath == targetPath ||
-		sourcePath == targetPath {
-		return false, fmt.Errorf(
-			"observation, source output, and target output must be distinct mounts",
-		)
-	}
-	observation, err := declaredInput(observationPort)
-	if err != nil {
-		return false, err
-	}
-	result, err := prmonitor.Materialize(ctx, prmonitor.MaterializeRequest{
-		Observation:      observation,
-		ObservationInput: observationPort,
-		ObservationRoot:  observationPath,
-		SourceOutput:     sourcePath,
-		TargetOutput:     targetPath,
-		Canonicalizer:    snapshot.Canonicalizer{},
-	})
-	if err != nil {
-		return true, err
-	}
-	fmt.Fprintf(
-		stdout,
-		"verified PR repositories: source=%s target=%s\n",
-		result.Source.HeadSHA,
-		result.Target.HeadSHA,
-	)
-	return false, nil
-}
-
-type authorizePRResponseOptions struct {
-	root        string
-	observation string
-	draft       string
-	output      string
-}
-
-func runAuthorizePRResponseMode(
-	ctx context.Context,
-	args []string,
-	stdout,
-	stderr io.Writer,
-) int {
-	options := authorizePRResponseOptions{}
-	flags := flag.NewFlagSet("function-runner authorize-pr-response", flag.ContinueOnError)
-	flags.SetOutput(stderr)
-	flags.StringVar(&options.root, "root", ".", "directory the task mounts are relative to")
-	flags.StringVar(&options.observation, "observation", "", "pull-request/v1 input mount, as `name` or name=path")
-	flags.StringVar(&options.draft, "draft", "", "optional agent-authored pull-request-response/v1 input mount, as `name` or name=path")
-	flags.StringVar(&options.output, "output", "", "authorized pull-request-response/v1 output mount, as `name` or name=path")
-	if err := flags.Parse(args); err != nil {
-		return exitUsage
-	}
-	if flags.NArg() > 0 {
-		fmt.Fprintf(stderr, "function-runner: unexpected argument %q\n", flags.Arg(0))
-		return exitUsage
-	}
-	rejected, err := executeAuthorizePRResponse(ctx, options, stdout)
-	if err != nil {
-		fmt.Fprintf(stderr, "function-runner: authorize-pr-response: %v\n", err)
-		if rejected {
-			return exitRejects
-		}
-		return exitUsage
-	}
-	return exitOK
-}
-
-func executeAuthorizePRResponse(
-	ctx context.Context,
-	options authorizePRResponseOptions,
-	stdout io.Writer,
-) (bool, error) {
-	for name, value := range map[string]string{
-		"observation": options.observation,
-		"output":      options.output,
-	} {
-		if strings.TrimSpace(value) == "" {
-			return false, fmt.Errorf("-%s is required", name)
-		}
-	}
-	observationPort, observationPath, err := parseMount(options.root, options.observation)
-	if err != nil {
-		return false, err
-	}
-	outputPort, outputPath, err := parseMount(options.root, options.output)
-	if err != nil {
-		return false, err
-	}
-	if observationPort == outputPort || observationPath == outputPath {
-		return false, fmt.Errorf("observation and output must be distinct mounts")
-	}
-	observation, err := declaredInput(observationPort)
-	if err != nil {
-		return false, err
-	}
-
-	var draft snapshot.SnapshotRef
-	var draftPort, draftPath string
-	var draftDeclared bool
-	if strings.TrimSpace(options.draft) != "" {
-		draftPort, draftPath, err = parseMount(options.root, options.draft)
-		if err != nil {
-			return false, err
-		}
-		if observationPort == draftPort ||
-			draftPort == outputPort ||
-			observationPath == draftPath ||
-			draftPath == outputPath {
-			return false, fmt.Errorf("observation, draft, and output must be distinct mounts")
-		}
-		draft, draftDeclared, err = optionalDeclaredInput(draftPort)
-		if err != nil {
-			return false, err
-		}
-	}
-	authority, err := declaredPRResponseAuthority(outputPort)
-	if err != nil {
-		return false, err
-	}
-	request := pullrequestresponse.Request{
-		Observation:       observation,
-		ObservationInput:  observationPort,
-		ObservationRoot:   observationPath,
-		ResponseAuthority: authority,
-		Canonicalizer:     snapshot.Canonicalizer{},
-	}
-	if draftDeclared {
-		request.Draft = draft
-		request.DraftInput = draftPort
-		request.DraftRoot = draftPath
-	}
-	record, err := pullrequestresponse.Authorize(ctx, request)
-	if err != nil {
-		return true, err
-	}
-	protectedRoots := []string{observationPath}
-	if draftPath != "" {
-		protectedRoots = append(protectedRoots, draftPath)
-	}
-	if err := pullrequestresponse.Write(
-		ctx,
-		outputPath,
-		record,
-		protectedRoots...,
-	); err != nil {
-		return false, err
-	}
-	if record.Body.Kind == contracts.PullRequestResponseNoResponse {
-		fmt.Fprintln(stdout, "authorized no provider response")
-		return false, nil
-	}
-	fmt.Fprintf(
-		stdout,
-		"authorized review batch %s: %d replies\n",
-		record.Body.BatchID,
-		len(record.Body.Replies),
-	)
-	return false, nil
-}
-
-func declaredPRResponseAuthority(
-	outputPort string,
-) (pullrequestresponse.RecordAuthority, error) {
-	prefix := "AGENT_OUTPUT_" + authorityEnvPort(outputPort)
-	declaredType := strings.TrimSpace(os.Getenv(prefix + "_RECORD_TYPE"))
-	declaredSchema := strings.TrimSpace(os.Getenv(prefix + "_RECORD_SCHEMA"))
-	authority := pullrequestresponse.RecordAuthority{
-		Type:   snapshot.TypeRef(declaredType),
-		Schema: snapshot.Digest(declaredSchema),
-	}
-	if authority.Type != snapshot.TypeRef("pull-request-response/v1") ||
-		authority.Schema.Validate() != nil {
-		return pullrequestresponse.RecordAuthority{}, fmt.Errorf(
-			"output mount %q has no valid declared pull-request-response/v1 authority",
-			outputPort,
-		)
-	}
-	return authority, nil
 }
 
 type judgeOptions struct {
@@ -444,28 +179,6 @@ func declaredInput(port string) (snapshot.SnapshotRef, error) {
 		return snapshot.SnapshotRef{}, fmt.Errorf("input mount %q declared snapshot identity: %w", port, err)
 	}
 	return ref, nil
-}
-
-func optionalDeclaredInput(
-	port string,
-) (snapshot.SnapshotRef, bool, error) {
-	prefix := "AGENT_INPUT_" + authorityEnvPort(port)
-	declaredType := strings.TrimSpace(os.Getenv(prefix + "_SNAPSHOT_TYPE"))
-	declaredDigest := strings.TrimSpace(os.Getenv(prefix + "_SNAPSHOT_DIGEST"))
-	if declaredType == "" && declaredDigest == "" {
-		return snapshot.SnapshotRef{}, false, nil
-	}
-	if declaredType == "" || declaredDigest == "" {
-		return snapshot.SnapshotRef{}, false, fmt.Errorf(
-			"input mount %q has an incomplete optional snapshot identity",
-			port,
-		)
-	}
-	reference, err := declaredInput(port)
-	if err != nil {
-		return snapshot.SnapshotRef{}, false, err
-	}
-	return reference, true, nil
 }
 
 // measurementsAuthority resolves the contract identity the measurements record
