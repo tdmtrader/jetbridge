@@ -45,10 +45,22 @@ var _ = Describe("Unpause Handler", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(reloaded).To(BeTrue())
 		Expect(pipeline.Paused()).To(BeFalse(), "the pipeline should actually be unpaused")
+	})
 
-		Expect(fakeLogger.Logs()).NotTo(ContainElement(gstruct.MatchFields(gstruct.IgnoreExtras, gstruct.Fields{
-			"Message": Equal("test.unpause-pipeline.failed-to-notify-resource-scanner"),
-		})), "the resource scanner should have been notified")
+	It("notifies the lidar scanner", func() {
+		pipeline := createPipeline(createTeam("some-team"), "some-pipeline")
+		Expect(pipeline.Pause("some-user")).To(Succeed())
+
+		signal, err := dbConn.Bus().ListenSignal(atc.ComponentLidarScanner)
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() {
+			Expect(dbConn.Bus().UnlistenSignal(atc.ComponentLidarScanner, signal)).To(Succeed())
+		})
+
+		server.UnpausePipeline(pipeline).ServeHTTP(recorder, request)
+
+		Expect(recorder.Code).To(Equal(http.StatusOK))
+		Eventually(signal.C()).Should(Receive())
 	})
 
 	Context("when there is a database error", func() {
