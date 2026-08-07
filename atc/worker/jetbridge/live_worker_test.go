@@ -14,15 +14,13 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// setupLiveWorker creates a Worker backed by a real K8s clientset with
-// fake DB components (we only need the DB fakes to satisfy the interface;
-// actual pod creation goes through the real K8s API).
+// setupLiveWorker creates a Worker backed by a real K8s clientset and an
+// isolated PostgreSQL clone.
 //
 // DaemonSet artifact config comes from the deployed daemon itself (see
 // adoptDaemonTLS). These environment variables fill in only what could not be
@@ -43,6 +41,11 @@ import (
 // behavior where a single worker serves all steps in a build). If nil and
 // DaemonSet mode is configured, a new locator is created.
 func setupLiveWorkerWithLocator(t *testing.T, handle string, locator *jetbridge.ArtifactLocator) (*jetbridge.Worker, runtime.BuildStepDelegate, *jetbridge.ArtifactLocator) {
+	worker, delegate, locator, _ := setupLiveWorkerWithLocatorAndDatabase(t, handle, locator)
+	return worker, delegate, locator
+}
+
+func setupLiveWorkerWithLocatorAndDatabase(t *testing.T, _ string, locator *jetbridge.ArtifactLocator) (*jetbridge.Worker, runtime.BuildStepDelegate, *jetbridge.ArtifactLocator, jetbridgeDB) {
 	t.Helper()
 
 	clientset, cfg := kubeClient(t)
@@ -93,15 +96,19 @@ func setupLiveWorkerWithLocator(t *testing.T, handle string, locator *jetbridge.
 	if err != nil {
 		t.Fatalf("creating rest config: %v", err)
 	}
+	database := useLiveJetbridgeDB(t)
+	dbWorker, found, err := database.WorkerFactory.GetWorker("live-k8s-worker")
+	if err != nil {
+		t.Fatalf("getting persisted worker: %v", err)
+	}
+	if !found {
+		dbWorker, err = persistNamedWorker(database, "live-k8s-worker")
+		if err != nil {
+			t.Fatalf("persisting worker: %v", err)
+		}
+	}
 
-	fakeDBWorker := new(dbfakes.FakeWorker)
-	fakeDBWorker.NameReturns("live-k8s-worker")
-
-	// Wire up the fake DB so FindOrCreateContainer works:
-	// FindContainer returns nothing → CreateContainer is called → Created() succeeds.
-	setupFakeDBContainer(fakeDBWorker, handle)
-
-	worker := jetbridge.NewWorker(fakeDBWorker, clientset, *cfg)
+	worker := jetbridge.NewWorker(dbWorker, clientset, *cfg)
 	executor := jetbridge.NewSPDYExecutor(clientset, restConfig)
 	worker.SetExecutor(executor)
 
@@ -114,19 +121,49 @@ func setupLiveWorkerWithLocator(t *testing.T, handle string, locator *jetbridge.
 		worker.SetArtifactLocator(locator)
 	}
 
-	return worker, &noopDelegate{}, locator
+	return worker, &noopDelegate{}, locator, database
 }
 
 func setupLiveWorker(t *testing.T, handle string) (*jetbridge.Worker, runtime.BuildStepDelegate) {
-	w, d, _ := setupLiveWorkerWithLocator(t, handle, nil)
+	w, d, _ := setupLiveWorkerWithDatabase(t, handle)
 	return w, d
+}
+
+func setupLiveWorkerWithDatabase(t *testing.T, handle string) (*jetbridge.Worker, runtime.BuildStepDelegate, jetbridgeDB) {
+	w, d, _, database := setupLiveWorkerWithLocatorAndDatabase(t, handle, nil)
+	return w, d, database
+}
+
+func requirePersistedContainer(t *testing.T, database jetbridgeDB, workerName, handle string) {
+	t.Helper()
+	persistedWorker, found, err := database.WorkerFactory.GetWorker(workerName)
+	if err != nil {
+		t.Fatalf("getting persisted worker: %v", err)
+	}
+	if !found {
+		t.Fatal("persisted worker not found")
+	}
+
+	creating, created, err := persistedWorker.FindContainer(db.NewFixedHandleContainerOwner(handle))
+	if err != nil {
+		t.Fatalf("finding persisted container: %v", err)
+	}
+	if creating != nil {
+		t.Fatalf("expected no creating container, got %T", creating)
+	}
+	if created == nil {
+		t.Fatal("persisted created container not found")
+	}
+	if created.Handle() != handle {
+		t.Fatalf("persisted container handle = %q, want %q", created.Handle(), handle)
+	}
 }
 
 // TestLiveWorkerTaskExecution exercises the full Worker → Container → Process
 // lifecycle using exec mode (pause pod + SPDY exec for all tasks).
 func TestLiveWorkerTaskExecution(t *testing.T) {
 	handle := "live-task-" + time.Now().Format("150405")
-	worker, delegate := setupLiveWorker(t, handle)
+	worker, delegate, database := setupLiveWorkerWithDatabase(t, handle)
 	clientset, cfg := kubeClient(t)
 	ctx := context.Background()
 
@@ -146,6 +183,7 @@ func TestLiveWorkerTaskExecution(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FindOrCreateContainer: %v", err)
 	}
+	requirePersistedContainer(t, database, "live-k8s-worker", handle)
 
 	// Run a simple command — this now always uses exec mode (pause pod + SPDY exec).
 	process, err := container.Run(ctx, runtime.ProcessSpec{
@@ -173,7 +211,7 @@ func TestLiveWorkerTaskExecution(t *testing.T) {
 // correctly through the exec-mode Pod lifecycle.
 func TestLiveWorkerNonZeroExit(t *testing.T) {
 	handle := "live-fail-" + time.Now().Format("150405")
-	worker, delegate := setupLiveWorker(t, handle)
+	worker, delegate, database := setupLiveWorkerWithDatabase(t, handle)
 	clientset, cfg := kubeClient(t)
 	ctx := context.Background()
 
@@ -192,6 +230,7 @@ func TestLiveWorkerNonZeroExit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FindOrCreateContainer: %v", err)
 	}
+	requirePersistedContainer(t, database, "live-k8s-worker", handle)
 
 	process, err := container.Run(ctx, runtime.ProcessSpec{
 		Path: "/bin/sh",
@@ -217,7 +256,7 @@ func TestLiveWorkerNonZeroExit(t *testing.T) {
 // carries JSON and stdout returns the result.
 func TestLiveWorkerExecMode(t *testing.T) {
 	handle := "live-exec-" + time.Now().Format("150405")
-	worker, delegate := setupLiveWorker(t, handle)
+	worker, delegate, database := setupLiveWorkerWithDatabase(t, handle)
 	clientset, cfg := kubeClient(t)
 	ctx := context.Background()
 
@@ -236,6 +275,7 @@ func TestLiveWorkerExecMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FindOrCreateContainer: %v", err)
 	}
+	requirePersistedContainer(t, database, "live-k8s-worker", handle)
 
 	// Provide stdin to exercise exec mode with stdin piping.
 	stdinData := `{"source":{"uri":"https://example.com"},"version":{"ref":"abc123"}}`
@@ -275,7 +315,7 @@ func TestLiveWorkerExecMode(t *testing.T) {
 // GC-managed cleanup and fly hijack support.
 func TestLiveWorkerPodSurvivesCompletion(t *testing.T) {
 	handle := "live-survive-" + time.Now().Format("150405")
-	worker, delegate := setupLiveWorker(t, handle)
+	worker, delegate, database := setupLiveWorkerWithDatabase(t, handle)
 	clientset, cfg := kubeClient(t)
 	ctx := context.Background()
 
@@ -292,6 +332,7 @@ func TestLiveWorkerPodSurvivesCompletion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FindOrCreateContainer: %v", err)
 	}
+	requirePersistedContainer(t, database, "live-k8s-worker", handle)
 
 	process, err := container.Run(ctx, runtime.ProcessSpec{
 		Path: "/bin/sh",
@@ -332,7 +373,7 @@ func TestLiveWorkerPodSurvivesCompletion(t *testing.T) {
 // This verifies that LookupContainer + Run on existing pod works end-to-end.
 func TestLiveWorkerHijackExistingPod(t *testing.T) {
 	handle := "live-hijack-" + time.Now().Format("150405")
-	worker, delegate := setupLiveWorker(t, handle)
+	worker, delegate, database := setupLiveWorkerWithDatabase(t, handle)
 	clientset, cfg := kubeClient(t)
 	ctx := context.Background()
 
@@ -350,6 +391,7 @@ func TestLiveWorkerHijackExistingPod(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FindOrCreateContainer: %v", err)
 	}
+	requirePersistedContainer(t, database, "live-k8s-worker", handle)
 
 	process, err := container.Run(ctx, runtime.ProcessSpec{
 		Path: "/bin/sh",
