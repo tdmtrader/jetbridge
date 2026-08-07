@@ -577,7 +577,7 @@ git commit -m "test(engine): persist first delegate success state"
 - Produces persisted GetDelegate metadata, BuildStepDelegate cache/config chains, and CheckDelegate scope attachment.
 - Retains one FakeBuild in each of build_step_delegate_test.go and check_delegate_test.go for runtime/timing matrices.
 
-- [ ] **Step 1: Add the GetDelegate persisted assertion before rewiring it.**
+- [x] **Step 1: Add the GetDelegate persisted assertion before rewiring it.**
 
 Add Describe("persisted PostgreSQL state") to get_delegate_test.go. Call useEngineDB once, save a config with some-job and some-resource, create the job build, and use fixture.Builder.WithResourceVersions for info.Version. Initially leave the delegate on fakeBuild. After UpdateResourceVersion, reload the real ResourceConfigVersion and assert its metadata.
 
@@ -589,25 +589,25 @@ Expect(found).To(BeTrue())
 Expect(version.Metadata()).To(Equal(db.NewResourceConfigMetadataFields(info.Metadata)))
 ~~~
 
-- [ ] **Step 2: Run the assertion-first RED command.**
+- [x] **Step 2: Run the assertion-first RED command.**
 
 Run: ginkgo ./atc/engine/ --focus='GetDelegate persisted PostgreSQL state updates resource version metadata'
 
 Expected: FAIL because the real version metadata is empty while UpdateResourceVersion still targets the fake pipeline/resource.
 
-- [ ] **Step 3: Implement GetDelegate success and exact failures.**
+- [x] **Step 3: Implement GetDelegate success and exact failures.**
 
 Wire Finished and successful UpdateResourceVersion to the real job build. Reload the build before consuming FinishGet. Use a real one-off build only for the genuine pipeline-not-found state because PipelineID is zero. Use pipelineErrorBuild{Build: realBuild, err: errors.New("nope")} for the pipeline error.
 
 For the resource error, wrap the real pipeline as resourceErrorPipeline{Pipeline: pipeline, err: errors.New("nope")} and return it from pipelineResultBuild{Build: realBuild, pipeline: wrappedPipeline, found: true}. Use an absent resource name for real not-found. The wrapper comments state that healthy PostgreSQL cannot fail only that lookup while keeping the build/pipeline row.
 
-- [ ] **Step 4: Convert BuildStepDelegate and CheckDelegate persisted Describes.**
+- [x] **Step 4: Convert BuildStepDelegate and CheckDelegate persisted Describes.**
 
 In build_step_delegate_test.go create a job build and real config/scope/version/cache chain for every success path. Use db.ForBuild(realBuild.ID()) when creating caches. Replace the fake metadata cache and custom-type caches with rows from fixture.ResourceCacheFactory. Keep resolver, stepper, run-state, policy, and runtime volume fakes. Move the single FakeBuild plus callback/retry matrix into Describe("retained runtime and fault matrix"); replace generated cache/config fakes in normal paths with real values or one-method wrappers.
 
 In check_delegate_test.go create config containing some-job, some-resource, a resource type, and a prototype. For a resource check, create the build through resource.CreateBuild rather than CreateOneOffBuild; for other pipeline-dependent paths use the real job build. Use real global and resource scopes. After PointToCheckedConfig call resource.Reload or pipeline.Reload, then assert the resource/resource-type/prototype resolves the same scope ID. After UpdateLastCheckStartTime or UpdateLastCheckEndTime, reload the scope and assert the timestamps/status changed. Keep clock, rate limiter, lock, and one FakeBuild under Describe("retained timing and fault matrix"). Use scopeErrorResourceConfig and latestVersionErrorScope around healthy real values for injected errors.
 
-- [ ] **Step 5: Run GREEN and sensitivity checks.**
+- [x] **Step 5: Run GREEN and sensitivity checks.**
 
 Run: ginkgo ./atc/engine/ --focus='(GetDelegate|BuildStepDelegate|CheckDelegate)'
 
@@ -619,7 +619,7 @@ Run: ginkgo ./atc/engine/ --focus='CheckDelegate persisted PostgreSQL state'
 
 Expected: FAIL because the global scope ID is not attached as the named resource scope. Restore FindOrCreateScope(&resourceID) and rerun to PASS.
 
-- [ ] **Step 6: Verify payoff and commit.**
+- [x] **Step 6: Verify payoff and commit.**
 
 Run: rg -n 'new\(dbfakes\.(FakeBuild|FakePipeline|FakeResource|FakeResourceCache|FakeResourceConfig|FakeResourceConfigFactory|FakeResourceConfigScope|FakeResourceConfigVersion)\)' atc/engine/get_delegate_test.go atc/engine/build_step_delegate_test.go atc/engine/check_delegate_test.go
 
