@@ -2,6 +2,7 @@ package pipelineserver_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -11,6 +12,7 @@ import (
 	"github.com/concourse/concourse/atc/api/auth"
 	"github.com/concourse/concourse/atc/api/pipelineserver"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/db/dbfakes"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -103,6 +105,20 @@ var _ = Describe("Handler", func() {
 			})
 		})
 
+		Context("when finding the pipeline fails", func() {
+			BeforeEach(func() {
+				factory = teamFactoryFailingPipelineLookup(errors.New("pipeline lookup failed"))
+			})
+
+			It("returns 500", func() {
+				Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
+			})
+
+			It("does not call the scoped handler", func() {
+				Expect(delegate.IsCalled).To(BeFalse())
+			})
+		})
+
 		Context("when the team exists", func() {
 			var team db.Team
 
@@ -178,6 +194,18 @@ var _ = Describe("Handler", func() {
 		})
 	})
 })
+
+// Keep this fake at the narrow late-query seam: FindTeam succeeds, then only
+// Team.Pipeline fails. Closing a real connection would fail FindTeam first and
+// leave the handler's distinct pipeline-error branch untested.
+func teamFactoryFailingPipelineLookup(err error) db.TeamFactory {
+	team := new(dbfakes.FakeTeam)
+	team.PipelineReturns(nil, false, err)
+
+	factory := new(dbfakes.FakeTeamFactory)
+	factory.FindTeamReturns(team, true, nil)
+	return factory
+}
 
 type delegateHandler struct {
 	IsCalled bool

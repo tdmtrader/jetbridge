@@ -1,6 +1,7 @@
 package pipelineserver_test
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -104,12 +105,7 @@ var _ = Describe("Rejected Archived Handler", func() {
 		})
 	})
 
-	Context("when the database is unavailable", func() {
-		// Previously two Contexts -- one failing the team lookup, one failing the
-		// pipeline lookup -- both asserting 500. A real database fails both
-		// through the same closed connection, and which internal call errored
-		// first is not something the handler's contract distinguishes: any
-		// database failure is a 500.
+	Context("when finding the team fails", func() {
 		BeforeEach(func() {
 			doomed := postgresRunner.OpenConn()
 			doomedFactory := db.NewTeamFactory(doomed, lockFactory)
@@ -122,6 +118,20 @@ var _ = Describe("Rejected Archived Handler", func() {
 
 		It("returns 500", func() {
 			Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
+		})
+	})
+
+	Context("when finding the pipeline fails", func() {
+		BeforeEach(func() {
+			factory = teamFactoryFailingPipelineLookup(errors.New("pipeline lookup failed"))
+		})
+
+		It("returns 500", func() {
+			Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
+		})
+
+		It("does not call the delegate", func() {
+			Expect(delegate.IsCalled).To(BeFalse())
 		})
 	})
 })
