@@ -161,7 +161,6 @@ realGraphs =
                     , ( "log-diagnosis-v3.json", ( 4, 3 ) )
                     , ( "measure-review-v3.json", ( 3, 2 ) )
                     , ( "merge-delivery-v3.json", ( 10, 15 ) )
-                    , ( "pr-monitor-v3.json", ( 16, 37 ) )
                     , ( "small-fix-v3.json", ( 9, 12 ) )
                     , ( "version-upgrade-v3.json", ( 9, 13 ) )
                     ]
@@ -222,7 +221,6 @@ realGraphs =
                     , ( "log-diagnosis-v3.json", ( 1, 1 ) )
                     , ( "measure-review-v3.json", ( 0, 0 ) )
                     , ( "merge-delivery-v3.json", ( 0, 0 ) )
-                    , ( "pr-monitor-v3.json", ( 1, 2 ) )
                     , ( "small-fix-v3.json", ( 0, 0 ) )
                     , ( "version-upgrade-v3.json", ( 0, 0 ) )
                     ]
@@ -236,7 +234,7 @@ realGraphs =
                             |> Result.withDefault []
                     )
                 |> List.map Model.decorationName
-                |> Expect.equal [ "timeout", "timeout", "timeout", "timeout" ]
+                |> Expect.equal [ "timeout", "timeout", "timeout" ]
     , test "every edge endpoint resolves to a node of the same graph" <|
         \_ ->
             Fixtures.all

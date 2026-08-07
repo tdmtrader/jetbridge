@@ -217,7 +217,7 @@ func TestFreezerProjectsOneRowPerExecutionNodeOfEverySeed(t *testing.T) {
 // the graph calls the same concept input:<port>. A projection that kept those
 // would carry identities no graph node can ever join to.
 func TestFreezerDropsSyntheticInputPortLoads(t *testing.T) {
-	harness := newHarness(t, "pr-monitor-v3")
+	harness := newHarness(t, "merge-delivery-v3")
 	rows := harness.freeze(t)
 
 	executionNodes := executionNodesOf(t, harness.compiled)
@@ -239,15 +239,15 @@ func TestFreezerDropsSyntheticInputPortLoads(t *testing.T) {
 // projection silently loses exactly the data it was built to preserve, and
 // looks healthy while doing it, because every other node kind populates fine.
 func TestFreezerProjectsADeterministicTaskFromBuildEventsAlone(t *testing.T) {
-	harness := newHarness(t, "pr-monitor-v3")
-	taskPlanID := harness.planID(t, "pr-monitor-materialize")
+	harness := newHarness(t, "merge-delivery-v3")
+	taskPlanID := harness.planID(t, "merge-preflight")
 	harness.evidence.evidence = db.AgentWorkflowRunEvidence{
 		BuildStepStatus: map[string]string{taskPlanID: db.AgentNodeBuildStepSucceeded},
 	}
 
 	rows := harness.freeze(t)
 
-	task := rowFor(t, rows, "pr-monitor-materialize")
+	task := rowFor(t, rows, "merge-preflight")
 	if task.NodeKind != KindTask {
 		t.Fatalf("node kind = %q, want task", task.NodeKind)
 	}
@@ -260,7 +260,7 @@ func TestFreezerProjectsADeterministicTaskFromBuildEventsAlone(t *testing.T) {
 	// The evidence is keyed by plan ID, so a reader keyed on anything else
 	// would spray one status across every task.
 	for _, row := range rows {
-		if row.NodeID == "pr-monitor-materialize" {
+		if row.NodeID == "merge-preflight" {
 			continue
 		}
 		if row.Status != string(StatusPending) {
@@ -282,7 +282,7 @@ func TestFreezerProjectsEveryDeterministicTaskOutcome(t *testing.T) {
 		{db.AgentNodeBuildStepErrored, StatusErrored},
 	} {
 		t.Run(testCase.buildStep, func(t *testing.T) {
-			harness := newHarness(t, "pr-monitor-v3")
+			harness := newHarness(t, "merge-delivery-v3")
 			harness.evidence.evidence = db.AgentWorkflowRunEvidence{
 				BuildStepStatus: map[string]string{
 					harness.planID(t, "merge-prepare"): testCase.buildStep,
@@ -301,7 +301,7 @@ func TestFreezerProjectsEveryDeterministicTaskOutcome(t *testing.T) {
 // pending. Coercing it to something plausible would freeze a guess as
 // immutable history, which is worse than an honest gap.
 func TestFreezerLeavesAnUnrecognisedBuildStepStatusPending(t *testing.T) {
-	harness := newHarness(t, "pr-monitor-v3")
+	harness := newHarness(t, "merge-delivery-v3")
 	harness.evidence.evidence = db.AgentWorkflowRunEvidence{
 		BuildStepStatus: map[string]string{
 			harness.planID(t, "merge-prepare"): "half-finished",
@@ -317,12 +317,15 @@ func TestFreezerLeavesAnUnrecognisedBuildStepStatusPending(t *testing.T) {
 // A deterministic task and an agent step land in the same projection from
 // different sources. Proving them together is what shows the build-event
 // reader is additive rather than a replacement for the metrics path.
+//
+// small-fix-v3 is the seed used here because it is the shipped workflow that
+// carries agent steps and a deterministic task in one graph.
 func TestFreezerProjectsTasksAndAgentStepsTogether(t *testing.T) {
-	harness := newHarness(t, "pr-monitor-v3")
+	harness := newHarness(t, "small-fix-v3")
 	started := time.Date(2026, 7, 31, 9, 0, 0, 0, time.UTC)
 	harness.evidence.evidence = db.AgentWorkflowRunEvidence{
 		AttemptMetrics: []db.AgentNodeAttemptMetric{{
-			PlanID:           harness.planID(t, "respond"),
+			PlanID:           harness.planID(t, "review"),
 			ExecutionAttempt: 2,
 			Status:           "ok",
 			CostUSD:          1.75,
@@ -330,13 +333,13 @@ func TestFreezerProjectsTasksAndAgentStepsTogether(t *testing.T) {
 			UpdatedAt:        started.Add(3 * time.Minute),
 		}},
 		BuildStepStatus: map[string]string{
-			harness.planID(t, "authorize-pr-response"): db.AgentNodeBuildStepFailed,
+			harness.planID(t, "dev-validation-repository-gates"): db.AgentNodeBuildStepFailed,
 		},
 	}
 
 	rows := harness.freeze(t)
 
-	agent := rowFor(t, rows, "respond")
+	agent := rowFor(t, rows, "review")
 	if agent.Status != string(StatusSucceeded) || agent.Attempt != 2 || agent.CostUSD != 1.75 {
 		t.Errorf("agent row = %+v, want succeeded attempt 2 costing 1.75", agent)
 	}
@@ -346,7 +349,7 @@ func TestFreezerProjectsTasksAndAgentStepsTogether(t *testing.T) {
 	if agent.CompletedAt == nil || agent.DurationSeconds != 180 {
 		t.Errorf("agent completion = %v/%ds, want 180s", agent.CompletedAt, agent.DurationSeconds)
 	}
-	task := rowFor(t, rows, "authorize-pr-response")
+	task := rowFor(t, rows, "dev-validation-repository-gates")
 	if task.Status != string(StatusFailed) {
 		t.Errorf("task status = %q, want failed", task.Status)
 	}
@@ -355,27 +358,27 @@ func TestFreezerProjectsTasksAndAgentStepsTogether(t *testing.T) {
 // Waits and publications reach the projection with the durable row they came
 // from, so the run page can link a node straight to its evidence.
 func TestFreezerCarriesWaitAndPublicationIdentityOntoTheRow(t *testing.T) {
-	harness := newHarness(t, "pr-monitor-v3")
+	harness := newHarness(t, "merge-delivery-v3")
 	created := time.Date(2026, 7, 31, 9, 0, 0, 0, time.UTC)
 	resolved := created.Add(2 * time.Minute)
 	harness.evidence.evidence = db.AgentWorkflowRunEvidence{
 		Waits: []db.AgentNodeWait{{
-			ID: 77, PlanID: harness.planID(t, "reapproval"), OutputName: "reapproval",
+			ID: 77, PlanID: harness.planID(t, "merge-approval"), OutputName: "merge-approval",
 			Status: "resolved", TimeoutPolicy: "fail", CreatedAt: created, ResolvedAt: &resolved,
 		}},
 		Publications: []db.AgentNodePublication{{
-			ID: 88, PlanID: harness.planID(t, "publish-revision"),
+			ID: 88, PlanID: harness.planID(t, "land-merge"),
 			Status: "succeeded", CreatedAt: created, UpdatedAt: resolved,
 		}},
 	}
 
 	rows := harness.freeze(t)
 
-	await := rowFor(t, rows, "reapproval")
+	await := rowFor(t, rows, "merge-approval")
 	if await.Status != string(StatusSucceeded) || await.WaitID == nil || *await.WaitID != 77 {
 		t.Errorf("await row = %+v, want succeeded carrying wait 77", await)
 	}
-	publish := rowFor(t, rows, "publish-revision")
+	publish := rowFor(t, rows, "land-merge")
 	if publish.Status != string(StatusSucceeded) || publish.PublicationID == nil || *publish.PublicationID != 88 {
 		t.Errorf("publish row = %+v, want succeeded carrying publication 88", publish)
 	}
@@ -388,14 +391,14 @@ func TestFreezerCarriesWaitAndPublicationIdentityOntoTheRow(t *testing.T) {
 // whose publication carries no plan identity cannot be joined to its node, and
 // the node must stay pending rather than adopt some other step's publication.
 func TestFreezerLeavesAPublishNodeWithNoMatchingPlanPending(t *testing.T) {
-	harness := newHarness(t, "pr-monitor-v3")
+	harness := newHarness(t, "merge-delivery-v3")
 	harness.evidence.evidence = db.AgentWorkflowRunEvidence{
 		Publications: []db.AgentNodePublication{{
 			ID: 88, PlanID: "some/other/plan", Status: "succeeded",
 		}},
 	}
 
-	row := rowFor(t, harness.freeze(t), "publish-revision")
+	row := rowFor(t, harness.freeze(t), "land-merge")
 	if row.Status != string(StatusPending) || row.PublicationID != nil {
 		t.Errorf("publish row = %+v, want pending with no publication", row)
 	}
@@ -406,7 +409,7 @@ func TestFreezerLeavesAPublishNodeWithNoMatchingPlanPending(t *testing.T) {
 // the wrong workflow, and it is wrong for exactly the runs a human most wants
 // to inspect: old ones, whose workflow has since moved on.
 func TestFreezerLoadsTheRunsOwnWorkflowVersion(t *testing.T) {
-	harness := newHarness(t, "pr-monitor-v3")
+	harness := newHarness(t, "merge-delivery-v3")
 	// A later, promoted revision of the same workflow name with a different
 	// node set. Nothing about it may reach this run's projection.
 	promoted := compileSeed(t, "small-fix-v3")
@@ -428,7 +431,7 @@ func TestFreezerLoadsTheRunsOwnWorkflowVersion(t *testing.T) {
 		}
 	}
 	// and the run's own revision is fully there
-	rowFor(t, rows, "pr-monitor-materialize")
+	rowFor(t, rows, "merge-prepare")
 }
 
 // The evidence must be gathered for the run being frozen, not for whatever run

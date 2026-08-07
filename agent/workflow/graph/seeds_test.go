@@ -84,8 +84,8 @@ func TestSeedGraphs(t *testing.T) {
 // The durable run-level binding is keyed by the public port
 // (agent_workflow_run_snapshots.port_name, served as OutputManifest.Port), and
 // an endpoint node's DisplayName is that same port. Labelling a public-output
-// edge with `outputs[].from` instead — which small-fix-v3, version-upgrade-v3
-// and pr-monitor-v3 all declare differently from the port name — put the graph
+// edge with `outputs[].from` instead — which small-fix-v3 and version-upgrade-v3
+// both declare differently from the port name — put the graph
 // and the run's own bindings in disjoint namespaces, so a node could never be
 // shown to have produced the workflow's deliverable.
 func assertEndpointEdgesCarryPublicPortNames(t *testing.T, built Graph) {

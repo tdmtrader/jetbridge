@@ -947,28 +947,6 @@ func TestBuildSmallFixSeedAwaitCarriesTimeoutDecoration(t *testing.T) {
 	}
 }
 
-// TestBuildPRMonitorSeedMarksTheConditionalReapproval pins the shipped
-// PR-reapproval await: checkAwaitSnapshot makes its answer conditional
-// (presence = snapshotConditional) because the server may prove from the exact
-// impact record that no new human wait is required. Both the node and the edge
-// into the publication must say so.
-func TestBuildPRMonitorSeedMarksTheConditionalReapproval(t *testing.T) {
-	g := buildSeed(t, "pr-monitor-v3")
-
-	node, found := g.Node("reapproval")
-	if !found || node.Kind != KindAwait {
-		t.Fatalf("expected the reapproval await node, got found=%v node=%+v", found, node)
-	}
-	if !node.Optional {
-		t.Fatalf("a pr_approval await binds conditionally, got %+v", node)
-	}
-
-	want := Edge{From: "reapproval", To: "publish-revision", PortName: "reapproval", TypeRef: "human-answer/v1", Optional: true}
-	if !hasEdge(g, want) {
-		t.Fatalf("expected the conditional approval edge %+v in %+v", want, edgesInto(g, "publish-revision"))
-	}
-}
-
 // A PR-reapproval step may legally name ONE binding for both the candidate's
 // authoritative validation (AwaitSnapshotStep.Validation) and the accepted
 // review's (PRApproval.AcceptedReview.Validation): the type checker constrains

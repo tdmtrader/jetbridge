@@ -38,7 +38,6 @@ func TestOnlySupportedEngineeringSeedsRemain(t *testing.T) {
 		"log-diagnosis-v3",
 		"measure-review-v3",
 		"merge-delivery-v3",
-		"pr-monitor-v3",
 		"small-fix-v3",
 		"version-upgrade-v3",
 	}
@@ -256,25 +255,6 @@ func TestVersionThreeEngineeringSeedsCompileAndRender(t *testing.T) {
 				{Name: "merge-report", Type: snapshot.TypeRef("validation/v1")},
 			},
 			dispositionOutput: "merged-change",
-			humanWait:         true,
-			publisher:         true,
-		},
-		{
-			directory: "seeds/pr-monitor-v3",
-			name:      "pr-monitor",
-			inputs: []workflow.SignaturePort{
-				{Name: "pull-request", Type: snapshot.TypeRef("pull-request/v1")},
-				{Name: "accepted-review", Type: snapshot.TypeRef("review/v1")},
-				{Name: "accepted-candidate", Type: snapshot.TypeRef("repository/v1")},
-				{Name: "accepted-validation", Type: snapshot.TypeRef("validation/v1")},
-			},
-			outputs: []workflow.SignaturePort{
-				{Name: "change", Type: snapshot.TypeRef("repository-change/v1")},
-				{Name: "response", Type: snapshot.TypeRef("pull-request-response/v1")},
-				{Name: "validation", Type: snapshot.TypeRef("validation/v1")},
-				{Name: "impact", Type: snapshot.TypeRef("publish-impact/v1")},
-			},
-			dispositionOutput: "change",
 			humanWait:         true,
 			publisher:         true,
 		},

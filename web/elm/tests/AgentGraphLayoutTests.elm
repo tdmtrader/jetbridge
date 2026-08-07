@@ -339,7 +339,6 @@ realGraphs =
                     , ( "log-diagnosis-v3.json", 4 )
                     , ( "measure-review-v3.json", 3 )
                     , ( "merge-delivery-v3.json", 10 )
-                    , ( "pr-monitor-v3.json", 16 )
                     , ( "small-fix-v3.json", 9 )
                     , ( "version-upgrade-v3.json", 9 )
                     ]
@@ -353,7 +352,6 @@ realGraphs =
                     , ( "log-diagnosis-v3.json", 3 )
                     , ( "measure-review-v3.json", 2 )
                     , ( "merge-delivery-v3.json", 15 )
-                    , ( "pr-monitor-v3.json", 37 )
                     , ( "small-fix-v3.json", 12 )
                     , ( "version-upgrade-v3.json", 13 )
                     ]
