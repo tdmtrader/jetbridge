@@ -2,18 +2,25 @@ package builds_test
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
+	"os"
+	"sync"
 	"testing"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
 
+	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/builds"
 	"github.com/concourse/concourse/atc/builds/buildsfakes"
 	"github.com/concourse/concourse/atc/component"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbfakes"
+	"github.com/concourse/concourse/atc/db/lock"
 	"github.com/concourse/concourse/atc/metric"
+	"github.com/concourse/concourse/atc/postgresrunner"
 	"github.com/concourse/concourse/atc/util"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
@@ -23,12 +30,130 @@ func init() {
 	util.PanicSink = io.Discard
 }
 
+var trackerPostgres postgresrunner.StandardTestRunner
+
+func TestMain(m *testing.M) {
+	os.Exit(trackerPostgres.Main(m))
+}
+
+type trackerDB struct {
+	Conn   db.DbConn
+	Teams  db.TeamFactory
+	Builds db.BuildFactory
+}
+
+func useRealTrackerDB(t *testing.T) trackerDB {
+	t.Helper()
+
+	conn := trackerPostgres.OpenConn(t)
+	db.CleanupBaseResourceTypesCache()
+	locks := lock.NewTestLockFactory(&trackerLockDB{held: map[string]bool{}})
+	return trackerDB{
+		Conn:   conn,
+		Teams:  db.NewTeamFactory(conn, locks),
+		Builds: db.NewBuildFactory(conn, locks, 0, time.Hour),
+	}
+}
+
+// trackerLockDB gives the production test lock factory advisory-lock semantics
+// without opening connections outside StandardTestRunner's clone.
+type trackerLockDB struct {
+	mu   sync.Mutex
+	held map[string]bool
+}
+
+func (database *trackerLockDB) Acquire(id lock.LockID) (bool, error) {
+	database.mu.Lock()
+	defer database.mu.Unlock()
+
+	key := fmt.Sprint([]int(id))
+	if database.held[key] {
+		return false, nil
+	}
+	database.held[key] = true
+	return true, nil
+}
+
+func (database *trackerLockDB) Release(id lock.LockID) (bool, error) {
+	database.mu.Lock()
+	defer database.mu.Unlock()
+
+	key := fmt.Sprint([]int(id))
+	if !database.held[key] {
+		return false, nil
+	}
+	delete(database.held, key)
+	return true, nil
+}
+
+func createTrackerStartedBuild(t *testing.T, team db.Team, planID atc.PlanID) db.Build {
+	t.Helper()
+
+	build, err := team.CreateStartedBuild(atc.Plan{ID: planID})
+	require.NoError(t, err)
+	return build
+}
+
+func createTrackerCheckBuild(t *testing.T, team db.Team) db.Build {
+	t.Helper()
+
+	pipeline, created, err := team.SavePipeline(
+		atc.PipelineRef{Name: "tracker-checks"},
+		atc.Config{Resources: atc.ResourceConfigs{{
+			Name: "some-resource", Type: "some-base-type", Source: atc.Source{"key": "value"},
+		}}},
+		db.ConfigVersion(0), false,
+	)
+	require.NoError(t, err)
+	require.True(t, created)
+	resource, found, err := pipeline.Resource("some-resource")
+	require.NoError(t, err)
+	require.True(t, found)
+	check, created, err := resource.CreateBuild(context.Background(), true, atc.Plan{
+		ID: "tracker-check",
+		Check: &atc.CheckPlan{
+			Name: resource.Name(), Type: resource.Type(), Source: resource.Source(), Resource: resource.Name(),
+		},
+	})
+	require.NoError(t, err)
+	require.True(t, created)
+	require.Equal(t, db.CheckBuildName, check.Name())
+	return check
+}
+
+func receiveTrackedBuild(t *testing.T, running <-chan db.Build) db.Build {
+	t.Helper()
+
+	select {
+	case build := <-running:
+		return build
+	case <-time.After(time.Second):
+		require.FailNow(t, "timed out waiting for tracked build")
+		return nil
+	}
+}
+
+func requireTrackerBuildStatusStable(
+	t *testing.T,
+	buildFactory db.BuildFactory,
+	buildID int,
+	expected db.BuildStatus,
+) {
+	t.Helper()
+
+	require.Never(t, func() bool {
+		reloaded, found, err := buildFactory.Build(buildID)
+		return err != nil || !found || reloaded.Status() != expected
+	}, 250*time.Millisecond, 10*time.Millisecond,
+		"build %d status changed after tracker finalization began", buildID,
+	)
+}
+
 type TrackerSuite struct {
 	suite.Suite
 	*require.Assertions
 
-	fakeBuildFactory *dbfakes.FakeBuildFactory
-	fakeEngine       *buildsfakes.FakeEngine
+	fakeEngine *buildsfakes.FakeEngine
 
 	tracker   *builds.Tracker
 	buildChan chan db.Build
@@ -44,27 +169,29 @@ func TestTracker(t *testing.T) {
 
 func (s *TrackerSuite) SetupTest() {
 	s.logger = lagertest.NewTestLogger("test")
-	s.fakeBuildFactory = new(dbfakes.FakeBuildFactory)
 	s.fakeEngine = new(buildsfakes.FakeEngine)
 	s.buildChan = make(chan db.Build, 10)
+}
 
+func (s *TrackerSuite) constructTracker(buildFactory db.BuildFactory) {
 	s.tracker = builds.NewTracker(
 		s.logger,
-		s.fakeBuildFactory,
+		buildFactory,
 		s.fakeEngine,
 		s.buildChan,
 	)
 }
 
 func (s *TrackerSuite) TestTrackRunsStartedBuilds() {
-	startedBuilds := []db.Build{}
-	for i := range 3 {
-		fakeBuild := new(dbfakes.FakeBuild)
-		fakeBuild.IDReturns(i + 1)
-		startedBuilds = append(startedBuilds, fakeBuild)
+	fixture := useRealTrackerDB(s.T())
+	team, err := fixture.Teams.CreateTeam(atc.Team{Name: "tracker-team"})
+	s.Require().NoError(err)
+	startedBuilds := []db.Build{
+		createTrackerStartedBuild(s.T(), team, "tracker-started-1"),
+		createTrackerStartedBuild(s.T(), team, "tracker-started-2"),
+		createTrackerStartedBuild(s.T(), team, "tracker-started-3"),
 	}
-
-	s.fakeBuildFactory.GetAllStartedBuildsReturns(startedBuilds, nil)
+	s.constructTracker(fixture.Builds)
 
 	running := make(chan db.Build, 3)
 	s.fakeEngine.NewBuildStub = func(build db.Build) builds.Runnable {
@@ -76,21 +203,18 @@ func (s *TrackerSuite) TestTrackRunsStartedBuilds() {
 		return engineBuild
 	}
 
-	err := s.tracker.Run(context.TODO())
+	err = s.tracker.Run(context.TODO())
 	s.NoError(err)
 
-	s.ElementsMatch([]int{
-		startedBuilds[0].ID(),
-		startedBuilds[1].ID(),
-		startedBuilds[2].ID(),
-	}, []int{
-		(<-running).ID(),
-		(<-running).ID(),
-		(<-running).ID(),
-	})
+	gotIDs := make([]int, 0, len(startedBuilds))
+	for range startedBuilds {
+		gotIDs = append(gotIDs, receiveTrackedBuild(s.T(), running).ID())
+	}
+	s.ElementsMatch([]int{startedBuilds[0].ID(), startedBuilds[1].ID(), startedBuilds[2].ID()}, gotIDs)
 }
 
 func (s *TrackerSuite) TestTrackInMemoryBuilds() {
+	s.constructTracker(nil)
 	inMemoryBuilds := []db.Build{}
 
 	running := make(chan db.Build, 3)
@@ -103,6 +227,7 @@ func (s *TrackerSuite) TestTrackInMemoryBuilds() {
 	}
 
 	for i := range 3 {
+		// Retained: in-memory checks have no persisted build row and are identified by ResourceID.
 		fakeBuild := new(dbfakes.FakeBuild)
 		// When tracked, in-memory builds have no id yet, but they do have a
 		// resource ID
@@ -112,40 +237,33 @@ func (s *TrackerSuite) TestTrackInMemoryBuilds() {
 		s.buildChan <- fakeBuild
 	}
 
-	err := s.tracker.Run(context.TODO())
-	s.NoError(err)
-
 	s.ElementsMatch([]int{
 		inMemoryBuilds[0].ResourceID(),
 		inMemoryBuilds[1].ResourceID(),
 		inMemoryBuilds[2].ResourceID(),
 	}, []int{
-		(<-running).ResourceID(),
-		(<-running).ResourceID(),
-		(<-running).ResourceID(),
+		receiveTrackedBuild(s.T(), running).ResourceID(),
+		receiveTrackedBuild(s.T(), running).ResourceID(),
+		receiveTrackedBuild(s.T(), running).ResourceID(),
 	})
 }
 
 func (s *TrackerSuite) TestTrackerDoesntCrashWhenOneBuildPanic() {
-	startedBuilds := []db.Build{}
-	fakeBuild1 := new(dbfakes.FakeBuild)
-	fakeBuild1.IDReturns(1)
-	startedBuilds = append(startedBuilds, fakeBuild1)
-
-	// build 2 and 3 are normal running build
-	for i := 1; i < 3; i++ {
-		fakeBuild := new(dbfakes.FakeBuild)
-		fakeBuild.IDReturns(i + 1)
-		startedBuilds = append(startedBuilds, fakeBuild)
+	fixture := useRealTrackerDB(s.T())
+	team, err := fixture.Teams.CreateTeam(atc.Team{Name: "tracker-team"})
+	s.Require().NoError(err)
+	startedBuilds := []db.Build{
+		createTrackerStartedBuild(s.T(), team, "tracker-panic"),
+		createTrackerStartedBuild(s.T(), team, "tracker-normal-1"),
+		createTrackerStartedBuild(s.T(), team, "tracker-normal-2"),
 	}
-
-	s.fakeBuildFactory.GetAllStartedBuildsReturns(startedBuilds, nil)
+	s.constructTracker(fixture.Builds)
 
 	running := make(chan db.Build, 3)
 	s.fakeEngine.NewBuildStub = func(build db.Build) builds.Runnable {
 		fakeEngineBuild := new(buildsfakes.FakeRunnable)
 		fakeEngineBuild.RunStub = func(context.Context) {
-			if build.ID() == 1 {
+			if build.ID() == startedBuilds[0].ID() {
 				panic("something went wrong")
 			} else {
 				running <- build
@@ -155,30 +273,32 @@ func (s *TrackerSuite) TestTrackerDoesntCrashWhenOneBuildPanic() {
 		return fakeEngineBuild
 	}
 
-	err := s.tracker.Run(context.TODO())
+	err = s.tracker.Run(context.TODO())
 	s.NoError(err)
 
-	s.ElementsMatch([]int{
-		startedBuilds[1].ID(),
-		startedBuilds[2].ID(),
-	}, []int{
-		(<-running).ID(),
-		(<-running).ID(),
-	})
+	s.ElementsMatch(
+		[]int{startedBuilds[1].ID(), startedBuilds[2].ID()},
+		[]int{receiveTrackedBuild(s.T(), running).ID(), receiveTrackedBuild(s.T(), running).ID()},
+	)
 
 	s.Eventually(func() bool {
-		return fakeBuild1.FinishCallCount() == 1
+		panicked, panickedFound, panickedErr := fixture.Builds.Build(startedBuilds[0].ID())
+		normal1, normal1Found, normal1Err := fixture.Builds.Build(startedBuilds[1].ID())
+		normal2, normal2Found, normal2Err := fixture.Builds.Build(startedBuilds[2].ID())
+		return panickedErr == nil && panickedFound && panicked.Status() == db.BuildStatusErrored &&
+			normal1Err == nil && normal1Found && normal1.Status() == db.BuildStatusStarted &&
+			normal2Err == nil && normal2Found && normal2.Status() == db.BuildStatusStarted
 	}, time.Second, 10*time.Millisecond)
-
-	s.Eventually(func() bool {
-		return fakeBuild1.FinishArgsForCall(0) == db.BuildStatusErrored
-	}, time.Second, 10*time.Millisecond)
+	requireTrackerBuildStatusStable(s.T(), fixture.Builds, startedBuilds[1].ID(), db.BuildStatusStarted)
+	requireTrackerBuildStatusStable(s.T(), fixture.Builds, startedBuilds[2].ID(), db.BuildStatusStarted)
 }
 
 func (s *TrackerSuite) TestTrackDoesntTrackAlreadyRunningBuilds() {
-	fakeBuild := new(dbfakes.FakeBuild)
-	fakeBuild.IDReturns(1)
-	s.fakeBuildFactory.GetAllStartedBuildsReturns([]db.Build{fakeBuild}, nil)
+	fixture := useRealTrackerDB(s.T())
+	team, err := fixture.Teams.CreateTeam(atc.Team{Name: "tracker-team"})
+	s.Require().NoError(err)
+	started := createTrackerStartedBuild(s.T(), team, "tracker-duplicate")
+	s.constructTracker(fixture.Builds)
 
 	wait := make(chan struct{})
 	defer close(wait)
@@ -194,10 +314,10 @@ func (s *TrackerSuite) TestTrackDoesntTrackAlreadyRunningBuilds() {
 		return engineBuild
 	}
 
-	err := s.tracker.Run(context.TODO())
+	err = s.tracker.Run(context.TODO())
 	s.NoError(err)
 
-	<-running
+	s.Equal(started.ID(), receiveTrackedBuild(s.T(), running).ID())
 
 	err = s.tracker.Run(context.TODO())
 	s.NoError(err)
@@ -210,10 +330,11 @@ func (s *TrackerSuite) TestTrackDoesntTrackAlreadyRunningBuilds() {
 }
 
 func (s *TrackerSuite) TestTrackDoesntTrackAlreadyRunningInMemoryChecks() {
+	s.constructTracker(nil)
+	// Retained: in-memory checks have no persisted build row and are identified by ResourceID.
 	fakeInMemoryCheck := new(dbfakes.FakeBuild)
 	fakeInMemoryCheck.IDReturns(0)
 	fakeInMemoryCheck.ResourceIDReturns(1)
-	s.fakeBuildFactory.GetAllStartedBuildsReturns([]db.Build{}, nil)
 
 	wait := make(chan struct{})
 	defer close(wait)
@@ -230,7 +351,7 @@ func (s *TrackerSuite) TestTrackDoesntTrackAlreadyRunningInMemoryChecks() {
 	}
 
 	s.buildChan <- fakeInMemoryCheck
-	<-running
+	receiveTrackedBuild(s.T(), running)
 	s.buildChan <- fakeInMemoryCheck
 
 	select {
@@ -241,6 +362,7 @@ func (s *TrackerSuite) TestTrackDoesntTrackAlreadyRunningInMemoryChecks() {
 }
 
 func (s *TrackerSuite) TestTrackerDrainsEngine() {
+	s.constructTracker(nil)
 	var _ component.Drainable = s.tracker
 
 	ctx := context.TODO()
@@ -255,44 +377,66 @@ func (s *TrackerSuite) TestTrackDoesNotFinalizeReleasedJobBuild() {
 	// web, retryable step error). The tracker must NOT error it — the build
 	// stays "started" so a later tracker cycle (possibly on a new web)
 	// re-attaches to it.
-	fakeBuild := new(dbfakes.FakeBuild)
-	fakeBuild.IDReturns(1)
-	fakeBuild.NameReturns("42") // job builds have numeric names
-	fakeBuild.IsRunningReturns(true)
+	fixture := useRealTrackerDB(s.T())
+	team, err := fixture.Teams.CreateTeam(atc.Team{Name: "tracker-team"})
+	s.Require().NoError(err)
+	pipeline, created, err := team.SavePipeline(
+		atc.PipelineRef{Name: "tracker-job-pipeline"},
+		atc.Config{Jobs: atc.JobConfigs{{Name: "some-job"}}},
+		db.ConfigVersion(0), false,
+	)
+	s.Require().NoError(err)
+	s.True(created)
+	job, found, err := pipeline.Job("some-job")
+	s.Require().NoError(err)
+	s.True(found)
+	startedBuild, err := job.CreateBuild("tracker")
+	s.Require().NoError(err)
+	started, err := startedBuild.Start(atc.Plan{ID: "tracker-job"})
+	s.Require().NoError(err)
+	s.True(started)
+	s.constructTracker(fixture.Builds)
 
-	s.fakeBuildFactory.GetAllStartedBuildsReturns([]db.Build{fakeBuild}, nil)
-
-	done := make(chan struct{})
+	running := make(chan db.Build, 2)
 	s.fakeEngine.NewBuildStub = func(build db.Build) builds.Runnable {
 		engineBuild := new(buildsfakes.FakeRunnable)
 		engineBuild.RunStub = func(context.Context) {
 			// Return without calling Finish — simulates early exit
-			close(done)
+			running <- build
 		}
 		return engineBuild
 	}
 
-	err := s.tracker.Run(context.TODO())
+	err = s.tracker.Run(context.TODO())
 	s.NoError(err)
+	s.Equal(startedBuild.ID(), receiveTrackedBuild(s.T(), running).ID())
 
-	<-done
+	// A second discovery can start only after the first tracker goroutine has
+	// returned and removed this ID from its in-process running set.
+	s.Eventually(func() bool {
+		if err := s.tracker.Run(context.TODO()); err != nil {
+			return false
+		}
+		select {
+		case got := <-running:
+			return got.ID() == startedBuild.ID()
+		default:
+			return false
+		}
+	}, time.Second, 10*time.Millisecond)
 
-	// Give the defer time to execute
-	time.Sleep(100 * time.Millisecond)
-
-	s.Equal(0, fakeBuild.FinishCallCount(), "tracker must not finalize a released job build")
+	requireTrackerBuildStatusStable(s.T(), fixture.Builds, startedBuild.ID(), db.BuildStatusStarted)
 }
 
 func (s *TrackerSuite) TestTrackFinalizesOrphanedCheckBuild() {
 	// A check build whose Run() exits without calling Finish() must be
 	// finalized so the checkFactory's in-flight tracking (cleared via
 	// onFinishBuild.Finish) is not permanently leaked.
-	fakeBuild := new(dbfakes.FakeBuild)
-	fakeBuild.IDReturns(1)
-	fakeBuild.NameReturns(db.CheckBuildName)
-	fakeBuild.IsRunningReturns(true)
-
-	s.fakeBuildFactory.GetAllStartedBuildsReturns([]db.Build{fakeBuild}, nil)
+	fixture := useRealTrackerDB(s.T())
+	team, err := fixture.Teams.CreateTeam(atc.Team{Name: "tracker-team"})
+	s.Require().NoError(err)
+	check := createTrackerCheckBuild(s.T(), team)
+	s.constructTracker(fixture.Builds)
 
 	done := make(chan struct{})
 	s.fakeEngine.NewBuildStub = func(build db.Build) builds.Runnable {
@@ -304,52 +448,63 @@ func (s *TrackerSuite) TestTrackFinalizesOrphanedCheckBuild() {
 		return engineBuild
 	}
 
-	err := s.tracker.Run(context.TODO())
+	err = s.tracker.Run(context.TODO())
 	s.NoError(err)
 
-	<-done
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		s.FailNow("check build was not tracked")
+	}
 
 	s.Eventually(func() bool {
-		return fakeBuild.FinishCallCount() == 1
+		reloaded, found, err := fixture.Builds.Build(check.ID())
+		return err == nil && found && reloaded.Status() == db.BuildStatusErrored
 	}, time.Second, 10*time.Millisecond, "tracker should finalize orphaned check build")
-
-	s.Equal(db.BuildStatusErrored, fakeBuild.FinishArgsForCall(0))
 }
 
 func (s *TrackerSuite) TestTrackDoesNotDoubleFinishCompletedBuild() {
-	// When a build completes normally (IsRunning returns false after
-	// Run), the tracker should NOT call Finish a second time.
-	fakeBuild := new(dbfakes.FakeBuild)
-	fakeBuild.IDReturns(1)
-	fakeBuild.IsRunningReturns(false) // build completed normally
+	// When an ordinary build completes normally, the tracker must not change
+	// its persisted terminal status after Run returns.
+	fixture := useRealTrackerDB(s.T())
+	team, err := fixture.Teams.CreateTeam(atc.Team{Name: "tracker-team"})
+	s.Require().NoError(err)
+	started := createTrackerStartedBuild(s.T(), team, "tracker-completes")
+	s.constructTracker(fixture.Builds)
 
-	s.fakeBuildFactory.GetAllStartedBuildsReturns([]db.Build{fakeBuild}, nil)
-
-	done := make(chan struct{})
+	finished := make(chan error, 1)
 	s.fakeEngine.NewBuildStub = func(build db.Build) builds.Runnable {
 		engineBuild := new(buildsfakes.FakeRunnable)
 		engineBuild.RunStub = func(context.Context) {
-			close(done)
+			finished <- build.Finish(db.BuildStatusSucceeded)
 		}
 		return engineBuild
 	}
 
-	err := s.tracker.Run(context.TODO())
+	err = s.tracker.Run(context.TODO())
 	s.NoError(err)
 
-	<-done
+	select {
+	case err := <-finished:
+		s.NoError(err)
+	case <-time.After(time.Second):
+		s.FailNow("build did not complete")
+	}
 
-	// Give the defer time to execute
-	time.Sleep(100 * time.Millisecond)
-
-	s.Equal(0, fakeBuild.FinishCallCount(), "tracker should not call Finish on a completed build")
+	s.Eventually(func() bool {
+		reloaded, found, err := fixture.Builds.Build(started.ID())
+		return err == nil && found && reloaded.Status() == db.BuildStatusSucceeded
+	}, time.Second, 10*time.Millisecond, "tracker should not change a completed build's terminal status")
+	requireTrackerBuildStatusStable(s.T(), fixture.Builds, started.ID(), db.BuildStatusSucceeded)
 }
 
 func (s *TrackerSuite) TestTrackOrphanedInMemoryCheckCleansUpInFlightTracking() {
+	s.constructTracker(nil)
 	// End-to-end test: an in-memory check build wrapped with a cleanup
 	// function (like onFinishBuild) should have its cleanup called even
 	// when Run() exits without calling Finish().
 	cleanedUp := make(chan struct{})
+	// Retained: in-memory checks have no persisted build row and are identified by ResourceID.
 	fakeBuild := new(dbfakes.FakeBuild)
 	fakeBuild.IDReturns(0)
 	fakeBuild.ResourceIDReturns(42)
@@ -385,28 +540,31 @@ func (s *TrackerSuite) TestTrackEmitsBuildsRunningMetric() {
 	// Drain stale gauge state
 	metric.Metrics.BuildsRunning.Max()
 
-	fakeBuild := new(dbfakes.FakeBuild)
-	fakeBuild.IDReturns(1)
-	fakeBuild.NameReturns("42") // non-check build
+	fixture := useRealTrackerDB(s.T())
+	team, err := fixture.Teams.CreateTeam(atc.Team{Name: "tracker-team"})
+	s.Require().NoError(err)
+	started := createTrackerStartedBuild(s.T(), team, "tracker-build-gauge")
+	s.constructTracker(fixture.Builds)
 
-	s.fakeBuildFactory.GetAllStartedBuildsReturns([]db.Build{fakeBuild}, nil)
-
-	var gaugeSeenDuringRun float64
+	gaugeSeenDuringRun := make(chan float64, 1)
 	s.fakeEngine.NewBuildStub = func(build db.Build) builds.Runnable {
 		engineBuild := new(buildsfakes.FakeRunnable)
 		engineBuild.RunStub = func(context.Context) {
-			gaugeSeenDuringRun = metric.Metrics.BuildsRunning.Max()
+			gaugeSeenDuringRun <- metric.Metrics.BuildsRunning.Max()
 		}
 		return engineBuild
 	}
 
-	err := s.tracker.Run(context.TODO())
+	err = s.tracker.Run(context.TODO())
 	s.NoError(err)
 
-	// Wait for the goroutine to finish
-	time.Sleep(100 * time.Millisecond)
-
-	s.GreaterOrEqual(gaugeSeenDuringRun, float64(1), "BuildsRunning should be >= 1 during build execution")
+	select {
+	case gauge := <-gaugeSeenDuringRun:
+		s.GreaterOrEqual(gauge, float64(1), "BuildsRunning should be >= 1 during build execution")
+	case <-time.After(time.Second):
+		s.FailNow("build gauge was not observed")
+	}
+	requireTrackerBuildStatusStable(s.T(), fixture.Builds, started.ID(), db.BuildStatusStarted)
 }
 
 // BT-05: CheckBuildsRunning metric for check builds
@@ -414,26 +572,42 @@ func (s *TrackerSuite) TestTrackEmitsCheckBuildsRunningMetric() {
 	// Drain stale gauge state
 	metric.Metrics.CheckBuildsRunning.Max()
 
-	fakeBuild := new(dbfakes.FakeBuild)
-	fakeBuild.IDReturns(1)
-	fakeBuild.NameReturns(db.CheckBuildName) // check build
+	fixture := useRealTrackerDB(s.T())
+	team, err := fixture.Teams.CreateTeam(atc.Team{Name: "tracker-team"})
+	s.Require().NoError(err)
+	check := createTrackerCheckBuild(s.T(), team)
+	s.constructTracker(fixture.Builds)
 
-	s.fakeBuildFactory.GetAllStartedBuildsReturns([]db.Build{fakeBuild}, nil)
-
-	var gaugeSeenDuringRun float64
+	gaugeSeenDuringRun := make(chan float64, 1)
 	s.fakeEngine.NewBuildStub = func(build db.Build) builds.Runnable {
 		engineBuild := new(buildsfakes.FakeRunnable)
 		engineBuild.RunStub = func(context.Context) {
-			gaugeSeenDuringRun = metric.Metrics.CheckBuildsRunning.Max()
+			gaugeSeenDuringRun <- metric.Metrics.CheckBuildsRunning.Max()
 		}
 		return engineBuild
 	}
 
-	err := s.tracker.Run(context.TODO())
+	err = s.tracker.Run(context.TODO())
 	s.NoError(err)
 
-	// Wait for the goroutine to finish
-	time.Sleep(100 * time.Millisecond)
+	select {
+	case gauge := <-gaugeSeenDuringRun:
+		s.GreaterOrEqual(gauge, float64(1), "CheckBuildsRunning should be >= 1 during check execution")
+	case <-time.After(time.Second):
+		s.FailNow("check gauge was not observed")
+	}
+	s.Eventually(func() bool {
+		reloaded, found, err := fixture.Builds.Build(check.ID())
+		return err == nil && found && reloaded.Status() == db.BuildStatusErrored
+	}, time.Second, 10*time.Millisecond)
+}
 
-	s.GreaterOrEqual(gaugeSeenDuringRun, float64(1), "CheckBuildsRunning should be >= 1 during check build execution")
+func (s *TrackerSuite) TestTrackerReturnsStartedBuildLookupError() {
+	lookupErr := errors.New("lookup started builds")
+	// Retained: ordinary rows cannot make GetAllStartedBuilds return an error.
+	buildFactory := new(dbfakes.FakeBuildFactory)
+	buildFactory.GetAllStartedBuildsReturns(nil, lookupErr)
+	s.constructTracker(buildFactory)
+
+	s.ErrorIs(s.tracker.Run(context.Background()), lookupErr)
 }
