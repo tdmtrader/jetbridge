@@ -3,9 +3,11 @@ package jetbridge_test
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
-	"github.com/concourse/concourse/atc/db/dbfakes"
+	concourse "github.com/concourse/concourse"
+	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -16,42 +18,64 @@ import (
 
 var _ = Describe("Registrar", func() {
 	var (
-		ctx               context.Context
-		fakeClientset     *fake.Clientset
-		fakeWorkerFactory *dbfakes.FakeWorkerFactory
-		cfg               jetbridge.Config
-		registrar         *jetbridge.Registrar
+		ctx           context.Context
+		database      jetbridgeDB
+		fakeClientset *fake.Clientset
+		cfg           jetbridge.Config
+		registrar     *jetbridge.Registrar
 	)
 
 	BeforeEach(func() {
 		ctx = context.Background()
+		database = useJetbridgeDB()
 		fakeClientset = fake.NewSimpleClientset()
-		fakeWorkerFactory = new(dbfakes.FakeWorkerFactory)
 		cfg = jetbridge.NewConfig("test-namespace", "")
 
 		testLogger := lagertest.NewTestLogger("registrar")
-		registrar = jetbridge.NewRegistrar(testLogger, fakeClientset, cfg, fakeWorkerFactory)
+		registrar = jetbridge.NewRegistrar(testLogger, fakeClientset, cfg, database.WorkerFactory)
 	})
+
+	reloadWorker := func() db.Worker {
+		GinkgoHelper()
+		worker, found, err := database.WorkerFactory.GetWorker(registrar.WorkerName())
+		Expect(err).ToNot(HaveOccurred())
+		Expect(found).To(BeTrue())
+		reloaded, err := worker.Reload()
+		Expect(err).ToNot(HaveOccurred())
+		Expect(reloaded).To(BeTrue())
+		return worker
+	}
 
 	Describe("Register", func() {
 		It("saves a worker to the database with the correct attributes", func() {
 			err := registrar.Register(ctx)
 			Expect(err).ToNot(HaveOccurred())
 
-			Expect(fakeWorkerFactory.SaveWorkerCallCount()).To(Equal(1))
-			savedWorker, ttl := fakeWorkerFactory.SaveWorkerArgsForCall(0)
+			savedWorker := reloadWorker()
 
 			By("using a name derived from the namespace")
-			Expect(savedWorker.Name).To(ContainSubstring("test-namespace"))
+			Expect(savedWorker.Name()).To(Equal("k8s-test-namespace"))
+			Expect(savedWorker.Version()).ToNot(BeNil())
+			Expect(*savedWorker.Version()).To(Equal(concourse.WorkerVersion))
 
 			By("setting the platform to linux")
-			Expect(savedWorker.Platform).To(Equal("linux"))
+			Expect(savedWorker.Platform()).To(Equal("linux"))
 
 			By("setting state to running")
-			Expect(savedWorker.State).To(Equal("running"))
+			Expect(savedWorker.State()).To(Equal(db.WorkerStateRunning))
+
+			By("persisting the complete global-worker identity")
+			Expect(savedWorker.ActiveContainers()).To(Equal(0))
+			Expect(savedWorker.ActiveVolumes()).To(Equal(0))
+			Expect(savedWorker.Tags()).To(BeEmpty())
+			Expect(savedWorker.TeamID()).To(Equal(0))
+			Expect(savedWorker.TeamName()).To(BeEmpty())
+			Expect(savedWorker.StartTime().Unix()).To(Equal(int64(0)))
+			Expect(savedWorker.Ephemeral()).To(BeFalse())
 
 			By("using a non-zero TTL")
-			Expect(ttl).To(BeNumerically(">", 0))
+			Expect(savedWorker.ExpiresAt()).To(BeTemporally(">", time.Now()))
+			Expect(savedWorker.ExpiresAt()).To(BeTemporally("<", time.Now().Add(time.Minute)))
 		})
 
 		It("reports active containers by counting Pods in the namespace", func() {
@@ -71,8 +95,7 @@ var _ = Describe("Registrar", func() {
 			err = registrar.Register(ctx)
 			Expect(err).ToNot(HaveOccurred())
 
-			savedWorker, _ := fakeWorkerFactory.SaveWorkerArgsForCall(0)
-			Expect(savedWorker.ActiveContainers).To(Equal(1))
+			Expect(reloadWorker().ActiveContainers()).To(Equal(1))
 		})
 
 		It("only counts Pods with the worker label", func() {
@@ -99,8 +122,7 @@ var _ = Describe("Registrar", func() {
 			err = registrar.Register(ctx)
 			Expect(err).ToNot(HaveOccurred())
 
-			savedWorker, _ := fakeWorkerFactory.SaveWorkerArgsForCall(0)
-			Expect(savedWorker.ActiveContainers).To(Equal(1))
+			Expect(reloadWorker().ActiveContainers()).To(Equal(1))
 		})
 
 		It("counts multiple labelled Pods", func() {
@@ -121,35 +143,43 @@ var _ = Describe("Registrar", func() {
 			err := registrar.Register(ctx)
 			Expect(err).ToNot(HaveOccurred())
 
-			savedWorker, _ := fakeWorkerFactory.SaveWorkerArgsForCall(0)
-			Expect(savedWorker.ActiveContainers).To(Equal(3))
+			Expect(reloadWorker().ActiveContainers()).To(Equal(3))
 		})
 
 		It("reports zero active containers when no Pods exist", func() {
 			err := registrar.Register(ctx)
 			Expect(err).ToNot(HaveOccurred())
 
-			savedWorker, _ := fakeWorkerFactory.SaveWorkerArgsForCall(0)
-			Expect(savedWorker.ActiveContainers).To(Equal(0))
+			Expect(reloadWorker().ActiveContainers()).To(Equal(0))
 		})
 
 		It("propagates SaveWorker errors", func() {
-			fakeWorkerFactory.SaveWorkerReturns(nil, fmt.Errorf("db connection lost"))
+			closedConn := closedJetbridgeCloneConn()
+			closedFactory := db.NewWorkerFactory(
+				closedConn,
+				db.NewStaticWorkerCache(lagertest.NewTestLogger("closed-worker-cache"), closedConn, 0),
+			)
+			registrar = jetbridge.NewRegistrar(
+				lagertest.NewTestLogger("registrar"), fakeClientset, cfg, closedFactory,
+			)
 
 			err := registrar.Register(ctx)
 			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("db connection lost"))
+			Expect(err.Error()).To(ContainSubstring("saving worker"))
 		})
 	})
 
 	Describe("Heartbeat", func() {
 		It("calls SaveWorker to refresh the TTL", func() {
-			err := registrar.Heartbeat(ctx)
+			Expect(registrar.Register(ctx)).To(Succeed())
+			_, err := database.Conn.Exec(
+				`UPDATE workers SET expires = NOW() - INTERVAL '1 minute' WHERE name = $1`,
+				registrar.WorkerName(),
+			)
 			Expect(err).ToNot(HaveOccurred())
 
-			Expect(fakeWorkerFactory.SaveWorkerCallCount()).To(Equal(1))
-			_, ttl := fakeWorkerFactory.SaveWorkerArgsForCall(0)
-			Expect(ttl).To(BeNumerically(">", 0))
+			Expect(registrar.Heartbeat(ctx)).To(Succeed())
+			Expect(reloadWorker().ExpiresAt()).To(BeTemporally(">", time.Now()))
 		})
 	})
 
@@ -158,9 +188,9 @@ var _ = Describe("Registrar", func() {
 			err := registrar.Register(ctx)
 			Expect(err).ToNot(HaveOccurred())
 
-			savedWorker, _ := fakeWorkerFactory.SaveWorkerArgsForCall(0)
-			typeNames := make([]string, len(savedWorker.ResourceTypes))
-			for i, rt := range savedWorker.ResourceTypes {
+			savedWorker := reloadWorker()
+			typeNames := make([]string, len(savedWorker.ResourceTypes()))
+			for i, rt := range savedWorker.ResourceTypes() {
 				typeNames[i] = rt.Type
 			}
 			Expect(typeNames).To(ContainElements("git", "registry-image", "time", "s3"))
@@ -172,14 +202,14 @@ var _ = Describe("Registrar", func() {
 				"custom-type=my-registry/custom",
 			})
 			testLogger := lagertest.NewTestLogger("registrar")
-			registrar = jetbridge.NewRegistrar(testLogger, fakeClientset, cfg, fakeWorkerFactory)
+			registrar = jetbridge.NewRegistrar(testLogger, fakeClientset, cfg, database.WorkerFactory)
 
 			err := registrar.Register(ctx)
 			Expect(err).ToNot(HaveOccurred())
 
-			savedWorker, _ := fakeWorkerFactory.SaveWorkerArgsForCall(0)
+			savedWorker := reloadWorker()
 			typeMap := make(map[string]string)
-			for _, rt := range savedWorker.ResourceTypes {
+			for _, rt := range savedWorker.ResourceTypes() {
 				typeMap[rt.Type] = rt.Image
 			}
 
@@ -201,9 +231,3 @@ var _ = Describe("Registrar", func() {
 		})
 	})
 })
-
-// workerVersion is used for testing; in production this comes from the binary.
-func init() {
-	// Ensure the fake worker factory returns no error by default.
-	// The FakeWorkerFactory's SaveWorkerReturns is set to nil, nil by default.
-}

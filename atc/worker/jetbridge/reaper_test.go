@@ -2,13 +2,15 @@ package jetbridge_test
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
+	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/gc/gcfakes"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	. "github.com/onsi/ginkgo/v2"
@@ -23,23 +25,30 @@ import (
 
 var _ = Describe("Reaper", func() {
 	var (
-		ctx                     context.Context
-		fakeClientset           *fake.Clientset
-		fakeContainerRepository *dbfakes.FakeContainerRepository
-		fakeDestroyer           *gcfakes.FakeDestroyer
-		cfg                     jetbridge.Config
-		reaper                  *jetbridge.Reaper
+		ctx                 context.Context
+		database            jetbridgeDB
+		dbWorker            db.Worker
+		fakeClientset       *fake.Clientset
+		containerRepository db.ContainerRepository
+		fakeDestroyer       *gcfakes.FakeDestroyer
+		cfg                 jetbridge.Config
+		reaper              *jetbridge.Reaper
 	)
 
 	BeforeEach(func() {
 		ctx = context.Background()
+		database = useJetbridgeDB()
 		fakeClientset = fake.NewSimpleClientset()
-		fakeContainerRepository = new(dbfakes.FakeContainerRepository)
+		containerRepository = database.ContainerRepository
 		fakeDestroyer = new(gcfakes.FakeDestroyer)
 		cfg = jetbridge.NewConfig("test-namespace", "")
+		var err error
+		dbWorker, err = persistNamedWorker(database, "k8s-test-namespace")
+		Expect(err).ToNot(HaveOccurred())
 
 		testLogger := lagertest.NewTestLogger("reaper")
-		reaper = jetbridge.NewReaper(testLogger, fakeClientset, cfg, fakeContainerRepository, fakeDestroyer)
+		reaper = jetbridge.NewReaper(testLogger, fakeClientset, cfg, containerRepository, fakeDestroyer)
+		reaper.SetBuildLookup(database.BuildFactory)
 	})
 
 	createLabelledPod := func(name string) {
@@ -77,21 +86,107 @@ var _ = Describe("Reaper", func() {
 		Expect(err).ToNot(HaveOccurred())
 	}
 
+	persistCreatedContainer := func(handle string) db.CreatedContainer {
+		GinkgoHelper()
+		creating, err := dbWorker.CreateContainer(
+			db.NewFixedHandleContainerOwner(handle),
+			db.ContainerMetadata{Type: db.ContainerTypeTask},
+		)
+		Expect(err).ToNot(HaveOccurred())
+		created, err := creating.Created()
+		Expect(err).ToNot(HaveOccurred())
+		return created
+	}
+
+	persistDestroyingContainer := func(handle string) db.DestroyingContainer {
+		GinkgoHelper()
+		destroying, err := persistCreatedContainer(handle).Destroying()
+		Expect(err).ToNot(HaveOccurred())
+		return destroying
+	}
+
+	containerRow := func(handle string) (string, string, sql.NullTime, bool) {
+		GinkgoHelper()
+		var state, workerName string
+		var missingSince sql.NullTime
+		err := database.Conn.QueryRow(
+			`SELECT state, worker_name, missing_since FROM containers WHERE handle = $1`,
+			handle,
+		).Scan(&state, &workerName, &missingSince)
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", "", sql.NullTime{}, false
+		}
+		Expect(err).ToNot(HaveOccurred())
+		return state, workerName, missingSince, true
+	}
+
+	persistStartedBuild := func(name string) (db.Build, int) {
+		GinkgoHelper()
+		team, err := database.TeamFactory.CreateTeam(atc.Team{Name: "reaper-" + name})
+		Expect(err).ToNot(HaveOccurred())
+		pipeline, _, err := team.SavePipeline(
+			atc.PipelineRef{Name: "pipeline-" + name},
+			atc.Config{Jobs: atc.JobConfigs{{Name: "some-job"}}},
+			0,
+			false,
+		)
+		Expect(err).ToNot(HaveOccurred())
+		job, found, err := pipeline.Job("some-job")
+		Expect(err).ToNot(HaveOccurred())
+		Expect(found).To(BeTrue())
+		build, err := job.CreateBuild("reaper-test")
+		Expect(err).ToNot(HaveOccurred())
+		started, err := build.Start(atc.Plan{ID: atc.PlanID("plan-" + name)})
+		Expect(err).ToNot(HaveOccurred())
+		Expect(started).To(BeTrue())
+		return build, team.ID()
+	}
+
+	persistBuildContainer := func(build db.Build, teamID int, planID atc.PlanID) db.CreatedContainer {
+		GinkgoHelper()
+		creating, err := dbWorker.CreateContainer(
+			db.NewBuildStepContainerOwner(build.ID(), planID, teamID),
+			db.ContainerMetadata{Type: db.ContainerTypeTask},
+		)
+		Expect(err).ToNot(HaveOccurred())
+		created, err := creating.Created()
+		Expect(err).ToNot(HaveOccurred())
+		return created
+	}
+
 	Describe("container reporting", func() {
 		It("reports active pod handles to UpdateContainersMissingSince", func() {
+			persistCreatedContainer("pod-aaa")
+			persistCreatedContainer("pod-bbb")
+			persistCreatedContainer("unreported-decoy")
+			_, err := database.Conn.Exec(
+				`UPDATE containers SET missing_since = NOW() - INTERVAL '1 minute' WHERE handle IN ($1, $2)`,
+				"pod-aaa",
+				"pod-bbb",
+			)
+			Expect(err).ToNot(HaveOccurred())
 			createLabelledPod("pod-aaa")
 			createLabelledPod("pod-bbb")
 
-			err := reaper.Run(ctx)
+			err = reaper.Run(ctx)
 			Expect(err).ToNot(HaveOccurred())
 
-			Expect(fakeContainerRepository.UpdateContainersMissingSinceCallCount()).To(Equal(1))
-			workerName, handles := fakeContainerRepository.UpdateContainersMissingSinceArgsForCall(0)
+			for _, handle := range []string{"pod-aaa", "pod-bbb"} {
+				state, workerName, missingSince, found := containerRow(handle)
+				Expect(found).To(BeTrue())
+				Expect(state).To(Equal(atc.ContainerStateCreated))
+				Expect(workerName).To(Equal("k8s-test-namespace"))
+				Expect(missingSince.Valid).To(BeFalse())
+			}
+			state, workerName, missingSince, found := containerRow("unreported-decoy")
+			Expect(found).To(BeTrue())
+			Expect(state).To(Equal(atc.ContainerStateCreated))
 			Expect(workerName).To(Equal("k8s-test-namespace"))
-			Expect(handles).To(ConsistOf("pod-aaa", "pod-bbb"))
+			Expect(missingSince.Valid).To(BeTrue())
 		})
 
 		It("calls DestroyContainers with active pod handles to clean up DB rows", func() {
+			persistCreatedContainer("pod-ccc")
 			createLabelledPod("pod-ccc")
 
 			err := reaper.Run(ctx)
@@ -104,36 +199,50 @@ var _ = Describe("Reaper", func() {
 		})
 
 		It("reports empty handles when no pods exist", func() {
+			persistCreatedContainer("unreported-container")
 			err := reaper.Run(ctx)
 			Expect(err).ToNot(HaveOccurred())
 
-			Expect(fakeContainerRepository.UpdateContainersMissingSinceCallCount()).To(Equal(1))
-			_, handles := fakeContainerRepository.UpdateContainersMissingSinceArgsForCall(0)
-			Expect(handles).To(BeEmpty())
+			state, workerName, missingSince, found := containerRow("unreported-container")
+			Expect(found).To(BeTrue())
+			Expect(state).To(Equal(atc.ContainerStateCreated))
+			Expect(workerName).To(Equal("k8s-test-namespace"))
+			Expect(missingSince.Valid).To(BeTrue())
 		})
 
 		It("calls DestroyUnknownContainers with active pod handles to catch orphans", func() {
+			persistCreatedContainer("known-pod")
 			createLabelledPod("orphan-pod")
 			createLabelledPod("known-pod")
 
 			err := reaper.Run(ctx)
 			Expect(err).ToNot(HaveOccurred())
 
-			Expect(fakeContainerRepository.DestroyUnknownContainersCallCount()).To(Equal(1))
-			workerName, handles := fakeContainerRepository.DestroyUnknownContainersArgsForCall(0)
+			state, workerName, missingSince, found := containerRow("orphan-pod")
+			Expect(found).To(BeTrue())
+			Expect(state).To(Equal(atc.ContainerStateDestroying))
 			Expect(workerName).To(Equal("k8s-test-namespace"))
-			Expect(handles).To(ConsistOf("orphan-pod", "known-pod"))
+			Expect(missingSince.Valid).To(BeFalse())
+
+			state, workerName, missingSince, found = containerRow("known-pod")
+			Expect(found).To(BeTrue())
+			Expect(state).To(Equal(atc.ContainerStateCreated))
+			Expect(workerName).To(Equal("k8s-test-namespace"))
+			Expect(missingSince.Valid).To(BeFalse())
+
+			pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(pods.Items).To(HaveLen(1))
+			Expect(pods.Items[0].Name).To(Equal("known-pod"))
 		})
 	})
 
 	Describe("pod reaping", func() {
 		It("deletes pods that are in 'destroying' state in the DB", func() {
+			persistDestroyingContainer("pod-to-destroy")
+			persistCreatedContainer("pod-to-keep")
 			createLabelledPod("pod-to-destroy")
 			createLabelledPod("pod-to-keep")
-
-			fakeContainerRepository.FindDestroyingContainersReturns(
-				[]string{"pod-to-destroy"}, nil,
-			)
 
 			err := reaper.Run(ctx)
 			Expect(err).ToNot(HaveOccurred())
@@ -148,21 +257,27 @@ var _ = Describe("Reaper", func() {
 			}
 			Expect(podNames).To(ConsistOf("pod-to-keep"))
 			Expect(podNames).ToNot(ContainElement("pod-to-destroy"))
+			state, workerName, _, found := containerRow("pod-to-destroy")
+			Expect(found).To(BeTrue())
+			Expect(state).To(Equal(atc.ContainerStateDestroying))
+			Expect(workerName).To(Equal("k8s-test-namespace"))
 		})
 
 		It("does not fail when a destroying pod does not exist in K8s", func() {
-			fakeContainerRepository.FindDestroyingContainersReturns(
-				[]string{"already-gone-pod"}, nil,
-			)
+			persistDestroyingContainer("already-gone-pod")
 
 			err := reaper.Run(ctx)
 			Expect(err).ToNot(HaveOccurred())
+			state, workerName, missingSince, found := containerRow("already-gone-pod")
+			Expect(found).To(BeTrue())
+			Expect(state).To(Equal(atc.ContainerStateDestroying))
+			Expect(workerName).To(Equal("k8s-test-namespace"))
+			Expect(missingSince.Valid).To(BeTrue())
 		})
 
 		It("does nothing when no containers are in destroying state", func() {
+			persistCreatedContainer("healthy-pod")
 			createLabelledPod("healthy-pod")
-
-			fakeContainerRepository.FindDestroyingContainersReturns([]string{}, nil)
 
 			err := reaper.Run(ctx)
 			Expect(err).ToNot(HaveOccurred())
@@ -171,6 +286,11 @@ var _ = Describe("Reaper", func() {
 			pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
 			Expect(err).ToNot(HaveOccurred())
 			Expect(pods.Items).To(HaveLen(1))
+			state, workerName, missingSince, found := containerRow("healthy-pod")
+			Expect(found).To(BeTrue())
+			Expect(state).To(Equal(atc.ContainerStateCreated))
+			Expect(workerName).To(Equal("k8s-test-namespace"))
+			Expect(missingSince.Valid).To(BeFalse())
 		})
 	})
 
@@ -179,8 +299,6 @@ var _ = Describe("Reaper", func() {
 	// reads it so the resumed plan skips the step instead of running it
 	// again. The reaper may only reap that pod once its build is done.
 	Describe("completed pod reaping", func() {
-		var fakeBuildFactory *dbfakes.FakeBuildFactory
-
 		// createCompletedPod builds a pod as Container.buildPodLabels would:
 		// a readable name plus the handle and (for job builds) build-id
 		// labels, annotated as a finished step.
@@ -205,12 +323,6 @@ var _ = Describe("Reaper", func() {
 			Expect(err).ToNot(HaveOccurred())
 		}
 
-		startedBuild := func(id int) db.Build {
-			build := new(dbfakes.FakeBuild)
-			build.IDReturns(id)
-			return build
-		}
-
 		livePodNames := func() []string {
 			pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
 			Expect(err).ToNot(HaveOccurred())
@@ -221,14 +333,14 @@ var _ = Describe("Reaper", func() {
 			return names
 		}
 
-		BeforeEach(func() {
-			fakeBuildFactory = new(dbfakes.FakeBuildFactory)
-			reaper.SetBuildLookup(fakeBuildFactory)
-		})
-
 		It("keeps a completed step's pod while its build is still running", func() {
-			createCompletedPod("my-pipeline-unit-test-b42-task-550e8400", "550e8400-e29b-41d4-a716-446655440000", "653430")
-			fakeBuildFactory.GetAllStartedBuildsReturns([]db.Build{startedBuild(653430)}, nil)
+			build, teamID := persistStartedBuild("running-owner")
+			container := persistBuildContainer(build, teamID, "running-step")
+			createCompletedPod(
+				"my-pipeline-unit-test-b42-task-550e8400",
+				container.Handle(),
+				strconv.Itoa(build.ID()),
+			)
 
 			Expect(reaper.Run(ctx)).To(Succeed())
 
@@ -239,62 +351,124 @@ var _ = Describe("Reaper", func() {
 			Expect(pod.Annotations).To(HaveKeyWithValue("concourse.ci/exit-status", "0"))
 
 			By("reporting it as active so its DB row is not marked missing")
-			_, reported := fakeContainerRepository.UpdateContainersMissingSinceArgsForCall(0)
-			Expect(reported).To(ConsistOf("550e8400-e29b-41d4-a716-446655440000"))
+			state, workerName, missingSince, found := containerRow(container.Handle())
+			Expect(found).To(BeTrue())
+			Expect(state).To(Equal(atc.ContainerStateCreated))
+			Expect(workerName).To(Equal("k8s-test-namespace"))
+			Expect(missingSince.Valid).To(BeFalse())
 		})
 
 		It("reaps a completed step's pod once its build is no longer running", func() {
-			createCompletedPod("my-pipeline-unit-test-b42-task-550e8400", "550e8400-e29b-41d4-a716-446655440000", "653430")
-			fakeBuildFactory.GetAllStartedBuildsReturns([]db.Build{startedBuild(999999)}, nil)
+			finishedBuild, teamID := persistStartedBuild("finished-owner")
+			container := persistBuildContainer(finishedBuild, teamID, "finished-step")
+			Expect(finishedBuild.Finish(db.BuildStatusSucceeded)).To(Succeed())
+			_, _ = persistStartedBuild("running-decoy")
+			createCompletedPod(
+				"my-pipeline-unit-test-b42-task-550e8400",
+				container.Handle(),
+				strconv.Itoa(finishedBuild.ID()),
+			)
 
 			Expect(reaper.Run(ctx)).To(Succeed())
 
 			Expect(livePodNames()).To(BeEmpty())
+			state, workerName, missingSince, found := containerRow(container.Handle())
+			Expect(found).To(BeTrue())
+			Expect(state).To(Equal(atc.ContainerStateCreated))
+			Expect(workerName).To(Equal("k8s-test-namespace"))
+			Expect(missingSince.Valid).To(BeTrue())
 		})
 
 		It("fast-reaps a completed check pod, which has no build to resume", func() {
-			createCompletedPod("chk-my-resource-aabbccdd", "aabbccdd-e29b-41d4-a716-446655440000", "")
-			createCompletedPod("my-pipeline-unit-test-b42-task-550e8400", "550e8400-e29b-41d4-a716-446655440000", "653430")
-			fakeBuildFactory.GetAllStartedBuildsReturns([]db.Build{startedBuild(653430)}, nil)
+			const checkHandle = "aabbccdd-e29b-41d4-a716-446655440000"
+			persistCreatedContainer(checkHandle)
+			build, teamID := persistStartedBuild("check-running-owner")
+			buildContainer := persistBuildContainer(build, teamID, "check-running-step")
+			createCompletedPod("chk-my-resource-aabbccdd", checkHandle, "")
+			createCompletedPod(
+				"my-pipeline-unit-test-b42-task-550e8400",
+				buildContainer.Handle(),
+				strconv.Itoa(build.ID()),
+			)
 
 			Expect(reaper.Run(ctx)).To(Succeed())
 
 			By("reaping the check pod while the running build's pod stays")
 			Expect(livePodNames()).To(ConsistOf("my-pipeline-unit-test-b42-task-550e8400"))
+			_, _, checkMissingSince, found := containerRow(checkHandle)
+			Expect(found).To(BeTrue())
+			Expect(checkMissingSince.Valid).To(BeTrue())
+			state, workerName, buildMissingSince, found := containerRow(buildContainer.Handle())
+			Expect(found).To(BeTrue())
+			Expect(state).To(Equal(atc.ContainerStateCreated))
+			Expect(workerName).To(Equal("k8s-test-namespace"))
+			Expect(buildMissingSince.Valid).To(BeFalse())
 		})
 
 		It("keeps completed pods when the running-build set cannot be read", func() {
-			createCompletedPod("my-pipeline-unit-test-b42-task-550e8400", "550e8400-e29b-41d4-a716-446655440000", "653430")
-			fakeBuildFactory.GetAllStartedBuildsReturns(nil, errors.New("database is down"))
+			build, teamID := persistStartedBuild("lookup-error-owner")
+			container := persistBuildContainer(build, teamID, "lookup-error-step")
+			createCompletedPod(
+				"my-pipeline-unit-test-b42-task-550e8400",
+				container.Handle(),
+				strconv.Itoa(build.ID()),
+			)
+			reaper.SetBuildLookup(db.NewBuildFactory(
+				closedJetbridgeCloneConn(), database.LockFactory, 0, time.Hour,
+			))
 
 			Expect(reaper.Run(ctx)).To(Succeed())
 
 			By("failing closed rather than deleting an annotation it cannot prove is stale")
 			Expect(livePodNames()).To(ConsistOf("my-pipeline-unit-test-b42-task-550e8400"))
+			state, workerName, missingSince, found := containerRow(container.Handle())
+			Expect(found).To(BeTrue())
+			Expect(state).To(Equal(atc.ContainerStateCreated))
+			Expect(workerName).To(Equal("k8s-test-namespace"))
+			Expect(missingSince.Valid).To(BeFalse())
 		})
 
 		It("keeps completed pods when no build lookup is configured", func() {
 			unwiredReaper := jetbridge.NewReaper(
-				lagertest.NewTestLogger("reaper"), fakeClientset, cfg, fakeContainerRepository, fakeDestroyer,
+				lagertest.NewTestLogger("reaper"), fakeClientset, cfg, containerRepository, fakeDestroyer,
 			)
-			createCompletedPod("my-pipeline-unit-test-b42-task-550e8400", "550e8400-e29b-41d4-a716-446655440000", "653430")
+			build, teamID := persistStartedBuild("unwired-owner")
+			container := persistBuildContainer(build, teamID, "unwired-step")
+			createCompletedPod(
+				"my-pipeline-unit-test-b42-task-550e8400",
+				container.Handle(),
+				strconv.Itoa(build.ID()),
+			)
 
 			Expect(unwiredReaper.Run(ctx)).To(Succeed())
 
 			Expect(livePodNames()).To(ConsistOf("my-pipeline-unit-test-b42-task-550e8400"))
+			state, workerName, missingSince, found := containerRow(container.Handle())
+			Expect(found).To(BeTrue())
+			Expect(state).To(Equal(atc.ContainerStateCreated))
+			Expect(workerName).To(Equal("k8s-test-namespace"))
+			Expect(missingSince.Valid).To(BeFalse())
 		})
 
 		It("still deletes a retained pod through the DB destroying path", func() {
-			createCompletedPod("my-pipeline-unit-test-b42-task-550e8400", "550e8400-e29b-41d4-a716-446655440000", "653430")
-			fakeBuildFactory.GetAllStartedBuildsReturns([]db.Build{startedBuild(653430)}, nil)
-			fakeContainerRepository.FindDestroyingContainersReturns(
-				[]string{"550e8400-e29b-41d4-a716-446655440000"}, nil,
+			build, teamID := persistStartedBuild("destroying-owner")
+			container := persistBuildContainer(build, teamID, "destroying-step")
+			_, err := container.Destroying()
+			Expect(err).ToNot(HaveOccurred())
+			createCompletedPod(
+				"my-pipeline-unit-test-b42-task-550e8400",
+				container.Handle(),
+				strconv.Itoa(build.ID()),
 			)
 
 			Expect(reaper.Run(ctx)).To(Succeed())
 
 			By("resolving the readable pod name from the handle label")
 			Expect(livePodNames()).To(BeEmpty())
+			state, workerName, _, found := containerRow(container.Handle())
+			Expect(found).To(BeTrue())
+			Expect(state).To(Equal(atc.ContainerStateDestroying))
+			Expect(workerName).To(Equal("k8s-test-namespace"))
 		})
 	})
 
@@ -318,6 +492,7 @@ var _ = Describe("Reaper", func() {
 		}
 
 		It("keeps an ownerless pre-bind Secret while a live Pod references it", func() {
+			persistCreatedContainer("private-pod")
 			createLabelledPod("private-pod")
 			pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "private-pod", metav1.GetOptions{})
 			Expect(err).ToNot(HaveOccurred())
@@ -343,6 +518,7 @@ var _ = Describe("Reaper", func() {
 			const handle = "private-handle"
 			const podName = "private-pod"
 			uid := types.UID("private-pod-uid")
+			persistDestroyingContainer(podName)
 			createLabelledPod(podName)
 			pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, podName, metav1.GetOptions{})
 			Expect(err).ToNot(HaveOccurred())
@@ -350,7 +526,6 @@ var _ = Describe("Reaper", func() {
 			_, err = fakeClientset.CoreV1().Pods("test-namespace").Update(ctx, pod, metav1.UpdateOptions{})
 			Expect(err).ToNot(HaveOccurred())
 			createPrivateMountSecret("private-secret", handle, podName, uid)
-			fakeContainerRepository.FindDestroyingContainersReturns([]string{podName}, nil)
 			fakeClientset.PrependReactor("delete", "pods", func(ktesting.Action) (bool, runtime.Object, error) {
 				return true, nil, fmt.Errorf("pod delete failed")
 			})
@@ -365,6 +540,7 @@ var _ = Describe("Reaper", func() {
 			const handle = "private-handle"
 			const podName = "private-pod"
 			uid := types.UID("private-pod-uid")
+			persistCreatedContainer(handle)
 			createLabelledPod(podName)
 			pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, podName, metav1.GetOptions{})
 			Expect(err).ToNot(HaveOccurred())
@@ -428,11 +604,8 @@ var _ = Describe("Reaper", func() {
 
 	Describe("reaper idempotency", func() {
 		It("is safe to run twice when first run already deleted the pod", func() {
+			persistDestroyingContainer("pod-to-destroy")
 			createLabelledPod("pod-to-destroy")
-
-			fakeContainerRepository.FindDestroyingContainersReturns(
-				[]string{"pod-to-destroy"}, nil,
-			)
 
 			By("first reaper sweep deletes the pod")
 			err := reaper.Run(ctx)
@@ -443,20 +616,20 @@ var _ = Describe("Reaper", func() {
 			Expect(pods.Items).To(BeEmpty())
 
 			By("second reaper sweep succeeds even though pod is already gone")
-			fakeContainerRepository.FindDestroyingContainersReturns(
-				[]string{"pod-to-destroy"}, nil,
-			)
 			err = reaper.Run(ctx)
 			Expect(err).ToNot(HaveOccurred())
+			state, workerName, missingSince, found := containerRow("pod-to-destroy")
+			Expect(found).To(BeTrue())
+			Expect(state).To(Equal(atc.ContainerStateDestroying))
+			Expect(workerName).To(Equal("k8s-test-namespace"))
+			Expect(missingSince.Valid).To(BeTrue())
 		})
 
 		It("does not destroy a newly created pod that is not marked destroying", func() {
+			persistDestroyingContainer("existing-pod")
+			persistCreatedContainer("brand-new-pod")
 			createLabelledPod("existing-pod")
 			createLabelledPod("brand-new-pod")
-
-			fakeContainerRepository.FindDestroyingContainersReturns(
-				[]string{"existing-pod"}, nil,
-			)
 
 			err := reaper.Run(ctx)
 			Expect(err).ToNot(HaveOccurred())
@@ -468,9 +641,16 @@ var _ = Describe("Reaper", func() {
 			Expect(pods.Items[0].Name).To(Equal("brand-new-pod"))
 
 			By("verifying both pods were reported to the DB before deletion")
-			Expect(fakeContainerRepository.UpdateContainersMissingSinceCallCount()).To(Equal(1))
-			_, handles := fakeContainerRepository.UpdateContainersMissingSinceArgsForCall(0)
-			Expect(handles).To(ConsistOf("existing-pod", "brand-new-pod"))
+			state, workerName, missingSince, found := containerRow("existing-pod")
+			Expect(found).To(BeTrue())
+			Expect(state).To(Equal(atc.ContainerStateDestroying))
+			Expect(workerName).To(Equal("k8s-test-namespace"))
+			Expect(missingSince.Valid).To(BeFalse())
+			state, workerName, missingSince, found = containerRow("brand-new-pod")
+			Expect(found).To(BeTrue())
+			Expect(state).To(Equal(atc.ContainerStateCreated))
+			Expect(workerName).To(Equal("k8s-test-namespace"))
+			Expect(missingSince.Valid).To(BeFalse())
 		})
 	})
 
@@ -492,27 +672,42 @@ var _ = Describe("Reaper", func() {
 		}
 
 		It("reports DB handles (from labels) not pod names to UpdateContainersMissingSince", func() {
-			createPodWithHandle("my-pipeline-build-b1-task-abcdef12", "abcdef12-3456-7890-abcd-ef1234567890")
-			createPodWithHandle("ci-test-b7-get-11223344", "11223344-5566-7788-99aa-bbccddeeff00")
+			const firstHandle = "abcdef12-3456-7890-abcd-ef1234567890"
+			const secondHandle = "11223344-5566-7788-99aa-bbccddeeff00"
+			persistCreatedContainer(firstHandle)
+			persistCreatedContainer(secondHandle)
+			persistCreatedContainer("readable-decoy")
+			_, err := database.Conn.Exec(
+				`UPDATE containers SET missing_since = NOW() - INTERVAL '1 minute' WHERE handle IN ($1, $2)`,
+				firstHandle,
+				secondHandle,
+			)
+			Expect(err).ToNot(HaveOccurred())
+			createPodWithHandle("my-pipeline-build-b1-task-abcdef12", firstHandle)
+			createPodWithHandle("ci-test-b7-get-11223344", secondHandle)
 
-			err := reaper.Run(ctx)
+			err = reaper.Run(ctx)
 			Expect(err).ToNot(HaveOccurred())
 
-			Expect(fakeContainerRepository.UpdateContainersMissingSinceCallCount()).To(Equal(1))
-			_, handles := fakeContainerRepository.UpdateContainersMissingSinceArgsForCall(0)
-			Expect(handles).To(ConsistOf(
-				"abcdef12-3456-7890-abcd-ef1234567890",
-				"11223344-5566-7788-99aa-bbccddeeff00",
-			))
+			for _, handle := range []string{firstHandle, secondHandle} {
+				state, workerName, missingSince, found := containerRow(handle)
+				Expect(found).To(BeTrue())
+				Expect(state).To(Equal(atc.ContainerStateCreated))
+				Expect(workerName).To(Equal("k8s-test-namespace"))
+				Expect(missingSince.Valid).To(BeFalse())
+			}
+			_, _, decoyMissingSince, found := containerRow("readable-decoy")
+			Expect(found).To(BeTrue())
+			Expect(decoyMissingSince.Valid).To(BeTrue())
 		})
 
 		It("deletes pods by pod name when DB returns handles for destruction", func() {
-			createPodWithHandle("my-pipeline-build-b1-task-abcdef12", "abcdef12-3456-7890-abcd-ef1234567890")
-			createPodWithHandle("ci-test-b7-get-11223344", "11223344-5566-7788-99aa-bbccddeeff00")
-
-			fakeContainerRepository.FindDestroyingContainersReturns(
-				[]string{"abcdef12-3456-7890-abcd-ef1234567890"}, nil,
-			)
+			const destroyingHandle = "abcdef12-3456-7890-abcd-ef1234567890"
+			const keptHandle = "11223344-5566-7788-99aa-bbccddeeff00"
+			persistDestroyingContainer(destroyingHandle)
+			persistCreatedContainer(keptHandle)
+			createPodWithHandle("my-pipeline-build-b1-task-abcdef12", destroyingHandle)
+			createPodWithHandle("ci-test-b7-get-11223344", keptHandle)
 
 			err := reaper.Run(ctx)
 			Expect(err).ToNot(HaveOccurred())
@@ -522,17 +717,24 @@ var _ = Describe("Reaper", func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(pods.Items).To(HaveLen(1))
 			Expect(pods.Items[0].Name).To(Equal("ci-test-b7-get-11223344"))
+			state, workerName, _, found := containerRow(destroyingHandle)
+			Expect(found).To(BeTrue())
+			Expect(state).To(Equal(atc.ContainerStateDestroying))
+			Expect(workerName).To(Equal("k8s-test-namespace"))
 		})
 
 		It("falls back to pod name when handle label is missing (backward compat)", func() {
+			persistCreatedContainer("legacy-uuid-pod")
 			createLabelledPod("legacy-uuid-pod")
 
 			err := reaper.Run(ctx)
 			Expect(err).ToNot(HaveOccurred())
 
-			Expect(fakeContainerRepository.UpdateContainersMissingSinceCallCount()).To(Equal(1))
-			_, handles := fakeContainerRepository.UpdateContainersMissingSinceArgsForCall(0)
-			Expect(handles).To(ConsistOf("legacy-uuid-pod"))
+			state, workerName, missingSince, found := containerRow("legacy-uuid-pod")
+			Expect(found).To(BeTrue())
+			Expect(state).To(Equal(atc.ContainerStateCreated))
+			Expect(workerName).To(Equal("k8s-test-namespace"))
+			Expect(missingSince.Valid).To(BeFalse())
 		})
 	})
 
