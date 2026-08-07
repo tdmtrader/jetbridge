@@ -19,8 +19,7 @@ var _ = postgresrunner.GinkgoRunner(&postgresRunner)
 
 var _ = BeforeEach(func() {
 	postgresRunner.CreateTestDBFromTemplate()
-})
-
-var _ = AfterEach(func() {
-	postgresRunner.DropTestDB()
+	DeferCleanup(func() {
+		postgresRunner.DropTestDB()
+	})
 })

@@ -49,13 +49,14 @@ var _ = BeforeEach(func() {
 	})
 
 	postgresRunner.CreateTestDBFromTemplate()
+	DeferCleanup(func() {
+		postgresRunner.DropTestDB()
+	})
 	dbConn = postgresRunner.OpenConn()
+	DeferCleanup(func() {
+		Expect(dbConn.Close()).To(Succeed())
+	})
 	signingKeyFactory = db.NewSigningKeyFactory(dbConn)
-})
-
-var _ = AfterEach(func() {
-	Expect(dbConn.Close()).To(Succeed())
-	postgresRunner.DropTestDB()
 })
 
 // saveSigningKey stores a real signing key and then backdates it.

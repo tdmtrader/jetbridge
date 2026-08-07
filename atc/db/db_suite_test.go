@@ -125,7 +125,11 @@ var _ = BeforeEach(func() {
 
 	var lockConns [lock.FactoryCount]*sql.DB
 	for i := 0; i < lock.FactoryCount; i++ {
-		lockConns[i] = postgresRunner.OpenSingleton()
+		lockConn := postgresRunner.OpenSingleton()
+		lockConns[i] = lockConn
+		DeferCleanup(func() {
+			Expect(lockConn.Close()).To(Succeed())
+		})
 	}
 	lockFactory = lock.NewLockFactory(lockConns, metric.LogLockAcquired, metric.LogLockReleased)
 
