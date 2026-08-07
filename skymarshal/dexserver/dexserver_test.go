@@ -3,6 +3,7 @@ package dexserver_test
 import (
 	"context"
 	"sort"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -37,6 +38,10 @@ var _ = Describe("Dex Server", func() {
 
 		storage, err = store.NewPostgresStorage(logger, postgresConfig)
 		Expect(err).ToNot(HaveOccurred())
+		openedStorage := storage
+		DeferCleanup(func() {
+			Expect(openedStorage.Close()).To(Succeed())
+		})
 
 		config = &dexserver.DexConfig{
 			Logger:            logger,
@@ -45,10 +50,6 @@ var _ = Describe("Dex Server", func() {
 		}
 
 		expectErr = false
-	})
-
-	AfterEach(func() {
-		storage.Close()
 	})
 
 	JustBeforeEach(func() {
@@ -225,14 +226,60 @@ var _ = Describe("Dex Server", func() {
 	})
 })
 
+var _ = Describe("PostgreSQL child wiring", func() {
+	It("preserves every supported connection property", func() {
+		info := postgresrunner.ConnectionInfo{
+			Host:            "db.example.test",
+			Port:            6432,
+			Socket:          "/private/tmp/postgres",
+			User:            "dex-user",
+			Password:        "dex-password",
+			Database:        "cc_db_dex",
+			ApplicationName: "dex-app",
+			SSLMode:         "verify-full",
+			SSLNegotiation:  "direct",
+			SSLRootCert:     "/certs/root.pem",
+			SSLCert:         "/certs/client.pem",
+			SSLKey:          "/certs/client-key.pem",
+			ConnectTimeout:  43 * time.Second,
+		}
+
+		config := postgresConfigFromConnectionInfo(info)
+
+		Expect(config.Host).To(Equal(info.Host))
+		Expect(config.Port).To(Equal(info.Port))
+		Expect(config.Socket).To(Equal(info.Socket))
+		Expect(config.User).To(Equal(info.User))
+		Expect(config.Password).To(Equal(info.Password))
+		Expect(config.Database).To(Equal(info.Database))
+		Expect(config.ApplicationName).To(Equal(info.ApplicationName))
+		Expect(config.SSLMode).To(Equal(info.SSLMode))
+		Expect(config.SSLNegotiation).To(Equal(info.SSLNegotiation))
+		Expect(config.CACert.Path()).To(Equal(info.SSLRootCert))
+		Expect(config.ClientCert.Path()).To(Equal(info.SSLCert))
+		Expect(config.ClientKey.Path()).To(Equal(info.SSLKey))
+		Expect(config.ConnectTimeout).To(Equal(info.ConnectTimeout))
+	})
+})
+
 func runnerPostgresConfig(r *postgresrunner.Runner) flag.PostgresConfig {
-	info := r.ConnectionInfo()
+	return postgresConfigFromConnectionInfo(r.ConnectionInfo())
+}
+
+func postgresConfigFromConnectionInfo(info postgresrunner.ConnectionInfo) flag.PostgresConfig {
 	return flag.PostgresConfig{
-		Host:     info.Host,
-		Port:     info.Port,
-		User:     info.User,
-		Password: info.Password,
-		Database: info.Database,
-		SSLMode:  info.SSLMode,
+		Host:            info.Host,
+		Port:            info.Port,
+		Socket:          info.Socket,
+		User:            info.User,
+		Password:        info.Password,
+		Database:        info.Database,
+		ApplicationName: info.ApplicationName,
+		SSLMode:         info.SSLMode,
+		SSLNegotiation:  info.SSLNegotiation,
+		CACert:          flag.File(info.SSLRootCert),
+		ClientCert:      flag.File(info.SSLCert),
+		ClientKey:       flag.File(info.SSLKey),
+		ConnectTimeout:  info.ConnectTimeout,
 	}
 }

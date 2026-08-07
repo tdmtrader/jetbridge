@@ -18,6 +18,7 @@ import (
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 const (
@@ -40,12 +41,19 @@ type SuiteConfig struct {
 }
 
 type ConnectionInfo struct {
-	Host     string
-	Port     uint16
-	User     string
-	Password string
-	Database string
-	SSLMode  string
+	Host            string
+	Port            uint16
+	Socket          string
+	User            string
+	Password        string
+	Database        string
+	ApplicationName string
+	SSLMode         string
+	SSLNegotiation  string
+	SSLRootCert     string
+	SSLCert         string
+	SSLKey          string
+	ConnectTimeout  time.Duration
 }
 
 type Runner struct {
@@ -113,6 +121,9 @@ func (r *Runner) AdoptSuiteConfig(config SuiteConfig, node int) error {
 	if err != nil {
 		return fmt.Errorf("parse admin DSN: %w", err)
 	}
+	if _, err := childSSLMode(config.AdminDSN); err != nil {
+		return fmt.Errorf("admin DSN cannot be propagated to child PostgreSQL clients: %w", err)
+	}
 
 	r.state = &runnerState{
 		suite:    config,
@@ -155,13 +166,34 @@ func (r *Runner) ConnectionInfo() ConnectionInfo {
 	if err != nil {
 		return ConnectionInfo{}
 	}
+	host := config.Host
+	socket := ""
+	if network, _ := pgconn.NetworkAddress(config.Host, config.Port); network == "unix" {
+		socket = config.Host
+		host = ""
+	}
+	sslNegotiation := config.SSLNegotiation
+	if sslNegotiation == "" {
+		sslNegotiation = "postgres"
+	}
+	sslMode, err := childSSLMode(dsn)
+	if err != nil {
+		return ConnectionInfo{}
+	}
 	return ConnectionInfo{
-		Host:     config.Host,
-		Port:     config.Port,
-		User:     config.User,
-		Password: config.Password,
-		Database: config.Database,
-		SSLMode:  sslModeFromDSN(dsn),
+		Host:            host,
+		Port:            config.Port,
+		Socket:          socket,
+		User:            config.User,
+		Password:        config.Password,
+		Database:        config.Database,
+		ApplicationName: config.RuntimeParams["application_name"],
+		SSLMode:         sslMode,
+		SSLNegotiation:  sslNegotiation,
+		SSLRootCert:     connectionSetting(dsn, "sslrootcert", "PGSSLROOTCERT"),
+		SSLCert:         connectionSetting(dsn, "sslcert", "PGSSLCERT"),
+		SSLKey:          connectionSetting(dsn, "sslkey", "PGSSLKEY"),
+		ConnectTimeout:  config.ConnectTimeout,
 	}
 }
 
@@ -700,7 +732,10 @@ func dsnForDatabase(dsn, database string) (string, error) {
 		}
 		parsed.Path = "/" + database
 		parsed.RawPath = ""
-		parsed.RawQuery = parsed.Query().Encode()
+		query := parsed.Query()
+		query.Del("dbname")
+		query.Del("database")
+		parsed.RawQuery = query.Encode()
 		return parsed.String(), nil
 	}
 
@@ -709,17 +744,18 @@ func dsnForDatabase(dsn, database string) (string, error) {
 		return "", err
 	}
 	databaseTokens := 0
-	var start, end int
-	for _, token := range tokens {
-		if token.key == "dbname" {
+	rewritten := dsn
+	for index := len(tokens) - 1; index >= 0; index-- {
+		token := tokens[index]
+		if token.key == "dbname" || token.key == "database" {
 			databaseTokens++
-			start, end = token.valueStart, token.valueEnd
+			rewritten = rewritten[:token.valueStart] + database + rewritten[token.valueEnd:]
 		}
 	}
-	if databaseTokens != 1 {
-		return "", fmt.Errorf("keyword DSN must contain exactly one dbname token, got %d", databaseTokens)
+	if databaseTokens == 0 {
+		return "", fmt.Errorf("keyword DSN must contain a dbname or database token")
 	}
-	return dsn[:start] + database + dsn[end:], nil
+	return rewritten, nil
 }
 
 type keywordDSNToken struct {
@@ -795,22 +831,43 @@ func isDSNSpace(char byte) bool {
 	return char == ' ' || char == '\t' || char == '\r' || char == '\n' || char == '\v' || char == '\f'
 }
 
-func sslModeFromDSN(dsn string) string {
+func childSSLMode(dsn string) (string, error) {
+	mode := connectionSetting(dsn, "sslmode", "PGSSLMODE")
+	if mode == "" {
+		return "", fmt.Errorf("sslmode must be explicit because PostgreSQL's prefer default cannot be represented by Concourse child configuration")
+	}
+	switch mode {
+	case "disable", "require", "verify-ca", "verify-full":
+		return mode, nil
+	default:
+		return "", fmt.Errorf("sslmode %q is not supported; use disable, require, verify-ca, or verify-full", mode)
+	}
+}
+
+func connectionSetting(dsn, name, environmentName string) string {
 	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
 		parsed, err := url.Parse(dsn)
 		if err == nil {
-			return parsed.Query().Get("sslmode")
+			if value := parsed.Query().Get(name); value != "" {
+				return value
+			}
 		}
-		return ""
-	}
-	tokens, err := keywordDSNTokens(dsn)
-	if err != nil {
-		return ""
-	}
-	for _, token := range tokens {
-		if token.key == "sslmode" {
-			return unquoteKeywordValue(dsn[token.valueStart:token.valueEnd])
+	} else {
+		tokens, err := keywordDSNTokens(dsn)
+		if err == nil {
+			value := ""
+			for _, token := range tokens {
+				if token.key == name {
+					value = unquoteKeywordValue(dsn[token.valueStart:token.valueEnd])
+				}
+			}
+			if value != "" {
+				return value
+			}
 		}
+	}
+	if environmentName != "" {
+		return os.Getenv(environmentName)
 	}
 	return ""
 }

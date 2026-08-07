@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -43,6 +44,7 @@ var _ = BeforeEach(func() {
 	_, _ = parser.ParseArgs([]string{})
 
 	postgresRunner.CreateTestDBFromTemplate()
+	DeferCleanup(postgresRunner.DropTestDB)
 	cmd.Postgres = runnerPostgresConfig(&postgresRunner)
 	info := postgresRunner.ConnectionInfo()
 	Expect(cmd.Postgres.Database).To(Equal(postgresRunner.DatabaseName()))
@@ -83,6 +85,12 @@ var _ = JustBeforeEach(func() {
 	Expect(err).NotTo(HaveOccurred())
 
 	atcProcess = ifrit.Invoke(runner)
+	process := atcProcess
+	DeferCleanup(func() {
+		exitErr, shutdownErr := shutdownProcess(process, 10*time.Second, 10*time.Second)
+		Expect(shutdownErr).NotTo(HaveOccurred())
+		Expect(exitErr).NotTo(HaveOccurred())
+	})
 
 	Eventually(func() error {
 		_, err := http.Get(atcURL + "/api/v1/info")
@@ -90,24 +98,140 @@ var _ = JustBeforeEach(func() {
 	}, 20*time.Second).ShouldNot(HaveOccurred())
 })
 
-var _ = AfterEach(func() {
-	atcProcess.Signal(os.Interrupt)
-	err := <-atcProcess.Wait()
-	Expect(err).NotTo(HaveOccurred())
-
-	postgresRunner.DropTestDB()
-})
-
 func runnerPostgresConfig(r *postgresrunner.Runner) flag.PostgresConfig {
-	info := r.ConnectionInfo()
-	return flag.PostgresConfig{
-		Host:     info.Host,
-		Port:     info.Port,
-		User:     info.User,
-		Password: info.Password,
-		Database: info.Database,
-		SSLMode:  info.SSLMode,
+	return postgresConfigFromConnectionInfo(r.ConnectionInfo())
+}
+
+func shutdownProcess(process ifrit.Process, gracePeriod, forcePeriod time.Duration) (error, error) {
+	if process == nil {
+		return nil, nil
 	}
+
+	wait := process.Wait()
+	process.Signal(os.Interrupt)
+	select {
+	case exitErr := <-wait:
+		return exitErr, nil
+	case <-time.After(gracePeriod):
+	}
+
+	process.Signal(os.Kill)
+	select {
+	case exitErr := <-wait:
+		return exitErr, nil
+	case <-time.After(forcePeriod):
+		return nil, fmt.Errorf("child process did not exit within %s after forced termination", forcePeriod)
+	}
+}
+
+func postgresConfigFromConnectionInfo(info postgresrunner.ConnectionInfo) flag.PostgresConfig {
+	return flag.PostgresConfig{
+		Host:            info.Host,
+		Port:            info.Port,
+		Socket:          info.Socket,
+		User:            info.User,
+		Password:        info.Password,
+		Database:        info.Database,
+		ApplicationName: info.ApplicationName,
+		SSLMode:         info.SSLMode,
+		SSLNegotiation:  info.SSLNegotiation,
+		CACert:          flag.File(info.SSLRootCert),
+		ClientCert:      flag.File(info.SSLCert),
+		ClientKey:       flag.File(info.SSLKey),
+		ConnectTimeout:  info.ConnectTimeout,
+	}
+}
+
+func TestPostgresConfigFromConnectionInfoPreservesSupportedProperties(t *testing.T) {
+	info := postgresrunner.ConnectionInfo{
+		Host:            "db.example.test",
+		Port:            6432,
+		Socket:          "/private/tmp/postgres",
+		User:            "integration-user",
+		Password:        "integration-password",
+		Database:        "cc_db_integration",
+		ApplicationName: "integration-app",
+		SSLMode:         "verify-full",
+		SSLNegotiation:  "direct",
+		SSLRootCert:     "/certs/root.pem",
+		SSLCert:         "/certs/client.pem",
+		SSLKey:          "/certs/client-key.pem",
+		ConnectTimeout:  41 * time.Second,
+	}
+
+	got := postgresConfigFromConnectionInfo(info)
+	if got.Host != info.Host || got.Port != info.Port || got.Socket != info.Socket {
+		t.Fatalf("network config = host %q port %d socket %q", got.Host, got.Port, got.Socket)
+	}
+	if got.User != info.User || got.Password != info.Password || got.Database != info.Database {
+		t.Fatalf("credential/database config = user %q password %q database %q", got.User, got.Password, got.Database)
+	}
+	if got.ApplicationName != info.ApplicationName || got.SSLMode != info.SSLMode || got.SSLNegotiation != info.SSLNegotiation {
+		t.Fatalf("runtime/TLS config = application %q sslmode %q sslnegotiation %q", got.ApplicationName, got.SSLMode, got.SSLNegotiation)
+	}
+	if got.CACert.Path() != info.SSLRootCert || got.ClientCert.Path() != info.SSLCert || got.ClientKey.Path() != info.SSLKey {
+		t.Fatalf("certificate config = CA %q cert %q key %q", got.CACert.Path(), got.ClientCert.Path(), got.ClientKey.Path())
+	}
+	if got.ConnectTimeout != info.ConnectTimeout {
+		t.Fatalf("connect timeout = %s, want %s", got.ConnectTimeout, info.ConnectTimeout)
+	}
+}
+
+func TestShutdownProcessForcesAChildAfterTheGracePeriod(t *testing.T) {
+	process := newForcedExitProcess()
+
+	exitErr, shutdownErr := shutdownProcess(process, time.Millisecond, time.Second)
+
+	if exitErr != nil || shutdownErr != nil {
+		t.Fatalf("shutdown returned exit error %v and shutdown error %v", exitErr, shutdownErr)
+	}
+	want := []os.Signal{os.Interrupt, os.Kill}
+	got := process.receivedSignals()
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("signals = %v, want %v", got, want)
+	}
+}
+
+type forcedExitProcess struct {
+	ready     chan struct{}
+	exited    chan struct{}
+	exitOnce  sync.Once
+	signalsMu sync.Mutex
+	signals   []os.Signal
+}
+
+func newForcedExitProcess() *forcedExitProcess {
+	ready := make(chan struct{})
+	close(ready)
+	return &forcedExitProcess{ready: ready, exited: make(chan struct{})}
+}
+
+func (process *forcedExitProcess) Ready() <-chan struct{} {
+	return process.ready
+}
+
+func (process *forcedExitProcess) Wait() <-chan error {
+	wait := make(chan error, 1)
+	go func() {
+		<-process.exited
+		wait <- nil
+	}()
+	return wait
+}
+
+func (process *forcedExitProcess) Signal(signal os.Signal) {
+	process.signalsMu.Lock()
+	process.signals = append(process.signals, signal)
+	process.signalsMu.Unlock()
+	if signal == os.Kill {
+		process.exitOnce.Do(func() { close(process.exited) })
+	}
+}
+
+func (process *forcedExitProcess) receivedSignals() []os.Signal {
+	process.signalsMu.Lock()
+	defer process.signalsMu.Unlock()
+	return append([]os.Signal(nil), process.signals...)
 }
 
 func TestIntegration(t *testing.T) {

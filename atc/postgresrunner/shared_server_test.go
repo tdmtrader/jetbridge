@@ -6,7 +6,10 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"fmt"
+	"net/url"
 	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -42,6 +45,21 @@ func TestDSNForDatabasePreservesKeywordAndURLConfiguration(t *testing.T) {
 			"cc_db_x_n1_s1",
 			"postgres://u:p@db:5432/cc_db_x_n1_s1?connect_timeout=5&sslmode=require",
 		},
+		{
+			"postgres://u:p@db:5432/postgres?sslmode=require&dbname=wrong&database=also-wrong",
+			"cc_db_x_n1_s1",
+			"postgres://u:p@db:5432/cc_db_x_n1_s1?sslmode=require",
+		},
+		{
+			"host=db port=5432 user=u database=postgres sslmode=require",
+			"cc_db_x_n1_s1",
+			"host=db port=5432 user=u database=cc_db_x_n1_s1 sslmode=require",
+		},
+		{
+			"host=db dbname=wrong database=also-wrong sslmode=require",
+			"cc_db_x_n1_s1",
+			"host=db dbname=cc_db_x_n1_s1 database=cc_db_x_n1_s1 sslmode=require",
+		},
 	}
 	for _, tt := range tests {
 		got, err := dsnForDatabase(tt.input, tt.name)
@@ -50,6 +68,13 @@ func TestDSNForDatabasePreservesKeywordAndURLConfiguration(t *testing.T) {
 		}
 		if got != tt.want {
 			t.Fatalf("dsn = %q, want %q", got, tt.want)
+		}
+		config, err := pgx.ParseConfig(got)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if config.Database != tt.name {
+			t.Fatalf("rewritten database = %q, want %q", config.Database, tt.name)
 		}
 	}
 }
@@ -118,6 +143,124 @@ func TestDSNForDatabaseAcceptsLibpqWhitespace(t *testing.T) {
 	}
 }
 
+func TestConnectionInfoPreservesSupportedChildConfiguration(t *testing.T) {
+	caCert, clientCert, clientKey := copyPostgresTLSFixtures(t)
+	const database = "cc_db_t1786000000_p4242_aabbccdd_n7_s1"
+
+	tests := []struct {
+		name     string
+		adminDSN string
+		want     ConnectionInfo
+	}{
+		{
+			name: "keyword DSN with socket",
+			adminDSN: fmt.Sprintf(
+				"host=/private/tmp port=6543 user='keyword user' password='keyword secret' dbname=postgres application_name='keyword app' sslmode=verify-full sslnegotiation=direct sslrootcert=%s sslcert=%s sslkey=%s connect_timeout=17",
+				caCert,
+				clientCert,
+				clientKey,
+			),
+			want: ConnectionInfo{
+				Socket:          "/private/tmp",
+				Port:            6543,
+				User:            "keyword user",
+				Password:        "keyword secret",
+				Database:        database,
+				ApplicationName: "keyword app",
+				SSLMode:         "verify-full",
+				SSLNegotiation:  "direct",
+				SSLRootCert:     caCert,
+				SSLCert:         clientCert,
+				SSLKey:          clientKey,
+				ConnectTimeout:  17 * time.Second,
+			},
+		},
+		{
+			name: "URL DSN with TCP host",
+			adminDSN: (&url.URL{
+				Scheme: "postgres",
+				User:   url.UserPassword("url user", "url secret"),
+				Host:   "db.example.test:6432",
+				Path:   "/postgres",
+				RawQuery: url.Values{
+					"application_name": {"url app"},
+					"sslmode":          {"verify-full"},
+					"sslnegotiation":   {"direct"},
+					"sslrootcert":      {caCert},
+					"sslcert":          {clientCert},
+					"sslkey":           {clientKey},
+					"connect_timeout":  {"29"},
+				}.Encode(),
+			}).String(),
+			want: ConnectionInfo{
+				Host:            "db.example.test",
+				Port:            6432,
+				User:            "url user",
+				Password:        "url secret",
+				Database:        database,
+				ApplicationName: "url app",
+				SSLMode:         "verify-full",
+				SSLNegotiation:  "direct",
+				SSLRootCert:     caCert,
+				SSLCert:         clientCert,
+				SSLKey:          clientKey,
+				ConnectTimeout:  29 * time.Second,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runner := Runner{state: &runnerState{
+				suite:     SuiteConfig{AdminDSN: tt.adminDSN},
+				currentDB: database,
+			}}
+			if got := runner.ConnectionInfo(); !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("connection info = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestConnectionInfoPreservesUnlimitedTimeoutAndDefaultsSSLNegotiation(t *testing.T) {
+	const database = "cc_db_t1786000000_p4242_aabbccdd_n7_s1"
+	runner := Runner{state: &runnerState{
+		suite:     SuiteConfig{AdminDSN: "host=/private/tmp port=5432 user=postgres dbname=postgres sslmode=disable"},
+		currentDB: database,
+	}}
+
+	info := runner.ConnectionInfo()
+
+	if info.SSLMode != "disable" {
+		t.Fatalf("sslmode = %q, want %q", info.SSLMode, "disable")
+	}
+	if info.SSLNegotiation != "postgres" {
+		t.Fatalf("sslnegotiation = %q, want Concourse default %q", info.SSLNegotiation, "postgres")
+	}
+	if info.ConnectTimeout != 0 {
+		t.Fatalf("connect timeout = %s, want unlimited", info.ConnectTimeout)
+	}
+}
+
+func copyPostgresTLSFixtures(t *testing.T) (string, string, string) {
+	t.Helper()
+	destination := t.TempDir()
+	copyFixture := func(name string) string {
+		t.Helper()
+		source := filepath.Join("..", "..", "hack", "vault", "certs", name)
+		contents, err := os.ReadFile(source)
+		if err != nil {
+			t.Fatal(err)
+		}
+		target := filepath.Join(destination, name)
+		if err := os.WriteFile(target, contents, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return target
+	}
+	return copyFixture("vault-ca.crt"), copyFixture("concourse.crt"), copyFixture("concourse.key")
+}
+
 func TestAdoptSuiteConfigValidatesNamesNodeAndState(t *testing.T) {
 	valid := SuiteConfig{
 		AdminDSN:     DefaultAdminDSN,
@@ -136,6 +279,16 @@ func TestAdoptSuiteConfigValidatesNamesNodeAndState(t *testing.T) {
 		{"mismatched template", func() SuiteConfig { c := valid; c.TemplateName = "cc_tpl_t1786000000_p4242_eeeeeeee"; return c }(), 1},
 		{"zero node", valid, 0},
 		{"negative node", valid, -1},
+		{"unsupported child sslmode", func() SuiteConfig {
+			c := valid
+			c.AdminDSN = "host=127.0.0.1 port=15432 user=postgres dbname=postgres sslmode=prefer"
+			return c
+		}(), 1},
+		{"omitted child sslmode", func() SuiteConfig {
+			c := valid
+			c.AdminDSN = "host=127.0.0.1 port=15432 user=postgres dbname=postgres"
+			return c
+		}(), 1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
