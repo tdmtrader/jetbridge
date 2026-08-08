@@ -1,0 +1,10 @@
+## Ship Summary
+
+**Message:** test(postgres): harden shared service acceptance
+**Files Changed:** 9
+**Timestamp:** 2026-08-08T20:05:53Z
+
+### Key Changes
+- Authenticate and require superuser access for the shared test service.
+- Prove per-suite DSN attribution, simultaneous distinct clones, and process-group cleanup.
+- Retire the obsolete local Colima launcher and verify wired fail-closed API defaults.
