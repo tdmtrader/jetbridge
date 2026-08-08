@@ -2,7 +2,18 @@
 set -euo pipefail
 
 printf '%s\n' "$$" >>"${FAKE_GINKGO_CHILD_PIDS}"
-trap 'printf "%s\\n" "$$" >>"${FAKE_GINKGO_TERMINATIONS}"; exit 0' HUP INT TERM
+printf '%s|%s\n' "${PGAPPNAME:-}" "${CONCOURSE_TEST_POSTGRES_DSN:-}" >>"${FAKE_GINKGO_DSN_LOG}"
+
+(
+	trap 'printf "grandchild\\n" >>"${FAKE_GINKGO_TERMINATIONS}"; exit 0' HUP INT TERM
+	while :; do
+		sleep 1
+	done
+) &
+printf '%s\n' "$!" >>"${FAKE_GINKGO_GRANDCHILD_PIDS}"
+
+trap 'printf "child\\n" >>"${FAKE_GINKGO_TERMINATIONS}"' TERM
+trap 'exit 0' HUP INT
 while :; do
-	sleep 1
+	sleep 1 || true
 done

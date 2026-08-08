@@ -106,7 +106,8 @@ ginkgo --procs=1 -v --timeout=3h --output-interceptor-mode=none ./topgun/k8s_beh
 | Go 1.25+ | All tests | [go.dev](https://go.dev/dl/) |
 | Ginkgo v2 | All Ginkgo suites | `go install github.com/onsi/ginkgo/v2/ginkgo@latest` |
 | PostgreSQL 14+ | PostgreSQL-backed unit and integration tests | Externally managed; verify with `make test-postgres-status` |
-| Docker | Image builds and K8s tests | [Docker on theborg](docs/docker-on-theborg.md) |
+| Docker | Image builds | [Docker on theborg](docs/docker-on-theborg.md) |
+| Compatible Docker host | K8s tests (CI-only from this Mac) | CI-provided |
 | Helm | K8s tests | `brew install helm` |
 | kubectl | K8s tests | `brew install kubectl` |
 
@@ -120,7 +121,8 @@ ginkgo --procs=1 -v --timeout=3h --output-interceptor-mode=none ./topgun/k8s_beh
 
 ### Flaky K8s behavioral tests
 
-~3 out of 117 specs may fail due to GC timing. Built-in retries handle most pod race conditions (container-not-found, pod-terminated-before-exec).
+Roughly three behavioral specs may fail due to GC timing. Built-in retries
+handle most pod races (container-not-found, pod-terminated-before-exec).
 
 ### Running a single test
 
