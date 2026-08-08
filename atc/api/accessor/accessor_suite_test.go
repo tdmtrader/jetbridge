@@ -20,9 +20,21 @@ var postgresRunner postgresrunner.Runner
 
 var _ = postgresrunner.GinkgoRunner(&postgresRunner)
 
+type realTeamFixture struct {
+	Conn        db.DbConn
+	TeamFactory db.TeamFactory
+}
+
 // useRealTeamFactory gives a database-backed spec its own migrated clone.
 // Route-map specs deliberately do not call this helper and stay database-free.
 func useRealTeamFactory() db.TeamFactory {
+	GinkgoHelper()
+	return useRealTeamFixture().TeamFactory
+}
+
+// useRealTeamFixture retains the clone-local connection for specs that need to
+// persist team attributes which are not exposed through TeamFactory.
+func useRealTeamFixture() *realTeamFixture {
 	GinkgoHelper()
 
 	postgresRunner.CreateTestDBFromTemplate()
@@ -44,7 +56,34 @@ func useRealTeamFactory() db.TeamFactory {
 
 	ignore := func(lager.Logger, lock.LockID) {}
 	lockFactory := lock.NewLockFactory(lockConns, ignore, ignore)
-	return db.NewTeamFactory(dbConn, lockFactory)
+	return &realTeamFixture{
+		Conn:        dbConn,
+		TeamFactory: db.NewTeamFactory(dbConn, lockFactory),
+	}
+}
+
+// persistTeam always reloads the row so callers observe values scanned from
+// PostgreSQL. Administrator status has no public setter, so set it by the
+// freshly allocated row ID within this spec's isolated clone.
+func (fixture *realTeamFixture) persistTeam(team atc.Team, admin bool) db.Team {
+	GinkgoHelper()
+
+	createdTeam, err := fixture.TeamFactory.CreateTeam(team)
+	Expect(err).NotTo(HaveOccurred())
+
+	if admin {
+		result, err := fixture.Conn.Exec(`UPDATE teams SET admin = TRUE WHERE id = $1`, createdTeam.ID())
+		Expect(err).NotTo(HaveOccurred())
+
+		rowsAffected, err := result.RowsAffected()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(rowsAffected).To(Equal(int64(1)))
+	}
+
+	persistedTeam, found, err := fixture.TeamFactory.FindTeam(team.Name)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(found).To(BeTrue())
+	return persistedTeam
 }
 
 // persistRoleTeam reloads the newly created row so authorization observes the
