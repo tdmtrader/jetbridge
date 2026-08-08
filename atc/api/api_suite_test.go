@@ -30,6 +30,7 @@ import (
 	workflowwaitsapi "github.com/concourse/concourse/agent/api/workflowwaits"
 	"github.com/concourse/concourse/agent/budget/budgettest"
 	"github.com/concourse/concourse/agent/credentials/credentialstest"
+	"github.com/concourse/concourse/agent/experiment"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/workflow"
 	"github.com/concourse/concourse/agent/workflow/workflowtest"
@@ -44,6 +45,7 @@ import (
 	"github.com/concourse/concourse/atc/api/auth"
 	"github.com/concourse/concourse/atc/api/containerserver/containerserverfakes"
 	"github.com/concourse/concourse/atc/api/policychecker/policycheckerfakes"
+	"github.com/concourse/concourse/atc/api/transcriptserver"
 	"github.com/concourse/concourse/atc/auditor/auditorfakes"
 	"github.com/concourse/concourse/atc/creds"
 	"github.com/concourse/concourse/atc/creds/credsfakes"
@@ -68,25 +70,11 @@ var (
 }`
 
 	fakeWorkerPool          *apifakes.FakePool
-	fakeVolumeRepository    *dbfakes.FakeVolumeRepository
-	dbTeamFactory           *dbfakes.FakeTeamFactory
-	dbPipelineFactory       *dbfakes.FakePipelineFactory
-	dbJobFactory            *dbfakes.FakeJobFactory
-	dbResourceFactory       *dbfakes.FakeResourceFactory
-	dbResourceConfigFactory *dbfakes.FakeResourceConfigFactory
-	fakePipeline            *dbfakes.FakePipeline
 	fakeAccess              *accessorfakes.FakeAccess
 	fakeAccessor            *accessorfakes.FakeAccessFactory
 	dbWorkerFactory         *dbfakes.FakeWorkerFactory
 	dbWorkerTeamFactory     *dbfakes.FakeTeamFactory
-	dbWorkerLifecycle       *dbfakes.FakeWorkerLifecycle
-	build                   *dbfakes.FakeBuild
-	dbBuildFactory          *dbfakes.FakeBuildFactory
-	dbUserFactory           *dbfakes.FakeUserFactory
-	dbCheckFactory          *dbfakes.FakeCheckFactory
-	fakePipelineRunFactory  *dbfakes.FakePipelineRunFactory
 	dbTeam                  *dbfakes.FakeTeam
-	dbWall                  *dbfakes.FakeWall
 	fakeSecretManager       *credsfakes.FakeSecrets
 	fakeVarSourcePool       *credsfakes.FakeVarSourcePool
 	fakePolicyChecker       *policycheckerfakes.FakePolicyChecker
@@ -97,10 +85,6 @@ var (
 	cliDownloadsDir         string
 	logger                  *lagertest.TestLogger
 	fakeClock               *fakeclock.FakeClock
-	dbSigningKeyFactory     *dbfakes.FakeSigningKeyFactory
-
-	fakeAgentRunTranscriptFactory *dbfakes.FakeAgentRunTranscriptFactory
-	apiFeedbackStore              *feedback.MemoryStore
 
 	constructedEventHandler *fakeEventHandlerFactory
 
@@ -118,6 +102,53 @@ type fakeEventHandlerFactory struct {
 }
 
 type unavailableWorkflowRunBackend struct{}
+
+// unavailableTeamFactory keeps default-route construction non-nil without
+// supplying synthetic successful database state. Converted team consumers
+// replace it with a clone-backed factory before serving their local router.
+type unavailableTeamFactory struct{}
+
+var errUnavailableTeamFactory = errors.New("team factory is unavailable in the API suite")
+
+var _ db.TeamFactory = unavailableTeamFactory{}
+
+// unavailableExperimentStore stays non-nil because the experiment handler
+// validates its store at construction time. Converted experiment specs replace
+// it with the real clone-backed factory before serving their local router.
+type unavailableExperimentStore struct{}
+
+var errUnavailableExperimentStore = errors.New("experiment store is unavailable in the API suite")
+
+var _ experiment.Store = unavailableExperimentStore{}
+var _ experiment.PagedStore = unavailableExperimentStore{}
+
+func (unavailableTeamFactory) CreateTeam(atc.Team) (db.Team, error) {
+	return nil, errUnavailableTeamFactory
+}
+
+func (unavailableTeamFactory) FindTeam(string) (db.Team, bool, error) {
+	return nil, false, errUnavailableTeamFactory
+}
+
+func (unavailableTeamFactory) GetTeams() ([]db.Team, error) {
+	return nil, errUnavailableTeamFactory
+}
+
+func (unavailableTeamFactory) GetByID(int) db.Team {
+	return nil
+}
+
+func (unavailableTeamFactory) CreateDefaultTeamIfNotExists() (db.Team, error) {
+	return nil, errUnavailableTeamFactory
+}
+
+func (unavailableTeamFactory) NotifyResourceScanner() error {
+	return errUnavailableTeamFactory
+}
+
+func (unavailableTeamFactory) NotifyCacher() error {
+	return errUnavailableTeamFactory
+}
 
 type allowWorkflowOutcomeAuthorizer struct{}
 
@@ -183,6 +214,101 @@ func (unavailableWorkflowRunBackend) OccurrencesForRun(context.Context, db.Agent
 	return nil, nil
 }
 
+func (unavailableExperimentStore) Create(
+	context.Context,
+	int,
+	string,
+	string,
+	experiment.Definition,
+) (experiment.StoredExperiment, error) {
+	return experiment.StoredExperiment{}, errUnavailableExperimentStore
+}
+
+func (unavailableExperimentStore) Update(
+	context.Context,
+	int,
+	experiment.ID,
+	int64,
+	string,
+	experiment.Definition,
+) (experiment.StoredExperiment, error) {
+	return experiment.StoredExperiment{}, errUnavailableExperimentStore
+}
+
+func (unavailableExperimentStore) Get(
+	context.Context,
+	int,
+	experiment.ID,
+) (experiment.StoredExperiment, bool, error) {
+	return experiment.StoredExperiment{}, false, errUnavailableExperimentStore
+}
+
+func (unavailableExperimentStore) List(context.Context, int) ([]experiment.StoredExperiment, error) {
+	return nil, errUnavailableExperimentStore
+}
+
+func (unavailableExperimentStore) ListPage(
+	context.Context,
+	int,
+	experiment.ListFilter,
+) ([]experiment.StoredExperiment, error) {
+	return nil, errUnavailableExperimentStore
+}
+
+func (unavailableExperimentStore) PreflightStart(
+	context.Context,
+	int,
+	experiment.ID,
+	int64,
+) (experiment.StoredExperiment, error) {
+	return experiment.StoredExperiment{}, errUnavailableExperimentStore
+}
+
+func (unavailableExperimentStore) Start(
+	context.Context,
+	int,
+	experiment.ID,
+	int64,
+	string,
+) (experiment.StoredExperiment, error) {
+	return experiment.StoredExperiment{}, errUnavailableExperimentStore
+}
+
+func (unavailableExperimentStore) Cancel(
+	context.Context,
+	int,
+	experiment.ID,
+	int64,
+	string,
+) (experiment.StoredExperiment, error) {
+	return experiment.StoredExperiment{}, errUnavailableExperimentStore
+}
+
+func (unavailableExperimentStore) ListCells(
+	context.Context,
+	int,
+	experiment.ID,
+) ([]experiment.StoredCell, error) {
+	return nil, errUnavailableExperimentStore
+}
+
+func (unavailableExperimentStore) GetCell(
+	context.Context,
+	int,
+	experiment.ID,
+	experiment.CellID,
+) (experiment.StoredCell, bool, error) {
+	return experiment.StoredCell{}, false, errUnavailableExperimentStore
+}
+
+func (unavailableExperimentStore) Scorecard(
+	context.Context,
+	int,
+	experiment.ID,
+) (experiment.Scorecard, error) {
+	return experiment.Scorecard{}, errUnavailableExperimentStore
+}
+
 func (f *fakeEventHandlerFactory) Construct(
 	logger lager.Logger,
 	build db.BuildForAPI,
@@ -197,8 +323,9 @@ func (f *fakeEventHandlerFactory) Construct(
 	})
 }
 
-// apiDBDeps is every db-typed collaborator the API handler is built from. The
-// suite's default is all fakes; a converted Describe passes real ones.
+// apiDBDeps is every database-backed collaborator the API handler is built
+// from. The suite default uses lightweight test collaborators (or nil where a
+// handler explicitly supports it); a converted Describe passes real stores.
 type apiDBDeps struct {
 	teamFactory           db.TeamFactory
 	pipelineFactory       db.PipelineFactory
@@ -215,9 +342,10 @@ type apiDBDeps struct {
 
 	wall              db.Wall
 	signingKeyFactory db.SigningKeyFactory
-	transcripts       db.AgentRunTranscriptFactory
-	workflowRuns      db.AgentWorkflowRunsFactory
+	transcripts       transcriptserver.Store
+	workflowRuns      ticketjournal.RunStore
 	experiments       experimentsapi.Store
+	feedbackStore     feedback.Store
 
 	// The agent handlers are configured with a trusted team. The suite
 	// hard-codes 1, which is safe only while nothing resolves it against a row.
@@ -227,17 +355,13 @@ type apiDBDeps struct {
 
 func fakeDBDeps() apiDBDeps {
 	return apiDBDeps{
-		teamFactory: dbTeamFactory, pipelineFactory: dbPipelineFactory,
-		jobFactory: dbJobFactory, resourceFactory: dbResourceFactory,
-		workerFactory: dbWorkerFactory, workerTeamFactory: dbWorkerTeamFactory,
-		volumeRepository: fakeVolumeRepository, buildFactory: dbBuildFactory,
-		checkFactory: dbCheckFactory, pipelineRunFactory: fakePipelineRunFactory,
-		resourceConfigFactory: dbResourceConfigFactory, userFactory: dbUserFactory,
-		wall: dbWall, signingKeyFactory: dbSigningKeyFactory,
-		transcripts:   fakeAgentRunTranscriptFactory,
-		workflowRuns:  new(dbfakes.FakeAgentWorkflowRunsFactory),
-		experiments:   new(dbfakes.FakeAgentExperimentsFactory),
-		trustedTeamID: 1, trustedTeamName: atc.DefaultTeamName,
+		teamFactory:       unavailableTeamFactory{},
+		workerFactory:     dbWorkerFactory,
+		workerTeamFactory: dbWorkerTeamFactory,
+		workflowRuns:      unavailableWorkflowRunBackend{},
+		experiments:       unavailableExperimentStore{},
+		feedbackStore:     feedback.NewMemoryStore(),
+		trustedTeamID:     1, trustedTeamName: atc.DefaultTeamName,
 	}
 }
 
@@ -365,7 +489,7 @@ func newAPIServer(deps apiDBDeps) *httptest.Server {
 		fakeClock,
 		deps.signingKeyFactory,
 		nil,
-		apiFeedbackStore,
+		deps.feedbackStore,
 		reviewstest.NewMemoryStore(),
 		metricstest.NewMemoryStore(),
 		apiTicketStore,
@@ -413,21 +537,7 @@ func newAPIServer(deps apiDBDeps) *httptest.Server {
 }
 
 var _ = BeforeEach(func() {
-	dbTeamFactory = new(dbfakes.FakeTeamFactory)
 	dbWorkerTeamFactory = new(dbfakes.FakeTeamFactory)
-	dbPipelineFactory = new(dbfakes.FakePipelineFactory)
-	dbJobFactory = new(dbfakes.FakeJobFactory)
-	dbResourceFactory = new(dbfakes.FakeResourceFactory)
-	dbResourceConfigFactory = new(dbfakes.FakeResourceConfigFactory)
-	dbBuildFactory = new(dbfakes.FakeBuildFactory)
-	dbUserFactory = new(dbfakes.FakeUserFactory)
-	dbCheckFactory = new(dbfakes.FakeCheckFactory)
-	fakePipelineRunFactory = new(dbfakes.FakePipelineRunFactory)
-	dbWall = new(dbfakes.FakeWall)
-	dbSigningKeyFactory = new(dbfakes.FakeSigningKeyFactory)
-	fakeAgentRunTranscriptFactory = new(dbfakes.FakeAgentRunTranscriptFactory)
-	apiFeedbackStore = feedback.NewMemoryStore()
-
 	interceptTimeoutFactory = new(containerserverfakes.FakeInterceptTimeoutFactory)
 	interceptTimeout = new(containerserverfakes.FakeInterceptTimeout)
 	interceptTimeoutFactory.NewInterceptTimeoutReturns(interceptTimeout)
@@ -435,8 +545,6 @@ var _ = BeforeEach(func() {
 	dbTeam = new(dbfakes.FakeTeam)
 	dbTeam.IDReturns(734)
 	dbTeam.NameReturns("some-team")
-	dbTeamFactory.FindTeamReturns(dbTeam, true, nil)
-	dbTeamFactory.GetByIDReturns(dbTeam)
 	dbWorkerTeamFactory.FindTeamReturns(dbTeam, true, nil)
 	dbWorkerTeamFactory.GetByIDReturns(dbTeam)
 
@@ -444,15 +552,10 @@ var _ = BeforeEach(func() {
 	fakeAccessor = new(accessorfakes.FakeAccessFactory)
 	fakeAccessor.CreateReturns(fakeAccess, nil)
 
-	fakePipeline = new(dbfakes.FakePipeline)
-	dbTeam.PipelineReturns(fakePipeline, true, nil)
-
 	dbWorkerFactory = new(dbfakes.FakeWorkerFactory)
-	dbWorkerLifecycle = new(dbfakes.FakeWorkerLifecycle)
 
 	fakeWorkerPool = new(apifakes.FakePool)
 
-	fakeVolumeRepository = new(dbfakes.FakeVolumeRepository)
 	fakeSecretManager = new(credsfakes.FakeSecrets)
 	fakeVarSourcePool = new(credsfakes.FakeVarSourcePool)
 	credsManagers = make(creds.Managers)
@@ -471,9 +574,16 @@ var _ = BeforeEach(func() {
 
 	isTLSEnabled = false
 
-	build = new(dbfakes.FakeBuild)
-
-	server = newAPIServer(fakeDBDeps())
+	defaultServer := newAPIServer(fakeDBDeps())
+	server = defaultServer
+	DeferCleanup(func() {
+		// Some endpoint specs replace the package server with a clone-backed
+		// router. AfterEach closes that replacement; retain this pointer so the
+		// otherwise unreachable default listener is closed as well.
+		if server != defaultServer {
+			defaultServer.Close()
+		}
+	})
 
 	client = &http.Client{
 		Transport: &http.Transport{},
