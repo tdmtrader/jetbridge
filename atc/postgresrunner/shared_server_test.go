@@ -433,7 +433,7 @@ func requireSharedPostgres(t *testing.T) string {
 	}
 	t.Cleanup(func() { admin.Close() })
 	if err := admin.Ping(); err != nil {
-		t.Fatalf("shared PostgreSQL unavailable: %v; run make test-postgres-up", err)
+		t.Fatalf("shared PostgreSQL unavailable: %v; start the configured external service or set CONCOURSE_TEST_POSTGRES_DSN", err)
 	}
 	return dsn
 }

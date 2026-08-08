@@ -3,6 +3,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE_ROOT="${CONCOURSE_TEST_SOURCE_ROOT:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
+DEFAULT_ADMIN_DSN="host=127.0.0.1 port=15432 user=postgres dbname=postgres sslmode=disable"
+ADMIN_DSN="${CONCOURSE_TEST_POSTGRES_DSN:-${DEFAULT_ADMIN_DSN}}"
 LOG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/concourse-postgres-concurrency.XXXXXX")"
 TOKEN="$(date +%s)_${$}"
 PIPELINE_APPLICATION_NAME="cc_accept_pipelineserver_${TOKEN}"
@@ -66,15 +68,21 @@ require_source_root() {
 		echo "ERROR: ginkgo is required" >&2
 		exit 2
 	}
+	command -v pg_isready >/dev/null 2>&1 || {
+		echo "ERROR: pg_isready is required" >&2
+		exit 2
+	}
+	command -v psql >/dev/null 2>&1 || {
+		echo "ERROR: psql is required" >&2
+		exit 2
+	}
 }
 
-default_admin_dsn() {
-	local exported
-	exported="$("${SOURCE_ROOT}/hack/test-postgres.sh" env)"
-	# The helper owns the default admin DSN. Source only its single export, never
-	# print it, so a caller-supplied password remains out of this script's output.
-	eval "${exported}"
-	printf '%s' "${CONCOURSE_TEST_POSTGRES_DSN}"
+require_shared_postgres() {
+	if ! pg_isready -q -d "${ADMIN_DSN}"; then
+		echo "ERROR: shared PostgreSQL must already be running; set CONCOURSE_TEST_POSTGRES_DSN for a non-default service" >&2
+		exit 1
+	fi
 }
 
 child_alive() {
@@ -83,7 +91,7 @@ child_alive() {
 }
 
 catalog_rows() {
-	docker --context colima exec concourse-test-postgres psql -U postgres -d postgres -At -F '|' \
+	psql --dbname="${ADMIN_DSN}" -At -F '|' \
 		-v ON_ERROR_STOP=1 \
 		-c "SELECT application_name, datname FROM pg_stat_activity WHERE application_name IN ('${PIPELINE_APPLICATION_NAME}', '${AUTH_APPLICATION_NAME}') AND datname LIKE 'cc_db_%' ORDER BY application_name, datname;"
 }
@@ -120,15 +128,14 @@ start_suite() {
 	local repeat=$5
 	(
 		cd "${SOURCE_ROOT}"
-		exec env "CONCOURSE_TEST_POSTGRES_DSN=${admin_dsn} application_name=${application_name}" \
+		exec env "CONCOURSE_TEST_POSTGRES_DSN=${admin_dsn}" "PGAPPNAME=${application_name}" \
 			ginkgo --procs=1 --no-color --repeat="${repeat}" "${package}"
 	) >"${log}" 2>&1 &
 	SUITE_PID=$!
 }
 
 require_source_root
-"${SOURCE_ROOT}/hack/test-postgres.sh" status
-ADMIN_DSN="$(default_admin_dsn)"
+require_shared_postgres
 
 # Pipelineserver is deliberately repeated: its individual clone windows are
 # very short, so repeating the independent package keeps its child alive long

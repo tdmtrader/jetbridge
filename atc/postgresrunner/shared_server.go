@@ -232,11 +232,11 @@ func (r *Runner) CreateSuiteTemplate(ctx context.Context) (config SuiteConfig, e
 	adminDSN := configuredAdminDSN()
 	admin, err := pgx.Connect(ctx, adminDSN)
 	if err != nil {
-		return SuiteConfig{}, fmt.Errorf("shared PostgreSQL unavailable: %w; run make test-postgres-up", err)
+		return SuiteConfig{}, fmt.Errorf("shared PostgreSQL unavailable: %w; start the configured external service or set CONCOURSE_TEST_POSTGRES_DSN", err)
 	}
 	defer admin.Close(context.Background())
 	if err := admin.Ping(ctx); err != nil {
-		return SuiteConfig{}, fmt.Errorf("shared PostgreSQL unavailable: %w; run make test-postgres-up", err)
+		return SuiteConfig{}, fmt.Errorf("shared PostgreSQL unavailable: %w; start the configured external service or set CONCOURSE_TEST_POSTGRES_DSN", err)
 	}
 	if _, err := admin.Exec(ctx, `SELECT pg_advisory_lock($1)`, reaperAdvisoryLockID); err != nil {
 		return SuiteConfig{}, fmt.Errorf("acquire shared PostgreSQL reaper lock: %w", err)

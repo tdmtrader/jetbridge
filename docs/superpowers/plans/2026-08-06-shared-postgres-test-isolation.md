@@ -1,5 +1,11 @@
 # Shared PostgreSQL Test Isolation Implementation Plan
 
+> **Environment update (2026-08-08):** This is the historical implementation
+> plan. Its Colima lifecycle steps are superseded because this Mac no longer
+> has a Docker daemon. The completed runner/template/clone work remains in use
+> against an externally managed machine-wide PostgreSQL service; the current
+> helper exposes only `status` and `env` and performs no lifecycle mutation.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace per-Ginkgo-process PostgreSQL postmasters with one Colima-hosted machine-wide PostgreSQL service that clones a unique database from a suite-owned template for every spec.
