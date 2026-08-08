@@ -21,10 +21,11 @@ var (
 	realWallClock  = db.NewClock()
 )
 
-// Registers BeforeSuite/AfterSuite only: one postmaster and one migrated
-// template per parallel process. A spec that never calls useRealDB pays
-// nothing beyond that -- no database is created and no connection opened, so
-// the ~950 specs still running against fakes are unaffected.
+// Registers BeforeSuite/AfterSuite only: all Ginkgo processes share one
+// machine-wide PostgreSQL server and one synchronized migrated suite template.
+// Each caller of useRealDB gets its own uniquely named clone, so parallel specs
+// are isolated without starting a postmaster per process. A spec that never
+// calls useRealDB creates no clone and opens no connection.
 var _ = postgresrunner.GinkgoRunner(&postgresRunner)
 
 // realDB is what a converted Describe holds: the connection, the factories the
@@ -106,6 +107,7 @@ func useRealDB() *realDB {
 		transcripts:       db.NewAgentRunTranscriptFactory(conn),
 		workflowRuns:      db.NewAgentWorkflowRunsFactory(conn),
 		experiments:       db.NewAgentExperimentsFactory(conn, nil),
+		feedbackStore:     db.NewAgentFeedbackFactory(conn),
 
 		trustedTeamID:   main.ID(),
 		trustedTeamName: main.Name(),
