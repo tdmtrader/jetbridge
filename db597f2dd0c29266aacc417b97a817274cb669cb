@@ -1,0 +1,10 @@
+## Ship Summary
+
+**Message:** docs: record postgres conversion handoff
+**Files Changed:** 6
+**Timestamp:** 2026-08-08T20:05:53Z
+
+### Key Changes
+- Record completed conversion and verification evidence without overstating missing historical checkpoints.
+- Preserve final-review-pending state.
+- Add a self-contained theborg continuation prompt with goal, branch, environment, tests, and remaining work.
