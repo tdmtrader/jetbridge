@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -15,9 +16,7 @@ import (
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/creds/noop"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 	. "github.com/concourse/concourse/atc/testhelpers"
-	"github.com/onsi/gomega/gbytes"
 	"github.com/tedsuo/rata"
 	"sigs.k8s.io/yaml"
 
@@ -169,6 +168,32 @@ func (team *configAPITeam) setConfigError(err error) {
 	team.state.configErr = err
 }
 
+func (team *configAPITeam) setSaveError(err error) {
+	team.state.mu.Lock()
+	defer team.state.mu.Unlock()
+	team.state.saveErr = err
+}
+
+func (team *configAPITeam) saveCallSnapshot() ([]configAPISaveCall, error) {
+	team.state.mu.Lock()
+	defer team.state.mu.Unlock()
+
+	calls := make([]configAPISaveCall, len(team.state.saveCalls))
+	for i, call := range team.state.saveCalls {
+		clonedConfig, err := cloneConfigAPIConfig(call.config)
+		if err != nil {
+			return nil, err
+		}
+		calls[i] = configAPISaveCall{
+			ref:             cloneConfigAPIPipelineRef(call.ref),
+			config:          clonedConfig,
+			from:            call.from,
+			initiallyPaused: call.initiallyPaused,
+		}
+	}
+	return calls, nil
+}
+
 func (team *configAPITeam) pipelineCallSnapshot() []atc.PipelineRef {
 	team.state.mu.Lock()
 	defer team.state.mu.Unlock()
@@ -230,15 +255,18 @@ func (factory *configAPITeamFactory) findTeamCallSnapshot() []string {
 	return append([]string(nil), factory.findTeamCalls...)
 }
 
+func (factory *configAPITeamFactory) notifyResourceScannerCallCount() int {
+	factory.mu.Lock()
+	defer factory.mu.Unlock()
+	return factory.notifyResourceScannerCalls
+}
+
 var _ = Describe("Config API", func() {
 	var (
-		pipelineConfig   atc.Config
-		requestGenerator *rata.RequestGenerator
+		pipelineConfig atc.Config
 	)
 
 	BeforeEach(func() {
-		requestGenerator = rata.NewRequestGenerator(server.URL, atc.Routes)
-
 		pipelineConfig = atc.Config{
 			Groups: atc.GroupConfigs{
 				{
@@ -552,23 +580,129 @@ var _ = Describe("Config API", func() {
 
 	Describe("PUT /api/v1/teams/:team_name/pipelines/:name/config", func() {
 		var (
-			request  *http.Request
-			response *http.Response
+			realdb                  *realDB
+			deps                    apiDBDeps
+			server                  *httptest.Server
+			realTeam                db.Team
+			realRequestedTeam       db.Team
+			realPipeline            db.Pipeline
+			configTeam              *configAPITeam
+			configTeamFactory       *configAPITeamFactory
+			fromVersion             db.ConfigVersion
+			originalPipelineConfig  atc.Config
+			routeParams             rata.Params
+			requestHeader           http.Header
+			requestQuery            url.Values
+			requestBody             []byte
+			scannerSignal           *db.NotifySignal
+			response                *http.Response
+			saveCalls               func() []configAPISaveCall
+			expectOriginalUnchanged func()
+			expectPersistedPipeline func(db.Team, atc.PipelineRef, atc.Config, bool, *db.ConfigVersion) db.Pipeline
+			expectUpdatedSave       func(atc.PipelineRef, atc.Config)
 		)
 
 		BeforeEach(func() {
+			realdb = useRealDB()
+			deps = realdb.Deps
+
 			var err error
-			request, err = requestGenerator.CreateRequest(atc.SaveConfig, rata.Params{
+			realTeam, err = deps.teamFactory.CreateTeam(atc.Team{Name: "a-team"})
+			Expect(err).NotTo(HaveOccurred())
+			realPipeline = realdb.SavePipeline(realTeam, "a-pipeline", pipelineConfig)
+			fromVersion = realPipeline.ConfigVersion()
+			originalPipelineConfig, err = realPipeline.Config()
+			Expect(err).NotTo(HaveOccurred())
+
+			configTeam = &configAPITeam{Team: realTeam, state: &configAPITeamState{}}
+			configTeamFactory = &configAPITeamFactory{
+				TeamFactory: deps.teamFactory,
+				team:        configTeam,
+			}
+			deps.teamFactory = configTeamFactory
+
+			routeParams = rata.Params{
 				"team_name":     "a-team",
 				"pipeline_name": "a-pipeline",
-			}, nil)
+			}
+			requestHeader = make(http.Header)
+			requestQuery = make(url.Values)
+			requestBody = nil
+
+			scannerSignal, err = realdb.Conn.Bus().ListenSignal(atc.ComponentLidarScanner)
 			Expect(err).NotTo(HaveOccurred())
+			DeferCleanup(func() {
+				Expect(realdb.Conn.Bus().UnlistenSignal(atc.ComponentLidarScanner, scannerSignal)).To(Succeed())
+			})
+
+			saveCalls = func() []configAPISaveCall {
+				GinkgoHelper()
+				calls, err := configTeam.saveCallSnapshot()
+				Expect(err).NotTo(HaveOccurred())
+				return calls
+			}
+
+			expectPersistedPipeline = func(
+				team db.Team,
+				ref atc.PipelineRef,
+				expectedConfig atc.Config,
+				expectedPaused bool,
+				previousVersion *db.ConfigVersion,
+			) db.Pipeline {
+				GinkgoHelper()
+				pipeline, found, err := team.Pipeline(ref)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(found).To(BeTrue())
+				persistedConfig, err := pipeline.Config()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(persistedConfig).To(Equal(expectedConfig))
+				Expect(pipeline.Paused()).To(Equal(expectedPaused))
+				if previousVersion == nil {
+					Expect(pipeline.ConfigVersion()).NotTo(BeZero())
+				} else {
+					Expect(pipeline.ConfigVersion()).NotTo(Equal(*previousVersion))
+				}
+				return pipeline
+			}
+
+			expectOriginalUnchanged = func() {
+				GinkgoHelper()
+				pipeline, found, err := realTeam.Pipeline(atc.PipelineRef{Name: "a-pipeline"})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(found).To(BeTrue())
+				persistedConfig, err := pipeline.Config()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(persistedConfig).To(Equal(originalPipelineConfig))
+				Expect(pipeline.ConfigVersion()).To(Equal(fromVersion))
+				Expect(pipeline.Paused()).To(BeFalse())
+			}
+
+			expectUpdatedSave = func(ref atc.PipelineRef, expectedConfig atc.Config) {
+				GinkgoHelper()
+				Expect(saveCalls()).To(Equal([]configAPISaveCall{{
+					ref:             ref,
+					config:          expectedConfig,
+					from:            fromVersion,
+					initiallyPaused: true,
+				}}))
+				expectPersistedPipeline(realTeam, ref, expectedConfig, false, &fromVersion)
+			}
+
 		})
 
 		JustBeforeEach(func() {
-			var err error
+			realdb.Deps = deps
+			server = realdb.Serve()
+			requestGenerator := rata.NewRequestGenerator(server.URL, atc.Routes)
+			request, err := requestGenerator.CreateRequest(atc.SaveConfig, routeParams, nil)
+			Expect(err).NotTo(HaveOccurred())
+			request.Header = requestHeader.Clone()
+			request.URL.RawQuery = requestQuery.Encode()
+			request.Body = io.NopCloser(bytes.NewReader(requestBody))
+
 			response, err = client.Do(request)
 			Expect(err).NotTo(HaveOccurred())
+			DeferCleanup(response.Body.Close)
 		})
 
 		Context("when authorized", func() {
@@ -581,21 +715,23 @@ var _ = Describe("Config API", func() {
 				Context("and is a string", func() {
 					BeforeEach(func() {
 						var err error
-						request, err = requestGenerator.CreateRequest(atc.SaveConfig, rata.Params{
+						realRequestedTeam, err = configTeamFactory.TeamFactory.CreateTeam(atc.Team{Name: "_team"})
+						Expect(err).NotTo(HaveOccurred())
+						routeParams = rata.Params{
 							"team_name":     "_team",
 							"pipeline_name": "_pipeline",
-						}, nil)
-						Expect(err).NotTo(HaveOccurred())
+						}
 
-						request.Header.Set("Content-Type", "application/json")
+						requestHeader.Set("Content-Type", "application/json")
 
 						payload, err := json.Marshal(pipelineConfig)
 						Expect(err).NotTo(HaveOccurred())
 
-						request.Body = gbytes.BufferWithBytes(payload)
+						requestBody = payload
 					})
 
 					It("returns warnings in the response body", func() {
+						Expect(response.StatusCode).To(Equal(http.StatusCreated))
 						Expect(io.ReadAll(response.Body)).To(MatchJSON(`
 							{
 								"warnings": [
@@ -609,23 +745,29 @@ var _ = Describe("Config API", func() {
 									}
 								]
 							}`))
+						persisted := expectPersistedPipeline(
+							realRequestedTeam,
+							atc.PipelineRef{Name: "_pipeline"},
+							pipelineConfig,
+							true,
+							nil,
+						)
+						Expect(persisted.ConfigVersion()).NotTo(BeZero())
 					})
 				})
 				Context("and is an empty string", func() {
 					BeforeEach(func() {
-						var err error
-						request, err = requestGenerator.CreateRequest(atc.SaveConfig, rata.Params{
+						routeParams = rata.Params{
 							"team_name":     "",
 							"pipeline_name": "",
-						}, nil)
-						Expect(err).NotTo(HaveOccurred())
+						}
 
-						request.Header.Set("Content-Type", "application/json")
+						requestHeader.Set("Content-Type", "application/json")
 
 						payload, err := json.Marshal(pipelineConfig)
 						Expect(err).NotTo(HaveOccurred())
 
-						request.Body = gbytes.BufferWithBytes(payload)
+						requestBody = payload
 					})
 
 					It("returns warnings in the response body", func() {
@@ -635,6 +777,9 @@ var _ = Describe("Config API", func() {
 										"pipeline: identifier cannot be an empty string"
 								]
 							}`))
+						Expect(configTeamFactory.findTeamCallSnapshot()).To(BeEmpty())
+						Expect(saveCalls()).To(BeEmpty())
+						expectOriginalUnchanged()
 					})
 				})
 
@@ -642,14 +787,14 @@ var _ = Describe("Config API", func() {
 
 			Context("when a config version is specified", func() {
 				BeforeEach(func() {
-					request.Header.Set(atc.ConfigVersionHeader, "42")
+					requestHeader.Set(atc.ConfigVersionHeader, strconv.FormatInt(int64(fromVersion), 10))
 				})
 
 				Context("when the config is malformed", func() {
 					Context("JSON", func() {
 						BeforeEach(func() {
-							request.Header.Set("Content-Type", "application/json")
-							request.Body = gbytes.BufferWithBytes([]byte(`{`))
+							requestHeader.Set("Content-Type", "application/json")
+							requestBody = []byte(`{`)
 						})
 
 						It("returns 400", func() {
@@ -673,14 +818,15 @@ var _ = Describe("Config API", func() {
 						})
 
 						It("does not save anything", func() {
-							Expect(dbTeam.SavePipelineCallCount()).To(Equal(0))
+							Expect(saveCalls()).To(BeEmpty())
+							expectOriginalUnchanged()
 						})
 					})
 
 					Context("YAML", func() {
 						BeforeEach(func() {
-							request.Header.Set("Content-Type", "application/x-yaml")
-							request.Body = gbytes.BufferWithBytes([]byte(`{`))
+							requestHeader.Set("Content-Type", "application/x-yaml")
+							requestBody = []byte(`{`)
 						})
 
 						It("returns 400", func() {
@@ -704,7 +850,8 @@ var _ = Describe("Config API", func() {
 						})
 
 						It("does not save anything", func() {
-							Expect(dbTeam.SavePipelineCallCount()).To(Equal(0))
+							Expect(saveCalls()).To(BeEmpty())
+							expectOriginalUnchanged()
 						})
 					})
 				})
@@ -712,12 +859,12 @@ var _ = Describe("Config API", func() {
 				Context("when the config is valid", func() {
 					Context("JSON", func() {
 						BeforeEach(func() {
-							request.Header.Set("Content-Type", "application/json")
+							requestHeader.Set("Content-Type", "application/json")
 
 							payload, err := json.Marshal(pipelineConfig)
 							Expect(err).NotTo(HaveOccurred())
 
-							request.Body = gbytes.BufferWithBytes(payload)
+							requestBody = payload
 						})
 
 						It("returns 200", func() {
@@ -725,7 +872,8 @@ var _ = Describe("Config API", func() {
 						})
 
 						It("notifies the scanner to run", func() {
-							Expect(dbTeamFactory.NotifyResourceScannerCallCount()).To(Equal(1))
+							Expect(configTeamFactory.notifyResourceScannerCallCount()).To(Equal(1))
+							Eventually(scannerSignal.C()).Should(Receive())
 						})
 
 						It("returns Content-Type 'application/json'", func() {
@@ -736,18 +884,12 @@ var _ = Describe("Config API", func() {
 						})
 
 						It("saves it initially paused", func() {
-							Expect(dbTeam.SavePipelineCallCount()).To(Equal(1))
-
-							ref, savedConfig, id, initiallyPaused := dbTeam.SavePipelineArgsForCall(0)
-							Expect(ref.Name).To(Equal("a-pipeline"))
-							Expect(savedConfig).To(Equal(pipelineConfig))
-							Expect(id).To(Equal(db.ConfigVersion(42)))
-							Expect(initiallyPaused).To(BeTrue())
+							expectUpdatedSave(atc.PipelineRef{Name: "a-pipeline"}, pipelineConfig)
 						})
 
 						Context("and saving it fails", func() {
 							BeforeEach(func() {
-								dbTeam.SavePipelineReturns(nil, false, errors.New("oh no!"))
+								configTeam.setSaveError(errors.New("oh no!"))
 							})
 
 							It("returns 500", func() {
@@ -756,12 +898,27 @@ var _ = Describe("Config API", func() {
 
 							It("returns the error in the response body", func() {
 								Expect(io.ReadAll(response.Body)).To(Equal([]byte("failed to save config: oh no!")))
+								expectOriginalUnchanged()
 							})
 						})
 
 						Context("when the pipeline is an immutable workflow-run template", func() {
 							BeforeEach(func() {
-								dbTeam.SavePipelineReturns(nil, false, db.ErrWorkflowRunTemplateImmutable)
+								Expect(realPipeline.Destroy()).To(Succeed())
+								templateConfig := pipelineConfig
+								templateConfig.Template = true
+								templateFactory := db.NewWorkflowRunTemplateFactory(realdb.Conn, realdb.LockFactory)
+								templatePipeline, created, err := templateFactory.SaveWorkflowRunTemplate(
+									context.Background(),
+									realTeam.ID(),
+									atc.PipelineRef{Name: "a-pipeline"},
+									templateConfig,
+								)
+								Expect(err).NotTo(HaveOccurred())
+								Expect(created).To(BeTrue())
+								owned, err := templateFactory.IsWorkflowRunTemplate(context.Background(), templatePipeline.ID())
+								Expect(err).NotTo(HaveOccurred())
+								Expect(owned).To(BeTrue())
 							})
 
 							It("returns 409 Conflict", func() {
@@ -771,16 +928,23 @@ var _ = Describe("Config API", func() {
 
 						Context("when it's the first time the pipeline has been created", func() {
 							BeforeEach(func() {
-								returnedPipeline := new(dbfakes.FakePipeline)
-								dbTeam.SavePipelineReturns(returnedPipeline, true, nil)
+								Expect(realPipeline.Destroy()).To(Succeed())
 							})
 
 							It("returns 201", func() {
 								Expect(response.StatusCode).To(Equal(http.StatusCreated))
+								Expect(saveCalls()).To(Equal([]configAPISaveCall{{
+									ref:             atc.PipelineRef{Name: "a-pipeline"},
+									config:          pipelineConfig,
+									from:            fromVersion,
+									initiallyPaused: true,
+								}}))
+								expectPersistedPipeline(realTeam, atc.PipelineRef{Name: "a-pipeline"}, pipelineConfig, true, nil)
 							})
 
 							It("does not notify the scanner to run", func() {
-								Expect(dbTeamFactory.NotifyResourceScannerCallCount()).To(Equal(0))
+								Expect(configTeamFactory.notifyResourceScannerCallCount()).To(BeZero())
+								Consistently(scannerSignal.C()).ShouldNot(Receive())
 							})
 						})
 
@@ -789,7 +953,7 @@ var _ = Describe("Config API", func() {
 								pipelineConfig.Groups[0].Resources = []string{"missing-resource"}
 								payload, err := json.Marshal(pipelineConfig)
 								Expect(err).NotTo(HaveOccurred())
-								request.Body = gbytes.BufferWithBytes(payload)
+								requestBody = payload
 							})
 
 							It("returns 400", func() {
@@ -813,19 +977,20 @@ var _ = Describe("Config API", func() {
 							})
 
 							It("does not save it", func() {
-								Expect(dbTeam.SavePipelineCallCount()).To(Equal(0))
+								Expect(saveCalls()).To(BeEmpty())
+								expectOriginalUnchanged()
 							})
 						})
 					})
 
 					Context("YAML", func() {
 						BeforeEach(func() {
-							request.Header.Set("Content-Type", "application/x-yaml")
+							requestHeader.Set("Content-Type", "application/x-yaml")
 
 							payload, err := yaml.Marshal(pipelineConfig)
 							Expect(err).NotTo(HaveOccurred())
 
-							request.Body = gbytes.BufferWithBytes(payload)
+							requestBody = payload
 						})
 
 						It("returns 200", func() {
@@ -833,7 +998,8 @@ var _ = Describe("Config API", func() {
 						})
 
 						It("notifies the scanner to run", func() {
-							Expect(dbTeamFactory.NotifyResourceScannerCallCount()).To(Equal(1))
+							Expect(configTeamFactory.notifyResourceScannerCallCount()).To(Equal(1))
+							Eventually(scannerSignal.C()).Should(Receive())
 						})
 
 						It("returns Content-Type 'application/json'", func() {
@@ -844,13 +1010,7 @@ var _ = Describe("Config API", func() {
 						})
 
 						It("saves it initially paused", func() {
-							Expect(dbTeam.SavePipelineCallCount()).To(Equal(1))
-
-							ref, savedConfig, id, initiallyPaused := dbTeam.SavePipelineArgsForCall(0)
-							Expect(ref.Name).To(Equal("a-pipeline"))
-							Expect(savedConfig).To(Equal(pipelineConfig))
-							Expect(id).To(Equal(db.ConfigVersion(42)))
-							Expect(initiallyPaused).To(BeTrue())
+							expectUpdatedSave(atc.PipelineRef{Name: "a-pipeline"}, pipelineConfig)
 						})
 
 						Context("when the payload contains suspicious types", func() {
@@ -875,8 +1035,8 @@ jobs:
         BAR: 1
         BAZ: 1.9`
 
-								request.Header.Set("Content-Type", "application/x-yaml")
-								request.Body = io.NopCloser(bytes.NewBufferString(payload))
+								requestHeader.Set("Content-Type", "application/x-yaml")
+								requestBody = []byte(payload)
 							})
 
 							It("returns 200", func() {
@@ -891,11 +1051,7 @@ jobs:
 							})
 
 							It("saves it", func() {
-								Expect(dbTeam.SavePipelineCallCount()).To(Equal(1))
-
-								ref, savedConfig, id, initiallyPaused := dbTeam.SavePipelineArgsForCall(0)
-								Expect(ref.Name).To(Equal("a-pipeline"))
-								Expect(savedConfig).To(Equal(atc.Config{
+								expectedConfig := atc.Config{
 									Resources: []atc.ResourceConfig{
 										{
 											Name:         "some-resource",
@@ -935,9 +1091,8 @@ jobs:
 											},
 										},
 									},
-								}))
-								Expect(id).To(Equal(db.ConfigVersion(42)))
-								Expect(initiallyPaused).To(BeTrue())
+								}
+								expectUpdatedSave(atc.PipelineRef{Name: "a-pipeline"}, expectedConfig)
 							})
 						})
 
@@ -947,9 +1102,7 @@ jobs:
 							)
 
 							BeforeEach(func() {
-								query := request.URL.Query()
-								query.Add(atc.SaveConfigCheckCreds, "")
-								request.URL.RawQuery = query.Encode()
+								requestQuery.Add(atc.SaveConfigCheckCreds, "")
 							})
 
 							ExpectCredsValidationPass := func() {
@@ -959,7 +1112,9 @@ jobs:
 									})
 
 									It("passes validation", func() {
-										Expect(dbTeam.SavePipelineCallCount()).To(Equal(1))
+										var expectedConfig atc.Config
+										Expect(yaml.Unmarshal([]byte(payload), &expectedConfig)).To(Succeed())
+										expectUpdatedSave(atc.PipelineRef{Name: "a-pipeline"}, expectedConfig)
 									})
 
 									It("returns 200 ok", func() {
@@ -975,7 +1130,8 @@ jobs:
 									})
 
 									It("fail validation", func() {
-										Expect(dbTeam.SavePipelineCallCount()).To(Equal(0))
+										Expect(saveCalls()).To(BeEmpty())
+										expectOriginalUnchanged()
 									})
 
 									It("returns 400", func() {
@@ -999,8 +1155,8 @@ jobs:
   - task: some-task
     file: some/task/config.yaml`
 
-									request.Header.Set("Content-Type", "application/x-yaml")
-									request.Body = io.NopCloser(bytes.NewBufferString(payload))
+									requestHeader.Set("Content-Type", "application/x-yaml")
+									requestBody = []byte(payload)
 								})
 
 								ExpectCredsValidationPass()
@@ -1020,8 +1176,8 @@ jobs:
   plan:
   - get: some-resource`
 
-									request.Header.Set("Content-Type", "application/x-yaml")
-									request.Body = io.NopCloser(bytes.NewBufferString(payload))
+									requestHeader.Set("Content-Type", "application/x-yaml")
+									requestBody = []byte(payload)
 								})
 
 								ExpectCredsValidationPass()
@@ -1040,8 +1196,8 @@ jobs:
   plan:
   - get: some-resource`
 
-									request.Header.Set("Content-Type", "application/x-yaml")
-									request.Body = io.NopCloser(bytes.NewBufferString(payload))
+									requestHeader.Set("Content-Type", "application/x-yaml")
+									requestBody = []byte(payload)
 								})
 
 								ExpectCredsValidationPass()
@@ -1064,8 +1220,8 @@ jobs:
     params:
       FOO: ((BAR))`
 
-									request.Header.Set("Content-Type", "application/x-yaml")
-									request.Body = io.NopCloser(bytes.NewBufferString(payload))
+									requestHeader.Set("Content-Type", "application/x-yaml")
+									requestBody = []byte(payload)
 								})
 
 								ExpectCredsValidationPass()
@@ -1088,8 +1244,8 @@ jobs:
     vars:
       FOO: ((BAR))`
 
-									request.Header.Set("Content-Type", "application/x-yaml")
-									request.Body = io.NopCloser(bytes.NewBufferString(payload))
+									requestHeader.Set("Content-Type", "application/x-yaml")
+									requestBody = []byte(payload)
 								})
 
 								ExpectCredsValidationPass()
@@ -1113,8 +1269,8 @@ jobs:
       vars:
         FOO: ((BAR))`
 
-									request.Header.Set("Content-Type", "application/x-yaml")
-									request.Body = io.NopCloser(bytes.NewBufferString(payload))
+									requestHeader.Set("Content-Type", "application/x-yaml")
+									requestBody = []byte(payload)
 								})
 
 								ExpectCredsValidationPass()
@@ -1183,15 +1339,13 @@ jobs:
 									},
 								}
 
-								request.Header.Set("Content-Type", "application/x-yaml")
-								request.Body = io.NopCloser(bytes.NewBufferString(payload))
+								requestHeader.Set("Content-Type", "application/x-yaml")
+								requestBody = []byte(payload)
 							})
 
 							Context("when the check_creds param is set", func() {
 								BeforeEach(func() {
-									query := request.URL.Query()
-									query.Add(atc.SaveConfigCheckCreds, "")
-									request.URL.RawQuery = query.Encode()
+									requestQuery.Add(atc.SaveConfigCheckCreds, "")
 								})
 
 								Context("when the credential exists in the credential manager", func() {
@@ -1200,13 +1354,7 @@ jobs:
 									})
 
 									It("passes validation and saves it un-interpolated", func() {
-										Expect(dbTeam.SavePipelineCallCount()).To(Equal(1))
-
-										ref, savedConfig, id, initiallyPaused := dbTeam.SavePipelineArgsForCall(0)
-										Expect(ref.Name).To(Equal("a-pipeline"))
-										Expect(savedConfig).To(Equal(payloadAsConfig))
-										Expect(id).To(Equal(db.ConfigVersion(42)))
-										Expect(initiallyPaused).To(BeTrue())
+										expectUpdatedSave(atc.PipelineRef{Name: "a-pipeline"}, payloadAsConfig)
 									})
 
 									It("returns 200", func() {
@@ -1249,22 +1397,29 @@ jobs:
 
 						Context("when it's the first time the pipeline has been created", func() {
 							BeforeEach(func() {
-								returnedPipeline := new(dbfakes.FakePipeline)
-								dbTeam.SavePipelineReturns(returnedPipeline, true, nil)
+								Expect(realPipeline.Destroy()).To(Succeed())
 							})
 
 							It("returns 201", func() {
 								Expect(response.StatusCode).To(Equal(http.StatusCreated))
+								Expect(saveCalls()).To(Equal([]configAPISaveCall{{
+									ref:             atc.PipelineRef{Name: "a-pipeline"},
+									config:          pipelineConfig,
+									from:            fromVersion,
+									initiallyPaused: true,
+								}}))
+								expectPersistedPipeline(realTeam, atc.PipelineRef{Name: "a-pipeline"}, pipelineConfig, true, nil)
 							})
 
 							It("does not notify the scanner to run", func() {
-								Expect(dbTeamFactory.NotifyResourceScannerCallCount()).To(Equal(0))
+								Expect(configTeamFactory.notifyResourceScannerCallCount()).To(BeZero())
+								Consistently(scannerSignal.C()).ShouldNot(Receive())
 							})
 						})
 
 						Context("and saving it fails", func() {
 							BeforeEach(func() {
-								dbTeam.SavePipelineReturns(nil, false, errors.New("oh no!"))
+								configTeam.setSaveError(errors.New("oh no!"))
 							})
 
 							It("returns 500", func() {
@@ -1273,6 +1428,7 @@ jobs:
 
 							It("returns the error in the response body", func() {
 								Expect(io.ReadAll(response.Body)).To(Equal([]byte("failed to save config: oh no!")))
+								expectOriginalUnchanged()
 							})
 						})
 
@@ -1281,7 +1437,7 @@ jobs:
 								pipelineConfig.Groups[0].Resources = []string{"missing-resource"}
 								payload, err := json.Marshal(pipelineConfig)
 								Expect(err).NotTo(HaveOccurred())
-								request.Body = gbytes.BufferWithBytes(payload)
+								requestBody = payload
 							})
 
 							It("returns 400", func() {
@@ -1305,16 +1461,15 @@ jobs:
 							})
 
 							It("does not save it", func() {
-								Expect(dbTeam.SavePipelineCallCount()).To(BeZero())
+								Expect(saveCalls()).To(BeEmpty())
+								expectOriginalUnchanged()
 							})
 						})
 
 						Context("when instance vars are specified", func() {
 							Context("when instance vars are malformed", func() {
 								BeforeEach(func() {
-									query := request.URL.Query()
-									query.Add("vars.foo", "{")
-									request.URL.RawQuery = query.Encode()
+									requestQuery.Add("vars.foo", "{")
 								})
 
 								It("returns 400", func() {
@@ -1338,25 +1493,29 @@ jobs:
 								})
 
 								It("does not save anything", func() {
-									Expect(dbTeam.SavePipelineCallCount()).To(Equal(0))
+									Expect(saveCalls()).To(BeEmpty())
+									expectOriginalUnchanged()
 								})
 							})
 
 							Context("when instance vars is valid", func() {
 								BeforeEach(func() {
-									query := request.URL.Query()
-									query.Add("vars", "{\"branch\":\"feature\"}")
-									request.URL.RawQuery = query.Encode()
+									requestQuery.Add("vars", "{\"branch\":\"feature\"}")
 								})
 
 								It("saves an instanced pipeline", func() {
-									Expect(dbTeam.SavePipelineCallCount()).To(Equal(1))
-
-									ref, _, _, _ := dbTeam.SavePipelineArgsForCall(0)
-									Expect(ref).To(Equal(atc.PipelineRef{
+									ref := atc.PipelineRef{
 										Name:         "a-pipeline",
 										InstanceVars: atc.InstanceVars{"branch": "feature"},
-									}))
+									}
+									Expect(saveCalls()).To(Equal([]configAPISaveCall{{
+										ref:             ref,
+										config:          pipelineConfig,
+										from:            fromVersion,
+										initiallyPaused: true,
+									}}))
+									expectPersistedPipeline(realTeam, ref, pipelineConfig, true, nil)
+									expectOriginalUnchanged()
 								})
 							})
 						})
@@ -1364,17 +1523,17 @@ jobs:
 
 					Context("there is a problem fetching the team", func() {
 						BeforeEach(func() {
-							request.Header.Set("Content-Type", "application/json")
+							requestHeader.Set("Content-Type", "application/json")
 
 							payload, err := json.Marshal(pipelineConfig)
 							Expect(err).NotTo(HaveOccurred())
 
-							request.Body = gbytes.BufferWithBytes(payload)
+							requestBody = payload
 						})
 
 						Context("when the team is not found", func() {
 							BeforeEach(func() {
-								dbTeamFactory.FindTeamReturns(nil, false, nil)
+								Expect(realTeam.Delete()).To(Succeed())
 							})
 
 							It("returns 404", func() {
@@ -1384,7 +1543,7 @@ jobs:
 
 						Context("when finding the team fails", func() {
 							BeforeEach(func() {
-								dbTeamFactory.FindTeamReturns(nil, false, errors.New("failed"))
+								configTeamFactory.setFindTeamError(errors.New("failed"))
 							})
 
 							It("returns 500", func() {
@@ -1397,12 +1556,12 @@ jobs:
 
 				Context("when the Content-Type is unsupported", func() {
 					BeforeEach(func() {
-						request.Header.Set("Content-Type", "application/x-toml")
+						requestHeader.Set("Content-Type", "application/x-toml")
 
 						payload, err := yaml.Marshal(pipelineConfig)
 						Expect(err).NotTo(HaveOccurred())
 
-						request.Body = gbytes.BufferWithBytes(payload)
+						requestBody = payload
 					})
 
 					It("returns Unsupported Media Type", func() {
@@ -1410,13 +1569,14 @@ jobs:
 					})
 
 					It("does not save it", func() {
-						Expect(dbTeam.SavePipelineCallCount()).To(Equal(0))
+						Expect(saveCalls()).To(BeEmpty())
+						expectOriginalUnchanged()
 					})
 				})
 
 				Context("when the config contains extra keys at the toplevel", func() {
 					BeforeEach(func() {
-						request.Header.Set("Content-Type", "application/json")
+						requestHeader.Set("Content-Type", "application/json")
 
 						remoraPayload, err := json.Marshal(map[string]any{
 							"extra": "noooooo",
@@ -1435,7 +1595,7 @@ jobs:
 						})
 						Expect(err).NotTo(HaveOccurred())
 
-						request.Body = gbytes.BufferWithBytes(remoraPayload)
+						requestBody = remoraPayload
 					})
 
 					It("returns 200", func() {
@@ -1450,11 +1610,7 @@ jobs:
 					})
 
 					It("saves it", func() {
-						Expect(dbTeam.SavePipelineCallCount()).To(Equal(1))
-
-						ref, savedConfig, id, initiallyPaused := dbTeam.SavePipelineArgsForCall(0)
-						Expect(ref.Name).To(Equal("a-pipeline"))
-						Expect(savedConfig).To(Equal(atc.Config{
+						expectedConfig := atc.Config{
 							Jobs: atc.JobConfigs{
 								{
 									Name:         "some-job",
@@ -1462,15 +1618,14 @@ jobs:
 									PlanSequence: []atc.Step{},
 								},
 							},
-						}))
-						Expect(id).To(Equal(db.ConfigVersion(42)))
-						Expect(initiallyPaused).To(BeTrue())
+						}
+						expectUpdatedSave(atc.PipelineRef{Name: "a-pipeline"}, expectedConfig)
 					})
 				})
 
 				Context("when the config contains extra keys nested under a valid key", func() {
 					BeforeEach(func() {
-						request.Header.Set("Content-Type", "application/json")
+						requestHeader.Set("Content-Type", "application/json")
 
 						remoraPayload, err := json.Marshal(map[string]any{
 							"extra": "noooooo",
@@ -1485,7 +1640,7 @@ jobs:
 						})
 						Expect(err).NotTo(HaveOccurred())
 
-						request.Body = gbytes.BufferWithBytes(remoraPayload)
+						requestBody = remoraPayload
 					})
 
 					It("returns 400", func() {
@@ -1504,14 +1659,15 @@ jobs:
 					})
 
 					It("does not save it", func() {
-						Expect(dbTeam.SavePipelineCallCount()).To(Equal(0))
+						Expect(saveCalls()).To(BeEmpty())
+						expectOriginalUnchanged()
 					})
 				})
 			})
 
 			Context("when a config version is malformed", func() {
 				BeforeEach(func() {
-					request.Header.Set(atc.ConfigVersionHeader, "forty-two")
+					requestHeader.Set(atc.ConfigVersionHeader, "forty-two")
 				})
 
 				It("returns 400", func() {
@@ -1535,7 +1691,8 @@ jobs:
 				})
 
 				It("does not save it", func() {
-					Expect(dbTeam.SavePipelineCallCount()).To(Equal(0))
+					Expect(saveCalls()).To(BeEmpty())
+					expectOriginalUnchanged()
 				})
 			})
 		})
@@ -1550,7 +1707,8 @@ jobs:
 			})
 
 			It("does not save the config", func() {
-				Expect(dbTeam.SavePipelineCallCount()).To(Equal(0))
+				Expect(saveCalls()).To(BeEmpty())
+				expectOriginalUnchanged()
 			})
 		})
 	})
