@@ -42,20 +42,20 @@ are not database state.
 
 ## Shared fixture and narrow seam design
 
-- [ ] Add mutex-protected file-local value/call types:
+- [x] Add mutex-protected file-local value/call types:
   `configAPISaveCall`, `configAPITeam`, `configAPIPipeline`, and
   `configAPITeamFactory`. Embed the real `db.Team`, `db.Pipeline`, and
   `db.TeamFactory`; delegate every healthy operation to PostgreSQL.
-- [ ] Record defensive copies of `Pipeline` refs, `SavePipeline` arguments,
+- [x] Record defensive copies of `Pipeline` refs, `SavePipeline` arguments,
   `FindTeam` names, and scanner-notify calls. Override only these selective
   fault ports, which healthy PostgreSQL cannot express at the required point:
   team lookup error, pipeline lookup error, pipeline config error, and save
   error. Preserve the existing exact sentinel messages.
-- [ ] Make the factory's healthy `FindTeam` delegate first and decorate only a
+- [x] Make the factory's healthy `FindTeam` delegate first and decorate only a
   found team. Real deletion must therefore produce real not-found behavior.
   Make healthy `NotifyResourceScanner` record and delegate so positive tests
   cover the production PostgreSQL notification too.
-- [ ] Shadow `realdb`, copied `deps`, and `server` separately inside each
+- [x] Shadow `realdb`, copied `deps`, and `server` separately inside each
   endpoint Describe, not in the shared Config API Describe. Each converted
   endpoint's setup calls `useRealDB()` once and stores route params, headers,
   query values, and body bytes only. Its `JustBeforeEach` applies finalized
@@ -66,36 +66,36 @@ are not database state.
   decorators unwired. No nested context may mutate a handler or URL captured
   earlier. This separation is required so the GET-only first commit leaves the
   still-fake PUT endpoint wired to the package suite server and remains green.
-- [ ] Capture the current 105 dry-run names before behavior changes. Capture a
+- [x] Capture the current 105 dry-run names before behavior changes. Capture a
   persisted RED by wiring the real update path with the old literal version
   42: the real CAS must reject it rather than silently accepting a fake call.
 
 ## Task 1: Persist the 15 GET config specs — two constructors to zero
 
-- [ ] Create real team `a-team` and real pipeline `something-else` from
+- [x] Create real team `a-team` and real pipeline `something-else` from
   `pipelineConfig`; route the handler through the recording decorators over
   those real objects. Assert the response config and dynamic persisted config
   version header.
-- [ ] For valid instance vars, save a real sibling pipeline whose ref contains
+- [x] For valid instance vars, save a real sibling pipeline whose ref contains
   `{branch: feature}` with a config distinguishable from the non-instanced
   seed. Require the recorded exact lookup ref plus the sibling's exact real
   config and dynamic config-version header, so a decorator returning the wrong
   pipeline cannot pass.
-- [ ] For malformed instance vars, replace the existing vacuous assertion on
+- [x] For malformed instance vars, replace the existing vacuous assertion on
   the unwired shared `dbTeam` with an empty local pipeline-lookup record and,
   where stable, an empty team-lookup record. This must prove parsing precedes
   database lookup.
-- [ ] Archive the real pipeline for the archived 404 and destroy it for the
+- [x] Archive the real pipeline for the archived 404 and destroy it for the
   not-found 404. Delete the real team for the team-not-found 404. Do not
   fabricate these states.
-- [ ] Use only the narrow pipeline-lookup, config-read, and team-lookup error
+- [x] Use only the narrow pipeline-lookup, config-read, and team-lookup error
   fields for the three 500 paths. Their embedded successful state remains real.
-- [ ] Retain access/auth behavior through `fakeAccess`; it is outside the
+- [x] Retain access/auth behavior through `fakeAccess`; it is outside the
   database conversion.
-- [ ] Sensitivity: temporarily make malformed vars valid and require the fixed
+- [x] Sensitivity: temporarily make malformed vars valid and require the fixed
   no-lookup assertion to fail; temporarily unarchive or retain the pipeline
   and require the corresponding 404 outcome to fail. Restore each mutation.
-- [ ] Run gofmt, compile, exact 15-spec focus serially and across nine
+- [x] Run gofmt, compile, exact 15-spec focus serially and across nine
   processes, focused name diff, zero GET constructors, an exact two remaining
   PUT constructors plus the still-needed file import, diff check, and an
   independent review with no unresolved findings. Commit only the file as:
@@ -103,41 +103,41 @@ are not database state.
 
 ## Task 2: Persist the 90 PUT config specs — two constructors to zero
 
-- [ ] Create real `a-team` and seed real `a-pipeline` with `pipelineConfig` in
+- [x] Create real `a-team` and seed real `a-pipeline` with `pipelineConfig` in
   each spec. Capture its actual `ConfigVersion()` as `fromVersion`; use that
   value in the request header and assertions instead of literal 42 so updates
   exercise production compare-and-swap.
-- [ ] For successful JSON/YAML and credential-validated updates, assert the
+- [x] For successful JSON/YAML and credential-validated updates, assert the
   exact recorded ref/config/from/`initiallyPaused=true`, then re-fetch the
   pipeline and require the decoded config, its existing unpaused state to be
   preserved, and a changed config version. `initiallyPaused` applies to inserts;
   a true value does not pause an existing pipeline. Never rely only on recorder
   state.
-- [ ] For every existing does-not-save assertion, require zero recorded saves
+- [x] For every existing does-not-save assertion, require zero recorded saves
   and, where applicable, re-fetch the original config/version unchanged.
   Continue using the non-database credential seam for credential existence.
-- [ ] Preserve identifier-warning behavior. For `_team/_pipeline`, create the
+- [x] Preserve identifier-warning behavior. For `_team/_pipeline`, create the
   real requested team and leave the pipeline absent so the warning path can
   perform a genuine create. In the existing warning-body `It`, also require
   status 201 and re-fetch
   `realRequestedTeam.Pipeline(atc.PipelineRef{Name: "_pipeline"})` to assert the
   exact persisted config, paused insert state, and dynamic config version.
   Empty identifiers must fail before lookup/save.
-- [ ] For first creation, destroy the seed before the request and require real
+- [x] For first creation, destroy the seed before the request and require real
   created status 201, a persisted paused pipeline, and no scanner notification.
   For normal updates, require status 200 and a changed persisted row.
-- [ ] For valid instance vars, persist/re-fetch the exact
+- [x] For valid instance vars, persist/re-fetch the exact
   `PipelineRef{Name: "a-pipeline", InstanceVars: {branch: feature}}` and assert
   recorder arguments and database identity.
-- [ ] Delete the real team for team-not-found. Use only the narrow team lookup
+- [x] Delete the real team for team-not-found. Use only the narrow team lookup
   and save error fields for exact 500/error-body behavior.
-- [ ] For the immutable-template 409, destroy the ordinary seed, set
+- [x] For the immutable-template 409, destroy the ordinary seed, set
   `templateConfig.Template=true`, and call
   `db.NewWorkflowRunTemplateFactory(realdb.Conn, realdb.LockFactory).SaveWorkflowRunTemplate(context.Background(), realTeam.ID(), atc.PipelineRef{Name: "a-pipeline"}, templateConfig)`.
   Require creation and prove the registry row with
   `IsWorkflowRunTemplate(context.Background(), pipeline.ID())`, then send the
   ordinary PUT and require 409. A plain template-shaped pipeline is not enough.
-- [ ] In positive notification specs, subscribe with
+- [x] In positive notification specs, subscribe with
   `signal, err := realdb.Conn.Bus().ListenSignal(atc.ComponentLidarScanner)` and
   immediately register
   `DeferCleanup(func() { Expect(realdb.Conn.Bus().UnlistenSignal(atc.ComponentLidarScanner, signal)).To(Succeed()) })`.
@@ -145,10 +145,10 @@ are not database state.
   signal. For create/no-notify specs, require zero calls and consistently no
   signal. Clone isolation prevents cross-spec notification leakage under
   parallel execution.
-- [ ] Remove all remaining `dbfakes`, `dbTeamFactory`, and `dbTeam` references
+- [x] Remove all remaining `dbfakes`, `dbTeamFactory`, and `dbTeam` references
   from this file. Remove `gbytes` too if the late-bound body state makes it
   unused.
-- [ ] Sensitivity, one restored mutation at a time: use `fromVersion+1` and
+- [x] Sensitivity, one restored mutation at a time: use `fromVersion+1` and
   require a success spec to fail; suppress scanner delegation and require a
   positive notification spec to fail; create only an ordinary template-shaped
   pipeline and require the 409 spec to fail; clear the save sentinel and
@@ -156,7 +156,7 @@ are not database state.
   delegate `initiallyPaused=false` and require the reloaded paused assertion to
   fail. Do not use an existing unpaused update for this mutation because its
   persisted pause state intentionally remains unchanged either way.
-- [ ] Run gofmt, compile, exact 90-spec PUT focus serially and across nine
+- [x] Run gofmt, compile, exact 90-spec PUT focus serially and across nine
   processes, the complete 105-spec Config focus serially and across nine
   processes, full API suite serially and across nine processes, `go test
   ./atc/api -count=1`, vet, diff/name/census checks, and independent review with
@@ -196,17 +196,50 @@ test "$(rg -o 'new\(dbfakes\.Fake[^)]*\)' atc/api/config_test.go | wc -l | tr -d
 
 ## Final acceptance and closure
 
-- [ ] Both code commits pass independently and together. Exact spec names are
+- [x] Both code commits pass independently and together. Exact spec names are
   unchanged at 105; GET is 15/15 and PUT is 90/90 serially and across exactly
   nine processes on unique per-spec clones of the one PostgreSQL instance.
-- [ ] The file moves 4→0 constructors/imports and no generated database fake is
+- [x] The file moves 4→0 constructors/imports and no generated database fake is
   moved elsewhere. All healthy Config API success state comes from PostgreSQL;
   only documented selective fault decorators and non-database access/secret
   seams remain.
-- [ ] Record exact RED/GREEN/sensitivity results, counts, full gates, commit
+- [x] Record exact RED/GREEN/sensitivity results, counts, full gates, commit
   IDs, and independent reviewer outcomes below. Commit only this plan as
   `docs: record api config postgres conversion`. Do not push.
 
 ## Observed completion evidence
 
-Record evidence only after the final acceptance items pass.
+- Code commits: GET `2ee418c211` (`test(api): persist config GET specs in
+  postgres`) and PUT `b225c3bb6c` (`test(api): persist config PUT specs in
+  postgres`). Each commit changed only `atc/api/config_test.go`.
+- Census: the file moved from four generated database constructors and one
+  `dbfakes` import to zero. `dbTeamFactory`, `dbTeam`, and qualified
+  `dbfakes.*` references are also zero; the access and credential seams remain
+  intentionally non-database.
+- Names: sorted dry-run names were byte-identical before and after, with 105
+  total specs: 15 GET and 90 PUT.
+- GET verification: the exact 15-spec focus passed serially and with nine
+  processes; the still-unconverted 90 PUT specs also passed at the GET commit
+  boundary. Persisted archive/destroy/team-delete paths and malformed-vars
+  no-lookup sensitivities failed when deliberately inverted, then passed after
+  restoration. Independent review reported no findings.
+- PUT TDD evidence: wiring the real update path while retaining literal config
+  version 42 failed because production compare-and-swap rejected the stale
+  version, as required. Separately, the old/fake-server persisted assertion
+  failed before the endpoint was late-bound to the real database. Each required
+  mutation failed for its intended reason and was restored: `fromVersion+1`,
+  suppressed scanner delegation, ordinary template-shaped pipeline in place of
+  the workflow-template registry row, cleared save sentinel, and
+  `initiallyPaused=false` on first creation.
+- PUT verification: 90/90 passed serially and with nine processes. The complete
+  Config focus passed 105/105 serially and with nine processes after the final
+  review correction. Compile-only, `go vet`, formatting, diff, name, and census
+  checks passed. The full API focus passed 825/825 serially and with nine
+  processes, and `go test ./atc/api -count=1` passed; these full-suite runs
+  preceded an assertion-only review correction, after which the complete
+  105-spec Config focus was rerun in both modes.
+- Review: an initial independent PUT review found one P2 because six credential
+  success cases derived their expected config from the recorder under test.
+  The tests now independently decode each exact request payload before checking
+  both the recorder and persisted row. Final re-review returned PASS with no
+  remaining findings.
