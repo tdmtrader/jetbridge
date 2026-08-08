@@ -9,6 +9,8 @@ SOURCE_ROOT="${TMP_DIR}/source"
 FAKE_BIN="${TMP_DIR}/bin"
 CHILD_PIDS="${TMP_DIR}/child-pids"
 TERMINATIONS="${TMP_DIR}/terminations"
+READY_LOG="${TMP_DIR}/pg-isready.log"
+PSQL_LOG="${TMP_DIR}/psql.log"
 PARENT_PID=""
 
 cleanup() {
@@ -35,13 +37,15 @@ fail() {
 }
 
 mkdir -p "${SOURCE_ROOT}/atc/api/pipelineserver" "${SOURCE_ROOT}/atc/api/auth" "${SOURCE_ROOT}/hack" "${FAKE_BIN}"
-ln -s "${FIXTURES}/test-postgres.sh" "${SOURCE_ROOT}/hack/test-postgres.sh"
 ln -s "${FIXTURES}/ginkgo" "${FAKE_BIN}/ginkgo"
-ln -s "${FIXTURES}/docker" "${FAKE_BIN}/docker"
+ln -s "${FIXTURES}/pg_isready" "${FAKE_BIN}/pg_isready"
+ln -s "${FIXTURES}/psql" "${FAKE_BIN}/psql"
 
 PATH="${FAKE_BIN}:${PATH}" \
 FAKE_GINKGO_CHILD_PIDS="${CHILD_PIDS}" \
 FAKE_GINKGO_TERMINATIONS="${TERMINATIONS}" \
+FAKE_PG_ISREADY_LOG="${READY_LOG}" \
+FAKE_PSQL_LOG="${PSQL_LOG}" \
 CONCOURSE_TEST_SOURCE_ROOT="${SOURCE_ROOT}" \
 bash "${TARGET}" >"${TMP_DIR}/parent.log" 2>&1 &
 PARENT_PID=$!
@@ -69,5 +73,7 @@ done <"${CHILD_PIDS}"
 
 [[ -f "${TERMINATIONS}" ]] || fail "fake Ginkgo children were not terminated"
 [[ "$(wc -l <"${TERMINATIONS}")" -eq 2 ]] || fail "expected one termination per direct child"
+[[ -s "${READY_LOG}" ]] || fail "shared PostgreSQL readiness was not checked"
+[[ -s "${PSQL_LOG}" ]] || fail "catalog was not queried through psql"
 
 echo "test-postgres concurrency signal cleanup: PASS"

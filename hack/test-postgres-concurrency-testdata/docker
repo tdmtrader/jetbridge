@@ -1,6 +1,0 @@
-#!/usr/bin/env bash
-set -euo pipefail
-
-# The acceptance barrier sees no matching rows; the signal arrives before it
-# can complete, so this fake only needs to succeed quickly.
-exit 0

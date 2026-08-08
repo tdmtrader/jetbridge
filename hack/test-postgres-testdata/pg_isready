@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+printf '%s\n' "$*" >>"${FAKE_PG_ISREADY_LOG}"
+exit "${FAKE_PG_ISREADY_STATUS:-0}"

@@ -3,17 +3,16 @@
 ## Quick Start
 
 ```bash
-make test-postgres-up
-eval "$(./hack/test-postgres.sh env)"
+make test-postgres-status
 make test-quick
 make test-all      # Everything including K8s tests (hours)
 ```
 
-The named `concourse-test-postgres` container stays up so independent test
-commands can run concurrently. Run `make test-postgres-down` only as explicit
-teardown after tests have finished; it is unsafe to run while tests are active.
-Each database-backed spec owns a clone, so separate PostgreSQL-backed package
-commands may overlap safely. Verify this contract with:
+The machine-wide PostgreSQL service is external to this repository: these
+targets never start, stop, or recreate it. The default service is
+`127.0.0.1:15432`; set `CONCOURSE_TEST_POSTGRES_DSN` when using another admin
+DSN. Each database-backed spec owns a clone, so separate PostgreSQL-backed
+package commands may overlap safely. Verify this contract with:
 
 ```bash
 make test-postgres-concurrency
@@ -29,7 +28,7 @@ suites may still contend on application HTTP ports.
 Runs all Ginkgo test suites excluding integration/e2e. Uses parallel execution across packages.
 
 - **Time:** ~3 minutes
-- **Prerequisites:** the shared test PostgreSQL service on the existing Colima runtime (`make test-postgres-up`)
+- **Prerequisites:** an already-running shared PostgreSQL service (`make test-postgres-status`)
 - **What it covers:** 79 test suites across atc/, fly/, skymarshal/, go-concourse/, tracing/
 
 ```bash
@@ -56,7 +55,7 @@ ginkgo -r ./fly/integration/
 Starts a real ATC process and tests API behavior.
 
 - **Time:** ~12 seconds
-- **Prerequisites:** the shared test PostgreSQL service on the existing Colima runtime (`make test-postgres-up`)
+- **Prerequisites:** an already-running shared PostgreSQL service (`make test-postgres-status`)
 - **What it covers:** 21 specs covering full API request/response flows (1 pending: team migration)
 
 ```bash
@@ -106,7 +105,7 @@ ginkgo --procs=1 -v --timeout=3h --output-interceptor-mode=none ./topgun/k8s_beh
 |------|-------------|---------|
 | Go 1.25+ | All tests | [go.dev](https://go.dev/dl/) |
 | Ginkgo v2 | All Ginkgo suites | `go install github.com/onsi/ginkgo/v2/ginkgo@latest` |
-| PostgreSQL 14+ | PostgreSQL-backed unit and integration tests | `make test-postgres-up` (existing Colima runtime; narrow local Docker exception) |
+| PostgreSQL 14+ | PostgreSQL-backed unit and integration tests | Externally managed; verify with `make test-postgres-status` |
 | Docker | Image builds and K8s tests | [Docker on theborg](docs/docker-on-theborg.md) |
 | KinD | K8s tests | `brew install kind` |
 | Helm | K8s tests | `brew install helm` |
@@ -116,7 +115,7 @@ ginkgo --procs=1 -v --timeout=3h --output-interceptor-mode=none ./topgun/k8s_beh
 
 ### Tests hang or timeout
 
-- **PostgreSQL not running:** PostgreSQL-backed unit and integration tests need the shared service on the existing Colima runtime. Run `make test-postgres-up`, then check with `pg_isready -h 127.0.0.1 -p 15432 -U postgres`. Non-DB packages do not need it.
+- **PostgreSQL not running:** PostgreSQL-backed unit and integration tests need an externally managed shared service. Start it outside this repository or set `CONCOURSE_TEST_POSTGRES_DSN`, then run `make test-postgres-status`. Non-DB packages do not need it.
 - **Port conflicts:** ATC integration tests bind to ports `9090+N`. Kill any conflicting processes.
 - **K8s tests slow:** KinD cluster creation takes 2-5 minutes. First run is always slower.
 

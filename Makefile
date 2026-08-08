@@ -1,15 +1,9 @@
-.PHONY: test-postgres-up test-postgres-status test-postgres-down test-postgres-helper test-postgres-concurrency test-postgres-concurrency-signal test-unit test-dev-mcp test-bench-harness test-fly-integration test-integration test-hangar-integration test-k8s test-k8s-integration test-k8s-behavioral test-quick test-all build-agent-broker-image test-agent-broker-smoke
+.PHONY: test-postgres-status test-postgres-helper test-postgres-concurrency test-postgres-concurrency-signal test-unit test-dev-mcp test-bench-harness test-fly-integration test-integration test-hangar-integration test-k8s test-k8s-integration test-k8s-behavioral test-quick test-all build-agent-broker-image test-agent-broker-smoke
 
 AGENT_BROKER_IMAGE ?= concourse-agent-broker:dev
 
-test-postgres-up:
-	./hack/test-postgres.sh up
-
 test-postgres-status:
 	./hack/test-postgres.sh status
-
-test-postgres-down:
-	./hack/test-postgres.sh down
 
 test-postgres-helper:
 	bash ./hack/test-postgres_test.sh

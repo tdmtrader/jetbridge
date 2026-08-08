@@ -1,7 +1,13 @@
 # Shared PostgreSQL Test Isolation
 
+> **Environment update (2026-08-08):** The template/clone design below remains
+> authoritative, but its Colima provisioning section is historical. This Mac
+> no longer has a Docker daemon. The repository now treats PostgreSQL as an
+> externally managed machine-wide service, and `hack/test-postgres.sh` provides
+> readiness/DSN output only; it never starts, stops, or recreates the service.
+
 **Date:** 2026-08-06
-**Status:** Approved
+**Status:** Implemented; provisioning model superseded as noted above
 
 ## Context
 
