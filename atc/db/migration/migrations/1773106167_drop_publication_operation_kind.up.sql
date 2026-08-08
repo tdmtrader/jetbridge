@@ -24,7 +24,7 @@
 -- provider-native operation into the window between the check and the drop.
 LOCK TABLE agent_publications IN ACCESS EXCLUSIVE MODE;
 
--- Refuse rather than destroy, exactly as 1773106160 did for bindings. A row
+-- Refuse rather than destroy, exactly as 1773106166 did for bindings. A row
 -- still carrying the discriminator is already unreachable through the store --
 -- it cannot be acquired, read, or completed -- but it is also the only record
 -- that the operation ever happened. Dropping operation_kind out from under it
