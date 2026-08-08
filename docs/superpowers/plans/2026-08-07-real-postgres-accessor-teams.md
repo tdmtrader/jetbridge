@@ -35,46 +35,48 @@ template clones, Concourse `db.TeamFactory`, Accessor authorization.
   import to zero. No generated fake may move into a helper or another file.
 - Current repository checkpoint is 115 constructors / 37 `dbfakes` test
   imports. After Builds it is 112 / 36; after the reviewed agent/suite cleanup
-  it is 96 / 36; this conversion yields 93 / 35. These counts exclude
-  `bench/corpus/**` and use the repository-wide requested-pattern census.
+  it was projected to be 96 / 36; this conversion was projected to yield
+  93 / 35. The work landed in a different order, and the accepted final branch
+  census is 89 / 33. These counts exclude `bench/corpus/**` and use the
+  repository-wide requested-pattern census.
 - Retain `FakeDisplayUserIdGenerator`: display-ID generation is a non-database
   algorithm seam and is outside this conversion.
 
 ## Task 1: Extend the existing real-team fixture without disturbing callers
 
-- [ ] Keep `useRealTeamFactory()` source-compatible for the seven existing
+- [x] Keep `useRealTeamFactory()` source-compatible for the seven existing
   real-DB test files. Factor its clone, connection, singleton-lock, and cleanup
   setup into a private fixture that also exposes the clone-local `db.DbConn`.
   One invocation must still mean one `CreateTestDBFromTemplate` call.
-- [ ] Add a helper that persists an `atc.Team{Name, Auth}` through the real
+- [x] Add a helper that persists an `atc.Team{Name, Auth}` through the real
   factory. When the fixture requests administrator status, update only that
   clone-owned row's `teams.admin` column by dynamic row ID, require exactly one
   affected row, then refetch by name. Always return the freshly scanned real
   object so `Name()`, `Admin()`, and `Auth()` are database reads, not input
   echoes.
-- [ ] Keep LIFO cleanup: close all ordinary/singleton connections before the
+- [x] Keep LIFO cleanup: close all ordinary/singleton connections before the
   unique clone is dropped. Do not start, stop, or reconfigure the shared
   machine-wide PostgreSQL service.
 
 ## Task 2: Replace the three Accessor `FakeTeam` values
 
-- [ ] Replace `fakeTeam1/2/3` with declarative fixture values containing only
+- [x] Replace `fakeTeam1/2/3` with declarative fixture values containing only
   name, admin flag, and auth. Default names remain `some-team-1/2/3`; default
   auth is empty and default admin is false.
-- [ ] Team-insensitive `HasToken`, `IsAuthenticated`, `IsSystem`, `Claims`,
+- [x] Team-insensitive `HasToken`, `IsAuthenticated`, `IsSystem`, `Claims`,
   and display-only `UserInfo` specs pass an empty team slice and do not call the
   DB helper. Every `IsAuthorized`, role-table, `TeamNames`, `IsAdmin`, and
   `TeamRoles` spec that observes team behavior calls the lazy real fixture
   exactly once and receives three freshly loaded rows.
-- [ ] Translate nested `NameReturns`, `AdminReturns`, and `AuthReturns` setup to
+- [x] Translate nested `NameReturns`, `AdminReturns`, and `AuthReturns` setup to
   fixture mutations that happen before persistence. For the three
   `DescribeTable` bodies, set the entry-specific fixture, persist once inside
   that entry, reconstruct `access`, then assert the unchanged expectation.
-- [ ] Preserve the deliberately arbitrary admin-team names (`some-team` and
+- [x] Preserve the deliberately arbitrary admin-team names (`some-team` and
   `not-some-team`) so authorization remains based on the persisted admin bit,
   not on the special default-team name. Preserve all exact user/group/provider
   auth maps, including the Cloud Foundry `cf:` normalization cases.
-- [ ] Assert fixture sanity at the persistence boundary: three distinct
+- [x] Assert fixture sanity at the persistence boundary: three distinct
   positive IDs, exact names/admin flags/auth maps after reload, and no extra
   team row. Assertions about Accessor output remain behavioral and unchanged.
 
@@ -107,9 +109,9 @@ gofmt -d atc/api/accessor/accessor_test.go atc/api/accessor/accessor_suite_test.
 git diff --check
 ```
 
-- [ ] Exact names remain 85/85 for `Accessor` and 134/134 for the package.
+- [x] Exact names remain 85/85 for `Accessor` and 134/134 for the package.
   The target file has zero generated database constructors/imports, and the
-  repository census is 93 / 35 after all prerequisite active tasks land.
+  repository census is 89 / 33 on the final branch.
 - [ ] Record RED/GREEN/sensitivity evidence, exact counts, review outcome,
   full gates, and commit ID below. Commit the two code files as
   `test(api): persist accessor team authorization`, then commit this plan as
@@ -117,4 +119,29 @@ git diff --check
 
 ## Observed completion evidence
 
-Record evidence only after final acceptance passes.
+- Implementation commit: `f6ced51f7c` (`test(api): persist accessor team
+  authorization`), changing only `accessor_test.go` and
+  `accessor_suite_test.go`.
+- The target `Accessor` describe passed 85/85 serially and across nine
+  processes; the complete Accessor package passed 134/134 in both modes. The
+  target file has no generated database constructor or `dbfakes` import.
+- Inspection confirms source-compatible fixture delegation, clone-local admin
+  updates by dynamic row ID, fresh row reloads, LIFO connection cleanup, lazy
+  allocation for team-sensitive specs, and three-row ID/name/admin/auth sanity
+  checks at the persistence boundary.
+- Broader acceptance passed the complete API suite 825/825 serially and across
+  nine processes, `go test ./atc/api`, `make test-integration` (24/24), and
+  `make test-fly-integration` (680/680).
+- Static validation passed `go vet ./atc/api/accessor`, `gofmt -d`, and
+  `git diff --check`.
+- The full `make test-unit` run exercised 155 suites in 29m48s and exited 2
+  only for the seven predeclared unrelated migration-version failures: the
+  expected head is `1773106160`, while embedded migrations/preflight stop at
+  `1773106159`. The other 154 suites passed; this gate is not reported green.
+- Final requested-pattern census is 89 constructors across 33 `dbfakes`
+  import files, down from 606 / 134. The remaining sites reconcile to 86
+  justified algorithmic/fault/timing seams plus three worker-suite
+  constructors.
+- No separate mutation-only evidence is recorded here, so the corresponding
+  TDD/sensitivity items remain open. Final independent branch review is
+  pending.

@@ -56,13 +56,13 @@ non-database access/event-handler seams.
 
 ## Shared fixture and decorator design
 
-- [ ] Each endpoint's `BeforeEach` calls `database = useRealDB()` and copies
+- [x] Each endpoint's `BeforeEach` calls `database = useRealDB()` and copies
   `deps = database.Deps`. Nested contexts finalize persisted fixtures and
   narrow error fields. Its `JustBeforeEach` assigns `database.Deps = deps`,
   starts `server = database.Serve()`, creates the request from that final URL
   and dynamic IDs/query/body, sends it, and registers response cleanup. No
   request may point at the package fake server after conversion.
-- [ ] Add mutex-protected embedded decorators that delegate every healthy
+- [x] Add mutex-protected embedded decorators that delegate every healthy
   operation:
   - `buildsAPIBuildFactory` over `db.BuildFactory`, overriding only
     `BuildForAPI`, `VisibleBuilds`, and `AllBuilds` for exact error/page
@@ -74,142 +74,156 @@ non-database access/event-handler seams.
     failure context requires it.
   - `buildsAPIPipeline` over a real pipeline, overriding only `Job(string)` for
     deliberate job lookup error/not-found after a valid build/pipeline lookup.
-- [ ] Decorators return fresh wrappers over the actual delegated object,
+- [x] Decorators return fresh wrappers over the actual delegated object,
   share only mutex-protected recorder/error state, and defensively copy page or
   argument values. Real found/not-found, visibility, privacy, ID, timestamps,
   plans, resources, preparation, and abort outcomes must remain real;
   event-route build lookup, authorization, and delegation must use that real
   graph.
-- [ ] Derive every ID, time, team/pipeline/job name, created-by value, plan
+- [x] Derive every ID, time, team/pipeline/job name, created-by value, plan
   origin, pagination bound, and response field from persisted objects. Avoid
   cross-domain ID coincidences by persisting decoys where an assertion could
   otherwise pass with two unrelated sequence values both equal to one.
 
 ## Task 1: POST build — local constructors 7 to 6
 
-- [ ] Persist real `some-team`. The normal handler calls
+- [x] Persist real `some-team`. The normal handler calls
   `Team.CreateStartedBuild(plan)`; decode its dynamic response and retrieve the
   row through the real build factory. Require team identity, started/running
   status, nonzero start time, schema, exact private plan, and public plan.
-- [ ] Unauthorized/forbidden specs compare real team build rows before/after
+- [x] Unauthorized/forbidden specs compare real team build rows before/after
   and require no insertion. Do not replace fake call counts with another
   recorder-only assertion.
-- [ ] Use only the decorated team's `CreateStartedBuild` error for the exact
+- [x] Use only the decorated team's `CreateStartedBuild` error for the exact
   500 path. Remove the local `FakeBuild`; do not preserve literal ID 42 or fake
   end/reap timestamps for a newly started real build.
 - [ ] Persisted RED: expect the decoded response ID to resolve in the real
   factory while the request still hits the fake server; require failure, then
   bind the real endpoint and pass. Sensitivity: expect `persisted.ID()+1`,
-  require failure, restore.
+  require failure, restore. No final-closeout RED evidence was recorded and the
+  mutation was not run; left open.
 - [ ] Run exact 8-spec serial+9 focus, compile/vet/diff/name/census and
   independent review. Commit only the file as:
-  `test(api): persist one-off build creation`.
+  `test(api): persist one-off build creation`. Final validation ran the full
+  95-spec Builds focus instead, and the implementation landed in one combined
+  commit; the remaining prescribed gates keep this item open.
 
 ## Task 2: Global build list — local constructors 6 to 3
 
-- [ ] Persist private/public pipelines with real `Hide`/`Expose`, job builds
+- [x] Persist private/public pipelines with real `Hide`/`Expose`, job builds
   through `Job.CreateBuild` plus `Start`/`Finish`, and a real resource check
   through `Resource.CreateBuild` or the production `dbtest.Builder` resource
   path. Remove the three `FakeBuildForAPI` values.
-- [ ] Decode real list responses and assert dynamic identities/fields.
+- [x] Decode real list responses and assert dynamic identities/fields.
   `VisibleBuilds` does not filter on `JobConfig.Public`: prove unauthenticated
   visibility with empty token team names plus a public pipeline only; prove an
   authenticated token sees its same-team private pipeline; and prove admin can
   see a cross-team private pipeline. Do not use job privacy as list evidence.
-- [ ] Use real ID-descending order. For pagination, persist at least four builds
+- [x] Use real ID-descending order. For pagination, persist at least four builds
   `b1 < b2 < b3 < b4`; request `from=b2&limit=2`, require `b3,b2`, and derive
   previous/next link bounds from `b4`/`b1`. Assert full RFC5988 URLs against the
   handler's configured fixed external URL (`https://example.com` in this API
   suite), not the random `httptest` server URL.
-- [ ] For timestamp mode, set deliberately separated UTC `start_time` values by
+- [x] For timestamp mode, set deliberately separated UTC `start_time` values by
   clone-scoped SQL, request inclusive epoch-second from/to bounds, assert the
   exact subset and no pagination links.
-- [ ] Use only the build-factory list error fields for the two 500 contexts.
+- [x] Use only the build-factory list error fields for the two 500 contexts.
   Record pages only where the existing specs assert parsing/defaults.
 - [ ] Persisted RED: seed real rows and expect their dynamic IDs/order while the
   request still uses fake list returns. Sensitivities: reverse expected IDs and
-  shift a timestamp bound; require failure, restore.
+  shift a timestamp bound; require failure, restore. No final-closeout RED
+  evidence was recorded and the mutation checks were not run; left open.
 - [ ] Run cumulative 25-spec serial+9 focus, exact census 3 remaining, review,
-  and commit only the file as:
-  `test(api): persist global build listing`.
+  and commit only the file as: `test(api): persist global build listing`.
+  Final validation ran the full 95-spec focus and the implementation landed in
+  one combined commit, so this composite checkpoint remains open.
 
 ## Task 3: Build detail and resources — local constructors remain 3
 
-- [ ] GET detail uses a persisted started/finished real job build with dynamic
+- [x] GET detail uses a persisted started/finished real job build with dynamic
   ID/timestamps. One-off unauthorized uses `Team.CreateOneOffBuild`; private
   and public pipeline states use real `Hide`/`Expose`. Authenticated but
   unauthorized 200 must still use a genuinely public pipeline under the
   pipeline-level handler tier.
-- [ ] Express absent build through a missing dynamic ID and lookup error through
+- [x] Express absent build through a missing dynamic ID and lookup error through
   only `buildsAPIBuildFactory.BuildForAPI`. A post-build pipeline failure uses
   only the embedded build's `Pipeline` override.
-- [ ] Resources success uses `dbtest.Builder.WithResourceVersions`,
+- [x] Resources success uses `dbtest.Builder.WithResourceVersions`,
   `WithNextInputMapping`, and `WithJobBuild` so real `AdoptInputsAndPipes` and
   `SaveOutput` rows feed `Build.Resources`. Decode and assert only fields the
   endpoint exposes: input name/version/pipeline ID/first-occurrence and output
   name/version. Persist a decoy build with distinct resources so the response
   proves target-build ownership; resource type may be fixture sanity only and
   must not be claimed as response behavior.
-- [ ] Empty resources use a real build with no adopted/saved versions. Only the
+- [x] Empty resources use a real build with no adopted/saved versions. Only the
   existing `Resources()` error uses the build decorator. Invalid and absent IDs
   must fail before/at real lookup as their contexts specify.
 - [ ] Persisted RED: request a real dynamic ID while the suite fake factory
   cannot resolve it. Sensitivity: mutate one expected persisted version and
-  require failure, restore.
+  require failure, restore. No final-closeout RED evidence was recorded and the
+  mutation was not run; left open.
 - [ ] Run cumulative 47-spec serial+9 focus, full affected regressions, review,
-  and commit only the file as:
-  `test(api): persist build details and resources`.
+  and commit only the file as: `test(api): persist build details and resources`.
+  Final validation ran the full 95-spec focus and the implementation landed in
+  one combined commit, so this composite checkpoint remains open.
 
 ## Task 4: Events and abort — local constructors 3 to 2
 
-- [ ] Events uses a real job build, pipeline visibility, and job privacy. Keep
+- [x] Events uses a real job build, pipeline visibility, and job privacy. Keep
   `constructedEventHandler`, but under its mutex require the delivered freshly
   scanned build ID/team/pipeline/job fields equal the persisted graph. Do not
   assert pointer identity. This endpoint task proves DB-backed lookup,
   authorization, and delegation only: the retained fake handler never invokes
   `Build.Events`, so do not claim that saved event rows are exercised here.
-- [ ] Use real public/private jobs for successful authorization. Use only the
+- [x] Use real public/private jobs for successful authorization. Use only the
   pipeline `Job` decorator for the deliberate job error/not-found branches and
   the factory decorator for build lookup error; real missing ID covers absence.
-- [ ] Abort uses a persisted one-off build. Unauthorized/forbidden paths reload
+- [x] Abort uses a persisted one-off build. Unauthorized/forbidden paths reload
   it and require `IsAborted()==false`; success reloads and requires true.
   Production `MarkAsAborted` updates the flag, not build status. Only the
   selective abort failure uses the build decorator.
 - [ ] Persisted REDs: require the event delegate's build ID and the durable
   aborted flag while fake objects still receive the calls. Sensitivities:
-  expect the wrong event build ID and invert `IsAborted`, fail, restore.
+  expect the wrong event build ID and invert `IsAborted`, fail, restore. No
+  final-closeout RED evidence was recorded and the mutations were not run;
+  left open.
 - [ ] Run cumulative 65-spec serial+9 focus, exact two remaining job
   constructors, review, and commit only the file as:
-  `test(api): persist build events and abort state`.
+  `test(api): persist build events and abort state`. Final validation ran the
+  full 95-spec focus and the implementation landed in one combined commit, so
+  this composite checkpoint remains open.
 
 ## Task 5: Preparation and plan — local constructors 2 to 0
 
-- [ ] Preparation persists a real pipeline/job/build graph with
+- [x] Preparation persists a real pipeline/job/build graph with
   `RawMaxInFlight: 1`, pending builds, versions/input mappings, and resolve
   errors using `dbtest.Builder`. Require `Job.ScheduleBuild(first)` to return
   true, then call and require `Job.ScheduleBuild(target)` to return false; that
   second call is what persists `jobs.max_in_flight_reached`. Pause pipeline/job
   through real APIs for those reasons. Assert dynamic preparation content from
   the real computation.
-- [ ] A healthy one-off/non-pending build returns a default found preparation;
+- [x] A healthy one-off/non-pending build returns a default found preparation;
   therefore retain narrow `Preparation()` overrides only for the existing
   `found=false` and error paths that cannot arise from a valid consistent row.
-- [ ] Plan success persists a valid task plan via `Build.Start` or a production
+- [x] Plan success persists a valid task plan via `Build.Start` or a production
   started-build API and asserts schema `exec.v2` plus exact `plan.Public()`.
   Real `CreateOneOffBuild` supplies natural no-plan state.
-- [ ] Replace the final two `FakeJob` constructors with real public/private
+- [x] Replace the final two `FakeJob` constructors with real public/private
   job configuration. Use only the pipeline's `Job` override for deliberate
   job error/not-found. Real pipeline visibility controls unauthenticated access.
-- [ ] Remove the `dbfakes` import and every shared `dbTeam`, `dbBuildFactory`,
+- [x] Remove the `dbfakes` import and every shared `dbTeam`, `dbBuildFactory`,
   `build`, and `fakePipeline` reference from this file.
 - [ ] Persisted RED: request the dynamic build and require computed preparation
   or public plan while fake wiring still answers. Sensitivities: flip
   `RawMaxInFlight`/resolve reason and expect a wrong plan schema/task path;
-  require failure and restore.
+  require failure and restore. No final-closeout RED evidence was recorded and
+  the mutation checks were not run; left open.
 - [ ] Run exact 95/95 serial+9, full API serial+9 and `go test` where feasible,
   compile/vet/diff/name/census, and independent review with no unresolved
   findings. Commit only the file as:
-  `test(api): persist build preparation and plans`.
+  `test(api): persist build preparation and plans`. The 95/95 focus, full API,
+  `go test`, vet, name, census, and combined code commit are recorded below;
+  the different commit granularity keeps this composite item open.
 
 ## Required verification
 
@@ -236,9 +250,9 @@ test "$(rg -o 'new\(dbfakes\.Fake[^)]*\)' atc/api/builds_test.go | wc -l | tr -d
 
 ## Final acceptance and closure
 
-- [ ] Exact names remain 95/95; every endpoint count remains unchanged and the
+- [x] Exact names remain 95/95; every endpoint count remains unchanged and the
   full focus passes serially/across exactly nine processes on isolated clones.
-- [ ] The file moves 7→0 constructors/import and no generated fake moves. Every
+- [x] The file moves 7→0 constructors/import and no generated fake moves. Every
   healthy build, list, visibility, pagination, resource, abort, preparation,
   and plan state comes from PostgreSQL; event lookup/auth/delegation uses a real
   build while streaming remains on the documented event-handler seam. Only
@@ -246,8 +260,53 @@ test "$(rg -o 'new\(dbfakes\.Fake[^)]*\)' atc/api/builds_test.go | wc -l | tr -d
   remain.
 - [ ] Record exact RED/GREEN/sensitivity evidence, commits, full gates, census,
   and reviewer outcomes below. Commit only this plan as
-  `docs: record builds api postgres conversion`. Do not push.
+  `docs: record builds api postgres conversion`. Do not push. The actual code
+  commit and available green gates are recorded below; the prescribed
+  plan-specific RED/sensitivity runs and independent review are not evidenced,
+  so this item remains open.
 
 ## Observed completion evidence
 
-Record evidence only after final acceptance passes.
+- Code commit: `0ebaf2796a` (`test(api): persist builds API state`) changes only
+  `atc/api/builds_test.go`, and the current source matches that committed
+  version. The implementation landed as one combined commit, rather than the
+  five endpoint-batch commits proposed by this plan.
+- Census: the file moved from one `FakeBuild`, three `FakeBuildForAPI`, and
+  three `FakeJob` constructors to zero. The `dbfakes` import and all shared
+  `dbTeam`, `dbBuildFactory`, suite `build`, and `fakePipeline` references are
+  also absent; `fakeAccess` and `constructedEventHandler` remain as the
+  documented non-database seams.
+- Name preservation: the sorted before/after dry-run snapshots are
+  byte-identical at 95 specs, retaining the planned endpoint counts of 8, 17,
+  11, 11, 12, 6, 15, and 15.
+- Persisted implementation: all eight endpoint groups now start their own
+  late-bound real-DB server and derive healthy creation, list/visibility,
+  pagination, resources, event lookup/authorization, abort, preparation, and
+  plan state from PostgreSQL. The embedded decorators are limited to the
+  documented selective errors/observations; SSE streaming remains on the
+  existing event-handler seam.
+- Runtime fixture correction: final validation exposed short declarations in
+  the events, preparation, and plan fixtures that shadowed their outer job
+  variables. Focused runs reproduced the nil-fixture failure (RED); assigning
+  the real jobs to the outer variables at all three sites made the focused
+  reruns pass (GREEN).
+- Focus and branch validation: Builds passed 95/95 serially and 95/95 with
+  exactly nine processes. The complete API focus passed 825/825 serially and
+  825/825 with exactly nine processes; `go test ./atc/api` also passed.
+  Broader validation passed `make test-integration` (24/24) and
+  `make test-fly-integration` (680/680).
+- Static validation passed `go vet ./atc/api`, the final dry-run name checks,
+  `gofmt -d`, and `git diff --check`.
+- The full `make test-unit` run exercised 155 suites in 29m48s and exited 2
+  only for the seven predeclared unrelated migration-version failures: the
+  expected head is `1773106160`, while embedded migrations/preflight stop at
+  `1773106159`. The other 154 suites passed; this gate is not reported green.
+- Final requested-pattern census is 89 constructors across 33 import files,
+  down from 606 / 134. All remaining sites reconcile to 86 reviewed non-suite
+  seams plus three worker-suite constructors.
+- Explicit gap: no final-closeout evidence is recorded for the plan-specific
+  persisted REDs, and the sensitivity mutations were not run. The task
+  checkpoints and final evidence box that additionally require those checks,
+  partial focuses, or prescribed per-batch commits remain open rather than
+  inferring them from the broader green suites. Final independent branch review
+  is pending.

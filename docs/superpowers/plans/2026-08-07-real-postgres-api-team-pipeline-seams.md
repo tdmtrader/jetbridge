@@ -52,18 +52,18 @@ Concourse `db.Team`/`db.Pipeline`, `dbtest.Builder`, API handlers.
 
 ## Shared decorator rules
 
-- [ ] Add test-owned embedded decorators with one mutex-protected state object
+- [x] Add test-owned embedded decorators with one mutex-protected state object
   per spec. A Teams factory/team decorator may override only `CreateTeam`,
   `NotifyCacher`, `UpdateProviderAuth`, `Delete`, `Rename`, and `Builds`, plus
   record delegated `FindTeam`/page arguments where an existing spec observes
   routing or parsing.
-- [ ] A Pipelines team/pipeline decorator may override only `Pipelines`,
+- [x] A Pipelines team/pipeline decorator may override only `Pipelines`,
   `Pipeline`, `OrderPipelines`, `OrderPipelinesWithinGroup`, `RenamePipeline`,
   `Destroy`, `Pause`, `Archive`, `Unpause`, `Expose`, `Hide`,
   `LoadDebugVersionsDB`, `Builds`, and `CreateStartedBuild` for their existing
   selective error/semantic-conflict contexts. Every unset method delegates to
   the freshly loaded real object.
-- [ ] Decorator factories first delegate real lookup, then wrap only the
+- [x] Decorator factories first delegate real lookup, then wrap only the
   intended dynamic team/pipeline ID. Defensively copy page/order arguments and
   never return a synthetic healthy entity or healthy data graph. Error flags,
   recorders, and overrides must be safe under `go test -race` style concurrent
@@ -71,19 +71,19 @@ Concourse `db.Team`/`db.Pipeline`, `dbtest.Builder`, API handlers.
 
 ## Task 1: Finish Teams API — one constructor to zero
 
-- [ ] Replace the outer `FakeTeam` with real rows and the narrow Teams
+- [x] Replace the outer `FakeTeam` with real rows and the narrow Teams
   decorators. Keep real lookup/create/update/delete/rename/build-list behavior
   for every healthy path; use the decorator only for the current late
   `CreateTeam`, `UpdateProviderAuth`, `Delete`, `Rename`, and `Builds` failures.
-- [ ] Persist the sole admin team by setting only the clone-owned main team's
+- [x] Persist the sole admin team by setting only the clone-owned main team's
   `admin` bit through its dynamic ID, require one affected row, refetch it, and
   prove the DELETE returns 403 while the row remains. This replaces the fake
   `Name/Admin/GetTeams/DeleteCallCount` graph.
-- [ ] Persist at least four distinguishable team builds. The page-observer
+- [x] Persist at least four distinguishable team builds. The page-observer
   decorator delegates `Team.Builds` while recording the exact parsed page for
   explicit and default limits. Use real dynamic pagination to assert RFC 5988
   previous/next links; do not synthesize `db.Pagination` on a healthy path.
-- [ ] Replace call-count-only healthy claims with durable assertions (row still
+- [x] Replace call-count-only healthy claims with durable assertions (row still
   present, exact build IDs/order/links). Keep recorder assertions only where
   the behavior under test is argument translation itself.
 - [ ] Persisted RED: require the real sole-admin row and real page IDs while
@@ -95,23 +95,23 @@ Concourse `db.Team`/`db.Pipeline`, `dbtest.Builder`, API handlers.
 
 ## Task 2: Finish Pipelines API — two constructors to zero
 
-- [ ] Replace the outer generated team/pipeline fakes with real rows and the
+- [x] Replace the outer generated team/pipeline fakes with real rows and the
   narrow Pipelines decorators. Each late fault begins with a successful real
   team and pipeline lookup; only the named method fails. Preserve exact
   `ErrWorkflowRunTemplateImmutable` versus generic-error response behavior.
-- [ ] Convert all four healthy `versions-db` specs to a real `a-team` /
+- [x] Convert all four healthy `versions-db` specs to a real `a-team` /
   `a-pipeline` graph. Persist jobs/resources and resource versions, one
   succeeded explicit output, one adopted input/implicit output, and a rerun
   mapping using production DB APIs/`dbtest.Builder`. Persist a distinguishable
   decoy pipeline so scope cannot pass accidentally.
-- [ ] Build the expected `atc.DebugVersionsDB` independently from the persisted
+- [x] Build the expected `atc.DebugVersionsDB` independently from the persisted
   objects' dynamic IDs, scope IDs, check orders, input names, build/job IDs,
   and rerun identity. Because the production queries have no `ORDER BY`, decode
   the raw body, assert exact slice cardinalities, sort every expected and
   actual slice by explicit composite keys, and compare the complete normalized
   graph. Do not call `LoadDebugVersionsDB` to manufacture the HTTP oracle. The
   error context uses only the decorator's `LoadDebugVersionsDB` error.
-- [ ] Replace fake `FindTeam` call assertions with the delegating factory's
+- [x] Replace fake `FindTeam` call assertions with the delegating factory's
   defensive argument record plus behavioral scope: `a-team` succeeds and the
   decoy team/pipeline graph is absent from the response.
 - [ ] Persisted RED: request the real dynamic graph while the fake values are
@@ -125,12 +125,12 @@ Concourse `db.Team`/`db.Pipeline`, `dbtest.Builder`, API handlers.
 
 ## Task 3: Retire the primary default-suite TeamFactory
 
-- [ ] Require repository-wide zero references to `dbTeamFactory` outside its
+- [x] Require repository-wide zero references to `dbTeamFactory` outside its
   suite declaration/allocation/default-deps assignment. Replace that default
   dependency with a small non-nil `unavailableTeamFactory` implementing the
   exact `db.TeamFactory` contract and returning one deterministic unavailable
   error (or nil for `GetByID`) rather than a generated success fake.
-- [ ] Keep the worker-specific factory/team wired only to worker dependencies.
+- [x] Keep the worker-specific factory/team wired only to worker dependencies.
   Rename the suite variable to `dbWorkerTeam` if useful for clarity, but do not
   delete that justified constructor in this task.
 - [ ] Run focused authorization/team/pipeline/worker coverage first, then full
@@ -162,11 +162,11 @@ gofmt -d atc/api/teams_test.go atc/api/pipelines_test.go atc/api/api_suite_test.
 git diff --check
 ```
 
-- [ ] Exact names remain 33 Teams target-file / 112 Pipelines target-file / 122
+- [x] Exact names remain 33 Teams target-file / 112 Pipelines target-file / 122
   Pipelines focus / 155 combined focus / complete API. The two target files
   have zero generated DB constructors/imports, no healthy path uses a generated
   DB fake, and only documented narrow error/observer seams remain.
-- [ ] Final repository requested-pattern census is 89 constructors / 33 import
+- [x] Final repository requested-pattern census is 89 constructors / 33 import
   files after all prerequisites and Tasks 1–3. Reconcile every remaining site
   to the reviewed 86 non-suite selective-fault/algorithm/timing ledger plus the
   three worker-suite constructors.
@@ -176,4 +176,28 @@ git diff --check
 
 ## Observed completion evidence
 
-Record evidence only after final acceptance passes.
+- Completed implementation commits: Teams `20f7b7c4bb`; Pipelines
+  `d3b5617b1b`; default-suite/interface retirements `5507ea7258`.
+- Focus validation passed serially and with nine processes: Teams 33/33;
+  exact Pipelines target file 112/112; broader Pipelines focus 122/122;
+  combined exact target files 145/145; and broader Teams-or-Pipelines focus
+  155/155.
+- Full API passed 825/825 serially and with nine processes. `go test ./atc/api`
+  passed, as did `make test-integration` (24/24) and Fly integration (680/680).
+- Static validation passed `go vet ./atc/api`, the final dry-run name checks,
+  `gofmt -d`, and `git diff --check`.
+- The full `make test-unit` run exercised 155 suites in 29m48s and exited 2
+  only for the seven predeclared unrelated migration-version failures: the
+  expected head is `1773106160`, while embedded migrations/preflight stop at
+  `1773106159`. The other 154 suites passed; this gate is not reported green.
+- The runtime RED for an empty pipeline rename was reproduced as expected 400
+  versus actual 500 when its real team fixture was absent. Hoisting one cloned
+  database/team/pipeline/server setup to the invalid-identifier parent fixed
+  the fixture; the exact leaf and all listed gates then passed. Independent
+  review: PASS.
+- Final requested-pattern census: 89 constructors across 33 import files,
+  down from the 606 constructors / 134 import-file baseline. The remaining
+  sites are the reviewed 86 justified seams plus three worker-suite
+  constructors.
+- Final independent branch review is pending; mutation-only evidence remains
+  intentionally open.

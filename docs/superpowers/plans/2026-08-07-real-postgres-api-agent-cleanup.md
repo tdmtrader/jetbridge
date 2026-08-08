@@ -42,18 +42,20 @@ agent review/feedback/workflow-run/transcript persistence, API handlers.
 
 ## Task 1: Persist the three feedback specs
 
-- [ ] Add `feedbackStore feedback.Store` to `apiDBDeps`. Default suite deps use
-  a fresh `feedback.NewMemoryStore()` per spec; `useRealDB()` uses
+- [x] Add `feedbackStore feedback.Store` to `apiDBDeps`. Default suite deps use
+  an explicit fail-closed `unavailableFeedbackStore`; `useRealDB()` uses
   `db.NewAgentFeedbackFactory(conn)`. Pass `deps.feedbackStore` to
-  `api.NewHandler` and remove the package-global `apiFeedbackStore`.
-- [ ] In each feedback spec, call `useRealDB()`, create real team `research`,
+  `api.NewHandler` and remove the package-global `apiFeedbackStore`. The
+  fail-closed default supersedes the plan's original temporary memory-store
+  proposal after whole-branch review found it could synthesize HTTP 201.
+- [x] In each feedback spec, call `useRealDB()`, create real team `research`,
   assign finalized deps, and serve locally. Seed the production review
   projection required by feedback's foreign-key/authorization semantics,
   retaining snapshot ID `9007199254740993` to cover values above 2^53.
-- [ ] Seed only clone-local valid rows: snapshot and upload production identity,
+- [x] Seed only clone-local valid rows: snapshot and upload production identity,
   then `db.NewAgentReviewsFactory(conn).UpsertReviewProjection(...)`. Read back
   with `db.NewAgentFeedbackFactory(conn).GetByReviewSnapshot`.
-- [ ] Success requires status 201, real `research` distinct from `main`, durable
+- [x] Success requires status 201, real `research` distinct from `main`, durable
   team-scoped feedback, exact finding/verdict, and canonical
   `DisplayUserId` replacing the forged request reviewer. Blank identity leaves
   the table empty. A genuinely absent team returns 404 and leaves it empty.
@@ -67,21 +69,21 @@ agent review/feedback/workflow-run/transcript persistence, API handlers.
 
 ## Task 2: Persist the six transcript specs
 
-- [ ] Narrow `apiDBDeps.transcripts` from the full generated factory interface
+- [x] Narrow `apiDBDeps.transcripts` from the full generated factory interface
   to `transcriptserver.Store`, the handler's exact one-method read contract.
   Default suite deps use nil (the handler's documented empty/404 behavior);
   `useRealDB()` retains `db.NewAgentRunTranscriptFactory(conn)`.
-- [ ] Remove the suite `fakeAgentRunTranscriptFactory` global/allocation and
+- [x] Remove the suite `fakeAgentRunTranscriptFactory` global/allocation and
   replace it in six specs with endpoint-local real DB/deps/server setup. Add a
   mutex-safe embedded error decorator that overrides only
   `ListByWorkflowRun` for the existing 500 context.
-- [ ] Seed a durable workflow definition and explicit run ID
+- [x] Seed a durable workflow definition and explicit run ID
   `9007199254740993` for workflow `review`, valid schema/signature versions and
   hashes, plus real one-off builds and
   `db.NewAgentRunTranscriptFactory(conn).Upsert(...)` transcript rows. Returned
   persisted rows must all carry the non-null workflow-run ID; remove the old
   impossible fake-only expectation that omitted it.
-- [ ] Prove workflow-name and run-ID scoping behaviorally with distinguishable
+- [x] Prove workflow-name and run-ID scoping behaviorally with distinguishable
   decoy run/transcript state rather than call-history assertions. Empty list
   persists a run with no transcripts; body/unknown-plan specs persist the
   addressed transcript. Malformed ID must perform no store query.
@@ -95,17 +97,17 @@ agent review/feedback/workflow-run/transcript persistence, API handlers.
 
 ## Task 3: Remove 12 definite default-suite constructors
 
-- [ ] Delete the globals/allocations/default assignments for these ten
+- [x] Delete the globals/allocations/default assignments for these ten
   unreachable pass-through dependencies, leaving their `apiDBDeps` fields nil:
   `FakePipelineFactory`, `FakeJobFactory`, `FakeResourceFactory`,
   `FakeResourceConfigFactory`, `FakeUserFactory`, `FakeCheckFactory`,
   `FakePipelineRunFactory`, `FakeWall`, `FakeSigningKeyFactory`, and
   `FakeVolumeRepository`.
-- [ ] Narrow `apiDBDeps.workflowRuns` to `ticketjournal.RunStore`; use the
+- [x] Narrow `apiDBDeps.workflowRuns` to `ticketjournal.RunStore`; use the
   existing non-nil `unavailableWorkflowRunBackend{}` in default deps and retain
   the real workflow-run factory in `useRealDB()`. This removes
   `FakeAgentWorkflowRunsFactory`.
-- [ ] Add a non-nil `unavailableExperimentStore` implementing
+- [x] Add a non-nil `unavailableExperimentStore` implementing
   `experiment.Store` and `experiment.PagedStore`, returning one deterministic
   unavailable error from every method. Use it only for the default server;
   real experiment specs retain `db.NewAgentExperimentsFactory`. This removes
@@ -120,11 +122,11 @@ agent review/feedback/workflow-run/transcript persistence, API handlers.
 
 ## Task 4: Remove three Builds-conditional suite constructors
 
-- [ ] Only after `atc/api/builds_test.go` has zero references to
+- [x] Only after `atc/api/builds_test.go` has zero references to
   `dbBuildFactory`, `fakePipeline`, and package-global `build`, delete the
   corresponding `FakeBuildFactory`, `FakePipeline`, and `FakeBuild` globals and
   allocations, plus `dbTeam.PipelineReturns(fakePipeline, true, nil)`.
-- [ ] Require a repository-wide zero-reference check for those three suite
+- [x] Require a repository-wide zero-reference check for those three suite
   identifiers outside their declarations before deletion. Run the exact 95
   Builds specs and full API serial/nine-process suites to detect implicit
   default-pipeline dependencies.
@@ -146,16 +148,54 @@ go vet ./atc/api
 git diff --check
 ```
 
-- [ ] Exact names remain 3 feedback / 6 transcript. All success state comes
+- [x] Exact names remain 3 feedback / 6 transcript. All success state comes
   from each spec's clone; only the transcript error decorator and explicit
   unavailable defaults remain as documented non-success seams.
-- [ ] Final exact product-test census is 96 constructors / 36 import files after
-  Builds and all four tasks, excluding `bench/corpus/**`. Record any later
-  `FakeTeam` reduction separately only after full behavioral proof.
+- [x] The cleanup landed atomically with the later default-suite retirements,
+  so there is no standalone 96 / 36 commit checkpoint. The final branch is
+  89 / 33, excluding `bench/corpus/**`; all remaining sites reconcile to 86
+  justified seams plus three worker-suite constructors.
 - [ ] Record RED/GREEN/sensitivity evidence, commit IDs, full gates, and review
   outcomes below; commit this plan as
   `docs: record agent api postgres cleanup`. Do not push.
 
 ## Observed completion evidence
 
-Record evidence only after final acceptance passes.
+- Implementation, interface cleanup, fixture wiring, and default-suite
+  retirement landed atomically in `5507ea7258` (`test(api): persist agent API
+  state and retire default database fakes`). The four planned code files were
+  interwoven, so the commit intentionally consolidated the per-task commits.
+- Feedback passed 3/3 serially and across nine processes. Its final specs bind
+  the clone-backed store before projection, fail closed with no row, then prove
+  durable team/snapshot scoping and canonical reviewer persistence after the
+  production review projection exists.
+- Transcripts passed 6/6 serially and across nine processes. The final specs
+  use durable workflow/run/build/transcript rows, a distinguishable decoy run,
+  non-null workflow-run IDs, and a mutex-safe one-method error decorator.
+- Full API passed 825/825 serially and across nine processes; after the final
+  fail-closed-default correction it passed 825/825 again in both modes.
+  `go test ./atc/api`, `make test-integration` (24/24), and `make
+  test-fly-integration` (680/680) also passed.
+- Static validation passed `go vet ./atc/api`, the final dry-run name checks,
+  `gofmt -d`, and `git diff --check`.
+- The full `make test-unit` run exercised 155 suites in 29m48s and exited 2
+  only for the seven predeclared unrelated migration-version failures: the
+  expected head is `1773106160`, while embedded migrations/preflight stop at
+  `1773106159`. The other 154 suites passed; this gate is not reported green.
+- Final requested-pattern census is 89 constructors across 33 `dbfakes`
+  import files, down from 606 / 134. The remaining sites reconcile to 86
+  justified algorithmic/fault/timing seams plus three worker-suite
+  constructors.
+- Whole-branch review found that the default feedback memory store could still
+  accept a healthy write and several nominally unavailable workflow-run reads
+  returned nil-success empty state. A focused regression reproduced all ten
+  permissive operations, then `5e4f903aba` replaced them with explicit
+  unavailable adapters; the regression and both full-API modes passed.
+- The same review found stale local-Colima provisioning. `7f1bce2ff3` changed
+  the helper to readiness/DSN-only behavior, made the concurrency barrier query
+  the external service directly, and aligned current runbooks with theborg's
+  no-local-Docker policy. Helper/signal tests, postgresrunner tests, and a live
+  distinct-clone concurrency run passed.
+- No standalone mutation-only sensitivity log is recorded here. Prescribed
+  focused checkpoints and per-task commit composites also remain open. Final
+  independent branch re-review is pending.
