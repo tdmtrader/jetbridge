@@ -101,7 +101,22 @@ type fakeEventHandlerFactory struct {
 	lock sync.Mutex
 }
 
+// unavailableFeedbackStore and unavailableWorkflowRunBackend keep the default
+// router non-nil without manufacturing healthy database outcomes. Converted
+// agent endpoint specs replace them with clone-backed stores before serving.
+type unavailableFeedbackStore struct{}
+
+var errUnavailableFeedbackStore = errors.New("feedback store is unavailable in the API suite")
+
+var _ feedback.Store = unavailableFeedbackStore{}
+
+func (unavailableFeedbackStore) Save(*feedback.StoredFeedback) error {
+	return errUnavailableFeedbackStore
+}
+
 type unavailableWorkflowRunBackend struct{}
+
+var errUnavailableWorkflowRunBackend = errors.New("workflow-run backend is unavailable in the API suite")
 
 // unavailableTeamFactory keeps default-route construction non-nil without
 // supplying synthetic successful database state. Converted team consumers
@@ -171,47 +186,47 @@ func (allowWorkflowOutcomeAuthorizer) AuthorizeModification(
 }
 
 func (unavailableWorkflowRunBackend) BindAndCreate(context.Context, workflowrun.AdmissionContext, workflowrun.BindRequest) (workflowrun.BindResult, error) {
-	return workflowrun.BindResult{}, errors.New("workflow-run backend is unavailable in the API suite")
+	return workflowrun.BindResult{}, errUnavailableWorkflowRunBackend
 }
 
 func (unavailableWorkflowRunBackend) Get(context.Context, int, snapshot.WorkflowRunID) (db.AgentWorkflowRun, bool, error) {
-	return db.AgentWorkflowRun{}, false, nil
+	return db.AgentWorkflowRun{}, false, errUnavailableWorkflowRunBackend
 }
 
 func (unavailableWorkflowRunBackend) GetKind(context.Context, int, workflow.DefinitionKind, snapshot.WorkflowRunID) (db.AgentWorkflowRun, bool, error) {
-	return db.AgentWorkflowRun{}, false, nil
+	return db.AgentWorkflowRun{}, false, errUnavailableWorkflowRunBackend
 }
 
 func (unavailableWorkflowRunBackend) List(context.Context, db.AgentWorkflowRunListFilter) ([]db.AgentWorkflowRun, error) {
-	return nil, nil
+	return nil, errUnavailableWorkflowRunBackend
 }
 
 func (unavailableWorkflowRunBackend) ListKind(context.Context, workflow.DefinitionKind, db.AgentWorkflowRunListFilter) ([]db.AgentWorkflowRun, error) {
-	return nil, nil
+	return nil, errUnavailableWorkflowRunBackend
 }
 
 func (unavailableWorkflowRunBackend) CountByStatus(context.Context, db.AgentWorkflowRunCountFilter) (map[db.AgentWorkflowRunStatus]int64, error) {
-	return map[db.AgentWorkflowRunStatus]int64{}, nil
+	return nil, errUnavailableWorkflowRunBackend
 }
 
 func (unavailableWorkflowRunBackend) Snapshots(context.Context, snapshot.WorkflowRunID) ([]db.AgentWorkflowRunSnapshotBinding, error) {
-	return nil, nil
+	return nil, errUnavailableWorkflowRunBackend
 }
 
 func (unavailableWorkflowRunBackend) Cancel(context.Context, int, snapshot.WorkflowRunID) (db.AgentWorkflowRun, bool, error) {
-	return db.AgentWorkflowRun{}, false, nil
+	return db.AgentWorkflowRun{}, false, errUnavailableWorkflowRunBackend
 }
 
 func (unavailableWorkflowRunBackend) GetAuthorized(context.Context, int, snapshot.SnapshotID) (snapshot.Snapshot, bool, error) {
-	return snapshot.Snapshot{}, false, nil
+	return snapshot.Snapshot{}, false, errUnavailableWorkflowRunBackend
 }
 
 func (unavailableWorkflowRunBackend) Upgrade(context.Context, workflow.NodeUpgradeRequest) (workflow.NodeUpgradeResult, error) {
-	return workflow.NodeUpgradeResult{}, errors.New("node-upgrade backend is unavailable in the API suite")
+	return workflow.NodeUpgradeResult{}, errUnavailableWorkflowRunBackend
 }
 
 func (unavailableWorkflowRunBackend) OccurrencesForRun(context.Context, db.AgentWorkflowRun) ([]occurrence.NodeOccurrence, error) {
-	return nil, nil
+	return nil, errUnavailableWorkflowRunBackend
 }
 
 func (unavailableExperimentStore) Create(
@@ -360,14 +375,52 @@ func fakeDBDeps() apiDBDeps {
 		workerTeamFactory: dbWorkerTeamFactory,
 		workflowRuns:      unavailableWorkflowRunBackend{},
 		experiments:       unavailableExperimentStore{},
-		feedbackStore:     feedback.NewMemoryStore(),
+		feedbackStore:     unavailableFeedbackStore{},
 		trustedTeamID:     1, trustedTeamName: atc.DefaultTeamName,
 	}
 }
 
+func TestDefaultAPIDatabaseDepsFailClosed(t *testing.T) {
+	deps := fakeDBDeps()
+	if err := deps.feedbackStore.Save(&feedback.StoredFeedback{}); !errors.Is(err, errUnavailableFeedbackStore) {
+		t.Errorf("default feedback store error = %v, want %v", err, errUnavailableFeedbackStore)
+	}
+
+	backend := unavailableWorkflowRunBackend{}
+	assertUnavailable := func(operation string, err error) {
+		t.Helper()
+		if !errors.Is(err, errUnavailableWorkflowRunBackend) {
+			t.Errorf("default workflow-run backend %s error = %v, want %v", operation, err, errUnavailableWorkflowRunBackend)
+		}
+	}
+
+	_, err := backend.BindAndCreate(context.Background(), workflowrun.AdmissionContext{}, workflowrun.BindRequest{})
+	assertUnavailable("BindAndCreate", err)
+	_, _, err = backend.Get(context.Background(), 0, 1)
+	assertUnavailable("Get", err)
+	_, _, err = backend.GetKind(context.Background(), 0, workflow.DefinitionKind("review"), 1)
+	assertUnavailable("GetKind", err)
+	_, err = backend.List(context.Background(), db.AgentWorkflowRunListFilter{})
+	assertUnavailable("List", err)
+	_, err = backend.ListKind(context.Background(), workflow.DefinitionKind("review"), db.AgentWorkflowRunListFilter{})
+	assertUnavailable("ListKind", err)
+	_, err = backend.CountByStatus(context.Background(), db.AgentWorkflowRunCountFilter{})
+	assertUnavailable("CountByStatus", err)
+	_, err = backend.Snapshots(context.Background(), 1)
+	assertUnavailable("Snapshots", err)
+	_, _, err = backend.Cancel(context.Background(), 0, 1)
+	assertUnavailable("Cancel", err)
+	_, _, err = backend.GetAuthorized(context.Background(), 0, 1)
+	assertUnavailable("GetAuthorized", err)
+	_, err = backend.Upgrade(context.Background(), workflow.NodeUpgradeRequest{})
+	assertUnavailable("Upgrade", err)
+	_, err = backend.OccurrencesForRun(context.Background(), db.AgentWorkflowRun{})
+	assertUnavailable("OccurrencesForRun", err)
+}
+
 // newAPIServer serves the production router over deps. Extracted verbatim
 // from the suite's BeforeEach so a single Describe can shadow `server` with
-// one built over real db factories, without disturbing the ~950 specs that
+// one built over real db factories, without disturbing the remaining specs that
 // still run against fakes.
 func newAPIServer(deps apiDBDeps) *httptest.Server {
 	GinkgoHelper()
