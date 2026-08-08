@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+printf '%s\n' "$*" >>"${FAKE_PSQL_LOG}"
+if [[ "${FAKE_PSQL_STATUS:-0}" -ne 0 ]]; then
+	exit "${FAKE_PSQL_STATUS}"
+fi
+printf '%s\n' "${FAKE_PSQL_RESULT:-t}"

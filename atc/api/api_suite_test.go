@@ -386,7 +386,10 @@ func TestDefaultAPIDatabaseDepsFailClosed(t *testing.T) {
 		t.Errorf("default feedback store error = %v, want %v", err, errUnavailableFeedbackStore)
 	}
 
-	backend := unavailableWorkflowRunBackend{}
+	backend, ok := deps.workflowRuns.(unavailableWorkflowRunBackend)
+	if !ok {
+		t.Fatalf("default workflow-run backend = %T, want unavailableWorkflowRunBackend", deps.workflowRuns)
+	}
 	assertUnavailable := func(operation string, err error) {
 		t.Helper()
 		if !errors.Is(err, errUnavailableWorkflowRunBackend) {
