@@ -5,14 +5,26 @@ printf '%s\n' "$$" >>"${FAKE_GINKGO_CHILD_PIDS}"
 printf '%s|%s\n' "${PGAPPNAME:-}" "${CONCOURSE_TEST_POSTGRES_DSN:-}" >>"${FAKE_GINKGO_DSN_LOG}"
 
 (
-	trap 'printf "grandchild\\n" >>"${FAKE_GINKGO_TERMINATIONS}"; exit 0' HUP INT TERM
+	terminate_grandchild() {
+		printf 'grandchild\n' >>"${FAKE_GINKGO_TERMINATIONS}"
+		if [[ "${FAKE_GINKGO_GRANDCHILD_STUBBORN:-0}" -eq 0 ]]; then
+			exit 0
+		fi
+	}
+	trap terminate_grandchild HUP INT TERM
 	while :; do
-		sleep 1
+		sleep 1 || true
 	done
 ) &
 printf '%s\n' "$!" >>"${FAKE_GINKGO_GRANDCHILD_PIDS}"
 
-trap 'printf "child\\n" >>"${FAKE_GINKGO_TERMINATIONS}"' TERM
+terminate_child() {
+	printf 'child\n' >>"${FAKE_GINKGO_TERMINATIONS}"
+	if [[ "${FAKE_GINKGO_STUBBORN:-1}" -eq 0 ]]; then
+		exit 0
+	fi
+}
+trap terminate_child TERM
 trap 'exit 0' HUP INT
 while :; do
 	sleep 1 || true

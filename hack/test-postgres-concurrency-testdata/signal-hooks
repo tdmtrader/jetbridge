@@ -1,0 +1,56 @@
+# Sourced through BASH_ENV only by the signal regressions.
+if [[ -n "${FAKE_GINKGO_SIGNAL_SCENARIO:-}" && "${FAKE_POSTGRES_SIGNAL_HOOK_INSTALLED:-0}" -eq 0 ]]; then
+	export FAKE_POSTGRES_SIGNAL_HOOK_INSTALLED=1
+	set -T
+	FAKE_LAUNCH_HOOK_FIRED=0
+	FAKE_LAUNCH_BOUNDARIES=0
+	FAKE_CLEANUP_HOOK_FIRED=0
+
+	postgres_concurrency_debug_hook() {
+		local deadline
+		case "${BASH_COMMAND}" in
+			'SUITE_PID=$!')
+				FAKE_LAUNCH_BOUNDARIES=$((FAKE_LAUNCH_BOUNDARIES + 1))
+				if [[ "${FAKE_LAUNCH_HOOK_FIRED}" -eq 0 && "${FAKE_LAUNCH_BOUNDARIES}" -eq "${FAKE_TRIGGER_LAUNCH_NUMBER:-2}" ]]; then
+					FAKE_LAUNCH_HOOK_FIRED=1
+					deadline=$((SECONDS + 10))
+					while (( SECONDS < deadline )); do
+						if [[ -f "${FAKE_GINKGO_CHILD_PIDS}" && -f "${FAKE_GINKGO_GRANDCHILD_PIDS}" ]] &&
+							[[ "$(wc -l <"${FAKE_GINKGO_CHILD_PIDS}")" -ge "${FAKE_TRIGGER_LAUNCH_NUMBER:-2}" ]] &&
+							[[ "$(wc -l <"${FAKE_GINKGO_GRANDCHILD_PIDS}")" -ge "${FAKE_TRIGGER_LAUNCH_NUMBER:-2}" ]]; then
+							break
+						fi
+						sleep 0.02
+					done
+					if [[ ! -f "${FAKE_GINKGO_CHILD_PIDS}" || ! -f "${FAKE_GINKGO_GRANDCHILD_PIDS}" ]] ||
+						[[ "$(wc -l <"${FAKE_GINKGO_CHILD_PIDS}")" -lt "${FAKE_TRIGGER_LAUNCH_NUMBER:-2}" ]] ||
+						[[ "$(wc -l <"${FAKE_GINKGO_GRANDCHILD_PIDS}")" -lt "${FAKE_TRIGGER_LAUNCH_NUMBER:-2}" ]]; then
+						echo "ERROR: timed out at launch-window fixture boundary" >&2
+						exit 98
+					fi
+					: >"${FAKE_GINKGO_LAUNCH_HOOK_FIRED}"
+					if [[ "${FAKE_GINKGO_SIGNAL_SCENARIO}" == launch ]]; then
+						trap - DEBUG
+					fi
+					kill -TERM "$$"
+				fi
+				;;
+			'local grace_deadline=$((SECONDS + 5))')
+				if [[ "${FAKE_GINKGO_SIGNAL_SCENARIO}" == repeated-term && "${FAKE_CLEANUP_HOOK_FIRED}" -eq 0 ]]; then
+					FAKE_CLEANUP_HOOK_FIRED=1
+					: >"${FAKE_GINKGO_CLEANUP_HOOK_READY}"
+					deadline=$((SECONDS + 10))
+					while [[ ! -e "${FAKE_GINKGO_CLEANUP_HOOK_RELEASE}" ]] && (( SECONDS < deadline )); do
+						sleep 0.02
+					done
+					if [[ ! -e "${FAKE_GINKGO_CLEANUP_HOOK_RELEASE}" ]]; then
+						echo "ERROR: timed out waiting for cleanup fixture release" >&2
+						exit 98
+					fi
+				fi
+				;;
+		esac
+		return 0
+	}
+	trap postgres_concurrency_debug_hook DEBUG
+fi

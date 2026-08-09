@@ -16,20 +16,24 @@ PIPELINE_PID=""
 AUTH_PID=""
 PIPELINE_PGID=""
 AUTH_PGID=""
+SUITE_PID=""
+SUITE_PGID=""
 OBSERVED=0
 CLEANUP_STARTED=0
+LAUNCH_IN_PROGRESS=0
+PENDING_SIGNAL_STATUS=""
 
 cleanup() {
 	local status=$1
-	if [[ "${CLEANUP_STARTED}" -eq 1 ]]; then
+	if (( CLEANUP_STARTED++ )); then
 		return
 	fi
-	CLEANUP_STARTED=1
-	trap - EXIT HUP INT TERM
+	trap - EXIT
+	trap '' HUP INT TERM
 
 	local pid
 	local pgid
-	for pid_and_pgid in "${PIPELINE_PID}:${PIPELINE_PGID}" "${AUTH_PID}:${AUTH_PGID}"; do
+	for pid_and_pgid in "${PIPELINE_PID}:${PIPELINE_PGID}" "${AUTH_PID}:${AUTH_PGID}" "${SUITE_PID}:${SUITE_PGID}"; do
 		pid="${pid_and_pgid%%:*}"
 		pgid="${pid_and_pgid#*:}"
 		if [[ -n "${pid}" && -n "${pgid}" ]] && process_group_alive "${pgid}"; then
@@ -44,14 +48,14 @@ cleanup() {
 		fi
 		sleep 0.05
 	done
-	for pid_and_pgid in "${PIPELINE_PID}:${PIPELINE_PGID}" "${AUTH_PID}:${AUTH_PGID}"; do
+	for pid_and_pgid in "${PIPELINE_PID}:${PIPELINE_PGID}" "${AUTH_PID}:${AUTH_PGID}" "${SUITE_PID}:${SUITE_PGID}"; do
 		pid="${pid_and_pgid%%:*}"
 		pgid="${pid_and_pgid#*:}"
 		if [[ -n "${pid}" && -n "${pgid}" ]] && process_group_alive "${pgid}"; then
 			kill -KILL -- "-${pgid}" 2>/dev/null || true
 		fi
 	done
-	for pid in "${PIPELINE_PID}" "${AUTH_PID}"; do
+	for pid in "${PIPELINE_PID}" "${AUTH_PID}" "${SUITE_PID}"; do
 		if [[ -n "${pid}" ]]; then
 			wait "${pid}" 2>/dev/null || true
 		fi
@@ -71,6 +75,15 @@ on_exit() {
 
 on_signal() {
 	local status=$1
+	if [[ "${CLEANUP_STARTED}" -ne 0 ]]; then
+		return
+	fi
+	if [[ "${LAUNCH_IN_PROGRESS}" -eq 1 ]]; then
+		if [[ -z "${PENDING_SIGNAL_STATUS}" ]]; then
+			PENDING_SIGNAL_STATUS="${status}"
+		fi
+		return
+	fi
 	cleanup "${status}"
 	exit "${status}"
 }
@@ -106,6 +119,51 @@ require_shared_postgres() {
 	fi
 }
 
+valid_percent_encoding() {
+	local LC_ALL=C
+	local text=$1
+	while [[ "${text}" == *%* ]]; do
+		text="${text#*%}"
+		[[ "${text}" =~ ^[[:xdigit:]][[:xdigit:]] ]] || return 1
+		text="${text:2}"
+	done
+}
+
+validate_postgres_uri_percent_encoding() {
+	local dsn=$1
+	case "${dsn}" in
+		postgres://*|postgresql://*)
+			if ! valid_percent_encoding "${dsn}"; then
+				echo "ERROR: malformed percent encoding in PostgreSQL URI" >&2
+				return 1
+			fi
+			;;
+	esac
+}
+
+query_key_is_application_name() {
+	local LC_ALL=C
+	local encoded=$1
+	local expected="application_name"
+	local byte
+	local actual
+	while [[ -n "${encoded}" ]]; do
+		[[ -n "${expected}" ]] || return 1
+		if [[ "${encoded}" == %* ]]; then
+			byte="${encoded:1:2}"
+			encoded="${encoded:3}"
+			[[ "${byte}" != "00" ]] || return 1
+			printf -v actual '%b' "\\x${byte}"
+		else
+			actual="${encoded:0:1}"
+			encoded="${encoded:1}"
+		fi
+		[[ "${actual}" == "${expected:0:1}" ]] || return 1
+		expected="${expected:1}"
+	done
+	[[ -z "${expected}" ]]
+}
+
 dsn_with_application_name() {
 	local dsn=$1
 	local application_name=$2
@@ -116,6 +174,7 @@ dsn_with_application_name() {
 
 	case "${dsn}" in
 		postgres://*|postgresql://*)
+			validate_postgres_uri_percent_encoding "${dsn}" || return 1
 			local fragment=""
 			local without_fragment="${dsn}"
 			if [[ "${without_fragment}" == *#* ]]; then
@@ -137,7 +196,7 @@ dsn_with_application_name() {
 			for parameter in "${parameters[@]}"; do
 				[[ -n "${parameter}" ]] || continue
 				key="${parameter%%=*}"
-				[[ "${key}" == "application_name" ]] && continue
+				query_key_is_application_name "${key}" && continue
 				if [[ -n "${rebuilt}" ]]; then
 					rebuilt+="&"
 				fi
@@ -241,12 +300,14 @@ observe_distinct_clones() {
 }
 
 start_suite() {
-	local application_name=$1
-	local package=$2
-	local log=$3
-	local admin_dsn=$4
+	local suite=$1
+	local application_name=$2
+	local package=$3
+	local log=$4
+	local admin_dsn=$5
 	local child_dsn
 	child_dsn="$(dsn_with_application_name "${admin_dsn}" "${application_name}")"
+	LAUNCH_IN_PROGRESS=1
 	set -m
 	(
 		cd "${SOURCE_ROOT}"
@@ -255,19 +316,38 @@ start_suite() {
 	) >"${log}" 2>&1 &
 	SUITE_PID=$!
 	SUITE_PGID="${SUITE_PID}"
+	case "${suite}" in
+		AUTH)
+			AUTH_PID="${SUITE_PID}"
+			AUTH_PGID="${SUITE_PGID}"
+			;;
+		PIPELINE)
+			PIPELINE_PID="${SUITE_PID}"
+			PIPELINE_PGID="${SUITE_PGID}"
+			;;
+		*)
+			echo "ERROR: unknown suite launch slot: ${suite}" >&2
+			return 2
+			;;
+	esac
 	set +m
+	SUITE_PID=""
+	SUITE_PGID=""
+	LAUNCH_IN_PROGRESS=0
+	if [[ -n "${PENDING_SIGNAL_STATUS}" ]]; then
+		local pending_status="${PENDING_SIGNAL_STATUS}"
+		PENDING_SIGNAL_STATUS=""
+		on_signal "${pending_status}"
+	fi
 }
 
 require_source_root
+validate_postgres_uri_percent_encoding "${ADMIN_DSN}"
 require_shared_postgres
 
 # Auth is the longer suite, so start it first and then start pipelineserver.
-start_suite "${AUTH_APPLICATION_NAME}" ./atc/api/auth "${AUTH_LOG}" "${ADMIN_DSN}"
-AUTH_PID="${SUITE_PID}"
-AUTH_PGID="${SUITE_PGID}"
-start_suite "${PIPELINE_APPLICATION_NAME}" ./atc/api/pipelineserver "${PIPELINE_LOG}" "${ADMIN_DSN}"
-PIPELINE_PID="${SUITE_PID}"
-PIPELINE_PGID="${SUITE_PGID}"
+start_suite AUTH "${AUTH_APPLICATION_NAME}" ./atc/api/auth "${AUTH_LOG}" "${ADMIN_DSN}"
+start_suite PIPELINE "${PIPELINE_APPLICATION_NAME}" ./atc/api/pipelineserver "${PIPELINE_LOG}" "${ADMIN_DSN}"
 
 if ! observe_distinct_clones; then
 	echo "ERROR: did not observe both suite application names simultaneously on distinct cc_db_ clones" >&2
