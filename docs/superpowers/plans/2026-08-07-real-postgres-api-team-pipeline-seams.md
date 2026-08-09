@@ -42,8 +42,9 @@ Concourse `db.Team`/`db.Pipeline`, `dbtest.Builder`, API handlers.
   `FakeTeam` + `FakePipeline` constructors/import from `pipelines_test.go`.
   Remove the primary suite `FakeTeamFactory` constructor only after a zero-
   reference check and full-suite proof. Do not move a generated fake.
-- Reviewed prerequisite checkpoint is 93 constructors / 35 `dbfakes` test
-  imports. The two files remove three constructors and two imports; suite
+- Historical prerequisite checkpoint is 93 constructors across 35 non-benchmark
+  `*_test.go` files importing `atc/db/dbfakes`. The two files remove three
+  constructors and two imports; suite
   cleanup later removed the suite-bootstrap worker constructors as part of the
   final review wave. The final requested-pattern census is 86 constructors
   across 32 non-benchmark `*_test.go` files importing `atc/db/dbfakes`,

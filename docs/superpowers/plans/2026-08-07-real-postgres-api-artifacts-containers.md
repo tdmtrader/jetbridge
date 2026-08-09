@@ -99,7 +99,7 @@ errors and query-argument observation that a healthy database cannot express.
 - [ ] Sensitivity: temporarily request a missing artifact ID or associate the
   volume with a different team; require the found 200/body path to fail 404,
   restore, and rerun. Not run during final closeout; left open.
-- [ ] Run compile, exact 18/18 serial and nine-process focus, full API
+- [x] Run compile, exact 18/18 serial and nine-process focus, full API
   regression when feasible, vet, dry-run-name diff, diff/census searches, and
   independent review with no unresolved findings. Commit only the file as:
   `test(api): persist artifact repository state`. The code commit and all
@@ -182,7 +182,7 @@ errors and query-argument observation that a healthy database cannot express.
   second team while retaining success; invert the real `LastHijack` outcome.
   Each affected focus must fail before restoration. These mutation-only checks
   were not run during final closeout; left open.
-- [ ] Run compile, exact 47/47 serial and nine-process focus, combined
+- [x] Run compile, exact 47/47 serial and nine-process focus, combined
   Artifact/Containers serial+9, full API regression when feasible, vet,
   dry-run-name diff, diff/census searches, and independent review with no
   unresolved findings. Commit only the file as:
