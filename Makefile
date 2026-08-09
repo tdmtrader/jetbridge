@@ -34,8 +34,8 @@ test-agent-broker-smoke:
 	go test ./agent/broker -run 'TestEngine(RunsConsultationThroughDurablePhases|CapturesReviewWorkspaceAfterAdmissionAndRunsExactCapture)$$' -count=1
 	go test ./agent/broker/mcp -run 'TestServer(ExposesOnlyTheTwoNeutralTools|CallsConsultAgentSynchronously)$$' -count=1
 
-# Unit tests: all packages except integration/e2e suites (~5 min)
-# Requires: PostgreSQL running locally
+# Unit tests: all packages except integration/e2e suites (~30 min)
+# Requires: externally managed PostgreSQL
 #
 # `bench` is skipped, not excused: bench/corpus/*/ground_truth/withheld_tests
 # are SEALED fixtures — verbatim copies of tests as they existed at each case's
@@ -60,14 +60,14 @@ test-bench-harness:
 	@echo "==> Running bench harness tests..."
 	cd bench/harness && go test ./... -count=1
 
-# Fly integration tests (~10 min)
+# Fly integration tests (~30 sec)
 # Requires: nothing (uses mock HTTP server)
 test-fly-integration:
 	@echo "==> Running fly integration tests..."
 	ginkgo -r --keep-going ./fly/integration/
 
-# ATC integration tests (~10 min)
-# Requires: PostgreSQL running locally
+# ATC integration tests (~12 sec)
+# Requires: externally managed PostgreSQL
 test-integration:
 	@echo "==> Running ATC integration tests..."
 	ginkgo -r --keep-going -p ./atc/integration/
@@ -107,7 +107,7 @@ test-k8s-behavioral:
 # All K8s tests
 test-k8s: test-k8s-integration test-k8s-behavioral
 
-# Quick: unit tests only (~3 min)
+# Quick: unit tests only (~30 min)
 # Good for local development iteration
 test-quick: test-unit
 
