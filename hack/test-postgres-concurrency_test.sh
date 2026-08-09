@@ -147,6 +147,10 @@ assert_recorded_processes_gone() {
 			kill -0 "${pid}" 2>/dev/null && fail "${description} ${pid} survived parent cleanup"
 		done <"${pid_file}"
 	done
+	# Completed cases no longer need fallback reaping. Retiring their raw PIDs
+	# prevents a later PID reuse from targeting an unrelated process at EXIT.
+	: >"${CHILD_PIDS}"
+	: >"${GRANDCHILD_PIDS}"
 	return 0
 }
 
