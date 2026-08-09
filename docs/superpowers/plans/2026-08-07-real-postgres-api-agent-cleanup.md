@@ -29,16 +29,19 @@ agent review/feedback/workflow-run/transcript persistence, API handlers.
 - Preserve all nine exact spec names: three feedback and six transcript specs.
 - Every converted spec calls `useRealDB()` once and starts an endpoint-local
   server only after its fixtures/dependency overrides are finalized.
-- The live product-test census is 115 generated constructors / 37 `dbfakes`
-  import files (excluding `bench/corpus/**`). Completing the final three local
+- Historical pre-conversion product-test census was 115 generated constructors
+  across 37 non-benchmark `*_test.go` files importing `atc/db/dbfakes`.
+  Completing the final three local
   Builds constructors removes those sites and that file's import, producing a
   post-Builds checkpoint of 112 / 36. This plan then removes one transcript
   constructor plus 15 default-suite constructors, yielding 96 / 36.
   Feedback removes success-state fake behavior but no constructor by itself.
-- Retain the two default `FakeTeamFactory` constructors, `FakeTeam`, and
-  `FakeWorkerFactory` until a later full-suite-backed audit proves their
-  remaining authorization/fault roles can be replaced. Do not claim 92 merely
-  by deleting the default `FakeTeam` without behavioral evidence.
+- Historical plan assumption: retain the two default `FakeTeamFactory`
+  constructors, `FakeTeam`, and `FakeWorkerFactory` until a later full-suite
+  audit. The final review instead removed the suite bootstrap constructors,
+  made worker defaults fail closed, and retained only two context-local
+  late-method fault seams in the Workers API. Do not rewrite the earlier 96 / 36
+  projection as if it anticipated that later cleanup.
 
 ## Task 1: Persist the three feedback specs
 
@@ -153,11 +156,16 @@ git diff --check
   unavailable defaults remain as documented non-success seams.
 - [x] The cleanup landed atomically with the later default-suite retirements,
   so there is no standalone 96 / 36 commit checkpoint. The final branch is
-  89 / 33, excluding `bench/corpus/**`; all remaining sites reconcile to 86
-  justified seams plus three worker-suite constructors.
+  86 constructors across 32 non-benchmark `*_test.go` files importing
+  `atc/db/dbfakes`; all remaining sites are
+  reviewed narrow algorithmic, fault-injection, observation,
+  transaction/listener, instrumentation, or timing seams.
 - [ ] Record RED/GREEN/sensitivity evidence, commit IDs, full gates, and review
   outcomes below; commit this plan as
-  `docs: record agent api postgres cleanup`. Do not push.
+  `docs: record agent api postgres cleanup`. Do not push. The implementation
+  commit, green gates, and final scoped re-review are recorded below, but the
+  prescribed per-task focus/commit composites and mutation-only evidence are
+  not, so this composite remains open.
 
 ## Observed completion evidence
 
@@ -182,10 +190,14 @@ git diff --check
   only for the seven predeclared unrelated migration-version failures: the
   expected head is `1773106160`, while embedded migrations/preflight stop at
   `1773106159`. The other 154 suites passed; this gate is not reported green.
-- Final requested-pattern census is 89 constructors across 33 `dbfakes`
-  import files, down from 606 / 134. The remaining sites reconcile to 86
-  justified algorithmic/fault/timing seams plus three worker-suite
-  constructors.
+- Final requested-pattern census is 86 constructors across 32 non-benchmark
+  `*_test.go` files importing `atc/db/dbfakes`, down from 606 constructors
+  across 134 such importer files. The syntax split is 83 `new(dbfakes.Fake...)`
+  sites and three composite/address literals; those literals are metric seams
+  in `atc/metric/query_counter_test.go` and `atc/metric/periodic_test.go`.
+  All 86 sites are reviewed narrow algorithmic, fault-injection, observation,
+  transaction/listener, instrumentation, or timing seams; no healthy
+  persistence-state fake remains.
 - Whole-branch review found that the default feedback memory store could still
   accept a healthy write and several nominally unavailable workflow-run reads
   returned nil-success empty state. A focused regression reproduced all ten
@@ -197,5 +209,10 @@ git diff --check
   no-local-Docker policy. Helper/signal tests, postgresrunner tests, and a live
   distinct-clone concurrency run passed.
 - No standalone mutation-only sensitivity log is recorded here. Prescribed
-  focused checkpoints and per-task commit composites also remain open. Final
-  independent branch re-review is pending.
+  focused checkpoints and per-task commit composites also remain open.
+- Final review and closure evidence: the whole-branch review at `cfc7452ca6`
+  found four Important findings and one Minor. The six-commit fix wave
+  (`bc232dd968`, `3f74327afd`, `4800ff4ea9`, `b3123e78f8`, `d637e0fad1`, and
+  `26dc5a1d9d`) addressed them. The scoped re-review of
+  `cfc7452ca6..26dc5a1d9d` found all five addressed, no new
+  Critical/Important/Minor issue, and authorized closure-document finalization.

@@ -103,8 +103,9 @@ errors and query-argument observation that a healthy database cannot express.
   regression when feasible, vet, dry-run-name diff, diff/census searches, and
   independent review with no unresolved findings. Commit only the file as:
   `test(api): persist artifact repository state`. The code commit and all
-  runtime/static gates are recorded below; this remains open only until the
-  final independent branch review is recorded.
+  runtime/static gates and the final scoped re-review are recorded below. This
+  composite remains open because its persisted RED and sensitivity evidence was
+  never recorded.
 
 ## Task 2: Persist Containers API state — 2 to 0
 
@@ -186,8 +187,9 @@ errors and query-argument observation that a healthy database cannot express.
   dry-run-name diff, diff/census searches, and independent review with no
   unresolved findings. Commit only the file as:
   `test(api): persist container API state`. The code commit and all
-  runtime/static gates are recorded below; this remains open only until the
-  final independent branch review is recorded.
+  runtime/static gates and the final scoped re-review are recorded below. This
+  composite remains open because its persisted RED and sensitivity evidence was
+  never recorded.
 
 ## Required verification
 
@@ -233,9 +235,9 @@ test "$(rg -o 'new\(dbfakes\.Fake[^)]*\)' \
 - [ ] Record exact RED/GREEN/sensitivity evidence, counts, commits, full gates,
   and independent review outcomes below. Commit only this plan as
   `docs: record artifact and container postgres conversion`. Do not push. The
-  code commits and available green gates are recorded below; the prescribed
-  persisted RED/sensitivity runs and independent review are not evidenced, so
-  this item remains open.
+  code commits, available green gates, and final scoped re-review are recorded
+  below; the prescribed persisted RED/sensitivity runs are not, so this item
+  remains open.
 
 ## Observed completion evidence
 
@@ -272,10 +274,21 @@ test "$(rg -o 'new\(dbfakes\.Fake[^)]*\)' \
   only for the seven predeclared unrelated migration-version failures: the
   expected head is `1773106160`, while embedded migrations/preflight stop at
   `1773106159`. The other 154 suites passed; this gate is not reported green.
-- Final requested-pattern census is 89 constructors across 33 import files,
-  down from 606 / 134. All remaining sites reconcile to 86 reviewed non-suite
-  seams plus three worker-suite constructors.
+- Final requested-pattern census is 86 constructors across 32 non-benchmark
+  `*_test.go` files importing `atc/db/dbfakes`, down from 606 constructors
+  across 134 such importer files. The syntax split is 83 `new(dbfakes.Fake...)`
+  sites and three composite/address literals; those literals are metric seams
+  in `atc/metric/query_counter_test.go` and `atc/metric/periodic_test.go`.
+  All 86 sites are reviewed narrow algorithmic, fault-injection, observation,
+  transaction/listener, instrumentation, or timing seams; no healthy
+  persistence-state fake remains.
 - Explicit gap: no final-closeout evidence is recorded for the plan-specific
   persisted REDs, and the sensitivity mutations were not run. Their composite
-  task/final-acceptance boxes remain open; final independent branch review is
-  pending and is not inferred from the green runtime/static gates.
+  task/final-acceptance boxes remain open and are not inferred from the green
+  runtime/static gates.
+- Final review and closure evidence: the whole-branch review at `cfc7452ca6`
+  found four Important findings and one Minor. The six-commit fix wave
+  (`bc232dd968`, `3f74327afd`, `4800ff4ea9`, `b3123e78f8`, `d637e0fad1`, and
+  `26dc5a1d9d`) addressed them. The scoped re-review of
+  `cfc7452ca6..26dc5a1d9d` found all five addressed, no new
+  Critical/Important/Minor issue, and authorized closure-document finalization.

@@ -261,9 +261,9 @@ test "$(rg -o 'new\(dbfakes\.Fake[^)]*\)' atc/api/builds_test.go | wc -l | tr -d
 - [ ] Record exact RED/GREEN/sensitivity evidence, commits, full gates, census,
   and reviewer outcomes below. Commit only this plan as
   `docs: record builds api postgres conversion`. Do not push. The actual code
-  commit and available green gates are recorded below; the prescribed
-  plan-specific RED/sensitivity runs and independent review are not evidenced,
-  so this item remains open.
+  commit, available green gates, and final scoped re-review are recorded below;
+  the prescribed plan-specific RED/sensitivity runs are not, so this item
+  remains open.
 
 ## Observed completion evidence
 
@@ -301,12 +301,22 @@ test "$(rg -o 'new\(dbfakes\.Fake[^)]*\)' atc/api/builds_test.go | wc -l | tr -d
   only for the seven predeclared unrelated migration-version failures: the
   expected head is `1773106160`, while embedded migrations/preflight stop at
   `1773106159`. The other 154 suites passed; this gate is not reported green.
-- Final requested-pattern census is 89 constructors across 33 import files,
-  down from 606 / 134. All remaining sites reconcile to 86 reviewed non-suite
-  seams plus three worker-suite constructors.
+- Final requested-pattern census is 86 constructors across 32 non-benchmark
+  `*_test.go` files importing `atc/db/dbfakes`, down from 606 constructors
+  across 134 such importer files. The syntax split is 83 `new(dbfakes.Fake...)`
+  sites and three composite/address literals; those literals are metric seams
+  in `atc/metric/query_counter_test.go` and `atc/metric/periodic_test.go`.
+  All 86 sites are reviewed narrow algorithmic, fault-injection, observation,
+  transaction/listener, instrumentation, or timing seams; no healthy
+  persistence-state fake remains.
 - Explicit gap: no final-closeout evidence is recorded for the plan-specific
   persisted REDs, and the sensitivity mutations were not run. The task
   checkpoints and final evidence box that additionally require those checks,
   partial focuses, or prescribed per-batch commits remain open rather than
-  inferring them from the broader green suites. Final independent branch review
-  is pending.
+  inferring them from the broader green suites.
+- Final review and closure evidence: the whole-branch review at `cfc7452ca6`
+  found four Important findings and one Minor. The six-commit fix wave
+  (`bc232dd968`, `3f74327afd`, `4800ff4ea9`, `b3123e78f8`, `d637e0fad1`, and
+  `26dc5a1d9d`) addressed them. The scoped re-review of
+  `cfc7452ca6..26dc5a1d9d` found all five addressed, no new
+  Critical/Important/Minor issue, and authorized closure-document finalization.

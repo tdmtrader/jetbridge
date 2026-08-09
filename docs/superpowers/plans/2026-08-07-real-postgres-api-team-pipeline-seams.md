@@ -44,11 +44,15 @@ Concourse `db.Team`/`db.Pipeline`, `dbtest.Builder`, API handlers.
   reference check and full-suite proof. Do not move a generated fake.
 - Reviewed prerequisite checkpoint is 93 constructors / 35 `dbfakes` test
   imports. The two files remove three constructors and two imports; suite
-  cleanup removes one more constructor while retaining its suite import. Final
-  requested-pattern census is therefore 89 / 33, excluding `bench/corpus/**`.
-- Retain the separate `FakeWorkerFactory`, worker `FakeTeamFactory`, and worker
-  `FakeTeam`; they model worker lookup/authorization seams and must not be
-  counted as ordinary Teams/Pipelines state.
+  cleanup later removed the suite-bootstrap worker constructors as part of the
+  final review wave. The final requested-pattern census is 86 constructors
+  across 32 non-benchmark `*_test.go` files importing `atc/db/dbfakes`,
+  using the repository-wide requested-pattern scope.
+- Historical plan assumption: retain the separate `FakeWorkerFactory`, worker
+  `FakeTeamFactory`, and worker `FakeTeam` as worker lookup/authorization
+  seams. The final review removed those suite-bootstrap constructors, made
+  defaults fail closed, and retained only two context-local late-method fault
+  seams in Workers API; do not treat them as ordinary Teams/Pipelines state.
 
 ## Shared decorator rules
 
@@ -89,9 +93,11 @@ Concourse `db.Team`/`db.Pipeline`, `dbtest.Builder`, API handlers.
 - [ ] Persisted RED: require the real sole-admin row and real page IDs while
   the old fake graph is bound. Sensitivities: clear the admin bit and shift one
   dynamic page boundary, require failure, then restore.
-- [ ] Run exact 33-spec serial/nine-process focuses, compile/vet/name/census/
+- [x] Run exact 33-spec serial/nine-process focuses, compile/vet/name/census/
   diff checks, and independent review. Commit only `teams_test.go` as
-  `test(api): persist remaining team API state`.
+  `test(api): persist remaining team API state`. The plan records 33/33 in both
+  modes, static checks, and review PASS; `20f7b7c4bb` is source-only for
+  `atc/api/teams_test.go`.
 
 ## Task 2: Finish Pipelines API — two constructors to zero
 
@@ -117,11 +123,14 @@ Concourse `db.Team`/`db.Pipeline`, `dbtest.Builder`, API handlers.
 - [ ] Persisted RED: request the real dynamic graph while the fake values are
   still bound. Sensitivities: substitute a decoy resource/build ID and remove
   one rerun mapping from the expected body, require failure, then restore.
-- [ ] Run the exact 112 target-file specs and the broader 122-spec Pipelines
+- [x] Run the exact 112 target-file specs and the broader 122-spec Pipelines
   focus serially and across nine processes, then the 145 target-file / 155
   focus combined regressions, compile/vet/name/census/diff checks, and
   independent review. Commit only
-  `pipelines_test.go` as `test(api): persist remaining pipeline API state`.
+  `pipelines_test.go` as `test(api): persist remaining pipeline API state`. The
+  plan records 112/112, 122/122, 145/145, and 155/155 in both modes, static
+  checks, and review PASS; `d3b5617b1b` is source-only for
+  `atc/api/pipelines_test.go`.
 
 ## Task 3: Retire the primary default-suite TeamFactory
 
@@ -140,6 +149,8 @@ Concourse `db.Team`/`db.Pipeline`, `dbtest.Builder`, API handlers.
   adapter to make it pass.
 - [ ] Independently review zero references and the full-suite outcome. Commit
   only `api_suite_test.go` as `test(api): retire default team database fake`.
+  The final re-review and full API evidence exist, but the prescribed focused
+  coverage and source-only Task 3 commit evidence were not recorded.
 
 ## Required verification and closure
 
@@ -166,13 +177,20 @@ git diff --check
   Pipelines focus / 155 combined focus / complete API. The two target files
   have zero generated DB constructors/imports, no healthy path uses a generated
   DB fake, and only documented narrow error/observer seams remain.
-- [x] Final repository requested-pattern census is 89 constructors / 33 import
-  files after all prerequisites and Tasks 1–3. Reconcile every remaining site
-  to the reviewed 86 non-suite selective-fault/algorithm/timing ledger plus the
-  three worker-suite constructors.
+- [x] Final repository requested-pattern census is 86 constructors across 32
+  non-benchmark `*_test.go` files importing `atc/db/dbfakes` after all
+  prerequisites and Tasks 1–3. The syntax split is 83 `new(dbfakes.Fake...)`
+  sites and three composite/address literals; those literals are metric seams
+  in `atc/metric/query_counter_test.go` and `atc/metric/periodic_test.go`.
+  All 86 sites are reviewed narrow algorithmic, fault-injection, observation,
+  transaction/listener, instrumentation, or timing seams; no healthy
+  persistence-state fake remains.
 - [ ] Record RED/GREEN/sensitivity evidence, review outcomes, exact census,
   full gates, and commit IDs below. Commit this plan as
-  `docs: record final team and pipeline postgres seams`. Do not push.
+  `docs: record final team and pipeline postgres seams`. Do not push. The
+  recorded focuses, static checks, source-only Task 1/2 commits, and review are
+  sufficient for their individual verification boxes; the plan-specific RED and
+  sensitivity evidence keeps this composite open.
 
 ## Observed completion evidence
 
@@ -195,9 +213,17 @@ git diff --check
   database/team/pipeline/server setup to the invalid-identifier parent fixed
   the fixture; the exact leaf and all listed gates then passed. Independent
   review: PASS.
-- Final requested-pattern census: 89 constructors across 33 import files,
-  down from the 606 constructors / 134 import-file baseline. The remaining
-  sites are the reviewed 86 justified seams plus three worker-suite
-  constructors.
-- Final independent branch review is pending; mutation-only evidence remains
-  intentionally open.
+- Final requested-pattern census is 86 constructors across 32 non-benchmark
+  `*_test.go` files importing `atc/db/dbfakes`, down from 606 constructors
+  across 134 such importer files. The syntax split is 83 `new(dbfakes.Fake...)`
+  sites and three composite/address literals; those literals are metric seams
+  in `atc/metric/query_counter_test.go` and `atc/metric/periodic_test.go`.
+  All 86 sites are reviewed narrow algorithmic, fault-injection, observation,
+  transaction/listener, instrumentation, or timing seams; no healthy
+  persistence-state fake remains.
+- Mutation-only evidence remains intentionally open. The whole-branch review at
+  `cfc7452ca6` found four Important findings and one Minor; the six-commit fix
+  wave (`bc232dd968`, `3f74327afd`, `4800ff4ea9`, `b3123e78f8`, `d637e0fad1`,
+  and `26dc5a1d9d`) addressed them. The scoped re-review of
+  `cfc7452ca6..26dc5a1d9d` found all five addressed, no new
+  Critical/Important/Minor issue, and authorized closure-document finalization.
