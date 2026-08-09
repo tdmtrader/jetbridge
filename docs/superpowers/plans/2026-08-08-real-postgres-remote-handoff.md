@@ -41,6 +41,25 @@ rg -l --glob '*_test.go' \
 
 Expected output: `86` and `32`.
 
+## Post-rebase publication verification
+
+On 2026-08-09 the completed conversion was rebased onto `origin/jetbridge`.
+The rebase retained JetBridge's later checkpoint and pull-request subsystem
+deletions without resurrecting their tests, while preserving the PostgreSQL
+conversion. Fresh post-rebase verification passed:
+
+- the API suite, 825/825 serially and 825/825 with nine processes;
+- `go test ./atc/api`, the complete 229-spec engine suite, `go test
+  ./atc/atccmd`, and `go test ./atc/postgresrunner`;
+- the complete `atc/db/migration` package at the current `1773106167` head;
+- the exact 86/32 constructor/importer census and formatting checks.
+
+The seven migration-head failures recorded below belong to the pre-rebase
+`1773106159` implementation. JetBridge has since advanced both the embedded
+head and preflight constant to `1773106167`; the formerly failing migration
+specs pass. A complete post-rebase `make test-unit` run was not repeated, so
+this record does not claim that broader target green.
+
 ## Historical remote-handoff context
 
 The original handoff targeted a dedicated worktree on theborg from
@@ -51,9 +70,9 @@ and no Docker installation on theborg. That environment was never the final
 closure environment: the remote host died, and the Mac's dedicated external
 service supplied the reviewed runtime evidence instead.
 
-No new commits after `db597f2dd0` have been pushed. This remains a local branch
-closure record; do not imply that the later fix wave or these closure documents
-were pushed.
+At the time of the original handoff, no commits after `db597f2dd0` had been
+pushed. That statement is preserved only as historical context and is
+superseded by the post-rebase verification described above.
 
 ## Key landed commits
 
@@ -90,10 +109,11 @@ the Mac's dedicated external PostgreSQL service:
   distinct clones and passed.
 - The exact 86/32 census, formatting, and `git diff --check` are green.
 
-`make test-unit` remains honestly red at 154/155 suites: seven known
-migration-head specs expect `1773106160`, while embedded/preflight migrations
-stop at `1773106159`. This predates the branch, is unrelated to this conversion,
-and must not be reported as green.
+At that pre-rebase implementation head, `make test-unit` was honestly red at
+154/155 suites: seven known migration-head specs expected `1773106160`, while
+embedded/preflight migrations stopped at `1773106159`. This predates the
+conversion and remains valid historical evidence, but it is not the current
+post-rebase migration state described above.
 
 ## Final-review history
 
@@ -130,7 +150,9 @@ or commit-shape evidence.
 
 Report the 606-to-86 constructor and 134-to-32 importer-file reduction using
 the exact non-benchmark `*_test.go` importer scope; explain the 83/three syntax
-split and the semantic seam classification. Include the two-stage review result,
-the six-commit fix wave, the known unrelated `make test-unit` migration gate,
-the deliberately open historical checkpoints, and that no new commits after
-`db597f2dd0` have been pushed.
+split and the semantic seam classification. Include the two-stage review
+result, the six-commit fix wave, the deliberately open historical checkpoints,
+and the post-rebase verification above. If mentioning the old 154/155
+`make test-unit` result, identify it as pre-rebase history: the current
+JetBridge migration head is `1773106167`, the formerly failing specs pass, and
+the complete post-rebase `make test-unit` target was not rerun.
