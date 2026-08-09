@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/concourse/concourse/atc"
@@ -30,6 +31,80 @@ func expectPersistedAPIWorker(actual db.Worker, expected atc.Worker, requestedAt
 	Expect(*actual.Version()).To(Equal(expected.Version))
 	Expect(actual.ExpiresAt()).To(BeTemporally(">=", requestedAt.Add(30*time.Second)))
 	Expect(actual.ExpiresAt()).To(BeTemporally("<=", respondedAt.Add(30*time.Second)))
+}
+
+type observedWorkerRegistration struct {
+	worker atc.Worker
+	ttl    time.Duration
+}
+
+type observingWorkerSaveFactory struct {
+	db.WorkerFactory
+
+	lock  sync.Mutex
+	calls []observedWorkerRegistration
+}
+
+func (factory *observingWorkerSaveFactory) SaveWorker(worker atc.Worker, ttl time.Duration) (db.Worker, error) {
+	factory.lock.Lock()
+	factory.calls = append(factory.calls, observedWorkerRegistration{worker: worker, ttl: ttl})
+	factory.lock.Unlock()
+	return factory.WorkerFactory.SaveWorker(worker, ttl)
+}
+
+func (factory *observingWorkerSaveFactory) callSnapshot() []observedWorkerRegistration {
+	factory.lock.Lock()
+	defer factory.lock.Unlock()
+	return append([]observedWorkerRegistration(nil), factory.calls...)
+}
+
+type workerTeamLookupResultFactory struct {
+	db.TeamFactory
+
+	teamName string
+	team     db.Team
+}
+
+func (factory workerTeamLookupResultFactory) FindTeam(name string) (db.Team, bool, error) {
+	team, found, err := factory.TeamFactory.FindTeam(name)
+	if err != nil || !found || name != factory.teamName {
+		return team, found, err
+	}
+	return factory.team, true, nil
+}
+
+type observingWorkerLookupFactory struct {
+	db.WorkerFactory
+
+	lock  sync.Mutex
+	calls int
+}
+
+func (factory *observingWorkerLookupFactory) GetWorker(name string) (db.Worker, bool, error) {
+	factory.lock.Lock()
+	factory.calls++
+	factory.lock.Unlock()
+	return factory.WorkerFactory.GetWorker(name)
+}
+
+func (factory *observingWorkerLookupFactory) callCount() int {
+	factory.lock.Lock()
+	defer factory.lock.Unlock()
+	return factory.calls
+}
+
+type workerLookupResultFactory struct {
+	db.WorkerFactory
+
+	workerName string
+	worker     db.Worker
+}
+
+func (factory workerLookupResultFactory) GetWorker(name string) (db.Worker, bool, error) {
+	if name == factory.workerName {
+		return factory.worker, true, nil
+	}
+	return factory.WorkerFactory.GetWorker(name)
 }
 
 var _ = Describe("Workers API", func() {
@@ -135,20 +210,27 @@ var _ = Describe("Workers API", func() {
 			// Retained forwarding seam: ActiveTasks is registration telemetry and
 			// factory input; workers.active_tasks is runtime placement state.
 			Context("when observing registration forwarding", func() {
+				var observer *observingWorkerSaveFactory
+
 				BeforeEach(func() {
+					observer = &observingWorkerSaveFactory{WorkerFactory: realdb.Deps.workerFactory}
 					deps := realdb.Deps
-					deps.workerFactory = dbWorkerFactory
+					deps.workerFactory = observer
 					server = newAPIServer(deps)
 					DeferCleanup(server.Close)
 				})
 
 				It("forwards active task telemetry and TTL to SaveWorker", func() {
 					Expect(response.StatusCode).To(Equal(http.StatusOK))
-					Expect(dbWorkerFactory.SaveWorkerCallCount()).To(Equal(1))
-					registration, savedTTL := dbWorkerFactory.SaveWorkerArgsForCall(0)
-					Expect(registration).To(Equal(worker))
-					Expect(registration.ActiveTasks).To(Equal(42))
-					Expect(savedTTL).To(Equal(30 * time.Second))
+					calls := observer.callSnapshot()
+					Expect(calls).To(Equal([]observedWorkerRegistration{{
+						worker: worker,
+						ttl:    30 * time.Second,
+					}}))
+					Expect(calls[0].worker.ActiveTasks).To(Equal(42))
+					_, found, err := realdb.Deps.workerFactory.GetWorker(worker.Name)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(found).To(BeTrue())
 				})
 			})
 		})
@@ -177,9 +259,12 @@ var _ = Describe("Workers API", func() {
 					// closing it makes FindTeam fail before Team.SaveWorker is reached.
 					foundTeam = new(dbfakes.FakeTeam)
 					foundTeam.SaveWorkerReturns(nil, errors.New("oh no!"))
-					dbWorkerTeamFactory.FindTeamReturns(foundTeam, true, nil)
 					deps := realdb.Deps
-					deps.workerTeamFactory = dbWorkerTeamFactory
+					deps.workerTeamFactory = workerTeamLookupResultFactory{
+						TeamFactory: deps.workerTeamFactory,
+						teamName:    "some-team",
+						team:        foundTeam,
+					}
 					server = newAPIServer(deps)
 					DeferCleanup(server.Close)
 				})
@@ -301,16 +386,19 @@ var _ = Describe("Workers API", func() {
 			It("returns 500", func() { Expect(response.StatusCode).To(Equal(http.StatusInternalServerError)) })
 		})
 		Context("when not authenticated", func() {
+			var observer *observingWorkerLookupFactory
+
 			BeforeEach(func() {
 				fakeAccess.IsAuthenticatedReturns(false)
+				observer = &observingWorkerLookupFactory{WorkerFactory: realdb.Deps.workerFactory}
 				deps := realdb.Deps
-				deps.workerFactory = dbWorkerFactory
+				deps.workerFactory = observer
 				server = newAPIServer(deps)
 				DeferCleanup(server.Close)
 			})
 			It("returns 401 without looking up the worker", func() {
 				Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
-				Expect(dbWorkerFactory.GetWorkerCallCount()).To(BeZero())
+				Expect(observer.callCount()).To(BeZero())
 			})
 		})
 		Context("when deletion fails after lookup", func() {
@@ -320,9 +408,12 @@ var _ = Describe("Workers API", func() {
 				// a closed WorkerFactory fails the lookup before this method.
 				fakeWorker = new(dbfakes.FakeWorker)
 				fakeWorker.DeleteReturns(errors.New("some-error"))
-				dbWorkerFactory.GetWorkerReturns(fakeWorker, true, nil)
 				deps := realdb.Deps
-				deps.workerFactory = dbWorkerFactory
+				deps.workerFactory = workerLookupResultFactory{
+					WorkerFactory: deps.workerFactory,
+					workerName:    "some-worker",
+					worker:        fakeWorker,
+				}
 				server = newAPIServer(deps)
 				DeferCleanup(server.Close)
 				fakeAccess.IsSystemReturns(true)

@@ -50,7 +50,6 @@ import (
 	"github.com/concourse/concourse/atc/creds"
 	"github.com/concourse/concourse/atc/creds/credsfakes"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/policy"
 	"github.com/concourse/concourse/atc/wrappa"
 
@@ -72,9 +71,6 @@ var (
 	fakeWorkerPool          *apifakes.FakePool
 	fakeAccess              *accessorfakes.FakeAccess
 	fakeAccessor            *accessorfakes.FakeAccessFactory
-	dbWorkerFactory         *dbfakes.FakeWorkerFactory
-	dbWorkerTeamFactory     *dbfakes.FakeTeamFactory
-	dbTeam                  *dbfakes.FakeTeam
 	fakeSecretManager       *credsfakes.FakeSecrets
 	fakeVarSourcePool       *credsfakes.FakeVarSourcePool
 	fakePolicyChecker       *policycheckerfakes.FakePolicyChecker
@@ -122,10 +118,13 @@ var errUnavailableWorkflowRunBackend = errors.New("workflow-run backend is unava
 // supplying synthetic successful database state. Converted team consumers
 // replace it with a clone-backed factory before serving their local router.
 type unavailableTeamFactory struct{}
+type unavailableWorkerFactory struct{}
 
 var errUnavailableTeamFactory = errors.New("team factory is unavailable in the API suite")
+var errUnavailableWorkerFactory = errors.New("worker factory is unavailable in the API suite")
 
 var _ db.TeamFactory = unavailableTeamFactory{}
+var _ db.WorkerFactory = unavailableWorkerFactory{}
 
 // unavailableExperimentStore stays non-nil because the experiment handler
 // validates its store at construction time. Converted experiment specs replace
@@ -163,6 +162,30 @@ func (unavailableTeamFactory) NotifyResourceScanner() error {
 
 func (unavailableTeamFactory) NotifyCacher() error {
 	return errUnavailableTeamFactory
+}
+
+func (unavailableWorkerFactory) GetWorker(string) (db.Worker, bool, error) {
+	return nil, false, errUnavailableWorkerFactory
+}
+
+func (unavailableWorkerFactory) SaveWorker(atc.Worker, time.Duration) (db.Worker, error) {
+	return nil, errUnavailableWorkerFactory
+}
+
+func (unavailableWorkerFactory) Workers() ([]db.Worker, error) {
+	return nil, errUnavailableWorkerFactory
+}
+
+func (unavailableWorkerFactory) VisibleWorkers([]string) ([]db.Worker, error) {
+	return nil, errUnavailableWorkerFactory
+}
+
+func (unavailableWorkerFactory) FindWorkersForContainerByOwner(db.ContainerOwner) ([]db.Worker, error) {
+	return nil, errUnavailableWorkerFactory
+}
+
+func (unavailableWorkerFactory) BuildContainersCountPerWorker() (map[string]int, error) {
+	return nil, errUnavailableWorkerFactory
 }
 
 type allowWorkflowOutcomeAuthorizer struct{}
@@ -371,8 +394,8 @@ type apiDBDeps struct {
 func fakeDBDeps() apiDBDeps {
 	return apiDBDeps{
 		teamFactory:       unavailableTeamFactory{},
-		workerFactory:     dbWorkerFactory,
-		workerTeamFactory: dbWorkerTeamFactory,
+		workerFactory:     unavailableWorkerFactory{},
+		workerTeamFactory: unavailableTeamFactory{},
 		workflowRuns:      unavailableWorkflowRunBackend{},
 		experiments:       unavailableExperimentStore{},
 		feedbackStore:     unavailableFeedbackStore{},
@@ -382,6 +405,37 @@ func fakeDBDeps() apiDBDeps {
 
 func TestDefaultAPIDatabaseDepsFailClosed(t *testing.T) {
 	deps := fakeDBDeps()
+	if _, ok := deps.workerFactory.(unavailableWorkerFactory); !ok {
+		t.Fatalf("default worker factory = %T, want unavailableWorkerFactory", deps.workerFactory)
+	}
+	assertWorkerUnavailable := func(operation string, err error) {
+		t.Helper()
+		if !errors.Is(err, errUnavailableWorkerFactory) {
+			t.Errorf("default worker factory %s error = %v, want %v", operation, err, errUnavailableWorkerFactory)
+		}
+	}
+
+	_, _, err := deps.workerFactory.GetWorker("some-worker")
+	assertWorkerUnavailable("GetWorker", err)
+	_, err = deps.workerFactory.SaveWorker(atc.Worker{Name: "some-worker"}, 0)
+	assertWorkerUnavailable("SaveWorker", err)
+	_, err = deps.workerFactory.Workers()
+	assertWorkerUnavailable("Workers", err)
+	_, err = deps.workerFactory.VisibleWorkers([]string{"some-team"})
+	assertWorkerUnavailable("VisibleWorkers", err)
+	_, err = deps.workerFactory.FindWorkersForContainerByOwner(nil)
+	assertWorkerUnavailable("FindWorkersForContainerByOwner", err)
+	_, err = deps.workerFactory.BuildContainersCountPerWorker()
+	assertWorkerUnavailable("BuildContainersCountPerWorker", err)
+
+	if _, ok := deps.workerTeamFactory.(unavailableTeamFactory); !ok {
+		t.Fatalf("default worker team factory = %T, want unavailableTeamFactory", deps.workerTeamFactory)
+	}
+	_, _, err = deps.workerTeamFactory.FindTeam("some-team")
+	if !errors.Is(err, errUnavailableTeamFactory) {
+		t.Errorf("default worker team factory FindTeam error = %v, want %v", err, errUnavailableTeamFactory)
+	}
+
 	if err := deps.feedbackStore.Save(&feedback.StoredFeedback{}); !errors.Is(err, errUnavailableFeedbackStore) {
 		t.Errorf("default feedback store error = %v, want %v", err, errUnavailableFeedbackStore)
 	}
@@ -397,7 +451,7 @@ func TestDefaultAPIDatabaseDepsFailClosed(t *testing.T) {
 		}
 	}
 
-	_, err := backend.BindAndCreate(context.Background(), workflowrun.AdmissionContext{}, workflowrun.BindRequest{})
+	_, err = backend.BindAndCreate(context.Background(), workflowrun.AdmissionContext{}, workflowrun.BindRequest{})
 	assertUnavailable("BindAndCreate", err)
 	_, _, err = backend.Get(context.Background(), 0, 1)
 	assertUnavailable("Get", err)
@@ -593,22 +647,13 @@ func newAPIServer(deps apiDBDeps) *httptest.Server {
 }
 
 var _ = BeforeEach(func() {
-	dbWorkerTeamFactory = new(dbfakes.FakeTeamFactory)
 	interceptTimeoutFactory = new(containerserverfakes.FakeInterceptTimeoutFactory)
 	interceptTimeout = new(containerserverfakes.FakeInterceptTimeout)
 	interceptTimeoutFactory.NewInterceptTimeoutReturns(interceptTimeout)
 
-	dbTeam = new(dbfakes.FakeTeam)
-	dbTeam.IDReturns(734)
-	dbTeam.NameReturns("some-team")
-	dbWorkerTeamFactory.FindTeamReturns(dbTeam, true, nil)
-	dbWorkerTeamFactory.GetByIDReturns(dbTeam)
-
 	fakeAccess = new(accessorfakes.FakeAccess)
 	fakeAccessor = new(accessorfakes.FakeAccessFactory)
 	fakeAccessor.CreateReturns(fakeAccess, nil)
-
-	dbWorkerFactory = new(dbfakes.FakeWorkerFactory)
 
 	fakeWorkerPool = new(apifakes.FakePool)
 
