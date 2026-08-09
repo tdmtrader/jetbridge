@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strconv"
 	"sync"
+	"testing"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
@@ -25,6 +26,84 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
+
+type hijackResourceCleanup struct {
+	lock    sync.Mutex
+	release func()
+	closers []io.Closer
+}
+
+func (cleanup *hijackResourceCleanup) setRelease(release func()) {
+	cleanup.lock.Lock()
+	defer cleanup.lock.Unlock()
+	cleanup.release = release
+}
+
+func (cleanup *hijackResourceCleanup) addCloser(closer io.Closer) {
+	if closer == nil {
+		return
+	}
+	cleanup.lock.Lock()
+	defer cleanup.lock.Unlock()
+	cleanup.closers = append(cleanup.closers, closer)
+}
+
+func (cleanup *hijackResourceCleanup) close() {
+	cleanup.lock.Lock()
+	release := cleanup.release
+	closers := append([]io.Closer(nil), cleanup.closers...)
+	cleanup.release = nil
+	cleanup.closers = nil
+	cleanup.lock.Unlock()
+
+	if release != nil {
+		release()
+	}
+	for _, closer := range closers {
+		_ = closer.Close()
+	}
+}
+
+type hijackCloserFunc func() error
+
+func (close hijackCloserFunc) Close() error {
+	return close()
+}
+
+func TestHijackResourceCleanupRunsOnDiagnosticFailure(t *testing.T) {
+	cleanup := new(hijackResourceCleanup)
+	releaseCount := 0
+	connectionCloseCount := 0
+	responseCloseCount := 0
+	cleanup.setRelease(func() { releaseCount++ })
+	cleanup.addCloser(hijackCloserFunc(func() error {
+		connectionCloseCount++
+		return errors.New("connection close diagnostic")
+	}))
+	cleanup.addCloser(hijackCloserFunc(func() error {
+		responseCloseCount++
+		return errors.New("response close diagnostic")
+	}))
+
+	diagnosticErr := func() error {
+		defer cleanup.close()
+		return errors.New("pre-release diagnostic failed")
+	}()
+	if diagnosticErr == nil || diagnosticErr.Error() != "pre-release diagnostic failed" {
+		t.Fatalf("diagnostic error = %v, want pre-release diagnostic failure", diagnosticErr)
+	}
+
+	cleanup.close()
+	if releaseCount != 1 {
+		t.Errorf("release count = %d, want 1", releaseCount)
+	}
+	if connectionCloseCount != 1 {
+		t.Errorf("connection close count = %d, want 1", connectionCloseCount)
+	}
+	if responseCloseCount != 1 {
+		t.Errorf("response close count = %d, want 1", responseCloseCount)
+	}
+}
 
 type containersAPICheckCall struct {
 	pipelineRef  atc.PipelineRef
@@ -719,6 +798,7 @@ var _ = Describe("Containers API", func() {
 			container          *runtimetest.Container
 			runtimeContainer   *containersAPIRuntimeContainer
 			releaseProcess     func()
+			resourceCleanup    *hijackResourceCleanup
 		)
 
 		useFixture := func(selected containersAPIFixture) {
@@ -737,6 +817,7 @@ var _ = Describe("Containers API", func() {
 			releaseProcess = func() {
 				releaseOnce.Do(func() { close(processExit) })
 			}
+			resourceCleanup.setRelease(releaseProcess)
 			container.ProcessDefs[0].Stub.Call = func(_ context.Context, _ *runtimetest.Process) (runtime.ProcessResult, error) {
 				return runtime.ProcessResult{ExitStatus: <-exit}, nil
 			}
@@ -758,6 +839,11 @@ var _ = Describe("Containers API", func() {
 		}
 
 		BeforeEach(func() {
+			conn = nil
+			response = nil
+			releaseProcess = nil
+			resourceCleanup = new(hijackResourceCleanup)
+
 			realdb = useRealDB()
 			deps = realdb.Deps
 			var err error
@@ -783,13 +869,13 @@ var _ = Describe("Containers API", func() {
 			useFixture(fixture)
 
 			expectBadHandshake = false
-			releaseProcess = nil
 			requestPayload = `{"path":"ls", "user": "snoopy"}`
 		})
 
 		JustBeforeEach(func() {
 			realdb.Deps = deps
 			server = realdb.Serve()
+			DeferCleanup(resourceCleanup.close)
 			wsURL, err := url.Parse(server.URL)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -798,6 +884,12 @@ var _ = Describe("Containers API", func() {
 
 			dialer := websocket.Dialer{}
 			conn, response, err = dialer.Dial(wsURL.String(), nil)
+			if conn != nil {
+				resourceCleanup.addCloser(conn)
+			}
+			if response != nil && response.Body != nil {
+				resourceCleanup.addCloser(response.Body)
+			}
 			if expectBadHandshake {
 				Expect(err).To(HaveOccurred())
 				Expect(response).NotTo(BeNil())
@@ -825,12 +917,7 @@ var _ = Describe("Containers API", func() {
 				runContext = container.ContextOfRun()
 				Expect(runContext).NotTo(BeNil())
 			}
-			if conn != nil {
-				_ = conn.Close()
-			}
-			if response != nil && response.Body != nil {
-				_ = response.Body.Close()
-			}
+			resourceCleanup.close()
 			if runContext != nil {
 				Eventually(runContext.Done()).Should(BeClosed())
 			}
