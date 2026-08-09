@@ -1,0 +1,9 @@
+## Ship Summary
+
+**Message:** chore(test): finalize postgres rebase
+**Files Changed:** 2
+**Timestamp:** 2026-08-09T21:50:44Z
+
+### Key Changes
+- Record verified post-rebase PostgreSQL conversion status and current migration head.
+- Restore gofmt cleanliness in the changed container-owner source.
