@@ -78,6 +78,11 @@ done
 [[ "$(wc -l <"${DSN_LOG}")" -eq 2 ]] || fail "expected one DSN record per child"
 grep -E '\|postgres://postgres@127\.0\.0\.1:15432/postgres\?sslmode=disable&application_name=cc_accept_pipelineserver_[0-9]+_[0-9]+$' "${DSN_LOG}" >/dev/null || fail "pipelineserver DSN did not override application_name"
 grep -E '\|postgres://postgres@127\.0\.0\.1:15432/postgres\?sslmode=disable&application_name=cc_accept_auth_[0-9]+_[0-9]+$' "${DSN_LOG}" >/dev/null || fail "auth DSN did not override application_name"
+for _ in $(seq 1 100); do
+	[[ -f "${PSQL_LOG}" ]] && [[ "$(wc -l <"${PSQL_LOG}")" -ge 2 ]] && break
+	sleep 0.05
+done
+[[ -f "${PSQL_LOG}" ]] && [[ "$(wc -l <"${PSQL_LOG}")" -ge 2 ]] || fail "catalog observation did not complete"
 
 kill -TERM "${PARENT_PID}"
 set +e

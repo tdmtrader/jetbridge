@@ -187,7 +187,9 @@ run_id_from_database() {
 }
 
 observe_distinct_clones() {
-	local snapshot databases application_name database run_id pipeline_db auth_db
+	local snapshot databases application_name database run_id
+	local pipeline_db=""
+	local auth_db=""
 	local pipeline_run_id=""
 	local auth_run_id=""
 	local timeout_seconds="${CONCOURSE_TEST_POSTGRES_OBSERVE_TIMEOUT_SECONDS:-120}"
