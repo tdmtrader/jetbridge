@@ -64,6 +64,11 @@ func (cleanup *hijackResourceCleanup) close() {
 	}
 }
 
+func (cleanup *hijackResourceCleanup) duringTeardown(teardown func()) {
+	defer cleanup.close()
+	teardown()
+}
+
 type hijackCloserFunc func() error
 
 func (close hijackCloserFunc) Close() error {
@@ -85,15 +90,16 @@ func TestHijackResourceCleanupRunsOnDiagnosticFailure(t *testing.T) {
 		return errors.New("response close diagnostic")
 	}))
 
-	diagnosticErr := func() error {
-		defer cleanup.close()
-		return errors.New("pre-release diagnostic failed")
+	diagnosticPanic := func() (recovered any) {
+		defer func() { recovered = recover() }()
+		cleanup.duringTeardown(func() {
+			panic("pre-release diagnostic failed")
+		})
+		return nil
 	}()
-	if diagnosticErr == nil || diagnosticErr.Error() != "pre-release diagnostic failed" {
-		t.Fatalf("diagnostic error = %v, want pre-release diagnostic failure", diagnosticErr)
+	if diagnosticPanic != "pre-release diagnostic failed" {
+		t.Fatalf("diagnostic panic = %v, want pre-release diagnostic failure", diagnosticPanic)
 	}
-
-	cleanup.close()
 	if releaseCount != 1 {
 		t.Errorf("release count = %d, want 1", releaseCount)
 	}
@@ -102,6 +108,16 @@ func TestHijackResourceCleanupRunsOnDiagnosticFailure(t *testing.T) {
 	}
 	if responseCloseCount != 1 {
 		t.Errorf("response close count = %d, want 1", responseCloseCount)
+	}
+
+	cleanup.close()
+	if releaseCount != 1 || connectionCloseCount != 1 || responseCloseCount != 1 {
+		t.Errorf(
+			"cleanup was not idempotent: release=%d connection=%d response=%d, want all 1",
+			releaseCount,
+			connectionCloseCount,
+			responseCloseCount,
+		)
 	}
 }
 
@@ -905,22 +921,24 @@ var _ = Describe("Containers API", func() {
 		})
 
 		AfterEach(func() {
-			var runContext context.Context
-			if releaseProcess != nil {
-				Eventually(container.RunningProcesses).Should(HaveLen(1))
-				runContext = container.ContextOfRun()
-				Expect(runContext).NotTo(BeNil())
-				releaseProcess()
-			} else if container != nil && len(container.RunningProcesses()) > 0 {
-				// RunningProcesses takes the same mutex Run releases after storing
-				// its context, so observing a process synchronizes this read.
-				runContext = container.ContextOfRun()
-				Expect(runContext).NotTo(BeNil())
-			}
-			resourceCleanup.close()
-			if runContext != nil {
-				Eventually(runContext.Done()).Should(BeClosed())
-			}
+			resourceCleanup.duringTeardown(func() {
+				var runContext context.Context
+				if releaseProcess != nil {
+					Eventually(container.RunningProcesses).Should(HaveLen(1))
+					runContext = container.ContextOfRun()
+					Expect(runContext).NotTo(BeNil())
+					releaseProcess()
+				} else if container != nil && len(container.RunningProcesses()) > 0 {
+					// RunningProcesses takes the same mutex Run releases after storing
+					// its context, so observing a process synchronizes this read.
+					runContext = container.ContextOfRun()
+					Expect(runContext).NotTo(BeNil())
+				}
+				resourceCleanup.close()
+				if runContext != nil {
+					Eventually(runContext.Done()).Should(BeClosed())
+				}
+			})
 		})
 
 		Context("when authenticated", func() {
