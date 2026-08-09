@@ -45,6 +45,13 @@ fail() {
 	exit 1
 }
 
+dsn_matches_application_name() {
+	local application_name=$1
+	local dsn=$2
+	[[ "${application_name}" =~ ^cc_accept_(pipelineserver|auth)_[0-9]+_[0-9]+$ ]] || return 1
+	[[ "${dsn}" == "postgres://postgres@127.0.0.1:15432/postgres?sslmode=disable&application_name=${application_name}" ]]
+}
+
 mkdir -p "${SOURCE_ROOT}/atc/api/pipelineserver" "${SOURCE_ROOT}/atc/api/auth" "${SOURCE_ROOT}/hack" "${FAKE_BIN}"
 ln -s "${FIXTURES}/ginkgo" "${FAKE_BIN}/ginkgo"
 ln -s "${FIXTURES}/pg_isready" "${FAKE_BIN}/pg_isready"
@@ -76,8 +83,21 @@ done
 [[ "$(wc -l <"${GRANDCHILD_PIDS}")" -eq 2 ]] || fail "expected two fake compiled-test grandchildren"
 [[ -f "${DSN_LOG}" ]] || fail "fake Ginkgo DSNs were not recorded"
 [[ "$(wc -l <"${DSN_LOG}")" -eq 2 ]] || fail "expected one DSN record per child"
-grep -E '\|postgres://postgres@127\.0\.0\.1:15432/postgres\?sslmode=disable&application_name=cc_accept_pipelineserver_[0-9]+_[0-9]+$' "${DSN_LOG}" >/dev/null || fail "pipelineserver DSN did not override application_name"
-grep -E '\|postgres://postgres@127\.0\.0\.1:15432/postgres\?sslmode=disable&application_name=cc_accept_auth_[0-9]+_[0-9]+$' "${DSN_LOG}" >/dev/null || fail "auth DSN did not override application_name"
+MISMATCHED_APPLICATION_NAME="cc_accept_pipelineserver_101_202"
+MISMATCHED_DSN="postgres://postgres@127.0.0.1:15432/postgres?sslmode=disable&application_name=cc_accept_pipelineserver_303_404"
+! dsn_matches_application_name "${MISMATCHED_APPLICATION_NAME}" "${MISMATCHED_DSN}" || fail "DSN assertion accepted a mismatched application name"
+
+PIPELINE_DSN_RECORDS=0
+AUTH_DSN_RECORDS=0
+while IFS='|' read -r application_name dsn; do
+	dsn_matches_application_name "${application_name}" "${dsn}" || fail "DSN application_name did not exactly match PGAPPNAME"
+	case "${application_name}" in
+		cc_accept_pipelineserver_*) ((PIPELINE_DSN_RECORDS += 1)) ;;
+		cc_accept_auth_*) ((AUTH_DSN_RECORDS += 1)) ;;
+	esac
+done <"${DSN_LOG}"
+[[ "${PIPELINE_DSN_RECORDS}" -eq 1 ]] || fail "expected one pipelineserver DSN record"
+[[ "${AUTH_DSN_RECORDS}" -eq 1 ]] || fail "expected one auth DSN record"
 for _ in $(seq 1 100); do
 	[[ -f "${PSQL_LOG}" ]] && [[ "$(wc -l <"${PSQL_LOG}")" -ge 2 ]] && break
 	sleep 0.05
