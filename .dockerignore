@@ -7,3 +7,16 @@ web/wats/node_modules
 web/elm/elm-stuff
 integration
 testflight
+
+# Development-track scaffolding and assistant config: never part of a build.
+forge
+ci-agent
+ci
+.claude
+.codex
+.cursor
+.gemini
+.worktrees
+.local-cluster
+docs
+screenshots

@@ -46,3 +46,8 @@ worker/runtime/integration/sample/sample
 # Forge orchestrator logs
 forge/.orchestrator/
 package-lock.json
+
+# Local scratch: git worktrees and throwaway clusters live in the tree.
+.worktrees/
+.local-cluster/
+.claude/
