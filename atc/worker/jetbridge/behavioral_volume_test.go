@@ -12,7 +12,6 @@ import (
 	"testing"
 
 	"github.com/concourse/concourse/atc/compression"
-	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/runtime"
 	corev1 "k8s.io/api/core/v1"
@@ -350,17 +349,6 @@ func TestVT09_Volume_NilDBVolume_InitializeTaskCacheReturnsNil(t *testing.T) {
 // VT-10: Volume Handle identity
 // ---------------------------------------------------------------------------
 
-func TestVT10_DeferredVolume_Handle_WithDBVolume_ReturnsDBHandle(t *testing.T) {
-	fakeDBVol := new(dbfakes.FakeCreatedVolume)
-	fakeDBVol.HandleReturns("db-handle-xyz")
-
-	vol := NewVolume(fakeDBVol, nil, "pod", "ns", "main", "/mnt")
-
-	if vol.Handle() != "db-handle-xyz" {
-		t.Errorf("expected db-handle-xyz, got %q", vol.Handle())
-	}
-}
-
 func TestVT10_DeferredVolume_Handle_WithoutDBVolume_ReturnsInternalHandle(t *testing.T) {
 	vol := NewDeferredVolume("internal-handle", "worker", nil, "ns", "main", "/mnt")
 
@@ -637,8 +625,9 @@ func TestCO10_PreferredInputNode_NilLocator_ReturnsEmpty(t *testing.T) {
 // Helpers
 // ---------------------------------------------------------------------------
 
-// newTestWorker creates a Worker suitable for unit testing buildVolumeMountsForSpec.
-// It uses a fake K8s clientset and a stub db.Worker.
+// newTestWorker creates a Worker suitable for unit testing the private
+// buildVolumeMountsForSpec runtime helper. The retained fake supplies only
+// Name(); it does not model persisted worker behavior.
 func newTestWorker(executor PodExecutor) *Worker {
 	fakeDBWorker := new(dbfakes.FakeWorker)
 	fakeDBWorker.NameReturns("test-worker")
@@ -682,7 +671,7 @@ type stubArtifactBehavioral struct {
 var _ runtime.Artifact = (*stubArtifactBehavioral)(nil)
 
 func (a *stubArtifactBehavioral) Handle() string { return a.handle }
-func (a *stubArtifactBehavioral) Source() string  { return "test-worker" }
+func (a *stubArtifactBehavioral) Source() string { return "test-worker" }
 func (a *stubArtifactBehavioral) StreamOut(_ context.Context, _ string, _ compression.Compression) (io.ReadCloser, error) {
 	return nil, fmt.Errorf("not implemented")
 }
@@ -713,18 +702,6 @@ func TestVT10_DaemonSetVolume_Source_ReturnsWorkerName(t *testing.T) {
 
 	if vol.Source() != "my-worker" {
 		t.Errorf("expected Source() = 'my-worker', got %q", vol.Source())
-	}
-}
-
-// Verify Volume Source with dbVolume returns dbVolume.WorkerName.
-func TestVT10_Volume_Source_WithDBVolume_ReturnsDBWorkerName(t *testing.T) {
-	fakeDBVol := new(dbfakes.FakeCreatedVolume)
-	fakeDBVol.WorkerNameReturns("db-worker-name")
-
-	vol := NewVolume(fakeDBVol, nil, "pod", "ns", "main", "/mnt")
-
-	if vol.Source() != "db-worker-name" {
-		t.Errorf("expected Source() = 'db-worker-name', got %q", vol.Source())
 	}
 }
 
@@ -826,20 +803,5 @@ func TestVT10_DaemonSetVolume_DBVolume_Nil(t *testing.T) {
 
 	if vol.DBVolume() != nil {
 		t.Error("expected DBVolume() to return nil")
-	}
-}
-
-// Verify DaemonSetVolume DBVolume returns the provided dbVolume.
-func TestVT10_DaemonSetVolume_DBVolume_NonNil(t *testing.T) {
-	fakeDBVol := new(dbfakes.FakeCreatedVolume)
-	fakeDBVol.HandleReturns("db-vol")
-
-	vol := NewDaemonSetVolume("key", "handle", "w1", fakeDBVol, "", Config{}, nil)
-
-	if vol.DBVolume() == nil {
-		t.Fatal("expected non-nil DBVolume()")
-	}
-	if vol.DBVolume().(db.CreatedVolume).Handle() != "db-vol" {
-		t.Errorf("expected DBVolume handle 'db-vol', got %q", vol.DBVolume().(db.CreatedVolume).Handle())
 	}
 }

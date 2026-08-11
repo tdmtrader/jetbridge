@@ -28,21 +28,26 @@ var _ = postgresrunner.GinkgoRunner(&postgresRunner)
 
 var _ = BeforeEach(func() {
 	postgresRunner.CreateTestDBFromTemplate()
+	DeferCleanup(func() {
+		postgresRunner.DropTestDB()
+	})
 
 	dbConn = postgresRunner.OpenConn()
+	DeferCleanup(func() {
+		Expect(dbConn.Close()).To(Succeed())
+	})
 	db.CleanupBaseResourceTypesCache()
 
 	ignore := func(logger lager.Logger, id lock.LockID) {}
 	var lockConns [lock.FactoryCount]*sql.DB
 	for i := 0; i < lock.FactoryCount; i++ {
-		lockConns[i] = postgresRunner.OpenSingleton()
+		lockConn := postgresRunner.OpenSingleton()
+		lockConns[i] = lockConn
+		DeferCleanup(func() {
+			Expect(lockConn.Close()).To(Succeed())
+		})
 	}
 	lockFactory = lock.NewLockFactory(lockConns, ignore, ignore)
-})
-
-var _ = AfterEach(func() {
-	Expect(dbConn.Close()).To(Succeed())
-	postgresRunner.DropTestDB()
 })
 
 func TestWorker(t *testing.T) {

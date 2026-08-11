@@ -18,826 +18,458 @@ import (
 	"github.com/onsi/gomega/gbytes"
 )
 
+type retentionBuild struct {
+	name      string
+	status    db.BuildStatus
+	completed bool
+	drained   bool
+	endAgo    time.Duration
+	reapAgo   time.Duration
+}
+
+type retentionScenario struct {
+	jobRetention        atc.JobConfig
+	calculator          BuildLogRetentionCalculator
+	drainerConfigured   bool
+	pausedPipeline      bool
+	pausedJob           bool
+	builds              []retentionBuild
+	expectedDeleted     []string
+	expectedFirstLogged string
+}
+
 var _ = Describe("BuildLogCollector", func() {
-	var (
-		buildLogCollector     GcCollector
-		fakePipelineFactory   *dbfakes.FakePipelineFactory
-		fakePipelineLifecycle *dbfakes.FakePipelineLifecycle
-		batchSize             int
-		buildLogRetainCalc    BuildLogRetentionCalculator
-		logger                *lagertest.TestLogger
-		ctx                   context.Context
+	DescribeTable("persisted PostgreSQL retention", runRetentionScenario,
+		Entry("drain filters", retentionScenario{
+			jobRetention:      atc.JobConfig{BuildLogsToRetain: 2},
+			calculator:        NewBuildLogRetentionCalculator(0, 0, 0, 0),
+			drainerConfigured: true,
+			builds: []retentionBuild{
+				{name: "b1", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 2 * time.Hour},
+				{name: "b2", status: db.BuildStatusFailed, completed: true, drained: false, endAgo: 2 * time.Hour},
+				{name: "b3", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 2 * time.Hour},
+				{name: "b4", status: db.BuildStatusFailed, completed: true, drained: false, endAgo: 2 * time.Hour},
+				{name: "b5", status: db.BuildStatusFailed, completed: true, drained: false, endAgo: 2 * time.Hour},
+				{name: "b6", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 2 * time.Hour},
+				{name: "b7", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 2 * time.Hour},
+			},
+			expectedDeleted:     []string{"b1", "b3"},
+			expectedFirstLogged: "b2",
+		}),
+		Entry("drain disabled", retentionScenario{
+			jobRetention: atc.JobConfig{BuildLogsToRetain: 2},
+			calculator:   NewBuildLogRetentionCalculator(0, 0, 0, 0),
+			builds: []retentionBuild{
+				{name: "b1", status: db.BuildStatusFailed, completed: true, drained: false, endAgo: 2 * time.Hour},
+				{name: "b2", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 2 * time.Hour},
+				{name: "b3", status: db.BuildStatusFailed, completed: true, drained: false, endAgo: 2 * time.Hour},
+				{name: "b4", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 2 * time.Hour},
+				{name: "b5", status: db.BuildStatusFailed, completed: true, drained: false, endAgo: 2 * time.Hour},
+				{name: "b6", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 2 * time.Hour},
+			},
+			expectedDeleted:     []string{"b1", "b2", "b3", "b4"},
+			expectedFirstLogged: "b5",
+		}),
+		Entry("running rows survive", retentionScenario{
+			jobRetention: atc.JobConfig{BuildLogsToRetain: 3},
+			calculator:   NewBuildLogRetentionCalculator(0, 0, 0, 0),
+			builds: []retentionBuild{
+				{name: "b1", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 2 * time.Hour},
+				{name: "b2", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 2 * time.Hour},
+				{name: "b3", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 2 * time.Hour},
+				{name: "b4", status: db.BuildStatusStarted, completed: false, drained: true},
+				{name: "b5", status: db.BuildStatusStarted, completed: false, drained: true},
+				{name: "b6", status: db.BuildStatusSucceeded, completed: true, drained: true, endAgo: 2 * time.Hour},
+			},
+			expectedDeleted:     []string{"b1"},
+			expectedFirstLogged: "b2",
+		}),
+		Entry("no eligible reap", retentionScenario{
+			jobRetention: atc.JobConfig{BuildLogsToRetain: 2},
+			calculator:   NewBuildLogRetentionCalculator(0, 0, 0, 0),
+			builds: []retentionBuild{
+				{name: "b1", status: db.BuildStatusStarted, completed: false, drained: true},
+			},
+			expectedDeleted:     []string{},
+			expectedFirstLogged: "b1",
+		}),
+		Entry("no builds", retentionScenario{
+			jobRetention:        atc.JobConfig{BuildLogsToRetain: 2},
+			calculator:          NewBuildLogRetentionCalculator(0, 0, 0, 0),
+			builds:              []retentionBuild{},
+			expectedDeleted:     []string{},
+			expectedFirstLogged: "",
+		}),
+		Entry("count only", retentionScenario{
+			jobRetention: atc.JobConfig{BuildLogRetention: &atc.BuildLogRetention{Builds: 1}},
+			calculator:   NewBuildLogRetentionCalculator(0, 0, 0, 0),
+			builds: []retentionBuild{
+				{name: "b1", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 49 * time.Hour},
+				{name: "b2", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 23 * time.Hour},
+			},
+			expectedDeleted:     []string{"b1"},
+			expectedFirstLogged: "b2",
+		}),
+		Entry("days satisfied", retentionScenario{
+			jobRetention: atc.JobConfig{BuildLogRetention: &atc.BuildLogRetention{Days: 1}},
+			calculator:   NewBuildLogRetentionCalculator(0, 0, 0, 0),
+			builds: []retentionBuild{
+				{name: "b1", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 49 * time.Hour},
+				{name: "b2", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 23 * time.Hour},
+			},
+			expectedDeleted:     []string{"b1"},
+			expectedFirstLogged: "b2",
+		}),
+		Entry("days protect both", retentionScenario{
+			jobRetention: atc.JobConfig{BuildLogRetention: &atc.BuildLogRetention{Days: 3}},
+			calculator:   NewBuildLogRetentionCalculator(0, 0, 0, 0),
+			builds: []retentionBuild{
+				{name: "b1", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 49 * time.Hour},
+				{name: "b2", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 23 * time.Hour},
+			},
+			expectedDeleted:     []string{},
+			expectedFirstLogged: "b1",
+		}),
+		Entry("combined count protects", retentionScenario{
+			jobRetention: atc.JobConfig{BuildLogRetention: &atc.BuildLogRetention{Builds: 1, Days: 2}},
+			calculator:   NewBuildLogRetentionCalculator(0, 0, 0, 0),
+			builds: []retentionBuild{
+				{name: "b1", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 49 * time.Hour},
+			},
+			expectedDeleted:     []string{},
+			expectedFirstLogged: "b1",
+		}),
+		Entry("combined days protect", retentionScenario{
+			jobRetention: atc.JobConfig{BuildLogRetention: &atc.BuildLogRetention{Builds: 1, Days: 2}},
+			calculator:   NewBuildLogRetentionCalculator(0, 0, 0, 0),
+			builds: []retentionBuild{
+				{name: "b1", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 24 * time.Hour},
+				{name: "b2", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 23 * time.Hour},
+			},
+			expectedDeleted:     []string{},
+			expectedFirstLogged: "b1",
+		}),
+		Entry("combined deletes", retentionScenario{
+			jobRetention: atc.JobConfig{BuildLogRetention: &atc.BuildLogRetention{Builds: 1, Days: 2}},
+			calculator:   NewBuildLogRetentionCalculator(0, 0, 0, 0),
+			builds: []retentionBuild{
+				{name: "b1", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 49 * time.Hour},
+				{name: "b2", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 23 * time.Hour},
+			},
+			expectedDeleted:     []string{"b1"},
+			expectedFirstLogged: "b2",
+		}),
+		Entry("minimum success", retentionScenario{
+			jobRetention: atc.JobConfig{BuildLogRetention: &atc.BuildLogRetention{Builds: 3, MinimumSucceededBuilds: 2}},
+			calculator:   NewBuildLogRetentionCalculator(0, 0, 0, 0),
+			builds: []retentionBuild{
+				{name: "b1", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 2 * time.Hour},
+				{name: "b2", status: db.BuildStatusSucceeded, completed: true, drained: true, endAgo: 2 * time.Hour},
+				{name: "b3", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 2 * time.Hour},
+				{name: "b4", status: db.BuildStatusSucceeded, completed: true, drained: true, endAgo: 2 * time.Hour},
+				{name: "b5", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 2 * time.Hour},
+			},
+			expectedDeleted:     []string{"b1", "b3"},
+			expectedFirstLogged: "b2",
+		}),
+		Entry("already reaped excluded", retentionScenario{
+			jobRetention: atc.JobConfig{BuildLogRetention: &atc.BuildLogRetention{Builds: 1}},
+			calculator:   NewBuildLogRetentionCalculator(0, 0, 0, 0),
+			builds: []retentionBuild{
+				{name: "b1", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 49 * time.Hour, reapAgo: time.Hour},
+				{name: "b2", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 49 * time.Hour},
+				{name: "b3", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 23 * time.Hour},
+			},
+			expectedDeleted:     []string{"b2"},
+			expectedFirstLogged: "b3",
+		}),
+		Entry("all eligible", retentionScenario{
+			jobRetention: atc.JobConfig{BuildLogRetention: &atc.BuildLogRetention{Days: 1}},
+			calculator:   NewBuildLogRetentionCalculator(0, 0, 0, 0),
+			builds: []retentionBuild{
+				{name: "b1", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 30 * time.Hour},
+				{name: "b2", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 30 * time.Hour},
+			},
+			expectedDeleted:     []string{"b1", "b2"},
+			expectedFirstLogged: "b1",
+		}),
+		Entry("retain zero skips", retentionScenario{
+			jobRetention: atc.JobConfig{BuildLogRetention: &atc.BuildLogRetention{Builds: 0, Days: 0}},
+			calculator:   NewBuildLogRetentionCalculator(0, 0, 0, 0),
+			builds: []retentionBuild{
+				{name: "b1", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 49 * time.Hour},
+				{name: "b2", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 23 * time.Hour},
+			},
+			expectedDeleted:     []string{},
+			expectedFirstLogged: "b1",
+		}),
+		Entry("calculator cap", retentionScenario{
+			jobRetention: atc.JobConfig{BuildLogsToRetain: 10},
+			calculator:   NewBuildLogRetentionCalculator(3, 3, 0, 0),
+			builds: []retentionBuild{
+				{name: "b1", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 2 * time.Hour},
+				{name: "b2", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 2 * time.Hour},
+				{name: "b3", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 2 * time.Hour},
+				{name: "b4", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 2 * time.Hour},
+			},
+			expectedDeleted:     []string{"b1"},
+			expectedFirstLogged: "b2",
+		}),
+		Entry("paused pipeline", retentionScenario{
+			jobRetention:   atc.JobConfig{BuildLogRetention: &atc.BuildLogRetention{Builds: 1}},
+			calculator:     NewBuildLogRetentionCalculator(0, 0, 0, 0),
+			pausedPipeline: true,
+			builds: []retentionBuild{
+				{name: "b1", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 49 * time.Hour},
+				{name: "b2", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 23 * time.Hour},
+			},
+			expectedDeleted:     []string{},
+			expectedFirstLogged: "b1",
+		}),
+		Entry("paused job", retentionScenario{
+			jobRetention: atc.JobConfig{BuildLogRetention: &atc.BuildLogRetention{Builds: 1}},
+			calculator:   NewBuildLogRetentionCalculator(0, 0, 0, 0),
+			pausedJob:    true,
+			builds: []retentionBuild{
+				{name: "b1", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 49 * time.Hour},
+				{name: "b2", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 23 * time.Hour},
+			},
+			expectedDeleted:     []string{},
+			expectedFirstLogged: "b1",
+		}),
 	)
 
-	BeforeEach(func() {
-		fakePipelineFactory = new(dbfakes.FakePipelineFactory)
-		fakePipelineLifecycle = new(dbfakes.FakePipelineLifecycle)
-		batchSize = 5
-		buildLogRetainCalc = NewBuildLogRetentionCalculator(0, 0, 0, 0)
-		logger = lagertest.NewTestLogger("test")
-		ctx = lagerctx.NewContext(context.Background(), logger)
-	})
-
-	JustBeforeEach(func() {
-		buildLogCollector = NewBuildLogCollector(
-			fakePipelineFactory,
-			fakePipelineLifecycle,
-			batchSize,
-			buildLogRetainCalc,
-			false,
+	Describe("retained selective database method faults", func() {
+		var (
+			collector             GcCollector
+			fakePipelineFactory   *dbfakes.FakePipelineFactory
+			fakePipelineLifecycle *dbfakes.FakePipelineLifecycle
+			fakePipeline          *dbfakes.FakePipeline
+			fakeJob               *dbfakes.FakeJob
+			faultLogger           *lagertest.TestLogger
+			ctx                   context.Context
+			disaster              error
 		)
-	})
-
-	It("removes build events from deleted pipelines", func() {
-		err := buildLogCollector.Run(ctx)
-		Expect(err).ToNot(HaveOccurred())
-		Expect(fakePipelineLifecycle.RemoveBuildEventsForDeletedPipelinesCallCount()).To(Equal(1))
-	})
-
-	Context("when removing build events from deleted pipelines fails", func() {
-		BeforeEach(func() {
-			fakePipelineLifecycle.RemoveBuildEventsForDeletedPipelinesReturns(errors.New("error"))
-		})
-
-		It("errors", func() {
-			err := buildLogCollector.Run(ctx)
-			Expect(err).To(HaveOccurred())
-		})
-	})
-
-	Context("when there is a pipeline", func() {
-		var fakePipeline *dbfakes.FakePipeline
 
 		BeforeEach(func() {
+			fakePipelineFactory = new(dbfakes.FakePipelineFactory)
+			fakePipelineLifecycle = new(dbfakes.FakePipelineLifecycle)
+			// A healthy persisted pipeline row cannot fail one selected interface
+			// method while preserving the surrounding row graph.
 			fakePipeline = new(dbfakes.FakePipeline)
-			fakePipeline.IDReturns(42)
-
-			fakePipelineFactory.AllPipelinesReturns([]db.Pipeline{fakePipeline}, nil)
-		})
-
-		Context("when getting the dashboard fails", func() {
-			var disaster error
-
-			BeforeEach(func() {
-				disaster = errors.New("sorry pal")
-				fakePipeline.JobsReturns(nil, disaster)
-			})
-
-			It("logs the error", func() {
-				Expect(buildLogCollector.Run(ctx)).To(BeNil())
-				Eventually(logger.Buffer()).Should(gbytes.Say(disaster.Error()))
-			})
-		})
-
-		Context("when the dashboard has a job", func() {
-			var fakeJob *dbfakes.FakeJob
-
-			BeforeEach(func() {
-				fakeJob = new(dbfakes.FakeJob)
-				fakeJob.NameReturns("job-1")
-				fakeJob.FirstLoggedBuildIDReturns(5)
-				fakeJob.ConfigReturns(atc.JobConfig{
-					BuildLogsToRetain: 2,
-				}, nil)
-
-				fakePipeline.JobsReturns([]db.Job{fakeJob}, nil)
-			})
-
-			Context("drain handling", func() {
-				JustBeforeEach(func() {
-					buildLogCollector = NewBuildLogCollector(
-						fakePipelineFactory,
-						fakePipelineLifecycle,
-						batchSize,
-						buildLogRetainCalc,
-						true,
-					)
-				})
-				BeforeEach(func() {
-					fakeJob.ChronoBuildsStub = func(page db.Page) ([]db.BuildForAPI, db.Pagination, error) {
-						if *page.From == 5 {
-							return []db.BuildForAPI{sbDrained(9, false), sbDrained(8, false), sbDrained(7, true), sbDrained(6, false), sbDrained(5, true)}, db.Pagination{Newer: &db.Page{From: db.NewIntPtr(10), Limit: 5}}, nil
-						} else if *page.From == 10 {
-							return []db.BuildForAPI{sbDrained(11, true), sbDrained(10, true)}, db.Pagination{}, nil
-						}
-						Fail(fmt.Sprintf("Builds called with unexpected argument: page=%#v", page))
-						return []db.BuildForAPI{}, db.Pagination{}, nil
-					}
-
-					fakePipeline.DeleteBuildEventsByBuildIDsReturns(nil)
-					fakeJob.UpdateFirstLoggedBuildIDReturns(nil)
-				})
-
-				JustBeforeEach(func() {
-					err := buildLogCollector.Run(ctx)
-					Expect(err).NotTo(HaveOccurred())
-				})
-
-				It("should not reap builds which have not been drained", func() {
-					Expect(fakePipeline.DeleteBuildEventsByBuildIDsCallCount()).To(Equal(1))
-
-					Expect(fakePipeline.DeleteBuildEventsByBuildIDsArgsForCall(0)).Should(Not(ContainElement(6)))
-					Expect(fakePipeline.DeleteBuildEventsByBuildIDsArgsForCall(0)).Should(Not(ContainElement(8)))
-					Expect(fakePipeline.DeleteBuildEventsByBuildIDsArgsForCall(0)).Should(Not(ContainElement(9)))
-				})
-
-				It("should reap builds which have been drained", func() {
-					Expect(fakePipeline.DeleteBuildEventsByBuildIDsCallCount()).To(Equal(1))
-
-					Expect(fakePipeline.DeleteBuildEventsByBuildIDsArgsForCall(0)).To(ConsistOf(7, 5))
-				})
-
-				It("should update first logged build id to the earliest non-drained build", func() {
-					Expect(fakePipeline.DeleteBuildEventsByBuildIDsCallCount()).To(Equal(1))
-
-					Expect(fakeJob.UpdateFirstLoggedBuildIDCallCount()).To(Equal(1))
-					actualNewFirstLoggedBuildID := fakeJob.UpdateFirstLoggedBuildIDArgsForCall(0)
-					Expect(actualNewFirstLoggedBuildID).To(Equal(6))
-				})
-			})
-
-			Context("when drain has not been configured", func() {
-				BeforeEach(func() {
-					buildLogCollector = NewBuildLogCollector(
-						fakePipelineFactory,
-						fakePipelineLifecycle,
-						batchSize,
-						buildLogRetainCalc,
-						false,
-					)
-					fakeJob.ChronoBuildsStub = func(page db.Page) ([]db.BuildForAPI, db.Pagination, error) {
-						if *page.From == 5 {
-							return []db.BuildForAPI{sbDrained(9, true), sbDrained(8, false), sbDrained(7, false), sbDrained(6, true), sbDrained(5, false)}, db.Pagination{Newer: &db.Page{From: db.NewIntPtr(10), Limit: 5}}, nil
-						} else if *page.From == 10 {
-							return []db.BuildForAPI{sbDrained(10, true)}, db.Pagination{}, nil
-						}
-						Fail(fmt.Sprintf("Builds called with unexpected argument: page=%#v", page))
-						return []db.BuildForAPI{}, db.Pagination{}, nil
-					}
-
-					fakePipeline.DeleteBuildEventsByBuildIDsReturns(nil)
-					fakeJob.UpdateFirstLoggedBuildIDReturns(nil)
-				})
-				It("should reap builds if draining is not configured", func() {
-					err := buildLogCollector.Run(ctx)
-					Expect(err).NotTo(HaveOccurred())
-					Expect(fakePipeline.DeleteBuildEventsByBuildIDsCallCount()).To(Equal(1))
-
-					Expect(fakePipeline.DeleteBuildEventsByBuildIDsArgsForCall(0)).To(ConsistOf(5, 6, 7, 8))
-
-					Expect(fakeJob.UpdateFirstLoggedBuildIDCallCount()).To(Equal(1))
-					actualNewFirstLoggedBuildID := fakeJob.UpdateFirstLoggedBuildIDArgsForCall(0)
-					Expect(actualNewFirstLoggedBuildID).To(Equal(9))
-				})
-			})
-
-			Context("when deleting build events fails", func() {
-				var disaster error
-
-				BeforeEach(func() {
-					fakeJob.ChronoBuildsStub = func(page db.Page) ([]db.BuildForAPI, db.Pagination, error) {
-						if *page.From == 5 {
-							return []db.BuildForAPI{sbDrained(8, false), sbDrained(7, true), sbDrained(6, false), sbDrained(5, false)}, db.Pagination{}, nil
-						}
-						Fail(fmt.Sprintf("Builds called with unexpected argument: page=%#v", page))
-						return []db.BuildForAPI{}, db.Pagination{}, nil
-					}
-
-					disaster = errors.New("major malfunction")
-
-					fakePipeline.DeleteBuildEventsByBuildIDsReturns(disaster)
-				})
-
-				It("logs the error", func() {
-					Expect(buildLogCollector.Run(ctx)).To(BeNil())
-					Eventually(logger.Buffer()).Should(gbytes.Say(disaster.Error()))
-				})
-
-				It("does not update first logged build id", func() {
-					buildLogCollector.Run(ctx)
-
-					Expect(fakeJob.UpdateFirstLoggedBuildIDCallCount()).To(BeZero())
-				})
-			})
-
-			Context("when updating first logged build id fails", func() {
-				var disaster error
-
-				BeforeEach(func() {
-					fakeJob.ChronoBuildsStub = func(page db.Page) ([]db.BuildForAPI, db.Pagination, error) {
-						if *page.From == 5 {
-							return []db.BuildForAPI{sbDrained(8, false), sbDrained(7, true), sbDrained(6, false), sbDrained(5, false)}, db.Pagination{}, nil
-						}
-						Fail(fmt.Sprintf("Builds called with unexpected argument: page=%#v", page))
-						return []db.BuildForAPI{}, db.Pagination{}, nil
-					}
-
-					disaster = errors.New("major malfunction")
-
-					fakeJob.UpdateFirstLoggedBuildIDReturns(disaster)
-				})
-
-				It("logs the error", func() {
-					Expect(buildLogCollector.Run(ctx)).To(BeNil())
-					Eventually(logger.Buffer()).Should(gbytes.Say(disaster.Error()))
-				})
-			})
-
-			Context("when the builds we want to reap are still running", func() {
-				BeforeEach(func() {
-					fakeJob.ConfigReturns(atc.JobConfig{
-						BuildLogsToRetain: 3,
-					}, nil)
-					fakeJob.ChronoBuildsStub = func(page db.Page) ([]db.BuildForAPI, db.Pagination, error) {
-						if *page.From == 5 {
-							return []db.BuildForAPI{
-								runningBuild(9),
-								runningBuild(8),
-								sb(7),
-								sb(6),
-								sb(5),
-							}, db.Pagination{Newer: &db.Page{From: db.NewIntPtr(10), Limit: 5}}, nil
-						} else if *page.From == 10 {
-							return []db.BuildForAPI{sb(10)}, db.Pagination{}, nil
-						} else {
-							Fail(fmt.Sprintf("Builds called with unexpected argument: page=%#v", page))
-						}
-						return nil, db.Pagination{}, nil
-					}
-
-					fakePipeline.DeleteBuildEventsByBuildIDsReturns(nil)
-
-					fakeJob.UpdateFirstLoggedBuildIDReturns(nil)
-				})
-
-				JustBeforeEach(func() {
-					err := buildLogCollector.Run(ctx)
-					Expect(err).NotTo(HaveOccurred())
-				})
-
-				It("reaps only not-running builds", func() {
-					Expect(fakePipeline.DeleteBuildEventsByBuildIDsCallCount()).To(Equal(1))
-					actualBuildIDs := fakePipeline.DeleteBuildEventsByBuildIDsArgsForCall(0)
-					Expect(actualBuildIDs).To(ConsistOf(5))
-				})
-
-				It("updates FirstLoggedBuildID to earliest non-reaped build", func() {
-					Expect(fakeJob.UpdateFirstLoggedBuildIDCallCount()).To(Equal(1))
-					actualNewFirstLoggedBuildID := fakeJob.UpdateFirstLoggedBuildIDArgsForCall(0)
-					Expect(actualNewFirstLoggedBuildID).To(Equal(6))
-				})
-			})
-
-			Context("when no builds need to be reaped", func() {
-				BeforeEach(func() {
-					fakeJob.ChronoBuildsStub = func(page db.Page) ([]db.BuildForAPI, db.Pagination, error) {
-						if *page.From == 5 {
-							return []db.BuildForAPI{runningBuild(5)}, db.Pagination{}, nil
-						} else {
-							Fail(fmt.Sprintf("Builds called with unexpected argument: page=%#v", page))
-						}
-						return nil, db.Pagination{}, nil
-					}
-
-					fakePipeline.DeleteBuildEventsByBuildIDsReturns(nil)
-
-					fakeJob.UpdateFirstLoggedBuildIDReturns(nil)
-				})
-
-				JustBeforeEach(func() {
-					err := buildLogCollector.Run(ctx)
-					Expect(err).NotTo(HaveOccurred())
-				})
-
-				It("doesn't reap any builds", func() {
-					Expect(fakePipeline.DeleteBuildEventsByBuildIDsCallCount()).To(BeZero())
-				})
-
-				It("doesn't update FirstLoggedBuildID", func() {
-					Expect(fakeJob.UpdateFirstLoggedBuildIDCallCount()).To(BeZero())
-				})
-			})
-
-			Context("when no builds exist", func() {
-				BeforeEach(func() {
-					fakeJob.ChronoBuildsReturns(nil, db.Pagination{}, nil)
-
-					fakePipeline.DeleteBuildEventsByBuildIDsReturns(nil)
-
-					fakeJob.UpdateFirstLoggedBuildIDReturns(nil)
-				})
-
-				It("doesn't reap any builds", func() {
-					err := buildLogCollector.Run(ctx)
-					Expect(err).NotTo(HaveOccurred())
-
-					Expect(fakePipeline.DeleteBuildEventsByBuildIDsCallCount()).To(BeZero())
-					Expect(fakeJob.UpdateFirstLoggedBuildIDCallCount()).To(BeZero())
-				})
-			})
-
-			Context("when getting the job builds fails", func() {
-				var disaster error
-
-				BeforeEach(func() {
-					disaster = errors.New("major malfunction")
-
-					fakeJob.ChronoBuildsReturns(nil, db.Pagination{}, disaster)
-				})
-
-				It("logs the error", func() {
-					Expect(buildLogCollector.Run(ctx)).To(BeNil())
-					Eventually(logger.Buffer()).Should(gbytes.Say(disaster.Error()))
-				})
-			})
-
-			Context("when only count is set", func() {
-				BeforeEach(func() {
-					fakeJob.ChronoBuildsStub = func(page db.Page) ([]db.BuildForAPI, db.Pagination, error) {
-						if *page.From == 5 {
-							return []db.BuildForAPI{sbTime(6, time.Now().Add(-23*time.Hour)), sbTime(5, time.Now().Add(-49*time.Hour))}, db.Pagination{}, nil
-						}
-						Fail(fmt.Sprintf("Builds called with unexpected argument: page=%#v", page))
-						return nil, db.Pagination{}, nil
-					}
-
-					fakeJob.ConfigReturns(atc.JobConfig{
-						BuildLogRetention: &atc.BuildLogRetention{
-							Builds: 1,
-							Days:   0,
-						},
-					}, nil)
-
-					fakePipeline.DeleteBuildEventsByBuildIDsReturns(nil)
-					fakeJob.UpdateFirstLoggedBuildIDReturns(nil)
-				})
-
-				It("should delete 1 build event", func() {
-					err := buildLogCollector.Run(ctx)
-					Expect(err).NotTo(HaveOccurred())
-
-					Expect(fakePipeline.DeleteBuildEventsByBuildIDsCallCount()).To(Equal(1))
-					actualBuildIDs := fakePipeline.DeleteBuildEventsByBuildIDsArgsForCall(0)
-					Expect(actualBuildIDs).To(ConsistOf(5))
-				})
-			})
-
-			Context("when only date is set", func() {
-				BeforeEach(func() {
-					fakeJob.ChronoBuildsStub = func(page db.Page) ([]db.BuildForAPI, db.Pagination, error) {
-						if *page.From == 5 {
-							return []db.BuildForAPI{sbTime(6, time.Now().Add(-23*time.Hour)), sbTime(5, time.Now().Add(-49*time.Hour))}, db.Pagination{}, nil
-						}
-						Fail(fmt.Sprintf("Builds called with unexpected argument: page=%#v", page))
-						return nil, db.Pagination{}, nil
-					}
-
-					fakeJob.ConfigReturns(atc.JobConfig{
-						BuildLogRetention: &atc.BuildLogRetention{
-							Builds: 0,
-							Days:   3,
-						},
-					}, nil)
-
-					fakePipeline.DeleteBuildEventsByBuildIDsReturns(nil)
-					fakeJob.UpdateFirstLoggedBuildIDReturns(nil)
-				})
-
-				It("should delete nothing, because of the date retention", func() {
-					err := buildLogCollector.Run(ctx)
-					Expect(err).NotTo(HaveOccurred())
-
-					Expect(fakePipeline.DeleteBuildEventsByBuildIDsCallCount()).To(Equal(0))
-				})
-			})
-
-			Context("when count and date are set > 0", func() {
-				BeforeEach(func() {
-					fakeJob.ConfigReturns(atc.JobConfig{
-						BuildLogRetention: &atc.BuildLogRetention{
-							Builds: 1,
-							Days:   2,
-						},
-					}, nil)
-
-					fakePipeline.DeleteBuildEventsByBuildIDsReturns(nil)
-					fakeJob.UpdateFirstLoggedBuildIDReturns(nil)
-				})
-
-				It("should not reap if count is not satisfied", func() {
-					fakeJob.ChronoBuildsStub = func(page db.Page) ([]db.BuildForAPI, db.Pagination, error) {
-						if *page.From == 5 {
-							return []db.BuildForAPI{sbTime(5, time.Now().Add(-49*time.Hour))}, db.Pagination{}, nil
-						}
-						Fail(fmt.Sprintf("Builds called with unexpected argument: page=%#v", page))
-						return nil, db.Pagination{}, nil
-					}
-
-					err := buildLogCollector.Run(ctx)
-					Expect(err).NotTo(HaveOccurred())
-
-					Expect(fakePipeline.DeleteBuildEventsByBuildIDsCallCount()).To(Equal(0))
-				})
-
-				It("should not reap if days is not satisfied", func() {
-					fakeJob.ChronoBuildsStub = func(page db.Page) ([]db.BuildForAPI, db.Pagination, error) {
-						if *page.From == 5 {
-							return []db.BuildForAPI{sbTime(6, time.Now().Add(-23*time.Hour)), sbTime(5, time.Now().Add(-24*time.Hour))}, db.Pagination{}, nil
-						}
-						Fail(fmt.Sprintf("Builds called with unexpected argument: page=%#v", page))
-						return nil, db.Pagination{}, nil
-					}
-
-					err := buildLogCollector.Run(ctx)
-					Expect(err).NotTo(HaveOccurred())
-
-					Expect(fakePipeline.DeleteBuildEventsByBuildIDsCallCount()).To(Equal(0))
-				})
-
-				It("should delete 1 build, because both criteria are satisfied", func() {
-					fakeJob.ChronoBuildsStub = func(page db.Page) ([]db.BuildForAPI, db.Pagination, error) {
-						if *page.From == 5 {
-							return []db.BuildForAPI{sbTime(6, time.Now().Add(-23*time.Hour)), sbTime(5, time.Now().Add(-49*time.Hour))}, db.Pagination{}, nil
-						}
-						Fail(fmt.Sprintf("Builds called with unexpected argument: page=%#v", page))
-						return nil, db.Pagination{}, nil
-					}
-
-					err := buildLogCollector.Run(ctx)
-					Expect(err).NotTo(HaveOccurred())
-
-					Expect(fakePipeline.DeleteBuildEventsByBuildIDsCallCount()).To(Equal(1))
-					actualBuildIDs := fakePipeline.DeleteBuildEventsByBuildIDsArgsForCall(0)
-					Expect(actualBuildIDs).To(ConsistOf(5))
-				})
-			})
-
-			Context("when only date is set", func() {
-				BeforeEach(func() {
-					fakeJob.ChronoBuildsStub = func(page db.Page) ([]db.BuildForAPI, db.Pagination, error) {
-						if *page.From == 5 {
-							return []db.BuildForAPI{sbTime(6, time.Now().Add(-23*time.Hour)), sbTime(5, time.Now().Add(-49*time.Hour))}, db.Pagination{}, nil
-						}
-						Fail(fmt.Sprintf("Builds called with unexpected argument: page=%#v", page))
-						return nil, db.Pagination{}, nil
-					}
-
-					fakeJob.ConfigReturns(atc.JobConfig{
-						BuildLogRetention: &atc.BuildLogRetention{
-							Builds: 0,
-							Days:   1,
-						},
-					}, nil)
-
-					fakePipeline.DeleteBuildEventsByBuildIDsReturns(nil)
-					fakeJob.UpdateFirstLoggedBuildIDReturns(nil)
-				})
-
-				It("should delete before that", func() {
-					err := buildLogCollector.Run(ctx)
-					Expect(err).NotTo(HaveOccurred())
-
-					Expect(fakePipeline.DeleteBuildEventsByBuildIDsCallCount()).To(Equal(1))
-					actualBuildIDs := fakePipeline.DeleteBuildEventsByBuildIDsArgsForCall(0)
-					Expect(actualBuildIDs).To(ConsistOf(5))
-				})
-			})
-
-			Context("when min_success_build is set", func() {
-				BeforeEach(func() {
-					fakeJob.ConfigReturns(atc.JobConfig{
-						BuildLogRetention: &atc.BuildLogRetention{
-							Builds:                 5,
-							Days:                   0,
-							MinimumSucceededBuilds: 2,
-						},
-					}, nil)
-
-					page1 := db.Page{From: db.NewIntPtr(5), Limit: 5}
-					page2 := db.Page{From: db.NewIntPtr(10), Limit: 5}
-					page3 := db.Page{From: db.NewIntPtr(15), Limit: 5}
-					fakeJob.ChronoBuildsStub = func(page db.Page) ([]db.BuildForAPI, db.Pagination, error) {
-						if *page.From == *page1.From {
-							return []db.BuildForAPI{sb(9), successBuild(8), sb(7), reapedBuild(6), reapedBuild(5)}, db.Pagination{Newer: &page2}, nil
-						} else if *page.From == *page2.From {
-							return []db.BuildForAPI{sb(14), successBuild(13), sb(12), sb(11), sb(10)}, db.Pagination{Newer: &page3}, nil
-						} else if *page.From == *page3.From {
-							return []db.BuildForAPI{sb(18), sb(17), sb(16), sb(15)}, db.Pagination{}, nil
-						}
-						Fail(fmt.Sprintf("Builds called with unexpected argument: page=%#v", page))
-						return nil, db.Pagination{}, nil
-					}
-				})
-
-				JustBeforeEach(func() {
-					err := buildLogCollector.Run(ctx)
-					Expect(err).NotTo(HaveOccurred())
-				})
-
-				It("should reap non success builds", func() {
-					Expect(fakePipeline.DeleteBuildEventsByBuildIDsCallCount()).To(Equal(1))
-					actualBuildIDs := fakePipeline.DeleteBuildEventsByBuildIDsArgsForCall(0)
-					Expect(actualBuildIDs).To(ConsistOf(7, 9, 10, 11, 12, 14, 15))
-
-					Expect(fakePipeline.DeleteBuildEventsByBuildIDsArgsForCall(0)).Should(Not(ContainElement(5)))
-					Expect(fakePipeline.DeleteBuildEventsByBuildIDsArgsForCall(0)).Should(Not(ContainElement(6)))
-				})
-
-				It("should keep at least n success builds, n=MinSuccessBuilds, n=2 ", func() {
-					Expect(fakePipeline.DeleteBuildEventsByBuildIDsArgsForCall(0)).Should(Not(ContainElement(8)))
-					Expect(fakePipeline.DeleteBuildEventsByBuildIDsArgsForCall(0)).Should(Not(ContainElement(13)))
-				})
-
-				It("should update first logged build id to the earliest success build", func() {
-					Expect(fakeJob.UpdateFirstLoggedBuildIDCallCount()).To(Equal(1))
-					actualNewFirstLoggedBuildID := fakeJob.UpdateFirstLoggedBuildIDArgsForCall(0)
-					Expect(actualNewFirstLoggedBuildID).To(Equal(8))
-				})
-			})
-
-			Context("when min_success_build equals builds", func() {
-				BeforeEach(func() {
-					fakeJob.ConfigReturns(atc.JobConfig{
-						BuildLogRetention: &atc.BuildLogRetention{
-							Builds:                 5,
-							Days:                   0,
-							MinimumSucceededBuilds: 5,
-						},
-					}, nil)
-
-					page1 := db.Page{From: db.NewIntPtr(5), Limit: 5}
-					page2 := db.Page{From: db.NewIntPtr(10), Limit: 5}
-					page3 := db.Page{From: db.NewIntPtr(15), Limit: 5}
-					fakeJob.ChronoBuildsStub = func(page db.Page) ([]db.BuildForAPI, db.Pagination, error) {
-						if *page.From == *page1.From {
-							return []db.BuildForAPI{sb(9), successBuild(8), sb(7), reapedBuild(6), reapedBuild(5)}, db.Pagination{Newer: &page2}, nil
-						} else if *page.From == *page2.From {
-							return []db.BuildForAPI{sb(14), successBuild(13), successBuild(12), sb(11), successBuild(10)}, db.Pagination{Newer: &page3}, nil
-						} else if *page.From == *page3.From {
-							return []db.BuildForAPI{successBuild(18), sb(17), sb(16), successBuild(15)}, db.Pagination{}, nil
-						}
-						Fail(fmt.Sprintf("Builds called with unexpected argument: page=%#v", page))
-						return nil, db.Pagination{}, nil
-					}
-				})
-
-				JustBeforeEach(func() {
-					err := buildLogCollector.Run(ctx)
-					Expect(err).NotTo(HaveOccurred())
-				})
-
-				It("should reap non success builds and success builds that exceeds min success build retained number", func() {
-					Expect(fakePipeline.DeleteBuildEventsByBuildIDsCallCount()).To(Equal(1))
-					actualBuildIDs := fakePipeline.DeleteBuildEventsByBuildIDsArgsForCall(0)
-					Expect(actualBuildIDs).To(ConsistOf(7, 8, 9, 11, 14, 16, 17))
-
-					Expect(fakePipeline.DeleteBuildEventsByBuildIDsArgsForCall(0)).Should(Not(ContainElement(5)))
-					Expect(fakePipeline.DeleteBuildEventsByBuildIDsArgsForCall(0)).Should(Not(ContainElement(6)))
-				})
-
-				It("should keep at least n success builds, n=MinSuccessBuilds, n=5", func() {
-					Expect(fakePipeline.DeleteBuildEventsByBuildIDsArgsForCall(0)).Should(Not(ContainElement(10)))
-					Expect(fakePipeline.DeleteBuildEventsByBuildIDsArgsForCall(0)).Should(Not(ContainElement(12)))
-					Expect(fakePipeline.DeleteBuildEventsByBuildIDsArgsForCall(0)).Should(Not(ContainElement(13)))
-					Expect(fakePipeline.DeleteBuildEventsByBuildIDsArgsForCall(0)).Should(Not(ContainElement(15)))
-					Expect(fakePipeline.DeleteBuildEventsByBuildIDsArgsForCall(0)).Should(Not(ContainElement(18)))
-				})
-
-				It("should update first logged build id to the earliest success build", func() {
-					Expect(fakeJob.UpdateFirstLoggedBuildIDCallCount()).To(Equal(1))
-					actualNewFirstLoggedBuildID := fakeJob.UpdateFirstLoggedBuildIDArgsForCall(0)
-					Expect(actualNewFirstLoggedBuildID).To(Equal(10))
-				})
-			})
-		})
-
-		Context("when the FirstLoggedBuildID has an value", func() {
-			Context("when all the logs get reaped", func() {
-				var fakeJob *dbfakes.FakeJob
-
-				BeforeEach(func() {
-					fakeJob = new(dbfakes.FakeJob)
-					fakeJob.NameReturns("job-1")
-					fakeJob.FirstLoggedBuildIDReturns(5)
-					fakeJob.ConfigReturns(atc.JobConfig{
-						BuildLogRetention: &atc.BuildLogRetention{
-							Days: 1,
-						},
-					}, nil)
-
-					fakePipeline.JobsReturns([]db.Job{fakeJob}, nil)
-
-					yesterday := time.Now().Add(-30 * time.Hour)
-
-					fakeJob.ChronoBuildsReturns([]db.BuildForAPI{sbTime(9, yesterday), sbTime(8, yesterday), sbTime(7, yesterday), sbTime(6, yesterday), sbTime(5, yesterday)}, db.Pagination{}, nil)
-				})
-
-				It("FirstLoggedBuildID doesn't get reset to 0", func() {
-					Expect(buildLogCollector.Run(ctx)).NotTo(HaveOccurred())
-					Expect(fakePipeline.DeleteBuildEventsByBuildIDsCallCount()).To(Equal(1))
-					Expect(fakePipeline.DeleteBuildEventsByBuildIDsArgsForCall(0)).To(ConsistOf(9, 8, 7, 6, 5))
-					Expect(fakeJob.UpdateFirstLoggedBuildIDCallCount()).To(Equal(0))
-				})
-			})
-
-			Context("when FirstLoggedBuildID == 1", func() {
-				var fakeJob *dbfakes.FakeJob
-
-				BeforeEach(func() {
-					fakeJob = new(dbfakes.FakeJob)
-					fakeJob.NameReturns("job-1")
-					fakeJob.FirstLoggedBuildIDReturns(1)
-					fakeJob.ConfigReturns(atc.JobConfig{
-						BuildLogsToRetain: 10,
-					}, nil)
-
-					fakePipeline.JobsReturns([]db.Job{fakeJob}, nil)
-				})
-
-				Context("when we install a custom build log retention calculator", func() {
-					BeforeEach(func() {
-						buildLogRetainCalc = NewBuildLogRetentionCalculator(3, 3, 0, 0)
-
-						fakeJob.ChronoBuildsStub = func(page db.Page) ([]db.BuildForAPI, db.Pagination, error) {
-							if *page.From == 1 {
-								return []db.BuildForAPI{sb(4), sb(3), sb(2), sb(1)}, db.Pagination{}, nil
-							}
-
-							Fail(fmt.Sprintf("Builds called with unexpected argument: page=%#v", page))
-							return nil, db.Pagination{}, nil
-						}
-
-						fakePipeline.DeleteBuildEventsByBuildIDsReturns(nil)
-						fakeJob.UpdateFirstLoggedBuildIDReturns(nil)
-					})
-
-					It("uses build log calculator", func() {
-						Expect(buildLogCollector.Run(ctx)).NotTo(HaveOccurred())
-						Expect(fakePipeline.DeleteBuildEventsByBuildIDsCallCount()).To(Equal(1))
-						Expect(fakePipeline.DeleteBuildEventsByBuildIDsArgsForCall(0)).To(ConsistOf(1))
-					})
-				})
-
-				Context("when getting the job builds fails", func() {
-					var disaster error
-
-					BeforeEach(func() {
-						disaster = errors.New("major malfunction")
-
-						fakeJob.ChronoBuildsReturns(nil, db.Pagination{}, disaster)
-					})
-
-					It("logs the error", func() {
-						Expect(buildLogCollector.Run(ctx)).To(BeNil())
-						Eventually(logger.Buffer()).Should(gbytes.Say(disaster.Error()))
-					})
-				})
-			})
-
-		})
-
-		Context("when the job says retain 0 builds", func() {
-			var fakeJob *dbfakes.FakeJob
-
-			BeforeEach(func() {
-				fakeJob = new(dbfakes.FakeJob)
-				fakeJob.NameReturns("job-1")
-				fakeJob.FirstLoggedBuildIDReturns(6)
-				fakeJob.ConfigReturns(atc.JobConfig{
-					BuildLogsToRetain: 0,
-				}, nil)
-				fakeJob.TagsReturns([]string{})
-
-				fakePipeline.JobsReturns([]db.Job{fakeJob}, nil)
-			})
-
-			It("skips the reaping step for that job", func() {
-				err := buildLogCollector.Run(ctx)
-				Expect(err).NotTo(HaveOccurred())
-
-				Expect(fakeJob.ChronoBuildsCallCount()).To(BeZero())
-				Expect(fakePipeline.DeleteBuildEventsByBuildIDsCallCount()).To(BeZero())
-				Expect(fakeJob.UpdateFirstLoggedBuildIDCallCount()).To(BeZero())
-			})
-		})
-	})
-
-	Context("when there is a paused pipeline", func() {
-		var fakePipeline *dbfakes.FakePipeline
-
-		BeforeEach(func() {
-			fakePipeline = new(dbfakes.FakePipeline)
-			fakePipeline.IDReturns(42)
-			fakePipeline.PausedReturns(true)
-
-			fakePipelineFactory.AllPipelinesReturns([]db.Pipeline{fakePipeline}, nil)
-		})
-
-		It("skips the reaping step for that pipeline", func() {
-			err := buildLogCollector.Run(ctx)
-			Expect(err).NotTo(HaveOccurred())
-
-			Expect(fakePipeline.DeleteBuildEventsByBuildIDsCallCount()).To(BeZero())
-		})
-	})
-
-	Context("When theres is a paused job", func() {
-		var fakePipeline *dbfakes.FakePipeline
-		var fakeJob *dbfakes.FakeJob
-
-		BeforeEach(func() {
-			fakePipeline = new(dbfakes.FakePipeline)
-			fakePipeline.IDReturns(42)
-
-			fakePipelineFactory.AllPipelinesReturns([]db.Pipeline{fakePipeline}, nil)
-
+			// A healthy persisted job row cannot fail one selected interface method
+			// while preserving the surrounding row graph.
 			fakeJob = new(dbfakes.FakeJob)
-			fakeJob.PausedReturns(true)
-			fakeJob.NameReturns("job-1")
-			fakeJob.FirstLoggedBuildIDReturns(1)
-			fakeJob.ConfigReturns(atc.JobConfig{
-				BuildLogsToRetain: 1,
-			}, nil)
-			fakeJob.TagsReturns([]string{})
 
-			fakeJob.ChronoBuildsStub = func(page db.Page) ([]db.BuildForAPI, db.Pagination, error) {
-				if *page.From == 1 {
-					return []db.BuildForAPI{sb(2), sb(1)}, db.Pagination{}, nil
-				}
+			oldBuild, err := defaultJob.CreateBuild("collector-fault-test")
+			Expect(err).NotTo(HaveOccurred())
+			started, err := oldBuild.Start(atc.Plan{ID: "old-build"})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(started).To(BeTrue())
+			Expect(oldBuild.Finish(db.BuildStatusFailed)).To(Succeed())
+			found, err := oldBuild.Reload()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
 
-				Fail(fmt.Sprintf("Builds called with unexpected argument: page=%#v", page))
-				return nil, db.Pagination{}, nil
-			}
+			newBuild, err := defaultJob.CreateBuild("collector-fault-test")
+			Expect(err).NotTo(HaveOccurred())
+			started, err = newBuild.Start(atc.Plan{ID: "new-build"})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(started).To(BeTrue())
+			Expect(newBuild.Finish(db.BuildStatusFailed)).To(Succeed())
+			found, err = newBuild.Reload()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
 
+			fakePipelineFactory.AllPipelinesReturns([]db.Pipeline{fakePipeline}, nil)
 			fakePipeline.JobsReturns([]db.Job{fakeJob}, nil)
+			fakeJob.ConfigReturns(atc.JobConfig{
+				BuildLogRetention: &atc.BuildLogRetention{Builds: 1},
+			}, nil)
+			fakeJob.FirstLoggedBuildIDReturns(oldBuild.ID())
+			fakeJob.ChronoBuildsReturns(
+				[]db.BuildForAPI{newBuild, oldBuild},
+				db.Pagination{},
+				nil,
+			)
+
+			faultLogger = lagertest.NewTestLogger("build-log-collector-fault")
+			ctx = lagerctx.NewContext(context.Background(), faultLogger)
+			disaster = errors.New("major malfunction")
 		})
 
-		It("skips the reaping step for that job", func() {
-			err := buildLogCollector.Run(ctx)
-			Expect(err).NotTo(HaveOccurred())
+		JustBeforeEach(func() {
+			collector = NewBuildLogCollector(
+				fakePipelineFactory,
+				fakePipelineLifecycle,
+				5,
+				NewBuildLogRetentionCalculator(0, 0, 0, 0),
+				false,
+			)
+		})
 
-			Expect(fakePipeline.DeleteBuildEventsByBuildIDsCallCount()).To(BeZero())
+		It("returns a deleted-pipeline cleanup error", func() {
+			fakePipelineLifecycle.RemoveBuildEventsForDeletedPipelinesReturns(disaster)
+			Expect(collector.Run(ctx)).To(MatchError(disaster))
+		})
+
+		It("returns an all-pipelines lookup error", func() {
+			fakePipelineFactory.AllPipelinesReturns(nil, disaster)
+			Expect(collector.Run(ctx)).To(MatchError(disaster))
+		})
+
+		It("logs a pipeline jobs lookup error", func() {
+			fakePipeline.JobsReturns(nil, disaster)
+			Expect(collector.Run(ctx)).To(Succeed())
+			Eventually(faultLogger.Buffer()).Should(gbytes.Say(disaster.Error()))
+		})
+
+		It("logs an event deletion error", func() {
+			fakePipeline.DeleteBuildEventsByBuildIDsReturns(disaster)
+			Expect(collector.Run(ctx)).To(Succeed())
+			Eventually(faultLogger.Buffer()).Should(gbytes.Say(disaster.Error()))
 			Expect(fakeJob.UpdateFirstLoggedBuildIDCallCount()).To(BeZero())
 		})
-	})
 
-	Context("when getting the pipelines fails", func() {
-		var disaster error
-
-		BeforeEach(func() {
-			disaster = errors.New("major malfunction")
-
-			fakePipelineFactory.AllPipelinesReturns(nil, disaster)
+		It("logs a chronological build lookup error", func() {
+			fakeJob.ChronoBuildsReturns(nil, db.Pagination{}, disaster)
+			Expect(collector.Run(ctx)).To(Succeed())
+			Eventually(faultLogger.Buffer()).Should(gbytes.Say(disaster.Error()))
 		})
 
-		It("returns the error", func() {
-			err := buildLogCollector.Run(ctx)
-			Expect(err).To(Equal(disaster))
+		It("logs a first-logged cursor update error", func() {
+			fakeJob.UpdateFirstLoggedBuildIDReturns(disaster)
+			Expect(collector.Run(ctx)).To(Succeed())
+			Eventually(faultLogger.Buffer()).Should(gbytes.Say(disaster.Error()))
 		})
 	})
-
 })
 
-func sb(id int) db.Build {
-	build := new(dbfakes.FakeBuild)
-	build.IDReturns(id)
-	build.IsRunningReturns(false)
-	return build
+func runRetentionScenario(scenario retentionScenario) {
+	fixtureTime := time.Now()
+
+	team, err := teamFactory.CreateTeam(atc.Team{Name: "build-log-retention-team"})
+	Expect(err).NotTo(HaveOccurred())
+
+	jobConfig := scenario.jobRetention
+	jobConfig.Name = "some-job"
+	pipeline, _, err := team.SavePipeline(
+		atc.PipelineRef{Name: "build-log-retention-pipeline"},
+		atc.Config{Jobs: atc.JobConfigs{jobConfig}},
+		db.ConfigVersion(0),
+		false,
+	)
+	Expect(err).NotTo(HaveOccurred())
+
+	job, found, err := pipeline.Job(jobConfig.Name)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(found).To(BeTrue())
+
+	buildsByName := make(map[string]db.Build, len(scenario.builds))
+	for _, buildSpec := range scenario.builds {
+		build, err := job.CreateBuild("collector-test")
+		Expect(err).NotTo(HaveOccurred())
+
+		started, err := build.Start(atc.Plan{ID: atc.PlanID("log-" + buildSpec.name)})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(started).To(BeTrue())
+
+		if buildSpec.completed {
+			Expect(build.Finish(buildSpec.status)).To(Succeed())
+		}
+		Expect(build.SetDrained(buildSpec.drained)).To(Succeed())
+
+		if buildSpec.endAgo > 0 {
+			_, err = dbConn.Exec(
+				"UPDATE builds SET end_time = $1 WHERE id = $2",
+				fixtureTime.Add(-buildSpec.endAgo),
+				build.ID(),
+			)
+			Expect(err).NotTo(HaveOccurred())
+		}
+		if buildSpec.reapAgo > 0 {
+			_, err = dbConn.Exec(
+				"UPDATE builds SET reap_time = $1 WHERE id = $2",
+				fixtureTime.Add(-buildSpec.reapAgo),
+				build.ID(),
+			)
+			Expect(err).NotTo(HaveOccurred())
+		}
+
+		buildsByName[buildSpec.name] = build
+	}
+
+	if len(scenario.builds) > 0 {
+		oldestBuild := buildsByName[scenario.builds[0].name]
+		_, err = dbConn.Exec(
+			"UPDATE jobs SET first_logged_build_id = $1 WHERE id = $2",
+			oldestBuild.ID(),
+			job.ID(),
+		)
+		Expect(err).NotTo(HaveOccurred())
+	}
+
+	job, found, err = pipeline.Job(jobConfig.Name)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(found).To(BeTrue())
+
+	if scenario.pausedPipeline {
+		Expect(pipeline.Pause("collector-test")).To(Succeed())
+		found, err = pipeline.Reload()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(pipeline.Paused()).To(BeTrue())
+	}
+	if scenario.pausedJob {
+		Expect(job.Pause("collector-test")).To(Succeed())
+		job, found, err = pipeline.Job(jobConfig.Name)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(job.Paused()).To(BeTrue())
+	}
+
+	for _, buildSpec := range scenario.builds {
+		Expect(buildEventCount(pipeline.ID(), buildsByName[buildSpec.name].ID())).To(
+			BeNumerically(">", 0),
+			"expected %s to have a seeded build event",
+			buildSpec.name,
+		)
+	}
+
+	ctx := lagerctx.NewContext(context.Background(), logger)
+	collector := NewBuildLogCollector(
+		db.NewPipelineFactory(dbConn, lockFactory),
+		db.NewPipelineLifecycle(dbConn, lockFactory),
+		5,
+		scenario.calculator,
+		scenario.drainerConfigured,
+	)
+	Expect(collector.Run(ctx)).To(Succeed())
+
+	deletedNames := []string{}
+	for _, buildSpec := range scenario.builds {
+		if buildEventCount(pipeline.ID(), buildsByName[buildSpec.name].ID()) == 0 {
+			deletedNames = append(deletedNames, buildSpec.name)
+		}
+	}
+	Expect(deletedNames).To(ConsistOf(scenario.expectedDeleted))
+
+	job, found, err = pipeline.Job(jobConfig.Name)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(found).To(BeTrue())
+	if scenario.expectedFirstLogged == "" {
+		Expect(job.FirstLoggedBuildID()).To(BeZero())
+	} else {
+		Expect(job.FirstLoggedBuildID()).To(Equal(buildsByName[scenario.expectedFirstLogged].ID()))
+	}
 }
 
-func sbTime(id int, end time.Time) db.Build {
-	build := new(dbfakes.FakeBuild)
-	build.IDReturns(id)
-	build.EndTimeReturns(end)
-	build.IsRunningReturns(false)
-	return build
-}
-
-func sbDrained(id int, drained bool) db.Build {
-	build := new(dbfakes.FakeBuild)
-	build.IsDrainedReturns(drained)
-	build.IDReturns(id)
-	build.IsRunningReturns(false)
-	return build
-}
-
-func runningBuild(id int) db.Build {
-	build := new(dbfakes.FakeBuild)
-	build.IDReturns(id)
-	build.IsRunningReturns(true)
-	return build
-}
-
-func reapedBuild(id int) db.Build {
-	build := new(dbfakes.FakeBuild)
-	build.IDReturns(id)
-	build.ReapTimeReturns(time.Now())
-	return build
-}
-
-func successBuild(id int) db.Build {
-	build := new(dbfakes.FakeBuild)
-	build.IDReturns(id)
-	build.StatusReturns(db.BuildStatusSucceeded)
-	return build
+func buildEventCount(pipelineID int, buildID int) int {
+	var count int
+	err := dbConn.QueryRow(
+		fmt.Sprintf("SELECT count(*) FROM pipeline_build_events_%d WHERE build_id = $1", pipelineID),
+		buildID,
+	).Scan(&count)
+	Expect(err).NotTo(HaveOccurred())
+	return count
 }

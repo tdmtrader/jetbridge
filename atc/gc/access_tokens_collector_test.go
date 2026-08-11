@@ -2,8 +2,9 @@ package gc_test
 
 import (
 	"context"
+	"time"
 
-	"github.com/concourse/concourse/atc/db/dbfakes"
+	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/gc"
 	"github.com/go-jose/go-jose/v4/jwt"
 	. "github.com/onsi/ginkgo/v2"
@@ -11,23 +12,58 @@ import (
 )
 
 var _ = Describe("AccessTokensCollector", func() {
-	var collector GcCollector
-	var fakeLifecycle *dbfakes.FakeAccessTokenLifecycle
+	var (
+		collector    GcCollector
+		tokenFactory db.AccessTokenFactory
+	)
+
+	// dbNow is the database's clock, not the test process's. RemoveExpiredAccessTokens
+	// compares against now() inside Postgres, so fixtures are placed relative to that
+	// -- otherwise a second of clock skew becomes a flake.
+	dbNow := func() time.Time {
+		var t time.Time
+		Expect(dbConn.QueryRow("SELECT now()").Scan(&t)).To(Succeed())
+		return t
+	}
+
+	expiringIn := func(name string, d time.Duration) {
+		Expect(tokenFactory.CreateAccessToken(name, db.Claims{
+			Claims: jwt.Claims{Expiry: jwt.NewNumericDate(dbNow().Add(d))},
+		})).To(Succeed())
+	}
+
+	exists := func(name string) bool {
+		_, found, err := tokenFactory.GetAccessToken(name)
+		Expect(err).NotTo(HaveOccurred())
+		return found
+	}
 
 	BeforeEach(func() {
-		fakeLifecycle = new(dbfakes.FakeAccessTokenLifecycle)
-
-		collector = gc.NewAccessTokensCollector(fakeLifecycle, jwt.DefaultLeeway)
+		tokenFactory = db.NewAccessTokenFactory(dbConn)
+		collector = gc.NewAccessTokensCollector(db.NewAccessTokenLifecycle(dbConn), jwt.DefaultLeeway)
 	})
 
 	Describe("Run", func() {
-		It("tells the access token lifecycle to remove expired access tokens", func() {
-			err := collector.Run(context.TODO())
-			Expect(err).NotTo(HaveOccurred())
+		It("removes tokens that have expired and keeps those that have not", func() {
+			expiringIn("long-expired", -24*time.Hour)
+			expiringIn("still-valid", 24*time.Hour)
 
-			Expect(fakeLifecycle.RemoveExpiredAccessTokensCallCount()).To(Equal(1))
-			leeway := fakeLifecycle.RemoveExpiredAccessTokensArgsForCall(0)
-			Expect(leeway).To(Equal(jwt.DefaultLeeway))
+			Expect(collector.Run(context.TODO())).To(Succeed())
+
+			Expect(exists("long-expired")).To(BeFalse(), "expired token should have been collected")
+			Expect(exists("still-valid")).To(BeTrue(), "unexpired token should have survived")
+		})
+
+		It("forwards its configured leeway, sparing a token only just expired", func() {
+			// jwt.DefaultLeeway is a minute. A token half that far past its expiry
+			// survives only if the collector actually passes the leeway through; with
+			// a zero leeway it would be deleted. This is what the old
+			// RemoveExpiredAccessTokensArgsForCall(0) assertion was reaching for.
+			expiringIn("just-expired", -jwt.DefaultLeeway/2)
+
+			Expect(collector.Run(context.TODO())).To(Succeed())
+
+			Expect(exists("just-expired")).To(BeTrue(), "leeway was not forwarded to the lifecycle")
 		})
 	})
 })

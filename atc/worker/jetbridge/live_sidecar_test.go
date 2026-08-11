@@ -12,7 +12,6 @@ import (
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	corev1 "k8s.io/api/core/v1"
@@ -137,12 +136,13 @@ func TestLiveSidecarViaWorkerAPI(t *testing.T) {
 	}
 
 	handle := "live-sidecar-api-" + time.Now().Format("150405")
+	database := useLiveJetbridgeDB(t)
+	dbWorker, err := persistNamedWorker(database, "live-sidecar-worker")
+	if err != nil {
+		t.Fatalf("persisting worker: %v", err)
+	}
 
-	fakeDBWorker := new(dbfakes.FakeWorker)
-	fakeDBWorker.NameReturns("live-sidecar-worker")
-	setupFakeDBContainer(fakeDBWorker, handle)
-
-	worker := jetbridge.NewWorker(fakeDBWorker, clientset, *cfg)
+	worker := jetbridge.NewWorker(dbWorker, clientset, *cfg)
 	executor := jetbridge.NewSPDYExecutor(clientset, restConfig)
 	worker.SetExecutor(executor)
 
@@ -168,6 +168,26 @@ func TestLiveSidecarViaWorkerAPI(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatalf("FindOrCreateContainer: %v", err)
+	}
+	persisted, found, err := database.WorkerFactory.GetWorker("live-sidecar-worker")
+	if err != nil {
+		t.Fatalf("getting persisted worker: %v", err)
+	}
+	if !found {
+		t.Fatal("persisted worker not found")
+	}
+	creating, created, err := persisted.FindContainer(db.NewFixedHandleContainerOwner(handle))
+	if err != nil {
+		t.Fatalf("finding persisted container: %v", err)
+	}
+	if creating != nil {
+		t.Fatalf("expected no creating container, got %T", creating)
+	}
+	if created == nil {
+		t.Fatal("persisted created container not found")
+	}
+	if created.Handle() != handle {
+		t.Fatalf("persisted container handle = %q, want %q", created.Handle(), handle)
 	}
 
 	// Run a simple command to trigger pod creation.
@@ -201,14 +221,14 @@ func TestLiveSidecarViaWorkerAPI(t *testing.T) {
 	t.Logf("pod containers: %v", containerNames)
 
 	// Should have at least main + helper-sidecar.
-	found := false
+	sidecarFound := false
 	for _, name := range containerNames {
 		if name == "helper-sidecar" {
-			found = true
+			sidecarFound = true
 			break
 		}
 	}
-	if !found {
+	if !sidecarFound {
 		t.Fatalf("expected 'helper-sidecar' container, found only: %v", containerNames)
 	}
 }

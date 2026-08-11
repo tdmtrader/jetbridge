@@ -1,16 +1,16 @@
 package auth_test
 
 import (
-	"errors"
 	"net/http"
 	"net/http/httptest"
+	"time"
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/api/accessor/accessorfakes"
 	"github.com/concourse/concourse/atc/api/auth"
 	"github.com/concourse/concourse/atc/auditor/auditorfakes"
-	"github.com/concourse/concourse/atc/db/dbfakes"
+	"github.com/concourse/concourse/atc/db"
 	"github.com/tedsuo/rata"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -19,26 +19,28 @@ import (
 
 var _ = Describe("CheckWorkerTeamAccessHandler", func() {
 	var (
-		response      *http.Response
-		server        *httptest.Server
-		delegate      *workerDelegateHandler
-		workerFactory *dbfakes.FakeWorkerFactory
-		handler       http.Handler
+		response *http.Response
+		server   *httptest.Server
+		delegate *workerDelegateHandler
+		factory  db.WorkerFactory
+		handler  http.Handler
 
 		fakeAccessor *accessorfakes.FakeAccessFactory
 		fakeaccess   *accessorfakes.FakeAccess
-		fakeWorker   *dbfakes.FakeWorker
 	)
 
 	BeforeEach(func() {
-		workerFactory = new(dbfakes.FakeWorkerFactory)
+		factory = workerFactory
 		fakeAccessor = new(accessorfakes.FakeAccessFactory)
 		fakeaccess = new(accessorfakes.FakeAccess)
-
-		handlerFactory := auth.NewCheckWorkerTeamAccessHandlerFactory(workerFactory)
-
 		delegate = &workerDelegateHandler{}
-		innerHandler := handlerFactory.HandlerFor(delegate, auth.UnauthorizedRejector{})
+	})
+
+	// JustBeforeEach so a Context can register the worker, or swap the factory
+	// for a doomed one, before the handler is built.
+	JustBeforeEach(func() {
+		innerHandler := auth.NewCheckWorkerTeamAccessHandlerFactory(factory).
+			HandlerFor(delegate, auth.UnauthorizedRejector{})
 
 		handler = accessor.NewHandler(
 			logger,
@@ -48,9 +50,7 @@ var _ = Describe("CheckWorkerTeamAccessHandler", func() {
 			new(auditorfakes.FakeAuditor),
 			map[string]string{},
 		)
-	})
 
-	JustBeforeEach(func() {
 		fakeAccessor.CreateReturns(fakeaccess, nil)
 		routes := rata.Routes{}
 		for _, route := range atc.Routes {
@@ -102,11 +102,12 @@ var _ = Describe("CheckWorkerTeamAccessHandler", func() {
 
 		Context("when worker exists and belongs to a team", func() {
 			BeforeEach(func() {
-				fakeWorker = new(dbfakes.FakeWorker)
-				fakeWorker.NameReturns("some-worker")
-				fakeWorker.TeamNameReturns("some-team")
-
-				workerFactory.GetWorkerReturns(fakeWorker, true, nil)
+				// A worker saved through a team is owned by it; that ownership is
+				// the column the handler authorizes against.
+				_, err := createTeam("some-team").SaveWorker(
+					atc.Worker{Name: "some-worker", Platform: "linux"}, 5*time.Minute,
+				)
+				Expect(err).NotTo(HaveOccurred())
 			})
 
 			Context("when user is admin/system", func() {
@@ -128,10 +129,6 @@ var _ = Describe("CheckWorkerTeamAccessHandler", func() {
 					fakeaccess.IsAuthorizedReturns(true)
 				})
 
-				It("fetches worker by the correct name", func() {
-					Expect(workerFactory.GetWorkerArgsForCall(0)).To(Equal("some-worker"))
-				})
-
 				It("calls worker delegate", func() {
 					Expect(delegate.IsCalled).To(BeTrue())
 					Expect(response.StatusCode).To(Equal(http.StatusOK))
@@ -141,10 +138,6 @@ var _ = Describe("CheckWorkerTeamAccessHandler", func() {
 			Context("when team in auth does not match worker team", func() {
 				BeforeEach(func() {
 					fakeaccess.IsAuthorizedReturns(false)
-				})
-
-				It("fetches worker by the correct name", func() {
-					Expect(workerFactory.GetWorkerArgsForCall(0)).To(Equal("some-worker"))
 				})
 
 				It("does not call worker delegate", func() {
@@ -160,10 +153,12 @@ var _ = Describe("CheckWorkerTeamAccessHandler", func() {
 		Context("when worker is not owned by a team", func() {
 			BeforeEach(func() {
 				fakeaccess.IsAuthorizedReturns(false)
-				fakeWorker = new(dbfakes.FakeWorker)
-				fakeWorker.NameReturns("some-worker")
-
-				workerFactory.GetWorkerReturns(fakeWorker, true, nil)
+				// Saved through the factory rather than a team: a global worker,
+				// belonging to no one.
+				_, err := workerFactory.SaveWorker(
+					atc.Worker{Name: "some-worker", Platform: "linux"}, 5*time.Minute,
+				)
+				Expect(err).NotTo(HaveOccurred())
 			})
 
 			Context("when user is admin/system", func() {
@@ -196,9 +191,7 @@ var _ = Describe("CheckWorkerTeamAccessHandler", func() {
 		})
 
 		Context("when worker does not exist", func() {
-			BeforeEach(func() {
-				workerFactory.GetWorkerReturns(nil, false, nil)
-			})
+			// No worker is registered, so the lookup misses.
 
 			It("does not call worker delegate", func() {
 				Expect(delegate.IsCalled).To(BeFalse())
@@ -211,7 +204,7 @@ var _ = Describe("CheckWorkerTeamAccessHandler", func() {
 
 		Context("when getting worker fails", func() {
 			BeforeEach(func() {
-				workerFactory.GetWorkerReturns(nil, false, errors.New("disaster"))
+				factory = doomedWorkerFactory()
 			})
 
 			It("returns 500", func() {

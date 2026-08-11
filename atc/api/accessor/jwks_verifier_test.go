@@ -17,13 +17,13 @@ import (
 
 var _ = Describe("JWKSVerifier", func() {
 	var (
-		privateKey  *rsa.PrivateKey
-		jwksServer  *httptest.Server
-		verifier    accessor.TokenVerifier
-		req         *http.Request
-		claims      map[string]any
-		verifyErr   error
-		keyID       string
+		privateKey *rsa.PrivateKey
+		jwksServer *httptest.Server
+		verifier   accessor.TokenVerifier
+		req        *http.Request
+		claims     map[string]any
+		verifyErr  error
+		keyID      string
 	)
 
 	BeforeEach(func() {
@@ -87,9 +87,9 @@ var _ = Describe("JWKSVerifier", func() {
 				},
 				map[string]any{
 					"email":              "user@example.com",
-					"name":              "Test User",
+					"name":               "Test User",
 					"preferred_username": "testuser",
-					"groups":            []string{"team-a", "team-b"},
+					"groups":             []string{"team-a", "team-b"},
 					"federated_claims": map[string]any{
 						"connector_id": "microsoft",
 						"user_id":      "ms-user-456",

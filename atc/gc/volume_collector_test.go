@@ -4,9 +4,10 @@ import (
 	"context"
 	"time"
 
+	sq "github.com/Masterminds/squirrel"
+
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/gc"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -62,47 +63,83 @@ var _ = Describe("VolumeCollector", func() {
 			Expect(err).ToNot(HaveOccurred())
 		})
 
-		Context("when there are expired volumes", func() {
-			var fakeVolumeRepository *dbfakes.FakeVolumeRepository
-
-			BeforeEach(func() {
-				fakeVolumeRepository = new(dbfakes.FakeVolumeRepository)
-
-				volumeCollector = gc.NewVolumeCollector(
-					fakeVolumeRepository,
-					missingVolumeGracePeriod,
-				)
-
-				err = volumeCollector.Run(context.TODO())
+		Context("when there are volumes the worker has stopped reporting", func() {
+			// RemoveMissingVolumes deletes created/failed volumes whose
+			// missing_since is further back than the grace period
+			// (volume_repository.go:167-173). missing_since is set by the
+			// container/volume reaper, so fixtures write it directly -- the same
+			// thing the sibling volume_repository_test.go does.
+			//
+			// The volumes belong to a live container on purpose. Run() calls
+			// markOrphanedVolumesAsDestroying before RemoveMissingVolumes
+			// (volume_collector.go:50-56), and a volume already moved to
+			// 'destroying' no longer matches the created/failed filter -- so an
+			// orphan would survive this sweep for a reason that has nothing to do
+			// with the grace period.
+			missingVolume := func(path string, missingSince any) string {
+				volume, err := volumeRepository.CreateContainerVolume(team.ID(), worker.Name(), creatingContainer1, path)
 				Expect(err).NotTo(HaveOccurred())
-			})
+				created, err := volume.Created()
+				Expect(err).NotTo(HaveOccurred())
 
-			It("deletes them from the database", func() {
-				Expect(fakeVolumeRepository.RemoveMissingVolumesCallCount()).To(Equal(1))
-				Expect(fakeVolumeRepository.RemoveMissingVolumesArgsForCall(0)).To(Equal(missingVolumeGracePeriod))
+				_, err = psql.Update("volumes").
+					Set("missing_since", missingSince).
+					Where(sq.Eq{"handle": created.Handle()}).
+					RunWith(dbConn).Exec()
+				Expect(err).NotTo(HaveOccurred())
+
+				return created.Handle()
+			}
+
+			handles := func() []string {
+				rows, err := psql.Select("handle").From("volumes").
+					Where(sq.Eq{"worker_name": worker.Name()}).RunWith(dbConn).Query()
+				Expect(err).NotTo(HaveOccurred())
+				defer rows.Close()
+				var out []string
+				for rows.Next() {
+					var h string
+					Expect(rows.Scan(&h)).To(Succeed())
+					out = append(out, h)
+				}
+				return out
+			}
+
+			It("deletes the ones past the grace period and keeps the rest", func() {
+				longMissing := missingVolume("some-path-1", sq.Expr("NOW() - '1 hour'::interval"))
+				justMissing := missingVolume("some-path-2", sq.Expr("NOW()"))
+				stillReported := missingVolume("some-path-3", nil)
+
+				Expect(volumeCollector.Run(context.TODO())).To(Succeed())
+
+				Expect(handles()).To(ConsistOf(justMissing, stillReported))
+				Expect(handles()).NotTo(ContainElement(longMissing))
 			})
 		})
 
 		Context("when there are failed volumes", func() {
+			var failedVolumeHandle string
+
 			JustBeforeEach(func() {
 				creatingVolume1, err := volumeRepository.CreateContainerVolume(team.ID(), worker.Name(), creatingContainer1, "some-path-1")
 				Expect(err).NotTo(HaveOccurred())
 
-				_, err = creatingVolume1.Failed()
+				failedVolume, err := creatingVolume1.Failed()
 				Expect(err).NotTo(HaveOccurred())
+				failedVolumeHandle = failedVolume.Handle()
 			})
 
 			It("deletes all the failed volumes from the database", func() {
-				failedVolumesLen, err := volumeRepository.DestroyFailedVolumes()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(failedVolumesLen).To(Equal(1))
+				var state string
+				Expect(dbConn.QueryRow("SELECT state FROM volumes WHERE handle = $1", failedVolumeHandle).Scan(&state)).To(Succeed())
+				Expect(state).To(Equal(string(db.VolumeStateFailed)))
 
-				err = volumeCollector.Run(context.TODO())
+				err := volumeCollector.Run(context.TODO())
 				Expect(err).NotTo(HaveOccurred())
 
-				failedVolumesLen, err = volumeRepository.DestroyFailedVolumes()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(failedVolumesLen).To(Equal(0))
+				var remaining int
+				Expect(dbConn.QueryRow("SELECT count(*) FROM volumes WHERE handle = $1", failedVolumeHandle).Scan(&remaining)).To(Succeed())
+				Expect(remaining).To(BeZero())
 			})
 		})
 

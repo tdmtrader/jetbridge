@@ -4,72 +4,60 @@ import (
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
+	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/api/accessor/accessorfakes"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
 
 var _ = Describe("TeamsCacher", func() {
-	var (
-		fakeNotifications *accessorfakes.FakeNotifications
-		fakeTeamFactory   *dbfakes.FakeTeamFactory
-		fetchedTeams      []db.Team
-		fakeTeam          *dbfakes.FakeTeam
-
-		teamFetcher accessor.TeamFetcher
-		signal      *db.NotifySignal
-		teams       []db.Team
-		err         error
-	)
-
-	BeforeEach(func() {
-		fakeTeam = new(dbfakes.FakeTeam)
-		teams = []db.Team{fakeTeam}
-
-		signal = db.NewNotifySignal()
-		fakeNotifications = new(accessorfakes.FakeNotifications)
-		fakeNotifications.ListenSignalReturns(signal, nil)
-		fakeTeamFactory = new(dbfakes.FakeTeamFactory)
-		fakeTeamFactory.GetTeamsReturns(teams, nil)
-	})
-
-	JustBeforeEach(func() {
-		teamFetcher = accessor.NewTeamsCacher(lager.NewLogger("test"), fakeNotifications, fakeTeamFactory, time.Minute, time.Minute)
-		fetchedTeams, err = teamFetcher.GetTeams()
+	It("refreshes persisted teams only after notification invalidates the cache", func() {
+		teamFactory := useRealTeamFactory()
+		_, err := teamFactory.CreateTeam(atc.Team{Name: "cached-team"})
 		Expect(err).NotTo(HaveOccurred())
-	})
 
-	Context("when there is no cache found", func() {
-		It("fetch teams from DB once", func() {
-			Expect(fakeTeamFactory.GetTeamsCallCount()).To(Equal(1))
-			Expect(fetchedTeams).To(Equal(teams))
-		})
-	})
+		signal := db.NewNotifySignal()
+		fakeNotifications := new(accessorfakes.FakeNotifications)
+		fakeNotifications.ListenSignalReturns(signal, nil)
+		teamFetcher := accessor.NewTeamsCacher(
+			lager.NewLogger("test"),
+			fakeNotifications,
+			teamFactory,
+			time.Minute,
+			time.Minute,
+		)
 
-	Context("when there is cache found", func() {
-		JustBeforeEach(func() {
-			fetchedTeams, err = teamFetcher.GetTeams()
-			Expect(err).NotTo(HaveOccurred())
-		})
+		teamNames := func(teams []db.Team) []string {
+			names := make([]string, 0, len(teams))
+			for _, team := range teams {
+				names = append(names, team.Name())
+			}
+			return names
+		}
 
-		It("does not fetch teams from DB again but read it from cache", func() {
-			Expect(fakeTeamFactory.GetTeamsCallCount()).To(Equal(1))
-			Expect(fetchedTeams).To(Equal(teams))
-		})
-	})
+		cached, err := teamFetcher.GetTeams()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(teamNames(cached)).To(ConsistOf("cached-team"))
 
-	Context("when it receives a notification", func() {
-		JustBeforeEach(func() {
-			signal.Signal()
-			time.Sleep(time.Second)
-		})
+		_, err = teamFactory.CreateTeam(atc.Team{Name: "new-team"})
+		Expect(err).NotTo(HaveOccurred())
 
-		It("fetch teams again from DB since cache is deleted", func() {
-			fetchedTeams, err = teamFetcher.GetTeams()
-			Eventually(fakeTeamFactory.GetTeamsCallCount()).Should(Equal(2))
-		})
+		persisted, err := teamFactory.GetTeams()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(teamNames(persisted)).To(ConsistOf("cached-team", "new-team"))
+
+		stillCached, err := teamFetcher.GetTeams()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(teamNames(stillCached)).To(ConsistOf("cached-team"))
+
+		signal.Signal()
+		Eventually(func(g Gomega) []string {
+			refreshed, err := teamFetcher.GetTeams()
+			g.Expect(err).NotTo(HaveOccurred())
+			return teamNames(refreshed)
+		}, 5*time.Second, 10*time.Millisecond).Should(ConsistOf("cached-team", "new-team"))
 	})
 })
