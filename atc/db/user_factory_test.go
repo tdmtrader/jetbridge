@@ -17,6 +17,22 @@ var _ = Describe("User Factory", func() {
 		users []db.User
 	)
 
+	// GetAllUsers includes the agent-platform service user seeded by
+	// migration 1773106022 (contracts §1.13); these specs assert only on
+	// the users they create.
+	// (GetAllUsers does not scan the sub column, so match on
+	// name+connector rather than sub.)
+	withoutPlatformUser := func(all []db.User) []db.User {
+		filtered := []db.User{}
+		for _, u := range all {
+			if u.Name() == "platform" && u.Connector() == "local" {
+				continue
+			}
+			filtered = append(filtered, u)
+		}
+		return filtered
+	}
+
 	JustBeforeEach(func() {
 		err = userFactory.CreateOrUpdateUser("test", "github",
 			base64.StdEncoding.EncodeToString([]byte("test"+"github")))
@@ -24,6 +40,7 @@ var _ = Describe("User Factory", func() {
 
 		users, err = userFactory.GetAllUsers()
 		Expect(err).ToNot(HaveOccurred())
+		users = withoutPlatformUser(users)
 	})
 
 	Context("when user doesn't exist", func() {
@@ -57,6 +74,7 @@ var _ = Describe("User Factory", func() {
 
 			users, err = userFactory.GetAllUsers()
 			Expect(err).ToNot(HaveOccurred())
+			users = withoutPlatformUser(users)
 			previousLastLogin = users[0].LastLogin()
 		})
 

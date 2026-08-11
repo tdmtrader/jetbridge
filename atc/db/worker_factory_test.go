@@ -6,7 +6,6 @@ import (
 	sq "github.com/Masterminds/squirrel"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/db/dbtest"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -335,8 +334,8 @@ var _ = Describe("WorkerFactory", func() {
 		var (
 			containerMetadata db.ContainerMetadata
 			build             db.Build
-			fakeOwner         *dbfakes.FakeContainerOwner
-			otherFakeOwner    *dbfakes.FakeContainerOwner
+			owner             db.ContainerOwner
+			otherTeamOwner    db.ContainerOwner
 		)
 
 		BeforeEach(func() {
@@ -347,30 +346,15 @@ var _ = Describe("WorkerFactory", func() {
 			}
 			build, err = defaultTeam.CreateOneOffBuild()
 			Expect(err).ToNot(HaveOccurred())
+			otherTeam, err := teamFactory.CreateTeam(atc.Team{Name: "other-team"})
+			Expect(err).ToNot(HaveOccurred())
 
-			fakeOwner = new(dbfakes.FakeContainerOwner)
-			fakeOwner.FindReturns(sq.Eq{
-				"build_id": build.ID(),
-				"plan_id":  "simple-plan",
-				"team_id":  1,
-			}, true, nil)
-			fakeOwner.CreateReturns(map[string]any{
-				"build_id": build.ID(),
-				"plan_id":  "simple-plan",
-				"team_id":  1,
-			}, nil)
-
-			otherFakeOwner = new(dbfakes.FakeContainerOwner)
-			otherFakeOwner.FindReturns(sq.Eq{
-				"build_id": build.ID(),
-				"plan_id":  "simple-plan",
-				"team_id":  2,
-			}, true, nil)
-			otherFakeOwner.CreateReturns(map[string]any{
-				"build_id": build.ID(),
-				"plan_id":  "simple-plan",
-				"team_id":  2,
-			}, nil)
+			// buildStepContainerOwner.Find/Create return exactly the
+			// build_id/plan_id/team_id map the fakes were stubbed to return
+			// (container_owner.go:123-136), so these are the same rows with the
+			// real type deciding the columns.
+			owner = db.NewBuildStepContainerOwner(build.ID(), "simple-plan", defaultTeam.ID())
+			otherTeamOwner = db.NewBuildStepContainerOwner(build.ID(), "simple-plan", otherTeam.ID())
 		})
 
 		Context("when there are check containers", func() {
@@ -458,19 +442,19 @@ var _ = Describe("WorkerFactory", func() {
 		Context("when there are build containers", func() {
 			Context("when there is a creating container", func() {
 				BeforeEach(func() {
-					_, err := defaultWorker.CreateContainer(fakeOwner, containerMetadata)
+					_, err := defaultWorker.CreateContainer(owner, containerMetadata)
 					Expect(err).ToNot(HaveOccurred())
 				})
 
 				It("returns it", func() {
-					workers, err := workerFactory.FindWorkersForContainerByOwner(fakeOwner)
+					workers, err := workerFactory.FindWorkersForContainerByOwner(owner)
 					Expect(err).ToNot(HaveOccurred())
 					Expect(workers).To(HaveLen(1))
 					Expect(workers[0].Name()).To(Equal(defaultWorker.Name()))
 				})
 
 				It("does not find container for another team", func() {
-					workers, err := workerFactory.FindWorkersForContainerByOwner(otherFakeOwner)
+					workers, err := workerFactory.FindWorkersForContainerByOwner(otherTeamOwner)
 					Expect(err).ToNot(HaveOccurred())
 					Expect(workers).To(HaveLen(0))
 				})
@@ -478,7 +462,7 @@ var _ = Describe("WorkerFactory", func() {
 
 			Context("when there is a created container", func() {
 				BeforeEach(func() {
-					creatingContainer, err := defaultWorker.CreateContainer(fakeOwner, containerMetadata)
+					creatingContainer, err := defaultWorker.CreateContainer(owner, containerMetadata)
 					Expect(err).ToNot(HaveOccurred())
 
 					_, err = creatingContainer.Created()
@@ -486,14 +470,14 @@ var _ = Describe("WorkerFactory", func() {
 				})
 
 				It("returns it", func() {
-					workers, err := workerFactory.FindWorkersForContainerByOwner(fakeOwner)
+					workers, err := workerFactory.FindWorkersForContainerByOwner(owner)
 					Expect(err).ToNot(HaveOccurred())
 					Expect(workers).To(HaveLen(1))
 					Expect(workers[0].Name()).To(Equal(defaultWorker.Name()))
 				})
 
 				It("does not find container for another team", func() {
-					workers, err := workerFactory.FindWorkersForContainerByOwner(otherFakeOwner)
+					workers, err := workerFactory.FindWorkersForContainerByOwner(otherTeamOwner)
 					Expect(err).ToNot(HaveOccurred())
 					Expect(workers).To(HaveLen(0))
 				})
@@ -501,17 +485,7 @@ var _ = Describe("WorkerFactory", func() {
 
 			Context("when there is no container", func() {
 				It("returns nil", func() {
-					bogusOwner := new(dbfakes.FakeContainerOwner)
-					bogusOwner.FindReturns(sq.Eq{
-						"build_id": build.ID() + 1,
-						"plan_id":  "how-could-this-happen-to-me",
-						"team_id":  1,
-					}, true, nil)
-					bogusOwner.CreateReturns(map[string]any{
-						"build_id": build.ID() + 1,
-						"plan_id":  "how-could-this-happen-to-me",
-						"team_id":  1,
-					}, nil)
+					bogusOwner := db.NewBuildStepContainerOwner(build.ID()+1, "how-could-this-happen-to-me", defaultTeam.ID())
 
 					workers, err := workerFactory.FindWorkersForContainerByOwner(bogusOwner)
 					Expect(err).ToNot(HaveOccurred())
@@ -523,9 +497,9 @@ var _ = Describe("WorkerFactory", func() {
 
 	Describe("BuildContainersCountPerWorker", func() {
 		var (
-			fakeOwner      *dbfakes.FakeContainerOwner
-			otherFakeOwner *dbfakes.FakeContainerOwner
-			build          db.Build
+			buildOwner db.ContainerOwner
+			checkOwner db.ContainerOwner
+			build      db.Build
 		)
 
 		BeforeEach(func() {
@@ -534,34 +508,35 @@ var _ = Describe("WorkerFactory", func() {
 			build, err = defaultTeam.CreateOneOffBuild()
 			Expect(err).ToNot(HaveOccurred())
 
-			worker, err = workerFactory.SaveWorker(atcWorker, 5*time.Minute)
+			// This worker has to advertise the base resource type the check
+			// container's resource config resolves to, or CreateContainer cannot
+			// place it -- the same constraint that applies in production.
+			checkCapableWorker := atcWorker
+			checkCapableWorker.ResourceTypes = append(
+				append([]atc.WorkerResourceType{}, atcWorker.ResourceTypes...),
+				defaultWorkerResourceType,
+			)
+			worker, err = workerFactory.SaveWorker(checkCapableWorker, 5*time.Minute)
 			Expect(err).ToNot(HaveOccurred())
 
-			fakeOwner = new(dbfakes.FakeContainerOwner)
-			fakeOwner.FindReturns(sq.Eq{
-				"build_id": build.ID(),
-				"plan_id":  "simple-plan",
-				"team_id":  1,
-			}, true, nil)
-			fakeOwner.CreateReturns(map[string]any{
-				"build_id": build.ID(),
-				"plan_id":  "simple-plan",
-				"team_id":  1,
-			}, nil)
+			// The count is of *build* containers, so the fixture needs one owner
+			// that carries a build_id and one that does not. In production the
+			// second is a check container, owned by a resource config check
+			// session -- which is where the fake's `"build_id": nil` came from.
+			buildOwner = db.NewBuildStepContainerOwner(build.ID(), "simple-plan", defaultTeam.ID())
 
-			otherFakeOwner = new(dbfakes.FakeContainerOwner)
-			otherFakeOwner.FindReturns(sq.Eq{
-				"build_id": nil,
-				"plan_id":  "simple-plan",
-				"team_id":  1,
-			}, true, nil)
-			otherFakeOwner.CreateReturns(map[string]any{
-				"build_id": nil,
-				"plan_id":  "simple-plan",
-				"team_id":  1,
-			}, nil)
+			rc, err := resourceConfigFactory.FindOrCreateResourceConfig(
+				defaultResource.Type(), defaultResource.Source(), nil,
+			)
+			Expect(err).ToNot(HaveOccurred())
 
-			creatingContainer, err := defaultWorker.CreateContainer(fakeOwner, db.ContainerMetadata{
+			checkOwner = db.NewResourceConfigCheckSessionContainerOwner(
+				rc.ID(),
+				rc.OriginBaseResourceType().ID,
+				db.ContainerOwnerExpiries{Min: 5 * time.Minute, Max: 5 * time.Minute},
+			)
+
+			creatingContainer, err := defaultWorker.CreateContainer(buildOwner, db.ContainerMetadata{
 				Type:     "task",
 				StepName: "some-task",
 			})
@@ -570,18 +545,18 @@ var _ = Describe("WorkerFactory", func() {
 			_, err = creatingContainer.Created()
 			Expect(err).ToNot(HaveOccurred())
 
-			_, err = defaultWorker.CreateContainer(otherFakeOwner, db.ContainerMetadata{
+			_, err = defaultWorker.CreateContainer(checkOwner, db.ContainerMetadata{
 				Type: "check",
 			})
 			Expect(err).ToNot(HaveOccurred())
 
-			_, err = worker.CreateContainer(fakeOwner, db.ContainerMetadata{
+			_, err = worker.CreateContainer(buildOwner, db.ContainerMetadata{
 				Type:     "task",
 				StepName: "other-task",
 			})
 			Expect(err).ToNot(HaveOccurred())
 
-			_, err = worker.CreateContainer(otherFakeOwner, db.ContainerMetadata{
+			_, err = worker.CreateContainer(checkOwner, db.ContainerMetadata{
 				Type: "check",
 			})
 			Expect(err).ToNot(HaveOccurred())

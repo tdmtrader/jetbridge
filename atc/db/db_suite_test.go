@@ -113,13 +113,23 @@ var _ = BeforeEach(func() {
 	logger = lagertest.NewTestLogger("test")
 
 	postgresRunner.CreateTestDBFromTemplate()
+	DeferCleanup(func() {
+		postgresRunner.DropTestDB()
+	})
 
 	dbConn = postgresRunner.OpenConn()
+	DeferCleanup(func() {
+		Expect(dbConn.Close()).To(Succeed())
+	})
 	db.CleanupBaseResourceTypesCache()
 
 	var lockConns [lock.FactoryCount]*sql.DB
 	for i := 0; i < lock.FactoryCount; i++ {
-		lockConns[i] = postgresRunner.OpenSingleton()
+		lockConn := postgresRunner.OpenSingleton()
+		lockConns[i] = lockConn
+		DeferCleanup(func() {
+			Expect(lockConn.Close()).To(Succeed())
+		})
 	}
 	lockFactory = lock.NewLockFactory(lockConns, metric.LogLockAcquired, metric.LogLockReleased)
 
@@ -252,10 +262,3 @@ func destroy(d interface{ Destroy() error }) {
 	err := d.Destroy()
 	Expect(err).ToNot(HaveOccurred())
 }
-
-var _ = AfterEach(func() {
-	err := dbConn.Close()
-	// try dropping the db even if closing initially fails
-	postgresRunner.DropTestDB()
-	Expect(err).NotTo(HaveOccurred())
-})
