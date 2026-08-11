@@ -51,3 +51,8 @@ package-lock.json
 .worktrees/
 .local-cluster/
 .claude/
+
+# Build intermediate: `elm make` emits elm.js, uglifyjs minifies it to
+# elm.min.js, and index.html loads only the minified file. Committing it
+# put 1.4 MB of generated code into every binary via //go:embed.
+web/public/elm.js

@@ -121,12 +121,24 @@ jobs:
       rootfs_uri: docker:///registry.home/concourse-test-runner:v5
       inputs:
       - name: repo
+      - name: web-public
       run:
         path: sh
         args:
         - -exc
         - |
           cd repo
+          # //go:embed in web/handler.go bakes web/public into the binary, so
+          # the freshly built assets MUST land before `go build` -- otherwise
+          # the committed bundle ships (2026-07-17).
+          echo "=== Installing freshly built frontend assets over web/public ==="
+          if [ ! -s ../web-public/elm.min.js ]; then
+            echo "FATAL: build-frontend produced no elm.min.js -- refusing to ship a possibly stale bundle" >&2
+            exit 1
+          fi
+          cp -a ../web-public/. web/public/
+          sha256sum web/public/elm.min.js
+
           # Version is DECLARED in the VERSION file, never derived from tags.
           # Deriving "latest tag + 1" made every green push a release and tied
           # the number to a tag namespace shared with 399 upstream Concourse
@@ -156,6 +168,79 @@ jobs:
     trigger: true
     params: {depth: 0, fetch_tags: true}
     passed: [tag-rc]
+  # web/handler.go embeds web/public with //go:embed, so a bare `go build`
+  # ships whatever elm.min.js was last COMMITTED. That is how v0.2.164-rc went
+  # out with a stale UI on 2026-07-17, and the committed bundle had already sat
+  # unrebuilt for 3.5 months before that. Regenerate from source here so a
+  # stale commit can never reach the image.
+  #
+  # This mirrors Dockerfile.build's `frontend` stage; keep the two in sync.
+  # Dockerfile.build is not reused wholesale because its Go stage stamps only
+  # concourse.Version -- this chain also stamps JetBridgeVersion -- and would
+  # re-download a module graph the test-runner image already has warm.
+  - task: build-frontend
+    attempts: 2
+    config:
+      platform: linux
+      # Same image as Dockerfile.build stage 1. The elm npm package ships
+      # x86_64 binaries only, so this must land on an amd64 node.
+      rootfs_uri: docker:///node:22-bookworm-slim
+      inputs:
+      - name: repo
+      outputs:
+      - name: web-public
+      # npm and the elm package registry are external egress, historically the
+      # flakiest part of any frontend build here: the caches keep repeat runs
+      # mostly offline and attempts: 2 absorbs a single bad fetch.
+      caches:
+      - path: yarn-global
+      - path: elm-home
+      run:
+        path: sh
+        args:
+        - -exc
+        - |
+          # Keep every download inside cached task dirs (yarn 4 puts its cache
+          # under globalFolder/cache; elm under ELM_HOME/0.19.1).
+          export YARN_GLOBAL_FOLDER="$(pwd)/yarn-global"
+          export ELM_HOME="$(pwd)/elm-home"
+          export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+          # puppeteer is a wats-only devDependency whose postinstall pulls a
+          # ~150MB Chrome build that `yarn run build` never touches.
+          export PUPPETEER_SKIP_DOWNLOAD=1
+
+          # Elm's built-in TLS needs system CA certificates to fetch package
+          # metadata; the node slim images autoremove them.
+          if [ ! -s /etc/ssl/certs/ca-certificates.crt ]; then
+            apt-get update
+            apt-get install -y --no-install-recommends ca-certificates
+            rm -rf /var/lib/apt/lists/*
+          fi
+
+          cd repo
+          # `corepack prepare` with no spec activates the version in the
+          # checkout's package.json "packageManager" field, so the yarn pin
+          # lives in exactly one place.
+          corepack enable
+          corepack prepare --activate
+          yarn --version
+
+          echo "=== Committed bundle (what a bare go build would have shipped) ==="
+          sha256sum web/public/elm.min.js || true
+
+          echo "=== Installing node dependencies ==="
+          yarn install --immutable || yarn install
+
+          echo "=== Building frontend (LESS -> css, Elm -> js, webpack) ==="
+          yarn run build
+
+          echo "=== Rebuilt frontend assets ==="
+          sha256sum web/public/elm.min.js web/public/main.css web/public/bundle.js
+
+          # Ship the whole merged directory: `yarn run build` regenerates
+          # elm.js/elm.min.js/main.css/*bundle.js and the rest (images, fonts,
+          # mdi-svg.min.js, graphviz) is committed source.
+          cp -a web/public/. ../web-public/
   - task: build-and-push-local
     privileged: true
     attempts: 2
@@ -164,12 +249,24 @@ jobs:
       rootfs_uri: docker:///registry.home/concourse-test-runner:v5
       inputs:
       - name: repo
+      - name: web-public
       run:
         path: sh
         args:
         - -exc
         - |
           cd repo
+          # //go:embed in web/handler.go bakes web/public into the binary, so
+          # the freshly built assets MUST land before `go build` -- otherwise
+          # the committed bundle ships (2026-07-17).
+          echo "=== Installing freshly built frontend assets over web/public ==="
+          if [ ! -s ../web-public/elm.min.js ]; then
+            echo "FATAL: build-frontend produced no elm.min.js -- refusing to ship a possibly stale bundle" >&2
+            exit 1
+          fi
+          cp -a ../web-public/. web/public/
+          sha256sum web/public/elm.min.js
+
           # Version is DECLARED in the VERSION file, never derived from tags.
           # Deriving "latest tag + 1" made every green push a release and tied
           # the number to a tag namespace shared with 399 upstream Concourse
