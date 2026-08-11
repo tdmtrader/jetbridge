@@ -64,6 +64,10 @@ type Container struct {
 	executor        PodExecutor
 	volumes         []*Volume
 	storageBackend  StorageBackend
+	// lookedUp is true when the Container was built by LookupContainer
+	// (fly hijack/intercept). Such a Container has no ContainerSpec -- it can
+	// only attach to a pod some step already created, never build one.
+	lookedUp bool
 	// reused is true when FindOrCreateContainer found an existing container
 	// in the DB (crash-recovery path). In DaemonSet mode this means the
 	// hostPath directory may contain stale data and needs cleanup.
@@ -82,6 +86,7 @@ func newContainer(
 	volumes []*Volume,
 	storageBackend StorageBackend,
 	reused bool,
+	lookedUp bool,
 ) *Container {
 	return &Container{
 		handle:         handle,
@@ -96,6 +101,7 @@ func newContainer(
 		executor:       executor,
 		volumes:        volumes,
 		storageBackend: storageBackend,
+		lookedUp:       lookedUp,
 		reused:         reused,
 	}
 }
@@ -113,7 +119,7 @@ func (c *Container) Run(ctx context.Context, spec runtime.ProcessSpec, io runtim
 		"namespace": c.config.Namespace,
 		"exec-mode": fmt.Sprintf("%t", execMode),
 		"build_id":  strconv.Itoa(c.metadata.BuildID),
-		"pod_name":  c.handle,
+		"pod_name":  c.podName,
 	})
 	var err error
 	defer func() { tracing.End(span, err) }()
@@ -133,6 +139,21 @@ func (c *Container) Run(ctx context.Context, spec runtime.ProcessSpec, io runtim
 		podName := c.podName
 		existingPod, getErr := c.clientset.CoreV1().Pods(c.config.Namespace).Get(ctx, c.podName, metav1.GetOptions{})
 		needsCreate := getErr != nil // pod doesn't exist
+
+		// A looked-up Container (fly hijack/intercept) carries no
+		// ContainerSpec, so it must never fabricate or replace a pod:
+		// building from the empty spec fails with a misleading "empty image
+		// for resource type (unknown)" error, and replacing a completed pod
+		// would destroy the exit-status annotation a restarted web needs to
+		// resume the step. Say plainly that there is nothing to intercept.
+		if c.lookedUp {
+			if needsCreate {
+				return nil, fmt.Errorf("container %q has no pod to intercept: pod %q does not exist", c.handle, c.podName)
+			}
+			if existingPod.Status.Phase == corev1.PodSucceeded || existingPod.Status.Phase == corev1.PodFailed {
+				return nil, fmt.Errorf("container %q has no pod to intercept: pod %q already exited (%s)", c.handle, c.podName, existingPod.Status.Phase)
+			}
+		}
 
 		if getErr == nil && (existingPod.Status.Phase == corev1.PodSucceeded || existingPod.Status.Phase == corev1.PodFailed) {
 			// Pod exists but is terminal — delete it so we can create a fresh one.
@@ -157,6 +178,10 @@ func (c *Container) Run(ctx context.Context, spec runtime.ProcessSpec, io runtim
 		metric.Metrics.ContainersCreated.Inc()
 		c.bindVolumesToPod(podName)
 		return newExecProcess(processID, podName, c.clientset, c.config, c, c.executor, spec, io, c.storageBackend), nil
+	}
+
+	if c.lookedUp {
+		return nil, fmt.Errorf("container %q cannot be intercepted: worker %q has no exec transport configured", c.handle, c.workerName)
 	}
 
 	// Fallback direct mode: only used when no executor is configured

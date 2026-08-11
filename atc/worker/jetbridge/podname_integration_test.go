@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	. "github.com/onsi/ginkgo/v2"
@@ -16,32 +15,35 @@ import (
 
 var _ = Describe("Pod Name Integration", func() {
 	var (
-		fakeDBWorker  *dbfakes.FakeWorker
+		dbWorker      db.Worker
 		fakeClientset *fake.Clientset
 		worker        *jetbridge.Worker
 		ctx           context.Context
 		cfg           jetbridge.Config
 		delegate      runtime.BuildStepDelegate
+		database      jetbridgeDB
 	)
 
 	BeforeEach(func() {
+		database = useJetbridgeDB()
 		ctx = context.Background()
-		fakeDBWorker = new(dbfakes.FakeWorker)
-		fakeDBWorker.NameReturns("k8s-worker-1")
+		var err error
+		dbWorker, err = persistNamedWorker(database, "k8s-worker-1")
+		Expect(err).NotTo(HaveOccurred())
 		fakeClientset = fake.NewSimpleClientset()
 		cfg = jetbridge.NewConfig("test-namespace", "")
 		delegate = &noopDelegate{}
 
-		worker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+		worker = jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
 	})
 
 	Describe("Run creates pod with readable name", func() {
 		It("uses GeneratePodName when metadata has pipeline/job/build", func() {
-			setupFakeDBContainer(fakeDBWorker, "550e8400-e29b-41d4-a716-446655440000")
+			handle := "550e8400-e29b-41d4-a716-446655440000"
 
 			container, _, err := worker.FindOrCreateContainer(
 				ctx,
-				db.NewFixedHandleContainerOwner("550e8400-e29b-41d4-a716-446655440000"),
+				db.NewFixedHandleContainerOwner(handle),
 				db.ContainerMetadata{
 					Type:         db.ContainerTypeTask,
 					StepName:     "run-tests",
@@ -57,6 +59,7 @@ var _ = Describe("Pod Name Integration", func() {
 				delegate,
 			)
 			Expect(err).ToNot(HaveOccurred())
+			expectPersistedContainer(database, "k8s-worker-1", handle)
 
 			_, err = container.Run(ctx, runtime.ProcessSpec{
 				Path: "/bin/sh",
@@ -76,7 +79,6 @@ var _ = Describe("Pod Name Integration", func() {
 
 		It("falls back to handle when metadata has no pipeline/job", func() {
 			handle := "550e8400-e29b-41d4-a716-446655440000"
-			setupFakeDBContainer(fakeDBWorker, handle)
 
 			container, _, err := worker.FindOrCreateContainer(
 				ctx,
@@ -90,6 +92,7 @@ var _ = Describe("Pod Name Integration", func() {
 				delegate,
 			)
 			Expect(err).ToNot(HaveOccurred())
+			expectPersistedContainer(database, "k8s-worker-1", handle)
 
 			_, err = container.Run(ctx, runtime.ProcessSpec{
 				Path: "/bin/sh",
@@ -104,14 +107,13 @@ var _ = Describe("Pod Name Integration", func() {
 		})
 
 		It("uses readable name in exec mode too", func() {
-			execWorker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+			execWorker := jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
 			execWorker.SetExecutor(&fakeExecExecutor{})
-
-			setupFakeDBContainer(fakeDBWorker, "aabbccdd-1122-3344-5566-778899aabbcc")
+			handle := "aabbccdd-1122-3344-5566-778899aabbcc"
 
 			container, _, err := execWorker.FindOrCreateContainer(
 				ctx,
-				db.NewFixedHandleContainerOwner("aabbccdd-1122-3344-5566-778899aabbcc"),
+				db.NewFixedHandleContainerOwner(handle),
 				db.ContainerMetadata{
 					Type:         db.ContainerTypeGet,
 					StepName:     "source-code",
@@ -127,6 +129,7 @@ var _ = Describe("Pod Name Integration", func() {
 				delegate,
 			)
 			Expect(err).ToNot(HaveOccurred())
+			expectPersistedContainer(database, "k8s-worker-1", handle)
 
 			_, err = container.Run(ctx, runtime.ProcessSpec{
 				Path: "/bin/sh",
@@ -153,8 +156,6 @@ var _ = Describe("Pod Name Integration", func() {
 				BuildName:    "42",
 			}, handle)
 
-			setupFakeDBContainer(fakeDBWorker, handle)
-
 			container, _, err := worker.FindOrCreateContainer(
 				ctx,
 				db.NewFixedHandleContainerOwner(handle),
@@ -172,6 +173,7 @@ var _ = Describe("Pod Name Integration", func() {
 				delegate,
 			)
 			Expect(err).ToNot(HaveOccurred())
+			expectPersistedContainer(database, "k8s-worker-1", handle)
 
 			// Store exit status so Attach returns an exitedProcess
 			// (avoids launching a pod watcher that would hang).
@@ -211,8 +213,6 @@ var _ = Describe("Pod Name Integration", func() {
 				BuildName:    "42",
 			}, handle)
 
-			setupFakeDBContainer(fakeDBWorker, handle)
-
 			container, _, err := worker.FindOrCreateContainer(
 				ctx,
 				db.NewFixedHandleContainerOwner(handle),
@@ -230,6 +230,7 @@ var _ = Describe("Pod Name Integration", func() {
 				delegate,
 			)
 			Expect(err).ToNot(HaveOccurred())
+			expectPersistedContainer(database, "k8s-worker-1", handle)
 
 			By("Attach fails when no pod exists with the readable name")
 			_, err = container.Attach(ctx, "some-process", runtime.ProcessIO{})
@@ -241,11 +242,11 @@ var _ = Describe("Pod Name Integration", func() {
 
 	Describe("Pod labels include rich metadata", func() {
 		It("adds pipeline, job, build, step, and handle labels", func() {
-			setupFakeDBContainer(fakeDBWorker, "550e8400-e29b-41d4-a716-446655440000")
+			handle := "550e8400-e29b-41d4-a716-446655440000"
 
 			container, _, err := worker.FindOrCreateContainer(
 				ctx,
-				db.NewFixedHandleContainerOwner("550e8400-e29b-41d4-a716-446655440000"),
+				db.NewFixedHandleContainerOwner(handle),
 				db.ContainerMetadata{
 					Type:         db.ContainerTypeTask,
 					StepName:     "run-tests",
@@ -261,6 +262,7 @@ var _ = Describe("Pod Name Integration", func() {
 				delegate,
 			)
 			Expect(err).ToNot(HaveOccurred())
+			expectPersistedContainer(database, "k8s-worker-1", handle)
 
 			_, err = container.Run(ctx, runtime.ProcessSpec{
 				Path: "/bin/sh",
@@ -281,11 +283,11 @@ var _ = Describe("Pod Name Integration", func() {
 		})
 
 		It("omits empty metadata labels", func() {
-			setupFakeDBContainer(fakeDBWorker, "test-handle")
+			handle := "test-handle"
 
 			container, _, err := worker.FindOrCreateContainer(
 				ctx,
-				db.NewFixedHandleContainerOwner("test-handle"),
+				db.NewFixedHandleContainerOwner(handle),
 				db.ContainerMetadata{Type: db.ContainerTypeTask},
 				runtime.ContainerSpec{
 					TeamID:    1,
@@ -295,6 +297,7 @@ var _ = Describe("Pod Name Integration", func() {
 				delegate,
 			)
 			Expect(err).ToNot(HaveOccurred())
+			expectPersistedContainer(database, "k8s-worker-1", handle)
 
 			_, err = container.Run(ctx, runtime.ProcessSpec{
 				Path: "/bin/sh",
@@ -312,11 +315,11 @@ var _ = Describe("Pod Name Integration", func() {
 		})
 
 		It("truncates label values to 63 chars (K8s label limit)", func() {
-			setupFakeDBContainer(fakeDBWorker, "label-trunc-handle")
+			handle := "label-trunc-handle"
 
 			container, _, err := worker.FindOrCreateContainer(
 				ctx,
-				db.NewFixedHandleContainerOwner("label-trunc-handle"),
+				db.NewFixedHandleContainerOwner(handle),
 				db.ContainerMetadata{
 					Type:         db.ContainerTypeTask,
 					PipelineName: "extremely-long-pipeline-name-that-exceeds-the-sixty-three-character-k8s-label-value-limit",
@@ -331,6 +334,7 @@ var _ = Describe("Pod Name Integration", func() {
 				delegate,
 			)
 			Expect(err).ToNot(HaveOccurred())
+			expectPersistedContainer(database, "k8s-worker-1", handle)
 
 			_, err = container.Run(ctx, runtime.ProcessSpec{
 				Path: "/bin/sh",
@@ -349,14 +353,13 @@ var _ = Describe("Pod Name Integration", func() {
 
 	Describe("Volume binding uses podName", func() {
 		It("binds volumes to the readable pod name after Run", func() {
-			execWorker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+			execWorker := jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
 			execWorker.SetExecutor(&fakeExecExecutor{})
-
-			setupFakeDBContainer(fakeDBWorker, "550e8400-e29b-41d4-a716-446655440000")
+			handle := "550e8400-e29b-41d4-a716-446655440000"
 
 			container, volumeMounts, err := execWorker.FindOrCreateContainer(
 				ctx,
-				db.NewFixedHandleContainerOwner("550e8400-e29b-41d4-a716-446655440000"),
+				db.NewFixedHandleContainerOwner(handle),
 				db.ContainerMetadata{
 					Type:         db.ContainerTypeTask,
 					PipelineName: "my-pipeline",
@@ -374,6 +377,7 @@ var _ = Describe("Pod Name Integration", func() {
 				delegate,
 			)
 			Expect(err).ToNot(HaveOccurred())
+			expectPersistedContainer(database, "k8s-worker-1", handle)
 
 			inputMount := filterMountsByPaths(volumeMounts, []string{"/tmp/build/workdir/my-input"})
 			Expect(inputMount).To(HaveLen(1))
@@ -394,3 +398,16 @@ var _ = Describe("Pod Name Integration", func() {
 		})
 	})
 })
+
+func expectPersistedContainer(database jetbridgeDB, workerName, handle string) {
+	GinkgoHelper()
+	persistedWorker, found, err := database.WorkerFactory.GetWorker(workerName)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(found).To(BeTrue())
+
+	creating, created, err := persistedWorker.FindContainer(db.NewFixedHandleContainerOwner(handle))
+	Expect(err).NotTo(HaveOccurred())
+	Expect(creating).To(BeNil())
+	Expect(created).NotTo(BeNil())
+	Expect(created.Handle()).To(Equal(handle))
+}

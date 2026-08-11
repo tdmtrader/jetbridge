@@ -7,7 +7,8 @@ import (
 	"io"
 	"sync"
 
-	"github.com/concourse/concourse/atc/db/dbfakes"
+	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -16,7 +17,10 @@ import (
 var _ = Describe("Volume", func() {
 	var (
 		ctx           context.Context
-		fakeDBVolume  *dbfakes.FakeCreatedVolume
+		database      jetbridgeDB
+		team          db.Team
+		dbWorker      db.Worker
+		dbVolume      db.CreatedVolume
 		fakeExecutor  *fakeExecExecutor
 		volume        *jetbridge.Volume
 		podName       string
@@ -27,9 +31,34 @@ var _ = Describe("Volume", func() {
 
 	BeforeEach(func() {
 		ctx = context.Background()
-		fakeDBVolume = new(dbfakes.FakeCreatedVolume)
-		fakeDBVolume.HandleReturns("vol-handle-123")
-		fakeDBVolume.WorkerNameReturns("k8s-worker-1")
+		database = useJetbridgeDB()
+		var err error
+		team, err = database.TeamFactory.CreateTeam(atc.Team{Name: "main"})
+		Expect(err).ToNot(HaveOccurred())
+		dbWorker, err = persistNamedWorker(database, "k8s-worker-1")
+		Expect(err).ToNot(HaveOccurred())
+
+		creatingVolume, err := database.VolumeRepository.CreateVolumeWithHandle(
+			"vol-handle-123",
+			team.ID(),
+			dbWorker.Name(),
+			db.VolumeTypeArtifact,
+		)
+		Expect(err).ToNot(HaveOccurred())
+		createdVolume, err := creatingVolume.Created()
+		Expect(err).ToNot(HaveOccurred())
+		artifact, err := createdVolume.InitializeArtifact("volume-test-artifact", 0)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(artifact.ID()).To(BeNumerically(">", 0))
+
+		var found bool
+		dbVolume, found, err = database.VolumeRepository.FindVolume(createdVolume.Handle())
+		Expect(err).ToNot(HaveOccurred())
+		Expect(found).To(BeTrue())
+		artifactVolume, found, err := artifact.Volume(team.ID())
+		Expect(err).ToNot(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(artifactVolume.Handle()).To(Equal(dbVolume.Handle()))
 		fakeExecutor = &fakeExecExecutor{}
 
 		podName = "test-pod"
@@ -38,7 +67,7 @@ var _ = Describe("Volume", func() {
 		mountPath = "/tmp/build/inputs"
 
 		volume = jetbridge.NewVolume(
-			fakeDBVolume,
+			dbVolume,
 			fakeExecutor,
 			podName,
 			namespace,
@@ -61,7 +90,25 @@ var _ = Describe("Volume", func() {
 
 	Describe("DBVolume", func() {
 		It("returns the underlying db volume", func() {
-			Expect(volume.DBVolume()).To(BeIdenticalTo(fakeDBVolume))
+			Expect(volume.DBVolume()).To(BeIdenticalTo(dbVolume))
+		})
+
+		It("returns the persisted DB volume from a DaemonSetVolume", func() {
+			daemonSetVolume := jetbridge.NewDaemonSetVolume(
+				"key",
+				"runtime-handle",
+				dbWorker.Name(),
+				dbVolume,
+				"",
+				jetbridge.Config{},
+				nil,
+			)
+
+			Expect(daemonSetVolume.DBVolume()).To(BeIdenticalTo(dbVolume))
+			Expect(daemonSetVolume.DBVolume().Handle()).To(Equal("vol-handle-123"))
+			Expect(daemonSetVolume.DBVolume().WorkerName()).To(Equal(dbWorker.Name()))
+			Expect(daemonSetVolume.DBVolume().TeamID()).To(Equal(team.ID()))
+			Expect(daemonSetVolume.DBVolume().Type()).To(Equal(db.VolumeTypeArtifact))
 		})
 	})
 
@@ -242,12 +289,24 @@ var _ = Describe("Volume", func() {
 
 	Describe("volume uniqueness", func() {
 		It("two volumes with different handles are distinguishable", func() {
-			fakeDBVolume2 := new(dbfakes.FakeCreatedVolume)
-			fakeDBVolume2.HandleReturns("vol-handle-456")
-			fakeDBVolume2.WorkerNameReturns("k8s-worker-1")
+			creatingVolume2, err := database.VolumeRepository.CreateVolumeWithHandle(
+				"vol-handle-456",
+				team.ID(),
+				dbWorker.Name(),
+				db.VolumeTypeArtifact,
+			)
+			Expect(err).ToNot(HaveOccurred())
+			createdVolume2, err := creatingVolume2.Created()
+			Expect(err).ToNot(HaveOccurred())
+			artifact2, err := createdVolume2.InitializeArtifact("volume-test-artifact-2", 0)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(artifact2.ID()).To(BeNumerically(">", 0))
+			dbVolume2, found, err := database.VolumeRepository.FindVolume(createdVolume2.Handle())
+			Expect(err).ToNot(HaveOccurred())
+			Expect(found).To(BeTrue())
 
 			volume2 := jetbridge.NewVolume(
-				fakeDBVolume2,
+				dbVolume2,
 				fakeExecutor,
 				"other-pod",
 				namespace,
@@ -256,6 +315,11 @@ var _ = Describe("Volume", func() {
 			)
 
 			Expect(volume.Handle()).ToNot(Equal(volume2.Handle()))
+			Expect(dbVolume2.Handle()).To(Equal("vol-handle-456"))
+			artifactVolume2, found, err := artifact2.Volume(team.ID())
+			Expect(err).ToNot(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(artifactVolume2.Handle()).To(Equal(volume2.Handle()))
 		})
 	})
 })

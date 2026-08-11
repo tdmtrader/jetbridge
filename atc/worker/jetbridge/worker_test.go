@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
+	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/runtime"
@@ -24,7 +25,9 @@ import (
 
 var _ = Describe("Worker", func() {
 	var (
-		fakeDBWorker  *dbfakes.FakeWorker
+		database      jetbridgeDB
+		dbWorker      db.Worker
+		team          db.Team
 		fakeClientset *fake.Clientset
 		worker        *jetbridge.Worker
 		ctx           context.Context
@@ -34,13 +37,18 @@ var _ = Describe("Worker", func() {
 
 	BeforeEach(func() {
 		ctx = context.Background()
-		fakeDBWorker = new(dbfakes.FakeWorker)
-		fakeDBWorker.NameReturns("k8s-worker-1")
+		database = useJetbridgeDB()
+		var err error
+		dbWorker, err = persistNamedWorker(database, "k8s-worker-1")
+		Expect(err).NotTo(HaveOccurred())
+		team, err = database.TeamFactory.CreateTeam(atc.Team{Name: "main"})
+		Expect(err).NotTo(HaveOccurred())
 		fakeClientset = fake.NewSimpleClientset()
 		cfg = jetbridge.NewConfig("test-namespace", "")
 		delegate = &noopDelegate{}
 
-		worker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+		worker = jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
+		worker.SetVolumeRepo(database.VolumeRepository)
 	})
 
 	Describe("Name", func() {
@@ -79,33 +87,23 @@ var _ = Describe("Worker", func() {
 		})
 
 		Context("when no container exists in the DB", func() {
-			var (
-				fakeCreatingContainer *dbfakes.FakeCreatingContainer
-				fakeCreatedContainer  *dbfakes.FakeCreatedContainer
-			)
-
-			BeforeEach(func() {
-				fakeDBWorker.FindContainerReturns(nil, nil, nil)
-
-				fakeCreatingContainer = new(dbfakes.FakeCreatingContainer)
-				fakeCreatingContainer.HandleReturns("test-handle")
-				fakeDBWorker.CreateContainerReturns(fakeCreatingContainer, nil)
-
-				fakeCreatedContainer = new(dbfakes.FakeCreatedContainer)
-				fakeCreatedContainer.HandleReturns("test-handle")
-				fakeCreatingContainer.CreatedReturns(fakeCreatedContainer, nil)
-			})
-
 			It("creates a container in the DB and defers Pod creation to Run", func() {
 				container, _, err := worker.FindOrCreateContainer(ctx, owner, metadata, spec, delegate)
 				Expect(err).ToNot(HaveOccurred())
 				Expect(container).ToNot(BeNil())
 
-				By("creating the container in the DB")
-				Expect(fakeDBWorker.CreateContainerCallCount()).To(Equal(1))
-
-				By("marking the container as created")
-				Expect(fakeCreatingContainer.CreatedCallCount()).To(Equal(1))
+				By("persisting the created container and its metadata")
+				var state, containerType, stepName string
+				err = database.Conn.QueryRow(`
+					SELECT state, meta_type, meta_step_name
+					FROM containers
+					WHERE handle = $1
+				`, "test-handle").Scan(&state, &containerType, &stepName)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(state).To(Equal(string(atc.ContainerStateCreated)))
+				Expect(containerType).To(Equal(string(db.ContainerTypeTask)))
+				Expect(stepName).To(Equal("my-task"))
+				Expect(container.DBContainer().Handle()).To(Equal("test-handle"))
 
 				By("not creating a Pod yet (deferred to Run)")
 				pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
@@ -127,42 +125,52 @@ var _ = Describe("Worker", func() {
 		})
 
 		Context("when transitioning to created state fails", func() {
-			var fakeCreatingContainer *dbfakes.FakeCreatingContainer
+			// Retained boundary doubles: PostgreSQL cannot selectively fail Created
+			// after a successful FindContainer/CreateContainer sequence.
+			var (
+				faultDBWorker          *dbfakes.FakeWorker
+				faultCreatingContainer *dbfakes.FakeCreatingContainer
+				faultWorker            *jetbridge.Worker
+			)
 
 			BeforeEach(func() {
-				fakeDBWorker.FindContainerReturns(nil, nil, nil)
-
-				fakeCreatingContainer = new(dbfakes.FakeCreatingContainer)
-				fakeCreatingContainer.HandleReturns("test-handle")
-				fakeDBWorker.CreateContainerReturns(fakeCreatingContainer, nil)
-
-				fakeCreatingContainer.CreatedReturns(nil, fmt.Errorf("db connection lost"))
+				faultDBWorker = new(dbfakes.FakeWorker)
+				faultDBWorker.NameReturns(dbWorker.Name())
+				faultCreatingContainer = new(dbfakes.FakeCreatingContainer)
+				faultCreatingContainer.HandleReturns("test-handle")
+				faultCreatingContainer.CreatedReturns(nil, fmt.Errorf("db connection lost"))
+				faultDBWorker.CreateContainerReturns(faultCreatingContainer, nil)
+				faultWorker = jetbridge.NewWorker(faultDBWorker, fakeClientset, cfg)
 			})
 
 			It("marks the container as failed so the GC can clean it up", func() {
-				_, _, err := worker.FindOrCreateContainer(ctx, owner, metadata, spec, delegate)
-				Expect(err).To(HaveOccurred())
-
-				Expect(fakeCreatingContainer.FailedCallCount()).To(Equal(1))
+				_, _, err := faultWorker.FindOrCreateContainer(ctx, owner, metadata, spec, delegate)
+				Expect(err).To(MatchError(ContainSubstring("db connection lost")))
+				Expect(faultCreatingContainer.FailedCallCount()).To(Equal(1))
 			})
 		})
 
 		Context("when a created container already exists in the DB", func() {
-			var fakeCreatedContainer *dbfakes.FakeCreatedContainer
+			var existing db.CreatedContainer
 
 			BeforeEach(func() {
-				fakeCreatedContainer = new(dbfakes.FakeCreatedContainer)
-				fakeCreatedContainer.HandleReturns("existing-handle")
-				fakeDBWorker.FindContainerReturns(nil, fakeCreatedContainer, nil)
+				owner = db.NewFixedHandleContainerOwner("existing-handle")
+				creating, err := dbWorker.CreateContainer(owner, metadata)
+				Expect(err).NotTo(HaveOccurred())
+				existing, err = creating.Created()
+				Expect(err).NotTo(HaveOccurred())
 			})
 
 			It("returns the existing container without creating a new one in the DB", func() {
 				container, _, err := worker.FindOrCreateContainer(ctx, owner, metadata, spec, delegate)
 				Expect(err).ToNot(HaveOccurred())
 				Expect(container).ToNot(BeNil())
+				Expect(container.DBContainer().ID()).To(Equal(existing.ID()))
 
-				By("not creating a new container in the DB")
-				Expect(fakeDBWorker.CreateContainerCallCount()).To(Equal(0))
+				var count int
+				err = database.Conn.QueryRow(`SELECT count(*) FROM containers WHERE handle = $1`, "existing-handle").Scan(&count)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(count).To(Equal(1))
 			})
 		})
 	})
@@ -179,9 +187,13 @@ var _ = Describe("Worker", func() {
 				_, err := fakeClientset.CoreV1().Pods("test-namespace").Create(ctx, pod, metav1.CreateOptions{})
 				Expect(err).ToNot(HaveOccurred())
 
-				fakeCreatedContainer := new(dbfakes.FakeCreatedContainer)
-				fakeCreatedContainer.HandleReturns("lookup-handle")
-				fakeDBWorker.FindContainerReturns(nil, fakeCreatedContainer, nil)
+				creating, err := dbWorker.CreateContainer(
+					db.NewFixedHandleContainerOwner("lookup-handle"),
+					db.ContainerMetadata{Type: db.ContainerTypeTask, StepName: "lookup-task"},
+				)
+				Expect(err).NotTo(HaveOccurred())
+				_, err = creating.Created()
+				Expect(err).NotTo(HaveOccurred())
 			})
 
 			It("returns the container", func() {
@@ -192,10 +204,6 @@ var _ = Describe("Worker", func() {
 			})
 
 			It("returns a container with a valid DBContainer for hijack support", func() {
-				fakeCreatedContainer := new(dbfakes.FakeCreatedContainer)
-				fakeCreatedContainer.HandleReturns("lookup-handle")
-				fakeDBWorker.FindContainerReturns(nil, fakeCreatedContainer, nil)
-
 				container, found, err := worker.LookupContainer(ctx, "lookup-handle")
 				Expect(err).ToNot(HaveOccurred())
 				Expect(found).To(BeTrue())
@@ -216,8 +224,6 @@ var _ = Describe("Worker", func() {
 				}
 				_, err := fakeClientset.CoreV1().Pods("test-namespace").Create(ctx, pod, metav1.CreateOptions{})
 				Expect(err).ToNot(HaveOccurred())
-
-				fakeDBWorker.FindContainerReturns(nil, nil, nil)
 			})
 
 			It("returns not found since the container is not tracked in the DB", func() {
@@ -234,89 +240,176 @@ var _ = Describe("Worker", func() {
 				Expect(found).To(BeFalse())
 			})
 		})
-	})
 
-	Describe("CreateVolumeForArtifact", func() {
-		var fakeVolumeRepo *dbfakes.FakeVolumeRepository
+		// fly intercept -j my-pipeline/unit-test: the DB handle is an opaque
+		// UUID, but the pod the step created is named from its metadata. The
+		// looked-up Container has to resolve to that pod, not to the handle.
+		Context("when the pod was named from build-step metadata", func() {
+			const (
+				buildStepHandle  = "550e8400-e29b-41d4-a716-446655440000"
+				buildStepPodName = "my-pipeline-unit-test-b42-task-550e8400"
+			)
 
-		Context("when the volume repo is configured", func() {
 			var (
-				fakeCreatingVolume *dbfakes.FakeCreatingVolume
-				fakeCreatedVolume  *dbfakes.FakeCreatedVolume
-				fakeArtifact       *dbfakes.FakeWorkerArtifact
+				interceptExecutor  *fakeExecExecutor
+				interceptWorker    *jetbridge.Worker
+				interceptContainer runtime.Container
 			)
 
 			BeforeEach(func() {
-				fakeVolumeRepo = new(dbfakes.FakeVolumeRepository)
-				worker.SetVolumeRepo(fakeVolumeRepo)
+				metadata := db.ContainerMetadata{
+					Type:         db.ContainerTypeTask,
+					PipelineName: "my-pipeline",
+					JobName:      "unit-test",
+					BuildName:    "42",
+					StepName:     "unit-test",
+					BuildID:      653430,
+				}
 
-				fakeCreatingVolume = new(dbfakes.FakeCreatingVolume)
-				fakeCreatingVolume.HandleReturns("artifact-volume-handle")
-				fakeCreatingVolume.IDReturns(42)
+				By("sanity-checking that the handle is not the pod name")
+				Expect(jetbridge.GeneratePodName(metadata, buildStepHandle)).To(Equal(buildStepPodName))
+				Expect(buildStepPodName).ToNot(Equal(buildStepHandle))
 
-				fakeCreatedVolume = new(dbfakes.FakeCreatedVolume)
-				fakeCreatedVolume.HandleReturns("artifact-volume-handle")
+				pod := &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      buildStepPodName,
+						Namespace: "test-namespace",
+						Labels: map[string]string{
+							"concourse.ci/worker": "k8s-worker-1",
+							"concourse.ci/handle": buildStepHandle,
+						},
+					},
+					Status: corev1.PodStatus{Phase: corev1.PodRunning},
+				}
+				_, err := fakeClientset.CoreV1().Pods("test-namespace").Create(ctx, pod, metav1.CreateOptions{})
+				Expect(err).ToNot(HaveOccurred())
 
-				fakeArtifact = new(dbfakes.FakeWorkerArtifact)
-				fakeArtifact.IDReturns(7)
+				creating, err := dbWorker.CreateContainer(db.NewFixedHandleContainerOwner(buildStepHandle), metadata)
+				Expect(err).NotTo(HaveOccurred())
+				_, err = creating.Created()
+				Expect(err).NotTo(HaveOccurred())
 
-				fakeVolumeRepo.CreateVolumeReturns(fakeCreatingVolume, nil)
-				fakeCreatingVolume.CreatedReturns(fakeCreatedVolume, nil)
-				fakeCreatedVolume.InitializeArtifactReturns(fakeArtifact, nil)
+				interceptExecutor = &fakeExecExecutor{}
+				interceptWorker = jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
+				interceptWorker.SetExecutor(interceptExecutor)
+
+				var found bool
+				interceptContainer, found, err = interceptWorker.LookupContainer(ctx, buildStepHandle)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(found).To(BeTrue())
 			})
 
+			It("execs into the pod the step actually created, not the raw handle", func() {
+				process, err := interceptContainer.Run(ctx, runtime.ProcessSpec{
+					Path: "/bin/sh",
+				}, runtime.ProcessIO{})
+				Expect(err).ToNot(HaveOccurred())
+
+				result, err := process.Wait(ctx)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(result.ExitStatus).To(Equal(0))
+
+				Expect(interceptExecutor.execCalls).ToNot(BeEmpty())
+				Expect(interceptExecutor.execCalls[0].podName).To(Equal(buildStepPodName))
+
+				By("not creating a replacement pod named after the handle")
+				pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+				Expect(err).ToNot(HaveOccurred())
+				Expect(pods.Items).To(HaveLen(1))
+				Expect(pods.Items[0].Name).To(Equal(buildStepPodName))
+			})
+
+			It("refuses to fabricate a pod when the step's pod is gone", func() {
+				err := fakeClientset.CoreV1().Pods("test-namespace").Delete(ctx, buildStepPodName, metav1.DeleteOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
+				_, err = interceptContainer.Run(ctx, runtime.ProcessSpec{Path: "/bin/sh"}, runtime.ProcessIO{})
+				Expect(err).To(MatchError(ContainSubstring("has no pod to intercept")))
+
+				By("not leaving a pod behind")
+				pods, listErr := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+				Expect(listErr).ToNot(HaveOccurred())
+				Expect(pods.Items).To(BeEmpty())
+			})
+
+			It("refuses to replace a pod that has already exited", func() {
+				pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, buildStepPodName, metav1.GetOptions{})
+				Expect(err).ToNot(HaveOccurred())
+				pod.Status.Phase = corev1.PodSucceeded
+				pod.Annotations = map[string]string{"concourse.ci/exit-status": "0"}
+				_, err = fakeClientset.CoreV1().Pods("test-namespace").Update(ctx, pod, metav1.UpdateOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
+				_, err = interceptContainer.Run(ctx, runtime.ProcessSpec{Path: "/bin/sh"}, runtime.ProcessIO{})
+				Expect(err).To(MatchError(ContainSubstring("already exited")))
+
+				By("leaving the completed pod (and its exit-status annotation) intact")
+				survivor, getErr := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, buildStepPodName, metav1.GetOptions{})
+				Expect(getErr).ToNot(HaveOccurred())
+				Expect(survivor.Annotations).To(HaveKeyWithValue("concourse.ci/exit-status", "0"))
+			})
+		})
+	})
+
+	Describe("CreateVolumeForArtifact", func() {
+		Context("when the volume repo is configured", func() {
 			It("creates an artifact volume and returns it with the artifact", func() {
-				vol, artifact, err := worker.CreateVolumeForArtifact(ctx, 1)
+				vol, artifact, err := worker.CreateVolumeForArtifact(ctx, team.ID())
 				Expect(err).ToNot(HaveOccurred())
 				Expect(vol).ToNot(BeNil())
 				Expect(artifact).ToNot(BeNil())
 
-				By("creating a volume with the correct team ID, worker name, and type")
-				Expect(fakeVolumeRepo.CreateVolumeCallCount()).To(Equal(1))
-				teamID, workerName, volType := fakeVolumeRepo.CreateVolumeArgsForCall(0)
-				Expect(teamID).To(Equal(1))
-				Expect(workerName).To(Equal("k8s-worker-1"))
-				Expect(volType).To(Equal(db.VolumeTypeArtifact))
+				By("persisting the volume transition and artifact association")
+				var persistedTeamID, workerArtifactID int
+				var workerName, state string
+				err = database.Conn.QueryRow(`
+					SELECT team_id, worker_name, state, worker_artifact_id
+					FROM volumes
+					WHERE handle = $1
+				`, vol.Handle()).Scan(&persistedTeamID, &workerName, &state, &workerArtifactID)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(persistedTeamID).To(Equal(team.ID()))
+				Expect(workerName).To(Equal(dbWorker.Name()))
+				Expect(state).To(Equal(string(db.VolumeStateCreated)))
+				Expect(workerArtifactID).To(Equal(artifact.ID()))
 
-				By("transitioning the volume to created state")
-				Expect(fakeCreatingVolume.CreatedCallCount()).To(Equal(1))
-
-				By("initializing the artifact on the created volume")
-				Expect(fakeCreatedVolume.InitializeArtifactCallCount()).To(Equal(1))
-				name, buildID := fakeCreatedVolume.InitializeArtifactArgsForCall(0)
-				Expect(name).To(Equal(""))
-				Expect(buildID).To(Equal(0))
-
-				By("returning the artifact from the DB")
-				Expect(artifact.ID()).To(Equal(7))
+				persisted, found, err := database.VolumeRepository.FindVolume(vol.Handle())
+				Expect(err).NotTo(HaveOccurred())
+				Expect(found).To(BeTrue())
+				Expect(persisted.Type()).To(Equal(db.VolumeTypeArtifact))
 			})
 
-			It("returns a volume with the correct handle", func() {
-				vol, _, err := worker.CreateVolumeForArtifact(ctx, 1)
+			It("returns the handle generated by the persisted volume", func() {
+				vol, _, err := worker.CreateVolumeForArtifact(ctx, team.ID())
 				Expect(err).ToNot(HaveOccurred())
-				Expect(vol.Handle()).To(Equal("artifact-volume-handle"))
+				Expect(vol.Handle()).NotTo(BeEmpty())
+
+				persisted, found, err := database.VolumeRepository.FindVolume(vol.Handle())
+				Expect(err).NotTo(HaveOccurred())
+				Expect(found).To(BeTrue())
+				Expect(persisted.Handle()).To(Equal(vol.Handle()))
 			})
 
 			Context("when the artifact store is configured", func() {
 				BeforeEach(func() {
-					worker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
-					worker.SetVolumeRepo(fakeVolumeRepo)
+					worker = jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
+					worker.SetVolumeRepo(database.VolumeRepository)
 				})
 
-				It("returns an DaemonSetVolume", func() {
-					vol, _, err := worker.CreateVolumeForArtifact(ctx, 1)
+				It("returns a DaemonSetVolume", func() {
+					vol, _, err := worker.CreateVolumeForArtifact(ctx, team.ID())
 					Expect(err).ToNot(HaveOccurred())
 					Expect(vol).ToNot(BeNil())
 
 					asVol, ok := vol.(*jetbridge.DaemonSetVolume)
 					Expect(ok).To(BeTrue(), "expected DaemonSetVolume, got %T", vol)
-					Expect(asVol.Key()).To(Equal("artifact-volume-handle"))
-					Expect(asVol.Handle()).To(Equal("artifact-volume-handle"))
+					Expect(asVol.Key()).To(Equal(jetbridge.ArtifactKey(vol.Handle())))
+					Expect(asVol.Handle()).To(Equal(vol.Handle()))
 				})
 			})
 
 			It("always returns a DaemonSetVolume", func() {
-				vol, _, err := worker.CreateVolumeForArtifact(ctx, 1)
+				vol, _, err := worker.CreateVolumeForArtifact(ctx, team.ID())
 				Expect(err).ToNot(HaveOccurred())
 				Expect(vol).ToNot(BeNil())
 
@@ -327,9 +420,8 @@ var _ = Describe("Worker", func() {
 
 		Context("when the volume repo is NOT configured", func() {
 			It("returns an error", func() {
-				// Create a fresh worker without SetVolumeRepo
-				freshWorker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
-				_, _, err := freshWorker.CreateVolumeForArtifact(ctx, 1)
+				freshWorker := jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
+				_, _, err := freshWorker.CreateVolumeForArtifact(ctx, team.ID())
 				Expect(err).To(HaveOccurred())
 				Expect(err).To(MatchError(ContainSubstring("volume repository not configured")))
 			})
@@ -337,77 +429,73 @@ var _ = Describe("Worker", func() {
 
 		Context("when CreateVolume fails", func() {
 			BeforeEach(func() {
-				fakeVolumeRepo = new(dbfakes.FakeVolumeRepository)
-				worker.SetVolumeRepo(fakeVolumeRepo)
-				fakeVolumeRepo.CreateVolumeReturns(nil, fmt.Errorf("db connection lost"))
+				worker.SetVolumeRepo(db.NewVolumeRepository(closedJetbridgeCloneConn()))
 			})
 
 			It("returns the error", func() {
-				_, _, err := worker.CreateVolumeForArtifact(ctx, 1)
+				_, _, err := worker.CreateVolumeForArtifact(ctx, team.ID())
 				Expect(err).To(HaveOccurred())
-				Expect(err).To(MatchError(ContainSubstring("db connection lost")))
+				Expect(err).To(MatchError(ContainSubstring("closed")))
 			})
 		})
 
-		Context("when transitioning to created state fails", func() {
+		Describe("retained database transition faults", func() {
+			// Retained boundary doubles: PostgreSQL cannot selectively fail the
+			// Created or InitializeArtifact transition after CreateVolume succeeds.
+			var (
+				faultVolumeRepo     *dbfakes.FakeVolumeRepository
+				faultCreatingVolume *dbfakes.FakeCreatingVolume
+				faultCreatedVolume  *dbfakes.FakeCreatedVolume
+			)
+
 			BeforeEach(func() {
-				fakeVolumeRepo = new(dbfakes.FakeVolumeRepository)
-				worker.SetVolumeRepo(fakeVolumeRepo)
-
-				fakeCreatingVolume := new(dbfakes.FakeCreatingVolume)
-				fakeCreatingVolume.HandleReturns("artifact-volume-handle")
-				fakeVolumeRepo.CreateVolumeReturns(fakeCreatingVolume, nil)
-
-				fakeCreatingVolume.CreatedReturns(nil, fmt.Errorf("transition error"))
+				faultVolumeRepo = new(dbfakes.FakeVolumeRepository)
+				faultCreatingVolume = new(dbfakes.FakeCreatingVolume)
+				faultCreatingVolume.HandleReturns("artifact-volume-handle")
+				faultCreatedVolume = new(dbfakes.FakeCreatedVolume)
+				faultCreatedVolume.HandleReturns("artifact-volume-handle")
 			})
 
-			It("returns the error", func() {
-				_, _, err := worker.CreateVolumeForArtifact(ctx, 1)
-				Expect(err).To(HaveOccurred())
-				Expect(err).To(MatchError(ContainSubstring("transition error")))
-			})
-		})
+			Context("when transitioning to created state fails", func() {
+				BeforeEach(func() {
+					worker.SetVolumeRepo(faultVolumeRepo)
+					faultVolumeRepo.CreateVolumeReturns(faultCreatingVolume, nil)
+					faultCreatingVolume.CreatedReturns(nil, fmt.Errorf("transition error"))
+				})
 
-		Context("when InitializeArtifact fails", func() {
-			BeforeEach(func() {
-				fakeVolumeRepo = new(dbfakes.FakeVolumeRepository)
-				worker.SetVolumeRepo(fakeVolumeRepo)
-
-				fakeCreatingVolume := new(dbfakes.FakeCreatingVolume)
-				fakeCreatingVolume.HandleReturns("artifact-volume-handle")
-				fakeVolumeRepo.CreateVolumeReturns(fakeCreatingVolume, nil)
-
-				fakeCreatedVolume := new(dbfakes.FakeCreatedVolume)
-				fakeCreatedVolume.HandleReturns("artifact-volume-handle")
-				fakeCreatingVolume.CreatedReturns(fakeCreatedVolume, nil)
-
-				fakeCreatedVolume.InitializeArtifactReturns(nil, fmt.Errorf("artifact init error"))
+				It("returns the error", func() {
+					_, _, err := worker.CreateVolumeForArtifact(ctx, team.ID())
+					Expect(err).To(HaveOccurred())
+					Expect(err).To(MatchError(ContainSubstring("transition error")))
+				})
 			})
 
-			It("returns the error", func() {
-				_, _, err := worker.CreateVolumeForArtifact(ctx, 1)
-				Expect(err).To(HaveOccurred())
-				Expect(err).To(MatchError(ContainSubstring("artifact init error")))
+			Context("when InitializeArtifact fails", func() {
+				BeforeEach(func() {
+					worker.SetVolumeRepo(faultVolumeRepo)
+					faultVolumeRepo.CreateVolumeReturns(faultCreatingVolume, nil)
+					faultCreatingVolume.CreatedReturns(faultCreatedVolume, nil)
+					faultCreatedVolume.InitializeArtifactReturns(nil, fmt.Errorf("artifact init error"))
+				})
+
+				It("returns the error", func() {
+					_, _, err := worker.CreateVolumeForArtifact(ctx, team.ID())
+					Expect(err).To(HaveOccurred())
+					Expect(err).To(MatchError(ContainSubstring("artifact init error")))
+				})
 			})
 		})
 	})
 
 	Describe("LookupVolume", func() {
-		var fakeVolumeRepo *dbfakes.FakeVolumeRepository
-
-		BeforeEach(func() {
-			fakeVolumeRepo = new(dbfakes.FakeVolumeRepository)
-			worker.SetVolumeRepo(fakeVolumeRepo)
-		})
-
 		Context("when the volume exists in the DB", func() {
-			var fakeCreatedVolume *dbfakes.FakeCreatedVolume
-
 			BeforeEach(func() {
-				fakeCreatedVolume = new(dbfakes.FakeCreatedVolume)
-				fakeCreatedVolume.HandleReturns("vol-handle-1")
-				fakeCreatedVolume.WorkerNameReturns("k8s-worker-1")
-				fakeVolumeRepo.FindVolumeReturns(fakeCreatedVolume, true, nil)
+				creating, err := database.VolumeRepository.CreateVolumeWithHandle(
+					"vol-handle-1", team.ID(), dbWorker.Name(), db.VolumeTypeArtifact,
+				)
+				Expect(err).NotTo(HaveOccurred())
+				_, err = creating.Created()
+				Expect(err).NotTo(HaveOccurred())
 			})
 
 			It("returns a cache-backed volume", func() {
@@ -418,19 +506,14 @@ var _ = Describe("Worker", func() {
 				Expect(vol.Handle()).To(Equal("vol-handle-1"))
 			})
 
-			It("calls FindVolume with the correct handle", func() {
-				_, _, err := worker.LookupVolume(ctx, "vol-handle-1")
+			It("does not match a different handle", func() {
+				_, found, err := worker.LookupVolume(ctx, "vol-handle")
 				Expect(err).ToNot(HaveOccurred())
-				Expect(fakeVolumeRepo.FindVolumeCallCount()).To(Equal(1))
-				Expect(fakeVolumeRepo.FindVolumeArgsForCall(0)).To(Equal("vol-handle-1"))
+				Expect(found).To(BeFalse())
 			})
 		})
 
 		Context("when the volume does not exist in the DB", func() {
-			BeforeEach(func() {
-				fakeVolumeRepo.FindVolumeReturns(nil, false, nil)
-			})
-
 			It("returns not found", func() {
 				_, found, err := worker.LookupVolume(ctx, "nonexistent")
 				Expect(err).ToNot(HaveOccurred())
@@ -440,19 +523,19 @@ var _ = Describe("Worker", func() {
 
 		Context("when the DB returns an error", func() {
 			BeforeEach(func() {
-				fakeVolumeRepo.FindVolumeReturns(nil, false, fmt.Errorf("db connection lost"))
+				worker.SetVolumeRepo(db.NewVolumeRepository(closedJetbridgeCloneConn()))
 			})
 
 			It("returns the error", func() {
 				_, _, err := worker.LookupVolume(ctx, "vol-handle-1")
 				Expect(err).To(HaveOccurred())
-				Expect(err).To(MatchError(ContainSubstring("db connection lost")))
+				Expect(err).To(MatchError(ContainSubstring("closed")))
 			})
 		})
 
 		Context("when no volume repo is configured", func() {
 			BeforeEach(func() {
-				worker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+				worker = jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
 				// intentionally do NOT call SetVolumeRepo
 			})
 
@@ -503,7 +586,7 @@ var _ = Describe("Worker", func() {
 				daemonCfg.ArtifactDaemonHostPath = "/var/artifacts"
 				daemonCfg.ArtifactDaemonService = "artifact-daemon"
 				daemonCfg.ArtifactDaemonPort = port
-				daemonWorker := jetbridge.NewWorker(fakeDBWorker, daemonClientset, daemonCfg)
+				daemonWorker := jetbridge.NewWorker(dbWorker, daemonClientset, daemonCfg)
 
 				logger := lagertest.NewTestLogger("test")
 				client := jetbridge.NewDaemonClient(logger, daemonClientset, "test-namespace", "artifact-daemon", port, nil)
@@ -572,7 +655,7 @@ var _ = Describe("Worker", func() {
 				daemonCfg.ArtifactDaemonHostPath = "/var/artifacts"
 				daemonCfg.ArtifactDaemonService = "artifact-daemon"
 				daemonCfg.ArtifactDaemonPort = port
-				daemonWorker := jetbridge.NewWorker(fakeDBWorker, daemonClientset, daemonCfg)
+				daemonWorker := jetbridge.NewWorker(dbWorker, daemonClientset, daemonCfg)
 
 				logger := lagertest.NewTestLogger("test")
 				client := jetbridge.NewDaemonClient(logger, daemonClientset, "test-namespace", "artifact-daemon", port, nil)
@@ -637,7 +720,7 @@ var _ = Describe("Worker", func() {
 				daemonCfg.ArtifactDaemonHostPath = "/var/artifacts"
 				daemonCfg.ArtifactDaemonService = "artifact-daemon"
 				daemonCfg.ArtifactDaemonPort = port
-				daemonWorker := jetbridge.NewWorker(fakeDBWorker, daemonClientset, daemonCfg)
+				daemonWorker := jetbridge.NewWorker(dbWorker, daemonClientset, daemonCfg)
 
 				logger := lagertest.NewTestLogger("test")
 				client := jetbridge.NewDaemonClient(logger, daemonClientset, "test-namespace", "artifact-daemon", port, nil)
@@ -692,7 +775,7 @@ var _ = Describe("Worker", func() {
 				daemonCfg.ArtifactDaemonHostPath = "/var/artifacts"
 				daemonCfg.ArtifactDaemonService = "artifact-daemon"
 				daemonCfg.ArtifactDaemonPort = port
-				daemonWorker := jetbridge.NewWorker(fakeDBWorker, daemonClientset, daemonCfg)
+				daemonWorker := jetbridge.NewWorker(dbWorker, daemonClientset, daemonCfg)
 
 				logger := lagertest.NewTestLogger("test")
 				client := jetbridge.NewDaemonClient(logger, daemonClientset, "test-namespace", "artifact-daemon", port, nil)
@@ -735,7 +818,7 @@ var _ = Describe("Worker", func() {
 			BeforeEach(func() {
 				daemonCfg = cfg
 				daemonCfg.ArtifactDaemonHostPath = "/var/artifacts"
-				daemonWorker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, daemonCfg)
+				daemonWorker = jetbridge.NewWorker(dbWorker, fakeClientset, daemonCfg)
 			})
 
 			It("wraps a container-mount DeferredVolume as a DaemonSetVolume", func() {
@@ -840,7 +923,7 @@ var _ = Describe("Worker", func() {
 			It("never returns a *Volume (exec-backed) when a DaemonSet backend is configured", func() {
 				daemonCfg := cfg
 				daemonCfg.ArtifactDaemonHostPath = "/var/artifacts"
-				daemonWorker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, daemonCfg)
+				daemonWorker := jetbridge.NewWorker(dbWorker, fakeClientset, daemonCfg)
 
 				// Try every kind of volume we produce in the runtime:
 				// DeferredVolume (container mounts when an executor is

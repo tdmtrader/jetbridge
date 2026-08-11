@@ -2,10 +2,9 @@ package jetbridge_test
 
 import (
 	"context"
-	"fmt"
 
+	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	. "github.com/onsi/ginkgo/v2"
@@ -17,7 +16,9 @@ import (
 
 var _ = Describe("Behavioral Worker Tests", func() {
 	var (
-		fakeDBWorker  *dbfakes.FakeWorker
+		database      jetbridgeDB
+		dbWorker      db.Worker
+		team          db.Team
 		fakeClientset *fake.Clientset
 		worker        *jetbridge.Worker
 		ctx           context.Context
@@ -27,8 +28,13 @@ var _ = Describe("Behavioral Worker Tests", func() {
 
 	BeforeEach(func() {
 		ctx = context.Background()
-		fakeDBWorker = new(dbfakes.FakeWorker)
-		fakeDBWorker.NameReturns("k8s-worker-1")
+		database = useJetbridgeDB()
+
+		var err error
+		dbWorker, err = persistNamedWorker(database, "k8s-worker-1")
+		Expect(err).NotTo(HaveOccurred())
+		team, err = database.TeamFactory.CreateTeam(atc.Team{Name: "main"})
+		Expect(err).NotTo(HaveOccurred())
 
 		node := &corev1.Node{
 			ObjectMeta: metav1.ObjectMeta{Name: "node-1"},
@@ -42,71 +48,61 @@ var _ = Describe("Behavioral Worker Tests", func() {
 		cfg = jetbridge.NewConfig("test-namespace", "")
 		delegate = &noopDelegate{}
 
-		worker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+		worker = jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
+		worker.SetVolumeRepo(database.VolumeRepository)
 	})
+
+	createVolume := func(handle string, volumeType db.VolumeType) db.CreatedVolume {
+		GinkgoHelper()
+		creating, err := database.VolumeRepository.CreateVolumeWithHandle(handle, team.ID(), dbWorker.Name(), volumeType)
+		Expect(err).NotTo(HaveOccurred())
+		created, err := creating.Created()
+		Expect(err).NotTo(HaveOccurred())
+		return created
+	}
 
 	// -----------------------------------------------------------------------
 	// RC-02: Cached volume lookup returns DaemonSetVolume
 	// -----------------------------------------------------------------------
 	Describe("RC-02: LookupVolume returns DaemonSetVolume", func() {
-		var fakeVolumeRepo *dbfakes.FakeVolumeRepository
-
 		BeforeEach(func() {
-			fakeVolumeRepo = new(dbfakes.FakeVolumeRepository)
-			worker.SetVolumeRepo(fakeVolumeRepo)
+			createVolume("cached-vol-1", db.VolumeTypeArtifact)
 		})
 
-		Context("when the volume exists in the DB", func() {
-			var fakeCreatedVolume *dbfakes.FakeCreatedVolume
+		It("returns a DaemonSetVolume backed by the persisted volume", func() {
+			vol, found, err := worker.LookupVolume(ctx, "cached-vol-1")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(vol).NotTo(BeNil())
+			Expect(vol.Handle()).To(Equal("cached-vol-1"))
 
+			dsVol, ok := vol.(*jetbridge.DaemonSetVolume)
+			Expect(ok).To(BeTrue(), "expected DaemonSetVolume, got %T", vol)
+			Expect(dsVol.Key()).To(Equal("cached-vol-1"))
+			Expect(dsVol.DBVolume().WorkerName()).To(Equal(dbWorker.Name()))
+		})
+
+		Context("with ArtifactLocator populated", func() {
 			BeforeEach(func() {
-				fakeCreatedVolume = new(dbfakes.FakeCreatedVolume)
-				fakeCreatedVolume.HandleReturns("cached-vol-1")
-				fakeCreatedVolume.WorkerNameReturns("k8s-worker-1")
-				fakeVolumeRepo.FindVolumeReturns(fakeCreatedVolume, true, nil)
+				locator := jetbridge.NewArtifactLocator()
+				locator.Record(jetbridge.ArtifactKey("cached-vol-1"), "node-42", "container/output")
+				worker.SetArtifactLocator(locator)
 			})
 
-			It("returns a DaemonSetVolume with the correct handle", func() {
+			It("returns volume with its persisted worker source", func() {
 				vol, found, err := worker.LookupVolume(ctx, "cached-vol-1")
-				Expect(err).ToNot(HaveOccurred())
+				Expect(err).NotTo(HaveOccurred())
 				Expect(found).To(BeTrue())
-				Expect(vol).ToNot(BeNil())
-				Expect(vol.Handle()).To(Equal("cached-vol-1"))
-
-				dsVol, ok := vol.(*jetbridge.DaemonSetVolume)
-				Expect(ok).To(BeTrue(), "expected DaemonSetVolume, got %T", vol)
-				Expect(dsVol.Key()).To(Equal("cached-vol-1"))
+				Expect(vol.Source()).To(Equal(dbWorker.Name()))
 			})
+		})
 
-			Context("with ArtifactLocator populated", func() {
-				BeforeEach(func() {
-					locator := jetbridge.NewArtifactLocator()
-					locator.Record(jetbridge.ArtifactKey("cached-vol-1"), "node-42", "container/output")
-					worker.SetArtifactLocator(locator)
-				})
-
-				It("returns volume with source node set from locator", func() {
-					vol, found, err := worker.LookupVolume(ctx, "cached-vol-1")
-					Expect(err).ToNot(HaveOccurred())
-					Expect(found).To(BeTrue())
-
-					dsVol, ok := vol.(*jetbridge.DaemonSetVolume)
-					Expect(ok).To(BeTrue())
-					Expect(dsVol.Source()).To(Equal("k8s-worker-1"))
-				})
-			})
-
-			Context("without ArtifactLocator", func() {
-				It("returns volume with empty source node (graceful degradation)", func() {
-					vol, found, err := worker.LookupVolume(ctx, "cached-vol-1")
-					Expect(err).ToNot(HaveOccurred())
-					Expect(found).To(BeTrue())
-
-					dsVol, ok := vol.(*jetbridge.DaemonSetVolume)
-					Expect(ok).To(BeTrue())
-					// Source is the worker name from the volume, not the node
-					Expect(dsVol.Source()).To(Equal("k8s-worker-1"))
-				})
+		Context("without ArtifactLocator", func() {
+			It("returns volume with its persisted worker source", func() {
+				vol, found, err := worker.LookupVolume(ctx, "cached-vol-1")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(found).To(BeTrue())
+				Expect(vol.Source()).To(Equal(dbWorker.Name()))
 			})
 		})
 	})
@@ -115,41 +111,61 @@ var _ = Describe("Behavioral Worker Tests", func() {
 	// RC-03: Cache hit short-circuit
 	// -----------------------------------------------------------------------
 	Describe("RC-03: Cache hit short-circuit", func() {
-		var fakeVolumeRepo *dbfakes.FakeVolumeRepository
-
 		BeforeEach(func() {
-			fakeVolumeRepo = new(dbfakes.FakeVolumeRepository)
-			worker.SetVolumeRepo(fakeVolumeRepo)
-
-			fakeCreatedVolume := new(dbfakes.FakeCreatedVolume)
-			fakeCreatedVolume.HandleReturns("cache-hit-vol")
-			fakeCreatedVolume.WorkerNameReturns("k8s-worker-1")
-			fakeVolumeRepo.FindVolumeReturns(fakeCreatedVolume, true, nil)
+			createVolume("cache-hit-vol", db.VolumeTypeArtifact)
 		})
 
 		It("returns a cached volume without creating a pod", func() {
 			vol, found, err := worker.LookupVolume(ctx, "cache-hit-vol")
-			Expect(err).ToNot(HaveOccurred())
+			Expect(err).NotTo(HaveOccurred())
 			Expect(found).To(BeTrue())
-			Expect(vol).ToNot(BeNil())
+			Expect(vol).NotTo(BeNil())
 
-			By("no pods should have been created")
 			pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
-			Expect(err).ToNot(HaveOccurred())
-			Expect(pods.Items).To(HaveLen(0))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(pods.Items).To(BeEmpty())
 		})
 
-		It("returns a volume that supports InitializeResourceCache", func() {
-			vol, found, err := worker.LookupVolume(ctx, "cache-hit-vol")
-			Expect(err).ToNot(HaveOccurred())
-			Expect(found).To(BeTrue())
+		It("persists the resource-cache association", func() {
+			_, err := database.WorkerFactory.SaveWorker(atc.Worker{
+				Name: "k8s-worker-1", Platform: "linux", Version: "1.2.3",
+				State: string(db.WorkerStateRunning),
+				ResourceTypes: []atc.WorkerResourceType{{
+					Type: "some-type", Image: "some-image", Version: "some-version",
+				}},
+			}, 0)
+			Expect(err).NotTo(HaveOccurred())
 
-			// InitializeResourceCache should not panic even with nil cache
-			result, err := vol.InitializeResourceCache(ctx, nil)
-			// With a fake dbVolume that hasn't had InitializeResourceCache
-			// configured, this will delegate to the fake's default behavior
-			Expect(err).ToNot(HaveOccurred())
-			Expect(result).To(BeNil())
+			build, err := team.CreateOneOffBuild()
+			Expect(err).NotTo(HaveOccurred())
+			cache, err := database.ResourceCacheFactory.FindOrCreateResourceCache(
+				db.ForBuild(build.ID()),
+				"some-type",
+				atc.Version{"version": "v1"},
+				atc.Source{"uri": "example.invalid"},
+				nil,
+				nil,
+			)
+			Expect(err).NotTo(HaveOccurred())
+
+			vol, found, err := worker.LookupVolume(ctx, "cache-hit-vol")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			result, err := vol.InitializeResourceCache(ctx, cache)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).NotTo(BeNil())
+			Expect(result.ID).NotTo(BeZero())
+
+			var workerResourceCacheID, resourceCacheID int
+			err = database.Conn.QueryRow(`
+				SELECT v.worker_resource_cache_id, wrc.resource_cache_id
+				FROM volumes v
+				JOIN worker_resource_caches wrc ON wrc.id = v.worker_resource_cache_id
+				WHERE v.handle = $1
+			`, "cache-hit-vol").Scan(&workerResourceCacheID, &resourceCacheID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(workerResourceCacheID).To(Equal(result.ID))
+			Expect(resourceCacheID).To(Equal(cache.ID()))
 		})
 	})
 
@@ -157,29 +173,19 @@ var _ = Describe("Behavioral Worker Tests", func() {
 	// RC-05: Cache invalidation
 	// -----------------------------------------------------------------------
 	Describe("RC-05: Cache invalidation", func() {
-		Context("when DB volume is not found", func() {
-			BeforeEach(func() {
-				fakeVolumeRepo := new(dbfakes.FakeVolumeRepository)
-				fakeVolumeRepo.FindVolumeReturns(nil, false, nil)
-				worker.SetVolumeRepo(fakeVolumeRepo)
-			})
-
-			It("returns (nil, false, nil)", func() {
-				vol, found, err := worker.LookupVolume(ctx, "expired-vol")
-				Expect(err).ToNot(HaveOccurred())
-				Expect(found).To(BeFalse())
-				Expect(vol).To(BeNil())
-			})
+		It("returns not found when no persisted volume has the handle", func() {
+			vol, found, err := worker.LookupVolume(ctx, "expired-vol")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeFalse())
+			Expect(vol).To(BeNil())
 		})
 
-		Context("when volumeRepo is nil", func() {
-			It("returns (nil, false, nil)", func() {
-				freshWorker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
-				vol, found, err := freshWorker.LookupVolume(ctx, "any-vol")
-				Expect(err).ToNot(HaveOccurred())
-				Expect(found).To(BeFalse())
-				Expect(vol).To(BeNil())
-			})
+		It("returns not found when volumeRepo is nil", func() {
+			freshWorker := jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
+			vol, found, err := freshWorker.LookupVolume(ctx, "any-vol")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeFalse())
+			Expect(vol).To(BeNil())
 		})
 	})
 
@@ -187,37 +193,33 @@ var _ = Describe("Behavioral Worker Tests", func() {
 	// CO-09: Output recording - CreateVolumeForArtifact
 	// -----------------------------------------------------------------------
 	Describe("CO-09: CreateVolumeForArtifact returns DaemonSetVolume with ArtifactKey", func() {
-		var fakeVolumeRepo *dbfakes.FakeVolumeRepository
-
-		BeforeEach(func() {
-			fakeVolumeRepo = new(dbfakes.FakeVolumeRepository)
-			worker.SetVolumeRepo(fakeVolumeRepo)
-
-			fakeCreatingVolume := new(dbfakes.FakeCreatingVolume)
-			fakeCreatingVolume.HandleReturns("art-vol-42")
-
-			fakeCreatedVolume := new(dbfakes.FakeCreatedVolume)
-			fakeCreatedVolume.HandleReturns("art-vol-42")
-
-			fakeArtifact := new(dbfakes.FakeWorkerArtifact)
-			fakeArtifact.IDReturns(99)
-
-			fakeVolumeRepo.CreateVolumeReturns(fakeCreatingVolume, nil)
-			fakeCreatingVolume.CreatedReturns(fakeCreatedVolume, nil)
-			fakeCreatedVolume.InitializeArtifactReturns(fakeArtifact, nil)
-		})
-
-		It("returns a DaemonSetVolume with key = ArtifactKey(handle)", func() {
-			vol, artifact, err := worker.CreateVolumeForArtifact(ctx, 1)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(artifact).ToNot(BeNil())
+		It("persists an artifact volume and returns its database artifact", func() {
+			vol, artifact, err := worker.CreateVolumeForArtifact(ctx, team.ID())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(artifact).NotTo(BeNil())
 
 			dsVol, ok := vol.(*jetbridge.DaemonSetVolume)
 			Expect(ok).To(BeTrue(), "expected DaemonSetVolume, got %T", vol)
+			Expect(dsVol.Key()).To(Equal(jetbridge.ArtifactKey(vol.Handle())))
+			Expect(dsVol.Handle()).NotTo(BeEmpty())
 
-			// ArtifactKey is identity, so key should equal handle
-			Expect(dsVol.Key()).To(Equal("art-vol-42"))
-			Expect(dsVol.Handle()).To(Equal("art-vol-42"))
+			var teamID, workerArtifactID int
+			var workerName, state string
+			err = database.Conn.QueryRow(`
+				SELECT team_id, worker_name, state, worker_artifact_id
+				FROM volumes
+				WHERE handle = $1
+			`, vol.Handle()).Scan(&teamID, &workerName, &state, &workerArtifactID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(teamID).To(Equal(team.ID()))
+			Expect(workerName).To(Equal(dbWorker.Name()))
+			Expect(state).To(Equal(string(db.VolumeStateCreated)))
+			Expect(workerArtifactID).To(Equal(artifact.ID()))
+
+			persisted, found, err := database.VolumeRepository.FindVolume(vol.Handle())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(persisted.Type()).To(Equal(db.VolumeTypeArtifact))
 		})
 	})
 
@@ -226,20 +228,17 @@ var _ = Describe("Behavioral Worker Tests", func() {
 	// -----------------------------------------------------------------------
 	Describe("LR-03: ATC restart resilience - LookupVolume without ArtifactLocator", func() {
 		BeforeEach(func() {
-			fakeVolumeRepo := new(dbfakes.FakeVolumeRepository)
-			fakeCreatedVolume := new(dbfakes.FakeCreatedVolume)
-			fakeCreatedVolume.HandleReturns("resilient-vol")
-			fakeCreatedVolume.WorkerNameReturns("k8s-worker-1")
-			fakeVolumeRepo.FindVolumeReturns(fakeCreatedVolume, true, nil)
-			worker.SetVolumeRepo(fakeVolumeRepo)
-			// Intentionally do NOT call SetArtifactLocator
+			createVolume("resilient-vol", db.VolumeTypeArtifact)
 		})
 
-		It("returns the volume without error (graceful degradation)", func() {
-			vol, found, err := worker.LookupVolume(ctx, "resilient-vol")
-			Expect(err).ToNot(HaveOccurred())
+		It("reconstructs the volume from persisted state", func() {
+			restartedWorker := jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
+			restartedWorker.SetVolumeRepo(db.NewVolumeRepository(database.Conn))
+
+			vol, found, err := restartedWorker.LookupVolume(ctx, "resilient-vol")
+			Expect(err).NotTo(HaveOccurred())
 			Expect(found).To(BeTrue())
-			Expect(vol).ToNot(BeNil())
+			Expect(vol).NotTo(BeNil())
 			Expect(vol.Handle()).To(Equal("resilient-vol"))
 		})
 	})
@@ -248,139 +247,95 @@ var _ = Describe("Behavioral Worker Tests", func() {
 	// LR-04: Container reuse
 	// -----------------------------------------------------------------------
 	Describe("LR-04: Container reuse when createdContainer already exists", func() {
-		var fakeCreatedContainer *dbfakes.FakeCreatedContainer
+		var existing db.CreatedContainer
 
 		BeforeEach(func() {
-			fakeCreatedContainer = new(dbfakes.FakeCreatedContainer)
-			fakeCreatedContainer.HandleReturns("reused-handle")
-			fakeDBWorker.FindContainerReturns(nil, fakeCreatedContainer, nil)
+			creating, err := dbWorker.CreateContainer(
+				db.NewFixedHandleContainerOwner("reused-handle"),
+				db.ContainerMetadata{Type: db.ContainerTypeTask, StepName: "my-task"},
+			)
+			Expect(err).NotTo(HaveOccurred())
+			existing, err = creating.Created()
+			Expect(err).NotTo(HaveOccurred())
 		})
 
-		It("returns the existing container without creating a new one", func() {
+		It("returns the same persisted container without inserting another row", func() {
 			owner := db.NewFixedHandleContainerOwner("reused-handle")
-			metadata := db.ContainerMetadata{
-				Type:     db.ContainerTypeTask,
-				StepName: "my-task",
-			}
+			metadata := db.ContainerMetadata{Type: db.ContainerTypeTask, StepName: "my-task"}
 			spec := runtime.ContainerSpec{
-				TeamID:   1,
-				TeamName: "main",
-				Dir:      "/workdir",
-				ImageSpec: runtime.ImageSpec{
-					ImageURL: "docker:///busybox",
-				},
+				TeamID: team.ID(), TeamName: team.Name(), Dir: "/workdir",
+				ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 			}
 
 			container, _, err := worker.FindOrCreateContainer(ctx, owner, metadata, spec, delegate)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(container).ToNot(BeNil())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(container.DBContainer().ID()).To(Equal(existing.ID()))
 
-			By("not creating a new container in the DB")
-			Expect(fakeDBWorker.CreateContainerCallCount()).To(Equal(0))
-
-			By("returning the existing DB container")
-			Expect(container.DBContainer()).ToNot(BeNil())
-			Expect(container.DBContainer().Handle()).To(Equal("reused-handle"))
+			var count int
+			err = database.Conn.QueryRow(`SELECT count(*) FROM containers WHERE handle = $1`, "reused-handle").Scan(&count)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(count).To(Equal(1))
 		})
 	})
 
-	// -----------------------------------------------------------------------
-	// Additional behavioral: FindOrCreateContainer volume mounts
-	// -----------------------------------------------------------------------
 	Describe("FindOrCreateContainer returns volume mounts matching spec", func() {
-		BeforeEach(func() {
-			setupFakeDBContainer(fakeDBWorker, "mount-test-handle")
-		})
-
 		It("returns mounts for Dir, inputs, outputs, and caches", func() {
 			owner := db.NewFixedHandleContainerOwner("mount-test-handle")
-			metadata := db.ContainerMetadata{
-				Type:     db.ContainerTypeTask,
-				StepName: "mount-test",
-			}
+			metadata := db.ContainerMetadata{Type: db.ContainerTypeTask, StepName: "mount-test"}
 			spec := runtime.ContainerSpec{
-				TeamID:   1,
-				TeamName: "main",
-				Dir:      "/workdir",
-				ImageSpec: runtime.ImageSpec{
-					ImageURL: "docker:///busybox",
-				},
-				Inputs: []runtime.Input{
-					{DestinationPath: "/workdir/input-a"},
-				},
-				Outputs: runtime.OutputPaths{"out-b": "/workdir/out-b"},
-				Caches:  []string{"my-cache"},
+				TeamID: team.ID(), TeamName: team.Name(), Dir: "/workdir",
+				ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+				Inputs:    []runtime.Input{{DestinationPath: "/workdir/input-a"}},
+				Outputs:   runtime.OutputPaths{"out-b": "/workdir/out-b"},
+				Caches:    []string{"my-cache"},
 			}
 
 			_, mounts, err := worker.FindOrCreateContainer(ctx, owner, metadata, spec, delegate)
-			Expect(err).ToNot(HaveOccurred())
-
-			// 1 dir + 1 input + 1 output + 1 cache = 4
+			Expect(err).NotTo(HaveOccurred())
 			Expect(mounts).To(HaveLen(4))
 
 			mountPaths := make([]string, len(mounts))
-			for i, m := range mounts {
-				mountPaths[i] = m.MountPath
+			for i, mount := range mounts {
+				mountPaths[i] = mount.MountPath
 			}
-			Expect(mountPaths).To(ContainElements(
-				"/workdir",
-				"/workdir/input-a",
-				"/workdir/out-b",
-			))
+			Expect(mountPaths).To(ContainElements("/workdir", "/workdir/input-a", "/workdir/out-b"))
 		})
 	})
 
-	// -----------------------------------------------------------------------
-	// LookupVolume with DB error
-	// -----------------------------------------------------------------------
 	Describe("LookupVolume propagates DB errors", func() {
-		BeforeEach(func() {
-			fakeVolumeRepo := new(dbfakes.FakeVolumeRepository)
-			fakeVolumeRepo.FindVolumeReturns(nil, false, fmt.Errorf("connection refused"))
-			worker.SetVolumeRepo(fakeVolumeRepo)
-		})
-
-		It("returns the error", func() {
+		It("returns the real repository error", func() {
+			worker.SetVolumeRepo(db.NewVolumeRepository(closedJetbridgeCloneConn()))
 			_, _, err := worker.LookupVolume(ctx, "any")
-			Expect(err).To(HaveOccurred())
-			Expect(err).To(MatchError(ContainSubstring("connection refused")))
+			Expect(err).To(MatchError(ContainSubstring("closed")))
 		})
 	})
 
-	// -----------------------------------------------------------------------
-	// SkipResourceCache returns false
-	// -----------------------------------------------------------------------
 	Describe("SkipResourceCache", func() {
 		It("returns false to enable caching in DaemonSet mode", func() {
 			Expect(worker.SkipResourceCache()).To(BeFalse())
 		})
 	})
 
-	// -----------------------------------------------------------------------
-	// CreateVolumeForArtifact error paths
-	// -----------------------------------------------------------------------
 	Describe("CreateVolumeForArtifact without volumeRepo", func() {
 		It("returns an error indicating volume repository not configured", func() {
-			freshWorker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
-			_, _, err := freshWorker.CreateVolumeForArtifact(ctx, 1)
-			Expect(err).To(HaveOccurred())
+			freshWorker := jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
+			_, _, err := freshWorker.CreateVolumeForArtifact(ctx, team.ID())
 			Expect(err).To(MatchError(ContainSubstring("volume repository not configured")))
 		})
 	})
 
-	// -----------------------------------------------------------------------
-	// LookupVolume calls FindVolume with correct handle
-	// -----------------------------------------------------------------------
 	Describe("LookupVolume passes handle to FindVolume", func() {
-		It("queries the volume repo with the exact handle", func() {
-			fakeVolumeRepo := new(dbfakes.FakeVolumeRepository)
-			fakeVolumeRepo.FindVolumeReturns(nil, false, nil)
-			worker.SetVolumeRepo(fakeVolumeRepo)
+		It("finds only the exact persisted handle", func() {
+			createVolume("specific-handle-abc", db.VolumeTypeArtifact)
 
-			_, _, _ = worker.LookupVolume(ctx, "specific-handle-abc")
+			vol, found, err := worker.LookupVolume(ctx, "specific-handle-abc")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(vol.Handle()).To(Equal("specific-handle-abc"))
 
-			Expect(fakeVolumeRepo.FindVolumeCallCount()).To(Equal(1))
-			Expect(fakeVolumeRepo.FindVolumeArgsForCall(0)).To(Equal("specific-handle-abc"))
+			_, found, err = worker.LookupVolume(ctx, "specific-handle-ab")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeFalse())
 		})
 	})
 })

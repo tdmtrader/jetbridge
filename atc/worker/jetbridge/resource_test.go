@@ -6,7 +6,6 @@ import (
 	"io"
 
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	. "github.com/onsi/ginkgo/v2"
@@ -18,7 +17,8 @@ import (
 
 var _ = Describe("Resource Step Execution", func() {
 	var (
-		fakeDBWorker  *dbfakes.FakeWorker
+		database      jetbridgeDB
+		dbWorker      db.Worker
 		fakeClientset *fake.Clientset
 		fakeExecutor  *fakeExecExecutor
 		worker        *jetbridge.Worker
@@ -29,20 +29,20 @@ var _ = Describe("Resource Step Execution", func() {
 
 	BeforeEach(func() {
 		ctx = context.Background()
-		fakeDBWorker = new(dbfakes.FakeWorker)
-		fakeDBWorker.NameReturns("k8s-worker-1")
+		database = useJetbridgeDB()
+		persistedWorker, persistErr := persistNamedWorker(database, "k8s-worker-1")
+		Expect(persistErr).NotTo(HaveOccurred())
+		dbWorker = persistedWorker
 		fakeClientset = fake.NewSimpleClientset()
 		cfg = jetbridge.NewConfig("test-namespace", "")
 		delegate = &noopDelegate{}
 		fakeExecutor = &fakeExecExecutor{}
 
-		worker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+		worker = jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
 		worker.SetExecutor(fakeExecutor)
 	})
 
 	setupContainer := func(handle string, containerType db.ContainerType, spec runtime.ContainerSpec) runtime.Container {
-		setupFakeDBContainer(fakeDBWorker, handle)
-
 		container, _, err := worker.FindOrCreateContainer(
 			ctx,
 			db.NewFixedHandleContainerOwner(handle),
@@ -78,6 +78,29 @@ var _ = Describe("Resource Step Execution", func() {
 				Type:           db.ContainerTypeGet,
 				CertsBindMount: true,
 			})
+		})
+
+		It("persists the created get container", func() {
+			var count int
+			err := database.Conn.QueryRow(
+				"SELECT count(*) FROM containers WHERE worker_name = $1 AND handle = $2",
+				"k8s-worker-1",
+				"get-resource-handle",
+			).Scan(&count)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(count).To(Equal(1))
+
+			var handle, workerName, state, metadataType string
+			err = database.Conn.QueryRow(
+				"SELECT handle, worker_name, state::text, meta_type FROM containers WHERE worker_name = $1 AND handle = $2",
+				"k8s-worker-1",
+				"get-resource-handle",
+			).Scan(&handle, &workerName, &state, &metadataType)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(handle).To(Equal("get-resource-handle"))
+			Expect(workerName).To(Equal("k8s-worker-1"))
+			Expect(state).To(Equal("created"))
+			Expect(metadataType).To(Equal("get"))
 		})
 
 		It("creates a pause Pod and execs /opt/resource/in with stdin/stdout", func() {

@@ -64,6 +64,7 @@ func makeContainer(handle string, metadata db.ContainerMetadata, spec runtime.Co
 		nil, // volumes
 		backend,
 		reused,
+		false,
 	)
 }
 
