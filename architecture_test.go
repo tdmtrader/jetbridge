@@ -52,11 +52,16 @@ var agenticPrefixes = []string{
 // with the reason it is allowed. A handler has to be registered somewhere; the
 // point of the allowlist is that "somewhere" is one named place with a stated
 // justification, rather than wherever it was convenient.
-var wiringPoints = map[string]string{
-	"atc/api": "the HTTP composition root -- api.NewHandler constructs every " +
-		"*server sibling package the same way, and mcpserver is registered as " +
-		"one more handler in that map",
-}
+//
+// It is empty, which is the end state worth defending: core does not name the
+// agentic layer at all. atc/api held the only entry until the MCP tool surface
+// and its route were removed; what remains of mcpserver is transport with no
+// Concourse imports and no registration.
+//
+// Adding an entry here is the moment to ask whether the dependency should be
+// inverted instead -- the agentic side depending on core costs nothing, and
+// core depending on the agentic side is what made v1/v2/v3 inseparable.
+var wiringPoints = map[string]string{}
 
 type goListPackage struct {
 	ImportPath     string   `json:"ImportPath"`
@@ -246,10 +251,17 @@ func TestAgenticLayerIsImportedOnlyAtItsWiringPoint(t *testing.T) {
 // This is a ratchet, not a prohibition. The pins record today's reach so that
 // widening it is a visible edit.
 var agenticCoreReach = map[string][]string{
-	"atc/api/mcpserver": {
-		"atc",    // shared wire types
-		"atc/db", // NOTE: direct database access, bypassing core's handlers
-	},
+	// Nothing. What is left of mcpserver is the JSON-RPC / Streamable-HTTP
+	// transport: no Concourse imports at all, which is why it was worth keeping
+	// when the tool surface went.
+	//
+	// It reached into atc and atc/db until then -- talking to the database
+	// directly rather than through core's handlers, which is exactly how its
+	// behaviour drifted from the REST API it shadowed until it no longer
+	// enforced the same authorization. When v4 rebuilds the tools, they should
+	// compose with core's handlers rather than re-implement them, and this pin
+	// should stay empty.
+	"atc/api/mcpserver": {},
 }
 
 func TestAgenticLayerDoesNotReachIntoCoreInternals(t *testing.T) {

@@ -117,8 +117,6 @@ const (
 
 	GetOpenIDConfiguration = "GetOpenIDConfiguration"
 	GetSigningKeys         = "GetSigningKeys"
-
-	MCPEndpoint = "MCPEndpoint"
 )
 
 const (
@@ -240,8 +238,6 @@ var Routes = rata.Routes([]rata.Route{
 	{Path: "/api/v1/wall", Method: "GET", Name: GetWall},
 	{Path: "/api/v1/wall", Method: "PUT", Name: SetWall},
 	{Path: "/api/v1/wall", Method: "DELETE", Name: ClearWall},
-
-	{Path: "/api/v1/mcp", Method: "POST", Name: MCPEndpoint},
 
 	{Path: "/.well-known/openid-configuration", Method: "GET", Name: GetOpenIDConfiguration},
 	{Path: "/.well-known/jwks.json", Method: "GET", Name: GetSigningKeys},

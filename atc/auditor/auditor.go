@@ -159,8 +159,7 @@ func (a *auditor) ValidateAction(action string) bool {
 		atc.ListWorkers,
 		atc.DeleteWorker,
 		atc.GetOpenIDConfiguration,
-		atc.GetSigningKeys,
-		atc.MCPEndpoint:
+		atc.GetSigningKeys:
 		return a.EnableWorkerAuditLog
 	case atc.ListVolumes:
 		return a.EnableVolumeAuditLog
