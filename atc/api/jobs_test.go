@@ -1,268 +1,676 @@
 package api_test
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
+	"reflect"
+	"sync"
 	"time"
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
+	"github.com/concourse/concourse/atc/db/dbtest"
 	. "github.com/concourse/concourse/atc/testhelpers"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
 
+type jobsAPIFixture struct {
+	Real     *realDB
+	Team     db.Team
+	Pipeline db.Pipeline
+	Builder  dbtest.Builder
+	Scenario *dbtest.Scenario
+}
+
+type jobsAPITeamFactory struct {
+	db.TeamFactory
+	teamName string
+	team     db.Team
+}
+
+func (factory jobsAPITeamFactory) FindTeam(name string) (db.Team, bool, error) {
+	if name == factory.teamName {
+		return factory.team, true, nil
+	}
+	return factory.TeamFactory.FindTeam(name)
+}
+
+type jobsAPITeam struct {
+	db.Team
+	pipeline db.Pipeline
+}
+
+func (team jobsAPITeam) Pipeline(ref atc.PipelineRef) (db.Pipeline, bool, error) {
+	if ref.Name == team.pipeline.Name() && reflect.DeepEqual(ref.InstanceVars, team.pipeline.InstanceVars()) {
+		return team.pipeline, true, nil
+	}
+	return team.Team.Pipeline(ref)
+}
+
+type jobsAPIPipeline struct {
+	db.Pipeline
+	jobName string
+	job     db.Job
+}
+
+func (pipeline jobsAPIPipeline) Job(name string) (db.Job, bool, error) {
+	if pipeline.job != nil && name == pipeline.jobName {
+		return pipeline.job, true, nil
+	}
+	return pipeline.Pipeline.Job(name)
+}
+
+type outputsErrorJob struct {
+	db.Job
+	err error
+}
+
+func (job outputsErrorJob) Outputs() ([]atc.JobOutput, error) {
+	return nil, job.err
+}
+
+type finishedAndNextErrorJob struct {
+	db.Job
+	err error
+}
+
+func (job finishedAndNextErrorJob) FinishedAndNextBuild() (db.Build, db.Build, error) {
+	return nil, nil, job.err
+}
+
+type resourcesErrorPipeline struct {
+	db.Pipeline
+	err error
+}
+
+type dashboardErrorPipeline struct {
+	db.Pipeline
+	err error
+}
+
+func (pipeline dashboardErrorPipeline) Dashboard() ([]atc.JobSummary, error) {
+	return nil, pipeline.err
+}
+
+func (pipeline resourcesErrorPipeline) Resources() (db.Resources, error) {
+	return nil, pipeline.err
+}
+
+type resourceTypesErrorPipeline struct {
+	db.Pipeline
+	err error
+}
+
+func (pipeline resourceTypesErrorPipeline) ResourceTypes() (db.ResourceTypes, error) {
+	return nil, pipeline.err
+}
+
+type inputsErrorJob struct {
+	db.Job
+	err error
+}
+
+func (job inputsErrorJob) Inputs() ([]atc.JobInput, error) {
+	return nil, job.err
+}
+
+type configErrorJob struct {
+	db.Job
+	err error
+}
+
+func (job configErrorJob) Config() (atc.JobConfig, error) {
+	return atc.JobConfig{}, job.err
+}
+
+type rerunErrorJob struct {
+	db.Job
+	err error
+}
+
+func (job rerunErrorJob) RerunBuild(db.Build, string) (db.Build, error) {
+	return nil, job.err
+}
+
+type recordingJobsCheckCall struct {
+	checkable               db.Checkable
+	resourceTypes           db.ResourceTypes
+	from                    atc.Version
+	manuallyTriggered       bool
+	skipIntervalRecursively bool
+	toDB                    bool
+	build                   db.Build
+	created                 bool
+	err                     error
+}
+
+type recordingJobsCheckFactory struct {
+	db.CheckFactory
+	mu    sync.Mutex
+	calls []recordingJobsCheckCall
+}
+
+func (factory *recordingJobsCheckFactory) TryCreateCheck(
+	ctx context.Context,
+	checkable db.Checkable,
+	resourceTypes db.ResourceTypes,
+	from atc.Version,
+	manuallyTriggered bool,
+	skipIntervalRecursively bool,
+	toDB bool,
+) (db.Build, bool, error) {
+	build, created, err := factory.CheckFactory.TryCreateCheck(
+		ctx, checkable, resourceTypes, from,
+		manuallyTriggered, skipIntervalRecursively, toDB,
+	)
+	factory.mu.Lock()
+	factory.calls = append(factory.calls, recordingJobsCheckCall{
+		checkable: checkable, resourceTypes: resourceTypes, from: from,
+		manuallyTriggered:       manuallyTriggered,
+		skipIntervalRecursively: skipIntervalRecursively,
+		toDB:                    toDB, build: build, created: created, err: err,
+	})
+	factory.mu.Unlock()
+	return build, created, err
+}
+
+func (factory *recordingJobsCheckFactory) Calls() []recordingJobsCheckCall {
+	factory.mu.Lock()
+	defer factory.mu.Unlock()
+	return append([]recordingJobsCheckCall(nil), factory.calls...)
+}
+
+func useJobsAPIFixture(ref atc.PipelineRef, config atc.Config) *jobsAPIFixture {
+	GinkgoHelper()
+
+	realdb := useRealDB()
+	team, err := realdb.Deps.teamFactory.CreateTeam(atc.Team{Name: "some-team"})
+	Expect(err).NotTo(HaveOccurred())
+	pipeline, _, err := team.SavePipeline(ref, config, db.ConfigVersion(0), false)
+	Expect(err).NotTo(HaveOccurred())
+	builder := dbtest.NewBuilder(realdb.Conn, realdb.LockFactory)
+
+	return &jobsAPIFixture{
+		Real:     realdb,
+		Team:     team,
+		Pipeline: pipeline,
+		Builder:  builder,
+		Scenario: &dbtest.Scenario{Team: team, Pipeline: pipeline},
+	}
+}
+
+func (fixture *jobsAPIFixture) Job(name string) db.Job {
+	GinkgoHelper()
+
+	job, found, err := fixture.Pipeline.Job(name)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(found).To(BeTrue())
+	return job
+}
+
+func (fixture *jobsAPIFixture) Serve() *httptest.Server {
+	GinkgoHelper()
+	return fixture.Real.Serve()
+}
+
+func (fixture *jobsAPIFixture) ServePipeline(pipeline db.Pipeline) *httptest.Server {
+	GinkgoHelper()
+
+	deps := fixture.Real.Deps
+	deps.teamFactory = jobsAPITeamFactory{
+		TeamFactory: deps.teamFactory,
+		teamName:    fixture.Team.Name(),
+		team: jobsAPITeam{
+			Team: fixture.Team, pipeline: pipeline,
+		},
+	}
+	server := newAPIServer(deps)
+	DeferCleanup(server.Close)
+	return server
+}
+
+func (fixture *jobsAPIFixture) doomedPipeline() db.Pipeline {
+	GinkgoHelper()
+
+	conn := postgresRunner.OpenConn()
+	teamFactory := db.NewTeamFactory(conn, fixture.Real.LockFactory)
+	team, found, err := teamFactory.FindTeam(fixture.Team.Name())
+	Expect(err).NotTo(HaveOccurred())
+	Expect(found).To(BeTrue())
+	pipeline, found, err := team.Pipeline(atc.PipelineRef{
+		Name: fixture.Pipeline.Name(), InstanceVars: fixture.Pipeline.InstanceVars(),
+	})
+	Expect(err).NotTo(HaveOccurred())
+	Expect(found).To(BeTrue())
+	Expect(conn.Close()).To(Succeed())
+	return pipeline
+}
+
+func (fixture *jobsAPIFixture) doomedJob(name string) db.Job {
+	GinkgoHelper()
+
+	conn := postgresRunner.OpenConn()
+	teamFactory := db.NewTeamFactory(conn, fixture.Real.LockFactory)
+	team, found, err := teamFactory.FindTeam(fixture.Team.Name())
+	Expect(err).NotTo(HaveOccurred())
+	Expect(found).To(BeTrue())
+	pipeline, found, err := team.Pipeline(atc.PipelineRef{
+		Name: fixture.Pipeline.Name(), InstanceVars: fixture.Pipeline.InstanceVars(),
+	})
+	Expect(err).NotTo(HaveOccurred())
+	Expect(found).To(BeTrue())
+	job, found, err := pipeline.Job(name)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(found).To(BeTrue())
+	Expect(conn.Close()).To(Succeed())
+	return job
+}
+
+func createJobsAPIBuild(job db.Job, createdBy string) db.Build {
+	GinkgoHelper()
+
+	build, err := job.CreateBuild(createdBy)
+	Expect(err).NotTo(HaveOccurred())
+	reloadJobsAPIBuild(build)
+	return build
+}
+
+func startJobsAPIBuild(build db.Build) {
+	GinkgoHelper()
+
+	started, err := build.Start(atc.Plan{})
+	Expect(err).NotTo(HaveOccurred())
+	Expect(started).To(BeTrue())
+	reloadJobsAPIBuild(build)
+}
+
+func finishJobsAPIBuild(build db.Build, status db.BuildStatus) {
+	GinkgoHelper()
+
+	Expect(build.Finish(status)).To(Succeed())
+	reloadJobsAPIBuild(build)
+}
+
+func reloadJobsAPIBuild(build db.Build) {
+	GinkgoHelper()
+
+	found, err := build.Reload()
+	Expect(err).NotTo(HaveOccurred())
+	Expect(found).To(BeTrue())
+}
+
+func jobsAPIGet(server *httptest.Server, path string) *http.Response {
+	GinkgoHelper()
+
+	response, err := client.Get(server.URL + path)
+	if response != nil {
+		DeferCleanup(func() {
+			Expect(response.Body.Close()).To(Succeed())
+		})
+	}
+	Expect(err).NotTo(HaveOccurred())
+	return response
+}
+
+func jobsAPIPost(server *httptest.Server, path string) *http.Response {
+	GinkgoHelper()
+
+	request, err := http.NewRequest(http.MethodPost, server.URL+path, nil)
+	Expect(err).NotTo(HaveOccurred())
+	response, err := client.Do(request)
+	if response != nil {
+		DeferCleanup(func() {
+			Expect(response.Body.Close()).To(Succeed())
+		})
+	}
+	Expect(err).NotTo(HaveOccurred())
+	return response
+}
+
+func jobsAPIRequest(server *httptest.Server, method string, path string) *http.Response {
+	GinkgoHelper()
+
+	request, err := http.NewRequest(method, server.URL+path, nil)
+	Expect(err).NotTo(HaveOccurred())
+	response, err := client.Do(request)
+	if response != nil {
+		DeferCleanup(func() {
+			Expect(response.Body.Close()).To(Succeed())
+		})
+	}
+	Expect(err).NotTo(HaveOccurred())
+	return response
+}
+
+func decodeJobsAPIResponse[T any](response *http.Response) T {
+	GinkgoHelper()
+
+	var value T
+	Expect(json.NewDecoder(response.Body).Decode(&value)).To(Succeed())
+	return value
+}
+
+func expectJobsAPIBuild(actual atc.Build, expected db.Build) {
+	GinkgoHelper()
+
+	Expect(actual.ID).To(Equal(expected.ID()))
+	Expect(actual.Name).To(Equal(expected.Name()))
+	Expect(actual.JobName).To(Equal(expected.JobName()))
+	Expect(actual.PipelineID).To(Equal(expected.PipelineID()))
+	Expect(actual.PipelineName).To(Equal(expected.PipelineName()))
+	Expect(actual.PipelineInstanceVars).To(Equal(expected.PipelineInstanceVars()))
+	Expect(actual.TeamName).To(Equal(expected.TeamName()))
+	Expect(actual.Status).To(Equal(atc.BuildStatus(expected.Status())))
+	Expect(actual.APIURL).To(Equal(fmt.Sprintf("/api/v1/builds/%d", expected.ID())))
+	Expect(actual.CreatedBy).To(Equal(expected.CreatedBy()))
+	if expected.StartTime().IsZero() {
+		Expect(actual.StartTime).To(BeZero())
+	} else {
+		Expect(actual.StartTime).To(Equal(expected.StartTime().Unix()))
+	}
+	if expected.EndTime().IsZero() {
+		Expect(actual.EndTime).To(BeZero())
+	} else {
+		Expect(actual.EndTime).To(Equal(expected.EndTime().Unix()))
+	}
+	if expected.RerunOf() == 0 {
+		Expect(actual.RerunOf).To(BeNil())
+		Expect(actual.RerunNumber).To(BeZero())
+	} else {
+		Expect(actual.RerunOf).To(Equal(&atc.RerunOfBuild{
+			ID: expected.RerunOf(), Name: expected.RerunOfName(),
+		}))
+		Expect(actual.RerunNumber).To(Equal(expected.RerunNumber()))
+	}
+}
+
+func expectJobsAPIBuildSummary(actual *atc.BuildSummary, expected db.Build) {
+	GinkgoHelper()
+
+	if expected == nil {
+		Expect(actual).To(BeNil())
+		return
+	}
+	Expect(actual).NotTo(BeNil())
+	Expect(actual.ID).To(Equal(expected.ID()))
+	Expect(actual.Name).To(Equal(expected.Name()))
+	Expect(actual.JobName).To(Equal(expected.JobName()))
+	Expect(actual.PipelineID).To(Equal(expected.PipelineID()))
+	Expect(actual.PipelineName).To(Equal(expected.PipelineName()))
+	Expect(actual.PipelineInstanceVars).To(Equal(expected.PipelineInstanceVars()))
+	Expect(actual.TeamName).To(Equal(expected.TeamName()))
+	Expect(actual.Status).To(Equal(atc.BuildStatus(expected.Status())))
+	Expect(actual.StartTime).To(Equal(expected.StartTime().Unix()))
+	Expect(actual.EndTime).To(Equal(expected.EndTime().Unix()))
+}
+
 var _ = Describe("Jobs API", func() {
-	var fakeJob *dbfakes.FakeJob
-	var versionedResourceTypes atc.ResourceTypes
-	var fakePipeline *dbfakes.FakePipeline
+	Describe("GET /api/v1/jobs", func() {
+		var server *httptest.Server
 
-	BeforeEach(func() {
-		fakeJob = new(dbfakes.FakeJob)
-		fakePipeline = new(dbfakes.FakePipeline)
-		dbTeamFactory.FindTeamReturns(dbTeam, true, nil)
-		dbTeam.PipelineReturns(fakePipeline, true, nil)
-
-		versionedResourceTypes = atc.ResourceTypes{
-			atc.ResourceType{
-				Name:   "some-resource-1",
-				Type:   "some-base-type-1",
-				Source: atc.Source{"some": "source-1"},
-			},
-			atc.ResourceType{
-				Name:   "some-resource-2",
-				Type:   "some-base-type-2",
-				Source: atc.Source{"some": "source-2"},
-			},
-			atc.ResourceType{
-				Name:   "some-resource-3",
-				Type:   "some-base-type-3",
-				Source: atc.Source{"some": "source-3"},
-			},
+		type listingState struct {
+			fixture   *jobsAPIFixture
+			pipelines map[string]db.Pipeline
+			jobs      map[int]db.Job
 		}
 
-		fakePipeline.ResourceTypesReturns([]db.ResourceType{
-			fakeDBResourceType(versionedResourceTypes[0]),
-			fakeDBResourceType(versionedResourceTypes[1]),
-			fakeDBResourceType(versionedResourceTypes[2]),
-		}, nil)
-	})
-
-	Describe("GET /api/v1/jobs", func() {
-		var response *http.Response
-
-		JustBeforeEach(func() {
-			req, err := http.NewRequest("GET", server.URL+"/api/v1/jobs", nil)
-			Expect(err).NotTo(HaveOccurred())
-
-			req.Header.Set("Content-Type", "application/json")
-
-			response, err = client.Do(req)
-			Expect(err).NotTo(HaveOccurred())
-		})
-
-		BeforeEach(func() {
-			dbJobFactory.VisibleJobsReturns([]atc.JobSummary{
-				{
-					ID:           1,
-					Name:         "some-job",
-					Paused:       true,
-					PipelineID:   1,
-					PipelineName: "some-pipeline",
-					TeamName:     "some-team",
-
-					Inputs: []atc.JobInputSummary{
-						{
-							Name:     "some-input",
-							Resource: "some-input",
-							Trigger:  false,
-						},
-						{
-							Name:     "some-name",
-							Resource: "some-other-input",
-							Passed:   []string{"a", "b"},
-							Trigger:  true,
+		setupListing := func() listingState {
+			GinkgoHelper()
+			config := atc.Config{
+				Resources: atc.ResourceConfigs{
+					{Name: "some-input", Type: dbtest.BaseResourceType},
+					{Name: "some-other-input", Type: dbtest.BaseResourceType},
+				},
+				Jobs: atc.JobConfigs{
+					{Name: "job-a"}, {Name: "job-b"},
+					{
+						Name: "some-job",
+						PlanSequence: []atc.Step{
+							{Config: &atc.GetStep{Name: "some-input"}},
+							{Config: &atc.GetStep{Name: "some-name", Resource: "some-other-input", Passed: []string{"job-a", "job-b"}, Trigger: true}},
 						},
 					},
-
-					NextBuild: &atc.BuildSummary{
-						ID:           3,
-						Name:         "2",
-						JobName:      "some-job",
-						PipelineID:   1,
-						PipelineName: "some-pipeline",
-						TeamName:     "some-team",
-						Status:       "started",
-					},
-					FinishedBuild: &atc.BuildSummary{
-						ID:           1,
-						Name:         "1",
-						JobName:      "some-job",
-						PipelineID:   1,
-						PipelineName: "some-pipeline",
-						TeamName:     "some-team",
-						Status:       "succeeded",
-						StartTime:    1,
-						EndTime:      100,
-					},
-
-					Groups: []string{"group-1", "group-2"},
 				},
-			}, nil)
-		})
-
-		It("returns 200 OK", func() {
-			Expect(response.StatusCode).To(Equal(http.StatusOK))
-		})
-
-		It("returns application/json", func() {
-			expectedHeaderEntries := map[string]string{
-				"Content-Type": "application/json",
+				Groups: atc.GroupConfigs{
+					{Name: "group-1", Jobs: []string{"some-job"}},
+					{Name: "group-2", Jobs: []string{"some-job"}},
+				},
 			}
-			Expect(response).Should(IncludeHeaderEntries(expectedHeaderEntries))
-		})
-
-		It("returns all jobs from public pipelines and pipelines in authenticated teams", func() {
-			body, err := io.ReadAll(response.Body)
-			Expect(err).NotTo(HaveOccurred())
-
-			Expect(body).To(MatchJSON(`[
-			{
-				"id": 1,
-				"name": "some-job",
-				"pipeline_id": 1,
-				"pipeline_name": "some-pipeline",
-				"team_name": "some-team",
-				"paused": true,
-				"next_build": {
-					"id": 3,
-					"team_name": "some-team",
-					"name": "2",
-					"status": "started",
-					"job_name": "some-job",
-					"pipeline_id": 1,
-					"pipeline_name": "some-pipeline"
-				},
-				"finished_build": {
-					"id": 1,
-					"team_name": "some-team",
-					"name": "1",
-					"status": "succeeded",
-					"job_name": "some-job",
-					"pipeline_id": 1,
-					"pipeline_name": "some-pipeline",
-					"start_time": 1,
-					"end_time": 100
-				},
-				"inputs": [
-					{
-						"name": "some-input",
-						"resource": "some-input"
-					},
-					{
-						"name": "some-name",
-						"resource": "some-other-input",
-						"passed": [
-							"a",
-							"b"
-						],
-						"trigger": true
-					}
-				],
-				"groups": ["group-1", "group-2"]
-			}
-			]`))
-		})
-
-		Context("when getting the jobs fails", func() {
-			BeforeEach(func() {
-				dbJobFactory.VisibleJobsReturns(nil, errors.New("nope"))
-			})
-
-			It("returns 500", func() {
-				Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-			})
-		})
-
-		Context("when there are no visible jobs", func() {
-			BeforeEach(func() {
-				dbJobFactory.VisibleJobsReturns(nil, nil)
-			})
-
-			It("returns empty array", func() {
-				body, err := io.ReadAll(response.Body)
+			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "private-authorized"}, config)
+			pipelines := map[string]db.Pipeline{"private-authorized": fixture.Pipeline}
+			for _, saved := range []struct {
+				teamName     string
+				pipelineName string
+				public       bool
+			}{
+				{teamName: "public-team", pipelineName: "public-pipeline", public: true},
+				{teamName: "private-team", pipelineName: "private-unauthorized"},
+			} {
+				team, err := fixture.Real.Deps.teamFactory.CreateTeam(atc.Team{Name: saved.teamName})
 				Expect(err).NotTo(HaveOccurred())
+				pipeline, _, err := team.SavePipeline(atc.PipelineRef{Name: saved.pipelineName}, config, db.ConfigVersion(0), false)
+				Expect(err).NotTo(HaveOccurred())
+				if saved.public {
+					Expect(pipeline.Expose()).To(Succeed())
+				}
+				pipelines[saved.pipelineName] = pipeline
+			}
 
-				Expect(body).To(MatchJSON(`[]`))
-			})
+			jobs := map[int]db.Job{}
+			for _, pipeline := range pipelines {
+				persistedJobs, err := pipeline.Jobs()
+				Expect(err).NotTo(HaveOccurred())
+				for _, job := range persistedJobs {
+					jobs[job.ID()] = job
+				}
+				mainJob, found, err := pipeline.Job("some-job")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(found).To(BeTrue())
+				Expect(mainJob.Pause("listing-test")).To(Succeed())
+				finished := createJobsAPIBuild(mainJob, "listing-test")
+				startJobsAPIBuild(finished)
+				finishJobsAPIBuild(finished, db.BuildStatusSucceeded)
+				next := createJobsAPIBuild(mainJob, "listing-test")
+				startJobsAPIBuild(next)
+				found, err = mainJob.Reload()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(found).To(BeTrue())
+			}
+			return listingState{fixture: fixture, pipelines: pipelines, jobs: jobs}
+		}
+
+		expectListing := func(response *http.Response, state listingState, visiblePipelineNames ...string) {
+			GinkgoHelper()
+			Expect(response.StatusCode).To(Equal(http.StatusOK))
+			Expect(response).To(IncludeHeaderEntries(map[string]string{"Content-Type": "application/json"}))
+			summaries := decodeJobsAPIResponse[[]atc.JobSummary](response)
+			expectedIDs := []int{}
+			for _, pipelineName := range visiblePipelineNames {
+				persistedJobs, err := state.pipelines[pipelineName].Jobs()
+				Expect(err).NotTo(HaveOccurred())
+				for _, job := range persistedJobs {
+					expectedIDs = append(expectedIDs, job.ID())
+				}
+			}
+			actualIDs := make([]int, 0, len(summaries))
+			for _, summary := range summaries {
+				actualIDs = append(actualIDs, summary.ID)
+				job := state.jobs[summary.ID]
+				Expect(job).NotTo(BeNil())
+				found, err := job.Reload()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(found).To(BeTrue())
+				Expect(summary.Name).To(Equal(job.Name()))
+				Expect(summary.PipelineID).To(Equal(job.PipelineID()))
+				Expect(summary.PipelineName).To(Equal(job.PipelineName()))
+				Expect(summary.TeamName).To(Equal(job.TeamName()))
+				Expect(summary.Paused).To(Equal(job.Paused()))
+				finished, next, err := job.FinishedAndNextBuild()
+				Expect(err).NotTo(HaveOccurred())
+				expectJobsAPIBuildSummary(summary.FinishedBuild, finished)
+				expectJobsAPIBuildSummary(summary.NextBuild, next)
+				if job.Name() == "some-job" {
+					Expect(summary.Inputs).To(Equal([]atc.JobInputSummary{
+						{Name: "some-input", Resource: "some-input"},
+						{Name: "some-name", Resource: "some-other-input", Passed: []string{"job-a", "job-b"}, Trigger: true},
+					}))
+					Expect(summary.Groups).To(Equal([]string{"group-1", "group-2"}))
+				} else {
+					Expect(summary.Inputs).To(BeEmpty())
+					Expect(summary.Groups).To(BeEmpty())
+				}
+			}
+			Expect(actualIDs).To(ConsistOf(expectedIDs))
+		}
+
+		It("returns only jobs in persisted public pipelines without authentication", func() {
+			state := setupListing()
+			server = state.fixture.Serve()
+			response := jobsAPIGet(server, "/api/v1/jobs")
+			expectListing(response, state, "public-pipeline")
 		})
 
-		Context("when not authenticated", func() {
-			It("populates job factory with no team names", func() {
-				Expect(dbJobFactory.VisibleJobsCallCount()).To(Equal(1))
-				Expect(dbJobFactory.VisibleJobsArgsForCall(0)).To(BeEmpty())
-			})
+		It("adds persisted private jobs for authenticated team membership", func() {
+			state := setupListing()
+			fakeAccess.TeamNamesReturns([]string{"some-team"})
+			server = state.fixture.Serve()
+			response := jobsAPIGet(server, "/api/v1/jobs")
+			expectListing(response, state, "public-pipeline", "private-authorized")
 		})
 
-		Context("when authenticated", func() {
-			BeforeEach(func() {
-				fakeAccess.TeamNamesReturns([]string{"some-team"})
-			})
+		It("returns every persisted active job for an administrator", func() {
+			state := setupListing()
+			fakeAccess.IsAdminReturns(true)
+			server = state.fixture.Serve()
+			response := jobsAPIGet(server, "/api/v1/jobs")
+			expectListing(response, state, "public-pipeline", "private-authorized", "private-unauthorized")
+		})
 
-			It("constructs job factory with provided team names", func() {
-				Expect(dbJobFactory.VisibleJobsCallCount()).To(Equal(1))
-				Expect(dbJobFactory.VisibleJobsArgsForCall(0)).To(ContainElement("some-team"))
-			})
+		It("returns an empty array when no configured jobs are visible", func() {
+			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "empty-pipeline"}, atc.Config{})
+			server = fixture.Serve()
+			response := jobsAPIGet(server, "/api/v1/jobs")
+			Expect(response.StatusCode).To(Equal(http.StatusOK))
+			Expect(decodeJobsAPIResponse[[]atc.JobSummary](response)).To(BeEmpty())
+		})
 
-			Context("user has the admin privilege", func() {
-				BeforeEach(func() {
-					fakeAccess.IsAdminReturns(true)
-				})
-
-				It("returns all jobs from public and private pipelines from unauthenticated teams", func() {
-					Expect(dbJobFactory.AllActiveJobsCallCount()).To(Equal(1))
-				})
-			})
+		It("returns 500 when the real job factory query uses a closed connection", func() {
+			fixture := useJobsAPIFixture(
+				atc.PipelineRef{Name: "some-pipeline"},
+				atc.Config{Jobs: atc.JobConfigs{{Name: "some-job"}}},
+			)
+			doomedConn := postgresRunner.OpenConn()
+			doomedJobFactory := db.NewJobFactory(doomedConn, fixture.Real.LockFactory)
+			Expect(doomedConn.Close()).To(Succeed())
+			deps := fixture.Real.Deps
+			deps.jobFactory = doomedJobFactory
+			server = newAPIServer(deps)
+			DeferCleanup(server.Close)
+			response := jobsAPIGet(server, "/api/v1/jobs")
+			Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
 		})
 	})
 
 	Describe("GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name", func() {
-		var response *http.Response
+		var (
+			response       *http.Response
+			server         *httptest.Server
+			fixture        *jobsAPIFixture
+			config         atc.Config
+			pipelineRef    atc.PipelineRef
+			job            db.Job
+			finishedBuild  db.Build
+			nextBuild      db.Build
+			exposePipeline bool
+			setup          func(*jobsAPIFixture)
+			routePipeline  func(*jobsAPIFixture) db.Pipeline
+		)
+
+		BeforeEach(func() {
+			fakeAccess.IsAuthenticatedReturns(true)
+			fakeAccess.IsAuthorizedReturns(true)
+			pipelineRef = atc.PipelineRef{Name: "some-pipeline"}
+			exposePipeline = false
+			routePipeline = nil
+			config = atc.Config{
+				Resources: atc.ResourceConfigs{
+					{Name: "some-input", Type: dbtest.BaseResourceType},
+					{Name: "some-other-input", Type: dbtest.BaseResourceType},
+					{Name: "some-output", Type: dbtest.BaseResourceType},
+					{Name: "some-other-output", Type: dbtest.BaseResourceType},
+				},
+				Jobs: atc.JobConfigs{
+					{Name: "upstream-a"},
+					{Name: "upstream-b"},
+					{
+						Name: "some-job",
+						PlanSequence: []atc.Step{
+							{Config: &atc.GetStep{Name: "some-input"}},
+							{Config: &atc.GetStep{
+								Name: "some-name", Resource: "some-other-input",
+								Passed: []string{"upstream-a", "upstream-b"}, Trigger: true,
+							}},
+							{Config: &atc.PutStep{Name: "some-output"}},
+							{Config: &atc.PutStep{Name: "some-other-output"}},
+						},
+					},
+				},
+				Groups: atc.GroupConfigs{
+					{Name: "group-1", Jobs: []string{"some-job"}},
+					{Name: "group-2", Jobs: []string{"some-job"}},
+				},
+			}
+			setup = func(fixture *jobsAPIFixture) {
+				job = fixture.Job("some-job")
+				Expect(job.Pause("api-test")).To(Succeed())
+				finishedBuild = createJobsAPIBuild(job, "api-test")
+				startJobsAPIBuild(finishedBuild)
+				finishJobsAPIBuild(finishedBuild, db.BuildStatusSucceeded)
+				nextBuild = createJobsAPIBuild(job, "api-test")
+				startJobsAPIBuild(nextBuild)
+				Expect(job.UpdateFirstLoggedBuildID(finishedBuild.ID())).To(Succeed())
+				found, err := job.Reload()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(found).To(BeTrue())
+			}
+		})
 
 		JustBeforeEach(func() {
-			var err error
-
-			response, err = client.Get(server.URL + "/api/v1/teams/some-team/pipelines/some-pipeline/jobs/some-job")
-			Expect(err).NotTo(HaveOccurred())
+			fixture = useJobsAPIFixture(pipelineRef, config)
+			setup(fixture)
+			if exposePipeline {
+				Expect(fixture.Pipeline.Expose()).To(Succeed())
+			}
+			if routePipeline == nil {
+				server = fixture.Serve()
+			} else {
+				server = fixture.ServePipeline(routePipeline(fixture))
+			}
+			response = jobsAPIGet(server, "/api/v1/teams/some-team/pipelines/some-pipeline/jobs/some-job")
 		})
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
 				fakeAccess.IsAuthenticatedReturns(false)
+				fakeAccess.IsAuthorizedReturns(false)
 			})
 
-			Context("and the pipeline is private", func() {
-				BeforeEach(func() {
-					fakePipeline.PublicReturns(false)
-				})
-
-				It("returns 401", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
-				})
+			It("returns 401 for a private pipeline", func() {
+				Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
 			})
 
 			Context("and the pipeline is public", func() {
 				BeforeEach(func() {
-					fakePipeline.JobReturns(fakeJob, true, nil)
-					fakePipeline.PublicReturns(true)
-					fakeJob.FinishedAndNextBuildReturns(nil, nil, nil)
+					exposePipeline = true
 				})
 
-				It("returns 200 OK", func() {
+				It("returns 200", func() {
 					Expect(response.StatusCode).To(Equal(http.StatusOK))
 				})
 			})
@@ -274,270 +682,223 @@ var _ = Describe("Jobs API", func() {
 				fakeAccess.IsAuthorizedReturns(false)
 			})
 
-			Context("and the pipeline is private", func() {
-				BeforeEach(func() {
-					fakePipeline.PublicReturns(false)
-				})
-
-				It("returns 403", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusForbidden))
-				})
+			It("returns 403 for a private pipeline", func() {
+				Expect(response.StatusCode).To(Equal(http.StatusForbidden))
 			})
 
 			Context("and the pipeline is public", func() {
 				BeforeEach(func() {
-					fakePipeline.JobReturns(fakeJob, true, nil)
-					fakePipeline.PublicReturns(true)
-					fakeJob.FinishedAndNextBuildReturns(nil, nil, nil)
+					exposePipeline = true
 				})
 
-				It("returns 200 OK", func() {
+				It("returns 200", func() {
 					Expect(response.StatusCode).To(Equal(http.StatusOK))
 				})
 			})
 		})
 
-		Context("when authenticated and authorized", func() {
-			var build1 *dbfakes.FakeBuild
-			var build2 *dbfakes.FakeBuild
-
-			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
-				fakeAccess.IsAuthorizedReturns(true)
-			})
-
-			Context("when getting the build succeeds", func() {
+		Context("when authorized", func() {
+			Context("when Pipeline.Job fails", func() {
 				BeforeEach(func() {
-					build1 = new(dbfakes.FakeBuild)
-					build1.IDReturns(1)
-					build1.NameReturns("1")
-					build1.JobNameReturns("some-job")
-					build1.PipelineIDReturns(1)
-					build1.PipelineNameReturns("some-pipeline")
-					build1.TeamNameReturns("some-team")
-					build1.StatusReturns(db.BuildStatusSucceeded)
-					build1.StartTimeReturns(time.Unix(1, 0))
-					build1.EndTimeReturns(time.Unix(100, 0))
-
-					build2 = new(dbfakes.FakeBuild)
-					build2.IDReturns(3)
-					build2.NameReturns("2")
-					build2.JobNameReturns("some-job")
-					build2.PipelineIDReturns(1)
-					build2.PipelineNameReturns("some-pipeline")
-					build2.TeamNameReturns("some-team")
-					build2.StatusReturns(db.BuildStatusStarted)
+					setup = func(*jobsAPIFixture) {}
+					routePipeline = func(fixture *jobsAPIFixture) db.Pipeline {
+						return fixture.doomedPipeline()
+					}
 				})
 
-				Context("when getting the job fails", func() {
-					BeforeEach(func() {
-						fakePipeline.JobReturns(nil, false, errors.New("nope"))
-					})
-
-					It("returns 500", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-					})
-				})
-
-				Context("when getting the job succeeds", func() {
-					BeforeEach(func() {
-						fakeJob.IDReturns(1)
-						fakeJob.PausedReturns(true)
-						fakeJob.FirstLoggedBuildIDReturns(99)
-						fakeJob.PipelineIDReturns(1)
-						fakeJob.PipelineNameReturns("some-pipeline")
-						fakeJob.NameReturns("some-job")
-						fakeJob.TagsReturns([]string{"group-1", "group-2"})
-						fakeJob.FinishedAndNextBuildReturns(build1, build2, nil)
-
-						fakePipeline.JobReturns(fakeJob, true, nil)
-					})
-
-					It("fetches the inputs", func() {
-						Expect(fakeJob.InputsCallCount()).To(Equal(1))
-					})
-
-					Context("when getting the inputs fails", func() {
-						BeforeEach(func() {
-							fakeJob.InputsReturns(nil, errors.New("nope"))
-						})
-
-						It("returns 500", func() {
-							Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-						})
-					})
-
-					Context("when getting the inputs succeeds", func() {
-						BeforeEach(func() {
-							fakeJob.InputsReturns([]atc.JobInput{
-								{
-									Name:     "some-input",
-									Resource: "some-input",
-								},
-								{
-									Name:     "some-name",
-									Resource: "some-other-input",
-									Passed:   []string{"a", "b"},
-									Trigger:  true,
-								},
-							}, nil)
-						})
-
-						It("fetches the outputs", func() {
-							Expect(fakeJob.OutputsCallCount()).To(Equal(1))
-						})
-
-						Context("when getting the outputs fails", func() {
-							BeforeEach(func() {
-								fakeJob.OutputsReturns(nil, errors.New("nope"))
-							})
-
-							It("returns 500", func() {
-								Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-							})
-						})
-
-						Context("when getting the outputs succeeds", func() {
-							BeforeEach(func() {
-								fakeJob.OutputsReturns([]atc.JobOutput{
-									{
-										Name:     "some-output",
-										Resource: "some-output",
-									},
-									{
-										Name:     "some-other-output",
-										Resource: "some-other-output",
-									},
-								}, nil)
-							})
-
-							It("fetches by job", func() {
-								Expect(fakeJob.FinishedAndNextBuildCallCount()).To(Equal(1))
-							})
-
-							It("returns 200 OK", func() {
-								Expect(response.StatusCode).To(Equal(http.StatusOK))
-							})
-
-							It("returns Content-Type 'application/json'", func() {
-								expectedHeaderEntries := map[string]string{
-									"Content-Type": "application/json",
-								}
-								Expect(response).Should(IncludeHeaderEntries(expectedHeaderEntries))
-							})
-
-							It("returns the job's name, if it's paused, and any running and finished builds", func() {
-								body, err := io.ReadAll(response.Body)
-								Expect(err).NotTo(HaveOccurred())
-
-								Expect(body).To(MatchJSON(`{
-							"id": 1,
-							"name": "some-job",
-							"pipeline_id": 1,
-							"pipeline_name": "some-pipeline",
-							"team_name": "some-team",
-							"paused": true,
-							"first_logged_build_id": 99,
-							"next_build": {
-								"id": 3,
-								"name": "2",
-								"job_name": "some-job",
-								"status": "started",
-								"api_url": "/api/v1/builds/3",
-								"pipeline_id": 1,
-								"pipeline_name": "some-pipeline",
-								"team_name": "some-team"
-							},
-							"finished_build": {
-								"id": 1,
-								"name": "1",
-								"job_name": "some-job",
-								"status": "succeeded",
-								"api_url": "/api/v1/builds/1",
-								"pipeline_id": 1,
-								"pipeline_name": "some-pipeline",
-								"team_name": "some-team",
-								"start_time": 1,
-								"end_time": 100
-							},
-							"inputs": [
-								{
-									"name": "some-input",
-									"resource": "some-input",
-									"trigger": false
-								},
-								{
-									"name": "some-name",
-									"resource": "some-other-input",
-									"passed": ["a", "b"],
-									"trigger": true
-								}
-							],
-							"outputs": [
-								{
-									"name": "some-output",
-									"resource": "some-output"
-								},
-								{
-									"name": "some-other-output",
-									"resource": "some-other-output"
-								}
-							],
-							"groups": ["group-1", "group-2"]
-						}`))
-
-							})
-
-							Context("when there are no running or finished builds", func() {
-								BeforeEach(func() {
-									fakeJob.FinishedAndNextBuildReturns(nil, nil, nil)
-								})
-
-								It("returns null as their entries", func() {
-									var job atc.Job
-									err := json.NewDecoder(response.Body).Decode(&job)
-									Expect(err).NotTo(HaveOccurred())
-
-									Expect(job.NextBuild).To(BeNil())
-									Expect(job.FinishedBuild).To(BeNil())
-								})
-							})
-
-							Context("when getting the job's builds fails", func() {
-								BeforeEach(func() {
-									fakeJob.FinishedAndNextBuildReturns(nil, nil, errors.New("oh no!"))
-								})
-
-								It("returns 500", func() {
-									Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-								})
-							})
-						})
-					})
+				It("returns 500", func() {
+					Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
 				})
 			})
 
-			Context("when the job is not found", func() {
+			Context("when the job is absent", func() {
 				BeforeEach(func() {
-					fakePipeline.JobReturns(nil, false, nil)
+					config.Jobs = atc.JobConfigs{{Name: "other-job"}}
+					setup = func(*jobsAPIFixture) {}
 				})
 
 				It("returns 404", func() {
 					Expect(response.StatusCode).To(Equal(http.StatusNotFound))
 				})
 			})
+
+			Context("when Inputs fails", func() {
+				BeforeEach(func() {
+					setup = func(fixture *jobsAPIFixture) {
+						job = fixture.Job("some-job")
+					}
+					routePipeline = func(fixture *jobsAPIFixture) db.Pipeline {
+						return jobsAPIPipeline{
+							Pipeline: fixture.Pipeline,
+							jobName:  "some-job",
+							job:      fixture.doomedJob("some-job"),
+						}
+					}
+				})
+
+				It("returns 500", func() {
+					Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
+				})
+			})
+
+			Context("when Outputs fails after real inputs succeed", func() {
+				BeforeEach(func() {
+					setup = func(fixture *jobsAPIFixture) {
+						job = fixture.Job("some-job")
+					}
+					routePipeline = func(fixture *jobsAPIFixture) db.Pipeline {
+						return jobsAPIPipeline{
+							Pipeline: fixture.Pipeline,
+							jobName:  "some-job",
+							job: outputsErrorJob{
+								Job: fixture.Job("some-job"), err: errors.New("outputs failed"),
+							},
+						}
+					}
+				})
+
+				It("returns 500", func() {
+					Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
+				})
+			})
+
+			Context("when FinishedAndNextBuild fails after real inputs and outputs succeed", func() {
+				BeforeEach(func() {
+					setup = func(fixture *jobsAPIFixture) {
+						job = fixture.Job("some-job")
+					}
+					routePipeline = func(fixture *jobsAPIFixture) db.Pipeline {
+						return jobsAPIPipeline{
+							Pipeline: fixture.Pipeline,
+							jobName:  "some-job",
+							job: finishedAndNextErrorJob{
+								Job: fixture.Job("some-job"), err: errors.New("build lookup failed"),
+							},
+						}
+					}
+				})
+
+				It("returns 500", func() {
+					Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
+				})
+			})
+
+			It("returns the persisted finished build identity and status", func() {
+				Expect(response.StatusCode).To(Equal(http.StatusOK))
+				Expect(response.Header.Get("Content-Type")).To(Equal("application/json"))
+				actual := decodeJobsAPIResponse[atc.Job](response)
+
+				Expect(actual.ID).To(Equal(job.ID()))
+				Expect(actual.Name).To(Equal(job.Name()))
+				Expect(actual.TeamName).To(Equal(job.TeamName()))
+				Expect(actual.PipelineID).To(Equal(job.PipelineID()))
+				Expect(actual.PipelineName).To(Equal(job.PipelineName()))
+				Expect(actual.PipelineInstanceVars).To(Equal(job.PipelineInstanceVars()))
+				Expect(actual.Paused).To(Equal(job.Paused()))
+				Expect(actual.PausedBy).To(Equal(job.PausedBy()))
+				Expect(actual.PausedAt).To(Equal(job.PausedAt().Unix()))
+				Expect(actual.FirstLoggedBuildID).To(Equal(job.FirstLoggedBuildID()))
+				Expect(actual.Groups).To(ConsistOf(job.Tags()))
+				Expect(actual.Inputs).To(ConsistOf(
+					atc.JobInput{Name: "some-input", Resource: "some-input"},
+					atc.JobInput{
+						Name: "some-name", Resource: "some-other-input",
+						Passed: []string{"upstream-a", "upstream-b"}, Trigger: true,
+					},
+				))
+				Expect(actual.Outputs).To(ConsistOf(
+					atc.JobOutput{Name: "some-output", Resource: "some-output"},
+					atc.JobOutput{Name: "some-other-output", Resource: "some-other-output"},
+				))
+				Expect(actual.FinishedBuild).NotTo(BeNil())
+				expectJobsAPIBuild(*actual.FinishedBuild, finishedBuild)
+				Expect(actual.NextBuild).NotTo(BeNil())
+				expectJobsAPIBuild(*actual.NextBuild, nextBuild)
+				Expect(actual.FinishedBuild.EndTime).NotTo(BeZero())
+				Expect(actual.NextBuild.EndTime).To(BeZero())
+			})
+
+			Context("when the job naturally has no builds", func() {
+				BeforeEach(func() {
+					setup = func(fixture *jobsAPIFixture) {
+						job = fixture.Job("some-job")
+					}
+				})
+
+				It("returns null build fields", func() {
+					Expect(response.StatusCode).To(Equal(http.StatusOK))
+					actual := decodeJobsAPIResponse[atc.Job](response)
+					Expect(actual.FinishedBuild).To(BeNil())
+					Expect(actual.NextBuild).To(BeNil())
+				})
+			})
 		})
 	})
 
 	Describe("GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/badge", func() {
+		var server *httptest.Server
 		var response *http.Response
+		var fixture *jobsAPIFixture
+		var config atc.Config
+		var expose bool
+		var hasFinishedBuild bool
+		var finishedStatus db.BuildStatus
+		var failure string
+
+		BeforeEach(func() {
+			fakeAccess.IsAuthenticatedReturns(true)
+			fakeAccess.IsAuthorizedReturns(true)
+			config = atc.Config{Jobs: atc.JobConfigs{{Name: "some-job"}}}
+			expose = false
+			hasFinishedBuild = false
+			finishedStatus = db.BuildStatusSucceeded
+			failure = ""
+		})
 
 		JustBeforeEach(func() {
-			var err error
+			fixture = useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, config)
+			if expose {
+				Expect(fixture.Pipeline.Expose()).To(Succeed())
+			} else {
+				Expect(fixture.Pipeline.Hide()).To(Succeed())
+			}
 
-			response, err = client.Get(server.URL + "/api/v1/teams/some-team/pipelines/some-pipeline/jobs/some-job/badge")
-			Expect(err).NotTo(HaveOccurred())
+			pipeline := fixture.Pipeline
+			switch failure {
+			case "pipeline-job":
+				pipeline = fixture.doomedPipeline()
+			case "finished-and-next":
+				job := fixture.Job("some-job")
+				pipeline = jobsAPIPipeline{
+					Pipeline: fixture.Pipeline,
+					jobName:  "some-job",
+					job: finishedAndNextErrorJob{
+						Job: job,
+						err: errors.New("oh no!"),
+					},
+				}
+			default:
+				if hasFinishedBuild {
+					build := createJobsAPIBuild(fixture.Job("some-job"), "api-badge-test")
+					startJobsAPIBuild(build)
+					finishJobsAPIBuild(build, finishedStatus)
+				}
+			}
+
+			if failure == "" {
+				server = fixture.Serve()
+			} else {
+				server = fixture.ServePipeline(pipeline)
+			}
+			response = jobsAPIGet(server, "/api/v1/teams/some-team/pipelines/some-pipeline/jobs/some-job/badge")
 		})
+
+		readBadge := func(response *http.Response) string {
+			GinkgoHelper()
+			body, err := io.ReadAll(response.Body)
+			Expect(err).NotTo(HaveOccurred())
+			return string(body)
+		}
 
 		Context("when authenticated and not authorized", func() {
 			BeforeEach(func() {
@@ -546,10 +907,6 @@ var _ = Describe("Jobs API", func() {
 			})
 
 			Context("and the pipeline is private", func() {
-				BeforeEach(func() {
-					fakePipeline.PublicReturns(false)
-				})
-
 				It("returns 403", func() {
 					Expect(response.StatusCode).To(Equal(http.StatusForbidden))
 				})
@@ -557,8 +914,7 @@ var _ = Describe("Jobs API", func() {
 
 			Context("and the pipeline is public", func() {
 				BeforeEach(func() {
-					fakePipeline.PublicReturns(true)
-					fakePipeline.JobReturns(fakeJob, true, nil)
+					expose = true
 				})
 
 				It("returns 200 OK", func() {
@@ -568,224 +924,90 @@ var _ = Describe("Jobs API", func() {
 		})
 
 		Context("when authorized", func() {
-			var build1 *dbfakes.FakeBuild
-
-			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
-				fakeAccess.IsAuthorizedReturns(true)
-
-				fakePipeline.JobReturns(fakeJob, true, nil)
-				fakeJob.NameReturns("some-job")
-
-				build1 = new(dbfakes.FakeBuild)
-			})
-
-			It("fetches by job", func() {
-				Expect(fakeJob.FinishedAndNextBuildCallCount()).To(Equal(1))
-			})
-
-			It("returns 200 OK", func() {
+			It("returns 200 OK with SVG headers and an unknown badge for the real buildless job", func() {
 				Expect(response.StatusCode).To(Equal(http.StatusOK))
-			})
-
-			It("returns Content-Type as image/svg+xml and disables caching", func() {
-				expectedHeaderEntries := map[string]string{
+				Expect(response).Should(IncludeHeaderEntries(map[string]string{
 					"Content-Type":  "image/svg+xml",
 					"Cache-Control": "no-cache, no-store, must-revalidate",
 					"Expires":       "0",
-				}
-				Expect(response).Should(IncludeHeaderEntries(expectedHeaderEntries))
+				}))
+				body := readBadge(response)
+				Expect(body).To(ContainSubstring("unknown"))
+				Expect(body).To(ContainSubstring("#9f9f9f"))
 			})
 
-			Context("when the finished build is successful", func() {
+			assertPersistedStatus := func(description string, status db.BuildStatus, label, color string) {
+				Context(description, func() {
+					BeforeEach(func() {
+						hasFinishedBuild = true
+						finishedStatus = status
+					})
+
+					It("renders the persisted finished build status and color", func() {
+						Expect(response.StatusCode).To(Equal(http.StatusOK))
+						body := readBadge(response)
+						Expect(body).To(ContainSubstring(label))
+						Expect(body).To(ContainSubstring(color))
+					})
+				})
+			}
+			assertPersistedStatus("when the finished build succeeded", db.BuildStatusSucceeded, "passing", "#44cc11")
+			assertPersistedStatus("when the finished build failed", db.BuildStatusFailed, "failing", "#e05d44")
+			assertPersistedStatus("when the finished build was aborted", db.BuildStatusAborted, "aborted", "#8f4b2d")
+			assertPersistedStatus("when the finished build errored", db.BuildStatusErrored, "errored", "#fe7d37")
+
+			Context("with a successful persisted build", func() {
 				BeforeEach(func() {
-					build1.StatusReturns(db.BuildStatusSucceeded)
-					fakeJob.FinishedAndNextBuildReturns(build1, nil, nil)
+					hasFinishedBuild = true
+					finishedStatus = db.BuildStatusSucceeded
 				})
 
-				It("returns passing badge with correct color", func() {
-					body, err := io.ReadAll(response.Body)
-					Expect(err).NotTo(HaveOccurred())
-
-					Expect(string(body)).To(ContainSubstring("passing"))
-					Expect(string(body)).To(ContainSubstring("#44cc11"))
-				})
-			})
-
-			Context("when the finished build is failed", func() {
-				BeforeEach(func() {
-					build1.StatusReturns(db.BuildStatusFailed)
-					fakeJob.FinishedAndNextBuildReturns(build1, nil, nil)
+				It("uses the URL title parameter and HTML escapes it", func() {
+					alternate := jobsAPIGet(server, "/api/v1/teams/some-team/pipelines/some-pipeline/jobs/some-job/badge?title=%24custom")
+					Expect(readBadge(alternate)).To(ContainSubstring("$custom"))
 				})
 
-				It("returns failing badge with correct color", func() {
-					body, err := io.ReadAll(response.Body)
-					Expect(err).NotTo(HaveOccurred())
-
-					Expect(string(body)).To(ContainSubstring("failing"))
-					Expect(string(body)).To(ContainSubstring("#e05d44"))
-				})
-			})
-
-			Context("when the finished build was aborted", func() {
-				BeforeEach(func() {
-					build1.StatusReturns(db.BuildStatusAborted)
-					fakeJob.FinishedAndNextBuildReturns(build1, nil, nil)
+				It("uses the default title and dimensions when the title is omitted", func() {
+					body := readBadge(response)
+					Expect(body).To(ContainSubstring("build"))
+					Expect(body).To(ContainSubstring(`width="88"`))
+					Expect(body).To(ContainSubstring(`d="M0 0h37v20H0z"`))
 				})
 
-				It("returns aborted badge with correct color", func() {
-					body, err := io.ReadAll(response.Body)
-					Expect(err).NotTo(HaveOccurred())
-
-					Expect(string(body)).To(ContainSubstring("aborted"))
-					Expect(string(body)).To(ContainSubstring("#8f4b2d"))
-				})
-			})
-
-			Context("when the finished build errored", func() {
-				BeforeEach(func() {
-					build1.StatusReturns(db.BuildStatusErrored)
-					fakeJob.FinishedAndNextBuildReturns(build1, nil, nil)
+				It("uses the default build title when the title parameter is empty", func() {
+					alternate := jobsAPIGet(server, "/api/v1/teams/some-team/pipelines/some-pipeline/jobs/some-job/badge?title=")
+					Expect(readBadge(alternate)).To(ContainSubstring("build"))
 				})
 
-				It("returns errored badge with correct color", func() {
-					body, err := io.ReadAll(response.Body)
-					Expect(err).NotTo(HaveOccurred())
+				DescribeTable("scales custom titles",
+					func(title, width string) {
+						alternate := jobsAPIGet(server, "/api/v1/teams/some-team/pipelines/some-pipeline/jobs/some-job/badge?title="+title)
+						body := readBadge(alternate)
+						Expect(body).To(ContainSubstring(title))
+						Expect(body).To(ContainSubstring(`width="` + width + `"`))
+					},
+					Entry("short", "test", "87"),
+					Entry("medium", "integration", "123"),
+					Entry("long", "very-long-deployment-name", "201"),
+				)
 
-					Expect(string(body)).To(ContainSubstring("errored"))
-					Expect(string(body)).To(ContainSubstring("#fe7d37"))
+				It("scales production-deployment and preserves the passing status", func() {
+					alternate := jobsAPIGet(server, "/api/v1/teams/some-team/pipelines/some-pipeline/jobs/some-job/badge?title=production-deployment")
+					body := readBadge(alternate)
+					Expect(body).To(ContainSubstring("production-deployment"))
+					Expect(body).To(ContainSubstring("passing"))
+					Expect(body).To(MatchRegexp(`width="[0-9]{3}"`))
 				})
-			})
 
-			Context("when there are no running or finished builds", func() {
-				BeforeEach(func() {
-					fakeJob.FinishedAndNextBuildReturns(nil, nil, nil)
-				})
-
-				It("returns unknown badge with correct color", func() {
-					body, err := io.ReadAll(response.Body)
-					Expect(err).NotTo(HaveOccurred())
-
-					Expect(string(body)).To(ContainSubstring("unknown"))
-					Expect(string(body)).To(ContainSubstring("#9f9f9f"))
+				It("preserves the original status width for custom titles", func() {
+					alternate := jobsAPIGet(server, "/api/v1/teams/some-team/pipelines/some-pipeline/jobs/some-job/badge?title=custom")
+					Expect(readBadge(alternate)).To(MatchRegexp(`d="M[0-9]+ 0h51v20H[0-9]+z"`))
 				})
 			})
 
-			Context("when generates badge title", func() {
+			Context("when getting the real job's builds fails", func() {
 				BeforeEach(func() {
-					build1.StatusReturns(db.BuildStatusSucceeded)
-					fakeJob.FinishedAndNextBuildReturns(build1, nil, nil)
-				})
-
-				It("uses url title parameter and HTML escapes it", func() {
-					response, err := client.Get(server.URL + "/api/v1/teams/some-team/pipelines/some-pipeline/jobs/some-job/badge?title=%24custom")
-					Expect(err).NotTo(HaveOccurred())
-
-					body, err := io.ReadAll(response.Body)
-					Expect(err).NotTo(HaveOccurred())
-
-					Expect(string(body)).To(ContainSubstring("$custom"))
-				})
-
-				It("uses default build title if not specified", func() {
-					response, err := client.Get(server.URL + "/api/v1/teams/some-team/pipelines/some-pipeline/jobs/some-job/badge")
-					Expect(err).NotTo(HaveOccurred())
-
-					body, err := io.ReadAll(response.Body)
-					Expect(err).NotTo(HaveOccurred())
-
-					Expect(string(body)).To(ContainSubstring("build"))
-					Expect(string(body)).To(ContainSubstring(`width="88"`))
-				})
-
-				It("uses default build title if url title parameter is falsy", func() {
-					response, err := client.Get(server.URL + "/api/v1/teams/some-team/pipelines/some-pipeline/jobs/some-job/badge?title=")
-					Expect(err).NotTo(HaveOccurred())
-
-					body, err := io.ReadAll(response.Body)
-					Expect(err).NotTo(HaveOccurred())
-
-					Expect(string(body)).To(ContainSubstring("build"))
-				})
-			})
-
-			Context("when scaling badges for custom titles", func() {
-				BeforeEach(func() {
-					build1.StatusReturns(db.BuildStatusSucceeded)
-					fakeJob.FinishedAndNextBuildReturns(build1, nil, nil)
-				})
-
-				It("scales short custom titles with padding", func() {
-					response, err := client.Get(server.URL + "/api/v1/teams/some-team/pipelines/some-pipeline/jobs/some-job/badge?title=test")
-					Expect(err).NotTo(HaveOccurred())
-
-					body, err := io.ReadAll(response.Body)
-					Expect(err).NotTo(HaveOccurred())
-
-					Expect(string(body)).To(ContainSubstring("test"))
-					Expect(string(body)).To(ContainSubstring(`width="87"`))
-				})
-
-				It("scales medium custom titles with reduced padding", func() {
-					response, err := client.Get(server.URL + "/api/v1/teams/some-team/pipelines/some-pipeline/jobs/some-job/badge?title=integration")
-					Expect(err).NotTo(HaveOccurred())
-
-					body, err := io.ReadAll(response.Body)
-					Expect(err).NotTo(HaveOccurred())
-
-					Expect(string(body)).To(ContainSubstring("integration"))
-					Expect(string(body)).To(ContainSubstring(`width="123"`))
-				})
-
-				It("scales long custom titles with no padding", func() {
-					response, err := client.Get(server.URL + "/api/v1/teams/some-team/pipelines/some-pipeline/jobs/some-job/badge?title=very-long-deployment-name")
-					Expect(err).NotTo(HaveOccurred())
-
-					body, err := io.ReadAll(response.Body)
-					Expect(err).NotTo(HaveOccurred())
-
-					Expect(string(body)).To(ContainSubstring("very-long-deployment-name"))
-					Expect(string(body)).To(ContainSubstring(`width="201"`))
-				})
-
-				It("scales badge correctly for production-deployment title", func() {
-					response, err := client.Get(server.URL + "/api/v1/teams/some-team/pipelines/some-pipeline/jobs/some-job/badge?title=production-deployment")
-					Expect(err).NotTo(HaveOccurred())
-
-					body, err := io.ReadAll(response.Body)
-					Expect(err).NotTo(HaveOccurred())
-
-					Expect(string(body)).To(ContainSubstring("production-deployment"))
-					Expect(string(body)).To(ContainSubstring("passing"))
-					Expect(string(body)).To(MatchRegexp(`width="\d{3}"`))
-				})
-
-				It("keeps default badge dimensions when no custom title", func() {
-					response, err := client.Get(server.URL + "/api/v1/teams/some-team/pipelines/some-pipeline/jobs/some-job/badge")
-					Expect(err).NotTo(HaveOccurred())
-
-					body, err := io.ReadAll(response.Body)
-					Expect(err).NotTo(HaveOccurred())
-
-					Expect(string(body)).To(ContainSubstring(`width="88"`))
-					Expect(string(body)).To(ContainSubstring(`d="M0 0h37v20H0z"`))
-					Expect(string(body)).To(ContainSubstring("build"))
-				})
-
-				It("preserves original status width for custom titles", func() {
-					response, err := client.Get(server.URL + "/api/v1/teams/some-team/pipelines/some-pipeline/jobs/some-job/badge?title=custom")
-					Expect(err).NotTo(HaveOccurred())
-
-					body, err := io.ReadAll(response.Body)
-					Expect(err).NotTo(HaveOccurred())
-
-					Expect(string(body)).To(MatchRegexp(`d="M\d+ 0h51v20H\d+z"`))
-				})
-			})
-
-			Context("when getting the job's builds fails", func() {
-				BeforeEach(func() {
-					fakeJob.FinishedAndNextBuildReturns(nil, nil, errors.New("oh no!"))
+					failure = "finished-and-next"
 				})
 
 				It("returns 500", func() {
@@ -793,9 +1015,9 @@ var _ = Describe("Jobs API", func() {
 				})
 			})
 
-			Context("when the job is not present", func() {
+			Context("when the job is naturally absent", func() {
 				BeforeEach(func() {
-					fakePipeline.JobReturns(nil, false, nil)
+					config = atc.Config{Jobs: atc.JobConfigs{{Name: "other-job"}}}
 				})
 
 				It("returns 404", func() {
@@ -803,9 +1025,9 @@ var _ = Describe("Jobs API", func() {
 				})
 			})
 
-			Context("when finding the job fails", func() {
+			Context("when finding the job through the real pipeline fails", func() {
 				BeforeEach(func() {
-					fakePipeline.JobReturns(nil, false, errors.New("db error finding job"))
+					failure = "pipeline-job"
 				})
 
 				It("returns 500", func() {
@@ -816,532 +1038,392 @@ var _ = Describe("Jobs API", func() {
 	})
 
 	Describe("GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs", func() {
-		var response *http.Response
-		var dashboardResponse []atc.JobSummary
+		var server *httptest.Server
 
-		JustBeforeEach(func() {
-			var err error
+		dashboardConfig := func() atc.Config {
+			return atc.Config{
+				Resources: atc.ResourceConfigs{
+					{Name: "input-1", Type: dbtest.BaseResourceType},
+					{Name: "input-2", Type: dbtest.BaseResourceType},
+					{Name: "input-3", Type: dbtest.BaseResourceType},
+				},
+				Jobs: atc.JobConfigs{
+					{Name: "job-1", PlanSequence: []atc.Step{{Config: &atc.GetStep{Name: "input-1"}}}},
+					{Name: "job-2", PlanSequence: []atc.Step{{Config: &atc.GetStep{Name: "input-2"}}}},
+					{Name: "job-3", PlanSequence: []atc.Step{{Config: &atc.GetStep{Name: "input-3"}}}},
+				},
+				Groups: atc.GroupConfigs{
+					{Name: "group-1", Jobs: []string{"job-1"}},
+					{Name: "group-2", Jobs: []string{"job-1", "job-2"}},
+				},
+			}
+		}
 
-			response, err = client.Get(server.URL + "/api/v1/teams/some-team/pipelines/some-pipeline/jobs")
-			Expect(err).NotTo(HaveOccurred())
+		It("returns persisted instanced jobs, groups, inputs, pause state, and ordinary build relationships", func() {
+			pipelineRef := atc.PipelineRef{Name: "some-pipeline", InstanceVars: atc.InstanceVars{"branch": "master"}}
+			fixture := useJobsAPIFixture(
+				pipelineRef,
+				dashboardConfig(),
+			)
+			fakeAccess.IsAuthenticatedReturns(true)
+			fakeAccess.IsAuthorizedReturns(true)
+			jobs := map[string]db.Job{}
+			for _, name := range []string{"job-1", "job-2", "job-3"} {
+				jobs[name] = fixture.Job(name)
+				Expect(jobs[name].Pause("dashboard-test")).To(Succeed())
+			}
+			job1Finished := createJobsAPIBuild(jobs["job-1"], "dashboard-test")
+			startJobsAPIBuild(job1Finished)
+			finishJobsAPIBuild(job1Finished, db.BuildStatusSucceeded)
+			job1Next := createJobsAPIBuild(jobs["job-1"], "dashboard-test")
+			startJobsAPIBuild(job1Next)
+			job2Finished := createJobsAPIBuild(jobs["job-2"], "dashboard-test")
+			startJobsAPIBuild(job2Finished)
+			finishJobsAPIBuild(job2Finished, db.BuildStatusFailed)
+
+			server = fixture.Serve()
+			response := jobsAPIGet(server, "/api/v1/teams/some-team/pipelines/some-pipeline/jobs?"+pipelineRef.QueryParams().Encode())
+			Expect(response.StatusCode).To(Equal(http.StatusOK))
+			Expect(response).To(IncludeHeaderEntries(map[string]string{"Content-Type": "application/json"}))
+			summaries := decodeJobsAPIResponse[[]atc.JobSummary](response)
+			Expect(summaries).To(HaveLen(3))
+			byName := map[string]atc.JobSummary{}
+			for _, summary := range summaries {
+				byName[summary.Name] = summary
+				job := jobs[summary.Name]
+				found, err := job.Reload()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(found).To(BeTrue())
+				Expect(summary.ID).To(Equal(job.ID()))
+				Expect(summary.PipelineID).To(Equal(fixture.Pipeline.ID()))
+				Expect(summary.PipelineName).To(Equal(fixture.Pipeline.Name()))
+				Expect(summary.PipelineInstanceVars).To(Equal(fixture.Pipeline.InstanceVars()))
+				Expect(summary.TeamName).To(Equal(fixture.Team.Name()))
+				Expect(summary.Paused).To(Equal(job.Paused()))
+			}
+			Expect(byName["job-1"].Inputs).To(Equal([]atc.JobInputSummary{{Name: "input-1", Resource: "input-1"}}))
+			Expect(byName["job-1"].Groups).To(Equal([]string{"group-1", "group-2"}))
+			expectJobsAPIBuildSummary(byName["job-1"].NextBuild, job1Next)
+			expectJobsAPIBuildSummary(byName["job-1"].FinishedBuild, job1Finished)
+			expectJobsAPIBuildSummary(byName["job-1"].TransitionBuild, job1Finished)
+			Expect(byName["job-2"].Inputs).To(Equal([]atc.JobInputSummary{{Name: "input-2", Resource: "input-2"}}))
+			Expect(byName["job-2"].Groups).To(Equal([]string{"group-2"}))
+			expectJobsAPIBuildSummary(byName["job-2"].NextBuild, nil)
+			expectJobsAPIBuildSummary(byName["job-2"].FinishedBuild, job2Finished)
+			expectJobsAPIBuildSummary(byName["job-2"].TransitionBuild, job2Finished)
+			Expect(byName["job-3"].Inputs).To(Equal([]atc.JobInputSummary{{Name: "input-3", Resource: "input-3"}}))
+			Expect(byName["job-3"].Groups).To(BeEmpty())
+			expectJobsAPIBuildSummary(byName["job-3"].NextBuild, nil)
+			expectJobsAPIBuildSummary(byName["job-3"].FinishedBuild, nil)
+			expectJobsAPIBuildSummary(byName["job-3"].TransitionBuild, nil)
 		})
 
-		Context("when getting the dashboard succeeds", func() {
+		It("returns an empty dashboard for a persisted pipeline with no jobs", func() {
+			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, atc.Config{})
+			fakeAccess.IsAuthenticatedReturns(true)
+			fakeAccess.IsAuthorizedReturns(true)
+			server = fixture.Serve()
+			response := jobsAPIGet(server, "/api/v1/teams/some-team/pipelines/some-pipeline/jobs")
+			Expect(response.StatusCode).To(Equal(http.StatusOK))
+			Expect(decodeJobsAPIResponse[[]atc.JobSummary](response)).To(BeEmpty())
+		})
 
-			BeforeEach(func() {
+		It("returns 500 from the narrow real-pipeline dashboard boundary", func() {
+			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, dashboardConfig())
+			fakeAccess.IsAuthenticatedReturns(true)
+			fakeAccess.IsAuthorizedReturns(true)
+			server = fixture.ServePipeline(dashboardErrorPipeline{Pipeline: fixture.Pipeline, err: errors.New("dashboard failed")})
+			response := jobsAPIGet(server, "/api/v1/teams/some-team/pipelines/some-pipeline/jobs")
+			Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
+		})
 
-				dashboardResponse = []atc.JobSummary{
-					{
-						ID:                   1,
-						Name:                 "job-1",
-						PipelineID:           2,
-						PipelineName:         "another-pipeline",
-						PipelineInstanceVars: atc.InstanceVars{"branch": "master"},
-						TeamName:             "some-team",
-						Paused:               true,
-						NextBuild: &atc.BuildSummary{
-							ID:                   3,
-							Name:                 "2",
-							JobName:              "job-1",
-							PipelineID:           2,
-							PipelineName:         "another-pipeline",
-							PipelineInstanceVars: atc.InstanceVars{"branch": "master"},
-							TeamName:             "some-team",
-							Status:               "started",
-						},
-						FinishedBuild: &atc.BuildSummary{
-							ID:                   1,
-							Name:                 "1",
-							JobName:              "job-1",
-							PipelineID:           2,
-							PipelineName:         "another-pipeline",
-							PipelineInstanceVars: atc.InstanceVars{"branch": "master"},
-							TeamName:             "some-team",
-							Status:               "succeeded",
-							StartTime:            1,
-							EndTime:              100,
-						},
-						TransitionBuild: &atc.BuildSummary{
-							ID:                   5,
-							Name:                 "five",
-							JobName:              "job-1",
-							PipelineID:           2,
-							PipelineName:         "another-pipeline",
-							PipelineInstanceVars: atc.InstanceVars{"branch": "master"},
-							TeamName:             "some-team",
-							Status:               "failed",
-							StartTime:            101,
-							EndTime:              200,
-						},
-						Inputs: []atc.JobInputSummary{
-							{
-								Name:     "input-1",
-								Resource: "input-1",
-							},
-						},
-						Groups: []string{
-							"group-1", "group-2",
-						},
-					},
-					{
-						ID:                   2,
-						Name:                 "job-2",
-						PipelineID:           2,
-						PipelineName:         "another-pipeline",
-						PipelineInstanceVars: atc.InstanceVars{"branch": "master"},
-						TeamName:             "some-team",
-						Paused:               true,
-						NextBuild:            nil,
-						FinishedBuild: &atc.BuildSummary{
-							ID:                   4,
-							Name:                 "1",
-							JobName:              "job-2",
-							PipelineID:           2,
-							PipelineName:         "another-pipeline",
-							PipelineInstanceVars: atc.InstanceVars{"branch": "master"},
-							TeamName:             "some-team",
-							Status:               "succeeded",
-							StartTime:            101,
-							EndTime:              200,
-						},
-						TransitionBuild: nil,
-						Inputs: []atc.JobInputSummary{
-							{
-								Name:     "input-2",
-								Resource: "input-2",
-							},
-						},
-						Groups: []string{
-							"group-2",
-						},
-					},
-					{
-						ID:                   3,
-						Name:                 "job-3",
-						PipelineID:           2,
-						PipelineName:         "another-pipeline",
-						PipelineInstanceVars: atc.InstanceVars{"branch": "master"},
-						TeamName:             "some-team",
-						Paused:               true,
-						NextBuild:            nil,
-						FinishedBuild:        nil,
-						TransitionBuild:      nil,
-						Inputs: []atc.JobInputSummary{
-							{
-								Name:     "input-3",
-								Resource: "input-3",
-							},
-						},
-						Groups: []string{},
-					},
-				}
-				fakePipeline.DashboardReturns(dashboardResponse, nil)
-			})
+		It("returns 401 for an unauthenticated private persisted pipeline", func() {
+			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, dashboardConfig())
+			fakeAccess.IsAuthenticatedReturns(false)
+			fakeAccess.IsAuthorizedReturns(false)
+			Expect(fixture.Pipeline.Hide()).To(Succeed())
+			server = fixture.Serve()
+			response := jobsAPIGet(server, "/api/v1/teams/some-team/pipelines/some-pipeline/jobs")
+			Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
+		})
 
-			Context("when not authorized", func() {
-				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(false)
-				})
-
-				Context("when not authenticated", func() {
-					BeforeEach(func() {
-						fakeAccess.IsAuthenticatedReturns(false)
-					})
-
-					Context("and the pipeline is private", func() {
-						BeforeEach(func() {
-							fakePipeline.PublicReturns(false)
-						})
-
-						It("returns 401", func() {
-							Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
-						})
-					})
-
-					Context("and the pipeline is public", func() {
-						BeforeEach(func() {
-							fakePipeline.PublicReturns(true)
-						})
-
-						It("returns 200 OK", func() {
-							Expect(response.StatusCode).To(Equal(http.StatusOK))
-						})
-					})
-				})
-			})
-
-			Context("when authorized", func() {
-				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(true)
-					fakeAccess.IsAuthenticatedReturns(true)
-				})
-
-				It("returns 200 OK", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusOK))
-				})
-
-				It("returns Content-Type 'application/json'", func() {
-					expectedHeaderEntries := map[string]string{
-						"Content-Type": "application/json",
-					}
-					Expect(response).Should(IncludeHeaderEntries(expectedHeaderEntries))
-				})
-
-				It("returns each job's name and any running and finished builds", func() {
-					body, err := io.ReadAll(response.Body)
-					Expect(err).NotTo(HaveOccurred())
-
-					Expect(body).To(MatchJSON(`[
-							{
-								"id": 1,
-								"name": "job-1",
-								"pipeline_id": 2,
-								"pipeline_name": "another-pipeline",
-								"pipeline_instance_vars": {
-									"branch": "master"
-								},
-								"team_name": "some-team",
-								"paused": true,
-								"next_build": {
-									"id": 3,
-									"name": "2",
-									"job_name": "job-1",
-									"status": "started",
-									"pipeline_id": 2,
-									"pipeline_name": "another-pipeline",
-									"pipeline_instance_vars": {
-										"branch": "master"
-									},
-									"team_name": "some-team"
-								},
-								"finished_build": {
-									"id": 1,
-									"name": "1",
-									"job_name": "job-1",
-									"status": "succeeded",
-									"pipeline_id": 2,
-									"pipeline_name": "another-pipeline",
-									"pipeline_instance_vars": {
-										"branch": "master"
-									},
-									"team_name": "some-team",
-									"start_time": 1,
-									"end_time": 100
-								},
-								"transition_build": {
-									"id": 5,
-									"name": "five",
-									"job_name": "job-1",
-									"status": "failed",
-									"pipeline_id": 2,
-									"pipeline_name": "another-pipeline",
-									"pipeline_instance_vars": {
-										"branch": "master"
-									},
-									"team_name": "some-team",
-									"start_time": 101,
-									"end_time": 200
-								},
-								"inputs": [{"name": "input-1", "resource": "input-1"}],
-								"groups": ["group-1", "group-2"]
-							},
-							{
-								"id": 2,
-								"name": "job-2",
-								"pipeline_id": 2,
-								"pipeline_name": "another-pipeline",
-								"pipeline_instance_vars": {
-									"branch": "master"
-								},
-								"team_name": "some-team",
-								"paused": true,
-								"finished_build": {
-									"id": 4,
-									"name": "1",
-									"job_name": "job-2",
-									"status": "succeeded",
-									"pipeline_id": 2,
-									"pipeline_name": "another-pipeline",
-									"pipeline_instance_vars": {
-										"branch": "master"
-									},
-									"team_name": "some-team",
-									"start_time": 101,
-									"end_time": 200
-								},
-								"inputs": [{"name": "input-2", "resource": "input-2"}],
-								"groups": ["group-2"]
-							},
-							{
-								"id": 3,
-								"name": "job-3",
-								"pipeline_id": 2,
-								"pipeline_name": "another-pipeline",
-								"pipeline_instance_vars": {
-									"branch": "master"
-								},
-								"team_name": "some-team",
-								"paused": true,
-								"inputs": [{"name": "input-3", "resource": "input-3"}]
-							}
-						]`))
-				})
-
-				Context("when there are no jobs in dashboard", func() {
-					BeforeEach(func() {
-						dashboardResponse = []atc.JobSummary{}
-						fakePipeline.DashboardReturns(dashboardResponse, nil)
-					})
-					It("should return an empty array", func() {
-						body, err := io.ReadAll(response.Body)
-						Expect(err).NotTo(HaveOccurred())
-
-						Expect(body).To(MatchJSON(`[]`))
-					})
-				})
-
-				Context("when getting the dashboard fails", func() {
-					Context("with an unknown error", func() {
-						BeforeEach(func() {
-							fakePipeline.DashboardReturns(nil, errors.New("oh no!"))
-						})
-
-						It("returns 500", func() {
-							Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-						})
-					})
-				})
-			})
+		It("returns a public persisted dashboard without authentication", func() {
+			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, dashboardConfig())
+			fakeAccess.IsAuthenticatedReturns(false)
+			fakeAccess.IsAuthorizedReturns(false)
+			Expect(fixture.Pipeline.Expose()).To(Succeed())
+			server = fixture.Serve()
+			response := jobsAPIGet(server, "/api/v1/teams/some-team/pipelines/some-pipeline/jobs")
+			Expect(response.StatusCode).To(Equal(http.StatusOK))
 		})
 	})
 
 	Describe("GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/builds", func() {
-		var response *http.Response
-		var queryParams string
+		var (
+			server        *httptest.Server
+			response      *http.Response
+			fixture       *jobsAPIFixture
+			pipelineRef   atc.PipelineRef
+			config        atc.Config
+			queryParams   string
+			expose        bool
+			setup         func(*jobsAPIFixture)
+			routePipeline func(*jobsAPIFixture) db.Pipeline
+		)
+
+		BeforeEach(func() {
+			fakeAccess.IsAuthenticatedReturns(true)
+			fakeAccess.IsAuthorizedReturns(true)
+			pipelineRef = atc.PipelineRef{Name: "some-pipeline"}
+			config = atc.Config{Jobs: atc.JobConfigs{{Name: "some-job"}}}
+			queryParams = ""
+			expose = false
+			setup = func(*jobsAPIFixture) {}
+			routePipeline = nil
+		})
 
 		JustBeforeEach(func() {
-			var err error
-
-			fakePipeline.NameReturns("some-pipeline")
-			response, err = client.Get(server.URL + "/api/v1/teams/some-team/pipelines/some-pipeline/jobs/some-job/builds" + queryParams)
-			Expect(err).NotTo(HaveOccurred())
+			fixture = useJobsAPIFixture(pipelineRef, config)
+			setup(fixture)
+			if expose {
+				Expect(fixture.Pipeline.Expose()).To(Succeed())
+			}
+			if routePipeline == nil {
+				server = fixture.Serve()
+			} else {
+				server = fixture.ServePipeline(routePipeline(fixture))
+			}
+			response = jobsAPIGet(server, "/api/v1/teams/some-team/pipelines/some-pipeline/jobs/some-job/builds"+queryParams)
 		})
+
+		decodeBuilds := func(response *http.Response) []atc.Build {
+			GinkgoHelper()
+			return decodeJobsAPIResponse[[]atc.Build](response)
+		}
 
 		Context("when authenticated and not authorized", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthorizedReturns(false)
 				fakeAccess.IsAuthenticatedReturns(true)
+				fakeAccess.IsAuthorizedReturns(false)
 			})
 
-			Context("and the pipeline is private", func() {
-				BeforeEach(func() {
-					fakePipeline.PublicReturns(false)
-				})
-
-				It("returns 403", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusForbidden))
-				})
+			It("returns 403 for a private pipeline", func() {
+				Expect(response.StatusCode).To(Equal(http.StatusForbidden))
 			})
 
 			Context("and the pipeline is public", func() {
-				BeforeEach(func() {
-					fakeBuild := new(dbfakes.FakeBuild)
+				var publicBuild db.Build
 
-					fakePipeline.PublicReturns(true)
-					fakePipeline.JobReturns(fakeJob, true, nil)
-					fakeJob.BuildReturns(fakeBuild, true, nil)
+				BeforeEach(func() {
+					expose = true
+					setup = func(fixture *jobsAPIFixture) {
+						publicBuild = createJobsAPIBuild(fixture.Job("some-job"), "api-public-test")
+					}
 				})
 
-				It("returns 200 OK", func() {
+				It("returns the persisted build", func() {
 					Expect(response.StatusCode).To(Equal(http.StatusOK))
+					actual := decodeBuilds(response)
+					Expect(actual).To(HaveLen(1))
+					expectJobsAPIBuild(actual[0], publicBuild)
 				})
 			})
 		})
 
 		Context("when authorized", func() {
-			BeforeEach(func() {
-				fakeAccess.IsAuthorizedReturns(true)
-			})
+			Context("when no params are passed", func() {
+				var persistedBuilds []db.Build
 
-			Context("when getting the job succeeds", func() {
 				BeforeEach(func() {
-					fakeJob.NameReturns("some-job")
-					fakePipeline.JobReturns(fakeJob, true, nil)
-				})
-
-				Context("when no params are passed", func() {
-					It("does not set defaults for since and until", func() {
-						Expect(fakeJob.BuildsCallCount()).To(Equal(1))
-
-						page := fakeJob.BuildsArgsForCall(0)
-						Expect(page).To(Equal(db.Page{
-							Limit: 100,
-						}))
-					})
-				})
-
-				Context("when all the params are passed", func() {
-					BeforeEach(func() {
-						queryParams = "?from=2&to=3&limit=8"
-					})
-
-					It("passes them through", func() {
-						Expect(fakeJob.BuildsCallCount()).To(Equal(1))
-
-						page := fakeJob.BuildsArgsForCall(0)
-						Expect(page).To(Equal(db.Page{
-							From:  db.NewIntPtr(2),
-							To:    db.NewIntPtr(3),
-							Limit: 8,
-						}))
-					})
-				})
-
-				Context("when getting the builds succeeds", func() {
-					var returnedBuilds []db.BuildForAPI
-
-					BeforeEach(func() {
-						queryParams = "?since=5&limit=2"
-
-						build1 := new(dbfakes.FakeBuildForAPI)
-						build1.IDReturns(4)
-						build1.NameReturns("2")
-						build1.JobNameReturns("some-job")
-						build1.PipelineNameReturns("some-pipeline")
-						build1.TeamNameReturns("some-team")
-						build1.StatusReturns(db.BuildStatusStarted)
-						build1.StartTimeReturns(time.Unix(1, 0))
-						build1.EndTimeReturns(time.Unix(100, 0))
-
-						build2 := new(dbfakes.FakeBuildForAPI)
-						build2.IDReturns(2)
-						build2.NameReturns("1")
-						build2.JobNameReturns("some-job")
-						build2.PipelineNameReturns("some-pipeline")
-						build2.TeamNameReturns("some-team")
-						build2.StatusReturns(db.BuildStatusSucceeded)
-						build2.StartTimeReturns(time.Unix(101, 0))
-						build2.EndTimeReturns(time.Unix(200, 0))
-
-						build3 := new(dbfakes.FakeBuildForAPI)
-						build3.IDReturns(3)
-						build3.NameReturns("1.1")
-						build3.JobNameReturns("some-job")
-						build3.PipelineNameReturns("some-pipeline")
-						build3.TeamNameReturns("some-team")
-						build3.StatusReturns(db.BuildStatusSucceeded)
-						build3.StartTimeReturns(time.Unix(102, 0))
-						build3.EndTimeReturns(time.Unix(300, 0))
-						build3.RerunOfReturns(2)
-						build3.RerunOfNameReturns("1")
-						build3.RerunNumberReturns(3)
-
-						returnedBuilds = []db.BuildForAPI{build1, build2, build3}
-						fakeJob.BuildsReturns(returnedBuilds, db.Pagination{}, nil)
-					})
-
-					It("returns 200 OK", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusOK))
-					})
-
-					It("returns Content-Type 'application/json'", func() {
-						expectedHeaderEntries := map[string]string{
-							"Content-Type": "application/json",
+					setup = func(fixture *jobsAPIFixture) {
+						job := fixture.Job("some-job")
+						persistedBuilds = make([]db.Build, 0, 101)
+						for range 101 {
+							persistedBuilds = append(persistedBuilds, createJobsAPIBuild(job, "api-default-limit"))
 						}
-						Expect(response).Should(IncludeHeaderEntries(expectedHeaderEntries))
-					})
-
-					It("returns the builds", func() {
-						body, err := io.ReadAll(response.Body)
-						Expect(err).NotTo(HaveOccurred())
-
-						Expect(body).To(MatchJSON(`[
-					{
-						"id": 4,
-						"name": "2",
-						"job_name": "some-job",
-						"status": "started",
-						"api_url": "/api/v1/builds/4",
-						"pipeline_name":"some-pipeline",
-						"team_name": "some-team",
-						"start_time": 1,
-						"end_time": 100
-					},
-					{
-						"id": 2,
-						"name": "1",
-						"job_name": "some-job",
-						"status": "succeeded",
-						"api_url": "/api/v1/builds/2",
-						"pipeline_name": "some-pipeline",
-						"team_name": "some-team",
-						"start_time": 101,
-						"end_time": 200
-					},
-					{
-						"id": 3,
-						"name": "1.1",
-						"job_name": "some-job",
-						"status": "succeeded",
-						"api_url": "/api/v1/builds/3",
-						"pipeline_name": "some-pipeline",
-						"team_name": "some-team",
-						"start_time": 102,
-						"end_time": 300,
-						"rerun_of": {
-							"id": 2,
-							"name": "1"
-						},
-						"rerun_number": 3
 					}
-				]`))
-					})
-
-					Context("when next/previous pages are available", func() {
-						BeforeEach(func() {
-							fakeJob.BuildsReturns(returnedBuilds, db.Pagination{
-								Newer: &db.Page{From: db.NewIntPtr(4), Limit: 2},
-								Older: &db.Page{To: db.NewIntPtr(2), Limit: 2},
-							}, nil)
-						})
-
-						It("returns Link headers per rfc5988", func() {
-							Expect(response.Header["Link"]).To(ConsistOf([]string{
-								fmt.Sprintf(`<%s/api/v1/teams/some-team/pipelines/some-pipeline/jobs/some-job/builds?from=4&limit=2>; rel="previous"`, externalURL),
-								fmt.Sprintf(`<%s/api/v1/teams/some-team/pipelines/some-pipeline/jobs/some-job/builds?to=2&limit=2>; rel="next"`, externalURL),
-							}))
-						})
-
-						Context("and builds are on instanced pipeline", func() {
-							BeforeEach(func() {
-								fakePipeline.InstanceVarsReturns(atc.InstanceVars{"branch": "master"})
-							})
-
-							It("returns Link headers per rfc5988", func() {
-								link := fmt.Sprintf(`<%s/api/v1/teams/some-team/pipelines/some-pipeline/jobs/some-job/builds?`, externalURL)
-								Expect(response.Header["Link"]).To(ConsistOf([]string{
-									link + `from=4&limit=2&vars.branch=%22master%22>; rel="previous"`,
-									link + `to=2&limit=2&vars.branch=%22master%22>; rel="next"`,
-								}))
-							})
-						})
-					})
 				})
 
-				Context("when getting the build fails", func() {
+				It("returns only the 100 newest persisted builds", func() {
+					Expect(response.StatusCode).To(Equal(http.StatusOK))
+					actual := decodeBuilds(response)
+					Expect(actual).To(HaveLen(atc.PaginationAPIDefaultLimit))
+					expectedIDs := make([]int, 0, atc.PaginationAPIDefaultLimit)
+					for i := len(persistedBuilds) - 1; i >= 1; i-- {
+						expectedIDs = append(expectedIDs, persistedBuilds[i].ID())
+					}
+					actualIDs := make([]int, len(actual))
+					for i, build := range actual {
+						actualIDs[i] = build.ID
+					}
+					Expect(actualIDs).To(Equal(expectedIDs))
+					Expect(actualIDs).NotTo(ContainElement(persistedBuilds[0].ID()))
+				})
+			})
+
+			Context("when from, to, and limit are passed", func() {
+				var persistedBuilds []db.Build
+
+				BeforeEach(func() {
+					setup = func(fixture *jobsAPIFixture) {
+						job := fixture.Job("some-job")
+						persistedBuilds = make([]db.Build, 0, 7)
+						for range 7 {
+							persistedBuilds = append(persistedBuilds, createJobsAPIBuild(job, "api-range"))
+						}
+						queryParams = fmt.Sprintf(
+							"?from=%d&to=%d&limit=3",
+							persistedBuilds[1].ID(),
+							persistedBuilds[5].ID(),
+						)
+					}
+				})
+
+				It("applies all supported cursor parameters to persisted rows", func() {
+					actual := decodeBuilds(response)
+					Expect(actual).To(HaveLen(3))
+					Expect([]int{actual[0].ID, actual[1].ID, actual[2].ID}).To(Equal([]int{
+						persistedBuilds[1].ID(),
+						persistedBuilds[2].ID(),
+						persistedBuilds[3].ID(),
+					}))
+
+					bounded := jobsAPIGet(server, fmt.Sprintf(
+						"/api/v1/teams/some-team/pipelines/some-pipeline/jobs/some-job/builds?from=%d&to=%d&limit=6",
+						persistedBuilds[1].ID(),
+						persistedBuilds[3].ID(),
+					))
+					Expect(bounded.StatusCode).To(Equal(http.StatusOK))
+					boundedBuilds := decodeBuilds(bounded)
+					Expect(boundedBuilds).To(HaveLen(3))
+					Expect([]int{boundedBuilds[0].ID, boundedBuilds[1].ID, boundedBuilds[2].ID}).To(Equal([]int{
+						persistedBuilds[1].ID(),
+						persistedBuilds[2].ID(),
+						persistedBuilds[3].ID(),
+					}))
+				})
+			})
+
+			Context("when persisted builds have ordinary and rerun state", func() {
+				var original db.Build
+				var started db.Build
+				var rerun db.Build
+
+				BeforeEach(func() {
+					setup = func(fixture *jobsAPIFixture) {
+						job := fixture.Job("some-job")
+						original = createJobsAPIBuild(job, "api-original")
+						startJobsAPIBuild(original)
+						finishJobsAPIBuild(original, db.BuildStatusSucceeded)
+						started = createJobsAPIBuild(job, "api-started")
+						startJobsAPIBuild(started)
+						var err error
+						rerun, err = job.RerunBuild(original, "api-rerun")
+						Expect(err).NotTo(HaveOccurred())
+						reloadJobsAPIBuild(rerun)
+						startJobsAPIBuild(rerun)
+						finishJobsAPIBuild(rerun, db.BuildStatusSucceeded)
+						queryParams = "?limit=3"
+					}
+				})
+
+				It("returns each dynamic build field in production order", func() {
+					Expect(response.StatusCode).To(Equal(http.StatusOK))
+					Expect(response.Header.Get("Content-Type")).To(Equal("application/json"))
+					actual := decodeBuilds(response)
+					Expect(actual).To(HaveLen(3))
+					expectJobsAPIBuild(actual[0], started)
+					expectJobsAPIBuild(actual[1], rerun)
+					expectJobsAPIBuild(actual[2], original)
+					Expect(actual[0].EndTime).To(BeZero())
+					Expect(actual[1].RerunOf).To(Equal(&atc.RerunOfBuild{
+						ID: original.ID(), Name: original.Name(),
+					}))
+					Expect(actual[1].RerunNumber).To(Equal(rerun.RerunNumber()))
+				})
+			})
+
+			Context("when older and newer pages are available", func() {
+				var olderBuild db.Build
+				var middleBuild db.Build
+				var newerBuild db.Build
+
+				BeforeEach(func() {
+					setup = func(fixture *jobsAPIFixture) {
+						job := fixture.Job("some-job")
+						olderBuild = createJobsAPIBuild(job, "api-pagination")
+						middleBuild = createJobsAPIBuild(job, "api-pagination")
+						newerBuild = createJobsAPIBuild(job, "api-pagination")
+						queryParams = fmt.Sprintf(
+							"?from=%d&to=%d&limit=1",
+							middleBuild.ID(),
+							middleBuild.ID(),
+						)
+						if varsQuery := pipelineRef.QueryParams().Encode(); varsQuery != "" {
+							queryParams += "&" + varsQuery
+						}
+					}
+				})
+
+				It("returns RFC5988 links derived from the persisted cursors", func() {
+					actual := decodeBuilds(response)
+					Expect(actual).To(HaveLen(1))
+					Expect(actual[0].ID).To(Equal(middleBuild.ID()))
+					Expect(response.Header["Link"]).To(ConsistOf([]string{
+						fmt.Sprintf(`<%s/api/v1/teams/some-team/pipelines/some-pipeline/jobs/some-job/builds?to=%d&limit=1>; rel="next"`,
+							externalURL, olderBuild.ID()),
+						fmt.Sprintf(`<%s/api/v1/teams/some-team/pipelines/some-pipeline/jobs/some-job/builds?from=%d&limit=1>; rel="previous"`,
+							externalURL, newerBuild.ID()),
+					}))
+				})
+
+				Context("and the pipeline has real instance vars", func() {
 					BeforeEach(func() {
-						fakeJob.BuildsReturns(nil, db.Pagination{}, errors.New("oh no!"))
+						pipelineRef = atc.PipelineRef{
+							Name: "some-pipeline",
+							InstanceVars: atc.InstanceVars{
+								"branch": "master",
+								"nested": map[string]any{"enabled": true},
+							},
+						}
 					})
 
-					It("returns 404 Not Found", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusNotFound))
+					It("preserves PipelineRef query encoding in both links", func() {
+						actual := decodeBuilds(response)
+						Expect(actual).To(HaveLen(1))
+						Expect(actual[0].PipelineInstanceVars).To(Equal(pipelineRef.InstanceVars))
+						varsQuery := pipelineRef.QueryParams().Encode()
+						Expect(response.Header["Link"]).To(ConsistOf([]string{
+							fmt.Sprintf(`<%s/api/v1/teams/some-team/pipelines/some-pipeline/jobs/some-job/builds?to=%d&limit=1&%s>; rel="next"`,
+								externalURL, olderBuild.ID(), varsQuery),
+							fmt.Sprintf(`<%s/api/v1/teams/some-team/pipelines/some-pipeline/jobs/some-job/builds?from=%d&limit=1&%s>; rel="previous"`,
+								externalURL, newerBuild.ID(), varsQuery),
+						}))
 					})
 				})
 			})
 
-			Context("when getting the job fails", func() {
+			Context("when querying the real job's builds fails", func() {
 				BeforeEach(func() {
-					fakePipeline.JobReturns(nil, false, errors.New("oh no!"))
+					routePipeline = func(fixture *jobsAPIFixture) db.Pipeline {
+						return jobsAPIPipeline{
+							Pipeline: fixture.Pipeline,
+							jobName:  "some-job",
+							job:      fixture.doomedJob("some-job"),
+						}
+					}
+				})
+
+				It("preserves the handler's 404 response", func() {
+					Expect(response.StatusCode).To(Equal(http.StatusNotFound))
+				})
+			})
+
+			Context("when finding the job through the real pipeline fails", func() {
+				BeforeEach(func() {
+					routePipeline = func(fixture *jobsAPIFixture) db.Pipeline {
+						return fixture.doomedPipeline()
+					}
 				})
 
 				It("returns 500", func() {
@@ -1349,552 +1431,499 @@ var _ = Describe("Jobs API", func() {
 				})
 			})
 
-			Context("when the job is not found", func() {
+			Context("when the job is naturally absent", func() {
 				BeforeEach(func() {
-					fakePipeline.JobReturns(nil, false, nil)
+					config = atc.Config{Jobs: atc.JobConfigs{{Name: "other-job"}}}
 				})
 
-				It("returns 404 Not Found", func() {
+				It("returns 404", func() {
 					Expect(response.StatusCode).To(Equal(http.StatusNotFound))
 				})
 			})
 		})
 	})
-
 	Describe("POST /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/builds", func() {
-		var request *http.Request
-		var response *http.Response
+		const path = "/api/v1/teams/some-team/pipelines/some-pipeline/jobs/some-job/builds"
+		var server *httptest.Server
+
+		manualConfig := func(disableManualTrigger bool) atc.Config {
+			return atc.Config{
+				ResourceTypes: atc.ResourceTypes{{
+					Name: "some-type", Type: dbtest.BaseResourceType,
+					Source: atc.Source{"repository": "resource-type"},
+				}},
+				Resources: atc.ResourceConfigs{{
+					Name: "some-input", Type: "some-type",
+					Source: atc.Source{"repository": "resource"},
+				}},
+				Jobs: atc.JobConfigs{{
+					Name: "some-job", DisableManualTrigger: disableManualTrigger,
+					PlanSequence: []atc.Step{{Config: &atc.GetStep{
+						Name: "some-input", Resource: "some-input",
+					}}},
+				}},
+			}
+		}
 
 		BeforeEach(func() {
-			var err error
+			fakeAccess.IsAuthorizedReturns(true)
+			fakeAccess.IsAuthenticatedReturns(true)
+			fakeAccess.UserInfoReturns(atc.UserInfo{DisplayUserId: "api-user"})
+		})
 
-			request, err = http.NewRequest("POST", server.URL+"/api/v1/teams/some-team/pipelines/some-pipeline/jobs/some-job/builds", nil)
+		It("persists exactly one pending build and schedules a real check from the persisted pin", func() {
+			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, manualConfig(false))
+			pinnedVersion := atc.Version{"ref": "pinned"}
+			fixture.Scenario.Run(fixture.Builder.WithResourceVersions("some-input", pinnedVersion))
+
+			resource := fixture.Scenario.Resource("some-input")
+			pinned, err := resource.PinVersion(fixture.Scenario.ResourceVersion("some-input", pinnedVersion).ID())
 			Expect(err).NotTo(HaveOccurred())
+			Expect(pinned).To(BeTrue())
+			found, err := resource.Reload()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(resource.CurrentPinnedVersion()).To(Equal(pinnedVersion))
+
+			var checksBefore int
+			Expect(fixture.Real.Conn.QueryRow(
+				`SELECT count(*) FROM builds WHERE resource_id = $1`, resource.ID(),
+			).Scan(&checksBefore)).To(Succeed())
+
+			recorder := &recordingJobsCheckFactory{CheckFactory: fixture.Real.Deps.checkFactory}
+			fixture.Real.Deps.checkFactory = recorder
+			server = fixture.Serve()
+			response := jobsAPIPost(server, path)
+			Expect(response.StatusCode).To(Equal(http.StatusOK))
+			Expect(response).To(IncludeHeaderEntries(map[string]string{"Content-Type": "application/json"}))
+
+			actual := decodeJobsAPIResponse[atc.Build](response)
+			job := fixture.Job("some-job")
+			persisted, found, err := job.Build(actual.Name)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			expectJobsAPIBuild(actual, persisted)
+			Expect(actual.ID).To(BeNumerically(">", 0))
+			Expect(actual.Name).NotTo(BeEmpty())
+			Expect(actual.PipelineName).To(Equal("some-pipeline"))
+			Expect(actual.TeamName).To(Equal("some-team"))
+			Expect(actual.CreatedBy).NotTo(BeNil())
+			Expect(*actual.CreatedBy).To(Equal("api-user"))
+			Expect(actual.Status).To(Equal(atc.StatusPending))
+			Expect(actual.StartTime).To(BeZero())
+			Expect(actual.EndTime).To(BeZero())
+
+			var jobBuilds int
+			Expect(fixture.Real.Conn.QueryRow(
+				`SELECT count(*) FROM builds WHERE job_id = $1`, job.ID(),
+			).Scan(&jobBuilds)).To(Succeed())
+			Expect(jobBuilds).To(Equal(1))
+
+			calls := recorder.Calls()
+			Expect(calls).To(HaveLen(1))
+			call := calls[0]
+			Expect(call.checkable.(db.Resource).ID()).To(Equal(resource.ID()))
+			Expect(call.resourceTypes).To(HaveLen(1))
+			Expect(call.resourceTypes[0].Name()).To(Equal("some-type"))
+			Expect(call.from).To(Equal(pinnedVersion))
+			Expect(call.manuallyTriggered).To(BeTrue())
+			Expect(call.skipIntervalRecursively).To(BeTrue())
+			Expect(call.toDB).To(BeTrue())
+			Expect(call.build).NotTo(BeNil())
+			Expect(call.created).To(BeTrue())
+			Expect(call.err).NotTo(HaveOccurred())
+
+			var checksAfter int
+			Expect(fixture.Real.Conn.QueryRow(
+				`SELECT count(*) FROM builds WHERE resource_id = $1`, resource.ID(),
+			).Scan(&checksAfter)).To(Succeed())
+			Expect(checksAfter).To(Equal(checksBefore + 1))
+			Expect(call.build.ID()).To(BeNumerically(">", 0))
+		})
+
+		It("rejects a job with manual triggering disabled without inserting a build", func() {
+			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, manualConfig(true))
+			server = fixture.Serve()
+			response := jobsAPIPost(server, path)
+			Expect(response.StatusCode).To(Equal(http.StatusConflict))
+
+			var count int
+			Expect(fixture.Real.Conn.QueryRow(
+				`SELECT count(*) FROM builds WHERE job_id = $1`, fixture.Job("some-job").ID(),
+			).Scan(&count)).To(Succeed())
+			Expect(count).To(BeZero())
+		})
+
+		It("returns 500 when the real job create fails on its closed connection", func() {
+			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, manualConfig(false))
+			doomed := fixture.doomedJob("some-job")
+			pipeline := jobsAPIPipeline{
+				Pipeline: fixture.Pipeline, jobName: "some-job", job: doomed,
+			}
+			server = fixture.ServePipeline(pipeline)
+			response := jobsAPIPost(server, path)
+			Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
+			var count int
+			Expect(fixture.Real.Conn.QueryRow(
+				`SELECT count(*) FROM builds WHERE job_id = $1`, fixture.Job("some-job").ID(),
+			).Scan(&count)).To(Succeed())
+			Expect(count).To(BeZero())
+		})
+
+		It("returns 500 when the real pipeline job lookup fails", func() {
+			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, manualConfig(false))
+			server = fixture.ServePipeline(fixture.doomedPipeline())
+			response := jobsAPIPost(server, path)
+			Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
+		})
+
+		It("returns 404 for a missing persisted job", func() {
+			fixture := useJobsAPIFixture(
+				atc.PipelineRef{Name: "some-pipeline"},
+				atc.Config{Jobs: atc.JobConfigs{{Name: "other-job"}}},
+			)
+			server = fixture.Serve()
+			response := jobsAPIPost(server, path)
+			Expect(response.StatusCode).To(Equal(http.StatusNotFound))
+		})
+
+		DescribeTable("keeps the inserted manual build when a downstream read fails",
+			func(boundary string) {
+				fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, manualConfig(false))
+				var pipeline db.Pipeline
+				switch boundary {
+				case "resources":
+					pipeline = resourcesErrorPipeline{Pipeline: fixture.Pipeline, err: errors.New("resources failed")}
+				case "resource types":
+					pipeline = resourceTypesErrorPipeline{Pipeline: fixture.Pipeline, err: errors.New("resource types failed")}
+				case "inputs":
+					job := inputsErrorJob{Job: fixture.Job("some-job"), err: errors.New("inputs failed")}
+					pipeline = jobsAPIPipeline{Pipeline: fixture.Pipeline, jobName: "some-job", job: job}
+				default:
+					Fail("unknown downstream boundary: " + boundary)
+				}
+
+				server = fixture.ServePipeline(pipeline)
+				response := jobsAPIPost(server, path)
+				Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
+				var count int
+				Expect(fixture.Real.Conn.QueryRow(
+					`SELECT count(*) FROM builds WHERE job_id = $1`, fixture.Job("some-job").ID(),
+				).Scan(&count)).To(Succeed())
+				Expect(count).To(Equal(1))
+			},
+			Entry("Pipeline.Resources", "resources"),
+			Entry("Pipeline.ResourceTypes", "resource types"),
+			Entry("Job.Inputs", "inputs"),
+		)
+	})
+	Describe("GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/inputs", func() {
+		const path = "/api/v1/teams/some-team/pipelines/some-pipeline/jobs/some-job/inputs"
+		var server *httptest.Server
+
+		inputConfig := func() atc.Config {
+			return atc.Config{
+				Resources: atc.ResourceConfigs{
+					{
+						Name: "some-resource", Type: dbtest.BaseResourceType,
+						Source: atc.Source{"repository": "primary"},
+					},
+					{
+						Name: "some-other-resource", Type: dbtest.UniqueBaseResourceType,
+						Source: atc.Source{"repository": "secondary"},
+					},
+				},
+				Jobs: atc.JobConfigs{
+					{Name: "a"},
+					{Name: "b"},
+					{
+						Name: "some-job",
+						PlanSequence: []atc.Step{
+							{Config: &atc.GetStep{
+								Name: "some-input", Resource: "some-resource",
+								Passed: []string{"a"}, Params: atc.Params{"some": "params"},
+							}},
+							{Config: &atc.GetStep{
+								Name: "some-other-input", Resource: "some-other-resource",
+								Passed: []string{"b"}, Params: atc.Params{"some": "other-params"},
+								Tags: []string{"some-tag"},
+							}},
+						},
+					},
+				},
+			}
+		}
+
+		setupInputMapping := func(fixture *jobsAPIFixture) (atc.Version, atc.Version) {
+			GinkgoHelper()
+			first := atc.Version{"ref": "first"}
+			second := atc.Version{"ref": "second"}
+			fixture.Scenario.Run(
+				fixture.Builder.WithResourceVersions("some-resource", first),
+				fixture.Builder.WithResourceVersions("some-other-resource", second),
+				fixture.Builder.WithNextInputMapping("some-job", dbtest.JobInputs{
+					{Name: "some-input", Version: first},
+					{Name: "some-other-input", Version: second},
+				}),
+			)
+			return first, second
+		}
+
+		BeforeEach(func() {
+			fakeAccess.IsAuthenticatedReturns(true)
+			fakeAccess.IsAuthorizedReturns(true)
+		})
+
+		It("returns 401 when unauthenticated", func() {
+			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, inputConfig())
+			fakeAccess.IsAuthenticatedReturns(false)
+			server = fixture.Serve()
+			response := jobsAPIGet(server, path)
+			Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
+		})
+
+		It("returns 403 when authenticated but unauthorized", func() {
+			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, inputConfig())
+			fakeAccess.IsAuthorizedReturns(false)
+			server = fixture.Serve()
+			response := jobsAPIGet(server, path)
+			Expect(response.StatusCode).To(Equal(http.StatusForbidden))
+		})
+
+		It("returns 500 when the real pipeline job lookup fails", func() {
+			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, inputConfig())
+			server = fixture.ServePipeline(fixture.doomedPipeline())
+			response := jobsAPIGet(server, path)
+			Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
+		})
+
+		It("returns 404 for a missing persisted job", func() {
+			fixture := useJobsAPIFixture(
+				atc.PipelineRef{Name: "some-pipeline"},
+				atc.Config{Jobs: atc.JobConfigs{{Name: "other-job"}}},
+			)
+			server = fixture.Serve()
+			response := jobsAPIGet(server, path)
+			Expect(response.StatusCode).To(Equal(http.StatusNotFound))
+		})
+
+		It("returns 500 from the narrow real Pipeline.Resources boundary", func() {
+			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, inputConfig())
+			pipeline := resourcesErrorPipeline{Pipeline: fixture.Pipeline, err: errors.New("resources failed")}
+			server = fixture.ServePipeline(pipeline)
+			response := jobsAPIGet(server, path)
+			Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
+		})
+
+		It("returns 500 when the real next-input read fails on its closed connection", func() {
+			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, inputConfig())
+			doomed := fixture.doomedJob("some-job")
+			pipeline := jobsAPIPipeline{
+				Pipeline: fixture.Pipeline, jobName: "some-job", job: doomed,
+			}
+			server = fixture.ServePipeline(pipeline)
+			response := jobsAPIGet(server, path)
+			Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
+		})
+
+		It("returns 404 while input versions have not been determined", func() {
+			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, inputConfig())
+			inputs, determined, err := fixture.Job("some-job").GetFullNextBuildInputs()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(determined).To(BeFalse())
+			Expect(inputs).To(BeNil())
+
+			server = fixture.Serve()
+			response := jobsAPIGet(server, path)
+			Expect(response.StatusCode).To(Equal(http.StatusNotFound))
+		})
+
+		It("returns 500 from the later narrow Job.Config boundary after resolving real inputs", func() {
+			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, inputConfig())
+			setupInputMapping(fixture)
+			job := configErrorJob{Job: fixture.Job("some-job"), err: errors.New("config failed")}
+			pipeline := jobsAPIPipeline{
+				Pipeline: fixture.Pipeline, jobName: "some-job", job: job,
+			}
+			server = fixture.ServePipeline(pipeline)
+			response := jobsAPIGet(server, path)
+			Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
+		})
+
+		It("returns the two persisted input mappings and their real resource graph", func() {
+			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, inputConfig())
+			firstVersion, secondVersion := setupInputMapping(fixture)
+			job := fixture.Job("some-job")
+			firstResource := fixture.Scenario.Resource("some-resource")
+			secondResource := fixture.Scenario.Resource("some-other-resource")
+
+			mapped, determined, err := job.GetFullNextBuildInputs()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(determined).To(BeTrue())
+			Expect(mapped).To(HaveLen(2))
+			mappedByName := map[string]db.BuildInput{}
+			for _, input := range mapped {
+				mappedByName[input.Name] = input
+			}
+			Expect(mappedByName["some-input"].ResourceID).To(Equal(firstResource.ID()))
+			Expect(mappedByName["some-input"].Version).To(Equal(firstVersion))
+			Expect(mappedByName["some-other-input"].ResourceID).To(Equal(secondResource.ID()))
+			Expect(mappedByName["some-other-input"].Version).To(Equal(secondVersion))
+			Expect(firstResource.ID()).NotTo(Equal(secondResource.ID()))
+
+			persistedConfig, err := job.Config()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(persistedConfig.Inputs()).To(ContainElements(
+				atc.JobInputParams{
+					JobInput: atc.JobInput{
+						Name: "some-input", Resource: "some-resource", Passed: []string{"a"},
+					},
+					Params: atc.Params{"some": "params"},
+				},
+				atc.JobInputParams{
+					JobInput: atc.JobInput{
+						Name: "some-other-input", Resource: "some-other-resource", Passed: []string{"b"},
+					},
+					Params: atc.Params{"some": "other-params"}, Tags: []string{"some-tag"},
+				},
+			))
+
+			server = fixture.Serve()
+			response := jobsAPIGet(server, path)
+			Expect(response.StatusCode).To(Equal(http.StatusOK))
+			Expect(response).To(IncludeHeaderEntries(map[string]string{"Content-Type": "application/json"}))
+			actual := decodeJobsAPIResponse[[]atc.BuildInput](response)
+			Expect(actual).To(HaveLen(2))
+			actualByName := map[string]atc.BuildInput{}
+			for _, input := range actual {
+				actualByName[input.Name] = input
+			}
+			Expect(actualByName).To(HaveKeyWithValue("some-input", atc.BuildInput{
+				Name: "some-input", Resource: "some-resource",
+				Type: dbtest.BaseResourceType, Source: atc.Source{"repository": "primary"},
+				Version: firstVersion, Params: atc.Params{"some": "params"},
+			}))
+			Expect(actualByName).To(HaveKeyWithValue("some-other-input", atc.BuildInput{
+				Name: "some-other-input", Resource: "some-other-resource",
+				Type: dbtest.UniqueBaseResourceType, Source: atc.Source{"repository": "secondary"},
+				Version: secondVersion, Params: atc.Params{"some": "other-params"},
+				Tags: []string{"some-tag"},
+			}))
+		})
+	})
+	Describe("GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/builds/:build_name", func() {
+		var (
+			server        *httptest.Server
+			response      *http.Response
+			fixture       *jobsAPIFixture
+			config        atc.Config
+			buildName     string
+			persisted     db.Build
+			expose        bool
+			setup         func(*jobsAPIFixture)
+			routePipeline func(*jobsAPIFixture) db.Pipeline
+		)
+
+		BeforeEach(func() {
+			fakeAccess.IsAuthorizedReturns(true)
+			fakeAccess.IsAuthenticatedReturns(true)
+			config = atc.Config{Jobs: atc.JobConfigs{{Name: "some-job"}}}
+			buildName = ""
+			expose = false
+			routePipeline = nil
+			setup = func(fixture *jobsAPIFixture) {
+				persisted = createJobsAPIBuild(fixture.Job("some-job"), "api-named-build")
+				startJobsAPIBuild(persisted)
+				finishJobsAPIBuild(persisted, db.BuildStatusSucceeded)
+				buildName = persisted.Name()
+			}
 		})
 
 		JustBeforeEach(func() {
-			var err error
-
-			response, err = client.Do(request)
-			Expect(err).NotTo(HaveOccurred())
+			fixture = useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, config)
+			setup(fixture)
+			if expose {
+				Expect(fixture.Pipeline.Expose()).To(Succeed())
+			}
+			if routePipeline == nil {
+				server = fixture.Serve()
+			} else {
+				server = fixture.ServePipeline(routePipeline(fixture))
+			}
+			response = jobsAPIGet(
+				server,
+				"/api/v1/teams/some-team/pipelines/some-pipeline/jobs/some-job/builds/"+buildName,
+			)
 		})
 
-		Context("when authorized and authenticated", func() {
-			BeforeEach(func() {
-				fakeAccess.IsAuthorizedReturns(true)
-				fakeAccess.IsAuthenticatedReturns(true)
+		Context("when authorized", func() {
+			It("returns the exact persisted build named in the request", func() {
+				Expect(response.StatusCode).To(Equal(http.StatusOK))
+				Expect(response.Header.Get("Content-Type")).To(Equal("application/json"))
+				actual := decodeJobsAPIResponse[atc.Build](response)
+				expectJobsAPIBuild(actual, persisted)
+				Expect(actual.Name).To(Equal(buildName))
+				Expect(actual.PipelineName).To(Equal("some-pipeline"))
+				Expect(actual.EndTime).NotTo(BeZero())
 			})
 
-			Context("when getting the job fails", func() {
+			Context("when the build is naturally absent", func() {
 				BeforeEach(func() {
-					fakePipeline.JobReturns(nil, false, errors.New("errorrr"))
+					setup = func(fixture *jobsAPIFixture) {
+						_ = fixture.Job("some-job")
+						buildName = "does-not-exist"
+					}
 				})
 
-				It("returns a 500", func() {
+				It("returns 404", func() {
+					Expect(response.StatusCode).To(Equal(http.StatusNotFound))
+				})
+			})
+
+			Context("when querying the real job for the build fails", func() {
+				BeforeEach(func() {
+					setup = func(fixture *jobsAPIFixture) {
+						_ = fixture.Job("some-job")
+						buildName = "does-not-exist"
+					}
+					routePipeline = func(fixture *jobsAPIFixture) db.Pipeline {
+						return jobsAPIPipeline{
+							Pipeline: fixture.Pipeline,
+							jobName:  "some-job",
+							job:      fixture.doomedJob("some-job"),
+						}
+					}
+				})
+
+				It("returns 500", func() {
 					Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
 				})
 			})
 
-			Context("when the job is not found", func() {
+			Context("when the job is naturally absent", func() {
 				BeforeEach(func() {
-					fakePipeline.JobReturns(nil, false, nil)
+					config = atc.Config{Jobs: atc.JobConfigs{{Name: "other-job"}}}
+					setup = func(*jobsAPIFixture) {
+						buildName = "1"
+					}
 				})
 
-				It("returns a 404", func() {
+				It("returns 404", func() {
 					Expect(response.StatusCode).To(Equal(http.StatusNotFound))
 				})
 			})
 
-			Context("when getting the job succeeds", func() {
+			Context("when finding the job through the real pipeline fails", func() {
 				BeforeEach(func() {
-					fakeJob.NameReturns("some-job")
-					fakePipeline.JobReturns(fakeJob, true, nil)
+					setup = func(*jobsAPIFixture) {
+						buildName = "1"
+					}
+					routePipeline = func(fixture *jobsAPIFixture) db.Pipeline {
+						return fixture.doomedPipeline()
+					}
 				})
 
-				Context("when manual triggering is disabled", func() {
-					BeforeEach(func() {
-						fakeJob.DisableManualTriggerReturns(true)
-					})
-
-					It("should return 409", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusConflict))
-					})
-
-					It("does not trigger the build", func() {
-						Expect(fakeJob.CreateBuildCallCount()).To(Equal(0))
-					})
-				})
-
-				Context("when manual triggering is enabled", func() {
-					BeforeEach(func() {
-						fakeJob.DisableManualTriggerReturns(false)
-					})
-
-					Context("when triggering the build fails", func() {
-						BeforeEach(func() {
-							fakeJob.CreateBuildReturns(nil, errors.New("nopers"))
-						})
-						It("returns a 500", func() {
-							Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-						})
-					})
-
-					Context("when triggering the build succeeds", func() {
-						BeforeEach(func() {
-							build := new(dbfakes.FakeBuild)
-							build.IDReturns(42)
-							build.NameReturns("1")
-							build.JobNameReturns("some-job")
-							build.PipelineNameReturns("a-pipeline")
-							build.TeamNameReturns("some-team")
-							build.StatusReturns(db.BuildStatusStarted)
-							build.StartTimeReturns(time.Unix(1, 0))
-							build.EndTimeReturns(time.Unix(100, 0))
-
-							fakeJob.CreateBuildReturns(build, nil)
-						})
-
-						It("triggers the build", func() {
-							Expect(fakeJob.CreateBuildCallCount()).To(Equal(1))
-						})
-
-						Context("when finding the pipeline resources fails", func() {
-							BeforeEach(func() {
-								fakePipeline.ResourcesReturns(nil, errors.New("nope"))
-							})
-
-							It("returns a 500", func() {
-								Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-							})
-						})
-
-						Context("when finding the pipeline resources succeeds", func() {
-							var fakeResource *dbfakes.FakeResource
-
-							BeforeEach(func() {
-								fakeResource = new(dbfakes.FakeResource)
-								fakeResource.NameReturns("some-input")
-								fakeResource.CurrentPinnedVersionReturns(atc.Version{"some": "version"})
-
-								fakePipeline.ResourcesReturns([]db.Resource{fakeResource}, nil)
-							})
-
-							Context("when finding the pipeline resource types fails", func() {
-								BeforeEach(func() {
-									fakePipeline.ResourceTypesReturns(nil, errors.New("nope"))
-								})
-
-								It("returns a 500", func() {
-									Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-								})
-							})
-
-							Context("when finding the pipeline resources types succeeds", func() {
-								var fakeResourceType *dbfakes.FakeResourceType
-
-								BeforeEach(func() {
-									fakeResourceType = new(dbfakes.FakeResourceType)
-									fakeResourceType.NameReturns("some-input")
-
-									fakePipeline.ResourceTypesReturns([]db.ResourceType{fakeResourceType}, nil)
-								})
-
-								It("fetches the job inputs", func() {
-									Expect(fakeJob.InputsCallCount()).To(Equal(1))
-								})
-
-								Context("when it fails to fetch the job inputs", func() {
-									BeforeEach(func() {
-										fakeJob.InputsReturns(nil, errors.New("nope"))
-									})
-
-									It("returns a 500", func() {
-										Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-									})
-								})
-
-								Context("when the job inputs are successfully fetched", func() {
-									BeforeEach(func() {
-										fakeJob.InputsReturns([]atc.JobInput{
-											{
-												Name:     "some-input",
-												Resource: "some-input",
-											},
-										}, nil)
-									})
-
-									It("returns 200 OK", func() {
-										Expect(response.StatusCode).To(Equal(http.StatusOK))
-									})
-
-									It("returns Content-Type 'application/json'", func() {
-										expectedHeaderEntries := map[string]string{
-											"Content-Type": "application/json",
-										}
-										Expect(response).Should(IncludeHeaderEntries(expectedHeaderEntries))
-									})
-
-									It("creates a check for the resource", func() {
-										Expect(dbCheckFactory.TryCreateCheckCallCount()).To(Equal(1))
-									})
-
-									It("runs the check from the current pinned version", func() {
-										_, _, _, fromVersion, _, _, toDB := dbCheckFactory.TryCreateCheckArgsForCall(0)
-										Expect(fromVersion).To(Equal(atc.Version{"some": "version"}))
-										Expect(toDB).To(BeTrue())
-									})
-
-									It("returns the build", func() {
-										body, err := io.ReadAll(response.Body)
-										Expect(err).NotTo(HaveOccurred())
-
-										Expect(body).To(MatchJSON(`{
-							"id": 42,
-							"name": "1",
-							"job_name": "some-job",
-							"status": "started",
-							"api_url": "/api/v1/builds/42",
-							"pipeline_name": "a-pipeline",
-							"team_name": "some-team",
-							"start_time": 1,
-							"end_time": 100
-						}`))
-									})
-								})
-							})
-						})
-					})
-				})
-			})
-		})
-	})
-
-	Describe("GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/inputs", func() {
-		var response *http.Response
-
-		JustBeforeEach(func() {
-			var err error
-
-			response, err = client.Get(server.URL + "/api/v1/teams/some-team/pipelines/some-pipeline/jobs/some-job/inputs")
-			Expect(err).NotTo(HaveOccurred())
-		})
-
-		Context("when not authenticated", func() {
-			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
-			})
-
-			It("returns 401", func() {
-				Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
-			})
-		})
-
-		Context("when authenticated", func() {
-			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
-			})
-
-			Context("when not authorized", func() {
-				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(false)
-				})
-
-				It("returns 403", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusForbidden))
-				})
-			})
-
-			Context("when authorized", func() {
-				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(true)
-				})
-
-				Context("when getting the job fails", func() {
-					BeforeEach(func() {
-						fakePipeline.JobReturns(nil, false, errors.New("some-error"))
-					})
-
-					It("returns 500", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-					})
-				})
-
-				Context("when the job is not found", func() {
-					BeforeEach(func() {
-						fakePipeline.JobReturns(nil, false, nil)
-					})
-
-					It("returns 404", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusNotFound))
-					})
-				})
-
-				Context("when getting the job succeeds", func() {
-					BeforeEach(func() {
-						fakePipeline.JobReturns(fakeJob, true, nil)
-					})
-
-					Context("when getting the resources fails", func() {
-						BeforeEach(func() {
-							fakePipeline.ResourcesReturns(nil, errors.New("some-error"))
-						})
-
-						It("returns 500", func() {
-							Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-						})
-					})
-
-					Context("when getting the resources succeeds", func() {
-						BeforeEach(func() {
-							resource1 := new(dbfakes.FakeResource)
-							resource1.IDReturns(1)
-							resource1.NameReturns("some-resource")
-							resource1.TypeReturns("some-type")
-							resource1.SourceReturns(atc.Source{"some": "source"})
-
-							resource2 := new(dbfakes.FakeResource)
-							resource1.IDReturns(2)
-							resource2.NameReturns("some-other-resource")
-							resource2.TypeReturns("some-other-type")
-							resource2.SourceReturns(atc.Source{"some": "other-source"})
-
-							fakePipeline.ResourcesReturns([]db.Resource{resource1, resource2}, nil)
-						})
-
-						Context("when getting the input versions for the job fails", func() {
-							BeforeEach(func() {
-								fakeJob.GetFullNextBuildInputsReturns(nil, false, errors.New("oh no!"))
-							})
-
-							It("returns 500", func() {
-								Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-							})
-						})
-
-						Context("when the job has no input versions available", func() {
-							BeforeEach(func() {
-								fakeJob.GetFullNextBuildInputsReturns(nil, false, nil)
-							})
-
-							It("returns 404", func() {
-								Expect(response.StatusCode).To(Equal(http.StatusNotFound))
-							})
-						})
-
-						Context("when the job has input versions", func() {
-							BeforeEach(func() {
-								inputs := []db.BuildInput{
-									{
-										Name:       "some-input",
-										Version:    atc.Version{"some": "version"},
-										ResourceID: 1,
-									},
-									{
-										Name:       "some-other-input",
-										Version:    atc.Version{"some": "other-version"},
-										ResourceID: 2,
-									},
-								}
-
-								fakeJob.GetFullNextBuildInputsReturns(inputs, true, nil)
-							})
-
-							It("fetches the job config", func() {
-								Expect(fakeJob.ConfigCallCount()).To(Equal(1))
-							})
-
-							Context("when it fails to fetch the job config", func() {
-								BeforeEach(func() {
-									fakeJob.ConfigReturns(atc.JobConfig{}, errors.New("nope"))
-								})
-
-								It("returns a 500", func() {
-									Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-								})
-							})
-
-							Context("when the job inputs are successfully fetched", func() {
-								BeforeEach(func() {
-									fakeJob.ConfigReturns(atc.JobConfig{
-										Name: "some-job",
-										PlanSequence: []atc.Step{
-											{
-												Config: &atc.GetStep{
-													Name:     "some-input",
-													Resource: "some-resource",
-													Passed:   []string{"job-a", "job-b"},
-													Params:   atc.Params{"some": "params"},
-												},
-											},
-											{
-												Config: &atc.GetStep{
-													Name:     "some-other-input",
-													Resource: "some-other-resource",
-													Passed:   []string{"job-c", "job-d"},
-													Params:   atc.Params{"some": "other-params"},
-													Tags:     []string{"some-tag"},
-												},
-											},
-										},
-									}, nil)
-								})
-
-								It("returns 200 OK", func() {
-									Expect(response.StatusCode).To(Equal(http.StatusOK))
-								})
-
-								It("returns Content-Type 'application/json'", func() {
-									expectedHeaderEntries := map[string]string{
-										"Content-Type": "application/json",
-									}
-									Expect(response).Should(IncludeHeaderEntries(expectedHeaderEntries))
-								})
-
-								It("returns the inputs", func() {
-									body, err := io.ReadAll(response.Body)
-									Expect(err).NotTo(HaveOccurred())
-
-									Expect(body).To(MatchJSON(`[
-									{
-										"name": "some-input",
-										"resource": "some-resource",
-										"type": "some-type",
-										"source": {"some": "source"},
-										"version": {"some": "version"},
-										"params": {"some": "params"}
-									},
-									{
-										"name": "some-other-input",
-										"resource": "some-other-resource",
-										"type": "some-other-type",
-										"source": {"some": "other-source"},
-										"version": {"some": "other-version"},
-										"params": {"some": "other-params"},
-										"tags": ["some-tag"]
-									}
-								]`))
-								})
-							})
-						})
-					})
-				})
-			})
-		})
-	})
-
-	Describe("GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/builds/:build_name", func() {
-		var response *http.Response
-
-		JustBeforeEach(func() {
-			var err error
-
-			response, err = client.Get(server.URL + "/api/v1/teams/some-team/pipelines/some-pipeline/jobs/some-job/builds/some-build")
-			Expect(err).NotTo(HaveOccurred())
-		})
-
-		Context("when authorized", func() {
-			BeforeEach(func() {
-				fakeAccess.IsAuthorizedReturns(true)
-				fakeAccess.IsAuthenticatedReturns(true)
-			})
-
-			Context("when getting the job succeeds", func() {
-				var fakeJob *dbfakes.FakeJob
-
-				BeforeEach(func() {
-					fakeJob = new(dbfakes.FakeJob)
-					fakeJob.NameReturns("some-job")
-					fakePipeline.JobReturns(fakeJob, true, nil)
-				})
-
-				Context("when getting the build succeeds", func() {
-					BeforeEach(func() {
-						dbBuild := new(dbfakes.FakeBuild)
-						dbBuild.IDReturns(1)
-						dbBuild.NameReturns("1")
-						dbBuild.JobNameReturns("some-job")
-						dbBuild.PipelineNameReturns("a-pipeline")
-						dbBuild.TeamNameReturns("some-team")
-						dbBuild.StatusReturns(db.BuildStatusSucceeded)
-						dbBuild.StartTimeReturns(time.Unix(1, 0))
-						dbBuild.EndTimeReturns(time.Unix(100, 0))
-						fakeJob.BuildReturns(dbBuild, true, nil)
-					})
-
-					It("returns 200 OK", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusOK))
-					})
-
-					It("returns Content-Type 'application/json'", func() {
-						expectedHeaderEntries := map[string]string{
-							"Content-Type": "application/json",
-						}
-						Expect(response).Should(IncludeHeaderEntries(expectedHeaderEntries))
-					})
-
-					It("fetches by job and build name", func() {
-						Expect(fakeJob.BuildCallCount()).To(Equal(1))
-
-						buildName := fakeJob.BuildArgsForCall(0)
-						Expect(buildName).To(Equal("some-build"))
-					})
-
-					It("returns the build", func() {
-						body, err := io.ReadAll(response.Body)
-						Expect(err).NotTo(HaveOccurred())
-
-						Expect(body).To(MatchJSON(`{
-					"id": 1,
-					"name": "1",
-					"job_name": "some-job",
-					"status": "succeeded",
-					"api_url": "/api/v1/builds/1",
-					"pipeline_name": "a-pipeline",
-					"team_name": "some-team",
-					"start_time": 1,
-					"end_time": 100
-				}`))
-
-					})
-				})
-
-				Context("when the build is not found", func() {
-					BeforeEach(func() {
-						fakeJob.BuildReturns(nil, false, nil)
-					})
-
-					It("returns Not Found", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusNotFound))
-					})
-				})
-
-				Context("when getting the build fails", func() {
-					BeforeEach(func() {
-						fakeJob.BuildReturns(nil, false, errors.New("oh no!"))
-					})
-
-					It("returns Internal Server Error", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-					})
-				})
-			})
-
-			Context("when the job is not found", func() {
-				BeforeEach(func() {
-					fakePipeline.JobReturns(nil, false, nil)
-				})
-
-				It("returns Not Found", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusNotFound))
-				})
-			})
-
-			Context("when getting the build fails", func() {
-				BeforeEach(func() {
-					fakePipeline.JobReturns(nil, false, errors.New("oh no!"))
-				})
-
-				It("returns Internal Server Error", func() {
+				It("returns 500", func() {
 					Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
 				})
 			})
@@ -1906,14 +1935,11 @@ var _ = Describe("Jobs API", func() {
 			})
 
 			Context("and the pipeline is private", func() {
-				BeforeEach(func() {
-					fakePipeline.PublicReturns(false)
-				})
-
 				Context("when not authenticated", func() {
 					BeforeEach(func() {
 						fakeAccess.IsAuthenticatedReturns(false)
 					})
+
 					It("returns 401", func() {
 						Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
 					})
@@ -1932,592 +1958,478 @@ var _ = Describe("Jobs API", func() {
 
 			Context("and the pipeline is public", func() {
 				BeforeEach(func() {
-					fakeBuild := new(dbfakes.FakeBuild)
-					fakePipeline.JobReturns(fakeJob, true, nil)
-					fakeJob.BuildReturns(fakeBuild, true, nil)
-
-					fakePipeline.PublicReturns(true)
+					expose = true
 				})
 
-				It("returns 200 OK", func() {
+				It("returns the requested persisted build", func() {
 					Expect(response.StatusCode).To(Equal(http.StatusOK))
+					actual := decodeJobsAPIResponse[atc.Build](response)
+					expectJobsAPIBuild(actual, persisted)
 				})
 			})
 		})
 	})
 
 	Describe("POST /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/builds/:build_name", func() {
-		var request *http.Request
-		var response *http.Response
+		var server *httptest.Server
+
+		rerunConfig := func() atc.Config {
+			return atc.Config{
+				Resources: atc.ResourceConfigs{{
+					Name: "some-resource", Type: dbtest.BaseResourceType,
+					Source: atc.Source{"repository": "rerun"},
+				}},
+				Jobs: atc.JobConfigs{{
+					Name: "some-job",
+					PlanSequence: []atc.Step{{Config: &atc.GetStep{
+						Name: "some-input", Resource: "some-resource",
+					}}},
+				}},
+			}
+		}
+
+		setupOriginalBuild := func(fixture *jobsAPIFixture) db.Build {
+			GinkgoHelper()
+			version := atc.Version{"ref": "original"}
+			fixture.Scenario.Run(fixture.Builder.WithResourceVersions("some-resource", version))
+			var original db.Build
+			fixture.Scenario.Run(fixture.Builder.WithJobBuild(
+				&original,
+				"some-job",
+				dbtest.JobInputs{{Name: "some-input", Version: version}},
+				nil,
+			))
+			reloadJobsAPIBuild(original)
+			Expect(original.InputsReady()).To(BeTrue())
+			return original
+		}
+
+		rerunPath := func(buildName string) string {
+			return fmt.Sprintf(
+				"/api/v1/teams/some-team/pipelines/some-pipeline/jobs/some-job/builds/%s",
+				buildName,
+			)
+		}
 
 		BeforeEach(func() {
-			var err error
-
-			request, err = http.NewRequest("POST", server.URL+"/api/v1/teams/some-team/pipelines/some-pipeline/jobs/some-job/builds/some-build", nil)
-			Expect(err).NotTo(HaveOccurred())
+			fakeAccess.IsAuthorizedReturns(true)
+			fakeAccess.IsAuthenticatedReturns(true)
+			fakeAccess.UserInfoReturns(atc.UserInfo{DisplayUserId: "rerun-user"})
 		})
 
-		JustBeforeEach(func() {
-			var err error
+		It("persists a pending rerun linked to the real original build", func() {
+			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, rerunConfig())
+			original := setupOriginalBuild(fixture)
+			server = fixture.Serve()
+			response := jobsAPIPost(server, rerunPath(original.Name()))
+			Expect(response.StatusCode).To(Equal(http.StatusOK))
+			Expect(response).To(IncludeHeaderEntries(map[string]string{"Content-Type": "application/json"}))
 
-			response, err = client.Do(request)
+			actual := decodeJobsAPIResponse[atc.Build](response)
+			job := fixture.Job("some-job")
+			persisted, found, err := job.Build(actual.Name)
 			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			expectJobsAPIBuild(actual, persisted)
+			Expect(persisted.Status()).To(Equal(db.BuildStatusPending))
+			Expect(persisted.RerunOf()).To(Equal(original.ID()))
+			Expect(persisted.RerunOfName()).To(Equal(original.Name()))
+			Expect(persisted.RerunNumber()).To(Equal(1))
+			Expect(persisted.Name()).To(Equal(original.Name() + ".1"))
+			Expect(persisted.JobName()).To(Equal(job.Name()))
+			Expect(persisted.PipelineID()).To(Equal(fixture.Pipeline.ID()))
+			Expect(persisted.PipelineName()).To(Equal(fixture.Pipeline.Name()))
+			Expect(persisted.TeamName()).To(Equal(fixture.Team.Name()))
+			Expect(actual.CreatedBy).NotTo(BeNil())
+			Expect(*actual.CreatedBy).To(Equal("rerun-user"))
+			Expect(actual.StartTime).To(BeZero())
+			Expect(actual.EndTime).To(BeZero())
+
+			var count int
+			Expect(fixture.Real.Conn.QueryRow(
+				`SELECT count(*) FROM builds WHERE rerun_of = $1`, original.ID(),
+			).Scan(&count)).To(Succeed())
+			Expect(count).To(Equal(1))
 		})
 
-		Context("when authorized and authenticated", func() {
-			BeforeEach(func() {
-				fakeAccess.IsAuthorizedReturns(true)
-				fakeAccess.IsAuthenticatedReturns(true)
-			})
+		It("returns 500 for an ordinary persisted build whose inputs are not ready", func() {
+			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, rerunConfig())
+			original := createJobsAPIBuild(fixture.Job("some-job"), "original-user")
+			Expect(original.InputsReady()).To(BeFalse())
+			server = fixture.Serve()
+			response := jobsAPIPost(server, rerunPath(original.Name()))
+			Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
 
-			Context("when getting the job fails", func() {
-				BeforeEach(func() {
-					fakePipeline.JobReturns(nil, false, errors.New("errorrr"))
-				})
+			var count int
+			Expect(fixture.Real.Conn.QueryRow(
+				`SELECT count(*) FROM builds WHERE rerun_of = $1`, original.ID(),
+			).Scan(&count)).To(Succeed())
+			Expect(count).To(BeZero())
+		})
 
-				It("returns a 500", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-				})
-			})
+		It("returns 404 for a missing persisted build", func() {
+			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, rerunConfig())
+			server = fixture.Serve()
+			response := jobsAPIPost(server, rerunPath("missing"))
+			Expect(response.StatusCode).To(Equal(http.StatusNotFound))
+		})
 
-			Context("when the job is not found", func() {
-				BeforeEach(func() {
-					fakePipeline.JobReturns(nil, false, nil)
-				})
+		It("returns 500 when the real Build lookup fails on its closed connection", func() {
+			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, rerunConfig())
+			doomed := fixture.doomedJob("some-job")
+			pipeline := jobsAPIPipeline{
+				Pipeline: fixture.Pipeline, jobName: "some-job", job: doomed,
+			}
+			server = fixture.ServePipeline(pipeline)
+			response := jobsAPIPost(server, rerunPath("some-build"))
+			Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
+		})
 
-				It("returns a 404", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusNotFound))
-				})
-			})
+		It("returns 500 from the narrow RerunBuild boundary after a real Build lookup", func() {
+			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, rerunConfig())
+			original := setupOriginalBuild(fixture)
+			job := rerunErrorJob{Job: fixture.Job("some-job"), err: errors.New("rerun failed")}
+			pipeline := jobsAPIPipeline{
+				Pipeline: fixture.Pipeline, jobName: "some-job", job: job,
+			}
+			server = fixture.ServePipeline(pipeline)
+			response := jobsAPIPost(server, rerunPath(original.Name()))
+			Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
 
-			Context("when getting the job succeeds", func() {
-				BeforeEach(func() {
-					fakeJob.NameReturns("some-job")
-					fakePipeline.JobReturns(fakeJob, true, nil)
-				})
+			var count int
+			Expect(fixture.Real.Conn.QueryRow(
+				`SELECT count(*) FROM builds WHERE rerun_of = $1`, original.ID(),
+			).Scan(&count)).To(Succeed())
+			Expect(count).To(BeZero())
+		})
 
-				It("tries to get the build to rerun", func() {
-					Expect(fakeJob.BuildCallCount()).To(Equal(1))
-				})
+		It("returns 500 when the real pipeline job lookup fails", func() {
+			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, rerunConfig())
+			server = fixture.ServePipeline(fixture.doomedPipeline())
+			response := jobsAPIPost(server, rerunPath("some-build"))
+			Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
+		})
 
-				Context("when getting the build to rerun fails", func() {
-					BeforeEach(func() {
-						fakeJob.BuildReturns(nil, false, errors.New("oops"))
-					})
-
-					It("returns a 500", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-					})
-				})
-
-				Context("when the build to rerun is not found", func() {
-					BeforeEach(func() {
-						fakeJob.BuildReturns(nil, false, nil)
-					})
-
-					It("returns a 404", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusNotFound))
-					})
-				})
-
-				Context("when getting the build to rerun succeeds", func() {
-					var fakeBuild *dbfakes.FakeBuild
-					BeforeEach(func() {
-						fakeBuild = new(dbfakes.FakeBuild)
-						fakeBuild.IDReturns(1)
-						fakeBuild.NameReturns("1")
-						fakeBuild.JobNameReturns("some-job")
-						fakeBuild.PipelineNameReturns("a-pipeline")
-						fakeBuild.TeamNameReturns("some-team")
-						fakeBuild.StatusReturns(db.BuildStatusStarted)
-						fakeBuild.StartTimeReturns(time.Unix(1, 0))
-						fakeBuild.EndTimeReturns(time.Unix(100, 0))
-
-						fakeJob.BuildReturns(fakeBuild, true, nil)
-					})
-
-					Context("when the build has no inputs", func() {
-						BeforeEach(func() {
-							fakeBuild.InputsReadyReturns(false)
-						})
-
-						It("returns a 500", func() {
-							Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-						})
-					})
-
-					Context("when the build is input ready", func() {
-						BeforeEach(func() {
-							fakeBuild.InputsReadyReturns(true)
-						})
-						Context("when creating the rerun build fails", func() {
-							BeforeEach(func() {
-								fakeJob.RerunBuildReturns(nil, errors.New("nopers"))
-							})
-
-							It("returns a 500", func() {
-								Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-							})
-						})
-
-						Context("when creating the rerun build succeeds", func() {
-							BeforeEach(func() {
-								build := new(dbfakes.FakeBuild)
-								build.IDReturns(2)
-								build.NameReturns("1.1")
-								build.JobNameReturns("some-job")
-								build.PipelineNameReturns("a-pipeline")
-								build.TeamNameReturns("some-team")
-								build.StatusReturns(db.BuildStatusStarted)
-								build.StartTimeReturns(time.Unix(1, 0))
-								build.EndTimeReturns(time.Unix(100, 0))
-
-								fakeJob.RerunBuildReturns(build, nil)
-							})
-
-							It("returns 200 OK", func() {
-								Expect(response.StatusCode).To(Equal(http.StatusOK))
-							})
-
-							It("returns Content-Type 'application/json'", func() {
-								expectedHeaderEntries := map[string]string{
-									"Content-Type": "application/json",
-								}
-								Expect(response).Should(IncludeHeaderEntries(expectedHeaderEntries))
-							})
-
-							It("returns the build", func() {
-								body, err := io.ReadAll(response.Body)
-								Expect(err).NotTo(HaveOccurred())
-
-								Expect(body).To(MatchJSON(`{
-							"id": 2,
-							"name": "1.1",
-							"job_name": "some-job",
-							"status": "started",
-							"api_url": "/api/v1/builds/2",
-							"pipeline_name": "a-pipeline",
-							"team_name": "some-team",
-							"start_time": 1,
-							"end_time": 100
-						}`))
-							})
-						})
-					})
-				})
-			})
+		It("returns 404 for a missing persisted job", func() {
+			fixture := useJobsAPIFixture(
+				atc.PipelineRef{Name: "some-pipeline"},
+				atc.Config{Jobs: atc.JobConfigs{{Name: "other-job"}}},
+			)
+			server = fixture.Serve()
+			response := jobsAPIPost(server, rerunPath("some-build"))
+			Expect(response.StatusCode).To(Equal(http.StatusNotFound))
 		})
 	})
-
 	Describe("PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/pause", func() {
-		var response *http.Response
+		var server *httptest.Server
+		path := "/api/v1/teams/some-team/pipelines/some-pipeline/jobs/job-name/pause"
+		config := atc.Config{
+			Resources: atc.ResourceConfigs{{Name: "repository", Type: dbtest.BaseResourceType}},
+			Jobs:      atc.JobConfigs{{Name: "job-name", PlanSequence: []atc.Step{{Config: &atc.GetStep{Name: "repository-source", Resource: "repository"}}}}},
+		}
 
-		JustBeforeEach(func() {
-			var err error
-
-			request, err := http.NewRequest("PUT", server.URL+"/api/v1/teams/some-team/pipelines/some-pipeline/jobs/job-name/pause", nil)
+		It("persists the authenticated user's pause state", func() {
+			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, config)
+			fakeAccess.IsAuthenticatedReturns(true)
+			fakeAccess.IsAuthorizedReturns(true)
+			fakeAccess.UserInfoReturns(atc.UserInfo{DisplayUserId: "api-user"})
+			server = fixture.Serve()
+			response := jobsAPIRequest(server, http.MethodPut, path)
+			Expect(response.StatusCode).To(Equal(http.StatusOK))
+			job := fixture.Job("job-name")
+			found, err := job.Reload()
 			Expect(err).NotTo(HaveOccurred())
-
-			response, err = client.Do(request)
-			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(job.Paused()).To(BeTrue())
+			Expect(job.PausedBy()).To(Equal("api-user"))
+			Expect(job.PausedAt()).To(BeTemporally("~", time.Now(), time.Second))
 		})
 
-		Context("when authenticated", func() {
-			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
-			})
-			Context("when authorized", func() {
-				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(true)
-
-					fakePipeline.JobReturns(fakeJob, true, nil)
-					fakeJob.PauseReturns(nil)
-				})
-
-				It("finds the job on the pipeline and pauses it", func() {
-					jobName := fakePipeline.JobArgsForCall(0)
-					Expect(jobName).To(Equal("job-name"))
-
-					Expect(fakeJob.PauseCallCount()).To(Equal(1))
-
-					Expect(response.StatusCode).To(Equal(http.StatusOK))
-				})
-
-				Context("when the job is not found", func() {
-					BeforeEach(func() {
-						fakePipeline.JobReturns(nil, false, nil)
-					})
-
-					It("returns a 404", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusNotFound))
-					})
-				})
-
-				Context("when finding the job fails", func() {
-					BeforeEach(func() {
-						fakePipeline.JobReturns(nil, false, errors.New("some-error"))
-					})
-
-					It("returns a 500", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-					})
-				})
-
-				Context("when the job fails to be paused", func() {
-					BeforeEach(func() {
-						fakeJob.PauseReturns(errors.New("some-error"))
-					})
-
-					It("returns a 500", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-					})
-				})
-			})
+		It("returns 404 for a missing configured job", func() {
+			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, atc.Config{Jobs: atc.JobConfigs{{Name: "other-job"}}})
+			fakeAccess.IsAuthenticatedReturns(true)
+			fakeAccess.IsAuthorizedReturns(true)
+			server = fixture.Serve()
+			response := jobsAPIRequest(server, http.MethodPut, path)
+			Expect(response.StatusCode).To(Equal(http.StatusNotFound))
 		})
 
-		Context("when not authenticated", func() {
-			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
-			})
+		It("returns 500 when the real pipeline job lookup fails", func() {
+			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, config)
+			fakeAccess.IsAuthenticatedReturns(true)
+			fakeAccess.IsAuthorizedReturns(true)
+			server = fixture.ServePipeline(fixture.doomedPipeline())
+			response := jobsAPIRequest(server, http.MethodPut, path)
+			Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
+		})
 
-			It("returns Status Unauthorized", func() {
-				Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
-			})
+		It("returns 500 when pausing a preloaded real job on its closed connection", func() {
+			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, config)
+			fakeAccess.IsAuthenticatedReturns(true)
+			fakeAccess.IsAuthorizedReturns(true)
+			pipeline := jobsAPIPipeline{Pipeline: fixture.Pipeline, jobName: "job-name", job: fixture.doomedJob("job-name")}
+			server = fixture.ServePipeline(pipeline)
+			response := jobsAPIRequest(server, http.MethodPut, path)
+			Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
+		})
+
+		It("returns 401 without authentication", func() {
+			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, config)
+			fakeAccess.IsAuthenticatedReturns(false)
+			server = fixture.Serve()
+			response := jobsAPIRequest(server, http.MethodPut, path)
+			Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
 		})
 	})
 
 	Describe("PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/unpause", func() {
-		var response *http.Response
+		var server *httptest.Server
+		path := "/api/v1/teams/some-team/pipelines/some-pipeline/jobs/job-name/unpause"
+		config := atc.Config{
+			Resources: atc.ResourceConfigs{{Name: "repository", Type: dbtest.BaseResourceType}},
+			Jobs:      atc.JobConfigs{{Name: "job-name", PlanSequence: []atc.Step{{Config: &atc.GetStep{Name: "repository-source", Resource: "repository"}}}}},
+		}
 
-		JustBeforeEach(func() {
-			var err error
-
-			request, err := http.NewRequest("PUT", server.URL+"/api/v1/teams/some-team/pipelines/some-pipeline/jobs/job-name/unpause", nil)
+		It("clears a real job's persisted pause state", func() {
+			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, config)
+			job := fixture.Job("job-name")
+			Expect(job.Pause("setup-user")).To(Succeed())
+			fakeAccess.IsAuthenticatedReturns(true)
+			fakeAccess.IsAuthorizedReturns(true)
+			server = fixture.Serve()
+			response := jobsAPIRequest(server, http.MethodPut, path)
+			Expect(response.StatusCode).To(Equal(http.StatusOK))
+			found, err := job.Reload()
 			Expect(err).NotTo(HaveOccurred())
-
-			response, err = client.Do(request)
-			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(job.Paused()).To(BeFalse())
+			Expect(job.PausedBy()).To(BeEmpty())
+			Expect(job.PausedAt()).To(BeZero())
 		})
 
-		Context("when authorized", func() {
-			BeforeEach(func() {
-				fakeAccess.IsAuthorizedReturns(true)
-			})
-
-			Context("when authenticated", func() {
-				BeforeEach(func() {
-					fakeAccess.IsAuthenticatedReturns(true)
-
-					fakePipeline.JobReturns(fakeJob, true, nil)
-					fakeJob.UnpauseReturns(nil)
-				})
-
-				It("finds the job on the pipeline and unpauses it", func() {
-					jobName := fakePipeline.JobArgsForCall(0)
-					Expect(jobName).To(Equal("job-name"))
-
-					Expect(fakeJob.UnpauseCallCount()).To(Equal(1))
-
-					Expect(response.StatusCode).To(Equal(http.StatusOK))
-				})
-
-				Context("when the job is not found", func() {
-					BeforeEach(func() {
-						fakePipeline.JobReturns(nil, false, nil)
-					})
-
-					It("returns a 404", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusNotFound))
-					})
-				})
-
-				Context("when finding the job fails", func() {
-					BeforeEach(func() {
-						fakePipeline.JobReturns(nil, false, errors.New("some-error"))
-					})
-
-					It("returns a 500", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-					})
-				})
-
-				Context("when the job fails to be unpaused", func() {
-					BeforeEach(func() {
-						fakeJob.UnpauseReturns(errors.New("some-error"))
-					})
-
-					It("returns a 500", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-					})
-				})
-			})
+		It("returns 404 for a missing configured job", func() {
+			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, atc.Config{Jobs: atc.JobConfigs{{Name: "other-job"}}})
+			fakeAccess.IsAuthenticatedReturns(true)
+			fakeAccess.IsAuthorizedReturns(true)
+			server = fixture.Serve()
+			response := jobsAPIRequest(server, http.MethodPut, path)
+			Expect(response.StatusCode).To(Equal(http.StatusNotFound))
 		})
 
-		Context("when not authenticated", func() {
-			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
-			})
+		It("returns 500 when the real pipeline job lookup fails", func() {
+			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, config)
+			fakeAccess.IsAuthenticatedReturns(true)
+			fakeAccess.IsAuthorizedReturns(true)
+			server = fixture.ServePipeline(fixture.doomedPipeline())
+			response := jobsAPIRequest(server, http.MethodPut, path)
+			Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
+		})
 
-			It("returns Status Unauthorized", func() {
-				Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
-			})
+		It("returns 500 when unpausing a preloaded real job on its closed connection", func() {
+			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, config)
+			fakeAccess.IsAuthenticatedReturns(true)
+			fakeAccess.IsAuthorizedReturns(true)
+			pipeline := jobsAPIPipeline{Pipeline: fixture.Pipeline, jobName: "job-name", job: fixture.doomedJob("job-name")}
+			server = fixture.ServePipeline(pipeline)
+			response := jobsAPIRequest(server, http.MethodPut, path)
+			Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
+		})
+
+		It("returns 401 without authentication", func() {
+			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, config)
+			fakeAccess.IsAuthenticatedReturns(false)
+			server = fixture.Serve()
+			response := jobsAPIRequest(server, http.MethodPut, path)
+			Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
 		})
 	})
 
 	Describe("DELETE /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/tasks/:step_name/cache", func() {
-		var (
-			request  *http.Request
-			response *http.Response
-		)
+		var server *httptest.Server
+		basePath := "/api/v1/teams/some-team/pipelines/some-pipeline/jobs/job-name/tasks/compile/cache"
+		config := atc.Config{Jobs: atc.JobConfigs{{Name: "job-name"}, {Name: "other-job"}}}
 
-		BeforeEach(func() {
-			var err error
-
-			request, err = http.NewRequest("DELETE", server.URL+"/api/v1/teams/some-team/pipelines/some-pipeline/jobs/job-name/tasks/:step_name/cache", nil)
+		seedCaches := func(fixture *jobsAPIFixture) (db.TaskCacheFactory, db.Job, db.Job) {
+			GinkgoHelper()
+			factory := db.NewTaskCacheFactory(fixture.Real.Conn)
+			job := fixture.Job("job-name")
+			otherJob := fixture.Job("other-job")
+			_, err := factory.FindOrCreate(job.ID(), "compile", "cache-path")
 			Expect(err).NotTo(HaveOccurred())
-		})
-
-		JustBeforeEach(func() {
-			var err error
-
-			response, err = client.Do(request)
+			_, err = factory.FindOrCreate(job.ID(), "compile", "other-path")
 			Expect(err).NotTo(HaveOccurred())
+			_, err = factory.FindOrCreate(otherJob.ID(), "compile", "cache-path")
+			Expect(err).NotTo(HaveOccurred())
+			return factory, job, otherJob
+		}
+
+		It("deletes all matching step caches and preserves another job's cache", func() {
+			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, config)
+			factory, job, otherJob := seedCaches(fixture)
+			fakeAccess.IsAuthenticatedReturns(true)
+			fakeAccess.IsAuthorizedReturns(true)
+			server = fixture.Serve()
+			response := jobsAPIRequest(server, http.MethodDelete, basePath)
+			Expect(response.StatusCode).To(Equal(http.StatusOK))
+			Expect(response).To(IncludeHeaderEntries(map[string]string{"Content-Type": "application/json"}))
+			Expect(decodeJobsAPIResponse[atc.ClearTaskCacheResponse](response).CachesRemoved).To(Equal(int64(2)))
+			_, found, err := factory.Find(job.ID(), "compile", "cache-path")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeFalse())
+			_, found, err = factory.Find(job.ID(), "compile", "other-path")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeFalse())
+			_, found, err = factory.Find(otherJob.ID(), "compile", "cache-path")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
 		})
 
-		Context("when authorized", func() {
-			BeforeEach(func() {
-				fakeAccess.IsAuthorizedReturns(true)
-			})
-
-			Context("when authenticated", func() {
-				BeforeEach(func() {
-					fakeAccess.IsAuthenticatedReturns(true)
-
-					fakePipeline.JobReturns(fakeJob, true, nil)
-					fakeJob.ClearTaskCacheReturns(1, nil)
-
-				})
-
-				Context("when no cachePath is passed", func() {
-					It("it finds the right job", func() {
-						jobName := fakePipeline.JobArgsForCall(0)
-						Expect(jobName).To(Equal("job-name"))
-					})
-
-					It("it clears the db cache entries successfully", func() {
-						Expect(fakeJob.ClearTaskCacheCallCount()).To(Equal(1))
-						_, cachePath := fakeJob.ClearTaskCacheArgsForCall(0)
-						Expect(cachePath).To(Equal(""))
-					})
-
-					It("returns 200 OK", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusOK))
-					})
-
-					It("returns Content-Type 'application/json'", func() {
-						expectedHeaderEntries := map[string]string{
-							"Content-Type": "application/json",
-						}
-						Expect(response).Should(IncludeHeaderEntries(expectedHeaderEntries))
-					})
-
-					It("it returns the number of rows deleted", func() {
-						body, err := io.ReadAll(response.Body)
-						Expect(err).NotTo(HaveOccurred())
-
-						Expect(body).To(MatchJSON(`{"caches_removed": 1}`))
-					})
-
-					Context("but no rows were deleted", func() {
-						BeforeEach(func() {
-							fakeJob.ClearTaskCacheReturns(0, nil)
-						})
-
-						It("it returns that 0 rows were deleted", func() {
-							body, err := io.ReadAll(response.Body)
-							Expect(err).NotTo(HaveOccurred())
-
-							Expect(body).To(MatchJSON(`{"caches_removed": 0}`))
-						})
-
-					})
-				})
-
-				Context("when a cachePath is passed", func() {
-					BeforeEach(func() {
-						query := request.URL.Query()
-						query.Add(atc.ClearTaskCacheQueryPath, "cache-path")
-						request.URL.RawQuery = query.Encode()
-					})
-
-					It("it finds the right job", func() {
-						jobName := fakePipeline.JobArgsForCall(0)
-						Expect(jobName).To(Equal("job-name"))
-					})
-
-					It("it clears the db cache entries successfully", func() {
-						Expect(fakeJob.ClearTaskCacheCallCount()).To(Equal(1))
-						_, cachePath := fakeJob.ClearTaskCacheArgsForCall(0)
-						Expect(cachePath).To(Equal("cache-path"))
-					})
-
-					It("returns 200 OK", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusOK))
-					})
-
-					It("returns Content-Type 'application/json'", func() {
-						expectedHeaderEntries := map[string]string{
-							"Content-Type": "application/json",
-						}
-						Expect(response).Should(IncludeHeaderEntries(expectedHeaderEntries))
-					})
-
-					It("it returns the number of rows deleted", func() {
-						body, err := io.ReadAll(response.Body)
-						Expect(err).NotTo(HaveOccurred())
-
-						Expect(body).To(MatchJSON(`{"caches_removed": 1}`))
-					})
-
-					Context("but no rows corresponding to the cachePath are deleted", func() {
-						BeforeEach(func() {
-							fakeJob.ClearTaskCacheReturns(0, nil)
-						})
-
-						It("it returns that 0 rows were deleted", func() {
-							body, err := io.ReadAll(response.Body)
-							Expect(err).NotTo(HaveOccurred())
-
-							Expect(body).To(MatchJSON(`{"caches_removed": 0}`))
-						})
-					})
-				})
-
-				Context("when the job is not found", func() {
-					BeforeEach(func() {
-						fakePipeline.JobReturns(nil, false, nil)
-					})
-
-					It("returns a 404", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusNotFound))
-					})
-				})
-
-				Context("when finding the job fails", func() {
-					BeforeEach(func() {
-						fakePipeline.JobReturns(nil, false, errors.New("some-error"))
-					})
-
-					It("returns a 500", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-					})
-				})
-
-				Context("when there are problems removing the db cache entries", func() {
-					BeforeEach(func() {
-						fakeJob.ClearTaskCacheReturns(-1, errors.New("some-error"))
-					})
-
-					It("returns a 500", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-					})
-				})
-			})
+		It("deletes only the selected cache path and preserves decoys", func() {
+			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, config)
+			factory, job, otherJob := seedCaches(fixture)
+			fakeAccess.IsAuthenticatedReturns(true)
+			fakeAccess.IsAuthorizedReturns(true)
+			server = fixture.Serve()
+			response := jobsAPIRequest(server, http.MethodDelete, basePath+"?"+atc.ClearTaskCacheQueryPath+"=cache-path")
+			Expect(response.StatusCode).To(Equal(http.StatusOK))
+			Expect(decodeJobsAPIResponse[atc.ClearTaskCacheResponse](response).CachesRemoved).To(Equal(int64(1)))
+			_, found, err := factory.Find(job.ID(), "compile", "cache-path")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeFalse())
+			_, found, err = factory.Find(job.ID(), "compile", "other-path")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			_, found, err = factory.Find(otherJob.ID(), "compile", "cache-path")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
 		})
 
-		Context("when not authenticated", func() {
-			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
-			})
+		It("reports zero when no persisted cache matches", func() {
+			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, config)
+			seedCaches(fixture)
+			fakeAccess.IsAuthenticatedReturns(true)
+			fakeAccess.IsAuthorizedReturns(true)
+			server = fixture.Serve()
+			response := jobsAPIRequest(server, http.MethodDelete, basePath+"?"+atc.ClearTaskCacheQueryPath+"=missing")
+			Expect(response.StatusCode).To(Equal(http.StatusOK))
+			Expect(decodeJobsAPIResponse[atc.ClearTaskCacheResponse](response).CachesRemoved).To(BeZero())
+		})
 
-			It("returns Status Unauthorized", func() {
-				Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
-			})
+		It("reports zero for a missing step and preserves persisted caches", func() {
+			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, config)
+			factory, job, otherJob := seedCaches(fixture)
+			fakeAccess.IsAuthenticatedReturns(true)
+			fakeAccess.IsAuthorizedReturns(true)
+			server = fixture.Serve()
+			response := jobsAPIRequest(
+				server,
+				http.MethodDelete,
+				"/api/v1/teams/some-team/pipelines/some-pipeline/jobs/job-name/tasks/missing-step/cache",
+			)
+			Expect(response.StatusCode).To(Equal(http.StatusOK))
+			Expect(decodeJobsAPIResponse[atc.ClearTaskCacheResponse](response).CachesRemoved).To(BeZero())
+			_, found, err := factory.Find(job.ID(), "compile", "cache-path")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			_, found, err = factory.Find(job.ID(), "compile", "other-path")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			_, found, err = factory.Find(otherJob.ID(), "compile", "cache-path")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+		})
+
+		It("returns 404 for a missing configured job", func() {
+			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, atc.Config{Jobs: atc.JobConfigs{{Name: "other-job"}}})
+			fakeAccess.IsAuthenticatedReturns(true)
+			fakeAccess.IsAuthorizedReturns(true)
+			server = fixture.Serve()
+			response := jobsAPIRequest(server, http.MethodDelete, basePath)
+			Expect(response.StatusCode).To(Equal(http.StatusNotFound))
+		})
+
+		It("returns 500 when the real pipeline job lookup fails", func() {
+			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, config)
+			fakeAccess.IsAuthenticatedReturns(true)
+			fakeAccess.IsAuthorizedReturns(true)
+			server = fixture.ServePipeline(fixture.doomedPipeline())
+			response := jobsAPIRequest(server, http.MethodDelete, basePath)
+			Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
+		})
+
+		It("returns 500 when clearing a preloaded real job on its closed connection", func() {
+			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, config)
+			fakeAccess.IsAuthenticatedReturns(true)
+			fakeAccess.IsAuthorizedReturns(true)
+			pipeline := jobsAPIPipeline{Pipeline: fixture.Pipeline, jobName: "job-name", job: fixture.doomedJob("job-name")}
+			server = fixture.ServePipeline(pipeline)
+			response := jobsAPIRequest(server, http.MethodDelete, basePath)
+			Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
+		})
+
+		It("returns 401 without authentication", func() {
+			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, config)
+			fakeAccess.IsAuthenticatedReturns(false)
+			server = fixture.Serve()
+			response := jobsAPIRequest(server, http.MethodDelete, basePath)
+			Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
 		})
 	})
 
 	Describe("PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/schedule", func() {
-		var response *http.Response
+		var server *httptest.Server
+		path := "/api/v1/teams/some-team/pipelines/some-pipeline/jobs/job-name/schedule"
+		config := atc.Config{Jobs: atc.JobConfigs{{Name: "job-name"}}}
 
-		JustBeforeEach(func() {
-			var err error
-
-			request, err := http.NewRequest("PUT", server.URL+"/api/v1/teams/some-team/pipelines/some-pipeline/jobs/job-name/schedule", nil)
+		It("advances the persisted schedule-request timestamp", func() {
+			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, config)
+			job := fixture.Job("job-name")
+			before := job.ScheduleRequestedTime()
+			fakeAccess.IsAuthenticatedReturns(true)
+			fakeAccess.IsAuthorizedReturns(true)
+			server = fixture.Serve()
+			response := jobsAPIRequest(server, http.MethodPut, path)
+			Expect(response.StatusCode).To(Equal(http.StatusOK))
+			found, err := job.Reload()
 			Expect(err).NotTo(HaveOccurred())
-
-			response, err = client.Do(request)
-			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(job.ScheduleRequestedTime()).To(BeTemporally(">", before))
 		})
 
-		Context("when authenticated", func() {
-			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
-			})
-			Context("when authorized", func() {
-				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(true)
-
-					fakePipeline.JobReturns(fakeJob, true, nil)
-					fakeJob.RequestScheduleReturns(nil)
-				})
-
-				It("finds the job on the pipeline and schedules it", func() {
-					jobName := fakePipeline.JobArgsForCall(0)
-					Expect(jobName).To(Equal("job-name"))
-
-					Expect(fakeJob.RequestScheduleCallCount()).To(Equal(1))
-
-					Expect(response.StatusCode).To(Equal(http.StatusOK))
-				})
-
-				Context("when the job is not found", func() {
-					BeforeEach(func() {
-						fakePipeline.JobReturns(nil, false, nil)
-					})
-
-					It("returns a 404", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusNotFound))
-					})
-				})
-
-				Context("when finding the job fails", func() {
-					BeforeEach(func() {
-						fakePipeline.JobReturns(nil, false, errors.New("some-error"))
-					})
-
-					It("returns a 500", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-					})
-				})
-
-				Context("when the job fails to be scheduled", func() {
-					BeforeEach(func() {
-						fakeJob.RequestScheduleReturns(errors.New("some-error"))
-					})
-
-					It("returns a 500", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-					})
-				})
-			})
+		It("returns 404 for a missing configured job", func() {
+			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, atc.Config{Jobs: atc.JobConfigs{{Name: "other-job"}}})
+			fakeAccess.IsAuthenticatedReturns(true)
+			fakeAccess.IsAuthorizedReturns(true)
+			server = fixture.Serve()
+			response := jobsAPIRequest(server, http.MethodPut, path)
+			Expect(response.StatusCode).To(Equal(http.StatusNotFound))
 		})
 
-		Context("when not authenticated", func() {
-			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
-			})
+		It("returns 500 when the real pipeline job lookup fails", func() {
+			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, config)
+			fakeAccess.IsAuthenticatedReturns(true)
+			fakeAccess.IsAuthorizedReturns(true)
+			server = fixture.ServePipeline(fixture.doomedPipeline())
+			response := jobsAPIRequest(server, http.MethodPut, path)
+			Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
+		})
 
-			It("returns Status Unauthorized", func() {
-				Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
-			})
+		It("returns 500 when scheduling a preloaded real job on its closed connection", func() {
+			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, config)
+			fakeAccess.IsAuthenticatedReturns(true)
+			fakeAccess.IsAuthorizedReturns(true)
+			pipeline := jobsAPIPipeline{Pipeline: fixture.Pipeline, jobName: "job-name", job: fixture.doomedJob("job-name")}
+			server = fixture.ServePipeline(pipeline)
+			response := jobsAPIRequest(server, http.MethodPut, path)
+			Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
+		})
+
+		It("returns 401 without authentication", func() {
+			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, config)
+			fakeAccess.IsAuthenticatedReturns(false)
+			server = fixture.Serve()
+			response := jobsAPIRequest(server, http.MethodPut, path)
+			Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
 		})
 	})
 })
-
-func fakeDBResourceType(t atc.ResourceType) *dbfakes.FakeResourceType {
-	fake := new(dbfakes.FakeResourceType)
-	fake.NameReturns(t.Name)
-	fake.TypeReturns(t.Type)
-	fake.SourceReturns(t.Source)
-	return fake
-}
