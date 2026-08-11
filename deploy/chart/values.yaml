@@ -195,11 +195,12 @@ kubernetes:
     namespacePrefix: "concourse-"
 
 # -- Explicit task cache backend selector.
-# Valid values: artifact, pvc, hostpath, emptydir.
-# When empty (default), auto-detects based on which config is set:
-#   artifact store > cache PVC > hostpath > emptydir.
-# Set explicitly to override auto-detection (e.g. "hostpath" when you
-# prefer node-local caches even though the artifact store is configured).
+# Valid values: hostpath, emptydir.
+# The binary rejects anything else at startup (ValidCacheStores in
+# atc/worker/jetbridge/config.go), so a value documented here that the code
+# does not accept is a CrashLoopBackOff, not a warning.
+# When empty (default), auto-detects: hostpath if cacheHostPath is set,
+# otherwise emptydir.
 cacheStore: ""
 
 # -- Host path for node-local task cache persistence.

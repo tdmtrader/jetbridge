@@ -3,7 +3,7 @@
 ## Quick Start
 
 ```bash
-make test-quick    # Unit + ci-agent tests (~5 min, needs PostgreSQL)
+make test-quick    # Unit + Elm tests (~5 min, needs PostgreSQL and yarn)
 make test-all      # Everything including K8s tests (hours)
 ```
 
@@ -24,15 +24,16 @@ ginkgo ./atc/exec/
 ginkgo ./fly/commands/
 ```
 
-### 2. CI-Agent Tests (`make test-ci-agent`)
+### 2. Elm Tests (`make test-elm`)
 
-Runs the ci-agent Go module (separate `go.mod`).
+Runs the frontend suite. It is the cheapest tier there is, and it had rotted to
+two non-compiling suites while nothing ran it.
 
-- **Time:** ~2 minutes
-- **Prerequisites:** None (fully self-contained)
+- **Time:** ~30 seconds
+- **Prerequisites:** `yarn install`
 
 ```bash
-cd ci-agent && go test ./... -count=1
+yarn run test
 ```
 
 ### 3. Fly Integration Tests (`make test-fly-integration`)
@@ -61,10 +62,10 @@ ginkgo -r -p ./atc/integration/
 
 ### 5. K8s Integration Tests (`make test-k8s-integration`)
 
-Creates a KinD (Kubernetes-in-Docker) cluster and deploys Concourse via Helm.
+Creates a K3s cluster from inside the suite via `testcontainers-go/modules/k3s`, then deploys Concourse via Helm.
 
-- **Time:** ~23 minutes (including KinD cluster creation/teardown)
-- **Prerequisites:** Docker, KinD, Helm, kubectl
+- **Time:** ~23 minutes (including cluster creation/teardown)
+- **Prerequisites:** Docker, Helm, kubectl
 - **What it covers:** 117 specs (7 pending) — pipeline execution, volume passing, pod lifecycle. ~2 pod cleanup specs are flaky due to GC timing.
 
 ```bash
@@ -78,15 +79,15 @@ docker build -f Dockerfile.local -t concourse-local:latest .
 
 ### 6. K8s Behavioral Tests (`make test-k8s-behavioral`)
 
-Full behavioral test suite with parallel KinD clusters (one per process).
+Full behavioral test suite with parallel K3s containers (one per process).
 
 - **Time:** 2-3 hours (with 2 procs)
-- **Prerequisites:** Docker, KinD, Helm, kubectl (needs significant CPU/memory)
+- **Prerequisites:** Docker, Helm, kubectl (needs significant CPU/memory)
 - **What it covers:** 302 specs — resource checking, pipeline behavior, volumes, hijacking
 - **Note:** Default 2 parallel procs. 4 procs may time out during cluster setup on resource-constrained machines. Override with `K8S_PROCS=4 make test-k8s-behavioral`.
 
 ```bash
-# Default (2 parallel KinD clusters)
+# Default (2 parallel K3s containers)
 make test-k8s-behavioral
 
 # More parallelism if your machine can handle it
@@ -104,7 +105,6 @@ ginkgo --procs=1 -v --timeout=3h --output-interceptor-mode=none ./topgun/k8s_beh
 | Ginkgo v2 | All Ginkgo suites | `go install github.com/onsi/ginkgo/v2/ginkgo@latest` |
 | PostgreSQL 14+ | Unit, integration tests | `brew install postgresql@14` |
 | Docker | K8s tests | [docker.com](https://www.docker.com/products/docker-desktop/) |
-| KinD | K8s tests | `brew install kind` |
 | Helm | K8s tests | `brew install helm` |
 | kubectl | K8s tests | `brew install kubectl` |
 
@@ -114,7 +114,7 @@ ginkgo --procs=1 -v --timeout=3h --output-interceptor-mode=none ./topgun/k8s_beh
 
 - **PostgreSQL not running:** Unit and integration tests need Postgres. Check with `pg_isready`.
 - **Port conflicts:** ATC integration tests bind to ports `9090+N`. Kill any conflicting processes.
-- **K8s tests slow:** KinD cluster creation takes 2-5 minutes. First run is always slower.
+- **K8s tests slow:** K3s container startup takes 2-5 minutes. First run is always slower.
 
 ### Flaky K8s behavioral tests
 
