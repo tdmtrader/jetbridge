@@ -1,0 +1,13 @@
+# Patterns helm must not treat as chart files.
+#
+# The chart's own Go test suite lives at deploy/chart/tests/, i.e. inside the
+# chart directory. `ginkgo -p` compiles its test binary into that package dir
+# as tests.test, and helm then rejects the whole chart with
+#   chart file "tests.test" is larger than the maximum file size 5242880
+# so every `helm template` assertion in the suite fails under `make test-unit`
+# while passing under plain `go test` (which builds into a temp dir).
+*.test
+tests/
+
+# Go build/coverage droppings, same reasoning.
+*.out

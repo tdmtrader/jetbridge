@@ -180,30 +180,16 @@ All parameters are documented in [`values.yaml`](values.yaml). Complete referenc
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `cachePvc.enabled` | `true` | Enable cache PVC for resource/task caches. |
-| `cachePvc.name` | `concourse-cache` | PVC name. |
-| `cachePvc.size` | `5Gi` | Storage size. |
-| `cachePvc.storageClass` | `""` (cluster default) | Storage class. |
-| `cachePvc.accessModes` | `[ReadWriteOnce]` | Access modes. |
 
 ### Storage — Artifact Store PVC
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `artifactStorePvc.enabled` | `true` | Enable artifact store PVC for cross-pod volume passing. |
-| `artifactStorePvc.name` | `concourse-artifacts` | PVC name. |
-| `artifactStorePvc.size` | `10Gi` | Storage size (nominal for GCS Fuse). |
-| `artifactStorePvc.storageClass` | `""` (cluster default) | Storage class. |
-| `artifactStorePvc.accessModes` | `[ReadWriteOnce]` | Access modes. **Use `ReadWriteMany` for multi-replica or concurrent builds.** |
 
 ### Storage — GCS Fuse (GKE Only)
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `artifactStorePvc.gcsFuse.enabled` | `false` | Enable GCS Fuse-backed artifact store. |
-| `artifactStorePvc.gcsFuse.bucketName` | `""` | GCS bucket name. |
-| `artifactStorePvc.gcsFuse.onlyDir` | `""` | Restrict mount to subdirectory prefix. |
-| `artifactStorePvc.gcsFuse.mountOptions` | `[implicit-dirs]` | Mount options for GCS Fuse driver. |
 
 When enabled, the chart creates a PV + PVC backed by a GCS bucket using
 the `gcsfuse.csi.storage.gke.io` CSI driver. The `implicit-dirs` mount
@@ -386,7 +372,6 @@ NFS, GCS FUSE, EBS, etc. Multi-node clusters need `ReadWriteMany` access.
 
 - **Secrets:** Replace `web.localUsers` with OIDC/OAuth via `web.extraArgs`. Generate signing keys externally and set `secrets.create=false`.
 - **Database:** Use an external managed database (Cloud SQL, RDS) with `postgresql.enabled=false`.
-- **Multi-node:** Set `artifactStorePvc.accessModes: [ReadWriteMany]` and use a storage class that supports it.
 - **TLS:** For native HTTPS, set `web.tls.enabled=true` and create a K8s Secret with your cert/key. Alternatively, terminate TLS at the ingress layer with `ingress.enabled=true`.
 - **Ingress:** Enable `ingress.enabled=true` with your ingress controller and TLS.
 - **Resources:** Tune `web.resources` based on pipeline count. The web node is the control plane and doesn't run builds.

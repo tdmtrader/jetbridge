@@ -58,7 +58,7 @@ jobs:
           spec:
             containers:
             - name: dind
-              image: docker:dind
+              image: docker:26-dind
               securityContext:
                 privileged: true
               env:

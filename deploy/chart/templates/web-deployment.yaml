@@ -164,17 +164,8 @@ spec:
             {{- if .Values.cacheStore }}
             - --kubernetes-cache-store={{ .Values.cacheStore }}
             {{- end }}
-            {{- if .Values.cachePvc.enabled }}
-            - --kubernetes-cache-pvc={{ .Values.cachePvc.name }}
-            {{- end }}
             {{- if .Values.cacheHostPath }}
             - --kubernetes-cache-host-path={{ .Values.cacheHostPath }}
-            {{- end }}
-            {{- if .Values.artifactStorePvc.enabled }}
-            - --kubernetes-artifact-store-claim={{ .Values.artifactStorePvc.name }}
-            {{- if .Values.artifactStorePvc.gcsFuse.enabled }}
-            - --kubernetes-artifact-store-gcs-fuse
-            {{- end }}
             {{- end }}
             {{- if .Values.artifactDaemon.enabled }}
             - --kubernetes-artifact-daemon-port={{ .Values.artifactDaemon.port | default 7780 }}
@@ -294,7 +285,24 @@ spec:
           emptyDir:
             medium: Memory
             sizeLimit: 64Mi
-        {{- if and (not .Values.secrets.create) .Values.secrets.signingKeySecret }}
+        {{- /*
+  secrets.create mints the session signing key into an emptyDir, so each pod
+  gets its own: a restart invalidates every session, and two replicas reject
+  each other's tokens outright. That is survivable for a single-replica dev
+  install and broken for anything else, so an explicit request for both is a
+  contradiction and fails the render rather than deploying something that
+  half-works.
+
+  Deliberately NOT solved with Helm `lookup` + genPrivateKey: `lookup` returns
+  nothing under `helm template`, which is ArgoCD's render mode, so every sync
+  would mint a fresh key AND write the private key into the rendered manifest
+  in cleartext. Pre-create the Secret and set secrets.create=false with
+  secrets.signingKeySecret instead.
+*/}}
+{{- if and .Values.secrets.create (gt (int .Values.web.replicas) 1) }}
+{{- fail "secrets.create=true generates a per-pod session signing key, which cannot work with web.replicas > 1. Pre-create a Secret and set secrets.create=false with secrets.signingKeySecret." }}
+{{- end }}
+{{- if and (not .Values.secrets.create) .Values.secrets.signingKeySecret }}
         - name: keys
           secret:
             secretName: {{ .Values.secrets.signingKeySecret }}
