@@ -2,61 +2,22 @@ package idtoken_test
 
 import (
 	"context"
-	"crypto/rand"
-	"fmt"
-	"math"
-	"math/big"
-	"strconv"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc/creds/idtoken"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
-	"github.com/go-jose/go-jose/v4"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
 
 var _ = Describe("IDToken Lifecycle", func() {
-
-	var signingKeys []db.SigningKey
-	var signingKeyFactory db.SigningKeyFactory
-	var lifecycler idtoken.SigningKeyLifecycler
-	var ctx context.Context
+	var (
+		lifecycler idtoken.SigningKeyLifecycler
+		ctx        context.Context
+	)
 
 	BeforeEach(func() {
-		signingKeys = make([]db.SigningKey, 0, 4)
-
-		signingKeyFactoryFake := &dbfakes.FakeSigningKeyFactory{}
-		signingKeyFactoryFake.CreateKeyStub = func(jwk jose.JSONWebKey) error {
-			key := createFakeSigningKey(jwk, time.Now())
-			signingKeys = append(signingKeys, key)
-
-			return nil
-		}
-
-		signingKeyFactoryFake.GetAllKeysStub = func() ([]db.SigningKey, error) {
-			return signingKeys, nil
-		}
-
-		signingKeyFactoryFake.GetNewestKeyStub = func(kty db.SigningKeyType) (db.SigningKey, error) {
-			var newest db.SigningKey
-			for _, key := range signingKeys {
-				if key.KeyType() == kty {
-					if newest == nil || newest.CreatedAt().Before(key.CreatedAt()) {
-						newest = key
-					}
-				}
-			}
-			if newest != nil {
-				return newest, nil
-			}
-			return nil, fmt.Errorf("not found")
-		}
-
-		signingKeyFactory = signingKeyFactoryFake
-
 		lifecycler = idtoken.SigningKeyLifecycler{
 			Logger:              lager.NewLogger(""),
 			DBSigningKeyFactory: signingKeyFactory,
@@ -68,15 +29,11 @@ var _ = Describe("IDToken Lifecycle", func() {
 	})
 
 	It("makes sure signing keys are created when none exist", func() {
-		before, err := signingKeyFactory.GetAllKeys()
-		Expect(err).ToNot(HaveOccurred())
-		Expect(before).To(HaveLen(0))
+		Expect(allSigningKeys()).To(HaveLen(0))
 
 		Expect(lifecycler.Run(ctx)).To(Succeed())
 
-		after, err := signingKeyFactory.GetAllKeys()
-		Expect(err).ToNot(HaveOccurred())
-		Expect(after).To(HaveLen(2))
+		Expect(allSigningKeys()).To(HaveLen(2))
 
 		rsaKey, err := signingKeyFactory.GetNewestKey(db.SigningKeyTypeRSA)
 		Expect(err).ToNot(HaveOccurred())
@@ -88,28 +45,21 @@ var _ = Describe("IDToken Lifecycle", func() {
 
 		// make sure a re-run does not create additional keys
 		Expect(lifecycler.Run(ctx)).To(Succeed())
-		after, err = signingKeyFactory.GetAllKeys()
-		Expect(err).ToNot(HaveOccurred())
-		Expect(after).To(HaveLen(2))
+		Expect(allSigningKeys()).To(HaveLen(2))
 	})
 
 	It("generates new keys when existing keys are too old", func() {
-		oldRSAKey := createFakeSigningKey(*rsaJWK, time.Now().Add(-61*time.Minute))
-		oldECKey := createFakeSigningKey(*ecJWK, time.Now().Add(-61*time.Minute))
-		signingKeys = append(signingKeys, oldRSAKey, oldECKey)
+		oldRSAKey := saveSigningKey(*rsaJWK, 61*time.Minute)
+		oldECKey := saveSigningKey(*ecJWK, 61*time.Minute)
 
-		before, err := signingKeyFactory.GetAllKeys()
-		Expect(err).ToNot(HaveOccurred())
-		Expect(before).To(HaveLen(2))
+		Expect(allSigningKeys()).To(HaveLen(2))
 
 		Expect(lifecycler.Run(ctx)).To(Succeed())
 
-		after, err := signingKeyFactory.GetAllKeys()
-		Expect(err).ToNot(HaveOccurred())
 		// old keys are not deleted until after the grace period, so we should now have 4 keys
-		Expect(after).To(HaveLen(4))
-		Expect(oldRSAKey.DeleteCallCount()).To(Equal(0))
-		Expect(oldECKey.DeleteCallCount()).To(Equal(0))
+		Expect(allSigningKeys()).To(HaveLen(4))
+		Expect(signingKeyExists(oldRSAKey.ID())).To(BeTrue(), "a rotated key survives its grace period")
+		Expect(signingKeyExists(oldECKey.ID())).To(BeTrue(), "a rotated key survives its grace period")
 
 		rsaKey, err := signingKeyFactory.GetNewestKey(db.SigningKeyTypeRSA)
 		Expect(err).ToNot(HaveOccurred())
@@ -123,49 +73,26 @@ var _ = Describe("IDToken Lifecycle", func() {
 
 		// make sure a re-run does not create additional keys
 		Expect(lifecycler.Run(ctx)).To(Succeed())
-		after, err = signingKeyFactory.GetAllKeys()
-		Expect(err).ToNot(HaveOccurred())
-		Expect(after).To(HaveLen(4))
+		Expect(allSigningKeys()).To(HaveLen(4))
 	})
 
 	It("removes outdated keys after grace period", func() {
-		oldRSAKey := createFakeSigningKey(*rsaJWK, time.Now().Add(-3*time.Hour))
-		oldECKey := createFakeSigningKey(*ecJWK, time.Now().Add(-3*time.Hour))
-		newRSAKey := createFakeSigningKey(*rsaJWK, time.Now().Add(-12*time.Minute))
-		newECKey := createFakeSigningKey(*ecJWK, time.Now().Add(-12*time.Minute))
-		signingKeys = append(signingKeys, oldRSAKey, oldECKey, newRSAKey, newECKey)
+		oldRSAKey := saveSigningKey(*rsaJWK, 3*time.Hour)
+		oldECKey := saveSigningKey(*ecJWK, 3*time.Hour)
+		newRSAKey := saveSigningKey(*rsaJWK, 12*time.Minute)
+		newECKey := saveSigningKey(*ecJWK, 12*time.Minute)
 
-		before, err := signingKeyFactory.GetAllKeys()
-		Expect(err).ToNot(HaveOccurred())
-		Expect(before).To(HaveLen(4))
+		Expect(allSigningKeys()).To(HaveLen(4))
 
 		Expect(lifecycler.Run(ctx)).To(Succeed())
 
-		Expect(oldRSAKey.DeleteCallCount()).To(Equal(1))
-		Expect(oldECKey.DeleteCallCount()).To(Equal(1))
-		Expect(newRSAKey.DeleteCallCount()).To(Equal(0))
-		Expect(newECKey.DeleteCallCount()).To(Equal(0))
+		// The old pair is past rotation and past grace, so those rows are gone.
+		// The 12-minute-old pair is past the 10-minute grace period but not past
+		// the hour rotation, so it stays. Previously DeleteCallCount(); the rows
+		// say it directly now.
+		Expect(signingKeyExists(oldRSAKey.ID())).To(BeFalse())
+		Expect(signingKeyExists(oldECKey.ID())).To(BeFalse())
+		Expect(signingKeyExists(newRSAKey.ID())).To(BeTrue())
+		Expect(signingKeyExists(newECKey.ID())).To(BeTrue())
 	})
 })
-
-func createFakeSigningKey(jwk jose.JSONWebKey, createdAt time.Time) *dbfakes.FakeSigningKey {
-
-	generateRandomNumericString := func() string {
-		num, _ := rand.Int(rand.Reader, big.NewInt(math.MaxInt64))
-		return strconv.Itoa(int(num.Int64()))
-	}
-
-	jwk.KeyID = generateRandomNumericString()
-
-	key := &dbfakes.FakeSigningKey{}
-	key.JWKReturns(jwk)
-	key.IDReturns(jwk.KeyID)
-	key.CreatedAtReturns(createdAt)
-
-	if jwk.Algorithm == "RS256" {
-		key.KeyTypeReturns(db.SigningKeyTypeRSA)
-	} else if jwk.Algorithm == "ES256" {
-		key.KeyTypeReturns(db.SigningKeyTypeEC)
-	}
-	return key
-}

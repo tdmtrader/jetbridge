@@ -27,11 +27,6 @@ type Generator interface {
 	GenerateAccessToken(claims db.Claims) (string, error)
 }
 
-//counterfeiter:generate . Parser
-type Parser interface {
-	ParseExpiry(raw string) (time.Time, error)
-}
-
 //counterfeiter:generate . ClaimsParser
 type ClaimsParser interface {
 	ParseClaims(idToken string) (db.Claims, error)

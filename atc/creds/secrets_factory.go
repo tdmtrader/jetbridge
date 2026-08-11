@@ -7,7 +7,6 @@ import (
 	"github.com/concourse/concourse/vars"
 )
 
-//counterfeiter:generate . SecretsFactory
 type SecretsFactory interface {
 	// NewSecrets returns an instance of a secret manager, capable of retrieving individual secrets
 	NewSecrets() Secrets
@@ -34,8 +33,6 @@ func (s SecretLookupParams) IsEmpty() bool {
 }
 
 // SecretsWithParams is an extended version of the Secrets interface that allows callers to pass in additional information
-//
-//counterfeiter:generate . SecretsWithParams
 type SecretsWithParams interface {
 	Secrets
 	GetWithParams(path string, params SecretLookupParams) (any, *time.Time, bool, error)
@@ -58,8 +55,6 @@ type K8sSecretRef = vars.SecretRef
 // implement to advertise that they can provide native Kubernetes Secret
 // references for a given secret path. When available, the runtime can emit
 // ValueFrom.SecretKeyRef in the pod spec instead of a literal Value.
-//
-//counterfeiter:generate . SecretRefProvider
 type SecretRefProvider interface {
 	GetSecretRef(path string) (*vars.SecretRef, bool)
 }

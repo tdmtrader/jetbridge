@@ -1,13 +1,10 @@
 package idtoken_test
 
 import (
-	"time"
-
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/creds"
 	"github.com/concourse/concourse/atc/creds/idtoken"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
 	. "github.com/onsi/ginkgo/v2"
@@ -22,23 +19,13 @@ var _ = Describe("IDToken Secret", func() {
 	var params creds.SecretLookupParams
 
 	BeforeEach(func() {
-		signingKeyFake := &dbfakes.FakeSigningKey{}
-		signingKeyFake.JWKReturns(*rsaJWK)
-		signingKeyFake.CreatedAtReturns(time.Now())
-		signingKeyFake.IDReturns(rsaJWK.KeyID)
-		signingKeyFake.KeyTypeReturns(db.SigningKeyTypeRSA)
+		signingKey := saveSigningKey(*rsaJWK, 0)
+		stored := signingKey.JWK()
+		verificationKey = stored.Public()
 
-		verificationKey = rsaJWK.Public()
-
-		signingKeyFactoryFake := &dbfakes.FakeSigningKeyFactory{}
-		signingKeyFactoryFake.GetAllKeysReturns([]db.SigningKey{
-			signingKeyFake,
-		}, nil)
-
-		signingKeyFactoryFake.GetNewestKeyReturns(signingKeyFake, nil)
 		tokenGenerator = idtoken.TokenGenerator{
 			Issuer:            testIssuer,
-			SigningKeyFactory: signingKeyFactoryFake,
+			SigningKeyFactory: db.NewSigningKeyFactory(dbConn),
 			ExpiresIn:         tokenExpiresIn,
 		}
 		secrets = &idtoken.IDToken{
