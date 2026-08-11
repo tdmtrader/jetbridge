@@ -144,6 +144,14 @@ development:
 > *Concourse uses Go's module system, so make sure it's **not** cloned under
 > your `$GOPATH`.*
 
+> **Docker on this fork's dev machine:** there is no local Docker daemon; it
+> runs as a pod on theborg (`./hack/borg-docker.sh up`, see
+> [docs/docker-on-theborg.md](docs/docker-on-theborg.md)). That remote daemon
+> serves image builds well, but **the `docker compose` workflow in this file
+> does not work against it** — compose relies on host bind mounts and published
+> ports, and both resolve inside the pod rather than on your machine. Use the
+> Kubernetes/JetBridge paths in `TESTING.md` and `docs/local-dev.md` instead.
+
 
 ## Running Concourse
 

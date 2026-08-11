@@ -1,4 +1,4 @@
-.PHONY: test-unit test-dev-mcp test-bench-harness test-fly-integration test-integration test-hangar-integration test-k8s test-k8s-integration test-k8s-behavioral test-quick test-all build-agent-broker-image test-agent-broker-smoke
+.PHONY: test-unit test-dev-mcp test-bench-harness test-fly-integration test-integration test-hangar-integration test-k8s test-k8s-integration test-k8s-behavioral test-quick test-all build-agent-broker-image test-agent-broker-smoke check-docker-tools
 
 AGENT_BROKER_IMAGE ?= concourse-agent-broker:dev
 
@@ -69,27 +69,36 @@ test-hangar-integration:
 	@if test -z "$$CONCOURSE_HANGAR_TEST_GCS_ENDPOINT"; then docker info >/dev/null 2>&1 || { echo "ERROR: a running Docker daemon is required"; exit 1; }; fi
 	go test -tags=integration ./agent/hangar -run '^Test(FakeGCSContainerRegistersCleanupBeforeReturningStartError|GCSStoreFakeServer)$$' -count=1 -v
 
-# K8s integration tests (~30 min)
-# Requires: Docker, KinD, Helm, kubectl
-# Creates a KinD cluster automatically
-test-k8s-integration:
-	@echo "==> Running K8s integration tests..."
-	@command -v docker >/dev/null 2>&1 || { echo "ERROR: docker is required"; exit 1; }
-	@command -v kind >/dev/null 2>&1 || { echo "ERROR: kind is required"; exit 1; }
+# Shared prerequisite check for the Docker-backed K8s tiers.
+# These suites create their cluster with testcontainers (rancher/k3s), NOT KinD --
+# no `kind` binary is invoked anywhere in topgun/, so it is not checked for.
+# There is no local Docker daemon on the dev Mac; see docs/docker-on-theborg.md.
+check-docker-tools:
+	@command -v docker >/dev/null 2>&1 || { echo "ERROR: the docker CLI is required"; exit 1; }
 	@command -v helm >/dev/null 2>&1 || { echo "ERROR: helm is required"; exit 1; }
 	@command -v kubectl >/dev/null 2>&1 || { echo "ERROR: kubectl is required"; exit 1; }
+	@docker info >/dev/null 2>&1 || { \
+		echo "ERROR: no reachable Docker daemon (DOCKER_HOST=$${DOCKER_HOST:-unset})."; \
+		echo "       Docker runs on theborg, not locally:"; \
+		echo "         ./hack/borg-docker.sh up && eval \"\$$(./hack/borg-docker.sh env)\""; \
+		echo "       See docs/docker-on-theborg.md"; exit 1; }
+
+# K8s integration tests (~30 min)
+# Requires: a reachable Docker daemon, Helm, kubectl. Creates a K3s cluster
+# via testcontainers. NOTE: currently CI-only -- testcontainers reaches the K3s
+# API server on a published port, which is not routable from the dev Mac when
+# the daemon is the theborg dind pod. See docs/docker-on-theborg.md.
+test-k8s-integration: check-docker-tools
+	@echo "==> Running K8s integration tests..."
 	go test ./topgun/k8s/integration/ -count=1 -v -timeout 30m
 
 # K8s behavioral tests (~2-3 hours)
-# Requires: Docker, KinD, Helm, kubectl
-# Creates one KinD cluster per parallel process.
+# Requires: a reachable Docker daemon, Helm, kubectl.
+# Creates one testcontainers K3s cluster per parallel process.
 # Default 2 procs; override with K8S_PROCS=4 if your machine has enough resources.
-test-k8s-behavioral:
+# Same CI-only caveat as test-k8s-integration.
+test-k8s-behavioral: check-docker-tools
 	@echo "==> Running K8s behavioral tests (this will take 2-3 hours)..."
-	@command -v docker >/dev/null 2>&1 || { echo "ERROR: docker is required"; exit 1; }
-	@command -v kind >/dev/null 2>&1 || { echo "ERROR: kind is required"; exit 1; }
-	@command -v helm >/dev/null 2>&1 || { echo "ERROR: helm is required"; exit 1; }
-	@command -v kubectl >/dev/null 2>&1 || { echo "ERROR: kubectl is required"; exit 1; }
 	ginkgo --procs=$${K8S_PROCS:-2} -v --timeout=3h ./topgun/k8s_behavioral/
 
 # All K8s tests

@@ -1,21 +1,38 @@
 # Fully Local Development (no theborg / concourse.home)
 
-> **Colima was removed from this Mac on 2026-08-02**, which reclaimed
-> significant disk. Every tier below that needs Docker — Tier 2 onward —
-> therefore does not work as written until Colima (or another Docker provider)
-> is reinstalled. Use **theborg** for anything requiring Docker or a cluster in
-> the meantime; `docs/agentic/README.md` and the reusable-node guide describe
-> the `fly -t home` path against the live deployment. Tier 1 (unit tests) is
-> unaffected: it needs only Go and a local PostgreSQL.
+> ## ⚠️ Superseded for every Docker-backed tier
+>
+> **Colima was removed from this Mac on 2026-08-02.** There is no local Docker
+> daemon, so **Tier 2 onward does not work as written**, and reinstalling
+> Colima is not the plan: Docker now runs as a pod on **theborg**.
+>
+> ```bash
+> ./hack/borg-docker.sh up && eval "$(./hack/borg-docker.sh env)"
+> ```
+>
+> Read **[docker-on-theborg.md](docker-on-theborg.md)** for what that setup can
+> and cannot do. The short version: daemon-side work (`build`, `pull`, `push`,
+> `save`/`load`, `run`) works and is now native `linux/amd64`; ports published
+> by containers are **not** reachable from this Mac, which is what keeps KinD
+> and the testcontainers K8s suites out of reach locally.
+>
+> What still works unchanged:
+> - **Tier 1** (unit/integration tests) — needs only Go and local PostgreSQL.
+> - **The jetbridge `live` tests** — they use client-go against a real cluster,
+>   not Docker. Point them at a throwaway namespace on theborg instead of the
+>   KinD cluster in Tier 3 (never `cicd` or `concourse`).
+>
+> Tiers 2–5 below are kept as the **historical 2026-07-11 record** of the
+> Colima/KinD setup — accurate for that date, not reproducible today.
 
 Verified 2026-07-11 on this Mac (Apple Silicon, 10 CPU / 24 GiB, Darwin 24.6,
 go 1.25.6, Colima, kind v1.35.0 node image, helm, kubectl). Everything below
 was actually run; anything not verified is explicitly marked.
 
-TL;DR: `./hack/local-dev-up.sh` stands up the whole thing (Colima + KinD +
-locally built image + Helm chart with artifact daemon). All 22 jetbridge live
-tests and a real two-task pipeline (with cross-step volume passing) pass on
-the local cluster.
+TL;DR (historical): `./hack/local-dev-up.sh` stood up the whole thing (Colima +
+KinD + locally built image + Helm chart with artifact daemon). All 22 jetbridge
+live tests and a real two-task pipeline (with cross-step volume passing) passed
+on the local cluster. The script depends on Colima and will not run today.
 
 ## Tier 1 — Unit tests (no Docker needed)
 
@@ -31,7 +48,10 @@ make test-integration  # real ATC + Postgres, ~12s
 Follow CLAUDE.md conventions (no `--race`; if `database "testdb_template"
 already exists`, another test run is active — wait, don't delete).
 
-## Tier 2 — Colima / Docker
+## Tier 2 — Colima / Docker (HISTORICAL — Colima is gone)
+
+Replaced by `./hack/borg-docker.sh up`; see
+[docker-on-theborg.md](docker-on-theborg.md). Retained for context only.
 
 ```bash
 colima start --cpu 4 --memory 8   # ~40s; profile on this machine is docker+k3s
@@ -46,9 +66,13 @@ Notes:
 - Colima's built-in k3s (`colima` context) is a usable second local cluster,
   but the verified workflow below uses KinD.
 
-## Tier 3 — Local K8s cluster + jetbridge live tests
+## Tier 3 — Local K8s cluster + jetbridge live tests (KinD part HISTORICAL)
 
-KinD on Colima works. Use an **isolated kubeconfig** so `~/.kube/config`
+The **live tests themselves still work today** — they need a Kubernetes API, not
+Docker. Run them against a throwaway namespace on theborg (see TESTING.md tier
+6). Only the KinD cluster below is unreachable now.
+
+KinD on Colima worked. Use an **isolated kubeconfig** so `~/.kube/config`
 (and the theborg context) is never touched:
 
 ```bash
@@ -82,7 +106,15 @@ go test -tags live -run '^TestLive' -v -count=1 -timeout 15m ./atc/worker/jetbri
 (The hostPath is node-global, so the daemon installed in the `concourse`
 namespace serves test pods in `jb-live-test` on the same single kind node.)
 
-## Tier 4 — K8s integration suites (testcontainers/K3s)
+## Tier 4 — K8s integration suites (testcontainers/K3s) — still CI-only
+
+Current status (2026-08-02): these remain CI-only, now for a *different*
+reason than below. Against the theborg dind daemon the blocker is that
+testcontainers reaches the K3s API server on a published port, and published
+ports live in the pod's netns — unreachable from this Mac.
+[docker-on-theborg.md](docker-on-theborg.md) records the two candidate fixes
+(route `10.42.0.0/24` + `TESTCONTAINERS_HOST_OVERRIDE`, or co-locate the test
+process in the dind pod). The Colima-era analysis below is historical.
 
 Historically these failed under Colima ("K3s-in-Docker-in-Colima namespace
 errors"). **That failure mode is gone** with current Colima (docker 28.x) —
@@ -122,7 +154,12 @@ Note this is NOT a coverage gap for the runtime itself: the same chart +
 image deploy and run pipelines fine in KinD (Tier 5), and all 22 live tests
 pass there.
 
-## Tier 5 — Local Concourse deployment (Helm chart in KinD)
+## Tier 5 — Local Concourse deployment (Helm chart in KinD) — HISTORICAL
+
+Needs Colima + KinD, so it does not run today. The equivalent now is a Helm
+install into a throwaway namespace on theborg, with the image built on the
+theborg dind daemon (native amd64 — the qemu caveat at the end of this document
+no longer applies).
 
 One command: `./hack/local-dev-up.sh`. Manual steps it automates:
 
@@ -221,8 +258,11 @@ colima stop                            # optional
 - **Full behavioral suite verification**: mechanically unblocked (see Tier 4)
   but a full 2-3h run on this 24 GiB machine with Colima capped at 8 GiB is
   untested; treat CI as authoritative.
-- **amd64 image builds via `build.sh`**: qemu emulation of the Elm/Go build
-  is impractically slow here. arm64 (`Dockerfile.local`) is the local path.
+- **amd64 image builds via `build.sh`**: qemu emulation of the Elm/Go build was
+  impractically slow on Apple Silicon, so arm64 (`Dockerfile.local`) was the
+  local path. **No longer a constraint** — the theborg dind daemon is native
+  `linux/amd64`, so `Dockerfile.build` compiles without emulation there. The
+  cost moves to uploading the build context over the port-forward.
 
 ## Status summary (2026-07-11)
 

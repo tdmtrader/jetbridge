@@ -82,7 +82,8 @@ the command exits, and `fly intercept` execs a new shell into it.
 
 ### Garbage collection
 
-A reaper component runs every 30 seconds (configurable via `--gc-interval`) and:
+A reaper component runs on the default 10-second component-polling interval
+(it has no dedicated flag of its own) and:
 
 1. Lists pods with the `concourse.ci/worker` label.
 2. Reports active containers to the DB (marks missing ones for GC).
@@ -90,8 +91,11 @@ A reaper component runs every 30 seconds (configurable via `--gc-interval`) and:
 4. Deletes each destroyed container's daemon artifact entry with an HTTP
    request to the producing node's daemon.
 
-The artifact daemon owns TTL cleanup and mirror lifecycle; the reaper neither
-execs `rm` in cache PVCs nor relies on an artifact-helper sidecar.
+The artifact daemon owns TTL cleanup and mirror lifecycle; the reaper deletes
+artifacts via an HTTP request to the owning node's daemon rather than execing
+`rm` inside a live pod's cache volume or relying on an artifact-helper
+sidecar. Task caches themselves are `hostpath` or `emptyDir` volumes
+(`--kubernetes-cache-store`) — there is no PVC-backed cache in this binary.
 
 ## What Didn't Change
 
@@ -395,6 +399,11 @@ Source: `tracing/meter.go`
 This runs a multi-stage Docker build: Node (frontend assets) → Go (binary
 with embedded assets) → runtime (minimal Ubuntu with ca-certificates).
 
+On this fork's dev machine there is no local Docker daemon — point `DOCKER_HOST`
+at the theborg dind pod first (`./hack/borg-docker.sh up`, see
+[docs/docker-on-theborg.md](docs/docker-on-theborg.md)). It is native
+`linux/amd64`, so the default platform needs no emulation there.
+
 Options: `PLATFORM=linux/arm64` for ARM builds, `CONCOURSE_VERSION=x.y.z` for
 version injection, `--push` flag to push to registry.
 
@@ -424,7 +433,13 @@ See `deploy/chart/values.yaml` for all configurable parameters and
 - **Secrets**: All web replicas MUST share the same signing key. The default
   `secrets.create=true` already does that; supply `secrets.signingKeySecret`
   instead when the key is managed externally or the chart is rendered without
-  a cluster connection.
+  a cluster connection. The same applies to `artifactDaemon.tls.existingSecret`
+  and `artifactDaemon.resolveCapability.existingSecret`: GitOps tools that only
+  run `helm template` (e.g. Argo CD without the Helm plugin) get an empty
+  `lookup` and re-mint these Secrets on every render. The resolve-capability
+  key churns on *every* such deployment (it's required whenever the daemon is,
+  which the K8s runtime mandates) and silently fails artifact fetch after the
+  next asymmetric restart; set the `existingSecret` values under GitOps.
 - **Multi-node**: Run the artifact DaemonSet on every eligible build node and
   set `artifactDaemon.mirror.replicas` for the desired failure tolerance.
 - **Ingress**: Enable `ingress.enabled=true` with TLS.
@@ -534,6 +549,16 @@ server dropped the log follow connection.
 `fly intercept` works by exec-ing into the pause pod. If the reaper has
 already cleaned up the pod, intercept will fail. Increase the GC grace
 period (`--gc-hijack-grace-period`) or intercept while the build is still running.
+A completed step's pod is retained for as long as its owning build keeps
+running, so intercepting a finished step in an active build is reliable;
+check pods are still reaped immediately.
+
+Before `27d3a56a97`, a looked-up container resolved to the wrong pod name
+for any pipeline job/task step, so `fly intercept -j pipeline/job` could
+not work at all, and hijacking an already-completed pod deleted it outright
+(destroying the exit-status annotation used for restart recovery). Both are
+fixed: lookups now resolve to the pod the step actually created and never
+fabricate or replace one.
 
 ### Pods not being cleaned up
 
@@ -556,14 +581,18 @@ metrics:
 
 | Metric | Type | Description |
 |--------|------|-------------|
-| `concourse_k8s_pod_startup_duration_ms` | Gauge | Time from pod creation to Running phase (milliseconds). Reports max value per scrape interval. |
+| `concourse_k8s_pod_startup_duration_milliseconds` | Histogram | Time from pod creation to Running phase (milliseconds). Sampled every 10s as the max value observed since the last sample; query the `_bucket`/`_sum`/`_count` series (not a `_ms`-suffixed name). |
 | `concourse_k8s_image_pull_failures_total` | Counter | Number of ImagePullBackOff / ErrImagePull failures. |
 
 Standard Concourse metrics (`concourse_containers_created_total`,
 `concourse_failed_containers_total`, etc.) continue to work.
 
-Enable Prometheus scraping via Helm `serviceMonitor.enabled=true` (requires
-prometheus-operator CRDs).
+Enable Prometheus scraping via Helm `serviceMonitor.enabled=true` **and**
+`web.metrics.enabled=true` (requires prometheus-operator CRDs). The ATC only
+starts its Prometheus listener, and the chart only renders the `metrics`
+container/Service port and the web ServiceMonitor, when
+`web.metrics.enabled=true`; `serviceMonitor.enabled=true` alone scrapes only
+the artifact daemon.
 
 ### OpenTelemetry
 

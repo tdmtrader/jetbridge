@@ -264,7 +264,9 @@ and the agent API surface.
 # Concourse binary
 go build -o concourse ./cmd/concourse
 
-# Docker image
+# Docker image -- needs a Docker daemon, which on this fork's dev machine lives
+# on theborg, not locally. See docs/docker-on-theborg.md
+eval "$(./hack/borg-docker.sh env)"
 docker build -f Dockerfile.build -t concourse:latest .
 ```
 

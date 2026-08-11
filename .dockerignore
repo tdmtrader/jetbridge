@@ -7,3 +7,12 @@ web/wats/node_modules
 web/elm/elm-stuff
 integration
 testflight
+
+# Local-only scratch. Never build inputs, and the whole context crosses the
+# network now that the Docker daemon is remote (docs/docker-on-theborg.md).
+# Compiled Ginkgo/Go test binaries alone were 5.4 GB across 162 files; the
+# `**/` prefix is required, since a bare `*.test` matches the repo root only.
+.worktrees
+.local-cluster
+.claude/worktrees
+**/*.test
