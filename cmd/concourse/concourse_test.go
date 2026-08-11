@@ -34,7 +34,7 @@ var _ = Describe("Web Command", func() {
 			"web",
 			"--postgres-user", "postgres",
 			"--postgres-database", "testdb",
-			"--postgres-port", strconv.Itoa(5433+GinkgoParallelProcess()),
+			"--postgres-port", strconv.Itoa(postgresRunner.Port),
 			"--main-team-local-user", "test",
 			"--add-local-user", "test:test",
 			"--debug-bind-port", strconv.Itoa(8000+GinkgoParallelProcess()),

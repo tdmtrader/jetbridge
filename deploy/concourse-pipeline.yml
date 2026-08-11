@@ -63,6 +63,24 @@ jobs:
           echo "=== Running unit tests across the full codebase ==="
           echo "Excluding packages that require external infrastructure"
           echo ""
+          # testhelpers/otel talks to tempo.home and loki.home. It is excluded
+          # from `make test-unit` for that reason but was never excluded here,
+          # so this job spent ~260s of its 10m budget retrying them whenever
+          # those hosts were unreachable. The exclusion lists now agree.
+
+          # Most of the suites below now run against a real postmaster that
+          # atc/postgresrunner starts itself (no sidecar, no service). It
+          # shells out to these three, and a missing one fails deep inside a
+          # BeforeSuite where the cause is not obvious -- so say it here.
+          for tool in initdb postgres psql; do
+            command -v "$tool" >/dev/null 2>&1 || {
+              echo "ERROR: '$tool' is not on PATH."
+              echo "The test-runner image must carry the PostgreSQL server and"
+              echo "client binaries; 24 packages start their own postmaster."
+              exit 1
+            }
+          done
+
           PACKAGES=$(go list ./... \
             | grep -v /integration \
             | grep -v /testflight \
@@ -74,6 +92,7 @@ jobs:
             | grep -v /atc/scheduler/algorithm \
             | grep -v '/atc/worker$' \
             | grep -v /skymarshal/dexserver \
+            | grep -v /testhelpers/otel \
             | grep -v /cmd)
           echo "Testing packages:"
           echo "$PACKAGES" | head -20
@@ -230,6 +249,14 @@ jobs:
 
           echo "=== Installing node dependencies ==="
           yarn install --immutable || yarn install
+
+          # This is the only task in the pipeline with elm-test available, so
+          # it is where the frontend tier runs. `yarn run build` below already
+          # fails on a frontend that does not compile; this catches the tier
+          # above that. It had rotted to two non-compiling suites by the time
+          # anyone ran it, precisely because nothing here ran it.
+          echo "=== Running Elm tests ==="
+          yarn run test
 
           echo "=== Building frontend (LESS -> css, Elm -> js, webpack) ==="
           yarn run build
