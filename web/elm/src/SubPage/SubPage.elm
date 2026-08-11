@@ -11,7 +11,6 @@ module SubPage.SubPage exposing
     , view
     )
 
-import AgentReviews.AgentReviews as AgentReviews
 import Application.Models exposing (Session)
 import Build.Build as Build
 import Build.Header.Models
@@ -52,7 +51,6 @@ type Model
     | FlySuccessModel FlySuccess.Models.Model
     | CausalityModel Causality.Model
     | DownloadFlyModel DownloadFly.Model.Model
-    | AgentReviewsModel AgentReviews.Model
 
 
 init : Session -> Routes.Route -> ( Model, List Effect )
@@ -129,10 +127,6 @@ init session route =
                 NotFound.init { notFoundImgSrc = session.notFoundImgSrc, route = session.route }
                     |> Tuple.mapFirst NotFoundModel
 
-        Routes.AgentReviews { teamName } ->
-            AgentReviews.init { teamName = teamName }
-                |> Tuple.mapFirst AgentReviewsModel
-
 
 handleNotFound : Session -> ET Model
 handleNotFound session ( model, effects ) =
@@ -180,9 +174,8 @@ genericUpdate :
     -> ET NotFound.Model.Model
     -> ET FlySuccess.Models.Model
     -> ET DownloadFly.Model.Model
-    -> ET AgentReviews.Model
     -> ET Model
-genericUpdate fBuild fJob fRes fPipe fDash fCaus fNF fFS dFly fAR ( model, effects ) =
+genericUpdate fBuild fJob fRes fPipe fDash fCaus fNF fFS dFly ( model, effects ) =
     case model of
         BuildModel buildModel ->
             fBuild ( buildModel, effects )
@@ -220,10 +213,6 @@ genericUpdate fBuild fJob fRes fPipe fDash fCaus fNF fFS dFly fAR ( model, effec
             dFly ( downloadFlyModel, effects )
                 |> Tuple.mapFirst DownloadFlyModel
 
-        AgentReviewsModel agentReviewsModel ->
-            fAR ( agentReviewsModel, effects )
-                |> Tuple.mapFirst AgentReviewsModel
-
 
 handleCallback : Callback -> Session -> ET Model
 handleCallback callback session =
@@ -237,11 +226,9 @@ handleCallback callback session =
         identity
         identity
         identity
-        (AgentReviews.handleCallback callback)
         >> (case callback of
                 LoggedOut (Ok ()) ->
                     genericUpdate
-                        handleLoggedOut
                         handleLoggedOut
                         handleLoggedOut
                         handleLoggedOut
@@ -283,7 +270,6 @@ handleDelivery session delivery =
         (NotFound.handleDelivery delivery)
         (FlySuccess.handleDelivery delivery)
         (DownloadFly.handleDelivery delivery)
-        identity
 
 
 update : Session -> Message -> ET Model
@@ -298,7 +284,6 @@ update session msg =
         (Login.update msg)
         (Login.update msg >> FlySuccess.update msg)
         (Login.update msg >> DownloadFly.update msg)
-        (Login.update msg >> AgentReviews.update msg)
         >> (case msg of
                 GoToRoute route ->
                     handleGoToRoute route
@@ -406,7 +391,6 @@ urlUpdateValid routes =
         identity
         identity
         identity
-        identity
 
 
 view : Session -> Model -> ( String, Html Message )
@@ -457,11 +441,6 @@ view ({ userState } as session) mdl =
             , Causality.view session model
             )
 
-        AgentReviewsModel model ->
-            ( AgentReviews.documentTitle
-            , AgentReviews.view session model
-            )
-
 
 tooltip : Model -> Session -> Maybe Tooltip.Tooltip
 tooltip mdl =
@@ -493,9 +472,6 @@ tooltip mdl =
         CausalityModel model ->
             Causality.tooltip model
 
-        AgentReviewsModel model ->
-            AgentReviews.tooltip model
-
 
 subscriptions : Model -> List Subscription
 subscriptions mdl =
@@ -526,6 +502,3 @@ subscriptions mdl =
 
         CausalityModel _ ->
             Causality.subscriptions
-
-        AgentReviewsModel _ ->
-            AgentReviews.subscriptions

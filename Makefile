@@ -1,4 +1,4 @@
-.PHONY: test-unit test-fly-integration test-integration test-k8s test-k8s-integration test-k8s-behavioral test-quick test-all
+.PHONY: test-unit test-elm test-fly-integration test-integration test-k8s test-k8s-integration test-k8s-behavioral test-quick test-all
 
 # Unit tests: all packages except integration/e2e suites (~5 min)
 # Requires: PostgreSQL running locally
@@ -6,6 +6,17 @@ test-unit:
 	@echo "==> Running unit tests..."
 	ginkgo -r -p --keep-going --flake-attempts=1 \
 		--skip-package=./integration,testflight,topgun,./worker/integration,./worker/runtime/integration,./worker/baggageclaim,fly/integration,testhelpers/otel
+
+# Elm frontend tests (~30 sec)
+# Requires: yarn install (elm-test comes from node_modules)
+#
+# This tier existed but was wired into nothing, so it rotted: by the time it was
+# first run on this branch two suites no longer compiled against the Session
+# record. Keep it in test-quick -- it is the cheapest tier we have, and a
+# frontend that does not compile is a frontend that does not ship.
+test-elm:
+	@echo "==> Running Elm tests..."
+	yarn --silent run test
 
 # Fly integration tests (~10 min)
 # Requires: nothing (uses mock HTTP server)
@@ -47,9 +58,9 @@ check-docker-tools:
 # All K8s tests
 test-k8s: test-k8s-integration test-k8s-behavioral
 
-# Quick: unit tests only (~5 min)
+# Quick: unit + Elm (~5 min)
 # Good for local development iteration
-test-quick: test-unit
+test-quick: test-unit test-elm
 
 # All tests in order of speed
-test-all: test-unit test-fly-integration test-integration test-k8s
+test-all: test-unit test-elm test-fly-integration test-integration test-k8s

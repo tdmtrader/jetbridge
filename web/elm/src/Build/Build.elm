@@ -16,7 +16,6 @@ module Build.Build exposing
 import Api.Endpoints as Endpoints
 import Application.Models exposing (Session)
 import Assets
-import Build.AgentReview
 import Build.Header.Header as Header
 import Build.Header.Models exposing (BuildPageType(..), CommentBarVisibility(..), CurrentOutput(..), commentBarIsVisible)
 import Build.Models exposing (Model, toMaybe)
@@ -27,7 +26,6 @@ import Build.StepTree.Models as STModels
 import Build.StepTree.StepTree as StepTree
 import Build.Styles as Styles
 import Concourse
-import Concourse.AgentReview
 import Concourse.BuildStatus exposing (BuildStatus(..))
 import DateFormat
 import Dict exposing (Dict)
@@ -130,13 +128,6 @@ init flags =
           , notFound = False
           , reapTime = Nothing
           , createdBy = Nothing
-          , agentReviews = []
-          , agentReviewLoadError = False
-          , agentReviewPanelExpanded = True
-          , expandedFindings = Set.empty
-          , showObservations = False
-          , agentReviewNotes = Dict.empty
-          , verdictErrors = Set.empty
           }
         , [ GetCurrentTime
           , GetCurrentTimeZone
@@ -317,23 +308,6 @@ handleCallback action ( model, effects ) =
             -- https://github.com/concourse/concourse/issues/3201
             ( model, effects )
 
-        BuildAgentReviewsFetched (Ok reviews) ->
-            ( { model | agentReviews = reviews, agentReviewLoadError = False }, effects )
-
-        BuildAgentReviewsFetched (Err _) ->
-            -- Missing review (empty list) is a normal state and renders
-            -- nothing; an API error renders a quiet one-line notice instead
-            -- of breaking the page.
-            ( { model | agentReviewLoadError = True }, effects )
-
-        AgentReviewVerdictSubmitted findingId (Ok ()) ->
-            ( { model | verdictErrors = Set.remove findingId model.verdictErrors }
-            , effects ++ [ FetchBuildAgentReviews model.id ]
-            )
-
-        AgentReviewVerdictSubmitted findingId (Err _) ->
-            ( { model | verdictErrors = Set.insert findingId model.verdictErrors }, effects )
-
         _ ->
             ( model, effects )
     )
@@ -512,41 +486,6 @@ update msg ( model, effects ) =
             , effects
             )
 
-        ToggleAgentReviewPanel ->
-            ( { model | agentReviewPanelExpanded = not model.agentReviewPanelExpanded }, effects )
-
-        ToggleAgentReviewFinding findingId ->
-            ( { model
-                | expandedFindings =
-                    if Set.member findingId model.expandedFindings then
-                        Set.remove findingId model.expandedFindings
-
-                    else
-                        Set.insert findingId model.expandedFindings
-              }
-            , effects
-            )
-
-        ToggleAgentReviewObservations ->
-            ( { model | showObservations = not model.showObservations }, effects )
-
-        AgentReviewVerdictClicked params ->
-            ( model
-            , effects
-                ++ [ SubmitAgentReviewVerdict
-                        { repo = params.repo
-                        , commitSha = params.commitSha
-                        , findingId = params.findingId
-                        , verdict = params.verdict
-                        , notes = Dict.get params.findingId model.agentReviewNotes |> Maybe.withDefault ""
-                        , reviewer = params.reviewer
-                        }
-                   ]
-            )
-
-        AgentReviewNoteChanged findingId note ->
-            ( { model | agentReviewNotes = Dict.insert findingId note model.agentReviewNotes }, effects )
-
         _ ->
             ( model, effects )
     )
@@ -656,18 +595,6 @@ handleBuildFetched build ( model, effects ) =
                 _ ->
                     []
 
-        fetchAgentReviews =
-            -- Only fetch once per build: either this is the first fetch for a
-            -- build we haven't loaded yet, or we're switching to a different
-            -- build id. Without this guard, handleBuildFetched fires on every
-            -- poll while a build is running and would re-request reviews
-            -- continuously.
-            if not model.hasLoadedYet || build.id /= model.id then
-                [ FetchBuildAgentReviews build.id ]
-
-            else
-                []
-
         ( newModel, cmd ) =
             if build.status == BuildStatusPending then
                 ( withBuild, effects ++ pollUntilStarted build.id )
@@ -694,7 +621,6 @@ handleBuildFetched build ( model, effects ) =
         ( newModel
         , cmd
             ++ fetchJobAndHistory
-            ++ fetchAgentReviews
             ++ SetFavIcon (Just build.status)
             :: (commentBarIsVisible model.comment
                     |> Maybe.map
@@ -869,13 +795,6 @@ body :
             , output : CurrentOutput
             , authorized : Bool
             , showHelp : Bool
-            , agentReviews : List Concourse.AgentReview.BuildReview
-            , agentReviewLoadError : Bool
-            , agentReviewPanelExpanded : Bool
-            , expandedFindings : Set String
-            , showObservations : Bool
-            , agentReviewNotes : Dict String String
-            , verdictErrors : Set String
         }
     -> Html Message
 body session ({ prep, output, authorized, showHelp } as params) =
@@ -890,7 +809,6 @@ body session ({ prep, output, authorized, showHelp } as params) =
     <|
         if authorized then
             [ viewBuildPrep prep
-            , Build.AgentReview.view (reviewerName session) params
             , Html.Lazy.lazy3
                 viewBuildOutput
                 session.timeZone

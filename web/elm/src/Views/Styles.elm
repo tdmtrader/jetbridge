@@ -131,12 +131,6 @@ pageBelowTopBar route =
                     , style "height" "100%"
                     , style "display" "flex"
                     ]
-
-                Routes.AgentReviews _ ->
-                    [ style "box-sizing" "border-box"
-                    , style "display" "flex"
-                    , style "height" "100%"
-                    ]
            )
 
 

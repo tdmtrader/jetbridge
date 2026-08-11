@@ -33,8 +33,6 @@ type Endpoint
     | UserInfo
     | Logout
     | InstanceGroup Concourse.InstanceGroupIdentifier InstanceGroupEndpoint
-    | BuildAgentReviews Concourse.BuildId
-    | TeamAgentReviews Concourse.TeamName
     | AgentFeedback
 
 
@@ -197,12 +195,6 @@ builder endpoint =
                 |> appendPath [ "teams", teamName ]
                 |> appendPath [ "pipelines", name ]
                 |> append (instanceGroupEndpoint subEndpoint)
-
-        BuildAgentReviews buildId ->
-            base |> appendPath [ "builds", String.fromInt buildId, "agent-reviews" ]
-
-        TeamAgentReviews teamName ->
-            base |> appendPath [ "teams", teamName, "agent-reviews" ]
 
         AgentFeedback ->
             base |> appendPath [ "agent", "feedback" ]

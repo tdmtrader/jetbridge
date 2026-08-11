@@ -43,18 +43,6 @@ type Message
       -- Download Fly Page
     | PlatformSelected String
     | GetHostname
-      -- Agent Review
-    | ToggleAgentReviewPanel
-    | ToggleAgentReviewFinding String
-    | ToggleAgentReviewObservations
-    | AgentReviewVerdictClicked
-        { repo : String
-        , commitSha : String
-        , findingId : String
-        , verdict : String
-        , reviewer : String
-        }
-    | AgentReviewNoteChanged String String
       -- common
     | Hover (Maybe DomID)
     | Click DomID

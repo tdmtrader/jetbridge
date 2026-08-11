@@ -109,14 +109,14 @@ var _ = Describe("StepMetadata", func() {
 					BuildID:      42,
 					BuildName:    "3",
 					TeamName:     "main",
-					JobName:      "agent-review",
+					JobName:      "build-and-test",
 					PipelineName: "concourse-self",
 					ExternalURL:  "https://concourse.home",
 				}.TaskEnv()).To(ConsistOf(
 					"BUILD_ID=42",
 					"BUILD_NAME=3",
 					"BUILD_TEAM_NAME=main",
-					"BUILD_JOB_NAME=agent-review",
+					"BUILD_JOB_NAME=build-and-test",
 					"BUILD_PIPELINE_NAME=concourse-self",
 					"ATC_EXTERNAL_URL=https://concourse.home",
 				))

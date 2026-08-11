@@ -15,7 +15,6 @@ import Base64
 import Browser.Dom exposing (Viewport, getElement, getViewport, getViewportOf, setViewportOf)
 import Browser.Navigation as Navigation
 import Concourse exposing (DatabaseID, encodeJob, encodePipeline, encodeTeam)
-import Concourse.AgentReview
 import Concourse.BuildStatus exposing (BuildStatus)
 import Concourse.Pagination exposing (Page)
 import Json.Decode
@@ -212,16 +211,6 @@ type Effect
     | SaveFavoritedInstanceGroups (Set ( Concourse.TeamName, Concourse.PipelineName ))
     | LoadFavoritedInstanceGroups
     | GetHostname
-    | FetchBuildAgentReviews Concourse.BuildId
-    | FetchTeamAgentReviews Concourse.TeamName
-    | SubmitAgentReviewVerdict
-        { repo : String
-        , commitSha : String
-        , findingId : String
-        , verdict : String
-        , notes : String
-        , reviewer : String
-        }
 
 
 type alias VersionId =
@@ -760,38 +749,6 @@ runEffect effect key csrfToken =
 
         GetHostname ->
             getHostname ()
-
-        FetchBuildAgentReviews buildId ->
-            Api.get (Endpoints.BuildAgentReviews buildId)
-                |> Api.expectJson (Json.Decode.list Concourse.AgentReview.decodeBuildReview)
-                |> Api.request
-                |> Task.attempt BuildAgentReviewsFetched
-
-        FetchTeamAgentReviews teamName ->
-            Api.get (Endpoints.TeamAgentReviews teamName)
-                |> Api.expectJson (Json.Decode.list Concourse.AgentReview.decodeSummary)
-                |> Api.request
-                |> Task.attempt TeamAgentReviewsFetched
-
-        SubmitAgentReviewVerdict params ->
-            Api.post Endpoints.AgentFeedback csrfToken
-                |> Api.withJsonBody
-                    (Json.Encode.object
-                        [ ( "review_ref"
-                          , Json.Encode.object
-                                [ ( "repo", Json.Encode.string params.repo )
-                                , ( "commit", Json.Encode.string params.commitSha )
-                                ]
-                          )
-                        , ( "finding_id", Json.Encode.string params.findingId )
-                        , ( "verdict", Json.Encode.string params.verdict )
-                        , ( "notes", Json.Encode.string params.notes )
-                        , ( "reviewer", Json.Encode.string params.reviewer )
-                        , ( "source", Json.Encode.string "interactive" )
-                        ]
-                    )
-                |> Api.request
-                |> Task.attempt (AgentReviewVerdictSubmitted params.findingId)
 
 
 pipelinesSectionName : PipelinesSection -> String
