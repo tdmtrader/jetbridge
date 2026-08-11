@@ -140,23 +140,16 @@ jobs:
       rootfs_uri: docker:///registry.home/concourse-test-runner:v5
       inputs:
       - name: repo
-      - name: web-public
       run:
         path: sh
         args:
         - -exc
         - |
           cd repo
-          # //go:embed in web/handler.go bakes web/public into the binary, so
-          # the freshly built assets MUST land before `go build` -- otherwise
-          # the committed bundle ships (2026-07-17).
-          echo "=== Installing freshly built frontend assets over web/public ==="
-          if [ ! -s ../web-public/elm.min.js ]; then
-            echo "FATAL: build-frontend produced no elm.min.js -- refusing to ship a possibly stale bundle" >&2
-            exit 1
-          fi
-          cp -a ../web-public/. web/public/
-          sha256sum web/public/elm.min.js
+          # This job builds nothing -- it validates the declared version and
+          # names the candidate. The frontend assets belong to the job that
+          # actually compiles a binary (build-image/build-and-push-local),
+          # which is where that block lives.
 
           # Version is DECLARED in the VERSION file, never derived from tags.
           # Deriving "latest tag + 1" made every green push a release and tied
