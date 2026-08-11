@@ -729,7 +729,7 @@ func (step *TaskStep) registerOutputs(logger lager.Logger, repository *build.Rep
 				// Artifact reference before handing it to the repository.
 				// Without this wrap, downstream consumers would exec into
 				// the producing pod for StreamOut, which breaks once the
-				// reaper deletes the pod (see forge/tracks/route_artifact_reads_through_daemonset_remove_exec_backed_artifact_io_20260418).
+				// reaper deletes the pod.
 				artifact := worker.ArtifactFromVolume(mount.Volume)
 				repository.RegisterArtifact(build.ArtifactName(outputName), artifact, false)
 			}

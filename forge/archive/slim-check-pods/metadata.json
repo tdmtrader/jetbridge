@@ -1,8 +1,0 @@
-{
-  "trackId": "slim-check-pods",
-  "type": "refactor",
-  "status": "completed",
-  "description": "Remove unnecessary artifact-helper sidecar and GCS FUSE injection from check step pods",
-  "createdAt": "2026-02-27T02:43:44.750Z",
-  "updatedAt": "2026-02-27T02:43:44.750Z"
-}

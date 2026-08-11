@@ -1,7 +1,7 @@
 package jetbridge_test
 
 // behavioral_runtime_spec_test.go covers the gaps identified in the K8s
-// Runtime Behavioral Specification (forge/tracks/k8s_runtime_behavioral_spec_20260331/).
+// Runtime Behavioral Specification.
 //
 // Requirements covered:
 //   PE-03: ImagePullPolicy=PullIfNotPresent on main container
