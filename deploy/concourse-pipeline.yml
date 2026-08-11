@@ -573,10 +573,53 @@ jobs:
 - name: release
   serial_groups: [pipeline]
   plan:
+  # The ONLY manually triggered job in the pipeline. Everything upstream of here
+  # runs on every green push, which is what keeps the branch deployable; cutting
+  # a release is a decision, and a decision needs someone to make it.
+  #
+  # Before this, `trigger: true` meant a green push WAS a release: eight jobs
+  # would go green and the ninth would tag, publish to GHCR, and redeploy,
+  # without anyone choosing to. TestReleaseJobIsManuallyTriggered keeps this
+  # false.
   - get: repo
-    trigger: true
+    trigger: false
     params: {depth: 0, fetch_tags: true}
     passed: [k8s-live-tests]
+  - task: acceptance-gate
+    config:
+      platform: linux
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v5
+      inputs:
+      - name: repo
+      run:
+        path: sh
+        args:
+        - -exc
+        - |
+          cd repo
+          fail() { echo "FATAL: $*" >&2; exit 1; }
+
+          # Read-only. Nothing here mutates anything, which is the point: every
+          # reason to refuse a release should be found before the release task
+          # starts pushing images.
+
+          VERSION=$(tr -d '[:space:]' < VERSION)
+          echo "${VERSION}" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' \
+            || fail "VERSION must be MAJOR.MINOR.PATCH, got '${VERSION}'"
+
+          # The same invariant TestVersionDeclarationsAgree asserts, re-checked
+          # here so a release cannot rest on a test having run in some earlier
+          # job against some earlier commit.
+          GO_VERSION=$(grep -E '^var JetBridgeVersion = ' versions.go | cut -d'"' -f2)
+          CHART_VERSION=$(grep -E '^appVersion:' deploy/chart/Chart.yaml \
+            | awk '{print $2}' | tr -d '"')
+
+          [ "${GO_VERSION}" = "${VERSION}" ] \
+            || fail "versions.go JetBridgeVersion=${GO_VERSION} but VERSION=${VERSION}"
+          [ "${CHART_VERSION}" = "${VERSION}" ] \
+            || fail "Chart.yaml appVersion=${CHART_VERSION} but VERSION=${VERSION}"
+
+          echo "=== Accepted: jb-${VERSION} at $(git rev-parse --short HEAD) ==="
   - task: tag-push-release
     privileged: true
     config:
@@ -608,6 +651,24 @@ jobs:
           git config --global user.email "ci@concourse.home"
           git config --global user.name "Concourse CI"
           git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/tdmtrader/jetbridge.git"
+          # --- 0. Already released? Refuse BEFORE touching any registry. ---
+          #
+          # This check used to sit down at the tagging step, which is after
+          # `docker push registry.home/jetbridge:${VERSION}` and after all three
+          # GHCR pushes. Re-running the release of an already-cut version
+          # therefore did the damage first and complained second: :VERSION and
+          # :latest were republished from an unreleased commit, and only then
+          # did the job go red. The deployment references :VERSION by tag, so
+          # the next reschedule could pull the rewritten image.
+          #
+          # The remote is the authority -- a local clone can be missing a tag
+          # that origin already holds.
+          if git ls-remote --exit-code --tags origin "refs/tags/jb-${VERSION}" >/dev/null 2>&1; then
+            echo "FATAL: tag jb-${VERSION} already exists on origin." >&2
+            echo "Refusing to republish a version that has already been cut." >&2
+            echo "Bump VERSION, versions.go and Chart.yaml, then re-run." >&2
+            exit 1
+          fi
 
           # NOTE: the git tag and the force-push to main are DEFERRED to the end
           # of this task, after the RC image is verified and the release image is
@@ -711,13 +772,17 @@ jobs:
           # The predecessor of this block tested `git rev-parse` and, when the
           # tag already existed, printed "skipping" and FELL THROUGH to the
           # force-push and the redeploy below. It read as a guard and was not
-          # one. Existing tag is now fatal, and the check is against the remote,
-          # which is the only authority -- a shallow local clone can be missing
-          # a tag that origin already holds.
+          # one.
+          #
+          # This is now a RACE re-check, not the guard. The guard is step 0
+          # above, which runs before any registry is touched; several minutes of
+          # image building sit between the two, and this closes the window where
+          # someone else cut the same version in between.
           echo "=== Tagging jb-${VERSION} ==="
           if git ls-remote --exit-code --tags origin "refs/tags/jb-${VERSION}" >/dev/null 2>&1; then
-            echo "FATAL: tag jb-${VERSION} already exists on origin." >&2
-            echo "Refusing to release a version that has already been cut." >&2
+            echo "FATAL: tag jb-${VERSION} appeared on origin during this build." >&2
+            echo "Someone else cut it after step 0 passed. The images above have" >&2
+            echo "already been published; reconcile before re-running." >&2
             exit 1
           fi
           git tag -a "jb-${VERSION}" -m "Release jb-${VERSION}"

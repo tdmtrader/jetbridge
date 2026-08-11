@@ -178,6 +178,69 @@ func TestPipelineDoesNotRetryDestructiveGit(t *testing.T) {
 	}
 }
 
+// Cutting a release is a decision. Every other job in the chain runs on every
+// green push -- that is what keeps the branch deployable -- but `release` tags
+// the commit, publishes `:VERSION` and `:latest` to a public registry, and
+// redeploys the cluster. With `trigger: true` a green push WAS a release: eight
+// jobs would go green and the ninth would ship, without anyone choosing to.
+//
+// The failure mode is quiet in exactly the wrong way. Nothing anywhere required
+// that VERSION had been bumped, so the steady state after the first release is
+// a ninth job that republishes mutable tags from an unreleased commit and only
+// then goes red on the existing git tag.
+//
+// So: release is manual, and stays manual.
+func TestReleaseJobIsManuallyTriggered(t *testing.T) {
+	const releaseJob = "release"
+
+	for _, path := range pipelineFiles(t) {
+		pipeline := loadPipeline(t, path)
+		name := filepath.Base(path)
+
+		for _, job := range pipeline.Jobs {
+			if job.Name != releaseJob {
+				continue
+			}
+
+			var gets int
+			for _, step := range flattenPlan(job.Plan) {
+				if step.Get == "" {
+					continue
+				}
+				gets++
+
+				if step.Trigger == nil {
+					// Concourse defaults trigger to false, so an absent key is
+					// correct behaviour -- but it is indistinguishable from an
+					// oversight, and this is the one job where the difference
+					// matters. Require it stated.
+					t.Errorf(
+						"%s: job %q gets %q without an explicit `trigger:`. "+
+							"The default is false, which is right, but say so: "+
+							"an unstated default is one edit away from becoming "+
+							"an automatic release.",
+						name, job.Name, step.Get,
+					)
+					continue
+				}
+
+				if *step.Trigger {
+					t.Errorf(
+						"%s: job %q gets %q with `trigger: true`, which makes "+
+							"every green push a release. Releases are cut by a "+
+							"person.",
+						name, job.Name, step.Get,
+					)
+				}
+			}
+
+			if gets == 0 {
+				t.Errorf("%s: job %q has no `get` steps; this test would pass vacuously", name, job.Name)
+			}
+		}
+	}
+}
+
 type pipelineDoc struct {
 	Jobs []struct {
 		Name string `json:"name"`
@@ -191,6 +254,10 @@ type step struct {
 	Task     string `json:"task"`
 	Resource string `json:"resource"`
 	Attempts int    `json:"attempts"`
+
+	// Pointer so an absent `trigger:` is distinguishable from `trigger: false`.
+	// They mean the same thing to Concourse and different things to a reader.
+	Trigger *bool `json:"trigger"`
 
 	// Nesting. These pipelines are nearly flat, but test-pipeline.yml uses
 	// in_parallel, and a step hidden inside one is still a step.
