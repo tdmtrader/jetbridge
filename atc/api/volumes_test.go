@@ -1,34 +1,106 @@
 package api_test
 
 import (
+	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
+	"net/http/httptest"
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 	. "github.com/concourse/concourse/atc/testhelpers"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
 
-var _ = Describe("Volumes API", func() {
+type afterGetTeamVolumesRepository struct {
+	db.VolumeRepository
+	afterGet func() error
+}
 
-	var fakeWorker *dbfakes.FakeWorker
+func (repository afterGetTeamVolumesRepository) GetTeamVolumes(teamID int) ([]db.CreatedVolume, error) {
+	volumes, err := repository.VolumeRepository.GetTeamVolumes(teamID)
+	if err != nil {
+		return nil, err
+	}
+
+	if repository.afterGet != nil {
+		if err := repository.afterGet(); err != nil {
+			return nil, err
+		}
+	}
+
+	return volumes, nil
+}
+
+var _ = Describe("Volumes API", func() {
+	var (
+		realDatabase          *realDB
+		team                  db.Team
+		worker                db.Worker
+		someOtherWorker       db.Worker
+		otherTeamVolumeHandle string
+		server                *httptest.Server
+	)
 
 	BeforeEach(func() {
-		fakeWorker = new(dbfakes.FakeWorker)
-		fakeWorker.NameReturns("some-worker")
+		realDatabase = useRealDB()
+
+		var err error
+		team, err = realDatabase.Deps.teamFactory.CreateTeam(atc.Team{Name: "a-team"})
+		Expect(err).NotTo(HaveOccurred())
+
+		worker, err = realDatabase.Deps.workerFactory.SaveWorker(atc.Worker{
+			Name: "some-worker",
+			ResourceTypes: []atc.WorkerResourceType{
+				{
+					Type:    "some-base-resource-type",
+					Version: "some-base-version",
+				},
+			},
+		}, 0)
+		Expect(err).NotTo(HaveOccurred())
+
+		someOtherWorker, err = realDatabase.Deps.workerFactory.SaveWorker(atc.Worker{Name: "some-other-worker"}, 0)
+		Expect(err).NotTo(HaveOccurred())
+
+		otherTeam, err := realDatabase.Deps.teamFactory.CreateTeam(atc.Team{Name: "some-other-team"})
+		Expect(err).NotTo(HaveOccurred())
+
+		otherTeamBuild, err := otherTeam.CreateOneOffBuild()
+		Expect(err).NotTo(HaveOccurred())
+
+		otherTeamContainer, err := someOtherWorker.CreateContainer(
+			db.NewBuildStepContainerOwner(otherTeamBuild.ID(), "some-other-plan", otherTeam.ID()),
+			db.ContainerMetadata{Type: db.ContainerTypeTask},
+		)
+		Expect(err).NotTo(HaveOccurred())
+
+		otherTeamVolume, err := realDatabase.Deps.volumeRepository.CreateContainerVolume(
+			otherTeam.ID(),
+			someOtherWorker.Name(),
+			otherTeamContainer,
+			"some-other-path",
+		)
+		Expect(err).NotTo(HaveOccurred())
+
+		createdOtherTeamVolume, err := otherTeamVolume.Created()
+		Expect(err).NotTo(HaveOccurred())
+		otherTeamVolumeHandle = createdOtherTeamVolume.Handle()
 	})
 
 	Describe("GET /api/v1/teams/a-team/volumes", func() {
 		var response *http.Response
 
 		JustBeforeEach(func() {
+			server = realDatabase.Serve()
+
 			var err error
 			response, err = client.Get(server.URL + "/api/v1/teams/a-team/volumes")
+			if response != nil {
+				DeferCleanup(response.Body.Close)
+			}
 			Expect(err).NotTo(HaveOccurred())
 		})
 
@@ -49,75 +121,173 @@ var _ = Describe("Volumes API", func() {
 			})
 
 			Context("when identifying the team succeeds", func() {
-				BeforeEach(func() {
-					dbTeam.IDReturns(1)
-				})
-
 				It("receives correct team name as function argument", func() {
 					Expect(fakeAccess.IsAuthorizedArgsForCall(0)).To(Equal("a-team"))
 				})
 
-				It("asks the factory for the volumes", func() {
-					Expect(fakeVolumeRepository.GetTeamVolumesCallCount()).To(Equal(1))
+				It("does not return volumes owned by another team", func() {
+					var volumes []atc.Volume
+					Expect(json.NewDecoder(response.Body).Decode(&volumes)).To(Succeed())
+
+					Expect(volumes).To(BeEmpty())
+					Expect(volumes).NotTo(ContainElement(HaveField("ID", otherTeamVolumeHandle)))
 				})
 
 				Context("when getting all volumes succeeds", func() {
+					var expectedVolumes []atc.Volume
+
 					BeforeEach(func() {
-						someOtherFakeWorker := new(dbfakes.FakeWorker)
-						someOtherFakeWorker.NameReturns("some-other-worker")
+						repository := realDatabase.Deps.volumeRepository
 
-						fakeVolumeRepository.GetTeamVolumesStub = func(teamID int) ([]db.CreatedVolume, error) {
-							if teamID != 1 {
-								return []db.CreatedVolume{}, nil
-							}
+						build, err := team.CreateOneOffBuild()
+						Expect(err).NotTo(HaveOccurred())
 
-							volume1 := new(dbfakes.FakeCreatedVolume)
-							volume1.HandleReturns("some-resource-cache-handle")
-							volume1.WorkerNameReturns(fakeWorker.Name())
-							volume1.TypeReturns(db.VolumeTypeResource)
-							volume1.ResourceTypeReturns(&db.VolumeResourceType{
-								ResourceType: &db.VolumeResourceType{
-									WorkerBaseResourceType: &db.UsedWorkerBaseResourceType{
-										Name:    "some-base-resource-type",
-										Version: "some-base-version",
+						resourceCacheFactory := db.NewResourceCacheFactory(realDatabase.Conn, realDatabase.LockFactory)
+						customTypeCache, err := resourceCacheFactory.FindOrCreateResourceCache(
+							db.ForBuild(build.ID()),
+							"some-base-resource-type",
+							atc.Version{"custom": "version"},
+							atc.Source{"custom": "source"},
+							nil,
+							nil,
+						)
+						Expect(err).NotTo(HaveOccurred())
+
+						resourceCache, err := resourceCacheFactory.FindOrCreateResourceCache(
+							db.ForBuild(build.ID()),
+							"some-custom-resource-type",
+							atc.Version{"some": "version"},
+							atc.Source{"some": "source"},
+							atc.Params{"some": "params"},
+							customTypeCache,
+						)
+						Expect(err).NotTo(HaveOccurred())
+
+						creatingResourceVolume, err := repository.CreateVolumeWithHandle(
+							"some-resource-cache-handle",
+							team.ID(),
+							worker.Name(),
+							db.VolumeTypeContainer,
+						)
+						Expect(err).NotTo(HaveOccurred())
+
+						resourceVolume, err := creatingResourceVolume.Created()
+						Expect(err).NotTo(HaveOccurred())
+						workerResourceCache, err := resourceVolume.InitializeResourceCache(resourceCache)
+						Expect(err).NotTo(HaveOccurred())
+						Expect(workerResourceCache).NotTo(BeNil())
+
+						workerBaseResourceType, found, err := db.NewWorkerBaseResourceTypeFactory(realDatabase.Conn).
+							Find("some-base-resource-type", worker)
+						Expect(err).NotTo(HaveOccurred())
+						Expect(found).To(BeTrue())
+
+						creatingBaseResourceTypeVolume, err := repository.CreateBaseResourceTypeVolume(workerBaseResourceType)
+						Expect(err).NotTo(HaveOccurred())
+						baseResourceTypeVolume, err := creatingBaseResourceTypeVolume.Created()
+						Expect(err).NotTo(HaveOccurred())
+
+						creatingContainer, err := worker.CreateContainer(
+							db.NewFixedHandleContainerOwner("some-container-handle"),
+							db.ContainerMetadata{Type: db.ContainerTypeTask},
+						)
+						Expect(err).NotTo(HaveOccurred())
+
+						creatingParentVolume, err := repository.CreateContainerVolume(
+							team.ID(),
+							worker.Name(),
+							creatingContainer,
+							"some-path",
+						)
+						Expect(err).NotTo(HaveOccurred())
+						parentVolume, err := creatingParentVolume.Created()
+						Expect(err).NotTo(HaveOccurred())
+
+						creatingChildVolume, err := parentVolume.CreateChildForContainer(creatingContainer, "some-child-path")
+						Expect(err).NotTo(HaveOccurred())
+						childVolume, err := creatingChildVolume.Created()
+						Expect(err).NotTo(HaveOccurred())
+						Expect(childVolume.WorkerName()).To(Equal(parentVolume.WorkerName()))
+
+						pipeline, _, err := team.SavePipeline(
+							atc.PipelineRef{
+								Name:         "some-pipeline",
+								InstanceVars: atc.InstanceVars{"branch": "master"},
+							},
+							atc.Config{Jobs: atc.JobConfigs{{Name: "some-job"}}},
+							db.ConfigVersion(0),
+							false,
+						)
+						Expect(err).NotTo(HaveOccurred())
+
+						job, found, err := pipeline.Job("some-job")
+						Expect(err).NotTo(HaveOccurred())
+						Expect(found).To(BeTrue())
+
+						taskCache, err := db.NewTaskCacheFactory(realDatabase.Conn).
+							FindOrCreate(job.ID(), "some-task", "some-task-cache-path")
+						Expect(err).NotTo(HaveOccurred())
+						workerTaskCache, err := db.NewWorkerTaskCacheFactory(realDatabase.Conn).FindOrCreate(db.WorkerTaskCache{
+							WorkerName: worker.Name(),
+							TaskCache:  taskCache,
+						})
+						Expect(err).NotTo(HaveOccurred())
+
+						creatingTaskCacheVolume, err := repository.CreateTaskCacheVolume(team.ID(), workerTaskCache)
+						Expect(err).NotTo(HaveOccurred())
+						taskCacheVolume, err := creatingTaskCacheVolume.Created()
+						Expect(err).NotTo(HaveOccurred())
+
+						expectedVolumes = []atc.Volume{
+							{
+								ID:         resourceVolume.Handle(),
+								WorkerName: worker.Name(),
+								Type:       string(db.VolumeTypeResource),
+								ResourceType: &atc.VolumeResourceType{
+									ResourceType: &atc.VolumeResourceType{
+										BaseResourceType: &atc.VolumeBaseResourceType{
+											Name:    "some-base-resource-type",
+											Version: "some-base-version",
+										},
+										Version: atc.Version{"custom": "version"},
 									},
-									Version: atc.Version{"custom": "version"},
+									Version: atc.Version{"some": "version"},
 								},
-								Version: atc.Version{"some": "version"},
-							}, nil)
-							volume2 := new(dbfakes.FakeCreatedVolume)
-							volume2.HandleReturns("some-import-handle")
-							volume2.WorkerNameReturns(fakeWorker.Name())
-							volume2.TypeReturns(db.VolumeTypeResourceType)
-							volume2.BaseResourceTypeReturns(&db.UsedWorkerBaseResourceType{
-								Name:    "some-base-resource-type",
-								Version: "some-base-version",
-							}, nil)
-							volume3 := new(dbfakes.FakeCreatedVolume)
-							volume3.HandleReturns("some-output-handle")
-							volume3.WorkerNameReturns(someOtherFakeWorker.Name())
-							volume3.ContainerHandleReturns("some-container-handle")
-							volume3.PathReturns("some-path")
-							volume3.ParentHandleReturns("some-parent-handle")
-							volume3.TypeReturns(db.VolumeTypeContainer)
-							volume4 := new(dbfakes.FakeCreatedVolume)
-							volume4.HandleReturns("some-cow-handle")
-							volume4.WorkerNameReturns(fakeWorker.Name())
-							volume4.ContainerHandleReturns("some-container-handle")
-							volume4.PathReturns("some-path")
-							volume4.TypeReturns(db.VolumeTypeContainer)
-							volume5 := new(dbfakes.FakeCreatedVolume)
-							volume5.HandleReturns("some-task-cache-handle")
-							volume5.WorkerNameReturns(fakeWorker.Name())
-							volume5.TypeReturns(db.VolumeTypeTaskCache)
-							volume5.TaskIdentifierReturns(1, atc.PipelineRef{Name: "some-pipeline", InstanceVars: atc.InstanceVars{"branch": "master"}}, "some-job", "some-task", nil)
-							return []db.CreatedVolume{
-								volume1,
-								volume2,
-								volume3,
-								volume4,
-								volume5,
-							}, nil
+							},
+							{
+								ID:         baseResourceTypeVolume.Handle(),
+								WorkerName: worker.Name(),
+								Type:       string(db.VolumeTypeResourceType),
+								BaseResourceType: &atc.VolumeBaseResourceType{
+									Name:    "some-base-resource-type",
+									Version: "some-base-version",
+								},
+							},
+							{
+								ID:              parentVolume.Handle(),
+								WorkerName:      worker.Name(),
+								Type:            string(db.VolumeTypeContainer),
+								ContainerHandle: creatingContainer.Handle(),
+								Path:            "some-path",
+							},
+							{
+								ID:              childVolume.Handle(),
+								WorkerName:      worker.Name(),
+								Type:            string(db.VolumeTypeContainer),
+								ContainerHandle: creatingContainer.Handle(),
+								Path:            "some-child-path",
+								ParentHandle:    parentVolume.Handle(),
+							},
+							{
+								ID:                   taskCacheVolume.Handle(),
+								WorkerName:           worker.Name(),
+								Type:                 string(db.VolumeTypeTaskCache),
+								PipelineID:           pipeline.ID(),
+								PipelineName:         "some-pipeline",
+								PipelineInstanceVars: atc.InstanceVars{"branch": "master"},
+								JobName:              "some-job",
+								StepName:             "some-task",
+							},
 						}
 					})
 
@@ -126,116 +296,25 @@ var _ = Describe("Volumes API", func() {
 					})
 
 					It("returns Content-Type 'application/json'", func() {
-						expectedHeaderEntries := map[string]string{
+						Expect(response).Should(IncludeHeaderEntries(map[string]string{
 							"Content-Type": "application/json",
-						}
-						Expect(response).Should(IncludeHeaderEntries(expectedHeaderEntries))
+						}))
 					})
 
-					It("returns all volumes", func() {
-						body, err := io.ReadAll(response.Body)
-						Expect(err).NotTo(HaveOccurred())
+					It("returns all real volumes visible to the team", func() {
+						var volumes []atc.Volume
+						Expect(json.NewDecoder(response.Body).Decode(&volumes)).To(Succeed())
 
-						Expect(body).To(MatchJSON(`[
-		 					{
-		 						"id": "some-resource-cache-handle",
-		 						"worker_name": "some-worker",
-		 						"type": "resource",
-		 						"container_handle": "",
-		 						"path": "",
-		 						"parent_handle": "",
-		 						"resource_type": {
-		 							"resource_type": {
-		 							  "resource_type": null,
-		 								"base_resource_type": {
-		 									"name": "some-base-resource-type",
-		 									"version": "some-base-version"
-		 								},
-		 								"version": {"custom": "version"}
-		 							},
-		 							"base_resource_type": null,
-		 							"version": {"some": "version"}
-		 						},
-		 						"base_resource_type": null,
-		 						"pipeline_id": 0,
-		 						"pipeline_name": "",
-		 						"pipeline_instance_vars": null,
-		 						"job_name": "",
-		 						"step_name": ""
-		 					},
-		 					{
-		 						"id": "some-import-handle",
-		 						"worker_name": "some-worker",
-		 						"type": "resource-type",
-		 						"container_handle": "",
-		 						"path": "",
-		 						"parent_handle": "",
-		 						"resource_type": null,
-		 						"base_resource_type": {
-		 							"name": "some-base-resource-type",
-		 							"version": "some-base-version"
-		 						},
-		 						"pipeline_id": 0,
-		 						"pipeline_name": "",
-		 						"pipeline_instance_vars": null,
-		 						"job_name": "",
-		 						"step_name": ""
-		 					},
-		 					{
-		 						"id": "some-output-handle",
-		 						"worker_name": "some-other-worker",
-		 						"type": "container",
-		 						"container_handle": "some-container-handle",
-		 						"path": "some-path",
-		 						"parent_handle": "some-parent-handle",
-		 						"resource_type": null,
-		 						"base_resource_type": null,
-		 						"pipeline_id": 0,
-		 						"pipeline_name": "",
-		 						"pipeline_instance_vars": null,
-		 						"job_name": "",
-		 						"step_name": ""
-		 					},
-		 					{
-		 						"id": "some-cow-handle",
-		 						"worker_name": "some-worker",
-		 						"type": "container",
-		 						"container_handle": "some-container-handle",
-		 						"parent_handle": "",
-		 						"path": "some-path",
-		 						"resource_type": null,
-		 						"base_resource_type": null,
-		 						"pipeline_id": 0,
-		 						"pipeline_name": "",
-		 						"pipeline_instance_vars": null,
-		 						"job_name": "",
-		 						"step_name": ""
-		 					},
-		 					{
-		 						"id": "some-task-cache-handle",
-		 						"worker_name": "some-worker",
-		 						"type": "task-cache",
-		 						"container_handle": "",
-		 						"parent_handle": "",
-		 						"path": "",
-		 						"resource_type": null,
-		 						"base_resource_type": null,
-		 						"pipeline_id": 1,
-		 						"pipeline_name": "some-pipeline",
-		 						"pipeline_instance_vars": {
-									"branch": "master"
-								},
-		 						"job_name": "some-job",
-		 						"step_name": "some-task"
-		 					}
-		 				]`,
-						))
+						Expect(volumes).To(ConsistOf(expectedVolumes))
+						Expect(volumes).NotTo(ContainElement(HaveField("ID", otherTeamVolumeHandle)))
 					})
 				})
 
 				Context("when getting all volumes fails", func() {
 					BeforeEach(func() {
-						fakeVolumeRepository.GetTeamVolumesReturns([]db.CreatedVolume{}, errors.New("oh no!"))
+						closedConnection := postgresRunner.OpenConn()
+						realDatabase.Deps.volumeRepository = db.NewVolumeRepository(closedConnection)
+						Expect(closedConnection.Close()).To(Succeed())
 					})
 
 					It("returns 500 Internal Server Error", func() {
@@ -244,49 +323,103 @@ var _ = Describe("Volumes API", func() {
 				})
 
 				Context("when a volume is deleted during the request", func() {
-					BeforeEach(func() {
-						fakeVolumeRepository.GetTeamVolumesStub = func(teamID int) ([]db.CreatedVolume, error) {
-							volume1 := new(dbfakes.FakeCreatedVolume)
-							volume1.ResourceTypeReturns(nil, errors.New("Something"))
+					var expectedBaseResourceTypeVolume atc.Volume
 
-							volume2 := new(dbfakes.FakeCreatedVolume)
-							volume2.HandleReturns("some-import-handle")
-							volume2.WorkerNameReturns(fakeWorker.Name())
-							volume2.TypeReturns(db.VolumeTypeResourceType)
-							volume2.BaseResourceTypeReturns(&db.UsedWorkerBaseResourceType{
+					BeforeEach(func() {
+						repository := realDatabase.Deps.volumeRepository
+
+						build, err := team.CreateOneOffBuild()
+						Expect(err).NotTo(HaveOccurred())
+
+						resourceCacheFactory := db.NewResourceCacheFactory(realDatabase.Conn, realDatabase.LockFactory)
+						customTypeCache, err := resourceCacheFactory.FindOrCreateResourceCache(
+							db.ForBuild(build.ID()),
+							"some-base-resource-type",
+							atc.Version{"custom": "version"},
+							atc.Source{"custom": "source"},
+							nil,
+							nil,
+						)
+						Expect(err).NotTo(HaveOccurred())
+
+						resourceCache, err := resourceCacheFactory.FindOrCreateResourceCache(
+							db.ForBuild(build.ID()),
+							"some-custom-resource-type",
+							atc.Version{"some": "version"},
+							atc.Source{"some": "source"},
+							atc.Params{"some": "params"},
+							customTypeCache,
+						)
+						Expect(err).NotTo(HaveOccurred())
+
+						creatingResourceVolume, err := repository.CreateVolumeWithHandle(
+							"disappearing-resource-cache-volume",
+							team.ID(),
+							worker.Name(),
+							db.VolumeTypeContainer,
+						)
+						Expect(err).NotTo(HaveOccurred())
+						resourceVolume, err := creatingResourceVolume.Created()
+						Expect(err).NotTo(HaveOccurred())
+						workerResourceCache, err := resourceVolume.InitializeResourceCache(resourceCache)
+						Expect(err).NotTo(HaveOccurred())
+						Expect(workerResourceCache).NotTo(BeNil())
+
+						workerBaseResourceType, found, err := db.NewWorkerBaseResourceTypeFactory(realDatabase.Conn).
+							Find("some-base-resource-type", worker)
+						Expect(err).NotTo(HaveOccurred())
+						Expect(found).To(BeTrue())
+
+						creatingBaseResourceTypeVolume, err := repository.CreateBaseResourceTypeVolume(workerBaseResourceType)
+						Expect(err).NotTo(HaveOccurred())
+						baseResourceTypeVolume, err := creatingBaseResourceTypeVolume.Created()
+						Expect(err).NotTo(HaveOccurred())
+
+						expectedBaseResourceTypeVolume = atc.Volume{
+							ID:         baseResourceTypeVolume.Handle(),
+							WorkerName: worker.Name(),
+							Type:       string(db.VolumeTypeResourceType),
+							BaseResourceType: &atc.VolumeBaseResourceType{
 								Name:    "some-base-resource-type",
 								Version: "some-base-version",
-							}, nil)
-							return []db.CreatedVolume{
-								volume1,
-								volume2,
-							}, nil
+							},
+						}
+
+						deleted, err := build.Delete()
+						Expect(err).NotTo(HaveOccurred())
+						Expect(deleted).To(BeTrue())
+
+						realDatabase.Deps.volumeRepository = afterGetTeamVolumesRepository{
+							VolumeRepository: repository,
+							afterGet: func() error {
+								tx, err := realDatabase.Conn.Begin()
+								if err != nil {
+									return err
+								}
+								defer tx.Rollback()
+
+								deleted, err := resourceCache.Destroy(tx)
+								if err != nil {
+									return err
+								}
+								if !deleted {
+									return errors.New("resource cache was not deleted")
+								}
+
+								if err := tx.Commit(); err != nil {
+									return err
+								}
+
+								return nil
+							},
 						}
 					})
 
 					It("returns a partial list of volumes", func() {
-						body, err := io.ReadAll(response.Body)
-						Expect(err).NotTo(HaveOccurred())
+						var volumes []atc.Volume
+						Expect(json.NewDecoder(response.Body).Decode(&volumes)).To(Succeed())
 
-						Expect(body).To(MatchJSON(`[
-		 					{
-		 						"id": "some-import-handle",
-		 						"worker_name": "some-worker",
-		 						"type": "resource-type",
-		 						"container_handle": "",
-		 						"path": "",
-		 						"parent_handle": "",
-		 						"resource_type": null,
-		 						"base_resource_type": {
-		 							"name": "some-base-resource-type",
-		 							"version": "some-base-version"
-		 						},
-		 						"pipeline_id": 0,
-		 						"pipeline_name": "",
-		 						"pipeline_instance_vars": null,
-		 						"job_name": "",
-		 						"step_name": ""
-		 					}]`))
+						Expect(volumes).To(ConsistOf(expectedBaseResourceTypeVolume))
 					})
 
 					It("returns 200 OK", func() {
@@ -294,14 +427,12 @@ var _ = Describe("Volumes API", func() {
 					})
 
 					It("returns Content-Type 'application/json'", func() {
-						expectedHeaderEntries := map[string]string{
+						Expect(response).Should(IncludeHeaderEntries(map[string]string{
 							"Content-Type": "application/json",
-						}
-						Expect(response).Should(IncludeHeaderEntries(expectedHeaderEntries))
+						}))
 					})
 				})
 			})
 		})
 	})
-
 })

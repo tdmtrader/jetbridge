@@ -156,13 +156,71 @@ var _ = BeforeEach(func() {
 
 	build = new(dbfakes.FakeBuild)
 
-	checkPipelineAccessHandlerFactory := auth.NewCheckPipelineAccessHandlerFactory(dbTeamFactory)
+	server = newAPIServer(fakeDBDeps())
 
-	checkBuildReadAccessHandlerFactory := auth.NewCheckBuildReadAccessHandlerFactory(dbBuildFactory)
+	client = &http.Client{
+		Transport: &http.Transport{},
+	}
+})
 
-	checkBuildWriteAccessHandlerFactory := auth.NewCheckBuildWriteAccessHandlerFactory(dbBuildFactory)
+// apiDBDeps is every database-backed collaborator the API handler is built
+// from. The suite default (fakeDBDeps) supplies the package-level fakes that
+// most specs assert against; a spec that wants real behaviour passes real
+// factories instead -- see useRealDB in real_db_test.go.
+//
+// Collecting them in a struct is what makes the two coexist: without it, the
+// only way to give one Describe real factories is to change the package-level
+// vars, which every other spec in the package shares.
+type apiDBDeps struct {
+	teamFactory           db.TeamFactory
+	pipelineFactory       db.PipelineFactory
+	jobFactory            db.JobFactory
+	resourceFactory       db.ResourceFactory
+	workerFactory         db.WorkerFactory
+	workerTeamFactory     db.TeamFactory
+	volumeRepository      db.VolumeRepository
+	buildFactory          db.BuildFactory
+	checkFactory          db.CheckFactory
+	resourceConfigFactory db.ResourceConfigFactory
+	userFactory           db.UserFactory
 
-	checkWorkerTeamAccessHandlerFactory := auth.NewCheckWorkerTeamAccessHandlerFactory(dbWorkerFactory)
+	wall              db.Wall
+	signingKeyFactory db.SigningKeyFactory
+}
+
+// fakeDBDeps is the historical wiring: every collaborator is the package-level
+// counterfeiter fake, so specs that assert on call counts keep working.
+func fakeDBDeps() apiDBDeps {
+	return apiDBDeps{
+		teamFactory:           dbTeamFactory,
+		pipelineFactory:       dbPipelineFactory,
+		jobFactory:            dbJobFactory,
+		resourceFactory:       dbResourceFactory,
+		workerFactory:         dbWorkerFactory,
+		workerTeamFactory:     dbWorkerTeamFactory,
+		volumeRepository:      fakeVolumeRepository,
+		buildFactory:          dbBuildFactory,
+		checkFactory:          dbCheckFactory,
+		resourceConfigFactory: dbResourceConfigFactory,
+		userFactory:           dbUserFactory,
+		wall:                  dbWall,
+		signingKeyFactory:     dbSigningKeyFactory,
+	}
+}
+
+// newAPIServer builds the full API handler over deps and serves it. The
+// accessor, auditor, policy checker and event handler stay fake: none of them
+// is a database seam.
+func newAPIServer(deps apiDBDeps) *httptest.Server {
+	GinkgoHelper()
+
+	checkPipelineAccessHandlerFactory := auth.NewCheckPipelineAccessHandlerFactory(deps.teamFactory)
+
+	checkBuildReadAccessHandlerFactory := auth.NewCheckBuildReadAccessHandlerFactory(deps.buildFactory)
+
+	checkBuildWriteAccessHandlerFactory := auth.NewCheckBuildWriteAccessHandlerFactory(deps.buildFactory)
+
+	checkWorkerTeamAccessHandlerFactory := auth.NewCheckWorkerTeamAccessHandlerFactory(deps.workerFactory)
 
 	fakePolicyChecker = new(policycheckerfakes.FakePolicyChecker)
 	fakePolicyChecker.CheckReturns(policy.PassedPolicyCheck(), nil)
@@ -186,17 +244,17 @@ var _ = BeforeEach(func() {
 
 		apiWrapper,
 
-		dbTeamFactory,
-		dbPipelineFactory,
-		dbJobFactory,
-		dbResourceFactory,
-		dbWorkerFactory,
-		dbWorkerTeamFactory,
-		fakeVolumeRepository,
-		dbBuildFactory,
-		dbCheckFactory,
-		dbResourceConfigFactory,
-		dbUserFactory,
+		deps.teamFactory,
+		deps.pipelineFactory,
+		deps.jobFactory,
+		deps.resourceFactory,
+		deps.workerFactory,
+		deps.workerTeamFactory,
+		deps.volumeRepository,
+		deps.buildFactory,
+		deps.checkFactory,
+		deps.resourceConfigFactory,
+		deps.userFactory,
 
 		constructedEventHandler.Construct,
 
@@ -216,9 +274,9 @@ var _ = BeforeEach(func() {
 		credsManagers,
 		interceptTimeoutFactory,
 		time.Second,
-		dbWall,
+		deps.wall,
 		fakeClock,
-		dbSigningKeyFactory,
+		deps.signingKeyFactory,
 		nil,
 	)
 
@@ -233,17 +291,11 @@ var _ = BeforeEach(func() {
 		map[string]string{},
 	)
 
-	handler = wrappa.LoggerHandler{
+	return httptest.NewServer(wrappa.LoggerHandler{
 		Logger:  logger,
 		Handler: accessorHandler,
-	}
-
-	server = httptest.NewServer(handler)
-
-	client = &http.Client{
-		Transport: &http.Transport{},
-	}
-})
+	})
+}
 
 var _ = AfterEach(func() {
 	os.Remove(cliDownloadsDir)

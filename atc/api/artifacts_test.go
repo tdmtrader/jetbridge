@@ -2,14 +2,18 @@ package api_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
-	"time"
+	"sync"
 
+	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/compression"
-	"github.com/concourse/concourse/atc/db/dbfakes"
+	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runtime/runtimetest"
 	. "github.com/concourse/concourse/atc/testhelpers"
 	"github.com/concourse/concourse/atc/worker"
@@ -17,18 +21,109 @@ import (
 	. "github.com/onsi/gomega"
 )
 
+type artifactAPITeam struct {
+	db.Team
+
+	mu                               sync.Mutex
+	findVolumeForWorkerArtifactErr   error
+	findVolumeForWorkerArtifactCalls []int
+}
+
+func (team *artifactAPITeam) FindVolumeForWorkerArtifact(artifactID int) (db.CreatedVolume, bool, error) {
+	team.mu.Lock()
+	team.findVolumeForWorkerArtifactCalls = append(team.findVolumeForWorkerArtifactCalls, artifactID)
+	err := team.findVolumeForWorkerArtifactErr
+	team.mu.Unlock()
+
+	if err != nil {
+		return nil, false, err
+	}
+
+	return team.Team.FindVolumeForWorkerArtifact(artifactID)
+}
+
+func (team *artifactAPITeam) SetFindVolumeForWorkerArtifactError(err error) {
+	team.mu.Lock()
+	defer team.mu.Unlock()
+	team.findVolumeForWorkerArtifactErr = err
+}
+
+func (team *artifactAPITeam) FindVolumeForWorkerArtifactCalls() []int {
+	team.mu.Lock()
+	defer team.mu.Unlock()
+	return append([]int(nil), team.findVolumeForWorkerArtifactCalls...)
+}
+
+type artifactAPITeamFactory struct {
+	db.TeamFactory
+	teamName string
+	team     db.Team
+}
+
+func (factory artifactAPITeamFactory) FindTeam(name string) (db.Team, bool, error) {
+	team, found, err := factory.TeamFactory.FindTeam(name)
+	if err != nil || !found || name != factory.teamName {
+		return team, found, err
+	}
+	return factory.team, true, nil
+}
+
 var _ = Describe("ArtifactRepository API", func() {
 	Describe("POST /api/v1/teams/:team_name/artifacts", func() {
-		var request *http.Request
-		var response *http.Response
+		var (
+			realdb    *realDB
+			deps      apiDBDeps
+			team      db.Team
+			routeTeam *artifactAPITeam
+			artifact  db.WorkerArtifact
+			handle    string
+			server    *httptest.Server
 
-		var tarContents runtimetest.VolumeContent
+			request  *http.Request
+			response *http.Response
+
+			tarContents runtimetest.VolumeContent
+		)
 
 		BeforeEach(func() {
+			realdb = useRealDB()
+			deps = realdb.Deps
+
+			var err error
+			team, err = deps.teamFactory.CreateTeam(atc.Team{Name: "some-team"})
+			Expect(err).NotTo(HaveOccurred())
+
+			worker, err := deps.workerFactory.SaveWorker(atc.Worker{Name: "artifact-worker"}, 0)
+			Expect(err).NotTo(HaveOccurred())
+
+			build, err := team.CreateOneOffBuild()
+			Expect(err).NotTo(HaveOccurred())
+
+			volumeHandle := "some-artifact-handle"
+			creating, err := deps.volumeRepository.CreateVolumeWithHandle(
+				volumeHandle, team.ID(), worker.Name(), db.VolumeTypeArtifact,
+			)
+			Expect(err).NotTo(HaveOccurred())
+			created, err := creating.Created()
+			Expect(err).NotTo(HaveOccurred())
+			handle = created.Handle()
+			artifact, err = created.InitializeArtifact("some-artifact", build.ID())
+			Expect(err).NotTo(HaveOccurred())
+
+			routeTeam = &artifactAPITeam{Team: team}
+			deps.teamFactory = artifactAPITeamFactory{
+				TeamFactory: deps.teamFactory,
+				teamName:    team.Name(),
+				team:        routeTeam,
+			}
+
 			fakeAccess.IsAuthenticatedReturns(true)
 		})
 
 		JustBeforeEach(func() {
+			realdb.Deps = deps
+			server = realdb.Serve()
+
 			body, err := tarContents.StreamOut(context.Background(), ".", compression.GzipEncoding)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -42,6 +137,9 @@ var _ = Describe("ArtifactRepository API", func() {
 			request.URL.RawQuery = q.Encode()
 
 			response, err = client.Do(request)
+			if response != nil {
+				DeferCleanup(response.Body.Close)
+			}
 			Expect(err).NotTo(HaveOccurred())
 		})
 
@@ -67,7 +165,6 @@ var _ = Describe("ArtifactRepository API", func() {
 
 		Context("when authorized", func() {
 			var volume *runtimetest.Volume
-			var workerArtifact *dbfakes.FakeWorkerArtifact
 
 			BeforeEach(func() {
 				fakeAccess.IsAuthorizedReturns(true)
@@ -76,13 +173,8 @@ var _ = Describe("ArtifactRepository API", func() {
 					"some/file": {Data: []byte("some contents")},
 				}
 
-				volume = runtimetest.NewVolume("some-artifact")
-
-				workerArtifact = new(dbfakes.FakeWorkerArtifact)
-				workerArtifact.IDReturns(0)
-				workerArtifact.CreatedAtReturns(time.Unix(42, 0))
-
-				fakeWorkerPool.CreateVolumeForArtifactReturns(volume, workerArtifact, nil)
+				volume = runtimetest.NewVolume(handle)
+				fakeWorkerPool.CreateVolumeForArtifactReturns(volume, artifact, nil)
 			})
 
 			It("creates the volume", func() {
@@ -90,7 +182,7 @@ var _ = Describe("ArtifactRepository API", func() {
 
 				_, workerSpec := fakeWorkerPool.CreateVolumeForArtifactArgsForCall(0)
 				Expect(workerSpec).To(Equal(worker.Spec{
-					TeamID: 734,
+					TeamID: team.ID(),
 				}))
 			})
 
@@ -113,26 +205,85 @@ var _ = Describe("ArtifactRepository API", func() {
 				body, err := io.ReadAll(response.Body)
 				Expect(err).NotTo(HaveOccurred())
 
-				Expect(body).To(MatchJSON(`{
-					"id": 0,
-					"name": "",
-					"build_id": 0,
-					"created_at": 42
-				}`))
+				expected, err := json.Marshal(atc.WorkerArtifact{
+					ID:        artifact.ID(),
+					Name:      artifact.Name(),
+					BuildID:   artifact.BuildID(),
+					CreatedAt: artifact.CreatedAt().Unix(),
+				})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(body).To(MatchJSON(expected))
 			})
 		})
 	})
 
 	Describe("GET /api/v1/teams/:team_name/artifacts/:artifact_id", func() {
-		var response *http.Response
+		var (
+			realdb     *realDB
+			deps       apiDBDeps
+			team       db.Team
+			routeTeam  *artifactAPITeam
+			artifact   db.WorkerArtifact
+			artifactID int
+			handle     string
+			server     *httptest.Server
+
+			request  *http.Request
+			response *http.Response
+		)
 
 		BeforeEach(func() {
+			realdb = useRealDB()
+			deps = realdb.Deps
+
+			var err error
+			team, err = deps.teamFactory.CreateTeam(atc.Team{Name: "some-team"})
+			Expect(err).NotTo(HaveOccurred())
+
+			worker, err := deps.workerFactory.SaveWorker(atc.Worker{Name: "artifact-worker"}, 0)
+			Expect(err).NotTo(HaveOccurred())
+
+			build, err := team.CreateOneOffBuild()
+			Expect(err).NotTo(HaveOccurred())
+
+			volumeHandle := "some-artifact-handle"
+			creating, err := deps.volumeRepository.CreateVolumeWithHandle(
+				volumeHandle, team.ID(), worker.Name(), db.VolumeTypeArtifact,
+			)
+			Expect(err).NotTo(HaveOccurred())
+			created, err := creating.Created()
+			Expect(err).NotTo(HaveOccurred())
+			handle = created.Handle()
+			artifact, err = created.InitializeArtifact("some-artifact", build.ID())
+			Expect(err).NotTo(HaveOccurred())
+			artifactID = artifact.ID()
+
+			routeTeam = &artifactAPITeam{Team: team}
+			deps.teamFactory = artifactAPITeamFactory{
+				TeamFactory: deps.teamFactory,
+				teamName:    team.Name(),
+				team:        routeTeam,
+			}
+
 			fakeAccess.IsAuthenticatedReturns(true)
 		})
 
 		JustBeforeEach(func() {
+			realdb.Deps = deps
+			server = realdb.Serve()
+
 			var err error
-			response, err = http.Get(server.URL + "/api/v1/teams/some-team/artifacts/18")
+			request, err = http.NewRequest(
+				http.MethodGet,
+				server.URL+fmt.Sprintf("/api/v1/teams/some-team/artifacts/%d", artifactID),
+				nil,
+			)
+			Expect(err).NotTo(HaveOccurred())
+
+			response, err = client.Do(request)
+			if response != nil {
+				DeferCleanup(response.Body.Close)
+			}
 			Expect(err).NotTo(HaveOccurred())
 		})
 
@@ -162,15 +313,12 @@ var _ = Describe("ArtifactRepository API", func() {
 			})
 
 			It("uses the artifactID to fetch the db volume record", func() {
-				Expect(dbTeam.FindVolumeForWorkerArtifactCallCount()).To(Equal(1))
-
-				artifactID := dbTeam.FindVolumeForWorkerArtifactArgsForCall(0)
-				Expect(artifactID).To(Equal(18))
+				Expect(routeTeam.FindVolumeForWorkerArtifactCalls()).To(Equal([]int{artifact.ID()}))
 			})
 
 			Context("when retrieving db artifact volume fails", func() {
 				BeforeEach(func() {
-					dbTeam.FindVolumeForWorkerArtifactReturns(nil, false, errors.New("nope"))
+					routeTeam.SetFindVolumeForWorkerArtifactError(errors.New("nope"))
 				})
 
 				It("errors", func() {
@@ -180,7 +328,7 @@ var _ = Describe("ArtifactRepository API", func() {
 
 			Context("when the db artifact volume is not found", func() {
 				BeforeEach(func() {
-					dbTeam.FindVolumeForWorkerArtifactReturns(nil, false, nil)
+					artifactID = artifact.ID() + 1
 				})
 
 				It("returns 404", func() {
@@ -189,21 +337,12 @@ var _ = Describe("ArtifactRepository API", func() {
 			})
 
 			Context("when the db artifact volume is found", func() {
-				var fakeVolume *dbfakes.FakeCreatedVolume
-
-				BeforeEach(func() {
-					fakeVolume = new(dbfakes.FakeCreatedVolume)
-					fakeVolume.HandleReturns("some-handle")
-
-					dbTeam.FindVolumeForWorkerArtifactReturns(fakeVolume, true, nil)
-				})
-
 				It("uses the volume handle to lookup the worker volume", func() {
 					Expect(fakeWorkerPool.LocateVolumeCallCount()).To(Equal(1))
 
-					_, teamID, handle := fakeWorkerPool.LocateVolumeArgsForCall(0)
-					Expect(handle).To(Equal("some-handle"))
-					Expect(teamID).To(Equal(734))
+					_, teamID, actualHandle := fakeWorkerPool.LocateVolumeArgsForCall(0)
+					Expect(actualHandle).To(Equal(handle))
+					Expect(teamID).To(Equal(team.ID()))
 				})
 
 				Context("when the worker client errors", func() {
@@ -230,7 +369,7 @@ var _ = Describe("ArtifactRepository API", func() {
 					var volume *runtimetest.Volume
 
 					BeforeEach(func() {
-						volume = runtimetest.NewVolume("volume").
+						volume = runtimetest.NewVolume(handle).
 							WithContent(runtimetest.VolumeContent{
 								"some/file": {Data: []byte("some content")},
 							})

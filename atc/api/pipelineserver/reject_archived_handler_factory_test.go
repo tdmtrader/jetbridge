@@ -6,8 +6,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 
+	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/pipelineserver"
-	"github.com/concourse/concourse/atc/db/dbfakes"
+	"github.com/concourse/concourse/atc/db"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -19,26 +20,20 @@ var _ = Describe("Rejected Archived Handler", func() {
 		server   *httptest.Server
 		delegate *delegateHandler
 
-		dbTeamFactory *dbfakes.FakeTeamFactory
-		fakeTeam      *dbfakes.FakeTeam
-		fakePipeline  *dbfakes.FakePipeline
-
-		handler http.Handler
+		factory db.TeamFactory
 	)
 
 	BeforeEach(func() {
 		delegate = &delegateHandler{}
-
-		dbTeamFactory = new(dbfakes.FakeTeamFactory)
-		fakeTeam = new(dbfakes.FakeTeam)
-		fakePipeline = new(dbfakes.FakePipeline)
-
-		handlerFactory := pipelineserver.NewRejectArchivedHandlerFactory(dbTeamFactory)
-		handler = handlerFactory.RejectArchived(delegate.GetHandler(fakePipeline))
+		factory = teamFactory
 	})
 
+	// The team and pipeline are looked up by the names in the query string, so
+	// each Context sets up (or deliberately omits) the rows those names resolve
+	// to rather than stubbing the lookup.
 	JustBeforeEach(func() {
-		server = httptest.NewServer(handler)
+		handlerFactory := pipelineserver.NewRejectArchivedHandlerFactory(factory)
+		server = httptest.NewServer(handlerFactory.RejectArchived(delegate.GetHandler(nil)))
 
 		request, err := http.NewRequest("POST", server.URL+"?:team_name=some-team&:pipeline_name=some-pipeline", nil)
 		Expect(err).NotTo(HaveOccurred())
@@ -47,71 +42,96 @@ var _ = Describe("Rejected Archived Handler", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	var _ = AfterEach(func() {
+	AfterEach(func() {
 		server.Close()
 	})
 
 	Context("when a team is found", func() {
+		var team db.Team
+
 		BeforeEach(func() {
-			dbTeamFactory.FindTeamReturns(fakeTeam, true, nil)
+			team = createTeam("some-team")
 		})
+
 		Context("when a pipeline is found", func() {
+			var pipeline db.Pipeline
+
 			BeforeEach(func() {
-				fakeTeam.PipelineReturns(fakePipeline, true, nil)
+				pipeline = createPipeline(team, "some-pipeline")
 			})
+
 			Context("when a pipeline is archived", func() {
 				BeforeEach(func() {
-					fakePipeline.ArchivedReturns(true)
+					Expect(pipeline.Archive()).To(Succeed())
 				})
+
 				It("returns 409", func() {
 					Expect(response.StatusCode).To(Equal(http.StatusConflict))
 				})
+
 				It("returns an error in the body", func() {
 					body, err := io.ReadAll(response.Body)
 					Expect(err).NotTo(HaveOccurred())
 					Expect(body).To(ContainSubstring("action not allowed for an archived pipeline"))
 				})
 			})
+
 			Context("when a pipeline is not archived", func() {
-				BeforeEach(func() {
-					fakePipeline.ArchivedReturns(false)
-				})
 				It("returns the delegate handler", func() {
 					Expect(delegate.IsCalled).To(BeTrue())
 				})
 			})
 		})
+
 		Context("when a pipeline is not found", func() {
+			// The team exists but owns a differently-named pipeline.
 			BeforeEach(func() {
-				fakeTeam.PipelineReturns(nil, false, nil)
+				createPipeline(team, "some-other-pipeline")
 			})
+
 			It("returns 404", func() {
 				Expect(response.StatusCode).To(Equal(http.StatusNotFound))
 			})
 		})
-		Context("when getting a pipeline returns an error", func() {
-			BeforeEach(func() {
-				fakeTeam.PipelineReturns(nil, false, errors.New("some error"))
-			})
-			It("returns 500", func() {
-				Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-			})
-		})
 	})
+
 	Context("when a team is not found", func() {
 		BeforeEach(func() {
-			dbTeamFactory.FindTeamReturns(nil, false, nil)
+			createTeam("some-other-team")
 		})
+
 		It("returns 404", func() {
 			Expect(response.StatusCode).To(Equal(http.StatusNotFound))
 		})
 	})
-	Context("when finding a team returns an error", func() {
+
+	Context("when finding the team fails", func() {
 		BeforeEach(func() {
-			dbTeamFactory.FindTeamReturns(nil, false, errors.New("some error"))
+			doomed := postgresRunner.OpenConn()
+			doomedFactory := db.NewTeamFactory(doomed, lockFactory)
+			_, err := doomedFactory.CreateTeam(atc.Team{Name: "some-team"})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(doomed.Close()).To(Succeed())
+
+			factory = doomedFactory
 		})
+
 		It("returns 500", func() {
 			Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
+		})
+	})
+
+	Context("when finding the pipeline fails", func() {
+		BeforeEach(func() {
+			factory = teamFactoryFailingPipelineLookup(errors.New("pipeline lookup failed"))
+		})
+
+		It("returns 500", func() {
+			Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
+		})
+
+		It("does not call the delegate", func() {
+			Expect(delegate.IsCalled).To(BeFalse())
 		})
 	})
 })
