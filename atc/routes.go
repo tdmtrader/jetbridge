@@ -118,15 +118,7 @@ const (
 	GetOpenIDConfiguration = "GetOpenIDConfiguration"
 	GetSigningKeys         = "GetSigningKeys"
 
-	SubmitAgentFeedback      = "SubmitAgentFeedback"
-	GetAgentFeedback         = "GetAgentFeedback"
-	GetAgentFeedbackSummary  = "GetAgentFeedbackSummary"
-	ClassifyAgentVerdict     = "ClassifyAgentVerdict"
-	GetAgentReviewFindings   = "GetAgentReviewFindings"
 
-	SubmitAgentReview    = "SubmitAgentReview"
-	GetBuildAgentReviews = "GetBuildAgentReviews"
-	ListTeamAgentReviews = "ListTeamAgentReviews"
 
 	MCPEndpoint = "MCPEndpoint"
 )
@@ -251,15 +243,7 @@ var Routes = rata.Routes([]rata.Route{
 	{Path: "/api/v1/wall", Method: "PUT", Name: SetWall},
 	{Path: "/api/v1/wall", Method: "DELETE", Name: ClearWall},
 
-	{Path: "/api/v1/agent/feedback/summary", Method: "GET", Name: GetAgentFeedbackSummary},
-	{Path: "/api/v1/agent/feedback/classify", Method: "POST", Name: ClassifyAgentVerdict},
-	{Path: "/api/v1/agent/feedback", Method: "POST", Name: SubmitAgentFeedback},
-	{Path: "/api/v1/agent/feedback", Method: "GET", Name: GetAgentFeedback},
-	{Path: "/api/v1/agent/reviews/:commit/findings", Method: "GET", Name: GetAgentReviewFindings},
 
-	{Path: "/api/v1/agent/reviews", Method: "POST", Name: SubmitAgentReview},
-	{Path: "/api/v1/builds/:build_id/agent-reviews", Method: "GET", Name: GetBuildAgentReviews},
-	{Path: "/api/v1/teams/:team_name/agent-reviews", Method: "GET", Name: ListTeamAgentReviews},
 
 	{Path: "/api/v1/mcp", Method: "POST", Name: MCPEndpoint},
 

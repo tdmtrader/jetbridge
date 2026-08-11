@@ -33,8 +33,11 @@ const v713LastMigration = 1666754000
 // v8.0.1 last migration
 const v801LastMigration = 1765921815
 
-// JetBridge HEAD (last migration)
-const jetbridgeHeadMigration = 1773105504
+// JetBridge HEAD (last migration). Derived from the binary's own embedded
+// migration set rather than hardcoded: the previous literal silently outlived
+// the migration it named, and a test asserting a stale head passes for the
+// wrong reason on every future migration.
+var jetbridgeHeadMigration int
 
 var _ = Describe("Legacy Database Upgrade", func() {
 	var (
@@ -56,6 +59,12 @@ var _ = Describe("Legacy Database Upgrade", func() {
 		fakeLogFunc := func(logger lager.Logger, id lock.LockID) {}
 		lockFactory = lock.NewLockFactory(lockDB, fakeLogFunc, fakeLogFunc)
 		migrator = migration.NewMigrator(db, lockFactory)
+
+		jetbridgeHeadMigration, err = migrator.SupportedVersion()
+		Expect(err).NotTo(HaveOccurred())
+		// Guard against a vacuous pass: SupportedVersion returning 0 would make
+		// every assertion below trivially satisfiable.
+		Expect(jetbridgeHeadMigration).To(BeNumerically(">", v801LastMigration))
 	})
 
 	AfterEach(func() {

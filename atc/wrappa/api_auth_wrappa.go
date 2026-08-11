@@ -40,8 +40,7 @@ func (wrappa *APIAuthWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 		switch name {
 		// pipeline is public or authorized
 		case atc.GetBuild,
-			atc.BuildResources,
-			atc.GetBuildAgentReviews:
+			atc.BuildResources:
 			newHandler = wrappa.checkBuildReadAccessHandlerFactory.AnyJobHandler(handler, rejector)
 
 		// pipeline and job are public or authorized
@@ -103,15 +102,6 @@ func (wrappa *APIAuthWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 			atc.GetSigningKeys:
 			newHandler = auth.CheckAuthenticationIfProvidedHandler(handler, rejector)
 
-		// unauthenticated at the Concourse-token layer: publishers authenticate
-		// with a static bearer token that the handler itself validates
-		// (agent/api/reviews.Handler.SubmitReview), not a Concourse user
-		// session/JWT. CheckAuthenticationIfProvidedHandler would reject any
-		// non-JWT Authorization header before the handler ever saw it, so this
-		// route must not go through Concourse token verification at all.
-		case atc.SubmitAgentReview:
-			// no-op: pass straight through to the handler
-
 		// admin
 		case atc.GetLogLevel,
 			atc.DestroyTeam,
@@ -166,12 +156,6 @@ func (wrappa *APIAuthWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 			atc.CreateArtifact,
 			atc.ScheduleJob,
 			atc.GetArtifact,
-			atc.SubmitAgentFeedback,
-			atc.GetAgentFeedback,
-			atc.GetAgentFeedbackSummary,
-			atc.ClassifyAgentVerdict,
-			atc.GetAgentReviewFindings,
-			atc.ListTeamAgentReviews,
 			atc.CopyResourceVersions,
 			atc.ListDeprecatedScopes:
 			newHandler = auth.CheckAuthorizationHandler(handler, rejector)

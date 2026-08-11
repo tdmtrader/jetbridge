@@ -8,8 +8,6 @@ import (
 	"code.cloudfoundry.org/clock"
 	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc"
-	"github.com/concourse/concourse/agent/api/feedback"
-	reviewsapi "github.com/concourse/concourse/agent/api/reviews"
 	"github.com/concourse/concourse/atc/api/artifactserver"
 	"github.com/concourse/concourse/atc/api/buildserver"
 	"github.com/concourse/concourse/atc/api/ccserver"
@@ -87,9 +85,6 @@ func NewHandler(
 	clock clock.Clock,
 	dbSigningKeyFactory db.SigningKeyFactory,
 	dbPinger infoserver.DBPinger,
-	feedbackStore feedback.Store,
-	reviewsStore reviewsapi.Store,
-	agentReviewPublishToken string,
 ) (http.Handler, error) {
 
 	absCLIDownloadsDir, err := filepath.Abs(cliDownloadsDir)
@@ -119,24 +114,6 @@ func NewHandler(
 	artifactServer := artifactserver.NewServer(logger, workerPool)
 	usersServer := usersserver.NewServer(logger, dbUserFactory)
 	wallServer := wallserver.NewServer(dbWall, logger)
-	feedbackServer := feedback.NewHandler(feedbackStore)
-	reviewsServer := reviewsapi.NewHandler(
-		reviewsStore,
-		feedbackStore,
-		func(id int) (reviewsapi.BuildContext, bool, error) {
-			build, found, err := dbBuildFactory.Build(id)
-			if err != nil || !found {
-				return reviewsapi.BuildContext{}, found, err
-			}
-			return reviewsapi.BuildContext{
-				BuildName:    build.Name(),
-				TeamName:     build.TeamName(),
-				PipelineName: build.PipelineName(),
-				JobName:      build.JobName(),
-			}, true, nil
-		},
-		agentReviewPublishToken,
-	)
 	if oidcIssuer == "" {
 		oidcIssuer = externalURL
 	}
@@ -265,16 +242,6 @@ func NewHandler(
 
 		atc.GetOpenIDConfiguration: http.HandlerFunc(idTokenServer.OpenIDConfiguration),
 		atc.GetSigningKeys:         http.HandlerFunc(idTokenServer.SigningKeys),
-
-		atc.SubmitAgentFeedback:     http.HandlerFunc(feedbackServer.SubmitFeedback),
-		atc.GetAgentFeedback:        http.HandlerFunc(feedbackServer.GetFeedback),
-		atc.GetAgentFeedbackSummary: http.HandlerFunc(feedbackServer.GetSummary),
-		atc.ClassifyAgentVerdict:    http.HandlerFunc(feedbackServer.ClassifyVerdict),
-		atc.GetAgentReviewFindings:  http.HandlerFunc(feedbackServer.GetFindings),
-
-		atc.SubmitAgentReview:    http.HandlerFunc(reviewsServer.SubmitReview),
-		atc.GetBuildAgentReviews: http.HandlerFunc(reviewsServer.GetByBuild),
-		atc.ListTeamAgentReviews: http.HandlerFunc(reviewsServer.ListByTeam),
 	}
 
 	return rata.NewRouter(atc.Routes, wrapper.Wrap(handlers))

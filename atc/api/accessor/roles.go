@@ -105,11 +105,4 @@ var DefaultRoles = map[string]string{
 	// making the route admin-only. (The atc/integration suite's login
 	// user is on the main team and therefore admin, so it would not
 	// catch a regression here.)
-	atc.SubmitAgentFeedback:     MemberRole,
-	atc.GetAgentFeedback:        ViewerRole,
-	atc.GetAgentFeedbackSummary: ViewerRole,
-	atc.ClassifyAgentVerdict:    MemberRole,
-	atc.GetAgentReviewFindings:  ViewerRole,
-	atc.ListTeamAgentReviews:    ViewerRole,
-	atc.GetBuildAgentReviews:    ViewerRole,
 }

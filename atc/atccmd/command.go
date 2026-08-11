@@ -215,7 +215,6 @@ type RunCommand struct {
 		ClientSecret            string `long:"client-secret" required:"true" description:"Client secret to use for login flow"`
 	} `group:"Web Server"`
 
-	AgentReviewPublishToken string `long:"agent-review-publish-token" description:"Static bearer token accepted for publishing agent review results via POST /api/v1/agent/reviews. Publishing is disabled when empty."`
 
 	LogDBQueries   bool `long:"log-db-queries" description:"Log database queries."`
 	LogClusterName bool `long:"log-cluster-name" description:"Log cluster name."`
@@ -2294,9 +2293,6 @@ func (cmd *RunCommand) constructAPIHandler(
 		clock.NewClock(),
 		dbSigningKeyFactory,
 		dbConn,
-		db.NewAgentFeedbackFactory(dbConn),
-		db.NewAgentReviewsFactory(dbConn),
-		cmd.AgentReviewPublishToken,
 	)
 }
 

@@ -12,8 +12,6 @@ import (
 	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagertest"
 
-	"github.com/concourse/concourse/agent/api/feedback"
-	"github.com/concourse/concourse/agent/api/reviews"
 	"github.com/concourse/concourse/atc/api"
 	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/api/accessor/accessorfakes"
@@ -222,9 +220,6 @@ var _ = BeforeEach(func() {
 		fakeClock,
 		dbSigningKeyFactory,
 		nil,
-		feedback.NewMemoryStore(),
-		reviews.NewMemoryStore(),
-		"test-agent-review-publish-token",
 	)
 
 	Expect(err).NotTo(HaveOccurred())
