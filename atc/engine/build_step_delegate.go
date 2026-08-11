@@ -355,12 +355,37 @@ func imageURLFromSource(resourceType string, source atc.Source, version atc.Vers
 	return "docker:///" + ref
 }
 
-// metadataFetchImage resolves a type image from cached DB versions without
-// running check+get plans. This is used on K8s where kubelet handles image
-// pulls natively and we only need the image reference URL.
+// pinnedImageVersion reports the version pinned on a get plan when that
+// version identifies the image exactly, i.e. it carries a digest.
 //
-// It looks up the latest version for the image's resource config (populated
-// by lidar's periodic checks) and constructs an ImageURL + ResourceCache.
+// A registry-image version is by convention {"digest": "sha256:..."} — that is
+// what lidar, check_step, and the on-demand resolver all produce. A pin
+// without a digest cannot be turned into an unambiguous image reference, so it
+// is not treated as pinned here and the caller resolves as usual. Note that
+// atc.FetchImagePlan pins a non-nil but *empty* version whenever the image
+// resource carries one (e.g. a tag-based reference), so a nil check alone is
+// not enough.
+func pinnedImageVersion(getPlan atc.Plan) (atc.Version, bool) {
+	if getPlan.Get == nil || getPlan.Get.Version == nil {
+		return nil, false
+	}
+
+	version := *getPlan.Get.Version
+	if digest, ok := version["digest"]; !ok || digest == "" {
+		return nil, false
+	}
+
+	return version, true
+}
+
+// metadataFetchImage resolves a type image without running check+get plans.
+// This is used on K8s where kubelet handles image pulls natively and we only
+// need the image reference URL.
+//
+// A version pinned on the get plan is authoritative and is used directly. When
+// nothing is pinned, it looks up the latest version for the image's resource
+// config (populated by lidar's periodic checks), falling back to an on-demand
+// registry resolve. Either way it constructs an ImageURL + ResourceCache.
 // Returns an error if the metadata path can't be used (no cached version,
 // unsupported type, etc.), signaling the caller to fall back to plan-based fetch.
 func (delegate *buildStepDelegate) metadataFetchImage(
@@ -380,56 +405,70 @@ func (delegate *buildStepDelegate) metadataFetchImage(
 		return runtime.ImageSpec{}, nil, fmt.Errorf("evaluate source: %w", err)
 	}
 
-	// Find the resource config for this type+source (same config lidar uses)
-	resourceConfig, err := delegate.resourceConfigFactory.FindOrCreateResourceConfig(
-		getPlan.Get.Type,
-		source,
-		nil, // base type, no parent cache
-	)
-	if err != nil {
-		return runtime.ImageSpec{}, nil, fmt.Errorf("find resource config: %w", err)
-	}
-
-	// Find scope (nil resource ID - type images aren't scoped to a pipeline resource)
-	scope, err := resourceConfig.FindOrCreateScope(nil)
-	if err != nil {
-		return runtime.ImageSpec{}, nil, fmt.Errorf("find scope: %w", err)
-	}
-
-	// Get latest version from DB (populated by lidar's periodic checks)
-	latestVersion, found, err := scope.LatestVersion()
-	if err != nil {
-		return runtime.ImageSpec{}, nil, fmt.Errorf("get latest version: %w", err)
-	}
-
 	var version atc.Version
-	if found {
-		version = atc.Version(latestVersion.Version())
-	} else if delegate.imageResolver != nil {
-		// On-demand resolution: resolve digest via native OCI registry API
-		// call instead of falling back to check+get pods.
-		repo, _ := source["repository"].(string)
-		tag, _ := source["tag"].(string)
 
-		var auth *imageresolver.BasicAuth
-		if username, ok := source["username"].(string); ok && username != "" {
-			password, _ := source["password"].(string)
-			auth = &imageresolver.BasicAuth{Username: username, Password: password}
-		}
-
-		digest, resolveErr := delegate.imageResolver.Resolve(ctx, repo, tag, auth)
-		if resolveErr != nil {
-			return runtime.ImageSpec{}, nil, fmt.Errorf("on-demand image resolve for %q: %w", repo, resolveErr)
-		}
-
-		version = atc.Version{"digest": digest}
-
-		// Save the resolved version to DB so subsequent builds can use cached path
-		if saveErr := scope.SaveVersions(db.SpanContext{}, []atc.Version{version}); saveErr != nil {
-			return runtime.ImageSpec{}, nil, fmt.Errorf("save resolved version: %w", saveErr)
-		}
+	if pinned, isPinned := pinnedImageVersion(getPlan); isPinned {
+		// A pinned digest is already the exact answer any resolution would
+		// compute, so use it as-is. Consulting the DB scope or calling the
+		// registry to confirm it defeats the point of pinning, and fails
+		// closed when the registry is unreachable (e.g. a TLS failure).
+		//
+		// The pinned version is deliberately NOT written back to the resource
+		// config scope: it is one caller's explicit choice, not lidar's view
+		// of the latest version for this source, and publishing it as the
+		// scope's latest would silently redirect unpinned users to it.
+		version = pinned
 	} else {
-		return runtime.ImageSpec{}, nil, fmt.Errorf("no cached version for type %q", getPlan.Get.Type)
+		// Find the resource config for this type+source (same config lidar uses)
+		resourceConfig, err := delegate.resourceConfigFactory.FindOrCreateResourceConfig(
+			getPlan.Get.Type,
+			source,
+			nil, // base type, no parent cache
+		)
+		if err != nil {
+			return runtime.ImageSpec{}, nil, fmt.Errorf("find resource config: %w", err)
+		}
+
+		// Find scope (nil resource ID - type images aren't scoped to a pipeline resource)
+		scope, err := resourceConfig.FindOrCreateScope(nil)
+		if err != nil {
+			return runtime.ImageSpec{}, nil, fmt.Errorf("find scope: %w", err)
+		}
+
+		// Get latest version from DB (populated by lidar's periodic checks)
+		latestVersion, found, err := scope.LatestVersion()
+		if err != nil {
+			return runtime.ImageSpec{}, nil, fmt.Errorf("get latest version: %w", err)
+		}
+
+		if found {
+			version = atc.Version(latestVersion.Version())
+		} else if delegate.imageResolver != nil {
+			// On-demand resolution: resolve digest via native OCI registry API
+			// call instead of falling back to check+get pods.
+			repo, _ := source["repository"].(string)
+			tag, _ := source["tag"].(string)
+
+			var auth *imageresolver.BasicAuth
+			if username, ok := source["username"].(string); ok && username != "" {
+				password, _ := source["password"].(string)
+				auth = &imageresolver.BasicAuth{Username: username, Password: password}
+			}
+
+			digest, resolveErr := delegate.imageResolver.Resolve(ctx, repo, tag, auth)
+			if resolveErr != nil {
+				return runtime.ImageSpec{}, nil, fmt.Errorf("on-demand image resolve for %q: %w", repo, resolveErr)
+			}
+
+			version = atc.Version{"digest": digest}
+
+			// Save the resolved version to DB so subsequent builds can use cached path
+			if saveErr := scope.SaveVersions(db.SpanContext{}, []atc.Version{version}); saveErr != nil {
+				return runtime.ImageSpec{}, nil, fmt.Errorf("save resolved version: %w", saveErr)
+			}
+		} else {
+			return runtime.ImageSpec{}, nil, fmt.Errorf("no cached version for type %q", getPlan.Get.Type)
+		}
 	}
 
 	// Construct image URL (e.g. docker:///repo@sha256:abc123)

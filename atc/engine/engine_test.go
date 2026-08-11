@@ -29,7 +29,6 @@ import (
 
 var _ = Describe("Engine", func() {
 	var (
-		fakeBuild          *dbfakes.FakeBuild
 		fakeStepperFactory *enginefakes.FakeStepperFactory
 
 		fakeGlobalCreds   *credsfakes.FakeSecrets
@@ -37,9 +36,6 @@ var _ = Describe("Engine", func() {
 	)
 
 	BeforeEach(func() {
-		fakeBuild = new(dbfakes.FakeBuild)
-		fakeBuild.IDReturns(128)
-
 		fakeStepperFactory = new(enginefakes.FakeStepperFactory)
 
 		fakeGlobalCreds = new(credsfakes.FakeSecrets)
@@ -48,16 +44,28 @@ var _ = Describe("Engine", func() {
 
 	Describe("NewBuild", func() {
 		var (
-			build  builds.Runnable
-			engine Engine
+			build     builds.Runnable
+			engine    Engine
+			realBuild db.Build
 		)
 
 		BeforeEach(func() {
+			fixture := useEngineDB()
+			_, _, _, realBuild = createEngineJobBuild(
+				fixture,
+				"some-team",
+				atc.PipelineRef{
+					Name:         "some-pipeline",
+					InstanceVars: atc.InstanceVars{"branch": "master"},
+				},
+				atc.Config{Jobs: atc.JobConfigs{{Name: "some-job"}}},
+				"some-user",
+			)
 			engine = NewEngine(fakeStepperFactory, fakeGlobalCreds, fakeVarSourcePool)
 		})
 
 		JustBeforeEach(func() {
-			build = engine.NewBuild(fakeBuild)
+			build = engine.NewBuild(realBuild)
 		})
 
 		It("returns a build", func() {
@@ -65,14 +73,19 @@ var _ = Describe("Engine", func() {
 		})
 	})
 
-	Describe("Build", func() {
+	Describe("retained runtime and fault matrix", func() {
 		var (
 			build     builds.Runnable
+			fakeBuild *dbfakes.FakeBuild
 			release   chan bool
 			waitGroup *sync.WaitGroup
 		)
 
 		BeforeEach(func() {
+			// This fake controls non-persistable lock, listener, cancellation,
+			// panic, retry, and callback ordering in the engine runtime.
+			fakeBuild = new(dbfakes.FakeBuild)
+			fakeBuild.IDReturns(128)
 
 			release = make(chan bool)
 			trackedStates := new(sync.Map)
@@ -299,12 +312,30 @@ var _ = Describe("Engine", func() {
 											Expect(fakeBuild.FinishArgsForCall(0)).To(Equal(db.BuildStatusErrored))
 										})
 
-										It("saves an error event with the message", func() {
-											waitGroup.Wait()
-											Expect(fakeBuild.SaveEventCallCount()).To(Equal(1))
-											ev := fakeBuild.SaveEventArgsForCall(0)
-											Expect(ev.EventType()).To(Equal(event.EventTypeError))
-											Expect(ev.(event.Error).Message).To(Equal("nope"))
+										Context("on a normal (job) build", func() {
+											// The step's own LogError wrapper surfaces the error
+											// event (at the leaf origin); finish() must NOT emit a
+											// second one at the build's root origin, which the UI
+											// renders as a duplicate error message (review finding,
+											// 2026-07-12).
+											It("does not double-emit the error event", func() {
+												waitGroup.Wait()
+												Expect(fakeBuild.SaveEventCallCount()).To(Equal(0))
+											})
+										})
+
+										Context("on a check build (whose check step is not LogError-wrapped)", func() {
+											BeforeEach(func() {
+												fakeBuild.NameReturns(db.CheckBuildName)
+											})
+
+											It("surfaces the error event so the check reason shows in the UI", func() {
+												waitGroup.Wait()
+												Expect(fakeBuild.SaveEventCallCount()).To(Equal(1))
+												ev := fakeBuild.SaveEventArgsForCall(0)
+												Expect(ev.EventType()).To(Equal(event.EventTypeError))
+												Expect(ev.(event.Error).Message).To(Equal("nope"))
+											})
 										})
 									})
 
@@ -382,6 +413,12 @@ var _ = Describe("Engine", func() {
 										waitGroup.Wait()
 										Expect(fakeBuild.FinishCallCount()).To(Equal(1))
 										Expect(fakeBuild.FinishArgsForCall(0)).To(Equal(db.BuildStatusErrored))
+									})
+
+									It("surfaces the panic as an error event (no LogError wrapper ran)", func() {
+										waitGroup.Wait()
+										Expect(fakeBuild.SaveEventCallCount()).To(Equal(1))
+										Expect(fakeBuild.SaveEventArgsForCall(0).EventType()).To(Equal(event.EventTypeError))
 									})
 								})
 

@@ -151,8 +151,8 @@ func (b *engineBuild) Run(ctx context.Context) {
 
 		// Fails the build if BuildStep returned an error because such unrecoverable
 		// errors will cause a build to never start to run. finish emits the
-		// error event.
-		b.finish(logger.Session("finish"), err, false)
+		// error event (no step ran, so nothing else will).
+		b.finish(logger.Session("finish"), err, false, false)
 
 		return
 	}
@@ -168,8 +168,8 @@ func (b *engineBuild) Run(ctx context.Context) {
 
 		// Fails the build if fetching the pipeline variables fails, as these errors
 		// are unrecoverable - e.g. if pipeline var_sources is wrong. finish
-		// emits the error event.
-		b.finish(logger.Session("finish"), err, false)
+		// emits the error event (no step ran, so nothing else will).
+		b.finish(logger.Session("finish"), err, false, false)
 
 		return
 	}
@@ -207,6 +207,11 @@ func (b *engineBuild) Run(ctx context.Context) {
 
 	var succeeded bool
 	var runErr error
+	// A recovered panic (or any error not raised by a running step) is not
+	// surfaced by a step's LogError wrapper, so finish() must emit the error
+	// event for it; a normal step error already flowed through LogError and
+	// must NOT be re-emitted (see finish()).
+	var panicked bool
 
 	done := make(chan struct{})
 	go func() {
@@ -216,6 +221,7 @@ func (b *engineBuild) Run(ctx context.Context) {
 			if err != nil {
 				logger.Error("panic-in-engine-build-step-run", err)
 				runErr = err
+				panicked = true
 			}
 		}()
 		succeeded, runErr = state.Run(lagerctx.NewContext(ctx, tracing.LoggerWithSpan(ctx, logger)), b.build.PrivatePlan())
@@ -229,7 +235,7 @@ func (b *engineBuild) Run(ctx context.Context) {
 		// them to clear in-flight check tracking. Job builds are left in
 		// "started" so the next web's build tracker re-attaches to them.
 		if b.build.Name() == db.CheckBuildName {
-			b.finish(logger.Session("finish"), fmt.Errorf("build released during drain"), false)
+			b.finish(logger.Session("finish"), fmt.Errorf("build released during drain"), false, false)
 		}
 
 	case <-done:
@@ -240,8 +246,10 @@ func (b *engineBuild) Run(ctx context.Context) {
 		}
 
 		// An in-memory build only generates a real build id once start to run,
-		// so let's update logger with the latest lager data.
-		b.finish(logger.Session("finish").WithData(b.build.LagerData()), runErr, succeeded)
+		// so let's update logger with the latest lager data. A non-panic runErr
+		// on the done path came from a running step (already surfaced by its
+		// LogError wrapper on job builds); a panic did not.
+		b.finish(logger.Session("finish").WithData(b.build.LagerData()), runErr, succeeded, !panicked)
 	}
 }
 
@@ -258,7 +266,14 @@ func (b *engineBuild) buildStepErrored(logger lager.Logger, message string) {
 	}
 }
 
-func (b *engineBuild) finish(logger lager.Logger, err error, succeeded bool) {
+// finish records the build's terminal status and, for errors, surfaces the
+// reason in the build output. fromRunningStep is true when err was returned by
+// a running step on the done path: on job builds that error already flowed
+// through the step's LogError wrapper (emitted at the leaf origin), so
+// re-emitting here would render a duplicate. Check builds are not
+// LogError-wrapped, and pre-step / drain / panic errors never reach a wrapper,
+// so those still emit here (review finding, 2026-07-12).
+func (b *engineBuild) finish(logger lager.Logger, err error, succeeded bool, fromRunningStep bool) {
 	if errors.Is(err, context.Canceled) {
 		b.saveStatus(logger, atc.StatusAborted)
 		logger.Info("aborted")
@@ -272,7 +287,9 @@ func (b *engineBuild) finish(logger lager.Logger, err error, succeeded bool) {
 		if errors.As(err, &retriable) {
 			message = retriable.Cause.Error()
 		}
-		b.buildStepErrored(logger, message)
+		if !fromRunningStep || b.build.Name() == db.CheckBuildName {
+			b.buildStepErrored(logger, message)
+		}
 
 		b.saveStatus(logger, atc.StatusErrored)
 		logger.Info("errored", lager.Data{"error": err.Error()})
