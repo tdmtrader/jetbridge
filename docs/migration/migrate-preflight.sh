@@ -79,7 +79,11 @@ v8.0.1:1765921815
 # policy and rejects merely same-run publication provenance; 1773106155 adds
 # the team-bound, immutable child-execution ledger used by the
 # agent broker without placing prompts or provider credentials in PostgreSQL.
-JETBRIDGE_VERSION=1773106159
+# 1773106160 narrows agent_tickets_origin_check to web/fly only, retiring the
+# 'retrospective' value ValidOrigin() has rejected since the self-filing
+# principal that created them was removed; it refuses to run while a
+# retrospective-origin row still exists rather than silently reassigning it.
+JETBRIDGE_VERSION=1773106160
 
 # Minimum supported source version (v6.x)
 MIN_SUPPORTED_VERSION=1601993582
