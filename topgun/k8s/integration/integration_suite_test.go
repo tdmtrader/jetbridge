@@ -104,7 +104,7 @@ func TestIntegration(t *testing.T) {
 type suiteConfig struct {
 	FlyBin      string `json:"fly_bin"`
 	ATCURL      string `json:"atc_url"`
-	ATCUsername  string `json:"atc_username"`
+	ATCUsername string `json:"atc_username"`
 	ATCPassword string `json:"atc_password"`
 	Namespace   string `json:"namespace"`
 	Kubeconfig  string `json:"kubeconfig"`

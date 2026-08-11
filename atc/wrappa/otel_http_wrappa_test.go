@@ -8,15 +8,15 @@ import (
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/wrappa"
 	"github.com/concourse/concourse/tracing"
+	"github.com/tedsuo/rata"
 	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
-	"github.com/tedsuo/rata"
 
-	"go.opentelemetry.io/otel"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"go.opentelemetry.io/otel"
 )
 
 var _ = Describe("OTelHTTPWrappa", func() {

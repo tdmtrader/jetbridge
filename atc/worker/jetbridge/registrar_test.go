@@ -16,11 +16,11 @@ import (
 
 var _ = Describe("Registrar", func() {
 	var (
-		ctx              context.Context
-		fakeClientset    *fake.Clientset
+		ctx               context.Context
+		fakeClientset     *fake.Clientset
 		fakeWorkerFactory *dbfakes.FakeWorkerFactory
-		cfg              jetbridge.Config
-		registrar        *jetbridge.Registrar
+		cfg               jetbridge.Config
+		registrar         *jetbridge.Registrar
 	)
 
 	BeforeEach(func() {

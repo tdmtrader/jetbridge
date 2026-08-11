@@ -6,10 +6,10 @@ import (
 )
 
 type HealthStatus struct {
-	Healthy  bool   `json:"healthy"`
-	DB       string `json:"db"`
-	Workers  string `json:"workers"`
-	DBError  string `json:"db_error,omitempty"`
+	Healthy bool   `json:"healthy"`
+	DB      string `json:"db"`
+	Workers string `json:"workers"`
+	DBError string `json:"db_error,omitempty"`
 }
 
 func (s *Server) Health(w http.ResponseWriter, r *http.Request) {

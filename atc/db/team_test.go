@@ -450,8 +450,8 @@ var _ = Describe("Team", func() {
 						},
 					}),
 					builder.WithWorker(atc.Worker{
-						ResourceTypes:   []atc.WorkerResourceType{defaultWorkerResourceType},
-						Name:            "some-default-worker",
+						ResourceTypes: []atc.WorkerResourceType{defaultWorkerResourceType},
+						Name:          "some-default-worker",
 					}),
 					builder.WithResourceVersions("some-resource"),
 					builder.WithResourceTypeVersions("some-type"),
@@ -515,9 +515,9 @@ var _ = Describe("Team", func() {
 						},
 					}),
 					builder.WithWorker(atc.Worker{
-						Name:            "default-team-worker",
-						Team:            "some-test-team",
-						ResourceTypes:   []atc.WorkerResourceType{defaultWorkerResourceType},
+						Name:          "default-team-worker",
+						Team:          "some-test-team",
+						ResourceTypes: []atc.WorkerResourceType{defaultWorkerResourceType},
 					}),
 					builder.WithResourceVersions("some-resource"),
 				)
@@ -587,9 +587,9 @@ var _ = Describe("Team", func() {
 							},
 						}),
 						builder.WithWorker(atc.Worker{
-							Name:            "other-team-worker",
-							Team:            "other-team",
-							ResourceTypes:   []atc.WorkerResourceType{defaultWorkerResourceType},
+							Name:          "other-team-worker",
+							Team:          "other-team",
+							ResourceTypes: []atc.WorkerResourceType{defaultWorkerResourceType},
 						}),
 						builder.WithResourceVersions("some-resource"),
 					)
@@ -3998,8 +3998,8 @@ var _ = Describe("Team", func() {
 						},
 					}),
 					builder.WithWorker(atc.Worker{
-						ResourceTypes:   []atc.WorkerResourceType{defaultWorkerResourceType},
-						Name:            "some-default-worker",
+						ResourceTypes: []atc.WorkerResourceType{defaultWorkerResourceType},
+						Name:          "some-default-worker",
 					}),
 					builder.WithResourceVersions("some-resource"),
 				)
@@ -4096,8 +4096,8 @@ var _ = Describe("Team", func() {
 						},
 					}),
 					builder.WithWorker(atc.Worker{
-						ResourceTypes:   []atc.WorkerResourceType{defaultWorkerResourceType},
-						Name:            "some-default-worker",
+						ResourceTypes: []atc.WorkerResourceType{defaultWorkerResourceType},
+						Name:          "some-default-worker",
 					}),
 					builder.WithResourceVersions("some-resource"),
 				)

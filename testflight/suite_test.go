@@ -17,8 +17,8 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	testotel "github.com/concourse/concourse/testhelpers/otel"
 	"github.com/concourse/concourse/go-concourse/concourse"
+	testotel "github.com/concourse/concourse/testhelpers/otel"
 	"github.com/google/uuid"
 	"github.com/onsi/gomega/gexec"
 	"go.opentelemetry.io/otel/attribute"

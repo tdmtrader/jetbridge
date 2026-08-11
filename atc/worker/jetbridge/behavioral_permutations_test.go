@@ -248,8 +248,8 @@ func TestBuildVolumeMounts_MixedOverlap(t *testing.T) {
 		},
 		Outputs: runtime.OutputPaths{
 			"modified-code": "/tmp/code",   // overlaps input
-			"result":        "/tmp/result",  // non-overlapping
-			"shared-out":    "/tmp/shared",  // overlaps input
+			"result":        "/tmp/result", // non-overlapping
+			"shared-out":    "/tmp/shared", // overlaps input
 		},
 	}
 

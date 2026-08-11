@@ -20,9 +20,9 @@ import (
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker"
 	"github.com/concourse/concourse/tracing"
-	oteltrace "go.opentelemetry.io/otel/trace"
 	"github.com/concourse/concourse/vars"
 	"go.opentelemetry.io/otel/trace"
+	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
 const taskProcessID = "task"

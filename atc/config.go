@@ -199,7 +199,7 @@ type ResourceType struct {
 	Privileged bool        `json:"privileged,omitempty"`
 	CheckEvery *CheckEvery `json:"check_every,omitempty"`
 	Tags       Tags        `json:"tags,omitempty"`
-	Params Params `json:"params,omitempty"`
+	Params     Params      `json:"params,omitempty"`
 }
 
 type Prototype struct {

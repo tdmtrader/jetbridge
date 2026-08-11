@@ -393,18 +393,18 @@ var _ = Describe("WorkerFactory", func() {
 							},
 						}),
 						builder.WithWorker(atc.Worker{
-							ResourceTypes:   []atc.WorkerResourceType{defaultWorkerResourceType},
-							Name:            "some-tagged-name",
-							Tags:            []string{"some-tag"},
+							ResourceTypes: []atc.WorkerResourceType{defaultWorkerResourceType},
+							Name:          "some-tagged-name",
+							Tags:          []string{"some-tag"},
 						}),
 						builder.WithWorker(atc.Worker{
-							ResourceTypes:   []atc.WorkerResourceType{defaultWorkerResourceType},
-							Name:            "some-team-name",
-							Team:            "default-team",
+							ResourceTypes: []atc.WorkerResourceType{defaultWorkerResourceType},
+							Name:          "some-team-name",
+							Team:          "default-team",
 						}),
 						builder.WithWorker(atc.Worker{
-							ResourceTypes:   []atc.WorkerResourceType{defaultWorkerResourceType},
-							Name:            "some-other-name",
+							ResourceTypes: []atc.WorkerResourceType{defaultWorkerResourceType},
+							Name:          "some-other-name",
 						}),
 						builder.WithResourceVersions(
 							"some-resource",

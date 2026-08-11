@@ -13,10 +13,10 @@ import (
 
 // NodeLabeler manages the node label that indicates a healthy DaemonSet pod.
 type NodeLabeler struct {
-	logger    lager.Logger
-	client    kubernetes.Interface
-	nodeName  string
-	labelKey  string
+	logger     lager.Logger
+	client     kubernetes.Interface
+	nodeName   string
+	labelKey   string
 	labelValue string
 }
 

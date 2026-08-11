@@ -15,8 +15,7 @@ import (
 type ResourcesCommand struct {
 	Pipeline flaghelpers.PipelineFlag `short:"p" long:"pipeline" required:"true" description:"Get resources in this pipeline"`
 	Json     bool                     `long:"json" description:"Print command result as JSON"`
-	Team  flaghelpers.TeamFlag  `long:"team" description:"Name of the team to which the pipeline belongs, if different from the target default"`
-
+	Team     flaghelpers.TeamFlag     `long:"team" description:"Name of the team to which the pipeline belongs, if different from the target default"`
 }
 
 func (command *ResourcesCommand) Execute([]string) error {

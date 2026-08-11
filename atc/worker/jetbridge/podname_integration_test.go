@@ -50,8 +50,8 @@ var _ = Describe("Pod Name Integration", func() {
 					BuildName:    "42",
 				},
 				runtime.ContainerSpec{
-					TeamID:   1,
-					Dir:      "/workdir",
+					TeamID:    1,
+					Dir:       "/workdir",
 					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 				},
 				delegate,
@@ -83,8 +83,8 @@ var _ = Describe("Pod Name Integration", func() {
 				db.NewFixedHandleContainerOwner(handle),
 				db.ContainerMetadata{Type: db.ContainerTypeTask},
 				runtime.ContainerSpec{
-					TeamID:   1,
-					Dir:      "/workdir",
+					TeamID:    1,
+					Dir:       "/workdir",
 					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 				},
 				delegate,
@@ -120,8 +120,8 @@ var _ = Describe("Pod Name Integration", func() {
 					BuildName:    "7",
 				},
 				runtime.ContainerSpec{
-					TeamID:   1,
-					Dir:      "/workdir",
+					TeamID:    1,
+					Dir:       "/workdir",
 					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 				},
 				delegate,
@@ -165,8 +165,8 @@ var _ = Describe("Pod Name Integration", func() {
 					BuildName:    "42",
 				},
 				runtime.ContainerSpec{
-					TeamID:   1,
-					Dir:      "/workdir",
+					TeamID:    1,
+					Dir:       "/workdir",
 					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 				},
 				delegate,
@@ -223,8 +223,8 @@ var _ = Describe("Pod Name Integration", func() {
 					BuildName:    "42",
 				},
 				runtime.ContainerSpec{
-					TeamID:   1,
-					Dir:      "/workdir",
+					TeamID:    1,
+					Dir:       "/workdir",
 					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 				},
 				delegate,
@@ -254,8 +254,8 @@ var _ = Describe("Pod Name Integration", func() {
 					BuildName:    "42",
 				},
 				runtime.ContainerSpec{
-					TeamID:   1,
-					Dir:      "/workdir",
+					TeamID:    1,
+					Dir:       "/workdir",
 					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 				},
 				delegate,
@@ -288,8 +288,8 @@ var _ = Describe("Pod Name Integration", func() {
 				db.NewFixedHandleContainerOwner("test-handle"),
 				db.ContainerMetadata{Type: db.ContainerTypeTask},
 				runtime.ContainerSpec{
-					TeamID:   1,
-					Dir:      "/workdir",
+					TeamID:    1,
+					Dir:       "/workdir",
 					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 				},
 				delegate,
@@ -324,8 +324,8 @@ var _ = Describe("Pod Name Integration", func() {
 					BuildName:    "1",
 				},
 				runtime.ContainerSpec{
-					TeamID:   1,
-					Dir:      "/workdir",
+					TeamID:    1,
+					Dir:       "/workdir",
 					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 				},
 				delegate,
@@ -364,8 +364,8 @@ var _ = Describe("Pod Name Integration", func() {
 					BuildName:    "42",
 				},
 				runtime.ContainerSpec{
-					TeamID:   1,
-					Dir:      "/tmp/build/workdir",
+					TeamID:    1,
+					Dir:       "/tmp/build/workdir",
 					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 					Inputs: []runtime.Input{
 						{DestinationPath: "/tmp/build/workdir/my-input"},

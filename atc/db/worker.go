@@ -86,10 +86,10 @@ type worker struct {
 	ephemeral        bool
 }
 
-func (worker *worker) Name() string         { return worker.name }
-func (worker *worker) Version() *string     { return worker.version }
-func (worker *worker) State() WorkerState   { return worker.state }
-func (worker *worker) ActiveContainers() int { return worker.activeContainers }
+func (worker *worker) Name() string                            { return worker.name }
+func (worker *worker) Version() *string                        { return worker.version }
+func (worker *worker) State() WorkerState                      { return worker.state }
+func (worker *worker) ActiveContainers() int                   { return worker.activeContainers }
 func (worker *worker) ActiveVolumes() int                      { return worker.activeVolumes }
 func (worker *worker) ResourceTypes() []atc.WorkerResourceType { return worker.resourceTypes }
 func (worker *worker) Platform() string                        { return worker.platform }
@@ -235,4 +235,3 @@ func (worker *worker) ActiveTasks() (int, error) {
 	}
 	return worker.activeTasks, nil
 }
-

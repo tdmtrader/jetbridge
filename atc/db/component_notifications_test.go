@@ -436,4 +436,3 @@ var _ = Describe("Component Notifications", func() {
 		})
 	})
 })
-

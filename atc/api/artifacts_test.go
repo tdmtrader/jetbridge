@@ -8,11 +8,11 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/concourse/concourse/atc/compression"
 	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/runtime/runtimetest"
 	. "github.com/concourse/concourse/atc/testhelpers"
 	"github.com/concourse/concourse/atc/worker"
-	"github.com/concourse/concourse/atc/compression"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )

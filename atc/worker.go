@@ -65,4 +65,3 @@ type WorkerResourceType struct {
 	Privileged           bool   `json:"privileged"`
 	UniqueVersionHistory bool   `json:"unique_version_history"`
 }
-

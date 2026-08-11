@@ -147,4 +147,3 @@ func isEventParseError(err error) bool {
 	}
 	return false
 }
-

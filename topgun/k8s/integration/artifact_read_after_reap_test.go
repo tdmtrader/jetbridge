@@ -18,13 +18,13 @@ import (
 // artifact cache rather than the deleted producer pod.
 //
 // Scenarios covered:
-//   1. File-based task config (`task: ... file: artifact/task-input.yaml`)
-//      where the producing get step's pod is deleted while a later `hold`
-//      task runs, before the file-config task fetches its config.
-//   2. Cross-step input consumption where a later task depends on an
-//      artifact produced by an earlier step, with an intermediate task
-//      that does not reference that artifact. The producer's pod is
-//      deleted during the intermediate step.
+//  1. File-based task config (`task: ... file: artifact/task-input.yaml`)
+//     where the producing get step's pod is deleted while a later `hold`
+//     task runs, before the file-config task fetches its config.
+//  2. Cross-step input consumption where a later task depends on an
+//     artifact produced by an earlier step, with an intermediate task
+//     that does not reference that artifact. The producer's pod is
+//     deleted during the intermediate step.
 //
 // IMPORTANT: the producer pod must only be deleted AFTER the producing step
 // has completed and the intermediate step is running (see waitForStepRunning).

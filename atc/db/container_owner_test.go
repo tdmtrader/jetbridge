@@ -30,8 +30,8 @@ var _ = Describe("ContainerOwner", func() {
 
 		BeforeEach(func() {
 			workerPayload := atc.Worker{
-				ResourceTypes:   []atc.WorkerResourceType{defaultWorkerResourceType},
-				Name:            "resource-config-check-session-worker",
+				ResourceTypes: []atc.WorkerResourceType{defaultWorkerResourceType},
+				Name:          "resource-config-check-session-worker",
 			}
 
 			var err error

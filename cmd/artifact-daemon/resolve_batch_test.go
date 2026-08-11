@@ -20,7 +20,7 @@ type batchItem struct {
 }
 
 type batchResponse struct {
-	Status  string           `json:"status"`
+	Status  string            `json:"status"`
 	Results []resolveResponse `json:"results"`
 }
 

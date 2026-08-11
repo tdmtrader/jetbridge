@@ -132,7 +132,7 @@ func findOrCreateResourceConfigScope(
 			From("resource_config_scopes").
 			Where(sq.Eq{
 				"resource_config_id": resourceConfig.ID(),
-				"deprecated_at":     nil,
+				"deprecated_at":      nil,
 			}).
 			Where(sq.Expr("resource_id IS NULL")).
 			RunWith(tx).
@@ -143,7 +143,7 @@ func findOrCreateResourceConfigScope(
 			Where(sq.Eq{
 				"resource_id":        resourceID,
 				"resource_config_id": resourceConfig.ID(),
-				"deprecated_at":     nil,
+				"deprecated_at":      nil,
 			}).
 			RunWith(tx).
 			Query()

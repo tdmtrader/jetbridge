@@ -50,14 +50,14 @@ var _ runtime.Container = (*Container)(nil)
 // The Pod is created lazily when Run() is called, since the command
 // (ProcessSpec) isn't known at FindOrCreateContainer time.
 type Container struct {
-	handle        string
-	podName       string
-	metadata      db.ContainerMetadata
-	containerSpec runtime.ContainerSpec
-	dbContainer   db.CreatedContainer
-	clientset     kubernetes.Interface
-	config        Config
-	workerName    string
+	handle          string
+	podName         string
+	metadata        db.ContainerMetadata
+	containerSpec   runtime.ContainerSpec
+	dbContainer     db.CreatedContainer
+	clientset       kubernetes.Interface
+	config          Config
+	workerName      string
 	mu              sync.RWMutex
 	properties      map[string]string
 	loadAnnotations sync.Once
@@ -452,14 +452,14 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 			Annotations: c.buildPodAnnotations(),
 		},
 		Spec: corev1.PodSpec{
-			RestartPolicy:                 corev1.RestartPolicyNever,
-			SecurityContext:               buildPodSecurityContext(privileged),
-			ImagePullSecrets:              buildImagePullSecrets(c.config.ImagePullSecrets, c.config.ImageRegistry),
-			ServiceAccountName:            c.config.ServiceAccount,
-			InitContainers:                initContainers,
-			Volumes:                       volumes,
-			Containers:                    containers,
-			Affinity:                      affinity,
+			RestartPolicy:      corev1.RestartPolicyNever,
+			SecurityContext:    buildPodSecurityContext(privileged),
+			ImagePullSecrets:   buildImagePullSecrets(c.config.ImagePullSecrets, c.config.ImageRegistry),
+			ServiceAccountName: c.config.ServiceAccount,
+			InitContainers:     initContainers,
+			Volumes:            volumes,
+			Containers:         containers,
+			Affinity:           affinity,
 
 			TerminationGracePeriodSeconds: &terminationGrace,
 		},

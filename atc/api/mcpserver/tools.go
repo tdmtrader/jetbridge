@@ -1092,4 +1092,3 @@ func registerCopyResourceVersions(s *Server, teamFactory db.TeamFactory) {
 		},
 	)
 }
-

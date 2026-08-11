@@ -571,4 +571,3 @@ func cleanupPod(name string) {
 		metav1.DeleteOptions{},
 	)
 }
-

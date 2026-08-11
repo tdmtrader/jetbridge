@@ -14,10 +14,10 @@ var MetricsConfigured bool
 
 // MetricsConfig holds configuration for OTel metrics export.
 type MetricsConfig struct {
-	OTLPAddress string            `long:"otlp-address"  description:"OTLP gRPC endpoint for metrics export"`
-	OTLPHeaders map[string]string `long:"otlp-header"   description:"headers to attach to OTLP metrics requests"`
-	OTLPUseTLS  bool              `long:"otlp-use-tls"  description:"use TLS for OTLP metrics connection"`
-	GCPProjectID string           `long:"gcp-project-id" description:"GCP project ID for Cloud Monitoring export"`
+	OTLPAddress  string            `long:"otlp-address"  description:"OTLP gRPC endpoint for metrics export"`
+	OTLPHeaders  map[string]string `long:"otlp-header"   description:"headers to attach to OTLP metrics requests"`
+	OTLPUseTLS   bool              `long:"otlp-use-tls"  description:"use TLS for OTLP metrics connection"`
+	GCPProjectID string            `long:"gcp-project-id" description:"GCP project ID for Cloud Monitoring export"`
 }
 
 // ConfigureMeterProvider sets the global OTel MeterProvider.

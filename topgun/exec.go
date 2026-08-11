@@ -2,9 +2,9 @@ package topgun
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
-	"io"
 	"path/filepath"
 	"strings"
 	"time"

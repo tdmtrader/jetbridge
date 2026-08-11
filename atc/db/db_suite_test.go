@@ -48,8 +48,8 @@ var (
 	workerBaseResourceTypeFactory       db.WorkerBaseResourceTypeFactory
 	workerTaskCacheFactory              db.WorkerTaskCacheFactory
 	userFactory                         db.UserFactory
-	dbWall    db.Wall
-	fakeClock dbfakes.FakeClock
+	dbWall                              db.Wall
+	fakeClock                           dbfakes.FakeClock
 
 	builder dbtest.Builder
 
