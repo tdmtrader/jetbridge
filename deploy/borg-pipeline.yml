@@ -323,21 +323,18 @@ jobs:
       rootfs_uri: docker:///alpine/git:latest
       inputs:
       - name: repo
-      params:
-        GITHUB_TOKEN: ((github-pat))
       run:
         path: sh
         args:
-        - -exc
+        - -ec
         - |
-          cd repo
-
-          echo "=== Promoting jetbridge -> main ==="
-          COMMIT=$(git rev-parse HEAD)
-          echo "Commit: ${COMMIT}"
-          echo ""
-
-          git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/tdmtrader/jetbridge.git"
-          git push origin HEAD:main
-          echo ""
-          echo "=== Promoted ${COMMIT} to main ==="
+          # promote-to-main pushed HEAD to the branch that is now frozen
+          # history. It is disarmed rather than deleted because this whole
+          # pipeline is slated for removal; failing loudly beats a silent push.
+          #
+          # The credential is gone with it: this task took ((github-pat)) and
+          # ran under `sh -exc`, so the expanded `git remote set-url
+          # https://x-access-token:${GITHUB_TOKEN}@...` was echoed into a build
+          # log that persists in the database. Nothing here needs a token now.
+          echo "FATAL: this pipeline no longer writes remote refs." >&2
+          exit 1

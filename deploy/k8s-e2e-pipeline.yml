@@ -17,7 +17,7 @@ resources:
   icon: git
   source:
     uri: https://github.com/tdmtrader/jetbridge.git
-    branch: jetbridge
+    branch: core
 
 jobs:
 - name: build-kind-runner
@@ -88,7 +88,7 @@ jobs:
             | tar xz --strip-components=1 -C /tmp linux-amd64/helm
 
           echo "=== Cloning fresh source ==="
-          git clone --depth 1 --branch jetbridge https://github.com/tdmtrader/jetbridge.git /tmp/fresh-src
+          git clone --depth 1 --branch core https://github.com/tdmtrader/jetbridge.git /tmp/fresh-src
 
           echo "=== Verifying clone has critical directories ==="
           ls -d /tmp/fresh-src/cmd/oom-trigger /tmp/fresh-src/cmd/concourse /tmp/fresh-src/cmd/artifact-daemon
