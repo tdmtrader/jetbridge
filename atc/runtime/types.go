@@ -17,6 +17,46 @@ import (
 // ErrFileNotFound is returned when a file cannot be found in a volume.
 var ErrFileNotFound = errors.New("file not found")
 
+// InterruptionReason identifies a Kubernetes lifecycle event that destroyed
+// an execution environment independently of the command it was running.
+// Recovery policy is deliberately outside this runtime contract.
+type InterruptionReason string
+
+const (
+	InterruptionPodDeleted InterruptionReason = "pod_deleted"
+	InterruptionEvicted    InterruptionReason = "evicted"
+	InterruptionNodeLost   InterruptionReason = "node_lost"
+	InterruptionPreempted  InterruptionReason = "preempted"
+)
+
+// InterruptionError identifies a retryable runtime interruption and preserves
+// the underlying Kubernetes observation for diagnostics.
+type InterruptionError interface {
+	error
+	InterruptionReason() InterruptionReason
+	RetryableError
+}
+
+type interruptionError struct {
+	reason InterruptionReason
+	cause  error
+}
+
+func NewInterruptionError(reason InterruptionReason, cause error) InterruptionError {
+	if cause == nil {
+		cause = errors.New("execution environment interrupted")
+	}
+	return &interruptionError{reason: reason, cause: cause}
+}
+
+func (e *interruptionError) Error() string { return e.cause.Error() }
+
+func (e *interruptionError) Unwrap() error { return e.cause }
+
+func (e *interruptionError) InterruptionReason() InterruptionReason { return e.reason }
+
+func (e *interruptionError) IsRetryable() bool { return true }
+
 // RetryableError is implemented by errors from runtime backends that represent
 // transient failures (e.g. API server unavailable, rate limiting). The exec
 // layer checks for this interface to decide whether to retry a step.

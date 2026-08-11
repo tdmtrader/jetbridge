@@ -33,6 +33,7 @@ const (
 	resourceResultPropertyName  = "concourse:resource-result"
 	mainContainerName           = "main"
 	exitStatusAnnotationKey     = "concourse.ci/exit-status"
+	buildIDLabelKey             = "concourse.ci/build-id"
 	resourceResultAnnotationKey = "concourse.ci/resource-result"
 )
 
@@ -672,7 +673,7 @@ func (c *Container) buildPodLabels() map[string]string {
 	addLabel("concourse.ci/build", c.metadata.BuildName)
 	addLabel("concourse.ci/step", c.metadata.StepName)
 	if c.metadata.BuildID != 0 {
-		addLabel("concourse.ci/build-id", strconv.Itoa(c.metadata.BuildID))
+		addLabel(buildIDLabelKey, strconv.Itoa(c.metadata.BuildID))
 	}
 	addLabel(handleLabelKey, c.handle)
 

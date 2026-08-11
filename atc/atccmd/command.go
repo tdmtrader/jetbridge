@@ -1310,6 +1310,11 @@ func (cmd *RunCommand) backendComponents(
 		if cmd.k8sArtifactLocator != nil {
 			k8sReaper.SetArtifactLocator(cmd.k8sArtifactLocator)
 		}
+		// The reaper reaps a completed step's pod only once its build is no
+		// longer running: until then the pod's exit-status annotation is the
+		// only thing that lets a restarted web resume the plan instead of
+		// re-executing the step.
+		k8sReaper.SetBuildLookup(dbBuildFactory)
 		components = append(components, RunnableComponent{
 			Component: atc.Component{
 				Name: atc.ComponentK8sWorkerReaper,

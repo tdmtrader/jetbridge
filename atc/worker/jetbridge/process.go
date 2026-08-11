@@ -19,6 +19,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	oteltrace "go.opentelemetry.io/otel/trace"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
@@ -207,11 +208,11 @@ func (p *Process) pollUntilDone(ctx context.Context) (runtime.ProcessResult, err
 			writePodDiagnostics(pod, p.processIO.Stderr)
 			return runtime.ProcessResult{}, fmt.Errorf("pod failed: %s: %s", reason, message)
 		}
-		if isPodEvicted(pod) {
-			metric.RecordK8sPodFailure(ctx, "Evicted")
+		if interruption := interruptionErrorForPod(pod, false, nil); interruption != nil {
+			metric.RecordK8sPodFailure(ctx, string(interruption.InterruptionReason()))
 			writePodDiagnostics(pod, p.processIO.Stderr)
 			writeNodeDiagnostics(ctx, p.clientset, pod, p.processIO.Stderr)
-			return runtime.ProcessResult{}, fmt.Errorf("pod failed: Evicted: %s", pod.Status.Message)
+			return runtime.ProcessResult{}, preferContextCancellation(ctx, interruption)
 		}
 		if message, unschedulable := isPodUnschedulable(pod); unschedulable {
 			if unschedulableFirstSeen.IsZero() {
@@ -378,6 +379,11 @@ func isPodFailedFast(pod *corev1.Pod) (reason, message string, failed bool) {
 	}
 	return "", "", false
 }
+
+// PreemptionAnnotation marks a pod the node-preemption watcher has already
+// identified as being reclaimed, so a subsequent deletion is classified as a
+// preemption rather than an ordinary pod-deleted event.
+const PreemptionAnnotation = "concourse-ci.org/preemption-notice"
 
 // isPodEvicted checks whether the pod has been evicted by the kubelet.
 func isPodEvicted(pod *corev1.Pod) bool {
@@ -1132,11 +1138,11 @@ func (p *execProcess) waitForRunning(ctx context.Context) error {
 			writePodDiagnostics(pod, p.processIO.Stderr)
 			return fmt.Errorf("pod failed: %s: %s", reason, message)
 		}
-		if isPodEvicted(pod) {
-			metric.RecordK8sPodFailure(ctx, "Evicted")
+		if interruption := interruptionErrorForPod(pod, false, nil); interruption != nil {
+			metric.RecordK8sPodFailure(ctx, string(interruption.InterruptionReason()))
 			writePodDiagnostics(pod, p.processIO.Stderr)
 			writeNodeDiagnostics(ctx, p.clientset, pod, p.processIO.Stderr)
-			return fmt.Errorf("pod failed: Evicted: %s", pod.Status.Message)
+			return preferContextCancellation(ctx, interruption)
 		}
 		if message, unschedulable := isPodUnschedulable(pod); unschedulable {
 			if unschedulableFirstSeen.IsZero() {
@@ -1232,4 +1238,76 @@ func (p *exitedProcess) Wait(_ context.Context) (runtime.ProcessResult, error) {
 
 func (p *exitedProcess) SetTTY(_ runtime.TTYSpec) error {
 	return nil
+}
+
+// interruptionReasonForPod uses structured Kubernetes lifecycle state only.
+// Status messages are diagnostic text, never recovery evidence.
+func interruptionReasonForPod(pod *corev1.Pod, deleted bool) (runtime.InterruptionReason, bool) {
+	if pod == nil {
+		return "", false
+	}
+
+	if pod.Status.Phase == corev1.PodFailed || deleted {
+		if deleted && pod.Annotations[PreemptionAnnotation] == "true" {
+			return runtime.InterruptionPreempted, true
+		}
+		for _, condition := range pod.Status.Conditions {
+			if condition.Type != corev1.DisruptionTarget || condition.Status != corev1.ConditionTrue {
+				continue
+			}
+			switch condition.Reason {
+			case "PreemptionByScheduler":
+				return runtime.InterruptionPreempted, true
+			case "DeletionByPodGC":
+				return runtime.InterruptionNodeLost, true
+			case "DeletionByTaintManager", "EvictionByEvictionAPI", "TerminationByKubelet":
+				return runtime.InterruptionEvicted, true
+			}
+		}
+	}
+
+	if pod.Status.Phase == corev1.PodFailed {
+		switch pod.Status.Reason {
+		case "Evicted":
+			return runtime.InterruptionEvicted, true
+		case "NodeLost", "Shutdown":
+			return runtime.InterruptionNodeLost, true
+		}
+	}
+	if deleted {
+		return runtime.InterruptionPodDeleted, true
+	}
+	return "", false
+}
+
+func interruptionErrorForPod(pod *corev1.Pod, deleted bool, cause error) runtime.InterruptionError {
+	reason, ok := interruptionReasonForPod(pod, deleted)
+	if !ok {
+		return nil
+	}
+	if cause == nil {
+		cause = fmt.Errorf("pod interrupted: %s", reason)
+	}
+	return runtime.NewInterruptionError(reason, cause)
+}
+
+func interruptionErrorForPodFailure(pod *corev1.Pod, fetchErr, cause error) runtime.InterruptionError {
+	if interruption := interruptionErrorForPod(pod, false, cause); interruption != nil {
+		return interruption
+	}
+	if apierrors.IsNotFound(fetchErr) {
+		return runtime.NewInterruptionError(
+			runtime.InterruptionPodDeleted,
+			fmt.Errorf("pod deleted while the process transport was active: %v: %w", fetchErr, cause),
+		)
+	}
+	return nil
+}
+
+func preferContextCancellation(ctx context.Context, err error) error {
+	var interruption runtime.InterruptionError
+	if errors.As(err, &interruption) && ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return err
 }

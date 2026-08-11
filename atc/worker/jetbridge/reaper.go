@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,6 +19,14 @@ import (
 // Reaper implements the GC sweep loop for K8s-backed containers and volumes.
 // It reports active pods to the DB, deletes pods that the DB has marked as
 // "destroying", and cleans up PVC cache subdirectories for destroying volumes.
+// RunningBuildLookup reports the builds the ATC still considers in flight.
+//
+// The reaper needs it to tell a completed step whose build is over from one
+// whose build is still running. db.BuildFactory satisfies it.
+type RunningBuildLookup interface {
+	GetAllStartedBuilds() ([]db.Build, error)
+}
+
 type Reaper struct {
 	logger              lager.Logger
 	clientset           kubernetes.Interface
@@ -29,6 +38,14 @@ type Reaper struct {
 	artifactLocator     *ArtifactLocator
 	nodeIPResolver      *NodeIPResolver
 	httpClient          *http.Client
+	buildLookup         RunningBuildLookup
+}
+
+// SetBuildLookup sets the source of truth for which builds are still running.
+// Without it the reaper cannot prove a completed pod is finished with, so it
+// retains every such pod and leaves them to the DB-driven destroying path.
+func (r *Reaper) SetBuildLookup(lookup RunningBuildLookup) {
+	r.buildLookup = lookup
 }
 
 // NewReaper creates a Reaper that will manage pod lifecycle using the given
@@ -84,21 +101,36 @@ func (r *Reaper) Run(ctx context.Context) error {
 		return fmt.Errorf("listing pods: %w", err)
 	}
 
-	// Proactively delete completed pods (those with exit-status annotation).
-	// This provides fast cleanup without waiting for the full DB GC cycle,
-	// ensuring check pods and completed build pods are reaped promptly.
-	var remainingPods []metav1.ObjectMeta
+	// Proactively delete completed pods (those with exit-status annotation)
+	// so check pods and finished builds' pods are reaped without waiting for
+	// the full DB GC cycle -- but only once nothing can still need to read
+	// that annotation. It is the only durable record of a step's result:
+	// engineBuild.Run deliberately leaves job builds "started" on drain so
+	// the next web re-attaches, and Container.Attach recovers the result from
+	// this annotation. Deleting it while the build is still in flight makes
+	// the resumed plan re-execute an already completed step.
+	var remainingPods, completedPods []metav1.ObjectMeta
 	for _, pod := range pods.Items {
 		if _, hasExitStatus := pod.Annotations[exitStatusAnnotationKey]; hasExitStatus {
-			if err := r.clientset.CoreV1().Pods(r.cfg.Namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{}); err != nil {
-				if !apierrors.IsNotFound(err) {
-					logger.Error("failed-to-cleanup-completed-pod", err, lager.Data{"pod": pod.Name})
-				}
-			}
+			completedPods = append(completedPods, pod.ObjectMeta)
 			continue
 		}
 		remainingPods = append(remainingPods, pod.ObjectMeta)
 	}
+
+	reapNow, retained := r.splitCompletedPods(logger, completedPods)
+	for _, podMeta := range reapNow {
+		if err := r.clientset.CoreV1().Pods(r.cfg.Namespace).Delete(ctx, podMeta.Name, metav1.DeleteOptions{}); err != nil {
+			if !apierrors.IsNotFound(err) {
+				logger.Error("failed-to-cleanup-completed-pod", err, lager.Data{"pod": podMeta.Name})
+			}
+		}
+	}
+	// A retained pod is still present in K8s, so it has to be reported as
+	// active below. Otherwise UpdateContainersMissingSince marks its
+	// container missing and RemoveDestroyingContainers drops the DB row
+	// while the pod -- and the annotation -- are still there.
+	remainingPods = append(remainingPods, retained...)
 
 	// Collect container handles from remaining (non-completed) pods.
 	// When pods have a concourse.ci/handle label (readable pod names),
@@ -230,4 +262,58 @@ func (r *Reaper) cleanupDaemonSetArtifacts(ctx context.Context, logger lager.Log
 
 		r.artifactLocator.Remove(key)
 	}
+}
+
+// splitCompletedPods divides pods carrying the exit-status annotation into
+// those that can be deleted now and those that must survive this sweep.
+//
+// A completed pod is safe to delete once its owning build is no longer
+// running: nothing will re-attach to it, so the annotation has no reader
+// left. Pods with no owning build at all -- in-memory check builds, whose
+// builds are finished on drain and never resumed, and the resource-type
+// get/put steps they spawn -- carry no build-id label and are always safe.
+//
+// When the running-build set cannot be determined the split is fail-closed:
+// every completed pod is retained and falls through to the DB-driven
+// destroying path, which still reaps it once GC marks its container. Erring
+// toward a pod that lingers is cheap; erring toward a deleted annotation
+// costs a re-executed step.
+func (r *Reaper) splitCompletedPods(logger lager.Logger, completed []metav1.ObjectMeta) (reap, retain []metav1.ObjectMeta) {
+	if len(completed) == 0 {
+		return nil, nil
+	}
+
+	ownedByBuild := false
+	for _, podMeta := range completed {
+		if podMeta.Labels[buildIDLabelKey] != "" {
+			ownedByBuild = true
+			break
+		}
+	}
+
+	running := map[string]bool{}
+	if ownedByBuild {
+		if r.buildLookup == nil {
+			logger.Debug("retaining-completed-pods-without-build-lookup", lager.Data{"pods": len(completed)})
+			return nil, completed
+		}
+		builds, err := r.buildLookup.GetAllStartedBuilds()
+		if err != nil {
+			logger.Error("failed-to-list-started-builds", err)
+			return nil, completed
+		}
+		for _, build := range builds {
+			running[strconv.Itoa(build.ID())] = true
+		}
+	}
+
+	for _, podMeta := range completed {
+		// A missing label yields "", which is never a running build id.
+		if running[podMeta.Labels[buildIDLabelKey]] {
+			retain = append(retain, podMeta)
+			continue
+		}
+		reap = append(reap, podMeta)
+	}
+	return reap, retain
 }

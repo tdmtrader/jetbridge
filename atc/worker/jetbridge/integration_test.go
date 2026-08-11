@@ -3,6 +3,7 @@ package jetbridge_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 
 	"github.com/concourse/concourse/atc"
@@ -417,7 +418,11 @@ var _ = Describe("Integration", func() {
 
 			_, err = process.Wait(ctx)
 			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("Evicted"))
+			// Eviction is now a typed, retryable interruption rather than a
+			// plain error, so the build can be retried instead of failed.
+			var interruption runtime.InterruptionError
+			Expect(errors.As(err, &interruption)).To(BeTrue())
+			Expect(interruption.InterruptionReason()).To(Equal(runtime.InterruptionEvicted))
 
 			By("verifying diagnostics were written to stderr")
 			Expect(stderr.String()).To(ContainSubstring("Pod Failure Diagnostics"))
