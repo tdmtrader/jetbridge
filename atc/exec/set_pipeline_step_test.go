@@ -12,7 +12,6 @@ import (
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/exec"
 	"github.com/concourse/concourse/atc/exec/build"
 	"github.com/concourse/concourse/atc/exec/execfakes"
@@ -23,6 +22,104 @@ import (
 	"github.com/concourse/concourse/vars"
 	"github.com/onsi/gomega/gbytes"
 )
+
+// pipelineLookupErrorTeam preserves a healthy PostgreSQL-backed team while
+// replacing only Pipeline for the lookup failure path.
+type pipelineLookupErrorTeam struct {
+	db.Team
+	err error
+}
+
+func (team pipelineLookupErrorTeam) Pipeline(atc.PipelineRef) (db.Pipeline, bool, error) {
+	return nil, false, team.err
+}
+
+// configErrorPipeline preserves a healthy PostgreSQL-backed pipeline while
+// replacing only Config for the read failure path.
+type configErrorPipeline struct {
+	db.Pipeline
+	err error
+}
+
+func (pipeline configErrorPipeline) Config() (atc.Config, error) {
+	return atc.Config{}, pipeline.err
+}
+
+// savePipelineErrorBuild preserves a healthy PostgreSQL-backed build while
+// replacing only SavePipeline for the write failure path.
+type savePipelineErrorBuild struct {
+	db.Build
+	err error
+}
+
+func (build savePipelineErrorBuild) SavePipeline(
+	atc.PipelineRef,
+	int,
+	atc.Config,
+	db.ConfigVersion,
+	bool,
+) (db.Pipeline, bool, error) {
+	return nil, false, build.err
+}
+
+type teamFactoryGetByIDOverride struct {
+	db.TeamFactory
+	team db.Team
+}
+
+func (factory teamFactoryGetByIDOverride) GetByID(int) db.Team {
+	return factory.team
+}
+
+type pipelineResultTeam struct {
+	db.Team
+	pipeline db.Pipeline
+}
+
+func (team pipelineResultTeam) Pipeline(atc.PipelineRef) (db.Pipeline, bool, error) {
+	return team.pipeline, true, nil
+}
+
+type buildFactoryResult struct {
+	db.BuildFactory
+	build db.Build
+}
+
+func (factory buildFactoryResult) Build(int) (db.Build, bool, error) {
+	return factory.build, true, nil
+}
+
+func setPipelineTestConfig(runArgs ...string) atc.Config {
+	if len(runArgs) == 0 {
+		runArgs = []string{"feature/foo"}
+	}
+
+	return atc.Config{
+		Jobs: atc.JobConfigs{
+			{
+				Name: "some-job",
+				PlanSequence: []atc.Step{
+					{
+						Config: &atc.TaskStep{
+							Name: "some-task",
+							Config: &atc.TaskConfig{
+								Platform: "linux",
+								ImageResource: &atc.ImageResource{
+									Type:   "registry-image",
+									Source: atc.Source{"repository": "busybox"},
+								},
+								Run: atc.TaskRunConfig{
+									Path: "echo",
+									Args: append([]string(nil), runArgs...),
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
 
 var _ = Describe("SetPipelineStep", func() {
 
@@ -89,43 +186,21 @@ jobs:
          - ((branch))
 `
 
-	var pipelineObject = atc.Config{
-		Jobs: atc.JobConfigs{
-			{
-				Name: "some-job",
-				PlanSequence: []atc.Step{
-					{
-						Config: &atc.TaskStep{
-							Name: "some-task",
-							Config: &atc.TaskConfig{
-								Platform: "linux",
-								ImageResource: &atc.ImageResource{
-									Type:   "registry-image",
-									Source: atc.Source{"repository": "busybox"},
-								},
-								Run: atc.TaskRunConfig{
-									Path: "echo",
-									Args: []string{"feature/foo"},
-								},
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-
 	var (
 		ctx        context.Context
 		cancel     func()
 		testLogger *lagertest.TestLogger
 
-		fakeTeamFactory  *dbfakes.FakeTeamFactory
-		fakeBuildFactory *dbfakes.FakeBuildFactory
-		fakeBuild        *dbfakes.FakeBuild
-		fakeTeam         *dbfakes.FakeTeam
-		fakePipeline     *dbfakes.FakePipeline
-		spanCtx          context.Context
+		fixture         *execDBFixture
+		teamFactory     db.TeamFactory
+		buildFactory    db.BuildFactory
+		currentTeam     db.Team
+		currentPipeline db.Pipeline
+		currentJob      db.Job
+		realBuild       db.Build
+		currentRef      atc.PipelineRef
+		targetRef       atc.PipelineRef
+		spanCtx         context.Context
 
 		fakeDelegate        *execfakes.FakeSetPipelineStepDelegate
 		fakeDelegateFactory *execfakes.FakeSetPipelineStepDelegateFactory
@@ -142,17 +217,7 @@ jobs:
 		stepOk  bool
 		stepErr error
 
-		stepMetadata = exec.StepMetadata{
-			TeamID:               123,
-			TeamName:             "some-team",
-			JobID:                87,
-			JobName:              "some-job",
-			BuildID:              42,
-			BuildName:            "some-build",
-			PipelineID:           4567,
-			PipelineName:         "some-pipeline",
-			PipelineInstanceVars: atc.InstanceVars{"branch": "feature/foo"},
-		}
+		stepMetadata exec.StepMetadata
 
 		stdout, stderr *gbytes.Buffer
 
@@ -163,6 +228,24 @@ jobs:
 		testLogger = lagertest.NewTestLogger("set-pipeline-action-test")
 		ctx, cancel = context.WithCancel(context.Background())
 		ctx = lagerctx.NewContext(ctx, testLogger)
+		fixture = useExecDB()
+		currentRef = atc.PipelineRef{
+			Name:         "parent-pipeline",
+			InstanceVars: atc.InstanceVars{"branch": "feature/foo"},
+		}
+		currentTeam, currentPipeline, currentJob, realBuild = createExecJobBuild(
+			fixture,
+			"some-team",
+			currentRef,
+			atc.Config{Jobs: atc.JobConfigs{{Name: "some-job"}}},
+			"some-user",
+		)
+		targetRef = atc.PipelineRef{
+			Name:         "some-pipeline",
+			InstanceVars: atc.InstanceVars{"branch": "feature/foo"},
+		}
+		teamFactory = fixture.TeamFactory
+		buildFactory = fixture.BuildFactory
 
 		artifactRepository = build.NewRepository()
 		state = new(execfakes.FakeRunState)
@@ -185,32 +268,17 @@ jobs:
 		fakeDelegateFactory = new(execfakes.FakeSetPipelineStepDelegateFactory)
 		fakeDelegateFactory.SetPipelineStepDelegateReturns(fakeDelegate)
 
-		fakeTeamFactory = new(dbfakes.FakeTeamFactory)
-		fakeBuildFactory = new(dbfakes.FakeBuildFactory)
-		fakeBuild = new(dbfakes.FakeBuild)
-		fakeTeam = new(dbfakes.FakeTeam)
-		fakePipeline = new(dbfakes.FakePipeline)
-
 		stepMetadata = exec.StepMetadata{
-			TeamID:               123,
-			TeamName:             "some-team",
-			BuildID:              42,
-			BuildName:            "some-build",
-			PipelineID:           4567,
-			PipelineName:         "some-pipeline",
-			PipelineInstanceVars: atc.InstanceVars{"branch": "feature/foo"},
+			TeamID:               currentTeam.ID(),
+			TeamName:             currentTeam.Name(),
+			JobID:                currentJob.ID(),
+			JobName:              currentJob.Name(),
+			BuildID:              realBuild.ID(),
+			BuildName:            realBuild.Name(),
+			PipelineID:           currentPipeline.ID(),
+			PipelineName:         currentPipeline.Name(),
+			PipelineInstanceVars: currentPipeline.InstanceVars(),
 		}
-
-		fakeTeam.IDReturns(stepMetadata.TeamID)
-		fakeTeam.NameReturns(stepMetadata.TeamName)
-
-		fakePipeline.NameReturns("some-pipeline")
-		fakePipeline.InstanceVarsReturns(atc.InstanceVars{"branch": "feature/foo"})
-		fakeTeamFactory.GetByIDReturns(fakeTeam)
-		fakeBuildFactory.BuildReturns(fakeBuild, true, nil)
-
-		fakeTeam.PipelineReturns(nil, false, nil)
-		fakeBuild.SavePipelineReturns(fakePipeline, true, nil)
 
 		fakeAgent = new(policyfakes.FakeAgent)
 		fakeAgent.CheckReturns(policy.PassedPolicyCheck(), nil)
@@ -241,12 +309,34 @@ jobs:
 			*plan.SetPipeline,
 			stepMetadata,
 			fakeDelegateFactory,
-			fakeTeamFactory,
-			fakeBuildFactory,
+			teamFactory,
+			buildFactory,
 			fakeStreamer,
 		)
 
 		stepOk, stepErr = spStep.Run(ctx, state)
+	})
+
+	Describe("persisted PostgreSQL success", func() {
+		BeforeEach(func() {
+			fakeStreamer.StreamFileReturns(&fakeReadCloser{str: pipelineContent}, nil)
+		})
+
+		It("persists the target reference and parent hierarchy", func() {
+			pipeline, found, err := currentTeam.Pipeline(targetRef)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			reloaded, err := pipeline.Reload()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(reloaded).To(BeTrue())
+			Expect(pipeline.Name()).To(Equal(targetRef.Name))
+			Expect(pipeline.InstanceVars()).To(Equal(targetRef.InstanceVars))
+			config, err := pipeline.Config()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(config).To(Equal(setPipelineTestConfig()))
+			Expect(pipeline.ParentJobID()).To(Equal(currentJob.ID()))
+			Expect(pipeline.ParentBuildID()).To(Equal(realBuild.ID()))
+		})
 	})
 
 	Context("when file is not configured", func() {
@@ -345,7 +435,14 @@ jobs:
 			})
 
 			It("should not update the job and build id", func() {
-				Expect(fakePipeline.SetParentIDsCallCount()).To(Equal(0))
+				reloaded, err := currentPipeline.Reload()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(reloaded).To(BeTrue())
+				Expect(currentPipeline.ParentJobID()).To(BeZero())
+				Expect(currentPipeline.ParentBuildID()).To(BeZero())
+				_, found, err := currentTeam.Pipeline(targetRef)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(found).To(BeFalse())
 			})
 		})
 
@@ -356,7 +453,13 @@ jobs:
 
 			Context("when get pipeline fails", func() {
 				BeforeEach(func() {
-					fakeTeam.PipelineReturns(nil, false, errors.New("fail to get pipeline"))
+					teamFactory = teamFactoryGetByIDOverride{
+						TeamFactory: fixture.TeamFactory,
+						team: pipelineLookupErrorTeam{
+							Team: currentTeam,
+							err:  errors.New("fail to get pipeline"),
+						},
+					}
 				})
 
 				It("should return error", func() {
@@ -367,13 +470,20 @@ jobs:
 
 			Context("when specified pipeline not found", func() {
 				It("should save the pipeline", func() {
-					Expect(fakeBuild.SavePipelineCallCount()).To(Equal(1))
-					ref, _, _, _, paused := fakeBuild.SavePipelineArgsForCall(0)
-					Expect(ref).To(Equal(atc.PipelineRef{
-						Name:         "some-pipeline",
-						InstanceVars: atc.InstanceVars{"branch": "feature/foo"},
-					}))
-					Expect(paused).To(BeFalse())
+					pipeline, found, err := currentTeam.Pipeline(targetRef)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(found).To(BeTrue())
+					reloaded, err := pipeline.Reload()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(reloaded).To(BeTrue())
+					Expect(pipeline.Name()).To(Equal(targetRef.Name))
+					Expect(pipeline.InstanceVars()).To(Equal(targetRef.InstanceVars))
+					config, err := pipeline.Config()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(config).To(Equal(setPipelineTestConfig()))
+					Expect(pipeline.ParentJobID()).To(Equal(currentJob.ID()))
+					Expect(pipeline.ParentBuildID()).To(Equal(realBuild.ID()))
+					Expect(pipeline.Paused()).To(BeFalse())
 				})
 
 				It("should stdout have message", func() {
@@ -382,15 +492,26 @@ jobs:
 			})
 
 			Context("when specified pipeline exists already", func() {
+				var existingPipeline db.Pipeline
+
 				BeforeEach(func() {
-					fakeTeam.PipelineReturns(fakePipeline, true, nil)
-					fakeBuild.SavePipelineReturns(fakePipeline, false, nil)
+					changedConfig := setPipelineTestConfig("hello world")
+					var err error
+					existingPipeline, _, err = currentTeam.SavePipeline(targetRef, changedConfig, 0, false)
+					Expect(err).NotTo(HaveOccurred())
 				})
 
 				Context("when no diff", func() {
 					BeforeEach(func() {
-						fakePipeline.ConfigReturns(pipelineObject, nil)
-						fakePipeline.SetParentIDsReturns(nil)
+						unchangedConfig := setPipelineTestConfig()
+						var err error
+						existingPipeline, _, err = currentTeam.SavePipeline(
+							targetRef,
+							unchangedConfig,
+							existingPipeline.ConfigVersion(),
+							false,
+						)
+						Expect(err).NotTo(HaveOccurred())
 					})
 
 					It("should log 'no changes to apply'", func() {
@@ -404,19 +525,37 @@ jobs:
 					})
 
 					It("should update the job and build id", func() {
-						Expect(fakePipeline.SetParentIDsCallCount()).To(Equal(1))
-						jobID, buildID := fakePipeline.SetParentIDsArgsForCall(0)
-						Expect(jobID).To(Equal(stepMetadata.JobID))
-						Expect(buildID).To(Equal(stepMetadata.BuildID))
+						pipeline, found, err := currentTeam.Pipeline(targetRef)
+						Expect(err).NotTo(HaveOccurred())
+						Expect(found).To(BeTrue())
+						reloaded, err := pipeline.Reload()
+						Expect(err).NotTo(HaveOccurred())
+						Expect(reloaded).To(BeTrue())
+						Expect(pipeline.ParentJobID()).To(Equal(currentJob.ID()))
+						Expect(pipeline.ParentBuildID()).To(Equal(realBuild.ID()))
+					})
+				})
+
+				Context("when reading the existing config fails", func() {
+					BeforeEach(func() {
+						teamFactory = teamFactoryGetByIDOverride{
+							TeamFactory: fixture.TeamFactory,
+							team: pipelineResultTeam{
+								Team: currentTeam,
+								pipeline: configErrorPipeline{
+									Pipeline: existingPipeline,
+									err:      errors.New("failed to read config"),
+								},
+							},
+						}
+					})
+
+					It("should return error", func() {
+						Expect(stepErr).To(MatchError("failed to read config"))
 					})
 				})
 
 				Context("when there are some diff", func() {
-					BeforeEach(func() {
-						pipelineObject.Jobs[0].PlanSequence[0].Config.(*atc.TaskStep).Config.Run.Args = []string{"hello world"}
-						fakePipeline.ConfigReturns(pipelineObject, nil)
-					})
-
 					It("should log diff", func() {
 						Expect(stdout).To(gbytes.Say("job some-job has changed:"))
 					})
@@ -425,6 +564,16 @@ jobs:
 						Expect(fakeDelegate.SetPipelineChangedCallCount()).To(Equal(1))
 						_, changed := fakeDelegate.SetPipelineChangedArgsForCall(0)
 						Expect(changed).To(BeTrue())
+
+						pipeline, found, err := currentTeam.Pipeline(targetRef)
+						Expect(err).NotTo(HaveOccurred())
+						Expect(found).To(BeTrue())
+						reloaded, err := pipeline.Reload()
+						Expect(err).NotTo(HaveOccurred())
+						Expect(reloaded).To(BeTrue())
+						config, err := pipeline.Config()
+						Expect(err).NotTo(HaveOccurred())
+						Expect(config).To(Equal(setPipelineTestConfig()))
 					})
 				})
 
@@ -441,7 +590,13 @@ jobs:
 
 				Context("when SavePipeline fails", func() {
 					BeforeEach(func() {
-						fakeBuild.SavePipelineReturns(nil, false, errors.New("failed to save"))
+						buildFactory = buildFactoryResult{
+							BuildFactory: fixture.BuildFactory,
+							build: savePipelineErrorBuild{
+								Build: realBuild,
+								err:   errors.New("failed to save"),
+							},
+						}
 					})
 
 					It("should return error", func() {
@@ -451,7 +606,13 @@ jobs:
 
 					Context("due to the pipeline being set by a newer build", func() {
 						BeforeEach(func() {
-							fakeBuild.SavePipelineReturns(nil, false, db.ErrSetByNewerBuild)
+							buildFactory = buildFactoryResult{
+								BuildFactory: fixture.BuildFactory,
+								build: savePipelineErrorBuild{
+									Build: realBuild,
+									err:   db.ErrSetByNewerBuild,
+								},
+							}
 						})
 						It("logs a warning", func() {
 							Expect(stderr).To(gbytes.Say("WARNING: the pipeline was not saved because it was already saved by a newer build"))
@@ -464,13 +625,16 @@ jobs:
 				})
 
 				It("should save the pipeline un-paused", func() {
-					Expect(fakeBuild.SavePipelineCallCount()).To(Equal(1))
-					ref, _, _, _, paused := fakeBuild.SavePipelineArgsForCall(0)
-					Expect(ref).To(Equal(atc.PipelineRef{
-						Name:         "some-pipeline",
-						InstanceVars: atc.InstanceVars{"branch": "feature/foo"},
-					}))
-					Expect(paused).To(BeFalse())
+					pipeline, found, err := currentTeam.Pipeline(targetRef)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(found).To(BeTrue())
+					reloaded, err := pipeline.Reload()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(reloaded).To(BeTrue())
+					Expect(pipeline.InstanceVars()).To(Equal(targetRef.InstanceVars))
+					Expect(pipeline.Paused()).To(BeFalse())
+					Expect(pipeline.ParentJobID()).To(Equal(currentJob.ID()))
+					Expect(pipeline.ParentBuildID()).To(Equal(realBuild.ID()))
 				})
 
 				It("should stdout have message", func() {
@@ -496,38 +660,39 @@ jobs:
 				})
 
 				It("should save the pipeline itself", func() {
-					Expect(fakeBuild.SavePipelineCallCount()).To(Equal(1))
-					pipelineRef, _, _, _, _ := fakeBuild.SavePipelineArgsForCall(0)
-					Expect(pipelineRef).To(Equal(atc.PipelineRef{
-						Name:         "some-pipeline",
-						InstanceVars: atc.InstanceVars{"branch": "feature/foo"},
-					}))
+					pipeline, found, err := currentTeam.Pipeline(currentRef)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(found).To(BeTrue())
+					reloaded, err := pipeline.Reload()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(reloaded).To(BeTrue())
+					Expect(pipeline.Name()).To(Equal(currentRef.Name))
+					Expect(pipeline.InstanceVars()).To(Equal(currentRef.InstanceVars))
+					config, err := pipeline.Config()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(config).To(Equal(setPipelineTestConfig()))
+					Expect(pipeline.ParentJobID()).To(Equal(currentJob.ID()))
+					Expect(pipeline.ParentBuildID()).To(Equal(realBuild.ID()))
 				})
 
 				It("should save to the current team", func() {
-					Expect(fakeBuild.SavePipelineCallCount()).To(Equal(1))
-					_, teamId, _, _, _ := fakeBuild.SavePipelineArgsForCall(0)
-					Expect(teamId).To(Equal(fakeTeam.ID()))
+					pipeline, found, err := currentTeam.Pipeline(currentRef)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(found).To(BeTrue())
+					Expect(pipeline.TeamID()).To(Equal(currentTeam.ID()))
+					_, found, err = fixture.TeamFactory.FindTeam("foo-team")
+					Expect(err).NotTo(HaveOccurred())
+					Expect(found).To(BeFalse())
 				})
 			})
 
 			Context("when team is configured", func() {
-				var (
-					fakeUserCurrentTeam *dbfakes.FakeTeam
-				)
+				var targetTeam db.Team
 
 				BeforeEach(func() {
-					fakeUserCurrentTeam = new(dbfakes.FakeTeam)
-					fakeUserCurrentTeam.IDReturns(111)
-					fakeUserCurrentTeam.NameReturns("main")
-					fakeUserCurrentTeam.AdminReturns(false)
-
-					stepMetadata.TeamID = fakeUserCurrentTeam.ID()
-					stepMetadata.TeamName = fakeUserCurrentTeam.Name()
-					fakeTeamFactory.FindTeamReturnsOnCall(
-						0,
-						fakeUserCurrentTeam, true, nil,
-					)
+					var err error
+					targetTeam, err = fixture.TeamFactory.CreateTeam(atc.Team{Name: "target-team"})
+					Expect(err).NotTo(HaveOccurred())
 				})
 
 				Context("when team is set to the empty string", func() {
@@ -536,6 +701,10 @@ jobs:
 					})
 
 					It("should finish successfully", func() {
+						pipeline, found, err := currentTeam.Pipeline(targetRef)
+						Expect(err).NotTo(HaveOccurred())
+						Expect(found).To(BeTrue())
+						Expect(pipeline.TeamID()).To(Equal(currentTeam.ID()))
 						Expect(fakeDelegate.FinishedCallCount()).To(Equal(1))
 						_, succeeded := fakeDelegate.FinishedArgsForCall(0)
 						Expect(succeeded).To(BeTrue())
@@ -545,10 +714,6 @@ jobs:
 				Context("when team does not exist", func() {
 					BeforeEach(func() {
 						spPlan.Team = "not-found"
-						fakeTeamFactory.FindTeamReturnsOnCall(
-							1,
-							nil, false, nil,
-						)
 					})
 
 					It("should return error", func() {
@@ -560,16 +725,14 @@ jobs:
 				Context("when team exists", func() {
 					Context("when the target team is the current team", func() {
 						BeforeEach(func() {
-							spPlan.Team = fakeUserCurrentTeam.Name()
-							fakeTeamFactory.FindTeamReturnsOnCall(
-								1,
-								fakeUserCurrentTeam, true, nil,
-							)
+							spPlan.Team = currentTeam.Name()
 						})
 
 						It("should finish successfully", func() {
-							_, teamID, _, _, _ := fakeBuild.SavePipelineArgsForCall(0)
-							Expect(teamID).To(Equal(fakeUserCurrentTeam.ID()))
+							pipeline, found, err := currentTeam.Pipeline(targetRef)
+							Expect(err).NotTo(HaveOccurred())
+							Expect(found).To(BeTrue())
+							Expect(pipeline.TeamID()).To(Equal(currentTeam.ID()))
 							Expect(fakeDelegate.FinishedCallCount()).To(Equal(1))
 							_, succeeded := fakeDelegate.FinishedArgsForCall(0)
 							Expect(succeeded).To(BeTrue())
@@ -578,21 +741,24 @@ jobs:
 
 					Context("when the team is not the current team", func() {
 						BeforeEach(func() {
-							spPlan.Team = fakeTeam.Name()
-							fakeTeamFactory.FindTeamReturnsOnCall(
-								1,
-								fakeTeam, true, nil,
-							)
+							spPlan.Team = targetTeam.Name()
 						})
 
 						Context("when the current team is an admin team", func() {
 							BeforeEach(func() {
-								fakeUserCurrentTeam.AdminReturns(true)
+								adminTeam, err := fixture.TeamFactory.CreateDefaultTeamIfNotExists()
+								Expect(err).NotTo(HaveOccurred())
+								stepMetadata.TeamID = adminTeam.ID()
+								stepMetadata.TeamName = adminTeam.Name()
 							})
 
 							It("should finish successfully", func() {
-								_, teamID, _, _, _ := fakeBuild.SavePipelineArgsForCall(0)
-								Expect(teamID).To(Equal(fakeTeam.ID()))
+								pipeline, found, err := targetTeam.Pipeline(targetRef)
+								Expect(err).NotTo(HaveOccurred())
+								Expect(found).To(BeTrue())
+								Expect(pipeline.TeamID()).To(Equal(targetTeam.ID()))
+								Expect(pipeline.ParentJobID()).To(Equal(currentJob.ID()))
+								Expect(pipeline.ParentBuildID()).To(Equal(realBuild.ID()))
 								Expect(fakeDelegate.FinishedCallCount()).To(Equal(1))
 								_, succeeded := fakeDelegate.FinishedArgsForCall(0)
 								Expect(succeeded).To(BeTrue())
