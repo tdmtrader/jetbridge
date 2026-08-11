@@ -3,7 +3,9 @@ package tests
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -239,6 +241,211 @@ func TestReleaseJobIsManuallyTriggered(t *testing.T) {
 			}
 		}
 	}
+}
+
+// The pipeline writes fly archives into the image; the ATC serves them from
+// --cli-artifacts-dir. Neither half knows about the other, and the naming is a
+// contract with exactly one enforcement point: whether the file the handler
+// opens happens to exist.
+//
+// It did not. atc/api/cliserver/download.go picks the extension by platform --
+// zip for windows, tgz otherwise -- and the pipeline wrote
+// fly-windows-amd64.tgz for every platform, so the windows branch called
+// zip.OpenReader on a file that was never created. `fly sync` on Windows 500s,
+// which is precisely the upgrade path that a 0.2 -> 0.3 minor bump forces every
+// existing client through.
+//
+// Rather than restate the naming here, read the extensions the handler picks
+// straight out of its source. A test that hardcodes both sides proves the two
+// hardcodings agree with each other, not with the code.
+func TestPipelinePackagesFlyArchivesTheATCCanServe(t *testing.T) {
+	root := repoRoot(t)
+
+	handler, err := os.ReadFile(filepath.Join(root, "atc", "api", "cliserver", "download.go"))
+	if err != nil {
+		t.Fatalf("reading the CLI download handler: %v", err)
+	}
+
+	extFor := map[string]string{}
+	for _, platform := range []string{"windows", "other"} {
+		// archiveExtension = "zip"  /  archiveExtension = "tgz"
+		re := regexp.MustCompile(`archiveExtension\s*=\s*"([a-z]+)"`)
+		all := re.FindAllStringSubmatch(string(handler), -1)
+		if len(all) != 2 {
+			t.Fatalf("expected 2 archiveExtension assignments in download.go, found %d -- "+
+				"the handler changed shape and this test needs revisiting", len(all))
+		}
+		// The windows branch is first in the if/else.
+		if platform == "windows" {
+			extFor[platform] = all[0][1]
+		} else {
+			extFor[platform] = all[1][1]
+		}
+	}
+
+	if extFor["windows"] == extFor["other"] {
+		t.Fatalf("both branches of download.go use %q; this test can no longer "+
+			"distinguish them", extFor["windows"])
+	}
+
+	pipeline, err := os.ReadFile(filepath.Join(root, "deploy", "concourse-pipeline.yml"))
+	if err != nil {
+		t.Fatalf("reading the pipeline: %v", err)
+	}
+	// Comments only, again: the packaging loop carries a comment naming the
+	// fly-windows-amd64.tgz it no longer writes, and a plain substring search
+	// over the raw file would accept that as the archive existing. `#` opens a
+	// comment in both YAML and the embedded shell, so one pass covers both.
+	script := stripShellComments(string(pipeline))
+
+	for _, want := range []struct{ platform, arch string }{
+		{"linux", "amd64"},
+		{"linux", "arm64"},
+		{"darwin", "amd64"},
+		{"darwin", "arm64"},
+		{"windows", "amd64"},
+	} {
+		key := "other"
+		if want.platform == "windows" {
+			key = "windows"
+		}
+		archive := fmt.Sprintf("fly-%s-%s.%s", want.platform, want.arch, extFor[key])
+
+		if !strings.Contains(script, archive) {
+			t.Errorf(
+				"deploy/concourse-pipeline.yml never mentions %q, but "+
+					"atc/api/cliserver/download.go serves %s/%s from that exact "+
+					"name. A missing archive is a 500 from `fly sync`, not a "+
+					"build failure.",
+				archive, want.platform, want.arch,
+			)
+		}
+	}
+}
+
+// The chart resolves its image tag as `default .Chart.AppVersion
+// .Values.image.tag`, so with no override a GitOps render asks for
+// <repository>:<appVersion> -- the bare version, e.g. 0.3.0.
+//
+// Only the `release` job ever published that tag. Since appVersion is bumped
+// when work on a version STARTS, not when it ships, every commit between the
+// bump and the release left the chart naming an image that did not exist, and
+// an ArgoCD sync in that window produced ImagePullBackOff on a cluster that was
+// otherwise healthy.
+//
+// build-image now publishes the bare tag too, while the version is unreleased.
+// This asserts it keeps doing so: the candidate job, not just the release job,
+// has to satisfy what the chart asks for.
+func TestCandidateBuildPublishesTheTagTheChartResolves(t *testing.T) {
+	root := repoRoot(t)
+
+	values, err := os.ReadFile(filepath.Join(root, "deploy", "chart", "values.yaml"))
+	if err != nil {
+		t.Fatalf("reading chart values: %v", err)
+	}
+
+	// An explicit image.tag would pin the deploy and make this moot; the
+	// default is empty, which is what triggers the appVersion fallback.
+	var vals struct {
+		Image struct {
+			Tag string `json:"tag"`
+		} `json:"image"`
+	}
+	if err := yaml.Unmarshal(values, &vals); err != nil {
+		t.Fatalf("parsing chart values: %v", err)
+	}
+	if vals.Image.Tag != "" {
+		t.Skipf("image.tag is pinned to %q, so the appVersion fallback does not apply", vals.Image.Tag)
+	}
+
+	pipeline := loadPipeline(t, filepath.Join(root, "deploy", "concourse-pipeline.yml"))
+
+	var checked bool
+	for _, job := range pipeline.Jobs {
+		if job.Name != "build-image" {
+			continue
+		}
+		checked = true
+
+		var script string
+		for _, step := range flattenPlan(job.Plan) {
+			script += stripShellComments(strings.Join(step.Config.Run.Args, "\n"))
+		}
+
+		// A push of the bare ${VERSION} tag -- not ${VERSION}-rc, not
+		// ${RC_TAG}. The `[^-]` guards against matching the rc forms.
+		bareTag := regexp.MustCompile(`docker push [^\s]*jetbridge:\$\{VERSION\}(\s|$)`)
+		if !bareTag.MatchString(script) {
+			t.Errorf(
+				"job %q never pushes jetbridge:${VERSION}. The chart resolves "+
+					"its tag from Chart.yaml appVersion, so between bumping the "+
+					"version and cutting the release that tag would name an "+
+					"image nobody has published, and an ArgoCD sync would "+
+					"ImagePullBackOff.",
+				job.Name,
+			)
+		}
+	}
+
+	if !checked {
+		t.Fatal("no build-image job found; this test would pass vacuously")
+	}
+}
+
+// A task script is a string in a YAML file. Nothing parses it until the job
+// runs, which on this pipeline means after up to eight upstream jobs and a
+// deploy -- so a stray quote costs a full chain to discover. `sh -n` parses
+// without executing.
+func TestPipelineTaskScriptsAreValidShell(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skipf("no sh on PATH: %v", err)
+	}
+
+	var checked int
+
+	for _, path := range pipelineFiles(t) {
+		pipeline := loadPipeline(t, path)
+		name := filepath.Base(path)
+
+		for _, job := range pipeline.Jobs {
+			for _, step := range flattenPlan(job.Plan) {
+				if step.Task == "" {
+					continue
+				}
+				if !strings.HasSuffix(step.Config.Run.Path, "sh") {
+					continue
+				}
+
+				// args is ["-exc", "<script>"]; the script is the last element.
+				args := step.Config.Run.Args
+				if len(args) == 0 {
+					continue
+				}
+				script := args[len(args)-1]
+				if len(script) < 20 {
+					t.Errorf("%s: job %q, task %q has a suspiciously short script (%d bytes); "+
+						"this check would be vacuous", name, job.Name, step.Task, len(script))
+					continue
+				}
+				checked++
+
+				cmd := exec.Command("sh", "-n")
+				cmd.Stdin = strings.NewReader(script)
+				out, err := cmd.CombinedOutput()
+				if err != nil {
+					t.Errorf(
+						"%s: job %q, task %q is not valid shell:\n%s",
+						name, job.Name, step.Task, strings.TrimSpace(string(out)),
+					)
+				}
+			}
+		}
+	}
+
+	if checked == 0 {
+		t.Fatal("no shell task scripts found; this test would pass vacuously")
+	}
+	t.Logf("parsed %d task scripts", checked)
 }
 
 type pipelineDoc struct {

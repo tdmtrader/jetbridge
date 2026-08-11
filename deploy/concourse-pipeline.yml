@@ -298,9 +298,30 @@ jobs:
           }
 
           SHORT_SHA=$(git rev-parse --short HEAD)
-          echo "Version: ${VERSION}-rc (${SHORT_SHA})"
 
-          LDFLAGS="-s -w -X github.com/concourse/concourse.Version=${VERSION}-rc -X github.com/concourse/concourse.JetBridgeVersion=${VERSION}-rc"
+          # The candidate's identity is its TAG, not its version string.
+          #
+          # RC_TAG is per-commit and immutable: it is what self-upgrade deploys,
+          # what verify-upgrade asserts is running, and what release promotes.
+          # RC_FLOATING is a convenience pointer to the newest candidate.
+          RC_TAG="${VERSION}-rc-${SHORT_SHA}"
+          RC_FLOATING="${VERSION}-rc"
+          echo "Version: ${VERSION} (candidate ${RC_TAG})"
+
+          # Stamped with the RELEASE version, deliberately, even though this is
+          # a candidate.
+          #
+          # It used to stamp ${VERSION}-rc, and because `release` promotes this
+          # exact image rather than recompiling, the stamp survived: the
+          # officially released ghcr:0.3.0 reported itself as "0.3.0-rc"
+          # forever, to every fly client and the UI footer. The alternative --
+          # recompiling at release time to fix the string -- means the bytes
+          # that ship are not the bytes that were tested, which is worse.
+          #
+          # So the binary carries the version it will be released as, and
+          # release is a retag of the tested image. Nothing recompiles after
+          # the tests run.
+          LDFLAGS="-s -w -X github.com/concourse/concourse.Version=${VERSION} -X github.com/concourse/concourse.JetBridgeVersion=${VERSION}"
 
           echo "=== Building concourse binary (linux/amd64 only — fly cross-compiles deferred to release) ==="
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o concourse-linux-amd64 ./cmd/concourse
@@ -320,16 +341,45 @@ jobs:
           # reaches a running web. Building linux/amd64 only here meant
           # `fly sync` 404s on exactly the upgrade that needs it.
           echo "=== Building fly CLI for every published platform ==="
-          FLY_LDFLAGS="-s -w -X github.com/concourse/concourse.Version=${VERSION}-rc"
+          # zip is only needed for the windows archive, and only this task needs
+          # it. Say so here rather than failing four platforms into the loop.
+          command -v zip >/dev/null 2>&1 || {
+            echo "ERROR: 'zip' is not on PATH." >&2
+            echo "The windows fly archive must be a .zip -- the ATC's download" >&2
+            echo "endpoint calls zip.OpenReader for that platform. Add zip to" >&2
+            echo "registry.home/concourse-test-runner." >&2
+            exit 1
+          }
+          FLY_LDFLAGS="-s -w -X github.com/concourse/concourse.Version=${VERSION}"
           mkdir -p fly-assets
+          ASSETS_DIR="$(pwd)/fly-assets"
           for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
             os="${target%/*}"; arch="${target#*/}"
             bin=fly; [ "$os" = "windows" ] && bin=fly.exe
             CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -ldflags "${FLY_LDFLAGS}" -o "/tmp/$bin" ./fly
-            tar czf "fly-assets/fly-${os}-${arch}.tgz" -C /tmp "$bin"
+
+            # Windows ships a zip, everything else a tgz. This is not a
+            # preference: atc/api/cliserver/download.go picks the archive name
+            # by platform and calls zip.OpenReader for windows, so a
+            # fly-windows-amd64.tgz is a file the download endpoint will never
+            # open. It 500s, and `fly sync` on Windows can never converge.
+            if [ "$os" = "windows" ]; then
+              (cd /tmp && zip -q "${ASSETS_DIR}/fly-${os}-${arch}.zip" "$bin")
+            else
+              tar czf "fly-assets/fly-${os}-${arch}.tgz" -C /tmp "$bin"
+            fi
             rm -f "/tmp/$bin"
           done
           ls -lh fly-assets/
+
+          # The download endpoint's naming is the contract; assert we met it
+          # rather than discovering it from a 500 on someone's laptop.
+          for expected in fly-linux-amd64.tgz fly-linux-arm64.tgz \
+                          fly-darwin-amd64.tgz fly-darwin-arm64.tgz \
+                          fly-windows-amd64.zip; do
+            [ -s "fly-assets/${expected}" ] \
+              || { echo "FATAL: fly-assets/${expected} missing or empty" >&2; exit 1; }
+          done
 
           REGISTRY="registry-docker-registry.cicd.svc.cluster.local:5000"
           BUILDER_POD="image-builder-$$"
@@ -391,22 +441,54 @@ jobs:
           DOCKERFILE
           kubectl cp /tmp/Dockerfile cicd/${BUILDER_POD}:/tmp/Dockerfile
 
+          # Is this version already released? It decides whether the floating
+          # :${VERSION} tag may move (see below). The repo is public, so this
+          # needs no credentials.
+          if git ls-remote --exit-code --tags origin "refs/tags/jb-${VERSION}" >/dev/null 2>&1; then
+            RELEASED=yes
+          else
+            RELEASED=no
+          fi
+
           echo "=== Building Docker image ==="
           kubectl exec -n cicd ${BUILDER_POD} -- \
             docker build \
               -t registry.home/jetbridge:latest \
-              -t registry.home/jetbridge:${VERSION}-rc \
+              -t registry.home/jetbridge:${RC_TAG} \
+              -t registry.home/jetbridge:${RC_FLOATING} \
               -t ${REGISTRY}/jetbridge:latest \
-              -t ${REGISTRY}/jetbridge:${VERSION}-rc \
+              -t ${REGISTRY}/jetbridge:${RC_TAG} \
+              -t ${REGISTRY}/jetbridge:${RC_FLOATING} \
               -f /tmp/Dockerfile /tmp/
 
           echo "=== Pushing to local registries ==="
-          kubectl exec -n cicd ${BUILDER_POD} -- docker push registry.home/jetbridge:latest
-          kubectl exec -n cicd ${BUILDER_POD} -- docker push registry.home/jetbridge:${VERSION}-rc
-          kubectl exec -n cicd ${BUILDER_POD} -- docker push ${REGISTRY}/jetbridge:latest
-          kubectl exec -n cicd ${BUILDER_POD} -- docker push ${REGISTRY}/jetbridge:${VERSION}-rc
+          for reg in registry.home ${REGISTRY}; do
+            kubectl exec -n cicd ${BUILDER_POD} -- docker push ${reg}/jetbridge:latest
+            kubectl exec -n cicd ${BUILDER_POD} -- docker push ${reg}/jetbridge:${RC_TAG}
+            kubectl exec -n cicd ${BUILDER_POD} -- docker push ${reg}/jetbridge:${RC_FLOATING}
+          done
 
-          echo "=== Image built and pushed to local registries: ${VERSION}-rc (${SHORT_SHA}) ==="
+          # The chart resolves its image tag as `default .Chart.AppVersion
+          # .Values.image.tag`, so a GitOps render asks for <repo>:${VERSION}.
+          # Only `release` ever published that tag, which left a window --
+          # between bumping VERSION and cutting the tag -- where the chart named
+          # an image that did not exist, and any ArgoCD sync in it produced
+          # ImagePullBackOff.
+          #
+          # So publish it here too, but ONLY while the version is unreleased.
+          # After jb-${VERSION} exists that tag is a released artifact and a
+          # later candidate must not overwrite it.
+          if [ "${RELEASED}" = "no" ]; then
+            echo "=== jb-${VERSION} not yet cut: pointing :${VERSION} at this candidate ==="
+            for reg in registry.home ${REGISTRY}; do
+              kubectl exec -n cicd ${BUILDER_POD} -- docker tag ${reg}/jetbridge:${RC_TAG} ${reg}/jetbridge:${VERSION}
+              kubectl exec -n cicd ${BUILDER_POD} -- docker push ${reg}/jetbridge:${VERSION}
+            done
+          else
+            echo "=== jb-${VERSION} already released: leaving :${VERSION} alone ==="
+          fi
+
+          echo "=== Image built and pushed: ${RC_TAG} ==="
 
 - name: self-upgrade
   serial_groups: [pipeline]
@@ -438,16 +520,30 @@ jobs:
             exit 1
           }
 
-          IMAGE="registry.home/jetbridge:${VERSION}-rc"
+          # The per-commit tag, not the floating :${VERSION}-rc. Deploying a
+          # mutable tag means `rollout restart` can pull whatever that tag
+          # points at by the time the kubelet asks -- which, when two commits
+          # build in quick succession, is not the commit this job is for.
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          IMAGE="registry.home/jetbridge:${VERSION}-rc-${SHORT_SHA}"
           echo "=== Self-upgrade: deploying ${IMAGE} ==="
-          echo "Triggering rollout and exiting immediately."
           echo ""
 
-          kubectl set image deployment/concourse-web concourse-web=${IMAGE} -n cicd
+          # `concourse-web=` named ONE container. web-deployment.yaml runs the
+          # same image in two initContainers as well -- generate-keys and
+          # migrate-db -- so those kept running the previous build, and
+          # migrate-db is the one that applies schema migrations. The '*='
+          # form sets every container in the spec.
+          kubectl set image deployment/concourse-web '*='"${IMAGE}" -n cicd
+
+          # The daemonset was restarted but never re-imaged, so the freshly
+          # built artifact-daemon binary never actually reached a node.
+          kubectl set image daemonset/concourse-artifact-daemon '*='"${IMAGE}" -n cicd
+
           kubectl rollout restart deployment/concourse-web -n cicd
           kubectl rollout restart daemonset/concourse-artifact-daemon -n cicd
 
-          echo "=== Rollout triggered. ==="
+          echo "=== Rollout triggered for ${IMAGE}. ==="
 
 - name: verify-upgrade
   serial_groups: [pipeline]
@@ -483,7 +579,16 @@ jobs:
             echo "FATAL: VERSION must be MAJOR.MINOR.PATCH, got '${VERSION}'" >&2
             exit 1
           }
-          EXPECTED="${VERSION}-rc"
+          # What this job asserts is that THIS COMMIT's image is running.
+          #
+          # It used to compare /api/v1/info's version against "${VERSION}-rc",
+          # a string derived only from the VERSION file. Most commits do not
+          # bump VERSION, so the pod still running from the PREVIOUS commit
+          # answered correctly and the job passed without any upgrade having
+          # landed -- and this is the last gate before release. A version
+          # string identifies a version; only the image tag identifies a build.
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          EXPECTED_IMAGE="registry.home/jetbridge:${VERSION}-rc-${SHORT_SHA}"
 
           echo "=== Waiting for rollout to complete ==="
           kubectl rollout status deployment/concourse-web -n cicd --timeout=180s
@@ -493,29 +598,65 @@ jobs:
           kubectl wait --for=condition=ready pod -l app.kubernetes.io/component=web -n cicd --timeout=120s
           kubectl wait --for=condition=ready pod -l app.kubernetes.io/component=artifact-daemon -n cicd --timeout=120s
 
+          # Assert on every running pod of each workload, not on one sampled
+          # pod: a rollout that half-landed leaves a mixture, and `sort -u`
+          # collapsing to exactly the expected image is what rules that out.
+          echo "=== Verifying every running pod is on ${EXPECTED_IMAGE} ==="
+          for component in web artifact-daemon; do
+            RUNNING=$(kubectl get pods -n cicd \
+              -l app.kubernetes.io/component=${component} \
+              --field-selector=status.phase=Running \
+              -o jsonpath='{range .items[*]}{range .spec.containers[*]}{.image}{"\n"}{end}{end}' \
+              | sort -u)
+
+            if [ -z "${RUNNING}" ]; then
+              echo "FATAL: no Running ${component} pods found" >&2
+              exit 1
+            fi
+            if [ "${RUNNING}" != "${EXPECTED_IMAGE}" ]; then
+              echo "FATAL: ${component} is running:" >&2
+              echo "${RUNNING}" | sed 's/^/  /' >&2
+              echo "expected exactly: ${EXPECTED_IMAGE}" >&2
+              exit 1
+            fi
+            echo "  ${component}: ${RUNNING}"
+          done
+
           echo "=== Letting service endpoints settle (15s) ==="
           sleep 15
 
+          # The image is right; now confirm the process built from it actually
+          # serves. The version it reports is the RELEASE version -- candidates
+          # are stamped with the version they will be released as, and carry
+          # their candidate identity in the image tag asserted above.
           CONCOURSE_URL="http://concourse-web.cicd.svc.cluster.local:8080"
-          echo "=== Waiting for Concourse to report version ${EXPECTED} ==="
-          echo ""
+          echo "=== Waiting for the API to report ${VERSION} ==="
 
           for i in $(seq 1 60); do
-            RUNNING=$(curl -sf "${CONCOURSE_URL}/api/v1/info" 2>/dev/null \
-              | grep -o '"version":"[^"]*"' \
-              | cut -d'"' -f4) || RUNNING="(unreachable)"
-            echo "  attempt ${i}: running=${RUNNING} expected=${EXPECTED}"
-            if [ "$RUNNING" = "$EXPECTED" ]; then
+            # Assigned separately from the pipeline so a failed curl is visible:
+            # `X=$(curl ... | cut ...) || fallback` can never fire, because the
+            # exit status of a pipeline is the exit status of `cut`, which is 0
+            # whatever curl did. That is why an unreachable ATC used to report
+            # an empty version rather than "(unreachable)".
+            INFO=$(curl -sf "${CONCOURSE_URL}/api/v1/info" 2>/dev/null) || INFO=""
+            if [ -z "${INFO}" ]; then
+              RUNNING="(unreachable)"
+            else
+              RUNNING=$(echo "${INFO}" | grep -o '"version":"[^"]*"' | cut -d'"' -f4)
+            fi
+
+            echo "  attempt ${i}: running=${RUNNING} expected=${VERSION}"
+            if [ "${RUNNING}" = "${VERSION}" ]; then
               echo ""
-              echo "=== Verified: Concourse is running v${EXPECTED} ==="
+              echo "=== Verified: ${EXPECTED_IMAGE} is live and serving ${VERSION} ==="
               exit 0
             fi
             sleep 5
           done
 
           echo ""
-          echo "=== FAILED: Concourse did not reach v${EXPECTED} within 5 minutes ==="
-          echo "  Last seen version: ${RUNNING}"
+          echo "=== FAILED: API did not report ${VERSION} within 5 minutes ==="
+          echo "  Last seen: ${RUNNING}"
           exit 1
 
 - name: k8s-live-tests
@@ -540,9 +681,26 @@ jobs:
         - |
           echo "=== Setting up kubeconfig for Go test client ==="
           SA_DIR=/var/run/secrets/kubernetes.io/serviceaccount
-          SA_TOKEN=$(cat "$SA_DIR/token")
           kubectl config set-cluster local --server="https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT}" --certificate-authority="$SA_DIR/ca.crt" --embed-certs=true
-          kubectl config set-credentials local --token="$SA_TOKEN"
+
+          # This task runs under `sh -exc`, so -x traces every command AFTER
+          # expansion. `SA_TOKEN=$(cat .../token)` and then passing it as
+          # --token printed the ServiceAccount bearer token verbatim into the
+          # build log, which Concourse persists and shows to anyone with
+          # pipeline access.
+          #
+          # The ATC's redactor does not help here. It masks values it saw being
+          # interpolated from a credential manager (that is what makes
+          # ((github-token)) safe in the release task); a token read off the
+          # projected volume at runtime was never interpolated, so the tracker
+          # has never seen the string and cannot mask it.
+          #
+          # Disable tracing across the two lines that touch the token, and read
+          # it from the file directly so it is never a shell word.
+          set +x
+          kubectl config set-credentials local --token="$(cat "$SA_DIR/token")"
+          set -x
+
           kubectl config set-context local --cluster=local --user=local --namespace=concourse
           kubectl config use-context local
           echo "Kubeconfig created, testing: $(kubectl get pods -n concourse --no-headers 2>&1 | wc -l) pods visible"
@@ -713,47 +871,47 @@ jobs:
             sleep 2
           done
 
-          echo "=== Building fly CLI for all platforms ==="
-          LDFLAGS="-s -w -X github.com/concourse/concourse.Version=${VERSION} -X github.com/concourse/concourse.JetBridgeVersion=${VERSION}"
-          FLY_LDFLAGS="-s -w -X github.com/concourse/concourse.Version=${VERSION}"
-          mkdir -p fly-assets fly-bin
-          for pair in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
-            OS="${pair%%/*}"
-            ARCH="${pair##*/}"
-            echo "  fly-${OS}-${ARCH}"
-            CGO_ENABLED=0 GOOS=${OS} GOARCH=${ARCH} go build -ldflags "${FLY_LDFLAGS}" -o fly-bin/fly ./fly
-            tar czf fly-assets/fly-${OS}-${ARCH}.tgz -C fly-bin fly
-            rm -f fly-bin/fly
-          done
-          rm -rf fly-bin
-          ls -lh fly-assets/
-
-          # --- 2. Verify the RC image exists BEFORE any git mutation ---
-          echo "=== Verifying RC image registry.home/jetbridge:${VERSION}-rc exists ==="
-          if ! kubectl exec -n cicd ${BUILDER_POD} -- docker pull registry.home/jetbridge:${VERSION}-rc; then
-            echo "FATAL: RC image ${VERSION}-rc not found."
-            echo "The RC pipeline (tag-rc/build-image) has not produced it — refusing"
-            echo "to tag jb-${VERSION}. Fix the RC build, then re-run."
+          # --- 2. Verify THIS COMMIT's candidate image exists ---
+          #
+          # Addressed by the per-commit tag, not the floating ${VERSION}-rc.
+          # The floating tag is whatever built most recently, which is not
+          # necessarily the commit that k8s-live-tests ran against.
+          RC_IMAGE="registry.home/jetbridge:${VERSION}-rc-${SHORT_SHA}"
+          echo "=== Verifying candidate ${RC_IMAGE} exists ==="
+          if ! kubectl exec -n cicd ${BUILDER_POD} -- docker pull "${RC_IMAGE}"; then
+            echo "FATAL: no candidate image for ${SHORT_SHA}." >&2
+            echo "build-image has not produced ${RC_IMAGE} -- refusing to tag" >&2
+            echo "jb-${VERSION}. Fix the candidate build, then re-run." >&2
             exit 1
           fi
 
-          echo "=== Copying fly assets into builder pod ==="
-          kubectl cp fly-assets cicd/${BUILDER_POD}:/tmp/fly-assets
+          # --- 2b. Promote. Do not rebuild. ---
+          #
+          # This used to rebuild fly for four platforms and layer them onto the
+          # candidate with a Dockerfile, which was pure vestige: build-image
+          # already compiles all FIVE platforms into the candidate, so the
+          # rebuild replaced those assets with a strictly worse set (no
+          # windows) and produced an image whose bytes no test had ever run.
+          # Its `LDFLAGS` -- the only place the clean version was ever written
+          # -- was assigned and never referenced, which is what a missing
+          # rebuild step looks like after someone removes the build it fed.
+          #
+          # Release is now a retag: the released image IS the tested image,
+          # digest for digest, and the binary inside already carries ${VERSION}
+          # because build-image stamped it that way.
+          echo "=== Promoting ${RC_IMAGE} -> ${VERSION} ==="
+          for tag in registry.home/jetbridge:${VERSION} ${GHCR}:${SHORT_SHA} ${GHCR}:${VERSION}; do
+            kubectl exec -n cicd ${BUILDER_POD} -- docker tag "${RC_IMAGE}" "${tag}"
+          done
 
-          echo "=== Rebuilding image with all fly platform assets ==="
-          cat <<'DOCKERFILE' > /tmp/Dockerfile.release
-          FROM registry.home/jetbridge:__VERSION__-rc
-          COPY fly-assets /usr/local/concourse/fly-assets
-          DOCKERFILE
-          sed -i "s/__VERSION__/${VERSION}/g" /tmp/Dockerfile.release
-          kubectl cp /tmp/Dockerfile.release cicd/${BUILDER_POD}:/tmp/Dockerfile.release
-          kubectl exec -n cicd ${BUILDER_POD} -- \
-            docker build \
-              -t registry.home/jetbridge:${VERSION} \
-              -t ${GHCR}:${SHORT_SHA} \
-              -t ${GHCR}:${VERSION} \
-              -t ${GHCR}:latest \
-              -f /tmp/Dockerfile.release /tmp/
+          # Same image ID on both sides, or the promotion added a layer.
+          RC_ID=$(kubectl exec -n cicd ${BUILDER_POD} -- docker image inspect --format '{{.Id}}' "${RC_IMAGE}")
+          REL_ID=$(kubectl exec -n cicd ${BUILDER_POD} -- docker image inspect --format '{{.Id}}' registry.home/jetbridge:${VERSION})
+          [ "${RC_ID}" = "${REL_ID}" ] || {
+            echo "FATAL: release image ${REL_ID} is not the tested image ${RC_ID}" >&2
+            exit 1
+          }
+          echo "=== Verified: released bytes are the tested bytes (${RC_ID}) ==="
 
           echo "=== Pushing release to local registry ==="
           kubectl exec -n cicd ${BUILDER_POD} -- docker push registry.home/jetbridge:${VERSION}
@@ -764,7 +922,6 @@ jobs:
           echo "=== Pushing to GHCR ==="
           kubectl exec -n cicd ${BUILDER_POD} -- docker push ${GHCR}:${SHORT_SHA}
           kubectl exec -n cicd ${BUILDER_POD} -- docker push ${GHCR}:${VERSION}
-          kubectl exec -n cicd ${BUILDER_POD} -- docker push ${GHCR}:latest
 
           # --- 3. Image published — NOW create the release tag ---
           # (Deferred from the top: only tag/push once the image actually exists.)
@@ -789,7 +946,17 @@ jobs:
           git push origin "jb-${VERSION}"
           echo "=== Tagged jb-${VERSION} ==="
 
-          # --- 4. Redeploy with final release version (includes all fly assets) ---
+          # --- 3b. :latest moves last, once the release is a fact ---
+          #
+          # It used to be pushed alongside :VERSION, i.e. before anything had
+          # checked whether this version was already released -- so a re-run
+          # republished :latest from an unreleased commit and only then failed.
+          # Nothing downstream reads it, but it is what a human pulls.
+          echo "=== Moving ${GHCR}:latest to ${VERSION} ==="
+          kubectl exec -n cicd ${BUILDER_POD} -- docker tag "${RC_IMAGE}" ${GHCR}:latest
+          kubectl exec -n cicd ${BUILDER_POD} -- docker push ${GHCR}:latest
+
+          # --- 4. Redeploy with final release version ---
           #
           # No push to main. `git push --force origin HEAD:refs/heads/main` used
           # to run here and would silently discard any commit on main that was
@@ -800,8 +967,19 @@ jobs:
           # refs.
           echo "=== Redeploying with release image ==="
           IMAGE="registry.home/jetbridge:${VERSION}"
-          kubectl set image deployment/concourse-web concourse-web=${IMAGE} -n cicd
+
+          # '*=' sets every container in the spec. Naming `concourse-web=` left
+          # the generate-keys and migrate-db initContainers -- which run the
+          # same image -- on the previous build.
+          kubectl set image deployment/concourse-web '*='"${IMAGE}" -n cicd
+          kubectl set image daemonset/concourse-artifact-daemon '*='"${IMAGE}" -n cicd
           kubectl rollout restart deployment/concourse-web -n cicd
+          kubectl rollout restart daemonset/concourse-artifact-daemon -n cicd
+
+          # The release job's last act used to be a fire-and-forget restart with
+          # nothing downstream to notice it failing.
+          kubectl rollout status deployment/concourse-web -n cicd --timeout=180s
+          kubectl rollout status daemonset/concourse-artifact-daemon -n cicd --timeout=180s
 
           echo "=== Release complete: ${VERSION} (${SHORT_SHA}) ==="
           echo "  Tagged: jb-${VERSION}"
