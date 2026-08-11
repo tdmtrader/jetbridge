@@ -1,3 +1,20 @@
+# Every task in this file carries a `timeout:`, and the reason is the
+# `serial_groups: [pipeline]` that every job below also carries.
+#
+# One serial group means one job runs at a time across the whole pipeline. So a
+# task that hangs does not fail a build -- it holds the group, and nothing else
+# ever starts. Without a timeout there is no upper bound on that: a Concourse
+# task runs until it exits or a human aborts it.
+#
+# The hang is not hypothetical. Most of the work here is `kubectl exec` into a
+# DinD pod, and none of those calls is individually bounded -- a wedged dockerd,
+# a pod that never goes Ready, a registry that accepts a push and stops
+# responding, all present as a task that is still running. The per-task budgets
+# are sized off the real work plus generous headroom; they are backstops, not
+# performance targets. `attempts:` multiplies them, which is intended: two
+# bounded attempts still terminate.
+#
+# TestEveryPipelineTaskHasATimeout keeps new tasks from arriving without one.
 resources:
 - name: repo
   type: git
@@ -12,6 +29,7 @@ jobs:
     trigger: true
     params: {depth: 1}
   - task: build-and-vet
+    timeout: 20m
     # Retry transient k8s-runtime pod disruptions (single-node contention);
     # this task errors (not fails) when its pod is lost mid-run.
     attempts: 2
@@ -48,6 +66,7 @@ jobs:
     params: {depth: 1}
     passed: [build-and-vet]
   - task: unit-tests
+    timeout: 30m
     attempts: 2
     config:
       platform: linux
@@ -110,6 +129,7 @@ jobs:
     params: {depth: 1}
     passed: [unit-tests]
   - task: k8s-runtime-integration-tests
+    timeout: 15m
     attempts: 2
     config:
       platform: linux
@@ -134,6 +154,7 @@ jobs:
     params: {depth: 0, fetch_tags: true}
     passed: [k8s-runtime-tests]
   - task: create-rc-tag
+    timeout: 10m
     attempts: 2
     config:
       platform: linux
@@ -191,6 +212,7 @@ jobs:
   # concourse.Version -- this chain also stamps JetBridgeVersion -- and would
   # re-download a module graph the test-runner image already has warm.
   - task: build-frontend
+    timeout: 20m
     attempts: 2
     config:
       platform: linux
@@ -241,7 +263,17 @@ jobs:
           sha256sum web/public/elm.min.js || true
 
           echo "=== Installing node dependencies ==="
-          yarn install --immutable || yarn install
+          # No `|| yarn install` fallback. --immutable fails for exactly one
+          # reason -- yarn.lock does not match package.json -- and the fallback
+          # answered that by regenerating the lockfile in the build container
+          # and installing whatever it resolved to. The dependency graph that
+          # produced the shipped bundle would then be one no commit records,
+          # and the lockfile drift that caused it stays in the tree, silently,
+          # for the next build to rediscover.
+          #
+          # This is not the flakiness `attempts: 2` exists for: a stale
+          # lockfile fails identically on the retry, which is the point.
+          yarn install --immutable
 
           # This is the only task in the pipeline with elm-test available, so
           # it is where the frontend tier runs. `yarn run build` below already
@@ -262,6 +294,7 @@ jobs:
           # mdi-svg.min.js, graphviz) is committed source.
           cp -a web/public/. ../web-public/
   - task: build-and-push-local
+    timeout: 45m
     privileged: true
     attempts: 2
     config:
@@ -498,6 +531,7 @@ jobs:
     params: {depth: 0, fetch_tags: true}
     passed: [build-image]
   - task: trigger-rollout
+    timeout: 10m
     attempts: 2
     config:
       platform: linux
@@ -558,6 +592,7 @@ jobs:
     params: {depth: 0, fetch_tags: true}
     passed: [self-upgrade]
   - task: check-running-version
+    timeout: 25m
     attempts: 2
     config:
       platform: linux
@@ -668,6 +703,7 @@ jobs:
     params: {depth: 1}
     passed: [verify-upgrade]
   - task: k8s-live-integration-tests
+    timeout: 45m
     attempts: 2
     config:
       platform: linux
@@ -744,6 +780,7 @@ jobs:
     params: {depth: 0, fetch_tags: true}
     passed: [k8s-live-tests]
   - task: acceptance-gate
+    timeout: 10m
     config:
       platform: linux
       rootfs_uri: docker:///registry.home/concourse-test-runner:v5
@@ -779,6 +816,7 @@ jobs:
 
           echo "=== Accepted: jb-${VERSION} at $(git rev-parse --short HEAD) ==="
   - task: tag-push-release
+    timeout: 45m
     privileged: true
     config:
       platform: linux

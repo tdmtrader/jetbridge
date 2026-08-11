@@ -28,6 +28,7 @@ jobs:
   - get: repo
     trigger: true
   - task: build-kind-runner-image
+    timeout: 45m
     privileged: true
     config:
       platform: linux

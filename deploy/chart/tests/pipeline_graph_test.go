@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"sigs.k8s.io/yaml"
 )
@@ -448,6 +449,73 @@ func TestPipelineTaskScriptsAreValidShell(t *testing.T) {
 	t.Logf("parsed %d task scripts", checked)
 }
 
+// A Concourse task runs until it exits or a human aborts it. There is no
+// implicit ceiling, and concourse-pipeline.yml puts every job in one
+// `serial_groups: [pipeline]`, so a task that hangs does not fail a build -- it
+// holds the group and nothing else ever starts.
+//
+// Most of the work in that pipeline is `kubectl exec` into a DinD pod, and none
+// of those calls is individually bounded. A wedged dockerd, a pod that never
+// goes Ready, a registry that accepts a push and stops responding: each of them
+// presents as a task that is simply still running, indefinitely.
+func TestEveryPipelineTaskHasATimeout(t *testing.T) {
+	var checked int
+
+	for _, path := range pipelineFiles(t) {
+		pipeline := loadPipeline(t, path)
+		name := filepath.Base(path)
+
+		for _, job := range pipeline.Jobs {
+			for _, step := range flattenPlan(job.Plan) {
+				if step.Task == "" {
+					continue
+				}
+				checked++
+
+				if step.Timeout == "" {
+					t.Errorf(
+						"%s: job %q, task %q has no `timeout:`. Concourse will "+
+							"run it forever, and with one serial group that "+
+							"blocks every other job until someone aborts by hand.",
+						name, job.Name, step.Task,
+					)
+					continue
+				}
+
+				d, err := time.ParseDuration(step.Timeout)
+				if err != nil {
+					t.Errorf("%s: job %q, task %q has an unparseable timeout %q: %v",
+						name, job.Name, step.Task, step.Timeout, err)
+					continue
+				}
+
+				// A ceiling, so nobody satisfies this test with `timeout: 168h`.
+				//
+				// It has to clear the longest real workload here: the K8s
+				// behavioral suite runs 2-3 hours (see CLAUDE.md), and its 4h
+				// budget is legitimate headroom rather than a formality. 6h
+				// leaves room above that and still catches a number chosen to
+				// mean "never".
+				const ceiling = 6 * time.Hour
+				if d > ceiling {
+					t.Errorf(
+						"%s: job %q, task %q has timeout %s, above the %s ceiling. "+
+							"A timeout that long is not a backstop -- a person "+
+							"would notice the wedge first, which is the thing it "+
+							"exists to avoid.",
+						name, job.Name, step.Task, step.Timeout, ceiling,
+					)
+				}
+			}
+		}
+	}
+
+	if checked == 0 {
+		t.Fatal("no tasks found; this test would pass vacuously")
+	}
+	t.Logf("checked %d tasks", checked)
+}
+
 type pipelineDoc struct {
 	Jobs []struct {
 		Name string `json:"name"`
@@ -461,6 +529,7 @@ type step struct {
 	Task     string `json:"task"`
 	Resource string `json:"resource"`
 	Attempts int    `json:"attempts"`
+	Timeout  string `json:"timeout"`
 
 	// Pointer so an absent `trigger:` is distinguishable from `trigger: false`.
 	// They mean the same thing to Concourse and different things to a reader.
