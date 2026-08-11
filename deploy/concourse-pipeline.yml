@@ -196,24 +196,18 @@ jobs:
         - -exc
         - |
           cd repo
-          git fetch --tags --force origin
-
-          echo "=== Computing next version from tags ==="
-          LATEST_TAG=$(git tag -l 'v0.2.*' --sort=-v:refname | grep -v '\-rc' | head -1)
-          if [ -z "$LATEST_TAG" ]; then
-            echo "No release tags found, starting at v0.1.0"
-            NEXT_VERSION="0.1.0"
-          else
-            VERSION="${LATEST_TAG#v}"
-            MAJOR=$(echo "$VERSION" | cut -d. -f1)
-            MINOR=$(echo "$VERSION" | cut -d. -f2)
-            PATCH=$(echo "$VERSION" | cut -d. -f3)
-            NEXT_VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))"
-            echo "Latest release: ${LATEST_TAG} -> next: v${NEXT_VERSION}"
-          fi
+          # Version is DECLARED in the VERSION file, never derived from tags.
+          # Deriving "latest tag + 1" made every green push a release and tied
+          # the number to a tag namespace shared with 399 upstream Concourse
+          # tags. One declaration, five consumers.
+          VERSION=$(tr -d '[:space:]' < VERSION)
+          echo "${VERSION}" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || {
+            echo "FATAL: VERSION must be MAJOR.MINOR.PATCH, got '${VERSION}'" >&2
+            exit 1
+          }
 
           SHORT_SHA=$(git rev-parse --short HEAD)
-          RC_TAG="v${NEXT_VERSION}-rc"
+          RC_TAG="jb-${VERSION}-rc"
           echo "=== Tagging ${RC_TAG} at ${SHORT_SHA} ==="
 
           # RC tags are no longer pushed. A force-pushed, moving tag is not a
@@ -245,20 +239,20 @@ jobs:
         - -exc
         - |
           cd repo
-          git fetch --tags --force origin
-
-          echo "=== Computing version from tags ==="
-          LATEST_TAG=$(git tag -l 'v0.2.*' --sort=-v:refname | grep -v '\-rc' | head -1)
-          VERSION="${LATEST_TAG#v}"
-          MAJOR=$(echo "$VERSION" | cut -d. -f1)
-          MINOR=$(echo "$VERSION" | cut -d. -f2)
-          PATCH=$(echo "$VERSION" | cut -d. -f3)
-          NEXT_VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))"
+          # Version is DECLARED in the VERSION file, never derived from tags.
+          # Deriving "latest tag + 1" made every green push a release and tied
+          # the number to a tag namespace shared with 399 upstream Concourse
+          # tags. One declaration, five consumers.
+          VERSION=$(tr -d '[:space:]' < VERSION)
+          echo "${VERSION}" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || {
+            echo "FATAL: VERSION must be MAJOR.MINOR.PATCH, got '${VERSION}'" >&2
+            exit 1
+          }
 
           SHORT_SHA=$(git rev-parse --short HEAD)
-          echo "Version: ${NEXT_VERSION}-rc (${SHORT_SHA})"
+          echo "Version: ${VERSION}-rc (${SHORT_SHA})"
 
-          LDFLAGS="-s -w -X github.com/concourse/concourse.Version=${NEXT_VERSION}-rc -X github.com/concourse/concourse.JetBridgeVersion=${NEXT_VERSION}-rc"
+          LDFLAGS="-s -w -X github.com/concourse/concourse.Version=${VERSION}-rc -X github.com/concourse/concourse.JetBridgeVersion=${VERSION}-rc"
 
           echo "=== Building concourse binary (linux/amd64 only — fly cross-compiles deferred to release) ==="
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o concourse-linux-amd64 ./cmd/concourse
@@ -268,7 +262,7 @@ jobs:
           ls -lh artifact-daemon-linux-amd64
 
           echo "=== Building fly CLI (linux/amd64 only for local deploy) ==="
-          FLY_LDFLAGS="-s -w -X github.com/concourse/concourse.Version=${NEXT_VERSION}-rc"
+          FLY_LDFLAGS="-s -w -X github.com/concourse/concourse.Version=${VERSION}-rc"
           mkdir -p fly-assets
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "${FLY_LDFLAGS}" -o /tmp/fly ./fly
           tar czf fly-assets/fly-linux-amd64.tgz -C /tmp fly
@@ -339,18 +333,18 @@ jobs:
           kubectl exec -n cicd ${BUILDER_POD} -- \
             docker build \
               -t registry.home/jetbridge:latest \
-              -t registry.home/jetbridge:v${NEXT_VERSION}-rc \
+              -t registry.home/jetbridge:${VERSION}-rc \
               -t ${REGISTRY}/jetbridge:latest \
-              -t ${REGISTRY}/jetbridge:v${NEXT_VERSION}-rc \
+              -t ${REGISTRY}/jetbridge:${VERSION}-rc \
               -f /tmp/Dockerfile /tmp/
 
           echo "=== Pushing to local registries ==="
           kubectl exec -n cicd ${BUILDER_POD} -- docker push registry.home/jetbridge:latest
-          kubectl exec -n cicd ${BUILDER_POD} -- docker push registry.home/jetbridge:v${NEXT_VERSION}-rc
+          kubectl exec -n cicd ${BUILDER_POD} -- docker push registry.home/jetbridge:${VERSION}-rc
           kubectl exec -n cicd ${BUILDER_POD} -- docker push ${REGISTRY}/jetbridge:latest
-          kubectl exec -n cicd ${BUILDER_POD} -- docker push ${REGISTRY}/jetbridge:v${NEXT_VERSION}-rc
+          kubectl exec -n cicd ${BUILDER_POD} -- docker push ${REGISTRY}/jetbridge:${VERSION}-rc
 
-          echo "=== Image built and pushed to local registries: v${NEXT_VERSION}-rc (${SHORT_SHA}) ==="
+          echo "=== Image built and pushed to local registries: ${VERSION}-rc (${SHORT_SHA}) ==="
 
 - name: self-upgrade
   serial_groups: [pipeline]
@@ -372,16 +366,17 @@ jobs:
         - -exc
         - |
           cd repo
-          git fetch --tags --force origin
+          # Version is DECLARED in the VERSION file, never derived from tags.
+          # Deriving "latest tag + 1" made every green push a release and tied
+          # the number to a tag namespace shared with 399 upstream Concourse
+          # tags. One declaration, five consumers.
+          VERSION=$(tr -d '[:space:]' < VERSION)
+          echo "${VERSION}" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || {
+            echo "FATAL: VERSION must be MAJOR.MINOR.PATCH, got '${VERSION}'" >&2
+            exit 1
+          }
 
-          LATEST_TAG=$(git tag -l 'v0.2.*' --sort=-v:refname | grep -v '\-rc' | head -1)
-          VERSION="${LATEST_TAG#v}"
-          MAJOR=$(echo "$VERSION" | cut -d. -f1)
-          MINOR=$(echo "$VERSION" | cut -d. -f2)
-          PATCH=$(echo "$VERSION" | cut -d. -f3)
-          NEXT_VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))"
-
-          IMAGE="registry.home/jetbridge:v${NEXT_VERSION}-rc"
+          IMAGE="registry.home/jetbridge:${VERSION}-rc"
           echo "=== Self-upgrade: deploying ${IMAGE} ==="
           echo "Triggering rollout and exiting immediately."
           echo ""
@@ -417,14 +412,16 @@ jobs:
         - -exc
         - |
           cd repo
-          git fetch --tags --force origin
-
-          LATEST_TAG=$(git tag -l 'v0.2.*' --sort=-v:refname | grep -v '\-rc' | head -1)
-          VERSION="${LATEST_TAG#v}"
-          MAJOR=$(echo "$VERSION" | cut -d. -f1)
-          MINOR=$(echo "$VERSION" | cut -d. -f2)
-          PATCH=$(echo "$VERSION" | cut -d. -f3)
-          EXPECTED="${MAJOR}.${MINOR}.$((PATCH + 1))-rc"
+          # Version is DECLARED in the VERSION file, never derived from tags.
+          # Deriving "latest tag + 1" made every green push a release and tied
+          # the number to a tag namespace shared with 399 upstream Concourse
+          # tags. One declaration, five consumers.
+          VERSION=$(tr -d '[:space:]' < VERSION)
+          echo "${VERSION}" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || {
+            echo "FATAL: VERSION must be MAJOR.MINOR.PATCH, got '${VERSION}'" >&2
+            exit 1
+          }
+          EXPECTED="${VERSION}-rc"
 
           echo "=== Waiting for rollout to complete ==="
           kubectl rollout status deployment/concourse-web -n cicd --timeout=180s
@@ -533,18 +530,18 @@ jobs:
         - -exc
         - |
           cd repo
-          git fetch --tags --force origin
-
-          echo "=== Computing release version from tags ==="
-          LATEST_TAG=$(git tag -l 'v0.2.*' --sort=-v:refname | grep -v '\-rc' | head -1)
-          VERSION="${LATEST_TAG#v}"
-          MAJOR=$(echo "$VERSION" | cut -d. -f1)
-          MINOR=$(echo "$VERSION" | cut -d. -f2)
-          PATCH=$(echo "$VERSION" | cut -d. -f3)
-          NEXT_VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))"
+          # Version is DECLARED in the VERSION file, never derived from tags.
+          # Deriving "latest tag + 1" made every green push a release and tied
+          # the number to a tag namespace shared with 399 upstream Concourse
+          # tags. One declaration, five consumers.
+          VERSION=$(tr -d '[:space:]' < VERSION)
+          echo "${VERSION}" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || {
+            echo "FATAL: VERSION must be MAJOR.MINOR.PATCH, got '${VERSION}'" >&2
+            exit 1
+          }
           SHORT_SHA=$(git rev-parse --short HEAD)
 
-          echo "Releasing: v${NEXT_VERSION} (${SHORT_SHA})"
+          echo "Releasing: ${VERSION} (${SHORT_SHA})"
 
           git config --global user.email "ci@concourse.home"
           git config --global user.name "Concourse CI"
@@ -594,8 +591,8 @@ jobs:
           done
 
           echo "=== Building fly CLI for all platforms ==="
-          LDFLAGS="-s -w -X github.com/concourse/concourse.Version=${NEXT_VERSION} -X github.com/concourse/concourse.JetBridgeVersion=${NEXT_VERSION}"
-          FLY_LDFLAGS="-s -w -X github.com/concourse/concourse.Version=${NEXT_VERSION}"
+          LDFLAGS="-s -w -X github.com/concourse/concourse.Version=${VERSION} -X github.com/concourse/concourse.JetBridgeVersion=${VERSION}"
+          FLY_LDFLAGS="-s -w -X github.com/concourse/concourse.Version=${VERSION}"
           mkdir -p fly-assets fly-bin
           for pair in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
             OS="${pair%%/*}"
@@ -609,11 +606,11 @@ jobs:
           ls -lh fly-assets/
 
           # --- 2. Verify the RC image exists BEFORE any git mutation ---
-          echo "=== Verifying RC image registry.home/jetbridge:v${NEXT_VERSION}-rc exists ==="
-          if ! kubectl exec -n cicd ${BUILDER_POD} -- docker pull registry.home/jetbridge:v${NEXT_VERSION}-rc; then
-            echo "FATAL: RC image v${NEXT_VERSION}-rc not found."
+          echo "=== Verifying RC image registry.home/jetbridge:${VERSION}-rc exists ==="
+          if ! kubectl exec -n cicd ${BUILDER_POD} -- docker pull registry.home/jetbridge:${VERSION}-rc; then
+            echo "FATAL: RC image ${VERSION}-rc not found."
             echo "The RC pipeline (tag-rc/build-image) has not produced it — refusing"
-            echo "to tag v${NEXT_VERSION} or push main. Fix the RC build, then re-run."
+            echo "to tag jb-${VERSION}. Fix the RC build, then re-run."
             exit 1
           fi
 
@@ -622,28 +619,28 @@ jobs:
 
           echo "=== Rebuilding image with all fly platform assets ==="
           cat <<'DOCKERFILE' > /tmp/Dockerfile.release
-          FROM registry.home/jetbridge:v__VERSION__-rc
+          FROM registry.home/jetbridge:__VERSION__-rc
           COPY fly-assets /usr/local/concourse/fly-assets
           DOCKERFILE
-          sed -i "s/__VERSION__/${NEXT_VERSION}/g" /tmp/Dockerfile.release
+          sed -i "s/__VERSION__/${VERSION}/g" /tmp/Dockerfile.release
           kubectl cp /tmp/Dockerfile.release cicd/${BUILDER_POD}:/tmp/Dockerfile.release
           kubectl exec -n cicd ${BUILDER_POD} -- \
             docker build \
-              -t registry.home/jetbridge:v${NEXT_VERSION} \
+              -t registry.home/jetbridge:${VERSION} \
               -t ${GHCR}:${SHORT_SHA} \
-              -t ${GHCR}:v${NEXT_VERSION} \
+              -t ${GHCR}:${VERSION} \
               -t ${GHCR}:latest \
               -f /tmp/Dockerfile.release /tmp/
 
           echo "=== Pushing release to local registry ==="
-          kubectl exec -n cicd ${BUILDER_POD} -- docker push registry.home/jetbridge:v${NEXT_VERSION}
+          kubectl exec -n cicd ${BUILDER_POD} -- docker push registry.home/jetbridge:${VERSION}
 
           echo "=== Logging into GHCR ==="
           echo "${GITHUB_TOKEN}" | kubectl exec -i -n cicd ${BUILDER_POD} -- docker login ghcr.io -u tdmtrader --password-stdin
 
           echo "=== Pushing to GHCR ==="
           kubectl exec -n cicd ${BUILDER_POD} -- docker push ${GHCR}:${SHORT_SHA}
-          kubectl exec -n cicd ${BUILDER_POD} -- docker push ${GHCR}:v${NEXT_VERSION}
+          kubectl exec -n cicd ${BUILDER_POD} -- docker push ${GHCR}:${VERSION}
           kubectl exec -n cicd ${BUILDER_POD} -- docker push ${GHCR}:latest
 
           # --- 3. Image published — NOW create the release tag ---
@@ -655,15 +652,15 @@ jobs:
           # one. Existing tag is now fatal, and the check is against the remote,
           # which is the only authority -- a shallow local clone can be missing
           # a tag that origin already holds.
-          echo "=== Tagging v${NEXT_VERSION} ==="
-          if git ls-remote --exit-code --tags origin "refs/tags/v${NEXT_VERSION}" >/dev/null 2>&1; then
-            echo "FATAL: tag v${NEXT_VERSION} already exists on origin." >&2
+          echo "=== Tagging jb-${VERSION} ==="
+          if git ls-remote --exit-code --tags origin "refs/tags/jb-${VERSION}" >/dev/null 2>&1; then
+            echo "FATAL: tag jb-${VERSION} already exists on origin." >&2
             echo "Refusing to release a version that has already been cut." >&2
             exit 1
           fi
-          git tag -a "v${NEXT_VERSION}" -m "Release v${NEXT_VERSION}"
-          git push origin "v${NEXT_VERSION}"
-          echo "=== Tagged v${NEXT_VERSION} ==="
+          git tag -a "jb-${VERSION}" -m "Release jb-${VERSION}"
+          git push origin "jb-${VERSION}"
+          echo "=== Tagged jb-${VERSION} ==="
 
           # --- 4. Redeploy with final release version (includes all fly assets) ---
           #
@@ -675,11 +672,11 @@ jobs:
           # The RC tag is no longer deleted either -- CI does not delete remote
           # refs.
           echo "=== Redeploying with release image ==="
-          IMAGE="registry.home/jetbridge:v${NEXT_VERSION}"
+          IMAGE="registry.home/jetbridge:${VERSION}"
           kubectl set image deployment/concourse-web concourse-web=${IMAGE} -n cicd
           kubectl rollout restart deployment/concourse-web -n cicd
 
-          echo "=== Release complete: v${NEXT_VERSION} (${SHORT_SHA}) ==="
-          echo "  Tagged: v${NEXT_VERSION}"
-          echo "  GHCR:   ${GHCR}:v${NEXT_VERSION}"
+          echo "=== Release complete: ${VERSION} (${SHORT_SHA}) ==="
+          echo "  Tagged: jb-${VERSION}"
+          echo "  GHCR:   ${GHCR}:${VERSION}"
           echo "  Local:  ${IMAGE}"

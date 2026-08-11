@@ -9,8 +9,13 @@ package concourse
 var Version = "0.0.0-dev"
 
 // JetBridgeVersion is the version of the JetBridge edition.
-// Kept in sync with the VERSION file by the CI bump step.
-var JetBridgeVersion = "0.2.80"
+//
+// This must equal the VERSION file and deploy/chart/Chart.yaml's appVersion.
+// TestVersionDeclarationsAgree enforces it; nothing keeps them in sync
+// automatically. The comment here used to claim "kept in sync with the VERSION
+// file by the CI bump step" -- no such step has ever existed, and all three
+// values sat at 0.2.80 across every release the fork ever cut.
+var JetBridgeVersion = "0.3.0"
 
 // ConcourseVersion is the upstream Concourse version this fork is based on.
 var ConcourseVersion = "8.0.1"
