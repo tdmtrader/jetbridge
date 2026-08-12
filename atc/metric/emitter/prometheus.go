@@ -51,6 +51,7 @@ type PrometheusEmitter struct {
 	gcWorkerCollectorDuration                     prometheus.Histogram
 	gcResourceCacheUseCollectorDuration           prometheus.Histogram
 	gcResourceConfigCollectorDuration             prometheus.Histogram
+	gcDeprecatedScopeCollectorDuration            prometheus.Histogram
 	gcResourceCacheCollectorDuration              prometheus.Histogram
 	gcResourceTaskCacheCollectorDuration          prometheus.Histogram
 	gcResourceConfigCheckSessionCollectorDuration prometheus.Histogram
@@ -78,10 +79,7 @@ type PrometheusEmitter struct {
 
 	checksEnqueued prometheus.Counter
 
-	volumesStreamed prometheus.Counter
-
-	getStepCacheHits       prometheus.Counter
-	streamedResourceCaches prometheus.Counter
+	getStepCacheHits prometheus.Counter
 
 	workerContainers                   *prometheus.GaugeVec
 	workerUnknownContainers            *prometheus.GaugeVec
@@ -102,11 +100,13 @@ type PrometheusEmitter struct {
 	k8sPodStartupDuration prometheus.Histogram
 	k8sImagePullFailures  prometheus.Counter
 
-	workerContainersLabels map[string]map[string]prometheus.Labels
-	workerVolumesLabels    map[string]map[string]prometheus.Labels
-	workerTasksLabels      map[string]map[string]prometheus.Labels
-	workerLastSeen         map[string]time.Time
-	mu                     sync.Mutex
+	workerContainersLabels        map[string]map[string]prometheus.Labels
+	workerUnknownContainersLabels map[string]map[string]prometheus.Labels
+	workerVolumesLabels           map[string]map[string]prometheus.Labels
+	workerUnknownVolumesLabels    map[string]map[string]prometheus.Labels
+	workerTasksLabels             map[string]map[string]prometheus.Labels
+	workerLastSeen                map[string]time.Time
+	mu                            sync.Mutex
 }
 
 type PrometheusConfig struct {
@@ -568,17 +568,6 @@ func (config *PrometheusConfig) NewEmitter(attributes map[string]string) (metric
 	)
 	prometheus.MustRegister(checksEnqueued)
 
-	volumesStreamed := prometheus.NewCounter(
-		prometheus.CounterOpts{
-			Namespace:   "concourse",
-			Subsystem:   "volumes",
-			Name:        "volumes_streamed",
-			Help:        "Total number of volumes streamed from one worker to the other",
-			ConstLabels: attributes,
-		},
-	)
-	prometheus.MustRegister(volumesStreamed)
-
 	workerOrphanedVolumesToBeCollected := prometheus.NewCounter(
 		prometheus.CounterOpts{
 			Namespace:   "concourse",
@@ -738,6 +727,18 @@ func (config *PrometheusConfig) NewEmitter(attributes map[string]string) (metric
 	)
 	prometheus.MustRegister(gcResourceConfigCollectorDuration)
 
+	gcDeprecatedScopeCollectorDuration := prometheus.NewHistogram(
+		prometheus.HistogramOpts{
+			Namespace:   "concourse",
+			Subsystem:   "gc",
+			Name:        "gc_deprecated_scope_collector_duration",
+			Help:        "Duration of gc deprecated scope collector (ms)",
+			ConstLabels: attributes,
+			Buckets:     []float64{1, 60, 180, 300, 600, 900, 1200, 1800, 2700, 3600, 7200, 18000, 36000},
+		},
+	)
+	prometheus.MustRegister(gcDeprecatedScopeCollectorDuration)
+
 	gcResourceCacheCollectorDuration := prometheus.NewHistogram(
 		prometheus.HistogramOpts{
 			Namespace:   "concourse",
@@ -821,17 +822,6 @@ func (config *PrometheusConfig) NewEmitter(attributes map[string]string) (metric
 	)
 	prometheus.MustRegister(getStepCacheHits)
 
-	streamedResourceCaches := prometheus.NewCounter(
-		prometheus.CounterOpts{
-			Namespace:   "concourse",
-			Subsystem:   "caches",
-			Name:        "streamed_resource_caches",
-			Help:        "Total number of streamed resource caches",
-			ConstLabels: attributes,
-		},
-	)
-	prometheus.MustRegister(streamedResourceCaches)
-
 	listener, err := net.Listen("tcp", config.bind())
 	if err != nil {
 		return nil, err
@@ -872,6 +862,7 @@ func (config *PrometheusConfig) NewEmitter(attributes map[string]string) (metric
 		gcWorkerCollectorDuration:                     gcWorkerCollectorDuration,
 		gcResourceCacheUseCollectorDuration:           gcResourceCacheUseCollectorDuration,
 		gcResourceConfigCollectorDuration:             gcResourceConfigCollectorDuration,
+		gcDeprecatedScopeCollectorDuration:            gcDeprecatedScopeCollectorDuration,
 		gcResourceCacheCollectorDuration:              gcResourceCacheCollectorDuration,
 		gcResourceTaskCacheCollectorDuration:          gcResourceTaskCacheCollectorDuration,
 		gcResourceConfigCheckSessionCollectorDuration: gcResourceConfigCheckSessionCollectorDuration,
@@ -910,7 +901,9 @@ func (config *PrometheusConfig) NewEmitter(attributes map[string]string) (metric
 		workerContainers:                   workerContainers,
 		workersRegistered:                  workersRegistered,
 		workerContainersLabels:             map[string]map[string]prometheus.Labels{},
+		workerUnknownContainersLabels:      map[string]map[string]prometheus.Labels{},
 		workerVolumesLabels:                map[string]map[string]prometheus.Labels{},
+		workerUnknownVolumesLabels:         map[string]map[string]prometheus.Labels{},
 		workerTasksLabels:                  map[string]map[string]prometheus.Labels{},
 		workerLastSeen:                     map[string]time.Time{},
 		workerVolumes:                      workerVolumes,
@@ -922,10 +915,7 @@ func (config *PrometheusConfig) NewEmitter(attributes map[string]string) (metric
 		k8sPodStartupDuration: k8sPodStartupDuration,
 		k8sImagePullFailures:  k8sImagePullFailures,
 
-		volumesStreamed: volumesStreamed,
-
-		getStepCacheHits:       getStepCacheHits,
-		streamedResourceCaches: streamedResourceCaches,
+		getStepCacheHits: getStepCacheHits,
 	}
 	go emitter.periodicMetricGC()
 
@@ -1037,6 +1027,8 @@ func (emitter *PrometheusEmitter) Emit(logger lager.Logger, event metric.Event) 
 		emitter.gcResourceCacheUseCollectorDuration.Observe(event.Value)
 	case "gc: resource config collector duration (ms)":
 		emitter.gcResourceConfigCollectorDuration.Observe(event.Value)
+	case "gc: deprecated scope collector duration (ms)":
+		emitter.gcDeprecatedScopeCollectorDuration.Observe(event.Value)
 	case "gc: resource cache collector duration (ms)":
 		emitter.gcResourceCacheCollectorDuration.Observe(event.Value)
 	case "gc: task cache collector duration (ms)":
@@ -1065,12 +1057,8 @@ func (emitter *PrometheusEmitter) Emit(logger lager.Logger, event metric.Event) 
 		emitter.checksStarted.Add(event.Value)
 	case "checks enqueued":
 		emitter.checksEnqueued.Add(event.Value)
-	case "volumes streamed":
-		emitter.volumesStreamed.Add(event.Value)
 	case "get step cache hits":
 		emitter.getStepCacheHits.Add(event.Value)
-	case "streamed resource caches":
-		emitter.streamedResourceCaches.Add(event.Value)
 	default:
 		// unless we have a specific metric, we do nothing
 	}
@@ -1240,11 +1228,11 @@ func (emitter *PrometheusEmitter) workerUnknownContainersMetric(logger lager.Log
 	}
 
 	key := serializeLabels(&labels)
-	if emitter.workerContainersLabels[worker] == nil {
-		emitter.workerContainersLabels[worker] = make(map[string]prometheus.Labels)
+	if emitter.workerUnknownContainersLabels[worker] == nil {
+		emitter.workerUnknownContainersLabels[worker] = make(map[string]prometheus.Labels)
 	}
-	emitter.workerContainersLabels[worker][key] = labels
-	emitter.workerUnknownContainers.With(emitter.workerContainersLabels[worker][key]).Set(event.Value)
+	emitter.workerUnknownContainersLabels[worker][key] = labels
+	emitter.workerUnknownContainers.With(emitter.workerUnknownContainersLabels[worker][key]).Set(event.Value)
 }
 
 func (emitter *PrometheusEmitter) workerVolumesMetric(logger lager.Logger, event metric.Event) {
@@ -1291,11 +1279,11 @@ func (emitter *PrometheusEmitter) workerUnknownVolumesMetric(logger lager.Logger
 	}
 
 	key := serializeLabels(&labels)
-	if emitter.workerVolumesLabels[worker] == nil {
-		emitter.workerVolumesLabels[worker] = make(map[string]prometheus.Labels)
+	if emitter.workerUnknownVolumesLabels[worker] == nil {
+		emitter.workerUnknownVolumesLabels[worker] = make(map[string]prometheus.Labels)
 	}
-	emitter.workerVolumesLabels[worker][key] = labels
-	emitter.workerUnknownVolumes.With(emitter.workerVolumesLabels[worker][key]).Set(event.Value)
+	emitter.workerUnknownVolumesLabels[worker][key] = labels
+	emitter.workerUnknownVolumes.With(emitter.workerUnknownVolumesLabels[worker][key]).Set(event.Value)
 }
 
 func (emitter *PrometheusEmitter) workerTasksMetric(logger lager.Logger, event metric.Event) {
@@ -1386,7 +1374,7 @@ func (emitter *PrometheusEmitter) periodicMetricGC() {
 		now := time.Now()
 		for worker, lastSeen := range emitter.workerLastSeen {
 			if now.Sub(lastSeen) > 2*time.Minute {
-				DoGarbageCollection(emitter, worker)
+				emitter.doGarbageCollection(worker)
 				delete(emitter.workerLastSeen, worker)
 			}
 		}
@@ -1395,56 +1383,31 @@ func (emitter *PrometheusEmitter) periodicMetricGC() {
 	}
 }
 
-// DoGarbageCollection retrieves and deletes stale metrics by their labels.
-func DoGarbageCollection(emitter PrometheusGarbageCollectable, worker string) {
-	for _, labels := range emitter.WorkerContainersLabels()[worker] {
-		emitter.WorkerContainers().Delete(labels)
+// doGarbageCollection retrieves and deletes stale metrics by their labels.
+func (emitter *PrometheusEmitter) doGarbageCollection(worker string) {
+	for _, labels := range emitter.workerContainersLabels[worker] {
+		emitter.workerContainers.Delete(labels)
 	}
 
-	for _, labels := range emitter.WorkerVolumesLabels()[worker] {
-		emitter.WorkerVolumes().Delete(labels)
+	for _, labels := range emitter.workerUnknownContainersLabels[worker] {
+		emitter.workerUnknownContainers.Delete(labels)
 	}
 
-	for _, labels := range emitter.WorkerTasksLabels()[worker] {
-		emitter.WorkerTasks().Delete(labels)
+	for _, labels := range emitter.workerVolumesLabels[worker] {
+		emitter.workerVolumes.Delete(labels)
 	}
 
-	delete(emitter.WorkerContainersLabels(), worker)
-	delete(emitter.WorkerVolumesLabels(), worker)
-	delete(emitter.WorkerTasksLabels(), worker)
-}
+	for _, labels := range emitter.workerUnknownVolumesLabels[worker] {
+		emitter.workerUnknownVolumes.Delete(labels)
+	}
 
-//counterfeiter:generate . PrometheusGarbageCollectable
-type PrometheusGarbageCollectable interface {
-	WorkerContainers() *prometheus.GaugeVec
-	WorkerVolumes() *prometheus.GaugeVec
-	WorkerTasks() *prometheus.GaugeVec
+	for _, labels := range emitter.workerTasksLabels[worker] {
+		emitter.workerTasks.Delete(labels)
+	}
 
-	WorkerContainersLabels() map[string]map[string]prometheus.Labels
-	WorkerVolumesLabels() map[string]map[string]prometheus.Labels
-	WorkerTasksLabels() map[string]map[string]prometheus.Labels
-}
-
-func (emitter *PrometheusEmitter) WorkerContainers() *prometheus.GaugeVec {
-	return emitter.workerContainers
-}
-
-func (emitter *PrometheusEmitter) WorkerVolumes() *prometheus.GaugeVec {
-	return emitter.workerVolumes
-}
-
-func (emitter *PrometheusEmitter) WorkerTasks() *prometheus.GaugeVec {
-	return emitter.workerTasks
-}
-
-func (emitter *PrometheusEmitter) WorkerContainersLabels() map[string]map[string]prometheus.Labels {
-	return emitter.workerContainersLabels
-}
-
-func (emitter *PrometheusEmitter) WorkerVolumesLabels() map[string]map[string]prometheus.Labels {
-	return emitter.workerVolumesLabels
-}
-
-func (emitter *PrometheusEmitter) WorkerTasksLabels() map[string]map[string]prometheus.Labels {
-	return emitter.workerTasksLabels
+	delete(emitter.workerContainersLabels, worker)
+	delete(emitter.workerUnknownContainersLabels, worker)
+	delete(emitter.workerVolumesLabels, worker)
+	delete(emitter.workerUnknownVolumesLabels, worker)
+	delete(emitter.workerTasksLabels, worker)
 }
