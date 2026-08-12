@@ -8,10 +8,6 @@ import (
 	"github.com/concourse/concourse/atc/metric"
 )
 
-//go:generate go run github.com/maxbrunsfeld/counterfeiter/v6 -generate
-
-//counterfeiter:generate . Destroyer
-
 // Destroyer allows removal of containers and volumes from the database.
 // Used as a dependency in jetbridge/reaper for GC of K8s resources.
 type Destroyer interface {

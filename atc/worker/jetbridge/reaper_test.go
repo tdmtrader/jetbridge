@@ -11,13 +11,17 @@ import (
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/gc/gcfakes"
+	"github.com/concourse/concourse/atc/gc"
+	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	apiruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 )
 
 var _ = Describe("Reaper", func() {
@@ -27,7 +31,7 @@ var _ = Describe("Reaper", func() {
 		dbWorker            db.Worker
 		fakeClientset       *fake.Clientset
 		containerRepository db.ContainerRepository
-		fakeDestroyer       *gcfakes.FakeDestroyer
+		destroyer           gc.Destroyer
 		cfg                 jetbridge.Config
 		reaper              *jetbridge.Reaper
 	)
@@ -37,15 +41,17 @@ var _ = Describe("Reaper", func() {
 		database = useJetbridgeDB()
 		fakeClientset = fake.NewSimpleClientset()
 		containerRepository = database.ContainerRepository
-		fakeDestroyer = new(gcfakes.FakeDestroyer)
 		cfg = jetbridge.NewConfig("test-namespace", "")
 		var err error
 		dbWorker, err = persistNamedWorker(database, "k8s-test-namespace")
 		Expect(err).ToNot(HaveOccurred())
 
 		testLogger := lagertest.NewTestLogger("reaper")
-		reaper = jetbridge.NewReaper(testLogger, fakeClientset, cfg, containerRepository, fakeDestroyer)
+		destroyer = gc.NewDestroyer(testLogger, containerRepository, database.VolumeRepository)
+		reaper = jetbridge.NewReaper(testLogger, fakeClientset, cfg, containerRepository, destroyer)
 		reaper.SetBuildLookup(database.BuildFactory)
+
+		metric.Metrics.ContainersDeleted.Delta()
 	})
 
 	createLabelledPod := func(name string) {
@@ -63,9 +69,9 @@ var _ = Describe("Reaper", func() {
 		Expect(err).ToNot(HaveOccurred())
 	}
 
-	persistCreatedContainer := func(handle string) db.CreatedContainer {
+	persistCreatedContainerOn := func(worker db.Worker, handle string) db.CreatedContainer {
 		GinkgoHelper()
-		creating, err := dbWorker.CreateContainer(
+		creating, err := worker.CreateContainer(
 			db.NewFixedHandleContainerOwner(handle),
 			db.ContainerMetadata{Type: db.ContainerTypeTask},
 		)
@@ -73,6 +79,11 @@ var _ = Describe("Reaper", func() {
 		created, err := creating.Created()
 		Expect(err).ToNot(HaveOccurred())
 		return created
+	}
+
+	persistCreatedContainer := func(handle string) db.CreatedContainer {
+		GinkgoHelper()
+		return persistCreatedContainerOn(dbWorker, handle)
 	}
 
 	persistDestroyingContainer := func(handle string) db.DestroyingContainer {
@@ -162,17 +173,32 @@ var _ = Describe("Reaper", func() {
 			Expect(missingSince.Valid).To(BeTrue())
 		})
 
-		It("calls DestroyContainers with active pod handles to clean up DB rows", func() {
+		It("deletes the DB rows of destroying containers no pod reports, on this worker only", func() {
 			persistCreatedContainer("pod-ccc")
+			persistDestroyingContainer("pod-ddd")
+			otherWorker, err := persistNamedWorker(database, "k8s-other-namespace")
+			Expect(err).ToNot(HaveOccurred())
+			_, err = persistCreatedContainerOn(otherWorker, "other-worker-pod").Destroying()
+			Expect(err).ToNot(HaveOccurred())
 			createLabelledPod("pod-ccc")
 
-			err := reaper.Run(ctx)
+			err = reaper.Run(ctx)
 			Expect(err).ToNot(HaveOccurred())
 
-			Expect(fakeDestroyer.DestroyContainersCallCount()).To(Equal(1))
-			workerName, handles := fakeDestroyer.DestroyContainersArgsForCall(0)
+			By("removing the row for the destroying container with no pod")
+			_, _, _, found := containerRow("pod-ddd")
+			Expect(found).To(BeFalse())
+			Expect(metric.Metrics.ContainersDeleted.Delta()).To(Equal(float64(1)))
+
+			By("leaving the reported container and the other worker's row alone")
+			state, workerName, _, found := containerRow("pod-ccc")
+			Expect(found).To(BeTrue())
+			Expect(state).To(Equal(atc.ContainerStateCreated))
 			Expect(workerName).To(Equal("k8s-test-namespace"))
-			Expect(handles).To(ConsistOf("pod-ccc"))
+			state, workerName, _, found = containerRow("other-worker-pod")
+			Expect(found).To(BeTrue())
+			Expect(state).To(Equal(atc.ContainerStateDestroying))
+			Expect(workerName).To(Equal("k8s-other-namespace"))
 		})
 
 		It("reports empty handles when no pods exist", func() {
@@ -240,16 +266,32 @@ var _ = Describe("Reaper", func() {
 			Expect(workerName).To(Equal("k8s-test-namespace"))
 		})
 
-		It("does not fail when a destroying pod does not exist in K8s", func() {
+		It("removes the DB row of a destroying container whose pod is already gone", func() {
 			persistDestroyingContainer("already-gone-pod")
 
 			err := reaper.Run(ctx)
 			Expect(err).ToNot(HaveOccurred())
-			state, workerName, missingSince, found := containerRow("already-gone-pod")
+
+			_, _, _, found := containerRow("already-gone-pod")
+			Expect(found).To(BeFalse())
+			Expect(metric.Metrics.ContainersDeleted.Delta()).To(Equal(float64(1)))
+		})
+
+		It("does not fail when a pod vanishes between the list and the delete", func() {
+			persistDestroyingContainer("racing-pod")
+			createLabelledPod("racing-pod")
+			fakeClientset.PrependReactor("delete", "pods", func(action k8stesting.Action) (bool, apiruntime.Object, error) {
+				return true, nil, apierrors.NewNotFound(corev1.Resource("pods"), "racing-pod")
+			})
+
+			err := reaper.Run(ctx)
+			Expect(err).ToNot(HaveOccurred())
+
+			state, workerName, missingSince, found := containerRow("racing-pod")
 			Expect(found).To(BeTrue())
 			Expect(state).To(Equal(atc.ContainerStateDestroying))
 			Expect(workerName).To(Equal("k8s-test-namespace"))
-			Expect(missingSince.Valid).To(BeTrue())
+			Expect(missingSince.Valid).To(BeFalse())
 		})
 
 		It("does nothing when no containers are in destroying state", func() {
@@ -407,7 +449,7 @@ var _ = Describe("Reaper", func() {
 
 		It("keeps completed pods when no build lookup is configured", func() {
 			unwiredReaper := jetbridge.NewReaper(
-				lagertest.NewTestLogger("reaper"), fakeClientset, cfg, containerRepository, fakeDestroyer,
+				lagertest.NewTestLogger("reaper"), fakeClientset, cfg, containerRepository, destroyer,
 			)
 			build, teamID := persistStartedBuild("unwired-owner")
 			container := persistBuildContainer(build, teamID, "unwired-step")
@@ -462,14 +504,12 @@ var _ = Describe("Reaper", func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(pods.Items).To(BeEmpty())
 
-			By("second reaper sweep succeeds even though pod is already gone")
+			By("second reaper sweep removes the DB row now that no pod reports it")
 			err = reaper.Run(ctx)
 			Expect(err).ToNot(HaveOccurred())
-			state, workerName, missingSince, found := containerRow("pod-to-destroy")
-			Expect(found).To(BeTrue())
-			Expect(state).To(Equal(atc.ContainerStateDestroying))
-			Expect(workerName).To(Equal("k8s-test-namespace"))
-			Expect(missingSince.Valid).To(BeTrue())
+			_, _, _, found := containerRow("pod-to-destroy")
+			Expect(found).To(BeFalse())
+			Expect(metric.Metrics.ContainersDeleted.Delta()).To(Equal(float64(1)))
 		})
 
 		It("does not destroy a newly created pod that is not marked destroying", func() {
