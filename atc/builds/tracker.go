@@ -23,7 +23,6 @@ type Engine interface {
 	Drain(context.Context)
 }
 
-//counterfeiter:generate . Runnable
 type Runnable interface {
 	Run(context.Context)
 }

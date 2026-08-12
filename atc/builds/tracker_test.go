@@ -23,6 +23,10 @@ func init() {
 	util.PanicSink = io.Discard
 }
 
+type runnableFunc func(context.Context)
+
+func (f runnableFunc) Run(ctx context.Context) { f(ctx) }
+
 type TrackerSuite struct {
 	suite.Suite
 	*require.Assertions
@@ -68,12 +72,9 @@ func (s *TrackerSuite) TestTrackRunsStartedBuilds() {
 
 	running := make(chan db.Build, 3)
 	s.fakeEngine.NewBuildStub = func(build db.Build) builds.Runnable {
-		engineBuild := new(buildsfakes.FakeRunnable)
-		engineBuild.RunStub = func(context.Context) {
+		return runnableFunc(func(context.Context) {
 			running <- build
-		}
-
-		return engineBuild
+		})
 	}
 
 	err := s.tracker.Run(context.TODO())
@@ -95,11 +96,9 @@ func (s *TrackerSuite) TestTrackInMemoryBuilds() {
 
 	running := make(chan db.Build, 3)
 	s.fakeEngine.NewBuildStub = func(build db.Build) builds.Runnable {
-		engineBuild := new(buildsfakes.FakeRunnable)
-		engineBuild.RunStub = func(context.Context) {
+		return runnableFunc(func(context.Context) {
 			running <- build
-		}
-		return engineBuild
+		})
 	}
 
 	for i := range 3 {
@@ -143,16 +142,13 @@ func (s *TrackerSuite) TestTrackerDoesntCrashWhenOneBuildPanic() {
 
 	running := make(chan db.Build, 3)
 	s.fakeEngine.NewBuildStub = func(build db.Build) builds.Runnable {
-		fakeEngineBuild := new(buildsfakes.FakeRunnable)
-		fakeEngineBuild.RunStub = func(context.Context) {
+		return runnableFunc(func(context.Context) {
 			if build.ID() == 1 {
 				panic("something went wrong")
 			} else {
 				running <- build
 			}
-		}
-
-		return fakeEngineBuild
+		})
 	}
 
 	err := s.tracker.Run(context.TODO())
@@ -185,13 +181,10 @@ func (s *TrackerSuite) TestTrackDoesntTrackAlreadyRunningBuilds() {
 
 	running := make(chan db.Build, 3)
 	s.fakeEngine.NewBuildStub = func(build db.Build) builds.Runnable {
-		engineBuild := new(buildsfakes.FakeRunnable)
-		engineBuild.RunStub = func(context.Context) {
+		return runnableFunc(func(context.Context) {
 			running <- build
 			<-wait
-		}
-
-		return engineBuild
+		})
 	}
 
 	err := s.tracker.Run(context.TODO())
@@ -220,13 +213,10 @@ func (s *TrackerSuite) TestTrackDoesntTrackAlreadyRunningInMemoryChecks() {
 
 	running := make(chan db.Build, 3)
 	s.fakeEngine.NewBuildStub = func(build db.Build) builds.Runnable {
-		engineBuild := new(buildsfakes.FakeRunnable)
-		engineBuild.RunStub = func(context.Context) {
+		return runnableFunc(func(context.Context) {
 			running <- build
 			<-wait
-		}
-
-		return engineBuild
+		})
 	}
 
 	s.buildChan <- fakeInMemoryCheck
@@ -264,12 +254,10 @@ func (s *TrackerSuite) TestTrackDoesNotFinalizeReleasedJobBuild() {
 
 	done := make(chan struct{})
 	s.fakeEngine.NewBuildStub = func(build db.Build) builds.Runnable {
-		engineBuild := new(buildsfakes.FakeRunnable)
-		engineBuild.RunStub = func(context.Context) {
+		return runnableFunc(func(context.Context) {
 			// Return without calling Finish — simulates early exit
 			close(done)
-		}
-		return engineBuild
+		})
 	}
 
 	err := s.tracker.Run(context.TODO())
@@ -296,12 +284,10 @@ func (s *TrackerSuite) TestTrackFinalizesOrphanedCheckBuild() {
 
 	done := make(chan struct{})
 	s.fakeEngine.NewBuildStub = func(build db.Build) builds.Runnable {
-		engineBuild := new(buildsfakes.FakeRunnable)
-		engineBuild.RunStub = func(context.Context) {
+		return runnableFunc(func(context.Context) {
 			// Return without calling Finish — simulates early exit
 			close(done)
-		}
-		return engineBuild
+		})
 	}
 
 	err := s.tracker.Run(context.TODO())
@@ -327,11 +313,9 @@ func (s *TrackerSuite) TestTrackDoesNotDoubleFinishCompletedBuild() {
 
 	done := make(chan struct{})
 	s.fakeEngine.NewBuildStub = func(build db.Build) builds.Runnable {
-		engineBuild := new(buildsfakes.FakeRunnable)
-		engineBuild.RunStub = func(context.Context) {
+		return runnableFunc(func(context.Context) {
 			close(done)
-		}
-		return engineBuild
+		})
 	}
 
 	err := s.tracker.Run(context.TODO())
@@ -363,11 +347,9 @@ func (s *TrackerSuite) TestTrackOrphanedInMemoryCheckCleansUpInFlightTracking() 
 
 	done := make(chan struct{})
 	s.fakeEngine.NewBuildStub = func(build db.Build) builds.Runnable {
-		engineBuild := new(buildsfakes.FakeRunnable)
-		engineBuild.RunStub = func(context.Context) {
+		return runnableFunc(func(context.Context) {
 			close(done)
-		}
-		return engineBuild
+		})
 	}
 
 	s.buildChan <- fakeBuild
@@ -394,12 +376,10 @@ func (s *TrackerSuite) TestTrackEmitsBuildsRunningMetric() {
 	var gaugeSeenDuringRun float64
 	done := make(chan struct{})
 	s.fakeEngine.NewBuildStub = func(build db.Build) builds.Runnable {
-		engineBuild := new(buildsfakes.FakeRunnable)
-		engineBuild.RunStub = func(context.Context) {
+		return runnableFunc(func(context.Context) {
 			gaugeSeenDuringRun = metric.Metrics.BuildsRunning.Max()
 			close(done)
-		}
-		return engineBuild
+		})
 	}
 
 	err := s.tracker.Run(context.TODO())
@@ -424,12 +404,10 @@ func (s *TrackerSuite) TestTrackEmitsCheckBuildsRunningMetric() {
 	var gaugeSeenDuringRun float64
 	done := make(chan struct{})
 	s.fakeEngine.NewBuildStub = func(build db.Build) builds.Runnable {
-		engineBuild := new(buildsfakes.FakeRunnable)
-		engineBuild.RunStub = func(context.Context) {
+		return runnableFunc(func(context.Context) {
 			gaugeSeenDuringRun = metric.Metrics.CheckBuildsRunning.Max()
 			close(done)
-		}
-		return engineBuild
+		})
 	}
 
 	err := s.tracker.Run(context.TODO())
