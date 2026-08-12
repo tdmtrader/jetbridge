@@ -20,7 +20,6 @@ type Container interface {
 	Metadata() ContainerMetadata
 }
 
-//counterfeiter:generate . CreatingContainer
 type CreatingContainer interface {
 	Container
 
@@ -127,7 +126,6 @@ func (container *creatingContainer) Failed() (FailedContainer, error) {
 	), nil
 }
 
-//counterfeiter:generate . CreatedContainer
 type CreatedContainer interface {
 	Container
 

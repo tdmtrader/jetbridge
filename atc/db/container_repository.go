@@ -9,7 +9,6 @@ import (
 	"github.com/concourse/concourse/atc"
 )
 
-//counterfeiter:generate . ContainerRepository
 type ContainerRepository interface {
 	FindOrphanedContainers() ([]CreatingContainer, []CreatedContainer, []DestroyingContainer, error)
 	DestroyFailedContainers() (int, error)

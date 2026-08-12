@@ -5,7 +5,6 @@ import (
 	"github.com/concourse/concourse/atc/db/lock"
 )
 
-//counterfeiter:generate . PipelineFactory
 type PipelineFactory interface {
 	VisiblePipelines([]string) ([]Pipeline, error)
 	AllPipelines() ([]Pipeline, error)

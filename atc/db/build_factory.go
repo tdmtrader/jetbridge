@@ -63,7 +63,6 @@ type BuildForAPI interface {
 	SetComment(string) error
 }
 
-//counterfeiter:generate . BuildFactory
 type BuildFactory interface {
 	BuildForAPI(int) (BuildForAPI, bool, error)
 	VisibleBuilds([]string, Page) ([]BuildForAPI, Pagination, error)

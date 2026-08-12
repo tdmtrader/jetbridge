@@ -8,7 +8,6 @@ import (
 	"github.com/concourse/concourse/atc/db/lock"
 )
 
-//counterfeiter:generate . PipelineLifecycle
 type PipelineLifecycle interface {
 	ArchiveAbandonedPipelines() error
 	RemoveBuildEventsForDeletedPipelines() error

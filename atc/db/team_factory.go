@@ -11,7 +11,6 @@ import (
 	"github.com/concourse/concourse/atc/db/lock"
 )
 
-//counterfeiter:generate . TeamFactory
 type TeamFactory interface {
 	CreateTeam(atc.Team) (Team, error)
 	FindTeam(string) (Team, bool, error)

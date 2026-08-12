@@ -9,7 +9,6 @@ import (
 	"github.com/google/uuid"
 )
 
-//counterfeiter:generate . VolumeRepository
 type VolumeRepository interface {
 	GetTeamVolumes(teamID int) ([]CreatedVolume, error)
 

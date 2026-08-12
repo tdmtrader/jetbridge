@@ -58,7 +58,6 @@ const (
 	VolumeTypeUknown        VolumeType = "unknown" // for migration to life
 )
 
-//counterfeiter:generate . CreatingVolume
 type CreatingVolume interface {
 	Handle() string
 	ID() int
@@ -145,8 +144,6 @@ func (volume *creatingVolume) Failed() (FailedVolume, error) {
 func (volume *creatingVolume) InitializeArtifact() (WorkerArtifact, error) {
 	return initializeArtifact(volume.conn, volume.id, "", 0)
 }
-
-//counterfeiter:generate . CreatedVolume
 
 // TODO-Later Consider separating CORE & Runtime concerns by breaking this abstraction up.
 type CreatedVolume interface {

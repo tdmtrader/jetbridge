@@ -10,7 +10,6 @@ import (
 	"github.com/concourse/concourse/atc/db/lock"
 )
 
-//counterfeiter:generate . PipelinePauser
 type PipelinePauser interface {
 	PausePipelines(ctx context.Context, daysSinceLastBuild int) error
 }
