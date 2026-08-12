@@ -5,12 +5,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 
+	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/api/accessor/accessorfakes"
 	"github.com/concourse/concourse/atc/api/auth"
 	"github.com/concourse/concourse/atc/auditor/auditorfakes"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -182,11 +182,7 @@ var _ = Describe("CheckPipelineAccessHandler", func() {
 			// A real database cannot selectively fail only Team.Pipeline while
 			// leaving TeamFactory.FindTeam healthy. Keep this seam deliberately
 			// narrow so the request reaches the late lookup under test.
-			failingTeam := new(dbfakes.FakeTeam)
-			failingTeam.PipelineReturns(nil, false, errors.New("pipeline lookup failed"))
-			failingFactory := new(dbfakes.FakeTeamFactory)
-			failingFactory.FindTeamReturns(failingTeam, true, nil)
-			factory = failingFactory
+			factory = pipelineLookupFailsTeamFactory{TeamFactory: teamFactory}
 		})
 
 		It("returns 500", func() {
@@ -198,6 +194,29 @@ var _ = Describe("CheckPipelineAccessHandler", func() {
 		})
 	})
 })
+
+// pipelineLookupFailsTeamFactory resolves the team for real and then fails only
+// the pipeline lookup made through it, which is the one ordering the handler
+// distinguishes but a live connection cannot produce on demand.
+type pipelineLookupFailsTeamFactory struct {
+	db.TeamFactory
+}
+
+func (factory pipelineLookupFailsTeamFactory) FindTeam(name string) (db.Team, bool, error) {
+	team, found, err := factory.TeamFactory.FindTeam(name)
+	if err != nil || !found {
+		return team, found, err
+	}
+	return pipelineLookupFailsTeam{Team: team}, true, nil
+}
+
+type pipelineLookupFailsTeam struct {
+	db.Team
+}
+
+func (pipelineLookupFailsTeam) Pipeline(atc.PipelineRef) (db.Pipeline, bool, error) {
+	return nil, false, errors.New("pipeline lookup failed")
+}
 
 type pipelineDelegateHandler struct {
 	IsCalled          bool

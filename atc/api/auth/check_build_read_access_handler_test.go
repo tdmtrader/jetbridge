@@ -12,7 +12,6 @@ import (
 	"github.com/concourse/concourse/atc/api/auth"
 	"github.com/concourse/concourse/atc/auditor/auditorfakes"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -383,29 +382,72 @@ var _ = Describe("CheckBuildReadAccessHandler", func() {
 // errors to that second query; a closed connection would fail BuildForAPI
 // first and leave both branches untested.
 func buildFactoryWithPipelineLookup(found bool, err error) db.BuildFactory {
-	build := new(dbfakes.FakeBuildForAPI)
-	build.PipelineIDReturns(41)
-	build.PipelineReturns(nil, found, err)
-
-	factory := new(dbfakes.FakeBuildFactory)
-	factory.BuildForAPIReturns(build, true, nil)
-	return factory
+	return lateLookupBuildFactory{
+		BuildFactory: buildFactory,
+		wrap: func(build db.BuildForAPI) db.BuildForAPI {
+			return pipelineLookupResultBuild{BuildForAPI: build, found: found, err: err}
+		},
+	}
 }
 
 func buildFactoryWithJobLookup(found bool, err error) db.BuildFactory {
-	pipeline := new(dbfakes.FakePipeline)
-	pipeline.PublicReturns(true)
-	pipeline.JobReturns(nil, found, err)
+	return lateLookupBuildFactory{
+		BuildFactory: buildFactory,
+		wrap: func(build db.BuildForAPI) db.BuildForAPI {
+			return jobLookupResultBuild{BuildForAPI: build, found: found, err: err}
+		},
+	}
+}
 
-	build := new(dbfakes.FakeBuildForAPI)
-	build.PipelineIDReturns(41)
-	build.PipelineReturns(pipeline, true, nil)
-	build.JobIDReturns(43)
-	build.JobNameReturns("some-job")
+type lateLookupBuildFactory struct {
+	db.BuildFactory
 
-	factory := new(dbfakes.FakeBuildFactory)
-	factory.BuildForAPIReturns(build, true, nil)
-	return factory
+	wrap func(db.BuildForAPI) db.BuildForAPI
+}
+
+func (factory lateLookupBuildFactory) BuildForAPI(buildID int) (db.BuildForAPI, bool, error) {
+	build, found, err := factory.BuildFactory.BuildForAPI(buildID)
+	if err != nil || !found {
+		return build, found, err
+	}
+	return factory.wrap(build), true, nil
+}
+
+type pipelineLookupResultBuild struct {
+	db.BuildForAPI
+
+	found bool
+	err   error
+}
+
+func (build pipelineLookupResultBuild) Pipeline() (db.Pipeline, bool, error) {
+	return nil, build.found, build.err
+}
+
+type jobLookupResultBuild struct {
+	db.BuildForAPI
+
+	found bool
+	err   error
+}
+
+func (build jobLookupResultBuild) Pipeline() (db.Pipeline, bool, error) {
+	pipeline, found, err := build.BuildForAPI.Pipeline()
+	if err != nil || !found {
+		return pipeline, found, err
+	}
+	return jobLookupResultPipeline{Pipeline: pipeline, found: build.found, err: build.err}, true, nil
+}
+
+type jobLookupResultPipeline struct {
+	db.Pipeline
+
+	found bool
+	err   error
+}
+
+func (pipeline jobLookupResultPipeline) Job(string) (db.Job, bool, error) {
+	return nil, pipeline.found, pipeline.err
 }
 
 type buildDelegateHandler struct {
