@@ -60,7 +60,6 @@ type TaskDelegateFactory interface {
 	TaskDelegate(state RunState) TaskDelegate
 }
 
-//counterfeiter:generate . TaskDelegate
 type TaskDelegate interface {
 	StartSpan(context.Context, string, tracing.Attrs) (context.Context, trace.Span)
 

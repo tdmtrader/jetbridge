@@ -7,18 +7,55 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"code.cloudfoundry.org/clock"
 	"code.cloudfoundry.org/lager/v3/lagerctx"
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/engine"
+	"github.com/concourse/concourse/atc/event"
 	"github.com/concourse/concourse/atc/exec"
 	"github.com/concourse/concourse/atc/exec/build"
-	"github.com/concourse/concourse/atc/exec/execfakes"
+	"github.com/concourse/concourse/atc/policy"
 	"github.com/concourse/concourse/atc/runtime/runtimetest"
-	"github.com/concourse/concourse/tracing"
 	"github.com/concourse/concourse/vars"
-	"github.com/onsi/gomega/gbytes"
 )
+
+// deniedPolicyCheck is the result a policy agent returns when it blocks an
+// action; the policy package keeps its own result type unexported.
+type deniedPolicyCheck struct {
+	messages []string
+}
+
+func (result deniedPolicyCheck) Allowed() bool      { return false }
+func (result deniedPolicyCheck) ShouldBlock() bool  { return true }
+func (result deniedPolicyCheck) Messages() []string { return result.messages }
+
+// setPipelineDenyingChecker is a policy.Checker wired the way a deployment with
+// a policy agent is: it screens the set_pipeline action, and denies it.
+type setPipelineDenyingChecker struct {
+	policy.NoopChecker
+	messages []string
+}
+
+func (checker setPipelineDenyingChecker) ShouldCheckAction(action string) bool {
+	return action == policy.ActionRunSetPipeline
+}
+
+func (checker setPipelineDenyingChecker) Check(policy.PolicyCheckInput) (policy.PolicyCheckResult, error) {
+	return deniedPolicyCheck{messages: checker.messages}, nil
+}
+
+func persistedSetPipelineChanges(fixture *execDBFixture, build db.Build) []bool {
+	GinkgoHelper()
+	var changes []bool
+	for _, e := range execBuildEvents(fixture, build) {
+		if changed, ok := e.(event.SetPipelineChanged); ok {
+			changes = append(changes, changed.Changed)
+		}
+	}
+	return changes
+}
 
 // pipelineLookupErrorTeam preserves a healthy PostgreSQL-backed team while
 // replacing only Pipeline for the lookup failure path.
@@ -197,10 +234,9 @@ jobs:
 		realBuild       db.Build
 		currentRef      atc.PipelineRef
 		targetRef       atc.PipelineRef
-		spanCtx         context.Context
 
-		fakeDelegate        *execfakes.FakeSetPipelineStepDelegate
-		fakeDelegateFactory exec.SetPipelineStepDelegateFactory
+		policyChecker   policy.Checker
+		delegateFactory exec.SetPipelineStepDelegateFactory
 
 		streamer *recordingStreamer
 
@@ -214,8 +250,6 @@ jobs:
 		stepErr error
 
 		stepMetadata exec.StepMetadata
-
-		stdout, stderr *gbytes.Buffer
 
 		planID = "56"
 	)
@@ -247,18 +281,10 @@ jobs:
 		artifactRepository = state.ArtifactRepository()
 		pipelineFileContent = ""
 
-		stdout = gbytes.NewBuffer()
-		stderr = gbytes.NewBuffer()
+		policyChecker = policy.NoopChecker{}
 
-		fakeDelegate = new(execfakes.FakeSetPipelineStepDelegate)
-		fakeDelegate.StdoutReturns(stdout)
-		fakeDelegate.StderrReturns(stderr)
-
-		spanCtx = context.Background()
-		fakeDelegate.StartSpanReturns(spanCtx, tracing.NoopSpan)
-
-		fakeDelegateFactory = setPipelineStepDelegateFactory(func(exec.RunState) exec.SetPipelineStepDelegate {
-			return fakeDelegate
+		delegateFactory = setPipelineStepDelegateFactory(func(state exec.RunState) exec.SetPipelineStepDelegate {
+			return engine.NewSetPipelineStepDelegate(realBuild, atc.PlanID(planID), state, clock.NewClock(), policyChecker)
 		})
 
 		stepMetadata = exec.StepMetadata{
@@ -305,7 +331,7 @@ jobs:
 			plan.ID,
 			*plan.SetPipeline,
 			stepMetadata,
-			fakeDelegateFactory,
+			delegateFactory,
 			teamFactory,
 			buildFactory,
 			streamer,
@@ -367,14 +393,12 @@ jobs:
 			})
 
 			It("should have an error message printed to stderr", func() {
-				Expect(stderr).To(gbytes.Say("invalid pipeline:"))
-				Expect(stderr).To(gbytes.Say("- invalid jobs:"))
+				Expect(execBuildLog(fixture, realBuild, event.OriginSourceStderr)).To(MatchRegexp(`(?s)invalid pipeline:.*- invalid jobs:`))
 			})
 
 			It("should finish unsuccessfully", func() {
-				Expect(fakeDelegate.FinishedCallCount()).To(Equal(1))
-				_, succeeded := fakeDelegate.FinishedArgsForCall(0)
-				Expect(succeeded).To(BeFalse())
+				Expect(execBuildFinishEvents(fixture, realBuild)).To(HaveLen(1))
+				Expect(execBuildFinishEvents(fixture, realBuild)[0].Succeeded).To(BeFalse())
 			})
 		})
 
@@ -388,14 +412,12 @@ jobs:
 			})
 
 			It("should have an error message printed to stderr", func() {
-				Expect(stderr).To(gbytes.Say("error parsing pipeline:"))
-				Expect(stderr).To(gbytes.Say(`mapping key "resources" already defined`))
+				Expect(execBuildLog(fixture, realBuild, event.OriginSourceStderr)).To(MatchRegexp(`(?s)error parsing pipeline:.*mapping key "resources" already defined`))
 			})
 
 			It("should finish unsuccessfully", func() {
-				Expect(fakeDelegate.FinishedCallCount()).To(Equal(1))
-				_, succeeded := fakeDelegate.FinishedArgsForCall(0)
-				Expect(succeeded).To(BeFalse())
+				Expect(execBuildFinishEvents(fixture, realBuild)).To(HaveLen(1))
+				Expect(execBuildFinishEvents(fixture, realBuild)[0].Succeeded).To(BeFalse())
 			})
 		})
 
@@ -409,9 +431,8 @@ jobs:
 			})
 
 			It("should finish successfully", func() {
-				Expect(fakeDelegate.FinishedCallCount()).To(Equal(1))
-				_, succeeded := fakeDelegate.FinishedArgsForCall(0)
-				Expect(succeeded).To(BeTrue())
+				Expect(execBuildFinishEvents(fixture, realBuild)).To(HaveLen(1))
+				Expect(execBuildFinishEvents(fixture, realBuild)[0].Succeeded).To(BeTrue())
 			})
 		})
 
@@ -425,7 +446,7 @@ jobs:
 			})
 
 			It("should log an error message", func() {
-				Expect(stderr).To(gbytes.Say("pipeline must contain at least one job"))
+				Expect(execBuildLog(fixture, realBuild, event.OriginSourceStderr)).To(ContainSubstring("pipeline must contain at least one job"))
 			})
 
 			It("should not update the job and build id", func() {
@@ -481,7 +502,7 @@ jobs:
 				})
 
 				It("should stdout have message", func() {
-					Expect(stdout).To(gbytes.Say("done"))
+					Expect(execBuildLog(fixture, realBuild, event.OriginSourceStdout)).To(ContainSubstring("done"))
 				})
 			})
 
@@ -509,13 +530,11 @@ jobs:
 					})
 
 					It("should log 'no changes to apply'", func() {
-						Expect(stdout).To(gbytes.Say("no changes to apply."))
+						Expect(execBuildLog(fixture, realBuild, event.OriginSourceStdout)).To(ContainSubstring("no changes to apply."))
 					})
 
 					It("should send a set pipeline changed event", func() {
-						Expect(fakeDelegate.SetPipelineChangedCallCount()).To(Equal(1))
-						_, changed := fakeDelegate.SetPipelineChangedArgsForCall(0)
-						Expect(changed).To(BeFalse())
+						Expect(persistedSetPipelineChanges(fixture, realBuild)).To(Equal([]bool{false}))
 					})
 
 					It("should update the job and build id", func() {
@@ -551,13 +570,11 @@ jobs:
 
 				Context("when there are some diff", func() {
 					It("should log diff", func() {
-						Expect(stdout).To(gbytes.Say("job some-job has changed:"))
+						Expect(execBuildLog(fixture, realBuild, event.OriginSourceStdout)).To(ContainSubstring("job some-job has changed:"))
 					})
 
 					It("should send a set pipeline changed event", func() {
-						Expect(fakeDelegate.SetPipelineChangedCallCount()).To(Equal(1))
-						_, changed := fakeDelegate.SetPipelineChangedArgsForCall(0)
-						Expect(changed).To(BeTrue())
+						Expect(persistedSetPipelineChanges(fixture, realBuild)).To(Equal([]bool{true}))
 
 						pipeline, found, err := currentTeam.Pipeline(targetRef)
 						Expect(err).NotTo(HaveOccurred())
@@ -573,12 +590,22 @@ jobs:
 
 				Context("when policy check fails", func() {
 					BeforeEach(func() {
-						fakeDelegate.CheckRunSetPipelinePolicyReturns(errors.New("policy-check-error"))
+						policyChecker = setPipelineDenyingChecker{messages: []string{"policy-check-error"}}
 					})
 
 					It("should return error", func() {
-						Expect(stepErr).To(HaveOccurred())
-						Expect(stepErr.Error()).To(Equal("policy-check-error"))
+						Expect(stepErr).To(MatchError(policy.PolicyCheckNotPass{
+							Messages: []string{"policy-check-error"},
+						}))
+					})
+
+					It("should leave the existing config in place", func() {
+						pipeline, found, err := currentTeam.Pipeline(targetRef)
+						Expect(err).NotTo(HaveOccurred())
+						Expect(found).To(BeTrue())
+						config, err := pipeline.Config()
+						Expect(err).NotTo(HaveOccurred())
+						Expect(config).To(Equal(setPipelineTestConfig("hello world")))
 					})
 				})
 
@@ -609,7 +636,7 @@ jobs:
 							}
 						})
 						It("logs a warning", func() {
-							Expect(stderr).To(gbytes.Say("WARNING: the pipeline was not saved because it was already saved by a newer build"))
+							Expect(execBuildLog(fixture, realBuild, event.OriginSourceStderr)).To(ContainSubstring("WARNING: the pipeline was not saved because it was already saved by a newer build"))
 						})
 						It("does not fail the step", func() {
 							Expect(stepErr).ToNot(HaveOccurred())
@@ -632,14 +659,12 @@ jobs:
 				})
 
 				It("should stdout have message", func() {
-					Expect(stdout).To(gbytes.Say("setting pipeline: some-pipeline"))
-					Expect(stdout).To(gbytes.Say("done"))
+					Expect(execBuildLog(fixture, realBuild, event.OriginSourceStdout)).To(MatchRegexp(`(?s)setting pipeline: some-pipeline.*done`))
 				})
 
 				It("should finish successfully", func() {
-					Expect(fakeDelegate.FinishedCallCount()).To(Equal(1))
-					_, succeeded := fakeDelegate.FinishedArgsForCall(0)
-					Expect(succeeded).To(BeTrue())
+					Expect(execBuildFinishEvents(fixture, realBuild)).To(HaveLen(1))
+					Expect(execBuildFinishEvents(fixture, realBuild)[0].Succeeded).To(BeTrue())
 				})
 			})
 
@@ -699,9 +724,8 @@ jobs:
 						Expect(err).NotTo(HaveOccurred())
 						Expect(found).To(BeTrue())
 						Expect(pipeline.TeamID()).To(Equal(currentTeam.ID()))
-						Expect(fakeDelegate.FinishedCallCount()).To(Equal(1))
-						_, succeeded := fakeDelegate.FinishedArgsForCall(0)
-						Expect(succeeded).To(BeTrue())
+						Expect(execBuildFinishEvents(fixture, realBuild)).To(HaveLen(1))
+						Expect(execBuildFinishEvents(fixture, realBuild)[0].Succeeded).To(BeTrue())
 					})
 				})
 
@@ -727,9 +751,8 @@ jobs:
 							Expect(err).NotTo(HaveOccurred())
 							Expect(found).To(BeTrue())
 							Expect(pipeline.TeamID()).To(Equal(currentTeam.ID()))
-							Expect(fakeDelegate.FinishedCallCount()).To(Equal(1))
-							_, succeeded := fakeDelegate.FinishedArgsForCall(0)
-							Expect(succeeded).To(BeTrue())
+							Expect(execBuildFinishEvents(fixture, realBuild)).To(HaveLen(1))
+							Expect(execBuildFinishEvents(fixture, realBuild)[0].Succeeded).To(BeTrue())
 						})
 					})
 
@@ -753,9 +776,8 @@ jobs:
 								Expect(pipeline.TeamID()).To(Equal(targetTeam.ID()))
 								Expect(pipeline.ParentJobID()).To(Equal(currentJob.ID()))
 								Expect(pipeline.ParentBuildID()).To(Equal(realBuild.ID()))
-								Expect(fakeDelegate.FinishedCallCount()).To(Equal(1))
-								_, succeeded := fakeDelegate.FinishedArgsForCall(0)
-								Expect(succeeded).To(BeTrue())
+								Expect(execBuildFinishEvents(fixture, realBuild)).To(HaveLen(1))
+								Expect(execBuildFinishEvents(fixture, realBuild)[0].Succeeded).To(BeTrue())
 							})
 						})
 

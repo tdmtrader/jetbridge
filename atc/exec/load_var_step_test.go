@@ -5,18 +5,20 @@ import (
 	"encoding/json"
 	"strings"
 
+	"code.cloudfoundry.org/clock"
 	"code.cloudfoundry.org/lager/v3/lagerctx"
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/onsi/gomega/gbytes"
 
 	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/engine"
+	"github.com/concourse/concourse/atc/event"
 	"github.com/concourse/concourse/atc/exec"
 	"github.com/concourse/concourse/atc/exec/build"
-	"github.com/concourse/concourse/atc/exec/execfakes"
+	"github.com/concourse/concourse/atc/policy"
 	"github.com/concourse/concourse/atc/runtime/runtimetest"
-	"github.com/concourse/concourse/tracing"
 	"github.com/concourse/concourse/vars"
 )
 
@@ -41,12 +43,12 @@ var _ = Describe("LoadVarStep", func() {
 		cancel     func()
 		testLogger *lagertest.TestLogger
 
-		fakeDelegate        *execfakes.FakeBuildStepDelegate
-		fakeDelegateFactory exec.BuildStepDelegateFactory
+		delegateFactory exec.BuildStepDelegateFactory
+
+		fixture *execDBFixture
+		dbBuild db.Build
 
 		streamer *recordingStreamer
-
-		spanCtx context.Context
 
 		loadVarPlan        *atc.LoadVarPlan
 		fileContent        string
@@ -66,8 +68,6 @@ var _ = Describe("LoadVarStep", func() {
 			PipelineName: "some-pipeline",
 		}
 
-		stdout, stderr *gbytes.Buffer
-
 		planID = "56"
 	)
 
@@ -80,18 +80,17 @@ var _ = Describe("LoadVarStep", func() {
 		artifactRepository = state.ArtifactRepository()
 		fileContent = ""
 
-		stdout = gbytes.NewBuffer()
-		stderr = gbytes.NewBuffer()
+		fixture = useExecDB()
+		_, _, _, dbBuild = createExecJobBuild(
+			fixture,
+			"load-var-team",
+			atc.PipelineRef{Name: "some-pipeline"},
+			atc.Config{Jobs: atc.JobConfigs{{Name: "some-job"}}},
+			"some-user",
+		)
 
-		fakeDelegate = new(execfakes.FakeBuildStepDelegate)
-		fakeDelegate.StdoutReturns(stdout)
-		fakeDelegate.StderrReturns(stderr)
-
-		spanCtx = context.Background()
-		fakeDelegate.StartSpanReturns(spanCtx, tracing.NoopSpan)
-
-		fakeDelegateFactory = buildStepDelegateFactory(func(exec.RunState) exec.BuildStepDelegate {
-			return fakeDelegate
+		delegateFactory = buildStepDelegateFactory(func(state exec.RunState) exec.BuildStepDelegate {
+			return engine.NewBuildStepDelegate(dbBuild, atc.PlanID(planID), state, clock.NewClock(), policy.NoopChecker{}, false)
 		})
 
 		streamer = newRecordingStreamer()
@@ -131,7 +130,7 @@ var _ = Describe("LoadVarStep", func() {
 			plan.ID,
 			*plan.LoadVar,
 			stepMetadata,
-			fakeDelegateFactory,
+			delegateFactory,
 			streamer,
 		)
 
@@ -172,6 +171,17 @@ var _ = Describe("LoadVarStep", func() {
 
 			It("var should be parsed correctly", func() {
 				expectLocalVarAdded("some-var", strings.TrimSpace(plainString), true)
+			})
+
+			It("persists the step lifecycle events and its stdout", func() {
+				Expect(execBuildEventTypes(fixture, dbBuild)).To(ContainElements(
+					event.EventTypeInitialize,
+					event.EventTypeStart,
+					event.EventTypeFinish,
+				))
+				Expect(execBuildLog(fixture, dbBuild, event.OriginSourceStdout)).To(Equal(
+					"var some-var fetched.\nadded var some-var to build.\n",
+				))
 			})
 		})
 

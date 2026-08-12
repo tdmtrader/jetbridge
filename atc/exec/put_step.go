@@ -23,7 +23,6 @@ type PutDelegateFactory interface {
 	PutDelegate(state RunState) PutDelegate
 }
 
-//counterfeiter:generate . PutDelegate
 type PutDelegate interface {
 	StartSpan(context.Context, string, tracing.Attrs) (context.Context, trace.Span)
 

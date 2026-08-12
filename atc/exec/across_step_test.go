@@ -2,19 +2,42 @@ package exec_test
 
 import (
 	"context"
+	"encoding/json"
 	"sync/atomic"
 
+	"code.cloudfoundry.org/clock"
 	"code.cloudfoundry.org/lager/v3/lagerctx"
 	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/engine"
+	"github.com/concourse/concourse/atc/event"
 	"github.com/concourse/concourse/atc/exec"
 	"github.com/concourse/concourse/atc/exec/build"
-	"github.com/concourse/concourse/atc/exec/execfakes"
+	"github.com/concourse/concourse/atc/policy"
 	"github.com/concourse/concourse/atc/runtime/runtimetest"
 	"github.com/concourse/concourse/vars"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/onsi/gomega/gbytes"
 )
+
+func persistedAcrossSubstepValues(fixture *execDBFixture, build db.Build) [][]any {
+	GinkgoHelper()
+	var values [][]any
+	for _, e := range execBuildEvents(fixture, build) {
+		substeps, ok := e.(event.AcrossSubsteps)
+		if !ok {
+			continue
+		}
+		for _, raw := range substeps.Substeps {
+			var substep struct {
+				Values []any `json:"values"`
+			}
+			Expect(json.Unmarshal(*raw, &substep)).To(Succeed())
+			values = append(values, substep.Values)
+		}
+	}
+	return values
+}
 
 var _ = Describe("AcrossStep", func() {
 	type vals [4]any
@@ -23,8 +46,10 @@ var _ = Describe("AcrossStep", func() {
 		ctx    context.Context
 		cancel func()
 
-		fakeDelegateFactory exec.BuildStepDelegateFactory
-		fakeDelegate        *execfakes.FakeBuildStepDelegate
+		delegateFactory exec.BuildStepDelegateFactory
+
+		fixture *execDBFixture
+		dbBuild db.Build
 
 		step exec.AcrossStep
 
@@ -48,8 +73,6 @@ var _ = Describe("AcrossStep", func() {
 			PipelineID:   4567,
 			PipelineName: "some-pipeline",
 		}
-
-		stderr *gbytes.Buffer
 	)
 
 	stepRun := func(succeeded bool) func(context.Context, exec.RunState) (bool, error) {
@@ -88,7 +111,7 @@ var _ = Describe("AcrossStep", func() {
 
 		panics := curCount == stepperPanicOnCount
 
-		s := new(execfakes.FakeStep)
+		s := new(scriptedStep)
 		if panics {
 			s.RunStub = func(_ context.Context, _ exec.RunState) (bool, error) {
 				panic("something went wrong")
@@ -106,13 +129,17 @@ var _ = Describe("AcrossStep", func() {
 
 		state = exec.NewRunState(stepper, vars.StaticVariables{})
 
-		stderr = gbytes.NewBuffer()
+		fixture = useExecDB()
+		_, _, _, dbBuild = createExecJobBuild(
+			fixture,
+			"across-team",
+			atc.PipelineRef{Name: "some-pipeline"},
+			atc.Config{Jobs: atc.JobConfigs{{Name: "some-job"}}},
+			"some-user",
+		)
 
-		fakeDelegate = new(execfakes.FakeBuildStepDelegate)
-		fakeDelegate.StderrReturns(stderr)
-
-		fakeDelegateFactory = buildStepDelegateFactory(func(exec.RunState) exec.BuildStepDelegate {
-			return fakeDelegate
+		delegateFactory = buildStepDelegateFactory(func(state exec.RunState) exec.BuildStepDelegate {
+			return engine.NewBuildStepDelegate(dbBuild, "across-plan-id", state, clock.NewClock(), policy.NoopChecker{}, false)
 		})
 
 		plan.Vars = []atc.AcrossVar{
@@ -171,14 +198,6 @@ var _ = Describe("AcrossStep", func() {
 			{"a2", "b2", "c3", "d1"},
 			{"a2", "b2", "c3", "d2"},
 		}
-		plans := make([]atc.VarScopedPlan, len(allVals))
-		for i, vals := range allVals {
-			// capture the array from the range
-			vals := vals
-			plans[i] = atc.VarScopedPlan{Values: vals[:]}
-		}
-		fakeDelegate.ConstructAcrossSubstepsReturns(plans, nil)
-
 		plan.FailFast = false
 	})
 
@@ -189,27 +208,20 @@ var _ = Describe("AcrossStep", func() {
 	JustBeforeEach(func() {
 		step = exec.Across(
 			plan,
-			fakeDelegateFactory,
+			delegateFactory,
 			stepMetadata,
 		)
 	})
 
-	It("initializes the step", func() {
+	It("persists the step lifecycle events", func() {
 		step.Run(ctx, state)
 
-		Expect(fakeDelegate.InitializingCallCount()).To(Equal(1))
-	})
-
-	It("starts the step", func() {
-		step.Run(ctx, state)
-
-		Expect(fakeDelegate.StartingCallCount()).To(Equal(1))
-	})
-
-	It("finishes the step", func() {
-		step.Run(ctx, state)
-
-		Expect(fakeDelegate.FinishedCallCount()).To(Equal(1))
+		Expect(execBuildEventTypes(fixture, dbBuild)).To(Equal([]atc.EventType{
+			event.EventTypeInitialize,
+			event.EventTypeStart,
+			event.EventTypeAcrossSubsteps,
+			event.EventTypeFinish,
+		}))
 	})
 
 	Context("when a var shadows an existing local var", func() {
@@ -221,16 +233,14 @@ var _ = Describe("AcrossStep", func() {
 			_, err := step.Run(ctx, state)
 			Expect(err).ToNot(HaveOccurred())
 
-			Expect(stderr).To(gbytes.Say("WARNING: across step shadows local var 'var2'"))
+			Expect(execBuildLog(fixture, dbBuild, event.OriginSourceStderr)).To(ContainSubstring("WARNING: across step shadows local var 'var2'"))
 		})
 	})
 
 	It("correctly computes the combinations of var values", func() {
 		step.Run(ctx, state)
 
-		Expect(fakeDelegate.ConstructAcrossSubstepsCallCount()).To(Equal(1))
-		_, _, valueCombinations := fakeDelegate.ConstructAcrossSubstepsArgsForCall(0)
-		Expect(valueCombinations).To(Equal([][]any{
+		Expect(persistedAcrossSubstepValues(fixture, dbBuild)).To(Equal([][]any{
 			{"a1", "b1", "c1", "d1"},
 			{"a1", "b1", "c1", "d2"},
 			{"a1", "b1", "c2", "d1"},
@@ -263,10 +273,9 @@ var _ = Describe("AcrossStep", func() {
 
 	It("does not merge artifacts produced by across child scopes", func() {
 		plan.Vars = []atc.AcrossVar{{Var: "var1", Values: []any{"only"}}}
-		fakeDelegate.ConstructAcrossSubstepsReturns([]atc.VarScopedPlan{{Values: []any{"only"}}}, nil)
-		step = exec.Across(plan, fakeDelegateFactory, stepMetadata)
+		step = exec.Across(plan, delegateFactory, stepMetadata)
 		state = exec.NewRunState(func(atc.Plan) exec.Step {
-			childStep := new(execfakes.FakeStep)
+			childStep := new(scriptedStep)
 			childStep.RunStub = func(_ context.Context, childState exec.RunState) (bool, error) {
 				childState.ArtifactRepository().RegisterArtifact(
 					build.ArtifactName("across-output"),

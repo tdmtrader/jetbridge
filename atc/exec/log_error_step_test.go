@@ -5,8 +5,12 @@ import (
 	"errors"
 	"fmt"
 
+	"code.cloudfoundry.org/clock"
+	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/engine"
 	. "github.com/concourse/concourse/atc/exec"
-	"github.com/concourse/concourse/atc/exec/execfakes"
+	"github.com/concourse/concourse/atc/policy"
 	"github.com/concourse/concourse/vars"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -17,10 +21,11 @@ var _ = Describe("LogErrorStep", func() {
 		ctx    context.Context
 		cancel func()
 
-		fakeStep *execfakes.FakeStep
+		fakeStep *scriptedStep
 
-		fakeDelegate        *execfakes.FakeBuildStepDelegate
-		fakeDelegateFactory BuildStepDelegateFactory
+		fixture         *execDBFixture
+		build           db.Build
+		delegateFactory BuildStepDelegateFactory
 
 		state RunState
 
@@ -30,15 +35,24 @@ var _ = Describe("LogErrorStep", func() {
 	BeforeEach(func() {
 		ctx, cancel = context.WithCancel(context.Background())
 
-		fakeStep = new(execfakes.FakeStep)
-		fakeDelegate = new(execfakes.FakeBuildStepDelegate)
-		fakeDelegateFactory = buildStepDelegateFactory(func(RunState) BuildStepDelegate {
-			return fakeDelegate
+		fakeStep = new(scriptedStep)
+
+		fixture = useExecDB()
+		_, _, _, build = createExecJobBuild(
+			fixture,
+			"log-error-team",
+			atc.PipelineRef{Name: "some-pipeline"},
+			atc.Config{Jobs: atc.JobConfigs{{Name: "some-job"}}},
+			"some-user",
+		)
+
+		delegateFactory = buildStepDelegateFactory(func(state RunState) BuildStepDelegate {
+			return engine.NewBuildStepDelegate(build, "some-plan-id", state, clock.NewClock(), policy.NoopChecker{}, false)
 		})
 
 		state = NewRunState(noopStepper, vars.StaticVariables{})
 
-		step = LogError(fakeStep, fakeDelegateFactory)
+		step = LogError(fakeStep, delegateFactory)
 	})
 
 	AfterEach(func() {
@@ -67,7 +81,7 @@ var _ = Describe("LogErrorStep", func() {
 			})
 
 			It("does not log", func() {
-				Expect(fakeDelegate.ErroredCallCount()).To(Equal(0))
+				Expect(execBuildErrorMessages(fixture, build)).To(BeEmpty())
 			})
 		})
 
@@ -85,7 +99,7 @@ var _ = Describe("LogErrorStep", func() {
 			})
 
 			It("does not log", func() {
-				Expect(fakeDelegate.ErroredCallCount()).To(Equal(0))
+				Expect(execBuildErrorMessages(fixture, build)).To(BeEmpty())
 			})
 		})
 
@@ -101,9 +115,7 @@ var _ = Describe("LogErrorStep", func() {
 			})
 
 			It("logs 'interrupted'", func() {
-				Expect(fakeDelegate.ErroredCallCount()).To(Equal(1))
-				_, message := fakeDelegate.ErroredArgsForCall(0)
-				Expect(message).To(Equal("interrupted"))
+				Expect(execBuildErrorMessages(fixture, build)).To(Equal([]string{"interrupted"}))
 			})
 		})
 
@@ -119,9 +131,7 @@ var _ = Describe("LogErrorStep", func() {
 			})
 
 			It("logs 'timeout exceeded'", func() {
-				Expect(fakeDelegate.ErroredCallCount()).To(Equal(1))
-				_, message := fakeDelegate.ErroredArgsForCall(0)
-				Expect(message).To(Equal("timeout exceeded"))
+				Expect(execBuildErrorMessages(fixture, build)).To(Equal([]string{"timeout exceeded"}))
 			})
 		})
 
@@ -137,9 +147,7 @@ var _ = Describe("LogErrorStep", func() {
 			})
 
 			It("logs the error", func() {
-				Expect(fakeDelegate.ErroredCallCount()).To(Equal(1))
-				_, message := fakeDelegate.ErroredArgsForCall(0)
-				Expect(message).To(Equal("disaster"))
+				Expect(execBuildErrorMessages(fixture, build)).To(Equal([]string{"disaster"}))
 			})
 		})
 	})

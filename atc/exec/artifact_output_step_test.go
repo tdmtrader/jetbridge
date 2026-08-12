@@ -8,9 +8,9 @@ import (
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/exec"
 	"github.com/concourse/concourse/atc/exec/build"
-	"github.com/concourse/concourse/atc/exec/execfakes"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/runtime/runtimetest"
+	"github.com/concourse/concourse/atc/worker"
 	"github.com/concourse/concourse/vars"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -51,11 +51,11 @@ var _ = Describe("ArtifactOutputStep", func() {
 			stepErr error
 			plan    atc.Plan
 
-			fixture        *execDBFixture
-			realBuild      db.Build
-			created        db.CreatedVolume
-			runtimeVolume  *runtimetest.Volume
-			fakeWorkerPool *execfakes.FakePool
+			fixture       *execDBFixture
+			realBuild     db.Build
+			created       db.CreatedVolume
+			runtimeVolume *runtimetest.Volume
+			workerPool    exec.Pool
 		)
 
 		BeforeEach(func() {
@@ -67,12 +67,12 @@ var _ = Describe("ArtifactOutputStep", func() {
 			Expect(err).NotTo(HaveOccurred())
 			realBuild, err = team.CreateOneOffBuild()
 			Expect(err).NotTo(HaveOccurred())
-			worker, err := fixture.WorkerFactory.SaveWorker(
+			savedWorker, err := fixture.WorkerFactory.SaveWorker(
 				atc.Worker{Name: "worker", Platform: "linux"}, 0,
 			)
 			Expect(err).NotTo(HaveOccurred())
 			creating, err := db.NewVolumeRepository(fixture.Conn).CreateVolumeWithHandle(
-				"some-volume", team.ID(), worker.Name(), db.VolumeTypeArtifact,
+				"some-volume", team.ID(), savedWorker.Name(), db.VolumeTypeArtifact,
 			)
 			Expect(err).NotTo(HaveOccurred())
 			created, err = creating.Created()
@@ -84,9 +84,14 @@ var _ = Describe("ArtifactOutputStep", func() {
 				runtimeVolumeWithDB{Volume: runtimeVolume, databaseVolume: created},
 				false,
 			)
-			fakeWorkerPool = new(execfakes.FakePool)
+			workerPool = worker.NewPool(
+				stubWorkerFactory(func(dbWorker db.Worker) runtime.Worker {
+					return runtimetest.NewWorker(dbWorker.Name()).WithVolumes(runtimeVolume)
+				}),
+				worker.DB{TeamFactory: fixture.TeamFactory},
+			)
 			plan = atc.Plan{ArtifactOutput: &atc.ArtifactOutputPlan{Name: "some-artifact-name"}}
-			step = exec.NewArtifactOutputStep(plan, realBuild, fakeWorkerPool)
+			step = exec.NewArtifactOutputStep(plan, realBuild, workerPool)
 		})
 
 		AfterEach(func() {

@@ -1,22 +1,23 @@
 package exec_test
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"time"
 
+	"code.cloudfoundry.org/clock"
+	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/lock"
-	"github.com/concourse/concourse/atc/db/lock/lockfakes"
+	"github.com/concourse/concourse/atc/engine"
+	"github.com/concourse/concourse/atc/event"
 	"github.com/concourse/concourse/atc/exec"
-	"github.com/concourse/concourse/atc/exec/execfakes"
 	"github.com/concourse/concourse/atc/imageresolver/imageresolvertesting"
 	"github.com/concourse/concourse/atc/metric"
+	"github.com/concourse/concourse/atc/policy"
 	"github.com/concourse/concourse/atc/resource"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/runtime/runtimetest"
@@ -28,6 +29,7 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
+	"golang.org/x/time/rate"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -44,6 +46,104 @@ func (scope saveVersionsErrorScope) SaveVersions(db.SpanContext, []atc.Version) 
 	return scope.err
 }
 
+// releaseCountingLock counts releases of whatever lock the real delegate
+// handed out; nothing in PostgreSQL distinguishes "released" from "never held"
+// for the no-op lock a non-resource check gets.
+type releaseCountingLock struct {
+	lock.Lock
+	releases *int
+}
+
+func (l releaseCountingLock) Release() error {
+	*l.releases++
+	return l.Lock.Release()
+}
+
+// recordingCheckDelegate keeps every behavior of the real delegate, recording
+// the arguments the build event stream does not carry and providing the two
+// fault injections PostgreSQL cannot perform on demand.
+type recordingCheckDelegate struct {
+	exec.CheckDelegate
+
+	onScope     func(db.ResourceConfig, db.ResourceConfigScope)
+	wrapScope   func(db.ResourceConfigScope) db.ResourceConfigScope
+	onWaitToRun func(db.ResourceConfigScope)
+	pointErr    error
+
+	beforeSelectWorkerCount int
+	containerOwnerCount     int
+	configs                 []db.ResourceConfig
+	pointedScopes           []db.ResourceConfigScope
+	startTimeUpdates        []checkStartTimeUpdate
+	lockReleases            int
+	span                    trace.Span
+}
+
+type checkStartTimeUpdate struct {
+	scope       db.ResourceConfigScope
+	nestedCheck bool
+}
+
+func (delegate *recordingCheckDelegate) StartSpan(ctx context.Context, component string, attrs tracing.Attrs) (context.Context, trace.Span) {
+	ctx, span := delegate.CheckDelegate.StartSpan(ctx, component, attrs)
+	delegate.span = span
+	return ctx, span
+}
+
+func (delegate *recordingCheckDelegate) BeforeSelectWorker(logger lager.Logger) error {
+	delegate.beforeSelectWorkerCount++
+	return delegate.CheckDelegate.BeforeSelectWorker(logger)
+}
+
+func (delegate *recordingCheckDelegate) ContainerOwner(planID atc.PlanID) db.ContainerOwner {
+	delegate.containerOwnerCount++
+	return delegate.CheckDelegate.ContainerOwner(planID)
+}
+
+func (delegate *recordingCheckDelegate) FindOrCreateScope(config db.ResourceConfig) (db.ResourceConfigScope, error) {
+	scope, err := delegate.CheckDelegate.FindOrCreateScope(config)
+	if err != nil {
+		return nil, err
+	}
+
+	delegate.configs = append(delegate.configs, config)
+	if delegate.onScope != nil {
+		delegate.onScope(config, scope)
+	}
+	if delegate.wrapScope != nil {
+		return delegate.wrapScope(scope), nil
+	}
+	return scope, nil
+}
+
+func (delegate *recordingCheckDelegate) WaitToRun(ctx context.Context, scope db.ResourceConfigScope) (lock.Lock, bool, error) {
+	if delegate.onWaitToRun != nil {
+		delegate.onWaitToRun(scope)
+	}
+
+	acquired, run, err := delegate.CheckDelegate.WaitToRun(ctx, scope)
+	if acquired == nil {
+		return nil, run, err
+	}
+	return releaseCountingLock{Lock: acquired, releases: &delegate.lockReleases}, run, err
+}
+
+func (delegate *recordingCheckDelegate) PointToCheckedConfig(scope db.ResourceConfigScope) error {
+	delegate.pointedScopes = append(delegate.pointedScopes, scope)
+	if delegate.pointErr != nil {
+		return delegate.pointErr
+	}
+	return delegate.CheckDelegate.PointToCheckedConfig(scope)
+}
+
+func (delegate *recordingCheckDelegate) UpdateScopeLastCheckStartTime(scope db.ResourceConfigScope, nestedCheck bool) (bool, int, error) {
+	delegate.startTimeUpdates = append(delegate.startTimeUpdates, checkStartTimeUpdate{
+		scope:       scope,
+		nestedCheck: nestedCheck,
+	})
+	return delegate.CheckDelegate.UpdateScopeLastCheckStartTime(scope, nestedCheck)
+}
+
 var _ = Describe("CheckStep", func() {
 	var (
 		ctx    context.Context
@@ -57,16 +157,21 @@ var _ = Describe("CheckStep", func() {
 		resourceConfig        db.ResourceConfig
 		resourceConfigScope   db.ResourceConfigScope
 		realBuild             db.Build
-		fakeDelegate          *execfakes.FakeCheckDelegate
-		fakeDelegateFactory   exec.CheckDelegateFactory
-		spanCtx               context.Context
+		realPipeline          db.Pipeline
+		delegate              *recordingCheckDelegate
+		delegateFactory       exec.CheckDelegateFactory
 		defaultTimeout        time.Duration = 0
 
-		fakePool        *execfakes.FakePool
+		scopeWrapper            func(db.ResourceConfigScope) db.ResourceConfigScope
+		waitToRunHook           func(db.ResourceConfigScope)
+		pointToCheckedConfigErr error
+
+		stepper      exec.Stepper
+		imageStepper *imageFetchStepper
+
+		fakePool        *scriptedPool
 		chosenWorker    *runtimetest.Worker
 		chosenContainer *runtimetest.WorkerContainer
-
-		fakeStdout, fakeStderr io.Writer
 
 		stepMetadata      exec.StepMetadata
 		checkStep         exec.Step
@@ -84,14 +189,27 @@ var _ = Describe("CheckStep", func() {
 	BeforeEach(func() {
 		ctx, cancel = context.WithCancel(context.Background())
 		fixture = useExecDB()
-		currentTeam, _, _, build := createExecJobBuild(
+		currentTeam, pipeline, _, build := createExecJobBuild(
 			fixture,
 			"some-team",
 			atc.PipelineRef{Name: "some-pipeline"},
-			atc.Config{Jobs: atc.JobConfigs{{Name: "some-job"}}},
+			atc.Config{
+				Jobs: atc.JobConfigs{{Name: "some-job"}},
+				Resources: atc.ResourceConfigs{{
+					Name:   "some-resource",
+					Type:   "some-base-type",
+					Source: atc.Source{"some": "super-secret-source"},
+				}},
+				ResourceTypes: atc.ResourceTypes{{
+					Name:   "some-resource-type",
+					Type:   "some-base-type",
+					Source: atc.Source{"some": "super-secret-source"},
+				}},
+			},
 			"some-user",
 		)
 		realBuild = build
+		realPipeline = pipeline
 		resourceConfigFactory = fixture.ResourceConfigFactory
 		var err error
 		expectedConfig, err = resourceConfigFactory.FindOrCreateResourceConfig(
@@ -106,11 +224,37 @@ var _ = Describe("CheckStep", func() {
 
 		planID = "some-plan-id"
 
-		runState = exec.NewRunState(noopStepper, vars.StaticVariables{"source-var": "super-secret-source"})
-		fakeDelegateFactory = checkDelegateFactory(func(exec.RunState) exec.CheckDelegate {
-			return fakeDelegate
+		imageStepper = new(imageFetchStepper)
+		stepper = noopStepper
+
+		runState = exec.NewRunState(func(plan atc.Plan) exec.Step {
+			return stepper(plan)
+		}, vars.StaticVariables{"source-var": "super-secret-source"})
+
+		scopeWrapper = nil
+		waitToRunHook = nil
+		pointToCheckedConfigErr = nil
+
+		delegateFactory = checkDelegateFactory(func(state exec.RunState) exec.CheckDelegate {
+			delegate = &recordingCheckDelegate{
+				CheckDelegate: engine.NewCheckDelegate(
+					realBuild,
+					atc.Plan{ID: planID, Check: &checkPlan},
+					state,
+					clock.NewClock(),
+					db.NewResourceCheckRateLimiter(rate.Inf, 0, time.Minute, nil, time.Minute, clock.NewClock()),
+					policy.NoopChecker{},
+				),
+				onScope: func(config db.ResourceConfig, scope db.ResourceConfigScope) {
+					resourceConfig = config
+					resourceConfigScope = scope
+				},
+				wrapScope:   scopeWrapper,
+				onWaitToRun: waitToRunHook,
+				pointErr:    pointToCheckedConfigErr,
+			}
+			return delegate
 		})
-		fakeDelegate = new(execfakes.FakeCheckDelegate)
 
 		stepMetadata = exec.StepMetadata{
 			TeamID:  currentTeam.ID(),
@@ -130,37 +274,10 @@ var _ = Describe("CheckStep", func() {
 				nil,
 			)
 		chosenContainer = chosenWorker.Containers[0]
-		fakePool = new(execfakes.FakePool)
+		fakePool = new(scriptedPool)
 		fakePool.FindOrSelectWorkerReturns(chosenWorker, nil)
 
-		spanCtx = context.Background()
-		fakeDelegate.StartSpanReturns(spanCtx, tracing.NoopSpan)
-
-		fakeStdout = bytes.NewBufferString("out")
-		fakeDelegate.StdoutReturns(fakeStdout)
-
-		fakeStderr = bytes.NewBufferString("err")
-		fakeDelegate.StderrReturns(fakeStderr)
-
-		fakeDelegate.ContainerOwnerReturns(expectedOwner)
-
 		containerMetadata = db.ContainerMetadata{}
-
-		fakeDelegate.FindOrCreateScopeStub = func(config db.ResourceConfig) (db.ResourceConfigScope, error) {
-			resourceConfig = config
-			scope, err := config.FindOrCreateScope(nil)
-			if err == nil {
-				resourceConfigScope = scope
-			}
-			return scope, err
-		}
-		fakeDelegate.UpdateScopeLastCheckStartTimeStub = func(scope db.ResourceConfigScope, nestedCheck bool) (bool, int, error) {
-			found, err := scope.UpdateLastCheckStartTime(int(time.Now().Unix()), nil)
-			return found, realBuild.ID(), err
-		}
-		fakeDelegate.UpdateScopeLastCheckEndTimeStub = func(scope db.ResourceConfigScope, succeeded bool) (bool, error) {
-			return scope.UpdateLastCheckEndTime(succeeded)
-		}
 
 		checkPlan = atc.CheckPlan{
 			Name:   "some-name",
@@ -189,7 +306,7 @@ var _ = Describe("CheckStep", func() {
 			resourceConfigFactory,
 			containerMetadata,
 			fakePool,
-			fakeDelegateFactory,
+			delegateFactory,
 			defaultTimeout,
 			checkStepOpts...,
 		)
@@ -199,12 +316,12 @@ var _ = Describe("CheckStep", func() {
 
 	Context("with a reasonable configuration", func() {
 		It("emits an Initializing event", func() {
-			Expect(fakeDelegate.InitializingCallCount()).To(Equal(1))
+			Expect(execBuildEventTypes(fixture, realBuild)).To(ContainElement(event.EventTypeInitializeCheck))
 		})
 
 		Context("when not running", func() {
 			BeforeEach(func() {
-				fakeDelegate.WaitToRunReturns(nil, false, nil)
+				checkPlan.Interval = atc.CheckEvery{Never: true}
 			})
 
 			It("doesn't run the step and succeeds", func() {
@@ -238,14 +355,9 @@ var _ = Describe("CheckStep", func() {
 		})
 
 		Context("running", func() {
-			var fakeLock *lockfakes.FakeLock
-
 			var invokedResource resource.Resource
 
 			BeforeEach(func() {
-				fakeLock = new(lockfakes.FakeLock)
-				fakeDelegate.WaitToRunReturns(fakeLock, true, nil)
-
 				invokedResource = resource.Resource{}
 
 				chosenContainer.ProcessDefs[0].Stub.Do = func(_ context.Context, p *runtimetest.Process) error {
@@ -266,11 +378,10 @@ var _ = Describe("CheckStep", func() {
 			Context("when not given a from version", func() {
 				BeforeEach(func() {
 					checkPlan.FromVersion = nil
-					fakeDelegate.WaitToRunStub = func(_ context.Context, scope db.ResourceConfigScope) (lock.Lock, bool, error) {
-						// Persisting the version while granting the lock proves LatestVersion
+					waitToRunHook = func(scope db.ResourceConfigScope) {
+						// Persisting the version as the run is granted proves LatestVersion
 						// is queried after WaitToRun rather than before it.
-						err := scope.SaveVersions(db.SpanContext{}, []atc.Version{{"latest": "version"}})
-						return fakeLock, true, err
+						Expect(scope.SaveVersions(db.SpanContext{}, []atc.Version{{"latest": "version"}})).To(Succeed())
 					}
 				})
 
@@ -289,7 +400,7 @@ var _ = Describe("CheckStep", func() {
 				})
 
 				It("get container owner from delegate", func() {
-					Expect(fakeDelegate.ContainerOwnerCallCount()).To(Equal(1))
+					Expect(delegate.containerOwnerCount).To(Equal(1))
 				})
 
 				It("doesn't enforce a timeout", func() {
@@ -302,13 +413,11 @@ var _ = Describe("CheckStep", func() {
 				})
 
 				It("emits a BeforeSelectWorker event", func() {
-					Expect(fakeDelegate.BeforeSelectWorkerCallCount()).To(Equal(1))
+					Expect(delegate.beforeSelectWorkerCount).To(Equal(1))
 				})
 
 				It("emits a SelectedWorker event", func() {
-					Expect(fakeDelegate.SelectedWorkerCallCount()).To(Equal(1))
-					_, workerName := fakeDelegate.SelectedWorkerArgsForCall(0)
-					Expect(workerName).To(Equal("worker"))
+					Expect(persistedSelectedWorkers(fixture, realBuild)).To(Equal([]string{"worker"}))
 				})
 
 				Context("when selecting a worker fails", func() {
@@ -325,8 +434,8 @@ var _ = Describe("CheckStep", func() {
 			Describe("running the check step", func() {
 				Context("when using a custom resource type", func() {
 					var (
-						fakeImageSpec      runtime.ImageSpec
-						imageResourceCache db.ResourceCache
+						fetchedImageArtifact *runtimetest.Volume
+						imageResourceCache   db.ResourceCache
 					)
 
 					BeforeEach(func() {
@@ -351,9 +460,7 @@ var _ = Describe("CheckStep", func() {
 
 						checkPlan.Type = "some-custom-type"
 
-						fakeImageSpec = runtime.ImageSpec{
-							ImageArtifact: runtimetest.NewVolume("some-volume"),
-						}
+						fetchedImageArtifact = runtimetest.NewVolume("some-volume")
 
 						var err error
 						imageResourceCache, err = fixture.ResourceCacheFactory.FindOrCreateResourceCache(
@@ -366,19 +473,24 @@ var _ = Describe("CheckStep", func() {
 						)
 						Expect(err).NotTo(HaveOccurred())
 
-						fakeDelegate.FetchImageReturns(fakeImageSpec, imageResourceCache, nil)
+						imageStepper.artifact = fetchedImageArtifact
+						imageStepper.cache = imageResourceCache
+						stepper = imageStepper.step
 					})
 
 					It("fetches the resource type image", func() {
-						Expect(fakeDelegate.FetchImageCallCount()).To(Equal(1))
-						_, actualGetImagePlan, actualCheckImagePlan, privileged := fakeDelegate.FetchImageArgsForCall(0)
-						Expect(actualGetImagePlan).To(Equal(*checkPlan.TypeImage.GetPlan))
-						Expect(actualCheckImagePlan).To(Equal(checkPlan.TypeImage.CheckPlan))
-						Expect(privileged).To(BeFalse())
+						Expect(imageStepper.ranPlans).To(Equal([]atc.Plan{
+							*checkPlan.TypeImage.CheckPlan,
+							*checkPlan.TypeImage.GetPlan,
+						}))
+						Expect(chosenContainer.Spec.ImageSpec.Privileged).To(BeFalse())
 					})
 
 					It("sets the image spec in the container spec", func() {
-						Expect(chosenContainer.Spec.ImageSpec).To(Equal(fakeImageSpec))
+						Expect(chosenContainer.Spec.ImageSpec).To(Equal(runtime.ImageSpec{
+							ImageArtifact: fetchedImageArtifact,
+							ResourceType:  "some-custom-type",
+						}))
 					})
 
 					It("creates the resource config using the image resource cache", func() {
@@ -399,9 +511,7 @@ var _ = Describe("CheckStep", func() {
 						})
 
 						It("fetches the image with privileged", func() {
-							Expect(fakeDelegate.FetchImageCallCount()).To(Equal(1))
-							_, _, _, privileged := fakeDelegate.FetchImageArgsForCall(0)
-							Expect(privileged).To(BeTrue())
+							Expect(chosenContainer.Spec.ImageSpec.Privileged).To(BeTrue())
 						})
 					})
 
@@ -447,9 +557,10 @@ var _ = Describe("CheckStep", func() {
 					})
 
 					It("points the resource or resource type to the scope", func() {
-						Expect(fakeDelegate.PointToCheckedConfigCallCount()).To(Equal(1))
-						scope := fakeDelegate.PointToCheckedConfigArgsForCall(0)
-						Expect(scope.ID()).To(Equal(resourceConfigScope.ID()))
+						resource, found, err := realPipeline.Resource("some-resource")
+						Expect(err).NotTo(HaveOccurred())
+						Expect(found).To(BeTrue())
+						Expect(resource.ResourceConfigScopeID()).To(Equal(resourceConfigScope.ID()))
 					})
 
 					It("uses build step container owner", func() {
@@ -457,10 +568,9 @@ var _ = Describe("CheckStep", func() {
 					})
 
 					It("update scope's check start time", func() {
-						Expect(fakeDelegate.UpdateScopeLastCheckStartTimeCallCount()).To(Equal(1))
-						scope, nestedStep := fakeDelegate.UpdateScopeLastCheckStartTimeArgsForCall(0)
-						Expect(scope.ID()).To(Equal(resourceConfigScope.ID()))
-						Expect(nestedStep).To(BeFalse())
+						Expect(delegate.startTimeUpdates).To(HaveLen(1))
+						Expect(delegate.startTimeUpdates[0].scope.ID()).To(Equal(resourceConfigScope.ID()))
+						Expect(delegate.startTimeUpdates[0].nestedCheck).To(BeFalse())
 					})
 				})
 
@@ -468,43 +578,24 @@ var _ = Describe("CheckStep", func() {
 					BeforeEach(func() {
 						checkPlan.Resource = ""
 						checkPlan.ResourceType = "some-resource-type"
-
-						expectedOwner = db.NewBuildStepContainerOwner(
-							501,
-							atc.PlanID("502"),
-							503,
-						)
-						fakeDelegate.ContainerOwnerReturns(expectedOwner)
-
-						chosenWorker = runtimetest.NewWorker("worker").
-							WithContainer(
-								expectedOwner,
-								runtimetest.NewContainer().WithProcess(
-									runtime.ProcessSpec{
-										Path: "/opt/resource/check",
-									},
-									runtimetest.ProcessStub{},
-								),
-								nil,
-							)
-						chosenContainer = chosenWorker.Containers[0]
-						fakePool.FindOrSelectWorkerReturns(chosenWorker, nil)
 					})
 
 					It("points the resource or resource type to the scope", func() {
-						Expect(fakeDelegate.PointToCheckedConfigCallCount()).To(Equal(1))
+						resourceType, found, err := realPipeline.ResourceType("some-resource-type")
+						Expect(err).NotTo(HaveOccurred())
+						Expect(found).To(BeTrue())
+						Expect(resourceType.ResourceConfigScopeID()).To(Equal(resourceConfigScope.ID()))
 					})
 
 					It("uses delegate's container owner", func() {
-						Expect(fakeDelegate.ContainerOwnerCallCount()).To(Equal(1))
+						Expect(delegate.containerOwnerCount).To(Equal(1))
 						Expect(chosenContainer.RunningProcesses()).To(HaveLen(1))
 					})
 
 					It("update scope's check start time", func() {
-						Expect(fakeDelegate.UpdateScopeLastCheckStartTimeCallCount()).To(Equal(1))
-						scope, nestedStep := fakeDelegate.UpdateScopeLastCheckStartTimeArgsForCall(0)
-						Expect(scope.ID()).To(Equal(resourceConfigScope.ID()))
-						Expect(nestedStep).To(BeTrue())
+						Expect(delegate.startTimeUpdates).To(HaveLen(1))
+						Expect(delegate.startTimeUpdates[0].scope.ID()).To(Equal(resourceConfigScope.ID()))
+						Expect(delegate.startTimeUpdates[0].nestedCheck).To(BeTrue())
 					})
 				})
 
@@ -528,9 +619,7 @@ var _ = Describe("CheckStep", func() {
 					})
 
 					It("emits an Errored event", func() {
-						Expect(fakeDelegate.ErroredCallCount()).To(Equal(1))
-						_, status := fakeDelegate.ErroredArgsForCall(0)
-						Expect(status).To(Equal(exec.TimeoutLogMessage))
+						Expect(execBuildErrorMessages(fixture, realBuild)).To(Equal([]string{exec.TimeoutLogMessage}))
 					})
 				})
 
@@ -551,19 +640,15 @@ var _ = Describe("CheckStep", func() {
 
 					Context("when tracing is enabled", func() {
 						var spanRecorder *tracetest.SpanRecorder
+						var runSpanContext trace.SpanContext
 
 						BeforeEach(func() {
 							spanRecorder = new(tracetest.SpanRecorder)
 							tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spanRecorder), sdktrace.WithSyncer(tracetest.NewInMemoryExporter()))
 							tracing.ConfigureTraceProvider(tp)
 
-							spanCtx, buildSpan := tracing.StartSpan(ctx, "build", nil)
-							fakeDelegate.StartSpanReturns(spanCtx, buildSpan)
-
 							chosenContainer.ProcessDefs[0].Stub.Do = func(ctx context.Context, _ *runtimetest.Process) error {
-								defer GinkgoRecover()
-								// Properly propagates span context
-								Expect(tracing.FromContext(ctx)).To(Equal(buildSpan))
+								runSpanContext = tracing.FromContext(ctx).SpanContext()
 								return nil
 							}
 						})
@@ -574,6 +659,12 @@ var _ = Describe("CheckStep", func() {
 
 						It("populates the TRACEPARENT env var", func() {
 							Expect(chosenContainer.Spec.Env).To(ContainElement(MatchRegexp(`TRACEPARENT=.+`)))
+						})
+
+						It("propagates the step span into the container run", func() {
+							ended := spanRecorder.Ended()
+							Expect(ended).To(HaveLen(1))
+							Expect(runSpanContext).To(Equal(ended[0].SpanContext()))
 						})
 
 						It("adds state-transition span events", func() {
@@ -592,7 +683,6 @@ var _ = Describe("CheckStep", func() {
 			})
 
 			Context("with tracing configured", func() {
-				var buildSpan trace.Span
 				var tracedVersion atc.Version
 
 				BeforeEach(func() {
@@ -600,8 +690,6 @@ var _ = Describe("CheckStep", func() {
 					tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
 					tracing.ConfigureTraceProvider(tp)
 
-					spanCtx, buildSpan = tracing.StartSpan(context.Background(), "fake-operation", nil)
-					fakeDelegate.StartSpanReturns(spanCtx, buildSpan)
 					tracedVersion = atc.Version{"trace": "persisted"}
 					chosenContainer.ProcessDefs[0].Stub.Output = []atc.Version{tracedVersion}
 				})
@@ -617,7 +705,7 @@ var _ = Describe("CheckStep", func() {
 					reloaded, err := version.Reload()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(reloaded).To(BeTrue())
-					traceID := buildSpan.SpanContext().TraceID().String()
+					traceID := delegate.span.SpanContext().TraceID().String()
 					traceParent := version.SpanContext().Get("traceparent")
 					Expect(traceParent).To(ContainSubstring(traceID))
 				})
@@ -636,8 +724,8 @@ var _ = Describe("CheckStep", func() {
 				})
 
 				It("saves the versions to the config scope", func() {
-					Expect(fakeDelegate.FindOrCreateScopeCallCount()).To(Equal(1))
-					config := fakeDelegate.FindOrCreateScopeArgsForCall(0)
+					Expect(delegate.configs).To(HaveLen(1))
+					config := delegate.configs[0]
 					Expect(config.ID()).To(Equal(expectedConfig.ID()))
 					Expect(config.OriginBaseResourceType().Name).To(Equal("some-base-type"))
 					Expect(resourceConfigScope.ResourceConfig().ID()).To(Equal(config.ID()))
@@ -666,9 +754,8 @@ var _ = Describe("CheckStep", func() {
 				})
 
 				It("emits a successful Finished event", func() {
-					Expect(fakeDelegate.FinishedCallCount()).To(Equal(1))
-					_, succeeded := fakeDelegate.FinishedArgsForCall(0)
-					Expect(succeeded).To(BeTrue())
+					Expect(execBuildFinishEvents(fixture, realBuild)).To(HaveLen(1))
+					Expect(execBuildFinishEvents(fixture, realBuild)[0].Succeeded).To(BeTrue())
 				})
 
 				Context("when no versions are returned", func() {
@@ -719,7 +806,7 @@ var _ = Describe("CheckStep", func() {
 						_, found, err := resourceConfigScope.FindVersion(atc.Version{"version": "2"})
 						Expect(err).NotTo(HaveOccurred())
 						Expect(found).To(BeTrue())
-						Expect(fakeLock.ReleaseCallCount()).To(Equal(1))
+						Expect(delegate.lockReleases).To(Equal(1))
 					})
 				})
 			})
@@ -742,7 +829,7 @@ var _ = Describe("CheckStep", func() {
 
 				// Finished is for script success/failure, whereas this is an error
 				It("does not emit a Finished event", func() {
-					Expect(fakeDelegate.FinishedCallCount()).To(Equal(0))
+					Expect(execBuildFinishEvents(fixture, realBuild)).To(BeEmpty())
 				})
 			})
 
@@ -765,9 +852,8 @@ var _ = Describe("CheckStep", func() {
 				})
 
 				It("emits a failed Finished event", func() {
-					Expect(fakeDelegate.FinishedCallCount()).To(Equal(1))
-					_, succeeded := fakeDelegate.FinishedArgsForCall(0)
-					Expect(succeeded).To(BeFalse())
+					Expect(execBuildFinishEvents(fixture, realBuild)).To(HaveLen(1))
+					Expect(execBuildFinishEvents(fixture, realBuild)[0].Succeeded).To(BeFalse())
 				})
 			})
 
@@ -776,14 +862,8 @@ var _ = Describe("CheckStep", func() {
 
 				BeforeEach(func() {
 					expectedErr = errors.New("save-versions-err")
-					fakeDelegate.FindOrCreateScopeStub = func(config db.ResourceConfig) (db.ResourceConfigScope, error) {
-						healthyScope, err := config.FindOrCreateScope(nil)
-						if err != nil {
-							return nil, err
-						}
-						resourceConfig = config
-						resourceConfigScope = healthyScope
-						return saveVersionsErrorScope{ResourceConfigScope: healthyScope, err: expectedErr}, nil
+					scopeWrapper = func(scope db.ResourceConfigScope) db.ResourceConfigScope {
+						return saveVersionsErrorScope{ResourceConfigScope: scope, err: expectedErr}
 					}
 				})
 
@@ -795,20 +875,14 @@ var _ = Describe("CheckStep", func() {
 
 			Context("when SaveVersions fails with FK violation (scope deleted by GC)", func() {
 				BeforeEach(func() {
-					fakeDelegate.FindOrCreateScopeStub = func(config db.ResourceConfig) (db.ResourceConfigScope, error) {
-						healthyScope, err := config.FindOrCreateScope(nil)
-						if err != nil {
-							return nil, err
-						}
-						resourceConfig = config
-						resourceConfigScope = healthyScope
+					scopeWrapper = func(scope db.ResourceConfigScope) db.ResourceConfigScope {
 						return saveVersionsErrorScope{
-							ResourceConfigScope: healthyScope,
+							ResourceConfigScope: scope,
 							err: fmt.Errorf(
 								"save versions: %w",
 								&pgconn.PgError{Code: pgerrcode.ForeignKeyViolation},
 							),
-						}, nil
+						}
 					}
 				})
 
@@ -817,9 +891,8 @@ var _ = Describe("CheckStep", func() {
 				})
 
 				It("finishes with failure (non-fatal)", func() {
-					Expect(fakeDelegate.FinishedCallCount()).To(Equal(1))
-					_, succeeded := fakeDelegate.FinishedArgsForCall(0)
-					Expect(succeeded).To(BeFalse())
+					Expect(execBuildFinishEvents(fixture, realBuild)).To(HaveLen(1))
+					Expect(execBuildFinishEvents(fixture, realBuild)[0].Succeeded).To(BeFalse())
 				})
 			})
 		})
@@ -839,9 +912,7 @@ var _ = Describe("CheckStep", func() {
 
 	Context("when PointToCheckedConfig fails with FK violation (scope deleted by GC)", func() {
 		BeforeEach(func() {
-			fakeDelegate.PointToCheckedConfigReturns(
-				&pgconn.PgError{Code: pgerrcode.ForeignKeyViolation},
-			)
+			pointToCheckedConfigErr = &pgconn.PgError{Code: pgerrcode.ForeignKeyViolation}
 		})
 
 		It("does not error", func() {
@@ -849,20 +920,14 @@ var _ = Describe("CheckStep", func() {
 		})
 
 		It("finishes with failure (non-fatal)", func() {
-			Expect(fakeDelegate.FinishedCallCount()).To(Equal(1))
-			_, succeeded := fakeDelegate.FinishedArgsForCall(0)
-			Expect(succeeded).To(BeFalse())
+			Expect(execBuildFinishEvents(fixture, realBuild)).To(HaveLen(1))
+			Expect(execBuildFinishEvents(fixture, realBuild)[0].Succeeded).To(BeFalse())
 		})
 	})
 
 	// MO-02, MO-03, MO-04: Check metrics
 	Describe("Check Metrics", func() {
-		var fakeLock *lockfakes.FakeLock
-
 		BeforeEach(func() {
-			fakeLock = new(lockfakes.FakeLock)
-			fakeDelegate.WaitToRunReturns(fakeLock, true, nil)
-
 			// Drain any leftover metric state from other tests
 			metric.Metrics.ChecksStarted.Delta()
 			metric.Metrics.ChecksFinishedWithSuccess.Delta()
@@ -943,7 +1008,7 @@ var _ = Describe("CheckStep", func() {
 
 		Context("when WaitToRun returns run=false", func() {
 			BeforeEach(func() {
-				fakeDelegate.WaitToRunReturns(nil, false, nil)
+				checkPlan.Interval = atc.CheckEvery{Never: true}
 			})
 
 			It("does not increment ChecksStarted", func() {
@@ -954,17 +1019,11 @@ var _ = Describe("CheckStep", func() {
 	})
 
 	Context("native resolution for registry-image", func() {
-		var (
-			fakeResolver *imageresolvertesting.FakeResolver
-			fakeLock     *lockfakes.FakeLock
-		)
+		var fakeResolver *imageresolvertesting.FakeResolver
 
 		BeforeEach(func() {
 			fakeResolver = new(imageresolvertesting.FakeResolver)
 			checkStepOpts = []exec.CheckStepOption{exec.WithCheckResolver(fakeResolver)}
-
-			fakeLock = new(lockfakes.FakeLock)
-			fakeDelegate.WaitToRunReturns(fakeLock, true, nil)
 
 			checkPlan = atc.CheckPlan{
 				Name: "some-registry-image",

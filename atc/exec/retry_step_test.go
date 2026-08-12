@@ -5,7 +5,6 @@ import (
 	"errors"
 
 	. "github.com/concourse/concourse/atc/exec"
-	"github.com/concourse/concourse/atc/exec/execfakes"
 	"github.com/concourse/concourse/vars"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -16,9 +15,9 @@ var _ = Describe("Retry Step", func() {
 		ctx    context.Context
 		cancel func()
 
-		attempt1 *execfakes.FakeStep
-		attempt2 *execfakes.FakeStep
-		attempt3 *execfakes.FakeStep
+		attempt1 *scriptedStep
+		attempt2 *scriptedStep
+		attempt3 *scriptedStep
 
 		state RunState
 
@@ -28,9 +27,9 @@ var _ = Describe("Retry Step", func() {
 	BeforeEach(func() {
 		ctx, cancel = context.WithCancel(context.Background())
 
-		attempt1 = new(execfakes.FakeStep)
-		attempt2 = new(execfakes.FakeStep)
-		attempt3 = new(execfakes.FakeStep)
+		attempt1 = new(scriptedStep)
+		attempt2 = new(scriptedStep)
+		attempt3 = new(scriptedStep)
 
 		state = NewRunState(noopStepper, vars.StaticVariables{})
 

@@ -221,7 +221,7 @@ var _ = Describe("BuildStepDelegate", func() {
 
 					volume = runtimetest.NewVolume("image-handle")
 
-					step := new(execfakes.FakeStep)
+					step := new(scriptedStep)
 					step.RunStub = func(_ context.Context, state exec.RunState) (bool, error) {
 						state.ArtifactRepository().RegisterArtifact("image", volume, false)
 						state.StoreResult(expectedGetPlan.ID, exec.GetResult{
@@ -571,7 +571,7 @@ var _ = Describe("BuildStepDelegate", func() {
 						runPlans = append(runPlans, p)
 
 						vol := runtimetest.NewVolume("registry-image-handle")
-						step := new(execfakes.FakeStep)
+						step := new(scriptedStep)
 						step.RunStub = func(_ context.Context, state exec.RunState) (bool, error) {
 							state.ArtifactRepository().RegisterArtifact("image", vol, false)
 							state.StoreResult(expectedGetPlan.ID, exec.GetResult{
@@ -664,7 +664,7 @@ var _ = Describe("BuildStepDelegate", func() {
 
 					vol := runtimetest.NewVolume("fallback-image-handle")
 
-					step := new(execfakes.FakeStep)
+					step := new(scriptedStep)
 					step.RunStub = func(_ context.Context, state exec.RunState) (bool, error) {
 						state.ArtifactRepository().RegisterArtifact("image", vol, false)
 						state.StoreResult(registryGetPlan.ID, exec.GetResult{
@@ -745,7 +745,7 @@ var _ = Describe("BuildStepDelegate", func() {
 					nativeDelegate = engine.NewBuildStepDelegateWithFactories(
 						realBuild, planID, exec.NewRunState(func(p atc.Plan) exec.Step {
 							runPlans = append(runPlans, p)
-							return new(execfakes.FakeStep)
+							return new(scriptedStep)
 						}, nil), fakeClock, fakePolicyChecker, false,
 						wrappedFactory, fixture.ResourceCacheFactory, fakeResolver,
 					)
@@ -770,7 +770,7 @@ var _ = Describe("BuildStepDelegate", func() {
 					nativeDelegate = engine.NewBuildStepDelegateWithFactories(
 						realBuild, planID, exec.NewRunState(func(p atc.Plan) exec.Step {
 							runPlans = append(runPlans, p)
-							return new(execfakes.FakeStep)
+							return new(scriptedStep)
 						}, nil), fakeClock, fakePolicyChecker, false,
 						fixture.ResourceConfigFactory, fixture.ResourceCacheFactory,
 						fakeResolver,
@@ -830,7 +830,7 @@ var _ = Describe("BuildStepDelegate", func() {
 
 					nativeDelegate = engine.NewBuildStepDelegateWithFactories(
 						realBuild, planID, exec.NewRunState(func(p atc.Plan) exec.Step {
-							return new(execfakes.FakeStep)
+							return new(scriptedStep)
 						}, nil), fakeClock, fakePolicyChecker, false,
 						fixture.ResourceConfigFactory, fixture.ResourceCacheFactory,
 						fakeResolver,
@@ -864,7 +864,7 @@ var _ = Describe("BuildStepDelegate", func() {
 
 					nativeDelegate = engine.NewBuildStepDelegateWithFactories(
 						realBuild, planID, exec.NewRunState(func(p atc.Plan) exec.Step {
-							return new(execfakes.FakeStep)
+							return new(scriptedStep)
 						}, nil), fakeClock, fakePolicyChecker, false,
 						fixture.ResourceConfigFactory, fixture.ResourceCacheFactory,
 						fakeResolver,

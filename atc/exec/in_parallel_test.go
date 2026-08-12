@@ -9,7 +9,6 @@ import (
 
 	. "github.com/concourse/concourse/atc/exec"
 	"github.com/concourse/concourse/atc/exec/build"
-	"github.com/concourse/concourse/atc/exec/execfakes"
 	"github.com/concourse/concourse/vars"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -20,8 +19,8 @@ var _ = Describe("Parallel", func() {
 		ctx    context.Context
 		cancel func()
 
-		fakeStepA *execfakes.FakeStep
-		fakeStepB *execfakes.FakeStep
+		fakeStepA *scriptedStep
+		fakeStepB *scriptedStep
 		fakeSteps []Step
 
 		repo  *build.Repository
@@ -35,8 +34,8 @@ var _ = Describe("Parallel", func() {
 	BeforeEach(func() {
 		ctx, cancel = context.WithCancel(context.Background())
 
-		fakeStepA = new(execfakes.FakeStep)
-		fakeStepB = new(execfakes.FakeStep)
+		fakeStepA = new(scriptedStep)
+		fakeStepB = new(scriptedStep)
 		fakeSteps = []Step{fakeStepA, fakeStepB}
 
 		step = InParallel(fakeSteps, len(fakeSteps), false)

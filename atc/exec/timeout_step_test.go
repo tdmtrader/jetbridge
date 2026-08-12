@@ -6,7 +6,6 @@ import (
 	"time"
 
 	. "github.com/concourse/concourse/atc/exec"
-	"github.com/concourse/concourse/atc/exec/execfakes"
 	"github.com/concourse/concourse/vars"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -17,7 +16,7 @@ var _ = Describe("Timeout Step", func() {
 		ctx    context.Context
 		cancel func()
 
-		fakeStep *execfakes.FakeStep
+		fakeStep *scriptedStep
 
 		state RunState
 
@@ -32,7 +31,7 @@ var _ = Describe("Timeout Step", func() {
 	BeforeEach(func() {
 		ctx, cancel = context.WithCancel(context.Background())
 
-		fakeStep = new(execfakes.FakeStep)
+		fakeStep = new(scriptedStep)
 
 		state = NewRunState(noopStepper, vars.StaticVariables{})
 

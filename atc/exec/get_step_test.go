@@ -8,36 +8,133 @@ import (
 	"fmt"
 	"time"
 
+	"code.cloudfoundry.org/clock"
 	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/lock"
 	"github.com/concourse/concourse/atc/db/lock/lockfakes"
+	"github.com/concourse/concourse/atc/engine"
+	"github.com/concourse/concourse/atc/event"
 	"github.com/concourse/concourse/atc/exec"
 	"github.com/concourse/concourse/atc/exec/build"
-	"github.com/concourse/concourse/atc/exec/execfakes"
+	"github.com/concourse/concourse/atc/policy"
 	"github.com/concourse/concourse/atc/resource"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/runtime/runtimetest"
 	"github.com/concourse/concourse/atc/worker"
 	"github.com/concourse/concourse/tracing"
 	"github.com/concourse/concourse/vars"
-	"github.com/onsi/gomega/gbytes"
 	"go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	oteltrace "go.opentelemetry.io/otel/trace"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
 
+func persistedFinishGets(fixture *execDBFixture, build db.Build) []event.FinishGet {
+	GinkgoHelper()
+	var finished []event.FinishGet
+	for _, e := range execBuildEvents(fixture, build) {
+		if finish, ok := e.(event.FinishGet); ok {
+			finished = append(finished, finish)
+		}
+	}
+	return finished
+}
+
+// recordingGetDelegate keeps every behavior of the real delegate and adds only
+// what PostgreSQL cannot show: the order of calls that persist nothing of
+// their own.
+type recordingGetDelegate struct {
+	exec.GetDelegate
+
+	calls          []string
+	updatedVersion []resourceVersionUpdate
+}
+
+type resourceVersionUpdate struct {
+	resourceName string
+	result       resource.VersionResult
+}
+
+func (delegate *recordingGetDelegate) Initializing(logger lager.Logger) {
+	delegate.calls = append(delegate.calls, "Initializing")
+	delegate.GetDelegate.Initializing(logger)
+}
+
+func (delegate *recordingGetDelegate) Starting(logger lager.Logger) {
+	delegate.calls = append(delegate.calls, "Starting")
+	delegate.GetDelegate.Starting(logger)
+}
+
+func (delegate *recordingGetDelegate) BeforeSelectWorker(logger lager.Logger) error {
+	delegate.calls = append(delegate.calls, "BeforeSelectWorker")
+	return delegate.GetDelegate.BeforeSelectWorker(logger)
+}
+
+func (delegate *recordingGetDelegate) SelectedWorker(logger lager.Logger, name string) {
+	delegate.calls = append(delegate.calls, "SelectedWorker")
+	delegate.GetDelegate.SelectedWorker(logger, name)
+}
+
+func (delegate *recordingGetDelegate) Finished(logger lager.Logger, status exec.ExitStatus, result resource.VersionResult) {
+	delegate.calls = append(delegate.calls, "Finished")
+	delegate.GetDelegate.Finished(logger, status, result)
+}
+
+func (delegate *recordingGetDelegate) ResourceCacheUser() db.ResourceCacheUser {
+	delegate.calls = append(delegate.calls, "ResourceCacheUser")
+	return delegate.GetDelegate.ResourceCacheUser()
+}
+
+func (delegate *recordingGetDelegate) ContainerOwner(planID atc.PlanID) db.ContainerOwner {
+	delegate.calls = append(delegate.calls, "ContainerOwner")
+	return delegate.GetDelegate.ContainerOwner(planID)
+}
+
+func (delegate *recordingGetDelegate) UpdateResourceVersion(logger lager.Logger, resourceName string, result resource.VersionResult) {
+	delegate.updatedVersion = append(delegate.updatedVersion, resourceVersionUpdate{
+		resourceName: resourceName,
+		result:       result,
+	})
+	delegate.GetDelegate.UpdateResourceVersion(logger, resourceName, result)
+}
+
+func (delegate *recordingGetDelegate) callCount(name string) int {
+	count := 0
+	for _, call := range delegate.calls {
+		if call == name {
+			count++
+		}
+	}
+	return count
+}
+
+func (delegate *recordingGetDelegate) lifecycleCalls() []string {
+	lifecycle := map[string]bool{
+		"Initializing":       true,
+		"Starting":           true,
+		"BeforeSelectWorker": true,
+		"SelectedWorker":     true,
+		"Finished":           true,
+	}
+	var calls []string
+	for _, call := range delegate.calls {
+		if lifecycle[call] {
+			calls = append(calls, call)
+		}
+	}
+	return calls
+}
+
 var _ = Describe("GetStep", func() {
 	var (
-		ctx       context.Context
-		cancel    func()
-		stdoutBuf *gbytes.Buffer
-		stderrBuf *gbytes.Buffer
+		ctx    context.Context
+		cancel func()
 
-		fakePool        *execfakes.FakePool
+		fakePool        *scriptedPool
 		chosenWorker    *runtimetest.Worker
 		chosenContainer *runtimetest.WorkerContainer
 		getVolume       *runtimetest.Volume
@@ -47,12 +144,13 @@ var _ = Describe("GetStep", func() {
 		resourceCacheFactory db.ResourceCacheFactory
 		loadOwnedCache       func() db.ResourceCache
 
-		fakeDelegate        *execfakes.FakeGetDelegate
-		fakeDelegateFactory exec.GetDelegateFactory
+		delegate        *recordingGetDelegate
+		delegateFactory exec.GetDelegateFactory
 
 		fakeLockFactory *lockfakes.FakeLockFactory
 
-		spanCtx context.Context
+		stepper      exec.Stepper
+		imageStepper *imageFetchStepper
 
 		getPlan *atc.GetPlan
 
@@ -70,18 +168,10 @@ var _ = Describe("GetStep", func() {
 			StepName:         "some-step",
 		}
 
-		stepMetadata = exec.StepMetadata{
-			TeamID:       123,
-			TeamName:     "some-team",
-			BuildID:      42,
-			BuildName:    "some-build",
-			PipelineID:   4567,
-			PipelineName: "some-pipeline",
-		}
+		stepMetadata  exec.StepMetadata
+		expectedOwner db.ContainerOwner
 
 		planID = atc.PlanID("56")
-
-		expectedOwner = db.NewBuildStepContainerOwner(stepMetadata.BuildID, planID, stepMetadata.TeamID)
 
 		defaultGetTimeout time.Duration = 0
 	)
@@ -89,7 +179,9 @@ var _ = Describe("GetStep", func() {
 	BeforeEach(func() {
 		ctx, cancel = context.WithCancel(context.Background())
 		fixture = useExecDB()
-		_, _, _, realBuild = createExecJobBuild(
+		var realTeam db.Team
+		var realPipeline db.Pipeline
+		realTeam, realPipeline, _, realBuild = createExecJobBuild(
 			fixture,
 			"some-team",
 			atc.PipelineRef{Name: "some-pipeline"},
@@ -99,6 +191,16 @@ var _ = Describe("GetStep", func() {
 			},
 			"some-user",
 		)
+		stepMetadata = exec.StepMetadata{
+			TeamID:       realTeam.ID(),
+			TeamName:     realTeam.Name(),
+			BuildID:      realBuild.ID(),
+			BuildName:    realBuild.Name(),
+			PipelineID:   realPipeline.ID(),
+			PipelineName: realPipeline.Name(),
+		}
+		expectedOwner = db.NewBuildStepContainerOwner(stepMetadata.BuildID, planID, stepMetadata.TeamID)
+
 		resourceCacheFactory = fixture.ResourceCacheFactory
 		loadOwnedCache = func() db.ResourceCache {
 			var resourceCacheID int
@@ -135,29 +237,27 @@ var _ = Describe("GetStep", func() {
 			},
 		}
 
-		fakePool = new(execfakes.FakePool)
+		fakePool = new(scriptedPool)
 		fakePool.FindOrSelectWorkerReturns(chosenWorker, nil)
 
 		fakeLockFactory = lockOnAttempt(1)
 
-		runState = exec.NewRunState(noopStepper, vars.StaticVariables{
+		imageStepper = new(imageFetchStepper)
+		stepper = noopStepper
+
+		runState = exec.NewRunState(func(plan atc.Plan) exec.Step {
+			return stepper(plan)
+		}, vars.StaticVariables{
 			"source-var": "super-secret-source",
 			"params-var": "super-secret-params",
 		})
 		artifactRepository = runState.ArtifactRepository()
 
-		fakeDelegate = new(execfakes.FakeGetDelegate)
-		stdoutBuf = gbytes.NewBuffer()
-		stderrBuf = gbytes.NewBuffer()
-		fakeDelegate.StdoutReturns(stdoutBuf)
-		fakeDelegate.StderrReturns(stderrBuf)
-		spanCtx = context.Background()
-		fakeDelegate.StartSpanReturns(spanCtx, tracing.NoopSpan)
-		fakeDelegate.ContainerOwnerReturns(expectedOwner)
-		fakeDelegate.ResourceCacheUserReturns(db.ForBuild(realBuild.ID()))
-
-		fakeDelegateFactory = getDelegateFactory(func(exec.RunState) exec.GetDelegate {
-			return fakeDelegate
+		delegateFactory = getDelegateFactory(func(state exec.RunState) exec.GetDelegate {
+			delegate = &recordingGetDelegate{
+				GetDelegate: engine.NewGetDelegate(realBuild, planID, state, clock.NewClock(), policy.NoopChecker{}),
+			}
+			return delegate
 		})
 
 		getPlan = &atc.GetPlan{
@@ -190,7 +290,7 @@ var _ = Describe("GetStep", func() {
 			containerMetadata,
 			fakeLockFactory,
 			resourceCacheFactory,
-			fakeDelegateFactory,
+			delegateFactory,
 			fakePool,
 			defaultGetTimeout,
 		)
@@ -263,19 +363,15 @@ var _ = Describe("GetStep", func() {
 
 	Context("when tracing is enabled", func() {
 		var spanRecorder *tracetest.SpanRecorder
+		var runSpanContext oteltrace.SpanContext
 
 		BeforeEach(func() {
 			spanRecorder = new(tracetest.SpanRecorder)
 			tp := trace.NewTracerProvider(trace.WithSpanProcessor(spanRecorder), trace.WithSyncer(tracetest.NewInMemoryExporter()))
 			tracing.ConfigureTraceProvider(tp)
 
-			spanCtx, buildSpan := tracing.StartSpan(ctx, "build", nil)
-			fakeDelegate.StartSpanReturns(spanCtx, buildSpan)
-
 			chosenContainer.ProcessDefs[0].Stub.Do = func(ctx context.Context, _ *runtimetest.Process) error {
-				defer GinkgoRecover()
-				// Properly propagates span context
-				Expect(tracing.FromContext(ctx)).To(Equal(buildSpan))
+				runSpanContext = tracing.FromContext(ctx).SpanContext()
 				return nil
 			}
 		})
@@ -286,6 +382,12 @@ var _ = Describe("GetStep", func() {
 
 		It("populates the TRACEPARENT env var", func() {
 			Expect(chosenContainer.Spec.Env).To(ContainElement(MatchRegexp(`TRACEPARENT=.+`)))
+		})
+
+		It("propagates the step span into the container run", func() {
+			ended := spanRecorder.Ended()
+			Expect(ended).To(HaveLen(1))
+			Expect(runSpanContext).To(Equal(ended[0].SpanContext()))
 		})
 
 		It("adds state-transition span events", func() {
@@ -361,7 +463,7 @@ var _ = Describe("GetStep", func() {
 			})
 
 			It("logs a message to stderr", func() {
-				Expect(stderrBuf).To(gbytes.Say(`INFO.*found.*cache`))
+				Expect(execBuildLog(fixture, realBuild, event.OriginSourceStderr)).To(MatchRegexp(`INFO.*found.*cache`))
 			})
 
 			It("loads metadata from the persisted cache row", func() {
@@ -370,6 +472,13 @@ var _ = Describe("GetStep", func() {
 				metadata, err := fixture.ResourceCacheFactory.ResourceCacheMetadata(cache)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(metadata).To(Equal(db.ResourceConfigMetadataFields{{Name: "some", Value: "metadata"}}))
+			})
+
+			It("looks the cache up by the persisted row on the selected worker", func() {
+				Expect(fakePool.FindResourceCacheVolumeOnWorkerCallCount()).To(Equal(1))
+				_, resourceCache, _, workerName, _ := fakePool.FindResourceCacheVolumeOnWorkerArgsForCall(0)
+				Expect(resourceCache.ID()).To(Equal(cached.ID()))
+				Expect(workerName).To(Equal(chosenWorker.Name()))
 			})
 
 			It("[GS-04] registers the cached artifact with fromCache=true", func() {
@@ -402,15 +511,15 @@ var _ = Describe("GetStep", func() {
 			})
 
 			It("finishes the step via the delegate", func() {
-				Expect(fakeDelegate.FinishedCallCount()).To(Equal(1))
-				_, status, info := fakeDelegate.FinishedArgsForCall(0)
-				Expect(status).To(Equal(exec.ExitStatus(0)))
-				Expect(info.Version).To(Equal(atc.Version{"some": "version"}))
-				Expect(info.Metadata).To(Equal(atc.Metadata{{Name: "some", Value: "metadata"}}))
+				finished := persistedFinishGets(fixture, realBuild)
+				Expect(finished).To(HaveLen(1))
+				Expect(finished[0].ExitStatus).To(Equal(0))
+				Expect(finished[0].FetchedVersion).To(Equal(atc.Version{"some": "version"}))
+				Expect(finished[0].FetchedMetadata).To(Equal(atc.Metadata{{Name: "some", Value: "metadata"}}))
 			})
 
 			It("does not log any info messages", func() {
-				Expect(stderrBuf).ToNot(gbytes.Say("INFO"))
+				Expect(execBuildLog(fixture, realBuild, event.OriginSourceStderr)).ToNot(ContainSubstring("INFO"))
 			})
 
 			Context("when the lock isn't initially acquired", func() {
@@ -423,7 +532,7 @@ var _ = Describe("GetStep", func() {
 				})
 
 				It("logs a message to stderr", func() {
-					Expect(stderrBuf).To(gbytes.Say(`INFO.*waiting.*lock`))
+					Expect(execBuildLog(fixture, realBuild, event.OriginSourceStderr)).To(MatchRegexp(`INFO.*waiting.*lock`))
 				})
 
 				It("[GS-03] retries lock acquisition until successful", func() {
@@ -450,15 +559,15 @@ var _ = Describe("GetStep", func() {
 		})
 
 		It("get resource cache owner from delegate", func() {
-			Expect(fakeDelegate.ResourceCacheUserCallCount()).To(Equal(1))
+			Expect(delegate.callCount("ResourceCacheUser")).To(Equal(1))
 		})
 
 		It("get container owner from delegate", func() {
-			Expect(fakeDelegate.ContainerOwnerCallCount()).To(Equal(1))
+			Expect(delegate.callCount("ContainerOwner")).To(Equal(1))
 		})
 
 		It("emits a BeforeSelectWorker event", func() {
-			Expect(fakeDelegate.BeforeSelectWorkerCallCount()).To(Equal(1))
+			Expect(delegate.callCount("BeforeSelectWorker")).To(Equal(1))
 		})
 
 		It("calls SelectWorker with the correct WorkerSpec", func() {
@@ -470,9 +579,7 @@ var _ = Describe("GetStep", func() {
 		})
 
 		It("emits a SelectedWorker event", func() {
-			Expect(fakeDelegate.SelectedWorkerCallCount()).To(Equal(1))
-			_, workerName := fakeDelegate.SelectedWorkerArgsForCall(0)
-			Expect(workerName).To(Equal("worker"))
+			Expect(persistedSelectedWorkers(fixture, realBuild)).To(Equal([]string{"worker"}))
 		})
 
 		Context("when selecting a worker fails", func() {
@@ -506,14 +613,12 @@ var _ = Describe("GetStep", func() {
 		})
 
 		It("emits an Errored event", func() {
-			Expect(fakeDelegate.ErroredCallCount()).To(Equal(1))
-			_, status := fakeDelegate.ErroredArgsForCall(0)
-			Expect(status).To(Equal(exec.TimeoutLogMessage))
+			Expect(execBuildErrorMessages(fixture, realBuild)).To(Equal([]string{exec.TimeoutLogMessage}))
 		})
 
 		It("[SE-04] calls Errored but not Finished on timeout", func() {
-			Expect(fakeDelegate.ErroredCallCount()).To(Equal(1))
-			Expect(fakeDelegate.FinishedCallCount()).To(Equal(0))
+			Expect(execBuildErrorMessages(fixture, realBuild)).To(HaveLen(1))
+			Expect(persistedFinishGets(fixture, realBuild)).To(BeEmpty())
 		})
 
 		Context("when the timeout is bogus", func() {
@@ -554,8 +659,8 @@ var _ = Describe("GetStep", func() {
 
 	Context("when using a custom resource type", func() {
 		var (
-			fetchedImageSpec   runtime.ImageSpec
-			imageResourceCache db.ResourceCache
+			fetchedImageArtifact *runtimetest.Volume
+			imageResourceCache   db.ResourceCache
 		)
 
 		BeforeEach(func() {
@@ -581,9 +686,7 @@ var _ = Describe("GetStep", func() {
 			getPlan.Type = "some-custom-type"
 			getPlan.TypeImage.BaseType = "registry-image"
 
-			fetchedImageSpec = runtime.ImageSpec{
-				ImageArtifact: runtimetest.NewVolume("some-volume"),
-			}
+			fetchedImageArtifact = runtimetest.NewVolume("some-volume")
 
 			var err error
 			imageResourceCache, err = fixture.ResourceCacheFactory.FindOrCreateResourceCache(
@@ -596,7 +699,9 @@ var _ = Describe("GetStep", func() {
 			)
 			Expect(err).NotTo(HaveOccurred())
 
-			fakeDelegate.FetchImageReturns(fetchedImageSpec, imageResourceCache, nil)
+			imageStepper.artifact = fetchedImageArtifact
+			imageStepper.cache = imageResourceCache
+			stepper = imageStepper.step
 		})
 
 		It("uses the same imageResourceCache to create the resourceCache", func() {
@@ -605,11 +710,11 @@ var _ = Describe("GetStep", func() {
 		})
 
 		It("fetches the resource type image and uses it for the container", func() {
-			Expect(fakeDelegate.FetchImageCallCount()).To(Equal(1))
-			_, actualGetImagePlan, actualCheckImagePlan, privileged := fakeDelegate.FetchImageArgsForCall(0)
-			Expect(actualGetImagePlan).To(Equal(*getPlan.TypeImage.GetPlan))
-			Expect(actualCheckImagePlan).To(Equal(getPlan.TypeImage.CheckPlan))
-			Expect(privileged).To(BeFalse())
+			Expect(imageStepper.ranPlans).To(Equal([]atc.Plan{
+				*getPlan.TypeImage.CheckPlan,
+				*getPlan.TypeImage.GetPlan,
+			}))
+			Expect(chosenContainer.Spec.ImageSpec.Privileged).To(BeFalse())
 		})
 
 		It("sets the worker spec with teamID", func() {
@@ -624,7 +729,10 @@ var _ = Describe("GetStep", func() {
 		})
 
 		It("runs with the correct ImageSpec", func() {
-			Expect(chosenContainer.Spec.ImageSpec).To(Equal(fetchedImageSpec))
+			Expect(chosenContainer.Spec.ImageSpec).To(Equal(runtime.ImageSpec{
+				ImageArtifact: fetchedImageArtifact,
+				ResourceType:  "some-custom-type",
+			}))
 		})
 
 		Context("when the resource type is privileged", func() {
@@ -633,9 +741,7 @@ var _ = Describe("GetStep", func() {
 			})
 
 			It("fetches the image with privileged", func() {
-				Expect(fakeDelegate.FetchImageCallCount()).To(Equal(1))
-				_, _, _, privileged := fakeDelegate.FetchImageArgsForCall(0)
-				Expect(privileged).To(BeTrue())
+				Expect(chosenContainer.Spec.ImageSpec.Privileged).To(BeTrue())
 			})
 		})
 	})
@@ -685,15 +791,16 @@ var _ = Describe("GetStep", func() {
 		})
 
 		It("finishes the step via the delegate", func() {
-			Expect(fakeDelegate.FinishedCallCount()).To(Equal(1))
-			_, status, info := fakeDelegate.FinishedArgsForCall(0)
-			Expect(status).To(Equal(exec.ExitStatus(0)))
-			Expect(info.Version).To(Equal(atc.Version{"some": "version"}))
-			Expect(info.Metadata).To(Equal(atc.Metadata{{Name: "some", Value: "metadata"}}))
+			finished := persistedFinishGets(fixture, realBuild)
+			Expect(finished).To(HaveLen(1))
+			Expect(finished[0].ExitStatus).To(Equal(0))
+			Expect(finished[0].FetchedVersion).To(Equal(atc.Version{"some": "version"}))
+			Expect(finished[0].FetchedMetadata).To(Equal(atc.Metadata{{Name: "some", Value: "metadata"}}))
 		})
 
 		It("saves the version for the resource", func() {
-			Expect(fakeDelegate.UpdateResourceVersionCallCount()).To(Equal(1))
+			Expect(delegate.updatedVersion).To(HaveLen(1))
+			Expect(delegate.updatedVersion[0].resourceName).To(Equal("some-resource"))
 		})
 
 		It("adds metadata to the build variables", func() {
@@ -706,8 +813,8 @@ var _ = Describe("GetStep", func() {
 		})
 
 		It("[SE-04] calls Finished but not Errored on success", func() {
-			Expect(fakeDelegate.FinishedCallCount()).To(Equal(1))
-			Expect(fakeDelegate.ErroredCallCount()).To(Equal(0))
+			Expect(persistedFinishGets(fixture, realBuild)).To(HaveLen(1))
+			Expect(execBuildErrorMessages(fixture, realBuild)).To(BeEmpty())
 		})
 
 		Context("when the source has a repository and version has a digest", func() {
@@ -769,10 +876,11 @@ var _ = Describe("GetStep", func() {
 		})
 
 		It("finishes the step via the delegate", func() {
-			Expect(fakeDelegate.FinishedCallCount()).To(Equal(1))
-			_, actualExitStatus, actualVersionResult := fakeDelegate.FinishedArgsForCall(0)
-			Expect(actualExitStatus).ToNot(Equal(exec.ExitStatus(0)))
-			Expect(actualVersionResult).To(BeZero())
+			finished := persistedFinishGets(fixture, realBuild)
+			Expect(finished).To(HaveLen(1))
+			Expect(finished[0].ExitStatus).ToNot(Equal(0))
+			Expect(finished[0].FetchedVersion).To(BeNil())
+			Expect(finished[0].FetchedMetadata).To(BeNil())
 		})
 
 		It("does not return an err", func() {
@@ -780,7 +888,7 @@ var _ = Describe("GetStep", func() {
 		})
 
 		It("does not update the resource version", func() {
-			Expect(fakeDelegate.UpdateResourceVersionCallCount()).To(Equal(0))
+			Expect(delegate.updatedVersion).To(BeEmpty())
 		})
 	})
 
@@ -924,16 +1032,15 @@ var _ = Describe("GetStep", func() {
 		})
 
 		It("updates resource version metadata", func() {
-			Expect(fakeDelegate.UpdateResourceVersionCallCount()).To(Equal(1))
-			_, resourceName, versionResult := fakeDelegate.UpdateResourceVersionArgsForCall(0)
-			Expect(resourceName).To(Equal("some-resource"))
-			Expect(versionResult.Version).To(Equal(atc.Version{"digest": "sha256:abc123def456"}))
+			Expect(delegate.updatedVersion).To(HaveLen(1))
+			Expect(delegate.updatedVersion[0].resourceName).To(Equal("some-resource"))
+			Expect(delegate.updatedVersion[0].result.Version).To(Equal(atc.Version{"digest": "sha256:abc123def456"}))
 		})
 
 		It("emits Finished with exit status 0", func() {
-			Expect(fakeDelegate.FinishedCallCount()).To(Equal(1))
-			_, exitStatus, _ := fakeDelegate.FinishedArgsForCall(0)
-			Expect(exitStatus).To(Equal(exec.ExitStatus(0)))
+			finished := persistedFinishGets(fixture, realBuild)
+			Expect(finished).To(HaveLen(1))
+			Expect(finished[0].ExitStatus).To(Equal(0))
 		})
 	})
 
@@ -943,31 +1050,8 @@ var _ = Describe("GetStep", func() {
 	// Note: Starting fires before worker selection in get (inside run() before
 	// retrieveFromCacheOrPerformGet), unlike put where Starting comes after SelectedWorker.
 	Context("[SE-03] delegate lifecycle callback ordering", func() {
-		var callOrder []string
-
-		BeforeEach(func() {
-			callOrder = nil
-
-			fakeDelegate.InitializingStub = func(lager.Logger) {
-				callOrder = append(callOrder, "Initializing")
-			}
-			fakeDelegate.StartingStub = func(lager.Logger) {
-				callOrder = append(callOrder, "Starting")
-			}
-			fakeDelegate.BeforeSelectWorkerStub = func(lager.Logger) error {
-				callOrder = append(callOrder, "BeforeSelectWorker")
-				return nil
-			}
-			fakeDelegate.SelectedWorkerStub = func(_ lager.Logger, _ string) {
-				callOrder = append(callOrder, "SelectedWorker")
-			}
-			fakeDelegate.FinishedStub = func(_ lager.Logger, _ exec.ExitStatus, _ resource.VersionResult) {
-				callOrder = append(callOrder, "Finished")
-			}
-		})
-
 		It("[SE-03] fires callbacks in order: Initializing → Starting → BeforeSelectWorker → SelectedWorker → Finished", func() {
-			Expect(callOrder).To(Equal([]string{
+			Expect(delegate.lifecycleCalls()).To(Equal([]string{
 				"Initializing",
 				"Starting",
 				"BeforeSelectWorker",

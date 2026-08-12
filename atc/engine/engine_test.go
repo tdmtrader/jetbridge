@@ -20,7 +20,6 @@ import (
 	"github.com/concourse/concourse/atc/engine/enginefakes"
 	"github.com/concourse/concourse/atc/event"
 	"github.com/concourse/concourse/atc/exec"
-	"github.com/concourse/concourse/atc/exec/execfakes"
 	"github.com/concourse/concourse/vars"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -172,10 +171,10 @@ var _ = Describe("Engine", func() {
 						})
 
 						Context("when converting the plan to a step succeeds", func() {
-							var fakeStep *execfakes.FakeStep
+							var fakeStep *scriptedStep
 
 							BeforeEach(func() {
-								fakeStep = new(execfakes.FakeStep)
+								fakeStep = new(scriptedStep)
 								fakeBuild.PrivatePlanReturns(atc.Plan{
 									ID: "build-plan",
 									LoadVar: &atc.LoadVarPlan{

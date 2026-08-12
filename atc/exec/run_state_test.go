@@ -6,7 +6,6 @@ import (
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/exec"
-	"github.com/concourse/concourse/atc/exec/execfakes"
 	"github.com/concourse/concourse/vars"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -16,7 +15,7 @@ var _ = Describe("RunState", func() {
 	var (
 		stepper     exec.Stepper
 		steppedPlan atc.Plan
-		fakeStep    *execfakes.FakeStep
+		fakeStep    *scriptedStep
 
 		credVars vars.Variables
 
@@ -24,7 +23,7 @@ var _ = Describe("RunState", func() {
 	)
 
 	BeforeEach(func() {
-		fakeStep = new(execfakes.FakeStep)
+		fakeStep = new(scriptedStep)
 		stepper = func(plan atc.Plan) exec.Step {
 			steppedPlan = plan
 			return fakeStep

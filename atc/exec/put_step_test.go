@@ -10,15 +10,19 @@ import (
 	"github.com/concourse/concourse/tracing"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/onsi/gomega/gbytes"
 	"go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	oteltrace "go.opentelemetry.io/otel/trace"
 
+	"code.cloudfoundry.org/clock"
+	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/engine"
+	"github.com/concourse/concourse/atc/event"
 	"github.com/concourse/concourse/atc/exec"
 	"github.com/concourse/concourse/atc/exec/build"
-	"github.com/concourse/concourse/atc/exec/execfakes"
+	"github.com/concourse/concourse/atc/policy"
 	"github.com/concourse/concourse/atc/resource"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/runtime/runtimetest"
@@ -26,19 +30,98 @@ import (
 	"github.com/concourse/concourse/vars"
 )
 
+// stepFunc adapts a plain function to exec.Step, for substeps a spec scripts
+// itself.
+type stepFunc func(context.Context, exec.RunState) (bool, error)
+
+func (f stepFunc) Run(ctx context.Context, state exec.RunState) (bool, error) {
+	return f(ctx, state)
+}
+
+// imageFetchStepper answers the check and get substeps a delegate's FetchImage
+// runs. The get substep does what the real get step does: register the fetched
+// artifact and store a GetResult under its own plan ID.
+type imageFetchStepper struct {
+	artifact runtime.Artifact
+	cache    db.ResourceCache
+
+	ranPlans []atc.Plan
+}
+
+func (stepper *imageFetchStepper) step(plan atc.Plan) exec.Step {
+	return stepFunc(func(_ context.Context, state exec.RunState) (bool, error) {
+		stepper.ranPlans = append(stepper.ranPlans, plan)
+
+		if plan.Get != nil {
+			state.StoreResult(plan.ID, exec.GetResult{
+				Name:          plan.Get.Name,
+				ResourceCache: stepper.cache,
+			})
+			state.ArtifactRepository().RegisterArtifact(
+				build.ArtifactName(plan.Get.Name),
+				stepper.artifact,
+				false,
+			)
+		}
+
+		return true, nil
+	})
+}
+
+func persistedFinishPuts(fixture *execDBFixture, build db.Build) []event.FinishPut {
+	GinkgoHelper()
+	var finished []event.FinishPut
+	for _, e := range execBuildEvents(fixture, build) {
+		if finish, ok := e.(event.FinishPut); ok {
+			finished = append(finished, finish)
+		}
+	}
+	return finished
+}
+
+func persistedSelectedWorkers(fixture *execDBFixture, build db.Build) []string {
+	GinkgoHelper()
+	var names []string
+	for _, e := range execBuildEvents(fixture, build) {
+		if selected, ok := e.(event.SelectedWorker); ok {
+			names = append(names, selected.WorkerName)
+		}
+	}
+	return names
+}
+
+// beforeSelectWorkerRecorder keeps the real delegate's behavior and only adds
+// what PostgreSQL cannot show: whether the step asked before selecting a
+// worker. BeforeSelectWorker writes nothing for a build that is not a check.
+type beforeSelectWorkerRecorder struct {
+	exec.PutDelegate
+
+	callCount int
+}
+
+func (delegate *beforeSelectWorkerRecorder) BeforeSelectWorker(logger lager.Logger) error {
+	delegate.callCount++
+	return delegate.PutDelegate.BeforeSelectWorker(logger)
+}
+
 var _ = Describe("PutStep", func() {
 	var (
 		ctx    context.Context
 		cancel func()
 
-		fakeDelegate        *execfakes.FakePutDelegate
-		fakeDelegateFactory exec.PutDelegateFactory
+		fixture    *execDBFixture
+		dbBuild    db.Build
+		dbTeam     db.Team
+		dbPipeline db.Pipeline
+		delegate  *beforeSelectWorkerRecorder
+		delegateFactory exec.PutDelegateFactory
 
-		fakePool        *execfakes.FakePool
+		stepper       exec.Stepper
+		imageStepper  *imageFetchStepper
+
+		fakePool        *scriptedPool
 		chosenWorker    *runtimetest.Worker
 		chosenContainer *runtimetest.WorkerContainer
-
-		spanCtx context.Context
 
 		putPlan *atc.PutPlan
 
@@ -52,16 +135,9 @@ var _ = Describe("PutStep", func() {
 			StepName:         "some-step",
 		}
 
-		planID       = atc.PlanID("some-plan-id")
-		stepMetadata = exec.StepMetadata{
-			TeamID:       123,
-			TeamName:     "some-team",
-			BuildID:      42,
-			BuildName:    "some-build",
-			PipelineID:   4567,
-			PipelineName: "some-pipeline",
-		}
-		expectedOwner = db.NewBuildStepContainerOwner(stepMetadata.BuildID, planID, stepMetadata.TeamID)
+		planID        = atc.PlanID("some-plan-id")
+		stepMetadata  exec.StepMetadata
+		expectedOwner db.ContainerOwner
 
 		state exec.RunState
 		repo  *build.Repository
@@ -70,16 +146,46 @@ var _ = Describe("PutStep", func() {
 		stepOk  bool
 		stepErr error
 
-		stdoutBuf *gbytes.Buffer
-		stderrBuf *gbytes.Buffer
-
 		versionResult resource.VersionResult
 
 		defaultPutTimeout time.Duration = 0
 	)
 
+	putStepResource := func() db.Resource {
+		GinkgoHelper()
+		resource, found, err := dbPipeline.Resource("some-resource")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		return resource
+	}
+
 	BeforeEach(func() {
 		ctx, cancel = context.WithCancel(context.Background())
+
+		fixture = useExecDB()
+		dbTeam, dbPipeline, _, dbBuild = createExecJobBuild(
+			fixture,
+			"some-team",
+			atc.PipelineRef{Name: "some-pipeline"},
+			atc.Config{
+				Jobs: atc.JobConfigs{{Name: "some-job"}},
+				Resources: atc.ResourceConfigs{{
+					Name: "some-resource",
+					Type: "some-resource-type",
+				}},
+			},
+			"some-user",
+		)
+
+		stepMetadata = exec.StepMetadata{
+			TeamID:       dbTeam.ID(),
+			TeamName:     dbTeam.Name(),
+			BuildID:      dbBuild.ID(),
+			BuildName:    dbBuild.Name(),
+			PipelineID:   dbPipeline.ID(),
+			PipelineName: dbPipeline.Name(),
+		}
+		expectedOwner = db.NewBuildStepContainerOwner(stepMetadata.BuildID, planID, stepMetadata.TeamID)
 
 		versionResult = resource.VersionResult{
 			Version:  atc.Version{"some": "version"},
@@ -103,23 +209,22 @@ var _ = Describe("PutStep", func() {
 				nil,
 			)
 		chosenContainer = chosenWorker.Containers[0]
-		fakePool = new(execfakes.FakePool)
+		fakePool = new(scriptedPool)
 		fakePool.FindOrSelectWorkerReturns(chosenWorker, nil)
 
-		fakeDelegate = new(execfakes.FakePutDelegate)
-		stdoutBuf = gbytes.NewBuffer()
-		stderrBuf = gbytes.NewBuffer()
-		fakeDelegate.StdoutReturns(stdoutBuf)
-		fakeDelegate.StderrReturns(stderrBuf)
-
-		fakeDelegateFactory = putDelegateFactory(func(exec.RunState) exec.PutDelegate {
-			return fakeDelegate
+		delegateFactory = putDelegateFactory(func(state exec.RunState) exec.PutDelegate {
+			delegate = &beforeSelectWorkerRecorder{
+				PutDelegate: engine.NewPutDelegate(dbBuild, planID, state, clock.NewClock(), policy.NoopChecker{}),
+			}
+			return delegate
 		})
 
-		spanCtx = context.Background()
-		fakeDelegate.StartSpanReturns(spanCtx, tracing.NoopSpan)
+		imageStepper = new(imageFetchStepper)
+		stepper = noopStepper
 
-		state = exec.NewRunState(noopStepper, vars.StaticVariables{
+		state = exec.NewRunState(func(plan atc.Plan) exec.Step {
+			return stepper(plan)
+		}, vars.StaticVariables{
 			"source-var": "super-secret-source",
 			"params-var": "super-secret-params",
 		})
@@ -161,7 +266,7 @@ var _ = Describe("PutStep", func() {
 			stepMetadata,
 			containerMetadata,
 			fakePool,
-			fakeDelegateFactory,
+			delegateFactory,
 			defaultPutTimeout,
 		)
 
@@ -186,7 +291,7 @@ var _ = Describe("PutStep", func() {
 		})
 
 		It("emits a BeforeSelectWorker event", func() {
-			Expect(fakeDelegate.BeforeSelectWorkerCallCount()).To(Equal(1))
+			Expect(delegate.callCount).To(Equal(1))
 		})
 
 		It("calls SelectWorker with the correct WorkerSpec", func() {
@@ -198,9 +303,7 @@ var _ = Describe("PutStep", func() {
 		})
 
 		It("emits a SelectedWorker event", func() {
-			Expect(fakeDelegate.SelectedWorkerCallCount()).To(Equal(1))
-			_, workerName := fakeDelegate.SelectedWorkerArgsForCall(0)
-			Expect(workerName).To(Equal("worker"))
+			Expect(persistedSelectedWorkers(fixture, dbBuild)).To(Equal([]string{"worker"}))
 		})
 
 		Context("when selecting a worker fails", func() {
@@ -416,23 +519,31 @@ var _ = Describe("PutStep", func() {
 	})
 
 	It("saves the build output", func() {
-		Expect(fakeDelegate.SaveOutputCallCount()).To(Equal(1))
+		_, outputs, err := dbBuild.Resources()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(outputs).To(ConsistOf(db.BuildOutput{
+			Name:    "some-name",
+			Version: atc.Version{"some": "version"},
+		}))
 
-		_, plan, actualSource, irc, info := fakeDelegate.SaveOutputArgsForCall(0)
-		Expect(plan.Name).To(Equal("some-name"))
-		Expect(plan.Type).To(Equal("some-resource-type"))
-		Expect(plan.Resource).To(Equal("some-resource"))
-		Expect(actualSource).To(Equal(atc.Source{"some": "super-secret-source"}))
-		Expect(irc).To(BeNil())
-		Expect(info.Version).To(Equal(atc.Version{"some": "version"}))
-		Expect(info.Metadata).To(Equal(atc.Metadata{{Name: "some", Value: "metadata"}}))
+		version, found, err := putStepResource().FindVersion(atc.Version{"some": "version"})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(version.Metadata()).To(Equal(db.ResourceConfigMetadataFields{
+			{Name: "some", Value: "metadata"},
+		}))
+
+		config, err := fixture.ResourceConfigFactory.FindOrCreateResourceConfig(
+			"some-resource-type",
+			atc.Source{"some": "super-secret-source"},
+			nil,
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(putStepResource().ResourceConfigID()).To(Equal(config.ID()))
 	})
 
 	Context("when using a custom resource type", func() {
-		var (
-			fetchedImageSpec   runtime.ImageSpec
-			imageResourceCache db.ResourceCache
-		)
+		var fetchedImageArtifact *runtimetest.Volume
 
 		BeforeEach(func() {
 			putPlan.TypeImage.GetPlan = &atc.Plan{
@@ -457,19 +568,17 @@ var _ = Describe("PutStep", func() {
 			putPlan.Type = "some-custom-type"
 			putPlan.TypeImage.BaseType = "registry-image"
 
-			fetchedImageSpec = runtime.ImageSpec{
-				ImageArtifact: runtimetest.NewVolume("some-volume"),
-			}
-
-			fakeDelegate.FetchImageReturns(fetchedImageSpec, imageResourceCache, nil)
+			fetchedImageArtifact = runtimetest.NewVolume("some-volume")
+			imageStepper.artifact = fetchedImageArtifact
+			stepper = imageStepper.step
 		})
 
 		It("fetches the resource type image and uses it for the container", func() {
-			Expect(fakeDelegate.FetchImageCallCount()).To(Equal(1))
-			_, actualGetImagePlan, actualCheckImagePlan, privileged := fakeDelegate.FetchImageArgsForCall(0)
-			Expect(actualGetImagePlan).To(Equal(*putPlan.TypeImage.GetPlan))
-			Expect(actualCheckImagePlan).To(Equal(putPlan.TypeImage.CheckPlan))
-			Expect(privileged).To(BeFalse())
+			Expect(imageStepper.ranPlans).To(Equal([]atc.Plan{
+				*putPlan.TypeImage.CheckPlan,
+				*putPlan.TypeImage.GetPlan,
+			}))
+			Expect(chosenContainer.Spec.ImageSpec.Privileged).To(BeFalse())
 		})
 
 		It("sets the worker spec with teamID", func() {
@@ -482,14 +591,20 @@ var _ = Describe("PutStep", func() {
 		})
 
 		It("sets the image spec in the container spec", func() {
-			Expect(chosenContainer.Spec.ImageSpec).To(Equal(fetchedImageSpec))
+			Expect(chosenContainer.Spec.ImageSpec).To(Equal(runtime.ImageSpec{
+				ImageArtifact: fetchedImageArtifact,
+				ResourceType:  "some-custom-type",
+			}))
 		})
 
 		It("saves the build output using the custom type's resource cache", func() {
-			Expect(fakeDelegate.SaveOutputCallCount()).To(Equal(1))
-
-			_, _, _, irc, _ := fakeDelegate.SaveOutputArgsForCall(0)
-			Expect(irc).To(BeNil())
+			config, err := fixture.ResourceConfigFactory.FindOrCreateResourceConfig(
+				"some-custom-type",
+				atc.Source{"some": "super-secret-source"},
+				nil,
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(putStepResource().ResourceConfigID()).To(Equal(config.ID()))
 		})
 
 		Context("when the resource type is privileged", func() {
@@ -498,9 +613,7 @@ var _ = Describe("PutStep", func() {
 			})
 
 			It("fetches the image with privileged", func() {
-				Expect(fakeDelegate.FetchImageCallCount()).To(Equal(1))
-				_, _, _, privileged := fakeDelegate.FetchImageArgsForCall(0)
-				Expect(privileged).To(BeTrue())
+				Expect(chosenContainer.Spec.ImageSpec.Privileged).To(BeTrue())
 			})
 		})
 	})
@@ -525,9 +638,7 @@ var _ = Describe("PutStep", func() {
 		})
 
 		It("emits an Errored event", func() {
-			Expect(fakeDelegate.ErroredCallCount()).To(Equal(1))
-			_, status := fakeDelegate.ErroredArgsForCall(0)
-			Expect(status).To(Equal(exec.TimeoutLogMessage))
+			Expect(execBuildErrorMessages(fixture, dbBuild)).To(Equal([]string{exec.TimeoutLogMessage}))
 		})
 
 		Context("when the timeout is bogus", func() {
@@ -568,19 +679,15 @@ var _ = Describe("PutStep", func() {
 
 	Context("when tracing is enabled", func() {
 		var spanRecorder *tracetest.SpanRecorder
+		var runSpanContext oteltrace.SpanContext
 
 		BeforeEach(func() {
 			spanRecorder = new(tracetest.SpanRecorder)
 			tp := trace.NewTracerProvider(trace.WithSpanProcessor(spanRecorder), trace.WithSyncer(tracetest.NewInMemoryExporter()))
 			tracing.ConfigureTraceProvider(tp)
 
-			spanCtx, buildSpan := tracing.StartSpan(ctx, "build", nil)
-			fakeDelegate.StartSpanReturns(spanCtx, buildSpan)
-
 			chosenContainer.ProcessDefs[0].Stub.Do = func(ctx context.Context, _ *runtimetest.Process) error {
-				defer GinkgoRecover()
-				// Properly propagates span context
-				Expect(tracing.FromContext(ctx)).To(Equal(buildSpan))
+				runSpanContext = tracing.FromContext(ctx).SpanContext()
 				return nil
 			}
 		})
@@ -591,6 +698,12 @@ var _ = Describe("PutStep", func() {
 
 		It("populates the TRACEPARENT env var", func() {
 			Expect(chosenContainer.Spec.Env).To(ContainElement(MatchRegexp(`TRACEPARENT=.+`)))
+		})
+
+		It("propagates the step span into the container run", func() {
+			ended := spanRecorder.Ended()
+			Expect(ended).To(HaveLen(1))
+			Expect(runSpanContext).To(Equal(ended[0].SpanContext()))
 		})
 
 		It("adds state-transition span events", func() {
@@ -631,17 +744,19 @@ var _ = Describe("PutStep", func() {
 		})
 
 		It("does not save the build output", func() {
-			Expect(fakeDelegate.SaveOutputCallCount()).To(Equal(0))
+			_, outputs, err := dbBuild.Resources()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(outputs).To(BeEmpty())
 		})
 	})
 
 	Context("when the script succeeds", func() {
 		It("finishes via the delegate", func() {
-			Expect(fakeDelegate.FinishedCallCount()).To(Equal(1))
-			_, status, info := fakeDelegate.FinishedArgsForCall(0)
-			Expect(status).To(Equal(exec.ExitStatus(0)))
-			Expect(info.Version).To(Equal(atc.Version{"some": "version"}))
-			Expect(info.Metadata).To(Equal(atc.Metadata{{Name: "some", Value: "metadata"}}))
+			finished := persistedFinishPuts(fixture, dbBuild)
+			Expect(finished).To(HaveLen(1))
+			Expect(finished[0].ExitStatus).To(Equal(0))
+			Expect(finished[0].CreatedVersion).To(Equal(atc.Version{"some": "version"}))
+			Expect(finished[0].CreatedMetadata).To(Equal(atc.Metadata{{Name: "some", Value: "metadata"}}))
 		})
 
 		It("stores the version as the step result", func() {
@@ -661,10 +776,11 @@ var _ = Describe("PutStep", func() {
 		})
 
 		It("finishes the step via the delegate", func() {
-			Expect(fakeDelegate.FinishedCallCount()).To(Equal(1))
-			_, status, info := fakeDelegate.FinishedArgsForCall(0)
-			Expect(status).To(Equal(exec.ExitStatus(42)))
-			Expect(info).To(BeZero())
+			finished := persistedFinishPuts(fixture, dbBuild)
+			Expect(finished).To(HaveLen(1))
+			Expect(finished[0].ExitStatus).To(Equal(42))
+			Expect(finished[0].CreatedVersion).To(BeNil())
+			Expect(finished[0].CreatedMetadata).To(BeNil())
 		})
 
 		It("returns nil", func() {
@@ -684,7 +800,7 @@ var _ = Describe("PutStep", func() {
 		})
 
 		It("does not finish the step via the delegate", func() {
-			Expect(fakeDelegate.FinishedCallCount()).To(Equal(0))
+			Expect(persistedFinishPuts(fixture, dbBuild)).To(BeEmpty())
 		})
 
 		It("returns the error", func() {

@@ -23,8 +23,6 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-//go:generate go run github.com/maxbrunsfeld/counterfeiter/v6 -generate
-
 var GetResourceLockInterval = 5 * time.Second
 
 type ErrPipelineNotFound struct {
@@ -52,7 +50,6 @@ type GetDelegateFactory interface {
 	GetDelegate(state RunState) GetDelegate
 }
 
-//counterfeiter:generate . GetDelegate
 type GetDelegate interface {
 	StartSpan(context.Context, string, tracing.Attrs) (context.Context, trace.Span)
 

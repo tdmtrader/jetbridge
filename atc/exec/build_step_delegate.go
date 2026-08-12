@@ -18,7 +18,6 @@ type BuildStepDelegateFactory interface {
 	BuildStepDelegate(state RunState) BuildStepDelegate
 }
 
-//counterfeiter:generate . BuildStepDelegate
 type BuildStepDelegate interface {
 	StartSpan(context.Context, string, tracing.Attrs) (context.Context, trace.Span)
 
@@ -45,7 +44,6 @@ type SetPipelineStepDelegateFactory interface {
 	SetPipelineStepDelegate(state RunState) SetPipelineStepDelegate
 }
 
-//counterfeiter:generate . SetPipelineStepDelegate
 type SetPipelineStepDelegate interface {
 	BuildStepDelegate
 	SetPipelineChanged(lager.Logger, bool)

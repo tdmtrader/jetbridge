@@ -48,7 +48,6 @@ type CheckDelegateFactory interface {
 	CheckDelegate(state RunState) CheckDelegate
 }
 
-//counterfeiter:generate . CheckDelegate
 type CheckDelegate interface {
 	BuildStepDelegate
 

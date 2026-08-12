@@ -15,8 +15,6 @@ import (
 
 //go:generate go run github.com/maxbrunsfeld/counterfeiter/v6 -generate
 
-//counterfeiter:generate . Step
-
 // A Step is an object that can be executed, whose result (e.g. Success) can be
 // collected, and whose dependent resources (e.g. Containers, Volumes) can be
 // released, allowing them to expire.
@@ -35,7 +33,6 @@ type Step interface {
 	Run(context.Context, RunState) (bool, error)
 }
 
-//counterfeiter:generate . BuildStepDelegate
 type BuildOutputFilter func(text string) string
 
 //counterfeiter:generate . RunState
@@ -69,7 +66,6 @@ type Privileged bool
 type InputHandler func(io.ReadCloser) error
 type OutputHandler func(io.Writer) error
 
-//counterfeiter:generate . Pool
 type Pool interface {
 	FindOrSelectWorker(context.Context, db.ContainerOwner, runtime.ContainerSpec, worker.Spec) (runtime.Worker, error)
 	FindResourceCacheVolumeOnWorker(context.Context, db.ResourceCache, worker.Spec, string, time.Time) (runtime.Volume, bool, error)

@@ -5,7 +5,6 @@ import (
 	"errors"
 
 	"github.com/concourse/concourse/atc/exec"
-	"github.com/concourse/concourse/atc/exec/execfakes"
 	"github.com/concourse/concourse/vars"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -16,8 +15,8 @@ var _ = Describe("On Abort Step", func() {
 		ctx    context.Context
 		cancel func()
 
-		step *execfakes.FakeStep
-		hook *execfakes.FakeStep
+		step *scriptedStep
+		hook *scriptedStep
 
 		state exec.RunState
 
@@ -30,8 +29,8 @@ var _ = Describe("On Abort Step", func() {
 	BeforeEach(func() {
 		ctx, cancel = context.WithCancel(context.Background())
 
-		step = &execfakes.FakeStep{}
-		hook = &execfakes.FakeStep{}
+		step = &scriptedStep{}
+		hook = &scriptedStep{}
 
 		state = exec.NewRunState(noopStepper, vars.StaticVariables{})
 

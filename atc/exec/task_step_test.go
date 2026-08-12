@@ -6,39 +6,109 @@ import (
 	"fmt"
 	"time"
 
+	"code.cloudfoundry.org/clock"
+	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/engine"
+	"github.com/concourse/concourse/atc/event"
 	"github.com/concourse/concourse/atc/exec"
 	"github.com/concourse/concourse/atc/exec/build"
-	"github.com/concourse/concourse/atc/exec/execfakes"
 	"github.com/concourse/concourse/atc/imageresolver"
 	"github.com/concourse/concourse/atc/imageresolver/imageresolvertesting"
+	"github.com/concourse/concourse/atc/policy"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/runtime/runtimetest"
 	"github.com/concourse/concourse/tracing"
 	"github.com/concourse/concourse/vars"
-	"github.com/onsi/gomega/gbytes"
 	"go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	oteltrace "go.opentelemetry.io/otel/trace"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
+
+// recordingTaskDelegate keeps every behavior of the real delegate and adds
+// only what the build event stream cannot show: the unshadowed task config and
+// the arguments of an image fetch.
+type recordingTaskDelegate struct {
+	exec.TaskDelegate
+
+	initializingCount       int
+	beforeSelectWorkerCount int
+	taskConfigs             []atc.TaskConfig
+	imageFetches            []taskImageFetch
+}
+
+type taskImageFetch struct {
+	resource     atc.ImageResource
+	types        atc.ResourceTypes
+	privileged   bool
+	tags         atc.Tags
+	skipInterval bool
+}
+
+func (delegate *recordingTaskDelegate) Initializing(logger lager.Logger) {
+	delegate.initializingCount++
+	delegate.TaskDelegate.Initializing(logger)
+}
+
+func (delegate *recordingTaskDelegate) BeforeSelectWorker(logger lager.Logger) error {
+	delegate.beforeSelectWorkerCount++
+	return delegate.TaskDelegate.BeforeSelectWorker(logger)
+}
+
+func (delegate *recordingTaskDelegate) SetTaskConfig(config atc.TaskConfig) {
+	delegate.taskConfigs = append(delegate.taskConfigs, config)
+	delegate.TaskDelegate.SetTaskConfig(config)
+}
+
+func (delegate *recordingTaskDelegate) FetchImage(
+	ctx context.Context,
+	image atc.ImageResource,
+	types atc.ResourceTypes,
+	privileged bool,
+	tags atc.Tags,
+	skipInterval bool,
+) (runtime.ImageSpec, error) {
+	delegate.imageFetches = append(delegate.imageFetches, taskImageFetch{
+		resource:     image,
+		types:        types,
+		privileged:   privileged,
+		tags:         tags,
+		skipInterval: skipInterval,
+	})
+	return delegate.TaskDelegate.FetchImage(ctx, image, types, privileged, tags, skipInterval)
+}
+
+func persistedFinishTasks(fixture *execDBFixture, build db.Build) []event.FinishTask {
+	GinkgoHelper()
+	var finished []event.FinishTask
+	for _, e := range execBuildEvents(fixture, build) {
+		if finish, ok := e.(event.FinishTask); ok {
+			finished = append(finished, finish)
+		}
+	}
+	return finished
+}
 
 var _ = Describe("TaskStep", func() {
 	var (
 		ctx    context.Context
 		cancel func()
 
-		stdoutBuf *gbytes.Buffer
-		stderrBuf *gbytes.Buffer
-
-		fakePool *execfakes.FakePool
+		fakePool *scriptedPool
 		streamer *recordingStreamer
 
-		fakeDelegate *execfakes.FakeTaskDelegate
+		fixture *execDBFixture
+		dbBuild db.Build
 
-		fakeDelegateFactory exec.TaskDelegateFactory
+		delegate        *recordingTaskDelegate
+		delegateFactory exec.TaskDelegateFactory
+
+		stepper      exec.Stepper
+		imageStepper *imageFetchStepper
 
 		taskPlan *atc.TaskPlan
 
@@ -58,16 +128,10 @@ var _ = Describe("TaskStep", func() {
 			StepName:         "some-step",
 		}
 
-		stepMetadata = exec.StepMetadata{
-			TeamID:      123,
-			BuildID:     1234,
-			JobID:       12345,
-			ExternalURL: "http://foo.bar",
-		}
+		stepMetadata  exec.StepMetadata
+		expectedOwner db.ContainerOwner
 
 		planID = atc.PlanID("42")
-
-		expectedOwner = db.NewBuildStepContainerOwner(stepMetadata.BuildID, planID, stepMetadata.TeamID)
 
 		defaultTaskTimeout time.Duration = 0
 	)
@@ -75,24 +139,50 @@ var _ = Describe("TaskStep", func() {
 	BeforeEach(func() {
 		ctx, cancel = context.WithCancel(context.Background())
 
-		stdoutBuf = gbytes.NewBuffer()
-		stderrBuf = gbytes.NewBuffer()
-
 		streamer = newRecordingStreamer()
 
-		fakeDelegate = new(execfakes.FakeTaskDelegate)
-		fakeDelegate.StdoutReturns(stdoutBuf)
-		fakeDelegate.StderrReturns(stderrBuf)
+		fixture = useExecDB()
+		var dbTeam db.Team
+		var dbJob db.Job
+		dbTeam, _, dbJob, dbBuild = createExecJobBuild(
+			fixture,
+			"some-team",
+			atc.PipelineRef{Name: "some-pipeline"},
+			atc.Config{Jobs: atc.JobConfigs{{Name: "some-job"}}},
+			"some-user",
+		)
 
-		fakeDelegate.StartSpanReturns(ctx, tracing.NoopSpan)
+		stepMetadata = exec.StepMetadata{
+			TeamID:      dbTeam.ID(),
+			BuildID:     dbBuild.ID(),
+			JobID:       dbJob.ID(),
+			ExternalURL: "http://foo.bar",
+		}
+		expectedOwner = db.NewBuildStepContainerOwner(stepMetadata.BuildID, planID, stepMetadata.TeamID)
 
-		fakeDelegateFactory = taskDelegateFactory(func(exec.RunState) exec.TaskDelegate {
-			return fakeDelegate
+		delegateFactory = taskDelegateFactory(func(state exec.RunState) exec.TaskDelegate {
+			delegate = &recordingTaskDelegate{
+				TaskDelegate: engine.NewTaskDelegate(
+					dbBuild,
+					planID,
+					state,
+					clock.NewClock(),
+					policy.NoopChecker{},
+					fixture.WorkerFactory,
+					fixture.LockFactory,
+				),
+			}
+			return delegate
 		})
 
 		taskStepOptions = nil
 
-		state = exec.NewRunState(noopStepper, vars.StaticVariables{"source-param": "super-secret-source"})
+		imageStepper = new(imageFetchStepper)
+		stepper = noopStepper
+
+		state = exec.NewRunState(func(plan atc.Plan) exec.Step {
+			return stepper(plan)
+		}, vars.StaticVariables{"source-param": "super-secret-source"})
 		repo = state.ArtifactRepository()
 
 		taskPlan = &atc.TaskPlan{
@@ -125,7 +215,7 @@ var _ = Describe("TaskStep", func() {
 			containerMetadata,
 			fakePool,
 			streamer,
-			fakeDelegateFactory,
+			delegateFactory,
 			defaultTaskTimeout,
 			taskStepOptions...,
 		)
@@ -180,19 +270,23 @@ var _ = Describe("TaskStep", func() {
 					nil,
 				)
 			chosenContainer = chosenWorker.Containers[0]
-			fakePool = new(execfakes.FakePool)
+			fakePool = new(scriptedPool)
 			fakePool.FindOrSelectWorkerReturns(chosenWorker, nil)
 		})
 
 		It("Task env includes atc external url and build identity", func() {
-			Expect(chosenContainer.Spec.Env).To(ConsistOf("ATC_EXTERNAL_URL=http://foo.bar", "BUILD_ID=1234", "SECURE=secret-task-param"))
+			Expect(chosenContainer.Spec.Env).To(ConsistOf(
+				"ATC_EXTERNAL_URL=http://foo.bar",
+				fmt.Sprintf("BUILD_ID=%d", stepMetadata.BuildID),
+				"SECURE=secret-task-param",
+			))
 		})
 
 		Context("before running the task", func() {
 			BeforeEach(func() {
 				chosenContainer.ProcessDefs[0].Stub.Do = func(_ context.Context, _ *runtimetest.Process) error {
 					defer GinkgoRecover()
-					Expect(fakeDelegate.InitializingCallCount()).To(Equal(1))
+					Expect(delegate.initializingCount).To(Equal(1))
 
 					return nil
 				}
@@ -218,13 +312,11 @@ var _ = Describe("TaskStep", func() {
 			})
 
 			It("emits a BeforeSelectWorker event", func() {
-				Expect(fakeDelegate.BeforeSelectWorkerCallCount()).To(Equal(1))
+				Expect(delegate.beforeSelectWorkerCount).To(Equal(1))
 			})
 
 			It("emits a SelectedWorker event", func() {
-				Expect(fakeDelegate.SelectedWorkerCallCount()).To(Equal(1))
-				_, workerName := fakeDelegate.SelectedWorkerArgsForCall(0)
-				Expect(workerName).To(Equal("worker"))
+				Expect(persistedSelectedWorkers(fixture, dbBuild)).To(Equal([]string{"worker"}))
 			})
 
 			Context("when selecting a worker fails", func() {
@@ -239,9 +331,7 @@ var _ = Describe("TaskStep", func() {
 		})
 
 		It("sets the config on the TaskDelegate", func() {
-			Expect(fakeDelegate.SetTaskConfigCallCount()).To(Equal(1))
-			actualTaskConfig := fakeDelegate.SetTaskConfigArgsForCall(0)
-			Expect(actualTaskConfig).To(Equal(*taskPlan.Config))
+			Expect(delegate.taskConfigs).To(Equal([]atc.TaskConfig{*taskPlan.Config}))
 		})
 
 		Context("when privileged", func() {
@@ -305,9 +395,7 @@ var _ = Describe("TaskStep", func() {
 			})
 
 			It("emits an Errored event", func() {
-				Expect(fakeDelegate.ErroredCallCount()).To(Equal(1))
-				_, status := fakeDelegate.ErroredArgsForCall(0)
-				Expect(status).To(Equal(exec.TimeoutLogMessage))
+				Expect(execBuildErrorMessages(fixture, dbBuild)).To(Equal([]string{exec.TimeoutLogMessage}))
 			})
 
 			Context("when the timeout is bogus", func() {
@@ -361,6 +449,7 @@ var _ = Describe("TaskStep", func() {
 
 		Context("when tracing is enabled", func() {
 			var spanRecorder *tracetest.SpanRecorder
+			var runSpanContext oteltrace.SpanContext
 
 			BeforeEach(func() {
 				defaultTaskTimeout = 0
@@ -368,13 +457,8 @@ var _ = Describe("TaskStep", func() {
 				tp := trace.NewTracerProvider(trace.WithSpanProcessor(spanRecorder), trace.WithSyncer(tracetest.NewInMemoryExporter()))
 				tracing.ConfigureTraceProvider(tp)
 
-				spanCtx, buildSpan := tracing.StartSpan(ctx, "build", nil)
-				fakeDelegate.StartSpanReturns(spanCtx, buildSpan)
-
 				chosenContainer.ProcessDefs[0].Stub.Do = func(ctx context.Context, _ *runtimetest.Process) error {
-					defer GinkgoRecover()
-					// Properly propagates span context
-					Expect(tracing.FromContext(ctx)).To(Equal(buildSpan))
+					runSpanContext = tracing.FromContext(ctx).SpanContext()
 					return nil
 				}
 			})
@@ -385,6 +469,12 @@ var _ = Describe("TaskStep", func() {
 
 			It("populates the TRACEPARENT env var", func() {
 				Expect(chosenContainer.Spec.Env).To(ContainElement(MatchRegexp(`TRACEPARENT=.+`)))
+			})
+
+			It("propagates the step span into the container run", func() {
+				ended := spanRecorder.Ended()
+				Expect(ended).To(HaveLen(1))
+				Expect(runSpanContext).To(Equal(ended[0].SpanContext()))
 			})
 
 			It("adds state-transition span events", func() {
@@ -828,10 +918,9 @@ var _ = Describe("TaskStep", func() {
 			})
 
 			It("uses the ENTRYPOINT/CMD and passes it back to the task delegate", func() {
-				Expect(fakeDelegate.SetTaskConfigCallCount()).To(Equal(1))
-				actualTaskConfig := fakeDelegate.SetTaskConfigArgsForCall(0)
-				Expect(actualTaskConfig.Run.Path).To(Equal("/bin/sh"))
-				Expect(actualTaskConfig.Run.Args).To(Equal([]string{"-c", "echo hello world"}))
+				Expect(delegate.taskConfigs).To(HaveLen(1))
+				Expect(delegate.taskConfigs[0].Run.Path).To(Equal("/bin/sh"))
+				Expect(delegate.taskConfigs[0].Run.Args).To(Equal([]string{"-c", "echo hello world"}))
 			})
 
 			Context("there are args in the task config", func() {
@@ -840,10 +929,9 @@ var _ = Describe("TaskStep", func() {
 				})
 
 				It("they are appended to the ENTRYPOINT/CMD args", func() {
-					Expect(fakeDelegate.SetTaskConfigCallCount()).To(Equal(1))
-					actualTaskConfig := fakeDelegate.SetTaskConfigArgsForCall(0)
-					Expect(actualTaskConfig.Run.Path).To(Equal("/bin/sh"))
-					Expect(actualTaskConfig.Run.Args).To(Equal([]string{"-c", "echo hello world", "task", "args"}))
+					Expect(delegate.taskConfigs).To(HaveLen(1))
+					Expect(delegate.taskConfigs[0].Run.Path).To(Equal("/bin/sh"))
+					Expect(delegate.taskConfigs[0].Run.Args).To(Equal([]string{"-c", "echo hello world", "task", "args"}))
 				})
 			})
 
@@ -858,10 +946,9 @@ var _ = Describe("TaskStep", func() {
 				})
 
 				It("is parsed correctly", func() {
-					Expect(fakeDelegate.SetTaskConfigCallCount()).To(Equal(1))
-					actualTaskConfig := fakeDelegate.SetTaskConfigArgsForCall(0)
-					Expect(actualTaskConfig.Run.Path).To(Equal("some-program"))
-					Expect(actualTaskConfig.Run.Args).To(Equal([]string{"some-arg"}))
+					Expect(delegate.taskConfigs).To(HaveLen(1))
+					Expect(delegate.taskConfigs[0].Run.Path).To(Equal("some-program"))
+					Expect(delegate.taskConfigs[0].Run.Args).To(Equal([]string{"some-arg"}))
 				})
 			})
 
@@ -876,10 +963,9 @@ var _ = Describe("TaskStep", func() {
 				})
 
 				It("is parsed correctly", func() {
-					Expect(fakeDelegate.SetTaskConfigCallCount()).To(Equal(1))
-					actualTaskConfig := fakeDelegate.SetTaskConfigArgsForCall(0)
-					Expect(actualTaskConfig.Run.Path).To(Equal("cmd-program"))
-					Expect(actualTaskConfig.Run.Args).To(Equal([]string{"cmd-arg"}))
+					Expect(delegate.taskConfigs).To(HaveLen(1))
+					Expect(delegate.taskConfigs[0].Run.Path).To(Equal("cmd-program"))
+					Expect(delegate.taskConfigs[0].Run.Args).To(Equal([]string{"cmd-arg"}))
 				})
 			})
 		})
@@ -1012,7 +1098,7 @@ var _ = Describe("TaskStep", func() {
 		})
 
 		Context("when the image_resource is specified (even if rootfs_uri is configured)", func() {
-			var fetchedImageSpec runtime.ImageSpec
+			var fetchedImageArtifact *runtimetest.Volume
 
 			BeforeEach(func() {
 				taskPlan.Config.RootfsURI = "some-image"
@@ -1023,11 +1109,9 @@ var _ = Describe("TaskStep", func() {
 				}
 				taskPlan.Tags = atc.Tags{"some", "tags"}
 
-				fetchedImageSpec = runtime.ImageSpec{
-					ImageArtifact: runtimetest.NewVolume("some-volume"),
-				}
-
-				fakeDelegate.FetchImageReturns(fetchedImageSpec, nil)
+				fetchedImageArtifact = runtimetest.NewVolume("some-volume")
+				imageStepper.artifact = fetchedImageArtifact
+				stepper = imageStepper.step
 			})
 
 			It("succeeds", func() {
@@ -1036,21 +1120,25 @@ var _ = Describe("TaskStep", func() {
 			})
 
 			It("fetches the image", func() {
-				Expect(fakeDelegate.FetchImageCallCount()).To(Equal(1))
-				_, imageResource, types, privileged, tags, skipInterval := fakeDelegate.FetchImageArgsForCall(0)
-				Expect(imageResource).To(Equal(atc.ImageResource{
-					Type:   "docker",
-					Source: atc.Source{"some": "super-secret-source"},
-					Params: atc.Params{"some": "params"},
-				}))
-				Expect(types).To(Equal(taskPlan.ResourceTypes))
-				Expect(privileged).To(BeFalse())
-				Expect(tags).To(Equal(atc.Tags{"some", "tags"}))
-				Expect(skipInterval).To(Equal(false))
+				Expect(delegate.imageFetches).To(Equal([]taskImageFetch{{
+					resource: atc.ImageResource{
+						Type:   "docker",
+						Source: atc.Source{"some": "super-secret-source"},
+						Params: atc.Params{"some": "params"},
+					},
+					types:        taskPlan.ResourceTypes,
+					privileged:   false,
+					tags:         atc.Tags{"some", "tags"},
+					skipInterval: false,
+				}}))
+				Expect(execBuildEventTypes(fixture, dbBuild)).To(ContainElement(event.EventTypeImageGet))
 			})
 
 			It("creates the specs with the fetched image", func() {
-				Expect(chosenContainer.Spec.ImageSpec).To(Equal(fetchedImageSpec))
+				Expect(chosenContainer.Spec.ImageSpec).To(Equal(runtime.ImageSpec{
+					ImageArtifact: fetchedImageArtifact,
+					ResourceType:  "image",
+				}))
 			})
 
 			Context("when privileged", func() {
@@ -1059,9 +1147,9 @@ var _ = Describe("TaskStep", func() {
 				})
 
 				It("fetches a privileged image", func() {
-					Expect(fakeDelegate.FetchImageCallCount()).To(Equal(1))
-					_, _, _, privileged, _, _ := fakeDelegate.FetchImageArgsForCall(0)
-					Expect(privileged).To(BeTrue())
+					Expect(delegate.imageFetches).To(HaveLen(1))
+					Expect(delegate.imageFetches[0].privileged).To(BeTrue())
+					Expect(chosenContainer.Spec.ImageSpec.Privileged).To(BeTrue())
 				})
 			})
 
@@ -1071,9 +1159,8 @@ var _ = Describe("TaskStep", func() {
 				})
 
 				It("fetches an image with forced check", func() {
-					Expect(fakeDelegate.FetchImageCallCount()).To(Equal(1))
-					_, _, _, _, _, skipInterval := fakeDelegate.FetchImageArgsForCall(0)
-					Expect(skipInterval).To(BeTrue())
+					Expect(delegate.imageFetches).To(HaveLen(1))
+					Expect(delegate.imageFetches[0].skipInterval).To(BeTrue())
 				})
 			})
 		})
@@ -1107,9 +1194,9 @@ var _ = Describe("TaskStep", func() {
 			})
 
 			It("finishes the step", func() {
-				Expect(fakeDelegate.FinishedCallCount()).To(Equal(1))
-				_, status := fakeDelegate.FinishedArgsForCall(0)
-				Expect(status).To(Equal(exec.ExitStatus(1)))
+				finished := persistedFinishTasks(fixture, dbBuild)
+				Expect(finished).To(HaveLen(1))
+				Expect(finished[0].ExitStatus).To(Equal(1))
 			})
 		})
 

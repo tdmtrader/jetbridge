@@ -3,6 +3,7 @@ package exec_test
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"io"
 	"testing"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbtest"
 	"github.com/concourse/concourse/atc/db/lock"
+	"github.com/concourse/concourse/atc/event"
 	"github.com/concourse/concourse/atc/exec"
 	"github.com/concourse/concourse/atc/postgresrunner"
 	"github.com/concourse/concourse/atc/runtime"
@@ -114,6 +116,110 @@ func createExecJobBuild(
 	build, err := job.CreateBuild(createdBy)
 	Expect(err).NotTo(HaveOccurred())
 	return team, pipeline, job, build
+}
+
+func execBuildEventCount(fixture *execDBFixture, build db.Build) int {
+	GinkgoHelper()
+	var count int
+	Expect(fixture.Conn.QueryRow(`
+		SELECT COUNT(*)
+		FROM build_events
+		WHERE build_id = $1
+	`, build.ID()).Scan(&count)).To(Succeed())
+	return count
+}
+
+// execBuildEvents reads back every event the step delegates persisted for the
+// build. The event source blocks once it drains an unfinished build, so the
+// row count bounds the read.
+func execBuildEvents(fixture *execDBFixture, build db.Build) []atc.Event {
+	GinkgoHelper()
+	count := execBuildEventCount(fixture, build)
+	if count == 0 {
+		return nil
+	}
+
+	source, err := build.Events(0)
+	Expect(err).NotTo(HaveOccurred())
+	defer func() { Expect(source.Close()).To(Succeed()) }()
+
+	events := make([]atc.Event, 0, count)
+	for i := 0; i < count; i++ {
+		envelope, err := source.Next()
+		Expect(err).NotTo(HaveOccurred())
+		encoded, err := json.Marshal(envelope)
+		Expect(err).NotTo(HaveOccurred())
+		var message event.Message
+		Expect(json.Unmarshal(encoded, &message)).To(Succeed())
+		events = append(events, message.Event)
+	}
+	return events
+}
+
+// execBuildEventPayloads reads the raw persisted payloads of one event type.
+// The parser registry maps "initialize", "start" and "finish" to their V10
+// shapes, so fields like Finish.Succeeded only survive at this level.
+func execBuildEventPayloads(fixture *execDBFixture, build db.Build, eventType atc.EventType) []json.RawMessage {
+	GinkgoHelper()
+	rows, err := fixture.Conn.Query(`
+		SELECT payload
+		FROM build_events
+		WHERE build_id = $1 AND type = $2
+		ORDER BY event_id ASC
+	`, build.ID(), string(eventType))
+	Expect(err).NotTo(HaveOccurred())
+	defer func() { Expect(rows.Close()).To(Succeed()) }()
+
+	var payloads []json.RawMessage
+	for rows.Next() {
+		var payload []byte
+		Expect(rows.Scan(&payload)).To(Succeed())
+		payloads = append(payloads, json.RawMessage(payload))
+	}
+	Expect(rows.Err()).NotTo(HaveOccurred())
+	return payloads
+}
+
+func execBuildFinishEvents(fixture *execDBFixture, build db.Build) []event.Finish {
+	GinkgoHelper()
+	var finishes []event.Finish
+	for _, payload := range execBuildEventPayloads(fixture, build, event.EventTypeFinish) {
+		var finish event.Finish
+		Expect(json.Unmarshal(payload, &finish)).To(Succeed())
+		finishes = append(finishes, finish)
+	}
+	return finishes
+}
+
+func execBuildEventTypes(fixture *execDBFixture, build db.Build) []atc.EventType {
+	GinkgoHelper()
+	var types []atc.EventType
+	for _, e := range execBuildEvents(fixture, build) {
+		types = append(types, e.EventType())
+	}
+	return types
+}
+
+func execBuildErrorMessages(fixture *execDBFixture, build db.Build) []string {
+	GinkgoHelper()
+	var messages []string
+	for _, e := range execBuildEvents(fixture, build) {
+		if errored, ok := e.(event.Error); ok {
+			messages = append(messages, errored.Message)
+		}
+	}
+	return messages
+}
+
+func execBuildLog(fixture *execDBFixture, build db.Build, source event.OriginSource) string {
+	GinkgoHelper()
+	var payload string
+	for _, e := range execBuildEvents(fixture, build) {
+		if logged, ok := e.(event.Log); ok && logged.Origin.Source == source {
+			payload += logged.Payload
+		}
+	}
+	return payload
 }
 
 var noopStepper exec.Stepper = func(atc.Plan) exec.Step {

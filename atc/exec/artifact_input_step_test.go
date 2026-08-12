@@ -8,8 +8,9 @@ import (
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/exec"
 	"github.com/concourse/concourse/atc/exec/build"
-	"github.com/concourse/concourse/atc/exec/execfakes"
+	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/runtime/runtimetest"
+	"github.com/concourse/concourse/atc/worker"
 	"github.com/concourse/concourse/vars"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -63,13 +64,21 @@ var _ = Describe("ArtifactInputStep", func() {
 			stepErr error
 			plan    atc.Plan
 
-			fixture        *execDBFixture
-			realBuild      db.Build
-			created        db.CreatedVolume
-			artifact       db.WorkerArtifact
-			runtimeVolume  *runtimetest.Volume
-			fakeWorkerPool *execfakes.FakePool
+			fixture       *execDBFixture
+			realBuild     db.Build
+			created       db.CreatedVolume
+			artifact      db.WorkerArtifact
+			runtimeVolume *runtimetest.Volume
+			workerPool    *recordingPool
 		)
+
+		// workerHoldingVolumes drives the real pool at the seam that turns a
+		// database worker into a runtime one.
+		workerHoldingVolumes := func(volumes ...*runtimetest.Volume) stubWorkerFactory {
+			return func(dbWorker db.Worker) runtime.Worker {
+				return runtimetest.NewWorker(dbWorker.Name()).WithVolumes(volumes...)
+			}
+		}
 
 		BeforeEach(func() {
 			ctx, cancel = context.WithCancel(context.Background())
@@ -80,12 +89,12 @@ var _ = Describe("ArtifactInputStep", func() {
 			Expect(err).NotTo(HaveOccurred())
 			realBuild, err = team.CreateOneOffBuild()
 			Expect(err).NotTo(HaveOccurred())
-			worker, err := fixture.WorkerFactory.SaveWorker(
+			savedWorker, err := fixture.WorkerFactory.SaveWorker(
 				atc.Worker{Name: "worker", Platform: "linux"}, 0,
 			)
 			Expect(err).NotTo(HaveOccurred())
 			creating, err := db.NewVolumeRepository(fixture.Conn).CreateVolumeWithHandle(
-				"some-volume", team.ID(), worker.Name(), db.VolumeTypeArtifact,
+				"some-volume", team.ID(), savedWorker.Name(), db.VolumeTypeArtifact,
 			)
 			Expect(err).NotTo(HaveOccurred())
 			created, err = creating.Created()
@@ -98,11 +107,11 @@ var _ = Describe("ArtifactInputStep", func() {
 				Name:       "some-input-artifact-name",
 			}}
 			runtimeVolume = runtimetest.NewVolume(created.Handle())
-			fakeWorkerPool = new(execfakes.FakePool)
-			fakeWorkerPool.LocateVolumeReturns(
-				runtimeVolume, runtimetest.NewWorker(worker.Name()), true, nil,
-			)
-			step = exec.NewArtifactInputStep(plan, realBuild, fakeWorkerPool)
+			workerPool = &recordingPool{Pool: worker.NewPool(
+				workerHoldingVolumes(runtimeVolume),
+				worker.DB{TeamFactory: fixture.TeamFactory},
+			)}
+			step = exec.NewArtifactInputStep(plan, realBuild, workerPool)
 		})
 
 		AfterEach(func() {
@@ -118,7 +127,7 @@ var _ = Describe("ArtifactInputStep", func() {
 				step = exec.NewArtifactInputStep(
 					plan,
 					artifactErrorBuild{Build: realBuild, err: errors.New("nope")},
-					fakeWorkerPool,
+					workerPool,
 				)
 			})
 
@@ -136,7 +145,7 @@ var _ = Describe("ArtifactInputStep", func() {
 					err:            errors.New("nope"),
 				}
 				wrappedBuild := artifactResultBuild{Build: realBuild, artifact: wrappedArtifact}
-				step = exec.NewArtifactInputStep(plan, wrappedBuild, fakeWorkerPool)
+				step = exec.NewArtifactInputStep(plan, wrappedBuild, workerPool)
 			})
 
 			It("returns the error", func() {
@@ -153,7 +162,7 @@ var _ = Describe("ArtifactInputStep", func() {
 					err:            nil,
 				}
 				wrappedBuild := artifactResultBuild{Build: realBuild, artifact: wrappedArtifact}
-				step = exec.NewArtifactInputStep(plan, wrappedBuild, fakeWorkerPool)
+				step = exec.NewArtifactInputStep(plan, wrappedBuild, workerPool)
 			})
 
 			It("returns the error", func() {
@@ -165,17 +174,23 @@ var _ = Describe("ArtifactInputStep", func() {
 
 		Context("when looking up the worker volume fails", func() {
 			BeforeEach(func() {
-				fakeWorkerPool.LocateVolumeReturns(nil, nil, false, errors.New("nope"))
+				step = exec.NewArtifactInputStep(plan, realBuild, worker.NewPool(
+					workerHoldingVolumes(runtimeVolume),
+					worker.DB{TeamFactory: db.NewTeamFactory(closedExecCloneConn(), fixture.LockFactory)},
+				))
 			})
 
 			It("returns the error", func() {
-				Expect(stepErr).To(MatchError("nope"))
+				Expect(stepErr).To(MatchError(ContainSubstring("database is closed")))
 			})
 		})
 
 		Context("when the worker volume does not exist", func() {
 			BeforeEach(func() {
-				fakeWorkerPool.LocateVolumeReturns(nil, nil, false, nil)
+				step = exec.NewArtifactInputStep(plan, realBuild, worker.NewPool(
+					workerHoldingVolumes(),
+					worker.DB{TeamFactory: fixture.TeamFactory},
+				))
 			})
 
 			It("returns an error", func() {
@@ -199,8 +214,8 @@ var _ = Describe("ArtifactInputStep", func() {
 			Expect(persistedVolume.TeamID()).To(Equal(realBuild.TeamID()))
 			Expect(persistedVolume.WorkerName()).To(Equal("worker"))
 
-			Expect(fakeWorkerPool.LocateVolumeCallCount()).To(Equal(1))
-			_, teamID, handle := fakeWorkerPool.LocateVolumeArgsForCall(0)
+			Expect(workerPool.LocateVolumeCallCount()).To(Equal(1))
+			_, teamID, handle := workerPool.LocateVolumeArgsForCall(0)
 			Expect(teamID).To(Equal(created.TeamID()))
 			Expect(handle).To(Equal(created.Handle()))
 
