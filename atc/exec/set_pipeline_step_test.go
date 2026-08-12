@@ -14,8 +14,6 @@ import (
 	"github.com/concourse/concourse/atc/exec"
 	"github.com/concourse/concourse/atc/exec/build"
 	"github.com/concourse/concourse/atc/exec/execfakes"
-	"github.com/concourse/concourse/atc/policy"
-	"github.com/concourse/concourse/atc/policy/policyfakes"
 	"github.com/concourse/concourse/atc/runtime/runtimetest"
 	"github.com/concourse/concourse/tracing"
 	"github.com/concourse/concourse/vars"
@@ -204,8 +202,6 @@ jobs:
 		fakeDelegate        *execfakes.FakeSetPipelineStepDelegate
 		fakeDelegateFactory exec.SetPipelineStepDelegateFactory
 
-		fakeAgent *policyfakes.FakeAgent
-
 		streamer *recordingStreamer
 
 		spPlan              *atc.SetPipelinePlan
@@ -276,10 +272,6 @@ jobs:
 			PipelineName:         currentPipeline.Name(),
 			PipelineInstanceVars: currentPipeline.InstanceVars(),
 		}
-
-		fakeAgent = new(policyfakes.FakeAgent)
-		fakeAgent.CheckReturns(policy.PassedPolicyCheck(), nil)
-		fakePolicyAgentFactory.NewAgentReturns(fakeAgent, nil)
 
 		streamer = newRecordingStreamer()
 

@@ -18,8 +18,6 @@ import (
 	"github.com/concourse/concourse/atc/db/dbtest"
 	"github.com/concourse/concourse/atc/db/lock"
 	"github.com/concourse/concourse/atc/exec"
-	"github.com/concourse/concourse/atc/policy"
-	"github.com/concourse/concourse/atc/policy/policyfakes"
 	"github.com/concourse/concourse/atc/postgresrunner"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/util"
@@ -28,11 +26,6 @@ import (
 
 func init() {
 	util.PanicSink = GinkgoWriter
-
-	fakePolicyAgentFactory = new(policyfakes.FakeAgentFactory)
-	fakePolicyAgentFactory.IsConfiguredReturns(true)
-	fakePolicyAgentFactory.DescriptionReturns("fakeAgent")
-	policy.RegisterAgent(fakePolicyAgentFactory)
 }
 
 func TestExec(t *testing.T) {
@@ -40,11 +33,7 @@ func TestExec(t *testing.T) {
 	RunSpecs(t, "Exec Suite")
 }
 
-var (
-	testLogger = lagertest.NewTestLogger("test")
-
-	fakePolicyAgentFactory *policyfakes.FakeAgentFactory
-)
+var testLogger = lagertest.NewTestLogger("test")
 
 type execDBFixture struct {
 	Conn                  db.DbConn
