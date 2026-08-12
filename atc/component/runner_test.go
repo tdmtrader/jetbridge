@@ -8,7 +8,7 @@ import (
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc/component"
-	"github.com/concourse/concourse/atc/component/cmocks"
+	"github.com/concourse/concourse/atc/component/componentfakes"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
@@ -29,18 +29,17 @@ type RunnerSuite struct {
 func (s *RunnerSuite) TestNotifyDriven() {
 	componentName := "some-component"
 
-	mockComponent := new(cmocks.Component)
-	mockComponent.On("Name").Return(componentName)
+	mockComponent := new(componentfakes.FakeComponent)
+	mockComponent.NameReturns(componentName)
 
-	mockBus := new(cmocks.NotificationsBus)
+	mockBus := new(componentfakes.FakeNotificationsBus)
 
 	ranImmediately := make(chan context.Context, 10)
 
-	mockSchedulable := schedulable{
-		runImmediately: func(ctx context.Context) {
-			ranImmediately <- ctx
-		},
-	}
+	mockSchedulable := new(componentfakes.FakeSchedulable)
+	mockSchedulable.RunImmediatelyCalls(func(ctx context.Context) {
+		ranImmediately <- ctx
+	})
 
 	runner := &component.Runner{
 		Logger:      lagertest.NewTestLogger("test"),
@@ -53,7 +52,7 @@ func (s *RunnerSuite) TestNotifyDriven() {
 
 	var process ifrit.Process
 	s.Run("listens for component signals on start and fires initial run", func() {
-		mockBus.On("ListenSignal", componentName).Return(signal, nil)
+		mockBus.ListenSignalReturns(signal, nil)
 
 		process = ifrit.Background(runner)
 		select {
@@ -62,7 +61,8 @@ func (s *RunnerSuite) TestNotifyDriven() {
 			s.Failf("process exited early", "error: %s", err)
 		}
 
-		mockBus.AssertCalled(s.T(), "ListenSignal", componentName)
+		s.Equal(1, mockBus.ListenSignalCallCount())
+		s.Equal(componentName, mockBus.ListenSignalArgsForCall(0))
 
 		// Runner fires once on startup
 		select {
@@ -117,18 +117,13 @@ func (s *RunnerSuite) TestNotifyDriven() {
 	})
 
 	s.Run("unlistens on exit", func() {
-		mockBus.On("UnlistenSignal", componentName, signal).Return(nil)
 		process.Signal(os.Interrupt)
 
 		s.NoError(<-process.Wait())
-		mockBus.AssertCalled(s.T(), "UnlistenSignal", componentName, signal)
+
+		s.Equal(1, mockBus.UnlistenSignalCallCount())
+		unlistenedName, unlistenedSignal := mockBus.UnlistenSignalArgsForCall(0)
+		s.Equal(componentName, unlistenedName)
+		s.Equal(signal, unlistenedSignal)
 	})
-}
-
-type schedulable struct {
-	runImmediately func(context.Context)
-}
-
-func (s schedulable) RunImmediately(ctx context.Context) {
-	s.runImmediately(ctx)
 }

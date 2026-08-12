@@ -6,10 +6,9 @@ import (
 	"testing"
 
 	"github.com/concourse/concourse/atc/component"
-	"github.com/concourse/concourse/atc/component/cmocks"
+	"github.com/concourse/concourse/atc/component/componentfakes"
 	"github.com/concourse/concourse/atc/db/lock"
 	"github.com/concourse/concourse/atc/db/lock/lockfakes"
-	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 )
@@ -40,8 +39,8 @@ type CoordinatorTest struct {
 
 func (test CoordinatorTest) Run(s *CoordinatorSuite) {
 	fakeLocker := new(lockfakes.FakeLockFactory)
-	fakeComponent := new(cmocks.Component)
-	fakeRunnable := new(cmocks.Runnable)
+	fakeComponent := new(componentfakes.FakeComponent)
+	fakeRunnable := new(componentfakes.FakeRunnable)
 
 	var fakeLock *lockfakes.FakeLock
 	if test.LockAvailable {
@@ -53,15 +52,16 @@ func (test CoordinatorTest) Run(s *CoordinatorSuite) {
 
 	componentName := "some-name"
 
-	fakeComponent.On("Name").Return(componentName)
+	fakeComponent.NameReturns(componentName)
 
-	fakeComponent.On("Reload").Return(!test.Disappeared, test.ReloadErr)
+	fakeComponent.ReloadReturns(!test.Disappeared, test.ReloadErr)
 
 	ctx := context.Background()
 
 	if test.Runs {
-		fakeRunnable.On("Run", ctx).Return(test.RunErr).Run(func(mock.Arguments) {
+		fakeRunnable.RunCalls(func(context.Context) error {
 			s.Equal(fakeLock.ReleaseCallCount(), 0, "lock was released too early")
+			return test.RunErr
 		})
 	}
 
@@ -74,9 +74,10 @@ func (test CoordinatorTest) Run(s *CoordinatorSuite) {
 	coordinator.RunImmediately(ctx)
 
 	if test.Runs {
-		fakeRunnable.AssertCalled(s.T(), "Run", ctx)
+		s.Equal(1, fakeRunnable.RunCallCount(), "component did not run")
+		s.Equal(ctx, fakeRunnable.RunArgsForCall(0), "component ran with wrong context")
 	} else {
-		fakeRunnable.AssertNotCalled(s.T(), "Run")
+		s.Equal(0, fakeRunnable.RunCallCount(), "component ran when it should not have")
 	}
 
 	if test.LockAvailable {
