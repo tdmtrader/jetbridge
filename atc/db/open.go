@@ -18,7 +18,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-//counterfeiter:generate . DbConn
 type DbConn interface {
 	Bus() NotificationsBus
 	EncryptionStrategy() encryption.Strategy
@@ -47,7 +46,6 @@ type DbConn interface {
 	Name() string
 }
 
-//counterfeiter:generate . Tx
 type Tx interface {
 	Commit() error
 	Exec(string, ...any) (sql.Result, error)

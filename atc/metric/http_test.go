@@ -4,8 +4,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 
-	"github.com/concourse/concourse/atc/metric/metricfakes"
-
 	. "github.com/concourse/concourse/atc/metric"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -26,20 +24,12 @@ func noopHandler(w http.ResponseWriter, r *http.Request) {
 var _ = Describe("MetricsHandler", func() {
 	var (
 		ts      *httptest.Server
-		emitter *metricfakes.FakeEmitter
+		emitter *recordingEmitter
 		monitor *Monitor
 	)
 
 	BeforeEach(func() {
-		emitter = &metricfakes.FakeEmitter{}
-		monitor = NewMonitor()
-
-		emitterFactory := &metricfakes.FakeEmitterFactory{}
-		emitterFactory.IsConfiguredReturns(true)
-		emitterFactory.NewEmitterReturns(emitter, nil)
-
-		monitor.RegisterEmitter(emitterFactory)
-		monitor.Initialize(testLogger, "test", map[string]string{}, 1000)
+		monitor, emitter = monitorWithRecorder()
 
 		ts = httptest.NewServer(
 			WrapHandler(
@@ -66,8 +56,8 @@ var _ = Describe("MetricsHandler", func() {
 			Expect(err).ToNot(HaveOccurred())
 			res.Body.Close()
 
-			Eventually(emitter.EmitCallCount).Should(BeNumerically("==", 1))
-			_, event = emitter.EmitArgsForCall(0)
+			Eventually(emitter.EventCount).Should(BeNumerically("==", 1))
+			event = emitter.Events()[0]
 		})
 
 		It("captures request and response properties", func() {

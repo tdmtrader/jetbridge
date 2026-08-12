@@ -1,10 +1,7 @@
 package metric_test
 
 import (
-	"errors"
-
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/metric"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -12,57 +9,57 @@ import (
 )
 
 var _ = Describe("Counting Database Queries", func() {
-	var (
-		underlyingConn *dbfakes.FakeDbConn
-		countingConn   db.DbConn
-	)
+	var countingConn db.DbConn
 
 	BeforeEach(func() {
-		underlyingConn = new(dbfakes.FakeDbConn)
-		countingConn = metric.CountQueries(underlyingConn)
+		useEmptyTestDB()
+
+		countingConn = metric.CountQueries(openTestConn("underlying"))
+
+		metric.Metrics.DatabaseQueries.Delta()
 	})
 
-	AfterEach(func() {
-		err := countingConn.Close()
-		Expect(err).NotTo(HaveOccurred())
+	It("passes through calls that are not queries, without counting them", func() {
+		Expect(countingConn.Ping()).To(Succeed())
+		Expect(countingConn.Name()).To(Equal("underlying"))
+
+		Expect(metric.Metrics.DatabaseQueries.Delta()).To(Equal(float64(0)))
 	})
 
-	It("passes through calls to the underlying connection", func() {
-		countingConn.Ping()
+	It("returns the errors from the underlying connection", func() {
+		brokenConn := metric.CountQueries(closedTestConn())
 
-		Expect(underlyingConn.PingCallCount()).To(Equal(1))
-	})
+		Expect(brokenConn.Ping()).To(MatchError(ContainSubstring("database is closed")))
 
-	It("returns the return values from the underlying connection", func() {
-		underlyingConn.PingReturns(errors.New("disaster"))
-
-		err := countingConn.Ping()
-		Expect(err).To(MatchError("disaster"))
+		_, err := brokenConn.Query("SELECT $1::int", 1)
+		Expect(err).To(MatchError(ContainSubstring("database is closed")))
 	})
 
 	Describe("query counting", func() {
 		It("increments the global (;_;) counter", func() {
-			_, err := countingConn.Query("SELECT $1::int", 1)
+			rows, err := countingConn.Query("SELECT $1::int", 1)
 			Expect(err).NotTo(HaveOccurred())
+			Expect(rows.Close()).To(Succeed())
 
 			Expect(metric.Metrics.DatabaseQueries.Delta()).To(Equal(float64(1)))
 
 			_, err = countingConn.Exec("SELECT $1::int", 1)
 			Expect(err).NotTo(HaveOccurred())
 
-			countingConn.QueryRow("SELECT $1::int", 1)
+			var value int
+			Expect(countingConn.QueryRow("SELECT $1::int", 1).Scan(&value)).To(Succeed())
+			Expect(value).To(Equal(1))
 
 			Expect(metric.Metrics.DatabaseQueries.Delta()).To(Equal(float64(2)))
 
 			By("working in transactions")
-			underlyingTx := &dbfakes.FakeTx{}
-			underlyingConn.BeginReturns(underlyingTx, nil)
-
 			tx, err := countingConn.Begin()
 			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(tx)
 
-			_, err = tx.Query("SELECT $1::int", 1)
+			rows, err = tx.Query("SELECT $1::int", 1)
 			Expect(err).NotTo(HaveOccurred())
+			Expect(rows.Close()).To(Succeed())
 
 			Expect(metric.Metrics.DatabaseQueries.Delta()).To(Equal(float64(1)))
 		})

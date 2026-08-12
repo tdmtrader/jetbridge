@@ -1,9 +1,10 @@
 package metric_test
 
 import (
+	"fmt"
+
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/metric"
-	"github.com/concourse/concourse/atc/metric/metricfakes"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -12,20 +13,12 @@ import (
 var _ = Describe("Metrics", func() {
 	Describe("worker state metric", func() {
 		var (
-			emitter *smartFakeEmitter
+			emitter *recordingEmitter
 			monitor *metric.Monitor
 		)
 
 		BeforeEach(func() {
-			emitter = new(smartFakeEmitter)
-			monitor = metric.NewMonitor()
-
-			emitterFactory := new(metricfakes.FakeEmitterFactory)
-			emitterFactory.IsConfiguredReturns(true)
-			emitterFactory.NewEmitterReturns(emitter, nil)
-
-			monitor.RegisterEmitter(emitterFactory)
-			monitor.Initialize(testLogger, "test", map[string]string{}, 1000)
+			monitor, emitter = monitorWithRecorder()
 		})
 
 		It("emits a value for every state", func() {
@@ -34,7 +27,7 @@ var _ = Describe("Metrics", func() {
 			waitForEvents(emitter)
 
 			for _, state := range db.AllWorkerStates() {
-				event := emitter.eventWithState(state)
+				event := eventWithState(emitter, state)
 				Expect(event.Value).To(Equal(float64(0)))
 			}
 		})
@@ -45,24 +38,23 @@ var _ = Describe("Metrics", func() {
 
 			waitForEvents(emitter)
 
-			event := emitter.eventWithState(db.WorkerStateRunning)
+			event := eventWithState(emitter, db.WorkerStateRunning)
 			Expect(event.Value).To(Equal(float64(1)))
 		})
 	})
 })
 
-type smartFakeEmitter struct {
-	metricfakes.FakeEmitter
-}
+func eventWithState(emitter *recordingEmitter, state db.WorkerState) metric.Event {
+	GinkgoHelper()
 
-func (fakeEmitter *smartFakeEmitter) eventWithState(state db.WorkerState) *metric.Event {
-	for i := 0; i < fakeEmitter.EmitCallCount(); i++ {
-		_, event := fakeEmitter.EmitArgsForCall(i)
+	for _, event := range emitter.Events() {
 		if event.Attributes["state"] == string(state) {
-			return &event
+			return event
 		}
 	}
-	return nil
+
+	Fail(fmt.Sprintf("no event emitted for worker state %s", state))
+	return metric.Event{}
 }
 
 func givenNoWorkers() metric.WorkersState {
@@ -77,7 +69,7 @@ func givenOneWorkerWithState(state db.WorkerState) metric.WorkersState {
 	return workersState
 }
 
-func waitForEvents(fakeEmitter *smartFakeEmitter) {
+func waitForEvents(emitter *recordingEmitter) {
 	numberOfWorkerStates := len(db.AllWorkerStates())
-	Eventually(fakeEmitter.EmitCallCount).Should(Equal(numberOfWorkerStates))
+	Eventually(emitter.EventCount).Should(Equal(numberOfWorkerStates))
 }

@@ -6,9 +6,7 @@ import (
 
 	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/metric"
-	"github.com/concourse/concourse/atc/metric/metricfakes"
 	"github.com/tedsuo/ifrit"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -18,23 +16,14 @@ import (
 
 var _ = Describe("Periodic emission of metrics", func() {
 	var (
-		emitter *metricfakes.FakeEmitter
+		emitter *recordingEmitter
 		monitor *metric.Monitor
 
 		process ifrit.Process
 	)
 
 	BeforeEach(func() {
-		emitter = &metricfakes.FakeEmitter{}
-		monitor = metric.NewMonitor()
-
-		emitterFactory := &metricfakes.FakeEmitterFactory{}
-		emitterFactory.IsConfiguredReturns(true)
-		emitterFactory.NewEmitterReturns(emitter, nil)
-
-		monitor.RegisterEmitter(emitterFactory)
-		monitor.Initialize(testLogger, "test", map[string]string{}, 1000)
-
+		monitor, emitter = monitorWithRecorder()
 	})
 
 	JustBeforeEach(func() {
@@ -52,26 +41,15 @@ var _ = Describe("Periodic emission of metrics", func() {
 		<-process.Wait()
 	})
 
-	events := func() []metric.Event {
-		var events []metric.Event
-		for i := 0; i < emitter.EmitCallCount(); i++ {
-			_, event := emitter.EmitArgsForCall(i)
-			events = append(events, event)
-		}
-		return events
-	}
-
 	Context("database-related metrics", func() {
 		BeforeEach(func() {
-			a := &dbfakes.FakeDbConn{}
-			a.NameReturns("A")
-			b := &dbfakes.FakeDbConn{}
-			b.NameReturns("B")
-			monitor.Databases = []db.DbConn{a, b}
+			useEmptyTestDB()
+
+			monitor.Databases = []db.DbConn{openTestConn("A"), openTestConn("B")}
 		})
 
 		It("emits database queries", func() {
-			Eventually(events).Should(
+			Eventually(emitter.Events).Should(
 				ContainElement(
 					MatchFields(IgnoreExtras, Fields{
 						"Name": Equal("database queries"),
@@ -80,7 +58,7 @@ var _ = Describe("Periodic emission of metrics", func() {
 			)
 
 			By("emits database connections for each pool")
-			Eventually(events).Should(
+			Eventually(emitter.Events).Should(
 				ContainElement(
 					MatchFields(IgnoreExtras, Fields{
 						"Name":       Equal("database connections"),
@@ -88,7 +66,7 @@ var _ = Describe("Periodic emission of metrics", func() {
 					}),
 				),
 			)
-			Eventually(events).Should(
+			Eventually(emitter.Events).Should(
 				ContainElement(
 					MatchFields(IgnoreExtras, Fields{
 						"Name":       Equal("database connections"),
@@ -114,7 +92,7 @@ var _ = Describe("Periodic emission of metrics", func() {
 		})
 
 		It("emits", func() {
-			Eventually(events).Should(
+			Eventually(emitter.Events).Should(
 				ContainElement(
 					MatchFields(IgnoreExtras, Fields{
 						"Name":  Equal("concurrent requests"),
@@ -126,7 +104,7 @@ var _ = Describe("Periodic emission of metrics", func() {
 				),
 			)
 
-			Eventually(events).Should(
+			Eventually(emitter.Events).Should(
 				ContainElement(
 					MatchFields(IgnoreExtras, Fields{
 						"Name":  Equal("concurrent requests limit hit"),
@@ -154,7 +132,7 @@ var _ = Describe("Periodic emission of metrics", func() {
 		})
 
 		It("emits", func() {
-			Eventually(events).Should(
+			Eventually(emitter.Events).Should(
 				ContainElement(
 					MatchFields(IgnoreExtras, Fields{
 						"Name":  Equal("steps waiting"),

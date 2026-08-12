@@ -12,8 +12,6 @@ import (
 	flags "github.com/jessevdk/go-flags"
 )
 
-//go:generate go run github.com/maxbrunsfeld/counterfeiter/v6 -generate
-
 type Event struct {
 	Name       string
 	Value      float64
@@ -23,12 +21,10 @@ type Event struct {
 	TraceID    string // optional trace ID for exemplar attachment
 }
 
-//counterfeiter:generate . Emitter
 type Emitter interface {
 	Emit(lager.Logger, Event)
 }
 
-//counterfeiter:generate . EmitterFactory
 type EmitterFactory interface {
 	Description() string
 	IsConfigured() bool

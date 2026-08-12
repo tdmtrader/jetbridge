@@ -3,7 +3,6 @@ package metric_test
 import (
 	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc/metric"
-	"github.com/concourse/concourse/atc/metric/metricfakes"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -12,20 +11,13 @@ import (
 var _ = Describe("ErrorSinkCollector", func() {
 	var (
 		errorSinkCollector metric.ErrorSinkCollector
-		emitter            *metricfakes.FakeEmitter
+		emitter            *recordingEmitter
 		monitor            *metric.Monitor
 	)
 
 	BeforeEach(func() {
-		emitter = &metricfakes.FakeEmitter{}
-		monitor = metric.NewMonitor()
+		monitor, emitter = monitorWithRecorder()
 		errorSinkCollector = metric.NewErrorSinkCollector(testLogger, monitor)
-
-		emitterFactory := &metricfakes.FakeEmitterFactory{}
-		emitterFactory.IsConfiguredReturns(true)
-		emitterFactory.NewEmitterReturns(emitter, nil)
-		monitor.RegisterEmitter(emitterFactory)
-		monitor.Initialize(testLogger, "test", map[string]string{}, 1000)
 	})
 
 	Context("Log", func() {
@@ -44,9 +36,8 @@ var _ = Describe("ErrorSinkCollector", func() {
 			})
 
 			It("emits with the message in the tags", func() {
-				Eventually(emitter.EmitCallCount).Should(BeNumerically("==", 1))
-				_, event := emitter.EmitArgsForCall(0)
-				Expect(event.Attributes).To(HaveKeyWithValue("message", "err-msg"))
+				Eventually(emitter.EventCount).Should(BeNumerically("==", 1))
+				Expect(emitter.Events()[0].Attributes).To(HaveKeyWithValue("message", "err-msg"))
 			})
 
 			Context("with error being from failed emission", func() {
@@ -59,7 +50,7 @@ var _ = Describe("ErrorSinkCollector", func() {
 				})
 
 				It("doesn't emit", func() {
-					Consistently(emitter.EmitCallCount).Should(BeNumerically("==", 0))
+					Consistently(emitter.EventCount).Should(BeNumerically("==", 0))
 				})
 			})
 		})
@@ -73,7 +64,7 @@ var _ = Describe("ErrorSinkCollector", func() {
 			})
 
 			It("doesn't emit", func() {
-				Consistently(emitter.EmitCallCount).Should(BeNumerically("==", 0))
+				Consistently(emitter.EventCount).Should(BeNumerically("==", 0))
 			})
 		})
 	})
