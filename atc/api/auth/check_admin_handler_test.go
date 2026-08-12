@@ -9,7 +9,6 @@ import (
 	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/api/accessor/accessorfakes"
 	"github.com/concourse/concourse/atc/api/auth"
-	"github.com/concourse/concourse/atc/api/auth/authfakes"
 	"github.com/concourse/concourse/atc/auditor/auditorfakes"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -18,7 +17,6 @@ import (
 
 var _ = Describe("CheckAdminHandler", func() {
 	var (
-		fakeRejector *authfakes.FakeRejector
 		fakeAccessor *accessorfakes.FakeAccessFactory
 		fakeaccess   *accessorfakes.FakeAccess
 		server       *httptest.Server
@@ -35,21 +33,12 @@ var _ = Describe("CheckAdminHandler", func() {
 	})
 
 	BeforeEach(func() {
-		fakeRejector = new(authfakes.FakeRejector)
 		fakeAccessor = new(accessorfakes.FakeAccessFactory)
 		fakeaccess = new(accessorfakes.FakeAccess)
 
-		fakeRejector.UnauthorizedStub = func(w http.ResponseWriter, r *http.Request) {
-			http.Error(w, "nope", http.StatusUnauthorized)
-		}
-
-		fakeRejector.ForbiddenStub = func(w http.ResponseWriter, r *http.Request) {
-			http.Error(w, "still nope", http.StatusForbidden)
-		}
-
 		innerHandler := auth.CheckAdminHandler(
 			simpleHandler,
-			fakeRejector,
+			auth.UnauthorizedRejector{},
 		)
 
 		server = httptest.NewServer(accessor.NewHandler(
@@ -112,6 +101,9 @@ var _ = Describe("CheckAdminHandler", func() {
 			Context("when is not admin", func() {
 				It("returns 403 Forbidden", func() {
 					Expect(response.StatusCode).To(Equal(http.StatusForbidden))
+					responseBody, err := io.ReadAll(response.Body)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(string(responseBody)).To(Equal("forbidden"))
 				})
 			})
 		})
@@ -125,7 +117,7 @@ var _ = Describe("CheckAdminHandler", func() {
 				Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
 				responseBody, err := io.ReadAll(response.Body)
 				Expect(err).NotTo(HaveOccurred())
-				Expect(string(responseBody)).To(Equal("nope\n"))
+				Expect(string(responseBody)).To(Equal("not authorized"))
 			})
 		})
 	})

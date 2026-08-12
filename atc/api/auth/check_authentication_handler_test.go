@@ -9,7 +9,6 @@ import (
 	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/api/accessor/accessorfakes"
 	"github.com/concourse/concourse/atc/api/auth"
-	"github.com/concourse/concourse/atc/api/auth/authfakes"
 	"github.com/concourse/concourse/atc/auditor/auditorfakes"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -21,7 +20,6 @@ var _ = Describe("AuthenticationHandler", func() {
 	var (
 		fakeAccess   *accessorfakes.FakeAccess
 		fakeAccessor *accessorfakes.FakeAccessFactory
-		fakeRejector *authfakes.FakeRejector
 
 		server *httptest.Server
 		client *http.Client
@@ -41,13 +39,8 @@ var _ = Describe("AuthenticationHandler", func() {
 	BeforeEach(func() {
 		fakeAccess = new(accessorfakes.FakeAccess)
 		fakeAccessor = new(accessorfakes.FakeAccessFactory)
-		fakeRejector = new(authfakes.FakeRejector)
 
 		fakeAccessor.CreateReturns(fakeAccess, nil)
-
-		fakeRejector.UnauthorizedStub = func(w http.ResponseWriter, r *http.Request) {
-			http.Error(w, "nope", http.StatusUnauthorized)
-		}
 
 		client = http.DefaultClient
 	})
@@ -62,7 +55,7 @@ var _ = Describe("AuthenticationHandler", func() {
 		BeforeEach(func() {
 			innerHandler := auth.CheckAuthenticationHandler(
 				simpleHandler,
-				fakeRejector,
+				auth.UnauthorizedRejector{},
 			)
 
 			server = httptest.NewServer(accessor.NewHandler(
@@ -109,7 +102,7 @@ var _ = Describe("AuthenticationHandler", func() {
 				It("rejects the request", func() {
 					responseBody, err := io.ReadAll(response.Body)
 					Expect(err).NotTo(HaveOccurred())
-					Expect(string(responseBody)).To(Equal("nope\n"))
+					Expect(string(responseBody)).To(Equal("not authorized"))
 				})
 			})
 		})
@@ -120,7 +113,7 @@ var _ = Describe("AuthenticationHandler", func() {
 		BeforeEach(func() {
 			innerHandler := auth.CheckAuthenticationIfProvidedHandler(
 				simpleHandler,
-				fakeRejector,
+				auth.UnauthorizedRejector{},
 			)
 
 			server = httptest.NewServer(accessor.NewHandler(
@@ -156,7 +149,7 @@ var _ = Describe("AuthenticationHandler", func() {
 					It("rejects the request", func() {
 						responseBody, err := io.ReadAll(response.Body)
 						Expect(err).NotTo(HaveOccurred())
-						Expect(string(responseBody)).To(Equal("nope\n"))
+						Expect(string(responseBody)).To(Equal("not authorized"))
 					})
 				})
 

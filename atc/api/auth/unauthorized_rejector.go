@@ -5,7 +5,6 @@ import (
 	"net/http"
 )
 
-//counterfeiter:generate . Rejector
 type Rejector interface {
 	Unauthorized(http.ResponseWriter, *http.Request)
 	Forbidden(http.ResponseWriter, *http.Request)

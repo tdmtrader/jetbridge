@@ -7,9 +7,6 @@ import (
 	"github.com/concourse/concourse/skymarshal/token"
 )
 
-//go:generate go run github.com/maxbrunsfeld/counterfeiter/v6 -generate
-//counterfeiter:generate net/http.Handler
-
 func NewResponseWrapper(w http.ResponseWriter, m token.Middleware) *responseWrapper {
 	return &responseWrapper{w, m}
 }
