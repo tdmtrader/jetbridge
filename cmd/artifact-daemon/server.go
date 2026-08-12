@@ -616,21 +616,6 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	s.registry.RegisterAlias(req.Key, req.LocalPath)
 
-	// Promote resource caches to the durable tier. Only resource caches: a
-	// step output is addressed by a per-build handle nobody will ask for
-	// again, so storing one durably buys nothing and costs a bucket.
-	//
-	// Detached from the request, because the ATC is waiting on this response
-	// and an upload of a multi-gigabyte cache is not something to hold it for.
-	if s.durable != nil && isResourceCacheKey(req.Key) {
-		key, localPath := req.Key, req.LocalPath
-		go func() {
-			release := s.guard.BeginRead(s.stepHandle(localPath))
-			defer release()
-			s.durable.Store(context.Background(), key, localPath, s.tarDirectory)
-		}()
-	}
-
 	s.logger.Info("registered", lager.Data{"key": req.Key, "path": req.LocalPath})
 	w.WriteHeader(http.StatusCreated)
 }
@@ -852,17 +837,6 @@ func (s *Server) handleHeadResourceCache(w http.ResponseWriter, r *http.Request)
 
 	path, found := s.registry.Lookup(key)
 	if !found {
-		// The node-local copy is a cache; the durable tier is the long-term
-		// home. A hit here is what lets a cold node report a cache hit instead
-		// of sending the build off to re-download.
-		if s.durable.Has(r.Context(), key) {
-			if s.nodeName != "" {
-				w.Header().Set("X-Node-Name", s.nodeName)
-			}
-			w.Header().Set("X-Artifact-Source", "durable")
-			w.WriteHeader(http.StatusOK)
-			return
-		}
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
@@ -897,18 +871,8 @@ func (s *Server) handleGetResourceCache(w http.ResponseWriter, r *http.Request) 
 
 	path, found := s.registry.Lookup(key)
 	if !found {
-		restored := filepath.Join(s.storagePath, "steps", key)
-		if s.durable.Restore(r.Context(), key, restored) {
-			// Register so the next request on this node takes the local path,
-			// and so resolveOne's step 2 can find it too. The copy lands under
-			// steps/ precisely so the existing sweeper reclaims it at TTL --
-			// a warmed cache that nothing reclaims is how a node disk fills.
-			s.registry.Register(key, restored)
-			path = restored
-		} else {
-			http.NotFound(w, r)
-			return
-		}
+		http.NotFound(w, r)
+		return
 	}
 
 	info, err := os.Stat(path)

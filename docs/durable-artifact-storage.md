@@ -11,12 +11,12 @@ and the difference is in their keys:
 - A **step output** is addressed by a per-build container handle. Nobody will
   ever ask for that key again, so storing it durably costs a bucket and buys
   nothing.
-- A **resource cache** is addressed by `rc-<id>`, derived from the resource
-  type, version and params (`atc/worker/jetbridge/resource_cache_key.go:12`).
-  The same key recurs on every build that wants the same thing — including on a
-  node that has never seen it.
+- A **resource cache** identifies content — a resource type at a version with
+  given params — so the same thing is wanted again on every build, including on
+  a node that has never seen it.
 
-So only resource caches are promoted. The node-local copy stays a cache with a
+So only resource caches are eligible. (The key that *names* one today is not
+safe to store permanently; see Status below.) The node-local copy stays a cache with a
 TTL; the durable copy is what outlives the sweeper, the node, and the cluster.
 
 It is **off by default**. With `artifactDaemon.durable.store` unset the daemon
@@ -41,24 +41,68 @@ durable-store miss, timeout, expired credential or corrupt object must all
 degrade to "not here". `DurableTier`'s methods return `bool`, not `error`, so
 there is no error for a caller to accidentally propagate.
 
-## How it fits
+## Status: store landed, wiring blocked on a content key
 
-The daemon's read path is a ladder (`cmd/artifact-daemon/server.go`,
-`resolveOne`): registry → local filesystem → peer node → miss. The durable tier
-is consulted only on the resource-cache handlers, and only after the local
-lookup fails:
+**The store is built and tested. It is not yet wired to anything, and it must
+not be wired to `rc-<id>`.**
+
+`rc-<id>` is `fmt.Sprintf("rc-%d", cacheID)` over `resource_caches.id`
+(`atc/worker/jetbridge/resource_cache_key.go:12`), and that column is a
+surrogate: `CREATE SEQUENCE resource_caches_id_seq`
+(`atc/db/migration/migrations/1510262030_initial_schema.up.sql:437`). Rows are
+hard-deleted by `CleanUpInvalidCaches` (`atc/db/resource_cache_lifecycle.go:77`,
+`sq.Delete("resource_caches")`) whenever a cache falls out of every in-use set,
+and the next build re-inserts the same (config, version, params) tuple under a
+**new** id.
+
+Two consequences, both of which only appear once the copy is permanent:
+
+1. **Orphans with no reclaim path.** Every GC cycle strands the object under the
+   old id. The daemon has no way to learn which ids the ATC deleted, so nothing
+   can ever remove them.
+2. **Wrong bytes after a database restore.** Restore Postgres from a snapshot
+   and the sequence rewinds while the bucket keeps every object ever written.
+   Id 42 is re-minted for a different tuple, and the store answers with the old
+   tuple's content. A get step then returns something that is not the version it
+   asked for, and nothing downstream can detect it.
+
+Today `rc-<id>` is safe **because** the local copy expires at a 2h TTL — the
+blast radius is bounded by the sweeper. A permanent copy removes exactly that
+bound, which is why this is a defect of the durable tier and not of the existing
+daemon.
+
+### What unblocks it
+
+A content-derived key, computed where the identity actually lives:
+`atc/db/resource_cache_factory.go:44-120` already has the resource type, source,
+`version_digest` and `params_hash` in scope. Persist
+`sha256(typeName ‖ sourceHash ‖ version_digest ‖ params_hash)` as a column,
+expose it on `db.ResourceCache`, and pass it alongside the id at registration.
+
+Note for whoever implements it: do **not** derive the parent from
+`ResourceCache.BaseResourceType()` (`atc/db/resource_cache.go:69-75`). It
+flattens the custom-type chain to the base type, so two different custom-type
+versions with identical source and params would collide — the same wrong-bytes
+bug by another route. Recurse through the parent cache's own key instead.
+
+That change touches `atc/db`, `atc/runtime` and `atc/exec`, so it is a
+deliberate piece of work rather than a follow-on commit.
+
+### Where it will attach
+
+Three points on the daemon, each only after the local lookup fails:
 
 | Path | Behaviour |
 |---|---|
-| `POST /register` | If the key is `rc-<n>`, tar and upload, detached from the response. |
-| `HEAD /resource-caches/{key}` | Local miss → ask the store → `200` with `X-Artifact-Source: durable`. |
+| `POST /register` | Tar and upload, detached from the response. |
+| `HEAD /resource-caches/{key}` | Local miss → ask the store → `200`. |
 | `GET /resource-caches/{key}` | Local miss → restore into `<storage>/steps/<key>`, register the alias, serve normally. |
 
 Restoring under `steps/` is deliberate: the existing sweeper reclaims that tree
 by mtime, so a warmed copy cannot grow without bound. It also makes the restored
-cache visible to `resolveOne`'s step 2 and to peers. This is the trap that task
-caches on hostPath already fell into — nothing reclaims them and node disk grows
-monotonically — and the reason not to invent a new unswept directory.
+cache visible to `resolveOne`'s step 2 and to peers. Task caches on hostPath are
+the cautionary case — nothing reclaims them and node disk grows monotonically —
+and the reason not to invent a new unswept directory.
 
 ## Layout
 
@@ -177,26 +221,21 @@ one table — a store that only works on disk is not the feature.
 The S3 backend is tested against a real `httptest` server speaking the real wire
 protocol to the real SDK, matching `atc/creds/ssm`. No mocks, no cloud account.
 
-`cmd/artifact-daemon/durable_tier_test.go` drives the real `Server` handlers,
-including a two-node case (a producer uploads; a consumer with empty storage
-restores and serves) and a `brokenStore` that fails every operation, asserting
-404 rather than 502.
+`cmd/artifact-daemon/durable_tier_test.go` covers the tier: a store/restore
+round trip through a real `Server`'s tar writer, a `brokenStore` that fails
+every operation, a nil tier, and upload collapsing under concurrency.
 
-Every property is mutation-verified: making a miss an error, uploading
-non-resource-caches, returning 502 on a broken store, and dropping the chart's
-`int64` coercion each fail the suite.
+Mutation-verified: making a miss an error, dropping the chart's `int64`
+coercion, and removing the S3 retry cap each fail the suite.
 
 **Cannot be tested locally:** real S3/GCS credentials, IRSA and Workload
 Identity, and behaviour against a bucket under lifecycle policy.
 
 ## Rollout
 
-The tier is off by default, so upgrading changes nothing until
-`artifactDaemon.durable.store` is set.
-
-To enable: set the values, roll the DaemonSet, watch
-`artifact_daemon_durable_operations_total{outcome="error"}`. A cold node's first
-`GET` of a known cache should log `durable.restore` and report `restored`.
+Nothing to roll out yet: the store has no caller. The flags and chart values
+exist and are validated, so the configuration surface can be reviewed now, but
+setting `artifactDaemon.durable.store` currently only constructs the backend.
 
 **Kill switch:** set `store: ""` and roll. The daemon reverts to node-local plus
 peers immediately; nothing else depends on the tier, and the objects in the
@@ -204,15 +243,16 @@ bucket are inert.
 
 ## Open questions
 
-1. **Reclaim.** Nothing deletes from the bucket today. `DurableTier.Delete`
+1. **The content key** — see Status above. This is the blocker.
+2. **Reclaim.** Nothing deletes from the bucket today. `DurableTier.Delete`
    exists and is tested but has no caller. The options are a bucket lifecycle
    policy (cheap, dumb, no code), or wiring it to core's existing
    `atc/gc/resource_cache_collector.go`, which already knows when a resource
    cache becomes unreferenced — accurate, but it couples the ATC to the daemon's
    store. **Start with a lifecycle policy**; revisit if cost matters.
-2. **Should step outputs ever be promoted?** They are excluded because their
+3. **Should step outputs ever be promoted?** They are excluded because their
    keys are per-build. If a use case appears (say, retaining a release artifact),
    it needs a stable key, which is a different feature.
-3. **GCS.** `cloud.google.com/go/storage` is not currently a dependency, and
+4. **GCS.** `cloud.google.com/go/storage` is not currently a dependency, and
    S3-interop covers GCS. Add a native backend only if interop proves
    insufficient.
