@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,11 +9,11 @@ import (
 	"net/http"
 
 	"code.cloudfoundry.org/lager/v3"
+	awssecretsmanager "github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	secretsmanagertypes "github.com/aws/aws-sdk-go-v2/service/secretsmanager/types"
 	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
 	"github.com/concourse/concourse/atc/creds/credhub"
 	"github.com/concourse/concourse/atc/creds/secretsmanager"
-	"github.com/concourse/concourse/atc/creds/secretsmanager/secretsmanagerfakes"
 	"github.com/concourse/concourse/atc/creds/ssm"
 	"github.com/concourse/concourse/atc/creds/ssm/ssmfakes"
 	"github.com/concourse/concourse/atc/creds/vault"
@@ -382,15 +383,15 @@ var _ = Describe("Pipelines API", func() {
 		})
 
 		Context("SecretsManager", func() {
-			var mockService *secretsmanagerfakes.FakeSecretsManagerAPI
+			var secretsManagerAPI *stubSecretsManagerAPI
 
 			BeforeEach(func() {
-				mockService = &secretsmanagerfakes.FakeSecretsManagerAPI{}
+				secretsManagerAPI = &stubSecretsManagerAPI{}
 
 				fakeAccess.IsAuthenticatedReturns(true)
 				fakeAccess.IsAdminReturns(true)
 
-				secretsManagerAccess := secretsmanager.NewSecretsManager(lager.NewLogger("ssm_test"), mockService, nil)
+				secretsManagerAccess := secretsmanager.NewSecretsManager(lager.NewLogger("ssm_test"), secretsManagerAPI, nil)
 
 				secretsManager := &secretsmanager.Manager{
 					AwsAccessKeyID:         "",
@@ -409,7 +410,7 @@ var _ = Describe("Pipelines API", func() {
 			Context("returns configured secretsmanager manager", func() {
 				Context("get secretsmanager info returns error", func() {
 					BeforeEach(func() {
-						mockService.GetSecretValueReturns(nil, errors.New("some error occurred"))
+						secretsManagerAPI.err = errors.New("some error occurred")
 					})
 
 					It("includes the error in json response", func() {
@@ -431,7 +432,7 @@ var _ = Describe("Pipelines API", func() {
 
 				Context("get secretsmanager info", func() {
 					BeforeEach(func() {
-						mockService.GetSecretValueReturns(nil, &secretsmanagertypes.ResourceNotFoundException{Message: ptr("dontcare")})
+						secretsManagerAPI.err = &secretsmanagertypes.ResourceNotFoundException{Message: ptr("dontcare")}
 					})
 
 					It("include sthe secretsmanager info in json response", func() {
@@ -459,4 +460,15 @@ var _ = Describe("Pipelines API", func() {
 
 func ptr[T any](v T) *T {
 	return &v
+}
+
+// stubSecretsManagerAPI reports whatever error the spec asks for. The info
+// endpoint renders the raw error string from the creds manager's health probe,
+// so what matters here is the error itself, not how AWS produced it.
+type stubSecretsManagerAPI struct {
+	err error
+}
+
+func (s *stubSecretsManagerAPI) GetSecretValue(context.Context, *awssecretsmanager.GetSecretValueInput, ...func(*awssecretsmanager.Options)) (*awssecretsmanager.GetSecretValueOutput, error) {
+	return nil, s.err
 }

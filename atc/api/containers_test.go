@@ -1134,7 +1134,7 @@ var _ = Describe("Containers API", func() {
 									Expect(err).NotTo(HaveOccurred())
 									Expect(receivedStdin).To(Equal([]byte("some stdin\n")))
 
-									Expect(interceptTimeout.ResetCallCount()).To(Equal(1))
+									Expect(interceptTimeout.resetCount()).To(Equal(1))
 								})
 							})
 
@@ -1269,24 +1269,14 @@ var _ = Describe("Containers API", func() {
 							})
 
 							Context("when intercept timeout channel sends a value", func() {
-								var (
-									interceptTimeoutChannel chan time.Time
-								)
-
-								BeforeEach(func() {
-									interceptTimeoutChannel = make(chan time.Time)
-									interceptTimeout.ChannelReturns(interceptTimeoutChannel)
-								})
-
 								It("exits with timeout error", func() {
-									interceptTimeout.ErrorReturns(errors.New("too slow"))
-									interceptTimeoutChannel <- time.Time{}
+									interceptTimeout.expire()
 
 									var hijackOutput atc.HijackOutput
 									err := conn.ReadJSON(&hijackOutput)
 									Expect(err).NotTo(HaveOccurred())
 
-									Expect(hijackOutput.Error).To(Equal("too slow"))
+									Expect(hijackOutput.Error).To(Equal("idle timeout (1h0m0s) reached"))
 								})
 							})
 						})

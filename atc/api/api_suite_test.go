@@ -17,8 +17,8 @@ import (
 	"github.com/concourse/concourse/atc/api/accessor/accessorfakes"
 	"github.com/concourse/concourse/atc/api/apifakes"
 	"github.com/concourse/concourse/atc/api/auth"
-	"github.com/concourse/concourse/atc/api/containerserver/containerserverfakes"
-	"github.com/concourse/concourse/atc/api/policychecker/policycheckerfakes"
+	"github.com/concourse/concourse/atc/api/containerserver"
+	"github.com/concourse/concourse/atc/api/policychecker"
 	"github.com/concourse/concourse/atc/auditor/auditorfakes"
 	"github.com/concourse/concourse/atc/creds"
 	"github.com/concourse/concourse/atc/creds/credsfakes"
@@ -41,19 +41,17 @@ var (
 	"resource_causality": false
 }`
 
-	fakeWorkerPool          *apifakes.FakePool
-	fakeAccess              *accessorfakes.FakeAccess
-	fakeAccessor            *accessorfakes.FakeAccessFactory
-	fakeSecretManager       *credsfakes.FakeSecrets
-	fakeVarSourcePool       *credsfakes.FakeVarSourcePool
-	fakePolicyChecker       *policycheckerfakes.FakePolicyChecker
-	credsManagers           creds.Managers
-	interceptTimeoutFactory *containerserverfakes.FakeInterceptTimeoutFactory
-	interceptTimeout        *containerserverfakes.FakeInterceptTimeout
-	isTLSEnabled            bool
-	cliDownloadsDir         string
-	logger                  *lagertest.TestLogger
-	fakeClock               *fakeclock.FakeClock
+	fakeWorkerPool    *apifakes.FakePool
+	fakeAccess        *accessorfakes.FakeAccess
+	fakeAccessor      *accessorfakes.FakeAccessFactory
+	fakeSecretManager *credsfakes.FakeSecrets
+	fakeVarSourcePool *credsfakes.FakeVarSourcePool
+	credsManagers     creds.Managers
+	interceptTimeout  *observingInterceptTimeout
+	isTLSEnabled      bool
+	cliDownloadsDir   string
+	logger            *lagertest.TestLogger
+	fakeClock         *fakeclock.FakeClock
 
 	constructedEventHandler *fakeEventHandlerFactory
 
@@ -81,10 +79,49 @@ func (f *fakeEventHandlerFactory) Construct(
 	})
 }
 
+// observingInterceptTimeout counts resets of the real idle timeout of a
+// hijacked container, and lets a spec expire it on demand. Reset and Error run
+// the production code; only the expiry channel belongs to the spec, since the
+// real one fires on wall-clock time alone.
+type observingInterceptTimeout struct {
+	containerserver.InterceptTimeout
+
+	channel chan time.Time
+
+	lock   sync.Mutex
+	resets int
+}
+
+func (t *observingInterceptTimeout) NewInterceptTimeout() containerserver.InterceptTimeout {
+	return t
+}
+
+func (t *observingInterceptTimeout) Reset() {
+	t.lock.Lock()
+	t.resets++
+	t.lock.Unlock()
+	t.InterceptTimeout.Reset()
+}
+
+func (t *observingInterceptTimeout) Channel() <-chan time.Time {
+	return t.channel
+}
+
+func (t *observingInterceptTimeout) resetCount() int {
+	t.lock.Lock()
+	defer t.lock.Unlock()
+	return t.resets
+}
+
+func (t *observingInterceptTimeout) expire() {
+	t.channel <- time.Time{}
+}
+
 var _ = BeforeEach(func() {
-	interceptTimeoutFactory = new(containerserverfakes.FakeInterceptTimeoutFactory)
-	interceptTimeout = new(containerserverfakes.FakeInterceptTimeout)
-	interceptTimeoutFactory.NewInterceptTimeoutReturns(interceptTimeout)
+	interceptTimeout = &observingInterceptTimeout{
+		InterceptTimeout: containerserver.NewInterceptTimeoutFactory(time.Hour).NewInterceptTimeout(),
+		channel:          make(chan time.Time),
+	}
 
 	fakeAccess = new(accessorfakes.FakeAccess)
 	fakeAccessor = new(accessorfakes.FakeAccessFactory)
@@ -156,11 +193,8 @@ func newAPIServer(deps apiDBDeps) *httptest.Server {
 
 	checkWorkerTeamAccessHandlerFactory := auth.NewCheckWorkerTeamAccessHandlerFactory(deps.workerFactory)
 
-	fakePolicyChecker = new(policycheckerfakes.FakePolicyChecker)
-	fakePolicyChecker.CheckReturns(policy.PassedPolicyCheck(), nil)
-
 	apiWrapper := wrappa.MultiWrappa{
-		wrappa.NewPolicyCheckWrappa(logger, fakePolicyChecker),
+		wrappa.NewPolicyCheckWrappa(logger, policychecker.NewApiPolicyChecker(policy.NoopChecker{})),
 		wrappa.NewAPIAuthWrappa(
 			checkPipelineAccessHandlerFactory,
 			checkBuildReadAccessHandlerFactory,
@@ -206,7 +240,7 @@ func newAPIServer(deps apiDBDeps) *httptest.Server {
 		fakeSecretManager,
 		fakeVarSourcePool,
 		credsManagers,
-		interceptTimeoutFactory,
+		interceptTimeout,
 		time.Second,
 		deps.wall,
 		fakeClock,

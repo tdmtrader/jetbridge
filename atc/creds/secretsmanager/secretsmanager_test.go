@@ -1,15 +1,16 @@
 package secretsmanager_test
 
 import (
-	"context"
-	"fmt"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"sync"
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
-	"github.com/aws/aws-sdk-go-v2/service/secretsmanager/types"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	awssecretsmanager "github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	"github.com/concourse/concourse/atc/creds"
-	"github.com/concourse/concourse/atc/creds/secretsmanager/secretsmanagerfakes"
 	"github.com/concourse/concourse/vars"
 
 	. "github.com/concourse/concourse/atc/creds/secretsmanager"
@@ -17,11 +18,112 @@ import (
 	. "github.com/onsi/gomega"
 )
 
+// secretsManagerService stands in for the AWS Secrets Manager endpoint. The SDK
+// client talking to it is the production one, so lookups are serialized,
+// signed, sent and deserialized exactly as they are against AWS.
+type secretsManagerService struct {
+	*httptest.Server
+
+	mu        sync.Mutex
+	requested []string
+	respond   func(secretID string) (int, any)
+}
+
+func newSecretsManagerService() *secretsManagerService {
+	service := &secretsManagerService{}
+	service.Server = httptest.NewServer(http.HandlerFunc(service.serve))
+	return service
+}
+
+func (s *secretsManagerService) serve(w http.ResponseWriter, r *http.Request) {
+	defer GinkgoRecover()
+
+	Expect(r.Header.Get("X-Amz-Target")).To(Equal("secretsmanager.GetSecretValue"))
+
+	var input struct {
+		SecretId string
+	}
+	Expect(json.NewDecoder(r.Body).Decode(&input)).To(Succeed())
+
+	s.mu.Lock()
+	s.requested = append(s.requested, input.SecretId)
+	respond := s.respond
+	s.mu.Unlock()
+
+	status, body := respond(input.SecretId)
+
+	w.Header().Set("Content-Type", "application/x-amz-json-1.1")
+	w.WriteHeader(status)
+	Expect(json.NewEncoder(w).Encode(body)).To(Succeed())
+}
+
+func (s *secretsManagerService) Respond(respond func(secretID string) (int, any)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.respond = respond
+}
+
+func (s *secretsManagerService) RequestedSecretIDs() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.requested...)
+}
+
+func (s *secretsManagerService) Client() *awssecretsmanager.Client {
+	return awssecretsmanager.NewFromConfig(aws.Config{
+		Region:       "us-east-1",
+		Credentials:  credentials.NewStaticCredentialsProvider("access-key", "secret-key", ""),
+		BaseEndpoint: aws.String(s.URL),
+		Retryer:      func() aws.Retryer { return aws.NopRetryer{} },
+	})
+}
+
+func secretString(value string) (int, any) {
+	return http.StatusOK, map[string]any{
+		"ARN":          "arn:aws:secretsmanager:us-east-1:123456789012:secret:concourse",
+		"Name":         "concourse",
+		"SecretString": value,
+	}
+}
+
+func secretBinary(value []byte) (int, any) {
+	return http.StatusOK, map[string]any{
+		"ARN":          "arn:aws:secretsmanager:us-east-1:123456789012:secret:concourse",
+		"Name":         "concourse",
+		"SecretBinary": value,
+	}
+}
+
+func awsError(status int, code string, message string) (int, any) {
+	return status, map[string]any{
+		"__type":  code,
+		"message": message,
+	}
+}
+
+func notFound() (int, any) {
+	return awsError(http.StatusBadRequest, "ResourceNotFoundException", "Secrets Manager can't find the specified secret.")
+}
+
 var _ = Describe("SecretsManager", func() {
 	var secretAccess *SecretsManager
 	var variables vars.Variables
 	var varRef vars.Reference
-	var mockService *secretsmanagerfakes.FakeSecretsManagerAPI
+	var service *secretsManagerService
+
+	BeforeEach(func() {
+		service = newSecretsManagerService()
+		service.Respond(func(secretID string) (int, any) {
+			if secretID == "/concourse/alpha/bogus/cheery" {
+				return secretString("secret value")
+			}
+			return notFound()
+		})
+	})
+
+	AfterEach(func() {
+		service.Close()
+	})
 
 	JustBeforeEach(func() {
 		varRef = vars.Reference{Path: "cheery"}
@@ -35,15 +137,7 @@ var _ = Describe("SecretsManager", func() {
 		Expect(t3).NotTo(BeNil())
 		Expect(err).To(BeNil())
 
-		mockService = &secretsmanagerfakes.FakeSecretsManagerAPI{}
-		mockService.GetSecretValueStub = getSecretValueStub(func(secretID string) (*secretsmanager.GetSecretValueOutput, error) {
-			if secretID == "/concourse/alpha/bogus/cheery" {
-				return &secretsmanager.GetSecretValueOutput{SecretString: aws.String("secret value"), Name: &secretID}, nil
-			}
-			return nil, &types.ResourceNotFoundException{}
-		})
-
-		secretAccess = NewSecretsManager(lagertest.NewTestLogger("secretsmanager_test"), mockService, []*creds.SecretTemplate{t1, t2, t3})
+		secretAccess = NewSecretsManager(lagertest.NewTestLogger("secretsmanager_test"), service.Client(), []*creds.SecretTemplate{t1, t2, t3})
 		variables = creds.NewVariables(secretAccess, creds.SecretLookupParams{Team: "alpha", Pipeline: "bogus"}, false)
 		Expect(secretAccess).NotTo(BeNil())
 	})
@@ -57,8 +151,8 @@ var _ = Describe("SecretsManager", func() {
 		})
 
 		It("should get complex parameter", func() {
-			mockService.GetSecretValueStub = getSecretValueStub(func(secretID string) (*secretsmanager.GetSecretValueOutput, error) {
-				return &secretsmanager.GetSecretValueOutput{SecretBinary: []byte(`{"name": "yours", "pass": "truely"}`), Name: &secretID}, nil
+			service.Respond(func(secretID string) (int, any) {
+				return secretBinary([]byte(`{"name": "yours", "pass": "truely"}`))
 			})
 			value, found, err := variables.Get(vars.Reference{Path: "user"})
 			Expect(err).To(BeNil())
@@ -70,8 +164,8 @@ var _ = Describe("SecretsManager", func() {
 		})
 
 		It("should get json string parameter", func() {
-			mockService.GetSecretValueStub = getSecretValueStub(func(secretID string) (*secretsmanager.GetSecretValueOutput, error) {
-				return &secretsmanager.GetSecretValueOutput{SecretString: aws.String(`{"name": "yours", "pass": "truely"}`), Name: &secretID}, nil
+			service.Respond(func(secretID string) (int, any) {
+				return secretString(`{"name": "yours", "pass": "truely"}`)
 			})
 			value, found, err := variables.Get(vars.Reference{Path: "user"})
 			Expect(err).To(BeNil())
@@ -83,11 +177,11 @@ var _ = Describe("SecretsManager", func() {
 		})
 
 		It("should get team parameter if exists", func() {
-			mockService.GetSecretValueStub = getSecretValueStub(func(secretID string) (*secretsmanager.GetSecretValueOutput, error) {
+			service.Respond(func(secretID string) (int, any) {
 				if secretID != "/concourse/alpha/cheery" {
-					return nil, &types.ResourceNotFoundException{}
+					return notFound()
 				}
-				return &secretsmanager.GetSecretValueOutput{SecretString: aws.String("team decrypted value"), Name: &secretID}, nil
+				return secretString("team decrypted value")
 			})
 			value, found, err := variables.Get(varRef)
 			Expect(value).To(BeEquivalentTo("team decrypted value"))
@@ -96,11 +190,11 @@ var _ = Describe("SecretsManager", func() {
 		})
 
 		It("should return shared parameter if exists", func() {
-			mockService.GetSecretValueStub = getSecretValueStub(func(secretID string) (*secretsmanager.GetSecretValueOutput, error) {
+			service.Respond(func(secretID string) (int, any) {
 				if secretID != "/concourse/cheery" {
-					return nil, &types.ResourceNotFoundException{}
+					return notFound()
 				}
-				return &secretsmanager.GetSecretValueOutput{SecretString: aws.String("shared decrypted value"), Name: &secretID}, nil
+				return secretString("shared decrypted value")
 			})
 			value, found, err := variables.Get(varRef)
 			Expect(value).To(BeEquivalentTo("shared decrypted value"))
@@ -109,7 +203,9 @@ var _ = Describe("SecretsManager", func() {
 		})
 
 		It("should return not found on error", func() {
-			mockService.GetSecretValueReturns(nil, fmt.Errorf("some error"))
+			service.Respond(func(secretID string) (int, any) {
+				return awsError(http.StatusInternalServerError, "InternalServiceError", "some error")
+			})
 			value, found, err := variables.Get(varRef)
 			Expect(value).To(BeNil())
 			Expect(found).To(BeFalse())
@@ -118,19 +214,19 @@ var _ = Describe("SecretsManager", func() {
 
 		It("should allow empty pipeline name", func() {
 			variables := creds.NewVariables(secretAccess, creds.SecretLookupParams{Team: "alpha", Pipeline: ""}, false)
-			mockService.GetSecretValueStub = getSecretValueStub(func(secretID string) (*secretsmanager.GetSecretValueOutput, error) {
-				Expect(secretID).To(Equal("/concourse/alpha/cheery"))
-				return &secretsmanager.GetSecretValueOutput{SecretString: aws.String("team power"), Name: &secretID}, nil
+			service.Respond(func(secretID string) (int, any) {
+				return secretString("team power")
 			})
 			value, found, err := variables.Get(varRef)
 			Expect(value).To(BeEquivalentTo("team power"))
 			Expect(found).To(BeTrue())
 			Expect(err).To(BeNil())
+			Expect(service.RequestedSecretIDs()).To(Equal([]string{"/concourse/alpha/cheery"}))
 		})
 
 		It("should treat marked for deletion as deleted", func() {
-			mockService.GetSecretValueStub = getSecretValueStub(func(secretID string) (*secretsmanager.GetSecretValueOutput, error) {
-				return nil, &types.InvalidRequestException{}
+			service.Respond(func(secretID string) (int, any) {
+				return awsError(http.StatusBadRequest, "InvalidRequestException", "secret is scheduled for deletion")
 			})
 			value, found, err := variables.Get(varRef)
 			Expect(value).To(BeNil())
@@ -139,12 +235,3 @@ var _ = Describe("SecretsManager", func() {
 		})
 	})
 })
-
-func getSecretValueStub(f func(secretID string) (*secretsmanager.GetSecretValueOutput, error)) func(ctx context.Context, params *secretsmanager.GetSecretValueInput, optFns ...func(*secretsmanager.Options)) (*secretsmanager.GetSecretValueOutput, error) {
-	return func(ctx context.Context, params *secretsmanager.GetSecretValueInput, optFns ...func(*secretsmanager.Options)) (*secretsmanager.GetSecretValueOutput, error) {
-		Expect(ctx).NotTo(BeNil())
-		Expect(params).NotTo(BeNil())
-		Expect(params.SecretId).NotTo(BeNil())
-		return f(*params.SecretId)
-	}
-}

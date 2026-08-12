@@ -8,8 +8,8 @@ import (
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
 
+	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/api/policychecker"
-	"github.com/concourse/concourse/atc/api/policychecker/policycheckerfakes"
 	"github.com/concourse/concourse/atc/policy"
 	"github.com/concourse/concourse/atc/policy/policyfakes"
 
@@ -17,13 +17,22 @@ import (
 	. "github.com/onsi/gomega"
 )
 
+type stubPolicyChecker struct {
+	result policy.PolicyCheckResult
+	err    error
+}
+
+func (c stubPolicyChecker) Check(string, accessor.Access, *http.Request) (policy.PolicyCheckResult, error) {
+	return c.result, c.err
+}
+
 var _ = Describe("Handler", func() {
 	var (
 		innerHandlerCalled    bool
 		dummyHandler          http.HandlerFunc
 		policyCheckerHandler  http.Handler
 		req                   *http.Request
-		fakePolicyChecker     *policycheckerfakes.FakePolicyChecker
+		policyChecker         policychecker.PolicyChecker
 		fakePolicyCheckResult *policyfakes.FakePolicyCheckResult
 		responseWriter        *httptest.ResponseRecorder
 
@@ -31,7 +40,7 @@ var _ = Describe("Handler", func() {
 	)
 
 	BeforeEach(func() {
-		fakePolicyChecker = new(policycheckerfakes.FakePolicyChecker)
+		policyChecker = policychecker.NewApiPolicyChecker(policy.NoopChecker{})
 		fakePolicyCheckResult = new(policyfakes.FakePolicyCheckResult)
 
 		innerHandlerCalled = false
@@ -47,18 +56,11 @@ var _ = Describe("Handler", func() {
 	})
 
 	JustBeforeEach(func() {
+		policyCheckerHandler = policychecker.NewHandler(logger, dummyHandler, "some-action", policyChecker)
 		policyCheckerHandler.ServeHTTP(responseWriter, req)
 	})
 
-	BeforeEach(func() {
-		policyCheckerHandler = policychecker.NewHandler(logger, dummyHandler, "some-action", fakePolicyChecker)
-	})
-
 	Context("policy check passes", func() {
-		BeforeEach(func() {
-			fakePolicyChecker.CheckReturns(policy.PassedPolicyCheck(), nil)
-		})
-
 		It("calls the inner handler", func() {
 			Expect(innerHandlerCalled).To(BeTrue())
 		})
@@ -68,7 +70,7 @@ var _ = Describe("Handler", func() {
 		BeforeEach(func() {
 			fakePolicyCheckResult.AllowedReturns(false)
 			fakePolicyCheckResult.MessagesReturns([]string{"a policy says you can't do that", "another policy also says you can't do that"})
-			fakePolicyChecker.CheckReturns(fakePolicyCheckResult, nil)
+			policyChecker = stubPolicyChecker{result: fakePolicyCheckResult}
 		})
 
 		Context("when should block", func() {
@@ -109,7 +111,7 @@ var _ = Describe("Handler", func() {
 
 	Context("policy check errors", func() {
 		BeforeEach(func() {
-			fakePolicyChecker.CheckReturns(nil, errors.New("some-error"))
+			policyChecker = stubPolicyChecker{err: errors.New("some-error")}
 		})
 
 		It("return http bad request", func() {

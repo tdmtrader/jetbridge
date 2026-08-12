@@ -16,8 +16,6 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-//go:generate go run github.com/maxbrunsfeld/counterfeiter/v6 -generate
-
 var upgrader = websocket.Upgrader{
 	HandshakeTimeout: 5 * time.Second,
 }
@@ -30,7 +28,6 @@ func (err InterceptTimeoutError) Error() string {
 	return fmt.Sprintf("idle timeout (%s) reached", err.duration)
 }
 
-//counterfeiter:generate . InterceptTimeoutFactory
 type InterceptTimeoutFactory interface {
 	NewInterceptTimeout() InterceptTimeout
 }
@@ -52,7 +49,6 @@ func (t *interceptTimeoutFactory) NewInterceptTimeout() InterceptTimeout {
 	}
 }
 
-//counterfeiter:generate . InterceptTimeout
 type InterceptTimeout interface {
 	Reset()
 	Channel() <-chan time.Time
