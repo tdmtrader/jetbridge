@@ -55,7 +55,6 @@ func (e InputVersionEmptyError) Error() string {
 	return fmt.Sprintf("input '%s' has successfully resolved but contains missing version information", e.InputName)
 }
 
-//counterfeiter:generate . Job
 type Job interface {
 	PipelineRef
 

@@ -11,7 +11,6 @@ import (
 	"github.com/concourse/concourse/atc"
 )
 
-//counterfeiter:generate . WorkerFactory
 type WorkerFactory interface {
 	GetWorker(name string) (Worker, bool, error)
 	SaveWorker(atcWorker atc.Worker, ttl time.Duration) (Worker, error)

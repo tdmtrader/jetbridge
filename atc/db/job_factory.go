@@ -11,8 +11,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-//counterfeiter:generate . JobFactory
-
 // XXX: This job factory object is not really a job factory anymore. It is
 // holding the responsibility for two very different things: constructing a
 // dashboard object and also a scheduler job object. Figure out what this is
