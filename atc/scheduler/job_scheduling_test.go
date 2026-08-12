@@ -138,6 +138,20 @@ var _ = DescribeTable("Job Scheduling",
 		},
 	}),
 
+	Entry("if the build after an aborted build has reached max in flight, it will not schedule", Example{
+		Job: DBJob{
+			Builds: []DBBuild{
+				{ID: 1, Aborted: true},
+				{ID: 2, MaxInFlightReached: true},
+			},
+		},
+
+		Result: Result{
+			StartedBuilds: []int{},
+			NeedsRetry:    true,
+		},
+	}),
+
 	Entry("if max in flight is reached, next builds will not schedule", Example{
 		Job: DBJob{
 			Builds: []DBBuild{
@@ -265,9 +279,10 @@ func (example Example) Run() {
 	fakeJob.ConfigReturns(atc.JobConfig{}, nil)
 	fakeJob.SaveNextInputMappingReturns(nil)
 
-	var expectedScheduledBuilds []*dbfakes.FakeBuild
+	startedBuilds := []int{}
 	var pendingBuilds []db.Build
-	for i, build := range example.Job.Builds {
+	var scheduleBuildCall int
+	for _, build := range example.Job.Builds {
 		fakeBuild := new(dbfakes.FakeBuild)
 		fakeBuild.IDReturns(build.ID)
 		fakeBuild.NameReturns(fmt.Sprint(build.ID))
@@ -276,10 +291,9 @@ func (example Example) Run() {
 		fakeBuild.IsManuallyTriggeredReturns(build.ManuallyTriggered)
 		fakeBuild.FinishReturns(nil)
 
-		if build.MaxInFlightReached {
-			fakeJob.ScheduleBuildReturnsOnCall(i, false, nil)
-		} else {
-			fakeJob.ScheduleBuildReturnsOnCall(i, true, nil)
+		if !build.Aborted {
+			fakeJob.ScheduleBuildReturnsOnCall(scheduleBuildCall, !build.MaxInFlightReached, nil)
+			scheduleBuildCall++
 		}
 
 		if build.ResourcesNotChecked {
@@ -302,13 +316,14 @@ func (example Example) Run() {
 			fakePlanner.CreateReturns(atc.Plan{}, nil)
 		}
 
-		if build.UnableToStart {
-			fakeBuild.StartReturns(false, nil)
-		} else {
-			fakeBuild.StartReturns(true, nil)
-		}
+		fakeBuild.StartCalls(func(atc.Plan) (bool, error) {
+			if build.UnableToStart {
+				return false, nil
+			}
+			startedBuilds = append(startedBuilds, build.ID)
+			return true, nil
+		})
 
-		expectedScheduledBuilds = append(expectedScheduledBuilds, fakeBuild)
 		pendingBuilds = append(pendingBuilds, fakeBuild)
 	}
 
@@ -338,11 +353,6 @@ func (example Example) Run() {
 	} else {
 		Expect(example.Result.Errored).To(BeFalse())
 		Expect(needsRetry).To(Equal(example.Result.NeedsRetry))
-		for i, buildID := range example.Result.StartedBuilds {
-			if expectedScheduledBuilds[i].StartCallCount() > 0 {
-				Expect(expectedScheduledBuilds[i].ID()).To(Equal(buildID))
-				Expect(expectedScheduledBuilds[i].StartCallCount()).To(Equal(1))
-			}
-		}
+		Expect(startedBuilds).To(Equal(example.Result.StartedBuilds))
 	}
 }

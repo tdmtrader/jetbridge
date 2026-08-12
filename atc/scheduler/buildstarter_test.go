@@ -7,6 +7,7 @@ import (
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/builds"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/scheduler"
@@ -18,7 +19,6 @@ import (
 
 var _ = Describe("BuildStarter", func() {
 	var (
-		fakePipeline  *dbfakes.FakePipeline
 		fakePlanner   *schedulerfakes.FakeBuildPlanner
 		pendingBuilds []db.Build
 		fakeAlgorithm *schedulerfakes.FakeAlgorithm
@@ -31,7 +31,6 @@ var _ = Describe("BuildStarter", func() {
 	)
 
 	BeforeEach(func() {
-		fakePipeline = new(dbfakes.FakePipeline)
 		fakePlanner = new(schedulerfakes.FakeBuildPlanner)
 		fakeAlgorithm = new(schedulerfakes.FakeAlgorithm)
 
@@ -135,10 +134,6 @@ var _ = Describe("BuildStarter", func() {
 					BeforeEach(func() {
 						pendingBuilds = []db.Build{abortedBuild}
 						job.GetPendingBuildsReturns(pendingBuilds, nil)
-					})
-
-					It("won't try to start the aborted pending build", func() {
-						Expect(abortedBuild.FinishCallCount()).To(Equal(1))
 					})
 
 					It("returns without error", func() {
@@ -489,7 +484,6 @@ var _ = Describe("BuildStarter", func() {
 					BeforeEach(func() {
 						job.PausedReturns(false)
 						job.ScheduleBuildReturns(true, nil)
-						fakePipeline.PausedReturns(false)
 					})
 
 					Context("when adopting inputs and pipes for a rerun build fails", func() {
@@ -911,5 +905,176 @@ var _ = Describe("BuildStarter", func() {
 				})
 			})
 		})
+	})
+})
+
+var _ = Describe("BuildStarter against PostgreSQL", func() {
+	var buildStarter scheduler.BuildStarter
+
+	taskJob := atc.JobConfig{
+		Name: "task-job",
+		PlanSequence: []atc.Step{
+			{
+				Config: &atc.TaskStep{
+					Name:       "some-task",
+					ConfigPath: "some/config/path.yml",
+				},
+			},
+		},
+	}
+
+	BeforeEach(func() {
+		buildStarter = scheduler.NewBuildStarter(
+			builds.NewPlanner(atc.NewPlanFactory(0)),
+			new(schedulerfakes.FakeAlgorithm),
+		)
+	})
+
+	persistJob := func(fixture *schedulerDB, config atc.Config, jobName string) db.Job {
+		GinkgoHelper()
+
+		_, pipeline := persistSchedulerPipeline(
+			fixture,
+			"starter-team",
+			"starter-pipeline",
+			config,
+		)
+		job := schedulerPipelineJob(pipeline, jobName)
+		Expect(job.SaveNextInputMapping(nil, true)).To(Succeed())
+		return job
+	}
+
+	nextPendingBuild := func(job db.Job) db.Build {
+		GinkgoHelper()
+
+		Expect(job.EnsurePendingBuildExists(context.Background())).To(Succeed())
+		pending, err := job.GetPendingBuilds()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(pending).To(HaveLen(1))
+		return pending[0]
+	}
+
+	tryStart := func(job db.Job, resources db.SchedulerResources) bool {
+		GinkgoHelper()
+
+		needsReschedule, err := buildStarter.TryStartPendingBuildsForJob(
+			context.Background(),
+			lagertest.NewTestLogger("test"),
+			db.SchedulerJob{Job: job, Resources: resources},
+			db.InputConfigs{},
+		)
+		Expect(err).NotTo(HaveOccurred())
+		return needsReschedule
+	}
+
+	reloadBuild := func(fixture *schedulerDB, buildID int) db.Build {
+		GinkgoHelper()
+
+		build, found, err := fixture.BuildFactory.Build(buildID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		return build
+	}
+
+	It("persists the plan it created onto the started build", func() {
+		fixture := useSchedulerDB()
+		job := persistJob(fixture, atc.Config{Jobs: atc.JobConfigs{taskJob}}, "task-job")
+		pendingBuild := nextPendingBuild(job)
+
+		Expect(tryStart(job, nil)).To(BeFalse())
+
+		startedBuild := reloadBuild(fixture, pendingBuild.ID())
+		Expect(startedBuild.Status()).To(Equal(db.BuildStatusStarted))
+		Expect(startedBuild.IsScheduled()).To(BeTrue())
+		Expect(startedBuild.HasPlan()).To(BeTrue())
+
+		persistedPlan := startedBuild.PrivatePlan()
+		Expect(persistedPlan.Do).NotTo(BeNil())
+		Expect(*persistedPlan.Do).To(HaveLen(1))
+		Expect((*persistedPlan.Do)[0].Task).NotTo(BeNil())
+		Expect((*persistedPlan.Do)[0].Task.Name).To(Equal("some-task"))
+		Expect((*persistedPlan.Do)[0].Task.ConfigPath).To(Equal("some/config/path.yml"))
+	})
+
+	It("marks the build as errored when the plan cannot be created", func() {
+		fixture := useSchedulerDB()
+		job := persistJob(fixture, atc.Config{
+			Resources: atc.ResourceConfigs{
+				{Name: "some-resource", Type: "some-type"},
+			},
+			Jobs: atc.JobConfigs{
+				{
+					Name: "get-job",
+					PlanSequence: []atc.Step{
+						{Config: &atc.GetStep{Name: "some-resource"}},
+					},
+				},
+			},
+		}, "get-job")
+		pendingBuild := nextPendingBuild(job)
+
+		Expect(tryStart(job, db.SchedulerResources{
+			{Name: "some-resource", Type: "some-type"},
+		})).To(BeFalse())
+
+		erroredBuild := reloadBuild(fixture, pendingBuild.ID())
+		Expect(erroredBuild.Status()).To(Equal(db.BuildStatusErrored))
+		Expect(erroredBuild.IsCompleted()).To(BeTrue())
+		Expect(erroredBuild.HasPlan()).To(BeFalse())
+	})
+
+	It("finishes an aborted pending build as aborted without planning it", func() {
+		fixture := useSchedulerDB()
+		job := persistJob(fixture, atc.Config{Jobs: atc.JobConfigs{taskJob}}, "task-job")
+		pendingBuild := nextPendingBuild(job)
+		Expect(pendingBuild.MarkAsAborted()).To(Succeed())
+
+		Expect(tryStart(job, nil)).To(BeFalse())
+
+		abortedBuild := reloadBuild(fixture, pendingBuild.ID())
+		Expect(abortedBuild.Status()).To(Equal(db.BuildStatusAborted))
+		Expect(abortedBuild.IsCompleted()).To(BeTrue())
+		Expect(abortedBuild.HasPlan()).To(BeFalse())
+	})
+
+	It("leaves the build pending and asks to be rescheduled when max in flight is reached", func() {
+		fixture := useSchedulerDB()
+		serialJob := taskJob
+		serialJob.Name = "serial-job"
+		serialJob.RawMaxInFlight = 1
+		job := persistJob(fixture, atc.Config{Jobs: atc.JobConfigs{serialJob}}, "serial-job")
+
+		firstBuild := nextPendingBuild(job)
+		Expect(tryStart(job, nil)).To(BeFalse())
+		Expect(reloadBuild(fixture, firstBuild.ID()).Status()).To(Equal(db.BuildStatusStarted))
+
+		secondBuild := nextPendingBuild(job)
+		Expect(tryStart(job, nil)).To(BeTrue())
+
+		blockedBuild := reloadBuild(fixture, secondBuild.ID())
+		Expect(blockedBuild.Status()).To(Equal(db.BuildStatusPending))
+		Expect(blockedBuild.IsScheduled()).To(BeFalse())
+		Expect(blockedBuild.HasPlan()).To(BeFalse())
+	})
+
+	It("starts a rerun build with its own persisted plan", func() {
+		fixture := useSchedulerDB()
+		job := persistJob(fixture, atc.Config{Jobs: atc.JobConfigs{taskJob}}, "task-job")
+		originalBuild := nextPendingBuild(job)
+		Expect(tryStart(job, nil)).To(BeFalse())
+
+		rerunBuild, err := job.RerunBuild(originalBuild, "test")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(rerunBuild.RerunOf()).To(Equal(originalBuild.ID()))
+
+		Expect(tryStart(job, nil)).To(BeFalse())
+
+		startedRerun := reloadBuild(fixture, rerunBuild.ID())
+		Expect(startedRerun.Status()).To(Equal(db.BuildStatusStarted))
+		Expect(startedRerun.IsScheduled()).To(BeTrue())
+
+		persistedPlan := startedRerun.PrivatePlan()
+		Expect(persistedPlan.Do).NotTo(BeNil())
+		Expect((*persistedPlan.Do)[0].Task.Name).To(Equal("some-task"))
 	})
 })
