@@ -9,8 +9,6 @@ import (
 	"github.com/concourse/concourse/atc"
 )
 
-//counterfeiter:generate . WorkerArtifact
-
 // TODO-L Can this be consolidated with atc/runtime/types.go -> Artifact OR Alternatively, there shouldn't be a volume reference here
 type WorkerArtifact interface {
 	ID() int

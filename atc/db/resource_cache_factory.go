@@ -9,7 +9,6 @@ import (
 	"github.com/concourse/concourse/atc/db/lock"
 )
 
-//counterfeiter:generate . ResourceCacheFactory
 type ResourceCacheFactory interface {
 	FindOrCreateResourceCache(
 		resourceCacheUser ResourceCacheUser,

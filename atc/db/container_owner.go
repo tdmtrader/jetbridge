@@ -8,8 +8,6 @@ import (
 	"github.com/concourse/concourse/atc"
 )
 
-//counterfeiter:generate . ContainerOwner
-
 // ContainerOwner designates the data the container should reference that
 // identifies its lifecycle. When the owner goes away, the container should
 // be garbage collected.

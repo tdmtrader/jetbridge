@@ -9,7 +9,6 @@ import (
 var componentsQuery = psql.Select("c.id, c.name").
 	From("components c")
 
-//counterfeiter:generate . Component
 type Component interface {
 	ID() int
 	Name() string

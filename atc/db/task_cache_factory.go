@@ -1,6 +1,5 @@
 package db
 
-//counterfeiter:generate . TaskCacheFactory
 type TaskCacheFactory interface {
 	Find(jobID int, stepName string, path string) (UsedTaskCache, bool, error)
 	FindOrCreate(jobID int, stepName string, path string) (UsedTaskCache, error)

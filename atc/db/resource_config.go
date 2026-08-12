@@ -24,7 +24,6 @@ var ErrResourceConfigDisappeared = errors.New("resource config disappeared")
 var ErrResourceConfigParentDisappeared = errors.New("resource config parent disappeared")
 var ErrResourceConfigHasNoType = errors.New("resource config has no type")
 
-//counterfeiter:generate . ResourceConfig
 type ResourceConfig interface {
 	ID() int
 	LastReferenced() time.Time

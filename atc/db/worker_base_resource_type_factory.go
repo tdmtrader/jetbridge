@@ -1,6 +1,5 @@
 package db
 
-//counterfeiter:generate . WorkerBaseResourceTypeFactory
 type WorkerBaseResourceTypeFactory interface {
 	Find(name string, worker Worker) (*UsedWorkerBaseResourceType, bool, error)
 }

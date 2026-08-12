@@ -9,7 +9,6 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 )
 
-//counterfeiter:generate . ResourceConfigVersion
 type ResourceConfigVersion interface {
 	ID() int
 	Version() Version

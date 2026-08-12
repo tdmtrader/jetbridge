@@ -15,7 +15,6 @@ import (
 	"github.com/concourse/concourse/atc/util"
 )
 
-//counterfeiter:generate . Prototype
 type Prototype interface {
 	PipelineRef
 

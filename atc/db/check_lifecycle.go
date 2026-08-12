@@ -4,7 +4,6 @@ import "code.cloudfoundry.org/lager/v3"
 
 var CheckDeleteBatchSize = 500
 
-//counterfeiter:generate . CheckLifecycle
 type CheckLifecycle interface {
 	DeleteCompletedChecks(logger lager.Logger) error
 }

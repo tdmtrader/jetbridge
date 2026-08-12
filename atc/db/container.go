@@ -12,7 +12,6 @@ var ErrContainerDisappeared = errors.New("container disappeared from db")
 
 type ContainerState string
 
-//counterfeiter:generate . Container
 type Container interface {
 	ID() int
 	State() string
@@ -235,7 +234,6 @@ func (container *createdContainer) UpdateLastHijack() error {
 	return nil
 }
 
-//counterfeiter:generate . DestroyingContainer
 type DestroyingContainer interface {
 	Container
 
@@ -297,7 +295,6 @@ func (container *destroyingContainer) Destroy() (bool, error) {
 	return true, nil
 }
 
-//counterfeiter:generate . FailedContainer
 type FailedContainer interface {
 	Container
 
