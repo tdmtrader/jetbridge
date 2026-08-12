@@ -9,7 +9,6 @@ import (
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/wrappa"
-	"github.com/concourse/concourse/atc/wrappa/wrappafakes"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -18,16 +17,15 @@ import (
 
 var _ = Describe("Concurrent Request Limits Wrappa", func() {
 	var (
-		fakeHandler *wrappafakes.FakeHandler
-		fakePolicy  *wrappafakes.FakeConcurrentRequestPolicy
-		fakePool    *wrappafakes.FakePool
-		testLogger  *lagertest.TestLogger
-		handler     http.Handler
-		request     *http.Request
+		pool                  wrappa.Pool
+		slotFreeDuringRequest bool
+		testLogger            *lagertest.TestLogger
+		handler               http.Handler
+		request               *http.Request
 	)
 
 	BeforeEach(func() {
-		fakeHandler = new(wrappafakes.FakeHandler)
+		slotFreeDuringRequest = false
 		testLogger = lagertest.NewTestLogger("test")
 		request, _ = http.NewRequest("GET", "localhost:8080", nil)
 	})
@@ -37,21 +35,30 @@ var _ = Describe("Concurrent Request Limits Wrappa", func() {
 	})
 
 	givenConcurrentRequestLimit := func(limit int) {
-		fakePolicy = new(wrappafakes.FakeConcurrentRequestPolicy)
-		fakePool = new(wrappafakes.FakePool)
-		fakePolicy.HandlerPoolReturns(fakePool, true)
-		fakePool.SizeReturns(limit)
+		policy := wrappa.NewConcurrentRequestPolicy(map[wrappa.LimitedRoute]int{
+			wrappa.LimitedRoute(atc.ListAllJobs): limit,
+		})
 
-		handler = wrappa.NewConcurrentRequestLimitsWrappa(testLogger, fakePolicy).
+		var found bool
+		pool, found = policy.HandlerPool(atc.ListAllJobs)
+		Expect(found).To(BeTrue())
+
+		handler = wrappa.NewConcurrentRequestLimitsWrappa(testLogger, policy).
 			Wrap(map[string]http.Handler{
-				atc.ListAllJobs: fakeHandler,
+				atc.ListAllJobs: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					slotFreeDuringRequest = pool.TryAcquire()
+					if slotFreeDuringRequest {
+						pool.Release()
+					}
+					w.Write([]byte("wrapped"))
+				}),
 			})[atc.ListAllJobs]
 	}
 
 	Context("when the limit is reached", func() {
 		BeforeEach(func() {
 			givenConcurrentRequestLimit(1)
-			fakePool.TryAcquireReturns(false)
+			Expect(pool.TryAcquire()).To(BeTrue())
 		})
 
 		It("responds with a 503", func() {
@@ -59,6 +66,7 @@ var _ = Describe("Concurrent Request Limits Wrappa", func() {
 			handler.ServeHTTP(recorder, request)
 
 			Expect(recorder.Code).To(Equal(http.StatusServiceUnavailable))
+			Expect(recorder.Body.String()).To(BeEmpty())
 		})
 
 		It("logs an INFO message", func() {
@@ -83,19 +91,27 @@ var _ = Describe("Concurrent Request Limits Wrappa", func() {
 	Context("when the limit is not reached", func() {
 		BeforeEach(func() {
 			givenConcurrentRequestLimit(1)
-			fakePool.TryAcquireReturns(true)
 		})
 
 		It("invokes the wrapped handler", func() {
-			handler.ServeHTTP(httptest.NewRecorder(), request)
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, request)
 
-			Expect(fakeHandler.ServeHTTPCallCount()).To(Equal(1), "wrapped handler not invoked")
+			Expect(recorder.Body.String()).To(Equal("wrapped"))
 		})
 
-		It("releases the pool", func() {
+		It("holds a slot for the duration of the request", func() {
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, request)
+
+			Expect(recorder.Body.String()).To(Equal("wrapped"))
+			Expect(slotFreeDuringRequest).To(BeFalse())
+		})
+
+		It("releases the slot once the request is done", func() {
 			handler.ServeHTTP(httptest.NewRecorder(), request)
 
-			Expect(fakePool.ReleaseCallCount()).To(Equal(1))
+			Expect(pool.TryAcquire()).To(BeTrue())
 		})
 
 		It("records the number of requests in-flight", func() {
@@ -116,6 +132,7 @@ var _ = Describe("Concurrent Request Limits Wrappa", func() {
 			handler.ServeHTTP(recorder, request)
 
 			Expect(recorder.Code).To(Equal(http.StatusNotImplemented))
+			Expect(recorder.Body.String()).To(BeEmpty())
 		})
 
 		It("logs a DEBUG message", func() {
@@ -134,6 +151,21 @@ var _ = Describe("Concurrent Request Limits Wrappa", func() {
 			handler.ServeHTTP(httptest.NewRecorder(), request)
 
 			Expect(metric.Metrics.ConcurrentRequestsLimitHit[atc.ListAllJobs].Delta()).To(Equal(float64(2)))
+		})
+	})
+
+	Context("when the route has no configured limit", func() {
+		It("passes the handler through untouched", func() {
+			unlimited := &stupidHandler{}
+
+			wrapped := wrappa.NewConcurrentRequestLimitsWrappa(
+				testLogger,
+				wrappa.NewConcurrentRequestPolicy(map[wrappa.LimitedRoute]int{}),
+			).Wrap(map[string]http.Handler{
+				atc.ListAllJobs: unlimited,
+			})
+
+			Expect(wrapped[atc.ListAllJobs]).To(BeIdenticalTo(unlimited))
 		})
 	})
 })

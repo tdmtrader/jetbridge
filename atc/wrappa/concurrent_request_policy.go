@@ -36,7 +36,6 @@ func isValidAction(action string) bool {
 	return false
 }
 
-//counterfeiter:generate . ConcurrentRequestPolicy
 type ConcurrentRequestPolicy interface {
 	HandlerPool(action string) (Pool, bool)
 }

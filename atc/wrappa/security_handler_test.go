@@ -6,7 +6,6 @@ import (
 
 	"github.com/concourse/concourse/atc/wrappa"
 
-	"github.com/concourse/concourse/atc/wrappa/wrappafakes"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -16,7 +15,7 @@ var _ = Describe("SecurityHandler", func() {
 		request *http.Request
 		rw      *httptest.ResponseRecorder
 
-		fakeHandler *wrappafakes.FakeHandler
+		wrappedHandler http.Handler
 
 		securityHandler wrappa.SecurityHandler
 	)
@@ -25,15 +24,21 @@ var _ = Describe("SecurityHandler", func() {
 		rw = httptest.NewRecorder()
 		request = httptest.NewRequest("GET", "/some/path", nil)
 
-		fakeHandler = new(wrappafakes.FakeHandler)
+		wrappedHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Write([]byte("delegated"))
+		})
 
 		securityHandler = wrappa.SecurityHandler{
-			Handler: fakeHandler,
+			Handler: wrappedHandler,
 		}
 	})
 
 	JustBeforeEach(func() {
 		securityHandler.ServeHTTP(rw, request)
+	})
+
+	It("delegates to the wrapped handler", func() {
+		Expect(rw.Body.String()).To(Equal("delegated"))
 	})
 
 	It("sets the correct security headers", func() {
@@ -53,7 +58,7 @@ var _ = Describe("SecurityHandler", func() {
 		BeforeEach(func() {
 			securityHandler = wrappa.SecurityHandler{
 				XFrameOptions: "some-x-frame-options",
-				Handler:       fakeHandler,
+				Handler:       wrappedHandler,
 			}
 		})
 		It("sets the X-Frame-Options to whatever it was configured with", func() {
@@ -65,7 +70,7 @@ var _ = Describe("SecurityHandler", func() {
 		BeforeEach(func() {
 			securityHandler = wrappa.SecurityHandler{
 				ContentSecurityPolicy: "some-policy 'value'",
-				Handler:               fakeHandler,
+				Handler:               wrappedHandler,
 			}
 		})
 		It("sets the Content-Security-Policy to whatever it was configured with", func() {
@@ -83,7 +88,7 @@ var _ = Describe("SecurityHandler", func() {
 		BeforeEach(func() {
 			securityHandler = wrappa.SecurityHandler{
 				StrictTransportSecurity: "some-policy 'value'",
-				Handler:                 fakeHandler,
+				Handler:                 wrappedHandler,
 			}
 		})
 		It("sets the Strict-Transport-Security to whatever it was configured with", func() {
