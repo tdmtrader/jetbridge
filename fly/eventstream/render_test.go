@@ -1,8 +1,11 @@
 package eventstream_test
 
 import (
+	"bytes"
 	"encoding/json"
-	"io"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
 	"time"
 
 	"github.com/fatih/color"
@@ -15,49 +18,83 @@ import (
 	"github.com/concourse/concourse/atc/event"
 	"github.com/concourse/concourse/fly/eventstream"
 	"github.com/concourse/concourse/fly/ui"
-	"github.com/concourse/concourse/go-concourse/concourse/eventstream/eventstreamfakes"
+	clientstream "github.com/concourse/concourse/go-concourse/concourse/eventstream"
+	"github.com/vito/go-sse/sse"
 )
 
 var _ = Describe("V1.0 Renderer", func() {
 	var (
 		out     *gbytes.Buffer
-		stream  *eventstreamfakes.FakeEventStream
 		options eventstream.RenderOptions
 
-		receivedEvents chan<- atc.Event
+		frames []sse.Event
+		server *httptest.Server
+		stream *clientstream.SSEEventStream
 
 		exitStatus int
 	)
 
+	writeEvent := func(ev atc.Event) {
+		payload, err := json.Marshal(event.Message{Event: ev})
+		Expect(err).NotTo(HaveOccurred())
+
+		frames = append(frames, sse.Event{
+			ID:   strconv.Itoa(len(frames)),
+			Name: "event",
+			Data: payload,
+		})
+	}
+
+	writeRawEvent := func(payload string) {
+		frames = append(frames, sse.Event{
+			ID:   strconv.Itoa(len(frames)),
+			Name: "event",
+			Data: []byte(payload),
+		})
+	}
+
 	BeforeEach(func() {
 		color.NoColor = false
 		out = gbytes.NewBuffer()
-		stream = new(eventstreamfakes.FakeEventStream)
 		options = eventstream.RenderOptions{}
-
-		events := make(chan atc.Event, 100)
-		receivedEvents = events
-
-		stream.NextEventStub = func() (atc.Event, error) {
-			select {
-			case ev := <-events:
-				return ev, nil
-			default:
-				return nil, io.EOF
-			}
-		}
+		frames = nil
 	})
 
 	JustBeforeEach(func() {
+		var body bytes.Buffer
+		for _, frame := range frames {
+			Expect(frame.Write(&body)).To(Succeed())
+		}
+		Expect(sse.Event{ID: strconv.Itoa(len(frames)), Name: "end"}.Write(&body)).To(Succeed())
+
+		server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+			w.Write(body.Bytes())
+		}))
+
+		source, err := sse.Connect(server.Client(), time.Second, func() *http.Request {
+			request, err := http.NewRequest("GET", server.URL, nil)
+			Expect(err).NotTo(HaveOccurred())
+			return request
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		stream = clientstream.NewSSEEventStream(source)
+
 		exitStatus = eventstream.Render(out, stream, options)
+	})
+
+	AfterEach(func() {
+		Expect(stream.Close()).To(Succeed())
+		server.Close()
 	})
 
 	Context("when a Log event is received", func() {
 		BeforeEach(func() {
-			receivedEvents <- event.Log{
+			writeEvent(event.Log{
 				Payload: "hello",
 				Time:    time.Now().Unix(),
-			}
+			})
 		})
 
 		It("prints its payload", func() {
@@ -78,9 +115,9 @@ var _ = Describe("V1.0 Renderer", func() {
 
 	Context("when an Error event is received", func() {
 		BeforeEach(func() {
-			receivedEvents <- event.Error{
+			writeEvent(event.Error{
 				Message: "oh no!",
-			}
+			})
 		})
 
 		It("prints its message in bold red, followed by a linebreak", func() {
@@ -100,9 +137,9 @@ var _ = Describe("V1.0 Renderer", func() {
 
 	Context("when an InitializeTask event is received", func() {
 		BeforeEach(func() {
-			receivedEvents <- event.InitializeTask{
+			writeEvent(event.InitializeTask{
 				Time: time.Now().Unix(),
-			}
+			})
 		})
 
 		It("prints initializing", func() {
@@ -122,7 +159,7 @@ var _ = Describe("V1.0 Renderer", func() {
 
 	Context("and a StartTask event is received", func() {
 		BeforeEach(func() {
-			receivedEvents <- event.StartTask{
+			writeEvent(event.StartTask{
 				Time: time.Now().Unix(),
 				TaskConfig: event.TaskConfig{
 					Image: "some-image",
@@ -131,7 +168,7 @@ var _ = Describe("V1.0 Renderer", func() {
 						Args: []string{"arg1", "arg2"},
 					},
 				},
-			}
+			})
 		})
 
 		It("prints the build's run script", func() {
@@ -151,9 +188,9 @@ var _ = Describe("V1.0 Renderer", func() {
 
 	Context("when a FinishTask event is received", func() {
 		BeforeEach(func() {
-			receivedEvents <- event.FinishTask{
+			writeEvent(event.FinishTask{
 				ExitStatus: 42,
-			}
+			})
 		})
 
 		It("returns its exit status", func() {
@@ -162,9 +199,9 @@ var _ = Describe("V1.0 Renderer", func() {
 
 		Context("and a Status event is received", func() {
 			BeforeEach(func() {
-				receivedEvents <- event.Status{
+				writeEvent(event.Status{
 					Status: atc.StatusSucceeded,
-				}
+				})
 			})
 
 			It("still processes it", func() {
@@ -190,10 +227,10 @@ var _ = Describe("V1.0 Renderer", func() {
 	Describe("receiving a Status event", func() {
 		Context("with status 'succeeded'", func() {
 			BeforeEach(func() {
-				receivedEvents <- event.Status{
+				writeEvent(event.Status{
 					Status: atc.StatusSucceeded,
 					Time:   time.Now().Unix(),
-				}
+				})
 			})
 
 			It("prints it in green", func() {
@@ -217,10 +254,10 @@ var _ = Describe("V1.0 Renderer", func() {
 
 		Context("with status 'failed'", func() {
 			BeforeEach(func() {
-				receivedEvents <- event.Status{
+				writeEvent(event.Status{
 					Status: atc.StatusFailed,
 					Time:   time.Now().Unix(),
-				}
+				})
 			})
 
 			It("prints it in red", func() {
@@ -244,10 +281,10 @@ var _ = Describe("V1.0 Renderer", func() {
 
 		Context("with status 'errored'", func() {
 			BeforeEach(func() {
-				receivedEvents <- event.Status{
+				writeEvent(event.Status{
 					Status: atc.StatusErrored,
 					Time:   time.Now().Unix(),
-				}
+				})
 			})
 
 			It("prints it in bold red", func() {
@@ -271,10 +308,10 @@ var _ = Describe("V1.0 Renderer", func() {
 
 		Context("with status 'aborted'", func() {
 			BeforeEach(func() {
-				receivedEvents <- event.Status{
+				writeEvent(event.Status{
 					Status: atc.StatusAborted,
 					Time:   time.Now().Unix(),
-				}
+				})
 			})
 
 			It("prints it in yellow", func() {
@@ -299,9 +336,9 @@ var _ = Describe("V1.0 Renderer", func() {
 
 	Context("when a WaitingForWorker event is received", func() {
 		BeforeEach(func() {
-			receivedEvents <- event.WaitingForWorker{
+			writeEvent(event.WaitingForWorker{
 				Time: time.Now().Unix(),
-			}
+			})
 		})
 
 		It("prints the build's run script", func() {
@@ -321,10 +358,10 @@ var _ = Describe("V1.0 Renderer", func() {
 
 	Context("when a SelectedWorker event is received", func() {
 		BeforeEach(func() {
-			receivedEvents <- event.SelectedWorker{
+			writeEvent(event.SelectedWorker{
 				Time:       time.Now().Unix(),
 				WorkerName: "some-worker",
-			}
+			})
 		})
 
 		It("prints the build's run script", func() {
@@ -357,11 +394,11 @@ var _ = Describe("V1.0 Renderer", func() {
 			Expect(err).ToNot(HaveOccurred())
 			sidecarPlan = json.RawMessage(planBytes)
 
-			receivedEvents <- event.Sidecar{
+			writeEvent(event.Sidecar{
 				Time:       time.Now().Unix(),
 				Origin:     event.Origin{ID: "abc123"},
 				PublicPlan: &sidecarPlan,
-			}
+			})
 		})
 
 		It("prints a sidecar attached header", func() {
@@ -370,11 +407,11 @@ var _ = Describe("V1.0 Renderer", func() {
 
 		Context("and a Log event is received from the sidecar", func() {
 			BeforeEach(func() {
-				receivedEvents <- event.Log{
+				writeEvent(event.Log{
 					Time:    time.Now().Unix(),
 					Origin:  event.Origin{ID: "abc123/sidecar/log-emitter"},
 					Payload: "hello from sidecar\n",
-				}
+				})
 			})
 
 			It("prefixes the log line with the sidecar name", func() {
@@ -385,11 +422,11 @@ var _ = Describe("V1.0 Renderer", func() {
 
 		Context("and a Log event is received from the main container", func() {
 			BeforeEach(func() {
-				receivedEvents <- event.Log{
+				writeEvent(event.Log{
 					Time:    time.Now().Unix(),
 					Origin:  event.Origin{ID: "abc123"},
 					Payload: "hello from main\n",
-				}
+				})
 			})
 
 			It("does not prefix the log line with a sidecar name", func() {
@@ -402,18 +439,8 @@ var _ = Describe("V1.0 Renderer", func() {
 	Context("when an UnknownEventTypeError or UnknownEventVersionError is received", func() {
 
 		BeforeEach(func() {
-			errors := make(chan error, 100)
-
-			stream.NextEventStub = func() (atc.Event, error) {
-				select {
-				case ev := <-errors:
-					return nil, ev
-				default:
-					return nil, io.EOF
-				}
-			}
-			errors <- event.UnknownEventTypeError{Type: "some-event"}
-			errors <- event.UnknownEventVersionError{Type: "some-bad-version-event"}
+			writeRawEvent(`{"data":{},"event":"some-event","version":"1.0"}`)
+			writeRawEvent(`{"data":{},"event":"status","version":"9.0"}`)
 		})
 
 		It("prints the build's run script", func() {
