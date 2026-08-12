@@ -230,9 +230,6 @@ type Example struct {
 }
 
 type DBJob struct {
-	Paused         bool
-	PipelinePaused bool
-
 	Builds []DBBuild
 }
 

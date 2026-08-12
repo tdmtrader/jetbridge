@@ -146,10 +146,6 @@ func (example Example) Run() {
 
 	var versionsDB db.VersionsDB
 	if example.LoadDB != "" {
-		if os.Getenv("ALGORITHM_REGRESSION") == "" {
-			ginkgo.Skip("skipping; to run, set $ALGORITHM_REGRESSION")
-		}
-
 		versionsDB = example.importVersionsDB(ctx, setup, cache, resources)
 	} else {
 		versionsDB = example.setupVersionsDB(ctx, setup, cache, resources)
@@ -280,7 +276,7 @@ func (example Example) importVersionsDB(ctx context.Context, setup setupDB, cach
 			txn, err := pgxConn.Begin(ctx)
 			Expect(err).ToNot(HaveOccurred())
 
-			cols := []string{"id", "resource_config_scope_id", "version", "version_sha256", "check_order"}
+			cols := []string{"id", "resource_config_scope_id", "version", "version_sha256", "version_md5", "check_order"}
 			copyCount, err := txn.CopyFrom(ctx,
 				pgx.Identifier{"resource_config_versions"},
 				cols, pgx.CopyFromSlice(len(debugDB.ResourceVersions), func(i int) (row []any, err error) {
@@ -297,6 +293,7 @@ func (example Example) importVersionsDB(ctx context.Context, setup setupDB, cach
 						resource.VersionID,
 						scope,
 						"{}",
+						strconv.Itoa(resource.VersionID),
 						strconv.Itoa(resource.VersionID),
 						resource.CheckOrder,
 					}
