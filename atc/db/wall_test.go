@@ -4,36 +4,40 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/atc"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
 
+type fixedClock struct {
+	now time.Time
+}
+
+func (c *fixedClock) Now() time.Time { return c.now }
+
+func (c *fixedClock) Until(t time.Time) time.Duration { return t.Sub(c.now) }
+
 var _ = Describe("Wall", func() {
 	var (
 		msgOnly    = atc.Wall{Message: "this is a test message!"}
 		msgWithTTL = atc.Wall{Message: "this is a test message!", TTL: time.Minute}
-		startTime  = time.Now()
+		startTime  = time.Now().Truncate(time.Microsecond)
 	)
 
 	Context(" a message is set", func() {
 		BeforeEach(func() {
-			fakeClock = dbfakes.FakeClock{}
-			fakeClock.NowReturns(startTime)
+			wallClock.now = startTime
 		})
 		Context("with no expiration", func() {
 			It("successfully sets the wall", func() {
 				err := dbWall.SetWall(msgOnly)
 				Expect(err).ToNot(HaveOccurred())
-				Expect(fakeClock.NowCallCount()).To(Equal(0))
 			})
 
 			It("successfully gets the wall", func() {
 				_ = dbWall.SetWall(msgOnly)
 				actualWall, err := dbWall.GetWall()
 				Expect(err).ToNot(HaveOccurred())
-				Expect(fakeClock.NowCallCount()).To(Equal(1))
 				Expect(actualWall).To(Equal(msgOnly))
 			})
 
@@ -42,30 +46,24 @@ var _ = Describe("Wall", func() {
 			It("successfully sets the wall", func() {
 				err := dbWall.SetWall(msgWithTTL)
 				Expect(err).ToNot(HaveOccurred())
-				Expect(fakeClock.NowCallCount()).To(Equal(1))
 			})
 
 			Context("the message has not expired", func() {
 				Context("and gets a wall", func() {
-					BeforeEach(func() {
-						fakeClock.NowReturns(startTime.Add(time.Second))
-						fakeClock.UntilReturns(30 * time.Second)
-					})
-
 					Specify("successfully", func() {
 						_ = dbWall.SetWall(msgWithTTL)
+						wallClock.now = startTime.Add(30 * time.Second)
+
 						_, err := dbWall.GetWall()
 						Expect(err).ToNot(HaveOccurred())
-						Expect(fakeClock.NowCallCount()).To(Equal(2))
-						Expect(fakeClock.UntilCallCount()).To(Equal(1))
 					})
 
 					Specify("with the TTL field set", func() {
 						_ = dbWall.SetWall(msgWithTTL)
+						wallClock.now = startTime.Add(30 * time.Second)
 
 						actualWall, _ := dbWall.GetWall()
-						msgWithTTL.TTL = 30 * time.Second
-						Expect(actualWall).To(Equal(msgWithTTL))
+						Expect(actualWall).To(Equal(atc.Wall{Message: msgWithTTL.Message, TTL: 30 * time.Second}))
 					})
 				})
 			})
@@ -73,11 +71,10 @@ var _ = Describe("Wall", func() {
 			Context("the message has expired", func() {
 				It("returns no message", func() {
 					_ = dbWall.SetWall(msgWithTTL)
-					fakeClock.NowReturns(startTime.Add(time.Hour))
+					wallClock.now = startTime.Add(time.Hour)
 
 					actualWall, err := dbWall.GetWall()
 					Expect(err).ToNot(HaveOccurred())
-					Expect(fakeClock.NowCallCount()).To(Equal(2))
 					Expect(actualWall).To(Equal(atc.Wall{}))
 				})
 			})

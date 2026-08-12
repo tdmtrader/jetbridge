@@ -1,23 +1,71 @@
 package db_test
 
 import (
+	"database/sql"
 	"errors"
 	"time"
 
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/jackc/pgx/v5/pgconn"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
 
+type stubExecutor struct {
+	statements []string
+	err        error
+}
+
+func (e *stubExecutor) Exec(statement string, args ...any) (sql.Result, error) {
+	e.statements = append(e.statements, statement)
+	return nil, e.err
+}
+
+type stubListener struct {
+	notifications chan *pgconn.Notification
+
+	listened   []string
+	unlistened []string
+
+	listenErr   error
+	unlistenErr error
+
+	onListen   func()
+	onUnlisten func()
+}
+
+func (l *stubListener) Close() error {
+	close(l.notifications)
+	return nil
+}
+
+func (l *stubListener) Listen(channel string) error {
+	l.listened = append(l.listened, channel)
+	if l.onListen != nil {
+		l.onListen()
+	}
+	return l.listenErr
+}
+
+func (l *stubListener) Unlisten(channel string) error {
+	l.unlistened = append(l.unlistened, channel)
+	if l.onUnlisten != nil {
+		l.onUnlisten()
+	}
+	return l.unlistenErr
+}
+
+func (l *stubListener) NotificationChannel() <-chan *pgconn.Notification {
+	return l.notifications
+}
+
 var _ = Describe("NotificationBus", func() {
 
 	var (
-		c            chan *pgconn.Notification
-		fakeExecutor *dbfakes.FakeExecutor
-		fakeListener *dbfakes.FakeListener
+		c        chan *pgconn.Notification
+		executor *stubExecutor
+		listener *stubListener
 
 		bus db.NotificationsBus
 	)
@@ -25,11 +73,11 @@ var _ = Describe("NotificationBus", func() {
 	BeforeEach(func() {
 		c = make(chan *pgconn.Notification, 1)
 
-		fakeExecutor = new(dbfakes.FakeExecutor)
-		fakeListener = new(dbfakes.FakeListener)
-		fakeListener.NotificationChannelReturns(c)
+		executor = new(stubExecutor)
+		listener = &stubListener{notifications: c}
 
-		bus = db.NewNotificationsBus(fakeListener, fakeExecutor)
+		bus = db.NewNotificationsBus(listener, executor)
+		DeferCleanup(bus.Close)
 	})
 
 	Context("Notify", func() {
@@ -42,14 +90,12 @@ var _ = Describe("NotificationBus", func() {
 		})
 
 		It("notifies the channel", func() {
-			Expect(fakeExecutor.ExecCallCount()).To(Equal(1))
-			msg, _ := fakeExecutor.ExecArgsForCall(0)
-			Expect(msg).To(Equal("NOTIFY some-channel"))
+			Expect(executor.statements).To(Equal([]string{"NOTIFY some-channel"}))
 		})
 
 		Context("when the executor errors", func() {
 			BeforeEach(func() {
-				fakeExecutor.ExecReturns(nil, errors.New("nope"))
+				executor.err = errors.New("nope")
 			})
 
 			It("errors", func() {
@@ -58,10 +104,6 @@ var _ = Describe("NotificationBus", func() {
 		})
 
 		Context("when the executor succeeds", func() {
-			BeforeEach(func() {
-				fakeExecutor.ExecReturns(nil, nil)
-			})
-
 			It("succeeds", func() {
 				Expect(err).NotTo(HaveOccurred())
 			})
@@ -79,14 +121,12 @@ var _ = Describe("NotificationBus", func() {
 
 		Context("when not already listening on channel", func() {
 			It("listens on the given channel", func() {
-				Expect(fakeListener.ListenCallCount()).To(Equal(1))
-				channel := fakeListener.ListenArgsForCall(0)
-				Expect(channel).To(Equal("some-channel"))
+				Expect(listener.listened).To(Equal([]string{"some-channel"}))
 			})
 
 			Context("when listening errors", func() {
 				BeforeEach(func() {
-					fakeListener.ListenReturns(errors.New("nope"))
+					listener.listenErr = errors.New("nope")
 				})
 
 				It("errors", func() {
@@ -95,10 +135,6 @@ var _ = Describe("NotificationBus", func() {
 			})
 
 			Context("when listening succeeds", func() {
-				BeforeEach(func() {
-					fakeListener.ListenReturns(nil)
-				})
-
 				It("succeeds", func() {
 					Expect(err).NotTo(HaveOccurred())
 				})
@@ -112,7 +148,7 @@ var _ = Describe("NotificationBus", func() {
 			})
 
 			It("only listens once", func() {
-				Expect(fakeListener.ListenCallCount()).To(Equal(1))
+				Expect(listener.listened).To(HaveLen(1))
 			})
 		})
 	})
@@ -134,14 +170,12 @@ var _ = Describe("NotificationBus", func() {
 			})
 
 			It("unlistens on the given channel", func() {
-				Expect(fakeListener.UnlistenCallCount()).To(Equal(1))
-				channel := fakeListener.UnlistenArgsForCall(0)
-				Expect(channel).To(Equal("some-channel"))
+				Expect(listener.unlistened).To(Equal([]string{"some-channel"}))
 			})
 
 			Context("when unlistening errors", func() {
 				BeforeEach(func() {
-					fakeListener.UnlistenReturns(errors.New("nope"))
+					listener.unlistenErr = errors.New("nope")
 				})
 
 				It("errors", func() {
@@ -150,10 +184,6 @@ var _ = Describe("NotificationBus", func() {
 			})
 
 			Context("when unlistening succeeds", func() {
-				BeforeEach(func() {
-					fakeListener.UnlistenReturns(nil)
-				})
-
 				It("succeeds", func() {
 					Expect(err).NotTo(HaveOccurred())
 				})
@@ -174,7 +204,7 @@ var _ = Describe("NotificationBus", func() {
 			})
 
 			It("does not unlisten on the given channel", func() {
-				Expect(fakeListener.UnlistenCallCount()).To(Equal(0))
+				Expect(listener.unlistened).To(BeEmpty())
 			})
 		})
 	})
@@ -296,12 +326,11 @@ var _ = Describe("NotificationBus", func() {
 
 		Context("when the notification channel fills up while listening", func() {
 			BeforeEach(func() {
-				fakeListener.ListenCalls(func(_ string) error {
+				listener.onListen = func() {
 					c <- &pgconn.Notification{Channel: "some-channel"}
 					c <- &pgconn.Notification{Channel: "some-channel"}
 					c <- &pgconn.Notification{Channel: "some-channel"}
-					return nil
-				})
+				}
 			})
 
 			It("should still be able to listen for signals", func() {
@@ -320,12 +349,11 @@ var _ = Describe("NotificationBus", func() {
 			var a *db.NotifySignal
 
 			BeforeEach(func() {
-				fakeListener.UnlistenCalls(func(_ string) error {
+				listener.onUnlisten = func() {
 					c <- &pgconn.Notification{Channel: "some-channel"}
 					c <- &pgconn.Notification{Channel: "some-channel"}
 					c <- &pgconn.Notification{Channel: "some-channel"}
-					return nil
-				})
+				}
 
 				var err error
 				a, err = bus.ListenSignal("some-channel")
@@ -336,6 +364,40 @@ var _ = Describe("NotificationBus", func() {
 				err := bus.UnlistenSignal("some-channel", a)
 				Expect(err).NotTo(HaveOccurred())
 			})
+		})
+	})
+
+	Describe("backed by Postgres LISTEN/NOTIFY", func() {
+		const channel = "notifications_bus_round_trip"
+		const otherChannel = "notifications_bus_round_trip_other"
+
+		var (
+			realBus db.NotificationsBus
+			signal  *db.NotifySignal
+		)
+
+		BeforeEach(func() {
+			realBus = dbConn.Bus()
+
+			var err error
+			signal, err = realBus.ListenSignal(channel)
+			Expect(err).NotTo(HaveOccurred())
+
+			DeferCleanup(func() {
+				Expect(realBus.UnlistenSignal(channel, signal)).To(Succeed())
+			})
+		})
+
+		It("delivers a signal for a NOTIFY that round-trips through Postgres", func() {
+			Expect(realBus.Notify(channel)).To(Succeed())
+
+			Eventually(signal.C(), 10*time.Second).Should(Receive())
+		})
+
+		It("does not deliver a signal for a channel it is not listening on", func() {
+			Expect(realBus.Notify(otherChannel)).To(Succeed())
+
+			Consistently(signal.C(), time.Second).ShouldNot(Receive())
 		})
 	})
 })

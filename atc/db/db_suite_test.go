@@ -14,7 +14,6 @@ import (
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/creds/credsfakes"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/db/dbtest"
 	"github.com/concourse/concourse/atc/db/lock"
 	"github.com/concourse/concourse/atc/metric"
@@ -49,7 +48,7 @@ var (
 	workerTaskCacheFactory              db.WorkerTaskCacheFactory
 	userFactory                         db.UserFactory
 	dbWall                              db.Wall
-	fakeClock                           dbfakes.FakeClock
+	wallClock                           fixedClock
 
 	builder dbtest.Builder
 
@@ -153,7 +152,8 @@ var _ = BeforeEach(func() {
 	workerBaseResourceTypeFactory = db.NewWorkerBaseResourceTypeFactory(dbConn)
 	workerTaskCacheFactory = db.NewWorkerTaskCacheFactory(dbConn)
 	userFactory = db.NewUserFactory(dbConn)
-	dbWall = db.NewWall(dbConn, &fakeClock)
+	wallClock = fixedClock{now: time.Now()}
+	dbWall = db.NewWall(dbConn, &wallClock)
 
 	builder = dbtest.NewBuilder(dbConn, lockFactory)
 

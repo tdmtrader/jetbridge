@@ -7,8 +7,6 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-//counterfeiter:generate . Listener
-
 type Listener interface {
 	Close() error
 	Listen(channel string) error
@@ -16,7 +14,6 @@ type Listener interface {
 	NotificationChannel() <-chan *pgconn.Notification
 }
 
-//counterfeiter:generate . Executor
 type Executor interface {
 	Exec(statement string, args ...any) (sql.Result, error)
 }

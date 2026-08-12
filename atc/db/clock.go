@@ -2,7 +2,6 @@ package db
 
 import "time"
 
-//counterfeiter:generate . Clock
 type Clock interface {
 	Now() time.Time
 	Until(time.Time) time.Duration
