@@ -1,9 +1,12 @@
 package token_test
 
 import (
-	"errors"
+	"crypto/rand"
+	"crypto/rsa"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
@@ -11,19 +14,42 @@ import (
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/skymarshal/skycmd"
 	"github.com/concourse/concourse/skymarshal/token"
-	"github.com/concourse/concourse/skymarshal/token/tokenfakes"
+	"github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
+
+var idTokenSigningKey *rsa.PrivateKey
+
+func signIDToken(claims map[string]any) string {
+	GinkgoHelper()
+
+	if idTokenSigningKey == nil {
+		var err error
+		idTokenSigningKey, err = rsa.GenerateKey(rand.Reader, 2048)
+		Expect(err).NotTo(HaveOccurred())
+	}
+
+	signer, err := jose.NewSigner(
+		jose.SigningKey{Algorithm: jose.RS256, Key: idTokenSigningKey},
+		(&jose.SignerOptions{}).WithType("JWT"),
+	)
+	Expect(err).NotTo(HaveOccurred())
+
+	raw, err := jwt.Signed(signer).Claims(claims).Serialize()
+	Expect(err).NotTo(HaveOccurred())
+
+	return raw
+}
 
 var _ = Describe("Access Tokens", func() {
 
 	Describe("StoreAccessToken", func() {
 		var (
 			realdb                 *realTokenDB
-			generator              *tokenfakes.FakeGenerator
-			claimsParser           *tokenfakes.FakeClaimsParser
+			generator              token.Generator
+			claimsParser           token.ClaimsParser
 			accessTokenFactory     db.AccessTokenFactory
 			userFactory            db.UserFactory
 			displayUserIdGenerator atc.DisplayUserIdGenerator
@@ -33,8 +59,8 @@ var _ = Describe("Access Tokens", func() {
 
 		BeforeEach(func() {
 			realdb = useRealTokenDB()
-			generator = new(tokenfakes.FakeGenerator)
-			claimsParser = new(tokenfakes.FakeClaimsParser)
+			generator = token.Factory{}
+			claimsParser = token.NewClaimsParser()
 			accessTokenFactory = realdb.AccessTokens
 			userFactory = realdb.Users
 			var err error
@@ -51,15 +77,16 @@ var _ = Describe("Access Tokens", func() {
 			statusCode int
 			body       string
 
-			parseClaimsErrors   bool
-			generateTokenErrors bool
-			storeTokenErrors    bool
-			storeUserErrors     bool
+			omitExpiryClaim  bool
+			storeTokenErrors bool
+			storeUserErrors  bool
 
-			expectStatusCode int
-			expectBody       string
-			expectTokenDelta int
-			expectUserDelta  int
+			expectStatusCode     int
+			expectBody           string
+			expectLogError       string
+			expectNewAccessToken bool
+			expectTokenDelta     int
+			expectUserDelta      int
 		}
 
 		for _, t := range []testCase{
@@ -78,12 +105,12 @@ var _ = Describe("Access Tokens", func() {
 
 				path:       "/sky/issuer/token",
 				statusCode: 200,
-				body:       `{"access_token":"123","token_type":"bearer","expires_in":1234,"id_token":"a.b.c"}`,
+				body:       `{"access_token":"123","token_type":"bearer","expires_in":1234,"id_token":"ID_TOKEN"}`,
 
-				expectStatusCode: 200,
-				expectBody:       `{"access_token":"123abc","token_type":"bearer","expires_in":1234,"id_token":"a.b.c"}`,
-				expectTokenDelta: 1,
-				expectUserDelta:  1,
+				expectStatusCode:     200,
+				expectNewAccessToken: true,
+				expectTokenDelta:     1,
+				expectUserDelta:      1,
 			},
 			{
 				it: "forwards failure response",
@@ -102,42 +129,44 @@ var _ = Describe("Access Tokens", func() {
 				statusCode: 200,
 				body:       `{"access_token":"123","token_type":"bearer","expires_in":1234,"id_token":"invalid"}`,
 
-				parseClaimsErrors: true,
-
 				expectStatusCode: 500,
+				expectLogError:   "parse-id-token",
 			},
 			{
 				it: "errors if generating token fails",
 
 				path:       "/sky/issuer/token",
 				statusCode: 200,
-				body:       `{"access_token":"123","token_type":"bearer","expires_in":1234,"id_token":"a.b.c"}`,
+				body:       `{"access_token":"123","token_type":"bearer","expires_in":1234,"id_token":"ID_TOKEN"}`,
 
-				generateTokenErrors: true,
+				omitExpiryClaim: true,
 
 				expectStatusCode: 500,
+				expectLogError:   "generate-access-token",
 			},
 			{
 				it: "errors if storing token fails",
 
 				path:       "/sky/issuer/token",
 				statusCode: 200,
-				body:       `{"access_token":"123","token_type":"bearer","expires_in":1234,"id_token":"a.b.c"}`,
+				body:       `{"access_token":"123","token_type":"bearer","expires_in":1234,"id_token":"ID_TOKEN"}`,
 
 				storeTokenErrors: true,
 
 				expectStatusCode: 500,
+				expectLogError:   "create-access-token-in-db",
 			},
 			{
 				it: "errors if storing user fails",
 
 				path:       "/sky/issuer/token",
 				statusCode: 200,
-				body:       `{"access_token":"123","token_type":"bearer","expires_in":1234,"id_token":"a.b.c"}`,
+				body:       `{"access_token":"123","token_type":"bearer","expires_in":1234,"id_token":"ID_TOKEN"}`,
 
 				storeUserErrors: true,
 
 				expectStatusCode: 500,
+				expectLogError:   "create-or-update-user",
 				expectTokenDelta: 1,
 			},
 		} {
@@ -145,48 +174,27 @@ var _ = Describe("Access Tokens", func() {
 
 			It(t.it, func() {
 				expiry := jwt.NumericDate(2000000000)
-				claims := db.Claims{
-					Claims: jwt.Claims{
-						Subject: "some-subject",
-						Expiry:  &expiry,
-					},
-					FederatedClaims: db.FederatedClaims{
-						UserID:    "some-user-id",
-						Connector: "oidc",
-					},
-					Username:          "some-username",
-					PreferredUsername: "some-preferred-username",
-					Email:             "some@example.com",
-					RawClaims: map[string]any{
-						"sub":                "some-subject",
-						"exp":                expiry,
-						"name":               "some-username",
-						"preferred_username": "some-preferred-username",
-						"email":              "some@example.com",
-						"federated_claims": map[string]any{
-							"user_id":      "some-user-id",
-							"connector_id": "oidc",
-						},
+				rawClaims := map[string]any{
+					"sub":                "some-subject",
+					"name":               "some-username",
+					"preferred_username": "some-preferred-username",
+					"email":              "some@example.com",
+					"federated_claims": map[string]any{
+						"user_id":      "some-user-id",
+						"connector_id": "oidc",
 					},
 				}
-				claimsParser.ParseClaimsReturns(claims, nil)
+				if !t.omitExpiryClaim {
+					rawClaims["exp"] = expiry
+				}
+				idToken := signIDToken(rawClaims)
 
 				baseHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					w.WriteHeader(t.statusCode)
-					w.Write([]byte(t.body))
+					w.Write([]byte(strings.ReplaceAll(t.body, "ID_TOKEN", idToken)))
 				})
 				r, _ := http.NewRequest("GET", t.path, nil)
 				rec := httptest.NewRecorder()
-
-				if t.parseClaimsErrors {
-					claimsParser.ParseClaimsReturns(db.Claims{}, errors.New("claims parse error"))
-				}
-
-				if t.generateTokenErrors {
-					generator.GenerateAccessTokenReturns("", errors.New("generate error"))
-				} else {
-					generator.GenerateAccessTokenReturns("123abc", nil)
-				}
 
 				if t.storeTokenErrors {
 					doomed := postgresRunner.OpenConn()
@@ -203,13 +211,36 @@ var _ = Describe("Access Tokens", func() {
 				var tokenCountBefore, userCountBefore int
 				Expect(realdb.Conn.QueryRow(`SELECT count(*) FROM access_tokens`).Scan(&tokenCountBefore)).To(Succeed())
 				Expect(realdb.Conn.QueryRow(`SELECT count(*) FROM users`).Scan(&userCountBefore)).To(Succeed())
+				Expect(tokenCountBefore).To(BeZero())
 
 				handler := token.StoreAccessToken(dummyLogger, baseHandler, generator, claimsParser, accessTokenFactory, userFactory, displayUserIdGenerator)
 				handler.ServeHTTP(rec, r)
 
 				result := rec.Result()
 				Expect(result.StatusCode).To(Equal(t.expectStatusCode))
-				Expect(rec.Body.String()).To(Equal(t.expectBody))
+
+				if t.expectLogError != "" {
+					Expect(dummyLogger.LogMessages()).To(ContainElement("whatever.token-request." + t.expectLogError))
+				}
+
+				var issuedToken string
+				if t.expectNewAccessToken {
+					var resp map[string]any
+					Expect(json.Unmarshal(rec.Body.Bytes(), &resp)).To(Succeed())
+
+					issuedToken, _ = resp["access_token"].(string)
+					Expect(issuedToken).NotTo(BeEmpty())
+					Expect(issuedToken).NotTo(Equal("123"))
+					Expect(resp["token_type"]).To(Equal("bearer"))
+					Expect(resp["expires_in"]).To(Equal(float64(1234)))
+					Expect(resp["id_token"]).To(Equal(idToken))
+
+					issuedExpiry, err := token.Factory{}.ParseExpiry(issuedToken)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(issuedExpiry).To(Equal(expiry.Time()))
+				} else {
+					Expect(rec.Body.String()).To(Equal(t.expectBody))
+				}
 
 				var tokenCountAfter, userCountAfter int
 				Expect(realdb.Conn.QueryRow(`SELECT count(*) FROM access_tokens`).Scan(&tokenCountAfter)).To(Succeed())
@@ -217,11 +248,17 @@ var _ = Describe("Access Tokens", func() {
 				Expect(tokenCountAfter - tokenCountBefore).To(Equal(t.expectTokenDelta))
 				Expect(userCountAfter - userCountBefore).To(Equal(t.expectUserDelta))
 
-				storedToken, tokenFound, err := realdb.AccessTokens.GetAccessToken("123abc")
-				Expect(err).NotTo(HaveOccurred())
-				Expect(tokenFound).To(Equal(t.expectTokenDelta == 1))
-				if tokenFound {
-					Expect(storedToken.Token).To(Equal("123abc"))
+				if t.expectTokenDelta == 1 {
+					var storedTokenValue string
+					Expect(realdb.Conn.QueryRow(`SELECT token FROM access_tokens`).Scan(&storedTokenValue)).To(Succeed())
+					if issuedToken != "" {
+						Expect(storedTokenValue).To(Equal(issuedToken))
+					}
+
+					storedToken, tokenFound, err := realdb.AccessTokens.GetAccessToken(storedTokenValue)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(tokenFound).To(BeTrue())
+					Expect(storedToken.Token).To(Equal(storedTokenValue))
 					Expect(storedToken.Claims.Subject).To(Equal("some-subject"))
 					Expect(storedToken.Claims.Expiry).NotTo(BeNil())
 					Expect(*storedToken.Claims.Expiry).To(Equal(expiry))

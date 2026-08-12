@@ -10,18 +10,17 @@ import (
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/skymarshal/skyserver"
-	"github.com/concourse/concourse/skymarshal/token/tokenfakes"
+	"github.com/concourse/concourse/skymarshal/token"
 
 	"github.com/onsi/gomega/ghttp"
 	"golang.org/x/oauth2"
 )
 
 var (
-	fakeTokenMiddleware *tokenfakes.FakeMiddleware
-	skyServer           *httptest.Server
-	dexServer           *ghttp.Server
-	config              *skyserver.SkyConfig
-	stateSigningKey     []byte
+	skyServer       *httptest.Server
+	dexServer       *ghttp.Server
+	config          *skyserver.SkyConfig
+	stateSigningKey []byte
 )
 
 func TestSkyServer(t *testing.T) {
@@ -31,8 +30,6 @@ func TestSkyServer(t *testing.T) {
 
 var _ = BeforeEach(func() {
 	var err error
-
-	fakeTokenMiddleware = new(tokenfakes.FakeMiddleware)
 
 	dexServer = ghttp.NewTLSServer()
 
@@ -55,7 +52,7 @@ var _ = BeforeEach(func() {
 
 	config = &skyserver.SkyConfig{
 		Logger:          lagertest.NewTestLogger("sky"),
-		TokenMiddleware: fakeTokenMiddleware,
+		TokenMiddleware: token.NewMiddleware(true),
 		OAuthConfig:     oauthConfig,
 		HTTPClient:      dexServer.HTTPTestServer.Client(),
 		StateSigningKey: stateSigningKey,

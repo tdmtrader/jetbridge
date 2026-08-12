@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/concourse/concourse/skymarshal/token"
 	"github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
 	. "github.com/onsi/ginkgo/v2"
@@ -20,6 +21,44 @@ import (
 
 	"github.com/onsi/gomega/ghttp"
 )
+
+const (
+	authCookieName    = "skymarshal_auth"
+	csrfCookieName    = "skymarshal_csrf"
+	refreshCookieName = "skymarshal_refresh"
+)
+
+type authTokenFails struct{ token.Middleware }
+
+func (authTokenFails) SetAuthToken(http.ResponseWriter, string, time.Time) error {
+	return errors.New("nope")
+}
+
+type csrfTokenFails struct{ token.Middleware }
+
+func (csrfTokenFails) SetCSRFToken(http.ResponseWriter, string, time.Time) error {
+	return errors.New("nope")
+}
+
+type refreshTokenFails struct{ token.Middleware }
+
+func (refreshTokenFails) SetRefreshToken(http.ResponseWriter, string, time.Time) error {
+	return errors.New("nope")
+}
+
+func cookieNamed(response *http.Response, name string) *http.Cookie {
+	GinkgoHelper()
+
+	var matching []*http.Cookie
+	for _, cookie := range response.Cookies() {
+		if cookie.Name == name {
+			matching = append(matching, cookie)
+		}
+	}
+
+	Expect(matching).To(HaveLen(1), "expected exactly one "+name+" cookie")
+	return matching[0]
+}
 
 // stateToken mirrors the struct in skyserver.go for test signing
 type stateToken struct {
@@ -144,29 +183,26 @@ var _ = Describe("Sky Server API", func() {
 			}
 
 			Context("without an existing token", func() {
-				BeforeEach(func() {
-					fakeTokenMiddleware.GetAuthTokenReturns("")
-				})
 				ExpectNewLogin()
 			})
 
 			Context("when the token has no type", func() {
 				BeforeEach(func() {
-					fakeTokenMiddleware.GetAuthTokenReturns("some-token")
+					request.AddCookie(&http.Cookie{Name: authCookieName, Value: "some-token"})
 				})
 				ExpectNewLogin()
 			})
 
 			Context("when the token is not a valid bearer token", func() {
 				BeforeEach(func() {
-					fakeTokenMiddleware.GetAuthTokenReturns("not-bearer some-token")
+					request.AddCookie(&http.Cookie{Name: authCookieName, Value: "not-bearer some-token"})
 				})
 				ExpectNewLogin()
 			})
 
 			Context("when the bearer token is not a valid JWT", func() {
 				BeforeEach(func() {
-					fakeTokenMiddleware.GetAuthTokenReturns("bearer not-a-jwt")
+					request.AddCookie(&http.Cookie{Name: authCookieName, Value: "bearer not-a-jwt"})
 				})
 				ExpectNewLogin()
 			})
@@ -174,7 +210,7 @@ var _ = Describe("Sky Server API", func() {
 			Context("when the token is expired", func() {
 				BeforeEach(func() {
 					expiredJWT := signTestJWT(time.Now().Add(-time.Hour))
-					fakeTokenMiddleware.GetAuthTokenReturns("bearer " + expiredJWT)
+					request.AddCookie(&http.Cookie{Name: authCookieName, Value: "bearer " + expiredJWT})
 				})
 				ExpectNewLogin()
 			})
@@ -182,7 +218,7 @@ var _ = Describe("Sky Server API", func() {
 			Context("when the token is valid", func() {
 				BeforeEach(func() {
 					validJWT := signTestJWT(time.Now().Add(time.Hour))
-					fakeTokenMiddleware.GetAuthTokenReturns("bearer " + validJWT)
+					request.AddCookie(&http.Cookie{Name: authCookieName, Value: "bearer " + validJWT})
 				})
 
 				It("redirects to the default redirect URI", func() {
@@ -216,9 +252,18 @@ var _ = Describe("Sky Server API", func() {
 			})
 
 			It("unsets all cookies", func() {
-				Expect(fakeTokenMiddleware.UnsetAuthTokenCallCount()).To(Equal(1))
-				Expect(fakeTokenMiddleware.UnsetCSRFTokenCallCount()).To(Equal(1))
-				Expect(fakeTokenMiddleware.UnsetRefreshTokenCallCount()).To(Equal(1))
+				for _, name := range []string{authCookieName, csrfCookieName, refreshCookieName} {
+					cookie := cookieNamed(response, name)
+					Expect(cookie.Value).To(BeEmpty())
+					Expect(cookie.MaxAge).To(Equal(-1))
+					Expect(cookie.Secure).To(BeTrue())
+					Expect(cookie.HttpOnly).To(BeTrue())
+					Expect(cookie.SameSite).To(Equal(http.SameSiteLaxMode))
+				}
+
+				Expect(cookieNamed(response, authCookieName).Path).To(Equal("/"))
+				Expect(cookieNamed(response, csrfCookieName).Path).To(Equal("/"))
+				Expect(cookieNamed(response, refreshCookieName).Path).To(Equal("/sky/"))
 			})
 		})
 
@@ -413,66 +458,77 @@ var _ = Describe("Sky Server API", func() {
 
 							Context("when setting the auth token fails", func() {
 								BeforeEach(func() {
-									fakeTokenMiddleware.SetAuthTokenReturns(errors.New("nope"))
+									config.TokenMiddleware = authTokenFails{config.TokenMiddleware}
 								})
 								It("errors", func() {
 									Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
 								})
 							})
 
-							Context("when setting the auth token succeeds", func() {
+							Context("when setting the refresh token fails", func() {
 								BeforeEach(func() {
-									fakeTokenMiddleware.SetAuthTokenReturns(nil)
+									config.TokenMiddleware = refreshTokenFails{config.TokenMiddleware}
+								})
+								It("errors", func() {
+									Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
+								})
+							})
+
+							Context("when setting the csrf token fails", func() {
+								BeforeEach(func() {
+									config.TokenMiddleware = csrfTokenFails{config.TokenMiddleware}
+								})
+								It("errors", func() {
+									Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
+								})
+							})
+
+							Context("when setting the tokens succeeds", func() {
+								var redirectResponse *http.Response
+
+								JustBeforeEach(func() {
+									redirectResponse = response.Request.Response
+									Expect(redirectResponse).NotTo(BeNil())
 								})
 
-								Context("when setting the csrf token fails", func() {
-									BeforeEach(func() {
-										fakeTokenMiddleware.SetCSRFTokenReturns(errors.New("nope"))
-									})
-									It("errors", func() {
-										Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-									})
+								It("saves the ID token as the auth token", func() {
+									cookie := cookieNamed(redirectResponse, authCookieName)
+									Expect(cookie.Value).To(Equal("bearer some-id-token"))
+									Expect(cookie.Path).To(Equal("/"))
+									Expect(cookie.Secure).To(BeTrue())
+									Expect(cookie.HttpOnly).To(BeTrue())
+									Expect(cookie.SameSite).To(Equal(http.SameSiteLaxMode))
 								})
 
-								Context("when setting the csrf token succeeds", func() {
-									BeforeEach(func() {
-										fakeTokenMiddleware.SetCSRFTokenReturns(nil)
-									})
+								It("stores the refresh token in a separate cookie", func() {
+									cookie := cookieNamed(redirectResponse, refreshCookieName)
+									Expect(cookie.Value).To(Equal("some-refresh-token"))
+									Expect(cookie.Path).To(Equal("/sky/"))
+									Expect(cookie.Secure).To(BeTrue())
+									Expect(cookie.HttpOnly).To(BeTrue())
+									Expect(cookie.SameSite).To(Equal(http.SameSiteLaxMode))
+								})
 
-									It("saves the ID token as the auth token", func() {
-										Expect(fakeTokenMiddleware.SetAuthTokenCallCount()).To(Equal(1))
-										_, tokenString, _ := fakeTokenMiddleware.SetAuthTokenArgsForCall(0)
-										Expect(tokenString).To(Equal("bearer some-id-token"))
-									})
+								It("sets a new csrf token", func() {
+									cookie := cookieNamed(redirectResponse, csrfCookieName)
+									Expect(cookie.Value).NotTo(BeEmpty())
+									Expect(cookie.Path).To(Equal("/"))
+									Expect(cookie.Secure).To(BeTrue())
+									Expect(cookie.HttpOnly).To(BeTrue())
+									Expect(cookie.SameSite).To(Equal(http.SameSiteLaxMode))
+								})
 
-									It("stores the refresh token in a separate cookie", func() {
-										Expect(fakeTokenMiddleware.SetRefreshTokenCallCount()).To(Equal(1))
-										_, tokenString, _ := fakeTokenMiddleware.SetRefreshTokenArgsForCall(0)
-										Expect(tokenString).To(Equal("some-refresh-token"))
-									})
+								It("redirects to redirect_uri from state token with the csrf_token", func() {
+									Expect(redirectResponse.StatusCode).To(Equal(http.StatusTemporaryRedirect))
 
-									It("sets a new csrf token", func() {
-										Expect(fakeTokenMiddleware.SetCSRFTokenCallCount()).To(Equal(1))
-										_, tokenString, _ := fakeTokenMiddleware.SetCSRFTokenArgsForCall(0)
-										Expect(tokenString).NotTo(BeEmpty())
-									})
+									skyServerURL, err := url.Parse(skyServer.URL)
+									Expect(err).NotTo(HaveOccurred())
 
-									It("redirects to redirect_uri from state token with the csrf_token", func() {
-										_, tokenArg, _ := fakeTokenMiddleware.SetCSRFTokenArgsForCall(0)
-
-										redirectResponse := response.Request.Response
-										Expect(redirectResponse).NotTo(BeNil())
-										Expect(redirectResponse.StatusCode).To(Equal(http.StatusTemporaryRedirect))
-
-										skyServerURL, err := url.Parse(skyServer.URL)
-										Expect(err).NotTo(HaveOccurred())
-
-										locationURL, err := redirectResponse.Location()
-										Expect(err).NotTo(HaveOccurred())
-										Expect(locationURL.Host).To(Equal(skyServerURL.Host))
-										Expect(locationURL.Path).To(Equal("/valid-redirect"))
-										Expect(locationURL.Query().Get("csrf_token")).To(Equal(tokenArg))
-									})
+									locationURL, err := redirectResponse.Location()
+									Expect(err).NotTo(HaveOccurred())
+									Expect(locationURL.Host).To(Equal(skyServerURL.Host))
+									Expect(locationURL.Path).To(Equal("/valid-redirect"))
+									Expect(locationURL.Query().Get("csrf_token")).To(Equal(cookieNamed(redirectResponse, csrfCookieName).Value))
 								})
 							})
 						})
@@ -512,10 +568,6 @@ var _ = Describe("Sky Server API", func() {
 			})
 
 			Context("when no refresh token is present", func() {
-				BeforeEach(func() {
-					fakeTokenMiddleware.GetRefreshTokenReturns("")
-				})
-
 				It("returns unauthorized", func() {
 					Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
 				})
@@ -523,7 +575,7 @@ var _ = Describe("Sky Server API", func() {
 
 			Context("when a refresh token is present", func() {
 				BeforeEach(func() {
-					fakeTokenMiddleware.GetRefreshTokenReturns("old-refresh-token")
+					request.AddCookie(&http.Cookie{Name: refreshCookieName, Value: "old-refresh-token"})
 				})
 
 				Context("when Dex returns a new token", func() {
@@ -548,23 +600,55 @@ var _ = Describe("Sky Server API", func() {
 					})
 
 					It("sets the new ID token as the auth token", func() {
-						Expect(fakeTokenMiddleware.SetAuthTokenCallCount()).To(Equal(1))
-						_, tokenString, _ := fakeTokenMiddleware.SetAuthTokenArgsForCall(0)
-						Expect(tokenString).To(Equal("bearer new-id-token"))
+						cookie := cookieNamed(response, authCookieName)
+						Expect(cookie.Value).To(Equal("bearer new-id-token"))
+						Expect(cookie.Path).To(Equal("/"))
+						Expect(cookie.Secure).To(BeTrue())
+						Expect(cookie.HttpOnly).To(BeTrue())
+						Expect(cookie.SameSite).To(Equal(http.SameSiteLaxMode))
 					})
 
 					It("rotates the refresh token", func() {
-						Expect(fakeTokenMiddleware.SetRefreshTokenCallCount()).To(Equal(1))
-						_, tokenString, _ := fakeTokenMiddleware.SetRefreshTokenArgsForCall(0)
-						Expect(tokenString).To(Equal("new-refresh-token"))
+						cookie := cookieNamed(response, refreshCookieName)
+						Expect(cookie.Value).To(Equal("new-refresh-token"))
+						Expect(cookie.Path).To(Equal("/sky/"))
+						Expect(cookie.Secure).To(BeTrue())
+						Expect(cookie.HttpOnly).To(BeTrue())
+						Expect(cookie.SameSite).To(Equal(http.SameSiteLaxMode))
 					})
 
 					It("returns a new CSRF token", func() {
-						Expect(fakeTokenMiddleware.SetCSRFTokenCallCount()).To(Equal(1))
-
 						var respBody map[string]string
 						Expect(json.Unmarshal(body, &respBody)).To(Succeed())
 						Expect(respBody["csrf_token"]).NotTo(BeEmpty())
+						Expect(cookieNamed(response, csrfCookieName).Value).To(Equal(respBody["csrf_token"]))
+					})
+
+					Context("when setting the auth token fails", func() {
+						BeforeEach(func() {
+							config.TokenMiddleware = authTokenFails{config.TokenMiddleware}
+						})
+						It("errors", func() {
+							Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
+						})
+					})
+
+					Context("when setting the refresh token fails", func() {
+						BeforeEach(func() {
+							config.TokenMiddleware = refreshTokenFails{config.TokenMiddleware}
+						})
+						It("errors", func() {
+							Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
+						})
+					})
+
+					Context("when setting the csrf token fails", func() {
+						BeforeEach(func() {
+							config.TokenMiddleware = csrfTokenFails{config.TokenMiddleware}
+						})
+						It("errors", func() {
+							Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
+						})
 					})
 				})
 

@@ -20,14 +20,10 @@ import (
 	"github.com/go-jose/go-jose/v4/jwt"
 )
 
-//go:generate go run github.com/maxbrunsfeld/counterfeiter/v6 -generate
-
-//counterfeiter:generate . Generator
 type Generator interface {
 	GenerateAccessToken(claims db.Claims) (string, error)
 }
 
-//counterfeiter:generate . ClaimsParser
 type ClaimsParser interface {
 	ParseClaims(idToken string) (db.Claims, error)
 }
