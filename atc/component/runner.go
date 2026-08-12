@@ -10,15 +10,12 @@ import (
 	"github.com/concourse/concourse/atc/db"
 )
 
-//counterfeiter:generate . NotificationsBus
 type NotificationsBus interface {
 	ListenSignal(string) (*db.NotifySignal, error)
 	UnlistenSignal(string, *db.NotifySignal) error
 }
 
 // Schedulable represents a workload that can be run on demand.
-//
-//counterfeiter:generate . Schedulable
 type Schedulable interface {
 	RunImmediately(context.Context)
 }

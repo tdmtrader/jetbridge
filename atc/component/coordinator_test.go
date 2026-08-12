@@ -2,135 +2,150 @@ package component_test
 
 import (
 	"context"
-	"errors"
-	"testing"
 
+	"code.cloudfoundry.org/lager/v3/lagerctx"
+	"code.cloudfoundry.org/lager/v3/lagertest"
+	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/component"
-	"github.com/concourse/concourse/atc/component/componentfakes"
+	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/lock"
-	"github.com/concourse/concourse/atc/db/lock/lockfakes"
-	"github.com/stretchr/testify/require"
-	"github.com/stretchr/testify/suite"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 )
 
-func TestCoordinator(t *testing.T) {
-	suite.Run(t, &CoordinatorSuite{
-		Assertions: require.New(t),
+var _ = Describe("Coordinator", func() {
+	const componentName = "some-name"
+
+	var (
+		logger *lagertest.TestLogger
+		ctx    context.Context
+
+		dbConn db.DbConn
+
+		otherLockFactory lock.LockFactory
+
+		runCtxs           []context.Context
+		lockHeldDuringRun bool
+
+		coordinator *component.Coordinator
+	)
+
+	BeforeEach(func() {
+		postgresRunner.CreateTestDBFromTemplate()
+		DeferCleanup(func() {
+			postgresRunner.DropTestDB()
+		})
+
+		logger = lagertest.NewTestLogger("test")
+		ctx = lagerctx.NewContext(context.Background(), logger)
+
+		dbConn = postgresRunner.OpenConn()
+		DeferCleanup(func() {
+			Expect(dbConn.Close()).To(Succeed())
+		})
+
+		otherLockFactory = newLockFactory(newLockConns())
+
+		dbComponent, err := db.NewComponentFactory(dbConn).CreateOrUpdate(atc.Component{Name: componentName})
+		Expect(err).NotTo(HaveOccurred())
+
+		runCtxs = nil
+		lockHeldDuringRun = false
+
+		coordinator = &component.Coordinator{
+			Locker:    newLockFactory(newLockConns()),
+			Component: dbComponent,
+			Runnable: component.RunFunc(func(runCtx context.Context) error {
+				runCtxs = append(runCtxs, runCtx)
+
+				_, acquired, err := otherLockFactory.Acquire(logger, lock.NewTaskLockID(componentName))
+				Expect(err).NotTo(HaveOccurred())
+				lockHeldDuringRun = !acquired
+
+				return nil
+			}),
+		}
 	})
-}
 
-type CoordinatorSuite struct {
-	suite.Suite
-	*require.Assertions
-}
+	Describe("RunImmediately", func() {
+		It("runs the component while holding its lock, and releases it after", func() {
+			coordinator.RunImmediately(ctx)
 
-type CoordinatorTest struct {
-	It string
+			Expect(runCtxs).To(HaveLen(1))
+			Expect(runCtxs[0]).To(Equal(ctx))
+			Expect(lockHeldDuringRun).To(BeTrue(), "lock was released too early")
 
-	LockAvailable bool
-	LockErr       error
-
-	Disappeared bool
-	ReloadErr   error
-
-	Runs   bool
-	RunErr error
-}
-
-func (test CoordinatorTest) Run(s *CoordinatorSuite) {
-	fakeLocker := new(lockfakes.FakeLockFactory)
-	fakeComponent := new(componentfakes.FakeComponent)
-	fakeRunnable := new(componentfakes.FakeRunnable)
-
-	var fakeLock *lockfakes.FakeLock
-	if test.LockAvailable {
-		fakeLock = new(lockfakes.FakeLock)
-		fakeLocker.AcquireReturns(fakeLock, true, nil)
-	} else {
-		fakeLocker.AcquireReturns(nil, false, test.LockErr)
-	}
-
-	componentName := "some-name"
-
-	fakeComponent.NameReturns(componentName)
-
-	fakeComponent.ReloadReturns(!test.Disappeared, test.ReloadErr)
-
-	ctx := context.Background()
-
-	if test.Runs {
-		fakeRunnable.RunCalls(func(context.Context) error {
-			s.Equal(fakeLock.ReleaseCallCount(), 0, "lock was released too early")
-			return test.RunErr
+			releasedLock, acquired, err := otherLockFactory.Acquire(logger, lock.NewTaskLockID(componentName))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(acquired).To(BeTrue(), "lock was not released")
+			Expect(releasedLock.Release()).To(Succeed())
 		})
-	}
 
-	coordinator := &component.Coordinator{
-		Locker:    fakeLocker,
-		Component: fakeComponent,
-		Runnable:  fakeRunnable,
-	}
+		Context("when another connection holds the lock", func() {
+			BeforeEach(func() {
+				heldLock, acquired, err := otherLockFactory.Acquire(logger, lock.NewTaskLockID(componentName))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(acquired).To(BeTrue())
 
-	coordinator.RunImmediately(ctx)
+				DeferCleanup(func() {
+					Expect(heldLock.Release()).To(Succeed())
+				})
+			})
 
-	if test.Runs {
-		s.Equal(1, fakeRunnable.RunCallCount(), "component did not run")
-		s.Equal(ctx, fakeRunnable.RunArgsForCall(0), "component ran with wrong context")
-	} else {
-		s.Equal(0, fakeRunnable.RunCallCount(), "component ran when it should not have")
-	}
+			It("does not run the component", func() {
+				coordinator.RunImmediately(ctx)
 
-	if test.LockAvailable {
-		_, acquiredLock := fakeLocker.AcquireArgsForCall(0)
-		s.Equal(lock.NewTaskLockID(componentName), acquiredLock, "acquired wrong lock")
-		s.Equal(1, fakeLock.ReleaseCallCount(), "lock was not released")
-	}
-}
-
-func (s *CoordinatorSuite) TestRunImmediately() {
-	someErr := errors.New("oh noes")
-
-	for _, t := range []CoordinatorTest{
-		{
-			It: "runs if the lock is available",
-
-			LockAvailable: true,
-
-			Runs: true,
-		},
-		{
-			It: "does not run if lock is unavailable",
-
-			LockAvailable: false,
-
-			Runs: false,
-		},
-		{
-			It: "does not run if acquiring the lock errors",
-
-			LockErr: someErr,
-
-			Runs: false,
-		},
-		{
-			It: "does not run if reloading the component errors",
-
-			LockAvailable: true,
-			ReloadErr:     someErr,
-
-			Runs: false,
-		},
-		{
-			It: "does not run if the component disappeared",
-
-			LockAvailable: true,
-			Disappeared:   true,
-
-			Runs: false,
-		},
-	} {
-		s.Run(t.It, func() {
-			t.Run(s)
+				Expect(runCtxs).To(BeEmpty())
+			})
 		})
-	}
-}
+
+		Context("when acquiring the lock errors", func() {
+			BeforeEach(func() {
+				conns := newLockConns()
+				for _, conn := range conns {
+					Expect(conn.Close()).To(Succeed())
+				}
+
+				coordinator.Locker = newLockFactory(conns)
+			})
+
+			It("does not run the component", func() {
+				coordinator.RunImmediately(ctx)
+
+				Expect(runCtxs).To(BeEmpty())
+			})
+		})
+
+		Context("when reloading the component errors", func() {
+			BeforeEach(func() {
+				_, err := dbConn.Exec("DROP TABLE components CASCADE")
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("does not run the component, but releases the lock", func() {
+				coordinator.RunImmediately(ctx)
+
+				Expect(runCtxs).To(BeEmpty())
+
+				releasedLock, acquired, err := otherLockFactory.Acquire(logger, lock.NewTaskLockID(componentName))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(acquired).To(BeTrue(), "lock was not released")
+				Expect(releasedLock.Release()).To(Succeed())
+			})
+		})
+
+		Context("when the component disappeared", func() {
+			BeforeEach(func() {
+				_, err := dbConn.Exec("DELETE FROM components WHERE name = $1", componentName)
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("does not run the component", func() {
+				coordinator.RunImmediately(ctx)
+
+				Expect(runCtxs).To(BeEmpty())
+			})
+		})
+	})
+})
