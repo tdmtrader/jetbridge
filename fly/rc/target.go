@@ -19,8 +19,6 @@ import (
 	"golang.org/x/oauth2"
 )
 
-//go:generate go run github.com/maxbrunsfeld/counterfeiter/v6 -generate
-
 var LocalVersion = conc.Version
 
 func init() {
@@ -50,7 +48,6 @@ func (e ErrVersionMismatch) Error() string {
 		ui.Embolden(e.flyVersion), ui.Embolden(e.atcVersion), os.Args[0], e.targetName)
 }
 
-//counterfeiter:generate . Target
 type Target interface {
 	Client() concourse.Client
 	Team() concourse.Team
