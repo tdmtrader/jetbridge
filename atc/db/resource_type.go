@@ -23,7 +23,6 @@ func (e ResourceTypeNotFoundError) Error() string {
 	return fmt.Sprintf("resource type not found: %d", e.ID)
 }
 
-//counterfeiter:generate . ResourceType
 type ResourceType interface {
 	PipelineRef
 

@@ -70,7 +70,6 @@ WITH RECURSIVE build_ids AS (
 	causalityMaxInputsOutputs = 25000
 )
 
-//counterfeiter:generate . Resource
 type Resource interface {
 	PipelineRef
 
