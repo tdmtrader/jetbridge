@@ -8,7 +8,6 @@ import (
 	sq "github.com/Masterminds/squirrel"
 )
 
-//counterfeiter:generate . Wall
 type Wall interface {
 	SetWall(atc.Wall) error
 	GetWall() (atc.Wall, error)

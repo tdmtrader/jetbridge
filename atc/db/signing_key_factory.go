@@ -16,7 +16,6 @@ const (
 	SigningKeyTypeEC  SigningKeyType = "EC"
 )
 
-//counterfeiter:generate . SigningKeyFactory
 type SigningKeyFactory interface {
 	CreateKey(jwk jose.JSONWebKey) error
 	GetAllKeys() ([]SigningKey, error)

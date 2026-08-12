@@ -6,7 +6,6 @@ import (
 	sq "github.com/Masterminds/squirrel"
 )
 
-//counterfeiter:generate . UserFactory
 type UserFactory interface {
 	CreateOrUpdateUser(username, connector, sub string) error
 	GetAllUsers() ([]User, error)

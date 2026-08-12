@@ -22,7 +22,6 @@ func (e ErrCustomResourceTypeVersionNotFound) Error() string {
 	return fmt.Sprintf("custom resource type '%s' version not found", e.Name)
 }
 
-//counterfeiter:generate . ResourceConfigFactory
 type ResourceConfigFactory interface {
 	FindOrCreateResourceConfig(
 		resourceType string,

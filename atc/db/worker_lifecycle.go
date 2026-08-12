@@ -6,7 +6,6 @@ import (
 	sq "github.com/Masterminds/squirrel"
 )
 
-//counterfeiter:generate . WorkerLifecycle
 type WorkerLifecycle interface {
 	DeleteUnresponsiveEphemeralWorkers() ([]string, error)
 	GetWorkerStateByName() (map[string]WorkerState, error)

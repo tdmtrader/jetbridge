@@ -23,7 +23,6 @@ import (
 	"github.com/concourse/concourse/atc/creds"
 	"github.com/concourse/concourse/atc/creds/credsfakes"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/policy"
 	"github.com/concourse/concourse/atc/wrappa"
 
@@ -43,24 +42,8 @@ var (
 }`
 
 	fakeWorkerPool          *apifakes.FakePool
-	fakeVolumeRepository    *dbfakes.FakeVolumeRepository
-	dbTeamFactory           *dbfakes.FakeTeamFactory
-	dbPipelineFactory       *dbfakes.FakePipelineFactory
-	dbJobFactory            *dbfakes.FakeJobFactory
-	dbResourceFactory       *dbfakes.FakeResourceFactory
-	dbResourceConfigFactory *dbfakes.FakeResourceConfigFactory
-	fakePipeline            *dbfakes.FakePipeline
 	fakeAccess              *accessorfakes.FakeAccess
 	fakeAccessor            *accessorfakes.FakeAccessFactory
-	dbWorkerFactory         *dbfakes.FakeWorkerFactory
-	dbWorkerTeamFactory     *dbfakes.FakeTeamFactory
-	dbWorkerLifecycle       *dbfakes.FakeWorkerLifecycle
-	build                   *dbfakes.FakeBuild
-	dbBuildFactory          *dbfakes.FakeBuildFactory
-	dbUserFactory           *dbfakes.FakeUserFactory
-	dbCheckFactory          *dbfakes.FakeCheckFactory
-	dbTeam                  *dbfakes.FakeTeam
-	dbWall                  *dbfakes.FakeWall
 	fakeSecretManager       *credsfakes.FakeSecrets
 	fakeVarSourcePool       *credsfakes.FakeVarSourcePool
 	fakePolicyChecker       *policycheckerfakes.FakePolicyChecker
@@ -71,7 +54,6 @@ var (
 	cliDownloadsDir         string
 	logger                  *lagertest.TestLogger
 	fakeClock               *fakeclock.FakeClock
-	dbSigningKeyFactory     *dbfakes.FakeSigningKeyFactory
 
 	constructedEventHandler *fakeEventHandlerFactory
 
@@ -100,42 +82,16 @@ func (f *fakeEventHandlerFactory) Construct(
 }
 
 var _ = BeforeEach(func() {
-	dbTeamFactory = new(dbfakes.FakeTeamFactory)
-	dbWorkerTeamFactory = new(dbfakes.FakeTeamFactory)
-	dbPipelineFactory = new(dbfakes.FakePipelineFactory)
-	dbJobFactory = new(dbfakes.FakeJobFactory)
-	dbResourceFactory = new(dbfakes.FakeResourceFactory)
-	dbResourceConfigFactory = new(dbfakes.FakeResourceConfigFactory)
-	dbBuildFactory = new(dbfakes.FakeBuildFactory)
-	dbUserFactory = new(dbfakes.FakeUserFactory)
-	dbCheckFactory = new(dbfakes.FakeCheckFactory)
-	dbWall = new(dbfakes.FakeWall)
-	dbSigningKeyFactory = new(dbfakes.FakeSigningKeyFactory)
-
 	interceptTimeoutFactory = new(containerserverfakes.FakeInterceptTimeoutFactory)
 	interceptTimeout = new(containerserverfakes.FakeInterceptTimeout)
 	interceptTimeoutFactory.NewInterceptTimeoutReturns(interceptTimeout)
-
-	dbTeam = new(dbfakes.FakeTeam)
-	dbTeam.IDReturns(734)
-	dbTeamFactory.FindTeamReturns(dbTeam, true, nil)
-	dbTeamFactory.GetByIDReturns(dbTeam)
-	dbWorkerTeamFactory.FindTeamReturns(dbTeam, true, nil)
-	dbWorkerTeamFactory.GetByIDReturns(dbTeam)
 
 	fakeAccess = new(accessorfakes.FakeAccess)
 	fakeAccessor = new(accessorfakes.FakeAccessFactory)
 	fakeAccessor.CreateReturns(fakeAccess, nil)
 
-	fakePipeline = new(dbfakes.FakePipeline)
-	dbTeam.PipelineReturns(fakePipeline, true, nil)
-
-	dbWorkerFactory = new(dbfakes.FakeWorkerFactory)
-	dbWorkerLifecycle = new(dbfakes.FakeWorkerLifecycle)
-
 	fakeWorkerPool = new(apifakes.FakePool)
 
-	fakeVolumeRepository = new(dbfakes.FakeVolumeRepository)
 	fakeSecretManager = new(credsfakes.FakeSecrets)
 	fakeVarSourcePool = new(credsfakes.FakeVarSourcePool)
 	credsManagers = make(creds.Managers)
@@ -154,9 +110,7 @@ var _ = BeforeEach(func() {
 
 	isTLSEnabled = false
 
-	build = new(dbfakes.FakeBuild)
-
-	server = newAPIServer(fakeDBDeps())
+	server = newAPIServer(apiDBDeps{})
 
 	client = &http.Client{
 		Transport: &http.Transport{},
@@ -164,13 +118,13 @@ var _ = BeforeEach(func() {
 })
 
 // apiDBDeps is every database-backed collaborator the API handler is built
-// from. The suite default (fakeDBDeps) supplies the package-level fakes that
-// most specs assert against; a spec that wants real behaviour passes real
-// factories instead -- see useRealDB in real_db_test.go.
+// from. A Describe that exercises one passes real factories -- see useRealDB in
+// real_db_test.go. The suite default leaves them all nil, which is safe because
+// the only endpoints reached without useRealDB (info, cli, log level) never
+// touch the database.
 //
-// Collecting them in a struct is what makes the two coexist: without it, the
-// only way to give one Describe real factories is to change the package-level
-// vars, which every other spec in the package shares.
+// Collecting them in a struct is what lets a single Describe swap one out
+// without disturbing the rest of the package.
 type apiDBDeps struct {
 	teamFactory           db.TeamFactory
 	pipelineFactory       db.PipelineFactory
@@ -186,26 +140,6 @@ type apiDBDeps struct {
 
 	wall              db.Wall
 	signingKeyFactory db.SigningKeyFactory
-}
-
-// fakeDBDeps is the historical wiring: every collaborator is the package-level
-// counterfeiter fake, so specs that assert on call counts keep working.
-func fakeDBDeps() apiDBDeps {
-	return apiDBDeps{
-		teamFactory:           dbTeamFactory,
-		pipelineFactory:       dbPipelineFactory,
-		jobFactory:            dbJobFactory,
-		resourceFactory:       dbResourceFactory,
-		workerFactory:         dbWorkerFactory,
-		workerTeamFactory:     dbWorkerTeamFactory,
-		volumeRepository:      fakeVolumeRepository,
-		buildFactory:          dbBuildFactory,
-		checkFactory:          dbCheckFactory,
-		resourceConfigFactory: dbResourceConfigFactory,
-		userFactory:           dbUserFactory,
-		wall:                  dbWall,
-		signingKeyFactory:     dbSigningKeyFactory,
-	}
 }
 
 // newAPIServer builds the full API handler over deps and serves it. The

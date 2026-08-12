@@ -11,7 +11,6 @@ import (
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -105,6 +104,27 @@ func (factory workerLookupResultFactory) GetWorker(name string) (db.Worker, bool
 		return factory.worker, true, nil
 	}
 	return factory.WorkerFactory.GetWorker(name)
+}
+
+// saveWorkerFails is a team whose SaveWorker fails after FindTeam has already
+// succeeded. Closing the connection cannot express that: it fails the lookup
+// first.
+type saveWorkerFails struct {
+	db.Team
+}
+
+func (saveWorkerFails) SaveWorker(atc.Worker, time.Duration) (db.Worker, error) {
+	return nil, errors.New("oh no!")
+}
+
+// deleteFails is the same trick one level down: Worker.Delete fails after
+// GetWorker has already returned the worker.
+type deleteFails struct {
+	db.Worker
+}
+
+func (deleteFails) Delete() error {
+	return errors.New("some-error")
 }
 
 var _ = Describe("Workers API", func() {
@@ -252,18 +272,12 @@ var _ = Describe("Workers API", func() {
 				Expect(registered.TeamID()).To(Equal(someTeam.ID()))
 			})
 			Context("when saving after lookup fails", func() {
-				var foundTeam *dbfakes.FakeTeam
 				BeforeEach(func() {
-					// Retained fault seam: Team.SaveWorker must fail after FindTeam succeeds.
-					// A real Team returned by CreateTeam shares the factory connection, so
-					// closing it makes FindTeam fail before Team.SaveWorker is reached.
-					foundTeam = new(dbfakes.FakeTeam)
-					foundTeam.SaveWorkerReturns(nil, errors.New("oh no!"))
 					deps := realdb.Deps
 					deps.workerTeamFactory = workerTeamLookupResultFactory{
 						TeamFactory: deps.workerTeamFactory,
 						teamName:    "some-team",
-						team:        foundTeam,
+						team:        saveWorkerFails{Team: someTeam},
 					}
 					server = newAPIServer(deps)
 					DeferCleanup(server.Close)
@@ -402,17 +416,15 @@ var _ = Describe("Workers API", func() {
 			})
 		})
 		Context("when deletion fails after lookup", func() {
-			var fakeWorker *dbfakes.FakeWorker
 			BeforeEach(func() {
-				// Retained fault seam: Worker.Delete must fail after GetWorker succeeds;
-				// a closed WorkerFactory fails the lookup before this method.
-				fakeWorker = new(dbfakes.FakeWorker)
-				fakeWorker.DeleteReturns(errors.New("some-error"))
+				stubborn, err := realdb.Deps.workerFactory.SaveWorker(atc.Worker{Name: "some-worker", Version: "1.2.3"}, 0)
+				Expect(err).NotTo(HaveOccurred())
+
 				deps := realdb.Deps
 				deps.workerFactory = workerLookupResultFactory{
 					WorkerFactory: deps.workerFactory,
 					workerName:    "some-worker",
-					worker:        fakeWorker,
+					worker:        deleteFails{Worker: stubborn},
 				}
 				server = newAPIServer(deps)
 				DeferCleanup(server.Close)

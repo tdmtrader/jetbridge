@@ -36,7 +36,6 @@ type Checkable interface {
 	CreateInMemoryBuild(context.Context, atc.Plan, util.SequenceGenerator) (Build, error)
 }
 
-//counterfeiter:generate . CheckFactory
 type CheckFactory interface {
 	TryCreateCheck(context.Context, Checkable, ResourceTypes, atc.Version, bool, bool, bool) (Build, bool, error)
 	Resources() ([]Resource, error)

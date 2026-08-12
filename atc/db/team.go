@@ -31,7 +31,6 @@ func (e ErrPipelineNotFound) Error() string {
 	return fmt.Sprintf("pipeline '%s' not found", atc.PipelineRef(e))
 }
 
-//counterfeiter:generate . Team
 type Team interface {
 	ID() int
 	Name() string

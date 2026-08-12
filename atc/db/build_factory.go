@@ -12,8 +12,6 @@ import (
 	"github.com/concourse/concourse/atc/db/lock"
 )
 
-//counterfeiter:generate . BuildForAPI
-
 // BuildForAPI is a smaller interface of db.Build that should only be used within
 // API packages.
 type BuildForAPI interface {

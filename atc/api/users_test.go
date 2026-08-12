@@ -1,7 +1,7 @@
 package api_test
 
 import (
-	"errors"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/url"
@@ -10,7 +10,6 @@ import (
 	"github.com/concourse/concourse/atc"
 
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 	. "github.com/concourse/concourse/atc/testhelpers"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -101,6 +100,12 @@ var _ = Describe("Users API", func() {
 	})
 
 	Context("GET /api/v1/users", func() {
+		var realdb *realDB
+
+		BeforeEach(func() {
+			realdb = useRealDB()
+			server = realdb.Serve()
+		})
 
 		JustBeforeEach(func() {
 			req, err := http.NewRequest("GET", server.URL+"/api/v1/users", nil)
@@ -145,7 +150,13 @@ var _ = Describe("Users API", func() {
 
 				Context("failing to retrieve users", func() {
 					BeforeEach(func() {
-						dbUserFactory.GetAllUsersReturns(nil, errors.New("no db connection"))
+						doomed := postgresRunner.OpenConn()
+						Expect(doomed.Close()).To(Succeed())
+
+						deps := realdb.Deps
+						deps.userFactory = db.NewUserFactory(doomed)
+						server = newAPIServer(deps)
+						DeferCleanup(server.Close)
 					})
 
 					It("fails", func() {
@@ -154,10 +165,6 @@ var _ = Describe("Users API", func() {
 				})
 
 				Context("having no users", func() {
-					BeforeEach(func() {
-						dbUserFactory.GetAllUsersReturns([]db.User{}, nil)
-					})
-
 					It("returns an empty array", func() {
 						body, err := io.ReadAll(response.Body)
 						Expect(err).NotTo(HaveOccurred())
@@ -167,30 +174,25 @@ var _ = Describe("Users API", func() {
 				})
 
 				Context("having users", func() {
-					var loginDate time.Time
+					var loggedInAt time.Time
 					BeforeEach(func() {
-						user1 := new(dbfakes.FakeUser)
-						user1.IDReturns(6)
-						user1.NameReturns("bob")
-						user1.ConnectorReturns("github")
-						user1.SubReturns("sub")
-
-						loginDate = time.Unix(10, 0)
-						user1.LastLoginReturns(loginDate)
-
-						dbUserFactory.GetAllUsersReturns([]db.User{user1}, nil)
+						loggedInAt = time.Now()
+						Expect(realdb.Deps.userFactory.CreateOrUpdateUser("bob", "github", "sub")).To(Succeed())
 					})
 
 					It("returns all users logged in since table creation", func() {
-						body, err := io.ReadAll(response.Body)
-						Expect(err).NotTo(HaveOccurred())
+						var users []atc.User
+						Expect(json.NewDecoder(response.Body).Decode(&users)).To(Succeed())
 
-						Expect(body).To(MatchJSON(`[{
-							"id": 6,
-							"username": "bob",
-							"connector": "github",
-							"last_login": 10
-						}]`))
+						stored, err := realdb.Deps.userFactory.GetAllUsers()
+						Expect(err).NotTo(HaveOccurred())
+						Expect(stored).To(HaveLen(1))
+
+						Expect(users).To(HaveLen(1))
+						Expect(users[0].ID).To(Equal(stored[0].ID()))
+						Expect(users[0].Username).To(Equal("bob"))
+						Expect(users[0].Connector).To(Equal("github"))
+						Expect(time.Unix(users[0].LastLogin, 0)).To(BeTemporally("~", loggedInAt, time.Minute))
 					})
 
 				})
@@ -214,8 +216,14 @@ var _ = Describe("Users API", func() {
 	})
 
 	Context("GET /api/v1/users?since=", func() {
-		var date string
+		var (
+			realdb *realDB
+			date   string
+		)
 		BeforeEach(func() {
+			realdb = useRealDB()
+			server = realdb.Serve()
+
 			fakeAccess.IsAuthenticatedReturns(true)
 			fakeAccess.IsAdminReturns(true)
 		})
@@ -228,29 +236,43 @@ var _ = Describe("Users API", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 		Context("with correct date format", func() {
-			var loginDate time.Time
+			var loggedInAt time.Time
 			BeforeEach(func() {
 				date = "1969-12-30"
 
-				user1 := new(dbfakes.FakeUser)
-				user1.IDReturns(6)
-				user1.NameReturns("bob")
-				user1.ConnectorReturns("github")
-				user1.SubReturns("sub")
-				loginDate = time.Unix(10, 0)
-				user1.LastLoginReturns(loginDate)
-				dbUserFactory.GetAllUsersByLoginDateReturns([]db.User{user1}, nil)
+				loggedInAt = time.Now()
+				Expect(realdb.Deps.userFactory.CreateOrUpdateUser("bob", "github", "sub")).To(Succeed())
 			})
 			It("returns users", func() {
+				var users []atc.User
+				Expect(json.NewDecoder(response.Body).Decode(&users)).To(Succeed())
+
+				stored, err := realdb.Deps.userFactory.GetAllUsers()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(stored).To(HaveLen(1))
+
+				Expect(users).To(HaveLen(1))
+				Expect(users[0].ID).To(Equal(stored[0].ID()))
+				Expect(users[0].Username).To(Equal("bob"))
+				Expect(users[0].Connector).To(Equal("github"))
+				Expect(time.Unix(users[0].LastLogin, 0)).To(BeTemporally("~", loggedInAt, time.Minute))
+			})
+		})
+
+		Context("with a date later than any login", func() {
+			BeforeEach(func() {
+				// Two days, not one: the handler parses the date as UTC
+				// midnight, which for a positive local offset can still land
+				// before a login that happened moments ago.
+				date = time.Now().UTC().AddDate(0, 0, 2).Format("2006-01-02")
+
+				Expect(realdb.Deps.userFactory.CreateOrUpdateUser("bob", "github", "sub")).To(Succeed())
+			})
+			It("returns an empty array", func() {
 				body, err := io.ReadAll(response.Body)
 				Expect(err).NotTo(HaveOccurred())
 
-				Expect(body).To(MatchJSON(`[{
-						"id": 6,
-						"username": "bob",
-						"connector": "github",
-						"last_login": 10
-					}]`))
+				Expect(body).To(MatchJSON(`[]`))
 			})
 		})
 
