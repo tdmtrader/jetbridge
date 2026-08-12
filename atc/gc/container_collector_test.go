@@ -11,10 +11,31 @@ import (
 	"github.com/concourse/concourse/atc/gc"
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
+
+// Run() accumulates four independent repository failures into one multierror
+// without short-circuiting. Each decorator below fails exactly one of those
+// calls and delegates the rest to PostgreSQL, so the steps that survive the
+// error are observed by their effect on real rows.
+type failFindOrphanedContainers struct{ db.ContainerRepository }
+
+func (failFindOrphanedContainers) FindOrphanedContainers() ([]db.CreatingContainer, []db.CreatedContainer, []db.DestroyingContainer, error) {
+	return nil, nil, nil, errors.New("nope")
+}
+
+type failDestroyFailedContainers struct{ db.ContainerRepository }
+
+func (failDestroyFailedContainers) DestroyFailedContainers() (int, error) {
+	return 0, errors.New("nope")
+}
+
+type failRemoveMissingContainers struct{ db.ContainerRepository }
+
+func (failRemoveMissingContainers) RemoveMissingContainers(time.Duration) (int, error) {
+	return 0, errors.New("nope")
+}
 
 var _ = Describe("ContainerCollector", func() {
 	var (
@@ -210,56 +231,113 @@ var _ = Describe("ContainerCollector", func() {
 			Expect(stateOf(newest.Handle())).To(Equal(string(atc.ContainerStateCreated)))
 		})
 
-		// The specs below keep a narrowly scoped fake. Each proves that a failure
-		// in one repository call does not stop the others from running -- error
-		// isolation between independent steps of Run(). A real database cannot be
-		// made to fail one of those calls and not the rest.
+		It("leaves an excess check container hijacked within the grace period alone", func() {
+			resourceConfig, err := resourceConfigFactory.FindOrCreateResourceConfig(
+				"some-base-type",
+				atc.Source{"repository": "some-hijacked-image"},
+				nil,
+			)
+			Expect(err).NotTo(HaveOccurred())
+
+			oldest := createdCheckContainer(resourceConfig)
+			createdCheckContainer(resourceConfig)
+			setColumn(oldest.Handle(), "last_hijack", sq.Expr("NOW()"))
+
+			Expect(collector.Run(context.TODO())).To(Succeed())
+
+			Expect(stateOf(oldest.Handle())).To(Equal(string(atc.ContainerStateCreated)),
+				"the hijack grace period applies to the check container cap too")
+		})
+
+		// Run() does not short-circuit: a failure in one repository call is
+		// accumulated and the remaining calls still run. Each spec below fails
+		// exactly one call and proves the others reached PostgreSQL.
 		Describe("error isolation", func() {
-			It("forwards the exact per-resource cap and hijack grace period", func() {
-				// Narrowly scoped wiring seam: the real outcome specs above prove
-				// cleanup behavior, while this fake observes the two policy values
-				// that are otherwise indistinguishable over a range of fixtures.
-				observing := new(dbfakes.FakeContainerRepository)
+			var (
+				orphaned db.CreatedContainer
+				failed   db.CreatingContainer
+				missing  db.CreatedContainer
+				excess   db.CreatedContainer
+			)
 
-				Expect(gc.NewContainerCollector(observing, missingContainerGracePeriod, hijackContainerGracePeriod).
-					Run(context.TODO())).To(Succeed())
+			BeforeEach(func() {
+				orphaned = createdContainer("isolation-orphan")
 
-				Expect(observing.DestroyExcessCheckContainersCallCount()).To(Equal(1))
-				maxPerResource, gracePeriod := observing.DestroyExcessCheckContainersArgsForCall(0)
-				Expect(maxPerResource).To(Equal(1))
-				Expect(gracePeriod).To(Equal(hijackContainerGracePeriod))
+				var err error
+				failed, err = worker.CreateContainer(
+					db.NewBuildStepContainerOwner(build.ID(), atc.PlanID("isolation-failed"), team.ID()),
+					db.ContainerMetadata{Type: "task", StepName: "some-task"},
+				)
+				Expect(err).NotTo(HaveOccurred())
+				_, err = failed.Failed()
+				Expect(err).NotTo(HaveOccurred())
+
+				// The missing container hangs off a second build that stays
+				// interceptible: RemoveMissingContainers only deletes rows still
+				// in the created state, so the orphan step must not touch it.
+				liveBuild, err := team.CreateOneOffBuild()
+				Expect(err).NotTo(HaveOccurred())
+				creating, err := worker.CreateContainer(
+					db.NewBuildStepContainerOwner(liveBuild.ID(), atc.PlanID("isolation-missing"), team.ID()),
+					db.ContainerMetadata{Type: "task", StepName: "some-task"},
+				)
+				Expect(err).NotTo(HaveOccurred())
+				missing, err = creating.Created()
+				Expect(err).NotTo(HaveOccurred())
+				setColumn(missing.Handle(), "missing_since", sq.Expr("NOW() - '1 hour'::interval"))
+
+				resourceConfig, err := resourceConfigFactory.FindOrCreateResourceConfig(
+					"some-base-type",
+					atc.Source{"repository": "some-isolation-image"},
+					nil,
+				)
+				Expect(err).NotTo(HaveOccurred())
+				excess = createdCheckContainer(resourceConfig)
+				createdCheckContainer(resourceConfig)
+
+				orphan()
 			})
 
-			It("still looks for orphans when destroying failed containers errors", func() {
-				failing := new(dbfakes.FakeContainerRepository)
-				failing.DestroyFailedContainersReturns(0, errors.New("nope"))
+			It("collects everything downstream when finding orphans fails", func() {
+				err := gc.NewContainerCollector(
+					failFindOrphanedContainers{containerRepository},
+					missingContainerGracePeriod,
+					hijackContainerGracePeriod,
+				).Run(context.TODO())
 
-				_ = gc.NewContainerCollector(failing, missingContainerGracePeriod, hijackContainerGracePeriod).
-					Run(context.TODO())
+				Expect(err).To(MatchError(ContainSubstring("nope")))
 
-				Expect(failing.FindOrphanedContainersCallCount()).To(Equal(1))
+				Expect(stateOf(failed.Handle())).To(Equal(string(atc.ContainerStateDestroying)))
+				Expect(exists(missing.Handle())).To(BeFalse())
+				Expect(stateOf(excess.Handle())).To(Equal(string(atc.ContainerStateDestroying)))
 			})
 
-			It("still cleans up other containers when DestroyExcessCheckContainers errors", func() {
-				failing := new(dbfakes.FakeContainerRepository)
-				failing.DestroyExcessCheckContainersReturns(0, errors.New("nope"))
+			It("collects everything downstream when destroying failed containers fails", func() {
+				err := gc.NewContainerCollector(
+					failDestroyFailedContainers{containerRepository},
+					missingContainerGracePeriod,
+					hijackContainerGracePeriod,
+				).Run(context.TODO())
 
-				_ = gc.NewContainerCollector(failing, missingContainerGracePeriod, hijackContainerGracePeriod).
-					Run(context.TODO())
+				Expect(err).To(MatchError(ContainSubstring("nope")))
 
-				Expect(failing.FindOrphanedContainersCallCount()).To(Equal(1))
-				Expect(failing.DestroyFailedContainersCallCount()).To(Equal(1))
+				Expect(stateOf(orphaned.Handle())).To(Equal(string(atc.ContainerStateDestroying)))
+				Expect(exists(missing.Handle())).To(BeFalse())
+				Expect(stateOf(excess.Handle())).To(Equal(string(atc.ContainerStateDestroying)))
 			})
 
-			It("returns the error when finding orphaned containers fails", func() {
-				failing := new(dbfakes.FakeContainerRepository)
-				failing.FindOrphanedContainersReturns(nil, nil, nil, errors.New("some error"))
+			It("collects everything downstream when removing missing containers fails", func() {
+				err := gc.NewContainerCollector(
+					failRemoveMissingContainers{containerRepository},
+					missingContainerGracePeriod,
+					hijackContainerGracePeriod,
+				).Run(context.TODO())
 
-				err := gc.NewContainerCollector(failing, missingContainerGracePeriod, hijackContainerGracePeriod).
-					Run(context.TODO())
+				Expect(err).To(MatchError(ContainSubstring("nope")))
 
-				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("some error"))
+				Expect(stateOf(orphaned.Handle())).To(Equal(string(atc.ContainerStateDestroying)))
+				Expect(stateOf(failed.Handle())).To(Equal(string(atc.ContainerStateDestroying)))
+				Expect(stateOf(excess.Handle())).To(Equal(string(atc.ContainerStateDestroying)))
 			})
 		})
 	})

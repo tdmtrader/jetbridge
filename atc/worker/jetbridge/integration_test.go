@@ -8,7 +8,6 @@ import (
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	. "github.com/onsi/ginkgo/v2"
@@ -23,36 +22,37 @@ import (
 // All task types now use exec-mode (pause pod + SPDY exec).
 var _ = Describe("Integration", func() {
 	var (
-		fakeDBWorker  *dbfakes.FakeWorker
+		database      jetbridgeDB
+		dbWorker      db.Worker
+		team          db.Team
 		fakeClientset *fake.Clientset
 		fakeExecutor  *fakeExecExecutor
 		worker        *jetbridge.Worker
 		ctx           context.Context
 		cfg           jetbridge.Config
 		delegate      runtime.BuildStepDelegate
-		containerSeq  int
 	)
 
 	BeforeEach(func() {
 		ctx = context.Background()
-		fakeDBWorker = new(dbfakes.FakeWorker)
-		fakeDBWorker.NameReturns("k8s-worker-1")
+		database = useJetbridgeDB()
+		var err error
+		dbWorker, err = persistNamedWorker(database, "k8s-worker-1")
+		Expect(err).NotTo(HaveOccurred())
+		team, err = database.TeamFactory.CreateTeam(atc.Team{Name: "main"})
+		Expect(err).NotTo(HaveOccurred())
 		fakeClientset = fake.NewSimpleClientset()
 		cfg = jetbridge.NewConfig("ci-namespace", "")
 		delegate = &noopDelegate{}
 		fakeExecutor = &fakeExecExecutor{}
-		containerSeq = 0
 
-		worker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+		worker = jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
 		worker.SetExecutor(fakeExecutor)
 	})
 
-	// createContainer is a helper that sets up DB fakes and calls
-	// FindOrCreateContainer with a unique handle.
+	// createContainer persists a container with the given handle and returns the
+	// runtime container the worker builds for it.
 	createContainer := func(handle string, containerType db.ContainerType, spec runtime.ContainerSpec) runtime.Container {
-		containerSeq++
-		setupFakeDBContainer(fakeDBWorker, handle)
-
 		container, _, err := worker.FindOrCreateContainer(
 			ctx,
 			db.NewFixedHandleContainerOwner(handle),
@@ -475,16 +475,17 @@ var _ = Describe("Integration", func() {
 	Describe("cache volume lifecycle", func() {
 		It("LookupVolume returns DaemonSetVolume", func() {
 			cacheCfg := jetbridge.NewConfig("ci-namespace", "")
-			fakeVolumeRepo := new(dbfakes.FakeVolumeRepository)
 
-			cacheWorker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cacheCfg)
+			cacheWorker := jetbridge.NewWorker(dbWorker, fakeClientset, cacheCfg)
 			cacheWorker.SetExecutor(fakeExecutor)
-			cacheWorker.SetVolumeRepo(fakeVolumeRepo)
+			cacheWorker.SetVolumeRepo(database.VolumeRepository)
 
-			fakeDBVolume := new(dbfakes.FakeCreatedVolume)
-			fakeDBVolume.HandleReturns("vol-cache-1")
-			fakeDBVolume.WorkerNameReturns("k8s-worker-1")
-			fakeVolumeRepo.FindVolumeReturns(fakeDBVolume, true, nil)
+			creating, err := database.VolumeRepository.CreateVolumeWithHandle(
+				"vol-cache-1", team.ID(), dbWorker.Name(), db.VolumeTypeArtifact,
+			)
+			Expect(err).NotTo(HaveOccurred())
+			_, err = creating.Created()
+			Expect(err).NotTo(HaveOccurred())
 
 			vol, found, err := cacheWorker.LookupVolume(ctx, "vol-cache-1")
 			Expect(err).ToNot(HaveOccurred())

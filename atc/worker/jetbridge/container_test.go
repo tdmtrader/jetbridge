@@ -11,7 +11,6 @@ import (
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/compression"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
@@ -27,7 +26,8 @@ import (
 
 var _ = Describe("Container", func() {
 	var (
-		fakeDBWorker  *dbfakes.FakeWorker
+		database      jetbridgeDB
+		dbWorker      db.Worker
 		fakeClientset *fake.Clientset
 		worker        *jetbridge.Worker
 		ctx           context.Context
@@ -37,21 +37,21 @@ var _ = Describe("Container", func() {
 
 	BeforeEach(func() {
 		ctx = context.Background()
-		fakeDBWorker = new(dbfakes.FakeWorker)
-		fakeDBWorker.NameReturns("k8s-worker-1")
+		database = useJetbridgeDB()
+		var err error
+		dbWorker, err = persistNamedWorker(database, "k8s-worker-1")
+		Expect(err).NotTo(HaveOccurred())
 		fakeClientset = fake.NewSimpleClientset()
 		cfg = jetbridge.NewConfig("test-namespace", "")
 		delegate = &noopDelegate{}
 
-		worker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+		worker = jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
 	})
 
 	Describe("Run", func() {
 		var container runtime.Container
 
 		BeforeEach(func() {
-			setupFakeDBContainer(fakeDBWorker, "run-test-handle")
-
 			var err error
 			container, _, err = worker.FindOrCreateContainer(
 				ctx,
@@ -120,8 +120,6 @@ var _ = Describe("Container", func() {
 
 	Describe("Run with Dir volume", func() {
 		It("creates a Pod with an emptyDir volume for spec.Dir when Dir is set", func() {
-			setupFakeDBContainer(fakeDBWorker, "dir-vol-handle")
-
 			container, _, err := worker.FindOrCreateContainer(
 				ctx,
 				db.NewFixedHandleContainerOwner("dir-vol-handle"),
@@ -158,8 +156,6 @@ var _ = Describe("Container", func() {
 		})
 
 		It("does not create a Dir volume when spec.Dir is empty", func() {
-			setupFakeDBContainer(fakeDBWorker, "no-dir-handle")
-
 			container, _, err := worker.FindOrCreateContainer(
 				ctx,
 				db.NewFixedHandleContainerOwner("no-dir-handle"),
@@ -194,8 +190,6 @@ var _ = Describe("Container", func() {
 		var container runtime.Container
 
 		BeforeEach(func() {
-			setupFakeDBContainer(fakeDBWorker, "input-vol-handle")
-
 			var err error
 			container, _, err = worker.FindOrCreateContainer(
 				ctx,
@@ -258,8 +252,6 @@ var _ = Describe("Container", func() {
 		var container runtime.Container
 
 		BeforeEach(func() {
-			setupFakeDBContainer(fakeDBWorker, "output-vol-handle")
-
 			var err error
 			container, _, err = worker.FindOrCreateContainer(
 				ctx,
@@ -313,8 +305,6 @@ var _ = Describe("Container", func() {
 		var container runtime.Container
 
 		BeforeEach(func() {
-			setupFakeDBContainer(fakeDBWorker, "shared-io-handle")
-
 			var err error
 			container, _, err = worker.FindOrCreateContainer(
 				ctx,
@@ -392,8 +382,6 @@ var _ = Describe("Container", func() {
 		var container runtime.Container
 
 		BeforeEach(func() {
-			setupFakeDBContainer(fakeDBWorker, "nonoverlap-io-handle")
-
 			var err error
 			container, _, err = worker.FindOrCreateContainer(
 				ctx,
@@ -440,8 +428,6 @@ var _ = Describe("Container", func() {
 		var container runtime.Container
 
 		BeforeEach(func() {
-			setupFakeDBContainer(fakeDBWorker, "cache-vol-handle")
-
 			var err error
 			container, _, err = worker.FindOrCreateContainer(
 				ctx,
@@ -493,8 +479,6 @@ var _ = Describe("Container", func() {
 		var container runtime.Container
 
 		BeforeEach(func() {
-			setupFakeDBContainer(fakeDBWorker, "scratch-vol-handle")
-
 			var err error
 			container, _, err = worker.FindOrCreateContainer(
 				ctx,
@@ -561,8 +545,6 @@ var _ = Describe("Container", func() {
 		var container runtime.Container
 
 		BeforeEach(func() {
-			setupFakeDBContainer(fakeDBWorker, "scratch-cache-handle")
-
 			var err error
 			container, _, err = worker.FindOrCreateContainer(
 				ctx,
@@ -614,8 +596,6 @@ var _ = Describe("Container", func() {
 		var container runtime.Container
 
 		BeforeEach(func() {
-			setupFakeDBContainer(fakeDBWorker, "scratch-rel-handle")
-
 			var err error
 			container, _, err = worker.FindOrCreateContainer(
 				ctx,
@@ -657,12 +637,10 @@ var _ = Describe("Container", func() {
 
 		Context("when CacheHostPath is set", func() {
 			BeforeEach(func() {
-				setupFakeDBContainer(fakeDBWorker, "cache-hostpath-handle")
-
 				cfgWithHostPath := jetbridge.NewConfig("test-namespace", "")
 				cfgWithHostPath.CacheHostPath = "/var/concourse/cache"
 
-				hostPathWorker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfgWithHostPath)
+				hostPathWorker := jetbridge.NewWorker(dbWorker, fakeClientset, cfgWithHostPath)
 
 				var err error
 				container, _, err = hostPathWorker.FindOrCreateContainer(
@@ -724,12 +702,10 @@ var _ = Describe("Container", func() {
 
 		Context("when CacheHostPath is set but JobID is 0 (one-off build)", func() {
 			BeforeEach(func() {
-				setupFakeDBContainer(fakeDBWorker, "cache-oneoff-handle")
-
 				cfgWithHostPath := jetbridge.NewConfig("test-namespace", "")
 				cfgWithHostPath.CacheHostPath = "/var/concourse/cache"
 
-				hostPathWorker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfgWithHostPath)
+				hostPathWorker := jetbridge.NewWorker(dbWorker, fakeClientset, cfgWithHostPath)
 
 				var err error
 				container, _, err = hostPathWorker.FindOrCreateContainer(
@@ -773,13 +749,11 @@ var _ = Describe("Container", func() {
 
 		Context("when CacheStore=hostpath overrides artifact store", func() {
 			BeforeEach(func() {
-				setupFakeDBContainer(fakeDBWorker, "explicit-hostpath-handle")
-
 				cfgExplicit := jetbridge.NewConfig("test-namespace", "")
 				cfgExplicit.CacheHostPath = "/var/concourse/cache"
 				cfgExplicit.CacheStore = jetbridge.CacheStoreHostPath
 
-				explicitWorker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfgExplicit)
+				explicitWorker := jetbridge.NewWorker(dbWorker, fakeClientset, cfgExplicit)
 
 				var err error
 				container, _, err = explicitWorker.FindOrCreateContainer(
@@ -827,12 +801,10 @@ var _ = Describe("Container", func() {
 
 		Context("when CacheStore=emptydir overrides artifact store", func() {
 			BeforeEach(func() {
-				setupFakeDBContainer(fakeDBWorker, "explicit-emptydir-handle")
-
 				cfgExplicit := jetbridge.NewConfig("test-namespace", "")
 				cfgExplicit.CacheStore = jetbridge.CacheStoreEmptyDir
 
-				explicitWorker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfgExplicit)
+				explicitWorker := jetbridge.NewWorker(dbWorker, fakeClientset, cfgExplicit)
 
 				var err error
 				container, _, err = explicitWorker.FindOrCreateContainer(
@@ -884,12 +856,10 @@ var _ = Describe("Container", func() {
 
 		Context("when CacheStore=emptydir is explicitly set", func() {
 			BeforeEach(func() {
-				setupFakeDBContainer(fakeDBWorker, "explicit-emptydir-handle")
-
 				cfgExplicit := jetbridge.NewConfig("test-namespace", "")
 				cfgExplicit.CacheStore = jetbridge.CacheStoreEmptyDir
 
-				explicitWorker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfgExplicit)
+				explicitWorker := jetbridge.NewWorker(dbWorker, fakeClientset, cfgExplicit)
 
 				var err error
 				container, _, err = explicitWorker.FindOrCreateContainer(
@@ -936,8 +906,6 @@ var _ = Describe("Container", func() {
 
 		Context("when CPU and Memory limits are specified", func() {
 			BeforeEach(func() {
-				setupFakeDBContainer(fakeDBWorker, "limits-handle")
-
 				cpu := uint64(1024)
 				memory := uint64(1073741824)
 
@@ -991,8 +959,6 @@ var _ = Describe("Container", func() {
 
 		Context("when no limits are specified", func() {
 			BeforeEach(func() {
-				setupFakeDBContainer(fakeDBWorker, "no-limits-handle")
-
 				var err error
 				container, _, err = worker.FindOrCreateContainer(
 					ctx,
@@ -1027,8 +993,6 @@ var _ = Describe("Container", func() {
 
 		Context("when both limits and independent requests are specified (Burstable QoS)", func() {
 			BeforeEach(func() {
-				setupFakeDBContainer(fakeDBWorker, "burstable-handle")
-
 				cpuLimit := uint64(2048)
 				memLimit := uint64(4294967296) // 4GB
 				cpuReq := uint64(512)
@@ -1080,8 +1044,6 @@ var _ = Describe("Container", func() {
 
 		Context("when only requests are specified with no limits (Burstable no-cap QoS)", func() {
 			BeforeEach(func() {
-				setupFakeDBContainer(fakeDBWorker, "requests-only-handle")
-
 				cpuReq := uint64(256)
 				memReq := uint64(536870912) // 512MB
 
@@ -1128,8 +1090,6 @@ var _ = Describe("Container", func() {
 
 		Context("when ephemeral-storage limits and requests are specified", func() {
 			BeforeEach(func() {
-				setupFakeDBContainer(fakeDBWorker, "ephemeral-handle")
-
 				cpuLimit := uint64(1024)
 				memLimit := uint64(1073741824) // 1GB
 				ephLimit := uint64(5368709120) // 5GB
@@ -1187,8 +1147,6 @@ var _ = Describe("Container", func() {
 
 		Context("when the container is not privileged", func() {
 			BeforeEach(func() {
-				setupFakeDBContainer(fakeDBWorker, "secure-handle")
-
 				var err error
 				container, _, err = worker.FindOrCreateContainer(
 					ctx,
@@ -1238,8 +1196,6 @@ var _ = Describe("Container", func() {
 
 		Context("when the container is privileged", func() {
 			BeforeEach(func() {
-				setupFakeDBContainer(fakeDBWorker, "priv-handle")
-
 				var err error
 				container, _, err = worker.FindOrCreateContainer(
 					ctx,
@@ -1293,13 +1249,11 @@ var _ = Describe("Container", func() {
 
 		Context("when image pull secrets and service account are configured", func() {
 			BeforeEach(func() {
-				setupFakeDBContainer(fakeDBWorker, "secrets-handle")
-
 				cfgWithSecrets := jetbridge.NewConfig("test-namespace", "")
 				cfgWithSecrets.ImagePullSecrets = []string{"registry-creds", "gcr-key"}
 				cfgWithSecrets.ServiceAccount = "ci-runner"
 
-				secretsWorker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfgWithSecrets)
+				secretsWorker := jetbridge.NewWorker(dbWorker, fakeClientset, cfgWithSecrets)
 
 				var err error
 				container, _, err = secretsWorker.FindOrCreateContainer(
@@ -1343,8 +1297,6 @@ var _ = Describe("Container", func() {
 
 		Context("when no image pull secrets or service account are configured", func() {
 			BeforeEach(func() {
-				setupFakeDBContainer(fakeDBWorker, "no-secrets-handle")
-
 				var err error
 				container, _, err = worker.FindOrCreateContainer(
 					ctx,
@@ -1379,8 +1331,6 @@ var _ = Describe("Container", func() {
 
 		Context("when ImageRegistry is configured with a SecretName", func() {
 			BeforeEach(func() {
-				setupFakeDBContainer(fakeDBWorker, "registry-handle")
-
 				cfgWithRegistry := jetbridge.NewConfig("test-namespace", "")
 				cfgWithRegistry.ImagePullSecrets = []string{"existing-secret"}
 				cfgWithRegistry.ImageRegistry = &jetbridge.ImageRegistryConfig{
@@ -1388,7 +1338,7 @@ var _ = Describe("Container", func() {
 					SecretName: "gcr-auth",
 				}
 
-				registryWorker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfgWithRegistry)
+				registryWorker := jetbridge.NewWorker(dbWorker, fakeClientset, cfgWithRegistry)
 
 				var err error
 				container, _, err = registryWorker.FindOrCreateContainer(
@@ -1427,15 +1377,13 @@ var _ = Describe("Container", func() {
 
 		Context("when ImageRegistry SecretName duplicates an existing imagePullSecret", func() {
 			BeforeEach(func() {
-				setupFakeDBContainer(fakeDBWorker, "dedup-handle")
-
 				cfgDup := jetbridge.NewConfig("test-namespace", "")
 				cfgDup.ImagePullSecrets = []string{"shared-secret"}
 				cfgDup.ImageRegistry = &jetbridge.ImageRegistryConfig{
 					SecretName: "shared-secret",
 				}
 
-				dedupWorker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfgDup)
+				dedupWorker := jetbridge.NewWorker(dbWorker, fakeClientset, cfgDup)
 
 				var err error
 				container, _, err = dedupWorker.FindOrCreateContainer(
@@ -1479,10 +1427,8 @@ var _ = Describe("Container", func() {
 
 		BeforeEach(func() {
 			execExecutor = &fakeExecExecutor{}
-			execWorker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+			execWorker = jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
 			execWorker.SetExecutor(execExecutor)
-
-			setupFakeDBContainer(fakeDBWorker, "exec-task-handle")
 
 			var err error
 			execContainer, _, err = execWorker.FindOrCreateContainer(
@@ -1589,7 +1535,7 @@ var _ = Describe("Container", func() {
 		var execWorker *jetbridge.Worker
 
 		BeforeEach(func() {
-			execWorker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+			execWorker = jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
 			execWorker.SetExecutor(&fakeExecExecutor{})
 		})
 
@@ -1597,8 +1543,6 @@ var _ = Describe("Container", func() {
 			var volumeMounts []runtime.VolumeMount
 
 			BeforeEach(func() {
-				setupFakeDBContainer(fakeDBWorker, "vm-input-handle")
-
 				var err error
 				_, volumeMounts, err = execWorker.FindOrCreateContainer(
 					ctx,
@@ -1649,8 +1593,6 @@ var _ = Describe("Container", func() {
 			var volumeMounts []runtime.VolumeMount
 
 			BeforeEach(func() {
-				setupFakeDBContainer(fakeDBWorker, "vm-output-handle")
-
 				var err error
 				_, volumeMounts, err = execWorker.FindOrCreateContainer(
 					ctx,
@@ -1700,8 +1642,6 @@ var _ = Describe("Container", func() {
 			var volumeMounts []runtime.VolumeMount
 
 			BeforeEach(func() {
-				setupFakeDBContainer(fakeDBWorker, "vm-cache-handle")
-
 				var err error
 				_, volumeMounts, err = execWorker.FindOrCreateContainer(
 					ctx,
@@ -1747,8 +1687,6 @@ var _ = Describe("Container", func() {
 			)
 
 			BeforeEach(func() {
-				setupFakeDBContainer(fakeDBWorker, "deferred-pod-handle")
-
 				var err error
 				container, volumeMounts, err = execWorker.FindOrCreateContainer(
 					ctx,
@@ -1790,10 +1728,8 @@ var _ = Describe("Container", func() {
 	Describe("Input streaming is a no-op (handled by init containers)", func() {
 		It("does not exec any streaming commands for inputs", func() {
 			execExecutor := &fakeExecExecutor{}
-			execWorkerIS := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+			execWorkerIS := jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
 			execWorkerIS.SetExecutor(execExecutor)
-
-			setupFakeDBContainer(fakeDBWorker, "noop-stream-handle")
 
 			artifact := &fakeArtifact{
 				handle:    "input-vol-1",
@@ -1856,10 +1792,8 @@ var _ = Describe("Container", func() {
 
 		BeforeEach(func() {
 			execExecutor = &fakeExecExecutor{}
-			execWorkerOE = jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+			execWorkerOE = jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
 			execWorkerOE.SetExecutor(execExecutor)
-
-			setupFakeDBContainer(fakeDBWorker, "output-extract-handle")
 
 			var err error
 			execContainer, volumeMounts, err = execWorkerOE.FindOrCreateContainer(
@@ -1949,8 +1883,6 @@ var _ = Describe("Container", func() {
 		var container runtime.Container
 
 		BeforeEach(func() {
-			setupFakeDBContainer(fakeDBWorker, "props-handle")
-
 			var err error
 			container, _, err = worker.FindOrCreateContainer(
 				ctx,
@@ -1983,7 +1915,7 @@ var _ = Describe("Container", func() {
 
 		BeforeEach(func() {
 			hijackExecutor = &fakeExecExecutor{}
-			hijackWorker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+			hijackWorker = jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
 			hijackWorker.SetExecutor(hijackExecutor)
 
 			// Simulate an existing pause pod (created by a previous task run).
@@ -2000,10 +1932,14 @@ var _ = Describe("Container", func() {
 			_, err := fakeClientset.CoreV1().Pods("test-namespace").Create(ctx, pod, metav1.CreateOptions{})
 			Expect(err).ToNot(HaveOccurred())
 
-			// Set up DB fakes so LookupContainer finds the container.
-			fakeCreatedContainer := new(dbfakes.FakeCreatedContainer)
-			fakeCreatedContainer.HandleReturns("hijack-pod")
-			fakeDBWorker.FindContainerReturns(nil, fakeCreatedContainer, nil)
+			// Persist the container so LookupContainer finds it.
+			creating, err := dbWorker.CreateContainer(
+				db.NewFixedHandleContainerOwner("hijack-pod"),
+				db.ContainerMetadata{Type: db.ContainerTypeTask},
+			)
+			Expect(err).NotTo(HaveOccurred())
+			_, err = creating.Created()
+			Expect(err).NotTo(HaveOccurred())
 
 			hijackContainer, _, err = hijackWorker.LookupContainer(ctx, "hijack-pod")
 			Expect(err).ToNot(HaveOccurred())
@@ -2029,7 +1965,7 @@ var _ = Describe("Container", func() {
 			Expect(result.ExitStatus).To(Equal(0))
 
 			Expect(hijackExecutor.execCalls).To(HaveLen(1))
-			Expect(hijackExecutor.execCalls[0].command).To(Equal([]string{"/bin/bash", "-l"}))
+			expectSupervisedExec(hijackExecutor.execCalls[0].command, `'/bin/bash' '-l'`)
 			Expect(hijackExecutor.execCalls[0].podName).To(Equal("hijack-pod"))
 		})
 
@@ -2089,7 +2025,7 @@ var _ = Describe("Container", func() {
 
 			It(fmt.Sprintf("replaces a %s pod with a new pause pod", phase), func() {
 				terminalExecutor := &fakeExecExecutor{}
-				terminalWorker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+				terminalWorker := jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
 				terminalWorker.SetExecutor(terminalExecutor)
 
 				// Use a UUID-style handle so GeneratePodName produces a
@@ -2112,7 +2048,6 @@ var _ = Describe("Container", func() {
 				_, err := fakeClientset.CoreV1().Pods("test-namespace").Create(ctx, terminalPod, metav1.CreateOptions{})
 				Expect(err).ToNot(HaveOccurred())
 
-				setupFakeDBContainer(fakeDBWorker, handle)
 				container, _, err := terminalWorker.FindOrCreateContainer(
 					ctx,
 					db.NewFixedHandleContainerOwner(handle),
@@ -2165,8 +2100,6 @@ var _ = Describe("Container", func() {
 
 		Context("when pod creation succeeds (direct mode)", func() {
 			BeforeEach(func() {
-				setupFakeDBContainer(fakeDBWorker, "metric-success-handle")
-
 				var err error
 				container, _, err = worker.FindOrCreateContainer(
 					ctx,
@@ -2205,10 +2138,8 @@ var _ = Describe("Container", func() {
 			)
 
 			BeforeEach(func() {
-				execWorker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+				execWorker = jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
 				execWorker.SetExecutor(&fakeExecExecutor{})
-
-				setupFakeDBContainer(fakeDBWorker, "metric-exec-success")
 
 				var err error
 				execContainer, _, err = execWorker.FindOrCreateContainer(
@@ -2242,8 +2173,6 @@ var _ = Describe("Container", func() {
 
 		Context("when pod creation fails", func() {
 			BeforeEach(func() {
-				setupFakeDBContainer(fakeDBWorker, "metric-fail-handle")
-
 				var err error
 				container, _, err = worker.FindOrCreateContainer(
 					ctx,
@@ -2284,8 +2213,6 @@ var _ = Describe("Container", func() {
 		var container runtime.Container
 
 		BeforeEach(func() {
-			setupFakeDBContainer(fakeDBWorker, "attach-handle")
-
 			var err error
 			container, _, err = worker.FindOrCreateContainer(
 				ctx,
@@ -2320,10 +2247,8 @@ var _ = Describe("Container", func() {
 			var execContainer runtime.Container
 
 			BeforeEach(func() {
-				execWorker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+				execWorker := jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
 				execWorker.SetExecutor(&fakeExecExecutor{})
-
-				setupFakeDBContainer(fakeDBWorker, "exec-attach-handle")
 
 				var err error
 				execContainer, _, err = execWorker.FindOrCreateContainer(
@@ -2371,10 +2296,8 @@ var _ = Describe("Container", func() {
 			var execContainer runtime.Container
 
 			BeforeEach(func() {
-				execWorker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+				execWorker := jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
 				execWorker.SetExecutor(&fakeExecExecutor{})
-
-				setupFakeDBContainer(fakeDBWorker, "exec-noann-handle")
 
 				var err error
 				execContainer, _, err = execWorker.FindOrCreateContainer(
@@ -2413,17 +2336,10 @@ var _ = Describe("Container", func() {
 	})
 
 	Describe("FindOrCreateContainer failure handling", func() {
-		It("calls Failed() on the creating container when Created() fails", func() {
-			fakeCreatingContainer := new(dbfakes.FakeCreatingContainer)
-			fakeCreatingContainer.HandleReturns("fail-create-handle")
-			fakeCreatingContainer.CreatedReturns(nil, fmt.Errorf("owner disappeared"))
-
-			fakeDBWorker.FindContainerReturns(nil, nil, nil)
-			fakeDBWorker.CreateContainerReturns(fakeCreatingContainer, nil)
-
-			_, _, err := worker.FindOrCreateContainer(
+		findOrCreate := func(w *jetbridge.Worker, handle string) error {
+			_, _, err := w.FindOrCreateContainer(
 				ctx,
-				db.NewFixedHandleContainerOwner("fail-create-handle"),
+				db.NewFixedHandleContainerOwner(handle),
 				db.ContainerMetadata{Type: db.ContainerTypeTask},
 				runtime.ContainerSpec{
 					TeamID:    1,
@@ -2431,102 +2347,84 @@ var _ = Describe("Container", func() {
 				},
 				delegate,
 			)
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("mark container as created"))
+			return err
+		}
+
+		stateOf := func(handle string) string {
+			var state string
+			Expect(database.Conn.QueryRow(
+				`SELECT state FROM containers WHERE handle = $1`, handle,
+			).Scan(&state)).To(Succeed())
+			return state
+		}
+
+		It("marks the container as failed when Created() fails", func() {
+			faultWorker := jetbridge.NewWorker(failCreatedTransition{dbWorker}, fakeClientset, cfg)
+
+			err := findOrCreate(faultWorker, "fail-create-handle")
+			Expect(err).To(MatchError(ContainSubstring("mark container as created")))
 
 			By("marking the container as failed in the DB")
-			Expect(fakeCreatingContainer.FailedCallCount()).To(Equal(1))
+			Expect(stateOf("fail-create-handle")).To(Equal(string(atc.ContainerStateFailed)))
 		})
 
 		It("returns error when FindContainer fails", func() {
-			fakeDBWorker.FindContainerReturns(nil, nil, fmt.Errorf("db connection lost"))
+			lostWorker := jetbridge.NewWorker(closedConnWorker("k8s-worker-1"), fakeClientset, cfg)
 
-			_, _, err := worker.FindOrCreateContainer(
-				ctx,
-				db.NewFixedHandleContainerOwner("db-fail-handle"),
-				db.ContainerMetadata{Type: db.ContainerTypeTask},
-				runtime.ContainerSpec{
-					TeamID:    1,
-					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
-				},
-				delegate,
-			)
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("find container in db"))
+			err := findOrCreate(lostWorker, "db-fail-handle")
+			Expect(err).To(MatchError(ContainSubstring("find container in db")))
 		})
 
 		It("returns error when CreateContainer fails", func() {
-			fakeDBWorker.FindContainerReturns(nil, nil, nil)
-			fakeDBWorker.CreateContainerReturns(nil, fmt.Errorf("duplicate key"))
-
-			_, _, err := worker.FindOrCreateContainer(
-				ctx,
+			// The handle is already taken on another worker, so the lookup on this
+			// worker misses and the insert hits containers_handle_key.
+			otherWorker, err := persistNamedWorker(database, "k8s-worker-2")
+			Expect(err).NotTo(HaveOccurred())
+			_, err = otherWorker.CreateContainer(
 				db.NewFixedHandleContainerOwner("dup-handle"),
 				db.ContainerMetadata{Type: db.ContainerTypeTask},
-				runtime.ContainerSpec{
-					TeamID:    1,
-					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
-				},
-				delegate,
 			)
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("create container in db"))
+			Expect(err).NotTo(HaveOccurred())
+
+			err = findOrCreate(worker, "dup-handle")
+			Expect(err).To(MatchError(ContainSubstring("create container in db")))
 		})
 
 		It("recovers a stale creating container by transitioning to created", func() {
-			// Simulate a creating container left from a previous crash.
-			fakeCreatingContainer := new(dbfakes.FakeCreatingContainer)
-			fakeCreatingContainer.HandleReturns("stale-creating-handle")
-			fakeCreatedContainer := new(dbfakes.FakeCreatedContainer)
-			fakeCreatedContainer.HandleReturns("stale-creating-handle")
-			fakeCreatingContainer.CreatedReturns(fakeCreatedContainer, nil)
-
-			// FindContainer returns the stale creating container.
-			fakeDBWorker.FindContainerReturns(fakeCreatingContainer, nil, nil)
-
-			container, _, err := worker.FindOrCreateContainer(
-				ctx,
+			// A creating container left behind by a previous crash.
+			_, err := dbWorker.CreateContainer(
 				db.NewFixedHandleContainerOwner("stale-creating-handle"),
 				db.ContainerMetadata{Type: db.ContainerTypeTask},
-				runtime.ContainerSpec{
-					TeamID:    1,
-					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
-				},
-				delegate,
 			)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(container).ToNot(BeNil())
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(findOrCreate(worker, "stale-creating-handle")).To(Succeed())
 
 			By("transitioning the creating container to created state")
-			Expect(fakeCreatingContainer.CreatedCallCount()).To(Equal(1))
+			Expect(stateOf("stale-creating-handle")).To(Equal(string(atc.ContainerStateCreated)))
 
-			By("not calling CreateContainer since the container already exists")
-			Expect(fakeDBWorker.CreateContainerCallCount()).To(Equal(0))
+			By("not inserting a second row since the container already exists")
+			var count int
+			Expect(database.Conn.QueryRow(
+				`SELECT count(*) FROM containers WHERE handle = $1`, "stale-creating-handle",
+			).Scan(&count)).To(Succeed())
+			Expect(count).To(Equal(1))
 		})
 
 		It("marks stale creating container as failed when Created() fails on recovery", func() {
-			fakeCreatingContainer := new(dbfakes.FakeCreatingContainer)
-			fakeCreatingContainer.HandleReturns("stale-fail-handle")
-			fakeCreatingContainer.CreatedReturns(nil, fmt.Errorf("state conflict"))
-
-			// FindContainer returns the stale creating container.
-			fakeDBWorker.FindContainerReturns(fakeCreatingContainer, nil, nil)
-
-			_, _, err := worker.FindOrCreateContainer(
-				ctx,
+			_, err := dbWorker.CreateContainer(
 				db.NewFixedHandleContainerOwner("stale-fail-handle"),
 				db.ContainerMetadata{Type: db.ContainerTypeTask},
-				runtime.ContainerSpec{
-					TeamID:    1,
-					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
-				},
-				delegate,
 			)
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("mark container as created"))
+			Expect(err).NotTo(HaveOccurred())
+
+			faultWorker := jetbridge.NewWorker(failStaleCreatedTransition{dbWorker}, fakeClientset, cfg)
+
+			err = findOrCreate(faultWorker, "stale-fail-handle")
+			Expect(err).To(MatchError(ContainSubstring("mark container as created")))
 
 			By("marking the stale container as failed")
-			Expect(fakeCreatingContainer.FailedCallCount()).To(Equal(1))
+			Expect(stateOf("stale-fail-handle")).To(Equal(string(atc.ContainerStateFailed)))
 		})
 	})
 })
@@ -2563,7 +2461,7 @@ func (a *fakeArtifact) Source() string { return a.source }
 
 var _ = Describe("Concurrent container operations", func() {
 	var (
-		fakeDBWorker  *dbfakes.FakeWorker
+		dbWorker      db.Worker
 		fakeClientset *fake.Clientset
 		ctx           context.Context
 		delegate      runtime.BuildStepDelegate
@@ -2571,17 +2469,16 @@ var _ = Describe("Concurrent container operations", func() {
 
 	BeforeEach(func() {
 		ctx = context.Background()
-		fakeDBWorker = new(dbfakes.FakeWorker)
-		fakeDBWorker.NameReturns("k8s-worker-1")
+		var err error
+		dbWorker, err = persistNamedWorker(useJetbridgeDB(), "k8s-worker-1")
+		Expect(err).NotTo(HaveOccurred())
 		fakeClientset = fake.NewSimpleClientset()
 		delegate = &noopDelegate{}
 	})
 
 	It("handles concurrent SetProperty and Properties without races", func() {
 		cfg := jetbridge.NewConfig("test-namespace", "")
-		worker := jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
-
-		setupFakeDBContainer(fakeDBWorker, "concurrent-props-handle")
+		worker := jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
 
 		container, _, err := worker.FindOrCreateContainer(
 			ctx,
@@ -2644,12 +2541,7 @@ var _ = Describe("Concurrent container operations", func() {
 			go func(n int) {
 				defer wg.Done()
 
-				// Each goroutine needs its own FakeWorker to avoid shared state
-				localFakeDBWorker := new(dbfakes.FakeWorker)
-				localFakeDBWorker.NameReturns("k8s-worker-1")
-				setupFakeDBContainer(localFakeDBWorker, fmt.Sprintf("concurrent-handle-%d", n))
-
-				localWorker := jetbridge.NewWorker(localFakeDBWorker, fakeClientset, cfg)
+				localWorker := jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
 
 				containers[n], _, errs[n] = localWorker.FindOrCreateContainer(
 					ctx,
@@ -2686,12 +2578,9 @@ var _ = Describe("Concurrent container operations", func() {
 			go func(n int) {
 				defer wg.Done()
 
-				localFakeDBWorker := new(dbfakes.FakeWorker)
-				localFakeDBWorker.NameReturns("k8s-worker-1")
 				handle := fmt.Sprintf("concurrent-run-%d", n)
-				setupFakeDBContainer(localFakeDBWorker, handle)
 
-				localWorker := jetbridge.NewWorker(localFakeDBWorker, fakeClientset, cfg)
+				localWorker := jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
 				container, _, err := localWorker.FindOrCreateContainer(
 					ctx,
 					db.NewFixedHandleContainerOwner(handle),
@@ -2731,7 +2620,7 @@ var _ = Describe("Concurrent container operations", func() {
 
 var _ = Describe("Run with sidecar containers", func() {
 	var (
-		fakeDBWorker  *dbfakes.FakeWorker
+		dbWorker      db.Worker
 		fakeClientset *fake.Clientset
 		worker        *jetbridge.Worker
 		ctx           context.Context
@@ -2742,18 +2631,17 @@ var _ = Describe("Run with sidecar containers", func() {
 
 	BeforeEach(func() {
 		ctx = context.Background()
-		fakeDBWorker = new(dbfakes.FakeWorker)
-		fakeDBWorker.NameReturns("k8s-worker-1")
+		var err error
+		dbWorker, err = persistNamedWorker(useJetbridgeDB(), "k8s-worker-1")
+		Expect(err).NotTo(HaveOccurred())
 		fakeClientset = fake.NewSimpleClientset()
 		cfg = jetbridge.NewConfig("test-namespace", "")
 		delegate = &noopDelegate{}
-		worker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+		worker = jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
 	})
 
 	Context("when no sidecars are configured", func() {
 		BeforeEach(func() {
-			setupFakeDBContainer(fakeDBWorker, "no-sidecar-handle")
-
 			var err error
 			container, _, err = worker.FindOrCreateContainer(
 				ctx,
@@ -2788,8 +2676,6 @@ var _ = Describe("Run with sidecar containers", func() {
 
 	Context("when one sidecar is configured", func() {
 		BeforeEach(func() {
-			setupFakeDBContainer(fakeDBWorker, "one-sidecar-handle")
-
 			var err error
 			container, _, err = worker.FindOrCreateContainer(
 				ctx,
@@ -2868,8 +2754,6 @@ var _ = Describe("Run with sidecar containers", func() {
 
 	Context("when multiple sidecars are configured", func() {
 		BeforeEach(func() {
-			setupFakeDBContainer(fakeDBWorker, "multi-sidecar-handle")
-
 			var err error
 			container, _, err = worker.FindOrCreateContainer(
 				ctx,
@@ -2918,8 +2802,6 @@ var _ = Describe("Run with sidecar containers", func() {
 
 	Context("when a sidecar has resources, command, args, and workingDir", func() {
 		BeforeEach(func() {
-			setupFakeDBContainer(fakeDBWorker, "sidecar-full-handle")
-
 			var err error
 			container, _, err = worker.FindOrCreateContainer(
 				ctx,
@@ -2985,10 +2867,8 @@ var _ = Describe("Run with sidecar containers", func() {
 		)
 
 		BeforeEach(func() {
-			setupFakeDBContainer(fakeDBWorker, "sidecar-artifact-handle")
-
 			cfgWithArtifact := jetbridge.NewConfig("test-namespace", "")
-			artifactWorker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfgWithArtifact)
+			artifactWorker = jetbridge.NewWorker(dbWorker, fakeClientset, cfgWithArtifact)
 
 			var err error
 			container, _, err = artifactWorker.FindOrCreateContainer(
@@ -3041,8 +2921,6 @@ var _ = Describe("Run with sidecar containers", func() {
 
 	Context("when a sidecar has no workingDir and the main container has a dir", func() {
 		BeforeEach(func() {
-			setupFakeDBContainer(fakeDBWorker, "sidecar-inherit-dir-handle")
-
 			var err error
 			container, _, err = worker.FindOrCreateContainer(
 				ctx,
@@ -3092,8 +2970,6 @@ var _ = Describe("Run with sidecar containers", func() {
 
 	Context("when a sidecar specifies its own workingDir", func() {
 		BeforeEach(func() {
-			setupFakeDBContainer(fakeDBWorker, "sidecar-own-dir-handle")
-
 			var err error
 			container, _, err = worker.FindOrCreateContainer(
 				ctx,
@@ -3141,10 +3017,8 @@ var _ = Describe("Run with sidecar containers", func() {
 		)
 
 		BeforeEach(func() {
-			setupFakeDBContainer(fakeDBWorker, "sidecar-exec-handle")
-
 			fakeExecutor = &fakeExecExecutor{}
-			execWorker = jetbridge.NewWorker(fakeDBWorker, fakeClientset, cfg)
+			execWorker = jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
 			execWorker.SetExecutor(fakeExecutor)
 
 			var err error
@@ -3197,8 +3071,6 @@ var _ = Describe("Run with sidecar containers", func() {
 
 	Context("when a sidecar image has a docker:/// prefix (image_artifact handoff)", func() {
 		BeforeEach(func() {
-			setupFakeDBContainer(fakeDBWorker, "sidecar-prefix-handle")
-
 			var err error
 			container, _, err = worker.FindOrCreateContainer(
 				ctx,

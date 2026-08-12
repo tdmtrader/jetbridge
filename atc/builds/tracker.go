@@ -14,9 +14,6 @@ import (
 	"github.com/concourse/concourse/tracing"
 )
 
-//go:generate go run github.com/maxbrunsfeld/counterfeiter/v6 -generate
-
-//counterfeiter:generate . Engine
 type Engine interface {
 	NewBuild(db.Build) Runnable
 

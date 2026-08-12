@@ -3,20 +3,17 @@ package builds_test
 import (
 	"context"
 	"io"
-	"testing"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
 
 	"github.com/concourse/concourse/atc/builds"
-	"github.com/concourse/concourse/atc/builds/buildsfakes"
 	"github.com/concourse/concourse/atc/component"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/util"
-	"github.com/stretchr/testify/require"
-	"github.com/stretchr/testify/suite"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 )
 
 func init() {
@@ -27,393 +24,256 @@ type runnableFunc func(context.Context)
 
 func (f runnableFunc) Run(ctx context.Context) { f(ctx) }
 
-type TrackerSuite struct {
-	suite.Suite
-	*require.Assertions
-
-	fakeBuildFactory *dbfakes.FakeBuildFactory
-	fakeEngine       *buildsfakes.FakeEngine
-
-	tracker   *builds.Tracker
-	buildChan chan db.Build
-
-	logger *lagertest.TestLogger
+// stubEngine stands in for the real engine, which recovers its own panics
+// (engine.go), so a Runnable that crashes or hangs cannot be expressed through
+// it, and whose Drain has no effect observable from outside it.
+type stubEngine struct {
+	newBuild func(db.Build) builds.Runnable
+	drained  []context.Context
 }
 
-func TestTracker(t *testing.T) {
-	suite.Run(t, &TrackerSuite{
-		Assertions: require.New(t),
-	})
-}
+func (e *stubEngine) NewBuild(build db.Build) builds.Runnable { return e.newBuild(build) }
 
-func (s *TrackerSuite) SetupTest() {
-	s.logger = lagertest.NewTestLogger("test")
-	s.fakeBuildFactory = new(dbfakes.FakeBuildFactory)
-	s.fakeEngine = new(buildsfakes.FakeEngine)
-	s.buildChan = make(chan db.Build, 10)
+func (e *stubEngine) Drain(ctx context.Context) { e.drained = append(e.drained, ctx) }
 
-	s.tracker = builds.NewTracker(
-		s.logger,
-		s.fakeBuildFactory,
-		s.fakeEngine,
-		s.buildChan,
+var _ = Describe("Tracker", func() {
+	var (
+		engine *stubEngine
+
+		tracker   *builds.Tracker
+		buildChan chan db.Build
 	)
-}
 
-func (s *TrackerSuite) TestTrackRunsStartedBuilds() {
-	startedBuilds := []db.Build{}
-	for i := range 3 {
-		fakeBuild := new(dbfakes.FakeBuild)
-		fakeBuild.IDReturns(i + 1)
-		startedBuilds = append(startedBuilds, fakeBuild)
-	}
+	BeforeEach(func() {
+		engine = &stubEngine{newBuild: func(db.Build) builds.Runnable {
+			return runnableFunc(func(context.Context) {})
+		}}
+		buildChan = make(chan db.Build, 10)
 
-	s.fakeBuildFactory.GetAllStartedBuildsReturns(startedBuilds, nil)
-
-	running := make(chan db.Build, 3)
-	s.fakeEngine.NewBuildStub = func(build db.Build) builds.Runnable {
-		return runnableFunc(func(context.Context) {
-			running <- build
-		})
-	}
-
-	err := s.tracker.Run(context.TODO())
-	s.NoError(err)
-
-	s.ElementsMatch([]int{
-		startedBuilds[0].ID(),
-		startedBuilds[1].ID(),
-		startedBuilds[2].ID(),
-	}, []int{
-		(<-running).ID(),
-		(<-running).ID(),
-		(<-running).ID(),
+		tracker = builds.NewTracker(
+			lagertest.NewTestLogger("test"),
+			buildFactory,
+			engine,
+			buildChan,
+		)
 	})
-}
 
-func (s *TrackerSuite) TestTrackInMemoryBuilds() {
-	inMemoryBuilds := []db.Build{}
-
-	running := make(chan db.Build, 3)
-	s.fakeEngine.NewBuildStub = func(build db.Build) builds.Runnable {
-		return runnableFunc(func(context.Context) {
-			running <- build
-		})
-	}
-
-	for i := range 3 {
-		fakeBuild := new(dbfakes.FakeBuild)
-		// When tracked, in-memory builds have no id yet, but they do have a
-		// resource ID
-		fakeBuild.IDReturns(0)
-		fakeBuild.ResourceIDReturns(i + 1)
-		inMemoryBuilds = append(inMemoryBuilds, fakeBuild)
-		s.buildChan <- fakeBuild
-	}
-
-	err := s.tracker.Run(context.TODO())
-	s.NoError(err)
-
-	s.ElementsMatch([]int{
-		inMemoryBuilds[0].ResourceID(),
-		inMemoryBuilds[1].ResourceID(),
-		inMemoryBuilds[2].ResourceID(),
-	}, []int{
-		(<-running).ResourceID(),
-		(<-running).ResourceID(),
-		(<-running).ResourceID(),
-	})
-}
-
-func (s *TrackerSuite) TestTrackerDoesntCrashWhenOneBuildPanic() {
-	startedBuilds := []db.Build{}
-	fakeBuild1 := new(dbfakes.FakeBuild)
-	fakeBuild1.IDReturns(1)
-	startedBuilds = append(startedBuilds, fakeBuild1)
-
-	// build 2 and 3 are normal running build
-	for i := 1; i < 3; i++ {
-		fakeBuild := new(dbfakes.FakeBuild)
-		fakeBuild.IDReturns(i + 1)
-		startedBuilds = append(startedBuilds, fakeBuild)
-	}
-
-	s.fakeBuildFactory.GetAllStartedBuildsReturns(startedBuilds, nil)
-
-	running := make(chan db.Build, 3)
-	s.fakeEngine.NewBuildStub = func(build db.Build) builds.Runnable {
-		return runnableFunc(func(context.Context) {
-			if build.ID() == 1 {
-				panic("something went wrong")
-			} else {
+	// runsInto reports each build the engine is asked to run.
+	runsInto := func(running chan<- db.Build) {
+		engine.newBuild = func(build db.Build) builds.Runnable {
+			return runnableFunc(func(context.Context) {
 				running <- build
-			}
-		})
+			})
+		}
 	}
 
-	err := s.tracker.Run(context.TODO())
-	s.NoError(err)
+	Describe("Run", func() {
+		It("runs every started build", func() {
+			first := startedJobBuild("first")
+			second := startedJobBuild("second")
+			third := startedJobBuild("third")
 
-	s.ElementsMatch([]int{
-		startedBuilds[1].ID(),
-		startedBuilds[2].ID(),
-	}, []int{
-		(<-running).ID(),
-		(<-running).ID(),
+			running := make(chan db.Build, 3)
+			runsInto(running)
+
+			Expect(tracker.Run(context.TODO())).To(Succeed())
+
+			Expect([]int{(<-running).ID(), (<-running).ID(), (<-running).ID()}).
+				To(ConsistOf(first.ID(), second.ID(), third.ID()))
+		})
+
+		It("runs in-memory check builds pushed onto the channel", func() {
+			running := make(chan db.Build, 1)
+			runsInto(running)
+
+			build := inMemoryCheckBuild()
+			buildChan <- build
+
+			Eventually(running).Should(Receive())
+		})
+
+		It("does not track a build it is already running", func() {
+			startedJobBuild("already-running")
+
+			wait := make(chan struct{})
+			defer close(wait)
+
+			running := make(chan db.Build, 3)
+			engine.newBuild = func(build db.Build) builds.Runnable {
+				return runnableFunc(func(context.Context) {
+					running <- build
+					<-wait
+				})
+			}
+
+			Expect(tracker.Run(context.TODO())).To(Succeed())
+			<-running
+
+			Expect(tracker.Run(context.TODO())).To(Succeed())
+
+			Consistently(running, 100*time.Millisecond).ShouldNot(Receive())
+		})
+
+		It("does not track a second in-memory check for a resource already running", func() {
+			wait := make(chan struct{})
+			defer close(wait)
+
+			running := make(chan db.Build, 3)
+			engine.newBuild = func(build db.Build) builds.Runnable {
+				return runnableFunc(func(context.Context) {
+					running <- build
+					<-wait
+				})
+			}
+
+			// Two dispatches for the same resource, as the check factory makes
+			// them: distinct builds with no id yet, deduplicated by resource.
+			buildChan <- inMemoryCheckBuild()
+			<-running
+			buildChan <- inMemoryCheckBuild()
+
+			Consistently(running, 100*time.Millisecond).ShouldNot(Receive())
+		})
+
+		It("errors a build whose run panics without stopping the others", func() {
+			crashing := startedJobBuild("crashing")
+			healthy := startedJobBuild("healthy")
+
+			running := make(chan db.Build, 2)
+			engine.newBuild = func(build db.Build) builds.Runnable {
+				id := build.ID()
+				return runnableFunc(func(context.Context) {
+					if id == crashing.ID() {
+						panic("something went wrong")
+					}
+					running <- build
+				})
+			}
+
+			Expect(tracker.Run(context.TODO())).To(Succeed())
+
+			Expect((<-running).ID()).To(Equal(healthy.ID()))
+			Eventually(func() db.BuildStatus { return statusOf(crashing.ID()) }).
+				Should(Equal(db.BuildStatusErrored))
+		})
 	})
 
-	s.Eventually(func() bool {
-		return fakeBuild1.FinishCallCount() == 1
-	}, time.Second, 10*time.Millisecond)
+	Describe("finalizing builds whose run returned early", func() {
+		// Run() returning while the build is still started is a legitimate
+		// resume path for a job build (engine drain, tracking lock held by
+		// another web, retryable step error): a later tracker cycle picks it up
+		// again. A check build has no such cycle, so leaving it started would
+		// leak the checkFactory's in-flight tracking forever.
+		returnsWithoutFinishing := func(done chan<- struct{}) {
+			engine.newBuild = func(db.Build) builds.Runnable {
+				return runnableFunc(func(context.Context) { close(done) })
+			}
+		}
 
-	s.Eventually(func() bool {
-		return fakeBuild1.FinishArgsForCall(0) == db.BuildStatusErrored
-	}, time.Second, 10*time.Millisecond)
-}
+		It("leaves a released job build started", func() {
+			build := startedJobBuild("released")
 
-func (s *TrackerSuite) TestTrackDoesntTrackAlreadyRunningBuilds() {
-	fakeBuild := new(dbfakes.FakeBuild)
-	fakeBuild.IDReturns(1)
-	s.fakeBuildFactory.GetAllStartedBuildsReturns([]db.Build{fakeBuild}, nil)
+			done := make(chan struct{})
+			returnsWithoutFinishing(done)
 
-	wait := make(chan struct{})
-	defer close(wait)
+			Expect(tracker.Run(context.TODO())).To(Succeed())
+			<-done
 
-	running := make(chan db.Build, 3)
-	s.fakeEngine.NewBuildStub = func(build db.Build) builds.Runnable {
-		return runnableFunc(func(context.Context) {
-			running <- build
-			<-wait
+			Consistently(func() db.BuildStatus { return statusOf(build.ID()) }, 100*time.Millisecond).
+				Should(Equal(db.BuildStatusStarted))
 		})
-	}
 
-	err := s.tracker.Run(context.TODO())
-	s.NoError(err)
+		It("errors an orphaned check build", func() {
+			build := startedCheckBuild()
 
-	<-running
+			done := make(chan struct{})
+			returnsWithoutFinishing(done)
 
-	err = s.tracker.Run(context.TODO())
-	s.NoError(err)
+			Expect(tracker.Run(context.TODO())).To(Succeed())
+			<-done
 
-	select {
-	case <-running:
-		s.Fail("another build was started!")
-	case <-time.After(100 * time.Millisecond):
-	}
-}
-
-func (s *TrackerSuite) TestTrackDoesntTrackAlreadyRunningInMemoryChecks() {
-	fakeInMemoryCheck := new(dbfakes.FakeBuild)
-	fakeInMemoryCheck.IDReturns(0)
-	fakeInMemoryCheck.ResourceIDReturns(1)
-	s.fakeBuildFactory.GetAllStartedBuildsReturns([]db.Build{}, nil)
-
-	wait := make(chan struct{})
-	defer close(wait)
-
-	running := make(chan db.Build, 3)
-	s.fakeEngine.NewBuildStub = func(build db.Build) builds.Runnable {
-		return runnableFunc(func(context.Context) {
-			running <- build
-			<-wait
+			Eventually(func() db.BuildStatus { return statusOf(build.ID()) }).
+				Should(Equal(db.BuildStatusErrored))
 		})
-	}
 
-	s.buildChan <- fakeInMemoryCheck
-	<-running
-	s.buildChan <- fakeInMemoryCheck
+		It("errors an orphaned in-memory check so its in-flight tracking is cleared", func() {
+			done := make(chan struct{})
+			returnsWithoutFinishing(done)
 
-	select {
-	case <-running:
-		s.Fail("another in-memory check was started!")
-	case <-time.After(100 * time.Millisecond):
-	}
-}
+			buildChan <- inMemoryCheckBuild()
+			<-done
 
-func (s *TrackerSuite) TestTrackerDrainsEngine() {
-	var _ component.Drainable = s.tracker
-
-	ctx := context.TODO()
-	s.tracker.Drain(ctx)
-	s.Equal(1, s.fakeEngine.DrainCallCount())
-	s.Equal(ctx, s.fakeEngine.DrainArgsForCall(0))
-}
-
-func (s *TrackerSuite) TestTrackDoesNotFinalizeReleasedJobBuild() {
-	// A job build whose Run() exits while the build is still running is a
-	// legitimate resume path (engine drain, tracking lock held by another
-	// web, retryable step error). The tracker must NOT error it — the build
-	// stays "started" so a later tracker cycle (possibly on a new web)
-	// re-attaches to it.
-	fakeBuild := new(dbfakes.FakeBuild)
-	fakeBuild.IDReturns(1)
-	fakeBuild.NameReturns("42") // job builds have numeric names
-	fakeBuild.IsRunningReturns(true)
-
-	s.fakeBuildFactory.GetAllStartedBuildsReturns([]db.Build{fakeBuild}, nil)
-
-	done := make(chan struct{})
-	s.fakeEngine.NewBuildStub = func(build db.Build) builds.Runnable {
-		return runnableFunc(func(context.Context) {
-			// Return without calling Finish — simulates early exit
-			close(done)
+			Eventually(func() string { return inMemoryStatusOf(resource.ID()) }).
+				Should(Equal(string(db.BuildStatusErrored)))
 		})
-	}
 
-	err := s.tracker.Run(context.TODO())
-	s.NoError(err)
+		It("does not re-finish a build that completed on its own", func() {
+			build := startedJobBuild("completed")
 
-	<-done
+			done := make(chan struct{})
+			engine.newBuild = func(b db.Build) builds.Runnable {
+				return runnableFunc(func(context.Context) {
+					Expect(b.Finish(db.BuildStatusSucceeded)).To(Succeed())
+					close(done)
+				})
+			}
 
-	// Give the defer time to execute
-	time.Sleep(100 * time.Millisecond)
+			Expect(tracker.Run(context.TODO())).To(Succeed())
+			<-done
 
-	s.Equal(0, fakeBuild.FinishCallCount(), "tracker must not finalize a released job build")
-}
-
-func (s *TrackerSuite) TestTrackFinalizesOrphanedCheckBuild() {
-	// A check build whose Run() exits without calling Finish() must be
-	// finalized so the checkFactory's in-flight tracking (cleared via
-	// onFinishBuild.Finish) is not permanently leaked.
-	fakeBuild := new(dbfakes.FakeBuild)
-	fakeBuild.IDReturns(1)
-	fakeBuild.NameReturns(db.CheckBuildName)
-	fakeBuild.IsRunningReturns(true)
-
-	s.fakeBuildFactory.GetAllStartedBuildsReturns([]db.Build{fakeBuild}, nil)
-
-	done := make(chan struct{})
-	s.fakeEngine.NewBuildStub = func(build db.Build) builds.Runnable {
-		return runnableFunc(func(context.Context) {
-			// Return without calling Finish — simulates early exit
-			close(done)
+			Consistently(func() db.BuildStatus { return statusOf(build.ID()) }, 100*time.Millisecond).
+				Should(Equal(db.BuildStatusSucceeded))
 		})
-	}
+	})
 
-	err := s.tracker.Run(context.TODO())
-	s.NoError(err)
+	Describe("metrics", func() {
+		It("counts a job build as running while it runs", func() {
+			metric.Metrics.BuildsRunning.Max()
+			startedJobBuild("metric-job")
 
-	<-done
+			var seenDuringRun float64
+			done := make(chan struct{})
+			engine.newBuild = func(db.Build) builds.Runnable {
+				return runnableFunc(func(context.Context) {
+					seenDuringRun = metric.Metrics.BuildsRunning.Max()
+					close(done)
+				})
+			}
 
-	s.Eventually(func() bool {
-		return fakeBuild.FinishCallCount() == 1
-	}, time.Second, 10*time.Millisecond, "tracker should finalize orphaned check build")
+			Expect(tracker.Run(context.TODO())).To(Succeed())
+			<-done
 
-	s.Equal(db.BuildStatusErrored, fakeBuild.FinishArgsForCall(0))
-}
-
-func (s *TrackerSuite) TestTrackDoesNotDoubleFinishCompletedBuild() {
-	// When a build completes normally (IsRunning returns false after
-	// Run), the tracker should NOT call Finish a second time.
-	fakeBuild := new(dbfakes.FakeBuild)
-	fakeBuild.IDReturns(1)
-	fakeBuild.IsRunningReturns(false) // build completed normally
-
-	s.fakeBuildFactory.GetAllStartedBuildsReturns([]db.Build{fakeBuild}, nil)
-
-	done := make(chan struct{})
-	s.fakeEngine.NewBuildStub = func(build db.Build) builds.Runnable {
-		return runnableFunc(func(context.Context) {
-			close(done)
+			Expect(seenDuringRun).To(BeNumerically(">=", 1))
 		})
-	}
 
-	err := s.tracker.Run(context.TODO())
-	s.NoError(err)
+		It("counts a check build as a running check while it runs", func() {
+			metric.Metrics.CheckBuildsRunning.Max()
+			startedCheckBuild()
 
-	<-done
+			var seenDuringRun float64
+			done := make(chan struct{})
+			engine.newBuild = func(db.Build) builds.Runnable {
+				return runnableFunc(func(context.Context) {
+					seenDuringRun = metric.Metrics.CheckBuildsRunning.Max()
+					close(done)
+				})
+			}
 
-	// Give the defer time to execute
-	time.Sleep(100 * time.Millisecond)
+			Expect(tracker.Run(context.TODO())).To(Succeed())
+			<-done
 
-	s.Equal(0, fakeBuild.FinishCallCount(), "tracker should not call Finish on a completed build")
-}
-
-func (s *TrackerSuite) TestTrackOrphanedInMemoryCheckCleansUpInFlightTracking() {
-	// End-to-end test: an in-memory check build wrapped with a cleanup
-	// function (like onFinishBuild) should have its cleanup called even
-	// when Run() exits without calling Finish().
-	cleanedUp := make(chan struct{})
-	fakeBuild := new(dbfakes.FakeBuild)
-	fakeBuild.IDReturns(0)
-	fakeBuild.ResourceIDReturns(42)
-	fakeBuild.NameReturns(db.CheckBuildName)
-	fakeBuild.IsRunningReturns(true)
-	// When Finish is called, signal cleanup
-	fakeBuild.FinishStub = func(status db.BuildStatus) error {
-		close(cleanedUp)
-		return nil
-	}
-
-	done := make(chan struct{})
-	s.fakeEngine.NewBuildStub = func(build db.Build) builds.Runnable {
-		return runnableFunc(func(context.Context) {
-			close(done)
+			Expect(seenDuringRun).To(BeNumerically(">=", 1))
 		})
-	}
+	})
 
-	s.buildChan <- fakeBuild
+	Describe("Drain", func() {
+		It("drains the engine", func() {
+			var _ component.Drainable = tracker
 
-	select {
-	case <-cleanedUp:
-		// Success — cleanup was triggered
-	case <-time.After(2 * time.Second):
-		s.Fail("cleanup was never triggered for orphaned in-memory check build")
-	}
-}
+			ctx := context.TODO()
+			tracker.Drain(ctx)
 
-// BT-05: BuildsRunning metric incremented during build tracking
-func (s *TrackerSuite) TestTrackEmitsBuildsRunningMetric() {
-	// Drain stale gauge state
-	metric.Metrics.BuildsRunning.Max()
-
-	fakeBuild := new(dbfakes.FakeBuild)
-	fakeBuild.IDReturns(1)
-	fakeBuild.NameReturns("42") // non-check build
-
-	s.fakeBuildFactory.GetAllStartedBuildsReturns([]db.Build{fakeBuild}, nil)
-
-	var gaugeSeenDuringRun float64
-	done := make(chan struct{})
-	s.fakeEngine.NewBuildStub = func(build db.Build) builds.Runnable {
-		return runnableFunc(func(context.Context) {
-			gaugeSeenDuringRun = metric.Metrics.BuildsRunning.Max()
-			close(done)
+			Expect(engine.drained).To(Equal([]context.Context{ctx}))
 		})
-	}
-
-	err := s.tracker.Run(context.TODO())
-	s.NoError(err)
-
-	<-done
-
-	s.GreaterOrEqual(gaugeSeenDuringRun, float64(1), "BuildsRunning should be >= 1 during build execution")
-}
-
-// BT-05: CheckBuildsRunning metric for check builds
-func (s *TrackerSuite) TestTrackEmitsCheckBuildsRunningMetric() {
-	// Drain stale gauge state
-	metric.Metrics.CheckBuildsRunning.Max()
-
-	fakeBuild := new(dbfakes.FakeBuild)
-	fakeBuild.IDReturns(1)
-	fakeBuild.NameReturns(db.CheckBuildName) // check build
-
-	s.fakeBuildFactory.GetAllStartedBuildsReturns([]db.Build{fakeBuild}, nil)
-
-	var gaugeSeenDuringRun float64
-	done := make(chan struct{})
-	s.fakeEngine.NewBuildStub = func(build db.Build) builds.Runnable {
-		return runnableFunc(func(context.Context) {
-			gaugeSeenDuringRun = metric.Metrics.CheckBuildsRunning.Max()
-			close(done)
-		})
-	}
-
-	err := s.tracker.Run(context.TODO())
-	s.NoError(err)
-
-	<-done
-
-	s.GreaterOrEqual(gaugeSeenDuringRun, float64(1), "CheckBuildsRunning should be >= 1 during check build execution")
-}
+	})
+})

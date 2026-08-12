@@ -10,7 +10,6 @@ import (
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/db/dbtest"
 	"github.com/concourse/concourse/atc/db/lock"
 	"github.com/concourse/concourse/atc/postgresrunner"
@@ -79,6 +78,20 @@ func closedJetbridgeCloneConn() db.DbConn {
 	return conn
 }
 
+// closedConnWorker loads a persisted worker over its own connection and then
+// closes it, so every statement the worker issues fails the way a lost
+// database connection does.
+func closedConnWorker(name string) db.Worker {
+	GinkgoHelper()
+	conn := postgresRunner.OpenConn()
+	factory := db.NewWorkerFactory(conn, db.NewStaticWorkerCache(lagertest.NewTestLogger("jetbridge-closed-conn"), conn, 0))
+	worker, found, err := factory.GetWorker(name)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(found).To(BeTrue())
+	Expect(conn.Close()).To(Succeed())
+	return worker
+}
+
 func persistNamedWorker(database jetbridgeDB, name string) (db.Worker, error) {
 	_, err := database.WorkerFactory.SaveWorker(atc.Worker{
 		Name: name, Platform: "linux", Version: "1.2.3",
@@ -117,18 +130,4 @@ func expectSupervisedExec(command []string, quotedCommand string) {
 	ExpectWithOffset(1, command[1]).To(Equal("-c"))
 	ExpectWithOffset(1, command[2]).To(ContainSubstring(quotedCommand))
 	ExpectWithOffset(1, command[2]).To(ContainSubstring(`trap '' HUP`))
-}
-
-// setupFakeDBContainer is retained from the fake-based suite: nine specs in
-// this package still build their worker from dbfakes, and converting them is
-// blocked on production features this branch does not carry. It coexists with
-// useJetbridgeDB above so files can convert one at a time.
-func setupFakeDBContainer(fakeDBWorker *dbfakes.FakeWorker, handle string) {
-	fakeCreatingContainer := new(dbfakes.FakeCreatingContainer)
-	fakeCreatingContainer.HandleReturns(handle)
-	fakeCreatedContainer := new(dbfakes.FakeCreatedContainer)
-	fakeCreatedContainer.HandleReturns(handle)
-	fakeCreatingContainer.CreatedReturns(fakeCreatedContainer, nil)
-	fakeDBWorker.FindContainerReturns(nil, nil, nil)
-	fakeDBWorker.CreateContainerReturns(fakeCreatingContainer, nil)
 }

@@ -12,7 +12,6 @@ import (
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	. "github.com/onsi/ginkgo/v2"
@@ -125,28 +124,20 @@ var _ = Describe("Worker", func() {
 		})
 
 		Context("when transitioning to created state fails", func() {
-			// Retained boundary doubles: PostgreSQL cannot selectively fail Created
-			// after a successful FindContainer/CreateContainer sequence.
-			var (
-				faultDBWorker          *dbfakes.FakeWorker
-				faultCreatingContainer *dbfakes.FakeCreatingContainer
-				faultWorker            *jetbridge.Worker
-			)
+			var faultWorker *jetbridge.Worker
 
 			BeforeEach(func() {
-				faultDBWorker = new(dbfakes.FakeWorker)
-				faultDBWorker.NameReturns(dbWorker.Name())
-				faultCreatingContainer = new(dbfakes.FakeCreatingContainer)
-				faultCreatingContainer.HandleReturns("test-handle")
-				faultCreatingContainer.CreatedReturns(nil, fmt.Errorf("db connection lost"))
-				faultDBWorker.CreateContainerReturns(faultCreatingContainer, nil)
-				faultWorker = jetbridge.NewWorker(faultDBWorker, fakeClientset, cfg)
+				faultWorker = jetbridge.NewWorker(failCreatedTransition{dbWorker}, fakeClientset, cfg)
 			})
 
 			It("marks the container as failed so the GC can clean it up", func() {
 				_, _, err := faultWorker.FindOrCreateContainer(ctx, owner, metadata, spec, delegate)
 				Expect(err).To(MatchError(ContainSubstring("db connection lost")))
-				Expect(faultCreatingContainer.FailedCallCount()).To(Equal(1))
+
+				var state string
+				err = database.Conn.QueryRow(`SELECT state FROM containers WHERE handle = $1`, "test-handle").Scan(&state)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(state).To(Equal(string(atc.ContainerStateFailed)))
 			})
 		})
 
@@ -439,49 +430,39 @@ var _ = Describe("Worker", func() {
 			})
 		})
 
-		Describe("retained database transition faults", func() {
-			// Retained boundary doubles: PostgreSQL cannot selectively fail the
-			// Created or InitializeArtifact transition after CreateVolume succeeds.
-			var (
-				faultVolumeRepo     *dbfakes.FakeVolumeRepository
-				faultCreatingVolume *dbfakes.FakeCreatingVolume
-				faultCreatedVolume  *dbfakes.FakeCreatedVolume
-			)
-
-			BeforeEach(func() {
-				faultVolumeRepo = new(dbfakes.FakeVolumeRepository)
-				faultCreatingVolume = new(dbfakes.FakeCreatingVolume)
-				faultCreatingVolume.HandleReturns("artifact-volume-handle")
-				faultCreatedVolume = new(dbfakes.FakeCreatedVolume)
-				faultCreatedVolume.HandleReturns("artifact-volume-handle")
-			})
-
+		Describe("database transition faults", func() {
 			Context("when transitioning to created state fails", func() {
 				BeforeEach(func() {
-					worker.SetVolumeRepo(faultVolumeRepo)
-					faultVolumeRepo.CreateVolumeReturns(faultCreatingVolume, nil)
-					faultCreatingVolume.CreatedReturns(nil, fmt.Errorf("transition error"))
+					worker.SetVolumeRepo(failVolumeCreatedTransition{database.VolumeRepository})
 				})
 
-				It("returns the error", func() {
+				It("returns the error and leaves the volume creating", func() {
 					_, _, err := worker.CreateVolumeForArtifact(ctx, team.ID())
-					Expect(err).To(HaveOccurred())
 					Expect(err).To(MatchError(ContainSubstring("transition error")))
+
+					var state string
+					err = database.Conn.QueryRow(
+						`SELECT state FROM volumes WHERE team_id = $1 AND worker_name = $2`,
+						team.ID(), dbWorker.Name(),
+					).Scan(&state)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(state).To(Equal(string(db.VolumeStateCreating)))
 				})
 			})
 
 			Context("when InitializeArtifact fails", func() {
 				BeforeEach(func() {
-					worker.SetVolumeRepo(faultVolumeRepo)
-					faultVolumeRepo.CreateVolumeReturns(faultCreatingVolume, nil)
-					faultCreatingVolume.CreatedReturns(faultCreatedVolume, nil)
-					faultCreatedVolume.InitializeArtifactReturns(nil, fmt.Errorf("artifact init error"))
+					worker.SetVolumeRepo(failInitializeArtifact{database.VolumeRepository})
 				})
 
-				It("returns the error", func() {
+				It("returns the error and creates no artifact", func() {
 					_, _, err := worker.CreateVolumeForArtifact(ctx, team.ID())
-					Expect(err).To(HaveOccurred())
 					Expect(err).To(MatchError(ContainSubstring("artifact init error")))
+
+					var count int
+					err = database.Conn.QueryRow(`SELECT count(*) FROM worker_artifacts`).Scan(&count)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(count).To(BeZero())
 				})
 			})
 		})
@@ -948,3 +929,75 @@ var _ = Describe("Worker", func() {
 		})
 	})
 })
+
+// The decorators below wrap the real PostgreSQL-backed worker and volume
+// repository so that exactly one transition in the middle of a sequence fails.
+// Everything before the fault is a real row, so what the worker leaves behind
+// is asserted against the database rather than against a call count.
+type failCreatedTransition struct{ db.Worker }
+
+func (w failCreatedTransition) CreateContainer(owner db.ContainerOwner, meta db.ContainerMetadata) (db.CreatingContainer, error) {
+	creating, err := w.Worker.CreateContainer(owner, meta)
+	if err != nil {
+		return nil, err
+	}
+	return creatingContainerCreatedFails{creating}, nil
+}
+
+type failStaleCreatedTransition struct{ db.Worker }
+
+func (w failStaleCreatedTransition) FindContainer(owner db.ContainerOwner) (db.CreatingContainer, db.CreatedContainer, error) {
+	creating, created, err := w.Worker.FindContainer(owner)
+	if err != nil || creating == nil {
+		return creating, created, err
+	}
+	return creatingContainerCreatedFails{creating}, created, nil
+}
+
+type creatingContainerCreatedFails struct{ db.CreatingContainer }
+
+func (creatingContainerCreatedFails) Created() (db.CreatedContainer, error) {
+	return nil, fmt.Errorf("db connection lost")
+}
+
+type failVolumeCreatedTransition struct{ db.VolumeRepository }
+
+func (r failVolumeCreatedTransition) CreateVolume(teamID int, workerName string, volumeType db.VolumeType) (db.CreatingVolume, error) {
+	creating, err := r.VolumeRepository.CreateVolume(teamID, workerName, volumeType)
+	if err != nil {
+		return nil, err
+	}
+	return creatingVolumeCreatedFails{creating}, nil
+}
+
+type creatingVolumeCreatedFails struct{ db.CreatingVolume }
+
+func (creatingVolumeCreatedFails) Created() (db.CreatedVolume, error) {
+	return nil, fmt.Errorf("transition error")
+}
+
+type failInitializeArtifact struct{ db.VolumeRepository }
+
+func (r failInitializeArtifact) CreateVolume(teamID int, workerName string, volumeType db.VolumeType) (db.CreatingVolume, error) {
+	creating, err := r.VolumeRepository.CreateVolume(teamID, workerName, volumeType)
+	if err != nil {
+		return nil, err
+	}
+	return creatingVolumeInitializeArtifactFails{creating}, nil
+}
+
+type creatingVolumeInitializeArtifactFails struct{ db.CreatingVolume }
+
+func (v creatingVolumeInitializeArtifactFails) Created() (db.CreatedVolume, error) {
+	created, err := v.CreatingVolume.Created()
+	if err != nil {
+		return nil, err
+	}
+	return createdVolumeInitializeArtifactFails{created}, nil
+}
+
+type createdVolumeInitializeArtifactFails struct{ db.CreatedVolume }
+
+func (createdVolumeInitializeArtifactFails) InitializeArtifact(string, int) (db.WorkerArtifact, error) {
+	return nil, fmt.Errorf("artifact init error")
+}

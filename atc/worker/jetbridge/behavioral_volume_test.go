@@ -12,7 +12,7 @@ import (
 	"testing"
 
 	"github.com/concourse/concourse/atc/compression"
-	"github.com/concourse/concourse/atc/db/dbfakes"
+	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runtime"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -625,13 +625,16 @@ func TestCO10_PreferredInputNode_NilLocator_ReturnsEmpty(t *testing.T) {
 // Helpers
 // ---------------------------------------------------------------------------
 
-// newTestWorker creates a Worker suitable for unit testing the private
-// buildVolumeMountsForSpec runtime helper. The retained fake supplies only
-// Name(); it does not model persisted worker behavior.
-func newTestWorker(executor PodExecutor) *Worker {
-	fakeDBWorker := new(dbfakes.FakeWorker)
-	fakeDBWorker.NameReturns("test-worker")
+// nameOnlyWorker supplies the one db.Worker method buildVolumeMountsForSpec
+// reaches. Every other method is nil, so any test that strays into the database
+// panics rather than silently observing a stub.
+type nameOnlyWorker struct{ db.Worker }
 
+func (nameOnlyWorker) Name() string { return "test-worker" }
+
+// newTestWorker creates a Worker suitable for unit testing the private
+// buildVolumeMountsForSpec runtime helper.
+func newTestWorker(executor PodExecutor) *Worker {
 	node := &corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{Name: "node-1"},
 		Status: corev1.NodeStatus{
@@ -641,7 +644,7 @@ func newTestWorker(executor PodExecutor) *Worker {
 	cs := fake.NewSimpleClientset(node)
 	cfg := NewConfig("test-ns", "")
 
-	w := NewWorker(fakeDBWorker, cs, cfg)
+	w := NewWorker(nameOnlyWorker{}, cs, cfg)
 	if executor != nil {
 		w.SetExecutor(executor)
 	}

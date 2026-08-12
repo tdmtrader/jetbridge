@@ -6,13 +6,32 @@ import (
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/gc"
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
+
+// Each decorator below fails exactly the one repository call whose error
+// passthrough is under test and delegates everything else to PostgreSQL.
+type failRemoveDestroyingContainers struct{ db.ContainerRepository }
+
+func (failRemoveDestroyingContainers) RemoveDestroyingContainers(string, []string) (int, error) {
+	return 0, errors.New("I am le tired")
+}
+
+type failRemoveDestroyingVolumes struct{ db.VolumeRepository }
+
+func (failRemoveDestroyingVolumes) RemoveDestroyingVolumes(string, []string) (int, error) {
+	return 0, errors.New("I am le tired")
+}
+
+type failGetDestroyingVolumes struct{ db.VolumeRepository }
+
+func (failGetDestroyingVolumes) GetDestroyingVolumes(string) ([]string, error) {
+	return nil, errors.New("some-bad-err")
+}
 
 var _ = Describe("Destroyer", func() {
 	var (
@@ -145,17 +164,14 @@ var _ = Describe("Destroyer", func() {
 		})
 
 		Context("when the container repository fails", func() {
-			// Narrowly scoped: the repository is asked to fail at exactly this
-			// call so the passthrough can be observed. A real database has no way
-			// to fail one statement on demand.
-			It("returns the error", func() {
-				failing := new(dbfakes.FakeContainerRepository)
-				failing.RemoveDestroyingContainersReturns(0, errors.New("I am le tired"))
+			It("returns the error and destroys nothing", func() {
+				survivor := destroyingContainer("repo-failure")
 
-				err := gc.NewDestroyer(logger, failing, volumeRepository).
-					DestroyContainers("some-worker", []string{"a"})
+				err := gc.NewDestroyer(logger, failRemoveDestroyingContainers{containerRepository}, volumeRepository).
+					DestroyContainers(worker.Name(), []string{})
 
 				Expect(err).To(MatchError("I am le tired"))
+				Expect(containerHandles()).To(ContainElement(survivor.Handle()))
 			})
 		})
 	})
@@ -208,17 +224,17 @@ var _ = Describe("Destroyer", func() {
 		})
 
 		Context("when the volume repository fails", func() {
-			// Narrowly scoped: fail only this repository call so the
-			// destroyer's error passthrough can be observed without making the
-			// shared PostgreSQL service fail unrelated statements.
-			It("returns the error", func() {
-				failing := new(dbfakes.FakeVolumeRepository)
-				failing.RemoveDestroyingVolumesReturns(0, errors.New("I am le tired"))
+			It("returns the error and destroys nothing", func() {
+				survivor := destroyingVolume("repo-failure-path")
 
-				err := gc.NewDestroyer(logger, containerRepository, failing).
-					DestroyVolumes("some-worker", []string{"a"})
+				err := gc.NewDestroyer(logger, containerRepository, failRemoveDestroyingVolumes{volumeRepository}).
+					DestroyVolumes(worker.Name(), []string{})
 
 				Expect(err).To(MatchError("I am le tired"))
+
+				remaining, err := volumeRepository.GetDestroyingVolumes(worker.Name())
+				Expect(err).NotTo(HaveOccurred())
+				Expect(remaining).To(ContainElement(survivor.Handle()))
 			})
 		})
 	})
@@ -240,16 +256,14 @@ var _ = Describe("Destroyer", func() {
 		})
 
 		Context("when the volume repository fails", func() {
-			// Narrowly scoped: fail only this read so the destroyer's error
-			// passthrough remains covered independently of database availability.
 			It("returns the error", func() {
-				failing := new(dbfakes.FakeVolumeRepository)
-				failing.GetDestroyingVolumesReturns(nil, errors.New("some-bad-err"))
+				destroyingVolume("read-failure-path")
 
-				_, err := gc.NewDestroyer(logger, containerRepository, failing).
-					FindDestroyingVolumesForGc("some-worker")
+				handles, err := gc.NewDestroyer(logger, containerRepository, failGetDestroyingVolumes{volumeRepository}).
+					FindDestroyingVolumesForGc(worker.Name())
 
-				Expect(err).To(HaveOccurred())
+				Expect(err).To(MatchError("some-bad-err"))
+				Expect(handles).To(BeEmpty())
 			})
 		})
 	})

@@ -10,7 +10,6 @@ import (
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 	. "github.com/concourse/concourse/atc/gc"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -239,111 +238,202 @@ var _ = Describe("BuildLogCollector", func() {
 		}),
 	)
 
-	Describe("retained selective database method faults", func() {
+	// Each spec below decorates the real, PostgreSQL-backed collaborator so that
+	// exactly one call fails. Every other read and write still reaches the
+	// database, so what the collector did before and after the fault is visible
+	// as real row state.
+	Describe("database faults", func() {
 		var (
-			collector             GcCollector
-			fakePipelineFactory   *dbfakes.FakePipelineFactory
-			fakePipelineLifecycle *dbfakes.FakePipelineLifecycle
-			fakePipeline          *dbfakes.FakePipeline
-			fakeJob               *dbfakes.FakeJob
-			faultLogger           *lagertest.TestLogger
-			ctx                   context.Context
-			disaster              error
+			pipelineFactory   db.PipelineFactory
+			pipelineLifecycle db.PipelineLifecycle
+			job               db.Job
+			faultLogger       *lagertest.TestLogger
+			ctx               context.Context
 		)
 
+		collectorFor := func(factory db.PipelineFactory, lifecycle db.PipelineLifecycle) GcCollector {
+			return NewBuildLogCollector(factory, lifecycle, 5, NewBuildLogRetentionCalculator(0, 0, 0, 0), false)
+		}
+
+		firstLoggedBuildID := func() int {
+			var id int
+			Expect(dbConn.QueryRow("SELECT first_logged_build_id FROM jobs WHERE id = $1", job.ID()).Scan(&id)).To(Succeed())
+			return id
+		}
+
+		buildEventCount := func() int {
+			var count int
+			Expect(dbConn.QueryRow("SELECT count(*) FROM build_events").Scan(&count)).To(Succeed())
+			return count
+		}
+
 		BeforeEach(func() {
-			fakePipelineFactory = new(dbfakes.FakePipelineFactory)
-			fakePipelineLifecycle = new(dbfakes.FakePipelineLifecycle)
-			// A healthy persisted pipeline row cannot fail one selected interface
-			// method while preserving the surrounding row graph.
-			fakePipeline = new(dbfakes.FakePipeline)
-			// A healthy persisted job row cannot fail one selected interface method
-			// while preserving the surrounding row graph.
-			fakeJob = new(dbfakes.FakeJob)
+			pipelineFactory = db.NewPipelineFactory(dbConn, lockFactory)
+			pipelineLifecycle = db.NewPipelineLifecycle(dbConn, lockFactory)
 
-			oldBuild, err := defaultJob.CreateBuild("collector-fault-test")
-			Expect(err).NotTo(HaveOccurred())
-			started, err := oldBuild.Start(atc.Plan{ID: "old-build"})
-			Expect(err).NotTo(HaveOccurred())
-			Expect(started).To(BeTrue())
-			Expect(oldBuild.Finish(db.BuildStatusFailed)).To(Succeed())
-			found, err := oldBuild.Reload()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(found).To(BeTrue())
-
-			newBuild, err := defaultJob.CreateBuild("collector-fault-test")
-			Expect(err).NotTo(HaveOccurred())
-			started, err = newBuild.Start(atc.Plan{ID: "new-build"})
-			Expect(err).NotTo(HaveOccurred())
-			Expect(started).To(BeTrue())
-			Expect(newBuild.Finish(db.BuildStatusFailed)).To(Succeed())
-			found, err = newBuild.Reload()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(found).To(BeTrue())
-
-			fakePipelineFactory.AllPipelinesReturns([]db.Pipeline{fakePipeline}, nil)
-			fakePipeline.JobsReturns([]db.Job{fakeJob}, nil)
-			fakeJob.ConfigReturns(atc.JobConfig{
-				BuildLogRetention: &atc.BuildLogRetention{Builds: 1},
-			}, nil)
-			fakeJob.FirstLoggedBuildIDReturns(oldBuild.ID())
-			fakeJob.ChronoBuildsReturns(
-				[]db.BuildForAPI{newBuild, oldBuild},
-				db.Pagination{},
-				nil,
+			pipeline, _, err := defaultTeam.SavePipeline(
+				atc.PipelineRef{Name: "build-log-fault-pipeline"},
+				atc.Config{Jobs: atc.JobConfigs{{
+					Name:              "some-job",
+					BuildLogRetention: &atc.BuildLogRetention{Builds: 1},
+				}}},
+				db.ConfigVersion(0),
+				false,
 			)
+			Expect(err).NotTo(HaveOccurred())
+
+			var found bool
+			job, found, err = pipeline.Job("some-job")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+
+			for _, name := range []string{"old-build", "new-build"} {
+				build, err := job.CreateBuild("collector-fault-test")
+				Expect(err).NotTo(HaveOccurred())
+				started, err := build.Start(atc.Plan{ID: atc.PlanID(name)})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(started).To(BeTrue())
+				Expect(build.Finish(db.BuildStatusFailed)).To(Succeed())
+			}
 
 			faultLogger = lagertest.NewTestLogger("build-log-collector-fault")
 			ctx = lagerctx.NewContext(context.Background(), faultLogger)
-			disaster = errors.New("major malfunction")
 		})
 
-		JustBeforeEach(func() {
-			collector = NewBuildLogCollector(
-				fakePipelineFactory,
-				fakePipelineLifecycle,
-				5,
-				NewBuildLogRetentionCalculator(0, 0, 0, 0),
-				false,
-			)
+		It("reaps the excess build and advances the cursor when nothing fails", func() {
+			before := buildEventCount()
+
+			Expect(collectorFor(pipelineFactory, pipelineLifecycle).Run(ctx)).To(Succeed())
+
+			Expect(buildEventCount()).To(BeNumerically("<", before))
+			Expect(firstLoggedBuildID()).To(BeNumerically(">", 0))
 		})
 
 		It("returns a deleted-pipeline cleanup error", func() {
-			fakePipelineLifecycle.RemoveBuildEventsForDeletedPipelinesReturns(disaster)
-			Expect(collector.Run(ctx)).To(MatchError(disaster))
+			err := collectorFor(pipelineFactory, failRemoveBuildEventsForDeletedPipelines{pipelineLifecycle}).Run(ctx)
+
+			Expect(err).To(MatchError(errDisaster))
+			Expect(firstLoggedBuildID()).To(BeZero())
 		})
 
 		It("returns an all-pipelines lookup error", func() {
-			fakePipelineFactory.AllPipelinesReturns(nil, disaster)
-			Expect(collector.Run(ctx)).To(MatchError(disaster))
+			err := collectorFor(failAllPipelines{pipelineFactory}, pipelineLifecycle).Run(ctx)
+
+			Expect(err).To(MatchError(errDisaster))
+			Expect(firstLoggedBuildID()).To(BeZero())
 		})
 
 		It("logs a pipeline jobs lookup error", func() {
-			fakePipeline.JobsReturns(nil, disaster)
-			Expect(collector.Run(ctx)).To(Succeed())
-			Eventually(faultLogger.Buffer()).Should(gbytes.Say(disaster.Error()))
+			factory := decoratedPipelines{pipelineFactory, func(p db.Pipeline) db.Pipeline {
+				return failPipelineJobs{p}
+			}}
+
+			Expect(collectorFor(factory, pipelineLifecycle).Run(ctx)).To(Succeed())
+
+			Eventually(faultLogger.Buffer()).Should(gbytes.Say(errDisaster.Error()))
+			Expect(firstLoggedBuildID()).To(BeZero())
 		})
 
-		It("logs an event deletion error", func() {
-			fakePipeline.DeleteBuildEventsByBuildIDsReturns(disaster)
-			Expect(collector.Run(ctx)).To(Succeed())
-			Eventually(faultLogger.Buffer()).Should(gbytes.Say(disaster.Error()))
-			Expect(fakeJob.UpdateFirstLoggedBuildIDCallCount()).To(BeZero())
+		It("logs an event deletion error and leaves the cursor where it was", func() {
+			factory := decoratedPipelines{pipelineFactory, func(p db.Pipeline) db.Pipeline {
+				return failDeleteBuildEvents{p}
+			}}
+			before := buildEventCount()
+
+			Expect(collectorFor(factory, pipelineLifecycle).Run(ctx)).To(Succeed())
+
+			Eventually(faultLogger.Buffer()).Should(gbytes.Say(errDisaster.Error()))
+			Expect(buildEventCount()).To(Equal(before))
+			Expect(firstLoggedBuildID()).To(BeZero())
 		})
 
 		It("logs a chronological build lookup error", func() {
-			fakeJob.ChronoBuildsReturns(nil, db.Pagination{}, disaster)
-			Expect(collector.Run(ctx)).To(Succeed())
-			Eventually(faultLogger.Buffer()).Should(gbytes.Say(disaster.Error()))
+			factory := decoratedPipelines{pipelineFactory, func(p db.Pipeline) db.Pipeline {
+				return decoratedJobs{p, func(j db.Job) db.Job { return failChronoBuilds{j} }}
+			}}
+
+			Expect(collectorFor(factory, pipelineLifecycle).Run(ctx)).To(Succeed())
+
+			Eventually(faultLogger.Buffer()).Should(gbytes.Say(errDisaster.Error()))
+			Expect(firstLoggedBuildID()).To(BeZero())
 		})
 
 		It("logs a first-logged cursor update error", func() {
-			fakeJob.UpdateFirstLoggedBuildIDReturns(disaster)
-			Expect(collector.Run(ctx)).To(Succeed())
-			Eventually(faultLogger.Buffer()).Should(gbytes.Say(disaster.Error()))
+			factory := decoratedPipelines{pipelineFactory, func(p db.Pipeline) db.Pipeline {
+				return decoratedJobs{p, func(j db.Job) db.Job { return failUpdateFirstLoggedBuildID{j} }}
+			}}
+
+			Expect(collectorFor(factory, pipelineLifecycle).Run(ctx)).To(Succeed())
+
+			Eventually(faultLogger.Buffer()).Should(gbytes.Say(errDisaster.Error()))
+			Expect(firstLoggedBuildID()).To(BeZero())
 		})
 	})
 })
+
+var errDisaster = errors.New("major malfunction")
+
+// decoratedPipelines and decoratedJobs keep the real lookup and wrap only the
+// rows it returns, so a fault can be aimed at one method of one collaborator.
+type decoratedPipelines struct {
+	db.PipelineFactory
+	decorate func(db.Pipeline) db.Pipeline
+}
+
+func (d decoratedPipelines) AllPipelines() ([]db.Pipeline, error) {
+	pipelines, err := d.PipelineFactory.AllPipelines()
+	if err != nil {
+		return nil, err
+	}
+	for i, pipeline := range pipelines {
+		pipelines[i] = d.decorate(pipeline)
+	}
+	return pipelines, nil
+}
+
+type decoratedJobs struct {
+	db.Pipeline
+	decorate func(db.Job) db.Job
+}
+
+func (d decoratedJobs) Jobs() (db.Jobs, error) {
+	jobs, err := d.Pipeline.Jobs()
+	if err != nil {
+		return nil, err
+	}
+	for i, job := range jobs {
+		jobs[i] = d.decorate(job)
+	}
+	return jobs, nil
+}
+
+type failRemoveBuildEventsForDeletedPipelines struct{ db.PipelineLifecycle }
+
+func (failRemoveBuildEventsForDeletedPipelines) RemoveBuildEventsForDeletedPipelines() error {
+	return errDisaster
+}
+
+type failAllPipelines struct{ db.PipelineFactory }
+
+func (failAllPipelines) AllPipelines() ([]db.Pipeline, error) { return nil, errDisaster }
+
+type failPipelineJobs struct{ db.Pipeline }
+
+func (failPipelineJobs) Jobs() (db.Jobs, error) { return nil, errDisaster }
+
+type failDeleteBuildEvents struct{ db.Pipeline }
+
+func (failDeleteBuildEvents) DeleteBuildEventsByBuildIDs([]int) error { return errDisaster }
+
+type failChronoBuilds struct{ db.Job }
+
+func (failChronoBuilds) ChronoBuilds(db.Page) ([]db.BuildForAPI, db.Pagination, error) {
+	return nil, db.Pagination{}, errDisaster
+}
+
+type failUpdateFirstLoggedBuildID struct{ db.Job }
+
+func (failUpdateFirstLoggedBuildID) UpdateFirstLoggedBuildID(int) error { return errDisaster }
 
 func runRetentionScenario(scenario retentionScenario) {
 	fixtureTime := time.Now()
