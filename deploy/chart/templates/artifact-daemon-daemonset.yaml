@@ -77,6 +77,36 @@ spec:
             - --preemption-watch
             - --preemption-budget={{ .Values.artifactDaemon.preemption.budget | default "25s" }}
             {{- end }}
+            {{- with .Values.artifactDaemon.durable }}
+            {{- if .store }}
+            - --durable-store={{ .store }}
+            - --durable-timeout={{ .timeout | default "5m" }}
+            - --durable-max-bytes={{ .maxBytes | default 5368709120 | int64 }}
+            {{- if eq .store "s3" }}
+            - --durable-s3-bucket={{ required "artifactDaemon.durable.bucket is required when durable.store is s3" .bucket }}
+            - --durable-s3-region={{ .region | default "us-east-1" }}
+            {{- with .prefix }}
+            - --durable-s3-prefix={{ . }}
+            {{- end }}
+            {{- with .endpoint }}
+            - --durable-s3-endpoint={{ . }}
+            {{- end }}
+            {{- end }}
+            {{- if eq .store "filesystem" }}
+            - --durable-path={{ required "artifactDaemon.durable.path is required when durable.store is filesystem" .path }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
+          {{- with .Values.artifactDaemon.durable }}
+          {{- if and .store .existingSecret }}
+          envFrom:
+            # Bucket credentials as AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY.
+            # Prefer IRSA or Workload Identity on a managed cluster and leave
+            # existingSecret empty -- nothing then holds a long-lived key.
+            - secretRef:
+                name: {{ .existingSecret }}
+          {{- end }}
+          {{- end }}
           env:
             - name: NODE_NAME
               valueFrom:

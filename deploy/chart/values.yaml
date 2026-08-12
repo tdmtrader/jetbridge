@@ -442,6 +442,43 @@ artifactDaemon:
   hostPath: /var/concourse/artifacts
   # -- TTL for automatic artifact cleanup (Go duration)
   ttl: "2h"
+
+  # -- Long-term store for resource caches.
+  # The node-local copy above is a cache with a TTL; this is the copy that
+  # outlives the sweeper, the node, and the cluster. Only resource caches go
+  # here -- a step output is addressed by a per-build handle nobody will ask
+  # for again, so storing one durably costs a bucket and buys nothing.
+  #
+  # Entirely optional. With store: "" the daemon behaves exactly as it did
+  # before: a cache that is not on this node or a peer is simply a miss.
+  #
+  # Every failure degrades rather than propagating -- an unreachable bucket
+  # costs a re-download, never a red build.
+  durable:
+    # -- Backend: "" (disabled), "s3", or "filesystem".
+    # "s3" is S3-compatible, so it also covers MinIO, Ceph, R2 and Backblaze.
+    store: ""
+    # -- Bucket name, for store: s3
+    bucket: ""
+    # -- Key prefix inside the bucket, so one bucket can serve several clusters
+    prefix: ""
+    # -- Endpoint override, for store: s3. Set this for MinIO; leave empty for AWS.
+    endpoint: ""
+    # -- Region. Required by the SDK signer even when endpoint ignores it.
+    region: "us-east-1"
+    # -- Root directory, for store: filesystem. Must be a shared mount (NFS,
+    # RWX PVC) to be durable across nodes -- a hostPath here is just a second
+    # local copy.
+    path: ""
+    # -- Per-operation timeout (Go duration)
+    timeout: "5m"
+    # -- Largest single artifact to store durably. 0 disables the limit.
+    maxBytes: 5368709120
+    # -- Existing Secret supplying credentials as environment variables
+    # (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY). Leave empty on a managed
+    # cluster and use IRSA or Workload Identity instead: nothing then holds a
+    # long-lived key.
+    existingSecret: ""
   # -- Override the headless service name. When set, used verbatim.
   # Default (when empty): <release-fullname>-artifact-daemon
   serviceName: ""

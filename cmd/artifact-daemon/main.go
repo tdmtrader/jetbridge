@@ -34,6 +34,17 @@ func main() {
 	preemptionWatch := flag.Bool("preemption-watch", false, "Watch GCP metadata server for spot preemption notice and evacuate unmirrored artifacts before termination")
 	preemptionBudget := flag.Duration("preemption-budget", 25*time.Second, "Total time budget for synchronous evacuation on preemption")
 
+	// Durable tier. Off unless --durable-store names a backend, and the daemon
+	// behaves exactly as before when it is off.
+	durableStore := flag.String("durable-store", "", "Long-term store for resource caches: \"\" (disabled), \"s3\" or \"filesystem\"")
+	durablePath := flag.String("durable-path", "", "Root directory for --durable-store=filesystem")
+	durableBucket := flag.String("durable-s3-bucket", "", "Bucket for --durable-store=s3")
+	durablePrefix := flag.String("durable-s3-prefix", "", "Key prefix inside the bucket, so one bucket can serve several clusters")
+	durableEndpoint := flag.String("durable-s3-endpoint", "", "S3 endpoint override; set this for MinIO and other S3-compatible stores")
+	durableRegion := flag.String("durable-s3-region", "us-east-1", "S3 region")
+	durableTimeout := flag.Duration("durable-timeout", 5*time.Minute, "Per-operation timeout for the durable store")
+	durableMaxBytes := flag.Int64("durable-max-bytes", 5<<30, "Largest single artifact to store durably; 0 disables the limit")
+
 	flag.Parse()
 
 	logger := lager.NewLogger("artifact-daemon")
@@ -84,6 +95,26 @@ func main() {
 	// after the mirror is wired up, so its step-dir-removed callback can
 	// prune mirror status without racing sweeper startup.
 	sweepDone := make(chan struct{})
+	if tier, err := buildDurableTier(logger, server.Metrics(), durableOptions{
+		kind:     *durableStore,
+		path:     *durablePath,
+		bucket:   *durableBucket,
+		prefix:   *durablePrefix,
+		endpoint: *durableEndpoint,
+		region:   *durableRegion,
+		timeout:  *durableTimeout,
+		maxBytes: *durableMaxBytes,
+	}); err != nil {
+		// Misconfiguration is worth failing on: an operator who asked for a
+		// durable store and silently did not get one would discover it as a
+		// mysteriously cold cache months later.
+		logger.Error("durable-store-config-invalid", err)
+		os.Exit(1)
+	} else if tier != nil {
+		server.SetDurableTier(tier)
+		logger.Info("durable-store-enabled", lager.Data{"backend": *durableStore})
+	}
+
 	sweeper := NewSweeper(logger, *storagePath, *ttl, 5*time.Minute, server.Registry())
 	sweeper.SetGuard(server.Guard())
 
