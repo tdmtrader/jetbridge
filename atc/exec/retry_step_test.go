@@ -5,8 +5,8 @@ import (
 	"errors"
 
 	. "github.com/concourse/concourse/atc/exec"
-	"github.com/concourse/concourse/atc/exec/build"
 	"github.com/concourse/concourse/atc/exec/execfakes"
+	"github.com/concourse/concourse/vars"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -20,8 +20,7 @@ var _ = Describe("Retry Step", func() {
 		attempt2 *execfakes.FakeStep
 		attempt3 *execfakes.FakeStep
 
-		repo  *build.Repository
-		state *execfakes.FakeRunState
+		state RunState
 
 		step Step
 	)
@@ -33,9 +32,7 @@ var _ = Describe("Retry Step", func() {
 		attempt2 = new(execfakes.FakeStep)
 		attempt3 = new(execfakes.FakeStep)
 
-		repo = build.NewRepository()
-		state = new(execfakes.FakeRunState)
-		state.ArtifactRepositoryReturns(repo)
+		state = NewRunState(noopStepper, vars.StaticVariables{})
 
 		step = Retry(attempt1, attempt2, attempt3)
 	})

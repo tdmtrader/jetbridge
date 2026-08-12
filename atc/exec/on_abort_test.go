@@ -5,8 +5,8 @@ import (
 	"errors"
 
 	"github.com/concourse/concourse/atc/exec"
-	"github.com/concourse/concourse/atc/exec/build"
 	"github.com/concourse/concourse/atc/exec/execfakes"
+	"github.com/concourse/concourse/vars"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -19,8 +19,7 @@ var _ = Describe("On Abort Step", func() {
 		step *execfakes.FakeStep
 		hook *execfakes.FakeStep
 
-		repo  *build.Repository
-		state *execfakes.FakeRunState
+		state exec.RunState
 
 		onAbortStep exec.Step
 
@@ -34,9 +33,7 @@ var _ = Describe("On Abort Step", func() {
 		step = &execfakes.FakeStep{}
 		hook = &execfakes.FakeStep{}
 
-		repo = build.NewRepository()
-		state = new(execfakes.FakeRunState)
-		state.ArtifactRepositoryReturns(repo)
+		state = exec.NewRunState(noopStepper, vars.StaticVariables{})
 
 		onAbortStep = exec.OnAbort(step, hook)
 

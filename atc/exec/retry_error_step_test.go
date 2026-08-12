@@ -7,8 +7,8 @@ import (
 	"net/url"
 
 	. "github.com/concourse/concourse/atc/exec"
-	"github.com/concourse/concourse/atc/exec/build"
 	"github.com/concourse/concourse/atc/exec/execfakes"
+	"github.com/concourse/concourse/vars"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -23,8 +23,7 @@ var _ = Describe("RetryErrorStep", func() {
 		fakeDelegate        *execfakes.FakeBuildStepDelegate
 		fakeDelegateFactory *execfakes.FakeBuildStepDelegateFactory
 
-		repo  *build.Repository
-		state *execfakes.FakeRunState
+		state RunState
 
 		step Step
 	)
@@ -37,9 +36,7 @@ var _ = Describe("RetryErrorStep", func() {
 		fakeDelegateFactory = new(execfakes.FakeBuildStepDelegateFactory)
 		fakeDelegateFactory.BuildStepDelegateReturns(fakeDelegate)
 
-		repo = build.NewRepository()
-		state = new(execfakes.FakeRunState)
-		state.ArtifactRepositoryReturns(repo)
+		state = NewRunState(noopStepper, vars.StaticVariables{})
 
 		step = RetryError(fakeStep, fakeDelegateFactory)
 	})

@@ -10,6 +10,7 @@ import (
 	. "github.com/concourse/concourse/atc/exec"
 	"github.com/concourse/concourse/atc/exec/build"
 	"github.com/concourse/concourse/atc/exec/execfakes"
+	"github.com/concourse/concourse/vars"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -24,7 +25,7 @@ var _ = Describe("Parallel", func() {
 		fakeSteps []Step
 
 		repo  *build.Repository
-		state *execfakes.FakeRunState
+		state RunState
 
 		step    Step
 		stepOk  bool
@@ -40,9 +41,8 @@ var _ = Describe("Parallel", func() {
 
 		step = InParallel(fakeSteps, len(fakeSteps), false)
 
-		repo = build.NewRepository()
-		state = new(execfakes.FakeRunState)
-		state.ArtifactRepositoryReturns(repo)
+		state = NewRunState(noopStepper, vars.StaticVariables{})
+		repo = state.ArtifactRepository()
 	})
 
 	AfterEach(func() {
@@ -59,12 +59,12 @@ var _ = Describe("Parallel", func() {
 
 	It("passes the artifact repo to all steps", func() {
 		Expect(fakeStepA.RunCallCount()).To(Equal(1))
-		_, repo := fakeStepA.RunArgsForCall(0)
-		Expect(repo).To(Equal(repo))
+		_, stepState := fakeStepA.RunArgsForCall(0)
+		Expect(stepState.ArtifactRepository()).To(BeIdenticalTo(repo))
 
 		Expect(fakeStepB.RunCallCount()).To(Equal(1))
-		_, repo = fakeStepB.RunArgsForCall(0)
-		Expect(repo).To(Equal(repo))
+		_, stepState = fakeStepB.RunArgsForCall(0)
+		Expect(stepState.ArtifactRepository()).To(BeIdenticalTo(repo))
 	})
 
 	Describe("executing each step", func() {

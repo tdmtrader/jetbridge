@@ -5,9 +5,9 @@ import (
 	"errors"
 
 	"github.com/concourse/concourse/atc/exec"
-	"github.com/concourse/concourse/atc/exec/build"
 	"github.com/concourse/concourse/atc/exec/execfakes"
 	"github.com/concourse/concourse/tracing"
+	"github.com/concourse/concourse/vars"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -22,8 +22,7 @@ var _ = Describe("Ensure Step", func() {
 		step *execfakes.FakeStep
 		hook *execfakes.FakeStep
 
-		repo  *build.Repository
-		state *execfakes.FakeRunState
+		state exec.RunState
 
 		ensure exec.Step
 
@@ -48,9 +47,7 @@ var _ = Describe("Ensure Step", func() {
 			return true, ctx.Err()
 		}
 
-		repo = build.NewRepository()
-		state = new(execfakes.FakeRunState)
-		state.ArtifactRepositoryReturns(repo)
+		state = exec.NewRunState(noopStepper, vars.StaticVariables{})
 
 		ensure = exec.Ensure(step, hook)
 	})

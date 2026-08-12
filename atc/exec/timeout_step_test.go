@@ -6,8 +6,8 @@ import (
 	"time"
 
 	. "github.com/concourse/concourse/atc/exec"
-	"github.com/concourse/concourse/atc/exec/build"
 	"github.com/concourse/concourse/atc/exec/execfakes"
+	"github.com/concourse/concourse/vars"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -19,8 +19,7 @@ var _ = Describe("Timeout Step", func() {
 
 		fakeStep *execfakes.FakeStep
 
-		repo  *build.Repository
-		state *execfakes.FakeRunState
+		state RunState
 
 		step Step
 
@@ -35,9 +34,7 @@ var _ = Describe("Timeout Step", func() {
 
 		fakeStep = new(execfakes.FakeStep)
 
-		repo = build.NewRepository()
-		state = new(execfakes.FakeRunState)
-		state.ArtifactRepositoryReturns(repo)
+		state = NewRunState(noopStepper, vars.StaticVariables{})
 
 		timeoutDuration = "1h"
 	})
