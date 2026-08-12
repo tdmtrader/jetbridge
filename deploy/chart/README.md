@@ -7,8 +7,8 @@ Kubernetes pods directly for every pipeline step.
 **Key differences from the official Concourse chart:**
 
 - No worker StatefulSet. Task pods are created on-demand by the web node.
-- Artifact passing uses a shared PVC with init containers and a sidecar (no SPDY streaming between workers).
-- The web node needs RBAC permissions to create pods, PVCs, and exec into containers in its namespace.
+- Artifact passing uses a per-node DaemonSet over HTTP (no shared PVC, no SPDY streaming between workers).
+- The web node needs RBAC permissions to create pods, exec into containers, and read logs in its namespace.
 
 ## Quickstart (k3s)
 
@@ -62,7 +62,7 @@ spec:
   project: default
   source:
     repoURL: https://github.com/your-org/concourse.git
-    targetRevision: jetbridge
+    targetRevision: core
     path: deploy/chart
     helm:
       valueFiles:
@@ -176,24 +176,24 @@ All parameters are documented in [`values.yaml`](values.yaml). Complete referenc
 | `kubernetes.imageRegistryPrefix` | `""` | Registry prefix for custom resource type images. |
 | `kubernetes.imageRegistrySecret` | `""` | Pull secret name for resource type images. |
 
-### Storage — Cache PVC
+### Storage
+
+The chart creates no artifact PVC — the only PersistentVolumeClaim it renders
+belongs to the bundled PostgreSQL. Artifacts live under `artifactDaemon.hostPath`
+on each node and move between nodes over HTTP; task caches are node-local
+directories or ephemeral emptyDirs.
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
+| `cacheStore` | `""` | Task cache backend: `hostpath` or `emptydir`. Empty auto-detects from `cacheHostPath`. |
+| `cacheHostPath` | `""` | Node directory for `hostpath` task caches. Empty falls back to emptyDir. |
+| `artifactDaemon.enabled` | `true` | Run the artifact DaemonSet. Artifact passing requires it. |
+| `artifactDaemon.hostPath` | `/var/concourse/artifacts` | Node directory the daemon stores artifacts in. |
+| `artifactDaemon.port` | `7780` | Port the daemon serves on. |
+| `artifactDaemon.ttl` | `2h` | How long an artifact is retained before the daemon sweeps it. |
 
-### Storage — Artifact Store PVC
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-
-### Storage — GCS Fuse (GKE Only)
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-
-When enabled, the chart creates a PV + PVC backed by a GCS bucket using
-the `gcsfuse.csi.storage.gke.io` CSI driver. The `implicit-dirs` mount
-option is recommended for Concourse's tar-based artifact layout.
+`artifactDaemon` also carries `mirror`, `preemption`, `tls` and `networkPolicy`
+blocks; see [`values.yaml`](values.yaml) for those.
 
 ### PostgreSQL
 
@@ -353,20 +353,23 @@ requests hit a replica with different keys.
      | (on-demand) |     |  (on-demand)  |     |  (on-demand)  |
      +------+------+     +-------+-------+     +-------+-------+
             |                     |                     |
-            +--------- artifact-store PVC --------------+
-                    (init containers extract inputs,
-                     sidecar uploads outputs as tars)
+            +------ artifact-daemon (DaemonSet, hostPath) ------+
+                    (init containers fetch inputs over HTTP;
+                     outputs are stored on the node and mirrored)
 ```
 
 **Artifact passing flow:**
 
 1. Step A runs and produces output in an emptyDir volume.
-2. The artifact-helper sidecar tars the emptyDir to the artifact store PVC.
-3. Step B's init container extracts the tar from the PVC into its own emptyDir.
-4. Step B runs with the extracted data available as input.
+2. The `artifact-daemon` on that node stores the output under its hostPath and
+   mirrors it to peer nodes per `artifactDaemon.mirror`.
+3. Step B's init container resolves which node holds the artifact and fetches
+   it over HTTP.
+4. Step B runs with the fetched data available as input.
 
-The artifact store PVC can use any storage class: hostPath (single-node),
-NFS, GCS FUSE, EBS, etc. Multi-node clusters need `ReadWriteMany` access.
+Nothing is shared between nodes, so no `ReadWriteMany` storage class is needed.
+`artifactDaemon.enabled` must be true — without a configured artifact daemon
+host path the web node has no way to pass artifacts between steps.
 
 ## Production Notes
 

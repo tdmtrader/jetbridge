@@ -26,11 +26,6 @@
     {
       "matchPackageNames": ["go.yaml.in/yaml/v2"],
       "allowedVersions": "<3.0.0"
-    },
-    {
-      "matchPackageNames": ["/garden/"],
-      "matchManagers": ["gomod"],
-      "enabled": false
     }
   ],
   "ignoreDeps": ["elm", "client-go"],

@@ -9,9 +9,6 @@ I've always been interested in devops, and I use concourse and kubernetes extens
 
 To be clear, all of the modifications to the base concourse are 100% vibe coded. This should be taken as an adventure into agent-first codign (where I focused on specifying the outcomes, not the implementation), and a proof of concept for how a k8s runtime for concourse might work- I was surprised at just how much I was able to do away with in favor of having the web node talk directly to the k8s api server, although it did require some compromises on the purity of the concourse architecture.
 
-Adjacent to the k8s runtime work, this also includes agent-first workflows for concourse. I think concourse's DAG model has tremendous potential as a platform for agentic CI operations. At its core, I've always viewed concourse tasks as functions that take an immput and produce an output. The composability of these functions is what gives concourse its power and flexibility, and also why I think it has great potential as an agent platform. The ability to tightly, consistently, and repeatably define exactly what gets fed to an agent and exactly what it produces allow the volatility of the AI Agents themselves to be more tightly bounded for repeatable workflows. The _results_ themselves may differ (unlike a traditional concourse task where ideally a set of inputs produces exactly the same outputs), but the _process_ of producing those results becomes versioned, repeatable, composable, _and_ transparent.
-
-
 ## What Changed
 
 ### No Workers
@@ -46,29 +43,35 @@ Pods are labelled with `concourse.ci/pipeline`, `concourse.ci/job`,
 `concourse.ci/build`, `concourse.ci/step`, and `concourse.ci/handle` for
 easy filtering with `kubectl`.
 
-### Artifact passing via PVC
+### Artifact passing via a per-node daemon
 
 Standard Concourse streams artifacts between workers over SPDY connections
-managed by the ATC. JetBridge replaces this with a shared PVC:
+managed by the ATC. JetBridge replaces this with a DaemonSet:
 
 1. Step A runs, produces output in an emptyDir volume.
-2. An artifact-helper sidecar tars the emptyDir to the artifact store PVC at `artifacts/<handle>.tar`.
-3. Step B's init container extracts the tar from the PVC into its own emptyDir.
+2. The `artifact-daemon` pod on that node takes the output and stores it under
+   its hostPath, then mirrors it to peer nodes.
+3. Step B's init container asks the daemon where the artifact lives and fetches
+   it over HTTP, from the owning node or a mirror.
 4. Step B runs with the data available.
 
-The artifact store PVC can be any storage class: hostPath (single-node),
-NFS, GCS FUSE, EBS, etc. Multi-node clusters need `ReadWriteMany` access.
+There is no shared volume and no `ReadWriteMany` requirement — nodes exchange
+artifacts over the network, so the storage under each daemon is node-local.
 
-Without the artifact store PVC configured, JetBridge falls back to SPDY
-streaming (same as standard Concourse but between pods instead of workers).
+Configured with `--kubernetes-artifact-daemon-host-path`, `-port` and
+`-service`; the daemon's own storage, TTL, mirroring and mTLS live under
+`artifactDaemon.*` in the chart.
 
-### Resource caching via PVC
+### Resource caching
 
 Standard Concourse caches resource versions on worker-local volumes managed
-by BaggageClaim. JetBridge uses a shared PVC mounted at `/concourse/cache`
-with subPath mounts per cache entry. Data survives pod restarts.
+by BaggageClaim. JetBridge mounts task caches at `/concourse/cache` with
+subPath mounts per cache entry.
 
-Without the cache PVC configured, caches use emptyDir (ephemeral, per-pod).
+The backend is chosen by `--kubernetes-cache-store`: `hostpath` keeps caches in
+node-local directories that survive pod restarts on that node, `emptydir` makes
+them ephemeral and per-pod. When the flag is empty the backend is auto-detected
+— `hostpath` if `--kubernetes-cache-host-path` is set, otherwise `emptydir`.
 
 ### Exec mode for stdin/stdout
 
@@ -81,16 +84,17 @@ the command exits, and `fly intercept` execs a new shell into it.
 
 ### Garbage collection
 
-A reaper component runs every 30 seconds (configurable via `--gc-interval`) and:
+A reaper component runs every 10 seconds and:
 
 1. Lists pods with the `concourse.ci/worker` label.
 2. Reports active containers to the DB (marks missing ones for GC).
 3. Deletes pods the DB has marked for destruction.
-4. Cleans up cache PVC subdirectories by exec-ing `rm -rf` in an active pod.
-5. Cleans up artifact store tar files by exec-ing `rm -f` in an active pod's
-   artifact-helper sidecar.
+4. Deletes artifacts for destroyed containers by sending HTTP DELETE to the
+   daemon pod that holds them.
 
-Cache and artifact cleanup require at least one active pod in the namespace.
+The interval is not configurable: the reaper registers no `Interval`, so it
+takes `defaultComponentInterval` in `atc/atccmd/command.go`. Artifact cleanup
+is best-effort — failures are logged and do not block the rest of the sweep.
 
 ## What Didn't Change
 
@@ -233,17 +237,6 @@ check-resource-type → get-resource-type chain that Garden used.
 
 Source: `atc/plan.go` (TypeImage.ImageRef)
 
-### GCS Fuse artifact store
-
-On GKE, the artifact store PVC can be backed by GCS Fuse. When enabled, pods
-that mount the artifact PVC get the `gke-gcsfuse/volumes: "true"` annotation
-required by the GKE sidecar injector webhook.
-
-Enable via `--kubernetes-artifact-store-gcs-fuse` flag or Helm
-`artifactStorePvc.gcsFuse.enabled=true`.
-
-Source: `atc/worker/jetbridge/config.go` (ArtifactStoreGCSFuse)
-
 ## Health Endpoint
 
 `GET /api/v1/health` — Returns 200 when healthy, 503 when unhealthy.
@@ -277,10 +270,6 @@ Source: `atc/api/infoserver/health.go`
   `SetTTY` is a no-op.
 - **Single namespace**: One worker per namespace. The worker name is
   deterministic (`k8s-<namespace>`).
-- **`fly execute -i` with artifact store**: When ArtifactStoreClaim is
-  configured, `fly execute --input` needs additional work to handle the
-  upload path (the volume's StreamIn returns an error directing callers
-  to use the artifact-helper instead).
 
 ## Configuration Reference
 
@@ -294,10 +283,14 @@ Kubernetes flags are optional.
 | `--kubernetes-namespace` | (required) | Namespace for task pods. Enables K8s backend. |
 | `--kubernetes-kubeconfig` | in-cluster | Path to kubeconfig. Empty uses the pod's service account. |
 | `--kubernetes-pod-startup-timeout` | `5m` | Max time for a pod to reach Running before failing the task. |
-| `--kubernetes-cache-pvc` | (none) | PVC name for shared cache volume at `/concourse/cache`. |
-| `--kubernetes-artifact-store-claim` | (none) | PVC name for artifact passing via tar files. |
-| `--kubernetes-artifact-store-gcs-fuse` | `false` | Adds `gke-gcsfuse/volumes: "true"` annotation to pods. GKE only. |
-| `--kubernetes-artifact-helper-image` | `alpine:latest` | Image for init containers and artifact-helper sidecar. Must have `tar`. |
+| `--kubernetes-pod-scheduling-timeout` | `15m` | Max time for a pod to be scheduled onto a node before failing the task. |
+| `--kubernetes-cache-store` | auto | Task cache backend: `hostpath` or `emptydir`. Empty auto-detects. |
+| `--kubernetes-cache-host-path` | (none) | Node directory for `hostpath` task caches. |
+| `--kubernetes-artifact-daemon-host-path` | (none) | Node directory the artifact daemon stores artifacts in. Required for artifact passing. |
+| `--kubernetes-artifact-daemon-port` | `7780` | Port the artifact daemon serves on. |
+| `--kubernetes-artifact-daemon-service` | `artifact-daemon` | Service used to reach daemon pods. |
+| `--kubernetes-artifact-daemon-tls-cert` / `-key` / `-ca-cert` | (none) | Client mTLS material for the daemon data plane. |
+| `--kubernetes-artifact-helper-image` | `alpine:latest` | Image for the artifact init containers. Must have `tar`. |
 | `--kubernetes-image-pull-secret` | (none) | K8s Secret for imagePullSecrets on task pods. Repeatable. |
 | `--kubernetes-service-account` | namespace default | ServiceAccount for task pods. |
 | `--kubernetes-image-registry-prefix` | (none) | Registry prefix for custom resource type images (e.g. `gcr.io/my-project/concourse`). |
@@ -421,8 +414,10 @@ See `deploy/chart/values.yaml` for all configurable parameters and
 - **Auth**: Replace `web.localUsers` with OIDC/OAuth via `web.extraArgs`.
 - **Secrets**: Generate signing keys externally and set `secrets.create=false`.
   All web replicas MUST share the same signing keys.
-- **Multi-node**: Set `artifactStorePvc.accessModes: [ReadWriteMany]` and
-  use a storage class that supports it (NFS, GCS FUSE, EFS).
+- **Multi-node**: No shared storage is required — the artifact daemon runs on
+  every node and moves artifacts over the network. Size
+  `artifactDaemon.hostPath` for the node's disk and set
+  `artifactDaemon.ttl` for how long artifacts are retained.
 - **Ingress**: Enable `ingress.enabled=true` with TLS.
 - **Image registry**: Set `kubernetes.imageRegistryPrefix` and
   `kubernetes.imageRegistrySecret` if using custom resource types from a
@@ -485,18 +480,22 @@ For private registries, verify `kubernetes.imagePullSecrets` or
 
 **Check**:
 ```bash
-# Verify the artifact store PVC is bound and writable
-kubectl -n concourse get pvc concourse-artifacts
+# Is a daemon running on every node, and healthy?
+kubectl -n concourse get pods -l app.kubernetes.io/component=artifact-daemon -o wide
 
-# Check the artifact-helper sidecar logs
-kubectl -n concourse logs <pod-name> -c artifact-helper
+# The daemon on the node that owns the artifact
+kubectl -n concourse logs <artifact-daemon-pod>
+
+# The init container that was supposed to fetch it
+kubectl -n concourse logs <pod-name> -c artifact-init
 ```
 
 **Common causes**:
-- PVC full (the sidecar's `tar cf` fails with "No space left on device")
-- PVC access mode wrong (`ReadWriteOnce` on a multi-node cluster)
-- Init container failed (the tar file doesn't exist on the PVC yet —
-  check that the upstream step completed successfully)
+- The node's `artifactDaemon.hostPath` disk is full
+- No daemon pod on the node the artifact was written to, so nothing serves it
+- `artifactDaemon.ttl` elapsed before the downstream step ran
+- The daemon is unreachable from the task pod (Service name, port, or
+  NetworkPolicy), so the init container cannot fetch
 
 ### Build output missing
 
@@ -562,11 +561,11 @@ otelMetrics:
 ### Key things to watch
 
 - **Pod startup latency**: If `pod_startup_duration_ms` climbs, check node
-  capacity, image pull times, or PVC binding delays.
+  capacity or image pull times.
 - **Image pull failures**: Sustained failures indicate a registry issue or
   misconfigured pull secrets.
-- **PVC usage**: Monitor disk usage on the cache and artifact store PVCs.
-  Full PVCs cause tar failures.
+- **Artifact daemon disk**: Monitor `artifactDaemon.hostPath` usage per node.
+  A full node disk fails artifact writes for every step scheduled there.
 - **Pod count**: Track pods in the namespace. A growing count of
   non-Running pods indicates the reaper isn't keeping up or pods are stuck.
 - **Health endpoint**: Poll `GET /api/v1/health` — returns 503 when DB or
@@ -595,12 +594,13 @@ kubectl -n concourse exec deploy/concourse-jetbridge-web -- df -h /concourse/cac
 
 | File | Purpose |
 |------|---------|
-| `atc/worker/jetbridge/config.go` | K8s flags, PVC config, base resource type image mappings |
+| `atc/worker/jetbridge/config.go` | K8s flags, cache and artifact-daemon config, base resource type image mappings |
 | `atc/worker/jetbridge/container.go` | Pod creation, lifecycle management, sidecar injection |
 | `atc/worker/jetbridge/executor.go` | Command execution via K8s exec API |
 | `atc/worker/jetbridge/podname.go` | Deterministic pod name generation |
 | `atc/worker/jetbridge/registrar.go` | Synthetic worker registration (direct DB write) |
-| `atc/worker/jetbridge/volume_artifactstore.go` | PVC-based artifact store volumes |
+| `atc/worker/jetbridge/storage_daemonset.go` | Artifact storage backed by the per-node DaemonSet |
+| `atc/worker/jetbridge/daemon_client.go` | HTTP client for the artifact daemon |
 | `atc/worker/jetbridge/errors.go` | Transient error classification and retry |
 | `atc/worker/jetbridge/reaper.go` | Pod and volume garbage collection |
 | `atc/worker/jetbridge/process.go` | Process abstraction over K8s exec |

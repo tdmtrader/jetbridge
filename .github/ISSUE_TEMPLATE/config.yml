@@ -1,10 +1,1 @@
-blank_issues_enabled: false
-
-contact_links:
-- name: ❔ Ask for help
-  url: https://github.com/concourse/concourse/discussions/new?category=help-support
-  about: Ask a question or troubleshoot a problem with Concourse.
-
-- name: 💡 Discuss an idea (Feature Requests)
-  url: https://github.com/concourse/concourse/discussions/new?category=ideas
-  about: Discuss a workflow that Concourse could better support.
+blank_issues_enabled: true

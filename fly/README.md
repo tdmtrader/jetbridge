@@ -1,52 +1,41 @@
 # fly
 
-A command line interface that runs a build in a container with [ATC](https://github.com/concourse/atc).
+The Concourse command line interface.
 
-[The documentation](https://concourse-ci.org/fly.html) is hosted together with Concourse's docs.
-
-A good place to start learning about Concourse is [its documentation](https://concourse-ci.org/index.html)
-or its [BOSH release](https://github.com/concourse/concourse).
-
-## Reporting Issues and Requesting Features
-
-Please report all issues and feature requests in [concourse/concourse](https://github.com/concourse/concourse/issues).
+[The upstream documentation](https://concourse-ci.org/fly.html) applies — this
+fork does not change the `fly` CLI, the pipeline YAML it submits, or the REST
+API it talks to.
 
 ## Building
 
-Fly is built using [Go](http://golang.org/). Building and testing fly is most easily done from a checkout of [concourse](https://github.com/concourse/concourse).
+From a checkout of this repository:
 
-1. Check out concourse and update submodules:
+```bash
+cd fly
+go build
+```
 
-  ```bash
-  git clone --recursive https://github.com/concourse/concourse.git
-  cd concourse
-  ```
+Tests use [ginkgo](https://onsi.github.io/ginkgo/):
 
-2. You can now build the fly binary with go build:
+```bash
+go install github.com/onsi/ginkgo/v2/ginkgo
+ginkgo -r
+```
 
-  ```bash
-  cd fly
-  go build
-  ```
+The integration suite, which builds the binary and runs it against a mock ATC,
+is `make test-fly-integration` from the repository root. See
+[TESTING.md](../TESTING.md).
 
-  If you are using Go 1.10 and below, run `go get ./...` before `go build`.
+## Installing from the Concourse UI
 
-3. You can also now run tests by installing and running [ginkgo](http://onsi.github.io/ginkgo/):
+`fly` is available for download from the lower right-hand corner of the web UI,
+which links to `/download-fly`.
 
-  ```bash
-  go get github.com/onsi/ginkgo/v2/ginkgo
-  ginkgo -r
-  ```
+## Upgrading fly
 
-## Installing from the Concourse UI for Project Development
+`fly` is not upgraded independently of the ATC it talks to. Either download it
+from the web UI again, or run `fly -t <target> sync`.
 
-Fly is available for download in the lower right-hand corner of the concourse UI
-which will take you to the download page:
-[http://localhost:8080/download-fly](http://localhost:8080/download-fly).
-
-1. Confirm availability with `which fly`
-
-## Upgrading Fly
-Fly is not available for upgrade independently of Concourse. You can download the corresponding upgraded version of Fly via the following: 
-* using the [Concourse UI](#installing-from-the-concourse-ui-for-project-development) 
-* running `fly -t example sync` if you already have fly locally
+Note that `fly` hard-errors on a MAJOR.MINOR version mismatch against the ATC
+(a patch difference only warns), so `fly sync` is the in-band remedy after the
+cluster moves to a new minor version.

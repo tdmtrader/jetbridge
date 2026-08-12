@@ -1,60 +1,13 @@
-# Contributing to Concourse
+# Contributing to JetBridge
 
-It takes a lot of work from a lot of people to build a great CI system.
+JetBridge is a personal fork of [Concourse CI](https://github.com/concourse/concourse).
+It is not the upstream project, and it does not use upstream's governance, RFC
+process, Discord, or CLA -- a pull request here cannot satisfy any of them.
 
-This document provides an outline for interacting with the Concourse community
-and its governance structure, as well as the nitty-gritty details how to write,
-test, and submit code changes.
+For the upstream project, go to
+[concourse/concourse](https://github.com/concourse/concourse).
 
-If you run into any trouble, feel free to hang out and ask for help in the
-[Discord][discord]!
-
-
-## Contribution process
-
-The Concourse project follows an [open governance model][governance] which
-divides project responsibilities between self-organizing teams. You can find
-the list of teams under the [`teams/` directory][governance-teams] - each team
-describes its purpose and responsibilities.
-
-The [**maintainers** team][governance-maintainers] is responsible for the issue
-and pull request backlog and all code within this repository, working in
-harmony with the [**core** team][governance-core] through the [RFC
-process][rfcs] to keep the Concourse product aligned with its [design
-principles][rfc-design-principles].
-
-As a first step you can optionally [add yourself as a
-contributor][governance-register]. Doing so will grant you a few things:
-
-1. A shiny `@contributors` role in Discord, allowing you to chat in `#dev`.
-1. The ability to triage issues and pull requests in the Concourse repo.
-1. The ability to re-trigger builds that ran for your pull requests.
-
-If you are planning to implement a new feature, you may want to [submit an
-RFC][rfc-submit] first - it's not necessary for every change, but requesting
-feedback early can help save time and effort. See ["When the RFC process is
-necessary"][rfc-necessary] for more information.
-
-The rest of this document describes how to contribute code, but there are many
-other ways to contribute that are incredibly helpful: helping others or just
-passing time in [Discussions][concourse-discussions] and [Discord][discord],
-providing feedback on [RFCs][rfcs], triaging [Issues][concourse-issues],
-improving the [documentation][docs] - any little bit helps.
-
-Cheers! 🍻
-
-[concourse-discussions]: https://github.com/concourse/concourse/discussions
-[concourse-issues]: https://github.com/concourse/concourse/issues
-[concourse-prs]: https://github.com/concourse/concourse/pulls
-[governance-core]: https://github.com/concourse/governance/blob/master/teams/core.yml
-[governance-maintainers]: https://github.com/concourse/governance/blob/master/teams/maintainers.yml
-[governance-register]: https://github.com/concourse/governance#individual-contributors
-[governance-teams]: https://github.com/concourse/governance/tree/master/teams
-[governance]: https://github.com/concourse/governance
-[rfc-design-principles]: https://github.com/concourse/rfcs/blob/master/DESIGN_PRINCIPLES.md
-[rfc-necessary]: https://github.com/concourse/rfcs#when-the-rfc-process-is-necessary
-[rfc-submit]: https://github.com/concourse/rfcs#submitting-an-rfc
-[rfcs]: https://github.com/concourse/rfcs
+What follows is how to build, test and change this tree.
 
 ## Development process
 
@@ -99,14 +52,9 @@ Cheers! 🍻
 
 ### Pull request requirements
 
-* As with any community interaction, you must follow the [Code of
-  Conduct][coc].
-
 * All changes must have adequate test coverage. For instruction on writing and
   running the various test suites, see [Testing your
   changes](#testing-your-changes).
-
-* All contributors must be registered with the Linux Foundation's [EasyCLA](https://easycla.lfx.linuxfoundation.org/)
 
 * The [documentation][docs] should be updated (in a separate, linked PR), but
   if you're not confident in your technical writing you may skip this step.
@@ -464,9 +412,6 @@ There are a few different test suites in Concourse:
   may be more visible to operators than end-users. We typically do not expect
   pull requests to add to this suite.
 
-If you need help figuring out the testing strategy for your change, ask in
-Discord!
-
 Concourse uses [Ginkgo](http://github.com/onsi/ginkgo) as its test framework
 and suite runner of choice for Go code. You'll need to install the `ginkgo` CLI
 to run the unit tests and `testflight`:
@@ -604,8 +549,6 @@ make test-k8s-behavioral
 
 See [TESTING.md](TESTING.md) for image build steps and timing expectations.
 
-[coc]: https://github.com/concourse/concourse/blob/master/CODE_OF_CONDUCT.md
-[discord]: https://discord.gg/MeRxXKW
 [docs]: https://github.com/concourse/docs
 [fav-commit]: https://dhwthompson.com/2019/my-favourite-git-commit
 [how-to-fork]: https://help.github.com/articles/fork-a-repo/

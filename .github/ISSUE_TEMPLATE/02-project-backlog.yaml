@@ -6,13 +6,6 @@ body:
     attributes:
       value: |
         This issue should be for any feature work that needs to be tracked.
-        It's the final place after having discussed the issue in a [Discussion
-        post](https://github.com/orgs/concourse/discussions),
-        [RFC](https://github.com/concourse/rfcs/), or Discord.
-
-        Creating this issue does not mean it will be prioritized or worked on
-        by the Concourse maintainers. Anyone in the community is free to work
-        on this issue, including you, the person submitting this issue.
 
   - type: textarea
     id: summary
