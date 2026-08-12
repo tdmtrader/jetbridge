@@ -2,7 +2,6 @@ package policychecker_test
 
 import (
 	"bytes"
-	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,7 +10,6 @@ import (
 	"github.com/concourse/concourse/atc/api/accessor/accessorfakes"
 	"github.com/concourse/concourse/atc/api/policychecker"
 	"github.com/concourse/concourse/atc/policy"
-	"github.com/concourse/concourse/atc/policy/policyfakes"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -19,20 +17,15 @@ import (
 
 var _ = Describe("PolicyChecker", func() {
 	var (
-		policyFilter          policy.Filter
-		fakeAccess            *accessorfakes.FakeAccess
-		fakeRequest           *http.Request
-		result                policy.PolicyCheckResult
-		checkErr              error
-		fakePolicyCheckResult *policyfakes.FakePolicyCheckResult
+		policyFilter policy.Filter
+		fakeAccess   *accessorfakes.FakeAccess
+		fakeRequest  *http.Request
+		result       policy.PolicyCheckResult
+		checkErr     error
 	)
 
 	BeforeEach(func() {
 		fakeAccess = new(accessorfakes.FakeAccess)
-		fakePolicyCheckResult = new(policyfakes.FakePolicyCheckResult)
-		fakePolicyAgent = new(policyfakes.FakeAgent)
-		fakePolicyAgent.CheckReturns(fakePolicyCheckResult, nil)
-		fakePolicyAgentFactory.NewAgentReturns(fakePolicyAgent, nil)
 
 		policyFilter = policy.Filter{
 			ActionsToSkip: []string{},
@@ -42,10 +35,7 @@ var _ = Describe("PolicyChecker", func() {
 	})
 
 	JustBeforeEach(func() {
-		policyCheck, err := policy.Initialize(testLogger, "some-cluster", "some-version", policyFilter)
-		Expect(err).ToNot(HaveOccurred())
-		Expect(policyCheck).ToNot(BeNil())
-		result, checkErr = policychecker.NewApiPolicyChecker(policyCheck).Check("some-action", fakeAccess, fakeRequest)
+		result, checkErr = policychecker.NewApiPolicyChecker(initializedChecker(policyFilter)).Check("some-action", fakeAccess, fakeRequest)
 	})
 
 	Context("when system action", func() {
@@ -57,7 +47,7 @@ var _ = Describe("PolicyChecker", func() {
 			Expect(result.Allowed()).To(BeTrue())
 		})
 		It("Agent should not be called", func() {
-			Expect(fakePolicyAgent.CheckCallCount()).To(Equal(0))
+			Expect(opaServer.Requests()).To(BeEmpty())
 		})
 	})
 
@@ -75,7 +65,7 @@ var _ = Describe("PolicyChecker", func() {
 				Expect(result.Allowed()).To(BeTrue())
 			})
 			It("Agent should not be called", func() {
-				Expect(fakePolicyAgent.CheckCallCount()).To(Equal(0))
+				Expect(opaServer.Requests()).To(BeEmpty())
 			})
 		})
 
@@ -89,7 +79,7 @@ var _ = Describe("PolicyChecker", func() {
 				Expect(result.Allowed()).To(BeTrue())
 			})
 			It("Agent should not be called", func() {
-				Expect(fakePolicyAgent.CheckCallCount()).To(Equal(0))
+				Expect(opaServer.Requests()).To(BeEmpty())
 			})
 		})
 
@@ -104,7 +94,7 @@ var _ = Describe("PolicyChecker", func() {
 				Expect(result.Allowed()).To(BeTrue())
 			})
 			It("Agent should not be called", func() {
-				Expect(fakePolicyAgent.CheckCallCount()).To(Equal(0))
+				Expect(opaServer.Requests()).To(BeEmpty())
 			})
 		})
 
@@ -127,7 +117,7 @@ var _ = Describe("PolicyChecker", func() {
 					Expect(result).To(BeNil())
 				})
 				It("Agent should not be called", func() {
-					Expect(fakePolicyAgent.CheckCallCount()).To(Equal(0))
+					Expect(opaServer.Requests()).To(BeEmpty())
 				})
 			})
 
@@ -145,7 +135,7 @@ var _ = Describe("PolicyChecker", func() {
 				})
 
 				It("Agent should not be called", func() {
-					Expect(fakePolicyAgent.CheckCallCount()).To(Equal(0))
+					Expect(opaServer.Requests()).To(BeEmpty())
 				})
 			})
 
@@ -166,22 +156,24 @@ var _ = Describe("PolicyChecker", func() {
 				})
 
 				It("Agent should be called", func() {
-					Expect(fakePolicyAgent.CheckCallCount()).To(Equal(1))
+					Expect(opaServer.Requests()).To(HaveLen(1))
 				})
 
 				It("Agent should take correct input", func() {
-					Expect(fakePolicyAgent.CheckArgsForCall(0)).To(Equal(policy.PolicyCheckInput{
-						Service:        "concourse",
-						ClusterName:    "some-cluster",
-						ClusterVersion: "some-version",
-						HttpMethod:     "PUT",
-						Action:         "some-action",
-						User:           "some-user",
-						Team:           "some-team",
-						Roles:          []string{"some-role"},
-						Pipeline:       "some-pipeline",
-						Data:           map[string]any{"a": "b"},
-					}))
+					Expect(opaServer.Requests()[0]).To(MatchJSON(`{
+						"input": {
+							"service": "concourse",
+							"cluster_name": "some-cluster",
+							"cluster_version": "some-version",
+							"http_method": "PUT",
+							"action": "some-action",
+							"user": "some-user",
+							"team": "some-team",
+							"roles": ["some-role"],
+							"pipeline": "some-pipeline",
+							"data": {"a": "b"}
+						}
+					}`))
 				})
 
 				It("request body should still be readable", func() {
@@ -192,7 +184,7 @@ var _ = Describe("PolicyChecker", func() {
 
 				Context("when Agent says pass", func() {
 					BeforeEach(func() {
-						fakePolicyAgent.CheckReturns(policy.PassedPolicyCheck(), nil)
+						opaServer.Reset(`{"result": {"allowed": true}}`)
 					})
 
 					It("it should pass", func() {
@@ -203,9 +195,7 @@ var _ = Describe("PolicyChecker", func() {
 
 				Context("when Agent says not-pass", func() {
 					BeforeEach(func() {
-						fakePolicyCheckResult.AllowedReturns(false)
-						fakePolicyCheckResult.ShouldBlockReturns(true)
-						fakePolicyCheckResult.MessagesReturns([]string{"a policy says you can't do that"})
+						opaServer.Reset(`{"result": {"allowed": false, "block": true, "reasons": ["a policy says you can't do that"]}}`)
 					})
 
 					It("should not pass", func() {
@@ -218,12 +208,12 @@ var _ = Describe("PolicyChecker", func() {
 
 				Context("when Agent says error", func() {
 					BeforeEach(func() {
-						fakePolicyAgent.CheckReturns(nil, errors.New("some-error"))
+						opaServer.RespondWithStatus(http.StatusInternalServerError)
 					})
 
 					It("should not pass", func() {
 						Expect(checkErr).To(HaveOccurred())
-						Expect(checkErr.Error()).To(Equal("some-error"))
+						Expect(checkErr.Error()).To(Equal("OPA server returned status: 500"))
 						Expect(result).To(BeNil())
 					})
 				})

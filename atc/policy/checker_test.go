@@ -2,7 +2,6 @@ package policy_test
 
 import (
 	"github.com/concourse/concourse/atc/policy"
-	"github.com/concourse/concourse/atc/policy/policyfakes"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -10,10 +9,9 @@ import (
 
 var _ = Describe("Policy checker", func() {
 	var (
-		checker    policy.Checker
-		filter     policy.Filter
-		err        error
-		fakeResult *policyfakes.FakePolicyCheckResult
+		checker policy.Checker
+		filter  policy.Filter
+		err     error
 	)
 
 	BeforeEach(func() {
@@ -22,27 +20,16 @@ var _ = Describe("Policy checker", func() {
 			Actions:       []string{"do_1", "do_2"},
 			ActionsToSkip: []string{"skip_1", "skip_2"},
 		}
-
-		fakeResult = new(policyfakes.FakePolicyCheckResult)
-		fakeAgent = new(policyfakes.FakeAgent)
-		fakeAgent.CheckReturns(fakeResult, nil)
-
-		fakeAgentFactory.NewAgentReturns(fakeAgent, nil)
 	})
 
 	JustBeforeEach(func() {
 		checker, err = policy.Initialize(testLogger, "some-cluster", "some-version", filter)
 	})
 
-	// fakeAgent is configured in BeforeSuite.
 	Context("Initialize", func() {
-		It("new agent should be returned", func() {
-			Expect(fakeAgentFactory.NewAgentCallCount()).To(Equal(1))
-		})
-
-		It("should return a checker", func() {
+		It("should return a checker backed by the configured agent", func() {
 			Expect(err).ToNot(HaveOccurred())
-			Expect(checker).ToNot(BeNil())
+			Expect(checker).To(BeAssignableToTypeOf(&policy.AgentChecker{}))
 		})
 
 		Context("Checker", func() {
@@ -82,6 +69,7 @@ var _ = Describe("Policy checker", func() {
 
 				BeforeEach(func() {
 					input = policy.PolicyCheckInput{}
+					opaServer.Reset(`{"result": {"allowed": false, "block": true, "reasons": ["a policy says you can't do that"]}}`)
 				})
 
 				JustBeforeEach(func() {
@@ -89,21 +77,25 @@ var _ = Describe("Policy checker", func() {
 				})
 
 				It("agent should be called", func() {
-					Expect(fakeAgent.CheckCallCount()).To(Equal(1))
+					Expect(opaServer.Requests()).To(HaveLen(1))
 				})
 
 				It("cluster name should be injected into input", func() {
-					realInput := fakeAgent.CheckArgsForCall(0)
-					Expect(realInput).To(Equal(policy.PolicyCheckInput{
-						Service:        "concourse",
-						ClusterName:    "some-cluster",
-						ClusterVersion: "some-version",
-					}))
+					Expect(opaServer.Requests()[0]).To(MatchJSON(`{
+						"input": {
+							"service": "concourse",
+							"cluster_name": "some-cluster",
+							"cluster_version": "some-version",
+							"action": ""
+						}
+					}`))
 				})
 
 				It("return the same result the agent returns", func() {
 					Expect(checkErr).ToNot(HaveOccurred())
-					Expect(output).To(Equal(fakeResult))
+					Expect(output.Allowed()).To(BeFalse())
+					Expect(output.ShouldBlock()).To(BeTrue())
+					Expect(output.Messages()).To(ConsistOf("a policy says you can't do that"))
 				})
 			})
 		})

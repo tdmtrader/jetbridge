@@ -1,47 +1,33 @@
 package policychecker_test
 
 import (
-	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
 
-	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/api/policychecker"
 	"github.com/concourse/concourse/atc/policy"
-	"github.com/concourse/concourse/atc/policy/policyfakes"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
 
-type stubPolicyChecker struct {
-	result policy.PolicyCheckResult
-	err    error
-}
-
-func (c stubPolicyChecker) Check(string, accessor.Access, *http.Request) (policy.PolicyCheckResult, error) {
-	return c.result, c.err
-}
-
 var _ = Describe("Handler", func() {
 	var (
-		innerHandlerCalled    bool
-		dummyHandler          http.HandlerFunc
-		policyCheckerHandler  http.Handler
-		req                   *http.Request
-		policyChecker         policychecker.PolicyChecker
-		fakePolicyCheckResult *policyfakes.FakePolicyCheckResult
-		responseWriter        *httptest.ResponseRecorder
+		innerHandlerCalled   bool
+		dummyHandler         http.HandlerFunc
+		policyCheckerHandler http.Handler
+		req                  *http.Request
+		policyChecker        policychecker.PolicyChecker
+		responseWriter       *httptest.ResponseRecorder
 
 		logger = lagertest.NewTestLogger("test")
 	)
 
 	BeforeEach(func() {
 		policyChecker = policychecker.NewApiPolicyChecker(policy.NoopChecker{})
-		fakePolicyCheckResult = new(policyfakes.FakePolicyCheckResult)
 
 		innerHandlerCalled = false
 		dummyHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -68,14 +54,14 @@ var _ = Describe("Handler", func() {
 
 	Context("policy check doesn't pass", func() {
 		BeforeEach(func() {
-			fakePolicyCheckResult.AllowedReturns(false)
-			fakePolicyCheckResult.MessagesReturns([]string{"a policy says you can't do that", "another policy also says you can't do that"})
-			policyChecker = stubPolicyChecker{result: fakePolicyCheckResult}
+			policyChecker = policychecker.NewApiPolicyChecker(initializedChecker(policy.Filter{
+				Actions: []string{"some-action"},
+			}))
 		})
 
 		Context("when should block", func() {
 			BeforeEach(func() {
-				fakePolicyCheckResult.ShouldBlockReturns(true)
+				opaServer.Reset(`{"result": {"allowed": false, "block": true, "reasons": ["a policy says you can't do that", "another policy also says you can't do that"]}}`)
 			})
 
 			It("return http forbidden", func() {
@@ -94,7 +80,7 @@ var _ = Describe("Handler", func() {
 
 		Context("when should not block", func() {
 			BeforeEach(func() {
-				fakePolicyCheckResult.ShouldBlockReturns(false)
+				opaServer.Reset(`{"result": {"allowed": false, "block": false, "reasons": ["a policy says you can't do that", "another policy also says you can't do that"]}}`)
 			})
 
 			It("calls the inner handler", func() {
@@ -111,7 +97,10 @@ var _ = Describe("Handler", func() {
 
 	Context("policy check errors", func() {
 		BeforeEach(func() {
-			policyChecker = stubPolicyChecker{err: errors.New("some-error")}
+			opaServer.RespondWithStatus(http.StatusInternalServerError)
+			policyChecker = policychecker.NewApiPolicyChecker(initializedChecker(policy.Filter{
+				Actions: []string{"some-action"},
+			}))
 		})
 
 		It("return http bad request", func() {

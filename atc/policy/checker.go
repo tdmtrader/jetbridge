@@ -77,8 +77,6 @@ func PassedPolicyCheck() PolicyCheckResult {
 	}
 }
 
-//counterfeiter:generate . Agent
-
 // Agent should be implemented by policy agents.
 type Agent interface {
 	// Check returns true if passes policy check. If not goes through policy
@@ -86,7 +84,6 @@ type Agent interface {
 	Check(PolicyCheckInput) (PolicyCheckResult, error)
 }
 
-//counterfeiter:generate . AgentFactory
 type AgentFactory interface {
 	Description() string
 	IsConfigured() bool
