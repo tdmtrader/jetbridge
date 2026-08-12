@@ -3,21 +3,43 @@ package exec_test
 import (
 	"context"
 	"errors"
-	"fmt"
+	"io"
 
+	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/compression"
 	. "github.com/concourse/concourse/atc/exec"
 	"github.com/concourse/concourse/atc/exec/build"
-	"github.com/concourse/concourse/atc/exec/execfakes"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/runtime/runtimetest"
 	"github.com/concourse/concourse/vars"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/onsi/gomega/gbytes"
 	"sigs.k8s.io/yaml"
 )
+
+// fetchErrorConfigSource preserves a real config source while replacing only
+// FetchConfig for the failure path.
+type fetchErrorConfigSource struct {
+	TaskConfigSource
+	err error
+}
+
+func (source fetchErrorConfigSource) FetchConfig(context.Context, lager.Logger, *build.Repository) (atc.TaskConfig, error) {
+	return atc.TaskConfig{}, source.err
+}
+
+// streamOutErrorArtifact preserves a real artifact while replacing only
+// StreamOut for the failure path.
+type streamOutErrorArtifact struct {
+	runtime.Artifact
+	err error
+}
+
+func (artifact streamOutErrorArtifact) StreamOut(context.Context, string, compression.Compression) (io.ReadCloser, error) {
+	return nil, artifact.err
+}
 
 var _ = Describe("TaskConfigSource", func() {
 	var (
@@ -83,24 +105,25 @@ var _ = Describe("TaskConfigSource", func() {
 
 	Describe("FileConfigSource", func() {
 		var (
-			configSource FileConfigSource
-			fakeStreamer *execfakes.FakeStreamer
-			fetchErr     error
-			artifactName string
+			configSource  FileConfigSource
+			streamer      *recordingStreamer
+			fetchedConfig atc.TaskConfig
+			fetchErr      error
+			artifactName  string
 		)
 
 		BeforeEach(func() {
 
 			artifactName = "some-artifact-name"
-			fakeStreamer = new(execfakes.FakeStreamer)
+			streamer = newRecordingStreamer()
 			configSource = FileConfigSource{
 				ConfigPath: artifactName + "/build.yml",
-				Streamer:   fakeStreamer,
+				Streamer:   streamer,
 			}
 		})
 
 		JustBeforeEach(func() {
-			_, fetchErr = configSource.FetchConfig(context.TODO(), logger, repo)
+			fetchedConfig, fetchErr = configSource.FetchConfig(context.TODO(), logger, repo)
 		})
 
 		Context("when the path does not indicate an artifact source", func() {
@@ -114,28 +137,23 @@ var _ = Describe("TaskConfigSource", func() {
 		})
 
 		Context("when the file's artifact can be found in the repository", func() {
-			var volume *runtimetest.Volume
-
-			BeforeEach(func() {
-				volume = runtimetest.NewVolume("some-volume")
+			registerConfigFile := func(content []byte) {
+				volume := runtimetest.NewVolume("some-volume").WithContent(runtimetest.VolumeContent{
+					"build.yml": {Data: content},
+				})
 				repo.RegisterArtifact(build.ArtifactName(artifactName), volume, false)
-			})
+			}
 
 			Context("when the artifact provides a proper file", func() {
-				var streamedOut *gbytes.Buffer
-
 				BeforeEach(func() {
 					marshalled, err := yaml.Marshal(taskConfig)
 					Expect(err).NotTo(HaveOccurred())
 
-					streamedOut = gbytes.BufferWithBytes(marshalled)
-					fakeStreamer.StreamFileReturns(streamedOut, nil)
+					registerConfigFile(marshalled)
 				})
 
 				It("fetches the file via the correct artifact & path", func() {
-					_, artifact, dest := fakeStreamer.StreamFileArgsForCall(0)
-					Expect(artifact).To(Equal(volume))
-					Expect(dest).To(Equal("build.yml"))
+					Expect(fetchedConfig).To(Equal(taskConfig))
 				})
 
 				It("succeeds", func() {
@@ -143,13 +161,12 @@ var _ = Describe("TaskConfigSource", func() {
 				})
 
 				It("closes the stream", func() {
-					Expect(streamedOut.Closed()).To(BeTrue())
+					Expect(streamer.streams).To(HaveLen(1))
+					Expect(streamer.streams[0].closed).To(BeTrue())
 				})
 			})
 
 			Context("when the artifact source provides an invalid configuration", func() {
-				var streamedOut *gbytes.Buffer
-
 				BeforeEach(func() {
 					invalidConfig := taskConfig
 					invalidConfig.Platform = ""
@@ -158,8 +175,7 @@ var _ = Describe("TaskConfigSource", func() {
 					marshalled, err := yaml.Marshal(invalidConfig)
 					Expect(err).NotTo(HaveOccurred())
 
-					streamedOut = gbytes.BufferWithBytes(marshalled)
-					fakeStreamer.StreamFileReturns(streamedOut, nil)
+					registerConfigFile(marshalled)
 				})
 
 				It("returns an error", func() {
@@ -168,11 +184,8 @@ var _ = Describe("TaskConfigSource", func() {
 			})
 
 			Context("when the artifact source provides a malformed file", func() {
-				var streamedOut *gbytes.Buffer
-
 				BeforeEach(func() {
-					streamedOut = gbytes.BufferWithBytes([]byte("bogus"))
-					fakeStreamer.StreamFileReturns(streamedOut, nil)
+					registerConfigFile([]byte("bogus"))
 				})
 
 				It("fails", func() {
@@ -180,22 +193,20 @@ var _ = Describe("TaskConfigSource", func() {
 				})
 
 				It("closes the stream", func() {
-					Expect(streamedOut.Closed()).To(BeTrue())
+					Expect(streamer.streams).To(HaveLen(1))
+					Expect(streamer.streams[0].closed).To(BeTrue())
 				})
 			})
 
 			Context("when the artifact source provides a valid file with invalid keys", func() {
-				var streamedOut *gbytes.Buffer
-
 				BeforeEach(func() {
-					streamedOut = gbytes.BufferWithBytes([]byte(`
+					registerConfigFile([]byte(`
 platform: beos
 
 intputs: []
 
 run: {path: a/file}
 `))
-					fakeStreamer.StreamFileReturns(streamedOut, nil)
 				})
 
 				It("fails", func() {
@@ -203,7 +214,8 @@ run: {path: a/file}
 				})
 
 				It("closes the stream", func() {
-					Expect(streamedOut.Closed()).To(BeTrue())
+					Expect(streamer.streams).To(HaveLen(1))
+					Expect(streamer.streams[0].closed).To(BeTrue())
 				})
 			})
 
@@ -211,22 +223,25 @@ run: {path: a/file}
 				disaster := errors.New("nope")
 
 				BeforeEach(func() {
-					fakeStreamer.StreamFileReturns(nil, disaster)
+					repo.RegisterArtifact(build.ArtifactName(artifactName), streamOutErrorArtifact{
+						Artifact: runtimetest.NewVolume("some-volume"),
+						err:      disaster,
+					}, false)
 				})
 
 				It("returns the error", func() {
-					Expect(fetchErr).To(HaveOccurred())
+					Expect(fetchErr).To(MatchError(disaster))
 				})
 			})
 
-			Context("when the file task is not found", func() {
+			Context("when the config file is not in the artifact", func() {
 				BeforeEach(func() {
-					fakeStreamer.StreamFileReturns(nil, runtime.ErrFileNotFound)
+					repo.RegisterArtifact(build.ArtifactName(artifactName), runtimetest.NewVolume("some-volume"), false)
 				})
 
 				It("returns the error", func() {
-					Expect(fetchErr).To(HaveOccurred())
-					Expect(fetchErr.Error()).To(Equal(fmt.Sprintf("task config '%s/build.yml' not found", artifactName)))
+					Expect(fetchErr).To(MatchError(ContainSubstring("build.yml")))
+					Expect(fetchErr).To(MatchError(ContainSubstring("file does not exist")))
 				})
 			})
 		})
@@ -513,7 +528,7 @@ run: {path: a/file}
 
 	Describe("ValidatingConfigSource", func() {
 		var (
-			fakeConfigSource *execfakes.FakeTaskConfigSource
+			innerConfig atc.TaskConfig
 
 			configSource TaskConfigSource
 
@@ -522,9 +537,9 @@ run: {path: a/file}
 		)
 
 		BeforeEach(func() {
-			fakeConfigSource = new(execfakes.FakeTaskConfigSource)
+			innerConfig = atc.TaskConfig{}
 
-			configSource = ValidatingConfigSource{fakeConfigSource}
+			configSource = ValidatingConfigSource{StaticConfigSource{Config: &innerConfig}}
 		})
 
 		JustBeforeEach(func() {
@@ -543,7 +558,7 @@ run: {path: a/file}
 			}
 
 			BeforeEach(func() {
-				fakeConfigSource.FetchConfigReturns(config, nil)
+				innerConfig = config
 			})
 
 			It("returns the config and no error", func() {
@@ -554,13 +569,13 @@ run: {path: a/file}
 
 		Context("when the config is invalid", func() {
 			BeforeEach(func() {
-				fakeConfigSource.FetchConfigReturns(atc.TaskConfig{
+				innerConfig = atc.TaskConfig{
 					RootfsURI: "some-image",
 					Params:    atc.TaskEnv{"PARAM": "A"},
 					Run: atc.TaskRunConfig{
 						Args: []string{"bananapants"},
 					},
-				}, nil)
+				}
 			})
 
 			It("returns the validation error", func() {
@@ -572,7 +587,10 @@ run: {path: a/file}
 			disaster := errors.New("nope")
 
 			BeforeEach(func() {
-				fakeConfigSource.FetchConfigReturns(atc.TaskConfig{}, disaster)
+				configSource = ValidatingConfigSource{fetchErrorConfigSource{
+					TaskConfigSource: StaticConfigSource{Config: &innerConfig},
+					err:              disaster,
+				}}
 			})
 
 			It("returns the error", func() {

@@ -44,7 +44,6 @@ func WithCheckResolver(r imageresolver.Resolver) CheckStepOption {
 	}
 }
 
-//counterfeiter:generate . CheckDelegateFactory
 type CheckDelegateFactory interface {
 	CheckDelegate(state RunState) CheckDelegate
 }

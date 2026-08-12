@@ -23,7 +23,7 @@ var _ = Describe("AcrossStep", func() {
 		ctx    context.Context
 		cancel func()
 
-		fakeDelegateFactory *execfakes.FakeBuildStepDelegateFactory
+		fakeDelegateFactory exec.BuildStepDelegateFactory
 		fakeDelegate        *execfakes.FakeBuildStepDelegate
 
 		step exec.AcrossStep
@@ -111,8 +111,9 @@ var _ = Describe("AcrossStep", func() {
 		fakeDelegate = new(execfakes.FakeBuildStepDelegate)
 		fakeDelegate.StderrReturns(stderr)
 
-		fakeDelegateFactory = new(execfakes.FakeBuildStepDelegateFactory)
-		fakeDelegateFactory.BuildStepDelegateReturns(fakeDelegate)
+		fakeDelegateFactory = buildStepDelegateFactory(func(exec.RunState) exec.BuildStepDelegate {
+			return fakeDelegate
+		})
 
 		plan.Vars = []atc.AcrossVar{
 			{

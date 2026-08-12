@@ -21,7 +21,7 @@ var _ = Describe("RetryErrorStep", func() {
 		fakeStep *execfakes.FakeStep
 
 		fakeDelegate        *execfakes.FakeBuildStepDelegate
-		fakeDelegateFactory *execfakes.FakeBuildStepDelegateFactory
+		fakeDelegateFactory BuildStepDelegateFactory
 
 		state RunState
 
@@ -33,8 +33,9 @@ var _ = Describe("RetryErrorStep", func() {
 
 		fakeStep = new(execfakes.FakeStep)
 		fakeDelegate = new(execfakes.FakeBuildStepDelegate)
-		fakeDelegateFactory = new(execfakes.FakeBuildStepDelegateFactory)
-		fakeDelegateFactory.BuildStepDelegateReturns(fakeDelegate)
+		fakeDelegateFactory = buildStepDelegateFactory(func(RunState) BuildStepDelegate {
+			return fakeDelegate
+		})
 
 		state = NewRunState(noopStepper, vars.StaticVariables{})
 

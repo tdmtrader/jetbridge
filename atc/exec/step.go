@@ -76,7 +76,6 @@ type Pool interface {
 	LocateVolume(ctx context.Context, teamID int, handle string) (runtime.Volume, runtime.Worker, bool, error)
 }
 
-//counterfeiter:generate . Streamer
 type Streamer interface {
 	StreamFile(ctx context.Context, artifact runtime.Artifact, path string) (io.ReadCloser, error)
 }

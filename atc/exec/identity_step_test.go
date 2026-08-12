@@ -4,7 +4,7 @@ import (
 	"context"
 
 	. "github.com/concourse/concourse/atc/exec"
-	"github.com/concourse/concourse/atc/exec/execfakes"
+	"github.com/concourse/concourse/vars"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -12,7 +12,7 @@ import (
 
 var _ = Describe("Identity", func() {
 	var (
-		state *execfakes.FakeRunState
+		state RunState
 
 		step IdentityStep
 
@@ -21,7 +21,7 @@ var _ = Describe("Identity", func() {
 	)
 
 	BeforeEach(func() {
-		state = new(execfakes.FakeRunState)
+		state = NewRunState(noopStepper, vars.StaticVariables{})
 	})
 
 	JustBeforeEach(func() {

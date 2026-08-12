@@ -58,7 +58,7 @@ var _ = Describe("CheckStep", func() {
 		resourceConfigScope   db.ResourceConfigScope
 		realBuild             db.Build
 		fakeDelegate          *execfakes.FakeCheckDelegate
-		fakeDelegateFactory   *execfakes.FakeCheckDelegateFactory
+		fakeDelegateFactory   exec.CheckDelegateFactory
 		spanCtx               context.Context
 		defaultTimeout        time.Duration = 0
 
@@ -107,7 +107,9 @@ var _ = Describe("CheckStep", func() {
 		planID = "some-plan-id"
 
 		runState = exec.NewRunState(noopStepper, vars.StaticVariables{"source-var": "super-secret-source"})
-		fakeDelegateFactory = new(execfakes.FakeCheckDelegateFactory)
+		fakeDelegateFactory = checkDelegateFactory(func(exec.RunState) exec.CheckDelegate {
+			return fakeDelegate
+		})
 		fakeDelegate = new(execfakes.FakeCheckDelegate)
 
 		stepMetadata = exec.StepMetadata{
@@ -159,8 +161,6 @@ var _ = Describe("CheckStep", func() {
 		fakeDelegate.UpdateScopeLastCheckEndTimeStub = func(scope db.ResourceConfigScope, succeeded bool) (bool, error) {
 			return scope.UpdateLastCheckEndTime(succeeded)
 		}
-
-		fakeDelegateFactory.CheckDelegateReturns(fakeDelegate)
 
 		checkPlan = atc.CheckPlan{
 			Name:   "some-name",

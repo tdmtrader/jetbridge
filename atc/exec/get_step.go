@@ -48,7 +48,6 @@ type GetResult struct {
 	ResourceCache db.ResourceCache
 }
 
-//counterfeiter:generate . GetDelegateFactory
 type GetDelegateFactory interface {
 	GetDelegate(state RunState) GetDelegate
 }

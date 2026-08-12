@@ -3,7 +3,6 @@ package exec_test
 import (
 	"context"
 	"errors"
-	"io"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -203,15 +202,16 @@ jobs:
 		spanCtx         context.Context
 
 		fakeDelegate        *execfakes.FakeSetPipelineStepDelegate
-		fakeDelegateFactory *execfakes.FakeSetPipelineStepDelegateFactory
+		fakeDelegateFactory exec.SetPipelineStepDelegateFactory
 
 		fakeAgent *policyfakes.FakeAgent
 
-		fakeStreamer *execfakes.FakeStreamer
+		streamer *recordingStreamer
 
-		spPlan             *atc.SetPipelinePlan
-		artifactRepository *build.Repository
-		state              *execfakes.FakeRunState
+		spPlan              *atc.SetPipelinePlan
+		pipelineFileContent string
+		artifactRepository  *build.Repository
+		state               exec.RunState
 
 		spStep  exec.Step
 		stepOk  bool
@@ -247,13 +247,9 @@ jobs:
 		teamFactory = fixture.TeamFactory
 		buildFactory = fixture.BuildFactory
 
-		artifactRepository = build.NewRepository()
-		state = new(execfakes.FakeRunState)
-		state.ArtifactRepositoryReturns(artifactRepository)
-
-		state.GetStub = vars.StaticVariables{"source-param": "super-secret-source"}.Get
-
-		artifactRepository.RegisterArtifact("some-resource", runtimetest.NewVolume("some-handle"), false)
+		state = exec.NewRunState(noopStepper, vars.StaticVariables{"source-param": "super-secret-source"})
+		artifactRepository = state.ArtifactRepository()
+		pipelineFileContent = ""
 
 		stdout = gbytes.NewBuffer()
 		stderr = gbytes.NewBuffer()
@@ -265,8 +261,9 @@ jobs:
 		spanCtx = context.Background()
 		fakeDelegate.StartSpanReturns(spanCtx, tracing.NoopSpan)
 
-		fakeDelegateFactory = new(execfakes.FakeSetPipelineStepDelegateFactory)
-		fakeDelegateFactory.SetPipelineStepDelegateReturns(fakeDelegate)
+		fakeDelegateFactory = setPipelineStepDelegateFactory(func(exec.RunState) exec.SetPipelineStepDelegate {
+			return fakeDelegate
+		})
 
 		stepMetadata = exec.StepMetadata{
 			TeamID:               currentTeam.ID(),
@@ -284,7 +281,7 @@ jobs:
 		fakeAgent.CheckReturns(policy.PassedPolicyCheck(), nil)
 		fakePolicyAgentFactory.NewAgentReturns(fakeAgent, nil)
 
-		fakeStreamer = new(execfakes.FakeStreamer)
+		streamer = newRecordingStreamer()
 
 		spPlan = &atc.SetPipelinePlan{
 			Name:         "some-pipeline",
@@ -299,6 +296,14 @@ jobs:
 	})
 
 	JustBeforeEach(func() {
+		volume := runtimetest.NewVolume("some-handle")
+		if pipelineFileContent != "" {
+			volume = volume.WithContent(runtimetest.VolumeContent{
+				"pipeline.yml": {Data: []byte(pipelineFileContent)},
+			})
+		}
+		artifactRepository.RegisterArtifact("some-resource", volume, false)
+
 		plan := atc.Plan{
 			ID:          atc.PlanID(planID),
 			SetPipeline: spPlan,
@@ -311,7 +316,7 @@ jobs:
 			fakeDelegateFactory,
 			teamFactory,
 			buildFactory,
-			fakeStreamer,
+			streamer,
 		)
 
 		stepOk, stepErr = spStep.Run(ctx, state)
@@ -319,7 +324,7 @@ jobs:
 
 	Describe("persisted PostgreSQL success", func() {
 		BeforeEach(func() {
-			fakeStreamer.StreamFileReturns(&fakeReadCloser{str: pipelineContent}, nil)
+			pipelineFileContent = pipelineContent
 		})
 
 		It("persists the target reference and parent hierarchy", func() {
@@ -354,18 +359,15 @@ jobs:
 
 	Context("when file is configured", func() {
 		Context("pipeline file not exist", func() {
-			BeforeEach(func() {
-				fakeStreamer.StreamFileReturns(nil, errors.New("file not found"))
-			})
-
 			It("should fail with error of file not configured", func() {
-				Expect(stepErr).To(MatchError("file not found"))
+				Expect(stepErr).To(MatchError(ContainSubstring("pipeline.yml")))
+				Expect(stepErr).To(MatchError(ContainSubstring("file does not exist")))
 			})
 		})
 
 		Context("when pipeline file exists but has bad syntax", func() {
 			BeforeEach(func() {
-				fakeStreamer.StreamFileReturns(&fakeReadCloser{str: badPipelineContentWithInvalidSyntax}, nil)
+				pipelineFileContent = badPipelineContentWithInvalidSyntax
 			})
 
 			It("should not return error", func() {
@@ -386,7 +388,7 @@ jobs:
 
 		Context("when pipeline file exists but has duplicate keys", func() {
 			BeforeEach(func() {
-				fakeStreamer.StreamFileReturns(&fakeReadCloser{str: badPipelineWithDuplicateKeys}, nil)
+				pipelineFileContent = badPipelineWithDuplicateKeys
 			})
 
 			It("should not return error", func() {
@@ -407,7 +409,7 @@ jobs:
 
 		Context("when pipeline file exists and has merge keys", func() {
 			BeforeEach(func() {
-				fakeStreamer.StreamFileReturns(&fakeReadCloser{str: pipelineWithMergeKeys}, nil)
+				pipelineFileContent = pipelineWithMergeKeys
 			})
 
 			It("should not return error", func() {
@@ -423,7 +425,7 @@ jobs:
 
 		Context("when pipeline file exists but is empty", func() {
 			BeforeEach(func() {
-				fakeStreamer.StreamFileReturns(&fakeReadCloser{str: badPipelineContentWithEmptyContent}, nil)
+				pipelineFileContent = badPipelineContentWithEmptyContent
 			})
 
 			It("should return an error", func() {
@@ -448,7 +450,7 @@ jobs:
 
 		Context("when pipeline file is good", func() {
 			BeforeEach(func() {
-				fakeStreamer.StreamFileReturns(&fakeReadCloser{str: pipelineContent}, nil)
+				pipelineFileContent = pipelineContent
 			})
 
 			Context("when get pipeline fails", func() {
@@ -780,21 +782,3 @@ jobs:
 		})
 	})
 })
-
-type fakeReadCloser struct {
-	str   string
-	index int
-}
-
-func (r *fakeReadCloser) Read(p []byte) (int, error) {
-	if r.index >= len(r.str) {
-		return 0, io.EOF
-	}
-	l := copy(p, []byte(r.str)[r.index:])
-	r.index += l
-	return l, nil
-}
-
-func (r *fakeReadCloser) Close() error {
-	return nil
-}

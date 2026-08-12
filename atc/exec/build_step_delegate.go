@@ -14,7 +14,6 @@ import (
 	"github.com/concourse/concourse/tracing"
 )
 
-//counterfeiter:generate . BuildStepDelegateFactory
 type BuildStepDelegateFactory interface {
 	BuildStepDelegate(state RunState) BuildStepDelegate
 }
@@ -42,7 +41,6 @@ type BuildStepDelegate interface {
 	ContainerOwner(planId atc.PlanID) db.ContainerOwner
 }
 
-//counterfeiter:generate . SetPipelineStepDelegateFactory
 type SetPipelineStepDelegateFactory interface {
 	SetPipelineStepDelegate(state RunState) SetPipelineStepDelegate
 }

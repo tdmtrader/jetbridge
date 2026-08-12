@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
-	"strings"
 	"time"
 
 	"github.com/concourse/concourse/atc"
@@ -35,12 +33,12 @@ var _ = Describe("TaskStep", func() {
 		stdoutBuf *gbytes.Buffer
 		stderrBuf *gbytes.Buffer
 
-		fakePool     *execfakes.FakePool
-		fakeStreamer *execfakes.FakeStreamer
+		fakePool *execfakes.FakePool
+		streamer *recordingStreamer
 
 		fakeDelegate *execfakes.FakeTaskDelegate
 
-		fakeDelegateFactory *execfakes.FakeTaskDelegateFactory
+		fakeDelegateFactory exec.TaskDelegateFactory
 
 		taskPlan *atc.TaskPlan
 
@@ -80,7 +78,7 @@ var _ = Describe("TaskStep", func() {
 		stdoutBuf = gbytes.NewBuffer()
 		stderrBuf = gbytes.NewBuffer()
 
-		fakeStreamer = new(execfakes.FakeStreamer)
+		streamer = newRecordingStreamer()
 
 		fakeDelegate = new(execfakes.FakeTaskDelegate)
 		fakeDelegate.StdoutReturns(stdoutBuf)
@@ -88,8 +86,9 @@ var _ = Describe("TaskStep", func() {
 
 		fakeDelegate.StartSpanReturns(ctx, tracing.NoopSpan)
 
-		fakeDelegateFactory = new(execfakes.FakeTaskDelegateFactory)
-		fakeDelegateFactory.TaskDelegateReturns(fakeDelegate)
+		fakeDelegateFactory = taskDelegateFactory(func(exec.RunState) exec.TaskDelegate {
+			return fakeDelegate
+		})
 
 		taskStepOptions = nil
 
@@ -125,7 +124,7 @@ var _ = Describe("TaskStep", func() {
 			stepMetadata,
 			containerMetadata,
 			fakePool,
-			fakeStreamer,
+			streamer,
 			fakeDelegateFactory,
 			defaultTaskTimeout,
 			taskStepOptions...,
@@ -768,10 +767,11 @@ var _ = Describe("TaskStep", func() {
 			Context("when the image's metadata.json is malformed", func() {
 				BeforeEach(func() {
 					taskPlan.Config.Run.Path = ""
-					fakeStreamer.StreamFileReturns(io.NopCloser(strings.NewReader("definitely not json")), nil)
 
 					taskPlan.ImageArtifactName = "some-image-artifact"
-					imageVolume := runtimetest.NewVolume("image-volume")
+					imageVolume := runtimetest.NewVolume("image-volume").WithContent(runtimetest.VolumeContent{
+						"metadata.json": {Data: []byte("definitely not json")},
+					})
 					repo.RegisterArtifact("some-image-artifact", imageVolume, false)
 				})
 
@@ -789,7 +789,6 @@ var _ = Describe("TaskStep", func() {
 			Context("when the image's metadata.json is not present in the image artifact", func() {
 				BeforeEach(func() {
 					taskPlan.Config.Run.Path = ""
-					fakeStreamer.StreamFileReturns(nil, runtime.ErrFileNotFound)
 
 					taskPlan.ImageArtifactName = "some-image-artifact"
 					imageVolume := runtimetest.NewVolume("image-volume")
@@ -797,8 +796,8 @@ var _ = Describe("TaskStep", func() {
 				})
 
 				It("returns the error", func() {
-					Expect(stepErr).To(HaveOccurred())
-					Expect(stepErr.Error()).To(ContainSubstring("file 'metadata.json' not found within artifact 'image-volume'"))
+					Expect(stepErr).To(MatchError(ContainSubstring("metadata.json")))
+					Expect(stepErr).To(MatchError(ContainSubstring("file does not exist")))
 				})
 
 				It("is not successful", func() {
@@ -821,10 +820,10 @@ var _ = Describe("TaskStep", func() {
     "echo hello world"
   ]
 }`
-				fakeStreamer.StreamFileReturns(io.NopCloser(strings.NewReader(rootfsMetadata)), nil)
-
 				taskPlan.ImageArtifactName = "some-image-artifact"
-				imageVolume := runtimetest.NewVolume("image-volume")
+				imageVolume := runtimetest.NewVolume("image-volume").WithContent(runtimetest.VolumeContent{
+					"metadata.json": {Data: []byte(rootfsMetadata)},
+				})
 				repo.RegisterArtifact("some-image-artifact", imageVolume, false)
 			})
 
@@ -853,7 +852,9 @@ var _ = Describe("TaskStep", func() {
 					taskPlan.Config.Run.Path = ""
 					taskPlan.Config.Run.Args = []string{}
 					rootfsMetadata := `{ "entrypoint": [ "some-program", "some-arg" ] }`
-					fakeStreamer.StreamFileReturns(io.NopCloser(strings.NewReader(rootfsMetadata)), nil)
+					repo.RegisterArtifact("some-image-artifact", runtimetest.NewVolume("image-volume").WithContent(runtimetest.VolumeContent{
+						"metadata.json": {Data: []byte(rootfsMetadata)},
+					}), false)
 				})
 
 				It("is parsed correctly", func() {
@@ -869,7 +870,9 @@ var _ = Describe("TaskStep", func() {
 					taskPlan.Config.Run.Path = ""
 					taskPlan.Config.Run.Args = []string{}
 					rootfsMetadata := `{ "cmd": [ "cmd-program", "cmd-arg" ] }`
-					fakeStreamer.StreamFileReturns(io.NopCloser(strings.NewReader(rootfsMetadata)), nil)
+					repo.RegisterArtifact("some-image-artifact", runtimetest.NewVolume("image-volume").WithContent(runtimetest.VolumeContent{
+						"metadata.json": {Data: []byte(rootfsMetadata)},
+					}), false)
 				})
 
 				It("is parsed correctly", func() {
@@ -972,7 +975,7 @@ var _ = Describe("TaskStep", func() {
 			})
 
 			It("does not try to stream metadata.json from the artifact", func() {
-				Expect(fakeStreamer.StreamFileCallCount()).To(Equal(0))
+				Expect(streamer.callCount).To(Equal(0))
 			})
 		})
 
@@ -1162,11 +1165,9 @@ var _ = Describe("TaskStep", func() {
   ports:
   - containerPort: 5432
 `
-				fakeStreamer.StreamFileReturnsOnCall(0,
-					io.NopCloser(strings.NewReader(sidecarYAML)), nil,
-				)
-
-				sidecarVolume := runtimetest.NewVolume("sidecar-source")
+				sidecarVolume := runtimetest.NewVolume("sidecar-source").WithContent(runtimetest.VolumeContent{
+					"ci/sidecars/postgres.yml": {Data: []byte(sidecarYAML)},
+				})
 				repo.RegisterArtifact("my-repo", sidecarVolume, false)
 
 				taskPlan.Sidecars = []atc.SidecarSource{{File: "my-repo/ci/sidecars/postgres.yml"}}
@@ -1196,7 +1197,7 @@ var _ = Describe("TaskStep", func() {
 				Expect(chosenContainer.Spec.Sidecars).To(HaveLen(1))
 				Expect(chosenContainer.Spec.Sidecars[0].Name).To(Equal("redis"))
 				Expect(chosenContainer.Spec.Sidecars[0].Image).To(Equal("redis:7"))
-				Expect(fakeStreamer.StreamFileCallCount()).To(Equal(0))
+				Expect(streamer.callCount).To(Equal(0))
 			})
 		})
 
@@ -1208,11 +1209,9 @@ var _ = Describe("TaskStep", func() {
   ports:
   - containerPort: 5432
 `
-				fakeStreamer.StreamFileReturnsOnCall(0,
-					io.NopCloser(strings.NewReader(sidecarYAML)), nil,
-				)
-
-				sidecarVolume := runtimetest.NewVolume("sidecar-source")
+				sidecarVolume := runtimetest.NewVolume("sidecar-source").WithContent(runtimetest.VolumeContent{
+					"ci/sidecars/postgres.yml": {Data: []byte(sidecarYAML)},
+				})
 				repo.RegisterArtifact("my-repo", sidecarVolume, false)
 
 				taskPlan.Sidecars = []atc.SidecarSource{
@@ -1238,11 +1237,9 @@ var _ = Describe("TaskStep", func() {
 - name: postgres
   image: postgres:15
 `
-				fakeStreamer.StreamFileReturnsOnCall(0,
-					io.NopCloser(strings.NewReader(sidecarYAML)), nil,
-				)
-
-				sidecarVolume := runtimetest.NewVolume("sidecar-source")
+				sidecarVolume := runtimetest.NewVolume("sidecar-source").WithContent(runtimetest.VolumeContent{
+					"ci/sidecars/postgres.yml": {Data: []byte(sidecarYAML)},
+				})
 				repo.RegisterArtifact("my-repo", sidecarVolume, false)
 
 				taskPlan.Sidecars = []atc.SidecarSource{

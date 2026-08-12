@@ -15,8 +15,6 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-//counterfeiter:generate . TaskConfigSource
-
 // TaskConfigSource is used to determine a Task step's TaskConfig.
 type TaskConfigSource interface {
 	// FetchConfig returns the TaskConfig, and may have to a task config file out

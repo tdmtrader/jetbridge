@@ -17,6 +17,7 @@ import (
 	"github.com/concourse/concourse/atc/exec/execfakes"
 	"github.com/concourse/concourse/atc/runtime/runtimetest"
 	"github.com/concourse/concourse/tracing"
+	"github.com/concourse/concourse/vars"
 )
 
 const plainString = "  pv  \n\n"
@@ -41,15 +42,16 @@ var _ = Describe("LoadVarStep", func() {
 		testLogger *lagertest.TestLogger
 
 		fakeDelegate        *execfakes.FakeBuildStepDelegate
-		fakeDelegateFactory *execfakes.FakeBuildStepDelegateFactory
+		fakeDelegateFactory exec.BuildStepDelegateFactory
 
-		fakeStreamer *execfakes.FakeStreamer
+		streamer *recordingStreamer
 
 		spanCtx context.Context
 
 		loadVarPlan        *atc.LoadVarPlan
+		fileContent        string
 		artifactRepository *build.Repository
-		state              *execfakes.FakeRunState
+		state              exec.RunState
 
 		spStep  exec.Step
 		stepOk  bool
@@ -74,11 +76,9 @@ var _ = Describe("LoadVarStep", func() {
 		ctx, cancel = context.WithCancel(context.Background())
 		ctx = lagerctx.NewContext(ctx, testLogger)
 
-		artifactRepository = build.NewRepository()
-		state = new(execfakes.FakeRunState)
-		state.ArtifactRepositoryReturns(artifactRepository)
-
-		artifactRepository.RegisterArtifact("some-resource", runtimetest.NewVolume("some-handle"), false)
+		state = exec.NewRunState(noopStepper, vars.StaticVariables{})
+		artifactRepository = state.ArtifactRepository()
+		fileContent = ""
 
 		stdout = gbytes.NewBuffer()
 		stderr = gbytes.NewBuffer()
@@ -90,18 +90,26 @@ var _ = Describe("LoadVarStep", func() {
 		spanCtx = context.Background()
 		fakeDelegate.StartSpanReturns(spanCtx, tracing.NoopSpan)
 
-		fakeDelegateFactory = new(execfakes.FakeBuildStepDelegateFactory)
-		fakeDelegateFactory.BuildStepDelegateReturns(fakeDelegate)
+		fakeDelegateFactory = buildStepDelegateFactory(func(exec.RunState) exec.BuildStepDelegate {
+			return fakeDelegate
+		})
 
-		fakeStreamer = new(execfakes.FakeStreamer)
+		streamer = newRecordingStreamer()
 	})
 
 	expectLocalVarAdded := func(expectKey string, expectValue any, expectRedact bool) {
-		Expect(state.AddLocalVarCallCount()).To(Equal(1))
-		k, v, redact := state.AddLocalVarArgsForCall(0)
-		Expect(k).To(Equal(expectKey))
-		Expect(v).To(Equal(expectValue))
-		Expect(redact).To(Equal(expectRedact))
+		value, found, err := state.Get(vars.Reference{Source: ".", Path: expectKey})
+		Expect(err).ToNot(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(value).To(Equal(expectValue))
+
+		redacted := vars.TrackedVarsMap{}
+		state.IterateInterpolatedCreds(redacted)
+		if expectRedact {
+			Expect(redacted).ToNot(BeEmpty())
+		} else {
+			Expect(redacted).To(BeEmpty())
+		}
 	}
 
 	AfterEach(func() {
@@ -109,6 +117,11 @@ var _ = Describe("LoadVarStep", func() {
 	})
 
 	JustBeforeEach(func() {
+		_, filePath, _ := strings.Cut(loadVarPlan.File, "/")
+		artifactRepository.RegisterArtifact("some-resource", runtimetest.NewVolume("some-handle").WithContent(runtimetest.VolumeContent{
+			filePath: {Data: []byte(fileContent)},
+		}), false)
+
 		plan := atc.Plan{
 			ID:      atc.PlanID(planID),
 			LoadVar: loadVarPlan,
@@ -119,7 +132,7 @@ var _ = Describe("LoadVarStep", func() {
 			*plan.LoadVar,
 			stepMetadata,
 			fakeDelegateFactory,
-			fakeStreamer,
+			streamer,
 		)
 
 		stepOk, stepErr = spStep.Run(ctx, state)
@@ -149,7 +162,7 @@ var _ = Describe("LoadVarStep", func() {
 					Format: "trim",
 				}
 
-				fakeStreamer.StreamFileReturns(&fakeReadCloser{str: plainString}, nil)
+				fileContent = plainString
 			})
 
 			It("succeeds", func() {
@@ -170,7 +183,7 @@ var _ = Describe("LoadVarStep", func() {
 					Format: "raw",
 				}
 
-				fakeStreamer.StreamFileReturns(&fakeReadCloser{str: plainString}, nil)
+				fileContent = plainString
 			})
 
 			It("succeeds", func() {
@@ -191,7 +204,7 @@ var _ = Describe("LoadVarStep", func() {
 					Format: "json",
 				}
 
-				fakeStreamer.StreamFileReturns(&fakeReadCloser{str: jsonString}, nil)
+				fileContent = jsonString
 			})
 
 			It("succeeds", func() {
@@ -212,7 +225,7 @@ var _ = Describe("LoadVarStep", func() {
 					Format: "yml",
 				}
 
-				fakeStreamer.StreamFileReturns(&fakeReadCloser{str: yamlString}, nil)
+				fileContent = yamlString
 			})
 
 			It("succeeds", func() {
@@ -233,7 +246,7 @@ var _ = Describe("LoadVarStep", func() {
 					Format: "yaml",
 				}
 
-				fakeStreamer.StreamFileReturns(&fakeReadCloser{str: yamlString}, nil)
+				fileContent = yamlString
 			})
 
 			It("succeeds", func() {
@@ -255,7 +268,7 @@ var _ = Describe("LoadVarStep", func() {
 					File: "some-resource/a.diff",
 				}
 
-				fakeStreamer.StreamFileReturns(&fakeReadCloser{str: plainString}, nil)
+				fileContent = plainString
 			})
 
 			It("succeeds", func() {
@@ -275,7 +288,7 @@ var _ = Describe("LoadVarStep", func() {
 					File: "some-resource/a.json",
 				}
 
-				fakeStreamer.StreamFileReturns(&fakeReadCloser{str: jsonString}, nil)
+				fileContent = jsonString
 			})
 
 			It("succeeds", func() {
@@ -295,7 +308,7 @@ var _ = Describe("LoadVarStep", func() {
 					File: "some-resource/a.yml",
 				}
 
-				fakeStreamer.StreamFileReturns(&fakeReadCloser{str: yamlString}, nil)
+				fileContent = yamlString
 			})
 
 			It("succeeds", func() {
@@ -315,7 +328,7 @@ var _ = Describe("LoadVarStep", func() {
 					File: "some-resource/a.yaml",
 				}
 
-				fakeStreamer.StreamFileReturns(&fakeReadCloser{str: yamlString}, nil)
+				fileContent = yamlString
 			})
 
 			It("succeeds", func() {
@@ -337,7 +350,7 @@ var _ = Describe("LoadVarStep", func() {
 					File: "some-resource/a.json",
 				}
 
-				fakeStreamer.StreamFileReturns(&fakeReadCloser{str: jsonString + "{}"}, nil)
+				fileContent = jsonString + "{}"
 			})
 
 			It("step should fail", func() {
@@ -353,7 +366,7 @@ var _ = Describe("LoadVarStep", func() {
 					File: "some-resource/a.yaml",
 				}
 
-				fakeStreamer.StreamFileReturns(&fakeReadCloser{str: "a:\nb"}, nil)
+				fileContent = "a:\nb"
 			})
 
 			It("step should fail", func() {
@@ -369,7 +382,7 @@ var _ = Describe("LoadVarStep", func() {
 					File: "some-resource-not-in-the-registry/a.json",
 				}
 
-				fakeStreamer.StreamFileReturns(&fakeReadCloser{str: plainString}, nil)
+				fileContent = plainString
 			})
 
 			It("step should fail", func() {
@@ -385,7 +398,7 @@ var _ = Describe("LoadVarStep", func() {
 					Name: "some-var",
 					File: "some-resource/a.diff",
 				}
-				fakeStreamer.StreamFileReturns(&fakeReadCloser{str: plainString}, nil)
+				fileContent = plainString
 			})
 
 			It("local var should be redacted", func() {
@@ -400,7 +413,7 @@ var _ = Describe("LoadVarStep", func() {
 					File:   "some-resource/a.diff",
 					Reveal: false,
 				}
-				fakeStreamer.StreamFileReturns(&fakeReadCloser{str: plainString}, nil)
+				fileContent = plainString
 			})
 
 			It("local var should be redacted", func() {
@@ -415,7 +428,7 @@ var _ = Describe("LoadVarStep", func() {
 					File:   "some-resource/a.diff",
 					Reveal: true,
 				}
-				fakeStreamer.StreamFileReturns(&fakeReadCloser{str: plainString}, nil)
+				fileContent = plainString
 			})
 
 			It("local var should not be redacted", func() {

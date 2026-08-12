@@ -19,7 +19,6 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-//counterfeiter:generate . PutDelegateFactory
 type PutDelegateFactory interface {
 	PutDelegate(state RunState) PutDelegate
 }

@@ -32,7 +32,7 @@ var _ = Describe("PutStep", func() {
 		cancel func()
 
 		fakeDelegate        *execfakes.FakePutDelegate
-		fakeDelegateFactory *execfakes.FakePutDelegateFactory
+		fakeDelegateFactory exec.PutDelegateFactory
 
 		fakePool        *execfakes.FakePool
 		chosenWorker    *runtimetest.Worker
@@ -112,8 +112,9 @@ var _ = Describe("PutStep", func() {
 		fakeDelegate.StdoutReturns(stdoutBuf)
 		fakeDelegate.StderrReturns(stderrBuf)
 
-		fakeDelegateFactory = new(execfakes.FakePutDelegateFactory)
-		fakeDelegateFactory.PutDelegateReturns(fakeDelegate)
+		fakeDelegateFactory = putDelegateFactory(func(exec.RunState) exec.PutDelegate {
+			return fakeDelegate
+		})
 
 		spanCtx = context.Background()
 		fakeDelegate.StartSpanReturns(spanCtx, tracing.NoopSpan)

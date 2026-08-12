@@ -56,7 +56,6 @@ func (err TaskImageSourceParametersError) Error() string {
 	return fmt.Sprintf("failed to evaluate image resource parameters: %s", err.Err)
 }
 
-//counterfeiter:generate . TaskDelegateFactory
 type TaskDelegateFactory interface {
 	TaskDelegate(state RunState) TaskDelegate
 }

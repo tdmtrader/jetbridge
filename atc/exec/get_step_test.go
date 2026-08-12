@@ -48,7 +48,7 @@ var _ = Describe("GetStep", func() {
 		loadOwnedCache       func() db.ResourceCache
 
 		fakeDelegate        *execfakes.FakeGetDelegate
-		fakeDelegateFactory *execfakes.FakeGetDelegateFactory
+		fakeDelegateFactory exec.GetDelegateFactory
 
 		fakeLockFactory *lockfakes.FakeLockFactory
 
@@ -156,8 +156,9 @@ var _ = Describe("GetStep", func() {
 		fakeDelegate.ContainerOwnerReturns(expectedOwner)
 		fakeDelegate.ResourceCacheUserReturns(db.ForBuild(realBuild.ID()))
 
-		fakeDelegateFactory = new(execfakes.FakeGetDelegateFactory)
-		fakeDelegateFactory.GetDelegateReturns(fakeDelegate)
+		fakeDelegateFactory = getDelegateFactory(func(exec.RunState) exec.GetDelegate {
+			return fakeDelegate
+		})
 
 		getPlan = &atc.GetPlan{
 			Name: "some-name",

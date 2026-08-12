@@ -1,7 +1,9 @@
 package exec_test
 
 import (
+	"context"
 	"database/sql"
+	"io"
 	"testing"
 	"time"
 
@@ -11,6 +13,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/compression"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbtest"
 	"github.com/concourse/concourse/atc/db/lock"
@@ -18,7 +21,9 @@ import (
 	"github.com/concourse/concourse/atc/policy"
 	"github.com/concourse/concourse/atc/policy/policyfakes"
 	"github.com/concourse/concourse/atc/postgresrunner"
+	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/util"
+	"github.com/concourse/concourse/atc/worker"
 )
 
 func init() {
@@ -125,4 +130,78 @@ func createExecJobBuild(
 var noopStepper exec.Stepper = func(atc.Plan) exec.Step {
 	Fail("cannot create substep")
 	return nil
+}
+
+type buildStepDelegateFactory func(exec.RunState) exec.BuildStepDelegate
+
+func (f buildStepDelegateFactory) BuildStepDelegate(state exec.RunState) exec.BuildStepDelegate {
+	return f(state)
+}
+
+type setPipelineStepDelegateFactory func(exec.RunState) exec.SetPipelineStepDelegate
+
+func (f setPipelineStepDelegateFactory) SetPipelineStepDelegate(state exec.RunState) exec.SetPipelineStepDelegate {
+	return f(state)
+}
+
+type checkDelegateFactory func(exec.RunState) exec.CheckDelegate
+
+func (f checkDelegateFactory) CheckDelegate(state exec.RunState) exec.CheckDelegate {
+	return f(state)
+}
+
+type getDelegateFactory func(exec.RunState) exec.GetDelegate
+
+func (f getDelegateFactory) GetDelegate(state exec.RunState) exec.GetDelegate {
+	return f(state)
+}
+
+type putDelegateFactory func(exec.RunState) exec.PutDelegate
+
+func (f putDelegateFactory) PutDelegate(state exec.RunState) exec.PutDelegate {
+	return f(state)
+}
+
+type taskDelegateFactory func(exec.RunState) exec.TaskDelegate
+
+func (f taskDelegateFactory) TaskDelegate(state exec.RunState) exec.TaskDelegate {
+	return f(state)
+}
+
+// recordingStreamer wraps the real worker.Streamer, keeping track of how many
+// files were streamed and whether the caller closed each stream it handed out.
+type recordingStreamer struct {
+	exec.Streamer
+
+	callCount int
+	streams   []*recordedStream
+}
+
+func newRecordingStreamer() *recordingStreamer {
+	return &recordingStreamer{
+		Streamer: worker.NewStreamer(compression.NewGzipCompression()),
+	}
+}
+
+func (s *recordingStreamer) StreamFile(ctx context.Context, artifact runtime.Artifact, path string) (io.ReadCloser, error) {
+	s.callCount++
+
+	stream, err := s.Streamer.StreamFile(ctx, artifact, path)
+	if err != nil {
+		return nil, err
+	}
+
+	recorded := &recordedStream{ReadCloser: stream}
+	s.streams = append(s.streams, recorded)
+	return recorded, nil
+}
+
+type recordedStream struct {
+	io.ReadCloser
+	closed bool
+}
+
+func (s *recordedStream) Close() error {
+	s.closed = true
+	return s.ReadCloser.Close()
 }
