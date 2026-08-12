@@ -1,54 +1,76 @@
 package encryption_test
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
+
 	"github.com/concourse/concourse/atc/db/encryption"
-	"github.com/concourse/concourse/atc/db/encryption/encryptionfakes"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
 
+func newEncryptionKey(k string) *encryption.Key {
+	block, err := aes.NewCipher([]byte(k))
+	Expect(err).ToNot(HaveOccurred())
+
+	aesgcm, err := cipher.NewGCM(block)
+	Expect(err).ToNot(HaveOccurred())
+
+	return encryption.NewKey(aesgcm)
+}
+
 var _ = Describe("Encryption Key with Fallback", func() {
 	var (
-		key       *encryption.FallbackStrategy
-		strategy1 *encryptionfakes.FakeStrategy
-		strategy2 *encryptionfakes.FakeStrategy
+		key      *encryption.Key
+		strategy *encryption.FallbackStrategy
 	)
 
 	BeforeEach(func() {
-		strategy1 = &encryptionfakes.FakeStrategy{}
-		strategy2 = &encryptionfakes.FakeStrategy{}
+		key = newEncryptionKey("AES256Key-32Characters1234567890")
 
-		key = encryption.NewFallbackStrategy(strategy1, strategy2)
+		strategy = encryption.NewFallbackStrategy(key, encryption.NewNoEncryption())
 	})
 
-	Context("when the main key is valid", func() {
-		It("decrypts plaintext using the main key", func() {
-			strategy1.DecryptReturns([]byte("plaintext"), nil)
+	It("encrypts with the main key", func() {
+		encryptedText, nonce, err := strategy.Encrypt([]byte("plaintext"))
+		Expect(err).ToNot(HaveOccurred())
+		Expect(nonce).ToNot(BeNil())
+		Expect(encryptedText).ToNot(Equal("plaintext"))
 
-			decryptedText, err := key.Decrypt("ciphertext", nil)
+		decryptedText, err := key.Decrypt(encryptedText, nonce)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(decryptedText).To(Equal([]byte("plaintext")))
+	})
+
+	Context("when the data is encrypted with the main key", func() {
+		It("decrypts it with the main key", func() {
+			encryptedText, nonce, err := key.Encrypt([]byte("plaintext"))
+			Expect(err).ToNot(HaveOccurred())
+
+			decryptedText, err := strategy.Decrypt(encryptedText, nonce)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(decryptedText).To(Equal([]byte("plaintext")))
 		})
 	})
 
-	Context("when the main key is invalid", func() {
-		It("decrypts plaintext using the fallback key", func() {
-			strategy1.DecryptReturns(nil, encryption.ErrDataIsEncrypted)
-			strategy2.DecryptReturns([]byte("plaintext"), nil)
-
-			decryptedText, err := key.Decrypt("ciphertext", nil)
+	Context("when the data is not encrypted", func() {
+		It("falls back to reading it as plaintext", func() {
+			decryptedText, err := strategy.Decrypt("plaintext", nil)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(decryptedText).To(Equal([]byte("plaintext")))
 		})
 	})
 
-	Context("when both keys to decrypt are invalid", func() {
-		It("return with an error", func() {
-			strategy1.DecryptReturns(nil, encryption.ErrDataIsEncrypted)
-			strategy2.DecryptReturns(nil, encryption.ErrDataIsEncrypted)
+	Context("when the data is encrypted with a different key", func() {
+		It("errors instead of returning the ciphertext", func() {
+			otherKey := newEncryptionKey("AES256Key-32Characters9564567123")
 
-			_, err := key.Decrypt("ciphertext", nil)
-			Expect(err).To(HaveOccurred())
+			encryptedText, nonce, err := otherKey.Encrypt([]byte("plaintext"))
+			Expect(err).ToNot(HaveOccurred())
+
+			decryptedText, err := strategy.Decrypt(encryptedText, nonce)
+			Expect(err).To(MatchError(encryption.ErrDataIsEncrypted))
+			Expect(decryptedText).To(BeNil())
 		})
 	})
 })
