@@ -15,7 +15,6 @@ import (
 
 	"github.com/concourse/concourse/atc/compression"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 )
 
 type VolumeContent fstest.MapFS
@@ -27,15 +26,11 @@ type Volume struct {
 	ResourceCacheInitialized  bool
 	ResourceCacheStreamedFrom int
 	TaskCacheInitialized      bool
-	DBVolume_                 *dbfakes.FakeCreatedVolume
 }
 
 func NewVolume(handle string) *Volume {
-	dbVolume := new(dbfakes.FakeCreatedVolume)
-	dbVolume.HandleReturns(handle)
 	return &Volume{
 		VolumeHandle: handle,
-		DBVolume_:    dbVolume,
 		Content:      VolumeContent{},
 	}
 }
@@ -77,8 +72,11 @@ func (v *Volume) InitializeTaskCache(_ context.Context, _ int, _, _ string, _ bo
 	return nil
 }
 
+// DBVolume returns nil — runtimetest models runtime behavior only, and carries
+// no persisted state. Tests that exercise a DB-backed path embed the Volume in
+// an adapter that returns a real db.CreatedVolume.
 func (v Volume) DBVolume() db.CreatedVolume {
-	return v.DBVolume_
+	return nil
 }
 
 func (vc VolumeContent) StreamIn(ctx context.Context, path string, encoding compression.Encoding, _ float64, tarStream io.Reader) error {

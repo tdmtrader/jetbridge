@@ -6,7 +6,6 @@ import (
 	"github.com/concourse/concourse/atc/db"
 )
 
-//counterfeiter:generate . DBPinger
 type DBPinger interface {
 	Ping() error
 }

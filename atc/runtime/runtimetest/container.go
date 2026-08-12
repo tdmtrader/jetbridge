@@ -8,7 +8,6 @@ import (
 	"sync"
 
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/runtime"
 )
 
@@ -18,9 +17,8 @@ type ProcessDefinition struct {
 }
 
 type Container struct {
-	ProcessDefs  []ProcessDefinition
-	Props        map[string]string
-	DBContainer_ *dbfakes.FakeCreatedContainer
+	ProcessDefs []ProcessDefinition
+	Props       map[string]string
 
 	mtx       *sync.Mutex
 	processes []*Process
@@ -29,11 +27,9 @@ type Container struct {
 }
 
 func NewContainer() *Container {
-	dbContainer := new(dbfakes.FakeCreatedContainer)
 	return &Container{
-		Props:        make(map[string]string),
-		DBContainer_: dbContainer,
-		mtx:          new(sync.Mutex),
+		Props: make(map[string]string),
+		mtx:   new(sync.Mutex),
 	}
 }
 
@@ -102,6 +98,9 @@ func (c *Container) SetProperty(name string, value string) error {
 	return nil
 }
 
+// DBContainer returns nil — runtimetest models runtime behavior only, and
+// carries no persisted state. Tests that exercise a DB-backed path embed the
+// Container in an adapter that returns a real db.CreatedContainer.
 func (c *Container) DBContainer() db.CreatedContainer {
-	return c.DBContainer_
+	return nil
 }

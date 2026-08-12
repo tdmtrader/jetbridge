@@ -6,7 +6,6 @@ import (
 	"reflect"
 
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/runtime"
 )
 
@@ -21,13 +20,10 @@ type Worker struct {
 	WorkerName string
 	Containers []*WorkerContainer
 	Volumes    []*Volume
-	DBWorker_  *dbfakes.FakeWorker
 }
 
 func NewWorker(name string) *Worker {
-	dbWorker := new(dbfakes.FakeWorker)
-	dbWorker.NameReturns(name)
-	return &Worker{WorkerName: name, DBWorker_: dbWorker}
+	return &Worker{WorkerName: name}
 }
 
 func (w Worker) WithVolumes(volumes ...*Volume) *Worker {
@@ -121,8 +117,4 @@ func (w Worker) FindDaemonResourceCache(ctx context.Context, cacheID int) (runti
 // reads are not exercised in this fake.
 func (w Worker) ArtifactFromVolume(vol runtime.Volume) runtime.Artifact {
 	return vol
-}
-
-func (w Worker) DBWorker() db.Worker {
-	return w.DBWorker_
 }
