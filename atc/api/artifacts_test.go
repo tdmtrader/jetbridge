@@ -16,7 +16,6 @@ import (
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runtime/runtimetest"
 	. "github.com/concourse/concourse/atc/testhelpers"
-	"github.com/concourse/concourse/atc/worker"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -27,6 +26,7 @@ type artifactAPITeam struct {
 	mu                               sync.Mutex
 	findVolumeForWorkerArtifactErr   error
 	findVolumeForWorkerArtifactCalls []int
+	findWorkerForVolumeCalls         []string
 }
 
 func (team *artifactAPITeam) FindVolumeForWorkerArtifact(artifactID int) (db.CreatedVolume, bool, error) {
@@ -40,6 +40,24 @@ func (team *artifactAPITeam) FindVolumeForWorkerArtifact(artifactID int) (db.Cre
 	}
 
 	return team.Team.FindVolumeForWorkerArtifact(artifactID)
+}
+
+// FindWorkerForVolume is how the worker pool turns the volume handle the
+// handler asked about into a worker. Recording it here rather than on the pool
+// observes both arguments the handler passed: the handle, and -- because the
+// team factory only hands this team out under its own ID -- the team ID.
+func (team *artifactAPITeam) FindWorkerForVolume(handle string) (db.Worker, bool, error) {
+	team.mu.Lock()
+	team.findWorkerForVolumeCalls = append(team.findWorkerForVolumeCalls, handle)
+	team.mu.Unlock()
+
+	return team.Team.FindWorkerForVolume(handle)
+}
+
+func (team *artifactAPITeam) FindWorkerForVolumeCalls() []string {
+	team.mu.Lock()
+	defer team.mu.Unlock()
+	return append([]string(nil), team.findWorkerForVolumeCalls...)
 }
 
 func (team *artifactAPITeam) SetFindVolumeForWorkerArtifactError(err error) {
@@ -58,6 +76,13 @@ type artifactAPITeamFactory struct {
 	db.TeamFactory
 	teamName string
 	team     db.Team
+}
+
+func (factory artifactAPITeamFactory) GetByID(teamID int) db.Team {
+	if teamID == factory.team.ID() {
+		return factory.team
+	}
+	return factory.TeamFactory.GetByID(teamID)
 }
 
 func (factory artifactAPITeamFactory) FindTeam(name string) (db.Team, bool, error) {
@@ -174,16 +199,11 @@ var _ = Describe("ArtifactRepository API", func() {
 				}
 
 				volume = runtimetest.NewVolume(handle)
-				fakeWorkerPool.CreateVolumeForArtifactReturns(volume, artifact, nil)
+				workerRuntime.createsArtifact(volume, artifact)
 			})
 
-			It("creates the volume", func() {
-				Expect(fakeWorkerPool.CreateVolumeForArtifactCallCount()).To(Equal(1))
-
-				_, workerSpec := fakeWorkerPool.CreateVolumeForArtifactArgsForCall(0)
-				Expect(workerSpec).To(Equal(worker.Spec{
-					TeamID: team.ID(),
-				}))
+			It("creates the volume for the team in the request", func() {
+				Expect(workerRuntime.artifactTeamIDSnapshot()).To(Equal([]int{team.ID()}))
 			})
 
 			It("streams into the volume", func() {
@@ -338,16 +358,12 @@ var _ = Describe("ArtifactRepository API", func() {
 
 			Context("when the db artifact volume is found", func() {
 				It("uses the volume handle to lookup the worker volume", func() {
-					Expect(fakeWorkerPool.LocateVolumeCallCount()).To(Equal(1))
-
-					_, teamID, actualHandle := fakeWorkerPool.LocateVolumeArgsForCall(0)
-					Expect(actualHandle).To(Equal(handle))
-					Expect(teamID).To(Equal(team.ID()))
+					Expect(routeTeam.FindWorkerForVolumeCalls()).To(Equal([]string{handle}))
 				})
 
 				Context("when the worker client errors", func() {
 					BeforeEach(func() {
-						fakeWorkerPool.LocateVolumeReturns(nil, nil, false, errors.New("nope"))
+						workerRuntime.failVolumeLookup(errors.New("nope"))
 					})
 
 					It("returns 500", func() {
@@ -357,7 +373,7 @@ var _ = Describe("ArtifactRepository API", func() {
 
 				Context("when the worker client can't find the volume", func() {
 					BeforeEach(func() {
-						fakeWorkerPool.LocateVolumeReturns(nil, nil, false, nil)
+						workerRuntime.addVolume(runtimetest.NewVolume("some-other-handle"))
 					})
 
 					It("returns 404", func() {
@@ -374,7 +390,7 @@ var _ = Describe("ArtifactRepository API", func() {
 								"some/file": {Data: []byte("some content")},
 							})
 
-						fakeWorkerPool.LocateVolumeReturns(volume, runtimetest.NewWorker("worker"), true, nil)
+						workerRuntime.addVolume(volume)
 					})
 
 					It("returns 200", func() {

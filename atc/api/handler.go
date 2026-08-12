@@ -33,9 +33,6 @@ import (
 	"github.com/tedsuo/rata"
 )
 
-//go:generate go run github.com/maxbrunsfeld/counterfeiter/v6 -generate
-
-//counterfeiter:generate . Pool
 type Pool interface {
 	artifactserver.Pool
 	containerserver.Pool

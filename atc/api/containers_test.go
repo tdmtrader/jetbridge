@@ -129,12 +129,13 @@ type containersAPICheckCall struct {
 type containersAPITeam struct {
 	db.Team
 
-	mu                         sync.Mutex
-	containersErr              error
-	findContainerByHandleErr   error
-	findContainerByHandleCalls []string
-	metadataCalls              []db.ContainerMetadata
-	checkCalls                 []containersAPICheckCall
+	mu                          sync.Mutex
+	containersErr               error
+	findContainerByHandleErr    error
+	findContainerByHandleCalls  []string
+	findWorkerForContainerCalls []string
+	metadataCalls               []db.ContainerMetadata
+	checkCalls                  []containersAPICheckCall
 }
 
 func (team *containersAPITeam) Containers() ([]db.Container, error) {
@@ -156,6 +157,18 @@ func (team *containersAPITeam) FindContainerByHandle(handle string) (db.Containe
 		return nil, false, err
 	}
 	return team.Team.FindContainerByHandle(handle)
+}
+
+// FindWorkerForContainer is how the worker pool turns the handle the handler
+// asked about into a worker. Recording it here rather than on the pool
+// observes both arguments the handler passed: the handle, and -- because the
+// team factory only hands this team out under its own ID -- the team ID.
+func (team *containersAPITeam) FindWorkerForContainer(handle string) (db.Worker, bool, error) {
+	team.mu.Lock()
+	team.findWorkerForContainerCalls = append(team.findWorkerForContainerCalls, handle)
+	team.mu.Unlock()
+
+	return team.Team.FindWorkerForContainer(handle)
 }
 
 func (team *containersAPITeam) FindContainersByMetadata(metadata db.ContainerMetadata) ([]db.Container, error) {
@@ -190,6 +203,12 @@ func (team *containersAPITeam) findContainerByHandleCallSnapshot() []string {
 	return append([]string(nil), team.findContainerByHandleCalls...)
 }
 
+func (team *containersAPITeam) findWorkerForContainerCallSnapshot() []string {
+	team.mu.Lock()
+	defer team.mu.Unlock()
+	return append([]string(nil), team.findWorkerForContainerCalls...)
+}
+
 func (team *containersAPITeam) metadataCallSnapshot() []db.ContainerMetadata {
 	team.mu.Lock()
 	defer team.mu.Unlock()
@@ -206,6 +225,13 @@ type containersAPITeamFactory struct {
 	db.TeamFactory
 	teamName string
 	team     *containersAPITeam
+}
+
+func (factory containersAPITeamFactory) GetByID(teamID int) db.Team {
+	if teamID == factory.team.ID() {
+		return factory.team
+	}
+	return factory.TeamFactory.GetByID(teamID)
 }
 
 func (factory containersAPITeamFactory) FindTeam(name string) (db.Team, bool, error) {
@@ -822,7 +848,7 @@ var _ = Describe("Containers API", func() {
 			fixture = selected
 			handle = selected.container.Handle()
 			runtimeContainer.dbContainer = selected.created
-			fakeWorkerPool.LocateContainerReturns(runtimeContainer, runtimetest.NewWorker(selected.worker.Name()), true, nil)
+			workerRuntime.addContainer(handle, runtimeContainer)
 		}
 
 		installBlockingProcess := func() chan int {
@@ -960,9 +986,7 @@ var _ = Describe("Containers API", func() {
 
 						It("returns Forbidden", func() {
 							Expect(response.StatusCode).To(Equal(http.StatusForbidden))
-							_, teamID, lookedUpHandle := fakeWorkerPool.LocateContainerArgsForCall(0)
-							Expect(teamID).To(Equal(team.ID()))
-							Expect(lookedUpHandle).To(Equal(handle))
+							Expect(routeTeam.findWorkerForContainerCallSnapshot()).To(Equal([]string{handle}))
 						})
 					})
 
@@ -981,9 +1005,7 @@ var _ = Describe("Containers API", func() {
 
 							It("returns 404 not found", func() {
 								Expect(response.StatusCode).To(Equal(http.StatusNotFound))
-								_, teamID, lookedUpHandle := fakeWorkerPool.LocateContainerArgsForCall(0)
-								Expect(teamID).To(Equal(team.ID()))
-								Expect(lookedUpHandle).To(Equal(handle))
+								Expect(routeTeam.findWorkerForContainerCallSnapshot()).To(Equal([]string{handle}))
 							})
 						})
 
@@ -997,9 +1019,7 @@ var _ = Describe("Containers API", func() {
 
 							It("should try to hijack the container", func() {
 								waitForHijack()
-								_, teamID, lookedUpHandle := fakeWorkerPool.LocateContainerArgsForCall(0)
-								Expect(teamID).To(Equal(team.ID()))
-								Expect(lookedUpHandle).To(Equal(handle))
+								Expect(routeTeam.findWorkerForContainerCallSnapshot()).To(Equal([]string{handle}))
 							})
 						})
 					})
@@ -1016,9 +1036,7 @@ var _ = Describe("Containers API", func() {
 
 						It("returns 404 not found", func() {
 							Expect(response.StatusCode).To(Equal(http.StatusNotFound))
-							_, teamID, lookedUpHandle := fakeWorkerPool.LocateContainerArgsForCall(0)
-							Expect(teamID).To(Equal(team.ID()))
-							Expect(lookedUpHandle).To(Equal(handle))
+							Expect(routeTeam.findWorkerForContainerCallSnapshot()).To(Equal([]string{handle}))
 						})
 					})
 
@@ -1027,14 +1045,12 @@ var _ = Describe("Containers API", func() {
 							BeforeEach(func() {
 								expectBadHandshake = true
 
-								fakeWorkerPool.LocateContainerReturns(nil, nil, false, errors.New("nope"))
+								workerRuntime.failContainerLookup(errors.New("nope"))
 							})
 
 							It("returns 500 internal error", func() {
 								Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-								_, teamID, lookedUpHandle := fakeWorkerPool.LocateContainerArgsForCall(0)
-								Expect(teamID).To(Equal(team.ID()))
-								Expect(lookedUpHandle).To(Equal(handle))
+								Expect(routeTeam.findWorkerForContainerCallSnapshot()).To(Equal([]string{handle}))
 							})
 						})
 
@@ -1042,14 +1058,16 @@ var _ = Describe("Containers API", func() {
 							BeforeEach(func() {
 								expectBadHandshake = true
 
-								fakeWorkerPool.LocateContainerReturns(nil, nil, false, nil)
+								// A container the database still records, on a worker
+								// that no longer holds it.
+								handle = createContainersAPIBuildStepContainer(
+									deps, team, "forgetful-worker", "forgotten-plan", fullMetadata, true,
+								).container.Handle()
 							})
 
 							It("returns 404 Not Found", func() {
 								Expect(response.StatusCode).To(Equal(http.StatusNotFound))
-								_, teamID, lookedUpHandle := fakeWorkerPool.LocateContainerArgsForCall(0)
-								Expect(teamID).To(Equal(team.ID()))
-								Expect(lookedUpHandle).To(Equal(handle))
+								Expect(routeTeam.findWorkerForContainerCallSnapshot()).To(Equal([]string{handle}))
 							})
 						})
 
@@ -1094,9 +1112,7 @@ var _ = Describe("Containers API", func() {
 							It("hijacks the build", func() {
 								waitForHijack()
 
-								_, lookedUpTeamID, lookedUpHandle := fakeWorkerPool.LocateContainerArgsForCall(0)
-								Expect(lookedUpTeamID).To(Equal(team.ID()))
-								Expect(lookedUpHandle).To(Equal(handle))
+								Expect(routeTeam.findWorkerForContainerCallSnapshot()).To(Equal([]string{handle}))
 							})
 
 							It("updates the last hijack value", func() {
@@ -1294,7 +1310,7 @@ var _ = Describe("Containers API", func() {
 
 			It("returns 401 Unauthorized", func() {
 				Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
-				Expect(fakeWorkerPool.LocateContainerCallCount()).To(Equal(0))
+				Expect(routeTeam.findWorkerForContainerCallSnapshot()).To(BeEmpty())
 			})
 		})
 	})

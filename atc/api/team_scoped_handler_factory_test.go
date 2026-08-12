@@ -11,7 +11,6 @@ import (
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api"
 	"github.com/concourse/concourse/atc/api/accessor"
-	"github.com/concourse/concourse/atc/auditor/auditorfakes"
 	"github.com/concourse/concourse/atc/db"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -47,10 +46,10 @@ var _ = Describe("TeamScopedHandlerFactory", func() {
 
 		handler = accessor.NewHandler(
 			logger,
-			"some-action",
+			auditedAction,
 			innerHandler,
 			fakeAccessor,
-			new(auditorfakes.FakeAuditor),
+			newAuditor(),
 			map[string]string{},
 		)
 	})
@@ -94,9 +93,9 @@ var _ = Describe("TeamScopedHandlerFactory", func() {
 			Expect(doomed.Close()).To(Succeed())
 
 			handler = accessor.NewHandler(
-				logger, "some-action",
+				logger, auditedAction,
 				api.NewTeamScopedHandlerFactory(logger, doomedFactory).HandlerFor(delegate.GetHandler),
-				fakeAccessor, new(auditorfakes.FakeAuditor), map[string]string{},
+				fakeAccessor, newAuditor(), map[string]string{},
 			)
 		})
 
