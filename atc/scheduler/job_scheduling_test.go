@@ -2,13 +2,12 @@ package scheduler_test
 
 import (
 	"context"
-	"errors"
-	"fmt"
 
 	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/builds"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
+	"github.com/concourse/concourse/atc/db/dbtest"
 	"github.com/concourse/concourse/atc/scheduler"
 	"github.com/concourse/concourse/atc/scheduler/schedulerfakes"
 	. "github.com/onsi/ginkgo/v2"
@@ -21,12 +20,12 @@ var _ = DescribeTable("Job Scheduling",
 	Entry("one pending build that can be successfully started", Example{
 		Job: DBJob{
 			Builds: []DBBuild{
-				{ID: 1},
+				{Kind: SchedulerBuild},
 			},
 		},
 
 		Result: Result{
-			StartedBuilds: []int{1},
+			StartedBuilds: []int{0},
 			NeedsRetry:    false,
 		},
 	}),
@@ -34,7 +33,7 @@ var _ = DescribeTable("Job Scheduling",
 	Entry("one pending build that is aborted", Example{
 		Job: DBJob{
 			Builds: []DBBuild{
-				{ID: 1, Aborted: true},
+				{Kind: SchedulerBuild, Aborted: true},
 			},
 		},
 
@@ -46,8 +45,9 @@ var _ = DescribeTable("Job Scheduling",
 
 	Entry("one pending build that has reached max in flight", Example{
 		Job: DBJob{
+			MaxInFlightReached: true,
 			Builds: []DBBuild{
-				{ID: 1, MaxInFlightReached: true},
+				{Kind: SchedulerBuild},
 			},
 		},
 
@@ -59,8 +59,9 @@ var _ = DescribeTable("Job Scheduling",
 
 	Entry("one manually triggered pending build that does not have resources checked", Example{
 		Job: DBJob{
+			ResourcesNotChecked: true,
 			Builds: []DBBuild{
-				{ID: 1, ManuallyTriggered: true, ResourcesNotChecked: true},
+				{Kind: ManualBuild},
 			},
 		},
 
@@ -72,8 +73,9 @@ var _ = DescribeTable("Job Scheduling",
 
 	Entry("one pending build that does not have inputs determined", Example{
 		Job: DBJob{
+			InputsUndetermined: true,
 			Builds: []DBBuild{
-				{ID: 1, InputsNotDetermined: true},
+				{Kind: SchedulerBuild},
 			},
 		},
 
@@ -85,8 +87,9 @@ var _ = DescribeTable("Job Scheduling",
 
 	Entry("one pending build that cannot create build plan", Example{
 		Job: DBJob{
+			PlanFails: true,
 			Builds: []DBBuild{
-				{ID: 1, CreatingBuildPlanFails: true},
+				{Kind: SchedulerBuild},
 			},
 		},
 
@@ -99,7 +102,7 @@ var _ = DescribeTable("Job Scheduling",
 	Entry("one pending build that is unable to start", Example{
 		Job: DBJob{
 			Builds: []DBBuild{
-				{ID: 1, UnableToStart: true},
+				{Kind: SchedulerBuild, AbortedAfterScan: true},
 			},
 		},
 
@@ -109,40 +112,41 @@ var _ = DescribeTable("Job Scheduling",
 		},
 	}),
 
-	Entry("one scheduler build, one manually triggered build and one rerun build", Example{
+	Entry("one rerun build, one scheduler build and one manually triggered build", Example{
 		Job: DBJob{
 			Builds: []DBBuild{
-				{ID: 4, RerunOfBuildID: 1},
-				{ID: 2},
-				{ID: 3, ManuallyTriggered: true},
+				{Kind: RerunBuild},
+				{Kind: SchedulerBuild},
+				{Kind: ManualBuild},
 			},
 		},
 
 		Result: Result{
-			StartedBuilds: []int{4, 2, 3},
+			StartedBuilds: []int{0, 1, 2},
 			NeedsRetry:    false,
 		},
 	}),
 
-	Entry("if pending builds is aborted, next build will continue to schedule", Example{
+	Entry("if a pending build is aborted, next build will continue to schedule", Example{
 		Job: DBJob{
 			Builds: []DBBuild{
-				{ID: 1, Aborted: true},
-				{ID: 2},
+				{Kind: SchedulerBuild, Aborted: true},
+				{Kind: ManualBuild},
 			},
 		},
 
 		Result: Result{
-			StartedBuilds: []int{2},
+			StartedBuilds: []int{1},
 			NeedsRetry:    false,
 		},
 	}),
 
 	Entry("if the build after an aborted build has reached max in flight, it will not schedule", Example{
 		Job: DBJob{
+			MaxInFlightReached: true,
 			Builds: []DBBuild{
-				{ID: 1, Aborted: true},
-				{ID: 2, MaxInFlightReached: true},
+				{Kind: SchedulerBuild, Aborted: true},
+				{Kind: ManualBuild},
 			},
 		},
 
@@ -154,9 +158,10 @@ var _ = DescribeTable("Job Scheduling",
 
 	Entry("if max in flight is reached, next builds will not schedule", Example{
 		Job: DBJob{
+			MaxInFlightReached: true,
 			Builds: []DBBuild{
-				{ID: 1, MaxInFlightReached: true},
-				{ID: 2},
+				{Kind: SchedulerBuild},
+				{Kind: ManualBuild},
 			},
 		},
 
@@ -168,9 +173,10 @@ var _ = DescribeTable("Job Scheduling",
 
 	Entry("if resources have not checked for a manually triggered build, next builds will not schedule", Example{
 		Job: DBJob{
+			ResourcesNotChecked: true,
 			Builds: []DBBuild{
-				{ID: 1, ManuallyTriggered: true, ResourcesNotChecked: true},
-				{ID: 2},
+				{Kind: ManualBuild},
+				{Kind: ManualBuild},
 			},
 		},
 
@@ -183,22 +189,23 @@ var _ = DescribeTable("Job Scheduling",
 	Entry("if the rerun build has no inputs determined, the normal build will continue to get scheduled", Example{
 		Job: DBJob{
 			Builds: []DBBuild{
-				{ID: 3, RerunOfBuildID: 1, InputsNotDetermined: true},
-				{ID: 2},
+				{Kind: StaleRerunBuild},
+				{Kind: SchedulerBuild},
 			},
 		},
 
 		Result: Result{
-			StartedBuilds: []int{2},
+			StartedBuilds: []int{1},
 			NeedsRetry:    false,
 		},
 	}),
 
 	Entry("if inputs are not determined on a regular build, next builds will not schedule", Example{
 		Job: DBJob{
+			InputsUndetermined: true,
 			Builds: []DBBuild{
-				{ID: 1, InputsNotDetermined: true},
-				{ID: 2},
+				{Kind: SchedulerBuild},
+				{Kind: ManualBuild},
 			},
 		},
 
@@ -211,9 +218,9 @@ var _ = DescribeTable("Job Scheduling",
 	Entry("if both rerun builds cannot determine inputs, next build will continue to schedule", Example{
 		Job: DBJob{
 			Builds: []DBBuild{
-				{ID: 4, RerunOfBuildID: 1, InputsNotDetermined: true},
-				{ID: 3, RerunOfBuildID: 1, InputsNotDetermined: true},
-				{ID: 2},
+				{Kind: StaleRerunBuild},
+				{Kind: StaleRerunBuild},
+				{Kind: SchedulerBuild},
 			},
 		},
 
@@ -225,9 +232,10 @@ var _ = DescribeTable("Job Scheduling",
 
 	Entry("if regular build fails to schedule, next rerun build will not schedule", Example{
 		Job: DBJob{
+			InputsUndetermined: true,
 			Builds: []DBBuild{
-				{ID: 2, InputsNotDetermined: true},
-				{ID: 4, RerunOfBuildID: 3},
+				{Kind: SchedulerBuild},
+				{Kind: RerunBuild},
 			},
 		},
 
@@ -238,121 +246,229 @@ var _ = DescribeTable("Job Scheduling",
 	}),
 )
 
+type BuildKind string
+
+const (
+	SchedulerBuild  BuildKind = "scheduler"
+	RerunBuild      BuildKind = "rerun"
+	StaleRerunBuild BuildKind = "stale-rerun"
+	ManualBuild     BuildKind = "manual"
+)
+
 type Example struct {
 	Job    DBJob
 	Result Result
 }
 
 type DBJob struct {
+	MaxInFlightReached  bool
+	InputsUndetermined  bool
+	ResourcesNotChecked bool
+	PlanFails           bool
+
 	Builds []DBBuild
 }
 
 type DBBuild struct {
-	ID                int
-	RerunOfBuildID    int
-	ManuallyTriggered bool
+	Kind BuildKind
 
-	Aborted bool
-
-	InputsNotDetermined bool
-	ResourcesNotChecked bool
-	MaxInFlightReached  bool
-
-	CreatingBuildPlanFails bool
-	UnableToStart          bool
+	Aborted          bool
+	AbortedAfterScan bool
 }
 
 type Result struct {
 	StartedBuilds []int
 	NeedsRetry    bool
-	Errored       bool
+}
+
+func (example Example) persistJob(fixture *schedulerDB) (db.Job, db.SchedulerResources) {
+	GinkgoHelper()
+
+	if example.Job.PlanFails {
+		return persistStarterJob(fixture, starterUnplannableJob, "get-job"),
+			db.SchedulerResources{{Name: "some-resource", Type: "some-type"}}
+	}
+
+	if example.Job.ResourcesNotChecked {
+		scenario := dbtest.Setup(
+			fixture.Builder.WithTeam("scheduling-team"),
+			fixture.Builder.WithPipeline(atc.Config{
+				Resources: atc.ResourceConfigs{
+					{Name: "some-resource", Type: dbtest.BaseResourceType, Source: atc.Source{"some": "source"}},
+				},
+				Jobs: atc.JobConfigs{
+					{
+						Name: "get-job",
+						PlanSequence: []atc.Step{
+							{Config: &atc.GetStep{Name: "some-resource"}},
+						},
+					},
+				},
+			}),
+			fixture.Builder.WithResourceVersions("some-resource", atc.Version{"ref": "v1"}),
+		)
+		job := scenario.Job("get-job")
+		Expect(job.SaveNextInputMapping(nil, true)).To(Succeed())
+		return job, db.SchedulerResources{{Name: "some-resource", Type: dbtest.BaseResourceType}}
+	}
+
+	jobConfig := starterTaskJob
+	if example.Job.MaxInFlightReached {
+		jobConfig.RawMaxInFlight = 1
+	}
+	return persistStarterJob(fixture, atc.Config{Jobs: atc.JobConfigs{jobConfig}}, jobConfig.Name), nil
+}
+
+// persistBuilds lays out the pending builds so that GetPendingBuilds scans them
+// in the order the example declares. Reruns sort by the build they rerun, so the
+// originals of any rerun declared ahead of the scheduler build have to exist
+// before it, and the scheduler build itself can only be created while nothing
+// else is pending.
+func (example Example) persistBuilds(job db.Job) []db.Build {
+	GinkgoHelper()
+
+	created := make([]db.Build, len(example.Job.Builds))
+	originals := make([]db.Build, len(example.Job.Builds))
+
+	schedulerIndex := len(example.Job.Builds)
+	for i, spec := range example.Job.Builds {
+		if spec.Kind == SchedulerBuild {
+			schedulerIndex = i
+			break
+		}
+	}
+
+	for i, spec := range example.Job.Builds {
+		if i < schedulerIndex && isRerun(spec.Kind) {
+			originals[i] = persistRerunOriginal(job, spec.Kind)
+		}
+	}
+
+	if schedulerIndex < len(example.Job.Builds) {
+		created[schedulerIndex] = nextPendingBuild(job)
+	}
+
+	for i, spec := range example.Job.Builds {
+		switch {
+		case i == schedulerIndex:
+		case isRerun(spec.Kind):
+			if originals[i] == nil {
+				originals[i] = persistRerunOriginal(job, spec.Kind)
+			}
+			rerun, err := job.RerunBuild(originals[i], "test")
+			Expect(err).NotTo(HaveOccurred())
+			created[i] = rerun
+		default:
+			build, err := job.CreateBuild("test")
+			Expect(err).NotTo(HaveOccurred())
+			created[i] = build
+		}
+	}
+
+	for i, spec := range example.Job.Builds {
+		if spec.Aborted {
+			Expect(created[i].MarkAsAborted()).To(Succeed())
+		}
+	}
+
+	return created
+}
+
+func isRerun(kind BuildKind) bool {
+	return kind == RerunBuild || kind == StaleRerunBuild
+}
+
+func persistRerunOriginal(job db.Job, kind BuildKind) db.Build {
+	GinkgoHelper()
+
+	original, err := job.CreateBuild("test")
+	Expect(err).NotTo(HaveOccurred())
+
+	if kind == RerunBuild {
+		_, determined, err := original.AdoptInputsAndPipes()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(determined).To(BeTrue())
+	}
+
+	Expect(original.Finish(db.BuildStatusSucceeded)).To(Succeed())
+	return original
+}
+
+func buildIDs(builds []db.Build) []int {
+	ids := make([]int, len(builds))
+	for i, build := range builds {
+		ids[i] = build.ID()
+	}
+	return ids
 }
 
 func (example Example) Run() {
-	fakePlanner := new(schedulerfakes.FakeBuildPlanner)
+	GinkgoHelper()
+
+	fixture := useSchedulerDB()
+
 	fakeAlgorithm := new(schedulerfakes.FakeAlgorithm)
-	fakeAlgorithm.ComputeReturns(nil, true, false, nil)
+	fakeAlgorithm.ComputeReturns(db.InputMapping{}, true, false, nil)
+	buildStarter := scheduler.NewBuildStarter(builds.NewPlanner(atc.NewPlanFactory(0)), fakeAlgorithm)
 
-	buildStarter := scheduler.NewBuildStarter(fakePlanner, fakeAlgorithm)
+	job, resources := example.persistJob(fixture)
 
-	fakeJob := new(dbfakes.FakeJob)
-	fakeJob.ConfigReturns(atc.JobConfig{}, nil)
-	fakeJob.SaveNextInputMappingReturns(nil)
+	if example.Job.MaxInFlightReached {
+		running, err := job.CreateBuild("test")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(job.ScheduleBuild(running)).To(BeTrue())
+		started, err := running.Start(atc.Plan{})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(started).To(BeTrue())
+	}
+
+	created := example.persistBuilds(job)
+
+	if example.Job.InputsUndetermined {
+		Expect(job.SaveNextInputMapping(nil, false)).To(Succeed())
+	}
+
+	pending, err := job.GetPendingBuilds()
+	Expect(err).NotTo(HaveOccurred())
+	Expect(buildIDs(pending)).To(Equal(buildIDs(created)))
+
+	abortAfterScan := map[int]bool{}
+	for i, spec := range example.Job.Builds {
+		if spec.AbortedAfterScan {
+			abortAfterScan[i] = true
+		}
+	}
+
+	scannedJob := db.Job(job)
+	if len(abortAfterScan) > 0 {
+		scannedJob = wrappedPendingBuildsJob{
+			Job: job,
+			wrap: func(i int, build db.Build) db.Build {
+				if abortAfterScan[i] {
+					Expect(build.MarkAsAborted()).To(Succeed())
+				}
+				return build
+			},
+		}
+	}
+
+	needsRetry, err := buildStarter.TryStartPendingBuildsForJob(
+		context.Background(),
+		lager.NewLogger("job-scheduling-tests"),
+		db.SchedulerJob{
+			Job:       scannedJob,
+			Resources: resources,
+		},
+		db.InputConfigs{},
+	)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(needsRetry).To(Equal(example.Result.NeedsRetry))
 
 	startedBuilds := []int{}
-	var pendingBuilds []db.Build
-	var scheduleBuildCall int
-	for _, build := range example.Job.Builds {
-		fakeBuild := new(dbfakes.FakeBuild)
-		fakeBuild.IDReturns(build.ID)
-		fakeBuild.NameReturns(fmt.Sprint(build.ID))
-		fakeBuild.IsAbortedReturns(build.Aborted)
-		fakeBuild.RerunOfReturns(build.RerunOfBuildID)
-		fakeBuild.IsManuallyTriggeredReturns(build.ManuallyTriggered)
-		fakeBuild.FinishReturns(nil)
-
-		if !build.Aborted {
-			fakeJob.ScheduleBuildReturnsOnCall(scheduleBuildCall, !build.MaxInFlightReached, nil)
-			scheduleBuildCall++
+	for i, build := range created {
+		if reloadStarterBuild(fixture, build.ID()).Status() == db.BuildStatusStarted {
+			startedBuilds = append(startedBuilds, i)
 		}
-
-		if build.ResourcesNotChecked {
-			fakeBuild.ResourcesCheckedReturns(false, nil)
-		} else {
-			fakeBuild.ResourcesCheckedReturns(true, nil)
-		}
-
-		if build.InputsNotDetermined {
-			fakeBuild.AdoptInputsAndPipesReturns(nil, false, nil)
-			fakeBuild.AdoptRerunInputsAndPipesReturns(nil, false, nil)
-		} else {
-			fakeBuild.AdoptInputsAndPipesReturns(nil, true, nil)
-			fakeBuild.AdoptRerunInputsAndPipesReturns(nil, true, nil)
-		}
-
-		if build.CreatingBuildPlanFails {
-			fakePlanner.CreateReturns(atc.Plan{}, errors.New("disaster"))
-		} else {
-			fakePlanner.CreateReturns(atc.Plan{}, nil)
-		}
-
-		fakeBuild.StartCalls(func(atc.Plan) (bool, error) {
-			if build.UnableToStart {
-				return false, nil
-			}
-			startedBuilds = append(startedBuilds, build.ID)
-			return true, nil
-		})
-
-		pendingBuilds = append(pendingBuilds, fakeBuild)
 	}
-
-	fakeJob.GetPendingBuildsReturns(pendingBuilds, nil)
-
-	jobInputs := db.InputConfigs{
-		{
-			Name: "fake-resource",
-		},
-	}
-
-	needsRetry, err := buildStarter.TryStartPendingBuildsForJob(context.Background(), lager.NewLogger("job-scheduling-tests"), db.SchedulerJob{
-		Job: fakeJob,
-		Resources: db.SchedulerResources{
-			{
-				Name: "fake-resource",
-				Type: "fake-resource-type",
-				Source: atc.Source{
-					"some": "source",
-				},
-			},
-		},
-	},
-		jobInputs)
-	if err != nil {
-		Expect(example.Result.Errored).To(BeTrue())
-	} else {
-		Expect(example.Result.Errored).To(BeFalse())
-		Expect(needsRetry).To(Equal(example.Result.NeedsRetry))
-		Expect(startedBuilds).To(Equal(example.Result.StartedBuilds))
-	}
+	Expect(startedBuilds).To(Equal(example.Result.StartedBuilds))
 }

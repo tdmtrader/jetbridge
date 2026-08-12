@@ -4,13 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/db/lock"
 	. "github.com/concourse/concourse/atc/scheduler"
 	"github.com/concourse/concourse/atc/scheduler/schedulerfakes"
@@ -48,6 +48,15 @@ func (factory *closeAfterScanSchedulerJobFactory) JobsToSchedule() (db.Scheduler
 		return nil, fmt.Errorf("close scanned job connection: %w", factory.closeErr)
 	}
 	return jobs, nil
+}
+
+type duplicateScanSchedulerJobFactory struct {
+	db.JobFactory
+	job db.SchedulerJob
+}
+
+func (factory *duplicateScanSchedulerJobFactory) JobsToSchedule() (db.SchedulerJobs, error) {
+	return db.SchedulerJobs{factory.job, factory.job}, nil
 }
 
 type destroyPipelineAfterScanJobFactory struct {
@@ -351,16 +360,39 @@ var _ = Describe("Runner", func() {
 		completion := newSchedulerJobCompletion()
 		realJobs[0].Job = &completionSchedulerJob{Job: realJobs[0].Job, completion: completion}
 
-		// A production JobsToSchedule query cannot return the same row twice.
-		// Retain this one synthetic factory to exercise Runner's in-memory guard.
-		duplicateFactory := new(dbfakes.FakeJobFactory)
-		duplicateFactory.JobsToScheduleReturns(db.SchedulerJobs{realJobs[0], realJobs[0]}, nil)
-		deferSchedulerCompletions(nil, func() []*schedulerJobCompletion {
+		// A production JobsToSchedule query cannot return the same row twice, so
+		// hand the runner the same real row twice to exercise its in-memory guard.
+		duplicateFactory := &duplicateScanSchedulerJobFactory{
+			JobFactory: fixture.JobFactory,
+			job:        realJobs[0],
+		}
+
+		scheduling := make(chan struct{}, 2)
+		unblock := make(chan struct{})
+		var once sync.Once
+		release := func() { once.Do(func() { close(unblock) }) }
+		fakeScheduler.ScheduleStub = func(context.Context, lager.Logger, db.SchedulerJob) (bool, error) {
+			scheduling <- struct{}{}
+			<-unblock
+			return false, nil
+		}
+		deferSchedulerCompletions(release, func() []*schedulerJobCompletion {
 			return []*schedulerJobCompletion{completion}
 		})
-		fakeScheduler.ScheduleReturns(false, nil)
 
-		Expect(newRunner(duplicateFactory, 2).Run(ctx)).To(Succeed())
+		// The single scheduling slot is held for as long as Schedule blocks, so
+		// Run can only return while the duplicate is still in flight if the
+		// duplicate was skipped outright.
+		runErr := make(chan error, 1)
+		go func() {
+			defer GinkgoRecover()
+			runErr <- newRunner(duplicateFactory, 1).Run(ctx)
+		}()
+
+		Eventually(ctx, scheduling, 10*time.Second).Should(Receive())
+		Eventually(ctx, runErr, 10*time.Second).Should(Receive(BeNil()))
+
+		release()
 		waitForSchedulerCompletion(ctx, completion)
 		Expect(fakeScheduler.ScheduleCallCount()).To(Equal(1))
 		_, lastScheduled := schedulerJobTimestamps(fixture, job.ID())

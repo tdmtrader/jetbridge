@@ -135,6 +135,149 @@ func (factory *observedSchedulerJobFactory) completion(jobID int) *schedulerJobC
 	return factory.completions[jobID]
 }
 
+type algorithmInputsFailsJob struct {
+	db.Job
+	err error
+}
+
+func (job algorithmInputsFailsJob) AlgorithmInputs() (db.InputConfigs, error) {
+	return nil, job.err
+}
+
+type requestScheduleFailsJob struct {
+	db.Job
+	err error
+}
+
+func (job requestScheduleFailsJob) RequestSchedule() error {
+	return job.err
+}
+
+type saveNextInputMappingFailsJob struct {
+	db.Job
+	err error
+}
+
+func (job saveNextInputMappingFailsJob) SaveNextInputMapping(db.InputMapping, bool) error {
+	return job.err
+}
+
+type nextBuildInputsFailsJob struct {
+	db.Job
+	err error
+}
+
+func (job nextBuildInputsFailsJob) GetFullNextBuildInputs() ([]db.BuildInput, bool, error) {
+	return nil, false, job.err
+}
+
+type ensurePendingBuildFailsJob struct {
+	db.Job
+	err error
+}
+
+func (job ensurePendingBuildFailsJob) EnsurePendingBuildExists(context.Context) error {
+	return job.err
+}
+
+type setHasNewInputsFailsJob struct {
+	db.Job
+	err error
+}
+
+func (job setHasNewInputsFailsJob) SetHasNewInputs(bool) error {
+	return job.err
+}
+
+type pendingBuildsFailsJob struct {
+	db.Job
+	err error
+}
+
+func (job pendingBuildsFailsJob) GetPendingBuilds() ([]db.Build, error) {
+	return nil, job.err
+}
+
+type scheduleBuildFailsJob struct {
+	db.Job
+	err error
+}
+
+func (job scheduleBuildFailsJob) ScheduleBuild(db.Build) (bool, error) {
+	return false, job.err
+}
+
+type wrappedPendingBuildsJob struct {
+	db.Job
+	wrap func(int, db.Build) db.Build
+}
+
+func (job wrappedPendingBuildsJob) GetPendingBuilds() ([]db.Build, error) {
+	pending, err := job.Job.GetPendingBuilds()
+	if err != nil {
+		return nil, err
+	}
+
+	wrapped := make([]db.Build, len(pending))
+	for i, build := range pending {
+		wrapped[i] = job.wrap(i, build)
+	}
+	return wrapped, nil
+}
+
+type resourcesCheckedFailsBuild struct {
+	db.Build
+	err error
+}
+
+func (build resourcesCheckedFailsBuild) ResourcesChecked() (bool, error) {
+	return false, build.err
+}
+
+type adoptInputsFailsBuild struct {
+	db.Build
+	err error
+}
+
+func (build adoptInputsFailsBuild) AdoptInputsAndPipes() ([]db.BuildInput, bool, error) {
+	return nil, false, build.err
+}
+
+type adoptRerunInputsFailsBuild struct {
+	db.Build
+	err error
+}
+
+func (build adoptRerunInputsFailsBuild) AdoptRerunInputsAndPipes() ([]db.BuildInput, bool, error) {
+	return nil, false, build.err
+}
+
+type startFailsBuild struct {
+	db.Build
+	err error
+}
+
+func (build startFailsBuild) Start(atc.Plan) (bool, error) {
+	return false, build.err
+}
+
+type finishFailsBuild struct {
+	db.Build
+	err error
+}
+
+func (build finishFailsBuild) Finish(db.BuildStatus) error {
+	return build.err
+}
+
+type checkNamedBuild struct {
+	db.Build
+}
+
+func (build checkNamedBuild) Name() string {
+	return db.CheckBuildName
+}
+
 func deferSchedulerCompletions(unblock func(), completions func() []*schedulerJobCompletion) {
 	GinkgoHelper()
 

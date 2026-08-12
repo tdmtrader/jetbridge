@@ -8,7 +8,6 @@ import (
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/metric"
 	. "github.com/concourse/concourse/atc/scheduler"
 	"github.com/concourse/concourse/atc/scheduler/schedulerfakes"
@@ -170,28 +169,42 @@ var _ = Describe("Scheduler Metrics & Observability", func() {
 			Expect(metric.Metrics.CheckBuildsStarted.Delta()).To(BeNumerically("==", 0))
 		})
 
-		It("increments CheckBuildsStarted for the synthetic check-build name", func() {
-			// A job-scoped production pending-build query cannot return the special
-			// check-build name. Keep this exact synthetic name boundary and persist
-			// every ordinary build in the neighboring spec.
-			fakeJob := new(dbfakes.FakeJob)
-			fakeBuild := new(dbfakes.FakeBuild)
-			fakeJob.ConfigReturns(atc.JobConfig{}, nil)
-			fakeJob.ScheduleBuildReturns(true, nil)
-			fakeJob.GetPendingBuildsReturns([]db.Build{fakeBuild}, nil)
-			fakeBuild.IDReturns(2)
-			fakeBuild.NameReturns(db.CheckBuildName)
-			fakeBuild.StartReturns(true, nil)
-			fakeBuild.AdoptInputsAndPipesReturns([]db.BuildInput{}, true, nil)
+		It("increments CheckBuildsStarted for the check-build name", func() {
+			fixture := useSchedulerDB()
+			_, pipeline := persistSchedulerPipeline(
+				fixture,
+				"check-metric-team",
+				"check-metric-pipeline",
+				atc.Config{Jobs: atc.JobConfigs{{Name: "check-metric-job"}}},
+			)
+			job := schedulerPipelineJob(pipeline, "check-metric-job")
+			Expect(job.SaveNextInputMapping(nil, true)).To(Succeed())
+			Expect(job.EnsurePendingBuildExists(context.Background())).To(Succeed())
+			pending, err := job.GetPendingBuilds()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(pending).To(HaveLen(1))
 
-			_, err := buildStarter.TryStartPendingBuildsForJob(
+			// A job-scoped pending-build query cannot return the check-build name,
+			// so rename the persisted build and leave everything else real.
+			checkNamedJob := wrappedPendingBuildsJob{
+				Job: job,
+				wrap: func(_ int, build db.Build) db.Build {
+					return checkNamedBuild{Build: build}
+				},
+			}
+
+			_, err = buildStarter.TryStartPendingBuildsForJob(
 				context.Background(),
 				lagertest.NewTestLogger("test"),
-				db.SchedulerJob{Job: fakeJob},
+				db.SchedulerJob{Job: checkNamedJob},
 				db.InputConfigs{},
 			)
 			Expect(err).NotTo(HaveOccurred())
 
+			persistedBuild, found, err := fixture.BuildFactory.Build(pending[0].ID())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(persistedBuild.Status()).To(Equal(db.BuildStatusStarted))
 			Expect(metric.Metrics.CheckBuildsStarted.Delta()).To(BeNumerically("==", 1))
 			Expect(metric.Metrics.BuildsStarted.Delta()).To(BeNumerically("==", 0))
 		})

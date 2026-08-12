@@ -9,7 +9,7 @@ import (
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/builds"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
+	"github.com/concourse/concourse/atc/db/dbtest"
 	"github.com/concourse/concourse/atc/scheduler"
 	"github.com/concourse/concourse/atc/scheduler/schedulerfakes"
 
@@ -17,15 +17,69 @@ import (
 	. "github.com/onsi/gomega"
 )
 
+var starterTaskJob = atc.JobConfig{
+	Name: "task-job",
+	PlanSequence: []atc.Step{
+		{
+			Config: &atc.TaskStep{
+				Name:       "some-task",
+				ConfigPath: "some/config/path.yml",
+			},
+		},
+	},
+}
+
+var starterUnplannableJob = atc.Config{
+	Resources: atc.ResourceConfigs{
+		{Name: "some-resource", Type: "some-type"},
+	},
+	Jobs: atc.JobConfigs{
+		{
+			Name: "get-job",
+			PlanSequence: []atc.Step{
+				{Config: &atc.GetStep{Name: "some-resource"}},
+			},
+		},
+	},
+}
+
+func persistStarterJob(fixture *schedulerDB, config atc.Config, jobName string) db.Job {
+	GinkgoHelper()
+
+	_, pipeline := persistSchedulerPipeline(
+		fixture,
+		"starter-team",
+		"starter-pipeline",
+		config,
+	)
+	job := schedulerPipelineJob(pipeline, jobName)
+	Expect(job.SaveNextInputMapping(nil, true)).To(Succeed())
+	return job
+}
+
+func nextPendingBuild(job db.Job) db.Build {
+	GinkgoHelper()
+
+	Expect(job.EnsurePendingBuildExists(context.Background())).To(Succeed())
+	pending, err := job.GetPendingBuilds()
+	Expect(err).NotTo(HaveOccurred())
+	Expect(pending).NotTo(BeEmpty())
+	return pending[len(pending)-1]
+}
+
+func reloadStarterBuild(fixture *schedulerDB, buildID int) db.Build {
+	GinkgoHelper()
+
+	build, found, err := fixture.BuildFactory.Build(buildID)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(found).To(BeTrue())
+	return build
+}
+
 var _ = Describe("BuildStarter", func() {
 	var (
 		fakePlanner   *schedulerfakes.FakeBuildPlanner
-		pendingBuilds []db.Build
 		fakeAlgorithm *schedulerfakes.FakeAlgorithm
-
-		buildStarter scheduler.BuildStarter
-
-		jobInputs db.InputConfigs
 
 		disaster error
 	)
@@ -34,1047 +88,676 @@ var _ = Describe("BuildStarter", func() {
 		fakePlanner = new(schedulerfakes.FakeBuildPlanner)
 		fakeAlgorithm = new(schedulerfakes.FakeAlgorithm)
 
-		buildStarter = scheduler.NewBuildStarter(fakePlanner, fakeAlgorithm)
-
 		disaster = errors.New("bad thing")
 	})
 
-	Describe("TryStartPendingBuildsForJob", func() {
-		var tryStartErr error
-		var needsReschedule bool
-		var createdBuild *dbfakes.FakeBuild
-		var job *dbfakes.FakeJob
-		var resources db.SchedulerResources
-		var resourceTypes atc.ResourceTypes
-		var prototypes atc.Prototypes
-
-		BeforeEach(func() {
-			resourceTypes = atc.ResourceTypes{
-				atc.ResourceType{Name: "some-resource-type"},
-			}
-
-			resources = db.SchedulerResources{
-				{
-					Name: "some-resource",
-				},
-			}
-
-			prototypes = atc.Prototypes{
-				{
-					Name: "some-prototype",
-				},
-			}
-		})
-
-		Context("when pending builds are successfully fetched", func() {
-			BeforeEach(func() {
-				createdBuild = new(dbfakes.FakeBuild)
-				createdBuild.IDReturns(66)
-				createdBuild.NameReturns("some-build")
-
-				pendingBuilds = []db.Build{createdBuild}
-
-				job = new(dbfakes.FakeJob)
-				job.GetPendingBuildsReturns(pendingBuilds, nil)
-				job.NameReturns("some-job")
-				job.IDReturns(1)
-				job.ConfigReturns(atc.JobConfig{
-					PlanSequence: []atc.Step{
-						{
-							Config: &atc.GetStep{
-								Name:     "input-1",
-								Resource: "some-resource",
-							},
-						}, {
-							Config: &atc.GetStep{
-								Name:     "input-2",
-								Resource: "some-resource",
-							},
-						},
-					},
-				}, nil)
-
-				jobInputs = db.InputConfigs{
-					{
-						Name:       "input-1",
-						ResourceID: 1,
-					},
-					{
-						Name:       "input-2",
-						ResourceID: 1,
-					},
-				}
-			})
-
-			Context("when one pending build is aborted before start", func() {
-				var abortedBuild *dbfakes.FakeBuild
-
-				BeforeEach(func() {
-					abortedBuild = new(dbfakes.FakeBuild)
-					abortedBuild.IDReturns(42)
-					abortedBuild.IsAbortedReturns(true)
-					abortedBuild.FinishReturns(nil)
-				})
-
-				JustBeforeEach(func() {
-					needsReschedule, tryStartErr = buildStarter.TryStartPendingBuildsForJob(
-						context.Background(),
-						lagertest.NewTestLogger("test"),
-						db.SchedulerJob{
-							Job:           job,
-							Resources:     resources,
-							ResourceTypes: resourceTypes,
-							Prototypes:    prototypes,
-						},
-						jobInputs,
-					)
-				})
-
-				Context("when there is one aborted build", func() {
-					BeforeEach(func() {
-						pendingBuilds = []db.Build{abortedBuild}
-						job.GetPendingBuildsReturns(pendingBuilds, nil)
-					})
-
-					It("returns without error", func() {
-						Expect(tryStartErr).NotTo(HaveOccurred())
-						Expect(needsReschedule).To(BeFalse())
-					})
-
-					Context("when finishing the aborted build fails", func() {
-						BeforeEach(func() {
-							abortedBuild.FinishReturns(disaster)
-						})
-
-						It("returns an error", func() {
-							Expect(tryStartErr).To(Equal(fmt.Errorf("finish aborted build: %w", disaster)))
-							Expect(needsReschedule).To(BeFalse())
-						})
-					})
-				})
-
-				Context("when there is multiple pending builds after the aborted build", func() {
-					BeforeEach(func() {
-						// make sure pending build can be started after another pending build is aborted
-						pendingBuilds = append([]db.Build{abortedBuild}, pendingBuilds...)
-						job.GetPendingBuildsReturns(pendingBuilds, nil)
-					})
-
-					It("will try to start the next non aborted pending build", func() {
-						Expect(job.ScheduleBuildCallCount()).To(Equal(1))
-						actualBuild := job.ScheduleBuildArgsForCall(0)
-						Expect(actualBuild.Name()).To(Equal(createdBuild.Name()))
-					})
-				})
-			})
-
-			Context("when manually triggered", func() {
-				BeforeEach(func() {
-					createdBuild.IsManuallyTriggeredReturns(true)
-
-					resources = db.SchedulerResources{
-						{
-							Name: "some-resource",
-						},
-					}
-				})
-
-				JustBeforeEach(func() {
-					needsReschedule, tryStartErr = buildStarter.TryStartPendingBuildsForJob(
-						context.Background(),
-						lagertest.NewTestLogger("test"),
-						db.SchedulerJob{
-							Job:       job,
-							Resources: resources,
-						},
-						jobInputs,
-					)
-				})
-
-				It("tries to schedule the build", func() {
-					Expect(job.ScheduleBuildCallCount()).To(Equal(1))
-					actualBuild := job.ScheduleBuildArgsForCall(0)
-					Expect(actualBuild.Name()).To(Equal(createdBuild.Name()))
-				})
-
-				Context("when the build not scheduled", func() {
-					BeforeEach(func() {
-						job.ScheduleBuildReturns(false, nil)
-					})
-
-					It("does not start the build and needs to be rescheduled", func() {
-						Expect(createdBuild.StartCallCount()).To(BeZero())
-						Expect(tryStartErr).ToNot(HaveOccurred())
-						Expect(needsReschedule).To(BeTrue())
-					})
-				})
-
-				Context("when scheduling the build fails", func() {
-					BeforeEach(func() {
-						job.ScheduleBuildReturns(false, disaster)
-					})
-
-					It("returns the error", func() {
-						Expect(tryStartErr).To(Equal(fmt.Errorf("schedule build: %w", disaster)))
-						Expect(needsReschedule).To(BeFalse())
-					})
-				})
-
-				Context("when the build is successfully scheduled", func() {
-					BeforeEach(func() {
-						job.ScheduleBuildReturns(true, nil)
-					})
-
-					Context("when checking if resources have been checked fails", func() {
-						BeforeEach(func() {
-							createdBuild.ResourcesCheckedReturns(false, disaster)
-						})
-
-						It("returns the error", func() {
-							Expect(tryStartErr).To(Equal(fmt.Errorf("ready to determine inputs: %w", disaster)))
-							Expect(needsReschedule).To(BeFalse())
-						})
-					})
-
-					Context("when some of the resources are checked before build create time", func() {
-						BeforeEach(func() {
-							createdBuild.ResourcesCheckedReturns(false, nil)
-						})
-
-						It("does not save the next input mapping", func() {
-							Expect(fakeAlgorithm.ComputeCallCount()).To(BeZero())
-						})
-
-						It("does not start the build", func() {
-							Expect(createdBuild.StartCallCount()).To(BeZero())
-						})
-
-						It("returns without error", func() {
-							Expect(tryStartErr).NotTo(HaveOccurred())
-						})
-
-						It("retries to schedule", func() {
-							Expect(needsReschedule).To(BeTrue())
-						})
-					})
-
-					Context("when all resources are checked after build create time or pinned", func() {
-						BeforeEach(func() {
-							createdBuild.ResourcesCheckedReturns(true, nil)
-						})
-
-						It("computes a new set of versions for inputs to the build", func() {
-							Expect(fakeAlgorithm.ComputeCallCount()).To(Equal(1))
-						})
-
-						Context("when computing the next inputs fails", func() {
-							BeforeEach(func() {
-								fakeAlgorithm.ComputeReturns(nil, false, false, disaster)
-							})
-
-							It("computes the next inputs for the right job and versions", func() {
-								Expect(fakeAlgorithm.ComputeCallCount()).To(Equal(1))
-								_, actualJob, actualInputs := fakeAlgorithm.ComputeArgsForCall(0)
-								Expect(actualJob).To(Equal(
-									db.SchedulerJob{
-										Job:       job,
-										Resources: resources,
-									}))
-								Expect(actualInputs).To(Equal(jobInputs))
-							})
-
-							It("returns the error and retries to schedule", func() {
-								Expect(tryStartErr).To(Equal(fmt.Errorf("get build inputs: %w", fmt.Errorf("compute inputs: %w", disaster))))
-								Expect(needsReschedule).To(BeFalse())
-							})
-						})
-
-						Context("when computing the next inputs succeeds", func() {
-							var expectedInputMapping db.InputMapping
-
-							BeforeEach(func() {
-								expectedInputMapping = map[string]db.InputResult{
-									"input-1": db.InputResult{
-										Input: &db.AlgorithmInput{
-											AlgorithmVersion: db.AlgorithmVersion{
-												ResourceID: 1,
-												Version:    db.ResourceVersion("1"),
-											},
-											FirstOccurrence: true,
-										},
-									},
-								}
-
-								fakeAlgorithm.ComputeReturns(expectedInputMapping, true, false, nil)
-							})
-
-							Context("when the algorithm can run again", func() {
-								BeforeEach(func() {
-									fakeAlgorithm.ComputeReturns(expectedInputMapping, true, true, nil)
-								})
-
-								It("requests schedule on the job", func() {
-									Expect(job.RequestScheduleCallCount()).To(Equal(1))
-								})
-
-								Context("when requesting schedule fails", func() {
-									BeforeEach(func() {
-										job.RequestScheduleReturns(disaster)
-									})
-
-									It("returns the error and retries to schedule", func() {
-										Expect(tryStartErr).To(Equal(fmt.Errorf("get build inputs: %w", fmt.Errorf("request schedule: %w", disaster))))
-										Expect(needsReschedule).To(BeFalse())
-									})
-								})
-							})
-
-							Context("when the algorithm can not run again", func() {
-								BeforeEach(func() {
-									fakeAlgorithm.ComputeReturns(expectedInputMapping, true, false, nil)
-								})
-
-								It("does not requests schedule on the job", func() {
-									Expect(job.RequestScheduleCallCount()).To(Equal(0))
-								})
-							})
-
-							It("saves the next input mapping", func() {
-								Expect(job.SaveNextInputMappingCallCount()).To(Equal(1))
-							})
-
-							Context("when saving the next input mapping fails", func() {
-								BeforeEach(func() {
-									job.SaveNextInputMappingReturns(disaster)
-								})
-
-								It("saves the next input mapping with the right inputs", func() {
-									actualInputMapping, resolved := job.SaveNextInputMappingArgsForCall(0)
-									Expect(actualInputMapping).To(Equal(expectedInputMapping))
-									Expect(resolved).To(BeTrue())
-								})
-
-								It("returns the error and retries to schedule", func() {
-									Expect(tryStartErr).To(Equal(fmt.Errorf("get build inputs: %w", fmt.Errorf("save next input mapping: %w", disaster))))
-									Expect(needsReschedule).To(BeFalse())
-								})
-							})
-
-							Context("when saving the next input mapping succeeds", func() {
-								BeforeEach(func() {
-									job.SaveNextInputMappingReturns(nil)
-								})
-
-								It("saved the next input mapping and adopts the inputs and pipes", func() {
-									Expect(createdBuild.AdoptInputsAndPipesCallCount()).To(Equal(1))
-									Expect(tryStartErr).NotTo(HaveOccurred())
-								})
-							})
-
-							Context("when adopting inputs and pipes succeeds", func() {
-								BeforeEach(func() {
-									createdBuild.AdoptInputsAndPipesReturns([]db.BuildInput{}, true, nil)
-								})
-
-								It("tries to fetch the job config", func() {
-									Expect(job.ConfigCallCount()).To(Equal(1))
-								})
-
-								It("creates the build plan with manually triggered", func() {
-									_, _, _, _, _, actualManuallyTriggered := fakePlanner.CreateArgsForCall(0)
-									Expect(actualManuallyTriggered).To(Equal(true))
-								})
-							})
-
-							Context("when adopting inputs and pipes fails", func() {
-								BeforeEach(func() {
-									createdBuild.AdoptInputsAndPipesReturns(nil, false, errors.New("error"))
-								})
-
-								It("returns an error and retries to schedule", func() {
-									Expect(tryStartErr).To(HaveOccurred())
-									Expect(needsReschedule).To(BeFalse())
-								})
-							})
-
-							Context("when adopting inputs and pipes has no satisfiable inputs", func() {
-								BeforeEach(func() {
-									createdBuild.AdoptInputsAndPipesReturns(nil, false, nil)
-								})
-
-								It("does not return an error and does not try to reschedule", func() {
-									Expect(tryStartErr).ToNot(HaveOccurred())
-									Expect(needsReschedule).To(BeFalse())
-								})
-							})
-						})
-					})
-				})
-			})
-
-			Context("when not manually triggered", func() {
-				var pendingBuild1 *dbfakes.FakeBuild
-				var pendingBuild2 *dbfakes.FakeBuild
-				var rerunBuild *dbfakes.FakeBuild
-
-				var jobConfig = atc.JobConfig{
-					Name: "some-job",
-					PlanSequence: []atc.Step{
-						{
-							Config: &atc.GetStep{
-								Name: "some-input",
-							},
-						},
-					},
-				}
-
-				var plannedPlan = atc.Plan{
-					Get: &atc.GetPlan{
-						Name:     "some-input",
-						Resource: "some-input",
-					},
-				}
-
-				BeforeEach(func() {
-					job.NameReturns("some-job")
-					job.IDReturns(1)
-					job.ConfigReturns(jobConfig, nil)
-					createdBuild.IsManuallyTriggeredReturns(false)
-
-					jobInputs = db.InputConfigs{}
-				})
-
-				JustBeforeEach(func() {
-					needsReschedule, tryStartErr = buildStarter.TryStartPendingBuildsForJob(
-						context.Background(),
-						lagertest.NewTestLogger("test"),
-						db.SchedulerJob{
-							Job:       job,
-							Resources: resources,
-							ResourceTypes: atc.ResourceTypes{
-								atc.ResourceType{
-									Name: "some-resource-type",
-								},
-							},
-							Prototypes: prototypes,
-						},
-						jobInputs,
-					)
-				})
-
-				It("doesn't compute the algorithm", func() {
-					Expect(fakeAlgorithm.ComputeCallCount()).To(Equal(0))
-				})
-
-				itScheduledAllBuilds := func() {
-					It("scheduled all the pending builds", func() {
-						Expect(job.ScheduleBuildCallCount()).To(Equal(3))
-						actualBuild := job.ScheduleBuildArgsForCall(0)
-						Expect(actualBuild.ID()).To(Equal(pendingBuild1.ID()))
-
-						actualBuild = job.ScheduleBuildArgsForCall(1)
-						Expect(actualBuild.ID()).To(Equal(rerunBuild.ID()))
-
-						actualBuild = job.ScheduleBuildArgsForCall(2)
-						Expect(actualBuild.ID()).To(Equal(pendingBuild2.ID()))
-					})
-				}
-
-				Context("when the stars align", func() {
-					BeforeEach(func() {
-						job.PausedReturns(false)
-						job.ScheduleBuildReturns(true, nil)
-					})
-
-					Context("when adopting inputs and pipes for a rerun build fails", func() {
-						BeforeEach(func() {
-							pendingBuild1 = new(dbfakes.FakeBuild)
-							pendingBuild1.IDReturns(99)
-							pendingBuild1.RerunOfReturns(1)
-							pendingBuild1.AdoptRerunInputsAndPipesReturns([]db.BuildInput{{Name: "some-input"}}, false, disaster)
-							job.GetPendingBuildsReturns([]db.Build{pendingBuild1}, nil)
-						})
-
-						It("returns the error and retries to schedule", func() {
-							Expect(tryStartErr).To(Equal(fmt.Errorf("get build inputs: %w", fmt.Errorf("adopt rerun inputs and pipes: %w", disaster))))
-							Expect(needsReschedule).To(BeFalse())
-						})
-					})
-
-					Context("when adopting inputs and pipes for a rerun build has no satisfiable inputs", func() {
-						BeforeEach(func() {
-							pendingBuild1 = new(dbfakes.FakeBuild)
-							pendingBuild1.IDReturns(99)
-							pendingBuild1.RerunOfReturns(1)
-							pendingBuild1.AdoptRerunInputsAndPipesReturns([]db.BuildInput{{Name: "some-input"}}, false, nil)
-							job.GetPendingBuildsReturns([]db.Build{pendingBuild1}, nil)
-						})
-
-						It("returns the error and does not retry to schedule", func() {
-							Expect(tryStartErr).ToNot(HaveOccurred())
-							Expect(needsReschedule).To(BeFalse())
-						})
-					})
-
-					Context("when adopting inputs and pipes for a normal scheduler build fails", func() {
-						BeforeEach(func() {
-							pendingBuild1 = new(dbfakes.FakeBuild)
-							pendingBuild1.IDReturns(99)
-							pendingBuild1.AdoptInputsAndPipesReturns([]db.BuildInput{{Name: "some-input"}}, false, disaster)
-							job.GetPendingBuildsReturns([]db.Build{pendingBuild1}, nil)
-						})
-
-						It("returns the error and retries to schedule", func() {
-							Expect(tryStartErr).To(Equal(fmt.Errorf("get build inputs: %w", fmt.Errorf("adopt inputs and pipes: %w", disaster))))
-							Expect(needsReschedule).To(BeFalse())
-						})
-					})
-
-					Context("when adopting inputs and pipes for a normal scheduler build has no satisfiable inputs", func() {
-						BeforeEach(func() {
-							pendingBuild1 = new(dbfakes.FakeBuild)
-							pendingBuild1.IDReturns(99)
-							pendingBuild1.AdoptInputsAndPipesReturns([]db.BuildInput{{Name: "some-input"}}, false, nil)
-							job.GetPendingBuildsReturns([]db.Build{pendingBuild1}, nil)
-						})
-
-						It("returns the error and does not retry to schedule", func() {
-							Expect(tryStartErr).ToNot(HaveOccurred())
-							Expect(needsReschedule).To(BeFalse())
-						})
-					})
-
-					Context("when there are several pending builds consisting of both retrigger and normal scheduler builds", func() {
-						BeforeEach(func() {
-							pendingBuild1 = new(dbfakes.FakeBuild)
-							pendingBuild1.IDReturns(99)
-							pendingBuild1.AdoptInputsAndPipesReturns([]db.BuildInput{{Name: "some-input"}}, true, nil)
-							job.ScheduleBuildReturnsOnCall(0, true, nil)
-							pendingBuild2 = new(dbfakes.FakeBuild)
-							pendingBuild2.IDReturns(999)
-							pendingBuild2.AdoptInputsAndPipesReturns([]db.BuildInput{{Name: "some-input"}}, true, nil)
-							job.ScheduleBuildReturnsOnCall(1, true, nil)
-							rerunBuild = new(dbfakes.FakeBuild)
-							rerunBuild.IDReturns(555)
-							rerunBuild.RerunOfReturns(pendingBuild1.ID())
-							rerunBuild.AdoptRerunInputsAndPipesReturns([]db.BuildInput{{Name: "some-input"}}, true, nil)
-							job.ScheduleBuildReturnsOnCall(2, true, nil)
-							pendingBuilds = []db.Build{pendingBuild1, rerunBuild, pendingBuild2}
-							job.GetPendingBuildsReturns(pendingBuilds, nil)
-						})
-
-						Context("when marking the build as scheduled fails", func() {
-							BeforeEach(func() {
-								job.ScheduleBuildReturnsOnCall(0, false, disaster)
-							})
-
-							It("returns the error", func() {
-								Expect(tryStartErr).To(Equal(fmt.Errorf("schedule build: %w", disaster)))
-							})
-
-							It("only tried to schedule one pending build", func() {
-								Expect(job.ScheduleBuildCallCount()).To(Equal(1))
-							})
-						})
-
-						Context("when the build was not able to be scheduled", func() {
-							BeforeEach(func() {
-								job.ScheduleBuildReturnsOnCall(0, false, nil)
-							})
-
-							It("doesn't return an error", func() {
-								Expect(tryStartErr).NotTo(HaveOccurred())
-							})
-
-							It("doesn't try adopt build inputs and pipes for that pending build and doesn't try scheduling the next ones", func() {
-								Expect(pendingBuild1.AdoptInputsAndPipesCallCount()).To(BeZero())
-								Expect(pendingBuild2.AdoptInputsAndPipesCallCount()).To(BeZero())
-								Expect(rerunBuild.AdoptRerunInputsAndPipesCallCount()).To(BeZero())
-							})
-						})
-
-						Context("when the build was scheduled successfully", func() {
-							Context("when the resource types are successfully fetched", func() {
-								Context("when creating the build plan fails for the rerun build and the scheduler builds", func() {
-									BeforeEach(func() {
-										fakePlanner.CreateReturns(atc.Plan{}, disaster)
-									})
-
-									It("keeps going after failing to create", func() {
-										Expect(fakePlanner.CreateCallCount()).To(Equal(3))
-
-										Expect(rerunBuild.FinishCallCount()).To(Equal(1))
-										Expect(pendingBuild1.FinishCallCount()).To(Equal(1))
-										Expect(pendingBuild2.FinishCallCount()).To(Equal(1))
-									})
-
-									Context("when marking the build as errored fails", func() {
-										BeforeEach(func() {
-											pendingBuild1.FinishReturns(disaster)
-										})
-
-										It("returns an error", func() {
-											Expect(tryStartErr).To(Equal(fmt.Errorf("finish build: %w", disaster)))
-											Expect(needsReschedule).To(BeFalse())
-										})
-
-										It("does not start the other pending build", func() {
-											Expect(pendingBuild2.StartCallCount()).To(Equal(0))
-										})
-
-										It("marked the right build as errored", func() {
-											Expect(pendingBuild1.FinishCallCount()).To(Equal(1))
-											actualStatus := pendingBuild1.FinishArgsForCall(0)
-											Expect(actualStatus).To(Equal(db.BuildStatusErrored))
-										})
-									})
-
-									Context("when marking the build as errored succeeds", func() {
-										BeforeEach(func() {
-											pendingBuild1.FinishReturns(nil)
-										})
-
-										It("does not start the other builds", func() {
-											Expect(pendingBuild2.StartCallCount()).To(Equal(0))
-										})
-
-										It("doesn't return an error", func() {
-											Expect(tryStartErr).NotTo(HaveOccurred())
-											Expect(needsReschedule).To(BeFalse())
-										})
-									})
-								})
-
-								Context("when creating the build plan succeeds", func() {
-									BeforeEach(func() {
-										fakePlanner.CreateReturns(plannedPlan, nil)
-										pendingBuild1.StartReturns(true, nil)
-										pendingBuild2.StartReturns(true, nil)
-										rerunBuild.StartReturns(true, nil)
-									})
-
-									It("adopts the build inputs and pipes", func() {
-										Expect(pendingBuild1.AdoptInputsAndPipesCallCount()).To(Equal(1))
-										Expect(pendingBuild1.AdoptRerunInputsAndPipesCallCount()).To(BeZero())
-
-										Expect(pendingBuild2.AdoptInputsAndPipesCallCount()).To(Equal(1))
-										Expect(pendingBuild2.AdoptRerunInputsAndPipesCallCount()).To(BeZero())
-
-										Expect(rerunBuild.AdoptInputsAndPipesCallCount()).To(BeZero())
-										Expect(rerunBuild.AdoptRerunInputsAndPipesCallCount()).To(Equal(1))
-									})
-
-									It("creates build plans for all builds", func() {
-										Expect(fakePlanner.CreateCallCount()).To(Equal(3))
-
-										actualPlanConfig, actualResourceConfigs, actualResourceTypes, actualPrototypes, actualBuildInputs, actualManuallyTriggered := fakePlanner.CreateArgsForCall(0)
-										Expect(actualPlanConfig).To(Equal(&atc.DoStep{Steps: jobConfig.PlanSequence}))
-										Expect(actualResourceConfigs).To(Equal(db.SchedulerResources{{Name: "some-resource"}}))
-										Expect(actualResourceTypes).To(Equal(resourceTypes))
-										Expect(actualPrototypes).To(Equal(prototypes))
-										Expect(actualBuildInputs).To(Equal([]db.BuildInput{{Name: "some-input"}}))
-										Expect(actualManuallyTriggered).To(Equal(false))
-
-										actualPlanConfig, actualResourceConfigs, actualResourceTypes, actualPrototypes, actualBuildInputs, actualManuallyTriggered = fakePlanner.CreateArgsForCall(1)
-										Expect(actualPlanConfig).To(Equal(&atc.DoStep{Steps: jobConfig.PlanSequence}))
-										Expect(actualResourceConfigs).To(Equal(db.SchedulerResources{{Name: "some-resource"}}))
-										Expect(actualResourceTypes).To(Equal(resourceTypes))
-										Expect(actualPrototypes).To(Equal(prototypes))
-										Expect(actualBuildInputs).To(Equal([]db.BuildInput{{Name: "some-input"}}))
-										Expect(actualManuallyTriggered).To(Equal(false))
-
-										actualPlanConfig, actualResourceConfigs, actualResourceTypes, actualPrototypes, actualBuildInputs, actualManuallyTriggered = fakePlanner.CreateArgsForCall(2)
-										Expect(actualPlanConfig).To(Equal(&atc.DoStep{Steps: jobConfig.PlanSequence}))
-										Expect(actualResourceConfigs).To(Equal(db.SchedulerResources{{Name: "some-resource"}}))
-										Expect(actualResourceTypes).To(Equal(resourceTypes))
-										Expect(actualPrototypes).To(Equal(prototypes))
-										Expect(actualBuildInputs).To(Equal([]db.BuildInput{{Name: "some-input"}}))
-										Expect(actualManuallyTriggered).To(Equal(false))
-									})
-
-									Context("when starting the build fails", func() {
-										BeforeEach(func() {
-											pendingBuild1.StartReturns(false, disaster)
-										})
-
-										It("returns the error", func() {
-											Expect(tryStartErr).To(Equal(fmt.Errorf("start build: %w", disaster)))
-											Expect(needsReschedule).To(BeFalse())
-										})
-
-										It("does not start the other builds", func() {
-											Expect(pendingBuild2.StartCallCount()).To(Equal(0))
-										})
-									})
-
-									Context("when starting the build returns false", func() {
-										BeforeEach(func() {
-											pendingBuild1.StartReturns(false, nil)
-										})
-
-										It("doesn't return an error", func() {
-											Expect(tryStartErr).NotTo(HaveOccurred())
-											Expect(needsReschedule).To(BeFalse())
-										})
-
-										It("starts the other builds", func() {
-											Expect(pendingBuild2.StartCallCount()).To(Equal(1))
-										})
-
-										It("finishes the build with aborted status", func() {
-											Expect(pendingBuild1.FinishCallCount()).To(Equal(1))
-											Expect(pendingBuild1.FinishArgsForCall(0)).To(Equal(db.BuildStatusAborted))
-										})
-
-										Context("when marking the build as errored fails", func() {
-											BeforeEach(func() {
-												pendingBuild1.FinishReturns(disaster)
-											})
-
-											It("returns an error", func() {
-												Expect(tryStartErr).To(Equal(fmt.Errorf("finish build: %w", disaster)))
-												Expect(needsReschedule).To(BeFalse())
-											})
-
-											It("does not start the other builds", func() {
-												Expect(pendingBuild2.StartCallCount()).To(Equal(0))
-											})
-
-											It("marked the right build as errored", func() {
-												Expect(pendingBuild1.FinishCallCount()).To(Equal(1))
-												actualStatus := pendingBuild1.FinishArgsForCall(0)
-												Expect(actualStatus).To(Equal(db.BuildStatusAborted))
-											})
-										})
-
-										Context("when marking the build as errored succeeds", func() {
-											BeforeEach(func() {
-												pendingBuild1.FinishReturns(nil)
-											})
-
-											It("doesn't return an error", func() {
-												Expect(tryStartErr).NotTo(HaveOccurred())
-												Expect(needsReschedule).To(BeFalse())
-											})
-
-											It("starts the other builds", func() {
-												Expect(pendingBuild2.StartCallCount()).To(Equal(1))
-											})
-										})
-									})
-
-									Context("when starting the builds returns true", func() {
-										BeforeEach(func() {
-											pendingBuild1.StartReturns(true, nil)
-											pendingBuild2.StartReturns(true, nil)
-											rerunBuild.StartReturns(true, nil)
-										})
-
-										It("doesn't return an error", func() {
-											Expect(tryStartErr).NotTo(HaveOccurred())
-											Expect(needsReschedule).To(BeFalse())
-										})
-
-										itScheduledAllBuilds()
-
-										It("starts the build with the right plan", func() {
-											Expect(pendingBuild1.StartCallCount()).To(Equal(1))
-											Expect(pendingBuild1.StartArgsForCall(0)).To(Equal(plannedPlan))
-
-											Expect(pendingBuild2.StartCallCount()).To(Equal(1))
-											Expect(pendingBuild2.StartArgsForCall(0)).To(Equal(plannedPlan))
-
-											Expect(rerunBuild.StartCallCount()).To(Equal(1))
-											Expect(rerunBuild.StartArgsForCall(0)).To(Equal(plannedPlan))
-										})
-									})
-								})
-							})
-						})
-
-						Context("when adopting the inputs and pipes fails", func() {
-							BeforeEach(func() {
-								pendingBuild1.AdoptInputsAndPipesReturns(nil, false, disaster)
-							})
-
-							It("returns the error", func() {
-								Expect(tryStartErr).To(Equal(fmt.Errorf("get build inputs: %w", fmt.Errorf("adopt inputs and pipes: %w", disaster))))
-								Expect(needsReschedule).To(BeFalse())
-							})
-						})
-
-						Context("when there are no next build inputs", func() {
-							BeforeEach(func() {
-								pendingBuild1.AdoptInputsAndPipesReturns(nil, false, nil)
-							})
-
-							It("doesn't return an error", func() {
-								Expect(tryStartErr).NotTo(HaveOccurred())
-								Expect(needsReschedule).To(BeFalse())
-							})
-
-							It("does not start the build", func() {
-								Expect(createdBuild.StartCallCount()).To(BeZero())
-							})
-						})
-
-						Context("when fetching pending builds fail", func() {
-							BeforeEach(func() {
-								job.GetPendingBuildsReturns(nil, disaster)
-							})
-
-							It("returns the error", func() {
-								Expect(tryStartErr).To(Equal(fmt.Errorf("get pending builds: %w", disaster)))
-							})
-
-							It("does not need to be rescheduled", func() {
-								Expect(needsReschedule).To(BeFalse())
-							})
-						})
-					})
-
-					Context("when there are several pending builds with one failing to start rerun build", func() {
-						BeforeEach(func() {
-							pendingBuild1 = new(dbfakes.FakeBuild)
-							pendingBuild1.IDReturns(99)
-							pendingBuild1.AdoptInputsAndPipesReturns([]db.BuildInput{{Name: "some-input"}}, true, nil)
-							pendingBuild1.StartReturns(true, nil)
-							job.ScheduleBuildReturnsOnCall(0, true, nil)
-							pendingBuild2 = new(dbfakes.FakeBuild)
-							pendingBuild2.IDReturns(999)
-							pendingBuild2.AdoptInputsAndPipesReturns([]db.BuildInput{{Name: "some-input"}}, true, nil)
-							pendingBuild2.StartReturns(true, nil)
-							job.ScheduleBuildReturnsOnCall(2, true, nil)
-						})
-
-						Context("when the rerun build is failing to adopt inputs and outputs", func() {
-							BeforeEach(func() {
-								rerunBuild = new(dbfakes.FakeBuild)
-								rerunBuild.IDReturns(555)
-								rerunBuild.RerunOfReturns(pendingBuild1.ID())
-								rerunBuild.AdoptRerunInputsAndPipesReturns(nil, false, errors.New("error"))
-								job.ScheduleBuildReturnsOnCall(1, true, nil)
-								pendingBuilds = []db.Build{pendingBuild1, rerunBuild, pendingBuild2}
-								job.GetPendingBuildsReturns(pendingBuilds, nil)
-							})
-
-							It("does not schedule the next build", func() {
-								Expect(tryStartErr).To(HaveOccurred())
-								Expect(pendingBuild1.StartCallCount()).To(Equal(1))
-								Expect(pendingBuild2.StartCallCount()).To(Equal(0))
-							})
-						})
-
-						Context("when the rerun build is not started because it has no inputs or versions", func() {
-							BeforeEach(func() {
-								rerunBuild = new(dbfakes.FakeBuild)
-								rerunBuild.IDReturns(555)
-								rerunBuild.RerunOfReturns(pendingBuild1.ID())
-								rerunBuild.AdoptRerunInputsAndPipesReturns(nil, false, nil)
-								job.ScheduleBuildReturnsOnCall(1, true, nil)
-								pendingBuilds = []db.Build{pendingBuild1, rerunBuild, pendingBuild2}
-								job.GetPendingBuildsReturns(pendingBuilds, nil)
-							})
-
-							It("tries to schedule the 2 other pending builds", func() {
-								Expect(tryStartErr).ToNot(HaveOccurred())
-								Expect(needsReschedule).To(BeFalse())
-								Expect(pendingBuild1.StartCallCount()).To(Equal(1))
-								Expect(pendingBuild2.StartCallCount()).To(Equal(1))
-							})
-						})
-
-						Context("when the rerun build needs to retry a new scheduler tick", func() {
-							BeforeEach(func() {
-								rerunBuild = new(dbfakes.FakeBuild)
-								rerunBuild.IDReturns(555)
-								rerunBuild.RerunOfReturns(pendingBuild1.ID())
-								job.ScheduleBuildReturnsOnCall(1, false, nil)
-								pendingBuilds = []db.Build{pendingBuild1, rerunBuild, pendingBuild2}
-								job.GetPendingBuildsReturns(pendingBuilds, nil)
-							})
-
-							It("does not try to schedule the other pending build", func() {
-								Expect(tryStartErr).ToNot(HaveOccurred())
-								Expect(needsReschedule).To(BeTrue())
-								Expect(pendingBuild1.StartCallCount()).To(Equal(1))
-								Expect(pendingBuild2.StartCallCount()).To(Equal(0))
-							})
-						})
-					})
-				})
-			})
-		})
-	})
-})
-
-var _ = Describe("BuildStarter against PostgreSQL", func() {
-	var buildStarter scheduler.BuildStarter
-
-	taskJob := atc.JobConfig{
-		Name: "task-job",
-		PlanSequence: []atc.Step{
-			{
-				Config: &atc.TaskStep{
-					Name:       "some-task",
-					ConfigPath: "some/config/path.yml",
-				},
-			},
-		},
+	realStarter := func() scheduler.BuildStarter {
+		return scheduler.NewBuildStarter(builds.NewPlanner(atc.NewPlanFactory(0)), fakeAlgorithm)
 	}
 
-	BeforeEach(func() {
-		buildStarter = scheduler.NewBuildStarter(
-			builds.NewPlanner(atc.NewPlanFactory(0)),
-			new(schedulerfakes.FakeAlgorithm),
-		)
-	})
-
-	persistJob := func(fixture *schedulerDB, config atc.Config, jobName string) db.Job {
-		GinkgoHelper()
-
-		_, pipeline := persistSchedulerPipeline(
-			fixture,
-			"starter-team",
-			"starter-pipeline",
-			config,
-		)
-		job := schedulerPipelineJob(pipeline, jobName)
-		Expect(job.SaveNextInputMapping(nil, true)).To(Succeed())
-		return job
+	plannedStarter := func() scheduler.BuildStarter {
+		return scheduler.NewBuildStarter(fakePlanner, fakeAlgorithm)
 	}
 
-	nextPendingBuild := func(job db.Job) db.Build {
-		GinkgoHelper()
-
-		Expect(job.EnsurePendingBuildExists(context.Background())).To(Succeed())
-		pending, err := job.GetPendingBuilds()
-		Expect(err).NotTo(HaveOccurred())
-		Expect(pending).To(HaveLen(1))
-		return pending[0]
-	}
-
-	tryStart := func(job db.Job, resources db.SchedulerResources) bool {
-		GinkgoHelper()
-
-		needsReschedule, err := buildStarter.TryStartPendingBuildsForJob(
+	tryStart := func(starter scheduler.BuildStarter, job db.SchedulerJob, inputs db.InputConfigs) (bool, error) {
+		return starter.TryStartPendingBuildsForJob(
 			context.Background(),
 			lagertest.NewTestLogger("test"),
-			db.SchedulerJob{Job: job, Resources: resources},
-			db.InputConfigs{},
+			job,
+			inputs,
 		)
-		Expect(err).NotTo(HaveOccurred())
-		return needsReschedule
 	}
 
-	reloadBuild := func(fixture *schedulerDB, buildID int) db.Build {
+	expectPending := func(fixture *schedulerDB, build db.Build) {
 		GinkgoHelper()
 
-		build, found, err := fixture.BuildFactory.Build(buildID)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(found).To(BeTrue())
-		return build
+		reloaded := reloadStarterBuild(fixture, build.ID())
+		Expect(reloaded.Status()).To(Equal(db.BuildStatusPending))
+		Expect(reloaded.HasPlan()).To(BeFalse())
 	}
 
-	It("persists the plan it created onto the started build", func() {
-		fixture := useSchedulerDB()
-		job := persistJob(fixture, atc.Config{Jobs: atc.JobConfigs{taskJob}}, "task-job")
-		pendingBuild := nextPendingBuild(job)
+	Describe("fetching the pending builds", func() {
+		It("returns the error when the pending builds cannot be fetched", func() {
+			fixture := useSchedulerDB()
+			job := persistStarterJob(fixture, atc.Config{Jobs: atc.JobConfigs{starterTaskJob}}, "task-job")
 
-		Expect(tryStart(job, nil)).To(BeFalse())
-
-		startedBuild := reloadBuild(fixture, pendingBuild.ID())
-		Expect(startedBuild.Status()).To(Equal(db.BuildStatusStarted))
-		Expect(startedBuild.IsScheduled()).To(BeTrue())
-		Expect(startedBuild.HasPlan()).To(BeTrue())
-
-		persistedPlan := startedBuild.PrivatePlan()
-		Expect(persistedPlan.Do).NotTo(BeNil())
-		Expect(*persistedPlan.Do).To(HaveLen(1))
-		Expect((*persistedPlan.Do)[0].Task).NotTo(BeNil())
-		Expect((*persistedPlan.Do)[0].Task.Name).To(Equal("some-task"))
-		Expect((*persistedPlan.Do)[0].Task.ConfigPath).To(Equal("some/config/path.yml"))
+			needsReschedule, err := tryStart(realStarter(), db.SchedulerJob{
+				Job: pendingBuildsFailsJob{Job: job, err: disaster},
+			}, db.InputConfigs{})
+			Expect(err).To(Equal(fmt.Errorf("get pending builds: %w", disaster)))
+			Expect(needsReschedule).To(BeFalse())
+		})
 	})
 
-	It("marks the build as errored when the plan cannot be created", func() {
-		fixture := useSchedulerDB()
-		job := persistJob(fixture, atc.Config{
-			Resources: atc.ResourceConfigs{
-				{Name: "some-resource", Type: "some-type"},
-			},
-			Jobs: atc.JobConfigs{
-				{
-					Name: "get-job",
-					PlanSequence: []atc.Step{
-						{Config: &atc.GetStep{Name: "some-resource"}},
+	Describe("an aborted pending build", func() {
+		It("finishes it as aborted without planning it", func() {
+			fixture := useSchedulerDB()
+			job := persistStarterJob(fixture, atc.Config{Jobs: atc.JobConfigs{starterTaskJob}}, "task-job")
+			pendingBuild := nextPendingBuild(job)
+			Expect(pendingBuild.MarkAsAborted()).To(Succeed())
+
+			needsReschedule, err := tryStart(realStarter(), db.SchedulerJob{Job: job}, db.InputConfigs{})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(needsReschedule).To(BeFalse())
+
+			abortedBuild := reloadStarterBuild(fixture, pendingBuild.ID())
+			Expect(abortedBuild.Status()).To(Equal(db.BuildStatusAborted))
+			Expect(abortedBuild.IsCompleted()).To(BeTrue())
+			Expect(abortedBuild.IsScheduled()).To(BeFalse())
+			Expect(abortedBuild.HasPlan()).To(BeFalse())
+		})
+
+		It("returns the error when finishing the aborted build fails", func() {
+			fixture := useSchedulerDB()
+			job := persistStarterJob(fixture, atc.Config{Jobs: atc.JobConfigs{starterTaskJob}}, "task-job")
+			pendingBuild := nextPendingBuild(job)
+			Expect(pendingBuild.MarkAsAborted()).To(Succeed())
+
+			needsReschedule, err := tryStart(realStarter(), db.SchedulerJob{
+				Job: wrappedPendingBuildsJob{
+					Job: job,
+					wrap: func(_ int, build db.Build) db.Build {
+						return finishFailsBuild{Build: build, err: disaster}
 					},
 				},
-			},
-		}, "get-job")
-		pendingBuild := nextPendingBuild(job)
+			}, db.InputConfigs{})
+			Expect(err).To(Equal(fmt.Errorf("finish aborted build: %w", disaster)))
+			Expect(needsReschedule).To(BeFalse())
 
-		Expect(tryStart(job, db.SchedulerResources{
-			{Name: "some-resource", Type: "some-type"},
-		})).To(BeFalse())
+			expectPending(fixture, pendingBuild)
+		})
 
-		erroredBuild := reloadBuild(fixture, pendingBuild.ID())
-		Expect(erroredBuild.Status()).To(Equal(db.BuildStatusErrored))
-		Expect(erroredBuild.IsCompleted()).To(BeTrue())
-		Expect(erroredBuild.HasPlan()).To(BeFalse())
+		It("starts the next pending build after it", func() {
+			fixture := useSchedulerDB()
+			job := persistStarterJob(fixture, atc.Config{Jobs: atc.JobConfigs{starterTaskJob}}, "task-job")
+			abortedBuild := nextPendingBuild(job)
+			Expect(abortedBuild.MarkAsAborted()).To(Succeed())
+
+			nextBuild, err := job.CreateBuild("test")
+			Expect(err).NotTo(HaveOccurred())
+			fakeAlgorithm.ComputeReturns(db.InputMapping{}, true, false, nil)
+
+			_, err = tryStart(realStarter(), db.SchedulerJob{Job: job}, db.InputConfigs{})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(reloadStarterBuild(fixture, abortedBuild.ID()).Status()).To(Equal(db.BuildStatusAborted))
+			Expect(reloadStarterBuild(fixture, nextBuild.ID()).Status()).To(Equal(db.BuildStatusStarted))
+		})
 	})
 
-	It("finishes an aborted pending build as aborted without planning it", func() {
-		fixture := useSchedulerDB()
-		job := persistJob(fixture, atc.Config{Jobs: atc.JobConfigs{taskJob}}, "task-job")
-		pendingBuild := nextPendingBuild(job)
-		Expect(pendingBuild.MarkAsAborted()).To(Succeed())
+	Describe("a manually triggered build", func() {
+		var (
+			fixture     *schedulerDB
+			job         db.Job
+			manualBuild db.Build
+		)
 
-		Expect(tryStart(job, nil)).To(BeFalse())
+		BeforeEach(func() {
+			fixture = useSchedulerDB()
+			job = persistStarterJob(fixture, atc.Config{Jobs: atc.JobConfigs{starterTaskJob}}, "task-job")
 
-		abortedBuild := reloadBuild(fixture, pendingBuild.ID())
-		Expect(abortedBuild.Status()).To(Equal(db.BuildStatusAborted))
-		Expect(abortedBuild.IsCompleted()).To(BeTrue())
-		Expect(abortedBuild.HasPlan()).To(BeFalse())
+			var err error
+			manualBuild, err = job.CreateBuild("test")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(manualBuild.IsManuallyTriggered()).To(BeTrue())
+
+			fakeAlgorithm.ComputeReturns(db.InputMapping{}, true, false, nil)
+		})
+
+		It("schedules it and starts it with a manually triggered plan", func() {
+			needsReschedule, err := tryStart(plannedStarter(), db.SchedulerJob{Job: job}, db.InputConfigs{})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(needsReschedule).To(BeFalse())
+
+			Expect(fakePlanner.CreateCallCount()).To(Equal(1))
+			_, _, _, _, _, manuallyTriggered := fakePlanner.CreateArgsForCall(0)
+			Expect(manuallyTriggered).To(BeTrue())
+
+			startedBuild := reloadStarterBuild(fixture, manualBuild.ID())
+			Expect(startedBuild.Status()).To(Equal(db.BuildStatusStarted))
+			Expect(startedBuild.IsScheduled()).To(BeTrue())
+		})
+
+		It("returns the error when scheduling the build fails", func() {
+			needsReschedule, err := tryStart(realStarter(), db.SchedulerJob{
+				Job: scheduleBuildFailsJob{Job: job, err: disaster},
+			}, db.InputConfigs{})
+			Expect(err).To(Equal(fmt.Errorf("schedule build: %w", disaster)))
+			Expect(needsReschedule).To(BeFalse())
+
+			expectPending(fixture, manualBuild)
+		})
+
+		It("returns the error when checking whether the resources were checked fails", func() {
+			needsReschedule, err := tryStart(realStarter(), db.SchedulerJob{
+				Job: wrappedPendingBuildsJob{
+					Job: job,
+					wrap: func(_ int, build db.Build) db.Build {
+						return resourcesCheckedFailsBuild{Build: build, err: disaster}
+					},
+				},
+			}, db.InputConfigs{})
+			Expect(err).To(Equal(fmt.Errorf("ready to determine inputs: %w", disaster)))
+			Expect(needsReschedule).To(BeFalse())
+		})
+
+		It("computes the inputs for the job it was given", func() {
+			resources := db.SchedulerResources{{Name: "some-resource"}}
+			jobInputs := db.InputConfigs{{Name: "input-1", ResourceID: 1}}
+
+			schedulerJob := db.SchedulerJob{Job: job, Resources: resources}
+			_, err := tryStart(realStarter(), schedulerJob, jobInputs)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(fakeAlgorithm.ComputeCallCount()).To(Equal(1))
+			_, actualJob, actualInputs := fakeAlgorithm.ComputeArgsForCall(0)
+			Expect(actualJob).To(Equal(schedulerJob))
+			Expect(actualInputs).To(Equal(jobInputs))
+		})
+
+		It("returns the error when computing the inputs fails", func() {
+			fakeAlgorithm.ComputeReturns(nil, false, false, disaster)
+
+			needsReschedule, err := tryStart(realStarter(), db.SchedulerJob{Job: job}, db.InputConfigs{})
+			Expect(err).To(Equal(fmt.Errorf("get build inputs: %w", fmt.Errorf("compute inputs: %w", disaster))))
+			Expect(needsReschedule).To(BeFalse())
+		})
+
+		It("requests schedule when the algorithm can run again", func() {
+			fakeAlgorithm.ComputeReturns(db.InputMapping{}, true, true, nil)
+			before, _ := schedulerJobTimestamps(fixture, job.ID())
+
+			_, err := tryStart(realStarter(), db.SchedulerJob{Job: job}, db.InputConfigs{})
+			Expect(err).NotTo(HaveOccurred())
+
+			requested, _ := schedulerJobTimestamps(fixture, job.ID())
+			Expect(requested).To(BeTemporally(">", before))
+		})
+
+		It("does not request schedule when the algorithm can not run again", func() {
+			before, _ := schedulerJobTimestamps(fixture, job.ID())
+
+			_, err := tryStart(realStarter(), db.SchedulerJob{Job: job}, db.InputConfigs{})
+			Expect(err).NotTo(HaveOccurred())
+
+			requested, _ := schedulerJobTimestamps(fixture, job.ID())
+			Expect(requested).To(Equal(before))
+		})
+
+		It("returns the error when requesting schedule fails", func() {
+			fakeAlgorithm.ComputeReturns(db.InputMapping{}, true, true, nil)
+
+			needsReschedule, err := tryStart(realStarter(), db.SchedulerJob{
+				Job: requestScheduleFailsJob{Job: job, err: disaster},
+			}, db.InputConfigs{})
+			Expect(err).To(Equal(fmt.Errorf("get build inputs: %w", fmt.Errorf("request schedule: %w", disaster))))
+			Expect(needsReschedule).To(BeFalse())
+		})
+
+		It("returns the error when saving the next input mapping fails", func() {
+			needsReschedule, err := tryStart(realStarter(), db.SchedulerJob{
+				Job: saveNextInputMappingFailsJob{Job: job, err: disaster},
+			}, db.InputConfigs{})
+			Expect(err).To(Equal(fmt.Errorf("get build inputs: %w", fmt.Errorf("save next input mapping: %w", disaster))))
+			Expect(needsReschedule).To(BeFalse())
+		})
+
+		It("returns the error when adopting the inputs and pipes fails", func() {
+			needsReschedule, err := tryStart(realStarter(), db.SchedulerJob{
+				Job: wrappedPendingBuildsJob{
+					Job: job,
+					wrap: func(_ int, build db.Build) db.Build {
+						return adoptInputsFailsBuild{Build: build, err: disaster}
+					},
+				},
+			}, db.InputConfigs{})
+			Expect(err).To(Equal(fmt.Errorf("get build inputs: %w", fmt.Errorf("adopt inputs and pipes: %w", disaster))))
+			Expect(needsReschedule).To(BeFalse())
+		})
+
+		It("leaves the build pending when the algorithm cannot resolve the inputs", func() {
+			fakeAlgorithm.ComputeReturns(db.InputMapping{}, false, false, nil)
+
+			needsReschedule, err := tryStart(realStarter(), db.SchedulerJob{Job: job}, db.InputConfigs{})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(needsReschedule).To(BeFalse())
+
+			blockedBuild := reloadStarterBuild(fixture, manualBuild.ID())
+			Expect(blockedBuild.Status()).To(Equal(db.BuildStatusPending))
+			Expect(blockedBuild.IsScheduled()).To(BeTrue())
+			Expect(blockedBuild.HasPlan()).To(BeFalse())
+		})
 	})
 
-	It("leaves the build pending and asks to be rescheduled when max in flight is reached", func() {
-		fixture := useSchedulerDB()
-		serialJob := taskJob
-		serialJob.Name = "serial-job"
-		serialJob.RawMaxInFlight = 1
-		job := persistJob(fixture, atc.Config{Jobs: atc.JobConfigs{serialJob}}, "serial-job")
+	Describe("a manually triggered build whose resources have not been checked", func() {
+		var (
+			fixture  *schedulerDB
+			scenario *dbtest.Scenario
+			job      db.Job
+			build    db.Build
+		)
 
-		firstBuild := nextPendingBuild(job)
-		Expect(tryStart(job, nil)).To(BeFalse())
-		Expect(reloadBuild(fixture, firstBuild.ID()).Status()).To(Equal(db.BuildStatusStarted))
+		BeforeEach(func() {
+			fixture = useSchedulerDB()
+			scenario = dbtest.Setup(
+				fixture.Builder.WithTeam("starter-team"),
+				fixture.Builder.WithPipeline(atc.Config{
+					Resources: atc.ResourceConfigs{
+						{Name: "some-resource", Type: dbtest.BaseResourceType, Source: atc.Source{"some": "source"}},
+					},
+					Jobs: atc.JobConfigs{
+						{
+							Name: "get-job",
+							PlanSequence: []atc.Step{
+								{Config: &atc.GetStep{Name: "some-resource"}},
+							},
+						},
+					},
+				}),
+				fixture.Builder.WithResourceVersions("some-resource", atc.Version{"ref": "v1"}),
+			)
+			job = scenario.Job("get-job")
 
-		secondBuild := nextPendingBuild(job)
-		Expect(tryStart(job, nil)).To(BeTrue())
+			var err error
+			build, err = job.CreateBuild("test")
+			Expect(err).NotTo(HaveOccurred())
 
-		blockedBuild := reloadBuild(fixture, secondBuild.ID())
-		Expect(blockedBuild.Status()).To(Equal(db.BuildStatusPending))
-		Expect(blockedBuild.IsScheduled()).To(BeFalse())
-		Expect(blockedBuild.HasPlan()).To(BeFalse())
+			fakeAlgorithm.ComputeReturns(db.InputMapping{}, true, false, nil)
+		})
+
+		It("asks to be rescheduled without determining any inputs", func() {
+			Expect(build.ResourcesChecked()).To(BeFalse())
+
+			needsReschedule, err := tryStart(realStarter(), db.SchedulerJob{Job: job}, db.InputConfigs{})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(needsReschedule).To(BeTrue())
+
+			Expect(fakeAlgorithm.ComputeCallCount()).To(BeZero())
+			blockedBuild := reloadStarterBuild(fixture, build.ID())
+			Expect(blockedBuild.Status()).To(Equal(db.BuildStatusPending))
+			Expect(blockedBuild.HasPlan()).To(BeFalse())
+		})
+
+		It("determines the inputs once the resources have been checked again", func() {
+			scenario.Run(fixture.Builder.WithResourceVersions("some-resource"))
+			Expect(build.ResourcesChecked()).To(BeTrue())
+
+			needsReschedule, err := tryStart(plannedStarter(), db.SchedulerJob{Job: job}, db.InputConfigs{})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(needsReschedule).To(BeFalse())
+
+			Expect(fakeAlgorithm.ComputeCallCount()).To(Equal(1))
+			Expect(reloadStarterBuild(fixture, build.ID()).Status()).To(Equal(db.BuildStatusStarted))
+		})
 	})
 
-	It("starts a rerun build with its own persisted plan", func() {
-		fixture := useSchedulerDB()
-		job := persistJob(fixture, atc.Config{Jobs: atc.JobConfigs{taskJob}}, "task-job")
-		originalBuild := nextPendingBuild(job)
-		Expect(tryStart(job, nil)).To(BeFalse())
+	Describe("several pending builds", func() {
+		var (
+			fixture *schedulerDB
+			job     db.Job
 
-		rerunBuild, err := job.RerunBuild(originalBuild, "test")
-		Expect(err).NotTo(HaveOccurred())
-		Expect(rerunBuild.RerunOf()).To(Equal(originalBuild.ID()))
+			schedulerBuild db.Build
+			rerunBuild     db.Build
+			manualBuild    db.Build
+		)
 
-		Expect(tryStart(job, nil)).To(BeFalse())
+		BeforeEach(func() {
+			fixture = useSchedulerDB()
+			job = persistStarterJob(fixture, atc.Config{Jobs: atc.JobConfigs{starterTaskJob}}, "task-job")
 
-		startedRerun := reloadBuild(fixture, rerunBuild.ID())
-		Expect(startedRerun.Status()).To(Equal(db.BuildStatusStarted))
-		Expect(startedRerun.IsScheduled()).To(BeTrue())
+			schedulerBuild = nextPendingBuild(job)
 
-		persistedPlan := startedRerun.PrivatePlan()
-		Expect(persistedPlan.Do).NotTo(BeNil())
-		Expect((*persistedPlan.Do)[0].Task.Name).To(Equal("some-task"))
+			var err error
+			rerunBuild, err = job.RerunBuild(schedulerBuild, "test")
+			Expect(err).NotTo(HaveOccurred())
+			manualBuild, err = job.CreateBuild("test")
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(buildIDs(schedulerPendingBuilds(job))).To(Equal(
+				buildIDs([]db.Build{schedulerBuild, rerunBuild, manualBuild}),
+			))
+			fakeAlgorithm.ComputeReturns(db.InputMapping{}, true, false, nil)
+		})
+
+		It("schedules and starts all of them", func() {
+			needsReschedule, err := tryStart(realStarter(), db.SchedulerJob{Job: job}, db.InputConfigs{})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(needsReschedule).To(BeFalse())
+
+			for _, build := range []db.Build{schedulerBuild, rerunBuild, manualBuild} {
+				started := reloadStarterBuild(fixture, build.ID())
+				Expect(started.Status()).To(Equal(db.BuildStatusStarted), "build %d", build.ID())
+				Expect(started.IsScheduled()).To(BeTrue())
+				Expect(started.HasPlan()).To(BeTrue())
+			}
+			Expect(schedulerPendingBuilds(job)).To(BeEmpty())
+		})
+
+		It("adopts the inputs and pipes of every build", func() {
+			_, err := tryStart(realStarter(), db.SchedulerJob{Job: job}, db.InputConfigs{})
+			Expect(err).NotTo(HaveOccurred())
+
+			for _, build := range []db.Build{schedulerBuild, rerunBuild, manualBuild} {
+				Expect(reloadStarterBuild(fixture, build.ID()).InputsReady()).To(BeTrue(), "build %d", build.ID())
+			}
+		})
+
+		It("stops at the first build it cannot mark as scheduled", func() {
+			needsReschedule, err := tryStart(realStarter(), db.SchedulerJob{
+				Job: scheduleBuildFailsJob{Job: job, err: disaster},
+			}, db.InputConfigs{})
+			Expect(err).To(Equal(fmt.Errorf("schedule build: %w", disaster)))
+			Expect(needsReschedule).To(BeFalse())
+
+			for _, build := range []db.Build{schedulerBuild, rerunBuild, manualBuild} {
+				expectPending(fixture, build)
+			}
+		})
+
+		It("keeps going after failing to create a plan and errors every build", func() {
+			fakePlanner.CreateReturns(atc.Plan{}, disaster)
+
+			needsReschedule, err := tryStart(plannedStarter(), db.SchedulerJob{Job: job}, db.InputConfigs{})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(needsReschedule).To(BeFalse())
+
+			Expect(fakePlanner.CreateCallCount()).To(Equal(3))
+			for _, build := range []db.Build{schedulerBuild, rerunBuild, manualBuild} {
+				errored := reloadStarterBuild(fixture, build.ID())
+				Expect(errored.Status()).To(Equal(db.BuildStatusErrored), "build %d", build.ID())
+				Expect(errored.HasPlan()).To(BeFalse())
+			}
+		})
+
+		It("returns the error when marking a build as errored fails", func() {
+			fakePlanner.CreateReturns(atc.Plan{}, disaster)
+
+			needsReschedule, err := tryStart(plannedStarter(), db.SchedulerJob{
+				Job: wrappedPendingBuildsJob{
+					Job: job,
+					wrap: func(i int, build db.Build) db.Build {
+						if i == 0 {
+							return finishFailsBuild{Build: build, err: disaster}
+						}
+						return build
+					},
+				},
+			}, db.InputConfigs{})
+			Expect(err).To(Equal(fmt.Errorf("finish build: %w", disaster)))
+			Expect(needsReschedule).To(BeFalse())
+
+			Expect(reloadStarterBuild(fixture, schedulerBuild.ID()).Status()).To(Equal(db.BuildStatusPending))
+			expectPending(fixture, rerunBuild)
+			expectPending(fixture, manualBuild)
+		})
+
+		It("returns the error when starting a build fails", func() {
+			needsReschedule, err := tryStart(realStarter(), db.SchedulerJob{
+				Job: wrappedPendingBuildsJob{
+					Job: job,
+					wrap: func(i int, build db.Build) db.Build {
+						if i == 0 {
+							return startFailsBuild{Build: build, err: disaster}
+						}
+						return build
+					},
+				},
+			}, db.InputConfigs{})
+			Expect(err).To(Equal(fmt.Errorf("start build: %w", disaster)))
+			Expect(needsReschedule).To(BeFalse())
+
+			expectPending(fixture, rerunBuild)
+			expectPending(fixture, manualBuild)
+		})
+
+		It("finishes a build aborted after it was scanned and starts the rest", func() {
+			needsReschedule, err := tryStart(realStarter(), db.SchedulerJob{
+				Job: wrappedPendingBuildsJob{
+					Job: job,
+					wrap: func(i int, build db.Build) db.Build {
+						if i == 0 {
+							Expect(build.MarkAsAborted()).To(Succeed())
+						}
+						return build
+					},
+				},
+			}, db.InputConfigs{})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(needsReschedule).To(BeFalse())
+
+			abortedBuild := reloadStarterBuild(fixture, schedulerBuild.ID())
+			Expect(abortedBuild.Status()).To(Equal(db.BuildStatusAborted))
+			Expect(abortedBuild.HasPlan()).To(BeFalse())
+			Expect(reloadStarterBuild(fixture, manualBuild.ID()).Status()).To(Equal(db.BuildStatusStarted))
+		})
+
+		It("returns the error when a build aborted after it was scanned cannot be finished", func() {
+			needsReschedule, err := tryStart(realStarter(), db.SchedulerJob{
+				Job: wrappedPendingBuildsJob{
+					Job: job,
+					wrap: func(i int, build db.Build) db.Build {
+						if i == 0 {
+							Expect(build.MarkAsAborted()).To(Succeed())
+							return finishFailsBuild{Build: build, err: disaster}
+						}
+						return build
+					},
+				},
+			}, db.InputConfigs{})
+			Expect(err).To(Equal(fmt.Errorf("finish build: %w", disaster)))
+			Expect(needsReschedule).To(BeFalse())
+
+			expectPending(fixture, manualBuild)
+		})
+
+		It("returns the error when adopting the rerun inputs and pipes fails", func() {
+			needsReschedule, err := tryStart(realStarter(), db.SchedulerJob{
+				Job: wrappedPendingBuildsJob{
+					Job: job,
+					wrap: func(i int, build db.Build) db.Build {
+						if i == 1 {
+							return adoptRerunInputsFailsBuild{Build: build, err: disaster}
+						}
+						return build
+					},
+				},
+			}, db.InputConfigs{})
+			Expect(err).To(Equal(fmt.Errorf("get build inputs: %w", fmt.Errorf("adopt rerun inputs and pipes: %w", disaster))))
+			Expect(needsReschedule).To(BeFalse())
+
+			Expect(reloadStarterBuild(fixture, schedulerBuild.ID()).Status()).To(Equal(db.BuildStatusStarted))
+			expectPending(fixture, manualBuild)
+		})
+
+		It("stops scheduling when a scheduler build cannot determine its inputs", func() {
+			Expect(job.SaveNextInputMapping(nil, false)).To(Succeed())
+
+			needsReschedule, err := tryStart(realStarter(), db.SchedulerJob{Job: job}, db.InputConfigs{})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(needsReschedule).To(BeFalse())
+
+			for _, build := range []db.Build{schedulerBuild, rerunBuild, manualBuild} {
+				expectPending(fixture, build)
+			}
+		})
+
+		It("only computes the algorithm for the manually triggered build", func() {
+			_, err := tryStart(realStarter(), db.SchedulerJob{Job: job}, db.InputConfigs{})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(fakeAlgorithm.ComputeCallCount()).To(Equal(1))
+		})
+	})
+
+	Describe("a rerun of a build that never determined its inputs", func() {
+		It("continues on to the next pending build", func() {
+			fixture := useSchedulerDB()
+			job := persistStarterJob(fixture, atc.Config{Jobs: atc.JobConfigs{starterTaskJob}}, "task-job")
+
+			originalBuild, err := job.CreateBuild("test")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(originalBuild.Finish(db.BuildStatusFailed)).To(Succeed())
+			Expect(originalBuild.InputsReady()).To(BeFalse())
+
+			schedulerBuild := nextPendingBuild(job)
+			rerunBuild, err := job.RerunBuild(originalBuild, "test")
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(schedulerPendingBuilds(job)).To(HaveLen(2))
+
+			needsReschedule, err := tryStart(realStarter(), db.SchedulerJob{Job: job}, db.InputConfigs{})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(needsReschedule).To(BeFalse())
+
+			Expect(fakeAlgorithm.ComputeCallCount()).To(BeZero())
+			expectPending(fixture, rerunBuild)
+			Expect(reloadStarterBuild(fixture, schedulerBuild.ID()).Status()).To(Equal(db.BuildStatusStarted))
+		})
+	})
+
+	Describe("a job that has reached max in flight", func() {
+		It("leaves the build pending and asks to be rescheduled", func() {
+			fixture := useSchedulerDB()
+			serialJob := starterTaskJob
+			serialJob.Name = "serial-job"
+			serialJob.RawMaxInFlight = 1
+			job := persistStarterJob(fixture, atc.Config{Jobs: atc.JobConfigs{serialJob}}, "serial-job")
+
+			firstBuild := nextPendingBuild(job)
+			_, err := tryStart(realStarter(), db.SchedulerJob{Job: job}, db.InputConfigs{})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(reloadStarterBuild(fixture, firstBuild.ID()).Status()).To(Equal(db.BuildStatusStarted))
+
+			secondBuild := nextPendingBuild(job)
+			needsReschedule, err := tryStart(realStarter(), db.SchedulerJob{Job: job}, db.InputConfigs{})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(needsReschedule).To(BeTrue())
+
+			blockedBuild := reloadStarterBuild(fixture, secondBuild.ID())
+			Expect(blockedBuild.Status()).To(Equal(db.BuildStatusPending))
+			Expect(blockedBuild.IsScheduled()).To(BeFalse())
+			Expect(blockedBuild.HasPlan()).To(BeFalse())
+		})
+
+		It("does not schedule the builds queued behind the blocked one", func() {
+			fixture := useSchedulerDB()
+			serialJob := starterTaskJob
+			serialJob.Name = "serial-job"
+			serialJob.RawMaxInFlight = 1
+			job := persistStarterJob(fixture, atc.Config{Jobs: atc.JobConfigs{serialJob}}, "serial-job")
+			fakeAlgorithm.ComputeReturns(db.InputMapping{}, true, false, nil)
+
+			runningBuild := nextPendingBuild(job)
+			_, err := tryStart(realStarter(), db.SchedulerJob{Job: job}, db.InputConfigs{})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(reloadStarterBuild(fixture, runningBuild.ID()).Status()).To(Equal(db.BuildStatusStarted))
+
+			blockedBuild := nextPendingBuild(job)
+			queuedBuild, err := job.CreateBuild("test")
+			Expect(err).NotTo(HaveOccurred())
+
+			needsReschedule, err := tryStart(realStarter(), db.SchedulerJob{Job: job}, db.InputConfigs{})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(needsReschedule).To(BeTrue())
+
+			expectPending(fixture, blockedBuild)
+			expectPending(fixture, queuedBuild)
+		})
+	})
+
+	Describe("planning a build", func() {
+		It("creates the plan from the job config and the scheduler job", func() {
+			fixture := useSchedulerDB()
+			job := persistStarterJob(fixture, atc.Config{Jobs: atc.JobConfigs{starterTaskJob}}, "task-job")
+			pendingBuild := nextPendingBuild(job)
+
+			resources := db.SchedulerResources{{Name: "some-resource"}}
+			resourceTypes := atc.ResourceTypes{{Name: "some-resource-type"}}
+			prototypes := atc.Prototypes{{Name: "some-prototype"}}
+
+			_, err := tryStart(plannedStarter(), db.SchedulerJob{
+				Job:           job,
+				Resources:     resources,
+				ResourceTypes: resourceTypes,
+				Prototypes:    prototypes,
+			}, db.InputConfigs{})
+			Expect(err).NotTo(HaveOccurred())
+
+			jobConfig, err := job.Config()
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(fakePlanner.CreateCallCount()).To(Equal(1))
+			planConfig, actualResources, actualResourceTypes, actualPrototypes, actualInputs, manuallyTriggered := fakePlanner.CreateArgsForCall(0)
+			Expect(planConfig).To(Equal(jobConfig.StepConfig()))
+			Expect(actualResources).To(Equal(resources))
+			Expect(actualResourceTypes).To(Equal(resourceTypes))
+			Expect(actualPrototypes).To(Equal(prototypes))
+			Expect(actualInputs).To(BeEmpty())
+			Expect(manuallyTriggered).To(BeFalse())
+			Expect(reloadStarterBuild(fixture, pendingBuild.ID()).Status()).To(Equal(db.BuildStatusStarted))
+		})
+
+		It("persists the plan it created onto the started build", func() {
+			fixture := useSchedulerDB()
+			job := persistStarterJob(fixture, atc.Config{Jobs: atc.JobConfigs{starterTaskJob}}, "task-job")
+			pendingBuild := nextPendingBuild(job)
+
+			needsReschedule, err := tryStart(realStarter(), db.SchedulerJob{Job: job}, db.InputConfigs{})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(needsReschedule).To(BeFalse())
+
+			startedBuild := reloadStarterBuild(fixture, pendingBuild.ID())
+			Expect(startedBuild.Status()).To(Equal(db.BuildStatusStarted))
+			Expect(startedBuild.IsScheduled()).To(BeTrue())
+			Expect(startedBuild.HasPlan()).To(BeTrue())
+
+			persistedPlan := startedBuild.PrivatePlan()
+			Expect(persistedPlan.Do).NotTo(BeNil())
+			Expect(*persistedPlan.Do).To(HaveLen(1))
+			Expect((*persistedPlan.Do)[0].Task).NotTo(BeNil())
+			Expect((*persistedPlan.Do)[0].Task.Name).To(Equal("some-task"))
+			Expect((*persistedPlan.Do)[0].Task.ConfigPath).To(Equal("some/config/path.yml"))
+		})
+
+		It("marks the build as errored when the plan cannot be created", func() {
+			fixture := useSchedulerDB()
+			job := persistStarterJob(fixture, starterUnplannableJob, "get-job")
+			pendingBuild := nextPendingBuild(job)
+
+			needsReschedule, err := tryStart(realStarter(), db.SchedulerJob{
+				Job:       job,
+				Resources: db.SchedulerResources{{Name: "some-resource", Type: "some-type"}},
+			}, db.InputConfigs{})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(needsReschedule).To(BeFalse())
+
+			erroredBuild := reloadStarterBuild(fixture, pendingBuild.ID())
+			Expect(erroredBuild.Status()).To(Equal(db.BuildStatusErrored))
+			Expect(erroredBuild.IsCompleted()).To(BeTrue())
+			Expect(erroredBuild.HasPlan()).To(BeFalse())
+		})
+
+		It("starts a rerun build with its own persisted plan", func() {
+			fixture := useSchedulerDB()
+			job := persistStarterJob(fixture, atc.Config{Jobs: atc.JobConfigs{starterTaskJob}}, "task-job")
+			originalBuild := nextPendingBuild(job)
+			_, err := tryStart(realStarter(), db.SchedulerJob{Job: job}, db.InputConfigs{})
+			Expect(err).NotTo(HaveOccurred())
+
+			rerunBuild, err := job.RerunBuild(originalBuild, "test")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(rerunBuild.RerunOf()).To(Equal(originalBuild.ID()))
+
+			_, err = tryStart(realStarter(), db.SchedulerJob{Job: job}, db.InputConfigs{})
+			Expect(err).NotTo(HaveOccurred())
+
+			startedRerun := reloadStarterBuild(fixture, rerunBuild.ID())
+			Expect(startedRerun.Status()).To(Equal(db.BuildStatusStarted))
+			Expect(startedRerun.IsScheduled()).To(BeTrue())
+
+			persistedPlan := startedRerun.PrivatePlan()
+			Expect(persistedPlan.Do).NotTo(BeNil())
+			Expect((*persistedPlan.Do)[0].Task.Name).To(Equal("some-task"))
+		})
 	})
 })
