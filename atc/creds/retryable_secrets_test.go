@@ -5,23 +5,32 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/atc/creds"
-	"github.com/concourse/concourse/atc/creds/credsfakes"
+	"github.com/concourse/concourse/atc/creds/dummy"
 	"github.com/concourse/concourse/vars"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
 
-func makeFlakySecretManager(numberOfFails int) creds.Secrets {
-	fakeSecretManager := new(credsfakes.FakeSecrets)
-	attempt := 0
-	fakeSecretManager.GetStub = func(string) (any, *time.Time, bool, error) {
-		attempt++
-		if attempt <= numberOfFails {
-			return nil, nil, false, fmt.Errorf("remote error: handshake failure")
-		}
-		return "received value", nil, true, nil
+type flakySecrets struct {
+	creds.Secrets
+
+	fails    int
+	attempts int
+}
+
+func (secrets *flakySecrets) Get(secretPath string) (any, *time.Time, bool, error) {
+	secrets.attempts++
+	if secrets.attempts <= secrets.fails {
+		return nil, nil, false, fmt.Errorf("remote error: handshake failure")
 	}
-	return fakeSecretManager
+	return secrets.Secrets.Get(secretPath)
+}
+
+func makeFlakySecretManager(numberOfFails int) creds.Secrets {
+	return &flakySecrets{
+		Secrets: &dummy.Secrets{StaticVariables: vars.StaticVariables{"team/pipeline/somevar": "received value"}},
+		fails:   numberOfFails,
+	}
 }
 
 var _ = Describe("Re-retrieval of secrets on retryable errors", func() {

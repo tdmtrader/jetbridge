@@ -1,18 +1,22 @@
 package ssm_test
 
 import (
-	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"sync"
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
 
 	"github.com/concourse/concourse/atc/creds"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	"github.com/aws/aws-sdk-go-v2/service/ssm/types"
 	. "github.com/concourse/concourse/atc/creds/ssm"
-	"github.com/concourse/concourse/atc/creds/ssm/ssmfakes"
 	"github.com/concourse/concourse/vars"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -24,7 +28,7 @@ var _ = Describe("Ssm", func() {
 	var ssmAccess *Ssm
 	var variables vars.Variables
 	var varRef vars.Reference
-	var mockService *ssmfakes.FakeSsmAPI
+	var awsSsm *fakeAWS
 
 	JustBeforeEach(func() {
 		varRef = vars.Reference{Path: "cheery"}
@@ -35,8 +39,8 @@ var _ = Describe("Ssm", func() {
 		Expect(t2).NotTo(BeNil())
 		Expect(err).To(BeNil())
 
-		mockService = &ssmfakes.FakeSsmAPI{}
-		mockService.GetParameterStub = getParameterStub(func(name string) (*ssm.GetParameterOutput, error) {
+		awsSsm = startFakeAWS()
+		awsSsm.getParameter(func(name string) (*ssm.GetParameterOutput, error) {
 			if name == "/concourse/alpha/bogus/cheery" {
 				val := "ssm decrypted value"
 				return &ssm.GetParameterOutput{Parameter: &types.Parameter{Value: &val}}, nil
@@ -44,11 +48,11 @@ var _ = Describe("Ssm", func() {
 			return nil, &types.ParameterNotFound{}
 		})
 
-		mockService.GetParametersByPathStub = getParametersByPathStub(func(path string) (*ssm.GetParametersByPathOutput, error) {
+		awsSsm.getParametersByPath(func(path string) (*ssm.GetParametersByPathOutput, error) {
 			return &ssm.GetParametersByPathOutput{}, nil
 		})
 
-		ssmAccess = NewSsm(lagertest.NewTestLogger("ssm_test"), mockService, []*creds.SecretTemplate{t1, t2}, "/concourse/shared")
+		ssmAccess = NewSsm(lagertest.NewTestLogger("ssm_test"), awsSsm.client, []*creds.SecretTemplate{t1, t2}, "/concourse/shared")
 
 		variables = creds.NewVariables(ssmAccess, creds.SecretLookupParams{Team: "alpha", Pipeline: "bogus"}, false)
 		Expect(ssmAccess).NotTo(BeNil())
@@ -63,7 +67,7 @@ var _ = Describe("Ssm", func() {
 		})
 
 		It("should get complex parameter", func() {
-			mockService.GetParametersByPathStub = getParametersByPathStub(func(path string) (*ssm.GetParametersByPathOutput, error) {
+			awsSsm.getParametersByPath(func(path string) (*ssm.GetParametersByPathOutput, error) {
 				return &ssm.GetParametersByPathOutput{Parameters: []types.Parameter{
 					{Name: aws.String("/concourse/alpha/bogus/user/name"), Value: aws.String("yours")},
 					{Name: aws.String("/concourse/alpha/bogus/user/pass"), Value: aws.String("truely")},
@@ -80,7 +84,7 @@ var _ = Describe("Ssm", func() {
 		})
 
 		It("should return numbers as strings", func() {
-			mockService.GetParameterStub = getParameterStub(func(name string) (*ssm.GetParameterOutput, error) {
+			awsSsm.getParameter(func(name string) (*ssm.GetParameterOutput, error) {
 				return &ssm.GetParameterOutput{Parameter: &types.Parameter{Value: aws.String("101")}}, nil
 			})
 
@@ -91,7 +95,7 @@ var _ = Describe("Ssm", func() {
 		})
 
 		It("should get team parameter if exists", func() {
-			mockService.GetParameterStub = getParameterStub(func(name string) (*ssm.GetParameterOutput, error) {
+			awsSsm.getParameter(func(name string) (*ssm.GetParameterOutput, error) {
 				if name != "/concourse/alpha/bogus/cheery" {
 					return nil, &types.ParameterNotFound{}
 				}
@@ -105,7 +109,7 @@ var _ = Describe("Ssm", func() {
 		})
 
 		It("should get shared parameter if exists", func() {
-			mockService.GetParameterStub = getParameterStub(func(name string) (*ssm.GetParameterOutput, error) {
+			awsSsm.getParameter(func(name string) (*ssm.GetParameterOutput, error) {
 				if name != "/concourse/shared/cheery" {
 					return nil, &types.ParameterNotFound{}
 				}
@@ -119,7 +123,10 @@ var _ = Describe("Ssm", func() {
 		})
 
 		It("should return not found on error", func() {
-			mockService.GetParameterReturns(nil, fmt.Errorf("some error"))
+			awsSsm.getParameter(func(name string) (*ssm.GetParameterOutput, error) {
+				return nil, fmt.Errorf("some error")
+			})
+
 			value, found, err := variables.Get(varRef)
 			Expect(value).To(BeNil())
 			Expect(found).To(BeFalse())
@@ -128,7 +135,7 @@ var _ = Describe("Ssm", func() {
 
 		It("should allow empty pipeline name", func() {
 			variables := creds.NewVariables(ssmAccess, creds.SecretLookupParams{Team: "alpha", Pipeline: ""}, false)
-			mockService.GetParameterStub = getParameterStub(func(name string) (*ssm.GetParameterOutput, error) {
+			awsSsm.getParameter(func(name string) (*ssm.GetParameterOutput, error) {
 				Expect(name).To(Equal("/concourse/alpha/cheery"))
 				return &ssm.GetParameterOutput{Parameter: &types.Parameter{Value: aws.String("team power")}}, nil
 			})
@@ -141,24 +148,91 @@ var _ = Describe("Ssm", func() {
 	})
 })
 
-func getParameterStub(f func(string) (*ssm.GetParameterOutput, error)) func(context.Context, *ssm.GetParameterInput, ...func(*ssm.Options)) (*ssm.GetParameterOutput, error) {
-	return func(ctx context.Context, params *ssm.GetParameterInput, optFns ...func(*ssm.Options)) (*ssm.GetParameterOutput, error) {
-		Expect(ctx).NotTo(BeNil())
-		Expect(params).NotTo(BeNil())
-		Expect(params.Name).NotTo(BeNil())
-		Expect(params.WithDecryption).To(PointTo(Equal(true)))
-		return f(*params.Name)
+// fakeAWS speaks the AWS JSON 1.1 wire protocol so that the specs drive a real
+// *ssm.Client, rather than a stand-in for one.
+type fakeAWS struct {
+	client *ssm.Client
+
+	mutex          sync.Mutex
+	parameter      func(name string) (*ssm.GetParameterOutput, error)
+	parametersPath func(path string) (*ssm.GetParametersByPathOutput, error)
+}
+
+func startFakeAWS() *fakeAWS {
+	f := new(fakeAWS)
+
+	server := httptest.NewServer(f)
+	DeferCleanup(server.Close)
+
+	f.client = ssm.New(ssm.Options{
+		Region:       "test-region",
+		Credentials:  credentials.NewStaticCredentialsProvider("access-key", "secret-key", ""),
+		BaseEndpoint: aws.String(server.URL),
+		Retryer:      aws.NopRetryer{},
+	})
+
+	return f
+}
+
+func (f *fakeAWS) getParameter(fn func(name string) (*ssm.GetParameterOutput, error)) {
+	f.mutex.Lock()
+	defer f.mutex.Unlock()
+	f.parameter = fn
+}
+
+func (f *fakeAWS) getParametersByPath(fn func(path string) (*ssm.GetParametersByPathOutput, error)) {
+	f.mutex.Lock()
+	defer f.mutex.Unlock()
+	f.parametersPath = fn
+}
+
+func (f *fakeAWS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	defer GinkgoRecover()
+
+	f.mutex.Lock()
+	parameter, parametersPath := f.parameter, f.parametersPath
+	f.mutex.Unlock()
+
+	switch target := r.Header.Get("X-Amz-Target"); target {
+	case "AmazonSSM.GetParameter":
+		var input ssm.GetParameterInput
+		Expect(json.NewDecoder(r.Body).Decode(&input)).To(Succeed())
+		Expect(input.Name).NotTo(BeNil())
+		Expect(input.WithDecryption).To(PointTo(Equal(true)))
+		output, err := parameter(*input.Name)
+		writeAWSResponse(w, output, err)
+
+	case "AmazonSSM.GetParametersByPath":
+		var input ssm.GetParametersByPathInput
+		Expect(json.NewDecoder(r.Body).Decode(&input)).To(Succeed())
+		Expect(input.Path).NotTo(BeNil())
+		Expect(input.Recursive).To(PointTo(Equal(true)))
+		Expect(input.WithDecryption).To(PointTo(Equal(true)))
+		Expect(input.MaxResults).To(PointTo(BeEquivalentTo(10)))
+		output, err := parametersPath(*input.Path)
+		writeAWSResponse(w, output, err)
+
+	default:
+		Fail(fmt.Sprintf("unexpected ssm operation %q", target))
 	}
 }
 
-func getParametersByPathStub(f func(string) (*ssm.GetParametersByPathOutput, error)) func(context.Context, *ssm.GetParametersByPathInput, ...func(*ssm.Options)) (*ssm.GetParametersByPathOutput, error) {
-	return func(ctx context.Context, params *ssm.GetParametersByPathInput, optFns ...func(*ssm.Options)) (*ssm.GetParametersByPathOutput, error) {
-		Expect(ctx).NotTo(BeNil())
-		Expect(params).NotTo(BeNil())
-		Expect(params.Path).NotTo(BeNil())
-		Expect(params.Recursive).To(PointTo(Equal(true)))
-		Expect(params.WithDecryption).To(PointTo(Equal(true)))
-		Expect(params.MaxResults).To(PointTo(BeEquivalentTo(10)))
-		return f(*params.Path)
+func writeAWSResponse(w http.ResponseWriter, output any, err error) {
+	w.Header().Set("Content-Type", "application/x-amz-json-1.1")
+
+	if err == nil {
+		Expect(json.NewEncoder(w).Encode(output)).To(Succeed())
+		return
 	}
+
+	errorType, status := "InternalServerError", http.StatusInternalServerError
+
+	var notFound *types.ParameterNotFound
+	if errors.As(err, &notFound) {
+		errorType, status = "ParameterNotFound", http.StatusBadRequest
+	}
+
+	w.Header().Set("X-Amzn-Errortype", errorType)
+	w.WriteHeader(status)
+	Expect(json.NewEncoder(w).Encode(map[string]string{"message": err.Error()})).To(Succeed())
 }
