@@ -3,6 +3,7 @@ package emitter
 import (
 	"fmt"
 	"maps"
+	"sync"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
@@ -16,6 +17,10 @@ type InfluxDBEmitter struct {
 	Database      string
 	BatchSize     int
 	BatchDuration time.Duration
+
+	batchMutex    sync.Mutex
+	batch         []metric.Event
+	lastBatchTime time.Time
 }
 
 type InfluxDBConfig struct {
@@ -32,14 +37,7 @@ type InfluxDBConfig struct {
 	BatchDuration time.Duration `long:"influxdb-batch-duration" default:"300s" description:"The duration to wait before emitting a batch of points to InfluxDB, disregarding influxdb-batch-size."`
 }
 
-var (
-	batch         []metric.Event
-	lastBatchTime time.Time
-)
-
 func init() {
-	batch = make([]metric.Event, 0)
-	lastBatchTime = time.Now()
 	metric.Metrics.RegisterEmitter(&InfluxDBConfig{})
 }
 
@@ -111,23 +109,37 @@ func emitBatch(emitter *InfluxDBEmitter, logger lager.Logger, events []metric.Ev
 }
 
 func (emitter *InfluxDBEmitter) Emit(logger lager.Logger, event metric.Event) {
-	batch = append(batch, event)
-	duration := time.Since(lastBatchTime)
-	if len(batch) >= emitter.BatchSize || duration >= emitter.BatchDuration {
+	emitter.batchMutex.Lock()
+	defer emitter.batchMutex.Unlock()
+
+	if emitter.lastBatchTime.IsZero() {
+		emitter.lastBatchTime = time.Now()
+	}
+
+	emitter.batch = append(emitter.batch, event)
+	duration := time.Since(emitter.lastBatchTime)
+	if len(emitter.batch) >= emitter.BatchSize || duration >= emitter.BatchDuration {
 		logger.Debug("influxdb-pre-emit-batch", lager.Data{
 			"influxdb-batch-size":     emitter.BatchSize,
-			"current-batch-size":      len(batch),
+			"current-batch-size":      len(emitter.batch),
 			"influxdb-batch-duration": emitter.BatchDuration,
 			"current-duration":        duration,
 		})
-		emitter.SubmitBatch(logger)
+		emitter.submitBatch(logger)
 	}
 }
 
 func (emitter *InfluxDBEmitter) SubmitBatch(logger lager.Logger) {
-	batchToSubmit := make([]metric.Event, len(batch))
-	copy(batchToSubmit, batch)
-	batch = make([]metric.Event, 0)
-	lastBatchTime = time.Now()
+	emitter.batchMutex.Lock()
+	defer emitter.batchMutex.Unlock()
+
+	emitter.submitBatch(logger)
+}
+
+func (emitter *InfluxDBEmitter) submitBatch(logger lager.Logger) {
+	batchToSubmit := make([]metric.Event, len(emitter.batch))
+	copy(batchToSubmit, emitter.batch)
+	emitter.batch = make([]metric.Event, 0)
+	emitter.lastBatchTime = time.Now()
 	go emitBatch(emitter, logger, batchToSubmit)
 }
