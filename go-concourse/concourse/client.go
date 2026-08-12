@@ -9,9 +9,6 @@ import (
 	"github.com/concourse/concourse/go-concourse/concourse/internal"
 )
 
-//go:generate go run github.com/maxbrunsfeld/counterfeiter/v6 -generate
-
-//counterfeiter:generate . Client
 type Client interface {
 	URL() string
 	HTTPClient() *http.Client

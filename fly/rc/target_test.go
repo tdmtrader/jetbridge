@@ -8,13 +8,15 @@ import (
 	"path/filepath"
 	"runtime"
 
+	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/fly/rc"
-	fakes "github.com/concourse/concourse/go-concourse/concourse/concoursefakes"
+	"github.com/concourse/concourse/go-concourse/concourse"
 	"golang.org/x/oauth2"
 	"sigs.k8s.io/yaml"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/onsi/gomega/ghttp"
 )
 
 var _ = Describe("Target", func() {
@@ -323,13 +325,20 @@ Lfkzl8ebb+tt0XFMUFc42WNr
 	})
 
 	Describe("FindTeam", func() {
-		It("finds the team", func() {
-			fakeClient := new(fakes.FakeClient)
+		const expectedURL = "/api/v1/teams/the-team"
 
-			rc.NewTarget(
+		var (
+			atcServer *ghttp.Server
+			target    rc.Target
+		)
+
+		BeforeEach(func() {
+			atcServer = ghttp.NewServer()
+
+			target = rc.NewTarget(
 				"test-target",
 				"default-team",
-				"http://example.com",
+				atcServer.URL(),
 				nil,
 				"ca-cert",
 				nil,
@@ -337,11 +346,38 @@ Lfkzl8ebb+tt0XFMUFc42WNr
 				"",
 				[]tls.Certificate{},
 				true,
-				fakeClient,
-			).FindTeam("the-team")
+				concourse.NewClient(atcServer.URL(), &http.Client{}, false),
+			)
+		})
 
-			Expect(fakeClient.FindTeamCallCount()).To(Equal(1), "client.FindTeam should be used")
-			Expect(fakeClient.FindTeamArgsForCall(0)).To(Equal("the-team"), "FindTeam should pass through team name")
+		AfterEach(func() {
+			atcServer.Close()
+		})
+
+		It("finds the team", func() {
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("GET", expectedURL),
+					ghttp.RespondWithJSONEncoded(http.StatusOK, atc.Team{ID: 1, Name: "the-team"}),
+				),
+			)
+
+			team, err := target.FindTeam("the-team")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(team.Name()).To(Equal("the-team"))
+			Expect(atcServer.ReceivedRequests()).To(HaveLen(1))
+		})
+
+		It("errors when the user has no role on the team", func() {
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("GET", expectedURL),
+					ghttp.RespondWith(http.StatusForbidden, ""),
+				),
+			)
+
+			_, err := target.FindTeam("the-team")
+			Expect(err).To(MatchError("you do not have a role on team 'the-team'"))
 		})
 	})
 })

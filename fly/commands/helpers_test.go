@@ -1,28 +1,42 @@
 package commands_test
 
 import (
-	"errors"
 	"fmt"
+	"net/http"
 	"strconv"
 
 	"github.com/concourse/concourse/atc"
 	. "github.com/concourse/concourse/fly/commands"
 	"github.com/concourse/concourse/fly/commands/internal/flaghelpers"
 	"github.com/concourse/concourse/go-concourse/concourse"
-	fakes "github.com/concourse/concourse/go-concourse/concourse/concoursefakes"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/onsi/gomega/ghttp"
 )
 
 var _ = Describe("Helper Functions", func() {
+	var (
+		atcServer *ghttp.Server
+		client    concourse.Client
+		team      concourse.Team
+	)
+
+	BeforeEach(func() {
+		atcServer = ghttp.NewServer()
+		client = concourse.NewClient(atcServer.URL(), &http.Client{}, false)
+		team = client.Team("some-team")
+	})
+
+	AfterEach(func() {
+		atcServer.Close()
+	})
+
 	Describe("#GetBuild", func() {
-		var client *fakes.FakeClient
-		var team *fakes.FakeTeam
 		expectedBuildID := "123"
 		expectedBuildName := "5"
 		expectedJobName := "myjob"
-		expectedPipelineRef := atc.PipelineRef{}
+		expectedPipelineRef := atc.PipelineRef{Name: "mypipeline"}
 		expectedBuild := atc.Build{
 			ID:      123,
 			Name:    expectedBuildName,
@@ -31,34 +45,40 @@ var _ = Describe("Helper Functions", func() {
 			APIURL:  fmt.Sprintf("api/v1/builds/%s", expectedBuildID),
 		}
 
-		BeforeEach(func() {
-			client = new(fakes.FakeClient)
-			team = new(fakes.FakeTeam)
-		})
-
 		Context("when passed a build id", func() {
+			expectedURL := "/api/v1/builds/123"
+
 			Context("when no error is encountered while fetching build", func() {
 				Context("when build exists", func() {
 					BeforeEach(func() {
-						client.BuildReturns(expectedBuild, true, nil)
+						atcServer.AppendHandlers(
+							ghttp.CombineHandlers(
+								ghttp.VerifyRequest("GET", expectedURL),
+								ghttp.RespondWithJSONEncoded(http.StatusOK, expectedBuild),
+							),
+						)
 					})
 
 					It("returns the build", func() {
-						build, err := GetBuild(client, nil, "", expectedBuildID, expectedPipelineRef)
+						build, err := GetBuild(client, nil, "", expectedBuildID, atc.PipelineRef{})
 						Expect(err).NotTo(HaveOccurred())
 						Expect(build).To(Equal(expectedBuild))
-						Expect(client.BuildCallCount()).To(Equal(1))
-						Expect(client.BuildArgsForCall(0)).To(Equal(expectedBuildID))
+						Expect(atcServer.ReceivedRequests()).To(HaveLen(1))
 					})
 				})
 
 				Context("when a build does not exist", func() {
 					BeforeEach(func() {
-						client.BuildReturns(atc.Build{}, false, nil)
+						atcServer.AppendHandlers(
+							ghttp.CombineHandlers(
+								ghttp.VerifyRequest("GET", expectedURL),
+								ghttp.RespondWithJSONEncoded(http.StatusNotFound, nil),
+							),
+						)
 					})
 
 					It("returns an error", func() {
-						_, err := GetBuild(client, nil, "", expectedBuildID, expectedPipelineRef)
+						_, err := GetBuild(client, nil, "", expectedBuildID, atc.PipelineRef{})
 						Expect(err).To(HaveOccurred())
 						Expect(err).To(MatchError("build not found"))
 					})
@@ -67,68 +87,79 @@ var _ = Describe("Helper Functions", func() {
 
 			Context("when an error is encountered while fetching build", func() {
 				BeforeEach(func() {
-					client.BuildReturns(atc.Build{}, false, errors.New("some-error"))
+					atcServer.AppendHandlers(
+						ghttp.CombineHandlers(
+							ghttp.VerifyRequest("GET", expectedURL),
+							ghttp.RespondWith(http.StatusInternalServerError, "some-error"),
+						),
+					)
 				})
 
 				It("return an error", func() {
-					_, err := GetBuild(client, nil, "", expectedBuildID, expectedPipelineRef)
-					Expect(err).To(MatchError("failed to get build some-error"))
+					_, err := GetBuild(client, nil, "", expectedBuildID, atc.PipelineRef{})
+					Expect(err).To(MatchError(HavePrefix("failed to get build ")))
+					Expect(err).To(MatchError(ContainSubstring("some-error")))
 				})
 			})
 		})
 
 		Context("when passed a pipeline and job name", func() {
+			expectedURL := "/api/v1/teams/some-team/pipelines/mypipeline/jobs/myjob"
+
 			Context("when no error was encountered while looking up for team job", func() {
 				Context("when job exists", func() {
 					Context("when the next build exists", func() {
 						BeforeEach(func() {
-							job := atc.Job{
-								Name:      expectedJobName,
-								NextBuild: &expectedBuild,
-							}
-							team.JobReturns(job, true, nil)
-							expectedPipelineRef = atc.PipelineRef{Name: "mypipeline"}
+							atcServer.AppendHandlers(
+								ghttp.CombineHandlers(
+									ghttp.VerifyRequest("GET", expectedURL),
+									ghttp.RespondWithJSONEncoded(http.StatusOK, atc.Job{
+										Name:      expectedJobName,
+										NextBuild: &expectedBuild,
+									}),
+								),
+							)
 						})
 
 						It("returns the next build for that job", func() {
 							build, err := GetBuild(client, team, expectedJobName, "", expectedPipelineRef)
 							Expect(err).NotTo(HaveOccurred())
 							Expect(build).To(Equal(expectedBuild))
-							Expect(team.JobCallCount()).To(Equal(1))
-							pipelineRef, jobName := team.JobArgsForCall(0)
-							Expect(pipelineRef).To(Equal(expectedPipelineRef))
-							Expect(jobName).To(Equal(expectedJobName))
+							Expect(atcServer.ReceivedRequests()).To(HaveLen(1))
 						})
 					})
 
 					Context("when the only the finished build exists", func() {
 						BeforeEach(func() {
-							job := atc.Job{
-								Name:          expectedJobName,
-								FinishedBuild: &expectedBuild,
-							}
-							team.JobReturns(job, true, nil)
-							expectedPipelineRef = atc.PipelineRef{Name: "mypipeline"}
+							atcServer.AppendHandlers(
+								ghttp.CombineHandlers(
+									ghttp.VerifyRequest("GET", expectedURL),
+									ghttp.RespondWithJSONEncoded(http.StatusOK, atc.Job{
+										Name:          expectedJobName,
+										FinishedBuild: &expectedBuild,
+									}),
+								),
+							)
 						})
 
 						It("returns the finished build for that job", func() {
 							build, err := GetBuild(client, team, expectedJobName, "", expectedPipelineRef)
 							Expect(err).NotTo(HaveOccurred())
 							Expect(build).To(Equal(expectedBuild))
-							Expect(team.JobCallCount()).To(Equal(1))
-							pipelineRef, jobName := team.JobArgsForCall(0)
-							Expect(pipelineRef).To(Equal(expectedPipelineRef))
-							Expect(jobName).To(Equal(expectedJobName))
+							Expect(atcServer.ReceivedRequests()).To(HaveLen(1))
 						})
 					})
 
 					Context("when no builds exist", func() {
 						BeforeEach(func() {
-							job := atc.Job{
-								Name: expectedJobName,
-							}
-							team.JobReturns(job, true, nil)
-							expectedPipelineRef = atc.PipelineRef{Name: "mypipeline"}
+							atcServer.AppendHandlers(
+								ghttp.CombineHandlers(
+									ghttp.VerifyRequest("GET", expectedURL),
+									ghttp.RespondWithJSONEncoded(http.StatusOK, atc.Job{
+										Name: expectedJobName,
+									}),
+								),
+							)
 						})
 
 						It("returns an error", func() {
@@ -140,8 +171,12 @@ var _ = Describe("Helper Functions", func() {
 
 				Context("when job does not exists", func() {
 					BeforeEach(func() {
-						team.JobReturns(atc.Job{}, false, nil)
-						expectedPipelineRef = atc.PipelineRef{Name: "mypipeline"}
+						atcServer.AppendHandlers(
+							ghttp.CombineHandlers(
+								ghttp.VerifyRequest("GET", expectedURL),
+								ghttp.RespondWithJSONEncoded(http.StatusNotFound, nil),
+							),
+						)
 					})
 
 					It("returns an error", func() {
@@ -153,41 +188,53 @@ var _ = Describe("Helper Functions", func() {
 
 			Context("when an error was encountered while looking up for team job", func() {
 				BeforeEach(func() {
-					team.JobReturns(atc.Job{}, false, errors.New("some-error"))
+					atcServer.AppendHandlers(
+						ghttp.CombineHandlers(
+							ghttp.VerifyRequest("GET", expectedURL),
+							ghttp.RespondWith(http.StatusInternalServerError, "some-error"),
+						),
+					)
 				})
 
 				It("should return an error", func() {
 					_, err := GetBuild(client, team, expectedJobName, "", expectedPipelineRef)
 					Expect(err).To(HaveOccurred())
-					Expect(err).To(MatchError("failed to get job some-error"))
+					Expect(err).To(MatchError(HavePrefix("failed to get job ")))
+					Expect(err).To(MatchError(ContainSubstring("some-error")))
 				})
 			})
 
 		})
 
 		Context("when passed pipeline, job, and build names", func() {
+			expectedURL := "/api/v1/teams/some-team/pipelines/mypipeline/jobs/myjob/builds/5"
+
 			Context("when the build exists", func() {
 				BeforeEach(func() {
-					team.JobBuildReturns(expectedBuild, true, nil)
-					expectedPipelineRef = atc.PipelineRef{Name: "mypipeline"}
+					atcServer.AppendHandlers(
+						ghttp.CombineHandlers(
+							ghttp.VerifyRequest("GET", expectedURL),
+							ghttp.RespondWithJSONEncoded(http.StatusOK, expectedBuild),
+						),
+					)
 				})
 
 				It("returns the build", func() {
 					build, err := GetBuild(client, team, expectedJobName, expectedBuildName, expectedPipelineRef)
 					Expect(err).NotTo(HaveOccurred())
 					Expect(build).To(Equal(expectedBuild))
-					Expect(team.JobBuildCallCount()).To(Equal(1))
-					pipelineRef, jobName, buildName := team.JobBuildArgsForCall(0)
-					Expect(pipelineRef).To(Equal(expectedPipelineRef))
-					Expect(buildName).To(Equal(expectedBuildName))
-					Expect(jobName).To(Equal(expectedJobName))
+					Expect(atcServer.ReceivedRequests()).To(HaveLen(1))
 				})
 			})
 
 			Context("when the build does not exist", func() {
 				BeforeEach(func() {
-					team.JobBuildReturns(atc.Build{}, false, nil)
-					expectedPipelineRef = atc.PipelineRef{Name: "mypipeline"}
+					atcServer.AppendHandlers(
+						ghttp.CombineHandlers(
+							ghttp.VerifyRequest("GET", expectedURL),
+							ghttp.RespondWithJSONEncoded(http.StatusNotFound, nil),
+						),
+					)
 				})
 
 				It("returns an error", func() {
@@ -198,6 +245,8 @@ var _ = Describe("Helper Functions", func() {
 		})
 
 		Context("when nothing is passed", func() {
+			expectedURL := "/api/v1/builds"
+
 			Context("when client.Builds does not return an error", func() {
 				var allBuilds [300]atc.Build
 
@@ -222,44 +271,42 @@ var _ = Describe("Helper Functions", func() {
 
 						allBuilds[150] = expectedOneOffBuild
 
-						client.BuildsStub = func(page concourse.Page) ([]atc.Build, concourse.Pagination, error) {
-							var builds []atc.Build
-							if page.To != 0 {
-								builds = allBuilds[page.To : page.To+page.Limit]
-							} else {
-								builds = allBuilds[0:page.Limit]
-							}
-
-							pagination := concourse.Pagination{
-								Previous: &concourse.Page{
-									Limit: page.Limit,
-									From:  builds[0].ID,
-								},
-								Next: &concourse.Page{
-									Limit: page.Limit,
-									To:    builds[len(builds)-1].ID,
-								},
-							}
-
-							return builds, pagination, nil
-						}
+						atcServer.AppendHandlers(
+							ghttp.CombineHandlers(
+								ghttp.VerifyRequest("GET", expectedURL, "limit=100"),
+								ghttp.RespondWithJSONEncoded(http.StatusOK, allBuilds[0:100], http.Header{
+									"Link": []string{
+										fmt.Sprintf(`<%s/api/v1/builds?to=99&limit=100>; rel="next"`, atcServer.URL()),
+									},
+								}),
+							),
+							ghttp.CombineHandlers(
+								ghttp.VerifyRequest("GET", expectedURL, "to=99&limit=100"),
+								ghttp.RespondWithJSONEncoded(http.StatusOK, allBuilds[99:199]),
+							),
+						)
 					})
 
 					It("returns latest one off build", func() {
-						build, err := GetBuild(client, nil, "", "", expectedPipelineRef)
+						build, err := GetBuild(client, nil, "", "", atc.PipelineRef{})
 						Expect(err).NotTo(HaveOccurred())
 						Expect(build).To(Equal(expectedOneOffBuild))
-						Expect(client.BuildsCallCount()).To(Equal(2))
+						Expect(atcServer.ReceivedRequests()).To(HaveLen(2))
 					})
 				})
 
 				Context("when no builds were found ", func() {
 					BeforeEach(func() {
-						client.BuildsReturns([]atc.Build{}, concourse.Pagination{Next: nil}, nil)
+						atcServer.AppendHandlers(
+							ghttp.CombineHandlers(
+								ghttp.VerifyRequest("GET", expectedURL, "limit=100"),
+								ghttp.RespondWithJSONEncoded(http.StatusOK, []atc.Build{}),
+							),
+						)
 					})
 
 					It("returns an error", func() {
-						_, err := GetBuild(client, nil, "", "", expectedPipelineRef)
+						_, err := GetBuild(client, nil, "", "", atc.PipelineRef{})
 						Expect(err).To(HaveOccurred())
 						Expect(err).To(MatchError("no builds match job"))
 					})
@@ -268,20 +315,28 @@ var _ = Describe("Helper Functions", func() {
 
 			Context("when client.Builds returns an error", func() {
 				BeforeEach(func() {
-					client.BuildsReturns(nil, concourse.Pagination{}, errors.New("some-error"))
+					atcServer.AppendHandlers(
+						ghttp.CombineHandlers(
+							ghttp.VerifyRequest("GET", expectedURL, "limit=100"),
+							ghttp.RespondWith(http.StatusInternalServerError, "some-error"),
+						),
+					)
 				})
 
 				It("should return an error", func() {
-					_, err := GetBuild(client, nil, "", "", expectedPipelineRef)
+					_, err := GetBuild(client, nil, "", "", atc.PipelineRef{})
 					Expect(err).To(HaveOccurred())
-					Expect(err).To(MatchError("failed to get builds some-error"))
+					Expect(err).To(MatchError(HavePrefix("failed to get builds ")))
+					Expect(err).To(MatchError(ContainSubstring("some-error")))
 				})
 			})
 		})
 	})
+
 	Describe("#GetLatestResourceVersions", func() {
-		var team *fakes.FakeTeam
 		var resourceVersions []atc.ResourceVersion
+
+		expectedURL := "/api/v1/teams/some-team/pipelines/mypipeline/resources/myresource/versions"
 
 		resource := flaghelpers.ResourceFlag{
 			PipelineRef: atc.PipelineRef{
@@ -292,7 +347,6 @@ var _ = Describe("Helper Functions", func() {
 		}
 
 		BeforeEach(func() {
-			team = new(fakes.FakeTeam)
 			resourceVersions = []atc.ResourceVersion{
 				{
 					ID:      1,
@@ -307,7 +361,13 @@ var _ = Describe("Helper Functions", func() {
 
 		When("resource versions exist", func() {
 			It("returns latest resource version", func() {
-				team.ResourceVersionsReturns(resourceVersions, concourse.Pagination{}, true, nil)
+				atcServer.AppendHandlers(
+					ghttp.CombineHandlers(
+						ghttp.VerifyRequest("GET", expectedURL, "filter=version%3Av1&vars.branch=%22master%22"),
+						ghttp.RespondWithJSONEncoded(http.StatusOK, resourceVersions),
+					),
+				)
+
 				latestResourceVersion, err := GetLatestResourceVersion(team, resource, atc.Version{"version": "v1"})
 				Expect(err).NotTo(HaveOccurred())
 				Expect(latestResourceVersion.Version).To(Equal(atc.Version{"version": "v1"}))
@@ -317,15 +377,27 @@ var _ = Describe("Helper Functions", func() {
 
 		When("call to resource versions returns an error", func() {
 			It("returns an error", func() {
-				team.ResourceVersionsReturns(nil, concourse.Pagination{}, false, errors.New("fake error"))
+				atcServer.AppendHandlers(
+					ghttp.CombineHandlers(
+						ghttp.VerifyRequest("GET", expectedURL, "filter=version%3Av1&vars.branch=%22master%22"),
+						ghttp.RespondWith(http.StatusInternalServerError, "fake error"),
+					),
+				)
+
 				_, err := GetLatestResourceVersion(team, resource, atc.Version{"version": "v1"})
-				Expect(err).To(MatchError("fake error"))
+				Expect(err).To(MatchError(ContainSubstring("fake error")))
 			})
 		})
 
 		When("call to resource versions returns an empty array", func() {
 			It("returns an error", func() {
-				team.ResourceVersionsReturns([]atc.ResourceVersion{}, concourse.Pagination{}, true, nil)
+				atcServer.AppendHandlers(
+					ghttp.CombineHandlers(
+						ghttp.VerifyRequest("GET", expectedURL, "filter=version%3Av2&vars.branch=%22master%22"),
+						ghttp.RespondWithJSONEncoded(http.StatusOK, []atc.ResourceVersion{}),
+					),
+				)
+
 				_, err := GetLatestResourceVersion(team, resource, atc.Version{"version": "v2"})
 				Expect(err).To(MatchError("could not find version matching {\"version\":\"v2\"}"))
 			})
