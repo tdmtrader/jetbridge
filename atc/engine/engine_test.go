@@ -7,15 +7,17 @@ import (
 	"sync"
 	"time"
 
+	"code.cloudfoundry.org/clock"
 	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagerctx"
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/builds"
-	"github.com/concourse/concourse/atc/creds/credsfakes"
+	"github.com/concourse/concourse/atc/creds"
+	"github.com/concourse/concourse/atc/creds/dummy"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbfakes"
-	"github.com/concourse/concourse/atc/db/lock/lockfakes"
+	"github.com/concourse/concourse/atc/db/lock"
 	. "github.com/concourse/concourse/atc/engine"
 	"github.com/concourse/concourse/atc/engine/enginefakes"
 	"github.com/concourse/concourse/atc/event"
@@ -25,6 +27,44 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
+
+// releaseRecordingLock keeps a genuine advisory lock's release behavior while
+// recording that the engine released it, which the lock itself does not expose.
+type releaseRecordingLock struct {
+	lock.Lock
+
+	mu       sync.Mutex
+	releases int
+}
+
+func (l *releaseRecordingLock) Release() error {
+	l.mu.Lock()
+	l.releases++
+	l.mu.Unlock()
+	return l.Lock.Release()
+}
+
+func (l *releaseRecordingLock) Releases() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.releases
+}
+
+// acquireTrackingLock takes the build-tracking lock the engine expects to be
+// handed when it starts tracking a build.
+func acquireTrackingLock() *releaseRecordingLock {
+	GinkgoHelper()
+
+	fixture := useEngineDB()
+	acquired, ok, err := fixture.LockFactory.Acquire(
+		lagertest.NewTestLogger("build-tracking-lock"),
+		lock.NewBuildTrackingLockID(128),
+	)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(ok).To(BeTrue())
+
+	return &releaseRecordingLock{Lock: acquired}
+}
 
 // A stepper factory hands out a closure and keeps no record of having done so,
 // so the number of builds it was asked about is only observable from outside.
@@ -44,8 +84,8 @@ var _ = Describe("Engine", func() {
 		fakeCoreStepFactory *enginefakes.FakeCoreStepFactory
 		stepperFactory      *countingStepperFactory
 
-		fakeGlobalCreds   *credsfakes.FakeSecrets
-		fakeVarSourcePool *credsfakes.FakeVarSourcePool
+		globalSecrets creds.Secrets
+		varSourcePool creds.VarSourcePool
 	)
 
 	BeforeEach(func() {
@@ -64,8 +104,15 @@ var _ = Describe("Engine", func() {
 			),
 		}
 
-		fakeGlobalCreds = new(credsfakes.FakeSecrets)
-		fakeVarSourcePool = new(credsfakes.FakeVarSourcePool)
+		globalSecrets = &dummy.Secrets{StaticVariables: vars.StaticVariables{"foo": "bar"}}
+		varSourcePool = creds.NewVarSourcePool(
+			lagertest.NewTestLogger("var-source-pool"),
+			creds.CredentialManagementConfig{},
+			time.Minute,
+			time.Minute,
+			clock.NewClock(),
+		)
+		DeferCleanup(varSourcePool.Close)
 	})
 
 	Describe("NewBuild", func() {
@@ -87,7 +134,7 @@ var _ = Describe("Engine", func() {
 				atc.Config{Jobs: atc.JobConfigs{{Name: "some-job"}}},
 				"some-user",
 			)
-			engine = NewEngine(stepperFactory, fakeGlobalCreds, fakeVarSourcePool)
+			engine = NewEngine(stepperFactory, globalSecrets, varSourcePool)
 		})
 
 		JustBeforeEach(func() {
@@ -121,8 +168,8 @@ var _ = Describe("Engine", func() {
 			build = NewBuild(
 				fakeBuild,
 				stepperFactory,
-				fakeGlobalCreds,
-				fakeVarSourcePool,
+				globalSecrets,
+				varSourcePool,
 				release,
 				trackedStates,
 				waitGroup,
@@ -145,12 +192,12 @@ var _ = Describe("Engine", func() {
 			})
 
 			Context("when acquiring the lock succeeds", func() {
-				var fakeLock *lockfakes.FakeLock
+				var trackingLock *releaseRecordingLock
 
 				BeforeEach(func() {
-					fakeLock = new(lockfakes.FakeLock)
+					trackingLock = acquireTrackingLock()
 
-					fakeBuild.AcquireTrackingLockReturns(fakeLock, true, nil)
+					fakeBuild.AcquireTrackingLockReturns(trackingLock, true, nil)
 				})
 
 				Context("when the build is active", func() {
@@ -188,7 +235,7 @@ var _ = Describe("Engine", func() {
 
 							It("releases the lock", func() {
 								waitGroup.Wait()
-								Expect(fakeLock.ReleaseCallCount()).To(Equal(1))
+								Expect(trackingLock.Releases()).To(Equal(1))
 							})
 
 							It("unlistens the abort signal", func() {
@@ -457,7 +504,7 @@ var _ = Describe("Engine", func() {
 								})
 
 								It("releases the lock", func() {
-									Expect(fakeLock.ReleaseCallCount()).To(Equal(1))
+									Expect(trackingLock.Releases()).To(Equal(1))
 								})
 
 								It("saves an error event", func() {
@@ -473,7 +520,7 @@ var _ = Describe("Engine", func() {
 							})
 
 							It("releases the lock", func() {
-								Expect(fakeLock.ReleaseCallCount()).To(Equal(1))
+								Expect(trackingLock.Releases()).To(Equal(1))
 							})
 
 							It("saves an error event", func() {
@@ -489,7 +536,7 @@ var _ = Describe("Engine", func() {
 						})
 
 						It("releases the lock", func() {
-							Expect(fakeLock.ReleaseCallCount()).To(Equal(1))
+							Expect(trackingLock.Releases()).To(Equal(1))
 						})
 					})
 				})
@@ -504,7 +551,7 @@ var _ = Describe("Engine", func() {
 					})
 
 					It("releases the lock", func() {
-						Expect(fakeLock.ReleaseCallCount()).To(Equal(1))
+						Expect(trackingLock.Releases()).To(Equal(1))
 					})
 				})
 
@@ -519,7 +566,7 @@ var _ = Describe("Engine", func() {
 					})
 
 					It("releases the lock", func() {
-						Expect(fakeLock.ReleaseCallCount()).To(Equal(1))
+						Expect(trackingLock.Releases()).To(Equal(1))
 					})
 				})
 
@@ -533,7 +580,7 @@ var _ = Describe("Engine", func() {
 					})
 
 					It("releases the lock", func() {
-						Expect(fakeLock.ReleaseCallCount()).To(Equal(1))
+						Expect(trackingLock.Releases()).To(Equal(1))
 					})
 				})
 			})

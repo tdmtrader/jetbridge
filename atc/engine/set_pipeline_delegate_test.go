@@ -1,7 +1,7 @@
 package engine_test
 
 import (
-	"errors"
+	"encoding/json"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -16,16 +16,14 @@ import (
 	"github.com/concourse/concourse/atc/event"
 	"github.com/concourse/concourse/atc/exec"
 	"github.com/concourse/concourse/atc/policy"
-	"github.com/concourse/concourse/atc/policy/policyfakes"
 	"github.com/concourse/concourse/vars"
 )
 
 var _ = Describe("SetPipelineStepDelegate", func() {
 	var (
-		logger                *lagertest.TestLogger
-		fakeClock             *fakeclock.FakeClock
-		fakePolicyChecker     *policyfakes.FakeChecker
-		fakePolicyCheckResult *policyfakes.FakePolicyCheckResult
+		logger        *lagertest.TestLogger
+		fakeClock     *fakeclock.FakeClock
+		policyChecker policy.Checker
 
 		state exec.RunState
 
@@ -43,10 +41,7 @@ var _ = Describe("SetPipelineStepDelegate", func() {
 		}
 		state = exec.NewRunState(noopStepper, credVars)
 
-		fakePolicyCheckResult = new(policyfakes.FakePolicyCheckResult)
-		fakePolicyChecker = new(policyfakes.FakeChecker)
-		fakePolicyChecker.CheckReturns(fakePolicyCheckResult, nil)
-
+		policyChecker = policy.NoopChecker{}
 	})
 
 	Describe("persisted PostgreSQL state", func() {
@@ -64,7 +59,7 @@ var _ = Describe("SetPipelineStepDelegate", func() {
 				atc.Config{Jobs: atc.JobConfigs{{Name: "some-job"}}},
 				"some-user",
 			)
-			delegate = engine.NewSetPipelineStepDelegate(realBuild, "some-plan-id", state, fakeClock, fakePolicyChecker)
+			delegate = engine.NewSetPipelineStepDelegate(realBuild, "some-plan-id", state, fakeClock, policyChecker)
 		})
 
 		It("saves changed event", func() {
@@ -102,10 +97,11 @@ var _ = Describe("SetPipelineStepDelegate", func() {
 				atc.Config{Jobs: atc.JobConfigs{{Name: "some-job"}}},
 				"some-user",
 			)
-			delegate = engine.NewSetPipelineStepDelegate(realBuild, "some-plan-id", state, fakeClock, fakePolicyChecker)
 		})
 
 		JustBeforeEach(func() {
+			delegate = engine.NewSetPipelineStepDelegate(realBuild, "some-plan-id", state, fakeClock, policyChecker)
+
 			pipelineConfig = atc.Config{
 				Groups: atc.GroupConfigs{
 					{
@@ -122,7 +118,7 @@ var _ = Describe("SetPipelineStepDelegate", func() {
 
 		Context("when the action does not need to be checked", func() {
 			BeforeEach(func() {
-				fakePolicyChecker.ShouldCheckActionReturns(false)
+				policyChecker = newPolicyChecker()
 			})
 
 			It("should succeed", func() {
@@ -130,47 +126,48 @@ var _ = Describe("SetPipelineStepDelegate", func() {
 			})
 
 			It("should not check policy", func() {
-				Expect(fakePolicyChecker.CheckCallCount()).To(Equal(0))
+				Expect(opaServer.Requests()).To(BeEmpty())
 			})
 		})
 
 		Context("when the action needs to be checked", func() {
 			BeforeEach(func() {
-				fakePolicyChecker.ShouldCheckActionReturns(true)
+				policyChecker = newPolicyChecker(policy.ActionRunSetPipeline)
 			})
 
 			It("should check policy", func() {
-				Expect(fakePolicyChecker.CheckCallCount()).To(Equal(1))
+				Expect(opaServer.Requests()).To(HaveLen(1))
 
-				input := fakePolicyChecker.CheckArgsForCall(0)
-				Expect(input).To(Equal(policy.PolicyCheckInput{
-					Action:   policy.ActionRunSetPipeline,
-					Team:     "some-team",
-					Pipeline: "some-pipeline",
-					Data:     &pipelineConfig,
+				request := opaServer.Requests()[0]
+				Expect(request.PolicyCheckInput).To(Equal(policy.PolicyCheckInput{
+					Service:        "concourse",
+					ClusterName:    "some-cluster",
+					ClusterVersion: "some-version",
+					Action:         policy.ActionRunSetPipeline,
+					Team:           "some-team",
+					Pipeline:       "some-pipeline",
 				}))
+
+				var checked atc.Config
+				Expect(json.Unmarshal(request.Data, &checked)).To(Succeed())
+				Expect(checked).To(Equal(pipelineConfig))
 			})
 
 			Context("when policy check fails", func() {
 				BeforeEach(func() {
-					fakePolicyChecker.CheckReturns(nil, errors.New("some-error"))
+					opaServer.Fails()
 				})
 
 				It("should fail", func() {
 					Expect(checkErr).To(HaveOccurred())
-					Expect(checkErr.Error()).To(Equal("policy check: some-error"))
+					Expect(checkErr.Error()).To(Equal("policy check: OPA server returned status: 500"))
 				})
 			})
 
 			Context("when policy check not pass", func() {
-				BeforeEach(func() {
-					fakePolicyCheckResult.AllowedReturns(false)
-					fakePolicyCheckResult.MessagesReturns([]string{"reasonA", "reasonB"})
-				})
-
 				Context("when should block", func() {
 					BeforeEach(func() {
-						fakePolicyCheckResult.ShouldBlockReturns(true)
+						opaServer.Answers(`{"result": {"allowed": false, "block": true, "reasons": ["reasonA", "reasonB"]}}`)
 					})
 
 					It("should fail", func() {
@@ -183,7 +180,7 @@ var _ = Describe("SetPipelineStepDelegate", func() {
 
 				Context("when should not block", func() {
 					BeforeEach(func() {
-						fakePolicyCheckResult.ShouldBlockReturns(false)
+						opaServer.Answers(`{"result": {"allowed": false, "block": false, "reasons": ["reasonA", "reasonB"]}}`)
 					})
 
 					It("should succeed", func() {
@@ -218,7 +215,7 @@ var _ = Describe("SetPipelineStepDelegate", func() {
 
 			Context("policy check passes", func() {
 				BeforeEach(func() {
-					fakePolicyCheckResult.AllowedReturns(true)
+					opaServer.Answers(`{"result": {"allowed": true}}`)
 				})
 
 				It("should succeed", func() {

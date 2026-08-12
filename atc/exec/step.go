@@ -13,8 +13,6 @@ import (
 	"github.com/concourse/concourse/vars"
 )
 
-//go:generate go run github.com/maxbrunsfeld/counterfeiter/v6 -generate
-
 // A Step is an object that can be executed, whose result (e.g. Success) can be
 // collected, and whose dependent resources (e.g. Containers, Volumes) can be
 // released, allowing them to expire.
@@ -35,7 +33,6 @@ type Step interface {
 
 type BuildOutputFilter func(text string) string
 
-//counterfeiter:generate . RunState
 type RunState interface {
 	vars.Variables
 

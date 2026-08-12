@@ -4,11 +4,10 @@ import (
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbfakes"
-	"github.com/concourse/concourse/atc/db/lock/lockfakes"
 	"github.com/concourse/concourse/atc/engine"
 	"github.com/concourse/concourse/atc/engine/enginefakes"
 	"github.com/concourse/concourse/atc/exec"
-	"github.com/concourse/concourse/atc/policy/policyfakes"
+	"github.com/concourse/concourse/atc/policy"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -19,9 +18,7 @@ var _ = Describe("Builder", func() {
 
 		var (
 			fakeCoreStepFactory *enginefakes.FakeCoreStepFactory
-			fakePolicyChecker   *policyfakes.FakeChecker
 			fakeWorkerFactory   *dbfakes.FakeWorkerFactory
-			fakeLockFactory     *lockfakes.FakeLockFactory
 
 			planFactory    atc.PlanFactory
 			stepperFactory engine.StepperFactory
@@ -29,17 +26,15 @@ var _ = Describe("Builder", func() {
 
 		BeforeEach(func() {
 			fakeCoreStepFactory = new(enginefakes.FakeCoreStepFactory)
-			fakePolicyChecker = new(policyfakes.FakeChecker)
 			fakeWorkerFactory = new(dbfakes.FakeWorkerFactory)
-			fakeLockFactory = new(lockfakes.FakeLockFactory)
 
 			stepperFactory = engine.NewStepperFactory(
 				fakeCoreStepFactory,
 				"http://example.com",
 				newCheckRateLimiter(),
-				fakePolicyChecker,
+				policy.NoopChecker{},
 				fakeWorkerFactory,
-				fakeLockFactory,
+				nil,
 				nil,
 				nil,
 				nil,

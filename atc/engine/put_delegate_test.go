@@ -14,18 +14,17 @@ import (
 	"github.com/concourse/concourse/atc/engine"
 	"github.com/concourse/concourse/atc/event"
 	"github.com/concourse/concourse/atc/exec"
-	"github.com/concourse/concourse/atc/policy/policyfakes"
+	"github.com/concourse/concourse/atc/policy"
 	"github.com/concourse/concourse/atc/resource"
 	"github.com/concourse/concourse/vars"
 )
 
 var _ = Describe("PutDelegate", func() {
 	var (
-		logger            *lagertest.TestLogger
-		fakeClock         *fakeclock.FakeClock
-		fakePolicyChecker *policyfakes.FakeChecker
-		realBuild         db.Build
-		resourceCache     db.ResourceCache
+		logger        *lagertest.TestLogger
+		fakeClock     *fakeclock.FakeClock
+		realBuild     db.Build
+		resourceCache db.ResourceCache
 
 		state exec.RunState
 
@@ -92,9 +91,7 @@ var _ = Describe("PutDelegate", func() {
 		)
 		Expect(err).NotTo(HaveOccurred())
 
-		fakePolicyChecker = new(policyfakes.FakeChecker)
-
-		delegate = engine.NewPutDelegate(realBuild, "some-plan-id", state, fakeClock, fakePolicyChecker)
+		delegate = engine.NewPutDelegate(realBuild, "some-plan-id", state, fakeClock, policy.NoopChecker{})
 	})
 
 	Describe("Finished", func() {

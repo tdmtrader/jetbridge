@@ -11,15 +11,15 @@ import (
 
 	"code.cloudfoundry.org/clock/fakeclock"
 	"code.cloudfoundry.org/lager/v3"
+	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/db/dbtest"
 	"github.com/concourse/concourse/atc/db/lock"
-	"github.com/concourse/concourse/atc/db/lock/lockfakes"
 	"github.com/concourse/concourse/atc/engine"
 	"github.com/concourse/concourse/atc/exec"
-	"github.com/concourse/concourse/atc/policy/policyfakes"
+	"github.com/concourse/concourse/atc/policy"
 	"github.com/concourse/concourse/vars"
 )
 
@@ -76,6 +76,24 @@ func (scope *checkTimingScope) UpdateLastCheckEndTime(succeeded bool) (bool, err
 	return scope.updateEnd(succeeded)
 }
 
+// acquireCheckingLock takes a genuine advisory lock for a scope to hand back,
+// so what WaitToRun returns stays distinguishable from the lock.NoopLock the
+// non-resource path substitutes.
+func acquireCheckingLock() lock.Lock {
+	GinkgoHelper()
+
+	fixture := useEngineDB()
+	acquired, ok, err := fixture.LockFactory.Acquire(
+		lagertest.NewTestLogger("check-lock"),
+		lock.NewResourceConfigCheckingLockID(1),
+	)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(ok).To(BeTrue())
+	DeferCleanup(func() { Expect(acquired.Release()).To(Succeed()) })
+
+	return acquired
+}
+
 // A rate limiter admits checks without recording that it did, so the count of
 // admissions is only observable from the outside.
 type countingRateLimiter struct {
@@ -91,18 +109,16 @@ func (limiter *countingRateLimiter) Wait(ctx context.Context) error {
 
 var _ = Describe("CheckDelegate", func() {
 	var (
-		now               time.Time
-		fakeClock         *fakeclock.FakeClock
-		rateLimiter       *countingRateLimiter
-		fakePolicyChecker *policyfakes.FakeChecker
-		state             exec.RunState
+		now         time.Time
+		fakeClock   *fakeclock.FakeClock
+		rateLimiter *countingRateLimiter
+		state       exec.RunState
 	)
 
 	BeforeEach(func() {
 		now = time.Date(1991, 6, 3, 5, 30, 0, 0, time.UTC)
 		fakeClock = fakeclock.NewFakeClock(now)
 		rateLimiter = &countingRateLimiter{RateLimiter: newCheckRateLimiter()}
-		fakePolicyChecker = new(policyfakes.FakeChecker)
 		state = exec.NewRunState(noopStepper, vars.StaticVariables{
 			"source-param": "super-secret-source",
 			"git-key":      "{\n123\n456\n789\n}\n",
@@ -131,7 +147,7 @@ var _ = Describe("CheckDelegate", func() {
 				state,
 				fakeClock,
 				rateLimiter,
-				fakePolicyChecker,
+				policy.NoopChecker{},
 			)
 		}
 
@@ -297,7 +313,7 @@ var _ = Describe("CheckDelegate", func() {
 				state,
 				fakeClock,
 				rateLimiter,
-				fakePolicyChecker,
+				policy.NoopChecker{},
 			)
 		}
 
@@ -309,12 +325,12 @@ var _ = Describe("CheckDelegate", func() {
 
 		It("rate limits before locking a due resource check", func() {
 			last := db.LastCheck{StartTime: now.Add(-2 * time.Hour), EndTime: now.Add(-2 * time.Hour), Succeeded: true}
-			fakeLock := new(lockfakes.FakeLock)
+			checkLock := acquireCheckingLock()
 			scope := &checkTimingScope{
 				lastCheck: func() (db.LastCheck, error) { return last, nil },
 				acquire: func(lager.Logger) (lock.Lock, bool, error) {
 					Expect(rateLimiter.waits).To(Equal(1))
-					return fakeLock, true, nil
+					return checkLock, true, nil
 				},
 			}
 			gotLock, run, err := newDelegate(atc.CheckPlan{
@@ -322,7 +338,7 @@ var _ = Describe("CheckDelegate", func() {
 			}).WaitToRun(context.Background(), scope)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(run).To(BeTrue())
-			Expect(gotLock).To(Equal(fakeLock))
+			Expect(gotLock).To(Equal(checkLock))
 			Expect(rateLimiter.waits).To(Equal(1))
 			Expect(scope.acquireCalls).To(Equal(1))
 			Expect(scope.lastCheckCalls).To(Equal(2))
@@ -330,12 +346,12 @@ var _ = Describe("CheckDelegate", func() {
 
 		It("forces a manual resource check when a from-version is configured", func() {
 			fakeBuild.CreateTimeReturns(now.Add(-time.Minute))
-			fakeLock := new(lockfakes.FakeLock)
+			checkLock := acquireCheckingLock()
 			scope := &checkTimingScope{
 				lastCheck: func() (db.LastCheck, error) {
 					return db.LastCheck{StartTime: now, Succeeded: true}, nil
 				},
-				acquire: func(lager.Logger) (lock.Lock, bool, error) { return fakeLock, true, nil },
+				acquire: func(lager.Logger) (lock.Lock, bool, error) { return checkLock, true, nil },
 			}
 
 			gotLock, run, err := newDelegate(atc.CheckPlan{
@@ -345,17 +361,17 @@ var _ = Describe("CheckDelegate", func() {
 			}).WaitToRun(context.Background(), scope)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(run).To(BeTrue())
-			Expect(gotLock).To(Equal(fakeLock))
+			Expect(gotLock).To(Equal(checkLock))
 			Expect(rateLimiter.waits).To(BeZero())
 			Expect(scope.acquireCalls).To(Equal(1))
 			Expect(scope.lastCheckCalls).To(Equal(2))
 		})
 
 		It("lets SkipInterval override Interval.Never for a resource check", func() {
-			fakeLock := new(lockfakes.FakeLock)
+			checkLock := acquireCheckingLock()
 			scope := &checkTimingScope{
 				lastCheck: func() (db.LastCheck, error) { return db.LastCheck{}, nil },
-				acquire:   func(lager.Logger) (lock.Lock, bool, error) { return fakeLock, true, nil },
+				acquire:   func(lager.Logger) (lock.Lock, bool, error) { return checkLock, true, nil },
 			}
 
 			gotLock, run, err := newDelegate(atc.CheckPlan{
@@ -365,7 +381,7 @@ var _ = Describe("CheckDelegate", func() {
 			}).WaitToRun(context.Background(), scope)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(run).To(BeTrue())
-			Expect(gotLock).To(Equal(fakeLock))
+			Expect(gotLock).To(Equal(checkLock))
 			Expect(rateLimiter.waits).To(BeZero())
 			Expect(scope.acquireCalls).To(Equal(1))
 			Expect(scope.lastCheckCalls).To(Equal(2))
@@ -373,12 +389,12 @@ var _ = Describe("CheckDelegate", func() {
 
 		It("runs a manual resource check created after the last successful check started", func() {
 			fakeBuild.CreateTimeReturns(now.Add(time.Minute))
-			fakeLock := new(lockfakes.FakeLock)
+			checkLock := acquireCheckingLock()
 			scope := &checkTimingScope{
 				lastCheck: func() (db.LastCheck, error) {
 					return db.LastCheck{StartTime: now, Succeeded: true}, nil
 				},
-				acquire: func(lager.Logger) (lock.Lock, bool, error) { return fakeLock, true, nil },
+				acquire: func(lager.Logger) (lock.Lock, bool, error) { return checkLock, true, nil },
 			}
 
 			gotLock, run, err := newDelegate(atc.CheckPlan{
@@ -386,18 +402,18 @@ var _ = Describe("CheckDelegate", func() {
 			}).WaitToRun(context.Background(), scope)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(run).To(BeTrue())
-			Expect(gotLock).To(Equal(fakeLock))
+			Expect(gotLock).To(Equal(checkLock))
 			Expect(scope.acquireCalls).To(Equal(1))
 		})
 
 		It("runs a manual resource check when the last check failed", func() {
 			fakeBuild.CreateTimeReturns(now.Add(-time.Minute))
-			fakeLock := new(lockfakes.FakeLock)
+			checkLock := acquireCheckingLock()
 			scope := &checkTimingScope{
 				lastCheck: func() (db.LastCheck, error) {
 					return db.LastCheck{StartTime: now, Succeeded: false}, nil
 				},
-				acquire: func(lager.Logger) (lock.Lock, bool, error) { return fakeLock, true, nil },
+				acquire: func(lager.Logger) (lock.Lock, bool, error) { return checkLock, true, nil },
 			}
 
 			gotLock, run, err := newDelegate(atc.CheckPlan{
@@ -405,7 +421,7 @@ var _ = Describe("CheckDelegate", func() {
 			}).WaitToRun(context.Background(), scope)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(run).To(BeTrue())
-			Expect(gotLock).To(Equal(fakeLock))
+			Expect(gotLock).To(Equal(checkLock))
 			Expect(scope.acquireCalls).To(Equal(1))
 		})
 

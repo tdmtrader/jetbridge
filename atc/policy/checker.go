@@ -8,8 +8,6 @@ import (
 	"github.com/jessevdk/go-flags"
 )
 
-//go:generate go run github.com/maxbrunsfeld/counterfeiter/v6 -generate
-
 const ActionUseImage = "UseImage"
 const ActionRunSetPipeline = "SetPipeline"
 
@@ -45,7 +43,6 @@ type PolicyCheckInput struct {
 	Data           any      `json:"data,omitempty"`
 }
 
-//counterfeiter:generate . PolicyCheckResult
 type PolicyCheckResult interface {
 	Allowed() bool
 	ShouldBlock() bool
@@ -110,7 +107,6 @@ var (
 	clusterVersion string
 )
 
-//counterfeiter:generate . Checker
 type Checker interface {
 	ShouldCheckHttpMethod(string) bool
 	ShouldCheckAction(string) bool

@@ -18,7 +18,7 @@ import (
 	"github.com/concourse/concourse/atc/exec"
 	"github.com/concourse/concourse/atc/imageresolver"
 	"github.com/concourse/concourse/atc/imageresolver/imageresolvertesting"
-	"github.com/concourse/concourse/atc/policy/policyfakes"
+	"github.com/concourse/concourse/atc/policy"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/runtime/runtimetest"
 	"github.com/concourse/concourse/vars"
@@ -143,11 +143,10 @@ func taskDelegateMetadataCounts(fixture *EngineDBFixture) (int, int) {
 
 var _ = Describe("TaskDelegate", func() {
 	var (
-		logger            *lagertest.TestLogger
-		fixture           *EngineDBFixture
-		realBuild         db.Build
-		fakeClock         *fakeclock.FakeClock
-		fakePolicyChecker *policyfakes.FakeChecker
+		logger    *lagertest.TestLogger
+		fixture   *EngineDBFixture
+		realBuild db.Build
+		fakeClock *fakeclock.FakeClock
 
 		state exec.RunState
 
@@ -177,9 +176,7 @@ var _ = Describe("TaskDelegate", func() {
 		}
 		state = exec.NewRunState(noopStepper, credVars)
 
-		fakePolicyChecker = new(policyfakes.FakeChecker)
-
-		delegate = NewTaskDelegate(realBuild, planID, state, fakeClock, fakePolicyChecker, fixture.WorkerFactory, fixture.LockFactory).(*taskDelegate)
+		delegate = NewTaskDelegate(realBuild, planID, state, fakeClock, policy.NoopChecker{}, fixture.WorkerFactory, fixture.LockFactory).(*taskDelegate)
 
 		delegate.SetTaskConfig(atc.TaskConfig{
 			Platform: "some-platform",
@@ -402,7 +399,7 @@ var _ = Describe("TaskDelegate", func() {
 			}
 
 			runState := exec.NewRunState(stepper, nil)
-			delegate = NewTaskDelegate(realBuild, planID, runState, fakeClock, fakePolicyChecker, fixture.WorkerFactory, fixture.LockFactory)
+			delegate = NewTaskDelegate(realBuild, planID, runState, fakeClock, policy.NoopChecker{}, fixture.WorkerFactory, fixture.LockFactory)
 
 			imageResource = atc.ImageResource{
 				Type:   "docker",
@@ -566,7 +563,7 @@ var _ = Describe("TaskDelegate", func() {
 				}
 
 				runState := exec.NewRunState(stepper, nil)
-				delegate = NewTaskDelegate(realBuild, planID, runState, fakeClock, fakePolicyChecker, fixture.WorkerFactory, fixture.LockFactory)
+				delegate = NewTaskDelegate(realBuild, planID, runState, fakeClock, policy.NoopChecker{}, fixture.WorkerFactory, fixture.LockFactory)
 			})
 
 			It("succeeds", func() {
@@ -653,7 +650,7 @@ var _ = Describe("TaskDelegate", func() {
 				}
 
 				integrationState := exec.NewRunState(integrationStepper, nil)
-				nativeDelegate := NewTaskDelegate(realBuild, planID, integrationState, fakeClock, fakePolicyChecker, fixture.WorkerFactory, fixture.LockFactory)
+				nativeDelegate := NewTaskDelegate(realBuild, planID, integrationState, fakeClock, policy.NoopChecker{}, fixture.WorkerFactory, fixture.LockFactory)
 
 				imgSpec, fetchErr := nativeDelegate.FetchImage(
 					context.TODO(), customImage, atc.ResourceTypes{}, false, atc.Tags{"k8s"}, false,
@@ -716,7 +713,7 @@ var _ = Describe("TaskDelegate", func() {
 				}
 
 				integrationState := exec.NewRunState(integrationStepper, nil)
-				nativeDelegate := NewTaskDelegate(realBuild, planID, integrationState, fakeClock, fakePolicyChecker, fixture.WorkerFactory, fixture.LockFactory)
+				nativeDelegate := NewTaskDelegate(realBuild, planID, integrationState, fakeClock, policy.NoopChecker{}, fixture.WorkerFactory, fixture.LockFactory)
 
 				imgSpec, fetchErr := nativeDelegate.FetchImage(
 					context.TODO(), pinnedImage, atc.ResourceTypes{}, false, nil, false,
@@ -763,7 +760,7 @@ var _ = Describe("TaskDelegate", func() {
 			delegateFactory = DelegateFactory{
 				build:                 realBuild,
 				plan:                  plan,
-				policyChecker:         fakePolicyChecker,
+				policyChecker:         policy.NoopChecker{},
 				dbWorkerFactory:       fixture.WorkerFactory,
 				lockFactory:           fixture.LockFactory,
 				resourceConfigFactory: resourceConfigFactory,
@@ -1224,7 +1221,7 @@ var _ = Describe("TaskDelegate", func() {
 				df := DelegateFactory{
 					build:                 realBuild,
 					plan:                  atc.Plan{ID: planID},
-					policyChecker:         fakePolicyChecker,
+					policyChecker:         policy.NoopChecker{},
 					dbWorkerFactory:       fixture.WorkerFactory,
 					lockFactory:           fixture.LockFactory,
 					resourceConfigFactory: resourceConfigFactory,

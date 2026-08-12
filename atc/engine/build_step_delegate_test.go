@@ -23,11 +23,8 @@ import (
 	"github.com/concourse/concourse/atc/engine"
 	"github.com/concourse/concourse/atc/event"
 	"github.com/concourse/concourse/atc/exec"
-	"github.com/concourse/concourse/atc/exec/build"
-	"github.com/concourse/concourse/atc/exec/execfakes"
 	"github.com/concourse/concourse/atc/imageresolver/imageresolvertesting"
 	"github.com/concourse/concourse/atc/policy"
-	"github.com/concourse/concourse/atc/policy/policyfakes"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/runtime/runtimetest"
 	"github.com/concourse/concourse/vars"
@@ -72,12 +69,12 @@ func (factory fixedResourceConfigFactory) FindOrCreateResourceConfig(
 
 var _ = Describe("BuildStepDelegate", func() {
 	var (
-		logger            *lagertest.TestLogger
-		fakeBuild         *dbfakes.FakeBuild
-		fakeClock         *fakeclock.FakeClock
-		planID            atc.PlanID
-		runState          *execfakes.FakeRunState
-		fakePolicyChecker *policyfakes.FakeChecker
+		logger        *lagertest.TestLogger
+		fakeBuild     *dbfakes.FakeBuild
+		fakeClock     *fakeclock.FakeClock
+		planID        atc.PlanID
+		runState      exec.RunState
+		policyChecker policy.Checker
 
 		credVars vars.StaticVariables
 
@@ -96,12 +93,9 @@ var _ = Describe("BuildStepDelegate", func() {
 		}
 		planID = "some-plan-id"
 
-		runState = new(execfakes.FakeRunState)
+		runState = exec.NewRunState(noopStepper, credVars)
 
-		repo := build.NewRepository()
-		runState.ArtifactRepositoryReturns(repo)
-
-		fakePolicyChecker = new(policyfakes.FakeChecker)
+		policyChecker = policy.NoopChecker{}
 	})
 
 	Describe("persisted PostgreSQL state", func() {
@@ -116,7 +110,7 @@ var _ = Describe("BuildStepDelegate", func() {
 				atc.Config{Jobs: atc.JobConfigs{{Name: "some-job"}}},
 				"some-user",
 			)
-			delegate = engine.NewBuildStepDelegate(realBuild, planID, runState, fakeClock, fakePolicyChecker, false)
+			delegate = engine.NewBuildStepDelegate(realBuild, planID, runState, fakeClock, policyChecker, false)
 		})
 
 		It("persists the initializing event", func() {
@@ -140,7 +134,7 @@ var _ = Describe("BuildStepDelegate", func() {
 		BeforeEach(func() {
 			// This fake controls non-persistable callback, policy, writer, and runtime fault behavior.
 			fakeBuild = new(dbfakes.FakeBuild)
-			delegate = engine.NewBuildStepDelegate(fakeBuild, planID, runState, fakeClock, fakePolicyChecker, false)
+			delegate = engine.NewBuildStepDelegate(fakeBuild, planID, runState, fakeClock, policyChecker, false)
 		})
 
 		Describe("FetchImage", func() {
@@ -183,14 +177,6 @@ var _ = Describe("BuildStepDelegate", func() {
 				)
 				Expect(err).NotTo(HaveOccurred())
 				buildUnderTest = realBuild
-
-				repo := build.NewRepository()
-				runState.ArtifactRepositoryReturns(repo)
-
-				runState.GetStub = vars.StaticVariables{
-					"source-var": "super-secret-source",
-					"params-var": "super-secret-params",
-				}.Get
 
 				runPlans = nil
 
@@ -240,7 +226,7 @@ var _ = Describe("BuildStepDelegate", func() {
 			})
 
 			JustBeforeEach(func() {
-				delegate = engine.NewBuildStepDelegate(buildUnderTest, planID, parentRunState, fakeClock, fakePolicyChecker, false)
+				delegate = engine.NewBuildStepDelegate(buildUnderTest, planID, parentRunState, fakeClock, policyChecker, false)
 				imageSpec, resourceCache, fetchErr = delegate.FetchImage(context.TODO(), *expectedGetPlan, expectedCheckPlan, privileged)
 			})
 
@@ -292,9 +278,11 @@ var _ = Describe("BuildStepDelegate", func() {
 			})
 
 			Describe("policy checking", func() {
+				var checker *recordingChecker
+
 				BeforeEach(func() {
-					// Retained: policy call ordering and warning delivery are runtime
-					// seams; persisted FetchImage paths use realBuild.
+					// Retained: warning delivery is a runtime seam; persisted
+					// FetchImage paths use realBuild.
 					buildUnderTest = fakeBuild
 					fakeBuild.TeamNameReturns("some-team")
 					fakeBuild.PipelineNameReturns("some-pipeline")
@@ -302,7 +290,8 @@ var _ = Describe("BuildStepDelegate", func() {
 
 				Context("when the action does not need to be checked", func() {
 					BeforeEach(func() {
-						fakePolicyChecker.ShouldCheckActionReturns(false)
+						checker = &recordingChecker{Checker: newPolicyChecker()}
+						policyChecker = checker
 					})
 
 					It("succeeds", func() {
@@ -310,44 +299,38 @@ var _ = Describe("BuildStepDelegate", func() {
 					})
 
 					It("checked if ActionUseImage is enabled", func() {
-						Expect(fakePolicyChecker.ShouldCheckActionCallCount()).To(Equal(1))
-						action := fakePolicyChecker.ShouldCheckActionArgsForCall(0)
-						Expect(action).To(Equal(policy.ActionUseImage))
+						Expect(checker.actions).To(Equal([]string{policy.ActionUseImage}))
 					})
 
 					It("does not check", func() {
-						Expect(fakePolicyChecker.CheckCallCount()).To(Equal(0))
+						Expect(opaServer.Requests()).To(BeEmpty())
 					})
 				})
 
 				Context("when the action needs to be checked", func() {
-					var fakeCheckResult *policyfakes.FakePolicyCheckResult
 					BeforeEach(func() {
-						fakeCheckResult = new(policyfakes.FakePolicyCheckResult)
-						fakePolicyChecker.CheckReturns(fakeCheckResult, nil)
-						fakePolicyChecker.ShouldCheckActionReturns(true)
+						checker = &recordingChecker{Checker: newPolicyChecker(policy.ActionUseImage)}
+						policyChecker = checker
 					})
 
 					It("policy check should be done", func() {
-						Expect(fakePolicyChecker.CheckCallCount()).To(Equal(1))
+						Expect(opaServer.Requests()).To(HaveLen(1))
 					})
 
 					Context("when the check fails", func() {
 						BeforeEach(func() {
-							fakePolicyChecker.CheckReturns(nil, errors.New("some-error"))
+							opaServer.Fails()
 						})
 
 						It("should fail", func() {
 							Expect(fetchErr).To(HaveOccurred())
-							Expect(fetchErr.Error()).To(Equal("policy check: some-error"))
+							Expect(fetchErr.Error()).To(Equal("policy check: OPA server returned status: 500"))
 						})
 					})
 
 					Context("when the check is not allowed", func() {
 						BeforeEach(func() {
-							fakeCheckResult.AllowedReturns(false)
-							fakeCheckResult.ShouldBlockReturns(true)
-							fakeCheckResult.MessagesReturns([]string{"reasonA", "reasonB"})
+							opaServer.Answers(`{"result": {"allowed": false, "block": true, "reasons": ["reasonA", "reasonB"]}}`)
 						})
 
 						It("should fail", func() {
@@ -362,9 +345,7 @@ var _ = Describe("BuildStepDelegate", func() {
 					// thus this case only verifies policy check warning messages.
 					Context("when the check is not allowed but non-block", func() {
 						BeforeEach(func() {
-							fakeCheckResult.AllowedReturns(false)
-							fakeCheckResult.ShouldBlockReturns(false)
-							fakeCheckResult.MessagesReturns([]string{"reasonA", "reasonB"})
+							opaServer.Answers(`{"result": {"allowed": false, "block": false, "reasons": ["reasonA", "reasonB"]}}`)
 						})
 
 						It("succeeds", func() {
@@ -394,7 +375,7 @@ var _ = Describe("BuildStepDelegate", func() {
 
 					Context("when the check is allowed", func() {
 						BeforeEach(func() {
-							fakeCheckResult.AllowedReturns(true)
+							opaServer.Answers(`{"result": {"allowed": true}}`)
 						})
 
 						It("succeeds", func() {
@@ -411,18 +392,21 @@ var _ = Describe("BuildStepDelegate", func() {
 						})
 
 						It("checked with the right values", func() {
-							Expect(fakePolicyChecker.CheckCallCount()).To(Equal(1))
-							input := fakePolicyChecker.CheckArgsForCall(0)
-							Expect(input).To(Equal(policy.PolicyCheckInput{
-								Action:   policy.ActionUseImage,
-								Team:     "some-team",
-								Pipeline: "some-pipeline",
-								Data: map[string]any{
-									"image_type":   "docker",
-									"image_source": atc.Source{"some": "((source-var))"},
-									"privileged":   false,
-								},
+							Expect(opaServer.Requests()).To(HaveLen(1))
+							request := opaServer.Requests()[0]
+							Expect(request.PolicyCheckInput).To(Equal(policy.PolicyCheckInput{
+								Service:        "concourse",
+								ClusterName:    "some-cluster",
+								ClusterVersion: "some-version",
+								Action:         policy.ActionUseImage,
+								Team:           "some-team",
+								Pipeline:       "some-pipeline",
 							}))
+							Expect(request.Data).To(MatchJSON(`{
+								"image_type": "docker",
+								"image_source": {"some": "((source-var))"},
+								"privileged": false
+							}`))
 						})
 
 						Context("when the image source contains credentials", func() {
@@ -433,18 +417,21 @@ var _ = Describe("BuildStepDelegate", func() {
 							})
 
 							It("redacts the value prior to checking", func() {
-								Expect(fakePolicyChecker.CheckCallCount()).To(Equal(1))
-								input := fakePolicyChecker.CheckArgsForCall(0)
-								Expect(input).To(Equal(policy.PolicyCheckInput{
-									Action:   policy.ActionUseImage,
-									Team:     "some-team",
-									Pipeline: "some-pipeline",
-									Data: map[string]any{
-										"image_type":   "docker",
-										"image_source": atc.Source{"some": "((redacted))"},
-										"privileged":   false,
-									},
+								Expect(opaServer.Requests()).To(HaveLen(1))
+								request := opaServer.Requests()[0]
+								Expect(request.PolicyCheckInput).To(Equal(policy.PolicyCheckInput{
+									Service:        "concourse",
+									ClusterName:    "some-cluster",
+									ClusterVersion: "some-version",
+									Action:         policy.ActionUseImage,
+									Team:           "some-team",
+									Pipeline:       "some-pipeline",
 								}))
+								Expect(request.Data).To(MatchJSON(`{
+									"image_type": "docker",
+									"image_source": {"some": "((redacted))"},
+									"privileged": false
+								}`))
 							})
 						})
 
@@ -454,18 +441,21 @@ var _ = Describe("BuildStepDelegate", func() {
 							})
 
 							It("checks with privileged", func() {
-								Expect(fakePolicyChecker.CheckCallCount()).To(Equal(1))
-								input := fakePolicyChecker.CheckArgsForCall(0)
-								Expect(input).To(Equal(policy.PolicyCheckInput{
-									Action:   policy.ActionUseImage,
-									Team:     "some-team",
-									Pipeline: "some-pipeline",
-									Data: map[string]any{
-										"image_type":   "docker",
-										"image_source": atc.Source{"some": "((source-var))"},
-										"privileged":   true,
-									},
+								Expect(opaServer.Requests()).To(HaveLen(1))
+								request := opaServer.Requests()[0]
+								Expect(request.PolicyCheckInput).To(Equal(policy.PolicyCheckInput{
+									Service:        "concourse",
+									ClusterName:    "some-cluster",
+									ClusterVersion: "some-version",
+									Action:         policy.ActionUseImage,
+									Team:           "some-team",
+									Pipeline:       "some-pipeline",
 								}))
+								Expect(request.Data).To(MatchJSON(`{
+									"image_type": "docker",
+									"image_source": {"some": "((source-var))"},
+									"privileged": true
+								}`))
 							})
 						})
 					})
@@ -487,7 +477,7 @@ var _ = Describe("BuildStepDelegate", func() {
 			Context("when no resource factories are set", func() {
 				It("runs both check and get plans (no metadata-only shortcut)", func() {
 					runPlans = nil
-					nativeDelegate := engine.NewBuildStepDelegate(fakeBuild, planID, parentRunState, fakeClock, fakePolicyChecker, false)
+					nativeDelegate := engine.NewBuildStepDelegate(fakeBuild, planID, parentRunState, fakeClock, policyChecker, false)
 					_, resCache, err := nativeDelegate.FetchImage(context.TODO(), *expectedGetPlan, expectedCheckPlan, false)
 					Expect(err).ToNot(HaveOccurred())
 
@@ -678,7 +668,7 @@ var _ = Describe("BuildStepDelegate", func() {
 
 				parentRunState := exec.NewRunState(stepper, nil)
 				nativeDelegate = engine.NewBuildStepDelegateWithFactories(
-					realBuild, planID, parentRunState, fakeClock, fakePolicyChecker, false,
+					realBuild, planID, parentRunState, fakeClock, policyChecker, false,
 					fixture.ResourceConfigFactory, fixture.ResourceCacheFactory,
 					nil, // no resolver — tests fallback behavior
 				)
@@ -746,7 +736,7 @@ var _ = Describe("BuildStepDelegate", func() {
 						realBuild, planID, exec.NewRunState(func(p atc.Plan) exec.Step {
 							runPlans = append(runPlans, p)
 							return new(scriptedStep)
-						}, nil), fakeClock, fakePolicyChecker, false,
+						}, nil), fakeClock, policyChecker, false,
 						wrappedFactory, fixture.ResourceCacheFactory, fakeResolver,
 					)
 				})
@@ -771,7 +761,7 @@ var _ = Describe("BuildStepDelegate", func() {
 						realBuild, planID, exec.NewRunState(func(p atc.Plan) exec.Step {
 							runPlans = append(runPlans, p)
 							return new(scriptedStep)
-						}, nil), fakeClock, fakePolicyChecker, false,
+						}, nil), fakeClock, policyChecker, false,
 						fixture.ResourceConfigFactory, fixture.ResourceCacheFactory,
 						fakeResolver,
 					)
@@ -831,7 +821,7 @@ var _ = Describe("BuildStepDelegate", func() {
 					nativeDelegate = engine.NewBuildStepDelegateWithFactories(
 						realBuild, planID, exec.NewRunState(func(p atc.Plan) exec.Step {
 							return new(scriptedStep)
-						}, nil), fakeClock, fakePolicyChecker, false,
+						}, nil), fakeClock, policyChecker, false,
 						fixture.ResourceConfigFactory, fixture.ResourceCacheFactory,
 						fakeResolver,
 					)
@@ -865,7 +855,7 @@ var _ = Describe("BuildStepDelegate", func() {
 					nativeDelegate = engine.NewBuildStepDelegateWithFactories(
 						realBuild, planID, exec.NewRunState(func(p atc.Plan) exec.Step {
 							return new(scriptedStep)
-						}, nil), fakeClock, fakePolicyChecker, false,
+						}, nil), fakeClock, policyChecker, false,
 						fixture.ResourceConfigFactory, fixture.ResourceCacheFactory,
 						fakeResolver,
 					)
@@ -1427,7 +1417,7 @@ var _ = Describe("BuildStepDelegate", func() {
 
 			BeforeEach(func() {
 				runState = exec.NewRunState(noopStepper, credVars)
-				delegate = engine.NewBuildStepDelegate(fakeBuild, "some-plan-id", runState, fakeClock, fakePolicyChecker, false)
+				delegate = engine.NewBuildStepDelegate(fakeBuild, "some-plan-id", runState, fakeClock, policyChecker, false)
 
 				runState.Get(vars.Reference{Path: "source-param"})
 				runState.Get(vars.Reference{Path: "git-key"})
@@ -1512,7 +1502,7 @@ var _ = Describe("BuildStepDelegate", func() {
 
 				Context("is disabled", func() {
 					BeforeEach(func() {
-						delegate = engine.NewBuildStepDelegate(fakeBuild, "some-plan-id", runState, fakeClock, fakePolicyChecker, true)
+						delegate = engine.NewBuildStepDelegate(fakeBuild, "some-plan-id", runState, fakeClock, policyChecker, true)
 					})
 
 					It("does not redact secrets", func() {
@@ -1613,7 +1603,7 @@ var _ = Describe("BuildStepDelegate", func() {
 
 				Context("is disabled", func() {
 					BeforeEach(func() {
-						delegate = engine.NewBuildStepDelegate(fakeBuild, "some-plan-id", runState, fakeClock, fakePolicyChecker, true)
+						delegate = engine.NewBuildStepDelegate(fakeBuild, "some-plan-id", runState, fakeClock, policyChecker, true)
 					})
 
 					It("does not redact secrets", func() {

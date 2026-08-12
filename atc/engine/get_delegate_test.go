@@ -15,7 +15,7 @@ import (
 	"github.com/concourse/concourse/atc/engine"
 	"github.com/concourse/concourse/atc/event"
 	"github.com/concourse/concourse/atc/exec"
-	"github.com/concourse/concourse/atc/policy/policyfakes"
+	"github.com/concourse/concourse/atc/policy"
 	"github.com/concourse/concourse/atc/resource"
 	"github.com/concourse/concourse/vars"
 )
@@ -56,9 +56,8 @@ func (build pipelineResultBuild) Pipeline() (db.Pipeline, bool, error) {
 
 var _ = Describe("GetDelegate", func() {
 	var (
-		logger            *lagertest.TestLogger
-		fakeClock         *fakeclock.FakeClock
-		fakePolicyChecker *policyfakes.FakeChecker
+		logger    *lagertest.TestLogger
+		fakeClock *fakeclock.FakeClock
 
 		state exec.RunState
 
@@ -82,8 +81,6 @@ var _ = Describe("GetDelegate", func() {
 			Version:  atc.Version{"foo": "bar"},
 			Metadata: atc.Metadata{{Name: "baz", Value: "shmaz"}},
 		}
-
-		fakePolicyChecker = new(policyfakes.FakeChecker)
 	})
 
 	Describe("persisted PostgreSQL state", func() {
@@ -116,7 +113,7 @@ var _ = Describe("GetDelegate", func() {
 			scenario := &dbtest.Scenario{Team: team, Pipeline: pipeline}
 			scenario.Run(fixture.Builder.WithResourceVersions("some-resource", info.Version))
 			version = scenario.ResourceVersion("some-resource", info.Version)
-			delegate = engine.NewGetDelegate(realBuild, "some-plan-id", state, fakeClock, fakePolicyChecker)
+			delegate = engine.NewGetDelegate(realBuild, "some-plan-id", state, fakeClock, policy.NoopChecker{})
 		})
 
 		It("saves the finish event", func() {
@@ -145,7 +142,7 @@ var _ = Describe("GetDelegate", func() {
 		It("leaves metadata unchanged when retrieving the pipeline fails", func() {
 			delegate = engine.NewGetDelegate(
 				pipelineErrorBuild{Build: realBuild, err: errors.New("nope")},
-				"some-plan-id", state, fakeClock, fakePolicyChecker,
+				"some-plan-id", state, fakeClock, policy.NoopChecker{},
 			)
 			delegate.UpdateResourceVersion(logger, "some-resource", info)
 			found, err := version.Reload()
@@ -157,7 +154,7 @@ var _ = Describe("GetDelegate", func() {
 		It("leaves metadata unchanged when the real one-off build has no pipeline", func() {
 			oneOff, err := team.CreateOneOffBuild()
 			Expect(err).NotTo(HaveOccurred())
-			delegate = engine.NewGetDelegate(oneOff, "some-plan-id", state, fakeClock, fakePolicyChecker)
+			delegate = engine.NewGetDelegate(oneOff, "some-plan-id", state, fakeClock, policy.NoopChecker{})
 			delegate.UpdateResourceVersion(logger, "some-resource", info)
 			found, err := version.Reload()
 			Expect(err).NotTo(HaveOccurred())
@@ -169,7 +166,7 @@ var _ = Describe("GetDelegate", func() {
 			wrappedPipeline := resourceErrorPipeline{Pipeline: pipeline, err: errors.New("nope")}
 			delegate = engine.NewGetDelegate(
 				pipelineResultBuild{Build: realBuild, pipeline: wrappedPipeline, found: true},
-				"some-plan-id", state, fakeClock, fakePolicyChecker,
+				"some-plan-id", state, fakeClock, policy.NoopChecker{},
 			)
 			delegate.UpdateResourceVersion(logger, "some-resource", info)
 			found, err := version.Reload()
