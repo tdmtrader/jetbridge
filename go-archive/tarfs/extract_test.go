@@ -1,9 +1,9 @@
 package tarfs_test
 
 import (
+	"archive/tar"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"time"
@@ -15,7 +15,7 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-var _ = Describe("Extract", func() {
+var _ = Describe("ExtractEntry", func() {
 	var extractionSrc io.Reader
 	var extractionDest string
 
@@ -69,11 +69,27 @@ var _ = Describe("Extract", func() {
 	})
 
 	JustBeforeEach(func() {
-		err := tarfs.Extract(extractionSrc, extractionDest)
-		Expect(err).NotTo(HaveOccurred())
+		tarReader := tar.NewReader(extractionSrc)
+
+		chown := os.Getuid() == 0
+
+		for {
+			hdr, err := tarReader.Next()
+			if err == io.EOF {
+				break
+			}
+
+			Expect(err).NotTo(HaveOccurred())
+
+			if hdr.Name == "." {
+				continue
+			}
+
+			Expect(tarfs.ExtractEntry(hdr, extractionDest, tarReader, chown)).To(Succeed())
+		}
 	})
 
-	extractionTest := func() {
+	It("writes the entries out, generating directories, and honoring file permissions and symlinks", func() {
 		someFile := filepath.Join(extractionDest, "some-file")
 
 		fileContents, err := os.ReadFile(someFile)
@@ -116,35 +132,5 @@ var _ = Describe("Extract", func() {
 		if runtime.GOOS != "windows" {
 			Expect(symlinkInfo.Mode() & 0755).To(Equal(os.FileMode(0755)))
 		}
-	}
-
-	Context("when 'tar' is on the PATH", func() {
-		BeforeEach(func() {
-			if runtime.GOOS == "windows" {
-				Skip("use go archive library only for windows")
-			}
-			_, err := exec.LookPath("tar")
-			Expect(err).NotTo(HaveOccurred())
-		})
-
-		It("extracts the TGZ's files, generating directories, and honoring file permissions and symlinks", extractionTest)
-	})
-
-	Context("when 'tar' is not in the PATH", func() {
-		var oldPATH string
-
-		BeforeEach(func() {
-			oldPATH = os.Getenv("PATH")
-			Expect(os.Setenv("PATH", "/dev/null")).To(Succeed())
-
-			_, err := exec.LookPath("tar")
-			Expect(err).To(HaveOccurred())
-		})
-
-		AfterEach(func() {
-			Expect(os.Setenv("PATH", oldPATH)).To(Succeed())
-		})
-
-		It("extracts the TGZ's files, generating directories, and honoring file permissions and symlinks", extractionTest)
 	})
 })

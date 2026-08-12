@@ -1,3 +1,3 @@
 # Archiver
 
-Utilities for extracting and compressing tgz and zip files.
+Utilities for extracting and compressing tgz files.

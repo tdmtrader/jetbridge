@@ -5,46 +5,10 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 )
-
-func Extract(src io.Reader, dest string) error {
-	if runtime.GOOS != "windows" {
-		tarPath, err := exec.LookPath("tar")
-		if err == nil {
-			return tarExtract(tarPath, src, dest)
-		}
-	}
-
-	tarReader := tar.NewReader(src)
-
-	chown := os.Getuid() == 0
-
-	for {
-		hdr, err := tarReader.Next()
-		if err == io.EOF {
-			break
-		}
-
-		if err != nil {
-			return err
-		}
-
-		if hdr.Name == "." {
-			continue
-		}
-
-		err = ExtractEntry(hdr, dest, tarReader, chown)
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
 
 type BreakoutError struct {
 	HeaderName string
