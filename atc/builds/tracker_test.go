@@ -392,10 +392,12 @@ func (s *TrackerSuite) TestTrackEmitsBuildsRunningMetric() {
 	s.fakeBuildFactory.GetAllStartedBuildsReturns([]db.Build{fakeBuild}, nil)
 
 	var gaugeSeenDuringRun float64
+	done := make(chan struct{})
 	s.fakeEngine.NewBuildStub = func(build db.Build) builds.Runnable {
 		engineBuild := new(buildsfakes.FakeRunnable)
 		engineBuild.RunStub = func(context.Context) {
 			gaugeSeenDuringRun = metric.Metrics.BuildsRunning.Max()
+			close(done)
 		}
 		return engineBuild
 	}
@@ -403,8 +405,7 @@ func (s *TrackerSuite) TestTrackEmitsBuildsRunningMetric() {
 	err := s.tracker.Run(context.TODO())
 	s.NoError(err)
 
-	// Wait for the goroutine to finish
-	time.Sleep(100 * time.Millisecond)
+	<-done
 
 	s.GreaterOrEqual(gaugeSeenDuringRun, float64(1), "BuildsRunning should be >= 1 during build execution")
 }
@@ -421,10 +422,12 @@ func (s *TrackerSuite) TestTrackEmitsCheckBuildsRunningMetric() {
 	s.fakeBuildFactory.GetAllStartedBuildsReturns([]db.Build{fakeBuild}, nil)
 
 	var gaugeSeenDuringRun float64
+	done := make(chan struct{})
 	s.fakeEngine.NewBuildStub = func(build db.Build) builds.Runnable {
 		engineBuild := new(buildsfakes.FakeRunnable)
 		engineBuild.RunStub = func(context.Context) {
 			gaugeSeenDuringRun = metric.Metrics.CheckBuildsRunning.Max()
+			close(done)
 		}
 		return engineBuild
 	}
@@ -432,8 +435,7 @@ func (s *TrackerSuite) TestTrackEmitsCheckBuildsRunningMetric() {
 	err := s.tracker.Run(context.TODO())
 	s.NoError(err)
 
-	// Wait for the goroutine to finish
-	time.Sleep(100 * time.Millisecond)
+	<-done
 
 	s.GreaterOrEqual(gaugeSeenDuringRun, float64(1), "CheckBuildsRunning should be >= 1 during check build execution")
 }
