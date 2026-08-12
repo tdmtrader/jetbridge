@@ -109,15 +109,15 @@ var _ = Describe("PutStep", func() {
 		ctx    context.Context
 		cancel func()
 
-		fixture    *execDBFixture
-		dbBuild    db.Build
-		dbTeam     db.Team
-		dbPipeline db.Pipeline
-		delegate  *beforeSelectWorkerRecorder
+		fixture         *execDBFixture
+		dbBuild         db.Build
+		dbTeam          db.Team
+		dbPipeline      db.Pipeline
+		delegate        *beforeSelectWorkerRecorder
 		delegateFactory exec.PutDelegateFactory
 
-		stepper       exec.Stepper
-		imageStepper  *imageFetchStepper
+		stepper      exec.Stepper
+		imageStepper *imageFetchStepper
 
 		fakePool        *scriptedPool
 		chosenWorker    *runtimetest.Worker
