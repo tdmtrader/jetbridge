@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 
+	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/accessor"
-	"github.com/concourse/concourse/atc/api/accessor/accessorfakes"
 	"github.com/concourse/concourse/atc/api/auth"
 	"github.com/concourse/concourse/atc/auditor/auditorfakes"
 	"github.com/concourse/concourse/atc/db"
@@ -17,28 +17,30 @@ import (
 
 var _ = Describe("CheckBuildWriteAccessHandler", func() {
 	var (
-		response     *http.Response
-		server       *httptest.Server
-		delegate     *buildDelegateHandler
-		factory      db.BuildFactory
-		handler      http.Handler
-		fakeAccessor *accessorfakes.FakeAccessFactory
-		fakeaccess   *accessorfakes.FakeAccess
-		build        db.Build
-		requestedID  int
+		response    *http.Response
+		server      *httptest.Server
+		delegate    *buildDelegateHandler
+		factory     db.BuildFactory
+		handler     http.Handler
+		team        db.Team
+		build       db.Build
+		requestedID int
+
+		// set by a Context to give the request a token; "" leaves it anonymous
+		authorization string
 	)
 
 	BeforeEach(func() {
 		factory = buildFactory
-		fakeAccessor = new(accessorfakes.FakeAccessFactory)
-		fakeaccess = new(accessorfakes.FakeAccess)
+		authorization = ""
 
 		delegate = &buildDelegateHandler{}
 
 		// A real build of a real job, owned by "some-team" -- which is the team
 		// the request claims, so the authorization decision is made against rows
 		// rather than against TeamNameReturns.
-		build = createJobBuild(createTeam("some-team"), "some-pipeline", "some-job")
+		team = createTeam("some-team")
+		build = createJobBuild(team, "some-pipeline", "some-job")
 		requestedID = build.ID()
 	})
 
@@ -48,21 +50,26 @@ var _ = Describe("CheckBuildWriteAccessHandler", func() {
 		innerHandler := auth.NewCheckBuildWriteAccessHandlerFactory(factory).
 			HandlerFor(delegate, auth.UnauthorizedRejector{})
 
+		// AbortBuild is a write route, so the real accessor demands the operator
+		// role rather than the blank one every role fails.
 		handler = accessor.NewHandler(
 			logger,
-			"some-action",
+			atc.AbortBuild,
 			innerHandler,
-			fakeAccessor,
+			realAccessFactory(),
 			new(auditorfakes.FakeAuditor),
 			map[string]string{},
 		)
 
-		fakeAccessor.CreateReturns(fakeaccess, nil)
 		server = httptest.NewServer(handler)
 
 		request, err := http.NewRequest("POST",
 			fmt.Sprintf("%s?:team_name=some-team&:build_id=%d", server.URL, requestedID), nil)
 		Expect(err).NotTo(HaveOccurred())
+
+		if authorization != "" {
+			request.Header.Set("Authorization", authorization)
+		}
 
 		response, err = new(http.Client).Do(request)
 		Expect(err).NotTo(HaveOccurred())
@@ -74,8 +81,8 @@ var _ = Describe("CheckBuildWriteAccessHandler", func() {
 
 	Context("when authenticated and accessing same team's build", func() {
 		BeforeEach(func() {
-			fakeaccess.IsAuthenticatedReturns(true)
-			fakeaccess.IsAuthorizedReturns(true)
+			authorization = validAccessToken()
+			grantRole(team, accessor.OperatorRole)
 		})
 
 		Context("when build exists", func() {
@@ -112,8 +119,19 @@ var _ = Describe("CheckBuildWriteAccessHandler", func() {
 
 	Context("when authenticated but accessing different team's build", func() {
 		BeforeEach(func() {
-			fakeaccess.IsAuthenticatedReturns(true)
-			fakeaccess.IsAuthorizedReturns(false)
+			authorization = validAccessToken()
+			grantRole(createTeam("some-other-team"), accessor.OperatorRole)
+		})
+
+		It("returns 403", func() {
+			Expect(response.StatusCode).To(Equal(http.StatusForbidden))
+		})
+	})
+
+	Context("when authenticated with too weak a role for the team", func() {
+		BeforeEach(func() {
+			authorization = validAccessToken()
+			grantRole(team, accessor.ViewerRole)
 		})
 
 		It("returns 403", func() {
@@ -123,7 +141,7 @@ var _ = Describe("CheckBuildWriteAccessHandler", func() {
 
 	Context("when not authenticated", func() {
 		BeforeEach(func() {
-			fakeaccess.IsAuthenticatedReturns(false)
+			grantRole(team, accessor.OperatorRole)
 		})
 
 		It("returns 401", func() {

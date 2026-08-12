@@ -8,12 +8,10 @@ import (
 	"github.com/concourse/concourse/atc/db"
 )
 
-//counterfeiter:generate . TokenVerifier
 type TokenVerifier interface {
 	Verify(req *http.Request) (map[string]any, error)
 }
 
-//counterfeiter:generate . TeamFetcher
 type TeamFetcher interface {
 	GetTeams() ([]db.Team, error)
 }

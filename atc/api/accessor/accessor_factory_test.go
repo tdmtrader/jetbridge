@@ -1,13 +1,11 @@
 package accessor_test
 
 import (
-	"errors"
 	"net/http"
+	"time"
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/accessor"
-	"github.com/concourse/concourse/atc/api/accessor/accessorfakes"
-	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/skymarshal/skycmd"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -19,10 +17,10 @@ var _ = Describe("AccessorFactory", func() {
 		systemClaimKey    string
 		systemClaimValues []string
 
-		fakeTokenVerifier *accessorfakes.FakeTokenVerifier
-		teamFactory       db.TeamFactory
-		teamFetcher       accessor.TeamFetcher
-		dummyRequest      *http.Request
+		fixture       *realTeamFixture
+		tokenVerifier accessor.TokenVerifier
+		teamFetcher   accessor.TeamFetcher
+		dummyRequest  *http.Request
 
 		displayUserIdGenerator atc.DisplayUserIdGenerator
 
@@ -33,9 +31,9 @@ var _ = Describe("AccessorFactory", func() {
 		systemClaimKey = "sub"
 		systemClaimValues = []string{"some-sub"}
 
-		fakeTokenVerifier = new(accessorfakes.FakeTokenVerifier)
-		teamFactory = useRealTeamFactory()
-		teamFetcher = teamFactory
+		fixture = useRealTeamFixture()
+		tokenVerifier = accessor.NewVerifier(fixture.AccessTokenFactory, []string{"some-aud"})
+		teamFetcher = fixture.TeamFactory
 		dummyRequest, _ = http.NewRequest("GET", "/", nil)
 
 		var err error
@@ -52,22 +50,26 @@ var _ = Describe("AccessorFactory", func() {
 		)
 
 		JustBeforeEach(func() {
-			factory := accessor.NewAccessFactory(fakeTokenVerifier, teamFetcher, systemClaimKey, systemClaimValues, displayUserIdGenerator)
+			factory := accessor.NewAccessFactory(tokenVerifier, teamFetcher, systemClaimKey, systemClaimValues, displayUserIdGenerator)
 			access, err = factory.Create(dummyRequest, role)
 		})
 
 		Context("when the token is valid", func() {
 			BeforeEach(func() {
-				fakeTokenVerifier.VerifyReturns(map[string]any{
+				fixture.persistAccessToken("user1-token", map[string]any{
+					"sub":                "user1-sub",
+					"aud":                []any{"some-aud"},
+					"exp":                float64(time.Now().Add(time.Hour).Unix()),
 					"preferred_username": "user1",
 					"email":              "user1@example.com",
 					"federated_claims": map[string]any{
 						"connector_id": "github",
 					},
-				}, nil)
+				})
+				dummyRequest.Header.Set("Authorization", "bearer user1-token")
 
 				persistTeam := func(name, authenticatedUser string) {
-					_, err := teamFactory.CreateTeam(atc.Team{
+					_, err := fixture.TeamFactory.CreateTeam(atc.Team{
 						Name: name,
 						Auth: atc.TeamAuth{
 							accessor.ViewerRole: {"users": {authenticatedUser}},
@@ -92,34 +94,34 @@ var _ = Describe("AccessorFactory", func() {
 
 		Context("when the team fetcher returns an error", func() {
 			BeforeEach(func() {
-				failingTeamFetcher := new(accessorfakes.FakeTeamFetcher)
-				failingTeamFetcher.GetTeamsReturns(nil, errors.New("nope"))
-				teamFetcher = failingTeamFetcher
+				fixture.disconnect()
 			})
 
 			It("returns an error", func() {
-				Expect(err).To(HaveOccurred())
+				Expect(err).To(MatchError(ContainSubstring("fetch teams")))
 			})
 		})
 
-		Context("when the verifier returns a NoToken error", func() {
-			BeforeEach(func() {
-				fakeTokenVerifier.VerifyReturns(nil, accessor.ErrVerificationNoToken)
-			})
-
+		Context("when the request carries no token", func() {
 			It("the accessor has no token", func() {
 				Expect(err).ToNot(HaveOccurred())
 				Expect(access.HasToken()).To(BeFalse())
 			})
 		})
 
-		Context("when the verifier returns some other error", func() {
+		Context("when the token has expired", func() {
 			BeforeEach(func() {
-				fakeTokenVerifier.VerifyReturns(nil, accessor.ErrVerificationTokenExpired)
+				fixture.persistAccessToken("expired-token", map[string]any{
+					"sub": "user1-sub",
+					"aud": []any{"some-aud"},
+					"exp": float64(time.Now().Add(-time.Hour).Unix()),
+				})
+				dummyRequest.Header.Set("Authorization", "bearer expired-token")
 			})
 
 			It("the accessor is unauthenticated", func() {
 				Expect(err).ToNot(HaveOccurred())
+				Expect(access.HasToken()).To(BeTrue())
 				Expect(access.IsAuthenticated()).To(BeFalse())
 			})
 		})

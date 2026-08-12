@@ -8,7 +8,6 @@ import (
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/accessor"
-	"github.com/concourse/concourse/atc/api/accessor/accessorfakes"
 	"github.com/concourse/concourse/atc/api/auth"
 	"github.com/concourse/concourse/atc/auditor/auditorfakes"
 	"github.com/concourse/concourse/atc/db"
@@ -18,19 +17,20 @@ import (
 
 var _ = Describe("CheckBuildReadAccessHandler", func() {
 	var (
-		response     *http.Response
-		server       *httptest.Server
-		delegate     *buildDelegateHandler
-		factory      db.BuildFactory
-		handler      http.Handler
-		fakeAccessor *accessorfakes.FakeAccessFactory
-		fakeaccess   *accessorfakes.FakeAccess
+		response *http.Response
+		server   *httptest.Server
+		delegate *buildDelegateHandler
+		factory  db.BuildFactory
+		handler  http.Handler
 
 		team        db.Team
 		pipeline    db.Pipeline
 		build       db.Build
 		jobConfig   atc.JobConfig
 		requestedID int
+
+		// set by a Context to give the request a token; "" leaves it anonymous
+		authorization string
 
 		// which of the factory's two handlers this Context exercises
 		handlerKind string
@@ -43,8 +43,6 @@ var _ = Describe("CheckBuildReadAccessHandler", func() {
 
 	BeforeEach(func() {
 		factory = buildFactory
-		fakeAccessor = new(accessorfakes.FakeAccessFactory)
-		fakeaccess = new(accessorfakes.FakeAccess)
 
 		delegate = &buildDelegateHandler{}
 
@@ -56,6 +54,7 @@ var _ = Describe("CheckBuildReadAccessHandler", func() {
 		pipeline = nil
 		build = nil
 		requestedID = 0
+		authorization = ""
 		pipelineVisibility = ""
 	})
 
@@ -88,17 +87,22 @@ var _ = Describe("CheckBuildReadAccessHandler", func() {
 		default:
 			innerHandler = handlerFactory.CheckIfPrivateJobHandler(delegate, auth.UnauthorizedRejector{})
 		}
+		// A real accessor resolves the role from the action, and every role
+		// fails the blank one, so the action has to be a route that has one.
 		handler = accessor.NewHandler(
-			logger, "some-action", innerHandler, fakeAccessor,
+			logger, atc.GetBuild, innerHandler, realAccessFactory(),
 			new(auditorfakes.FakeAuditor), map[string]string{},
 		)
 
-		fakeAccessor.CreateReturns(fakeaccess, nil)
 		server = httptest.NewServer(handler)
 
 		request, err := http.NewRequest("POST",
 			fmt.Sprintf("%s?:build_id=%d", server.URL, requestedID), nil)
 		Expect(err).NotTo(HaveOccurred())
+
+		if authorization != "" {
+			request.Header.Set("Authorization", authorization)
+		}
 
 		response, err = new(http.Client).Do(request)
 		Expect(err).NotTo(HaveOccurred())
@@ -152,8 +156,8 @@ var _ = Describe("CheckBuildReadAccessHandler", func() {
 
 		Context("when authenticated and accessing same team's build", func() {
 			BeforeEach(func() {
-				fakeaccess.IsAuthenticatedReturns(true)
-				fakeaccess.IsAuthorizedReturns(true)
+				authorization = validAccessToken()
+				grantRole(team, accessor.ViewerRole)
 			})
 
 			WithExistingBuild(ItReturnsTheBuild)
@@ -161,8 +165,10 @@ var _ = Describe("CheckBuildReadAccessHandler", func() {
 
 		Context("when authenticated but accessing different team's build", func() {
 			BeforeEach(func() {
-				fakeaccess.IsAuthenticatedReturns(true)
-				fakeaccess.IsAuthorizedReturns(false)
+				authorization = validAccessToken()
+				// The role is granted on another team entirely, so the build's
+				// team resolves to no role at all.
+				grantRole(createTeam("some-other-team"), accessor.ViewerRole)
 			})
 
 			WithExistingBuild(func() {
@@ -216,7 +222,7 @@ var _ = Describe("CheckBuildReadAccessHandler", func() {
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				fakeaccess.IsAuthenticatedReturns(false)
+				grantRole(team, accessor.ViewerRole)
 			})
 
 			WithExistingBuild(func() {
@@ -346,8 +352,8 @@ var _ = Describe("CheckBuildReadAccessHandler", func() {
 
 		Context("when authenticated and accessing same team's build", func() {
 			BeforeEach(func() {
-				fakeaccess.IsAuthenticatedReturns(true)
-				fakeaccess.IsAuthorizedReturns(true)
+				authorization = validAccessToken()
+				grantRole(team, accessor.ViewerRole)
 			})
 
 			WithExistingBuild(ItReturnsTheBuild)
@@ -355,8 +361,10 @@ var _ = Describe("CheckBuildReadAccessHandler", func() {
 
 		Context("when authenticated but accessing different team's build", func() {
 			BeforeEach(func() {
-				fakeaccess.IsAuthenticatedReturns(true)
-				fakeaccess.IsAuthorizedReturns(false)
+				authorization = validAccessToken()
+				// The role is granted on another team entirely, so the build's
+				// team resolves to no role at all.
+				grantRole(createTeam("some-other-team"), accessor.ViewerRole)
 			})
 
 			WithExistingBuild(func() {
@@ -366,7 +374,7 @@ var _ = Describe("CheckBuildReadAccessHandler", func() {
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				fakeaccess.IsAuthenticatedReturns(false)
+				grantRole(team, accessor.ViewerRole)
 			})
 
 			WithExistingBuild(func() {

@@ -7,7 +7,6 @@ import (
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/accessor"
-	"github.com/concourse/concourse/atc/api/accessor/accessorfakes"
 	"github.com/concourse/concourse/atc/api/auth"
 	"github.com/concourse/concourse/atc/auditor/auditorfakes"
 	"github.com/concourse/concourse/atc/db"
@@ -25,14 +24,13 @@ var _ = Describe("CheckWorkerTeamAccessHandler", func() {
 		factory  db.WorkerFactory
 		handler  http.Handler
 
-		fakeAccessor *accessorfakes.FakeAccessFactory
-		fakeaccess   *accessorfakes.FakeAccess
+		// set by a Context to give the request a token; "" leaves it anonymous
+		authorization string
 	)
 
 	BeforeEach(func() {
 		factory = workerFactory
-		fakeAccessor = new(accessorfakes.FakeAccessFactory)
-		fakeaccess = new(accessorfakes.FakeAccess)
+		authorization = ""
 		delegate = &workerDelegateHandler{}
 	})
 
@@ -42,16 +40,17 @@ var _ = Describe("CheckWorkerTeamAccessHandler", func() {
 		innerHandler := auth.NewCheckWorkerTeamAccessHandlerFactory(factory).
 			HandlerFor(delegate, auth.UnauthorizedRejector{})
 
+		// DeleteWorker is the route this handler guards, and it is the route
+		// whose default role a real accessor resolves the request against.
 		handler = accessor.NewHandler(
 			logger,
-			"some-action",
+			atc.DeleteWorker,
 			innerHandler,
-			fakeAccessor,
+			realAccessFactory(),
 			new(auditorfakes.FakeAuditor),
 			map[string]string{},
 		)
 
-		fakeAccessor.CreateReturns(fakeaccess, nil)
 		routes := rata.Routes{}
 		for _, route := range atc.Routes {
 			if route.Name == atc.DeleteWorker {
@@ -72,6 +71,10 @@ var _ = Describe("CheckWorkerTeamAccessHandler", func() {
 		}, nil)
 		Expect(err).NotTo(HaveOccurred())
 
+		if authorization != "" {
+			request.Header.Set("Authorization", authorization)
+		}
+
 		response, err = new(http.Client).Do(request)
 		Expect(err).NotTo(HaveOccurred())
 	})
@@ -81,10 +84,6 @@ var _ = Describe("CheckWorkerTeamAccessHandler", func() {
 	})
 
 	Context("when not authenticated", func() {
-		BeforeEach(func() {
-			fakeaccess.IsAuthenticatedReturns(false)
-		})
-
 		It("returns 401", func() {
 			Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
 		})
@@ -96,15 +95,17 @@ var _ = Describe("CheckWorkerTeamAccessHandler", func() {
 
 	Context("when authenticated", func() {
 		BeforeEach(func() {
-			fakeaccess.IsAuthenticatedReturns(true)
-			fakeaccess.IsAuthorizedReturns(true)
+			authorization = validAccessToken()
 		})
 
 		Context("when worker exists and belongs to a team", func() {
+			var team db.Team
+
 			BeforeEach(func() {
 				// A worker saved through a team is owned by it; that ownership is
 				// the column the handler authorizes against.
-				_, err := createTeam("some-team").SaveWorker(
+				team = createTeam("some-team")
+				_, err := team.SaveWorker(
 					atc.Worker{Name: "some-worker", Platform: "linux"}, 5*time.Minute,
 				)
 				Expect(err).NotTo(HaveOccurred())
@@ -112,7 +113,7 @@ var _ = Describe("CheckWorkerTeamAccessHandler", func() {
 
 			Context("when user is admin/system", func() {
 				BeforeEach(func() {
-					fakeaccess.IsAdminReturns(true)
+					makeAdmin(team)
 				})
 
 				It("calls worker delegate", func() {
@@ -124,9 +125,20 @@ var _ = Describe("CheckWorkerTeamAccessHandler", func() {
 				})
 			})
 
+			Context("when the token carries the system claim", func() {
+				BeforeEach(func() {
+					authorization = systemAccessToken()
+				})
+
+				It("calls worker delegate", func() {
+					Expect(delegate.IsCalled).To(BeTrue())
+					Expect(response.StatusCode).To(Equal(http.StatusOK))
+				})
+			})
+
 			Context("when team in auth matches worker team", func() {
 				BeforeEach(func() {
-					fakeaccess.IsAuthorizedReturns(true)
+					grantRole(team, accessor.MemberRole)
 				})
 
 				It("calls worker delegate", func() {
@@ -137,7 +149,7 @@ var _ = Describe("CheckWorkerTeamAccessHandler", func() {
 
 			Context("when team in auth does not match worker team", func() {
 				BeforeEach(func() {
-					fakeaccess.IsAuthorizedReturns(false)
+					grantRole(createTeam("some-other-team"), accessor.MemberRole)
 				})
 
 				It("does not call worker delegate", func() {
@@ -152,7 +164,6 @@ var _ = Describe("CheckWorkerTeamAccessHandler", func() {
 
 		Context("when worker is not owned by a team", func() {
 			BeforeEach(func() {
-				fakeaccess.IsAuthorizedReturns(false)
 				// Saved through the factory rather than a team: a global worker,
 				// belonging to no one.
 				_, err := workerFactory.SaveWorker(
@@ -163,7 +174,7 @@ var _ = Describe("CheckWorkerTeamAccessHandler", func() {
 
 			Context("when user is admin/system", func() {
 				BeforeEach(func() {
-					fakeaccess.IsAdminReturns(true)
+					makeAdmin(createTeam("some-team"))
 				})
 
 				It("calls worker delegate", func() {
@@ -177,7 +188,7 @@ var _ = Describe("CheckWorkerTeamAccessHandler", func() {
 
 			Context("when user is not admin/system", func() {
 				BeforeEach(func() {
-					fakeaccess.IsAdminReturns(false)
+					grantRole(createTeam("some-team"), accessor.MemberRole)
 				})
 
 				It("does not call worker delegate", func() {

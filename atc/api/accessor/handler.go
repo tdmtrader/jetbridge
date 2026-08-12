@@ -9,8 +9,6 @@ import (
 	"github.com/concourse/concourse/atc/auditor"
 )
 
-//counterfeiter:generate net/http.Handler
-
 const accessorContextKey atc.ContextKey = "accessor"
 
 //counterfeiter:generate . AccessFactory

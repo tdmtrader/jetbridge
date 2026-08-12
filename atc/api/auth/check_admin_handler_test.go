@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 
 	"github.com/concourse/concourse/atc/api/accessor"
-	"github.com/concourse/concourse/atc/api/accessor/accessorfakes"
 	"github.com/concourse/concourse/atc/api/auth"
 	"github.com/concourse/concourse/atc/auditor/auditorfakes"
 
@@ -17,10 +16,11 @@ import (
 
 var _ = Describe("CheckAdminHandler", func() {
 	var (
-		fakeAccessor *accessorfakes.FakeAccessFactory
-		fakeaccess   *accessorfakes.FakeAccess
-		server       *httptest.Server
-		client       *http.Client
+		server *httptest.Server
+		client *http.Client
+
+		// set by a Context to give the request a token; "" leaves it anonymous
+		authorization string
 	)
 
 	simpleHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -33,19 +33,20 @@ var _ = Describe("CheckAdminHandler", func() {
 	})
 
 	BeforeEach(func() {
-		fakeAccessor = new(accessorfakes.FakeAccessFactory)
-		fakeaccess = new(accessorfakes.FakeAccess)
+		authorization = ""
 
 		innerHandler := auth.CheckAdminHandler(
 			simpleHandler,
 			auth.UnauthorizedRejector{},
 		)
 
+		// Admin routes carry no default role, so "some-action" resolves to the
+		// blank role the real handler hands admin routes.
 		server = httptest.NewServer(accessor.NewHandler(
 			logger,
 			"some-action",
 			innerHandler,
-			fakeAccessor,
+			realAccessFactory(),
 			new(auditorfakes.FakeAuditor),
 			map[string]string{},
 		))
@@ -53,10 +54,6 @@ var _ = Describe("CheckAdminHandler", func() {
 		client = &http.Client{
 			Transport: &http.Transport{},
 		}
-	})
-
-	JustBeforeEach(func() {
-		fakeAccessor.CreateReturns(fakeaccess, nil)
 	})
 
 	Context("when a request is made", func() {
@@ -73,18 +70,22 @@ var _ = Describe("CheckAdminHandler", func() {
 		JustBeforeEach(func() {
 			var err error
 
+			if authorization != "" {
+				request.Header.Set("Authorization", authorization)
+			}
+
 			response, err = client.Do(request)
 			Expect(err).NotTo(HaveOccurred())
 		})
 
 		Context("when the validator returns true", func() {
 			BeforeEach(func() {
-				fakeaccess.IsAuthenticatedReturns(true)
+				authorization = validAccessToken()
 			})
 
 			Context("when is admin", func() {
 				BeforeEach(func() {
-					fakeaccess.IsAdminReturns(true)
+					makeAdmin(createTeam("some-team"))
 				})
 
 				It("returns 200 OK", func() {
@@ -99,6 +100,12 @@ var _ = Describe("CheckAdminHandler", func() {
 			})
 
 			Context("when is not admin", func() {
+				BeforeEach(func() {
+					// Owning a team is not enough: the team itself must be an
+					// administrator team.
+					grantRole(createTeam("some-team"), accessor.OwnerRole)
+				})
+
 				It("returns 403 Forbidden", func() {
 					Expect(response.StatusCode).To(Equal(http.StatusForbidden))
 					responseBody, err := io.ReadAll(response.Body)
@@ -109,10 +116,6 @@ var _ = Describe("CheckAdminHandler", func() {
 		})
 
 		Context("when the validator returns false", func() {
-			BeforeEach(func() {
-				fakeaccess.IsAuthenticatedReturns(false)
-			})
-
 			It("rejects the request", func() {
 				Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
 				responseBody, err := io.ReadAll(response.Body)

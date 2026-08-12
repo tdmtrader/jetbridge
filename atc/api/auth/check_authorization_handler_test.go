@@ -7,10 +7,11 @@ import (
 	"net/http/httptest"
 	"net/url"
 
+	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/accessor"
-	"github.com/concourse/concourse/atc/api/accessor/accessorfakes"
 	"github.com/concourse/concourse/atc/api/auth"
 	"github.com/concourse/concourse/atc/auditor/auditorfakes"
+	"github.com/concourse/concourse/atc/db"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -18,11 +19,13 @@ import (
 
 var _ = Describe("CheckAuthorizationHandler", func() {
 	var (
-		fakeAccessor *accessorfakes.FakeAccessFactory
-		fakeaccess   *accessorfakes.FakeAccess
+		team db.Team
 
 		server *httptest.Server
 		client *http.Client
+
+		// set by a Context to give the request a token; "" leaves it anonymous
+		authorization string
 	)
 
 	simpleHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -33,19 +36,21 @@ var _ = Describe("CheckAuthorizationHandler", func() {
 	})
 
 	BeforeEach(func() {
-		fakeAccessor = new(accessorfakes.FakeAccessFactory)
-		fakeaccess = new(accessorfakes.FakeAccess)
+		authorization = ""
+		team = createTeam("some-team")
 
 		innerHandler := auth.CheckAuthorizationHandler(
 			simpleHandler,
 			auth.UnauthorizedRejector{},
 		)
 
+		// A real accessor resolves the role from the action, and every role
+		// fails the blank one, so the action has to be a route that has one.
 		server = httptest.NewServer(accessor.NewHandler(
 			logger,
-			"some-action",
+			atc.ListPipelines,
 			innerHandler,
-			fakeAccessor,
+			realAccessFactory(),
 			new(auditorfakes.FakeAuditor),
 			map[string]string{},
 		))
@@ -53,10 +58,6 @@ var _ = Describe("CheckAuthorizationHandler", func() {
 		client = &http.Client{
 			Transport: &http.Transport{},
 		}
-	})
-
-	JustBeforeEach(func() {
-		fakeAccessor.CreateReturns(fakeaccess, nil)
 	})
 
 	Context("when a request is made", func() {
@@ -74,18 +75,22 @@ var _ = Describe("CheckAuthorizationHandler", func() {
 		JustBeforeEach(func() {
 			var err error
 
+			if authorization != "" {
+				request.Header.Set("Authorization", authorization)
+			}
+
 			response, err = client.Do(request)
 			Expect(err).NotTo(HaveOccurred())
 		})
 
 		Context("when the request is authenticated", func() {
 			BeforeEach(func() {
-				fakeaccess.IsAuthenticatedReturns(true)
+				authorization = validAccessToken()
 			})
 
 			Context("when the bearer token's team matches the request's team", func() {
 				BeforeEach(func() {
-					fakeaccess.IsAuthorizedReturns(true)
+					grantRole(team, accessor.ViewerRole)
 				})
 
 				It("returns 200", func() {
@@ -101,7 +106,7 @@ var _ = Describe("CheckAuthorizationHandler", func() {
 
 			Context("when the bearer token's team is set to something other than the request's team", func() {
 				BeforeEach(func() {
-					fakeaccess.IsAuthorizedReturns(false)
+					grantRole(createTeam("some-other-team"), accessor.ViewerRole)
 				})
 
 				It("returns 403", func() {
@@ -115,7 +120,7 @@ var _ = Describe("CheckAuthorizationHandler", func() {
 
 		Context("when the request is not authenticated", func() {
 			BeforeEach(func() {
-				fakeaccess.IsAuthenticatedReturns(false)
+				grantRole(team, accessor.ViewerRole)
 			})
 
 			It("returns 401", func() {

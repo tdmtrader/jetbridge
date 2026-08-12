@@ -7,7 +7,6 @@ import (
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/accessor"
-	"github.com/concourse/concourse/atc/api/accessor/accessorfakes"
 	"github.com/concourse/concourse/atc/api/auth"
 	"github.com/concourse/concourse/atc/auditor/auditorfakes"
 	"github.com/concourse/concourse/atc/db"
@@ -26,8 +25,8 @@ var _ = Describe("CheckPipelineAccessHandler", func() {
 		pipeline db.Pipeline
 		handler  http.Handler
 
-		fakeAccessor *accessorfakes.FakeAccessFactory
-		fakeaccess   *accessorfakes.FakeAccess
+		// set by a Context to give the request a token; "" leaves it anonymous
+		authorization string
 	)
 
 	BeforeEach(func() {
@@ -36,9 +35,8 @@ var _ = Describe("CheckPipelineAccessHandler", func() {
 		factory = teamFactory
 		team = createTeam("some-team")
 		pipeline = nil
+		authorization = ""
 
-		fakeAccessor = new(accessorfakes.FakeAccessFactory)
-		fakeaccess = new(accessorfakes.FakeAccess)
 		delegate = &pipelineDelegateHandler{}
 	})
 
@@ -48,20 +46,25 @@ var _ = Describe("CheckPipelineAccessHandler", func() {
 		innerHandler := auth.NewCheckPipelineAccessHandlerFactory(factory).
 			HandlerFor(delegate, auth.UnauthorizedRejector{})
 
+		// A real accessor resolves the role from the action, and every role
+		// fails the blank one, so the action has to be a route that has one.
 		handler = accessor.NewHandler(
 			logger,
-			"some-action",
+			atc.GetPipeline,
 			innerHandler,
-			fakeAccessor,
+			realAccessFactory(),
 			new(auditorfakes.FakeAuditor),
 			map[string]string{},
 		)
 
-		fakeAccessor.CreateReturns(fakeaccess, nil)
 		server = httptest.NewServer(handler)
 
 		request, err := http.NewRequest("POST", server.URL+"?:team_name=some-team&:pipeline_name=some-pipeline", nil)
 		Expect(err).NotTo(HaveOccurred())
+
+		if authorization != "" {
+			request.Header.Set("Authorization", authorization)
+		}
 
 		response, err = new(http.Client).Do(request)
 		Expect(err).NotTo(HaveOccurred())
@@ -120,8 +123,8 @@ var _ = Describe("CheckPipelineAccessHandler", func() {
 
 			Context("and authorized", func() {
 				BeforeEach(func() {
-					fakeaccess.IsAuthenticatedReturns(true)
-					fakeaccess.IsAuthorizedReturns(true)
+					authorization = validAccessToken()
+					grantRole(team, accessor.ViewerRole)
 				})
 
 				It("calls pipelineScopedHandler with pipelineDB in context", func() {
@@ -136,12 +139,14 @@ var _ = Describe("CheckPipelineAccessHandler", func() {
 
 			Context("and unauthorized", func() {
 				BeforeEach(func() {
-					fakeaccess.IsAuthorizedReturns(false)
+					// The role is granted on another team entirely, so the
+					// request's team resolves to no role at all.
+					grantRole(createTeam("some-other-team"), accessor.ViewerRole)
 				})
 
 				Context("and is authenticated", func() {
 					BeforeEach(func() {
-						fakeaccess.IsAuthenticatedReturns(true)
+						authorization = validAccessToken()
 					})
 
 					It("returns 403 Forbidden", func() {
@@ -150,10 +155,6 @@ var _ = Describe("CheckPipelineAccessHandler", func() {
 				})
 
 				Context("and not authenticated", func() {
-					BeforeEach(func() {
-						fakeaccess.IsAuthenticatedReturns(false)
-					})
-
 					It("returns 401 Unauthorized", func() {
 						Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
 					})

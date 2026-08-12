@@ -6,7 +6,6 @@ import (
 	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/accessor"
-	"github.com/concourse/concourse/atc/api/accessor/accessorfakes"
 	"github.com/concourse/concourse/atc/db"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -15,16 +14,14 @@ import (
 
 var _ = Describe("TeamsCacher", func() {
 	It("refreshes persisted teams only after notification invalidates the cache", func() {
-		teamFactory := useRealTeamFactory()
+		fixture := useRealTeamFixture()
+		teamFactory := fixture.TeamFactory
 		_, err := teamFactory.CreateTeam(atc.Team{Name: "cached-team"})
 		Expect(err).NotTo(HaveOccurred())
 
-		signal := db.NewNotifySignal()
-		fakeNotifications := new(accessorfakes.FakeNotifications)
-		fakeNotifications.ListenSignalReturns(signal, nil)
 		teamFetcher := accessor.NewTeamsCacher(
 			lager.NewLogger("test"),
-			fakeNotifications,
+			fixture.Conn.Bus(),
 			teamFactory,
 			time.Minute,
 			time.Minute,
@@ -53,11 +50,16 @@ var _ = Describe("TeamsCacher", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(teamNames(stillCached)).To(ConsistOf("cached-team"))
 
-		signal.Signal()
+		// The cacher subscribes from its own goroutine, so a NOTIFY issued
+		// before it reaches LISTEN goes nowhere. Re-notifying is what makes
+		// the handoff observable; the assertion above already proved the
+		// cache does not refresh on its own.
 		Eventually(func(g Gomega) []string {
+			g.Expect(teamFactory.NotifyCacher()).To(Succeed())
+
 			refreshed, err := teamFetcher.GetTeams()
 			g.Expect(err).NotTo(HaveOccurred())
 			return teamNames(refreshed)
-		}, 5*time.Second, 10*time.Millisecond).Should(ConsistOf("cached-team", "new-team"))
+		}, 10*time.Second, 100*time.Millisecond).Should(ConsistOf("cached-team", "new-team"))
 	})
 })

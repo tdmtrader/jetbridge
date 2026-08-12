@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 
 	"github.com/concourse/concourse/atc/api/accessor"
-	"github.com/concourse/concourse/atc/api/accessor/accessorfakes"
 	"github.com/concourse/concourse/atc/api/auth"
 	"github.com/concourse/concourse/atc/auditor/auditorfakes"
 
@@ -18,11 +17,11 @@ import (
 var _ = Describe("AuthenticationHandler", func() {
 
 	var (
-		fakeAccess   *accessorfakes.FakeAccess
-		fakeAccessor *accessorfakes.FakeAccessFactory
-
 		server *httptest.Server
 		client *http.Client
+
+		// set by a Context to give the request a token; "" leaves it anonymous
+		authorization string
 
 		err      error
 		request  *http.Request
@@ -37,15 +36,15 @@ var _ = Describe("AuthenticationHandler", func() {
 	})
 
 	BeforeEach(func() {
-		fakeAccess = new(accessorfakes.FakeAccess)
-		fakeAccessor = new(accessorfakes.FakeAccessFactory)
-
-		fakeAccessor.CreateReturns(fakeAccess, nil)
-
+		authorization = ""
 		client = http.DefaultClient
 	})
 
 	JustBeforeEach(func() {
+		if authorization != "" {
+			request.Header.Set("Authorization", authorization)
+		}
+
 		response, err = client.Do(request)
 		Expect(err).NotTo(HaveOccurred())
 	})
@@ -62,7 +61,7 @@ var _ = Describe("AuthenticationHandler", func() {
 				logger,
 				"some-action",
 				innerHandler,
-				fakeAccessor,
+				realAccessFactory(),
 				new(auditorfakes.FakeAuditor),
 				map[string]string{},
 			))
@@ -76,7 +75,7 @@ var _ = Describe("AuthenticationHandler", func() {
 
 			Context("when the user is authenticated ", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAuthenticatedReturns(true)
+					authorization = validAccessToken()
 				})
 
 				It("returns 200", func() {
@@ -91,10 +90,6 @@ var _ = Describe("AuthenticationHandler", func() {
 			})
 
 			Context("when the user is not authenticated", func() {
-				BeforeEach(func() {
-					fakeAccess.IsAuthenticatedReturns(false)
-				})
-
 				It("returns 401", func() {
 					Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
 				})
@@ -120,7 +115,7 @@ var _ = Describe("AuthenticationHandler", func() {
 				logger,
 				"some-action",
 				innerHandler,
-				fakeAccessor,
+				realAccessFactory(),
 				new(auditorfakes.FakeAuditor),
 				map[string]string{},
 			))
@@ -133,13 +128,9 @@ var _ = Describe("AuthenticationHandler", func() {
 			})
 
 			Context("when a token is provided", func() {
-				BeforeEach(func() {
-					fakeAccess.HasTokenReturns(true)
-				})
-
 				Context("when the user is not authenticated", func() {
 					BeforeEach(func() {
-						fakeAccess.IsAuthenticatedReturns(false)
+						authorization = expiredAccessToken()
 					})
 
 					It("returns 401", func() {
@@ -155,7 +146,7 @@ var _ = Describe("AuthenticationHandler", func() {
 
 				Context("when the user is authenticated ", func() {
 					BeforeEach(func() {
-						fakeAccess.IsAuthenticatedReturns(true)
+						authorization = validAccessToken()
 					})
 
 					It("returns 200", func() {
@@ -171,10 +162,6 @@ var _ = Describe("AuthenticationHandler", func() {
 			})
 
 			Context("when a token is NOT provided", func() {
-				BeforeEach(func() {
-					fakeAccess.HasTokenReturns(false)
-				})
-
 				It("returns 200", func() {
 					Expect(response.StatusCode).To(Equal(http.StatusOK))
 				})

@@ -2,7 +2,9 @@ package accessor_test
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"sync"
 	"testing"
 
 	"code.cloudfoundry.org/lager/v3"
@@ -21,19 +23,17 @@ var postgresRunner postgresrunner.Runner
 var _ = postgresrunner.GinkgoRunner(&postgresRunner)
 
 type realTeamFixture struct {
-	Conn        db.DbConn
-	TeamFactory db.TeamFactory
+	Conn               db.DbConn
+	TeamFactory        db.TeamFactory
+	AccessTokenFactory db.AccessTokenFactory
+
+	closeOnce sync.Once
 }
 
-// useRealTeamFactory gives a database-backed spec its own migrated clone.
-// Route-map specs deliberately do not call this helper and stay database-free.
-func useRealTeamFactory() db.TeamFactory {
-	GinkgoHelper()
-	return useRealTeamFixture().TeamFactory
-}
-
-// useRealTeamFixture retains the clone-local connection for specs that need to
-// persist team attributes which are not exposed through TeamFactory.
+// useRealTeamFixture gives a database-backed spec its own migrated clone, and
+// retains the clone-local connection for specs that need to persist team
+// attributes which are not exposed through TeamFactory. Route-map specs
+// deliberately do not call this helper and stay database-free.
 func useRealTeamFixture() *realTeamFixture {
 	GinkgoHelper()
 
@@ -41,9 +41,6 @@ func useRealTeamFixture() *realTeamFixture {
 	DeferCleanup(postgresRunner.DropTestDB)
 
 	dbConn := postgresRunner.OpenConn()
-	DeferCleanup(func() {
-		Expect(dbConn.Close()).To(Succeed())
-	})
 
 	var lockConns [lock.FactoryCount]*sql.DB
 	for i := 0; i < lock.FactoryCount; i++ {
@@ -56,10 +53,44 @@ func useRealTeamFixture() *realTeamFixture {
 
 	ignore := func(lager.Logger, lock.LockID) {}
 	lockFactory := lock.NewLockFactory(lockConns, ignore, ignore)
-	return &realTeamFixture{
-		Conn:        dbConn,
-		TeamFactory: db.NewTeamFactory(dbConn, lockFactory),
+	fixture := &realTeamFixture{
+		Conn:               dbConn,
+		TeamFactory:        db.NewTeamFactory(dbConn, lockFactory),
+		AccessTokenFactory: db.NewAccessTokenFactory(dbConn),
 	}
+	DeferCleanup(fixture.disconnect)
+	return fixture
+}
+
+// disconnect drops the connection this fixture handed out, which is how a spec
+// reaches the error paths that only a database going away can produce. Cleanup
+// calls it too, so it must survive being called twice.
+func (fixture *realTeamFixture) disconnect() {
+	GinkgoHelper()
+
+	fixture.closeOnce.Do(func() {
+		Expect(fixture.Conn.Close()).To(Succeed())
+	})
+}
+
+// persistAccessToken stores a token and hands back the claims as PostgreSQL
+// gives them up again. The claims column only ever holds the raw claims map --
+// db.Claims marshals nothing else -- so every typed field the verifier reads is
+// reconstructed by the round trip rather than carried over from the input.
+func (fixture *realTeamFixture) persistAccessToken(token string, rawClaims map[string]any) db.Claims {
+	GinkgoHelper()
+
+	payload, err := json.Marshal(rawClaims)
+	Expect(err).NotTo(HaveOccurred())
+
+	var claims db.Claims
+	Expect(json.Unmarshal(payload, &claims)).To(Succeed())
+	Expect(fixture.AccessTokenFactory.CreateAccessToken(token, claims)).To(Succeed())
+
+	stored, found, err := fixture.AccessTokenFactory.GetAccessToken(token)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(found).To(BeTrue())
+	return stored.Claims
 }
 
 // persistTeam always reloads the row so callers observe values scanned from

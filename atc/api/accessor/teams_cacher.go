@@ -9,7 +9,6 @@ import (
 	"github.com/patrickmn/go-cache"
 )
 
-//counterfeiter:generate . Notifications
 type Notifications interface {
 	ListenSignal(string) (*db.NotifySignal, error)
 	UnlistenSignal(string, *db.NotifySignal) error

@@ -18,7 +18,6 @@ var (
 	ErrVerificationInvalidAudience = errors.New("token has invalid audience")
 )
 
-//counterfeiter:generate . AccessTokenFetcher
 type AccessTokenFetcher interface {
 	GetAccessToken(rawToken string) (db.AccessToken, bool, error)
 	DeleteAccessToken(rawToken string) error

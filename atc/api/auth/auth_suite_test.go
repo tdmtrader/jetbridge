@@ -2,11 +2,13 @@ package auth_test
 
 import (
 	"database/sql"
+	"encoding/json"
 	"testing"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/lock"
 	"github.com/concourse/concourse/atc/postgresrunner"
@@ -63,6 +65,95 @@ var _ = BeforeEach(func() {
 	buildFactory = db.NewBuildFactory(dbConn, lockFactory, 0, time.Hour)
 	workerFactory = db.NewWorkerFactory(dbConn, db.NewStaticWorkerCache(logger, dbConn, 0))
 })
+
+const (
+	accessTokenAudience  = "some-aud"
+	accessTokenConnector = "test"
+	accessTokenUserID    = "some-user"
+	accessTokenSubject   = "some-sub"
+	systemClaimValue     = "some-system-sub"
+)
+
+// realAccessFactory is the accessor the ATC actually wires up: bearer tokens
+// are resolved against the access_tokens table, and the roles a request carries
+// are computed from the auth stored on the teams it finds.
+func realAccessFactory() accessor.AccessFactory {
+	return accessor.NewAccessFactory(
+		accessor.NewVerifier(db.NewAccessTokenFactory(dbConn), []string{accessTokenAudience}),
+		teamFactory,
+		"sub",
+		[]string{systemClaimValue},
+		nil,
+	)
+}
+
+// validAccessToken stores a token for accessTokenUserID and hands back the
+// Authorization header carrying it. Authentication has no other source once the
+// accessor is real.
+func validAccessToken() string {
+	GinkgoHelper()
+	return persistAccessToken("valid-token", accessTokenSubject, time.Now().Add(time.Hour))
+}
+
+// expiredAccessToken is how a request carries a token and still fails
+// verification, which is the only way HasToken and IsAuthenticated disagree.
+func expiredAccessToken() string {
+	GinkgoHelper()
+	return persistAccessToken("expired-token", accessTokenSubject, time.Now().Add(-time.Hour))
+}
+
+// systemAccessToken carries the subject the access factory is configured to
+// treat as the system user.
+func systemAccessToken() string {
+	GinkgoHelper()
+	return persistAccessToken("system-token", systemClaimValue, time.Now().Add(time.Hour))
+}
+
+func persistAccessToken(token, subject string, expiry time.Time) string {
+	GinkgoHelper()
+
+	payload, err := json.Marshal(map[string]any{
+		"sub": subject,
+		"aud": []any{accessTokenAudience},
+		"exp": expiry.Unix(),
+		"federated_claims": map[string]any{
+			"connector_id": accessTokenConnector,
+			"user_id":      accessTokenUserID,
+		},
+	})
+	Expect(err).NotTo(HaveOccurred())
+
+	var claims db.Claims
+	Expect(json.Unmarshal(payload, &claims)).To(Succeed())
+	Expect(db.NewAccessTokenFactory(dbConn).CreateAccessToken(token, claims)).To(Succeed())
+
+	return "bearer " + token
+}
+
+// grantRole writes the team auth that makes a real accessor authorized: the
+// role is matched against the connector and user id the token claims.
+func grantRole(team db.Team, role string) {
+	GinkgoHelper()
+
+	Expect(team.UpdateProviderAuth(atc.TeamAuth{
+		role: {"users": {accessTokenConnector + ":" + accessTokenUserID}},
+	})).To(Succeed())
+}
+
+// makeAdmin supplies both halves accessor.IsAdmin insists on: the team is an
+// administrator team, and the user owns it.
+func makeAdmin(team db.Team) {
+	GinkgoHelper()
+
+	grantRole(team, accessor.OwnerRole)
+
+	result, err := dbConn.Exec(`UPDATE teams SET admin = TRUE WHERE id = $1`, team.ID())
+	Expect(err).NotTo(HaveOccurred())
+
+	rowsAffected, err := result.RowsAffected()
+	Expect(err).NotTo(HaveOccurred())
+	Expect(rowsAffected).To(Equal(int64(1)))
+}
 
 func createTeam(name string) db.Team {
 	team, err := teamFactory.CreateTeam(atc.Team{Name: name})
