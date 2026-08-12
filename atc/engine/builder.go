@@ -29,7 +29,6 @@ type CoreStepFactory interface {
 	ArtifactOutputStep(atc.Plan, db.Build) exec.Step
 }
 
-//counterfeiter:generate . StepperFactory
 type StepperFactory interface {
 	StepperForBuild(db.Build) (exec.Stepper, error)
 }

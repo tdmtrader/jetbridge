@@ -17,7 +17,6 @@ import (
 	"github.com/concourse/concourse/atc/policy"
 )
 
-//counterfeiter:generate . RateLimiter
 type RateLimiter interface {
 	Wait(context.Context) error
 }

@@ -18,7 +18,6 @@ import (
 	"github.com/concourse/concourse/atc/db/lock"
 	"github.com/concourse/concourse/atc/db/lock/lockfakes"
 	"github.com/concourse/concourse/atc/engine"
-	"github.com/concourse/concourse/atc/engine/enginefakes"
 	"github.com/concourse/concourse/atc/exec"
 	"github.com/concourse/concourse/atc/policy/policyfakes"
 	"github.com/concourse/concourse/vars"
@@ -77,11 +76,24 @@ func (scope *checkTimingScope) UpdateLastCheckEndTime(succeeded bool) (bool, err
 	return scope.updateEnd(succeeded)
 }
 
+// A rate limiter admits checks without recording that it did, so the count of
+// admissions is only observable from the outside.
+type countingRateLimiter struct {
+	engine.RateLimiter
+
+	waits int
+}
+
+func (limiter *countingRateLimiter) Wait(ctx context.Context) error {
+	limiter.waits++
+	return limiter.RateLimiter.Wait(ctx)
+}
+
 var _ = Describe("CheckDelegate", func() {
 	var (
 		now               time.Time
 		fakeClock         *fakeclock.FakeClock
-		fakeRateLimiter   *enginefakes.FakeRateLimiter
+		rateLimiter       *countingRateLimiter
 		fakePolicyChecker *policyfakes.FakeChecker
 		state             exec.RunState
 	)
@@ -89,7 +101,7 @@ var _ = Describe("CheckDelegate", func() {
 	BeforeEach(func() {
 		now = time.Date(1991, 6, 3, 5, 30, 0, 0, time.UTC)
 		fakeClock = fakeclock.NewFakeClock(now)
-		fakeRateLimiter = new(enginefakes.FakeRateLimiter)
+		rateLimiter = &countingRateLimiter{RateLimiter: newCheckRateLimiter()}
 		fakePolicyChecker = new(policyfakes.FakeChecker)
 		state = exec.NewRunState(noopStepper, vars.StaticVariables{
 			"source-param": "super-secret-source",
@@ -118,7 +130,7 @@ var _ = Describe("CheckDelegate", func() {
 				atc.Plan{ID: "some-plan-id", Check: &check},
 				state,
 				fakeClock,
-				fakeRateLimiter,
+				rateLimiter,
 				fakePolicyChecker,
 			)
 		}
@@ -284,7 +296,7 @@ var _ = Describe("CheckDelegate", func() {
 				atc.Plan{ID: "some-plan-id", Check: &check},
 				state,
 				fakeClock,
-				fakeRateLimiter,
+				rateLimiter,
 				fakePolicyChecker,
 			)
 		}
@@ -301,7 +313,7 @@ var _ = Describe("CheckDelegate", func() {
 			scope := &checkTimingScope{
 				lastCheck: func() (db.LastCheck, error) { return last, nil },
 				acquire: func(lager.Logger) (lock.Lock, bool, error) {
-					Expect(fakeRateLimiter.WaitCallCount()).To(Equal(1))
+					Expect(rateLimiter.waits).To(Equal(1))
 					return fakeLock, true, nil
 				},
 			}
@@ -311,7 +323,7 @@ var _ = Describe("CheckDelegate", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(run).To(BeTrue())
 			Expect(gotLock).To(Equal(fakeLock))
-			Expect(fakeRateLimiter.WaitCallCount()).To(Equal(1))
+			Expect(rateLimiter.waits).To(Equal(1))
 			Expect(scope.acquireCalls).To(Equal(1))
 			Expect(scope.lastCheckCalls).To(Equal(2))
 		})
@@ -334,7 +346,7 @@ var _ = Describe("CheckDelegate", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(run).To(BeTrue())
 			Expect(gotLock).To(Equal(fakeLock))
-			Expect(fakeRateLimiter.WaitCallCount()).To(BeZero())
+			Expect(rateLimiter.waits).To(BeZero())
 			Expect(scope.acquireCalls).To(Equal(1))
 			Expect(scope.lastCheckCalls).To(Equal(2))
 		})
@@ -354,7 +366,7 @@ var _ = Describe("CheckDelegate", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(run).To(BeTrue())
 			Expect(gotLock).To(Equal(fakeLock))
-			Expect(fakeRateLimiter.WaitCallCount()).To(BeZero())
+			Expect(rateLimiter.waits).To(BeZero())
 			Expect(scope.acquireCalls).To(Equal(1))
 			Expect(scope.lastCheckCalls).To(Equal(2))
 		})
@@ -441,7 +453,7 @@ var _ = Describe("CheckDelegate", func() {
 			Expect(gotLock).To(BeNil())
 			Expect(scope.lastCheckCalls).To(BeZero())
 			Expect(scope.acquireCalls).To(BeZero())
-			Expect(fakeRateLimiter.WaitCallCount()).To(BeZero())
+			Expect(rateLimiter.waits).To(BeZero())
 		})
 
 		It("skips an interval-blocked resource check before acquiring the lock", func() {
@@ -478,7 +490,7 @@ var _ = Describe("CheckDelegate", func() {
 			}).WaitToRun(context.Background(), scope)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(run).To(BeFalse())
-			Expect(fakeRateLimiter.WaitCallCount()).To(BeZero())
+			Expect(rateLimiter.waits).To(BeZero())
 		})
 
 		It("reuses a successful nested check completed after the build started", func() {
@@ -492,7 +504,7 @@ var _ = Describe("CheckDelegate", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(run).To(BeFalse())
 			Expect(gotLock).To(BeNil())
-			Expect(fakeRateLimiter.WaitCallCount()).To(BeZero())
+			Expect(rateLimiter.waits).To(BeZero())
 		})
 
 		It("blocks a successful non-resource check solely while its interval is unelapsed", func() {
@@ -510,7 +522,7 @@ var _ = Describe("CheckDelegate", func() {
 			Expect(run).To(BeFalse())
 			Expect(gotLock).To(BeNil())
 			Expect(scope.lastCheckCalls).To(Equal(1))
-			Expect(fakeRateLimiter.WaitCallCount()).To(BeZero())
+			Expect(rateLimiter.waits).To(BeZero())
 		})
 
 		DescribeTable("runs a non-resource check with a no-op lock",
@@ -532,7 +544,7 @@ var _ = Describe("CheckDelegate", func() {
 				Expect(gotLock).To(Equal(lock.NoopLock{}))
 				Expect(scope.lastCheckCalls).To(Equal(1))
 				Expect(scope.acquireCalls).To(BeZero())
-				Expect(fakeRateLimiter.WaitCallCount()).To(BeZero())
+				Expect(rateLimiter.waits).To(BeZero())
 			},
 			Entry("after a prior failure",
 				atc.CheckPlan{ResourceType: "some-resource-type"},
@@ -569,7 +581,7 @@ var _ = Describe("CheckDelegate", func() {
 				{Resource: "some-resource"},
 				{Resource: "some-resource", SkipInterval: true},
 			} {
-				waitsBefore := fakeRateLimiter.WaitCallCount()
+				waitsBefore := rateLimiter.waits
 				scope := &checkTimingScope{
 					lastCheck: func() (db.LastCheck, error) {
 						return db.LastCheck{}, errors.New("some-error")
@@ -587,9 +599,9 @@ var _ = Describe("CheckDelegate", func() {
 				Expect(scope.lastCheckCalls).To(Equal(1))
 				Expect(scope.acquireCalls).To(BeZero())
 				if check.SkipInterval {
-					Expect(fakeRateLimiter.WaitCallCount()).To(Equal(waitsBefore))
+					Expect(rateLimiter.waits).To(Equal(waitsBefore))
 				} else {
-					Expect(fakeRateLimiter.WaitCallCount()).To(Equal(waitsBefore + 1))
+					Expect(rateLimiter.waits).To(Equal(waitsBefore + 1))
 				}
 			}
 		})

@@ -27,16 +27,43 @@ import (
 	. "github.com/onsi/gomega"
 )
 
+// A stepper factory hands out a closure and keeps no record of having done so,
+// so the number of builds it was asked about is only observable from outside.
+type countingStepperFactory struct {
+	StepperFactory
+
+	stepperCalls int
+}
+
+func (factory *countingStepperFactory) StepperForBuild(build db.Build) (exec.Stepper, error) {
+	factory.stepperCalls++
+	return factory.StepperFactory.StepperForBuild(build)
+}
+
 var _ = Describe("Engine", func() {
 	var (
-		fakeStepperFactory *enginefakes.FakeStepperFactory
+		fakeCoreStepFactory *enginefakes.FakeCoreStepFactory
+		stepperFactory      *countingStepperFactory
 
 		fakeGlobalCreds   *credsfakes.FakeSecrets
 		fakeVarSourcePool *credsfakes.FakeVarSourcePool
 	)
 
 	BeforeEach(func() {
-		fakeStepperFactory = new(enginefakes.FakeStepperFactory)
+		fakeCoreStepFactory = new(enginefakes.FakeCoreStepFactory)
+		stepperFactory = &countingStepperFactory{
+			StepperFactory: NewStepperFactory(
+				fakeCoreStepFactory,
+				"http://example.com",
+				newCheckRateLimiter(),
+				nil,
+				nil,
+				nil,
+				nil,
+				nil,
+				nil,
+			),
+		}
 
 		fakeGlobalCreds = new(credsfakes.FakeSecrets)
 		fakeVarSourcePool = new(credsfakes.FakeVarSourcePool)
@@ -61,7 +88,7 @@ var _ = Describe("Engine", func() {
 				atc.Config{Jobs: atc.JobConfigs{{Name: "some-job"}}},
 				"some-user",
 			)
-			engine = NewEngine(fakeStepperFactory, fakeGlobalCreds, fakeVarSourcePool)
+			engine = NewEngine(stepperFactory, fakeGlobalCreds, fakeVarSourcePool)
 		})
 
 		JustBeforeEach(func() {
@@ -86,6 +113,7 @@ var _ = Describe("Engine", func() {
 			// panic, retry, and callback ordering in the engine runtime.
 			fakeBuild = new(dbfakes.FakeBuild)
 			fakeBuild.IDReturns(128)
+			fakeBuild.SchemaReturns("exec.v2")
 
 			release = make(chan bool)
 			trackedStates := new(sync.Map)
@@ -93,7 +121,7 @@ var _ = Describe("Engine", func() {
 
 			build = NewBuild(
 				fakeBuild,
-				fakeStepperFactory,
+				stepperFactory,
 				fakeGlobalCreds,
 				fakeVarSourcePool,
 				release,
@@ -144,7 +172,6 @@ var _ = Describe("Engine", func() {
 						})
 
 						Context("when converting the plan to a step succeeds", func() {
-							var steppedPlans chan atc.Plan
 							var fakeStep *execfakes.FakeStep
 
 							BeforeEach(func() {
@@ -157,11 +184,7 @@ var _ = Describe("Engine", func() {
 									},
 								})
 
-								steppedPlans = make(chan atc.Plan, 1)
-								fakeStepperFactory.StepperForBuildReturns(func(plan atc.Plan) exec.Step {
-									steppedPlans <- plan
-									return fakeStep
-								}, nil)
+								fakeCoreStepFactory.LoadVarStepReturns(fakeStep)
 							})
 
 							It("releases the lock", func() {
@@ -175,7 +198,9 @@ var _ = Describe("Engine", func() {
 							})
 
 							It("constructs a step from the build's plan", func() {
-								plan := <-steppedPlans
+								waitGroup.Wait()
+								Expect(fakeCoreStepFactory.LoadVarStepCallCount()).To(Equal(1))
+								plan, _, _ := fakeCoreStepFactory.LoadVarStepArgsForCall(0)
 								Expect(plan).ToNot(BeZero())
 								Expect(plan).To(Equal(fakeBuild.PrivatePlan())) //XXX
 							})
@@ -445,7 +470,7 @@ var _ = Describe("Engine", func() {
 
 						Context("when converting the plan to a step fails", func() {
 							BeforeEach(func() {
-								fakeStepperFactory.StepperForBuildReturns(nil, errors.New("nope"))
+								fakeBuild.SchemaReturns("not-schema")
 							})
 
 							It("releases the lock", func() {
@@ -476,7 +501,7 @@ var _ = Describe("Engine", func() {
 					})
 
 					It("does not build the step", func() {
-						Expect(fakeStepperFactory.StepperForBuildCallCount()).To(BeZero())
+						Expect(stepperFactory.stepperCalls).To(BeZero())
 					})
 
 					It("releases the lock", func() {
@@ -491,7 +516,7 @@ var _ = Describe("Engine", func() {
 					})
 
 					It("does not build the step", func() {
-						Expect(fakeStepperFactory.StepperForBuildCallCount()).To(BeZero())
+						Expect(stepperFactory.stepperCalls).To(BeZero())
 					})
 
 					It("releases the lock", func() {
@@ -505,7 +530,7 @@ var _ = Describe("Engine", func() {
 					})
 
 					It("does not build the step", func() {
-						Expect(fakeStepperFactory.StepperForBuildCallCount()).To(BeZero())
+						Expect(stepperFactory.stepperCalls).To(BeZero())
 					})
 
 					It("releases the lock", func() {
@@ -520,7 +545,7 @@ var _ = Describe("Engine", func() {
 				})
 
 				It("does not build the step", func() {
-					Expect(fakeStepperFactory.StepperForBuildCallCount()).To(BeZero())
+					Expect(stepperFactory.stepperCalls).To(BeZero())
 				})
 			})
 		})

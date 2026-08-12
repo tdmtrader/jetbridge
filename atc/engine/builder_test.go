@@ -19,7 +19,6 @@ var _ = Describe("Builder", func() {
 
 		var (
 			fakeCoreStepFactory *enginefakes.FakeCoreStepFactory
-			fakeRateLimiter     *enginefakes.FakeRateLimiter
 			fakePolicyChecker   *policyfakes.FakeChecker
 			fakeWorkerFactory   *dbfakes.FakeWorkerFactory
 			fakeLockFactory     *lockfakes.FakeLockFactory
@@ -30,7 +29,6 @@ var _ = Describe("Builder", func() {
 
 		BeforeEach(func() {
 			fakeCoreStepFactory = new(enginefakes.FakeCoreStepFactory)
-			fakeRateLimiter = new(enginefakes.FakeRateLimiter)
 			fakePolicyChecker = new(policyfakes.FakeChecker)
 			fakeWorkerFactory = new(dbfakes.FakeWorkerFactory)
 			fakeLockFactory = new(lockfakes.FakeLockFactory)
@@ -38,7 +36,7 @@ var _ = Describe("Builder", func() {
 			stepperFactory = engine.NewStepperFactory(
 				fakeCoreStepFactory,
 				"http://example.com",
-				fakeRateLimiter,
+				newCheckRateLimiter(),
 				fakePolicyChecker,
 				fakeWorkerFactory,
 				fakeLockFactory,
