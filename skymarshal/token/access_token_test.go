@@ -6,10 +6,10 @@ import (
 	"net/http/httptest"
 	"time"
 
-	"github.com/concourse/concourse/atc/atcfakes"
-
 	"code.cloudfoundry.org/lager/v3/lagertest"
+	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/skymarshal/skycmd"
 	"github.com/concourse/concourse/skymarshal/token"
 	"github.com/concourse/concourse/skymarshal/token/tokenfakes"
 	"github.com/go-jose/go-jose/v4/jwt"
@@ -26,7 +26,7 @@ var _ = Describe("Access Tokens", func() {
 			claimsParser           *tokenfakes.FakeClaimsParser
 			accessTokenFactory     db.AccessTokenFactory
 			userFactory            db.UserFactory
-			displayUserIdGenerator *atcfakes.FakeDisplayUserIdGenerator
+			displayUserIdGenerator atc.DisplayUserIdGenerator
 
 			dummyLogger *lagertest.TestLogger
 		)
@@ -37,7 +37,9 @@ var _ = Describe("Access Tokens", func() {
 			claimsParser = new(tokenfakes.FakeClaimsParser)
 			accessTokenFactory = realdb.AccessTokens
 			userFactory = realdb.Users
-			displayUserIdGenerator = new(atcfakes.FakeDisplayUserIdGenerator)
+			var err error
+			displayUserIdGenerator, err = skycmd.NewSkyDisplayUserIdGenerator(map[string]string{"oidc": "email"})
+			Expect(err).NotTo(HaveOccurred())
 
 			dummyLogger = lagertest.NewTestLogger("whatever")
 		})
@@ -150,7 +152,7 @@ var _ = Describe("Access Tokens", func() {
 					},
 					FederatedClaims: db.FederatedClaims{
 						UserID:    "some-user-id",
-						Connector: "some-connector",
+						Connector: "oidc",
 					},
 					Username:          "some-username",
 					PreferredUsername: "some-preferred-username",
@@ -163,12 +165,11 @@ var _ = Describe("Access Tokens", func() {
 						"email":              "some@example.com",
 						"federated_claims": map[string]any{
 							"user_id":      "some-user-id",
-							"connector_id": "some-connector",
+							"connector_id": "oidc",
 						},
 					},
 				}
 				claimsParser.ParseClaimsReturns(claims, nil)
-				displayUserIdGenerator.DisplayUserIdReturns("some-display-user")
 
 				baseHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					w.WriteHeader(t.statusCode)
@@ -226,7 +227,7 @@ var _ = Describe("Access Tokens", func() {
 					Expect(*storedToken.Claims.Expiry).To(Equal(expiry))
 					Expect(storedToken.Claims.FederatedClaims).To(Equal(db.FederatedClaims{
 						UserID:    "some-user-id",
-						Connector: "some-connector",
+						Connector: "oidc",
 					}))
 					Expect(storedToken.Claims.Username).To(Equal("some-username"))
 					Expect(storedToken.Claims.PreferredUsername).To(Equal("some-preferred-username"))
@@ -240,8 +241,8 @@ var _ = Describe("Access Tokens", func() {
 						FROM users
 						WHERE sub = $1
 					`, "some-subject").Scan(&username, &connector, &subject)).To(Succeed())
-					Expect(username).To(Equal("some-display-user"))
-					Expect(connector).To(Equal("some-connector"))
+					Expect(username).To(Equal("some@example.com"))
+					Expect(connector).To(Equal("oidc"))
 					Expect(subject).To(Equal("some-subject"))
 				}
 			})

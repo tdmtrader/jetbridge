@@ -1,13 +1,13 @@
 package accessor_test
 
 import (
-	"github.com/concourse/concourse/atc/atcfakes"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/skymarshal/skycmd"
 )
 
 type accessorTeamFixture struct {
@@ -26,7 +26,8 @@ var _ = Describe("Accessor", func() {
 		useRealTeams bool
 		persistTeams func() []db.Team
 
-		fakeDisplayUserIdGenerator *atcfakes.FakeDisplayUserIdGenerator
+		displayUserIdConfig    map[string]string
+		displayUserIdGenerator atc.DisplayUserIdGenerator
 	)
 
 	BeforeEach(func() {
@@ -75,14 +76,19 @@ var _ = Describe("Accessor", func() {
 			return teams
 		}
 
-		fakeDisplayUserIdGenerator = new(atcfakes.FakeDisplayUserIdGenerator)
+		displayUserIdConfig = map[string]string{}
 	})
 
 	JustBeforeEach(func() {
 		if useRealTeams {
 			teams = persistTeams()
 		}
-		access = accessor.NewAccessor(verification, requiredRole, "sub", []string{"system"}, teams, fakeDisplayUserIdGenerator)
+
+		var err error
+		displayUserIdGenerator, err = skycmd.NewSkyDisplayUserIdGenerator(displayUserIdConfig)
+		Expect(err).NotTo(HaveOccurred())
+
+		access = accessor.NewAccessor(verification, requiredRole, "sub", []string{"system"}, teams, displayUserIdGenerator)
 	})
 
 	Describe("HasToken", func() {
@@ -240,7 +246,7 @@ var _ = Describe("Accessor", func() {
 			}
 
 			teams = persistTeams()
-			access = accessor.NewAccessor(verification, requiredRole, "sub", []string{"system"}, teams, fakeDisplayUserIdGenerator)
+			access = accessor.NewAccessor(verification, requiredRole, "sub", []string{"system"}, teams, displayUserIdGenerator)
 			result := access.IsAuthorized("some-team")
 			Expect(expected).Should(Equal(result))
 		},
@@ -288,7 +294,7 @@ var _ = Describe("Accessor", func() {
 			}
 
 			teams = persistTeams()
-			access = accessor.NewAccessor(verification, requiredRole, "sub", []string{"system"}, teams, fakeDisplayUserIdGenerator)
+			access = accessor.NewAccessor(verification, requiredRole, "sub", []string{"system"}, teams, displayUserIdGenerator)
 			result := access.IsAuthorized("some-team")
 			Expect(expected).Should(Equal(result))
 		},
@@ -350,7 +356,7 @@ var _ = Describe("Accessor", func() {
 			}
 
 			teams = persistTeams()
-			access = accessor.NewAccessor(verification, requiredRole, "sub", []string{"system"}, teams, fakeDisplayUserIdGenerator)
+			access = accessor.NewAccessor(verification, requiredRole, "sub", []string{"system"}, teams, displayUserIdGenerator)
 			result := access.IsAuthorized("some-team")
 			Expect(expected).Should(Equal(result))
 		},
@@ -730,16 +736,14 @@ var _ = Describe("Accessor", func() {
 	Describe("UserInfo", func() {
 		var result atc.UserInfo
 
-		BeforeEach(func() {
-			fakeDisplayUserIdGenerator.DisplayUserIdReturns("some-user-id")
-		})
-
 		JustBeforeEach(func() {
 			result = access.UserInfo()
 		})
 
 		Context("when there is a valid token", func() {
 			BeforeEach(func() {
+				displayUserIdConfig = map[string]string{"oidc": "user_id"}
+
 				verification.HasToken = true
 				verification.IsTokenValid = true
 				verification.RawClaims = map[string]any{
@@ -749,7 +753,7 @@ var _ = Describe("Accessor", func() {
 					"email":              "some-email",
 					"federated_claims": map[string]any{
 						"user_id":      "some-id",
-						"connector_id": "some-connector",
+						"connector_id": "oidc",
 					},
 				}
 			})
@@ -764,9 +768,34 @@ var _ = Describe("Accessor", func() {
 					IsAdmin:       false,
 					IsSystem:      false,
 					Teams:         map[string][]string{},
-					Connector:     "some-connector",
-					DisplayUserId: "some-user-id",
+					Connector:     "oidc",
+					DisplayUserId: "some-id",
 				}))
+			})
+
+			DescribeTable("DisplayUserId for the field configured on the connector",
+				func(fieldName string, expected string) {
+					generator, err := skycmd.NewSkyDisplayUserIdGenerator(map[string]string{"oidc": fieldName})
+					Expect(err).NotTo(HaveOccurred())
+
+					access = accessor.NewAccessor(verification, requiredRole, "sub", []string{"system"}, teams, generator)
+					Expect(access.UserInfo().DisplayUserId).To(Equal(expected))
+				},
+
+				Entry("user_id", "user_id", "some-id"),
+				Entry("name", "name", "some-name"),
+				Entry("username", "username", "some-user-name"),
+				Entry("email", "email", "some-email"),
+			)
+
+			Context("when the connector is not configured", func() {
+				BeforeEach(func() {
+					displayUserIdConfig = map[string]string{}
+				})
+
+				It("falls back to the preferred username", func() {
+					Expect(result.DisplayUserId).To(Equal("some-user-name"))
+				})
 			})
 		})
 	})

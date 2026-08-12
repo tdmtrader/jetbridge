@@ -7,8 +7,8 @@ import (
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/api/accessor/accessorfakes"
-	"github.com/concourse/concourse/atc/atcfakes"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/skymarshal/skycmd"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -24,7 +24,7 @@ var _ = Describe("AccessorFactory", func() {
 		teamFetcher       accessor.TeamFetcher
 		dummyRequest      *http.Request
 
-		fakeDisplayUserIdGenerator *atcfakes.FakeDisplayUserIdGenerator
+		displayUserIdGenerator atc.DisplayUserIdGenerator
 
 		role string
 	)
@@ -38,7 +38,9 @@ var _ = Describe("AccessorFactory", func() {
 		teamFetcher = teamFactory
 		dummyRequest, _ = http.NewRequest("GET", "/", nil)
 
-		fakeDisplayUserIdGenerator = new(atcfakes.FakeDisplayUserIdGenerator)
+		var err error
+		displayUserIdGenerator, err = skycmd.NewSkyDisplayUserIdGenerator(map[string]string{"github": "email"})
+		Expect(err).NotTo(HaveOccurred())
 
 		role = accessor.ViewerRole
 	})
@@ -50,7 +52,7 @@ var _ = Describe("AccessorFactory", func() {
 		)
 
 		JustBeforeEach(func() {
-			factory := accessor.NewAccessFactory(fakeTokenVerifier, teamFetcher, systemClaimKey, systemClaimValues, fakeDisplayUserIdGenerator)
+			factory := accessor.NewAccessFactory(fakeTokenVerifier, teamFetcher, systemClaimKey, systemClaimValues, displayUserIdGenerator)
 			access, err = factory.Create(dummyRequest, role)
 		})
 
@@ -58,6 +60,7 @@ var _ = Describe("AccessorFactory", func() {
 			BeforeEach(func() {
 				fakeTokenVerifier.VerifyReturns(map[string]any{
 					"preferred_username": "user1",
+					"email":              "user1@example.com",
 					"federated_claims": map[string]any{
 						"connector_id": "github",
 					},
@@ -80,6 +83,10 @@ var _ = Describe("AccessorFactory", func() {
 
 			It("returns an accessor authorized for the matching persisted teams", func() {
 				Expect(access.TeamNames()).To(ConsistOf("t1", "t3"))
+			})
+
+			It("returns an accessor that uses the configured display user id", func() {
+				Expect(access.UserInfo().DisplayUserId).To(Equal("user1@example.com"))
 			})
 		})
 
