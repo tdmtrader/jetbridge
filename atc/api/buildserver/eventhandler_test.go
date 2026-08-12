@@ -1,19 +1,21 @@
 package buildserver_test
 
 import (
-	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	. "github.com/concourse/concourse/atc/testhelpers"
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
+	"github.com/concourse/concourse/atc"
 	. "github.com/concourse/concourse/atc/api/buildserver"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/event"
 	"github.com/vito/go-sse/sse"
 
@@ -21,27 +23,118 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-func fakeEvent(payload string, eventID string) event.Envelope {
-	msg := json.RawMessage(payload)
-	return event.Envelope{
-		Data:    &msg,
-		Event:   "fake",
-		Version: "42.0",
-		EventID: eventID,
+type numberedEvent struct {
+	Number int `json:"event"`
+}
+
+func (numberedEvent) EventType() atc.EventType  { return "fake" }
+func (numberedEvent) Version() atc.EventVersion { return "42.0" }
+
+func numberedEventData(number int, eventID int) string {
+	return fmt.Sprintf(`{"data":{"event":%d},"event":"fake","version":"42.0","event_id":"%d"}`, number, eventID)
+}
+
+// closeWatchingBuild counts the Close calls the handler makes against the real
+// event source it was handed. Nothing on db.EventSource reports that itself,
+// and an unclosed source leaks a goroutine and a LISTEN connection.
+type closeWatchingBuild struct {
+	db.BuildForAPI
+
+	closes atomic.Int64
+
+	mutex   sync.Mutex
+	sources []db.EventSource
+}
+
+func (b *closeWatchingBuild) Events(from uint) (db.EventSource, error) {
+	source, err := b.BuildForAPI.Events(from)
+	if err != nil {
+		return nil, err
 	}
+
+	b.mutex.Lock()
+	b.sources = append(b.sources, source)
+	b.mutex.Unlock()
+
+	return &closeWatchingSource{EventSource: source, closes: &b.closes}, nil
+}
+
+func (b *closeWatchingBuild) CloseCount() int {
+	return int(b.closes.Load())
+}
+
+// ReleaseSources closes anything the handler left open, bypassing the counter
+// so the assertion still sees what the handler did. A source left listening
+// holds a session open and would wedge the suite on DROP DATABASE instead of
+// failing the spec that noticed.
+func (b *closeWatchingBuild) ReleaseSources() {
+	b.mutex.Lock()
+	defer b.mutex.Unlock()
+
+	for _, source := range b.sources {
+		_ = source.Close()
+	}
+}
+
+type closeWatchingSource struct {
+	db.EventSource
+
+	closes *atomic.Int64
+}
+
+func (s *closeWatchingSource) Close() error {
+	s.closes.Add(1)
+	return s.EventSource.Close()
+}
+
+// failAfterFirstEvent fails a real stream mid-flight, which a healthy build
+// event source never does on its own.
+type failAfterFirstEvent struct {
+	db.BuildForAPI
+
+	err error
+}
+
+func (b failAfterFirstEvent) Events(from uint) (db.EventSource, error) {
+	source, err := b.BuildForAPI.Events(from)
+	if err != nil {
+		return nil, err
+	}
+
+	return &failingSource{EventSource: source, err: b.err}, nil
+}
+
+type failingSource struct {
+	db.EventSource
+
+	err    error
+	served bool
+}
+
+func (s *failingSource) Next() (event.Envelope, error) {
+	if s.served {
+		return event.Envelope{}, s.err
+	}
+
+	s.served = true
+	return s.EventSource.Next()
 }
 
 var _ = Describe("Handler", func() {
 	var (
-		build *dbfakes.FakeBuild
+		handlerBuild db.BuildForAPI
 
 		server *httptest.Server
 	)
 
 	BeforeEach(func() {
-		build = new(dbfakes.FakeBuild)
+		handlerBuild = nil
 
-		server = httptest.NewServer(NewEventHandler(lagertest.NewTestLogger("test"), build))
+		// Each context picks its own build, so resolve it when the request
+		// arrives rather than when the server starts.
+		server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			NewEventHandler(lagertest.NewTestLogger("test"), handlerBuild).ServeHTTP(w, r)
+		}))
 	})
 
 	Describe("GET", func() {
@@ -58,39 +151,30 @@ var _ = Describe("Handler", func() {
 		})
 
 		Context("when subscribing to the build succeeds", func() {
-			var fakeEventSource *dbfakes.FakeEventSource
-			var returnedEvents []event.Envelope
+			var watchedBuild *closeWatchingBuild
 
 			BeforeEach(func() {
-				returnedEvents = []event.Envelope{
-					fakeEvent(`{"event":1}`, "1"),
-					fakeEvent(`{"event":2}`, "2"),
-					fakeEvent(`{"event":3}`, "3"),
-				}
+				team := createTeam("some-team")
 
-				fakeEventSource = new(dbfakes.FakeEventSource)
+				build := createBuild(team)
+				Expect(build.SaveEvent(numberedEvent{1})).To(Succeed())
+				Expect(build.SaveEvent(numberedEvent{2})).To(Succeed())
+				Expect(build.SaveEvent(numberedEvent{3})).To(Succeed())
+				Expect(build.Finish(db.BuildStatusSucceeded)).To(Succeed())
 
-				build.EventsStub = func(from uint) (db.EventSource, error) {
-					fakeEventSource.NextStub = func() (event.Envelope, error) {
-						defer GinkgoRecover()
+				// A sibling build shares the team's build_events partition, so
+				// its events are what a build_id-blind query would leak.
+				sibling := createBuild(team)
+				Expect(sibling.SaveEvent(numberedEvent{99})).To(Succeed())
+				Expect(sibling.Finish(db.BuildStatusSucceeded)).To(Succeed())
 
-						Expect(fakeEventSource.CloseCallCount()).To(Equal(0))
-
-						if from >= uint(len(returnedEvents)) {
-							return event.Envelope{}, db.ErrEndOfBuildEventStream
-						}
-
-						from++
-
-						return returnedEvents[from-1], nil
-					}
-
-					return fakeEventSource, nil
-				}
+				watchedBuild = &closeWatchingBuild{BuildForAPI: buildForAPI(build)}
+				DeferCleanup(watchedBuild.ReleaseSources)
+				handlerBuild = watchedBuild
 			})
 
 			AfterEach(func() {
-				Eventually(fakeEventSource.CloseCallCount, 30*time.Second).Should(Equal(1))
+				Eventually(watchedBuild.CloseCount, 30*time.Second).Should(Equal(1))
 			})
 
 			JustBeforeEach(func() {
@@ -101,13 +185,6 @@ var _ = Describe("Handler", func() {
 				}
 				response, err = client.Do(request)
 				Expect(err).NotTo(HaveOccurred())
-			})
-
-			It("gets the events from the right build, starting at 0", func() {
-				_ = response.Body.Close()
-				Eventually(build.EventsCallCount).Should(Equal(1))
-				actualFrom := build.EventsArgsForCall(0)
-				Expect(actualFrom).To(BeZero())
 			})
 
 			It("returns 200", func() {
@@ -139,30 +216,36 @@ var _ = Describe("Handler", func() {
 				Expect(response).Should(IncludeHeaderEntries(expectedHeaderEntries))
 			})
 
-			It("emits them, followed by an end event", func() {
+			It("emits this build's events from the start, followed by an end event", func() {
 				defer db.Close(response.Body)
 				reader := sse.NewReadCloser(response.Body)
 
 				Expect(reader.Next()).To(Equal(sse.Event{
 					ID:   "0",
 					Name: "event",
-					Data: []byte(`{"data":{"event":1},"event":"fake","version":"42.0","event_id":"1"}`),
+					Data: []byte(numberedEventData(1, 0)),
 				}))
 
 				Expect(reader.Next()).To(Equal(sse.Event{
 					ID:   "1",
 					Name: "event",
-					Data: []byte(`{"data":{"event":2},"event":"fake","version":"42.0","event_id":"2"}`),
+					Data: []byte(numberedEventData(2, 1)),
 				}))
 
 				Expect(reader.Next()).To(Equal(sse.Event{
 					ID:   "2",
 					Name: "event",
-					Data: []byte(`{"data":{"event":3},"event":"fake","version":"42.0","event_id":"3"}`),
+					Data: []byte(numberedEventData(3, 2)),
 				}))
 
+				status, err := reader.Next()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(status.ID).To(Equal("3"))
+				Expect(status.Name).To(Equal("event"))
+				Expect(string(status.Data)).To(ContainSubstring(`"event":"status"`))
+
 				Expect(reader.Next()).To(Equal(sse.Event{
-					ID:   "3",
+					ID:   "4",
 					Name: "end",
 					Data: []byte{},
 				}))
@@ -174,43 +257,41 @@ var _ = Describe("Handler", func() {
 				})
 
 				It("starts subscribing from after the id", func() {
-					_ = response.Body.Close()
-					Eventually(build.EventsCallCount).Should(Equal(1))
-					actualFrom := build.EventsArgsForCall(0)
-					Expect(actualFrom).To(Equal(uint(2)))
+					defer db.Close(response.Body)
+					reader := sse.NewReadCloser(response.Body)
+
+					Expect(reader.Next()).To(Equal(sse.Event{
+						ID:   "2",
+						Name: "event",
+						Data: []byte(numberedEventData(3, 2)),
+					}))
 				})
 			})
 		})
 
 		Context("when the eventsource returns an error", func() {
-			var fakeEventSource *dbfakes.FakeEventSource
+			var watchedBuild *closeWatchingBuild
 			var disaster error
 
 			BeforeEach(func() {
 				disaster = errors.New("a coffee machine")
 
-				fakeEventSource = new(dbfakes.FakeEventSource)
+				build := createBuild(createTeam("some-team"))
+				Expect(build.SaveEvent(numberedEvent{1})).To(Succeed())
+				Expect(build.Finish(db.BuildStatusSucceeded)).To(Succeed())
 
-				from := 0
-				fakeEventSource.NextStub = func() (event.Envelope, error) {
-					defer GinkgoRecover()
-
-					Expect(fakeEventSource.CloseCallCount()).To(Equal(0))
-
-					from++
-
-					if from == 1 {
-						return fakeEvent(`{"event":1}`, "1"), nil
-					} else {
-						return event.Envelope{}, disaster
-					}
+				watchedBuild = &closeWatchingBuild{
+					BuildForAPI: failAfterFirstEvent{
+						BuildForAPI: buildForAPI(build),
+						err:         disaster,
+					},
 				}
-
-				build.EventsReturns(fakeEventSource, nil)
+				DeferCleanup(watchedBuild.ReleaseSources)
+				handlerBuild = watchedBuild
 			})
 
 			AfterEach(func() {
-				Eventually(fakeEventSource.CloseCallCount, 30*time.Second).Should(Equal(1))
+				Eventually(watchedBuild.CloseCount, 30*time.Second).Should(Equal(1))
 			})
 
 			JustBeforeEach(func() {
@@ -229,7 +310,7 @@ var _ = Describe("Handler", func() {
 				Expect(reader.Next()).To(Equal(sse.Event{
 					ID:   "0",
 					Name: "event",
-					Data: []byte(`{"data":{"event":1},"event":"fake","version":"42.0","event_id":"1"}`),
+					Data: []byte(numberedEventData(1, 0)),
 				}))
 
 				_, err := reader.Next()
@@ -239,11 +320,42 @@ var _ = Describe("Handler", func() {
 		})
 
 		Context("when the event stream never ends", func() {
-			var fakeEventSource *dbfakes.FakeEventSource
+			var watchedBuild *closeWatchingBuild
+
 			BeforeEach(func() {
-				fakeEventSource = new(dbfakes.FakeEventSource)
-				fakeEventSource.NextReturns(fakeEvent(`{"event":1}`, "1"), nil)
-				build.EventsReturns(fakeEventSource, nil)
+				build := createBuild(createTeam("some-team"))
+				Expect(build.SaveEvent(numberedEvent{1})).To(Succeed())
+
+				// The build never finishes, and keeps emitting, so the handler
+				// only ever stops because the client went away.
+				stop := make(chan struct{})
+				done := make(chan struct{})
+				go func() {
+					defer GinkgoRecover()
+					defer close(done)
+
+					for number := 2; ; number++ {
+						select {
+						case <-stop:
+							return
+						default:
+						}
+
+						if err := build.SaveEvent(numberedEvent{number}); err != nil {
+							return
+						}
+
+						time.Sleep(time.Millisecond)
+					}
+				}()
+				DeferCleanup(func() {
+					close(stop)
+					<-done
+				})
+
+				watchedBuild = &closeWatchingBuild{BuildForAPI: buildForAPI(build)}
+				DeferCleanup(watchedBuild.ReleaseSources)
+				handlerBuild = watchedBuild
 			})
 
 			JustBeforeEach(func() {
@@ -264,14 +376,24 @@ var _ = Describe("Handler", func() {
 				It("closes the event stream when connection is closed", func() {
 					err := response.Body.Close()
 					Expect(err).NotTo(HaveOccurred())
-					Eventually(fakeEventSource.CloseCallCount, 30*time.Second).Should(Equal(1))
+					Eventually(watchedBuild.CloseCount, 30*time.Second).Should(Equal(1))
 				})
 			})
 		})
 
 		Context("when subscribing to it fails", func() {
 			BeforeEach(func() {
-				build.EventsReturns(nil, errors.New("nope"))
+				// Losing the database connection is how subscribing really
+				// fails: the event source opens a transaction before anything
+				// else.
+				severedConn := postgresRunner.OpenConn()
+				build, found, err := db.NewBuildFactory(severedConn, lockFactory, 0, time.Hour).
+					BuildForAPI(createBuild(createTeam("some-team")).ID())
+				Expect(err).NotTo(HaveOccurred())
+				Expect(found).To(BeTrue())
+				Expect(severedConn.Close()).To(Succeed())
+
+				handlerBuild = build
 			})
 
 			JustBeforeEach(func() {
