@@ -9,7 +9,6 @@ import (
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/api/auth"
-	"github.com/concourse/concourse/atc/auditor/auditorfakes"
 	"github.com/concourse/concourse/atc/db"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -91,7 +90,7 @@ var _ = Describe("CheckBuildReadAccessHandler", func() {
 		// fails the blank one, so the action has to be a route that has one.
 		handler = accessor.NewHandler(
 			logger, atc.GetBuild, innerHandler, realAccessFactory(),
-			new(auditorfakes.FakeAuditor), map[string]string{},
+			realAuditor(), map[string]string{},
 		)
 
 		server = httptest.NewServer(handler)

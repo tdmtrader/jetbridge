@@ -8,7 +8,6 @@ import (
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/api/auth"
-	"github.com/concourse/concourse/atc/auditor/auditorfakes"
 	"github.com/concourse/concourse/atc/db"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -57,7 +56,7 @@ var _ = Describe("CheckBuildWriteAccessHandler", func() {
 			atc.AbortBuild,
 			innerHandler,
 			realAccessFactory(),
-			new(auditorfakes.FakeAuditor),
+			realAuditor(),
 			map[string]string{},
 		)
 

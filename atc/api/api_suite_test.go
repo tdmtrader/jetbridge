@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"code.cloudfoundry.org/clock"
 	"code.cloudfoundry.org/clock/fakeclock"
 	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagertest"
@@ -21,7 +22,7 @@ import (
 	"github.com/concourse/concourse/atc/api/policychecker"
 	"github.com/concourse/concourse/atc/auditor"
 	"github.com/concourse/concourse/atc/creds"
-	"github.com/concourse/concourse/atc/creds/credsfakes"
+	"github.com/concourse/concourse/atc/creds/noop"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/policy"
 	"github.com/concourse/concourse/atc/worker"
@@ -42,17 +43,17 @@ var (
 	"resource_causality": false
 }`
 
-	workerRuntime     *apiWorkerRuntime
-	fakeAccess        *accessorfakes.FakeAccess
-	fakeAccessor      *accessorfakes.FakeAccessFactory
-	fakeSecretManager *credsfakes.FakeSecrets
-	fakeVarSourcePool *credsfakes.FakeVarSourcePool
-	credsManagers     creds.Managers
-	interceptTimeout  *observingInterceptTimeout
-	isTLSEnabled      bool
-	cliDownloadsDir   string
-	logger            *lagertest.TestLogger
-	fakeClock         *fakeclock.FakeClock
+	workerRuntime    *apiWorkerRuntime
+	fakeAccess       *accessorfakes.FakeAccess
+	fakeAccessor     *accessorfakes.FakeAccessFactory
+	secretManager    creds.Secrets
+	varSourcePool    creds.VarSourcePool
+	credsManagers    creds.Managers
+	interceptTimeout *observingInterceptTimeout
+	isTLSEnabled     bool
+	cliDownloadsDir  string
+	logger           *lagertest.TestLogger
+	fakeClock        *fakeclock.FakeClock
 
 	constructedEventHandler *fakeEventHandlerFactory
 
@@ -130,10 +131,6 @@ var _ = BeforeEach(func() {
 
 	workerRuntime = newAPIWorkerRuntime()
 
-	fakeSecretManager = new(credsfakes.FakeSecrets)
-	fakeVarSourcePool = new(credsfakes.FakeVarSourcePool)
-	credsManagers = make(creds.Managers)
-
 	fakeClock = fakeclock.NewFakeClock(time.Unix(123, 456))
 
 	var err error
@@ -143,6 +140,17 @@ var _ = BeforeEach(func() {
 	constructedEventHandler = &fakeEventHandlerFactory{}
 
 	logger = lagertest.NewTestLogger("api")
+
+	secretManager = noop.Noop{}
+	varSourcePool = creds.NewVarSourcePool(
+		logger.Session("var-source-pool"),
+		creds.CredentialManagementConfig{},
+		5*time.Minute,
+		time.Minute,
+		clock.NewClock(),
+	)
+	DeferCleanup(varSourcePool.Close)
+	credsManagers = make(creds.Managers)
 
 	sink = lager.NewReconfigurableSink(lager.NewPrettySink(GinkgoWriter, lager.DEBUG), lager.DEBUG)
 
@@ -276,8 +284,8 @@ func newAPIServer(deps apiDBDeps) *httptest.Server {
 		"4.5.6",
 		"0.1.0-test",
 		"8.0.1-test",
-		fakeSecretManager,
-		fakeVarSourcePool,
+		secretManager,
+		varSourcePool,
 		credsManagers,
 		interceptTimeout,
 		time.Second,

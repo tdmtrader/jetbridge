@@ -6,9 +6,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 
+	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/api/auth"
-	"github.com/concourse/concourse/atc/auditor/auditorfakes"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -40,14 +40,15 @@ var _ = Describe("CheckAdminHandler", func() {
 			auth.UnauthorizedRejector{},
 		)
 
-		// Admin routes carry no default role, so "some-action" resolves to the
-		// blank role the real handler hands admin routes.
+		// ListActiveUsersSince is a route this handler guards, and like every
+		// admin route it carries no default role, so it resolves to the blank
+		// role the real handler hands admin routes.
 		server = httptest.NewServer(accessor.NewHandler(
 			logger,
-			"some-action",
+			atc.ListActiveUsersSince,
 			innerHandler,
 			realAccessFactory(),
-			new(auditorfakes.FakeAuditor),
+			realAuditor(),
 			map[string]string{},
 		))
 

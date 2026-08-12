@@ -8,9 +8,6 @@ import (
 	"github.com/concourse/concourse/atc"
 )
 
-//go:generate go run github.com/maxbrunsfeld/counterfeiter/v6 -generate
-
-//counterfeiter:generate . Auditor
 func NewAuditor(
 	EnableBuildAuditLog bool,
 	EnableContainerAuditLog bool,

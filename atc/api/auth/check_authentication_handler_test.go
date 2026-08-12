@@ -6,9 +6,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 
+	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/api/auth"
-	"github.com/concourse/concourse/atc/auditor/auditorfakes"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -57,12 +57,15 @@ var _ = Describe("AuthenticationHandler", func() {
 				auth.UnauthorizedRejector{},
 			)
 
+			// GetUser is a route this handler guards, and it carries no default
+			// role, so authentication is the only thing between the request and
+			// the inner handler.
 			server = httptest.NewServer(accessor.NewHandler(
 				logger,
-				"some-action",
+				atc.GetUser,
 				innerHandler,
 				realAccessFactory(),
-				new(auditorfakes.FakeAuditor),
+				realAuditor(),
 				map[string]string{},
 			))
 		})
@@ -111,12 +114,15 @@ var _ = Describe("AuthenticationHandler", func() {
 				auth.UnauthorizedRejector{},
 			)
 
+			// GetSigningKeys is a route this handler guards, and it carries no
+			// default role, so a valid token is the only thing between the
+			// request and the inner handler.
 			server = httptest.NewServer(accessor.NewHandler(
 				logger,
-				"some-action",
+				atc.GetSigningKeys,
 				innerHandler,
 				realAccessFactory(),
-				new(auditorfakes.FakeAuditor),
+				realAuditor(),
 				map[string]string{},
 			))
 		})

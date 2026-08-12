@@ -6,9 +6,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 
+	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/accessor"
-	"github.com/concourse/concourse/atc/api/accessor/accessorfakes"
 	"github.com/concourse/concourse/atc/api/policychecker"
+	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/policy"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -18,14 +19,17 @@ import (
 var _ = Describe("PolicyChecker", func() {
 	var (
 		policyFilter policy.Filter
-		fakeAccess   *accessorfakes.FakeAccess
+		claims       map[string]any
+		teams        []db.Team
 		fakeRequest  *http.Request
 		result       policy.PolicyCheckResult
 		checkErr     error
 	)
 
 	BeforeEach(func() {
-		fakeAccess = new(accessorfakes.FakeAccess)
+		claims = map[string]any{}
+		teams = nil
+		fakeRequest = nil
 
 		policyFilter = policy.Filter{
 			ActionsToSkip: []string{},
@@ -35,12 +39,22 @@ var _ = Describe("PolicyChecker", func() {
 	})
 
 	JustBeforeEach(func() {
-		result, checkErr = policychecker.NewApiPolicyChecker(initializedChecker(policyFilter)).Check("some-action", fakeAccess, fakeRequest)
+		access := accessor.NewAccessor(
+			accessor.Verification{HasToken: true, IsTokenValid: true, RawClaims: claims},
+			accessor.OwnerRole,
+			systemClaimKey,
+			[]string{systemClaimValue},
+			teams,
+			nil,
+		)
+		result, checkErr = policychecker.NewApiPolicyChecker(initializedChecker(policyFilter)).Check("some-action", access, fakeRequest)
 	})
 
 	Context("when system action", func() {
 		BeforeEach(func() {
-			fakeAccess.IsSystemReturns(true)
+			claims[systemClaimKey] = systemClaimValue
+			fakeRequest = httptest.NewRequest("PUT", "/something", nil)
+			policyFilter.HttpMethods = []string{"PUT"}
 		})
 		It("should pass", func() {
 			Expect(checkErr).ToNot(HaveOccurred())
@@ -52,10 +66,6 @@ var _ = Describe("PolicyChecker", func() {
 	})
 
 	Context("when not system action", func() {
-		BeforeEach(func() {
-			fakeAccess.IsSystemReturns(false)
-		})
-
 		Context("when the action should be skipped", func() {
 			BeforeEach(func() {
 				policyFilter.ActionsToSkip = []string{"some-action"}
@@ -141,10 +151,11 @@ var _ = Describe("PolicyChecker", func() {
 
 			Context("when every is ok", func() {
 				BeforeEach(func() {
-					fakeAccess.TeamRolesReturns(map[string][]string{
-						"some-team": {"some-role"},
-					})
-					fakeAccess.ClaimsReturns(accessor.Claims{UserName: "some-user"})
+					teams = []db.Team{persistTeam("some-team", atc.TeamAuth{
+						"some-role": {"users": {"test:some-user"}},
+					})}
+					claims["name"] = "some-user"
+					claims["federated_claims"] = map[string]any{"connector_id": "test"}
 					body := bytes.NewBuffer([]byte("a: b"))
 					fakeRequest = httptest.NewRequest("PUT", "/something?:team_name=some-team&:pipeline_name=some-pipeline", body)
 					fakeRequest.Header.Add("Content-type", "application/x-yaml")

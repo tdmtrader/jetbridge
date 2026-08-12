@@ -36,9 +36,6 @@ type realDB struct {
 
 // useRealDB gives the calling Describe a migrated database and deps built over
 // real factories. Call it from a BeforeEach; cleanup is registered here.
-//
-// The credential manager stays fake: creds.Secrets is a third-party seam, not a
-// database one, and db.NewCheckFactory requires one either way.
 func useRealDB() *realDB {
 	GinkgoHelper()
 
@@ -75,7 +72,7 @@ func useRealDB() *realDB {
 	checkBuildChan := make(chan db.Build, 64)
 
 	checkFactory := db.NewCheckFactory(
-		conn, lockFactory, fakeSecretManager, fakeVarSourcePool,
+		conn, lockFactory, secretManager, varSourcePool,
 		checkBuildChan, util.NewSequenceGenerator(1),
 	)
 

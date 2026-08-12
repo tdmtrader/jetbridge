@@ -8,7 +8,6 @@ import (
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/api/auth"
-	"github.com/concourse/concourse/atc/auditor/auditorfakes"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/tedsuo/rata"
 
@@ -47,7 +46,7 @@ var _ = Describe("CheckWorkerTeamAccessHandler", func() {
 			atc.DeleteWorker,
 			innerHandler,
 			realAccessFactory(),
-			new(auditorfakes.FakeAuditor),
+			realAuditor(),
 			map[string]string{},
 		)
 

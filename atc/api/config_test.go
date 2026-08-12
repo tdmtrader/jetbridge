@@ -13,14 +13,13 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/creds"
+	"github.com/concourse/concourse/atc/creds/dummy"
 	"github.com/concourse/concourse/atc/creds/noop"
 	"github.com/concourse/concourse/atc/db"
 	. "github.com/concourse/concourse/atc/testhelpers"
 	"github.com/tedsuo/rata"
 	"sigs.k8s.io/yaml"
-
-	// load dummy credential manager
-	_ "github.com/concourse/concourse/atc/creds/dummy"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -258,6 +257,13 @@ func (factory *configAPITeamFactory) notifyResourceScannerCallCount() int {
 	factory.mu.Lock()
 	defer factory.mu.Unlock()
 	return factory.notifyResourceScannerCalls
+}
+
+// configAPISecrets is the credential manager production registers under the
+// name "dummy", holding the one variable given. Its lookup paths are real, so
+// resolving a var walks team/pipeline/, then team/, then the bare name.
+func configAPISecrets(name string, value any) creds.Secrets {
+	return dummy.NewSecretsFactory([]dummy.VarFlag{{Name: name, Value: value}}).NewSecrets()
 }
 
 var _ = Describe("Config API", func() {
@@ -1083,7 +1089,7 @@ jobs:
 							ExpectCredsValidationPass := func() {
 								Context("when the param exists in creds manager", func() {
 									BeforeEach(func() {
-										fakeSecretManager.GetReturns("this-string-value-doesn't-matter", nil, true, nil)
+										secretManager = configAPISecrets("BAR", "this-string-value-doesn't-matter")
 									})
 
 									It("passes validation", func() {
@@ -1101,7 +1107,7 @@ jobs:
 							ExpectCredsValidationFail := func() {
 								Context("when the param does not exist in creds manager", func() {
 									BeforeEach(func() {
-										fakeSecretManager.GetReturns(nil, nil, false, nil)
+										secretManager = configAPISecrets("SOME-OTHER-VAR", "this-string-value-doesn't-matter")
 									})
 
 									It("fail validation", func() {
@@ -1325,7 +1331,7 @@ jobs:
 
 								Context("when the credential exists in the credential manager", func() {
 									BeforeEach(func() {
-										fakeSecretManager.GetReturns("this-string-value-doesn't-matter", nil, true, nil)
+										secretManager = configAPISecrets("BAR", "this-string-value-doesn't-matter")
 									})
 
 									It("passes validation and saves it un-interpolated", func() {
@@ -1339,7 +1345,7 @@ jobs:
 
 								Context("when the credential does not exist in the credential manager", func() {
 									BeforeEach(func() {
-										fakeSecretManager.GetReturns(nil, nil, false, nil) // nil value, nil expiration, not found, no error
+										secretManager = configAPISecrets("SOME-OTHER-VAR", "this-string-value-doesn't-matter")
 									})
 
 									It("returns 400", func() {
@@ -1353,9 +1359,7 @@ jobs:
 
 								Context("when a credentials manager is not used", func() {
 									BeforeEach(func() {
-										fakeSecretManager.GetStub = func(secretPath string) (any, *time.Time, bool, error) {
-											return noop.Noop{}.Get(secretPath)
-										}
+										secretManager = noop.Noop{}
 									})
 
 									It("returns 400", func() {

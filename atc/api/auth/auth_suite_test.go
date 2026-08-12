@@ -7,8 +7,10 @@ import (
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
+	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/accessor"
+	"github.com/concourse/concourse/atc/auditor"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/lock"
 	"github.com/concourse/concourse/atc/postgresrunner"
@@ -84,6 +86,16 @@ func realAccessFactory() accessor.AccessFactory {
 		"sub",
 		[]string{systemClaimValue},
 		nil,
+	)
+}
+
+// realAuditor is the auditor the ATC wires up, with every category enabled so a
+// spec runs the logging path rather than an early return. It panics on an action
+// its switch does not name, so a spec has to audit a real route.
+func realAuditor() auditor.Auditor {
+	return auditor.NewAuditor(
+		true, true, true, true, true, true, true, true, true,
+		lagertest.NewTestLogger("audit"),
 	)
 }
 
