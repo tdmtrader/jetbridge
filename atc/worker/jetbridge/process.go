@@ -908,7 +908,8 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 		return runtime.ProcessResult{}, wrapIfTransient(fmt.Errorf("exec in pod: %w", err))
 	}
 
-	// Upload step outputs to the artifact store PVC for cross-node access.
+	// Hand step outputs to the artifact daemon so later steps -- possibly on
+	// other nodes -- can fetch them.
 	if err := p.uploadOutputsToArtifactStore(ctx); err != nil {
 		fetchPodFailureContext(ctx, p.clientset, p.config.Namespace, p.podName, p.processIO.Stderr)
 		return runtime.ProcessResult{}, fmt.Errorf("uploading artifacts: %w", err)

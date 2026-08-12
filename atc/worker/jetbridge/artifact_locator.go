@@ -14,7 +14,7 @@ type ArtifactLocation struct {
 // decisions in init containers.
 //
 // The map is ephemeral — lost on ATC restart. In-flight builds retry from the
-// producing step on restart (same as PVC loss behavior).
+// producing step on restart.
 type ArtifactLocator struct {
 	mu        sync.RWMutex
 	locations map[string]ArtifactLocation // artifact key → location

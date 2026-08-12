@@ -54,8 +54,7 @@ func (w *Worker) SetExecutor(executor PodExecutor) {
 }
 
 // SetVolumeRepo sets the VolumeRepository used by LookupVolume to find
-// cache-backed volumes in the database. This is set by the factory when
-// cache PVC is configured.
+// cache-backed volumes in the database.
 func (w *Worker) SetVolumeRepo(repo db.VolumeRepository) {
 	w.volumeRepo = repo
 }
@@ -65,11 +64,6 @@ func (w *Worker) SetVolumeRepo(repo db.VolumeRepository) {
 // given locator and sets it as the storage backend.
 func (w *Worker) SetArtifactLocator(locator *ArtifactLocator) {
 	w.storageBackend = NewDaemonSetBackend(w.config, locator, w.nodeIPResolver)
-}
-
-// SetStorageBackend sets the storage backend directly.
-func (w *Worker) SetStorageBackend(backend StorageBackend) {
-	w.storageBackend = backend
 }
 
 // SetDaemonClient configures the DaemonClient on the storage backend for

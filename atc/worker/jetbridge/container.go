@@ -428,7 +428,7 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 	resources := buildResourceRequirements(c.containerSpec.Limits)
 	privileged := c.containerSpec.ImageSpec.Privileged
 
-	// Add artifact store PVC volume if configured.
+	// Add the artifact storage volume, when a backend is configured.
 	if artifactVol := c.buildArtifactStoreVolume(); artifactVol != nil {
 		volumes = append(volumes, *artifactVol)
 	}

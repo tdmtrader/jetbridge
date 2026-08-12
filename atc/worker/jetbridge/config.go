@@ -31,8 +31,9 @@ const (
 	// (UUID). With readable pod names, this label maps back to the DB row.
 	handleLabelKey = "concourse.ci/handle"
 
-	// CacheBasePath is the mount path inside pods where the cache PVC is
+	// CacheBasePath is the mount path inside pods where task caches are
 	// attached. Cache entries live in subdirectories keyed by volume handle.
+	// The volume behind it is node-local or an emptyDir -- see CacheStore.
 	CacheBasePath = "/concourse/cache"
 
 	// DefaultArtifactHelperImage is the container image used for init

@@ -18,7 +18,7 @@ import (
 
 // Reaper implements the GC sweep loop for K8s-backed containers and volumes.
 // It reports active pods to the DB, deletes pods that the DB has marked as
-// "destroying", and cleans up PVC cache subdirectories for destroying volumes.
+// "destroying", and asks the artifact daemon to drop their artifacts.
 // RunningBuildLookup reports the builds the ATC still considers in flight.
 //
 // The reaper needs it to tell a completed step whose build is over from one
@@ -84,8 +84,8 @@ func (r *Reaper) SetArtifactLocator(locator *ArtifactLocator) {
 }
 
 // Run implements component.Runnable. It reports active pods to the DB,
-// deletes pods that the DB has marked for destruction, and cleans up
-// PVC cache subdirectories for destroying volumes.
+// deletes pods that the DB has marked for destruction, and asks the artifact
+// daemon to drop the artifacts those containers produced.
 func (r *Reaper) Run(ctx context.Context) error {
 	logger := r.logger.Session("run")
 
@@ -197,16 +197,10 @@ func (r *Reaper) Run(ctx context.Context) error {
 		}
 	}
 
-	// Clean up artifact store entries for destroyed containers.
-	r.cleanupArtifactStoreEntries(ctx, logger, destroying)
+	// Drop the artifacts those containers produced.
+	r.cleanupDaemonSetArtifacts(ctx, logger, destroying)
 
 	return nil
-}
-
-// cleanupArtifactStoreEntries removes artifacts from the DaemonSet for
-// destroyed containers. Best-effort — failures are logged but don't block GC.
-func (r *Reaper) cleanupArtifactStoreEntries(ctx context.Context, logger lager.Logger, handles []string) {
-	r.cleanupDaemonSetArtifacts(ctx, logger, handles)
 }
 
 // cleanupDaemonSetArtifacts sends HTTP DELETE requests to DaemonSet pods

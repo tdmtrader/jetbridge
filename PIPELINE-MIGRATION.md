@@ -208,16 +208,18 @@ understanding the backends helps you design pipeline caching strategies.
 
 | Backend | Flag Value | Persistence | Performance | Best For |
 |---------|-----------|-------------|-------------|----------|
-| **emptydir** | `--kubernetes-cache-store=emptydir` | Lost on pod termination | Fast (RAM/local disk) | Stateless CI, no cache needed |
-| **pvc** | `--kubernetes-cache-store=pvc` | Survives pod restarts | Moderate (network PVC) | Shared caches across builds |
-| **hostpath** | `--kubernetes-cache-store=hostpath` | Node-local, survives restarts | Fast (local disk) | Single-node clusters, node-affinity builds |
-| **artifact** | `--kubernetes-cache-store=artifact` | Tar on artifact PVC | Slower (tar/untar) | Multi-node, no hostPath available |
+| **emptydir** | `--kubernetes-cache-store=emptydir` | Lost on pod termination | Fast (local disk) | Stateless CI, no cache needed |
+| **hostpath** | `--kubernetes-cache-store=hostpath` | Node-local, survives pod restarts | Fast (local disk) | Reusing a cache across builds on the same node |
+
+Those are the only two the binary accepts — see `ValidCacheStores` in
+`atc/worker/jetbridge/config.go`; anything else is rejected at startup. Leaving
+`--kubernetes-cache-store` unset auto-detects: `hostpath` when
+`--kubernetes-cache-host-path` is set, `emptydir` otherwise.
 
 **When to use each:**
 - **emptydir**: Development clusters, pipelines where caching isn't important
-- **pvc**: Production default — persistent and shared across all pods
-- **hostpath**: When builds are pinned to a node (via affinity) and need fast local I/O
-- **artifact**: When you need persistence on multi-node clusters without ReadWriteMany PVCs
+- **hostpath**: When builds land on the same node often enough for a warm cache
+  to pay off. A cache is node-local, so a build scheduled elsewhere starts cold.
 
 **Pipeline impact**: Your `caches:` declarations work unchanged regardless of backend.
 The backend only affects where the cached data is stored between builds.
@@ -482,30 +484,31 @@ When `image` is set on a resource type, no check or get plans are generated
 for the resource type itself. The image is pulled directly by the Kubernetes
 runtime.
 
-### DaemonSet Artifact Backend
+### The Artifact Daemon
 
-For high-throughput pipelines, JetBridge supports a DaemonSet-based artifact
-backend where each node runs a local artifact server. Artifacts are stored
-on node-local storage and served via HTTP, eliminating PVC contention.
+Artifact passing is handled by a DaemonSet: each node runs a local artifact
+server that stores artifacts on node-local disk and serves them over HTTP,
+mirroring to peers so a consumer scheduled elsewhere can still fetch them.
+There is no shared volume, so no `ReadWriteMany` storage class is required.
 
-**When to use:**
-- High fan-out pipelines (many parallel jobs producing/consuming artifacts)
-- Large artifact sizes where PVC I/O is a bottleneck
-- Multi-node clusters where ReadWriteMany PVC performance is inadequate
+This is not optional and there is nothing to select — it is how artifacts move.
 
 **Configuration** (operator-level, not pipeline YAML):
 ```yaml
 # Helm values
-kubernetes:
-  artifactBackend: daemonset
-  artifactDaemonPort: 7788
-  artifactDaemonHostPath: /var/concourse/artifacts
+artifactDaemon:
+  enabled: true
+  hostPath: /var/concourse/artifacts
+  port: 7780
+  ttl: "2h"
 ```
 
-**Pipeline impact**: No pipeline YAML changes needed. The artifact passing
-mechanism is transparent — your `inputs:` and `outputs:` work the same way.
-The difference is operational: artifacts are stored on the node running the
-pod instead of on a shared PVC.
+**Pipeline impact**: None. Your `inputs:` and `outputs:` work exactly as they
+do on upstream Concourse — the mechanism underneath is what changed.
+
+What it does change is operational: artifacts occupy disk on the nodes that
+produced them, until `artifactDaemon.ttl` elapses or the reaper drops them with
+their container. Size that disk for your fan-out.
 
 ---
 
@@ -638,7 +641,7 @@ for shared state or performance.
 
 **K8s-native replacement:** Use `hostPath` volumes via the cache backend
 (`--kubernetes-cache-store=hostpath`) for cache-like workloads. For other
-host access needs, consider `scratch_paths` (emptyDir) or dedicated PVCs.
+host access needs, consider `scratch_paths` (emptyDir).
 
 ### BaggageClaim / btrfs Cache Snapshots
 
@@ -647,11 +650,12 @@ instant volume cloning and cache restoration.
 
 **K8s status:** Removed. No snapshot-based caching.
 
-**K8s-native replacement:** Use the `pvc` or `artifact` cache backends.
-PVC caching uses subpath mounts — data survives pod restarts but there's
-no instant cloning. For workloads that relied heavily on btrfs snapshot
-performance, consider:
-- `hostpath` backend on nodes with fast local SSDs
+**K8s-native replacement:** Use the `hostpath` cache backend. It mounts
+node-local directories with subpath mounts — data survives pod restarts on that
+node, but there is no instant cloning. For workloads that relied heavily on
+btrfs snapshot performance, consider:
+- `hostpath` on nodes with fast local SSDs, with node affinity so builds return
+  to a warm cache
 - `scratch_paths` for truly ephemeral scratch data
 - Restructuring pipelines to minimize cache dependency
 
@@ -736,7 +740,7 @@ improvements. For each suggestion:
 - Replace `privileged: true` + docker-in-docker with sidecars
 - Replace docker-compose in tasks with sidecar service containers
 - Worker tags are removed — use K8s node selectors instead
-- BaggageClaim/btrfs caching replaced by PVC/hostpath/artifact/emptydir backends
+- BaggageClaim/btrfs caching replaced by the hostpath/emptydir cache backends
 
 ## Patterns to Flag
 - `privileged: true` — Suggest sidecar alternative if used for dind
