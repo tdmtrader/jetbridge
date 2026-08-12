@@ -1,9 +1,11 @@
 package engine_test
 
 import (
+	"fmt"
+	"net/url"
+
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/engine"
 	"github.com/concourse/concourse/atc/engine/enginefakes"
 	"github.com/concourse/concourse/atc/exec"
@@ -12,28 +14,45 @@ import (
 	. "github.com/onsi/gomega"
 )
 
+// Every id in a fresh database starts at 1, so step metadata wired to the wrong
+// id would still match. Give each sequence its own range first.
+func spreadEngineIDSequences(fixture *engineDBFixture) {
+	GinkgoHelper()
+
+	for table, start := range map[string]int{
+		"teams":     100,
+		"pipelines": 200,
+		"jobs":      300,
+		"builds":    400,
+	} {
+		_, err := fixture.Conn.Exec(fmt.Sprintf("SELECT setval('%s_id_seq', %d)", table, start))
+		Expect(err).NotTo(HaveOccurred())
+	}
+}
+
 var _ = Describe("Builder", func() {
 
 	Describe("BuildStep", func() {
 
 		var (
 			fakeCoreStepFactory *enginefakes.FakeCoreStepFactory
-			fakeWorkerFactory   *dbfakes.FakeWorkerFactory
+			fixture             *engineDBFixture
 
 			planFactory    atc.PlanFactory
 			stepperFactory engine.StepperFactory
 		)
 
 		BeforeEach(func() {
+			fixture = useEngineDB()
+			spreadEngineIDSequences(fixture)
 			fakeCoreStepFactory = new(enginefakes.FakeCoreStepFactory)
-			fakeWorkerFactory = new(dbfakes.FakeWorkerFactory)
 
 			stepperFactory = engine.NewStepperFactory(
 				fakeCoreStepFactory,
 				"http://example.com",
 				newCheckRateLimiter(),
 				policy.NoopChecker{},
-				fakeWorkerFactory,
+				fixture.WorkerFactory,
 				nil,
 				nil,
 				nil,
@@ -45,8 +64,9 @@ var _ = Describe("Builder", func() {
 
 		Context("with a build", func() {
 			var (
-				fakeBuild    *dbfakes.FakeBuild
-				fakePipeline *dbfakes.FakePipeline
+				build    db.Build
+				pipeline db.Pipeline
+				job      db.Job
 
 				expectedPlan                     atc.Plan
 				expectedMetadataWithCreatedBy    exec.StepMetadata
@@ -54,76 +74,58 @@ var _ = Describe("Builder", func() {
 			)
 
 			BeforeEach(func() {
-				fakePipeline = new(dbfakes.FakePipeline)
-				fakePipeline.IDReturns(2222)
-				fakePipeline.NameReturns("some-pipeline")
-				fakePipeline.InstanceVarsReturns(atc.InstanceVars{"branch": "master"})
-
-				fakeBuild = new(dbfakes.FakeBuild)
-				fakeBuild.IDReturns(4444)
-				fakeBuild.NameReturns("42")
-				fakeBuild.JobNameReturns("some-job")
-				fakeBuild.JobIDReturns(3333)
-				fakeBuild.PipelineIDReturns(fakePipeline.ID())
-				fakeBuild.PipelineNameReturns(fakePipeline.Name())
-				fakeBuild.PipelineInstanceVarsReturns(fakePipeline.InstanceVars())
-				fakeBuild.PipelineReturns(fakePipeline, true, nil)
-				fakeBuild.TeamNameReturns("some-team")
-				fakeBuild.TeamIDReturns(1111)
-				someUser := "some-user"
-				fakeBuild.CreatedByReturns(&someUser)
-
-				expectedMetadataWithCreatedBy = exec.StepMetadata{
-					BuildID:              4444,
-					BuildName:            "42",
-					TeamID:               1111,
-					TeamName:             "some-team",
-					JobID:                3333,
-					JobName:              "some-job",
-					PipelineID:           2222,
-					PipelineName:         "some-pipeline",
-					PipelineInstanceVars: atc.InstanceVars{"branch": "master"},
-					ExternalURL:          "http://example.com",
-					CreatedBy:            "some-user",
-				}
+				_, pipeline, job, build = createEngineJobBuild(
+					fixture,
+					"some-team",
+					atc.PipelineRef{
+						Name:         "some-pipeline",
+						InstanceVars: atc.InstanceVars{"branch": "master"},
+					},
+					atc.Config{Jobs: atc.JobConfigs{{Name: "some-job"}}},
+					"some-user",
+				)
+				Expect([]int{pipeline.TeamID(), pipeline.ID(), job.ID(), build.ID()}).
+					To(Equal([]int{101, 201, 301, 401}))
 
 				expectedMetadataWithoutCreatedBy = exec.StepMetadata{
-					BuildID:              4444,
-					BuildName:            "42",
-					TeamID:               1111,
+					BuildID:              build.ID(),
+					BuildName:            build.Name(),
+					TeamID:               pipeline.TeamID(),
 					TeamName:             "some-team",
-					JobID:                3333,
+					JobID:                job.ID(),
 					JobName:              "some-job",
-					PipelineID:           2222,
+					PipelineID:           pipeline.ID(),
 					PipelineName:         "some-pipeline",
 					PipelineInstanceVars: atc.InstanceVars{"branch": "master"},
+					InstanceVarsQuery:    url.Values{"vars.branch": []string{`"master"`}},
 					ExternalURL:          "http://example.com",
 				}
+
+				expectedMetadataWithCreatedBy = expectedMetadataWithoutCreatedBy
+				expectedMetadataWithCreatedBy.CreatedBy = "some-user"
 			})
 
-			Context("when the build has the wrong schema", func() {
-				BeforeEach(func() {
-					fakeBuild.SchemaReturns("not-schema")
-				})
+			Context("when the build has not been started", func() {
+				It("errors, because only a started build carries a supported schema", func() {
+					Expect(build.Schema()).To(BeEmpty())
 
-				It("errors", func() {
-					_, err := stepperFactory.StepperForBuild(fakeBuild)
+					_, err := stepperFactory.StepperForBuild(build)
 					Expect(err).To(HaveOccurred())
 				})
 			})
 
-			Context("when the build has the right schema", func() {
-				BeforeEach(func() {
-					fakeBuild.SchemaReturns("exec.v2")
-				})
-
+			Context("when the build has been started", func() {
 				JustBeforeEach(func() {
-					fakeBuild.PrivatePlanReturns(expectedPlan)
+					started, err := build.Start(expectedPlan)
+					Expect(err).ToNot(HaveOccurred())
+					Expect(started).To(BeTrue())
+					Expect(build.Reload()).To(BeTrue())
+					Expect(build.Schema()).To(Equal("exec.v2"))
 
-					stepper, err := stepperFactory.StepperForBuild(fakeBuild)
+					stepper, err := stepperFactory.StepperForBuild(build)
 					Expect(err).ToNot(HaveOccurred())
 
-					stepper(fakeBuild.PrivatePlan())
+					stepper(build.PrivatePlan())
 				})
 
 				Context("with a putget in an in_parallel", func() {
@@ -175,13 +177,13 @@ var _ = Describe("Builder", func() {
 							Expect(containerMetadata).To(Equal(db.ContainerMetadata{
 								Type:                 db.ContainerTypePut,
 								StepName:             "some-put",
-								PipelineID:           2222,
+								PipelineID:           pipeline.ID(),
 								PipelineName:         "some-pipeline",
 								PipelineInstanceVars: "{\"branch\":\"master\"}",
-								JobID:                3333,
+								JobID:                job.ID(),
 								JobName:              "some-job",
-								BuildID:              4444,
-								BuildName:            "42",
+								BuildID:              build.ID(),
+								BuildName:            build.Name(),
 							}))
 
 							plan, stepMetadata, containerMetadata, _ = fakeCoreStepFactory.PutStepArgsForCall(1)
@@ -190,13 +192,13 @@ var _ = Describe("Builder", func() {
 							Expect(containerMetadata).To(Equal(db.ContainerMetadata{
 								Type:                 db.ContainerTypePut,
 								StepName:             "some-put-2",
-								PipelineID:           2222,
+								PipelineID:           pipeline.ID(),
 								PipelineName:         "some-pipeline",
 								PipelineInstanceVars: "{\"branch\":\"master\"}",
-								JobID:                3333,
+								JobID:                job.ID(),
 								JobName:              "some-job",
-								BuildID:              4444,
-								BuildName:            "42",
+								BuildID:              build.ID(),
+								BuildName:            build.Name(),
 							}))
 						})
 					})
@@ -253,13 +255,13 @@ var _ = Describe("Builder", func() {
 							Expect(containerMetadata).To(Equal(db.ContainerMetadata{
 								Type:                 db.ContainerTypePut,
 								StepName:             "some-put",
-								PipelineID:           2222,
+								PipelineID:           pipeline.ID(),
 								PipelineName:         "some-pipeline",
 								PipelineInstanceVars: "{\"branch\":\"master\"}",
-								JobID:                3333,
+								JobID:                job.ID(),
 								JobName:              "some-job",
-								BuildID:              4444,
-								BuildName:            "42",
+								BuildID:              build.ID(),
+								BuildName:            build.Name(),
 							}))
 
 							plan, stepMetadata, containerMetadata, _ = fakeCoreStepFactory.PutStepArgsForCall(1)
@@ -268,13 +270,13 @@ var _ = Describe("Builder", func() {
 							Expect(containerMetadata).To(Equal(db.ContainerMetadata{
 								Type:                 db.ContainerTypePut,
 								StepName:             "some-put-2",
-								PipelineID:           2222,
+								PipelineID:           pipeline.ID(),
 								PipelineName:         "some-pipeline",
 								PipelineInstanceVars: "{\"branch\":\"master\"}",
-								JobID:                3333,
+								JobID:                job.ID(),
 								JobName:              "some-job",
-								BuildID:              4444,
-								BuildName:            "42",
+								BuildID:              build.ID(),
+								BuildName:            build.Name(),
 							}))
 						})
 					})
@@ -347,13 +349,13 @@ var _ = Describe("Builder", func() {
 						Expect(containerMetadata).To(Equal(db.ContainerMetadata{
 							Type:                 db.ContainerTypeGet,
 							StepName:             "some-get",
-							PipelineID:           2222,
+							PipelineID:           pipeline.ID(),
 							PipelineName:         "some-pipeline",
 							PipelineInstanceVars: "{\"branch\":\"master\"}",
-							JobID:                3333,
+							JobID:                job.ID(),
 							JobName:              "some-job",
-							BuildID:              4444,
-							BuildName:            "42",
+							BuildID:              build.ID(),
+							BuildName:            build.Name(),
 							Attempt:              "1",
 						}))
 					})
@@ -367,13 +369,13 @@ var _ = Describe("Builder", func() {
 						Expect(containerMetadata).To(Equal(db.ContainerMetadata{
 							Type:                 db.ContainerTypeGet,
 							StepName:             "some-get",
-							PipelineID:           2222,
+							PipelineID:           pipeline.ID(),
 							PipelineName:         "some-pipeline",
 							PipelineInstanceVars: "{\"branch\":\"master\"}",
-							JobID:                3333,
+							JobID:                job.ID(),
 							JobName:              "some-job",
-							BuildID:              4444,
-							BuildName:            "42",
+							BuildID:              build.ID(),
+							BuildName:            build.Name(),
 							Attempt:              "3",
 						}))
 					})
@@ -391,13 +393,13 @@ var _ = Describe("Builder", func() {
 						Expect(containerMetadata).To(Equal(db.ContainerMetadata{
 							Type:                 db.ContainerTypeTask,
 							StepName:             "some-task",
-							PipelineID:           2222,
+							PipelineID:           pipeline.ID(),
 							PipelineName:         "some-pipeline",
 							PipelineInstanceVars: "{\"branch\":\"master\"}",
-							JobID:                3333,
+							JobID:                job.ID(),
 							JobName:              "some-job",
-							BuildID:              4444,
-							BuildName:            "42",
+							BuildID:              build.ID(),
+							BuildName:            build.Name(),
 							Attempt:              "2.1",
 						}))
 
@@ -409,13 +411,13 @@ var _ = Describe("Builder", func() {
 						Expect(containerMetadata).To(Equal(db.ContainerMetadata{
 							Type:                 db.ContainerTypeTask,
 							StepName:             "some-task",
-							PipelineID:           2222,
+							PipelineID:           pipeline.ID(),
 							PipelineName:         "some-pipeline",
 							PipelineInstanceVars: "{\"branch\":\"master\"}",
-							JobID:                3333,
+							JobID:                job.ID(),
 							JobName:              "some-job",
-							BuildID:              4444,
-							BuildName:            "42",
+							BuildID:              build.ID(),
+							BuildName:            build.Name(),
 							Attempt:              "2.2",
 						}))
 					})
@@ -507,13 +509,13 @@ var _ = Describe("Builder", func() {
 							Expect(containerMetadata).To(Equal(db.ContainerMetadata{
 								Type:                 db.ContainerTypeGet,
 								StepName:             "some-input",
-								PipelineID:           2222,
+								PipelineID:           pipeline.ID(),
 								PipelineName:         "some-pipeline",
 								PipelineInstanceVars: "{\"branch\":\"master\"}",
-								JobID:                3333,
+								JobID:                job.ID(),
 								JobName:              "some-job",
-								BuildID:              4444,
-								BuildName:            "42",
+								BuildID:              build.ID(),
+								BuildName:            build.Name(),
 							}))
 						})
 					})
@@ -535,13 +537,13 @@ var _ = Describe("Builder", func() {
 							Expect(containerMetadata).To(Equal(db.ContainerMetadata{
 								Type:                 db.ContainerTypeTask,
 								StepName:             "some-task",
-								PipelineID:           2222,
+								PipelineID:           pipeline.ID(),
 								PipelineName:         "some-pipeline",
 								PipelineInstanceVars: "{\"branch\":\"master\"}",
-								JobID:                3333,
+								JobID:                job.ID(),
 								JobName:              "some-job",
-								BuildID:              4444,
-								BuildName:            "42",
+								BuildID:              build.ID(),
+								BuildName:            build.Name(),
 							}))
 						})
 					})
@@ -608,13 +610,13 @@ var _ = Describe("Builder", func() {
 							Expect(containerMetadata).To(Equal(db.ContainerMetadata{
 								Type:                 db.ContainerTypeCheck,
 								StepName:             "some-check",
-								PipelineID:           2222,
+								PipelineID:           pipeline.ID(),
 								PipelineName:         "some-pipeline",
 								PipelineInstanceVars: `{"branch":"master"}`,
-								JobID:                3333,
+								JobID:                job.ID(),
 								JobName:              "some-job",
-								BuildID:              4444,
-								BuildName:            "42",
+								BuildID:              build.ID(),
+								BuildName:            build.Name(),
 							}))
 						})
 					})
@@ -659,13 +661,13 @@ var _ = Describe("Builder", func() {
 							Expect(containerMetadata).To(Equal(db.ContainerMetadata{
 								Type:                 db.ContainerTypePut,
 								StepName:             "some-put",
-								PipelineID:           2222,
+								PipelineID:           pipeline.ID(),
 								PipelineName:         "some-pipeline",
 								PipelineInstanceVars: "{\"branch\":\"master\"}",
-								JobID:                3333,
+								JobID:                job.ID(),
 								JobName:              "some-job",
-								BuildID:              4444,
-								BuildName:            "42",
+								BuildID:              build.ID(),
+								BuildName:            build.Name(),
 							}))
 						})
 
@@ -676,13 +678,13 @@ var _ = Describe("Builder", func() {
 							Expect(containerMetadata).To(Equal(db.ContainerMetadata{
 								Type:                 db.ContainerTypeGet,
 								StepName:             "some-get",
-								PipelineID:           2222,
+								PipelineID:           pipeline.ID(),
 								PipelineName:         "some-pipeline",
 								PipelineInstanceVars: "{\"branch\":\"master\"}",
-								JobID:                3333,
+								JobID:                job.ID(),
 								JobName:              "some-job",
-								BuildID:              4444,
-								BuildName:            "42",
+								BuildID:              build.ID(),
+								BuildName:            build.Name(),
 							}))
 						})
 					})
@@ -740,13 +742,13 @@ var _ = Describe("Builder", func() {
 							Expect(plan).To(Equal(inputPlan))
 							Expect(stepMetadata).To(Equal(expectedMetadataWithoutCreatedBy))
 							Expect(containerMetadata).To(Equal(db.ContainerMetadata{
-								PipelineID:           2222,
+								PipelineID:           pipeline.ID(),
 								PipelineName:         "some-pipeline",
 								PipelineInstanceVars: "{\"branch\":\"master\"}",
-								JobID:                3333,
+								JobID:                job.ID(),
 								JobName:              "some-job",
-								BuildID:              4444,
-								BuildName:            "42",
+								BuildID:              build.ID(),
+								BuildName:            build.Name(),
 								StepName:             "some-input",
 								Type:                 db.ContainerTypeGet,
 							}))
@@ -758,13 +760,13 @@ var _ = Describe("Builder", func() {
 							Expect(plan).To(Equal(completionTaskPlan))
 							Expect(stepMetadata).To(Equal(expectedMetadataWithoutCreatedBy))
 							Expect(containerMetadata).To(Equal(db.ContainerMetadata{
-								PipelineID:           2222,
+								PipelineID:           pipeline.ID(),
 								PipelineName:         "some-pipeline",
 								PipelineInstanceVars: "{\"branch\":\"master\"}",
-								JobID:                3333,
+								JobID:                job.ID(),
 								JobName:              "some-job",
-								BuildID:              4444,
-								BuildName:            "42",
+								BuildID:              build.ID(),
+								BuildName:            build.Name(),
 								StepName:             "some-completion-task",
 								Type:                 db.ContainerTypeTask,
 							}))
@@ -776,13 +778,13 @@ var _ = Describe("Builder", func() {
 							Expect(plan).To(Equal(failureTaskPlan))
 							Expect(stepMetadata).To(Equal(expectedMetadataWithoutCreatedBy))
 							Expect(containerMetadata).To(Equal(db.ContainerMetadata{
-								PipelineID:           2222,
+								PipelineID:           pipeline.ID(),
 								PipelineName:         "some-pipeline",
 								PipelineInstanceVars: "{\"branch\":\"master\"}",
-								JobID:                3333,
+								JobID:                job.ID(),
 								JobName:              "some-job",
-								BuildID:              4444,
-								BuildName:            "42",
+								BuildID:              build.ID(),
+								BuildName:            build.Name(),
 								StepName:             "some-failure-task",
 								Type:                 db.ContainerTypeTask,
 							}))
@@ -794,13 +796,13 @@ var _ = Describe("Builder", func() {
 							Expect(plan).To(Equal(successTaskPlan))
 							Expect(stepMetadata).To(Equal(expectedMetadataWithoutCreatedBy))
 							Expect(containerMetadata).To(Equal(db.ContainerMetadata{
-								PipelineID:           2222,
+								PipelineID:           pipeline.ID(),
 								PipelineName:         "some-pipeline",
 								PipelineInstanceVars: "{\"branch\":\"master\"}",
-								JobID:                3333,
+								JobID:                job.ID(),
 								JobName:              "some-job",
-								BuildID:              4444,
-								BuildName:            "42",
+								BuildID:              build.ID(),
+								BuildName:            build.Name(),
 								StepName:             "some-success-task",
 								Type:                 db.ContainerTypeTask,
 							}))
@@ -812,13 +814,13 @@ var _ = Describe("Builder", func() {
 							Expect(plan).To(Equal(nextTaskPlan))
 							Expect(stepMetadata).To(Equal(expectedMetadataWithoutCreatedBy))
 							Expect(containerMetadata).To(Equal(db.ContainerMetadata{
-								PipelineID:           2222,
+								PipelineID:           pipeline.ID(),
 								PipelineName:         "some-pipeline",
 								PipelineInstanceVars: "{\"branch\":\"master\"}",
-								JobID:                3333,
+								JobID:                job.ID(),
 								JobName:              "some-job",
-								BuildID:              4444,
-								BuildName:            "42",
+								BuildID:              build.ID(),
+								BuildName:            build.Name(),
 								StepName:             "some-next-task",
 								Type:                 db.ContainerTypeTask,
 							}))
@@ -847,13 +849,13 @@ var _ = Describe("Builder", func() {
 						Expect(containerMetadata).To(Equal(db.ContainerMetadata{
 							Type:                 db.ContainerTypeGet,
 							StepName:             "some-input",
-							PipelineID:           2222,
+							PipelineID:           pipeline.ID(),
 							PipelineName:         "some-pipeline",
 							PipelineInstanceVars: "{\"branch\":\"master\"}",
-							JobID:                3333,
+							JobID:                job.ID(),
 							JobName:              "some-job",
-							BuildID:              4444,
-							BuildName:            "42",
+							BuildID:              build.ID(),
+							BuildName:            build.Name(),
 						}))
 					})
 				})
@@ -863,9 +865,8 @@ var _ = Describe("Builder", func() {
 					It("returns an IdentityStep", func() {
 						// Construct a Plan with only an ID — no recognized type fields set
 						unknownPlan := atc.Plan{ID: "unknown-plan-id"}
-						fakeBuild.PrivatePlanReturns(unknownPlan)
 
-						stepper, err := stepperFactory.StepperForBuild(fakeBuild)
+						stepper, err := stepperFactory.StepperForBuild(build)
 						Expect(err).ToNot(HaveOccurred())
 
 						step := stepper(unknownPlan)

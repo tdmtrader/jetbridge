@@ -19,7 +19,6 @@ import (
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/engine"
 	"github.com/concourse/concourse/atc/event"
 	"github.com/concourse/concourse/atc/exec"
@@ -29,6 +28,24 @@ import (
 	"github.com/concourse/concourse/atc/runtime/runtimetest"
 	"github.com/concourse/concourse/vars"
 )
+
+// A build persists the events handed to it but keeps no record of the call, so
+// what the delegate emitted, and in what order, is only observable from
+// outside. saveErr injects the one save failure a healthy build cannot produce.
+type eventRecordingBuild struct {
+	db.Build
+
+	saveErr error
+	events  []atc.Event
+}
+
+func (b *eventRecordingBuild) SaveEvent(ev atc.Event) error {
+	b.events = append(b.events, ev)
+	if b.saveErr != nil {
+		return b.saveErr
+	}
+	return b.Build.SaveEvent(ev)
+}
 
 // latestVersionErrorScope preserves a healthy persisted scope while injecting
 // the one LatestVersion failure that PostgreSQL cannot produce selectively.
@@ -70,7 +87,6 @@ func (factory fixedResourceConfigFactory) FindOrCreateResourceConfig(
 var _ = Describe("BuildStepDelegate", func() {
 	var (
 		logger        *lagertest.TestLogger
-		fakeBuild     *dbfakes.FakeBuild
 		fakeClock     *fakeclock.FakeClock
 		planID        atc.PlanID
 		runState      exec.RunState
@@ -79,6 +95,10 @@ var _ = Describe("BuildStepDelegate", func() {
 		credVars vars.StaticVariables
 
 		now = time.Date(1991, 6, 3, 5, 30, 0, 0, time.UTC)
+
+		fixture   *engineDBFixture
+		realBuild db.Build
+		build     *eventRecordingBuild
 
 		delegate exec.BuildStepDelegate
 	)
@@ -96,20 +116,21 @@ var _ = Describe("BuildStepDelegate", func() {
 		runState = exec.NewRunState(noopStepper, credVars)
 
 		policyChecker = policy.NoopChecker{}
+
+		fixture = useEngineDB()
+		spreadEngineIDSequences(fixture)
+		_, _, _, realBuild = createEngineJobBuild(
+			fixture,
+			"some-team",
+			atc.PipelineRef{Name: "some-pipeline"},
+			atc.Config{Jobs: atc.JobConfigs{{Name: "some-job"}}},
+			"some-user",
+		)
+		build = &eventRecordingBuild{Build: realBuild}
 	})
 
 	Describe("persisted PostgreSQL state", func() {
-		var realBuild db.Build
-
 		BeforeEach(func() {
-			fixture := useEngineDB()
-			_, _, _, realBuild = createEngineJobBuild(
-				fixture,
-				"build-step-events-team",
-				atc.PipelineRef{Name: "some-pipeline"},
-				atc.Config{Jobs: atc.JobConfigs{{Name: "some-job"}}},
-				"some-user",
-			)
 			delegate = engine.NewBuildStepDelegate(realBuild, planID, runState, fakeClock, policyChecker, false)
 		})
 
@@ -130,11 +151,12 @@ var _ = Describe("BuildStepDelegate", func() {
 		})
 	})
 
-	Describe("retained runtime and fault matrix", func() {
+	// Every value below comes from the same real build row; the only seams are
+	// the recorded SaveEvent calls the build itself does not expose and, where a
+	// spec needs one, an injected save failure.
+	Describe("runtime behavior over the real build", func() {
 		BeforeEach(func() {
-			// This fake controls non-persistable callback, policy, writer, and runtime fault behavior.
-			fakeBuild = new(dbfakes.FakeBuild)
-			delegate = engine.NewBuildStepDelegate(fakeBuild, planID, runState, fakeClock, policyChecker, false)
+			delegate = engine.NewBuildStepDelegate(build, planID, runState, fakeClock, policyChecker, false)
 		})
 
 		Describe("FetchImage", func() {
@@ -143,8 +165,6 @@ var _ = Describe("BuildStepDelegate", func() {
 			var expectedCheckPlan, expectedGetPlan *atc.Plan
 			var volume *runtimetest.Volume
 			var persistedResourceCache db.ResourceCache
-			var fixture *engineDBFixture
-			var realBuild db.Build
 			var buildUnderTest db.Build
 
 			var privileged bool
@@ -158,14 +178,6 @@ var _ = Describe("BuildStepDelegate", func() {
 			var parentRunState exec.RunState
 
 			BeforeEach(func() {
-				fixture = useEngineDB()
-				_, _, _, realBuild = createEngineJobBuild(
-					fixture,
-					"build-step-fetch-team",
-					atc.PipelineRef{Name: "some-pipeline"},
-					atc.Config{Jobs: atc.JobConfigs{{Name: "some-job"}}},
-					"some-user",
-				)
 				var err error
 				persistedResourceCache, err = fixture.ResourceCacheFactory.FindOrCreateResourceCache(
 					db.ForBuild(realBuild.ID()),
@@ -281,11 +293,10 @@ var _ = Describe("BuildStepDelegate", func() {
 				var checker *recordingChecker
 
 				BeforeEach(func() {
-					// Retained: warning delivery is a runtime seam; persisted
-					// FetchImage paths use realBuild.
-					buildUnderTest = fakeBuild
-					fakeBuild.TeamNameReturns("some-team")
-					fakeBuild.PipelineNameReturns("some-pipeline")
+					// The warnings are delivered as build events, which only the
+					// recording wrapper exposes; the values checked come from the
+					// same real build row.
+					buildUnderTest = build
 				})
 
 				Context("when the action does not need to be checked", func() {
@@ -353,7 +364,7 @@ var _ = Describe("BuildStepDelegate", func() {
 						})
 
 						It("log warning messages", func() {
-							e := fakeBuild.SaveEventArgsForCall(0)
+							e := build.events[0]
 							Expect(e.EventType()).To(Equal(event.EventTypeLog))
 							Expect(e.(event.Log).Origin).To(Equal(event.Origin{
 								ID:     "some-plan-id",
@@ -363,7 +374,7 @@ var _ = Describe("BuildStepDelegate", func() {
 							Expect(e.(event.Log).Payload).To(ContainSubstring("reasonA"))
 							Expect(e.(event.Log).Payload).To(ContainSubstring("reasonB"))
 
-							e = fakeBuild.SaveEventArgsForCall(1)
+							e = build.events[1]
 							Expect(e.EventType()).To(Equal(event.EventTypeLog))
 							Expect(e.(event.Log).Origin).To(Equal(event.Origin{
 								ID:     "some-plan-id",
@@ -383,8 +394,8 @@ var _ = Describe("BuildStepDelegate", func() {
 						})
 
 						It("should not log policy check warning", func() {
-							for i := 0; i < fakeBuild.SaveEventCallCount(); i++ {
-								e := fakeBuild.SaveEventArgsForCall(i)
+							for i := 0; i < len(build.events); i++ {
+								e := build.events[i]
 								if logEvent, ok := e.(event.Log); ok {
 									Expect(logEvent.Payload).ToNot(ContainSubstring("WARNING: unblocking from the policy check failure for soft enforcement"))
 								}
@@ -477,7 +488,7 @@ var _ = Describe("BuildStepDelegate", func() {
 			Context("when no resource factories are set", func() {
 				It("runs both check and get plans (no metadata-only shortcut)", func() {
 					runPlans = nil
-					nativeDelegate := engine.NewBuildStepDelegate(fakeBuild, planID, parentRunState, fakeClock, policyChecker, false)
+					nativeDelegate := engine.NewBuildStepDelegate(build, planID, parentRunState, fakeClock, policyChecker, false)
 					_, resCache, err := nativeDelegate.FetchImage(context.TODO(), *expectedGetPlan, expectedCheckPlan, false)
 					Expect(err).ToNot(HaveOccurred())
 
@@ -592,8 +603,6 @@ var _ = Describe("BuildStepDelegate", func() {
 		Describe("Metadata-only FetchImage persisted PostgreSQL state", func() {
 			var (
 				nativeDelegate    exec.BuildStepDelegate
-				fixture           *engineDBFixture
-				realBuild         db.Build
 				resourceConfig    db.ResourceConfig
 				scope             db.ResourceConfigScope
 				fallbackCache     db.ResourceCache
@@ -603,15 +612,6 @@ var _ = Describe("BuildStepDelegate", func() {
 			)
 
 			BeforeEach(func() {
-				fixture = useEngineDB()
-				_, _, _, realBuild = createEngineJobBuild(
-					fixture,
-					"metadata-fetch-team",
-					atc.PipelineRef{Name: "some-pipeline"},
-					atc.Config{Jobs: atc.JobConfigs{{Name: "some-job"}}},
-					"some-user",
-				)
-
 				registryCheckPlan = &atc.Plan{
 					ID: planID + "/image-check",
 					Check: &atc.CheckPlan{
@@ -1010,8 +1010,8 @@ var _ = Describe("BuildStepDelegate", func() {
 				Expect(substeps).To(Equal(expectedSubstepPlans))
 
 				By("emitting the public plans as a build event")
-				Expect(fakeBuild.SaveEventCallCount()).To(Equal(1))
-				Expect(fakeBuild.SaveEventArgsForCall(0)).To(Equal(event.AcrossSubsteps{
+				Expect(len(build.events)).To(Equal(1))
+				Expect(build.events[0]).To(Equal(event.AcrossSubsteps{
 					Time: now.Unix(),
 					Substeps: []*json.RawMessage{
 						expectedSubstepPlans[0].Public(),
@@ -1057,8 +1057,8 @@ var _ = Describe("BuildStepDelegate", func() {
 				Expect(substeps).To(Equal(expectedSubstepPlans))
 
 				By("emitting the public plans as a build event")
-				Expect(fakeBuild.SaveEventCallCount()).To(Equal(1))
-				Expect(fakeBuild.SaveEventArgsForCall(0)).To(Equal(event.AcrossSubsteps{
+				Expect(len(build.events)).To(Equal(1))
+				Expect(build.events[0]).To(Equal(event.AcrossSubsteps{
 					Time: now.Unix(),
 					Substeps: []*json.RawMessage{
 						expectedSubstepPlans[0].Public(),
@@ -1135,7 +1135,6 @@ var _ = Describe("BuildStepDelegate", func() {
 
 				Context("when saving the event succeeds", func() {
 					BeforeEach(func() {
-						fakeBuild.SaveEventReturns(nil)
 						writtenBytes, writeErr = writer.Write([]byte("hello\nworld"))
 						writer.(io.Closer).Close()
 					})
@@ -1146,8 +1145,8 @@ var _ = Describe("BuildStepDelegate", func() {
 					})
 
 					It("saves a log event", func() {
-						Expect(fakeBuild.SaveEventCallCount()).To(Equal(2))
-						Expect(fakeBuild.SaveEventArgsForCall(0)).To(Equal(event.Log{
+						Expect(len(build.events)).To(Equal(2))
+						Expect(build.events[0]).To(Equal(event.Log{
 							Time:    now.Unix(),
 							Payload: "hello\n",
 							Origin: event.Origin{
@@ -1155,7 +1154,7 @@ var _ = Describe("BuildStepDelegate", func() {
 								ID:     "some-plan-id",
 							},
 						}))
-						Expect(fakeBuild.SaveEventArgsForCall(1)).To(Equal(event.Log{
+						Expect(build.events[1]).To(Equal(event.Log{
 							Time:    now.Unix(),
 							Payload: "world",
 							Origin: event.Origin{
@@ -1170,7 +1169,7 @@ var _ = Describe("BuildStepDelegate", func() {
 					disaster := errors.New("nope")
 
 					BeforeEach(func() {
-						fakeBuild.SaveEventReturns(disaster)
+						build.saveErr = disaster
 						writtenBytes, writeErr = writer.Write([]byte("hello\nworld"))
 						writer.(io.Closer).Close()
 					})
@@ -1184,7 +1183,6 @@ var _ = Describe("BuildStepDelegate", func() {
 				Context("caches any text after \\n or \\r", func() {
 					Context("when the data only contains \\n", func() {
 						BeforeEach(func() {
-							fakeBuild.SaveEventReturns(nil)
 							writtenBytes, writeErr = writer.Write([]byte("hello\nworld"))
 						})
 
@@ -1194,8 +1192,8 @@ var _ = Describe("BuildStepDelegate", func() {
 						})
 
 						It("saves two log events", func() {
-							Expect(fakeBuild.SaveEventCallCount()).To(Equal(1))
-							Expect(fakeBuild.SaveEventArgsForCall(0)).To(Equal(event.Log{
+							Expect(len(build.events)).To(Equal(1))
+							Expect(build.events[0]).To(Equal(event.Log{
 								Time:    now.Unix(),
 								Payload: "hello\n",
 								Origin: event.Origin{
@@ -1205,8 +1203,8 @@ var _ = Describe("BuildStepDelegate", func() {
 							}))
 
 							writer.(io.Closer).Close()
-							Expect(fakeBuild.SaveEventCallCount()).To(Equal(2), "second event is cached and only written after writer.Close() is called")
-							Expect(fakeBuild.SaveEventArgsForCall(1)).To(Equal(event.Log{
+							Expect(len(build.events)).To(Equal(2), "second event is cached and only written after writer.Close() is called")
+							Expect(build.events[1]).To(Equal(event.Log{
 								Time:    now.Unix(),
 								Payload: "world",
 								Origin: event.Origin{
@@ -1219,7 +1217,6 @@ var _ = Describe("BuildStepDelegate", func() {
 
 					Context("when the data only contains \\r", func() {
 						BeforeEach(func() {
-							fakeBuild.SaveEventReturns(nil)
 							writtenBytes, writeErr = writer.Write([]byte("hello\rworld"))
 						})
 
@@ -1229,8 +1226,8 @@ var _ = Describe("BuildStepDelegate", func() {
 						})
 
 						It("saves two log events, breaking on \\r", func() {
-							Expect(fakeBuild.SaveEventCallCount()).To(Equal(1))
-							Expect(fakeBuild.SaveEventArgsForCall(0)).To(Equal(event.Log{
+							Expect(len(build.events)).To(Equal(1))
+							Expect(build.events[0]).To(Equal(event.Log{
 								Time:    now.Unix(),
 								Payload: "hello\r",
 								Origin: event.Origin{
@@ -1240,8 +1237,8 @@ var _ = Describe("BuildStepDelegate", func() {
 							}))
 
 							writer.(io.Closer).Close()
-							Expect(fakeBuild.SaveEventCallCount()).To(Equal(2), "second event is cached and only written after writer.Close() is called")
-							Expect(fakeBuild.SaveEventArgsForCall(1)).To(Equal(event.Log{
+							Expect(len(build.events)).To(Equal(2), "second event is cached and only written after writer.Close() is called")
+							Expect(build.events[1]).To(Equal(event.Log{
 								Time:    now.Unix(),
 								Payload: "world",
 								Origin: event.Origin{
@@ -1254,7 +1251,6 @@ var _ = Describe("BuildStepDelegate", func() {
 
 					Context("when the data contains \\n and \\r", func() {
 						BeforeEach(func() {
-							fakeBuild.SaveEventReturns(nil)
 							writtenBytes, writeErr = writer.Write([]byte("hello\nbeautiful\rworld\n"))
 							writer.(io.Closer).Close()
 						})
@@ -1265,8 +1261,8 @@ var _ = Describe("BuildStepDelegate", func() {
 						})
 
 						It("writer prefers breaking on the last \\n over \\r", func() {
-							Expect(fakeBuild.SaveEventCallCount()).To(Equal(1))
-							Expect(fakeBuild.SaveEventArgsForCall(0)).To(Equal(event.Log{
+							Expect(len(build.events)).To(Equal(1))
+							Expect(build.events[0]).To(Equal(event.Log{
 								Time:    now.Unix(),
 								Payload: "hello\nbeautiful\rworld\n",
 								Origin: event.Origin{
@@ -1279,26 +1275,25 @@ var _ = Describe("BuildStepDelegate", func() {
 
 					Context("when the data does not contain \\n or \\r", func() {
 						BeforeEach(func() {
-							fakeBuild.SaveEventReturns(nil)
 							writtenBytes, writeErr = writer.Write([]byte("hello world"))
 						})
 
 						It("returns the length of the string, no error, and does not log the event", func() {
 							Expect(writtenBytes).To(Equal(len("hello world")))
 							Expect(writeErr).ToNot(HaveOccurred())
-							Expect(fakeBuild.SaveEventCallCount()).To(Equal(0), "first payload should be entirely cached")
+							Expect(len(build.events)).To(Equal(0), "first payload should be entirely cached")
 						})
 
 						It("flushes the payload after 1 second", func() {
-							Expect(fakeBuild.SaveEventCallCount()).To(Equal(0), "first payload should be entirely cached")
+							Expect(len(build.events)).To(Equal(0), "first payload should be entirely cached")
 
 							fakeClock.Increment(time.Second)
 							writtenBytes, writeErr = writer.Write([]byte("!!!"))
 							Expect(writtenBytes).To(Equal(len("!!!")))
 							Expect(writeErr).ToNot(HaveOccurred())
 
-							Expect(fakeBuild.SaveEventCallCount()).To(Equal(1), "entire payload should be flushed")
-							Expect(fakeBuild.SaveEventArgsForCall(0)).To(Equal(event.Log{
+							Expect(len(build.events)).To(Equal(1), "entire payload should be flushed")
+							Expect(build.events[0]).To(Equal(event.Log{
 								Time:    fakeClock.Now().Unix(),
 								Payload: "hello world!!!",
 								Origin: event.Origin{
@@ -1308,7 +1303,7 @@ var _ = Describe("BuildStepDelegate", func() {
 							}))
 
 							writer.(io.Closer).Close()
-							Expect(fakeBuild.SaveEventCallCount()).To(Equal(1), "no more events should be written")
+							Expect(len(build.events)).To(Equal(1), "no more events should be written")
 						})
 					})
 				})
@@ -1332,18 +1327,14 @@ var _ = Describe("BuildStepDelegate", func() {
 				})
 
 				Context("when saving the event succeeds", func() {
-					BeforeEach(func() {
-						fakeBuild.SaveEventReturns(nil)
-					})
-
 					It("returns the length of the string, and no error", func() {
 						Expect(writtenBytes).To(Equal(len("hello\n")))
 						Expect(writeErr).ToNot(HaveOccurred())
 					})
 
 					It("saves a log event", func() {
-						Expect(fakeBuild.SaveEventCallCount()).To(Equal(1))
-						Expect(fakeBuild.SaveEventArgsForCall(0)).To(Equal(event.Log{
+						Expect(len(build.events)).To(Equal(1))
+						Expect(build.events[0]).To(Equal(event.Log{
 							Time:    now.Unix(),
 							Payload: "hello\n",
 							Origin: event.Origin{
@@ -1358,7 +1349,7 @@ var _ = Describe("BuildStepDelegate", func() {
 					disaster := errors.New("nope")
 
 					BeforeEach(func() {
-						fakeBuild.SaveEventReturns(disaster)
+						build.saveErr = disaster
 					})
 
 					It("returns 0 length, and the error", func() {
@@ -1375,13 +1366,9 @@ var _ = Describe("BuildStepDelegate", func() {
 			})
 
 			Context("when saving the event succeeds", func() {
-				BeforeEach(func() {
-					fakeBuild.SaveEventReturns(nil)
-				})
-
 				It("saves it with the current time", func() {
-					Expect(fakeBuild.SaveEventCallCount()).To(Equal(1))
-					Expect(fakeBuild.SaveEventArgsForCall(0)).To(Equal(event.Error{
+					Expect(len(build.events)).To(Equal(1))
+					Expect(build.events[0]).To(Equal(event.Error{
 						Time:    now.Unix(),
 						Message: "fake error message",
 						Origin: event.Origin{
@@ -1395,7 +1382,7 @@ var _ = Describe("BuildStepDelegate", func() {
 				disaster := errors.New("nope")
 
 				BeforeEach(func() {
-					fakeBuild.SaveEventReturns(disaster)
+					build.saveErr = disaster
 				})
 
 				It("logs an error", func() {
@@ -1417,7 +1404,7 @@ var _ = Describe("BuildStepDelegate", func() {
 
 			BeforeEach(func() {
 				runState = exec.NewRunState(noopStepper, credVars)
-				delegate = engine.NewBuildStepDelegate(fakeBuild, "some-plan-id", runState, fakeClock, policyChecker, false)
+				delegate = engine.NewBuildStepDelegate(build, "some-plan-id", runState, fakeClock, policyChecker, false)
 
 				runState.Get(vars.Reference{Path: "source-param"})
 				runState.Get(vars.Reference{Path: "git-key"})
@@ -1434,8 +1421,8 @@ var _ = Describe("BuildStepDelegate", func() {
 					It("should be redacted", func() {
 						Expect(writeErr).To(BeNil())
 						Expect(writtenBytes).To(Equal(len("ok super-secret-source ok")))
-						Expect(fakeBuild.SaveEventCallCount()).To(Equal(1))
-						Expect(fakeBuild.SaveEventArgsForCall(0)).To(Equal(event.Log{
+						Expect(len(build.events)).To(Equal(1))
+						Expect(build.events[0]).To(Equal(event.Log{
 							Time:    now.Unix(),
 							Payload: "ok ((redacted)) ok",
 							Origin: event.Origin{
@@ -1459,8 +1446,8 @@ var _ = Describe("BuildStepDelegate", func() {
 					It("should be redacted", func() {
 						Expect(writeErr).To(BeNil())
 						Expect(writtenBytes).To(Equal(len(logLines)))
-						Expect(fakeBuild.SaveEventCallCount()).To(Equal(1))
-						Expect(fakeBuild.SaveEventArgsForCall(0)).To(Equal(event.Log{
+						Expect(len(build.events)).To(Equal(1))
+						Expect(build.events[0]).To(Equal(event.Log{
 							Time:    now.Unix(),
 							Payload: "ok((redacted))ok\nok((redacted))ok\nok((redacted))ok\n",
 							Origin: event.Origin{
@@ -1480,8 +1467,8 @@ var _ = Describe("BuildStepDelegate", func() {
 					})
 
 					It("should be redacted", func() {
-						Expect(fakeBuild.SaveEventCallCount()).To(Equal(2))
-						Expect(fakeBuild.SaveEventArgsForCall(0)).To(Equal(event.Log{
+						Expect(len(build.events)).To(Equal(2))
+						Expect(build.events[0]).To(Equal(event.Log{
 							Time:    now.Unix(),
 							Payload: "ok((redacted))ok\n",
 							Origin: event.Origin{
@@ -1489,7 +1476,7 @@ var _ = Describe("BuildStepDelegate", func() {
 								ID:     "some-plan-id",
 							},
 						}))
-						Expect(fakeBuild.SaveEventArgsForCall(1)).To(Equal(event.Log{
+						Expect(build.events[1]).To(Equal(event.Log{
 							Time:    now.Unix(),
 							Payload: "ok((redacted))ok\nok((redacted))ok\n",
 							Origin: event.Origin{
@@ -1502,7 +1489,7 @@ var _ = Describe("BuildStepDelegate", func() {
 
 				Context("is disabled", func() {
 					BeforeEach(func() {
-						delegate = engine.NewBuildStepDelegate(fakeBuild, "some-plan-id", runState, fakeClock, policyChecker, true)
+						delegate = engine.NewBuildStepDelegate(build, "some-plan-id", runState, fakeClock, policyChecker, true)
 					})
 
 					It("does not redact secrets", func() {
@@ -1511,8 +1498,8 @@ var _ = Describe("BuildStepDelegate", func() {
 						writer.(io.Closer).Close()
 						Expect(writeErr).To(BeNil())
 						Expect(writtenBytes).To(Equal(len("ok super-secret-source ok")))
-						Expect(fakeBuild.SaveEventCallCount()).To(Equal(1))
-						Expect(fakeBuild.SaveEventArgsForCall(0)).To(Equal(event.Log{
+						Expect(len(build.events)).To(Equal(1))
+						Expect(build.events[0]).To(Equal(event.Log{
 							Time:    now.Unix(),
 							Payload: "ok super-secret-source ok",
 							Origin: event.Origin{
@@ -1535,8 +1522,8 @@ var _ = Describe("BuildStepDelegate", func() {
 					It("should be redacted", func() {
 						Expect(writeErr).To(BeNil())
 						Expect(writtenBytes).To(Equal(len("ok super-secret-source ok")))
-						Expect(fakeBuild.SaveEventCallCount()).To(Equal(1))
-						Expect(fakeBuild.SaveEventArgsForCall(0)).To(Equal(event.Log{
+						Expect(len(build.events)).To(Equal(1))
+						Expect(build.events[0]).To(Equal(event.Log{
 							Time:    now.Unix(),
 							Payload: "ok ((redacted)) ok",
 							Origin: event.Origin{
@@ -1560,8 +1547,8 @@ var _ = Describe("BuildStepDelegate", func() {
 					It("should be redacted", func() {
 						Expect(writeErr).To(BeNil())
 						Expect(writtenBytes).To(Equal(len(logLines)))
-						Expect(fakeBuild.SaveEventCallCount()).To(Equal(1))
-						Expect(fakeBuild.SaveEventArgsForCall(0)).To(Equal(event.Log{
+						Expect(len(build.events)).To(Equal(1))
+						Expect(build.events[0]).To(Equal(event.Log{
 							Time:    now.Unix(),
 							Payload: "{\nok((redacted))ok\nok((redacted))ok\nok((redacted))ok\n}\n",
 							Origin: event.Origin{
@@ -1581,8 +1568,8 @@ var _ = Describe("BuildStepDelegate", func() {
 					})
 
 					It("should be redacted", func() {
-						Expect(fakeBuild.SaveEventCallCount()).To(Equal(2))
-						Expect(fakeBuild.SaveEventArgsForCall(0)).To(Equal(event.Log{
+						Expect(len(build.events)).To(Equal(2))
+						Expect(build.events[0]).To(Equal(event.Log{
 							Time:    now.Unix(),
 							Payload: "ok((redacted))ok\n",
 							Origin: event.Origin{
@@ -1590,7 +1577,7 @@ var _ = Describe("BuildStepDelegate", func() {
 								ID:     "some-plan-id",
 							},
 						}))
-						Expect(fakeBuild.SaveEventArgsForCall(1)).To(Equal(event.Log{
+						Expect(build.events[1]).To(Equal(event.Log{
 							Time:    now.Unix(),
 							Payload: "ok((redacted))ok\nok((redacted))ok\n",
 							Origin: event.Origin{
@@ -1603,7 +1590,7 @@ var _ = Describe("BuildStepDelegate", func() {
 
 				Context("is disabled", func() {
 					BeforeEach(func() {
-						delegate = engine.NewBuildStepDelegate(fakeBuild, "some-plan-id", runState, fakeClock, policyChecker, true)
+						delegate = engine.NewBuildStepDelegate(build, "some-plan-id", runState, fakeClock, policyChecker, true)
 					})
 
 					It("does not redact secrets", func() {
@@ -1612,8 +1599,8 @@ var _ = Describe("BuildStepDelegate", func() {
 						writer.(io.Closer).Close()
 						Expect(writeErr).To(BeNil())
 						Expect(writtenBytes).To(Equal(len("ok super-secret-source ok")))
-						Expect(fakeBuild.SaveEventCallCount()).To(Equal(1))
-						Expect(fakeBuild.SaveEventArgsForCall(0)).To(Equal(event.Log{
+						Expect(len(build.events)).To(Equal(1))
+						Expect(build.events[0]).To(Equal(event.Log{
 							Time:    now.Unix(),
 							Payload: "ok super-secret-source ok",
 							Origin: event.Origin{
@@ -1627,15 +1614,10 @@ var _ = Describe("BuildStepDelegate", func() {
 		})
 
 		Describe("ContainerOwner", func() {
-			JustBeforeEach(func() {
-				delegate.ContainerOwner("some-plan")
-			})
-
 			It("should delegate to build", func() {
-				Expect(fakeBuild.ContainerOwnerCallCount()).To(Equal(1))
-
-				planId := fakeBuild.ContainerOwnerArgsForCall(0)
-				Expect(planId).To(Equal(atc.PlanID("some-plan")))
+				Expect(delegate.ContainerOwner("some-plan")).To(Equal(
+					db.NewBuildStepContainerOwner(realBuild.ID(), "some-plan", realBuild.TeamID()),
+				))
 			})
 		})
 
