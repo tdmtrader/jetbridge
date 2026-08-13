@@ -72,8 +72,7 @@ func useRealDB() *realDB {
 	checkBuildChan := make(chan db.Build, 64)
 
 	checkFactory := db.NewCheckFactory(
-		conn, lockFactory, secretManager, varSourcePool,
-		checkBuildChan, util.NewSequenceGenerator(1),
+		conn, lockFactory, checkBuildChan, util.NewSequenceGenerator(1),
 	)
 
 	// The real clock, matching production wiring in atccmd. The suite's

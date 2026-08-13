@@ -7,12 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"code.cloudfoundry.org/clock"
 	"code.cloudfoundry.org/lager/v3"
-	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc"
-	"github.com/concourse/concourse/atc/creds"
-	"github.com/concourse/concourse/atc/creds/noop"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbtest"
 	"github.com/concourse/concourse/atc/db/lock"
@@ -282,21 +278,10 @@ func useLidarDB() *lidarDB {
 	lockFactory, closeLocks := openLidarLockFactory()
 	DeferCleanup(func() { Expect(closeLocks()).To(Succeed()) })
 
-	varSourcePool := creds.NewVarSourcePool(
-		lagertest.NewTestLogger("var-source-pool"),
-		creds.CredentialManagementConfig{},
-		5*time.Minute,
-		time.Minute,
-		clock.NewClock(),
-	)
-	DeferCleanup(varSourcePool.Close)
-
 	checkBuilds := make(chan db.Build, 64)
 	checkFactory := db.NewCheckFactory(
 		conn,
 		lockFactory,
-		noop.Noop{},
-		varSourcePool,
 		checkBuilds,
 		util.NewSequenceGenerator(1),
 	)

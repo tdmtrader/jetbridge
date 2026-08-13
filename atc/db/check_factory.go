@@ -9,7 +9,6 @@ import (
 	"code.cloudfoundry.org/lager/v3/lagerctx"
 	sq "github.com/Masterminds/squirrel"
 	"github.com/concourse/concourse/atc"
-	"github.com/concourse/concourse/atc/creds"
 	"github.com/concourse/concourse/atc/db/lock"
 	"github.com/concourse/concourse/atc/util"
 )
@@ -47,9 +46,6 @@ type checkFactory struct {
 	conn        DbConn
 	lockFactory lock.LockFactory
 
-	secrets       creds.Secrets
-	varSourcePool creds.VarSourcePool
-
 	planFactory atc.PlanFactory
 
 	checkBuildChan    chan<- Build
@@ -64,17 +60,12 @@ type checkFactory struct {
 func NewCheckFactory(
 	conn DbConn,
 	lockFactory lock.LockFactory,
-	secrets creds.Secrets,
-	varSourcePool creds.VarSourcePool,
 	checkBuildChan chan<- Build,
 	sequenceGenerator util.SequenceGenerator,
 ) CheckFactory {
 	return &checkFactory{
 		conn:        conn,
 		lockFactory: lockFactory,
-
-		secrets:       secrets,
-		varSourcePool: varSourcePool,
 
 		planFactory: atc.NewPlanFactory(time.Now().Unix()),
 
