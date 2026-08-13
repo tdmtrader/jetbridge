@@ -36,11 +36,11 @@ func main() {
 
 	// Durable tier. Off unless --durable-store names a backend, and the daemon
 	// behaves exactly as before when it is off.
-	durableStore := flag.String("durable-store", "", "Long-term store for resource caches: \"\" (disabled), \"s3\" or \"filesystem\"")
+	durableStore := flag.String("durable-store", "", "Long-term store for resource caches: \"\" (disabled), \"gcs\", \"s3\" or \"filesystem\"")
 	durablePath := flag.String("durable-path", "", "Root directory for --durable-store=filesystem")
-	durableBucket := flag.String("durable-s3-bucket", "", "Bucket for --durable-store=s3")
-	durablePrefix := flag.String("durable-s3-prefix", "", "Key prefix inside the bucket, so one bucket can serve several clusters")
-	durableEndpoint := flag.String("durable-s3-endpoint", "", "S3 endpoint override; set this for MinIO and other S3-compatible stores")
+	durableBucket := flag.String("durable-bucket", "", "Bucket for --durable-store=gcs or =s3")
+	durablePrefix := flag.String("durable-prefix", "", "Key prefix inside the bucket, so one bucket can serve several clusters or consumers")
+	durableEndpoint := flag.String("durable-endpoint", "", "Endpoint override; set this for MinIO and other S3-compatible stores")
 	durableRegion := flag.String("durable-s3-region", "us-east-1", "S3 region")
 	durableTimeout := flag.Duration("durable-timeout", 5*time.Minute, "Per-operation timeout for the durable store")
 	durableMaxBytes := flag.Int64("durable-max-bytes", 5<<30, "Largest single artifact to store durably; 0 disables the limit")

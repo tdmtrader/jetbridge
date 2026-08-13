@@ -74,9 +74,9 @@ func (d *DurableTier) Has(ctx context.Context, key string) bool {
 	ctx, cancel := context.WithTimeout(ctx, d.timeout)
 	defer cancel()
 
-	found, err := d.store.Has(ctx, key)
+	_, found, err := d.store.Stat(ctx, key)
 	if err != nil {
-		d.logger.Error("has-failed", err, lager.Data{"key": key})
+		d.logger.Error("stat-failed", err, lager.Data{"key": key})
 		d.metrics.recordDurable("has", "error")
 		return false
 	}

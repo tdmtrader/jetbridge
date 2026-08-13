@@ -35,18 +35,35 @@ import (
 	"regexp"
 )
 
+// Attributes describe a stored object without transferring it.
+type Attributes struct {
+	// Key is the object's key, as passed to Put.
+	Key string
+
+	// Size is the object's length in bytes.
+	Size int64
+
+	// Version identifies one particular write, where the backend has such a
+	// concept -- a GCS generation, an S3 versionId. Empty where it does not.
+	//
+	// It exists so a caller that cares which write it read (v4's snapshot
+	// store will) can pin one, without this package taking a position on
+	// whether that matters.
+	Version string
+}
+
 // Store is a flat key/value space holding one opaque blob per key.
 //
 // Implementations must treat a missing object as an ordinary outcome, not an
-// error: Get and Has report absence through their bool, and Delete of an absent
-// key succeeds. An error means the store itself failed — unreachable, denied,
-// malformed — and every caller in the daemon responds to that by carrying on
-// without the store.
+// error: Stat and Get report absence through their bool, and Delete of an
+// absent key succeeds. An error means the store itself failed -- unreachable,
+// denied, malformed -- and every caller in the daemon responds to that by
+// carrying on without the store.
 type Store interface {
-	// Has reports whether the key is present, without transferring the body.
-	// It exists so a cache probe costs one metadata round-trip rather than a
+	// Stat reports the object's attributes without transferring the body. It
+	// exists so a cache probe costs one metadata round-trip rather than a
 	// download the caller discards.
-	Has(ctx context.Context, key string) (bool, error)
+	Stat(ctx context.Context, key string) (Attributes, bool, error)
 
 	// Get opens the object. A miss is (nil, false, nil).
 	//
@@ -63,6 +80,17 @@ type Store interface {
 	// Delete removes the object. Deleting an absent key is not an error, so a
 	// reclaim pass can be re-run without tracking what it already removed.
 	Delete(ctx context.Context, key string) error
+
+	// List calls fn for every object in the store, in unspecified order,
+	// stopping early if fn returns an error and returning it.
+	//
+	// Reclaim needs this. Storage is the only authority on what storage
+	// holds: a database can be restored, rebuilt or diverge, and anything
+	// reconciling a bucket against one has to be able to enumerate the bucket
+	// rather than infer its contents. A store without List can only ever
+	// delete objects something already remembered, which is precisely the set
+	// that does not leak.
+	List(ctx context.Context, fn func(Attributes) error) error
 }
 
 // ErrTooLarge is returned by Put when the body exceeds the configured limit.

@@ -60,6 +60,18 @@ type S3Config struct {
 
 	// Limit bounds a single object in bytes; zero or less is unbounded.
 	Limit int64
+
+	// MaxAttempts bounds how hard the client tries before giving up.
+	//
+	// It is configuration rather than a property of the backend because the
+	// right answer depends entirely on whether the bytes are replaceable. For
+	// the artifact daemon a miss is free, so retrying is latency a build pays
+	// for an answer it will discard, and 2 is right. For a caller whose bytes
+	// have no upstream — an agent's workspace, say — giving up after two
+	// attempts on a transient 503 loses data, and it should ask for more.
+	//
+	// Zero means 2.
+	MaxAttempts int
 }
 
 // NewS3 builds an S3-compatible store.
@@ -89,13 +101,13 @@ func NewS3(ctx context.Context, cfg S3Config) (*S3, error) {
 		return nil, fmt.Errorf("durable: load aws config: %w", err)
 	}
 
+	attempts := cfg.MaxAttempts
+	if attempts <= 0 {
+		attempts = 2
+	}
+
 	client := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
-		// Fail fast rather than thoroughly. The tier above degrades to a cache
-		// miss on error, so a long retry ladder does not rescue anything — it
-		// just holds a build's cache probe open while the bucket is down. Two
-		// attempts absorb a blip; anything more is latency the build pays for
-		// an answer it is going to ignore.
-		o.RetryMaxAttempts = 2
+		o.RetryMaxAttempts = attempts
 
 		if cfg.Endpoint != "" {
 			o.BaseEndpoint = aws.String(cfg.Endpoint)
@@ -140,24 +152,28 @@ func isMiss(err error) bool {
 	return false
 }
 
-// Has issues a HEAD so a cache probe does not pay for the body.
-func (s *S3) Has(ctx context.Context, key string) (bool, error) {
+// Stat issues a HEAD so a cache probe does not pay for the body.
+func (s *S3) Stat(ctx context.Context, key string) (Attributes, bool, error) {
 	objKey, err := s.objectKey(key)
 	if err != nil {
-		return false, err
+		return Attributes{}, false, err
 	}
 
-	_, err = s.client.HeadObject(ctx, &s3.HeadObjectInput{
+	out, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(objKey),
 	})
 	switch {
 	case err == nil:
-		return true, nil
+		return Attributes{
+			Key:     key,
+			Size:    aws.ToInt64(out.ContentLength),
+			Version: aws.ToString(out.VersionId),
+		}, true, nil
 	case isMiss(err):
-		return false, nil
+		return Attributes{}, false, nil
 	default:
-		return false, fmt.Errorf("durable: head %s: %w", key, err)
+		return Attributes{}, false, fmt.Errorf("durable: head %s: %w", key, err)
 	}
 }
 
@@ -227,6 +243,43 @@ func (s *S3) Delete(ctx context.Context, key string) error {
 	})
 	if err != nil && !isMiss(err) {
 		return fmt.Errorf("durable: delete %s: %w", key, err)
+	}
+
+	return nil
+}
+
+// List pages through the bucket under this store's prefix.
+//
+// Keys that do not round-trip through objectKey are skipped: a bucket shared
+// with another consumer — v4's snapshot store is the expected one — holds
+// objects that are not this store's to enumerate, and a reclaim pass must not
+// mistake them for orphans.
+func (s *S3) List(ctx context.Context, fn func(Attributes) error) error {
+	input := &s3.ListObjectsV2Input{Bucket: aws.String(s.bucket)}
+	if s.prefix != "" {
+		input.Prefix = aws.String(s.prefix + "/")
+	}
+
+	pager := s3.NewListObjectsV2Paginator(s.client, input)
+	for pager.HasMorePages() {
+		page, err := pager.NextPage(ctx)
+		if err != nil {
+			return fmt.Errorf("durable: list: %w", err)
+		}
+
+		for _, obj := range page.Contents {
+			key := aws.ToString(obj.Key)
+			if s.prefix != "" {
+				key = strings.TrimPrefix(key, s.prefix+"/")
+			}
+			if ValidateKey(key) != nil {
+				continue
+			}
+
+			if err := fn(Attributes{Key: key, Size: aws.ToInt64(obj.Size)}); err != nil {
+				return err
+			}
+		}
 	}
 
 	return nil

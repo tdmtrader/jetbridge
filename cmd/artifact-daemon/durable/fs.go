@@ -43,20 +43,24 @@ func (f *FS) path(key string) (string, error) {
 	return filepath.Join(f.root, key), nil
 }
 
-// Has reports whether the object file exists.
-func (f *FS) Has(_ context.Context, key string) (bool, error) {
+// Stat reports the object file's attributes.
+//
+// There is no Version: a file has no generation, so a caller that needs to pin
+// one write cannot do it on this backend.
+func (f *FS) Stat(_ context.Context, key string) (Attributes, bool, error) {
 	path, err := f.path(key)
 	if err != nil {
-		return false, err
+		return Attributes{}, false, err
 	}
 
-	switch _, err := os.Stat(path); {
+	info, err := os.Stat(path)
+	switch {
 	case err == nil:
-		return true, nil
+		return Attributes{Key: key, Size: info.Size()}, true, nil
 	case os.IsNotExist(err):
-		return false, nil
+		return Attributes{}, false, nil
 	default:
-		return false, fmt.Errorf("durable: stat %s: %w", key, err)
+		return Attributes{}, false, fmt.Errorf("durable: stat %s: %w", key, err)
 	}
 }
 
@@ -119,6 +123,40 @@ func (f *FS) Delete(_ context.Context, key string) error {
 
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("durable: remove %s: %w", key, err)
+	}
+
+	return nil
+}
+
+// List walks the root directory.
+//
+// Entries that are not objects are skipped rather than reported: the temporary
+// files Put writes are siblings of the objects, and a reclaim pass that treated
+// one as an orphan would delete an upload in flight.
+func (f *FS) List(_ context.Context, fn func(Attributes) error) error {
+	entries, err := os.ReadDir(f.root)
+	if err != nil {
+		return fmt.Errorf("durable: list: %w", err)
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() || ValidateKey(entry.Name()) != nil {
+			continue
+		}
+
+		info, err := entry.Info()
+		if err != nil {
+			if os.IsNotExist(err) {
+				// Swept between ReadDir and Info; it is simply gone.
+				continue
+			}
+
+			return fmt.Errorf("durable: list %s: %w", entry.Name(), err)
+		}
+
+		if err := fn(Attributes{Key: entry.Name(), Size: info.Size()}); err != nil {
+			return err
+		}
 	}
 
 	return nil

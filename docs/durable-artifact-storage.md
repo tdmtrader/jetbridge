@@ -124,11 +124,18 @@ off pays nothing for it.
 ## Interface
 
 ```go
+type Attributes struct {
+    Key     string
+    Size    int64
+    Version string // GCS generation, S3 versionId; empty on a filesystem
+}
+
 type Store interface {
-    Has(ctx context.Context, key string) (bool, error)
+    Stat(ctx context.Context, key string) (Attributes, bool, error)
     Get(ctx context.Context, key string) (io.ReadCloser, bool, error)
     Put(ctx context.Context, key string, body io.Reader) error
     Delete(ctx context.Context, key string) error
+    List(ctx context.Context, fn func(Attributes) error) error
 }
 ```
 
@@ -136,21 +143,48 @@ A miss is reported through the `bool`, never as an error. An error means the
 store itself failed. That distinction is what lets the tier above it fail open
 without swallowing real faults silently.
 
+`Stat` rather than a bare `Has` because a caller that needs the size or wants
+to pin one particular write should not have to download the body to get it.
+`Version` is the backend's own name for a write — a GCS generation, an S3
+versionId — and is empty where the backend has no such concept rather than
+invented.
+
+`List` is there for reclaim. Storage is the only authority on what storage
+holds: a database can be restored, rebuilt or diverge, so anything reconciling
+a bucket against one has to enumerate the bucket. A store without `List` can
+only delete what something already remembered, which is exactly the set that
+does not leak.
+
 Keys are validated against `^[a-zA-Z0-9][a-zA-Z0-9._-]{0,254}$`. The fs backend
 joins the key onto a root directory, so `../` would escape it; S3 turns a slash
 into a prefix, which would hide the object from `Delete`.
 
 ## Backends
 
-**s3** — S3-compatible, so it also covers MinIO, Ceph, R2 and Backblaze. That
-matters more than native support for any one cloud: a self-hosted JetBridge is
-likelier to have a MinIO than an AWS account. `aws-sdk-go-v2` was already a
-direct dependency (`atc/creds/ssm`, `atc/creds/secretsmanager`), so this added
-one service package rather than a vendor tree.
+**gcs** — native Cloud Storage, and the default choice on GCP.
+
+Cloud Storage does speak S3 through its XML API, but interop signs with SigV4,
+which needs an HMAC key: a long-lived secret tied to a service account that
+somebody has to mount and rotate. The native client uses Application Default
+Credentials, which on GKE is Workload Identity — no key exists to leak. That is
+the whole reason this backend exists rather than pointing the S3 one at
+`storage.googleapis.com`. There is deliberately no way to pass a credential to
+`NewGCS`.
+
+No spooling: Cloud Storage's writer is a plain `io.WriteCloser` that chunks as
+it goes. A truncated body cancels the context rather than closing the writer,
+because `Close` finalises whatever was written and would publish a short object.
+
+**s3** — S3-compatible, so it covers AWS, MinIO, Ceph, R2 and Backblaze. It
+earns its place even with GCS as the primary: theborg is not GCP, and MinIO is
+a better on-prem object store than a filesystem over NFS. `aws-sdk-go-v2` was
+already a direct dependency (`atc/creds/ssm`, `atc/creds/secretsmanager`).
 
 Bodies are spooled to a temp file before upload. The SDK needs a seekable body
 to sign and to retry, and holding a multi-gigabyte cache in memory on every node
-of a DaemonSet is how a cluster OOMs.
+of a DaemonSet is how a cluster OOMs. `MaxAttempts` is configuration rather than
+a property of the backend: for the daemon a miss is free so 2 is right, but a
+caller whose bytes have no upstream should ask for more.
 
 **filesystem** — the whole store for a single-node install on an NFS or RWX
 mount, and the backend every test in the package runs against. Writes go through
@@ -158,18 +192,23 @@ a temp file and a rename, so a crashed or over-limit upload never leaves a short
 file that a later `Get` would serve as whole.
 
 > A `hostPath` for `durable.path` is **not** durable — it is a second local
-> copy. Point it at shared storage or use s3.
+> copy. Point it at shared storage, or use `gcs`/`s3`.
+>
+> A **GCS Fuse** mount is also not a safe target for the `filesystem` backend:
+> both `FS.Put` and `DurableTier.Restore` get their atomicity from `os.Rename`,
+> and Fuse implements rename as copy-then-delete. Use the `gcs` backend, which
+> talks to the API directly.
 
 ## Configuration
 
 ```yaml
 artifactDaemon:
   durable:
-    store: ""                    # "" | s3 | filesystem
-    bucket: ""                   # s3
-    prefix: ""                   # namespaces one bucket across clusters
-    endpoint: ""                 # set for MinIO; empty for AWS
-    region: "us-east-1"
+    store: ""                    # "" | gcs | s3 | filesystem
+    bucket: ""                   # gcs, s3
+    prefix: ""                   # namespaces one bucket across clusters/consumers
+    endpoint: ""                 # set for MinIO; empty for GCP and AWS
+    region: "us-east-1"          # s3 only
     path: ""                     # filesystem
     timeout: "5m"
     maxBytes: 5368709120         # 0 disables
@@ -179,7 +218,7 @@ artifactDaemon:
 Credentials arrive as environment from `existingSecret`, never as flags — a flag
 lands in the process table and in `kubectl describe pod`. On a managed cluster,
 leave `existingSecret` empty and use IRSA or Workload Identity; nothing then
-holds a long-lived key.
+holds a long-lived key. With `store: gcs` on GKE it is not needed at all.
 
 An incomplete config fails at `helm template`, not at runtime: a daemon that
 starts, reports healthy and quietly caches nothing is a much worse failure.
@@ -215,11 +254,17 @@ Series are pre-initialised so an alert can fire from the first failure.
 
 ## Testing
 
-25 subtests in `cmd/artifact-daemon/durable`, run against both backends through
-one table — a store that only works on disk is not the feature.
+All three backends run the same conformance table — a store that only works on
+disk is not the feature. Each of GCS, S3 and filesystem passes the same ten
+behaviours.
 
-The S3 backend is tested against a real `httptest` server speaking the real wire
-protocol to the real SDK, matching `atc/creds/ssm`. No mocks, no cloud account.
+The cloud backends are tested against real `httptest` servers speaking the real
+wire protocols to the real SDKs, matching `atc/creds/ssm`. No mocks, no cloud
+account.
+
+One thing the GCS fake taught: the Go client uploads over the JSON API but
+fetches object bodies over the **XML** API at `/<bucket>/<object>`. A fake
+serving only the JSON routes accepted every write and missed every read.
 
 `cmd/artifact-daemon/durable_tier_test.go` covers the tier: a store/restore
 round trip through a real `Server`'s tar writer, a `brokenStore` that fails

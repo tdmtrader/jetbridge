@@ -455,16 +455,24 @@ artifactDaemon:
   # Every failure degrades rather than propagating -- an unreachable bucket
   # costs a re-download, never a red build.
   durable:
-    # -- Backend: "" (disabled), "s3", or "filesystem".
-    # "s3" is S3-compatible, so it also covers MinIO, Ceph, R2 and Backblaze.
+    # -- Backend: "" (disabled), "gcs", "s3", or "filesystem".
+    #
+    # "gcs" is native Cloud Storage and authenticates with Application Default
+    # Credentials -- on GKE that is Workload Identity, so no key exists to leak.
+    # Cloud Storage also speaks S3, but only with an HMAC key, which is a
+    # long-lived secret somebody has to mount and rotate. Prefer "gcs" on GCP.
+    #
+    # "s3" is S3-compatible, so it covers AWS, MinIO, Ceph, R2 and Backblaze.
     store: ""
-    # -- Bucket name, for store: s3
+    # -- Bucket name, for store: gcs or s3
     bucket: ""
     # -- Key prefix inside the bucket, so one bucket can serve several clusters
+    # or several consumers. Reclaim only ever enumerates its own prefix.
     prefix: ""
-    # -- Endpoint override, for store: s3. Set this for MinIO; leave empty for AWS.
+    # -- Endpoint override. Set this for MinIO; leave empty for AWS or GCP.
     endpoint: ""
-    # -- Region. Required by the SDK signer even when endpoint ignores it.
+    # -- Region, for store: s3. Required by the SDK signer even when the
+    # endpoint ignores it.
     region: "us-east-1"
     # -- Root directory, for store: filesystem. Must be a shared mount (NFS,
     # RWX PVC) to be durable across nodes -- a hostPath here is just a second
@@ -475,9 +483,9 @@ artifactDaemon:
     # -- Largest single artifact to store durably. 0 disables the limit.
     maxBytes: 5368709120
     # -- Existing Secret supplying credentials as environment variables
-    # (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY). Leave empty on a managed
-    # cluster and use IRSA or Workload Identity instead: nothing then holds a
-    # long-lived key.
+    # (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY for s3). Leave empty on a
+    # managed cluster and use IRSA or Workload Identity instead: nothing then
+    # holds a long-lived key. Not needed at all for store: gcs on GKE.
     existingSecret: ""
   # -- Override the headless service name. When set, used verbatim.
   # Default (when empty): <release-fullname>-artifact-daemon

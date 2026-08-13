@@ -95,8 +95,8 @@ func TestRestoreOfAnAbsentKeyLeavesTheDestinationAlone(t *testing.T) {
 // credential, a bad endpoint.
 type brokenStore struct{}
 
-func (brokenStore) Has(context.Context, string) (bool, error) {
-	return false, errors.New("bucket unreachable")
+func (brokenStore) Stat(context.Context, string) (durable.Attributes, bool, error) {
+	return durable.Attributes{}, false, errors.New("bucket unreachable")
 }
 func (brokenStore) Get(context.Context, string) (io.ReadCloser, bool, error) {
 	return nil, false, errors.New("bucket unreachable")
@@ -105,6 +105,9 @@ func (brokenStore) Put(context.Context, string, io.Reader) error {
 	return errors.New("bucket unreachable")
 }
 func (brokenStore) Delete(context.Context, string) error {
+	return errors.New("bucket unreachable")
+}
+func (brokenStore) List(context.Context, func(durable.Attributes) error) error {
 	return errors.New("bucket unreachable")
 }
 
@@ -196,8 +199,8 @@ type countingStore struct {
 	puts  atomic.Int64
 }
 
-func (c *countingStore) Has(ctx context.Context, key string) (bool, error) {
-	return c.inner.Has(ctx, key)
+func (c *countingStore) Stat(ctx context.Context, key string) (durable.Attributes, bool, error) {
+	return c.inner.Stat(ctx, key)
 }
 func (c *countingStore) Get(ctx context.Context, key string) (io.ReadCloser, bool, error) {
 	return c.inner.Get(ctx, key)
@@ -211,4 +214,7 @@ func (c *countingStore) Put(ctx context.Context, key string, body io.Reader) err
 }
 func (c *countingStore) Delete(ctx context.Context, key string) error {
 	return c.inner.Delete(ctx, key)
+}
+func (c *countingStore) List(ctx context.Context, fn func(durable.Attributes) error) error {
+	return c.inner.List(ctx, fn)
 }

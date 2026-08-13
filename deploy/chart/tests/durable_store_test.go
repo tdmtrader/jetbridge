@@ -67,6 +67,11 @@ func TestIncompleteDurableConfigFailsToRender(t *testing.T) {
 			want: "bucket is required",
 		},
 		{
+			name: "gcs without a bucket",
+			sets: []string{"artifactDaemon.durable.store=gcs"},
+			want: "bucket is required",
+		},
+		{
 			name: "filesystem without a path",
 			sets: []string{"artifactDaemon.durable.store=filesystem"},
 			want: "path is required",
@@ -125,4 +130,24 @@ func durableFlags(out string) string {
 	}
 
 	return strings.Join(kept, "\n")
+}
+
+// GCS is the day-0 backend, and the point of choosing it over S3 interop is
+// that it needs no credential at all: Application Default Credentials on GKE
+// means Workload Identity. A render that demanded a key would have thrown that
+// away.
+func TestGCSNeedsNoCredentialFlags(t *testing.T) {
+	out := render(t,
+		"artifactDaemon.durable.store=gcs",
+		"artifactDaemon.durable.bucket=jb-artifacts",
+	)
+
+	if !strings.Contains(out, "--durable-store=gcs") {
+		t.Fatalf("gcs backend not rendered:\n%s", durableFlags(out))
+	}
+	for _, unwanted := range []string{"--durable-s3-region", "secretRef", "GOOGLE_APPLICATION_CREDENTIALS"} {
+		if strings.Contains(out, unwanted) {
+			t.Errorf("gcs render contains %q; it should authenticate with ADC alone", unwanted)
+		}
+	}
 }

@@ -33,6 +33,11 @@ func eachStore(t *testing.T, run func(t *testing.T, store durable.Store)) {
 		srv := newFakeS3(t)
 		run(t, srv.store(t, 0))
 	})
+
+	t.Run("gcs", func(t *testing.T) {
+		srv := newFakeGCS(t)
+		run(t, srv.store(t, 0))
+	})
 }
 
 func TestGetOfAbsentKeyIsAMissNotAnError(t *testing.T) {
@@ -53,14 +58,14 @@ func TestGetOfAbsentKeyIsAMissNotAnError(t *testing.T) {
 	})
 }
 
-func TestHasOfAbsentKeyIsFalseNotAnError(t *testing.T) {
+func TestStatOfAbsentKeyIsFalseNotAnError(t *testing.T) {
 	eachStore(t, func(t *testing.T, store durable.Store) {
-		found, err := store.Has(context.Background(), "rc-404")
+		_, found, err := store.Stat(context.Background(), "rc-404")
 		if err != nil {
-			t.Fatalf("Has of absent key returned an error: %v", err)
+			t.Fatalf("Stat of absent key returned an error: %v", err)
 		}
 		if found {
-			t.Fatal("Has reported a hit for a key that was never written")
+			t.Fatal("Stat reported a hit for a key that was never written")
 		}
 	})
 }
@@ -74,9 +79,12 @@ func TestPutThenGetRoundTrips(t *testing.T) {
 			t.Fatalf("Put: %v", err)
 		}
 
-		found, err := store.Has(ctx, "rc-1")
+		attrs, found, err := store.Stat(ctx, "rc-1")
 		if err != nil || !found {
-			t.Fatalf("Has after Put = (%v, %v), want (true, nil)", found, err)
+			t.Fatalf("Stat after Put = (%v, %v), want (true, nil)", found, err)
+		}
+		if attrs.Size != int64(len(want)) {
+			t.Fatalf("Stat reported %d bytes, want %d", attrs.Size, len(want))
 		}
 
 		body, found, err := store.Get(ctx, "rc-1")
@@ -137,7 +145,7 @@ func TestDeleteIsIdempotent(t *testing.T) {
 			t.Fatalf("Delete of an already-deleted key: %v", err)
 		}
 
-		if found, _ := store.Has(ctx, "rc-3"); found {
+		if _, found, _ := store.Stat(ctx, "rc-3"); found {
 			t.Fatal("key still present after Delete")
 		}
 	})
@@ -165,8 +173,8 @@ func TestKeysThatCouldEscapeTheStoreAreRejected(t *testing.T) {
 			if _, _, err := store.Get(ctx, key); err == nil {
 				t.Errorf("Get(%q) was accepted; it must be rejected", key)
 			}
-			if _, err := store.Has(ctx, key); err == nil {
-				t.Errorf("Has(%q) was accepted; it must be rejected", key)
+			if _, _, err := store.Stat(ctx, key); err == nil {
+				t.Errorf("Stat(%q) was accepted; it must be rejected", key)
 			}
 			if err := store.Delete(ctx, key); err == nil {
 				t.Errorf("Delete(%q) was accepted; it must be rejected", key)
@@ -189,13 +197,29 @@ func TestPutOverTheLimitFailsRatherThanTruncating(t *testing.T) {
 			t.Fatalf("Put over limit = %v, want ErrTooLarge", err)
 		}
 
-		if found, _ := store.Has(context.Background(), "rc-big"); found {
+		if _, found, _ := store.Stat(context.Background(), "rc-big"); found {
 			t.Fatal("an over-limit Put left an object behind")
 		}
 	})
 
 	t.Run("s3", func(t *testing.T) {
 		srv := newFakeS3(t)
+		store := srv.store(t, 8)
+
+		err := store.Put(context.Background(), "rc-big", strings.NewReader("more than eight bytes"))
+		if !errors.Is(err, durable.ErrTooLarge) {
+			t.Fatalf("Put over limit = %v, want ErrTooLarge", err)
+		}
+		if srv.has("rc-big") {
+			t.Fatal("an over-limit Put reached the bucket")
+		}
+	})
+
+	t.Run("gcs", func(t *testing.T) {
+		// Cloud Storage's writer finalises on Close, so a truncated body has
+		// to cancel the context instead. Without that this publishes a short
+		// object and reports success.
+		srv := newFakeGCS(t)
 		store := srv.store(t, 8)
 
 		err := store.Put(context.Background(), "rc-big", strings.NewReader("more than eight bytes"))
@@ -235,7 +259,7 @@ func TestFSPutLeavesNoPartialFileWhenTheBodyFails(t *testing.T) {
 		t.Fatal("Put with a failing body succeeded")
 	}
 
-	if found, _ := store.Has(context.Background(), "rc-partial"); found {
+	if _, found, _ := store.Stat(context.Background(), "rc-partial"); found {
 		t.Fatal("a failed Put left the object visible")
 	}
 
@@ -272,8 +296,8 @@ func TestS3UsesThePrefixForEveryOperation(t *testing.T) {
 		t.Fatalf("object not stored under the prefix; keys present: %v", srv.keys())
 	}
 
-	if found, err := store.Has(ctx, "rc-9"); err != nil || !found {
-		t.Fatalf("Has = (%v, %v), want (true, nil)", found, err)
+	if _, found, err := store.Stat(ctx, "rc-9"); err != nil || !found {
+		t.Fatalf("Stat = (%v, %v), want (true, nil)", found, err)
 	}
 	if err := store.Delete(ctx, "rc-9"); err != nil {
 		t.Fatalf("Delete: %v", err)
@@ -293,8 +317,8 @@ func TestS3ServerErrorsSurfaceAsErrorsNotMisses(t *testing.T) {
 	if _, _, err := store.Get(context.Background(), "rc-1"); err == nil {
 		t.Fatal("Get against a failing bucket reported success")
 	}
-	if _, err := store.Has(context.Background(), "rc-1"); err == nil {
-		t.Fatal("Has against a failing bucket reported success")
+	if _, _, err := store.Stat(context.Background(), "rc-1"); err == nil {
+		t.Fatal("Stat against a failing bucket reported success")
 	}
 }
 
@@ -392,6 +416,14 @@ func (f *fakeS3) serve(w http.ResponseWriter, r *http.Request) {
 
 	trimmed := strings.TrimPrefix(r.URL.Path, "/")
 	parts := strings.SplitN(trimmed, "/", 2)
+
+	// A bucket-level GET with list-type=2 is ListObjectsV2, not an object
+	// fetch: the key is empty and the query carries the request.
+	if r.Method == http.MethodGet && r.URL.Query().Get("list-type") == "2" {
+		f.listObjects(w, r)
+		return
+	}
+
 	if len(parts) != 2 || parts[1] == "" {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
@@ -461,11 +493,191 @@ func TestS3StopsRetryingAFailingBucket(t *testing.T) {
 	srv.fail(http.StatusInternalServerError)
 	store := srv.store(t, 0)
 
-	if _, err := store.Has(context.Background(), "rc-1"); err == nil {
-		t.Fatal("Has against a failing bucket reported success")
+	if _, _, err := store.Stat(context.Background(), "rc-1"); err == nil {
+		t.Fatal("Stat against a failing bucket reported success")
 	}
 
 	if got := srv.requests(); got != 2 {
 		t.Fatalf("a failing bucket was tried %d times, want 2 (RetryMaxAttempts)", got)
 	}
+}
+
+func TestGetReportsFoundAlongsideTheBody(t *testing.T) {
+	// Written after the GCS backend accepted every write and missed every
+	// read: the client uploads over the JSON API but fetches bodies over the
+	// XML API, and the fake only served the JSON routes. The round-trip test
+	// discarded `found` and panicked on a nil body, which named the symptom
+	// and not the cause.
+	eachStore(t, func(t *testing.T, store durable.Store) {
+		ctx := context.Background()
+		if err := store.Put(ctx, "rc-found", strings.NewReader("x")); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+
+		body, found, err := store.Get(ctx, "rc-found")
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if !found {
+			t.Fatal("Get reported a miss for a key that was just written")
+		}
+		defer body.Close()
+	})
+}
+
+func TestListEnumeratesEveryStoredObject(t *testing.T) {
+	// Reclaim depends on this: storage is the only authority on what storage
+	// holds, so anything reconciling a bucket against a database has to be
+	// able to enumerate the bucket.
+	eachStore(t, func(t *testing.T, store durable.Store) {
+		ctx := context.Background()
+		want := map[string]int64{"rc-10": 3, "rc-11": 5, "rc-12": 1}
+
+		for key, size := range want {
+			if err := store.Put(ctx, key, strings.NewReader(strings.Repeat("x", int(size)))); err != nil {
+				t.Fatalf("Put %s: %v", key, err)
+			}
+		}
+
+		got := map[string]int64{}
+		if err := store.List(ctx, func(a durable.Attributes) error {
+			got[a.Key] = a.Size
+			return nil
+		}); err != nil {
+			t.Fatalf("List: %v", err)
+		}
+
+		for key, size := range want {
+			if got[key] != size {
+				t.Errorf("List reported %s as %d bytes, want %d", key, got[key], size)
+			}
+		}
+		if len(got) != len(want) {
+			t.Errorf("List returned %d objects, want %d: %v", len(got), len(want), got)
+		}
+	})
+}
+
+func TestListStopsWhenTheCallbackFails(t *testing.T) {
+	eachStore(t, func(t *testing.T, store durable.Store) {
+		ctx := context.Background()
+		for _, key := range []string{"rc-20", "rc-21", "rc-22"} {
+			if err := store.Put(ctx, key, strings.NewReader("x")); err != nil {
+				t.Fatalf("Put %s: %v", key, err)
+			}
+		}
+
+		stop := errors.New("stop")
+		seen := 0
+		err := store.List(ctx, func(durable.Attributes) error {
+			seen++
+			return stop
+		})
+
+		if !errors.Is(err, stop) {
+			t.Fatalf("List returned %v, want the callback's error", err)
+		}
+		if seen != 1 {
+			t.Fatalf("List called the callback %d times after it failed, want 1", seen)
+		}
+	})
+}
+
+func TestListSkipsObjectsBelongingToAnotherConsumer(t *testing.T) {
+	// One bucket is expected to serve several consumers, separated by prefix.
+	// A reclaim pass that enumerated the whole bucket would see the other
+	// consumer's objects as orphans and delete them.
+	srv := newFakeGCS(t)
+	mine := srv.storeWithPrefix(t, "resource-caches", 0)
+	theirs := srv.storeWithPrefix(t, "agent-snapshots", 0)
+
+	ctx := context.Background()
+	if err := mine.Put(ctx, "rc-1", strings.NewReader("mine")); err != nil {
+		t.Fatalf("Put mine: %v", err)
+	}
+	if err := theirs.Put(ctx, "snap1", strings.NewReader("theirs")); err != nil {
+		t.Fatalf("Put theirs: %v", err)
+	}
+
+	var keys []string
+	if err := mine.List(ctx, func(a durable.Attributes) error {
+		keys = append(keys, a.Key)
+		return nil
+	}); err != nil {
+		t.Fatalf("List: %v", err)
+	}
+
+	if len(keys) != 1 || keys[0] != "rc-1" {
+		t.Fatalf("List returned %v, want only [rc-1]", keys)
+	}
+
+	// The filter has to be server-side. Fetching the other consumer's objects
+	// and discarding them client-side gives the same answer at a cost that
+	// grows with somebody else's data.
+	if got := srv.lastListPrefix(t); got != "resource-caches/" {
+		t.Errorf("List asked the server to filter by %q, want %q — the whole bucket is being enumerated", got, "resource-caches/")
+	}
+}
+
+func TestStatReportsAVersionWhereTheBackendHasOne(t *testing.T) {
+	// v4's snapshot store will want to pin the exact write it read. GCS has
+	// generations and S3 has versionIds; a file has neither, and saying so is
+	// more useful than inventing one.
+	srv := newFakeGCS(t)
+	store := srv.store(t, 0)
+	ctx := context.Background()
+
+	if err := store.Put(ctx, "rc-30", strings.NewReader("x")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	attrs, found, err := store.Stat(ctx, "rc-30")
+	if err != nil || !found {
+		t.Fatalf("Stat = (%v, %v), want (true, nil)", found, err)
+	}
+	if attrs.Version == "" {
+		t.Error("GCS Stat reported no Version; generation should populate it")
+	}
+
+	fs, err := durable.NewFS(t.TempDir(), 0)
+	if err != nil {
+		t.Fatalf("NewFS: %v", err)
+	}
+	if err := fs.Put(ctx, "rc-30", strings.NewReader("x")); err != nil {
+		t.Fatalf("fs Put: %v", err)
+	}
+	fsAttrs, _, err := fs.Stat(ctx, "rc-30")
+	if err != nil {
+		t.Fatalf("fs Stat: %v", err)
+	}
+	if fsAttrs.Version != "" {
+		t.Errorf("fs Stat invented a Version %q; a file has no generation", fsAttrs.Version)
+	}
+}
+
+// listObjects answers ListObjectsV2 with the XML the SDK expects.
+func (f *fakeS3) listObjects(w http.ResponseWriter, r *http.Request) {
+	prefix := r.URL.Query().Get("prefix")
+
+	f.mu.Lock()
+	var contents strings.Builder
+	count := 0
+	for key, body := range f.objects {
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		count++
+		contents.WriteString("<Contents><Key>" + key + "</Key><Size>" +
+			strconv.Itoa(len(body)) + "</Size></Contents>")
+	}
+	f.mu.Unlock()
+
+	w.Header().Set("Content-Type", "application/xml")
+	_, _ = w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?>` +
+		`<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">` +
+		`<Name>artifacts</Name><Prefix>` + prefix + `</Prefix>` +
+		`<KeyCount>` + strconv.Itoa(count) + `</KeyCount>` +
+		`<MaxKeys>1000</MaxKeys><IsTruncated>false</IsTruncated>` +
+		contents.String() +
+		`</ListBucketResult>`))
 }

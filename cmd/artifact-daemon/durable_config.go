@@ -46,9 +46,27 @@ func buildDurableTier(logger lager.Logger, m *metrics, opts durableOptions) (*Du
 		}
 		store = fs
 
+	case "gcs":
+		if opts.bucket == "" {
+			return nil, fmt.Errorf("--durable-bucket is required for --durable-store=gcs")
+		}
+		// No credential flags: on GKE the right answer is Workload Identity
+		// via Application Default Credentials, and off GKE the SDK already
+		// reads GOOGLE_APPLICATION_CREDENTIALS. Neither needs a key here.
+		gcs, err := durable.NewGCS(context.Background(), durable.GCSConfig{
+			Bucket:   opts.bucket,
+			Prefix:   opts.prefix,
+			Endpoint: opts.endpoint,
+			Limit:    opts.maxBytes,
+		})
+		if err != nil {
+			return nil, err
+		}
+		store = gcs
+
 	case "s3":
 		if opts.bucket == "" {
-			return nil, fmt.Errorf("--durable-s3-bucket is required for --durable-store=s3")
+			return nil, fmt.Errorf("--durable-bucket is required for --durable-store=s3")
 		}
 		// Credentials come from the SDK's default chain, which is what picks
 		// up IRSA and Workload Identity. Nothing here reads a key from a flag:
@@ -66,7 +84,7 @@ func buildDurableTier(logger lager.Logger, m *metrics, opts durableOptions) (*Du
 		store = s3
 
 	default:
-		return nil, fmt.Errorf("unknown --durable-store %q: want \"\", \"s3\" or \"filesystem\"", opts.kind)
+		return nil, fmt.Errorf("unknown --durable-store %q: want \"\", \"gcs\", \"s3\" or \"filesystem\"", opts.kind)
 	}
 
 	return NewDurableTier(logger, store, m, opts.timeout), nil
