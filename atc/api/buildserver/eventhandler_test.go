@@ -124,15 +124,25 @@ var _ = Describe("Handler", func() {
 	var (
 		handlerBuild db.BuildForAPI
 
+		handlerReturned chan struct{}
+
 		server *httptest.Server
 	)
 
 	BeforeEach(func() {
 		handlerBuild = nil
+		handlerReturned = make(chan struct{}, 1)
 
 		// Each context picks its own build, so resolve it when the request
 		// arrives rather than when the server starts.
 		server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			defer func() {
+				select {
+				case handlerReturned <- struct{}{}:
+				default:
+				}
+			}()
+
 			NewEventHandler(lagertest.NewTestLogger("test"), handlerBuild).ServeHTTP(w, r)
 		}))
 	})
@@ -378,6 +388,42 @@ var _ = Describe("Handler", func() {
 					Expect(err).NotTo(HaveOccurred())
 					Eventually(watchedBuild.CloseCount, 30*time.Second).Should(Equal(1))
 				})
+			})
+		})
+
+		Context("when the build is live but idle", func() {
+			var watchedBuild *closeWatchingBuild
+
+			BeforeEach(func() {
+				build := createBuild(createTeam("some-team"))
+				Expect(build.SaveEvent(numberedEvent{1})).To(Succeed())
+
+				// The build never finishes and never emits again, so once the
+				// handler has drained what is already there it is parked in
+				// Next() with nothing to wake it but the client going away.
+				watchedBuild = &closeWatchingBuild{BuildForAPI: buildForAPI(build)}
+				DeferCleanup(watchedBuild.ReleaseSources)
+				handlerBuild = watchedBuild
+			})
+
+			It("returns and closes the event source when the client disconnects", func() {
+				client := &http.Client{
+					Transport: &http.Transport{},
+				}
+				response, err := client.Do(request)
+				Expect(err).NotTo(HaveOccurred())
+
+				reader := sse.NewReadCloser(response.Body)
+				Expect(reader.Next()).To(Equal(sse.Event{
+					ID:   "0",
+					Name: "event",
+					Data: []byte(numberedEventData(1, 0)),
+				}))
+
+				Expect(response.Body.Close()).To(Succeed())
+
+				Eventually(handlerReturned, 30*time.Second).Should(Receive())
+				Eventually(watchedBuild.CloseCount, 30*time.Second).Should(Equal(1))
 			})
 		})
 

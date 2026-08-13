@@ -5,9 +5,11 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"sync"
 
 	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/event"
 	"github.com/vito/go-sse/sse"
 )
 
@@ -58,25 +60,62 @@ func NewEventHandler(logger lager.Logger, build db.BuildForAPI) http.Handler {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
+		// Next() blocks until the build emits, which for an idle live build is
+		// unbounded, so it cannot be waited on from the same goroutine that has
+		// to notice the client leaving. Read it here and hand the results over
+		// instead. The defers unwind in the order this goroutine needs: stop
+		// wanting results, close the source so Next() returns, then reap.
+		var reading sync.WaitGroup
+		defer reading.Wait()
 		defer db.Close(events)
+
+		handlerDone := make(chan struct{})
+		defer close(handlerDone)
+
+		next := make(chan nextEvent, 1)
+
+		reading.Add(1)
+		go func() {
+			defer reading.Done()
+
+			for {
+				ev, err := events.Next()
+
+				select {
+				case next <- nextEvent{envelope: ev, err: err}:
+				case <-handlerDone:
+					return
+				}
+
+				if err != nil {
+					return
+				}
+			}
+		}()
 
 		for {
 			contextLogger := logger.WithData(lager.Data{"id": eventID})
 
-			ev, err := events.Next()
-			if err != nil {
-				if err == db.ErrEndOfBuildEventStream {
+			var result nextEvent
+			select {
+			case result = <-next:
+			case <-r.Context().Done():
+				return
+			}
+
+			if result.err != nil {
+				if result.err == db.ErrEndOfBuildEventStream {
 					if err := writer.WriteEnd(eventID); err != nil {
 						contextLogger.Info("failed-to-write-end", lager.Data{"error": err.Error()})
 					}
 					<-r.Context().Done()
 				} else {
-					contextLogger.Error("failed-to-get-next-build-event", err)
+					contextLogger.Error("failed-to-get-next-build-event", result.err)
 				}
 				return
 			}
 
-			if err := writer.WriteEvent(eventID, ev); err != nil {
+			if err := writer.WriteEvent(eventID, result.envelope); err != nil {
 				contextLogger.Info("failed-to-write-event", lager.Data{"error": err.Error()})
 				return
 			}
@@ -84,6 +123,11 @@ func NewEventHandler(logger lager.Logger, build db.BuildForAPI) http.Handler {
 			eventID++
 		}
 	})
+}
+
+type nextEvent struct {
+	envelope event.Envelope
+	err      error
 }
 
 type eventWriter struct {
