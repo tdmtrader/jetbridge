@@ -42,11 +42,10 @@ durable-store miss, timeout, expired credential or corrupt object must all
 degrade to "not here". `DurableTier`'s methods return `bool`, not `error`, so
 there is no error for a caller to accidentally propagate.
 
-## Status: store landed, content key landed, handler wiring outstanding
+## Status: wired end to end; reclaim outstanding
 
-**The store is built and tested, and the content key it needs now exists. What
-remains is passing that key from the ATC to the daemon and re-adding the three
-handler hooks.**
+**The store, the content key and the ATC↔daemon wiring are all landed and
+tested. What has no caller yet is deletion.**
 
 `db.ResourceCache.DurableKey()` returns `rc-<sha256>` over the cache's identity,
 persisted as `resource_caches.durable_key`
@@ -119,25 +118,56 @@ together and made a key-format change a lockstep redeploy of every node. It is
 gone. The ATC supplies a durable name for the artifacts it wants kept and stays
 silent about the rest; that silence is the entire protocol.
 
+### Two phases, two questions
+
+The find path asks two different questions and must keep them on separate
+channels.
+
+| Path | Question | Answer |
+|---|---|---|
+| `HEAD /resource-caches/{key}` | *Do you have these bytes on disk right now?* | Local registry only. **Never** the durable store. |
+| `POST /durable/restore` | *Can you get them?* | Pulls from the store and makes its own answer true before returning. |
+| `POST /register` `{"durable":true}` | — | Tars and uploads, detached from the response. |
+
+**Why HEAD must never consult the store.** Every daemon sees the same bucket. If
+HEAD answered from it, all of them would report 200 for anything ever stored;
+`ProbeResourceCache` races to the first responder, so the winner would be
+arbitrary and the node affinity the probe exists to provide would be gone — a
+cache resident on node A served by node B pulling it back out of object storage.
+Worse, a durable 200 would tell the ATC to skip the get step while no node holds
+the bytes, making bucket availability a hard build dependency in a design whose
+whole premise is that it is not.
+
+So the ATC probes locally, and only on a miss — and only when it has a content
+key, and only when a daemon advertised `X-Durable-Tier` — asks one daemon to
+warm. Candidates are ranked by rendezvous hash of the **node name**, so
+concurrent builds converge on one node rather than each pulling a private copy,
+and a rolling update (which replaces every pod IP at once) does not reshuffle
+every key's owner.
+
+A failed warm suppresses further attempts for that key for 60s. This is not an
+optimisation: a get step's own `timeout:` does not bound the warm, and
+`attemptGet` re-enters every `GetResourceLockInterval` (5s) while waiting for the
+resource lock, so without suppression a degraded bucket would cost a full warm
+timeout every five seconds indefinitely.
+
+**Rolling upgrade.** Capability rides the HEAD response, so an old daemon (which
+sets no header) receives exactly zero requests to a route it does not have. An
+old ATC sends no `durable` field, and `encoding/json` drops it — nothing is
+promoted. Neither direction needs a lockstep deploy.
+
+**The restore key travels in the request body, not the path.** As a path segment
+it would have to be un-escaped before being joined onto the storage root, where
+`%2e%2e%2f%2e%2e%2f` decodes to `../../` and escapes it entirely.
+
 ### What remains
 
-Thread `DurableKey()` from the ATC to the daemon — `ProbeResourceCache` and
-`RegisterAlias` in `atc/worker/jetbridge/daemon_client.go` are the two calls —
-and re-add the register/HEAD/GET hooks in `cmd/artifact-daemon/server.go` that
-were removed in `5e3f297a2b`. `DurableTier.Delete` and `Store.List` are built and
-tested but still have no caller; they are the reclaim path.
+`DurableTier.Delete` and `Store.List` are built and tested but still have no
+caller; they are the reclaim path. See Open questions.
 
-### Where it will attach
+### Where restores land
 
-Three points on the daemon, each only after the local lookup fails:
-
-| Path | Behaviour |
-|---|---|
-| `POST /register` | Tar and upload, detached from the response. |
-| `HEAD /resource-caches/{key}` | Local miss → ask the store → `200`. |
-| `GET /resource-caches/{key}` | Local miss → restore into `<storage>/steps/<key>`, register the alias, serve normally. |
-
-Restoring under `steps/` is deliberate: the existing sweeper reclaims that tree
+`<storage>/steps/<key>`. This is deliberate: the existing sweeper reclaims that tree
 by mtime, so a warmed copy cannot grow without bound. It also makes the restored
 cache visible to `resolveOne`'s step 2 and to peers. Task caches on hostPath are
 the cautionary case — nothing reclaims them and node disk grows monotonically —
@@ -327,17 +357,18 @@ bucket are inert.
 
 ## Open questions
 
-1. **Handler wiring.** The content key exists; the register/HEAD/GET hooks that
-   use it do not. See Status above.
-2. **Reclaim.** Nothing deletes from the bucket today. `DurableTier.Delete`
+1. **Reclaim.** Nothing deletes from the bucket today. `DurableTier.Delete`
    exists and is tested but has no caller. The options are a bucket lifecycle
    policy (cheap, dumb, no code), or wiring it to core's existing
    `atc/gc/resource_cache_collector.go`, which already knows when a resource
    cache becomes unreferenced — accurate, but it couples the ATC to the daemon's
    store. **Start with a lifecycle policy**; revisit if cost matters.
-3. **Should step outputs ever be promoted?** They are excluded because their
+2. **Should step outputs ever be promoted?** They are excluded because their
    keys are per-build. If a use case appears (say, retaining a release artifact),
    it needs a stable key, which is a different feature.
-4. **GCS.** `cloud.google.com/go/storage` is not currently a dependency, and
-   S3-interop covers GCS. Add a native backend only if interop proves
-   insufficient.
+3. **Warm concurrency across nodes.** Rendezvous hashing makes builds on
+   *different* nodes agree on one warm owner, and the daemon collapses concurrent
+   restores of one key. Nothing collapses two ATC processes racing before either
+   has registered the alias — both would restore, and one loses the rename. That
+   costs a duplicate download, never a wrong answer, so it is left alone until
+   measured.

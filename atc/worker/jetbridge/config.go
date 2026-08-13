@@ -162,6 +162,15 @@ type Config struct {
 	// ArtifactDaemonPort is the HTTP port for the DaemonSet artifact server.
 	ArtifactDaemonPort int
 
+	// ArtifactDaemonWarmTimeout bounds a durable-tier restore, which pulls a
+	// whole resource cache out of object storage and so is legitimately much
+	// slower than a probe. Zero means the default.
+	//
+	// It must stay well under the daemon's own artifact TTL: a restore lands in
+	// a temporary directory under steps/, and the sweeper is what reclaims one
+	// left behind by a crash.
+	ArtifactDaemonWarmTimeout time.Duration
+
 	// ArtifactDaemonHostPath is the hostPath directory for artifact storage
 	// on each node when using the DaemonSet backend.
 	ArtifactDaemonHostPath string

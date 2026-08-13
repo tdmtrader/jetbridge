@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
@@ -33,8 +34,7 @@ func fakeEndpointSlice(namespace, service string, ips ...string) *discoveryv1.En
 	}
 }
 
-func TestProbeResourceCache_FoundViaNewEndpoint(t *testing.T) {
-	// Daemon with the new HEAD /resource-caches/ endpoint.
+func TestProbeResourceCache_Found(t *testing.T) {
 	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodHead && r.URL.Path == "/resource-caches/rc-42" {
 			w.WriteHeader(http.StatusOK)
@@ -44,32 +44,31 @@ func TestProbeResourceCache_FoundViaNewEndpoint(t *testing.T) {
 	}))
 	defer daemon.Close()
 
-	daemonAddr := daemon.Listener.Addr().String()
-	host := daemonAddr[:len(daemonAddr)-len(":"+portFromAddr(daemonAddr))]
-	port := portFromAddrInt(daemonAddr)
-
+	host, port := hostPort(daemon)
 	clientset := fake.NewSimpleClientset(fakeEndpointSlice("cicd", "artifact-daemon", host))
-	logger := lagertest.NewTestLogger("test")
-	client := jetbridge.NewDaemonClient(logger, clientset, "cicd", "artifact-daemon", port, nil)
+	client := jetbridge.NewDaemonClient(lagertest.NewTestLogger("test"), clientset, "cicd", "artifact-daemon", port, nil)
 
-	daemonIP, found, err := client.ProbeResourceCache(context.Background(), "rc-42")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	probe, found := client.ProbeResourceCache(context.Background(), "rc-42")
 	if !found {
 		t.Fatal("expected cache to be found")
 	}
-	if daemonIP != host {
-		t.Errorf("expected daemon IP %q, got %q", host, daemonIP)
+	if probe.IP != host {
+		t.Errorf("expected daemon IP %q, got %q", host, probe.IP)
 	}
 }
 
-func TestProbeResourceCache_FoundViaResolveFallback(t *testing.T) {
-	// Older daemon without HEAD /resource-caches/ — falls back to /resolve.
+// The probe must never fall back to POST /resolve. That leg wrote a full copy
+// of the artifact to /tmp/concourse-probe-<key> inside the daemon pod — outside
+// storagePath, so the sweeper never reclaimed it — and it answered 200 off a
+// PEER fetch, meaning a daemon holding nothing locally could win the race. Both
+// break the invariant that a probe hit identifies a node with the bytes.
+func TestProbeResourceCacheNeverFallsBackToResolve(t *testing.T) {
+	var resolved atomic.Bool
+
 	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost && r.URL.Path == "/resolve" {
+		if r.URL.Path == "/resolve" || r.URL.Path == "/resolve-batch" {
+			resolved.Store(true)
 			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
 			w.Write([]byte(`{"status":"ok","method":"registry"}`))
 			return
 		}
@@ -77,23 +76,15 @@ func TestProbeResourceCache_FoundViaResolveFallback(t *testing.T) {
 	}))
 	defer daemon.Close()
 
-	daemonAddr := daemon.Listener.Addr().String()
-	host := daemonAddr[:len(daemonAddr)-len(":"+portFromAddr(daemonAddr))]
-	port := portFromAddrInt(daemonAddr)
-
+	host, port := hostPort(daemon)
 	clientset := fake.NewSimpleClientset(fakeEndpointSlice("cicd", "artifact-daemon", host))
-	logger := lagertest.NewTestLogger("test")
-	client := jetbridge.NewDaemonClient(logger, clientset, "cicd", "artifact-daemon", port, nil)
+	client := jetbridge.NewDaemonClient(lagertest.NewTestLogger("test"), clientset, "cicd", "artifact-daemon", port, nil)
 
-	daemonIP, found, err := client.ProbeResourceCache(context.Background(), "rc-42")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if _, found := client.ProbeResourceCache(context.Background(), "rc-42"); found {
+		t.Error("a daemon that only answers /resolve reported a cache hit")
 	}
-	if !found {
-		t.Fatal("expected cache to be found via resolve fallback")
-	}
-	if daemonIP != host {
-		t.Errorf("expected daemon IP %q, got %q", host, daemonIP)
+	if resolved.Load() {
+		t.Error("probe called /resolve; it writes an unreclaimable copy into the daemon pod")
 	}
 }
 
@@ -103,36 +94,74 @@ func TestProbeResourceCache_NotFound(t *testing.T) {
 	}))
 	defer daemon.Close()
 
-	daemonAddr := daemon.Listener.Addr().String()
-	host := daemonAddr[:len(daemonAddr)-len(":"+portFromAddr(daemonAddr))]
-	port := portFromAddrInt(daemonAddr)
-
+	host, port := hostPort(daemon)
 	clientset := fake.NewSimpleClientset(fakeEndpointSlice("cicd", "artifact-daemon", host))
-	logger := lagertest.NewTestLogger("test")
-	client := jetbridge.NewDaemonClient(logger, clientset, "cicd", "artifact-daemon", port, nil)
+	client := jetbridge.NewDaemonClient(lagertest.NewTestLogger("test"), clientset, "cicd", "artifact-daemon", port, nil)
 
-	_, found, err := client.ProbeResourceCache(context.Background(), "rc-999")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if found {
+	if _, found := client.ProbeResourceCache(context.Background(), "rc-999"); found {
 		t.Error("expected cache to not be found")
 	}
 }
 
 func TestProbeResourceCache_NoDaemons(t *testing.T) {
-	// Empty EndpointSlice — no daemon pods.
 	clientset := fake.NewSimpleClientset(fakeEndpointSlice("cicd", "artifact-daemon"))
-	logger := lagertest.NewTestLogger("test")
-	client := jetbridge.NewDaemonClient(logger, clientset, "cicd", "artifact-daemon", 7780, nil)
+	client := jetbridge.NewDaemonClient(lagertest.NewTestLogger("test"), clientset, "cicd", "artifact-daemon", 7780, nil)
 
-	_, found, err := client.ProbeResourceCache(context.Background(), "rc-1")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if found {
+	if _, found := client.ProbeResourceCache(context.Background(), "rc-1"); found {
 		t.Error("expected not found with no daemons")
 	}
+}
+
+// Capability has to be learned from a response the ATC already sends, and from
+// ANY status. A daemon answering 404 for this key is still the daemon that can
+// warm it; reading the header only off a 200 would mean the capability is known
+// exactly when it is not needed and unknown whenever it is.
+func TestProbeResourceCacheLearnsDurableCapabilityFromAMiss(t *testing.T) {
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Durable-Tier", "enabled")
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer daemon.Close()
+
+	host, port := hostPort(daemon)
+	clientset := fake.NewSimpleClientset(fakeEndpointSlice("cicd", "artifact-daemon", host))
+	client := jetbridge.NewDaemonClient(lagertest.NewTestLogger("test"), clientset, "cicd", "artifact-daemon", port, nil)
+
+	probe, found := client.ProbeResourceCache(context.Background(), "rc-42")
+	if found {
+		t.Fatal("expected a miss")
+	}
+	if !probe.DurableCapable {
+		t.Error("probe did not learn the daemon has a durable tier")
+	}
+	if len(probe.Endpoints) != 1 {
+		t.Errorf("expected the discovered endpoints to be carried back, got %d", len(probe.Endpoints))
+	}
+}
+
+// A daemon that predates the durable tier sets no header, and the ATC must then
+// issue zero requests to a route it does not have.
+func TestProbeResourceCacheReportsNoCapabilityForAnOlderDaemon(t *testing.T) {
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer daemon.Close()
+
+	host, port := hostPort(daemon)
+	clientset := fake.NewSimpleClientset(fakeEndpointSlice("cicd", "artifact-daemon", host))
+	client := jetbridge.NewDaemonClient(lagertest.NewTestLogger("test"), clientset, "cicd", "artifact-daemon", port, nil)
+
+	if probe, _ := client.ProbeResourceCache(context.Background(), "rc-42"); probe.DurableCapable {
+		t.Error("reported durable capability for a daemon that never advertised it")
+	}
+}
+
+// hostPort splits an httptest server's address for use as an EndpointSlice
+// address plus a client port.
+func hostPort(ts *httptest.Server) (string, int) {
+	addr := ts.Listener.Addr().String()
+
+	return addr[:len(addr)-len(":"+portFromAddr(addr))], portFromAddrInt(addr)
 }
 
 // ---------------------------------------------------------------------------
