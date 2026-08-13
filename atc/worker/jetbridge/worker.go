@@ -302,16 +302,26 @@ func (w *Worker) LookupVolume(ctx context.Context, handle string) (runtime.Volum
 	return NewDaemonSetVolume(key, handle, w.Name(), dbVolume, "", w.config, w.nodeIPResolver), true, nil
 }
 
-// RegisterResourceCache creates a symlink on the daemon's hostPath to cache
-// the resource data for subsequent get steps. The symlink maps
-// steps/rc-{cacheID} → steps/{containerHandle}/dir.
-func (w *Worker) RegisterResourceCache(ctx context.Context, cacheID int, volume runtime.Volume) error {
+// RegisterResourceCache registers an alias on the daemon so subsequent get
+// steps for the same resource cache skip the fetch. The alias maps the cache
+// key to the get step output's path on the daemon's hostPath; nothing on disk
+// is created or moved.
+//
+// A cache carrying a content key is also offered to the durable tier. One
+// without is registered node-locally only: its key is a row id, which cannot
+// name anything meant to outlive the row.
+func (w *Worker) RegisterResourceCache(ctx context.Context, cache db.ResourceCache, volume runtime.Volume) error {
 	if w.storageBackend == nil {
 		return nil
 	}
 
+	cacheKey := ResourceCacheKey(cache)
+	durable := cache.DurableKey() != ""
+
 	logger := lagerctx.FromContext(ctx).Session("register-resource-cache", lager.Data{
-		"cache-id": cacheID,
+		"cache-id": cache.ID(),
+		"key":      cacheKey,
+		"durable":  durable,
 		"handle":   volume.Handle(),
 	})
 
@@ -325,14 +335,14 @@ func (w *Worker) RegisterResourceCache(ctx context.Context, cacheID int, volume 
 	}
 
 	logger.Info("registering", lager.Data{"node": nodeName})
-	return w.storageBackend.RegisterResourceCache(ctx, cacheID, handle, nodeName)
+	return w.storageBackend.RegisterResourceCache(ctx, cacheKey, durable, handle, nodeName)
 }
 
-// FindDaemonResourceCache probes all live daemon pods for a cached resource
-// with the given cache ID. The cache is a symlink at steps/rc-{id} on the
-// daemon's hostPath, discoverable via HEAD /artifacts/steps/rc-{id}.
+// FindDaemonResourceCache probes all live daemon pods for a cached resource.
+// The cache is a registry alias pointing at the get step output's directory,
+// discoverable via HEAD /resource-caches/{key}.
 //
-// On hit, returns a stub volume whose handle is the cache key (rc-{id}). When
+// On hit, returns a stub volume whose handle is the cache key. When
 // this volume is used as input to a task step, BuildFetchInitContainers
 // resolves it via the daemon's /resolve endpoint which follows the symlink
 // to the original get step output.
@@ -342,9 +352,9 @@ func (w *Worker) RegisterResourceCache(ctx context.Context, cacheID int, volume 
 // it may contain stale entries for nodes that no longer exist (e.g. after a
 // node roll). The locator is only used for scheduling affinity and fetch
 // routing — never as a source of truth for cache existence.
-func (w *Worker) FindDaemonResourceCache(ctx context.Context, cacheID int) (runtime.Volume, bool, error) {
+func (w *Worker) FindDaemonResourceCache(ctx context.Context, cache db.ResourceCache) (runtime.Volume, bool, error) {
 	logger := lagerctx.FromContext(ctx).Session("find-daemon-resource-cache", lager.Data{
-		"cache-id":    cacheID,
+		"cache-id":    cache.ID(),
 		"has-backend": w.storageBackend != nil,
 	})
 
@@ -353,14 +363,12 @@ func (w *Worker) FindDaemonResourceCache(ctx context.Context, cacheID int) (runt
 		return nil, false, nil
 	}
 
-	cacheKey := ResourceCacheKey(cacheID)
-
-	// Probe live daemon pods for the cache.
+	// Probe live daemon pods for the cache, then — only on a miss, and only
+	// when the cache has a content key — ask one to warm it from the durable
+	// tier. Never returns an error: a cold cache is a re-download, not a
+	// failure.
 	logger.Info("probing-daemons")
-	daemonIP, found, err := w.storageBackend.FindResourceCache(ctx, cacheID)
-	if err != nil {
-		return nil, false, err
-	}
+	vol, found := w.storageBackend.FindResourceCache(ctx, ResourceCacheKey(cache), cache.DurableKey(), w.Name())
 	if !found {
 		return nil, false, nil
 	}
@@ -377,7 +385,6 @@ func (w *Worker) FindDaemonResourceCache(ctx context.Context, cacheID int) (runt
 	// DaemonSetBackend.WrapVolumeForLookup. Re-probing on lookup is cheap
 	// (one EndpointSlice list + a few HEADs) and avoids stale-entry risk.
 
-	vol := NewDaemonSetVolumeFromIP(cacheKey, cacheKey, w.Name(), daemonIP, w.config)
 	return vol, true, nil
 }
 

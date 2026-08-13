@@ -453,7 +453,7 @@ func (step *GetStep) retrieveFromCache(
 
 	// If DB miss, fall back to probing daemon pods directly.
 	if !found {
-		volume, found, err = worker.FindDaemonResourceCache(ctx, resourceCache.ID())
+		volume, found, err = worker.FindDaemonResourceCache(ctx, resourceCache)
 		if err != nil {
 			return nil, resource.VersionResult{}, false, err
 		}
@@ -527,7 +527,7 @@ func (step *GetStep) performGetAndInitCache(
 
 	// Register the resource cache alias on the daemon so subsequent get
 	// steps for the same version can skip the fetch entirely.
-	if err := worker.RegisterResourceCache(ctx, resourceCache.ID(), volume); err != nil {
+	if err := worker.RegisterResourceCache(ctx, resourceCache, volume); err != nil {
 		logger.Error("failed-to-register-resource-cache", err)
 		// Non-fatal — caching won't work but the get step succeeded.
 	}

@@ -573,7 +573,7 @@ var _ = Describe("Worker", func() {
 				client := jetbridge.NewDaemonClient(logger, daemonClientset, "test-namespace", "artifact-daemon", port, nil)
 				daemonWorker.SetDaemonClient(client)
 
-				vol, found, err := daemonWorker.FindDaemonResourceCache(ctx, 42)
+				vol, found, err := daemonWorker.FindDaemonResourceCache(ctx, stubCache{id: 42})
 				Expect(err).ToNot(HaveOccurred())
 				Expect(found).To(BeTrue())
 				Expect(vol).ToNot(BeNil())
@@ -642,7 +642,7 @@ var _ = Describe("Worker", func() {
 				client := jetbridge.NewDaemonClient(logger, daemonClientset, "test-namespace", "artifact-daemon", port, nil)
 				daemonWorker.SetDaemonClient(client)
 
-				vol, found, err := daemonWorker.FindDaemonResourceCache(ctx, 42)
+				vol, found, err := daemonWorker.FindDaemonResourceCache(ctx, stubCache{id: 42})
 				Expect(err).ToNot(HaveOccurred())
 				Expect(found).To(BeTrue())
 				Expect(vol).ToNot(BeNil())
@@ -710,7 +710,7 @@ var _ = Describe("Worker", func() {
 				daemonWorker.SetArtifactLocator(locator)
 				daemonWorker.SetDaemonClient(client)
 
-				_, found, err := daemonWorker.FindDaemonResourceCache(ctx, 42)
+				_, found, err := daemonWorker.FindDaemonResourceCache(ctx, stubCache{id: 42})
 				Expect(err).ToNot(HaveOccurred())
 				Expect(found).To(BeTrue())
 
@@ -775,7 +775,7 @@ var _ = Describe("Worker", func() {
 				// FindDaemonResourceCache should NOT return the stale
 				// locator entry — it should probe live daemons and find
 				// nothing, since the live daemon returns 404.
-				_, found, err := daemonWorker.FindDaemonResourceCache(ctx, 42)
+				_, found, err := daemonWorker.FindDaemonResourceCache(ctx, stubCache{id: 42})
 				Expect(err).ToNot(HaveOccurred())
 				Expect(found).To(BeFalse(), "expected no cache hit when the locator entry points to a dead node and no live daemon has the cache")
 			})

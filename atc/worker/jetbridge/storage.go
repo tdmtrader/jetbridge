@@ -29,14 +29,24 @@ type StorageBackend interface {
 	WrapVolumeForLookup(ctx context.Context, key, handle, workerName string, dbVolume db.CreatedVolume) runtime.Volume
 
 	// RegisterResourceCache registers a resource cache alias on the daemon,
-	// mapping the stable cache key (rc-{id}) to the physical disk path of
-	// the get step output. This makes the cache discoverable via HEAD
-	// /resource-caches/{key} on subsequent runs.
-	RegisterResourceCache(ctx context.Context, cacheID int, volumeHandle, nodeName string) error
+	// mapping the cache key to the physical disk path of the get step output.
+	// This makes the cache discoverable via HEAD /resource-caches/{key} on
+	// subsequent runs.
+	//
+	// durable is the ATC's statement that this artifact is worth keeping past
+	// the node. The daemon reads a bool and never inspects the key: deciding
+	// what deserves to be kept requires knowing whether it is re-derivable,
+	// which is knowledge the daemon does not have.
+	RegisterResourceCache(ctx context.Context, cacheKey string, durable bool, volumeHandle, nodeName string) error
 
-	// FindResourceCache probes all daemon pods for a cached resource with
-	// the given cache ID. Returns the node name and daemon key if found.
-	FindResourceCache(ctx context.Context, cacheID int) (nodeName string, found bool, err error)
+	// FindResourceCache returns a volume bound to a daemon holding the cache,
+	// or (nil, false).
+	//
+	// It never returns an error. Every failure — endpoint discovery, transport,
+	// an unreachable bucket — is a miss, because the caller's next move is to
+	// re-run the get step either way. The error is absent from the signature
+	// so that no future caller can turn a cold cache into a red build.
+	FindResourceCache(ctx context.Context, cacheKey, durableKey, workerName string) (runtime.Volume, bool)
 }
 
 func emptyDirVolume(name string) corev1.Volume {

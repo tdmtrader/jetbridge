@@ -102,16 +102,20 @@ type Worker interface {
 
 	// RegisterResourceCache registers the given volume as a cached resource
 	// on the artifact backend, so future get steps for the same resource
-	// cache ID can skip the fetch. Implementations that do not support
+	// cache can skip the fetch. Implementations that do not support
 	// daemon-based caching should return nil.
-	RegisterResourceCache(ctx context.Context, cacheID int, volume Volume) error
+	//
+	// Takes the cache rather than its id because the id names only a row.
+	// Promoting a cache to storage that outlives the row needs its content
+	// key, which only the cache itself carries.
+	RegisterResourceCache(ctx context.Context, cache db.ResourceCache, volume Volume) error
 
 	// FindDaemonResourceCache checks the artifact backend for an existing
-	// cached resource with the given cache ID. Returns a Volume with the
+	// cached resource. Returns a Volume with the
 	// cache key as its handle (resolvable by the daemon's /resolve-batch
 	// endpoint) and the node name where it was found. Returns (nil, false,
 	// nil) when no cached version exists.
-	FindDaemonResourceCache(ctx context.Context, cacheID int) (Volume, bool, error)
+	FindDaemonResourceCache(ctx context.Context, cache db.ResourceCache) (Volume, bool, error)
 
 	// ArtifactFromVolume wraps a step-local volume as an Artifact reference
 	// suitable for registration in a build's artifact repository. The wrapped

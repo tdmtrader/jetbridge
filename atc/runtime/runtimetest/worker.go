@@ -20,6 +20,11 @@ type Worker struct {
 	WorkerName string
 	Containers []*WorkerContainer
 	Volumes    []*Volume
+
+	// DaemonResourceCaches seeds cache hits by resource cache id. Without it
+	// the get step's cache-hit branch cannot be exercised at all, since this
+	// Worker otherwise reports every cache as absent.
+	DaemonResourceCaches map[int]runtime.Volume
 }
 
 func NewWorker(name string) *Worker {
@@ -104,12 +109,20 @@ func (w Worker) SkipResourceCache() bool {
 	return false
 }
 
-func (w Worker) RegisterResourceCache(ctx context.Context, cacheID int, volume runtime.Volume) error {
+func (w Worker) RegisterResourceCache(ctx context.Context, cache db.ResourceCache, volume runtime.Volume) error {
 	return nil
 }
 
-func (w Worker) FindDaemonResourceCache(ctx context.Context, cacheID int) (runtime.Volume, bool, error) {
-	return nil, false, nil
+// FindDaemonResourceCache reports a hit for any cache seeded into
+// DaemonResourceCaches. It keys by id rather than deriving the daemon key,
+// so this helper stays free of the Kubernetes client that jetbridge pulls in.
+func (w Worker) FindDaemonResourceCache(ctx context.Context, cache db.ResourceCache) (runtime.Volume, bool, error) {
+	vol, found := w.DaemonResourceCaches[cache.ID()]
+	if !found {
+		return nil, false, nil
+	}
+
+	return vol, true, nil
 }
 
 // ArtifactFromVolume returns the volume unchanged — the runtimetest Worker
