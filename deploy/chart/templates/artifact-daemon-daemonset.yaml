@@ -82,6 +82,12 @@ spec:
             - --durable-store={{ .store }}
             - --durable-timeout={{ .timeout | default "5m" }}
             - --durable-max-bytes={{ .maxBytes | default 5368709120 | int64 }}
+            {{- with .maintenanceInterval }}
+            - --durable-maintenance-interval={{ . }}
+            {{- end }}
+            {{- range $class, $age := .retention }}
+            - --durable-retention={{ $class }}={{ $age }}
+            {{- end }}
             {{- if or (eq .store "s3") (eq .store "gcs") }}
             - --durable-bucket={{ required "artifactDaemon.durable.bucket is required when durable.store is gcs or s3" .bucket }}
             {{- with .prefix }}

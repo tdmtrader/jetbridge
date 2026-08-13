@@ -18,6 +18,9 @@ type metrics struct {
 	peerFetch       *prometheus.CounterVec
 	durableOps      *prometheus.CounterVec
 
+	durableReclaimed      prometheus.Counter
+	durableReclaimedBytes prometheus.Counter
+
 	durableObjects   prometheus.Gauge
 	durableBytes     prometheus.Gauge
 	durableOldestAge prometheus.Gauge
@@ -55,6 +58,19 @@ func newMetrics() *metrics {
 		// this node. Every daemon reports the same number, so sum() across nodes
 		// multiplies the store by node count. Use max by (...). Getting this
 		// backwards has already caused one silent OOM in this project.
+		// Counters, not gauges: these are this node's own deletions, so summing
+		// across nodes is correct and is what you want -- the store is shared,
+		// but the work of reclaiming it is not.
+		durableReclaimed: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "artifact_daemon",
+			Name:      "durable_reclaimed_objects_total",
+			Help:      "Objects deleted from the durable store by this daemon's retention sweep. Per-node work, so sum() across nodes is correct.",
+		}),
+		durableReclaimedBytes: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "artifact_daemon",
+			Name:      "durable_reclaimed_bytes_total",
+			Help:      "Bytes deleted from the durable store by this daemon's retention sweep. Per-node work, so sum() across nodes is correct.",
+		}),
 		durableObjects: prometheus.NewGauge(prometheus.GaugeOpts{
 			Namespace: "artifact_daemon",
 			Name:      "durable_store_objects",
@@ -72,7 +88,8 @@ func newMetrics() *metrics {
 		}),
 	}
 	reg.MustRegister(m.resolveRequests, m.resolveDuration, m.peerFetch, m.durableOps,
-		m.durableObjects, m.durableBytes, m.durableOldestAge)
+		m.durableObjects, m.durableBytes, m.durableOldestAge,
+		m.durableReclaimed, m.durableReclaimedBytes)
 
 	// Initialize peer-fetch series to 0 so the family is always scrapeable and
 	// rate() works from the first fetch (CounterVecs emit no series until a
@@ -140,4 +157,14 @@ func (m *metrics) recordResidency(objects, bytes int64, oldest time.Duration) {
 	m.durableObjects.Set(float64(objects))
 	m.durableBytes.Set(float64(bytes))
 	m.durableOldestAge.Set(oldest.Seconds())
+}
+
+// recordReclaimed adds one sweep's deletions.
+func (m *metrics) recordReclaimed(objects, bytes int64) {
+	if m == nil {
+		return
+	}
+
+	m.durableReclaimed.Add(float64(objects))
+	m.durableReclaimedBytes.Add(float64(bytes))
 }

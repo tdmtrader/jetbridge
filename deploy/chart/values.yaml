@@ -455,35 +455,36 @@ artifactDaemon:
   # Every failure degrades rather than propagating -- an unreachable bucket
   # costs a re-download, never a red build.
   durable:
-    # -- RECLAIM IS NOT AUTOMATIC. Nothing in JetBridge ever deletes from this
-    # store, deliberately: a durable copy exists precisely to outlive the
-    # database row that referenced it, so reference-based deletion would remove
-    # objects at exactly the moment they became valuable.
+    # -- Retention, as class: duration. JetBridge deletes expired objects
+    # itself, on a periodic walk of the store, so this is the only place a
+    # retention period is written.
     #
-    # Retention is an object lifecycle rule on the bucket instead. Objects are
-    # named "<class>/<identity>", so a rule matching a class prefix expires that
-    # whole class, and different classes can have very different lifetimes. The
-    # only class today is "resource-caches/".
+    # A class with no entry here is KEPT FOREVER. Silence has to mean keep,
+    # because the alternative is that a typo in a class name empties a bucket.
+    # Leaving this empty means nothing is ever reclaimed, which is a valid
+    # choice but usually not the one you want -- you will discover it as a bill.
     #
-    # Set an expiry before enabling this, or the bucket grows forever. Example
-    # (gcloud):
+    #   retention:
+    #     resource-caches: 720h    # 30 days
     #
-    #   gcloud storage buckets update gs://BUCKET --lifecycle-file=lifecycle.json
+    # Objects are named "<class>/<identity>". "resource-caches" is the only
+    # class today; a future kind of durable artifact gets its own.
     #
-    #   {"rule":[{"action":{"type":"Delete"},
-    #             "condition":{"age":30,"matchesPrefix":["resource-caches/"]}}]}
-    #
-    # IF YOU SET `prefix` BELOW, THE RULE MUST INCLUDE IT. Objects are named
-    # "<prefix>/<class>/<identity>", so with prefix: cluster-a the rule has to
-    # match "cluster-a/resource-caches/". A rule written without it matches
-    # nothing, expires nothing, and reports no error -- the bucket simply grows.
-    #
-    # Age is measured from the object's creation, not its last read -- object
-    # stores offer no last-access condition. A cache that is produced again
-    # rewrites the object and resets its age, so in practice this expires caches
+    # Age is measured from the object's last WRITE, not its last read: object
+    # stores do not track reads, so there is no LRU here. Producing a cache
+    # again rewrites it and resets its age, so this effectively expires caches
     # that have stopped being produced. An expired cache is re-derived by the
     # next get step; nothing fails.
     #
+    # A bucket lifecycle rule still works as a backstop for when JetBridge is
+    # not running. The two do not conflict -- both only ever delete what is
+    # already past its age -- but remember a bucket rule must match the full
+    # object name including `prefix` below.
+    retention: {}
+    # -- How often each daemon walks the store to reclaim and measure. Every
+    # daemon runs its own enumeration and a List is billed per page, so this is
+    # deliberately slow. Empty uses the binary's default (15m).
+    maintenanceInterval: ""
     # -- Backend: "" (disabled), "gcs", "s3", or "filesystem".
     #
     # "gcs" is native Cloud Storage and authenticates with Application Default
@@ -498,9 +499,9 @@ artifactDaemon:
     # -- Key prefix inside the bucket, so one bucket can serve several clusters
     # or several consumers. Reclaim only ever enumerates its own prefix.
     #
-    # Setting this changes the object names your lifecycle rules must match:
-    # "<prefix>/resource-caches/..." rather than "resource-caches/...". See the
-    # reclaim note above.
+    # Setting this changes the object names, to "<prefix>/<class>/<identity>".
+    # JetBridge's own reclaim handles that automatically; a backstop bucket
+    # lifecycle rule would have to include the prefix to match anything.
     prefix: ""
     # -- Endpoint override. Set this for MinIO; leave empty for AWS or GCP.
     endpoint: ""

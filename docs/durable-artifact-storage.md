@@ -42,11 +42,10 @@ durable-store miss, timeout, expired credential or corrupt object must all
 degrade to "not here". `DurableTier`'s methods return `bool`, not `error`, so
 there is no error for a caller to accidentally propagate.
 
-## Status: wired end to end, retention by lifecycle policy
+## Status: complete
 
-**The store, the content key, the ATC↔daemon wiring and the retention model are
-landed and tested. Reclaim is an object lifecycle rule the operator writes; no
-code in JetBridge deletes from the store.**
+**Store, content key, ATC↔daemon wiring, retention and reclaim are all landed
+and tested. Nothing has run against a real bucket yet.**
 
 `db.ResourceCache.DurableKey()` returns `rc-<sha256>` over the cache's identity,
 persisted as `resource_caches.durable_key`
@@ -164,39 +163,65 @@ it would have to be un-escaped before being joined onto the storage root, where
 ### Retention
 
 Objects are named `<class>/<identity>` — today only `resource-caches/rc-<sha>`.
-The class is a prefix an object lifecycle rule matches, so an operator expires a
-whole class with one bucket rule, and different classes can have very different
-lifetimes: a task cache in days, a review perhaps never.
+The daemon walks the store on an interval, deleting objects in a configured
+class that are older than its retention period, and reporting what remains.
 
-**Reclaim is deliberately not JetBridge's job.** The obvious wiring —
-`DurableTier.Delete` from `atc/gc/resource_cache_collector.go`, which already
-knows when a cache becomes unreferenced — is the original bug one layer up. A
-durable copy exists precisely to outlive the row that referenced it, so deleting
-on unreference removes objects at exactly the moment they become valuable. Any
-JetBridge-managed reclaim would therefore need its own age policy, which is what
-the bucket already implements, plus a reconcile loop and a coupling to the store.
+Policy is `--durable-retention CLASS=DURATION`, repeatable, surfaced in the chart
+as `artifactDaemon.durable.retention`. **A class with no entry is kept forever**,
+and an unset policy reclaims nothing at all. Silence has to mean keep, because
+the alternative is that a typo in a class name empties a bucket.
 
-Two consequences worth knowing:
+#### Why JetBridge reclaims rather than a bucket lifecycle rule
 
-- **Age is since creation, not since last read.** Object stores offer no
-  last-access lifecycle condition, so there is no LRU. This is softened by
-  `promoteToDurable` having no `Has()` short-circuit: every produce rewrites the
-  object and resets its age, so the rule effectively expires caches that have
-  stopped being *produced*. A cache read constantly but produced once will still
-  expire, and be re-derived once. That costs a download, never a build.
-- **The class says what an artifact is, never how long it lives.** Duration is
-  operator policy and belongs in the bucket. Encoding it in code would mean a
-  redeploy to change a retention period and two sources of truth for what it
-  currently is.
+A lifecycle rule is the obvious answer and was the first design. Two things
+argued it down:
+
+- **Nothing can check the rule is right.** The period lives as a string an
+  operator types into a cloud console, and it has to match a prefix this code
+  composes — including the store's own `--durable-prefix`, which is easy to
+  forget. A rule with the wrong prefix matches nothing, deletes nothing and
+  reports no error. The store simply grows.
+- **It does not exist for `store: filesystem`.** A shared NFS or RWX volume has
+  no lifecycle mechanism, so that backend had no reclaim path at all.
+
+Note what this argument is *not*. The rejected design earlier in this document
+is reference-based deletion — driving `Delete` from
+`atc/gc/resource_cache_collector.go`, which fires when a cache becomes
+unreferenced, which is exactly when the durable copy becomes valuable. That
+remains wrong. Age-based reclaim run by JetBridge has none of that problem, and
+conflating the two arguments is how this design initially landed in the wrong
+place.
+
+A bucket rule remains a perfectly good backstop for when JetBridge is not
+running. The two do not conflict: both only ever delete what is already past its
+age.
+
+#### Properties worth preserving
+
+- **Everything uncertain keeps.** No timestamp, no class prefix, an unconfigured
+  class, or a flat key that merely spells a class name — all kept.
+  `RetentionPolicy.expired` is the only thing between a configuration mistake and
+  an emptied store, and every branch in it answers "keep".
+- **A zero timestamp must never expire.** It reads as 1970, so a naive age check
+  would find every object ancient and delete the store on its first pass. This is
+  why `Attributes.Updated` exists and why all three backends populate it.
+- **Age is since last WRITE, not last read.** Object stores do not track reads,
+  so there is no LRU. `promoteToDurable` deliberately has no `Has()`
+  short-circuit, so producing a cache again rewrites it and resets its age — the
+  policy therefore expires caches that have stopped being *produced*.
+- **No leader election.** Deleting an absent key is not an error by the `Store`
+  contract, so several daemons reclaiming at once is correct. The jitter and the
+  interval exist to make it cheap, not correct.
+- **Deletes are capped per pass** and the cap is logged when it bites. A reclaim
+  that silently stops early reads exactly like one that finished.
+- **One walk, two jobs.** Enumeration is the expensive part, so residency
+  measurement shares it. The gauges therefore describe the store as the pass
+  leaves it.
 
 `DurableClassResourceCache` (`atc/worker/jetbridge/resource_cache_key.go`) and
-the documented prefix in `deploy/chart/values.yaml` must agree, or every
-lifecycle rule in every deployment silently stops matching with no error
-anywhere. `TestDocumentedPrefixMatchesTheCodesRetentionClass` holds them
-together.
-
-`Store.List` and `DurableTier.Delete` remain built, tested and uncalled. They
-are what a future accurate reclaim would need; a lifecycle rule needs neither.
+the class documented in `deploy/chart/values.yaml` must agree, or a retention
+entry names a class nothing produces and is inert.
+`TestDocumentedPrefixMatchesTheCodesRetentionClass` holds them together.
 
 ### The two key namespaces
 
@@ -355,16 +380,50 @@ Every row degrades. None fails a build.
 
 ## Observability
 
-`artifact_daemon_durable_operations_total{op,outcome}` — a counter, per node.
+### Daemon — per-node counters
 
-`op` is `has|restore|store|delete`; `outcome` is `hit|miss|ok|error|raced`.
+`artifact_daemon_durable_operations_total{op,outcome}`, where `op` is
+`has|restore|store|delete|list` and `outcome` is `hit|miss|ok|error|raced`.
 Series are pre-initialised so an alert can fire from the first failure.
 
-> **Aggregation.** This is a per-node counter of *operations*, so `sum()` across
-> nodes is correct. That is not true of a store-*size* gauge on a DaemonSet:
-> every node would report the same bucket total and `sum()` would multiply it by
-> node count. Use `max by (…)` for any gauge added later. This has already
-> caused one silent OOM in this project.
+`artifact_daemon_durable_reclaimed_objects_total` and `…_bytes_total` — what this
+daemon's retention sweep deleted.
+
+All of these are this node's own work, so `sum()` across nodes is correct.
+
+### Daemon — shared-store gauges
+
+`artifact_daemon_durable_store_objects`, `…_store_bytes`, and
+`…_store_oldest_object_age_seconds`.
+
+> **Aggregation.** These describe the SHARED store, not the node. Every daemon
+> reports the same number, so `sum()` across a DaemonSet multiplies the store by
+> node count. Use `max by (…)`. This has already caused one silent OOM in this
+> project, which is why the warning is repeated in every `Help` string.
+
+Oldest-object age is the signal that retention is working: it should plateau near
+the configured period, and rise without bound if a class is producing objects
+that no policy covers.
+
+A failed enumeration leaves the previous gauge values standing rather than
+zeroing them — a zero is indistinguishable from an empty store, and "the bucket
+went to zero" is the worst false alert these could produce.
+
+### ATC — is the tier earning its egress?
+
+Four counters partition every resource-cache lookup that reaches a daemon:
+
+| Metric | Meaning |
+|---|---|
+| `resource cache local hits` | a node already had it — the fast path |
+| `durable warm hits` | pulled from the store — the tier paying off |
+| `durable warm misses` | asked the store, nothing there or it failed |
+| `durable warm suppressed` | skipped; a recent warm for this key failed |
+
+They sum to the number of lookups, so any ratio taken from them is meaningful.
+Suppressed rising is the bucket-unhealthy signal: the negative cache is absorbing
+a retry loop that would otherwise cost a warm timeout every few seconds per
+waiting get step.
 
 ## Testing
 
@@ -402,10 +461,15 @@ bucket are inert.
 
 ## Open questions
 
-1. **Should step outputs ever be promoted?** They are excluded because their
+1. **True LRU.** Retention is by age since last write; object stores expose no
+   last-access time, and JetBridge does not track reads either. Keeping what is
+   hot rather than what is recent would mean touching an object on every warm,
+   which costs a write per cache hit. Not obviously worth it — revisit if
+   measurements show useful caches expiring.
+2. **Should step outputs ever be promoted?** They are excluded because their
    keys are per-build. If a use case appears (say, retaining a release artifact),
    it needs a stable key, which is a different feature.
-2. **Warm concurrency across nodes.** Rendezvous hashing makes builds on
+3. **Warm concurrency across nodes.** Rendezvous hashing makes builds on
    *different* nodes agree on one warm owner, and the daemon collapses concurrent
    restores of one key. Nothing collapses two ATC processes racing before either
    has registered the alias — both would restore, and one loses the rename. That

@@ -155,35 +155,59 @@ func TestGCSNeedsNoCredentialFlags(t *testing.T) {
 	}
 }
 
-// Reclaim is a bucket lifecycle rule, not code, and that is a decision an
-// operator has to know about before they turn the tier on: nothing in JetBridge
-// deletes from the store, so an unconfigured bucket grows forever.
-//
-// The chart is where they will look. This asserts the values file still says so,
-// and still names the class prefix a rule has to match — a rule written against
-// the wrong prefix silently expires nothing.
-func TestValuesDocumentsThatReclaimIsALifecyclePolicy(t *testing.T) {
+// An unset retention keeps everything forever. That is a defensible default --
+// deleting by default would be far worse -- but it has to be legible, because
+// the failure mode is a bill rather than an error.
+func TestValuesSaysAnUnsetRetentionKeepsEverything(t *testing.T) {
 	body, err := os.ReadFile(filepath.Join(repoRoot(t), "deploy", "chart", "values.yaml"))
 	if err != nil {
 		t.Fatalf("read values.yaml: %v", err)
 	}
 	values := string(body)
 
-	for _, want := range []string{
-		"RECLAIM IS NOT AUTOMATIC",
-		"matchesPrefix",
-		"resource-caches/",
-	} {
+	for _, want := range []string{"KEPT FOREVER", "retention:"} {
 		if !strings.Contains(values, want) {
-			t.Errorf("values.yaml no longer mentions %q; an operator has no way to learn reclaim is theirs to configure", want)
+			t.Errorf("values.yaml no longer mentions %q; an operator has no way to learn nothing expires by default", want)
 		}
 	}
 }
 
-// The prefix the docs tell operators to write a rule against must be the prefix
-// the ATC actually stores under. If these drift, every lifecycle rule in every
-// deployment silently stops matching and the bucket grows without bound, with
-// no error anywhere.
+// Retention is off unless asked for, and the daemon must not grow a flag on
+// upgrade for every existing install.
+func TestRetentionIsNotRenderedByDefault(t *testing.T) {
+	out := render(t,
+		"artifactDaemon.durable.store=gcs",
+		"artifactDaemon.durable.bucket=b",
+	)
+
+	if strings.Contains(out, "--durable-retention") {
+		t.Error("a default render passes --durable-retention; retention must be opt-in")
+	}
+}
+
+// Each configured class must reach the binary as its own flag. A class that
+// renders but is silently dropped keeps its objects forever with no error.
+func TestRetentionRendersOneFlagPerClass(t *testing.T) {
+	out := render(t,
+		"artifactDaemon.durable.store=gcs",
+		"artifactDaemon.durable.bucket=b",
+		"artifactDaemon.durable.retention.resource-caches=720h",
+		"artifactDaemon.durable.retention.reviews=8760h",
+	)
+
+	for _, want := range []string{
+		"--durable-retention=resource-caches=720h",
+		"--durable-retention=reviews=8760h",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q in the render; got:\n%s", want, durableFlags(out))
+		}
+	}
+}
+
+// The class name an operator writes in values.yaml must be the class the ATC
+// actually stores under. A retention entry naming a class nothing produces is
+// inert: it expires nothing, reports nothing, and the store grows.
 func TestDocumentedPrefixMatchesTheCodesRetentionClass(t *testing.T) {
 	body, err := os.ReadFile(filepath.Join(repoRoot(t), "atc", "worker", "jetbridge", "resource_cache_key.go"))
 	if err != nil {
@@ -201,7 +225,9 @@ func TestDocumentedPrefixMatchesTheCodesRetentionClass(t *testing.T) {
 		t.Fatalf("read values.yaml: %v", err)
 	}
 
-	if !strings.Contains(string(values), class+"/") {
-		t.Errorf("values.yaml documents a lifecycle prefix that does not match the code's class %q/", class)
+	// As a retention key in the documented example, which is the form an
+	// operator copies.
+	if !strings.Contains(string(values), class+": ") {
+		t.Errorf("values.yaml never shows %q as a retention key; an operator has nothing correct to copy", class)
 	}
 }
