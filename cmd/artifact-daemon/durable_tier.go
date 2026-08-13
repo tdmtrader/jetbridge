@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sync"
 	"time"
 
@@ -15,14 +14,18 @@ import (
 	"github.com/concourse/concourse/cmd/artifact-daemon/durable"
 )
 
-// DurableTier is the daemon's long-term home for resource caches.
+// DurableTier is the daemon's long-term home for artifacts worth keeping.
 //
-// Only resource caches go here, and the reason is their keys. A step output is
-// addressed by a per-build handle that nobody will ever ask for again, so
-// storing one durably buys nothing. A resource cache is addressed by rc-<id>,
-// derived from the resource type, version and params, so the same key recurs on
-// every build that wants the same thing — including on a node that has never
-// seen it.
+// It takes the key as given and never inspects it. Whether an artifact deserves
+// to outlive its node is a question about the artifact's meaning — is it
+// re-derivable, will anything ever ask for it again — and the daemon knows
+// neither. The ATC does, so the ATC decides: it supplies a durable name for the
+// things it wants kept and stays silent about the rest.
+//
+// That silence is the whole interface. An earlier cut had the daemon sniff keys
+// for an "rc-<id>" prefix, which put the ATC's naming scheme in a second binary
+// with no compiler holding the two halves together, and made a key-format change
+// a lockstep redeploy of every node.
 //
 // The node-local copy stays a cache with a TTL. This is the copy that outlives
 // the sweeper, the node, and the cluster.
@@ -230,21 +233,6 @@ func (d *DurableTier) release(key string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	delete(d.inFlight, key)
-}
-
-// resourceCacheKeyPattern matches the keys the ATC mints in
-// atc/worker/jetbridge/resource_cache_key.go (ResourceCacheKey: "rc-%d").
-//
-// Deliberately duplicated rather than imported: the daemon is a separate binary
-// and importing atc/worker/jetbridge would drag the Kubernetes client into a
-// pod that runs on every node. The two sides agree on a wire format, and this
-// is the daemon's half of it.
-var resourceCacheKeyPattern = regexp.MustCompile(`^rc-\d+$`)
-
-// isResourceCacheKey reports whether a key names a resource cache, which is the
-// only kind of artifact promoted to the durable tier.
-func isResourceCacheKey(key string) bool {
-	return resourceCacheKeyPattern.MatchString(key)
 }
 
 func outcome(found bool) string {

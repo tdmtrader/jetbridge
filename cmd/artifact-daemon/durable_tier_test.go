@@ -173,25 +173,6 @@ func TestConcurrentStoresOfOneKeyCollapse(t *testing.T) {
 	}
 }
 
-func TestOnlyResourceCacheKeysAreEligible(t *testing.T) {
-	// The predicate that decides what may ever be promoted. It is duplicated
-	// from the ATC's ResourceCacheKey across a process boundary, so it is worth
-	// pinning on this side too.
-	for _, key := range []string{"rc-1", "rc-9999"} {
-		if !isResourceCacheKey(key) {
-			t.Errorf("isResourceCacheKey(%q) = false, want true", key)
-		}
-	}
-	for _, key := range []string{
-		"8f14e45fceea167a5a36dedd4bea2543", // a container handle
-		"rc-", "rc-abc", "xrc-1", "rc-1x", "",
-	} {
-		if isResourceCacheKey(key) {
-			t.Errorf("isResourceCacheKey(%q) = true, want false", key)
-		}
-	}
-}
-
 // countingStore counts Puts so a test can prove concurrent uploads of one key
 // collapse to a single transfer.
 type countingStore struct {
