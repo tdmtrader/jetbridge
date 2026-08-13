@@ -25,8 +25,12 @@ v8.0.0:1765921815
 v8.0.1:1765921815
 "
 
-# JetBridge target version
-JETBRIDGE_VERSION=1773105503
+# JetBridge target version.
+#
+# Must equal the highest migration in atc/db/migration/migrations. This script
+# runs on an operator's laptop against a live database before an upgrade, so it
+# cannot ask the binary; TestPreflightTargetsTheHeadMigration keeps it honest.
+JETBRIDGE_VERSION=1773105504
 
 # Minimum supported source version (v6.x)
 MIN_SUPPORTED_VERSION=1601993582

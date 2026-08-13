@@ -68,9 +68,12 @@ func (f *resourceCacheFactory) FindOrCreateResourceCache(
 	marshaledVersion, _ := json.Marshal(version)
 	cacheVersion := string(marshaledVersion)
 
+	durableKey := durableCacheKey(resourceTypeName, source, params, version, customTypeResourceCache)
+
 	found := true
 	var id int
-	err = psql.Select("id").
+	var existingKey sql.NullString
+	err = psql.Select("id", "durable_key").
 		From("resource_caches").
 		Where(sq.Eq{
 			"resource_config_id": rc.id,
@@ -80,11 +83,27 @@ func (f *resourceCacheFactory) FindOrCreateResourceCache(
 		Suffix("FOR SHARE").
 		RunWith(tx).
 		QueryRow().
-		Scan(&id)
+		Scan(&id, &existingKey)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			found = false
 		} else {
+			return nil, err
+		}
+	}
+
+	if found && durableKey != "" && existingKey.String != durableKey {
+		// A row written before the column existed, backfilled here rather than
+		// in the migration: the source lives in resource_configs and the custom
+		// type chain has to be walked in Go, so this is the first place the key
+		// is computable. Uses FOR SHARE above, so concurrent callers computing
+		// the identical key may both write it.
+		_, err = psql.Update("resource_caches").
+			Set("durable_key", durableKey).
+			Where(sq.Eq{"id": id}).
+			RunWith(tx).
+			Exec()
+		if err != nil {
 			return nil, err
 		}
 	}
@@ -96,19 +115,22 @@ func (f *resourceCacheFactory) FindOrCreateResourceCache(
 				"version",
 				"version_digest",
 				"params_hash",
+				"durable_key",
 			).
 			Values(
 				rc.id,
 				cacheVersion,
 				sq.Expr("encode(digest(?, 'sha256'), 'hex')", cacheVersion),
 				paramsHash(params),
+				sql.NullString{String: durableKey, Valid: durableKey != ""},
 			).
 			Suffix(`
 				ON CONFLICT (resource_config_id, version_digest, params_hash) DO UPDATE SET
 				resource_config_id = EXCLUDED.resource_config_id,
 				version = EXCLUDED.version,
 				version_digest = EXCLUDED.version_digest,
-				params_hash = EXCLUDED.params_hash
+				params_hash = EXCLUDED.params_hash,
+				durable_key = EXCLUDED.durable_key
 				RETURNING id
 			`).
 			RunWith(tx).
@@ -157,6 +179,7 @@ func (f *resourceCacheFactory) FindOrCreateResourceCache(
 		id:             id,
 		resourceConfig: rc,
 		version:        version,
+		durableKey:     durableKey,
 
 		lockFactory: f.lockFactory,
 		conn:        f.conn,
@@ -213,13 +236,14 @@ func (f *resourceCacheFactory) FindResourceCacheByID(id int) (ResourceCache, boo
 func findResourceCacheByID(tx Tx, resourceCacheID int, lock lock.LockFactory, conn DbConn) (ResourceCache, bool, error) {
 	var rcID int
 	var versionBytes string
+	var durableKey sql.NullString
 
-	err := psql.Select("resource_config_id", "version").
+	err := psql.Select("resource_config_id", "version", "durable_key").
 		From("resource_caches").
 		Where(sq.Eq{"id": resourceCacheID}).
 		RunWith(tx).
 		QueryRow().
-		Scan(&rcID, &versionBytes)
+		Scan(&rcID, &versionBytes, &durableKey)
 
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -247,6 +271,7 @@ func findResourceCacheByID(tx Tx, resourceCacheID int, lock lock.LockFactory, co
 		id:             resourceCacheID,
 		version:        version,
 		resourceConfig: rc,
+		durableKey:     durableKey.String,
 		lockFactory:    lock,
 		conn:           conn,
 	}

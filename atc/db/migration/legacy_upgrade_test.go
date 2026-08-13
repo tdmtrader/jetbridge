@@ -8,8 +8,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/concourse/concourse/atc/db/lock"
@@ -750,6 +752,44 @@ func mustExec(db *sql.DB, query string) {
 	_, err := db.Exec(query)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "failed to execute: %s", query)
 }
+
+// preflightTargetVersion reads JETBRIDGE_VERSION out of migrate-preflight.sh.
+func preflightTargetVersion() int {
+	GinkgoHelper()
+
+	_, thisFile, _, _ := runtime.Caller(0)
+	repoRoot := filepath.Join(filepath.Dir(thisFile), "..", "..", "..")
+
+	body, err := os.ReadFile(filepath.Join(repoRoot, "docs", "migration", "migrate-preflight.sh"))
+	Expect(err).NotTo(HaveOccurred())
+
+	m := regexp.MustCompile(`(?m)^JETBRIDGE_VERSION=(\d+)$`).FindSubmatch(body)
+	Expect(m).NotTo(BeNil(), "JETBRIDGE_VERSION= not found in migrate-preflight.sh")
+
+	v, err := strconv.Atoi(string(m[1]))
+	Expect(err).NotTo(HaveOccurred())
+
+	return v
+}
+
+var _ = Describe("migrate-preflight.sh", func() {
+	// The script runs on an operator's laptop before an upgrade, so it cannot
+	// ask the binary what the head migration is and has to hardcode it. Nothing
+	// syncs the two. Left to drift, the script tells operators their database is
+	// "ahead of JetBridge" and refuses an upgrade that is in fact fine.
+	//
+	// Adding a migration means editing this constant. The failure message is the
+	// documentation.
+	It("targets the head migration", func() {
+		migrator := migration.NewMigrator(nil, nil)
+
+		head, err := migrator.SupportedVersion()
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(preflightTargetVersion()).To(Equal(head),
+			"set JETBRIDGE_VERSION in docs/migration/migrate-preflight.sh to %d", head)
+	})
+})
 
 // runPreflightAndExpectPass runs the migrate-preflight.sh script against the
 // test database and asserts that it exits 0 (pass or pass-with-warnings).

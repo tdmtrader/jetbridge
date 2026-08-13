@@ -15,9 +15,10 @@ and the difference is in their keys:
   given params — so the same thing is wanted again on every build, including on
   a node that has never seen it.
 
-So only resource caches are eligible. (The key that *names* one today is not
-safe to store permanently; see Status below.) The node-local copy stays a cache with a
-TTL; the durable copy is what outlives the sweeper, the node, and the cluster.
+So only resource caches are eligible, and the ATC is what decides that — it
+names a cache with `DurableKey()` and says nothing about anything else. The
+node-local copy stays a cache with a TTL; the durable copy is what outlives the
+sweeper, the node, and the cluster.
 
 It is **off by default**. With `artifactDaemon.durable.store` unset the daemon
 behaves exactly as it did before.
@@ -41,10 +42,20 @@ durable-store miss, timeout, expired credential or corrupt object must all
 degrade to "not here". `DurableTier`'s methods return `bool`, not `error`, so
 there is no error for a caller to accidentally propagate.
 
-## Status: store landed, wiring blocked on a content key
+## Status: store landed, content key landed, handler wiring outstanding
 
-**The store is built and tested. It is not yet wired to anything, and it must
-not be wired to `rc-<id>`.**
+**The store is built and tested, and the content key it needs now exists. What
+remains is passing that key from the ATC to the daemon and re-adding the three
+handler hooks.**
+
+`db.ResourceCache.DurableKey()` returns `rc-<sha256>` over the cache's identity,
+persisted as `resource_caches.durable_key`
+(`atc/db/migration/migrations/1773105504_add_resource_cache_durable_key.up.sql`)
+and computed by `durableCacheKey` in `atc/db/resource_cache.go`. The rest of this
+section records why the obvious key was wrong, because the reasoning is not
+recoverable from the code alone.
+
+### Do not wire this to `rc-<id>`
 
 `rc-<id>` is `fmt.Sprintf("rc-%d", cacheID)` over `resource_caches.id`
 (`atc/worker/jetbridge/resource_cache_key.go:12`), and that column is a
@@ -71,22 +82,50 @@ blast radius is bounded by the sweeper. A permanent copy removes exactly that
 bound, which is why this is a defect of the durable tier and not of the existing
 daemon.
 
-### What unblocks it
+A per-row UUID — v7 included — fixes only the second consequence. It is still
+minted per row, so it still changes on delete-and-recreate: the durable copy
+becomes unfindable at exactly the moment it would be useful, and the result is a
+store that is safe and never hits.
 
-A content-derived key, computed where the identity actually lives:
-`atc/db/resource_cache_factory.go:44-120` already has the resource type, source,
-`version_digest` and `params_hash` in scope. Persist
-`sha256(typeName ‖ sourceHash ‖ version_digest ‖ params_hash)` as a column,
-expose it on `db.ResourceCache`, and pass it alongside the id at registration.
+### The key
 
-Note for whoever implements it: do **not** derive the parent from
-`ResourceCache.BaseResourceType()` (`atc/db/resource_cache.go:69-75`). It
-flattens the custom-type chain to the base type, so two different custom-type
-versions with identical source and params would collide — the same wrong-bytes
-bug by another route. Recurse through the parent cache's own key instead.
+`durableCacheKey` hashes what makes two caches interchangeable: the parent
+resource cache's own key, the resource type name, the source hash, the version
+digest and the params hash. It is computed in `FindOrCreateResourceCache`, which
+is the only place all of those are in scope, and stored as a column because
+`FindResourceCacheByID` has neither source nor params and could not recompute it.
 
-That change touches `atc/db`, `atc/runtime` and `atc/exec`, so it is a
-deliberate piece of work rather than a follow-on commit.
+Rows predating the column hold `NULL`, which reads as "not eligible for durable
+storage". The migration cannot backfill them — the source lives in
+`resource_configs` and the custom type chain has to be walked in Go — so the next
+`FindOrCreateResourceCache` for that tuple fills it in.
+
+The parent must contribute **its own key**, recursively. Do not reach for
+`ResourceCache.BaseResourceType()` (`atc/db/resource_cache.go`): it flattens the
+custom-type chain to its base, so two different versions of a custom type with
+identical source and params collide — the same wrong-bytes bug by a shorter
+route. `resource_cache_durable_key_test.go` pins this.
+
+### Eligibility is the ATC's call, not the daemon's
+
+The daemon takes the key as an opaque string. It does not parse it, and it does
+not decide what deserves to be kept — it cannot, because "is this re-derivable"
+and "will anything ask for this again" are questions about the artifact's
+meaning.
+
+An earlier cut had the daemon match `^rc-\d+$` to decide eligibility, which put
+the ATC's naming scheme in a second binary with no compiler holding the halves
+together and made a key-format change a lockstep redeploy of every node. It is
+gone. The ATC supplies a durable name for the artifacts it wants kept and stays
+silent about the rest; that silence is the entire protocol.
+
+### What remains
+
+Thread `DurableKey()` from the ATC to the daemon — `ProbeResourceCache` and
+`RegisterAlias` in `atc/worker/jetbridge/daemon_client.go` are the two calls —
+and re-add the register/HEAD/GET hooks in `cmd/artifact-daemon/server.go` that
+were removed in `5e3f297a2b`. `DurableTier.Delete` and `Store.List` are built and
+tested but still have no caller; they are the reclaim path.
 
 ### Where it will attach
 
@@ -288,7 +327,8 @@ bucket are inert.
 
 ## Open questions
 
-1. **The content key** — see Status above. This is the blocker.
+1. **Handler wiring.** The content key exists; the register/HEAD/GET hooks that
+   use it do not. See Status above.
 2. **Reclaim.** Nothing deletes from the bucket today. `DurableTier.Delete`
    exists and is tested but has no caller. The options are a bucket lifecycle
    policy (cheap, dumb, no code), or wiring it to core's existing
