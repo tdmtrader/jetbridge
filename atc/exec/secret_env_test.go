@@ -103,6 +103,14 @@ var _ = Describe("BuildSecretEnv", func() {
 		Expect(result).To(BeNil())
 	})
 
+	// This pins a known defect rather than the desired behaviour: Tracker keys
+	// interpolated creds on path plus fields but secret refs on path alone, so
+	// the lookup here misses and the literal secret is written into the pod env.
+	// Fixing it needs two changes together -- the tracker keys, and a resolver
+	// that reports the field as the secret's key. kubernetes.Secrets.GetSecretRef
+	// takes only a path and hardcodes Key: "value", and VariableLookupFromSecrets
+	// drops Fields before calling it, so the tracker change alone would produce a
+	// ref to the wrong key, which is worse than the leak.
 	It("returns nil for a param resolved from a field of a credential", func() {
 		params = atc.TaskEnv{"DB_PASS": "s3cret"}
 
