@@ -1,7 +1,6 @@
 package engine_test
 
 import (
-	"fmt"
 	"net/url"
 
 	"github.com/concourse/concourse/atc"
@@ -13,22 +12,6 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
-
-// Every id in a fresh database starts at 1, so step metadata wired to the wrong
-// id would still match. Give each sequence its own range first.
-func spreadEngineIDSequences(fixture *engineDBFixture) {
-	GinkgoHelper()
-
-	for table, start := range map[string]int{
-		"teams":     100,
-		"pipelines": 200,
-		"jobs":      300,
-		"builds":    400,
-	} {
-		_, err := fixture.Conn.Exec(fmt.Sprintf("SELECT setval('%s_id_seq', %d)", table, start))
-		Expect(err).NotTo(HaveOccurred())
-	}
-}
 
 var _ = Describe("Builder", func() {
 
@@ -44,7 +27,6 @@ var _ = Describe("Builder", func() {
 
 		BeforeEach(func() {
 			fixture = useEngineDB()
-			spreadEngineIDSequences(fixture)
 			fakeCoreStepFactory = new(enginefakes.FakeCoreStepFactory)
 
 			stepperFactory = engine.NewStepperFactory(
@@ -84,9 +66,6 @@ var _ = Describe("Builder", func() {
 					atc.Config{Jobs: atc.JobConfigs{{Name: "some-job"}}},
 					"some-user",
 				)
-				Expect([]int{pipeline.TeamID(), pipeline.ID(), job.ID(), build.ID()}).
-					To(Equal([]int{101, 201, 301, 401}))
-
 				expectedMetadataWithoutCreatedBy = exec.StepMetadata{
 					BuildID:              build.ID(),
 					BuildName:            build.Name(),

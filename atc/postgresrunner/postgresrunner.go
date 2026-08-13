@@ -215,8 +215,16 @@ func (runner *Runner) psqlf(c string, args ...any) int {
 	return runner.psql(fmt.Sprintf(c, args...))
 }
 
+// psql runs c against the "postgres" database. libpq defaults dbname to the
+// user name, so this is what the no-dbname form always connected to; naming it
+// keeps the distinction from psqlIn visible, because anything schema-shaped run
+// here finds no Concourse tables and still exits 0.
 func (runner *Runner) psql(c string) int {
-	cmd := exec.Command("psql", "-h", "/tmp", "-U", "postgres", "-p", strconv.Itoa(runner.Port), "-q", "-t", "-c", c)
+	return runner.psqlIn("postgres", c)
+}
+
+func (runner *Runner) psqlIn(dbName string, c string) int {
+	cmd := exec.Command("psql", "-h", "/tmp", "-U", "postgres", "-p", strconv.Itoa(runner.Port), dbName, "-q", "-t", "-c", c)
 	session, err := gexec.Start(cmd, ginkgo.GinkgoWriter, ginkgo.GinkgoWriter)
 	Expect(err).NotTo(HaveOccurred())
 
@@ -260,8 +268,46 @@ func (runner *Runner) InitializeTestDBTemplate() {
 	`)
 	Expect(exitCode).To(Equal(0), "mark tables as unlogged")
 
+	exitCode = runner.psqlIn("testdb_template", spreadIDSequencesSQL)
+	Expect(exitCode).To(Equal(0), "spread id sequences")
+
 	runner.terminateIdleConnections("testdb_template")
 }
+
+// spreadIDSequencesSQL gives every id sequence a range of its own, so that the
+// first row of one table cannot share an id with the first row of another. Left
+// alone, teams.id, pipelines.id, jobs.id and builds.id are all 1 in a fresh
+// database, and a step wired to the wrong one of those still matches
+// Equal(1) -- a mutation swapping TeamID for PipelineID in engine's step
+// metadata passed for exactly that reason.
+//
+// The ranges come from the live schema rather than a list, so a table added by a
+// future migration is covered without anyone remembering to do it. The ~24
+// matches at a stride of a million top out around 24000001, well inside the
+// 2147483647 of the narrowest id column (most are integer, a few bigint).
+//
+// build_event_id_seq_<n> sequences are created per pipeline at runtime and
+// dropped by Truncate; the end-anchored match excludes them.
+const spreadIDSequencesSQL = `
+			SET client_min_messages TO WARNING;
+
+			CREATE OR REPLACE FUNCTION spread_id_sequences() RETURNS void AS $$
+			DECLARE
+					statements CURSOR FOR
+							SELECT sequencename, row_number() OVER (ORDER BY sequencename) AS n
+							FROM pg_sequences
+							WHERE schemaname = 'public' AND sequencename LIKE '%\_id\_seq';
+			BEGIN
+					FOR stmt IN statements LOOP
+							EXECUTE 'ALTER SEQUENCE ' || quote_ident(stmt.sequencename) ||
+									' START WITH ' || (stmt.n * 1000000 + 1) ||
+									' RESTART;';
+					END LOOP;
+			END;
+			$$ LANGUAGE plpgsql;
+
+			SELECT spread_id_sequences();
+`
 
 func (runner *Runner) CreateEmptyTestDB() {
 	exitCode := runner.psql("CREATE DATABASE testdb;")
@@ -286,13 +332,13 @@ func (runner *Runner) terminateIdleConnections(dbName string) {
 }
 
 func (runner *Runner) Truncate() {
-	truncate := exec.Command(
-		"psql",
-		"-h", "/tmp",
-		"-U", "postgres",
-		"-p", strconv.Itoa(runner.Port),
-		"testdb",
-		"-c", `
+	exitCode := runner.psqlIn("testdb", truncateSQL+spreadIDSequencesSQL)
+	Expect(exitCode).To(Equal(0), "truncate testdb")
+}
+
+// TRUNCATE ... RESTART IDENTITY rewinds every sequence to its start value, so
+// the spread has to be reapplied here as well as on the template.
+const truncateSQL = `
 			SET client_min_messages TO WARNING;
 
 			CREATE OR REPLACE FUNCTION truncate_tables() RETURNS void AS $$
@@ -355,13 +401,4 @@ func (runner *Runner) Truncate() {
 			SELECT drop_ephemeral_sequences();
 			SELECT drop_ephemeral_tables();
 			SELECT reset_global_sequences();
-		`,
-	)
-
-	truncateS, err := gexec.Start(truncate, ginkgo.GinkgoWriter, ginkgo.GinkgoWriter)
-	Expect(err).NotTo(HaveOccurred())
-
-	<-truncateS.Exited
-
-	Expect(truncateS).To(gexec.Exit(0))
-}
+`

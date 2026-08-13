@@ -118,7 +118,6 @@ var _ = Describe("BuildStepDelegate", func() {
 		policyChecker = policy.NoopChecker{}
 
 		fixture = useEngineDB()
-		spreadEngineIDSequences(fixture)
 		_, _, _, realBuild = createEngineJobBuild(
 			fixture,
 			"some-team",
