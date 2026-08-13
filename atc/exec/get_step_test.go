@@ -13,7 +13,6 @@ import (
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/lock"
-	"github.com/concourse/concourse/atc/db/lock/lockfakes"
 	"github.com/concourse/concourse/atc/engine"
 	"github.com/concourse/concourse/atc/event"
 	"github.com/concourse/concourse/atc/exec"
@@ -147,7 +146,7 @@ var _ = Describe("GetStep", func() {
 		delegate        *recordingGetDelegate
 		delegateFactory exec.GetDelegateFactory
 
-		fakeLockFactory *lockfakes.FakeLockFactory
+		lockFactory *recordingLockFactory
 
 		stepper      exec.Stepper
 		imageStepper *imageFetchStepper
@@ -240,7 +239,7 @@ var _ = Describe("GetStep", func() {
 		fakePool = new(scriptedPool)
 		fakePool.FindOrSelectWorkerReturns(chosenWorker, nil)
 
-		fakeLockFactory = lockOnAttempt(1)
+		lockFactory = &recordingLockFactory{LockFactory: fixture.LockFactory}
 
 		imageStepper = new(imageFetchStepper)
 		stepper = noopStepper
@@ -288,7 +287,7 @@ var _ = Describe("GetStep", func() {
 			*plan.Get,
 			stepMetadata,
 			containerMetadata,
-			fakeLockFactory,
+			lockFactory,
 			resourceCacheFactory,
 			delegateFactory,
 			fakePool,
@@ -436,8 +435,6 @@ var _ = Describe("GetStep", func() {
 			)
 
 			BeforeEach(func() {
-				fakeLockFactory = neverLock()
-
 				chosenContainer.ProcessDefs[0].Stub.Err = "should not run"
 
 				cacheVolume = runtimetest.NewVolume("cache-volume")
@@ -466,6 +463,10 @@ var _ = Describe("GetStep", func() {
 				Expect(execBuildLog(fixture, realBuild, event.OriginSourceStderr)).To(MatchRegexp(`INFO.*found.*cache`))
 			})
 
+			It("never reaches for the resource get lock", func() {
+				Expect(lockFactory.acquires).To(BeZero())
+			})
+
 			It("loads metadata from the persisted cache row", func() {
 				cache := loadOwnedCache()
 				Expect(cache.ID()).To(Equal(cached.ID()))
@@ -491,8 +492,6 @@ var _ = Describe("GetStep", func() {
 
 		Context("when the cache is missing from the selected worker", func() {
 			BeforeEach(func() {
-				fakeLockFactory = lockOnAttempt(1)
-
 				chosenContainer.ProcessDefs[0].Stub.Output = resource.VersionResult{
 					Version:  atc.Version{"some": "version"},
 					Metadata: atc.Metadata{{Name: "some", Value: "metadata"}},
@@ -522,9 +521,10 @@ var _ = Describe("GetStep", func() {
 				Expect(execBuildLog(fixture, realBuild, event.OriginSourceStderr)).ToNot(ContainSubstring("INFO"))
 			})
 
-			Context("when the lock isn't initially acquired", func() {
+			Context("when the lock is held by another session", func() {
 				BeforeEach(func() {
-					fakeLockFactory = lockOnAttempt(3)
+					lockFactory.contender = execLockFactory()
+					lockFactory.refusals = 2
 				})
 
 				It("succeeds", func() {
@@ -536,9 +536,16 @@ var _ = Describe("GetStep", func() {
 				})
 
 				It("[GS-03] retries lock acquisition until successful", func() {
-					// lockOnAttempt(3) returns false for the first 2 calls and true
-					// on the 3rd — verifying that the get step actually loops.
-					Expect(fakeLockFactory.AcquireCallCount()).To(BeNumerically(">=", 3))
+					Expect(lockFactory.acquires).To(Equal(3))
+					Expect(lockFactory.held).To(BeNil())
+				})
+
+				It("runs the get script once the lock is free", func() {
+					finished := persistedFinishGets(fixture, realBuild)
+					Expect(finished).To(HaveLen(1))
+					Expect(finished[0].ExitStatus).To(Equal(0))
+					Expect(finished[0].FetchedVersion).To(Equal(atc.Version{"some": "version"}))
+					Expect(finished[0].FetchedMetadata).To(Equal(atc.Metadata{{Name: "some", Value: "metadata"}}))
 				})
 			})
 		})
@@ -1062,23 +1069,37 @@ var _ = Describe("GetStep", func() {
 	})
 })
 
-func lockOnAttempt(attemptNumber int) *lockfakes.FakeLockFactory {
-	fakeLockFactory := new(lockfakes.FakeLockFactory)
-	fakeLockFactory.AcquireStub = func(lager.Logger, lock.LockID) (lock.Lock, bool, error) {
-		attemptNumber--
-		if attemptNumber <= 0 {
-			return new(lockfakes.FakeLock), true, nil
-		}
-		return nil, false, nil
-	}
+// recordingLockFactory keeps the real Postgres advisory locks and adds only
+// what they cannot show: how many times the step reached for one. Setting
+// refusals has contender hold the very lock the step asks for, on its own
+// session, until the step has been turned away that many times.
+type recordingLockFactory struct {
+	lock.LockFactory
 
-	return fakeLockFactory
+	contender lock.LockFactory
+	refusals  int
+
+	acquires int
+	held     lock.Lock
 }
 
-func neverLock() *lockfakes.FakeLockFactory {
-	fakeLockFactory := new(lockfakes.FakeLockFactory)
-	fakeLockFactory.AcquireStub = func(lager.Logger, lock.LockID) (lock.Lock, bool, error) {
-		panic("expected lock to not be acquired")
+func (f *recordingLockFactory) Acquire(logger lager.Logger, id lock.LockID) (lock.Lock, bool, error) {
+	GinkgoHelper()
+
+	if f.acquires == 0 && f.refusals > 0 {
+		var acquired bool
+		var err error
+		f.held, acquired, err = f.contender.Acquire(logger, id)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(acquired).To(BeTrue())
 	}
-	return fakeLockFactory
+
+	if f.held != nil && f.acquires >= f.refusals {
+		Expect(f.held.Release()).To(Succeed())
+		f.held = nil
+	}
+
+	f.acquires++
+
+	return f.LockFactory.Acquire(logger, id)
 }

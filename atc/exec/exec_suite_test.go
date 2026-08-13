@@ -62,19 +62,7 @@ func useExecDB() *execDBFixture {
 	DeferCleanup(func() { Expect(conn.Close()).To(Succeed()) })
 	db.CleanupBaseResourceTypesCache()
 
-	var lockConns [lock.FactoryCount]*sql.DB
-	for i := 0; i < lock.FactoryCount; i++ {
-		lockConn := execPostgresRunner.OpenSingleton()
-		lockConns[i] = lockConn
-		connToClose := lockConn
-		DeferCleanup(func() { Expect(connToClose.Close()).To(Succeed()) })
-	}
-
-	lockFactory := lock.NewLockFactory(
-		lockConns,
-		func(lager.Logger, lock.LockID) {},
-		func(lager.Logger, lock.LockID) {},
-	)
+	lockFactory := execLockFactory()
 	logger := lagertest.NewTestLogger("exec-postgres-fixture")
 
 	return &execDBFixture{
@@ -87,6 +75,26 @@ func useExecDB() *execDBFixture {
 		ResourceConfigFactory: db.NewResourceConfigFactory(conn, lockFactory),
 		ResourceCacheFactory:  db.NewResourceCacheFactory(conn, lockFactory),
 	}
+}
+
+// execLockFactory opens its own set of singleton connections, so two factories
+// built by it contend for advisory locks across genuinely separate sessions.
+func execLockFactory() lock.LockFactory {
+	GinkgoHelper()
+
+	var lockConns [lock.FactoryCount]*sql.DB
+	for i := 0; i < lock.FactoryCount; i++ {
+		lockConn := execPostgresRunner.OpenSingleton()
+		lockConns[i] = lockConn
+		connToClose := lockConn
+		DeferCleanup(func() { Expect(connToClose.Close()).To(Succeed()) })
+	}
+
+	return lock.NewLockFactory(
+		lockConns,
+		func(lager.Logger, lock.LockID) {},
+		func(lager.Logger, lock.LockID) {},
+	)
 }
 
 func closedExecCloneConn() db.DbConn {

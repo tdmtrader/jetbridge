@@ -108,7 +108,6 @@ func NewResourceGetLockID(name string) LockID {
 	return LockID{LockTypeResourceGet, lockIDFromString(name)}
 }
 
-//counterfeiter:generate . LockFactory
 type LockFactory interface {
 	Acquire(logger lager.Logger, ids LockID) (Lock, bool, error)
 }
@@ -193,7 +192,6 @@ func (f *lockFactory) Acquire(logger lager.Logger, id LockID) (Lock, bool, error
 	return l, true, nil
 }
 
-//counterfeiter:generate . Lock
 type Lock interface {
 	Release() error
 }
