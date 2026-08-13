@@ -232,3 +232,121 @@ func TestRegisterAliasSendsTheDurableFlagAsGiven(t *testing.T) {
 		}
 	}
 }
+
+// Volumes bound from a probe or a warm must carry the daemonClient, exactly as
+// lookup-wrapped ones do (TestDaemonSetBackend_WrapVolumeForLookup_SetsDaemonClient).
+//
+// NewDaemonSetVolumeFromIP leaves the field nil, and fetchArtifactWithPeerFallback
+// returns the recorded source's error verbatim when it is nil — so an alias swept
+// between the probe and the read becomes a bare 404 and a red build, while the
+// bytes sit on another node that was never asked.
+func TestFindResourceCacheBindsAVolumeThatCanPeerFallBack(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		spy   *warmSpy
+		phase string
+	}{
+		{"local hit", &warmSpy{local: true, durableCapable: true, restoreOK: true}, "probe"},
+		{"after a warm", &warmSpy{local: false, durableCapable: true, restoreOK: true}, "warm"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b := backendFor(t, tc.spy)
+
+			vol, found := b.FindResourceCache(context.Background(), "rc-42", "rc-content", "worker-1")
+			if !found {
+				t.Fatalf("expected a hit via %s", tc.phase)
+			}
+
+			dsv, ok := vol.(*DaemonSetVolume)
+			if !ok {
+				t.Fatalf("expected *DaemonSetVolume, got %T", vol)
+			}
+			if dsv.daemonClient == nil {
+				t.Fatalf("volume bound via %s carries no daemonClient; peer fallback is dead", tc.phase)
+			}
+		})
+	}
+}
+
+// An endpoint the API has marked not-ready is a pod that is terminating or
+// failing its probe. Binding an artifact read to one is a read against a pod
+// that is going away.
+//
+// EndpointSlice reports these alongside ready ones — that is what Conditions is
+// for — and discovery previously flattened every address regardless, so a
+// terminating pod could win the probe race.
+func TestProbeSkipsEndpointsTheAPIMarkedNotReady(t *testing.T) {
+	var hits atomic.Int64
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	addr := ts.Listener.Addr().String()
+	host := addr[:strings.LastIndex(addr, ":")]
+	port, err := strconv.Atoi(addr[strings.LastIndex(addr, ":")+1:])
+	if err != nil {
+		t.Fatalf("parse port: %v", err)
+	}
+
+	notReady := false
+	clientset := fake.NewSimpleClientset(&discoveryv1.EndpointSlice{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "artifact-daemon-xyz",
+			Namespace: "cicd",
+			Labels:    map[string]string{discoveryv1.LabelServiceName: "artifact-daemon"},
+		},
+		Endpoints: []discoveryv1.Endpoint{{
+			Addresses:  []string{host},
+			NodeName:   ptr("node-a"),
+			Conditions: discoveryv1.EndpointConditions{Ready: &notReady},
+		}},
+	})
+
+	client := NewDaemonClient(lagertest.NewTestLogger("test"), clientset, "cicd", "artifact-daemon", port, nil)
+
+	if _, found := client.ProbeResourceCache(context.Background(), "rc-42"); found {
+		t.Error("probe reported a hit from a not-ready pod")
+	}
+	if got := hits.Load(); got != 0 {
+		t.Errorf("probe sent %d requests to a not-ready pod, want 0", got)
+	}
+}
+
+// ...and a ready endpoint in the same slice must still be used, so the filter
+// cannot pass by excluding everything.
+func TestProbeStillUsesReadyEndpoints(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	addr := ts.Listener.Addr().String()
+	host := addr[:strings.LastIndex(addr, ":")]
+	port, err := strconv.Atoi(addr[strings.LastIndex(addr, ":")+1:])
+	if err != nil {
+		t.Fatalf("parse port: %v", err)
+	}
+
+	ready := true
+	clientset := fake.NewSimpleClientset(&discoveryv1.EndpointSlice{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "artifact-daemon-xyz",
+			Namespace: "cicd",
+			Labels:    map[string]string{discoveryv1.LabelServiceName: "artifact-daemon"},
+		},
+		Endpoints: []discoveryv1.Endpoint{{
+			Addresses:  []string{host},
+			NodeName:   ptr("node-a"),
+			Conditions: discoveryv1.EndpointConditions{Ready: &ready},
+		}},
+	})
+
+	client := NewDaemonClient(lagertest.NewTestLogger("test"), clientset, "cicd", "artifact-daemon", port, nil)
+
+	if _, found := client.ProbeResourceCache(context.Background(), "rc-42"); !found {
+		t.Error("probe ignored a ready pod that had the cache")
+	}
+}
