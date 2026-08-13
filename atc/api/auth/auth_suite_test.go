@@ -3,6 +3,7 @@ package auth_test
 import (
 	"database/sql"
 	"encoding/json"
+	"net/http"
 	"testing"
 	"time"
 
@@ -75,6 +76,30 @@ const (
 	accessTokenSubject   = "some-sub"
 	systemClaimValue     = "some-system-sub"
 )
+
+// The cookies the real token middleware reads and writes. They are named here
+// rather than exported so a rename in skymarshal has to be noticed here too.
+const (
+	authCookieName = "skymarshal_auth"
+	csrfCookieName = "skymarshal_csrf"
+)
+
+// cookieNamed is how a spec observes what the middleware actually wrote: every
+// attribute survives the Set-Cookie round trip, so Path, Secure, HttpOnly and
+// SameSite are assertable off the response.
+func cookieNamed(response *http.Response, name string) *http.Cookie {
+	GinkgoHelper()
+
+	var matching []*http.Cookie
+	for _, cookie := range response.Cookies() {
+		if cookie.Name == name {
+			matching = append(matching, cookie)
+		}
+	}
+
+	Expect(matching).To(HaveLen(1), "expected exactly one "+name+" cookie")
+	return matching[0]
+}
 
 // realAccessFactory is the accessor the ATC actually wires up: bearer tokens
 // are resolved against the access_tokens table, and the roles a request carries

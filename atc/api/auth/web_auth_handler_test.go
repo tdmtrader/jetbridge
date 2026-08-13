@@ -15,24 +15,23 @@ import (
 	"github.com/concourse/concourse/atc/api/buildserver"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/skymarshal/token"
-	"github.com/concourse/concourse/skymarshal/token/tokenfakes"
 )
 
 var _ = Describe("WebAuthHandler", func() {
 	var (
-		fakeMiddleware *tokenfakes.FakeMiddleware
-		nested         recordingHandler
+		middleware token.Middleware
+		nested     recordingHandler
 	)
 
 	var server *httptest.Server
 
 	BeforeEach(func() {
-		fakeMiddleware = new(tokenfakes.FakeMiddleware)
+		middleware = token.NewMiddleware(true)
 		nested = recordingHandler{requests: make(chan *http.Request, 1)}
 
 		server = httptest.NewServer(auth.WebAuthHandler{
 			Handler:    nested,
-			Middleware: fakeMiddleware,
+			Middleware: middleware,
 		})
 	})
 
@@ -43,14 +42,23 @@ var _ = Describe("WebAuthHandler", func() {
 	Describe("handling a request", func() {
 		var request *http.Request
 		var response *http.Response
+		var authenticated bool
 
 		BeforeEach(func() {
+			authenticated = false
+
 			var err error
 			request, err = http.NewRequest("GET", server.URL, bytes.NewBufferString("hello"))
 			Expect(err).NotTo(HaveOccurred())
 		})
 
+		// The cookie is attached here rather than in a BeforeEach so that a
+		// context which replaces the request still sends it.
 		JustBeforeEach(func() {
+			if authenticated {
+				request.AddCookie(&http.Cookie{Name: authCookieName, Value: "username:password"})
+			}
+
 			var err error
 			response, err = http.DefaultClient.Do(request)
 			Expect(err).NotTo(HaveOccurred())
@@ -58,10 +66,6 @@ var _ = Describe("WebAuthHandler", func() {
 		})
 
 		Context("without the auth cookie", func() {
-			BeforeEach(func() {
-				fakeMiddleware.GetAuthTokenReturns("")
-			})
-
 			It("does not set auth cookie in response", func() {
 				Expect(response.Cookies()).To(HaveLen(0))
 			})
@@ -81,22 +85,18 @@ var _ = Describe("WebAuthHandler", func() {
 
 			Context("the nested handler returns unauthorized", func() {
 				BeforeEach(func() {
-					request = requestToNestedStatus(fakeMiddleware, http.StatusUnauthorized)
+					request = requestToNestedStatus(middleware, http.StatusUnauthorized)
 				})
 
-				It("does not unset the auth cookie", func() {
-					Expect(fakeMiddleware.UnsetAuthTokenCallCount()).To(Equal(0))
-				})
-
-				It("does not unset the csrf cookie", func() {
-					Expect(fakeMiddleware.UnsetCSRFTokenCallCount()).To(Equal(0))
+				It("does not unset any cookie", func() {
+					Expect(response.Cookies()).To(BeEmpty())
 				})
 			})
 		})
 
 		Context("with the auth cookie", func() {
 			BeforeEach(func() {
-				fakeMiddleware.GetAuthTokenReturns("username:password")
+				authenticated = true
 			})
 
 			It("sets the Authorization header with the value from the cookie", func() {
@@ -144,7 +144,7 @@ var _ = Describe("WebAuthHandler", func() {
 						defer GinkgoRecover()
 						auth.WebAuthHandler{
 							Handler:    buildserver.NewEventHandler(lager.NewLogger("test"), build),
-							Middleware: fakeMiddleware,
+							Middleware: middleware,
 						}.ServeHTTP(w, r)
 					}))
 					DeferCleanup(eventServer.Close)
@@ -160,15 +160,32 @@ var _ = Describe("WebAuthHandler", func() {
 
 			Context("the nested handler returns unauthorized", func() {
 				BeforeEach(func() {
-					request = requestToNestedStatus(fakeMiddleware, http.StatusUnauthorized)
+					request = requestToNestedStatus(middleware, http.StatusUnauthorized)
 				})
 
 				It("unsets the auth cookie", func() {
-					Expect(fakeMiddleware.UnsetAuthTokenCallCount()).To(Equal(1))
+					cookie := cookieNamed(response, authCookieName)
+					Expect(cookie.Value).To(BeEmpty())
+					Expect(cookie.MaxAge).To(Equal(-1))
+					Expect(cookie.Path).To(Equal("/"))
+					Expect(cookie.Secure).To(BeTrue())
+					Expect(cookie.HttpOnly).To(BeTrue())
+					Expect(cookie.SameSite).To(Equal(http.SameSiteLaxMode))
 				})
 
 				It("unsets the csrf cookie", func() {
-					Expect(fakeMiddleware.UnsetCSRFTokenCallCount()).To(Equal(1))
+					cookie := cookieNamed(response, csrfCookieName)
+					Expect(cookie.Value).To(BeEmpty())
+					Expect(cookie.MaxAge).To(Equal(-1))
+					Expect(cookie.Path).To(Equal("/"))
+					Expect(cookie.Secure).To(BeTrue())
+					Expect(cookie.HttpOnly).To(BeTrue())
+					Expect(cookie.SameSite).To(Equal(http.SameSiteLaxMode))
+				})
+
+				It("unsets the cookies before the status is written", func() {
+					Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
+					Expect(response.Cookies()).To(HaveLen(2))
 				})
 			})
 		})

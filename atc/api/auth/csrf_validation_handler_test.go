@@ -9,7 +9,7 @@ import (
 	"code.cloudfoundry.org/lager/v3/lagertest"
 
 	"github.com/concourse/concourse/atc/api/auth"
-	"github.com/concourse/concourse/skymarshal/token/tokenfakes"
+	"github.com/concourse/concourse/skymarshal/token"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -22,7 +22,6 @@ var _ = Describe("CsrfValidationHandler", func() {
 		request               *http.Request
 		response              *http.Response
 		delegateHandlerCalled bool
-		fakeMiddleware        *tokenfakes.FakeMiddleware
 		isCSRFRequired        bool
 		logger                *lagertest.TestLogger
 		isLoggerSet           bool
@@ -44,14 +43,13 @@ var _ = Describe("CsrfValidationHandler", func() {
 
 	BeforeEach(func() {
 		isLoggerSet = true
-		fakeMiddleware = new(tokenfakes.FakeMiddleware)
 		delegateHandlerCalled = false
 		isCSRFRequired = false
 		logger = lagertest.NewTestLogger("csrf-validation-test")
 
 		csrfValidationHandler = auth.CSRFValidationHandler(
 			simpleHandler,
-			fakeMiddleware,
+			token.NewMiddleware(false),
 		)
 
 		server = httptest.NewServer(csrfRequiredWrapHandler)
@@ -95,7 +93,7 @@ var _ = Describe("CsrfValidationHandler", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				request.Header.Set(auth.CSRFHeaderName, "some-token")
-				fakeMiddleware.GetCSRFTokenReturns("some-token")
+				request.AddCookie(&http.Cookie{Name: csrfCookieName, Value: "some-token"})
 			})
 
 			It("returns 200 OK", func() {
@@ -123,10 +121,6 @@ var _ = Describe("CsrfValidationHandler", func() {
 			})
 
 			Context("when auth token does not contain CSRF", func() {
-				BeforeEach(func() {
-					fakeMiddleware.GetCSRFTokenReturns("")
-				})
-
 				It("returns 401 Bad Request", func() {
 					Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
 				})
@@ -138,7 +132,7 @@ var _ = Describe("CsrfValidationHandler", func() {
 
 			Context("when auth token contains non-matching CSRF", func() {
 				BeforeEach(func() {
-					fakeMiddleware.GetCSRFTokenReturns("some-other-csrf")
+					request.AddCookie(&http.Cookie{Name: csrfCookieName, Value: "some-other-csrf"})
 				})
 
 				It("returns 401 Not Authorized", func() {
@@ -152,7 +146,7 @@ var _ = Describe("CsrfValidationHandler", func() {
 
 			Context("when auth token contains matching CSRF", func() {
 				BeforeEach(func() {
-					fakeMiddleware.GetCSRFTokenReturns("some-csrf-token")
+					request.AddCookie(&http.Cookie{Name: csrfCookieName, Value: "some-csrf-token"})
 				})
 
 				It("returns 200 OK", func() {
