@@ -257,6 +257,7 @@ func TestTLS_ProtectedPaths_RejectWithoutClientCert(t *testing.T) {
 		{"PUT", "/stream-in/build-1"},
 		{"HEAD", "/resource-caches/rc-1"},
 		{"GET", "/resource-caches/rc-1"},
+		{"POST", "/durable/restore"},
 	}
 
 	for _, tc := range protectedPaths {

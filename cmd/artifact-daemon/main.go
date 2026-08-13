@@ -95,6 +95,17 @@ func main() {
 	// after the mirror is wired up, so its step-dir-removed callback can
 	// prune mirror status without racing sweeper startup.
 	sweepDone := make(chan struct{})
+
+	// A restore assembles the artifact in a temporary directory under steps/,
+	// and the sweeper is what reclaims one left behind by a crash. If a restore
+	// may outlive the TTL, the sweeper can instead delete a live restore's
+	// working directory out from under it.
+	if *durableStore != "" && *durableTimeout >= *ttl {
+		logger.Error("durable-timeout-exceeds-ttl", fmt.Errorf(
+			"--durable-timeout (%s) must be less than --ttl (%s)", *durableTimeout, *ttl))
+		os.Exit(1)
+	}
+
 	if tier, err := buildDurableTier(logger, server.Metrics(), durableOptions{
 		kind:     *durableStore,
 		path:     *durablePath,

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
+	"golang.org/x/sync/singleflight"
 )
 
 // Server is the artifact-daemon HTTP server that stores and serves
@@ -31,7 +32,17 @@ type Server struct {
 	metrics       *metrics
 	guard         *ReadGuard
 	durable       *DurableTier
+
+	// restoreFlight collapses concurrent durable restores of one key.
+	restoreFlight singleflight.Group
+	// uploadSem bounds concurrent durable uploads. Each spools a whole
+	// artifact through temporary storage, so unbounded promotion is a way to
+	// run the node out of disk.
+	uploadSem chan struct{}
 }
+
+// maxConcurrentDurableUploads caps in-flight promotions per daemon.
+const maxConcurrentDurableUploads = 4
 
 // NewServer creates a new artifact-daemon server.
 func NewServer(logger lager.Logger, storagePath, nodeName string) *Server {
@@ -42,6 +53,7 @@ func NewServer(logger lager.Logger, storagePath, nodeName string) *Server {
 		registry:    NewRegistry(logger),
 		metrics:     newMetrics(),
 		guard:       NewReadGuard(),
+		uploadSem:   make(chan struct{}, maxConcurrentDurableUploads),
 	}
 }
 
@@ -139,6 +151,7 @@ func (s *Server) Handler(opts ...HandlerOption) http.Handler {
 	mux.HandleFunc("POST /register", protect(s.handleRegister))
 	mux.HandleFunc("POST /mirror", protect(s.handleMirrorTrigger))
 	mux.HandleFunc("PUT /stream-in/", protect(s.handleStreamIn))
+	mux.HandleFunc("POST /durable/restore", protect(s.handleDurableRestore))
 	mux.HandleFunc("HEAD /resource-caches/", protect(s.handleHeadResourceCache))
 	mux.HandleFunc("GET /resource-caches/", protect(s.handleGetResourceCache))
 
@@ -540,6 +553,16 @@ func (s *Server) lookupRegistryAlias(r *http.Request) (string, bool) {
 type registerRequest struct {
 	Key       string `json:"key"`
 	LocalPath string `json:"local_path"`
+
+	// Durable is the ATC's statement that this artifact is worth keeping past
+	// the node. The daemon reads a bool and never looks at the key: whether an
+	// artifact is re-derivable, and whether anything will ask for it again, are
+	// questions about its meaning that only the ATC can answer. This field is
+	// the entire eligibility protocol.
+	//
+	// Absent or false behaves exactly as the daemon did before the durable
+	// tier existed.
+	Durable bool `json:"durable,omitempty"`
 }
 
 // mirrorRequest is the JSON body for POST /mirror.
@@ -616,7 +639,11 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	s.registry.RegisterAlias(req.Key, req.LocalPath)
 
-	s.logger.Info("registered", lager.Data{"key": req.Key, "path": req.LocalPath})
+	if req.Durable {
+		s.promoteToDurable(r.Context(), req.Key, req.LocalPath)
+	}
+
+	s.logger.Info("registered", lager.Data{"key": req.Key, "path": req.LocalPath, "durable": req.Durable})
 	w.WriteHeader(http.StatusCreated)
 }
 
@@ -829,6 +856,11 @@ func sanitizeMode(typeflag byte, mode os.FileMode) os.FileMode {
 // successful get step). Returns 200 with X-Node-Name header if found, 404
 // otherwise.
 func (s *Server) handleHeadResourceCache(w http.ResponseWriter, r *http.Request) {
+	// Before any return: capability is a property of this daemon, not of this
+	// key, so it must be reported even on a miss or an error. Reporting it only
+	// on a hit would mean it is known exactly when it is not needed.
+	s.advertiseDurableTier(w)
+
 	key := strings.TrimPrefix(r.URL.Path, "/resource-caches/")
 	if key == "" {
 		w.WriteHeader(http.StatusBadRequest)
@@ -863,6 +895,8 @@ func (s *Server) handleHeadResourceCache(w http.ResponseWriter, r *http.Request)
 // handleGetResourceCache streams a resource cache as a tar archive. Used by
 // peer daemons to fetch cached resource data for cross-node resolution.
 func (s *Server) handleGetResourceCache(w http.ResponseWriter, r *http.Request) {
+	s.advertiseDurableTier(w)
+
 	key := strings.TrimPrefix(r.URL.Path, "/resource-caches/")
 	if key == "" {
 		http.Error(w, "key required", http.StatusBadRequest)
