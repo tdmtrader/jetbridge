@@ -1,6 +1,8 @@
 package event_test
 
 import (
+	"encoding/json"
+
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/event"
 	. "github.com/onsi/ginkgo/v2"
@@ -75,4 +77,27 @@ var _ = Describe("ParseEvent", func() {
 		Entry("ImageGet", event.ImageGet{}),
 		Entry("AcrossSubsteps", event.AcrossSubsteps{}),
 	)
+})
+
+var _ = Describe("Message", func() {
+	It("can round-trip an event", func() {
+		payload, err := json.Marshal(event.Message{Event: event.Log{Payload: "sup"}})
+		Expect(err).ToNot(HaveOccurred())
+
+		var message event.Message
+		Expect(json.Unmarshal(payload, &message)).To(Succeed())
+		Expect(message.Event).To(Equal(event.Log{Payload: "sup"}))
+	})
+
+	It("fails to unmarshal an envelope with no data, rather than panicking", func() {
+		var message event.Message
+		err := json.Unmarshal([]byte(`{"event":"log","version":"5.1"}`), &message)
+		Expect(err).To(MatchError("missing event data: log version 5.1"))
+	})
+
+	It("fails to unmarshal an envelope with null data, rather than panicking", func() {
+		var message event.Message
+		err := json.Unmarshal([]byte(`{"data":null,"event":"some-event","version":"1.0"}`), &message)
+		Expect(err).To(MatchError("missing event data: some-event version 1.0"))
+	})
 })

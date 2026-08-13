@@ -126,6 +126,13 @@ func (m *Message) UnmarshalJSON(bytes []byte) error {
 		return err
 	}
 
+	if envelope.Data == nil {
+		return MissingEventDataError{
+			Type:    envelope.Event,
+			Version: envelope.Version,
+		}
+	}
+
 	event, err := ParseEvent(envelope.Version, envelope.Event, *envelope.Data)
 	if err != nil {
 		return err
@@ -142,6 +149,15 @@ type UnknownEventTypeError struct {
 
 func (err UnknownEventTypeError) Error() string {
 	return fmt.Sprintf("unknown event type: %s", err.Type)
+}
+
+type MissingEventDataError struct {
+	Type    atc.EventType
+	Version atc.EventVersion
+}
+
+func (err MissingEventDataError) Error() string {
+	return fmt.Sprintf("missing event data: %s version %s", err.Type, err.Version)
 }
 
 type UnknownEventVersionError struct {

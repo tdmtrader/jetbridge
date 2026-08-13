@@ -463,4 +463,33 @@ var _ = Describe("V1.0 Renderer", func() {
 
 	})
 
+	Context("when an event with no data is received", func() {
+
+		BeforeEach(func() {
+			writeRawEvent(`{"event":"some-event","version":"1.0"}`)
+			writeRawEvent(`{"event":"log","version":"5.1"}`)
+		})
+
+		It("reports it as a parse failure", func() {
+			Expect(out.Contents()).To(ContainSubstring("failed to parse next event"))
+			Expect(out.Contents()).To(ContainSubstring("missing event data: some-event version 1.0"))
+		})
+
+		It("exits with 255 exit code", func() {
+			Expect(exitStatus).To(Equal(255))
+		})
+
+		Context("when IgnoreEventParsingErrors is configured", func() {
+			BeforeEach(func() {
+				options.IgnoreEventParsingErrors = true
+			})
+
+			It("exits with 0 exit code", func() {
+				Expect(exitStatus).To(Equal(0))
+			})
+
+		})
+
+	})
+
 })

@@ -144,6 +144,8 @@ func isEventParseError(err error) bool {
 		return true
 	} else if _, ok := err.(event.UnknownEventVersionError); ok {
 		return true
+	} else if _, ok := err.(event.MissingEventDataError); ok {
+		return true
 	}
 	return false
 }
