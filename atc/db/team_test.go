@@ -13,7 +13,6 @@ import (
 
 	sq "github.com/Masterminds/squirrel"
 	"github.com/concourse/concourse/atc"
-	"github.com/concourse/concourse/atc/creds/credsfakes"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbtest"
 	"github.com/concourse/concourse/atc/event"
@@ -380,7 +379,6 @@ var _ = Describe("Team", func() {
 
 	Describe("Containers", func() {
 		var (
-			fakeSecretManager      *credsfakes.FakeSecrets
 			resourceContainer      db.CreatingContainer
 			resourceTypeContainer  db.CreatingContainer
 			prototypeContainer     db.CreatingContainer
@@ -411,9 +409,6 @@ var _ = Describe("Team", func() {
 
 		Context("when there are task and check containers", func() {
 			BeforeEach(func() {
-				fakeSecretManager = new(credsfakes.FakeSecrets)
-				fakeSecretManager.GetReturns("", nil, false, nil)
-
 				scenario = dbtest.Setup(
 					builder.WithPipeline(atc.Config{
 						Jobs: atc.JobConfigs{

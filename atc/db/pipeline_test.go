@@ -7,7 +7,7 @@ import (
 
 	"code.cloudfoundry.org/clock"
 	"github.com/concourse/concourse/atc/creds"
-	"github.com/concourse/concourse/atc/creds/credsfakes"
+	"github.com/concourse/concourse/atc/creds/dummy"
 	"github.com/concourse/concourse/atc/db/dbtest"
 	"github.com/concourse/concourse/vars"
 	"github.com/jackc/pgx/v5"
@@ -16,9 +16,6 @@ import (
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/event"
-
-	// load dummy credential manager
-	_ "github.com/concourse/concourse/atc/creds/dummy"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -2115,8 +2112,8 @@ var _ = Describe("Pipeline", func() {
 
 	Describe("Variables", func() {
 		var (
-			fakeGlobalSecrets *credsfakes.FakeSecrets
-			pool              creds.VarSourcePool
+			globalSecrets *countingSecrets
+			pool          creds.VarSourcePool
 
 			pvars vars.Variables
 			err   error
@@ -2143,12 +2140,8 @@ var _ = Describe("Pipeline", func() {
 		})
 
 		JustBeforeEach(func() {
-			fakeGlobalSecrets = new(credsfakes.FakeSecrets)
-			fakeGlobalSecrets.GetStub = func(key string) (any, *time.Time, bool, error) {
-				if key == "gk" {
-					return "gv", nil, true, nil
-				}
-				return nil, nil, false, nil
+			globalSecrets = &countingSecrets{
+				Secrets: &dummy.Secrets{StaticVariables: vars.StaticVariables{"gk": "gv"}},
 			}
 
 			params := creds.SecretLookupParams{
@@ -2157,7 +2150,7 @@ var _ = Describe("Pipeline", func() {
 				InstanceVars: pipeline.InstanceVars(),
 			}
 
-			pvars, err = pipeline.Variables(logger, fakeGlobalSecrets, pool, params)
+			pvars, err = pipeline.Variables(logger, globalSecrets, pool, params)
 			Expect(err).NotTo(HaveOccurred())
 		})
 
@@ -2176,7 +2169,7 @@ var _ = Describe("Pipeline", func() {
 
 		It("should not get from global secrets if found in the pipeline var source", func() {
 			pvars.Get(vars.Reference{Source: "some-var-source", Path: "pk"})
-			Expect(fakeGlobalSecrets.GetCallCount()).To(Equal(0))
+			Expect(globalSecrets.getCount).To(Equal(0))
 		})
 
 		It("should get var from global var source", func() {
@@ -2274,4 +2267,17 @@ var _ = Describe("Pipeline", func() {
 
 func intptr(i int) *int {
 	return &i
+}
+
+// countingSecrets wraps a real secret manager to record how many lookups reach
+// it. A secret manager has no way to report that on its own.
+type countingSecrets struct {
+	creds.Secrets
+
+	getCount int
+}
+
+func (s *countingSecrets) Get(path string) (any, *time.Time, bool, error) {
+	s.getCount++
+	return s.Secrets.Get(path)
 }

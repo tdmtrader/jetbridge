@@ -10,9 +10,6 @@ import (
 	"code.cloudfoundry.org/lager/v3"
 )
 
-//go:generate go run github.com/maxbrunsfeld/counterfeiter/v6 -generate
-
-//counterfeiter:generate . VarSourcePool
 type VarSourcePool interface {
 	FindOrCreate(lager.Logger, map[string]any, ManagerFactory) (Secrets, error)
 	Size() int

@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"code.cloudfoundry.org/clock"
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	sq "github.com/Masterminds/squirrel"
 
@@ -12,7 +13,8 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/concourse/concourse/atc"
-	"github.com/concourse/concourse/atc/creds/credsfakes"
+	"github.com/concourse/concourse/atc/creds"
+	"github.com/concourse/concourse/atc/creds/noop"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbtest"
 	"github.com/concourse/concourse/atc/db/lock"
@@ -30,8 +32,6 @@ var (
 	postgresRunner postgresrunner.Runner
 
 	dbConn                              db.DbConn
-	fakeSecrets                         *credsfakes.FakeSecrets
-	fakeVarSourcePool                   *credsfakes.FakeVarSourcePool
 	componentFactory                    db.ComponentFactory
 	buildFactory                        db.BuildFactory
 	volumeRepository                    db.VolumeRepository
@@ -135,8 +135,15 @@ var _ = BeforeEach(func() {
 	checkBuildChan = make(chan db.Build, 10)
 	seqGenerator = util.NewSequenceGenerator(1)
 
-	fakeSecrets = new(credsfakes.FakeSecrets)
-	fakeVarSourcePool = new(credsfakes.FakeVarSourcePool)
+	varSourcePool := creds.NewVarSourcePool(
+		logger.Session("var-source-pool"),
+		creds.CredentialManagementConfig{},
+		5*time.Minute,
+		time.Minute,
+		clock.NewClock(),
+	)
+	DeferCleanup(varSourcePool.Close)
+
 	componentFactory = db.NewComponentFactory(dbConn)
 	buildFactory = db.NewBuildFactory(dbConn, lockFactory, 5*time.Minute, 5*time.Minute)
 	volumeRepository = db.NewVolumeRepository(dbConn)
@@ -148,7 +155,7 @@ var _ = BeforeEach(func() {
 	resourceConfigFactory = db.NewResourceConfigFactory(dbConn, lockFactory)
 	resourceCacheFactory = db.NewResourceCacheFactory(dbConn, lockFactory)
 	taskCacheFactory = db.NewTaskCacheFactory(dbConn)
-	checkFactory = db.NewCheckFactory(dbConn, lockFactory, fakeSecrets, fakeVarSourcePool, checkBuildChan, seqGenerator)
+	checkFactory = db.NewCheckFactory(dbConn, lockFactory, noop.Noop{}, varSourcePool, checkBuildChan, seqGenerator)
 	workerBaseResourceTypeFactory = db.NewWorkerBaseResourceTypeFactory(dbConn)
 	workerTaskCacheFactory = db.NewWorkerTaskCacheFactory(dbConn)
 	userFactory = db.NewUserFactory(dbConn)

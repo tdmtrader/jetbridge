@@ -12,7 +12,6 @@ type SecretsFactory interface {
 	NewSecrets() Secrets
 }
 
-//counterfeiter:generate . Secrets
 type Secrets interface {
 	// Every credential manager needs to be able to return (secret, secret_expiration_time, exists, error) based on the secret path
 	Get(string) (any, *time.Time, bool, error)
