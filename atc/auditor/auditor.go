@@ -143,7 +143,9 @@ func (a *auditor) ValidateAction(action string) bool {
 		atc.GetUser,
 		atc.GetWall,
 		atc.SetWall,
-		atc.ClearWall:
+		atc.ClearWall,
+		atc.GetOpenIDConfiguration,
+		atc.GetSigningKeys:
 		return a.EnableSystemAuditLog
 	case atc.ListTeams,
 		atc.SetTeam,
@@ -154,9 +156,7 @@ func (a *auditor) ValidateAction(action string) bool {
 		return a.EnableTeamAuditLog
 	case atc.RegisterWorker,
 		atc.ListWorkers,
-		atc.DeleteWorker,
-		atc.GetOpenIDConfiguration,
-		atc.GetSigningKeys:
+		atc.DeleteWorker:
 		return a.EnableWorkerAuditLog
 	case atc.ListVolumes:
 		return a.EnableVolumeAuditLog
