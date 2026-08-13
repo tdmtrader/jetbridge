@@ -169,12 +169,14 @@ var _ = Describe("Build", func() {
 
 			Context("OnCheckBuildStart", func() {
 				var buildId int
+				var preBuildId int
 
 				BeforeEach(func() {
 					err := build.OnCheckBuildStart()
 					Expect(err).ToNot(HaveOccurred())
 
 					buildId = build.ID()
+					preBuildId = build.LagerData()["pre_build_id"].(int)
 				})
 
 				It("get a build id", func() {
@@ -254,16 +256,16 @@ var _ = Describe("Build", func() {
 				})
 
 				It("ResourceCacheUser", func() {
-					Expect(build.ResourceCacheUser()).To(Equal(db.ForInMemoryBuild(1, build.CreateTime())))
+					Expect(build.ResourceCacheUser()).To(Equal(db.ForInMemoryBuild(preBuildId, build.CreateTime())))
 				})
 
 				It("ContainerOwner", func() {
 					Expect(build.ContainerOwner("some-plan")).To(Equal(
-						db.NewInMemoryCheckBuildContainerOwner(buildId, build.CreateTime(), "some-plan", defaultResource.TeamID())))
+						db.NewInMemoryCheckBuildContainerOwner(preBuildId, build.CreateTime(), "some-plan", defaultResource.TeamID())))
 				})
 
 				It("RunStateID", func() {
-					Expect(build.RunStateID()).To(Equal(fmt.Sprintf("in-memory-check-build:%d", buildId)))
+					Expect(build.RunStateID()).To(Equal(fmt.Sprintf("in-memory-check-build:%d", preBuildId)))
 				})
 
 				Context("AcquireTrackingLock", func() {

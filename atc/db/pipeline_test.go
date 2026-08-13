@@ -3,7 +3,6 @@ package db_test
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"time"
 
 	"code.cloudfoundry.org/clock"
@@ -1871,7 +1870,7 @@ var _ = Describe("Pipeline", func() {
 			Expect(startedBuild.ID()).ToNot(BeZero())
 			Expect(startedBuild.JobName()).To(BeZero())
 			Expect(startedBuild.PipelineName()).To(Equal("fake-pipeline"))
-			Expect(startedBuild.Name()).To(Equal(strconv.Itoa(startedBuild.ID())))
+			Expect(startedBuild.Name()).To(Equal("1"))
 			Expect(startedBuild.TeamName()).To(Equal(team.Name()))
 			Expect(startedBuild.Status()).To(Equal(db.BuildStatusStarted))
 		})

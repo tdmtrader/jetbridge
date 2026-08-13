@@ -553,7 +553,7 @@ var _ = Describe("Volume", func() {
 		})
 
 		It("initializes the worker artifact", func() {
-			Expect(workerArtifact.ID()).To(Equal(1))
+			Expect(workerArtifact.ID()).ToNot(BeZero())
 			Expect(workerArtifact.Name()).To(Equal("some-name"))
 			Expect(workerArtifact.BuildID()).To(Equal(0))
 			Expect(workerArtifact.CreatedAt()).ToNot(BeNil())

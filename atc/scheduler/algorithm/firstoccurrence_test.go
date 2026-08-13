@@ -41,6 +41,7 @@ var _ = Describe("Resolve", func() {
 		inputMapping db.InputMapping
 		buildInputs  []buildInput
 		buildOutputs []buildOutput
+		r1ID         int
 	)
 
 	BeforeEach(func() {
@@ -49,16 +50,6 @@ var _ = Describe("Resolve", func() {
 	})
 
 	JustBeforeEach(func() {
-		setup := setupDB{
-			teamID:      1,
-			pipelineID:  1,
-			psql:        sq.StatementBuilder.PlaceholderFormat(sq.Dollar).RunWith(dbConn),
-			jobIDs:      StringMapping{},
-			resourceIDs: StringMapping{},
-			versionIDs:  StringMapping{},
-		}
-
-		// setup team 1 and pipeline 1
 		team, err := teamFactory.CreateTeam(atc.Team{Name: "algorithm"})
 		Expect(err).NotTo(HaveOccurred())
 
@@ -92,9 +83,31 @@ var _ = Describe("Resolve", func() {
 			Name: "some-base-type",
 		}
 
-		_, err = brt.FindOrCreate(setupTx, false)
+		baseResourceType, err := brt.FindOrCreate(setupTx, false)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(setupTx.Commit()).To(Succeed())
+
+		// r1 and j1 are already in the pipeline config above, so the DSL has to
+		// reuse the ids SavePipeline handed them. Its upsert reassigns resources.id
+		// on conflict, and job_inputs already references the saved row.
+		savedResource, found, err := pipeline.Resource("r1")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		r1ID = savedResource.ID()
+
+		savedJob, found, err := pipeline.Job("j1")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+
+		setup := setupDB{
+			teamID:             team.ID(),
+			pipelineID:         pipeline.ID(),
+			baseResourceTypeID: baseResourceType.ID,
+			psql:               sq.StatementBuilder.PlaceholderFormat(sq.Dollar).RunWith(dbConn),
+			jobIDs:             StringMapping{"j1": savedJob.ID()},
+			resourceIDs:        StringMapping{"r1": savedResource.ID()},
+			versionIDs:         StringMapping{},
+		}
 
 		resources := map[string]atc.ResourceConfig{}
 
@@ -285,7 +298,7 @@ var _ = Describe("Resolve", func() {
 					Input: &db.AlgorithmInput{
 						AlgorithmVersion: db.AlgorithmVersion{
 							Version:    db.ResourceVersion(convertToSHA256("v2")),
-							ResourceID: 1,
+							ResourceID: r1ID,
 						},
 						FirstOccurrence: false,
 					},
@@ -315,7 +328,7 @@ var _ = Describe("Resolve", func() {
 					Input: &db.AlgorithmInput{
 						AlgorithmVersion: db.AlgorithmVersion{
 							Version:    db.ResourceVersion(convertToSHA256("v2")),
-							ResourceID: 1},
+							ResourceID: r1ID},
 						FirstOccurrence: true,
 					},
 					PassedBuildIDs: []int{},
@@ -344,7 +357,7 @@ var _ = Describe("Resolve", func() {
 					Input: &db.AlgorithmInput{
 						AlgorithmVersion: db.AlgorithmVersion{
 							Version:    db.ResourceVersion(convertToSHA256("v2")),
-							ResourceID: 1},
+							ResourceID: r1ID},
 						FirstOccurrence: true,
 					},
 					PassedBuildIDs: []int{},
@@ -373,7 +386,7 @@ var _ = Describe("Resolve", func() {
 					Input: &db.AlgorithmInput{
 						AlgorithmVersion: db.AlgorithmVersion{
 							Version:    db.ResourceVersion(convertToSHA256("v2")),
-							ResourceID: 1},
+							ResourceID: r1ID},
 						FirstOccurrence: true,
 					},
 					PassedBuildIDs: []int{},
@@ -401,7 +414,7 @@ var _ = Describe("Resolve", func() {
 					Input: &db.AlgorithmInput{
 						AlgorithmVersion: db.AlgorithmVersion{
 							Version:    db.ResourceVersion(convertToSHA256("v2")),
-							ResourceID: 1},
+							ResourceID: r1ID},
 						FirstOccurrence: true,
 					},
 					PassedBuildIDs: []int{},
@@ -447,7 +460,7 @@ var _ = Describe("Resolve", func() {
 					Input: &db.AlgorithmInput{
 						AlgorithmVersion: db.AlgorithmVersion{
 							Version:    db.ResourceVersion(convertToSHA256("v2")),
-							ResourceID: 1},
+							ResourceID: r1ID},
 						FirstOccurrence: false,
 					},
 					PassedBuildIDs: []int{},
@@ -492,7 +505,7 @@ var _ = Describe("Resolve", func() {
 					Input: &db.AlgorithmInput{
 						AlgorithmVersion: db.AlgorithmVersion{
 							Version:    db.ResourceVersion(convertToSHA256("v3")),
-							ResourceID: 1,
+							ResourceID: r1ID,
 						},
 						FirstOccurrence: false,
 					},

@@ -11,7 +11,7 @@ var _ = Describe("WorkerTaskCache", func() {
 	var workerTaskCache db.WorkerTaskCache
 
 	BeforeEach(func() {
-		taskCache, err := taskCacheFactory.FindOrCreate(1, "some-step", "some-path")
+		taskCache, err := taskCacheFactory.FindOrCreate(defaultJob.ID(), "some-step", "some-path")
 		Expect(err).ToNot(HaveOccurred())
 
 		workerTaskCache = db.WorkerTaskCache{
@@ -26,14 +26,16 @@ var _ = Describe("WorkerTaskCache", func() {
 				usedWorkerTaskCache, err := workerTaskCacheFactory.FindOrCreate(workerTaskCache)
 				Expect(err).ToNot(HaveOccurred())
 
-				Expect(usedWorkerTaskCache.ID).To(Equal(1))
+				Expect(usedWorkerTaskCache.ID).ToNot(BeZero())
 			})
 		})
 
 		Context("when there is existing worker task caches", func() {
+			var existingWorkerTaskCache *db.UsedWorkerTaskCache
+
 			BeforeEach(func() {
 				var err error
-				_, err = workerTaskCacheFactory.FindOrCreate(workerTaskCache)
+				existingWorkerTaskCache, err = workerTaskCacheFactory.FindOrCreate(workerTaskCache)
 				Expect(err).ToNot(HaveOccurred())
 			})
 
@@ -41,7 +43,7 @@ var _ = Describe("WorkerTaskCache", func() {
 				usedWorkerTaskCache, err := workerTaskCacheFactory.FindOrCreate(workerTaskCache)
 				Expect(err).ToNot(HaveOccurred())
 
-				Expect(usedWorkerTaskCache.ID).To(Equal(1))
+				Expect(usedWorkerTaskCache.ID).To(Equal(existingWorkerTaskCache.ID))
 			})
 		})
 	})

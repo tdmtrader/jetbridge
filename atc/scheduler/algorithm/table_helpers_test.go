@@ -114,15 +114,6 @@ func (example Example) Run() {
 	ctx, span := tracing.StartSpan(context.Background(), currentTest.LeafNodeText, tracing.Attrs{})
 	defer span.End()
 
-	setup := setupDB{
-		teamID:      1,
-		pipelineID:  1,
-		psql:        sq.StatementBuilder.PlaceholderFormat(sq.Dollar).RunWith(dbConn),
-		jobIDs:      StringMapping{},
-		resourceIDs: StringMapping{},
-		versionIDs:  StringMapping{},
-	}
-
 	team, err := teamFactory.CreateTeam(atc.Team{Name: "algorithm"})
 	Expect(err).NotTo(HaveOccurred())
 
@@ -136,9 +127,19 @@ func (example Example) Run() {
 		Name: "some-base-type",
 	}
 
-	_, err = brt.FindOrCreate(setupTx, false)
+	baseResourceType, err := brt.FindOrCreate(setupTx, false)
 	Expect(err).NotTo(HaveOccurred())
 	Expect(setupTx.Commit()).To(Succeed())
+
+	setup := setupDB{
+		teamID:             team.ID(),
+		pipelineID:         pipeline.ID(),
+		baseResourceTypeID: baseResourceType.ID,
+		psql:               sq.StatementBuilder.PlaceholderFormat(sq.Dollar).RunWith(dbConn),
+		jobIDs:             StringMapping{},
+		resourceIDs:        StringMapping{},
+		versionIDs:         StringMapping{},
+	}
 
 	resources := map[string]atc.ResourceConfig{}
 
@@ -777,8 +778,9 @@ func (example Example) assert(
 }
 
 type setupDB struct {
-	teamID     int
-	pipelineID int
+	teamID             int
+	pipelineID         int
+	baseResourceTypeID int
 
 	jobIDs      StringMapping
 	resourceIDs StringMapping
@@ -810,7 +812,7 @@ func (s setupDB) insertResource(name string, scope *int) int {
 
 	_, err = s.psql.Insert("resource_configs").
 		Columns("id", "source_hash", "base_resource_type_id").
-		Values(resourceConfigID, fmt.Sprintf("%x", sha256.Sum256(j)), 1).
+		Values(resourceConfigID, fmt.Sprintf("%x", sha256.Sum256(j)), s.baseResourceTypeID).
 		Suffix("ON CONFLICT DO NOTHING").
 		Exec()
 	Expect(err).ToNot(HaveOccurred())
