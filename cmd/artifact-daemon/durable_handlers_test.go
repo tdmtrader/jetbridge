@@ -67,10 +67,10 @@ func TestHeadResourceCacheNeverAnswersFromTheDurableStore(t *testing.T) {
 	server, ts, store := newDaemon(t, "node-a", true)
 
 	// The object is in the bucket, but nothing is on this node's disk.
-	if err := store.Put(context.Background(), "rc-abc", strings.NewReader("tarbytes")); err != nil {
+	if err := store.Put(context.Background(), "resource-caches/rc-abc", strings.NewReader("tarbytes")); err != nil {
 		t.Fatalf("seed store: %v", err)
 	}
-	if !server.durable.Has(context.Background(), "rc-abc") {
+	if !server.durable.Has(context.Background(), "resource-caches/rc-abc") {
 		t.Fatal("precondition: the object should be in the durable store")
 	}
 
@@ -134,11 +134,11 @@ func TestDurableRestoreMaterialisesAndRegisters(t *testing.T) {
 	if err := server.tarDirectory(&buf, src); err != nil {
 		t.Fatalf("tar: %v", err)
 	}
-	if err := store.Put(context.Background(), "rc-abc", &buf); err != nil {
+	if err := store.Put(context.Background(), "resource-caches/rc-abc", &buf); err != nil {
 		t.Fatalf("seed store: %v", err)
 	}
 
-	resp := post(t, ts, "/durable/restore", `{"key":"rc-abc"}`)
+	resp := post(t, ts, "/durable/restore", `{"key":"rc-abc","durable_key":"resource-caches/rc-abc"}`)
 	if resp.StatusCode != http.StatusCreated {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("restore returned %d: %s", resp.StatusCode, body)
@@ -174,7 +174,7 @@ func TestDurableRestoreMaterialisesAndRegisters(t *testing.T) {
 func TestDurableRestoreOfAnAbsentObjectIs404(t *testing.T) {
 	_, ts, _ := newDaemon(t, "node-a", true)
 
-	if resp := post(t, ts, "/durable/restore", `{"key":"rc-nothing"}`); resp.StatusCode != http.StatusNotFound {
+	if resp := post(t, ts, "/durable/restore", `{"key":"rc-nothing","durable_key":"resource-caches/rc-nothing"}`); resp.StatusCode != http.StatusNotFound {
 		t.Errorf("restore of an absent object returned %d, want 404", resp.StatusCode)
 	}
 }
@@ -184,7 +184,7 @@ func TestDurableRestoreOfAnAbsentObjectIs404(t *testing.T) {
 func TestDurableRestoreWithoutATierIs501(t *testing.T) {
 	_, ts, _ := newDaemon(t, "node-a", false)
 
-	if resp := post(t, ts, "/durable/restore", `{"key":"rc-abc"}`); resp.StatusCode != http.StatusNotImplemented {
+	if resp := post(t, ts, "/durable/restore", `{"key":"rc-abc","durable_key":"resource-caches/rc-abc"}`); resp.StatusCode != http.StatusNotImplemented {
 		t.Errorf("restore with no tier returned %d, want 501", resp.StatusCode)
 	}
 }
@@ -196,9 +196,9 @@ func TestDurableRestoreRejectsKeysThatEscapeTheStorageRoot(t *testing.T) {
 	server, ts, _ := newDaemon(t, "node-a", true)
 
 	for _, key := range []string{
-		"../../etc", "..", ".", "a/b", "/abs", "", "-leading-dash", "with space",
+		"../../etc", "..", ".", "a/b/c", "/abs", "", "-leading-dash", "with space", "a/../b",
 	} {
-		body, _ := json.Marshal(durableRestoreRequest{Key: key})
+		body, _ := json.Marshal(durableRestoreRequest{Key: "rc-abc", DurableKey: key})
 		resp := post(t, ts, "/durable/restore", string(body))
 
 		if resp.StatusCode != http.StatusBadRequest {
@@ -229,7 +229,7 @@ func TestConcurrentRestoresOfOneKeyCollapse(t *testing.T) {
 	if err := server.tarDirectory(&buf, src); err != nil {
 		t.Fatalf("tar: %v", err)
 	}
-	if err := counting.inner.Put(context.Background(), "rc-abc", &buf); err != nil {
+	if err := counting.inner.Put(context.Background(), "resource-caches/rc-abc", &buf); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
@@ -238,7 +238,7 @@ func TestConcurrentRestoresOfOneKeyCollapse(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			resp, err := http.Post(ts.URL+"/durable/restore", "application/json", strings.NewReader(`{"key":"rc-abc"}`))
+			resp, err := http.Post(ts.URL+"/durable/restore", "application/json", strings.NewReader(`{"key":"rc-abc","durable_key":"resource-caches/rc-abc"}`))
 			if err == nil {
 				resp.Body.Close()
 			}
@@ -254,14 +254,14 @@ func TestConcurrentRestoresOfOneKeyCollapse(t *testing.T) {
 // Registration is the ATC's eligibility signal, and it is a bool. A register
 // without it must upload nothing, which is what keeps step outputs — and caches
 // with no content key — out of permanent storage.
-func TestRegisterPromotesOnlyWhenTheATCSaysDurable(t *testing.T) {
+func TestRegisterPromotesOnlyWhenTheATCNamesADurableKey(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		body       string
 		wantUpload bool
 	}{
-		{"durable true", `{"key":%q,"local_path":%q,"durable":true}`, true},
-		{"durable false", `{"key":%q,"local_path":%q,"durable":false}`, false},
+		{"durable key given", `{"key":%q,"local_path":%q,"durable_key":"resource-caches/rc-abc"}`, true},
+		{"durable key empty", `{"key":%q,"local_path":%q,"durable_key":""}`, false},
 		{"field absent", `{"key":%q,"local_path":%q}`, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -273,7 +273,7 @@ func TestRegisterPromotesOnlyWhenTheATCSaysDurable(t *testing.T) {
 				t.Fatalf("register returned %d", resp.StatusCode)
 			}
 
-			if uploaded := eventuallyHas(store, "rc-abc", 2*time.Second); uploaded != tc.wantUpload {
+			if uploaded := eventuallyHas(store, "resource-caches/rc-abc", 2*time.Second); uploaded != tc.wantUpload {
 				t.Errorf("uploaded = %v, want %v", uploaded, tc.wantUpload)
 			}
 			_ = server
@@ -319,4 +319,80 @@ func (c *countingGetStore) Delete(ctx context.Context, key string) error {
 }
 func (c *countingGetStore) List(ctx context.Context, fn func(durable.Attributes) error) error {
 	return c.inner.List(ctx, fn)
+}
+
+// The two names are different namespaces and a restore must keep them apart.
+//
+// The object lives in the bucket under a retention-class prefix; the local copy
+// must land as a DIRECT child of steps/, because that is the only thing the
+// sweeper reclaims. Using the durable key for the destination would nest it one
+// level down, where it would never be swept and node disk would grow without
+// bound — the way task caches on hostPath already did once.
+func TestRestoreLandsFlatEvenWhenTheDurableKeyIsPrefixed(t *testing.T) {
+	server, ts, store := newDaemon(t, "node-a", true)
+
+	src := writeDir(t, t.TempDir(), "payload", map[string]string{"file": "x"})
+	var buf bytes.Buffer
+	if err := server.tarDirectory(&buf, src); err != nil {
+		t.Fatalf("tar: %v", err)
+	}
+	if err := store.Put(context.Background(), "resource-caches/rc-abc", &buf); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	resp := post(t, ts, "/durable/restore", `{"key":"rc-abc","durable_key":"resource-caches/rc-abc"}`)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("restore returned %d", resp.StatusCode)
+	}
+
+	steps := filepath.Join(server.storagePath, "steps")
+	entries, err := os.ReadDir(steps)
+	if err != nil {
+		t.Fatalf("read steps/: %v", err)
+	}
+
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	if len(names) != 1 || names[0] != "rc-abc" {
+		t.Fatalf("steps/ contains %v, want exactly [rc-abc] — a nested restore is never swept", names)
+	}
+	if _, err := os.Stat(filepath.Join(steps, "rc-abc", "file")); err != nil {
+		t.Errorf("restored payload not at steps/rc-abc: %v", err)
+	}
+}
+
+// A local alias with a slash would nest under steps/ and escape the sweeper, so
+// it is rejected even though the same string is a legal durable key.
+func TestRestoreRejectsANestedLocalKey(t *testing.T) {
+	_, ts, _ := newDaemon(t, "node-a", true)
+
+	resp := post(t, ts, "/durable/restore",
+		`{"key":"resource-caches/rc-abc","durable_key":"resource-caches/rc-abc"}`)
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("a nested local key returned %d, want 400", resp.StatusCode)
+	}
+}
+
+// Register stores under the name the ATC gave, not under the local alias.
+// Conflating them would drop the retention class, and the object would then fall
+// outside every lifecycle rule the operator wrote.
+func TestRegisterStoresUnderTheDurableKeyNotTheAlias(t *testing.T) {
+	_, ts, store := newDaemon(t, "node-a", true)
+	src := writeDir(t, t.TempDir(), "payload", map[string]string{"file": "x"})
+
+	resp := post(t, ts, "/register",
+		fmt.Sprintf(`{"key":"rc-abc","local_path":%q,"durable_key":"resource-caches/rc-abc"}`, src))
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("register returned %d", resp.StatusCode)
+	}
+
+	if !eventuallyHas(store, "resource-caches/rc-abc", 2*time.Second) {
+		t.Error("object was not stored under the class-prefixed durable key")
+	}
+	if _, found, _ := store.Stat(context.Background(), "rc-abc"); found {
+		t.Error("object was stored under the bare local alias; the retention class is lost")
+	}
 }

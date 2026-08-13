@@ -42,10 +42,11 @@ durable-store miss, timeout, expired credential or corrupt object must all
 degrade to "not here". `DurableTier`'s methods return `bool`, not `error`, so
 there is no error for a caller to accidentally propagate.
 
-## Status: wired end to end; reclaim outstanding
+## Status: wired end to end, retention by lifecycle policy
 
-**The store, the content key and the ATC↔daemon wiring are all landed and
-tested. What has no caller yet is deletion.**
+**The store, the content key, the ATC↔daemon wiring and the retention model are
+landed and tested. Reclaim is an object lifecycle rule the operator writes; no
+code in JetBridge deletes from the store.**
 
 `db.ResourceCache.DurableKey()` returns `rc-<sha256>` over the cache's identity,
 persisted as `resource_caches.durable_key`
@@ -160,10 +161,54 @@ promoted. Neither direction needs a lockstep deploy.
 it would have to be un-escaped before being joined onto the storage root, where
 `%2e%2e%2f%2e%2e%2f` decodes to `../../` and escapes it entirely.
 
-### What remains
+### Retention
 
-`DurableTier.Delete` and `Store.List` are built and tested but still have no
-caller; they are the reclaim path. See Open questions.
+Objects are named `<class>/<identity>` — today only `resource-caches/rc-<sha>`.
+The class is a prefix an object lifecycle rule matches, so an operator expires a
+whole class with one bucket rule, and different classes can have very different
+lifetimes: a task cache in days, a review perhaps never.
+
+**Reclaim is deliberately not JetBridge's job.** The obvious wiring —
+`DurableTier.Delete` from `atc/gc/resource_cache_collector.go`, which already
+knows when a cache becomes unreferenced — is the original bug one layer up. A
+durable copy exists precisely to outlive the row that referenced it, so deleting
+on unreference removes objects at exactly the moment they become valuable. Any
+JetBridge-managed reclaim would therefore need its own age policy, which is what
+the bucket already implements, plus a reconcile loop and a coupling to the store.
+
+Two consequences worth knowing:
+
+- **Age is since creation, not since last read.** Object stores offer no
+  last-access lifecycle condition, so there is no LRU. This is softened by
+  `promoteToDurable` having no `Has()` short-circuit: every produce rewrites the
+  object and resets its age, so the rule effectively expires caches that have
+  stopped being *produced*. A cache read constantly but produced once will still
+  expire, and be re-derived once. That costs a download, never a build.
+- **The class says what an artifact is, never how long it lives.** Duration is
+  operator policy and belongs in the bucket. Encoding it in code would mean a
+  redeploy to change a retention period and two sources of truth for what it
+  currently is.
+
+`DurableClassResourceCache` (`atc/worker/jetbridge/resource_cache_key.go`) and
+the documented prefix in `deploy/chart/values.yaml` must agree, or every
+lifecycle rule in every deployment silently stops matching with no error
+anywhere. `TestDocumentedPrefixMatchesTheCodesRetentionClass` holds them
+together.
+
+`Store.List` and `DurableTier.Delete` remain built, tested and uncalled. They
+are what a future accurate reclaim would need; a lifecycle rule needs neither.
+
+### The two key namespaces
+
+| Name | Shape | Why |
+|---|---|---|
+| local alias | `rc-<sha>` | Becomes a direct child of `steps/`, the only thing the sweeper reclaims. A nested one would never be swept. |
+| durable key | `resource-caches/rc-<sha>` | Names an object in a bucket; the prefix is what a lifecycle rule acts on. |
+
+Both travel explicitly on the wire (`key` and `durable_key`) and the daemon
+derives neither from the other. `durable_key`'s presence is the whole
+eligibility protocol — absent means "do not keep it", which is what a cache
+predating the `durable_key` column sends.
 
 ### Where restores land
 
@@ -357,16 +402,10 @@ bucket are inert.
 
 ## Open questions
 
-1. **Reclaim.** Nothing deletes from the bucket today. `DurableTier.Delete`
-   exists and is tested but has no caller. The options are a bucket lifecycle
-   policy (cheap, dumb, no code), or wiring it to core's existing
-   `atc/gc/resource_cache_collector.go`, which already knows when a resource
-   cache becomes unreferenced — accurate, but it couples the ATC to the daemon's
-   store. **Start with a lifecycle policy**; revisit if cost matters.
-2. **Should step outputs ever be promoted?** They are excluded because their
+1. **Should step outputs ever be promoted?** They are excluded because their
    keys are per-build. If a use case appears (say, retaining a release artifact),
    it needs a stable key, which is a different feature.
-3. **Warm concurrency across nodes.** Rendezvous hashing makes builds on
+2. **Warm concurrency across nodes.** Rendezvous hashing makes builds on
    *different* nodes agree on one warm owner, and the daemon collapses concurrent
    restores of one key. Nothing collapses two ATC processes racing before either
    has registered the alias — both would restore, and one loses the rename. That

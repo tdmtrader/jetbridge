@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
@@ -32,8 +33,15 @@ const DurableTierHeader = "X-Durable-Tier"
 const ArtifactTierHeader = "X-Artifact-Tier"
 
 // durableRestoreRequest is the body of POST /durable/restore.
+//
+// The two names are different namespaces and must not be conflated. Key is the
+// node-local alias, and becomes a direct child of steps/ — which is the only
+// thing the sweeper reclaims, so it must be a single path segment. DurableKey
+// names an object in a bucket and carries a retention-class prefix that an
+// object lifecycle rule acts on.
 type durableRestoreRequest struct {
-	Key string `json:"key"`
+	Key        string `json:"key"`
+	DurableKey string `json:"durable_key"`
 }
 
 type durableRestoreResponse struct {
@@ -60,15 +68,25 @@ func (s *Server) handleDurableRestore(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("invalid JSON: %v", err), http.StatusBadRequest)
 		return
 	}
-	// A SHAPE check, not a meaning check: can this string be joined onto the
-	// storage root without escaping it. It says nothing about what the key
-	// names, so it is not the key classification the daemon is forbidden to do.
-	// Without it, "../.." would name any directory on the host.
+	// SHAPE checks, not meaning checks: can these strings be joined onto a root
+	// without escaping it. They say nothing about what the keys name, so this is
+	// not the classification the daemon is forbidden to do. Without them, "../.."
+	// would name any directory on the host -- and this process runs as root with
+	// CAP_DAC_OVERRIDE.
 	//
-	// Reusing the store's own validator rather than restating the pattern: two
-	// copies of a key format in one binary is how they drift apart.
-	if err := durable.ValidateKey(req.Key); err != nil {
-		http.Error(w, fmt.Sprintf("invalid key: %v", err), http.StatusBadRequest)
+	// Reusing the store's validator rather than restating the pattern: two copies
+	// of a key format in one binary is how they drift apart.
+	if err := durable.ValidateKey(req.DurableKey); err != nil {
+		http.Error(w, fmt.Sprintf("invalid durable_key: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	// The local alias is stricter: it becomes a direct child of steps/, and a
+	// direct child is the only thing the sweeper reclaims. A nested one would
+	// never be swept, and node disk would grow without bound -- which is exactly
+	// how task caches on hostPath became monotonic.
+	if err := durable.ValidateKey(req.Key); err != nil || strings.Contains(req.Key, "/") {
+		http.Error(w, "invalid key: must be a single path segment", http.StatusBadRequest)
 		return
 	}
 
@@ -79,7 +97,7 @@ func (s *Server) handleDurableRestore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	logger := s.logger.Session("durable-restore", lager.Data{"key": req.Key})
+	logger := s.logger.Session("durable-restore", lager.Data{"key": req.Key, "durable_key": req.DurableKey})
 	start := time.Now()
 
 	if path, found := s.registry.Lookup(req.Key); found {
@@ -108,7 +126,7 @@ func (s *Server) handleDurableRestore(w http.ResponseWriter, r *http.Request) {
 		// The request context dies when this handler returns, but the caller
 		// is waiting on the response, so the caller's deadline is the right
 		// one. DurableTier.Restore applies its own timeout on top.
-		if !s.durable.Restore(r.Context(), req.Key, dest) {
+		if !s.durable.Restore(r.Context(), req.DurableKey, dest) {
 			return false, nil
 		}
 		s.registry.RegisterAlias(req.Key, dest)

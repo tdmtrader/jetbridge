@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -152,16 +153,26 @@ func TestDeleteIsIdempotent(t *testing.T) {
 }
 
 func TestKeysThatCouldEscapeTheStoreAreRejected(t *testing.T) {
-	// The fs backend joins the key onto a root directory and S3 turns a slash
-	// into a prefix, which would hide the object from Delete.
+	// The fs backend joins the key onto a root directory, so a key that walks
+	// out of it writes anywhere the daemon can reach -- and the daemon runs as
+	// root with CAP_DAC_OVERRIDE.
+	//
+	// One slash is legal (a retention-class prefix; see TestClassPrefixedKeys).
+	// Everything here is not.
 	escapes := []string{
 		"../etc/passwd",
-		"a/b",
+		"a/b/c",  // two levels: a lifecycle rule matches a prefix, so depth is not free
+		"a/../b", // one slash after cleaning, but three segments before it
+		"a/..",   // trailing traversal
+		"../b",   // leading traversal
+		"a/",     // empty second segment
+		"/b",     // empty first segment
 		"",
 		".",
 		"..",
 		"/absolute",
 		strings.Repeat("x", 256),
+		"toolong/" + strings.Repeat("x", 256),
 	}
 
 	eachStore(t, func(t *testing.T, store durable.Store) {
@@ -680,4 +691,78 @@ func (f *fakeS3) listObjects(w http.ResponseWriter, r *http.Request) {
 		`<MaxKeys>1000</MaxKeys><IsTruncated>false</IsTruncated>` +
 		contents.String() +
 		`</ListBucketResult>`))
+}
+
+// A key may carry one retention-class prefix, so an object lifecycle rule can
+// expire whole classes at different ages — a task cache in days, a review
+// perhaps never — without the store knowing what any class means.
+//
+// The fs backend is the one that has to work for this: an object store has no
+// directories, so a slash is just a character in the name, but fs must create
+// the prefix directory and then find its way back out again in List.
+func TestClassPrefixedKeys(t *testing.T) {
+	eachStore(t, func(t *testing.T, store durable.Store) {
+		ctx := context.Background()
+
+		const key = "resource-caches/rc-abc"
+		if err := store.Put(ctx, key, strings.NewReader("cached bytes")); err != nil {
+			t.Fatalf("Put(%q): %v", key, err)
+		}
+
+		body, found, err := store.Get(ctx, key)
+		if err != nil || !found {
+			t.Fatalf("Get(%q) = found %v, err %v", key, found, err)
+		}
+		defer body.Close()
+
+		got, err := io.ReadAll(body)
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		if string(got) != "cached bytes" {
+			t.Errorf("round-tripped %q", got)
+		}
+
+		// Reclaim depends on this: an object the store holds but cannot
+		// enumerate is one nothing can ever delete.
+		var listed []string
+		if err := store.List(ctx, func(a durable.Attributes) error {
+			listed = append(listed, a.Key)
+			return nil
+		}); err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		if !slices.Contains(listed, key) {
+			t.Errorf("List did not report the prefixed key; got %v", listed)
+		}
+
+		if err := store.Delete(ctx, key); err != nil {
+			t.Fatalf("Delete(%q): %v", key, err)
+		}
+		if _, found, _ := store.Stat(ctx, key); found {
+			t.Error("the object survived Delete")
+		}
+	})
+}
+
+// Two classes must not collide, and deleting one class must not touch another.
+func TestClassesAreIndependent(t *testing.T) {
+	eachStore(t, func(t *testing.T, store durable.Store) {
+		ctx := context.Background()
+
+		if err := store.Put(ctx, "short-lived/rc-abc", strings.NewReader("a")); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+		if err := store.Put(ctx, "permanent/rc-abc", strings.NewReader("b")); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+
+		if err := store.Delete(ctx, "short-lived/rc-abc"); err != nil {
+			t.Fatalf("Delete: %v", err)
+		}
+
+		if _, found, _ := store.Stat(ctx, "permanent/rc-abc"); !found {
+			t.Error("deleting one class removed the same identity in another")
+		}
+	})
 }

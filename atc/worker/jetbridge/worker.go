@@ -316,12 +316,12 @@ func (w *Worker) RegisterResourceCache(ctx context.Context, cache db.ResourceCac
 	}
 
 	cacheKey := ResourceCacheKey(cache)
-	durable := cache.DurableKey() != ""
+	durableKey := DurableStorageKey(cache)
 
 	logger := lagerctx.FromContext(ctx).Session("register-resource-cache", lager.Data{
 		"cache-id": cache.ID(),
 		"key":      cacheKey,
-		"durable":  durable,
+		"durable":  durableKey,
 		"handle":   volume.Handle(),
 	})
 
@@ -335,7 +335,7 @@ func (w *Worker) RegisterResourceCache(ctx context.Context, cache db.ResourceCac
 	}
 
 	logger.Info("registering", lager.Data{"node": nodeName})
-	return w.storageBackend.RegisterResourceCache(ctx, cacheKey, durable, handle, nodeName)
+	return w.storageBackend.RegisterResourceCache(ctx, cacheKey, durableKey, handle, nodeName)
 }
 
 // FindDaemonResourceCache probes all live daemon pods for a cached resource.
@@ -368,7 +368,7 @@ func (w *Worker) FindDaemonResourceCache(ctx context.Context, cache db.ResourceC
 	// tier. Never returns an error: a cold cache is a re-download, not a
 	// failure.
 	logger.Info("probing-daemons")
-	vol, found := w.storageBackend.FindResourceCache(ctx, ResourceCacheKey(cache), cache.DurableKey(), w.Name())
+	vol, found := w.storageBackend.FindResourceCache(ctx, ResourceCacheKey(cache), DurableStorageKey(cache), w.Name())
 	if !found {
 		return nil, false, nil
 	}

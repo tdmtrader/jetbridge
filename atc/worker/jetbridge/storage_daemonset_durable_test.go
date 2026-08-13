@@ -99,7 +99,7 @@ func TestFindResourceCacheDoesNotWarmOnALocalHit(t *testing.T) {
 	d := &warmSpy{local: true, durableCapable: true, restoreOK: true}
 	b := backendFor(t, d)
 
-	vol, found := b.FindResourceCache(context.Background(), "rc-42", "rc-content", "worker-1")
+	vol, found := b.FindResourceCache(context.Background(), "rc-42", "resource-caches/rc-content", "worker-1")
 	if !found {
 		t.Fatal("expected a local hit")
 	}
@@ -132,7 +132,7 @@ func TestFindResourceCacheDoesNotWarmAnUnadvertisedDaemon(t *testing.T) {
 	d := &warmSpy{local: false, durableCapable: false, restoreOK: true}
 	b := backendFor(t, d)
 
-	if _, found := b.FindResourceCache(context.Background(), "rc-42", "rc-content", "worker-1"); found {
+	if _, found := b.FindResourceCache(context.Background(), "rc-42", "resource-caches/rc-content", "worker-1"); found {
 		t.Error("reported a hit from a daemon with no durable tier")
 	}
 	if got := d.restores.Load(); got != 0 {
@@ -145,7 +145,7 @@ func TestFindResourceCacheWarmsOnAMiss(t *testing.T) {
 	d := &warmSpy{local: false, durableCapable: true, restoreOK: true}
 	b := backendFor(t, d)
 
-	vol, found := b.FindResourceCache(context.Background(), "rc-42", "rc-content", "worker-1")
+	vol, found := b.FindResourceCache(context.Background(), "rc-42", "resource-caches/rc-content", "worker-1")
 	if !found {
 		t.Fatal("expected the warm to produce a hit")
 	}
@@ -166,7 +166,7 @@ func TestFindResourceCacheSuppressesAfterAFailedWarm(t *testing.T) {
 	b := backendFor(t, d)
 
 	for range 5 {
-		if _, found := b.FindResourceCache(context.Background(), "rc-42", "rc-content", "worker-1"); found {
+		if _, found := b.FindResourceCache(context.Background(), "rc-42", "resource-caches/rc-content", "worker-1"); found {
 			t.Fatal("a failing store reported a hit")
 		}
 	}
@@ -183,12 +183,12 @@ func TestFindResourceCacheSuppressesAfterAFailedWarm(t *testing.T) {
 // in permanent storage is the exact defect the key exists to prevent. An ATC
 // that always said "durable" would reintroduce it while every daemon-side test
 // still passed, because the daemon only ever sees the bool it is handed.
-func TestRegisterAliasSendsTheDurableFlagAsGiven(t *testing.T) {
-	for _, durable := range []bool{true, false} {
+func TestRegisterAliasSendsTheDurableKeyAsGiven(t *testing.T) {
+	for _, durableKey := range []string{"resource-caches/rc-abc", ""} {
 		var got struct {
-			Key       string `json:"key"`
-			LocalPath string `json:"local_path"`
-			Durable   bool   `json:"durable"`
+			Key        string `json:"key"`
+			LocalPath  string `json:"local_path"`
+			DurableKey string `json:"durable_key"`
 		}
 		var seen atomic.Bool
 
@@ -220,15 +220,20 @@ func TestRegisterAliasSendsTheDurableFlagAsGiven(t *testing.T) {
 		})
 
 		client := NewDaemonClient(lagertest.NewTestLogger("test"), clientset, "cicd", "artifact-daemon", port, nil)
-		if err := client.RegisterAlias(context.Background(), "rc-42", "/some/path", durable); err != nil {
-			t.Fatalf("RegisterAlias(durable=%v): %v", durable, err)
+		if err := client.RegisterAlias(context.Background(), "rc-42", "/some/path", durableKey); err != nil {
+			t.Fatalf("RegisterAlias(durableKey=%q): %v", durableKey, err)
 		}
 
 		if !seen.Load() {
 			t.Fatal("the daemon never received a register call")
 		}
-		if got.Durable != durable {
-			t.Errorf("sent durable=%v, daemon received %v", durable, got.Durable)
+		if got.DurableKey != durableKey {
+			t.Errorf("sent durable_key=%q, daemon received %q", durableKey, got.DurableKey)
+		}
+		// The two names are different namespaces; conflating them would file a
+		// bucket object under a bare local alias, losing the retention class.
+		if got.Key != "rc-42" {
+			t.Errorf("local alias key = %q, want rc-42", got.Key)
 		}
 	}
 }
@@ -252,7 +257,7 @@ func TestFindResourceCacheBindsAVolumeThatCanPeerFallBack(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			b := backendFor(t, tc.spy)
 
-			vol, found := b.FindResourceCache(context.Background(), "rc-42", "rc-content", "worker-1")
+			vol, found := b.FindResourceCache(context.Background(), "rc-42", "resource-caches/rc-content", "worker-1")
 			if !found {
 				t.Fatalf("expected a hit via %s", tc.phase)
 			}

@@ -91,7 +91,17 @@ func (f *FS) Put(_ context.Context, key string, body io.Reader) error {
 		return err
 	}
 
-	tmp, err := os.CreateTemp(f.root, ".put-*")
+	// A class-prefixed key ("resource-caches/rc-...") is a subdirectory here.
+	// Object stores have no directories, so this is the fs backend paying for a
+	// structure the others get free.
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("durable: create prefix for %s: %w", key, err)
+	}
+
+	// Temp file in the same directory as the destination: os.Rename is only
+	// atomic within a filesystem, and a prefix directory could in principle be a
+	// mount point.
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".put-*")
 	if err != nil {
 		return fmt.Errorf("durable: create temp: %w", err)
 	}
@@ -134,30 +144,68 @@ func (f *FS) Delete(_ context.Context, key string) error {
 // files Put writes are siblings of the objects, and a reclaim pass that treated
 // one as an orphan would delete an upload in flight.
 func (f *FS) List(_ context.Context, fn func(Attributes) error) error {
+	// One level of prefix directory, matching what ValidateKey admits. An
+	// object store has no directories, so this walk is the fs backend
+	// reconstructing a structure the others express in the key itself.
 	entries, err := os.ReadDir(f.root)
 	if err != nil {
 		return fmt.Errorf("durable: list: %w", err)
 	}
 
 	for _, entry := range entries {
-		if entry.IsDir() || ValidateKey(entry.Name()) != nil {
+		if !entry.IsDir() {
+			if err := f.emit(fn, "", entry); err != nil {
+				return err
+			}
+
 			continue
 		}
 
-		info, err := entry.Info()
+		// A prefix directory. Anything else here (an in-flight .put-* temp
+		// cannot be one, but a stray directory could) is skipped by the key
+		// validation inside emit.
+		nested, err := os.ReadDir(filepath.Join(f.root, entry.Name()))
 		if err != nil {
 			if os.IsNotExist(err) {
-				// Swept between ReadDir and Info; it is simply gone.
 				continue
 			}
 
 			return fmt.Errorf("durable: list %s: %w", entry.Name(), err)
 		}
 
-		if err := fn(Attributes{Key: entry.Name(), Size: info.Size()}); err != nil {
-			return err
+		for _, child := range nested {
+			if child.IsDir() {
+				continue
+			}
+			if err := f.emit(fn, entry.Name(), child); err != nil {
+				return err
+			}
 		}
 	}
 
 	return nil
+}
+
+// emit reports one entry, skipping anything that is not a valid key so an
+// in-flight ".put-*" temp is never mistaken for a stored object.
+func (f *FS) emit(fn func(Attributes) error, prefix string, entry os.DirEntry) error {
+	key := entry.Name()
+	if prefix != "" {
+		key = prefix + "/" + key
+	}
+	if ValidateKey(key) != nil {
+		return nil
+	}
+
+	info, err := entry.Info()
+	if err != nil {
+		if os.IsNotExist(err) {
+			// Swept between ReadDir and Info; it is simply gone.
+			return nil
+		}
+
+		return fmt.Errorf("durable: list %s: %w", key, err)
+	}
+
+	return fn(Attributes{Key: key, Size: info.Size()})
 }

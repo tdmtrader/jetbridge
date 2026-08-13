@@ -455,6 +455,30 @@ artifactDaemon:
   # Every failure degrades rather than propagating -- an unreachable bucket
   # costs a re-download, never a red build.
   durable:
+    # -- RECLAIM IS NOT AUTOMATIC. Nothing in JetBridge ever deletes from this
+    # store, deliberately: a durable copy exists precisely to outlive the
+    # database row that referenced it, so reference-based deletion would remove
+    # objects at exactly the moment they became valuable.
+    #
+    # Retention is an object lifecycle rule on the bucket instead. Objects are
+    # named "<class>/<identity>", so a rule matching a class prefix expires that
+    # whole class, and different classes can have very different lifetimes. The
+    # only class today is "resource-caches/".
+    #
+    # Set an expiry before enabling this, or the bucket grows forever. Example
+    # (gcloud):
+    #
+    #   gcloud storage buckets update gs://BUCKET --lifecycle-file=lifecycle.json
+    #
+    #   {"rule":[{"action":{"type":"Delete"},
+    #             "condition":{"age":30,"matchesPrefix":["resource-caches/"]}}]}
+    #
+    # Age is measured from the object's creation, not its last read -- object
+    # stores offer no last-access condition. A cache that is produced again
+    # rewrites the object and resets its age, so in practice this expires caches
+    # that have stopped being produced. An expired cache is re-derived by the
+    # next get step; nothing fails.
+    #
     # -- Backend: "" (disabled), "gcs", "s3", or "filesystem".
     #
     # "gcs" is native Cloud Storage and authenticates with Application Default

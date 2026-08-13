@@ -571,7 +571,7 @@ func (b *DaemonSetBackend) WrapVolumeForLookup(ctx context.Context, key, handle,
 // Instead of using NodeIPResolver (which needs nodes/get RBAC), this discovers
 // the daemon pod IP from EndpointSlices (only needs discovery.k8s.io RBAC) and
 // POSTs the registration directly.
-func (b *DaemonSetBackend) RegisterResourceCache(ctx context.Context, cacheKey string, durable bool, volumeHandle, nodeName string) error {
+func (b *DaemonSetBackend) RegisterResourceCache(ctx context.Context, cacheKey, durableKey, volumeHandle, nodeName string) error {
 	if b.daemonClient == nil {
 		return fmt.Errorf("daemon client not configured")
 	}
@@ -600,7 +600,7 @@ func (b *DaemonSetBackend) RegisterResourceCache(ctx context.Context, cacheKey s
 	// step, the daemon has the data locally. On a single-node cluster
 	// there's only one daemon; on multi-node we register on all daemons
 	// but only the one with local data will have the path.
-	if err := b.daemonClient.RegisterAlias(ctx, cacheKey, diskPath, durable); err != nil {
+	if err := b.daemonClient.RegisterAlias(ctx, cacheKey, diskPath, durableKey); err != nil {
 		return fmt.Errorf("register resource cache alias: %w", err)
 	}
 
@@ -649,7 +649,7 @@ func (b *DaemonSetBackend) FindResourceCache(ctx context.Context, cacheKey, dura
 	warmCtx, cancel := context.WithTimeout(ctx, b.config.ArtifactDaemonWarmTimeout)
 	defer cancel()
 
-	ip, ok := b.daemonClient.WarmResourceCache(warmCtx, durableKey, probe.Endpoints)
+	ip, ok := b.daemonClient.WarmResourceCache(warmCtx, cacheKey, durableKey, probe.Endpoints)
 	if !ok {
 		b.warmNegative.suppress(cacheKey, warmSuppressionWindow)
 		return nil, false

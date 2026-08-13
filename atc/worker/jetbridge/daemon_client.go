@@ -373,7 +373,7 @@ func (d *DaemonClient) TriggerMirror(ctx context.Context, daemonIP, key string) 
 // cluster only one daemon exists; on multi-node, only the daemon whose node
 // has the localPath will accept the registration (the daemon validates that
 // the path exists on disk).
-func (d *DaemonClient) RegisterAlias(ctx context.Context, key, localPath string, durable bool) error {
+func (d *DaemonClient) RegisterAlias(ctx context.Context, key, localPath, durableKey string) error {
 	logger := d.logger.Session("register-alias", lager.Data{"key": key})
 
 	ips, err := d.daemonIPs(ctx)
@@ -384,7 +384,7 @@ func (d *DaemonClient) RegisterAlias(ctx context.Context, key, localPath string,
 		return fmt.Errorf("no daemon pods found")
 	}
 
-	body := fmt.Sprintf(`{"key":%q,"local_path":%q,"durable":%t}`, key, localPath, durable)
+	body := fmt.Sprintf(`{"key":%q,"local_path":%q,"durable_key":%q}`, key, localPath, durableKey)
 	registered := false
 
 	for _, ip := range ips {

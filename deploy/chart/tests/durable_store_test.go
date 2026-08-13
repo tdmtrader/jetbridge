@@ -1,7 +1,10 @@
 package tests
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -149,5 +152,56 @@ func TestGCSNeedsNoCredentialFlags(t *testing.T) {
 		if strings.Contains(out, unwanted) {
 			t.Errorf("gcs render contains %q; it should authenticate with ADC alone", unwanted)
 		}
+	}
+}
+
+// Reclaim is a bucket lifecycle rule, not code, and that is a decision an
+// operator has to know about before they turn the tier on: nothing in JetBridge
+// deletes from the store, so an unconfigured bucket grows forever.
+//
+// The chart is where they will look. This asserts the values file still says so,
+// and still names the class prefix a rule has to match — a rule written against
+// the wrong prefix silently expires nothing.
+func TestValuesDocumentsThatReclaimIsALifecyclePolicy(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join(repoRoot(t), "deploy", "chart", "values.yaml"))
+	if err != nil {
+		t.Fatalf("read values.yaml: %v", err)
+	}
+	values := string(body)
+
+	for _, want := range []string{
+		"RECLAIM IS NOT AUTOMATIC",
+		"matchesPrefix",
+		"resource-caches/",
+	} {
+		if !strings.Contains(values, want) {
+			t.Errorf("values.yaml no longer mentions %q; an operator has no way to learn reclaim is theirs to configure", want)
+		}
+	}
+}
+
+// The prefix the docs tell operators to write a rule against must be the prefix
+// the ATC actually stores under. If these drift, every lifecycle rule in every
+// deployment silently stops matching and the bucket grows without bound, with
+// no error anywhere.
+func TestDocumentedPrefixMatchesTheCodesRetentionClass(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join(repoRoot(t), "atc", "worker", "jetbridge", "resource_cache_key.go"))
+	if err != nil {
+		t.Fatalf("read resource_cache_key.go: %v", err)
+	}
+
+	m := regexp.MustCompile(`DurableClassResourceCache\s*=\s*"([^"]+)"`).FindSubmatch(body)
+	if m == nil {
+		t.Fatal("DurableClassResourceCache constant not found")
+	}
+	class := string(m[1])
+
+	values, err := os.ReadFile(filepath.Join(repoRoot(t), "deploy", "chart", "values.yaml"))
+	if err != nil {
+		t.Fatalf("read values.yaml: %v", err)
+	}
+
+	if !strings.Contains(string(values), class+"/") {
+		t.Errorf("values.yaml documents a lifecycle prefix that does not match the code's class %q/", class)
 	}
 }

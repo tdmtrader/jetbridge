@@ -33,6 +33,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"strings"
 )
 
 // Attributes describe a stored object without transferring it.
@@ -99,21 +100,40 @@ type Store interface {
 // because the build consuming it fails somewhere further away.
 var ErrTooLarge = errors.New("durable: object exceeds size limit")
 
-// keyPattern is deliberately narrow. Keys reach a filesystem path in the fs
-// backend and an object name in S3, and the daemon's callers only ever produce
-// resource-cache keys, so anything outside this shape is a bug upstream rather
-// than a case to encode.
-var keyPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,254}$`)
+// segmentPattern is deliberately narrow. Segments reach a filesystem path in
+// the fs backend and an object name in GCS and S3, so anything outside this
+// shape is a bug upstream rather than a case to encode.
+var segmentPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,254}$`)
 
 // ValidateKey rejects keys that could escape the store's namespace.
 //
+// A key is either one segment, or a retention-class prefix and one segment:
+//
+//	rc-<sha256>
+//	resource-caches/rc-<sha256>
+//
+// The prefix exists so an object lifecycle rule can expire whole classes of
+// artifact at different ages — a task cache in days, a review perhaps never —
+// without the store, the daemon, or this function knowing what any class means.
+// Each segment is validated identically; the slash is structure, not content.
+//
+// Exactly one slash is allowed. Deeper nesting is not rejected for safety (the
+// checks below already cover traversal) but because a lifecycle rule matches a
+// prefix, and a hierarchy invites rules that overlap in ways nobody can predict
+// from reading them.
+//
 // The fs backend joins the key onto a root directory, so "../" would write
-// outside it; S3 tolerates far more but a key with a slash silently becomes a
-// prefix, which turns Delete into a no-op and hides the object from a reclaim
-// pass.
+// outside it.
 func ValidateKey(key string) error {
-	if !keyPattern.MatchString(key) {
-		return fmt.Errorf("durable: invalid key %q", key)
+	segments := strings.Split(key, "/")
+	if len(segments) > 2 {
+		return fmt.Errorf("durable: invalid key %q: at most one prefix segment", key)
+	}
+
+	for _, segment := range segments {
+		if !segmentPattern.MatchString(segment) {
+			return fmt.Errorf("durable: invalid key %q", key)
+		}
 	}
 
 	return nil

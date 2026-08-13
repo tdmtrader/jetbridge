@@ -43,14 +43,14 @@ const warmAttempts = 2
 //
 // Candidates are ranked by rendezvous hash so that concurrent builds wanting the
 // same cache converge on the same node instead of each warming a private copy.
-func (d *DaemonClient) WarmResourceCache(ctx context.Context, durableKey string, eps []daemonEndpoint) (string, bool) {
+func (d *DaemonClient) WarmResourceCache(ctx context.Context, cacheKey, durableKey string, eps []daemonEndpoint) (string, bool) {
 	logger := d.logger.Session("warm-resource-cache", lager.Data{"key": durableKey})
 
 	if len(eps) == 0 {
 		return "", false
 	}
 
-	body, err := json.Marshal(durableRestoreRequest{Key: durableKey})
+	body, err := json.Marshal(durableRestoreRequest{Key: cacheKey, DurableKey: durableKey})
 	if err != nil {
 		return "", false
 	}
@@ -156,5 +156,12 @@ func warmOwners(key string, eps []daemonEndpoint) []daemonEndpoint {
 // /resolve and /mirror, and avoids a path wildcard rejecting the multi-segment
 // keys the daemon's own registry scan can produce.
 type durableRestoreRequest struct {
+	// Key is the node-local alias the daemon will register, and must be a single
+	// path segment: it becomes a direct child of steps/, which is the only thing
+	// the sweeper reclaims.
 	Key string `json:"key"`
+
+	// DurableKey names the object in the bucket, and carries the retention-class
+	// prefix an object lifecycle rule acts on.
+	DurableKey string `json:"durable_key"`
 }

@@ -33,11 +33,12 @@ type StorageBackend interface {
 	// This makes the cache discoverable via HEAD /resource-caches/{key} on
 	// subsequent runs.
 	//
-	// durable is the ATC's statement that this artifact is worth keeping past
-	// the node. The daemon reads a bool and never inspects the key: deciding
-	// what deserves to be kept requires knowing whether it is re-derivable,
-	// which is knowledge the daemon does not have.
-	RegisterResourceCache(ctx context.Context, cacheKey string, durable bool, volumeHandle, nodeName string) error
+	// durableKey names this artifact in long-term storage, or is empty for "do
+	// not keep it". Its presence is the entire eligibility protocol, and its
+	// retention-class prefix is what an object lifecycle rule acts on. The
+	// daemon never inspects it: what an artifact is, whether it is re-derivable,
+	// and how long it should be kept are all knowledge the daemon lacks.
+	RegisterResourceCache(ctx context.Context, cacheKey, durableKey, volumeHandle, nodeName string) error
 
 	// FindResourceCache returns a volume bound to a daemon holding the cache,
 	// or (nil, false).

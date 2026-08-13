@@ -18,6 +18,8 @@ import (
 
 	"code.cloudfoundry.org/lager/v3"
 	"golang.org/x/sync/singleflight"
+
+	"github.com/concourse/concourse/cmd/artifact-daemon/durable"
 )
 
 // Server is the artifact-daemon HTTP server that stores and serves
@@ -554,15 +556,22 @@ type registerRequest struct {
 	Key       string `json:"key"`
 	LocalPath string `json:"local_path"`
 
-	// Durable is the ATC's statement that this artifact is worth keeping past
-	// the node. The daemon reads a bool and never looks at the key: whether an
-	// artifact is re-derivable, and whether anything will ask for it again, are
-	// questions about its meaning that only the ATC can answer. This field is
-	// the entire eligibility protocol.
+	// DurableKey is the name to store this artifact under for the long term,
+	// or empty for "do not keep it".
 	//
-	// Absent or false behaves exactly as the daemon did before the durable
-	// tier existed.
-	Durable bool `json:"durable,omitempty"`
+	// Its presence is the entire eligibility protocol. The daemon does not
+	// parse it and does not derive it from Key: whether an artifact is
+	// re-derivable, whether anything will ask for it again, and how long it
+	// should be kept are all questions about its meaning that only the ATC can
+	// answer. The ATC answers the last one by choosing the key's retention-class
+	// prefix, which an object lifecycle rule acts on.
+	//
+	// It is deliberately not the same field as Key. Key names the node-local
+	// alias and must stay a single path segment; DurableKey names an object in
+	// a bucket and carries a class prefix.
+	//
+	// Absent behaves exactly as the daemon did before the durable tier existed.
+	DurableKey string `json:"durable_key,omitempty"`
 }
 
 // mirrorRequest is the JSON body for POST /mirror.
@@ -639,11 +648,15 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	s.registry.RegisterAlias(req.Key, req.LocalPath)
 
-	if req.Durable {
-		s.promoteToDurable(r.Context(), req.Key, req.LocalPath)
+	if req.DurableKey != "" {
+		if err := durable.ValidateKey(req.DurableKey); err != nil {
+			http.Error(w, fmt.Sprintf("invalid durable_key: %v", err), http.StatusBadRequest)
+			return
+		}
+		s.promoteToDurable(r.Context(), req.DurableKey, req.LocalPath)
 	}
 
-	s.logger.Info("registered", lager.Data{"key": req.Key, "path": req.LocalPath, "durable": req.Durable})
+	s.logger.Info("registered", lager.Data{"key": req.Key, "path": req.LocalPath, "durable_key": req.DurableKey})
 	w.WriteHeader(http.StatusCreated)
 }
 
