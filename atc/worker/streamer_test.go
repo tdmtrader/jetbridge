@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/concourse/concourse/atc/compression"
 	"github.com/concourse/concourse/atc/runtime"
+	"github.com/concourse/concourse/atc/runtime/runtimetest"
 	"github.com/concourse/concourse/atc/worker"
 )
 
@@ -81,6 +83,18 @@ func TestStreamer_StreamFile_WithGzipCompression(t *testing.T) {
 
 	if string(data) != fileContent {
 		t.Errorf("expected %q, got %q", fileContent, string(data))
+	}
+}
+
+func TestStreamer_StreamFile_MissingFile(t *testing.T) {
+	// An empty volume: the underlying filesystem reports the miss as
+	// fs.ErrNotExist, exactly as a real volume does.
+	volume := runtimetest.NewVolume("empty-volume")
+
+	s := worker.NewStreamer(compression.NewGzipCompression())
+	_, err := s.StreamFile(context.Background(), volume, "task.yml")
+	if !errors.Is(err, runtime.ErrFileNotFound) {
+		t.Fatalf("expected runtime.ErrFileNotFound, got %v", err)
 	}
 }
 

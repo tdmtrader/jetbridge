@@ -378,8 +378,10 @@ jobs:
 	Context("when file is configured", func() {
 		Context("pipeline file not exist", func() {
 			It("should fail with error of file not configured", func() {
-				Expect(stepErr).To(MatchError(ContainSubstring("pipeline.yml")))
-				Expect(stepErr).To(MatchError(ContainSubstring("file does not exist")))
+				Expect(stepErr).To(MatchError(exec.FileNotFoundError{
+					Name:     "some-resource",
+					FilePath: "pipeline.yml",
+				}))
 			})
 		})
 

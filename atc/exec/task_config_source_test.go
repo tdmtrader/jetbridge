@@ -240,8 +240,7 @@ run: {path: a/file}
 				})
 
 				It("returns the error", func() {
-					Expect(fetchErr).To(MatchError(ContainSubstring("build.yml")))
-					Expect(fetchErr).To(MatchError(ContainSubstring("file does not exist")))
+					Expect(fetchErr).To(MatchError("task config '" + artifactName + "/build.yml' not found"))
 				})
 			})
 		})

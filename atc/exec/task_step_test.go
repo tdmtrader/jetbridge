@@ -886,8 +886,10 @@ var _ = Describe("TaskStep", func() {
 				})
 
 				It("returns the error", func() {
-					Expect(stepErr).To(MatchError(ContainSubstring("metadata.json")))
-					Expect(stepErr).To(MatchError(ContainSubstring("file does not exist")))
+					Expect(stepErr).To(MatchError(exec.FileNotFoundError{
+						Name:     "image-volume",
+						FilePath: "metadata.json",
+					}))
 				})
 
 				It("is not successful", func() {

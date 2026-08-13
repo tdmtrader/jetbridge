@@ -3,7 +3,9 @@ package worker
 import (
 	"archive/tar"
 	"context"
+	"errors"
 	"io"
+	"io/fs"
 
 	"github.com/concourse/concourse/atc/compression"
 	"github.com/concourse/concourse/atc/runtime"
@@ -23,6 +25,9 @@ func NewStreamer(compression compression.Compression) Streamer {
 func (s Streamer) StreamFile(ctx context.Context, artifact runtime.Artifact, path string) (io.ReadCloser, error) {
 	out, err := artifact.StreamOut(ctx, path, s.compression)
 	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, runtime.ErrFileNotFound
+		}
 		return nil, err
 	}
 
