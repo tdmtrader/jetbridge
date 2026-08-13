@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -765,4 +766,48 @@ func TestClassesAreIndependent(t *testing.T) {
 			t.Error("deleting one class removed the same identity in another")
 		}
 	})
+}
+
+// The store's own prefix composes in FRONT of the retention class, so an object
+// is named "<prefix>/<class>/<identity>".
+//
+// This is what an operator's lifecycle rule has to match, and getting it wrong
+// is silent: a rule written against "resource-caches/" when a prefix is
+// configured matches nothing, expires nothing, and reports no error. The bucket
+// just grows. Pinning the composition here so the shape the chart documents
+// cannot drift from the shape the code writes.
+func TestStorePrefixComposesInFrontOfTheRetentionClass(t *testing.T) {
+	root := t.TempDir()
+
+	store, err := durable.NewFS(filepath.Join(root, "cluster-a"), 0)
+	if err != nil {
+		t.Fatalf("NewFS: %v", err)
+	}
+
+	ctx := context.Background()
+	if err := store.Put(ctx, "resource-caches/rc-abc", strings.NewReader("x")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	// The fs backend makes the composition visible as a path; GCS and S3 build
+	// the same string as an object name.
+	if _, err := os.Stat(filepath.Join(root, "cluster-a", "resource-caches", "rc-abc")); err != nil {
+		t.Errorf("expected <prefix>/<class>/<identity>; stat failed: %v", err)
+	}
+
+	// List reports keys WITHOUT the store prefix, so what it yields can be fed
+	// straight back to Get and Delete. A reclaim pass depends on that round-trip.
+	var listed []string
+	if err := store.List(ctx, func(a durable.Attributes) error {
+		listed = append(listed, a.Key)
+		return nil
+	}); err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(listed) != 1 || listed[0] != "resource-caches/rc-abc" {
+		t.Fatalf("List reported %v, want [resource-caches/rc-abc]", listed)
+	}
+	if err := store.Delete(ctx, listed[0]); err != nil {
+		t.Errorf("a key from List did not round-trip to Delete: %v", err)
+	}
 }

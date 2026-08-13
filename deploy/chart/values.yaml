@@ -473,6 +473,11 @@ artifactDaemon:
     #   {"rule":[{"action":{"type":"Delete"},
     #             "condition":{"age":30,"matchesPrefix":["resource-caches/"]}}]}
     #
+    # IF YOU SET `prefix` BELOW, THE RULE MUST INCLUDE IT. Objects are named
+    # "<prefix>/<class>/<identity>", so with prefix: cluster-a the rule has to
+    # match "cluster-a/resource-caches/". A rule written without it matches
+    # nothing, expires nothing, and reports no error -- the bucket simply grows.
+    #
     # Age is measured from the object's creation, not its last read -- object
     # stores offer no last-access condition. A cache that is produced again
     # rewrites the object and resets its age, so in practice this expires caches
@@ -492,6 +497,10 @@ artifactDaemon:
     bucket: ""
     # -- Key prefix inside the bucket, so one bucket can serve several clusters
     # or several consumers. Reclaim only ever enumerates its own prefix.
+    #
+    # Setting this changes the object names your lifecycle rules must match:
+    # "<prefix>/resource-caches/..." rather than "resource-caches/...". See the
+    # reclaim note above.
     prefix: ""
     # -- Endpoint override. Set this for MinIO; leave empty for AWS or GCP.
     endpoint: ""
