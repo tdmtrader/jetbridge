@@ -287,6 +287,10 @@ func (step *GetStep) run(ctx context.Context, state RunState, delegate GetDelega
 		return false, err
 	}
 
+	if processResult.ExitStatus == 0 && artifact == nil {
+		return false, fmt.Errorf("get of '%s' produced no artifact", step.plan.Name)
+	}
+
 	var succeeded bool
 	if processResult.ExitStatus == 0 {
 		state.StoreResult(step.planID, GetResult{

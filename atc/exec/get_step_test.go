@@ -1051,6 +1051,35 @@ var _ = Describe("GetStep", func() {
 		})
 	})
 
+	Context("when the worker hands back no artifact for the fetched volume", func() {
+		BeforeEach(func() {
+			chosenContainer.ProcessDefs[0].Stub.Output = resource.VersionResult{
+				Version:  atc.Version{"some": "version"},
+				Metadata: atc.Metadata{{Name: "some", Value: "metadata"}},
+			}
+			fakePool.FindOrSelectWorkerReturns(artifactlessWorker{Worker: chosenWorker}, nil)
+		})
+
+		It("errors instead of reporting a successful get", func() {
+			Expect(stepErr).To(MatchError(ContainSubstring("produced no artifact")))
+			Expect(stepOk).To(BeFalse())
+		})
+
+		It("registers no artifact", func() {
+			_, _, found := artifactRepository.ArtifactFor(build.ArtifactName(getPlan.Name))
+			Expect(found).To(BeFalse())
+		})
+
+		It("stores no result for the step", func() {
+			var result exec.GetResult
+			Expect(runState.Result(planID, &result)).To(BeFalse())
+		})
+
+		It("never finishes the step with exit status 0", func() {
+			Expect(persistedFinishGets(fixture, realBuild)).To(BeEmpty())
+		})
+	})
+
 	// [SE-03] Verify the get step fires delegate callbacks in the documented order.
 	//
 	// Get step order: Initializing → Starting → BeforeSelectWorker → SelectedWorker → Finished.
@@ -1068,6 +1097,16 @@ var _ = Describe("GetStep", func() {
 		})
 	})
 })
+
+// artifactlessWorker keeps every behavior of the real worker and hands back no
+// artifact for the volume the get step just fetched.
+type artifactlessWorker struct {
+	runtime.Worker
+}
+
+func (artifactlessWorker) ArtifactFromVolume(runtime.Volume) runtime.Artifact {
+	return nil
+}
 
 // recordingLockFactory keeps the real Postgres advisory locks and adds only
 // what they cannot show: how many times the step reached for one. Setting
