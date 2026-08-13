@@ -120,6 +120,7 @@ func (g *GCS) Stat(ctx context.Context, key string) (Attributes, bool, error) {
 		return Attributes{
 			Key:     key,
 			Size:    attrs.Size,
+			Updated: attrs.Updated,
 			Version: strconv.FormatInt(attrs.Generation, 10),
 		}, true, nil
 	case errors.Is(err, storage.ErrObjectNotExist):
@@ -223,6 +224,7 @@ func (g *GCS) List(ctx context.Context, fn func(Attributes) error) error {
 		if err := fn(Attributes{
 			Key:     key,
 			Size:    attrs.Size,
+			Updated: attrs.Updated,
 			Version: strconv.FormatInt(attrs.Generation, 10),
 		}); err != nil {
 			return err

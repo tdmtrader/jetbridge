@@ -101,6 +101,38 @@ func tick(logger lager.Logger, m *Monitor) {
 		},
 	)
 
+	m.emit(
+		logger.Session("resource-cache-local-hits"),
+		Event{
+			Name:  "resource cache local hits",
+			Value: m.ResourceCacheLocalHits.Delta(),
+		},
+	)
+
+	m.emit(
+		logger.Session("durable-warm-hits"),
+		Event{
+			Name:  "durable warm hits",
+			Value: m.DurableWarmHits.Delta(),
+		},
+	)
+
+	m.emit(
+		logger.Session("durable-warm-misses"),
+		Event{
+			Name:  "durable warm misses",
+			Value: m.DurableWarmMisses.Delta(),
+		},
+	)
+
+	m.emit(
+		logger.Session("durable-warm-suppressed"),
+		Event{
+			Name:  "durable warm suppressed",
+			Value: m.DurableWarmSuppressed.Delta(),
+		},
+	)
+
 	containersCreated := m.ContainersCreated.Delta()
 	m.emit(
 		logger.Session("containers-created"),

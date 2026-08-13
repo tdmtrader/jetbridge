@@ -44,6 +44,24 @@ type Monitor struct {
 	ContainersCreated Counter
 	VolumesCreated    Counter
 
+	// Durable artifact tier. Together these answer the only question that
+	// matters about it: is it earning its egress?
+	//
+	// A lookup ends in exactly one of these, so they sum to the number of
+	// resource-cache lookups that reached the daemon:
+	//   ResourceCacheLocalHits  a node already had it -- the fast path
+	//   DurableWarmHits         pulled from the store -- the tier paying off
+	//   DurableWarmMisses       tried the store, nothing there or it failed
+	//   DurableWarmSuppressed   skipped, because a recent warm for this key failed
+	//
+	// Suppressed rising is the signal that the bucket is unhealthy: it means the
+	// negative cache is doing its job, absorbing a retry loop that would
+	// otherwise cost a warm timeout every few seconds per waiting get step.
+	ResourceCacheLocalHits Counter
+	DurableWarmHits        Counter
+	DurableWarmMisses      Counter
+	DurableWarmSuppressed  Counter
+
 	FailedContainers Counter
 	FailedVolumes    Counter
 

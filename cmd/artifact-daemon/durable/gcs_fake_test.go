@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/concourse/concourse/cmd/artifact-daemon/durable"
 )
@@ -24,6 +25,7 @@ type fakeGCS struct {
 
 	mu         sync.Mutex
 	objects    map[string][]byte
+	written    map[string]time.Time
 	generation int64
 	gens       map[string]int64
 	failStatus int
@@ -38,7 +40,7 @@ type fakeGCS struct {
 func newFakeGCS(t *testing.T) *fakeGCS {
 	t.Helper()
 
-	f := &fakeGCS{objects: map[string][]byte{}, gens: map[string]int64{}}
+	f := &fakeGCS{objects: map[string][]byte{}, written: map[string]time.Time{}, gens: map[string]int64{}}
 	f.srv = httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(f.srv.Close)
 
@@ -83,12 +85,26 @@ func (f *fakeGCS) storeWithPrefix(t *testing.T, prefix string, limit int64) dura
 	return store
 }
 
+// modified reports when the fake last wrote a key, so its responses carry a
+// plausible timestamp rather than the zero value.
+func (f *fakeGCS) modified(name string) time.Time {
+	if t, ok := f.written[name]; ok {
+		return t
+	}
+
+	return time.Now()
+}
+
 func (f *fakeGCS) objectJSON(name string, body []byte, gen int64) map[string]any {
 	return map[string]any{
-		"kind":       "storage#object",
-		"name":       name,
-		"bucket":     "artifacts",
-		"size":       strconv.Itoa(len(body)),
+		"kind":   "storage#object",
+		"name":   name,
+		"bucket": "artifacts",
+		"size":   strconv.Itoa(len(body)),
+		// The real object resource carries this, and a fake that omits it lets
+		// a caller read a zero timestamp as 1970 -- which any age-based reclaim
+		// treats as expired.
+		"updated":    f.modified(name).UTC().Format(time.RFC3339),
 		"generation": strconv.FormatInt(gen, 10),
 	}
 }
@@ -139,6 +155,7 @@ func (f *fakeGCS) upload(w http.ResponseWriter, r *http.Request) {
 	f.generation++
 	gen := f.generation
 	f.objects[name] = body
+	f.written[name] = time.Now()
 	f.gens[name] = gen
 	f.mu.Unlock()
 

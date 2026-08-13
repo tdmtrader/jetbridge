@@ -11,6 +11,8 @@ import (
 	"testing"
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
+
+	"github.com/concourse/concourse/atc/metric"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
@@ -353,5 +355,62 @@ func TestProbeStillUsesReadyEndpoints(t *testing.T) {
 
 	if _, found := client.ProbeResourceCache(context.Background(), "rc-42"); !found {
 		t.Error("probe ignored a ready pod that had the cache")
+	}
+}
+
+// The four counters must partition every lookup that reaches the daemon: local
+// hit, warm hit, warm miss, warm suppressed. If they do not, no ratio computed
+// from them means anything — and the whole reason they exist is to answer
+// "is this tier earning its egress?".
+func TestFindResourceCacheCountsEveryOutcomeExactlyOnce(t *testing.T) {
+	read := func() (local, hits, misses, suppressed float64) {
+		return metric.Metrics.ResourceCacheLocalHits.Delta(),
+			metric.Metrics.DurableWarmHits.Delta(),
+			metric.Metrics.DurableWarmMisses.Delta(),
+			metric.Metrics.DurableWarmSuppressed.Delta()
+	}
+
+	for _, tc := range []struct {
+		name                            string
+		spy                             *warmSpy
+		lookups                         int
+		local, hits, misses, suppressed float64
+	}{
+		{
+			name:    "local hit",
+			spy:     &warmSpy{local: true, durableCapable: true, restoreOK: true},
+			lookups: 1, local: 1,
+		},
+		{
+			name:    "warm hit",
+			spy:     &warmSpy{local: false, durableCapable: true, restoreOK: true},
+			lookups: 1, hits: 1,
+		},
+		{
+			// One miss, then the negative cache absorbs the rest. That split is
+			// the signal a degraded bucket is being contained rather than
+			// retried into the ground.
+			name:    "warm miss then suppressed",
+			spy:     &warmSpy{local: false, durableCapable: true, restoreOK: false},
+			lookups: 4, misses: 1, suppressed: 3,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			read() // drain any counts from earlier subtests
+
+			b := backendFor(t, tc.spy)
+			for range tc.lookups {
+				b.FindResourceCache(context.Background(), "rc-42", "resource-caches/rc-content", "worker-1")
+			}
+
+			local, hits, misses, suppressed := read()
+			if local != tc.local || hits != tc.hits || misses != tc.misses || suppressed != tc.suppressed {
+				t.Errorf("local=%v hits=%v misses=%v suppressed=%v; want %v/%v/%v/%v",
+					local, hits, misses, suppressed, tc.local, tc.hits, tc.misses, tc.suppressed)
+			}
+			if got := local + hits + misses + suppressed; got != float64(tc.lookups) {
+				t.Errorf("counters sum to %v across %d lookups; they must partition every outcome", got, tc.lookups)
+			}
+		})
 	}
 }

@@ -56,7 +56,7 @@ func (f *FS) Stat(_ context.Context, key string) (Attributes, bool, error) {
 	info, err := os.Stat(path)
 	switch {
 	case err == nil:
-		return Attributes{Key: key, Size: info.Size()}, true, nil
+		return Attributes{Key: key, Size: info.Size(), Updated: info.ModTime()}, true, nil
 	case os.IsNotExist(err):
 		return Attributes{}, false, nil
 	default:
@@ -207,5 +207,5 @@ func (f *FS) emit(fn func(Attributes) error, prefix string, entry os.DirEntry) e
 		return fmt.Errorf("durable: list %s: %w", key, err)
 	}
 
-	return fn(Attributes{Key: key, Size: info.Size()})
+	return fn(Attributes{Key: key, Size: info.Size(), Updated: info.ModTime()})
 }

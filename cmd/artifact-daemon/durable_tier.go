@@ -197,6 +197,20 @@ func (d *DurableTier) Store(ctx context.Context, key, srcDir string, tar func(io
 	d.metrics.recordDurable("store", "ok")
 }
 
+// ObjectStore exposes the backing store for callers that enumerate it rather
+// than fetch through it — today only the residency reporter.
+//
+// Named this way because Store is already the upload method. It returns the
+// store rather than proxying List because the reporter's whole job is to walk
+// it, and a proxy would only be a longer way to say the same thing.
+func (d *DurableTier) ObjectStore() durable.Store {
+	if d == nil {
+		return nil
+	}
+
+	return d.store
+}
+
 // Delete removes the durable copy. Used by the reclaim path.
 func (d *DurableTier) Delete(ctx context.Context, key string) bool {
 	if d == nil {

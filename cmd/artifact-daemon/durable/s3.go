@@ -168,6 +168,7 @@ func (s *S3) Stat(ctx context.Context, key string) (Attributes, bool, error) {
 		return Attributes{
 			Key:     key,
 			Size:    aws.ToInt64(out.ContentLength),
+			Updated: aws.ToTime(out.LastModified),
 			Version: aws.ToString(out.VersionId),
 		}, true, nil
 	case isMiss(err):
@@ -276,7 +277,7 @@ func (s *S3) List(ctx context.Context, fn func(Attributes) error) error {
 				continue
 			}
 
-			if err := fn(Attributes{Key: key, Size: aws.ToInt64(obj.Size)}); err != nil {
+			if err := fn(Attributes{Key: key, Size: aws.ToInt64(obj.Size), Updated: aws.ToTime(obj.LastModified)}); err != nil {
 				return err
 			}
 		}

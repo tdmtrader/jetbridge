@@ -34,6 +34,7 @@ import (
 	"io"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // Attributes describe a stored object without transferring it.
@@ -43,6 +44,16 @@ type Attributes struct {
 
 	// Size is the object's length in bytes.
 	Size int64
+
+	// Updated is when this object was last written, or the zero time where the
+	// backend does not report one.
+	//
+	// It is the only thing that makes age-based reclaim possible: a bucket
+	// lifecycle rule can expire by age without help, but anything JetBridge does
+	// itself has to be able to ask how old an object is. Note it is last-WRITE,
+	// not last-read -- object stores do not track reads, so no LRU can be built
+	// on this.
+	Updated time.Time
 
 	// Version identifies one particular write, where the backend has such a
 	// concept -- a GCS generation, an S3 versionId. Empty where it does not.

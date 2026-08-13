@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/runtime"
 	corev1 "k8s.io/api/core/v1"
 )
@@ -629,6 +630,8 @@ func (b *DaemonSetBackend) FindResourceCache(ctx context.Context, cacheKey, dura
 
 	probe, found := b.daemonClient.ProbeResourceCache(ctx, cacheKey)
 	if found {
+		metric.Metrics.ResourceCacheLocalHits.Inc()
+
 		return b.bindProbed(cacheKey, workerName, probe.IP), true
 	}
 
@@ -643,6 +646,8 @@ func (b *DaemonSetBackend) FindResourceCache(ctx context.Context, cacheKey, dura
 	// suppression a degraded bucket turns a 5s lock tick into a warm-timeout tick
 	// for as long as the bucket stays degraded.
 	if b.warmNegative.suppressed(cacheKey) {
+		metric.Metrics.DurableWarmSuppressed.Inc()
+
 		return nil, false
 	}
 
@@ -651,9 +656,13 @@ func (b *DaemonSetBackend) FindResourceCache(ctx context.Context, cacheKey, dura
 
 	ip, ok := b.daemonClient.WarmResourceCache(warmCtx, cacheKey, durableKey, probe.Endpoints)
 	if !ok {
+		metric.Metrics.DurableWarmMisses.Inc()
 		b.warmNegative.suppress(cacheKey, warmSuppressionWindow)
+
 		return nil, false
 	}
+
+	metric.Metrics.DurableWarmHits.Inc()
 
 	return b.bindProbed(cacheKey, workerName, ip), true
 }

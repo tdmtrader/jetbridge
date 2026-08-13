@@ -43,6 +43,7 @@ func main() {
 	durableEndpoint := flag.String("durable-endpoint", "", "Endpoint override; set this for MinIO and other S3-compatible stores")
 	durableRegion := flag.String("durable-s3-region", "us-east-1", "S3 region")
 	durableTimeout := flag.Duration("durable-timeout", 5*time.Minute, "Per-operation timeout for the durable store")
+	durableResidencyInterval := flag.Duration("durable-residency-interval", defaultResidencyInterval, "How often to measure durable-store size for metrics. Every daemon runs its own enumeration, and a List is billed per page, so this is deliberately slow.")
 	durableMaxBytes := flag.Int64("durable-max-bytes", 5<<30, "Largest single artifact to store durably; 0 disables the limit")
 
 	flag.Parse()
@@ -96,6 +97,10 @@ func main() {
 	// prune mirror status without racing sweeper startup.
 	sweepDone := make(chan struct{})
 
+	// Cancelled alongside the sweeper at shutdown, so the residency walk does
+	// not hold the process open mid-enumeration.
+	residencyCtx, residencyCancel := context.WithCancel(context.Background())
+
 	// A restore assembles the artifact in a temporary directory under steps/,
 	// and the sweeper is what reclaims one left behind by a crash. If a restore
 	// may outlive the TTL, the sweeper can instead delete a live restore's
@@ -124,6 +129,12 @@ func main() {
 	} else if tier != nil {
 		server.SetDurableTier(tier)
 		logger.Info("durable-store-enabled", lager.Data{"backend": *durableStore})
+
+		// Reclaim is an object lifecycle rule the operator writes; nothing here
+		// performs it, so nothing here would otherwise notice a rule that
+		// matches no object. Measuring the store is what makes that visible.
+		residency := NewResidencyReporter(logger, tier.ObjectStore(), server.Metrics(), *durableResidencyInterval)
+		go residency.Run(residencyCtx)
 	}
 
 	sweeper := NewSweeper(logger, *storagePath, *ttl, 5*time.Minute, server.Registry())
@@ -278,6 +289,7 @@ func main() {
 
 	// Stop sweeper.
 	close(sweepDone)
+	residencyCancel()
 
 	// Remove node label before shutting down.
 	if labeler != nil {

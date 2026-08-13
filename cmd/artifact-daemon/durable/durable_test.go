@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/concourse/concourse/cmd/artifact-daemon/durable"
 )
@@ -345,14 +346,25 @@ type fakeS3 struct {
 	srv        *httptest.Server
 	mu         sync.Mutex
 	objects    map[string][]byte
+	written    map[string]time.Time
 	failStatus int
 	seen       int
+}
+
+// modified reports when the fake last wrote a key, so its responses carry a
+// plausible timestamp rather than the zero value.
+func (f *fakeS3) modified(key string) time.Time {
+	if t, ok := f.written[key]; ok {
+		return t
+	}
+
+	return time.Now()
 }
 
 func newFakeS3(t *testing.T) *fakeS3 {
 	t.Helper()
 
-	f := &fakeS3{objects: map[string][]byte{}}
+	f := &fakeS3{objects: map[string][]byte{}, written: map[string]time.Time{}}
 	f.srv = httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(f.srv.Close)
 
@@ -451,6 +463,7 @@ func (f *fakeS3) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		f.mu.Lock()
 		f.objects[key] = body
+		f.written[key] = time.Now()
 		f.mu.Unlock()
 		w.WriteHeader(http.StatusOK)
 
@@ -465,6 +478,10 @@ func (f *fakeS3) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+		// Real S3 returns Last-Modified on a HEAD and the SDK maps it to
+		// HeadObjectOutput.LastModified. Omitting it here would let Stat report
+		// a zero time that any age predicate reads as 1970.
+		w.Header().Set("Last-Modified", f.modified(key).UTC().Format(http.TimeFormat))
 		w.WriteHeader(http.StatusOK)
 
 	case http.MethodGet:
@@ -679,8 +696,12 @@ func (f *fakeS3) listObjects(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		count++
+		// LastModified is not decoration: the real ListObjectsV2 returns it on
+		// every entry, and a fake that omits it lets a caller read a zero
+		// timestamp as 1970 -- which any age-based reclaim treats as expired.
 		contents.WriteString("<Contents><Key>" + key + "</Key><Size>" +
-			strconv.Itoa(len(body)) + "</Size></Contents>")
+			strconv.Itoa(len(body)) + "</Size><LastModified>" +
+			f.modified(key).UTC().Format(time.RFC3339) + "</LastModified></Contents>")
 	}
 	f.mu.Unlock()
 
@@ -810,4 +831,47 @@ func TestStorePrefixComposesInFrontOfTheRetentionClass(t *testing.T) {
 	if err := store.Delete(ctx, listed[0]); err != nil {
 		t.Errorf("a key from List did not round-trip to Delete: %v", err)
 	}
+}
+
+// Every backend must report when an object was last written. Age-based reclaim
+// -- whether a bucket lifecycle rule's or JetBridge's own -- has nothing to work
+// with otherwise, and a zero timestamp reads as "1970", which any age predicate
+// would treat as expired.
+func TestListReportsWhenAnObjectWasWritten(t *testing.T) {
+	eachStore(t, func(t *testing.T, store durable.Store) {
+		ctx := context.Background()
+		before := time.Now().Add(-time.Minute)
+
+		if err := store.Put(ctx, "rc-abc", strings.NewReader("x")); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+
+		var got durable.Attributes
+		if err := store.List(ctx, func(a durable.Attributes) error {
+			if a.Key == "rc-abc" {
+				got = a
+			}
+			return nil
+		}); err != nil {
+			t.Fatalf("List: %v", err)
+		}
+
+		if got.Key == "" {
+			t.Fatal("List did not report the object")
+		}
+		if got.Updated.IsZero() {
+			t.Fatal("Updated is zero; every age predicate would read this object as ancient")
+		}
+		if got.Updated.Before(before) {
+			t.Errorf("Updated = %v, which predates the write", got.Updated)
+		}
+
+		stat, found, err := store.Stat(ctx, "rc-abc")
+		if err != nil || !found {
+			t.Fatalf("Stat: found %v, err %v", found, err)
+		}
+		if stat.Updated.IsZero() {
+			t.Error("Stat reported no Updated; List and Stat must agree on what they expose")
+		}
+	})
 }

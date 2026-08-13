@@ -17,6 +17,10 @@ type metrics struct {
 	resolveDuration *prometheus.HistogramVec
 	peerFetch       *prometheus.CounterVec
 	durableOps      *prometheus.CounterVec
+
+	durableObjects   prometheus.Gauge
+	durableBytes     prometheus.Gauge
+	durableOldestAge prometheus.Gauge
 }
 
 // newMetrics builds and registers the daemon metric collectors.
@@ -45,8 +49,30 @@ func newMetrics() *metrics {
 			Name:      "durable_operations_total",
 			Help:      "Durable-store operations, by op (has/restore/store/delete) and outcome (hit/miss/ok/error/raced). This is a per-node counter of operations, so sum() across nodes is correct here -- unlike a store-size gauge, where every node reports the same total and sum() multiplies it by node count.",
 		}, []string{"op", "outcome"}),
+
+		// AGGREGATION WARNING, repeated in every Help string below because it is
+		// the one way these are read wrong: these describe the SHARED STORE, not
+		// this node. Every daemon reports the same number, so sum() across nodes
+		// multiplies the store by node count. Use max by (...). Getting this
+		// backwards has already caused one silent OOM in this project.
+		durableObjects: prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: "artifact_daemon",
+			Name:      "durable_store_objects",
+			Help:      "Objects in the shared durable store. SHARED VALUE -- every node reports the same total; aggregate with max by(), never sum().",
+		}),
+		durableBytes: prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: "artifact_daemon",
+			Name:      "durable_store_bytes",
+			Help:      "Bytes in the shared durable store. SHARED VALUE -- every node reports the same total; aggregate with max by(), never sum().",
+		}),
+		durableOldestAge: prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: "artifact_daemon",
+			Name:      "durable_store_oldest_object_age_seconds",
+			Help:      "Age of the oldest object in the durable store. Reclaim is a bucket lifecycle rule nothing here performs, so this is the only signal that the rule is working: it should plateau near the configured expiry and grow without bound if the rule matches nothing. SHARED VALUE -- aggregate with max by(), never sum().",
+		}),
 	}
-	reg.MustRegister(m.resolveRequests, m.resolveDuration, m.peerFetch, m.durableOps)
+	reg.MustRegister(m.resolveRequests, m.resolveDuration, m.peerFetch, m.durableOps,
+		m.durableObjects, m.durableBytes, m.durableOldestAge)
 
 	// Initialize peer-fetch series to 0 so the family is always scrapeable and
 	// rate() works from the first fetch (CounterVecs emit no series until a
@@ -62,6 +88,8 @@ func newMetrics() *metrics {
 	m.durableOps.WithLabelValues("restore", "hit")
 	m.durableOps.WithLabelValues("restore", "miss")
 	m.durableOps.WithLabelValues("store", "ok")
+	m.durableOps.WithLabelValues("list", "error")
+	m.durableOps.WithLabelValues("list", "ok")
 
 	return m
 }
@@ -97,4 +125,19 @@ func (m *metrics) recordDurable(op, outcome string) {
 		return
 	}
 	m.durableOps.WithLabelValues(op, outcome).Inc()
+}
+
+// recordResidency publishes what the durable store currently holds.
+//
+// Only ever called after a successful enumeration: a failed one leaves the
+// previous values standing, because a zero is indistinguishable from an empty
+// store and "the bucket went to zero" is the worst possible false alert.
+func (m *metrics) recordResidency(objects, bytes int64, oldest time.Duration) {
+	if m == nil {
+		return
+	}
+
+	m.durableObjects.Set(float64(objects))
+	m.durableBytes.Set(float64(bytes))
+	m.durableOldestAge.Set(oldest.Seconds())
 }
