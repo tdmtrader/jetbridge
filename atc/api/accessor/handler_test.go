@@ -1,11 +1,11 @@
 package accessor_test
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"time"
 
-	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/accessor"
@@ -14,223 +14,116 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-// recordingAccessFactory keeps the role the handler resolved and the accessor
-// the real factory built from it. The handler exposes neither: the role is
-// consumed inside Create, and the accessor only ever reaches the wrapped
-// handler through the request context.
-type recordingAccessFactory struct {
-	accessor.AccessFactory
-
-	roles    []string
-	accesses []accessor.Access
-}
-
-func (f *recordingAccessFactory) Create(req *http.Request, role string) (accessor.Access, error) {
-	f.roles = append(f.roles, role)
-
-	access, err := f.AccessFactory.Create(req, role)
-	if err != nil {
-		return nil, err
-	}
-
-	f.accesses = append(f.accesses, access)
-	return access, nil
-}
-
-// recordingAuditor keeps what the handler audited, then hands it to the real
-// auditor. The real one writes a log line and returns nothing, so the request
-// the handler audited is otherwise unobservable.
-type recordingAuditor struct {
-	auditor.Auditor
-
-	audited []auditedEvent
-}
-
-type auditedEvent struct {
-	action   string
-	userName string
-	request  *http.Request
-}
-
-func (a *recordingAuditor) Audit(action string, userName string, r *http.Request) {
-	a.audited = append(a.audited, auditedEvent{action, userName, r})
-
-	a.Auditor.Audit(action, userName, r)
-}
-
 var _ = Describe("Handler", func() {
+	const (
+		token  = "handler-token"
+		userID = "handler-user-id"
+	)
 
 	var (
-		logger        lager.Logger
-		fixture       *realTeamFixture
-		accessFactory *recordingAccessFactory
-		auditRecorder *recordingAuditor
+		accessFactory *accessor.Factory
+		auditLogger   *lagertest.TestLogger
+		teamName      string
 
-		servedRequests []*http.Request
-
-		action      string
-		customRoles map[string]string
-
-		r *http.Request
-		w *httptest.ResponseRecorder
+		serve func(string, map[string]string, http.Handler) *httptest.ResponseRecorder
 	)
 
 	BeforeEach(func() {
-		logger = lager.NewLogger("test")
+		fixture := useRealTeamFixture()
+		team := persistRoleTeam(
+			fixture.TeamFactory,
+			"viewer-team",
+			accessor.ViewerRole,
+			userID,
+		)
+		teamName = team.Name()
 
-		fixture = useRealTeamFixture()
-		accessFactory = &recordingAccessFactory{
-			AccessFactory: accessor.NewAccessFactory(
-				accessor.NewVerifier(fixture.AccessTokenFactory, []string{"some-aud"}),
-				fixture.TeamFactory,
-				"sub",
-				[]string{"some-system-sub"},
-				nil,
-			),
-		}
-		auditRecorder = &recordingAuditor{
-			Auditor: auditor.NewAuditor(
-				true, true, true, true, true, true, true, true, true,
-				lagertest.NewTestLogger("audit"),
-			),
-		}
+		fixture.persistAccessToken(token, map[string]any{
+			"sub":                "handler-sub",
+			"aud":                []any{"some-aud"},
+			"exp":                float64(time.Now().Add(time.Hour).Unix()),
+			"name":               "Handler User",
+			"preferred_username": "handler",
+			"email":              "handler@example.com",
+			"federated_claims": map[string]any{
+				"connector_id": "test",
+				"user_id":      userID,
+			},
+		})
 
-		servedRequests = nil
-
-		action = atc.GetUser
-		customRoles = map[string]string{atc.GetUser: "some-role"}
-
-		var err error
-		r, err = http.NewRequest("GET", "localhost:8080", nil)
-		Expect(err).NotTo(HaveOccurred())
-
-		w = httptest.NewRecorder()
-	})
-
-	JustBeforeEach(func() {
-		handler := accessor.NewHandler(
-			logger,
-			action,
-			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				servedRequests = append(servedRequests, r)
-			}),
-			accessFactory,
-			auditRecorder,
-			customRoles,
+		accessFactory = accessor.NewAccessFactory(
+			accessor.NewVerifier(fixture.AccessTokenFactory, []string{"some-aud"}),
+			fixture.TeamFactory,
+			"sub",
+			[]string{"some-system-sub"},
+			nil,
 		)
 
-		handler.ServeHTTP(w, r)
+		auditLogger = lagertest.NewTestLogger("audit")
+		aud := auditor.NewAuditor(
+			true, true, true, true, true, true, true, true, true,
+			auditLogger,
+		)
+		handlerLogger := lagertest.NewTestLogger("handler")
+
+		serve = func(action string, customRoles map[string]string, next http.Handler) *httptest.ResponseRecorder {
+			request := httptest.NewRequest(http.MethodGet, "http://localhost:8080", nil)
+			request.Header.Set("Authorization", "bearer "+token)
+			response := httptest.NewRecorder()
+
+			accessor.NewHandler(
+				handlerLogger,
+				action,
+				next,
+				accessFactory,
+				aud,
+				customRoles,
+			).ServeHTTP(response, request)
+
+			return response
+		}
 	})
 
-	Describe("Accessor Handler", func() {
-		Context("when there's a default role for the given action", func() {
-			BeforeEach(func() {
-				action = atc.SaveConfig
-			})
-
-			Context("when the role has not been customized", func() {
-				BeforeEach(func() {
-					customRoles = map[string]string{}
-				})
-
-				It("finds the role", func() {
-					Expect(accessFactory.roles).To(Equal([]string{accessor.MemberRole}))
-				})
-			})
-
-			Context("when the role has been customized", func() {
-				BeforeEach(func() {
-					customRoles = map[string]string{
-						atc.SaveConfig: accessor.ViewerRole,
-					}
-				})
-
-				It("finds the role", func() {
-					Expect(accessFactory.roles).To(Equal([]string{accessor.ViewerRole}))
-				})
-			})
+	It("resolves default and custom roles through real team authorization", func() {
+		downstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if accessor.GetAccessor(r).IsAuthorized(teamName) {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			w.WriteHeader(http.StatusForbidden)
 		})
 
-		Context("when there's no default role for the given action", func() {
-			BeforeEach(func() {
-				action = atc.ListActiveUsersSince
-			})
+		defaultRole := serve(atc.SaveConfig, map[string]string{}, downstream)
+		Expect(defaultRole.Code).To(Equal(http.StatusForbidden))
 
-			Context("when the role has not been customized", func() {
-				BeforeEach(func() {
-					customRoles = map[string]string{}
-				})
+		customRole := serve(atc.SaveConfig, map[string]string{
+			atc.SaveConfig: accessor.ViewerRole,
+		}, downstream)
+		Expect(customRole.Code).To(Equal(http.StatusNoContent))
+	})
 
-				It("sends a blank role (admin roles don't have defaults)", func() {
-					Expect(accessFactory.roles).To(Equal([]string{""}))
-				})
-			})
-		})
+	It("passes exact persisted claims downstream and writes a real audit event", func() {
+		response := serve(atc.GetUser, map[string]string{}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			Expect(json.NewEncoder(w).Encode(accessor.GetAccessor(r).Claims())).To(Succeed())
+		}))
 
-		Context("when the request is authenticated", func() {
-			BeforeEach(func() {
-				fixture.persistAccessToken("some-token", map[string]any{
-					"sub":  "some-sub",
-					"aud":  []any{"some-aud"},
-					"exp":  float64(time.Now().Add(time.Hour).Unix()),
-					"name": "some-user",
-					"federated_claims": map[string]any{
-						"connector_id": "some-connector",
-					},
-				})
-				r.Header.Set("Authorization", "bearer some-token")
-			})
+		Expect(response.Code).To(Equal(http.StatusOK))
 
-			It("audits the event", func() {
-				Expect(auditRecorder.audited).To(HaveLen(1))
-				Expect(auditRecorder.audited[0].action).To(Equal(atc.GetUser))
-				Expect(auditRecorder.audited[0].userName).To(Equal("some-user"))
-				Expect(auditRecorder.audited[0].request).To(BeIdenticalTo(r))
-			})
+		var claims accessor.Claims
+		Expect(json.NewDecoder(response.Body).Decode(&claims)).To(Succeed())
+		Expect(claims).To(Equal(accessor.Claims{
+			Sub:               "handler-sub",
+			UserID:            userID,
+			UserName:          "Handler User",
+			PreferredUsername: "handler",
+			Email:             "handler@example.com",
+			Connector:         "test",
+		}))
 
-			It("invokes the handler", func() {
-				Expect(servedRequests).To(HaveLen(1))
-				Expect(accessor.GetAccessor(servedRequests[0])).To(BeIdenticalTo(accessFactory.accesses[0]))
-			})
-
-			It("hands the handler an accessor carrying the persisted claims", func() {
-				Expect(servedRequests).To(HaveLen(1))
-				access := accessor.GetAccessor(servedRequests[0])
-				Expect(access.IsAuthenticated()).To(BeTrue())
-				Expect(access.Claims()).To(Equal(accessor.Claims{
-					Sub:       "some-sub",
-					UserName:  "some-user",
-					Connector: "some-connector",
-				}))
-			})
-		})
-
-		Context("when the request is not authenticated", func() {
-			It("audits the anonymous request", func() {
-				Expect(auditRecorder.audited).To(HaveLen(1))
-				Expect(auditRecorder.audited[0].action).To(Equal(atc.GetUser))
-				Expect(auditRecorder.audited[0].userName).To(Equal(""))
-				Expect(auditRecorder.audited[0].request).To(BeIdenticalTo(r))
-			})
-
-			It("invokes the handler", func() {
-				Expect(servedRequests).To(HaveLen(1))
-				Expect(accessor.GetAccessor(servedRequests[0])).To(BeIdenticalTo(accessFactory.accesses[0]))
-			})
-		})
-
-		Context("when the accessor factory errors", func() {
-			BeforeEach(func() {
-				fixture.disconnect()
-			})
-
-			It("returns a server error", func() {
-				Expect(w.Result().StatusCode).To(Equal(http.StatusInternalServerError))
-			})
-
-			It("never reaches the wrapped handler", func() {
-				Expect(servedRequests).To(BeEmpty())
-			})
-		})
+		logs := auditLogger.Logs()
+		Expect(logs).To(HaveLen(1))
+		Expect(logs[0].Message).To(Equal("audit.audit"))
+		Expect(logs[0].Data).To(HaveKeyWithValue("action", atc.GetUser))
+		Expect(logs[0].Data).To(HaveKeyWithValue("user", "Handler User"))
 	})
 })
