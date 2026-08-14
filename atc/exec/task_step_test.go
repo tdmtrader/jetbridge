@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"time"
 
 	"code.cloudfoundry.org/clock"
@@ -21,6 +22,7 @@ import (
 	"github.com/concourse/concourse/atc/runtime/runtimetest"
 	"github.com/concourse/concourse/tracing"
 	"github.com/concourse/concourse/vars"
+	"github.com/google/go-containerregistry/pkg/authn"
 	"go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	oteltrace "go.opentelemetry.io/otel/trace"
@@ -91,6 +93,31 @@ func persistedFinishTasks(fixture *execDBFixture, build db.Build) []event.Finish
 		}
 	}
 	return finished
+}
+
+func newTaskStepRegistry() *imageresolvertesting.Registry {
+	GinkgoHelper()
+	registry := imageresolvertesting.NewRegistry()
+	DeferCleanup(registry.Close)
+	return registry
+}
+
+func pushTaskStepImage(registry *imageresolvertesting.Registry, repository, tag string) string {
+	GinkgoHelper()
+	digest, err := registry.Push(repository, tag)
+	Expect(err).NotTo(HaveOccurred())
+	return digest
+}
+
+func taskStepHeadRequests(registry *imageresolvertesting.Registry) []imageresolvertesting.Request {
+	GinkgoHelper()
+	var heads []imageresolvertesting.Request
+	for _, request := range registry.DrainRequests() {
+		if request.Method == http.MethodHead {
+			heads = append(heads, request)
+		}
+	}
+	return heads
 }
 
 var _ = Describe("TaskStep", func() {
@@ -1446,20 +1473,23 @@ var _ = Describe("TaskStep", func() {
 		})
 
 		Context("when sidecar images are resolved to pinned digests", func() {
-			var fakeResolver *imageresolvertesting.FakeResolver
+			var (
+				registry *imageresolvertesting.Registry
+				digest   string
+			)
 
 			BeforeEach(func() {
-				fakeResolver = &imageresolvertesting.FakeResolver{}
-				fakeResolver.ResolveStub(func(ctx context.Context, repo string, tag string, auth *imageresolver.BasicAuth) (string, error) {
-					return "sha256:resolved" + repo + tag, nil
-				})
-
-				taskStepOptions = []exec.TaskStepOption{exec.WithImageResolver(fakeResolver)}
+				registry = newTaskStepRegistry()
+				digest = pushTaskStepImage(registry, "redis", "7")
+				registry.DrainRequests()
+				taskStepOptions = []exec.TaskStepOption{
+					exec.WithImageResolver(imageresolver.NewResolver(authn.DefaultKeychain)),
+				}
 
 				taskPlan.Sidecars = []atc.SidecarSource{
 					{Config: &atc.SidecarConfig{
 						Name:  "redis",
-						Image: "redis:7",
+						Image: registry.Host() + "/redis:7",
 						Ports: []atc.SidecarPort{{ContainerPort: 6379}},
 					}},
 				}
@@ -1468,23 +1498,24 @@ var _ = Describe("TaskStep", func() {
 			It("resolves bare image tags to pinned digests", func() {
 				Expect(stepErr).ToNot(HaveOccurred())
 				Expect(chosenContainer.Spec.Sidecars).To(HaveLen(1))
-				Expect(chosenContainer.Spec.Sidecars[0].Image).To(Equal("redis@sha256:resolvedredis7"))
+				Expect(chosenContainer.Spec.Sidecars[0].Image).To(Equal(registry.Host() + "/redis@" + digest))
 			})
 		})
 
 		Context("when sidecar image is already digest-pinned", func() {
-			var fakeResolver *imageresolvertesting.FakeResolver
+			var registry *imageresolvertesting.Registry
 
 			BeforeEach(func() {
-				fakeResolver = &imageresolvertesting.FakeResolver{}
-				fakeResolver.ResolveReturns("sha256:shouldnotbecalled", nil)
-
-				taskStepOptions = []exec.TaskStepOption{exec.WithImageResolver(fakeResolver)}
+				registry = newTaskStepRegistry()
+				registry.DrainRequests()
+				taskStepOptions = []exec.TaskStepOption{
+					exec.WithImageResolver(imageresolver.NewResolver(authn.DefaultKeychain)),
+				}
 
 				taskPlan.Sidecars = []atc.SidecarSource{
 					{Config: &atc.SidecarConfig{
 						Name:  "redis",
-						Image: "redis@sha256:abc123",
+						Image: registry.Host() + "/redis@sha256:abc123",
 						Ports: []atc.SidecarPort{{ContainerPort: 6379}},
 					}},
 				}
@@ -1493,22 +1524,25 @@ var _ = Describe("TaskStep", func() {
 			It("skips resolution for already-pinned digests", func() {
 				Expect(stepErr).ToNot(HaveOccurred())
 				Expect(chosenContainer.Spec.Sidecars).To(HaveLen(1))
-				Expect(chosenContainer.Spec.Sidecars[0].Image).To(Equal("redis@sha256:abc123"))
-				Expect(fakeResolver.ResolveCallCount()).To(Equal(0))
+				Expect(chosenContainer.Spec.Sidecars[0].Image).To(Equal(registry.Host() + "/redis@sha256:abc123"))
+				Expect(taskStepHeadRequests(registry)).To(BeEmpty())
 			})
 		})
 
 		Context("when sidecar image resolution fails", func() {
-			BeforeEach(func() {
-				fakeResolver := &imageresolvertesting.FakeResolver{}
-				fakeResolver.ResolveReturns("", fmt.Errorf("registry unreachable"))
+			var registry *imageresolvertesting.Registry
 
-				taskStepOptions = []exec.TaskStepOption{exec.WithImageResolver(fakeResolver)}
+			BeforeEach(func() {
+				registry = newTaskStepRegistry()
+				registry.DrainRequests()
+				taskStepOptions = []exec.TaskStepOption{
+					exec.WithImageResolver(imageresolver.NewResolver(authn.DefaultKeychain)),
+				}
 
 				taskPlan.Sidecars = []atc.SidecarSource{
 					{Config: &atc.SidecarConfig{
 						Name:  "redis",
-						Image: "redis:7",
+						Image: registry.Host() + "/redis:7",
 						Ports: []atc.SidecarPort{{ContainerPort: 6379}},
 					}},
 				}
@@ -1517,25 +1551,32 @@ var _ = Describe("TaskStep", func() {
 			It("falls through to the original tag-based image (best-effort)", func() {
 				Expect(stepErr).ToNot(HaveOccurred())
 				Expect(chosenContainer.Spec.Sidecars).To(HaveLen(1))
-				Expect(chosenContainer.Spec.Sidecars[0].Image).To(Equal("redis:7"))
+				Expect(chosenContainer.Spec.Sidecars[0].Image).To(Equal(registry.Host() + "/redis:7"))
+				Expect(taskStepHeadRequests(registry)).To(ContainElement(imageresolvertesting.Request{
+					Method: http.MethodHead,
+					Path:   "/v2/redis/manifests/7",
+				}))
 			})
 		})
 
 		Context("when sidecar image has a docker:/// prefix", func() {
-			var fakeResolver *imageresolvertesting.FakeResolver
+			var (
+				registry *imageresolvertesting.Registry
+				digest   string
+			)
 
 			BeforeEach(func() {
-				fakeResolver = &imageresolvertesting.FakeResolver{}
-				fakeResolver.ResolveStub(func(ctx context.Context, repo string, tag string, auth *imageresolver.BasicAuth) (string, error) {
-					return "sha256:stripped" + repo + tag, nil
-				})
-
-				taskStepOptions = []exec.TaskStepOption{exec.WithImageResolver(fakeResolver)}
+				registry = newTaskStepRegistry()
+				digest = pushTaskStepImage(registry, "redis", "7")
+				registry.DrainRequests()
+				taskStepOptions = []exec.TaskStepOption{
+					exec.WithImageResolver(imageresolver.NewResolver(authn.DefaultKeychain)),
+				}
 
 				taskPlan.Sidecars = []atc.SidecarSource{
 					{Config: &atc.SidecarConfig{
 						Name:  "redis",
-						Image: "docker:///redis:7",
+						Image: "docker:///" + registry.Host() + "/redis:7",
 						Ports: []atc.SidecarPort{{ContainerPort: 6379}},
 					}},
 				}
@@ -1543,33 +1584,33 @@ var _ = Describe("TaskStep", func() {
 
 			It("strips the prefix before resolving the digest", func() {
 				Expect(stepErr).ToNot(HaveOccurred())
-				Expect(fakeResolver.ResolveCallCount()).To(Equal(1))
-				_, resolvedRepo, resolvedTag, _ := fakeResolver.ResolveArgsForCall(0)
-				Expect(resolvedRepo).To(Equal("redis"))
-				Expect(resolvedTag).To(Equal("7"))
+				Expect(taskStepHeadRequests(registry)).To(ContainElement(imageresolvertesting.Request{
+					Method: http.MethodHead,
+					Path:   "/v2/redis/manifests/7",
+				}))
 			})
 
 			It("sets the resolved digest on the sidecar", func() {
 				Expect(chosenContainer.Spec.Sidecars).To(HaveLen(1))
-				Expect(chosenContainer.Spec.Sidecars[0].Image).To(Equal("redis@sha256:strippedredis7"))
+				Expect(chosenContainer.Spec.Sidecars[0].Image).To(Equal(registry.Host() + "/redis@" + digest))
 			})
 		})
 
 		Context("when sidecar image has a docker:// prefix (double-slash)", func() {
-			var fakeResolver *imageresolvertesting.FakeResolver
+			var registry *imageresolvertesting.Registry
 
 			BeforeEach(func() {
-				fakeResolver = &imageresolvertesting.FakeResolver{}
-				fakeResolver.ResolveStub(func(ctx context.Context, repo string, tag string, auth *imageresolver.BasicAuth) (string, error) {
-					return "sha256:stripped" + repo + tag, nil
-				})
-
-				taskStepOptions = []exec.TaskStepOption{exec.WithImageResolver(fakeResolver)}
+				registry = newTaskStepRegistry()
+				pushTaskStepImage(registry, "mydb", "v3")
+				registry.DrainRequests()
+				taskStepOptions = []exec.TaskStepOption{
+					exec.WithImageResolver(imageresolver.NewResolver(authn.DefaultKeychain)),
+				}
 
 				taskPlan.Sidecars = []atc.SidecarSource{
 					{Config: &atc.SidecarConfig{
 						Name:  "mydb",
-						Image: "docker://myregistry.example.com/mydb:v3",
+						Image: "docker://" + registry.Host() + "/mydb:v3",
 						Ports: []atc.SidecarPort{{ContainerPort: 5432}},
 					}},
 				}
@@ -1577,28 +1618,28 @@ var _ = Describe("TaskStep", func() {
 
 			It("strips the prefix and resolves correctly", func() {
 				Expect(stepErr).ToNot(HaveOccurred())
-				Expect(fakeResolver.ResolveCallCount()).To(Equal(1))
-				_, resolvedRepo, resolvedTag, _ := fakeResolver.ResolveArgsForCall(0)
-				Expect(resolvedRepo).To(Equal("myregistry.example.com/mydb"))
-				Expect(resolvedTag).To(Equal("v3"))
+				Expect(taskStepHeadRequests(registry)).To(ContainElement(imageresolvertesting.Request{
+					Method: http.MethodHead,
+					Path:   "/v2/mydb/manifests/v3",
+				}))
 			})
 		})
 
 		Context("when sidecar image has a raw:/// prefix", func() {
-			var fakeResolver *imageresolvertesting.FakeResolver
+			var registry *imageresolvertesting.Registry
 
 			BeforeEach(func() {
-				fakeResolver = &imageresolvertesting.FakeResolver{}
-				fakeResolver.ResolveStub(func(ctx context.Context, repo string, tag string, auth *imageresolver.BasicAuth) (string, error) {
-					return "sha256:stripped" + repo + tag, nil
-				})
-
-				taskStepOptions = []exec.TaskStepOption{exec.WithImageResolver(fakeResolver)}
+				registry = newTaskStepRegistry()
+				pushTaskStepImage(registry, "nginx", "alpine")
+				registry.DrainRequests()
+				taskStepOptions = []exec.TaskStepOption{
+					exec.WithImageResolver(imageresolver.NewResolver(authn.DefaultKeychain)),
+				}
 
 				taskPlan.Sidecars = []atc.SidecarSource{
 					{Config: &atc.SidecarConfig{
 						Name:  "nginx",
-						Image: "raw:///nginx:alpine",
+						Image: "raw:///" + registry.Host() + "/nginx:alpine",
 						Ports: []atc.SidecarPort{{ContainerPort: 80}},
 					}},
 				}
@@ -1606,26 +1647,27 @@ var _ = Describe("TaskStep", func() {
 
 			It("strips the prefix and resolves correctly", func() {
 				Expect(stepErr).ToNot(HaveOccurred())
-				Expect(fakeResolver.ResolveCallCount()).To(Equal(1))
-				_, resolvedRepo, resolvedTag, _ := fakeResolver.ResolveArgsForCall(0)
-				Expect(resolvedRepo).To(Equal("nginx"))
-				Expect(resolvedTag).To(Equal("alpine"))
+				Expect(taskStepHeadRequests(registry)).To(ContainElement(imageresolvertesting.Request{
+					Method: http.MethodHead,
+					Path:   "/v2/nginx/manifests/alpine",
+				}))
 			})
 		})
 
 		Context("when sidecar image has a docker:/// prefix and is already digest-pinned", func() {
-			var fakeResolver *imageresolvertesting.FakeResolver
+			var registry *imageresolvertesting.Registry
 
 			BeforeEach(func() {
-				fakeResolver = &imageresolvertesting.FakeResolver{}
-				fakeResolver.ResolveReturns("sha256:shouldnotbecalled", nil)
-
-				taskStepOptions = []exec.TaskStepOption{exec.WithImageResolver(fakeResolver)}
+				registry = newTaskStepRegistry()
+				registry.DrainRequests()
+				taskStepOptions = []exec.TaskStepOption{
+					exec.WithImageResolver(imageresolver.NewResolver(authn.DefaultKeychain)),
+				}
 
 				taskPlan.Sidecars = []atc.SidecarSource{
 					{Config: &atc.SidecarConfig{
 						Name:  "redis",
-						Image: "docker:///redis@sha256:alreadypinned",
+						Image: "docker:///" + registry.Host() + "/redis@sha256:alreadypinned",
 						Ports: []atc.SidecarPort{{ContainerPort: 6379}},
 					}},
 				}
@@ -1634,8 +1676,8 @@ var _ = Describe("TaskStep", func() {
 			It("skips resolution for already-pinned digests", func() {
 				Expect(stepErr).ToNot(HaveOccurred())
 				Expect(chosenContainer.Spec.Sidecars).To(HaveLen(1))
-				Expect(chosenContainer.Spec.Sidecars[0].Image).To(Equal("docker:///redis@sha256:alreadypinned"))
-				Expect(fakeResolver.ResolveCallCount()).To(Equal(0))
+				Expect(chosenContainer.Spec.Sidecars[0].Image).To(Equal("docker:///" + registry.Host() + "/redis@sha256:alreadypinned"))
+				Expect(taskStepHeadRequests(registry)).To(BeEmpty())
 			})
 		})
 

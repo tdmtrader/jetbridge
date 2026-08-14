@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"reflect"
 	"slices"
 	"strings"
@@ -22,11 +23,13 @@ import (
 	"github.com/concourse/concourse/atc/engine"
 	"github.com/concourse/concourse/atc/event"
 	"github.com/concourse/concourse/atc/exec"
+	"github.com/concourse/concourse/atc/imageresolver"
 	"github.com/concourse/concourse/atc/imageresolver/imageresolvertesting"
 	"github.com/concourse/concourse/atc/policy"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/runtime/runtimetest"
 	"github.com/concourse/concourse/vars"
+	"github.com/google/go-containerregistry/pkg/authn"
 )
 
 // A build persists the events handed to it but keeps no record of the call, so
@@ -74,6 +77,31 @@ func (config fixedScopeResourceConfig) FindOrCreateScope(*int) (db.ResourceConfi
 type fixedResourceConfigFactory struct {
 	db.ResourceConfigFactory
 	resourceConfig db.ResourceConfig
+}
+
+func newBuildDelegateRegistry() *imageresolvertesting.Registry {
+	GinkgoHelper()
+	registry := imageresolvertesting.NewRegistry()
+	DeferCleanup(registry.Close)
+	return registry
+}
+
+func pushBuildDelegateImage(registry *imageresolvertesting.Registry, repository, tag string) string {
+	GinkgoHelper()
+	digest, err := registry.Push(repository, tag)
+	Expect(err).NotTo(HaveOccurred())
+	return digest
+}
+
+func buildDelegateHeadRequests(registry *imageresolvertesting.Registry) []imageresolvertesting.Request {
+	GinkgoHelper()
+	var heads []imageresolvertesting.Request
+	for _, request := range registry.DrainRequests() {
+		if request.Method == http.MethodHead {
+			heads = append(heads, request)
+		}
+	}
+	return heads
 }
 
 func (factory fixedResourceConfigFactory) FindOrCreateResourceConfig(
@@ -710,8 +738,13 @@ var _ = Describe("BuildStepDelegate", func() {
 			})
 
 			Context("when loading the latest resource config version fails", func() {
+				var registry *imageresolvertesting.Registry
+
 				BeforeEach(func() {
-					fakeResolver := new(imageresolvertesting.FakeResolver)
+					registry = newBuildDelegateRegistry()
+					registry.DrainRequests()
+					registryGetPlan.Get.Source = atc.Source{"repository": registry.Host() + "/db-error"}
+					registryCheckPlan.Check.Source = registryGetPlan.Get.Source
 					wrappedScope := latestVersionErrorScope{
 						ResourceConfigScope: scope,
 						err:                 errors.New("latest version failed"),
@@ -732,7 +765,8 @@ var _ = Describe("BuildStepDelegate", func() {
 								return true, nil
 							})
 						}, nil), fakeClock, policyChecker, false,
-						wrappedFactory, fixture.ResourceCacheFactory, fakeResolver,
+						wrappedFactory, fixture.ResourceCacheFactory,
+						imageresolver.NewResolver(authn.DefaultKeychain),
 					)
 				})
 
@@ -740,17 +774,22 @@ var _ = Describe("BuildStepDelegate", func() {
 					_, _, err := nativeDelegate.FetchImage(context.TODO(), *registryGetPlan, registryCheckPlan, false)
 					Expect(err).To(MatchError("get latest version: latest version failed"))
 					Expect(runPlans).To(BeEmpty())
+					Expect(buildDelegateHeadRequests(registry)).To(BeEmpty())
 				})
 			})
 
 			Context("when no cached version exists in DB but resolver is available", func() {
-				var fakeResolver *imageresolvertesting.FakeResolver
+				var (
+					registry *imageresolvertesting.Registry
+					digest   string
+				)
 
 				BeforeEach(func() {
-					registryGetPlan.Get.Source = atc.Source{"repository": "my-registry/no-cache", "tag": "latest"}
+					registry = newBuildDelegateRegistry()
+					digest = pushBuildDelegateImage(registry, "no-cache", "latest")
+					registry.DrainRequests()
+					registryGetPlan.Get.Source = atc.Source{"repository": registry.Host() + "/no-cache", "tag": "latest"}
 					registryCheckPlan.Check.Source = registryGetPlan.Get.Source
-					fakeResolver = new(imageresolvertesting.FakeResolver)
-					fakeResolver.ResolveReturns("sha256:resolved999", nil)
 
 					nativeDelegate = engine.NewBuildStepDelegateWithFactories(
 						realBuild, planID, exec.NewRunState(func(p atc.Plan) exec.Step {
@@ -760,7 +799,7 @@ var _ = Describe("BuildStepDelegate", func() {
 							})
 						}, nil), fakeClock, policyChecker, false,
 						fixture.ResourceConfigFactory, fixture.ResourceCacheFactory,
-						fakeResolver,
+						imageresolver.NewResolver(authn.DefaultKeychain),
 					)
 				})
 
@@ -771,12 +810,11 @@ var _ = Describe("BuildStepDelegate", func() {
 					By("not executing any plans")
 					Expect(runPlans).To(BeEmpty())
 
-					By("calling the resolver with correct args")
-					Expect(fakeResolver.ResolveCallCount()).To(Equal(1))
-					_, repo, tag, auth := fakeResolver.ResolveArgsForCall(0)
-					Expect(repo).To(Equal("my-registry/no-cache"))
-					Expect(tag).To(Equal("latest"))
-					Expect(auth).To(BeNil())
+					By("resolving the requested manifest through the registry protocol")
+					Expect(buildDelegateHeadRequests(registry)).To(ContainElement(imageresolvertesting.Request{
+						Method: http.MethodHead,
+						Path:   "/v2/no-cache/manifests/latest",
+					}))
 
 					By("saving the resolved version to DB")
 					config, err := fixture.ResourceConfigFactory.FindOrCreateResourceConfig(
@@ -788,27 +826,32 @@ var _ = Describe("BuildStepDelegate", func() {
 					latest, found, err := resolvedScope.LatestVersion()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(found).To(BeTrue())
-					Expect(atc.Version(latest.Version())).To(Equal(atc.Version{"digest": "sha256:resolved999"}))
+					Expect(atc.Version(latest.Version())).To(Equal(atc.Version{"digest": digest}))
 
 					By("returning an ImageSpec with the resolved image URL")
-					Expect(spec.ImageURL).To(Equal("docker:///my-registry/no-cache@sha256:resolved999"))
+					Expect(spec.ImageURL).To(Equal("docker:///" + registry.Host() + "/no-cache@" + digest))
 					Expect(spec.ImageArtifact).To(BeNil())
 
 					By("returning the metadata resource cache")
 					Expect(cache.ID()).To(BeNumerically(">", 0))
-					Expect(cache.Version()).To(Equal(atc.Version{"digest": "sha256:resolved999"}))
+					Expect(cache.Version()).To(Equal(atc.Version{"digest": digest}))
 				})
 			})
 
 			Context("when on-demand resolve with basic auth credentials", func() {
-				var fakeResolver *imageresolvertesting.FakeResolver
+				var (
+					registry *imageresolvertesting.Registry
+					digest   string
+				)
 
 				BeforeEach(func() {
-					fakeResolver = new(imageresolvertesting.FakeResolver)
-					fakeResolver.ResolveReturns("sha256:authed123", nil)
+					registry = newBuildDelegateRegistry()
+					digest = pushBuildDelegateImage(registry, "my-image", "v2")
+					registry.RequireBasicAuth("myuser", "mypass")
+					registry.DrainRequests()
 
 					registryGetPlan.Get.Source = atc.Source{
-						"repository": "private-registry.com/my-image",
+						"repository": registry.Host() + "/my-image",
 						"tag":        "v2",
 						"username":   "myuser",
 						"password":   "mypass",
@@ -822,7 +865,7 @@ var _ = Describe("BuildStepDelegate", func() {
 							})
 						}, nil), fakeClock, policyChecker, false,
 						fixture.ResourceConfigFactory, fixture.ResourceCacheFactory,
-						fakeResolver,
+						imageresolver.NewResolver(authn.DefaultKeychain),
 					)
 				})
 
@@ -830,26 +873,24 @@ var _ = Describe("BuildStepDelegate", func() {
 					spec, _, err := nativeDelegate.FetchImage(context.TODO(), *registryGetPlan, registryCheckPlan, false)
 					Expect(err).ToNot(HaveOccurred())
 
-					Expect(fakeResolver.ResolveCallCount()).To(Equal(1))
-					_, repo, tag, auth := fakeResolver.ResolveArgsForCall(0)
-					Expect(repo).To(Equal("private-registry.com/my-image"))
-					Expect(tag).To(Equal("v2"))
-					Expect(auth).ToNot(BeNil())
-					Expect(auth.Username).To(Equal("myuser"))
-					Expect(auth.Password).To(Equal("mypass"))
+					Expect(buildDelegateHeadRequests(registry)).To(ContainElement(imageresolvertesting.Request{
+						Method:       http.MethodHead,
+						Path:         "/v2/my-image/manifests/v2",
+						HasBasicAuth: true,
+					}))
 
-					Expect(spec.ImageURL).To(Equal("docker:///private-registry.com/my-image@sha256:authed123"))
+					Expect(spec.ImageURL).To(Equal("docker:///" + registry.Host() + "/my-image@" + digest))
 				})
 			})
 
 			Context("when on-demand resolve fails", func() {
-				var fakeResolver *imageresolvertesting.FakeResolver
+				var registry *imageresolvertesting.Registry
 
 				BeforeEach(func() {
-					registryGetPlan.Get.Source = atc.Source{"repository": "my-registry/failing", "tag": "latest"}
+					registry = newBuildDelegateRegistry()
+					registry.DrainRequests()
+					registryGetPlan.Get.Source = atc.Source{"repository": registry.Host() + "/failing", "tag": "latest"}
 					registryCheckPlan.Check.Source = registryGetPlan.Get.Source
-					fakeResolver = new(imageresolvertesting.FakeResolver)
-					fakeResolver.ResolveReturns("", fmt.Errorf("registry unreachable"))
 
 					nativeDelegate = engine.NewBuildStepDelegateWithFactories(
 						realBuild, planID, exec.NewRunState(func(p atc.Plan) exec.Step {
@@ -858,7 +899,7 @@ var _ = Describe("BuildStepDelegate", func() {
 							})
 						}, nil), fakeClock, policyChecker, false,
 						fixture.ResourceConfigFactory, fixture.ResourceCacheFactory,
-						fakeResolver,
+						imageresolver.NewResolver(authn.DefaultKeychain),
 					)
 				})
 
@@ -866,7 +907,10 @@ var _ = Describe("BuildStepDelegate", func() {
 					_, _, err := nativeDelegate.FetchImage(context.TODO(), *registryGetPlan, registryCheckPlan, false)
 					Expect(err).To(HaveOccurred())
 					Expect(err.Error()).To(ContainSubstring("on-demand image resolve"))
-					Expect(err.Error()).To(ContainSubstring("registry unreachable"))
+					Expect(buildDelegateHeadRequests(registry)).To(ContainElement(imageresolvertesting.Request{
+						Method: http.MethodHead,
+						Path:   "/v2/failing/manifests/latest",
+					}))
 				})
 			})
 

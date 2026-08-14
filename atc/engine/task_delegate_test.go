@@ -3,8 +3,8 @@ package engine
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
+	"net/http"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -22,6 +22,7 @@ import (
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/runtime/runtimetest"
 	"github.com/concourse/concourse/vars"
+	"github.com/google/go-containerregistry/pkg/authn"
 )
 
 var noopStepper exec.Stepper = func(atc.Plan) exec.Step {
@@ -93,6 +94,31 @@ func saveTaskDelegateVersion(fixture *EngineDBFixture, resourceType string, sour
 	scope := findTaskDelegateScope(fixture, resourceType, source)
 	Expect(scope.SaveVersions(db.SpanContext{}, []atc.Version{version})).To(Succeed())
 	return scope
+}
+
+func newTaskDelegateRegistry() *imageresolvertesting.Registry {
+	GinkgoHelper()
+	registry := imageresolvertesting.NewRegistry()
+	DeferCleanup(registry.Close)
+	return registry
+}
+
+func pushTaskDelegateImage(registry *imageresolvertesting.Registry, repository, tag string) string {
+	GinkgoHelper()
+	digest, err := registry.Push(repository, tag)
+	Expect(err).NotTo(HaveOccurred())
+	return digest
+}
+
+func taskDelegateHeadRequests(registry *imageresolvertesting.Registry) []imageresolvertesting.Request {
+	GinkgoHelper()
+	var heads []imageresolvertesting.Request
+	for _, request := range registry.DrainRequests() {
+		if request.Method == http.MethodHead {
+			heads = append(heads, request)
+		}
+	}
+	return heads
 }
 
 func createTaskDelegateCache(
@@ -1059,12 +1085,13 @@ var _ = Describe("TaskDelegate", func() {
 		})
 
 		It("resolves on-demand via resolver when no cached version exists", func() {
-			source := atc.Source{"repository": "my-org/on-demand"}
+			registry := newTaskDelegateRegistry()
+			digest := pushTaskDelegateImage(registry, "my-org/on-demand", "latest")
+			registry.DrainRequests()
+			source := atc.Source{"repository": registry.Host() + "/my-org/on-demand"}
 			scope := findTaskDelegateScope(fixture, "registry-image", source)
 
-			fakeResolver := new(imageresolvertesting.FakeResolver)
-			fakeResolver.ResolveReturns("sha256:ondemand456", nil)
-			imageResolver = fakeResolver
+			imageResolver = imageresolver.NewResolver(authn.DefaultKeychain)
 
 			noopStepper := func(p atc.Plan) exec.Step {
 				Fail("no steps should be created when resolver handles resolution")
@@ -1080,31 +1107,32 @@ var _ = Describe("TaskDelegate", func() {
 			)
 			Expect(err).ToNot(HaveOccurred())
 
-			By("resolving via the resolver")
-			Expect(fakeResolver.ResolveCallCount()).To(Equal(1))
-			_, repo, _, _ := fakeResolver.ResolveArgsForCall(0)
-			Expect(repo).To(Equal("my-org/on-demand"))
+			By("resolving the requested manifest through the registry protocol")
+			Expect(taskDelegateHeadRequests(registry)).To(ContainElement(imageresolvertesting.Request{
+				Method: http.MethodHead,
+				Path:   "/v2/my-org/on-demand/manifests/latest",
+			}))
 			Expect(*executedPlans).To(BeEmpty())
 
 			By("saving the resolved version to DB")
 			latest, found, latestErr := scope.LatestVersion()
 			Expect(latestErr).NotTo(HaveOccurred())
 			Expect(found).To(BeTrue())
-			Expect(atc.Version(latest.Version())).To(Equal(atc.Version{"digest": "sha256:ondemand456"}))
+			Expect(atc.Version(latest.Version())).To(Equal(atc.Version{"digest": digest}))
 
 			By("returning the correct image URL")
-			Expect(imgSpec.ImageURL).To(Equal("docker:///my-org/on-demand@sha256:ondemand456"))
+			Expect(imgSpec.ImageURL).To(Equal("docker:///" + registry.Host() + "/my-org/on-demand@" + digest))
 			Expect(imgSpec.ImageArtifact).To(BeNil())
-			Expect(taskDelegateAssociatedCache(fixture, realBuild).Version()).To(Equal(atc.Version{"digest": "sha256:ondemand456"}))
+			Expect(taskDelegateAssociatedCache(fixture, realBuild).Version()).To(Equal(atc.Version{"digest": digest}))
 		})
 
 		It("returns error when resolver fails (no fallback to pods)", func() {
-			source := atc.Source{"repository": "my-org/fail-test"}
+			registry := newTaskDelegateRegistry()
+			registry.DrainRequests()
+			source := atc.Source{"repository": registry.Host() + "/my-org/fail-test"}
 			scope := findTaskDelegateScope(fixture, "registry-image", source)
 
-			fakeResolver := new(imageresolvertesting.FakeResolver)
-			fakeResolver.ResolveReturns("", fmt.Errorf("registry timeout"))
-			imageResolver = fakeResolver
+			imageResolver = imageresolver.NewResolver(authn.DefaultKeychain)
 
 			noopStepper := func(p atc.Plan) exec.Step {
 				Fail("no steps should be created when resolver is configured")
@@ -1120,7 +1148,10 @@ var _ = Describe("TaskDelegate", func() {
 			)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("on-demand image resolve"))
-			Expect(err.Error()).To(ContainSubstring("registry timeout"))
+			Expect(taskDelegateHeadRequests(registry)).To(ContainElement(imageresolvertesting.Request{
+				Method: http.MethodHead,
+				Path:   "/v2/my-org/fail-test/manifests/latest",
+			}))
 			Expect(*executedPlans).To(BeEmpty())
 			latest, found, latestErr := scope.LatestVersion()
 			Expect(latestErr).NotTo(HaveOccurred())
@@ -1175,7 +1206,7 @@ var _ = Describe("TaskDelegate", func() {
 			// broke `fly agent snapshots capture-resource`).
 			const pinnedDigest = "sha256:4866878ca7324e5c3d1fb9f250ce16e0ef6d9505166b4b57e7a59cc6b86dba74"
 
-			var fakeResolver *imageresolvertesting.FakeResolver
+			var registry *imageresolvertesting.Registry
 
 			// Builds a delegate through the production factory path with an
 			// image resolver attached. The stepper fails the spec if any
@@ -1194,18 +1225,18 @@ var _ = Describe("TaskDelegate", func() {
 					lockFactory:           fixture.LockFactory,
 					resourceConfigFactory: resourceConfigFactory,
 					resourceCacheFactory:  resourceCacheFactory,
-					imageResolver:         fakeResolver,
+					imageResolver:         imageresolver.NewResolver(authn.DefaultKeychain),
 				}
 				return df.TaskDelegate(exec.NewRunState(failStepper, nil))
 			}
 
 			BeforeEach(func() {
-				fakeResolver = new(imageresolvertesting.FakeResolver)
-				fakeResolver.ResolveReturns("sha256:resolver-must-not-be-used", nil)
+				registry = newTaskDelegateRegistry()
+				registry.DrainRequests()
 			})
 
 			It("uses the pinned digest without calling the image resolver", func() {
-				source := atc.Source{"repository": "registry.home/agent-runner"}
+				source := atc.Source{"repository": registry.Host() + "/agent-runner"}
 				resourceConfigFactory = db.NewResourceConfigFactory(ClosedEngineCloneConn(), fixture.LockFactory)
 				td := buildResolvingTaskDelegate()
 
@@ -1222,10 +1253,10 @@ var _ = Describe("TaskDelegate", func() {
 				Expect(err).ToNot(HaveOccurred())
 
 				By("never reaching out to the registry")
-				Expect(fakeResolver.ResolveCallCount()).To(Equal(0))
+				Expect(taskDelegateHeadRequests(registry)).To(BeEmpty())
 
 				By("returning an image URL pinned to the requested digest")
-				Expect(imgSpec.ImageURL).To(Equal("docker:///registry.home/agent-runner@" + pinnedDigest))
+				Expect(imgSpec.ImageURL).To(Equal("docker:///" + registry.Host() + "/agent-runner@" + pinnedDigest))
 				Expect(imgSpec.ImageArtifact).To(BeNil(), "no volume artifact on the metadata path")
 				cache := taskDelegateAssociatedCache(fixture, realBuild)
 				Expect(cache.Version()).To(Equal(atc.Version{"digest": pinnedDigest}))
@@ -1236,8 +1267,8 @@ var _ = Describe("TaskDelegate", func() {
 				// registry.home/agent-runner, so the pre-fix code did an
 				// on-demand resolve of ":latest" and died on the registry's
 				// TLS certificate. A pinned digest needs no registry at all.
-				fakeResolver.ResolveReturns("", fmt.Errorf(
-					`Get "https://registry.home/v2/": tls: failed to verify certificate`))
+				source := atc.Source{"repository": registry.Host() + "/agent-runner"}
+				registry.Close()
 				resourceConfigFactory = db.NewResourceConfigFactory(ClosedEngineCloneConn(), fixture.LockFactory)
 
 				td := buildResolvingTaskDelegate()
@@ -1247,15 +1278,14 @@ var _ = Describe("TaskDelegate", func() {
 					atc.ImageResource{
 						Name:    "image",
 						Type:    "registry-image",
-						Source:  atc.Source{"repository": "registry.home/agent-runner"},
+						Source:  source,
 						Version: atc.Version{"digest": pinnedDigest},
 					},
 					atc.ResourceTypes{}, false, nil, false,
 				)
 				Expect(err).ToNot(HaveOccurred())
 
-				Expect(fakeResolver.ResolveCallCount()).To(Equal(0), "a pinned digest must never hit the registry")
-				Expect(imgSpec.ImageURL).To(Equal("docker:///registry.home/agent-runner@" + pinnedDigest))
+				Expect(imgSpec.ImageURL).To(Equal("docker:///" + registry.Host() + "/agent-runner@" + pinnedDigest))
 				Expect(taskDelegateAssociatedCache(fixture, realBuild).Version()).To(Equal(atc.Version{"digest": pinnedDigest}))
 			})
 
@@ -1269,7 +1299,7 @@ var _ = Describe("TaskDelegate", func() {
 					atc.ImageResource{
 						Name:    "image",
 						Type:    "registry-image",
-						Source:  atc.Source{"repository": "registry.home/agent-runner"},
+						Source:  atc.Source{"repository": registry.Host() + "/agent-runner"},
 						Version: atc.Version{"digest": pinnedDigest},
 					},
 					atc.ResourceTypes{}, false, nil, false,
@@ -1284,7 +1314,7 @@ var _ = Describe("TaskDelegate", func() {
 			})
 
 			It("still builds and saves a resource cache for the pinned version", func() {
-				source := atc.Source{"repository": "registry.home/agent-runner"}
+				source := atc.Source{"repository": registry.Host() + "/agent-runner"}
 				params := atc.Params{"some": "param"}
 				resourceConfigFactory = db.NewResourceConfigFactory(ClosedEngineCloneConn(), fixture.LockFactory)
 				td := buildResolvingTaskDelegate()
@@ -1317,7 +1347,7 @@ var _ = Describe("TaskDelegate", func() {
 			})
 
 			It("uses the cached DB version, not the resolver, when nothing is pinned", func() {
-				source := atc.Source{"repository": "registry.home/agent-runner"}
+				source := atc.Source{"repository": registry.Host() + "/agent-runner"}
 				scope := saveTaskDelegateVersion(
 					fixture, "registry-image", source, atc.Version{"digest": "sha256:stale-cached"},
 				)
@@ -1334,8 +1364,8 @@ var _ = Describe("TaskDelegate", func() {
 				)
 				Expect(err).ToNot(HaveOccurred())
 
-				Expect(fakeResolver.ResolveCallCount()).To(Equal(0), "a warm cache must not hit the registry")
-				Expect(imgSpec.ImageURL).To(Equal("docker:///registry.home/agent-runner@sha256:stale-cached"))
+				Expect(taskDelegateHeadRequests(registry)).To(BeEmpty(), "a warm cache must not hit the registry")
+				Expect(imgSpec.ImageURL).To(Equal("docker:///" + registry.Host() + "/agent-runner@sha256:stale-cached"))
 				latest, found, latestErr := scope.LatestVersion()
 				Expect(latestErr).NotTo(HaveOccurred())
 				Expect(found).To(BeTrue())
@@ -1344,9 +1374,10 @@ var _ = Describe("TaskDelegate", func() {
 			})
 
 			It("falls back to an on-demand resolve when nothing is pinned and nothing is cached", func() {
-				source := atc.Source{"repository": "registry.home/agent-runner", "tag": "v1"}
+				digest := pushTaskDelegateImage(registry, "agent-runner", "v1")
+				registry.DrainRequests()
+				source := atc.Source{"repository": registry.Host() + "/agent-runner", "tag": "v1"}
 				scope := findTaskDelegateScope(fixture, "registry-image", source)
-				fakeResolver.ResolveReturns("sha256:resolved-on-demand", nil)
 
 				td := buildResolvingTaskDelegate()
 
@@ -1361,16 +1392,16 @@ var _ = Describe("TaskDelegate", func() {
 				)
 				Expect(err).ToNot(HaveOccurred())
 
-				Expect(fakeResolver.ResolveCallCount()).To(Equal(1))
-				_, repo, tag, _ := fakeResolver.ResolveArgsForCall(0)
-				Expect(repo).To(Equal("registry.home/agent-runner"))
-				Expect(tag).To(Equal("v1"))
-				Expect(imgSpec.ImageURL).To(Equal("docker:///registry.home/agent-runner@sha256:resolved-on-demand"))
+				Expect(taskDelegateHeadRequests(registry)).To(ContainElement(imageresolvertesting.Request{
+					Method: http.MethodHead,
+					Path:   "/v2/agent-runner/manifests/v1",
+				}))
+				Expect(imgSpec.ImageURL).To(Equal("docker:///" + registry.Host() + "/agent-runner@" + digest))
 				latest, found, latestErr := scope.LatestVersion()
 				Expect(latestErr).NotTo(HaveOccurred())
 				Expect(found).To(BeTrue())
-				Expect(atc.Version(latest.Version())).To(Equal(atc.Version{"digest": "sha256:resolved-on-demand"}))
-				Expect(taskDelegateAssociatedCache(fixture, realBuild).Version()).To(Equal(atc.Version{"digest": "sha256:resolved-on-demand"}))
+				Expect(atc.Version(latest.Version())).To(Equal(atc.Version{"digest": digest}))
+				Expect(taskDelegateAssociatedCache(fixture, realBuild).Version()).To(Equal(atc.Version{"digest": digest}))
 			})
 
 			It("resolves on demand when the pin carries no digest", func() {
@@ -1378,9 +1409,10 @@ var _ = Describe("TaskDelegate", func() {
 				// the ImageResource carries one, which is what
 				// agent/resourcecapture produces for a tag-based reference.
 				// An empty pin identifies nothing, so it must not short-circuit.
-				source := atc.Source{"repository": "registry.home/agent-runner", "tag": "latest"}
+				digest := pushTaskDelegateImage(registry, "agent-runner", "latest")
+				registry.DrainRequests()
+				source := atc.Source{"repository": registry.Host() + "/agent-runner", "tag": "latest"}
 				scope := findTaskDelegateScope(fixture, "registry-image", source)
-				fakeResolver.ResolveReturns("sha256:tag-resolved", nil)
 
 				td := buildResolvingTaskDelegate()
 
@@ -1396,13 +1428,16 @@ var _ = Describe("TaskDelegate", func() {
 				)
 				Expect(err).ToNot(HaveOccurred())
 
-				Expect(fakeResolver.ResolveCallCount()).To(Equal(1))
-				Expect(imgSpec.ImageURL).To(Equal("docker:///registry.home/agent-runner@sha256:tag-resolved"))
+				Expect(taskDelegateHeadRequests(registry)).To(ContainElement(imageresolvertesting.Request{
+					Method: http.MethodHead,
+					Path:   "/v2/agent-runner/manifests/latest",
+				}))
+				Expect(imgSpec.ImageURL).To(Equal("docker:///" + registry.Host() + "/agent-runner@" + digest))
 				latest, found, latestErr := scope.LatestVersion()
 				Expect(latestErr).NotTo(HaveOccurred())
 				Expect(found).To(BeTrue())
-				Expect(atc.Version(latest.Version())).To(Equal(atc.Version{"digest": "sha256:tag-resolved"}))
-				Expect(taskDelegateAssociatedCache(fixture, realBuild).Version()).To(Equal(atc.Version{"digest": "sha256:tag-resolved"}))
+				Expect(atc.Version(latest.Version())).To(Equal(atc.Version{"digest": digest}))
+				Expect(taskDelegateAssociatedCache(fixture, realBuild).Version()).To(Equal(atc.Version{"digest": digest}))
 			})
 		})
 	})

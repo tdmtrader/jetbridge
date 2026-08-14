@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"time"
 
 	"code.cloudfoundry.org/clock"
@@ -15,6 +16,7 @@ import (
 	"github.com/concourse/concourse/atc/engine"
 	"github.com/concourse/concourse/atc/event"
 	"github.com/concourse/concourse/atc/exec"
+	"github.com/concourse/concourse/atc/imageresolver"
 	"github.com/concourse/concourse/atc/imageresolver/imageresolvertesting"
 	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/policy"
@@ -24,6 +26,7 @@ import (
 	"github.com/concourse/concourse/atc/worker"
 	"github.com/concourse/concourse/tracing"
 	"github.com/concourse/concourse/vars"
+	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/jackc/pgerrcode"
 	"github.com/jackc/pgx/v5/pgconn"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -82,6 +85,31 @@ type recordingCheckDelegate struct {
 type checkStartTimeUpdate struct {
 	scope       db.ResourceConfigScope
 	nestedCheck bool
+}
+
+func newCheckStepRegistry() *imageresolvertesting.Registry {
+	GinkgoHelper()
+	registry := imageresolvertesting.NewRegistry()
+	DeferCleanup(registry.Close)
+	return registry
+}
+
+func pushCheckStepImage(registry *imageresolvertesting.Registry, repository, tag string) string {
+	GinkgoHelper()
+	digest, err := registry.Push(repository, tag)
+	Expect(err).NotTo(HaveOccurred())
+	return digest
+}
+
+func checkStepHeadRequests(registry *imageresolvertesting.Registry) []imageresolvertesting.Request {
+	GinkgoHelper()
+	var heads []imageresolvertesting.Request
+	for _, request := range registry.DrainRequests() {
+		if request.Method == http.MethodHead {
+			heads = append(heads, request)
+		}
+	}
+	return heads
 }
 
 func (delegate *recordingCheckDelegate) StartSpan(ctx context.Context, component string, attrs tracing.Attrs) (context.Context, trace.Span) {
@@ -1019,17 +1047,20 @@ var _ = Describe("CheckStep", func() {
 	})
 
 	Context("native resolution for registry-image", func() {
-		var fakeResolver *imageresolvertesting.FakeResolver
+		var registry *imageresolvertesting.Registry
 
 		BeforeEach(func() {
-			fakeResolver = new(imageresolvertesting.FakeResolver)
-			checkStepOpts = []exec.CheckStepOption{exec.WithCheckResolver(fakeResolver)}
+			registry = newCheckStepRegistry()
+			registry.DrainRequests()
+			checkStepOpts = []exec.CheckStepOption{
+				exec.WithCheckResolver(imageresolver.NewResolver(authn.DefaultKeychain)),
+			}
 
 			checkPlan = atc.CheckPlan{
 				Name: "some-registry-image",
 				Type: "registry-image",
 				Source: atc.Source{
-					"repository": "gcr.io/my-project/my-image",
+					"repository": registry.Host() + "/my-project/my-image",
 					"tag":        "latest",
 				},
 				TypeImage: atc.TypeImage{
@@ -1043,26 +1074,28 @@ var _ = Describe("CheckStep", func() {
 		})
 
 		Context("when the resolver succeeds", func() {
+			var digest string
+
 			BeforeEach(func() {
-				fakeResolver.ResolveReturns("sha256:abc123def456", nil)
+				digest = pushCheckStepImage(registry, "my-project/my-image", "latest")
+				registry.DrainRequests()
 			})
 
 			It("resolves natively without creating a container", func() {
 				Expect(stepErr).ToNot(HaveOccurred())
 				Expect(stepOk).To(BeTrue())
 
-				Expect(fakeResolver.ResolveCallCount()).To(Equal(1))
-				_, repo, tag, auth := fakeResolver.ResolveArgsForCall(0)
-				Expect(repo).To(Equal("gcr.io/my-project/my-image"))
-				Expect(tag).To(Equal("latest"))
-				Expect(auth).To(BeNil())
+				Expect(checkStepHeadRequests(registry)).To(ContainElement(imageresolvertesting.Request{
+					Method: http.MethodHead,
+					Path:   "/v2/my-project/my-image/manifests/latest",
+				}))
 
 				// Should NOT have selected a worker or created a container.
 				Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(0))
 			})
 
 			It("saves the resolved version", func() {
-				expectedVersion := atc.Version{"digest": "sha256:abc123def456"}
+				expectedVersion := atc.Version{"digest": digest}
 				version, found, err := resourceConfigScope.FindVersion(expectedVersion)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(found).To(BeTrue())
@@ -1075,7 +1108,7 @@ var _ = Describe("CheckStep", func() {
 			It("stores the result in run state", func() {
 				var val atc.Version
 				Expect(runState.Result(planID, &val)).To(BeTrue())
-				Expect(val).To(Equal(atc.Version{"digest": "sha256:abc123def456"}))
+				Expect(val).To(Equal(atc.Version{"digest": digest}))
 			})
 
 			It("updates check timestamps and metrics", func() {
@@ -1085,34 +1118,45 @@ var _ = Describe("CheckStep", func() {
 		})
 
 		Context("with explicit username/password", func() {
+			var digest string
+
 			BeforeEach(func() {
+				digest = pushCheckStepImage(registry, "image", "latest")
+				registry.RequireBasicAuth("my-user", "my-pass")
+				registry.DrainRequests()
 				checkPlan.Source = atc.Source{
-					"repository": "private.registry.io/image",
+					"repository": registry.Host() + "/image",
 					"username":   "my-user",
 					"password":   "my-pass",
 				}
-				fakeResolver.ResolveReturns("sha256:deadbeef", nil)
 			})
 
 			It("passes BasicAuth to the resolver", func() {
 				Expect(stepErr).ToNot(HaveOccurred())
-				Expect(fakeResolver.ResolveCallCount()).To(Equal(1))
-				_, _, _, auth := fakeResolver.ResolveArgsForCall(0)
-				Expect(auth).ToNot(BeNil())
-				Expect(auth.Username).To(Equal("my-user"))
-				Expect(auth.Password).To(Equal("my-pass"))
+				Expect(checkStepHeadRequests(registry)).To(ContainElement(imageresolvertesting.Request{
+					Method:       http.MethodHead,
+					Path:         "/v2/image/manifests/latest",
+					HasBasicAuth: true,
+				}))
+				var version atc.Version
+				Expect(runState.Result(planID, &version)).To(BeTrue())
+				Expect(version).To(Equal(atc.Version{"digest": digest}))
 			})
 		})
 
 		Context("when the resolver fails", func() {
+			var rejectedDigest string
+
 			BeforeEach(func() {
-				fakeResolver.ResolveReturns("", errors.New("UNAUTHORIZED"))
+				rejectedDigest = pushCheckStepImage(registry, "my-project/my-image", "latest")
+				registry.RequireBasicAuth("required-user", "required-password")
+				registry.DrainRequests()
 			})
 
 			It("returns an error and does not save versions", func() {
 				Expect(stepErr).To(HaveOccurred())
-				Expect(stepErr.Error()).To(ContainSubstring("UNAUTHORIZED"))
-				_, found, err := resourceConfigScope.FindVersion(atc.Version{"digest": "sha256:abc123def456"})
+				Expect(stepErr.Error()).To(ContainSubstring("401 Unauthorized"))
+				_, found, err := resourceConfigScope.FindVersion(atc.Version{"digest": rejectedDigest})
 				Expect(err).NotTo(HaveOccurred())
 				Expect(found).To(BeFalse())
 			})
@@ -1130,8 +1174,7 @@ var _ = Describe("CheckStep", func() {
 			})
 
 			It("falls back to container-based check", func() {
-				// The resolver should NOT be called.
-				Expect(fakeResolver.ResolveCallCount()).To(Equal(0))
+				Expect(checkStepHeadRequests(registry)).To(BeEmpty())
 				// A worker should be selected for the container check.
 				Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(1))
 			})
