@@ -304,6 +304,44 @@ var _ = Describe("CheckDelegate", func() {
 			Expect(completed.lock.Release()).To(Succeed())
 		})
 
+		It("re-evaluates persisted state after waiting for the production resource-config lock", func() {
+			setEngineScopeLastCheck(fixture, resourceScope, now.Add(-2*time.Hour), now.Add(-2*time.Hour), true)
+			contender := independentEngineLockFactory()
+			held, acquired, err := contender.Acquire(
+				lagertest.NewTestLogger("held-check-lock"),
+				lock.NewResourceConfigCheckingLockID(config.ID()),
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(acquired).To(BeTrue())
+
+			type outcome struct {
+				lock lock.Lock
+				run  bool
+				err  error
+			}
+			result := make(chan outcome, 1)
+			go func() {
+				gotLock, run, err := newDelegate(checkBuild, atc.CheckPlan{
+					Resource: "some-resource", Interval: atc.CheckEvery{Interval: time.Hour},
+				}).WaitToRun(context.Background(), resourceScope)
+				result <- outcome{lock: gotLock, run: run, err: err}
+			}()
+
+			Consistently(result, 100*time.Millisecond).ShouldNot(Receive())
+			setEngineScopeLastCheck(fixture, resourceScope, now, now, true)
+			Expect(held.Release()).To(Succeed())
+			fakeClock.WaitForWatcherAndIncrement(time.Second)
+
+			var completed outcome
+			Eventually(result).Should(Receive(&completed))
+			if completed.lock != nil {
+				DeferCleanup(func() { Expect(completed.lock.Release()).To(Succeed()) })
+			}
+			Expect(completed.err).NotTo(HaveOccurred())
+			Expect(completed.run).To(BeFalse())
+			Expect(completed.lock).To(BeNil())
+		})
+
 		It("skips a nonmanual check_every never resource check", func() {
 			before, err := resourceScope.LastCheck()
 			Expect(err).NotTo(HaveOccurred())
@@ -315,6 +353,20 @@ var _ = Describe("CheckDelegate", func() {
 			Expect(run).To(BeFalse())
 			Expect(acquired).To(BeNil())
 			Expect(resourceScope.LastCheck()).To(Equal(before))
+		})
+
+		It("lets a manual resource check override check_every never", func() {
+			setEngineScopeLastCheck(fixture, resourceScope, now, now, false)
+
+			acquired, run, err := newDelegate(checkBuild, atc.CheckPlan{
+				Resource:     "some-resource",
+				SkipInterval: true,
+				Interval:     atc.CheckEvery{Never: true},
+			}).WaitToRun(context.Background(), resourceScope)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(run).To(BeTrue())
+			Expect(acquired).NotTo(BeNil())
+			Expect(acquired.Release()).To(Succeed())
 		})
 
 		It("skips a periodic resource check whose interval has not elapsed", func() {
@@ -347,6 +399,20 @@ var _ = Describe("CheckDelegate", func() {
 			acquired, run, err := newDelegate(checkBuild, atc.CheckPlan{
 				Resource: "some-resource", SkipInterval: true,
 			}).WaitToRun(context.Background(), resourceScope)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(run).To(BeFalse())
+			Expect(acquired).To(BeNil())
+		})
+
+		It("reuses a successful nested check completed after the real build started", func() {
+			Expect(checkBuild.StartTime()).NotTo(BeZero())
+			fakeClock = fakeclock.NewFakeClock(checkBuild.StartTime().Add(2 * time.Hour))
+			completedAfterBuild := checkBuild.StartTime().Add(time.Minute)
+			setEngineScopeLastCheck(fixture, globalScope, completedAfterBuild, completedAfterBuild, true)
+
+			acquired, run, err := newDelegate(checkBuild, atc.CheckPlan{
+				ResourceType: "some-resource-type",
+			}).WaitToRun(context.Background(), globalScope)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(run).To(BeFalse())
 			Expect(acquired).To(BeNil())
