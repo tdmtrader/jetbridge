@@ -9,7 +9,7 @@ import (
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbtest"
 	"github.com/concourse/concourse/atc/scheduler"
-	"github.com/concourse/concourse/atc/scheduler/schedulerfakes"
+	"github.com/concourse/concourse/atc/scheduler/algorithm"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -85,9 +85,9 @@ var _ = DescribeTable("Job Scheduling",
 		},
 	}),
 
-	Entry("one pending build that cannot create build plan", Example{
+	Entry("one pending build whose run step refers to a missing prototype", Example{
 		Job: DBJob{
-			PlanFails: true,
+			UnknownPrototype: true,
 			Builds: []DBBuild{
 				{Kind: SchedulerBuild},
 			},
@@ -264,7 +264,7 @@ type DBJob struct {
 	MaxInFlightReached  bool
 	InputsUndetermined  bool
 	ResourcesNotChecked bool
-	PlanFails           bool
+	UnknownPrototype    bool
 
 	Builds []DBBuild
 }
@@ -284,9 +284,21 @@ type Result struct {
 func (example Example) persistJob(fixture *schedulerDB) (db.Job, db.SchedulerResources) {
 	GinkgoHelper()
 
-	if example.Job.PlanFails {
-		return persistStarterJob(fixture, starterUnplannableJob, "get-job"),
-			db.SchedulerResources{{Name: "some-resource", Type: "some-type"}}
+	if example.Job.UnknownPrototype {
+		return persistStarterJob(
+			fixture,
+			atc.Config{
+				Jobs: atc.JobConfigs{
+					{
+						Name: "run-job",
+						PlanSequence: []atc.Step{
+							{Config: &atc.RunStep{Message: "hello", Type: "missing-prototype"}},
+						},
+					},
+				},
+			},
+			"run-job",
+		), nil
 	}
 
 	if example.Job.ResourcesNotChecked {
@@ -407,11 +419,12 @@ func (example Example) Run() {
 
 	fixture := useSchedulerDB()
 
-	fakeAlgorithm := new(schedulerfakes.FakeAlgorithm)
-	fakeAlgorithm.ComputeReturns(db.InputMapping{}, true, false, nil)
-	buildStarter := scheduler.NewBuildStarter(builds.NewPlanner(atc.NewPlanFactory(0)), fakeAlgorithm)
+	realScheduler := scheduler.NewScheduler(
+		builds.NewPlanner(atc.NewPlanFactory(0)),
+		algorithm.New(schedulerVersionsDB(fixture)),
+	)
 
-	job, resources := example.persistJob(fixture)
+	job, _ := example.persistJob(fixture)
 
 	if example.Job.MaxInFlightReached {
 		running, err := job.CreateBuild("test")
@@ -439,9 +452,9 @@ func (example Example) Run() {
 		}
 	}
 
-	scannedJob := db.Job(job)
+	schedulerJob := schedulerJobToSchedule(fixture, job)
 	if len(abortAfterScan) > 0 {
-		scannedJob = wrappedPendingBuildsJob{
+		schedulerJob.Job = wrappedPendingBuildsJob{
 			Job: job,
 			wrap: func(i int, build db.Build) db.Build {
 				if abortAfterScan[i] {
@@ -452,13 +465,10 @@ func (example Example) Run() {
 		}
 	}
 
-	needsRetry, err := buildStarter.TryStartPendingBuildsForJob(
+	needsRetry, err := realScheduler.BuildStarter.TryStartPendingBuildsForJob(
 		context.Background(),
 		lager.NewLogger("job-scheduling-tests"),
-		db.SchedulerJob{
-			Job:       scannedJob,
-			Resources: resources,
-		},
+		schedulerJob,
 		db.InputConfigs{},
 	)
 	Expect(err).NotTo(HaveOccurred())
@@ -471,4 +481,20 @@ func (example Example) Run() {
 		}
 	}
 	Expect(startedBuilds).To(Equal(example.Result.StartedBuilds))
+
+	if example.Job.UnknownPrototype {
+		erroredBuild := reloadStarterBuild(fixture, created[0].ID())
+		Expect(erroredBuild.Status()).To(Equal(db.BuildStatusErrored))
+		Expect(erroredBuild.IsCompleted()).To(BeTrue())
+		Expect(erroredBuild.HasPlan()).To(BeFalse())
+		Expect(erroredBuild.PrivatePlan()).To(Equal(atc.Plan{}))
+	}
+
+	for i, spec := range example.Job.Builds {
+		if spec.Aborted || spec.AbortedAfterScan {
+			abortedBuild := reloadStarterBuild(fixture, created[i].ID())
+			Expect(abortedBuild.Status()).To(Equal(db.BuildStatusAborted))
+			Expect(abortedBuild.IsCompleted()).To(BeTrue())
+		}
+	}
 }

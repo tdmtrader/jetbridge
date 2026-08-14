@@ -2,8 +2,6 @@ package scheduler_test
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
@@ -13,7 +11,6 @@ import (
 	"github.com/concourse/concourse/atc/db/dbtest"
 	. "github.com/concourse/concourse/atc/scheduler"
 	"github.com/concourse/concourse/atc/scheduler/algorithm"
-	"github.com/concourse/concourse/atc/scheduler/schedulerfakes"
 	"github.com/concourse/concourse/tracing"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -22,6 +19,25 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
+var schedulerMappingPipeline = atc.Config{
+	Resources: atc.ResourceConfigs{
+		{Name: "resource-a", Type: dbtest.BaseResourceType, Source: atc.Source{"some": "a"}},
+		{Name: "resource-b", Type: dbtest.BaseResourceType, Source: atc.Source{"some": "b"}},
+	},
+	Jobs: atc.JobConfigs{
+		{
+			Name: "some-job",
+			PlanSequence: []atc.Step{
+				{Config: &atc.GetStep{Name: "a", Resource: "resource-a", Trigger: true}},
+				{Config: &atc.GetStep{Name: "b", Resource: "resource-b"}},
+			},
+		},
+	},
+}
+
+// The three-resource pipeline is intentionally reserved for trace-link coverage.
+// Mapping and has-new-inputs scenarios use schedulerMappingPipeline so a third
+// trigger cannot silently change their persisted state.
 var triggerPipeline = atc.Config{
 	Resources: atc.ResourceConfigs{
 		{Name: "resource-a", Type: dbtest.BaseResourceType, Source: atc.Source{"some": "a"}},
@@ -44,29 +60,6 @@ func schedulerVersionsDB(fixture *schedulerDB) db.VersionsDB {
 	return db.NewVersionsDB(fixture.Conn, 100, gocache.New(time.Minute, time.Minute))
 }
 
-func schedulerInputResult(
-	versions db.VersionsDB,
-	resource db.Resource,
-	version atc.Version,
-	firstOccurrence bool,
-) db.InputResult {
-	GinkgoHelper()
-
-	digest, found, err := versions.FindVersionOfResource(context.Background(), resource.ID(), version)
-	Expect(err).NotTo(HaveOccurred())
-	Expect(found).To(BeTrue())
-
-	return db.InputResult{
-		Input: &db.AlgorithmInput{
-			AlgorithmVersion: db.AlgorithmVersion{
-				ResourceID: resource.ID(),
-				Version:    digest,
-			},
-			FirstOccurrence: firstOccurrence,
-		},
-	}
-}
-
 func schedulerPendingBuilds(job db.Job) []db.Build {
 	GinkgoHelper()
 
@@ -84,46 +77,67 @@ func schedulerJobHasNewInputs(job db.Job) bool {
 	return job.HasNewInputs()
 }
 
+func schedulerJobToSchedule(fixture *schedulerDB, job db.Job) db.SchedulerJob {
+	GinkgoHelper()
+
+	Expect(job.RequestSchedule()).To(Succeed())
+	jobs, err := fixture.JobFactory.JobsToScheduleByIDs([]int{job.ID()})
+	Expect(err).NotTo(HaveOccurred())
+	Expect(jobs).To(HaveLen(1))
+	return jobs[0]
+}
+
+func schedulerCompleteInputHistory(
+	fixture *schedulerDB,
+	scenario *dbtest.Scenario,
+	jobName string,
+	inputs dbtest.JobInputs,
+) db.Build {
+	GinkgoHelper()
+
+	var historicalBuild db.Build
+	scenario.Run(fixture.Builder.WithJobBuild(&historicalBuild, jobName, inputs, nil))
+	Expect(historicalBuild.Finish(db.BuildStatusSucceeded)).To(Succeed())
+	return historicalBuild
+}
+
+func schedulerPersistedInputs(job db.Job) map[string]db.BuildInput {
+	GinkgoHelper()
+
+	buildInputs, resolved, err := job.GetFullNextBuildInputs()
+	Expect(err).NotTo(HaveOccurred())
+	Expect(resolved).To(BeTrue())
+
+	persisted := map[string]db.BuildInput{}
+	for _, input := range buildInputs {
+		persisted[input.Name] = input
+	}
+	return persisted
+}
+
 var _ = Describe("Scheduler", func() {
-	var (
-		fakeAlgorithm    *schedulerfakes.FakeAlgorithm
-		fakeBuildStarter *schedulerfakes.FakeBuildStarter
+	newScheduler := func(fixture *schedulerDB) *Scheduler {
+		return NewScheduler(
+			builds.NewPlanner(atc.NewPlanFactory(0)),
+			algorithm.New(schedulerVersionsDB(fixture)),
+		)
+	}
 
-		scheduler *Scheduler
-
-		disaster error
-	)
-
-	BeforeEach(func() {
-		fakeAlgorithm = new(schedulerfakes.FakeAlgorithm)
-		fakeBuildStarter = new(schedulerfakes.FakeBuildStarter)
-
-		scheduler = &Scheduler{
-			Algorithm:    fakeAlgorithm,
-			BuildStarter: fakeBuildStarter,
-		}
-
-		disaster = errors.New("bad thing")
-	})
-
-	schedule := func(ctx context.Context, job db.Job) error {
+	schedule := func(ctx context.Context, fixture *schedulerDB, job db.SchedulerJob) bool {
 		GinkgoHelper()
 
-		_, err := scheduler.Schedule(ctx, lagertest.NewTestLogger("test"), db.SchedulerJob{
-			Job:       job,
-			Resources: db.SchedulerResources{{Name: "some-resource"}},
-		})
-		return err
+		needsRetry, err := newScheduler(fixture).Schedule(
+			ctx,
+			lagertest.NewTestLogger("test"),
+			job,
+		)
+		Expect(err).NotTo(HaveOccurred())
+		return needsRetry
 	}
 
 	Describe("a job with no configured inputs", func() {
-		var (
-			fixture *schedulerDB
-			job     db.Job
-		)
-
-		BeforeEach(func() {
-			fixture = useSchedulerDB()
+		It("persists a resolved empty mapping without creating a build or scheduling again", func() {
+			fixture := useSchedulerDB()
 			_, pipeline := persistSchedulerPipeline(
 				fixture,
 				"scheduler-team",
@@ -139,182 +153,50 @@ var _ = Describe("Scheduler", func() {
 					},
 				},
 			)
-			job = schedulerPipelineJob(pipeline, "some-job-1")
+			job := schedulerPipelineJob(pipeline, "some-job-1")
+			schedulerJob := schedulerJobToSchedule(fixture, job)
+			requestedBefore, _ := schedulerJobTimestamps(fixture, job.ID())
 
-			fakeAlgorithm.ComputeReturns(db.InputMapping{}, true, false, nil)
-		})
-
-		It("computes the inputs for the job it was given", func() {
-			Expect(schedule(context.Background(), job)).To(Succeed())
-
-			Expect(fakeAlgorithm.ComputeCallCount()).To(Equal(1))
-			_, actualJob, actualInputs := fakeAlgorithm.ComputeArgsForCall(0)
-			Expect(actualJob.Name()).To(Equal("some-job-1"))
-			Expect(actualInputs).To(BeNil())
-		})
-
-		It("persists a resolved empty input mapping with real scheduling services", func() {
-			realScheduler := NewScheduler(
-				builds.NewPlanner(atc.NewPlanFactory(0)),
-				algorithm.New(schedulerVersionsDB(fixture)),
-			)
-
-			_, err := realScheduler.Schedule(
-				context.Background(),
-				lagertest.NewTestLogger("test"),
-				db.SchedulerJob{Job: job},
-			)
-			Expect(err).NotTo(HaveOccurred())
+			Expect(schedule(context.Background(), fixture, schedulerJob)).To(BeFalse())
 
 			buildInputs, resolved, err := job.GetFullNextBuildInputs()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(resolved).To(BeTrue())
 			Expect(buildInputs).To(BeEmpty())
 			Expect(schedulerPendingBuilds(job)).To(BeEmpty())
-		})
+			Expect(schedulerJobHasNewInputs(job)).To(BeFalse())
 
-		It("returns the error when the job inputs fail to fetch", func() {
-			err := schedule(context.Background(), algorithmInputsFailsJob{Job: job, err: disaster})
-			Expect(err).To(Equal(fmt.Errorf("inputs: %w", disaster)))
-		})
-
-		It("returns the error when computing the inputs fails", func() {
-			fakeAlgorithm.ComputeReturns(nil, false, false, disaster)
-
-			err := schedule(context.Background(), job)
-			Expect(err).To(Equal(fmt.Errorf("compute inputs: %w", disaster)))
-		})
-
-		It("requests schedule when the algorithm can run again", func() {
-			fakeAlgorithm.ComputeReturns(db.InputMapping{}, true, true, nil)
-			before, _ := schedulerJobTimestamps(fixture, job.ID())
-
-			Expect(schedule(context.Background(), job)).To(Succeed())
-
-			requested, _ := schedulerJobTimestamps(fixture, job.ID())
-			Expect(requested).To(BeTemporally(">", before))
-		})
-
-		It("does not request schedule when the algorithm can not run again", func() {
-			before, _ := schedulerJobTimestamps(fixture, job.ID())
-
-			Expect(schedule(context.Background(), job)).To(Succeed())
-
-			requested, _ := schedulerJobTimestamps(fixture, job.ID())
-			Expect(requested).To(Equal(before))
-		})
-
-		It("returns the error when requesting schedule fails", func() {
-			fakeAlgorithm.ComputeReturns(db.InputMapping{}, true, true, nil)
-
-			err := schedule(context.Background(), requestScheduleFailsJob{Job: job, err: disaster})
-			Expect(err).To(Equal(fmt.Errorf("request schedule: %w", disaster)))
-		})
-
-		It("returns the error when saving the next input mapping fails", func() {
-			err := schedule(context.Background(), saveNextInputMappingFailsJob{Job: job, err: disaster})
-			Expect(err).To(Equal(fmt.Errorf("save next input mapping: %w", disaster)))
-		})
-
-		It("returns the error when getting the full next build inputs fails", func() {
-			err := schedule(context.Background(), nextBuildInputsFailsJob{Job: job, err: disaster})
-			Expect(err).To(Equal(fmt.Errorf("get next build inputs: %w", disaster)))
-		})
-
-		It("starts the pending builds for the job it was given", func() {
-			fakeBuildStarter.TryStartPendingBuildsForJobReturns(false, disaster)
-
-			Expect(schedule(context.Background(), job)).To(Equal(disaster))
-
-			Expect(fakeBuildStarter.TryStartPendingBuildsForJobCallCount()).To(Equal(1))
-			_, _, actualJob, actualInputs := fakeBuildStarter.TryStartPendingBuildsForJobArgsForCall(0)
-			Expect(actualJob.Name()).To(Equal("some-job-1"))
-			Expect(actualJob.Resources).To(Equal(db.SchedulerResources{{Name: "some-resource"}}))
-			Expect(actualInputs).To(BeNil())
-		})
-
-		It("does not create a pending build or mark the job as having new inputs", func() {
-			guardedJob := setHasNewInputsFailsJob{Job: job, err: disaster}
-
-			Expect(schedule(context.Background(), guardedJob)).To(Succeed())
-
-			Expect(schedulerPendingBuilds(job)).To(BeEmpty())
-		})
-
-		It("leaves the inputs undetermined when the algorithm can not resolve them", func() {
-			fakeAlgorithm.ComputeReturns(db.InputMapping{}, false, false, nil)
-
-			Expect(schedule(context.Background(), job)).To(Succeed())
-
-			_, satisfiable, err := job.GetFullNextBuildInputs()
+			apiBuilds, _, err := job.BuildsWithTime(db.Page{Limit: 50})
 			Expect(err).NotTo(HaveOccurred())
-			Expect(satisfiable).To(BeFalse())
-			Expect(schedulerPendingBuilds(job)).To(BeEmpty())
-			Expect(fakeBuildStarter.TryStartPendingBuildsForJobCallCount()).To(Equal(1))
+			Expect(apiBuilds).To(BeEmpty())
+
+			requestedAfter, _ := schedulerJobTimestamps(fixture, job.ID())
+			Expect(requestedAfter).To(Equal(requestedBefore))
 		})
 	})
 
 	Describe("a job with resource inputs", func() {
-		var (
-			fixture  *schedulerDB
-			scenario *dbtest.Scenario
-			versions db.VersionsDB
-			job      db.Job
-		)
-
-		BeforeEach(func() {
-			fixture = useSchedulerDB()
-			scenario = dbtest.Setup(
+		It("persists a first-occurrence trigger and a previously used non-trigger input", func() {
+			fixture := useSchedulerDB()
+			scenario := dbtest.Setup(
 				fixture.Builder.WithTeam("scheduler-team"),
-				fixture.Builder.WithPipeline(triggerPipeline),
-				fixture.Builder.WithResourceVersions("resource-a", atc.Version{"ref": "v1"}),
+				fixture.Builder.WithPipeline(schedulerMappingPipeline),
+				fixture.Builder.WithResourceVersions(
+					"resource-a",
+					atc.Version{"ref": "v0"},
+					atc.Version{"ref": "v1"},
+				),
 				fixture.Builder.WithResourceVersions("resource-b", atc.Version{"ref": "v2"}),
-				fixture.Builder.WithResourceVersions("resource-c", atc.Version{"ref": "v3"}),
 			)
-			versions = schedulerVersionsDB(fixture)
-			job = scenario.Job("some-job")
-		})
+			job := scenario.Job("some-job")
+			schedulerCompleteInputHistory(fixture, scenario, "some-job", dbtest.JobInputs{
+				{Name: "a", Version: atc.Version{"ref": "v0"}},
+				{Name: "b", Version: atc.Version{"ref": "v2"}},
+			})
 
-		firstOccurrenceOf := func(resourceName string, version atc.Version) db.InputResult {
-			GinkgoHelper()
-			return schedulerInputResult(versions, scenario.Resource(resourceName), version, true)
-		}
+			Expect(schedule(context.Background(), fixture, schedulerJobToSchedule(fixture, job))).To(BeFalse())
 
-		reoccurrenceOf := func(resourceName string, version atc.Version) db.InputResult {
-			GinkgoHelper()
-			return schedulerInputResult(versions, scenario.Resource(resourceName), version, false)
-		}
-
-		It("computes the job's persisted inputs", func() {
-			fakeAlgorithm.ComputeReturns(db.InputMapping{}, true, false, nil)
-
-			Expect(schedule(context.Background(), job)).To(Succeed())
-
-			_, actualJob, actualInputs := fakeAlgorithm.ComputeArgsForCall(0)
-			Expect(actualJob.Name()).To(Equal("some-job"))
-			Expect(actualInputs).To(ConsistOf(
-				db.InputConfig{Name: "a", ResourceID: scenario.Resource("resource-a").ID(), JobID: job.ID(), Trigger: true},
-				db.InputConfig{Name: "b", ResourceID: scenario.Resource("resource-b").ID(), JobID: job.ID()},
-				db.InputConfig{Name: "c", ResourceID: scenario.Resource("resource-c").ID(), JobID: job.ID(), Trigger: true},
-			))
-		})
-
-		It("persists the computed input mapping", func() {
-			fakeAlgorithm.ComputeReturns(db.InputMapping{
-				"a": firstOccurrenceOf("resource-a", atc.Version{"ref": "v1"}),
-				"b": reoccurrenceOf("resource-b", atc.Version{"ref": "v2"}),
-			}, true, false, nil)
-
-			Expect(schedule(context.Background(), job)).To(Succeed())
-
-			buildInputs, satisfiable, err := job.GetFullNextBuildInputs()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(satisfiable).To(BeTrue())
-
-			persisted := map[string]db.BuildInput{}
-			for _, input := range buildInputs {
-				persisted[input.Name] = input
-			}
+			persisted := schedulerPersistedInputs(job)
 			Expect(persisted).To(HaveLen(2))
 			Expect(persisted["a"].Version).To(Equal(atc.Version{"ref": "v1"}))
 			Expect(persisted["a"].ResourceID).To(Equal(scenario.Resource("resource-a").ID()))
@@ -324,87 +206,181 @@ var _ = Describe("Scheduler", func() {
 			Expect(persisted["b"].FirstOccurrence).To(BeFalse())
 		})
 
-		It("creates a pending build for a first occurrence of a trigger input", func() {
-			fakeAlgorithm.ComputeReturns(db.InputMapping{
-				"a": firstOccurrenceOf("resource-a", atc.Version{"ref": "v1"}),
-				"b": reoccurrenceOf("resource-b", atc.Version{"ref": "v2"}),
-			}, true, false, nil)
+		It("starts and plans the pending build for a first occurrence of a trigger input", func() {
+			fixture := useSchedulerDB()
+			scenario := dbtest.Setup(
+				fixture.Builder.WithTeam("scheduler-team"),
+				fixture.Builder.WithPipeline(schedulerMappingPipeline),
+				fixture.Builder.WithResourceVersions("resource-a", atc.Version{"ref": "v1"}),
+				fixture.Builder.WithResourceVersions("resource-b", atc.Version{"ref": "v2"}),
+			)
+			job := scenario.Job("some-job")
 
-			Expect(schedule(context.Background(), job)).To(Succeed())
-
-			Expect(schedulerPendingBuilds(job)).To(HaveLen(1))
-			Expect(schedulerJobHasNewInputs(job)).To(BeTrue())
-		})
-
-		It("returns the error when creating the pending build fails", func() {
-			fakeAlgorithm.ComputeReturns(db.InputMapping{
-				"a": firstOccurrenceOf("resource-a", atc.Version{"ref": "v1"}),
-			}, true, false, nil)
-
-			err := schedule(context.Background(), ensurePendingBuildFailsJob{Job: job, err: disaster})
-			Expect(err).To(Equal(fmt.Errorf("ensure pending build exists: %w", disaster)))
-		})
-
-		It("marks new inputs without a pending build when no first occurrence triggers", func() {
-			fakeAlgorithm.ComputeReturns(db.InputMapping{
-				"a": reoccurrenceOf("resource-a", atc.Version{"ref": "v1"}),
-				"b": firstOccurrenceOf("resource-b", atc.Version{"ref": "v2"}),
-			}, true, false, nil)
-
-			Expect(schedule(context.Background(), job)).To(Succeed())
+			Expect(schedule(context.Background(), fixture, schedulerJobToSchedule(fixture, job))).To(BeFalse())
 
 			Expect(schedulerPendingBuilds(job)).To(BeEmpty())
 			Expect(schedulerJobHasNewInputs(job)).To(BeTrue())
-		})
 
-		It("returns the error when marking the job as having new inputs fails", func() {
-			fakeAlgorithm.ComputeReturns(db.InputMapping{
-				"b": firstOccurrenceOf("resource-b", atc.Version{"ref": "v2"}),
-			}, true, false, nil)
-
-			err := schedule(context.Background(), setHasNewInputsFailsJob{Job: job, err: disaster})
-			Expect(err).To(Equal(fmt.Errorf("set has new inputs: %w", disaster)))
-		})
-
-		It("does not mark the job again when it already has new inputs", func() {
-			Expect(job.SetHasNewInputs(true)).To(Succeed())
-			Expect(schedulerJobHasNewInputs(job)).To(BeTrue())
-
-			fakeAlgorithm.ComputeReturns(db.InputMapping{
-				"b": firstOccurrenceOf("resource-b", atc.Version{"ref": "v2"}),
-			}, true, false, nil)
-
-			err := schedule(context.Background(), setHasNewInputsFailsJob{Job: job, err: disaster})
+			apiBuilds, _, err := job.BuildsWithTime(db.Page{Limit: 50})
 			Expect(err).NotTo(HaveOccurred())
+			Expect(apiBuilds).To(HaveLen(1))
+			Expect(apiBuilds[0].Status()).To(Equal(db.BuildStatusStarted))
+			Expect(apiBuilds[0].HasPlan()).To(BeTrue())
+
+			persistedBuild, found, err := fixture.BuildFactory.Build(apiBuilds[0].ID())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(persistedBuild.PrivatePlan()).NotTo(Equal(atc.Plan{}))
 		})
 
-		It("clears new inputs when nothing is a first occurrence any more", func() {
+		It("marks a new non-trigger input without creating a build", func() {
+			fixture := useSchedulerDB()
+			scenario := dbtest.Setup(
+				fixture.Builder.WithTeam("scheduler-team"),
+				fixture.Builder.WithPipeline(schedulerMappingPipeline),
+				fixture.Builder.WithResourceVersions("resource-a", atc.Version{"ref": "v1"}),
+				fixture.Builder.WithResourceVersions(
+					"resource-b",
+					atc.Version{"ref": "v1"},
+					atc.Version{"ref": "v2"},
+				),
+			)
+			job := scenario.Job("some-job")
+			historicalBuild := schedulerCompleteInputHistory(fixture, scenario, "some-job", dbtest.JobInputs{
+				{Name: "a", Version: atc.Version{"ref": "v1"}},
+				{Name: "b", Version: atc.Version{"ref": "v1"}},
+			})
+
+			Expect(schedule(context.Background(), fixture, schedulerJobToSchedule(fixture, job))).To(BeFalse())
+
+			persisted := schedulerPersistedInputs(job)
+			Expect(persisted).To(HaveLen(2))
+			Expect(persisted["a"].FirstOccurrence).To(BeFalse())
+			Expect(persisted["b"].Version).To(Equal(atc.Version{"ref": "v2"}))
+			Expect(persisted["b"].FirstOccurrence).To(BeTrue())
+			Expect(schedulerPendingBuilds(job)).To(BeEmpty())
+			Expect(schedulerJobHasNewInputs(job)).To(BeTrue())
+
+			apiBuilds, _, err := job.BuildsWithTime(db.Page{Limit: 50})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(apiBuilds).To(HaveLen(1))
+			Expect(apiBuilds[0].ID()).To(Equal(historicalBuild.ID()))
+		})
+
+		It("clears has-new-inputs when every selected version was used by a completed build", func() {
+			fixture := useSchedulerDB()
+			scenario := dbtest.Setup(
+				fixture.Builder.WithTeam("scheduler-team"),
+				fixture.Builder.WithPipeline(schedulerMappingPipeline),
+				fixture.Builder.WithResourceVersions("resource-a", atc.Version{"ref": "v1"}),
+				fixture.Builder.WithResourceVersions("resource-b", atc.Version{"ref": "v2"}),
+			)
+			job := scenario.Job("some-job")
+			historicalBuild := schedulerCompleteInputHistory(fixture, scenario, "some-job", dbtest.JobInputs{
+				{Name: "a", Version: atc.Version{"ref": "v1"}},
+				{Name: "b", Version: atc.Version{"ref": "v2"}},
+			})
 			Expect(job.SetHasNewInputs(true)).To(Succeed())
 			Expect(schedulerJobHasNewInputs(job)).To(BeTrue())
 
-			fakeAlgorithm.ComputeReturns(db.InputMapping{
-				"a": reoccurrenceOf("resource-a", atc.Version{"ref": "v1"}),
-				"b": reoccurrenceOf("resource-b", atc.Version{"ref": "v2"}),
-			}, true, false, nil)
+			Expect(schedule(context.Background(), fixture, schedulerJobToSchedule(fixture, job))).To(BeFalse())
 
-			Expect(schedule(context.Background(), job)).To(Succeed())
-
+			persisted := schedulerPersistedInputs(job)
+			Expect(persisted).To(HaveLen(2))
+			Expect(persisted["a"].FirstOccurrence).To(BeFalse())
+			Expect(persisted["b"].FirstOccurrence).To(BeFalse())
+			Expect(schedulerPendingBuilds(job)).To(BeEmpty())
 			Expect(schedulerJobHasNewInputs(job)).To(BeFalse())
+
+			apiBuilds, _, err := job.BuildsWithTime(db.Page{Limit: 50})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(apiBuilds).To(HaveLen(1))
+			Expect(apiBuilds[0].ID()).To(Equal(historicalBuild.ID()))
 		})
 
-		It("does not clear new inputs the job never had", func() {
-			fakeAlgorithm.ComputeReturns(db.InputMapping{
-				"a": reoccurrenceOf("resource-a", atc.Version{"ref": "v1"}),
-				"b": reoccurrenceOf("resource-b", atc.Version{"ref": "v2"}),
-			}, true, false, nil)
+		It("persists an unsatisfiable mapping when a resource has no version", func() {
+			fixture := useSchedulerDB()
+			scenario := dbtest.Setup(
+				fixture.Builder.WithTeam("scheduler-team"),
+				fixture.Builder.WithPipeline(schedulerMappingPipeline),
+				fixture.Builder.WithResourceVersions("resource-a", atc.Version{"ref": "v1"}),
+			)
+			job := scenario.Job("some-job")
 
-			err := schedule(context.Background(), setHasNewInputsFailsJob{Job: job, err: disaster})
+			Expect(schedule(context.Background(), fixture, schedulerJobToSchedule(fixture, job))).To(BeFalse())
+
+			buildInputs, resolved, err := job.GetFullNextBuildInputs()
 			Expect(err).NotTo(HaveOccurred())
+			Expect(resolved).To(BeFalse())
+			Expect(buildInputs).To(BeNil())
+
+			persistedInputs, err := job.GetNextBuildInputs()
+			Expect(err).NotTo(HaveOccurred())
+			persisted := map[string]db.BuildInput{}
+			for _, input := range persistedInputs {
+				persisted[input.Name] = input
+			}
+			Expect(persisted).To(HaveLen(2))
+			Expect(persisted["a"].Version).To(Equal(atc.Version{"ref": "v1"}))
+			Expect(persisted["b"].ResolveError).To(Equal(string(db.LatestVersionNotFound)))
+			Expect(schedulerPendingBuilds(job)).To(BeEmpty())
+			Expect(schedulerJobHasNewInputs(job)).To(BeFalse())
+
+			apiBuilds, _, err := job.BuildsWithTime(db.Page{Limit: 50})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(apiBuilds).To(BeEmpty())
+		})
+	})
+
+	Describe("a job that consumes every resource version", func() {
+		It("requests another schedule when two versions remain after its historical input", func() {
+			fixture := useSchedulerDB()
+			config := atc.Config{
+				Resources: atc.ResourceConfigs{
+					{Name: "some-resource", Type: dbtest.BaseResourceType, Source: atc.Source{"some": "source"}},
+				},
+				Jobs: atc.JobConfigs{
+					{
+						Name: "every-job",
+						PlanSequence: []atc.Step{
+							{Config: &atc.GetStep{
+								Name:     "some-input",
+								Resource: "some-resource",
+								Version:  &atc.VersionConfig{Every: true},
+							}},
+						},
+					},
+				},
+			}
+			scenario := dbtest.Setup(
+				fixture.Builder.WithTeam("scheduler-team"),
+				fixture.Builder.WithPipeline(config),
+				fixture.Builder.WithResourceVersions("some-resource", atc.Version{"ref": "v1"}),
+			)
+			job := scenario.Job("every-job")
+			schedulerCompleteInputHistory(fixture, scenario, "every-job", dbtest.JobInputs{
+				{Name: "some-input", Version: atc.Version{"ref": "v1"}},
+			})
+			scenario.Run(fixture.Builder.WithResourceVersions(
+				"some-resource",
+				atc.Version{"ref": "v2"},
+				atc.Version{"ref": "v3"},
+			))
+			schedulerJob := schedulerJobToSchedule(fixture, job)
+			requestedBefore, _ := schedulerJobTimestamps(fixture, job.ID())
+
+			Expect(schedule(context.Background(), fixture, schedulerJob)).To(BeFalse())
+
+			persisted := schedulerPersistedInputs(job)
+			Expect(persisted).To(HaveLen(1))
+			Expect(persisted["some-input"].Version).To(Equal(atc.Version{"ref": "v2"}))
+			requestedAfter, _ := schedulerJobTimestamps(fixture, job.ID())
+			Expect(requestedAfter).To(BeTemporally(">", requestedBefore))
 		})
 	})
 
 	Describe("a job whose trigger inputs carry the span context of their check", func() {
-		It("links the pending build to the scheduler span and follows the triggering check", func() {
+		It("links the created build to the scheduler span and follows the triggering check", func() {
 			exporter := tracetest.NewInMemoryExporter()
 			tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
 			tracing.ConfigureTraceProvider(tp)
@@ -425,18 +401,16 @@ var _ = Describe("Scheduler", func() {
 			scenario.SpanContext = db.NewSpanContext(checkCtxC)
 			scenario.Run(fixture.Builder.WithResourceVersions("resource-c", atc.Version{"ref": "v3"}))
 
-			versions := schedulerVersionsDB(fixture)
 			job := scenario.Job("some-job")
-			fakeAlgorithm.ComputeReturns(db.InputMapping{
-				"a": schedulerInputResult(versions, scenario.Resource("resource-a"), atc.Version{"ref": "v1"}, true),
-				"b": schedulerInputResult(versions, scenario.Resource("resource-b"), atc.Version{"ref": "v2"}, false),
-				"c": schedulerInputResult(versions, scenario.Resource("resource-c"), atc.Version{"ref": "v3"}, true),
-			}, true, false, nil)
-
 			schedulerCtx, _ := tracing.StartSpan(context.Background(), "scheduler.Run", nil)
-			Expect(schedule(schedulerCtx, job)).To(Succeed())
+			Expect(schedule(schedulerCtx, fixture, schedulerJobToSchedule(fixture, job))).To(BeFalse())
 
-			Expect(schedulerPendingBuilds(job)).To(HaveLen(1))
+			Expect(schedulerPendingBuilds(job)).To(BeEmpty())
+			apiBuilds, _, err := job.BuildsWithTime(db.Page{Limit: 50})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(apiBuilds).To(HaveLen(1))
+			Expect(apiBuilds[0].Status()).To(Equal(db.BuildStatusStarted))
+			Expect(apiBuilds[0].HasPlan()).To(BeTrue())
 
 			var pendingBuildSpans []tracetest.SpanStub
 			for _, span := range exporter.GetSpans() {
