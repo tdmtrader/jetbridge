@@ -15,25 +15,32 @@ var _ = Describe("Retry Step", func() {
 		ctx    context.Context
 		cancel func()
 
-		attempt1 *scriptedStep
-		attempt2 *scriptedStep
-		attempt3 *scriptedStep
+		attempt1 stepFunc
+		attempt2 stepFunc
+		attempt3 stepFunc
 
-		state RunState
-
-		step Step
+		state         RunState
+		attemptEvents chan string
 	)
 
 	BeforeEach(func() {
 		ctx, cancel = context.WithCancel(context.Background())
 
-		attempt1 = new(scriptedStep)
-		attempt2 = new(scriptedStep)
-		attempt3 = new(scriptedStep)
+		attemptEvents = make(chan string, 6)
+		attempt1 = stepFunc(func(context.Context, RunState) (bool, error) {
+			attemptEvents <- "attempt-1-started"
+			return false, nil
+		})
+		attempt2 = stepFunc(func(context.Context, RunState) (bool, error) {
+			attemptEvents <- "attempt-2-started"
+			return false, nil
+		})
+		attempt3 = stepFunc(func(context.Context, RunState) (bool, error) {
+			attemptEvents <- "attempt-3-started"
+			return false, nil
+		})
 
 		state = NewRunState(noopStepper, vars.StaticVariables{})
-
-		step = Retry(attempt1, attempt2, attempt3)
 	})
 
 	Describe("Run", func() {
@@ -41,20 +48,22 @@ var _ = Describe("Retry Step", func() {
 		var stepErr error
 
 		JustBeforeEach(func() {
-			stepOk, stepErr = step.Run(ctx, state)
+			stepOk, stepErr = Retry(attempt1, attempt2, attempt3).Run(ctx, state)
 		})
 
 		Context("when attempt 1 succeeds", func() {
 			BeforeEach(func() {
-				attempt1.RunReturns(true, nil)
+				attempt1 = stepFunc(func(context.Context, RunState) (bool, error) {
+					attemptEvents <- "attempt-1-started"
+					return true, nil
+				})
 			})
 
 			It("returns nil having only run the first attempt", func() {
 				Expect(stepErr).ToNot(HaveOccurred())
 
-				Expect(attempt1.RunCallCount()).To(Equal(1))
-				Expect(attempt2.RunCallCount()).To(Equal(0))
-				Expect(attempt3.RunCallCount()).To(Equal(0))
+				Expect(attemptEvents).To(Receive(Equal("attempt-1-started")))
+				Consistently(attemptEvents).ShouldNot(Receive())
 			})
 
 			It("succeeds", func() {
@@ -64,16 +73,18 @@ var _ = Describe("Retry Step", func() {
 
 		Context("when attempt 1 fails, and attempt 2 succeeds", func() {
 			BeforeEach(func() {
-				attempt1.RunReturns(false, nil)
-				attempt2.RunReturns(true, nil)
+				attempt2 = stepFunc(func(context.Context, RunState) (bool, error) {
+					attemptEvents <- "attempt-2-started"
+					return true, nil
+				})
 			})
 
 			It("returns nil having only run the first and second attempts", func() {
 				Expect(stepErr).ToNot(HaveOccurred())
 
-				Expect(attempt1.RunCallCount()).To(Equal(1))
-				Expect(attempt2.RunCallCount()).To(Equal(1))
-				Expect(attempt3.RunCallCount()).To(Equal(0))
+				Expect(attemptEvents).To(Receive(Equal("attempt-1-started")))
+				Expect(attemptEvents).To(Receive(Equal("attempt-2-started")))
+				Consistently(attemptEvents).ShouldNot(Receive())
 			})
 
 			It("succeeds", func() {
@@ -83,16 +94,22 @@ var _ = Describe("Retry Step", func() {
 
 		Context("when attempt 1 errors, and attempt 2 succeeds", func() {
 			BeforeEach(func() {
-				attempt1.RunReturns(false, errors.New("nope"))
-				attempt2.RunReturns(true, nil)
+				attempt1 = stepFunc(func(context.Context, RunState) (bool, error) {
+					attemptEvents <- "attempt-1-started"
+					return false, errors.New("nope")
+				})
+				attempt2 = stepFunc(func(context.Context, RunState) (bool, error) {
+					attemptEvents <- "attempt-2-started"
+					return true, nil
+				})
 			})
 
 			It("returns nil having only run the first and second attempts", func() {
 				Expect(stepErr).ToNot(HaveOccurred())
 
-				Expect(attempt1.RunCallCount()).To(Equal(1))
-				Expect(attempt2.RunCallCount()).To(Equal(1))
-				Expect(attempt3.RunCallCount()).To(Equal(0))
+				Expect(attemptEvents).To(Receive(Equal("attempt-1-started")))
+				Expect(attemptEvents).To(Receive(Equal("attempt-2-started")))
+				Consistently(attemptEvents).ShouldNot(Receive())
 			})
 
 			It("succeeds", func() {
@@ -102,19 +119,23 @@ var _ = Describe("Retry Step", func() {
 
 		Context("when attempt 1 errors, and attempt 2 is interrupted", func() {
 			BeforeEach(func() {
-				attempt1.RunReturns(false, errors.New("nope"))
-				attempt2.RunStub = func(c context.Context, r RunState) (bool, error) {
+				attempt1 = stepFunc(func(context.Context, RunState) (bool, error) {
+					attemptEvents <- "attempt-1-started"
+					return false, errors.New("nope")
+				})
+				attempt2 = stepFunc(func(c context.Context, r RunState) (bool, error) {
+					attemptEvents <- "attempt-2-started"
 					cancel()
 					return false, c.Err()
-				}
+				})
 			})
 
 			It("returns the context error having only run the first and second attempts", func() {
 				Expect(stepErr).To(Equal(context.Canceled))
 
-				Expect(attempt1.RunCallCount()).To(Equal(1))
-				Expect(attempt2.RunCallCount()).To(Equal(1))
-				Expect(attempt3.RunCallCount()).To(Equal(0))
+				Expect(attemptEvents).To(Receive(Equal("attempt-1-started")))
+				Expect(attemptEvents).To(Receive(Equal("attempt-2-started")))
+				Consistently(attemptEvents).ShouldNot(Receive())
 			})
 
 			It("fails", func() {
@@ -124,22 +145,30 @@ var _ = Describe("Retry Step", func() {
 
 		Context("when attempt 1 errors, attempt 2 times out, and attempt 3 succeeds", func() {
 			BeforeEach(func() {
-				attempt1.RunReturns(false, errors.New("nope"))
-				attempt2.RunStub = func(c context.Context, r RunState) (bool, error) {
+				attempt1 = stepFunc(func(context.Context, RunState) (bool, error) {
+					attemptEvents <- "attempt-1-started"
+					return false, errors.New("nope")
+				})
+				attempt2 = stepFunc(func(c context.Context, r RunState) (bool, error) {
+					attemptEvents <- "attempt-2-started"
 					timeout, subCancel := context.WithTimeout(c, 0)
 					defer subCancel()
 					<-timeout.Done()
 					return false, timeout.Err()
-				}
-				attempt3.RunReturns(true, nil)
+				})
+				attempt3 = stepFunc(func(context.Context, RunState) (bool, error) {
+					attemptEvents <- "attempt-3-started"
+					return true, nil
+				})
 			})
 
 			It("returns nil after running all 3 steps", func() {
 				Expect(stepErr).ToNot(HaveOccurred())
 
-				Expect(attempt1.RunCallCount()).To(Equal(1))
-				Expect(attempt2.RunCallCount()).To(Equal(1))
-				Expect(attempt3.RunCallCount()).To(Equal(1))
+				Expect(attemptEvents).To(Receive(Equal("attempt-1-started")))
+				Expect(attemptEvents).To(Receive(Equal("attempt-2-started")))
+				Expect(attemptEvents).To(Receive(Equal("attempt-3-started")))
+				Consistently(attemptEvents).ShouldNot(Receive())
 			})
 
 			It("succeeds", func() {
@@ -149,17 +178,19 @@ var _ = Describe("Retry Step", func() {
 
 		Context("when attempt 1 fails, attempt 2 fails, and attempt 3 succeeds", func() {
 			BeforeEach(func() {
-				attempt1.RunReturns(false, nil)
-				attempt2.RunReturns(false, nil)
-				attempt3.RunReturns(true, nil)
+				attempt3 = stepFunc(func(context.Context, RunState) (bool, error) {
+					attemptEvents <- "attempt-3-started"
+					return true, nil
+				})
 			})
 
 			It("returns nil after running all 3 steps", func() {
 				Expect(stepErr).ToNot(HaveOccurred())
 
-				Expect(attempt1.RunCallCount()).To(Equal(1))
-				Expect(attempt2.RunCallCount()).To(Equal(1))
-				Expect(attempt3.RunCallCount()).To(Equal(1))
+				Expect(attemptEvents).To(Receive(Equal("attempt-1-started")))
+				Expect(attemptEvents).To(Receive(Equal("attempt-2-started")))
+				Expect(attemptEvents).To(Receive(Equal("attempt-3-started")))
+				Consistently(attemptEvents).ShouldNot(Receive())
 			})
 
 			It("succeeds", func() {
@@ -171,17 +202,19 @@ var _ = Describe("Retry Step", func() {
 			disaster := errors.New("nope")
 
 			BeforeEach(func() {
-				attempt1.RunReturns(false, nil)
-				attempt2.RunReturns(false, nil)
-				attempt3.RunReturns(false, disaster)
+				attempt3 = stepFunc(func(context.Context, RunState) (bool, error) {
+					attemptEvents <- "attempt-3-started"
+					return false, disaster
+				})
 			})
 
 			It("returns the error", func() {
 				Expect(stepErr).To(Equal(disaster))
 
-				Expect(attempt1.RunCallCount()).To(Equal(1))
-				Expect(attempt2.RunCallCount()).To(Equal(1))
-				Expect(attempt3.RunCallCount()).To(Equal(1))
+				Expect(attemptEvents).To(Receive(Equal("attempt-1-started")))
+				Expect(attemptEvents).To(Receive(Equal("attempt-2-started")))
+				Expect(attemptEvents).To(Receive(Equal("attempt-3-started")))
+				Consistently(attemptEvents).ShouldNot(Receive())
 			})
 
 			It("fails", func() {
@@ -190,18 +223,13 @@ var _ = Describe("Retry Step", func() {
 		})
 
 		Context("when attempt 1 fails, attempt 2 fails, and attempt 3 fails", func() {
-			BeforeEach(func() {
-				attempt1.RunReturns(false, nil)
-				attempt2.RunReturns(false, nil)
-				attempt3.RunReturns(false, nil)
-			})
-
-			It("returns nil having only run the first and second attempts", func() {
+			It("returns nil after running all three attempts", func() {
 				Expect(stepErr).ToNot(HaveOccurred())
 
-				Expect(attempt1.RunCallCount()).To(Equal(1))
-				Expect(attempt2.RunCallCount()).To(Equal(1))
-				Expect(attempt3.RunCallCount()).To(Equal(1))
+				Expect(attemptEvents).To(Receive(Equal("attempt-1-started")))
+				Expect(attemptEvents).To(Receive(Equal("attempt-2-started")))
+				Expect(attemptEvents).To(Receive(Equal("attempt-3-started")))
+				Consistently(attemptEvents).ShouldNot(Receive())
 			})
 
 			It("fails", func() {

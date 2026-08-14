@@ -15,11 +15,9 @@ var _ = Describe("Try Step", func() {
 		ctx    context.Context
 		cancel func()
 
-		runStep *scriptedStep
+		runStep stepFunc
 
 		state RunState
-
-		step Step
 
 		stepOk  bool
 		stepErr error
@@ -28,15 +26,15 @@ var _ = Describe("Try Step", func() {
 	BeforeEach(func() {
 		ctx, cancel = context.WithCancel(context.Background())
 
-		runStep = new(scriptedStep)
+		runStep = stepFunc(func(context.Context, RunState) (bool, error) {
+			return false, nil
+		})
 
 		state = NewRunState(noopStepper, vars.StaticVariables{})
-
-		step = Try(runStep)
 	})
 
 	JustBeforeEach(func() {
-		stepOk, stepErr = step.Run(ctx, state)
+		stepOk, stepErr = Try(runStep).Run(ctx, state)
 	})
 
 	AfterEach(func() {
@@ -45,7 +43,9 @@ var _ = Describe("Try Step", func() {
 
 	Context("when the inner step fails", func() {
 		BeforeEach(func() {
-			runStep.RunReturns(false, nil)
+			runStep = stepFunc(func(context.Context, RunState) (bool, error) {
+				return false, nil
+			})
 		})
 
 		It("succeeds anyway", func() {
@@ -56,7 +56,9 @@ var _ = Describe("Try Step", func() {
 
 	Context("when interrupted", func() {
 		BeforeEach(func() {
-			runStep.RunReturns(false, context.Canceled)
+			runStep = stepFunc(func(context.Context, RunState) (bool, error) {
+				return false, context.Canceled
+			})
 		})
 
 		It("propagates the error and does not succeed", func() {
@@ -67,7 +69,9 @@ var _ = Describe("Try Step", func() {
 
 	Context("when the inner step returns any other error", func() {
 		BeforeEach(func() {
-			runStep.RunReturns(false, errors.New("some error"))
+			runStep = stepFunc(func(context.Context, RunState) (bool, error) {
+				return false, errors.New("some error")
+			})
 		})
 
 		It("swallows the error", func() {

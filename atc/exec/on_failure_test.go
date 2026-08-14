@@ -18,12 +18,14 @@ var _ = Describe("On Failure Step", func() {
 		ctx    context.Context
 		cancel func()
 
-		step *scriptedStep
-		hook *scriptedStep
+		step stepFunc
+		hook stepFunc
 
-		state exec.RunState
-
-		onFailureStep exec.Step
+		state        exec.RunState
+		events       chan string
+		mainContexts chan context.Context
+		hookContexts chan context.Context
+		hookStates   chan exec.RunState
 
 		stepOk  bool
 		stepErr error
@@ -32,12 +34,23 @@ var _ = Describe("On Failure Step", func() {
 	BeforeEach(func() {
 		ctx, cancel = context.WithCancel(context.Background())
 
-		step = &scriptedStep{}
-		hook = &scriptedStep{}
+		events = make(chan string, 2)
+		mainContexts = make(chan context.Context, 1)
+		hookContexts = make(chan context.Context, 1)
+		hookStates = make(chan exec.RunState, 1)
+		step = stepFunc(func(ctx context.Context, _ exec.RunState) (bool, error) {
+			events <- "main-started"
+			mainContexts <- ctx
+			return false, nil
+		})
+		hook = stepFunc(func(ctx context.Context, state exec.RunState) (bool, error) {
+			events <- "failure-hook-started"
+			hookContexts <- ctx
+			hookStates <- state
+			return true, nil
+		})
 
 		state = exec.NewRunState(noopStepper, vars.StaticVariables{})
-
-		onFailureStep = exec.OnFailure(step, hook)
 	})
 
 	AfterEach(func() {
@@ -45,29 +58,29 @@ var _ = Describe("On Failure Step", func() {
 	})
 
 	JustBeforeEach(func() {
-		stepOk, stepErr = onFailureStep.Run(ctx, state)
+		stepOk, stepErr = exec.OnFailure(step, hook).Run(ctx, state)
 	})
 
 	Context("when the step fails", func() {
 		BeforeEach(func() {
-			step.RunReturns(false, nil)
+			step = stepFunc(func(ctx context.Context, _ exec.RunState) (bool, error) {
+				events <- "main-started"
+				mainContexts <- ctx
+				return false, nil
+			})
 		})
 
 		It("runs the failure hook", func() {
-			Expect(step.RunCallCount()).To(Equal(1))
-			Expect(hook.RunCallCount()).To(Equal(1))
+			Expect(events).To(Receive(Equal("main-started")))
+			Expect(events).To(Receive(Equal("failure-hook-started")))
 		})
 
 		It("runs the hook with the run state", func() {
-			Expect(hook.RunCallCount()).To(Equal(1))
-
-			_, argsState := hook.RunArgsForCall(0)
-			Expect(argsState).To(Equal(state))
+			Expect(hookStates).To(Receive(Equal(state)))
 		})
 
 		It("propagates the context to the hook", func() {
-			runCtx, _ := hook.RunArgsForCall(0)
-			Expect(runCtx).To(Equal(ctx))
+			Expect(hookContexts).To(Receive(Equal(ctx)))
 		})
 
 		It("does not error", func() {
@@ -79,12 +92,16 @@ var _ = Describe("On Failure Step", func() {
 		disaster := errors.New("disaster")
 
 		BeforeEach(func() {
-			step.RunReturns(false, disaster)
+			step = stepFunc(func(ctx context.Context, _ exec.RunState) (bool, error) {
+				events <- "main-started"
+				mainContexts <- ctx
+				return false, disaster
+			})
 		})
 
 		It("does not run the failure hook", func() {
-			Expect(step.RunCallCount()).To(Equal(1))
-			Expect(hook.RunCallCount()).To(Equal(0))
+			Expect(events).To(Receive(Equal("main-started")))
+			Consistently(events).ShouldNot(Receive())
 		})
 
 		It("returns the error", func() {
@@ -94,12 +111,16 @@ var _ = Describe("On Failure Step", func() {
 
 	Context("when the step succeeds", func() {
 		BeforeEach(func() {
-			step.RunReturns(true, nil)
+			step = stepFunc(func(ctx context.Context, _ exec.RunState) (bool, error) {
+				events <- "main-started"
+				mainContexts <- ctx
+				return true, nil
+			})
 		})
 
 		It("does not run the failure hook", func() {
-			Expect(step.RunCallCount()).To(Equal(1))
-			Expect(hook.RunCallCount()).To(Equal(0))
+			Expect(events).To(Receive(Equal("main-started")))
+			Consistently(events).ShouldNot(Receive())
 		})
 
 		It("returns nil", func() {
@@ -108,14 +129,19 @@ var _ = Describe("On Failure Step", func() {
 	})
 
 	It("propagates the context to the step", func() {
-		runCtx, _ := step.RunArgsForCall(0)
-		Expect(runCtx).To(Equal(ctx))
+		Expect(mainContexts).To(Receive(Equal(ctx)))
 	})
 
 	Context("when step fails and hook fails", func() {
 		BeforeEach(func() {
-			step.RunReturns(false, nil)
-			hook.RunReturns(false, nil)
+			step = stepFunc(func(context.Context, exec.RunState) (bool, error) {
+				events <- "main-started"
+				return false, nil
+			})
+			hook = stepFunc(func(context.Context, exec.RunState) (bool, error) {
+				events <- "failure-hook-started"
+				return false, nil
+			})
 		})
 
 		It("fails", func() {
@@ -125,8 +151,14 @@ var _ = Describe("On Failure Step", func() {
 
 	Context("when step fails and hook succeeds", func() {
 		BeforeEach(func() {
-			step.RunReturns(false, nil)
-			hook.RunReturns(true, nil)
+			step = stepFunc(func(context.Context, exec.RunState) (bool, error) {
+				events <- "main-started"
+				return false, nil
+			})
+			hook = stepFunc(func(context.Context, exec.RunState) (bool, error) {
+				events <- "failure-hook-started"
+				return true, nil
+			})
 		})
 
 		It("fails", func() {
@@ -136,7 +168,10 @@ var _ = Describe("On Failure Step", func() {
 
 	Context("when step succeeds", func() {
 		BeforeEach(func() {
-			step.RunReturns(true, nil)
+			step = stepFunc(func(context.Context, exec.RunState) (bool, error) {
+				events <- "main-started"
+				return true, nil
+			})
 		})
 
 		It("succeeds", func() {
@@ -152,8 +187,14 @@ var _ = Describe("On Failure Step", func() {
 			tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spanRecorder))
 			tracing.ConfigureTraceProvider(tp)
 
-			step.RunReturns(false, nil)
-			hook.RunReturns(true, nil)
+			step = stepFunc(func(context.Context, exec.RunState) (bool, error) {
+				events <- "main-started"
+				return false, nil
+			})
+			hook = stepFunc(func(context.Context, exec.RunState) (bool, error) {
+				events <- "failure-hook-started"
+				return true, nil
+			})
 		})
 
 		AfterEach(func() {

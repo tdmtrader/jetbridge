@@ -15,12 +15,11 @@ var _ = Describe("On Abort Step", func() {
 		ctx    context.Context
 		cancel func()
 
-		step *scriptedStep
-		hook *scriptedStep
+		step stepFunc
+		hook stepFunc
 
-		state exec.RunState
-
-		onAbortStep exec.Step
+		state  exec.RunState
+		events chan string
 
 		stepOk  bool
 		stepErr error
@@ -29,12 +28,17 @@ var _ = Describe("On Abort Step", func() {
 	BeforeEach(func() {
 		ctx, cancel = context.WithCancel(context.Background())
 
-		step = &scriptedStep{}
-		hook = &scriptedStep{}
+		events = make(chan string, 2)
+		step = stepFunc(func(context.Context, exec.RunState) (bool, error) {
+			events <- "main-started"
+			return false, nil
+		})
+		hook = stepFunc(func(context.Context, exec.RunState) (bool, error) {
+			events <- "abort-hook-started"
+			return true, nil
+		})
 
 		state = exec.NewRunState(noopStepper, vars.StaticVariables{})
-
-		onAbortStep = exec.OnAbort(step, hook)
 
 		stepOk = false
 		stepErr = nil
@@ -45,23 +49,30 @@ var _ = Describe("On Abort Step", func() {
 	})
 
 	JustBeforeEach(func() {
-		stepOk, stepErr = onAbortStep.Run(ctx, state)
+		stepOk, stepErr = exec.OnAbort(step, hook).Run(ctx, state)
 	})
 
 	Context("when the step is aborted", func() {
 		BeforeEach(func() {
-			step.RunReturns(false, context.Canceled)
+			step = stepFunc(func(context.Context, exec.RunState) (bool, error) {
+				events <- "main-started"
+				return false, context.Canceled
+			})
 		})
 
 		It("runs the abort hook", func() {
 			Expect(stepErr).To(Equal(context.Canceled))
-			Expect(hook.RunCallCount()).To(Equal(1))
+			Expect(events).To(Receive(Equal("main-started")))
+			Expect(events).To(Receive(Equal("abort-hook-started")))
 		})
 	})
 
 	Context("when the step succeeds", func() {
 		BeforeEach(func() {
-			step.RunReturns(true, nil)
+			step = stepFunc(func(context.Context, exec.RunState) (bool, error) {
+				events <- "main-started"
+				return true, nil
+			})
 		})
 
 		It("is successful", func() {
@@ -69,13 +80,17 @@ var _ = Describe("On Abort Step", func() {
 		})
 
 		It("does not run the abort hook", func() {
-			Expect(hook.RunCallCount()).To(Equal(0))
+			Expect(events).To(Receive(Equal("main-started")))
+			Consistently(events).ShouldNot(Receive())
 		})
 	})
 
 	Context("when the step fails", func() {
 		BeforeEach(func() {
-			step.RunReturns(false, nil)
+			step = stepFunc(func(context.Context, exec.RunState) (bool, error) {
+				events <- "main-started"
+				return false, nil
+			})
 		})
 
 		It("is not successful", func() {
@@ -83,8 +98,8 @@ var _ = Describe("On Abort Step", func() {
 		})
 
 		It("does not run the abort hook", func() {
-			Expect(step.RunCallCount()).To(Equal(1))
-			Expect(hook.RunCallCount()).To(Equal(0))
+			Expect(events).To(Receive(Equal("main-started")))
+			Consistently(events).ShouldNot(Receive())
 		})
 	})
 
@@ -92,7 +107,10 @@ var _ = Describe("On Abort Step", func() {
 		disaster := errors.New("disaster")
 
 		BeforeEach(func() {
-			step.RunReturns(false, disaster)
+			step = stepFunc(func(context.Context, exec.RunState) (bool, error) {
+				events <- "main-started"
+				return false, disaster
+			})
 		})
 
 		It("returns the error", func() {
@@ -100,8 +118,8 @@ var _ = Describe("On Abort Step", func() {
 		})
 
 		It("does not run the abort hook", func() {
-			Expect(step.RunCallCount()).To(Equal(1))
-			Expect(hook.RunCallCount()).To(Equal(0))
+			Expect(events).To(Receive(Equal("main-started")))
+			Consistently(events).ShouldNot(Receive())
 		})
 	})
 })

@@ -29,16 +29,10 @@ var noopStepper exec.Stepper = func(atc.Plan) exec.Step {
 	return nil
 }
 
-// scriptedStep is a Step whose behavior the spec writes itself.
-type scriptedStep struct {
-	RunStub func(context.Context, exec.RunState) (bool, error)
-}
+type stepFunc func(context.Context, exec.RunState) (bool, error)
 
-func (s *scriptedStep) Run(ctx context.Context, state exec.RunState) (bool, error) {
-	if s.RunStub == nil {
-		return false, nil
-	}
-	return s.RunStub(ctx, state)
+func (f stepFunc) Run(ctx context.Context, state exec.RunState) (bool, error) {
+	return f(ctx, state)
 }
 
 func taskDelegateBuildEventCount(fixture *EngineDBFixture, build db.Build) int {
@@ -367,8 +361,7 @@ var _ = Describe("TaskDelegate", func() {
 			stepper = func(p atc.Plan) exec.Step {
 				runPlans = append(runPlans, p)
 
-				step := new(scriptedStep)
-				step.RunStub = func(_ context.Context, state exec.RunState) (bool, error) {
+				return stepFunc(func(_ context.Context, state exec.RunState) (bool, error) {
 					if p.Get != nil {
 						source := p.Get.Source
 						params := p.Get.Params
@@ -394,8 +387,7 @@ var _ = Describe("TaskDelegate", func() {
 						})
 					}
 					return true, nil
-				}
-				return step
+				})
 			}
 
 			runState := exec.NewRunState(stepper, nil)
@@ -632,8 +624,7 @@ var _ = Describe("TaskDelegate", func() {
 				var integrationRunPlans []atc.Plan
 				integrationStepper := func(p atc.Plan) exec.Step {
 					integrationRunPlans = append(integrationRunPlans, p)
-					step := new(scriptedStep)
-					step.RunStub = func(_ context.Context, state exec.RunState) (bool, error) {
+					return stepFunc(func(_ context.Context, state exec.RunState) (bool, error) {
 						if p.Check != nil {
 							state.StoreResult(p.ID, atc.Version{"digest": "sha256:e2d4a1f5c8b9"})
 						}
@@ -645,8 +636,7 @@ var _ = Describe("TaskDelegate", func() {
 							})
 						}
 						return true, nil
-					}
-					return step
+					})
 				}
 
 				integrationState := exec.NewRunState(integrationStepper, nil)
@@ -698,8 +688,7 @@ var _ = Describe("TaskDelegate", func() {
 				var integrationRunPlans []atc.Plan
 				integrationStepper := func(p atc.Plan) exec.Step {
 					integrationRunPlans = append(integrationRunPlans, p)
-					step := new(scriptedStep)
-					step.RunStub = func(_ context.Context, state exec.RunState) (bool, error) {
+					return stepFunc(func(_ context.Context, state exec.RunState) (bool, error) {
 						if p.Get != nil {
 							state.ArtifactRepository().RegisterArtifact("image", nil, false)
 							state.StoreResult(p.ID, exec.GetResult{
@@ -708,8 +697,7 @@ var _ = Describe("TaskDelegate", func() {
 							})
 						}
 						return true, nil
-					}
-					return step
+					})
 				}
 
 				integrationState := exec.NewRunState(integrationStepper, nil)
@@ -783,11 +771,9 @@ var _ = Describe("TaskDelegate", func() {
 			saveTaskDelegateVersion(fixture, "registry-image", source, atc.Version{"digest": "sha256:metadata42"})
 
 			noopStepper := func(p atc.Plan) exec.Step {
-				step := new(scriptedStep)
-				step.RunStub = func(_ context.Context, s exec.RunState) (bool, error) {
+				return stepFunc(func(_ context.Context, s exec.RunState) (bool, error) {
 					return true, nil
-				}
-				return step
+				})
 			}
 
 			td, executedPlans := buildTaskDelegate(noopStepper)
@@ -821,8 +807,7 @@ var _ = Describe("TaskDelegate", func() {
 			)
 
 			fallbackStepper := func(p atc.Plan) exec.Step {
-				step := new(scriptedStep)
-				step.RunStub = func(_ context.Context, s exec.RunState) (bool, error) {
+				return stepFunc(func(_ context.Context, s exec.RunState) (bool, error) {
 					if p.Check != nil {
 						s.StoreResult(p.ID, atc.Version{"digest": "sha256:fallback123"})
 					}
@@ -835,8 +820,7 @@ var _ = Describe("TaskDelegate", func() {
 						})
 					}
 					return true, nil
-				}
-				return step
+				})
 			}
 
 			td, executedPlans := buildTaskDelegate(fallbackStepper)
@@ -863,8 +847,7 @@ var _ = Describe("TaskDelegate", func() {
 			)
 
 			fallbackStepper := func(p atc.Plan) exec.Step {
-				step := new(scriptedStep)
-				step.RunStub = func(_ context.Context, s exec.RunState) (bool, error) {
+				return stepFunc(func(_ context.Context, s exec.RunState) (bool, error) {
 					if p.Check != nil {
 						s.StoreResult(p.ID, atc.Version{"digest": "sha256:v1"})
 					}
@@ -874,8 +857,7 @@ var _ = Describe("TaskDelegate", func() {
 						s.StoreResult(p.ID, exec.GetResult{Name: "image", ResourceCache: fallbackCache})
 					}
 					return true, nil
-				}
-				return step
+				})
 			}
 
 			td1, plans1 := buildTaskDelegate(fallbackStepper)
@@ -894,9 +876,7 @@ var _ = Describe("TaskDelegate", func() {
 			)).To(Succeed())
 
 			noopStepper := func(p atc.Plan) exec.Step {
-				step := new(scriptedStep)
-				step.RunStub = func(_ context.Context, s exec.RunState) (bool, error) { return true, nil }
-				return step
+				return stepFunc(func(_ context.Context, s exec.RunState) (bool, error) { return true, nil })
 			}
 
 			td2, plans2 := buildTaskDelegate(noopStepper)
@@ -919,9 +899,7 @@ var _ = Describe("TaskDelegate", func() {
 			saveTaskDelegateVersion(fixture, "registry-image", source, atc.Version{"digest": "sha256:metadata42"})
 
 			noopStepper := func(p atc.Plan) exec.Step {
-				step := new(scriptedStep)
-				step.RunStub = func(_ context.Context, s exec.RunState) (bool, error) { return true, nil }
-				return step
+				return stepFunc(func(_ context.Context, s exec.RunState) (bool, error) { return true, nil })
 			}
 
 			td, _ := buildTaskDelegate(noopStepper)
@@ -944,9 +922,7 @@ var _ = Describe("TaskDelegate", func() {
 			saveTaskDelegateVersion(fixture, "registry-image", source, atc.Version{"digest": "sha256:metadata42"})
 
 			noopStepper := func(p atc.Plan) exec.Step {
-				step := new(scriptedStep)
-				step.RunStub = func(_ context.Context, s exec.RunState) (bool, error) { return true, nil }
-				return step
+				return stepFunc(func(_ context.Context, s exec.RunState) (bool, error) { return true, nil })
 			}
 
 			td, _ := buildTaskDelegate(noopStepper)
@@ -967,9 +943,7 @@ var _ = Describe("TaskDelegate", func() {
 			saveTaskDelegateVersion(fixture, "registry-image", source, atc.Version{"digest": "sha256:metadata42"})
 
 			noopStepper := func(p atc.Plan) exec.Step {
-				step := new(scriptedStep)
-				step.RunStub = func(_ context.Context, s exec.RunState) (bool, error) { return true, nil }
-				return step
+				return stepFunc(func(_ context.Context, s exec.RunState) (bool, error) { return true, nil })
 			}
 
 			td, _ := buildTaskDelegate(noopStepper)
@@ -992,8 +966,7 @@ var _ = Describe("TaskDelegate", func() {
 			)
 
 			fallbackStepper := func(p atc.Plan) exec.Step {
-				step := new(scriptedStep)
-				step.RunStub = func(_ context.Context, s exec.RunState) (bool, error) {
+				return stepFunc(func(_ context.Context, s exec.RunState) (bool, error) {
 					if p.Check != nil {
 						s.StoreResult(p.ID, atc.Version{"digest": "sha256:custom123"})
 					}
@@ -1006,8 +979,7 @@ var _ = Describe("TaskDelegate", func() {
 						})
 					}
 					return true, nil
-				}
-				return step
+				})
 			}
 
 			td, executedPlans := buildTaskDelegate(fallbackStepper)
@@ -1034,8 +1006,7 @@ var _ = Describe("TaskDelegate", func() {
 			imageResolver = nil
 
 			fallbackStepper := func(p atc.Plan) exec.Step {
-				step := new(scriptedStep)
-				step.RunStub = func(_ context.Context, s exec.RunState) (bool, error) {
+				return stepFunc(func(_ context.Context, s exec.RunState) (bool, error) {
 					if p.Check != nil {
 						s.StoreResult(p.ID, atc.Version{"digest": "sha256:dbfail"})
 					}
@@ -1048,8 +1019,7 @@ var _ = Describe("TaskDelegate", func() {
 						})
 					}
 					return true, nil
-				}
-				return step
+				})
 			}
 
 			td, executedPlans := buildTaskDelegate(fallbackStepper)
@@ -1165,8 +1135,7 @@ var _ = Describe("TaskDelegate", func() {
 			)
 
 			fallbackStepper := func(p atc.Plan) exec.Step {
-				step := new(scriptedStep)
-				step.RunStub = func(_ context.Context, s exec.RunState) (bool, error) {
+				return stepFunc(func(_ context.Context, s exec.RunState) (bool, error) {
 					if p.Check != nil {
 						s.StoreResult(p.ID, atc.Version{"digest": "sha256:nofactory"})
 					}
@@ -1179,8 +1148,7 @@ var _ = Describe("TaskDelegate", func() {
 						})
 					}
 					return true, nil
-				}
-				return step
+				})
 			}
 
 			resourceConfigFactory = nil

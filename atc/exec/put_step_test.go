@@ -30,14 +30,6 @@ import (
 	"github.com/concourse/concourse/vars"
 )
 
-// stepFunc adapts a plain function to exec.Step, for substeps a spec scripts
-// itself.
-type stepFunc func(context.Context, exec.RunState) (bool, error)
-
-func (f stepFunc) Run(ctx context.Context, state exec.RunState) (bool, error) {
-	return f(ctx, state)
-}
-
 // imageFetchStepper answers the check and get substeps a delegate's FetchImage
 // runs. The get substep does what the real get step does: register the fetched
 // artifact and store a GetResult under its own plan ID.

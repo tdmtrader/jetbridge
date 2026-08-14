@@ -21,21 +21,21 @@ var _ = Describe("LogErrorStep", func() {
 		ctx    context.Context
 		cancel func()
 
-		fakeStep *scriptedStep
+		runStep stepFunc
 
 		fixture         *execDBFixture
 		build           db.Build
 		delegateFactory BuildStepDelegateFactory
 
 		state RunState
-
-		step Step
 	)
 
 	BeforeEach(func() {
 		ctx, cancel = context.WithCancel(context.Background())
 
-		fakeStep = new(scriptedStep)
+		runStep = stepFunc(func(context.Context, RunState) (bool, error) {
+			return false, nil
+		})
 
 		fixture = useExecDB()
 		_, _, _, build = createExecJobBuild(
@@ -52,7 +52,6 @@ var _ = Describe("LogErrorStep", func() {
 
 		state = NewRunState(noopStepper, vars.StaticVariables{})
 
-		step = LogError(fakeStep, delegateFactory)
 	})
 
 	AfterEach(func() {
@@ -64,12 +63,14 @@ var _ = Describe("LogErrorStep", func() {
 		var runErr error
 
 		JustBeforeEach(func() {
-			runOk, runErr = step.Run(ctx, state)
+			runOk, runErr = LogError(runStep, delegateFactory).Run(ctx, state)
 		})
 
 		Context("when the inner step does not error", func() {
 			BeforeEach(func() {
-				fakeStep.RunReturns(true, nil)
+				runStep = stepFunc(func(context.Context, RunState) (bool, error) {
+					return true, nil
+				})
 			})
 
 			It("returns true", func() {
@@ -87,7 +88,9 @@ var _ = Describe("LogErrorStep", func() {
 
 		Context("when the inner step has failed", func() {
 			BeforeEach(func() {
-				fakeStep.RunReturns(false, nil)
+				runStep = stepFunc(func(context.Context, RunState) (bool, error) {
+					return false, nil
+				})
 			})
 
 			It("returns false", func() {
@@ -107,7 +110,9 @@ var _ = Describe("LogErrorStep", func() {
 			var canceled = fmt.Errorf("wrapped: %w", context.Canceled)
 
 			BeforeEach(func() {
-				fakeStep.RunReturns(false, canceled)
+				runStep = stepFunc(func(context.Context, RunState) (bool, error) {
+					return false, canceled
+				})
 			})
 
 			It("propagates the error", func() {
@@ -123,7 +128,9 @@ var _ = Describe("LogErrorStep", func() {
 			var timedOut = fmt.Errorf("wrapped: %w", context.DeadlineExceeded)
 
 			BeforeEach(func() {
-				fakeStep.RunReturns(false, timedOut)
+				runStep = stepFunc(func(context.Context, RunState) (bool, error) {
+					return false, timedOut
+				})
 			})
 
 			It("propagates the error", func() {
@@ -139,7 +146,9 @@ var _ = Describe("LogErrorStep", func() {
 			disaster := errors.New("disaster")
 
 			BeforeEach(func() {
-				fakeStep.RunReturns(false, disaster)
+				runStep = stepFunc(func(context.Context, RunState) (bool, error) {
+					return false, disaster
+				})
 			})
 
 			It("propagates the error", func() {

@@ -16,11 +16,11 @@ var _ = Describe("Timeout Step", func() {
 		ctx    context.Context
 		cancel func()
 
-		fakeStep *scriptedStep
+		runStep stepFunc
 
-		state RunState
-
-		step Step
+		state        RunState
+		events       chan string
+		stepContexts chan context.Context
 
 		timeoutDuration string
 
@@ -31,7 +31,13 @@ var _ = Describe("Timeout Step", func() {
 	BeforeEach(func() {
 		ctx, cancel = context.WithCancel(context.Background())
 
-		fakeStep = new(scriptedStep)
+		events = make(chan string, 1)
+		stepContexts = make(chan context.Context, 1)
+		runStep = stepFunc(func(ctx context.Context, state RunState) (bool, error) {
+			events <- "step-started"
+			stepContexts <- ctx
+			return false, nil
+		})
 
 		state = NewRunState(noopStepper, vars.StaticVariables{})
 
@@ -39,13 +45,12 @@ var _ = Describe("Timeout Step", func() {
 	})
 
 	JustBeforeEach(func() {
-		step = Timeout(fakeStep, timeoutDuration)
-		stepOk, stepErr = step.Run(ctx, state)
+		stepOk, stepErr = Timeout(runStep, timeoutDuration).Run(ctx, state)
 	})
 
 	Context("when the duration is valid", func() {
 		It("runs the step with a deadline", func() {
-			runCtx, _ := fakeStep.RunArgsForCall(0)
+			runCtx := <-stepContexts
 			deadline, ok := runCtx.Deadline()
 			Expect(ok).To(BeTrue())
 			Expect(deadline).To(BeTemporally("~", time.Now().Add(time.Hour), 10*time.Second))
@@ -56,7 +61,11 @@ var _ = Describe("Timeout Step", func() {
 
 			BeforeEach(func() {
 				someError = errors.New("some error")
-				fakeStep.RunReturns(false, someError)
+				runStep = stepFunc(func(ctx context.Context, state RunState) (bool, error) {
+					events <- "step-started"
+					stepContexts <- ctx
+					return false, someError
+				})
 			})
 
 			It("returns the error", func() {
@@ -67,7 +76,11 @@ var _ = Describe("Timeout Step", func() {
 
 		Context("when the step exceeds the timeout", func() {
 			BeforeEach(func() {
-				fakeStep.RunReturns(true, context.DeadlineExceeded)
+				runStep = stepFunc(func(ctx context.Context, state RunState) (bool, error) {
+					events <- "step-started"
+					stepContexts <- ctx
+					return true, context.DeadlineExceeded
+				})
 			})
 
 			It("returns no error", func() {
@@ -85,7 +98,7 @@ var _ = Describe("Timeout Step", func() {
 			})
 
 			It("forwards the context down", func() {
-				runCtx, _ := fakeStep.RunArgsForCall(0)
+				runCtx := <-stepContexts
 				Expect(runCtx.Err()).To(Equal(context.Canceled))
 			})
 
@@ -96,7 +109,11 @@ var _ = Describe("Timeout Step", func() {
 
 		Context("when the step is successful", func() {
 			BeforeEach(func() {
-				fakeStep.RunReturns(true, nil)
+				runStep = stepFunc(func(ctx context.Context, state RunState) (bool, error) {
+					events <- "step-started"
+					stepContexts <- ctx
+					return true, nil
+				})
 			})
 
 			It("is successful", func() {
@@ -106,7 +123,11 @@ var _ = Describe("Timeout Step", func() {
 
 		Context("when the step fails", func() {
 			BeforeEach(func() {
-				fakeStep.RunReturns(false, nil)
+				runStep = stepFunc(func(ctx context.Context, state RunState) (bool, error) {
+					events <- "step-started"
+					stepContexts <- ctx
+					return false, nil
+				})
 			})
 
 			It("is not successful", func() {
@@ -122,7 +143,7 @@ var _ = Describe("Timeout Step", func() {
 
 		It("errors immediately without running the step", func() {
 			Expect(stepErr).To(HaveOccurred())
-			Expect(fakeStep.RunCallCount()).To(BeZero())
+			Consistently(events).ShouldNot(Receive())
 		})
 	})
 })

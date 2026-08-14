@@ -22,21 +22,21 @@ var _ = Describe("RetryErrorStep", func() {
 		ctx    context.Context
 		cancel func()
 
-		fakeStep *scriptedStep
+		runStep stepFunc
 
 		fixture         *execDBFixture
 		build           db.Build
 		delegateFactory BuildStepDelegateFactory
 
 		state RunState
-
-		step Step
 	)
 
 	BeforeEach(func() {
 		ctx, cancel = context.WithCancel(context.Background())
 
-		fakeStep = new(scriptedStep)
+		runStep = stepFunc(func(context.Context, RunState) (bool, error) {
+			return false, nil
+		})
 		fixture = useExecDB()
 		_, _, _, build = createExecJobBuild(
 			fixture,
@@ -52,7 +52,6 @@ var _ = Describe("RetryErrorStep", func() {
 
 		state = NewRunState(noopStepper, vars.StaticVariables{})
 
-		step = RetryError(fakeStep, delegateFactory)
 	})
 
 	AfterEach(func() {
@@ -64,12 +63,12 @@ var _ = Describe("RetryErrorStep", func() {
 		var runErr error
 
 		JustBeforeEach(func() {
-			runOk, runErr = step.Run(ctx, state)
+			runOk, runErr = RetryError(runStep, delegateFactory).Run(ctx, state)
 		})
 
 		Context("when the inner step does not error", func() {
 			BeforeEach(func() {
-				fakeStep.RunReturns(true, nil)
+				runStep = stepFunc(func(context.Context, RunState) (bool, error) { return true, nil })
 			})
 
 			It("returns nil", func() {
@@ -83,7 +82,9 @@ var _ = Describe("RetryErrorStep", func() {
 
 		Context("when aborted", func() {
 			BeforeEach(func() {
-				fakeStep.RunReturns(false, context.Canceled)
+				runStep = stepFunc(func(context.Context, RunState) (bool, error) {
+					return false, context.Canceled
+				})
 			})
 
 			It("propagates the error", func() {
@@ -94,7 +95,7 @@ var _ = Describe("RetryErrorStep", func() {
 		Context("when url.Error error happened", func() {
 			cause := &url.Error{Op: "error", URL: "err", Err: errors.New("error")}
 			BeforeEach(func() {
-				fakeStep.RunReturns(false, cause)
+				runStep = stepFunc(func(context.Context, RunState) (bool, error) { return false, cause })
 			})
 
 			It("should return retriable", func() {
@@ -109,7 +110,7 @@ var _ = Describe("RetryErrorStep", func() {
 		Context("when net.Error error happened", func() {
 			cause := &net.OpError{Op: "read", Net: "test", Source: nil, Addr: nil, Err: errors.New("test")}
 			BeforeEach(func() {
-				fakeStep.RunReturns(false, cause)
+				runStep = stepFunc(func(context.Context, RunState) (bool, error) { return false, cause })
 			})
 
 			It("should return retriable", func() {
@@ -121,7 +122,7 @@ var _ = Describe("RetryErrorStep", func() {
 			disaster := errors.New("disaster")
 
 			BeforeEach(func() {
-				fakeStep.RunReturns(false, disaster)
+				runStep = stepFunc(func(context.Context, RunState) (bool, error) { return false, disaster })
 			})
 
 			It("propagates the error", func() {
@@ -131,7 +132,7 @@ var _ = Describe("RetryErrorStep", func() {
 
 		Context("when the wrapped step has succeeded", func() {
 			BeforeEach(func() {
-				fakeStep.RunReturns(true, nil)
+				runStep = stepFunc(func(context.Context, RunState) (bool, error) { return true, nil })
 			})
 
 			It("returns true", func() {
@@ -141,7 +142,7 @@ var _ = Describe("RetryErrorStep", func() {
 
 		Context("when the wrapped step has failed", func() {
 			BeforeEach(func() {
-				fakeStep.RunReturns(false, nil)
+				runStep = stepFunc(func(context.Context, RunState) (bool, error) { return false, nil })
 			})
 
 			It("returns true", func() {

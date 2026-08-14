@@ -75,7 +75,7 @@ var _ = Describe("AcrossStep", func() {
 		}
 	)
 
-	stepRun := func(succeeded bool) func(context.Context, exec.RunState) (bool, error) {
+	stepRun := func(succeeded bool) stepFunc {
 		started := started
 		terminate := terminate
 
@@ -111,16 +111,14 @@ var _ = Describe("AcrossStep", func() {
 
 		panics := curCount == stepperPanicOnCount
 
-		s := new(scriptedStep)
 		if panics {
-			s.RunStub = func(_ context.Context, _ exec.RunState) (bool, error) {
+			return stepFunc(func(_ context.Context, _ exec.RunState) (bool, error) {
 				panic("something went wrong")
-			}
-		} else {
-			successful := curCount != stepperFailOnCount
-			s.RunStub = stepRun(successful)
+			})
 		}
-		return s
+
+		successful := curCount != stepperFailOnCount
+		return stepRun(successful)
 	}
 
 	BeforeEach(func() {
@@ -275,16 +273,14 @@ var _ = Describe("AcrossStep", func() {
 		plan.Vars = []atc.AcrossVar{{Var: "var1", Values: []any{"only"}}}
 		step = exec.Across(plan, delegateFactory, stepMetadata)
 		state = exec.NewRunState(func(atc.Plan) exec.Step {
-			childStep := new(scriptedStep)
-			childStep.RunStub = func(_ context.Context, childState exec.RunState) (bool, error) {
+			return stepFunc(func(_ context.Context, childState exec.RunState) (bool, error) {
 				childState.ArtifactRepository().RegisterArtifact(
 					build.ArtifactName("across-output"),
 					runtimetest.NewVolume("across-output"),
 					false,
 				)
 				return true, nil
-			}
-			return childStep
+			})
 		}, vars.StaticVariables{})
 
 		succeeded, err := step.Run(ctx, state)

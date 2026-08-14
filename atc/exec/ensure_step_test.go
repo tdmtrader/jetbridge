@@ -18,12 +18,13 @@ var _ = Describe("Ensure Step", func() {
 		ctx    context.Context
 		cancel func()
 
-		step *scriptedStep
-		hook *scriptedStep
+		step stepFunc
+		hook stepFunc
 
-		state exec.RunState
-
-		ensure exec.Step
+		state        exec.RunState
+		events       chan string
+		stepContexts chan context.Context
+		hookContexts chan context.Context
 
 		stepOk  bool
 		stepErr error
@@ -32,29 +33,36 @@ var _ = Describe("Ensure Step", func() {
 	BeforeEach(func() {
 		ctx, cancel = context.WithCancel(context.Background())
 
-		step = &scriptedStep{}
-		hook = &scriptedStep{}
+		events = make(chan string, 2)
+		stepContexts = make(chan context.Context, 1)
+		hookContexts = make(chan context.Context, 1)
 
-		step.RunStub = func(ctx context.Context, state exec.RunState) (bool, error) {
+		step = stepFunc(func(ctx context.Context, state exec.RunState) (bool, error) {
+			events <- "main-started"
+			stepContexts <- ctx
 			return true, ctx.Err()
-		}
+		})
 
-		hook.RunStub = func(ctx context.Context, state exec.RunState) (bool, error) {
+		hook = stepFunc(func(ctx context.Context, state exec.RunState) (bool, error) {
+			events <- "ensure-hook-started"
+			hookContexts <- ctx
 			return true, ctx.Err()
-		}
+		})
 
 		state = exec.NewRunState(noopStepper, vars.StaticVariables{})
-
-		ensure = exec.Ensure(step, hook)
 	})
 
 	JustBeforeEach(func() {
-		stepOk, stepErr = ensure.Run(ctx, state)
+		stepOk, stepErr = exec.Ensure(step, hook).Run(ctx, state)
 	})
 
 	Context("when the step succeeds", func() {
 		BeforeEach(func() {
-			step.RunReturns(true, nil)
+			step = stepFunc(func(ctx context.Context, state exec.RunState) (bool, error) {
+				events <- "main-started"
+				stepContexts <- ctx
+				return true, nil
+			})
 		})
 
 		It("returns nil", func() {
@@ -62,14 +70,18 @@ var _ = Describe("Ensure Step", func() {
 		})
 
 		It("runs the ensure hook", func() {
-			Expect(step.RunCallCount()).To(Equal(1))
-			Expect(hook.RunCallCount()).To(Equal(1))
+			Expect(events).To(Receive(Equal("main-started")))
+			Expect(events).To(Receive(Equal("ensure-hook-started")))
 		})
 	})
 
 	Context("when the step fails", func() {
 		BeforeEach(func() {
-			step.RunReturns(false, nil)
+			step = stepFunc(func(ctx context.Context, state exec.RunState) (bool, error) {
+				events <- "main-started"
+				stepContexts <- ctx
+				return false, nil
+			})
 		})
 
 		It("returns nil", func() {
@@ -77,8 +89,8 @@ var _ = Describe("Ensure Step", func() {
 		})
 
 		It("runs the ensure hook", func() {
-			Expect(step.RunCallCount()).To(Equal(1))
-			Expect(hook.RunCallCount()).To(Equal(1))
+			Expect(events).To(Receive(Equal("main-started")))
+			Expect(events).To(Receive(Equal("ensure-hook-started")))
 		})
 	})
 
@@ -86,7 +98,11 @@ var _ = Describe("Ensure Step", func() {
 		disaster := errors.New("disaster")
 
 		BeforeEach(func() {
-			step.RunReturns(false, disaster)
+			step = stepFunc(func(ctx context.Context, state exec.RunState) (bool, error) {
+				events <- "main-started"
+				stepContexts <- ctx
+				return false, disaster
+			})
 		})
 
 		It("returns the error", func() {
@@ -95,8 +111,8 @@ var _ = Describe("Ensure Step", func() {
 		})
 
 		It("runs the ensure hook", func() {
-			Expect(step.RunCallCount()).To(Equal(1))
-			Expect(hook.RunCallCount()).To(Equal(1))
+			Expect(events).To(Receive(Equal("main-started")))
+			Expect(events).To(Receive(Equal("ensure-hook-started")))
 		})
 	})
 
@@ -110,23 +126,25 @@ var _ = Describe("Ensure Step", func() {
 		})
 
 		It("cancels the first step and runs the hook (without canceling it)", func() {
-			Expect(step.RunCallCount()).To(Equal(1))
-			Expect(hook.RunCallCount()).To(Equal(1))
+			Expect(events).To(Receive(Equal("main-started")))
+			Expect(events).To(Receive(Equal("ensure-hook-started")))
 
-			stepCtx, _ := step.RunArgsForCall(0)
+			stepCtx := <-stepContexts
 			Expect(stepCtx.Err()).To(Equal(context.Canceled))
 
-			hookCtx, _ := hook.RunArgsForCall(0)
+			hookCtx := <-hookContexts
 			Expect(hookCtx.Err()).ToNot(HaveOccurred())
 		})
 	})
 
 	Context("when the context is canceled during the hook", func() {
 		BeforeEach(func() {
-			hook.RunStub = func(context.Context, exec.RunState) (bool, error) {
+			hook = stepFunc(func(hookCtx context.Context, state exec.RunState) (bool, error) {
+				events <- "ensure-hook-started"
+				hookContexts <- hookCtx
 				cancel()
 				return false, ctx.Err()
-			}
+			})
 		})
 
 		It("returns context.Canceled", func() {
@@ -134,21 +152,21 @@ var _ = Describe("Ensure Step", func() {
 		})
 
 		It("allows canceling the hook if the first step has not been canceled", func() {
-			Expect(step.RunCallCount()).To(Equal(1))
-			Expect(hook.RunCallCount()).To(Equal(1))
+			Expect(events).To(Receive(Equal("main-started")))
+			Expect(events).To(Receive(Equal("ensure-hook-started")))
 
-			stepCtx, _ := step.RunArgsForCall(0)
+			stepCtx := <-stepContexts
 			Expect(stepCtx.Err()).To(Equal(context.Canceled))
 
-			hookCtx, _ := hook.RunArgsForCall(0)
+			hookCtx := <-hookContexts
 			Expect(hookCtx.Err()).To(Equal(context.Canceled))
 		})
 	})
 
 	Context("when both step and hook succeed", func() {
 		BeforeEach(func() {
-			step.RunReturns(true, nil)
-			hook.RunReturns(true, nil)
+			step = stepFunc(func(context.Context, exec.RunState) (bool, error) { return true, nil })
+			hook = stepFunc(func(context.Context, exec.RunState) (bool, error) { return true, nil })
 		})
 
 		It("succeeds", func() {
@@ -158,8 +176,8 @@ var _ = Describe("Ensure Step", func() {
 
 	Context("when step succeeds and hook fails", func() {
 		BeforeEach(func() {
-			step.RunReturns(true, nil)
-			hook.RunReturns(false, nil)
+			step = stepFunc(func(context.Context, exec.RunState) (bool, error) { return true, nil })
+			hook = stepFunc(func(context.Context, exec.RunState) (bool, error) { return false, nil })
 		})
 
 		It("does not succeed", func() {
@@ -169,8 +187,8 @@ var _ = Describe("Ensure Step", func() {
 
 	Context("when step fails and hook succeeds", func() {
 		BeforeEach(func() {
-			step.RunReturns(false, nil)
-			hook.RunReturns(true, nil)
+			step = stepFunc(func(context.Context, exec.RunState) (bool, error) { return false, nil })
+			hook = stepFunc(func(context.Context, exec.RunState) (bool, error) { return true, nil })
 		})
 
 		It("does not succeed", func() {
@@ -178,10 +196,10 @@ var _ = Describe("Ensure Step", func() {
 		})
 	})
 
-	Context("when step succeeds and hook fails", func() {
+	Context("when both step and hook fail", func() {
 		BeforeEach(func() {
-			step.RunReturns(false, nil)
-			hook.RunReturns(false, nil)
+			step = stepFunc(func(context.Context, exec.RunState) (bool, error) { return false, nil })
+			hook = stepFunc(func(context.Context, exec.RunState) (bool, error) { return false, nil })
 		})
 
 		It("does not succeed", func() {
@@ -197,8 +215,8 @@ var _ = Describe("Ensure Step", func() {
 			tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spanRecorder))
 			tracing.ConfigureTraceProvider(tp)
 
-			step.RunReturns(true, nil)
-			hook.RunReturns(true, nil)
+			step = stepFunc(func(context.Context, exec.RunState) (bool, error) { return true, nil })
+			hook = stepFunc(func(context.Context, exec.RunState) (bool, error) { return true, nil })
 		})
 
 		AfterEach(func() {

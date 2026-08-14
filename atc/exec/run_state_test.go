@@ -13,9 +13,11 @@ import (
 
 var _ = Describe("RunState", func() {
 	var (
-		stepper     exec.Stepper
-		steppedPlan atc.Plan
-		fakeStep    *scriptedStep
+		stepper      exec.Stepper
+		runStep      stepFunc
+		steppedPlans chan atc.Plan
+		stepContexts chan context.Context
+		stepStates   chan exec.RunState
 
 		credVars vars.Variables
 
@@ -23,10 +25,17 @@ var _ = Describe("RunState", func() {
 	)
 
 	BeforeEach(func() {
-		fakeStep = new(scriptedStep)
+		steppedPlans = make(chan atc.Plan, 1)
+		stepContexts = make(chan context.Context, 1)
+		stepStates = make(chan exec.RunState, 1)
+		runStep = stepFunc(func(ctx context.Context, state exec.RunState) (bool, error) {
+			stepContexts <- ctx
+			stepStates <- state
+			return true, nil
+		})
 		stepper = func(plan atc.Plan) exec.Step {
-			steppedPlan = plan
-			return fakeStep
+			steppedPlans <- plan
+			return runStep
 		}
 
 		credVars = vars.StaticVariables{"k1": "v1", "k2": "v2", "k3": "v3"}
@@ -51,7 +60,11 @@ var _ = Describe("RunState", func() {
 				},
 			}
 
-			fakeStep.RunReturns(true, nil)
+			runStep = stepFunc(func(ctx context.Context, state exec.RunState) (bool, error) {
+				stepContexts <- ctx
+				stepStates <- state
+				return true, nil
+			})
 		})
 
 		JustBeforeEach(func() {
@@ -59,16 +72,16 @@ var _ = Describe("RunState", func() {
 		})
 
 		It("constructs and runs a step for the plan", func() {
-			Expect(steppedPlan).To(Equal(plan))
-			Expect(fakeStep.RunCallCount()).To(Equal(1))
-			runCtx, runState := fakeStep.RunArgsForCall(0)
-			Expect(runCtx).To(Equal(ctx))
-			Expect(runState).To(Equal(state))
+			Expect(steppedPlans).To(Receive(Equal(plan)))
+			Expect(stepContexts).To(Receive(Equal(ctx)))
+			Expect(stepStates).To(Receive(Equal(state)))
 		})
 
 		Context("when the step succeeds", func() {
 			BeforeEach(func() {
-				fakeStep.RunReturns(true, nil)
+				runStep = stepFunc(func(context.Context, exec.RunState) (bool, error) {
+					return true, nil
+				})
 			})
 
 			It("succeeds", func() {
@@ -78,7 +91,9 @@ var _ = Describe("RunState", func() {
 
 		Context("when the step fails", func() {
 			BeforeEach(func() {
-				fakeStep.RunReturns(false, nil)
+				runStep = stepFunc(func(context.Context, exec.RunState) (bool, error) {
+					return false, nil
+				})
 			})
 
 			It("fails", func() {
@@ -90,7 +105,9 @@ var _ = Describe("RunState", func() {
 			disaster := errors.New("nope")
 
 			BeforeEach(func() {
-				fakeStep.RunReturns(false, disaster)
+				runStep = stepFunc(func(context.Context, exec.RunState) (bool, error) {
+					return false, disaster
+				})
 			})
 
 			It("returns the error", func() {

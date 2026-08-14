@@ -19,12 +19,11 @@ var _ = Describe("On Error Step", func() {
 		ctx    context.Context
 		cancel func()
 
-		step *scriptedStep
-		hook *scriptedStep
+		step stepFunc
+		hook stepFunc
 
-		state exec.RunState
-
-		onErrorStep exec.Step
+		state  exec.RunState
+		events chan string
 
 		stepOk  bool
 		stepErr error
@@ -35,16 +34,21 @@ var _ = Describe("On Error Step", func() {
 	BeforeEach(func() {
 		ctx, cancel = context.WithCancel(context.Background())
 
-		step = &scriptedStep{}
-		hook = &scriptedStep{}
+		events = make(chan string, 2)
+		step = stepFunc(func(context.Context, exec.RunState) (bool, error) {
+			events <- "main-started"
+			return false, nil
+		})
+		hook = stepFunc(func(context.Context, exec.RunState) (bool, error) {
+			events <- "error-hook-started"
+			return true, nil
+		})
 
 		state = exec.NewRunState(noopStepper, vars.StaticVariables{})
 
-		onErrorStep = exec.OnError(step, hook)
-
 		stepErr = nil
 
-		disaster = multierror.Append(disaster, errors.New("disaster"))
+		disaster = multierror.Append(nil, errors.New("disaster"))
 	})
 
 	AfterEach(func() {
@@ -52,37 +56,46 @@ var _ = Describe("On Error Step", func() {
 	})
 
 	JustBeforeEach(func() {
-		stepOk, stepErr = onErrorStep.Run(ctx, state)
+		stepOk, stepErr = exec.OnError(step, hook).Run(ctx, state)
 	})
 
 	Context("when the step errors", func() {
 		BeforeEach(func() {
-			step.RunReturns(false, disaster)
+			step = stepFunc(func(context.Context, exec.RunState) (bool, error) {
+				events <- "main-started"
+				return false, disaster
+			})
 		})
 
 		It("runs the error hook", func() {
 			Expect(stepErr).To(Equal(disaster))
-			Expect(hook.RunCallCount()).To(Equal(1))
-			Expect(step.RunCallCount()).To(Equal(1))
+			Expect(events).To(Receive(Equal("main-started")))
+			Expect(events).To(Receive(Equal("error-hook-started")))
 		})
 	})
 
 	Context("when the step error is retriable", func() {
 		BeforeEach(func() {
 			disaster = multierror.Append(disaster, exec.Retriable{})
-			step.RunReturns(false, disaster)
+			step = stepFunc(func(context.Context, exec.RunState) (bool, error) {
+				events <- "main-started"
+				return false, disaster
+			})
 		})
 
 		It("does not run the error hook", func() {
 			Expect(stepErr).To(Equal(disaster))
-			Expect(hook.RunCallCount()).To(Equal(0))
-			Expect(step.RunCallCount()).To(Equal(1))
+			Expect(events).To(Receive(Equal("main-started")))
+			Consistently(events).ShouldNot(Receive())
 		})
 	})
 
 	Context("when the step succeeds", func() {
 		BeforeEach(func() {
-			step.RunReturns(true, nil)
+			step = stepFunc(func(context.Context, exec.RunState) (bool, error) {
+				events <- "main-started"
+				return true, nil
+			})
 		})
 
 		It("is successful", func() {
@@ -90,13 +103,17 @@ var _ = Describe("On Error Step", func() {
 		})
 
 		It("does not run the error hook", func() {
-			Expect(hook.RunCallCount()).To(Equal(0))
+			Expect(events).To(Receive(Equal("main-started")))
+			Consistently(events).ShouldNot(Receive())
 		})
 	})
 
 	Context("when the step fails", func() {
 		BeforeEach(func() {
-			step.RunReturns(false, nil)
+			step = stepFunc(func(context.Context, exec.RunState) (bool, error) {
+				events <- "main-started"
+				return false, nil
+			})
 		})
 
 		It("is not successful", func() {
@@ -104,8 +121,8 @@ var _ = Describe("On Error Step", func() {
 		})
 
 		It("does not run the error hook", func() {
-			Expect(step.RunCallCount()).To(Equal(1))
-			Expect(hook.RunCallCount()).To(Equal(0))
+			Expect(events).To(Receive(Equal("main-started")))
+			Consistently(events).ShouldNot(Receive())
 		})
 	})
 
@@ -117,8 +134,14 @@ var _ = Describe("On Error Step", func() {
 			tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spanRecorder))
 			tracing.ConfigureTraceProvider(tp)
 
-			step.RunReturns(false, errors.New("step error"))
-			hook.RunReturns(true, nil)
+			step = stepFunc(func(context.Context, exec.RunState) (bool, error) {
+				events <- "main-started"
+				return false, errors.New("step error")
+			})
+			hook = stepFunc(func(context.Context, exec.RunState) (bool, error) {
+				events <- "error-hook-started"
+				return true, nil
+			})
 		})
 
 		AfterEach(func() {
