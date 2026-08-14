@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbtest"
 	. "github.com/concourse/concourse/atc/testhelpers"
@@ -360,6 +361,7 @@ type pipelineDebugDecoyIDs struct {
 type pipelineDebugVersionsFixture struct {
 	Database *realDB
 	State    *pipelineAPIDecoratorState
+	Team     db.Team
 	Expected atc.DebugVersionsDB
 	Decoy    pipelineDebugDecoyIDs
 }
@@ -554,6 +556,7 @@ func persistPipelineDebugVersionsFixture() pipelineDebugVersionsFixture {
 	return pipelineDebugVersionsFixture{
 		Database: database,
 		State:    state,
+		Team:     targetTeam,
 		Expected: expected,
 		Decoy: pipelineDebugDecoyIDs{
 			resourceIDs: []int{decoyResource.ID()},
@@ -940,7 +943,10 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when team is set in user context", func() {
 			BeforeEach(func() {
-				fakeAccess.TeamNamesReturns([]string{"some-team"})
+				unrelatedTeam, err := listingDB.Deps.teamFactory.CreateTeam(atc.Team{Name: "unrelated"})
+				Expect(err).NotTo(HaveOccurred())
+				grantProfile(unrelatedTeam, memberProfile, accessor.ViewerRole)
+				useProfile(memberProfile)
 			})
 
 			It("does not grant visibility to an unrelated team", func() {
@@ -949,6 +955,10 @@ var _ = Describe("Pipelines API", func() {
 		})
 
 		Context("when not authenticated", func() {
+			BeforeEach(func() {
+				useProfile(anonymousProfile)
+			})
+
 			It("returns only public pipelines", func() {
 				expectPipelineResponse(response, pipelines["public-main"], pipelines["public-other"])
 			})
@@ -956,7 +966,8 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.TeamNamesReturns([]string{"main"})
+				grantProfile(listingDB.Main, memberProfile, accessor.ViewerRole)
+				useProfile(memberProfile)
 			})
 
 			It("returns all pipelines of the team + all public pipelines", func() {
@@ -969,7 +980,7 @@ var _ = Describe("Pipelines API", func() {
 
 			Context("user has the Admin privilege", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAdminReturns(true)
+					useProfile(adminProfile)
 				})
 
 				It("user can see all private and public pipelines from all teams", func() {
@@ -1025,7 +1036,8 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when authenticated as requested team", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthorizedReturns(true)
+				grantProfile(listingDB.Main, memberProfile, accessor.ViewerRole)
+				useProfile(memberProfile)
 			})
 
 			It("returns 200 OK", func() {
@@ -1073,8 +1085,11 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when authenticated as another team", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
-				fakeAccess.IsAuthorizedReturns(false)
+				anotherTeam, found, err := listingDB.Deps.teamFactory.FindTeam("another")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(found).To(BeTrue())
+				grantProfile(anotherTeam, memberProfile, accessor.ViewerRole)
+				useProfile(memberProfile)
 			})
 
 			It("returns only team's public pipelines", func() {
@@ -1084,7 +1099,7 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				useProfile(anonymousProfile)
 			})
 
 			It("returns only team's public pipelines", func() {
@@ -1127,7 +1142,7 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				useProfile(anonymousProfile)
 				Expect(detailPipeline.Hide()).To(Succeed())
 			})
 
@@ -1138,8 +1153,8 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when authenticated as requested team", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
-				fakeAccess.IsAuthorizedReturns(true)
+				grantProfile(detailDB.Main, memberProfile, accessor.ViewerRole)
+				useProfile(memberProfile)
 			})
 
 			It("returns 200 ok", func() {
@@ -1170,9 +1185,7 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when authenticated as another team", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
-				fakeAccess.IsAuthorizedReturns(false)
-
+				useProfile(memberProfile)
 			})
 
 			Context("and the pipeline is private", func() {
@@ -1198,7 +1211,7 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when not authenticated at all", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				useProfile(anonymousProfile)
 			})
 
 			Context("and the pipeline is private", func() {
@@ -1226,9 +1239,11 @@ var _ = Describe("Pipelines API", func() {
 	Describe("GET /api/v1/teams/:team_name/pipelines/:pipeline_name/badge", func() {
 		var response *http.Response
 		var (
-			badgeDB       *realDB
-			badgePipeline db.Pipeline
-			teamName      = "some-team"
+			badgeDB         *realDB
+			badgePipeline   db.Pipeline
+			teamName        = "some-team"
+			selectedProfile requestProfile
+			grantRole       string
 		)
 
 		persistBadgePipeline := func(config atc.Config, statuses map[string]db.BuildStatus) {
@@ -1251,20 +1266,22 @@ var _ = Describe("Pipelines API", func() {
 
 		BeforeEach(func() {
 			teamName = "some-team"
+			selectedProfile = anonymousProfile
+			grantRole = ""
 		})
 
 		JustBeforeEach(func() {
 			var err error
+			if grantRole != "" {
+				grantProfile(badgeDB.Main, selectedProfile, grantRole)
+			}
+			useProfile(selectedProfile)
 
 			response, err = client.Get(server.URL + "/api/v1/teams/" + teamName + "/pipelines/some-pipeline/badge")
 			Expect(err).NotTo(HaveOccurred())
 		})
 
 		Context("when not authorized", func() {
-			BeforeEach(func() {
-				fakeAccess.IsAuthorizedReturns(false)
-			})
-
 			Context("and the pipeline is private", func() {
 				BeforeEach(func() {
 					persistBadgePipeline(atc.Config{Jobs: atc.JobConfigs{{Name: "private-job"}}}, nil)
@@ -1272,7 +1289,7 @@ var _ = Describe("Pipelines API", func() {
 
 				Context("when user is authenticated", func() {
 					BeforeEach(func() {
-						fakeAccess.IsAuthenticatedReturns(true)
+						selectedProfile = memberProfile
 					})
 					It("returns 403", func() {
 						Expect(response.StatusCode).To(Equal(http.StatusForbidden))
@@ -1281,7 +1298,7 @@ var _ = Describe("Pipelines API", func() {
 
 				Context("when user is not authenticated", func() {
 					BeforeEach(func() {
-						fakeAccess.IsAuthenticatedReturns(false)
+						selectedProfile = anonymousProfile
 					})
 
 					It("returns 401", func() {
@@ -1304,8 +1321,8 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when authorized", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
-				fakeAccess.IsAuthorizedReturns(true)
+				selectedProfile = memberProfile
+				grantRole = accessor.ViewerRole
 			})
 
 			Context("when the pipeline has no finished builds", func() {
@@ -1512,18 +1529,15 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
+				useProfile(memberProfile)
 			})
 
 			Context("when requester belongs to the team", func() {
-				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(true)
-				})
-
 				Context("when deleting succeeds", func() {
 					BeforeEach(func() {
 						deleteDB = useRealDB()
 						deleteDB.SavePipeline(deleteDB.Main, "a-pipeline-name", atc.Config{Jobs: atc.JobConfigs{{Name: "job"}}})
+						grantProfile(deleteDB.Main, memberProfile, accessor.MemberRole)
 						server = deleteDB.Serve()
 						requestTeam = "main"
 					})
@@ -1542,6 +1556,7 @@ var _ = Describe("Pipelines API", func() {
 						fixture := persistPipelineAPIFaultFixture("a-team", "a-pipeline-name", pipelineAPIFaults{
 							destroyErr: errors.New("disaster!"),
 						})
+						grantProfile(fixture.Team, memberProfile, accessor.MemberRole)
 						server = fixture.Database.Serve()
 					})
 
@@ -1552,10 +1567,6 @@ var _ = Describe("Pipelines API", func() {
 			})
 
 			Context("when requester does not belong to the team", func() {
-				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(false)
-				})
-
 				It("returns 403", func() {
 					Expect(response.StatusCode).To(Equal(http.StatusForbidden))
 				})
@@ -1564,7 +1575,7 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when the user is not logged in", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				useProfile(anonymousProfile)
 			})
 
 			It("returns 401 Unauthorized", func() {
@@ -1597,12 +1608,18 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
+				useProfile(memberProfile)
 			})
 
 			Context("when requester belongs to the team", func() {
+				var apiUserProfile requestProfile
+
 				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(true)
+					apiUserProfile = persistRequestProfile(
+						"api-user-token", "api-user-subject", "api-user-id",
+						"API User", "api-user",
+					)
+					useProfile(apiUserProfile)
 				})
 
 				Context("when pausing the pipeline succeeds", func() {
@@ -1611,9 +1628,9 @@ var _ = Describe("Pipelines API", func() {
 						persistedPipeline = realdb.SavePipeline(realdb.Main, "a-pipeline", atc.Config{
 							Jobs: atc.JobConfigs{{Name: "job"}},
 						})
+						grantProfile(realdb.Main, apiUserProfile, accessor.OperatorRole)
 						server = realdb.Serve()
 						requestTeam = "main"
-						fakeAccess.UserInfoReturns(atc.UserInfo{DisplayUserId: "api-user"})
 					})
 
 					It("returns 200", func() {
@@ -1635,6 +1652,7 @@ var _ = Describe("Pipelines API", func() {
 						fixture := persistPipelineAPIFaultFixture("a-team", "a-pipeline", pipelineAPIFaults{
 							pauseErr: errors.New("welp"),
 						})
+						grantProfile(fixture.Team, apiUserProfile, accessor.OperatorRole)
 						server = fixture.Database.Serve()
 					})
 
@@ -1645,10 +1663,6 @@ var _ = Describe("Pipelines API", func() {
 			})
 
 			Context("when requester does not belong to the team", func() {
-				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(false)
-				})
-
 				It("returns 403", func() {
 					Expect(response.StatusCode).To(Equal(http.StatusForbidden))
 				})
@@ -1657,7 +1671,7 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				useProfile(anonymousProfile)
 			})
 
 			It("returns 401", func() {
@@ -1678,8 +1692,7 @@ var _ = Describe("Pipelines API", func() {
 
 		BeforeEach(func() {
 			requestTeam = "a-team"
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAuthorizedReturns(true)
+			useProfile(memberProfile)
 		})
 
 		JustBeforeEach(func() {
@@ -1701,6 +1714,7 @@ var _ = Describe("Pipelines API", func() {
 					Display: &atc.DisplayConfig{BackgroundImage: "archive.jpg"},
 				}
 				archivedPipeline = archiveDB.SavePipeline(archiveDB.Main, "a-pipeline", archiveConfig)
+				grantProfile(archiveDB.Main, memberProfile, accessor.MemberRole)
 				server = archiveDB.Serve()
 				requestTeam = "main"
 				requestedAt = time.Now()
@@ -1727,6 +1741,7 @@ var _ = Describe("Pipelines API", func() {
 				fixture := persistPipelineAPIFaultFixture("a-team", "a-pipeline", pipelineAPIFaults{
 					archiveErr: errors.New("pq: a db error"),
 				})
+				grantProfile(fixture.Team, memberProfile, accessor.MemberRole)
 				server = fixture.Database.Serve()
 			})
 
@@ -1737,7 +1752,7 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				useProfile(anonymousProfile)
 			})
 
 			It("returns 401", func() {
@@ -1770,18 +1785,15 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
+				useProfile(memberProfile)
 			})
 			Context("when requester belongs to the team", func() {
-				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(true)
-				})
-
 				Context("when unpausing the pipeline succeeds", func() {
 					BeforeEach(func() {
 						unpauseDB = useRealDB()
 						unpausedPipeline = unpauseDB.SavePipeline(unpauseDB.Main, "a-pipeline", atc.Config{Jobs: atc.JobConfigs{{Name: "job"}}})
 						Expect(unpausedPipeline.Pause("fixture")).To(Succeed())
+						grantProfile(unpauseDB.Main, memberProfile, accessor.OperatorRole)
 						server = unpauseDB.Serve()
 						requestTeam = "main"
 					})
@@ -1805,6 +1817,7 @@ var _ = Describe("Pipelines API", func() {
 						fixture := persistPipelineAPIFaultFixture("a-team", "a-pipeline", pipelineAPIFaults{
 							unpauseErr: errors.New("welp"),
 						})
+						grantProfile(fixture.Team, memberProfile, accessor.OperatorRole)
 						server = fixture.Database.Serve()
 					})
 
@@ -1815,10 +1828,6 @@ var _ = Describe("Pipelines API", func() {
 			})
 
 			Context("when requester does not belong to the team", func() {
-				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(false)
-				})
-
 				It("returns 403", func() {
 					Expect(response.StatusCode).To(Equal(http.StatusForbidden))
 				})
@@ -1827,7 +1836,7 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				useProfile(anonymousProfile)
 			})
 
 			It("returns 401 Unauthorized", func() {
@@ -1860,18 +1869,15 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
+				useProfile(memberProfile)
 			})
 
 			Context("when requester belongs to the team", func() {
-				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(true)
-				})
-
 				Context("when exposing the pipeline succeeds", func() {
 					BeforeEach(func() {
 						exposeDB = useRealDB()
 						exposedPipeline = exposeDB.SavePipeline(exposeDB.Main, "a-pipeline", atc.Config{Jobs: atc.JobConfigs{{Name: "job"}}})
+						grantProfile(exposeDB.Main, memberProfile, accessor.MemberRole)
 						server = exposeDB.Serve()
 						requestTeam = "main"
 					})
@@ -1893,6 +1899,7 @@ var _ = Describe("Pipelines API", func() {
 						fixture := persistPipelineAPIFaultFixture("a-team", "a-pipeline", pipelineAPIFaults{
 							exposeErr: errors.New("welp"),
 						})
+						grantProfile(fixture.Team, memberProfile, accessor.MemberRole)
 						server = fixture.Database.Serve()
 					})
 
@@ -1903,10 +1910,6 @@ var _ = Describe("Pipelines API", func() {
 			})
 
 			Context("when requester does not belong to the team", func() {
-				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(false)
-				})
-
 				It("returns 403", func() {
 					Expect(response.StatusCode).To(Equal(http.StatusForbidden))
 				})
@@ -1915,7 +1918,7 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				useProfile(anonymousProfile)
 			})
 
 			It("returns 401 Unauthorized", func() {
@@ -1948,18 +1951,15 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
+				useProfile(memberProfile)
 			})
 			Context("when requester belongs to the team", func() {
-				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(true)
-				})
-
 				Context("when hiding the pipeline succeeds", func() {
 					BeforeEach(func() {
 						hideDB = useRealDB()
 						hiddenPipeline = hideDB.SavePipeline(hideDB.Main, "a-pipeline", atc.Config{Jobs: atc.JobConfigs{{Name: "job"}}})
 						Expect(hiddenPipeline.Expose()).To(Succeed())
+						grantProfile(hideDB.Main, memberProfile, accessor.MemberRole)
 						server = hideDB.Serve()
 						requestTeam = "main"
 					})
@@ -1981,6 +1981,7 @@ var _ = Describe("Pipelines API", func() {
 						fixture := persistPipelineAPIFaultFixture("a-team", "a-pipeline", pipelineAPIFaults{
 							hideErr: errors.New("welp"),
 						})
+						grantProfile(fixture.Team, memberProfile, accessor.MemberRole)
 						server = fixture.Database.Serve()
 					})
 
@@ -1991,10 +1992,6 @@ var _ = Describe("Pipelines API", func() {
 			})
 
 			Context("when requester does not belong to the team", func() {
-				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(false)
-				})
-
 				It("returns 403 Forbidden", func() {
 					Expect(response.StatusCode).To(Equal(http.StatusForbidden))
 				})
@@ -2003,7 +2000,7 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when not authorized", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				useProfile(anonymousProfile)
 			})
 
 			It("returns 401 Unauthorized", func() {
@@ -2046,20 +2043,17 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
+				useProfile(memberProfile)
 			})
 
 			Context("when requester belongs to the team", func() {
-				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(true)
-				})
-
 				Context("when ordering the pipelines succeeds", func() {
 					BeforeEach(func() {
 						orderingDB = useRealDB()
 						var err error
 						orderingTeam, err = orderingDB.Deps.teamFactory.CreateTeam(atc.Team{Name: "a-team"})
 						Expect(err).NotTo(HaveOccurred())
+						grantProfile(orderingTeam, memberProfile, accessor.MemberRole)
 						for _, name := range []string{
 							"just-kidding",
 							"a-pipeline",
@@ -2106,6 +2100,7 @@ var _ = Describe("Pipelines API", func() {
 						fixture := persistPipelineAPIFaultFixture("a-team", "", pipelineAPIFaults{
 							orderPipelinesErr: db.ErrPipelineNotFound{Name: "a-pipeline"},
 						})
+						grantProfile(fixture.Team, memberProfile, accessor.MemberRole)
 						for _, name := range pipelineNames {
 							fixture.Database.SavePipeline(fixture.Team, name, atc.Config{Jobs: atc.JobConfigs{{Name: "job"}}})
 						}
@@ -2123,6 +2118,7 @@ var _ = Describe("Pipelines API", func() {
 						fixture := persistPipelineAPIFaultFixture("a-team", "", pipelineAPIFaults{
 							orderPipelinesErr: errors.New("welp"),
 						})
+						grantProfile(fixture.Team, memberProfile, accessor.MemberRole)
 						for _, name := range pipelineNames {
 							fixture.Database.SavePipeline(fixture.Team, name, atc.Config{Jobs: atc.JobConfigs{{Name: "job"}}})
 						}
@@ -2136,10 +2132,6 @@ var _ = Describe("Pipelines API", func() {
 			})
 
 			Context("when requester does not belong to the team", func() {
-				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(false)
-				})
-
 				It("returns 403", func() {
 					Expect(response.StatusCode).To(Equal(http.StatusForbidden))
 				})
@@ -2148,7 +2140,7 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				useProfile(anonymousProfile)
 			})
 
 			It("returns 401 Unauthorized", func() {
@@ -2189,20 +2181,17 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
+				useProfile(memberProfile)
 			})
 
 			Context("when requester belongs to the team", func() {
-				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(true)
-				})
-
 				Context("when ordering the pipelines succeeds", func() {
 					BeforeEach(func() {
 						withinDB = useRealDB()
 						var err error
 						withinTeam, err = withinDB.Deps.teamFactory.CreateTeam(atc.Team{Name: "a-team"})
 						Expect(err).NotTo(HaveOccurred())
+						grantProfile(withinTeam, memberProfile, accessor.MemberRole)
 						for _, vars := range []atc.InstanceVars{{"branch": "test-2"}, nil, {"branch": "test"}} {
 							_, _, err := withinTeam.SavePipeline(atc.PipelineRef{Name: "a-pipeline", InstanceVars: vars}, atc.Config{Jobs: atc.JobConfigs{{Name: "job"}}}, db.ConfigVersion(0), false)
 							Expect(err).NotTo(HaveOccurred())
@@ -2236,6 +2225,7 @@ var _ = Describe("Pipelines API", func() {
 						fixture := persistPipelineAPIFaultFixture("a-team", "", pipelineAPIFaults{
 							orderPipelinesWithinGroupErr: db.ErrPipelineNotFound{Name: "a-pipeline"},
 						})
+						grantProfile(fixture.Team, memberProfile, accessor.MemberRole)
 						for _, vars := range []atc.InstanceVars{{"branch": "test-2"}, nil, {"branch": "test"}} {
 							_, _, err := fixture.Team.SavePipeline(atc.PipelineRef{Name: "a-pipeline", InstanceVars: vars}, atc.Config{Jobs: atc.JobConfigs{{Name: "job"}}}, db.ConfigVersion(0), false)
 							Expect(err).NotTo(HaveOccurred())
@@ -2254,6 +2244,7 @@ var _ = Describe("Pipelines API", func() {
 						fixture := persistPipelineAPIFaultFixture("a-team", "", pipelineAPIFaults{
 							orderPipelinesWithinGroupErr: errors.New("welp"),
 						})
+						grantProfile(fixture.Team, memberProfile, accessor.MemberRole)
 						for _, vars := range []atc.InstanceVars{{"branch": "test-2"}, nil, {"branch": "test"}} {
 							_, _, err := fixture.Team.SavePipeline(atc.PipelineRef{Name: "a-pipeline", InstanceVars: vars}, atc.Config{Jobs: atc.JobConfigs{{Name: "job"}}}, db.ConfigVersion(0), false)
 							Expect(err).NotTo(HaveOccurred())
@@ -2268,10 +2259,6 @@ var _ = Describe("Pipelines API", func() {
 			})
 
 			Context("when requester does not belong to the team", func() {
-				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(false)
-				})
-
 				It("returns 403", func() {
 					Expect(response.StatusCode).To(Equal(http.StatusForbidden))
 				})
@@ -2280,7 +2267,7 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				useProfile(anonymousProfile)
 			})
 
 			It("returns 401 Unauthorized", func() {
@@ -2304,8 +2291,7 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
-				fakeAccess.IsAuthorizedReturns(true)
+				useProfile(memberProfile)
 			})
 
 			Context("when getting the debug versions db works", func() {
@@ -2313,6 +2299,7 @@ var _ = Describe("Pipelines API", func() {
 
 				BeforeEach(func() {
 					fixture = persistPipelineDebugVersionsFixture()
+					grantProfile(fixture.Team, memberProfile, accessor.ViewerRole)
 					server = fixture.Database.Serve()
 				})
 
@@ -2361,6 +2348,7 @@ var _ = Describe("Pipelines API", func() {
 					fixture = persistPipelineAPIFaultFixture("a-team", "a-pipeline", pipelineAPIFaults{
 						loadDebugVersionsDBErr: errors.New("nope"),
 					})
+					grantProfile(fixture.Team, memberProfile, accessor.ViewerRole)
 					server = fixture.Database.Serve()
 				})
 
@@ -2380,7 +2368,7 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				useProfile(anonymousProfile)
 			})
 
 			It("returns 401 Unauthorized", func() {
@@ -2415,19 +2403,16 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
+				useProfile(memberProfile)
 			})
 			Context("when authorized", func() {
-				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(true)
-				})
-
 				Context("when renaming succeeds", func() {
 					BeforeEach(func() {
 						renameDB = useRealDB()
 						var err error
 						renameTeam, err = renameDB.Deps.teamFactory.CreateTeam(atc.Team{Name: "a-team"})
 						Expect(err).NotTo(HaveOccurred())
+						grantProfile(renameTeam, memberProfile, accessor.MemberRole)
 						renameDB.SavePipeline(renameTeam, "a-pipeline", atc.Config{Jobs: atc.JobConfigs{{Name: "job"}}})
 						server = renameDB.Serve()
 					})
@@ -2450,6 +2435,7 @@ var _ = Describe("Pipelines API", func() {
 							renamePipelineOverride: true,
 							renamePipelineFound:    false,
 						})
+						grantProfile(fixture.Team, memberProfile, accessor.MemberRole)
 						server = fixture.Database.Serve()
 					})
 
@@ -2465,6 +2451,7 @@ var _ = Describe("Pipelines API", func() {
 							renamePipelineFound:    false,
 							renamePipelineErr:      errors.New("whoops"),
 						})
+						grantProfile(fixture.Team, memberProfile, accessor.MemberRole)
 						server = fixture.Database.Serve()
 					})
 
@@ -2479,6 +2466,7 @@ var _ = Describe("Pipelines API", func() {
 						var err error
 						renameTeam, err = renameDB.Deps.teamFactory.CreateTeam(atc.Team{Name: "a-team"})
 						Expect(err).NotTo(HaveOccurred())
+						grantProfile(renameTeam, memberProfile, accessor.MemberRole)
 						renameDB.SavePipeline(renameTeam, "a-pipeline", atc.Config{Jobs: atc.JobConfigs{{Name: "job"}}})
 						server = renameDB.Serve()
 					})
@@ -2523,10 +2511,6 @@ var _ = Describe("Pipelines API", func() {
 			})
 
 			Context("when requester does not belong to the team", func() {
-				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(false)
-				})
-
 				It("returns 403 Forbidden", func() {
 					Expect(response.StatusCode).To(Equal(http.StatusForbidden))
 				})
@@ -2535,7 +2519,7 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				useProfile(anonymousProfile)
 			})
 
 			It("returns 401 Unauthorized", func() {
@@ -2546,14 +2530,15 @@ var _ = Describe("Pipelines API", func() {
 
 	Describe("GET /api/v1/teams/:team_name/pipelines/:pipeline_name/builds", func() {
 		var (
-			response     *http.Response
-			queryParams  string
-			requestTeam  = "some-team"
-			requestPipe  = "some-pipeline"
-			listDB       *realDB
-			listPipeline db.Pipeline
-			listBuild1   db.Build
-			listBuild2   db.Build
+			response        *http.Response
+			queryParams     string
+			requestTeam     = "some-team"
+			requestPipe     = "some-pipeline"
+			listDB          *realDB
+			listPipeline    db.Pipeline
+			listBuild1      db.Build
+			listBuild2      db.Build
+			grantListAccess bool
 		)
 
 		persistPipelineWithBuilds := func(pipelineRef atc.PipelineRef, count int) (db.Pipeline, []db.Build) {
@@ -2567,6 +2552,9 @@ var _ = Describe("Pipelines API", func() {
 				false,
 			)
 			Expect(err).NotTo(HaveOccurred())
+			if grantListAccess {
+				grantProfile(listDB.Main, memberProfile, accessor.ViewerRole)
+			}
 			job, found, err := pipeline.Job("some-job")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(found).To(BeTrue())
@@ -2595,6 +2583,7 @@ var _ = Describe("Pipelines API", func() {
 			requestTeam = "some-team"
 			requestPipe = "some-pipeline"
 			queryParams = ""
+			grantListAccess = false
 		})
 
 		JustBeforeEach(func() {
@@ -2606,7 +2595,7 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				useProfile(anonymousProfile)
 			})
 
 			Context("and the pipeline is private", func() {
@@ -2633,8 +2622,8 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when authorized", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
-				fakeAccess.IsAuthorizedReturns(true)
+				grantListAccess = true
+				useProfile(memberProfile)
 			})
 
 			Context("when no params are passed", func() {
@@ -2828,6 +2817,7 @@ var _ = Describe("Pipelines API", func() {
 					fixture := persistPipelineAPIFaultFixture("some-team", "some-pipeline", pipelineAPIFaults{
 						buildsErr: errors.New("oh no!"),
 					})
+					grantProfile(fixture.Team, memberProfile, accessor.ViewerRole)
 					server = fixture.Database.Serve()
 				})
 
@@ -2876,7 +2866,7 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				useProfile(anonymousProfile)
 				postDB = useRealDB()
 				postPipeline = postDB.SavePipeline(postDB.Main, "a-pipeline", atc.Config{Jobs: atc.JobConfigs{{Name: "job"}}})
 				server = postDB.Serve()
@@ -2893,12 +2883,11 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
+				useProfile(memberProfile)
 			})
 
 			Context("when not authorized", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(false)
 					postDB = useRealDB()
 					postPipeline = postDB.SavePipeline(postDB.Main, "a-pipeline", atc.Config{Jobs: atc.JobConfigs{{Name: "job"}}})
 					server = postDB.Serve()
@@ -2914,15 +2903,12 @@ var _ = Describe("Pipelines API", func() {
 			})
 
 			Context("when authorized", func() {
-				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(true)
-				})
-
 				Context("when creating a started build fails", func() {
 					BeforeEach(func() {
 						fixture := persistPipelineAPIFaultFixture("a-team", "a-pipeline", pipelineAPIFaults{
 							createStartedBuildErr: errors.New("oh no!"),
 						})
+						grantProfile(fixture.Team, memberProfile, accessor.MemberRole)
 						server = fixture.Database.Serve()
 					})
 
@@ -2935,6 +2921,7 @@ var _ = Describe("Pipelines API", func() {
 					BeforeEach(func() {
 						postDB = useRealDB()
 						postPipeline = postDB.SavePipeline(postDB.Main, "a-pipeline", atc.Config{Jobs: atc.JobConfigs{{Name: "job"}}})
+						grantProfile(postDB.Main, memberProfile, accessor.MemberRole)
 						server = postDB.Serve()
 						postTeam = "main"
 					})
