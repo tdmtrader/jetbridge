@@ -46,7 +46,7 @@ var _ = Describe("TeamScopedHandlerFactory", func() {
 
 		handler = accessor.NewHandler(
 			logger,
-			auditedAction,
+			atc.GetTeam,
 			innerHandler,
 			fakeAccessor,
 			newAuditor(),
@@ -93,7 +93,7 @@ var _ = Describe("TeamScopedHandlerFactory", func() {
 			Expect(doomed.Close()).To(Succeed())
 
 			handler = accessor.NewHandler(
-				logger, auditedAction,
+				logger, atc.GetTeam,
 				api.NewTeamScopedHandlerFactory(logger, doomedFactory).HandlerFor(delegate.GetHandler),
 				fakeAccessor, newAuditor(), map[string]string{},
 			)

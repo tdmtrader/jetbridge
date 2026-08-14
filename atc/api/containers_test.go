@@ -924,8 +924,7 @@ var _ = Describe("Containers API", func() {
 			wsURL.Scheme = "ws"
 			wsURL.Path = "/api/v1/teams/a-team/containers/" + handle + "/hijack"
 
-			dialer := websocket.Dialer{}
-			conn, response, err = dialer.Dial(wsURL.String(), nil)
+			conn, response, err = dialWebsocket(wsURL.String())
 			if conn != nil {
 				resourceCleanup.addCloser(conn)
 			}

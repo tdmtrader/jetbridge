@@ -13,12 +13,12 @@ import (
 	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagertest"
 
-	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api"
 	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/api/accessor/accessorfakes"
 	"github.com/concourse/concourse/atc/api/auth"
 	"github.com/concourse/concourse/atc/api/containerserver"
+	"github.com/concourse/concourse/atc/api/infoserver"
 	"github.com/concourse/concourse/atc/api/policychecker"
 	"github.com/concourse/concourse/atc/auditor"
 	"github.com/concourse/concourse/atc/creds"
@@ -27,6 +27,7 @@ import (
 	"github.com/concourse/concourse/atc/policy"
 	"github.com/concourse/concourse/atc/worker"
 	"github.com/concourse/concourse/atc/wrappa"
+	"github.com/concourse/concourse/skymarshal/skycmd"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -59,6 +60,8 @@ var (
 
 	server *httptest.Server
 	client *http.Client
+
+	apiProfileTransport *profileTransport
 )
 
 type fakeEventHandlerFactory struct {
@@ -156,21 +159,22 @@ var _ = BeforeEach(func() {
 
 	isTLSEnabled = false
 
-	server = newAPIServer(apiDBDeps{})
+	postgresRunner.Truncate()
+	apiDB = openRealDB()
+	createRequestProfiles()
 
-	client = &http.Client{
-		Transport: &http.Transport{},
-	}
+	apiProfileTransport = &profileTransport{base: &http.Transport{}}
+	useProfile(anonymousProfile)
+	client = &http.Client{Transport: apiProfileTransport}
+
+	server = newAPIServer(apiDB.Deps)
+	rootServer := server
+	DeferCleanup(rootServer.Close)
 })
 
 // apiDBDeps is every database-backed collaborator the API handler is built
-// from. A Describe that exercises one passes real factories -- see useRealDB in
-// real_db_test.go. The suite default leaves them all nil, which is safe because
-// the only endpoints reached without useRealDB (info, cli, log level) never
-// touch the database.
-//
-// Collecting them in a struct is what lets a single Describe swap one out
-// without disturbing the rest of the package.
+// from. The root server receives the full real fixture; individual Describes
+// can override one dependency without making the others nil.
 type apiDBDeps struct {
 	teamFactory           db.TeamFactory
 	pipelineFactory       db.PipelineFactory
@@ -183,45 +187,84 @@ type apiDBDeps struct {
 	checkFactory          db.CheckFactory
 	resourceConfigFactory db.ResourceConfigFactory
 	userFactory           db.UserFactory
+	accessTokenFactory    db.AccessTokenFactory
+	dbPinger              infoserver.DBPinger
 
 	wall              db.Wall
 	signingKeyFactory db.SigningKeyFactory
 }
 
-// auditedAction is the action the accessor handler labels every request with.
-// Production labels each route with its own action; here one handler fronts
-// the whole API, so it has to be an action the auditor routes -- the auditor
-// panics on one it does not know -- and a system action is the category the
-// audit flag below turns on.
-const auditedAction = atc.GetInfo
-
-// newAuditor returns the auditor production wires in, with the one category
-// auditedAction falls into switched on so that Audit actually logs.
-func newAuditor() auditor.Auditor {
-	return auditingACopy{
-		Auditor: auditor.NewAuditor(false, false, false, false, false, true, false, false, false, logger),
+func (base apiDBDeps) withOverrides(overrides apiDBDeps) apiDBDeps {
+	if overrides.teamFactory != nil {
+		base.teamFactory = overrides.teamFactory
 	}
+	if overrides.pipelineFactory != nil {
+		base.pipelineFactory = overrides.pipelineFactory
+	}
+	if overrides.jobFactory != nil {
+		base.jobFactory = overrides.jobFactory
+	}
+	if overrides.resourceFactory != nil {
+		base.resourceFactory = overrides.resourceFactory
+	}
+	if overrides.workerFactory != nil {
+		base.workerFactory = overrides.workerFactory
+	}
+	if overrides.workerTeamFactory != nil {
+		base.workerTeamFactory = overrides.workerTeamFactory
+	}
+	if overrides.volumeRepository != nil {
+		base.volumeRepository = overrides.volumeRepository
+	}
+	if overrides.buildFactory != nil {
+		base.buildFactory = overrides.buildFactory
+	}
+	if overrides.checkFactory != nil {
+		base.checkFactory = overrides.checkFactory
+	}
+	if overrides.resourceConfigFactory != nil {
+		base.resourceConfigFactory = overrides.resourceConfigFactory
+	}
+	if overrides.userFactory != nil {
+		base.userFactory = overrides.userFactory
+	}
+	if overrides.accessTokenFactory != nil {
+		base.accessTokenFactory = overrides.accessTokenFactory
+	}
+	if overrides.dbPinger != nil {
+		base.dbPinger = overrides.dbPinger
+	}
+	if overrides.wall != nil {
+		base.wall = overrides.wall
+	}
+	if overrides.signingKeyFactory != nil {
+		base.signingKeyFactory = overrides.signingKeyFactory
+	}
+	return base
 }
 
-// auditingACopy hands the auditor its own copy of the request. Auditing parses
-// the request form and net/http caches that parse; production audits from
-// inside the router, after the router has appended the route's parameters to
-// the query, while the accessor handler here fronts the router. Auditing the
-// original would freeze a parameterless parse that every routed handler would
-// then read `:build_id` and friends out of.
-type auditingACopy struct {
-	auditor.Auditor
-}
-
-func (a auditingACopy) Audit(action string, userName string, r *http.Request) {
-	a.Auditor.Audit(action, userName, r.Clone(r.Context()))
+// newAuditor returns the same concrete route auditor production wires in.
+func newAuditor() auditor.Auditor {
+	return auditor.NewAuditor(false, false, false, false, false, true, false, false, false, logger)
 }
 
 // newAPIServer builds the full API handler over deps and serves it. The
-// accessor, policy checker and event handler stay fake: none of them is a
-// database seam.
+// access wrapper resolves real persisted bearer tokens and team roles. The
+// policy checker and event handler remain deterministic suite fixtures.
 func newAPIServer(deps apiDBDeps) *httptest.Server {
 	GinkgoHelper()
+	Expect(apiDB).NotTo(BeNil())
+	deps = apiDB.Deps.withOverrides(deps)
+
+	displayID, err := skycmd.NewSkyDisplayUserIdGenerator(map[string]string{})
+	Expect(err).NotTo(HaveOccurred())
+	accessFactory := accessor.NewAccessFactory(
+		accessor.NewVerifier(deps.accessTokenFactory, []string{"api-test"}),
+		deps.teamFactory,
+		"sub",
+		[]string{"api-system"},
+		displayID,
+	)
 
 	checkPipelineAccessHandlerFactory := auth.NewCheckPipelineAccessHandlerFactory(deps.teamFactory)
 
@@ -239,6 +282,7 @@ func newAPIServer(deps apiDBDeps) *httptest.Server {
 			checkBuildWriteAccessHandlerFactory,
 			checkWorkerTeamAccessHandlerFactory,
 		),
+		wrappa.NewAccessorWrappa(logger, accessFactory, newAuditor(), map[string]string{}),
 	}
 
 	workerPool := worker.NewPool(
@@ -292,29 +336,19 @@ func newAPIServer(deps apiDBDeps) *httptest.Server {
 		deps.wall,
 		fakeClock,
 		deps.signingKeyFactory,
-		nil,
+		deps.dbPinger,
 	)
 
 	Expect(err).NotTo(HaveOccurred())
 
-	accessorHandler := accessor.NewHandler(
-		logger,
-		auditedAction,
-		handler,
-		fakeAccessor,
-		newAuditor(),
-		map[string]string{},
-	)
-
 	return httptest.NewServer(wrappa.LoggerHandler{
 		Logger:  logger,
-		Handler: accessorHandler,
+		Handler: handler,
 	})
 }
 
 var _ = AfterEach(func() {
 	os.Remove(cliDownloadsDir)
-	server.Close()
 })
 
 func TestAPI(t *testing.T) {

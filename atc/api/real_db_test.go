@@ -3,6 +3,7 @@ package api_test
 import (
 	"database/sql"
 	"net/http/httptest"
+	"sync"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
@@ -11,16 +12,27 @@ import (
 	"github.com/concourse/concourse/atc/db/lock"
 	"github.com/concourse/concourse/atc/postgresrunner"
 	"github.com/concourse/concourse/atc/util"
+	"github.com/tedsuo/ifrit"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
 
-var postgresRunner postgresrunner.Runner
+var (
+	postgresRunner  postgresrunner.Runner
+	postgresProcess ifrit.Process
+	apiDB           *realDB
+)
 
-// Registers the suite-level postmaster. Specs that never call useRealDB pay
-// only the one-time startup; they keep running against the package-level fakes.
-var _ = postgresrunner.GinkgoRunner(&postgresRunner)
+var _ = BeforeSuite(func() {
+	postgresrunner.InitializeRunnerForGinkgo(&postgresRunner, &postgresProcess)
+	postgresRunner.CreateTestDBFromTemplate()
+})
+
+var _ = AfterSuite(func() {
+	postgresRunner.DropTestDB()
+	postgresrunner.FinalizeRunnerForGinkgo(&postgresRunner, &postgresProcess)
+})
 
 // realDB is what a converted Describe holds: the connection, the factories the
 // handler was built from, and the default team. Specs write fixtures through
@@ -28,27 +40,49 @@ var _ = postgresrunner.GinkgoRunner(&postgresRunner)
 // asserting that a handler called FindTeam with the right argument passes just
 // as happily against a handler that ignores the argument entirely.
 type realDB struct {
-	Conn        db.DbConn
-	LockFactory lock.LockFactory
-	Deps        apiDBDeps
-	Main        db.Team
+	Conn               db.DbConn
+	WorkerConn         db.DbConn
+	HealthConn         db.DbConn
+	AccessTokenFactory db.AccessTokenFactory
+	LockFactory        lock.LockFactory
+	Deps               apiDBDeps
+	Main               db.Team
+
+	disconnectOnce       sync.Once
+	disconnectWorkerOnce sync.Once
+	disconnectHealthOnce sync.Once
 }
 
-// useRealDB gives the calling Describe a migrated database and deps built over
-// real factories. Call it from a BeforeEach; cleanup is registered here.
-func useRealDB() *realDB {
+func (r *realDB) disconnect() {
+	GinkgoHelper()
+	r.disconnectOnce.Do(func() {
+		Expect(r.Conn.Close()).To(Succeed())
+	})
+}
+
+func (r *realDB) disconnectWorker() {
+	GinkgoHelper()
+	r.disconnectWorkerOnce.Do(func() {
+		Expect(r.WorkerConn.Close()).To(Succeed())
+	})
+}
+
+func (r *realDB) disconnectHealth() {
+	GinkgoHelper()
+	r.disconnectHealthOnce.Do(func() {
+		Expect(r.HealthConn.Close()).To(Succeed())
+	})
+}
+
+// openRealDB opens independent request, worker, and health connections over
+// the suite database. The database itself is created once in BeforeSuite and
+// truncated before each spec.
+func openRealDB() *realDB {
 	GinkgoHelper()
 
-	postgresRunner.CreateTestDBFromTemplate()
-	// Register the drop first so Ginkgo's LIFO cleanup closes every connection
-	// below before dropping the clone. Keeping it as its own cleanup node also
-	// means a failed Close expectation cannot suppress the drop.
-	DeferCleanup(postgresRunner.DropTestDB)
-
 	conn := postgresRunner.OpenConn()
-	DeferCleanup(func() {
-		Expect(conn.Close()).To(Succeed())
-	})
+	workerConn := postgresRunner.OpenConn()
+	healthConn := postgresRunner.OpenConn()
 	db.CleanupBaseResourceTypesCache()
 
 	var lockConns [lock.FactoryCount]*sql.DB
@@ -63,6 +97,7 @@ func useRealDB() *realDB {
 	lockFactory := lock.NewLockFactory(lockConns, ignore, ignore)
 
 	teamFactory := db.NewTeamFactory(conn, lockFactory)
+	accessTokenFactory := db.NewAccessTokenFactory(conn)
 
 	main, err := teamFactory.CreateTeam(atc.Team{Name: atc.DefaultTeamName})
 	Expect(err).NotTo(HaveOccurred())
@@ -79,24 +114,52 @@ func useRealDB() *realDB {
 	// fakeclock does not satisfy db.Clock -- it has Now but not Until.
 	dbClock := db.NewClock()
 
+	workerFactory := db.NewWorkerFactory(
+		workerConn,
+		db.NewStaticWorkerCache(logger, workerConn, 0),
+	)
+
 	deps := apiDBDeps{
 		teamFactory:           teamFactory,
 		pipelineFactory:       db.NewPipelineFactory(conn, lockFactory),
 		jobFactory:            db.NewJobFactory(conn, lockFactory),
 		resourceFactory:       db.NewResourceFactory(conn, lockFactory),
-		workerFactory:         db.NewWorkerFactory(conn, db.NewStaticWorkerCache(logger, conn, 0)),
+		workerFactory:         workerFactory,
 		workerTeamFactory:     teamFactory,
 		volumeRepository:      db.NewVolumeRepository(conn),
 		buildFactory:          db.NewBuildFactory(conn, lockFactory, 0, time.Hour),
 		checkFactory:          checkFactory,
 		resourceConfigFactory: db.NewResourceConfigFactory(conn, lockFactory),
 		userFactory:           db.NewUserFactory(conn),
+		accessTokenFactory:    accessTokenFactory,
+		dbPinger:              healthConn,
 
 		wall:              db.NewWall(conn, &dbClock),
 		signingKeyFactory: db.NewSigningKeyFactory(conn),
 	}
 
-	return &realDB{Conn: conn, LockFactory: lockFactory, Deps: deps, Main: main}
+	realdb := &realDB{
+		Conn:               conn,
+		WorkerConn:         workerConn,
+		HealthConn:         healthConn,
+		AccessTokenFactory: accessTokenFactory,
+		LockFactory:        lockFactory,
+		Deps:               deps,
+		Main:               main,
+	}
+	DeferCleanup(realdb.disconnect)
+	DeferCleanup(realdb.disconnectWorker)
+	DeferCleanup(realdb.disconnectHealth)
+
+	return realdb
+}
+
+// useRealDB returns the current spec's shared real fixture. Existing endpoint
+// fixtures can keep calling it without creating another database clone.
+func useRealDB() *realDB {
+	GinkgoHelper()
+	Expect(apiDB).NotTo(BeNil())
+	return apiDB
 }
 
 // Serve builds a server over these deps for the duration of the spec. Shadowing
