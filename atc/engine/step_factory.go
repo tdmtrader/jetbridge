@@ -15,7 +15,7 @@ import (
 	"github.com/concourse/concourse/atc/worker"
 )
 
-type coreStepFactory struct {
+type CoreStepFactory struct {
 	pool                  worker.Pool
 	streamer              worker.Streamer
 	lockFactory           lock.LockFactory
@@ -32,12 +32,12 @@ type coreStepFactory struct {
 	imageResolver         imageresolver.Resolver
 }
 
-// CoreStepFactoryOption configures optional fields on coreStepFactory.
-type CoreStepFactoryOption func(*coreStepFactory)
+// CoreStepFactoryOption configures optional fields on CoreStepFactory.
+type CoreStepFactoryOption func(*CoreStepFactory)
 
 // WithCoreImageResolver sets the image resolver for sidecar digest pinning.
 func WithCoreImageResolver(r imageresolver.Resolver) CoreStepFactoryOption {
-	return func(f *coreStepFactory) {
+	return func(f *CoreStepFactory) {
 		f.imageResolver = r
 	}
 }
@@ -57,8 +57,8 @@ func NewCoreStepFactory(
 	defaultPutTimeout time.Duration,
 	defaultTaskTimeout time.Duration,
 	opts ...CoreStepFactoryOption,
-) CoreStepFactory {
-	f := &coreStepFactory{
+) *CoreStepFactory {
+	f := &CoreStepFactory{
 		pool:                  pool,
 		streamer:              streamer,
 		lockFactory:           lockFactory,
@@ -79,7 +79,7 @@ func NewCoreStepFactory(
 	return f
 }
 
-func (factory *coreStepFactory) GetStep(
+func (factory *CoreStepFactory) GetStep(
 	plan atc.Plan,
 	stepMetadata exec.StepMetadata,
 	containerMetadata db.ContainerMetadata,
@@ -106,7 +106,7 @@ func (factory *coreStepFactory) GetStep(
 	return getStep
 }
 
-func (factory *coreStepFactory) PutStep(
+func (factory *CoreStepFactory) PutStep(
 	plan atc.Plan,
 	stepMetadata exec.StepMetadata,
 	containerMetadata db.ContainerMetadata,
@@ -131,7 +131,7 @@ func (factory *coreStepFactory) PutStep(
 	return putStep
 }
 
-func (factory *coreStepFactory) CheckStep(
+func (factory *CoreStepFactory) CheckStep(
 	plan atc.Plan,
 	stepMetadata exec.StepMetadata,
 	containerMetadata db.ContainerMetadata,
@@ -163,7 +163,7 @@ func (factory *coreStepFactory) CheckStep(
 	return checkStep
 }
 
-func (factory *coreStepFactory) RunStep(
+func (factory *CoreStepFactory) RunStep(
 	plan atc.Plan,
 	stepMetadata exec.StepMetadata,
 	containerMetadata db.ContainerMetadata,
@@ -184,7 +184,7 @@ func (factory *coreStepFactory) RunStep(
 	return runStep
 }
 
-func (factory *coreStepFactory) TaskStep(
+func (factory *CoreStepFactory) TaskStep(
 	plan atc.Plan,
 	stepMetadata exec.StepMetadata,
 	containerMetadata db.ContainerMetadata,
@@ -219,7 +219,7 @@ func (factory *coreStepFactory) TaskStep(
 	return taskStep
 }
 
-func (factory *coreStepFactory) SetPipelineStep(
+func (factory *CoreStepFactory) SetPipelineStep(
 	plan atc.Plan,
 	stepMetadata exec.StepMetadata,
 	delegateFactory DelegateFactory,
@@ -241,7 +241,7 @@ func (factory *coreStepFactory) SetPipelineStep(
 	return spStep
 }
 
-func (factory *coreStepFactory) LoadVarStep(
+func (factory *CoreStepFactory) LoadVarStep(
 	plan atc.Plan,
 	stepMetadata exec.StepMetadata,
 	delegateFactory DelegateFactory,
@@ -261,14 +261,14 @@ func (factory *coreStepFactory) LoadVarStep(
 	return loadVarStep
 }
 
-func (factory *coreStepFactory) ArtifactInputStep(
+func (factory *CoreStepFactory) ArtifactInputStep(
 	plan atc.Plan,
 	build db.Build,
 ) exec.Step {
 	return exec.NewArtifactInputStep(plan, build, factory.pool)
 }
 
-func (factory *coreStepFactory) ArtifactOutputStep(
+func (factory *CoreStepFactory) ArtifactOutputStep(
 	plan atc.Plan,
 	build db.Build,
 ) exec.Step {

@@ -11,9 +11,10 @@ import (
 
 type WorkerContainer struct {
 	*Container
-	Mounts []runtime.VolumeMount
-	Owner  db.ContainerOwner
-	Spec   *runtime.ContainerSpec
+	Mounts   []runtime.VolumeMount
+	Owner    db.ContainerOwner
+	Metadata db.ContainerMetadata
+	Spec     *runtime.ContainerSpec
 }
 
 type Worker struct {
@@ -79,6 +80,7 @@ func (w *Worker) FindOrCreateContainer(ctx context.Context, owner db.ContainerOw
 		panic("unimplemented: runtimetest.Worker.FindOrCreateContainer can currently only find a container.\n" +
 			fmt.Sprintf("missing owner: %+v", owner))
 	}
+	c.Metadata = metadata
 	c.Spec = &spec
 	return c.Container, c.Mounts, nil
 }

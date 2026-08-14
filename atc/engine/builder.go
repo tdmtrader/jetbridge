@@ -16,19 +16,6 @@ import (
 
 const supportedSchema = "exec.v2"
 
-//counterfeiter:generate . CoreStepFactory
-type CoreStepFactory interface {
-	GetStep(atc.Plan, exec.StepMetadata, db.ContainerMetadata, DelegateFactory) exec.Step
-	PutStep(atc.Plan, exec.StepMetadata, db.ContainerMetadata, DelegateFactory) exec.Step
-	TaskStep(atc.Plan, exec.StepMetadata, db.ContainerMetadata, DelegateFactory) exec.Step
-	RunStep(atc.Plan, exec.StepMetadata, db.ContainerMetadata, DelegateFactory) exec.Step
-	CheckStep(atc.Plan, exec.StepMetadata, db.ContainerMetadata, DelegateFactory) exec.Step
-	SetPipelineStep(atc.Plan, exec.StepMetadata, DelegateFactory) exec.Step
-	LoadVarStep(atc.Plan, exec.StepMetadata, DelegateFactory) exec.Step
-	ArtifactInputStep(atc.Plan, db.Build) exec.Step
-	ArtifactOutputStep(atc.Plan, db.Build) exec.Step
-}
-
 type StepperFactory interface {
 	StepperForBuild(db.Build) (exec.Stepper, error)
 }
@@ -40,7 +27,7 @@ func (f StepperFactoryFunc) StepperForBuild(build db.Build) (exec.Stepper, error
 }
 
 func NewStepperFactory(
-	coreFactory CoreStepFactory,
+	coreFactory *CoreStepFactory,
 	externalURL string,
 	rateLimiter RateLimiter,
 	policyChecker policy.Checker,
@@ -64,7 +51,7 @@ func NewStepperFactory(
 }
 
 type stepperFactory struct {
-	coreFactory           CoreStepFactory
+	coreFactory           *CoreStepFactory
 	externalURL           string
 	rateLimiter           RateLimiter
 	policyChecker         policy.Checker
