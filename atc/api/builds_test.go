@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbtest"
 	. "github.com/concourse/concourse/atc/testhelpers"
@@ -592,27 +593,19 @@ var _ = Describe("Builds API", func() {
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				useProfile(anonymousProfile)
 			})
 
 			It("returns 401", func() {
 				Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
 				Expect(buildsAPIRequireTeamBuilds(team)).To(HaveLen(buildCount))
 			})
-
-			It("does not trigger a build", func() {
-				Expect(buildsAPIRequireTeamBuilds(team)).To(HaveLen(buildCount))
-			})
 		})
 
 		Context("when authenticated", func() {
-			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
-			})
-
 			Context("when not authorized", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(false)
+					useProfile(memberProfile)
 				})
 
 				It("returns 403", func() {
@@ -623,7 +616,8 @@ var _ = Describe("Builds API", func() {
 
 			Context("when authorized", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(true)
+					grantProfile(team, memberProfile, accessor.MemberRole)
+					useProfile(memberProfile)
 				})
 
 				Context("when creating a started build fails", func() {
@@ -705,6 +699,7 @@ var _ = Describe("Builds API", func() {
 			publicBuilds          []db.BuildForAPI
 			sameTeamPrivateBuild  db.BuildForAPI
 			crossTeamPrivateBuild db.BuildForAPI
+			someTeam              db.Team
 			unauthenticatedBuilds []db.BuildForAPI
 			authenticatedBuilds   []db.BuildForAPI
 			adminBuilds           []db.BuildForAPI
@@ -720,7 +715,8 @@ var _ = Describe("Builds API", func() {
 			deps = database.Deps
 			realBuildFactory = deps.buildFactory
 
-			someTeam, err := deps.teamFactory.CreateTeam(atc.Team{Name: "some-team"})
+			var err error
+			someTeam, err = deps.teamFactory.CreateTeam(atc.Team{Name: "some-team"})
 			Expect(err).NotTo(HaveOccurred())
 			otherTeam, err := deps.teamFactory.CreateTeam(atc.Team{Name: "other-team"})
 			Expect(err).NotTo(HaveOccurred())
@@ -835,8 +831,6 @@ var _ = Describe("Builds API", func() {
 			}
 
 			queryParams = ""
-			fakeAccess.TeamNamesReturns(nil)
-			fakeAccess.IsAdminReturns(false)
 		})
 
 		JustBeforeEach(func() {
@@ -853,7 +847,7 @@ var _ = Describe("Builds API", func() {
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				useProfile(anonymousProfile)
 			})
 
 			Context("when no params are passed", func() {
@@ -934,7 +928,6 @@ var _ = Describe("Builds API", func() {
 
 			Context("when next/previous pages are available", func() {
 				BeforeEach(func() {
-					fakeAccess.TeamNamesReturns(nil)
 					queryParams = fmt.Sprintf("?from=%d&limit=2", publicBuilds[1].ID())
 				})
 
@@ -959,14 +952,9 @@ var _ = Describe("Builds API", func() {
 		})
 
 		Context("when authenticated", func() {
-			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
-				fakeAccess.TeamNamesReturns([]string{"some-team"})
-			})
-
 			Context("when user has the admin privilege", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAdminReturns(true)
+					useProfile(adminProfile)
 				})
 
 				It("calls AllBuilds", func() {
@@ -980,6 +968,8 @@ var _ = Describe("Builds API", func() {
 
 			Context("when no params are passed", func() {
 				BeforeEach(func() {
+					grantProfile(someTeam, memberProfile, accessor.ViewerRole)
+					useProfile(memberProfile)
 					queryParams = ""
 				})
 
@@ -994,6 +984,8 @@ var _ = Describe("Builds API", func() {
 
 			Context("when all the params are passed", func() {
 				BeforeEach(func() {
+					grantProfile(someTeam, memberProfile, accessor.ViewerRole)
+					useProfile(memberProfile)
 					queryParams = fmt.Sprintf(
 						"?from=%d&to=%d&limit=8",
 						publicBuilds[1].ID(),
@@ -1014,6 +1006,11 @@ var _ = Describe("Builds API", func() {
 			})
 
 			Context("when getting the builds succeeds", func() {
+				BeforeEach(func() {
+					grantProfile(someTeam, memberProfile, accessor.ViewerRole)
+					useProfile(memberProfile)
+				})
+
 				It("returns 200 OK", func() {
 					Expect(response.StatusCode).To(Equal(http.StatusOK))
 				})
@@ -1040,7 +1037,7 @@ var _ = Describe("Builds API", func() {
 
 			Context("when next/previous pages are available", func() {
 				BeforeEach(func() {
-					fakeAccess.TeamNamesReturns(nil)
+					useProfile(memberProfile)
 					queryParams = fmt.Sprintf("?from=%d&limit=2", publicBuilds[1].ID())
 				})
 
@@ -1055,6 +1052,8 @@ var _ = Describe("Builds API", func() {
 
 			Context("when getting all builds fails", func() {
 				BeforeEach(func() {
+					grantProfile(someTeam, memberProfile, accessor.ViewerRole)
+					useProfile(memberProfile)
 					listState.setVisibleBuildsError(errors.New("oh no!"))
 				})
 
@@ -1179,8 +1178,7 @@ var _ = Describe("Builds API", func() {
 			Context("when the build can be found", func() {
 				Context("when not authenticated", func() {
 					BeforeEach(func() {
-						fakeAccess.IsAuthenticatedReturns(false)
-						fakeAccess.IsAuthorizedReturns(false)
+						useProfile(anonymousProfile)
 					})
 
 					Context("and build is one off", func() {
@@ -1230,22 +1228,27 @@ var _ = Describe("Builds API", func() {
 
 				Context("when authenticated", func() {
 					BeforeEach(func() {
-						fakeAccess.IsAuthenticatedReturns(true)
+						Expect(pipeline.Hide()).To(Succeed())
+						reloaded, err := pipeline.Reload()
+						Expect(err).NotTo(HaveOccurred())
+						Expect(reloaded).To(BeTrue())
+						Expect(pipeline.Public()).To(BeFalse())
 					})
 
 					Context("when user is not authorized", func() {
 						BeforeEach(func() {
-							fakeAccess.IsAuthorizedReturns(false)
-
+							useProfile(memberProfile)
 						})
-						It("returns 200 OK", func() {
-							Expect(response.StatusCode).To(Equal(http.StatusOK))
+
+						It("returns 403", func() {
+							Expect(response.StatusCode).To(Equal(http.StatusForbidden))
 						})
 					})
 
 					Context("when user is authorized", func() {
 						BeforeEach(func() {
-							fakeAccess.IsAuthorizedReturns(true)
+							grantProfile(team, memberProfile, accessor.ViewerRole)
+							useProfile(memberProfile)
 						})
 
 						It("returns 200 OK", func() {
@@ -1391,7 +1394,7 @@ var _ = Describe("Builds API", func() {
 		Context("when the build is found", func() {
 			Context("when not authenticated", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAuthenticatedReturns(false)
+					useProfile(anonymousProfile)
 				})
 
 				Context("and build is one off", func() {
@@ -1431,8 +1434,7 @@ var _ = Describe("Builds API", func() {
 
 			Context("when authenticated, but not authorized", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAuthenticatedReturns(true)
-					fakeAccess.IsAuthorizedReturns(false)
+					useProfile(memberProfile)
 				})
 
 				It("returns 403", func() {
@@ -1442,8 +1444,8 @@ var _ = Describe("Builds API", func() {
 
 			Context("when authenticated and authorized", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAuthenticatedReturns(true)
-					fakeAccess.IsAuthorizedReturns(true)
+					grantProfile(team, memberProfile, accessor.ViewerRole)
+					useProfile(memberProfile)
 				})
 
 				It("returns 200 OK", func() {
@@ -1668,8 +1670,7 @@ var _ = Describe("Builds API", func() {
 		Context("when the build can be found", func() {
 			Context("when authenticated, but not authorized", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAuthenticatedReturns(true)
-					fakeAccess.IsAuthorizedReturns(false)
+					useProfile(memberProfile)
 				})
 
 				It("returns 403", func() {
@@ -1679,8 +1680,8 @@ var _ = Describe("Builds API", func() {
 
 			Context("when authorized", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAuthenticatedReturns(true)
-					fakeAccess.IsAuthorizedReturns(true)
+					grantProfile(team, memberProfile, accessor.ViewerRole)
+					useProfile(memberProfile)
 				})
 
 				It("returns 200", func() {
@@ -1699,7 +1700,7 @@ var _ = Describe("Builds API", func() {
 
 			Context("when not authenticated", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAuthenticatedReturns(false)
+					useProfile(anonymousProfile)
 				})
 
 				Context("and the pipeline is private", func() {
@@ -1808,10 +1809,13 @@ var _ = Describe("Builds API", func() {
 			factoryState     *buildsAPIBuildFactoryState
 			buildState       *buildsAPIBuildState
 
-			persistedBuild db.BuildForAPI
-			initialStatus  db.BuildStatus
-			missingBuildID int
-			requestBuildID string
+			team               db.Team
+			persistedBuild     db.BuildForAPI
+			decoyBuild         db.BuildForAPI
+			initialStatus      db.BuildStatus
+			decoyInitialStatus db.BuildStatus
+			missingBuildID     int
+			requestBuildID     string
 
 			server   *httptest.Server
 			response *http.Response
@@ -1822,7 +1826,8 @@ var _ = Describe("Builds API", func() {
 			deps = database.Deps
 			realBuildFactory = deps.buildFactory
 
-			team, err := deps.teamFactory.CreateTeam(atc.Team{Name: "some-team"})
+			var err error
+			team, err = deps.teamFactory.CreateTeam(atc.Team{Name: "some-team"})
 			Expect(err).NotTo(HaveOccurred())
 			oneOffBuild, err := team.CreateOneOffBuild()
 			Expect(err).NotTo(HaveOccurred())
@@ -1839,6 +1844,22 @@ var _ = Describe("Builds API", func() {
 			Expect(persistedBuild.Status()).To(Equal(db.BuildStatusStarted))
 			Expect(buildsAPIRequireBuild(realBuildFactory, persistedBuild.ID()).IsAborted()).To(BeFalse())
 			initialStatus = persistedBuild.Status()
+
+			decoyOneOffBuild, err := team.CreateOneOffBuild()
+			Expect(err).NotTo(HaveOccurred())
+			started, err = decoyOneOffBuild.Start(atc.Plan{
+				ID: "abort-decoy-task",
+				Task: &atc.TaskPlan{Config: &atc.TaskConfig{
+					Run: atc.TaskRunConfig{Path: "abort-decoy-task"},
+				}},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(started).To(BeTrue())
+			decoyBuild = buildsAPIRequireBuildForAPI(realBuildFactory, decoyOneOffBuild.ID())
+			Expect(decoyBuild.ID()).NotTo(Equal(persistedBuild.ID()))
+			Expect(decoyBuild.PipelineID()).To(BeZero())
+			Expect(buildsAPIRequireBuild(realBuildFactory, decoyBuild.ID()).IsAborted()).To(BeFalse())
+			decoyInitialStatus = decoyBuild.Status()
 
 			missingBuildID = persistedBuild.ID() + 1_000_000
 			_, found, err := realBuildFactory.BuildForAPI(missingBuildID)
@@ -1874,23 +1895,23 @@ var _ = Describe("Builds API", func() {
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				useProfile(anonymousProfile)
 			})
 
 			It("returns 401", func() {
 				Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
 				reloaded := buildsAPIRequireBuild(realBuildFactory, persistedBuild.ID())
 				Expect(reloaded.IsAborted()).To(BeFalse())
+				decoy := buildsAPIRequireBuild(realBuildFactory, decoyBuild.ID())
+				Expect(decoy.IsAborted()).To(BeFalse())
+				Expect(decoy.Status()).To(Equal(decoyInitialStatus))
 			})
 		})
 
 		Context("when authenticated", func() {
-			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
-			})
-
 			Context("when looking up the build fails", func() {
 				BeforeEach(func() {
+					useProfile(memberProfile)
 					factoryState.setBuildForAPIError(errors.New("nope"))
 				})
 
@@ -1903,6 +1924,7 @@ var _ = Describe("Builds API", func() {
 
 			Context("when the build can not be found", func() {
 				BeforeEach(func() {
+					useProfile(memberProfile)
 					requestBuildID = fmt.Sprintf("%d", missingBuildID)
 				})
 
@@ -1916,19 +1938,23 @@ var _ = Describe("Builds API", func() {
 			Context("when the build is found", func() {
 				Context("when not authorized", func() {
 					BeforeEach(func() {
-						fakeAccess.IsAuthorizedReturns(false)
+						useProfile(memberProfile)
 					})
 
 					It("returns 403", func() {
 						Expect(response.StatusCode).To(Equal(http.StatusForbidden))
 						reloaded := buildsAPIRequireBuild(realBuildFactory, persistedBuild.ID())
 						Expect(reloaded.IsAborted()).To(BeFalse())
+						decoy := buildsAPIRequireBuild(realBuildFactory, decoyBuild.ID())
+						Expect(decoy.IsAborted()).To(BeFalse())
+						Expect(decoy.Status()).To(Equal(decoyInitialStatus))
 					})
 				})
 
 				Context("when authorized", func() {
 					BeforeEach(func() {
-						fakeAccess.IsAuthorizedReturns(true)
+						grantProfile(team, memberProfile, accessor.OperatorRole)
+						useProfile(memberProfile)
 					})
 
 					Context("when aborting the build fails", func() {
@@ -1940,6 +1966,9 @@ var _ = Describe("Builds API", func() {
 							Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
 							reloaded := buildsAPIRequireBuild(realBuildFactory, persistedBuild.ID())
 							Expect(reloaded.IsAborted()).To(BeFalse())
+							decoy := buildsAPIRequireBuild(realBuildFactory, decoyBuild.ID())
+							Expect(decoy.IsAborted()).To(BeFalse())
+							Expect(decoy.Status()).To(Equal(decoyInitialStatus))
 						})
 					})
 
@@ -1949,6 +1978,9 @@ var _ = Describe("Builds API", func() {
 							reloaded := buildsAPIRequireBuild(realBuildFactory, persistedBuild.ID())
 							Expect(reloaded.IsAborted()).To(BeTrue())
 							Expect(reloaded.Status()).To(Equal(initialStatus))
+							decoy := buildsAPIRequireBuild(realBuildFactory, decoyBuild.ID())
+							Expect(decoy.IsAborted()).To(BeFalse())
+							Expect(decoy.Status()).To(Equal(decoyInitialStatus))
 						})
 					})
 				})
@@ -2136,8 +2168,7 @@ var _ = Describe("Builds API", func() {
 		Context("when the build is found", func() {
 			Context("when authenticated, but not authorized", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAuthenticatedReturns(true)
-					fakeAccess.IsAuthorizedReturns(false)
+					useProfile(memberProfile)
 				})
 
 				It("returns 403", func() {
@@ -2147,7 +2178,7 @@ var _ = Describe("Builds API", func() {
 
 			Context("when not authenticated", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAuthenticatedReturns(false)
+					useProfile(anonymousProfile)
 				})
 
 				Context("and build is one off", func() {
@@ -2219,8 +2250,8 @@ var _ = Describe("Builds API", func() {
 
 			Context("when authenticated", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAuthenticatedReturns(true)
-					fakeAccess.IsAuthorizedReturns(true)
+					grantProfile(team, memberProfile, accessor.ViewerRole)
+					useProfile(memberProfile)
 				})
 
 				It("fetches data from the db", func() {
@@ -2441,8 +2472,7 @@ var _ = Describe("Builds API", func() {
 		Context("when the build is found", func() {
 			Context("when authenticated, but not authorized", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAuthenticatedReturns(true)
-					fakeAccess.IsAuthorizedReturns(false)
+					useProfile(memberProfile)
 				})
 
 				It("returns 403", func() {
@@ -2452,7 +2482,7 @@ var _ = Describe("Builds API", func() {
 
 			Context("when not authenticated", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAuthenticatedReturns(false)
+					useProfile(anonymousProfile)
 				})
 
 				Context("and build is one off", func() {
@@ -2532,8 +2562,8 @@ var _ = Describe("Builds API", func() {
 
 			Context("when authenticated", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAuthenticatedReturns(true)
-					fakeAccess.IsAuthorizedReturns(true)
+					grantProfile(team, memberProfile, accessor.ViewerRole)
+					useProfile(memberProfile)
 				})
 
 				Context("when the build returns a plan", func() {
