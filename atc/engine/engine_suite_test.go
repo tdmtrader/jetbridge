@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -129,7 +130,7 @@ func (o *recordingOPA) Fails() {
 func (o *recordingOPA) Requests() []policyRequest {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	return o.requests
+	return slices.Clone(o.requests)
 }
 
 // newPolicyChecker builds the agent-backed checker the ATC wires in, filtered
@@ -147,15 +148,36 @@ func newPolicyChecker(actions ...string) policy.Checker {
 	return checker
 }
 
-// recordingChecker keeps the real checker's decisions while recording the one
-// thing it gives no way to observe: the actions a delegate asked about.
-type recordingChecker struct {
-	policy.Checker
+func engineBuildEventCount(fixture *engineDBFixture, build db.Build) int {
+	GinkgoHelper()
 
-	actions []string
+	var count int
+	Expect(fixture.Conn.QueryRow(
+		"SELECT count(*) FROM build_events WHERE build_id = $1",
+		build.ID(),
+	).Scan(&count)).To(Succeed())
+	return count
 }
 
-func (c *recordingChecker) ShouldCheckAction(action string) bool {
-	c.actions = append(c.actions, action)
-	return c.Checker.ShouldCheckAction(action)
+func engineBuildEvents(fixture *engineDBFixture, build db.Build) []atc.Event {
+	GinkgoHelper()
+
+	count := engineBuildEventCount(fixture, build)
+	events := make([]atc.Event, 0, count)
+	for i := range count {
+		events = append(events, consumeEngineBuildEvent(build, uint(i)))
+	}
+	return events
+}
+
+func engineBuildEventsOfType(fixture *engineDBFixture, build db.Build, eventType atc.EventType) []atc.Event {
+	GinkgoHelper()
+
+	var matching []atc.Event
+	for _, persisted := range engineBuildEvents(fixture, build) {
+		if persisted.EventType() == eventType {
+			matching = append(matching, persisted)
+		}
+	}
+	return matching
 }

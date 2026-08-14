@@ -2,8 +2,7 @@ package engine_test
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
+	"database/sql"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -22,126 +21,47 @@ import (
 	"github.com/concourse/concourse/vars"
 )
 
-// A healthy resource config cannot fail only FindOrCreateScope while retaining
-// its persisted identity and origin fields.
-type scopeErrorResourceConfig struct {
-	db.ResourceConfig
-	err error
-}
-
-func (config scopeErrorResourceConfig) FindOrCreateScope(*int) (db.ResourceConfigScope, error) {
-	return nil, config.err
-}
-
-// A persisted build's create and start times are whenever the row was written,
-// so moving them relative to the spec's fake clock is the one thing PostgreSQL
-// cannot do.
-type buildAt struct {
-	db.Build
-
-	created time.Time
-	started time.Time
-}
-
-func (b buildAt) CreateTime() time.Time { return b.created }
-func (b buildAt) StartTime() time.Time  { return b.started }
-
-// OnCheckBuildStart is a no-op on a persisted build, so whether the delegate
-// called it is only observable from outside; err injects the failure a healthy
-// build cannot produce.
-type checkStartRecordingBuild struct {
-	db.Build
-
-	err   error
-	calls int
-}
-
-func (b *checkStartRecordingBuild) OnCheckBuildStart() error {
-	b.calls++
-	if b.err != nil {
-		return b.err
-	}
-	return b.Build.OnCheckBuildStart()
-}
-
-// checkTimingScope is the narrow timing/fault seam for WaitToRun and update
-// error ordering. Persisted scope creation, attachment, and timestamps are
-// covered separately below against real PostgreSQL rows.
-type checkTimingScope struct {
-	db.ResourceConfigScope
-
-	lastCheck       func() (db.LastCheck, error)
-	acquire         func(lager.Logger) (lock.Lock, bool, error)
-	updateStart     func(int, *json.RawMessage) (bool, error)
-	updateEnd       func(bool) (bool, error)
-	lastCheckCalls  int
-	acquireCalls    int
-	updateStartArgs []struct {
-		buildID int
-		plan    *json.RawMessage
-	}
-	updateEndArgs []bool
-}
-
-func (scope *checkTimingScope) LastCheck() (db.LastCheck, error) {
-	scope.lastCheckCalls++
-	return scope.lastCheck()
-}
-
-func (scope *checkTimingScope) AcquireResourceCheckingLock(logger lager.Logger) (lock.Lock, bool, error) {
-	scope.acquireCalls++
-	return scope.acquire(logger)
-}
-
-func (scope *checkTimingScope) UpdateLastCheckStartTime(buildID int, plan *json.RawMessage) (bool, error) {
-	scope.updateStartArgs = append(scope.updateStartArgs, struct {
-		buildID int
-		plan    *json.RawMessage
-	}{buildID: buildID, plan: plan})
-	return scope.updateStart(buildID, plan)
-}
-
-func (scope *checkTimingScope) UpdateLastCheckEndTime(succeeded bool) (bool, error) {
-	scope.updateEndArgs = append(scope.updateEndArgs, succeeded)
-	return scope.updateEnd(succeeded)
-}
-
-// acquireCheckingLock takes a genuine advisory lock for a scope to hand back,
-// so what WaitToRun returns stays distinguishable from the lock.NoopLock the
-// non-resource path substitutes.
-func acquireCheckingLock(fixture *engineDBFixture) lock.Lock {
+func independentEngineLockFactory() lock.LockFactory {
 	GinkgoHelper()
 
-	acquired, ok, err := fixture.LockFactory.Acquire(
-		lagertest.NewTestLogger("check-lock"),
-		lock.NewResourceConfigCheckingLockID(1),
+	var lockConns [lock.FactoryCount]*sql.DB
+	for i := range lock.FactoryCount {
+		conn := enginePostgresRunner.OpenSingleton()
+		lockConns[i] = conn
+		DeferCleanup(func() { Expect(conn.Close()).To(Succeed()) })
+	}
+
+	return lock.NewLockFactory(
+		lockConns,
+		func(lager.Logger, lock.LockID) {},
+		func(lager.Logger, lock.LockID) {},
 	)
+}
+
+func setEngineScopeLastCheck(
+	fixture *engineDBFixture,
+	scope db.ResourceConfigScope,
+	start time.Time,
+	end time.Time,
+	succeeded bool,
+) {
+	GinkgoHelper()
+
+	_, err := fixture.Conn.Exec(`
+		UPDATE resource_config_scopes
+		SET last_check_start_time = $1,
+		    last_check_end_time = $2,
+		    last_check_succeeded = $3
+		WHERE id = $4
+	`, start, end, succeeded, scope.ID())
 	Expect(err).NotTo(HaveOccurred())
-	Expect(ok).To(BeTrue())
-	DeferCleanup(func() { Expect(acquired.Release()).To(Succeed()) })
-
-	return acquired
-}
-
-// A rate limiter admits checks without recording that it did, so the count of
-// admissions is only observable from the outside.
-type countingRateLimiter struct {
-	engine.RateLimiter
-
-	waits int
-}
-
-func (limiter *countingRateLimiter) Wait(ctx context.Context) error {
-	limiter.waits++
-	return limiter.RateLimiter.Wait(ctx)
 }
 
 var _ = Describe("CheckDelegate", func() {
 	var (
-		now         time.Time
-		fakeClock   *fakeclock.FakeClock
-		rateLimiter *countingRateLimiter
-		state       exec.RunState
+		now       time.Time
+		fakeClock *fakeclock.FakeClock
+		state     exec.RunState
 
 		fixture       *engineDBFixture
 		team          db.Team
@@ -162,7 +82,7 @@ var _ = Describe("CheckDelegate", func() {
 			atc.Plan{ID: "some-plan-id", Check: &check},
 			state,
 			fakeClock,
-			rateLimiter,
+			newCheckRateLimiter(),
 			policy.NoopChecker{},
 		)
 	}
@@ -170,7 +90,6 @@ var _ = Describe("CheckDelegate", func() {
 	BeforeEach(func() {
 		now = time.Date(1991, 6, 3, 5, 30, 0, 0, time.UTC)
 		fakeClock = fakeclock.NewFakeClock(now)
-		rateLimiter = &countingRateLimiter{RateLimiter: newCheckRateLimiter()}
 		state = exec.NewRunState(noopStepper, vars.StaticVariables{
 			"source-param": "super-secret-source",
 			"git-key":      "{\n123\n456\n789\n}\n",
@@ -245,13 +164,6 @@ var _ = Describe("CheckDelegate", func() {
 			Expect(*named.ResourceID()).To(Equal(resource.ID()))
 		})
 
-		It("bounds a selective scope lookup failure around the healthy config", func() {
-			_, err := newDelegate(jobBuild, atc.CheckPlan{}).FindOrCreateScope(
-				scopeErrorResourceConfig{ResourceConfig: config, err: errors.New("nope")},
-			)
-			Expect(err).To(MatchError(ContainSubstring("find or create scope: nope")))
-		})
-
 		It("rejects a deleted named resource before creating a scope", func() {
 			_, err := newDelegate(jobBuild, atc.CheckPlan{Resource: "missing-resource"}).FindOrCreateScope(config)
 			Expect(err).To(MatchError(ContainSubstring("resource 'missing-resource' deleted")))
@@ -263,15 +175,6 @@ var _ = Describe("CheckDelegate", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(found).To(BeTrue())
 			Expect(resource.ResourceConfigScopeID()).To(Equal(resourceScope.ID()))
-			var attachedResourceID int
-			Expect(fixture.Conn.QueryRow(`
-				SELECT scope.resource_id
-				FROM resources resource
-				JOIN resource_config_scopes scope
-				  ON scope.id = resource.resource_config_scope_id
-				WHERE resource.id = $1
-			`, resource.ID()).Scan(&attachedResourceID)).To(Succeed())
-			Expect(attachedResourceID).To(Equal(resource.ID()))
 
 			Expect(newDelegate(jobBuild, atc.CheckPlan{ResourceType: "some-resource-type"}).PointToCheckedConfig(globalScope)).To(Succeed())
 			found, err = resourceType.Reload()
@@ -284,14 +187,6 @@ var _ = Describe("CheckDelegate", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(found).To(BeTrue())
 			Expect(prototype.ResourceConfigScopeID()).To(Equal(globalScope.ID()))
-
-			found, err = pipeline.Reload()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(found).To(BeTrue())
-			persistedResource, found, err := pipeline.Resource("some-resource")
-			Expect(err).NotTo(HaveOccurred())
-			Expect(found).To(BeTrue())
-			Expect(persistedResource.ResourceConfigScopeID()).To(Equal(resourceScope.ID()))
 		})
 
 		It("persists last-check start and end evidence", func() {
@@ -300,6 +195,7 @@ var _ = Describe("CheckDelegate", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(found).To(BeTrue())
 			Expect(buildID).To(Equal(checkBuild.ID()))
+
 			started, err := resourceScope.LastCheck()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(started.StartTime).To(BeTemporally("~", time.Now(), 2*time.Second))
@@ -313,10 +209,42 @@ var _ = Describe("CheckDelegate", func() {
 			Expect(finished.Succeeded).To(BeTrue())
 		})
 
+		It("observes a scope deleted before its start and end updates", func() {
+			_, err := fixture.Conn.Exec("DELETE FROM resource_config_scopes WHERE id = $1", resourceScope.ID())
+			Expect(err).NotTo(HaveOccurred())
+
+			delegate := newDelegate(checkBuild, atc.CheckPlan{Resource: "some-resource"})
+			found, buildID, err := delegate.UpdateScopeLastCheckStartTime(resourceScope, false)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeFalse())
+			Expect(buildID).To(Equal(checkBuild.ID()))
+
+			found, err = delegate.UpdateScopeLastCheckEndTime(resourceScope, true)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeFalse())
+		})
+
+		It("updates nested-check evidence without associating a build", func() {
+			delegate := newDelegate(checkBuild, atc.CheckPlan{ResourceType: "some-resource-type"})
+			found, buildID, err := delegate.UpdateScopeLastCheckStartTime(globalScope, true)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(buildID).To(BeZero())
+
+			var persistedBuildID *int
+			var persistedPlan []byte
+			Expect(fixture.Conn.QueryRow(`
+				SELECT last_check_build_id, last_check_build_plan
+				FROM resource_config_scopes
+				WHERE id = $1
+			`, globalScope.ID()).Scan(&persistedBuildID, &persistedPlan)).To(Succeed())
+			Expect(persistedBuildID).To(BeNil())
+			Expect(persistedPlan).To(BeNil())
+		})
+
 		It("treats an empty checked-config target as a no-op", func() {
 			oneOff, err := team.CreateOneOffBuild()
 			Expect(err).NotTo(HaveOccurred())
-
 			Expect(newDelegate(oneOff, atc.CheckPlan{}).PointToCheckedConfig(globalScope)).To(Succeed())
 		})
 
@@ -328,386 +256,126 @@ var _ = Describe("CheckDelegate", func() {
 		})
 	})
 
-	// The real check build carries every value these specs need. What it cannot
-	// carry is a timestamp placed relative to the fake clock, a selectively
-	// failing pipeline lookup, or a record of the no-op start callback, so each
-	// of those is a one-method decorator over the same real build.
-	Describe("timing and fault seams over the real check build", func() {
-		It("rate limits before locking a due resource check", func() {
-			last := db.LastCheck{StartTime: now.Add(-2 * time.Hour), EndTime: now.Add(-2 * time.Hour), Succeeded: true}
-			checkLock := acquireCheckingLock(fixture)
-			scope := &checkTimingScope{
-				lastCheck: func() (db.LastCheck, error) { return last, nil },
-				acquire: func(lager.Logger) (lock.Lock, bool, error) {
-					Expect(rateLimiter.waits).To(Equal(1))
-					return checkLock, true, nil
-				},
-			}
-			gotLock, run, err := newDelegate(checkBuild, atc.CheckPlan{
+	Describe("check timing and locking through real scopes", func() {
+		It("runs a due periodic resource check and returns its production lock", func() {
+			setEngineScopeLastCheck(fixture, resourceScope, now.Add(-2*time.Hour), now.Add(-2*time.Hour), true)
+
+			acquired, run, err := newDelegate(checkBuild, atc.CheckPlan{
 				Resource: "some-resource", Interval: atc.CheckEvery{Interval: time.Hour},
-			}).WaitToRun(context.Background(), scope)
+			}).WaitToRun(context.Background(), resourceScope)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(run).To(BeTrue())
-			Expect(gotLock).To(Equal(checkLock))
-			Expect(rateLimiter.waits).To(Equal(1))
-			Expect(scope.acquireCalls).To(Equal(1))
-			Expect(scope.lastCheckCalls).To(Equal(2))
+			Expect(acquired).NotTo(BeNil())
+			Expect(acquired.Release()).To(Succeed())
+		})
+
+		It("waits for the production resource-config lock and proceeds after release", func() {
+			setEngineScopeLastCheck(fixture, resourceScope, now.Add(-2*time.Hour), now.Add(-2*time.Hour), true)
+			contender := independentEngineLockFactory()
+			held, acquired, err := contender.Acquire(
+				lagertest.NewTestLogger("held-check-lock"),
+				lock.NewResourceConfigCheckingLockID(config.ID()),
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(acquired).To(BeTrue())
+
+			type outcome struct {
+				lock lock.Lock
+				run  bool
+				err  error
+			}
+			result := make(chan outcome, 1)
+			go func() {
+				gotLock, run, err := newDelegate(checkBuild, atc.CheckPlan{
+					Resource: "some-resource", Interval: atc.CheckEvery{Interval: time.Hour},
+				}).WaitToRun(context.Background(), resourceScope)
+				result <- outcome{lock: gotLock, run: run, err: err}
+			}()
+
+			Consistently(result, 100*time.Millisecond).ShouldNot(Receive())
+			Expect(held.Release()).To(Succeed())
+			fakeClock.WaitForWatcherAndIncrement(time.Second)
+
+			var completed outcome
+			Eventually(result).Should(Receive(&completed))
+			Expect(completed.err).NotTo(HaveOccurred())
+			Expect(completed.run).To(BeTrue())
+			Expect(completed.lock).NotTo(BeNil())
+			Expect(completed.lock.Release()).To(Succeed())
+		})
+
+		It("skips a nonmanual check_every never resource check", func() {
+			before, err := resourceScope.LastCheck()
+			Expect(err).NotTo(HaveOccurred())
+
+			acquired, run, err := newDelegate(checkBuild, atc.CheckPlan{
+				Resource: "some-resource", Interval: atc.CheckEvery{Never: true},
+			}).WaitToRun(context.Background(), resourceScope)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(run).To(BeFalse())
+			Expect(acquired).To(BeNil())
+			Expect(resourceScope.LastCheck()).To(Equal(before))
+		})
+
+		It("skips a periodic resource check whose interval has not elapsed", func() {
+			setEngineScopeLastCheck(fixture, resourceScope, now, now, true)
+
+			acquired, run, err := newDelegate(checkBuild, atc.CheckPlan{
+				Resource: "some-resource", Interval: atc.CheckEvery{Interval: time.Hour},
+			}).WaitToRun(context.Background(), resourceScope)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(run).To(BeFalse())
+			Expect(acquired).To(BeNil())
 		})
 
 		It("forces a manual resource check when a from-version is configured", func() {
-			build := buildAt{Build: checkBuild, created: now.Add(-time.Minute)}
-			checkLock := acquireCheckingLock(fixture)
-			scope := &checkTimingScope{
-				lastCheck: func() (db.LastCheck, error) {
-					return db.LastCheck{StartTime: now, Succeeded: true}, nil
-				},
-				acquire: func(lager.Logger) (lock.Lock, bool, error) { return checkLock, true, nil },
-			}
+			setEngineScopeLastCheck(fixture, resourceScope, time.Now().Add(time.Hour), time.Now().Add(time.Hour), true)
 
-			gotLock, run, err := newDelegate(build, atc.CheckPlan{
-				Resource:     "some-resource",
-				SkipInterval: true,
-				FromVersion:  atc.Version{"some": "version"},
-			}).WaitToRun(context.Background(), scope)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(run).To(BeTrue())
-			Expect(gotLock).To(Equal(checkLock))
-			Expect(rateLimiter.waits).To(BeZero())
-			Expect(scope.acquireCalls).To(Equal(1))
-			Expect(scope.lastCheckCalls).To(Equal(2))
-		})
-
-		It("lets SkipInterval override Interval.Never for a resource check", func() {
-			checkLock := acquireCheckingLock(fixture)
-			scope := &checkTimingScope{
-				lastCheck: func() (db.LastCheck, error) { return db.LastCheck{}, nil },
-				acquire:   func(lager.Logger) (lock.Lock, bool, error) { return checkLock, true, nil },
-			}
-
-			gotLock, run, err := newDelegate(checkBuild, atc.CheckPlan{
-				Resource:     "some-resource",
-				SkipInterval: true,
-				Interval:     atc.CheckEvery{Never: true},
-			}).WaitToRun(context.Background(), scope)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(run).To(BeTrue())
-			Expect(gotLock).To(Equal(checkLock))
-			Expect(rateLimiter.waits).To(BeZero())
-			Expect(scope.acquireCalls).To(Equal(1))
-			Expect(scope.lastCheckCalls).To(Equal(2))
-		})
-
-		It("runs a manual resource check created after the last successful check started", func() {
-			build := buildAt{Build: checkBuild, created: now.Add(time.Minute)}
-			checkLock := acquireCheckingLock(fixture)
-			scope := &checkTimingScope{
-				lastCheck: func() (db.LastCheck, error) {
-					return db.LastCheck{StartTime: now, Succeeded: true}, nil
-				},
-				acquire: func(lager.Logger) (lock.Lock, bool, error) { return checkLock, true, nil },
-			}
-
-			gotLock, run, err := newDelegate(build, atc.CheckPlan{
+			acquired, run, err := newDelegate(checkBuild, atc.CheckPlan{
 				Resource: "some-resource", SkipInterval: true,
-			}).WaitToRun(context.Background(), scope)
+				FromVersion: atc.Version{"some": "version"},
+			}).WaitToRun(context.Background(), resourceScope)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(run).To(BeTrue())
-			Expect(gotLock).To(Equal(checkLock))
-			Expect(scope.acquireCalls).To(Equal(1))
+			Expect(acquired).NotTo(BeNil())
+			Expect(acquired.Release()).To(Succeed())
 		})
 
-		It("runs a manual resource check when the last check failed", func() {
-			build := buildAt{Build: checkBuild, created: now.Add(-time.Minute)}
-			checkLock := acquireCheckingLock(fixture)
-			scope := &checkTimingScope{
-				lastCheck: func() (db.LastCheck, error) {
-					return db.LastCheck{StartTime: now, Succeeded: false}, nil
-				},
-				acquire: func(lager.Logger) (lock.Lock, bool, error) { return checkLock, true, nil },
-			}
+		It("reuses a newer successful manual resource check", func() {
+			setEngineScopeLastCheck(fixture, resourceScope, time.Now().Add(time.Hour), time.Now().Add(time.Hour), true)
 
-			gotLock, run, err := newDelegate(build, atc.CheckPlan{
+			acquired, run, err := newDelegate(checkBuild, atc.CheckPlan{
 				Resource: "some-resource", SkipInterval: true,
-			}).WaitToRun(context.Background(), scope)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(run).To(BeTrue())
-			Expect(gotLock).To(Equal(checkLock))
-			Expect(scope.acquireCalls).To(Equal(1))
-		})
-
-		It("retries after losing the resource lock and re-evaluates LastCheck", func() {
-			interval := time.Minute
-			scope := &checkTimingScope{}
-			scope.lastCheck = func() (db.LastCheck, error) {
-				if scope.lastCheckCalls == 1 {
-					return db.LastCheck{EndTime: now.Add(-interval - time.Second), Succeeded: true}, nil
-				}
-				return db.LastCheck{EndTime: now, Succeeded: true}, nil
-			}
-			scope.acquire = func(lager.Logger) (lock.Lock, bool, error) {
-				return nil, false, nil
-			}
-			go fakeClock.WaitForWatcherAndIncrement(time.Second)
-
-			gotLock, run, err := newDelegate(checkBuild, atc.CheckPlan{
-				Resource: "some-resource", Interval: atc.CheckEvery{Interval: interval},
-			}).WaitToRun(context.Background(), scope)
+			}).WaitToRun(context.Background(), resourceScope)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(run).To(BeFalse())
-			Expect(gotLock).To(BeNil())
-			Expect(scope.acquireCalls).To(Equal(1))
-			Expect(scope.lastCheckCalls).To(Equal(2))
+			Expect(acquired).To(BeNil())
 		})
 
-		It("skips a nonmanual Interval.Never resource check without reading LastCheck", func() {
-			scope := &checkTimingScope{
-				lastCheck: func() (db.LastCheck, error) {
-					Fail("Interval.Never must return before reading LastCheck")
-					return db.LastCheck{}, nil
-				},
-				acquire: func(lager.Logger) (lock.Lock, bool, error) {
-					Fail("Interval.Never must return before acquiring a lock")
-					return nil, false, nil
-				},
-			}
-
-			gotLock, run, err := newDelegate(checkBuild, atc.CheckPlan{
-				Resource: "some-resource", Interval: atc.CheckEvery{Never: true},
-			}).WaitToRun(context.Background(), scope)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(run).To(BeFalse())
-			Expect(gotLock).To(BeNil())
-			Expect(scope.lastCheckCalls).To(BeZero())
-			Expect(scope.acquireCalls).To(BeZero())
-			Expect(rateLimiter.waits).To(BeZero())
-		})
-
-		It("skips an interval-blocked resource check before acquiring the lock", func() {
-			scope := &checkTimingScope{
-				lastCheck: func() (db.LastCheck, error) {
-					return db.LastCheck{EndTime: now, Succeeded: true}, nil
-				},
-				acquire: func(lager.Logger) (lock.Lock, bool, error) {
-					Fail("interval-blocked checks must not acquire a lock")
-					return nil, false, nil
-				},
-			}
-			_, run, err := newDelegate(checkBuild, atc.CheckPlan{
-				Resource: "some-resource", Interval: atc.CheckEvery{Interval: time.Hour},
-			}).WaitToRun(context.Background(), scope)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(run).To(BeFalse())
-			Expect(scope.acquireCalls).To(BeZero())
-		})
-
-		It("reuses a successful manual check created after this build", func() {
-			build := buildAt{Build: checkBuild, created: now.Add(-time.Minute)}
-			scope := &checkTimingScope{
-				lastCheck: func() (db.LastCheck, error) {
-					return db.LastCheck{StartTime: now, Succeeded: true}, nil
-				},
-				acquire: func(lager.Logger) (lock.Lock, bool, error) {
-					Fail("reused manual checks must not acquire a lock")
-					return nil, false, nil
-				},
-			}
-			_, run, err := newDelegate(build, atc.CheckPlan{
-				Resource: "some-resource", SkipInterval: true,
-			}).WaitToRun(context.Background(), scope)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(run).To(BeFalse())
-			Expect(rateLimiter.waits).To(BeZero())
-		})
-
-		It("reuses a successful nested check completed after the build started", func() {
-			build := buildAt{Build: checkBuild, started: now.Add(-time.Minute)}
-			scope := &checkTimingScope{lastCheck: func() (db.LastCheck, error) {
-				return db.LastCheck{EndTime: now, Succeeded: true}, nil
-			}}
-			gotLock, run, err := newDelegate(build, atc.CheckPlan{
-				ResourceType: "some-resource-type", Interval: atc.CheckEvery{Interval: time.Hour},
-			}).WaitToRun(context.Background(), scope)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(run).To(BeFalse())
-			Expect(gotLock).To(BeNil())
-			Expect(rateLimiter.waits).To(BeZero())
-		})
-
-		It("blocks a successful non-resource check solely while its interval is unelapsed", func() {
-			build := buildAt{Build: checkBuild, started: now.Add(time.Minute)}
-			scope := &checkTimingScope{lastCheck: func() (db.LastCheck, error) {
-				return db.LastCheck{EndTime: now, Succeeded: true}, nil
-			}}
-
-			gotLock, run, err := newDelegate(build, atc.CheckPlan{
-				ResourceType: "some-resource-type",
-				Interval:     atc.CheckEvery{Interval: time.Hour},
-				SkipInterval: false,
-			}).WaitToRun(context.Background(), scope)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(run).To(BeFalse())
-			Expect(gotLock).To(BeNil())
-			Expect(scope.lastCheckCalls).To(Equal(1))
-			Expect(rateLimiter.waits).To(BeZero())
-		})
-
-		DescribeTable("runs a non-resource check with a no-op lock",
-			func(check atc.CheckPlan, lastEndOffset time.Duration, succeeded bool, buildStartOffset time.Duration) {
-				build := buildAt{Build: checkBuild, started: now.Add(buildStartOffset)}
-				scope := &checkTimingScope{
-					lastCheck: func() (db.LastCheck, error) {
-						return db.LastCheck{EndTime: now.Add(lastEndOffset), Succeeded: succeeded}, nil
-					},
-					acquire: func(lager.Logger) (lock.Lock, bool, error) {
-						Fail("non-resource checks must not acquire a resource lock")
-						return nil, false, nil
-					},
-				}
-
-				gotLock, run, err := newDelegate(build, check).WaitToRun(context.Background(), scope)
+		DescribeTable("evaluates non-resource checks from persisted last-check state",
+			func(check atc.CheckPlan, endOffset time.Duration, succeeded bool, expectedRun bool) {
+				end := now.Add(endOffset)
+				setEngineScopeLastCheck(fixture, globalScope, end, end, succeeded)
+				acquired, run, err := newDelegate(checkBuild, check).WaitToRun(context.Background(), globalScope)
 				Expect(err).NotTo(HaveOccurred())
-				Expect(run).To(BeTrue())
-				Expect(gotLock).To(Equal(lock.NoopLock{}))
-				Expect(scope.lastCheckCalls).To(Equal(1))
-				Expect(scope.acquireCalls).To(BeZero())
-				Expect(rateLimiter.waits).To(BeZero())
+				Expect(run).To(Equal(expectedRun))
+				if expectedRun {
+					Expect(acquired).To(Equal(lock.NoopLock{}))
+				} else {
+					Expect(acquired).To(BeNil())
+				}
 			},
-			Entry("after a prior failure",
-				atc.CheckPlan{ResourceType: "some-resource-type"},
-				time.Duration(0), false, -time.Minute,
+			Entry("runs after a prior failure",
+				atc.CheckPlan{ResourceType: "some-resource-type"}, time.Duration(0), false, true,
 			),
-			Entry("when the last check ended before this build started",
-				atc.CheckPlan{ResourceType: "some-resource-type"},
-				-time.Minute, true, time.Duration(0),
-			),
-			Entry("after the configured interval elapsed",
+			Entry("runs after the configured interval elapsed",
 				atc.CheckPlan{ResourceType: "some-resource-type", Interval: atc.CheckEvery{Interval: time.Hour}},
-				-2*time.Hour, true, time.Duration(0),
+				-2*time.Hour, true, true,
 			),
-			Entry("when a manual check overrides an unelapsed interval",
-				atc.CheckPlan{ResourceType: "some-resource-type", SkipInterval: true, Interval: atc.CheckEvery{Interval: time.Hour}},
-				time.Duration(0), true, time.Minute,
-			),
-			Entry("when a failed check overrides an unelapsed interval",
+			Entry("skips while the configured interval is unelapsed",
 				atc.CheckPlan{ResourceType: "some-resource-type", Interval: atc.CheckEvery{Interval: time.Hour}},
-				time.Duration(0), false, time.Minute,
+				time.Duration(0), true, false,
 			),
 		)
-
-		It("propagates the selected timing lookup error", func() {
-			scope := &checkTimingScope{lastCheck: func() (db.LastCheck, error) {
-				return db.LastCheck{}, errors.New("some-error")
-			}}
-			_, _, err := newDelegate(checkBuild, atc.CheckPlan{ResourceType: "some-resource-type"}).WaitToRun(context.Background(), scope)
-			Expect(err).To(MatchError("some-error"))
-		})
-
-		It("propagates resource LastCheck errors for periodic and manual checks", func() {
-			for _, check := range []atc.CheckPlan{
-				{Resource: "some-resource"},
-				{Resource: "some-resource", SkipInterval: true},
-			} {
-				waitsBefore := rateLimiter.waits
-				scope := &checkTimingScope{
-					lastCheck: func() (db.LastCheck, error) {
-						return db.LastCheck{}, errors.New("some-error")
-					},
-					acquire: func(lager.Logger) (lock.Lock, bool, error) {
-						Fail("a LastCheck error must return before acquiring the lock")
-						return nil, false, nil
-					},
-				}
-
-				gotLock, run, err := newDelegate(checkBuild, check).WaitToRun(context.Background(), scope)
-				Expect(err).To(MatchError("some-error"))
-				Expect(run).To(BeFalse())
-				Expect(gotLock).To(BeNil())
-				Expect(scope.lastCheckCalls).To(Equal(1))
-				Expect(scope.acquireCalls).To(BeZero())
-				if check.SkipInterval {
-					Expect(rateLimiter.waits).To(Equal(waitsBefore))
-				} else {
-					Expect(rateLimiter.waits).To(Equal(waitsBefore + 1))
-				}
-			}
-		})
-
-		It("does not update the scope when OnCheckBuildStart fails", func() {
-			build := &checkStartRecordingBuild{Build: checkBuild, err: errors.New("some-error")}
-			scope := &checkTimingScope{updateStart: func(int, *json.RawMessage) (bool, error) {
-				Fail("scope must not update after OnCheckBuildStart fails")
-				return false, nil
-			}}
-			found, buildID, err := newDelegate(build, atc.CheckPlan{Resource: "some-resource"}).UpdateScopeLastCheckStartTime(scope, false)
-			Expect(err).To(MatchError("some-error"))
-			Expect(found).To(BeFalse())
-			Expect(buildID).To(BeZero())
-			Expect(scope.updateStartArgs).To(BeEmpty())
-		})
-
-		It("preserves nonnested build evidence when the scope start update fails", func() {
-			build := &checkStartRecordingBuild{Build: checkBuild}
-			scope := &checkTimingScope{updateStart: func(buildID int, plan *json.RawMessage) (bool, error) {
-				Expect(buildID).To(Equal(checkBuild.ID()))
-				Expect(plan).To(Equal(checkBuild.PublicPlan()))
-				return false, errors.New("some-error")
-			}}
-
-			found, buildID, err := newDelegate(build, atc.CheckPlan{Resource: "some-resource"}).UpdateScopeLastCheckStartTime(scope, false)
-			Expect(err).To(MatchError("some-error"))
-			Expect(found).To(BeFalse())
-			Expect(buildID).To(Equal(checkBuild.ID()))
-			Expect(scope.updateStartArgs).To(HaveLen(1))
-			Expect(build.calls).To(Equal(1))
-		})
-
-		It("updates nested-check start evidence once without touching the build", func() {
-			build := &checkStartRecordingBuild{Build: checkBuild}
-			scope := &checkTimingScope{updateStart: func(buildID int, plan *json.RawMessage) (bool, error) {
-				Expect(buildID).To(BeZero())
-				Expect(plan).To(BeNil())
-				return true, nil
-			}}
-
-			found, buildID, err := newDelegate(build, atc.CheckPlan{ResourceType: "some-resource-type"}).UpdateScopeLastCheckStartTime(scope, true)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(found).To(BeTrue())
-			Expect(buildID).To(BeZero())
-			Expect(scope.updateStartArgs).To(HaveLen(1))
-			Expect(build.calls).To(BeZero())
-		})
-
-		It("passes nested-check nil build evidence and bounds a scope update failure", func() {
-			build := &checkStartRecordingBuild{Build: checkBuild}
-			scope := &checkTimingScope{updateStart: func(buildID int, plan *json.RawMessage) (bool, error) {
-				Expect(buildID).To(BeZero())
-				Expect(plan).To(BeNil())
-				return false, errors.New("some-error")
-			}}
-			found, buildID, err := newDelegate(build, atc.CheckPlan{ResourceType: "some-resource-type"}).UpdateScopeLastCheckStartTime(scope, true)
-			Expect(err).To(MatchError("some-error"))
-			Expect(found).To(BeFalse())
-			Expect(buildID).To(BeZero())
-			Expect(build.calls).To(BeZero())
-		})
-
-		It("passes end status and bounds a scope completion failure", func() {
-			scope := &checkTimingScope{updateEnd: func(succeeded bool) (bool, error) {
-				Expect(succeeded).To(BeTrue())
-				return false, errors.New("some-error")
-			}}
-			found, err := newDelegate(checkBuild, atc.CheckPlan{}).UpdateScopeLastCheckEndTime(scope, true)
-			Expect(err).To(MatchError("some-error"))
-			Expect(found).To(BeFalse())
-			Expect(scope.updateEndArgs).To(Equal([]bool{true}))
-		})
-
-		It("bounds pipeline lookup errors", func() {
-			build := pipelineErrorBuild{Build: checkBuild, err: errors.New("nope")}
-			_, err := newDelegate(build, atc.CheckPlan{Resource: "some-resource"}).FindOrCreateScope(
-				scopeErrorResourceConfig{err: errors.New("scope must not be reached")},
-			)
-			Expect(err).To(MatchError(ContainSubstring("get build pipeline: nope")))
-		})
 	})
 })

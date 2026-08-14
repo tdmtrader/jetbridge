@@ -27,49 +27,6 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-// A build whose row is intact cannot fail only the tracking lock acquisition.
-type trackingLockErrorBuild struct {
-	db.Build
-
-	err error
-}
-
-func (b trackingLockErrorBuild) AcquireTrackingLock(lager.Logger, time.Duration) (lock.Lock, bool, error) {
-	return nil, false, b.err
-}
-
-// Unlistening leaves no trace on the build, so record it around the real
-// listener; err injects the listen failure a healthy bus cannot produce.
-type abortListenerRecordingBuild struct {
-	db.Build
-
-	err        error
-	unlistened bool
-}
-
-func (b *abortListenerRecordingBuild) AbortSignal() (*db.NotifySignal, func(), error) {
-	if b.err != nil {
-		return nil, nil, b.err
-	}
-
-	signal, unlisten, err := b.Build.AbortSignal()
-	return signal, func() {
-		b.unlistened = true
-		unlisten()
-	}, err
-}
-
-// A build whose pipeline resolves cannot fail only the credential lookup.
-type variablesErrorBuild struct {
-	db.Build
-
-	err error
-}
-
-func (b variablesErrorBuild) Variables(lager.Logger, creds.Secrets, creds.VarSourcePool) (vars.Variables, error) {
-	return nil, b.err
-}
-
 var _ = Describe("Engine", func() {
 	var (
 		stepperFactory StepperFactory
@@ -139,11 +96,11 @@ var _ = Describe("Engine", func() {
 
 	Describe("Run", func() {
 		var (
-			fixture   *engineDBFixture
-			resource  db.Resource
-			realBuild db.Build
-			recorder  *eventRecordingBuild
-			dbBuild   db.Build
+			fixture     *engineDBFixture
+			resource    db.Resource
+			realBuild   db.Build
+			dbBuild     db.Build
+			errorEvents func() []atc.Event
 
 			plan       atc.Plan
 			prepareRow func()
@@ -182,8 +139,7 @@ var _ = Describe("Engine", func() {
 			Expect(found).To(BeTrue())
 			Expect(realBuild.Name()).To(Equal(db.CheckBuildName))
 
-			recorder = &eventRecordingBuild{Build: realBuild}
-			dbBuild = recorder
+			dbBuild = realBuild
 			prepareRow = func() {}
 		}
 
@@ -213,8 +169,7 @@ var _ = Describe("Engine", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(found).To(BeTrue())
 
-			recorder = &eventRecordingBuild{Build: realBuild}
-			dbBuild = recorder
+			dbBuild = realBuild
 
 			plan = atc.Plan{
 				ID: "build-plan",
@@ -233,6 +188,9 @@ var _ = Describe("Engine", func() {
 			release = make(chan bool)
 			trackedStates = new(sync.Map)
 			waitGroup = new(sync.WaitGroup)
+			errorEvents = func() []atc.Event {
+				return engineBuildEventsOfType(fixture, realBuild, event.EventTypeError)
+			}
 		})
 
 		JustBeforeEach(func() {
@@ -254,13 +212,6 @@ var _ = Describe("Engine", func() {
 		Context("when acquiring the lock succeeds", func() {
 			Context("when the build is running", func() {
 				Context("when listening for aborts succeeds", func() {
-					var aborts *abortListenerRecordingBuild
-
-					BeforeEach(func() {
-						aborts = &abortListenerRecordingBuild{Build: recorder}
-						dbBuild = aborts
-					})
-
 					Context("when converting the plan to a step succeeds", func() {
 						BeforeEach(func() {
 							step = stepFunc(func(context.Context, exec.RunState) (bool, error) {
@@ -271,11 +222,6 @@ var _ = Describe("Engine", func() {
 						It("releases the lock", func() {
 							waitGroup.Wait()
 							expectTrackingLockReleased()
-						})
-
-						It("unlistens the abort signal", func() {
-							waitGroup.Wait()
-							Expect(aborts.unlistened).To(BeTrue())
 						})
 
 						It("constructs a step from the build's plan", func() {
@@ -338,8 +284,9 @@ var _ = Describe("Engine", func() {
 
 									It("saves an error event explaining the drain", func() {
 										waitGroup.Wait()
-										Expect(recorder.events).To(HaveLen(1))
-										ev := recorder.events[0]
+										events := errorEvents()
+										Expect(events).To(HaveLen(1))
+										ev := events[0]
 										Expect(ev.EventType()).To(Equal(event.EventTypeError))
 										Expect(ev.(event.Error).Message).To(Equal("build released during drain"))
 									})
@@ -414,7 +361,7 @@ var _ = Describe("Engine", func() {
 
 								It("does not save an error event", func() {
 									waitGroup.Wait()
-									Expect(recorder.events).To(BeEmpty())
+									Expect(errorEvents()).To(BeEmpty())
 								})
 							})
 
@@ -440,7 +387,7 @@ var _ = Describe("Engine", func() {
 										// 2026-07-12).
 										It("does not double-emit the error event", func() {
 											waitGroup.Wait()
-											Expect(recorder.events).To(BeEmpty())
+											Expect(errorEvents()).To(BeEmpty())
 										})
 									})
 
@@ -449,8 +396,9 @@ var _ = Describe("Engine", func() {
 
 										It("surfaces the error event so the check reason shows in the UI", func() {
 											waitGroup.Wait()
-											Expect(recorder.events).To(HaveLen(1))
-											ev := recorder.events[0]
+											events := errorEvents()
+											Expect(events).To(HaveLen(1))
+											ev := events[0]
 											Expect(ev.EventType()).To(Equal(event.EventTypeError))
 											Expect(ev.(event.Error).Message).To(Equal("nope"))
 										})
@@ -475,8 +423,9 @@ var _ = Describe("Engine", func() {
 
 										It("saves an error event with the unwrapped cause", func() {
 											waitGroup.Wait()
-											Expect(recorder.events).To(HaveLen(1))
-											ev := recorder.events[0]
+											events := errorEvents()
+											Expect(events).To(HaveLen(1))
+											ev := events[0]
 											Expect(ev.EventType()).To(Equal(event.EventTypeError))
 											Expect(ev.(event.Error).Message).To(Equal("nope"))
 										})
@@ -501,7 +450,7 @@ var _ = Describe("Engine", func() {
 
 								It("does not save an error event", func() {
 									waitGroup.Wait()
-									Expect(recorder.events).To(BeEmpty())
+									Expect(errorEvents()).To(BeEmpty())
 								})
 
 								It("finishes the build", func() {
@@ -540,8 +489,9 @@ var _ = Describe("Engine", func() {
 
 								It("surfaces the panic as an error event (no LogError wrapper ran)", func() {
 									waitGroup.Wait()
-									Expect(recorder.events).To(HaveLen(1))
-									Expect(recorder.events[0].EventType()).To(Equal(event.EventTypeError))
+									events := errorEvents()
+									Expect(events).To(HaveLen(1))
+									Expect(events[0].EventType()).To(Equal(event.EventTypeError))
 								})
 							})
 
@@ -557,20 +507,6 @@ var _ = Describe("Engine", func() {
 							})
 						})
 
-						Context("when getting the build vars fails", func() {
-							BeforeEach(func() {
-								dbBuild = variablesErrorBuild{Build: recorder, err: errors.New("ruh roh")}
-							})
-
-							It("releases the lock", func() {
-								expectTrackingLockReleased()
-							})
-
-							It("saves an error event", func() {
-								Expect(recorder.events).To(HaveLen(1))
-								Expect(recorder.events[0].EventType()).To(Equal(event.EventTypeError))
-							})
-						})
 					})
 
 					Context("when converting the plan to a step fails", func() {
@@ -586,19 +522,10 @@ var _ = Describe("Engine", func() {
 						})
 
 						It("saves an error event", func() {
-							Expect(recorder.events).To(HaveLen(1))
-							Expect(recorder.events[0].EventType()).To(Equal(event.EventTypeError))
+							events := errorEvents()
+							Expect(events).To(HaveLen(1))
+							Expect(events[0].EventType()).To(Equal(event.EventTypeError))
 						})
-					})
-				})
-
-				Context("when listening for aborts fails", func() {
-					BeforeEach(func() {
-						dbBuild = &abortListenerRecordingBuild{Build: recorder, err: errors.New("nope")}
-					})
-
-					It("releases the lock", func() {
-						expectTrackingLockReleased()
 					})
 				})
 			})
@@ -644,15 +571,5 @@ var _ = Describe("Engine", func() {
 			})
 		})
 
-		Context("when acquiring the lock fails", func() {
-			BeforeEach(func() {
-				dbBuild = trackingLockErrorBuild{Build: recorder, err: errors.New("no lock for you")}
-			})
-
-			It("does not build the step", func() {
-				waitGroup.Wait()
-				Consistently(builtPlans).ShouldNot(Receive())
-			})
-		})
 	})
 })

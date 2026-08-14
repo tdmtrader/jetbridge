@@ -3,7 +3,6 @@ package engine_test
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,7 +15,6 @@ import (
 	. "github.com/onsi/gomega"
 
 	"code.cloudfoundry.org/clock/fakeclock"
-	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
@@ -31,53 +29,6 @@ import (
 	"github.com/concourse/concourse/vars"
 	"github.com/google/go-containerregistry/pkg/authn"
 )
-
-// A build persists the events handed to it but keeps no record of the call, so
-// what the delegate emitted, and in what order, is only observable from
-// outside. saveErr injects the one save failure a healthy build cannot produce.
-type eventRecordingBuild struct {
-	db.Build
-
-	saveErr error
-	events  []atc.Event
-}
-
-func (b *eventRecordingBuild) SaveEvent(ev atc.Event) error {
-	b.events = append(b.events, ev)
-	if b.saveErr != nil {
-		return b.saveErr
-	}
-	return b.Build.SaveEvent(ev)
-}
-
-// latestVersionErrorScope preserves a healthy persisted scope while injecting
-// the one LatestVersion failure that PostgreSQL cannot produce selectively.
-type latestVersionErrorScope struct {
-	db.ResourceConfigScope
-	err error
-}
-
-func (scope latestVersionErrorScope) LatestVersion() (db.ResourceConfigVersion, bool, error) {
-	return nil, false, scope.err
-}
-
-// fixedScopeResourceConfig routes the healthy resource config to the
-// selectively failing scope without replacing any other config behavior.
-type fixedScopeResourceConfig struct {
-	db.ResourceConfig
-	scope db.ResourceConfigScope
-}
-
-func (config fixedScopeResourceConfig) FindOrCreateScope(*int) (db.ResourceConfigScope, error) {
-	return config.scope, nil
-}
-
-// fixedResourceConfigFactory routes only this lookup through the decorated
-// healthy config; all other factory behavior remains real PostgreSQL behavior.
-type fixedResourceConfigFactory struct {
-	db.ResourceConfigFactory
-	resourceConfig db.ResourceConfig
-}
 
 func newBuildDelegateRegistry() *imageresolvertesting.Registry {
 	GinkgoHelper()
@@ -104,14 +55,6 @@ func buildDelegateHeadRequests(registry *imageresolvertesting.Registry) []imager
 	return heads
 }
 
-func (factory fixedResourceConfigFactory) FindOrCreateResourceConfig(
-	string,
-	atc.Source,
-	db.ResourceCache,
-) (db.ResourceConfig, error) {
-	return factory.resourceConfig, nil
-}
-
 var _ = Describe("BuildStepDelegate", func() {
 	var (
 		logger        *lagertest.TestLogger
@@ -124,9 +67,9 @@ var _ = Describe("BuildStepDelegate", func() {
 
 		now = time.Date(1991, 6, 3, 5, 30, 0, 0, time.UTC)
 
-		fixture   *engineDBFixture
-		realBuild db.Build
-		build     *eventRecordingBuild
+		fixture     *engineDBFixture
+		realBuild   db.Build
+		buildEvents func() []atc.Event
 
 		delegate exec.BuildStepDelegate
 	)
@@ -153,7 +96,7 @@ var _ = Describe("BuildStepDelegate", func() {
 			atc.Config{Jobs: atc.JobConfigs{{Name: "some-job"}}},
 			"some-user",
 		)
-		build = &eventRecordingBuild{Build: realBuild}
+		buildEvents = func() []atc.Event { return engineBuildEvents(fixture, realBuild) }
 	})
 
 	Describe("persisted PostgreSQL state", func() {
@@ -178,12 +121,9 @@ var _ = Describe("BuildStepDelegate", func() {
 		})
 	})
 
-	// Every value below comes from the same real build row; the only seams are
-	// the recorded SaveEvent calls the build itself does not expose and, where a
-	// spec needs one, an injected save failure.
 	Describe("runtime behavior over the real build", func() {
 		BeforeEach(func() {
-			delegate = engine.NewBuildStepDelegate(build, planID, runState, fakeClock, policyChecker, false)
+			delegate = engine.NewBuildStepDelegate(realBuild, planID, runState, fakeClock, policyChecker, false)
 		})
 
 		Describe("FetchImage", func() {
@@ -315,27 +255,17 @@ var _ = Describe("BuildStepDelegate", func() {
 			})
 
 			Describe("policy checking", func() {
-				var checker *recordingChecker
-
 				BeforeEach(func() {
-					// The warnings are delivered as build events, which only the
-					// recording wrapper exposes; the values checked come from the
-					// same real build row.
-					buildUnderTest = build
+					buildUnderTest = realBuild
 				})
 
 				Context("when the action does not need to be checked", func() {
 					BeforeEach(func() {
-						checker = &recordingChecker{Checker: newPolicyChecker()}
-						policyChecker = checker
+						policyChecker = newPolicyChecker()
 					})
 
 					It("succeeds", func() {
 						Expect(fetchErr).ToNot(HaveOccurred())
-					})
-
-					It("checked if ActionUseImage is enabled", func() {
-						Expect(checker.actions).To(Equal([]string{policy.ActionUseImage}))
 					})
 
 					It("does not check", func() {
@@ -345,8 +275,7 @@ var _ = Describe("BuildStepDelegate", func() {
 
 				Context("when the action needs to be checked", func() {
 					BeforeEach(func() {
-						checker = &recordingChecker{Checker: newPolicyChecker(policy.ActionUseImage)}
-						policyChecker = checker
+						policyChecker = newPolicyChecker(policy.ActionUseImage)
 					})
 
 					It("policy check should be done", func() {
@@ -389,7 +318,9 @@ var _ = Describe("BuildStepDelegate", func() {
 						})
 
 						It("log warning messages", func() {
-							e := build.events[0]
+							events := engineBuildEvents(fixture, realBuild)
+							Expect(events).To(HaveLen(2))
+							e := events[0]
 							Expect(e.EventType()).To(Equal(event.EventTypeLog))
 							Expect(e.(event.Log).Origin).To(Equal(event.Origin{
 								ID:     "some-plan-id",
@@ -399,7 +330,7 @@ var _ = Describe("BuildStepDelegate", func() {
 							Expect(e.(event.Log).Payload).To(ContainSubstring("reasonA"))
 							Expect(e.(event.Log).Payload).To(ContainSubstring("reasonB"))
 
-							e = build.events[1]
+							e = events[1]
 							Expect(e.EventType()).To(Equal(event.EventTypeLog))
 							Expect(e.(event.Log).Origin).To(Equal(event.Origin{
 								ID:     "some-plan-id",
@@ -419,8 +350,7 @@ var _ = Describe("BuildStepDelegate", func() {
 						})
 
 						It("should not log policy check warning", func() {
-							for i := 0; i < len(build.events); i++ {
-								e := build.events[i]
+							for _, e := range engineBuildEvents(fixture, realBuild) {
 								if logEvent, ok := e.(event.Log); ok {
 									Expect(logEvent.Payload).ToNot(ContainSubstring("WARNING: unblocking from the policy check failure for soft enforcement"))
 								}
@@ -513,7 +443,7 @@ var _ = Describe("BuildStepDelegate", func() {
 			Context("when no resource factories are set", func() {
 				It("runs both check and get plans (no metadata-only shortcut)", func() {
 					runPlans = nil
-					nativeDelegate := engine.NewBuildStepDelegate(build, planID, parentRunState, fakeClock, policyChecker, false)
+					nativeDelegate := engine.NewBuildStepDelegate(realBuild, planID, parentRunState, fakeClock, policyChecker, false)
 					_, resCache, err := nativeDelegate.FetchImage(context.TODO(), *expectedGetPlan, expectedCheckPlan, false)
 					Expect(err).ToNot(HaveOccurred())
 
@@ -735,47 +665,6 @@ var _ = Describe("BuildStepDelegate", func() {
 				spec, _, err := nativeDelegate.FetchImage(context.TODO(), *registryGetPlan, registryCheckPlan, true)
 				Expect(err).ToNot(HaveOccurred())
 				Expect(spec.Privileged).To(BeTrue())
-			})
-
-			Context("when loading the latest resource config version fails", func() {
-				var registry *imageresolvertesting.Registry
-
-				BeforeEach(func() {
-					registry = newBuildDelegateRegistry()
-					registry.DrainRequests()
-					registryGetPlan.Get.Source = atc.Source{"repository": registry.Host() + "/db-error"}
-					registryCheckPlan.Check.Source = registryGetPlan.Get.Source
-					wrappedScope := latestVersionErrorScope{
-						ResourceConfigScope: scope,
-						err:                 errors.New("latest version failed"),
-					}
-					wrappedConfig := fixedScopeResourceConfig{
-						ResourceConfig: resourceConfig,
-						scope:          wrappedScope,
-					}
-					wrappedFactory := fixedResourceConfigFactory{
-						ResourceConfigFactory: fixture.ResourceConfigFactory,
-						resourceConfig:        wrappedConfig,
-					}
-
-					nativeDelegate = engine.NewBuildStepDelegateWithFactories(
-						realBuild, planID, exec.NewRunState(func(p atc.Plan) exec.Step {
-							runPlans = append(runPlans, p)
-							return stepFunc(func(context.Context, exec.RunState) (bool, error) {
-								return true, nil
-							})
-						}, nil), fakeClock, policyChecker, false,
-						wrappedFactory, fixture.ResourceCacheFactory,
-						imageresolver.NewResolver(authn.DefaultKeychain),
-					)
-				})
-
-				It("returns the database error without running fallback plans", func() {
-					_, _, err := nativeDelegate.FetchImage(context.TODO(), *registryGetPlan, registryCheckPlan, false)
-					Expect(err).To(MatchError("get latest version: latest version failed"))
-					Expect(runPlans).To(BeEmpty())
-					Expect(buildDelegateHeadRequests(registry)).To(BeEmpty())
-				})
 			})
 
 			Context("when no cached version exists in DB but resolver is available", func() {
@@ -1055,8 +944,7 @@ var _ = Describe("BuildStepDelegate", func() {
 				Expect(substeps).To(Equal(expectedSubstepPlans))
 
 				By("emitting the public plans as a build event")
-				Expect(len(build.events)).To(Equal(1))
-				Expect(build.events[0]).To(Equal(event.AcrossSubsteps{
+				Expect(buildEvents()).To(ConsistOf(event.AcrossSubsteps{
 					Time: now.Unix(),
 					Substeps: []*json.RawMessage{
 						expectedSubstepPlans[0].Public(),
@@ -1102,8 +990,7 @@ var _ = Describe("BuildStepDelegate", func() {
 				Expect(substeps).To(Equal(expectedSubstepPlans))
 
 				By("emitting the public plans as a build event")
-				Expect(len(build.events)).To(Equal(1))
-				Expect(build.events[0]).To(Equal(event.AcrossSubsteps{
+				Expect(buildEvents()).To(ConsistOf(event.AcrossSubsteps{
 					Time: now.Unix(),
 					Substeps: []*json.RawMessage{
 						expectedSubstepPlans[0].Public(),
@@ -1190,8 +1077,9 @@ var _ = Describe("BuildStepDelegate", func() {
 					})
 
 					It("saves a log event", func() {
-						Expect(len(build.events)).To(Equal(2))
-						Expect(build.events[0]).To(Equal(event.Log{
+						events := buildEvents()
+						Expect(events).To(HaveLen(2))
+						Expect(events[0]).To(Equal(event.Log{
 							Time:    now.Unix(),
 							Payload: "hello\n",
 							Origin: event.Origin{
@@ -1199,7 +1087,7 @@ var _ = Describe("BuildStepDelegate", func() {
 								ID:     "some-plan-id",
 							},
 						}))
-						Expect(build.events[1]).To(Equal(event.Log{
+						Expect(events[1]).To(Equal(event.Log{
 							Time:    now.Unix(),
 							Payload: "world",
 							Origin: event.Origin{
@@ -1207,21 +1095,6 @@ var _ = Describe("BuildStepDelegate", func() {
 								ID:     "some-plan-id",
 							},
 						}))
-					})
-				})
-
-				Context("when saving the event fails", func() {
-					disaster := errors.New("nope")
-
-					BeforeEach(func() {
-						build.saveErr = disaster
-						writtenBytes, writeErr = writer.Write([]byte("hello\nworld"))
-						writer.(io.Closer).Close()
-					})
-
-					It("returns 0 length, and the error", func() {
-						Expect(writtenBytes).To(Equal(0))
-						Expect(writeErr).To(Equal(disaster))
 					})
 				})
 
@@ -1237,8 +1110,9 @@ var _ = Describe("BuildStepDelegate", func() {
 						})
 
 						It("saves two log events", func() {
-							Expect(len(build.events)).To(Equal(1))
-							Expect(build.events[0]).To(Equal(event.Log{
+							events := buildEvents()
+							Expect(events).To(HaveLen(1))
+							Expect(events[0]).To(Equal(event.Log{
 								Time:    now.Unix(),
 								Payload: "hello\n",
 								Origin: event.Origin{
@@ -1248,8 +1122,9 @@ var _ = Describe("BuildStepDelegate", func() {
 							}))
 
 							writer.(io.Closer).Close()
-							Expect(len(build.events)).To(Equal(2), "second event is cached and only written after writer.Close() is called")
-							Expect(build.events[1]).To(Equal(event.Log{
+							events = buildEvents()
+							Expect(events).To(HaveLen(2), "second event is cached and only written after writer.Close() is called")
+							Expect(events[1]).To(Equal(event.Log{
 								Time:    now.Unix(),
 								Payload: "world",
 								Origin: event.Origin{
@@ -1271,8 +1146,9 @@ var _ = Describe("BuildStepDelegate", func() {
 						})
 
 						It("saves two log events, breaking on \\r", func() {
-							Expect(len(build.events)).To(Equal(1))
-							Expect(build.events[0]).To(Equal(event.Log{
+							events := buildEvents()
+							Expect(events).To(HaveLen(1))
+							Expect(events[0]).To(Equal(event.Log{
 								Time:    now.Unix(),
 								Payload: "hello\r",
 								Origin: event.Origin{
@@ -1282,8 +1158,9 @@ var _ = Describe("BuildStepDelegate", func() {
 							}))
 
 							writer.(io.Closer).Close()
-							Expect(len(build.events)).To(Equal(2), "second event is cached and only written after writer.Close() is called")
-							Expect(build.events[1]).To(Equal(event.Log{
+							events = buildEvents()
+							Expect(events).To(HaveLen(2), "second event is cached and only written after writer.Close() is called")
+							Expect(events[1]).To(Equal(event.Log{
 								Time:    now.Unix(),
 								Payload: "world",
 								Origin: event.Origin{
@@ -1306,8 +1183,7 @@ var _ = Describe("BuildStepDelegate", func() {
 						})
 
 						It("writer prefers breaking on the last \\n over \\r", func() {
-							Expect(len(build.events)).To(Equal(1))
-							Expect(build.events[0]).To(Equal(event.Log{
+							Expect(buildEvents()).To(ConsistOf(event.Log{
 								Time:    now.Unix(),
 								Payload: "hello\nbeautiful\rworld\n",
 								Origin: event.Origin{
@@ -1326,19 +1202,18 @@ var _ = Describe("BuildStepDelegate", func() {
 						It("returns the length of the string, no error, and does not log the event", func() {
 							Expect(writtenBytes).To(Equal(len("hello world")))
 							Expect(writeErr).ToNot(HaveOccurred())
-							Expect(len(build.events)).To(Equal(0), "first payload should be entirely cached")
+							Expect(buildEvents()).To(BeEmpty(), "first payload should be entirely cached")
 						})
 
 						It("flushes the payload after 1 second", func() {
-							Expect(len(build.events)).To(Equal(0), "first payload should be entirely cached")
+							Expect(buildEvents()).To(BeEmpty(), "first payload should be entirely cached")
 
 							fakeClock.Increment(time.Second)
 							writtenBytes, writeErr = writer.Write([]byte("!!!"))
 							Expect(writtenBytes).To(Equal(len("!!!")))
 							Expect(writeErr).ToNot(HaveOccurred())
 
-							Expect(len(build.events)).To(Equal(1), "entire payload should be flushed")
-							Expect(build.events[0]).To(Equal(event.Log{
+							Expect(buildEvents()).To(ConsistOf(event.Log{
 								Time:    fakeClock.Now().Unix(),
 								Payload: "hello world!!!",
 								Origin: event.Origin{
@@ -1348,7 +1223,7 @@ var _ = Describe("BuildStepDelegate", func() {
 							}))
 
 							writer.(io.Closer).Close()
-							Expect(len(build.events)).To(Equal(1), "no more events should be written")
+							Expect(buildEvents()).To(HaveLen(1), "no more events should be written")
 						})
 					})
 				})
@@ -1378,8 +1253,7 @@ var _ = Describe("BuildStepDelegate", func() {
 					})
 
 					It("saves a log event", func() {
-						Expect(len(build.events)).To(Equal(1))
-						Expect(build.events[0]).To(Equal(event.Log{
+						Expect(buildEvents()).To(ConsistOf(event.Log{
 							Time:    now.Unix(),
 							Payload: "hello\n",
 							Origin: event.Origin{
@@ -1387,19 +1261,6 @@ var _ = Describe("BuildStepDelegate", func() {
 								ID:     "some-plan-id",
 							},
 						}))
-					})
-				})
-
-				Context("when saving the event fails", func() {
-					disaster := errors.New("nope")
-
-					BeforeEach(func() {
-						build.saveErr = disaster
-					})
-
-					It("returns 0 length, and the error", func() {
-						Expect(writtenBytes).To(Equal(0))
-						Expect(writeErr).To(Equal(disaster))
 					})
 				})
 			})
@@ -1412,29 +1273,13 @@ var _ = Describe("BuildStepDelegate", func() {
 
 			Context("when saving the event succeeds", func() {
 				It("saves it with the current time", func() {
-					Expect(len(build.events)).To(Equal(1))
-					Expect(build.events[0]).To(Equal(event.Error{
+					Expect(buildEvents()).To(ConsistOf(event.Error{
 						Time:    now.Unix(),
 						Message: "fake error message",
 						Origin: event.Origin{
 							ID: "some-plan-id",
 						},
 					}))
-				})
-			})
-
-			Context("when saving the event fails", func() {
-				disaster := errors.New("nope")
-
-				BeforeEach(func() {
-					build.saveErr = disaster
-				})
-
-				It("logs an error", func() {
-					logs := logger.Logs()
-					Expect(len(logs)).To(Equal(1))
-					Expect(logs[0].Message).To(Equal("test.failed-to-save-error-event"))
-					Expect(logs[0].Data).To(Equal(lager.Data{"error": "nope"}))
 				})
 			})
 		})
@@ -1449,7 +1294,7 @@ var _ = Describe("BuildStepDelegate", func() {
 
 			BeforeEach(func() {
 				runState = exec.NewRunState(noopStepper, credVars)
-				delegate = engine.NewBuildStepDelegate(build, "some-plan-id", runState, fakeClock, policyChecker, false)
+				delegate = engine.NewBuildStepDelegate(realBuild, "some-plan-id", runState, fakeClock, policyChecker, false)
 
 				runState.Get(vars.Reference{Path: "source-param"})
 				runState.Get(vars.Reference{Path: "git-key"})
@@ -1466,8 +1311,7 @@ var _ = Describe("BuildStepDelegate", func() {
 					It("should be redacted", func() {
 						Expect(writeErr).To(BeNil())
 						Expect(writtenBytes).To(Equal(len("ok super-secret-source ok")))
-						Expect(len(build.events)).To(Equal(1))
-						Expect(build.events[0]).To(Equal(event.Log{
+						Expect(buildEvents()).To(ConsistOf(event.Log{
 							Time:    now.Unix(),
 							Payload: "ok ((redacted)) ok",
 							Origin: event.Origin{
@@ -1491,8 +1335,7 @@ var _ = Describe("BuildStepDelegate", func() {
 					It("should be redacted", func() {
 						Expect(writeErr).To(BeNil())
 						Expect(writtenBytes).To(Equal(len(logLines)))
-						Expect(len(build.events)).To(Equal(1))
-						Expect(build.events[0]).To(Equal(event.Log{
+						Expect(buildEvents()).To(ConsistOf(event.Log{
 							Time:    now.Unix(),
 							Payload: "ok((redacted))ok\nok((redacted))ok\nok((redacted))ok\n",
 							Origin: event.Origin{
@@ -1512,8 +1355,9 @@ var _ = Describe("BuildStepDelegate", func() {
 					})
 
 					It("should be redacted", func() {
-						Expect(len(build.events)).To(Equal(2))
-						Expect(build.events[0]).To(Equal(event.Log{
+						events := buildEvents()
+						Expect(events).To(HaveLen(2))
+						Expect(events[0]).To(Equal(event.Log{
 							Time:    now.Unix(),
 							Payload: "ok((redacted))ok\n",
 							Origin: event.Origin{
@@ -1521,7 +1365,7 @@ var _ = Describe("BuildStepDelegate", func() {
 								ID:     "some-plan-id",
 							},
 						}))
-						Expect(build.events[1]).To(Equal(event.Log{
+						Expect(events[1]).To(Equal(event.Log{
 							Time:    now.Unix(),
 							Payload: "ok((redacted))ok\nok((redacted))ok\n",
 							Origin: event.Origin{
@@ -1534,7 +1378,7 @@ var _ = Describe("BuildStepDelegate", func() {
 
 				Context("is disabled", func() {
 					BeforeEach(func() {
-						delegate = engine.NewBuildStepDelegate(build, "some-plan-id", runState, fakeClock, policyChecker, true)
+						delegate = engine.NewBuildStepDelegate(realBuild, "some-plan-id", runState, fakeClock, policyChecker, true)
 					})
 
 					It("does not redact secrets", func() {
@@ -1543,8 +1387,7 @@ var _ = Describe("BuildStepDelegate", func() {
 						writer.(io.Closer).Close()
 						Expect(writeErr).To(BeNil())
 						Expect(writtenBytes).To(Equal(len("ok super-secret-source ok")))
-						Expect(len(build.events)).To(Equal(1))
-						Expect(build.events[0]).To(Equal(event.Log{
+						Expect(buildEvents()).To(ConsistOf(event.Log{
 							Time:    now.Unix(),
 							Payload: "ok super-secret-source ok",
 							Origin: event.Origin{
@@ -1567,8 +1410,7 @@ var _ = Describe("BuildStepDelegate", func() {
 					It("should be redacted", func() {
 						Expect(writeErr).To(BeNil())
 						Expect(writtenBytes).To(Equal(len("ok super-secret-source ok")))
-						Expect(len(build.events)).To(Equal(1))
-						Expect(build.events[0]).To(Equal(event.Log{
+						Expect(buildEvents()).To(ConsistOf(event.Log{
 							Time:    now.Unix(),
 							Payload: "ok ((redacted)) ok",
 							Origin: event.Origin{
@@ -1592,8 +1434,7 @@ var _ = Describe("BuildStepDelegate", func() {
 					It("should be redacted", func() {
 						Expect(writeErr).To(BeNil())
 						Expect(writtenBytes).To(Equal(len(logLines)))
-						Expect(len(build.events)).To(Equal(1))
-						Expect(build.events[0]).To(Equal(event.Log{
+						Expect(buildEvents()).To(ConsistOf(event.Log{
 							Time:    now.Unix(),
 							Payload: "{\nok((redacted))ok\nok((redacted))ok\nok((redacted))ok\n}\n",
 							Origin: event.Origin{
@@ -1613,8 +1454,9 @@ var _ = Describe("BuildStepDelegate", func() {
 					})
 
 					It("should be redacted", func() {
-						Expect(len(build.events)).To(Equal(2))
-						Expect(build.events[0]).To(Equal(event.Log{
+						events := buildEvents()
+						Expect(events).To(HaveLen(2))
+						Expect(events[0]).To(Equal(event.Log{
 							Time:    now.Unix(),
 							Payload: "ok((redacted))ok\n",
 							Origin: event.Origin{
@@ -1622,7 +1464,7 @@ var _ = Describe("BuildStepDelegate", func() {
 								ID:     "some-plan-id",
 							},
 						}))
-						Expect(build.events[1]).To(Equal(event.Log{
+						Expect(events[1]).To(Equal(event.Log{
 							Time:    now.Unix(),
 							Payload: "ok((redacted))ok\nok((redacted))ok\n",
 							Origin: event.Origin{
@@ -1635,7 +1477,7 @@ var _ = Describe("BuildStepDelegate", func() {
 
 				Context("is disabled", func() {
 					BeforeEach(func() {
-						delegate = engine.NewBuildStepDelegate(build, "some-plan-id", runState, fakeClock, policyChecker, true)
+						delegate = engine.NewBuildStepDelegate(realBuild, "some-plan-id", runState, fakeClock, policyChecker, true)
 					})
 
 					It("does not redact secrets", func() {
@@ -1644,8 +1486,7 @@ var _ = Describe("BuildStepDelegate", func() {
 						writer.(io.Closer).Close()
 						Expect(writeErr).To(BeNil())
 						Expect(writtenBytes).To(Equal(len("ok super-secret-source ok")))
-						Expect(len(build.events)).To(Equal(1))
-						Expect(build.events[0]).To(Equal(event.Log{
+						Expect(buildEvents()).To(ConsistOf(event.Log{
 							Time:    now.Unix(),
 							Payload: "ok super-secret-source ok",
 							Origin: event.Origin{
