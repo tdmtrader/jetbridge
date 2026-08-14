@@ -320,15 +320,9 @@ jobs:
 				pipelineFileContent = badPipelineContentWithInvalidSyntax
 			})
 
-			It("should not return error", func() {
+			It("reports the invalid pipeline and finishes unsuccessfully without returning an error", func() {
 				Expect(stepErr).NotTo(HaveOccurred())
-			})
-
-			It("should have an error message printed to stderr", func() {
 				Expect(execBuildLog(fixture, realBuild, event.OriginSourceStderr)).To(MatchRegexp(`(?s)invalid pipeline:.*- invalid jobs:`))
-			})
-
-			It("should finish unsuccessfully", func() {
 				Expect(execBuildFinishEvents(fixture, realBuild)).To(HaveLen(1))
 				Expect(execBuildFinishEvents(fixture, realBuild)[0].Succeeded).To(BeFalse())
 			})
@@ -339,15 +333,9 @@ jobs:
 				pipelineFileContent = badPipelineWithDuplicateKeys
 			})
 
-			It("should not return error", func() {
+			It("reports the duplicate key and finishes unsuccessfully without returning an error", func() {
 				Expect(stepErr).NotTo(HaveOccurred())
-			})
-
-			It("should have an error message printed to stderr", func() {
 				Expect(execBuildLog(fixture, realBuild, event.OriginSourceStderr)).To(MatchRegexp(`(?s)error parsing pipeline:.*mapping key "resources" already defined`))
-			})
-
-			It("should finish unsuccessfully", func() {
 				Expect(execBuildFinishEvents(fixture, realBuild)).To(HaveLen(1))
 				Expect(execBuildFinishEvents(fixture, realBuild)[0].Succeeded).To(BeFalse())
 			})
@@ -358,11 +346,8 @@ jobs:
 				pipelineFileContent = pipelineWithMergeKeys
 			})
 
-			It("should not return error", func() {
+			It("accepts merge keys and finishes successfully", func() {
 				Expect(stepErr).NotTo(HaveOccurred())
-			})
-
-			It("should finish successfully", func() {
 				Expect(execBuildFinishEvents(fixture, realBuild)).To(HaveLen(1))
 				Expect(execBuildFinishEvents(fixture, realBuild)[0].Succeeded).To(BeTrue())
 			})
@@ -373,15 +358,9 @@ jobs:
 				pipelineFileContent = badPipelineContentWithEmptyContent
 			})
 
-			It("should return an error", func() {
+			It("reports the empty pipeline without updating persisted hierarchy", func() {
 				Expect(stepErr).NotTo(HaveOccurred())
-			})
-
-			It("should log an error message", func() {
 				Expect(execBuildLog(fixture, realBuild, event.OriginSourceStderr)).To(ContainSubstring("pipeline must contain at least one job"))
-			})
-
-			It("should not update the job and build id", func() {
 				reloaded, err := currentPipeline.Reload()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(reloaded).To(BeTrue())
@@ -524,16 +503,10 @@ jobs:
 						existingPipeline = newerPipeline
 					})
 
-					It("logs a warning", func() {
+					It("warns, succeeds, and retains the newer build's pipeline", func() {
 						Expect(execBuildLog(fixture, realBuild, event.OriginSourceStderr)).To(ContainSubstring("WARNING: the pipeline was not saved because it was already saved by a newer build"))
-					})
-
-					It("does not fail the step", func() {
 						Expect(stepErr).ToNot(HaveOccurred())
 						Expect(stepOk).To(BeTrue())
-					})
-
-					It("retains the newer build's persisted pipeline", func() {
 						pipeline, found, err := currentTeam.Pipeline(targetRef)
 						Expect(err).NotTo(HaveOccurred())
 						Expect(found).To(BeTrue())

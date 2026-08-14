@@ -166,12 +166,9 @@ var _ = Describe("LoadVarStep", func() {
 				fileContent = plainString
 			})
 
-			It("succeeds", func() {
+			It("succeeds and parses the var correctly", func() {
 				Expect(stepErr).ToNot(HaveOccurred())
 				Expect(stepOk).To(BeTrue())
-			})
-
-			It("var should be parsed correctly", func() {
 				expectLocalVarAdded("some-var", strings.TrimSpace(plainString), true)
 			})
 
@@ -198,12 +195,9 @@ var _ = Describe("LoadVarStep", func() {
 				fileContent = plainString
 			})
 
-			It("succeeds", func() {
+			It("succeeds and parses the var correctly", func() {
 				Expect(stepErr).ToNot(HaveOccurred())
 				Expect(stepOk).To(BeTrue())
-			})
-
-			It("var should be parsed correctly", func() {
 				expectLocalVarAdded("some-var", plainString, true)
 			})
 		})
@@ -219,12 +213,9 @@ var _ = Describe("LoadVarStep", func() {
 				fileContent = jsonString
 			})
 
-			It("succeeds", func() {
+			It("succeeds and parses the var correctly", func() {
 				Expect(stepErr).ToNot(HaveOccurred())
 				Expect(stepOk).To(BeTrue())
-			})
-
-			It("var should be parsed correctly", func() {
 				expectLocalVarAdded("some-var", map[string]any{"k1": "jv1", "k2": "jv2", "k3": json.Number("123")}, true)
 			})
 		})
@@ -240,12 +231,9 @@ var _ = Describe("LoadVarStep", func() {
 				fileContent = yamlString
 			})
 
-			It("succeeds", func() {
+			It("succeeds and parses the var correctly", func() {
 				Expect(stepErr).ToNot(HaveOccurred())
 				Expect(stepOk).To(BeTrue())
-			})
-
-			It("var should be parsed correctly", func() {
 				expectLocalVarAdded("some-var", map[string]any{"k1": "yv1", "k2": "yv2", "k3": json.Number("123")}, true)
 			})
 		})
@@ -261,12 +249,9 @@ var _ = Describe("LoadVarStep", func() {
 				fileContent = yamlString
 			})
 
-			It("succeeds", func() {
+			It("succeeds and parses the var correctly", func() {
 				Expect(stepErr).ToNot(HaveOccurred())
 				Expect(stepOk).To(BeTrue())
-			})
-
-			It("var should be parsed correctly", func() {
 				expectLocalVarAdded("some-var", map[string]any{"k1": "yv1", "k2": "yv2", "k3": json.Number("123")}, true)
 			})
 		})
@@ -283,12 +268,9 @@ var _ = Describe("LoadVarStep", func() {
 				fileContent = plainString
 			})
 
-			It("succeeds", func() {
+			It("succeeds and parses the var correctly as trim", func() {
 				Expect(stepErr).ToNot(HaveOccurred())
 				Expect(stepOk).To(BeTrue())
-			})
-
-			It("var should be parsed correctly as trim", func() {
 				expectLocalVarAdded("some-var", strings.TrimSpace(plainString), true)
 			})
 		})
@@ -303,12 +285,9 @@ var _ = Describe("LoadVarStep", func() {
 				fileContent = jsonString
 			})
 
-			It("succeeds", func() {
+			It("succeeds and parses the var correctly", func() {
 				Expect(stepErr).ToNot(HaveOccurred())
 				Expect(stepOk).To(BeTrue())
-			})
-
-			It("var should be parsed correctly", func() {
 				expectLocalVarAdded("some-var", map[string]any{"k1": "jv1", "k2": "jv2", "k3": json.Number("123")}, true)
 			})
 		})
@@ -323,12 +302,9 @@ var _ = Describe("LoadVarStep", func() {
 				fileContent = yamlString
 			})
 
-			It("succeeds", func() {
+			It("succeeds and parses the var correctly", func() {
 				Expect(stepErr).ToNot(HaveOccurred())
 				Expect(stepOk).To(BeTrue())
-			})
-
-			It("var should be parsed correctly", func() {
 				expectLocalVarAdded("some-var", map[string]any{"k1": "yv1", "k2": "yv2", "k3": json.Number("123")}, true)
 			})
 		})
@@ -343,12 +319,9 @@ var _ = Describe("LoadVarStep", func() {
 				fileContent = yamlString
 			})
 
-			It("succeeds", func() {
+			It("succeeds and parses the var correctly", func() {
 				Expect(stepErr).ToNot(HaveOccurred())
 				Expect(stepOk).To(BeTrue())
-			})
-
-			It("var should be parsed correctly", func() {
 				expectLocalVarAdded("some-var", map[string]any{"k1": "yv1", "k2": "yv2", "k3": json.Number("123")}, true)
 			})
 		})

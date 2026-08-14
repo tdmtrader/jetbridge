@@ -43,6 +43,34 @@ func persistedFinishGets(fixture *execDBFixture, build db.Build) []event.FinishG
 	return finished
 }
 
+func seedGetPipelineResourceVersion(
+	fixture *execDBFixture,
+	pipeline db.Pipeline,
+	version atc.Version,
+	metadata db.ResourceConfigMetadataFields,
+) db.Resource {
+	GinkgoHelper()
+	resource, found, err := pipeline.Resource("some-resource")
+	Expect(err).NotTo(HaveOccurred())
+	Expect(found).To(BeTrue())
+	config, err := fixture.ResourceConfigFactory.FindOrCreateResourceConfig(
+		"some-base-type",
+		atc.Source{"some": "super-secret-source"},
+		nil,
+	)
+	Expect(err).NotTo(HaveOccurred())
+	resourceID := resource.ID()
+	scope, err := config.FindOrCreateScope(&resourceID)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(resource.SetResourceConfigScope(scope)).To(Succeed())
+	Expect(scope.SaveVersions(db.SpanContext{}, []atc.Version{version})).To(Succeed())
+	_, err = resource.Reload()
+	Expect(err).NotTo(HaveOccurred())
+	_, err = resource.UpdateMetadata(version, metadata)
+	Expect(err).NotTo(HaveOccurred())
+	return resource
+}
+
 var _ = Describe("GetStep", func() {
 	var (
 		ctx    context.Context
@@ -70,6 +98,7 @@ var _ = Describe("GetStep", func() {
 
 		lockFactory       lock.LockFactory
 		contendingGetLock lock.Lock
+		heldCachedGetLock lock.Lock
 
 		stepper      exec.Stepper
 		imageStepper *imageFetchStepper
@@ -183,6 +212,7 @@ var _ = Describe("GetStep", func() {
 
 		lockFactory = fixture.LockFactory
 		contendingGetLock = nil
+		heldCachedGetLock = nil
 
 		imageStepper = new(imageFetchStepper)
 		stepper = noopStepper
@@ -211,29 +241,6 @@ var _ = Describe("GetStep", func() {
 			Version:  &atc.Version{"some": "version"},
 		}
 
-		var found bool
-		var err error
-		pipelineResource, found, err = realPipeline.Resource("some-resource")
-		Expect(err).NotTo(HaveOccurred())
-		Expect(found).To(BeTrue())
-		resourceConfig, err := fixture.ResourceConfigFactory.FindOrCreateResourceConfig(
-			"some-base-type",
-			atc.Source{"some": "super-secret-source"},
-			nil,
-		)
-		Expect(err).NotTo(HaveOccurred())
-		resourceID := pipelineResource.ID()
-		resourceScope, err := resourceConfig.FindOrCreateScope(&resourceID)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(pipelineResource.SetResourceConfigScope(resourceScope)).To(Succeed())
-		Expect(resourceScope.SaveVersions(db.SpanContext{}, []atc.Version{{"some": "version"}})).To(Succeed())
-		_, err = pipelineResource.Reload()
-		Expect(err).NotTo(HaveOccurred())
-		_, err = pipelineResource.UpdateMetadata(
-			atc.Version{"some": "version"},
-			db.ResourceConfigMetadataFields{{Name: "some", Value: "old-metadata"}},
-		)
-		Expect(err).NotTo(HaveOccurred())
 	})
 
 	AfterEach(func() {
@@ -272,6 +279,18 @@ var _ = Describe("GetStep", func() {
 			workerPool,
 			defaultGetTimeout,
 		)
+
+		if heldCachedGetLock != nil {
+			boundedCtx, boundedCancel := context.WithTimeout(ctx, 5*time.Second)
+			defer boundedCancel()
+			runDone := make(chan struct{})
+			go func() {
+				stepOk, stepErr = getStep.Run(boundedCtx, runState)
+				close(runDone)
+			}()
+			Eventually(runDone, 6*time.Second).Should(BeClosed())
+			return
+		}
 
 		if contendingGetLock == nil {
 			stepOk, stepErr = getStep.Run(ctx, runState)
@@ -505,6 +524,55 @@ var _ = Describe("GetStep", func() {
 				Expect(fromCache).To(BeTrue())
 				Expect(artifact).To(Equal(cacheVolume))
 			})
+
+			Context("while the matching resource-get lock is independently held", func() {
+				BeforeEach(func() {
+					contender := execLockFactory()
+					var acquired bool
+					var err error
+					heldCachedGetLock, acquired, err = contender.Acquire(
+						testLogger,
+						lock.NewResourceGetLockID(strconv.Itoa(cached.ID())+"-"+chosenWorker.Name()),
+					)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(acquired).To(BeTrue())
+					DeferCleanup(func() {
+						if heldCachedGetLock != nil {
+							Expect(heldCachedGetLock.Release()).To(Succeed())
+							heldCachedGetLock = nil
+						}
+					})
+				})
+
+				It("completes from the persisted cache without reaching for the held lock", func() {
+					Expect(stepErr).NotTo(HaveOccurred())
+					Expect(stepOk).To(BeTrue())
+
+					var result exec.GetResult
+					Expect(runState.Result(planID, &result)).To(BeTrue())
+					Expect(result.Name).To(Equal(getPlan.Name))
+					Expect(result.ResourceCache.ID()).To(Equal(cached.ID()))
+					finished := persistedFinishGets(fixture, realBuild)
+					Expect(finished).To(HaveLen(1))
+					Expect(finished[0].ExitStatus).To(Equal(0))
+
+					artifact, fromCache, found := artifactRepository.ArtifactFor(build.ArtifactName(getPlan.Name))
+					Expect(found).To(BeTrue())
+					Expect(fromCache).To(BeTrue())
+					Expect(artifact).To(Equal(cacheVolume))
+
+					probe := execLockFactory()
+					probeLock, acquired, err := probe.Acquire(
+						testLogger,
+						lock.NewResourceGetLockID(strconv.Itoa(cached.ID())+"-"+chosenWorker.Name()),
+					)
+					Expect(err).NotTo(HaveOccurred())
+					if acquired {
+						DeferCleanup(func() { Expect(probeLock.Release()).To(Succeed()) })
+					}
+					Expect(acquired).To(BeFalse())
+				})
+			})
 		})
 
 		Context("when the cache is missing from the selected worker", func() {
@@ -565,15 +633,9 @@ var _ = Describe("GetStep", func() {
 					})
 				})
 
-				It("succeeds", func() {
+				It("[GS-03] waits for the independent lock, then runs and succeeds", func() {
 					Expect(stepErr).ToNot(HaveOccurred())
-				})
-
-				It("logs a message to stderr", func() {
 					Expect(execBuildLog(fixture, realBuild, event.OriginSourceStderr)).To(MatchRegexp(`INFO.*waiting.*lock`))
-				})
-
-				It("[GS-03] runs the get script once the independently held lock is free", func() {
 					finished := persistedFinishGets(fixture, realBuild)
 					Expect(finished).To(HaveLen(1))
 					Expect(finished[0].ExitStatus).To(Equal(0))
@@ -802,14 +864,25 @@ var _ = Describe("GetStep", func() {
 			Expect(finished[0].FetchedMetadata).To(Equal(atc.Metadata{{Name: "some", Value: "metadata"}}))
 		})
 
-		It("saves the version for the resource", func() {
-			version, found, err := pipelineResource.FindVersion(atc.Version{"some": "version"})
-			Expect(err).NotTo(HaveOccurred())
-			Expect(found).To(BeTrue())
-			reloaded, err := version.Reload()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(reloaded).To(BeTrue())
-			Expect(version.Metadata()).To(Equal(db.ResourceConfigMetadataFields{{Name: "some", Value: "metadata"}}))
+		Context("with a persisted pipeline resource version", func() {
+			BeforeEach(func() {
+				pipelineResource = seedGetPipelineResourceVersion(
+					fixture,
+					realPipeline,
+					atc.Version{"some": "version"},
+					db.ResourceConfigMetadataFields{{Name: "some", Value: "old-metadata"}},
+				)
+			})
+
+			It("saves the returned metadata for the resource version", func() {
+				version, found, err := pipelineResource.FindVersion(atc.Version{"some": "version"})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(found).To(BeTrue())
+				reloaded, err := version.Reload()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(reloaded).To(BeTrue())
+				Expect(version.Metadata()).To(Equal(db.ResourceConfigMetadataFields{{Name: "some", Value: "metadata"}}))
+			})
 		})
 
 		It("adds metadata to the build variables", func() {
@@ -896,14 +969,25 @@ var _ = Describe("GetStep", func() {
 			Expect(stepErr).ToNot(HaveOccurred())
 		})
 
-		It("does not update the resource version", func() {
-			version, found, err := pipelineResource.FindVersion(atc.Version{"some": "version"})
-			Expect(err).NotTo(HaveOccurred())
-			Expect(found).To(BeTrue())
-			reloaded, err := version.Reload()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(reloaded).To(BeTrue())
-			Expect(version.Metadata()).To(Equal(db.ResourceConfigMetadataFields{{Name: "some", Value: "old-metadata"}}))
+		Context("with existing resource version metadata", func() {
+			BeforeEach(func() {
+				pipelineResource = seedGetPipelineResourceVersion(
+					fixture,
+					realPipeline,
+					atc.Version{"some": "version"},
+					db.ResourceConfigMetadataFields{{Name: "some", Value: "old-metadata"}},
+				)
+			})
+
+			It("does not update the resource version", func() {
+				version, found, err := pipelineResource.FindVersion(atc.Version{"some": "version"})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(found).To(BeTrue())
+				reloaded, err := version.Reload()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(reloaded).To(BeTrue())
+				Expect(version.Metadata()).To(Equal(db.ResourceConfigMetadataFields{{Name: "some", Value: "old-metadata"}}))
+			})
 		})
 	})
 
@@ -1062,10 +1146,32 @@ var _ = Describe("GetStep", func() {
 			Expect(imageRef).To(Equal("docker:///my-org/my-image@sha256:abc123def456"))
 		})
 
-		It("emits Finished with exit status 0", func() {
-			finished := persistedFinishGets(fixture, realBuild)
-			Expect(finished).To(HaveLen(1))
-			Expect(finished[0].ExitStatus).To(Equal(0))
+		Context("with existing resource version metadata", func() {
+			BeforeEach(func() {
+				pipelineResource = seedGetPipelineResourceVersion(
+					fixture,
+					realPipeline,
+					atc.Version{"digest": "sha256:abc123def456"},
+					db.ResourceConfigMetadataFields{{Name: "some", Value: "old-metadata"}},
+				)
+			})
+
+			It("updates the persisted resource version and emits Finished", func() {
+				version, found, err := pipelineResource.FindVersion(atc.Version{"digest": "sha256:abc123def456"})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(found).To(BeTrue())
+				reloaded, err := version.Reload()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(reloaded).To(BeTrue())
+				Expect(version.Metadata()).To(BeEmpty())
+				Expect(version.Metadata()).NotTo(Equal(
+					db.ResourceConfigMetadataFields{{Name: "some", Value: "old-metadata"}},
+				))
+
+				finished := persistedFinishGets(fixture, realBuild)
+				Expect(finished).To(HaveLen(1))
+				Expect(finished[0].ExitStatus).To(Equal(0))
+			})
 		})
 	})
 

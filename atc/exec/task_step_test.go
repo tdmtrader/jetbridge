@@ -2,6 +2,7 @@ package exec_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
@@ -45,10 +46,10 @@ func persistedFinishTasks(fixture *execDBFixture, build db.Build) []event.Finish
 func persistedStartTasks(fixture *execDBFixture, build db.Build) []event.StartTask {
 	GinkgoHelper()
 	var started []event.StartTask
-	for _, e := range execBuildEvents(fixture, build) {
-		if start, ok := e.(event.StartTask); ok {
-			started = append(started, start)
-		}
+	for _, payload := range execBuildEventPayloads(fixture, build, event.EventTypeStartTask) {
+		var start event.StartTask
+		Expect(json.Unmarshal(payload, &start)).To(Succeed())
+		started = append(started, start)
 	}
 	return started
 }
@@ -1110,16 +1111,10 @@ var _ = Describe("TaskStep", func() {
 				stepper = imageStepper.step
 			})
 
-			It("succeeds", func() {
+			It("succeeds with the fetched image and persists its fetch event", func() {
 				Expect(stepErr).ToNot(HaveOccurred())
 				Expect(stepOk).To(BeTrue())
-			})
-
-			It("persists the image fetch event", func() {
 				Expect(execBuildEventTypes(fixture, dbBuild)).To(ContainElement(event.EventTypeImageGet))
-			})
-
-			It("creates the specs with the fetched image", func() {
 				Expect(chosenContainer.Spec.ImageSpec).To(Equal(runtime.ImageSpec{
 					ImageArtifact: fetchedImageArtifact,
 					ResourceType:  "image",
@@ -1133,6 +1128,54 @@ var _ = Describe("TaskStep", func() {
 
 				It("fetches a privileged image", func() {
 					Expect(chosenContainer.Spec.ImageSpec.Privileged).To(BeTrue())
+				})
+			})
+
+			Context("when check skip interval is true", func() {
+				BeforeEach(func() {
+					taskPlan.CheckSkipInterval = true
+					stepper = func(plan atc.Plan) exec.Step {
+						return stepFunc(func(_ context.Context, fetchState exec.RunState) (bool, error) {
+							if plan.Check != nil {
+								if !plan.Check.SkipInterval {
+									return false, nil
+								}
+								fetchState.StoreResult(plan.ID, true)
+								return true, nil
+							}
+
+							if plan.Get != nil {
+								if plan.Get.VersionFrom == nil {
+									return false, nil
+								}
+								var forcedCheck bool
+								if !fetchState.Result(*plan.Get.VersionFrom, &forcedCheck) || !forcedCheck {
+									return false, nil
+								}
+								fetchState.StoreResult(plan.ID, exec.GetResult{Name: plan.Get.Name})
+								fetchState.ArtifactRepository().RegisterArtifact(
+									build.ArtifactName(plan.Get.Name),
+									fetchedImageArtifact,
+									false,
+								)
+							}
+
+							return true, nil
+						})
+					}
+				})
+
+				It("runs with the image fetched by the forced check plan", func() {
+					Expect(stepErr).NotTo(HaveOccurred())
+					Expect(stepOk).To(BeTrue())
+					Expect(execBuildEventTypes(fixture, dbBuild)).To(ContainElements(
+						event.EventTypeImageCheck,
+						event.EventTypeImageGet,
+					))
+					Expect(chosenContainer.Spec.ImageSpec).To(Equal(runtime.ImageSpec{
+						ImageArtifact: fetchedImageArtifact,
+						ResourceType:  "image",
+					}))
 				})
 			})
 		})

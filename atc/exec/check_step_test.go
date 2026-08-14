@@ -2,6 +2,7 @@ package exec_test
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"code.cloudfoundry.org/clock"
+	"code.cloudfoundry.org/clock/fakeclock"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/lock"
@@ -109,6 +111,9 @@ var _ = Describe("CheckStep", func() {
 		defaultTimeout        time.Duration = 0
 
 		deleteScopeAfterCreation bool
+		delegateClock            clock.Clock
+		checkLockClock           *fakeclock.FakeClock
+		contendingCheckLock      lock.Lock
 
 		stepper      exec.Stepper
 		imageStepper *imageFetchStepper
@@ -179,13 +184,16 @@ var _ = Describe("CheckStep", func() {
 		}, vars.StaticVariables{"source-var": "super-secret-source"})
 
 		deleteScopeAfterCreation = false
+		delegateClock = clock.NewClock()
+		checkLockClock = nil
+		contendingCheckLock = nil
 
 		delegateFactory = checkDelegateFactory(func(state exec.RunState) exec.CheckDelegate {
 			realDelegate := engine.NewCheckDelegate(
 				realBuild,
 				atc.Plan{ID: planID, Check: &checkPlan},
 				state,
-				clock.NewClock(),
+				delegateClock,
 				db.NewResourceCheckRateLimiter(rate.Inf, 0, time.Minute, nil, time.Minute, clock.NewClock()),
 				policy.NoopChecker{},
 			)
@@ -268,7 +276,33 @@ var _ = Describe("CheckStep", func() {
 			checkStepOpts...,
 		)
 
-		stepOk, stepErr = checkStep.Run(ctx, runState)
+		if contendingCheckLock == nil {
+			stepOk, stepErr = checkStep.Run(ctx, runState)
+			return
+		}
+
+		runDone := make(chan struct{})
+		go func() {
+			stepOk, stepErr = checkStep.Run(ctx, runState)
+			close(runDone)
+		}()
+
+		Eventually(checkLockClock.WatcherCount, 5*time.Second).Should(BeNumerically(">=", 1))
+		Consistently(runDone, 100*time.Millisecond).ShouldNot(BeClosed())
+		checkedResource, found, err := realPipeline.Resource("some-resource")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		_, err = checkedResource.Reload()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(checkedResource.ResourceConfigScopeID()).To(Equal(resourceConfigScope.ID()))
+		Expect(resourceConfigScope.SaveVersions(
+			db.SpanContext{},
+			[]atc.Version{{"latest": "version"}},
+		)).To(Succeed())
+		Expect(contendingCheckLock.Release()).To(Succeed())
+		contendingCheckLock = nil
+		checkLockClock.Increment(time.Second)
+		Eventually(runDone, 5*time.Second).Should(BeClosed())
 	})
 
 	Context("with a reasonable configuration", func() {
@@ -335,14 +369,38 @@ var _ = Describe("CheckStep", func() {
 			Context("when not given a from version", func() {
 				BeforeEach(func() {
 					checkPlan.FromVersion = nil
-					Expect(resourceConfigScope.SaveVersions(
-						db.SpanContext{},
-						[]atc.Version{{"latest": "version"}},
-					)).To(Succeed())
+					checkPlan.Resource = "some-resource"
+					resourceID, found, err := realPipeline.ResourceID(checkPlan.Resource)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(found).To(BeTrue())
+					resourceConfigScope, err = expectedConfig.FindOrCreateScope(&resourceID)
+					Expect(err).NotTo(HaveOccurred())
+					chosenContainer.ProcessDefs[0].Stub.Output = []atc.Version{{"latest": "version"}}
+					checkLockClock = fakeclock.NewFakeClock(time.Now())
+					delegateClock = checkLockClock
+
+					contender := execLockFactory()
+					checkedResourceConfigID := resourceConfigScope.ResourceConfig().ID()
+					Expect(checkedResourceConfigID).To(Equal(expectedConfig.ID()))
+					var acquired bool
+					contendingCheckLock, acquired, err = contender.Acquire(
+						testLogger,
+						lock.NewResourceConfigCheckingLockID(checkedResourceConfigID),
+					)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(acquired).To(BeTrue())
+					DeferCleanup(func() {
+						if contendingCheckLock != nil {
+							Expect(contendingCheckLock.Release()).To(Succeed())
+						}
+					})
 				})
 
-				It("finds the latest version itself - it's a strong, independent check step who dont need no plan", func() {
+				It("reads the latest persisted version after waiting for the production lock", func() {
 					Expect(invokedResource.Version).To(Equal(atc.Version{"latest": "version"}))
+					var result atc.Version
+					Expect(runState.Result(planID, &result)).To(BeTrue())
+					Expect(result).To(Equal(atc.Version{"latest": "version"}))
 				})
 			})
 
@@ -440,12 +498,21 @@ var _ = Describe("CheckStep", func() {
 					})
 
 					It("creates the resource config using the image resource cache", func() {
-						expectedCustomConfig, err := fixture.ResourceConfigFactory.FindOrCreateResourceConfig(
-							"some-custom-type",
-							atc.Source{"some": "super-secret-source"},
-							imageResourceCache,
-						)
+						sourceJSON, err := json.Marshal(atc.Source{"some": "super-secret-source"})
 						Expect(err).NotTo(HaveOccurred())
+						expectedSourceHash := fmt.Sprintf("%x", sha256.Sum256(sourceJSON))
+						var customConfigID, matchingConfigs int
+						Expect(fixture.Conn.QueryRow(
+							`SELECT COALESCE(MIN(id), 0), COUNT(*)
+							 FROM resource_configs
+							 WHERE resource_cache_id = $1 AND source_hash = $2`,
+							imageResourceCache.ID(),
+							expectedSourceHash,
+						).Scan(&customConfigID, &matchingConfigs)).To(Succeed())
+						Expect(matchingConfigs).To(Equal(1))
+						expectedCustomConfig, found, err := fixture.ResourceConfigFactory.FindResourceConfigByID(customConfigID)
+						Expect(err).NotTo(HaveOccurred())
+						Expect(found).To(BeTrue())
 						Expect(expectedCustomConfig.CreatedByResourceCache()).NotTo(BeNil())
 						Expect(expectedCustomConfig.CreatedByResourceCache().ID()).To(Equal(imageResourceCache.ID()))
 					})
@@ -517,7 +584,7 @@ var _ = Describe("CheckStep", func() {
 						Expect(chosenContainer.RunningProcesses()).To(HaveLen(1))
 					})
 
-					It("persists the build-backed check start state", func() {
+					It("persists build-backed check state and releases its production lock", func() {
 						lastCheck, err := resourceConfigScope.LastCheck()
 						Expect(err).NotTo(HaveOccurred())
 						Expect(lastCheck.StartTime).To(BeTemporally("~", time.Now(), time.Minute))
@@ -528,9 +595,6 @@ var _ = Describe("CheckStep", func() {
 						).Scan(&lastCheckBuildID)).To(Succeed())
 						Expect(lastCheckBuildID.Valid).To(BeTrue())
 						Expect(lastCheckBuildID.Int64).To(Equal(int64(realBuild.ID())))
-					})
-
-					It("releases the production resource-check lock", func() {
 						checkedResourceConfigID := resourceConfigScope.ResourceConfig().ID()
 						Expect(checkedResourceConfigID).To(Equal(expectedConfig.ID()))
 						independentFactory := execLockFactory()
@@ -848,11 +912,8 @@ var _ = Describe("CheckStep", func() {
 					}
 				})
 
-				It("does not error", func() {
+				It("finishes non-fatally after the persisted scope is deleted", func() {
 					Expect(stepErr).NotTo(HaveOccurred())
-				})
-
-				It("finishes with failure (non-fatal)", func() {
 					Expect(execBuildFinishEvents(fixture, realBuild)).To(HaveLen(1))
 					Expect(execBuildFinishEvents(fixture, realBuild)[0].Succeeded).To(BeFalse())
 					var count int
@@ -889,11 +950,8 @@ var _ = Describe("CheckStep", func() {
 			deleteScopeAfterCreation = true
 		})
 
-		It("does not error", func() {
+		It("finishes non-fatally after the persisted scope is deleted", func() {
 			Expect(stepErr).NotTo(HaveOccurred())
-		})
-
-		It("finishes with failure (non-fatal)", func() {
 			Expect(execBuildFinishEvents(fixture, realBuild)).To(HaveLen(1))
 			Expect(execBuildFinishEvents(fixture, realBuild)[0].Succeeded).To(BeFalse())
 			var count int
