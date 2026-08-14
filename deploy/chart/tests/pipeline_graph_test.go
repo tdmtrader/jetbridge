@@ -710,3 +710,80 @@ func sortedKeys(m map[string]bool) []string {
 
 	return keys
 }
+
+// TestUnitExclusionsMatchThePipeline pins the two places that decide which
+// packages get tested to the same answer.
+//
+// They drifted once, and silently: the pipeline excluded atc/db, atc/gc,
+// atc/scheduler/algorithm, atc/worker, cmd and skymarshal/dexserver, none of
+// which the Makefile skipped. That is 52k lines of tests which passed on every
+// developer machine and ran in CI exactly never. A commit claiming to have
+// aligned the lists removed one entry and left six, because nothing checked.
+//
+// Neither list is authoritative -- the test only requires that they agree.
+func TestUnitExclusionsMatchThePipeline(t *testing.T) {
+	root := repoRoot(t)
+
+	makefile, err := os.ReadFile(filepath.Join(root, "Makefile"))
+	if err != nil {
+		t.Fatalf("reading the Makefile: %v", err)
+	}
+
+	skip := regexp.MustCompile(`--skip-package=([^\s\\]+)`).FindSubmatch(makefile)
+	if skip == nil {
+		t.Fatal("the Makefile's test-unit target no longer passes --skip-package; " +
+			"this test can no longer find the exclusion list")
+	}
+
+	fromMakefile := map[string]bool{}
+	for _, pkg := range strings.Split(string(skip[1]), ",") {
+		fromMakefile[normalizeExclusion(pkg)] = true
+	}
+
+	pipeline, err := os.ReadFile(filepath.Join(root, "deploy", "concourse-pipeline.yml"))
+	if err != nil {
+		t.Fatalf("reading the pipeline: %v", err)
+	}
+
+	// Comments in this file discuss exclusions in prose, and `#` opens a
+	// comment in both YAML and the embedded shell, so strip them before
+	// matching or the prose counts as configuration.
+	script := stripShellComments(string(pipeline))
+
+	// `)` closes the surrounding $(...) on the last entry and is shell syntax,
+	// not part of the package path.
+	greps := regexp.MustCompile(`grep -v '?([^\s'\\)]+)'?`).FindAllStringSubmatch(script, -1)
+	if len(greps) == 0 {
+		t.Fatal("deploy/concourse-pipeline.yml no longer filters packages with " +
+			"grep -v; this test can no longer find the exclusion list")
+	}
+
+	fromPipeline := map[string]bool{}
+	for _, g := range greps {
+		fromPipeline[normalizeExclusion(g[1])] = true
+	}
+
+	for pkg := range fromMakefile {
+		if !fromPipeline[pkg] {
+			t.Errorf("the Makefile skips %q but the pipeline does not, so CI runs "+
+				"a suite no one runs locally", pkg)
+		}
+	}
+	for pkg := range fromPipeline {
+		if !fromMakefile[pkg] {
+			t.Errorf("the pipeline skips %q but the Makefile does not, so that "+
+				"suite passes locally and never runs in CI", pkg)
+		}
+	}
+}
+
+// normalizeExclusion reduces the two spellings to one. The Makefile writes
+// `./integration` and `fly/integration`; the pipeline writes `/integration` and
+// anchors some entries as `/atc/worker$`.
+func normalizeExclusion(pkg string) string {
+	pkg = strings.TrimSpace(pkg)
+	pkg = strings.TrimSuffix(pkg, "$")
+	pkg = strings.TrimPrefix(pkg, "./")
+	pkg = strings.TrimPrefix(pkg, "/")
+	return pkg
+}

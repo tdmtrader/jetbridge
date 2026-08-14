@@ -66,7 +66,7 @@ jobs:
     params: {depth: 1}
     passed: [build-and-vet]
   - task: unit-tests
-    timeout: 30m
+    timeout: 45m
     attempts: 2
     config:
       platform: linux
@@ -100,24 +100,20 @@ jobs:
             }
           done
 
+          # This list must match the --skip-package list in the Makefile's
+          # test-unit target. Anything excluded here and not there is a suite
+          # that passes locally and never runs in CI.
           PACKAGES=$(go list ./... \
             | grep -v /integration \
             | grep -v /testflight \
             | grep -v /topgun \
             | grep -v /fly/integration \
-            | grep -v /atc/db \
-            | grep -v /atc/gc \
-            | grep -v /atc/postgresrunner \
-            | grep -v /atc/scheduler/algorithm \
-            | grep -v '/atc/worker$' \
-            | grep -v /skymarshal/dexserver \
-            | grep -v /testhelpers/otel \
-            | grep -v /cmd)
+            | grep -v /testhelpers/otel)
           echo "Testing packages:"
           echo "$PACKAGES" | head -20
           echo "... ($(echo "$PACKAGES" | wc -l | tr -d ' ') packages total)"
           echo ""
-          go test -count=1 -timeout 10m $PACKAGES
+          go test -count=1 -timeout 20m $PACKAGES
           echo "=== All unit tests passed ==="
 
 - name: k8s-runtime-tests

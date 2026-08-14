@@ -1,11 +1,16 @@
 .PHONY: test-unit test-elm test-fly-integration test-integration test-k8s test-k8s-integration test-k8s-behavioral test-quick test-all
 
-# Unit tests: all packages except integration/e2e suites (~5 min)
+# Unit tests: all packages except integration/e2e suites (~9 min)
 # Requires: PostgreSQL running locally
+#
+# This list must match the grep -v chain in the unit-tests job of
+# deploy/concourse-pipeline.yml. TestUnitExclusionsMatchThePipeline enforces it:
+# a package excluded there and not here is one that passes locally and never
+# runs in CI, which is how 52k lines of tests went unrun.
 test-unit:
 	@echo "==> Running unit tests..."
 	ginkgo -r -p --keep-going --flake-attempts=1 \
-		--skip-package=./integration,testflight,topgun,./worker/integration,./worker/runtime/integration,./worker/baggageclaim,fly/integration,testhelpers/otel
+		--skip-package=./integration,testflight,topgun,fly/integration,testhelpers/otel
 
 # Elm frontend tests (~30 sec)
 # Requires: yarn install (elm-test comes from node_modules)
