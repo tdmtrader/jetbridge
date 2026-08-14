@@ -11,6 +11,7 @@ import (
 	"strconv"
 
 	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbtest"
 	. "github.com/concourse/concourse/atc/testhelpers"
@@ -799,16 +800,18 @@ func versionsAPIBuildRelationshipSpecs(relationship string) func() {
 			resourceName      string
 			stringVersionID   string
 			exposePipeline    bool
+			selectedProfile   requestProfile
+			grantRole         string
 			prepare           func(*versionsAPIBuildRelationships)
 			expectedBuildsFor func(*versionsAPIBuildRelationships) []db.Build
 		)
 
 		BeforeEach(func() {
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAuthorizedReturns(true)
 			resourceName = "some-resource"
 			stringVersionID = ""
 			exposePipeline = false
+			selectedProfile = memberProfile
+			grantRole = accessor.ViewerRole
 			prepare = nil
 			if relationship == "input_to" {
 				expectedBuildsFor = func(r *versionsAPIBuildRelationships) []db.Build {
@@ -832,6 +835,10 @@ func versionsAPIBuildRelationshipSpecs(relationship string) func() {
 			if stringVersionID == "" {
 				stringVersionID = strconv.Itoa(relationships.targetVersionID)
 			}
+			if grantRole != "" {
+				grantProfile(relationships.fixture.team, selectedProfile, grantRole)
+			}
+			useProfile(selectedProfile)
 			response = relationships.fixture.requestVersionBuilds(
 				resourceName, stringVersionID, relationship,
 			)
@@ -839,7 +846,7 @@ func versionsAPIBuildRelationshipSpecs(relationship string) func() {
 
 		Context("when not authorized", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthorizedReturns(false)
+				grantRole = ""
 			})
 
 			Context("and the pipeline is private", func() {
@@ -851,7 +858,7 @@ func versionsAPIBuildRelationshipSpecs(relationship string) func() {
 
 				Context("when not authenticated", func() {
 					BeforeEach(func() {
-						fakeAccess.IsAuthenticatedReturns(false)
+						selectedProfile = anonymousProfile
 					})
 
 					It("returns 401", func() {
@@ -863,7 +870,7 @@ func versionsAPIBuildRelationshipSpecs(relationship string) func() {
 			Context("and the pipeline is public", func() {
 				BeforeEach(func() {
 					exposePipeline = true
-					fakeAccess.IsAuthenticatedReturns(false)
+					selectedProfile = anonymousProfile
 				})
 
 				It("returns 200 OK", func() {
@@ -980,6 +987,8 @@ var _ = Describe("Versions API", func() {
 			resourceName     string
 			resourcePublic   bool
 			pipelinePublic   bool
+			selectedProfile  requestProfile
+			grantRole        string
 			prepare          []func(*versionsAPIFixture)
 			expectedVersions []atc.ResourceVersion
 		)
@@ -990,6 +999,8 @@ var _ = Describe("Versions API", func() {
 			resourceName = "some-resource"
 			resourcePublic = false
 			pipelinePublic = false
+			selectedProfile = anonymousProfile
+			grantRole = ""
 			prepare = nil
 			expectedVersions = nil
 		})
@@ -1009,20 +1020,16 @@ var _ = Describe("Versions API", func() {
 			for _, setup := range prepare {
 				setup(fixture)
 			}
+			if grantRole != "" {
+				grantProfile(fixture.team, selectedProfile, grantRole)
+			}
+			useProfile(selectedProfile)
 			response = fixture.requestVersions(resourceName, queryParams)
 		})
 
 		Context("when not authorized", func() {
-			BeforeEach(func() {
-				fakeAccess.IsAuthorizedReturns(false)
-			})
-
 			Context("and the pipeline is private", func() {
 				Context("user is not authenticated", func() {
-					BeforeEach(func() {
-						fakeAccess.IsAuthenticatedReturns(false)
-					})
-
 					It("returns 401", func() {
 						Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
 					})
@@ -1030,7 +1037,7 @@ var _ = Describe("Versions API", func() {
 
 				Context("user is authenticated", func() {
 					BeforeEach(func() {
-						fakeAccess.IsAuthenticatedReturns(true)
+						selectedProfile = memberProfile
 					})
 
 					It("returns 403", func() {
@@ -1079,7 +1086,7 @@ var _ = Describe("Versions API", func() {
 
 					Context("when the user is authenticated", func() {
 						BeforeEach(func() {
-							fakeAccess.IsAuthenticatedReturns(true)
+							selectedProfile = memberProfile
 						})
 
 						It("returns the json without version metadata", func() {
@@ -1094,8 +1101,8 @@ var _ = Describe("Versions API", func() {
 
 		Context("when authorized", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
-				fakeAccess.IsAuthorizedReturns(true)
+				selectedProfile = memberProfile
+				grantRole = accessor.ViewerRole
 			})
 
 			It("finds the resource", func() {
@@ -1440,15 +1447,19 @@ var _ = Describe("Versions API", func() {
 
 	Describe("PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions/:resource_version_id/enable", func() {
 		var (
-			response     *http.Response
-			fixture      *versionsAPIFixture
-			resourceName string
-			versions     versionsAPIMutationVersions
-			prepare      []func(*versionsAPIFixture)
+			response        *http.Response
+			fixture         *versionsAPIFixture
+			resourceName    string
+			versions        versionsAPIMutationVersions
+			selectedProfile requestProfile
+			grantRole       string
+			prepare         []func(*versionsAPIFixture)
 		)
 
 		BeforeEach(func() {
 			resourceName = "resource-name"
+			selectedProfile = anonymousProfile
+			grantRole = ""
 			prepare = nil
 		})
 
@@ -1461,6 +1472,10 @@ var _ = Describe("Versions API", func() {
 			for _, setup := range prepare {
 				setup(fixture)
 			}
+			if grantRole != "" {
+				grantProfile(fixture.team, selectedProfile, grantRole)
+			}
+			useProfile(selectedProfile)
 			response = fixture.requestVersionMutation(
 				resourceName, versions.targetID, "enable",
 			)
@@ -1468,12 +1483,12 @@ var _ = Describe("Versions API", func() {
 
 		Context("when authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
+				selectedProfile = memberProfile
 			})
 
 			Context("when authorized", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(true)
+					grantRole = accessor.OperatorRole
 				})
 
 				It("finds the configured resource", func() {
@@ -1533,9 +1548,6 @@ var _ = Describe("Versions API", func() {
 			})
 
 			Context("when not authorized", func() {
-				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(false)
-				})
 				It("returns Forbidden", func() {
 					Expect(response.StatusCode).To(Equal(http.StatusForbidden))
 				})
@@ -1543,10 +1555,6 @@ var _ = Describe("Versions API", func() {
 		})
 
 		Context("when not authenticated", func() {
-			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
-			})
-
 			It("returns Unauthorized", func() {
 				Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
 			})
@@ -1555,15 +1563,19 @@ var _ = Describe("Versions API", func() {
 
 	Describe("PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions/:resource_version_id/disable", func() {
 		var (
-			response     *http.Response
-			fixture      *versionsAPIFixture
-			resourceName string
-			versions     versionsAPIMutationVersions
-			prepare      []func(*versionsAPIFixture)
+			response        *http.Response
+			fixture         *versionsAPIFixture
+			resourceName    string
+			versions        versionsAPIMutationVersions
+			selectedProfile requestProfile
+			grantRole       string
+			prepare         []func(*versionsAPIFixture)
 		)
 
 		BeforeEach(func() {
 			resourceName = "resource-name"
+			selectedProfile = anonymousProfile
+			grantRole = ""
 			prepare = nil
 		})
 
@@ -1573,6 +1585,10 @@ var _ = Describe("Versions API", func() {
 			for _, setup := range prepare {
 				setup(fixture)
 			}
+			if grantRole != "" {
+				grantProfile(fixture.team, selectedProfile, grantRole)
+			}
+			useProfile(selectedProfile)
 			response = fixture.requestVersionMutation(
 				resourceName, versions.targetID, "disable",
 			)
@@ -1580,12 +1596,12 @@ var _ = Describe("Versions API", func() {
 
 		Context("when authenticated ", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
+				selectedProfile = memberProfile
 			})
 
 			Context("when authorized", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(true)
+					grantRole = accessor.OperatorRole
 				})
 
 				It("finds the configured resource", func() {
@@ -1644,20 +1660,12 @@ var _ = Describe("Versions API", func() {
 				})
 			})
 			Context("when not authorized", func() {
-				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(false)
-				})
-
 				It("returns Forbidden", func() {
 					Expect(response.StatusCode).To(Equal(http.StatusForbidden))
 				})
 			})
 		})
 		Context("when not authenticated", func() {
-			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
-			})
-
 			It("returns Unauthorized", func() {
 				Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
 			})
@@ -1666,15 +1674,19 @@ var _ = Describe("Versions API", func() {
 
 	Describe("PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions/:resource_version_id/pin", func() {
 		var (
-			response     *http.Response
-			fixture      *versionsAPIFixture
-			resourceName string
-			versions     versionsAPIMutationVersions
-			prepare      []func(*versionsAPIFixture)
+			response        *http.Response
+			fixture         *versionsAPIFixture
+			resourceName    string
+			versions        versionsAPIMutationVersions
+			selectedProfile requestProfile
+			grantRole       string
+			prepare         []func(*versionsAPIFixture)
 		)
 
 		BeforeEach(func() {
 			resourceName = "resource-name"
+			selectedProfile = anonymousProfile
+			grantRole = ""
 			prepare = nil
 		})
 
@@ -1687,6 +1699,10 @@ var _ = Describe("Versions API", func() {
 			for _, setup := range prepare {
 				setup(fixture)
 			}
+			if grantRole != "" {
+				grantProfile(fixture.team, selectedProfile, grantRole)
+			}
+			useProfile(selectedProfile)
 			response = fixture.requestVersionMutation(
 				resourceName, versions.targetID, "pin",
 			)
@@ -1694,12 +1710,12 @@ var _ = Describe("Versions API", func() {
 
 		Context("when authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
+				selectedProfile = memberProfile
 			})
 
 			Context("when authorized", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(true)
+					grantRole = accessor.OperatorRole
 				})
 
 				It("finds the configured resource", func() {
@@ -1788,9 +1804,6 @@ var _ = Describe("Versions API", func() {
 			})
 
 			Context("when not authorized", func() {
-				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(false)
-				})
 				It("returns Forbidden", func() {
 					Expect(response.StatusCode).To(Equal(http.StatusForbidden))
 				})
@@ -1798,10 +1811,6 @@ var _ = Describe("Versions API", func() {
 		})
 
 		Context("when not authenticated", func() {
-			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
-			})
-
 			It("returns Unauthorized", func() {
 				Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
 			})
@@ -1813,16 +1822,16 @@ var _ = Describe("Versions API", func() {
 	Describe("GET /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions/:resource_version_id/output_of", versionsAPIBuildRelationshipSpecs("output_of"))
 	Describe("DELETE /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions", func() {
 		var (
-			response     *http.Response
-			state        *versionsAPIResourceClearState
-			resourceName string
-			prepare      []func(*versionsAPIResourceClearState)
+			response        *http.Response
+			state           *versionsAPIResourceClearState
+			resourceName    string
+			selectedProfile requestProfile
+			prepare         []func(*versionsAPIResourceClearState)
 		)
 
 		BeforeEach(func() {
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAdminReturns(false)
 			resourceName = "resource-name"
+			selectedProfile = memberProfile
 			prepare = nil
 		})
 
@@ -1831,6 +1840,7 @@ var _ = Describe("Versions API", func() {
 			for _, setup := range prepare {
 				setup(state)
 			}
+			useProfile(selectedProfile)
 			response = state.fixture.requestClearVersions("resources", resourceName)
 		})
 
@@ -1843,7 +1853,7 @@ var _ = Describe("Versions API", func() {
 
 			Context("when the user is an admin", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAdminReturns(true)
+					selectedProfile = adminProfile
 				})
 
 				It("returns 200", func() {
@@ -1917,13 +1927,13 @@ var _ = Describe("Versions API", func() {
 			response         *http.Response
 			state            *versionsAPIResourceTypeClearState
 			resourceTypeName string
+			selectedProfile  requestProfile
 			prepare          []func(*versionsAPIResourceTypeClearState)
 		)
 
 		BeforeEach(func() {
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAdminReturns(false)
 			resourceTypeName = "some-resource-type"
+			selectedProfile = memberProfile
 			prepare = nil
 		})
 
@@ -1932,12 +1942,13 @@ var _ = Describe("Versions API", func() {
 			for _, setup := range prepare {
 				setup(state)
 			}
+			useProfile(selectedProfile)
 			response = state.fixture.requestClearVersions("resource-types", resourceTypeName)
 		})
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				selectedProfile = anonymousProfile
 			})
 
 			It("returns Unauthorized", func() {
@@ -1954,7 +1965,7 @@ var _ = Describe("Versions API", func() {
 
 			Context("when the user is an admin", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAdminReturns(true)
+					selectedProfile = adminProfile
 				})
 
 				It("returns 200", func() {
