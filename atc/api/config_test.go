@@ -3,13 +3,11 @@ package api_test
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/concourse/concourse/atc"
@@ -25,240 +23,6 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
-
-type configAPISaveCall struct {
-	ref             atc.PipelineRef
-	config          atc.Config
-	from            db.ConfigVersion
-	initiallyPaused bool
-}
-
-type configAPIPipeline struct {
-	db.Pipeline
-	configErr error
-}
-
-func (pipeline configAPIPipeline) Config() (atc.Config, error) {
-	if pipeline.configErr != nil {
-		return atc.Config{}, pipeline.configErr
-	}
-	return pipeline.Pipeline.Config()
-}
-
-type configAPITeam struct {
-	db.Team
-	state *configAPITeamState
-}
-
-type configAPITeamState struct {
-	mu            sync.Mutex
-	pipelineErr   error
-	configErr     error
-	saveErr       error
-	pipelineCalls []atc.PipelineRef
-	saveCalls     []configAPISaveCall
-}
-
-func cloneConfigAPIValue(value any) any {
-	switch typed := value.(type) {
-	case atc.InstanceVars:
-		cloned := make(atc.InstanceVars, len(typed))
-		for key, nested := range typed {
-			cloned[key] = cloneConfigAPIValue(nested)
-		}
-		return cloned
-	case map[string]any:
-		cloned := make(map[string]any, len(typed))
-		for key, nested := range typed {
-			cloned[key] = cloneConfigAPIValue(nested)
-		}
-		return cloned
-	case []any:
-		cloned := make([]any, len(typed))
-		for i, nested := range typed {
-			cloned[i] = cloneConfigAPIValue(nested)
-		}
-		return cloned
-	case []string:
-		return append([]string(nil), typed...)
-	default:
-		return typed
-	}
-}
-
-func cloneConfigAPIPipelineRef(ref atc.PipelineRef) atc.PipelineRef {
-	cloned := atc.PipelineRef{Name: ref.Name}
-	if ref.InstanceVars != nil {
-		cloned.InstanceVars = make(atc.InstanceVars, len(ref.InstanceVars))
-		for key, value := range ref.InstanceVars {
-			cloned.InstanceVars[key] = cloneConfigAPIValue(value)
-		}
-	}
-	return cloned
-}
-
-func cloneConfigAPIConfig(config atc.Config) (atc.Config, error) {
-	payload, err := json.Marshal(config)
-	if err != nil {
-		return atc.Config{}, err
-	}
-
-	var cloned atc.Config
-	if err := json.Unmarshal(payload, &cloned); err != nil {
-		return atc.Config{}, err
-	}
-	return cloned, nil
-}
-
-func (team *configAPITeam) Pipeline(ref atc.PipelineRef) (db.Pipeline, bool, error) {
-	team.state.mu.Lock()
-	team.state.pipelineCalls = append(team.state.pipelineCalls, cloneConfigAPIPipelineRef(ref))
-	pipelineErr := team.state.pipelineErr
-	configErr := team.state.configErr
-	team.state.mu.Unlock()
-
-	if pipelineErr != nil {
-		return nil, false, pipelineErr
-	}
-
-	pipeline, found, err := team.Team.Pipeline(ref)
-	if err != nil || !found {
-		return pipeline, found, err
-	}
-	return configAPIPipeline{Pipeline: pipeline, configErr: configErr}, true, nil
-}
-
-func (team *configAPITeam) SavePipeline(
-	ref atc.PipelineRef,
-	config atc.Config,
-	from db.ConfigVersion,
-	initiallyPaused bool,
-) (db.Pipeline, bool, error) {
-	clonedConfig, err := cloneConfigAPIConfig(config)
-	if err != nil {
-		return nil, false, err
-	}
-
-	team.state.mu.Lock()
-	team.state.saveCalls = append(team.state.saveCalls, configAPISaveCall{
-		ref:             cloneConfigAPIPipelineRef(ref),
-		config:          clonedConfig,
-		from:            from,
-		initiallyPaused: initiallyPaused,
-	})
-	saveErr := team.state.saveErr
-	team.state.mu.Unlock()
-
-	if saveErr != nil {
-		return nil, false, saveErr
-	}
-	return team.Team.SavePipeline(ref, config, from, initiallyPaused)
-}
-
-func (team *configAPITeam) setPipelineError(err error) {
-	team.state.mu.Lock()
-	defer team.state.mu.Unlock()
-	team.state.pipelineErr = err
-}
-
-func (team *configAPITeam) setConfigError(err error) {
-	team.state.mu.Lock()
-	defer team.state.mu.Unlock()
-	team.state.configErr = err
-}
-
-func (team *configAPITeam) setSaveError(err error) {
-	team.state.mu.Lock()
-	defer team.state.mu.Unlock()
-	team.state.saveErr = err
-}
-
-func (team *configAPITeam) saveCallSnapshot() ([]configAPISaveCall, error) {
-	team.state.mu.Lock()
-	defer team.state.mu.Unlock()
-
-	calls := make([]configAPISaveCall, len(team.state.saveCalls))
-	for i, call := range team.state.saveCalls {
-		clonedConfig, err := cloneConfigAPIConfig(call.config)
-		if err != nil {
-			return nil, err
-		}
-		calls[i] = configAPISaveCall{
-			ref:             cloneConfigAPIPipelineRef(call.ref),
-			config:          clonedConfig,
-			from:            call.from,
-			initiallyPaused: call.initiallyPaused,
-		}
-	}
-	return calls, nil
-}
-
-func (team *configAPITeam) pipelineCallSnapshot() []atc.PipelineRef {
-	team.state.mu.Lock()
-	defer team.state.mu.Unlock()
-
-	calls := make([]atc.PipelineRef, len(team.state.pipelineCalls))
-	for i, ref := range team.state.pipelineCalls {
-		calls[i] = cloneConfigAPIPipelineRef(ref)
-	}
-	return calls
-}
-
-type configAPITeamFactory struct {
-	db.TeamFactory
-
-	mu                         sync.Mutex
-	team                       *configAPITeam
-	findTeamErr                error
-	findTeamCalls              []string
-	notifyResourceScannerCalls int
-}
-
-func (factory *configAPITeamFactory) FindTeam(name string) (db.Team, bool, error) {
-	factory.mu.Lock()
-	factory.findTeamCalls = append(factory.findTeamCalls, name)
-	findTeamErr := factory.findTeamErr
-	factory.mu.Unlock()
-
-	if findTeamErr != nil {
-		return nil, false, findTeamErr
-	}
-
-	team, found, err := factory.TeamFactory.FindTeam(name)
-	if err != nil || !found {
-		return team, found, err
-	}
-
-	factory.mu.Lock()
-	decorated := factory.team
-	factory.mu.Unlock()
-	return &configAPITeam{Team: team, state: decorated.state}, true, nil
-}
-
-func (factory *configAPITeamFactory) NotifyResourceScanner() error {
-	factory.mu.Lock()
-	factory.notifyResourceScannerCalls++
-	factory.mu.Unlock()
-	return factory.TeamFactory.NotifyResourceScanner()
-}
-
-func (factory *configAPITeamFactory) setFindTeamError(err error) {
-	factory.mu.Lock()
-	defer factory.mu.Unlock()
-	factory.findTeamErr = err
-}
-
-func (factory *configAPITeamFactory) findTeamCallSnapshot() []string {
-	factory.mu.Lock()
-	defer factory.mu.Unlock()
-	return append([]string(nil), factory.findTeamCalls...)
-}
-
-func (factory *configAPITeamFactory) notifyResourceScannerCallCount() int {
-	factory.mu.Lock()
-	defer factory.mu.Unlock()
-	return factory.notifyResourceScannerCalls
-}
 
 // configAPISecrets is the credential manager production registers under the
 // name "dummy", holding the one variable given. Its lookup paths are real, so
@@ -352,16 +116,14 @@ var _ = Describe("Config API", func() {
 
 	Describe("GET /api/v1/teams/:team_name/pipelines/:name/config", func() {
 		var (
-			realdb            *realDB
-			deps              apiDBDeps
-			server            *httptest.Server
-			realTeam          db.Team
-			realPipeline      db.Pipeline
-			configTeam        *configAPITeam
-			configTeamFactory *configAPITeamFactory
-			routeParams       rata.Params
-			requestQuery      url.Values
-			response          *http.Response
+			realdb       *realDB
+			deps         apiDBDeps
+			server       *httptest.Server
+			realTeam     db.Team
+			realPipeline db.Pipeline
+			routeParams  rata.Params
+			requestQuery url.Values
+			response     *http.Response
 		)
 
 		BeforeEach(func() {
@@ -372,13 +134,6 @@ var _ = Describe("Config API", func() {
 			realTeam, err = deps.teamFactory.CreateTeam(atc.Team{Name: "a-team"})
 			Expect(err).NotTo(HaveOccurred())
 			realPipeline = realdb.SavePipeline(realTeam, "something-else", pipelineConfig)
-
-			configTeam = &configAPITeam{Team: realTeam, state: &configAPITeamState{}}
-			configTeamFactory = &configAPITeamFactory{
-				TeamFactory: deps.teamFactory,
-				team:        configTeam,
-			}
-			deps.teamFactory = configTeamFactory
 
 			routeParams = rata.Params{
 				"team_name":     "a-team",
@@ -436,10 +191,6 @@ var _ = Describe("Config API", func() {
 										}`))
 							})
 
-							It("doesn't find the pipeline", func() {
-								Expect(configTeamFactory.findTeamCallSnapshot()).To(BeEmpty())
-								Expect(configTeam.pipelineCallSnapshot()).To(BeEmpty())
-							})
 						})
 
 						Context("when instance vars is valid", func() {
@@ -471,12 +222,7 @@ var _ = Describe("Config API", func() {
 								Expect(err).NotTo(HaveOccurred())
 							})
 
-							It("finds the pipeline", func() {
-								Expect(configTeam.pipelineCallSnapshot()).To(Equal([]atc.PipelineRef{{
-									Name:         "something-else",
-									InstanceVars: atc.InstanceVars{"branch": "feature"},
-								}}))
-
+							It("returns the instanced pipeline config", func() {
 								Expect(response.StatusCode).To(Equal(http.StatusOK))
 								Expect(response.Header.Get(atc.ConfigVersionHeader)).To(Equal(strconv.Itoa(int(instancedPipeline.ConfigVersion()))))
 
@@ -510,15 +256,6 @@ var _ = Describe("Config API", func() {
 							}))
 						})
 
-						Context("when finding the config fails", func() {
-							BeforeEach(func() {
-								configTeam.setConfigError(errors.New("fail"))
-							})
-
-							It("returns 500", func() {
-								Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-							})
-						})
 					})
 
 					Context("when the pipeline is archived", func() {
@@ -541,15 +278,6 @@ var _ = Describe("Config API", func() {
 					})
 				})
 
-				Context("when finding the pipeline fails", func() {
-					BeforeEach(func() {
-						configTeam.setPipelineError(errors.New("failed"))
-					})
-
-					It("returns 500", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-					})
-				})
 			})
 
 			Context("when the team is not found", func() {
@@ -563,15 +291,6 @@ var _ = Describe("Config API", func() {
 				})
 			})
 
-			Context("when finding the team fails", func() {
-				BeforeEach(func() {
-					configTeamFactory.setFindTeamError(errors.New("failed"))
-				})
-
-				It("returns 500", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-				})
-			})
 		})
 
 		Context("when not authenticated", func() {
@@ -593,8 +312,6 @@ var _ = Describe("Config API", func() {
 			realTeam                db.Team
 			realRequestedTeam       db.Team
 			realPipeline            db.Pipeline
-			configTeam              *configAPITeam
-			configTeamFactory       *configAPITeamFactory
 			fromVersion             db.ConfigVersion
 			originalPipelineConfig  atc.Config
 			routeParams             rata.Params
@@ -603,7 +320,6 @@ var _ = Describe("Config API", func() {
 			requestBody             []byte
 			scannerSignal           *db.NotifySignal
 			response                *http.Response
-			saveCalls               func() []configAPISaveCall
 			expectOriginalUnchanged func()
 			expectPersistedPipeline func(db.Team, atc.PipelineRef, atc.Config, bool, *db.ConfigVersion) db.Pipeline
 			expectUpdatedSave       func(atc.PipelineRef, atc.Config)
@@ -621,13 +337,6 @@ var _ = Describe("Config API", func() {
 			originalPipelineConfig, err = realPipeline.Config()
 			Expect(err).NotTo(HaveOccurred())
 
-			configTeam = &configAPITeam{Team: realTeam, state: &configAPITeamState{}}
-			configTeamFactory = &configAPITeamFactory{
-				TeamFactory: deps.teamFactory,
-				team:        configTeam,
-			}
-			deps.teamFactory = configTeamFactory
-
 			routeParams = rata.Params{
 				"team_name":     "a-team",
 				"pipeline_name": "a-pipeline",
@@ -641,13 +350,6 @@ var _ = Describe("Config API", func() {
 			DeferCleanup(func() {
 				Expect(realdb.Conn.Bus().UnlistenSignal(atc.ComponentLidarScanner, scannerSignal)).To(Succeed())
 			})
-
-			saveCalls = func() []configAPISaveCall {
-				GinkgoHelper()
-				calls, err := configTeam.saveCallSnapshot()
-				Expect(err).NotTo(HaveOccurred())
-				return calls
-			}
 
 			expectPersistedPipeline = func(
 				team db.Team,
@@ -686,12 +388,6 @@ var _ = Describe("Config API", func() {
 
 			expectUpdatedSave = func(ref atc.PipelineRef, expectedConfig atc.Config) {
 				GinkgoHelper()
-				Expect(saveCalls()).To(Equal([]configAPISaveCall{{
-					ref:             ref,
-					config:          expectedConfig,
-					from:            fromVersion,
-					initiallyPaused: true,
-				}}))
 				expectPersistedPipeline(realTeam, ref, expectedConfig, false, &fromVersion)
 			}
 
@@ -706,6 +402,15 @@ var _ = Describe("Config API", func() {
 			request.Header = requestHeader.Clone()
 			request.URL.RawQuery = requestQuery.Encode()
 			request.Body = io.NopCloser(bytes.NewReader(requestBody))
+			for {
+				select {
+				case <-scannerSignal.C():
+					continue
+				default:
+					goto scannerSignalDrained
+				}
+			}
+		scannerSignalDrained:
 
 			response, err = client.Do(request)
 			Expect(err).NotTo(HaveOccurred())
@@ -722,7 +427,7 @@ var _ = Describe("Config API", func() {
 				Context("and is a string", func() {
 					BeforeEach(func() {
 						var err error
-						realRequestedTeam, err = configTeamFactory.TeamFactory.CreateTeam(atc.Team{Name: "_team"})
+						realRequestedTeam, err = deps.teamFactory.CreateTeam(atc.Team{Name: "_team"})
 						Expect(err).NotTo(HaveOccurred())
 						grantProfile(realRequestedTeam, memberProfile, accessor.MemberRole)
 						useProfile(memberProfile)
@@ -787,8 +492,6 @@ var _ = Describe("Config API", func() {
 										"pipeline: identifier cannot be an empty string"
 								]
 							}`))
-						Expect(configTeamFactory.findTeamCallSnapshot()).To(BeEmpty())
-						Expect(saveCalls()).To(BeEmpty())
 						expectOriginalUnchanged()
 					})
 				})
@@ -828,7 +531,6 @@ var _ = Describe("Config API", func() {
 						})
 
 						It("does not save anything", func() {
-							Expect(saveCalls()).To(BeEmpty())
 							expectOriginalUnchanged()
 						})
 					})
@@ -860,7 +562,6 @@ var _ = Describe("Config API", func() {
 						})
 
 						It("does not save anything", func() {
-							Expect(saveCalls()).To(BeEmpty())
 							expectOriginalUnchanged()
 						})
 					})
@@ -882,7 +583,6 @@ var _ = Describe("Config API", func() {
 						})
 
 						It("notifies the scanner to run", func() {
-							Expect(configTeamFactory.notifyResourceScannerCallCount()).To(Equal(1))
 							Eventually(scannerSignal.C()).Should(Receive())
 						})
 
@@ -897,21 +597,6 @@ var _ = Describe("Config API", func() {
 							expectUpdatedSave(atc.PipelineRef{Name: "a-pipeline"}, pipelineConfig)
 						})
 
-						Context("and saving it fails", func() {
-							BeforeEach(func() {
-								configTeam.setSaveError(errors.New("oh no!"))
-							})
-
-							It("returns 500", func() {
-								Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-							})
-
-							It("returns the error in the response body", func() {
-								Expect(io.ReadAll(response.Body)).To(Equal([]byte("failed to save config: oh no!")))
-								expectOriginalUnchanged()
-							})
-						})
-
 						Context("when it's the first time the pipeline has been created", func() {
 							BeforeEach(func() {
 								Expect(realPipeline.Destroy()).To(Succeed())
@@ -919,17 +604,10 @@ var _ = Describe("Config API", func() {
 
 							It("returns 201", func() {
 								Expect(response.StatusCode).To(Equal(http.StatusCreated))
-								Expect(saveCalls()).To(Equal([]configAPISaveCall{{
-									ref:             atc.PipelineRef{Name: "a-pipeline"},
-									config:          pipelineConfig,
-									from:            fromVersion,
-									initiallyPaused: true,
-								}}))
 								expectPersistedPipeline(realTeam, atc.PipelineRef{Name: "a-pipeline"}, pipelineConfig, true, nil)
 							})
 
 							It("does not notify the scanner to run", func() {
-								Expect(configTeamFactory.notifyResourceScannerCallCount()).To(BeZero())
 								Consistently(scannerSignal.C()).ShouldNot(Receive())
 							})
 						})
@@ -963,7 +641,6 @@ var _ = Describe("Config API", func() {
 							})
 
 							It("does not save it", func() {
-								Expect(saveCalls()).To(BeEmpty())
 								expectOriginalUnchanged()
 							})
 						})
@@ -984,7 +661,6 @@ var _ = Describe("Config API", func() {
 						})
 
 						It("notifies the scanner to run", func() {
-							Expect(configTeamFactory.notifyResourceScannerCallCount()).To(Equal(1))
 							Eventually(scannerSignal.C()).Should(Receive())
 						})
 
@@ -1116,7 +792,6 @@ jobs:
 									})
 
 									It("fail validation", func() {
-										Expect(saveCalls()).To(BeEmpty())
 										expectOriginalUnchanged()
 									})
 
@@ -1386,33 +1061,11 @@ jobs:
 
 							It("returns 201", func() {
 								Expect(response.StatusCode).To(Equal(http.StatusCreated))
-								Expect(saveCalls()).To(Equal([]configAPISaveCall{{
-									ref:             atc.PipelineRef{Name: "a-pipeline"},
-									config:          pipelineConfig,
-									from:            fromVersion,
-									initiallyPaused: true,
-								}}))
 								expectPersistedPipeline(realTeam, atc.PipelineRef{Name: "a-pipeline"}, pipelineConfig, true, nil)
 							})
 
 							It("does not notify the scanner to run", func() {
-								Expect(configTeamFactory.notifyResourceScannerCallCount()).To(BeZero())
 								Consistently(scannerSignal.C()).ShouldNot(Receive())
-							})
-						})
-
-						Context("and saving it fails", func() {
-							BeforeEach(func() {
-								configTeam.setSaveError(errors.New("oh no!"))
-							})
-
-							It("returns 500", func() {
-								Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-							})
-
-							It("returns the error in the response body", func() {
-								Expect(io.ReadAll(response.Body)).To(Equal([]byte("failed to save config: oh no!")))
-								expectOriginalUnchanged()
 							})
 						})
 
@@ -1445,7 +1098,6 @@ jobs:
 							})
 
 							It("does not save it", func() {
-								Expect(saveCalls()).To(BeEmpty())
 								expectOriginalUnchanged()
 							})
 						})
@@ -1477,7 +1129,6 @@ jobs:
 								})
 
 								It("does not save anything", func() {
-									Expect(saveCalls()).To(BeEmpty())
 									expectOriginalUnchanged()
 								})
 							})
@@ -1492,12 +1143,6 @@ jobs:
 										Name:         "a-pipeline",
 										InstanceVars: atc.InstanceVars{"branch": "feature"},
 									}
-									Expect(saveCalls()).To(Equal([]configAPISaveCall{{
-										ref:             ref,
-										config:          pipelineConfig,
-										from:            fromVersion,
-										initiallyPaused: true,
-									}}))
 									expectPersistedPipeline(realTeam, ref, pipelineConfig, true, nil)
 									expectOriginalUnchanged()
 								})
@@ -1526,15 +1171,6 @@ jobs:
 							})
 						})
 
-						Context("when finding the team fails", func() {
-							BeforeEach(func() {
-								configTeamFactory.setFindTeamError(errors.New("failed"))
-							})
-
-							It("returns 500", func() {
-								Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-							})
-						})
 					})
 
 				})
@@ -1554,7 +1190,6 @@ jobs:
 					})
 
 					It("does not save it", func() {
-						Expect(saveCalls()).To(BeEmpty())
 						expectOriginalUnchanged()
 					})
 				})
@@ -1644,7 +1279,6 @@ jobs:
 					})
 
 					It("does not save it", func() {
-						Expect(saveCalls()).To(BeEmpty())
 						expectOriginalUnchanged()
 					})
 				})
@@ -1676,7 +1310,6 @@ jobs:
 				})
 
 				It("does not save it", func() {
-					Expect(saveCalls()).To(BeEmpty())
 					expectOriginalUnchanged()
 				})
 			})
@@ -1692,7 +1325,6 @@ jobs:
 			})
 
 			It("does not save the config", func() {
-				Expect(saveCalls()).To(BeEmpty())
 				expectOriginalUnchanged()
 			})
 		})

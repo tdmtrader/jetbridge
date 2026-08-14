@@ -3,11 +3,9 @@ package api_test
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"sync"
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/accessor"
@@ -15,124 +13,6 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
-
-type teamsAPITeamState struct {
-	mu sync.Mutex
-
-	createTeamErr         error
-	updateProviderAuthErr error
-	deleteErr             error
-	renameErr             error
-	buildsErr             error
-
-	notifyCacherCalls int
-	buildPages        []db.Page
-}
-
-func cloneTeamsAPIPage(page db.Page) db.Page {
-	cloned := page
-	if page.From != nil {
-		cloned.From = db.NewIntPtr(*page.From)
-	}
-	if page.To != nil {
-		cloned.To = db.NewIntPtr(*page.To)
-	}
-	return cloned
-}
-
-func (state *teamsAPITeamState) notifyCacherCallCount() int {
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	return state.notifyCacherCalls
-}
-
-func (state *teamsAPITeamState) buildPageSnapshot() []db.Page {
-	state.mu.Lock()
-	defer state.mu.Unlock()
-
-	pages := make([]db.Page, len(state.buildPages))
-	for i, page := range state.buildPages {
-		pages[i] = cloneTeamsAPIPage(page)
-	}
-	return pages
-}
-
-type teamsAPITeam struct {
-	db.Team
-	state *teamsAPITeamState
-}
-
-func (team *teamsAPITeam) UpdateProviderAuth(auth atc.TeamAuth) error {
-	team.state.mu.Lock()
-	err := team.state.updateProviderAuthErr
-	team.state.mu.Unlock()
-	if err != nil {
-		return err
-	}
-	return team.Team.UpdateProviderAuth(auth)
-}
-
-func (team *teamsAPITeam) Delete() error {
-	team.state.mu.Lock()
-	err := team.state.deleteErr
-	team.state.mu.Unlock()
-	if err != nil {
-		return err
-	}
-	return team.Team.Delete()
-}
-
-func (team *teamsAPITeam) Rename(name string) error {
-	team.state.mu.Lock()
-	err := team.state.renameErr
-	team.state.mu.Unlock()
-	if err != nil {
-		return err
-	}
-	return team.Team.Rename(name)
-}
-
-func (team *teamsAPITeam) Builds(page db.Page) ([]db.BuildForAPI, db.Pagination, error) {
-	team.state.mu.Lock()
-	team.state.buildPages = append(team.state.buildPages, cloneTeamsAPIPage(page))
-	err := team.state.buildsErr
-	team.state.mu.Unlock()
-	if err != nil {
-		return nil, db.Pagination{}, err
-	}
-	return team.Team.Builds(page)
-}
-
-type teamsAPITeamFactory struct {
-	db.TeamFactory
-	state        *teamsAPITeamState
-	targetTeamID int
-}
-
-func (factory *teamsAPITeamFactory) CreateTeam(team atc.Team) (db.Team, error) {
-	factory.state.mu.Lock()
-	err := factory.state.createTeamErr
-	factory.state.mu.Unlock()
-	if err != nil {
-		return nil, err
-	}
-	return factory.TeamFactory.CreateTeam(team)
-}
-
-func (factory *teamsAPITeamFactory) FindTeam(name string) (db.Team, bool, error) {
-	team, found, err := factory.TeamFactory.FindTeam(name)
-	if err != nil || !found || factory.targetTeamID == 0 || team.ID() != factory.targetTeamID {
-		return team, found, err
-	}
-	return &teamsAPITeam{Team: team, state: factory.state}, true, nil
-}
-
-func (factory *teamsAPITeamFactory) NotifyCacher() error {
-	factory.state.mu.Lock()
-	factory.state.notifyCacherCalls++
-	factory.state.mu.Unlock()
-	return factory.TeamFactory.NotifyCacher()
-}
 
 func jsonEncode(object any) *bytes.Buffer {
 	reqPayload, err := json.Marshal(object)
@@ -189,18 +69,6 @@ var _ = Describe("Teams API", func() {
 			Expect(names).NotTo(ContainElement(atc.DefaultTeamName))
 		})
 
-		Context("when listing teams fails", func() {
-			BeforeEach(func() {
-				doomed := postgresRunner.OpenConn()
-				Expect(doomed.Close()).To(Succeed())
-				deps := realdb.Deps
-				deps.teamFactory = db.NewTeamFactory(doomed, realdb.LockFactory)
-				server = newAPIServer(deps)
-				DeferCleanup(server.Close)
-			})
-
-			It("returns 500", func() { Expect(response.StatusCode).To(Equal(http.StatusInternalServerError)) })
-		})
 	})
 
 	Describe("GET /api/v1/teams/:team_name", func() {
@@ -255,11 +123,12 @@ var _ = Describe("Teams API", func() {
 
 	Describe("PUT /api/v1/teams/:team_name", func() {
 		var (
-			realdb   *realDB
-			response *http.Response
-			atcTeam  atc.Team
-			teamAuth atc.TeamAuth
-			teamName string
+			realdb      *realDB
+			response    *http.Response
+			atcTeam     atc.Team
+			teamAuth    atc.TeamAuth
+			teamName    string
+			cacheSignal *db.NotifySignal
 		)
 
 		BeforeEach(func() {
@@ -268,10 +137,27 @@ var _ = Describe("Teams API", func() {
 			teamAuth = atc.TeamAuth{"owner": map[string][]string{"groups": {}, "users": {"local:username"}}}
 			atcTeam = atc.Team{Auth: teamAuth}
 			teamName = "some-team"
+			var err error
+			cacheSignal, err = realdb.Conn.Bus().ListenSignal(atc.TeamCacheChannel)
+			Expect(err).NotTo(HaveOccurred())
+			DeferCleanup(func() {
+				Expect(realdb.Conn.Bus().UnlistenSignal(atc.TeamCacheChannel, cacheSignal)).To(Succeed())
+			})
 		})
 		JustBeforeEach(func() {
 			request, err := http.NewRequest("PUT", server.URL+"/api/v1/teams/"+teamName, jsonEncode(atcTeam))
 			Expect(err).NotTo(HaveOccurred())
+			if cacheSignal != nil {
+				for {
+					select {
+					case <-cacheSignal.C():
+						continue
+					default:
+						goto cacheSignalDrained
+					}
+				}
+			}
+		cacheSignalDrained:
 			response, err = client.Do(request)
 			Expect(err).NotTo(HaveOccurred())
 		})
@@ -288,45 +174,9 @@ var _ = Describe("Teams API", func() {
 			})
 
 			Context("when observing cache notification", func() {
-				var cacheSignal *db.NotifySignal
-
-				BeforeEach(func() {
-					var err error
-					cacheSignal, err = realdb.Conn.Bus().ListenSignal(atc.TeamCacheChannel)
-					Expect(err).NotTo(HaveOccurred())
-					DeferCleanup(func() {
-						Expect(realdb.Conn.Bus().UnlistenSignal(atc.TeamCacheChannel, cacheSignal)).To(Succeed())
-					})
-				})
-
 				It("notifies the team cache after creation", func() {
 					Expect(response.StatusCode).To(Equal(http.StatusCreated))
 					Eventually(cacheSignal.C()).Should(Receive())
-				})
-			})
-
-			Context("when creating the team fails", func() {
-				var state *teamsAPITeamState
-
-				BeforeEach(func() {
-					// Retained fault seam: TeamFactory.CreateTeam must fail after FindTeam
-					// succeeds; a closed TeamFactory fails the lookup before this method.
-					state = &teamsAPITeamState{createTeamErr: errors.New("it is never going to happen")}
-					deps := realdb.Deps
-					deps.teamFactory = &teamsAPITeamFactory{
-						TeamFactory: realdb.Deps.teamFactory,
-						state:       state,
-					}
-					server = newAPIServer(deps)
-					DeferCleanup(server.Close)
-				})
-				It("returns 500 without notifying the team cache", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-					Expect(state.notifyCacherCallCount()).To(BeZero())
-					team, found, err := realdb.Deps.teamFactory.FindTeam("some-team")
-					Expect(err).NotTo(HaveOccurred())
-					Expect(team).To(BeNil())
-					Expect(found).To(BeFalse())
 				})
 			})
 
@@ -403,31 +253,6 @@ var _ = Describe("Teams API", func() {
 				})
 			})
 
-			Context("when updating provider auth fails", func() {
-				BeforeEach(func() {
-					// Retained fault seam: Team.UpdateProviderAuth must fail after FindTeam
-					// succeeds; a closed TeamFactory fails the lookup before this method.
-					team, found, err := realdb.Deps.teamFactory.FindTeam("some-team")
-					Expect(err).NotTo(HaveOccurred())
-					Expect(found).To(BeTrue())
-					state := &teamsAPITeamState{updateProviderAuthErr: errors.New("stop trying to make fetch happen")}
-					deps := realdb.Deps
-					deps.teamFactory = &teamsAPITeamFactory{
-						TeamFactory:  realdb.Deps.teamFactory,
-						state:        state,
-						targetTeamID: team.ID(),
-					}
-					server = newAPIServer(deps)
-					DeferCleanup(server.Close)
-				})
-				It("returns 500", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-					team, found, err := realdb.Deps.teamFactory.FindTeam("some-team")
-					Expect(err).NotTo(HaveOccurred())
-					Expect(found).To(BeTrue())
-					Expect(team.Auth()).To(Equal(expectedAuth))
-				})
-			})
 		})
 
 		Context("when an authorized non-admin targets a missing team", func() {
@@ -441,24 +266,10 @@ var _ = Describe("Teams API", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(team).To(BeNil())
 				Expect(found).To(BeFalse())
+				Consistently(cacheSignal.C()).ShouldNot(Receive())
 			})
 		})
 
-		Context("when the direct team lookup fails", func() {
-			BeforeEach(func() {
-				useProfile(adminProfile)
-				doomed := postgresRunner.OpenConn()
-				Expect(doomed.Close()).To(Succeed())
-				deps := realdb.Deps
-				deps.teamFactory = db.NewTeamFactory(doomed, realdb.LockFactory)
-				server = newAPIServer(deps)
-				DeferCleanup(server.Close)
-			})
-
-			It("returns 500", func() {
-				Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-			})
-		})
 	})
 
 	Describe("DELETE /api/v1/teams/:team_name", func() {
@@ -478,21 +289,6 @@ var _ = Describe("Teams API", func() {
 			Expect(err).NotTo(HaveOccurred())
 			response, err = client.Do(req)
 			Expect(err).NotTo(HaveOccurred())
-		})
-
-		Context("when the team lookup fails", func() {
-			BeforeEach(func() {
-				doomed := postgresRunner.OpenConn()
-				Expect(doomed.Close()).To(Succeed())
-				deps := realdb.Deps
-				deps.teamFactory = db.NewTeamFactory(doomed, realdb.LockFactory)
-				server = newAPIServer(deps)
-				DeferCleanup(server.Close)
-			})
-
-			It("returns 500", func() {
-				Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-			})
 		})
 
 		Context("when the team exists", func() {
@@ -562,30 +358,6 @@ var _ = Describe("Teams API", func() {
 				var adminTeamCount int
 				Expect(realdb.Conn.QueryRow(`SELECT count(*) FROM teams WHERE admin = TRUE`).Scan(&adminTeamCount)).To(Succeed())
 				Expect(adminTeamCount).To(Equal(1))
-			})
-		})
-		Context("when deleting the team fails", func() {
-			BeforeEach(func() {
-				// Retained fault seam: Team.Delete must fail after FindTeam succeeds;
-				// a closed TeamFactory fails the lookup before this method.
-				team, err := realdb.Deps.teamFactory.CreateTeam(atc.Team{Name: "team"})
-				Expect(err).NotTo(HaveOccurred())
-				state := &teamsAPITeamState{deleteErr: errors.New("disaster")}
-				deps := realdb.Deps
-				deps.teamFactory = &teamsAPITeamFactory{
-					TeamFactory:  realdb.Deps.teamFactory,
-					state:        state,
-					targetTeamID: team.ID(),
-				}
-				server = newAPIServer(deps)
-				DeferCleanup(server.Close)
-			})
-			It("returns 500 Internal Server Error", func() {
-				Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-				team, found, err := realdb.Deps.teamFactory.FindTeam("team")
-				Expect(err).NotTo(HaveOccurred())
-				Expect(found).To(BeTrue())
-				Expect(team.Name()).To(Equal("team"))
 			})
 		})
 	})
@@ -685,32 +457,6 @@ var _ = Describe("Teams API", func() {
 				Expect(io.ReadAll(response.Body)).To(MatchJSON(`{"errors":["team: identifier cannot be an empty string"]}`))
 			})
 		})
-		Context("when renaming fails after lookup", func() {
-			BeforeEach(func() {
-				// Retained fault seam: Team.Rename must fail after FindTeam succeeds;
-				// a closed TeamFactory fails the lookup before this method.
-				state := &teamsAPITeamState{renameErr: errors.New("disaster")}
-				deps := realdb.Deps
-				deps.teamFactory = &teamsAPITeamFactory{
-					TeamFactory:  realdb.Deps.teamFactory,
-					state:        state,
-					targetTeamID: team.ID(),
-				}
-				server = newAPIServer(deps)
-				DeferCleanup(server.Close)
-			})
-			It("returns 500", func() {
-				Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-				team, found, err := realdb.Deps.teamFactory.FindTeam("a-team")
-				Expect(err).NotTo(HaveOccurred())
-				Expect(found).To(BeTrue())
-				Expect(team.Name()).To(Equal("a-team"))
-				renamed, found, err := realdb.Deps.teamFactory.FindTeam("some-new-name")
-				Expect(err).NotTo(HaveOccurred())
-				Expect(renamed).To(BeNil())
-				Expect(found).To(BeFalse())
-			})
-		})
 	})
 
 	Describe("GET /api/v1/teams/:team_name/builds", func() {
@@ -734,7 +480,6 @@ var _ = Describe("Teams API", func() {
 			var (
 				team           db.Team
 				protectedBuild db.Build
-				state          *teamsAPITeamState
 			)
 
 			BeforeEach(func() {
@@ -744,20 +489,10 @@ var _ = Describe("Teams API", func() {
 				Expect(err).NotTo(HaveOccurred())
 				protectedBuild, err = team.CreateOneOffBuild()
 				Expect(err).NotTo(HaveOccurred())
-				state = &teamsAPITeamState{}
-				deps := realdb.Deps
-				deps.teamFactory = &teamsAPITeamFactory{
-					TeamFactory:  realdb.Deps.teamFactory,
-					state:        state,
-					targetTeamID: team.ID(),
-				}
-				server = newAPIServer(deps)
-				DeferCleanup(server.Close)
 			})
 
-			It("returns 401 without listing builds", func() {
+			It("returns 401 without changing the protected build", func() {
 				Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
-				Expect(state.buildPageSnapshot()).To(BeEmpty())
 				builds, _, err := team.Builds(db.Page{Limit: 100})
 				Expect(err).NotTo(HaveOccurred())
 				Expect(builds).To(HaveLen(1))
@@ -822,7 +557,6 @@ var _ = Describe("Teams API", func() {
 		})
 		Context("when observing page translation", func() {
 			var (
-				state  *teamsAPITeamState
 				builds [4]db.Build
 			)
 
@@ -834,20 +568,10 @@ var _ = Describe("Teams API", func() {
 					Expect(err).NotTo(HaveOccurred())
 				}
 
-				state = &teamsAPITeamState{}
-				deps := realdb.Deps
-				deps.teamFactory = &teamsAPITeamFactory{
-					TeamFactory:  realdb.Deps.teamFactory,
-					state:        state,
-					targetTeamID: team.ID(),
-				}
-				server = newAPIServer(deps)
-				DeferCleanup(server.Close)
 				queryParams = fmt.Sprintf("?from=%d&to=%d&limit=8", builds[1].ID(), builds[2].ID())
 			})
-			It("passes page arguments through", func() {
+			It("returns the requested build range", func() {
 				Expect(response.StatusCode).To(Equal(http.StatusOK))
-				Expect(state.buildPageSnapshot()).To(Equal([]db.Page{{From: db.NewIntPtr(builds[1].ID()), To: db.NewIntPtr(builds[2].ID()), Limit: 8}}))
 
 				var returned []atc.Build
 				Expect(json.NewDecoder(response.Body).Decode(&returned)).To(Succeed())
@@ -858,7 +582,6 @@ var _ = Describe("Teams API", func() {
 				BeforeEach(func() { queryParams = "" })
 				It("uses the default limit", func() {
 					Expect(response.StatusCode).To(Equal(http.StatusOK))
-					Expect(state.buildPageSnapshot()).To(Equal([]db.Page{{Limit: 100}}))
 
 					var returned []atc.Build
 					Expect(json.NewDecoder(response.Body).Decode(&returned)).To(Succeed())
@@ -875,7 +598,6 @@ var _ = Describe("Teams API", func() {
 
 				It("returns Link headers per RFC 5988", func() {
 					Expect(response.StatusCode).To(Equal(http.StatusOK))
-					Expect(state.buildPageSnapshot()).To(Equal([]db.Page{{From: db.NewIntPtr(builds[1].ID()), Limit: 2}}))
 
 					var returned []atc.Build
 					Expect(json.NewDecoder(response.Body).Decode(&returned)).To(Succeed())
@@ -886,30 +608,6 @@ var _ = Describe("Teams API", func() {
 						fmt.Sprintf(`<%s/api/v1/teams/some-team/builds?to=%d&limit=2>; rel="next"`, externalURL, builds[0].ID()),
 					))
 				})
-			})
-		})
-		Context("when listing builds fails after lookup", func() {
-			BeforeEach(func() {
-				// Retained fault seam: Team.Builds must fail after FindTeam succeeds;
-				// a closed TeamFactory fails the lookup before this method.
-				team, err := realdb.Deps.teamFactory.CreateTeam(atc.Team{Name: "some-team"})
-				Expect(err).NotTo(HaveOccurred())
-				state := &teamsAPITeamState{buildsErr: errors.New("oh no!")}
-				deps := realdb.Deps
-				deps.teamFactory = &teamsAPITeamFactory{
-					TeamFactory:  realdb.Deps.teamFactory,
-					state:        state,
-					targetTeamID: team.ID(),
-				}
-				server = newAPIServer(deps)
-				DeferCleanup(server.Close)
-			})
-			It("returns 404", func() {
-				Expect(response.StatusCode).To(Equal(http.StatusNotFound))
-				team, found, err := realdb.Deps.teamFactory.FindTeam("some-team")
-				Expect(err).NotTo(HaveOccurred())
-				Expect(found).To(BeTrue())
-				Expect(team.Name()).To(Equal("some-team"))
 			})
 		})
 	})

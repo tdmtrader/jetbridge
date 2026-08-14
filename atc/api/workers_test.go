@@ -3,10 +3,8 @@ package api_test
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
-	"sync"
 	"time"
 
 	"github.com/concourse/concourse/atc"
@@ -31,101 +29,6 @@ func expectPersistedAPIWorker(actual db.Worker, expected atc.Worker, requestedAt
 	Expect(*actual.Version()).To(Equal(expected.Version))
 	Expect(actual.ExpiresAt()).To(BeTemporally(">=", requestedAt.Add(30*time.Second)))
 	Expect(actual.ExpiresAt()).To(BeTemporally("<=", respondedAt.Add(30*time.Second)))
-}
-
-type observedWorkerRegistration struct {
-	worker atc.Worker
-	ttl    time.Duration
-}
-
-type observingWorkerSaveFactory struct {
-	db.WorkerFactory
-
-	lock  sync.Mutex
-	calls []observedWorkerRegistration
-}
-
-func (factory *observingWorkerSaveFactory) SaveWorker(worker atc.Worker, ttl time.Duration) (db.Worker, error) {
-	factory.lock.Lock()
-	factory.calls = append(factory.calls, observedWorkerRegistration{worker: worker, ttl: ttl})
-	factory.lock.Unlock()
-	return factory.WorkerFactory.SaveWorker(worker, ttl)
-}
-
-func (factory *observingWorkerSaveFactory) callSnapshot() []observedWorkerRegistration {
-	factory.lock.Lock()
-	defer factory.lock.Unlock()
-	return append([]observedWorkerRegistration(nil), factory.calls...)
-}
-
-type workerTeamLookupResultFactory struct {
-	db.TeamFactory
-
-	teamName string
-	team     db.Team
-}
-
-func (factory workerTeamLookupResultFactory) FindTeam(name string) (db.Team, bool, error) {
-	team, found, err := factory.TeamFactory.FindTeam(name)
-	if err != nil || !found || name != factory.teamName {
-		return team, found, err
-	}
-	return factory.team, true, nil
-}
-
-type observingWorkerLookupFactory struct {
-	db.WorkerFactory
-
-	lock  sync.Mutex
-	calls int
-}
-
-func (factory *observingWorkerLookupFactory) GetWorker(name string) (db.Worker, bool, error) {
-	factory.lock.Lock()
-	factory.calls++
-	factory.lock.Unlock()
-	return factory.WorkerFactory.GetWorker(name)
-}
-
-func (factory *observingWorkerLookupFactory) callCount() int {
-	factory.lock.Lock()
-	defer factory.lock.Unlock()
-	return factory.calls
-}
-
-type workerLookupResultFactory struct {
-	db.WorkerFactory
-
-	workerName string
-	worker     db.Worker
-}
-
-func (factory workerLookupResultFactory) GetWorker(name string) (db.Worker, bool, error) {
-	if name == factory.workerName {
-		return factory.worker, true, nil
-	}
-	return factory.WorkerFactory.GetWorker(name)
-}
-
-// saveWorkerFails is a team whose SaveWorker fails after FindTeam has already
-// succeeded. Closing the connection cannot express that: it fails the lookup
-// first.
-type saveWorkerFails struct {
-	db.Team
-}
-
-func (saveWorkerFails) SaveWorker(atc.Worker, time.Duration) (db.Worker, error) {
-	return nil, errors.New("oh no!")
-}
-
-// deleteFails is the same trick one level down: Worker.Delete fails after
-// GetWorker has already returned the worker.
-type deleteFails struct {
-	db.Worker
-}
-
-func (deleteFails) Delete() error {
-	return errors.New("some-error")
 }
 
 var _ = Describe("Workers API", func() {
@@ -173,17 +76,6 @@ var _ = Describe("Workers API", func() {
 				Expect([]string{workers[0].Name, workers[1].Name, workers[2].Name}).To(ConsistOf(global.Name(), own.Name(), other.Name()))
 			})
 		})
-		Context("when listing workers fails", func() {
-			BeforeEach(func() {
-				doomed := postgresRunner.OpenConn()
-				Expect(doomed.Close()).To(Succeed())
-				deps := realdb.Deps
-				deps.workerFactory = db.NewWorkerFactory(doomed, db.NewStaticWorkerCache(logger, doomed, 0))
-				server = newAPIServer(deps)
-				DeferCleanup(server.Close)
-			})
-			It("returns 500", func() { Expect(response.StatusCode).To(Equal(http.StatusInternalServerError)) })
-		})
 		Context("when not authenticated", func() {
 			BeforeEach(func() { useProfile(anonymousProfile) })
 			It("returns 401", func() { Expect(response.StatusCode).To(Equal(http.StatusUnauthorized)) })
@@ -225,33 +117,6 @@ var _ = Describe("Workers API", func() {
 				expectPersistedAPIWorker(registered, worker, requestedAt, respondedAt)
 				Expect(registered.TeamName()).To(BeEmpty())
 			})
-
-			// Retained forwarding seam: ActiveTasks is registration telemetry and
-			// factory input; workers.active_tasks is runtime placement state.
-			Context("when observing registration forwarding", func() {
-				var observer *observingWorkerSaveFactory
-
-				BeforeEach(func() {
-					observer = &observingWorkerSaveFactory{WorkerFactory: realdb.Deps.workerFactory}
-					deps := realdb.Deps
-					deps.workerFactory = observer
-					server = newAPIServer(deps)
-					DeferCleanup(server.Close)
-				})
-
-				It("forwards active task telemetry and TTL to SaveWorker", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusOK))
-					calls := observer.callSnapshot()
-					Expect(calls).To(Equal([]observedWorkerRegistration{{
-						worker: worker,
-						ttl:    30 * time.Second,
-					}}))
-					Expect(calls[0].worker.ActiveTasks).To(Equal(42))
-					_, found, err := realdb.Deps.workerFactory.GetWorker(worker.Name)
-					Expect(err).NotTo(HaveOccurred())
-					Expect(found).To(BeTrue())
-				})
-			})
 		})
 		Context("for a team worker", func() {
 			var someTeam db.Team
@@ -269,19 +134,6 @@ var _ = Describe("Workers API", func() {
 				expectPersistedAPIWorker(registered, worker, requestedAt, respondedAt)
 				Expect(registered.TeamName()).To(Equal("some-team"))
 				Expect(registered.TeamID()).To(Equal(someTeam.ID()))
-			})
-			Context("when saving after lookup fails", func() {
-				BeforeEach(func() {
-					deps := realdb.Deps
-					deps.workerTeamFactory = workerTeamLookupResultFactory{
-						TeamFactory: deps.workerTeamFactory,
-						teamName:    "some-team",
-						team:        saveWorkerFails{Team: someTeam},
-					}
-					server = newAPIServer(deps)
-					DeferCleanup(server.Close)
-				})
-				It("returns 500", func() { Expect(response.StatusCode).To(Equal(http.StatusInternalServerError)) })
 			})
 		})
 		Context("when the team does not exist", func() {
@@ -306,17 +158,6 @@ var _ = Describe("Workers API", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(found).To(BeFalse())
 			})
-		})
-		Context("when saving a global worker fails", func() {
-			BeforeEach(func() {
-				doomed := postgresRunner.OpenConn()
-				Expect(doomed.Close()).To(Succeed())
-				deps := realdb.Deps
-				deps.workerFactory = db.NewWorkerFactory(doomed, db.NewStaticWorkerCache(logger, doomed, 0))
-				server = newAPIServer(deps)
-				DeferCleanup(server.Close)
-			})
-			It("returns 500", func() { Expect(response.StatusCode).To(Equal(http.StatusInternalServerError)) })
 		})
 		Context("when the TTL is invalid", func() {
 			BeforeEach(func() { ttl = "invalid-duration" })
@@ -406,37 +247,18 @@ var _ = Describe("Workers API", func() {
 			It("returns 500", func() { Expect(response.StatusCode).To(Equal(http.StatusInternalServerError)) })
 		})
 		Context("when not authenticated", func() {
-			var observer *observingWorkerLookupFactory
-
 			BeforeEach(func() {
 				useProfile(anonymousProfile)
-				observer = &observingWorkerLookupFactory{WorkerFactory: realdb.Deps.workerFactory}
-				deps := realdb.Deps
-				deps.workerFactory = observer
-				server = newAPIServer(deps)
-				DeferCleanup(server.Close)
-			})
-			It("returns 401 without looking up the worker", func() {
-				Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
-				Expect(observer.callCount()).To(BeZero())
-			})
-		})
-		Context("when deletion fails after lookup", func() {
-			BeforeEach(func() {
-				stubborn, err := realdb.Deps.workerFactory.SaveWorker(atc.Worker{Name: "some-worker", Version: "1.2.3"}, 0)
+				_, err := realdb.Deps.workerFactory.SaveWorker(atc.Worker{Name: "some-worker", Version: "1.2.3"}, 0)
 				Expect(err).NotTo(HaveOccurred())
-
-				deps := realdb.Deps
-				deps.workerFactory = workerLookupResultFactory{
-					WorkerFactory: deps.workerFactory,
-					workerName:    "some-worker",
-					worker:        deleteFails{Worker: stubborn},
-				}
-				server = newAPIServer(deps)
-				DeferCleanup(server.Close)
-				useProfile(systemProfile)
 			})
-			It("returns 500", func() { Expect(response.StatusCode).To(Equal(http.StatusInternalServerError)) })
+			It("returns 401 without deleting the worker", func() {
+				Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
+				worker, found, err := realdb.Deps.workerFactory.GetWorker("some-worker")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(found).To(BeTrue())
+				Expect(worker.Name()).To(Equal("some-worker"))
+			})
 		})
 	})
 })

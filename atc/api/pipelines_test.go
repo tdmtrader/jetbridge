@@ -3,12 +3,10 @@ package api_test
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"sort"
-	"sync"
 	"time"
 
 	"github.com/concourse/concourse/atc"
@@ -20,336 +18,6 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-type pipelineAPIFaults struct {
-	pipelinesErr                 error
-	orderPipelinesErr            error
-	orderPipelinesWithinGroupErr error
-	renamePipelineOverride       bool
-	renamePipelineFound          bool
-	renamePipelineErr            error
-	destroyErr                   error
-	pauseErr                     error
-	archiveErr                   error
-	unpauseErr                   error
-	exposeErr                    error
-	hideErr                      error
-	loadDebugVersionsDBErr       error
-	buildsErr                    error
-	createStartedBuildErr        error
-}
-
-type pipelineAPIWithinGroupCall struct {
-	groupName    string
-	instanceVars []atc.InstanceVars
-}
-
-type pipelineAPIDecoratorState struct {
-	mu sync.Mutex
-
-	faults pipelineAPIFaults
-
-	findTeamArgs         []string
-	orderPipelinesArgs   [][]string
-	orderWithinGroupArgs []pipelineAPIWithinGroupCall
-	buildPages           []db.Page
-}
-
-func newPipelineAPIDecoratorState(faults pipelineAPIFaults) *pipelineAPIDecoratorState {
-	return &pipelineAPIDecoratorState{faults: faults}
-}
-
-func (state *pipelineAPIDecoratorState) snapshotFaults() pipelineAPIFaults {
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	return state.faults
-}
-
-func (state *pipelineAPIDecoratorState) recordFindTeam(name string) {
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	state.findTeamArgs = append(state.findTeamArgs, name)
-}
-
-func (state *pipelineAPIDecoratorState) findTeamArguments() []string {
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	return append([]string(nil), state.findTeamArgs...)
-}
-
-func (state *pipelineAPIDecoratorState) recordPipelineOrder(names []string) {
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	state.orderPipelinesArgs = append(state.orderPipelinesArgs, append([]string(nil), names...))
-}
-
-func clonePipelineAPIInstanceVars(instanceVars []atc.InstanceVars) []atc.InstanceVars {
-	cloned := make([]atc.InstanceVars, len(instanceVars))
-	for i, vars := range instanceVars {
-		if vars == nil {
-			continue
-		}
-		cloned[i] = make(atc.InstanceVars, len(vars))
-		for key, value := range vars {
-			cloned[i][key] = clonePipelineAPIInstanceVarValue(value)
-		}
-	}
-	return cloned
-}
-
-func clonePipelineAPIInstanceVarValue(value any) any {
-	switch typed := value.(type) {
-	case atc.InstanceVars:
-		cloned := make(atc.InstanceVars, len(typed))
-		for key, child := range typed {
-			cloned[key] = clonePipelineAPIInstanceVarValue(child)
-		}
-		return cloned
-	case map[string]any:
-		cloned := make(map[string]any, len(typed))
-		for key, child := range typed {
-			cloned[key] = clonePipelineAPIInstanceVarValue(child)
-		}
-		return cloned
-	case []any:
-		cloned := make([]any, len(typed))
-		for i, child := range typed {
-			cloned[i] = clonePipelineAPIInstanceVarValue(child)
-		}
-		return cloned
-	default:
-		return typed
-	}
-}
-
-func (state *pipelineAPIDecoratorState) recordWithinGroupOrder(groupName string, instanceVars []atc.InstanceVars) {
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	state.orderWithinGroupArgs = append(state.orderWithinGroupArgs, pipelineAPIWithinGroupCall{
-		groupName:    groupName,
-		instanceVars: clonePipelineAPIInstanceVars(instanceVars),
-	})
-}
-
-func clonePipelineAPIPage(page db.Page) db.Page {
-	cloned := page
-	if page.From != nil {
-		from := *page.From
-		cloned.From = &from
-	}
-	if page.To != nil {
-		to := *page.To
-		cloned.To = &to
-	}
-	return cloned
-}
-
-func (state *pipelineAPIDecoratorState) recordBuildPage(page db.Page) {
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	state.buildPages = append(state.buildPages, clonePipelineAPIPage(page))
-}
-
-type pipelineAPITeamFactory struct {
-	db.TeamFactory
-
-	state            *pipelineAPIDecoratorState
-	targetTeamID     int
-	targetPipelineID int
-}
-
-func (factory *pipelineAPITeamFactory) FindTeam(name string) (db.Team, bool, error) {
-	team, found, err := factory.TeamFactory.FindTeam(name)
-	factory.state.recordFindTeam(name)
-	if err != nil || !found || team.ID() != factory.targetTeamID {
-		return team, found, err
-	}
-	return &pipelineAPITeam{
-		Team:             team,
-		state:            factory.state,
-		targetPipelineID: factory.targetPipelineID,
-	}, true, nil
-}
-
-type pipelineAPITeam struct {
-	db.Team
-
-	state            *pipelineAPIDecoratorState
-	targetPipelineID int
-}
-
-func (team *pipelineAPITeam) Pipelines() ([]db.Pipeline, error) {
-	if err := team.state.snapshotFaults().pipelinesErr; err != nil {
-		return nil, err
-	}
-	pipelines, err := team.Team.Pipelines()
-	if err != nil {
-		return nil, err
-	}
-	for i, pipeline := range pipelines {
-		pipelines[i] = team.decoratePipeline(pipeline)
-	}
-	return pipelines, nil
-}
-
-func (team *pipelineAPITeam) Pipeline(ref atc.PipelineRef) (db.Pipeline, bool, error) {
-	pipeline, found, err := team.Team.Pipeline(ref)
-	if err != nil || !found {
-		return pipeline, found, err
-	}
-	return team.decoratePipeline(pipeline), true, nil
-}
-
-func (team *pipelineAPITeam) decoratePipeline(pipeline db.Pipeline) db.Pipeline {
-	if pipeline == nil || team.targetPipelineID == 0 || pipeline.ID() != team.targetPipelineID {
-		return pipeline
-	}
-	return &pipelineAPIPipeline{Pipeline: pipeline, state: team.state}
-}
-
-func (team *pipelineAPITeam) OrderPipelines(names []string) error {
-	team.state.recordPipelineOrder(names)
-	if err := team.state.snapshotFaults().orderPipelinesErr; err != nil {
-		return err
-	}
-	return team.Team.OrderPipelines(names)
-}
-
-func (team *pipelineAPITeam) OrderPipelinesWithinGroup(groupName string, instanceVars []atc.InstanceVars) error {
-	team.state.recordWithinGroupOrder(groupName, instanceVars)
-	if err := team.state.snapshotFaults().orderPipelinesWithinGroupErr; err != nil {
-		return err
-	}
-	return team.Team.OrderPipelinesWithinGroup(groupName, instanceVars)
-}
-
-func (team *pipelineAPITeam) RenamePipeline(oldName string, newName string) (bool, error) {
-	faults := team.state.snapshotFaults()
-	if faults.renamePipelineOverride {
-		return faults.renamePipelineFound, faults.renamePipelineErr
-	}
-	return team.Team.RenamePipeline(oldName, newName)
-}
-
-type pipelineAPIPipeline struct {
-	db.Pipeline
-	state *pipelineAPIDecoratorState
-}
-
-func (pipeline *pipelineAPIPipeline) Destroy() error {
-	if err := pipeline.state.snapshotFaults().destroyErr; err != nil {
-		return err
-	}
-	return pipeline.Pipeline.Destroy()
-}
-
-func (pipeline *pipelineAPIPipeline) Pause(pausedBy string) error {
-	if err := pipeline.state.snapshotFaults().pauseErr; err != nil {
-		return err
-	}
-	return pipeline.Pipeline.Pause(pausedBy)
-}
-
-func (pipeline *pipelineAPIPipeline) Archive() error {
-	if err := pipeline.state.snapshotFaults().archiveErr; err != nil {
-		return err
-	}
-	return pipeline.Pipeline.Archive()
-}
-
-func (pipeline *pipelineAPIPipeline) Unpause() error {
-	if err := pipeline.state.snapshotFaults().unpauseErr; err != nil {
-		return err
-	}
-	return pipeline.Pipeline.Unpause()
-}
-
-func (pipeline *pipelineAPIPipeline) Expose() error {
-	if err := pipeline.state.snapshotFaults().exposeErr; err != nil {
-		return err
-	}
-	return pipeline.Pipeline.Expose()
-}
-
-func (pipeline *pipelineAPIPipeline) Hide() error {
-	if err := pipeline.state.snapshotFaults().hideErr; err != nil {
-		return err
-	}
-	return pipeline.Pipeline.Hide()
-}
-
-func (pipeline *pipelineAPIPipeline) LoadDebugVersionsDB() (*atc.DebugVersionsDB, error) {
-	if err := pipeline.state.snapshotFaults().loadDebugVersionsDBErr; err != nil {
-		return nil, err
-	}
-	return pipeline.Pipeline.LoadDebugVersionsDB()
-}
-
-func (pipeline *pipelineAPIPipeline) Builds(page db.Page) ([]db.BuildForAPI, db.Pagination, error) {
-	pipeline.state.recordBuildPage(page)
-	if err := pipeline.state.snapshotFaults().buildsErr; err != nil {
-		return nil, db.Pagination{}, err
-	}
-	return pipeline.Pipeline.Builds(page)
-}
-
-func (pipeline *pipelineAPIPipeline) CreateStartedBuild(plan atc.Plan) (db.Build, error) {
-	if err := pipeline.state.snapshotFaults().createStartedBuildErr; err != nil {
-		return nil, err
-	}
-	return pipeline.Pipeline.CreateStartedBuild(plan)
-}
-
-type pipelineAPIFaultFixture struct {
-	Database *realDB
-	State    *pipelineAPIDecoratorState
-	Team     db.Team
-	Pipeline db.Pipeline
-}
-
-func persistPipelineAPIFaultFixture(teamName string, pipelineName string, faults pipelineAPIFaults) pipelineAPIFaultFixture {
-	GinkgoHelper()
-
-	database := useRealDB()
-	return decoratePipelineAPIFaultFixture(database, teamName, pipelineName, faults)
-}
-
-func decoratePipelineAPIFaultFixture(database *realDB, teamName string, pipelineName string, faults pipelineAPIFaults) pipelineAPIFaultFixture {
-	GinkgoHelper()
-
-	team := database.Main
-	if teamName != database.Main.Name() {
-		var err error
-		team, err = database.Deps.teamFactory.CreateTeam(atc.Team{Name: teamName})
-		Expect(err).NotTo(HaveOccurred())
-	}
-
-	var pipeline db.Pipeline
-	if pipelineName != "" {
-		pipeline = database.SavePipeline(team, pipelineName, atc.Config{
-			Jobs: atc.JobConfigs{{Name: "fixture-job"}},
-		})
-	}
-
-	state := newPipelineAPIDecoratorState(faults)
-	targetPipelineID := 0
-	if pipeline != nil {
-		targetPipelineID = pipeline.ID()
-	}
-	database.Deps.teamFactory = &pipelineAPITeamFactory{
-		TeamFactory:      database.Deps.teamFactory,
-		state:            state,
-		targetTeamID:     team.ID(),
-		targetPipelineID: targetPipelineID,
-	}
-
-	return pipelineAPIFaultFixture{
-		Database: database,
-		State:    state,
-		Team:     team,
-		Pipeline: pipeline,
-	}
-}
-
 type pipelineDebugDecoyIDs struct {
 	resourceIDs []int
 	versionIDs  []int
@@ -360,7 +28,6 @@ type pipelineDebugDecoyIDs struct {
 
 type pipelineDebugVersionsFixture struct {
 	Database *realDB
-	State    *pipelineAPIDecoratorState
 	Team     db.Team
 	Expected atc.DebugVersionsDB
 	Decoy    pipelineDebugDecoyIDs
@@ -545,17 +212,8 @@ func persistPipelineDebugVersionsFixture() pipelineDebugVersionsFixture {
 	Expect(err).NotTo(HaveOccurred())
 	Expect(found).To(BeTrue())
 
-	state := newPipelineAPIDecoratorState(pipelineAPIFaults{})
-	database.Deps.teamFactory = &pipelineAPITeamFactory{
-		TeamFactory:      database.Deps.teamFactory,
-		state:            state,
-		targetTeamID:     targetTeam.ID(),
-		targetPipelineID: targetPipeline.ID(),
-	}
-
 	return pipelineDebugVersionsFixture{
 		Database: database,
-		State:    state,
 		Team:     targetTeam,
 		Expected: expected,
 		Decoy: pipelineDebugDecoyIDs{
@@ -1069,18 +727,6 @@ var _ = Describe("Pipelines API", func() {
 				))
 			})
 
-			Context("when the call to get active pipelines fails", func() {
-				BeforeEach(func() {
-					fixture := decoratePipelineAPIFaultFixture(listingDB, "main", "", pipelineAPIFaults{
-						pipelinesErr: errors.New("disaster"),
-					})
-					server = fixture.Database.Serve()
-				})
-
-				It("returns 500 internal server error", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-				})
-			})
 		})
 
 		Context("when authenticated as another team", func() {
@@ -1551,19 +1197,6 @@ var _ = Describe("Pipelines API", func() {
 					})
 				})
 
-				Context("when an error occurs destroying the pipeline", func() {
-					BeforeEach(func() {
-						fixture := persistPipelineAPIFaultFixture("a-team", "a-pipeline-name", pipelineAPIFaults{
-							destroyErr: errors.New("disaster!"),
-						})
-						grantProfile(fixture.Team, memberProfile, accessor.MemberRole)
-						server = fixture.Database.Serve()
-					})
-
-					It("returns a 500 Internal Server Error", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-					})
-				})
 			})
 
 			Context("when requester does not belong to the team", func() {
@@ -1647,19 +1280,6 @@ var _ = Describe("Pipelines API", func() {
 					})
 				})
 
-				Context("when pausing the pipeline fails", func() {
-					BeforeEach(func() {
-						fixture := persistPipelineAPIFaultFixture("a-team", "a-pipeline", pipelineAPIFaults{
-							pauseErr: errors.New("welp"),
-						})
-						grantProfile(fixture.Team, apiUserProfile, accessor.OperatorRole)
-						server = fixture.Database.Serve()
-					})
-
-					It("returns 500", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-					})
-				})
 			})
 
 			Context("when requester does not belong to the team", func() {
@@ -1736,20 +1356,6 @@ var _ = Describe("Pipelines API", func() {
 			})
 		})
 
-		Context("when archiving the pipeline fails due to the DB", func() {
-			BeforeEach(func() {
-				fixture := persistPipelineAPIFaultFixture("a-team", "a-pipeline", pipelineAPIFaults{
-					archiveErr: errors.New("pq: a db error"),
-				})
-				grantProfile(fixture.Team, memberProfile, accessor.MemberRole)
-				server = fixture.Database.Serve()
-			})
-
-			It("gives a server error", func() {
-				Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-			})
-		})
-
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
 				useProfile(anonymousProfile)
@@ -1812,19 +1418,6 @@ var _ = Describe("Pipelines API", func() {
 					})
 				})
 
-				Context("when unpausing the pipeline fails for an unknown reason", func() {
-					BeforeEach(func() {
-						fixture := persistPipelineAPIFaultFixture("a-team", "a-pipeline", pipelineAPIFaults{
-							unpauseErr: errors.New("welp"),
-						})
-						grantProfile(fixture.Team, memberProfile, accessor.OperatorRole)
-						server = fixture.Database.Serve()
-					})
-
-					It("returns 500", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-					})
-				})
 			})
 
 			Context("when requester does not belong to the team", func() {
@@ -1894,19 +1487,6 @@ var _ = Describe("Pipelines API", func() {
 					})
 				})
 
-				Context("when exposing the pipeline fails", func() {
-					BeforeEach(func() {
-						fixture := persistPipelineAPIFaultFixture("a-team", "a-pipeline", pipelineAPIFaults{
-							exposeErr: errors.New("welp"),
-						})
-						grantProfile(fixture.Team, memberProfile, accessor.MemberRole)
-						server = fixture.Database.Serve()
-					})
-
-					It("returns 500", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-					})
-				})
 			})
 
 			Context("when requester does not belong to the team", func() {
@@ -1976,19 +1556,6 @@ var _ = Describe("Pipelines API", func() {
 					})
 				})
 
-				Context("when hiding the pipeline fails", func() {
-					BeforeEach(func() {
-						fixture := persistPipelineAPIFaultFixture("a-team", "a-pipeline", pipelineAPIFaults{
-							hideErr: errors.New("welp"),
-						})
-						grantProfile(fixture.Team, memberProfile, accessor.MemberRole)
-						server = fixture.Database.Serve()
-					})
-
-					It("returns 500", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-					})
-				})
 			})
 
 			Context("when requester does not belong to the team", func() {
@@ -2097,36 +1664,27 @@ var _ = Describe("Pipelines API", func() {
 
 				Context("when a pipeline does not exist", func() {
 					BeforeEach(func() {
-						fixture := persistPipelineAPIFaultFixture("a-team", "", pipelineAPIFaults{
-							orderPipelinesErr: db.ErrPipelineNotFound{Name: "a-pipeline"},
-						})
-						grantProfile(fixture.Team, memberProfile, accessor.MemberRole)
-						for _, name := range pipelineNames {
-							fixture.Database.SavePipeline(fixture.Team, name, atc.Config{Jobs: atc.JobConfigs{{Name: "job"}}})
+						orderingDB = useRealDB()
+						var err error
+						orderingTeam, err = orderingDB.Deps.teamFactory.CreateTeam(atc.Team{Name: "a-team"})
+						Expect(err).NotTo(HaveOccurred())
+						grantProfile(orderingTeam, memberProfile, accessor.MemberRole)
+						for _, name := range pipelineNames[1:] {
+							orderingDB.SavePipeline(orderingTeam, name, atc.Config{Jobs: atc.JobConfigs{{Name: "job"}}})
 						}
-						server = fixture.Database.Serve()
+						server = orderingDB.Serve()
 					})
 
 					It("returns 400", func() {
 						Expect(response.StatusCode).To(Equal(http.StatusBadRequest))
 						Expect(io.ReadAll(response.Body)).To(ContainSubstring("pipeline 'a-pipeline' not found"))
-					})
-				})
-
-				Context("when ordering the pipelines fails", func() {
-					BeforeEach(func() {
-						fixture := persistPipelineAPIFaultFixture("a-team", "", pipelineAPIFaults{
-							orderPipelinesErr: errors.New("welp"),
-						})
-						grantProfile(fixture.Team, memberProfile, accessor.MemberRole)
-						for _, name := range pipelineNames {
-							fixture.Database.SavePipeline(fixture.Team, name, atc.Config{Jobs: atc.JobConfigs{{Name: "job"}}})
+						pipelines, err := orderingTeam.Pipelines()
+						Expect(err).NotTo(HaveOccurred())
+						actualNames := make([]string, len(pipelines))
+						for i, pipeline := range pipelines {
+							actualNames[i] = pipeline.Name()
 						}
-						server = fixture.Database.Serve()
-					})
-
-					It("returns 500", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
+						Expect(actualNames).To(Equal(pipelineNames[1:]))
 					})
 				})
 			})
@@ -2222,38 +1780,32 @@ var _ = Describe("Pipelines API", func() {
 
 				Context("when a pipeline does not exist", func() {
 					BeforeEach(func() {
-						fixture := persistPipelineAPIFaultFixture("a-team", "", pipelineAPIFaults{
-							orderPipelinesWithinGroupErr: db.ErrPipelineNotFound{Name: "a-pipeline"},
-						})
-						grantProfile(fixture.Team, memberProfile, accessor.MemberRole)
-						for _, vars := range []atc.InstanceVars{{"branch": "test-2"}, nil, {"branch": "test"}} {
-							_, _, err := fixture.Team.SavePipeline(atc.PipelineRef{Name: "a-pipeline", InstanceVars: vars}, atc.Config{Jobs: atc.JobConfigs{{Name: "job"}}}, db.ConfigVersion(0), false)
+						withinDB = useRealDB()
+						var err error
+						withinTeam, err = withinDB.Deps.teamFactory.CreateTeam(atc.Team{Name: "a-team"})
+						Expect(err).NotTo(HaveOccurred())
+						grantProfile(withinTeam, memberProfile, accessor.MemberRole)
+						for _, vars := range []atc.InstanceVars{{"branch": "test-2"}, nil} {
+							_, _, err := withinTeam.SavePipeline(
+								atc.PipelineRef{Name: "a-pipeline", InstanceVars: vars},
+								atc.Config{Jobs: atc.JobConfigs{{Name: "job"}}},
+								db.ConfigVersion(0),
+								false,
+							)
 							Expect(err).NotTo(HaveOccurred())
 						}
-						server = fixture.Database.Serve()
+						server = withinDB.Serve()
 					})
 
 					It("returns 400", func() {
 						Expect(response.StatusCode).To(Equal(http.StatusBadRequest))
-						Expect(io.ReadAll(response.Body)).To(ContainSubstring("pipeline 'a-pipeline' not found"))
-					})
-				})
-
-				Context("when ordering the pipelines fails", func() {
-					BeforeEach(func() {
-						fixture := persistPipelineAPIFaultFixture("a-team", "", pipelineAPIFaults{
-							orderPipelinesWithinGroupErr: errors.New("welp"),
-						})
-						grantProfile(fixture.Team, memberProfile, accessor.MemberRole)
-						for _, vars := range []atc.InstanceVars{{"branch": "test-2"}, nil, {"branch": "test"}} {
-							_, _, err := fixture.Team.SavePipeline(atc.PipelineRef{Name: "a-pipeline", InstanceVars: vars}, atc.Config{Jobs: atc.JobConfigs{{Name: "job"}}}, db.ConfigVersion(0), false)
-							Expect(err).NotTo(HaveOccurred())
-						}
-						server = fixture.Database.Serve()
-					})
-
-					It("returns 500", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
+						Expect(io.ReadAll(response.Body)).To(ContainSubstring("pipeline 'a-pipeline/branch:test' not found"))
+						pipelines, err := withinTeam.Pipelines()
+						Expect(err).NotTo(HaveOccurred())
+						Expect(normalizedInstanceVars(pipelines, "a-pipeline")).To(Equal([]atc.InstanceVars{
+							{"branch": "test-2"},
+							{},
+						}))
 					})
 				})
 			})
@@ -2303,10 +1855,6 @@ var _ = Describe("Pipelines API", func() {
 					server = fixture.Database.Serve()
 				})
 
-				It("constructs teamDB with provided team name", func() {
-					Expect(fixture.State.findTeamArguments()).To(Equal([]string{"a-team"}))
-				})
-
 				It("returns 200", func() {
 					Expect(response.StatusCode).To(Equal(http.StatusOK))
 				})
@@ -2341,29 +1889,6 @@ var _ = Describe("Pipelines API", func() {
 				})
 			})
 
-			Context("when getting the debug versions db fails", func() {
-				var fixture pipelineAPIFaultFixture
-
-				BeforeEach(func() {
-					fixture = persistPipelineAPIFaultFixture("a-team", "a-pipeline", pipelineAPIFaults{
-						loadDebugVersionsDBErr: errors.New("nope"),
-					})
-					grantProfile(fixture.Team, memberProfile, accessor.ViewerRole)
-					server = fixture.Database.Serve()
-				})
-
-				It("constructs teamDB with provided team name", func() {
-					Expect(fixture.State.findTeamArguments()).To(Equal([]string{"a-team"}))
-				})
-
-				It("returns 500", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-				})
-
-				It("does not return application/json", func() {
-					Expect(response.Header.Get("Content-Type")).To(BeEmpty())
-				})
-			})
 		})
 
 		Context("when not authenticated", func() {
@@ -2431,32 +1956,21 @@ var _ = Describe("Pipelines API", func() {
 
 				Context("when the pipeline does not exist", func() {
 					BeforeEach(func() {
-						fixture := persistPipelineAPIFaultFixture("a-team", "a-pipeline", pipelineAPIFaults{
-							renamePipelineOverride: true,
-							renamePipelineFound:    false,
-						})
-						grantProfile(fixture.Team, memberProfile, accessor.MemberRole)
-						server = fixture.Database.Serve()
+						renameDB = useRealDB()
+						var err error
+						renameTeam, err = renameDB.Deps.teamFactory.CreateTeam(atc.Team{Name: "a-team"})
+						Expect(err).NotTo(HaveOccurred())
+						grantProfile(renameTeam, memberProfile, accessor.MemberRole)
+						renameDB.SavePipeline(renameTeam, "decoy-pipeline", atc.Config{Jobs: atc.JobConfigs{{Name: "job"}}})
+						server = renameDB.Serve()
 					})
 
-					It("returns a 404", func() {
+					It("returns a 404 without renaming another pipeline", func() {
 						Expect(response.StatusCode).To(Equal(http.StatusNotFound))
-					})
-				})
-
-				Context("when renaming the pipeline errors", func() {
-					BeforeEach(func() {
-						fixture := persistPipelineAPIFaultFixture("a-team", "a-pipeline", pipelineAPIFaults{
-							renamePipelineOverride: true,
-							renamePipelineFound:    false,
-							renamePipelineErr:      errors.New("whoops"),
-						})
-						grantProfile(fixture.Team, memberProfile, accessor.MemberRole)
-						server = fixture.Database.Serve()
-					})
-
-					It("returns a 500 internal server error", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
+						decoy, found, err := renameTeam.Pipeline(atc.PipelineRef{Name: "decoy-pipeline"})
+						Expect(err).NotTo(HaveOccurred())
+						Expect(found).To(BeTrue())
+						Expect(decoy.Name()).To(Equal("decoy-pipeline"))
 					})
 				})
 
@@ -2812,19 +2326,6 @@ var _ = Describe("Pipelines API", func() {
 				})
 			})
 
-			Context("when getting the build fails", func() {
-				BeforeEach(func() {
-					fixture := persistPipelineAPIFaultFixture("some-team", "some-pipeline", pipelineAPIFaults{
-						buildsErr: errors.New("oh no!"),
-					})
-					grantProfile(fixture.Team, memberProfile, accessor.ViewerRole)
-					server = fixture.Database.Serve()
-				})
-
-				It("returns 404 Not Found", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusNotFound))
-				})
-			})
 		})
 	})
 
@@ -2903,20 +2404,6 @@ var _ = Describe("Pipelines API", func() {
 			})
 
 			Context("when authorized", func() {
-				Context("when creating a started build fails", func() {
-					BeforeEach(func() {
-						fixture := persistPipelineAPIFaultFixture("a-team", "a-pipeline", pipelineAPIFaults{
-							createStartedBuildErr: errors.New("oh no!"),
-						})
-						grantProfile(fixture.Team, memberProfile, accessor.MemberRole)
-						server = fixture.Database.Serve()
-					})
-
-					It("returns 500 Internal Server Error", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-					})
-				})
-
 				Context("when creating a started build succeeds", func() {
 					BeforeEach(func() {
 						postDB = useRealDB()
