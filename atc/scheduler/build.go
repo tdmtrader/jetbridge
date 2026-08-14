@@ -6,6 +6,7 @@ import (
 
 	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/scheduler/algorithm"
 )
 
 type manualTriggerBuild struct {
@@ -14,7 +15,7 @@ type manualTriggerBuild struct {
 	job       db.Job
 	jobInputs db.InputConfigs
 
-	algorithm Algorithm
+	algorithm *algorithm.Algorithm
 }
 
 func (m *manualTriggerBuild) IsReadyToDetermineInputs(logger lager.Logger) (bool, error) {

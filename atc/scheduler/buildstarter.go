@@ -6,26 +6,12 @@ import (
 	"strconv"
 
 	"code.cloudfoundry.org/lager/v3"
-	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/builds"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/metric"
+	"github.com/concourse/concourse/atc/scheduler/algorithm"
 	"github.com/concourse/concourse/tracing"
 )
-
-//counterfeiter:generate . BuildStarter
-type BuildStarter interface {
-	TryStartPendingBuildsForJob(
-		ctx context.Context,
-		logger lager.Logger,
-		job db.SchedulerJob,
-		inputs db.InputConfigs,
-	) (bool, error)
-}
-
-//counterfeiter:generate . BuildPlanner
-type BuildPlanner interface {
-	Create(atc.StepConfig, db.SchedulerResources, atc.ResourceTypes, atc.Prototypes, []db.BuildInput, bool) (atc.Plan, error)
-}
 
 type Build interface {
 	db.Build
@@ -35,9 +21,9 @@ type Build interface {
 }
 
 func NewBuildStarter(
-	planner BuildPlanner,
-	algorithm Algorithm,
-) BuildStarter {
+	planner builds.Planner,
+	algorithm *algorithm.Algorithm,
+) *buildStarter {
 	return &buildStarter{
 		planner:   planner,
 		algorithm: algorithm,
@@ -45,8 +31,8 @@ func NewBuildStarter(
 }
 
 type buildStarter struct {
-	planner   BuildPlanner
-	algorithm Algorithm
+	planner   builds.Planner
+	algorithm *algorithm.Algorithm
 }
 
 func (s *buildStarter) TryStartPendingBuildsForJob(

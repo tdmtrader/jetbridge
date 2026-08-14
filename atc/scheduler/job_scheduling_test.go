@@ -419,11 +419,6 @@ func (example Example) Run() {
 
 	fixture := useSchedulerDB()
 
-	realScheduler := scheduler.NewScheduler(
-		builds.NewPlanner(atc.NewPlanFactory(0)),
-		algorithm.New(schedulerVersionsDB(fixture)),
-	)
-
 	job, _ := example.persistJob(fixture)
 
 	if example.Job.MaxInFlightReached {
@@ -465,7 +460,10 @@ func (example Example) Run() {
 		}
 	}
 
-	needsRetry, err := realScheduler.BuildStarter.TryStartPendingBuildsForJob(
+	needsRetry, err := scheduler.NewBuildStarter(
+		builds.NewPlanner(atc.NewPlanFactory(0)),
+		algorithm.New(schedulerVersionsDB(fixture)),
+	).TryStartPendingBuildsForJob(
 		context.Background(),
 		lager.NewLogger("job-scheduling-tests"),
 		schedulerJob,

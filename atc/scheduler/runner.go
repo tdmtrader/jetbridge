@@ -14,15 +14,6 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 )
 
-//counterfeiter:generate . BuildScheduler
-type BuildScheduler interface {
-	Schedule(
-		ctx context.Context,
-		logger lager.Logger,
-		job db.SchedulerJob,
-	) (bool, error)
-}
-
 type ScheduleFunc func(context.Context, lager.Logger, db.SchedulerJob) (bool, error)
 
 type Runner struct {

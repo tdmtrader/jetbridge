@@ -12,26 +12,15 @@ import (
 	"github.com/concourse/concourse/tracing"
 )
 
-//go:generate go run github.com/maxbrunsfeld/counterfeiter/v6 -generate
-
-//counterfeiter:generate . Algorithm
-type Algorithm interface {
-	Compute(
-		context.Context,
-		db.Job,
-		db.InputConfigs,
-	) (db.InputMapping, bool, bool, error)
-}
-
 type Scheduler struct {
-	Algorithm    Algorithm
-	BuildStarter BuildStarter
+	algorithm    *algorithm.Algorithm
+	buildStarter *buildStarter
 }
 
 func NewScheduler(planner builds.Planner, alg *algorithm.Algorithm) *Scheduler {
 	return &Scheduler{
-		Algorithm:    alg,
-		BuildStarter: NewBuildStarter(planner, alg),
+		algorithm:    alg,
+		buildStarter: NewBuildStarter(planner, alg),
 	}
 }
 
@@ -45,7 +34,7 @@ func (s *Scheduler) Schedule(
 		return false, fmt.Errorf("inputs: %w", err)
 	}
 
-	inputMapping, resolved, runAgain, err := s.Algorithm.Compute(ctx, job, jobInputs)
+	inputMapping, resolved, runAgain, err := s.algorithm.Compute(ctx, job, jobInputs)
 	if err != nil {
 		return false, fmt.Errorf("compute inputs: %w", err)
 	}
@@ -67,7 +56,7 @@ func (s *Scheduler) Schedule(
 		return false, err
 	}
 
-	return s.BuildStarter.TryStartPendingBuildsForJob(ctx, logger, job, jobInputs)
+	return s.buildStarter.TryStartPendingBuildsForJob(ctx, logger, job, jobInputs)
 }
 
 func (s *Scheduler) ensurePendingBuildExists(
