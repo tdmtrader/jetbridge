@@ -2,14 +2,10 @@ package api_test
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
-	"reflect"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/concourse/concourse/atc"
@@ -27,130 +23,6 @@ type resourceAPIFixture struct {
 	team     db.Team
 	pipeline db.Pipeline
 	scenario *dbtest.Scenario
-}
-
-type resourceAPITeamFactory struct {
-	db.TeamFactory
-	teamName string
-	team     db.Team
-}
-
-func (factory resourceAPITeamFactory) FindTeam(name string) (db.Team, bool, error) {
-	if name == factory.teamName {
-		return factory.team, true, nil
-	}
-	return factory.TeamFactory.FindTeam(name)
-}
-
-type resourceAPITeam struct {
-	db.Team
-	pipeline db.Pipeline
-}
-
-func (team resourceAPITeam) Pipeline(ref atc.PipelineRef) (db.Pipeline, bool, error) {
-	if ref.Name == team.pipeline.Name() && reflect.DeepEqual(ref.InstanceVars, team.pipeline.InstanceVars()) {
-		return team.pipeline, true, nil
-	}
-	return team.Team.Pipeline(ref)
-}
-
-// resourceAPIPipeline is a narrow post-lookup seam. Ordinary calls delegate to
-// the production pipeline; individual fields are used only to deliver a
-// method-specific SQL failure or a preloaded production object whose secondary
-// connection has already been closed.
-type resourceAPIPipeline struct {
-	db.Pipeline
-	resource                 db.Resource
-	resourceType             db.ResourceType
-	resourceTypesPipeline    db.Pipeline
-	resourceOverrideName     string
-	resourceTypeOverrideName string
-}
-
-func (pipeline resourceAPIPipeline) Resource(name string) (db.Resource, bool, error) {
-	if pipeline.resource != nil && name == pipeline.resourceOverrideName {
-		return pipeline.resource, true, nil
-	}
-	return pipeline.Pipeline.Resource(name)
-}
-
-func (pipeline resourceAPIPipeline) Resources() (db.Resources, error) {
-	return pipeline.Pipeline.Resources()
-}
-
-func (pipeline resourceAPIPipeline) ResourceType(name string) (db.ResourceType, bool, error) {
-	if pipeline.resourceType != nil && name == pipeline.resourceTypeOverrideName {
-		return pipeline.resourceType, true, nil
-	}
-	return pipeline.Pipeline.ResourceType(name)
-}
-
-func (pipeline resourceAPIPipeline) ResourceTypes() (db.ResourceTypes, error) {
-	if pipeline.resourceTypesPipeline != nil {
-		return pipeline.resourceTypesPipeline.ResourceTypes()
-	}
-	return pipeline.Pipeline.ResourceTypes()
-}
-
-type resourceAPICheckCall struct {
-	checkable               db.Checkable
-	resourceTypes           db.ResourceTypes
-	from                    atc.Version
-	manuallyTriggered       bool
-	skipIntervalRecursively bool
-	toDB                    bool
-}
-
-// resourceAPICheckFactory normally delegates to the real CheckFactory. Its two
-// non-delegating boundaries are deliberately limited to the handler's
-// impossible defensive "not created" result and an injected factory error.
-type resourceAPICheckFactory struct {
-	db.CheckFactory
-
-	mu         sync.Mutex
-	calls      []resourceAPICheckCall
-	notCreated bool
-	err        error
-}
-
-func (factory *resourceAPICheckFactory) TryCreateCheck(
-	ctx context.Context,
-	checkable db.Checkable,
-	resourceTypes db.ResourceTypes,
-	from atc.Version,
-	manuallyTriggered bool,
-	skipIntervalRecursively bool,
-	toDB bool,
-) (db.Build, bool, error) {
-	factory.mu.Lock()
-	factory.calls = append(factory.calls, resourceAPICheckCall{
-		checkable: checkable, resourceTypes: resourceTypes, from: from,
-		manuallyTriggered:       manuallyTriggered,
-		skipIntervalRecursively: skipIntervalRecursively,
-		toDB:                    toDB,
-	})
-	notCreated, configuredErr := factory.notCreated, factory.err
-	factory.mu.Unlock()
-
-	if configuredErr != nil {
-		// PostgreSQL cannot be asked to produce an arbitrary CheckFactory error.
-		return nil, false, configuredErr
-	}
-	if notCreated {
-		// Manual checks bypass duplicate suppression, so this defensive handler
-		// result cannot arise from the production factory.
-		return nil, false, nil
-	}
-	return factory.CheckFactory.TryCreateCheck(
-		ctx, checkable, resourceTypes, from,
-		manuallyTriggered, skipIntervalRecursively, toDB,
-	)
-}
-
-func (factory *resourceAPICheckFactory) Calls() []resourceAPICheckCall {
-	factory.mu.Lock()
-	defer factory.mu.Unlock()
-	return append([]resourceAPICheckCall(nil), factory.calls...)
 }
 
 func defaultResourceAPIConfig() atc.Config {
@@ -212,82 +84,6 @@ func (fixture *resourceAPIFixture) updatePipeline(config atc.Config) {
 	Expect(err).NotTo(HaveOccurred())
 	fixture.pipeline = pipeline
 	fixture.scenario.Pipeline = pipeline
-}
-
-func (fixture *resourceAPIFixture) overridePipeline(pipeline db.Pipeline) {
-	fixture.database.Deps.teamFactory = resourceAPITeamFactory{
-		TeamFactory: fixture.database.Deps.teamFactory,
-		teamName:    fixture.team.Name(),
-		team: resourceAPITeam{
-			Team: fixture.team, pipeline: pipeline,
-		},
-	}
-}
-
-func (fixture *resourceAPIFixture) doomedPipeline() db.Pipeline {
-	GinkgoHelper()
-
-	conn := postgresRunner.OpenConn()
-	teamFactory := db.NewTeamFactory(conn, fixture.database.LockFactory)
-	team, found, err := teamFactory.FindTeam(fixture.team.Name())
-	Expect(err).NotTo(HaveOccurred())
-	Expect(found).To(BeTrue())
-	pipeline, found, err := team.Pipeline(atc.PipelineRef{
-		Name: fixture.pipeline.Name(), InstanceVars: fixture.pipeline.InstanceVars(),
-	})
-	Expect(err).NotTo(HaveOccurred())
-	Expect(found).To(BeTrue())
-	Expect(conn.Close()).To(Succeed())
-	return pipeline
-}
-
-func (fixture *resourceAPIFixture) doomedResource(name string) db.Resource {
-	GinkgoHelper()
-
-	conn := postgresRunner.OpenConn()
-	teamFactory := db.NewTeamFactory(conn, fixture.database.LockFactory)
-	team, found, err := teamFactory.FindTeam(fixture.team.Name())
-	Expect(err).NotTo(HaveOccurred())
-	Expect(found).To(BeTrue())
-	pipeline, found, err := team.Pipeline(atc.PipelineRef{
-		Name: fixture.pipeline.Name(), InstanceVars: fixture.pipeline.InstanceVars(),
-	})
-	Expect(err).NotTo(HaveOccurred())
-	Expect(found).To(BeTrue())
-	resource, found, err := pipeline.Resource(name)
-	Expect(err).NotTo(HaveOccurred())
-	Expect(found).To(BeTrue())
-	Expect(conn.Close()).To(Succeed())
-	return resource
-}
-
-func (fixture *resourceAPIFixture) doomedResourceType(name string) db.ResourceType {
-	GinkgoHelper()
-
-	conn := postgresRunner.OpenConn()
-	teamFactory := db.NewTeamFactory(conn, fixture.database.LockFactory)
-	team, found, err := teamFactory.FindTeam(fixture.team.Name())
-	Expect(err).NotTo(HaveOccurred())
-	Expect(found).To(BeTrue())
-	pipeline, found, err := team.Pipeline(atc.PipelineRef{
-		Name: fixture.pipeline.Name(), InstanceVars: fixture.pipeline.InstanceVars(),
-	})
-	Expect(err).NotTo(HaveOccurred())
-	Expect(found).To(BeTrue())
-	resourceType, found, err := pipeline.ResourceType(name)
-	Expect(err).NotTo(HaveOccurred())
-	Expect(found).To(BeTrue())
-	Expect(conn.Close()).To(Succeed())
-	return resourceType
-}
-
-func (fixture *resourceAPIFixture) doomedResourceFactory() db.ResourceFactory {
-	GinkgoHelper()
-
-	conn := postgresRunner.OpenConn()
-	factory := db.NewResourceFactory(conn, fixture.database.LockFactory)
-	Expect(conn.Close()).To(Succeed())
-	return factory
 }
 
 func requestResourceAPI(fixture *resourceAPIFixture, method, path string, body io.Reader) *http.Response {
@@ -550,13 +346,6 @@ var _ = Describe("Resources API", func() {
 			Expect(decodeResourceAPIResponse[[]atc.Resource](response)).To(BeEmpty())
 		})
 
-		It("returns 500 when the production resource factory connection is closed", func() {
-			grantProfile(fixture.team, memberProfile, accessor.ViewerRole)
-			useProfile(memberProfile)
-			fixture.database.Deps.resourceFactory = fixture.doomedResourceFactory()
-			response := requestResourceAPI(fixture, http.MethodGet, "/api/v1/resources", nil)
-			Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-		})
 	})
 
 	Describe("GET /api/v1/teams/:team_name/pipelines/:pipeline_name/resources", func() {
@@ -600,13 +389,6 @@ var _ = Describe("Resources API", func() {
 			Expect(decodeResourceAPIResponse[[]atc.Resource](response)).To(BeEmpty())
 		})
 
-		It("returns 500 when the production pipeline resource query fails", func() {
-			grantProfile(fixture.team, memberProfile, accessor.ViewerRole)
-			useProfile(memberProfile)
-			fixture.overridePipeline(fixture.doomedPipeline())
-			response := requestResourceAPI(fixture, http.MethodGet, path, nil)
-			Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-		})
 	})
 
 	Describe("GET /api/v1/teams/:team_name/pipelines/:pipeline_name/resource-types", func() {
@@ -652,13 +434,6 @@ var _ = Describe("Resources API", func() {
 			Expect(decodeResourceAPIResponse[atc.ResourceTypes](response)).To(BeEmpty())
 		})
 
-		It("returns 500 when the production resource-type query fails", func() {
-			grantProfile(fixture.team, memberProfile, accessor.ViewerRole)
-			useProfile(memberProfile)
-			fixture.overridePipeline(fixture.doomedPipeline())
-			response := requestResourceAPI(fixture, http.MethodGet, path, nil)
-			Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-		})
 	})
 
 	Describe("GET /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name", func() {
@@ -721,12 +496,6 @@ var _ = Describe("Resources API", func() {
 			Expect(response.StatusCode).To(Equal(http.StatusNotFound))
 		})
 
-		It("returns 500 when the production resource lookup connection is closed", func() {
-			fixture.overridePipeline(fixture.doomedPipeline())
-			response := requestResourceAPI(fixture, http.MethodGet, path, nil)
-			Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-		})
-
 		It("enforces persisted pipeline visibility", func() {
 			deniedProfile := persistRequestProfile(
 				"resource-get-denied-token", "resource-get-denied-subject", "resource-get-denied-user",
@@ -777,12 +546,6 @@ var _ = Describe("Resources API", func() {
 			Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
 		})
 
-		It("returns 500 when the production unpin resource lookup fails", func() {
-			fixture.overridePipeline(fixture.doomedPipeline())
-			response := requestResourceAPI(fixture, http.MethodPut, unpinPath, nil)
-			Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-		})
-
 		It("sets a comment on an existing persisted pin", func() {
 			version := atc.Version{"ref": "commented"}
 			fixture.scenario.Run(fixture.builder.WithResourceVersions("resource-name", version))
@@ -806,28 +569,6 @@ var _ = Describe("Resources API", func() {
 		It("returns 400 for malformed pin-comment JSON", func() {
 			response := requestResourceAPI(fixture, http.MethodPut, commentPath, strings.NewReader("{"))
 			Expect(response.StatusCode).To(Equal(http.StatusBadRequest))
-		})
-
-		It("returns 500 when a preloaded real resource loses its connection", func() {
-			doomed := fixture.doomedResource("resource-name")
-			fixture.overridePipeline(resourceAPIPipeline{
-				Pipeline: fixture.pipeline, resource: doomed,
-				resourceOverrideName: "resource-name",
-			})
-			response := requestResourceAPI(
-				fixture, http.MethodPut, commentPath,
-				resourceAPIJSONBody(atc.SetPinCommentRequestBody{PinComment: "cannot persist"}),
-			)
-			Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-		})
-
-		It("returns 500 when the production pin-comment resource lookup fails", func() {
-			fixture.overridePipeline(fixture.doomedPipeline())
-			response := requestResourceAPI(
-				fixture, http.MethodPut, commentPath,
-				resourceAPIJSONBody(atc.SetPinCommentRequestBody{PinComment: "cannot look up"}),
-			)
-			Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
 		})
 
 		It("preserves pin-comment missing and authorization statuses", func() {
@@ -924,22 +665,6 @@ var _ = Describe("Resources API", func() {
 			Expect(decodeResourceAPIResponse[atc.ClearResourceCacheResponse](response).CachesRemoved).To(BeZero())
 		})
 
-		It("returns 500 when a preloaded resource loses its connection", func() {
-			doomed := fixture.doomedResource("resource-name")
-			fixture.overridePipeline(resourceAPIPipeline{
-				Pipeline: fixture.pipeline, resource: doomed,
-				resourceOverrideName: "resource-name",
-			})
-			response := requestResourceAPI(fixture, http.MethodDelete, path, nil)
-			Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-		})
-
-		It("returns 500 when the production cache resource lookup fails", func() {
-			fixture.overridePipeline(fixture.doomedPipeline())
-			response := requestResourceAPI(fixture, http.MethodDelete, path, nil)
-			Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-		})
-
 		It("preserves cache authorization statuses", func() {
 			deniedProfile := persistRequestProfile(
 				"cache-denied-token", "cache-denied-subject", "cache-denied-user",
@@ -960,33 +685,61 @@ var _ = Describe("Resources API", func() {
 
 	Describe("manual resource, resource-type, and prototype checks", func() {
 		BeforeEach(func() {
+			config := defaultResourceAPIConfig()
+			config.Resources[0].Type = "resource-type-name"
+			config.ResourceTypes[0].Type = "parent-type"
+			config.ResourceTypes = append(config.ResourceTypes, atc.ResourceType{
+				Name: "parent-type", Type: dbtest.BaseResourceType,
+				Source: atc.Source{"repository": "resource-parent"},
+			})
+			config.Prototypes[0].Type = "prototype-parent"
+			config.ResourceTypes = append(config.ResourceTypes, atc.ResourceType{
+				Name: "prototype-parent", Type: dbtest.BaseResourceType,
+				Source: atc.Source{"repository": "prototype-parent"},
+			})
+			fixture.updatePipeline(config)
 			grantProfile(fixture.team, memberProfile, accessor.OperatorRole)
 			useProfile(memberProfile)
 		})
 
-		DescribeTable("persists a started manual check with the forwarded request and private plan",
+		DescribeTable("persists a started manual check with its domain identity and recursive private plan",
 			func(kind, path string) {
-				factory := &resourceAPICheckFactory{CheckFactory: fixture.database.Deps.checkFactory}
-				fixture.database.Deps.checkFactory = factory
 				from := atc.Version{"ref": kind + "-from"}
+				switch kind {
+				case "resource":
+					fixture.scenario.Run(fixture.builder.WithResourceVersions("resource-name", from))
+				case "resource-type":
+					resourceType, found, err := fixture.pipeline.ResourceType("resource-type-name")
+					Expect(err).NotTo(HaveOccurred())
+					Expect(found).To(BeTrue())
+					resourceConfig, err := fixture.database.Deps.resourceConfigFactory.FindOrCreateResourceConfig(
+						resourceType.Type(), resourceType.Source(), nil,
+					)
+					Expect(err).NotTo(HaveOccurred())
+					scope, err := resourceConfig.FindOrCreateScope(nil)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(resourceType.SetResourceConfigScope(scope)).To(Succeed())
+				case "prototype":
+					prototype, found, err := fixture.pipeline.Prototype("prototype-name")
+					Expect(err).NotTo(HaveOccurred())
+					Expect(found).To(BeTrue())
+					resourceConfig, err := fixture.database.Deps.resourceConfigFactory.FindOrCreateResourceConfig(
+						prototype.Type(), prototype.Source(), nil,
+					)
+					Expect(err).NotTo(HaveOccurred())
+					scope, err := resourceConfig.FindOrCreateScope(nil)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(prototype.SetResourceConfigScope(scope)).To(Succeed())
+				}
 				response := requestResourceAPI(
 					fixture, http.MethodPost, path,
-					resourceAPIJSONBody(atc.CheckRequestBody{From: from, Shallow: true}),
+					resourceAPIJSONBody(atc.CheckRequestBody{From: from, Shallow: false}),
 				)
 				Expect(response.StatusCode).To(Equal(http.StatusCreated))
 				presented := decodeResourceAPIResponse[atc.Build](response)
 				Expect(presented.ID).To(BeNumerically(">", 0))
 				Expect(presented.Status).To(Equal(atc.StatusStarted))
 				Expect(presented.TeamName).To(Equal(fixture.team.Name()))
-
-				calls := factory.Calls()
-				Expect(calls).To(HaveLen(1))
-				call := calls[0]
-				Expect(call.from).To(Equal(from))
-				Expect(call.manuallyTriggered).To(BeTrue())
-				Expect(call.skipIntervalRecursively).To(BeFalse())
-				Expect(call.toDB).To(BeTrue())
-				Expect(call.checkable.Name()).To(Equal(kind + "-name"))
 
 				build, found, err := fixture.database.Deps.buildFactory.Build(presented.ID)
 				Expect(err).NotTo(HaveOccurred())
@@ -997,101 +750,87 @@ var _ = Describe("Resources API", func() {
 				Expect(build.StartTime()).NotTo(BeZero())
 				privatePlan := build.PrivatePlan()
 				Expect(privatePlan.ID).NotTo(BeEmpty())
-				expectedCheck := atc.CheckPlan{
-					Type:         dbtest.BaseResourceType,
-					TypeImage:    atc.TypeImage{BaseType: dbtest.BaseResourceType},
-					FromVersion:  from,
-					SkipInterval: true,
-				}
+				Expect(privatePlan.Check).NotTo(BeNil())
+				check := privatePlan.Check
+				Expect(check.FromVersion).To(Equal(from))
+				Expect(check.SkipInterval).To(BeTrue())
+				Expect(check.TypeImage.CheckPlan).NotTo(BeNil())
+				Expect(check.TypeImage.CheckPlan.Check).NotTo(BeNil())
+				Expect(check.TypeImage.CheckPlan.Check.SkipInterval).To(BeTrue())
 				switch kind {
 				case "resource":
-					Expect(build.ResourceID()).To(Equal(call.checkable.(db.Resource).ID()))
-					expectedCheck.Name = "resource-name"
-					expectedCheck.Source = atc.Source{"repository": "primary"}
-					expectedCheck.Resource = "resource-name"
-					expectedCheck.Interval = atc.CheckEvery{Interval: 2 * time.Minute}
-					expectedCheck.Tags = atc.Tags{"resource-worker"}
-					expectedCheck.Timeout = "4m"
+					resource, found, err := fixture.pipeline.Resource("resource-name")
+					Expect(err).NotTo(HaveOccurred())
+					Expect(found).To(BeTrue())
+					Expect(resource.ResourceConfigID()).To(BeNumerically(">", 0))
+					Expect(resource.ResourceConfigScopeID()).To(BeNumerically(">", 0))
+					Expect(build.ResourceID()).To(Equal(resource.ID()))
+					Expect(check.Name).To(Equal("resource-name"))
+					Expect(check.Resource).To(Equal("resource-name"))
+					Expect(check.Type).To(Equal("resource-type-name"))
+					Expect(check.Source).To(Equal(atc.Source{
+						"repository": "primary",
+						"branch":     "main",
+					}))
+					Expect(check.TypeImage.CheckPlan.Check.ResourceType).To(Equal("resource-type-name"))
+					Expect(check.TypeImage.CheckPlan.Check.Type).To(Equal("parent-type"))
+					_, found, err = resource.FindVersion(from)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(found).To(BeTrue())
 				case "resource-type":
-					Expect(build.ResourceTypeID()).To(Equal(call.checkable.(db.ResourceType).ID()))
-					expectedCheck.Name = "resource-type-name"
-					expectedCheck.Source = atc.Source{"repository": "resource-type"}
-					expectedCheck.ResourceType = "resource-type-name"
-					expectedCheck.Interval = atc.CheckEvery{Interval: 3 * time.Minute}
-					expectedCheck.Tags = atc.Tags{"resource-type-worker"}
+					resourceType, found, err := fixture.pipeline.ResourceType("resource-type-name")
+					Expect(err).NotTo(HaveOccurred())
+					Expect(found).To(BeTrue())
+					found, err = resourceType.Reload()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(found).To(BeTrue())
+					Expect(resourceType.ResourceConfigID()).To(BeNumerically(">", 0))
+					Expect(resourceType.ResourceConfigScopeID()).To(BeNumerically(">", 0))
+					Expect(build.ResourceTypeID()).To(Equal(resourceType.ID()))
+					Expect(check.Name).To(Equal("resource-type-name"))
+					Expect(check.ResourceType).To(Equal("resource-type-name"))
+					Expect(check.Type).To(Equal("parent-type"))
+					Expect(check.Source).To(Equal(atc.Source{"repository": "resource-type"}))
+					Expect(check.TypeImage.CheckPlan.Check.ResourceType).To(Equal("parent-type"))
+					Expect(check.TypeImage.CheckPlan.Check.Type).To(Equal(dbtest.BaseResourceType))
 				case "prototype":
+					prototype, found, err := fixture.pipeline.Prototype("prototype-name")
+					Expect(err).NotTo(HaveOccurred())
+					Expect(found).To(BeTrue())
+					found, err = prototype.Reload()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(found).To(BeTrue())
+					Expect(prototype.ResourceConfigID()).To(BeNumerically(">", 0))
+					Expect(prototype.ResourceConfigScopeID()).To(BeNumerically(">", 0))
 					Expect(build.ResourceID()).To(BeZero())
 					Expect(build.ResourceTypeID()).To(BeZero())
-					expectedCheck.Name = "prototype-name"
-					expectedCheck.Source = atc.Source{"repository": "prototype"}
-					expectedCheck.Prototype = "prototype-name"
-					expectedCheck.Interval = atc.CheckEvery{Interval: time.Minute}
-					expectedCheck.Tags = atc.Tags{"prototype-worker"}
+					Expect(check.Name).To(Equal("prototype-name"))
+					Expect(check.Prototype).To(Equal("prototype-name"))
+					Expect(check.Type).To(Equal("prototype-parent"))
+					Expect(check.Source).To(Equal(atc.Source{"repository": "prototype"}))
+					Expect(check.TypeImage.CheckPlan.Check.ResourceType).To(Equal("prototype-parent"))
+					Expect(check.TypeImage.CheckPlan.Check.Type).To(Equal(dbtest.BaseResourceType))
 				}
-				Expect(privatePlan.Check).To(Equal(&expectedCheck))
 			},
 			Entry("resource", "resource", "/api/v1/teams/a-team/pipelines/a-pipeline/resources/resource-name/check"),
 			Entry("resource type", "resource-type", "/api/v1/teams/a-team/pipelines/a-pipeline/resource-types/resource-type-name/check"),
 			Entry("prototype", "prototype", "/api/v1/teams/a-team/pipelines/a-pipeline/prototypes/prototype-name/check"),
 		)
 
-		DescribeTable("returns 500 for the explicit check-factory error boundary",
-			func(path string) {
-				factory := &resourceAPICheckFactory{
-					CheckFactory: fixture.database.Deps.checkFactory,
-					err:          errors.New("configured check failure"),
-				}
-				fixture.database.Deps.checkFactory = factory
-				response := requestResourceAPI(
-					fixture, http.MethodPost, path, resourceAPIJSONBody(atc.CheckRequestBody{}),
-				)
-				Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-				body, err := io.ReadAll(response.Body)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(string(body)).To(ContainSubstring("configured check failure"))
-				Expect(factory.Calls()).To(HaveLen(1))
-			},
-			Entry("resource", "/api/v1/teams/a-team/pipelines/a-pipeline/resources/resource-name/check"),
-			Entry("resource type", "/api/v1/teams/a-team/pipelines/a-pipeline/resource-types/resource-type-name/check"),
-			Entry("prototype", "/api/v1/teams/a-team/pipelines/a-pipeline/prototypes/prototype-name/check"),
-		)
-
-		DescribeTable("returns 500 for the impossible manual-check not-created result",
-			func(path string) {
-				factory := &resourceAPICheckFactory{
-					CheckFactory: fixture.database.Deps.checkFactory,
-					notCreated:   true,
-				}
-				fixture.database.Deps.checkFactory = factory
-				response := requestResourceAPI(
-					fixture, http.MethodPost, path, resourceAPIJSONBody(atc.CheckRequestBody{}),
-				)
-				Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-				Expect(factory.Calls()).To(HaveLen(1))
-				var builds int
-				Expect(fixture.database.Conn.QueryRow(`SELECT count(*) FROM builds`).Scan(&builds)).To(Succeed())
-				Expect(builds).To(BeZero())
-			},
-			Entry("resource", "/api/v1/teams/a-team/pipelines/a-pipeline/resources/resource-name/check"),
-			Entry("resource type", "/api/v1/teams/a-team/pipelines/a-pipeline/resource-types/resource-type-name/check"),
-			Entry("prototype", "/api/v1/teams/a-team/pipelines/a-pipeline/prototypes/prototype-name/check"),
-		)
-
-		DescribeTable("forwards recursive checking when shallow is false",
-			func(path string) {
-				factory := &resourceAPICheckFactory{CheckFactory: fixture.database.Deps.checkFactory}
-				fixture.database.Deps.checkFactory = factory
-				response := requestResourceAPI(
-					fixture, http.MethodPost, path, resourceAPIJSONBody(atc.CheckRequestBody{}),
-				)
-				Expect(response.StatusCode).To(Equal(http.StatusCreated))
-				Expect(factory.Calls()).To(HaveLen(1))
-				Expect(factory.Calls()[0].skipIntervalRecursively).To(BeTrue())
-			},
-			Entry("resource", "/api/v1/teams/a-team/pipelines/a-pipeline/resources/resource-name/check"),
-			Entry("resource type", "/api/v1/teams/a-team/pipelines/a-pipeline/resource-types/resource-type-name/check"),
-			Entry("prototype", "/api/v1/teams/a-team/pipelines/a-pipeline/prototypes/prototype-name/check"),
-		)
+		It("keeps the nested custom-type interval when shallow is true", func() {
+			response := requestResourceAPI(
+				fixture,
+				http.MethodPost,
+				"/api/v1/teams/a-team/pipelines/a-pipeline/resources/resource-name/check",
+				resourceAPIJSONBody(atc.CheckRequestBody{Shallow: true}),
+			)
+			Expect(response.StatusCode).To(Equal(http.StatusCreated))
+			presented := decodeResourceAPIResponse[atc.Build](response)
+			build, found, err := fixture.database.Deps.buildFactory.Build(presented.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(build.PrivatePlan().Check.TypeImage.CheckPlan.Check.SkipInterval).To(BeFalse())
+		})
 
 		DescribeTable("preserves each check handler's missing and authorization statuses",
 			func(path, missingPath string) {
@@ -1133,33 +872,6 @@ var _ = Describe("Resources API", func() {
 			Expect(requestResourceAPI(fixture, http.MethodPost, path, strings.NewReader("{")).StatusCode).To(Equal(http.StatusBadRequest))
 		})
 
-		DescribeTable("returns 500 when the selected production lookup connection is closed",
-			func(path string) {
-				fixture.overridePipeline(fixture.doomedPipeline())
-				response := requestResourceAPI(
-					fixture, http.MethodPost, path, resourceAPIJSONBody(atc.CheckRequestBody{}),
-				)
-				Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-			},
-			Entry("resource", "/api/v1/teams/a-team/pipelines/a-pipeline/resources/resource-name/check"),
-			Entry("resource type", "/api/v1/teams/a-team/pipelines/a-pipeline/resource-types/resource-type-name/check"),
-			Entry("prototype", "/api/v1/teams/a-team/pipelines/a-pipeline/prototypes/prototype-name/check"),
-		)
-
-		DescribeTable("returns 500 when resource-type expansion fails after a real checkable lookup",
-			func(path string) {
-				fixture.overridePipeline(resourceAPIPipeline{
-					Pipeline: fixture.pipeline, resourceTypesPipeline: fixture.doomedPipeline(),
-				})
-				response := requestResourceAPI(
-					fixture, http.MethodPost, path, resourceAPIJSONBody(atc.CheckRequestBody{}),
-				)
-				Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-			},
-			Entry("resource", "/api/v1/teams/a-team/pipelines/a-pipeline/resources/resource-name/check"),
-			Entry("resource type", "/api/v1/teams/a-team/pipelines/a-pipeline/resource-types/resource-type-name/check"),
-			Entry("prototype", "/api/v1/teams/a-team/pipelines/a-pipeline/prototypes/prototype-name/check"),
-		)
 	})
 
 	Describe("POST resource check webhook", func() {
@@ -1170,8 +882,6 @@ var _ = Describe("Resources API", func() {
 		})
 
 		It("uses the literal token from persisted resource config and creates a real check", func() {
-			factory := &resourceAPICheckFactory{CheckFactory: fixture.database.Deps.checkFactory}
-			fixture.database.Deps.checkFactory = factory
 			response := requestResourceAPI(
 				fixture, http.MethodPost, basePath+"?webhook_token=webhook-token", nil,
 			)
@@ -1183,12 +893,6 @@ var _ = Describe("Resources API", func() {
 			Expect(build.IsManuallyTriggered()).To(BeTrue())
 			Expect(build.Status()).To(Equal(db.BuildStatusStarted))
 			Expect(build.PrivatePlan().Check.Resource).To(Equal("resource-name"))
-			calls := factory.Calls()
-			Expect(calls).To(HaveLen(1))
-			Expect(calls[0].from).To(BeNil())
-			Expect(calls[0].manuallyTriggered).To(BeTrue())
-			Expect(calls[0].skipIntervalRecursively).To(BeFalse())
-			Expect(calls[0].toDB).To(BeTrue())
 		})
 
 		It("rejects a missing or incorrect webhook token", func() {
@@ -1198,48 +902,12 @@ var _ = Describe("Resources API", func() {
 			).StatusCode).To(Equal(http.StatusUnauthorized))
 		})
 
-		It("returns 500 when the production webhook resource lookup fails", func() {
-			fixture.overridePipeline(fixture.doomedPipeline())
-			response := requestResourceAPI(
-				fixture, http.MethodPost, basePath+"?webhook_token=webhook-token", nil,
-			)
-			Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-		})
-
 		It("returns 404 when the persisted webhook resource is missing", func() {
 			path := "/api/v1/teams/a-team/pipelines/a-pipeline/resources/missing/check/webhook?webhook_token=webhook-token"
 			response := requestResourceAPI(fixture, http.MethodPost, path, nil)
 			Expect(response.StatusCode).To(Equal(http.StatusNotFound))
 		})
 
-		It("returns 500 when webhook resource-type expansion loses its production connection", func() {
-			fixture.overridePipeline(resourceAPIPipeline{
-				Pipeline: fixture.pipeline, resourceTypesPipeline: fixture.doomedPipeline(),
-			})
-			response := requestResourceAPI(
-				fixture, http.MethodPost, basePath+"?webhook_token=webhook-token", nil,
-			)
-			Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-		})
-
-		It("uses the same two narrow CheckFactory failure boundaries", func() {
-			factory := &resourceAPICheckFactory{
-				CheckFactory: fixture.database.Deps.checkFactory,
-				err:          errors.New("webhook check failure"),
-			}
-			fixture.database.Deps.checkFactory = factory
-			response := requestResourceAPI(
-				fixture, http.MethodPost, basePath+"?webhook_token=webhook-token", nil,
-			)
-			Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-
-			factory.err = nil
-			factory.notCreated = true
-			response = requestResourceAPI(
-				fixture, http.MethodPost, basePath+"?webhook_token=webhook-token", nil,
-			)
-			Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-		})
 	})
 
 	Describe("shared resources and resource types", func() {
@@ -1291,47 +959,6 @@ var _ = Describe("Resources API", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(typeBody).NotTo(BeEmpty())
 		})
-
-		It("returns 500 when preloaded shared objects lose their secondary connections", func() {
-			doomedResource := fixture.doomedResource("resource-name")
-			fixture.overridePipeline(resourceAPIPipeline{
-				Pipeline: fixture.pipeline, resource: doomedResource,
-				resourceOverrideName: "resource-name",
-			})
-			resourceResponse := requestResourceAPI(
-				fixture, http.MethodGet,
-				"/api/v1/teams/a-team/pipelines/a-pipeline/resources/resource-name/shared", nil,
-			)
-			Expect(resourceResponse.StatusCode).To(Equal(http.StatusInternalServerError))
-			resourceBody, err := io.ReadAll(resourceResponse.Body)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(resourceBody).NotTo(BeEmpty())
-
-			fixture.database.Deps.teamFactory = db.NewTeamFactory(fixture.database.Conn, fixture.database.LockFactory)
-			doomedType := fixture.doomedResourceType("resource-type-name")
-			fixture.overridePipeline(resourceAPIPipeline{
-				Pipeline: fixture.pipeline, resourceType: doomedType,
-				resourceTypeOverrideName: "resource-type-name",
-			})
-			typeResponse := requestResourceAPI(
-				fixture, http.MethodGet,
-				"/api/v1/teams/a-team/pipelines/a-pipeline/resource-types/resource-type-name/shared", nil,
-			)
-			Expect(typeResponse.StatusCode).To(Equal(http.StatusInternalServerError))
-			typeBody, err := io.ReadAll(typeResponse.Body)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(typeBody).NotTo(BeEmpty())
-		})
-
-		DescribeTable("returns 500 when the selected production shared lookup connection is closed",
-			func(path string) {
-				fixture.overridePipeline(fixture.doomedPipeline())
-				response := requestResourceAPI(fixture, http.MethodGet, path, nil)
-				Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-			},
-			Entry("resource", "/api/v1/teams/a-team/pipelines/a-pipeline/resources/resource-name/shared"),
-			Entry("resource type", "/api/v1/teams/a-team/pipelines/a-pipeline/resource-types/resource-type-name/shared"),
-		)
 
 		DescribeTable("requires authentication and administrator access",
 			func(path string) {

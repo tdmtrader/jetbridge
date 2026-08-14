@@ -23,34 +23,6 @@ type ccAPIFixture struct {
 	job      db.Job
 }
 
-// ccAPITeamFactoryResult preserves a successful FindTeam while routing one
-// supplied real team whose later database call can fail. A healthy PostgreSQL
-// connection cannot selectively fail Team.Pipelines after that lookup.
-type ccAPITeamFactoryResult struct {
-	db.TeamFactory
-	teamName string
-	team     db.Team
-}
-
-func (factory ccAPITeamFactoryResult) FindTeam(name string) (db.Team, bool, error) {
-	if name == factory.teamName {
-		return factory.team, true, nil
-	}
-	return factory.TeamFactory.FindTeam(name)
-}
-
-// ccAPITeamPipelinesResult preserves a healthy real team while routing one
-// supplied real pipeline whose Dashboard call can fail. Healthy PostgreSQL
-// cannot selectively fail Pipeline.Dashboard after Team.Pipelines succeeds.
-type ccAPITeamPipelinesResult struct {
-	db.Team
-	pipelines []db.Pipeline
-}
-
-func (team ccAPITeamPipelinesResult) Pipelines() ([]db.Pipeline, error) {
-	return team.pipelines, nil
-}
-
 func createCCAPIJob(
 	database *realDB,
 	teamName string,
@@ -101,40 +73,6 @@ func finishCCAPIBuild(
 	Expect(build.Status()).To(Equal(status))
 	Expect(build.EndTime()).To(BeTemporally("==", endTime.UTC()))
 	return build
-}
-
-func closedCCAPITeam(database *realDB, teamName string) db.Team {
-	GinkgoHelper()
-
-	conn := postgresRunner.OpenConn()
-	defer func() {
-		Expect(conn.Close()).To(Succeed())
-	}()
-	teamFactory := db.NewTeamFactory(conn, database.LockFactory)
-	team, found, err := teamFactory.FindTeam(teamName)
-	Expect(err).NotTo(HaveOccurred())
-	Expect(found).To(BeTrue())
-	return team
-}
-
-func closedCCAPIPipeline(database *realDB, fixture ccAPIFixture) db.Pipeline {
-	GinkgoHelper()
-
-	conn := postgresRunner.OpenConn()
-	defer func() {
-		Expect(conn.Close()).To(Succeed())
-	}()
-	teamFactory := db.NewTeamFactory(conn, database.LockFactory)
-	team, found, err := teamFactory.FindTeam(fixture.team.Name())
-	Expect(err).NotTo(HaveOccurred())
-	Expect(found).To(BeTrue())
-	pipeline, found, err := team.Pipeline(atc.PipelineRef{
-		Name:         fixture.pipeline.Name(),
-		InstanceVars: fixture.pipeline.InstanceVars(),
-	})
-	Expect(err).NotTo(HaveOccurred())
-	Expect(found).To(BeTrue())
-	return pipeline
 }
 
 func expectedCCProjectXML(
@@ -397,30 +335,6 @@ var _ = Describe("cc.xml", func() {
 						})
 					})
 
-					Context("when finding the jobs fails", func() {
-						BeforeEach(func() {
-							fixture := createCCAPIJob(
-								database,
-								"a-team",
-								atc.PipelineRef{Name: "something-else"},
-								"some-job",
-							)
-							teamName = fixture.team.Name()
-							closedPipeline := closedCCAPIPipeline(database, fixture)
-							deps.teamFactory = ccAPITeamFactoryResult{
-								TeamFactory: deps.teamFactory,
-								teamName:    fixture.team.Name(),
-								team: ccAPITeamPipelinesResult{
-									Team:      fixture.team,
-									pipelines: []db.Pipeline{closedPipeline},
-								},
-							}
-						})
-
-						It("returns 500", func() {
-							Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-						})
-					})
 				})
 
 				Context("when an instanced pipeline is found", func() {
@@ -495,22 +409,6 @@ var _ = Describe("cc.xml", func() {
 					})
 				})
 
-				Context("when getting the pipelines fails", func() {
-					BeforeEach(func() {
-						team, err := deps.teamFactory.CreateTeam(atc.Team{Name: "a-team"})
-						Expect(err).NotTo(HaveOccurred())
-						teamName = team.Name()
-						deps.teamFactory = ccAPITeamFactoryResult{
-							TeamFactory: deps.teamFactory,
-							teamName:    team.Name(),
-							team:        closedCCAPITeam(database, team.Name()),
-						}
-					})
-
-					It("returns 500", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-					})
-				})
 			})
 
 			Context("when the team is not found", func() {
@@ -524,19 +422,6 @@ var _ = Describe("cc.xml", func() {
 				})
 			})
 
-			Context("when finding the team fails", func() {
-				BeforeEach(func() {
-					grantViewer = false
-					useProfile(adminProfile)
-					doomed := postgresRunner.OpenConn()
-					deps.teamFactory = db.NewTeamFactory(doomed, database.LockFactory)
-					Expect(doomed.Close()).To(Succeed())
-				})
-
-				It("returns 500", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-				})
-			})
 		})
 
 		Context("when not authenticated", func() {

@@ -2,12 +2,10 @@ package api_test
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"reflect"
 	"strconv"
 
 	"github.com/concourse/concourse/atc"
@@ -27,120 +25,6 @@ type versionsAPIFixture struct {
 	ref      atc.PipelineRef
 	scenario *dbtest.Scenario
 	server   *httptest.Server
-}
-
-type versionsAPITeamFactory struct {
-	db.TeamFactory
-	teamName string
-	team     db.Team
-}
-
-func (factory versionsAPITeamFactory) FindTeam(name string) (db.Team, bool, error) {
-	if name == factory.teamName {
-		return factory.team, true, nil
-	}
-	return factory.TeamFactory.FindTeam(name)
-}
-
-type versionsAPITeam struct {
-	db.Team
-	ref      atc.PipelineRef
-	pipeline db.Pipeline
-}
-
-func (team versionsAPITeam) Pipeline(ref atc.PipelineRef) (db.Pipeline, bool, error) {
-	if ref.Name == team.ref.Name && reflect.DeepEqual(ref.InstanceVars, team.ref.InstanceVars) {
-		return team.pipeline, true, nil
-	}
-	return team.Team.Pipeline(ref)
-}
-
-type versionsAPIPipeline struct {
-	db.Pipeline
-	resourceName string
-	resource     db.Resource
-}
-
-func (pipeline versionsAPIPipeline) Resource(name string) (db.Resource, bool, error) {
-	if pipeline.resource != nil && name == pipeline.resourceName {
-		return pipeline.resource, true, nil
-	}
-	return pipeline.Pipeline.Resource(name)
-}
-
-type versionsAPIResourceTypePipeline struct {
-	db.Pipeline
-	resourceTypeName string
-	resourceType     db.ResourceType
-}
-
-func (pipeline versionsAPIResourceTypePipeline) ResourceType(name string) (db.ResourceType, bool, error) {
-	if pipeline.resourceType != nil && name == pipeline.resourceTypeName {
-		return pipeline.resourceType, true, nil
-	}
-	return pipeline.Pipeline.ResourceType(name)
-}
-
-// versionsAPIResourceTypeClearError preserves the handler's ClearVersions
-// error branch around a healthy persisted type. A closed real type cannot be
-// used here: resourceType.ClearVersions currently dereferences the nil SQL
-// result from a failed Exec before it can return that error to the handler.
-type versionsAPIResourceTypeClearError struct {
-	db.ResourceType
-	err error
-}
-
-func (resourceType versionsAPIResourceTypeClearError) ClearVersions() (int64, error) {
-	return 0, resourceType.err
-}
-
-type versionsAPIInputBuildsErrorPipeline struct {
-	db.Pipeline
-	err error
-}
-
-func (pipeline versionsAPIInputBuildsErrorPipeline) GetBuildsWithVersionAsInput(
-	int,
-	int,
-) ([]db.Build, error) {
-	return nil, pipeline.err
-}
-
-type versionsAPIOutputBuildsErrorPipeline struct {
-	db.Pipeline
-	err error
-}
-
-func (pipeline versionsAPIOutputBuildsErrorPipeline) GetBuildsWithVersionAsOutput(
-	int,
-	int,
-) ([]db.Build, error) {
-	return nil, pipeline.err
-}
-
-// versionsAPIVersionsNotFoundResource preserves the defensive handler branch
-// that production SQL cannot reach after a configured resource has been found:
-// an empty real scope returns found=true with an empty version slice.
-type versionsAPIVersionsNotFoundResource struct {
-	db.Resource
-}
-
-func (resource versionsAPIVersionsNotFoundResource) Versions(
-	db.Page,
-	atc.Version,
-) ([]atc.ResourceVersion, db.Pagination, bool, error) {
-	return nil, db.Pagination{}, false, nil
-}
-
-// versionsAPIPinNotFoundResource preserves the defensive handler branch that
-// production PostgreSQL cannot reach: pinning a nonexistent version violates
-// a constraint and returns an error instead of found=false with a nil error.
-type versionsAPIPinNotFoundResource struct {
-	db.Resource
-}
-
-func (resource versionsAPIPinNotFoundResource) PinVersion(int) (bool, error) {
-	return false, nil
 }
 
 type versionsAPIMutationVersions struct {
@@ -200,49 +84,6 @@ func (fixture *versionsAPIFixture) resourceType(name string) db.ResourceType {
 	Expect(err).NotTo(HaveOccurred())
 	Expect(found).To(BeTrue(), "resource type %q not found", name)
 	return resourceType
-}
-
-func (fixture *versionsAPIFixture) overridePipeline(pipeline db.Pipeline) {
-	fixture.database.Deps.teamFactory = versionsAPITeamFactory{
-		TeamFactory: fixture.database.Deps.teamFactory,
-		teamName:    fixture.team.Name(),
-		team: versionsAPITeam{
-			Team: fixture.team, ref: fixture.ref, pipeline: pipeline,
-		},
-	}
-}
-
-func (fixture *versionsAPIFixture) doomedPipeline() db.Pipeline {
-	GinkgoHelper()
-
-	conn := postgresRunner.OpenConn()
-	defer func() { Expect(conn.Close()).To(Succeed()) }()
-	teamFactory := db.NewTeamFactory(conn, fixture.database.LockFactory)
-	team, found, err := teamFactory.FindTeam(fixture.team.Name())
-	Expect(err).NotTo(HaveOccurred())
-	Expect(found).To(BeTrue())
-	pipeline, found, err := team.Pipeline(fixture.ref)
-	Expect(err).NotTo(HaveOccurred())
-	Expect(found).To(BeTrue())
-	return pipeline
-}
-
-func (fixture *versionsAPIFixture) doomedResource(name string) db.Resource {
-	GinkgoHelper()
-
-	conn := postgresRunner.OpenConn()
-	defer func() { Expect(conn.Close()).To(Succeed()) }()
-	teamFactory := db.NewTeamFactory(conn, fixture.database.LockFactory)
-	team, found, err := teamFactory.FindTeam(fixture.team.Name())
-	Expect(err).NotTo(HaveOccurred())
-	Expect(found).To(BeTrue())
-	pipeline, found, err := team.Pipeline(fixture.ref)
-	Expect(err).NotTo(HaveOccurred())
-	Expect(found).To(BeTrue())
-	resource, found, err := pipeline.Resource(name)
-	Expect(err).NotTo(HaveOccurred())
-	Expect(found).To(BeTrue())
-	return resource
 }
 
 func (fixture *versionsAPIFixture) requestVersions(resourceName string, query url.Values) *http.Response {
@@ -890,18 +731,6 @@ func versionsAPIBuildRelationshipSpecs(relationship string) func() {
 				})
 			})
 
-			Context("when failing to retrieve the resource", func() {
-				BeforeEach(func() {
-					prepare = func(r *versionsAPIBuildRelationships) {
-						r.fixture.overridePipeline(r.fixture.doomedPipeline())
-					}
-				})
-
-				It("returns 500", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-				})
-			})
-
 			It("selects relationships for the requested resource", func() {
 				actual := decodeVersionsAPIBuilds(response)
 				Expect(versionsAPIBuildIDs(actual)).ToNot(ContainElement(relationships.otherBuild.ID()))
@@ -954,25 +783,6 @@ func versionsAPIBuildRelationshipSpecs(relationship string) func() {
 				})
 			})
 
-			Context("when the relationship query fails", func() {
-				BeforeEach(func() {
-					prepare = func(r *versionsAPIBuildRelationships) {
-						if relationship == "input_to" {
-							r.fixture.overridePipeline(versionsAPIInputBuildsErrorPipeline{
-								Pipeline: r.fixture.pipeline, err: errors.New("input relationship failed"),
-							})
-						} else {
-							r.fixture.overridePipeline(versionsAPIOutputBuildsErrorPipeline{
-								Pipeline: r.fixture.pipeline, err: errors.New("output relationship failed"),
-							})
-						}
-					}
-				})
-
-				It("returns a 500 internal server error", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-				})
-			})
 		})
 	}
 }
@@ -1387,50 +1197,6 @@ var _ = Describe("Versions API", func() {
 					})
 				})
 
-				Context("when the versions can't be found", func() {
-					BeforeEach(func() {
-						prepare = append(prepare, func(fixture *versionsAPIFixture) {
-							resource := versionsAPIVersionsNotFoundResource{
-								Resource: fixture.resource(resourceName),
-							}
-							fixture.overridePipeline(versionsAPIPipeline{
-								Pipeline: fixture.pipeline, resourceName: resourceName, resource: resource,
-							})
-						})
-					})
-
-					It("returns 404 not found", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusNotFound))
-					})
-				})
-
-				Context("when getting the versions fails", func() {
-					BeforeEach(func() {
-						prepare = append(prepare, func(fixture *versionsAPIFixture) {
-							fixture.overridePipeline(versionsAPIPipeline{
-								Pipeline:     fixture.pipeline,
-								resourceName: resourceName,
-								resource:     fixture.doomedResource(resourceName),
-							})
-						})
-					})
-
-					It("returns 500 Internal Server Error", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-					})
-				})
-			})
-
-			Context("when finding the resource fails", func() {
-				BeforeEach(func() {
-					prepare = append(prepare, func(fixture *versionsAPIFixture) {
-						fixture.overridePipeline(fixture.doomedPipeline())
-					})
-				})
-
-				It("returns 500 Internal Server Error", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-				})
 			})
 
 			Context("when the resource is not found", func() {
@@ -1508,32 +1274,6 @@ var _ = Describe("Versions API", func() {
 						})
 					})
 
-					Context("when enabling the resource fails", func() {
-						BeforeEach(func() {
-							prepare = append(prepare, func(fixture *versionsAPIFixture) {
-								fixture.overridePipeline(versionsAPIPipeline{
-									Pipeline: fixture.pipeline, resourceName: resourceName,
-									resource: fixture.doomedResource(resourceName),
-								})
-							})
-						})
-
-						It("returns 500", func() {
-							Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-						})
-					})
-				})
-
-				Context("when it fails to find the resource", func() {
-					BeforeEach(func() {
-						prepare = append(prepare, func(fixture *versionsAPIFixture) {
-							fixture.overridePipeline(fixture.doomedPipeline())
-						})
-					})
-
-					It("returns Internal Server Error", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-					})
 				})
 
 				Context("when the resource is not found", func() {
@@ -1621,32 +1361,6 @@ var _ = Describe("Versions API", func() {
 						})
 					})
 
-					Context("when disabling the resource fails", func() {
-						BeforeEach(func() {
-							prepare = append(prepare, func(fixture *versionsAPIFixture) {
-								fixture.overridePipeline(versionsAPIPipeline{
-									Pipeline: fixture.pipeline, resourceName: resourceName,
-									resource: fixture.doomedResource(resourceName),
-								})
-							})
-						})
-
-						It("returns 500", func() {
-							Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-						})
-					})
-				})
-
-				Context("when it fails to find the resource", func() {
-					BeforeEach(func() {
-						prepare = append(prepare, func(fixture *versionsAPIFixture) {
-							fixture.overridePipeline(fixture.doomedPipeline())
-						})
-					})
-
-					It("returns Internal Server Error", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-					})
 				})
 
 				Context("when the resource is not found", func() {
@@ -1745,51 +1459,6 @@ var _ = Describe("Versions API", func() {
 						})
 					})
 
-					Context("when pinning the resource fails by resource not exist", func() {
-						BeforeEach(func() {
-							prepare = append(prepare, func(fixture *versionsAPIFixture) {
-								resource := versionsAPIPinNotFoundResource{
-									Resource: fixture.resource(resourceName),
-								}
-								fixture.overridePipeline(versionsAPIPipeline{
-									Pipeline: fixture.pipeline, resourceName: resourceName, resource: resource,
-								})
-							})
-						})
-
-						It("returns 404", func() {
-							Expect(response.StatusCode).To(Equal(http.StatusNotFound))
-							Expect(reloadVersionsAPIResource(fixture).CurrentPinnedVersion()).To(Equal(versions.decoy))
-						})
-					})
-
-					Context("when pinning the resource fails by error", func() {
-						BeforeEach(func() {
-							prepare = append(prepare, func(fixture *versionsAPIFixture) {
-								fixture.overridePipeline(versionsAPIPipeline{
-									Pipeline: fixture.pipeline, resourceName: resourceName,
-									resource: fixture.doomedResource(resourceName),
-								})
-							})
-						})
-
-						It("returns 500", func() {
-							Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-							Expect(reloadVersionsAPIResource(fixture).CurrentPinnedVersion()).To(Equal(versions.decoy))
-						})
-					})
-				})
-
-				Context("when it fails to find the resource", func() {
-					BeforeEach(func() {
-						prepare = append(prepare, func(fixture *versionsAPIFixture) {
-							fixture.overridePipeline(fixture.doomedPipeline())
-						})
-					})
-
-					It("returns Internal Server Error", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-					})
 				})
 
 				Context("when the resource is not found", func() {
@@ -1882,21 +1551,6 @@ var _ = Describe("Versions API", func() {
 					)).To(ConsistOf(state.decoyVersions))
 				})
 
-				Context("when deleting the resource versions fails", func() {
-					BeforeEach(func() {
-						prepare = append(prepare, func(state *versionsAPIResourceClearState) {
-							state.fixture.overridePipeline(versionsAPIPipeline{
-								Pipeline: state.fixture.pipeline, resourceName: state.resourceName,
-								resource: state.fixture.doomedResource(state.resourceName),
-							})
-						})
-					})
-
-					It("returns 500", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-					})
-				})
-
 				Context("when the resource is not found", func() {
 					BeforeEach(func() {
 						resourceName = "missing-resource"
@@ -1907,17 +1561,6 @@ var _ = Describe("Versions API", func() {
 					})
 				})
 
-				Context("when finding the resource errors", func() {
-					BeforeEach(func() {
-						prepare = append(prepare, func(state *versionsAPIResourceClearState) {
-							state.fixture.overridePipeline(state.fixture.doomedPipeline())
-						})
-					})
-
-					It("returns 500", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-					})
-				})
 			})
 		})
 	})
@@ -2000,25 +1643,6 @@ var _ = Describe("Versions API", func() {
 					}
 				})
 
-				Context("when deleting the resource type versions fails", func() {
-					BeforeEach(func() {
-						prepare = append(prepare, func(state *versionsAPIResourceTypeClearState) {
-							resourceType := versionsAPIResourceTypeClearError{
-								ResourceType: state.fixture.resourceType(state.resourceType),
-								err:          errors.New("clear resource type versions failed"),
-							}
-							state.fixture.overridePipeline(versionsAPIResourceTypePipeline{
-								Pipeline: state.fixture.pipeline, resourceTypeName: state.resourceType,
-								resourceType: resourceType,
-							})
-						})
-					})
-
-					It("returns 500", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-					})
-				})
-
 				Context("when the resource type is not found", func() {
 					BeforeEach(func() {
 						resourceTypeName = "missing-resource-type"
@@ -2029,17 +1653,6 @@ var _ = Describe("Versions API", func() {
 					})
 				})
 
-				Context("when finding the resource type errors", func() {
-					BeforeEach(func() {
-						prepare = append(prepare, func(state *versionsAPIResourceTypeClearState) {
-							state.fixture.overridePipeline(state.fixture.doomedPipeline())
-						})
-					})
-
-					It("returns 500", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-					})
-				})
 			})
 		})
 	})

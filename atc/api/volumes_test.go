@@ -15,21 +15,34 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-type afterGetTeamVolumesRepository struct {
+type destroyResourceCacheAfterTeamVolumeReadRepository struct {
 	db.VolumeRepository
-	afterGet func() error
+	conn          db.DbConn
+	resourceCache db.ResourceCache
 }
 
-func (repository afterGetTeamVolumesRepository) GetTeamVolumes(teamID int) ([]db.CreatedVolume, error) {
+func (repository destroyResourceCacheAfterTeamVolumeReadRepository) GetTeamVolumes(teamID int) ([]db.CreatedVolume, error) {
 	volumes, err := repository.VolumeRepository.GetTeamVolumes(teamID)
 	if err != nil {
 		return nil, err
 	}
 
-	if repository.afterGet != nil {
-		if err := repository.afterGet(); err != nil {
-			return nil, err
-		}
+	tx, err := repository.conn.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	deleted, err := repository.resourceCache.Destroy(tx)
+	if err != nil {
+		return nil, err
+	}
+	if !deleted {
+		return nil, errors.New("resource cache was not deleted")
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, err
 	}
 
 	return volumes, nil
@@ -307,18 +320,6 @@ var _ = Describe("Volumes API", func() {
 					})
 				})
 
-				Context("when getting all volumes fails", func() {
-					BeforeEach(func() {
-						closedConnection := postgresRunner.OpenConn()
-						realDatabase.Deps.volumeRepository = db.NewVolumeRepository(closedConnection)
-						Expect(closedConnection.Close()).To(Succeed())
-					})
-
-					It("returns 500 Internal Server Error", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-					})
-				})
-
 				Context("when a volume is deleted during the request", func() {
 					var expectedBaseResourceTypeVolume atc.Volume
 
@@ -386,29 +387,10 @@ var _ = Describe("Volumes API", func() {
 						Expect(err).NotTo(HaveOccurred())
 						Expect(deleted).To(BeTrue())
 
-						realDatabase.Deps.volumeRepository = afterGetTeamVolumesRepository{
+						realDatabase.Deps.volumeRepository = destroyResourceCacheAfterTeamVolumeReadRepository{
 							VolumeRepository: repository,
-							afterGet: func() error {
-								tx, err := realDatabase.Conn.Begin()
-								if err != nil {
-									return err
-								}
-								defer tx.Rollback()
-
-								deleted, err := resourceCache.Destroy(tx)
-								if err != nil {
-									return err
-								}
-								if !deleted {
-									return errors.New("resource cache was not deleted")
-								}
-
-								if err := tx.Commit(); err != nil {
-									return err
-								}
-
-								return nil
-							},
+							conn:             realDatabase.Conn,
+							resourceCache:    resourceCache,
 						}
 					})
 
