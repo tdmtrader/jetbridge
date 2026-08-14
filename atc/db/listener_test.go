@@ -17,6 +17,7 @@ var _ = Describe("PgxListener", func() {
 		err          error
 		notifierConn db.DbConn
 		listener     *db.PgxListener
+		pool         *pgxpool.Pool
 
 		testPayload = "hello"
 	)
@@ -24,7 +25,7 @@ var _ = Describe("PgxListener", func() {
 	BeforeEach(func(ctx context.Context) {
 		notifierConn = postgresRunner.OpenConn()
 
-		pool, err := pgxpool.New(ctx, postgresRunner.DataSourceName())
+		pool, err = pgxpool.New(ctx, postgresRunner.DataSourceName())
 		Expect(err).ToNot(HaveOccurred())
 
 		listener = db.NewPgxListener(pool)
@@ -39,6 +40,7 @@ var _ = Describe("PgxListener", func() {
 		err = listener.Close()
 		Expect(err).ToNot(HaveOccurred())
 		Eventually(ctx, c).WithTimeout(time.Second).Should(BeClosed())
+		Expect(pool.Stat().TotalConns()).To(BeZero())
 	})
 
 	Context("Listen()", func() {

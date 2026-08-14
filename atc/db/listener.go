@@ -54,8 +54,9 @@ func (l *PgxListener) Close() error {
 	if l.conn != nil {
 		l.conn.Release()
 		l.conn = nil
-		// Don't need to manually close the pool
 	}
+	// The listener owns the pool supplied at construction.
+	l.pool.Close()
 
 	close(l.comms)
 	return nil
