@@ -130,9 +130,8 @@ var _ = Describe("Handler", func() {
 					// A team the caller is trying to reach by putting its name in
 					// the body. Both teams own a pipeline of the same name, so the
 					// only way to tell which one the handler scoped to is which
-					// pipeline the delegate receives -- which is the property that
-					// matters, and one the old FindTeamArgsForCall assertion could
-					// only approximate.
+					// pipeline the delegate receives -- the externally meaningful
+					// scoping property this scenario must prove.
 					otherTeam := createTeam("some-other-team")
 					createPipeline(otherTeam, "some-pipeline")
 					urlTeamPipeline := createPipeline(team, "some-pipeline")
