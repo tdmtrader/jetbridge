@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"code.cloudfoundry.org/lager/v3"
@@ -11,7 +12,8 @@ import (
 )
 
 // apiWorkerRuntime is the half of a worker that is not the database: the
-// volumes and containers it holds by handle, and whether reaching it fails.
+// volumes and containers it holds by handle, plus artifact volumes keyed by
+// their owning team.
 // Every decision the API asks a worker.Pool to make -- which worker holds a
 // handle, whether that worker is running, which worker a new artifact lands on
 // -- is left to the real pool over the real database. Only this last hop is
@@ -19,21 +21,21 @@ import (
 type apiWorkerRuntime struct {
 	mu sync.Mutex
 
-	volumes    map[string]runtime.Volume
-	containers map[string]runtime.Container
+	volumes           map[string]runtime.Volume
+	containers        map[string]runtime.Container
+	artifactsByTeamID map[int]apiArtifact
+}
 
-	volumeErr    error
-	containerErr error
-
-	artifactVolume  runtime.Volume
-	artifact        db.WorkerArtifact
-	artifactTeamIDs []int
+type apiArtifact struct {
+	volume   runtime.Volume
+	artifact db.WorkerArtifact
 }
 
 func newAPIWorkerRuntime() *apiWorkerRuntime {
 	return &apiWorkerRuntime{
-		volumes:    map[string]runtime.Volume{},
-		containers: map[string]runtime.Container{},
+		volumes:           map[string]runtime.Volume{},
+		containers:        map[string]runtime.Container{},
+		artifactsByTeamID: map[int]apiArtifact{},
 	}
 }
 
@@ -49,29 +51,10 @@ func (rt *apiWorkerRuntime) addContainer(handle string, container runtime.Contai
 	rt.containers[handle] = container
 }
 
-func (rt *apiWorkerRuntime) failVolumeLookup(err error) {
+func (rt *apiWorkerRuntime) addArtifact(teamID int, volume runtime.Volume, artifact db.WorkerArtifact) {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
-	rt.volumeErr = err
-}
-
-func (rt *apiWorkerRuntime) failContainerLookup(err error) {
-	rt.mu.Lock()
-	defer rt.mu.Unlock()
-	rt.containerErr = err
-}
-
-func (rt *apiWorkerRuntime) createsArtifact(volume runtime.Volume, artifact db.WorkerArtifact) {
-	rt.mu.Lock()
-	defer rt.mu.Unlock()
-	rt.artifactVolume = volume
-	rt.artifact = artifact
-}
-
-func (rt *apiWorkerRuntime) artifactTeamIDSnapshot() []int {
-	rt.mu.Lock()
-	defer rt.mu.Unlock()
-	return append([]int(nil), rt.artifactTeamIDs...)
+	rt.artifactsByTeamID[teamID] = apiArtifact{volume: volume, artifact: artifact}
 }
 
 // poolWorkerFactory is the worker.Factory the pool builds workers with.
@@ -99,10 +82,6 @@ func (w poolWorker) LookupVolume(_ context.Context, handle string) (runtime.Volu
 	w.runtime.mu.Lock()
 	defer w.runtime.mu.Unlock()
 
-	if w.runtime.volumeErr != nil {
-		return nil, false, w.runtime.volumeErr
-	}
-
 	volume, found := w.runtime.volumes[handle]
 	return volume, found, nil
 }
@@ -110,10 +89,6 @@ func (w poolWorker) LookupVolume(_ context.Context, handle string) (runtime.Volu
 func (w poolWorker) LookupContainer(_ context.Context, handle string) (runtime.Container, bool, error) {
 	w.runtime.mu.Lock()
 	defer w.runtime.mu.Unlock()
-
-	if w.runtime.containerErr != nil {
-		return nil, false, w.runtime.containerErr
-	}
 
 	container, found := w.runtime.containers[handle]
 	return container, found, nil
@@ -123,6 +98,9 @@ func (w poolWorker) CreateVolumeForArtifact(_ context.Context, teamID int) (runt
 	w.runtime.mu.Lock()
 	defer w.runtime.mu.Unlock()
 
-	w.runtime.artifactTeamIDs = append(w.runtime.artifactTeamIDs, teamID)
-	return w.runtime.artifactVolume, w.runtime.artifact, nil
+	artifact, found := w.runtime.artifactsByTeamID[teamID]
+	if !found {
+		return nil, nil, fmt.Errorf("artifact for team %d not found", teamID)
+	}
+	return artifact.volume, artifact.artifact, nil
 }

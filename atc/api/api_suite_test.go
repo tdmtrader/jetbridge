@@ -16,6 +16,7 @@ import (
 	"github.com/concourse/concourse/atc/api"
 	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/api/auth"
+	"github.com/concourse/concourse/atc/api/buildserver"
 	"github.com/concourse/concourse/atc/api/containerserver"
 	"github.com/concourse/concourse/atc/api/infoserver"
 	"github.com/concourse/concourse/atc/api/policychecker"
@@ -53,33 +54,11 @@ var (
 	logger           *lagertest.TestLogger
 	fakeClock        *fakeclock.FakeClock
 
-	constructedEventHandler *fakeEventHandlerFactory
-
 	server *httptest.Server
 	client *http.Client
 
 	apiProfileTransport *profileTransport
 )
-
-type fakeEventHandlerFactory struct {
-	build db.BuildForAPI
-
-	lock sync.Mutex
-}
-
-func (f *fakeEventHandlerFactory) Construct(
-	logger lager.Logger,
-	build db.BuildForAPI,
-) http.Handler {
-	f.lock.Lock()
-	f.build = build
-	f.lock.Unlock()
-
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("fake event handler factory was here"))
-	})
-}
 
 // observingInterceptTimeout counts resets of the real idle timeout of a
 // hijacked container, and lets a spec expire it on demand. Reset and Error run
@@ -132,8 +111,6 @@ var _ = BeforeEach(func() {
 	var err error
 	cliDownloadsDir, err = os.MkdirTemp("", "cli-downloads")
 	Expect(err).NotTo(HaveOccurred())
-
-	constructedEventHandler = &fakeEventHandlerFactory{}
 
 	logger = lagertest.NewTestLogger("api")
 
@@ -243,7 +220,7 @@ func newAuditor() auditor.Auditor {
 
 // newAPIServer builds the full API handler over deps and serves it. The
 // access wrapper resolves real persisted bearer tokens and team roles. The
-// policy checker and event handler remain deterministic suite fixtures.
+// policy checker remains a deterministic suite fixture.
 func newAPIServer(deps apiDBDeps) *httptest.Server {
 	GinkgoHelper()
 	Expect(apiDB).NotTo(BeNil())
@@ -308,7 +285,7 @@ func newAPIServer(deps apiDBDeps) *httptest.Server {
 		deps.resourceConfigFactory,
 		deps.userFactory,
 
-		constructedEventHandler.Construct,
+		buildserver.NewEventHandler,
 
 		workerPool,
 

@@ -4,63 +4,22 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"sync"
 	"time"
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbtest"
+	"github.com/concourse/concourse/atc/event"
 	. "github.com/concourse/concourse/atc/testhelpers"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/vito/go-sse/sse"
 )
-
-type buildsAPITeamState struct {
-	mu                    sync.Mutex
-	createStartedBuildErr error
-}
-
-func (state *buildsAPITeamState) setCreateStartedBuildError(err error) {
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	state.createStartedBuildErr = err
-}
-
-type buildsAPITeam struct {
-	db.Team
-	state *buildsAPITeamState
-}
-
-func (team *buildsAPITeam) CreateStartedBuild(plan atc.Plan) (db.Build, error) {
-	team.state.mu.Lock()
-	err := team.state.createStartedBuildErr
-	team.state.mu.Unlock()
-
-	if err != nil {
-		return nil, err
-	}
-	return team.Team.CreateStartedBuild(plan)
-}
-
-type buildsAPITeamFactory struct {
-	db.TeamFactory
-	teamName string
-	state    *buildsAPITeamState
-}
-
-func (factory buildsAPITeamFactory) FindTeam(name string) (db.Team, bool, error) {
-	team, found, err := factory.TeamFactory.FindTeam(name)
-	if err != nil || !found || team.Name() != factory.teamName {
-		return team, found, err
-	}
-	return &buildsAPITeam{Team: team, state: factory.state}, true, nil
-}
 
 func buildsAPIRequireTeamBuilds(team db.Team) []db.BuildForAPI {
 	GinkgoHelper()
@@ -70,289 +29,31 @@ func buildsAPIRequireTeamBuilds(team db.Team) []db.BuildForAPI {
 	return builds
 }
 
-type buildsAPIVisibleBuildsCall struct {
-	teamNames []string
-	page      db.Page
-}
+func buildsAPIRemoveJob(team db.Team, pipeline db.Pipeline, jobName string) db.Pipeline {
+	GinkgoHelper()
 
-type buildsAPIBuildFactoryState struct {
-	mu sync.Mutex
-
-	visibleBuildsErr error
-	buildForAPIErr   error
-	buildWrapper     func(db.BuildForAPI) db.BuildForAPI
-	visibleCalls     []buildsAPIVisibleBuildsCall
-	allCalls         []db.Page
-	buildCalls       []int
-}
-
-func cloneBuildsAPIPage(page db.Page) db.Page {
-	cloned := page
-	if page.From != nil {
-		cloned.From = db.NewIntPtr(*page.From)
-	}
-	if page.To != nil {
-		cloned.To = db.NewIntPtr(*page.To)
-	}
-	return cloned
-}
-
-func (state *buildsAPIBuildFactoryState) setVisibleBuildsError(err error) {
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	state.visibleBuildsErr = err
-}
-
-func (state *buildsAPIBuildFactoryState) setBuildForAPIError(err error) {
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	state.buildForAPIErr = err
-}
-
-func (state *buildsAPIBuildFactoryState) setBuildWrapper(wrapper func(db.BuildForAPI) db.BuildForAPI) {
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	state.buildWrapper = wrapper
-}
-
-func (state *buildsAPIBuildFactoryState) visibleBuildsCalls() []buildsAPIVisibleBuildsCall {
-	state.mu.Lock()
-	defer state.mu.Unlock()
-
-	calls := make([]buildsAPIVisibleBuildsCall, len(state.visibleCalls))
-	for i, call := range state.visibleCalls {
-		calls[i] = buildsAPIVisibleBuildsCall{
-			teamNames: append([]string(nil), call.teamNames...),
-			page:      cloneBuildsAPIPage(call.page),
+	config, err := pipeline.Config()
+	Expect(err).NotTo(HaveOccurred())
+	remainingJobs := make(atc.JobConfigs, 0, len(config.Jobs))
+	for _, job := range config.Jobs {
+		if job.Name != jobName {
+			remainingJobs = append(remainingJobs, job)
 		}
 	}
-	return calls
-}
+	config.Jobs = remainingJobs
 
-func (state *buildsAPIBuildFactoryState) allBuildsCalls() []db.Page {
-	state.mu.Lock()
-	defer state.mu.Unlock()
-
-	calls := make([]db.Page, len(state.allCalls))
-	for i, call := range state.allCalls {
-		calls[i] = cloneBuildsAPIPage(call)
-	}
-	return calls
-}
-
-func (state *buildsAPIBuildFactoryState) buildForAPICalls() []int {
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	return append([]int(nil), state.buildCalls...)
-}
-
-type buildsAPIBuildFactory struct {
-	db.BuildFactory
-	state *buildsAPIBuildFactoryState
-}
-
-func (factory *buildsAPIBuildFactory) VisibleBuilds(teamNames []string, page db.Page) ([]db.BuildForAPI, db.Pagination, error) {
-	factory.state.mu.Lock()
-	factory.state.visibleCalls = append(factory.state.visibleCalls, buildsAPIVisibleBuildsCall{
-		teamNames: append([]string(nil), teamNames...),
-		page:      cloneBuildsAPIPage(page),
-	})
-	err := factory.state.visibleBuildsErr
-	factory.state.mu.Unlock()
-
-	if err != nil {
-		return nil, db.Pagination{}, err
-	}
-	return factory.BuildFactory.VisibleBuilds(teamNames, page)
-}
-
-func (factory *buildsAPIBuildFactory) AllBuilds(page db.Page) ([]db.BuildForAPI, db.Pagination, error) {
-	factory.state.mu.Lock()
-	factory.state.allCalls = append(factory.state.allCalls, cloneBuildsAPIPage(page))
-	factory.state.mu.Unlock()
-
-	return factory.BuildFactory.AllBuilds(page)
-}
-
-func (factory *buildsAPIBuildFactory) BuildForAPI(buildID int) (db.BuildForAPI, bool, error) {
-	factory.state.mu.Lock()
-	factory.state.buildCalls = append(factory.state.buildCalls, buildID)
-	err := factory.state.buildForAPIErr
-	wrapper := factory.state.buildWrapper
-	factory.state.mu.Unlock()
-
-	if err != nil {
-		return nil, false, err
-	}
-
-	build, found, err := factory.BuildFactory.BuildForAPI(buildID)
-	if err != nil || !found || wrapper == nil {
-		return build, found, err
-	}
-	return wrapper(build), true, nil
-}
-
-type buildsAPIBuildState struct {
-	mu sync.Mutex
-
-	pipelineOverride bool
-	pipeline         db.Pipeline
-	pipelineFound    bool
-	pipelineErr      error
-	pipelineWrapper  func(db.Pipeline) db.Pipeline
-	resourcesErr     error
-	markAsAbortedErr error
-	preparationSet   bool
-	preparation      db.BuildPreparation
-	preparationFound bool
-	preparationErr   error
-}
-
-func (state *buildsAPIBuildState) setPipelineResult(pipeline db.Pipeline, found bool, err error) {
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	state.pipelineOverride = true
-	state.pipeline = pipeline
-	state.pipelineFound = found
-	state.pipelineErr = err
-}
-
-func (state *buildsAPIBuildState) setResourcesError(err error) {
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	state.resourcesErr = err
-}
-
-func (state *buildsAPIBuildState) setPipelineWrapper(wrapper func(db.Pipeline) db.Pipeline) {
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	state.pipelineWrapper = wrapper
-}
-
-func (state *buildsAPIBuildState) setMarkAsAbortedError(err error) {
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	state.markAsAbortedErr = err
-}
-
-func (state *buildsAPIBuildState) setPreparationResult(
-	preparation db.BuildPreparation,
-	found bool,
-	err error,
-) {
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	state.preparationSet = true
-	state.preparation = preparation
-	state.preparationFound = found
-	state.preparationErr = err
-}
-
-type buildsAPIBuild struct {
-	db.BuildForAPI
-	state *buildsAPIBuildState
-}
-
-func (build *buildsAPIBuild) Pipeline() (db.Pipeline, bool, error) {
-	build.state.mu.Lock()
-	override := build.state.pipelineOverride
-	pipeline := build.state.pipeline
-	found := build.state.pipelineFound
-	err := build.state.pipelineErr
-	wrapper := build.state.pipelineWrapper
-	build.state.mu.Unlock()
-
-	if override {
-		return pipeline, found, err
-	}
-
-	pipeline, found, err = build.BuildForAPI.Pipeline()
-	if err != nil || !found || wrapper == nil {
-		return pipeline, found, err
-	}
-	return wrapper(pipeline), true, nil
-}
-
-func (build *buildsAPIBuild) Resources() ([]db.BuildInput, []db.BuildOutput, error) {
-	build.state.mu.Lock()
-	err := build.state.resourcesErr
-	build.state.mu.Unlock()
-
-	if err != nil {
-		return nil, nil, err
-	}
-	return build.BuildForAPI.Resources()
-}
-
-func (build *buildsAPIBuild) MarkAsAborted() error {
-	build.state.mu.Lock()
-	err := build.state.markAsAbortedErr
-	build.state.mu.Unlock()
-
-	// A valid persisted build cannot make only MarkAsAborted fail, so this is
-	// the narrow error seam for that one existing handler branch.
-	if err != nil {
-		return err
-	}
-	return build.BuildForAPI.MarkAsAborted()
-}
-
-func (build *buildsAPIBuild) Preparation() (db.BuildPreparation, bool, error) {
-	build.state.mu.Lock()
-	override := build.state.preparationSet
-	preparation := build.state.preparation
-	found := build.state.preparationFound
-	err := build.state.preparationErr
-	build.state.mu.Unlock()
-
-	// Consistent persisted builds always return a found preparation. This seam
-	// is limited to the handler's existing not-found and lookup-error branches.
-	if override {
-		return preparation, found, err
-	}
-	return build.BuildForAPI.Preparation()
-}
-
-type buildsAPIPipelineState struct {
-	mu sync.Mutex
-
-	jobOverride     bool
-	jobOverrideName string
-	job             db.Job
-	jobFound        bool
-	jobErr          error
-}
-
-func (state *buildsAPIPipelineState) setJobResult(name string, job db.Job, found bool, err error) {
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	state.jobOverride = true
-	state.jobOverrideName = name
-	state.job = job
-	state.jobFound = found
-	state.jobErr = err
-}
-
-// buildsAPIPipeline preserves every real pipeline behavior except the one
-// Pipeline.Job result that an error-path spec deliberately makes unreachable.
-type buildsAPIPipeline struct {
-	db.Pipeline
-	state *buildsAPIPipelineState
-}
-
-func (pipeline *buildsAPIPipeline) Job(name string) (db.Job, bool, error) {
-	pipeline.state.mu.Lock()
-	override := pipeline.state.jobOverride
-	overrideName := pipeline.state.jobOverrideName
-	job := pipeline.state.job
-	found := pipeline.state.jobFound
-	err := pipeline.state.jobErr
-	pipeline.state.mu.Unlock()
-
-	if override && name == overrideName {
-		return job, found, err
-	}
-	return pipeline.Pipeline.Job(name)
+	updated, created, err := team.SavePipeline(
+		atc.PipelineRef{Name: pipeline.Name(), InstanceVars: pipeline.InstanceVars()},
+		config,
+		pipeline.ConfigVersion(),
+		false,
+	)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(created).To(BeFalse())
+	_, found, err := updated.Job(jobName)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(found).To(BeFalse())
+	return updated
 }
 
 func buildsAPIStartJobBuild(job db.Job, createdBy string, plan atc.Plan, finalStatus db.BuildStatus) db.Build {
@@ -508,28 +209,6 @@ func buildsAPIExpectResourcesResponse(response *http.Response, expectedBuild db.
 	return actual
 }
 
-func buildsAPIExpectConstructedEventBuild(
-	expectedBuild db.BuildForAPI,
-	expectedTeam db.Team,
-	expectedPipeline db.Pipeline,
-	expectedJob db.Job,
-) {
-	GinkgoHelper()
-
-	constructedEventHandler.lock.Lock()
-	defer constructedEventHandler.lock.Unlock()
-
-	actual := constructedEventHandler.build
-	Expect(actual).NotTo(BeNil())
-	Expect(actual.ID()).To(Equal(expectedBuild.ID()))
-	Expect(actual.TeamID()).To(Equal(expectedTeam.ID()))
-	Expect(actual.TeamName()).To(Equal(expectedTeam.Name()))
-	Expect(actual.PipelineID()).To(Equal(expectedPipeline.ID()))
-	Expect(actual.PipelineName()).To(Equal(expectedPipeline.Name()))
-	Expect(actual.JobID()).To(Equal(expectedJob.ID()))
-	Expect(actual.JobName()).To(Equal(expectedJob.Name()))
-}
-
 var _ = Describe("Builds API", func() {
 
 	Describe("POST /api/v1/builds", func() {
@@ -537,7 +216,6 @@ var _ = Describe("Builds API", func() {
 			database   *realDB
 			deps       apiDBDeps
 			team       db.Team
-			teamState  *buildsAPITeamState
 			buildCount int
 			plan       atc.Plan
 			server     *httptest.Server
@@ -551,13 +229,6 @@ var _ = Describe("Builds API", func() {
 			var err error
 			team, err = deps.teamFactory.CreateTeam(atc.Team{Name: "some-team"})
 			Expect(err).NotTo(HaveOccurred())
-
-			teamState = &buildsAPITeamState{}
-			deps.teamFactory = buildsAPITeamFactory{
-				TeamFactory: deps.teamFactory,
-				teamName:    team.Name(),
-				state:       teamState,
-			}
 
 			buildCount = len(buildsAPIRequireTeamBuilds(team))
 
@@ -618,17 +289,6 @@ var _ = Describe("Builds API", func() {
 				BeforeEach(func() {
 					grantProfile(team, memberProfile, accessor.MemberRole)
 					useProfile(memberProfile)
-				})
-
-				Context("when creating a started build fails", func() {
-					BeforeEach(func() {
-						teamState.setCreateStartedBuildError(errors.New("oh no!"))
-					})
-
-					It("returns 500 Internal Server Error", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-						Expect(buildsAPIRequireTeamBuilds(team)).To(HaveLen(buildCount))
-					})
 				})
 
 				Context("when creating a started build succeeds", func() {
@@ -694,7 +354,6 @@ var _ = Describe("Builds API", func() {
 			database         *realDB
 			deps             apiDBDeps
 			realBuildFactory db.BuildFactory
-			listState        *buildsAPIBuildFactoryState
 
 			publicBuilds          []db.BuildForAPI
 			sameTeamPrivateBuild  db.BuildForAPI
@@ -824,12 +483,6 @@ var _ = Describe("Builds API", func() {
 			Expect(sameTeamPrivatePipeline.Public()).To(BeFalse())
 			Expect(crossTeamPrivatePipeline.Public()).To(BeFalse())
 
-			listState = &buildsAPIBuildFactoryState{}
-			deps.buildFactory = &buildsAPIBuildFactory{
-				BuildFactory: realBuildFactory,
-				state:        listState,
-			}
-
 			queryParams = ""
 		})
 
@@ -850,21 +503,6 @@ var _ = Describe("Builds API", func() {
 				useProfile(anonymousProfile)
 			})
 
-			Context("when no params are passed", func() {
-				BeforeEach(func() {
-					queryParams = ""
-				})
-
-				It("does not set defaults for since and until", func() {
-					calls := listState.visibleBuildsCalls()
-					Expect(calls).To(HaveLen(1))
-					Expect(calls[0].page).To(Equal(db.Page{
-						Limit: 100,
-					}))
-					Expect(calls[0].teamNames).To(BeEmpty())
-				})
-			})
-
 			Context("when all the params are passed", func() {
 				BeforeEach(func() {
 					queryParams = fmt.Sprintf(
@@ -874,14 +512,7 @@ var _ = Describe("Builds API", func() {
 					)
 				})
 
-				It("passes them through", func() {
-					calls := listState.visibleBuildsCalls()
-					Expect(calls).To(HaveLen(1))
-					Expect(calls[0].page).To(Equal(db.Page{
-						From:  db.NewIntPtr(publicBuilds[1].ID()),
-						To:    db.NewIntPtr(publicBuilds[2].ID()),
-						Limit: 8,
-					}))
+				It("returns the requested build range", func() {
 					buildsAPIExpectBuildsResponse(response, []db.BuildForAPI{publicBuilds[1], publicBuilds[2]})
 				})
 
@@ -894,15 +525,7 @@ var _ = Describe("Builds API", func() {
 						)
 					})
 
-					It("calls AllBuilds", func() {
-						calls := listState.visibleBuildsCalls()
-						Expect(calls).To(HaveLen(1))
-						Expect(calls[0].page).To(Equal(db.Page{
-							From:    db.NewIntPtr(int(buildStartTimes[1].Unix())),
-							To:      db.NewIntPtr(int(buildStartTimes[2].Unix())),
-							Limit:   100,
-							UseDate: true,
-						}))
+					It("returns the requested timestamp range", func() {
 						buildsAPIExpectBuildsResponse(response, []db.BuildForAPI{publicBuilds[2], publicBuilds[1]})
 						Expect(response.Header.Values("Link")).To(BeEmpty())
 					})
@@ -940,15 +563,6 @@ var _ = Describe("Builds API", func() {
 				})
 			})
 
-			Context("when getting all builds fails", func() {
-				BeforeEach(func() {
-					listState.setVisibleBuildsError(errors.New("oh no!"))
-				})
-
-				It("returns 500 Internal Server Error", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-				})
-			})
 		})
 
 		Context("when authenticated", func() {
@@ -957,29 +571,11 @@ var _ = Describe("Builds API", func() {
 					useProfile(adminProfile)
 				})
 
-				It("calls AllBuilds", func() {
-					Expect(listState.allBuildsCalls()).To(ConsistOf(db.Page{Limit: 100}))
-					Expect(listState.visibleBuildsCalls()).To(BeEmpty())
+				It("returns private builds across all teams", func() {
 					builds := buildsAPIExpectBuildsResponse(response, adminBuilds)
 					Expect(builds[0].ID).To(Equal(crossTeamPrivateBuild.ID()))
 				})
 
-			})
-
-			Context("when no params are passed", func() {
-				BeforeEach(func() {
-					grantProfile(someTeam, memberProfile, accessor.ViewerRole)
-					useProfile(memberProfile)
-					queryParams = ""
-				})
-
-				It("does not set defaults for since and until", func() {
-					calls := listState.visibleBuildsCalls()
-					Expect(calls).To(HaveLen(1))
-					Expect(calls[0].page).To(Equal(db.Page{
-						Limit: 100,
-					}))
-				})
 			})
 
 			Context("when all the params are passed", func() {
@@ -993,14 +589,7 @@ var _ = Describe("Builds API", func() {
 					)
 				})
 
-				It("passes them through", func() {
-					calls := listState.visibleBuildsCalls()
-					Expect(calls).To(HaveLen(1))
-					Expect(calls[0].page).To(Equal(db.Page{
-						From:  db.NewIntPtr(publicBuilds[1].ID()),
-						To:    db.NewIntPtr(publicBuilds[2].ID()),
-						Limit: 8,
-					}))
+				It("returns the requested build range", func() {
 					buildsAPIExpectBuildsResponse(response, []db.BuildForAPI{publicBuilds[1], publicBuilds[2]})
 				})
 			})
@@ -1027,9 +616,6 @@ var _ = Describe("Builds API", func() {
 				})
 
 				It("returns builds for teams from the token", func() {
-					calls := listState.visibleBuildsCalls()
-					Expect(calls).To(HaveLen(1))
-					Expect(calls[0].teamNames).To(ConsistOf("some-team"))
 					builds := buildsAPIExpectBuildsResponse(response, authenticatedBuilds)
 					Expect(builds[0].ID).To(Equal(sameTeamPrivateBuild.ID()))
 				})
@@ -1050,17 +636,6 @@ var _ = Describe("Builds API", func() {
 				})
 			})
 
-			Context("when getting all builds fails", func() {
-				BeforeEach(func() {
-					grantProfile(someTeam, memberProfile, accessor.ViewerRole)
-					useProfile(memberProfile)
-					listState.setVisibleBuildsError(errors.New("oh no!"))
-				})
-
-				It("returns 500 Internal Server Error", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-				})
-			})
 		})
 	})
 
@@ -1069,8 +644,6 @@ var _ = Describe("Builds API", func() {
 			database         *realDB
 			deps             apiDBDeps
 			realBuildFactory db.BuildFactory
-			factoryState     *buildsAPIBuildFactoryState
-			buildState       *buildsAPIBuildState
 
 			team           db.Team
 			pipeline       db.Pipeline
@@ -1119,16 +692,6 @@ var _ = Describe("Builds API", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(found).To(BeFalse())
 
-			buildState = &buildsAPIBuildState{}
-			factoryState = &buildsAPIBuildFactoryState{}
-			factoryState.setBuildWrapper(func(build db.BuildForAPI) db.BuildForAPI {
-				return &buildsAPIBuild{BuildForAPI: build, state: buildState}
-			})
-			deps.buildFactory = &buildsAPIBuildFactory{
-				BuildFactory: realBuildFactory,
-				state:        factoryState,
-			}
-
 			requestBuildID = fmt.Sprintf("%d", persistedBuild.ID())
 		})
 
@@ -1155,16 +718,6 @@ var _ = Describe("Builds API", func() {
 		})
 
 		Context("when parsing the build_id succeeds", func() {
-			Context("when calling the database fails", func() {
-				BeforeEach(func() {
-					factoryState.setBuildForAPIError(errors.New("disaster"))
-				})
-
-				It("returns 500 Internal Server Error", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-				})
-			})
-
 			Context("when the build cannot be found", func() {
 				BeforeEach(func() {
 					requestBuildID = fmt.Sprintf("%d", missingBuildID)
@@ -1192,16 +745,6 @@ var _ = Describe("Builds API", func() {
 
 						It("returns 401", func() {
 							Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
-						})
-					})
-
-					Context("and the pipeline is not found", func() {
-						BeforeEach(func() {
-							buildState.setPipelineResult(nil, false, nil)
-						})
-
-						It("returns 404", func() {
-							Expect(response.StatusCode).To(Equal(http.StatusNotFound))
 						})
 					})
 
@@ -1263,7 +806,6 @@ var _ = Describe("Builds API", func() {
 						})
 
 						It("returns the build with the given build_id", func() {
-							Expect(factoryState.buildForAPICalls()).To(Equal([]int{persistedBuild.ID()}))
 							actual := buildsAPIExpectBuildResponse(response, persistedBuild)
 							Expect(actual.ID).To(Equal(persistedBuild.ID()))
 							Expect(actual.PipelineID).To(Equal(pipeline.ID()))
@@ -1281,8 +823,6 @@ var _ = Describe("Builds API", func() {
 			database         *realDB
 			deps             apiDBDeps
 			realBuildFactory db.BuildFactory
-			factoryState     *buildsAPIBuildFactoryState
-			buildState       *buildsAPIBuildState
 			builder          dbtest.Builder
 			scenario         *dbtest.Scenario
 
@@ -1359,16 +899,6 @@ var _ = Describe("Builds API", func() {
 			_, found, err := realBuildFactory.BuildForAPI(missingBuildID)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(found).To(BeFalse())
-
-			buildState = &buildsAPIBuildState{}
-			factoryState = &buildsAPIBuildFactoryState{}
-			factoryState.setBuildWrapper(func(build db.BuildForAPI) db.BuildForAPI {
-				return &buildsAPIBuild{BuildForAPI: build, state: buildState}
-			})
-			deps.buildFactory = &buildsAPIBuildFactory{
-				BuildFactory: realBuildFactory,
-				state:        factoryState,
-			}
 
 			inputOneVersion = atc.Version{"version": "value1"}
 			inputTwoVersion = atc.Version{"version": "value2"}
@@ -1514,27 +1044,7 @@ var _ = Describe("Builds API", func() {
 					})
 				})
 
-				Context("when the build resources error", func() {
-					BeforeEach(func() {
-						buildState.setResourcesError(errors.New("where are my feedback?"))
-					})
-
-					It("returns internal server error", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-					})
-				})
-
 				Context("with an invalid build", func() {
-					Context("when the lookup errors", func() {
-						BeforeEach(func() {
-							factoryState.setBuildForAPIError(errors.New("Freakin' out man, I'm freakin' out!"))
-						})
-
-						It("returns internal server error", func() {
-							Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-						})
-					})
-
 					Context("when the build does not exist", func() {
 						BeforeEach(func() {
 							requestBuildID = fmt.Sprintf("%d", missingBuildID)
@@ -1564,19 +1074,19 @@ var _ = Describe("Builds API", func() {
 			database         *realDB
 			deps             apiDBDeps
 			realBuildFactory db.BuildFactory
-			factoryState     *buildsAPIBuildFactoryState
-			buildState       *buildsAPIBuildState
-			pipelineState    *buildsAPIPipelineState
 
-			team           db.Team
-			pipeline       db.Pipeline
-			privateJob     db.Job
-			publicJob      db.Job
-			persistedBuild db.BuildForAPI
-			publicBuild    db.BuildForAPI
-			persistedJob   db.Job
-			missingBuildID int
-			requestBuildID string
+			team               db.Team
+			pipeline           db.Pipeline
+			privateJob         db.Job
+			publicJob          db.Job
+			persistedBuild     db.BuildForAPI
+			publicBuild        db.BuildForAPI
+			missingBuildID     int
+			requestBuildID     string
+			targetEventPayload string
+			decoyEventPayload  string
+			cancelEventRequest context.CancelFunc
+			eventRequest       *http.Request
 
 			server   *httptest.Server
 			response *http.Response
@@ -1624,9 +1134,12 @@ var _ = Describe("Builds API", func() {
 					Run: atc.TaskRunConfig{Path: "events-public-task"},
 				}},
 			}, db.BuildStatusSucceeded)
+			targetEventPayload = "target-build-log-payload"
+			decoyEventPayload = "decoy-build-log-payload"
+			Expect(publicBuildRow.SaveEvent(event.Log{Payload: decoyEventPayload})).To(Succeed())
+			Expect(privateBuildRow.SaveEvent(event.Log{Payload: targetEventPayload})).To(Succeed())
 			persistedBuild = buildsAPIRequireBuildForAPI(realBuildFactory, privateBuildRow.ID())
 			publicBuild = buildsAPIRequireBuildForAPI(realBuildFactory, publicBuildRow.ID())
-			persistedJob = privateJob
 			Expect(persistedBuild.ID()).NotTo(Equal(publicBuild.ID()))
 			Expect(persistedBuild.PipelineID()).To(Equal(pipeline.ID()))
 			Expect(publicBuild.PipelineID()).To(Equal(pipeline.ID()))
@@ -1636,20 +1149,6 @@ var _ = Describe("Builds API", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(found).To(BeFalse())
 
-			pipelineState = &buildsAPIPipelineState{}
-			buildState = &buildsAPIBuildState{}
-			buildState.setPipelineWrapper(func(realPipeline db.Pipeline) db.Pipeline {
-				return &buildsAPIPipeline{Pipeline: realPipeline, state: pipelineState}
-			})
-			factoryState = &buildsAPIBuildFactoryState{}
-			factoryState.setBuildWrapper(func(realBuild db.BuildForAPI) db.BuildForAPI {
-				return &buildsAPIBuild{BuildForAPI: realBuild, state: buildState}
-			})
-			deps.buildFactory = &buildsAPIBuildFactory{
-				BuildFactory: realBuildFactory,
-				state:        factoryState,
-			}
-
 			requestBuildID = fmt.Sprintf("%d", persistedBuild.ID())
 		})
 
@@ -1657,13 +1156,23 @@ var _ = Describe("Builds API", func() {
 			database.Deps = deps
 			server = database.Serve()
 
-			request, err := http.NewRequest("GET", server.URL+"/api/v1/builds/"+requestBuildID+"/events", nil)
+			var err error
+			requestContext, cancel := context.WithCancel(context.Background())
+			cancelEventRequest = cancel
+			eventRequest, err = http.NewRequestWithContext(
+				requestContext,
+				http.MethodGet,
+				server.URL+"/api/v1/builds/"+requestBuildID+"/events",
+				nil,
+			)
 			Expect(err).NotTo(HaveOccurred())
+			eventRequest.Header.Set("Last-Event-ID", "1")
 
-			response, err = client.Do(request)
+			response, err = client.Do(eventRequest)
 			Expect(err).NotTo(HaveOccurred())
 			DeferCleanup(func() {
-				Expect(response.Body.Close()).To(Succeed())
+				cancelEventRequest()
+				_ = response.Body.Close()
 			})
 		})
 
@@ -1688,13 +1197,29 @@ var _ = Describe("Builds API", func() {
 					Expect(response.StatusCode).To(Equal(200))
 				})
 
-				It("serves the request via the event handler", func() {
-					body, err := io.ReadAll(response.Body)
-					Expect(err).NotTo(HaveOccurred())
+				It("streams the target build event at its per-build ordinal", func() {
+					Expect(eventRequest.URL.Path).To(Equal(fmt.Sprintf("/api/v1/builds/%d/events", persistedBuild.ID())))
+					Expect(response.Header.Get("Content-Type")).To(Equal("text/event-stream; charset=utf-8"))
 
-					Expect(string(body)).To(Equal("fake event handler factory was here"))
-					buildsAPIExpectConstructedEventBuild(persistedBuild, team, pipeline, persistedJob)
-					Expect(factoryState.buildForAPICalls()).To(Equal([]int{persistedBuild.ID()}))
+					stream := sse.NewReadCloser(response.Body)
+					outer, err := stream.Next()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(outer.Name).To(Equal("event"))
+					Expect(outer.ID).To(Equal("2"))
+
+					var envelope event.Envelope
+					Expect(json.Unmarshal(outer.Data, &envelope)).To(Succeed())
+					Expect(envelope.Event).To(Equal(event.EventTypeLog))
+					Expect(envelope.EventID).To(Equal("2"))
+					Expect(envelope.Data).NotTo(BeNil())
+
+					var logEvent event.Log
+					Expect(json.Unmarshal(*envelope.Data, &logEvent)).To(Succeed())
+					Expect(logEvent.Payload).To(Equal(targetEventPayload))
+					Expect(logEvent.Payload).NotTo(Equal(decoyEventPayload))
+
+					cancelEventRequest()
+					Expect(response.Body.Close()).To(Succeed())
 				})
 			})
 
@@ -1728,7 +1253,6 @@ var _ = Describe("Builds API", func() {
 						Context("and the job is public", func() {
 							BeforeEach(func() {
 								persistedBuild = publicBuild
-								persistedJob = publicJob
 								requestBuildID = fmt.Sprintf("%d", persistedBuild.ID())
 							})
 
@@ -1736,30 +1260,12 @@ var _ = Describe("Builds API", func() {
 								Expect(response.StatusCode).To(Equal(200))
 							})
 
-							It("serves the request via the event handler", func() {
-								body, err := io.ReadAll(response.Body)
-								Expect(err).NotTo(HaveOccurred())
-
-								Expect(string(body)).To(Equal("fake event handler factory was here"))
-								buildsAPIExpectConstructedEventBuild(persistedBuild, team, pipeline, persistedJob)
-								Expect(factoryState.buildForAPICalls()).To(Equal([]int{persistedBuild.ID()}))
-							})
-						})
-					})
-
-					Context("when finding the job fails", func() {
-						BeforeEach(func() {
-							pipelineState.setJobResult(privateJob.Name(), nil, false, errors.New("nope"))
-						})
-
-						It("returns Internal Server Error", func() {
-							Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
 						})
 					})
 
 					Context("when the job cannot be found", func() {
 						BeforeEach(func() {
-							pipelineState.setJobResult(privateJob.Name(), nil, false, nil)
+							pipeline = buildsAPIRemoveJob(team, pipeline, privateJob.Name())
 						})
 
 						It("returns Not Found", func() {
@@ -1778,25 +1284,6 @@ var _ = Describe("Builds API", func() {
 					})
 				})
 
-				Context("when calling the database fails", func() {
-					BeforeEach(func() {
-						factoryState.setBuildForAPIError(errors.New("nope"))
-					})
-
-					It("returns Internal Server Error", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-					})
-				})
-			})
-		})
-
-		Context("when calling the database fails", func() {
-			BeforeEach(func() {
-				factoryState.setBuildForAPIError(errors.New("nope"))
-			})
-
-			It("returns Internal Server Error", func() {
-				Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
 			})
 		})
 	})
@@ -1806,8 +1293,6 @@ var _ = Describe("Builds API", func() {
 			database         *realDB
 			deps             apiDBDeps
 			realBuildFactory db.BuildFactory
-			factoryState     *buildsAPIBuildFactoryState
-			buildState       *buildsAPIBuildState
 
 			team               db.Team
 			persistedBuild     db.BuildForAPI
@@ -1866,16 +1351,6 @@ var _ = Describe("Builds API", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(found).To(BeFalse())
 
-			buildState = &buildsAPIBuildState{}
-			factoryState = &buildsAPIBuildFactoryState{}
-			factoryState.setBuildWrapper(func(realBuild db.BuildForAPI) db.BuildForAPI {
-				return &buildsAPIBuild{BuildForAPI: realBuild, state: buildState}
-			})
-			deps.buildFactory = &buildsAPIBuildFactory{
-				BuildFactory: realBuildFactory,
-				state:        factoryState,
-			}
-
 			requestBuildID = fmt.Sprintf("%d", persistedBuild.ID())
 		})
 
@@ -1909,19 +1384,6 @@ var _ = Describe("Builds API", func() {
 		})
 
 		Context("when authenticated", func() {
-			Context("when looking up the build fails", func() {
-				BeforeEach(func() {
-					useProfile(memberProfile)
-					factoryState.setBuildForAPIError(errors.New("nope"))
-				})
-
-				It("returns 500", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-					reloaded := buildsAPIRequireBuild(realBuildFactory, persistedBuild.ID())
-					Expect(reloaded.IsAborted()).To(BeFalse())
-				})
-			})
-
 			Context("when the build can not be found", func() {
 				BeforeEach(func() {
 					useProfile(memberProfile)
@@ -1957,21 +1419,6 @@ var _ = Describe("Builds API", func() {
 						useProfile(memberProfile)
 					})
 
-					Context("when aborting the build fails", func() {
-						BeforeEach(func() {
-							buildState.setMarkAsAbortedError(errors.New("nope"))
-						})
-
-						It("returns 500", func() {
-							Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-							reloaded := buildsAPIRequireBuild(realBuildFactory, persistedBuild.ID())
-							Expect(reloaded.IsAborted()).To(BeFalse())
-							decoy := buildsAPIRequireBuild(realBuildFactory, decoyBuild.ID())
-							Expect(decoy.IsAborted()).To(BeFalse())
-							Expect(decoy.Status()).To(Equal(decoyInitialStatus))
-						})
-					})
-
 					Context("when aborting succeeds", func() {
 						It("returns 204", func() {
 							Expect(response.StatusCode).To(Equal(http.StatusNoContent))
@@ -1993,9 +1440,6 @@ var _ = Describe("Builds API", func() {
 			database         *realDB
 			deps             apiDBDeps
 			realBuildFactory db.BuildFactory
-			factoryState     *buildsAPIBuildFactoryState
-			buildState       *buildsAPIBuildState
-			pipelineState    *buildsAPIPipelineState
 			builder          dbtest.Builder
 			scenario         *dbtest.Scenario
 
@@ -2136,20 +1580,6 @@ var _ = Describe("Builds API", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(found).To(BeFalse())
 
-			pipelineState = &buildsAPIPipelineState{}
-			buildState = &buildsAPIBuildState{}
-			buildState.setPipelineWrapper(func(realPipeline db.Pipeline) db.Pipeline {
-				return &buildsAPIPipeline{Pipeline: realPipeline, state: pipelineState}
-			})
-			factoryState = &buildsAPIBuildFactoryState{}
-			factoryState.setBuildWrapper(func(realBuild db.BuildForAPI) db.BuildForAPI {
-				return &buildsAPIBuild{BuildForAPI: realBuild, state: buildState}
-			})
-			deps.buildFactory = &buildsAPIBuildFactory{
-				BuildFactory: realBuildFactory,
-				state:        factoryState,
-			}
-
 			requestBuildID = fmt.Sprintf("%d", persistedBuild.ID())
 		})
 
@@ -2226,19 +1656,9 @@ var _ = Describe("Builds API", func() {
 						})
 					})
 
-					Context("when finding the job fails", func() {
-						BeforeEach(func() {
-							pipelineState.setJobResult(preparationJob.Name(), nil, false, errors.New("nope"))
-						})
-
-						It("returns Internal Server Error", func() {
-							Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-						})
-					})
-
 					Context("when the job cannot be found", func() {
 						BeforeEach(func() {
-							pipelineState.setJobResult(preparationJob.Name(), nil, false, nil)
+							pipeline = buildsAPIRemoveJob(team, pipeline, preparationJob.Name())
 						})
 
 						It("returns Not Found", func() {
@@ -2297,7 +1717,7 @@ var _ = Describe("Builds API", func() {
 
 				Context("when the build preparation is not found", func() {
 					BeforeEach(func() {
-						buildState.setPreparationResult(db.BuildPreparation{}, false, nil)
+						pipeline = buildsAPIRemoveJob(team, pipeline, preparationJob.Name())
 					})
 
 					It("returns Not Found", func() {
@@ -2305,29 +1725,6 @@ var _ = Describe("Builds API", func() {
 					})
 				})
 
-				Context("when looking up the build preparation fails", func() {
-					BeforeEach(func() {
-						buildState.setPreparationResult(
-							db.BuildPreparation{},
-							false,
-							errors.New("ho ho ho merry festivus"),
-						)
-					})
-
-					It("returns 500 Internal Server Error", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-					})
-				})
-			})
-		})
-
-		Context("when looking up the build fails", func() {
-			BeforeEach(func() {
-				factoryState.setBuildForAPIError(errors.New("ho ho ho merry festivus"))
-			})
-
-			It("returns 500 Internal Server Error", func() {
-				Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
 			})
 		})
 
@@ -2347,9 +1744,6 @@ var _ = Describe("Builds API", func() {
 			database         *realDB
 			deps             apiDBDeps
 			realBuildFactory db.BuildFactory
-			factoryState     *buildsAPIBuildFactoryState
-			buildState       *buildsAPIBuildState
-			pipelineState    *buildsAPIPipelineState
 
 			team              db.Team
 			pipeline          db.Pipeline
@@ -2440,20 +1834,6 @@ var _ = Describe("Builds API", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(found).To(BeFalse())
 
-			pipelineState = &buildsAPIPipelineState{}
-			buildState = &buildsAPIBuildState{}
-			buildState.setPipelineWrapper(func(realPipeline db.Pipeline) db.Pipeline {
-				return &buildsAPIPipeline{Pipeline: realPipeline, state: pipelineState}
-			})
-			factoryState = &buildsAPIBuildFactoryState{}
-			factoryState.setBuildWrapper(func(realBuild db.BuildForAPI) db.BuildForAPI {
-				return &buildsAPIBuild{BuildForAPI: realBuild, state: buildState}
-			})
-			deps.buildFactory = &buildsAPIBuildFactory{
-				BuildFactory: realBuildFactory,
-				state:        factoryState,
-			}
-
 			requestBuildID = fmt.Sprintf("%d", persistedBuild.ID())
 		})
 
@@ -2511,18 +1891,9 @@ var _ = Describe("Builds API", func() {
 						Expect(pipeline.Public()).To(BeTrue())
 					})
 
-					Context("when finding the job fails", func() {
-						BeforeEach(func() {
-							pipelineState.setJobResult(privateJob.Name(), nil, false, errors.New("nope"))
-						})
-						It("returns 500", func() {
-							Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-						})
-					})
-
 					Context("when the job does not exist", func() {
 						BeforeEach(func() {
-							pipelineState.setJobResult(privateJob.Name(), nil, false, nil)
+							pipeline = buildsAPIRemoveJob(team, pipeline, privateJob.Name())
 						})
 						It("returns 404", func() {
 							Expect(response.StatusCode).To(Equal(http.StatusNotFound))
@@ -2628,14 +1999,5 @@ var _ = Describe("Builds API", func() {
 			})
 		})
 
-		Context("when looking up the build fails", func() {
-			BeforeEach(func() {
-				factoryState.setBuildForAPIError(errors.New("oh no!"))
-			})
-
-			It("returns 500 Internal Server Error", func() {
-				Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-			})
-		})
 	})
 })

@@ -15,7 +15,6 @@ import (
 	"testing"
 	"time"
 
-	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/db"
@@ -122,127 +121,6 @@ func TestHijackResourceCleanupRunsOnDiagnosticFailure(t *testing.T) {
 	}
 }
 
-type containersAPICheckCall struct {
-	pipelineRef  atc.PipelineRef
-	resourceName string
-}
-
-type containersAPITeam struct {
-	db.Team
-
-	mu                          sync.Mutex
-	containersErr               error
-	findContainerByHandleErr    error
-	findContainerByHandleCalls  []string
-	findWorkerForContainerCalls []string
-	metadataCalls               []db.ContainerMetadata
-	checkCalls                  []containersAPICheckCall
-}
-
-func (team *containersAPITeam) Containers() ([]db.Container, error) {
-	team.mu.Lock()
-	err := team.containersErr
-	team.mu.Unlock()
-	if err != nil {
-		return nil, err
-	}
-	return team.Team.Containers()
-}
-
-func (team *containersAPITeam) FindContainerByHandle(handle string) (db.Container, bool, error) {
-	team.mu.Lock()
-	team.findContainerByHandleCalls = append(team.findContainerByHandleCalls, handle)
-	err := team.findContainerByHandleErr
-	team.mu.Unlock()
-	if err != nil {
-		return nil, false, err
-	}
-	return team.Team.FindContainerByHandle(handle)
-}
-
-// FindWorkerForContainer is how the worker pool turns the handle the handler
-// asked about into a worker. Recording it here rather than on the pool
-// observes both arguments the handler passed: the handle, and -- because the
-// team factory only hands this team out under its own ID -- the team ID.
-func (team *containersAPITeam) FindWorkerForContainer(handle string) (db.Worker, bool, error) {
-	team.mu.Lock()
-	team.findWorkerForContainerCalls = append(team.findWorkerForContainerCalls, handle)
-	team.mu.Unlock()
-
-	return team.Team.FindWorkerForContainer(handle)
-}
-
-func (team *containersAPITeam) FindContainersByMetadata(metadata db.ContainerMetadata) ([]db.Container, error) {
-	team.mu.Lock()
-	team.metadataCalls = append(team.metadataCalls, metadata)
-	team.mu.Unlock()
-	return team.Team.FindContainersByMetadata(metadata)
-}
-
-func (team *containersAPITeam) FindCheckContainers(logger lager.Logger, pipelineRef atc.PipelineRef, resourceName string) ([]db.Container, map[int]time.Time, error) {
-	team.mu.Lock()
-	team.checkCalls = append(team.checkCalls, containersAPICheckCall{pipelineRef: pipelineRef, resourceName: resourceName})
-	team.mu.Unlock()
-	return team.Team.FindCheckContainers(logger, pipelineRef, resourceName)
-}
-
-func (team *containersAPITeam) setContainersError(err error) {
-	team.mu.Lock()
-	defer team.mu.Unlock()
-	team.containersErr = err
-}
-
-func (team *containersAPITeam) setFindContainerByHandleError(err error) {
-	team.mu.Lock()
-	defer team.mu.Unlock()
-	team.findContainerByHandleErr = err
-}
-
-func (team *containersAPITeam) findContainerByHandleCallSnapshot() []string {
-	team.mu.Lock()
-	defer team.mu.Unlock()
-	return append([]string(nil), team.findContainerByHandleCalls...)
-}
-
-func (team *containersAPITeam) findWorkerForContainerCallSnapshot() []string {
-	team.mu.Lock()
-	defer team.mu.Unlock()
-	return append([]string(nil), team.findWorkerForContainerCalls...)
-}
-
-func (team *containersAPITeam) metadataCallSnapshot() []db.ContainerMetadata {
-	team.mu.Lock()
-	defer team.mu.Unlock()
-	return append([]db.ContainerMetadata(nil), team.metadataCalls...)
-}
-
-func (team *containersAPITeam) checkCallSnapshot() []containersAPICheckCall {
-	team.mu.Lock()
-	defer team.mu.Unlock()
-	return append([]containersAPICheckCall(nil), team.checkCalls...)
-}
-
-type containersAPITeamFactory struct {
-	db.TeamFactory
-	teamName string
-	team     *containersAPITeam
-}
-
-func (factory containersAPITeamFactory) GetByID(teamID int) db.Team {
-	if teamID == factory.team.ID() {
-		return factory.team
-	}
-	return factory.TeamFactory.GetByID(teamID)
-}
-
-func (factory containersAPITeamFactory) FindTeam(name string) (db.Team, bool, error) {
-	team, found, err := factory.TeamFactory.FindTeam(name)
-	if err != nil || !found || name != factory.teamName {
-		return team, found, err
-	}
-	return factory.team, true, nil
-}
-
 type containersAPIFixture struct {
 	container db.Container
 	created   db.CreatedContainer
@@ -284,6 +162,8 @@ func createContainersAPICheckContainer(
 	deps apiDBDeps,
 	team db.Team,
 	workerName string,
+	pipelineRef atc.PipelineRef,
+	resourceName string,
 	source atc.Source,
 ) containersAPIFixture {
 	GinkgoHelper()
@@ -293,14 +173,10 @@ func createContainersAPICheckContainer(
 
 	worker, err := deps.workerFactory.SaveWorker(dbtest.BaseWorker(workerName), 0)
 	Expect(err).NotTo(HaveOccurred())
-	pipelineRef := atc.PipelineRef{
-		Name:         "some-pipeline",
-		InstanceVars: atc.InstanceVars{"branch": "master"},
-	}
 	pipeline, _, err := team.SavePipeline(
 		pipelineRef,
 		atc.Config{Resources: atc.ResourceConfigs{{
-			Name:   "some-resource",
+			Name:   resourceName,
 			Type:   dbtest.BaseResourceType,
 			Source: source,
 		}}},
@@ -310,8 +186,8 @@ func createContainersAPICheckContainer(
 	Expect(err).NotTo(HaveOccurred())
 
 	scenario := &dbtest.Scenario{Team: team, Pipeline: pipeline, Workers: []db.Worker{worker}}
-	scenario.Run(builder.WithResourceVersions("some-resource", atc.Version{"version": "1"}))
-	resource := scenario.Resource("some-resource")
+	scenario.Run(builder.WithResourceVersions(resourceName, atc.Version{"version": "1"}))
+	resource := scenario.Resource(resourceName)
 	found, err := resource.Reload()
 	Expect(err).NotTo(HaveOccurred())
 	Expect(found).To(BeTrue())
@@ -368,14 +244,13 @@ var _ = Describe("Containers API", func() {
 
 	Describe("GET /api/v1/teams/a-team/containers", func() {
 		var (
-			realdb    *realDB
-			deps      apiDBDeps
-			team      db.Team
-			routeTeam *containersAPITeam
-			server    *httptest.Server
-			query     url.Values
-			response  *http.Response
-			fixture   containersAPIFixture
+			realdb   *realDB
+			deps     apiDBDeps
+			team     db.Team
+			server   *httptest.Server
+			query    url.Values
+			response *http.Response
+			fixture  containersAPIFixture
 		)
 
 		BeforeEach(func() {
@@ -384,12 +259,6 @@ var _ = Describe("Containers API", func() {
 			var err error
 			team, err = deps.teamFactory.CreateTeam(atc.Team{Name: "a-team"})
 			Expect(err).NotTo(HaveOccurred())
-			routeTeam = &containersAPITeam{Team: team}
-			deps.teamFactory = containersAPITeamFactory{
-				TeamFactory: deps.teamFactory,
-				teamName:    team.Name(),
-				team:        routeTeam,
-			}
 			query = url.Values{}
 		})
 
@@ -508,32 +377,29 @@ var _ = Describe("Containers API", func() {
 					})
 				})
 
-				Context("when there is an error", func() {
-					BeforeEach(func() {
-						routeTeam.setContainersError(errors.New("some error"))
-					})
-
-					It("returns 500", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-					})
-				})
 			})
 
 			Describe("querying with pipeline id", func() {
 				BeforeEach(func() {
 					fixture = createContainersAPIBuildStepContainer(deps, team, "pipeline-worker", "pipeline-plan", fullMetadata, true)
+					createContainersAPIBuildStepContainer(
+						deps, team, "pipeline-decoy-worker", "pipeline-decoy-plan",
+						func(buildID int) db.ContainerMetadata {
+							metadata := fullMetadata(buildID)
+							metadata.PipelineID = pipelineID + 1
+							return metadata
+						},
+						true,
+					)
 					query = url.Values{
 						"pipeline_id": []string{strconv.Itoa(pipelineID)},
 					}
 				})
 
-				It("queries with it in the metadata", func() {
-					Expect(routeTeam.metadataCallSnapshot()).To(Equal([]db.ContainerMetadata{{
-						PipelineID: pipelineID,
-					}}))
+				It("returns the container with the requested pipeline ID", func() {
 					var presented []atc.Container
 					Expect(json.NewDecoder(response.Body).Decode(&presented)).To(Succeed())
-					Expect(presented).To(ContainElement(HaveField("ID", fixture.container.Handle())))
+					Expect(presented).To(ConsistOf(HaveField("ID", fixture.container.Handle())))
 				})
 			})
 
@@ -544,72 +410,92 @@ var _ = Describe("Containers API", func() {
 						metadata.PipelineInstanceVars = `{"branch":"master"}`
 						return metadata
 					}, true)
+					createContainersAPIBuildStepContainer(deps, team, "vars-decoy-worker", "vars-decoy-plan", func(buildID int) db.ContainerMetadata {
+						metadata := fullMetadata(buildID)
+						metadata.PipelineInstanceVars = `{"branch":"other"}`
+						return metadata
+					}, true)
 					query = url.Values{
 						"vars": []string{`{"branch":"master"}`},
 					}
 				})
 
-				It("queries with it in the metadata", func() {
-					Expect(routeTeam.metadataCallSnapshot()).To(Equal([]db.ContainerMetadata{{
-						PipelineInstanceVars: `{"branch":"master"}`,
-					}}))
+				It("returns the container with the requested pipeline instance vars", func() {
 					var presented []atc.Container
 					Expect(json.NewDecoder(response.Body).Decode(&presented)).To(Succeed())
-					Expect(presented).To(ContainElement(HaveField("ID", fixture.container.Handle())))
+					Expect(presented).To(ConsistOf(HaveField("ID", fixture.container.Handle())))
 				})
 			})
 
 			Describe("querying with job id", func() {
 				BeforeEach(func() {
 					fixture = createContainersAPIBuildStepContainer(deps, team, "job-worker", "job-plan", fullMetadata, true)
+					createContainersAPIBuildStepContainer(
+						deps, team, "job-decoy-worker", "job-decoy-plan",
+						func(buildID int) db.ContainerMetadata {
+							metadata := fullMetadata(buildID)
+							metadata.JobID = jobID + 1
+							return metadata
+						},
+						true,
+					)
 					query = url.Values{
 						"job_id": []string{strconv.Itoa(jobID)},
 					}
 				})
 
-				It("queries with it in the metadata", func() {
-					Expect(routeTeam.metadataCallSnapshot()).To(Equal([]db.ContainerMetadata{{
-						JobID: jobID,
-					}}))
+				It("returns the container with the requested job ID", func() {
 					var presented []atc.Container
 					Expect(json.NewDecoder(response.Body).Decode(&presented)).To(Succeed())
-					Expect(presented).To(ContainElement(HaveField("ID", fixture.container.Handle())))
+					Expect(presented).To(ConsistOf(HaveField("ID", fixture.container.Handle())))
 				})
 			})
 
 			Describe("querying with type", func() {
 				BeforeEach(func() {
 					fixture = createContainersAPIBuildStepContainer(deps, team, "type-worker", "type-plan", fullMetadata, true)
+					createContainersAPIBuildStepContainer(
+						deps, team, "type-decoy-worker", "type-decoy-plan",
+						func(buildID int) db.ContainerMetadata {
+							metadata := fullMetadata(buildID)
+							metadata.Type = db.ContainerTypeGet
+							return metadata
+						},
+						true,
+					)
 					query = url.Values{
 						"type": []string{string(stepType)},
 					}
 				})
 
-				It("queries with it in the metadata", func() {
-					Expect(routeTeam.metadataCallSnapshot()).To(Equal([]db.ContainerMetadata{{
-						Type: stepType,
-					}}))
+				It("returns the container with the requested type", func() {
 					var presented []atc.Container
 					Expect(json.NewDecoder(response.Body).Decode(&presented)).To(Succeed())
-					Expect(presented).To(ContainElement(HaveField("ID", fixture.container.Handle())))
+					Expect(presented).To(ConsistOf(HaveField("ID", fixture.container.Handle())))
 				})
 			})
 
 			Describe("querying with step name", func() {
 				BeforeEach(func() {
 					fixture = createContainersAPIBuildStepContainer(deps, team, "step-worker", "step-plan", fullMetadata, true)
+					createContainersAPIBuildStepContainer(
+						deps, team, "step-decoy-worker", "step-decoy-plan",
+						func(buildID int) db.ContainerMetadata {
+							metadata := fullMetadata(buildID)
+							metadata.StepName = stepName + "-other"
+							return metadata
+						},
+						true,
+					)
 					query = url.Values{
 						"step_name": []string{stepName},
 					}
 				})
 
-				It("queries with it in the metadata", func() {
-					Expect(routeTeam.metadataCallSnapshot()).To(Equal([]db.ContainerMetadata{{
-						StepName: stepName,
-					}}))
+				It("returns the container with the requested step name", func() {
 					var presented []atc.Container
 					Expect(json.NewDecoder(response.Body).Decode(&presented)).To(Succeed())
-					Expect(presented).To(ContainElement(HaveField("ID", fixture.container.Handle())))
+					Expect(presented).To(ConsistOf(HaveField("ID", fixture.container.Handle())))
 				})
 			})
 
@@ -617,14 +503,14 @@ var _ = Describe("Containers API", func() {
 				Context("when the buildID can be parsed as an int", func() {
 					BeforeEach(func() {
 						fixture = createContainersAPIBuildStepContainer(deps, team, "build-worker", "build-plan", fullMetadata, true)
+						createContainersAPIBuildStepContainer(deps, team, "build-decoy-worker", "build-decoy-plan", fullMetadata, true)
 						query = url.Values{"build_id": []string{strconv.Itoa(fixture.build.ID())}}
 					})
 
-					It("queries with it in the metadata", func() {
-						Expect(routeTeam.metadataCallSnapshot()).To(Equal([]db.ContainerMetadata{{BuildID: fixture.build.ID()}}))
+					It("returns the container with the requested build ID", func() {
 						var presented []atc.Container
 						Expect(json.NewDecoder(response.Body).Decode(&presented)).To(Succeed())
-						Expect(presented).To(ContainElement(HaveField("ID", fixture.container.Handle())))
+						Expect(presented).To(ConsistOf(HaveField("ID", fixture.container.Handle())))
 					})
 
 					Context("when the buildID fails to be parsed as an int", func() {
@@ -638,10 +524,6 @@ var _ = Describe("Containers API", func() {
 							Expect(response.StatusCode).To(Equal(http.StatusBadRequest))
 						})
 
-						It("does not lookup containers", func() {
-							Expect(routeTeam.metadataCallSnapshot()).To(BeEmpty())
-							Expect(routeTeam.checkCallSnapshot()).To(BeEmpty())
-						})
 					})
 				})
 			})
@@ -650,25 +532,48 @@ var _ = Describe("Containers API", func() {
 				Context("when the attempts can be parsed as a slice of int", func() {
 					BeforeEach(func() {
 						fixture = createContainersAPIBuildStepContainer(deps, team, "attempt-worker", "attempt-plan", fullMetadata, true)
+						createContainersAPIBuildStepContainer(
+							deps, team, "attempt-decoy-worker", "attempt-decoy-plan",
+							func(buildID int) db.ContainerMetadata {
+								metadata := fullMetadata(buildID)
+								metadata.Attempt = attempt + ".1"
+								return metadata
+							},
+							true,
+						)
 						query = url.Values{
 							"attempt": []string{attempt},
 						}
 					})
 
-					It("queries with it in the metadata", func() {
-						Expect(routeTeam.metadataCallSnapshot()).To(Equal([]db.ContainerMetadata{{
-							Attempt: attempt,
-						}}))
+					It("returns the container with the requested attempt", func() {
 						var presented []atc.Container
 						Expect(json.NewDecoder(response.Body).Decode(&presented)).To(Succeed())
-						Expect(presented).To(ContainElement(HaveField("ID", fixture.container.Handle())))
+						Expect(presented).To(ConsistOf(HaveField("ID", fixture.container.Handle())))
 					})
 				})
 			})
 
 			Describe("querying with type 'check'", func() {
 				BeforeEach(func() {
-					fixture = createContainersAPICheckContainer(realdb, deps, team, "check-list-worker", atc.Source{"some": "source"})
+					fixture = createContainersAPICheckContainer(
+						realdb,
+						deps,
+						team,
+						"check-list-worker",
+						atc.PipelineRef{Name: "some-pipeline", InstanceVars: atc.InstanceVars{"branch": "master"}},
+						"some-resource",
+						atc.Source{"some": "source"},
+					)
+					createContainersAPICheckContainer(
+						realdb,
+						deps,
+						team,
+						"check-list-decoy-worker",
+						atc.PipelineRef{Name: "other-pipeline", InstanceVars: atc.InstanceVars{"branch": "other"}},
+						"other-resource",
+						atc.Source{"other": "source"},
+					)
 					rawInstanceVars, _ := json.Marshal(atc.InstanceVars{"branch": "master"})
 					query = url.Values{
 						"type":          []string{"check"},
@@ -678,14 +583,10 @@ var _ = Describe("Containers API", func() {
 					}
 				})
 
-				It("queries with check properties", func() {
-					Expect(routeTeam.checkCallSnapshot()).To(Equal([]containersAPICheckCall{{
-						pipelineRef:  atc.PipelineRef{Name: "some-pipeline", InstanceVars: atc.InstanceVars{"branch": "master"}},
-						resourceName: "some-resource",
-					}}))
+				It("returns the check container for the requested pipeline and resource", func() {
 					var presented []atc.Container
 					Expect(json.NewDecoder(response.Body).Decode(&presented)).To(Succeed())
-					Expect(presented).To(ContainElement(HaveField("ID", fixture.container.Handle())))
+					Expect(presented).To(ConsistOf(HaveField("ID", fixture.container.Handle())))
 				})
 			})
 		})
@@ -693,14 +594,13 @@ var _ = Describe("Containers API", func() {
 
 	Describe("GET /api/v1/containers/:id", func() {
 		var (
-			realdb    *realDB
-			deps      apiDBDeps
-			team      db.Team
-			routeTeam *containersAPITeam
-			fixture   containersAPIFixture
-			handle    string
-			server    *httptest.Server
-			response  *http.Response
+			realdb   *realDB
+			deps     apiDBDeps
+			team     db.Team
+			fixture  containersAPIFixture
+			handle   string
+			server   *httptest.Server
+			response *http.Response
 		)
 
 		BeforeEach(func() {
@@ -712,13 +612,10 @@ var _ = Describe("Containers API", func() {
 			fixture = createContainersAPIBuildStepContainer(
 				deps, team, "get-worker", "get-plan", fullMetadata, true,
 			)
+			createContainersAPIBuildStepContainer(
+				deps, team, "get-decoy-worker", "get-decoy-plan", fullMetadata, true,
+			)
 			handle = fixture.container.Handle()
-			routeTeam = &containersAPITeam{Team: team}
-			deps.teamFactory = containersAPITeamFactory{
-				TeamFactory: deps.teamFactory,
-				teamName:    team.Name(),
-				team:        routeTeam,
-			}
 		})
 
 		JustBeforeEach(func() {
@@ -777,10 +674,6 @@ var _ = Describe("Containers API", func() {
 						Expect(response).Should(IncludeHeaderEntries(expectedHeaderEntries))
 					})
 
-					It("performs lookup by id", func() {
-						Expect(routeTeam.findContainerByHandleCallSnapshot()).To(Equal([]string{handle}))
-					})
-
 					It("returns the container", func() {
 						body, err := io.ReadAll(response.Body)
 						Expect(err).NotTo(HaveOccurred())
@@ -812,15 +705,6 @@ var _ = Describe("Containers API", func() {
 				})
 			})
 
-			Context("when there is an error", func() {
-				BeforeEach(func() {
-					routeTeam.setFindContainerByHandleError(errors.New("some error"))
-				})
-
-				It("returns 500", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-				})
-			})
 		})
 	})
 
@@ -830,7 +714,6 @@ var _ = Describe("Containers API", func() {
 			deps               apiDBDeps
 			team               db.Team
 			outsideTeam        db.Team
-			routeTeam          *containersAPITeam
 			fixture            containersAPIFixture
 			handle             string
 			server             *httptest.Server
@@ -894,13 +777,6 @@ var _ = Describe("Containers API", func() {
 			Expect(err).NotTo(HaveOccurred())
 			outsideTeam, err = deps.teamFactory.CreateTeam(atc.Team{Name: "outside-team"})
 			Expect(err).NotTo(HaveOccurred())
-			routeTeam = &containersAPITeam{Team: team}
-			deps.teamFactory = containersAPITeamFactory{
-				TeamFactory: deps.teamFactory,
-				teamName:    team.Name(),
-				team:        routeTeam,
-			}
-
 			container = runtimetest.NewContainer().WithProcess(
 				runtime.ProcessSpec{Path: "ls", User: "snoopy"},
 				runtimetest.ProcessStub{},
@@ -978,14 +854,19 @@ var _ = Describe("Containers API", func() {
 					Context("when the user is not admin", func() {
 						BeforeEach(func() {
 							useFixture(createContainersAPICheckContainer(
-								realdb, deps, team, "check-non-admin-worker", atc.Source{"route": "source"},
+								realdb,
+								deps,
+								team,
+								"check-non-admin-worker",
+								atc.PipelineRef{Name: "some-pipeline", InstanceVars: atc.InstanceVars{"branch": "master"}},
+								"some-resource",
+								atc.Source{"route": "source"},
 							))
 							expectBadHandshake = true
 						})
 
 						It("returns Forbidden", func() {
 							Expect(response.StatusCode).To(Equal(http.StatusForbidden))
-							Expect(routeTeam.findWorkerForContainerCallSnapshot()).To(Equal([]string{handle}))
 						})
 					})
 
@@ -997,28 +878,38 @@ var _ = Describe("Containers API", func() {
 						Context("when the container is not within the team", func() {
 							BeforeEach(func() {
 								useFixture(createContainersAPICheckContainer(
-									realdb, deps, outsideTeam, "outside-check-worker", atc.Source{"outside": "distinct-source"},
+									realdb,
+									deps,
+									outsideTeam,
+									"outside-check-worker",
+									atc.PipelineRef{Name: "outside-pipeline", InstanceVars: atc.InstanceVars{"branch": "outside"}},
+									"outside-resource",
+									atc.Source{"outside": "distinct-source"},
 								))
 								expectBadHandshake = true
 							})
 
 							It("returns 404 not found", func() {
 								Expect(response.StatusCode).To(Equal(http.StatusNotFound))
-								Expect(routeTeam.findWorkerForContainerCallSnapshot()).To(Equal([]string{handle}))
 							})
 						})
 
 						Context("when the container is within the team", func() {
 							BeforeEach(func() {
 								useFixture(createContainersAPICheckContainer(
-									realdb, deps, team, "check-admin-worker", atc.Source{"route": "source"},
+									realdb,
+									deps,
+									team,
+									"check-admin-worker",
+									atc.PipelineRef{Name: "some-pipeline", InstanceVars: atc.InstanceVars{"branch": "master"}},
+									"some-resource",
+									atc.Source{"route": "source"},
 								))
 								installBlockingProcess()
 							})
 
 							It("should try to hijack the container", func() {
 								waitForHijack()
-								Expect(routeTeam.findWorkerForContainerCallSnapshot()).To(Equal([]string{handle}))
 							})
 						})
 					})
@@ -1035,24 +926,10 @@ var _ = Describe("Containers API", func() {
 
 						It("returns 404 not found", func() {
 							Expect(response.StatusCode).To(Equal(http.StatusNotFound))
-							Expect(routeTeam.findWorkerForContainerCallSnapshot()).To(Equal([]string{handle}))
 						})
 					})
 
 					Context("when the container is within the team", func() {
-						Context("when the call to lookup the container returns an error", func() {
-							BeforeEach(func() {
-								expectBadHandshake = true
-
-								workerRuntime.failContainerLookup(errors.New("nope"))
-							})
-
-							It("returns 500 internal error", func() {
-								Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-								Expect(routeTeam.findWorkerForContainerCallSnapshot()).To(Equal([]string{handle}))
-							})
-						})
-
 						Context("when the container could not be found on the worker client", func() {
 							BeforeEach(func() {
 								expectBadHandshake = true
@@ -1066,7 +943,6 @@ var _ = Describe("Containers API", func() {
 
 							It("returns 404 Not Found", func() {
 								Expect(response.StatusCode).To(Equal(http.StatusNotFound))
-								Expect(routeTeam.findWorkerForContainerCallSnapshot()).To(Equal([]string{handle}))
 							})
 						})
 
@@ -1106,8 +982,6 @@ var _ = Describe("Containers API", func() {
 
 							It("hijacks the build", func() {
 								waitForHijack()
-
-								Expect(routeTeam.findWorkerForContainerCallSnapshot()).To(Equal([]string{handle}))
 							})
 
 							It("updates the last hijack value", func() {
@@ -1305,7 +1179,6 @@ var _ = Describe("Containers API", func() {
 
 			It("returns 401 Unauthorized", func() {
 				Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
-				Expect(routeTeam.findWorkerForContainerCallSnapshot()).To(BeEmpty())
 			})
 		})
 	})
