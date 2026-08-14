@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/compression"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runtime/runtimetest"
@@ -142,7 +143,7 @@ var _ = Describe("ArtifactRepository API", func() {
 				team:        routeTeam,
 			}
 
-			fakeAccess.IsAuthenticatedReturns(true)
+			useProfile(memberProfile)
 		})
 
 		JustBeforeEach(func() {
@@ -170,7 +171,7 @@ var _ = Describe("ArtifactRepository API", func() {
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				useProfile(anonymousProfile)
 			})
 
 			It("returns 401 Unauthorized", func() {
@@ -180,7 +181,7 @@ var _ = Describe("ArtifactRepository API", func() {
 
 		Context("when not authorized", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthorizedReturns(false)
+				useProfile(memberProfile)
 			})
 
 			It("returns 403 Forbidden", func() {
@@ -192,7 +193,8 @@ var _ = Describe("ArtifactRepository API", func() {
 			var volume *runtimetest.Volume
 
 			BeforeEach(func() {
-				fakeAccess.IsAuthorizedReturns(true)
+				grantProfile(team, memberProfile, accessor.MemberRole)
+				useProfile(memberProfile)
 
 				tarContents = runtimetest.VolumeContent{
 					"some/file": {Data: []byte("some contents")},
@@ -285,7 +287,7 @@ var _ = Describe("ArtifactRepository API", func() {
 				team:        routeTeam,
 			}
 
-			fakeAccess.IsAuthenticatedReturns(true)
+			useProfile(memberProfile)
 		})
 
 		JustBeforeEach(func() {
@@ -309,7 +311,7 @@ var _ = Describe("ArtifactRepository API", func() {
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				useProfile(anonymousProfile)
 			})
 
 			It("returns 401 Unauthorized", func() {
@@ -319,7 +321,7 @@ var _ = Describe("ArtifactRepository API", func() {
 
 		Context("when not authorized", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthorizedReturns(false)
+				useProfile(memberProfile)
 			})
 
 			It("returns 403 Forbidden", func() {
@@ -329,7 +331,8 @@ var _ = Describe("ArtifactRepository API", func() {
 
 		Context("when authorized", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthorizedReturns(true)
+				grantProfile(team, memberProfile, accessor.MemberRole)
+				useProfile(memberProfile)
 			})
 
 			It("uses the artifactID to fetch the db volume record", func() {

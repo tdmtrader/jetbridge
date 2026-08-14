@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/creds"
 	"github.com/concourse/concourse/atc/creds/dummy"
 	"github.com/concourse/concourse/atc/creds/noop"
@@ -403,8 +404,8 @@ var _ = Describe("Config API", func() {
 
 		Context("when authorized", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
-				fakeAccess.IsAuthorizedReturns(true)
+				grantProfile(realTeam, memberProfile, accessor.ViewerRole)
+				useProfile(memberProfile)
 			})
 
 			Context("when the team is found", func() {
@@ -554,6 +555,7 @@ var _ = Describe("Config API", func() {
 			Context("when the team is not found", func() {
 				BeforeEach(func() {
 					Expect(realTeam.Delete()).To(Succeed())
+					useProfile(adminProfile)
 				})
 
 				It("returns 404", func() {
@@ -574,7 +576,7 @@ var _ = Describe("Config API", func() {
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				useProfile(anonymousProfile)
 			})
 
 			It("returns 401", func() {
@@ -712,8 +714,8 @@ var _ = Describe("Config API", func() {
 
 		Context("when authorized", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
-				fakeAccess.IsAuthorizedReturns(true)
+				grantProfile(realTeam, memberProfile, accessor.MemberRole)
+				useProfile(memberProfile)
 			})
 
 			Context("when an identifier is invalid", func() {
@@ -722,6 +724,8 @@ var _ = Describe("Config API", func() {
 						var err error
 						realRequestedTeam, err = configTeamFactory.TeamFactory.CreateTeam(atc.Team{Name: "_team"})
 						Expect(err).NotTo(HaveOccurred())
+						grantProfile(realRequestedTeam, memberProfile, accessor.MemberRole)
+						useProfile(memberProfile)
 						routeParams = rata.Params{
 							"team_name":     "_team",
 							"pipeline_name": "_pipeline",
@@ -762,6 +766,7 @@ var _ = Describe("Config API", func() {
 				})
 				Context("and is an empty string", func() {
 					BeforeEach(func() {
+						useProfile(adminProfile)
 						routeParams = rata.Params{
 							"team_name":     "",
 							"pipeline_name": "",
@@ -1513,6 +1518,7 @@ jobs:
 						Context("when the team is not found", func() {
 							BeforeEach(func() {
 								Expect(realTeam.Delete()).To(Succeed())
+								useProfile(adminProfile)
 							})
 
 							It("returns 404", func() {
@@ -1678,7 +1684,7 @@ jobs:
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				useProfile(anonymousProfile)
 			})
 
 			It("returns 401", func() {

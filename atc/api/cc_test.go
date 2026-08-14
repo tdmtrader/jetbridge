@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/db"
 	. "github.com/concourse/concourse/atc/testhelpers"
 	"github.com/tedsuo/rata"
@@ -169,16 +170,25 @@ var _ = Describe("cc.xml", func() {
 		response         *http.Response
 		server           *httptest.Server
 		teamName         string
+		grantViewer      bool
 	)
 
 	BeforeEach(func() {
 		database = useRealDB()
 		deps = database.Deps
 		teamName = "a-team"
+		grantViewer = false
 	})
 
 	Describe("GET /api/v1/teams/:team_name/cc.xml", func() {
 		JustBeforeEach(func() {
+			if grantViewer {
+				team, found, err := database.Deps.teamFactory.FindTeam(teamName)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(found).To(BeTrue())
+				grantProfile(team, memberProfile, accessor.ViewerRole)
+			}
+
 			server = newAPIServer(deps)
 			DeferCleanup(server.Close)
 			requestGenerator = rata.NewRequestGenerator(server.URL, atc.Routes)
@@ -199,8 +209,8 @@ var _ = Describe("cc.xml", func() {
 
 		Context("when authorized", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
-				fakeAccess.IsAuthorizedReturns(true)
+				grantViewer = true
+				useProfile(memberProfile)
 			})
 
 			Context("when the team is found", func() {
@@ -504,6 +514,11 @@ var _ = Describe("cc.xml", func() {
 			})
 
 			Context("when the team is not found", func() {
+				BeforeEach(func() {
+					grantViewer = false
+					useProfile(adminProfile)
+				})
+
 				It("returns 404", func() {
 					Expect(response.StatusCode).To(Equal(http.StatusNotFound))
 				})
@@ -511,6 +526,8 @@ var _ = Describe("cc.xml", func() {
 
 			Context("when finding the team fails", func() {
 				BeforeEach(func() {
+					grantViewer = false
+					useProfile(adminProfile)
 					doomed := postgresRunner.OpenConn()
 					deps.teamFactory = db.NewTeamFactory(doomed, database.LockFactory)
 					Expect(doomed.Close()).To(Succeed())
@@ -524,7 +541,7 @@ var _ = Describe("cc.xml", func() {
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				useProfile(anonymousProfile)
 			})
 
 			Context("when there are public pipelines", func() {

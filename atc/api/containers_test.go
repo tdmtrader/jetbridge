@@ -17,6 +17,7 @@ import (
 
 	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbtest"
 	"github.com/concourse/concourse/atc/runtime"
@@ -408,7 +409,7 @@ var _ = Describe("Containers API", func() {
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				useProfile(anonymousProfile)
 			})
 
 			It("returns 401 Unauthorized", func() {
@@ -418,8 +419,8 @@ var _ = Describe("Containers API", func() {
 
 		Context("when authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
-				fakeAccess.IsAuthorizedReturns(true)
+				grantProfile(team, memberProfile, accessor.ViewerRole)
+				useProfile(memberProfile)
 			})
 
 			Context("with no params", func() {
@@ -735,7 +736,7 @@ var _ = Describe("Containers API", func() {
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				useProfile(anonymousProfile)
 			})
 
 			It("returns 401 Unauthorized", func() {
@@ -745,8 +746,8 @@ var _ = Describe("Containers API", func() {
 
 		Context("when authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
-				fakeAccess.IsAuthorizedReturns(true)
+				grantProfile(team, memberProfile, accessor.ViewerRole)
+				useProfile(memberProfile)
 			})
 
 			Context("when the container is not found", func() {
@@ -968,8 +969,8 @@ var _ = Describe("Containers API", func() {
 
 		Context("when authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
-				fakeAccess.IsAuthorizedReturns(true)
+				grantProfile(team, memberProfile, accessor.MemberRole)
+				useProfile(memberProfile)
 			})
 
 			Context("and the worker pool returns a container", func() {
@@ -980,7 +981,6 @@ var _ = Describe("Containers API", func() {
 								realdb, deps, team, "check-non-admin-worker", atc.Source{"route": "source"},
 							))
 							expectBadHandshake = true
-							fakeAccess.IsAdminReturns(false)
 						})
 
 						It("returns Forbidden", func() {
@@ -991,7 +991,7 @@ var _ = Describe("Containers API", func() {
 
 					Context("when the user is an admin", func() {
 						BeforeEach(func() {
-							fakeAccess.IsAdminReturns(true)
+							useProfile(adminProfile)
 						})
 
 						Context("when the container is not within the team", func() {
@@ -1102,10 +1102,6 @@ var _ = Describe("Containers API", func() {
 
 							BeforeEach(func() {
 								processExit = installBlockingProcess()
-							})
-
-							It("did not check if the user is admin", func() {
-								Expect(fakeAccess.IsAdminCallCount()).To(Equal(0))
 							})
 
 							It("hijacks the build", func() {
@@ -1304,7 +1300,7 @@ var _ = Describe("Containers API", func() {
 			BeforeEach(func() {
 				expectBadHandshake = true
 
-				fakeAccess.IsAuthenticatedReturns(false)
+				useProfile(anonymousProfile)
 			})
 
 			It("returns 401 Unauthorized", func() {
