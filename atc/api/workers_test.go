@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/db"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -147,8 +148,8 @@ var _ = Describe("Workers API", func() {
 			Expect(err).NotTo(HaveOccurred())
 			other, err = otherTeam.SaveWorker(atc.Worker{Name: "other-team-worker", Platform: "linux", Version: "1.2.3", State: string(db.WorkerStateRunning), Tags: []string{"other"}}, 0)
 			Expect(err).NotTo(HaveOccurred())
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.TeamNamesReturns([]string{"some-team"})
+			grantProfile(someTeam, memberProfile, accessor.ViewerRole)
+			useProfile(memberProfile)
 		})
 		JustBeforeEach(func() {
 			var err error
@@ -164,7 +165,7 @@ var _ = Describe("Workers API", func() {
 			Expect([]string{workers[0].Name, workers[1].Name}).To(ConsistOf(global.Name(), own.Name()))
 		})
 		Context("when the user is an admin", func() {
-			BeforeEach(func() { fakeAccess.IsAdminReturns(true) })
+			BeforeEach(func() { useProfile(adminProfile) })
 			It("shows all workers", func() {
 				var workers []atc.Worker
 				Expect(json.NewDecoder(response.Body).Decode(&workers)).To(Succeed())
@@ -184,7 +185,7 @@ var _ = Describe("Workers API", func() {
 			It("returns 500", func() { Expect(response.StatusCode).To(Equal(http.StatusInternalServerError)) })
 		})
 		Context("when not authenticated", func() {
-			BeforeEach(func() { fakeAccess.IsAuthenticatedReturns(false) })
+			BeforeEach(func() { useProfile(anonymousProfile) })
 			It("returns 401", func() { Expect(response.StatusCode).To(Equal(http.StatusUnauthorized)) })
 		})
 	})
@@ -204,9 +205,7 @@ var _ = Describe("Workers API", func() {
 			Expect(realdb.Conn.QueryRow("SELECT NOW()").Scan(&requestedAt)).To(Succeed())
 			worker = apiWorker()
 			ttl = "30s"
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAuthorizedReturns(true)
-			fakeAccess.IsSystemReturns(true)
+			useProfile(systemProfile)
 		})
 		JustBeforeEach(func() {
 			payload, err := json.Marshal(worker)
@@ -290,8 +289,14 @@ var _ = Describe("Workers API", func() {
 			It("returns 400", func() { Expect(response.StatusCode).To(Equal(http.StatusBadRequest)) })
 		})
 		Context("when request is not from tsa", func() {
-			BeforeEach(func() { fakeAccess.IsSystemReturns(false) })
-			It("return 403", func() { Expect(response.StatusCode).To(Equal(http.StatusForbidden)) })
+			BeforeEach(func() { useProfile(memberProfile) })
+			It("returns 403 without saving the worker", func() {
+				Expect(response.StatusCode).To(Equal(http.StatusForbidden))
+				registered, found, err := realdb.Deps.workerFactory.GetWorker(worker.Name)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(registered).To(BeNil())
+				Expect(found).To(BeFalse())
+			})
 		})
 		Context("when the worker has no name", func() {
 			BeforeEach(func() { worker.Name = "" })
@@ -336,7 +341,7 @@ var _ = Describe("Workers API", func() {
 			})
 		})
 		Context("when not authenticated", func() {
-			BeforeEach(func() { fakeAccess.IsAuthenticatedReturns(false) })
+			BeforeEach(func() { useProfile(anonymousProfile) })
 			It("returns 401 without saving the worker", func() {
 				Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
 				_, found, err := realdb.Deps.workerFactory.GetWorker("worker-name")
@@ -354,7 +359,7 @@ var _ = Describe("Workers API", func() {
 		BeforeEach(func() {
 			realdb = useRealDB()
 			server = realdb.Serve()
-			fakeAccess.IsAuthenticatedReturns(true)
+			useProfile(systemProfile)
 		})
 		JustBeforeEach(func() {
 			req, err := http.NewRequest("DELETE", server.URL+"/api/v1/workers/some-worker", nil)
@@ -373,7 +378,7 @@ var _ = Describe("Workers API", func() {
 			BeforeEach(func() {
 				_, err := realdb.Deps.workerFactory.SaveWorker(atc.Worker{Name: "some-worker", Version: "1.2.3"}, 0)
 				Expect(err).NotTo(HaveOccurred())
-				fakeAccess.IsSystemReturns(true)
+				useProfile(systemProfile)
 			})
 			It("deletes a global worker", assertDeleted)
 		})
@@ -381,7 +386,7 @@ var _ = Describe("Workers API", func() {
 			BeforeEach(func() {
 				_, err := realdb.Deps.workerFactory.SaveWorker(atc.Worker{Name: "some-worker", Version: "1.2.3"}, 0)
 				Expect(err).NotTo(HaveOccurred())
-				fakeAccess.IsAdminReturns(true)
+				useProfile(adminProfile)
 			})
 			It("deletes a global worker", assertDeleted)
 		})
@@ -391,19 +396,20 @@ var _ = Describe("Workers API", func() {
 				Expect(err).NotTo(HaveOccurred())
 				_, err = team.SaveWorker(atc.Worker{Name: "some-worker", Version: "1.2.3"}, 0)
 				Expect(err).NotTo(HaveOccurred())
-				fakeAccess.IsAuthorizedReturns(true)
+				grantProfile(team, memberProfile, accessor.MemberRole)
+				useProfile(memberProfile)
 			})
 			It("deletes a team worker", assertDeleted)
 		})
 		Context("when the worker has already been deleted", func() {
-			BeforeEach(func() { fakeAccess.IsSystemReturns(true) })
+			BeforeEach(func() { useProfile(systemProfile) })
 			It("returns 500", func() { Expect(response.StatusCode).To(Equal(http.StatusInternalServerError)) })
 		})
 		Context("when not authenticated", func() {
 			var observer *observingWorkerLookupFactory
 
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				useProfile(anonymousProfile)
 				observer = &observingWorkerLookupFactory{WorkerFactory: realdb.Deps.workerFactory}
 				deps := realdb.Deps
 				deps.workerFactory = observer
@@ -428,7 +434,7 @@ var _ = Describe("Workers API", func() {
 				}
 				server = newAPIServer(deps)
 				DeferCleanup(server.Close)
-				fakeAccess.IsSystemReturns(true)
+				useProfile(systemProfile)
 			})
 			It("returns 500", func() { Expect(response.StatusCode).To(Equal(http.StatusInternalServerError)) })
 		})
