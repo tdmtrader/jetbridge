@@ -17,9 +17,14 @@ import (
 )
 
 type requestProfile struct {
-	authorization string
-	connector     string
-	userID        string
+	authorization     string
+	token             string
+	subject           string
+	connector         string
+	userID            string
+	name              string
+	preferredUsername string
+	persist           *sync.Once
 }
 
 var (
@@ -27,6 +32,8 @@ var (
 	memberProfile    requestProfile
 	adminProfile     requestProfile
 	systemProfile    requestProfile
+
+	adminProfileSetup *sync.Once
 )
 
 type profileTransport struct {
@@ -70,6 +77,24 @@ func (transport *profileTransport) authorizationHeader() http.Header {
 func useProfile(profile requestProfile) {
 	GinkgoHelper()
 	Expect(apiProfileTransport).NotTo(BeNil())
+	ensureProfilePersisted(profile)
+
+	if sameRequestProfile(profile, adminProfile) {
+		adminProfileSetup.Do(func() {
+			grantProfile(apiDB.Main, adminProfile, accessor.OwnerRole)
+			result, err := apiDB.Conn.Exec(`UPDATE teams SET admin = TRUE WHERE id = $1`, apiDB.Main.ID())
+			Expect(err).NotTo(HaveOccurred())
+			rowsAffected, err := result.RowsAffected()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(rowsAffected).To(Equal(int64(1)))
+
+			teamFactory := db.NewTeamFactory(apiDB.Conn, apiDB.LockFactory)
+			main, found, err := teamFactory.FindTeam(apiDB.Main.Name())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			apiDB.Main = main
+		})
+	}
 
 	apiProfileTransport.mu.Lock()
 	apiProfileTransport.authorization = profile.authorization
@@ -84,73 +109,93 @@ func dialWebsocket(url string) (*websocket.Conn, *http.Response, error) {
 func createRequestProfiles() {
 	GinkgoHelper()
 
+	adminProfileSetup = new(sync.Once)
+
 	anonymousProfile = requestProfile{}
-	memberProfile = persistRequestProfile(
+	memberProfile = newRequestProfile(
 		"api-member-token",
 		"api-member-subject",
 		"api-member-user",
 		"API Member",
 		"api-member",
 	)
-	adminProfile = persistRequestProfile(
+	adminProfile = newRequestProfile(
 		"api-admin-token",
 		"api-admin-subject",
 		"api-admin-user",
 		"API Administrator",
 		"api-admin",
 	)
-	systemProfile = persistRequestProfile(
+	systemProfile = newRequestProfile(
 		"api-system-token",
 		"api-system",
 		"api-system-user",
 		"API System",
 		"api-system",
 	)
-
-	grantProfile(apiDB.Main, adminProfile, accessor.OwnerRole)
-	result, err := apiDB.Conn.Exec(`UPDATE teams SET admin = TRUE WHERE id = $1`, apiDB.Main.ID())
-	Expect(err).NotTo(HaveOccurred())
-	rowsAffected, err := result.RowsAffected()
-	Expect(err).NotTo(HaveOccurred())
-	Expect(rowsAffected).To(Equal(int64(1)))
-
-	main, found, err := apiDB.Deps.teamFactory.FindTeam(apiDB.Main.Name())
-	Expect(err).NotTo(HaveOccurred())
-	Expect(found).To(BeTrue())
-	apiDB.Main = main
 }
 
 func persistRequestProfile(token, subject, userID, name, preferredUsername string) requestProfile {
 	GinkgoHelper()
 
-	rawClaims, err := json.Marshal(map[string]any{
-		"sub":                subject,
-		"aud":                []string{"api-test"},
-		"exp":                time.Now().Add(time.Hour).Unix(),
-		"name":               name,
-		"preferred_username": preferredUsername,
-		"federated_claims": map[string]any{
-			"connector_id": "test",
-			"user_id":      userID,
-		},
-	})
-	Expect(err).NotTo(HaveOccurred())
+	profile := newRequestProfile(token, subject, userID, name, preferredUsername)
+	ensureProfilePersisted(profile)
+	return profile
+}
 
-	var claims db.Claims
-	Expect(json.Unmarshal(rawClaims, &claims)).To(Succeed())
-	Expect(apiDB.AccessTokenFactory.CreateAccessToken(token, claims)).To(Succeed())
-
+func newRequestProfile(token, subject, userID, name, preferredUsername string) requestProfile {
 	return requestProfile{
-		authorization: "Bearer " + token,
-		connector:     "test",
-		userID:        userID,
+		authorization:     "Bearer " + token,
+		token:             token,
+		subject:           subject,
+		connector:         "test",
+		userID:            userID,
+		name:              name,
+		preferredUsername: preferredUsername,
+		persist:           new(sync.Once),
 	}
+}
+
+func ensureProfilePersisted(profile requestProfile) {
+	GinkgoHelper()
+
+	if profile.authorization == "" || profile.persist == nil {
+		// Profiles without a token descriptor are persisted explicitly by the
+		// spec that constructs them. The standard and dedicated profiles all
+		// carry descriptors and take the path below.
+		return
+	}
+
+	profile.persist.Do(func() {
+		rawClaims, err := json.Marshal(map[string]any{
+			"sub":                profile.subject,
+			"aud":                []string{"api-test"},
+			"exp":                time.Now().Add(time.Hour).Unix(),
+			"name":               profile.name,
+			"preferred_username": profile.preferredUsername,
+			"federated_claims": map[string]any{
+				"connector_id": profile.connector,
+				"user_id":      profile.userID,
+			},
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		var claims db.Claims
+		Expect(json.Unmarshal(rawClaims, &claims)).To(Succeed())
+		Expect(apiDB.AccessTokenFactory.CreateAccessToken(profile.token, claims)).To(Succeed())
+	})
+}
+
+func sameRequestProfile(left, right requestProfile) bool {
+	return left.authorization == right.authorization &&
+		left.connector == right.connector &&
+		left.userID == right.userID
 }
 
 func grantProfile(team db.Team, profile requestProfile, role string) {
 	GinkgoHelper()
-	Expect(profile).NotTo(Equal(anonymousProfile), "the anonymous profile cannot receive a team role")
-	Expect(profile).NotTo(Equal(systemProfile), "the system profile cannot receive a team role")
+	Expect(sameRequestProfile(profile, anonymousProfile)).To(BeFalse(), "the anonymous profile cannot receive a team role")
+	Expect(sameRequestProfile(profile, systemProfile)).To(BeFalse(), "the system profile cannot receive a team role")
 
 	auth := make(atc.TeamAuth, len(team.Auth())+1)
 	for existingRole, providerAuth := range team.Auth() {
