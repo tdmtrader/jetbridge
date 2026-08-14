@@ -111,9 +111,12 @@ var _ = Describe("PutStep", func() {
 		stepper      exec.Stepper
 		imageStepper *imageFetchStepper
 
-		fakePool        *scriptedPool
+		workerPool      exec.Pool
+		workerSeeds     []runtimeWorkerSeed
 		chosenWorker    *runtimetest.Worker
 		chosenContainer *runtimetest.WorkerContainer
+		globalWorker    *runtimetest.Worker
+		globalContainer *runtimetest.WorkerContainer
 
 		putPlan *atc.PutPlan
 
@@ -201,8 +204,27 @@ var _ = Describe("PutStep", func() {
 				nil,
 			)
 		chosenContainer = chosenWorker.Containers[0]
-		fakePool = new(scriptedPool)
-		fakePool.FindOrSelectWorkerReturns(chosenWorker, nil)
+		globalWorker = runtimetest.NewWorker("global-worker").
+			WithContainer(
+				expectedOwner,
+				runtimetest.NewContainer().WithProcess(
+					runtime.ProcessSpec{
+						ID:   "resource",
+						Path: "/opt/resource/out",
+						Args: []string{resource.ResourcesDir("put")},
+					},
+					runtimetest.ProcessStub{
+						Attachable: true,
+						Output:     versionResult,
+					},
+				),
+				nil,
+			)
+		globalContainer = globalWorker.Containers[0]
+		workerSeeds = []runtimeWorkerSeed{
+			{Model: chosenWorker, Team: dbTeam},
+			{Model: globalWorker},
+		}
 
 		delegateFactory = putDelegateFactory(func(state exec.RunState) exec.PutDelegate {
 			delegate = &beforeSelectWorkerRecorder{
@@ -247,6 +269,7 @@ var _ = Describe("PutStep", func() {
 	})
 
 	JustBeforeEach(func() {
+		workerPool = saveRuntimeWorkerPool(fixture, workerSeeds...)
 		plan := atc.Plan{
 			ID:  atc.PlanID(planID),
 			Put: putPlan,
@@ -257,7 +280,7 @@ var _ = Describe("PutStep", func() {
 			*plan.Put,
 			stepMetadata,
 			containerMetadata,
-			fakePool,
+			workerPool,
 			delegateFactory,
 			defaultPutTimeout,
 		)
@@ -269,42 +292,28 @@ var _ = Describe("PutStep", func() {
 	})
 
 	Describe("worker selection", func() {
-		var ctx context.Context
-		var workerSpec worker.Spec
-
-		JustBeforeEach(func() {
-			Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(1))
-			ctx, _, _, workerSpec = fakePool.FindOrSelectWorkerArgsForCall(0)
-		})
-
-		It("doesn't enforce a timeout", func() {
-			_, ok := ctx.Deadline()
-			Expect(ok).To(BeFalse())
-		})
-
 		It("emits a BeforeSelectWorker event", func() {
 			Expect(delegate.callCount).To(Equal(1))
-		})
-
-		It("calls SelectWorker with the correct WorkerSpec", func() {
-			Expect(workerSpec).To(Equal(
-				worker.Spec{
-					TeamID: stepMetadata.TeamID,
-				},
-			))
 		})
 
 		It("emits a SelectedWorker event", func() {
 			Expect(persistedSelectedWorkers(fixture, dbBuild)).To(Equal([]string{"worker"}))
 		})
 
+		It("runs on the exact-team worker and leaves the global worker idle", func() {
+			Expect(chosenContainer.RunningProcesses()).To(HaveLen(1))
+			Expect(globalContainer.RunningProcesses()).To(BeEmpty())
+		})
+
 		Context("when selecting a worker fails", func() {
 			BeforeEach(func() {
-				fakePool.FindOrSelectWorkerReturns(nil, errors.New("nope"))
+				otherTeam, err := fixture.TeamFactory.CreateTeam(atc.Team{Name: "other-team"})
+				Expect(err).NotTo(HaveOccurred())
+				workerSeeds = []runtimeWorkerSeed{{Model: chosenWorker, Team: otherTeam}}
 			})
 
-			It("returns an err", func() {
-				Expect(stepErr).To(MatchError(ContainSubstring("nope")))
+			It("returns the no-compatible-worker error", func() {
+				Expect(stepErr).To(MatchError(worker.ErrNoWorkers))
 			})
 		})
 	})
@@ -405,7 +414,20 @@ var _ = Describe("PutStep", func() {
 			})
 
 			It("does not select a worker or run the resource script", func() {
-				Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(0))
+				Expect(chosenContainer.RunningProcesses()).To(BeEmpty())
+				Expect(globalContainer.RunningProcesses()).To(BeEmpty())
+				Expect(persistedSelectedWorkers(fixture, dbBuild)).To(BeEmpty())
+
+				var containerCount, volumeCount, artifactCount int
+				Expect(fixture.Conn.QueryRow(`
+					SELECT
+						(SELECT COUNT(*) FROM containers),
+						(SELECT COUNT(*) FROM volumes),
+						(SELECT COUNT(*) FROM worker_artifacts)
+				`).Scan(&containerCount, &volumeCount, &artifactCount)).To(Succeed())
+				Expect(containerCount).To(BeZero())
+				Expect(volumeCount).To(BeZero())
+				Expect(artifactCount).To(BeZero())
 			})
 		})
 
@@ -573,13 +595,9 @@ var _ = Describe("PutStep", func() {
 			Expect(chosenContainer.Spec.ImageSpec.Privileged).To(BeFalse())
 		})
 
-		It("sets the worker spec with teamID", func() {
-			Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(1))
-			_, _, _, workerSpec := fakePool.FindOrSelectWorkerArgsForCall(0)
-
-			Expect(workerSpec).To(Equal(worker.Spec{
-				TeamID: stepMetadata.TeamID,
-			}))
+		It("runs the custom resource type on the exact-team worker", func() {
+			Expect(chosenContainer.RunningProcesses()).To(HaveLen(1))
+			Expect(globalContainer.RunningProcesses()).To(BeEmpty())
 		})
 
 		It("sets the image spec in the container spec", func() {

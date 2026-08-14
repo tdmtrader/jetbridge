@@ -2,7 +2,6 @@ package exec_test
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -20,6 +19,7 @@ import (
 	"github.com/concourse/concourse/atc/policy"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/runtime/runtimetest"
+	"github.com/concourse/concourse/atc/worker"
 	"github.com/concourse/concourse/tracing"
 	"github.com/concourse/concourse/vars"
 	"github.com/google/go-containerregistry/pkg/authn"
@@ -125,11 +125,13 @@ var _ = Describe("TaskStep", func() {
 		ctx    context.Context
 		cancel func()
 
-		fakePool *scriptedPool
-		streamer *recordingStreamer
+		workerPool  exec.Pool
+		workerSeeds []runtimeWorkerSeed
+		streamer    *recordingStreamer
 
-		fixture *execDBFixture
-		dbBuild db.Build
+		fixture    *execDBFixture
+		targetTeam db.Team
+		dbBuild    db.Build
 
 		delegate        *recordingTaskDelegate
 		delegateFactory exec.TaskDelegateFactory
@@ -169,9 +171,8 @@ var _ = Describe("TaskStep", func() {
 		streamer = newRecordingStreamer()
 
 		fixture = useExecDB()
-		var dbTeam db.Team
 		var dbJob db.Job
-		dbTeam, _, dbJob, dbBuild = createExecJobBuild(
+		targetTeam, _, dbJob, dbBuild = createExecJobBuild(
 			fixture,
 			"some-team",
 			atc.PipelineRef{Name: "some-pipeline"},
@@ -180,7 +181,7 @@ var _ = Describe("TaskStep", func() {
 		)
 
 		stepMetadata = exec.StepMetadata{
-			TeamID:      dbTeam.ID(),
+			TeamID:      targetTeam.ID(),
 			BuildID:     dbBuild.ID(),
 			JobID:       dbJob.ID(),
 			ExternalURL: "http://foo.bar",
@@ -203,6 +204,8 @@ var _ = Describe("TaskStep", func() {
 		})
 
 		taskStepOptions = nil
+		workerPool = nil
+		workerSeeds = nil
 
 		imageStepper = new(imageFetchStepper)
 		stepper = noopStepper
@@ -227,6 +230,9 @@ var _ = Describe("TaskStep", func() {
 	})
 
 	JustBeforeEach(func() {
+		if len(workerSeeds) != 0 {
+			workerPool = saveRuntimeWorkerPool(fixture, workerSeeds...)
+		}
 		plan := atc.Plan{
 			ID:   planID,
 			Task: taskPlan,
@@ -240,7 +246,7 @@ var _ = Describe("TaskStep", func() {
 			atc.ContainerLimits{},
 			stepMetadata,
 			containerMetadata,
-			fakePool,
+			workerPool,
 			streamer,
 			delegateFactory,
 			defaultTaskTimeout,
@@ -250,15 +256,16 @@ var _ = Describe("TaskStep", func() {
 		stepOk, stepErr = taskStep.Run(ctx, state)
 	})
 
-	expectWorkerSpecTeamIDSet := func() {
-		Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(1))
-		_, _, _, workerSpec := fakePool.FindOrSelectWorkerArgsForCall(0)
-		Expect(workerSpec.TeamID).To(Equal(stepMetadata.TeamID))
-	}
-
 	Context("when the plan has a config", func() {
 		var chosenWorker *runtimetest.Worker
 		var chosenContainer *runtimetest.WorkerContainer
+		var globalWorker *runtimetest.Worker
+		var globalContainer *runtimetest.WorkerContainer
+
+		expectExactTeamWorkerRan := func() {
+			Expect(chosenContainer.RunningProcesses()).To(HaveLen(1))
+			Expect(globalContainer.RunningProcesses()).To(BeEmpty())
+		}
 
 		BeforeEach(func() {
 			taskPlan.Config = &atc.TaskConfig{
@@ -297,8 +304,31 @@ var _ = Describe("TaskStep", func() {
 					nil,
 				)
 			chosenContainer = chosenWorker.Containers[0]
-			fakePool = new(scriptedPool)
-			fakePool.FindOrSelectWorkerReturns(chosenWorker, nil)
+			globalWorker = runtimetest.NewWorker("global-worker").
+				WithContainer(
+					expectedOwner,
+					runtimetest.NewContainer().WithProcess(
+						runtime.ProcessSpec{
+							ID:   "task",
+							Path: "ls",
+							Args: []string{"some", "args"},
+							Dir:  "some-artifact-root",
+							TTY: &runtime.TTYSpec{
+								WindowSize: runtime.WindowSize{
+									Columns: 500,
+									Rows:    500,
+								},
+							},
+						},
+						runtimetest.ProcessStub{Attachable: true},
+					),
+					nil,
+				)
+			globalContainer = globalWorker.Containers[0]
+			workerSeeds = []runtimeWorkerSeed{
+				{Model: chosenWorker, Team: targetTeam},
+				{Model: globalWorker},
+			}
 		})
 
 		It("Task env includes atc external url and build identity", func() {
@@ -326,18 +356,6 @@ var _ = Describe("TaskStep", func() {
 		})
 
 		Describe("worker selection", func() {
-			var ctx context.Context
-
-			JustBeforeEach(func() {
-				Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(1))
-				ctx, _, _, _ = fakePool.FindOrSelectWorkerArgsForCall(0)
-			})
-
-			It("doesn't enforce a timeout", func() {
-				_, ok := ctx.Deadline()
-				Expect(ok).To(BeFalse())
-			})
-
 			It("emits a BeforeSelectWorker event", func() {
 				Expect(delegate.beforeSelectWorkerCount).To(Equal(1))
 			})
@@ -346,13 +364,19 @@ var _ = Describe("TaskStep", func() {
 				Expect(persistedSelectedWorkers(fixture, dbBuild)).To(Equal([]string{"worker"}))
 			})
 
+			It("runs on the exact-team worker and leaves the global worker idle", func() {
+				expectExactTeamWorkerRan()
+			})
+
 			Context("when selecting a worker fails", func() {
 				BeforeEach(func() {
-					fakePool.FindOrSelectWorkerReturns(nil, errors.New("nope"))
+					otherTeam, err := fixture.TeamFactory.CreateTeam(atc.Team{Name: "other-team"})
+					Expect(err).NotTo(HaveOccurred())
+					workerSeeds = []runtimeWorkerSeed{{Model: chosenWorker, Team: otherTeam}}
 				})
 
-				It("returns an err", func() {
-					Expect(stepErr).To(MatchError(ContainSubstring("nope")))
+				It("returns the no-compatible-worker error", func() {
+					Expect(stepErr).To(MatchError(worker.ErrNoWorkers))
 				})
 			})
 		})
@@ -1016,8 +1040,7 @@ var _ = Describe("TaskStep", func() {
 					Expect(chosenContainer.Spec.ImageSpec).To(Equal(runtime.ImageSpec{
 						ImageArtifact: imageVolume,
 					}))
-
-					expectWorkerSpecTeamIDSet()
+					expectExactTeamWorkerRan()
 				})
 
 				Describe("when task config specifies image and/or image resource as well as image artifact", func() {
@@ -1035,7 +1058,7 @@ var _ = Describe("TaskStep", func() {
 								Expect(chosenContainer.Spec.ImageSpec).To(Equal(runtime.ImageSpec{
 									ImageArtifact: imageVolume,
 								}))
-								expectWorkerSpecTeamIDSet()
+								expectExactTeamWorkerRan()
 							})
 						})
 
@@ -1053,7 +1076,7 @@ var _ = Describe("TaskStep", func() {
 								Expect(chosenContainer.Spec.ImageSpec).To(Equal(runtime.ImageSpec{
 									ImageArtifact: imageVolume,
 								}))
-								expectWorkerSpecTeamIDSet()
+								expectExactTeamWorkerRan()
 							})
 						})
 					})

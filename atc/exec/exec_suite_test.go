@@ -22,6 +22,7 @@ import (
 	"github.com/concourse/concourse/atc/exec"
 	"github.com/concourse/concourse/atc/postgresrunner"
 	"github.com/concourse/concourse/atc/runtime"
+	"github.com/concourse/concourse/atc/runtime/runtimetest"
 	"github.com/concourse/concourse/atc/util"
 	"github.com/concourse/concourse/atc/worker"
 )
@@ -77,6 +78,42 @@ func useExecDB() *execDBFixture {
 	}
 }
 
+type runtimeWorkerFactory map[string]runtime.Worker
+
+func (workers runtimeWorkerFactory) NewWorker(_ lager.Logger, dbWorker db.Worker) runtime.Worker {
+	runtimeWorker, found := workers[dbWorker.Name()]
+	Expect(found).To(BeTrue(), "runtime model for database worker %q", dbWorker.Name())
+	return runtimeWorker
+}
+
+type runtimeWorkerSeed struct {
+	Model *runtimetest.Worker
+	Team  db.Team // nil means a global worker
+}
+
+func saveRuntimeWorkerPool(fixture *execDBFixture, seeds ...runtimeWorkerSeed) worker.Pool {
+	GinkgoHelper()
+
+	runtimeWorkers := runtimeWorkerFactory{}
+	for _, seed := range seeds {
+		workerPayload := atc.Worker{Name: seed.Model.Name(), Platform: "linux"}
+		var err error
+		if seed.Team != nil {
+			_, err = seed.Team.SaveWorker(workerPayload, 0)
+		} else {
+			_, err = fixture.WorkerFactory.SaveWorker(workerPayload, 0)
+		}
+		Expect(err).NotTo(HaveOccurred())
+		runtimeWorkers[seed.Model.Name()] = seed.Model
+	}
+
+	return worker.NewPool(runtimeWorkers, worker.DB{
+		WorkerFactory: fixture.WorkerFactory,
+		TeamFactory:   fixture.TeamFactory,
+		VolumeRepo:    db.NewVolumeRepository(fixture.Conn),
+	})
+}
+
 // execLockFactory opens its own set of singleton connections, so two factories
 // built by it contend for advisory locks across genuinely separate sessions.
 func execLockFactory() lock.LockFactory {
@@ -95,13 +132,6 @@ func execLockFactory() lock.LockFactory {
 		func(lager.Logger, lock.LockID) {},
 		func(lager.Logger, lock.LockID) {},
 	)
-}
-
-func closedExecCloneConn() db.DbConn {
-	GinkgoHelper()
-	conn := execPostgresRunner.OpenConn()
-	Expect(conn.Close()).To(Succeed())
-	return conn
 }
 
 func createExecJobBuild(

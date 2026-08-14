@@ -186,6 +186,7 @@ var _ = Describe("CheckStep", func() {
 		resourceConfigScope   db.ResourceConfigScope
 		realBuild             db.Build
 		realPipeline          db.Pipeline
+		targetTeam            db.Team
 		delegate              *recordingCheckDelegate
 		delegateFactory       exec.CheckDelegateFactory
 		defaultTimeout        time.Duration = 0
@@ -197,9 +198,12 @@ var _ = Describe("CheckStep", func() {
 		stepper      exec.Stepper
 		imageStepper *imageFetchStepper
 
-		fakePool        *scriptedPool
+		workerPool      exec.Pool
+		workerSeeds     []runtimeWorkerSeed
 		chosenWorker    *runtimetest.Worker
 		chosenContainer *runtimetest.WorkerContainer
+		globalWorker    *runtimetest.Worker
+		globalContainer *runtimetest.WorkerContainer
 
 		stepMetadata      exec.StepMetadata
 		checkStep         exec.Step
@@ -217,7 +221,7 @@ var _ = Describe("CheckStep", func() {
 	BeforeEach(func() {
 		ctx, cancel = context.WithCancel(context.Background())
 		fixture = useExecDB()
-		currentTeam, pipeline, _, build := createExecJobBuild(
+		team, pipeline, _, build := createExecJobBuild(
 			fixture,
 			"some-team",
 			atc.PipelineRef{Name: "some-pipeline"},
@@ -236,6 +240,7 @@ var _ = Describe("CheckStep", func() {
 			},
 			"some-user",
 		)
+		targetTeam = team
 		realBuild = build
 		realPipeline = pipeline
 		resourceConfigFactory = fixture.ResourceConfigFactory
@@ -285,7 +290,7 @@ var _ = Describe("CheckStep", func() {
 		})
 
 		stepMetadata = exec.StepMetadata{
-			TeamID:  currentTeam.ID(),
+			TeamID:  targetTeam.ID(),
 			BuildID: realBuild.ID(),
 		}
 		expectedOwner = db.NewBuildStepContainerOwner(stepMetadata.BuildID, planID, stepMetadata.TeamID)
@@ -302,8 +307,22 @@ var _ = Describe("CheckStep", func() {
 				nil,
 			)
 		chosenContainer = chosenWorker.Containers[0]
-		fakePool = new(scriptedPool)
-		fakePool.FindOrSelectWorkerReturns(chosenWorker, nil)
+		globalWorker = runtimetest.NewWorker("global-worker").
+			WithContainer(
+				expectedOwner,
+				runtimetest.NewContainer().WithProcess(
+					runtime.ProcessSpec{
+						Path: "/opt/resource/check",
+					},
+					runtimetest.ProcessStub{},
+				),
+				nil,
+			)
+		globalContainer = globalWorker.Containers[0]
+		workerSeeds = []runtimeWorkerSeed{
+			{Model: chosenWorker, Team: targetTeam},
+			{Model: globalWorker},
+		}
 
 		containerMetadata = db.ContainerMetadata{}
 
@@ -327,13 +346,14 @@ var _ = Describe("CheckStep", func() {
 	})
 
 	JustBeforeEach(func() {
+		workerPool = saveRuntimeWorkerPool(fixture, workerSeeds...)
 		checkStep = exec.NewCheckStep(
 			planID,
 			checkPlan,
 			stepMetadata,
 			resourceConfigFactory,
 			containerMetadata,
-			fakePool,
+			workerPool,
 			delegateFactory,
 			defaultTimeout,
 			checkStepOpts...,
@@ -419,25 +439,8 @@ var _ = Describe("CheckStep", func() {
 			})
 
 			Describe("worker selection", func() {
-				var ctx context.Context
-				var workerSpec worker.Spec
-
-				JustBeforeEach(func() {
-					Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(1))
-					ctx, _, _, workerSpec = fakePool.FindOrSelectWorkerArgsForCall(0)
-				})
-
 				It("get container owner from delegate", func() {
 					Expect(delegate.containerOwnerCount).To(Equal(1))
-				})
-
-				It("doesn't enforce a timeout", func() {
-					_, ok := ctx.Deadline()
-					Expect(ok).To(BeFalse())
-				})
-
-				It("calls SelectWorker with the correct WorkerSpec", func() {
-					Expect(workerSpec.TeamID).To(Equal(stepMetadata.TeamID))
 				})
 
 				It("emits a BeforeSelectWorker event", func() {
@@ -448,13 +451,32 @@ var _ = Describe("CheckStep", func() {
 					Expect(persistedSelectedWorkers(fixture, realBuild)).To(Equal([]string{"worker"}))
 				})
 
+				Context("when an exact-team worker and a global worker are available", func() {
+					It("runs on the exact-team worker", func() {
+						Expect(chosenContainer.RunningProcesses()).To(HaveLen(1))
+						Expect(globalContainer.RunningProcesses()).To(BeEmpty())
+
+						databaseWorker, found, err := fixture.WorkerFactory.GetWorker(chosenWorker.Name())
+						Expect(err).NotTo(HaveOccurred())
+						Expect(found).To(BeTrue())
+						Expect(databaseWorker.TeamID()).To(Equal(targetTeam.ID()))
+
+						databaseGlobalWorker, found, err := fixture.WorkerFactory.GetWorker(globalWorker.Name())
+						Expect(err).NotTo(HaveOccurred())
+						Expect(found).To(BeTrue())
+						Expect(databaseGlobalWorker.TeamID()).To(BeZero())
+					})
+				})
+
 				Context("when selecting a worker fails", func() {
 					BeforeEach(func() {
-						fakePool.FindOrSelectWorkerReturns(nil, errors.New("nope"))
+						otherTeam, err := fixture.TeamFactory.CreateTeam(atc.Team{Name: "other-team"})
+						Expect(err).NotTo(HaveOccurred())
+						workerSeeds = []runtimeWorkerSeed{{Model: chosenWorker, Team: otherTeam}}
 					})
 
-					It("returns an err", func() {
-						Expect(stepErr).To(MatchError(ContainSubstring("nope")))
+					It("returns the no-compatible-worker error", func() {
+						Expect(errors.Is(stepErr, worker.ErrNoWorkers)).To(BeTrue())
 					})
 				})
 			})
@@ -1090,8 +1112,20 @@ var _ = Describe("CheckStep", func() {
 					Path:   "/v2/my-project/my-image/manifests/latest",
 				}))
 
-				// Should NOT have selected a worker or created a container.
-				Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(0))
+				Expect(chosenContainer.RunningProcesses()).To(BeEmpty())
+				Expect(globalContainer.RunningProcesses()).To(BeEmpty())
+				Expect(persistedSelectedWorkers(fixture, realBuild)).To(BeEmpty())
+
+				var containerCount, volumeCount, artifactCount int
+				Expect(fixture.Conn.QueryRow(`
+					SELECT
+						(SELECT COUNT(*) FROM containers),
+						(SELECT COUNT(*) FROM volumes),
+						(SELECT COUNT(*) FROM worker_artifacts)
+				`).Scan(&containerCount, &volumeCount, &artifactCount)).To(Succeed())
+				Expect(containerCount).To(BeZero())
+				Expect(volumeCount).To(BeZero())
+				Expect(artifactCount).To(BeZero())
 			})
 
 			It("saves the resolved version", func() {
@@ -1175,8 +1209,8 @@ var _ = Describe("CheckStep", func() {
 
 			It("falls back to container-based check", func() {
 				Expect(checkStepHeadRequests(registry)).To(BeEmpty())
-				// A worker should be selected for the container check.
-				Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(1))
+				Expect(chosenContainer.RunningProcesses()).To(HaveLen(1))
+				Expect(globalContainer.RunningProcesses()).To(BeEmpty())
 			})
 		})
 	})

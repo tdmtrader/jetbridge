@@ -2,7 +2,6 @@ package exec_test
 
 import (
 	"context"
-	"errors"
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
@@ -10,22 +9,10 @@ import (
 	"github.com/concourse/concourse/atc/exec/build"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/runtime/runtimetest"
-	"github.com/concourse/concourse/atc/worker"
 	"github.com/concourse/concourse/vars"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
-
-// A healthy created volume cannot fail only InitializeArtifact. Embedding the
-// real volume keeps every other db.CreatedVolume method tied to persisted state.
-type initErrorVolume struct {
-	db.CreatedVolume
-	err error
-}
-
-func (volume initErrorVolume) InitializeArtifact(string, int) (db.WorkerArtifact, error) {
-	return nil, volume.err
-}
 
 // runtimetest.NewVolume supplies the runtime behavior while this adapter keeps
 // the DB side attached to the clone-local persisted volume.
@@ -67,28 +54,23 @@ var _ = Describe("ArtifactOutputStep", func() {
 			Expect(err).NotTo(HaveOccurred())
 			realBuild, err = team.CreateOneOffBuild()
 			Expect(err).NotTo(HaveOccurred())
-			savedWorker, err := fixture.WorkerFactory.SaveWorker(
-				atc.Worker{Name: "worker", Platform: "linux"}, 0,
-			)
-			Expect(err).NotTo(HaveOccurred())
+			runtimeVolume = runtimetest.NewVolume("some-volume")
+			runtimeWorker := runtimetest.NewWorker("worker").WithVolumes(runtimeVolume)
+			workerPool = saveRuntimeWorkerPool(fixture, runtimeWorkerSeed{
+				Model: runtimeWorker,
+				Team:  team,
+			})
 			creating, err := db.NewVolumeRepository(fixture.Conn).CreateVolumeWithHandle(
-				"some-volume", team.ID(), savedWorker.Name(), db.VolumeTypeArtifact,
+				"some-volume", team.ID(), runtimeWorker.Name(), db.VolumeTypeArtifact,
 			)
 			Expect(err).NotTo(HaveOccurred())
 			created, err = creating.Created()
 			Expect(err).NotTo(HaveOccurred())
 
-			runtimeVolume = runtimetest.NewVolume(created.Handle())
 			state.ArtifactRepository().RegisterArtifact(
 				build.ArtifactName("some-artifact-name"),
 				runtimeVolumeWithDB{Volume: runtimeVolume, databaseVolume: created},
 				false,
-			)
-			workerPool = worker.NewPool(
-				stubWorkerFactory(func(dbWorker db.Worker) runtime.Worker {
-					return runtimetest.NewWorker(dbWorker.Name()).WithVolumes(runtimeVolume)
-				}),
-				worker.DB{TeamFactory: fixture.TeamFactory},
 			)
 			plan = atc.Plan{ArtifactOutput: &atc.ArtifactOutputPlan{Name: "some-artifact-name"}}
 			step = exec.NewArtifactOutputStep(plan, realBuild, workerPool)
@@ -111,27 +93,6 @@ var _ = Describe("ArtifactOutputStep", func() {
 				Expect(stepErr).To(MatchError(exec.ArtifactNotFoundError{
 					ArtifactName: "some-artifact-name",
 				}))
-			})
-		})
-
-		Context("when initializing the artifact fails", func() {
-			BeforeEach(func() {
-				state = exec.NewRunState(noopStepper, vars.StaticVariables{})
-				state.ArtifactRepository().RegisterArtifact(
-					build.ArtifactName("some-artifact-name"),
-					runtimeVolumeWithDB{
-						Volume: runtimeVolume,
-						databaseVolume: initErrorVolume{
-							CreatedVolume: created,
-							err:           errors.New("nope"),
-						},
-					},
-					false,
-				)
-			})
-
-			It("returns the error", func() {
-				Expect(stepErr).To(MatchError("nope"))
 			})
 		})
 

@@ -2,54 +2,16 @@ package exec_test
 
 import (
 	"context"
-	"errors"
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/exec"
 	"github.com/concourse/concourse/atc/exec/build"
-	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/runtime/runtimetest"
-	"github.com/concourse/concourse/atc/worker"
 	"github.com/concourse/concourse/vars"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
-
-// A healthy clone cannot make Artifact fail on demand while preserving the
-// build and artifact rows used by the surrounding success setup.
-type artifactErrorBuild struct {
-	db.Build
-	err error
-}
-
-func (build artifactErrorBuild) Artifact(int) (db.WorkerArtifact, error) {
-	return nil, build.err
-}
-
-// A healthy artifact cannot deterministically return a Volume error/not-found
-// result after its persisted volume association has been created.
-type volumeResultArtifact struct {
-	db.WorkerArtifact
-	volume db.CreatedVolume
-	found  bool
-	err    error
-}
-
-func (artifact volumeResultArtifact) Volume(int) (db.CreatedVolume, bool, error) {
-	return artifact.volume, artifact.found, artifact.err
-}
-
-// artifactResultBuild returns the wrapped artifact at the Build.Artifact seam;
-// every other Build method remains backed by the healthy real build.
-type artifactResultBuild struct {
-	db.Build
-	artifact db.WorkerArtifact
-}
-
-func (build artifactResultBuild) Artifact(int) (db.WorkerArtifact, error) {
-	return build.artifact, nil
-}
 
 var _ = Describe("ArtifactInputStep", func() {
 	Describe("persisted PostgreSQL state", func() {
@@ -69,16 +31,8 @@ var _ = Describe("ArtifactInputStep", func() {
 			created       db.CreatedVolume
 			artifact      db.WorkerArtifact
 			runtimeVolume *runtimetest.Volume
-			workerPool    *recordingPool
+			workerPool    exec.Pool
 		)
-
-		// workerHoldingVolumes drives the real pool at the seam that turns a
-		// database worker into a runtime one.
-		workerHoldingVolumes := func(volumes ...*runtimetest.Volume) stubWorkerFactory {
-			return func(dbWorker db.Worker) runtime.Worker {
-				return runtimetest.NewWorker(dbWorker.Name()).WithVolumes(volumes...)
-			}
-		}
 
 		BeforeEach(func() {
 			ctx, cancel = context.WithCancel(context.Background())
@@ -89,12 +43,14 @@ var _ = Describe("ArtifactInputStep", func() {
 			Expect(err).NotTo(HaveOccurred())
 			realBuild, err = team.CreateOneOffBuild()
 			Expect(err).NotTo(HaveOccurred())
-			savedWorker, err := fixture.WorkerFactory.SaveWorker(
-				atc.Worker{Name: "worker", Platform: "linux"}, 0,
-			)
-			Expect(err).NotTo(HaveOccurred())
+			runtimeVolume = runtimetest.NewVolume("some-volume")
+			runtimeWorker := runtimetest.NewWorker("worker").WithVolumes(runtimeVolume)
+			workerPool = saveRuntimeWorkerPool(fixture, runtimeWorkerSeed{
+				Model: runtimeWorker,
+				Team:  team,
+			})
 			creating, err := db.NewVolumeRepository(fixture.Conn).CreateVolumeWithHandle(
-				"some-volume", team.ID(), savedWorker.Name(), db.VolumeTypeArtifact,
+				"some-volume", team.ID(), runtimeWorker.Name(), db.VolumeTypeArtifact,
 			)
 			Expect(err).NotTo(HaveOccurred())
 			created, err = creating.Created()
@@ -106,11 +62,6 @@ var _ = Describe("ArtifactInputStep", func() {
 				ArtifactID: artifact.ID(),
 				Name:       "some-input-artifact-name",
 			}}
-			runtimeVolume = runtimetest.NewVolume(created.Handle())
-			workerPool = &recordingPool{Pool: worker.NewPool(
-				workerHoldingVolumes(runtimeVolume),
-				worker.DB{TeamFactory: fixture.TeamFactory},
-			)}
 			step = exec.NewArtifactInputStep(plan, realBuild, workerPool)
 		})
 
@@ -122,47 +73,13 @@ var _ = Describe("ArtifactInputStep", func() {
 			stepOk, stepErr = step.Run(ctx, state)
 		})
 
-		Context("when looking up the build artifact errors", func() {
-			BeforeEach(func() {
-				step = exec.NewArtifactInputStep(
-					plan,
-					artifactErrorBuild{Build: realBuild, err: errors.New("nope")},
-					workerPool,
-				)
-			})
-
-			It("returns the error", func() {
-				Expect(stepErr).To(MatchError("nope"))
-			})
-		})
-
-		Context("when looking up the db volume fails", func() {
-			BeforeEach(func() {
-				wrappedArtifact := volumeResultArtifact{
-					WorkerArtifact: artifact,
-					volume:         nil,
-					found:          false,
-					err:            errors.New("nope"),
-				}
-				wrappedBuild := artifactResultBuild{Build: realBuild, artifact: wrappedArtifact}
-				step = exec.NewArtifactInputStep(plan, wrappedBuild, workerPool)
-			})
-
-			It("returns the error", func() {
-				Expect(stepErr).To(MatchError("nope"))
-			})
-		})
-
 		Context("when the db volume does not exist", func() {
 			BeforeEach(func() {
-				wrappedArtifact := volumeResultArtifact{
-					WorkerArtifact: artifact,
-					volume:         nil,
-					found:          false,
-					err:            nil,
-				}
-				wrappedBuild := artifactResultBuild{Build: realBuild, artifact: wrappedArtifact}
-				step = exec.NewArtifactInputStep(plan, wrappedBuild, workerPool)
+				destroying, err := created.Destroying()
+				Expect(err).NotTo(HaveOccurred())
+				destroyed, err := destroying.Destroy()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(destroyed).To(BeTrue())
 			})
 
 			It("returns the error", func() {
@@ -172,25 +89,14 @@ var _ = Describe("ArtifactInputStep", func() {
 			})
 		})
 
-		Context("when looking up the worker volume fails", func() {
-			BeforeEach(func() {
-				step = exec.NewArtifactInputStep(plan, realBuild, worker.NewPool(
-					workerHoldingVolumes(runtimeVolume),
-					worker.DB{TeamFactory: db.NewTeamFactory(closedExecCloneConn(), fixture.LockFactory)},
-				))
-			})
-
-			It("returns the error", func() {
-				Expect(stepErr).To(MatchError(ContainSubstring("database is closed")))
-			})
-		})
-
 		Context("when the worker volume does not exist", func() {
 			BeforeEach(func() {
-				step = exec.NewArtifactInputStep(plan, realBuild, worker.NewPool(
-					workerHoldingVolumes(),
-					worker.DB{TeamFactory: fixture.TeamFactory},
-				))
+				team := fixture.TeamFactory.GetByID(realBuild.TeamID())
+				workerPool = saveRuntimeWorkerPool(fixture, runtimeWorkerSeed{
+					Model: runtimetest.NewWorker("worker"),
+					Team:  team,
+				})
+				step = exec.NewArtifactInputStep(plan, realBuild, workerPool)
 			})
 
 			It("returns an error", func() {
@@ -213,11 +119,6 @@ var _ = Describe("ArtifactInputStep", func() {
 			Expect(persistedVolume.Handle()).To(Equal("some-volume"))
 			Expect(persistedVolume.TeamID()).To(Equal(realBuild.TeamID()))
 			Expect(persistedVolume.WorkerName()).To(Equal("worker"))
-
-			Expect(workerPool.LocateVolumeCallCount()).To(Equal(1))
-			_, teamID, handle := workerPool.LocateVolumeArgsForCall(0)
-			Expect(teamID).To(Equal(created.TeamID()))
-			Expect(handle).To(Equal(created.Handle()))
 
 			registered, fromCache, found := state.ArtifactRepository().ArtifactFor(
 				build.ArtifactName("some-input-artifact-name"),

@@ -133,12 +133,18 @@ var _ = Describe("GetStep", func() {
 		ctx    context.Context
 		cancel func()
 
-		fakePool        *scriptedPool
+		workerPool      exec.Pool
+		workerSeeds     []runtimeWorkerSeed
+		workerPoolReady bool
+		artifactless    bool
 		chosenWorker    *runtimetest.Worker
 		chosenContainer *runtimetest.WorkerContainer
+		globalWorker    *runtimetest.Worker
+		globalContainer *runtimetest.WorkerContainer
 		getVolume       *runtimetest.Volume
 
 		fixture              *execDBFixture
+		targetTeam           db.Team
 		realBuild            db.Build
 		resourceCacheFactory db.ResourceCacheFactory
 		loadOwnedCache       func() db.ResourceCache
@@ -178,9 +184,8 @@ var _ = Describe("GetStep", func() {
 	BeforeEach(func() {
 		ctx, cancel = context.WithCancel(context.Background())
 		fixture = useExecDB()
-		var realTeam db.Team
 		var realPipeline db.Pipeline
-		realTeam, realPipeline, _, realBuild = createExecJobBuild(
+		targetTeam, realPipeline, _, realBuild = createExecJobBuild(
 			fixture,
 			"some-team",
 			atc.PipelineRef{Name: "some-pipeline"},
@@ -191,8 +196,8 @@ var _ = Describe("GetStep", func() {
 			"some-user",
 		)
 		stepMetadata = exec.StepMetadata{
-			TeamID:       realTeam.ID(),
-			TeamName:     realTeam.Name(),
+			TeamID:       targetTeam.ID(),
+			TeamName:     targetTeam.Name(),
 			BuildID:      realBuild.ID(),
 			BuildName:    realBuild.Name(),
 			PipelineID:   realPipeline.ID(),
@@ -235,9 +240,30 @@ var _ = Describe("GetStep", func() {
 				MountPath: resource.ResourcesDir("get"),
 			},
 		}
-
-		fakePool = new(scriptedPool)
-		fakePool.FindOrSelectWorkerReturns(chosenWorker, nil)
+		globalWorker = runtimetest.NewWorker("global-worker").
+			WithContainer(
+				expectedOwner,
+				runtimetest.NewContainer().WithProcess(
+					runtime.ProcessSpec{
+						ID:   "resource",
+						Path: "/opt/resource/in",
+						Args: []string{resource.ResourcesDir("get")},
+					},
+					runtimetest.ProcessStub{},
+				),
+				nil,
+			)
+		globalContainer = globalWorker.Containers[0]
+		globalContainer.Mounts = []runtime.VolumeMount{{
+			Volume:    runtimetest.NewVolume("global-get-volume"),
+			MountPath: resource.ResourcesDir("get"),
+		}}
+		workerSeeds = []runtimeWorkerSeed{
+			{Model: chosenWorker, Team: targetTeam},
+			{Model: globalWorker},
+		}
+		workerPoolReady = false
+		artifactless = false
 
 		lockFactory = &recordingLockFactory{LockFactory: fixture.LockFactory}
 
@@ -277,6 +303,21 @@ var _ = Describe("GetStep", func() {
 	})
 
 	JustBeforeEach(func() {
+		if !workerPoolReady {
+			workerPool = saveRuntimeWorkerPool(fixture, workerSeeds...)
+		}
+		if artifactless {
+			runtimeWorkers := runtimeWorkerFactory{
+				chosenWorker.Name(): artifactlessWorker{Worker: chosenWorker},
+				globalWorker.Name(): globalWorker,
+			}
+			workerPool = worker.NewPool(runtimeWorkers, worker.DB{
+				WorkerFactory: fixture.WorkerFactory,
+				TeamFactory:   fixture.TeamFactory,
+				VolumeRepo:    db.NewVolumeRepository(fixture.Conn),
+			})
+		}
+
 		plan := atc.Plan{
 			ID:  atc.PlanID(planID),
 			Get: getPlan,
@@ -290,7 +331,7 @@ var _ = Describe("GetStep", func() {
 			lockFactory,
 			resourceCacheFactory,
 			delegateFactory,
-			fakePool,
+			workerPool,
 			defaultGetTimeout,
 		)
 
@@ -423,11 +464,6 @@ var _ = Describe("GetStep", func() {
 			exec.GetResourceLockInterval = 10 * time.Millisecond
 		})
 
-		AfterEach(func() {
-			// always select a worker
-			Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(1))
-		})
-
 		Context("when the cache is present on the selected worker", func() {
 			var (
 				cacheVolume *runtimetest.Volume
@@ -438,7 +474,6 @@ var _ = Describe("GetStep", func() {
 				chosenContainer.ProcessDefs[0].Stub.Err = "should not run"
 
 				cacheVolume = runtimetest.NewVolume("cache-volume")
-				fakePool.FindResourceCacheVolumeOnWorkerReturns(cacheVolume, true, nil)
 				var err error
 				cached, err = fixture.ResourceCacheFactory.FindOrCreateResourceCache(
 					db.ForBuild(realBuild.ID()),
@@ -453,6 +488,32 @@ var _ = Describe("GetStep", func() {
 					cached,
 					atc.Metadata{{Name: "some", Value: "metadata"}},
 				)).To(Succeed())
+
+				chosenWorker = chosenWorker.WithVolumes(cacheVolume)
+				workerSeeds[0].Model = chosenWorker
+				workerPool = saveRuntimeWorkerPool(fixture, workerSeeds...)
+				workerPoolReady = true
+
+				_, err = targetTeam.SaveWorker(atc.Worker{
+					Name:     chosenWorker.Name(),
+					Platform: "linux",
+					ResourceTypes: []atc.WorkerResourceType{{
+						Type:    "some-base-type",
+						Image:   "some-base-type-image",
+						Version: "some-base-type-version",
+					}},
+				}, 0)
+				Expect(err).NotTo(HaveOccurred())
+
+				creating, err := db.NewVolumeRepository(fixture.Conn).CreateVolumeWithHandle(
+					cacheVolume.Handle(), targetTeam.ID(), chosenWorker.Name(), db.VolumeTypeResource,
+				)
+				Expect(err).NotTo(HaveOccurred())
+				created, err := creating.Created()
+				Expect(err).NotTo(HaveOccurred())
+				workerResourceCache, err := created.InitializeResourceCache(cached)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(workerResourceCache).NotTo(BeNil())
 			})
 
 			It("succeeds", func() {
@@ -475,11 +536,15 @@ var _ = Describe("GetStep", func() {
 				Expect(metadata).To(Equal(db.ResourceConfigMetadataFields{{Name: "some", Value: "metadata"}}))
 			})
 
-			It("looks the cache up by the persisted row on the selected worker", func() {
-				Expect(fakePool.FindResourceCacheVolumeOnWorkerCallCount()).To(Equal(1))
-				_, resourceCache, _, workerName, _ := fakePool.FindResourceCacheVolumeOnWorkerArgsForCall(0)
-				Expect(resourceCache.ID()).To(Equal(cached.ID()))
-				Expect(workerName).To(Equal(chosenWorker.Name()))
+			It("uses the matching persisted and runtime cache volume on the selected worker", func() {
+				persistedVolume, found, err := db.NewVolumeRepository(fixture.Conn).
+					FindResourceCacheVolume(chosenWorker.Name(), cached, realBuild.StartTime())
+				Expect(err).NotTo(HaveOccurred())
+				Expect(found).To(BeTrue())
+				Expect(persistedVolume.Handle()).To(Equal(cacheVolume.Handle()))
+				Expect(persistedVolume.WorkerName()).To(Equal(chosenWorker.Name()))
+				Expect(chosenContainer.RunningProcesses()).To(BeEmpty())
+				Expect(globalContainer.RunningProcesses()).To(BeEmpty())
 			})
 
 			It("[GS-04] registers the cached artifact with fromCache=true", func() {
@@ -552,19 +617,6 @@ var _ = Describe("GetStep", func() {
 	})
 
 	Describe("worker selection", func() {
-		var ctx context.Context
-		var workerSpec worker.Spec
-
-		JustBeforeEach(func() {
-			Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(1))
-			ctx, _, _, workerSpec = fakePool.FindOrSelectWorkerArgsForCall(0)
-		})
-
-		It("doesn't enforce a timeout", func() {
-			_, ok := ctx.Deadline()
-			Expect(ok).To(BeFalse())
-		})
-
 		It("get resource cache owner from delegate", func() {
 			Expect(delegate.callCount("ResourceCacheUser")).To(Equal(1))
 		})
@@ -577,25 +629,24 @@ var _ = Describe("GetStep", func() {
 			Expect(delegate.callCount("BeforeSelectWorker")).To(Equal(1))
 		})
 
-		It("calls SelectWorker with the correct WorkerSpec", func() {
-			Expect(workerSpec).To(Equal(
-				worker.Spec{
-					TeamID: stepMetadata.TeamID,
-				},
-			))
-		})
-
 		It("emits a SelectedWorker event", func() {
 			Expect(persistedSelectedWorkers(fixture, realBuild)).To(Equal([]string{"worker"}))
 		})
 
+		It("runs on the exact-team worker and leaves the global worker idle", func() {
+			Expect(chosenContainer.RunningProcesses()).To(HaveLen(1))
+			Expect(globalContainer.RunningProcesses()).To(BeEmpty())
+		})
+
 		Context("when selecting a worker fails", func() {
 			BeforeEach(func() {
-				fakePool.FindOrSelectWorkerReturns(nil, errors.New("nope"))
+				otherTeam, err := fixture.TeamFactory.CreateTeam(atc.Team{Name: "other-team"})
+				Expect(err).NotTo(HaveOccurred())
+				workerSeeds = []runtimeWorkerSeed{{Model: chosenWorker, Team: otherTeam}}
 			})
 
-			It("returns an err", func() {
-				Expect(stepErr).To(MatchError(ContainSubstring("nope")))
+			It("returns the no-compatible-worker error", func() {
+				Expect(stepErr).To(MatchError(worker.ErrNoWorkers))
 			})
 		})
 	})
@@ -724,15 +775,9 @@ var _ = Describe("GetStep", func() {
 			Expect(chosenContainer.Spec.ImageSpec.Privileged).To(BeFalse())
 		})
 
-		It("sets the worker spec with teamID", func() {
-			Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(1))
-			_, _, _, workerSpec := fakePool.FindOrSelectWorkerArgsForCall(0)
-
-			Expect(workerSpec).To(Equal(
-				worker.Spec{
-					TeamID: stepMetadata.TeamID,
-				},
-			))
+		It("runs the custom resource type on the exact-team worker", func() {
+			Expect(chosenContainer.RunningProcesses()).To(HaveLen(1))
+			Expect(globalContainer.RunningProcesses()).To(BeEmpty())
 		})
 
 		It("runs with the correct ImageSpec", func() {
@@ -919,7 +964,8 @@ var _ = Describe("GetStep", func() {
 			It("performs the full get step (selects a worker and creates a container)", func() {
 				Expect(stepErr).ToNot(HaveOccurred())
 				Expect(stepOk).To(BeTrue())
-				Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(1))
+				Expect(chosenContainer.RunningProcesses()).To(HaveLen(1))
+				Expect(globalContainer.RunningProcesses()).To(BeEmpty())
 			})
 
 			It("stores a GetResult in the run state", func() {
@@ -958,7 +1004,8 @@ var _ = Describe("GetStep", func() {
 			})
 
 			It("still runs the full get step", func() {
-				Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(1))
+				Expect(chosenContainer.RunningProcesses()).To(HaveLen(1))
+				Expect(globalContainer.RunningProcesses()).To(BeEmpty())
 			})
 
 			It("does not register an image ref (no repository in source)", func() {
@@ -976,7 +1023,8 @@ var _ = Describe("GetStep", func() {
 			})
 
 			It("still runs the full get step", func() {
-				Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(1))
+				Expect(chosenContainer.RunningProcesses()).To(HaveLen(1))
+				Expect(globalContainer.RunningProcesses()).To(BeEmpty())
 			})
 		})
 
@@ -1023,7 +1071,20 @@ var _ = Describe("GetStep", func() {
 		It("does not select a worker or create a container", func() {
 			Expect(stepErr).ToNot(HaveOccurred())
 			Expect(stepOk).To(BeTrue())
-			Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(0))
+			Expect(chosenContainer.RunningProcesses()).To(BeEmpty())
+			Expect(globalContainer.RunningProcesses()).To(BeEmpty())
+			Expect(persistedSelectedWorkers(fixture, realBuild)).To(BeEmpty())
+
+			var containerCount, volumeCount, artifactCount int
+			Expect(fixture.Conn.QueryRow(`
+				SELECT
+					(SELECT COUNT(*) FROM containers),
+					(SELECT COUNT(*) FROM volumes),
+					(SELECT COUNT(*) FROM worker_artifacts)
+			`).Scan(&containerCount, &volumeCount, &artifactCount)).To(Succeed())
+			Expect(containerCount).To(BeZero())
+			Expect(volumeCount).To(BeZero())
+			Expect(artifactCount).To(BeZero())
 		})
 
 		It("registers a nil artifact", func() {
@@ -1057,7 +1118,7 @@ var _ = Describe("GetStep", func() {
 				Version:  atc.Version{"some": "version"},
 				Metadata: atc.Metadata{{Name: "some", Value: "metadata"}},
 			}
-			fakePool.FindOrSelectWorkerReturns(artifactlessWorker{Worker: chosenWorker}, nil)
+			artifactless = true
 		})
 
 		It("errors instead of reporting a successful get", func() {
