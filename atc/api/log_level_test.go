@@ -32,13 +32,9 @@ var _ = Describe("Log Level API", func() {
 		})
 
 		Context("when authenticated", func() {
-			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
-			})
-
 			Context("is admin", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAdminReturns(true)
+					useProfile(adminProfile)
 				})
 
 				for x, y := range map[atc.LogLevel]lager.LogLevel{
@@ -92,6 +88,10 @@ var _ = Describe("Log Level API", func() {
 			})
 
 			Context("is not admin", func() {
+				BeforeEach(func() {
+					useProfile(memberProfile)
+				})
+
 				It("return 403 Forbidden", func() {
 					Expect(response.StatusCode).To(Equal(http.StatusForbidden))
 				})
@@ -101,7 +101,7 @@ var _ = Describe("Log Level API", func() {
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				useProfile(anonymousProfile)
 			})
 
 			It("returns 401", func() {

@@ -29,9 +29,13 @@ import (
 	. "github.com/onsi/gomega/gstruct"
 )
 
-var _ = Describe("Pipelines API", func() {
+var _ = Describe("Info API", func() {
 	Describe("GET /api/v1/info", func() {
 		var response *http.Response
+
+		BeforeEach(func() {
+			useProfile(anonymousProfile)
+		})
 
 		JustBeforeEach(func() {
 			var err error
@@ -70,6 +74,10 @@ var _ = Describe("Pipelines API", func() {
 			body       []byte
 		)
 
+		BeforeEach(func() {
+			useProfile(adminProfile)
+		})
+
 		JustBeforeEach(func() {
 			req, err := http.NewRequest("GET", server.URL+"/api/v1/info/creds", nil)
 			Expect(err).NotTo(HaveOccurred())
@@ -93,9 +101,6 @@ var _ = Describe("Pipelines API", func() {
 
 			BeforeEach(func() {
 				awsSSM = startStubAWSSSM()
-
-				fakeAccess.IsAuthenticatedReturns(true)
-				fakeAccess.IsAdminReturns(true)
 
 				ssmAccess := ssm.NewSsm(lager.NewLogger("ssm_test"), awsSSM.client, nil, "")
 				ssmManager := &ssm.SsmManager{
@@ -160,9 +165,6 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("vault", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
-				fakeAccess.IsAdminReturns(true)
-
 				authConfig := vault.AuthConfig{
 					Backend:       "backend-server",
 					BackendMaxTTL: 20,
@@ -289,9 +291,6 @@ var _ = Describe("Pipelines API", func() {
 			)
 
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
-				fakeAccess.IsAdminReturns(true)
-
 				tls = credhub.TLS{
 					CACerts: []string{},
 				}
@@ -391,9 +390,6 @@ var _ = Describe("Pipelines API", func() {
 
 			BeforeEach(func() {
 				secretsManagerAPI = &stubSecretsManagerAPI{}
-
-				fakeAccess.IsAuthenticatedReturns(true)
-				fakeAccess.IsAdminReturns(true)
 
 				secretsManagerAccess := secretsmanager.NewSecretsManager(lager.NewLogger("ssm_test"), secretsManagerAPI, nil)
 

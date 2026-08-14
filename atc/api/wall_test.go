@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"time"
 
 	"github.com/concourse/concourse/atc"
@@ -19,16 +18,16 @@ var _ = Describe("Wall API", func() {
 	var (
 		response *http.Response
 		realdb   *realDB
-		server   *httptest.Server
 	)
 
 	BeforeEach(func() {
 		realdb = useRealDB()
-		server = realdb.Serve()
 	})
 
 	Context("Gets a wall message", func() {
 		BeforeEach(func() {
+			useProfile(anonymousProfile)
+
 			// A real banner row, set through the same Wall the handler reads.
 			Expect(realdb.Deps.wall.SetWall(atc.Wall{Message: "test message"})).To(Succeed())
 		})
@@ -106,13 +105,9 @@ var _ = Describe("Wall API", func() {
 		})
 
 		Context("when authenticated", func() {
-			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
-			})
-
 			Context("and is admin", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAdminReturns(true)
+					useProfile(adminProfile)
 				})
 
 				It("returns 200", func() {
@@ -150,22 +145,30 @@ var _ = Describe("Wall API", func() {
 
 			Context("and is not admin", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAdminReturns(false)
+					useProfile(memberProfile)
 				})
 
 				It("returns 403", func() {
 					Expect(response.StatusCode).To(Equal(http.StatusForbidden))
+
+					stored, err := realdb.Deps.wall.GetWall()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(stored.Message).To(BeEmpty())
 				})
 			})
 		})
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				useProfile(anonymousProfile)
 			})
 
 			It("returns 401", func() {
 				Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
+
+				stored, err := realdb.Deps.wall.GetWall()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(stored.Message).To(BeEmpty())
 			})
 		})
 	})
@@ -184,13 +187,9 @@ var _ = Describe("Wall API", func() {
 		})
 
 		Context("when authenticated", func() {
-			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
-			})
-
 			Context("is an admin", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAdminReturns(true)
+					useProfile(adminProfile)
 				})
 
 				It("returns 200", func() {
@@ -205,21 +204,29 @@ var _ = Describe("Wall API", func() {
 			})
 			Context("is not an admin", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAdminReturns(false)
+					useProfile(memberProfile)
 				})
 
 				It("returns 403", func() {
 					Expect(response.StatusCode).To(Equal(http.StatusForbidden))
+
+					stored, err := realdb.Deps.wall.GetWall()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(stored.Message).To(Equal("to be cleared"))
 				})
 			})
 		})
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				useProfile(anonymousProfile)
 			})
 
 			It("returns 401", func() {
 				Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
+
+				stored, err := realdb.Deps.wall.GetWall()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(stored.Message).To(Equal("to be cleared"))
 			})
 
 		})

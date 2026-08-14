@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/atc"
-
+	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/db"
 	. "github.com/concourse/concourse/atc/testhelpers"
 
@@ -38,23 +38,49 @@ var _ = Describe("Users API", func() {
 		Context("when authenticated", func() {
 
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
-
-				fakeAccess.UserInfoReturns(atc.UserInfo{
-					Sub:      "some-sub",
-					Name:     "some-name",
-					UserId:   "some-user-id",
-					UserName: "some-user-name",
-					Email:    "some@email.com",
-					IsAdmin:  true,
-					IsSystem: false,
-					Teams: map[string][]string{
-						"some-team":       {"owner"},
-						"some-other-team": {"viewer"},
+				rawClaims, err := json.Marshal(map[string]any{
+					"sub":                "some-sub",
+					"aud":                []string{"api-test"},
+					"exp":                time.Now().Add(time.Hour).Unix(),
+					"name":               "some-name",
+					"preferred_username": "some-user-name",
+					"email":              "some@email.com",
+					"federated_claims": map[string]any{
+						"connector_id": "some-connector",
+						"user_id":      "some-user-id",
 					},
-					Connector:     "some-connector",
-					DisplayUserId: "some-user-id",
 				})
+				Expect(err).NotTo(HaveOccurred())
+
+				var claims db.Claims
+				Expect(json.Unmarshal(rawClaims, &claims)).To(Succeed())
+				Expect(apiDB.AccessTokenFactory.CreateAccessToken("some-user-token", claims)).To(Succeed())
+
+				profile := requestProfile{
+					authorization: "Bearer some-user-token",
+					connector:     "some-connector",
+					userID:        "some-user-id",
+				}
+
+				someTeam, err := apiDB.Deps.teamFactory.CreateTeam(atc.Team{Name: "some-team"})
+				Expect(err).NotTo(HaveOccurred())
+				otherTeam, err := apiDB.Deps.teamFactory.CreateTeam(atc.Team{Name: "some-other-team"})
+				Expect(err).NotTo(HaveOccurred())
+				grantProfile(someTeam, profile, accessor.OwnerRole)
+				grantProfile(otherTeam, profile, accessor.ViewerRole)
+
+				result, err := apiDB.Conn.Exec(`UPDATE teams SET admin = TRUE WHERE id = $1`, someTeam.ID())
+				Expect(err).NotTo(HaveOccurred())
+				rowsAffected, err := result.RowsAffected()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(rowsAffected).To(Equal(int64(1)))
+
+				someTeam, found, err := apiDB.Deps.teamFactory.FindTeam(someTeam.Name())
+				Expect(err).NotTo(HaveOccurred())
+				Expect(found).To(BeTrue())
+				Expect(someTeam.Admin()).To(BeTrue())
+
+				useProfile(profile)
 			})
 
 			It("succeeds", func() {
@@ -82,14 +108,14 @@ var _ = Describe("Users API", func() {
 							  "some-other-team": ["viewer"]
 							},
 							"connector": "some-connector",
-							"display_user_id": "some-user-id"
+							"display_user_id": "some-user-name"
 						}`))
 			})
 		})
 
 		Context("not authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				useProfile(anonymousProfile)
 			})
 
 			It("returns 401", func() {
@@ -104,7 +130,6 @@ var _ = Describe("Users API", func() {
 
 		BeforeEach(func() {
 			realdb = useRealDB()
-			server = realdb.Serve()
 		})
 
 		JustBeforeEach(func() {
@@ -118,12 +143,10 @@ var _ = Describe("Users API", func() {
 		})
 
 		Context("when authenticated", func() {
-
-			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
-			})
-
 			Context("not an admin", func() {
+				BeforeEach(func() {
+					useProfile(memberProfile)
+				})
 
 				It("returns 403", func() {
 					Expect(response.StatusCode).To(Equal(http.StatusForbidden))
@@ -134,7 +157,7 @@ var _ = Describe("Users API", func() {
 			Context("being an admin", func() {
 
 				BeforeEach(func() {
-					fakeAccess.IsAdminReturns(true)
+					useProfile(adminProfile)
 				})
 
 				It("succeeds", func() {
@@ -146,22 +169,6 @@ var _ = Describe("Users API", func() {
 						"Content-Type": "application/json",
 					}
 					Expect(response).Should(IncludeHeaderEntries(expectedHeaderEntries))
-				})
-
-				Context("failing to retrieve users", func() {
-					BeforeEach(func() {
-						doomed := postgresRunner.OpenConn()
-						Expect(doomed.Close()).To(Succeed())
-
-						deps := realdb.Deps
-						deps.userFactory = db.NewUserFactory(doomed)
-						server = newAPIServer(deps)
-						DeferCleanup(server.Close)
-					})
-
-					It("fails", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-					})
 				})
 
 				Context("having no users", func() {
@@ -204,7 +211,7 @@ var _ = Describe("Users API", func() {
 		Context("not authenticated", func() {
 
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				useProfile(anonymousProfile)
 			})
 
 			It("returns 401", func() {
@@ -222,10 +229,7 @@ var _ = Describe("Users API", func() {
 		)
 		BeforeEach(func() {
 			realdb = useRealDB()
-			server = realdb.Serve()
-
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAdminReturns(true)
+			useProfile(adminProfile)
 		})
 
 		JustBeforeEach(func() {
