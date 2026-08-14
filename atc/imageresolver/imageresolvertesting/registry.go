@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/go-containerregistry/pkg/name"
 	ociregistry "github.com/google/go-containerregistry/pkg/registry"
+	"github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/empty"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
@@ -55,7 +56,10 @@ func (registry *Registry) Push(repository, tag string) (string, error) {
 		return "", fmt.Errorf("parse image reference: %w", err)
 	}
 
-	image := mutate.MediaType(empty.Image, types.OCIManifestSchema1)
+	image := mutate.Annotations(empty.Image, map[string]string{
+		"org.opencontainers.image.ref.name": repository + ":" + tag,
+	}).(v1.Image)
+	image = mutate.MediaType(image, types.OCIManifestSchema1)
 	if err := remote.Write(ref, image); err != nil {
 		return "", fmt.Errorf("push image: %w", err)
 	}

@@ -705,8 +705,9 @@ var _ = Describe("Scanner Resource Type Resolution", func() {
 	It("resolves persisted resource types across independent pipelines", func() {
 		fixture := useLidarDB()
 		registry := newLidarRegistry()
-		digest := pushLidarImage(registry, "my-image", "latest")
-		pushLidarImage(registry, "other-image", "latest")
+		firstDigest := pushLidarImage(registry, "my-image", "latest")
+		secondDigest := pushLidarImage(registry, "other-image", "latest")
+		Expect(firstDigest).NotTo(Equal(secondDigest))
 		registry.DrainRequests()
 		firstConfig := defaultResourceType(registry.Host() + "/my-image")
 		firstPipeline, _ := persistResourceType(fixture, teamName, pipelineName, firstConfig)
@@ -723,6 +724,16 @@ var _ = Describe("Scanner Resource Type Resolution", func() {
 			fixture, fixture.CheckFactory, resolver, fixture.ResourceConfigFactory,
 			lagertest.NewTestLogger("test"),
 		)).To(Succeed())
+		Expect(lidarHeadRequests(registry)).To(ContainElements(
+			imageresolvertesting.Request{
+				Method: http.MethodHead,
+				Path:   "/v2/my-image/manifests/latest",
+			},
+			imageresolvertesting.Request{
+				Method: http.MethodHead,
+				Path:   "/v2/other-image/manifests/latest",
+			},
+		))
 		firstType := lidarPipelineResourceType(firstPipeline, resourceTypeName)
 		secondType := lidarPipelineResourceType(secondPipeline, secondConfig.Name)
 		expectedFirstConfig, err := fixture.ResourceConfigFactory.FindOrCreateResourceConfig(
@@ -740,8 +751,8 @@ var _ = Describe("Scanner Resource Type Resolution", func() {
 		firstScope := resolvedLidarResourceTypeScope(fixture, firstType)
 		secondScope := resolvedLidarResourceTypeScope(fixture, secondType)
 		Expect(firstScope.ID()).NotTo(Equal(secondScope.ID()))
-		expectLidarLatestVersion(firstScope, atc.Version{"digest": digest})
-		expectLidarLatestVersion(secondScope, atc.Version{"digest": digest})
+		expectLidarLatestVersion(firstScope, atc.Version{"digest": firstDigest})
+		expectLidarLatestVersion(secondScope, atc.Version{"digest": secondDigest})
 	})
 })
 

@@ -164,6 +164,9 @@ func TestResolver_MultipleTags(t *testing.T) {
 	registry := startRegistry(t)
 	digestV1 := pushImage(t, registry, "myrepo/app", "v1")
 	digestV2 := pushImage(t, registry, "myrepo/app", "v2")
+	if digestV1 == digestV2 {
+		t.Fatalf("distinct tags produced the same expected digest %q", digestV1)
+	}
 
 	resolver := imageresolver.NewResolver(authn.DefaultKeychain)
 
@@ -182,5 +185,8 @@ func TestResolver_MultipleTags(t *testing.T) {
 	}
 	if got2 != digestV2 {
 		t.Errorf("v2: got %q, want %q", got2, digestV2)
+	}
+	if got1 == got2 {
+		t.Errorf("distinct tags resolved to the same digest %q", got1)
 	}
 }

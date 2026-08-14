@@ -39,6 +39,24 @@ func TestRegistryResolvesPushedImage(t *testing.T) {
 	}
 }
 
+func TestRegistryPushesDistinctManifestsPerReference(t *testing.T) {
+	registry := imageresolvertesting.NewRegistry()
+	t.Cleanup(registry.Close)
+
+	firstDigest, err := registry.Push("repo/first", "v1")
+	if err != nil {
+		t.Fatalf("push first image: %v", err)
+	}
+	secondDigest, err := registry.Push("repo/second", "v2")
+	if err != nil {
+		t.Fatalf("push second image: %v", err)
+	}
+
+	if firstDigest == secondDigest {
+		t.Fatalf("distinct references produced the same digest %q", firstDigest)
+	}
+}
+
 func TestRegistryRequiresBasicAuth(t *testing.T) {
 	registry := imageresolvertesting.NewRegistry()
 	t.Cleanup(registry.Close)
