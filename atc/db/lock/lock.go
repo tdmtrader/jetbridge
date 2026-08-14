@@ -13,8 +13,6 @@ import (
 	"code.cloudfoundry.org/lager/v3"
 )
 
-//go:generate go run github.com/maxbrunsfeld/counterfeiter/v6 -generate
-
 const (
 	LockTypeResourceConfigChecking = iota
 	LockTypeBuildTracking
@@ -113,7 +111,7 @@ type LockFactory interface {
 }
 
 type lockFactory struct {
-	db           LockDB
+	db           *lockDB
 	locks        lockRepo
 	acquireMutex *sync.Mutex
 
@@ -147,19 +145,6 @@ func NewLockFactory(
 	}
 
 	return factories
-}
-
-func NewTestLockFactory(db LockDB) LockFactory {
-	return &lockFactory{
-		db: db,
-		locks: lockRepo{
-			locks: map[string]bool{},
-			mutex: &sync.Mutex{},
-		},
-		acquireMutex: &sync.Mutex{},
-		acquireFunc:  func(logger lager.Logger, id LockID) {},
-		releaseFunc:  func(logger lager.Logger, id LockID) {},
-	}
 }
 
 type lockFactories [FactoryCount]*lockFactory
@@ -202,17 +187,11 @@ type NoopLock struct{}
 // Release does nothing. Successfully.
 func (NoopLock) Release() error { return nil }
 
-//counterfeiter:generate . LockDB
-type LockDB interface {
-	Acquire(id LockID) (bool, error)
-	Release(id LockID) (bool, error)
-}
-
 type lock struct {
 	id LockID
 
 	logger       lager.Logger
-	db           LockDB
+	db           *lockDB
 	locks        lockRepo
 	acquireMutex *sync.Mutex
 
