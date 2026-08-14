@@ -1216,7 +1216,7 @@ func (cmd *RunCommand) backendComponents(
 			Runnable: scheduler.NewRunner(
 				logger.Session("scheduler"),
 				dbJobFactory,
-				jobScheduler,
+				jobScheduler.Schedule,
 				cmd.JobSchedulingMaxInFlight,
 			),
 		},

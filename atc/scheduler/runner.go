@@ -23,20 +23,22 @@ type BuildScheduler interface {
 	) (bool, error)
 }
 
+type ScheduleFunc func(context.Context, lager.Logger, db.SchedulerJob) (bool, error)
+
 type Runner struct {
 	logger     lager.Logger
 	jobFactory db.JobFactory
-	scheduler  BuildScheduler
+	schedule   ScheduleFunc
 
 	guardJobScheduling chan struct{}
 	running            *sync.Map
 }
 
-func NewRunner(logger lager.Logger, jobFactory db.JobFactory, scheduler BuildScheduler, maxJobs uint64) *Runner {
+func NewRunner(logger lager.Logger, jobFactory db.JobFactory, schedule ScheduleFunc, maxJobs uint64) *Runner {
 	return &Runner{
 		logger:     logger,
 		jobFactory: jobFactory,
-		scheduler:  scheduler,
+		schedule:   schedule,
 
 		guardJobScheduling: make(chan struct{}, maxJobs),
 		running:            &sync.Map{},
@@ -140,7 +142,7 @@ func (s *Runner) scheduleJob(ctx context.Context, logger lager.Logger, job db.Sc
 
 	jStart := time.Now()
 
-	needsRetry, err := s.scheduler.Schedule(
+	needsRetry, err := s.schedule(
 		spanCtx,
 		logger,
 		job,

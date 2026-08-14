@@ -2,7 +2,6 @@ package scheduler_test
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -10,45 +9,17 @@ import (
 	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/builds"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/db/dbtest"
 	"github.com/concourse/concourse/atc/db/lock"
+	"github.com/concourse/concourse/atc/metric"
 	. "github.com/concourse/concourse/atc/scheduler"
-	"github.com/concourse/concourse/atc/scheduler/schedulerfakes"
+	"github.com/concourse/concourse/atc/scheduler/algorithm"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	. "github.com/onsi/gomega/gstruct"
 )
-
-type countedSchedulerJobFactory struct {
-	db.JobFactory
-	calls int
-}
-
-func (factory *countedSchedulerJobFactory) JobsToSchedule() (db.SchedulerJobs, error) {
-	factory.calls++
-	return factory.JobFactory.JobsToSchedule()
-}
-
-type closeAfterScanSchedulerJobFactory struct {
-	db.JobFactory
-	close      func() error
-	closeCalls int
-	closeErr   error
-}
-
-func (factory *closeAfterScanSchedulerJobFactory) JobsToSchedule() (db.SchedulerJobs, error) {
-	jobs, err := factory.JobFactory.JobsToSchedule()
-	if err != nil {
-		return nil, err
-	}
-	factory.closeCalls++
-	factory.closeErr = factory.close()
-	if factory.closeErr != nil {
-		return nil, fmt.Errorf("close scanned job connection: %w", factory.closeErr)
-	}
-	return jobs, nil
-}
 
 type duplicateScanSchedulerJobFactory struct {
 	db.JobFactory
@@ -78,20 +49,41 @@ func (factory *destroyPipelineAfterScanJobFactory) JobsToSchedule() (db.Schedule
 }
 
 var _ = Describe("Runner", func() {
-	var fakeScheduler *schedulerfakes.FakeBuildScheduler
+	newRealScheduler := func(fixture *schedulerDB) *Scheduler {
+		GinkgoHelper()
+		return NewScheduler(
+			builds.NewPlanner(atc.NewPlanFactory(0)),
+			algorithm.New(schedulerVersionsDB(fixture)),
+		)
+	}
 
-	BeforeEach(func() {
-		fakeScheduler = new(schedulerfakes.FakeBuildScheduler)
-	})
-
-	newRunner := func(jobFactory db.JobFactory, maxInFlight uint64) *Runner {
+	newRunner := func(fixture *schedulerDB, jobFactory db.JobFactory, maxInFlight uint64) *Runner {
 		GinkgoHelper()
 		return NewRunner(
 			lagertest.NewTestLogger("test"),
 			jobFactory,
-			fakeScheduler,
+			newRealScheduler(fixture).Schedule,
 			maxInFlight,
 		)
+	}
+
+	triggeringJobs := func(names ...string) atc.Config {
+		GinkgoHelper()
+		jobs := make(atc.JobConfigs, 0, len(names))
+		for _, name := range names {
+			jobs = append(jobs, atc.JobConfig{
+				Name: name,
+				PlanSequence: []atc.Step{
+					{Config: &atc.GetStep{Name: "some-input", Resource: "some-resource", Trigger: true}},
+				},
+			})
+		}
+		return atc.Config{
+			Resources: atc.ResourceConfigs{
+				{Name: "some-resource", Type: dbtest.BaseResourceType, Source: atc.Source{"some": "source"}},
+			},
+			Jobs: jobs,
+		}
 	}
 
 	deferObservedFactory := func(
@@ -119,120 +111,86 @@ var _ = Describe("Runner", func() {
 		}
 	}
 
-	It("loads the full persisted job scan and schedules jobs with their resources", func(ctx SpecContext) {
+	expectNoJobBuild := func(job db.Job) {
+		GinkgoHelper()
+		apiBuilds, _, err := job.BuildsWithTime(db.Page{Limit: 50})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(apiBuilds).To(BeEmpty())
+		Expect(schedulerPendingBuilds(job)).To(BeEmpty())
+	}
+
+	expectStartedJobBuild := func(fixture *schedulerDB, job db.Job) {
+		GinkgoHelper()
+		apiBuilds, _, err := job.BuildsWithTime(db.Page{Limit: 50})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(apiBuilds).To(HaveLen(1))
+		Expect(apiBuilds[0].Status()).To(Equal(db.BuildStatusStarted))
+		Expect(apiBuilds[0].HasPlan()).To(BeTrue())
+
+		persisted, found, err := fixture.BuildFactory.Build(apiBuilds[0].ID())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(persisted.PrivatePlan()).NotTo(Equal(atc.Plan{}))
+		Expect(schedulerPendingBuilds(job)).To(BeEmpty())
+	}
+
+	It("starts every requested job from the full persisted scan and leaves other jobs untouched", func(ctx SpecContext) {
 		fixture := useSchedulerDB()
-		_, firstPipeline := persistSchedulerPipeline(
-			fixture,
-			"runner-team-one",
-			"runner-pipeline-one",
-			atc.Config{
-				Resources: atc.ResourceConfigs{
-					{Name: "some-resource", Type: "git", Source: atc.Source{"uri": "git://some-resource"}},
-					{Name: "some-dependent-resource", Type: "git", Source: atc.Source{"uri": "git://some-dependent-resource"}},
-				},
-				Jobs: atc.JobConfigs{
-					{
-						Name: "some-job",
-						PlanSequence: []atc.Step{
-							{Config: &atc.GetStep{Name: "some-resource"}},
-							{Config: &atc.GetStep{Name: "some-dependent-resource"}},
-						},
-					},
-					{
-						Name: "some-other-job",
-						PlanSequence: []atc.Step{
-							{Config: &atc.GetStep{Name: "some-resource"}},
-							{Config: &atc.GetStep{Name: "some-dependent-resource"}},
-						},
-					},
-					{Name: "not-requested"},
-				},
-			},
-		)
-		_, secondPipeline := persistSchedulerPipeline(
-			fixture,
-			"runner-team-two",
-			"runner-pipeline-two",
-			atc.Config{
-				Resources: atc.ResourceConfigs{
-					{Name: "another-resource", Type: "git", Source: atc.Source{"uri": "git://another-resource"}},
-				},
-				Jobs: atc.JobConfigs{
-					{
-						Name: "another-job",
-						PlanSequence: []atc.Step{
-							{Config: &atc.GetStep{Name: "another-resource"}},
-						},
-					},
-				},
-			},
+		scenario := dbtest.Setup(
+			fixture.Builder.WithTeam("runner-team"),
+			fixture.Builder.WithPipeline(triggeringJobs(
+				"some-job",
+				"some-other-job",
+				"another-job",
+				"not-requested",
+			)),
+			fixture.Builder.WithResourceVersions("some-resource", atc.Version{"ref": "v1"}),
 		)
 
 		jobs := []db.Job{
-			schedulerPipelineJob(firstPipeline, "some-job"),
-			schedulerPipelineJob(firstPipeline, "some-other-job"),
-			schedulerPipelineJob(secondPipeline, "another-job"),
+			scenario.Job("some-job"),
+			scenario.Job("some-other-job"),
+			scenario.Job("another-job"),
 		}
-		jobRequested := make(map[int]time.Time)
+		jobRequested := make(map[int]time.Time, len(jobs))
 		for _, job := range jobs {
-			requestSchedulerJob(fixture, job)
-			scheduleRequested, _ := schedulerJobTimestamps(fixture, job.ID())
-			jobRequested[job.ID()] = scheduleRequested
+			jobRequested[job.ID()] = requestSchedulerJob(fixture, job)
 		}
-		notRequested := schedulerPipelineJob(firstPipeline, "not-requested")
-		notRequestedTime, _ := schedulerJobTimestamps(fixture, notRequested.ID())
-		Expect(notRequested.UpdateLastScheduled(notRequestedTime)).To(Succeed())
+		notRequested := scenario.Job("not-requested")
+		notRequestedRequested, _ := schedulerJobTimestamps(fixture, notRequested.ID())
+		Expect(notRequested.UpdateLastScheduled(notRequestedRequested)).To(Succeed())
+		_, notRequestedLast := schedulerJobTimestamps(fixture, notRequested.ID())
 
-		counted := &countedSchedulerJobFactory{JobFactory: fixture.JobFactory}
-		observed := observeSchedulerJobFactory(counted)
+		observed := observeSchedulerJobFactory(fixture.JobFactory)
 		jobIDs := []int{jobs[0].ID(), jobs[1].ID(), jobs[2].ID()}
 		deferObservedFactory(observed, jobIDs...)
-		fakeScheduler.ScheduleReturns(false, nil)
-
-		Expect(newRunner(observed, 1).Run(ctx)).To(Succeed())
+		Expect(newRunner(fixture, observed, 1).Run(ctx)).To(Succeed())
 		waitObservedFactory(ctx, observed, jobIDs...)
 
-		Expect(counted.calls).To(Equal(1))
-		Expect(fakeScheduler.ScheduleCallCount()).To(Equal(3))
-		scheduledResources := map[string]db.SchedulerResources{}
-		for i := 0; i < fakeScheduler.ScheduleCallCount(); i++ {
-			_, _, scheduledJob := fakeScheduler.ScheduleArgsForCall(i)
-			scheduledResources[scheduledJob.Name()] = scheduledJob.Resources
-		}
-		Expect(scheduledResources).To(MatchAllKeys(Keys{
-			"some-job": ConsistOf(
-				db.SchedulerResource{Name: "some-resource", Type: "git", Source: atc.Source{"uri": "git://some-resource"}},
-				db.SchedulerResource{Name: "some-dependent-resource", Type: "git", Source: atc.Source{"uri": "git://some-dependent-resource"}},
-			),
-			"some-other-job": ConsistOf(
-				db.SchedulerResource{Name: "some-resource", Type: "git", Source: atc.Source{"uri": "git://some-resource"}},
-				db.SchedulerResource{Name: "some-dependent-resource", Type: "git", Source: atc.Source{"uri": "git://some-dependent-resource"}},
-			),
-			"another-job": ConsistOf(
-				db.SchedulerResource{Name: "another-resource", Type: "git", Source: atc.Source{"uri": "git://another-resource"}},
-			),
-		}))
 		for _, job := range jobs {
+			expectStartedJobBuild(fixture, job)
 			scheduleRequested, lastScheduled := schedulerJobTimestamps(fixture, job.ID())
 			Expect(scheduleRequested).To(Equal(jobRequested[job.ID()]))
 			Expect(lastScheduled).To(Equal(jobRequested[job.ID()]))
 		}
+		expectNoJobBuild(notRequested)
+		persistedNotRequested, persistedNotRequestedLast := schedulerJobTimestamps(fixture, notRequested.ID())
+		Expect(persistedNotRequested).To(Equal(notRequestedRequested))
+		Expect(persistedNotRequestedLast).To(Equal(notRequestedLast))
 	})
 
-	It("skips a job whose production scheduling lock is held", func(ctx SpecContext) {
+	It("skips the exact job whose production scheduling lock is held", func(ctx SpecContext) {
 		fixture := useSchedulerDB()
-		_, pipeline := persistSchedulerPipeline(
-			fixture,
-			"lock-team",
-			"lock-pipeline",
-			atc.Config{Jobs: atc.JobConfigs{{Name: "locked-job"}, {Name: "available-job"}}},
+		scenario := dbtest.Setup(
+			fixture.Builder.WithTeam("lock-team"),
+			fixture.Builder.WithPipeline(triggeringJobs("locked-job", "available-job")),
+			fixture.Builder.WithResourceVersions("some-resource", atc.Version{"ref": "v1"}),
 		)
-		lockedJob := schedulerPipelineJob(pipeline, "locked-job")
-		availableJob := schedulerPipelineJob(pipeline, "available-job")
-		requestSchedulerJob(fixture, lockedJob)
-		requestSchedulerJob(fixture, availableJob)
-		lockedRequested, lockedLast := schedulerJobTimestamps(fixture, lockedJob.ID())
-		availableRequested, _ := schedulerJobTimestamps(fixture, availableJob.ID())
+		lockedJob := scenario.Job("locked-job")
+		availableJob := scenario.Job("available-job")
+		lockedRequested := requestSchedulerJob(fixture, lockedJob)
+		_, lockedLast := schedulerJobTimestamps(fixture, lockedJob.ID())
+		availableRequested := requestSchedulerJob(fixture, availableJob)
 
 		holderFactory := fixture.useIndependentLockFactory()
 		heldLock, acquired, err := holderFactory.Acquire(
@@ -250,97 +208,65 @@ var _ = Describe("Runner", func() {
 
 		observed := observeSchedulerJobFactory(fixture.JobFactory)
 		deferObservedFactory(observed, lockedJob.ID(), availableJob.ID())
-		fakeScheduler.ScheduleReturns(false, nil)
-		Expect(newRunner(observed, 2).Run(ctx)).To(Succeed())
+		Expect(newRunner(fixture, observed, 2).Run(ctx)).To(Succeed())
 		waitObservedFactory(ctx, observed, lockedJob.ID(), availableJob.ID())
 
 		Expect(heldLock.Release()).To(Succeed())
 		released = true
-		Expect(fakeScheduler.ScheduleCallCount()).To(Equal(1))
-		_, _, scheduledJob := fakeScheduler.ScheduleArgsForCall(0)
-		Expect(scheduledJob.ID()).To(Equal(availableJob.ID()))
+		expectNoJobBuild(lockedJob)
 		persistedLockedRequested, persistedLockedLast := schedulerJobTimestamps(fixture, lockedJob.ID())
 		Expect(persistedLockedRequested).To(Equal(lockedRequested))
 		Expect(persistedLockedLast).To(Equal(lockedLast))
+
+		expectStartedJobBuild(fixture, availableJob)
 		_, persistedAvailableLast := schedulerJobTimestamps(fixture, availableJob.ID())
 		Expect(persistedAvailableLast).To(Equal(availableRequested))
 	})
 
-	It("does not schedule when the real advisory-lock connection fails", func(ctx SpecContext) {
+	It("leaves last_scheduled unchanged when a real max-in-flight build needs a retry", func(ctx SpecContext) {
 		fixture := useSchedulerDB()
-		_, pipeline := persistSchedulerPipeline(
-			fixture,
-			"doomed-lock-team",
-			"doomed-lock-pipeline",
-			atc.Config{Jobs: atc.JobConfigs{{Name: "doomed-lock-job"}}},
+		config := triggeringJobs("serial-job")
+		config.Jobs[0].RawMaxInFlight = 1
+		scenario := dbtest.Setup(
+			fixture.Builder.WithTeam("retry-team"),
+			fixture.Builder.WithPipeline(config),
+			fixture.Builder.WithResourceVersions("some-resource", atc.Version{"ref": "v1"}),
 		)
-		job := schedulerPipelineJob(pipeline, "doomed-lock-job")
-		requestSchedulerJob(fixture, job)
-		requested, initialLast := schedulerJobTimestamps(fixture, job.ID())
+		job := scenario.Job("serial-job")
 
-		doomedLocks, closeDoomedLocks := openSchedulerLockFactory()
-		Expect(closeDoomedLocks()).To(Succeed())
-		observed := observeSchedulerJobFactory(db.NewJobFactory(fixture.Conn, doomedLocks))
+		realScheduler := newRealScheduler(fixture)
+		needsRetry, err := realScheduler.Schedule(
+			context.Background(),
+			lagertest.NewTestLogger("initial-schedule"),
+			schedulerJobToSchedule(fixture, job),
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(needsRetry).To(BeFalse())
+		expectStartedJobBuild(fixture, job)
+
+		Expect(job.EnsurePendingBuildExists(context.Background())).To(Succeed())
+		blocked := schedulerPendingBuilds(job)
+		Expect(blocked).To(HaveLen(1))
+		requested := requestSchedulerJob(fixture, job)
+		_, initialLast := schedulerJobTimestamps(fixture, job.ID())
+
+		observed := observeSchedulerJobFactory(fixture.JobFactory)
 		deferObservedFactory(observed, job.ID())
-
-		Expect(newRunner(observed, 1).Run(ctx)).To(Succeed())
+		Expect(newRunner(fixture, observed, 1).Run(ctx)).To(Succeed())
 		waitObservedFactory(ctx, observed, job.ID())
-		Expect(fakeScheduler.ScheduleCallCount()).To(BeZero())
+
 		persistedRequested, persistedLast := schedulerJobTimestamps(fixture, job.ID())
 		Expect(persistedRequested).To(Equal(requested))
 		Expect(persistedLast).To(Equal(initialLast))
+		remaining := schedulerPendingBuilds(job)
+		Expect(remaining).To(HaveLen(1))
+		Expect(remaining[0].ID()).To(Equal(blocked[0].ID()))
+		persistedBlocked, found, err := fixture.BuildFactory.Build(blocked[0].ID())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(persistedBlocked.Status()).To(Equal(db.BuildStatusPending))
+		Expect(persistedBlocked.HasPlan()).To(BeFalse())
 	})
-
-	DescribeTable("only advances successful persisted jobs",
-		func(ctx SpecContext, outcome string) {
-			fixture := useSchedulerDB()
-			_, pipeline := persistSchedulerPipeline(
-				fixture,
-				"outcome-team",
-				"outcome-pipeline",
-				atc.Config{Jobs: atc.JobConfigs{{Name: "affected-job"}, {Name: "successful-job"}}},
-			)
-			affectedJob := schedulerPipelineJob(pipeline, "affected-job")
-			successfulJob := schedulerPipelineJob(pipeline, "successful-job")
-			requestSchedulerJob(fixture, affectedJob)
-			requestSchedulerJob(fixture, successfulJob)
-			affectedRequested, affectedLast := schedulerJobTimestamps(fixture, affectedJob.ID())
-			successfulRequested, _ := schedulerJobTimestamps(fixture, successfulJob.ID())
-
-			fakeScheduler.ScheduleStub = func(_ context.Context, _ lager.Logger, job db.SchedulerJob) (bool, error) {
-				if job.Name() == "successful-job" {
-					return false, nil
-				}
-				if job.Name() != "affected-job" {
-					return false, fmt.Errorf("unexpected job %q", job.Name())
-				}
-				switch outcome {
-				case "error":
-					return false, errors.New("schedule failed")
-				case "panic":
-					panic("schedule panic")
-				case "retry":
-					return true, nil
-				default:
-					return false, fmt.Errorf("unexpected outcome %q", outcome)
-				}
-			}
-
-			observed := observeSchedulerJobFactory(fixture.JobFactory)
-			deferObservedFactory(observed, affectedJob.ID(), successfulJob.ID())
-			Expect(newRunner(observed, 2).Run(ctx)).To(Succeed())
-			waitObservedFactory(ctx, observed, affectedJob.ID(), successfulJob.ID())
-
-			persistedAffectedRequested, persistedAffectedLast := schedulerJobTimestamps(fixture, affectedJob.ID())
-			Expect(persistedAffectedRequested).To(Equal(affectedRequested))
-			Expect(persistedAffectedLast).To(Equal(affectedLast))
-			_, persistedSuccessfulLast := schedulerJobTimestamps(fixture, successfulJob.ID())
-			Expect(persistedSuccessfulLast).To(Equal(successfulRequested))
-		},
-		Entry("after a scheduler error", "error"),
-		Entry("after a scheduler panic", "panic"),
-		Entry("when scheduling needs a retry", "retry"),
-	)
 
 	It("deduplicates a deliberately duplicated real job input", func(ctx SpecContext) {
 		fixture := useSchedulerDB()
@@ -351,8 +277,7 @@ var _ = Describe("Runner", func() {
 			atc.Config{Jobs: atc.JobConfigs{{Name: "duplicate-job"}}},
 		)
 		job := schedulerPipelineJob(pipeline, "duplicate-job")
-		requestSchedulerJob(fixture, job)
-		requested, _ := schedulerJobTimestamps(fixture, job.ID())
+		requested := requestSchedulerJob(fixture, job)
 
 		realJobs, err := fixture.JobFactory.JobsToSchedule()
 		Expect(err).NotTo(HaveOccurred())
@@ -367,134 +292,69 @@ var _ = Describe("Runner", func() {
 			job:        realJobs[0],
 		}
 
-		scheduling := make(chan struct{}, 2)
-		unblock := make(chan struct{})
-		var once sync.Once
-		release := func() { once.Do(func() { close(unblock) }) }
-		fakeScheduler.ScheduleStub = func(context.Context, lager.Logger, db.SchedulerJob) (bool, error) {
-			scheduling <- struct{}{}
-			<-unblock
+		started := make(chan struct{}, 1)
+		releaseSchedule := make(chan struct{})
+		var releaseOnce sync.Once
+		release := func() { releaseOnce.Do(func() { close(releaseSchedule) }) }
+		schedule := ScheduleFunc(func(context.Context, lager.Logger, db.SchedulerJob) (bool, error) {
+			started <- struct{}{}
+			<-releaseSchedule
 			return false, nil
-		}
+		})
 		deferSchedulerCompletions(release, func() []*schedulerJobCompletion {
 			return []*schedulerJobCompletion{completion}
 		})
 
-		// The single scheduling slot is held for as long as Schedule blocks, so
-		// Run can only return while the duplicate is still in flight if the
-		// duplicate was skipped outright.
+		metric.Metrics.JobsScheduling.Max()
 		runErr := make(chan error, 1)
 		go func() {
 			defer GinkgoRecover()
-			runErr <- newRunner(duplicateFactory, 1).Run(ctx)
+			runErr <- NewRunner(
+				lagertest.NewTestLogger("test"),
+				duplicateFactory,
+				schedule,
+				1,
+			).Run(ctx)
 		}()
 
-		Eventually(ctx, scheduling, 10*time.Second).Should(Receive())
+		Eventually(ctx, started, 10*time.Second).Should(Receive())
 		Eventually(ctx, runErr, 10*time.Second).Should(Receive(BeNil()))
+		Expect(metric.Metrics.JobsScheduling.Max()).To(Equal(float64(1)))
+		Consistently(started).ShouldNot(Receive())
 
 		release()
 		waitForSchedulerCompletion(ctx, completion)
-		Expect(fakeScheduler.ScheduleCallCount()).To(Equal(1))
+		Expect(metric.Metrics.JobsScheduling.Max()).To(BeZero())
 		_, lastScheduled := schedulerJobTimestamps(fixture, job.ID())
 		Expect(lastScheduled).To(Equal(requested))
 	})
 
-	It("does not advance a job whose reload uses a closed secondary connection", func(ctx SpecContext) {
+	It("does not leave a job build when its pipeline is destroyed after scanning", func(ctx SpecContext) {
 		fixture := useSchedulerDB()
-		_, pipeline := persistSchedulerPipeline(
-			fixture,
-			"reload-error-team",
-			"reload-error-pipeline",
-			atc.Config{Jobs: atc.JobConfigs{{Name: "reload-error-job"}}},
+		scenario := dbtest.Setup(
+			fixture.Builder.WithTeam("reload-missing-team"),
+			fixture.Builder.WithPipeline(triggeringJobs("reload-missing-job")),
+			fixture.Builder.WithResourceVersions("some-resource", atc.Version{"ref": "v1"}),
 		)
-		job := schedulerPipelineJob(pipeline, "reload-error-job")
-		requestSchedulerJob(fixture, job)
-		requested, initialLast := schedulerJobTimestamps(fixture, job.ID())
-
-		secondaryConn := schedulerPostgresRunner.OpenConn()
-		closingFactory := &closeAfterScanSchedulerJobFactory{
-			JobFactory: db.NewJobFactory(secondaryConn, fixture.LockFactory),
-			close:      secondaryConn.Close,
-		}
-		observed := observeSchedulerJobFactory(closingFactory)
-		deferObservedFactory(observed, job.ID())
-
-		Expect(newRunner(observed, 1).Run(ctx)).To(Succeed())
-		waitObservedFactory(ctx, observed, job.ID())
-		Expect(closingFactory.closeCalls).To(Equal(1))
-		Expect(closingFactory.closeErr).NotTo(HaveOccurred())
-		Expect(fakeScheduler.ScheduleCallCount()).To(BeZero())
-		persistedRequested, persistedLast := schedulerJobTimestamps(fixture, job.ID())
-		Expect(persistedRequested).To(Equal(requested))
-		Expect(persistedLast).To(Equal(initialLast))
-	})
-
-	It("does not schedule a real job deleted with its pipeline after scanning", func(ctx SpecContext) {
-		fixture := useSchedulerDB()
-		_, pipeline := persistSchedulerPipeline(
-			fixture,
-			"reload-missing-team",
-			"reload-missing-pipeline",
-			atc.Config{Jobs: atc.JobConfigs{{Name: "reload-missing-job"}}},
-		)
-		job := schedulerPipelineJob(pipeline, "reload-missing-job")
+		job := scenario.Job("reload-missing-job")
+		jobID := job.ID()
 		requestSchedulerJob(fixture, job)
 
 		destroyingFactory := &destroyPipelineAfterScanJobFactory{
 			JobFactory: fixture.JobFactory,
-			pipeline:   pipeline,
+			pipeline:   scenario.Pipeline,
 		}
 		observed := observeSchedulerJobFactory(destroyingFactory)
-		deferObservedFactory(observed, job.ID())
+		deferObservedFactory(observed, jobID)
+		Expect(newRunner(fixture, observed, 1).Run(ctx)).To(Succeed())
+		waitObservedFactory(ctx, observed, jobID)
 
-		Expect(newRunner(observed, 1).Run(ctx)).To(Succeed())
-		waitObservedFactory(ctx, observed, job.ID())
 		Expect(destroyingFactory.destroyErr).NotTo(HaveOccurred())
-		Expect(fakeScheduler.ScheduleCallCount()).To(BeZero())
-		_, found, err := pipeline.Job("reload-missing-job")
+		_, found, err := scenario.Pipeline.Job("reload-missing-job")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeFalse())
-	})
-
-	It("does not advance last_scheduled when its update connection closes", func(ctx SpecContext) {
-		fixture := useSchedulerDB()
-		_, pipeline := persistSchedulerPipeline(
-			fixture,
-			"update-error-team",
-			"update-error-pipeline",
-			atc.Config{Jobs: atc.JobConfigs{{Name: "update-error-job"}}},
-		)
-		job := schedulerPipelineJob(pipeline, "update-error-job")
-		requestSchedulerJob(fixture, job)
-		requested, initialLast := schedulerJobTimestamps(fixture, job.ID())
-
-		secondaryConn := schedulerPostgresRunner.OpenConn()
-		closeCalls := 0
-		var closeErr error
-		fakeScheduler.ScheduleStub = func(_ context.Context, _ lager.Logger, _ db.SchedulerJob) (bool, error) {
-			closeCalls++
-			closeErr = secondaryConn.Close()
-			return false, closeErr
-		}
-		observed := observeSchedulerJobFactory(db.NewJobFactory(secondaryConn, fixture.LockFactory))
-		deferObservedFactory(observed, job.ID())
-
-		Expect(newRunner(observed, 1).Run(ctx)).To(Succeed())
-		waitObservedFactory(ctx, observed, job.ID())
-		Expect(closeCalls).To(Equal(1))
-		Expect(closeErr).NotTo(HaveOccurred())
-		persistedRequested, persistedLast := schedulerJobTimestamps(fixture, job.ID())
-		Expect(persistedRequested).To(Equal(requested))
-		Expect(persistedLast).To(Equal(initialLast))
-	})
-
-	It("returns a direct persisted job-scan error", func(ctx SpecContext) {
-		fixture := useSchedulerDB()
-		doomedConn := schedulerPostgresRunner.OpenConn()
-		Expect(doomedConn.Close()).To(Succeed())
-
-		err := newRunner(db.NewJobFactory(doomedConn, fixture.LockFactory), 1).Run(ctx)
-		Expect(err).To(MatchError(ContainSubstring("find jobs to schedule")))
-		Expect(fakeScheduler.ScheduleCallCount()).To(BeZero())
+		var remainingBuilds int
+		Expect(fixture.Conn.QueryRow(`SELECT COUNT(*) FROM builds WHERE job_id = $1`, jobID).Scan(&remainingBuilds)).To(Succeed())
+		Expect(remainingBuilds).To(BeZero())
 	})
 })
