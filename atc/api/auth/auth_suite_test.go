@@ -104,7 +104,7 @@ func cookieNamed(response *http.Response, name string) *http.Cookie {
 // realAccessFactory is the accessor the ATC actually wires up: bearer tokens
 // are resolved against the access_tokens table, and the roles a request carries
 // are computed from the auth stored on the teams it finds.
-func realAccessFactory() accessor.AccessFactory {
+func realAccessFactory() *accessor.Factory {
 	return accessor.NewAccessFactory(
 		accessor.NewVerifier(db.NewAccessTokenFactory(dbConn), []string{accessTokenAudience}),
 		teamFactory,

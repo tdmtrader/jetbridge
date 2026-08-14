@@ -15,7 +15,6 @@ import (
 
 	"github.com/concourse/concourse/atc/api"
 	"github.com/concourse/concourse/atc/api/accessor"
-	"github.com/concourse/concourse/atc/api/accessor/accessorfakes"
 	"github.com/concourse/concourse/atc/api/auth"
 	"github.com/concourse/concourse/atc/api/containerserver"
 	"github.com/concourse/concourse/atc/api/infoserver"
@@ -45,8 +44,6 @@ var (
 }`
 
 	workerRuntime    *apiWorkerRuntime
-	fakeAccess       *accessorfakes.FakeAccess
-	fakeAccessor     *accessorfakes.FakeAccessFactory
 	secretManager    creds.Secrets
 	varSourcePool    creds.VarSourcePool
 	credsManagers    creds.Managers
@@ -127,10 +124,6 @@ var _ = BeforeEach(func() {
 		InterceptTimeout: containerserver.NewInterceptTimeoutFactory(time.Hour).NewInterceptTimeout(),
 		channel:          make(chan time.Time),
 	}
-
-	fakeAccess = new(accessorfakes.FakeAccess)
-	fakeAccessor = new(accessorfakes.FakeAccessFactory)
-	fakeAccessor.CreateReturns(fakeAccess, nil)
 
 	workerRuntime = newAPIWorkerRuntime()
 

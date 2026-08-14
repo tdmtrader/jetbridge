@@ -2203,7 +2203,7 @@ func (cmd *RunCommand) constructAPIHandler(
 	workerPool worker.Pool,
 	secretManager creds.Secrets,
 	credsManagers creds.Managers,
-	accessFactory accessor.AccessFactory,
+	accessFactory *accessor.Factory,
 	dbWall db.Wall,
 	policyChecker policy.Checker,
 	dbSigningKeyFactory db.SigningKeyFactory,

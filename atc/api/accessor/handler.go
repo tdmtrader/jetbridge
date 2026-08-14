@@ -11,16 +11,11 @@ import (
 
 const accessorContextKey atc.ContextKey = "accessor"
 
-//counterfeiter:generate . AccessFactory
-type AccessFactory interface {
-	Create(req *http.Request, role string) (Access, error)
-}
-
 func NewHandler(
 	logger lager.Logger,
 	action string,
 	handler http.Handler,
-	accessFactory AccessFactory,
+	accessFactory *Factory,
 	auditor auditor.Auditor,
 	customRoles map[string]string,
 ) http.Handler {
@@ -38,7 +33,7 @@ type accessorHandler struct {
 	logger        lager.Logger
 	action        string
 	handler       http.Handler
-	accessFactory AccessFactory
+	accessFactory *Factory
 	auditor       auditor.Auditor
 	customRoles   map[string]string
 }

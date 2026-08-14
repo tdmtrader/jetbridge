@@ -9,7 +9,7 @@ import (
 
 func NewAccessorWrappa(
 	logger lager.Logger,
-	accessFactory accessor.AccessFactory,
+	accessFactory *accessor.Factory,
 	auditor auditor.Auditor,
 	customRoles map[string]string,
 ) *AccessorWrappa {
@@ -23,7 +23,7 @@ func NewAccessorWrappa(
 
 type AccessorWrappa struct {
 	logger        lager.Logger
-	accessFactory accessor.AccessFactory
+	accessFactory *accessor.Factory
 	auditor       auditor.Auditor
 	customRoles   map[string]string
 }
