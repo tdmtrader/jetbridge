@@ -33,6 +33,12 @@ type StepperFactory interface {
 	StepperForBuild(db.Build) (exec.Stepper, error)
 }
 
+type StepperFactoryFunc func(db.Build) (exec.Stepper, error)
+
+func (f StepperFactoryFunc) StepperForBuild(build db.Build) (exec.Stepper, error) {
+	return f(build)
+}
+
 func NewStepperFactory(
 	coreFactory CoreStepFactory,
 	externalURL string,

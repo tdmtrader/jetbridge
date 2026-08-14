@@ -19,7 +19,6 @@ import (
 	"github.com/concourse/concourse/atc/db/dbtest"
 	"github.com/concourse/concourse/atc/db/lock"
 	. "github.com/concourse/concourse/atc/engine"
-	"github.com/concourse/concourse/atc/engine/enginefakes"
 	"github.com/concourse/concourse/atc/event"
 	"github.com/concourse/concourse/atc/exec"
 	"github.com/concourse/concourse/vars"
@@ -71,43 +70,30 @@ func (b variablesErrorBuild) Variables(lager.Logger, creds.Secrets, creds.VarSou
 	return nil, b.err
 }
 
-// A stepper factory hands out a closure and keeps no record of having done so,
-// so the number of builds it was asked about is only observable from outside.
-type countingStepperFactory struct {
-	StepperFactory
-
-	stepperCalls int
-}
-
-func (factory *countingStepperFactory) StepperForBuild(build db.Build) (exec.Stepper, error) {
-	factory.stepperCalls++
-	return factory.StepperFactory.StepperForBuild(build)
-}
-
 var _ = Describe("Engine", func() {
 	var (
-		fakeCoreStepFactory *enginefakes.FakeCoreStepFactory
-		stepperFactory      *countingStepperFactory
+		stepperFactory StepperFactory
+		step           stepFunc
+		builtPlans     chan atc.Plan
 
 		globalSecrets creds.Secrets
 		varSourcePool creds.VarSourcePool
 	)
 
 	BeforeEach(func() {
-		fakeCoreStepFactory = new(enginefakes.FakeCoreStepFactory)
-		stepperFactory = &countingStepperFactory{
-			StepperFactory: NewStepperFactory(
-				fakeCoreStepFactory,
-				"http://example.com",
-				newCheckRateLimiter(),
-				nil,
-				nil,
-				nil,
-				nil,
-				nil,
-				nil,
-			),
-		}
+		builtPlans = make(chan atc.Plan, 1)
+		step = stepFunc(func(context.Context, exec.RunState) (bool, error) {
+			return true, nil
+		})
+		stepperFactory = StepperFactoryFunc(func(build db.Build) (exec.Stepper, error) {
+			if build.Schema() != "exec.v2" {
+				return nil, errors.New("schema not supported")
+			}
+			return func(plan atc.Plan) exec.Step {
+				builtPlans <- plan
+				return step
+			}, nil
+		})
 
 		globalSecrets = &dummy.Secrets{StaticVariables: vars.StaticVariables{"foo": "bar"}}
 		varSourcePool = creds.NewVarSourcePool(
@@ -276,11 +262,10 @@ var _ = Describe("Engine", func() {
 					})
 
 					Context("when converting the plan to a step succeeds", func() {
-						var fakeStep *scriptedStep
-
 						BeforeEach(func() {
-							fakeStep = new(scriptedStep)
-							fakeCoreStepFactory.LoadVarStepReturns(fakeStep)
+							step = stepFunc(func(context.Context, exec.RunState) (bool, error) {
+								return true, nil
+							})
 						})
 
 						It("releases the lock", func() {
@@ -295,10 +280,7 @@ var _ = Describe("Engine", func() {
 
 						It("constructs a step from the build's plan", func() {
 							waitGroup.Wait()
-							Expect(fakeCoreStepFactory.LoadVarStepCallCount()).To(Equal(1))
-							stepPlan, _, _ := fakeCoreStepFactory.LoadVarStepArgsForCall(0)
-							Expect(stepPlan).To(Equal(plan))
-							Expect(stepPlan).To(Equal(realBuild.PrivatePlan()))
+							Expect(<-builtPlans).To(Equal(realBuild.PrivatePlan()))
 						})
 
 						Context("when getting the build vars succeeds", func() {
@@ -306,10 +288,10 @@ var _ = Describe("Engine", func() {
 
 							BeforeEach(func() {
 								invokedState = make(chan exec.RunState, 1)
-								fakeStep.RunStub = func(ctx context.Context, state exec.RunState) (bool, error) {
+								step = stepFunc(func(ctx context.Context, state exec.RunState) (bool, error) {
 									invokedState <- state
 									return true, nil
-								}
+								})
 							})
 
 							It("runs the step with the build variables", func() {
@@ -330,11 +312,11 @@ var _ = Describe("Engine", func() {
 										release <- true
 									}()
 
-									fakeStep.RunStub = func(context.Context, exec.RunState) (bool, error) {
+									step = stepFunc(func(context.Context, exec.RunState) (bool, error) {
 										close(readyToRelease)
 										<-time.After(time.Hour)
 										return true, nil
-									}
+									})
 								})
 
 								Context("when this is a job build", func() {
@@ -365,11 +347,15 @@ var _ = Describe("Engine", func() {
 							})
 
 							Context("when the build is aborted", func() {
-								var aborted chan error
+								var (
+									aborted         chan error
+									receivedContext chan context.Context
+								)
 
 								BeforeEach(func() {
 									readyToAbort := make(chan bool)
 									aborted = make(chan error, 1)
+									receivedContext = make(chan context.Context, 1)
 
 									go func() {
 										<-readyToAbort
@@ -381,27 +367,29 @@ var _ = Describe("Engine", func() {
 										aborted <- abortHandle.MarkAsAborted()
 									}()
 
-									fakeStep.RunStub = func(ctx context.Context, _ exec.RunState) (bool, error) {
+									step = stepFunc(func(ctx context.Context, _ exec.RunState) (bool, error) {
+										receivedContext <- ctx
 										close(readyToAbort)
 										select {
 										case <-ctx.Done():
 										case <-time.After(10 * time.Second):
 										}
 										return true, nil
-									}
+									})
 								})
 
 								It("cancels the context given to the step", func() {
 									waitGroup.Wait()
 									Expect(<-aborted).NotTo(HaveOccurred())
-									stepCtx, _ := fakeStep.RunArgsForCall(0)
-									Expect(stepCtx.Done()).To(BeClosed())
+									Eventually((<-receivedContext).Done()).Should(BeClosed())
 								})
 							})
 
 							Context("when the build finishes successfully", func() {
 								BeforeEach(func() {
-									fakeStep.RunReturns(true, nil)
+									step = stepFunc(func(context.Context, exec.RunState) (bool, error) {
+										return true, nil
+									})
 								})
 
 								It("finishes the build", func() {
@@ -413,7 +401,9 @@ var _ = Describe("Engine", func() {
 
 							Context("when the build finishes woefully", func() {
 								BeforeEach(func() {
-									fakeStep.RunReturns(false, nil)
+									step = stepFunc(func(context.Context, exec.RunState) (bool, error) {
+										return false, nil
+									})
 								})
 
 								It("finishes the build", func() {
@@ -431,7 +421,9 @@ var _ = Describe("Engine", func() {
 							Context("when the build finishes with error", func() {
 								Context("when the error is not retryable", func() {
 									BeforeEach(func() {
-										fakeStep.RunReturns(false, errors.New("nope"))
+										step = stepFunc(func(context.Context, exec.RunState) (bool, error) {
+											return false, errors.New("nope")
+										})
 									})
 
 									It("finishes the build", func() {
@@ -467,7 +459,9 @@ var _ = Describe("Engine", func() {
 
 								Context("when the error is retryable", func() {
 									BeforeEach(func() {
-										fakeStep.RunReturns(false, exec.Retriable{Cause: errors.New("nope")})
+										step = stepFunc(func(context.Context, exec.RunState) (bool, error) {
+											return false, exec.Retriable{Cause: errors.New("nope")}
+										})
 									})
 
 									Context("when this is a check build", func() {
@@ -500,7 +494,9 @@ var _ = Describe("Engine", func() {
 
 							Context("when the build finishes with cancelled error", func() {
 								BeforeEach(func() {
-									fakeStep.RunReturns(false, context.Canceled)
+									step = stepFunc(func(context.Context, exec.RunState) (bool, error) {
+										return false, context.Canceled
+									})
 								})
 
 								It("does not save an error event", func() {
@@ -517,7 +513,9 @@ var _ = Describe("Engine", func() {
 
 							Context("when the build finishes with a wrapped cancelled error", func() {
 								BeforeEach(func() {
-									fakeStep.RunReturns(false, fmt.Errorf("but im not a wrapper: %w", context.Canceled))
+									step = stepFunc(func(context.Context, exec.RunState) (bool, error) {
+										return false, fmt.Errorf("but im not a wrapper: %w", context.Canceled)
+									})
 								})
 
 								It("finishes the build", func() {
@@ -529,9 +527,9 @@ var _ = Describe("Engine", func() {
 
 							Context("when the build panics", func() {
 								BeforeEach(func() {
-									fakeStep.RunStub = func(context.Context, exec.RunState) (bool, error) {
+									step = stepFunc(func(context.Context, exec.RunState) (bool, error) {
 										panic("something went wrong")
-									}
+									})
 								})
 
 								It("finishes the build with error", func() {
@@ -617,7 +615,8 @@ var _ = Describe("Engine", func() {
 				})
 
 				It("does not build the step", func() {
-					Expect(stepperFactory.stepperCalls).To(BeZero())
+					waitGroup.Wait()
+					Consistently(builtPlans).ShouldNot(Receive())
 				})
 
 				It("releases the lock", func() {
@@ -635,7 +634,8 @@ var _ = Describe("Engine", func() {
 				})
 
 				It("does not build the step", func() {
-					Expect(stepperFactory.stepperCalls).To(BeZero())
+					waitGroup.Wait()
+					Consistently(builtPlans).ShouldNot(Receive())
 				})
 
 				It("releases the lock", func() {
@@ -650,7 +650,8 @@ var _ = Describe("Engine", func() {
 			})
 
 			It("does not build the step", func() {
-				Expect(stepperFactory.stepperCalls).To(BeZero())
+				waitGroup.Wait()
+				Consistently(builtPlans).ShouldNot(Receive())
 			})
 		})
 	})

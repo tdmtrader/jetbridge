@@ -7,8 +7,13 @@ import (
 	"github.com/concourse/concourse/atc/exec"
 )
 
-// scriptedStep is a Step whose behavior the spec writes itself. The engine runs
-// a build's step on its own goroutine, so the record of those calls is guarded.
+type stepFunc func(context.Context, exec.RunState) (bool, error)
+
+func (f stepFunc) Run(ctx context.Context, state exec.RunState) (bool, error) {
+	return f(ctx, state)
+}
+
+// scriptedStep remains for engine scenarios that this migration does not own.
 type scriptedStep struct {
 	RunStub func(context.Context, exec.RunState) (bool, error)
 
