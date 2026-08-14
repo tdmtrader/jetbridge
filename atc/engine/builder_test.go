@@ -3,6 +3,7 @@ package engine_test
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 
@@ -10,8 +11,10 @@ import (
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/engine"
+	"github.com/concourse/concourse/atc/event"
 	"github.com/concourse/concourse/atc/exec"
 	"github.com/concourse/concourse/atc/policy"
+	"github.com/concourse/concourse/atc/resource"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/runtime/runtimetest"
 	"github.com/concourse/concourse/atc/worker"
@@ -98,7 +101,7 @@ var _ = Describe("Builder", func() {
 		Expect(stepper(unknownPlan)).To(Equal(exec.IdentityStep{}))
 	})
 
-	It("propagates build and attempt metadata into the runtime task container", func() {
+	It("derives nested retry attempts in runtime task metadata", func() {
 		fixture := useEngineDB()
 		team, pipeline, job, build := createEngineJobBuild(
 			fixture,
@@ -112,38 +115,62 @@ var _ = Describe("Builder", func() {
 		)
 
 		planFactory := atc.NewPlanFactory(123)
-		taskPlan := planFactory.NewPlan(atc.TaskPlan{
-			Name: "some-task",
-			Config: &atc.TaskConfig{
-				Platform: "linux",
-				Run: atc.TaskRunConfig{
-					Path: "echo",
-					Args: []string{"hello"},
+		taskPlans := []atc.Plan{
+			planFactory.NewPlan(atc.TaskPlan{
+				Name: "some-task",
+				Config: &atc.TaskConfig{
+					Platform: "linux",
+					Run: atc.TaskRunConfig{
+						Path: "echo",
+						Args: []string{"hello"},
+					},
 				},
-			},
-		})
-		taskPlan.Attempts = []int{2, 1}
+			}),
+			planFactory.NewPlan(atc.TaskPlan{
+				Name: "some-task",
+				Config: &atc.TaskConfig{
+					Platform: "linux",
+					Run: atc.TaskRunConfig{
+						Path: "echo",
+						Args: []string{"hello"},
+					},
+				},
+			}),
+			planFactory.NewPlan(atc.TaskPlan{
+				Name: "some-task",
+				Config: &atc.TaskConfig{
+					Platform: "linux",
+					Run: atc.TaskRunConfig{
+						Path: "echo",
+						Args: []string{"hello"},
+					},
+				},
+			}),
+		}
+		nestedRetryPlan := planFactory.NewPlan(atc.RetryPlan{taskPlans[1], taskPlans[2]})
+		retryPlan := planFactory.NewPlan(atc.RetryPlan{taskPlans[0], nestedRetryPlan})
 
 		taskNameHash := sha256.Sum256([]byte("some-task"))
 		expectedWorkingDirectory := filepath.Join("/tmp", "build", fmt.Sprintf("%x", taskNameHash[:4]))
-		runtimeContainer := runtimetest.NewContainer().WithProcess(
-			runtime.ProcessSpec{
-				ID:   "task",
-				Path: "echo",
-				Args: []string{"hello"},
-				Dir:  expectedWorkingDirectory,
-				TTY: &runtime.TTYSpec{
-					WindowSize: runtime.WindowSize{Columns: 500, Rows: 500},
-				},
-			},
-			runtimetest.ProcessStub{ExitStatus: 0},
-		)
-		runtimeWorker := runtimetest.NewWorker("runtime-worker").WithContainer(
-			db.NewBuildStepContainerOwner(build.ID(), taskPlan.ID, team.ID()),
-			runtimeContainer,
-			nil,
-		)
-		workerContainer := runtimeWorker.Containers[0]
+		runtimeWorker := runtimetest.NewWorker("runtime-worker")
+		for i, taskPlan := range taskPlans {
+			runtimeWorker = runtimeWorker.WithContainer(
+				db.NewBuildStepContainerOwner(build.ID(), taskPlan.ID, team.ID()),
+				runtimetest.NewContainer().WithProcess(
+					runtime.ProcessSpec{
+						ID:   "task",
+						Path: "echo",
+						Args: []string{"hello"},
+						Dir:  expectedWorkingDirectory,
+						TTY: &runtime.TTYSpec{
+							WindowSize: runtime.WindowSize{Columns: 500, Rows: 500},
+						},
+					},
+					runtimetest.ProcessStub{ExitStatus: []int{1, 1, 0}[i]},
+				),
+				nil,
+			)
+		}
 
 		dbWorker, err := fixture.WorkerFactory.SaveWorker(
 			atc.Worker{Name: runtimeWorker.Name(), Platform: "linux"},
@@ -151,7 +178,7 @@ var _ = Describe("Builder", func() {
 		)
 		Expect(err).NotTo(HaveOccurred())
 
-		started, err := build.Start(taskPlan)
+		started, err := build.Start(retryPlan)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(started).To(BeTrue())
 		Expect(build.Reload()).To(BeTrue())
@@ -161,14 +188,117 @@ var _ = Describe("Builder", func() {
 			runtimeWorkerFactory{dbWorker.Name(): runtimeWorker},
 		).StepperForBuild(build)
 		Expect(err).NotTo(HaveOccurred())
-		step := stepper(taskPlan)
+		step := stepper(build.PrivatePlan())
 		state := exec.NewRunState(stepper, vars.StaticVariables{})
 		succeeded, err := step.Run(context.Background(), state)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(succeeded).To(BeTrue())
 
+		expectedTaskEnv := []string{
+			fmt.Sprintf("BUILD_ID=%d", build.ID()),
+			"BUILD_NAME=" + build.Name(),
+			"BUILD_TEAM_NAME=some-team",
+			"BUILD_JOB_NAME=" + job.Name(),
+			"BUILD_PIPELINE_NAME=" + pipeline.Name(),
+			"ATC_EXTERNAL_URL=http://example.com",
+		}
+		for i, expectedAttempt := range []string{"1", "2.1", "2.2"} {
+			Expect(runtimeWorker.Containers[i].Metadata).To(Equal(db.ContainerMetadata{
+				Type:                 db.ContainerTypeTask,
+				PipelineID:           pipeline.ID(),
+				JobID:                job.ID(),
+				BuildID:              build.ID(),
+				PipelineName:         pipeline.Name(),
+				PipelineInstanceVars: `{"branch":"master"}`,
+				JobName:              job.Name(),
+				BuildName:            build.Name(),
+				StepName:             "some-task",
+				Attempt:              expectedAttempt,
+				WorkingDirectory:     expectedWorkingDirectory,
+			}))
+			Expect(runtimeWorker.Containers[i].Spec).To(SatisfyAll(
+				HaveField("TeamID", team.ID()),
+				HaveField("TeamName", "some-team"),
+				HaveField("JobID", job.ID()),
+				HaveField("StepName", "some-task"),
+				HaveField("Type", db.ContainerTypeTask),
+				HaveField("Dir", expectedWorkingDirectory),
+				HaveField("Env", ConsistOf(expectedTaskEnv)),
+			))
+			Expect(runtimeWorker.Containers[i].RunningProcesses()).To(HaveLen(1))
+		}
+	})
+
+	It("exposes instance-qualified build metadata to a real put container", func() {
+		fixture := useEngineDB()
+		team, pipeline, job, build := createEngineJobBuild(
+			fixture,
+			"some-team",
+			atc.PipelineRef{
+				Name:         "some-pipeline",
+				InstanceVars: atc.InstanceVars{"branch": "master"},
+			},
+			atc.Config{Jobs: atc.JobConfigs{{Name: "some-job"}}},
+			"some-user",
+		)
+
+		planFactory := atc.NewPlanFactory(456)
+		putPlan := planFactory.NewPlan(atc.PutPlan{
+			Name: "some-put",
+			Type: "some-resource-type",
+			TypeImage: atc.TypeImage{
+				BaseType: "some-resource-type",
+			},
+			Source:               atc.Source{"some": "source"},
+			Params:               atc.Params{"some": "params"},
+			ExposeBuildCreatedBy: true,
+		})
+
+		runtimeContainer := runtimetest.NewContainer().WithProcess(
+			runtime.ProcessSpec{
+				ID:   "resource",
+				Path: "/opt/resource/out",
+				Args: []string{resource.ResourcesDir("put")},
+			},
+			runtimetest.ProcessStub{
+				Attachable: true,
+				Output: resource.VersionResult{
+					Version: atc.Version{"version": "one"},
+				},
+			},
+		)
+		runtimeWorker := runtimetest.NewWorker("runtime-worker").WithContainer(
+			db.NewBuildStepContainerOwner(build.ID(), putPlan.ID, team.ID()),
+			runtimeContainer,
+			nil,
+		)
+		workerContainer := runtimeWorker.Containers[0]
+		dbWorker, err := fixture.WorkerFactory.SaveWorker(
+			atc.Worker{Name: runtimeWorker.Name(), Platform: "linux"},
+			0,
+		)
+		Expect(err).NotTo(HaveOccurred())
+
+		started, err := build.Start(putPlan)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(started).To(BeTrue())
+		Expect(build.Reload()).To(BeTrue())
+
+		stepper, err := newRealStepperFactory(
+			fixture,
+			runtimeWorkerFactory{dbWorker.Name(): runtimeWorker},
+		).StepperForBuild(build)
+		Expect(err).NotTo(HaveOccurred())
+		step := stepper(build.PrivatePlan())
+		succeeded, err := step.Run(
+			context.Background(),
+			exec.NewRunState(stepper, vars.StaticVariables{}),
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(succeeded).To(BeTrue())
+
 		Expect(workerContainer.Metadata).To(Equal(db.ContainerMetadata{
-			Type:                 db.ContainerTypeTask,
+			Type:                 db.ContainerTypePut,
 			PipelineID:           pipeline.ID(),
 			JobID:                job.ID(),
 			BuildID:              build.ID(),
@@ -176,10 +306,104 @@ var _ = Describe("Builder", func() {
 			PipelineInstanceVars: `{"branch":"master"}`,
 			JobName:              job.Name(),
 			BuildName:            build.Name(),
-			StepName:             "some-task",
-			Attempt:              "2.1",
-			WorkingDirectory:     expectedWorkingDirectory,
+			StepName:             "some-put",
+			WorkingDirectory:     resource.ResourcesDir("put"),
 		}))
-		Expect(workerContainer.Spec.TeamName).To(Equal("some-team"))
+
+		expectedBuildURL := fmt.Sprintf(
+			"http://example.com/teams/some-team/pipelines/some-pipeline/jobs/some-job/builds/%s",
+			build.Name(),
+		) + `?vars.branch=%22master%22`
+		Expect(workerContainer.Spec).To(SatisfyAll(
+			HaveField("TeamID", team.ID()),
+			HaveField("TeamName", "some-team"),
+			HaveField("JobID", job.ID()),
+			HaveField("Type", db.ContainerTypePut),
+			HaveField("Dir", resource.ResourcesDir("put")),
+			HaveField("ImageSpec.ResourceType", "some-resource-type"),
+			HaveField("Env", ConsistOf(
+				fmt.Sprintf("BUILD_ID=%d", build.ID()),
+				"BUILD_NAME="+build.Name(),
+				fmt.Sprintf("BUILD_TEAM_ID=%d", team.ID()),
+				"BUILD_TEAM_NAME=some-team",
+				fmt.Sprintf("BUILD_JOB_ID=%d", job.ID()),
+				"BUILD_JOB_NAME="+job.Name(),
+				fmt.Sprintf("BUILD_PIPELINE_ID=%d", pipeline.ID()),
+				"BUILD_PIPELINE_NAME="+pipeline.Name(),
+				`BUILD_PIPELINE_INSTANCE_VARS={"branch":"master"}`,
+				"ATC_EXTERNAL_URL=http://example.com",
+				"BUILD_URL="+expectedBuildURL,
+				fmt.Sprintf("BUILD_URL_SHORT=http://example.com/builds/%d", build.ID()),
+				"BUILD_CREATED_BY=some-user",
+			)),
+		))
+	})
+
+	It("composes run plans into persisted run behavior", func() {
+		fixture := useEngineDB()
+		_, _, _, build := createEngineJobBuild(
+			fixture,
+			"some-team",
+			atc.PipelineRef{Name: "some-pipeline"},
+			atc.Config{Jobs: atc.JobConfigs{{Name: "some-job"}}},
+			"some-user",
+		)
+		runPlan := atc.NewPlanFactory(789).NewPlan(atc.RunPlan{
+			Message: "some-message",
+			Type:    "some-prototype",
+		})
+
+		started, err := build.Start(runPlan)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(started).To(BeTrue())
+		Expect(build.Reload()).To(BeTrue())
+
+		stepper, err := newRealStepperFactory(fixture, nil).StepperForBuild(build)
+		Expect(err).NotTo(HaveOccurred())
+		step := stepper(build.PrivatePlan())
+		succeeded, err := step.Run(
+			context.Background(),
+			exec.NewRunState(stepper, vars.StaticVariables{}),
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(succeeded).To(BeTrue())
+
+		rows, err := fixture.Conn.Query(`
+			SELECT type, payload
+			FROM build_events
+			WHERE build_id = $1
+			ORDER BY event_id ASC
+		`, build.ID())
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { Expect(rows.Close()).To(Succeed()) }()
+
+		var eventTypes []atc.EventType
+		var stderr string
+		for rows.Next() {
+			var eventType atc.EventType
+			var payload []byte
+			Expect(rows.Scan(&eventType, &payload)).To(Succeed())
+			eventTypes = append(eventTypes, eventType)
+			if eventType == event.EventTypeLog {
+				var logged event.Log
+				Expect(json.Unmarshal(payload, &logged)).To(Succeed())
+				if logged.Origin.Source == event.OriginSourceStderr {
+					stderr += logged.Payload
+				}
+			}
+		}
+		Expect(rows.Err()).NotTo(HaveOccurred())
+		Expect(eventTypes).To(Equal([]atc.EventType{
+			event.EventTypeStatus,
+			event.EventTypeInitialize,
+			event.EventTypeLog,
+			event.EventTypeStart,
+			event.EventTypeLog,
+			event.EventTypeFinish,
+		}))
+		Expect(stderr).To(SatisfyAll(
+			ContainSubstring("the run step is not yet implemented"),
+			ContainSubstring("pretending to run some-message on prototype some-prototype..."),
+		))
 	})
 })
