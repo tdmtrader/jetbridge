@@ -286,27 +286,26 @@ func (runner *Runner) InitializeTestDBTemplate() {
 // matches at a stride of a million top out around 24000001, well inside the
 // 2147483647 of the narrowest id column (most are integer, a few bigint).
 //
-// build_event_id_seq_<n> sequences are created per pipeline at runtime and
-// dropped by Truncate; the end-anchored match excludes them.
+// Legacy build_event_id_seq_<n> sequences are dropped defensively by
+// Truncate; the end-anchored match excludes them from the persistent ranges.
 const spreadIDSequencesSQL = `
 			SET client_min_messages TO WARNING;
 
-			CREATE OR REPLACE FUNCTION spread_id_sequences() RETURNS void AS $$
-			DECLARE
-					statements CURSOR FOR
-							SELECT sequencename, row_number() OVER (ORDER BY sequencename) AS n
-							FROM pg_sequences
-							WHERE schemaname = 'public' AND sequencename LIKE '%\_id\_seq';
+			DO $spread_id_sequences$
 			BEGIN
-					FOR stmt IN statements LOOP
-							EXECUTE 'ALTER SEQUENCE ' || quote_ident(stmt.sequencename) ||
-									' START WITH ' || (stmt.n * 1000000 + 1) ||
-									' RESTART;';
-					END LOOP;
+					PERFORM setval(
+							format('%I.%I', schemaname, sequencename)::regclass,
+							n * 1000000 + 1,
+							false
+					)
+					FROM (
+							SELECT schemaname, sequencename,
+									row_number() OVER (ORDER BY sequencename) AS n
+							FROM pg_sequences
+							WHERE schemaname = 'public' AND sequencename LIKE '%\_id\_seq'
+					) sequences;
 			END;
-			$$ LANGUAGE plpgsql;
-
-			SELECT spread_id_sequences();
+			$spread_id_sequences$ LANGUAGE plpgsql;
 `
 
 func (runner *Runner) CreateEmptyTestDB() {
@@ -332,73 +331,74 @@ func (runner *Runner) terminateIdleConnections(dbName string) {
 }
 
 func (runner *Runner) Truncate() {
-	exitCode := runner.psqlIn("testdb", truncateSQL+spreadIDSequencesSQL)
-	Expect(exitCode).To(Equal(0), "truncate testdb")
+	conn := runner.OpenSingleton()
+	defer func() {
+		Expect(conn.Close()).To(Succeed(), "close truncate connection")
+	}()
+
+	_, err := conn.Exec(truncateSQL + spreadIDSequencesSQL)
+	Expect(err).NotTo(HaveOccurred(), "truncate testdb")
 }
 
-// TRUNCATE ... RESTART IDENTITY rewinds every sequence to its start value, so
-// the spread has to be reapplied here as well as on the template.
+// Truncate resets the two global sequences below; spreadIDSequencesSQL resets
+// every table ID sequence after this block runs.
 const truncateSQL = `
 			SET client_min_messages TO WARNING;
 
-			CREATE OR REPLACE FUNCTION truncate_tables() RETURNS void AS $$
+			DO $truncate_test_database$
 			DECLARE
-					statements CURSOR FOR
-							SELECT tablename FROM pg_tables
-							WHERE schemaname = 'public' AND tablename != 'migrations_history';
+					table_names text;
+					ephemeral_sequence_names text;
+					ephemeral_table_names text;
 			BEGIN
-					FOR stmt IN statements LOOP
-							EXECUTE 'TRUNCATE TABLE ' || quote_ident(stmt.tablename) || ' RESTART IDENTITY CASCADE;';
-					END LOOP;
-			END;
-			$$ LANGUAGE plpgsql;
+					SELECT string_agg(format('%I.%I', schemaname, tablename), ', ')
+					INTO table_names
+					FROM pg_tables
+					WHERE schemaname = 'public'
+					AND tablename != 'migrations_history'
+					AND pg_relation_size(format('%I.%I', schemaname, tablename)::regclass) > 0;
 
-			CREATE OR REPLACE FUNCTION drop_ephemeral_sequences() RETURNS void AS $$
-			DECLARE
-					statements CURSOR FOR
-							SELECT relname FROM pg_class
-							WHERE relname LIKE 'build_event_id_seq_%';
-			BEGIN
-					FOR stmt IN statements LOOP
-							EXECUTE 'DROP SEQUENCE ' || quote_ident(stmt.relname) || ';';
-					END LOOP;
-			END;
-			$$ LANGUAGE plpgsql;
+					IF table_names IS NOT NULL THEN
+							EXECUTE 'TRUNCATE TABLE ' || table_names || ' CASCADE;';
+					END IF;
 
-			CREATE OR REPLACE FUNCTION drop_ephemeral_tables() RETURNS void AS $$
-			DECLARE
-					statements CURSOR FOR
-							SELECT relname FROM pg_class
-							WHERE relname LIKE 'pipeline_build_events_%'
-							AND relkind = 'r';
-					team_statements CURSOR FOR
-							SELECT relname FROM pg_class
-							WHERE relname LIKE 'team_build_events_%'
-							AND relkind = 'r';
-			BEGIN
-					FOR stmt IN statements LOOP
-							EXECUTE 'DROP TABLE ' || quote_ident(stmt.relname) || ';';
-					END LOOP;
-					FOR stmt IN team_statements LOOP
-							EXECUTE 'DROP TABLE ' || quote_ident(stmt.relname) || ';';
-					END LOOP;
-			END;
-			$$ LANGUAGE plpgsql;
+					SELECT string_agg(format('%I.%I', namespace.nspname, relation.relname), ', ')
+					INTO ephemeral_sequence_names
+					FROM pg_class relation
+					JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+					WHERE namespace.nspname = 'public'
+					AND relation.relkind = 'S'
+					AND relation.relname ~ '^build_event_id_seq_[0-9]+$';
 
-			CREATE OR REPLACE FUNCTION reset_global_sequences() RETURNS void AS $$
-			DECLARE
-					statements CURSOR FOR
-							SELECT relname FROM pg_class
-							WHERE relname IN ('one_off_name', 'config_version_seq');
-			BEGIN
-					FOR stmt IN statements LOOP
-							EXECUTE 'ALTER SEQUENCE ' || quote_ident(stmt.relname) || ' RESTART WITH 1;';
-					END LOOP;
-			END;
-			$$ LANGUAGE plpgsql;
+					IF ephemeral_sequence_names IS NOT NULL THEN
+							EXECUTE 'DROP SEQUENCE ' || ephemeral_sequence_names || ';';
+					END IF;
 
-			SELECT truncate_tables();
-			SELECT drop_ephemeral_sequences();
-			SELECT drop_ephemeral_tables();
-			SELECT reset_global_sequences();
+					SELECT string_agg(format('%I.%I', namespace.nspname, relation.relname), ', ')
+					INTO ephemeral_table_names
+					FROM pg_class relation
+					JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+					WHERE namespace.nspname = 'public'
+					AND relation.relkind = 'r'
+					AND (
+							relation.relname ~ '^pipeline_build_events_[0-9]+$'
+							OR relation.relname ~ '^team_build_events_[0-9]+$'
+					);
+
+					IF ephemeral_table_names IS NOT NULL THEN
+							EXECUTE 'DROP TABLE ' || ephemeral_table_names || ';';
+					END IF;
+
+					PERFORM setval(
+							format('%I.%I', namespace.nspname, relation.relname)::regclass,
+							1,
+							false
+					)
+					FROM pg_class relation
+					JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+					WHERE namespace.nspname = 'public'
+					AND relation.relkind = 'S'
+					AND relation.relname IN ('one_off_name', 'config_version_seq');
+			END;
+			$truncate_test_database$ LANGUAGE plpgsql;
 `
