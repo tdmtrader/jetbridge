@@ -6,7 +6,9 @@ import (
 	"fmt"
 
 	"code.cloudfoundry.org/lager/v3"
+	"github.com/concourse/concourse/atc/builds"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/scheduler/algorithm"
 	"github.com/concourse/concourse/tracing"
 )
 
@@ -24,6 +26,13 @@ type Algorithm interface {
 type Scheduler struct {
 	Algorithm    Algorithm
 	BuildStarter BuildStarter
+}
+
+func NewScheduler(planner builds.Planner, alg *algorithm.Algorithm) *Scheduler {
+	return &Scheduler{
+		Algorithm:    alg,
+		BuildStarter: NewBuildStarter(planner, alg),
+	}
 }
 
 func (s *Scheduler) Schedule(

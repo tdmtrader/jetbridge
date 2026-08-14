@@ -8,9 +8,11 @@ import (
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/builds"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbtest"
 	. "github.com/concourse/concourse/atc/scheduler"
+	"github.com/concourse/concourse/atc/scheduler/algorithm"
 	"github.com/concourse/concourse/atc/scheduler/schedulerfakes"
 	"github.com/concourse/concourse/tracing"
 	. "github.com/onsi/ginkgo/v2"
@@ -149,6 +151,26 @@ var _ = Describe("Scheduler", func() {
 			_, actualJob, actualInputs := fakeAlgorithm.ComputeArgsForCall(0)
 			Expect(actualJob.Name()).To(Equal("some-job-1"))
 			Expect(actualInputs).To(BeNil())
+		})
+
+		It("persists a resolved empty input mapping with real scheduling services", func() {
+			realScheduler := NewScheduler(
+				builds.NewPlanner(atc.NewPlanFactory(0)),
+				algorithm.New(schedulerVersionsDB(fixture)),
+			)
+
+			_, err := realScheduler.Schedule(
+				context.Background(),
+				lagertest.NewTestLogger("test"),
+				db.SchedulerJob{Job: job},
+			)
+			Expect(err).NotTo(HaveOccurred())
+
+			buildInputs, resolved, err := job.GetFullNextBuildInputs()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(resolved).To(BeTrue())
+			Expect(buildInputs).To(BeEmpty())
+			Expect(schedulerPendingBuilds(job)).To(BeEmpty())
 		})
 
 		It("returns the error when the job inputs fail to fetch", func() {

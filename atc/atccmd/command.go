@@ -1182,6 +1182,11 @@ func (cmd *RunCommand) backendComponents(
 		cmd.ResourceTypeCheckingInterval = cmd.ResourceCheckingInterval
 	}
 
+	jobScheduler := scheduler.NewScheduler(
+		builds.NewPlanner(atc.NewPlanFactory(time.Now().Unix())),
+		alg,
+	)
+
 	components := []RunnableComponent{
 		{
 			Component: atc.Component{
@@ -1211,12 +1216,7 @@ func (cmd *RunCommand) backendComponents(
 			Runnable: scheduler.NewRunner(
 				logger.Session("scheduler"),
 				dbJobFactory,
-				&scheduler.Scheduler{
-					Algorithm: alg,
-					BuildStarter: scheduler.NewBuildStarter(
-						builds.NewPlanner(atc.NewPlanFactory(time.Now().Unix())),
-						alg),
-				},
+				jobScheduler,
 				cmd.JobSchedulingMaxInFlight,
 			),
 		},
