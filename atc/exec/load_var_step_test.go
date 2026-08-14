@@ -12,6 +12,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/compression"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/engine"
 	"github.com/concourse/concourse/atc/event"
@@ -19,6 +20,7 @@ import (
 	"github.com/concourse/concourse/atc/exec/build"
 	"github.com/concourse/concourse/atc/policy"
 	"github.com/concourse/concourse/atc/runtime/runtimetest"
+	"github.com/concourse/concourse/atc/worker"
 	"github.com/concourse/concourse/vars"
 )
 
@@ -48,7 +50,7 @@ var _ = Describe("LoadVarStep", func() {
 		fixture *execDBFixture
 		dbBuild db.Build
 
-		streamer *recordingStreamer
+		streamer exec.Streamer
 
 		loadVarPlan        *atc.LoadVarPlan
 		fileContent        string
@@ -93,7 +95,7 @@ var _ = Describe("LoadVarStep", func() {
 			return engine.NewBuildStepDelegate(dbBuild, atc.PlanID(planID), state, clock.NewClock(), policy.NoopChecker{}, false)
 		})
 
-		streamer = newRecordingStreamer()
+		streamer = worker.NewStreamer(compression.NewGzipCompression())
 	})
 
 	expectLocalVarAdded := func(expectKey string, expectValue any, expectRedact bool) {

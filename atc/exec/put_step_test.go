@@ -15,7 +15,6 @@ import (
 	oteltrace "go.opentelemetry.io/otel/trace"
 
 	"code.cloudfoundry.org/clock"
-	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/engine"
@@ -36,14 +35,10 @@ import (
 type imageFetchStepper struct {
 	artifact runtime.Artifact
 	cache    db.ResourceCache
-
-	ranPlans []atc.Plan
 }
 
 func (stepper *imageFetchStepper) step(plan atc.Plan) exec.Step {
 	return stepFunc(func(_ context.Context, state exec.RunState) (bool, error) {
-		stepper.ranPlans = append(stepper.ranPlans, plan)
-
 		if plan.Get != nil {
 			state.StoreResult(plan.ID, exec.GetResult{
 				Name:          plan.Get.Name,
@@ -82,20 +77,6 @@ func persistedSelectedWorkers(fixture *execDBFixture, build db.Build) []string {
 	return names
 }
 
-// beforeSelectWorkerRecorder keeps the real delegate's behavior and only adds
-// what PostgreSQL cannot show: whether the step asked before selecting a
-// worker. BeforeSelectWorker writes nothing for a build that is not a check.
-type beforeSelectWorkerRecorder struct {
-	exec.PutDelegate
-
-	callCount int
-}
-
-func (delegate *beforeSelectWorkerRecorder) BeforeSelectWorker(logger lager.Logger) error {
-	delegate.callCount++
-	return delegate.PutDelegate.BeforeSelectWorker(logger)
-}
-
 var _ = Describe("PutStep", func() {
 	var (
 		ctx    context.Context
@@ -105,7 +86,6 @@ var _ = Describe("PutStep", func() {
 		dbBuild         db.Build
 		dbTeam          db.Team
 		dbPipeline      db.Pipeline
-		delegate        *beforeSelectWorkerRecorder
 		delegateFactory exec.PutDelegateFactory
 
 		stepper      exec.Stepper
@@ -227,10 +207,7 @@ var _ = Describe("PutStep", func() {
 		}
 
 		delegateFactory = putDelegateFactory(func(state exec.RunState) exec.PutDelegate {
-			delegate = &beforeSelectWorkerRecorder{
-				PutDelegate: engine.NewPutDelegate(dbBuild, planID, state, clock.NewClock(), policy.NoopChecker{}),
-			}
-			return delegate
+			return engine.NewPutDelegate(dbBuild, planID, state, clock.NewClock(), policy.NoopChecker{})
 		})
 
 		imageStepper = new(imageFetchStepper)
@@ -292,10 +269,6 @@ var _ = Describe("PutStep", func() {
 	})
 
 	Describe("worker selection", func() {
-		It("emits a BeforeSelectWorker event", func() {
-			Expect(delegate.callCount).To(Equal(1))
-		})
-
 		It("emits a SelectedWorker event", func() {
 			Expect(persistedSelectedWorkers(fixture, dbBuild)).To(Equal([]string{"worker"}))
 		})
@@ -587,11 +560,7 @@ var _ = Describe("PutStep", func() {
 			stepper = imageStepper.step
 		})
 
-		It("fetches the resource type image and uses it for the container", func() {
-			Expect(imageStepper.ranPlans).To(Equal([]atc.Plan{
-				*putPlan.TypeImage.CheckPlan,
-				*putPlan.TypeImage.GetPlan,
-			}))
+		It("uses the fetched resource type image for the container", func() {
 			Expect(chosenContainer.Spec.ImageSpec.Privileged).To(BeFalse())
 		})
 

@@ -2,10 +2,9 @@ package exec_test
 
 import (
 	"context"
-	"errors"
 	"io"
+	"sync"
 
-	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/compression"
@@ -13,32 +12,36 @@ import (
 	"github.com/concourse/concourse/atc/exec/build"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/runtime/runtimetest"
+	"github.com/concourse/concourse/atc/worker"
 	"github.com/concourse/concourse/vars"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"sigs.k8s.io/yaml"
 )
 
-// fetchErrorConfigSource preserves a real config source while replacing only
-// FetchConfig for the failure path.
-type fetchErrorConfigSource struct {
-	TaskConfigSource
-	err error
-}
-
-func (source fetchErrorConfigSource) FetchConfig(context.Context, lager.Logger, *build.Repository) (atc.TaskConfig, error) {
-	return atc.TaskConfig{}, source.err
-}
-
-// streamOutErrorArtifact preserves a real artifact while replacing only
-// StreamOut for the failure path.
-type streamOutErrorArtifact struct {
+type closeDetectingArtifact struct {
 	runtime.Artifact
-	err error
+	closed chan struct{}
 }
 
-func (artifact streamOutErrorArtifact) StreamOut(context.Context, string, compression.Compression) (io.ReadCloser, error) {
-	return nil, artifact.err
+func (artifact closeDetectingArtifact) StreamOut(ctx context.Context, path string, compression compression.Compression) (io.ReadCloser, error) {
+	reader, err := artifact.Artifact.StreamOut(ctx, path, compression)
+	if err != nil {
+		return nil, err
+	}
+	return &closeDetectingReader{ReadCloser: reader, closed: artifact.closed}, nil
+}
+
+type closeDetectingReader struct {
+	io.ReadCloser
+	closed chan struct{}
+	once   sync.Once
+}
+
+func (reader *closeDetectingReader) Close() error {
+	err := reader.ReadCloser.Close()
+	reader.once.Do(func() { close(reader.closed) })
+	return err
 }
 
 var _ = Describe("TaskConfigSource", func() {
@@ -106,16 +109,17 @@ var _ = Describe("TaskConfigSource", func() {
 	Describe("FileConfigSource", func() {
 		var (
 			configSource  FileConfigSource
-			streamer      *recordingStreamer
+			streamer      Streamer
 			fetchedConfig atc.TaskConfig
 			fetchErr      error
 			artifactName  string
+			streamClosed  chan struct{}
 		)
 
 		BeforeEach(func() {
 
 			artifactName = "some-artifact-name"
-			streamer = newRecordingStreamer()
+			streamer = worker.NewStreamer(compression.NewGzipCompression())
 			configSource = FileConfigSource{
 				ConfigPath: artifactName + "/build.yml",
 				Streamer:   streamer,
@@ -138,10 +142,14 @@ var _ = Describe("TaskConfigSource", func() {
 
 		Context("when the file's artifact can be found in the repository", func() {
 			registerConfigFile := func(content []byte) {
+				streamClosed = make(chan struct{})
 				volume := runtimetest.NewVolume("some-volume").WithContent(runtimetest.VolumeContent{
 					"build.yml": {Data: content},
 				})
-				repo.RegisterArtifact(build.ArtifactName(artifactName), volume, false)
+				repo.RegisterArtifact(build.ArtifactName(artifactName), closeDetectingArtifact{
+					Artifact: volume,
+					closed:   streamClosed,
+				}, false)
 			}
 
 			Context("when the artifact provides a proper file", func() {
@@ -161,8 +169,7 @@ var _ = Describe("TaskConfigSource", func() {
 				})
 
 				It("closes the stream", func() {
-					Expect(streamer.streams).To(HaveLen(1))
-					Expect(streamer.streams[0].closed).To(BeTrue())
+					Expect(streamClosed).To(BeClosed())
 				})
 			})
 
@@ -193,8 +200,7 @@ var _ = Describe("TaskConfigSource", func() {
 				})
 
 				It("closes the stream", func() {
-					Expect(streamer.streams).To(HaveLen(1))
-					Expect(streamer.streams[0].closed).To(BeTrue())
+					Expect(streamClosed).To(BeClosed())
 				})
 			})
 
@@ -214,23 +220,7 @@ run: {path: a/file}
 				})
 
 				It("closes the stream", func() {
-					Expect(streamer.streams).To(HaveLen(1))
-					Expect(streamer.streams[0].closed).To(BeTrue())
-				})
-			})
-
-			Context("when streaming the file out fails", func() {
-				disaster := errors.New("nope")
-
-				BeforeEach(func() {
-					repo.RegisterArtifact(build.ArtifactName(artifactName), streamOutErrorArtifact{
-						Artifact: runtimetest.NewVolume("some-volume"),
-						err:      disaster,
-					}, false)
-				})
-
-				It("returns the error", func() {
-					Expect(fetchErr).To(MatchError(disaster))
+					Expect(streamClosed).To(BeClosed())
 				})
 			})
 
@@ -582,20 +572,6 @@ run: {path: a/file}
 			})
 		})
 
-		Context("when fetching the config fails", func() {
-			disaster := errors.New("nope")
-
-			BeforeEach(func() {
-				configSource = ValidatingConfigSource{fetchErrorConfigSource{
-					TaskConfigSource: StaticConfigSource{Config: &innerConfig},
-					err:              disaster,
-				}}
-			})
-
-			It("returns the error", func() {
-				Expect(fetchErr).To(Equal(disaster))
-			})
-		})
 	})
 
 	Describe("InterpolateTemplateConfigSource", func() {

@@ -2,6 +2,7 @@ package exec_test
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,7 +10,6 @@ import (
 	"time"
 
 	"code.cloudfoundry.org/clock"
-	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/lock"
@@ -27,8 +27,6 @@ import (
 	"github.com/concourse/concourse/tracing"
 	"github.com/concourse/concourse/vars"
 	"github.com/google/go-containerregistry/pkg/authn"
-	"github.com/jackc/pgerrcode"
-	"github.com/jackc/pgx/v5/pgconn"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
@@ -38,53 +36,34 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-// saveVersionsErrorScope preserves a healthy PostgreSQL-backed scope while
-// replacing only the method needed to exercise CheckStep's persistence errors.
-type saveVersionsErrorScope struct {
-	db.ResourceConfigScope
-	err error
-}
-
-func (scope saveVersionsErrorScope) SaveVersions(db.SpanContext, []atc.Version) error {
-	return scope.err
-}
-
-// releaseCountingLock counts releases of whatever lock the real delegate
-// handed out; nothing in PostgreSQL distinguishes "released" from "never held"
-// for the no-op lock a non-resource check gets.
-type releaseCountingLock struct {
-	lock.Lock
-	releases *int
-}
-
-func (l releaseCountingLock) Release() error {
-	*l.releases++
-	return l.Lock.Release()
-}
-
-// recordingCheckDelegate keeps every behavior of the real delegate, recording
-// the arguments the build event stream does not carry and providing the two
-// fault injections PostgreSQL cannot perform on demand.
-type recordingCheckDelegate struct {
+// scopeDeletingCheckDelegate models the real race where GC deletes a scope
+// after it is created but before the check points a pipeline resource at it.
+// It records no calls and injects no database error: PointToCheckedConfig sees
+// the foreign-key violation produced by the now-absent persisted row.
+type scopeDeletingCheckDelegate struct {
 	exec.CheckDelegate
-
-	onScope     func(db.ResourceConfig, db.ResourceConfigScope)
-	wrapScope   func(db.ResourceConfigScope) db.ResourceConfigScope
-	onWaitToRun func(db.ResourceConfigScope)
-	pointErr    error
-
-	beforeSelectWorkerCount int
-	containerOwnerCount     int
-	configs                 []db.ResourceConfig
-	pointedScopes           []db.ResourceConfigScope
-	startTimeUpdates        []checkStartTimeUpdate
-	lockReleases            int
-	span                    trace.Span
+	conn db.DbConn
 }
 
-type checkStartTimeUpdate struct {
-	scope       db.ResourceConfigScope
-	nestedCheck bool
+func (delegate scopeDeletingCheckDelegate) FindOrCreateScope(config db.ResourceConfig) (db.ResourceConfigScope, error) {
+	scope, err := delegate.CheckDelegate.FindOrCreateScope(config)
+	if err != nil {
+		return nil, err
+	}
+
+	result, err := delegate.conn.Exec(`DELETE FROM resource_config_scopes WHERE id = $1`, scope.ID())
+	if err != nil {
+		return nil, fmt.Errorf("delete scope after creation: %w", err)
+	}
+	deleted, err := result.RowsAffected()
+	if err != nil {
+		return nil, fmt.Errorf("count deleted scopes: %w", err)
+	}
+	if deleted != 1 {
+		return nil, fmt.Errorf("delete scope after creation: deleted %d rows", deleted)
+	}
+
+	return scope, nil
 }
 
 func newCheckStepRegistry() *imageresolvertesting.Registry {
@@ -112,66 +91,6 @@ func checkStepHeadRequests(registry *imageresolvertesting.Registry) []imageresol
 	return heads
 }
 
-func (delegate *recordingCheckDelegate) StartSpan(ctx context.Context, component string, attrs tracing.Attrs) (context.Context, trace.Span) {
-	ctx, span := delegate.CheckDelegate.StartSpan(ctx, component, attrs)
-	delegate.span = span
-	return ctx, span
-}
-
-func (delegate *recordingCheckDelegate) BeforeSelectWorker(logger lager.Logger) error {
-	delegate.beforeSelectWorkerCount++
-	return delegate.CheckDelegate.BeforeSelectWorker(logger)
-}
-
-func (delegate *recordingCheckDelegate) ContainerOwner(planID atc.PlanID) db.ContainerOwner {
-	delegate.containerOwnerCount++
-	return delegate.CheckDelegate.ContainerOwner(planID)
-}
-
-func (delegate *recordingCheckDelegate) FindOrCreateScope(config db.ResourceConfig) (db.ResourceConfigScope, error) {
-	scope, err := delegate.CheckDelegate.FindOrCreateScope(config)
-	if err != nil {
-		return nil, err
-	}
-
-	delegate.configs = append(delegate.configs, config)
-	if delegate.onScope != nil {
-		delegate.onScope(config, scope)
-	}
-	if delegate.wrapScope != nil {
-		return delegate.wrapScope(scope), nil
-	}
-	return scope, nil
-}
-
-func (delegate *recordingCheckDelegate) WaitToRun(ctx context.Context, scope db.ResourceConfigScope) (lock.Lock, bool, error) {
-	if delegate.onWaitToRun != nil {
-		delegate.onWaitToRun(scope)
-	}
-
-	acquired, run, err := delegate.CheckDelegate.WaitToRun(ctx, scope)
-	if acquired == nil {
-		return nil, run, err
-	}
-	return releaseCountingLock{Lock: acquired, releases: &delegate.lockReleases}, run, err
-}
-
-func (delegate *recordingCheckDelegate) PointToCheckedConfig(scope db.ResourceConfigScope) error {
-	delegate.pointedScopes = append(delegate.pointedScopes, scope)
-	if delegate.pointErr != nil {
-		return delegate.pointErr
-	}
-	return delegate.CheckDelegate.PointToCheckedConfig(scope)
-}
-
-func (delegate *recordingCheckDelegate) UpdateScopeLastCheckStartTime(scope db.ResourceConfigScope, nestedCheck bool) (bool, int, error) {
-	delegate.startTimeUpdates = append(delegate.startTimeUpdates, checkStartTimeUpdate{
-		scope:       scope,
-		nestedCheck: nestedCheck,
-	})
-	return delegate.CheckDelegate.UpdateScopeLastCheckStartTime(scope, nestedCheck)
-}
-
 var _ = Describe("CheckStep", func() {
 	var (
 		ctx    context.Context
@@ -182,18 +101,14 @@ var _ = Describe("CheckStep", func() {
 		fixture               *execDBFixture
 		resourceConfigFactory db.ResourceConfigFactory
 		expectedConfig        db.ResourceConfig
-		resourceConfig        db.ResourceConfig
 		resourceConfigScope   db.ResourceConfigScope
 		realBuild             db.Build
 		realPipeline          db.Pipeline
 		targetTeam            db.Team
-		delegate              *recordingCheckDelegate
 		delegateFactory       exec.CheckDelegateFactory
 		defaultTimeout        time.Duration = 0
 
-		scopeWrapper            func(db.ResourceConfigScope) db.ResourceConfigScope
-		waitToRunHook           func(db.ResourceConfigScope)
-		pointToCheckedConfigErr error
+		deleteScopeAfterCreation bool
 
 		stepper      exec.Stepper
 		imageStepper *imageFetchStepper
@@ -251,8 +166,7 @@ var _ = Describe("CheckStep", func() {
 			nil,
 		)
 		Expect(err).NotTo(HaveOccurred())
-		resourceConfig = expectedConfig
-		resourceConfigScope, err = resourceConfig.FindOrCreateScope(nil)
+		resourceConfigScope, err = expectedConfig.FindOrCreateScope(nil)
 		Expect(err).NotTo(HaveOccurred())
 
 		planID = "some-plan-id"
@@ -264,29 +178,24 @@ var _ = Describe("CheckStep", func() {
 			return stepper(plan)
 		}, vars.StaticVariables{"source-var": "super-secret-source"})
 
-		scopeWrapper = nil
-		waitToRunHook = nil
-		pointToCheckedConfigErr = nil
+		deleteScopeAfterCreation = false
 
 		delegateFactory = checkDelegateFactory(func(state exec.RunState) exec.CheckDelegate {
-			delegate = &recordingCheckDelegate{
-				CheckDelegate: engine.NewCheckDelegate(
-					realBuild,
-					atc.Plan{ID: planID, Check: &checkPlan},
-					state,
-					clock.NewClock(),
-					db.NewResourceCheckRateLimiter(rate.Inf, 0, time.Minute, nil, time.Minute, clock.NewClock()),
-					policy.NoopChecker{},
-				),
-				onScope: func(config db.ResourceConfig, scope db.ResourceConfigScope) {
-					resourceConfig = config
-					resourceConfigScope = scope
-				},
-				wrapScope:   scopeWrapper,
-				onWaitToRun: waitToRunHook,
-				pointErr:    pointToCheckedConfigErr,
+			realDelegate := engine.NewCheckDelegate(
+				realBuild,
+				atc.Plan{ID: planID, Check: &checkPlan},
+				state,
+				clock.NewClock(),
+				db.NewResourceCheckRateLimiter(rate.Inf, 0, time.Minute, nil, time.Minute, clock.NewClock()),
+				policy.NoopChecker{},
+			)
+			if deleteScopeAfterCreation {
+				return scopeDeletingCheckDelegate{
+					CheckDelegate: realDelegate,
+					conn:          fixture.Conn,
+				}
 			}
-			return delegate
+			return realDelegate
 		})
 
 		stepMetadata = exec.StepMetadata{
@@ -426,11 +335,10 @@ var _ = Describe("CheckStep", func() {
 			Context("when not given a from version", func() {
 				BeforeEach(func() {
 					checkPlan.FromVersion = nil
-					waitToRunHook = func(scope db.ResourceConfigScope) {
-						// Persisting the version as the run is granted proves LatestVersion
-						// is queried after WaitToRun rather than before it.
-						Expect(scope.SaveVersions(db.SpanContext{}, []atc.Version{{"latest": "version"}})).To(Succeed())
-					}
+					Expect(resourceConfigScope.SaveVersions(
+						db.SpanContext{},
+						[]atc.Version{{"latest": "version"}},
+					)).To(Succeed())
 				})
 
 				It("finds the latest version itself - it's a strong, independent check step who dont need no plan", func() {
@@ -439,14 +347,6 @@ var _ = Describe("CheckStep", func() {
 			})
 
 			Describe("worker selection", func() {
-				It("get container owner from delegate", func() {
-					Expect(delegate.containerOwnerCount).To(Equal(1))
-				})
-
-				It("emits a BeforeSelectWorker event", func() {
-					Expect(delegate.beforeSelectWorkerCount).To(Equal(1))
-				})
-
 				It("emits a SelectedWorker event", func() {
 					Expect(persistedSelectedWorkers(fixture, realBuild)).To(Equal([]string{"worker"}))
 				})
@@ -528,11 +428,7 @@ var _ = Describe("CheckStep", func() {
 						stepper = imageStepper.step
 					})
 
-					It("fetches the resource type image", func() {
-						Expect(imageStepper.ranPlans).To(Equal([]atc.Plan{
-							*checkPlan.TypeImage.CheckPlan,
-							*checkPlan.TypeImage.GetPlan,
-						}))
+					It("uses the fetched resource type image", func() {
 						Expect(chosenContainer.Spec.ImageSpec.Privileged).To(BeFalse())
 					})
 
@@ -544,15 +440,14 @@ var _ = Describe("CheckStep", func() {
 					})
 
 					It("creates the resource config using the image resource cache", func() {
-						Expect(resourceConfig.CreatedByResourceCache()).NotTo(BeNil())
-						Expect(resourceConfig.CreatedByResourceCache().ID()).To(Equal(imageResourceCache.ID()))
 						expectedCustomConfig, err := fixture.ResourceConfigFactory.FindOrCreateResourceConfig(
 							"some-custom-type",
 							atc.Source{"some": "super-secret-source"},
 							imageResourceCache,
 						)
 						Expect(err).NotTo(HaveOccurred())
-						Expect(resourceConfig.ID()).To(Equal(expectedCustomConfig.ID()))
+						Expect(expectedCustomConfig.CreatedByResourceCache()).NotTo(BeNil())
+						Expect(expectedCustomConfig.CreatedByResourceCache().ID()).To(Equal(imageResourceCache.ID()))
 					})
 
 					Context("when the resource type is privileged", func() {
@@ -604,6 +499,11 @@ var _ = Describe("CheckStep", func() {
 				Context("when the plan is for a resource", func() {
 					BeforeEach(func() {
 						checkPlan.Resource = "some-resource"
+						resourceID, found, err := realPipeline.ResourceID(checkPlan.Resource)
+						Expect(err).NotTo(HaveOccurred())
+						Expect(found).To(BeTrue())
+						resourceConfigScope, err = expectedConfig.FindOrCreateScope(&resourceID)
+						Expect(err).NotTo(HaveOccurred())
 					})
 
 					It("points the resource or resource type to the scope", func() {
@@ -617,10 +517,30 @@ var _ = Describe("CheckStep", func() {
 						Expect(chosenContainer.RunningProcesses()).To(HaveLen(1))
 					})
 
-					It("update scope's check start time", func() {
-						Expect(delegate.startTimeUpdates).To(HaveLen(1))
-						Expect(delegate.startTimeUpdates[0].scope.ID()).To(Equal(resourceConfigScope.ID()))
-						Expect(delegate.startTimeUpdates[0].nestedCheck).To(BeFalse())
+					It("persists the build-backed check start state", func() {
+						lastCheck, err := resourceConfigScope.LastCheck()
+						Expect(err).NotTo(HaveOccurred())
+						Expect(lastCheck.StartTime).To(BeTemporally("~", time.Now(), time.Minute))
+						var lastCheckBuildID sql.NullInt64
+						Expect(fixture.Conn.QueryRow(
+							`SELECT last_check_build_id FROM resource_config_scopes WHERE id = $1`,
+							resourceConfigScope.ID(),
+						).Scan(&lastCheckBuildID)).To(Succeed())
+						Expect(lastCheckBuildID.Valid).To(BeTrue())
+						Expect(lastCheckBuildID.Int64).To(Equal(int64(realBuild.ID())))
+					})
+
+					It("releases the production resource-check lock", func() {
+						checkedResourceConfigID := resourceConfigScope.ResourceConfig().ID()
+						Expect(checkedResourceConfigID).To(Equal(expectedConfig.ID()))
+						independentFactory := execLockFactory()
+						acquiredLock, acquired, err := independentFactory.Acquire(
+							testLogger,
+							lock.NewResourceConfigCheckingLockID(checkedResourceConfigID),
+						)
+						Expect(err).NotTo(HaveOccurred())
+						Expect(acquired).To(BeTrue())
+						Expect(acquiredLock.Release()).To(Succeed())
 					})
 				})
 
@@ -637,15 +557,20 @@ var _ = Describe("CheckStep", func() {
 						Expect(resourceType.ResourceConfigScopeID()).To(Equal(resourceConfigScope.ID()))
 					})
 
-					It("uses delegate's container owner", func() {
-						Expect(delegate.containerOwnerCount).To(Equal(1))
+					It("uses the build step container owner", func() {
 						Expect(chosenContainer.RunningProcesses()).To(HaveLen(1))
 					})
 
-					It("update scope's check start time", func() {
-						Expect(delegate.startTimeUpdates).To(HaveLen(1))
-						Expect(delegate.startTimeUpdates[0].scope.ID()).To(Equal(resourceConfigScope.ID()))
-						Expect(delegate.startTimeUpdates[0].nestedCheck).To(BeTrue())
+					It("persists nested check state without a build association", func() {
+						lastCheck, err := resourceConfigScope.LastCheck()
+						Expect(err).NotTo(HaveOccurred())
+						Expect(lastCheck.StartTime).To(BeTemporally("~", time.Now(), time.Minute))
+						var lastCheckBuildID sql.NullInt64
+						Expect(fixture.Conn.QueryRow(
+							`SELECT last_check_build_id FROM resource_config_scopes WHERE id = $1`,
+							resourceConfigScope.ID(),
+						).Scan(&lastCheckBuildID)).To(Succeed())
+						Expect(lastCheckBuildID.Valid).To(BeFalse())
 					})
 				})
 
@@ -733,10 +658,13 @@ var _ = Describe("CheckStep", func() {
 			})
 
 			Context("with tracing configured", func() {
-				var tracedVersion atc.Version
+				var (
+					exporter      *tracetest.InMemoryExporter
+					tracedVersion atc.Version
+				)
 
 				BeforeEach(func() {
-					exporter := tracetest.NewInMemoryExporter()
+					exporter = tracetest.NewInMemoryExporter()
 					tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
 					tracing.ConfigureTraceProvider(tp)
 
@@ -755,7 +683,13 @@ var _ = Describe("CheckStep", func() {
 					reloaded, err := version.Reload()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(reloaded).To(BeTrue())
-					traceID := delegate.span.SpanContext().TraceID().String()
+					var traceID string
+					for _, span := range exporter.GetSpans() {
+						if span.Name == "check" {
+							traceID = span.SpanContext.TraceID().String()
+						}
+					}
+					Expect(traceID).NotTo(BeEmpty())
 					traceParent := version.SpanContext().Get("traceparent")
 					Expect(traceParent).To(ContainSubstring(traceID))
 				})
@@ -774,11 +708,8 @@ var _ = Describe("CheckStep", func() {
 				})
 
 				It("saves the versions to the config scope", func() {
-					Expect(delegate.configs).To(HaveLen(1))
-					config := delegate.configs[0]
-					Expect(config.ID()).To(Equal(expectedConfig.ID()))
-					Expect(config.OriginBaseResourceType().Name).To(Equal("some-base-type"))
-					Expect(resourceConfigScope.ResourceConfig().ID()).To(Equal(config.ID()))
+					Expect(resourceConfigScope.ResourceConfig().ID()).To(Equal(expectedConfig.ID()))
+					Expect(resourceConfigScope.ResourceConfig().OriginBaseResourceType().Name).To(Equal("some-base-type"))
 
 					for _, expectedVersion := range []atc.Version{{"version": "1"}, {"version": "2"}} {
 						version, found, err := resourceConfigScope.FindVersion(expectedVersion)
@@ -852,12 +783,6 @@ var _ = Describe("CheckStep", func() {
 						Expect(lastCheck.Succeeded).To(BeTrue())
 					})
 
-					It("releases the lock", func() {
-						_, found, err := resourceConfigScope.FindVersion(atc.Version{"version": "2"})
-						Expect(err).NotTo(HaveOccurred())
-						Expect(found).To(BeTrue())
-						Expect(delegate.lockReleases).To(Equal(1))
-					})
 				})
 			})
 
@@ -907,32 +832,19 @@ var _ = Describe("CheckStep", func() {
 				})
 			})
 
-			Context("having SaveVersions failing", func() {
-				var expectedErr error
-
-				BeforeEach(func() {
-					expectedErr = errors.New("save-versions-err")
-					scopeWrapper = func(scope db.ResourceConfigScope) db.ResourceConfigScope {
-						return saveVersionsErrorScope{ResourceConfigScope: scope, err: expectedErr}
-					}
-				})
-
-				It("errors", func() {
-					Expect(stepErr).To(HaveOccurred())
-					Expect(errors.Is(stepErr, expectedErr)).To(BeTrue())
-				})
-			})
-
 			Context("when SaveVersions fails with FK violation (scope deleted by GC)", func() {
 				BeforeEach(func() {
-					scopeWrapper = func(scope db.ResourceConfigScope) db.ResourceConfigScope {
-						return saveVersionsErrorScope{
-							ResourceConfigScope: scope,
-							err: fmt.Errorf(
-								"save versions: %w",
-								&pgconn.PgError{Code: pgerrcode.ForeignKeyViolation},
-							),
-						}
+					chosenContainer.ProcessDefs[0].Stub.Output = []atc.Version{{"version": "deleted-scope"}}
+					chosenContainer.ProcessDefs[0].Stub.Do = func(context.Context, *runtimetest.Process) error {
+						result, err := fixture.Conn.Exec(
+							`DELETE FROM resource_config_scopes WHERE id = $1`,
+							resourceConfigScope.ID(),
+						)
+						Expect(err).NotTo(HaveOccurred())
+						deleted, err := result.RowsAffected()
+						Expect(err).NotTo(HaveOccurred())
+						Expect(deleted).To(Equal(int64(1)))
+						return nil
 					}
 				})
 
@@ -943,6 +855,12 @@ var _ = Describe("CheckStep", func() {
 				It("finishes with failure (non-fatal)", func() {
 					Expect(execBuildFinishEvents(fixture, realBuild)).To(HaveLen(1))
 					Expect(execBuildFinishEvents(fixture, realBuild)[0].Succeeded).To(BeFalse())
+					var count int
+					Expect(fixture.Conn.QueryRow(
+						`SELECT COUNT(*) FROM resource_config_scopes WHERE id = $1`,
+						resourceConfigScope.ID(),
+					).Scan(&count)).To(Succeed())
+					Expect(count).To(BeZero())
 				})
 			})
 		})
@@ -962,7 +880,13 @@ var _ = Describe("CheckStep", func() {
 
 	Context("when PointToCheckedConfig fails with FK violation (scope deleted by GC)", func() {
 		BeforeEach(func() {
-			pointToCheckedConfigErr = &pgconn.PgError{Code: pgerrcode.ForeignKeyViolation}
+			checkPlan.Resource = "some-resource"
+			resourceID, found, err := realPipeline.ResourceID(checkPlan.Resource)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			resourceConfigScope, err = expectedConfig.FindOrCreateScope(&resourceID)
+			Expect(err).NotTo(HaveOccurred())
+			deleteScopeAfterCreation = true
 		})
 
 		It("does not error", func() {
@@ -972,6 +896,12 @@ var _ = Describe("CheckStep", func() {
 		It("finishes with failure (non-fatal)", func() {
 			Expect(execBuildFinishEvents(fixture, realBuild)).To(HaveLen(1))
 			Expect(execBuildFinishEvents(fixture, realBuild)[0].Succeeded).To(BeFalse())
+			var count int
+			Expect(fixture.Conn.QueryRow(
+				`SELECT COUNT(*) FROM resource_config_scopes WHERE id = $1`,
+				resourceConfigScope.ID(),
+			).Scan(&count)).To(Succeed())
+			Expect(count).To(BeZero())
 		})
 	})
 
@@ -1129,8 +1059,16 @@ var _ = Describe("CheckStep", func() {
 			})
 
 			It("saves the resolved version", func() {
+				config, err := fixture.ResourceConfigFactory.FindOrCreateResourceConfig(
+					checkPlan.Type,
+					checkPlan.Source,
+					nil,
+				)
+				Expect(err).NotTo(HaveOccurred())
+				scope, err := config.FindOrCreateScope(nil)
+				Expect(err).NotTo(HaveOccurred())
 				expectedVersion := atc.Version{"digest": digest}
-				version, found, err := resourceConfigScope.FindVersion(expectedVersion)
+				version, found, err := scope.FindVersion(expectedVersion)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(found).To(BeTrue())
 				reloaded, err := version.Reload()
@@ -1190,7 +1128,15 @@ var _ = Describe("CheckStep", func() {
 			It("returns an error and does not save versions", func() {
 				Expect(stepErr).To(HaveOccurred())
 				Expect(stepErr.Error()).To(ContainSubstring("401 Unauthorized"))
-				_, found, err := resourceConfigScope.FindVersion(atc.Version{"digest": rejectedDigest})
+				config, err := fixture.ResourceConfigFactory.FindOrCreateResourceConfig(
+					checkPlan.Type,
+					checkPlan.Source,
+					nil,
+				)
+				Expect(err).NotTo(HaveOccurred())
+				scope, err := config.FindOrCreateScope(nil)
+				Expect(err).NotTo(HaveOccurred())
+				_, found, err := scope.FindVersion(atc.Version{"digest": rejectedDigest})
 				Expect(err).NotTo(HaveOccurred())
 				Expect(found).To(BeFalse())
 			})

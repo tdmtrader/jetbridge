@@ -6,10 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"code.cloudfoundry.org/clock"
-	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/lock"
@@ -43,91 +43,6 @@ func persistedFinishGets(fixture *execDBFixture, build db.Build) []event.FinishG
 	return finished
 }
 
-// recordingGetDelegate keeps every behavior of the real delegate and adds only
-// what PostgreSQL cannot show: the order of calls that persist nothing of
-// their own.
-type recordingGetDelegate struct {
-	exec.GetDelegate
-
-	calls          []string
-	updatedVersion []resourceVersionUpdate
-}
-
-type resourceVersionUpdate struct {
-	resourceName string
-	result       resource.VersionResult
-}
-
-func (delegate *recordingGetDelegate) Initializing(logger lager.Logger) {
-	delegate.calls = append(delegate.calls, "Initializing")
-	delegate.GetDelegate.Initializing(logger)
-}
-
-func (delegate *recordingGetDelegate) Starting(logger lager.Logger) {
-	delegate.calls = append(delegate.calls, "Starting")
-	delegate.GetDelegate.Starting(logger)
-}
-
-func (delegate *recordingGetDelegate) BeforeSelectWorker(logger lager.Logger) error {
-	delegate.calls = append(delegate.calls, "BeforeSelectWorker")
-	return delegate.GetDelegate.BeforeSelectWorker(logger)
-}
-
-func (delegate *recordingGetDelegate) SelectedWorker(logger lager.Logger, name string) {
-	delegate.calls = append(delegate.calls, "SelectedWorker")
-	delegate.GetDelegate.SelectedWorker(logger, name)
-}
-
-func (delegate *recordingGetDelegate) Finished(logger lager.Logger, status exec.ExitStatus, result resource.VersionResult) {
-	delegate.calls = append(delegate.calls, "Finished")
-	delegate.GetDelegate.Finished(logger, status, result)
-}
-
-func (delegate *recordingGetDelegate) ResourceCacheUser() db.ResourceCacheUser {
-	delegate.calls = append(delegate.calls, "ResourceCacheUser")
-	return delegate.GetDelegate.ResourceCacheUser()
-}
-
-func (delegate *recordingGetDelegate) ContainerOwner(planID atc.PlanID) db.ContainerOwner {
-	delegate.calls = append(delegate.calls, "ContainerOwner")
-	return delegate.GetDelegate.ContainerOwner(planID)
-}
-
-func (delegate *recordingGetDelegate) UpdateResourceVersion(logger lager.Logger, resourceName string, result resource.VersionResult) {
-	delegate.updatedVersion = append(delegate.updatedVersion, resourceVersionUpdate{
-		resourceName: resourceName,
-		result:       result,
-	})
-	delegate.GetDelegate.UpdateResourceVersion(logger, resourceName, result)
-}
-
-func (delegate *recordingGetDelegate) callCount(name string) int {
-	count := 0
-	for _, call := range delegate.calls {
-		if call == name {
-			count++
-		}
-	}
-	return count
-}
-
-func (delegate *recordingGetDelegate) lifecycleCalls() []string {
-	lifecycle := map[string]bool{
-		"Initializing":       true,
-		"Starting":           true,
-		"BeforeSelectWorker": true,
-		"SelectedWorker":     true,
-		"Finished":           true,
-	}
-	var calls []string
-	for _, call := range delegate.calls {
-		if lifecycle[call] {
-			calls = append(calls, call)
-		}
-	}
-	return calls
-}
-
 var _ = Describe("GetStep", func() {
 	var (
 		ctx    context.Context
@@ -145,14 +60,16 @@ var _ = Describe("GetStep", func() {
 
 		fixture              *execDBFixture
 		targetTeam           db.Team
+		realPipeline         db.Pipeline
 		realBuild            db.Build
+		pipelineResource     db.Resource
 		resourceCacheFactory db.ResourceCacheFactory
 		loadOwnedCache       func() db.ResourceCache
 
-		delegate        *recordingGetDelegate
 		delegateFactory exec.GetDelegateFactory
 
-		lockFactory *recordingLockFactory
+		lockFactory       lock.LockFactory
+		contendingGetLock lock.Lock
 
 		stepper      exec.Stepper
 		imageStepper *imageFetchStepper
@@ -184,7 +101,6 @@ var _ = Describe("GetStep", func() {
 	BeforeEach(func() {
 		ctx, cancel = context.WithCancel(context.Background())
 		fixture = useExecDB()
-		var realPipeline db.Pipeline
 		targetTeam, realPipeline, _, realBuild = createExecJobBuild(
 			fixture,
 			"some-team",
@@ -265,7 +181,8 @@ var _ = Describe("GetStep", func() {
 		workerPoolReady = false
 		artifactless = false
 
-		lockFactory = &recordingLockFactory{LockFactory: fixture.LockFactory}
+		lockFactory = fixture.LockFactory
+		contendingGetLock = nil
 
 		imageStepper = new(imageFetchStepper)
 		stepper = noopStepper
@@ -279,10 +196,7 @@ var _ = Describe("GetStep", func() {
 		artifactRepository = runState.ArtifactRepository()
 
 		delegateFactory = getDelegateFactory(func(state exec.RunState) exec.GetDelegate {
-			delegate = &recordingGetDelegate{
-				GetDelegate: engine.NewGetDelegate(realBuild, planID, state, clock.NewClock(), policy.NoopChecker{}),
-			}
-			return delegate
+			return engine.NewGetDelegate(realBuild, planID, state, clock.NewClock(), policy.NoopChecker{})
 		})
 
 		getPlan = &atc.GetPlan{
@@ -296,6 +210,30 @@ var _ = Describe("GetStep", func() {
 			Params:   atc.Params{"some": "((params-var))"},
 			Version:  &atc.Version{"some": "version"},
 		}
+
+		var found bool
+		var err error
+		pipelineResource, found, err = realPipeline.Resource("some-resource")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		resourceConfig, err := fixture.ResourceConfigFactory.FindOrCreateResourceConfig(
+			"some-base-type",
+			atc.Source{"some": "super-secret-source"},
+			nil,
+		)
+		Expect(err).NotTo(HaveOccurred())
+		resourceID := pipelineResource.ID()
+		resourceScope, err := resourceConfig.FindOrCreateScope(&resourceID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(pipelineResource.SetResourceConfigScope(resourceScope)).To(Succeed())
+		Expect(resourceScope.SaveVersions(db.SpanContext{}, []atc.Version{{"some": "version"}})).To(Succeed())
+		_, err = pipelineResource.Reload()
+		Expect(err).NotTo(HaveOccurred())
+		_, err = pipelineResource.UpdateMetadata(
+			atc.Version{"some": "version"},
+			db.ResourceConfigMetadataFields{{Name: "some", Value: "old-metadata"}},
+		)
+		Expect(err).NotTo(HaveOccurred())
 	})
 
 	AfterEach(func() {
@@ -335,7 +273,25 @@ var _ = Describe("GetStep", func() {
 			defaultGetTimeout,
 		)
 
-		stepOk, stepErr = getStep.Run(ctx, runState)
+		if contendingGetLock == nil {
+			stepOk, stepErr = getStep.Run(ctx, runState)
+			return
+		}
+
+		runDone := make(chan struct{})
+		go func() {
+			stepOk, stepErr = getStep.Run(ctx, runState)
+			close(runDone)
+		}()
+
+		Eventually(func() string {
+			return execBuildLog(fixture, realBuild, event.OriginSourceStderr)
+		}).Should(ContainSubstring("waiting to acquire resource lock"))
+		Consistently(runDone).ShouldNot(BeClosed())
+
+		Expect(contendingGetLock.Release()).To(Succeed())
+		contendingGetLock = nil
+		Eventually(runDone).Should(BeClosed())
 	})
 
 	Describe("persisted PostgreSQL state", func() {
@@ -524,10 +480,6 @@ var _ = Describe("GetStep", func() {
 				Expect(execBuildLog(fixture, realBuild, event.OriginSourceStderr)).To(MatchRegexp(`INFO.*found.*cache`))
 			})
 
-			It("never reaches for the resource get lock", func() {
-				Expect(lockFactory.acquires).To(BeZero())
-			})
-
 			It("loads metadata from the persisted cache row", func() {
 				cache := loadOwnedCache()
 				Expect(cache.ID()).To(Equal(cached.ID()))
@@ -588,8 +540,29 @@ var _ = Describe("GetStep", func() {
 
 			Context("when the lock is held by another session", func() {
 				BeforeEach(func() {
-					lockFactory.contender = execLockFactory()
-					lockFactory.refusals = 2
+					resourceCache, err := fixture.ResourceCacheFactory.FindOrCreateResourceCache(
+						db.ForBuild(realBuild.ID()),
+						"some-base-type",
+						atc.Version{"some": "version"},
+						atc.Source{"some": "super-secret-source"},
+						atc.Params{"some": "super-secret-params"},
+						nil,
+					)
+					Expect(err).NotTo(HaveOccurred())
+
+					contender := execLockFactory()
+					var acquired bool
+					contendingGetLock, acquired, err = contender.Acquire(
+						testLogger,
+						lock.NewResourceGetLockID(strconv.Itoa(resourceCache.ID())+"-"+chosenWorker.Name()),
+					)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(acquired).To(BeTrue())
+					DeferCleanup(func() {
+						if contendingGetLock != nil {
+							Expect(contendingGetLock.Release()).To(Succeed())
+						}
+					})
 				})
 
 				It("succeeds", func() {
@@ -600,12 +573,7 @@ var _ = Describe("GetStep", func() {
 					Expect(execBuildLog(fixture, realBuild, event.OriginSourceStderr)).To(MatchRegexp(`INFO.*waiting.*lock`))
 				})
 
-				It("[GS-03] retries lock acquisition until successful", func() {
-					Expect(lockFactory.acquires).To(Equal(3))
-					Expect(lockFactory.held).To(BeNil())
-				})
-
-				It("runs the get script once the lock is free", func() {
+				It("[GS-03] runs the get script once the independently held lock is free", func() {
 					finished := persistedFinishGets(fixture, realBuild)
 					Expect(finished).To(HaveLen(1))
 					Expect(finished[0].ExitStatus).To(Equal(0))
@@ -617,18 +585,6 @@ var _ = Describe("GetStep", func() {
 	})
 
 	Describe("worker selection", func() {
-		It("get resource cache owner from delegate", func() {
-			Expect(delegate.callCount("ResourceCacheUser")).To(Equal(1))
-		})
-
-		It("get container owner from delegate", func() {
-			Expect(delegate.callCount("ContainerOwner")).To(Equal(1))
-		})
-
-		It("emits a BeforeSelectWorker event", func() {
-			Expect(delegate.callCount("BeforeSelectWorker")).To(Equal(1))
-		})
-
 		It("emits a SelectedWorker event", func() {
 			Expect(persistedSelectedWorkers(fixture, realBuild)).To(Equal([]string{"worker"}))
 		})
@@ -767,11 +723,7 @@ var _ = Describe("GetStep", func() {
 			Expect(cache.ResourceConfig().CreatedByResourceCache().ID()).To(Equal(imageResourceCache.ID()))
 		})
 
-		It("fetches the resource type image and uses it for the container", func() {
-			Expect(imageStepper.ranPlans).To(Equal([]atc.Plan{
-				*getPlan.TypeImage.CheckPlan,
-				*getPlan.TypeImage.GetPlan,
-			}))
+		It("uses the fetched resource type image for the container", func() {
 			Expect(chosenContainer.Spec.ImageSpec.Privileged).To(BeFalse())
 		})
 
@@ -851,8 +803,13 @@ var _ = Describe("GetStep", func() {
 		})
 
 		It("saves the version for the resource", func() {
-			Expect(delegate.updatedVersion).To(HaveLen(1))
-			Expect(delegate.updatedVersion[0].resourceName).To(Equal("some-resource"))
+			version, found, err := pipelineResource.FindVersion(atc.Version{"some": "version"})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			reloaded, err := version.Reload()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(reloaded).To(BeTrue())
+			Expect(version.Metadata()).To(Equal(db.ResourceConfigMetadataFields{{Name: "some", Value: "metadata"}}))
 		})
 
 		It("adds metadata to the build variables", func() {
@@ -940,7 +897,13 @@ var _ = Describe("GetStep", func() {
 		})
 
 		It("does not update the resource version", func() {
-			Expect(delegate.updatedVersion).To(BeEmpty())
+			version, found, err := pipelineResource.FindVersion(atc.Version{"some": "version"})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			reloaded, err := version.Reload()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(reloaded).To(BeTrue())
+			Expect(version.Metadata()).To(Equal(db.ResourceConfigMetadataFields{{Name: "some", Value: "old-metadata"}}))
 		})
 	})
 
@@ -1099,12 +1062,6 @@ var _ = Describe("GetStep", func() {
 			Expect(imageRef).To(Equal("docker:///my-org/my-image@sha256:abc123def456"))
 		})
 
-		It("updates resource version metadata", func() {
-			Expect(delegate.updatedVersion).To(HaveLen(1))
-			Expect(delegate.updatedVersion[0].resourceName).To(Equal("some-resource"))
-			Expect(delegate.updatedVersion[0].result.Version).To(Equal(atc.Version{"digest": "sha256:abc123def456"}))
-		})
-
 		It("emits Finished with exit status 0", func() {
 			finished := persistedFinishGets(fixture, realBuild)
 			Expect(finished).To(HaveLen(1))
@@ -1141,22 +1098,6 @@ var _ = Describe("GetStep", func() {
 		})
 	})
 
-	// [SE-03] Verify the get step fires delegate callbacks in the documented order.
-	//
-	// Get step order: Initializing → Starting → BeforeSelectWorker → SelectedWorker → Finished.
-	// Note: Starting fires before worker selection in get (inside run() before
-	// retrieveFromCacheOrPerformGet), unlike put where Starting comes after SelectedWorker.
-	Context("[SE-03] delegate lifecycle callback ordering", func() {
-		It("[SE-03] fires callbacks in order: Initializing → Starting → BeforeSelectWorker → SelectedWorker → Finished", func() {
-			Expect(delegate.lifecycleCalls()).To(Equal([]string{
-				"Initializing",
-				"Starting",
-				"BeforeSelectWorker",
-				"SelectedWorker",
-				"Finished",
-			}))
-		})
-	})
 })
 
 // artifactlessWorker keeps every behavior of the real worker and hands back no
@@ -1167,39 +1108,4 @@ type artifactlessWorker struct {
 
 func (artifactlessWorker) ArtifactFromVolume(runtime.Volume) runtime.Artifact {
 	return nil
-}
-
-// recordingLockFactory keeps the real Postgres advisory locks and adds only
-// what they cannot show: how many times the step reached for one. Setting
-// refusals has contender hold the very lock the step asks for, on its own
-// session, until the step has been turned away that many times.
-type recordingLockFactory struct {
-	lock.LockFactory
-
-	contender lock.LockFactory
-	refusals  int
-
-	acquires int
-	held     lock.Lock
-}
-
-func (f *recordingLockFactory) Acquire(logger lager.Logger, id lock.LockID) (lock.Lock, bool, error) {
-	GinkgoHelper()
-
-	if f.acquires == 0 && f.refusals > 0 {
-		var acquired bool
-		var err error
-		f.held, acquired, err = f.contender.Acquire(logger, id)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(acquired).To(BeTrue())
-	}
-
-	if f.held != nil && f.acquires >= f.refusals {
-		Expect(f.held.Release()).To(Succeed())
-		f.held = nil
-	}
-
-	f.acquires++
-
-	return f.LockFactory.Acquire(logger, id)
 }

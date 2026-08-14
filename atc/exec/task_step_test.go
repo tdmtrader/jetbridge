@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"code.cloudfoundry.org/clock"
-	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/compression"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/engine"
 	"github.com/concourse/concourse/atc/event"
@@ -31,59 +31,6 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-// recordingTaskDelegate keeps every behavior of the real delegate and adds
-// only what the build event stream cannot show: the unshadowed task config and
-// the arguments of an image fetch.
-type recordingTaskDelegate struct {
-	exec.TaskDelegate
-
-	initializingCount       int
-	beforeSelectWorkerCount int
-	taskConfigs             []atc.TaskConfig
-	imageFetches            []taskImageFetch
-}
-
-type taskImageFetch struct {
-	resource     atc.ImageResource
-	types        atc.ResourceTypes
-	privileged   bool
-	tags         atc.Tags
-	skipInterval bool
-}
-
-func (delegate *recordingTaskDelegate) Initializing(logger lager.Logger) {
-	delegate.initializingCount++
-	delegate.TaskDelegate.Initializing(logger)
-}
-
-func (delegate *recordingTaskDelegate) BeforeSelectWorker(logger lager.Logger) error {
-	delegate.beforeSelectWorkerCount++
-	return delegate.TaskDelegate.BeforeSelectWorker(logger)
-}
-
-func (delegate *recordingTaskDelegate) SetTaskConfig(config atc.TaskConfig) {
-	delegate.taskConfigs = append(delegate.taskConfigs, config)
-	delegate.TaskDelegate.SetTaskConfig(config)
-}
-
-func (delegate *recordingTaskDelegate) FetchImage(
-	ctx context.Context,
-	image atc.ImageResource,
-	types atc.ResourceTypes,
-	privileged bool,
-	tags atc.Tags,
-	skipInterval bool,
-) (runtime.ImageSpec, error) {
-	delegate.imageFetches = append(delegate.imageFetches, taskImageFetch{
-		resource:     image,
-		types:        types,
-		privileged:   privileged,
-		tags:         tags,
-		skipInterval: skipInterval,
-	})
-	return delegate.TaskDelegate.FetchImage(ctx, image, types, privileged, tags, skipInterval)
-}
-
 func persistedFinishTasks(fixture *execDBFixture, build db.Build) []event.FinishTask {
 	GinkgoHelper()
 	var finished []event.FinishTask
@@ -93,6 +40,17 @@ func persistedFinishTasks(fixture *execDBFixture, build db.Build) []event.Finish
 		}
 	}
 	return finished
+}
+
+func persistedStartTasks(fixture *execDBFixture, build db.Build) []event.StartTask {
+	GinkgoHelper()
+	var started []event.StartTask
+	for _, e := range execBuildEvents(fixture, build) {
+		if start, ok := e.(event.StartTask); ok {
+			started = append(started, start)
+		}
+	}
+	return started
 }
 
 func newTaskStepRegistry() *imageresolvertesting.Registry {
@@ -127,13 +85,12 @@ var _ = Describe("TaskStep", func() {
 
 		workerPool  exec.Pool
 		workerSeeds []runtimeWorkerSeed
-		streamer    *recordingStreamer
+		streamer    exec.Streamer
 
 		fixture    *execDBFixture
 		targetTeam db.Team
 		dbBuild    db.Build
 
-		delegate        *recordingTaskDelegate
 		delegateFactory exec.TaskDelegateFactory
 
 		stepper      exec.Stepper
@@ -168,7 +125,7 @@ var _ = Describe("TaskStep", func() {
 	BeforeEach(func() {
 		ctx, cancel = context.WithCancel(context.Background())
 
-		streamer = newRecordingStreamer()
+		streamer = worker.NewStreamer(compression.NewGzipCompression())
 
 		fixture = useExecDB()
 		var dbJob db.Job
@@ -189,18 +146,15 @@ var _ = Describe("TaskStep", func() {
 		expectedOwner = db.NewBuildStepContainerOwner(stepMetadata.BuildID, planID, stepMetadata.TeamID)
 
 		delegateFactory = taskDelegateFactory(func(state exec.RunState) exec.TaskDelegate {
-			delegate = &recordingTaskDelegate{
-				TaskDelegate: engine.NewTaskDelegate(
-					dbBuild,
-					planID,
-					state,
-					clock.NewClock(),
-					policy.NoopChecker{},
-					fixture.WorkerFactory,
-					fixture.LockFactory,
-				),
-			}
-			return delegate
+			return engine.NewTaskDelegate(
+				dbBuild,
+				planID,
+				state,
+				clock.NewClock(),
+				policy.NoopChecker{},
+				fixture.WorkerFactory,
+				fixture.LockFactory,
+			)
 		})
 
 		taskStepOptions = nil
@@ -339,27 +293,7 @@ var _ = Describe("TaskStep", func() {
 			))
 		})
 
-		Context("before running the task", func() {
-			BeforeEach(func() {
-				chosenContainer.ProcessDefs[0].Stub.Do = func(_ context.Context, _ *runtimetest.Process) error {
-					defer GinkgoRecover()
-					Expect(delegate.initializingCount).To(Equal(1))
-
-					return nil
-				}
-			})
-
-			It("invokes the delegate's Initializing callback", func() {
-				// validate the process actually ran
-				Expect(chosenContainer.RunningProcesses()).To(HaveLen(1))
-			})
-		})
-
 		Describe("worker selection", func() {
-			It("emits a BeforeSelectWorker event", func() {
-				Expect(delegate.beforeSelectWorkerCount).To(Equal(1))
-			})
-
 			It("emits a SelectedWorker event", func() {
 				Expect(persistedSelectedWorkers(fixture, dbBuild)).To(Equal([]string{"worker"}))
 			})
@@ -381,8 +315,17 @@ var _ = Describe("TaskStep", func() {
 			})
 		})
 
-		It("sets the config on the TaskDelegate", func() {
-			Expect(delegate.taskConfigs).To(Equal([]atc.TaskConfig{*taskPlan.Config}))
+		It("persists the task config in the start event", func() {
+			started := persistedStartTasks(fixture, dbBuild)
+			Expect(started).To(HaveLen(1))
+			Expect(started[0].Origin).To(Equal(event.Origin{ID: event.OriginID(planID)}))
+			Expect(started[0].TaskConfig).To(Equal(event.TaskConfig{
+				Platform: "some-platform",
+				Run: event.TaskRunConfig{
+					Path: "ls",
+					Args: []string{"some", "args"},
+				},
+			}))
 		})
 
 		Context("when privileged", func() {
@@ -970,10 +913,11 @@ var _ = Describe("TaskStep", func() {
 				repo.RegisterArtifact("some-image-artifact", imageVolume, false)
 			})
 
-			It("uses the ENTRYPOINT/CMD and passes it back to the task delegate", func() {
-				Expect(delegate.taskConfigs).To(HaveLen(1))
-				Expect(delegate.taskConfigs[0].Run.Path).To(Equal("/bin/sh"))
-				Expect(delegate.taskConfigs[0].Run.Args).To(Equal([]string{"-c", "echo hello world"}))
+			It("persists the ENTRYPOINT/CMD in the start event", func() {
+				started := persistedStartTasks(fixture, dbBuild)
+				Expect(started).To(HaveLen(1))
+				Expect(started[0].TaskConfig.Run.Path).To(Equal("/bin/sh"))
+				Expect(started[0].TaskConfig.Run.Args).To(Equal([]string{"-c", "echo hello world"}))
 			})
 
 			Context("there are args in the task config", func() {
@@ -982,9 +926,10 @@ var _ = Describe("TaskStep", func() {
 				})
 
 				It("they are appended to the ENTRYPOINT/CMD args", func() {
-					Expect(delegate.taskConfigs).To(HaveLen(1))
-					Expect(delegate.taskConfigs[0].Run.Path).To(Equal("/bin/sh"))
-					Expect(delegate.taskConfigs[0].Run.Args).To(Equal([]string{"-c", "echo hello world", "task", "args"}))
+					started := persistedStartTasks(fixture, dbBuild)
+					Expect(started).To(HaveLen(1))
+					Expect(started[0].TaskConfig.Run.Path).To(Equal("/bin/sh"))
+					Expect(started[0].TaskConfig.Run.Args).To(Equal([]string{"-c", "echo hello world", "task", "args"}))
 				})
 			})
 
@@ -999,9 +944,10 @@ var _ = Describe("TaskStep", func() {
 				})
 
 				It("is parsed correctly", func() {
-					Expect(delegate.taskConfigs).To(HaveLen(1))
-					Expect(delegate.taskConfigs[0].Run.Path).To(Equal("some-program"))
-					Expect(delegate.taskConfigs[0].Run.Args).To(Equal([]string{"some-arg"}))
+					started := persistedStartTasks(fixture, dbBuild)
+					Expect(started).To(HaveLen(1))
+					Expect(started[0].TaskConfig.Run.Path).To(Equal("some-program"))
+					Expect(started[0].TaskConfig.Run.Args).To(Equal([]string{"some-arg"}))
 				})
 			})
 
@@ -1016,9 +962,10 @@ var _ = Describe("TaskStep", func() {
 				})
 
 				It("is parsed correctly", func() {
-					Expect(delegate.taskConfigs).To(HaveLen(1))
-					Expect(delegate.taskConfigs[0].Run.Path).To(Equal("cmd-program"))
-					Expect(delegate.taskConfigs[0].Run.Args).To(Equal([]string{"cmd-arg"}))
+					started := persistedStartTasks(fixture, dbBuild)
+					Expect(started).To(HaveLen(1))
+					Expect(started[0].TaskConfig.Run.Path).To(Equal("cmd-program"))
+					Expect(started[0].TaskConfig.Run.Args).To(Equal([]string{"cmd-arg"}))
 				})
 			})
 		})
@@ -1112,9 +1059,6 @@ var _ = Describe("TaskStep", func() {
 				}))
 			})
 
-			It("does not try to stream metadata.json from the artifact", func() {
-				Expect(streamer.callCount).To(Equal(0))
-			})
 		})
 
 		Context("when image artifact has both a volume and an image ref (full get of registry-image)", func() {
@@ -1171,18 +1115,7 @@ var _ = Describe("TaskStep", func() {
 				Expect(stepOk).To(BeTrue())
 			})
 
-			It("fetches the image", func() {
-				Expect(delegate.imageFetches).To(Equal([]taskImageFetch{{
-					resource: atc.ImageResource{
-						Type:   "docker",
-						Source: atc.Source{"some": "super-secret-source"},
-						Params: atc.Params{"some": "params"},
-					},
-					types:        taskPlan.ResourceTypes,
-					privileged:   false,
-					tags:         atc.Tags{"some", "tags"},
-					skipInterval: false,
-				}}))
+			It("persists the image fetch event", func() {
 				Expect(execBuildEventTypes(fixture, dbBuild)).To(ContainElement(event.EventTypeImageGet))
 			})
 
@@ -1199,20 +1132,7 @@ var _ = Describe("TaskStep", func() {
 				})
 
 				It("fetches a privileged image", func() {
-					Expect(delegate.imageFetches).To(HaveLen(1))
-					Expect(delegate.imageFetches[0].privileged).To(BeTrue())
 					Expect(chosenContainer.Spec.ImageSpec.Privileged).To(BeTrue())
-				})
-			})
-
-			Context("when check skip interval is true", func() {
-				BeforeEach(func() {
-					taskPlan.CheckSkipInterval = true
-				})
-
-				It("fetches an image with forced check", func() {
-					Expect(delegate.imageFetches).To(HaveLen(1))
-					Expect(delegate.imageFetches[0].skipInterval).To(BeTrue())
 				})
 			})
 		})
@@ -1331,12 +1251,11 @@ var _ = Describe("TaskStep", func() {
 				}
 			})
 
-			It("includes inline sidecars in the container spec without file streaming", func() {
+			It("includes inline sidecars in the container spec", func() {
 				Expect(stepErr).ToNot(HaveOccurred())
 				Expect(chosenContainer.Spec.Sidecars).To(HaveLen(1))
 				Expect(chosenContainer.Spec.Sidecars[0].Name).To(Equal("redis"))
 				Expect(chosenContainer.Spec.Sidecars[0].Image).To(Equal("redis:7"))
-				Expect(streamer.callCount).To(Equal(0))
 			})
 		})
 

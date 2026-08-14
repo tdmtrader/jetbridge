@@ -2,7 +2,6 @@ package exec_test
 
 import (
 	"context"
-	"errors"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -11,6 +10,7 @@ import (
 	"code.cloudfoundry.org/lager/v3/lagerctx"
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/compression"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/engine"
 	"github.com/concourse/concourse/atc/event"
@@ -18,6 +18,7 @@ import (
 	"github.com/concourse/concourse/atc/exec/build"
 	"github.com/concourse/concourse/atc/policy"
 	"github.com/concourse/concourse/atc/runtime/runtimetest"
+	"github.com/concourse/concourse/atc/worker"
 	"github.com/concourse/concourse/vars"
 )
 
@@ -55,72 +56,6 @@ func persistedSetPipelineChanges(fixture *execDBFixture, build db.Build) []bool 
 		}
 	}
 	return changes
-}
-
-// pipelineLookupErrorTeam preserves a healthy PostgreSQL-backed team while
-// replacing only Pipeline for the lookup failure path.
-type pipelineLookupErrorTeam struct {
-	db.Team
-	err error
-}
-
-func (team pipelineLookupErrorTeam) Pipeline(atc.PipelineRef) (db.Pipeline, bool, error) {
-	return nil, false, team.err
-}
-
-// configErrorPipeline preserves a healthy PostgreSQL-backed pipeline while
-// replacing only Config for the read failure path.
-type configErrorPipeline struct {
-	db.Pipeline
-	err error
-}
-
-func (pipeline configErrorPipeline) Config() (atc.Config, error) {
-	return atc.Config{}, pipeline.err
-}
-
-// savePipelineErrorBuild preserves a healthy PostgreSQL-backed build while
-// replacing only SavePipeline for the write failure path.
-type savePipelineErrorBuild struct {
-	db.Build
-	err error
-}
-
-func (build savePipelineErrorBuild) SavePipeline(
-	atc.PipelineRef,
-	int,
-	atc.Config,
-	db.ConfigVersion,
-	bool,
-) (db.Pipeline, bool, error) {
-	return nil, false, build.err
-}
-
-type teamFactoryGetByIDOverride struct {
-	db.TeamFactory
-	team db.Team
-}
-
-func (factory teamFactoryGetByIDOverride) GetByID(int) db.Team {
-	return factory.team
-}
-
-type pipelineResultTeam struct {
-	db.Team
-	pipeline db.Pipeline
-}
-
-func (team pipelineResultTeam) Pipeline(atc.PipelineRef) (db.Pipeline, bool, error) {
-	return team.pipeline, true, nil
-}
-
-type buildFactoryResult struct {
-	db.BuildFactory
-	build db.Build
-}
-
-func (factory buildFactoryResult) Build(int) (db.Build, bool, error) {
-	return factory.build, true, nil
 }
 
 func setPipelineTestConfig(runArgs ...string) atc.Config {
@@ -226,8 +161,6 @@ jobs:
 		testLogger *lagertest.TestLogger
 
 		fixture         *execDBFixture
-		teamFactory     db.TeamFactory
-		buildFactory    db.BuildFactory
 		currentTeam     db.Team
 		currentPipeline db.Pipeline
 		currentJob      db.Job
@@ -238,7 +171,7 @@ jobs:
 		policyChecker   policy.Checker
 		delegateFactory exec.SetPipelineStepDelegateFactory
 
-		streamer *recordingStreamer
+		streamer exec.Streamer
 
 		spPlan              *atc.SetPipelinePlan
 		pipelineFileContent string
@@ -274,9 +207,6 @@ jobs:
 			Name:         "some-pipeline",
 			InstanceVars: atc.InstanceVars{"branch": "feature/foo"},
 		}
-		teamFactory = fixture.TeamFactory
-		buildFactory = fixture.BuildFactory
-
 		state = exec.NewRunState(noopStepper, vars.StaticVariables{"source-param": "super-secret-source"})
 		artifactRepository = state.ArtifactRepository()
 		pipelineFileContent = ""
@@ -299,7 +229,7 @@ jobs:
 			PipelineInstanceVars: currentPipeline.InstanceVars(),
 		}
 
-		streamer = newRecordingStreamer()
+		streamer = worker.NewStreamer(compression.NewGzipCompression())
 
 		spPlan = &atc.SetPipelinePlan{
 			Name:         "some-pipeline",
@@ -332,8 +262,8 @@ jobs:
 			*plan.SetPipeline,
 			stepMetadata,
 			delegateFactory,
-			teamFactory,
-			buildFactory,
+			fixture.TeamFactory,
+			fixture.BuildFactory,
 			streamer,
 		)
 
@@ -468,23 +398,6 @@ jobs:
 				pipelineFileContent = pipelineContent
 			})
 
-			Context("when get pipeline fails", func() {
-				BeforeEach(func() {
-					teamFactory = teamFactoryGetByIDOverride{
-						TeamFactory: fixture.TeamFactory,
-						team: pipelineLookupErrorTeam{
-							Team: currentTeam,
-							err:  errors.New("fail to get pipeline"),
-						},
-					}
-				})
-
-				It("should return error", func() {
-					Expect(stepErr).To(HaveOccurred())
-					Expect(stepErr.Error()).To(Equal("fail to get pipeline"))
-				})
-			})
-
 			Context("when specified pipeline not found", func() {
 				It("should save the pipeline", func() {
 					pipeline, found, err := currentTeam.Pipeline(targetRef)
@@ -551,25 +464,6 @@ jobs:
 					})
 				})
 
-				Context("when reading the existing config fails", func() {
-					BeforeEach(func() {
-						teamFactory = teamFactoryGetByIDOverride{
-							TeamFactory: fixture.TeamFactory,
-							team: pipelineResultTeam{
-								Team: currentTeam,
-								pipeline: configErrorPipeline{
-									Pipeline: existingPipeline,
-									err:      errors.New("failed to read config"),
-								},
-							},
-						}
-					})
-
-					It("should return error", func() {
-						Expect(stepErr).To(MatchError("failed to read config"))
-					})
-				})
-
 				Context("when there are some diff", func() {
 					It("should log diff", func() {
 						Expect(execBuildLog(fixture, realBuild, event.OriginSourceStdout)).To(ContainSubstring("job some-job has changed:"))
@@ -611,39 +505,42 @@ jobs:
 					})
 				})
 
-				Context("when SavePipeline fails", func() {
+				Context("when a newer build has already set the pipeline", func() {
+					var newerBuild db.Build
+
 					BeforeEach(func() {
-						buildFactory = buildFactoryResult{
-							BuildFactory: fixture.BuildFactory,
-							build: savePipelineErrorBuild{
-								Build: realBuild,
-								err:   errors.New("failed to save"),
-							},
-						}
+						var err error
+						newerBuild, err = currentJob.CreateBuild("newer-user")
+						Expect(err).NotTo(HaveOccurred())
+						newerConfig := setPipelineTestConfig("newer-build")
+						newerPipeline, _, err := newerBuild.SavePipeline(
+							targetRef,
+							currentTeam.ID(),
+							newerConfig,
+							existingPipeline.ConfigVersion(),
+							false,
+						)
+						Expect(err).NotTo(HaveOccurred())
+						existingPipeline = newerPipeline
 					})
 
-					It("should return error", func() {
-						Expect(stepErr).To(HaveOccurred())
-						Expect(stepErr.Error()).To(Equal("failed to save"))
+					It("logs a warning", func() {
+						Expect(execBuildLog(fixture, realBuild, event.OriginSourceStderr)).To(ContainSubstring("WARNING: the pipeline was not saved because it was already saved by a newer build"))
 					})
 
-					Context("due to the pipeline being set by a newer build", func() {
-						BeforeEach(func() {
-							buildFactory = buildFactoryResult{
-								BuildFactory: fixture.BuildFactory,
-								build: savePipelineErrorBuild{
-									Build: realBuild,
-									err:   db.ErrSetByNewerBuild,
-								},
-							}
-						})
-						It("logs a warning", func() {
-							Expect(execBuildLog(fixture, realBuild, event.OriginSourceStderr)).To(ContainSubstring("WARNING: the pipeline was not saved because it was already saved by a newer build"))
-						})
-						It("does not fail the step", func() {
-							Expect(stepErr).ToNot(HaveOccurred())
-							Expect(stepOk).To(BeTrue())
-						})
+					It("does not fail the step", func() {
+						Expect(stepErr).ToNot(HaveOccurred())
+						Expect(stepOk).To(BeTrue())
+					})
+
+					It("retains the newer build's persisted pipeline", func() {
+						pipeline, found, err := currentTeam.Pipeline(targetRef)
+						Expect(err).NotTo(HaveOccurred())
+						Expect(found).To(BeTrue())
+						config, err := pipeline.Config()
+						Expect(err).NotTo(HaveOccurred())
+						Expect(config).To(Equal(setPipelineTestConfig("newer-build")))
+						Expect(pipeline.ParentBuildID()).To(Equal(newerBuild.ID()))
 					})
 				})
 

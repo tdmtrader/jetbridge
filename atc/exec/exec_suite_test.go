@@ -1,10 +1,8 @@
 package exec_test
 
 import (
-	"context"
 	"database/sql"
 	"encoding/json"
-	"io"
 	"testing"
 	"time"
 
@@ -14,7 +12,6 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/concourse/concourse/atc"
-	"github.com/concourse/concourse/atc/compression"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbtest"
 	"github.com/concourse/concourse/atc/db/lock"
@@ -299,42 +296,4 @@ type taskDelegateFactory func(exec.RunState) exec.TaskDelegate
 
 func (f taskDelegateFactory) TaskDelegate(state exec.RunState) exec.TaskDelegate {
 	return f(state)
-}
-
-// recordingStreamer wraps the real worker.Streamer, keeping track of how many
-// files were streamed and whether the caller closed each stream it handed out.
-type recordingStreamer struct {
-	exec.Streamer
-
-	callCount int
-	streams   []*recordedStream
-}
-
-func newRecordingStreamer() *recordingStreamer {
-	return &recordingStreamer{
-		Streamer: worker.NewStreamer(compression.NewGzipCompression()),
-	}
-}
-
-func (s *recordingStreamer) StreamFile(ctx context.Context, artifact runtime.Artifact, path string) (io.ReadCloser, error) {
-	s.callCount++
-
-	stream, err := s.Streamer.StreamFile(ctx, artifact, path)
-	if err != nil {
-		return nil, err
-	}
-
-	recorded := &recordedStream{ReadCloser: stream}
-	s.streams = append(s.streams, recorded)
-	return recorded, nil
-}
-
-type recordedStream struct {
-	io.ReadCloser
-	closed bool
-}
-
-func (s *recordedStream) Close() error {
-	s.closed = true
-	return s.ReadCloser.Close()
 }
