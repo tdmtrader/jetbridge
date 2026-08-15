@@ -181,7 +181,7 @@ func (p *PeerResolver) Probe(ctx context.Context, key string) (string, bool) {
 func (p *PeerResolver) Fetch(ctx context.Context, peerIP, key, destPath string) error {
 	logger := p.logger.Session("peer-fetch", lager.Data{"key": key, "peer": peerIP, "dest": destPath})
 
-	url := fmt.Sprintf("http://%s:%d/artifacts/steps/%s", peerIP, p.port, key)
+	url := fmt.Sprintf("%s://%s:%d/artifacts/steps/%s", p.scheme, peerIP, p.port, key)
 
 	var lastErr error
 	for attempt := 1; attempt <= 3; attempt++ {

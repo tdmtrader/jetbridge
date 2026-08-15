@@ -646,13 +646,16 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.registry.RegisterAlias(req.Key, req.LocalPath)
-
 	if req.DurableKey != "" {
 		if err := durable.ValidateKey(req.DurableKey); err != nil {
 			http.Error(w, fmt.Sprintf("invalid durable_key: %v", err), http.StatusBadRequest)
 			return
 		}
+	}
+
+	s.registry.RegisterAlias(req.Key, req.LocalPath)
+
+	if req.DurableKey != "" {
 		s.promoteToDurable(r.Context(), req.DurableKey, req.LocalPath)
 	}
 
