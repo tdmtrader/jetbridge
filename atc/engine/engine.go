@@ -20,8 +20,6 @@ import (
 	"github.com/concourse/concourse/tracing"
 )
 
-//go:generate go run github.com/maxbrunsfeld/counterfeiter/v6 -generate
-
 func NewEngine(
 	stepperFactory StepperFactory,
 	secrets creds.Secrets,

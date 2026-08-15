@@ -7,8 +7,6 @@ import (
 	"github.com/concourse/concourse/atc/runtime"
 )
 
-//go:generate go run github.com/maxbrunsfeld/counterfeiter/v6 -generate
-
 // ArtifactName is just a string, with its own type to make interfaces using it
 // more self-documenting.
 type ArtifactName string

@@ -50,10 +50,8 @@ func (command *ValidatePipelineCommand) Execute(args []string) error {
 // references it can be validated -- nothing is ever signed, so no key is ever
 // needed.
 //
-// This used to be dbfakes.FakeSigningKeyFactory. A counterfeiter double is
-// generated test scaffolding, and importing it here linked the whole dbfakes
-// package into the shipped fly binary. The behaviour is identical: the fake
-// returned zero values and nil errors too.
+// This is a production no-op for a validation-only path. Keeping it here avoids
+// linking test scaffolding into the shipped fly binary.
 type noSigningKeys struct{}
 
 func (noSigningKeys) CreateKey(jose.JSONWebKey) error { return nil }

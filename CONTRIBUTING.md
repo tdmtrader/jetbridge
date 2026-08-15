@@ -420,15 +420,14 @@ to run the unit tests and `testflight`:
 $ go get github.com/onsi/ginkgo/ginkgo
 ```
 
-We use [Counterfeiter](https://github.com/maxbrunsfeld/counterfeiter) to generate
-fakes for our unit tests. You may need to regenerate fakes if you add or modify an
-interface. You can generate the fakes by running
+### Test doubles
 
-```sh
-$ go generate ./...
-```
-
-in the directory where the interface is located.
+Tests should prefer public HTTP/protocol behavior, persisted database state,
+and deterministic in-memory boundary models. Do not add generated or
+interaction mocks, call-count/argument assertions, or mocking frameworks.
+Controlled clocks, protocol servers, client-go object/watch state, and small
+channel-gated lifecycle functions are acceptable when asserted through
+observable outcomes.
 
 ### Running unit tests
 
