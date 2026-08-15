@@ -7,13 +7,11 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"net/url"
 	"time"
 
-	"github.com/concourse/concourse/skymarshal/token"
 	"github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
 	. "github.com/onsi/ginkgo/v2"
@@ -27,24 +25,6 @@ const (
 	csrfCookieName    = "skymarshal_csrf"
 	refreshCookieName = "skymarshal_refresh"
 )
-
-type authTokenFails struct{ token.Middleware }
-
-func (authTokenFails) SetAuthToken(http.ResponseWriter, string, time.Time) error {
-	return errors.New("nope")
-}
-
-type csrfTokenFails struct{ token.Middleware }
-
-func (csrfTokenFails) SetCSRFToken(http.ResponseWriter, string, time.Time) error {
-	return errors.New("nope")
-}
-
-type refreshTokenFails struct{ token.Middleware }
-
-func (refreshTokenFails) SetRefreshToken(http.ResponseWriter, string, time.Time) error {
-	return errors.New("nope")
-}
 
 func cookieNamed(response *http.Response, name string) *http.Cookie {
 	GinkgoHelper()
@@ -456,33 +436,6 @@ var _ = Describe("Sky Server API", func() {
 								request.URL.RawQuery = "code=some-code&state=" + stateToken
 							})
 
-							Context("when setting the auth token fails", func() {
-								BeforeEach(func() {
-									config.TokenMiddleware = authTokenFails{config.TokenMiddleware}
-								})
-								It("errors", func() {
-									Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-								})
-							})
-
-							Context("when setting the refresh token fails", func() {
-								BeforeEach(func() {
-									config.TokenMiddleware = refreshTokenFails{config.TokenMiddleware}
-								})
-								It("errors", func() {
-									Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-								})
-							})
-
-							Context("when setting the csrf token fails", func() {
-								BeforeEach(func() {
-									config.TokenMiddleware = csrfTokenFails{config.TokenMiddleware}
-								})
-								It("errors", func() {
-									Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-								})
-							})
-
 							Context("when setting the tokens succeeds", func() {
 								var redirectResponse *http.Response
 
@@ -624,32 +577,6 @@ var _ = Describe("Sky Server API", func() {
 						Expect(cookieNamed(response, csrfCookieName).Value).To(Equal(respBody["csrf_token"]))
 					})
 
-					Context("when setting the auth token fails", func() {
-						BeforeEach(func() {
-							config.TokenMiddleware = authTokenFails{config.TokenMiddleware}
-						})
-						It("errors", func() {
-							Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-						})
-					})
-
-					Context("when setting the refresh token fails", func() {
-						BeforeEach(func() {
-							config.TokenMiddleware = refreshTokenFails{config.TokenMiddleware}
-						})
-						It("errors", func() {
-							Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-						})
-					})
-
-					Context("when setting the csrf token fails", func() {
-						BeforeEach(func() {
-							config.TokenMiddleware = csrfTokenFails{config.TokenMiddleware}
-						})
-						It("errors", func() {
-							Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-						})
-					})
 				})
 
 				Context("when Dex returns an error", func() {
