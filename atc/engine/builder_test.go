@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc"
@@ -337,6 +338,131 @@ var _ = Describe("Builder", func() {
 				"BUILD_CREATED_BY=some-user",
 			)),
 		))
+	})
+
+	It("executes a persisted composite control-flow plan", func() {
+		fixture := useEngineDB()
+		_, _, _, build := createEngineJobBuild(
+			fixture,
+			"some-team",
+			atc.PipelineRef{Name: "some-pipeline"},
+			atc.Config{Jobs: atc.JobConfigs{{Name: "some-job"}}},
+			"some-user",
+		)
+
+		planFactory := atc.NewPlanFactory(700)
+		identityID := 0
+		identityPlan := func() atc.Plan {
+			identityID++
+			return atc.Plan{ID: atc.PlanID(fmt.Sprintf("identity-%d", identityID))}
+		}
+		runPlan := planFactory.NewPlan(atc.RunPlan{
+			Message: "composite-plan-ran",
+			Type:    "some-prototype",
+		})
+		ensureRunPlan := planFactory.NewPlan(atc.RunPlan{
+			Message: "ensure-plan-ran",
+			Type:    "some-prototype",
+		})
+		acrossPlan := planFactory.NewPlan(atc.AcrossPlan{
+			Vars: []atc.AcrossVar{{
+				Var:    "branch",
+				Values: []any{"main"},
+			}},
+			SubStepTemplate: `{"id":"across-template","run":{"message":"across-((.:branch))","type":"some-prototype","privileged":false}}`,
+		})
+		parallelPlan := planFactory.NewPlan(atc.InParallelPlan{
+			Limit:    2,
+			FailFast: true,
+			Steps: []atc.Plan{
+				planFactory.NewPlan(atc.TimeoutPlan{
+					Step: planFactory.NewPlan(atc.TryPlan{Step: planFactory.NewPlan(atc.ArtifactInputPlan{
+						ArtifactID: 999_999,
+						Name:       "missing-input",
+					})}),
+					Duration: "1m",
+				}),
+				planFactory.NewPlan(atc.OnFailurePlan{
+					Step: identityPlan(),
+					Next: planFactory.NewPlan(atc.ArtifactOutputPlan{Name: "failure-output"}),
+				}),
+				planFactory.NewPlan(atc.OnErrorPlan{
+					Step: identityPlan(),
+					Next: planFactory.NewPlan(atc.ArtifactInputPlan{ArtifactID: 123, Name: "error-input"}),
+				}),
+				planFactory.NewPlan(atc.OnAbortPlan{
+					Step: identityPlan(),
+					Next: planFactory.NewPlan(atc.ArtifactInputPlan{
+						ArtifactID: 999_998,
+						Name:       "must-not-run-on-abort",
+					}),
+				}),
+				acrossPlan,
+			},
+		})
+		doPlan := planFactory.NewPlan(atc.DoPlan{
+			parallelPlan,
+			planFactory.NewPlan(atc.OnSuccessPlan{
+				Step: identityPlan(),
+				Next: runPlan,
+			}),
+		})
+		compositePlan := planFactory.NewPlan(atc.EnsurePlan{
+			Step: doPlan,
+			Next: ensureRunPlan,
+		})
+
+		started, err := build.Start(compositePlan)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(started).To(BeTrue())
+		Expect(build.Reload()).To(BeTrue())
+		Expect(build.PrivatePlan()).To(Equal(compositePlan))
+
+		stepper, err := newRealStepperFactory(fixture, nil).StepperForBuild(build)
+		Expect(err).NotTo(HaveOccurred())
+		step := stepper(build.PrivatePlan())
+		succeeded, err := step.Run(
+			context.Background(),
+			exec.NewRunState(stepper, vars.StaticVariables{}),
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(succeeded).To(BeTrue())
+		Expect(build.Finish(db.BuildStatusSucceeded)).To(Succeed())
+		Expect(build.Reload()).To(BeTrue())
+		Expect(build.Status()).To(Equal(db.BuildStatusSucceeded))
+
+		rows, err := fixture.Conn.Query(`
+			SELECT payload
+			FROM build_events
+			WHERE build_id = $1 AND type = $2
+			ORDER BY event_id ASC
+		`, build.ID(), event.EventTypeLog)
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { Expect(rows.Close()).To(Succeed()) }()
+
+		var stderr string
+		for rows.Next() {
+			var payload []byte
+			Expect(rows.Scan(&payload)).To(Succeed())
+			var logged event.Log
+			Expect(json.Unmarshal(payload, &logged)).To(Succeed())
+			if logged.Origin.Source == event.OriginSourceStderr {
+				stderr += logged.Payload
+			}
+		}
+		Expect(rows.Err()).NotTo(HaveOccurred())
+		messages := []string{
+			"pretending to run across-main on prototype some-prototype",
+			"pretending to run composite-plan-ran on prototype some-prototype",
+			"pretending to run ensure-plan-ran on prototype some-prototype",
+		}
+		previous := -1
+		for _, message := range messages {
+			Expect(stderr).To(ContainSubstring(message))
+			position := strings.Index(stderr, message)
+			Expect(position).To(BeNumerically(">", previous))
+			previous = position
+		}
 	})
 
 	It("composes run plans into persisted run behavior", func() {
