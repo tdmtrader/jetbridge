@@ -2,6 +2,7 @@ package buildserver_test
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 
@@ -19,15 +20,13 @@ var _ = Describe("ScopedHandlerFactory", func() {
 	var (
 		response *http.Response
 		server   *httptest.Server
-		delegate *delegateHandler
 		handler  http.Handler
 	)
 
 	BeforeEach(func() {
-		delegate = &delegateHandler{}
 		logger := lagertest.NewTestLogger("test")
 		handlerFactory := NewScopedHandlerFactory(logger)
-		handler = handlerFactory.HandlerFor(delegate.GetHandler)
+		handler = handlerFactory.HandlerFor(renderBuild)
 	})
 
 	JustBeforeEach(func() {
@@ -41,6 +40,7 @@ var _ = Describe("ScopedHandlerFactory", func() {
 	})
 
 	var _ = AfterEach(func() {
+		Expect(response.Body.Close()).To(Succeed())
 		server.Close()
 	})
 
@@ -49,15 +49,14 @@ var _ = Describe("ScopedHandlerFactory", func() {
 
 		BeforeEach(func() {
 			// The factory only passes this through, so what matters is that the
-			// handler receives the very build the context carried. A real row
-			// serves as the identity token as well as a fake did.
+			// response identifies the very build the context carried.
 			contextBuild = buildForAPI(createBuild(createTeam("some-team")))
-			handler = &wrapHandler{handler, contextBuild}
+			handler = &buildContextHandler{next: handler, build: contextBuild}
 		})
 
-		It("calls scoped handler with build from context", func() {
-			Expect(delegate.IsCalled).To(BeTrue())
-			Expect(delegate.Build.ID()).To(Equal(contextBuild.ID()))
+		It("renders the build from context", func() {
+			Expect(response.StatusCode).To(Equal(http.StatusOK))
+			Expect(response.Header.Get("X-Concourse-Scoped-Build")).To(Equal(fmt.Sprint(contextBuild.ID())))
 		})
 	})
 
@@ -65,31 +64,21 @@ var _ = Describe("ScopedHandlerFactory", func() {
 		It("returns 500", func() {
 			Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
 		})
-
-		It("does not call the scoped handler", func() {
-			Expect(delegate.IsCalled).To(BeFalse())
-		})
 	})
 })
 
-type delegateHandler struct {
-	IsCalled bool
-	Build    db.BuildForAPI
-}
-
-func (handler *delegateHandler) GetHandler(build db.BuildForAPI) http.Handler {
+func renderBuild(build db.BuildForAPI) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		handler.IsCalled = true
-		handler.Build = build
+		w.Header().Set("X-Concourse-Scoped-Build", fmt.Sprint(build.ID()))
 	})
 }
 
-type wrapHandler struct {
-	delegate     http.Handler
-	contextBuild db.BuildForAPI
+type buildContextHandler struct {
+	next  http.Handler
+	build db.BuildForAPI
 }
 
-func (h *wrapHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	ctx := context.WithValue(r.Context(), auth.BuildContextKey, h.contextBuild)
-	h.delegate.ServeHTTP(w, r.WithContext(ctx))
+func (h *buildContextHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	ctx := context.WithValue(r.Context(), auth.BuildContextKey, h.build)
+	h.next.ServeHTTP(w, r.WithContext(ctx))
 }

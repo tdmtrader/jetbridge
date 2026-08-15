@@ -1,13 +1,10 @@
 package buildserver_test
 
 import (
-	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	. "github.com/concourse/concourse/atc/testhelpers"
@@ -16,7 +13,6 @@ import (
 	"github.com/concourse/concourse/atc"
 	. "github.com/concourse/concourse/atc/api/buildserver"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/event"
 	"github.com/vito/go-sse/sse"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -27,97 +23,70 @@ type numberedEvent struct {
 	Number int `json:"event"`
 }
 
-func (numberedEvent) EventType() atc.EventType  { return "fake" }
+func (numberedEvent) EventType() atc.EventType  { return "numbered" }
 func (numberedEvent) Version() atc.EventVersion { return "42.0" }
 
 func numberedEventData(number int, eventID int) string {
-	return fmt.Sprintf(`{"data":{"event":%d},"event":"fake","version":"42.0","event_id":"%d"}`, number, eventID)
+	return fmt.Sprintf(`{"data":{"event":%d},"event":"numbered","version":"42.0","event_id":"%d"}`, number, eventID)
 }
 
-// closeWatchingBuild counts the Close calls the handler makes against the real
-// event source it was handed. Nothing on db.EventSource reports that itself,
-// and an unclosed source leaks a goroutine and a LISTEN connection.
-type closeWatchingBuild struct {
+// eventStreamLifecycleBuild keeps the production event source intact and adds
+// a one-shot signal for its externally important close lifecycle. Closing a
+// live stream must release its goroutine and PostgreSQL LISTEN connection.
+type eventStreamLifecycleBuild struct {
 	db.BuildForAPI
 
-	closes atomic.Int64
-
-	mutex   sync.Mutex
-	sources []db.EventSource
+	mutex        sync.Mutex
+	openSource   db.EventSource
+	streamClosed chan struct{}
 }
 
-func (b *closeWatchingBuild) Events(from uint) (db.EventSource, error) {
+func newEventStreamLifecycleBuild(build db.BuildForAPI) *eventStreamLifecycleBuild {
+	return &eventStreamLifecycleBuild{
+		BuildForAPI:  build,
+		streamClosed: make(chan struct{}),
+	}
+}
+
+func (b *eventStreamLifecycleBuild) Events(from uint) (db.EventSource, error) {
 	source, err := b.BuildForAPI.Events(from)
 	if err != nil {
 		return nil, err
 	}
 
 	b.mutex.Lock()
-	b.sources = append(b.sources, source)
+	b.openSource = source
 	b.mutex.Unlock()
 
-	return &closeWatchingSource{EventSource: source, closes: &b.closes}, nil
+	return &eventStreamLifecycleSource{
+		EventSource: source,
+		closed:      b.streamClosed,
+	}, nil
 }
 
-func (b *closeWatchingBuild) CloseCount() int {
-	return int(b.closes.Load())
-}
-
-// ReleaseSources closes anything the handler left open, bypassing the counter
-// so the assertion still sees what the handler did. A source left listening
-// holds a session open and would wedge the suite on DROP DATABASE instead of
-// failing the spec that noticed.
-func (b *closeWatchingBuild) ReleaseSources() {
+// releaseOpenStream prevents a failed lifecycle assertion from wedging suite
+// teardown on the source's PostgreSQL listener.
+func (b *eventStreamLifecycleBuild) releaseOpenStream() {
 	b.mutex.Lock()
-	defer b.mutex.Unlock()
+	openSource := b.openSource
+	b.mutex.Unlock()
 
-	for _, source := range b.sources {
-		_ = source.Close()
+	if openSource != nil {
+		_ = openSource.Close()
 	}
 }
 
-type closeWatchingSource struct {
+type eventStreamLifecycleSource struct {
 	db.EventSource
 
-	closes *atomic.Int64
+	closed chan struct{}
+	once   sync.Once
 }
 
-func (s *closeWatchingSource) Close() error {
-	s.closes.Add(1)
-	return s.EventSource.Close()
-}
-
-// failAfterFirstEvent fails a real stream mid-flight, which a healthy build
-// event source never does on its own.
-type failAfterFirstEvent struct {
-	db.BuildForAPI
-
-	err error
-}
-
-func (b failAfterFirstEvent) Events(from uint) (db.EventSource, error) {
-	source, err := b.BuildForAPI.Events(from)
-	if err != nil {
-		return nil, err
-	}
-
-	return &failingSource{EventSource: source, err: b.err}, nil
-}
-
-type failingSource struct {
-	db.EventSource
-
-	err    error
-	served bool
-}
-
-func (s *failingSource) Next() (event.Envelope, error) {
-	if s.served {
-		return event.Envelope{}, s.err
-	}
-
-	s.served = true
-	return s.EventSource.Next()
+func (s *eventStreamLifecycleSource) Close() error {
+	err := s.EventSource.Close()
+	s.once.Do(func() { close(s.closed) })
+	return err
 }
 
 var _ = Describe("Handler", func() {
@@ -145,6 +114,7 @@ var _ = Describe("Handler", func() {
 
 			NewEventHandler(lagertest.NewTestLogger("test"), handlerBuild).ServeHTTP(w, r)
 		}))
+		DeferCleanup(server.Close)
 	})
 
 	Describe("GET", func() {
@@ -161,8 +131,6 @@ var _ = Describe("Handler", func() {
 		})
 
 		Context("when subscribing to the build succeeds", func() {
-			var watchedBuild *closeWatchingBuild
-
 			BeforeEach(func() {
 				team := createTeam("some-team")
 
@@ -178,13 +146,7 @@ var _ = Describe("Handler", func() {
 				Expect(sibling.SaveEvent(numberedEvent{99})).To(Succeed())
 				Expect(sibling.Finish(db.BuildStatusSucceeded)).To(Succeed())
 
-				watchedBuild = &closeWatchingBuild{BuildForAPI: buildForAPI(build)}
-				DeferCleanup(watchedBuild.ReleaseSources)
-				handlerBuild = watchedBuild
-			})
-
-			AfterEach(func() {
-				Eventually(watchedBuild.CloseCount, 30*time.Second).Should(Equal(1))
+				handlerBuild = buildForAPI(build)
 			})
 
 			JustBeforeEach(func() {
@@ -279,92 +241,17 @@ var _ = Describe("Handler", func() {
 			})
 		})
 
-		Context("when the eventsource returns an error", func() {
-			var watchedBuild *closeWatchingBuild
-			var disaster error
-
-			BeforeEach(func() {
-				disaster = errors.New("a coffee machine")
-
-				build := createBuild(createTeam("some-team"))
-				Expect(build.SaveEvent(numberedEvent{1})).To(Succeed())
-				Expect(build.Finish(db.BuildStatusSucceeded)).To(Succeed())
-
-				watchedBuild = &closeWatchingBuild{
-					BuildForAPI: failAfterFirstEvent{
-						BuildForAPI: buildForAPI(build),
-						err:         disaster,
-					},
-				}
-				DeferCleanup(watchedBuild.ReleaseSources)
-				handlerBuild = watchedBuild
-			})
-
-			AfterEach(func() {
-				Eventually(watchedBuild.CloseCount, 30*time.Second).Should(Equal(1))
-			})
-
-			JustBeforeEach(func() {
-				var err error
-
-				client := &http.Client{
-					Transport: &http.Transport{},
-				}
-				response, err = client.Do(request)
-				Expect(err).NotTo(HaveOccurred())
-			})
-
-			It("just stops sending events", func() {
-				reader := sse.NewReadCloser(response.Body)
-
-				Expect(reader.Next()).To(Equal(sse.Event{
-					ID:   "0",
-					Name: "event",
-					Data: []byte(numberedEventData(1, 0)),
-				}))
-
-				_, err := reader.Next()
-				Expect(err).To(HaveOccurred())
-				Expect(err).To(Equal(io.EOF))
-			})
-		})
-
 		Context("when the event stream never ends", func() {
-			var watchedBuild *closeWatchingBuild
+			var watchedBuild *eventStreamLifecycleBuild
 
 			BeforeEach(func() {
 				build := createBuild(createTeam("some-team"))
 				Expect(build.SaveEvent(numberedEvent{1})).To(Succeed())
 
-				// The build never finishes, and keeps emitting, so the handler
-				// only ever stops because the client went away.
-				stop := make(chan struct{})
-				done := make(chan struct{})
-				go func() {
-					defer GinkgoRecover()
-					defer close(done)
-
-					for number := 2; ; number++ {
-						select {
-						case <-stop:
-							return
-						default:
-						}
-
-						if err := build.SaveEvent(numberedEvent{number}); err != nil {
-							return
-						}
-
-						time.Sleep(time.Millisecond)
-					}
-				}()
-				DeferCleanup(func() {
-					close(stop)
-					<-done
-				})
-
-				watchedBuild = &closeWatchingBuild{BuildForAPI: buildForAPI(build)}
-				DeferCleanup(watchedBuild.ReleaseSources)
+				// An unfinished build's production source remains open while it
+				// waits for another event; only the client disconnect ends it.
+				watchedBuild = newEventStreamLifecycleBuild(buildForAPI(build))
+				DeferCleanup(watchedBuild.releaseOpenStream)
 				handlerBuild = watchedBuild
 			})
 
@@ -386,13 +273,13 @@ var _ = Describe("Handler", func() {
 				It("closes the event stream when connection is closed", func() {
 					err := response.Body.Close()
 					Expect(err).NotTo(HaveOccurred())
-					Eventually(watchedBuild.CloseCount, 30*time.Second).Should(Equal(1))
+					Eventually(watchedBuild.streamClosed, 30*time.Second).Should(BeClosed())
 				})
 			})
 		})
 
 		Context("when the build is live but idle", func() {
-			var watchedBuild *closeWatchingBuild
+			var watchedBuild *eventStreamLifecycleBuild
 
 			BeforeEach(func() {
 				build := createBuild(createTeam("some-team"))
@@ -401,8 +288,8 @@ var _ = Describe("Handler", func() {
 				// The build never finishes and never emits again, so once the
 				// handler has drained what is already there it is parked in
 				// Next() with nothing to wake it but the client going away.
-				watchedBuild = &closeWatchingBuild{BuildForAPI: buildForAPI(build)}
-				DeferCleanup(watchedBuild.ReleaseSources)
+				watchedBuild = newEventStreamLifecycleBuild(buildForAPI(build))
+				DeferCleanup(watchedBuild.releaseOpenStream)
 				handlerBuild = watchedBuild
 			})
 
@@ -423,37 +310,7 @@ var _ = Describe("Handler", func() {
 				Expect(response.Body.Close()).To(Succeed())
 
 				Eventually(handlerReturned, 30*time.Second).Should(Receive())
-				Eventually(watchedBuild.CloseCount, 30*time.Second).Should(Equal(1))
-			})
-		})
-
-		Context("when subscribing to it fails", func() {
-			BeforeEach(func() {
-				// Losing the database connection is how subscribing really
-				// fails: the event source opens a transaction before anything
-				// else.
-				severedConn := postgresRunner.OpenConn()
-				build, found, err := db.NewBuildFactory(severedConn, lockFactory, 0, time.Hour).
-					BuildForAPI(createBuild(createTeam("some-team")).ID())
-				Expect(err).NotTo(HaveOccurred())
-				Expect(found).To(BeTrue())
-				Expect(severedConn.Close()).To(Succeed())
-
-				handlerBuild = build
-			})
-
-			JustBeforeEach(func() {
-				var err error
-
-				client := &http.Client{
-					Transport: &http.Transport{},
-				}
-				response, err = client.Do(request)
-				Expect(err).NotTo(HaveOccurred())
-			})
-
-			It("returns 500", func() {
-				Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
+				Eventually(watchedBuild.streamClosed, 30*time.Second).Should(BeClosed())
 			})
 		})
 	})

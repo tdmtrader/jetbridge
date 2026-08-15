@@ -21,14 +21,13 @@ var _ = Describe("CsrfValidationHandler", func() {
 		csrfValidationHandler http.Handler
 		request               *http.Request
 		response              *http.Response
-		delegateHandlerCalled bool
 		isCSRFRequired        bool
 		logger                *lagertest.TestLogger
 		isLoggerSet           bool
 	)
 
 	simpleHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		delegateHandlerCalled = true
+		w.Header().Set("X-CSRF-Validated", "true")
 	})
 
 	csrfRequiredWrapHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -43,7 +42,6 @@ var _ = Describe("CsrfValidationHandler", func() {
 
 	BeforeEach(func() {
 		isLoggerSet = true
-		delegateHandlerCalled = false
 		isCSRFRequired = false
 		logger = lagertest.NewTestLogger("csrf-validation-test")
 
@@ -66,6 +64,7 @@ var _ = Describe("CsrfValidationHandler", func() {
 	})
 
 	AfterEach(func() {
+		Expect(response.Body.Close()).To(Succeed())
 		server.Close()
 	})
 
@@ -75,8 +74,8 @@ var _ = Describe("CsrfValidationHandler", func() {
 				Expect(response.StatusCode).To(Equal(http.StatusOK))
 			})
 
-			It("calls delegate handler", func() {
-				Expect(delegateHandlerCalled).To(BeTrue())
+			It("passes the request through the validated boundary", func() {
+				Expect(response.Header.Get("X-CSRF-Validated")).To(Equal("true"))
 			})
 		})
 	})
@@ -100,8 +99,8 @@ var _ = Describe("CsrfValidationHandler", func() {
 				Expect(response.StatusCode).To(Equal(http.StatusOK))
 			})
 
-			It("calls delegate handler", func() {
-				Expect(delegateHandlerCalled).To(BeTrue())
+			It("passes safe methods through the validated boundary", func() {
+				Expect(response.Header.Get("X-CSRF-Validated")).To(Equal("true"))
 			})
 		})
 
@@ -110,8 +109,8 @@ var _ = Describe("CsrfValidationHandler", func() {
 				Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
 			})
 
-			It("does not call delegate handler", func() {
-				Expect(delegateHandlerCalled).To(BeFalse())
+			It("does not expose the validated response", func() {
+				Expect(response.Header.Get("X-CSRF-Validated")).To(BeEmpty())
 			})
 		})
 
@@ -125,8 +124,8 @@ var _ = Describe("CsrfValidationHandler", func() {
 					Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
 				})
 
-				It("does not call delegate handler", func() {
-					Expect(delegateHandlerCalled).To(BeFalse())
+				It("does not expose the validated response", func() {
+					Expect(response.Header.Get("X-CSRF-Validated")).To(BeEmpty())
 				})
 			})
 
@@ -139,8 +138,8 @@ var _ = Describe("CsrfValidationHandler", func() {
 					Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
 				})
 
-				It("does not call delegate handler", func() {
-					Expect(delegateHandlerCalled).To(BeFalse())
+				It("does not expose the validated response", func() {
+					Expect(response.Header.Get("X-CSRF-Validated")).To(BeEmpty())
 				})
 			})
 
@@ -153,8 +152,8 @@ var _ = Describe("CsrfValidationHandler", func() {
 					Expect(response.StatusCode).To(Equal(http.StatusOK))
 				})
 
-				It("calls delegate handler", func() {
-					Expect(delegateHandlerCalled).To(BeTrue())
+				It("passes the matching token through the validated boundary", func() {
+					Expect(response.Header.Get("X-CSRF-Validated")).To(Equal("true"))
 				})
 			})
 		})

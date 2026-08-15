@@ -1,7 +1,6 @@
 package auth_test
 
 import (
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -18,8 +17,6 @@ var _ = Describe("CheckBuildReadAccessHandler", func() {
 	var (
 		response *http.Response
 		server   *httptest.Server
-		delegate *buildDelegateHandler
-		factory  db.BuildFactory
 		handler  http.Handler
 
 		team        db.Team
@@ -41,10 +38,6 @@ var _ = Describe("CheckBuildReadAccessHandler", func() {
 	)
 
 	BeforeEach(func() {
-		factory = buildFactory
-
-		delegate = &buildDelegateHandler{}
-
 		team = createTeam("some-team")
 		jobConfig = atc.JobConfig{Name: "some-job"}
 
@@ -76,15 +69,13 @@ var _ = Describe("CheckBuildReadAccessHandler", func() {
 			requestedID = build.ID()
 		}
 
-		// Built here, not in each Context's BeforeEach, so an inner Context can
-		// swap `factory` for a doomed one first.
-		handlerFactory := auth.NewCheckBuildReadAccessHandlerFactory(factory)
+		handlerFactory := auth.NewCheckBuildReadAccessHandlerFactory(buildFactory)
 		var innerHandler http.Handler
 		switch handlerKind {
 		case "anyJob":
-			innerHandler = handlerFactory.AnyJobHandler(delegate, auth.UnauthorizedRejector{})
+			innerHandler = handlerFactory.AnyJobHandler(http.HandlerFunc(renderBuildScope), auth.UnauthorizedRejector{})
 		default:
-			innerHandler = handlerFactory.CheckIfPrivateJobHandler(delegate, auth.UnauthorizedRejector{})
+			innerHandler = handlerFactory.CheckIfPrivateJobHandler(http.HandlerFunc(renderBuildScope), auth.UnauthorizedRejector{})
 		}
 		// A real accessor resolves the role from the action, and every role
 		// fails the blank one, so the action has to be a route that has one.
@@ -108,6 +99,7 @@ var _ = Describe("CheckBuildReadAccessHandler", func() {
 	})
 
 	var _ = AfterEach(func() {
+		Expect(response.Body.Close()).To(Succeed())
 		server.Close()
 	})
 
@@ -116,9 +108,8 @@ var _ = Describe("CheckBuildReadAccessHandler", func() {
 			Expect(response.StatusCode).To(Equal(http.StatusOK))
 		})
 
-		It("calls delegate with the build context", func() {
-			Expect(delegate.IsCalled).To(BeTrue())
-			Expect(delegate.ContextBuild.ID()).To(Equal(build.ID()))
+		It("scopes the response to the requested build", func() {
+			Expect(response.Header.Get("X-Concourse-Scoped-Build")).To(Equal(fmt.Sprint(build.ID())))
 		})
 	}
 
@@ -134,16 +125,6 @@ var _ = Describe("CheckBuildReadAccessHandler", func() {
 
 			It("returns 404", func() {
 				Expect(response.StatusCode).To(Equal(http.StatusNotFound))
-			})
-		})
-
-		Context("when getting build fails", func() {
-			BeforeEach(func() {
-				factory = doomedBuildFactory()
-			})
-
-			It("returns 503", func() {
-				Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
 			})
 		})
 	}
@@ -188,14 +169,6 @@ var _ = Describe("CheckBuildReadAccessHandler", func() {
 						Expect(response.StatusCode).To(Equal(http.StatusForbidden))
 					})
 				})
-				Context("when fetching pipeline throws error", func() {
-					BeforeEach(func() {
-						factory = buildFactoryWithPipelineLookup(false, errors.New("pipeline lookup failed"))
-					})
-					It("return 500", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-					})
-				})
 				Context("when the build is not for a pipeline", func() {
 					BeforeEach(func() {
 						// A one-off build has no pipeline.
@@ -205,15 +178,6 @@ var _ = Describe("CheckBuildReadAccessHandler", func() {
 					})
 					It("return 403", func() {
 						Expect(response.StatusCode).To(Equal(http.StatusForbidden))
-					})
-				})
-				Context("when the pipeline disappears during the request", func() {
-					BeforeEach(func() {
-						factory = buildFactoryWithPipelineLookup(false, nil)
-					})
-
-					It("returns 404", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusNotFound))
 					})
 				})
 			})
@@ -242,14 +206,6 @@ var _ = Describe("CheckBuildReadAccessHandler", func() {
 						Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
 					})
 				})
-				Context("when fetching pipeline throws error", func() {
-					BeforeEach(func() {
-						factory = buildFactoryWithPipelineLookup(false, errors.New("pipeline lookup failed"))
-					})
-					It("return 500", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-					})
-				})
 				Context("when the build is not for a pipeline", func() {
 					BeforeEach(func() {
 						// A one-off build has no pipeline.
@@ -261,15 +217,6 @@ var _ = Describe("CheckBuildReadAccessHandler", func() {
 						Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
 					})
 				})
-				Context("when the pipeline disappears during the request", func() {
-					BeforeEach(func() {
-						factory = buildFactoryWithPipelineLookup(false, nil)
-					})
-
-					It("returns 404", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusNotFound))
-					})
-				})
 			})
 		})
 	})
@@ -278,6 +225,34 @@ var _ = Describe("CheckBuildReadAccessHandler", func() {
 
 		BeforeEach(func() {
 			handlerKind = "privateJob"
+		})
+
+		Context("when a public historical build's job is no longer active", func() {
+			BeforeEach(func() {
+				pipeline, build = createJobBuildWithConfig(
+					team,
+					"some-pipeline",
+					atc.JobConfig{Name: "some-job", Public: true},
+				)
+				Expect(pipeline.Expose()).To(Succeed())
+
+				var err error
+				pipeline, _, err = team.SavePipeline(
+					atc.PipelineRef{Name: "some-pipeline"},
+					atc.Config{},
+					pipeline.ConfigVersion(),
+					false,
+				)
+				Expect(err).NotTo(HaveOccurred())
+
+				_, found, err := pipeline.Job("some-job")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(found).To(BeFalse())
+			})
+
+			It("returns 404", func() {
+				Expect(response.StatusCode).To(Equal(http.StatusNotFound))
+			})
 		})
 
 		ItChecksIfJobIsPrivate := func(status int) {
@@ -314,26 +289,6 @@ var _ = Describe("CheckBuildReadAccessHandler", func() {
 
 					It("returns "+fmt.Sprint(status), func() {
 						Expect(response.StatusCode).To(Equal(status))
-					})
-				})
-
-				Context("getting the job fails", func() {
-					BeforeEach(func() {
-						factory = buildFactoryWithJobLookup(false, errors.New("job lookup failed"))
-					})
-
-					It("returns 500", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-					})
-				})
-
-				Context("when the job disappears during the request", func() {
-					BeforeEach(func() {
-						factory = buildFactoryWithJobLookup(false, nil)
-					})
-
-					It("returns 404", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusNotFound))
 					})
 				})
 			})
@@ -383,86 +338,7 @@ var _ = Describe("CheckBuildReadAccessHandler", func() {
 	})
 })
 
-// These factories retain only the late-lookup seams that real PostgreSQL
-// cannot trigger deterministically: BuildForAPI succeeds, then a concurrent
-// cascade can remove the selected parent before its lookup. They also isolate
-// errors to that second query; a closed connection would fail BuildForAPI
-// first and leave both branches untested.
-func buildFactoryWithPipelineLookup(found bool, err error) db.BuildFactory {
-	return lateLookupBuildFactory{
-		BuildFactory: buildFactory,
-		wrap: func(build db.BuildForAPI) db.BuildForAPI {
-			return pipelineLookupResultBuild{BuildForAPI: build, found: found, err: err}
-		},
-	}
-}
-
-func buildFactoryWithJobLookup(found bool, err error) db.BuildFactory {
-	return lateLookupBuildFactory{
-		BuildFactory: buildFactory,
-		wrap: func(build db.BuildForAPI) db.BuildForAPI {
-			return jobLookupResultBuild{BuildForAPI: build, found: found, err: err}
-		},
-	}
-}
-
-type lateLookupBuildFactory struct {
-	db.BuildFactory
-
-	wrap func(db.BuildForAPI) db.BuildForAPI
-}
-
-func (factory lateLookupBuildFactory) BuildForAPI(buildID int) (db.BuildForAPI, bool, error) {
-	build, found, err := factory.BuildFactory.BuildForAPI(buildID)
-	if err != nil || !found {
-		return build, found, err
-	}
-	return factory.wrap(build), true, nil
-}
-
-type pipelineLookupResultBuild struct {
-	db.BuildForAPI
-
-	found bool
-	err   error
-}
-
-func (build pipelineLookupResultBuild) Pipeline() (db.Pipeline, bool, error) {
-	return nil, build.found, build.err
-}
-
-type jobLookupResultBuild struct {
-	db.BuildForAPI
-
-	found bool
-	err   error
-}
-
-func (build jobLookupResultBuild) Pipeline() (db.Pipeline, bool, error) {
-	pipeline, found, err := build.BuildForAPI.Pipeline()
-	if err != nil || !found {
-		return pipeline, found, err
-	}
-	return jobLookupResultPipeline{Pipeline: pipeline, found: build.found, err: build.err}, true, nil
-}
-
-type jobLookupResultPipeline struct {
-	db.Pipeline
-
-	found bool
-	err   error
-}
-
-func (pipeline jobLookupResultPipeline) Job(string) (db.Job, bool, error) {
-	return nil, pipeline.found, pipeline.err
-}
-
-type buildDelegateHandler struct {
-	IsCalled     bool
-	ContextBuild db.BuildForAPI
-}
-
-func (handler *buildDelegateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	handler.IsCalled = true
-	handler.ContextBuild = r.Context().Value(auth.BuildContextKey).(db.BuildForAPI)
+func renderBuildScope(w http.ResponseWriter, r *http.Request) {
+	build := r.Context().Value(auth.BuildContextKey).(db.BuildForAPI)
+	w.Header().Set("X-Concourse-Scoped-Build", fmt.Sprint(build.ID()))
 }

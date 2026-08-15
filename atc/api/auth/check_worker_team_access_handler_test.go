@@ -19,8 +19,6 @@ var _ = Describe("CheckWorkerTeamAccessHandler", func() {
 	var (
 		response *http.Response
 		server   *httptest.Server
-		delegate *workerDelegateHandler
-		factory  db.WorkerFactory
 		handler  http.Handler
 
 		// set by a Context to give the request a token; "" leaves it anonymous
@@ -28,16 +26,12 @@ var _ = Describe("CheckWorkerTeamAccessHandler", func() {
 	)
 
 	BeforeEach(func() {
-		factory = workerFactory
 		authorization = ""
-		delegate = &workerDelegateHandler{}
 	})
 
-	// JustBeforeEach so a Context can register the worker, or swap the factory
-	// for a doomed one, before the handler is built.
 	JustBeforeEach(func() {
-		innerHandler := auth.NewCheckWorkerTeamAccessHandlerFactory(factory).
-			HandlerFor(delegate, auth.UnauthorizedRejector{})
+		innerHandler := auth.NewCheckWorkerTeamAccessHandlerFactory(workerFactory).
+			HandlerFor(http.HandlerFunc(renderWorkerScope), auth.UnauthorizedRejector{})
 
 		// DeleteWorker is the route this handler guards, and it is the route
 		// whose default role a real accessor resolves the request against.
@@ -66,7 +60,6 @@ var _ = Describe("CheckWorkerTeamAccessHandler", func() {
 		requestGenerator := rata.NewRequestGenerator(server.URL, atc.Routes)
 		request, err := requestGenerator.CreateRequest(atc.DeleteWorker, rata.Params{
 			"worker_name": "some-worker",
-			"team_name":   "some-team",
 		}, nil)
 		Expect(err).NotTo(HaveOccurred())
 
@@ -79,16 +72,13 @@ var _ = Describe("CheckWorkerTeamAccessHandler", func() {
 	})
 
 	var _ = AfterEach(func() {
+		Expect(response.Body.Close()).To(Succeed())
 		server.Close()
 	})
 
 	Context("when not authenticated", func() {
 		It("returns 401", func() {
 			Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
-		})
-
-		It("does not call the scoped handler", func() {
-			Expect(delegate.IsCalled).To(BeFalse())
 		})
 	})
 
@@ -115,12 +105,9 @@ var _ = Describe("CheckWorkerTeamAccessHandler", func() {
 					makeAdmin(team)
 				})
 
-				It("calls worker delegate", func() {
-					Expect(delegate.IsCalled).To(BeTrue())
+				It("returns the requested worker scope", func() {
 					Expect(response.StatusCode).To(Equal(http.StatusOK))
-				})
-				It("returns 200", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusOK))
+					Expect(response.Header.Get("X-Concourse-Scoped-Worker")).To(Equal("some-worker"))
 				})
 			})
 
@@ -129,9 +116,9 @@ var _ = Describe("CheckWorkerTeamAccessHandler", func() {
 					authorization = systemAccessToken()
 				})
 
-				It("calls worker delegate", func() {
-					Expect(delegate.IsCalled).To(BeTrue())
+				It("returns the requested worker scope", func() {
 					Expect(response.StatusCode).To(Equal(http.StatusOK))
+					Expect(response.Header.Get("X-Concourse-Scoped-Worker")).To(Equal("some-worker"))
 				})
 			})
 
@@ -140,19 +127,15 @@ var _ = Describe("CheckWorkerTeamAccessHandler", func() {
 					grantRole(team, accessor.MemberRole)
 				})
 
-				It("calls worker delegate", func() {
-					Expect(delegate.IsCalled).To(BeTrue())
+				It("returns the requested worker scope", func() {
 					Expect(response.StatusCode).To(Equal(http.StatusOK))
+					Expect(response.Header.Get("X-Concourse-Scoped-Worker")).To(Equal("some-worker"))
 				})
 			})
 
 			Context("when team in auth does not match worker team", func() {
 				BeforeEach(func() {
 					grantRole(createTeam("some-other-team"), accessor.MemberRole)
-				})
-
-				It("does not call worker delegate", func() {
-					Expect(delegate.IsCalled).To(BeFalse())
 				})
 
 				It("returns 403 Forbidden", func() {
@@ -176,22 +159,15 @@ var _ = Describe("CheckWorkerTeamAccessHandler", func() {
 					makeAdmin(createTeam("some-team"))
 				})
 
-				It("calls worker delegate", func() {
-					Expect(delegate.IsCalled).To(BeTrue())
+				It("returns the requested worker scope", func() {
 					Expect(response.StatusCode).To(Equal(http.StatusOK))
-				})
-				It("returns 200", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusOK))
+					Expect(response.Header.Get("X-Concourse-Scoped-Worker")).To(Equal("some-worker"))
 				})
 			})
 
 			Context("when user is not admin/system", func() {
 				BeforeEach(func() {
 					grantRole(createTeam("some-team"), accessor.MemberRole)
-				})
-
-				It("does not call worker delegate", func() {
-					Expect(delegate.IsCalled).To(BeFalse())
 				})
 
 				It("returns 403 Forbidden", func() {
@@ -202,36 +178,13 @@ var _ = Describe("CheckWorkerTeamAccessHandler", func() {
 
 		Context("when worker does not exist", func() {
 			// No worker is registered, so the lookup misses.
-
-			It("does not call worker delegate", func() {
-				Expect(delegate.IsCalled).To(BeFalse())
-			})
-
 			It("returns 404 Not found", func() {
 				Expect(response.StatusCode).To(Equal(http.StatusNotFound))
-			})
-		})
-
-		Context("when getting worker fails", func() {
-			BeforeEach(func() {
-				factory = doomedWorkerFactory()
-			})
-
-			It("returns 500", func() {
-				Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-			})
-
-			It("does not call the scoped handler", func() {
-				Expect(delegate.IsCalled).To(BeFalse())
 			})
 		})
 	})
 })
 
-type workerDelegateHandler struct {
-	IsCalled bool
-}
-
-func (handler *workerDelegateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	handler.IsCalled = true
+func renderWorkerScope(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("X-Concourse-Scoped-Worker", r.FormValue(":worker_name"))
 }

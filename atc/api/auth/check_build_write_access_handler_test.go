@@ -18,8 +18,6 @@ var _ = Describe("CheckBuildWriteAccessHandler", func() {
 	var (
 		response    *http.Response
 		server      *httptest.Server
-		delegate    *buildDelegateHandler
-		factory     db.BuildFactory
 		handler     http.Handler
 		team        db.Team
 		build       db.Build
@@ -30,24 +28,21 @@ var _ = Describe("CheckBuildWriteAccessHandler", func() {
 	)
 
 	BeforeEach(func() {
-		factory = buildFactory
 		authorization = ""
-
-		delegate = &buildDelegateHandler{}
 
 		// A real build of a real job, owned by "some-team" -- which is the team
 		// the request claims, so the authorization decision is made against rows
-		// rather than against TeamNameReturns.
+		// rather than a configured team-name response.
 		team = createTeam("some-team")
 		build = createJobBuild(team, "some-pipeline", "some-job")
 		requestedID = build.ID()
 	})
 
-	// JustBeforeEach so a Context can point the request at a different id, or
-	// swap the factory for a doomed one, before the handler is built.
+	// JustBeforeEach so a Context can point the request at a different id before
+	// the handler is built.
 	JustBeforeEach(func() {
-		innerHandler := auth.NewCheckBuildWriteAccessHandlerFactory(factory).
-			HandlerFor(delegate, auth.UnauthorizedRejector{})
+		innerHandler := auth.NewCheckBuildWriteAccessHandlerFactory(buildFactory).
+			HandlerFor(http.HandlerFunc(renderBuildScope), auth.UnauthorizedRejector{})
 
 		// AbortBuild is a write route, so the real accessor demands the operator
 		// role rather than the blank one every role fails.
@@ -75,6 +70,7 @@ var _ = Describe("CheckBuildWriteAccessHandler", func() {
 	})
 
 	var _ = AfterEach(func() {
+		Expect(response.Body.Close()).To(Succeed())
 		server.Close()
 	})
 
@@ -89,9 +85,8 @@ var _ = Describe("CheckBuildWriteAccessHandler", func() {
 				Expect(response.StatusCode).To(Equal(http.StatusOK))
 			})
 
-			It("calls delegate with the build context", func() {
-				Expect(delegate.IsCalled).To(BeTrue())
-				Expect(delegate.ContextBuild.ID()).To(Equal(build.ID()))
+			It("scopes the response to the requested build", func() {
+				Expect(response.Header.Get("X-Concourse-Scoped-Build")).To(Equal(fmt.Sprint(build.ID())))
 			})
 		})
 
@@ -102,16 +97,6 @@ var _ = Describe("CheckBuildWriteAccessHandler", func() {
 
 			It("returns 404", func() {
 				Expect(response.StatusCode).To(Equal(http.StatusNotFound))
-			})
-		})
-
-		Context("when getting build fails", func() {
-			BeforeEach(func() {
-				factory = doomedBuildFactory()
-			})
-
-			It("returns 500", func() {
-				Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
 			})
 		})
 	})

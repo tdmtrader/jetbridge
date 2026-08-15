@@ -20,14 +20,28 @@ import (
 var _ = Describe("WebAuthHandler", func() {
 	var (
 		middleware token.Middleware
-		nested     recordingHandler
+		nested     http.Handler
 	)
 
 	var server *httptest.Server
 
 	BeforeEach(func() {
 		middleware = token.NewMiddleware(true)
-		nested = recordingHandler{requests: make(chan *http.Request, 1)}
+		nested = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if authorization := r.Header.Get("Authorization"); authorization != "" {
+				w.Header().Set("X-Observed-Authorization", authorization)
+			}
+
+			required, present := r.Context().Value(auth.CSRFRequiredKey).(bool)
+			switch {
+			case !present:
+				w.Header().Set("X-Observed-CSRF-Context", "unset")
+			case required:
+				w.Header().Set("X-Observed-CSRF-Context", "required")
+			default:
+				w.Header().Set("X-Observed-CSRF-Context", "not-required")
+			}
+		})
 
 		server = httptest.NewServer(auth.WebAuthHandler{
 			Handler:    nested,
@@ -71,16 +85,11 @@ var _ = Describe("WebAuthHandler", func() {
 			})
 
 			It("proxies to the handler without setting the Authorization header", func() {
-				var proxied *http.Request
-				Expect(nested.requests).To(Receive(&proxied))
-				Expect(proxied.Header.Get("Authorization")).To(BeEmpty())
+				Expect(response.Header.Get("X-Observed-Authorization")).To(BeEmpty())
 			})
 
 			It("does not set CSRF required context in request", func() {
-				var proxied *http.Request
-				Expect(nested.requests).To(Receive(&proxied))
-				csrfRequiredContext := proxied.Context().Value(auth.CSRFRequiredKey)
-				Expect(csrfRequiredContext).To(BeNil())
+				Expect(response.Header.Get("X-Observed-CSRF-Context")).To(Equal("unset"))
 			})
 
 			Context("the nested handler returns unauthorized", func() {
@@ -100,19 +109,11 @@ var _ = Describe("WebAuthHandler", func() {
 			})
 
 			It("sets the Authorization header with the value from the cookie", func() {
-				var proxied *http.Request
-				Expect(nested.requests).To(Receive(&proxied))
-				Expect(proxied.Header.Get("Authorization")).To(Equal("username:password"))
+				Expect(response.Header.Get("X-Observed-Authorization")).To(Equal("username:password"))
 			})
 
 			It("sets CSRF required context in request", func() {
-				var proxied *http.Request
-				Expect(nested.requests).To(Receive(&proxied))
-				csrfRequiredContext := proxied.Context().Value(auth.CSRFRequiredKey)
-				Expect(csrfRequiredContext).NotTo(BeNil())
-
-				boolCsrf := csrfRequiredContext.(bool)
-				Expect(boolCsrf).To(BeFalse())
+				Expect(response.Header.Get("X-Observed-CSRF-Context")).To(Equal("not-required"))
 			})
 
 			Context("and the request also has an Authorization header", func() {
@@ -121,9 +122,7 @@ var _ = Describe("WebAuthHandler", func() {
 				})
 
 				It("does not override the Authorization header", func() {
-					var proxied *http.Request
-					Expect(nested.requests).To(Receive(&proxied))
-					Expect(proxied.Header.Get("Authorization")).To(Equal("foobar"))
+					Expect(response.Header.Get("X-Observed-Authorization")).To(Equal("foobar"))
 				})
 			})
 
@@ -220,17 +219,6 @@ var _ = Describe("WebAuthHandler", func() {
 		})
 	})
 })
-
-// recordingHandler hands each request it is given to the spec over a buffered
-// channel: the handler runs on the server's goroutine, so the request cannot be
-// stashed in a variable the spec reads.
-type recordingHandler struct {
-	requests chan *http.Request
-}
-
-func (handler recordingHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	handler.requests <- r
-}
 
 // requestToNestedStatus points a request at a WebAuthHandler whose nested
 // handler answers with status, which is what drives the cookie unsetting.

@@ -2,13 +2,12 @@ package pipelineserver_test
 
 import (
 	"context"
-	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 
-	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/auth"
 	"github.com/concourse/concourse/atc/api/pipelineserver"
 	"github.com/concourse/concourse/atc/db"
@@ -19,57 +18,56 @@ import (
 
 var _ = Describe("Handler", func() {
 	var (
-		response *http.Response
-		server   *httptest.Server
-		delegate *delegateHandler
-
-		factory db.TeamFactory
-		handler http.Handler
+		response        *http.Response
+		server          *httptest.Server
+		handler         http.Handler
+		contextPipeline db.Pipeline
+		requestForm     url.Values
 	)
 
 	BeforeEach(func() {
-		delegate = &delegateHandler{}
-		factory = teamFactory
+		contextPipeline = nil
+		requestForm = nil
 	})
 
 	JustBeforeEach(func() {
-		handlerFactory := pipelineserver.NewScopedHandlerFactory(factory)
-		handler = handlerFactory.HandlerFor(delegate.GetHandler)
+		handlerFactory := pipelineserver.NewScopedHandlerFactory(teamFactory)
+		handler = handlerFactory.HandlerFor(renderPipeline)
+		if contextPipeline != nil {
+			handler = &pipelineContextHandler{next: handler, pipeline: contextPipeline}
+		}
 		server = httptest.NewServer(handler)
 
-		request, err := http.NewRequest("POST", server.URL+"?:team_name=some-team&:pipeline_name=some-pipeline", nil)
+		var body *strings.Reader
+		if requestForm == nil {
+			body = strings.NewReader("")
+		} else {
+			body = strings.NewReader(requestForm.Encode())
+		}
+		request, err := http.NewRequest("POST", server.URL+"?:team_name=some-team&:pipeline_name=some-pipeline", body)
 		Expect(err).NotTo(HaveOccurred())
+		if requestForm != nil {
+			request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		}
 
 		response, err = new(http.Client).Do(request)
 		Expect(err).NotTo(HaveOccurred())
 	})
 
 	AfterEach(func() {
+		Expect(response.Body.Close()).To(Succeed())
 		server.Close()
 	})
 
 	Context("when pipeline is in request context", func() {
-		var contextPipeline db.Pipeline
-
 		BeforeEach(func() {
 			contextPipeline = createPipeline(createTeam("context-team"), "context-pipeline")
 		})
 
-		JustBeforeEach(func() {
-			// Rebuild with the wrapper, then reissue: a pipeline already in the
-			// context short-circuits the lookup entirely.
-			server.Close()
-			server = httptest.NewServer(&wrapHandler{handler, contextPipeline})
-
-			request, err := http.NewRequest("POST", server.URL+"?:team_name=some-team&:pipeline_name=some-pipeline", nil)
-			Expect(err).NotTo(HaveOccurred())
-			response, err = new(http.Client).Do(request)
-			Expect(err).NotTo(HaveOccurred())
-		})
-
-		It("calls scoped handler with pipeline from context", func() {
-			Expect(delegate.IsCalled).To(BeTrue())
-			Expect(delegate.Pipeline).To(BeIdenticalTo(contextPipeline))
+		It("renders the pipeline already present in context", func() {
+			Expect(response.StatusCode).To(Equal(http.StatusOK))
+			Expect(response.Header.Get("X-Concourse-Scoped-Pipeline")).To(Equal(fmt.Sprint(contextPipeline.ID())))
+			Expect(response.Header.Get("X-Concourse-Scoped-Team")).To(Equal("context-team"))
 		})
 	})
 
@@ -77,44 +75,6 @@ var _ = Describe("Handler", func() {
 		Context("when the team does not exist", func() {
 			It("returns 404", func() {
 				Expect(response.StatusCode).To(Equal(http.StatusNotFound))
-			})
-
-			It("does not call the scoped handler", func() {
-				Expect(delegate.IsCalled).To(BeFalse())
-			})
-		})
-
-		Context("when finding the team fails", func() {
-			BeforeEach(func() {
-				doomed := postgresRunner.OpenConn()
-				doomedFactory := db.NewTeamFactory(doomed, lockFactory)
-				_, err := doomedFactory.CreateTeam(atc.Team{Name: "some-team"})
-				Expect(err).NotTo(HaveOccurred())
-				Expect(doomed.Close()).To(Succeed())
-
-				factory = doomedFactory
-			})
-
-			It("returns 500", func() {
-				Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-			})
-
-			It("does not call the scoped handler", func() {
-				Expect(delegate.IsCalled).To(BeFalse())
-			})
-		})
-
-		Context("when finding the pipeline fails", func() {
-			BeforeEach(func() {
-				factory = teamFactoryFailingPipelineLookup(errors.New("pipeline lookup failed"))
-			})
-
-			It("returns 500", func() {
-				Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-			})
-
-			It("does not call the scoped handler", func() {
-				Expect(delegate.IsCalled).To(BeFalse())
 			})
 		})
 
@@ -126,35 +86,24 @@ var _ = Describe("Handler", func() {
 			})
 
 			Context("when the request carries a different team name in a form body", func() {
-				JustBeforeEach(func() {
+				var urlTeamPipeline db.Pipeline
+
+				BeforeEach(func() {
 					// A team the caller is trying to reach by putting its name in
 					// the body. Both teams own a pipeline of the same name, so the
 					// only way to tell which one the handler scoped to is which
-					// pipeline the delegate receives -- the externally meaningful
-					// scoping property this scenario must prove.
+					// pipeline identity the response renders -- the externally
+					// meaningful scoping property this scenario must prove.
 					otherTeam := createTeam("some-other-team")
 					createPipeline(otherTeam, "some-pipeline")
-					urlTeamPipeline := createPipeline(team, "some-pipeline")
-
-					body := url.Values{":team_name": {"some-other-team"}}
-					request, err := http.NewRequest(
-						"POST",
-						server.URL+"?:team_name=some-team&:pipeline_name=some-pipeline",
-						strings.NewReader(body.Encode()),
-					)
-					Expect(err).NotTo(HaveOccurred())
-					request.Header.Add("Content-type", "application/x-www-form-urlencoded")
-
-					response, err = new(http.Client).Do(request)
-					Expect(err).NotTo(HaveOccurred())
-
-					Expect(delegate.IsCalled).To(BeTrue())
-					Expect(delegate.Pipeline.ID()).To(Equal(urlTeamPipeline.ID()),
-						"the team name in the URL must win over the one in the body")
+					urlTeamPipeline = createPipeline(team, "some-pipeline")
+					requestForm = url.Values{":team_name": {"some-other-team"}}
 				})
 
 				It("scopes to the team named in the URL", func() {
 					Expect(response.StatusCode).To(Equal(http.StatusOK))
+					Expect(response.Header.Get("X-Concourse-Scoped-Pipeline")).To(Equal(fmt.Sprint(urlTeamPipeline.ID())))
+					Expect(response.Header.Get("X-Concourse-Scoped-Team")).To(Equal("some-team"))
 				})
 			})
 
@@ -165,10 +114,9 @@ var _ = Describe("Handler", func() {
 					pipeline = createPipeline(team, "some-pipeline")
 				})
 
-				It("hands the scoped handler that pipeline", func() {
-					Expect(delegate.IsCalled).To(BeTrue())
-					Expect(delegate.Pipeline.ID()).To(Equal(pipeline.ID()))
-					Expect(delegate.Pipeline.Name()).To(Equal("some-pipeline"))
+				It("renders the resolved pipeline", func() {
+					Expect(response.Header.Get("X-Concourse-Scoped-Pipeline")).To(Equal(fmt.Sprint(pipeline.ID())))
+					Expect(response.Header.Get("X-Concourse-Scoped-Pipeline-Name")).To(Equal("some-pipeline"))
 				})
 
 				It("returns 200", func() {
@@ -184,58 +132,25 @@ var _ = Describe("Handler", func() {
 				It("returns 404", func() {
 					Expect(response.StatusCode).To(Equal(http.StatusNotFound))
 				})
-
-				It("does not call the scoped handler", func() {
-					Expect(delegate.IsCalled).To(BeFalse())
-				})
 			})
 		})
 	})
 })
 
-// Keep this fake at the narrow late-query seam: FindTeam succeeds, then only
-// Team.Pipeline fails. Closing a real connection would fail FindTeam first and
-// leave the handler's distinct pipeline-error branch untested.
-func teamFactoryFailingPipelineLookup(err error) db.TeamFactory {
-	return pipelineLookupFailureFactory{err: err}
-}
-
-type pipelineLookupFailureFactory struct {
-	db.TeamFactory
-	err error
-}
-
-func (factory pipelineLookupFailureFactory) FindTeam(string) (db.Team, bool, error) {
-	return pipelineLookupFailureTeam{err: factory.err}, true, nil
-}
-
-type pipelineLookupFailureTeam struct {
-	db.Team
-	err error
-}
-
-func (team pipelineLookupFailureTeam) Pipeline(atc.PipelineRef) (db.Pipeline, bool, error) {
-	return nil, false, team.err
-}
-
-type delegateHandler struct {
-	IsCalled bool
-	Pipeline db.Pipeline
-}
-
-func (handler *delegateHandler) GetHandler(dbPipeline db.Pipeline) http.Handler {
+func renderPipeline(dbPipeline db.Pipeline) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		handler.IsCalled = true
-		handler.Pipeline = dbPipeline
+		w.Header().Set("X-Concourse-Scoped-Pipeline", fmt.Sprint(dbPipeline.ID()))
+		w.Header().Set("X-Concourse-Scoped-Pipeline-Name", dbPipeline.Name())
+		w.Header().Set("X-Concourse-Scoped-Team", dbPipeline.TeamName())
 	})
 }
 
-type wrapHandler struct {
-	delegate        http.Handler
-	contextPipeline db.Pipeline
+type pipelineContextHandler struct {
+	next     http.Handler
+	pipeline db.Pipeline
 }
 
-func (h *wrapHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	ctx := context.WithValue(r.Context(), auth.PipelineContextKey, h.contextPipeline)
-	h.delegate.ServeHTTP(w, r.WithContext(ctx))
+func (h *pipelineContextHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	ctx := context.WithValue(r.Context(), auth.PipelineContextKey, h.pipeline)
+	h.next.ServeHTTP(w, r.WithContext(ctx))
 }

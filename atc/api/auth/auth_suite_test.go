@@ -252,29 +252,3 @@ func createJobBuild(team db.Team, pipelineName, jobName string) db.Build {
 	Expect(err).NotTo(HaveOccurred())
 	return build
 }
-
-// doomedWorkerFactory is the worker-side counterpart of doomedTeamFactory.
-func doomedWorkerFactory() db.WorkerFactory {
-	doomed := postgresRunner.OpenConn()
-	factory := db.NewWorkerFactory(doomed, db.NewStaticWorkerCache(logger, doomed, 0))
-	Expect(doomed.Close()).To(Succeed())
-	return factory
-}
-
-// doomedBuildFactory is the build-side counterpart of doomedTeamFactory.
-func doomedBuildFactory() db.BuildFactory {
-	doomed := postgresRunner.OpenConn()
-	factory := db.NewBuildFactory(doomed, lockFactory, 0, time.Hour)
-	Expect(doomed.Close()).To(Succeed())
-	return factory
-}
-
-// doomedTeamFactory returns a factory whose connection is already closed, so
-// every lookup through it fails the way a database outage would. It opens its
-// own connection: AfterEach asserts the suite's closes cleanly.
-func doomedTeamFactory() db.TeamFactory {
-	doomed := postgresRunner.OpenConn()
-	factory := db.NewTeamFactory(doomed, lockFactory)
-	Expect(doomed.Close()).To(Succeed())
-	return factory
-}

@@ -16,8 +16,7 @@ import (
 
 var _ = Describe("Handler", func() {
 	var (
-		innerHandlerCalled   bool
-		dummyHandler         http.HandlerFunc
+		acceptedHandler      http.HandlerFunc
 		policyCheckerHandler http.Handler
 		req                  *http.Request
 		policyChecker        policychecker.PolicyChecker
@@ -29,9 +28,10 @@ var _ = Describe("Handler", func() {
 	BeforeEach(func() {
 		policyChecker = policychecker.NewApiPolicyChecker(policy.NoopChecker{})
 
-		innerHandlerCalled = false
-		dummyHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			innerHandlerCalled = true
+		acceptedHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("X-Concourse-Policy-Checked", "accepted")
+			_, err := io.WriteString(w, "policy accepted")
+			Expect(err).NotTo(HaveOccurred())
 		})
 
 		responseWriter = httptest.NewRecorder()
@@ -42,13 +42,15 @@ var _ = Describe("Handler", func() {
 	})
 
 	JustBeforeEach(func() {
-		policyCheckerHandler = policychecker.NewHandler(logger, dummyHandler, "some-action", policyChecker)
+		policyCheckerHandler = policychecker.NewHandler(logger, acceptedHandler, "some-action", policyChecker)
 		policyCheckerHandler.ServeHTTP(responseWriter, req)
 	})
 
 	Context("policy check passes", func() {
-		It("calls the inner handler", func() {
-			Expect(innerHandlerCalled).To(BeTrue())
+		It("returns the accepted response", func() {
+			Expect(responseWriter.Code).To(Equal(http.StatusOK))
+			Expect(responseWriter.Header().Get("X-Concourse-Policy-Checked")).To(Equal("accepted"))
+			Expect(responseWriter.Body.String()).To(Equal("policy accepted"))
 		})
 	})
 
@@ -73,8 +75,8 @@ var _ = Describe("Handler", func() {
 				Expect(string(msg)).To(ContainSubstring("another policy also says you can't do that"))
 			})
 
-			It("not call the inner handler", func() {
-				Expect(innerHandlerCalled).To(BeFalse())
+			It("does not expose an accepted response", func() {
+				Expect(responseWriter.Header().Get("X-Concourse-Policy-Checked")).To(BeEmpty())
 			})
 		})
 
@@ -83,8 +85,10 @@ var _ = Describe("Handler", func() {
 				opaServer.Reset(`{"result": {"allowed": false, "block": false, "reasons": ["a policy says you can't do that", "another policy also says you can't do that"]}}`)
 			})
 
-			It("calls the inner handler", func() {
-				Expect(innerHandlerCalled).To(BeTrue())
+			It("returns the accepted response", func() {
+				Expect(responseWriter.Code).To(Equal(http.StatusOK))
+				Expect(responseWriter.Header().Get("X-Concourse-Policy-Checked")).To(Equal("accepted"))
+				Expect(responseWriter.Body.String()).To(Equal("policy accepted"))
 			})
 
 			It("response should have a header about policy check warning", func() {
@@ -111,8 +115,8 @@ var _ = Describe("Handler", func() {
 			Expect(string(msg)).To(Equal("policy-checker: unreachable or misconfigured"))
 		})
 
-		It("not call the inner handler", func() {
-			Expect(innerHandlerCalled).To(BeFalse())
+		It("does not expose an accepted response", func() {
+			Expect(responseWriter.Header().Get("X-Concourse-Policy-Checked")).To(BeEmpty())
 		})
 	})
 })

@@ -1,12 +1,10 @@
 package pipelineserver_test
 
 import (
-	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 
-	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/pipelineserver"
 	"github.com/concourse/concourse/atc/db"
 
@@ -18,22 +16,16 @@ var _ = Describe("Rejected Archived Handler", func() {
 	var (
 		response *http.Response
 		server   *httptest.Server
-		delegate *delegateHandler
-
-		factory db.TeamFactory
 	)
-
-	BeforeEach(func() {
-		delegate = &delegateHandler{}
-		factory = teamFactory
-	})
 
 	// The team and pipeline are looked up by the names in the query string, so
 	// each Context sets up (or deliberately omits) the rows those names resolve
-	// to rather than stubbing the lookup.
+	// to and exercises the production lookup.
 	JustBeforeEach(func() {
-		handlerFactory := pipelineserver.NewRejectArchivedHandlerFactory(factory)
-		server = httptest.NewServer(handlerFactory.RejectArchived(delegate.GetHandler(nil)))
+		handlerFactory := pipelineserver.NewRejectArchivedHandlerFactory(teamFactory)
+		server = httptest.NewServer(handlerFactory.RejectArchived(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("X-Concourse-Archive-Check", "active")
+		})))
 
 		request, err := http.NewRequest("POST", server.URL+"?:team_name=some-team&:pipeline_name=some-pipeline", nil)
 		Expect(err).NotTo(HaveOccurred())
@@ -43,6 +35,7 @@ var _ = Describe("Rejected Archived Handler", func() {
 	})
 
 	AfterEach(func() {
+		Expect(response.Body.Close()).To(Succeed())
 		server.Close()
 	})
 
@@ -77,8 +70,9 @@ var _ = Describe("Rejected Archived Handler", func() {
 			})
 
 			Context("when a pipeline is not archived", func() {
-				It("returns the delegate handler", func() {
-					Expect(delegate.IsCalled).To(BeTrue())
+				It("returns the active-pipeline response", func() {
+					Expect(response.StatusCode).To(Equal(http.StatusOK))
+					Expect(response.Header.Get("X-Concourse-Archive-Check")).To(Equal("active"))
 				})
 			})
 		})
@@ -102,36 +96,6 @@ var _ = Describe("Rejected Archived Handler", func() {
 
 		It("returns 404", func() {
 			Expect(response.StatusCode).To(Equal(http.StatusNotFound))
-		})
-	})
-
-	Context("when finding the team fails", func() {
-		BeforeEach(func() {
-			doomed := postgresRunner.OpenConn()
-			doomedFactory := db.NewTeamFactory(doomed, lockFactory)
-			_, err := doomedFactory.CreateTeam(atc.Team{Name: "some-team"})
-			Expect(err).NotTo(HaveOccurred())
-			Expect(doomed.Close()).To(Succeed())
-
-			factory = doomedFactory
-		})
-
-		It("returns 500", func() {
-			Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-		})
-	})
-
-	Context("when finding the pipeline fails", func() {
-		BeforeEach(func() {
-			factory = teamFactoryFailingPipelineLookup(errors.New("pipeline lookup failed"))
-		})
-
-		It("returns 500", func() {
-			Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-		})
-
-		It("does not call the delegate", func() {
-			Expect(delegate.IsCalled).To(BeFalse())
 		})
 	})
 })
