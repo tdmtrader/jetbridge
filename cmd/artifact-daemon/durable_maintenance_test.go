@@ -2,8 +2,7 @@ package main
 
 import (
 	"context"
-	"errors"
-	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -100,8 +99,8 @@ func TestResidencyKeepsLastValuesWhenTheStoreFails(t *testing.T) {
 		t.Fatalf("precondition: objects = %v, want 1", got)
 	}
 
-	// Now the store breaks.
-	newMaintainer(t, brokenStore{}, m, nil).sweep(ctx)
+	// Now a real filesystem-backed store becomes unavailable.
+	newMaintainer(t, unavailableFS(t), m, nil).sweep(ctx)
 
 	if got := gaugeValue(t, m, "artifact_daemon_durable_store_objects"); got != 1 {
 		t.Errorf("objects = %v after a failed enumeration; a zero reads as an empty bucket", got)
@@ -246,7 +245,9 @@ func TestSweepWithNoPolicyDeletesNothing(t *testing.T) {
 // yields the zero value, which reads as 1970 -- so a naive age check would find
 // every object ancient and delete the store on the first pass.
 func TestSweepNeverDeletesAnObjectWithNoTimestamp(t *testing.T) {
-	store := &noTimestampStore{inner: mustFS(t)}
+	protocol := newS3ProtocolState(t)
+	protocol.omitObjectTimes()
+	store := protocol.store(t)
 	ctx := context.Background()
 
 	if err := store.Put(ctx, "resource-caches/rc-abc", strings.NewReader("x")); err != nil {
@@ -263,77 +264,36 @@ func TestSweepNeverDeletesAnObjectWithNoTimestamp(t *testing.T) {
 // One failed delete must not abort the pass -- the rest of the backlog still
 // needs clearing, and the object it could not remove is simply removed later.
 func TestSweepContinuesPastADeleteFailure(t *testing.T) {
-	root := t.TempDir()
-	inner, err := durable.NewFS(root, 0)
-	if err != nil {
-		t.Fatalf("NewFS: %v", err)
+	protocol := newS3ProtocolState(t)
+	store := protocol.store(t)
+	ctx := context.Background()
+	for _, object := range []struct {
+		key  string
+		body string
+	}{
+		{key: "first-class/rc-a", body: "x"},
+		{key: "second-class/rc-b", body: "y"},
+		{key: "third-class/rc-c", body: "z"},
+	} {
+		if err := store.Put(ctx, object.key, strings.NewReader(object.body)); err != nil {
+			t.Fatalf("seed %q: %v", object.key, err)
+		}
+		protocol.backdateObject(t, object.key, 48*time.Hour)
 	}
+	protocol.makeDeleteUnavailable("second-class/rc-b", http.StatusServiceUnavailable)
 
-	seed(t, root, "resource-caches/rc-a", "x", 48*time.Hour)
-	seed(t, root, "resource-caches/rc-b", "y", 48*time.Hour)
-	seed(t, root, "resource-caches/rc-c", "z", 48*time.Hour)
+	newMaintainer(t, store, newMetrics(), RetentionPolicy{
+		"first-class":  time.Hour,
+		"second-class": time.Hour,
+		"third-class":  time.Hour,
+	}).sweep(ctx)
 
-	store := &failDeleteStore{inner: inner, fail: "resource-caches/rc-b"}
-	newMaintainer(t, store, newMetrics(), RetentionPolicy{"resource-caches": time.Hour}).sweep(context.Background())
-
-	for _, key := range []string{"resource-caches/rc-a", "resource-caches/rc-c"} {
-		if present(t, inner, key) {
+	for _, key := range []string{"first-class/rc-a", "third-class/rc-c"} {
+		if present(t, store, key) {
 			t.Errorf("%q survived; one delete failure aborted the whole pass", key)
 		}
 	}
-	if !present(t, inner, "resource-caches/rc-b") {
-		t.Error("precondition: the failing delete should have left its object in place")
+	if !present(t, store, "second-class/rc-b") {
+		t.Error("the object whose S3 deletion was unavailable should remain for the next pass")
 	}
-}
-
-// noTimestampStore models a backend that reports sizes but not write times.
-type noTimestampStore struct{ inner durable.Store }
-
-func (s *noTimestampStore) Stat(ctx context.Context, key string) (durable.Attributes, bool, error) {
-	a, found, err := s.inner.Stat(ctx, key)
-	a.Updated = time.Time{}
-
-	return a, found, err
-}
-func (s *noTimestampStore) Get(ctx context.Context, key string) (io.ReadCloser, bool, error) {
-	return s.inner.Get(ctx, key)
-}
-func (s *noTimestampStore) Put(ctx context.Context, key string, body io.Reader) error {
-	return s.inner.Put(ctx, key, body)
-}
-func (s *noTimestampStore) Delete(ctx context.Context, key string) error {
-	return s.inner.Delete(ctx, key)
-}
-func (s *noTimestampStore) List(ctx context.Context, fn func(durable.Attributes) error) error {
-	return s.inner.List(ctx, func(a durable.Attributes) error {
-		a.Updated = time.Time{}
-
-		return fn(a)
-	})
-}
-
-// failDeleteStore refuses to delete one specific key.
-type failDeleteStore struct {
-	inner durable.Store
-	fail  string
-}
-
-func (s *failDeleteStore) Stat(ctx context.Context, key string) (durable.Attributes, bool, error) {
-	return s.inner.Stat(ctx, key)
-}
-func (s *failDeleteStore) Get(ctx context.Context, key string) (io.ReadCloser, bool, error) {
-	return s.inner.Get(ctx, key)
-}
-func (s *failDeleteStore) Put(ctx context.Context, key string, body io.Reader) error {
-	return s.inner.Put(ctx, key, body)
-}
-func (s *failDeleteStore) Delete(ctx context.Context, key string) error {
-	if key == s.fail {
-		return errors.New("permission denied")
-	}
-
-	return s.inner.Delete(ctx, key)
-}
-func (s *failDeleteStore) List(ctx context.Context, fn func(durable.Attributes) error) error {
-	return s.inner.List(ctx, fn)
 }

@@ -2,11 +2,9 @@ package main
 
 import (
 	"context"
-	"errors"
-	"io"
+	"net/http"
 	"os"
 	"path/filepath"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -53,6 +51,24 @@ func mustFS(t *testing.T) durable.Store {
 	return store
 }
 
+func unavailableFS(t *testing.T) durable.Store {
+	t.Helper()
+
+	root := filepath.Join(t.TempDir(), "store")
+	store, err := durable.NewFS(root, 0)
+	if err != nil {
+		t.Fatalf("NewFS: %v", err)
+	}
+	if err := os.Remove(root); err != nil {
+		t.Fatalf("remove empty store root: %v", err)
+	}
+	if err := os.WriteFile(root, []byte("not a directory"), 0o644); err != nil {
+		t.Fatalf("replace store root with a regular file: %v", err)
+	}
+
+	return store
+}
+
 func TestStoreThenRestoreRoundTripsADirectory(t *testing.T) {
 	tier, server := newTier(t, mustFS(t))
 	work := t.TempDir()
@@ -91,32 +107,12 @@ func TestRestoreOfAnAbsentKeyLeavesTheDestinationAlone(t *testing.T) {
 	}
 }
 
-// brokenStore fails every operation: an unreachable bucket, an expired
-// credential, a bad endpoint.
-type brokenStore struct{}
-
-func (brokenStore) Stat(context.Context, string) (durable.Attributes, bool, error) {
-	return durable.Attributes{}, false, errors.New("bucket unreachable")
-}
-func (brokenStore) Get(context.Context, string) (io.ReadCloser, bool, error) {
-	return nil, false, errors.New("bucket unreachable")
-}
-func (brokenStore) Put(context.Context, string, io.Reader) error {
-	return errors.New("bucket unreachable")
-}
-func (brokenStore) Delete(context.Context, string) error {
-	return errors.New("bucket unreachable")
-}
-func (brokenStore) List(context.Context, func(durable.Attributes) error) error {
-	return errors.New("bucket unreachable")
-}
-
 func TestABrokenStoreDegradesInsteadOfPropagating(t *testing.T) {
 	// The property the whole design rests on. Every artifact here is
 	// re-derivable, so an unreachable bucket must cost a re-download and
 	// nothing else. The methods return bool precisely so there is no error for
 	// a caller to accidentally turn into a failed build.
-	tier, server := newTier(t, brokenStore{})
+	tier, server := newTier(t, unavailableFS(t))
 	work := t.TempDir()
 	src := writeDir(t, work, "src", map[string]string{"payload": "x"})
 
@@ -153,49 +149,56 @@ func TestANilTierIsSafe(t *testing.T) {
 }
 
 func TestConcurrentStoresOfOneKeyCollapse(t *testing.T) {
-	counting := &countingStore{inner: mustFS(t)}
-	tier, server := newTier(t, counting)
-	src := writeDir(t, t.TempDir(), "src", map[string]string{"payload": "x"})
+	const concurrentStores = 5
+	const key = "rc-5"
 
-	done := make(chan struct{})
-	for range 5 {
+	protocol := newS3ProtocolState(t)
+	store := protocol.store(t)
+	tier, server := newTier(t, store)
+	src := writeDir(t, t.TempDir(), "src", map[string]string{"payload": "x"})
+	// Register the gate last so failure cleanup releases the transfer before
+	// temporary source and destination directories are removed.
+	transfer := protocol.gateTransfer(t, http.MethodPut, key)
+
+	ready := make(chan struct{}, concurrentStores)
+	start := make(chan struct{})
+	done := make(chan struct{}, concurrentStores)
+	for range concurrentStores {
 		go func() {
-			defer func() { done <- struct{}{} }()
-			tier.Store(context.Background(), "rc-5", src, server.tarDirectory)
+			ready <- struct{}{}
+			<-start
+			tier.Store(context.Background(), key, src, server.tarDirectory)
+			done <- struct{}{}
 		}()
 	}
-	for range 5 {
-		<-done
+	for range concurrentStores {
+		<-ready
+	}
+	close(start)
+
+	transfer.waitUntilEntered(t)
+
+	// The transfer is still held at the S3 boundary. Every other Store must
+	// therefore have observed that key as busy and returned without uploading.
+	for range concurrentStores - 1 {
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("a same-key Store did not collapse behind the in-flight upload")
+		}
+	}
+	if got := len(protocol.requestsFor(http.MethodPut, key)); got != 1 {
+		t.Fatalf("%d overlapping Stores produced %d S3 uploads, want exactly 1", concurrentStores, got)
 	}
 
-	if got := counting.puts.Load(); got > 1 {
-		t.Fatalf("5 concurrent Stores produced %d uploads, want 1", got)
+	transfer.open()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the admitted S3 upload did not finish after the backend became available")
 	}
-}
 
-// countingStore counts Puts so a test can prove concurrent uploads of one key
-// collapse to a single transfer.
-type countingStore struct {
-	inner durable.Store
-	puts  atomic.Int64
-}
-
-func (c *countingStore) Stat(ctx context.Context, key string) (durable.Attributes, bool, error) {
-	return c.inner.Stat(ctx, key)
-}
-func (c *countingStore) Get(ctx context.Context, key string) (io.ReadCloser, bool, error) {
-	return c.inner.Get(ctx, key)
-}
-func (c *countingStore) Put(ctx context.Context, key string, body io.Reader) error {
-	c.puts.Add(1)
-	// Slow enough that the other callers are genuinely concurrent.
-	time.Sleep(50 * time.Millisecond)
-
-	return c.inner.Put(ctx, key, body)
-}
-func (c *countingStore) Delete(ctx context.Context, key string) error {
-	return c.inner.Delete(ctx, key)
-}
-func (c *countingStore) List(ctx context.Context, fn func(durable.Attributes) error) error {
-	return c.inner.List(ctx, fn)
+	if !tier.Has(context.Background(), key) {
+		t.Fatal("the one admitted upload did not leave the object in the durable store")
+	}
 }

@@ -190,15 +190,25 @@ func TestSweeper_NotifiesCallbackWhenStepDirRemoved(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var removed []string
+	removed := make(chan string, 2)
 	sweeper := daemon.NewSweeper(lagertest.NewTestLogger("sweeper"), storagePath, 2*time.Hour, 5*time.Minute, nil)
 	sweeper.SetOnStepDirRemoved(func(handle string) {
-		removed = append(removed, handle)
+		removed <- handle
 	})
 
 	sweeper.SweepOnce()
 
-	if len(removed) != 1 || removed[0] != "expired-handle" {
-		t.Errorf("expected callback for expired-handle only, got %v", removed)
+	select {
+	case handle := <-removed:
+		if handle != "expired-handle" {
+			t.Errorf("notified for %q, want expired-handle", handle)
+		}
+	default:
+		t.Fatal("step-directory removal did not notify its lifecycle observer")
+	}
+	select {
+	case handle := <-removed:
+		t.Errorf("unexpected extra removal notification for %q", handle)
+	default:
 	}
 }

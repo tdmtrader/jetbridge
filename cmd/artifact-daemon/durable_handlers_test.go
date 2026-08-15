@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -219,35 +218,105 @@ func TestDurableRestoreRejectsKeysThatEscapeTheStorageRoot(t *testing.T) {
 // Several builds on one node wanting the same cache must produce one download,
 // not one each.
 func TestConcurrentRestoresOfOneKeyCollapse(t *testing.T) {
-	server, ts, _ := newDaemon(t, "node-a", true)
+	const concurrentRestores = 6
+	const key = "rc-abc"
+	const durableKey = "resource-caches/rc-abc"
 
-	counting := &countingGetStore{inner: mustFS(t)}
-	server.SetDurableTier(NewDurableTier(lagertest.NewTestLogger("tier"), counting, server.Metrics(), time.Minute))
+	protocol := newS3ProtocolState(t)
+	store := protocol.store(t)
+	server := NewServer(lagertest.NewTestLogger("daemon-node-a"), t.TempDir(), "node-a")
+	server.SetDurableTier(NewDurableTier(lagertest.NewTestLogger("tier"), store, server.Metrics(), time.Minute))
 
 	src := writeDir(t, t.TempDir(), "payload", map[string]string{"file": "x"})
 	var buf bytes.Buffer
 	if err := server.tarDirectory(&buf, src); err != nil {
 		t.Fatalf("tar: %v", err)
 	}
-	if err := counting.inner.Put(context.Background(), "resource-caches/rc-abc", &buf); err != nil {
+	if err := store.Put(context.Background(), durableKey, &buf); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
-	var wg sync.WaitGroup
-	for range 6 {
-		wg.Add(1)
+	// Admit every public restore request before any of them can call the real
+	// handler. The first S3 GET is then held below, giving every handler a
+	// deterministic overlapping request to join instead of relying on a sleep.
+	arrived := make(chan struct{}, concurrentRestores)
+	admit := make(chan struct{})
+	var admitOnce sync.Once
+	openAdmit := func() { admitOnce.Do(func() { close(admit) }) }
+	handler := server.Handler()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/durable/restore" {
+			arrived <- struct{}{}
+			<-admit
+		}
+		handler.ServeHTTP(w, r)
+	}))
+	t.Cleanup(ts.Close)
+	t.Cleanup(openAdmit)
+
+	// Register this cleanup after the daemon server's cleanup so a failed spec
+	// always releases the backend before httptest waits for handlers to exit.
+	transfer := protocol.gateTransfer(t, http.MethodGet, durableKey)
+
+	type restoreResult struct {
+		status int
+		err    error
+	}
+	ready := make(chan struct{}, concurrentRestores)
+	start := make(chan struct{})
+	results := make(chan restoreResult, concurrentRestores)
+	for range concurrentRestores {
 		go func() {
-			defer wg.Done()
+			ready <- struct{}{}
+			<-start
 			resp, err := http.Post(ts.URL+"/durable/restore", "application/json", strings.NewReader(`{"key":"rc-abc","durable_key":"resource-caches/rc-abc"}`))
-			if err == nil {
-				resp.Body.Close()
+			if err != nil {
+				results <- restoreResult{err: err}
+				return
 			}
+			resp.Body.Close()
+			results <- restoreResult{status: resp.StatusCode}
 		}()
 	}
-	wg.Wait()
+	for range concurrentRestores {
+		<-ready
+	}
+	close(start)
+	for range concurrentRestores {
+		select {
+		case <-arrived:
+		case <-time.After(5 * time.Second):
+			t.Fatal("a concurrent restore did not reach the public HTTP boundary")
+		}
+	}
+	openAdmit()
 
-	if got := counting.gets.Load(); got > 1 {
-		t.Errorf("6 concurrent restores pulled the object %d times, want 1", got)
+	transfer.waitUntilEntered(t)
+	if got := len(protocol.requestsFor(http.MethodGet, durableKey)); got != 1 {
+		t.Fatalf("while the first restore was held, the S3 protocol saw %d downloads, want exactly 1", got)
+	}
+	select {
+	case result := <-results:
+		t.Fatalf("restore completed before its S3 transfer was released: %+v", result)
+	default:
+	}
+
+	transfer.open()
+	for range concurrentRestores {
+		select {
+		case result := <-results:
+			if result.err != nil {
+				t.Errorf("restore request failed: %v", result.err)
+			} else if result.status != http.StatusCreated {
+				t.Errorf("overlapping restore returned %d, want %d", result.status, http.StatusCreated)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("a concurrent restore did not finish after the S3 transfer was released")
+		}
+	}
+
+	if got := len(protocol.requestsFor(http.MethodGet, durableKey)); got != 1 {
+		t.Errorf("%d overlapping restores produced %d S3 downloads, want exactly 1", concurrentRestores, got)
 	}
 }
 
@@ -293,32 +362,6 @@ func eventuallyHas(store durable.Store, key string, within time.Duration) bool {
 	}
 
 	return false
-}
-
-// countingGetStore counts Gets so a test can prove concurrent restores of one
-// key collapse to a single download.
-type countingGetStore struct {
-	inner durable.Store
-	gets  atomic.Int64
-}
-
-func (c *countingGetStore) Stat(ctx context.Context, key string) (durable.Attributes, bool, error) {
-	return c.inner.Stat(ctx, key)
-}
-func (c *countingGetStore) Get(ctx context.Context, key string) (io.ReadCloser, bool, error) {
-	c.gets.Add(1)
-	time.Sleep(50 * time.Millisecond)
-
-	return c.inner.Get(ctx, key)
-}
-func (c *countingGetStore) Put(ctx context.Context, key string, body io.Reader) error {
-	return c.inner.Put(ctx, key, body)
-}
-func (c *countingGetStore) Delete(ctx context.Context, key string) error {
-	return c.inner.Delete(ctx, key)
-}
-func (c *countingGetStore) List(ctx context.Context, fn func(durable.Attributes) error) error {
-	return c.inner.List(ctx, fn)
 }
 
 // The two names are different namespaces and a restore must keep them apart.
