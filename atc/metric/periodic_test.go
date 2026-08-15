@@ -11,24 +11,24 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	. "github.com/onsi/gomega/gstruct"
 )
 
 var _ = Describe("Periodic emission of metrics", func() {
 	var (
-		emitter *recordingEmitter
+		output  *metricLogOutput
 		monitor *metric.Monitor
+		logger  lager.Logger
 
 		process ifrit.Process
 	)
 
 	BeforeEach(func() {
-		monitor, emitter = monitorWithRecorder()
+		monitor, output, logger = monitorWithLager()
 	})
 
 	JustBeforeEach(func() {
 		runner := metric.PeriodicallyEmit(
-			lager.NewLogger("dont care"),
+			logger,
 			monitor,
 			250*time.Millisecond,
 		)
@@ -49,29 +49,27 @@ var _ = Describe("Periodic emission of metrics", func() {
 		})
 
 		It("emits database queries", func() {
-			Eventually(emitter.Events).Should(
+			Eventually(output.MetricEvents).Should(
 				ContainElement(
-					MatchFields(IgnoreExtras, Fields{
-						"Name": Equal("database queries"),
-					}),
+					HaveKeyWithValue("name", "database queries"),
 				),
 			)
 
 			By("emits database connections for each pool")
-			Eventually(emitter.Events).Should(
+			Eventually(output.MetricEvents).Should(
 				ContainElement(
-					MatchFields(IgnoreExtras, Fields{
-						"Name":       Equal("database connections"),
-						"Attributes": Equal(map[string]string{"ConnectionName": "A"}),
-					}),
+					And(
+						HaveKeyWithValue("name", "database connections"),
+						HaveKeyWithValue("ConnectionName", "A"),
+					),
 				),
 			)
-			Eventually(emitter.Events).Should(
+			Eventually(output.MetricEvents).Should(
 				ContainElement(
-					MatchFields(IgnoreExtras, Fields{
-						"Name":       Equal("database connections"),
-						"Attributes": Equal(map[string]string{"ConnectionName": "B"}),
-					}),
+					And(
+						HaveKeyWithValue("name", "database connections"),
+						HaveKeyWithValue("ConnectionName", "B"),
+					),
 				),
 			)
 		})
@@ -92,27 +90,23 @@ var _ = Describe("Periodic emission of metrics", func() {
 		})
 
 		It("emits", func() {
-			Eventually(emitter.Events).Should(
+			Eventually(output.MetricEvents).Should(
 				ContainElement(
-					MatchFields(IgnoreExtras, Fields{
-						"Name":  Equal("concurrent requests"),
-						"Value": Equal(float64(123)),
-						"Attributes": Equal(map[string]string{
-							"action": action,
-						}),
-					}),
+					And(
+						HaveKeyWithValue("name", "concurrent requests"),
+						HaveKeyWithValue("value", float64(123)),
+						HaveKeyWithValue("action", action),
+					),
 				),
 			)
 
-			Eventually(emitter.Events).Should(
+			Eventually(output.MetricEvents).Should(
 				ContainElement(
-					MatchFields(IgnoreExtras, Fields{
-						"Name":  Equal("concurrent requests limit hit"),
-						"Value": Equal(float64(10)),
-						"Attributes": Equal(map[string]string{
-							"action": action,
-						}),
-					}),
+					And(
+						HaveKeyWithValue("name", "concurrent requests limit hit"),
+						HaveKeyWithValue("value", float64(10)),
+						HaveKeyWithValue("action", action),
+					),
 				),
 			)
 		})
@@ -132,17 +126,15 @@ var _ = Describe("Periodic emission of metrics", func() {
 		})
 
 		It("emits", func() {
-			Eventually(emitter.Events).Should(
+			Eventually(output.MetricEvents).Should(
 				ContainElement(
-					MatchFields(IgnoreExtras, Fields{
-						"Name":  Equal("steps waiting"),
-						"Value": Equal(float64(123)),
-						"Attributes": Equal(map[string]string{
-							"teamId":   labels.TeamId,
-							"teamName": labels.TeamName,
-							"type":     labels.Type,
-						}),
-					}),
+					And(
+						HaveKeyWithValue("name", "steps waiting"),
+						HaveKeyWithValue("value", float64(123)),
+						HaveKeyWithValue("teamId", labels.TeamId),
+						HaveKeyWithValue("teamName", labels.TeamName),
+						HaveKeyWithValue("type", labels.Type),
+					),
 				),
 			)
 		})

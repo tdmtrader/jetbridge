@@ -11,13 +11,14 @@ import (
 var _ = Describe("ErrorSinkCollector", func() {
 	var (
 		errorSinkCollector metric.ErrorSinkCollector
-		emitter            *recordingEmitter
+		output             *metricLogOutput
 		monitor            *metric.Monitor
 	)
 
 	BeforeEach(func() {
-		monitor, emitter = monitorWithRecorder()
-		errorSinkCollector = metric.NewErrorSinkCollector(testLogger, monitor)
+		var logger lager.Logger
+		monitor, output, logger = monitorWithLager()
+		errorSinkCollector = metric.NewErrorSinkCollector(logger, monitor)
 	})
 
 	Context("Log", func() {
@@ -36,8 +37,8 @@ var _ = Describe("ErrorSinkCollector", func() {
 			})
 
 			It("emits with the message in the tags", func() {
-				Eventually(emitter.EventCount).Should(BeNumerically("==", 1))
-				Expect(emitter.Events()[0].Attributes).To(HaveKeyWithValue("message", "err-msg"))
+				Eventually(output.EventCount).Should(BeNumerically("==", 1))
+				Expect(output.MetricEvents()[0]).To(HaveKeyWithValue("message", "err-msg"))
 			})
 
 			Context("with error being from failed emission", func() {
@@ -50,7 +51,7 @@ var _ = Describe("ErrorSinkCollector", func() {
 				})
 
 				It("doesn't emit", func() {
-					Consistently(emitter.EventCount).Should(BeNumerically("==", 0))
+					Consistently(output.EventCount).Should(BeNumerically("==", 0))
 				})
 			})
 		})
@@ -64,7 +65,7 @@ var _ = Describe("ErrorSinkCollector", func() {
 			})
 
 			It("doesn't emit", func() {
-				Consistently(emitter.EventCount).Should(BeNumerically("==", 0))
+				Consistently(output.EventCount).Should(BeNumerically("==", 0))
 			})
 		})
 	})

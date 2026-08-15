@@ -3,6 +3,7 @@ package metric_test
 import (
 	"fmt"
 
+	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/metric"
 
@@ -13,48 +14,49 @@ import (
 var _ = Describe("Metrics", func() {
 	Describe("worker state metric", func() {
 		var (
-			emitter *recordingEmitter
+			output  *metricLogOutput
 			monitor *metric.Monitor
+			logger  lager.Logger
 		)
 
 		BeforeEach(func() {
-			monitor, emitter = monitorWithRecorder()
+			monitor, output, logger = monitorWithLager()
 		})
 
 		It("emits a value for every state", func() {
-			givenNoWorkers().Emit(testLogger, monitor)
+			givenNoWorkers().Emit(logger, monitor)
 
-			waitForEvents(emitter)
+			waitForEvents(output)
 
 			for _, state := range db.AllWorkerStates() {
-				event := eventWithState(emitter, state)
-				Expect(event.Value).To(Equal(float64(0)))
+				event := eventWithState(output, state)
+				Expect(event).To(HaveKeyWithValue("value", float64(0)))
 			}
 		})
 
 		It("correctly emits the number of running workers", func() {
 			givenOneWorkerWithState(db.WorkerStateRunning).
-				Emit(testLogger, monitor)
+				Emit(logger, monitor)
 
-			waitForEvents(emitter)
+			waitForEvents(output)
 
-			event := eventWithState(emitter, db.WorkerStateRunning)
-			Expect(event.Value).To(Equal(float64(1)))
+			event := eventWithState(output, db.WorkerStateRunning)
+			Expect(event).To(HaveKeyWithValue("value", float64(1)))
 		})
 	})
 })
 
-func eventWithState(emitter *recordingEmitter, state db.WorkerState) metric.Event {
+func eventWithState(output *metricLogOutput, state db.WorkerState) lager.Data {
 	GinkgoHelper()
 
-	for _, event := range emitter.Events() {
-		if event.Attributes["state"] == string(state) {
+	for _, event := range output.MetricEvents() {
+		if event["state"] == string(state) {
 			return event
 		}
 	}
 
 	Fail(fmt.Sprintf("no event emitted for worker state %s", state))
-	return metric.Event{}
+	return nil
 }
 
 func givenNoWorkers() metric.WorkersState {
@@ -69,7 +71,7 @@ func givenOneWorkerWithState(state db.WorkerState) metric.WorkersState {
 	return workersState
 }
 
-func waitForEvents(emitter *recordingEmitter) {
+func waitForEvents(output *metricLogOutput) {
 	numberOfWorkerStates := len(db.AllWorkerStates())
-	Eventually(emitter.EventCount).Should(Equal(numberOfWorkerStates))
+	Eventually(output.EventCount).Should(Equal(numberOfWorkerStates))
 }

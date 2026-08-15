@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 
+	"code.cloudfoundry.org/lager/v3"
 	. "github.com/concourse/concourse/atc/metric"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -24,16 +25,17 @@ func noopHandler(w http.ResponseWriter, r *http.Request) {
 var _ = Describe("MetricsHandler", func() {
 	var (
 		ts      *httptest.Server
-		emitter *recordingEmitter
+		output  *metricLogOutput
 		monitor *Monitor
+		logger  lager.Logger
 	)
 
 	BeforeEach(func() {
-		monitor, emitter = monitorWithRecorder()
+		monitor, output, logger = monitorWithLager()
 
 		ts = httptest.NewServer(
 			WrapHandler(
-				testLogger,
+				logger,
 				monitor,
 				"ApiEndpoint",
 				http.HandlerFunc(noopHandler),
@@ -48,7 +50,7 @@ var _ = Describe("MetricsHandler", func() {
 	Context("when serving requests", func() {
 		var (
 			endpoint = "/"
-			event    Event
+			event    lager.Data
 		)
 
 		JustBeforeEach(func() {
@@ -56,15 +58,15 @@ var _ = Describe("MetricsHandler", func() {
 			Expect(err).ToNot(HaveOccurred())
 			res.Body.Close()
 
-			Eventually(emitter.EventCount).Should(BeNumerically("==", 1))
-			event = emitter.Events()[0]
+			Eventually(output.EventCount).Should(BeNumerically("==", 1))
+			event = output.MetricEvents()[0]
 		})
 
 		It("captures request and response properties", func() {
-			Expect(event.Attributes).To(HaveKeyWithValue("status", "404"))
-			Expect(event.Attributes).To(HaveKeyWithValue("method", "GET"))
-			Expect(event.Attributes).To(HaveKeyWithValue("route", "ApiEndpoint"))
-			Expect(event.Attributes).To(HaveKeyWithValue("path", "/"))
+			Expect(event).To(HaveKeyWithValue("status", "404"))
+			Expect(event).To(HaveKeyWithValue("method", "GET"))
+			Expect(event).To(HaveKeyWithValue("route", "ApiEndpoint"))
+			Expect(event).To(HaveKeyWithValue("path", "/"))
 		})
 
 		Context("to endpoint that returns success statuses", func() {
@@ -73,11 +75,11 @@ var _ = Describe("MetricsHandler", func() {
 			})
 
 			It("captures error code", func() {
-				Expect(event.Attributes).To(HaveKeyWithValue("status", "200"))
+				Expect(event).To(HaveKeyWithValue("status", "200"))
 			})
 
 			It("captures route", func() {
-				Expect(event.Attributes).To(HaveKeyWithValue("path", "/success"))
+				Expect(event).To(HaveKeyWithValue("path", "/success"))
 			})
 		})
 
@@ -87,11 +89,11 @@ var _ = Describe("MetricsHandler", func() {
 			})
 
 			It("captures error code", func() {
-				Expect(event.Attributes).To(HaveKeyWithValue("status", "500"))
+				Expect(event).To(HaveKeyWithValue("status", "500"))
 			})
 
 			It("captures route", func() {
-				Expect(event.Attributes).To(HaveKeyWithValue("path", "/failure"))
+				Expect(event).To(HaveKeyWithValue("path", "/failure"))
 			})
 		})
 	})
