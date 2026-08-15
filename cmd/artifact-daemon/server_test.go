@@ -4,18 +4,19 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
-	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
+	discoveryv1 "k8s.io/api/discovery/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/fake"
 
 	daemon "github.com/concourse/concourse/cmd/artifact-daemon"
 )
@@ -788,102 +789,213 @@ func TestStreamIn_RestrictiveModesNormalized(t *testing.T) {
 // artifact_daemon_resilience_20260425).
 // ---------------------------------------------------------------------------
 
-// recordingMirror collects keys passed to Trigger so tests can assert
-// scheduling without running real network I/O.
-type recordingMirror struct {
-	mu   sync.Mutex
-	keys []string
+type peerMirrorWrite struct {
+	method      string
+	path        string
+	origin      string
+	contentType string
+	files       map[string]string
+	decodeError string
 }
 
-func (m *recordingMirror) Trigger(ctx context.Context, key string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.keys = append(m.keys, key)
+type mirrorProtocolFixture struct {
+	storagePath string
+	producer    *httptest.Server
+	client      *http.Client
+	mirror      *daemon.Mirror
+	peerWrites  chan peerMirrorWrite
 }
 
-func (m *recordingMirror) calls() []string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	out := make([]string, len(m.keys))
-	copy(out, m.keys)
-	return out
-}
+func newMirrorProtocolFixture(t *testing.T, seedContent string) *mirrorProtocolFixture {
+	t.Helper()
 
-func TestPostMirror_EnqueuesJobAndReturns202(t *testing.T) {
 	storagePath := t.TempDir()
+	sourceDir := filepath.Join(storagePath, "steps", "handle", "output")
+	if err := os.MkdirAll(sourceDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceDir, "data.txt"), []byte(seedContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// The peer is created first so cleanup can close the producer, drain the
+	// mirror, and only then tear down the peer protocol endpoint.
+	peerWrites := make(chan peerMirrorWrite, 8)
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		write := peerMirrorWrite{
+			method:      r.Method,
+			path:        r.URL.Path,
+			origin:      r.Header.Get(daemon.MirrorOriginHeader),
+			contentType: r.Header.Get("Content-Type"),
+			files:       map[string]string{},
+		}
+
+		tr := tar.NewReader(r.Body)
+		for {
+			header, err := tr.Next()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				write.decodeError = err.Error()
+				break
+			}
+			if header.Typeflag != tar.TypeReg {
+				continue
+			}
+
+			contents, err := io.ReadAll(tr)
+			if err != nil {
+				write.decodeError = err.Error()
+				break
+			}
+			write.files[header.Name] = string(contents)
+		}
+
+		peerWrites <- write
+		w.WriteHeader(http.StatusCreated)
+	}))
+	t.Cleanup(peer.Close)
+
+	peerHost, peerPort := splitHostPort(t, peer.Listener.Addr().String())
+	const (
+		namespace   = "mirror-test"
+		serviceName = "artifact-daemon-peer"
+		localPodIP  = "192.0.2.44"
+	)
+	ready := true
+	clientset := fake.NewSimpleClientset(&discoveryv1.EndpointSlice{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "artifact-daemon-peer-slice",
+			Namespace: namespace,
+			Labels: map[string]string{
+				discoveryv1.LabelServiceName: serviceName,
+			},
+		},
+		AddressType: discoveryv1.AddressTypeIPv4,
+		Endpoints: []discoveryv1.Endpoint{{
+			Addresses:  []string{peerHost},
+			Conditions: discoveryv1.EndpointConditions{Ready: &ready},
+		}},
+	})
+
 	logger := lagertest.NewTestLogger("artifact-daemon")
-	server := daemon.NewServer(logger, storagePath, "test-node")
+	producer := daemon.NewServer(logger, storagePath, "test-node")
+	peers := daemon.NewPeerResolver(logger, clientset, namespace, serviceName, peerPort, localPodIP, nil)
+	client := &http.Client{Timeout: 2 * time.Second}
+	mirror := daemon.NewMirror(daemon.MirrorConfig{
+		StoragePath:    storagePath,
+		Port:           peerPort,
+		Scheme:         "http",
+		Replicas:       2,
+		Concurrency:    1,
+		PerPeerTimeout: time.Second,
+		Peers:          peers,
+		Client:         client,
+		Logger:         logger,
+		Guard:          producer.Guard(),
+	})
+	t.Cleanup(mirror.Stop)
 
-	rec := &recordingMirror{}
-	server.SetMirrorTrigger(rec.Trigger)
+	producer.SetMirrorTrigger(mirror.Trigger)
+	producerHTTP := httptest.NewServer(producer.Handler())
+	t.Cleanup(producerHTTP.Close)
 
-	ts := httptest.NewServer(server.Handler())
-	defer ts.Close()
+	return &mirrorProtocolFixture{
+		storagePath: storagePath,
+		producer:    producerHTTP,
+		client:      client,
+		mirror:      mirror,
+		peerWrites:  peerWrites,
+	}
+}
 
-	resp, err := http.Post(ts.URL+"/mirror", "application/json",
-		strings.NewReader(`{"key":"handle/output"}`))
+func (fixture *mirrorProtocolFixture) postMirror(t *testing.T, body string) int {
+	t.Helper()
+
+	resp, err := fixture.client.Post(fixture.producer.URL+"/mirror", "application/json", strings.NewReader(body))
 	if err != nil {
 		t.Fatalf("POST /mirror failed: %v", err)
 	}
 	resp.Body.Close()
+	return resp.StatusCode
+}
 
-	if resp.StatusCode != http.StatusAccepted {
-		t.Errorf("expected 202 Accepted, got %d", resp.StatusCode)
+func (fixture *mirrorProtocolFixture) assertSinglePeerWrite(t *testing.T, expectedContent string) {
+	t.Helper()
+	fixture.mirror.Stop()
+
+	var write peerMirrorWrite
+	select {
+	case write = <-fixture.peerWrites:
+	default:
+		t.Fatal("expected one peer mirror PUT")
 	}
 
-	calls := rec.calls()
-	if len(calls) != 1 || calls[0] != "handle/output" {
-		t.Errorf("expected Trigger to be called once with 'handle/output', got %v", calls)
+	if write.method != http.MethodPut {
+		t.Errorf("expected peer method PUT, got %q", write.method)
 	}
+	if write.path != "/stream-in/handle/output" {
+		t.Errorf("expected peer path /stream-in/handle/output, got %q", write.path)
+	}
+	if write.origin != "true" {
+		t.Errorf("expected %s=true, got %q", daemon.MirrorOriginHeader, write.origin)
+	}
+	if write.contentType != "application/x-tar" {
+		t.Errorf("expected peer content type application/x-tar, got %q", write.contentType)
+	}
+	if write.decodeError != "" {
+		t.Fatalf("peer could not decode mirror tar: %s", write.decodeError)
+	}
+	if write.files["data.txt"] != expectedContent {
+		t.Errorf("expected peer data.txt=%q, got %q", expectedContent, write.files["data.txt"])
+	}
+	select {
+	case extra := <-fixture.peerWrites:
+		t.Fatalf("expected exactly one peer PUT, got an additional %s %s", extra.method, extra.path)
+	default:
+	}
+}
+
+func (fixture *mirrorProtocolFixture) assertNoPeerWrite(t *testing.T) {
+	t.Helper()
+	fixture.mirror.Stop()
+
+	select {
+	case write := <-fixture.peerWrites:
+		t.Fatalf("expected no peer PUT, got %s %s", write.method, write.path)
+	default:
+	}
+}
+
+func TestPostMirror_ReplicatesArtifactAndReturns202(t *testing.T) {
+	fixture := newMirrorProtocolFixture(t, "mirror-source")
+
+	status := fixture.postMirror(t, `{"key":"handle/output"}`)
+	if status != http.StatusAccepted {
+		t.Errorf("expected 202 Accepted, got %d", status)
+	}
+	fixture.assertSinglePeerWrite(t, "mirror-source")
 }
 
 func TestPostMirror_EmptyKey_Returns400(t *testing.T) {
-	storagePath := t.TempDir()
-	logger := lagertest.NewTestLogger("artifact-daemon")
-	server := daemon.NewServer(logger, storagePath, "test-node")
+	fixture := newMirrorProtocolFixture(t, "unused-source")
 
-	rec := &recordingMirror{}
-	server.SetMirrorTrigger(rec.Trigger)
-
-	ts := httptest.NewServer(server.Handler())
-	defer ts.Close()
-
-	resp, err := http.Post(ts.URL+"/mirror", "application/json",
-		strings.NewReader(`{"key":""}`))
-	if err != nil {
-		t.Fatalf("POST /mirror failed: %v", err)
+	status := fixture.postMirror(t, `{"key":""}`)
+	if status != http.StatusBadRequest {
+		t.Errorf("expected 400 for empty key, got %d", status)
 	}
-	resp.Body.Close()
-
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Errorf("expected 400 for empty key, got %d", resp.StatusCode)
-	}
-	if calls := rec.calls(); len(calls) != 0 {
-		t.Errorf("expected no Trigger calls for empty key, got %v", calls)
-	}
+	fixture.assertNoPeerWrite(t)
 }
 
 func TestPostMirror_InvalidJSON_Returns400(t *testing.T) {
-	storagePath := t.TempDir()
-	logger := lagertest.NewTestLogger("artifact-daemon")
-	server := daemon.NewServer(logger, storagePath, "test-node")
+	fixture := newMirrorProtocolFixture(t, "unused-source")
 
-	rec := &recordingMirror{}
-	server.SetMirrorTrigger(rec.Trigger)
-
-	ts := httptest.NewServer(server.Handler())
-	defer ts.Close()
-
-	resp, err := http.Post(ts.URL+"/mirror", "application/json",
-		strings.NewReader(`not json`))
-	if err != nil {
-		t.Fatalf("POST /mirror failed: %v", err)
+	status := fixture.postMirror(t, `not json`)
+	if status != http.StatusBadRequest {
+		t.Errorf("expected 400 for invalid JSON, got %d", status)
 	}
-	resp.Body.Close()
-
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Errorf("expected 400 for invalid JSON, got %d", resp.StatusCode)
-	}
+	fixture.assertNoPeerWrite(t)
 }
 
 // ---------------------------------------------------------------------------
@@ -914,22 +1026,13 @@ func makeTarPayload(t *testing.T, content string) *bytes.Reader {
 	return bytes.NewReader(buf.Bytes())
 }
 
-func TestStreamIn_SchedulesMirrorTrigger(t *testing.T) {
-	storagePath := t.TempDir()
-	logger := lagertest.NewTestLogger("artifact-daemon")
-	server := daemon.NewServer(logger, storagePath, "test-node")
-
-	rec := &recordingMirror{}
-	server.SetMirrorTrigger(rec.Trigger)
-
-	ts := httptest.NewServer(server.Handler())
-	defer ts.Close()
-
+func TestStreamIn_StoresAndMirrorsArtifact(t *testing.T) {
+	fixture := newMirrorProtocolFixture(t, "old-source")
 	body := makeTarPayload(t, "payload-bytes")
-	req, _ := http.NewRequest(http.MethodPut, ts.URL+"/stream-in/handle/output", body)
+	req, _ := http.NewRequest(http.MethodPut, fixture.producer.URL+"/stream-in/handle/output", body)
 	req.Header.Set("Content-Type", "application/x-tar")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := fixture.client.Do(req)
 	if err != nil {
 		t.Fatalf("stream-in failed: %v", err)
 	}
@@ -938,9 +1041,13 @@ func TestStreamIn_SchedulesMirrorTrigger(t *testing.T) {
 		t.Fatalf("stream-in: expected 201, got %d", resp.StatusCode)
 	}
 
-	calls := rec.calls()
-	if len(calls) != 1 || calls[0] != "handle/output" {
-		t.Errorf("expected mirror trigger to fire once with key 'handle/output', got %v", calls)
+	fixture.assertSinglePeerWrite(t, "payload-bytes")
+	stored, err := os.ReadFile(filepath.Join(fixture.storagePath, "steps", "handle", "output", "data.txt"))
+	if err != nil {
+		t.Fatalf("read local stream-in artifact: %v", err)
+	}
+	if string(stored) != "payload-bytes" {
+		t.Errorf("expected local data.txt=%q, got %q", "payload-bytes", string(stored))
 	}
 }
 
@@ -1181,19 +1288,14 @@ func TestResolve_TouchesStepDirSoSweeperSpares(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStreamIn_MirrorOriginWrite_DoesNotRetriggerMirror(t *testing.T) {
-	storagePath := t.TempDir()
-	server := daemon.NewServer(lagertest.NewTestLogger("artifact-daemon"), storagePath, "test-node")
-	rec := &recordingMirror{}
-	server.SetMirrorTrigger(rec.Trigger)
-	ts := httptest.NewServer(server.Handler())
-	defer ts.Close()
+	fixture := newMirrorProtocolFixture(t, "old-source")
 
 	body := makeTarPayload(t, "mirrored-bytes")
-	req, _ := http.NewRequest(http.MethodPut, ts.URL+"/stream-in/handle/output", body)
+	req, _ := http.NewRequest(http.MethodPut, fixture.producer.URL+"/stream-in/handle/output", body)
 	req.Header.Set("Content-Type", "application/x-tar")
 	req.Header.Set(daemon.MirrorOriginHeader, "true")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := fixture.client.Do(req)
 	if err != nil {
 		t.Fatalf("stream-in failed: %v", err)
 	}
@@ -1202,12 +1304,14 @@ func TestStreamIn_MirrorOriginWrite_DoesNotRetriggerMirror(t *testing.T) {
 		t.Fatalf("stream-in: expected 201, got %d", resp.StatusCode)
 	}
 
-	if calls := rec.calls(); len(calls) != 0 {
-		t.Errorf("expected no mirror re-trigger for a mirror-origin write, got %v", calls)
-	}
+	fixture.assertNoPeerWrite(t)
 
 	// The artifact itself must still be stored and registered.
-	if _, err := os.Stat(filepath.Join(storagePath, "steps", "handle", "output")); err != nil {
-		t.Errorf("mirror-origin write not stored: %v", err)
+	stored, err := os.ReadFile(filepath.Join(fixture.storagePath, "steps", "handle", "output", "data.txt"))
+	if err != nil {
+		t.Fatalf("mirror-origin write not stored: %v", err)
+	}
+	if string(stored) != "mirrored-bytes" {
+		t.Errorf("expected stored mirror-origin bytes %q, got %q", "mirrored-bytes", string(stored))
 	}
 }

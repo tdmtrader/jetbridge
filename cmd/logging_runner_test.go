@@ -3,71 +3,48 @@ package cmd_test
 import (
 	"errors"
 	"os"
+	"time"
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	. "github.com/concourse/concourse/cmd"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/tedsuo/ifrit"
-	ifritFakes "github.com/tedsuo/ifrit/fake_runner_v2"
 )
 
 var _ = Describe("LoggingRunner", func() {
+	It("forwards lifecycle signals and reports the child's exit", func() {
+		exitErr := errors.New("some-error")
+		receivedSignals := make(chan os.Signal, 1)
 
-	var (
-		runner                  ifrit.Runner
-		fakeRunner              *ifritFakes.FakeRunner
-		logger                  *lagertest.TestLogger
-		fakeRunnerBlocker       chan any
-		fakeRunnerRunStubReturn error
-		runnerError             chan error
-		signals                 <-chan os.Signal
-		ready                   chan<- struct{}
-	)
-
-	BeforeEach(func() {
-		runnerError = make(chan error, 1)
-
-		fakeRunnerBlocker = make(chan any)
-		signals = make(chan os.Signal)
-		ready = make(chan struct{})
-
-		fakeRunner = new(ifritFakes.FakeRunner)
-		fakeRunner.RunStub = func(signals <-chan os.Signal, ready chan<- struct{}) error {
-			<-fakeRunnerBlocker
-			return fakeRunnerRunStubReturn
-		}
-		logger = lagertest.NewTestLogger("foo")
-		runner = NewLoggingRunner(logger, fakeRunner)
-
-		fakeRunnerRunStubReturn = errors.New("some-error")
-		close(fakeRunnerBlocker)
-	})
-
-	JustBeforeEach(func() {
-		go func() {
-			runnerError <- runner.Run(signals, ready)
-		}()
-	})
-
-	Describe("#Run", func() {
-		It("logs the member name", func() {
-			<-runnerError
-			Expect(logger.LogMessages()).To(ContainElement("foo.logging-runner-exited"))
+		child := ifrit.RunFunc(func(signals <-chan os.Signal, ready chan<- struct{}) error {
+			close(ready)
+			receivedSignals <- <-signals
+			return exitErr
 		})
 
-		It("returns the child's return value", func() {
-			err := <-runnerError
-			Expect(err).To(Equal(fakeRunnerRunStubReturn))
+		logger := lagertest.NewTestLogger("foo")
+		process := ifrit.Background(NewLoggingRunner(logger, child))
+		finished := false
+		DeferCleanup(func() {
+			if finished {
+				return
+			}
+
+			process.Signal(os.Interrupt)
+			select {
+			case <-process.Wait():
+			case <-time.After(time.Second):
+				Fail("logging runner did not stop during cleanup")
+			}
 		})
 
-		It("invokes the child's Run with signals and ready", func() {
-			<-runnerError
-			Expect(fakeRunner.RunCallCount()).To(Equal(1))
-			sig, read := fakeRunner.RunArgsForCall(0)
+		Eventually(process.Ready(), time.Second).Should(BeClosed())
+		process.Signal(os.Interrupt)
+		Eventually(receivedSignals, time.Second).Should(Receive(Equal(os.Interrupt)))
+		Eventually(process.Wait(), time.Second).Should(Receive(MatchError(exitErr)))
+		finished = true
 
-			Expect(sig).To(Equal(signals))
-			Expect(read).To(Equal(ready))
-		})
+		Expect(logger.LogMessages()).To(ContainElement("foo.logging-runner-exited"))
 	})
 })

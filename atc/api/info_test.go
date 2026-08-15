@@ -1,9 +1,7 @@
 package api_test
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,7 +12,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	awssecretsmanager "github.com/aws/aws-sdk-go-v2/service/secretsmanager"
-	secretsmanagertypes "github.com/aws/aws-sdk-go-v2/service/secretsmanager/types"
 	awsssm "github.com/aws/aws-sdk-go-v2/service/ssm"
 	"github.com/concourse/concourse/atc/creds/credhub"
 	"github.com/concourse/concourse/atc/creds/secretsmanager"
@@ -97,12 +94,12 @@ var _ = Describe("Info API", func() {
 		})
 
 		Context("SSM", func() {
-			var awsSSM *stubAWSSSM
+			var ssmService *ssmProtocolServer
 
 			BeforeEach(func() {
-				awsSSM = startStubAWSSSM()
+				ssmService = startSSMProtocolServer()
 
-				ssmAccess := ssm.NewSsm(lager.NewLogger("ssm_test"), awsSSM.client, nil, "")
+				ssmAccess := ssm.NewSsm(lager.NewLogger("ssm_test"), ssmService.client, nil, "")
 				ssmManager := &ssm.SsmManager{
 					AwsAccessKeyID:         "",
 					AwsSecretAccessKey:     "",
@@ -119,7 +116,7 @@ var _ = Describe("Info API", func() {
 			Context("returns configured ssm manager", func() {
 				Context("get ssm manager info returns error", func() {
 					BeforeEach(func() {
-						awsSSM.respondWithError("InternalServerError", "some error occured")
+						ssmService.respondWithError("InternalServerError", "some error occured")
 					})
 
 					It("includes the error in json response", func() {
@@ -140,7 +137,7 @@ var _ = Describe("Info API", func() {
 
 				Context("get ssm manager info", func() {
 					BeforeEach(func() {
-						awsSSM.respondWithError("ParameterNotFound", "dontcare")
+						ssmService.respondWithError("ParameterNotFound", "dontcare")
 					})
 
 					It("includes the ssm health info in json response", func() {
@@ -386,12 +383,12 @@ var _ = Describe("Info API", func() {
 		})
 
 		Context("SecretsManager", func() {
-			var secretsManagerAPI *stubSecretsManagerAPI
+			var service *secretsManagerProtocolServer
 
 			BeforeEach(func() {
-				secretsManagerAPI = &stubSecretsManagerAPI{}
+				service = startSecretsManagerProtocolServer()
 
-				secretsManagerAccess := secretsmanager.NewSecretsManager(lager.NewLogger("ssm_test"), secretsManagerAPI, nil)
+				secretsManagerAccess := secretsmanager.NewSecretsManager(lager.NewLogger("secretsmanager_test"), service.client, nil)
 
 				secretsManager := &secretsmanager.Manager{
 					AwsAccessKeyID:         "",
@@ -410,32 +407,32 @@ var _ = Describe("Info API", func() {
 			Context("returns configured secretsmanager manager", func() {
 				Context("get secretsmanager info returns error", func() {
 					BeforeEach(func() {
-						secretsManagerAPI.err = errors.New("some error occurred")
+						service.respondWithError(http.StatusInternalServerError, "InternalServiceError", "some error occurred")
 					})
 
 					It("includes the error in json response", func() {
-						Expect(body).To(MatchJSON(`{
-					"secretsmanager": {
-						"aws_region": "blah",
-						"pipeline_secret_template": "pipeline-secret-template",
-						"team_secret_template": "team-secret-template",
-						"shared_secret_template": "shared-secret-template",
-						"health": {
-							"error": "some error occurred",
-							"method": "GetSecretValue"
+						var info struct {
+							SecretsManager struct {
+								Health struct {
+									Error  string `json:"error"`
+									Method string `json:"method"`
+								} `json:"health"`
+							} `json:"secretsmanager"`
 						}
-					}
-				}`))
+
+						Expect(json.Unmarshal(body, &info)).To(Succeed())
+						Expect(info.SecretsManager.Health.Method).To(Equal("GetSecretValue"))
+						Expect(info.SecretsManager.Health.Error).To(ContainSubstring("some error occurred"))
 					})
 
 				})
 
 				Context("get secretsmanager info", func() {
 					BeforeEach(func() {
-						secretsManagerAPI.err = &secretsmanagertypes.ResourceNotFoundException{Message: ptr("dontcare")}
+						service.respondWithError(http.StatusBadRequest, "ResourceNotFoundException", "dontcare")
 					})
 
-					It("include sthe secretsmanager info in json response", func() {
+					It("includes the secretsmanager info in json response", func() {
 						Expect(body).To(MatchJSON(`{
 					"secretsmanager": {
 						"aws_region": "blah",
@@ -458,16 +455,12 @@ var _ = Describe("Info API", func() {
 	})
 })
 
-func ptr[T any](v T) *T {
-	return &v
-}
-
-// stubAWSSSM speaks the AWS JSON 1.1 wire protocol so that the info endpoint
+// ssmProtocolServer speaks the AWS JSON 1.1 wire protocol so the info endpoint
 // drives a real *ssm.Client. The health probe only cares about the error the
 // client raises, and the client wraps every one of them in a
 // *smithy.OperationError -- which a hand-built types.ParameterNotFound would
 // not be.
-type stubAWSSSM struct {
+type ssmProtocolServer struct {
 	client *awsssm.Client
 
 	mutex     sync.Mutex
@@ -475,30 +468,30 @@ type stubAWSSSM struct {
 	message   string
 }
 
-func startStubAWSSSM() *stubAWSSSM {
-	stub := &stubAWSSSM{errorType: "ParameterNotFound", message: "not found"}
+func startSSMProtocolServer() *ssmProtocolServer {
+	service := &ssmProtocolServer{errorType: "ParameterNotFound", message: "not found"}
 
-	server := httptest.NewServer(stub)
+	server := httptest.NewServer(service)
 	DeferCleanup(server.Close)
 
-	stub.client = awsssm.New(awsssm.Options{
+	service.client = awsssm.New(awsssm.Options{
 		Region:       "blah",
 		Credentials:  credentials.NewStaticCredentialsProvider("access-key", "secret-key", ""),
 		BaseEndpoint: aws.String(server.URL),
 		Retryer:      aws.NopRetryer{},
 	})
 
-	return stub
+	return service
 }
 
-func (stub *stubAWSSSM) respondWithError(errorType string, message string) {
-	stub.mutex.Lock()
-	defer stub.mutex.Unlock()
-	stub.errorType = errorType
-	stub.message = message
+func (service *ssmProtocolServer) respondWithError(errorType string, message string) {
+	service.mutex.Lock()
+	defer service.mutex.Unlock()
+	service.errorType = errorType
+	service.message = message
 }
 
-func (stub *stubAWSSSM) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (service *ssmProtocolServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer GinkgoRecover()
 
 	Expect(r.Header.Get("X-Amz-Target")).To(Equal("AmazonSSM.GetParameter"))
@@ -507,9 +500,9 @@ func (stub *stubAWSSSM) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	Expect(json.NewDecoder(r.Body).Decode(&input)).To(Succeed())
 	Expect(input.Name).To(PointTo(Equal("__concourse-health-check")))
 
-	stub.mutex.Lock()
-	errorType, message := stub.errorType, stub.message
-	stub.mutex.Unlock()
+	service.mutex.Lock()
+	errorType, message := service.errorType, service.message
+	service.mutex.Unlock()
 
 	status := http.StatusInternalServerError
 	if errorType == "ParameterNotFound" {
@@ -522,13 +515,71 @@ func (stub *stubAWSSSM) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	Expect(json.NewEncoder(w).Encode(map[string]string{"message": message})).To(Succeed())
 }
 
-// stubSecretsManagerAPI reports whatever error the spec asks for. The info
-// endpoint renders the raw error string from the creds manager's health probe,
-// so what matters here is the error itself, not how AWS produced it.
-type stubSecretsManagerAPI struct {
-	err error
+// secretsManagerProtocolServer speaks the AWS JSON 1.1 protocol used by the
+// production SDK client. The handler records no collaborator calls: the public
+// info response is the observable result of signing, serializing, and decoding
+// a real GetSecretValue request.
+type secretsManagerProtocolServer struct {
+	client *awssecretsmanager.Client
+
+	mutex     sync.Mutex
+	status    int
+	errorType string
+	message   string
 }
 
-func (s *stubSecretsManagerAPI) GetSecretValue(context.Context, *awssecretsmanager.GetSecretValueInput, ...func(*awssecretsmanager.Options)) (*awssecretsmanager.GetSecretValueOutput, error) {
-	return nil, s.err
+func startSecretsManagerProtocolServer() *secretsManagerProtocolServer {
+	service := &secretsManagerProtocolServer{
+		status:    http.StatusBadRequest,
+		errorType: "ResourceNotFoundException",
+		message:   "not found",
+	}
+
+	server := httptest.NewServer(service)
+	DeferCleanup(server.Close)
+
+	service.client = awssecretsmanager.New(awssecretsmanager.Options{
+		Region:       "blah",
+		Credentials:  credentials.NewStaticCredentialsProvider("access-key", "secret-key", ""),
+		BaseEndpoint: aws.String(server.URL),
+		Retryer:      aws.NopRetryer{},
+	})
+
+	return service
+}
+
+func (service *secretsManagerProtocolServer) respondWithError(status int, errorType string, message string) {
+	service.mutex.Lock()
+	defer service.mutex.Unlock()
+
+	service.status = status
+	service.errorType = errorType
+	service.message = message
+}
+
+func (service *secretsManagerProtocolServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	defer GinkgoRecover()
+
+	Expect(r.Method).To(Equal(http.MethodPost))
+	Expect(r.Header.Get("X-Amz-Target")).To(Equal("secretsmanager.GetSecretValue"))
+	Expect(r.Header.Get("Content-Type")).To(ContainSubstring("application/x-amz-json-1.1"))
+	Expect(r.Header.Get("Authorization")).To(ContainSubstring("Credential=access-key/"))
+
+	var input struct {
+		SecretID string `json:"SecretId"`
+	}
+	Expect(json.NewDecoder(r.Body).Decode(&input)).To(Succeed())
+	Expect(input.SecretID).To(Equal("__concourse-health-check"))
+
+	service.mutex.Lock()
+	status, errorType, message := service.status, service.errorType, service.message
+	service.mutex.Unlock()
+
+	w.Header().Set("Content-Type", "application/x-amz-json-1.1")
+	w.Header().Set("X-Amzn-Errortype", errorType)
+	w.WriteHeader(status)
+	Expect(json.NewEncoder(w).Encode(map[string]string{
+		"__type":  errorType,
+		"message": message,
+	})).To(Succeed())
 }
