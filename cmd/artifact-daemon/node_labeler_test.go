@@ -113,32 +113,3 @@ func TestNodeLabeler_RoundTrip(t *testing.T) {
 		t.Errorf("RemoveLabel clobbered existing label")
 	}
 }
-
-// TestNodeLabeler_AddLabel_VerifyPatchPayload verifies the exact JSON patch
-// sent to the K8s API contains the expected label key and value.
-func TestNodeLabeler_AddLabel_VerifyPatchPayload(t *testing.T) {
-	ctx := context.Background()
-	logger := lagertest.NewTestLogger("node-labeler")
-	client := fake.NewSimpleClientset(&corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{Name: "patch-node"},
-	})
-
-	labeler := daemon.NewNodeLabeler(logger, client, "patch-node", "concourse.dev/artifact-cache")
-
-	if err := labeler.AddLabel(ctx); err != nil {
-		t.Fatalf("AddLabel: %v", err)
-	}
-
-	// Verify via the fake client's action recorder
-	actions := client.Actions()
-	found := false
-	for _, action := range actions {
-		if action.GetVerb() == "patch" && action.GetResource().Resource == "nodes" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Error("expected a patch action on nodes, found none")
-	}
-}

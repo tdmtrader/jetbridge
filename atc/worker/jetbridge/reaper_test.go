@@ -3,9 +3,13 @@ package jetbridge_test
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strconv"
+	"sync"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
@@ -17,11 +21,10 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	apiruntime "k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
-	k8stesting "k8s.io/client-go/testing"
+	"k8s.io/client-go/rest"
 )
 
 var _ = Describe("Reaper", func() {
@@ -277,15 +280,32 @@ var _ = Describe("Reaper", func() {
 			Expect(metric.Metrics.ContainersDeleted.Delta()).To(Equal(float64(1)))
 		})
 
-		It("does not fail when a pod vanishes between the list and the delete", func() {
+		It("succeeds when a listed pod vanishes before it is deleted", func() {
 			persistDestroyingContainer("racing-pod")
-			createLabelledPod("racing-pod")
-			fakeClientset.PrependReactor("delete", "pods", func(action k8stesting.Action) (bool, apiruntime.Object, error) {
-				return true, nil, apierrors.NewNotFound(corev1.Resource("pods"), "racing-pod")
-			})
+			listedPod := &corev1.Pod{
+				TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Pod"},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "racing-pod",
+					Namespace: "test-namespace",
+					Labels: map[string]string{
+						"concourse.ci/worker": "k8s-test-namespace",
+					},
+				},
+				Status: corev1.PodStatus{Phase: corev1.PodRunning},
+			}
+			protocolClient, protocolServer := newReaperDeleteRaceClient(listedPod)
+			DeferCleanup(protocolServer.Close)
 
-			err := reaper.Run(ctx)
-			Expect(err).ToNot(HaveOccurred())
+			racingReaper := jetbridge.NewReaper(
+				lagertest.NewTestLogger("racing-reaper"),
+				protocolClient,
+				cfg,
+				containerRepository,
+				destroyer,
+			)
+			racingReaper.SetBuildLookup(database.BuildFactory)
+
+			Expect(racingReaper.Run(ctx)).To(Succeed())
 
 			state, workerName, missingSince, found := containerRow("racing-pod")
 			Expect(found).To(BeTrue())
@@ -626,3 +646,68 @@ var _ = Describe("Reaper", func() {
 	})
 
 })
+
+type reaperPodLifecycle string
+
+const (
+	reaperPodPresent  reaperPodLifecycle = "present"
+	reaperPodVanished reaperPodLifecycle = "vanished"
+)
+
+func newReaperDeleteRaceClient(pod *corev1.Pod) (kubernetes.Interface, *httptest.Server) {
+	GinkgoHelper()
+
+	podListJSON, err := json.Marshal(corev1.PodList{
+		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "PodList"},
+		Items:    []corev1.Pod{*pod.DeepCopy()},
+	})
+	Expect(err).NotTo(HaveOccurred())
+	notFoundJSON, err := json.Marshal(metav1.Status{
+		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Status"},
+		Status:   metav1.StatusFailure,
+		Message:  fmt.Sprintf("pods %q not found", pod.Name),
+		Reason:   metav1.StatusReasonNotFound,
+		Details:  &metav1.StatusDetails{Name: pod.Name, Kind: "pods"},
+		Code:     http.StatusNotFound,
+	})
+	Expect(err).NotTo(HaveOccurred())
+
+	var stateMu sync.Mutex
+	lifecycle := reaperPodPresent
+	collectionPath := fmt.Sprintf("/api/v1/namespaces/%s/pods", pod.Namespace)
+	podPath := fmt.Sprintf("%s/%s", collectionPath, pod.Name)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == collectionPath:
+			stateMu.Lock()
+			state := lifecycle
+			if lifecycle == reaperPodPresent {
+				lifecycle = reaperPodVanished
+			}
+			stateMu.Unlock()
+			if state == reaperPodPresent {
+				_, _ = w.Write(podListJSON)
+				return
+			}
+			_, _ = w.Write([]byte(`{"apiVersion":"v1","kind":"PodList","items":[]}`))
+		case request.Method == http.MethodDelete && request.URL.Path == podPath:
+			stateMu.Lock()
+			state := lifecycle
+			stateMu.Unlock()
+			if state == reaperPodVanished {
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write(notFoundJSON)
+				return
+			}
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{"apiVersion":"v1","kind":"Status","status":"Failure","reason":"Conflict","code":409}`))
+		default:
+			http.NotFound(w, request)
+		}
+	}))
+
+	client, err := kubernetes.NewForConfig(&rest.Config{Host: server.URL})
+	Expect(err).NotTo(HaveOccurred())
+	return client, server
+}

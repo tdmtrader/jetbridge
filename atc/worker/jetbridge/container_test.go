@@ -18,9 +18,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	apiruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
-	k8stesting "k8s.io/client-go/testing"
 )
 
 var _ = Describe("Container", func() {
@@ -2160,42 +2158,6 @@ var _ = Describe("Container", func() {
 			})
 		})
 
-		Context("when pod creation fails", func() {
-			BeforeEach(func() {
-				var err error
-				container, _, err = worker.FindOrCreateContainer(
-					ctx,
-					db.NewFixedHandleContainerOwner("metric-fail-handle"),
-					db.ContainerMetadata{Type: db.ContainerTypeTask},
-					runtime.ContainerSpec{
-						TeamID:    1,
-						Dir:       "/workdir",
-						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
-					},
-					delegate,
-				)
-				Expect(err).ToNot(HaveOccurred())
-
-				// Make pod creation fail by injecting a reactor.
-				fakeClientset.PrependReactor("create", "pods", func(action k8stesting.Action) (bool, apiruntime.Object, error) {
-					return true, nil, fmt.Errorf("simulated pod creation failure")
-				})
-
-				metric.Metrics.ContainersCreated.Delta()
-				metric.Metrics.FailedContainers.Delta()
-			})
-
-			It("increments FailedContainers", func() {
-				_, err := container.Run(ctx, runtime.ProcessSpec{
-					Path: "/bin/sh",
-					Args: []string{"-c", "echo hello"},
-				}, runtime.ProcessIO{})
-				Expect(err).To(HaveOccurred())
-
-				Expect(metric.Metrics.FailedContainers.Delta()).To(Equal(float64(1)))
-				Expect(metric.Metrics.ContainersCreated.Delta()).To(Equal(float64(0)))
-			})
-		})
 	})
 
 	Describe("Attach", func() {

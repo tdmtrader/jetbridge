@@ -35,6 +35,7 @@ import (
 	"github.com/concourse/concourse/tracing"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/onsi/gomega/gbytes"
 	"go.opentelemetry.io/otel"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
@@ -393,7 +394,7 @@ var _ = Describe("[SC-07] Sidecar log streaming routing (direct mode)", func() {
 		worker = jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
 	})
 
-	It("[SC-07] when SidecarWriters contains an entry, GetLogs is requested for the sidecar container by name", func() {
+	It("[SC-07] streams sidecar logs to the dedicated writer when one is configured", func() {
 
 		container, _, err := worker.FindOrCreateContainer(
 			ctx,
@@ -411,7 +412,7 @@ var _ = Describe("[SC-07] Sidecar log streaming routing (direct mode)", func() {
 		)
 		Expect(err).ToNot(HaveOccurred())
 
-		sidecarWriter := new(bytes.Buffer)
+		sidecarWriter := gbytes.NewBuffer()
 		process, err := container.Run(ctx, runtime.ProcessSpec{
 			Path: "/bin/sh",
 		}, runtime.ProcessIO{
@@ -441,22 +442,10 @@ var _ = Describe("[SC-07] Sidecar log streaming routing (direct mode)", func() {
 		Expect(err).ToNot(HaveOccurred())
 		Expect(result.ExitStatus).To(Equal(0))
 
-		// Verify GetLogs was requested for the sidecar container.
-		var sidecarLogRequested bool
-		for _, action := range fakeClientset.Actions() {
-			if action.GetVerb() == "get" && action.GetSubresource() == "log" {
-				if getAction, ok := action.(interface{ GetName() string }); ok {
-					_ = getAction
-				}
-				sidecarLogRequested = true
-				break
-			}
-		}
-		Expect(sidecarLogRequested).To(BeTrue(),
-			"expected GetLogs to be called for the sidecar container")
+		Eventually(func() string { return string(sidecarWriter.Contents()) }).Should(Equal("fake logs"))
 	})
 
-	It("[SC-07] when SidecarWriters is empty, GetLogs is still requested for the sidecar (prefix fallback path)", func() {
+	It("[SC-07] prefixes sidecar logs on stdout when no dedicated writer is configured", func() {
 
 		container, _, err := worker.FindOrCreateContainer(
 			ctx,
@@ -474,10 +463,11 @@ var _ = Describe("[SC-07] Sidecar log streaming routing (direct mode)", func() {
 		)
 		Expect(err).ToNot(HaveOccurred())
 
+		stdout := gbytes.NewBuffer()
 		process, err := container.Run(ctx, runtime.ProcessSpec{
 			Path: "/bin/sh",
 		}, runtime.ProcessIO{
-			Stdout: new(bytes.Buffer),
+			Stdout: stdout,
 			// No SidecarWriters — falls back to prefixed output on Stdout
 		})
 		Expect(err).ToNot(HaveOccurred())
@@ -498,16 +488,7 @@ var _ = Describe("[SC-07] Sidecar log streaming routing (direct mode)", func() {
 		Expect(err).ToNot(HaveOccurred())
 		Expect(result.ExitStatus).To(Equal(0))
 
-		// Verify GetLogs was requested (prefix fallback path also calls GetLogs).
-		var logRequested bool
-		for _, action := range fakeClientset.Actions() {
-			if action.GetVerb() == "get" && action.GetSubresource() == "log" {
-				logRequested = true
-				break
-			}
-		}
-		Expect(logRequested).To(BeTrue(),
-			"expected GetLogs to be called for sidecar prefix-fallback log streaming")
+		Eventually(func() string { return string(stdout.Contents()) }).Should(ContainSubstring("[redis] fake logs"))
 	})
 })
 

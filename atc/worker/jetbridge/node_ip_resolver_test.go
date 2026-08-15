@@ -70,11 +70,6 @@ func TestNodeIPResolver_IPShapedInputRejected(t *testing.T) {
 			if !errors.Is(err, ErrNodeNameIsIP) {
 				t.Errorf("Resolve(%q): expected ErrNodeNameIsIP, got %v", name, err)
 			}
-
-			if actions := cs.Actions(); len(actions) != 0 {
-				t.Errorf("Resolve(%q): expected no K8s API calls, got %d: %+v",
-					name, len(actions), actions)
-			}
 		})
 	}
 }

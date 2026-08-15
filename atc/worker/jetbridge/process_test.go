@@ -3,10 +3,13 @@ package jetbridge_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"sync/atomic"
+	"net/http"
+	"net/http/httptest"
+	"sync"
 	"time"
 
 	"github.com/concourse/concourse/atc"
@@ -21,9 +24,9 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	apiruntime "k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
-	k8stesting "k8s.io/client-go/testing"
+	"k8s.io/client-go/rest"
 )
 
 var _ = Describe("Process", func() {
@@ -1447,138 +1450,47 @@ var _ = Describe("Process", func() {
 		})
 	})
 
-	Describe("transient API error handling", func() {
-		It("tolerates a single API error during pollUntilDone", func() {
-			errorClientset := fake.NewSimpleClientset()
-			errorCfg := jetbridge.NewConfig("test-namespace", "")
-			errorWorker := jetbridge.NewWorker(dbWorker, errorClientset, errorCfg)
-
-			transientContainer, _, err := errorWorker.FindOrCreateContainer(
-				ctx,
-				db.NewFixedHandleContainerOwner("transient-ok-handle"),
-				db.ContainerMetadata{Type: db.ContainerTypeTask},
-				runtime.ContainerSpec{
-					TeamID:    1,
-					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+	Describe("PodWatcher initial synchronization through the Kubernetes API", func() {
+		It("recovers from a transient GET failure", func() {
+			expectedPod := &corev1.Pod{
+				TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Pod"},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:            "initial-sync-pod",
+					Namespace:       "test-namespace",
+					ResourceVersion: "17",
 				},
-				delegate,
-			)
-			Expect(err).ToNot(HaveOccurred())
-
-			process, err := transientContainer.Run(ctx, runtime.ProcessSpec{
-				Path: "/bin/true",
-			}, runtime.ProcessIO{})
-			Expect(err).ToNot(HaveOccurred())
-
-			// Simulate pod completion BEFORE installing the error reactor.
-			pod, err := errorClientset.CoreV1().Pods("test-namespace").Get(ctx, "transient-ok-handle", metav1.GetOptions{})
-			Expect(err).ToNot(HaveOccurred())
-			pod.Status.Phase = corev1.PodSucceeded
-			pod.Status.ContainerStatuses = []corev1.ContainerStatus{
-				{Name: "main", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 0}}},
+				Status: corev1.PodStatus{Phase: corev1.PodSucceeded},
 			}
-			_, err = errorClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
-			Expect(err).ToNot(HaveOccurred())
+			protocolClient, protocolServer := newRecoveringPodProtocolClient(expectedPod)
+			DeferCleanup(protocolServer.Close)
 
-			// Now inject a reactor that fails the first Get, then lets subsequent ones through.
-			var callCount int32
-			errorClientset.PrependReactor("get", "pods", func(action k8stesting.Action) (bool, apiruntime.Object, error) {
-				n := atomic.AddInt32(&callCount, 1)
-				if n == 1 {
-					return true, nil, errors.New("transient API error")
-				}
-				return false, nil, nil
-			})
+			watcher := jetbridge.NewPodWatcher(protocolClient, expectedPod.Namespace, expectedPod.Name)
+			DeferCleanup(watcher.Stop)
 
-			result, err := process.Wait(ctx)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(result.ExitStatus).To(Equal(0))
+			observedPod, err := watcher.Next(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(observedPod.Name).To(Equal(expectedPod.Name))
+			Expect(observedPod.ResourceVersion).To(Equal(expectedPod.ResourceVersion))
+			Expect(observedPod.Status.Phase).To(Equal(corev1.PodSucceeded))
 		})
 
-		It("fails after 3 consecutive API errors in pollUntilDone", func() {
-			errorClientset := fake.NewSimpleClientset()
-			errorCfg := jetbridge.NewConfig("test-namespace", "")
-			errorWorker := jetbridge.NewWorker(dbWorker, errorClientset, errorCfg)
-
-			transientContainer, _, err := errorWorker.FindOrCreateContainer(
-				ctx,
-				db.NewFixedHandleContainerOwner("transient-fail-handle"),
-				db.ContainerMetadata{Type: db.ContainerTypeTask},
-				runtime.ContainerSpec{
-					TeamID:    1,
-					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+		It("reports the public error after three consecutive GET failures", func() {
+			expectedPod := &corev1.Pod{
+				TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Pod"},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "unavailable-initial-sync-pod",
+					Namespace: "test-namespace",
 				},
-				delegate,
-			)
-			Expect(err).ToNot(HaveOccurred())
-
-			process, err := transientContainer.Run(ctx, runtime.ProcessSpec{
-				Path: "/bin/true",
-			}, runtime.ProcessIO{})
-			Expect(err).ToNot(HaveOccurred())
-
-			// All Gets fail.
-			errorClientset.PrependReactor("get", "pods", func(action k8stesting.Action) (bool, apiruntime.Object, error) {
-				return true, nil, errors.New("persistent API error")
-			})
-
-			_, err = process.Wait(ctx)
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("consecutive API errors"))
-		})
-
-		It("resets error count after a successful API call", func() {
-			errorClientset := fake.NewSimpleClientset()
-			errorCfg := jetbridge.NewConfig("test-namespace", "")
-			errorWorker := jetbridge.NewWorker(dbWorker, errorClientset, errorCfg)
-
-			transientContainer, _, err := errorWorker.FindOrCreateContainer(
-				ctx,
-				db.NewFixedHandleContainerOwner("transient-reset-handle"),
-				db.ContainerMetadata{Type: db.ContainerTypeTask},
-				runtime.ContainerSpec{
-					TeamID:    1,
-					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
-				},
-				delegate,
-			)
-			Expect(err).ToNot(HaveOccurred())
-
-			process, err := transientContainer.Run(ctx, runtime.ProcessSpec{
-				Path: "/bin/true",
-			}, runtime.ProcessIO{})
-			Expect(err).ToNot(HaveOccurred())
-
-			// Set pod to completed BEFORE installing the reactor.
-			pod, err := errorClientset.CoreV1().Pods("test-namespace").Get(ctx, "transient-reset-handle", metav1.GetOptions{})
-			Expect(err).ToNot(HaveOccurred())
-			pod.Status.Phase = corev1.PodSucceeded
-			pod.Status.ContainerStatuses = []corev1.ContainerStatus{
-				{Name: "main", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 0}}},
 			}
-			_, err = errorClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
-			Expect(err).ToNot(HaveOccurred())
+			protocolClient, protocolServer := newUnavailablePodProtocolClient(expectedPod)
+			DeferCleanup(protocolServer.Close)
 
-			// Pattern: fail, fail, succeed, fail, fail, then succeed with completed pod.
-			// This tests that consecutive count resets after a success.
-			var callCount int32
-			errorClientset.PrependReactor("get", "pods", func(action k8stesting.Action) (bool, apiruntime.Object, error) {
-				n := atomic.AddInt32(&callCount, 1)
-				switch n {
-				case 1, 2: // First two fail
-					return true, nil, errors.New("transient error")
-				case 3: // Third succeeds (resets counter), pod is completed
-					return false, nil, nil
-				case 4, 5: // Next two fail
-					return true, nil, errors.New("transient error")
-				default: // After that, succeed — pod is complete
-					return false, nil, nil
-				}
-			})
+			watcher := jetbridge.NewPodWatcher(protocolClient, expectedPod.Namespace, expectedPod.Name)
+			DeferCleanup(watcher.Stop)
 
-			result, err := process.Wait(ctx)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(result.ExitStatus).To(Equal(0))
+			observedPod, err := watcher.Next(ctx)
+			Expect(observedPod).To(BeNil())
+			Expect(err).To(MatchError(ContainSubstring("3 consecutive API errors during initial sync")))
 		})
 	})
 
@@ -1700,6 +1612,87 @@ var _ = Describe("Process", func() {
 		})
 	})
 })
+
+type podProtocolAvailability string
+
+const (
+	podTemporarilyUnavailable podProtocolAvailability = "temporarily-unavailable"
+	podAvailable              podProtocolAvailability = "available"
+)
+
+func newRecoveringPodProtocolClient(pod *corev1.Pod) (kubernetes.Interface, *httptest.Server) {
+	GinkgoHelper()
+
+	podJSON, err := json.Marshal(pod)
+	Expect(err).NotTo(HaveOccurred())
+	errorJSON, err := json.Marshal(metav1.Status{
+		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Status"},
+		Status:   metav1.StatusFailure,
+		Message:  "the pod API is temporarily unavailable",
+		Reason:   metav1.StatusReasonServiceUnavailable,
+		Details:  &metav1.StatusDetails{Name: pod.Name, Kind: "pods"},
+		Code:     http.StatusServiceUnavailable,
+	})
+	Expect(err).NotTo(HaveOccurred())
+
+	var stateMu sync.Mutex
+	availability := podTemporarilyUnavailable
+	podPath := fmt.Sprintf("/api/v1/namespaces/%s/pods/%s", pod.Namespace, pod.Name)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodGet || request.URL.Path != podPath {
+			http.NotFound(w, request)
+			return
+		}
+
+		stateMu.Lock()
+		state := availability
+		if availability == podTemporarilyUnavailable {
+			availability = podAvailable
+		}
+		stateMu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		if state == podTemporarilyUnavailable {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write(errorJSON)
+			return
+		}
+		_, _ = w.Write(podJSON)
+	}))
+
+	client, err := kubernetes.NewForConfig(&rest.Config{Host: server.URL})
+	Expect(err).NotTo(HaveOccurred())
+	return client, server
+}
+
+func newUnavailablePodProtocolClient(pod *corev1.Pod) (kubernetes.Interface, *httptest.Server) {
+	GinkgoHelper()
+
+	errorJSON, err := json.Marshal(metav1.Status{
+		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Status"},
+		Status:   metav1.StatusFailure,
+		Message:  "the pod API is unavailable",
+		Reason:   metav1.StatusReasonServiceUnavailable,
+		Details:  &metav1.StatusDetails{Name: pod.Name, Kind: "pods"},
+		Code:     http.StatusServiceUnavailable,
+	})
+	Expect(err).NotTo(HaveOccurred())
+
+	podPath := fmt.Sprintf("/api/v1/namespaces/%s/pods/%s", pod.Namespace, pod.Name)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodGet || request.URL.Path != podPath {
+			http.NotFound(w, request)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write(errorJSON)
+	}))
+
+	client, err := kubernetes.NewForConfig(&rest.Config{Host: server.URL})
+	Expect(err).NotTo(HaveOccurred())
+	return client, server
+}
 
 var _ = Describe("Process sidecar lifecycle", func() {
 	var (

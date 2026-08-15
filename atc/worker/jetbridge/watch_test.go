@@ -3,7 +3,6 @@ package jetbridge_test
 import (
 	"context"
 	"errors"
-	"sync/atomic"
 
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	. "github.com/onsi/ginkgo/v2"
@@ -176,15 +175,13 @@ var _ = Describe("PodWatcher", func() {
 			_, err := fakeClientset.CoreV1().Pods("test-namespace").Create(ctx, pod, metav1.CreateOptions{})
 			Expect(err).ToNot(HaveOccurred())
 
-			var watchCallCount int32
 			fakeWatcher1 := watch.NewRaceFreeFake()
 			fakeWatcher2 := watch.NewRaceFreeFake()
-			fakeClientset.PrependWatchReactor("pods", func(action k8stesting.Action) (bool, watch.Interface, error) {
-				n := atomic.AddInt32(&watchCallCount, 1)
-				if n == 1 {
-					return true, fakeWatcher1, nil
-				}
-				return true, fakeWatcher2, nil
+			watcherLifecycle := make(chan watch.Interface, 2)
+			watcherLifecycle <- fakeWatcher1
+			watcherLifecycle <- fakeWatcher2
+			fakeClientset.PrependWatchReactor("pods", func(_ k8stesting.Action) (bool, watch.Interface, error) {
+				return true, <-watcherLifecycle, nil
 			})
 
 			pw := jetbridge.NewPodWatcher(fakeClientset, "test-namespace", "reconnect-pod")
@@ -216,9 +213,6 @@ var _ = Describe("PodWatcher", func() {
 			receivedPod, err = pw.Next(ctx)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(receivedPod.Status.Phase).To(Equal(corev1.PodSucceeded))
-
-			// Verify watch was called twice (initial + reconnection).
-			Expect(atomic.LoadInt32(&watchCallCount)).To(BeNumerically(">=", 2))
 		})
 
 		It("falls back to Get() if watch re-establishment fails consecutively", func() {
@@ -238,15 +232,19 @@ var _ = Describe("PodWatcher", func() {
 			_, err := fakeClientset.CoreV1().Pods("test-namespace").Create(ctx, pod, metav1.CreateOptions{})
 			Expect(err).ToNot(HaveOccurred())
 
-			// First watcher works, then all subsequent watches fail.
-			var watchCallCount int32
+			// The initial watch at RV 200 works. Re-establishment from the
+			// observed RV 201 is unavailable, so Next falls back to Get.
 			fakeWatcher1 := watch.NewRaceFreeFake()
 			fakeClientset.PrependWatchReactor("pods", func(action k8stesting.Action) (bool, watch.Interface, error) {
-				n := atomic.AddInt32(&watchCallCount, 1)
-				if n == 1 {
+				resourceVersion := action.(k8stesting.WatchAction).GetWatchRestrictions().ResourceVersion
+				switch resourceVersion {
+				case "200":
 					return true, fakeWatcher1, nil
+				case "201":
+					return true, nil, errors.New("watch unavailable")
+				default:
+					return true, nil, errors.New("unexpected watch resource version")
 				}
-				return true, nil, errors.New("watch unavailable")
 			})
 
 			pw := jetbridge.NewPodWatcher(fakeClientset, "test-namespace", "fallback-pod")
@@ -296,18 +294,18 @@ var _ = Describe("PodWatcher", func() {
 			_, err := fakeClientset.CoreV1().Pods("test-namespace").Create(ctx, pod, metav1.CreateOptions{})
 			Expect(err).ToNot(HaveOccurred())
 
-			var watchCallCount int32
-			var capturedResourceVersions []string
 			fakeWatcher1 := watch.NewRaceFreeFake()
 			fakeWatcher2 := watch.NewRaceFreeFake()
 			fakeClientset.PrependWatchReactor("pods", func(action k8stesting.Action) (bool, watch.Interface, error) {
-				watchAction := action.(k8stesting.WatchAction)
-				capturedResourceVersions = append(capturedResourceVersions, watchAction.GetWatchRestrictions().ResourceVersion)
-				n := atomic.AddInt32(&watchCallCount, 1)
-				if n == 1 {
+				resourceVersion := action.(k8stesting.WatchAction).GetWatchRestrictions().ResourceVersion
+				switch resourceVersion {
+				case "500":
 					return true, fakeWatcher1, nil
+				case "501":
+					return true, fakeWatcher2, nil
+				default:
+					return true, nil, errors.New("unexpected watch resource version")
 				}
-				return true, fakeWatcher2, nil
 			})
 
 			pw := jetbridge.NewPodWatcher(fakeClientset, "test-namespace", "rv-track-pod")
@@ -337,11 +335,6 @@ var _ = Describe("PodWatcher", func() {
 			receivedPod, err = pw.Next(ctx)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(receivedPod.Status.Phase).To(Equal(corev1.PodSucceeded))
-
-			By("verifying reconnection used the last observed resourceVersion")
-			Expect(capturedResourceVersions).To(HaveLen(2))
-			Expect(capturedResourceVersions[0]).To(Equal("500")) // from initial Get()
-			Expect(capturedResourceVersions[1]).To(Equal("501")) // from last event
 		})
 
 		It("delivers rapid pod updates without losing the final state", func() {
