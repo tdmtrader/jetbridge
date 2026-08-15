@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,6 +19,56 @@ import (
 
 	daemon "github.com/concourse/concourse/cmd/artifact-daemon"
 )
+
+type peerAvailability struct {
+	mu        sync.Mutex
+	available bool
+
+	expectedPath string
+	tarName      string
+	tarContent   []byte
+
+	unavailableRequest chan struct{}
+	unavailableOnce    sync.Once
+}
+
+func newPeerAvailability(expectedKey, tarName string, tarContent []byte) *peerAvailability {
+	return &peerAvailability{
+		expectedPath:       "/artifacts/steps/" + expectedKey,
+		tarName:            tarName,
+		tarContent:         tarContent,
+		unavailableRequest: make(chan struct{}),
+	}
+}
+
+func (peer *peerAvailability) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet || r.URL.Path != peer.expectedPath {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+
+	peer.mu.Lock()
+	available := peer.available
+	peer.mu.Unlock()
+
+	if !available {
+		peer.unavailableOnce.Do(func() { close(peer.unavailableRequest) })
+		w.WriteHeader(http.StatusServiceUnavailable)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/x-tar")
+	tw := tar.NewWriter(w)
+	_ = tw.WriteHeader(&tar.Header{Name: peer.tarName, Size: int64(len(peer.tarContent)), Mode: 0644})
+	_, _ = tw.Write(peer.tarContent)
+	_ = tw.Close()
+}
+
+func (peer *peerAvailability) MakeAvailable() {
+	peer.mu.Lock()
+	peer.available = true
+	peer.mu.Unlock()
+}
 
 // TestPeerFetch_DownloadsAndExtractsTar verifies that Fetch downloads a tar
 // stream from a peer daemon and extracts it to the destination directory.
@@ -71,22 +122,11 @@ func TestPeerFetch_DownloadsAndExtractsTar(t *testing.T) {
 	}
 }
 
-// TestPeerFetch_RetriesOnFailure verifies retry behavior when peer returns errors.
-func TestPeerFetch_RetriesOnFailure(t *testing.T) {
-	attempts := 0
-	fakePeer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		attempts++
-		if attempts < 3 {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			return
-		}
-		// Third attempt: return a valid tar with one file.
-		tw := tar.NewWriter(w)
-		content := []byte("retry-success")
-		tw.WriteHeader(&tar.Header{Name: "data.txt", Size: int64(len(content)), Mode: 0644})
-		tw.Write(content)
-		tw.Close()
-	}))
+// TestPeerFetch_RecoversWhenPeerBecomesAvailable verifies that an in-flight
+// fetch survives a peer availability transition and extracts the eventual tar.
+func TestPeerFetch_RecoversWhenPeerBecomesAvailable(t *testing.T) {
+	peer := newPeerAvailability("some-key", "data.txt", []byte("retry-success"))
+	fakePeer := httptest.NewServer(peer)
 	defer fakePeer.Close()
 
 	logger := lagertest.NewTestLogger("test")
@@ -94,17 +134,33 @@ func TestPeerFetch_RetriesOnFailure(t *testing.T) {
 	resolver := daemon.NewPeerResolver(logger, nil, "", "", port, "", nil)
 
 	destDir := filepath.Join(t.TempDir(), "retry-dest")
-	err := resolver.Fetch(t.Context(), host, "some-key", destDir)
-	if err != nil {
-		t.Fatalf("expected success after retries, got: %v", err)
+	fetchDone := make(chan error, 1)
+	go func() {
+		fetchDone <- resolver.Fetch(t.Context(), host, "some-key", destDir)
+	}()
+
+	select {
+	case <-peer.unavailableRequest:
+	case <-time.After(2 * time.Second):
+		t.Fatal("peer did not observe the fetch while unavailable")
+	}
+	peer.MakeAvailable()
+
+	select {
+	case err := <-fetchDone:
+		if err != nil {
+			t.Fatalf("expected success after peer became available, got: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("fetch did not finish after peer became available")
 	}
 
-	data, _ := os.ReadFile(filepath.Join(destDir, "data.txt"))
+	data, err := os.ReadFile(filepath.Join(destDir, "data.txt"))
+	if err != nil {
+		t.Fatalf("read fetched data: %v", err)
+	}
 	if string(data) != "retry-success" {
 		t.Errorf("expected 'retry-success', got %q", string(data))
-	}
-	if attempts != 3 {
-		t.Errorf("expected 3 attempts, got %d", attempts)
 	}
 }
 
@@ -119,34 +175,63 @@ func TestPeerProbe_NoPeers(t *testing.T) {
 	}
 }
 
-// TestPeerFetch_LargeArtifactSlowTransfer verifies that Fetch succeeds even
-// when the peer takes longer than the old 10s timeout to respond (simulating
-// a large artifact transfer).
-func TestPeerFetch_LargeArtifactSlowTransfer(t *testing.T) {
+// TestPeerFetch_WaitsForArtifactTransfer verifies that Fetch remains in flight
+// until the peer finishes producing the tar stream.
+func TestPeerFetch_WaitsForArtifactTransfer(t *testing.T) {
+	requestStarted := make(chan struct{})
+	releaseResponse := make(chan struct{})
+	var (
+		requestOnce sync.Once
+		releaseOnce sync.Once
+	)
+	release := func() { releaseOnce.Do(func() { close(releaseResponse) }) }
 	fakePeer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Simulate a slow transfer — delay 2s before sending tar data.
-		// With the old shared 10s http.Client timeout this would work,
-		// but it verifies the fetch client is separate from the probe client.
-		time.Sleep(2 * time.Second)
+		requestOnce.Do(func() { close(requestStarted) })
+		<-releaseResponse
 		tw := tar.NewWriter(w)
 		content := []byte("large-artifact-data")
-		tw.WriteHeader(&tar.Header{Name: "big-file.bin", Size: int64(len(content)), Mode: 0644})
-		tw.Write(content)
-		tw.Close()
+		_ = tw.WriteHeader(&tar.Header{Name: "big-file.bin", Size: int64(len(content)), Mode: 0644})
+		_, _ = tw.Write(content)
+		_ = tw.Close()
 	}))
 	defer fakePeer.Close()
+	defer release()
 
 	logger := lagertest.NewTestLogger("test")
 	host, port := splitHostPort(t, fakePeer.Listener.Addr().String())
 	resolver := daemon.NewPeerResolver(logger, nil, "", "", port, "", nil)
 
 	destDir := filepath.Join(t.TempDir(), "large-fetch")
-	err := resolver.Fetch(t.Context(), host, "large-key", destDir)
-	if err != nil {
-		t.Fatalf("expected success for slow transfer, got: %v", err)
+	fetchDone := make(chan error, 1)
+	go func() {
+		fetchDone <- resolver.Fetch(t.Context(), host, "large-key", destDir)
+	}()
+
+	select {
+	case <-requestStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("peer did not receive fetch request")
+	}
+	select {
+	case err := <-fetchDone:
+		t.Fatalf("fetch completed before the artifact response was released: %v", err)
+	default:
+	}
+	release()
+
+	select {
+	case err := <-fetchDone:
+		if err != nil {
+			t.Fatalf("expected success after transfer was released, got: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("fetch did not finish after artifact response was released")
 	}
 
-	data, _ := os.ReadFile(filepath.Join(destDir, "big-file.bin"))
+	data, err := os.ReadFile(filepath.Join(destDir, "big-file.bin"))
+	if err != nil {
+		t.Fatalf("read fetched artifact: %v", err)
+	}
 	if string(data) != "large-artifact-data" {
 		t.Errorf("expected 'large-artifact-data', got %q", string(data))
 	}

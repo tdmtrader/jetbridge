@@ -1037,49 +1037,18 @@ func TestPeerProbe_NoPeerResponds200(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// PD-03: Peer fetch with retry
+// PD-03: Peer fetch retry budget
 // ---------------------------------------------------------------------------
 
-func TestPeerFetch_CountsRetryAttempts(t *testing.T) {
-	var attempts int
+func TestPeerFetch_StopsAfterRetryBudget(t *testing.T) {
+	var (
+		mu       sync.Mutex
+		requests []string
+	)
 	fakePeer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		attempts++
-		if attempts < 2 {
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-		// Second attempt: return valid tar.
-		tw := tar.NewWriter(w)
-		content := []byte("retry-ok")
-		tw.WriteHeader(&tar.Header{Name: "file.txt", Size: int64(len(content)), Mode: 0644})
-		tw.Write(content)
-		tw.Close()
-	}))
-	defer fakePeer.Close()
-
-	logger := lagertest.NewTestLogger("retry")
-	host, port := splitHostPort(t, fakePeer.Listener.Addr().String())
-	resolver := daemon.NewPeerResolver(logger, nil, "", "", port, "", nil)
-
-	destDir := filepath.Join(t.TempDir(), "retry")
-	err := resolver.Fetch(context.Background(), host, "retry-key", destDir)
-	if err != nil {
-		t.Fatalf("expected success on retry, got: %v", err)
-	}
-	if attempts != 2 {
-		t.Errorf("expected 2 attempts, got %d", attempts)
-	}
-
-	data, _ := os.ReadFile(filepath.Join(destDir, "file.txt"))
-	if string(data) != "retry-ok" {
-		t.Errorf("expected 'retry-ok', got %q", string(data))
-	}
-}
-
-func TestPeerFetch_AllAttemptsExhausted(t *testing.T) {
-	var attempts int
-	fakePeer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		attempts++
+		mu.Lock()
+		requests = append(requests, r.Method+" "+r.URL.RequestURI())
+		mu.Unlock()
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}))
 	defer fakePeer.Close()
@@ -1093,8 +1062,21 @@ func TestPeerFetch_AllAttemptsExhausted(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error after exhausting retries")
 	}
-	if attempts != 3 {
-		t.Errorf("expected 3 attempts, got %d", attempts)
+
+	mu.Lock()
+	defer mu.Unlock()
+	expected := []string{
+		"GET /artifacts/steps/fail-key",
+		"GET /artifacts/steps/fail-key",
+		"GET /artifacts/steps/fail-key",
+	}
+	if len(requests) != len(expected) {
+		t.Fatalf("expected %d bounded retry requests, got %d: %v", len(expected), len(requests), requests)
+	}
+	for i, request := range requests {
+		if request != expected[i] {
+			t.Errorf("retry request %d: expected %q, got %q", i+1, expected[i], request)
+		}
 	}
 }
 

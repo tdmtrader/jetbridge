@@ -7,54 +7,142 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
 )
 
+type metadataServiceState uint8
+
+const (
+	metadataUnavailable metadataServiceState = iota
+	metadataAvailable
+	metadataWaitingForChange
+)
+
+// metadataService models the metadata endpoint's availability and long-poll
+// lifecycle. A non-preemption response moves it into a held second poll, which
+// gives tests a deterministic barrier proving the first response was handled.
+type metadataService struct {
+	mu    sync.Mutex
+	state metadataServiceState
+	body  string
+
+	metadataFlavor string
+	waitForChange  string
+
+	unavailableRequest chan struct{}
+	repollStarted      chan struct{}
+	unavailableOnce    sync.Once
+	repollOnce         sync.Once
+}
+
+func newUnavailableMetadataService() *metadataService {
+	return newMetadataService(metadataUnavailable, "")
+}
+
+func newAvailableMetadataService(body string) *metadataService {
+	return newMetadataService(metadataAvailable, body)
+}
+
+func newMetadataService(state metadataServiceState, body string) *metadataService {
+	return &metadataService{
+		state:              state,
+		body:               body,
+		unavailableRequest: make(chan struct{}),
+		repollStarted:      make(chan struct{}),
+	}
+}
+
+func (service *metadataService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	service.mu.Lock()
+	service.metadataFlavor = r.Header.Get("Metadata-Flavor")
+	service.waitForChange = r.URL.Query().Get("wait_for_change")
+	state := service.state
+	body := service.body
+	if state == metadataAvailable {
+		service.state = metadataWaitingForChange
+	}
+	service.mu.Unlock()
+
+	switch state {
+	case metadataUnavailable:
+		service.unavailableOnce.Do(func() { close(service.unavailableRequest) })
+		w.WriteHeader(http.StatusInternalServerError)
+	case metadataAvailable:
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(body))
+	case metadataWaitingForChange:
+		service.repollOnce.Do(func() { close(service.repollStarted) })
+		<-r.Context().Done()
+	}
+}
+
+func (service *metadataService) MakeAvailable(body string) {
+	service.mu.Lock()
+	service.state = metadataAvailable
+	service.body = body
+	service.mu.Unlock()
+}
+
+func (service *metadataService) RequestContract() (string, string) {
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	return service.metadataFlavor, service.waitForChange
+}
+
+func startPreemptionWatcher(t *testing.T, watcher *PreemptionWatcher) (context.CancelFunc, <-chan struct{}) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	done := make(chan struct{})
+	go func() {
+		watcher.Run(ctx)
+		close(done)
+	}()
+	return cancel, done
+}
+
+func waitForLifecycleSignal(t *testing.T, signal <-chan struct{}, failure string) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-time.After(2 * time.Second):
+		t.Fatal(failure)
+	}
+}
+
+func assertNoCallbackSignal(t *testing.T, callback <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-callback:
+		t.Fatal("preemption callback fired more than once or for a non-preemption response")
+	default:
+	}
+}
+
 // ---------------------------------------------------------------------------
 // preemption.Watcher — long-poll GCP metadata for spot preemption notice.
 // ---------------------------------------------------------------------------
 
 func TestPreemptionWatcher_FiresCallbackOnTrue(t *testing.T) {
-	var (
-		gotMetadataFlavor string
-		gotWaitForChange  string
-	)
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotMetadataFlavor = r.Header.Get("Metadata-Flavor")
-		gotWaitForChange = r.URL.Query().Get("wait_for_change")
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("TRUE"))
-	}))
+	metadata := newAvailableMetadataService("TRUE")
+	srv := httptest.NewServer(metadata)
 	defer srv.Close()
 
-	var fired int32
-	callbackDone := make(chan struct{}, 1)
+	callbackSignals := make(chan struct{}, 2)
 	logger := lagertest.NewTestLogger("preempt")
-
 	watcher := NewPreemptionWatcher(logger, srv.URL, func(ctx context.Context) {
-		atomic.AddInt32(&fired, 1)
-		callbackDone <- struct{}{}
+		callbackSignals <- struct{}{}
 	})
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go watcher.Run(ctx)
+	_, watcherDone := startPreemptionWatcher(t, watcher)
+	waitForLifecycleSignal(t, callbackSignals, "expected onPreempted callback to fire on TRUE response")
+	waitForLifecycleSignal(t, watcherDone, "watcher did not exit after preemption callback")
+	assertNoCallbackSignal(t, callbackSignals)
 
-	select {
-	case <-callbackDone:
-		// Good.
-	case <-time.After(2 * time.Second):
-		t.Fatal("expected onPreempted callback to fire on TRUE response")
-	}
-
-	if got := atomic.LoadInt32(&fired); got != 1 {
-		t.Errorf("expected callback to fire exactly once, got %d", got)
-	}
+	gotMetadataFlavor, gotWaitForChange := metadata.RequestContract()
 	if gotMetadataFlavor != "Google" {
 		t.Errorf("expected Metadata-Flavor: Google header, got %q", gotMetadataFlavor)
 	}
@@ -64,40 +152,24 @@ func TestPreemptionWatcher_FiresCallbackOnTrue(t *testing.T) {
 }
 
 func TestPreemptionWatcher_RetriesOnTransientError(t *testing.T) {
-	// Server returns 500 the first two times, then 200 TRUE. Watcher
-	// should keep polling and eventually fire the callback.
-	var calls int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		n := atomic.AddInt32(&calls, 1)
-		if n < 3 {
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("TRUE"))
-	}))
+	metadata := newUnavailableMetadataService()
+	srv := httptest.NewServer(metadata)
 	defer srv.Close()
 
-	callbackDone := make(chan struct{}, 1)
+	callbackSignals := make(chan struct{}, 2)
 	logger := lagertest.NewTestLogger("preempt")
 	watcher := NewPreemptionWatcher(logger, srv.URL, func(ctx context.Context) {
-		callbackDone <- struct{}{}
+		callbackSignals <- struct{}{}
 	})
+	watcher.errorBackoff = time.Millisecond
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go watcher.Run(ctx)
+	_, watcherDone := startPreemptionWatcher(t, watcher)
+	waitForLifecycleSignal(t, metadata.unavailableRequest, "metadata service was not polled while unavailable")
+	metadata.MakeAvailable("TRUE")
 
-	select {
-	case <-callbackDone:
-		// Good.
-	case <-time.After(5 * time.Second):
-		t.Fatal("expected callback to fire after server recovered from transient errors")
-	}
-
-	if got := atomic.LoadInt32(&calls); got < 3 {
-		t.Errorf("expected at least 3 polls (2 errors + 1 success), got %d", got)
-	}
+	waitForLifecycleSignal(t, callbackSignals, "expected callback after metadata service became available")
+	waitForLifecycleSignal(t, watcherDone, "watcher did not exit after recovered metadata response")
+	assertNoCallbackSignal(t, callbackSignals)
 }
 
 // ---------------------------------------------------------------------------
@@ -153,31 +225,22 @@ func TestPreemptionWatcher_FiresEvacuate_FlushesUnmirroredToPeer(t *testing.T) {
 	}
 	defer mirror.Stop()
 
-	// Fake metadata server that returns TRUE immediately.
-	metadata := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("TRUE"))
-	}))
+	metadataService := newAvailableMetadataService("TRUE")
+	metadata := httptest.NewServer(metadataService)
 	defer metadata.Close()
 
 	// Wire the watcher's callback to invoke Evacuate, mirroring main.go's
 	// production wiring.
-	evacuateDone := make(chan struct{}, 1)
+	evacuateSignals := make(chan struct{}, 2)
 	watcher := NewPreemptionWatcher(logger, metadata.URL, func(ctx context.Context) {
 		mirror.Evacuate(ctx, 3*time.Second)
-		evacuateDone <- struct{}{}
+		evacuateSignals <- struct{}{}
 	})
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go watcher.Run(ctx)
-
-	select {
-	case <-evacuateDone:
-		// Good.
-	case <-time.After(5 * time.Second):
-		t.Fatal("expected Evacuate to complete after preempt notice")
-	}
+	_, watcherDone := startPreemptionWatcher(t, watcher)
+	waitForLifecycleSignal(t, evacuateSignals, "expected Evacuate to complete after preempt notice")
+	waitForLifecycleSignal(t, watcherDone, "watcher did not exit after evacuation")
+	assertNoCallbackSignal(t, evacuateSignals)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -200,25 +263,21 @@ func TestPreemptionWatcher_IgnoresMalformedBody(t *testing.T) {
 	}
 	for _, body := range cases {
 		t.Run("body="+body, func(t *testing.T) {
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.WriteHeader(http.StatusOK)
-				w.Write([]byte(body))
-			}))
+			metadata := newAvailableMetadataService(body)
+			srv := httptest.NewServer(metadata)
 			defer srv.Close()
 
-			var fired int32
+			callbackSignals := make(chan struct{}, 1)
 			logger := lagertest.NewTestLogger("malformed")
 			watcher := NewPreemptionWatcher(logger, srv.URL, func(ctx context.Context) {
-				atomic.AddInt32(&fired, 1)
+				callbackSignals <- struct{}{}
 			})
 
-			ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-			defer cancel()
-			watcher.Run(ctx)
-
-			if got := atomic.LoadInt32(&fired); got != 0 {
-				t.Errorf("body %q should NOT fire callback, but it did (count=%d)", body, got)
-			}
+			cancel, watcherDone := startPreemptionWatcher(t, watcher)
+			waitForLifecycleSignal(t, metadata.repollStarted, "watcher did not continue polling after malformed metadata")
+			cancel()
+			waitForLifecycleSignal(t, watcherDone, "watcher did not stop after malformed metadata test cancellation")
+			assertNoCallbackSignal(t, callbackSignals)
 		})
 	}
 }
@@ -228,49 +287,36 @@ func TestPreemptionWatcher_IgnoresMalformedBody(t *testing.T) {
 // still fires the callback. The metadata server is documented to return
 // the exact value but we should be tolerant of whitespace.
 func TestPreemptionWatcher_AllowsTrailingWhitespace(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("TRUE\n"))
-	}))
+	metadata := newAvailableMetadataService("TRUE\n")
+	srv := httptest.NewServer(metadata)
 	defer srv.Close()
 
-	fired := make(chan struct{}, 1)
+	callbackSignals := make(chan struct{}, 2)
 	logger := lagertest.NewTestLogger("trailing-ws")
 	watcher := NewPreemptionWatcher(logger, srv.URL, func(ctx context.Context) {
-		fired <- struct{}{}
+		callbackSignals <- struct{}{}
 	})
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go watcher.Run(ctx)
-
-	select {
-	case <-fired:
-	case <-time.After(2 * time.Second):
-		t.Fatal("expected TRUE\\n (with trailing newline) to fire callback")
-	}
+	_, watcherDone := startPreemptionWatcher(t, watcher)
+	waitForLifecycleSignal(t, callbackSignals, "expected TRUE\\n (with trailing newline) to fire callback")
+	waitForLifecycleSignal(t, watcherDone, "watcher did not exit after whitespace-tolerant preemption callback")
+	assertNoCallbackSignal(t, callbackSignals)
 }
 
 func TestPreemptionWatcher_DoesNotFireOnFalse(t *testing.T) {
-	// Server returns "FALSE" indefinitely. Watcher should keep polling
-	// without firing the callback.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("FALSE"))
-	}))
+	metadata := newAvailableMetadataService("FALSE")
+	srv := httptest.NewServer(metadata)
 	defer srv.Close()
 
-	var fired int32
+	callbackSignals := make(chan struct{}, 1)
 	logger := lagertest.NewTestLogger("preempt")
 	watcher := NewPreemptionWatcher(logger, srv.URL, func(ctx context.Context) {
-		atomic.AddInt32(&fired, 1)
+		callbackSignals <- struct{}{}
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-	defer cancel()
-	watcher.Run(ctx)
-
-	if got := atomic.LoadInt32(&fired); got != 0 {
-		t.Errorf("expected no callback on FALSE responses, got %d", got)
-	}
+	cancel, watcherDone := startPreemptionWatcher(t, watcher)
+	waitForLifecycleSignal(t, metadata.repollStarted, "watcher did not continue long-polling after FALSE metadata")
+	cancel()
+	waitForLifecycleSignal(t, watcherDone, "watcher did not stop after FALSE metadata test cancellation")
+	assertNoCallbackSignal(t, callbackSignals)
 }
