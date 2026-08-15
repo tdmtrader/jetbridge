@@ -80,9 +80,8 @@ type goListPackage struct {
 // add without thinking.
 //
 // "The agentic layer must not reach further into core" counts production
-// imports only. mcpserver's tests import atc/db/dbfakes, which says something
-// about the mock cleanup not having reached that package -- but it is not a
-// coupling v4 would inherit, and pinning it here would just be noise.
+// imports only. Test-only support dependencies are not couplings a production
+// successor would inherit, and pinning them here would just be noise.
 type importGraph struct {
 	prod map[string][]string
 	all  map[string][]string

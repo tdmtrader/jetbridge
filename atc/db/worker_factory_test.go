@@ -349,10 +349,8 @@ var _ = Describe("WorkerFactory", func() {
 			otherTeam, err := teamFactory.CreateTeam(atc.Team{Name: "other-team"})
 			Expect(err).ToNot(HaveOccurred())
 
-			// buildStepContainerOwner.Find/Create return exactly the
-			// build_id/plan_id/team_id map the fakes were stubbed to return
-			// (container_owner.go:123-136), so these are the same rows with the
-			// real type deciding the columns.
+			// buildStepContainerOwner.Find/Create derive the
+			// build_id/plan_id/team_id columns from this real owner value.
 			owner = db.NewBuildStepContainerOwner(build.ID(), "simple-plan", defaultTeam.ID())
 			otherTeamOwner = db.NewBuildStepContainerOwner(build.ID(), "simple-plan", otherTeam.ID())
 		})

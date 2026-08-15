@@ -88,8 +88,7 @@ var _ = Describe("IDToken Lifecycle", func() {
 
 		// The old pair is past rotation and past grace, so those rows are gone.
 		// The 12-minute-old pair is past the 10-minute grace period but not past
-		// the hour rotation, so it stays. Previously DeleteCallCount(); the rows
-		// say it directly now.
+		// the hour rotation, so it stays.
 		Expect(signingKeyExists(oldRSAKey.ID())).To(BeFalse())
 		Expect(signingKeyExists(oldECKey.ID())).To(BeFalse())
 		Expect(signingKeyExists(newRSAKey.ID())).To(BeTrue())

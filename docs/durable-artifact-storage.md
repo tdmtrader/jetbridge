@@ -440,8 +440,8 @@ fetches object bodies over the **XML** API at `/<bucket>/<object>`. A fake
 serving only the JSON routes accepted every write and missed every read.
 
 `cmd/artifact-daemon/durable_tier_test.go` covers the tier: a store/restore
-round trip through a real `Server`'s tar writer, a `brokenStore` that fails
-every operation, a nil tier, and upload collapsing under concurrency.
+round trip through a real `Server`'s tar writer, a real unavailable filesystem
+state, a nil tier, and upload collapsing at a real S3 protocol boundary.
 
 Mutation-verified: making a miss an error, dropping the chart's `int64`
 coercion, and removing the S3 retry cap each fail the suite.
