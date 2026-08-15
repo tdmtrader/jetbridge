@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"sync"
 	"time"
 
@@ -31,15 +32,28 @@ var _ = Describe("Engine", func() {
 	var (
 		stepperFactory StepperFactory
 		step           stepFunc
-		builtPlans     chan atc.Plan
+		stepStarted    chan struct{}
+		expectedPlan   atc.Plan
 
 		globalSecrets creds.Secrets
 		varSourcePool creds.VarSourcePool
 	)
 
+	seededPrivatePlan := func() atc.Plan {
+		return atc.Plan{
+			ID: "build-plan",
+			LoadVar: &atc.LoadVarPlan{
+				Name: "some-var",
+				File: "some-file.yml",
+			},
+		}
+	}
+
 	BeforeEach(func() {
-		builtPlans = make(chan atc.Plan, 1)
+		expectedPlan = seededPrivatePlan()
+		stepStarted = make(chan struct{}, 1)
 		step = stepFunc(func(context.Context, exec.RunState) (bool, error) {
+			stepStarted <- struct{}{}
 			return true, nil
 		})
 		stepperFactory = StepperFactoryFunc(func(build db.Build) (exec.Stepper, error) {
@@ -47,7 +61,11 @@ var _ = Describe("Engine", func() {
 				return nil, errors.New("schema not supported")
 			}
 			return func(plan atc.Plan) exec.Step {
-				builtPlans <- plan
+				if !reflect.DeepEqual(plan, expectedPlan) {
+					return stepFunc(func(context.Context, exec.RunState) (bool, error) {
+						return false, errors.New("stepper received a plan other than the independently seeded expected plan")
+					})
+				}
 				return step
 			}, nil
 		})
@@ -171,13 +189,7 @@ var _ = Describe("Engine", func() {
 
 			dbBuild = realBuild
 
-			plan = atc.Plan{
-				ID: "build-plan",
-				LoadVar: &atc.LoadVarPlan{
-					Name: "some-var",
-					File: "some-file.yml",
-				},
-			}
+			plan = seededPrivatePlan()
 			prepareRow = func() {
 				started, err := realBuild.Start(plan)
 				Expect(err).NotTo(HaveOccurred())
@@ -224,29 +236,33 @@ var _ = Describe("Engine", func() {
 							expectTrackingLockReleased()
 						})
 
-						It("constructs a step from the build's plan", func() {
+						It("runs the build's persisted private plan", func() {
 							waitGroup.Wait()
-							Expect(<-builtPlans).To(Equal(realBuild.PrivatePlan()))
+							Expect(realBuild.Reload()).To(BeTrue())
+							Expect(realBuild.Status()).To(Equal(db.BuildStatusSucceeded))
 						})
 
 						Context("when getting the build vars succeeds", func() {
-							var invokedState chan exec.RunState
-
 							BeforeEach(func() {
-								invokedState = make(chan exec.RunState, 1)
-								step = stepFunc(func(ctx context.Context, state exec.RunState) (bool, error) {
-									invokedState <- state
+								step = stepFunc(func(_ context.Context, state exec.RunState) (bool, error) {
+									val, found, err := state.Get(vars.Reference{Path: "foo"})
+									if err != nil {
+										return false, err
+									}
+									if !found {
+										return false, errors.New("build variable foo was not found")
+									}
+									if val != "bar" {
+										return false, fmt.Errorf("build variable foo was %v, want bar", val)
+									}
 									return true, nil
 								})
 							})
 
 							It("runs the step with the build variables", func() {
-								state := <-invokedState
-
-								val, found, err := state.Get(vars.Reference{Path: "foo"})
-								Expect(err).ToNot(HaveOccurred())
-								Expect(found).To(BeTrue())
-								Expect(val).To(Equal("bar"))
+								waitGroup.Wait()
+								Expect(realBuild.Reload()).To(BeTrue())
+								Expect(realBuild.Status()).To(Equal(db.BuildStatusSucceeded))
 							})
 
 							Context("when the build is released", func() {
@@ -541,9 +557,9 @@ var _ = Describe("Engine", func() {
 					}
 				})
 
-				It("does not build the step", func() {
+				It("does not run the step", func() {
 					waitGroup.Wait()
-					Consistently(builtPlans).ShouldNot(Receive())
+					Consistently(stepStarted).ShouldNot(Receive())
 				})
 
 				It("releases the lock", func() {
@@ -560,9 +576,9 @@ var _ = Describe("Engine", func() {
 					}
 				})
 
-				It("does not build the step", func() {
+				It("does not run the step", func() {
 					waitGroup.Wait()
-					Consistently(builtPlans).ShouldNot(Receive())
+					Consistently(stepStarted).ShouldNot(Receive())
 				})
 
 				It("releases the lock", func() {

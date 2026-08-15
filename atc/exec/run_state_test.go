@@ -11,13 +11,12 @@ import (
 	. "github.com/onsi/gomega"
 )
 
+type runStateContextKey struct{}
+
 var _ = Describe("RunState", func() {
 	var (
-		stepper      exec.Stepper
-		runStep      stepFunc
-		steppedPlans chan atc.Plan
-		stepContexts chan context.Context
-		stepStates   chan exec.RunState
+		stepper exec.Stepper
+		runStep stepFunc
 
 		credVars vars.Variables
 
@@ -25,16 +24,10 @@ var _ = Describe("RunState", func() {
 	)
 
 	BeforeEach(func() {
-		steppedPlans = make(chan atc.Plan, 1)
-		stepContexts = make(chan context.Context, 1)
-		stepStates = make(chan exec.RunState, 1)
-		runStep = stepFunc(func(ctx context.Context, state exec.RunState) (bool, error) {
-			stepContexts <- ctx
-			stepStates <- state
+		runStep = stepFunc(func(context.Context, exec.RunState) (bool, error) {
 			return true, nil
 		})
-		stepper = func(plan atc.Plan) exec.Step {
-			steppedPlans <- plan
+		stepper = func(atc.Plan) exec.Step {
 			return runStep
 		}
 
@@ -51,7 +44,7 @@ var _ = Describe("RunState", func() {
 		var runErr error
 
 		BeforeEach(func() {
-			ctx = context.Background()
+			ctx = context.WithValue(context.Background(), runStateContextKey{}, "forwarded-context")
 			plan = atc.Plan{
 				ID: "some-plan",
 				LoadVar: &atc.LoadVarPlan{
@@ -61,20 +54,40 @@ var _ = Describe("RunState", func() {
 			}
 
 			runStep = stepFunc(func(ctx context.Context, state exec.RunState) (bool, error) {
-				stepContexts <- ctx
-				stepStates <- state
+				if ctx.Value(runStateContextKey{}) != "forwarded-context" {
+					return false, errors.New("run context was not forwarded")
+				}
+				value, found, err := state.Get(vars.Reference{Path: "k1"})
+				if err != nil {
+					return false, err
+				}
+				if !found || value != "v1" {
+					return false, errors.New("run state was not forwarded")
+				}
+				state.StoreResult(plan.ID, "context-and-state-forwarded")
 				return true, nil
 			})
+
+			stepper = func(candidate atc.Plan) exec.Step {
+				if candidate.ID != plan.ID || candidate.LoadVar == nil || candidate.LoadVar.Name != "foo" || candidate.LoadVar.File != "bar" {
+					return stepFunc(func(context.Context, exec.RunState) (bool, error) {
+						return false, errors.New("run plan was not forwarded")
+					})
+				}
+				return runStep
+			}
+			state = exec.NewRunState(stepper, credVars)
 		})
 
 		JustBeforeEach(func() {
 			runOk, runErr = state.Run(ctx, plan)
 		})
 
-		It("constructs and runs a step for the plan", func() {
-			Expect(steppedPlans).To(Receive(Equal(plan)))
-			Expect(stepContexts).To(Receive(Equal(ctx)))
-			Expect(stepStates).To(Receive(Equal(state)))
+		It("forwards the plan, context, and state through the step contract", func() {
+			Expect(runErr).ToNot(HaveOccurred())
+			var forwarded string
+			Expect(state.Result(plan.ID, &forwarded)).To(BeTrue())
+			Expect(forwarded).To(Equal("context-and-state-forwarded"))
 		})
 
 		Context("when the step succeeds", func() {
