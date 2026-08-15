@@ -108,7 +108,7 @@ var _ = Describe("Pod Name Integration", func() {
 
 		It("uses readable name in exec mode too", func() {
 			execWorker := jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
-			execWorker.SetExecutor(&fakeExecExecutor{})
+			execWorker.SetExecutor(newPodRuntime(fakeClientset))
 			handle := "aabbccdd-1122-3344-5566-778899aabbcc"
 
 			container, _, err := execWorker.FindOrCreateContainer(
@@ -354,7 +354,7 @@ var _ = Describe("Pod Name Integration", func() {
 	Describe("Volume binding uses podName", func() {
 		It("binds volumes to the readable pod name after Run", func() {
 			execWorker := jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
-			execWorker.SetExecutor(&fakeExecExecutor{})
+			execWorker.SetExecutor(newPodRuntime(fakeClientset))
 			handle := "550e8400-e29b-41d4-a716-446655440000"
 
 			container, volumeMounts, err := execWorker.FindOrCreateContainer(

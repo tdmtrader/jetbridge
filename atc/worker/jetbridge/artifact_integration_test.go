@@ -10,8 +10,6 @@ import (
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 )
 
@@ -24,7 +22,7 @@ var _ = Describe("Artifact Integration", func() {
 		team          db.Team
 		dbWorker      db.Worker
 		fakeClientset *fake.Clientset
-		fakeExecutor  *fakeExecExecutor
+		podRuntime    *podRuntime
 		worker        *jetbridge.Worker
 		ctx           context.Context
 		cfg           jetbridge.Config
@@ -40,13 +38,13 @@ var _ = Describe("Artifact Integration", func() {
 		dbWorker, err = persistNamedWorker(database, "k8s-worker-1")
 		Expect(err).ToNot(HaveOccurred())
 		fakeClientset = fake.NewSimpleClientset()
-		fakeExecutor = &fakeExecExecutor{}
+		podRuntime = newPodRuntime(fakeClientset)
 		delegate = &noopDelegate{}
 
 		cfg = jetbridge.NewConfig("ci-namespace", "")
 
 		worker = jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
-		worker.SetExecutor(fakeExecutor)
+		worker.SetExecutor(podRuntime)
 		worker.SetVolumeRepo(database.VolumeRepository)
 	})
 
@@ -73,12 +71,11 @@ var _ = Describe("Artifact Integration", func() {
 		Expect(workerName).To(Equal(dbWorker.Name()))
 	}
 
-	simulatePodRunning := func(podName string) {
-		pod, err := fakeClientset.CoreV1().Pods("ci-namespace").Get(ctx, podName, metav1.GetOptions{})
-		Expect(err).ToNot(HaveOccurred())
-		pod.Status.Phase = corev1.PodRunning
-		_, err = fakeClientset.CoreV1().Pods("ci-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
-		Expect(err).ToNot(HaveOccurred())
+	installProgram := func(podName, executable string, installed program) podKey {
+		key := podKey{"ci-namespace", podName, "main"}
+		Expect(podRuntime.AddContainer(key)).To(Succeed())
+		Expect(podRuntime.InstallProgram(key, executable, installed)).To(Succeed())
+		return key
 	}
 
 	Describe("multi-step pipeline with artifact passing", func() {
@@ -114,7 +111,6 @@ var _ = Describe("Artifact Integration", func() {
 			Expect(lookedUpASV.DBVolume().Handle()).To(Equal(persistedVolume.Handle()))
 
 			By("step 3: creating a task container that receives the artifact as input")
-			fakeExecutor.execStdout = []byte("artifact data received\n")
 			container, mounts, err := worker.FindOrCreateContainer(
 				ctx,
 				db.NewFixedHandleContainerOwner("task-consume-artifact"),
@@ -159,21 +155,21 @@ var _ = Describe("Artifact Integration", func() {
 			})
 			Expect(err).ToNot(HaveOccurred())
 
-			simulatePodRunning("task-consume-artifact")
+			taskKey := installProgram(
+				"task-consume-artifact",
+				"/bin/sh",
+				program{Stdout: []byte("artifact data received\n")},
+			)
 			result, err := process.Wait(ctx)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(result.ExitStatus).To(Equal(0))
 
-			By("verifying the main command was exec'd (plus artifact-helper tar calls)")
-			Expect(fakeExecutor.execCalls).ToNot(BeEmpty())
-			// The first exec call is the main task command
-			expectSupervisedExec(fakeExecutor.execCalls[0].command, `'/bin/sh' '-c' 'cat /tmp/build/workdir/my-input/data.txt'`)
-			Expect(fakeExecutor.execCalls[0].containerName).To(Equal("main"))
-
-			// Remaining calls are artifact-helper sidecar tar commands
-			for _, call := range fakeExecutor.execCalls[1:] {
-				Expect(call.containerName).To(Equal("artifact-helper"))
-			}
+			By("verifying the semantic task command and its public output")
+			Expect(stdout.String()).To(Equal("artifact data received\n"))
+			Expect(podRuntime.Processes(taskKey)).To(Equal([]modeledProcess{{
+				Command:    []string{"/bin/sh", "-c", "cat /tmp/build/workdir/my-input/data.txt"},
+				Supervised: true,
+			}}))
 		})
 
 		It("passes artifacts through get → task → put pipeline steps", func() {
@@ -229,15 +225,17 @@ var _ = Describe("Artifact Integration", func() {
 			}, runtime.ProcessIO{})
 			Expect(err).ToNot(HaveOccurred())
 
-			simulatePodRunning("task-build-step")
+			taskKey := installProgram("task-build-step", "/bin/sh", program{})
 			result, err := process.Wait(ctx)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(result.ExitStatus).To(Equal(0))
+			Expect(podRuntime.Processes(taskKey)).To(Equal([]modeledProcess{{
+				Command:    []string{"/bin/sh", "-c", "go build -o /tmp/build/workdir/binary/app ./..."},
+				Supervised: true,
+			}}))
 
 			By("step 3: put step receives task output as input")
-			fakeExecutor.execCalls = nil
 			putStdout := `{"version":{"ref":"v1.0.0"}}`
-			fakeExecutor.execStdout = []byte(putStdout)
 
 			putContainer, putMounts, err := worker.FindOrCreateContainer(
 				ctx,
@@ -278,11 +276,19 @@ var _ = Describe("Artifact Integration", func() {
 			})
 			Expect(err).ToNot(HaveOccurred())
 
-			simulatePodRunning("put-upload-step")
+			putKey := installProgram(
+				"put-upload-step",
+				"/opt/resource/out",
+				program{Stdout: []byte(putStdout)},
+			)
 			putResult, err := putProcess.Wait(ctx)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(putResult.ExitStatus).To(Equal(0))
 			Expect(putStdoutBuf.String()).To(Equal(putStdout))
+			Expect(podRuntime.Processes(putKey)).To(Equal([]modeledProcess{{
+				Command: []string{"/opt/resource/out", "/tmp/build/put"},
+				Stdin:   []byte(`{"source":{"bucket":"releases"}}`),
+			}}))
 
 			By("verifying the complete get→task→put chain used artifact store volumes")
 			Expect(getVol).ToNot(BeNil(), "get output should be DaemonSetVolume")
@@ -406,7 +412,7 @@ var _ = Describe("Artifact Integration", func() {
 		BeforeEach(func() {
 			noCfg := jetbridge.NewConfig("ci-namespace", "")
 			noArtifactWorker = jetbridge.NewWorker(dbWorker, fakeClientset, noCfg)
-			noArtifactWorker.SetExecutor(fakeExecutor)
+			noArtifactWorker.SetExecutor(podRuntime)
 			noArtifactWorker.SetVolumeRepo(database.VolumeRepository)
 		})
 

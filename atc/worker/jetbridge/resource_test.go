@@ -3,14 +3,12 @@ package jetbridge_test
 import (
 	"bytes"
 	"context"
-	"io"
 
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 )
@@ -20,7 +18,7 @@ var _ = Describe("Resource Step Execution", func() {
 		database      jetbridgeDB
 		dbWorker      db.Worker
 		fakeClientset *fake.Clientset
-		fakeExecutor  *fakeExecExecutor
+		podRuntime    *podRuntime
 		worker        *jetbridge.Worker
 		ctx           context.Context
 		cfg           jetbridge.Config
@@ -36,10 +34,10 @@ var _ = Describe("Resource Step Execution", func() {
 		fakeClientset = fake.NewSimpleClientset()
 		cfg = jetbridge.NewConfig("test-namespace", "")
 		delegate = &noopDelegate{}
-		fakeExecutor = &fakeExecExecutor{}
+		podRuntime = newPodRuntime(fakeClientset)
 
 		worker = jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
-		worker.SetExecutor(fakeExecutor)
+		worker.SetExecutor(podRuntime)
 	})
 
 	setupContainer := func(handle string, containerType db.ContainerType, spec runtime.ContainerSpec) runtime.Container {
@@ -54,14 +52,11 @@ var _ = Describe("Resource Step Execution", func() {
 		return container
 	}
 
-	// simulatePodRunning updates the Pod status to Running so that
-	// Process.Wait can proceed with the exec.
-	simulatePodRunning := func(podName string) {
-		pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, podName, metav1.GetOptions{})
-		Expect(err).ToNot(HaveOccurred())
-		pod.Status.Phase = corev1.PodRunning
-		_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
-		Expect(err).ToNot(HaveOccurred())
+	installProgram := func(podName, executable string, installed program) podKey {
+		key := podKey{"test-namespace", podName, "main"}
+		Expect(podRuntime.AddContainer(key)).To(Succeed())
+		Expect(podRuntime.InstallProgram(key, executable, installed)).To(Succeed())
+		return key
 	}
 
 	Describe("get step", func() {
@@ -106,7 +101,6 @@ var _ = Describe("Resource Step Execution", func() {
 		It("creates a pause Pod and execs /opt/resource/in with stdin/stdout", func() {
 			stdinJSON := `{"source":{"uri":"https://github.com/concourse/concourse"},"version":{"ref":"abc123"}}`
 			stdoutJSON := `{"version":{"ref":"abc123"},"metadata":[{"name":"commit","value":"abc123"}]}`
-			fakeExecutor.execStdout = []byte(stdoutJSON)
 
 			stdout := new(bytes.Buffer)
 			stderr := new(bytes.Buffer)
@@ -132,32 +126,23 @@ var _ = Describe("Resource Step Execution", func() {
 			Expect(pod.Spec.Containers[0].Command[0]).ToNot(Equal("/opt/resource/in"))
 
 			By("waiting for the Pod to complete via exec")
-			simulatePodRunning("get-resource-handle")
+			key := installProgram("get-resource-handle", "/opt/resource/in", program{Stdout: []byte(stdoutJSON)})
 
 			result, err := process.Wait(ctx)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(result.ExitStatus).To(Equal(0))
 
-			By("executing the resource script via PodExecutor")
-			Expect(fakeExecutor.execCalls).To(HaveLen(1))
-			call := fakeExecutor.execCalls[0]
-			Expect(call.command).To(Equal([]string{"/opt/resource/in", "/tmp/build/get"}))
-			Expect(call.podName).To(Equal("get-resource-handle"))
-			Expect(call.namespace).To(Equal("test-namespace"))
-			Expect(call.containerName).To(Equal("main"))
-
-			By("piping stdin JSON to the resource script")
-			stdinData, err := io.ReadAll(call.stdin)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(string(stdinData)).To(Equal(stdinJSON))
+			By("executing the resource script with the intended input")
+			Expect(podRuntime.Processes(key)).To(Equal([]modeledProcess{{
+				Command: []string{"/opt/resource/in", "/tmp/build/get"},
+				Stdin:   []byte(stdinJSON),
+			}}))
 
 			By("capturing stdout JSON from the resource script")
 			Expect(stdout.String()).To(Equal(stdoutJSON))
 		})
 
 		It("returns non-zero exit code on resource failure", func() {
-			fakeExecutor.execErr = &jetbridge.ExecExitError{ExitCode: 1}
-
 			process, err := container.Run(ctx, runtime.ProcessSpec{
 				ID:   "resource",
 				Path: "/opt/resource/in",
@@ -169,7 +154,7 @@ var _ = Describe("Resource Step Execution", func() {
 			})
 			Expect(err).ToNot(HaveOccurred())
 
-			simulatePodRunning("get-resource-handle")
+			installProgram("get-resource-handle", "/opt/resource/in", program{ExitCode: 1})
 
 			result, err := process.Wait(ctx)
 			Expect(err).ToNot(HaveOccurred())
@@ -198,7 +183,6 @@ var _ = Describe("Resource Step Execution", func() {
 		It("creates a Pod with input volumes and execs /opt/resource/out", func() {
 			stdinJSON := `{"source":{"uri":"https://github.com/concourse/concourse"},"params":{"repository":"my-repo"}}`
 			stdoutJSON := `{"version":{"ref":"def456"},"metadata":[{"name":"pushed","value":"true"}]}`
-			fakeExecutor.execStdout = []byte(stdoutJSON)
 
 			stdout := new(bytes.Buffer)
 
@@ -227,15 +211,16 @@ var _ = Describe("Resource Step Execution", func() {
 			Expect(hasMountAt).To(BeTrue(), "expected volume mount at /tmp/build/put/my-repo")
 
 			By("executing /opt/resource/out via PodExecutor")
-			simulatePodRunning("put-resource-handle")
+			key := installProgram("put-resource-handle", "/opt/resource/out", program{Stdout: []byte(stdoutJSON)})
 
 			result, err := process.Wait(ctx)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(result.ExitStatus).To(Equal(0))
 
-			Expect(fakeExecutor.execCalls).To(HaveLen(1))
-			call := fakeExecutor.execCalls[0]
-			Expect(call.command).To(Equal([]string{"/opt/resource/out", "/tmp/build/put"}))
+			Expect(podRuntime.Processes(key)).To(Equal([]modeledProcess{{
+				Command: []string{"/opt/resource/out", "/tmp/build/put"},
+				Stdin:   []byte(stdinJSON),
+			}}))
 			Expect(stdout.String()).To(Equal(stdoutJSON))
 		})
 	})
@@ -258,7 +243,6 @@ var _ = Describe("Resource Step Execution", func() {
 		It("creates a Pod and execs /opt/resource/check with stdin/stdout", func() {
 			stdinJSON := `{"source":{"uri":"https://github.com/concourse/concourse"}}`
 			stdoutJSON := `[{"ref":"abc123"},{"ref":"def456"}]`
-			fakeExecutor.execStdout = []byte(stdoutJSON)
 
 			stdout := new(bytes.Buffer)
 
@@ -271,20 +255,17 @@ var _ = Describe("Resource Step Execution", func() {
 			})
 			Expect(err).ToNot(HaveOccurred())
 
-			simulatePodRunning("check-resource-handle")
+			key := installProgram("check-resource-handle", "/opt/resource/check", program{Stdout: []byte(stdoutJSON)})
 
 			result, err := process.Wait(ctx)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(result.ExitStatus).To(Equal(0))
 
-			By("executing /opt/resource/check via PodExecutor")
-			Expect(fakeExecutor.execCalls).To(HaveLen(1))
-			call := fakeExecutor.execCalls[0]
-			Expect(call.command).To(Equal([]string{"/opt/resource/check"}))
-
-			By("piping stdin and capturing stdout")
-			stdinData, _ := io.ReadAll(call.stdin)
-			Expect(string(stdinData)).To(Equal(stdinJSON))
+			By("executing /opt/resource/check with the intended input")
+			Expect(podRuntime.Processes(key)).To(Equal([]modeledProcess{{
+				Command: []string{"/opt/resource/check"},
+				Stdin:   []byte(stdinJSON),
+			}}))
 			Expect(stdout.String()).To(Equal(stdoutJSON))
 		})
 

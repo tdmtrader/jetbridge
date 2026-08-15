@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"io"
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
@@ -26,7 +25,7 @@ var _ = Describe("Integration", func() {
 		dbWorker      db.Worker
 		team          db.Team
 		fakeClientset *fake.Clientset
-		fakeExecutor  *fakeExecExecutor
+		podRuntime    *podRuntime
 		worker        *jetbridge.Worker
 		ctx           context.Context
 		cfg           jetbridge.Config
@@ -44,10 +43,10 @@ var _ = Describe("Integration", func() {
 		fakeClientset = fake.NewSimpleClientset()
 		cfg = jetbridge.NewConfig("ci-namespace", "")
 		delegate = &noopDelegate{}
-		fakeExecutor = &fakeExecExecutor{}
+		podRuntime = newPodRuntime(fakeClientset)
 
 		worker = jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
-		worker.SetExecutor(fakeExecutor)
+		worker.SetExecutor(podRuntime)
 	})
 
 	// createContainer persists a container with the given handle and returns the
@@ -64,12 +63,11 @@ var _ = Describe("Integration", func() {
 		return container
 	}
 
-	simulatePodRunning := func(podName string) {
-		pod, err := fakeClientset.CoreV1().Pods("ci-namespace").Get(ctx, podName, metav1.GetOptions{})
-		Expect(err).ToNot(HaveOccurred())
-		pod.Status.Phase = corev1.PodRunning
-		_, err = fakeClientset.CoreV1().Pods("ci-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
-		Expect(err).ToNot(HaveOccurred())
+	installProgram := func(podName, executable string, installed program) podKey {
+		key := podKey{"ci-namespace", podName, "main"}
+		Expect(podRuntime.AddContainer(key)).To(Succeed())
+		Expect(podRuntime.InstallProgram(key, executable, installed)).To(Succeed())
+		return key
 	}
 
 	Describe("simple task pipeline", func() {
@@ -102,15 +100,17 @@ var _ = Describe("Integration", func() {
 			Expect(pod.Spec.Containers[0].Command).To(Equal([]string{"sh", "-c", "trap 'exit 0' TERM; sleep 86400 & wait"}))
 			Expect(pod.Labels["concourse.ci/worker"]).To(Equal("k8s-worker-1"))
 
-			By("simulating Pod reaching Running state and waiting for exec result")
-			simulatePodRunning("task-abc123")
+			By("installing the task program and waiting for its public result")
+			taskKey := installProgram("task-abc123", "/bin/sh", program{})
 			result, err := process.Wait(ctx)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(result.ExitStatus).To(Equal(0))
 
-			By("verifying the real command was exec'd under the task supervisor")
-			Expect(fakeExecutor.execCalls).To(HaveLen(1))
-			expectSupervisedExec(fakeExecutor.execCalls[0].command, `'/bin/sh' '-c' 'echo hello world && exit 0'`)
+			By("verifying the semantic child ran under the task supervisor")
+			Expect(podRuntime.Processes(taskKey)).To(Equal([]modeledProcess{{
+				Command:    []string{"/bin/sh", "-c", "echo hello world && exit 0"},
+				Supervised: true,
+			}}))
 
 			By("verifying exit status is stored in container properties")
 			props, err := container.Properties()
@@ -119,8 +119,6 @@ var _ = Describe("Integration", func() {
 		})
 
 		It("handles task failure with non-zero exit code", func() {
-			fakeExecutor.execErr = &jetbridge.ExecExitError{ExitCode: 2}
-
 			container := createContainer("task-fail", db.ContainerTypeTask, runtime.ContainerSpec{
 				TeamID:    1,
 				ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
@@ -132,7 +130,7 @@ var _ = Describe("Integration", func() {
 			}, runtime.ProcessIO{})
 			Expect(err).ToNot(HaveOccurred())
 
-			simulatePodRunning("task-fail")
+			installProgram("task-fail", "/bin/sh", program{ExitCode: 2})
 			result, err := process.Wait(ctx)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(result.ExitStatus).To(Equal(2))
@@ -140,7 +138,7 @@ var _ = Describe("Integration", func() {
 	})
 
 	Describe("task reattach after web restart", func() {
-		It("re-execs the identical supervisor command against the surviving pod", func() {
+		It("replays the completed child against the surviving pod", func() {
 			spec := runtime.ContainerSpec{
 				TeamID: 1,
 				Dir:    "/tmp/build/workdir",
@@ -156,13 +154,17 @@ var _ = Describe("Integration", func() {
 
 			By("web 1: running the task")
 			container1 := createContainer("task-reattach", db.ContainerTypeTask, spec)
-			process1, err := container1.Run(ctx, processSpec, runtime.ProcessIO{})
+			web1Output := new(bytes.Buffer)
+			process1, err := container1.Run(ctx, processSpec, runtime.ProcessIO{Stdout: web1Output})
 			Expect(err).ToNot(HaveOccurred())
-			simulatePodRunning("task-reattach")
+			taskKey := installProgram(
+				"task-reattach",
+				"/bin/sh",
+				program{Stdout: []byte("release built\n")},
+			)
 			_, err = process1.Wait(ctx)
 			Expect(err).ToNot(HaveOccurred())
-			Expect(fakeExecutor.execCalls).To(HaveLen(1))
-			web1Command := fakeExecutor.execCalls[0].command
+			Expect(web1Output.String()).To(Equal("release built\n"))
 
 			By("simulating web 1 dying before the exit status was recorded")
 			pod, err := fakeClientset.CoreV1().Pods("ci-namespace").Get(ctx, "task-reattach", metav1.GetOptions{})
@@ -177,20 +179,22 @@ var _ = Describe("Integration", func() {
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("no completion status"))
 
-			By("web 2: Run reuses the surviving pod and re-execs the identical command")
-			process2, err := container2.Run(ctx, processSpec, runtime.ProcessIO{})
+			By("web 2: Run reuses the surviving pod and replays the completed child")
+			web2Output := new(bytes.Buffer)
+			process2, err := container2.Run(ctx, processSpec, runtime.ProcessIO{Stdout: web2Output})
 			Expect(err).ToNot(HaveOccurred())
 			_, err = process2.Wait(ctx)
 			Expect(err).ToNot(HaveOccurred())
+			Expect(web2Output.String()).To(Equal("release built\n"))
 
 			pods, err := fakeClientset.CoreV1().Pods("ci-namespace").List(ctx, metav1.ListOptions{})
 			Expect(err).ToNot(HaveOccurred())
 			Expect(pods.Items).To(HaveLen(1), "no second pod may be created on reattach")
 
-			Expect(fakeExecutor.execCalls).To(HaveLen(2))
-			Expect(fakeExecutor.execCalls[1].command).To(Equal(web1Command),
-				"re-exec must be byte-identical so the supervisor resumes instead of restarting")
-			expectSupervisedExec(fakeExecutor.execCalls[1].command, `'/bin/sh' '-c' 'make release'`)
+			Expect(podRuntime.Processes(taskKey)).To(Equal([]modeledProcess{{
+				Command:    []string{"/bin/sh", "-c", "make release"},
+				Supervised: true,
+			}}), "reattach must replay the supervisor result without starting a second child")
 		})
 	})
 
@@ -210,7 +214,6 @@ var _ = Describe("Integration", func() {
 
 			getStdin := `{"source":{"uri":"https://github.com/concourse/concourse","branch":"main"},"version":{"ref":"abc123"}}`
 			getStdout := `{"version":{"ref":"abc123"},"metadata":[{"name":"commit","value":"abc123"}]}`
-			fakeExecutor.execStdout = []byte(getStdout)
 
 			getStdoutBuf := new(bytes.Buffer)
 			getProcess, err := getContainer.Run(ctx, runtime.ProcessSpec{
@@ -224,22 +227,20 @@ var _ = Describe("Integration", func() {
 			})
 			Expect(err).ToNot(HaveOccurred())
 
-			simulatePodRunning("get-repo")
+			getKey := installProgram("get-repo", "/opt/resource/in", program{Stdout: []byte(getStdout)})
 			getResult, err := getProcess.Wait(ctx)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(getResult.ExitStatus).To(Equal(0))
 			Expect(getStdoutBuf.String()).To(Equal(getStdout))
 
-			By("verifying get step stdin was piped correctly")
-			Expect(fakeExecutor.execCalls).To(HaveLen(1))
-			stdinData, _ := io.ReadAll(fakeExecutor.execCalls[0].stdin)
-			Expect(string(stdinData)).To(Equal(getStdin))
+			By("verifying the get protocol command and stdin")
+			Expect(podRuntime.Processes(getKey)).To(Equal([]modeledProcess{{
+				Command: []string{"/opt/resource/in", "/tmp/build/get"},
+				Stdin:   []byte(getStdin),
+			}}))
 
 			By("running the put step with the fetched resource")
-			// Reset executor for the put step
-			fakeExecutor.execCalls = nil
 			putStdout := `{"version":{"ref":"def456"},"metadata":[{"name":"pushed","value":"true"}]}`
-			fakeExecutor.execStdout = []byte(putStdout)
 
 			putContainer := createContainer("put-repo", db.ContainerTypePut, runtime.ContainerSpec{
 				TeamID:   1,
@@ -267,23 +268,22 @@ var _ = Describe("Integration", func() {
 			})
 			Expect(err).ToNot(HaveOccurred())
 
-			simulatePodRunning("put-repo")
+			putKey := installProgram("put-repo", "/opt/resource/out", program{Stdout: []byte(putStdout)})
 			putResult, err := putProcess.Wait(ctx)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(putResult.ExitStatus).To(Equal(0))
 			Expect(putStdoutBuf.String()).To(Equal(putStdout))
 
-			By("verifying the put exec was called correctly")
-			Expect(fakeExecutor.execCalls).To(HaveLen(1))
-			Expect(fakeExecutor.execCalls[0].command).To(Equal([]string{"/opt/resource/out", "/tmp/build/put"}))
+			By("verifying the put protocol command and stdin")
+			Expect(podRuntime.Processes(putKey)).To(Equal([]modeledProcess{{
+				Command: []string{"/opt/resource/out", "/tmp/build/put"},
+				Stdin:   []byte(putStdin),
+			}}))
 		})
 	})
 
 	Describe("build cancellation", func() {
-		It("returns an error when the context is cancelled during exec-mode task", func() {
-			// Make the executor return context error to simulate cancellation during exec
-			fakeExecutor.execErr = context.Canceled
-
+		It("returns an error when the task wait context is canceled", func() {
 			container := createContainer("cancel-task", db.ContainerTypeTask, runtime.ContainerSpec{
 				TeamID:    1,
 				ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
@@ -295,13 +295,15 @@ var _ = Describe("Integration", func() {
 			}, runtime.ProcessIO{})
 			Expect(err).ToNot(HaveOccurred())
 
-			By("simulating the Pod reaching Running state")
-			simulatePodRunning("cancel-task")
+			taskKey := installProgram("cancel-task", "/bin/sleep", program{})
+			waitCtx, cancel := context.WithCancel(ctx)
+			cancel()
 
-			By("waiting for result — exec returns cancellation error")
-			_, err = process.Wait(ctx)
+			By("waiting with the canceled context")
+			_, err = process.Wait(waitCtx)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("canceled"))
+			Expect(podRuntime.Processes(taskKey)).To(BeEmpty())
 
 			By("verifying the Pod still exists (GC handles cleanup, not the process)")
 			pods, err := fakeClientset.CoreV1().Pods("ci-namespace").List(ctx, metav1.ListOptions{})
@@ -309,15 +311,12 @@ var _ = Describe("Integration", func() {
 			Expect(pods.Items).To(HaveLen(1), "pause Pod should remain for GC to clean up")
 		})
 
-		It("returns an error when the context is cancelled during an exec-mode resource step", func() {
+		It("returns an error when the resource wait context is canceled", func() {
 			container := createContainer("cancel-resource", db.ContainerTypeGet, runtime.ContainerSpec{
 				TeamID:    1,
 				ImageSpec: runtime.ImageSpec{ResourceType: "git"},
 				Type:      db.ContainerTypeGet,
 			})
-
-			// Make the executor block by returning context error
-			fakeExecutor.execErr = context.Canceled
 
 			process, err := container.Run(ctx, runtime.ProcessSpec{
 				ID:   "resource",
@@ -330,12 +329,15 @@ var _ = Describe("Integration", func() {
 			})
 			Expect(err).ToNot(HaveOccurred())
 
-			By("simulating the Pod reaching Running state")
-			simulatePodRunning("cancel-resource")
+			resourceKey := installProgram("cancel-resource", "/opt/resource/in", program{})
+			waitCtx, cancel := context.WithCancel(ctx)
+			cancel()
 
-			By("waiting - the exec returns an error")
-			_, err = process.Wait(ctx)
+			By("waiting with the canceled context")
+			_, err = process.Wait(waitCtx)
 			Expect(err).To(HaveOccurred())
+			Expect(errors.Is(err, context.Canceled)).To(BeTrue())
+			Expect(podRuntime.Processes(resourceKey)).To(BeEmpty())
 
 			By("verifying the pause Pod still exists (GC handles cleanup)")
 			pods, err := fakeClientset.CoreV1().Pods("ci-namespace").List(ctx, metav1.ListOptions{})
@@ -394,7 +396,6 @@ var _ = Describe("Integration", func() {
 				Type:      db.ContainerTypeGet,
 			})
 
-			fakeExecutor.execStdout = []byte(`{}`)
 			var stderr bytes.Buffer
 			process, err := container.Run(ctx, runtime.ProcessSpec{
 				ID:   "resource",
@@ -477,7 +478,7 @@ var _ = Describe("Integration", func() {
 			cacheCfg := jetbridge.NewConfig("ci-namespace", "")
 
 			cacheWorker := jetbridge.NewWorker(dbWorker, fakeClientset, cacheCfg)
-			cacheWorker.SetExecutor(fakeExecutor)
+			cacheWorker.SetExecutor(podRuntime)
 			cacheWorker.SetVolumeRepo(database.VolumeRepository)
 
 			creating, err := database.VolumeRepository.CreateVolumeWithHandle(
@@ -549,15 +550,17 @@ var _ = Describe("Integration", func() {
 				Expect(vol.EmptyDir).ToNot(BeNil())
 			}
 
-			By("simulating successful completion via exec")
-			simulatePodRunning("task-with-io")
+			By("installing the task program and completing it through exec")
+			taskKey := installProgram("task-with-io", "/bin/sh", program{})
 			result, err := process.Wait(ctx)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(result.ExitStatus).To(Equal(0))
 
-			By("verifying the command was exec'd with the correct working dir")
-			Expect(fakeExecutor.execCalls).To(HaveLen(1))
-			expectSupervisedExec(fakeExecutor.execCalls[0].command, `'/bin/sh' '-c' 'go build -o /tmp/build/workdir/binary/app ./...'`)
+			By("verifying the semantic task command")
+			Expect(podRuntime.Processes(taskKey)).To(Equal([]modeledProcess{{
+				Command:    []string{"/bin/sh", "-c", "go build -o /tmp/build/workdir/binary/app ./..."},
+				Supervised: true,
+			}}))
 		})
 
 		It("passes inputs from a get step to a put step via volume mounts", func() {
@@ -575,7 +578,6 @@ var _ = Describe("Integration", func() {
 			})
 
 			putStdout := `{"version":{"path":"releases/v1.0.0/app.tar.gz"}}`
-			fakeExecutor.execStdout = []byte(putStdout)
 
 			stdout := new(bytes.Buffer)
 			process, err := container.Run(ctx, runtime.ProcessSpec{
@@ -607,7 +609,7 @@ var _ = Describe("Integration", func() {
 			))
 
 			By("completing the put and verifying output")
-			simulatePodRunning("put-multi-input")
+			installProgram("put-multi-input", "/opt/resource/out", program{Stdout: []byte(putStdout)})
 			result, err := process.Wait(ctx)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(result.ExitStatus).To(Equal(0))
@@ -686,16 +688,17 @@ var _ = Describe("Integration", func() {
 			mainMounts := pod.Spec.Containers[0].VolumeMounts
 			Expect(sidecar.VolumeMounts).To(Equal(mainMounts))
 
-			By("simulating Pod running and waiting for exec result")
-			simulatePodRunning("task-sidecar")
+			By("installing the task program and waiting for its result")
+			taskKey := installProgram("task-sidecar", "/bin/sh", program{})
 			result, err := process.Wait(ctx)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(result.ExitStatus).To(Equal(0))
 
-			By("verifying the real command was exec'd in the main container")
-			Expect(fakeExecutor.execCalls).To(HaveLen(1))
-			expectSupervisedExec(fakeExecutor.execCalls[0].command, `'/bin/sh' '-c' 'npm test'`)
-			Expect(fakeExecutor.execCalls[0].containerName).To(Equal("main"))
+			By("verifying the semantic child ran in the main container")
+			Expect(podRuntime.Processes(taskKey)).To(Equal([]modeledProcess{{
+				Command:    []string{"/bin/sh", "-c", "npm test"},
+				Supervised: true,
+			}}))
 		})
 
 		It("runs a task with multiple sidecars", func() {
@@ -732,7 +735,7 @@ var _ = Describe("Integration", func() {
 			}
 			Expect(containerNames).To(ContainElements("main", "postgres", "redis"))
 
-			simulatePodRunning("task-multi-sidecar")
+			installProgram("task-multi-sidecar", "pytest", program{})
 			result, err := process.Wait(ctx)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(result.ExitStatus).To(Equal(0))

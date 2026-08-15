@@ -24,7 +24,6 @@ package jetbridge_test
 import (
 	"bytes"
 	"context"
-	"errors"
 	"io"
 	"time"
 
@@ -270,7 +269,7 @@ var _ = Describe("[PE-08] TTY flag in exec mode", func() {
 		dbWorker      db.Worker
 		fakeClientset *fake.Clientset
 		execWorker    *jetbridge.Worker
-		execExecutor  *fakeExecExecutor
+		execRuntime   *podRuntime
 		ctx           context.Context
 		cfg           jetbridge.Config
 		delegate      runtime.BuildStepDelegate
@@ -285,9 +284,9 @@ var _ = Describe("[PE-08] TTY flag in exec mode", func() {
 		fakeClientset = fake.NewSimpleClientset()
 		cfg = jetbridge.NewConfig("test-namespace", "")
 		delegate = &noopDelegate{}
-		execExecutor = &fakeExecExecutor{}
+		execRuntime = newPodRuntime(fakeClientset)
 		execWorker = jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
-		execWorker.SetExecutor(execExecutor)
+		execWorker.SetExecutor(execRuntime)
 	})
 
 	It("[PE-08] passes TTY=true to ExecInPod when ProcessSpec.TTY is set", func() {
@@ -315,23 +314,18 @@ var _ = Describe("[PE-08] TTY flag in exec mode", func() {
 		})
 		Expect(err).ToNot(HaveOccurred())
 
-		// Transition pod to Running so waitForRunning completes.
-		pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "pe08-tty-handle", metav1.GetOptions{})
-		Expect(err).ToNot(HaveOccurred())
-		pod.Status.Phase = corev1.PodRunning
-		_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
-		Expect(err).ToNot(HaveOccurred())
+		key := podKey{"test-namespace", "pe08-tty-handle", "main"}
+		Expect(execRuntime.AddContainer(key)).To(Succeed())
+		Expect(execRuntime.InstallProgram(key, "/bin/sh", program{})).To(Succeed())
 
 		result, err := process.Wait(ctx)
 		Expect(err).ToNot(HaveOccurred())
 		Expect(result.ExitStatus).To(Equal(0))
 
-		execExecutor.mu.Lock()
-		calls := execExecutor.execCalls
-		execExecutor.mu.Unlock()
-
-		Expect(calls).To(HaveLen(1))
-		Expect(calls[0].tty).To(BeTrue(), "expected TTY=true to be passed to ExecInPod")
+		Expect(execRuntime.TerminalSessions(key)).To(ConsistOf(And(
+			HaveField("Command", Equal([]string{"/bin/sh"})),
+			HaveField("TTY", BeTrue()),
+		)))
 	})
 
 	It("[PE-08] passes TTY=false to ExecInPod when ProcessSpec.TTY is nil", func() {
@@ -357,22 +351,19 @@ var _ = Describe("[PE-08] TTY flag in exec mode", func() {
 		})
 		Expect(err).ToNot(HaveOccurred())
 
-		pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "pe08-notty-handle", metav1.GetOptions{})
-		Expect(err).ToNot(HaveOccurred())
-		pod.Status.Phase = corev1.PodRunning
-		_, err = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
-		Expect(err).ToNot(HaveOccurred())
+		key := podKey{"test-namespace", "pe08-notty-handle", "main"}
+		Expect(execRuntime.AddContainer(key)).To(Succeed())
+		Expect(execRuntime.InstallProgram(key, "/bin/sh", program{})).To(Succeed())
 
 		result, err := process.Wait(ctx)
 		Expect(err).ToNot(HaveOccurred())
 		Expect(result.ExitStatus).To(Equal(0))
 
-		execExecutor.mu.Lock()
-		calls := execExecutor.execCalls
-		execExecutor.mu.Unlock()
-
-		Expect(calls).To(HaveLen(1))
-		Expect(calls[0].tty).To(BeFalse(), "expected TTY=false when ProcessSpec.TTY is nil")
+		Expect(execRuntime.Processes(key)).To(ConsistOf(And(
+			HaveField("Command", Equal([]string{"/bin/sh"})),
+			HaveField("TTY", BeFalse()),
+		)))
+		Expect(execRuntime.TerminalSessions(key)).To(BeEmpty())
 	})
 })
 
@@ -745,7 +736,7 @@ var _ = Describe("[OE] Observability span events", func() {
 		fakeClientset *fake.Clientset
 		execWorker    *jetbridge.Worker
 		execContainer runtime.Container
-		fakeExecutor  *fakeExecExecutor
+		execRuntime   *podRuntime
 		ctx           context.Context
 		cfg           jetbridge.Config
 		delegate      runtime.BuildStepDelegate
@@ -768,9 +759,9 @@ var _ = Describe("[OE] Observability span events", func() {
 		fakeClientset = fake.NewSimpleClientset()
 		cfg = jetbridge.NewConfig("test-namespace", "")
 		delegate = &noopDelegate{}
-		fakeExecutor = &fakeExecExecutor{}
+		execRuntime = newPodRuntime(fakeClientset)
 		execWorker = jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
-		execWorker.SetExecutor(fakeExecutor)
+		execWorker.SetExecutor(execRuntime)
 	})
 
 	AfterEach(func() {
@@ -794,6 +785,12 @@ var _ = Describe("[OE] Observability span events", func() {
 			names = append(names, e.Name)
 		}
 		return names
+	}
+
+	installShell := func(handle string) {
+		key := podKey{"test-namespace", handle, "main"}
+		Expect(execRuntime.AddContainer(key)).To(Succeed())
+		Expect(execRuntime.InstallProgram(key, "/bin/sh", program{})).To(Succeed())
 	}
 
 	Context("exec mode (waitForRunning span)", func() {
@@ -824,6 +821,7 @@ var _ = Describe("[OE] Observability span events", func() {
 				Stderr: new(bytes.Buffer),
 			})
 			Expect(err).ToNot(HaveOccurred())
+			installShell("oe-span-handle")
 
 			pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "oe-span-handle", metav1.GetOptions{})
 			Expect(err).ToNot(HaveOccurred())
@@ -865,6 +863,7 @@ var _ = Describe("[OE] Observability span events", func() {
 				Stderr: new(bytes.Buffer),
 			})
 			Expect(err).ToNot(HaveOccurred())
+			installShell("oe-span-handle")
 
 			// Pre-stage: set ContainerCreating state BEFORE Wait() so it appears
 			// in the watcher's initial sync snapshot. This triggers image.pulling.
@@ -934,6 +933,7 @@ var _ = Describe("[OE] Observability span events", func() {
 				Stderr: new(bytes.Buffer),
 			})
 			Expect(err).ToNot(HaveOccurred())
+			installShell("oe-init-fail-handle")
 
 			pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "oe-init-fail-handle", metav1.GetOptions{})
 			Expect(err).ToNot(HaveOccurred())
@@ -989,7 +989,7 @@ var _ = Describe("[OE-06] init.container.failed span event (dedicated test)", fu
 		dbWorker      db.Worker
 		fakeClientset *fake.Clientset
 		execWorker    *jetbridge.Worker
-		fakeExecutor  *fakeExecExecutor
+		execRuntime   *podRuntime
 		ctx           context.Context
 		cfg           jetbridge.Config
 		delegate      runtime.BuildStepDelegate
@@ -1012,9 +1012,9 @@ var _ = Describe("[OE-06] init.container.failed span event (dedicated test)", fu
 		fakeClientset = fake.NewSimpleClientset()
 		cfg = jetbridge.NewConfig("test-namespace", "")
 		delegate = &noopDelegate{}
-		fakeExecutor = &fakeExecExecutor{}
+		execRuntime = newPodRuntime(fakeClientset)
 		execWorker = jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
-		execWorker.SetExecutor(fakeExecutor)
+		execWorker.SetExecutor(execRuntime)
 	})
 
 	AfterEach(func() {
@@ -1045,6 +1045,10 @@ var _ = Describe("[OE-06] init.container.failed span event (dedicated test)", fu
 			Stderr: new(bytes.Buffer),
 		})
 		Expect(err).ToNot(HaveOccurred())
+
+		key := podKey{"test-namespace", "oe06-init-fail-run", "main"}
+		Expect(execRuntime.AddContainer(key)).To(Succeed())
+		Expect(execRuntime.InstallProgram(key, "/bin/sh", program{})).To(Succeed())
 
 		pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "oe06-init-fail-run", metav1.GetOptions{})
 		Expect(err).ToNot(HaveOccurred())
@@ -1115,7 +1119,7 @@ var _ = Describe("[OE-09] Observability event deduplication", func() {
 		dbWorker      db.Worker
 		fakeClientset *fake.Clientset
 		execWorker    *jetbridge.Worker
-		fakeExecutor  *fakeExecExecutor
+		execRuntime   *podRuntime
 		ctx           context.Context
 		cfg           jetbridge.Config
 		delegate      runtime.BuildStepDelegate
@@ -1138,9 +1142,9 @@ var _ = Describe("[OE-09] Observability event deduplication", func() {
 		fakeClientset = fake.NewSimpleClientset()
 		cfg = jetbridge.NewConfig("test-namespace", "")
 		delegate = &noopDelegate{}
-		fakeExecutor = &fakeExecExecutor{}
+		execRuntime = newPodRuntime(fakeClientset)
 		execWorker = jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
-		execWorker.SetExecutor(fakeExecutor)
+		execWorker.SetExecutor(execRuntime)
 	})
 
 	AfterEach(func() {
@@ -1171,6 +1175,10 @@ var _ = Describe("[OE-09] Observability event deduplication", func() {
 			Stderr: new(bytes.Buffer),
 		})
 		Expect(err).ToNot(HaveOccurred())
+
+		key := podKey{"test-namespace", "oe09-dedup-handle", "main"}
+		Expect(execRuntime.AddContainer(key)).To(Succeed())
+		Expect(execRuntime.InstallProgram(key, "/bin/sh", program{})).To(Succeed())
 
 		pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "oe09-dedup-handle", metav1.GetOptions{})
 		Expect(err).ToNot(HaveOccurred())
@@ -1250,6 +1258,10 @@ var _ = Describe("[OE-09] Observability event deduplication", func() {
 		})
 		Expect(err).ToNot(HaveOccurred())
 
+		key := podKey{"test-namespace", "oe09-sidecar-dedup", "main"}
+		Expect(execRuntime.AddContainer(key)).To(Succeed())
+		Expect(execRuntime.InstallProgram(key, "/bin/sh", program{})).To(Succeed())
+
 		pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "oe09-sidecar-dedup", metav1.GetOptions{})
 		Expect(err).ToNot(HaveOccurred())
 
@@ -1310,7 +1322,8 @@ var _ = Describe("[OE] Remaining observability coverage (OE-01, OE-05, OE-07, OE
 		fakeClientset *fake.Clientset
 		execWorker    *jetbridge.Worker
 		execContainer runtime.Container
-		fakeExecutor  *fakeExecExecutor
+		execRuntime   *podRuntime
+		execHandle    string
 		ctx           context.Context
 		cfg           jetbridge.Config
 		delegate      runtime.BuildStepDelegate
@@ -1333,9 +1346,9 @@ var _ = Describe("[OE] Remaining observability coverage (OE-01, OE-05, OE-07, OE
 		fakeClientset = fake.NewSimpleClientset()
 		cfg = jetbridge.NewConfig("test-namespace", "")
 		delegate = &noopDelegate{}
-		fakeExecutor = &fakeExecExecutor{}
+		execRuntime = newPodRuntime(fakeClientset)
 		execWorker = jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
-		execWorker.SetExecutor(fakeExecutor)
+		execWorker.SetExecutor(execRuntime)
 	})
 
 	AfterEach(func() {
@@ -1381,6 +1394,7 @@ var _ = Describe("[OE] Remaining observability coverage (OE-01, OE-05, OE-07, OE
 
 	// startContainer creates a DB-backed exec container ready to Run().
 	startContainer := func(handle string) {
+		execHandle = handle
 		var err error
 		execContainer, _, err = execWorker.FindOrCreateContainer(
 			ctx,
@@ -1406,6 +1420,10 @@ var _ = Describe("[OE] Remaining observability coverage (OE-01, OE-05, OE-07, OE
 			Stderr: new(bytes.Buffer),
 		})
 		Expect(err).ToNot(HaveOccurred())
+
+		key := podKey{"test-namespace", execHandle, "main"}
+		Expect(execRuntime.AddContainer(key)).To(Succeed())
+		Expect(execRuntime.InstallProgram(key, "/bin/sh", program{})).To(Succeed())
 		return process
 	}
 
@@ -1870,7 +1888,8 @@ var _ = Describe("[P3] Runtime edge cases (PE-02, PE-09, RF-14, RF-15)", func() 
 
 	Describe("RF-14: init container failure reporting", func() {
 		It("[RF-14] returns an error with the failed init container's name, state, and retrieved logs", func() {
-			container := execContainerWith("rf14-init", &fakeExecExecutor{})
+			execRuntime := newPodRuntime(fakeClientset)
+			container := execContainerWith("rf14-init", execRuntime)
 
 			process, err := container.Run(ctx, runtime.ProcessSpec{
 				Path: "/opt/resource/in",
@@ -1927,10 +1946,8 @@ var _ = Describe("[P3] Runtime edge cases (PE-02, PE-09, RF-14, RF-15)", func() 
 			_, err := fakeClientset.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
 			Expect(err).ToNot(HaveOccurred())
 
-			// Executor fails with a non-retryable, non-ExecExitError error so the
-			// generic exec-failure branch runs fetchPodFailureContext.
-			executor := &fakeExecExecutor{execErr: errors.New("exec stream: connection refused")}
-			container := execContainerWith("rf15-node", executor)
+			execRuntime := newPodRuntime(fakeClientset)
+			container := execContainerWith("rf15-node", execRuntime)
 
 			stderr := new(bytes.Buffer)
 			process, err := container.Run(ctx, runtime.ProcessSpec{
@@ -1942,6 +1959,12 @@ var _ = Describe("[P3] Runtime edge cases (PE-02, PE-09, RF-14, RF-15)", func() 
 				Stderr: stderr,
 			})
 			Expect(err).ToNot(HaveOccurred())
+
+			key := podKey{"test-namespace", "rf15-node", "main"}
+			Expect(execRuntime.AddContainer(key)).To(Succeed())
+			Expect(execRuntime.InstallProgram(key, "/opt/resource/in", program{
+				Effect: execOOMKillsPod,
+			})).To(Succeed())
 
 			// Pin the pod onto the node and mark it Running so waitForRunning
 			// passes and the exec is attempted. NodeName is a spec field, so a
@@ -1955,6 +1978,7 @@ var _ = Describe("[P3] Runtime edge cases (PE-02, PE-09, RF-14, RF-15)", func() 
 			_, err = process.Wait(ctx)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("exec in pod"))
+			Expect(err.Error()).To(ContainSubstring("OOM killed"))
 
 			out := stderr.String()
 			Expect(out).To(ContainSubstring("Pod Failure Diagnostics"), "pod diagnostics must be written")

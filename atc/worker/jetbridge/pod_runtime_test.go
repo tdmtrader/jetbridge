@@ -42,6 +42,7 @@ type program struct {
 	Stderr   []byte
 	ExitCode int
 	Effect   execEffect
+	Files    map[string][]byte
 }
 
 type modeledProcess struct {
@@ -209,6 +210,7 @@ func (r *podRuntime) InstallProgram(key podKey, executable string, installed pro
 	}
 	installed.Stdout = bytes.Clone(installed.Stdout)
 	installed.Stderr = bytes.Clone(installed.Stderr)
+	installed.Files = cloneFiles(installed.Files)
 	container.Programs[executable] = installed
 	return nil
 }
@@ -387,6 +389,7 @@ func (r *podRuntime) ExecInPod(
 				return err
 			}
 		}
+		applyProgramFiles(container.Files, installed.Files)
 		if err := r.applyEffect(key, installed.Effect); err != nil {
 			return err
 		}
@@ -437,6 +440,7 @@ func (r *podRuntime) runSupervisor(
 	if err := writeProgramOutput(stdout, log); err != nil {
 		return err
 	}
+	applyProgramFiles(container.Files, installed.Files)
 	if err := r.applyEffect(key, installed.Effect); err != nil {
 		return err
 	}
@@ -444,6 +448,23 @@ func (r *podRuntime) runSupervisor(
 		return &jetbridge.ExecExitError{ExitCode: installed.ExitCode}
 	}
 	return nil
+}
+
+func cloneFiles(files map[string][]byte) map[string][]byte {
+	if files == nil {
+		return nil
+	}
+	cloned := make(map[string][]byte, len(files))
+	for name, data := range files {
+		cloned[path.Clean(name)] = bytes.Clone(data)
+	}
+	return cloned
+}
+
+func applyProgramFiles(destination, files map[string][]byte) {
+	for name, data := range files {
+		destination[path.Clean(name)] = bytes.Clone(data)
+	}
 }
 
 const supervisorEnvelopeBodyPrefix = `

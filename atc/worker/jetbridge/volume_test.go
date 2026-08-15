@@ -1,18 +1,30 @@
 package jetbridge_test
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
-	"errors"
 	"io"
-	"sync"
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"k8s.io/client-go/kubernetes/fake"
 )
+
+func volumeTarArchive(name string, data []byte) []byte {
+	GinkgoHelper()
+
+	var archive bytes.Buffer
+	writer := tar.NewWriter(&archive)
+	Expect(writer.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: int64(len(data))})).To(Succeed())
+	_, err := writer.Write(data)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(writer.Close()).To(Succeed())
+	return archive.Bytes()
+}
 
 var _ = Describe("Volume", func() {
 	var (
@@ -21,8 +33,9 @@ var _ = Describe("Volume", func() {
 		team          db.Team
 		dbWorker      db.Worker
 		dbVolume      db.CreatedVolume
-		fakeExecutor  *fakeExecExecutor
+		podRuntime    *podRuntime
 		volume        *jetbridge.Volume
+		key           podKey
 		podName       string
 		namespace     string
 		containerName string
@@ -59,16 +72,17 @@ var _ = Describe("Volume", func() {
 		Expect(err).ToNot(HaveOccurred())
 		Expect(found).To(BeTrue())
 		Expect(artifactVolume.Handle()).To(Equal(dbVolume.Handle()))
-		fakeExecutor = &fakeExecExecutor{}
-
 		podName = "test-pod"
 		namespace = "test-namespace"
 		containerName = "main"
 		mountPath = "/tmp/build/inputs"
+		podRuntime = newPodRuntime(fake.NewSimpleClientset())
+		key = podKey{namespace, podName, containerName}
+		Expect(podRuntime.AddContainer(key)).To(Succeed())
 
 		volume = jetbridge.NewVolume(
 			dbVolume,
-			fakeExecutor,
+			podRuntime,
 			podName,
 			namespace,
 			containerName,
@@ -113,146 +127,113 @@ var _ = Describe("Volume", func() {
 	})
 
 	Describe("StreamIn", func() {
-		It("execs tar extract in the correct Pod container at the specified path", func() {
-			reader := bytes.NewReader([]byte("tar-data"))
+		It("extracts archive files into the mounted container path", func() {
+			archive := volumeTarArchive("data.txt", []byte("artifact payload"))
 
-			err := volume.StreamIn(ctx, ".", nil, 0, reader)
-			Expect(err).ToNot(HaveOccurred())
+			Expect(volume.StreamIn(ctx, ".", nil, 0, bytes.NewReader(archive))).To(Succeed())
 
-			Expect(fakeExecutor.execCalls).To(HaveLen(1))
-			call := fakeExecutor.execCalls[0]
-			Expect(call.podName).To(Equal("test-pod"))
-			Expect(call.namespace).To(Equal("test-namespace"))
-			Expect(call.containerName).To(Equal("main"))
-			Expect(call.command).To(Equal([]string{"tar", "xf", "-", "-C", "/tmp/build/inputs"}))
+			data, found := podRuntime.File(key, "/tmp/build/inputs/data.txt")
+			Expect(found).To(BeTrue())
+			Expect(data).To(Equal([]byte("artifact payload")))
 		})
 
-		It("pipes the reader data to stdin of the exec", func() {
-			inputData := []byte("some-tar-stream-data")
-			reader := bytes.NewReader(inputData)
+		It("extracts archive files beneath a requested subdirectory", func() {
+			archive := volumeTarArchive("nested.txt", []byte("nested payload"))
 
-			err := volume.StreamIn(ctx, ".", nil, 0, reader)
-			Expect(err).ToNot(HaveOccurred())
+			Expect(volume.StreamIn(ctx, "sub/dir", nil, 0, bytes.NewReader(archive))).To(Succeed())
 
-			call := fakeExecutor.execCalls[0]
-			Expect(call.stdin).ToNot(BeNil())
-			stdinData, err := io.ReadAll(call.stdin)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(stdinData).To(Equal(inputData))
+			data, found := podRuntime.File(key, "/tmp/build/inputs/sub/dir/nested.txt")
+			Expect(found).To(BeTrue())
+			Expect(data).To(Equal([]byte("nested payload")))
 		})
 
-		It("uses a subdirectory path when path is not root", func() {
-			reader := bytes.NewReader([]byte("tar-data"))
+		It("returns a stable error when the target container has terminated", func() {
+			Expect(podRuntime.Terminate(key, "Completed")).To(Succeed())
 
-			err := volume.StreamIn(ctx, "sub/dir", nil, 0, reader)
-			Expect(err).ToNot(HaveOccurred())
-
-			call := fakeExecutor.execCalls[0]
-			Expect(call.command).To(Equal([]string{"tar", "xf", "-", "-C", "/tmp/build/inputs/sub/dir"}))
+			err := volume.StreamIn(ctx, ".", nil, 0, bytes.NewReader(volumeTarArchive("data", []byte("payload"))))
+			Expect(err).To(MatchError(ContainSubstring("terminated")))
 		})
 
-		It("passes stream-in purpose and volume mount path in ExecAttrs", func() {
-			reader := bytes.NewReader([]byte("tar-data"))
-			err := volume.StreamIn(ctx, ".", nil, 0, reader)
-			Expect(err).ToNot(HaveOccurred())
+		It("returns a stable error when the target pod is missing", func() {
+			missing := jetbridge.NewVolume(
+				dbVolume,
+				newPodRuntime(fake.NewSimpleClientset()),
+				"missing-pod",
+				namespace,
+				containerName,
+				mountPath,
+			)
 
-			call := fakeExecutor.execCalls[0]
-			Expect(call.attrs.Purpose).To(Equal("stream-in"))
-			Expect(call.attrs.VolumeMountPath).To(Equal("/tmp/build/inputs"))
-		})
-
-		Context("when the exec returns an error", func() {
-			BeforeEach(func() {
-				fakeExecutor.execErr = errors.New("exec failed: container not running")
-			})
-
-			It("returns the error", func() {
-				reader := bytes.NewReader([]byte("data"))
-				err := volume.StreamIn(ctx, ".", nil, 0, reader)
-				Expect(err).To(MatchError(ContainSubstring("exec failed")))
-			})
+			err := missing.StreamIn(ctx, ".", nil, 0, bytes.NewReader(volumeTarArchive("data", []byte("payload"))))
+			Expect(err).To(MatchError(ContainSubstring("pod not found")))
 		})
 	})
 
 	Describe("StreamOut", func() {
 		BeforeEach(func() {
-			fakeExecutor.execStdout = []byte("tar-output-bytes")
+			Expect(podRuntime.PutFile(key, "/tmp/build/inputs/data.txt", []byte("artifact payload"))).To(Succeed())
+			Expect(podRuntime.PutFile(key, "/tmp/build/inputs/sub/dir/nested.txt", []byte("nested payload"))).To(Succeed())
+			Expect(podRuntime.PutFile(key, "/tmp/build/inputs/pipeline.yml", []byte("pipeline: value"))).To(Succeed())
 		})
 
-		It("execs tar create in the correct Pod container at the specified path", func() {
+		It("streams a tar archive of files from the mounted container path", func() {
 			readCloser, err := volume.StreamOut(ctx, ".", nil)
 			Expect(err).ToNot(HaveOccurred())
 			defer readCloser.Close()
 
-			// Read all data to let the goroutine complete
-			_, _ = io.ReadAll(readCloser)
+			destinationRuntime := newPodRuntime(fake.NewSimpleClientset())
+			destinationKey := podKey{namespace, "destination-pod", containerName}
+			Expect(destinationRuntime.AddContainer(destinationKey)).To(Succeed())
+			destination := jetbridge.NewVolume(nil, destinationRuntime, destinationKey.Pod, namespace, containerName, "/tmp/destination")
+			Expect(destination.StreamIn(ctx, ".", nil, 0, readCloser)).To(Succeed())
 
-			Expect(fakeExecutor.execCalls).To(HaveLen(1))
-			call := fakeExecutor.execCalls[0]
-			Expect(call.podName).To(Equal("test-pod"))
-			Expect(call.namespace).To(Equal("test-namespace"))
-			Expect(call.containerName).To(Equal("main"))
-			Expect(call.command).To(Equal([]string{"tar", "cf", "-", "-C", "/tmp/build/inputs", "."}))
+			data, found := destinationRuntime.File(destinationKey, "/tmp/destination/data.txt")
+			Expect(found).To(BeTrue())
+			Expect(data).To(Equal([]byte("artifact payload")))
 		})
 
-		It("passes stream-out purpose and volume mount path in ExecAttrs", func() {
-			readCloser, err := volume.StreamOut(ctx, ".", nil)
-			Expect(err).ToNot(HaveOccurred())
-			defer readCloser.Close()
-			_, _ = io.ReadAll(readCloser)
-
-			Expect(fakeExecutor.execCalls).To(HaveLen(1))
-			call := fakeExecutor.execCalls[0]
-			Expect(call.attrs.Purpose).To(Equal("stream-out"))
-			Expect(call.attrs.VolumeMountPath).To(Equal("/tmp/build/inputs"))
-		})
-
-		It("returns the stdout as a ReadCloser via streaming pipe", func() {
-			readCloser, err := volume.StreamOut(ctx, ".", nil)
-			Expect(err).ToNot(HaveOccurred())
-			defer readCloser.Close()
-
-			data, err := io.ReadAll(readCloser)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(data).To(Equal([]byte("tar-output-bytes")))
-		})
-
-		It("uses a subdirectory path when path is not root", func() {
+		It("streams only the requested subdirectory", func() {
 			readCloser, err := volume.StreamOut(ctx, "sub/dir", nil)
 			Expect(err).ToNot(HaveOccurred())
 			defer readCloser.Close()
 
-			// Read all data to let the goroutine complete
-			_, _ = io.ReadAll(readCloser)
+			destinationRuntime := newPodRuntime(fake.NewSimpleClientset())
+			destinationKey := podKey{namespace, "subdirectory-destination", containerName}
+			Expect(destinationRuntime.AddContainer(destinationKey)).To(Succeed())
+			destination := jetbridge.NewVolume(nil, destinationRuntime, destinationKey.Pod, namespace, containerName, "/tmp/destination")
+			Expect(destination.StreamIn(ctx, ".", nil, 0, readCloser)).To(Succeed())
 
-			call := fakeExecutor.execCalls[0]
-			Expect(call.command).To(Equal([]string{"tar", "cf", "-", "-C", "/tmp/build/inputs", "sub/dir"}))
+			data, found := destinationRuntime.File(destinationKey, "/tmp/destination/sub/dir/nested.txt")
+			Expect(found).To(BeTrue())
+			Expect(data).To(Equal([]byte("nested payload")))
+			_, found = destinationRuntime.File(destinationKey, "/tmp/destination/data.txt")
+			Expect(found).To(BeFalse())
 		})
 
-		It("handles a file path by tarring from the mount root", func() {
+		It("streams a requested file", func() {
 			readCloser, err := volume.StreamOut(ctx, "pipeline.yml", nil)
 			Expect(err).ToNot(HaveOccurred())
 			defer readCloser.Close()
 
-			_, _ = io.ReadAll(readCloser)
+			destinationRuntime := newPodRuntime(fake.NewSimpleClientset())
+			destinationKey := podKey{namespace, "file-destination", containerName}
+			Expect(destinationRuntime.AddContainer(destinationKey)).To(Succeed())
+			destination := jetbridge.NewVolume(nil, destinationRuntime, destinationKey.Pod, namespace, containerName, "/tmp/destination")
+			Expect(destination.StreamIn(ctx, ".", nil, 0, readCloser)).To(Succeed())
 
-			call := fakeExecutor.execCalls[0]
-			Expect(call.command).To(Equal([]string{"tar", "cf", "-", "-C", "/tmp/build/inputs", "pipeline.yml"}))
+			data, found := destinationRuntime.File(destinationKey, "/tmp/destination/pipeline.yml")
+			Expect(found).To(BeTrue())
+			Expect(data).To(Equal([]byte("pipeline: value")))
 		})
 
-		Context("when the exec returns an error", func() {
-			BeforeEach(func() {
-				fakeExecutor.execErr = errors.New("exec failed: pod terminated")
-			})
+		It("propagates a terminated-container error through the pipe reader", func() {
+			Expect(podRuntime.Terminate(key, "Completed")).To(Succeed())
+			readCloser, err := volume.StreamOut(ctx, ".", nil)
+			Expect(err).ToNot(HaveOccurred())
+			defer readCloser.Close()
 
-			It("propagates the error through the pipe reader", func() {
-				readCloser, err := volume.StreamOut(ctx, ".", nil)
-				Expect(err).ToNot(HaveOccurred())
-				defer readCloser.Close()
-
-				_, err = io.ReadAll(readCloser)
-				Expect(err).To(MatchError(ContainSubstring("exec failed")))
-			})
+			_, err = io.ReadAll(readCloser)
+			Expect(err).To(MatchError(ContainSubstring("terminated")))
 		})
 	})
 
@@ -307,7 +288,7 @@ var _ = Describe("Volume", func() {
 
 			volume2 := jetbridge.NewVolume(
 				dbVolume2,
-				fakeExecutor,
+				podRuntime,
 				"other-pod",
 				namespace,
 				containerName,
@@ -326,30 +307,39 @@ var _ = Describe("Volume", func() {
 
 var _ = Describe("Volume-to-Volume Streaming (same worker)", func() {
 	var (
-		ctx          context.Context
-		fakeExecutor *fakeExecExecutor
+		ctx        context.Context
+		podRuntime *podRuntime
 	)
 
 	BeforeEach(func() {
 		ctx = context.Background()
-		fakeExecutor = &fakeExecExecutor{}
+		podRuntime = newPodRuntime(fake.NewSimpleClientset())
 	})
 
 	It("streams data from source volume (pod A) to destination volume (pod B)", func() {
+		sourceKey := podKey{"test-namespace", "source-pod", "main"}
+		destinationKey := podKey{"test-namespace", "dest-pod", "main"}
+		Expect(podRuntime.AddContainer(sourceKey)).To(Succeed())
+		Expect(podRuntime.AddContainer(destinationKey)).To(Succeed())
+		Expect(podRuntime.PutFile(
+			sourceKey,
+			"/tmp/build/workdir/output/artifact.txt",
+			[]byte("tar-payload-from-source"),
+		)).To(Succeed())
+
 		sourceVol := jetbridge.NewVolume(
-			nil, fakeExecutor,
+			nil, podRuntime,
 			"source-pod", "test-namespace", "main",
 			"/tmp/build/workdir/output",
 		)
 
 		destVol := jetbridge.NewVolume(
-			nil, fakeExecutor,
+			nil, podRuntime,
 			"dest-pod", "test-namespace", "main",
 			"/tmp/build/workdir/input",
 		)
 
 		By("StreamOut from source volume produces tar data")
-		fakeExecutor.execStdout = []byte("tar-payload-from-source")
 		tarStream, err := sourceVol.StreamOut(ctx, ".", nil)
 		Expect(err).ToNot(HaveOccurred())
 
@@ -358,39 +348,37 @@ var _ = Describe("Volume-to-Volume Streaming (same worker)", func() {
 		tarStream.Close()
 		Expect(err).ToNot(HaveOccurred())
 
-		By("verifying the exec calls target different pods")
-		Expect(fakeExecutor.execCalls).To(HaveLen(2))
-
-		streamOutCall := fakeExecutor.execCalls[0]
-		Expect(streamOutCall.podName).To(Equal("source-pod"))
-		Expect(streamOutCall.command).To(Equal([]string{"tar", "cf", "-", "-C", "/tmp/build/workdir/output", "."}))
-
-		streamInCall := fakeExecutor.execCalls[1]
-		Expect(streamInCall.podName).To(Equal("dest-pod"))
-		Expect(streamInCall.command).To(Equal([]string{"tar", "xf", "-", "-C", "/tmp/build/workdir/input"}))
-
-		By("the tar data piped from source to destination")
-		stdinData, err := io.ReadAll(streamInCall.stdin)
-		Expect(err).ToNot(HaveOccurred())
-		Expect(stdinData).To(Equal([]byte("tar-payload-from-source")))
+		By("verifying the source file reached the destination pod")
+		data, found := podRuntime.File(destinationKey, "/tmp/build/workdir/input/artifact.txt")
+		Expect(found).To(BeTrue())
+		Expect(data).To(Equal([]byte("tar-payload-from-source")))
 	})
 
 	It("works with deferred volumes after pod name is set", func() {
+		sourceKey := podKey{"test-namespace", "step-1-pod", "main"}
+		destinationKey := podKey{"test-namespace", "step-2-pod", "main"}
+		Expect(podRuntime.AddContainer(sourceKey)).To(Succeed())
+		Expect(podRuntime.AddContainer(destinationKey)).To(Succeed())
+		Expect(podRuntime.PutFile(
+			sourceKey,
+			"/tmp/build/workdir/output/deferred.txt",
+			[]byte("deferred-tar-data"),
+		)).To(Succeed())
+
 		sourceVol := jetbridge.NewDeferredVolume(
 			"src-handle", "k8s-worker",
-			fakeExecutor, "test-namespace", "main",
+			podRuntime, "test-namespace", "main",
 			"/tmp/build/workdir/output",
 		)
 		sourceVol.SetPodName("step-1-pod")
 
 		destVol := jetbridge.NewDeferredVolume(
 			"dst-handle", "k8s-worker",
-			fakeExecutor, "test-namespace", "main",
+			podRuntime, "test-namespace", "main",
 			"/tmp/build/workdir/input",
 		)
 		destVol.SetPodName("step-2-pod")
 
-		fakeExecutor.execStdout = []byte("deferred-tar-data")
 		tarStream, err := sourceVol.StreamOut(ctx, ".", nil)
 		Expect(err).ToNot(HaveOccurred())
 
@@ -398,72 +386,8 @@ var _ = Describe("Volume-to-Volume Streaming (same worker)", func() {
 		tarStream.Close()
 		Expect(err).ToNot(HaveOccurred())
 
-		Expect(fakeExecutor.execCalls).To(HaveLen(2))
-		Expect(fakeExecutor.execCalls[0].podName).To(Equal("step-1-pod"))
-		Expect(fakeExecutor.execCalls[1].podName).To(Equal("step-2-pod"))
+		data, found := podRuntime.File(destinationKey, "/tmp/build/workdir/input/deferred.txt")
+		Expect(found).To(BeTrue())
+		Expect(data).To(Equal([]byte("deferred-tar-data")))
 	})
 })
-
-// fakeExecExecutor is a test double for jetbridge.PodExecutor.
-// It consumes stdin (like a real executor) to prevent io.Pipe deadlocks.
-type fakeExecExecutor struct {
-	mu         sync.Mutex
-	execCalls  []execCall
-	execErr    error
-	execStdout []byte
-	execFunc   func() error // per-call error function; takes priority over execErr when set
-}
-
-type execCall struct {
-	podName       string
-	namespace     string
-	containerName string
-	command       []string
-	stdin         io.Reader
-	tty           bool
-	attrs         jetbridge.ExecAttrs
-}
-
-func (f *fakeExecExecutor) ExecInPod(
-	ctx context.Context,
-	namespace, podName, containerName string,
-	command []string,
-	stdin io.Reader,
-	stdout, stderr io.Writer,
-	tty bool,
-	attrs jetbridge.ExecAttrs,
-) error {
-	// Consume stdin into a buffer (mimics real executor behavior and
-	// unblocks io.Pipe writers used by streaming StreamOut).
-	var stdinBuf io.Reader
-	if stdin != nil {
-		data, _ := io.ReadAll(stdin)
-		stdinBuf = bytes.NewReader(data)
-	}
-
-	f.mu.Lock()
-	f.execCalls = append(f.execCalls, execCall{
-		podName:       podName,
-		namespace:     namespace,
-		containerName: containerName,
-		command:       command,
-		stdin:         stdinBuf,
-		tty:           tty,
-		attrs:         attrs,
-	})
-	execFunc := f.execFunc
-	execErr := f.execErr
-	execStdout := f.execStdout
-	f.mu.Unlock()
-
-	if execFunc != nil {
-		return execFunc()
-	}
-	if execErr != nil {
-		return execErr
-	}
-	if stdout != nil && execStdout != nil {
-		_, _ = stdout.Write(execStdout)
-	}
-	return nil
-}
