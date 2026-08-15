@@ -2,11 +2,14 @@ package builds_test
 
 import (
 	"context"
+	"fmt"
 	"io"
+	"sync"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
 
+	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/builds"
 	"github.com/concourse/concourse/atc/component"
 	"github.com/concourse/concourse/atc/db"
@@ -20,36 +23,158 @@ func init() {
 	util.PanicSink = io.Discard
 }
 
-type runnableFunc func(context.Context)
+type lifecycleBehavior atc.PlanID
 
-func (f runnableFunc) Run(ctx context.Context) { f(ctx) }
+const (
+	lifecycleStarted  lifecycleBehavior = "started"
+	lifecycleReleased lifecycleBehavior = "released"
+	lifecyclePanic    lifecycleBehavior = "panic"
+	lifecycleFinish   lifecycleBehavior = "finish"
+)
 
-// stubEngine stands in for the real engine, which recovers its own panics
-// (engine.go), so a Runnable that crashes or hangs cannot be expressed through
-// it, and whose Drain has no effect observable from outside it.
-type stubEngine struct {
-	newBuild func(db.Build) builds.Runnable
-	drained  []context.Context
+// lifecycleEngine gives every build the same small domain lifecycle. The
+// build's persisted plan chooses the behavior; tests can only observe the
+// lifecycle gates and the resulting database state.
+type lifecycleEngine struct {
+	mu      sync.Mutex
+	running map[string]struct{}
+
+	started  chan struct{}
+	release  chan struct{}
+	released chan struct{}
+	draining chan struct{}
+
+	releaseOnce sync.Once
+	drainOnce   sync.Once
 }
 
-func (e *stubEngine) NewBuild(build db.Build) builds.Runnable { return e.newBuild(build) }
+func newLifecycleEngine() *lifecycleEngine {
+	return &lifecycleEngine{
+		running:  map[string]struct{}{},
+		started:  make(chan struct{}, 1),
+		release:  make(chan struct{}),
+		released: make(chan struct{}, 1),
+		draining: make(chan struct{}),
+	}
+}
 
-func (e *stubEngine) Drain(ctx context.Context) { e.drained = append(e.drained, ctx) }
+func (engine *lifecycleEngine) NewBuild(build db.Build) builds.Runnable {
+	return lifecycleBuild{engine: engine, build: build}
+}
+
+func (engine *lifecycleEngine) Drain(context.Context) {
+	engine.drainOnce.Do(func() { close(engine.draining) })
+}
+
+func (engine *lifecycleEngine) Release() {
+	engine.releaseOnce.Do(func() { close(engine.release) })
+}
+
+func (engine *lifecycleEngine) claim(build db.Build) (string, bool) {
+	key := lifecycleKey(build)
+
+	engine.mu.Lock()
+	defer engine.mu.Unlock()
+
+	if _, found := engine.running[key]; found {
+		return key, false
+	}
+	engine.running[key] = struct{}{}
+	return key, true
+}
+
+func (engine *lifecycleEngine) unclaim(key string) {
+	engine.mu.Lock()
+	delete(engine.running, key)
+	engine.mu.Unlock()
+}
+
+func lifecycleKey(build db.Build) string {
+	if build.ID() != 0 {
+		return fmt.Sprintf("build-%d", build.ID())
+	}
+	return fmt.Sprintf("resource-%d", build.ResourceID())
+}
+
+type lifecycleBuild struct {
+	engine *lifecycleEngine
+	build  db.Build
+}
+
+func (running lifecycleBuild) Run(context.Context) {
+	behavior := lifecycleBehavior(running.build.PrivatePlan().ID)
+	if behavior == lifecycleStarted {
+		key, claimed := running.engine.claim(running.build)
+		if !claimed {
+			if err := running.build.Finish(db.BuildStatusErrored); err != nil {
+				panic(err)
+			}
+			return
+		}
+		defer running.engine.unclaim(key)
+	}
+
+	if running.build.Name() == db.CheckBuildName {
+		if err := running.build.OnCheckBuildStart(); err != nil {
+			panic(err)
+		}
+	}
+
+	switch behavior {
+	case lifecycleStarted:
+		running.engine.started <- struct{}{}
+		<-running.engine.release
+		running.engine.released <- struct{}{}
+	case lifecycleReleased:
+		running.engine.released <- struct{}{}
+	case lifecyclePanic:
+		panic("lifecycle build panicked")
+	case lifecycleFinish:
+		if err := running.build.Finish(db.BuildStatusSucceeded); err != nil {
+			panic(err)
+		}
+	default:
+		panic(fmt.Sprintf("unknown lifecycle behavior %q", running.build.PrivatePlan().ID))
+	}
+}
+
+func startedLifecycleCheckBuild(behavior lifecycleBehavior) db.Build {
+	GinkgoHelper()
+	build, created, err := resource.CreateBuild(
+		context.Background(),
+		true,
+		atc.Plan{ID: atc.PlanID(behavior)},
+	)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(created).To(BeTrue())
+	return build
+}
+
+func inMemoryLifecycleCheckBuild(behavior lifecycleBehavior) db.Build {
+	GinkgoHelper()
+	build, err := resource.CreateInMemoryBuild(
+		context.Background(),
+		atc.Plan{ID: atc.PlanID(behavior)},
+		util.NewSequenceGenerator(1),
+	)
+	Expect(err).NotTo(HaveOccurred())
+	return build
+}
 
 var _ = Describe("Tracker", func() {
 	var (
-		engine *stubEngine
+		engine *lifecycleEngine
 
 		tracker   *builds.Tracker
 		buildChan chan db.Build
 	)
 
 	BeforeEach(func() {
-		engine = &stubEngine{newBuild: func(db.Build) builds.Runnable {
-			return runnableFunc(func(context.Context) {})
-		}}
-		buildChan = make(chan db.Build, 10)
+		engine = newLifecycleEngine()
+		DeferCleanup(engine.Release)
 
+		buildChan = make(chan db.Build, 10)
+		DeferCleanup(func() { close(buildChan) })
 		tracker = builds.NewTracker(
 			lagertest.NewTestLogger("test"),
 			buildFactory,
@@ -58,103 +183,70 @@ var _ = Describe("Tracker", func() {
 		)
 	})
 
-	// runsInto reports each build the engine is asked to run.
-	runsInto := func(running chan<- db.Build) {
-		engine.newBuild = func(build db.Build) builds.Runnable {
-			return runnableFunc(func(context.Context) {
-				running <- build
-			})
-		}
-	}
-
 	Describe("Run", func() {
 		It("runs every started build", func() {
-			first := startedJobBuild("first")
-			second := startedJobBuild("second")
-			third := startedJobBuild("third")
-
-			running := make(chan db.Build, 3)
-			runsInto(running)
+			first := startedJobBuild(string(lifecycleFinish))
+			second := startedJobBuild(string(lifecycleFinish))
+			third := startedJobBuild(string(lifecycleFinish))
 
 			Expect(tracker.Run(context.TODO())).To(Succeed())
 
-			Expect([]int{(<-running).ID(), (<-running).ID(), (<-running).ID()}).
-				To(ConsistOf(first.ID(), second.ID(), third.ID()))
+			Eventually(func() []db.BuildStatus {
+				return []db.BuildStatus{statusOf(first.ID()), statusOf(second.ID()), statusOf(third.ID())}
+			}).Should(ConsistOf(
+				db.BuildStatusSucceeded,
+				db.BuildStatusSucceeded,
+				db.BuildStatusSucceeded,
+			))
 		})
 
 		It("runs in-memory check builds pushed onto the channel", func() {
-			running := make(chan db.Build, 1)
-			runsInto(running)
+			buildChan <- inMemoryLifecycleCheckBuild(lifecycleFinish)
 
-			build := inMemoryCheckBuild()
-			buildChan <- build
-
-			Eventually(running).Should(Receive())
+			Eventually(func() string { return inMemoryStatusOf(resource.ID()) }).
+				Should(Equal(string(db.BuildStatusSucceeded)))
 		})
 
 		It("does not track a build it is already running", func() {
-			startedJobBuild("already-running")
-
-			wait := make(chan struct{})
-			defer close(wait)
-
-			running := make(chan db.Build, 3)
-			engine.newBuild = func(build db.Build) builds.Runnable {
-				return runnableFunc(func(context.Context) {
-					running <- build
-					<-wait
-				})
-			}
+			build := startedJobBuild(string(lifecycleStarted))
 
 			Expect(tracker.Run(context.TODO())).To(Succeed())
-			<-running
+			Eventually(engine.started).Should(Receive())
 
 			Expect(tracker.Run(context.TODO())).To(Succeed())
+			Consistently(func() db.BuildStatus { return statusOf(build.ID()) }, 100*time.Millisecond).
+				Should(Equal(db.BuildStatusStarted))
 
-			Consistently(running, 100*time.Millisecond).ShouldNot(Receive())
+			engine.Release()
+			Eventually(engine.released).Should(Receive())
+			Expect(statusOf(build.ID())).To(Equal(db.BuildStatusStarted))
 		})
 
 		It("does not track a second in-memory check for a resource already running", func() {
-			wait := make(chan struct{})
-			defer close(wait)
+			buildChan <- inMemoryLifecycleCheckBuild(lifecycleStarted)
+			Eventually(engine.started).Should(Receive())
+			Expect(inMemoryStatusOf(resource.ID())).To(Equal(string(db.BuildStatusStarted)))
 
-			running := make(chan db.Build, 3)
-			engine.newBuild = func(build db.Build) builds.Runnable {
-				return runnableFunc(func(context.Context) {
-					running <- build
-					<-wait
-				})
-			}
+			buildChan <- inMemoryLifecycleCheckBuild(lifecycleStarted)
+			Consistently(func() string { return inMemoryStatusOf(resource.ID()) }, 100*time.Millisecond).
+				Should(Equal(string(db.BuildStatusStarted)))
 
-			// Two dispatches for the same resource, as the check factory makes
-			// them: distinct builds with no id yet, deduplicated by resource.
-			buildChan <- inMemoryCheckBuild()
-			<-running
-			buildChan <- inMemoryCheckBuild()
-
-			Consistently(running, 100*time.Millisecond).ShouldNot(Receive())
+			engine.Release()
+			Eventually(engine.released).Should(Receive())
+			Eventually(func() string { return inMemoryStatusOf(resource.ID()) }).
+				Should(Equal(string(db.BuildStatusErrored)))
 		})
 
 		It("errors a build whose run panics without stopping the others", func() {
-			crashing := startedJobBuild("crashing")
-			healthy := startedJobBuild("healthy")
-
-			running := make(chan db.Build, 2)
-			engine.newBuild = func(build db.Build) builds.Runnable {
-				id := build.ID()
-				return runnableFunc(func(context.Context) {
-					if id == crashing.ID() {
-						panic("something went wrong")
-					}
-					running <- build
-				})
-			}
+			crashing := startedJobBuild(string(lifecyclePanic))
+			healthy := startedJobBuild(string(lifecycleFinish))
 
 			Expect(tracker.Run(context.TODO())).To(Succeed())
 
-			Expect((<-running).ID()).To(Equal(healthy.ID()))
 			Eventually(func() db.BuildStatus { return statusOf(crashing.ID()) }).
 				Should(Equal(db.BuildStatusErrored))
+			Eventually(func() db.BuildStatus { return statusOf(healthy.ID()) }).
+				Should(Equal(db.BuildStatusSucceeded))
 		})
 	})
 
@@ -164,63 +256,41 @@ var _ = Describe("Tracker", func() {
 		// another web, retryable step error): a later tracker cycle picks it up
 		// again. A check build has no such cycle, so leaving it started would
 		// leak the checkFactory's in-flight tracking forever.
-		returnsWithoutFinishing := func(done chan<- struct{}) {
-			engine.newBuild = func(db.Build) builds.Runnable {
-				return runnableFunc(func(context.Context) { close(done) })
-			}
-		}
-
 		It("leaves a released job build started", func() {
-			build := startedJobBuild("released")
-
-			done := make(chan struct{})
-			returnsWithoutFinishing(done)
+			build := startedJobBuild(string(lifecycleReleased))
 
 			Expect(tracker.Run(context.TODO())).To(Succeed())
-			<-done
+			Eventually(engine.released).Should(Receive())
 
 			Consistently(func() db.BuildStatus { return statusOf(build.ID()) }, 100*time.Millisecond).
 				Should(Equal(db.BuildStatusStarted))
 		})
 
 		It("errors an orphaned check build", func() {
-			build := startedCheckBuild()
-
-			done := make(chan struct{})
-			returnsWithoutFinishing(done)
+			build := startedLifecycleCheckBuild(lifecycleReleased)
 
 			Expect(tracker.Run(context.TODO())).To(Succeed())
-			<-done
+			Eventually(engine.released).Should(Receive())
 
 			Eventually(func() db.BuildStatus { return statusOf(build.ID()) }).
 				Should(Equal(db.BuildStatusErrored))
 		})
 
 		It("errors an orphaned in-memory check so its in-flight tracking is cleared", func() {
-			done := make(chan struct{})
-			returnsWithoutFinishing(done)
-
-			buildChan <- inMemoryCheckBuild()
-			<-done
+			buildChan <- inMemoryLifecycleCheckBuild(lifecycleReleased)
+			Eventually(engine.released).Should(Receive())
 
 			Eventually(func() string { return inMemoryStatusOf(resource.ID()) }).
 				Should(Equal(string(db.BuildStatusErrored)))
 		})
 
 		It("does not re-finish a build that completed on its own", func() {
-			build := startedJobBuild("completed")
-
-			done := make(chan struct{})
-			engine.newBuild = func(b db.Build) builds.Runnable {
-				return runnableFunc(func(context.Context) {
-					Expect(b.Finish(db.BuildStatusSucceeded)).To(Succeed())
-					close(done)
-				})
-			}
+			build := startedJobBuild(string(lifecycleFinish))
 
 			Expect(tracker.Run(context.TODO())).To(Succeed())
-			<-done
 
+			Eventually(func() db.BuildStatus { return statusOf(build.ID()) }).
+				Should(Equal(db.BuildStatusSucceeded))
 			Consistently(func() db.BuildStatus { return statusOf(build.ID()) }, 100*time.Millisecond).
 				Should(Equal(db.BuildStatusSucceeded))
 		})
@@ -229,40 +299,32 @@ var _ = Describe("Tracker", func() {
 	Describe("metrics", func() {
 		It("counts a job build as running while it runs", func() {
 			metric.Metrics.BuildsRunning.Max()
-			startedJobBuild("metric-job")
-
-			var seenDuringRun float64
-			done := make(chan struct{})
-			engine.newBuild = func(db.Build) builds.Runnable {
-				return runnableFunc(func(context.Context) {
-					seenDuringRun = metric.Metrics.BuildsRunning.Max()
-					close(done)
-				})
-			}
+			build := startedJobBuild(string(lifecycleStarted))
 
 			Expect(tracker.Run(context.TODO())).To(Succeed())
-			<-done
+			Eventually(engine.started).Should(Receive())
 
-			Expect(seenDuringRun).To(BeNumerically(">=", 1))
+			Expect(metric.Metrics.BuildsRunning.Max()).To(BeNumerically(">=", 1))
+			Expect(statusOf(build.ID())).To(Equal(db.BuildStatusStarted))
+
+			engine.Release()
+			Eventually(engine.released).Should(Receive())
 		})
 
 		It("counts a check build as a running check while it runs", func() {
 			metric.Metrics.CheckBuildsRunning.Max()
-			startedCheckBuild()
-
-			var seenDuringRun float64
-			done := make(chan struct{})
-			engine.newBuild = func(db.Build) builds.Runnable {
-				return runnableFunc(func(context.Context) {
-					seenDuringRun = metric.Metrics.CheckBuildsRunning.Max()
-					close(done)
-				})
-			}
+			build := startedLifecycleCheckBuild(lifecycleStarted)
 
 			Expect(tracker.Run(context.TODO())).To(Succeed())
-			<-done
+			Eventually(engine.started).Should(Receive())
 
-			Expect(seenDuringRun).To(BeNumerically(">=", 1))
+			Expect(metric.Metrics.CheckBuildsRunning.Max()).To(BeNumerically(">=", 1))
+			Expect(statusOf(build.ID())).To(Equal(db.BuildStatusStarted))
+
+			engine.Release()
+			Eventually(engine.released).Should(Receive())
+			Eventually(func() db.BuildStatus { return statusOf(build.ID()) }).
+				Should(Equal(db.BuildStatusErrored))
 		})
 	})
 
@@ -270,10 +332,9 @@ var _ = Describe("Tracker", func() {
 		It("drains the engine", func() {
 			var _ component.Drainable = tracker
 
-			ctx := context.TODO()
-			tracker.Drain(ctx)
+			tracker.Drain(context.TODO())
 
-			Expect(engine.drained).To(Equal([]context.Context{ctx}))
+			Eventually(engine.draining).Should(BeClosed())
 		})
 	})
 })

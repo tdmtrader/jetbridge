@@ -57,8 +57,8 @@ var _ = Describe("AccessTokensCollector", func() {
 		It("forwards its configured leeway, sparing a token only just expired", func() {
 			// jwt.DefaultLeeway is a minute. A token half that far past its expiry
 			// survives only if the collector actually passes the leeway through; with
-			// a zero leeway it would be deleted. This is what the old
-			// RemoveExpiredAccessTokensArgsForCall(0) assertion was reaching for.
+			// a zero leeway it would be deleted. The persisted token outcome proves
+			// that the collector honors its configured boundary.
 			expiringIn("just-expired", -jwt.DefaultLeeway/2)
 
 			Expect(collector.Run(context.TODO())).To(Succeed())

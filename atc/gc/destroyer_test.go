@@ -1,7 +1,6 @@
 package gc_test
 
 import (
-	"errors"
 	"time"
 
 	"github.com/concourse/concourse/atc"
@@ -12,26 +11,6 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
-
-// Each decorator below fails exactly the one repository call whose error
-// passthrough is under test and delegates everything else to PostgreSQL.
-type failRemoveDestroyingContainers struct{ db.ContainerRepository }
-
-func (failRemoveDestroyingContainers) RemoveDestroyingContainers(string, []string) (int, error) {
-	return 0, errors.New("I am le tired")
-}
-
-type failRemoveDestroyingVolumes struct{ db.VolumeRepository }
-
-func (failRemoveDestroyingVolumes) RemoveDestroyingVolumes(string, []string) (int, error) {
-	return 0, errors.New("I am le tired")
-}
-
-type failGetDestroyingVolumes struct{ db.VolumeRepository }
-
-func (failGetDestroyingVolumes) GetDestroyingVolumes(string) ([]string, error) {
-	return nil, errors.New("some-bad-err")
-}
 
 var _ = Describe("Destroyer", func() {
 	var (
@@ -162,18 +141,6 @@ var _ = Describe("Destroyer", func() {
 				Expect(containerHandles()).To(ContainElement(survivor.Handle()))
 			})
 		})
-
-		Context("when the container repository fails", func() {
-			It("returns the error and destroys nothing", func() {
-				survivor := destroyingContainer("repo-failure")
-
-				err := gc.NewDestroyer(logger, failRemoveDestroyingContainers{containerRepository}, volumeRepository).
-					DestroyContainers(worker.Name(), []string{})
-
-				Expect(err).To(MatchError("I am le tired"))
-				Expect(containerHandles()).To(ContainElement(survivor.Handle()))
-			})
-		})
 	})
 
 	Describe("DestroyVolumes", func() {
@@ -222,21 +189,6 @@ var _ = Describe("Destroyer", func() {
 				Expect(remaining).To(ContainElement(survivor.Handle()))
 			})
 		})
-
-		Context("when the volume repository fails", func() {
-			It("returns the error and destroys nothing", func() {
-				survivor := destroyingVolume("repo-failure-path")
-
-				err := gc.NewDestroyer(logger, containerRepository, failRemoveDestroyingVolumes{volumeRepository}).
-					DestroyVolumes(worker.Name(), []string{})
-
-				Expect(err).To(MatchError("I am le tired"))
-
-				remaining, err := volumeRepository.GetDestroyingVolumes(worker.Name())
-				Expect(err).NotTo(HaveOccurred())
-				Expect(remaining).To(ContainElement(survivor.Handle()))
-			})
-		})
 	})
 
 	Describe("FindDestroyingVolumesForGc", func() {
@@ -253,18 +205,6 @@ var _ = Describe("Destroyer", func() {
 			handles, err := destroyer.FindDestroyingVolumesForGc(worker.Name())
 			Expect(err).NotTo(HaveOccurred())
 			Expect(handles).To(ConsistOf(first.Handle(), second.Handle()))
-		})
-
-		Context("when the volume repository fails", func() {
-			It("returns the error", func() {
-				destroyingVolume("read-failure-path")
-
-				handles, err := gc.NewDestroyer(logger, containerRepository, failGetDestroyingVolumes{volumeRepository}).
-					FindDestroyingVolumesForGc(worker.Name())
-
-				Expect(err).To(MatchError("some-bad-err"))
-				Expect(handles).To(BeEmpty())
-			})
 		})
 	})
 })

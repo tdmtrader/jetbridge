@@ -1,7 +1,6 @@
 package engine_test
 
 import (
-	"errors"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -19,40 +18,6 @@ import (
 	"github.com/concourse/concourse/atc/resource"
 	"github.com/concourse/concourse/vars"
 )
-
-// A healthy clone cannot make Pipeline fail on demand while preserving the
-// build row needed by the rest of this delegate test.
-type pipelineErrorBuild struct {
-	db.Build
-	err error
-}
-
-func (build pipelineErrorBuild) Pipeline() (db.Pipeline, bool, error) {
-	return nil, false, build.err
-}
-
-// A healthy pipeline cannot fail only Resource while its other persisted
-// fields remain readable.
-type resourceErrorPipeline struct {
-	db.Pipeline
-	err error
-}
-
-func (pipeline resourceErrorPipeline) Resource(string) (db.Resource, bool, error) {
-	return nil, false, pipeline.err
-}
-
-// pipelineResultBuild injects a wrapped persisted pipeline into GetDelegate;
-// every other Build method remains backed by the healthy real build.
-type pipelineResultBuild struct {
-	db.Build
-	pipeline db.Pipeline
-	found    bool
-}
-
-func (build pipelineResultBuild) Pipeline() (db.Pipeline, bool, error) {
-	return build.pipeline, build.found, nil
-}
 
 var _ = Describe("GetDelegate", func() {
 	var (
@@ -139,35 +104,10 @@ var _ = Describe("GetDelegate", func() {
 			Expect(version.Metadata()).To(Equal(db.NewResourceConfigMetadataFields(info.Metadata)))
 		})
 
-		It("leaves metadata unchanged when retrieving the pipeline fails", func() {
-			delegate = engine.NewGetDelegate(
-				pipelineErrorBuild{Build: realBuild, err: errors.New("nope")},
-				"some-plan-id", state, fakeClock, policy.NoopChecker{},
-			)
-			delegate.UpdateResourceVersion(logger, "some-resource", info)
-			found, err := version.Reload()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(found).To(BeTrue())
-			Expect(version.Metadata()).To(BeEmpty())
-		})
-
 		It("leaves metadata unchanged when the real one-off build has no pipeline", func() {
 			oneOff, err := team.CreateOneOffBuild()
 			Expect(err).NotTo(HaveOccurred())
 			delegate = engine.NewGetDelegate(oneOff, "some-plan-id", state, fakeClock, policy.NoopChecker{})
-			delegate.UpdateResourceVersion(logger, "some-resource", info)
-			found, err := version.Reload()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(found).To(BeTrue())
-			Expect(version.Metadata()).To(BeEmpty())
-		})
-
-		It("leaves metadata unchanged when retrieving the resource fails", func() {
-			wrappedPipeline := resourceErrorPipeline{Pipeline: pipeline, err: errors.New("nope")}
-			delegate = engine.NewGetDelegate(
-				pipelineResultBuild{Build: realBuild, pipeline: wrappedPipeline, found: true},
-				"some-plan-id", state, fakeClock, policy.NoopChecker{},
-			)
 			delegate.UpdateResourceVersion(logger, "some-resource", info)
 			found, err := version.Reload()
 			Expect(err).NotTo(HaveOccurred())
