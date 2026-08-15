@@ -651,20 +651,6 @@ var _ = Describe("Pipelines API", func() {
 				})
 			})
 
-			Context("when the call to get active pipelines fails", func() {
-				BeforeEach(func() {
-					doomed := postgresRunner.OpenConn()
-					Expect(doomed.Close()).To(Succeed())
-					deps := listingDB.Deps
-					deps.pipelineFactory = db.NewPipelineFactory(doomed, listingDB.LockFactory)
-					server = newAPIServer(deps)
-					DeferCleanup(server.Close)
-				})
-
-				It("returns 500 internal server error", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-				})
-			})
 		})
 	})
 

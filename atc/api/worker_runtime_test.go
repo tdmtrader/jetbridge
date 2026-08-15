@@ -12,8 +12,8 @@ import (
 )
 
 // apiWorkerRuntime is the half of a worker that is not the database: the
-// volumes and containers it holds by handle, plus artifact volumes keyed by
-// their owning team.
+// volumes and containers it holds by handle, plus the real volume repository
+// used to create artifact volumes on demand.
 // Every decision the API asks a worker.Pool to make -- which worker holds a
 // handle, whether that worker is running, which worker a new artifact lands on
 // -- is left to the real pool over the real database. Only this last hop is
@@ -21,21 +21,15 @@ import (
 type apiWorkerRuntime struct {
 	mu sync.Mutex
 
-	volumes           map[string]runtime.Volume
-	containers        map[string]runtime.Container
-	artifactsByTeamID map[int]apiArtifact
-}
-
-type apiArtifact struct {
-	volume   runtime.Volume
-	artifact db.WorkerArtifact
+	volumes                  map[string]runtime.Volume
+	containers               map[string]runtime.Container
+	artifactVolumeRepository db.VolumeRepository
 }
 
 func newAPIWorkerRuntime() *apiWorkerRuntime {
 	return &apiWorkerRuntime{
-		volumes:           map[string]runtime.Volume{},
-		containers:        map[string]runtime.Container{},
-		artifactsByTeamID: map[int]apiArtifact{},
+		volumes:    map[string]runtime.Volume{},
+		containers: map[string]runtime.Container{},
 	}
 }
 
@@ -51,10 +45,17 @@ func (rt *apiWorkerRuntime) addContainer(handle string, container runtime.Contai
 	rt.containers[handle] = container
 }
 
-func (rt *apiWorkerRuntime) addArtifact(teamID int, volume runtime.Volume, artifact db.WorkerArtifact) {
+func (rt *apiWorkerRuntime) connectArtifactVolumeRepository(repository db.VolumeRepository) {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
-	rt.artifactsByTeamID[teamID] = apiArtifact{volume: volume, artifact: artifact}
+	rt.artifactVolumeRepository = repository
+}
+
+func (rt *apiWorkerRuntime) volumeByHandle(handle string) (runtime.Volume, bool) {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	volume, found := rt.volumes[handle]
+	return volume, found
 }
 
 // poolWorkerFactory is the worker.Factory the pool builds workers with.
@@ -96,11 +97,27 @@ func (w poolWorker) LookupContainer(_ context.Context, handle string) (runtime.C
 
 func (w poolWorker) CreateVolumeForArtifact(_ context.Context, teamID int) (runtime.Volume, db.WorkerArtifact, error) {
 	w.runtime.mu.Lock()
-	defer w.runtime.mu.Unlock()
+	repository := w.runtime.artifactVolumeRepository
+	w.runtime.mu.Unlock()
 
-	artifact, found := w.runtime.artifactsByTeamID[teamID]
-	if !found {
-		return nil, nil, fmt.Errorf("artifact for team %d not found", teamID)
+	if repository == nil {
+		return nil, nil, fmt.Errorf("artifact volume repository is not connected")
 	}
-	return artifact.volume, artifact.artifact, nil
+
+	creating, err := repository.CreateVolume(teamID, w.Name(), db.VolumeTypeArtifact)
+	if err != nil {
+		return nil, nil, fmt.Errorf("create artifact volume: %w", err)
+	}
+	created, err := creating.Created()
+	if err != nil {
+		return nil, nil, fmt.Errorf("transition artifact volume: %w", err)
+	}
+	artifact, err := created.InitializeArtifact("", 0)
+	if err != nil {
+		return nil, nil, fmt.Errorf("initialize artifact: %w", err)
+	}
+
+	volume := runtimetest.NewVolume(created.Handle())
+	w.runtime.addVolume(volume)
+	return volume, artifact, nil
 }

@@ -1075,16 +1075,23 @@ var _ = Describe("Jobs API", func() {
 				ResourceTypes: atc.ResourceTypes{
 					{
 						Name: "some-type", Type: "parent-type",
-						Source: atc.Source{"repository": "resource-type"},
+						Source:     atc.Source{"repository": "resource-type"},
+						CheckEvery: &atc.CheckEvery{Interval: 5 * time.Minute},
+						Tags:       atc.Tags{"type-worker"},
 					},
 					{
 						Name: "parent-type", Type: dbtest.BaseResourceType,
-						Source: atc.Source{"repository": "parent-type"},
+						Source:     atc.Source{"repository": "parent-type"},
+						CheckEvery: &atc.CheckEvery{Interval: 3 * time.Minute},
+						Tags:       atc.Tags{"parent-worker"},
 					},
 				},
 				Resources: atc.ResourceConfigs{{
 					Name: "some-input", Type: "some-type",
-					Source: atc.Source{"repository": "resource"},
+					Source:       atc.Source{"repository": "resource"},
+					CheckEvery:   &atc.CheckEvery{Interval: 7 * time.Minute},
+					CheckTimeout: "8m",
+					Tags:         atc.Tags{"resource-worker"},
 				}},
 				Jobs: atc.JobConfigs{{
 					Name: "some-job", DisableManualTrigger: disableManualTrigger,
@@ -1181,12 +1188,32 @@ var _ = Describe("Jobs API", func() {
 			Expect(checkPlan.Type).To(Equal("some-type"))
 			Expect(checkPlan.Source).To(Equal(atc.Source{"repository": "resource"}))
 			Expect(checkPlan.FromVersion).To(Equal(pinnedVersion))
+			Expect(checkPlan.Interval).To(Equal(atc.CheckEvery{Interval: 7 * time.Minute}))
 			Expect(checkPlan.SkipInterval).To(BeTrue())
+			Expect(checkPlan.Timeout).To(Equal("8m"))
+			Expect(checkPlan.Tags).To(Equal(atc.Tags{"resource-worker"}))
 			Expect(checkPlan.TypeImage.CheckPlan).NotTo(BeNil())
-			Expect(checkPlan.TypeImage.CheckPlan.Check).NotTo(BeNil())
-			Expect(checkPlan.TypeImage.CheckPlan.Check.ResourceType).To(Equal("some-type"))
-			Expect(checkPlan.TypeImage.CheckPlan.Check.Type).To(Equal("parent-type"))
-			Expect(checkPlan.TypeImage.CheckPlan.Check.SkipInterval).To(BeTrue())
+			typeCheck := checkPlan.TypeImage.CheckPlan.Check
+			Expect(typeCheck).NotTo(BeNil())
+			Expect(typeCheck.Name).To(Equal("some-type"))
+			Expect(typeCheck.ResourceType).To(Equal("some-type"))
+			Expect(typeCheck.Type).To(Equal("parent-type"))
+			Expect(typeCheck.Source).To(Equal(atc.Source{"repository": "resource-type"}))
+			Expect(typeCheck.Interval).To(Equal(atc.CheckEvery{Interval: 5 * time.Minute}))
+			Expect(typeCheck.SkipInterval).To(BeTrue())
+			Expect(typeCheck.Tags).To(Equal(atc.Tags{"type-worker"}))
+			Expect(typeCheck.TypeImage.CheckPlan).NotTo(BeNil())
+			parentCheck := typeCheck.TypeImage.CheckPlan.Check
+			Expect(parentCheck).NotTo(BeNil())
+			Expect(parentCheck.Name).To(Equal("parent-type"))
+			Expect(parentCheck.ResourceType).To(Equal("parent-type"))
+			Expect(parentCheck.Type).To(Equal(dbtest.BaseResourceType))
+			Expect(parentCheck.Source).To(Equal(atc.Source{"repository": "parent-type"}))
+			Expect(parentCheck.Interval).To(Equal(atc.CheckEvery{Interval: 3 * time.Minute}))
+			Expect(parentCheck.SkipInterval).To(BeTrue())
+			Expect(parentCheck.Tags).To(Equal(atc.Tags{"parent-worker"}))
+			Expect(parentCheck.TypeImage.BaseType).To(Equal(dbtest.BaseResourceType))
+			Expect(parentCheck.TypeImage.CheckPlan).To(BeNil())
 			_, found, err = resource.FindVersion(pinnedVersion)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(found).To(BeTrue())

@@ -118,6 +118,15 @@ func decodeResourceAPIResponse[T any](response *http.Response) T {
 	return value
 }
 
+func requireNestedResourceAPICheck(check *atc.CheckPlan) *atc.CheckPlan {
+	GinkgoHelper()
+	Expect(check).NotTo(BeNil())
+	Expect(check.TypeImage.CheckPlan).NotTo(BeNil())
+	nested := check.TypeImage.CheckPlan.Check
+	Expect(nested).NotTo(BeNil())
+	return nested
+}
+
 func resourceByName(resources []atc.Resource, name string) atc.Resource {
 	GinkgoHelper()
 
@@ -688,14 +697,19 @@ var _ = Describe("Resources API", func() {
 			config := defaultResourceAPIConfig()
 			config.Resources[0].Type = "resource-type-name"
 			config.ResourceTypes[0].Type = "parent-type"
+			config.ResourceTypes[0].CheckEvery = &atc.CheckEvery{Interval: 3 * time.Minute}
 			config.ResourceTypes = append(config.ResourceTypes, atc.ResourceType{
 				Name: "parent-type", Type: dbtest.BaseResourceType,
-				Source: atc.Source{"repository": "resource-parent"},
+				Source:     atc.Source{"repository": "resource-parent"},
+				CheckEvery: &atc.CheckEvery{Interval: 4 * time.Minute},
+				Tags:       atc.Tags{"parent-worker"},
 			})
 			config.Prototypes[0].Type = "prototype-parent"
 			config.ResourceTypes = append(config.ResourceTypes, atc.ResourceType{
 				Name: "prototype-parent", Type: dbtest.BaseResourceType,
-				Source: atc.Source{"repository": "prototype-parent"},
+				Source:     atc.Source{"repository": "prototype-parent"},
+				CheckEvery: &atc.CheckEvery{Interval: 5 * time.Minute},
+				Tags:       atc.Tags{"prototype-parent-worker"},
 			})
 			fixture.updatePipeline(config)
 			grantProfile(fixture.team, memberProfile, accessor.OperatorRole)
@@ -754,9 +768,8 @@ var _ = Describe("Resources API", func() {
 				check := privatePlan.Check
 				Expect(check.FromVersion).To(Equal(from))
 				Expect(check.SkipInterval).To(BeTrue())
-				Expect(check.TypeImage.CheckPlan).NotTo(BeNil())
-				Expect(check.TypeImage.CheckPlan.Check).NotTo(BeNil())
-				Expect(check.TypeImage.CheckPlan.Check.SkipInterval).To(BeTrue())
+				nestedCheck := requireNestedResourceAPICheck(check)
+				Expect(nestedCheck.SkipInterval).To(BeTrue())
 				switch kind {
 				case "resource":
 					resource, found, err := fixture.pipeline.Resource("resource-name")
@@ -772,8 +785,24 @@ var _ = Describe("Resources API", func() {
 						"repository": "primary",
 						"branch":     "main",
 					}))
-					Expect(check.TypeImage.CheckPlan.Check.ResourceType).To(Equal("resource-type-name"))
-					Expect(check.TypeImage.CheckPlan.Check.Type).To(Equal("parent-type"))
+					Expect(check.Interval).To(Equal(atc.CheckEvery{Interval: 2 * time.Minute}))
+					Expect(check.Timeout).To(Equal("4m"))
+					Expect(check.Tags).To(Equal(atc.Tags{"resource-worker"}))
+					Expect(nestedCheck.Name).To(Equal("resource-type-name"))
+					Expect(nestedCheck.ResourceType).To(Equal("resource-type-name"))
+					Expect(nestedCheck.Type).To(Equal("parent-type"))
+					Expect(nestedCheck.Source).To(Equal(atc.Source{"repository": "resource-type"}))
+					Expect(nestedCheck.Interval).To(Equal(atc.CheckEvery{Interval: 3 * time.Minute}))
+					Expect(nestedCheck.Tags).To(Equal(atc.Tags{"resource-type-worker"}))
+					parentCheck := requireNestedResourceAPICheck(nestedCheck)
+					Expect(parentCheck.Name).To(Equal("parent-type"))
+					Expect(parentCheck.ResourceType).To(Equal("parent-type"))
+					Expect(parentCheck.Type).To(Equal(dbtest.BaseResourceType))
+					Expect(parentCheck.Source).To(Equal(atc.Source{"repository": "resource-parent"}))
+					Expect(parentCheck.Interval).To(Equal(atc.CheckEvery{Interval: 4 * time.Minute}))
+					Expect(parentCheck.SkipInterval).To(BeTrue())
+					Expect(parentCheck.Tags).To(Equal(atc.Tags{"parent-worker"}))
+					Expect(parentCheck.TypeImage.CheckPlan).To(BeNil())
 					_, found, err = resource.FindVersion(from)
 					Expect(err).NotTo(HaveOccurred())
 					Expect(found).To(BeTrue())
@@ -791,8 +820,16 @@ var _ = Describe("Resources API", func() {
 					Expect(check.ResourceType).To(Equal("resource-type-name"))
 					Expect(check.Type).To(Equal("parent-type"))
 					Expect(check.Source).To(Equal(atc.Source{"repository": "resource-type"}))
-					Expect(check.TypeImage.CheckPlan.Check.ResourceType).To(Equal("parent-type"))
-					Expect(check.TypeImage.CheckPlan.Check.Type).To(Equal(dbtest.BaseResourceType))
+					Expect(check.Interval).To(Equal(atc.CheckEvery{Interval: 3 * time.Minute}))
+					Expect(check.Timeout).To(BeEmpty())
+					Expect(check.Tags).To(Equal(atc.Tags{"resource-type-worker"}))
+					Expect(nestedCheck.Name).To(Equal("parent-type"))
+					Expect(nestedCheck.ResourceType).To(Equal("parent-type"))
+					Expect(nestedCheck.Type).To(Equal(dbtest.BaseResourceType))
+					Expect(nestedCheck.Source).To(Equal(atc.Source{"repository": "resource-parent"}))
+					Expect(nestedCheck.Interval).To(Equal(atc.CheckEvery{Interval: 4 * time.Minute}))
+					Expect(nestedCheck.Tags).To(Equal(atc.Tags{"parent-worker"}))
+					Expect(nestedCheck.TypeImage.CheckPlan).To(BeNil())
 				case "prototype":
 					prototype, found, err := fixture.pipeline.Prototype("prototype-name")
 					Expect(err).NotTo(HaveOccurred())
@@ -808,8 +845,16 @@ var _ = Describe("Resources API", func() {
 					Expect(check.Prototype).To(Equal("prototype-name"))
 					Expect(check.Type).To(Equal("prototype-parent"))
 					Expect(check.Source).To(Equal(atc.Source{"repository": "prototype"}))
-					Expect(check.TypeImage.CheckPlan.Check.ResourceType).To(Equal("prototype-parent"))
-					Expect(check.TypeImage.CheckPlan.Check.Type).To(Equal(dbtest.BaseResourceType))
+					Expect(check.Interval).To(Equal(atc.CheckEvery{Interval: time.Minute}))
+					Expect(check.Timeout).To(BeEmpty())
+					Expect(check.Tags).To(Equal(atc.Tags{"prototype-worker"}))
+					Expect(nestedCheck.Name).To(Equal("prototype-parent"))
+					Expect(nestedCheck.ResourceType).To(Equal("prototype-parent"))
+					Expect(nestedCheck.Type).To(Equal(dbtest.BaseResourceType))
+					Expect(nestedCheck.Source).To(Equal(atc.Source{"repository": "prototype-parent"}))
+					Expect(nestedCheck.Interval).To(Equal(atc.CheckEvery{Interval: 5 * time.Minute}))
+					Expect(nestedCheck.Tags).To(Equal(atc.Tags{"prototype-parent-worker"}))
+					Expect(nestedCheck.TypeImage.CheckPlan).To(BeNil())
 				}
 			},
 			Entry("resource", "resource", "/api/v1/teams/a-team/pipelines/a-pipeline/resources/resource-name/check"),
@@ -817,19 +862,38 @@ var _ = Describe("Resources API", func() {
 			Entry("prototype", "prototype", "/api/v1/teams/a-team/pipelines/a-pipeline/prototypes/prototype-name/check"),
 		)
 
-		It("keeps the nested custom-type interval when shallow is true", func() {
-			response := requestResourceAPI(
-				fixture,
-				http.MethodPost,
-				"/api/v1/teams/a-team/pipelines/a-pipeline/resources/resource-name/check",
-				resourceAPIJSONBody(atc.CheckRequestBody{Shallow: true}),
-			)
-			Expect(response.StatusCode).To(Equal(http.StatusCreated))
-			presented := decodeResourceAPIResponse[atc.Build](response)
-			build, found, err := fixture.database.Deps.buildFactory.Build(presented.ID)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(found).To(BeTrue())
-			Expect(build.PrivatePlan().Check.TypeImage.CheckPlan.Check.SkipInterval).To(BeFalse())
+		It("keeps every nested custom-type interval when each manual-check route is shallow", func() {
+			checks := []struct {
+				name  string
+				path  string
+				depth int
+			}{
+				{name: "resource", path: "/api/v1/teams/a-team/pipelines/a-pipeline/resources/resource-name/check", depth: 2},
+				{name: "resource type", path: "/api/v1/teams/a-team/pipelines/a-pipeline/resource-types/resource-type-name/check", depth: 1},
+				{name: "prototype", path: "/api/v1/teams/a-team/pipelines/a-pipeline/prototypes/prototype-name/check", depth: 1},
+			}
+
+			for _, checkCase := range checks {
+				By(checkCase.name)
+				response := requestResourceAPI(
+					fixture,
+					http.MethodPost,
+					checkCase.path,
+					resourceAPIJSONBody(atc.CheckRequestBody{Shallow: true}),
+				)
+				Expect(response.StatusCode).To(Equal(http.StatusCreated))
+				presented := decodeResourceAPIResponse[atc.Build](response)
+				build, found, err := fixture.database.Deps.buildFactory.Build(presented.ID)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(found).To(BeTrue())
+				rootCheck := build.PrivatePlan().Check
+				Expect(rootCheck.SkipInterval).To(BeTrue())
+				nestedCheck := requireNestedResourceAPICheck(rootCheck)
+				Expect(nestedCheck.SkipInterval).To(BeFalse())
+				if checkCase.depth == 2 {
+					Expect(requireNestedResourceAPICheck(nestedCheck).SkipInterval).To(BeFalse())
+				}
+			}
 		})
 
 		DescribeTable("preserves each check handler's missing and authorization statuses",
@@ -878,6 +942,9 @@ var _ = Describe("Resources API", func() {
 		const basePath = "/api/v1/teams/a-team/pipelines/a-pipeline/resources/resource-name/check/webhook"
 
 		BeforeEach(func() {
+			config := defaultResourceAPIConfig()
+			config.Resources[0].Type = "resource-type-name"
+			fixture.updatePipeline(config)
 			useProfile(anonymousProfile)
 		})
 
@@ -892,7 +959,13 @@ var _ = Describe("Resources API", func() {
 			Expect(found).To(BeTrue())
 			Expect(build.IsManuallyTriggered()).To(BeTrue())
 			Expect(build.Status()).To(Equal(db.BuildStatusStarted))
-			Expect(build.PrivatePlan().Check.Resource).To(Equal("resource-name"))
+			check := build.PrivatePlan().Check
+			Expect(check.Resource).To(Equal("resource-name"))
+			Expect(check.FromVersion).To(BeNil())
+			Expect(check.SkipInterval).To(BeTrue())
+			nestedCheck := requireNestedResourceAPICheck(check)
+			Expect(nestedCheck.ResourceType).To(Equal("resource-type-name"))
+			Expect(nestedCheck.SkipInterval).To(BeFalse())
 		})
 
 		It("rejects a missing or incorrect webhook token", func() {

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -22,12 +21,10 @@ import (
 var _ = Describe("ArtifactRepository API", func() {
 	Describe("POST /api/v1/teams/:team_name/artifacts", func() {
 		var (
-			realdb   *realDB
-			deps     apiDBDeps
-			team     db.Team
-			artifact db.WorkerArtifact
-			handle   string
-			server   *httptest.Server
+			realdb *realDB
+			deps   apiDBDeps
+			team   db.Team
+			server *httptest.Server
 
 			request  *http.Request
 			response *http.Response
@@ -43,22 +40,9 @@ var _ = Describe("ArtifactRepository API", func() {
 			team, err = deps.teamFactory.CreateTeam(atc.Team{Name: "some-team"})
 			Expect(err).NotTo(HaveOccurred())
 
-			worker, err := deps.workerFactory.SaveWorker(atc.Worker{Name: "artifact-worker"}, 0)
+			_, err = deps.workerFactory.SaveWorker(atc.Worker{Name: "artifact-worker"}, 0)
 			Expect(err).NotTo(HaveOccurred())
-
-			build, err := team.CreateOneOffBuild()
-			Expect(err).NotTo(HaveOccurred())
-
-			volumeHandle := "some-artifact-handle"
-			creating, err := deps.volumeRepository.CreateVolumeWithHandle(
-				volumeHandle, team.ID(), worker.Name(), db.VolumeTypeArtifact,
-			)
-			Expect(err).NotTo(HaveOccurred())
-			created, err := creating.Created()
-			Expect(err).NotTo(HaveOccurred())
-			handle = created.Handle()
-			artifact, err = created.InitializeArtifact("some-artifact", build.ID())
-			Expect(err).NotTo(HaveOccurred())
+			workerRuntime.connectArtifactVolumeRepository(deps.volumeRepository)
 
 			useProfile(memberProfile)
 		})
@@ -107,7 +91,7 @@ var _ = Describe("ArtifactRepository API", func() {
 		})
 
 		Context("when authorized", func() {
-			var volume *runtimetest.Volume
+			var volumesBefore, artifactsBefore int
 
 			BeforeEach(func() {
 				grantProfile(team, memberProfile, accessor.MemberRole)
@@ -116,49 +100,47 @@ var _ = Describe("ArtifactRepository API", func() {
 				tarContents = runtimetest.VolumeContent{
 					"some/file": {Data: []byte("some contents")},
 				}
-
-				volume = runtimetest.NewVolume(handle)
-				workerRuntime.addArtifact(team.ID(), volume, artifact)
+				Expect(realdb.Conn.QueryRow(
+					`SELECT count(*) FROM volumes WHERE team_id = $1`, team.ID(),
+				).Scan(&volumesBefore)).To(Succeed())
+				Expect(realdb.Conn.QueryRow(
+					`SELECT count(*) FROM worker_artifacts`,
+				).Scan(&artifactsBefore)).To(Succeed())
 			})
 
-			It("uses the artifact volume owned by the requested team", func() {
+			It("creates a fresh team-owned artifact volume, streams the payload, and returns it", func() {
 				Expect(response.StatusCode).To(Equal(http.StatusCreated))
-				Expect(volume.Content).To(Equal(tarContents))
+				Expect(response).To(IncludeHeaderEntries(map[string]string{
+					"Content-Type": "application/json",
+				}))
 
-				created, found, err := team.FindVolumeForWorkerArtifact(artifact.ID())
+				var presented atc.WorkerArtifact
+				Expect(json.NewDecoder(response.Body).Decode(&presented)).To(Succeed())
+				Expect(presented.ID).To(BeNumerically(">", 0))
+				Expect(presented.Name).To(BeEmpty())
+				Expect(presented.BuildID).To(BeZero())
+				Expect(presented.CreatedAt).To(BeNumerically(">", 0))
+
+				var volumesAfter, artifactsAfter int
+				Expect(realdb.Conn.QueryRow(
+					`SELECT count(*) FROM volumes WHERE team_id = $1`, team.ID(),
+				).Scan(&volumesAfter)).To(Succeed())
+				Expect(realdb.Conn.QueryRow(
+					`SELECT count(*) FROM worker_artifacts`,
+				).Scan(&artifactsAfter)).To(Succeed())
+				Expect(volumesAfter).To(Equal(volumesBefore + 1))
+				Expect(artifactsAfter).To(Equal(artifactsBefore + 1))
+
+				created, found, err := team.FindVolumeForWorkerArtifact(presented.ID)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(found).To(BeTrue())
 				Expect(created.TeamID()).To(Equal(team.ID()))
-				Expect(created.Handle()).To(Equal(handle))
-			})
 
-			It("streams into the volume", func() {
+				runtimeVolume, found := workerRuntime.volumeByHandle(created.Handle())
+				Expect(found).To(BeTrue())
+				volume, ok := runtimeVolume.(*runtimetest.Volume)
+				Expect(ok).To(BeTrue())
 				Expect(volume.Content).To(Equal(tarContents))
-			})
-
-			It("returns 201 Created", func() {
-				Expect(response.StatusCode).To(Equal(http.StatusCreated))
-			})
-
-			It("returns Content-Type 'application/json'", func() {
-				expectedHeaderEntries := map[string]string{
-					"Content-Type": "application/json",
-				}
-				Expect(response).Should(IncludeHeaderEntries(expectedHeaderEntries))
-			})
-
-			It("returns the artifact record", func() {
-				body, err := io.ReadAll(response.Body)
-				Expect(err).NotTo(HaveOccurred())
-
-				expected, err := json.Marshal(atc.WorkerArtifact{
-					ID:        artifact.ID(),
-					Name:      artifact.Name(),
-					BuildID:   artifact.BuildID(),
-					CreatedAt: artifact.CreatedAt().Unix(),
-				})
-				Expect(err).NotTo(HaveOccurred())
-				Expect(body).To(MatchJSON(expected))
 			})
 		})
 	})
