@@ -1,4 +1,4 @@
-.PHONY: test-unit test-elm test-fly-integration test-integration test-k8s test-k8s-integration test-k8s-behavioral test-quick test-all
+.PHONY: test-unit test-coverage test-elm test-fly-integration test-integration test-k8s test-k8s-integration test-k8s-behavioral test-quick test-all
 
 # Unit tests: all packages except integration/e2e suites (~9 min)
 # Requires: PostgreSQL running locally
@@ -11,6 +11,14 @@ test-unit:
 	@echo "==> Running unit tests..."
 	ginkgo -r -p --keep-going --flake-attempts=1 \
 		--skip-package=./integration,testflight,topgun,fly/integration,testhelpers/otel
+
+# Product coverage: the unit/public suites plus the real Fly and Concourse
+# subprocess boundaries. Test-infrastructure packages are excluded from the
+# denominator. The threshold is weighted by Go statements across the whole
+# product, not averaged package percentages.
+test-coverage:
+	@echo "==> Running product coverage..."
+	hack/coverage
 
 # Elm frontend tests (~30 sec)
 # Requires: yarn install (elm-test comes from node_modules)

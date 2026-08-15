@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+if [[ $# -lt 2 ]]; then
+  echo "usage: $0 OUTPUT PROFILE [PROFILE ...]" >&2
+  exit 2
+fi
+
+output=$1
+shift
+
+threshold=${COVERAGE_THRESHOLD:-80}
+packages_file=${COVERAGE_PACKAGES_FILE:-}
+denominator_profile=${COVERAGE_DENOMINATOR_PROFILE:-}
+work_dir=$(mktemp -d "${TMPDIR:-/tmp}/concourse-covermerge.XXXXXX")
+trap 'rm -rf "$work_dir"' EXIT
+
+body="$work_dir/body"
+
+awk -v packages_file="$packages_file" -v denominator_profile="$denominator_profile" '
+  BEGIN {
+    if (packages_file != "") {
+      while ((getline package_path < packages_file) > 0) {
+        allowed_packages[package_path] = 1
+      }
+      close(packages_file)
+    }
+  }
+
+  FNR == 1 {
+    if ($0 != "mode: set") {
+      printf "unsupported coverage mode in %s: %s\n", FILENAME, $0 > "/dev/stderr"
+      failed = 1
+    }
+    next
+  }
+
+  NF != 3 {
+    printf "malformed coverage row in %s: %s\n", FILENAME, $0 > "/dev/stderr"
+    failed = 1
+    next
+  }
+
+  {
+    position = $1
+    num_statements = $2 + 0
+    count = $3 + 0
+    if (FILENAME == denominator_profile) {
+      count = 0
+    }
+
+    if (packages_file != "") {
+      source_file = position
+      sub(/:[0-9].*$/, "", source_file)
+      package_path = source_file
+      sub("/[^/]+$", "", package_path)
+      if (!(package_path in allowed_packages)) {
+        next
+      }
+    }
+
+    if (position in statements && statements[position] != num_statements) {
+      printf "statement count mismatch for %s: %d != %d\n", position, statements[position], num_statements > "/dev/stderr"
+      failed = 1
+      next
+    }
+
+    statements[position] = num_statements
+    if (count > 0) {
+      covered[position] = 1
+    }
+  }
+
+  END {
+    if (failed) {
+      exit 1
+    }
+    for (position in statements) {
+      printf "%s %d %d\n", position, statements[position], covered[position] ? 1 : 0
+    }
+  }
+' "$@" > "$body"
+
+mkdir -p "$(dirname "$output")"
+{
+  echo "mode: set"
+  LC_ALL=C sort "$body"
+} > "$output"
+
+read -r covered total percentage < <(
+  awk '
+    NR == 1 { next }
+    {
+      total += $2
+      if ($3 > 0) {
+        covered += $2
+      }
+    }
+    END {
+      if (total == 0) {
+        exit 1
+      }
+      printf "%d %d %.4f\n", covered, total, 100 * covered / total
+    }
+  ' "$output"
+)
+
+printf "product statement coverage: %d/%d (%s%%)\n" "$covered" "$total" "$percentage"
+
+if ! awk -v covered="$covered" -v total="$total" -v threshold="$threshold" 'BEGIN { exit !(100 * covered / total >= threshold) }'; then
+  printf "coverage is below the required %s%% threshold\n" "$threshold" >&2
+  exit 1
+fi

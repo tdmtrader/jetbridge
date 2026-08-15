@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+cd "$repo_root"
+
+# Keep every nested Go invocation on the toolchain selected by this module.
+# This matters when the PATH launcher is older and GOTOOLCHAIN=auto resolves a
+# newer downloaded toolchain for the repository.
+selected_goroot=$(go env GOROOT)
+export PATH="$selected_goroot/bin:$PATH"
+
+coverage_output=${COVERAGE_OUTPUT:-"$repo_root/coverage.coverprofile"}
+coverage_procs=${COVERAGE_PROCS:-4}
+
+if [[ -n ${COVERAGE_WORKDIR:-} ]]; then
+  mkdir -p "$COVERAGE_WORKDIR"
+  work_dir=$(mktemp -d "$COVERAGE_WORKDIR/run.XXXXXX")
+  keep_work_dir=1
+else
+  work_dir=$(mktemp -d "${TMPDIR:-/tmp}/concourse-coverage.XXXXXX")
+  keep_work_dir=${KEEP_COVERAGE_WORKDIR:-0}
+fi
+
+cleanup() {
+  if [[ $keep_work_dir == 1 ]]; then
+    echo "coverage work directory: $work_dir"
+  else
+    rm -rf "$work_dir"
+  fi
+}
+trap cleanup EXIT
+
+if command -v ginkgo >/dev/null 2>&1; then
+  ginkgo=(ginkgo)
+else
+  ginkgo=(go run github.com/onsi/ginkgo/v2/ginkgo)
+fi
+
+packages_file="$work_dir/product-packages"
+go list -f '{{if or (len .GoFiles) (len .CgoFiles)}}{{.ImportPath}}{{end}}' ./... |
+  awk '
+    NF == 0 { next }
+    /\/atc\/db\/dbtest$/ { next }
+    /\/atc\/postgresrunner$/ { next }
+    /\/atc\/runtime\/runtimetest$/ { next }
+    /\/topgun($|\/)/ { next }
+    /\/testhelpers\/otel$/ { next }
+    /\/integration\/internal\// { next }
+    /\/atc\/testhelpers$/ { next }
+    /\/go-archive\/archivetest$/ { next }
+    /\/atc\/worker\/workertest$/ { next }
+    /\/atc\/imageresolver\/imageresolvertesting$/ { next }
+    /\/cmd\/oom-trigger$/ { next }
+    /\/testflight$/ { next }
+    { print }
+  ' > "$packages_file"
+
+if [[ ! -s $packages_file ]]; then
+  echo "product package discovery returned no packages" >&2
+  exit 1
+fi
+
+product_packages=()
+while IFS= read -r package_path; do
+  product_packages+=("$package_path")
+done < "$packages_file"
+instrument_packages=github.com/concourse/concourse/...
+
+echo "==> Inventorying the product coverage denominator"
+go test \
+  -run '^$' \
+  -count=1 \
+  -covermode=set \
+  -coverprofile="$work_dir/denominator.coverprofile" \
+  "${product_packages[@]}"
+
+echo "==> Running product unit and in-process system suites"
+"${ginkgo[@]}" \
+  -r \
+  --procs="$coverage_procs" \
+  --keep-going \
+  --flake-attempts=1 \
+  --skip-package=./integration,testflight,topgun,fly/integration,testhelpers/otel \
+  --cover \
+  --covermode=set \
+  --coverpkg="$instrument_packages" \
+  --coverprofile=unit.coverprofile \
+  --output-dir="$work_dir"
+
+# Ginkgo's package coverprofile cannot import counters from a child copy of a
+# test executable. Run the real artifact-daemon lifecycle through the Go test
+# driver as well so its process-boundary coverage is represented.
+echo "==> Running the real artifact-daemon lifecycle"
+go test \
+  -run '^TestArtifactDaemonLifecycle$' \
+  -count=1 \
+  -covermode=set \
+  -coverpkg=github.com/concourse/concourse/cmd/artifact-daemon \
+  -coverprofile="$work_dir/artifact-lifecycle.coverprofile" \
+  ./cmd/artifact-daemon
+
+mkdir -p "$work_dir/raw/fly" "$work_dir/raw/concourse"
+coverage_goflags="${GOFLAGS:+$GOFLAGS }-cover -covermode=set -coverpkg=$instrument_packages"
+
+echo "==> Running the real Fly CLI integration suite"
+GOCOVERDIR="$work_dir/raw/fly" GOFLAGS="$coverage_goflags" \
+  "${ginkgo[@]}" \
+  --procs=1 \
+  --keep-going \
+  --cover \
+  --covermode=set \
+  --coverpkg="$instrument_packages" \
+  --coverprofile=fly-parent.coverprofile \
+  --output-dir="$work_dir" \
+  ./fly/integration \
+  -- -test.gocoverdir="$work_dir/raw/fly"
+
+echo "==> Running the real Concourse startup suite"
+GOCOVERDIR="$work_dir/raw/concourse" GOFLAGS="$coverage_goflags" \
+  "${ginkgo[@]}" \
+  --procs=1 \
+  --keep-going \
+  --cover \
+  --covermode=set \
+  --coverpkg="$instrument_packages" \
+  --coverprofile=concourse-parent.coverprofile \
+  --output-dir="$work_dir" \
+  ./cmd/concourse \
+  -- -test.gocoverdir="$work_dir/raw/concourse"
+
+go tool covdata textfmt \
+  -i="$work_dir/raw/fly,$work_dir/raw/concourse" \
+  -o="$work_dir/subprocess.coverprofile"
+
+echo "==> Enforcing product statement coverage"
+COVERAGE_PACKAGES_FILE="$packages_file" \
+COVERAGE_DENOMINATOR_PROFILE="$work_dir/denominator.coverprofile" \
+COVERAGE_THRESHOLD="${COVERAGE_THRESHOLD:-80}" \
+  "$repo_root/hack/merge-coverprofiles" \
+  "$coverage_output" \
+  "$work_dir/denominator.coverprofile" \
+  "$work_dir/unit.coverprofile" \
+  "$work_dir/artifact-lifecycle.coverprofile" \
+  "$work_dir/fly-parent.coverprofile" \
+  "$work_dir/concourse-parent.coverprofile" \
+  "$work_dir/subprocess.coverprofile"

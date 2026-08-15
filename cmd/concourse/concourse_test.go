@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"os/exec"
 	"strconv"
+	"time"
 
 	"github.com/concourse/concourse/atc/postgresrunner"
 	"github.com/onsi/gomega/gbytes"
@@ -58,8 +59,7 @@ var _ = Describe("Web Command", func() {
 	})
 
 	AfterEach(func() {
-		ginkgomon.Interrupt(concourseProcess)
-		<-concourseProcess.Wait()
+		ginkgomon.Interrupt(concourseProcess, 10*time.Second)
 		postgresRunner.DropTestDB()
 
 		postgresrunner.FinalizeRunnerForGinkgo(&postgresRunner, &dbProcess)
