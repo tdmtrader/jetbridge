@@ -17,7 +17,7 @@ type Server struct {
 	logger lager.Logger
 
 	workerPool              Pool
-	interceptTimeoutFactory InterceptTimeoutFactory
+	interceptIdleTimeout    time.Duration
 	interceptUpdateInterval time.Duration
 	clock                   clock.Clock
 }
@@ -25,14 +25,14 @@ type Server struct {
 func NewServer(
 	logger lager.Logger,
 	workerPool Pool,
-	interceptTimeoutFactory InterceptTimeoutFactory,
+	interceptIdleTimeout time.Duration,
 	interceptUpdateInterval time.Duration,
 	clock clock.Clock,
 ) *Server {
 	return &Server{
 		logger:                  logger,
 		workerPool:              workerPool,
-		interceptTimeoutFactory: interceptTimeoutFactory,
+		interceptIdleTimeout:    interceptIdleTimeout,
 		interceptUpdateInterval: interceptUpdateInterval,
 		clock:                   clock,
 	}

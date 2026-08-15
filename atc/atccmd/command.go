@@ -26,7 +26,6 @@ import (
 	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/api/auth"
 	"github.com/concourse/concourse/atc/api/buildserver"
-	"github.com/concourse/concourse/atc/api/containerserver"
 	"github.com/concourse/concourse/atc/api/pipelineserver"
 	"github.com/concourse/concourse/atc/api/policychecker"
 	"github.com/concourse/concourse/atc/auditor"
@@ -2294,7 +2293,7 @@ func (cmd *RunCommand) constructAPIHandler(
 		secretManager,
 		cmd.varSourcePool,
 		credsManagers,
-		containerserver.NewInterceptTimeoutFactory(cmd.InterceptIdleTimeout),
+		cmd.InterceptIdleTimeout,
 		time.Minute,
 		dbWall,
 		clock.NewClock(),

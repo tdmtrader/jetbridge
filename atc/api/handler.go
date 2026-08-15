@@ -75,7 +75,7 @@ func NewHandler(
 	secretManager creds.Secrets,
 	varSourcePool creds.VarSourcePool,
 	credsManagers creds.Managers,
-	interceptTimeoutFactory containerserver.InterceptTimeoutFactory,
+	interceptIdleTimeout time.Duration,
 	interceptUpdateInterval time.Duration,
 	dbWall db.Wall,
 	clock clock.Clock,
@@ -103,7 +103,7 @@ func NewHandler(
 	workerServer := workerserver.NewServer(logger, workerTeamFactory, dbWorkerFactory)
 	logLevelServer := loglevelserver.NewServer(logger, sink)
 	cliServer := cliserver.NewServer(logger, absCLIDownloadsDir)
-	containerServer := containerserver.NewServer(logger, workerPool, interceptTimeoutFactory, interceptUpdateInterval, clock)
+	containerServer := containerserver.NewServer(logger, workerPool, interceptIdleTimeout, interceptUpdateInterval, clock)
 	volumesServer := volumeserver.NewServer(logger, volumeRepository)
 	teamServer := teamserver.NewServer(logger, dbTeamFactory, externalURL)
 	infoServer := infoserver.NewServer(logger, version, workerVersion, externalURL, clusterName, credsManagers, jetBridgeVersion, concourseVersion, dbPinger, dbWorkerFactory)

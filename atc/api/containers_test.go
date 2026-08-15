@@ -1005,21 +1005,56 @@ var _ = Describe("Containers API", func() {
 							})
 
 							Context("when stdin is sent over the API", func() {
-								JustBeforeEach(func() {
+								It("forwards the payload and renews the idle deadline", func() {
+									process := waitForHijack()
+									type readResult struct {
+										output atc.HijackOutput
+										err    error
+									}
+									reads := make(chan readResult, 3)
+									go func() {
+										for {
+											var output atc.HijackOutput
+											err := conn.ReadJSON(&output)
+											reads <- readResult{output: output, err: err}
+											if err != nil {
+												return
+											}
+										}
+									}()
+
+									// The update loop and idle deadline both use the controlled
+									// production clock. Move close to the original deadline before
+									// activity arrives.
+									fakeClock.WaitForNWatchersAndIncrement(59*time.Minute, 2)
+
 									err := conn.WriteJSON(atc.HijackInput{
 										Stdin: []byte("some stdin\n"),
 									})
 									Expect(err).NotTo(HaveOccurred())
-								})
-
-								It("forwards the payload to the process", func() {
-									process := waitForHijack()
 
 									receivedStdin, err := bufio.NewReader(process.Stdin()).ReadBytes('\n')
 									Expect(err).NotTo(HaveOccurred())
 									Expect(receivedStdin).To(Equal([]byte("some stdin\n")))
 
-									Expect(interceptTimeout.resetCount()).To(Equal(1))
+									// Cross the deadline that was active before stdin arrived. A
+									// visible output frame proves the public session is still alive.
+									fakeClock.Increment(time.Minute)
+									_, err = fmt.Fprint(process.Stdout(), "still connected\n")
+									Expect(err).NotTo(HaveOccurred())
+
+									var read readResult
+									Eventually(reads).Should(Receive(&read))
+									Expect(read.err).NotTo(HaveOccurred())
+									Expect(read.output.Stdout).To(Equal([]byte("still connected\n")))
+									Consistently(reads, 250*time.Millisecond).ShouldNot(Receive())
+
+									// The renewed deadline still expires normally one hour after
+									// the input was processed.
+									fakeClock.Increment(59 * time.Minute)
+									Eventually(reads).Should(Receive(&read))
+									Expect(read.err).NotTo(HaveOccurred())
+									Expect(read.output.Error).To(Equal("idle timeout (1h0m0s) reached"))
 								})
 							})
 
@@ -1155,7 +1190,8 @@ var _ = Describe("Containers API", func() {
 
 							Context("when intercept timeout channel sends a value", func() {
 								It("exits with timeout error", func() {
-									interceptTimeout.expire()
+									waitForHijack()
+									fakeClock.WaitForNWatchersAndIncrement(time.Hour, 2)
 
 									var hijackOutput atc.HijackOutput
 									err := conn.ReadJSON(&hijackOutput)

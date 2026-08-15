@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	"code.cloudfoundry.org/clock"
 	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/accessor"
@@ -26,55 +27,6 @@ type InterceptTimeoutError struct {
 
 func (err InterceptTimeoutError) Error() string {
 	return fmt.Sprintf("idle timeout (%s) reached", err.duration)
-}
-
-type InterceptTimeoutFactory interface {
-	NewInterceptTimeout() InterceptTimeout
-}
-
-func NewInterceptTimeoutFactory(duration time.Duration) InterceptTimeoutFactory {
-	return &interceptTimeoutFactory{
-		duration: duration,
-	}
-}
-
-type interceptTimeoutFactory struct {
-	duration time.Duration
-}
-
-func (t *interceptTimeoutFactory) NewInterceptTimeout() InterceptTimeout {
-	return &interceptTimeout{
-		duration: t.duration,
-		timer:    time.NewTimer(t.duration),
-	}
-}
-
-type InterceptTimeout interface {
-	Reset()
-	Channel() <-chan time.Time
-	Error() error
-}
-
-type interceptTimeout struct {
-	duration time.Duration
-	timer    *time.Timer
-}
-
-func (t *interceptTimeout) Reset() {
-	if t.duration > 0 {
-		t.timer.Reset(t.duration)
-	}
-}
-
-func (t *interceptTimeout) Channel() <-chan time.Time {
-	if t.duration > 0 {
-		return t.timer.C
-	}
-	return make(chan time.Time)
-}
-
-func (t *interceptTimeout) Error() error {
-	return InterceptTimeoutError{duration: t.duration}
 }
 
 func (s *Server) HijackContainer(team db.Team) http.Handler {
@@ -200,8 +152,6 @@ func (s *Server) hijack(ctx context.Context, hLog lager.Logger, conn *websocket.
 	}
 
 	var tty *runtime.TTYSpec
-	var idle InterceptTimeout
-
 	if request.Process.TTY != nil {
 		tty = &runtime.TTYSpec{
 			WindowSize: runtime.WindowSize{
@@ -290,13 +240,20 @@ func (s *Server) hijack(ctx context.Context, hLog lager.Logger, conn *websocket.
 		}
 	}()
 
-	idle = s.interceptTimeoutFactory.NewInterceptTimeout()
-	idleChan := idle.Channel()
+	var idleTimer clock.Timer
+	var idleChan <-chan time.Time
+	if s.interceptIdleTimeout > 0 {
+		idleTimer = s.clock.NewTimer(s.interceptIdleTimeout)
+		idleChan = idleTimer.C()
+		defer idleTimer.Stop()
+	}
 
 	for {
 		select {
 		case input := <-inputs:
-			idle.Reset()
+			if idleTimer != nil {
+				idleTimer.Reset(s.interceptIdleTimeout)
+			}
 			if input.Closed {
 				_ = stdinW.Close()
 			} else if input.TTYSpec != nil {
@@ -316,7 +273,7 @@ func (s *Server) hijack(ctx context.Context, hLog lager.Logger, conn *websocket.
 			}
 
 		case <-idleChan:
-			errs <- idle.Error()
+			errs <- InterceptTimeoutError{duration: s.interceptIdleTimeout}
 
 		case output := <-outputs:
 			err := conn.WriteJSON(output)

@@ -4,7 +4,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"sync"
 	"testing"
 	"time"
 
@@ -17,7 +16,6 @@ import (
 	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/api/auth"
 	"github.com/concourse/concourse/atc/api/buildserver"
-	"github.com/concourse/concourse/atc/api/containerserver"
 	"github.com/concourse/concourse/atc/api/infoserver"
 	"github.com/concourse/concourse/atc/api/policychecker"
 	"github.com/concourse/concourse/atc/auditor"
@@ -44,15 +42,15 @@ var (
 	"resource_causality": false
 }`
 
-	workerRuntime    *apiWorkerRuntime
-	secretManager    creds.Secrets
-	varSourcePool    creds.VarSourcePool
-	credsManagers    creds.Managers
-	interceptTimeout *observingInterceptTimeout
-	isTLSEnabled     bool
-	cliDownloadsDir  string
-	logger           *lagertest.TestLogger
-	fakeClock        *fakeclock.FakeClock
+	workerRuntime        *apiWorkerRuntime
+	secretManager        creds.Secrets
+	varSourcePool        creds.VarSourcePool
+	credsManagers        creds.Managers
+	interceptIdleTimeout time.Duration
+	isTLSEnabled         bool
+	cliDownloadsDir      string
+	logger               *lagertest.TestLogger
+	fakeClock            *fakeclock.FakeClock
 
 	server *httptest.Server
 	client *http.Client
@@ -60,53 +58,11 @@ var (
 	apiProfileTransport *profileTransport
 )
 
-// observingInterceptTimeout counts resets of the real idle timeout of a
-// hijacked container, and lets a spec expire it on demand. Reset and Error run
-// the production code; only the expiry channel belongs to the spec, since the
-// real one fires on wall-clock time alone.
-type observingInterceptTimeout struct {
-	containerserver.InterceptTimeout
-
-	channel chan time.Time
-
-	lock   sync.Mutex
-	resets int
-}
-
-func (t *observingInterceptTimeout) NewInterceptTimeout() containerserver.InterceptTimeout {
-	return t
-}
-
-func (t *observingInterceptTimeout) Reset() {
-	t.lock.Lock()
-	t.resets++
-	t.lock.Unlock()
-	t.InterceptTimeout.Reset()
-}
-
-func (t *observingInterceptTimeout) Channel() <-chan time.Time {
-	return t.channel
-}
-
-func (t *observingInterceptTimeout) resetCount() int {
-	t.lock.Lock()
-	defer t.lock.Unlock()
-	return t.resets
-}
-
-func (t *observingInterceptTimeout) expire() {
-	t.channel <- time.Time{}
-}
-
 var _ = BeforeEach(func() {
-	interceptTimeout = &observingInterceptTimeout{
-		InterceptTimeout: containerserver.NewInterceptTimeoutFactory(time.Hour).NewInterceptTimeout(),
-		channel:          make(chan time.Time),
-	}
+	fakeClock = fakeclock.NewFakeClock(time.Unix(123, 456))
+	interceptIdleTimeout = time.Hour
 
 	workerRuntime = newAPIWorkerRuntime()
-
-	fakeClock = fakeclock.NewFakeClock(time.Unix(123, 456))
 
 	var err error
 	cliDownloadsDir, err = os.MkdirTemp("", "cli-downloads")
@@ -301,7 +257,7 @@ func newAPIServer(deps apiDBDeps) *httptest.Server {
 		secretManager,
 		varSourcePool,
 		credsManagers,
-		interceptTimeout,
+		interceptIdleTimeout,
 		time.Second,
 		deps.wall,
 		fakeClock,
