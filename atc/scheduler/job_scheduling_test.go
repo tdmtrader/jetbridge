@@ -440,23 +440,18 @@ func (example Example) Run() {
 	Expect(err).NotTo(HaveOccurred())
 	Expect(buildIDs(pending)).To(Equal(buildIDs(created)))
 
-	abortAfterScan := map[int]bool{}
+	abortAfterScan := map[int]struct{}{}
 	for i, spec := range example.Job.Builds {
 		if spec.AbortedAfterScan {
-			abortAfterScan[i] = true
+			abortAfterScan[created[i].ID()] = struct{}{}
 		}
 	}
 
 	schedulerJob := schedulerJobToSchedule(fixture, job)
 	if len(abortAfterScan) > 0 {
-		schedulerJob.Job = wrappedPendingBuildsJob{
-			Job: job,
-			wrap: func(i int, build db.Build) db.Build {
-				if abortAfterScan[i] {
-					Expect(build.MarkAsAborted()).To(Succeed())
-				}
-				return build
-			},
+		schedulerJob.Job = abortAfterPendingBuildScanJob{
+			Job:           job,
+			abortBuildIDs: abortAfterScan,
 		}
 	}
 

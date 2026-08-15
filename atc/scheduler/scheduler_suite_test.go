@@ -135,22 +135,21 @@ func (factory *observedSchedulerJobFactory) completion(jobID int) *schedulerJobC
 	return factory.completions[jobID]
 }
 
-type wrappedPendingBuildsJob struct {
+type checkNamedPendingBuildsJob struct {
 	db.Job
-	wrap func(int, db.Build) db.Build
 }
 
-func (job wrappedPendingBuildsJob) GetPendingBuilds() ([]db.Build, error) {
+func (job checkNamedPendingBuildsJob) GetPendingBuilds() ([]db.Build, error) {
 	pending, err := job.Job.GetPendingBuilds()
 	if err != nil {
 		return nil, err
 	}
 
-	wrapped := make([]db.Build, len(pending))
+	checkNamed := make([]db.Build, len(pending))
 	for i, build := range pending {
-		wrapped[i] = job.wrap(i, build)
+		checkNamed[i] = checkNamedBuild{Build: build}
 	}
-	return wrapped, nil
+	return checkNamed, nil
 }
 
 type checkNamedBuild struct {
@@ -159,6 +158,28 @@ type checkNamedBuild struct {
 
 func (build checkNamedBuild) Name() string {
 	return db.CheckBuildName
+}
+
+type abortAfterPendingBuildScanJob struct {
+	db.Job
+	abortBuildIDs map[int]struct{}
+}
+
+func (job abortAfterPendingBuildScanJob) GetPendingBuilds() ([]db.Build, error) {
+	pending, err := job.Job.GetPendingBuilds()
+	if err != nil {
+		return nil, err
+	}
+
+	for _, build := range pending {
+		if _, abort := job.abortBuildIDs[build.ID()]; !abort {
+			continue
+		}
+		if err := build.MarkAsAborted(); err != nil {
+			return nil, err
+		}
+	}
+	return pending, nil
 }
 
 func deferSchedulerCompletions(unblock func(), completions func() []*schedulerJobCompletion) {

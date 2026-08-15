@@ -294,12 +294,7 @@ var _ = Describe("Scheduler Metrics & Observability", func() {
 
 			// A job-scoped pending-build query cannot return the check-build name,
 			// so change only that domain identity and leave the real build untouched.
-			schedulerJob.Job = wrappedPendingBuildsJob{
-				Job: job,
-				wrap: func(_ int, build db.Build) db.Build {
-					return checkNamedBuild{Build: build}
-				},
-			}
+			schedulerJob.Job = checkNamedPendingBuildsJob{Job: job}
 			tryStart(fixture, schedulerJob, inputs)
 			expectStartedBuild(fixture, pending)
 			Expect(metric.Metrics.CheckBuildsStarted.Delta()).To(Equal(float64(1)))

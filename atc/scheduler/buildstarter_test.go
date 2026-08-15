@@ -255,14 +255,9 @@ var _ = Describe("BuildStarter", func() {
 
 		It("finishes a build aborted after the scan and starts the remaining builds", func() {
 			schedulerJob := schedulerJobToSchedule(fixture, job)
-			schedulerJob.Job = wrappedPendingBuildsJob{
-				Job: job,
-				wrap: func(i int, build db.Build) db.Build {
-					if i == 0 {
-						Expect(build.MarkAsAborted()).To(Succeed())
-					}
-					return build
-				},
+			schedulerJob.Job = abortAfterPendingBuildScanJob{
+				Job:           job,
+				abortBuildIDs: map[int]struct{}{schedulerBuild.ID(): {}},
 			}
 
 			needsRetry, err := tryStart(fixture, schedulerJob)
