@@ -734,8 +734,13 @@ var _ = Describe("Pipelines API", func() {
 				useProfile(anonymousProfile)
 			})
 
-			It("returns only team's public pipelines", func() {
+			It("returns public pipelines and 404 for a missing team", func() {
 				expectPipelineResponse(response, pipelines["public-main"])
+
+				missing, err := client.Get(server.URL + "/api/v1/teams/missing-team/pipelines")
+				Expect(err).NotTo(HaveOccurred())
+				DeferCleanup(missing.Body.Close)
+				Expect(missing.StatusCode).To(Equal(http.StatusNotFound))
 			})
 		})
 	})
@@ -1643,8 +1648,19 @@ var _ = Describe("Pipelines API", func() {
 						Expect(actualNames).NotTo(Equal(initialNames))
 					})
 
-					It("returns 200", func() {
+					It("returns 200 and rejects malformed ordering JSON", func() {
 						Expect(response.StatusCode).To(Equal(http.StatusOK))
+
+						request, err := http.NewRequest(
+							http.MethodPut,
+							server.URL+"/api/v1/teams/a-team/pipelines/ordering",
+							bytes.NewBufferString("{"),
+						)
+						Expect(err).NotTo(HaveOccurred())
+						malformed, err := client.Do(request)
+						Expect(err).NotTo(HaveOccurred())
+						DeferCleanup(malformed.Body.Close)
+						Expect(malformed.StatusCode).To(Equal(http.StatusBadRequest))
 					})
 				})
 
@@ -1759,8 +1775,19 @@ var _ = Describe("Pipelines API", func() {
 						Expect(actualInstanceVars).NotTo(Equal(initialInstanceVars))
 					})
 
-					It("returns 200", func() {
+					It("returns 200 and rejects malformed instance ordering JSON", func() {
 						Expect(response.StatusCode).To(Equal(http.StatusOK))
+
+						request, err := http.NewRequest(
+							http.MethodPut,
+							server.URL+"/api/v1/teams/a-team/pipelines/a-pipeline/ordering",
+							bytes.NewBufferString("{"),
+						)
+						Expect(err).NotTo(HaveOccurred())
+						malformed, err := client.Do(request)
+						Expect(err).NotTo(HaveOccurred())
+						DeferCleanup(malformed.Body.Close)
+						Expect(malformed.StatusCode).To(Equal(http.StatusBadRequest))
 					})
 				})
 
@@ -2038,6 +2065,7 @@ var _ = Describe("Pipelines API", func() {
 			listPipeline    db.Pipeline
 			listBuild1      db.Build
 			listBuild2      db.Build
+			listBuild2Start time.Time
 			grantListAccess bool
 		)
 
@@ -2207,6 +2235,18 @@ var _ = Describe("Pipelines API", func() {
 					started, err = listBuild2.Start(atc.Plan{})
 					Expect(err).NotTo(HaveOccurred())
 					Expect(started).To(BeTrue())
+					listBuild2Start = time.Date(2020, time.November, 2, 0, 0, 0, 0, time.UTC)
+					for index, build := range []db.Build{listBuild1, listBuild2} {
+						result, err := listDB.Conn.Exec(
+							"UPDATE builds SET start_time = $1 WHERE id = $2",
+							listBuild2Start.Add(time.Duration(index-1)*time.Hour),
+							build.ID(),
+						)
+						Expect(err).NotTo(HaveOccurred())
+						rows, err := result.RowsAffected()
+						Expect(err).NotTo(HaveOccurred())
+						Expect(rows).To(Equal(int64(1)))
+					}
 					queryParams = "?limit=2"
 				})
 
@@ -2249,6 +2289,21 @@ var _ = Describe("Pipelines API", func() {
 							Expect(actual.EndTime).To(Equal(persisted.EndTime().Unix()))
 						}
 					}
+
+					timestamped, err := client.Get(fmt.Sprintf(
+						"%s/api/v1/teams/main/pipelines/some-pipeline/builds?timestamps=true&from=%d&to=%d&limit=2",
+						server.URL,
+						listBuild2Start.Unix(),
+						listBuild2Start.Unix(),
+					))
+					Expect(err).NotTo(HaveOccurred())
+					DeferCleanup(timestamped.Body.Close)
+					Expect(timestamped.StatusCode).To(Equal(http.StatusOK))
+					var timestampedBuilds []atc.Build
+					Expect(json.NewDecoder(timestamped.Body).Decode(&timestampedBuilds)).To(Succeed())
+					Expect(timestampedBuilds).To(HaveLen(1))
+					Expect(timestampedBuilds[0].ID).To(Equal(listBuild2.ID()))
+					Expect(timestamped.Header.Values("Link")).To(BeEmpty())
 				})
 
 				Context("when next/previous pages are available", func() {
@@ -2410,7 +2465,7 @@ var _ = Describe("Pipelines API", func() {
 						Expect(response).Should(IncludeHeaderEntries(expectedHeaderEntries))
 					})
 
-					It("creates a started build", func() {
+					It("creates a started build and rejects malformed plan JSON", func() {
 						builds, _, err := postPipeline.Builds(db.Page{Limit: 1})
 						Expect(err).NotTo(HaveOccurred())
 						Expect(builds).To(HaveLen(1))
@@ -2422,6 +2477,21 @@ var _ = Describe("Pipelines API", func() {
 						Expect(found).To(BeTrue())
 						Expect(build.Status()).To(Equal(db.BuildStatusStarted))
 						Expect([]byte(*build.PublicPlan())).To(MatchJSON([]byte(*plan.Public())))
+
+						malformedRequest, err := http.NewRequest(
+							http.MethodPost,
+							server.URL+"/api/v1/teams/main/pipelines/a-pipeline/builds",
+							bytes.NewBufferString("{"),
+						)
+						Expect(err).NotTo(HaveOccurred())
+						malformed, err := client.Do(malformedRequest)
+						Expect(err).NotTo(HaveOccurred())
+						DeferCleanup(malformed.Body.Close)
+						Expect(malformed.StatusCode).To(Equal(http.StatusBadRequest))
+
+						builds, _, err = postPipeline.Builds(db.Page{Limit: 2})
+						Expect(err).NotTo(HaveOccurred())
+						Expect(builds).To(HaveLen(1))
 					})
 
 					It("returns the created build", func() {

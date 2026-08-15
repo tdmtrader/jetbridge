@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strconv"
+	"strings"
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/accessor"
@@ -191,6 +192,91 @@ func (fixture *versionsAPIFixture) requestClearVersions(collection string, name 
 	}
 	Expect(err).NotTo(HaveOccurred())
 	return response
+}
+
+func (fixture *versionsAPIFixture) requestResourceRoute(
+	method string,
+	resourceName string,
+	suffix string,
+	body string,
+) *http.Response {
+	GinkgoHelper()
+
+	if fixture.server == nil {
+		fixture.server = fixture.database.Serve()
+	}
+	path := fmt.Sprintf(
+		"/api/v1/teams/%s/pipelines/%s/resources/%s/%s",
+		fixture.team.Name(), fixture.pipeline.Name(), resourceName, suffix,
+	)
+	if encoded := fixture.ref.QueryParams().Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	request, err := http.NewRequest(
+		method,
+		fixture.server.URL+path,
+		strings.NewReader(body),
+	)
+	Expect(err).NotTo(HaveOccurred())
+	if body != "" {
+		request.Header.Set("Content-Type", "application/json")
+	}
+	response, err := client.Do(request)
+	if response != nil {
+		DeferCleanup(func() { Expect(response.Body.Close()).To(Succeed()) })
+	}
+	Expect(err).NotTo(HaveOccurred())
+	return response
+}
+
+func (fixture *versionsAPIFixture) requestExactVersion(
+	resourceName string,
+	versionID string,
+) *http.Response {
+	GinkgoHelper()
+	return fixture.requestResourceRoute(
+		http.MethodGet,
+		resourceName,
+		"versions/"+versionID,
+		"",
+	)
+}
+
+func (fixture *versionsAPIFixture) requestCausality(
+	resourceName string,
+	versionID int,
+	direction string,
+) *http.Response {
+	GinkgoHelper()
+	return fixture.requestResourceRoute(
+		http.MethodGet,
+		resourceName,
+		fmt.Sprintf("versions/%d/%s", versionID, direction),
+		"",
+	)
+}
+
+func (fixture *versionsAPIFixture) requestDeprecatedScopes(resourceName string) *http.Response {
+	GinkgoHelper()
+	return fixture.requestResourceRoute(
+		http.MethodGet,
+		resourceName,
+		"deprecated-scopes",
+		"",
+	)
+}
+
+func (fixture *versionsAPIFixture) requestCopyVersions(
+	resourceName string,
+	body string,
+) *http.Response {
+	GinkgoHelper()
+	return fixture.requestResourceRoute(
+		http.MethodPut,
+		resourceName,
+		"copy-versions",
+		body,
+	)
 }
 
 func newVersionsAPIMutationFixture() *versionsAPIFixture {
@@ -631,6 +717,205 @@ func expectVersionsAPIBuilds(actual []atc.Build, expected []db.Build) {
 		}
 		Expect(byID).To(HaveKeyWithValue(build.ID(), expectedBuild))
 	}
+}
+
+type versionsAPICausalityState struct {
+	fixture               *versionsAPIFixture
+	build                 db.Build
+	job                   db.Job
+	rootVersion           atc.Version
+	parallelInputVersion  atc.Version
+	childVersion          atc.Version
+	parallelOutputVersion atc.Version
+	resources             map[string]db.Resource
+	versions              map[string]db.ResourceConfigVersion
+}
+
+func newVersionsAPICausalityState() *versionsAPICausalityState {
+	GinkgoHelper()
+
+	state := &versionsAPICausalityState{
+		rootVersion:           atc.Version{"ref": "root-v1"},
+		parallelInputVersion:  atc.Version{"ref": "parallel-input-v1"},
+		childVersion:          atc.Version{"ref": "child-v1"},
+		parallelOutputVersion: atc.Version{"ref": "parallel-output-v1"},
+	}
+	state.fixture = newVersionsAPIFixture(atc.PipelineRef{Name: "a-pipeline"}, atc.Config{
+		Resources: atc.ResourceConfigs{
+			{Name: "root", Type: dbtest.BaseResourceType, Source: atc.Source{"repository": "root"}},
+			{Name: "parallel-input", Type: dbtest.BaseResourceType, Source: atc.Source{"repository": "parallel-input"}},
+			{Name: "child", Type: dbtest.BaseResourceType, Source: atc.Source{"repository": "child"}},
+			{Name: "parallel-output", Type: dbtest.BaseResourceType, Source: atc.Source{"repository": "parallel-output"}},
+		},
+		Jobs: atc.JobConfigs{{
+			Name: "bridge",
+			PlanSequence: []atc.Step{
+				{Config: &atc.GetStep{Name: "root-input", Resource: "root"}},
+				{Config: &atc.GetStep{Name: "parallel-input", Resource: "parallel-input"}},
+				{Config: &atc.PutStep{Name: "child-output", Resource: "child"}},
+				{Config: &atc.PutStep{Name: "parallel-output", Resource: "parallel-output"}},
+			},
+		}},
+	})
+	state.fixture.scenario.Run(
+		state.fixture.builder.WithResourceVersions("root", state.rootVersion),
+		state.fixture.builder.WithResourceVersions("parallel-input", state.parallelInputVersion),
+		state.fixture.builder.WithJobBuild(
+			&state.build,
+			"bridge",
+			dbtest.JobInputs{
+				{Name: "root-input", Version: state.rootVersion},
+				{Name: "parallel-input", Version: state.parallelInputVersion},
+			},
+			dbtest.JobOutputs{
+				"child-output":    state.childVersion,
+				"parallel-output": state.parallelOutputVersion,
+			},
+		),
+	)
+	startVersionsAPIBuild(state.build)
+	finishVersionsAPIBuild(state.build, db.BuildStatusSucceeded)
+	state.job = state.fixture.scenario.Job("bridge")
+	state.resources = map[string]db.Resource{}
+	state.versions = map[string]db.ResourceConfigVersion{}
+	for name, version := range map[string]atc.Version{
+		"root":            state.rootVersion,
+		"parallel-input":  state.parallelInputVersion,
+		"child":           state.childVersion,
+		"parallel-output": state.parallelOutputVersion,
+	} {
+		state.resources[name] = state.fixture.scenario.Resource(name)
+		state.versions[name] = state.fixture.scenario.ResourceVersion(name, version)
+	}
+	return state
+}
+
+func decodeVersionsAPICausality(response *http.Response) atc.Causality {
+	GinkgoHelper()
+
+	var causality atc.Causality
+	Expect(json.NewDecoder(response.Body).Decode(&causality)).To(Succeed())
+	return causality
+}
+
+func versionsAPICausalityResourceNames(causality atc.Causality) []string {
+	names := make([]string, 0, len(causality.Resources))
+	for _, resource := range causality.Resources {
+		names = append(names, resource.Name)
+	}
+	return names
+}
+
+func versionsAPICausalityVersionByID(
+	causality atc.Causality,
+	versionID int,
+) atc.CausalityResourceVersion {
+	GinkgoHelper()
+
+	for _, version := range causality.ResourceVersions {
+		if version.ID == versionID {
+			return version
+		}
+	}
+	Fail(fmt.Sprintf("causality resource version %d not found", versionID))
+	return atc.CausalityResourceVersion{}
+}
+
+type versionsAPIHistoryState struct {
+	fixture           *versionsAPIFixture
+	oldVersions       []atc.Version
+	currentVersion    atc.Version
+	oldMetadata       atc.Metadata
+	oldVersionID      int
+	oldScopeID        int
+	oldConfigID       int
+	foreignOldScopeID int
+}
+
+func versionsAPIHistoryConfig(targetSource string, foreignSource string) atc.Config {
+	return atc.Config{Resources: atc.ResourceConfigs{
+		{
+			Name: "history", Type: dbtest.BaseResourceType,
+			Source: atc.Source{"repository": targetSource},
+		},
+		{
+			Name: "foreign", Type: dbtest.BaseResourceType,
+			Source: atc.Source{"repository": foreignSource},
+		},
+	}}
+}
+
+func newVersionsAPIHistoryState() *versionsAPIHistoryState {
+	GinkgoHelper()
+
+	state := &versionsAPIHistoryState{
+		oldVersions: []atc.Version{
+			{"ref": "old-v1"},
+			{"ref": "old-v2"},
+		},
+		currentVersion: atc.Version{"ref": "current-v1"},
+		oldMetadata:    atc.Metadata{{Name: "commit", Value: "first history entry"}},
+	}
+	state.fixture = newVersionsAPIFixture(
+		atc.PipelineRef{Name: "a-pipeline"},
+		versionsAPIHistoryConfig("history-v1", "foreign-v1"),
+	)
+	state.fixture.scenario.Run(
+		state.fixture.builder.WithResourceVersions("history", state.oldVersions...),
+		state.fixture.builder.WithVersionMetadata(
+			"history",
+			state.oldVersions[0],
+			db.NewResourceConfigMetadataFields(state.oldMetadata),
+		),
+		state.fixture.builder.WithResourceVersions(
+			"foreign",
+			atc.Version{"ref": "foreign-old-v1"},
+		),
+	)
+	oldResource := state.fixture.resource("history")
+	state.oldScopeID = oldResource.ResourceConfigScopeID()
+	state.oldConfigID = oldResource.ResourceConfigID()
+	state.oldVersionID = state.fixture.scenario.ResourceVersion(
+		"history", state.oldVersions[0],
+	).ID()
+	state.foreignOldScopeID = state.fixture.resource("foreign").ResourceConfigScopeID()
+
+	state.fixture.updatePipeline(versionsAPIHistoryConfig("history-v2", "foreign-v2"))
+	state.fixture.scenario.Run(
+		state.fixture.builder.WithResourceVersions("history", state.currentVersion),
+		state.fixture.builder.WithResourceVersions(
+			"foreign",
+			atc.Version{"ref": "foreign-current-v1"},
+		),
+	)
+	currentResource := state.fixture.resource("history")
+	Expect(currentResource.ResourceConfigScopeID()).NotTo(Equal(state.oldScopeID))
+	Expect(currentResource.ResourceConfigID()).NotTo(Equal(state.oldConfigID))
+	return state
+}
+
+func decodeVersionsAPIExactVersion(response *http.Response) atc.ResourceVersion {
+	GinkgoHelper()
+
+	var version atc.ResourceVersion
+	Expect(json.NewDecoder(response.Body).Decode(&version)).To(Succeed())
+	return version
+}
+
+func decodeVersionsAPIDeprecatedScopes(response *http.Response) []atc.DeprecatedScope {
+	GinkgoHelper()
+
+	var scopes []atc.DeprecatedScope
+	Expect(json.NewDecoder(response.Body).Decode(&scopes)).To(Succeed())
+	return scopes
+}
+
+func decodeVersionsAPICopyResponse(response *http.Response) atc.CopyVersionsResponse {
+	GinkgoHelper()
+
+	var copied atc.CopyVersionsResponse
+	Expect(json.NewDecoder(response.Body).Decode(&copied)).To(Succeed())
+	return copied
 }
 
 func versionsAPIBuildRelationshipSpecs(relationship string) func() {
@@ -1489,6 +1774,217 @@ var _ = Describe("Versions API", func() {
 	Describe("GET /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions/:resource_version_id/input_to", versionsAPIBuildRelationshipSpecs("input_to"))
 
 	Describe("GET /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions/:resource_version_id/output_of", versionsAPIBuildRelationshipSpecs("output_of"))
+
+	Describe("resource version causality", func() {
+		It("returns the persisted upstream and downstream graph while filtering parallel branches", func() {
+			state := newVersionsAPICausalityState()
+			grantProfile(state.fixture.team, memberProfile, accessor.ViewerRole)
+			useProfile(memberProfile)
+
+			previousFeatureFlag := atc.EnableResourceCausality
+			DeferCleanup(func() { atc.EnableResourceCausality = previousFeatureFlag })
+			atc.EnableResourceCausality = false
+			disabled := state.fixture.requestCausality(
+				"root",
+				state.versions["root"].ID(),
+				"downstream",
+			)
+			Expect(disabled.StatusCode).To(Equal(http.StatusForbidden))
+
+			atc.EnableResourceCausality = true
+			missingResource := state.fixture.requestCausality(
+				"missing-resource",
+				state.versions["root"].ID(),
+				"downstream",
+			)
+			Expect(missingResource.StatusCode).To(Equal(http.StatusNotFound))
+
+			downstreamResponse := state.fixture.requestCausality(
+				"root",
+				state.versions["root"].ID(),
+				"downstream",
+			)
+			Expect(downstreamResponse.StatusCode).To(Equal(http.StatusOK))
+			Expect(downstreamResponse).To(IncludeHeaderEntries(map[string]string{
+				"Content-Type": "application/json",
+			}))
+			downstream := decodeVersionsAPICausality(downstreamResponse)
+			Expect(downstream.Jobs).To(ConsistOf(atc.CausalityJob{
+				ID:       state.job.ID(),
+				Name:     state.job.Name(),
+				BuildIDs: []int{state.build.ID()},
+			}))
+			Expect(downstream.Builds).To(HaveLen(1))
+			Expect(downstream.Builds[0].ID).To(Equal(state.build.ID()))
+			Expect(downstream.Builds[0].Name).To(Equal(state.build.Name()))
+			Expect(downstream.Builds[0].JobId).To(Equal(state.job.ID()))
+			Expect(downstream.Builds[0].Status).To(Equal(
+				atc.BuildStatus(db.BuildStatusSucceeded),
+			))
+			Expect(downstream.Builds[0].ResourceVersionIDs).To(ConsistOf(
+				state.versions["child"].ID(),
+				state.versions["parallel-output"].ID(),
+			))
+			Expect(versionsAPICausalityResourceNames(downstream)).To(ConsistOf(
+				"root",
+				"child",
+				"parallel-output",
+			))
+			Expect(downstream.ResourceVersions).To(HaveLen(3))
+			Expect(versionsAPICausalityVersionByID(
+				downstream,
+				state.versions["root"].ID(),
+			)).To(Equal(atc.CausalityResourceVersion{
+				ID:         state.versions["root"].ID(),
+				ResourceID: state.resources["root"].ID(),
+				Version:    state.rootVersion,
+				BuildIDs:   []int{state.build.ID()},
+			}))
+			Expect(versionsAPICausalityVersionByID(
+				downstream,
+				state.versions["child"].ID(),
+			)).To(Equal(atc.CausalityResourceVersion{
+				ID:         state.versions["child"].ID(),
+				ResourceID: state.resources["child"].ID(),
+				Version:    state.childVersion,
+			}))
+
+			upstreamResponse := state.fixture.requestCausality(
+				"child",
+				state.versions["child"].ID(),
+				"upstream",
+			)
+			Expect(upstreamResponse.StatusCode).To(Equal(http.StatusOK))
+			upstream := decodeVersionsAPICausality(upstreamResponse)
+			Expect(upstream.Jobs).To(ConsistOf(atc.CausalityJob{
+				ID:       state.job.ID(),
+				Name:     state.job.Name(),
+				BuildIDs: []int{state.build.ID()},
+			}))
+			Expect(upstream.Builds).To(HaveLen(1))
+			Expect(upstream.Builds[0].ResourceVersionIDs).To(ConsistOf(
+				state.versions["root"].ID(),
+				state.versions["parallel-input"].ID(),
+			))
+			Expect(versionsAPICausalityResourceNames(upstream)).To(ConsistOf(
+				"root",
+				"parallel-input",
+				"child",
+			))
+			Expect(upstream.ResourceVersions).To(HaveLen(3))
+			Expect(versionsAPICausalityVersionByID(
+				upstream,
+				state.versions["child"].ID(),
+			)).To(Equal(atc.CausalityResourceVersion{
+				ID:         state.versions["child"].ID(),
+				ResourceID: state.resources["child"].ID(),
+				Version:    state.childVersion,
+				BuildIDs:   []int{state.build.ID()},
+			}))
+			Expect(versionsAPICausalityVersionByID(
+				upstream,
+				state.versions["root"].ID(),
+			)).To(Equal(atc.CausalityResourceVersion{
+				ID:         state.versions["root"].ID(),
+				ResourceID: state.resources["root"].ID(),
+				Version:    state.rootVersion,
+			}))
+		})
+	})
+
+	Describe("resource version history migration", func() {
+		It("preserves and copies deprecated history through the public HTTP contracts", func() {
+			state := newVersionsAPIHistoryState()
+
+			useProfile(anonymousProfile)
+			unauthorized := state.fixture.requestExactVersion(
+				"history",
+				strconv.Itoa(state.oldVersionID),
+			)
+			Expect(unauthorized.StatusCode).To(Equal(http.StatusUnauthorized))
+
+			grantProfile(state.fixture.team, memberProfile, accessor.ViewerRole)
+			useProfile(memberProfile)
+			malformedVersion := state.fixture.requestExactVersion("history", "not-a-number")
+			Expect(malformedVersion.StatusCode).To(Equal(http.StatusBadRequest))
+			missingVersion := state.fixture.requestExactVersion("history", "-1")
+			Expect(missingVersion.StatusCode).To(Equal(http.StatusNotFound))
+
+			exactVersionResponse := state.fixture.requestExactVersion(
+				"history",
+				strconv.Itoa(state.oldVersionID),
+			)
+			Expect(exactVersionResponse.StatusCode).To(Equal(http.StatusOK))
+			Expect(exactVersionResponse).To(IncludeHeaderEntries(map[string]string{
+				"Content-Type": "application/json",
+			}))
+			Expect(decodeVersionsAPIExactVersion(exactVersionResponse)).To(Equal(
+				atc.ResourceVersion{
+					ID:       state.oldVersionID,
+					Enabled:  true,
+					Version:  state.oldVersions[0],
+					Metadata: state.oldMetadata,
+				},
+			))
+
+			missingResource := state.fixture.requestDeprecatedScopes("missing-resource")
+			Expect(missingResource.StatusCode).To(Equal(http.StatusNotFound))
+			deprecatedResponse := state.fixture.requestDeprecatedScopes("history")
+			Expect(deprecatedResponse.StatusCode).To(Equal(http.StatusOK))
+			Expect(deprecatedResponse).To(IncludeHeaderEntries(map[string]string{
+				"Content-Type": "application/json",
+			}))
+			deprecated := decodeVersionsAPIDeprecatedScopes(deprecatedResponse)
+			Expect(deprecated).To(HaveLen(1))
+			Expect(deprecated[0].ID).To(Equal(state.oldScopeID))
+			Expect(deprecated[0].ConfigID).To(Equal(state.oldConfigID))
+			Expect(deprecated[0].DeprecatedAt).To(
+				MatchRegexp(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$`),
+			)
+
+			copyBody := fmt.Sprintf(`{"from_scope_id":%d}`, state.oldScopeID)
+			forbiddenCopy := state.fixture.requestCopyVersions("history", copyBody)
+			Expect(forbiddenCopy.StatusCode).To(Equal(http.StatusForbidden))
+
+			grantProfile(state.fixture.team, memberProfile, accessor.OperatorRole)
+			malformedCopy := state.fixture.requestCopyVersions("history", `{`)
+			Expect(malformedCopy.StatusCode).To(Equal(http.StatusBadRequest))
+			missingScope := state.fixture.requestCopyVersions("history", `{}`)
+			Expect(missingScope.StatusCode).To(Equal(http.StatusBadRequest))
+			missingCopyResource := state.fixture.requestCopyVersions(
+				"missing-resource",
+				copyBody,
+			)
+			Expect(missingCopyResource.StatusCode).To(Equal(http.StatusNotFound))
+			foreignScope := state.fixture.requestCopyVersions(
+				"history",
+				fmt.Sprintf(`{"from_scope_id":%d}`, state.foreignOldScopeID),
+			)
+			Expect(foreignScope.StatusCode).To(Equal(http.StatusNotFound))
+
+			copyResponse := state.fixture.requestCopyVersions("history", copyBody)
+			Expect(copyResponse.StatusCode).To(Equal(http.StatusOK))
+			Expect(copyResponse).To(IncludeHeaderEntries(map[string]string{
+				"Content-Type": "application/json",
+			}))
+			Expect(decodeVersionsAPICopyResponse(copyResponse)).To(Equal(
+				atc.CopyVersionsResponse{VersionsCopied: len(state.oldVersions)},
+			))
+
+			idempotentCopy := state.fixture.requestCopyVersions("history", copyBody)
+			Expect(idempotentCopy.StatusCode).To(Equal(http.StatusOK))
+			Expect(decodeVersionsAPICopyResponse(idempotentCopy)).To(Equal(
+				atc.CopyVersionsResponse{VersionsCopied: 0},
+			))
+
+			listedResponse := state.fixture.requestVersions("history", url.Values{"limit": {"100"}})
+			Expect(listedResponse.StatusCode).To(Equal(http.StatusOK))
+			Expect(versionsAPIVersionValues(decodeVersionsAPIResponse(listedResponse))).To(
+				ConsistOf(append(state.oldVersions, state.currentVersion)),
+			)
+		})
+	})
+
 	Describe("DELETE /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions", func() {
 		var (
 			response        *http.Response

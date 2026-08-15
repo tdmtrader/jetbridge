@@ -931,9 +931,15 @@ var _ = Describe("Resources API", func() {
 			),
 		)
 
-		It("returns 400 for malformed resource-check JSON", func() {
-			path := "/api/v1/teams/a-team/pipelines/a-pipeline/resources/resource-name/check"
-			Expect(requestResourceAPI(fixture, http.MethodPost, path, strings.NewReader("{")).StatusCode).To(Equal(http.StatusBadRequest))
+		It("returns 400 for malformed JSON on every manual-check route", func() {
+			for _, path := range []string{
+				"/api/v1/teams/a-team/pipelines/a-pipeline/resources/resource-name/check",
+				"/api/v1/teams/a-team/pipelines/a-pipeline/resource-types/resource-type-name/check",
+				"/api/v1/teams/a-team/pipelines/a-pipeline/prototypes/prototype-name/check",
+			} {
+				response := requestResourceAPI(fixture, http.MethodPost, path, strings.NewReader("{"))
+				Expect(response.StatusCode).To(Equal(http.StatusBadRequest), path)
+			}
 		})
 
 	})
@@ -973,6 +979,15 @@ var _ = Describe("Resources API", func() {
 			Expect(requestResourceAPI(
 				fixture, http.MethodPost, basePath+"?webhook_token=wrong", nil,
 			).StatusCode).To(Equal(http.StatusUnauthorized))
+
+			config := defaultResourceAPIConfig()
+			config.Resources[0].Type = "resource-type-name"
+			config.Resources[0].WebhookToken = "((missing-webhook-token))"
+			fixture.updatePipeline(config)
+			unresolved := requestResourceAPI(
+				fixture, http.MethodPost, basePath+"?webhook_token=anything", nil,
+			)
+			Expect(unresolved.StatusCode).To(Equal(http.StatusInternalServerError))
 		})
 
 		It("returns 404 when the persisted webhook resource is missing", func() {

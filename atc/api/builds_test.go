@@ -16,6 +16,7 @@ import (
 	"github.com/concourse/concourse/atc/db/dbtest"
 	"github.com/concourse/concourse/atc/event"
 	. "github.com/concourse/concourse/atc/testhelpers"
+	"github.com/concourse/concourse/atc/util"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/vito/go-sse/sse"
@@ -1285,6 +1286,262 @@ var _ = Describe("Builds API", func() {
 				})
 
 			})
+		})
+	})
+
+	Describe("shared-scope in-memory check build access", func() {
+		It("lets an associated team read a finished check and its events while denying an unrelated team", func() {
+			database := useRealDB()
+			deps := database.Deps
+
+			ownerTeam, err := deps.teamFactory.CreateTeam(atc.Team{Name: "check-owner-team"})
+			Expect(err).NotTo(HaveOccurred())
+			peerTeam, err := deps.teamFactory.CreateTeam(atc.Team{Name: "check-peer-team"})
+			Expect(err).NotTo(HaveOccurred())
+			unrelatedTeam, err := deps.teamFactory.CreateTeam(atc.Team{Name: "check-unrelated-team"})
+			Expect(err).NotTo(HaveOccurred())
+
+			resourceConfig := atc.ResourceConfig{
+				Name:   "shared-resource",
+				Type:   dbtest.BaseResourceType,
+				Source: atc.Source{"repository": "shared-scope"},
+			}
+			ownerPipeline := database.SavePipeline(ownerTeam, "check-owner-pipeline", atc.Config{
+				Resources: atc.ResourceConfigs{resourceConfig},
+			})
+			peerPipeline := database.SavePipeline(peerTeam, "check-peer-pipeline", atc.Config{
+				Resources: atc.ResourceConfigs{resourceConfig},
+			})
+			Expect(ownerPipeline.Hide()).To(Succeed())
+			Expect(peerPipeline.Hide()).To(Succeed())
+
+			ownerResource, found, err := ownerPipeline.Resource(resourceConfig.Name)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			peerResource, found, err := peerPipeline.Resource(resourceConfig.Name)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+
+			config, err := deps.resourceConfigFactory.FindOrCreateResourceConfig(
+				ownerResource.Type(), ownerResource.Source(), nil,
+			)
+			Expect(err).NotTo(HaveOccurred())
+			sharedScope, err := config.FindOrCreateScope(nil)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(ownerResource.SetResourceConfigScope(sharedScope)).To(Succeed())
+			Expect(peerResource.SetResourceConfigScope(sharedScope)).To(Succeed())
+			ownerReloaded, err := ownerResource.Reload()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(ownerReloaded).To(BeTrue())
+			peerReloaded, err := peerResource.Reload()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(peerReloaded).To(BeTrue())
+			Expect(ownerResource.ResourceConfigScopeID()).To(Equal(sharedScope.ID()))
+			Expect(peerResource.ResourceConfigScopeID()).To(Equal(sharedScope.ID()))
+
+			plan := atc.Plan{
+				ID: "shared-scope-check",
+				Check: &atc.CheckPlan{
+					Name:     ownerResource.Name(),
+					Resource: ownerResource.Name(),
+					Type:     ownerResource.Type(),
+					Source:   ownerResource.Source(),
+				},
+			}
+			checkBuild, err := ownerResource.CreateInMemoryBuild(
+				context.Background(), plan, util.NewSequenceGenerator(1),
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(checkBuild.OnCheckBuildStart()).To(Succeed())
+			updated, err := sharedScope.UpdateLastCheckStartTime(checkBuild.ID(), checkBuild.PublicPlan())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(updated).To(BeTrue())
+			Expect(checkBuild.SaveEvent(event.Log{Payload: "shared-check-log"})).To(Succeed())
+			Expect(checkBuild.Finish(db.BuildStatusSucceeded)).To(Succeed())
+			updated, err = sharedScope.UpdateLastCheckEndTime(true)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(updated).To(BeTrue())
+
+			persistedBuild, found, err := deps.buildFactory.BuildForAPI(checkBuild.ID())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(persistedBuild.TeamName()).To(Or(Equal(ownerTeam.Name()), Equal(peerTeam.Name())))
+
+			associatedTeam := ownerTeam
+			if persistedBuild.TeamName() == ownerTeam.Name() {
+				associatedTeam = peerTeam
+			}
+			associatedProfile := persistRequestProfile(
+				"shared-check-associated-token",
+				"shared-check-associated-subject",
+				"shared-check-associated-user",
+				"Shared Check Associated User",
+				"shared-check-associated",
+			)
+			grantProfile(associatedTeam, associatedProfile, accessor.ViewerRole)
+			unrelatedProfile := persistRequestProfile(
+				"shared-check-unrelated-token",
+				"shared-check-unrelated-subject",
+				"shared-check-unrelated-user",
+				"Shared Check Unrelated User",
+				"shared-check-unrelated",
+			)
+			grantProfile(unrelatedTeam, unrelatedProfile, accessor.ViewerRole)
+
+			buildURL := fmt.Sprintf("%s/api/v1/builds/%d", server.URL, checkBuild.ID())
+			useProfile(associatedProfile)
+			buildResponse, err := client.Get(buildURL)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(buildResponse.StatusCode).To(Equal(http.StatusOK))
+			var presented atc.Build
+			Expect(json.NewDecoder(buildResponse.Body).Decode(&presented)).To(Succeed())
+			Expect(buildResponse.Body.Close()).To(Succeed())
+			Expect(presented.ID).To(Equal(checkBuild.ID()))
+			Expect(presented.Name).To(Equal(db.CheckBuildName))
+			Expect(presented.ResourceName).To(Equal(resourceConfig.Name))
+
+			eventContext, cancelEvents := context.WithTimeout(context.Background(), 10*time.Second)
+			DeferCleanup(cancelEvents)
+			eventRequest, err := http.NewRequestWithContext(
+				eventContext, http.MethodGet, buildURL+"/events", nil,
+			)
+			Expect(err).NotTo(HaveOccurred())
+			eventResponse, err := client.Do(eventRequest)
+			Expect(err).NotTo(HaveOccurred())
+			DeferCleanup(eventResponse.Body.Close)
+			Expect(eventResponse.StatusCode).To(Equal(http.StatusOK))
+			stream := sse.NewReadCloser(eventResponse.Body)
+
+			nextEnvelope := func(expectedID string, expectedType atc.EventType) event.Envelope {
+				GinkgoHelper()
+				outer, err := stream.Next()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(outer.Name).To(Equal("event"))
+				Expect(outer.ID).To(Equal(expectedID))
+				var envelope event.Envelope
+				Expect(json.Unmarshal(outer.Data, &envelope)).To(Succeed())
+				Expect(envelope.Event).To(Equal(expectedType))
+				Expect(envelope.EventID).To(Equal(expectedID))
+				return envelope
+			}
+
+			started := nextEnvelope("0", event.EventTypeStatus)
+			var startedStatus event.Status
+			Expect(json.Unmarshal(*started.Data, &startedStatus)).To(Succeed())
+			Expect(startedStatus.Status).To(Equal(atc.StatusStarted))
+			logged := nextEnvelope("1", event.EventTypeLog)
+			var logEvent event.Log
+			Expect(json.Unmarshal(*logged.Data, &logEvent)).To(Succeed())
+			Expect(logEvent.Payload).To(Equal("shared-check-log"))
+			finished := nextEnvelope("2", event.EventTypeStatus)
+			var finishedStatus event.Status
+			Expect(json.Unmarshal(*finished.Data, &finishedStatus)).To(Succeed())
+			Expect(finishedStatus.Status).To(Equal(atc.StatusSucceeded))
+			end, err := stream.Next()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(end.Name).To(Equal("end"))
+			Expect(end.ID).To(Equal("3"))
+			cancelEvents()
+			Expect(eventResponse.Body.Close()).To(Succeed())
+
+			useProfile(unrelatedProfile)
+			deniedBuildResponse, err := client.Get(buildURL)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(deniedBuildResponse.StatusCode).To(Equal(http.StatusForbidden))
+			Expect(deniedBuildResponse.Body.Close()).To(Succeed())
+			deniedEventResponse, err := client.Get(buildURL + "/events")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(deniedEventResponse.StatusCode).To(Equal(http.StatusForbidden))
+			Expect(deniedEventResponse.Body.Close()).To(Succeed())
+		})
+	})
+
+	Describe("build comment and artifact routes", func() {
+		It("validates and persists the selected build comment while presenting its artifact state", func() {
+			database := useRealDB()
+			team, err := database.Deps.teamFactory.CreateTeam(atc.Team{Name: "comment-team"})
+			Expect(err).NotTo(HaveOccurred())
+			pipeline := database.SavePipeline(team, "comment-pipeline", atc.Config{
+				Jobs: atc.JobConfigs{{Name: "comment-job"}},
+			})
+			job, found, err := pipeline.Job("comment-job")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			build, err := job.CreateBuild("comment-user")
+			Expect(err).NotTo(HaveOccurred())
+
+			decoy, err := job.CreateBuild("comment-decoy-user")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(decoy.ID()).NotTo(Equal(build.ID()))
+
+			worker, err := database.Deps.workerFactory.SaveWorker(atc.Worker{Name: "comment-artifact-worker"}, 0)
+			Expect(err).NotTo(HaveOccurred())
+			createArtifact := func(owner db.Build, name, handle string) db.WorkerArtifact {
+				GinkgoHelper()
+				creating, err := database.Deps.volumeRepository.CreateVolumeWithHandle(
+					handle,
+					team.ID(),
+					worker.Name(),
+					db.VolumeTypeArtifact,
+				)
+				Expect(err).NotTo(HaveOccurred())
+				created, err := creating.Created()
+				Expect(err).NotTo(HaveOccurred())
+				artifact, err := created.InitializeArtifact(name, owner.ID())
+				Expect(err).NotTo(HaveOccurred())
+				return artifact
+			}
+			targetArtifact := createArtifact(build, "target-output", "comment-target-artifact")
+			decoyArtifact := createArtifact(decoy, "decoy-output", "comment-decoy-artifact")
+			Expect(decoyArtifact.ID()).NotTo(Equal(targetArtifact.ID()))
+
+			grantProfile(team, memberProfile, accessor.OperatorRole)
+			useProfile(memberProfile)
+			commentServer := database.Serve()
+			path := fmt.Sprintf("%s/api/v1/builds/%d/comment", commentServer.URL, build.ID())
+
+			putComment := func(body string) *http.Response {
+				GinkgoHelper()
+				request, err := http.NewRequest(http.MethodPut, path, bytes.NewBufferString(body))
+				Expect(err).NotTo(HaveOccurred())
+				response, err := client.Do(request)
+				Expect(err).NotTo(HaveOccurred())
+				DeferCleanup(response.Body.Close)
+				return response
+			}
+
+			malformed := putComment("{")
+			Expect(malformed.StatusCode).To(Equal(http.StatusBadRequest))
+			reloaded, found, err := database.Deps.buildFactory.BuildForAPI(build.ID())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(reloaded.Comment()).To(BeEmpty())
+
+			updated := putComment(`{"comment":"investigating flaky input"}`)
+			Expect(updated.StatusCode).To(Equal(http.StatusOK))
+			Expect(updated.Header.Get("Content-Type")).To(Equal("application/json"))
+			reloaded, found, err = database.Deps.buildFactory.BuildForAPI(build.ID())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(reloaded.Comment()).To(Equal("investigating flaky input"))
+
+			decoyReloaded, found, err := database.Deps.buildFactory.BuildForAPI(decoy.ID())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(decoyReloaded.Comment()).To(BeEmpty())
+
+			artifacts, err := client.Get(fmt.Sprintf("%s/api/v1/builds/%d/artifacts", commentServer.URL, build.ID()))
+			Expect(err).NotTo(HaveOccurred())
+			DeferCleanup(artifacts.Body.Close)
+			Expect(artifacts.StatusCode).To(Equal(http.StatusOK))
+			Expect(artifacts.Header.Get("Content-Type")).To(Equal("application/json"))
+			var presentedArtifacts []atc.WorkerArtifact
+			Expect(json.NewDecoder(artifacts.Body).Decode(&presentedArtifacts)).To(Succeed())
+			Expect(presentedArtifacts).To(HaveLen(1))
+			Expect(presentedArtifacts[0].ID).To(Equal(targetArtifact.ID()))
+			Expect(presentedArtifacts[0].Name).To(Equal(targetArtifact.Name()))
+			Expect(presentedArtifacts[0].BuildID).To(Equal(build.ID()))
+			Expect(presentedArtifacts[0].CreatedAt).To(Equal(targetArtifact.CreatedAt().Unix()))
 		})
 	})
 

@@ -609,7 +609,7 @@ var _ = Describe("Jobs API", func() {
 		})
 
 		Context("when authorized", func() {
-			It("returns 200 OK with SVG headers and an unknown badge for the real buildless job", func() {
+			It("returns an unknown badge for real buildless and pending jobs", func() {
 				Expect(response.StatusCode).To(Equal(http.StatusOK))
 				Expect(response).Should(IncludeHeaderEntries(map[string]string{
 					"Content-Type":  "image/svg+xml",
@@ -619,6 +619,23 @@ var _ = Describe("Jobs API", func() {
 				body := readBadge(response)
 				Expect(body).To(ContainSubstring("unknown"))
 				Expect(body).To(ContainSubstring("#9f9f9f"))
+
+				job := fixture.Job("some-job")
+				pending := createJobsAPIBuild(job, "api-pending-badge")
+				Expect(pending.Status()).To(Equal(db.BuildStatusPending))
+				finished, next, err := job.FinishedAndNextBuild()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(finished).To(BeNil())
+				Expect(next).NotTo(BeNil())
+				Expect(next.ID()).To(Equal(pending.ID()))
+
+				pendingResponse := jobsAPIGet(
+					server,
+					"/api/v1/teams/some-team/pipelines/some-pipeline/jobs/some-job/badge",
+				)
+				pendingBody := readBadge(pendingResponse)
+				Expect(pendingBody).To(ContainSubstring("unknown"))
+				Expect(pendingBody).To(ContainSubstring("#9f9f9f"))
 			})
 
 			assertPersistedStatus := func(description string, status db.BuildStatus, label, color string) {
@@ -959,6 +976,8 @@ var _ = Describe("Jobs API", func() {
 				var original db.Build
 				var started db.Build
 				var rerun db.Build
+				var timestampFrom int64
+				var timestampTo int64
 
 				BeforeEach(func() {
 					setup = func(fixture *jobsAPIFixture) {
@@ -974,6 +993,22 @@ var _ = Describe("Jobs API", func() {
 						reloadJobsAPIBuild(rerun)
 						startJobsAPIBuild(rerun)
 						finishJobsAPIBuild(rerun, db.BuildStatusSucceeded)
+
+						base := time.Date(2020, time.November, 1, 0, 0, 0, 0, time.UTC)
+						for index, build := range []db.Build{original, rerun, started} {
+							result, err := fixture.Real.Conn.Exec(
+								"UPDATE builds SET start_time = $1 WHERE id = $2",
+								base.Add(time.Duration(index)*time.Hour),
+								build.ID(),
+							)
+							Expect(err).NotTo(HaveOccurred())
+							rows, err := result.RowsAffected()
+							Expect(err).NotTo(HaveOccurred())
+							Expect(rows).To(Equal(int64(1)))
+							reloadJobsAPIBuild(build)
+						}
+						timestampFrom = base.Add(time.Hour).Unix()
+						timestampTo = base.Add(2 * time.Hour).Unix()
 						queryParams = "?limit=3"
 					}
 				})
@@ -991,6 +1026,19 @@ var _ = Describe("Jobs API", func() {
 						ID: original.ID(), Name: original.Name(),
 					}))
 					Expect(actual[1].RerunNumber).To(Equal(rerun.RerunNumber()))
+
+					timestamped := jobsAPIGet(
+						server,
+						fmt.Sprintf(
+							"/api/v1/teams/some-team/pipelines/some-pipeline/jobs/some-job/builds?timestamps=true&from=%d&to=%d&limit=3",
+							timestampFrom,
+							timestampTo,
+						),
+					)
+					withTimestamps := decodeBuilds(timestamped)
+					Expect(withTimestamps).To(HaveLen(2))
+					Expect([]int{withTimestamps[0].ID, withTimestamps[1].ID}).To(Equal([]int{started.ID(), rerun.ID()}))
+					Expect(timestamped.Header.Values("Link")).To(BeEmpty())
 				})
 			})
 

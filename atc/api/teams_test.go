@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/accessor"
@@ -230,9 +231,25 @@ var _ = Describe("Teams API", func() {
 			Context("when provider auth is empty", func() {
 				BeforeEach(func() { atcTeam = atc.Team{} })
 
-				It("rejects the request without mutating provider auth", func() {
+				It("rejects empty and malformed requests without mutating provider auth", func() {
 					Expect(response.StatusCode).To(Equal(http.StatusBadRequest))
 					team, found, err := realdb.Deps.teamFactory.FindTeam("some-team")
+					Expect(err).NotTo(HaveOccurred())
+					Expect(found).To(BeTrue())
+					Expect(team.Auth()).To(Equal(expectedAuth))
+
+					request, err := http.NewRequest(
+						http.MethodPut,
+						server.URL+"/api/v1/teams/some-team",
+						bytes.NewBufferString("{"),
+					)
+					Expect(err).NotTo(HaveOccurred())
+					malformed, err := client.Do(request)
+					Expect(err).NotTo(HaveOccurred())
+					DeferCleanup(malformed.Body.Close)
+					Expect(malformed.StatusCode).To(Equal(http.StatusBadRequest))
+
+					team, found, err = realdb.Deps.teamFactory.FindTeam("some-team")
 					Expect(err).NotTo(HaveOccurred())
 					Expect(found).To(BeTrue())
 					Expect(team.Auth()).To(Equal(expectedAuth))
@@ -557,7 +574,8 @@ var _ = Describe("Teams API", func() {
 		})
 		Context("when observing page translation", func() {
 			var (
-				builds [4]db.Build
+				builds          [4]db.Build
+				buildStartTimes [4]time.Time
 			)
 
 			BeforeEach(func() {
@@ -566,6 +584,16 @@ var _ = Describe("Teams API", func() {
 				for i := range builds {
 					builds[i], err = team.CreateOneOffBuild()
 					Expect(err).NotTo(HaveOccurred())
+					buildStartTimes[i] = time.Date(2020, time.November, i+1, 0, 0, 0, 0, time.UTC)
+					result, err := realdb.Conn.Exec(
+						"UPDATE builds SET start_time = $1 WHERE id = $2",
+						buildStartTimes[i],
+						builds[i].ID(),
+					)
+					Expect(err).NotTo(HaveOccurred())
+					rows, err := result.RowsAffected()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(rows).To(Equal(int64(1)))
 				}
 
 				queryParams = fmt.Sprintf("?from=%d&to=%d&limit=8", builds[1].ID(), builds[2].ID())
@@ -589,6 +617,21 @@ var _ = Describe("Teams API", func() {
 					Expect([]int{returned[0].ID, returned[1].ID, returned[2].ID, returned[3].ID}).To(Equal([]int{
 						builds[3].ID(), builds[2].ID(), builds[1].ID(), builds[0].ID(),
 					}))
+
+					timestamped, err := client.Get(fmt.Sprintf(
+						"%s/api/v1/teams/some-team/builds?timestamps=true&from=%d&to=%d",
+						server.URL,
+						buildStartTimes[1].Unix(),
+						buildStartTimes[2].Unix(),
+					))
+					Expect(err).NotTo(HaveOccurred())
+					DeferCleanup(timestamped.Body.Close)
+					Expect(timestamped.StatusCode).To(Equal(http.StatusOK))
+					var withTimestamps []atc.Build
+					Expect(json.NewDecoder(timestamped.Body).Decode(&withTimestamps)).To(Succeed())
+					Expect(withTimestamps).To(HaveLen(2))
+					Expect([]int{withTimestamps[0].ID, withTimestamps[1].ID}).To(Equal([]int{builds[2].ID(), builds[1].ID()}))
+					Expect(timestamped.Header.Values("Link")).To(BeEmpty())
 				})
 			})
 			Context("when newer and older pages are available", func() {
