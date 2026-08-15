@@ -3,7 +3,7 @@ package exec_test
 import (
 	"context"
 	"encoding/json"
-	"sync/atomic"
+	"fmt"
 
 	"code.cloudfoundry.org/clock"
 	"code.cloudfoundry.org/lager/v3/lagerctx"
@@ -56,9 +56,8 @@ var _ = Describe("AcrossStep", func() {
 		plan  atc.AcrossPlan
 		state exec.RunState
 
-		stepperCount        int64
-		stepperFailOnCount  int64
-		stepperPanicOnCount int64
+		failingValues map[vals]struct{}
+		panicValues   map[vals]struct{}
 
 		allVals []vals
 
@@ -75,25 +74,35 @@ var _ = Describe("AcrossStep", func() {
 		}
 	)
 
-	stepRun := func(succeeded bool) stepFunc {
+	stepRun := func() stepFunc {
 		started := started
 		terminate := terminate
+		failingValues := failingValues
+		panicValues := panicValues
 
 		return func(ctx context.Context, childState exec.RunState) (bool, error) {
-			defer GinkgoRecover()
-
 			By("having the correct var values")
 			values := vals{}
 			for i, v := range plan.Vars {
 				val, found, _ := childState.Get(vars.Reference{Source: ".", Path: v.Var})
-				Expect(found).To(BeTrue(), "unset variable "+v.Var)
+				if !found {
+					return false, fmt.Errorf("unset variable %s", v.Var)
+				}
 				values[i] = val
 			}
 
 			By("running with a child scope")
-			Expect(childState.Parent()).To(Equal(state))
+			if childState.Parent() != state {
+				return false, fmt.Errorf("across substep did not run in a child scope")
+			}
 
 			started <- values
+			if _, ok := panicValues[values]; ok {
+				panic("something went wrong")
+			}
+			if _, ok := failingValues[values]; ok {
+				return false, nil
+			}
 			if c, ok := terminate[values]; ok {
 				select {
 				case err := <-c:
@@ -102,23 +111,12 @@ var _ = Describe("AcrossStep", func() {
 					return false, ctx.Err()
 				}
 			}
-			return succeeded, nil
+			return true, nil
 		}
 	}
 
-	stepper := func(plan atc.Plan) exec.Step {
-		curCount := atomic.AddInt64(&stepperCount, 1)
-
-		panics := curCount == stepperPanicOnCount
-
-		if panics {
-			return stepFunc(func(_ context.Context, _ exec.RunState) (bool, error) {
-				panic("something went wrong")
-			})
-		}
-
-		successful := curCount != stepperFailOnCount
-		return stepRun(successful)
+	stepper := func(atc.Plan) exec.Step {
+		return stepRun()
 	}
 
 	BeforeEach(func() {
@@ -160,9 +158,8 @@ var _ = Describe("AcrossStep", func() {
 				Values: []any{"d1", "d2"},
 			},
 		}
-		stepperFailOnCount = -1
-		stepperPanicOnCount = -1
-		stepperCount = 0
+		failingValues = map[vals]struct{}{}
+		panicValues = map[vals]struct{}{}
 
 		started = make(chan vals, 24)
 		terminate = map[vals]chan error{}
@@ -385,7 +382,7 @@ var _ = Describe("AcrossStep", func() {
 			BeforeEach(func() {
 				plan.FailFast = true
 
-				stepperFailOnCount = 2
+				failingValues[vals{"a1", "b1", "c2", "d1"}] = struct{}{}
 			})
 
 			It("stops running steps after a failure", func() {
@@ -406,7 +403,7 @@ var _ = Describe("AcrossStep", func() {
 			BeforeEach(func() {
 				plan.FailFast = false
 
-				stepperFailOnCount = 2
+				failingValues[vals{"a1", "b1", "c2", "d1"}] = struct{}{}
 			})
 
 			It("allows all steps to run before failing", func() {
@@ -428,7 +425,7 @@ var _ = Describe("AcrossStep", func() {
 	Describe("panic recovery", func() {
 		Context("when one step panics", func() {
 			BeforeEach(func() {
-				stepperPanicOnCount = 2
+				panicValues[vals{"a1", "b1", "c2", "d1"}] = struct{}{}
 			})
 
 			It("handles it gracefully", func() {
