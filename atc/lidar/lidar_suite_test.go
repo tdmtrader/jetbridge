@@ -1,10 +1,8 @@
 package lidar_test
 
 import (
-	"context"
 	"database/sql"
 	"errors"
-	"sync"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
@@ -42,225 +40,6 @@ type lidarDB struct {
 	ResourceConfigFactory db.ResourceConfigFactory
 	CheckFactory          db.CheckFactory
 	CheckBuilds           chan db.Build
-}
-
-type lidarCheckCall struct {
-	checkable               db.Checkable
-	resourceTypes           db.ResourceTypes
-	from                    atc.Version
-	manuallyTriggered       bool
-	skipIntervalRecursively bool
-	toDB                    bool
-}
-
-func (call lidarCheckCall) resource() db.Resource {
-	GinkgoHelper()
-	resource, ok := call.checkable.(db.Resource)
-	Expect(ok).To(BeTrue(), "expected a resource check, got %T", call.checkable)
-	return resource
-}
-
-// lidarCheckFactory observes calls while keeping the production CheckFactory
-// on every successful path. Its overrides are limited to fetch failures,
-// panic recovery, and post-fetch wrappers for the two GC-race boundaries.
-type lidarCheckFactory struct {
-	db.CheckFactory
-
-	mu                    sync.Mutex
-	calls                 []lidarCheckCall
-	resourcesErr          error
-	resourceTypesErr      error
-	panicTryCreate        bool
-	resourceScopeErrs     map[int]error
-	resourceTypeScopeErrs map[int]error
-}
-
-func observeLidarCheckFactory(factory db.CheckFactory) *lidarCheckFactory {
-	return &lidarCheckFactory{
-		CheckFactory:          factory,
-		resourceScopeErrs:     make(map[int]error),
-		resourceTypeScopeErrs: make(map[int]error),
-	}
-}
-
-func (factory *lidarCheckFactory) TryCreateCheck(
-	ctx context.Context,
-	checkable db.Checkable,
-	resourceTypes db.ResourceTypes,
-	from atc.Version,
-	manuallyTriggered bool,
-	skipIntervalRecursively bool,
-	toDB bool,
-) (db.Build, bool, error) {
-	factory.mu.Lock()
-	factory.calls = append(factory.calls, lidarCheckCall{
-		checkable:               checkable,
-		resourceTypes:           resourceTypes,
-		from:                    from,
-		manuallyTriggered:       manuallyTriggered,
-		skipIntervalRecursively: skipIntervalRecursively,
-		toDB:                    toDB,
-	})
-	panicTryCreate := factory.panicTryCreate
-	factory.mu.Unlock()
-
-	if panicTryCreate {
-		panic("configured TryCreateCheck panic")
-	}
-	return factory.CheckFactory.TryCreateCheck(
-		ctx, checkable, resourceTypes, from,
-		manuallyTriggered, skipIntervalRecursively, toDB,
-	)
-}
-
-func (factory *lidarCheckFactory) Resources() ([]db.Resource, error) {
-	factory.mu.Lock()
-	configuredErr := factory.resourcesErr
-	factory.mu.Unlock()
-	if configuredErr != nil {
-		return nil, configuredErr
-	}
-
-	resources, err := factory.CheckFactory.Resources()
-	if err != nil {
-		return nil, err
-	}
-	for i, resource := range resources {
-		factory.mu.Lock()
-		scopeErr := factory.resourceScopeErrs[resource.ID()]
-		factory.mu.Unlock()
-		if scopeErr != nil {
-			resources[i] = lidarResourceWithScopeError{Resource: resource, err: scopeErr}
-		}
-	}
-	return resources, nil
-}
-
-func (factory *lidarCheckFactory) ResourceTypesByPipeline() (map[int]db.ResourceTypes, error) {
-	factory.mu.Lock()
-	configuredErr := factory.resourceTypesErr
-	factory.mu.Unlock()
-	if configuredErr != nil {
-		return nil, configuredErr
-	}
-
-	byPipeline, err := factory.CheckFactory.ResourceTypesByPipeline()
-	if err != nil {
-		return nil, err
-	}
-	for pipelineID, resourceTypes := range byPipeline {
-		wrapped := append(db.ResourceTypes(nil), resourceTypes...)
-		for i, resourceType := range wrapped {
-			factory.mu.Lock()
-			scopeErr := factory.resourceTypeScopeErrs[resourceType.ID()]
-			factory.mu.Unlock()
-			if scopeErr != nil {
-				wrapped[i] = lidarResourceTypeWithScopeError{ResourceType: resourceType, err: scopeErr}
-			}
-		}
-		byPipeline[pipelineID] = wrapped
-	}
-	return byPipeline, nil
-}
-
-func (factory *lidarCheckFactory) Calls() []lidarCheckCall {
-	factory.mu.Lock()
-	defer factory.mu.Unlock()
-	return append([]lidarCheckCall(nil), factory.calls...)
-}
-
-func (factory *lidarCheckFactory) FailResources(err error) {
-	factory.mu.Lock()
-	defer factory.mu.Unlock()
-	factory.resourcesErr = err
-}
-
-func (factory *lidarCheckFactory) FailResourceTypes(err error) {
-	factory.mu.Lock()
-	defer factory.mu.Unlock()
-	factory.resourceTypesErr = err
-}
-
-func (factory *lidarCheckFactory) PanicOnTryCreate() {
-	factory.mu.Lock()
-	defer factory.mu.Unlock()
-	factory.panicTryCreate = true
-}
-
-func (factory *lidarCheckFactory) FailResourceScope(resourceID int, err error) {
-	factory.mu.Lock()
-	defer factory.mu.Unlock()
-	factory.resourceScopeErrs[resourceID] = err
-}
-
-func (factory *lidarCheckFactory) FailResourceTypeScope(resourceTypeID int, err error) {
-	factory.mu.Lock()
-	defer factory.mu.Unlock()
-	factory.resourceTypeScopeErrs[resourceTypeID] = err
-}
-
-type lidarResourceWithScopeError struct {
-	db.Resource
-	err error
-}
-
-func (resource lidarResourceWithScopeError) SetResourceConfigScope(db.ResourceConfigScope) error {
-	return resource.err
-}
-
-type lidarResourceTypeWithScopeError struct {
-	db.ResourceType
-	err error
-}
-
-func (resourceType lidarResourceTypeWithScopeError) SetResourceConfigScope(db.ResourceConfigScope) error {
-	return resourceType.err
-}
-
-// lidarResourceConfigFactory delegates real config/scope lookup and can only
-// replace SaveVersions with the post-lookup failure under test.
-type lidarResourceConfigFactory struct {
-	db.ResourceConfigFactory
-	saveVersionsErr error
-}
-
-func (factory lidarResourceConfigFactory) FindOrCreateResourceConfig(
-	resourceType string,
-	source atc.Source,
-	customTypeResourceCache db.ResourceCache,
-) (db.ResourceConfig, error) {
-	config, err := factory.ResourceConfigFactory.FindOrCreateResourceConfig(
-		resourceType, source, customTypeResourceCache,
-	)
-	if err != nil {
-		return nil, err
-	}
-	return lidarResourceConfig{ResourceConfig: config, saveVersionsErr: factory.saveVersionsErr}, nil
-}
-
-type lidarResourceConfig struct {
-	db.ResourceConfig
-	saveVersionsErr error
-}
-
-func (config lidarResourceConfig) FindOrCreateScope(resourceID *int) (db.ResourceConfigScope, error) {
-	scope, err := config.ResourceConfig.FindOrCreateScope(resourceID)
-	if err != nil {
-		return nil, err
-	}
-	return lidarResourceConfigScope{ResourceConfigScope: scope, saveVersionsErr: config.saveVersionsErr}, nil
-}
-
-type lidarResourceConfigScope struct {
-	db.ResourceConfigScope
-	saveVersionsErr error
-}
-
-func (scope lidarResourceConfigScope) SaveVersions(span db.SpanContext, versions []atc.Version) error {
-	if scope.saveVersionsErr != nil {
-		return scope.saveVersionsErr
-	}
-	return scope.ResourceConfigScope.SaveVersions(span, versions)
 }
 
 func useLidarDB() *lidarDB {
@@ -457,11 +236,18 @@ func drainLidarCheckBuilds(fixture *lidarDB, count int) []db.Build {
 	GinkgoHelper()
 	builds := make([]db.Build, 0, count)
 	for range count {
-		var build db.Build
-		Eventually(fixture.CheckBuilds).WithTimeout(5 * time.Second).Should(Receive(&build))
+		build := receiveLidarCheckBuild(fixture)
+		Expect(build.Finish(db.BuildStatusSucceeded)).To(Succeed())
 		builds = append(builds, build)
 	}
 	return builds
+}
+
+func receiveLidarCheckBuild(fixture *lidarDB) db.Build {
+	GinkgoHelper()
+	var build db.Build
+	Eventually(fixture.CheckBuilds).WithTimeout(5 * time.Second).Should(Receive(&build))
+	return build
 }
 
 func lidarConfigWithGets(resources atc.ResourceConfigs, resourceTypes atc.ResourceTypes) atc.Config {
