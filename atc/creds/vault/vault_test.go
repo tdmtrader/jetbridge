@@ -15,19 +15,19 @@ import (
 	"github.com/onsi/gomega/ghttp"
 )
 
-type MockSecret struct {
+type vaultSecret struct {
 	path   string
 	secret *vaultapi.Secret
 }
 
-type MockSecretReader struct {
-	secrets *[]MockSecret
+type vaultSecretReader struct {
+	secrets *[]vaultSecret
 }
 
-func (msr *MockSecretReader) Read(lookupPath string) (*vaultapi.Secret, error) {
+func (reader *vaultSecretReader) Read(lookupPath string) (*vaultapi.Secret, error) {
 	Expect(lookupPath).ToNot(BeNil())
 
-	for _, secret := range *msr.secrets {
+	for _, secret := range *reader.secrets {
 		if lookupPath == secret.path {
 			return secret.secret, nil
 		}
@@ -36,7 +36,7 @@ func (msr *MockSecretReader) Read(lookupPath string) (*vaultapi.Secret, error) {
 	return nil, nil
 }
 
-func createMockV2Secret(value string) *vaultapi.Secret {
+func createVaultV2Secret(value string) *vaultapi.Secret {
 	return &vaultapi.Secret{
 		Data: map[string]any{
 			"data": map[string]any{"value": value},
@@ -50,7 +50,7 @@ func createMockV2Secret(value string) *vaultapi.Secret {
 	}
 }
 
-func createMockV1Secret(value string) *vaultapi.Secret {
+func createVaultV1Secret(value string) *vaultapi.Secret {
 	return &vaultapi.Secret{
 		Data: map[string]any{
 			"value": value,
@@ -62,13 +62,13 @@ var _ = Describe("Vault", func() {
 
 	var v *vault.Vault
 	var variables vars.Variables
-	var msr *MockSecretReader
+	var secretReader *vaultSecretReader
 	var varFoo vars.Reference
 	var loggedInCh chan struct{}
 
 	BeforeEach(func() {
 
-		msr = &MockSecretReader{&[]MockSecret{
+		secretReader = &vaultSecretReader{&[]vaultSecret{
 			{
 				path: "/concourse/team",
 				secret: &vaultapi.Secret{
@@ -83,7 +83,7 @@ var _ = Describe("Vault", func() {
 		loggedInCh = make(chan struct{}, 1)
 
 		v = &vault.Vault{
-			SecretReader:    msr,
+			SecretReader:    secretReader,
 			Prefix:          "/concourse",
 			LookupTemplates: []*creds.SecretTemplate{p, t},
 			SharedPath:      "shared",
@@ -110,7 +110,7 @@ var _ = Describe("Vault", func() {
 			})
 
 			It("should set expiration", func() {
-				v.SecretReader = &MockSecretReader{&[]MockSecret{
+				v.SecretReader = &vaultSecretReader{&[]vaultSecret{
 					{
 						path: "/concourse/team/pipeline/foo",
 						secret: &vaultapi.Secret{
@@ -126,7 +126,7 @@ var _ = Describe("Vault", func() {
 			})
 
 			It("should get secret from pipeline", func() {
-				v.SecretReader = &MockSecretReader{&[]MockSecret{
+				v.SecretReader = &vaultSecretReader{&[]vaultSecret{
 					{
 						path: "/concourse/team/pipeline/foo",
 						secret: &vaultapi.Secret{
@@ -141,7 +141,7 @@ var _ = Describe("Vault", func() {
 			})
 
 			It("should get secret from team", func() {
-				v.SecretReader = &MockSecretReader{&[]MockSecret{
+				v.SecretReader = &vaultSecretReader{&[]vaultSecret{
 					{
 						path: "/concourse/team/foo",
 						secret: &vaultapi.Secret{
@@ -156,7 +156,7 @@ var _ = Describe("Vault", func() {
 			})
 
 			It("should get secret from shared", func() {
-				v.SecretReader = &MockSecretReader{&[]MockSecret{
+				v.SecretReader = &vaultSecretReader{&[]vaultSecret{
 					{
 						path: "/concourse/shared/foo",
 						secret: &vaultapi.Secret{
@@ -171,7 +171,7 @@ var _ = Describe("Vault", func() {
 			})
 
 			It("should get secret from pipeline even its in shared", func() {
-				v.SecretReader = &MockSecretReader{&[]MockSecret{
+				v.SecretReader = &vaultSecretReader{&[]vaultSecret{
 					{
 						path: "/concourse/shared/foo",
 						secret: &vaultapi.Secret{
@@ -197,7 +197,7 @@ var _ = Describe("Vault", func() {
 					b, _ := creds.BuildSecretTemplate("b", "/concourse/place2/{{.Team}}/{{.Secret}}")
 					c, _ := creds.BuildSecretTemplate("c", "/concourse/place3/{{.Secret}}")
 
-					sr := &MockSecretReader{&[]MockSecret{
+					sr := &vaultSecretReader{&[]vaultSecret{
 						{
 							path: "/concourse/place1/team/sub/pipeline/foo",
 							secret: &vaultapi.Secret{
@@ -255,7 +255,7 @@ var _ = Describe("Vault", func() {
 					t, _ := creds.BuildSecretTemplate("t", "/concourse/{{.Team}}/{{.Secret}}")
 
 					v = &vault.Vault{
-						SecretReader:    msr,
+						SecretReader:    secretReader,
 						Prefix:          "/concourse",
 						LookupTemplates: []*creds.SecretTemplate{p, t},
 					}
@@ -264,7 +264,7 @@ var _ = Describe("Vault", func() {
 				})
 
 				It("should not get secret from root", func() {
-					v.SecretReader = &MockSecretReader{&[]MockSecret{
+					v.SecretReader = &vaultSecretReader{&[]vaultSecret{
 						{
 							path: "/concourse/foo",
 							secret: &vaultapi.Secret{
@@ -280,7 +280,7 @@ var _ = Describe("Vault", func() {
 
 			Context("allowRootPath", func() {
 				BeforeEach(func() {
-					v.SecretReader = &MockSecretReader{&[]MockSecret{
+					v.SecretReader = &vaultSecretReader{&[]vaultSecret{
 						{
 							path: "/concourse/foo",
 							secret: &vaultapi.Secret{
@@ -380,7 +380,7 @@ var _ = Describe("Vault KV2", func() {
 			server.AppendHandlers(
 				ghttp.CombineHandlers(
 					ghttp.VerifyRequest("GET", "/v1/concourse/data/team/pipeline/foo"),
-					ghttp.RespondWithJSONEncodedPtr(&statusCodeOK, createMockV2Secret("bar")),
+					ghttp.RespondWithJSONEncodedPtr(&statusCodeOK, createVaultV2Secret("bar")),
 				),
 			)
 			value, expiration, found, err := v.Get("team/pipeline/foo")
@@ -394,7 +394,7 @@ var _ = Describe("Vault KV2", func() {
 			server.AppendHandlers(
 				ghttp.CombineHandlers(
 					ghttp.VerifyRequest("GET", "/v1/concourse/data/team/pipeline/foo"),
-					ghttp.RespondWithJSONEncodedPtr(&statusCodeOK, createMockV2Secret("bar")),
+					ghttp.RespondWithJSONEncodedPtr(&statusCodeOK, createVaultV2Secret("bar")),
 				),
 			)
 			value, found, err := variables.Get(varFoo)
@@ -411,7 +411,7 @@ var _ = Describe("Vault KV2", func() {
 				),
 				ghttp.CombineHandlers(
 					ghttp.VerifyRequest("GET", "/v1/concourse/data/team/foo"),
-					ghttp.RespondWithJSONEncodedPtr(&statusCodeOK, createMockV2Secret("bar")),
+					ghttp.RespondWithJSONEncodedPtr(&statusCodeOK, createVaultV2Secret("bar")),
 				),
 			)
 			value, found, err := variables.Get(varFoo)
@@ -432,7 +432,7 @@ var _ = Describe("Vault KV2", func() {
 				),
 				ghttp.CombineHandlers(
 					ghttp.VerifyRequest("GET", "/v1/concourse/data/shared/foo"),
-					ghttp.RespondWithJSONEncodedPtr(&statusCodeOK, createMockV2Secret("bar")),
+					ghttp.RespondWithJSONEncodedPtr(&statusCodeOK, createVaultV2Secret("bar")),
 				),
 			)
 			value, found, err := variables.Get(varFoo)
@@ -445,7 +445,7 @@ var _ = Describe("Vault KV2", func() {
 			server.AppendHandlers(
 				ghttp.CombineHandlers(
 					ghttp.VerifyRequest("GET", "/v1/concourse/data/team/pipeline/foo"),
-					ghttp.RespondWithJSONEncodedPtr(&statusCodeOK, createMockV2Secret("bar")),
+					ghttp.RespondWithJSONEncodedPtr(&statusCodeOK, createVaultV2Secret("bar")),
 				),
 			)
 			value, found, err := variables.Get(varFoo)
@@ -468,7 +468,7 @@ var _ = Describe("Vault KV2", func() {
 				server.AppendHandlers(
 					ghttp.CombineHandlers(
 						ghttp.VerifyRequest("GET", "/v1/concourse/data/place1/team/sub/pipeline/foo"),
-						ghttp.RespondWithJSONEncodedPtr(&statusCodeOK, createMockV2Secret("bar")),
+						ghttp.RespondWithJSONEncodedPtr(&statusCodeOK, createVaultV2Secret("bar")),
 					),
 				)
 				value, found, err := variables.Get(varFoo)
@@ -485,7 +485,7 @@ var _ = Describe("Vault KV2", func() {
 					),
 					ghttp.CombineHandlers(
 						ghttp.VerifyRequest("GET", "/v1/concourse/data/place2/team/baz"),
-						ghttp.RespondWithJSONEncodedPtr(&statusCodeOK, createMockV2Secret("qux")),
+						ghttp.RespondWithJSONEncodedPtr(&statusCodeOK, createVaultV2Secret("qux")),
 					),
 				)
 				value, found, err := variables.Get(vars.Reference{Path: "baz"})
@@ -506,7 +506,7 @@ var _ = Describe("Vault KV2", func() {
 					),
 					ghttp.CombineHandlers(
 						ghttp.VerifyRequest("GET", "/v1/concourse/data/place3/global"),
-						ghttp.RespondWithJSONEncodedPtr(&statusCodeOK, createMockV2Secret("shared")),
+						ghttp.RespondWithJSONEncodedPtr(&statusCodeOK, createVaultV2Secret("shared")),
 					),
 				)
 				value, found, err := variables.Get(vars.Reference{Path: "global"})
@@ -542,7 +542,7 @@ var _ = Describe("Vault KV2", func() {
 					// This should never be called.
 					ghttp.CombineHandlers(
 						ghttp.VerifyRequest("GET", "/v1/concourse/data/foo"),
-						ghttp.RespondWithJSONEncodedPtr(&statusCodeOK, createMockV2Secret("foo")),
+						ghttp.RespondWithJSONEncodedPtr(&statusCodeOK, createVaultV2Secret("foo")),
 					),
 				)
 				_, found, err := variables.Get(varFoo)
@@ -569,7 +569,7 @@ var _ = Describe("Vault KV2", func() {
 					// This should only be called for root.
 					ghttp.CombineHandlers(
 						ghttp.VerifyRequest("GET", "/v1/concourse/data/foo"),
-						ghttp.RespondWithJSONEncodedPtr(&statusCodeOK, createMockV2Secret("foo")),
+						ghttp.RespondWithJSONEncodedPtr(&statusCodeOK, createVaultV2Secret("foo")),
 					),
 				)
 			})
@@ -653,7 +653,7 @@ var _ = Describe("Vault KV1", func() {
 			server.AppendHandlers(
 				ghttp.CombineHandlers(
 					ghttp.VerifyRequest("GET", "/v1/concourse/team/pipeline/foo"),
-					ghttp.RespondWithJSONEncodedPtr(&statusCodeOK, createMockV1Secret("bar")),
+					ghttp.RespondWithJSONEncodedPtr(&statusCodeOK, createVaultV1Secret("bar")),
 				),
 			)
 			value, found, err := variables.Get(varFoo)
@@ -670,7 +670,7 @@ var _ = Describe("Vault KV1", func() {
 				),
 				ghttp.CombineHandlers(
 					ghttp.VerifyRequest("GET", "/v1/concourse/team/foo"),
-					ghttp.RespondWithJSONEncodedPtr(&statusCodeOK, createMockV1Secret("bar")),
+					ghttp.RespondWithJSONEncodedPtr(&statusCodeOK, createVaultV1Secret("bar")),
 				),
 			)
 			value, found, err := variables.Get(varFoo)
@@ -691,7 +691,7 @@ var _ = Describe("Vault KV1", func() {
 				),
 				ghttp.CombineHandlers(
 					ghttp.VerifyRequest("GET", "/v1/concourse/shared/foo"),
-					ghttp.RespondWithJSONEncodedPtr(&statusCodeOK, createMockV1Secret("bar")),
+					ghttp.RespondWithJSONEncodedPtr(&statusCodeOK, createVaultV1Secret("bar")),
 				),
 			)
 			value, found, err := variables.Get(varFoo)
@@ -704,7 +704,7 @@ var _ = Describe("Vault KV1", func() {
 			server.AppendHandlers(
 				ghttp.CombineHandlers(
 					ghttp.VerifyRequest("GET", "/v1/concourse/team/pipeline/foo"),
-					ghttp.RespondWithJSONEncodedPtr(&statusCodeOK, createMockV1Secret("bar")),
+					ghttp.RespondWithJSONEncodedPtr(&statusCodeOK, createVaultV1Secret("bar")),
 				),
 			)
 			value, found, err := variables.Get(varFoo)
@@ -727,7 +727,7 @@ var _ = Describe("Vault KV1", func() {
 				server.AppendHandlers(
 					ghttp.CombineHandlers(
 						ghttp.VerifyRequest("GET", "/v1/concourse/place1/team/sub/pipeline/foo"),
-						ghttp.RespondWithJSONEncodedPtr(&statusCodeOK, createMockV1Secret("bar")),
+						ghttp.RespondWithJSONEncodedPtr(&statusCodeOK, createVaultV1Secret("bar")),
 					),
 				)
 				value, found, err := variables.Get(varFoo)
@@ -744,7 +744,7 @@ var _ = Describe("Vault KV1", func() {
 					),
 					ghttp.CombineHandlers(
 						ghttp.VerifyRequest("GET", "/v1/concourse/place2/team/baz"),
-						ghttp.RespondWithJSONEncodedPtr(&statusCodeOK, createMockV1Secret("qux")),
+						ghttp.RespondWithJSONEncodedPtr(&statusCodeOK, createVaultV1Secret("qux")),
 					),
 				)
 				value, found, err := variables.Get(vars.Reference{Path: "baz"})
@@ -765,7 +765,7 @@ var _ = Describe("Vault KV1", func() {
 					),
 					ghttp.CombineHandlers(
 						ghttp.VerifyRequest("GET", "/v1/concourse/place3/global"),
-						ghttp.RespondWithJSONEncodedPtr(&statusCodeOK, createMockV1Secret("shared")),
+						ghttp.RespondWithJSONEncodedPtr(&statusCodeOK, createVaultV1Secret("shared")),
 					),
 				)
 				value, found, err := variables.Get(vars.Reference{Path: "global"})
@@ -801,7 +801,7 @@ var _ = Describe("Vault KV1", func() {
 					// This should never be called.
 					ghttp.CombineHandlers(
 						ghttp.VerifyRequest("GET", "/v1/concourse/foo"),
-						ghttp.RespondWithJSONEncodedPtr(&statusCodeOK, createMockV1Secret("foo")),
+						ghttp.RespondWithJSONEncodedPtr(&statusCodeOK, createVaultV1Secret("foo")),
 					),
 				)
 				_, found, err := variables.Get(varFoo)
@@ -828,7 +828,7 @@ var _ = Describe("Vault KV1", func() {
 					// This should only be called for root.
 					ghttp.CombineHandlers(
 						ghttp.VerifyRequest("GET", "/v1/concourse/foo"),
-						ghttp.RespondWithJSONEncodedPtr(&statusCodeOK, createMockV1Secret("foo")),
+						ghttp.RespondWithJSONEncodedPtr(&statusCodeOK, createVaultV1Secret("foo")),
 					),
 				)
 			})
