@@ -30,20 +30,22 @@ var _ = Describe("NamedVariables", func() {
 			Expect(err.Error()).To(Equal("missing source 's3' in var: s3:foo"))
 		})
 
-		It("return found value as soon as one source succeeds", func() {
-			vars1 := &FakeVariables{}
-			vars2 := StaticVariables{"key2": "val"}
-			vars3 := &FakeVariables{GetErr: errors.New("fake-err")}
+		It("selects the named source and preserves nested fields", func() {
+			vars1 := errorVariables{err: errors.New("wrong source s1")}
+			vars2 := StaticVariables{
+				"key2": map[string]any{"nested": "val"},
+			}
+			vars3 := errorVariables{err: errors.New("wrong source s3")}
 			vars := NamedVariables{"s1": vars1, "s2": vars2, "s3": vars3}
 
-			val, found, err := vars.Get(Reference{Source: "s2", Path: "key2"})
+			val, found, err := vars.Get(Reference{
+				Source: "s2",
+				Path:   "key2",
+				Fields: []string{"nested"},
+			})
 			Expect(val).To(Equal("val"))
 			Expect(found).To(BeTrue())
 			Expect(err).ToNot(HaveOccurred())
-
-			// Didn't get past other variables
-			Expect(vars1.GetCallCount).To(Equal(0))
-			Expect(vars3.GetCallCount).To(Equal(0))
 		})
 
 		It("return no value and not found if var source name is not specified", func() {
@@ -59,7 +61,7 @@ var _ = Describe("NamedVariables", func() {
 
 		It("return error as soon as one source fails", func() {
 			vars1 := StaticVariables{"key1": "val"}
-			vars2 := &FakeVariables{GetErr: errors.New("fake-err")}
+			vars2 := errorVariables{err: errors.New("fake-err")}
 			vars := NamedVariables{"s1": vars1, "s2": vars2}
 
 			val, found, err := vars.Get(Reference{Source: "s2", Path: "key3"})

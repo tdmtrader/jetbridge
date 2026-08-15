@@ -81,19 +81,16 @@ var _ = Describe("CredVarsTracker secret ref integration", func() {
 	})
 
 	It("does not track secret refs when CredVars does not implement SecretRefResolver", func() {
-		fakeVars := &FakeVariables{
-			GetFunc: func(ref Reference) (any, bool, error) {
-				return "plain-value", true, nil
-			},
-		}
+		staticVars := StaticVariables{"some-var": "plain-value"}
 		tracker := &CredVarsTracker{
-			CredVars: fakeVars,
+			CredVars: staticVars,
 			Tracker:  NewTracker(),
 		}
 
-		_, found, err := tracker.Get(Reference{Path: "some-var"})
+		value, found, err := tracker.Get(Reference{Path: "some-var"})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeTrue())
+		Expect(value).To(Equal("plain-value"))
 
 		refs := collectSecretRefs(tracker.Tracker)
 		Expect(refs).To(BeEmpty())

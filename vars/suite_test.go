@@ -14,22 +14,14 @@ func TestReg(t *testing.T) {
 	RunSpecs(t, "director/template")
 }
 
-type FakeVariables struct {
-	GetFunc      func(Reference) (any, bool, error)
-	GetVarDef    Reference
-	GetErr       error
-	GetCallCount int
+type errorVariables struct {
+	err error
 }
 
-func (v *FakeVariables) Get(ref Reference) (any, bool, error) {
-	v.GetCallCount += 1
-	v.GetVarDef = ref
-	if v.GetFunc != nil {
-		return v.GetFunc(ref)
-	}
-	return nil, false, v.GetErr
+func (v errorVariables) Get(Reference) (any, bool, error) {
+	return nil, false, v.err
 }
 
-func (v *FakeVariables) List() ([]Reference, error) {
-	return nil, nil
+func (v errorVariables) List() ([]Reference, error) {
+	return nil, v.err
 }

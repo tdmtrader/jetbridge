@@ -2112,7 +2112,7 @@ var _ = Describe("Pipeline", func() {
 
 	Describe("Variables", func() {
 		var (
-			globalSecrets *countingSecrets
+			globalSecrets *dummy.Secrets
 			pool          creds.VarSourcePool
 
 			pvars vars.Variables
@@ -2140,9 +2140,7 @@ var _ = Describe("Pipeline", func() {
 		})
 
 		JustBeforeEach(func() {
-			globalSecrets = &countingSecrets{
-				Secrets: &dummy.Secrets{StaticVariables: vars.StaticVariables{"gk": "gv"}},
-			}
+			globalSecrets = &dummy.Secrets{StaticVariables: vars.StaticVariables{"gk": "gv"}}
 
 			params := creds.SecretLookupParams{
 				Team:         pipeline.TeamName(),
@@ -2155,6 +2153,8 @@ var _ = Describe("Pipeline", func() {
 		})
 
 		It("should get var from pipeline var source", func() {
+			globalSecrets.StaticVariables["pk"] = "global-pv"
+
 			v, found, err := pvars.Get(vars.Reference{Source: "some-var-source", Path: "pk"})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(found).To(BeTrue())
@@ -2165,11 +2165,6 @@ var _ = Describe("Pipeline", func() {
 			_, found, err := pvars.Get(vars.Reference{Path: "pk"})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(found).To(BeFalse())
-		})
-
-		It("should not get from global secrets if found in the pipeline var source", func() {
-			pvars.Get(vars.Reference{Source: "some-var-source", Path: "pk"})
-			Expect(globalSecrets.getCount).To(Equal(0))
 		})
 
 		It("should get var from global var source", func() {
@@ -2267,17 +2262,4 @@ var _ = Describe("Pipeline", func() {
 
 func intptr(i int) *int {
 	return &i
-}
-
-// countingSecrets wraps a real secret manager to record how many lookups reach
-// it. A secret manager has no way to report that on its own.
-type countingSecrets struct {
-	creds.Secrets
-
-	getCount int
-}
-
-func (s *countingSecrets) Get(path string) (any, *time.Time, bool, error) {
-	s.getCount++
-	return s.Secrets.Get(path)
 }

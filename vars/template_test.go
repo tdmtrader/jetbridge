@@ -404,7 +404,7 @@ dup-key: ((key3))
 
 	It("returns error if finding variable fails", func() {
 		template := NewTemplate([]byte("((key))"))
-		vars := &FakeVariables{GetErr: errors.New("fake-err")}
+		vars := errorVariables{err: errors.New("fake-err")}
 
 		_, err := template.Evaluate(vars, EvaluateOpts{})
 		Expect(err).To(HaveOccurred())

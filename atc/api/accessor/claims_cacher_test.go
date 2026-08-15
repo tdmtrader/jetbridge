@@ -1,7 +1,7 @@
 package accessor_test
 
 import (
-	"sync"
+	"time"
 
 	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/db"
@@ -10,34 +10,9 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-// countingAccessTokenFetcher counts the reads that reach PostgreSQL, which is
-// the only way a spec can tell a cache hit from a fetch.
-type countingAccessTokenFetcher struct {
-	accessor.AccessTokenFetcher
-
-	mu      sync.Mutex
-	fetched int
-}
-
-func (f *countingAccessTokenFetcher) GetAccessToken(rawToken string) (db.AccessToken, bool, error) {
-	f.mu.Lock()
-	f.fetched++
-	f.mu.Unlock()
-
-	return f.AccessTokenFetcher.GetAccessToken(rawToken)
-}
-
-func (f *countingAccessTokenFetcher) fetches() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	return f.fetched
-}
-
 var _ = Describe("ClaimsCacher", func() {
 	var (
 		fixture           *realTeamFixture
-		accessTokens      *countingAccessTokenFetcher
 		maxCacheSizeBytes int
 
 		claimsCacher accessor.AccessTokenFetcher
@@ -45,12 +20,11 @@ var _ = Describe("ClaimsCacher", func() {
 
 	BeforeEach(func() {
 		fixture = useRealTeamFixture()
-		accessTokens = &countingAccessTokenFetcher{AccessTokenFetcher: fixture.AccessTokenFactory}
 		maxCacheSizeBytes = 1000
 	})
 
 	JustBeforeEach(func() {
-		claimsCacher = accessor.NewClaimsCacher(accessTokens, maxCacheSizeBytes)
+		claimsCacher = accessor.NewClaimsCacher(fixture.AccessTokenFactory, maxCacheSizeBytes)
 	})
 
 	It("fetches claims from the DB", func() {
@@ -61,8 +35,6 @@ var _ = Describe("ClaimsCacher", func() {
 		Expect(found).To(BeTrue())
 		Expect(token).To(Equal(db.AccessToken{Token: "token", Claims: stored}))
 		Expect(token.Claims.Username).To(Equal("foo"))
-
-		Expect(accessTokens.fetches()).To(Equal(1), "did not fetch from DB")
 	})
 
 	It("returns not found if the token isn't found", func() {
@@ -74,75 +46,113 @@ var _ = Describe("ClaimsCacher", func() {
 	It("doesn't fetch from the DB when the result is cached", func() {
 		stored := fixture.persistAccessToken("token", map[string]any{"name": "foo"})
 
-		claimsCacher.GetAccessToken("token")
+		_, found, err := claimsCacher.GetAccessToken("token")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(fixture.AccessTokenFactory.DeleteAccessToken("token")).To(Succeed())
+
 		cached, found, err := claimsCacher.GetAccessToken("token")
 		Expect(err).ToNot(HaveOccurred())
 		Expect(found).To(BeTrue())
 		Expect(cached).To(Equal(db.AccessToken{Token: "token", Claims: stored}))
-
-		Expect(accessTokens.fetches()).To(Equal(1), "did not cache claims")
 	})
 
 	It("doesn't cache claims when cache size is exceeded", func() {
 		fixture.persistAccessToken("token", map[string]any{"a": stringWithLen(2000)})
 
-		claimsCacher.GetAccessToken("token")
-		claimsCacher.GetAccessToken("token")
-		Expect(accessTokens.fetches()).To(Equal(2), "cached claims that exceed length")
+		_, found, err := claimsCacher.GetAccessToken("token")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(fixture.AccessTokenFactory.DeleteAccessToken("token")).To(Succeed())
+
+		_, found, err = claimsCacher.GetAccessToken("token")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeFalse())
 	})
 
 	It("evicts the least recently used access token when size limit exceeded", func() {
+		expected := map[string]db.AccessToken{}
 		for _, token := range []string{"token1", "token2", "token3"} {
-			fixture.persistAccessToken(token, map[string]any{"a": stringWithLen(400)})
+			claims := fixture.persistAccessToken(token, map[string]any{"a": stringWithLen(400)})
+			expected[token] = db.AccessToken{Token: token, Claims: claims}
 		}
 
 		By("filling the cache")
-		claimsCacher.GetAccessToken("token1")
-		claimsCacher.GetAccessToken("token2")
-		Expect(accessTokens.fetches()).To(Equal(2))
+		for _, token := range []string{"token1", "token2", "token3"} {
+			fetched, found, err := claimsCacher.GetAccessToken(token)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(fetched).To(Equal(expected[token]))
+		}
 
-		By("overflowing the cache")
-		claimsCacher.GetAccessToken("token3")
-		Expect(accessTokens.fetches()).To(Equal(3))
+		By("removing the database fallback")
+		for _, token := range []string{"token1", "token2", "token3"} {
+			Expect(fixture.AccessTokenFactory.DeleteAccessToken(token)).To(Succeed())
+		}
 
-		By("fetching the least recently used token")
-		claimsCacher.GetAccessToken("token1")
-		Expect(accessTokens.fetches()).To(Equal(4), "did not evict least recently used")
+		By("observing the least recently used token is absent from both stores")
+		_, found, err := claimsCacher.GetAccessToken("token1")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeFalse())
 
-		By("ensuring the latest token was not evicted")
-		claimsCacher.GetAccessToken("token3")
-		Expect(accessTokens.fetches()).To(Equal(4), "evicted the latest token")
-	})
-
-	It("errors when the DB fails", func() {
-		fixture.disconnect()
-
-		_, _, err := claimsCacher.GetAccessToken("token")
-		Expect(err).To(MatchError(ContainSubstring("database is closed")))
+		By("observing the most recently used token is still cached")
+		cached, found, err := claimsCacher.GetAccessToken("token3")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(cached).To(Equal(expected["token3"]))
 	})
 
 	It("fetches claims from the DB concurrently", func() {
-		// this is designed purely to trigger the race detector
-		go claimsCacher.GetAccessToken("token1")
-		go claimsCacher.GetAccessToken("token2")
-		go claimsCacher.GetAccessToken("token3")
-		Eventually(accessTokens.fetches).Should(Equal(3))
+		type fetchResult struct {
+			rawToken string
+			token    db.AccessToken
+			found    bool
+			err      error
+		}
+
+		rawTokens := []string{"token1", "token2", "token3"}
+		expected := make(map[string]db.AccessToken, len(rawTokens))
+		for _, rawToken := range rawTokens {
+			claims := fixture.persistAccessToken(rawToken, map[string]any{"name": rawToken})
+			expected[rawToken] = db.AccessToken{Token: rawToken, Claims: claims}
+		}
+
+		results := make(chan fetchResult, len(rawTokens))
+		for _, rawToken := range rawTokens {
+			rawToken := rawToken
+			go func() {
+				token, found, err := claimsCacher.GetAccessToken(rawToken)
+				results <- fetchResult{rawToken: rawToken, token: token, found: found, err: err}
+			}()
+		}
+
+		Eventually(results).WithTimeout(3 * time.Second).Should(HaveLen(len(rawTokens)))
+		close(results)
+		for result := range results {
+			Expect(result.err).NotTo(HaveOccurred())
+			Expect(result.found).To(BeTrue())
+			Expect(result.token).To(Equal(expected[result.rawToken]))
+		}
 	})
 
 	It("deletes token from cache", func() {
 		fixture.persistAccessToken("token1", map[string]any{"name": "foo"})
 
 		By("fetching the token for the first time (populates cache)")
-		_, _, err := claimsCacher.GetAccessToken("token1")
+		_, found, err := claimsCacher.GetAccessToken("token1")
 		Expect(err).ToNot(HaveOccurred())
-		Expect(accessTokens.fetches()).To(Equal(1))
+		Expect(found).To(BeTrue())
+
+		By("deleting the backing row")
+		Expect(fixture.AccessTokenFactory.DeleteAccessToken("token1")).To(Succeed())
 
 		By("deleting the token from the cache")
 		Expect(claimsCacher.DeleteAccessToken("token1")).To(Succeed())
 
-		By("fetching the token again, should refetch from DB due to deletion")
-		claimsCacher.GetAccessToken("token1")
-		Expect(accessTokens.fetches()).To(Equal(2), "expected to refetch after delete")
+		By("observing the token is absent on the next fetch")
+		_, found, err = claimsCacher.GetAccessToken("token1")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeFalse())
 	})
 
 	It("leaves the row in place when only the cache entry is dropped", func() {

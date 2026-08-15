@@ -1,13 +1,12 @@
 package creds_test
 
 import (
-	"fmt"
+	"errors"
+	"sync"
 	"time"
 
 	"github.com/concourse/concourse/atc/creds"
-	"github.com/concourse/concourse/atc/creds/dummy"
 	"github.com/concourse/concourse/tracing"
-	"github.com/concourse/concourse/vars"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
@@ -15,215 +14,263 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-type countingSecrets struct {
-	creds.Secrets
-
-	reads  int
-	misses int
+type secretEntry struct {
+	value      any
+	expiration *time.Time
 }
 
-func (secrets *countingSecrets) Get(secretPath string) (any, *time.Time, bool, error) {
-	value, expiration, found, err := secrets.Secrets.Get(secretPath)
-	if found || err != nil {
-		secrets.reads++
-	} else {
-		secrets.misses++
+type stateSecrets struct {
+	mu       sync.RWMutex
+	entries  map[string]secretEntry
+	failures map[string]error
+}
+
+func newStateSecrets(entries map[string]secretEntry) *stateSecrets {
+	return &stateSecrets{
+		entries:  entries,
+		failures: map[string]error{},
 	}
-	return value, expiration, found, err
 }
 
-type failingSecrets struct {
-	creds.Secrets
+func (secrets *stateSecrets) Get(secretPath string) (any, *time.Time, bool, error) {
+	secrets.mu.RLock()
+	defer secrets.mu.RUnlock()
 
-	path string
-}
-
-func (secrets failingSecrets) Get(secretPath string) (any, *time.Time, bool, error) {
-	if secretPath == secrets.path {
-		return nil, nil, false, fmt.Errorf("unexpected error")
+	if err, failed := secrets.failures[secretPath]; failed {
+		return nil, nil, false, err
 	}
-	return secrets.Secrets.Get(secretPath)
-}
 
-type alreadyExpiredSecrets struct {
-	creds.Secrets
-}
-
-func (secrets alreadyExpiredSecrets) Get(secretPath string) (any, *time.Time, bool, error) {
-	value, expiration, found, err := secrets.Secrets.Get(secretPath)
+	entry, found := secrets.entries[secretPath]
 	if !found {
-		return value, expiration, found, err
+		return nil, nil, false, nil
 	}
-	return value, &time.Time{}, found, err
+	return entry.value, entry.expiration, true, nil
+}
+
+func (*stateSecrets) NewSecretLookupPaths(string, string, bool) []creds.SecretLookupPath {
+	return []creds.SecretLookupPath{creds.NewSecretLookupWithPrefix("")}
+}
+
+func (secrets *stateSecrets) Set(secretPath string, value any, expiration *time.Time) {
+	secrets.mu.Lock()
+	defer secrets.mu.Unlock()
+
+	secrets.entries[secretPath] = secretEntry{value: value, expiration: expiration}
+}
+
+func (secrets *stateSecrets) Delete(secretPath string) {
+	secrets.mu.Lock()
+	defer secrets.mu.Unlock()
+
+	delete(secrets.entries, secretPath)
+}
+
+func (secrets *stateSecrets) Fail(secretPath string, err error) {
+	secrets.mu.Lock()
+	defer secrets.mu.Unlock()
+
+	secrets.failures[secretPath] = err
+}
+
+func (secrets *stateSecrets) Recover(secretPath string, value any, expiration *time.Time) {
+	secrets.mu.Lock()
+	defer secrets.mu.Unlock()
+
+	delete(secrets.failures, secretPath)
+	secrets.entries[secretPath] = secretEntry{value: value, expiration: expiration}
 }
 
 var _ = Describe("Caching of secrets", func() {
+	const expiryTimeout = 3 * time.Second
 
-	var underlyingSecrets *dummy.Secrets
-	var secretManager *countingSecrets
+	var underlyingSecrets *stateSecrets
 	var cacheConfig creds.SecretCacheConfig
 	var cachedSecretManager *creds.CachedSecrets
 
 	BeforeEach(func() {
-		underlyingSecrets = &dummy.Secrets{StaticVariables: vars.StaticVariables{"foo": "value"}}
-		secretManager = &countingSecrets{Secrets: underlyingSecrets}
+		underlyingSecrets = newStateSecrets(map[string]secretEntry{
+			"foo": {value: "value"},
+		})
 		cacheConfig = creds.SecretCacheConfig{
-			Duration:         400 * time.Millisecond,
-			DurationNotFound: 200 * time.Millisecond,
-			PurgeInterval:    100 * time.Millisecond,
+			Duration:         time.Minute,
+			DurationNotFound: time.Minute,
+			PurgeInterval:    10 * time.Minute,
 		}
 	})
 
 	JustBeforeEach(func() {
-		cachedSecretManager = creds.NewCachedSecrets(secretManager, cacheConfig)
+		cachedSecretManager = creds.NewCachedSecrets(underlyingSecrets, cacheConfig)
 	})
 
 	It("should implement the SecretsWithParams interface", func() {
 		var _ creds.SecretsWithParams = cachedSecretManager
 	})
 
-	It("should handle missing secrets correctly and cache misses", func() {
-		// miss
+	It("caches missing secrets", func() {
 		value, expiration, found, err := cachedSecretManager.Get("bar")
+		Expect(err).NotTo(HaveOccurred())
 		Expect(value).To(BeNil())
 		Expect(expiration).To(BeNil())
 		Expect(found).To(BeFalse())
-		Expect(err).To(BeNil())
-		Expect(secretManager.reads).To(BeIdenticalTo(0))
-		Expect(secretManager.misses).To(BeIdenticalTo(1))
 
-		// cached miss
+		underlyingSecrets.Set("bar", "new-value", nil)
 		value, expiration, found, err = cachedSecretManager.Get("bar")
+		Expect(err).NotTo(HaveOccurred())
 		Expect(value).To(BeNil())
 		Expect(expiration).To(BeNil())
 		Expect(found).To(BeFalse())
-		Expect(err).To(BeNil())
-		Expect(secretManager.reads).To(BeIdenticalTo(0))
-		Expect(secretManager.misses).To(BeIdenticalTo(1))
 	})
 
-	It("should handle existing secrets correctly and cache them, returning previous value if the underlying value has changed", func() {
-		// hit
+	It("returns a cached value after the backing value changes", func() {
 		value, expiration, found, err := cachedSecretManager.Get("foo")
-		Expect(value).To(BeIdenticalTo("value"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(value).To(Equal("value"))
 		Expect(expiration).To(BeNil())
 		Expect(found).To(BeTrue())
-		Expect(err).To(BeNil())
-		Expect(secretManager.reads).To(BeIdenticalTo(1))
-		Expect(secretManager.misses).To(BeIdenticalTo(0))
 
-		// cached hit
-		underlyingSecrets.StaticVariables["foo"] = "different-value"
+		underlyingSecrets.Set("foo", "different-value", nil)
 		value, expiration, found, err = cachedSecretManager.Get("foo")
-		Expect(value).To(BeIdenticalTo("value"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(value).To(Equal("value"))
 		Expect(expiration).To(BeNil())
 		Expect(found).To(BeTrue())
-		Expect(err).To(BeNil())
-		Expect(secretManager.reads).To(BeIdenticalTo(1))
-		Expect(secretManager.misses).To(BeIdenticalTo(0))
 	})
 
-	Context("when the underlying secret manager fails", func() {
+	It("does not cache backend errors", func() {
+		backendErr := errors.New("transient backend error")
+		underlyingSecrets.Fail("baz", backendErr)
+
+		value, expiration, found, err := cachedSecretManager.Get("baz")
+		Expect(err).To(MatchError(backendErr))
+		Expect(value).To(BeNil())
+		Expect(expiration).To(BeNil())
+		Expect(found).To(BeFalse())
+
+		underlyingSecrets.Recover("baz", "recovered-value", nil)
+		value, expiration, found, err = cachedSecretManager.Get("baz")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(value).To(Equal("recovered-value"))
+		Expect(expiration).To(BeNil())
+		Expect(found).To(BeTrue())
+	})
+
+	Context("when a positive cache entry expires", func() {
 		BeforeEach(func() {
-			secretManager = &countingSecrets{Secrets: failingSecrets{Secrets: underlyingSecrets, path: "baz"}}
+			cacheConfig.Duration = 225 * time.Millisecond
 		})
 
-		It("should handle errors correctly and avoid caching errors", func() {
-			// error
-			value, expiration, found, err := cachedSecretManager.Get("baz")
-			Expect(value).To(BeNil())
-			Expect(expiration).To(BeNil())
-			Expect(found).To(BeFalse())
-			Expect(err).NotTo(BeNil())
-			Expect(secretManager.reads).To(BeIdenticalTo(1))
-			Expect(secretManager.misses).To(BeIdenticalTo(0))
+		It("returns the changed backing value", func() {
+			value, _, found, err := cachedSecretManager.Get("foo")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(value).To(Equal("value"))
 
-			// no caching of error
-			value, expiration, found, err = cachedSecretManager.Get("baz")
-			Expect(value).To(BeNil())
-			Expect(expiration).To(BeNil())
-			Expect(found).To(BeFalse())
-			Expect(err).NotTo(BeNil())
-			Expect(secretManager.reads).To(BeIdenticalTo(2))
-			Expect(secretManager.misses).To(BeIdenticalTo(0))
+			underlyingSecrets.Set("foo", "different-value", nil)
+			value, _, found, err = cachedSecretManager.Get("foo")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(value).To(Equal("value"))
+
+			Eventually(func(g Gomega) any {
+				value, _, found, err := cachedSecretManager.Get("foo")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(found).To(BeTrue())
+				return value
+			}).WithTimeout(expiryTimeout).WithPolling(15 * time.Millisecond).Should(Equal("different-value"))
 		})
 	})
 
-	It("should re-retrieve expired entries", func() {
-		// get few entries first
-		_, _, _, _ = cachedSecretManager.Get("foo")
-		_, _, _, _ = cachedSecretManager.Get("bar")
-		_, _, _, _ = cachedSecretManager.Get("baz")
-		Expect(secretManager.reads).To(BeIdenticalTo(1))
-		Expect(secretManager.misses).To(BeIdenticalTo(2))
-
-		// get these entries again and make sure they are cached
-		_, _, _, _ = cachedSecretManager.Get("foo")
-		_, _, _, _ = cachedSecretManager.Get("bar")
-		_, _, _, _ = cachedSecretManager.Get("baz")
-		Expect(secretManager.reads).To(BeIdenticalTo(1))
-		Expect(secretManager.misses).To(BeIdenticalTo(2))
-
-		// sleep
-		time.Sleep(cacheConfig.Duration + time.Millisecond)
-
-		// check counters again and make sure the entries are re-retrieved
-		_, _, _, _ = cachedSecretManager.Get("foo")
-		_, _, _, _ = cachedSecretManager.Get("bar")
-		_, _, _, _ = cachedSecretManager.Get("baz")
-		Expect(secretManager.reads).To(BeIdenticalTo(2))
-		Expect(secretManager.misses).To(BeIdenticalTo(4))
-	})
-
-	It("should cache negative responses for a separately specified duration", func() {
-		// get few entries first
-		_, _, _, _ = cachedSecretManager.Get("foo")
-		_, _, _, _ = cachedSecretManager.Get("bar")
-		_, _, _, _ = cachedSecretManager.Get("baz")
-		Expect(secretManager.reads).To(BeIdenticalTo(1))
-		Expect(secretManager.misses).To(BeIdenticalTo(2))
-
-		// sleep
-		time.Sleep(cacheConfig.DurationNotFound + time.Millisecond)
-
-		// existing secret should still be cached
-		_, _, _, _ = cachedSecretManager.Get("foo")
-		Expect(secretManager.reads).To(BeIdenticalTo(1))
-		Expect(secretManager.misses).To(BeIdenticalTo(2))
-
-		// non-existing secrets should be attempted to be retrieved again
-		_, _, _, _ = cachedSecretManager.Get("bar")
-		_, _, _, _ = cachedSecretManager.Get("baz")
-		Expect(secretManager.reads).To(BeIdenticalTo(1))
-		Expect(secretManager.misses).To(BeIdenticalTo(4))
-	})
-
-	Context("when the underlying secret has already expired", func() {
+	Context("when missing entries have a shorter cache duration", func() {
 		BeforeEach(func() {
-			secretManager = &countingSecrets{Secrets: alreadyExpiredSecrets{Secrets: underlyingSecrets}}
+			cacheConfig.DurationNotFound = 225 * time.Millisecond
 		})
 
-		It("should not cache longer than default duration if durarion is 0 or less", func() {
-			// get few entries first
-			_, _, _, _ = cachedSecretManager.Get("foo")
-			_, _, _, _ = cachedSecretManager.Get("bar")
-			_, _, _, _ = cachedSecretManager.Get("baz")
-			Expect(secretManager.reads).To(BeIdenticalTo(1))
-			Expect(secretManager.misses).To(BeIdenticalTo(2))
+		It("refreshes the missing entry while keeping a positive entry cached", func() {
+			value, _, found, err := cachedSecretManager.Get("foo")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(value).To(Equal("value"))
 
-			// sleep
-			time.Sleep(cacheConfig.Duration + time.Millisecond)
+			value, _, found, err = cachedSecretManager.Get("bar")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeFalse())
+			Expect(value).To(BeNil())
 
-			// existing secret should be gone
-			_, _, _, _ = cachedSecretManager.Get("foo")
-			Expect(secretManager.reads).To(BeIdenticalTo(2))
-			Expect(secretManager.misses).To(BeIdenticalTo(2))
+			underlyingSecrets.Set("foo", "different-value", nil)
+			underlyingSecrets.Set("bar", "new-value", nil)
 
-			// non-existing secrets should be attempted to be retrieved again
-			_, _, _, _ = cachedSecretManager.Get("bar")
-			_, _, _, _ = cachedSecretManager.Get("baz")
-			Expect(secretManager.reads).To(BeIdenticalTo(2))
-			Expect(secretManager.misses).To(BeIdenticalTo(4))
+			value, _, found, err = cachedSecretManager.Get("bar")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeFalse())
+			Expect(value).To(BeNil())
+
+			Eventually(func(g Gomega) any {
+				value, _, found, err := cachedSecretManager.Get("bar")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(found).To(BeTrue())
+				return value
+			}).WithTimeout(expiryTimeout).WithPolling(15 * time.Millisecond).Should(Equal("new-value"))
+
+			value, _, found, err = cachedSecretManager.Get("foo")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(value).To(Equal("value"))
+		})
+	})
+
+	Context("when the backing secret lease is already expired", func() {
+		BeforeEach(func() {
+			cacheConfig.Duration = 225 * time.Millisecond
+			expired := time.Now().Add(-time.Minute)
+			underlyingSecrets.Set("foo", "value", &expired)
+		})
+
+		It("falls back to the configured cache duration", func() {
+			value, expiration, found, err := cachedSecretManager.Get("foo")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(value).To(Equal("value"))
+			Expect(expiration).NotTo(BeNil())
+			Expect(expiration.Before(time.Now())).To(BeTrue())
+
+			underlyingSecrets.Set("foo", "different-value", nil)
+			value, _, found, err = cachedSecretManager.Get("foo")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(value).To(Equal("value"))
+
+			Eventually(func(g Gomega) any {
+				value, _, found, err := cachedSecretManager.Get("foo")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(found).To(BeTrue())
+				return value
+			}).WithTimeout(expiryTimeout).WithPolling(15 * time.Millisecond).Should(Equal("different-value"))
+		})
+	})
+
+	Context("when the backing secret lease expires before the configured cache duration", func() {
+		It("uses the shorter lease duration", func() {
+			expiresSoon := time.Now().Add(250 * time.Millisecond)
+			underlyingSecrets.Set("foo", "value", &expiresSoon)
+
+			value, expiration, found, err := cachedSecretManager.Get("foo")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(value).To(Equal("value"))
+			Expect(expiration).NotTo(BeNil())
+
+			underlyingSecrets.Set("foo", "different-value", nil)
+			value, _, found, err = cachedSecretManager.Get("foo")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(value).To(Equal("value"))
+
+			Eventually(func(g Gomega) any {
+				value, _, found, err := cachedSecretManager.Get("foo")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(found).To(BeTrue())
+				return value
+			}).WithTimeout(expiryTimeout).WithPolling(15 * time.Millisecond).Should(Equal("different-value"))
 		})
 	})
 
@@ -231,7 +278,7 @@ var _ = Describe("Caching of secrets", func() {
 		var spanRecorder *tracetest.SpanRecorder
 
 		BeforeEach(func() {
-			underlyingSecrets.StaticVariables["bar"] = "value"
+			underlyingSecrets.Set("bar", "value", nil)
 
 			spanRecorder = new(tracetest.SpanRecorder)
 			tp := sdktrace.NewTracerProvider(
@@ -246,34 +293,30 @@ var _ = Describe("Caching of secrets", func() {
 		})
 
 		It("emits a creds.lookup span on cache hit", func() {
-			// First call: cache miss (populates cache)
 			_, _, _, _ = cachedSecretManager.Get("foo")
-
-			// Second call: cache hit
 			_, _, _, _ = cachedSecretManager.Get("foo")
 
 			ended := spanRecorder.Ended()
 			Expect(len(ended)).To(BeNumerically(">=", 2))
 
-			// Find the second span (cache hit)
 			var cacheHitSpan sdktrace.ReadOnlySpan
 			hitCount := 0
-			for _, s := range ended {
-				if s.Name() == "creds.lookup" {
+			for _, span := range ended {
+				if span.Name() == "creds.lookup" {
 					hitCount++
 					if hitCount == 2 {
-						cacheHitSpan = s
+						cacheHitSpan = span
 					}
 				}
 			}
-			Expect(cacheHitSpan).ToNot(BeNil(), "expected second creds.lookup span")
+			Expect(cacheHitSpan).NotTo(BeNil(), "expected second creds.lookup span")
 
-			attrMap := make(map[string]string)
-			for _, a := range cacheHitSpan.Attributes() {
-				attrMap[string(a.Key)] = a.Value.AsString()
+			attributes := make(map[string]string)
+			for _, attribute := range cacheHitSpan.Attributes() {
+				attributes[string(attribute.Key)] = attribute.Value.AsString()
 			}
-			Expect(attrMap["secret.path"]).To(Equal("foo"))
-			Expect(attrMap["cache.hit"]).To(Equal("true"))
+			Expect(attributes["secret.path"]).To(Equal("foo"))
+			Expect(attributes["cache.hit"]).To(Equal("true"))
 		})
 
 		It("emits a creds.lookup span on cache miss", func() {
@@ -281,22 +324,21 @@ var _ = Describe("Caching of secrets", func() {
 
 			ended := spanRecorder.Ended()
 			var lookupSpan sdktrace.ReadOnlySpan
-			for _, s := range ended {
-				if s.Name() == "creds.lookup" {
-					lookupSpan = s
+			for _, span := range ended {
+				if span.Name() == "creds.lookup" {
+					lookupSpan = span
 					break
 				}
 			}
-			Expect(lookupSpan).ToNot(BeNil(), "expected creds.lookup span")
+			Expect(lookupSpan).NotTo(BeNil(), "expected creds.lookup span")
 
-			attrMap := make(map[string]string)
-			for _, a := range lookupSpan.Attributes() {
-				attrMap[string(a.Key)] = a.Value.AsString()
+			attributes := make(map[string]string)
+			for _, attribute := range lookupSpan.Attributes() {
+				attributes[string(attribute.Key)] = attribute.Value.AsString()
 			}
-			Expect(attrMap["secret.path"]).To(Equal("bar"))
-			Expect(attrMap["cache.hit"]).To(Equal("false"))
-			Expect(attrMap["secret.found"]).To(Equal("true"))
+			Expect(attributes["secret.path"]).To(Equal("bar"))
+			Expect(attributes["cache.hit"]).To(Equal("false"))
+			Expect(attributes["secret.found"]).To(Equal("true"))
 		})
 	})
-
 })
