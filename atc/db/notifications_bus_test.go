@@ -30,10 +30,11 @@ func listenForNotification(bus db.NotificationsBus, channel string) (*db.NotifyS
 
 var _ = Describe("NotificationBus", func() {
 	const (
-		targetChannel   = "notifications_bus_target"
-		otherChannel    = "notifications_bus_other"
-		barrierChannel  = "notifications_bus_barrier"
-		deliveryTimeout = 10 * time.Second
+		targetChannel    = "notifications_bus_target"
+		otherChannel     = "notifications_bus_other"
+		barrierChannel   = "notifications_bus_barrier"
+		reconnectChannel = "notifications_bus_reconnect"
+		deliveryTimeout  = 10 * time.Second
 	)
 
 	var (
@@ -99,5 +100,33 @@ var _ = Describe("NotificationBus", func() {
 
 		Expect(peerBus.Notify(targetChannel)).To(Succeed())
 		Eventually(target.C(), deliveryTimeout).Should(Receive())
+	})
+
+	It("wakes listeners after the connection drops so they rescan for what they missed", func() {
+		// A dedicated connection, so terminating its listener backend below
+		// cannot disturb any other connection the suite is using.
+		droppedConn := postgresRunner.OpenConn()
+		DeferCleanup(func() {
+			Expect(droppedConn.Close()).To(Succeed())
+		})
+
+		signal, _ := listenForNotification(droppedConn.Bus(), reconnectChannel)
+		Consistently(signal.C(), 100*time.Millisecond).ShouldNot(Receive())
+
+		By("terminating the backend that is serving this listener")
+		var terminated int
+		Expect(dbConn.QueryRow(`
+			SELECT count(*) FROM (
+				SELECT pg_terminate_backend(pid)
+				FROM pg_stat_activity
+				WHERE datname = current_database()
+				  AND pid <> pg_backend_pid()
+				  AND query = 'LISTEN ' || $1
+			) AS terminated_backends
+		`, reconnectChannel).Scan(&terminated)).To(Succeed())
+		Expect(terminated).To(Equal(1))
+
+		By("waking the listener even though nothing was published on its channel")
+		Eventually(signal.C(), deliveryTimeout).Should(Receive())
 	})
 })

@@ -129,6 +129,16 @@ func (l *PgxListener) listenerLoop() {
 				for channel, _ := range l.channels {
 					l.conn.Exec(ctx, fmt.Sprintf("LISTEN %s", channel))
 				}
+
+				// Anything published while the connection was down was missed,
+				// so report the reconnect as a nil notification. Consumers take
+				// it as "rescan everything". Dropping it when the buffer is full
+				// is safe: those 32 pending notifications will wake the same
+				// listeners anyway.
+				select {
+				case l.notify <- nil:
+				default:
+				}
 			}
 			cancel()
 			continue
