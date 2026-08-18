@@ -2309,6 +2309,33 @@ var _ = Describe("Container", func() {
 			return state
 		}
 
+		// rejectTransitionTo makes Postgres refuse any update moving a container
+		// into the given state, leaving every other transition working. That
+		// asymmetry is what this error path needs: the created transition has to
+		// fail while the failed transition that follows it still lands.
+		rejectTransitionTo := func(state string) {
+			GinkgoHelper()
+
+			_, err := database.Conn.Exec(fmt.Sprintf(`
+				CREATE FUNCTION reject_container_transition() RETURNS trigger AS $$
+				BEGIN
+					IF NEW.state = '%s' THEN
+						RAISE EXCEPTION 'transition to %s rejected by test';
+					END IF;
+					RETURN NEW;
+				END;
+				$$ LANGUAGE plpgsql
+			`, state, state))
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = database.Conn.Exec(`
+				CREATE TRIGGER reject_container_transition
+				BEFORE UPDATE ON containers
+				FOR EACH ROW EXECUTE FUNCTION reject_container_transition()
+			`)
+			Expect(err).NotTo(HaveOccurred())
+		}
+
 		It("returns error when FindContainer fails", func() {
 			lostWorker := jetbridge.NewWorker(closedConnWorker("k8s-worker-1"), fakeClientset, cfg)
 
@@ -2350,6 +2377,22 @@ var _ = Describe("Container", func() {
 				`SELECT count(*) FROM containers WHERE handle = $1`, "stale-creating-handle",
 			).Scan(&count)).To(Succeed())
 			Expect(count).To(Equal(1))
+		})
+
+		It("marks the container as failed when the created transition fails", func() {
+			_, err := dbWorker.CreateContainer(
+				db.NewFixedHandleContainerOwner("created-transition-fail-handle"),
+				db.ContainerMetadata{Type: db.ContainerTypeTask},
+			)
+			Expect(err).NotTo(HaveOccurred())
+
+			rejectTransitionTo(atc.ContainerStateCreated)
+
+			err = findOrCreate(worker, "created-transition-fail-handle")
+			Expect(err).To(MatchError(ContainSubstring("mark container as created")))
+
+			By("leaving the container failed, since the GC never collects one stuck in creating")
+			Expect(stateOf("created-transition-fail-handle")).To(Equal(string(atc.ContainerStateFailed)))
 		})
 
 	})
