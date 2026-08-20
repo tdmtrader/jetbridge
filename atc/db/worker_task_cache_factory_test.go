@@ -1,6 +1,7 @@
 package db_test
 
 import (
+	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -11,7 +12,7 @@ var _ = Describe("WorkerTaskCache", func() {
 	var workerTaskCache db.WorkerTaskCache
 
 	BeforeEach(func() {
-		taskCache, err := taskCacheFactory.FindOrCreate(defaultJob.ID(), "some-step", "some-path")
+		taskCache, err := taskCacheFactory.FindOrCreate(atc.TaskCacheIdentity{JobID: defaultJob.ID()}, "some-step", "some-path")
 		Expect(err).ToNot(HaveOccurred())
 
 		workerTaskCache = db.WorkerTaskCache{

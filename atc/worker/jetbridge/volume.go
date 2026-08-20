@@ -9,6 +9,7 @@ import (
 
 	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagerctx"
+	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/compression"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/metric"
@@ -339,5 +340,5 @@ func (v *Volume) InitializeTaskCache(ctx context.Context, jobID int, stepName st
 	}
 	start := time.Now()
 	defer func() { metric.RecordVolumeOperationDuration(ctx, time.Since(start), "initialize") }()
-	return v.dbVolume.InitializeTaskCache(jobID, stepName, path)
+	return v.dbVolume.InitializeTaskCache(atc.TaskCacheIdentity{JobID: jobID}, stepName, path)
 }

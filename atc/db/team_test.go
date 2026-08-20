@@ -2794,17 +2794,17 @@ var _ = Describe("Team", func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(found).To(BeTrue())
 
-			_, err = taskCacheFactory.FindOrCreate(job.ID(), "some-task", "some-path")
+			_, err = taskCacheFactory.FindOrCreate(atc.TaskCacheIdentity{JobID: job.ID()}, "some-task", "some-path")
 			Expect(err).ToNot(HaveOccurred())
 
-			_, found, err = taskCacheFactory.Find(job.ID(), "some-task", "some-path")
+			_, found, err = taskCacheFactory.Find(atc.TaskCacheIdentity{JobID: job.ID()}, "some-task", "some-path")
 			Expect(err).ToNot(HaveOccurred())
 			Expect(found).To(BeTrue())
 
-			_, err = taskCacheFactory.FindOrCreate(job.ID(), "some-nested-task", "some-path")
+			_, err = taskCacheFactory.FindOrCreate(atc.TaskCacheIdentity{JobID: job.ID()}, "some-nested-task", "some-path")
 			Expect(err).ToNot(HaveOccurred())
 
-			_, found, err = taskCacheFactory.Find(job.ID(), "some-nested-task", "some-path")
+			_, found, err = taskCacheFactory.Find(atc.TaskCacheIdentity{JobID: job.ID()}, "some-nested-task", "some-path")
 			Expect(err).ToNot(HaveOccurred())
 			Expect(found).To(BeTrue())
 
@@ -2813,11 +2813,11 @@ var _ = Describe("Team", func() {
 			_, _, err = team.SavePipeline(pipelineRef, config, pipeline.ConfigVersion(), false)
 			Expect(err).ToNot(HaveOccurred())
 
-			_, found, err = taskCacheFactory.Find(job.ID(), "some-task", "some-path")
+			_, found, err = taskCacheFactory.Find(atc.TaskCacheIdentity{JobID: job.ID()}, "some-task", "some-path")
 			Expect(err).ToNot(HaveOccurred())
 			Expect(found).To(BeFalse())
 
-			_, found, err = taskCacheFactory.Find(job.ID(), "some-nested-task", "some-path")
+			_, found, err = taskCacheFactory.Find(atc.TaskCacheIdentity{JobID: job.ID()}, "some-nested-task", "some-path")
 			Expect(err).ToNot(HaveOccurred())
 			Expect(found).To(BeFalse())
 		})
@@ -2830,17 +2830,17 @@ var _ = Describe("Team", func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(found).To(BeTrue())
 
-			_, err = taskCacheFactory.FindOrCreate(job.ID(), "some-task", "some-path")
+			_, err = taskCacheFactory.FindOrCreate(atc.TaskCacheIdentity{JobID: job.ID()}, "some-task", "some-path")
 			Expect(err).ToNot(HaveOccurred())
 
-			_, found, err = taskCacheFactory.Find(job.ID(), "some-task", "some-path")
+			_, found, err = taskCacheFactory.Find(atc.TaskCacheIdentity{JobID: job.ID()}, "some-task", "some-path")
 			Expect(err).ToNot(HaveOccurred())
 			Expect(found).To(BeTrue())
 
-			_, err = taskCacheFactory.FindOrCreate(job.ID(), "some-nested-task", "some-path")
+			_, err = taskCacheFactory.FindOrCreate(atc.TaskCacheIdentity{JobID: job.ID()}, "some-nested-task", "some-path")
 			Expect(err).ToNot(HaveOccurred())
 
-			_, found, err = taskCacheFactory.Find(job.ID(), "some-nested-task", "some-path")
+			_, found, err = taskCacheFactory.Find(atc.TaskCacheIdentity{JobID: job.ID()}, "some-nested-task", "some-path")
 			Expect(err).ToNot(HaveOccurred())
 			Expect(found).To(BeTrue())
 
@@ -2861,11 +2861,11 @@ var _ = Describe("Team", func() {
 			_, _, err = team.SavePipeline(pipelineRef, config, pipeline.ConfigVersion(), false)
 			Expect(err).ToNot(HaveOccurred())
 
-			_, found, err = taskCacheFactory.Find(job.ID(), "some-task", "some-path")
+			_, found, err = taskCacheFactory.Find(atc.TaskCacheIdentity{JobID: job.ID()}, "some-task", "some-path")
 			Expect(err).ToNot(HaveOccurred())
 			Expect(found).To(BeFalse())
 
-			_, found, err = taskCacheFactory.Find(job.ID(), "some-nested-task", "some-path")
+			_, found, err = taskCacheFactory.Find(atc.TaskCacheIdentity{JobID: job.ID()}, "some-nested-task", "some-path")
 			Expect(err).ToNot(HaveOccurred())
 			Expect(found).To(BeFalse())
 		})
@@ -2881,10 +2881,10 @@ var _ = Describe("Team", func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(found).To(BeTrue())
 
-			_, err = taskCacheFactory.FindOrCreate(job.ID(), "some-task", "some-path")
+			_, err = taskCacheFactory.FindOrCreate(atc.TaskCacheIdentity{JobID: job.ID()}, "some-task", "some-path")
 			Expect(err).ToNot(HaveOccurred())
 
-			_, found, err = taskCacheFactory.Find(job.ID(), "some-task", "some-path")
+			_, found, err = taskCacheFactory.Find(atc.TaskCacheIdentity{JobID: job.ID()}, "some-task", "some-path")
 			Expect(err).ToNot(HaveOccurred())
 			Expect(found).To(BeTrue())
 
@@ -2892,10 +2892,10 @@ var _ = Describe("Team", func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(found).To(BeTrue())
 
-			_, err = taskCacheFactory.FindOrCreate(otherJob.ID(), "some-task", "some-path")
+			_, err = taskCacheFactory.FindOrCreate(atc.TaskCacheIdentity{JobID: otherJob.ID()}, "some-task", "some-path")
 			Expect(err).ToNot(HaveOccurred())
 
-			_, found, err = taskCacheFactory.Find(otherJob.ID(), "some-task", "some-path")
+			_, found, err = taskCacheFactory.Find(atc.TaskCacheIdentity{JobID: otherJob.ID()}, "some-task", "some-path")
 			Expect(err).ToNot(HaveOccurred())
 			Expect(found).To(BeTrue())
 
@@ -2916,11 +2916,11 @@ var _ = Describe("Team", func() {
 			_, _, err = team.SavePipeline(pipelineRef, config, pipeline.ConfigVersion(), false)
 			Expect(err).ToNot(HaveOccurred())
 
-			_, found, err = taskCacheFactory.Find(job.ID(), "some-task", "some-path")
+			_, found, err = taskCacheFactory.Find(atc.TaskCacheIdentity{JobID: job.ID()}, "some-task", "some-path")
 			Expect(err).ToNot(HaveOccurred())
 			Expect(found).To(BeFalse())
 
-			_, found, err = taskCacheFactory.Find(otherJob.ID(), "some-task", "some-path")
+			_, found, err = taskCacheFactory.Find(atc.TaskCacheIdentity{JobID: otherJob.ID()}, "some-task", "some-path")
 			Expect(err).ToNot(HaveOccurred())
 			Expect(found).To(BeTrue())
 		})

@@ -7,7 +7,7 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-const pipelineTemplateRunsVersion = 1773105506
+const pipelineTemplateRunsVersion = 1773105507
 
 var _ = Describe("Pipeline template run schema", func() {
 	var database *sql.DB
@@ -112,11 +112,9 @@ var _ = Describe("Pipeline template run schema", func() {
 	})
 
 	It("refuses a down migration when future template-owned task caches remain", func() {
-		_, err := database.Exec(`
-			ALTER TABLE task_caches ADD COLUMN template_pipeline_id integer;
-			INSERT INTO task_caches(step_name, path, template_pipeline_id)
-			  VALUES ('run-cache', '/cache', 1)
-		`)
+		var pipelineID int
+		Expect(database.QueryRow(`INSERT INTO pipelines(team_id, name, secondary_ordering) SELECT id, 'future-cache-owner', 1 FROM teams WHERE name = 'template-runs' RETURNING id`).Scan(&pipelineID)).To(Succeed())
+		_, err := database.Exec(`INSERT INTO task_caches(step_name, path, template_pipeline_id, run_job_name) VALUES ('run-cache', '/cache', $1, 'run-job')`, pipelineID)
 		Expect(err).NotTo(HaveOccurred())
 
 		Expect(database.Close()).To(Succeed())
@@ -127,11 +125,9 @@ var _ = Describe("Pipeline template run schema", func() {
 	})
 
 	It("refuses a down migration when future run job task caches remain", func() {
-		_, err := database.Exec(`
-			ALTER TABLE task_caches ADD COLUMN run_job_name text;
-			INSERT INTO task_caches(step_name, path, run_job_name)
-			  VALUES ('run-cache', '/cache', 'run-job')
-		`)
+		var pipelineID int
+		Expect(database.QueryRow(`INSERT INTO pipelines(team_id, name, secondary_ordering) SELECT id, 'future-run-cache-owner', 1 FROM teams WHERE name = 'template-runs' RETURNING id`).Scan(&pipelineID)).To(Succeed())
+		_, err := database.Exec(`INSERT INTO task_caches(step_name, path, template_pipeline_id, run_job_name) VALUES ('run-cache', '/cache', $1, 'run-job')`, pipelineID)
 		Expect(err).NotTo(HaveOccurred())
 
 		Expect(database.Close()).To(Succeed())
@@ -139,5 +135,24 @@ var _ = Describe("Pipeline template run schema", func() {
 		Expect(err).To(MatchError(ContainSubstring("cannot roll back pipeline template runs")))
 
 		database = postgresRunner.OpenDBAtVersion(pipelineTemplateRunsVersion)
+	})
+
+	It("persists exactly one ordinary or shared run task cache identity", func() {
+		// This fails if task-cache rows can be ambiguous, or a shared run cache
+		// cannot survive independently of an ephemeral payload job.
+		var templateID, ordinaryPipelineID, ordinaryJobID int
+		Expect(database.QueryRow(`INSERT INTO pipelines(team_id, name, secondary_ordering) SELECT id, 'ordinary-cache', 1 FROM teams WHERE name = 'template-runs' RETURNING id`).Scan(&ordinaryPipelineID)).To(Succeed())
+		Expect(database.QueryRow(`INSERT INTO jobs(name, pipeline_id, config) VALUES ('ordinary', $1, '{}') RETURNING id`, ordinaryPipelineID).Scan(&ordinaryJobID)).To(Succeed())
+		_, err := database.Exec(`INSERT INTO task_caches(job_id, step_name, path) VALUES ($1, 'ordinary', '/cache')`, ordinaryJobID)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = database.Exec(`INSERT INTO task_caches(job_id, step_name, path) VALUES ($1, 'ordinary', '/cache')`, ordinaryJobID)
+		Expect(err).To(MatchError(ContainSubstring("task_caches_job_id_step_name_path_uniq")))
+		Expect(database.QueryRow(`INSERT INTO pipelines(team_id, name, template, secondary_ordering) SELECT id, 'cache-base', true, 1 FROM teams WHERE name = 'template-runs' RETURNING id`).Scan(&templateID)).To(Succeed())
+		_, err = database.Exec(`INSERT INTO task_caches(job_id, step_name, path) VALUES (NULL, 'ordinary', '/cache')`)
+		Expect(err).To(MatchError(ContainSubstring("task_caches_identity_complete")))
+		_, err = database.Exec(`INSERT INTO task_caches(template_pipeline_id, run_job_name, step_name, path) VALUES ($1, 'deploy', 'task', '/cache')`, templateID)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = database.Exec(`INSERT INTO task_caches(template_pipeline_id, run_job_name, step_name, path) VALUES ($1, 'deploy', 'task', '/cache')`, templateID)
+		Expect(err).To(MatchError(ContainSubstring("task_caches_run_identity_unique")))
 	})
 })

@@ -37,10 +37,10 @@ var _ = Describe("TaskCacheLifecycle", func() {
 				},
 			}),
 		)
-		taskCache, err := taskCacheFactory.FindOrCreate(archivedScenario.Job("some-job").ID(), "some-step", "some-path")
+		taskCache, err := taskCacheFactory.FindOrCreate(atc.TaskCacheIdentity{JobID: archivedScenario.Job("some-job").ID()}, "some-step", "some-path")
 		Expect(err).ToNot(HaveOccurred())
 
-		_, err = taskCacheFactory.FindOrCreate(otherScenario.Job("some-other-job").ID(), "some-step", "some-path")
+		_, err = taskCacheFactory.FindOrCreate(atc.TaskCacheIdentity{JobID: otherScenario.Job("some-other-job").ID()}, "some-step", "some-path")
 		Expect(err).ToNot(HaveOccurred())
 
 		err = archivedScenario.Pipeline.Archive()
@@ -76,13 +76,13 @@ var _ = Describe("TaskCacheLifecycle", func() {
 		err := finishedBuild.Finish(db.BuildStatusSucceeded)
 		Expect(err).ToNot(HaveOccurred())
 
-		taskCache, err := taskCacheFactory.FindOrCreate(otherScenario.Job("some-other-job").ID(), "some-step", "some-path")
+		taskCache, err := taskCacheFactory.FindOrCreate(atc.TaskCacheIdentity{JobID: otherScenario.Job("some-other-job").ID()}, "some-step", "some-path")
 		Expect(err).ToNot(HaveOccurred())
 
-		_, err = taskCacheFactory.FindOrCreate(pausedScenario.Job("some-job-1").ID(), "some-step", "some-path")
+		_, err = taskCacheFactory.FindOrCreate(atc.TaskCacheIdentity{JobID: pausedScenario.Job("some-job-1").ID()}, "some-step", "some-path")
 		Expect(err).ToNot(HaveOccurred())
 
-		_, err = taskCacheFactory.FindOrCreate(pausedScenario.Job("some-job-2").ID(), "some-step", "some-path")
+		_, err = taskCacheFactory.FindOrCreate(atc.TaskCacheIdentity{JobID: pausedScenario.Job("some-job-2").ID()}, "some-step", "some-path")
 		Expect(err).ToNot(HaveOccurred())
 
 		err = pausedScenario.Pipeline.Pause("tester")
@@ -119,10 +119,10 @@ var _ = Describe("TaskCacheLifecycle", func() {
 		err = pausedScenario.Job("some-job-2").Pause("tester")
 		Expect(err).ToNot(HaveOccurred())
 
-		taskCache, err := taskCacheFactory.FindOrCreate(pausedScenario.Job("some-job-1").ID(), "some-step", "some-path")
+		taskCache, err := taskCacheFactory.FindOrCreate(atc.TaskCacheIdentity{JobID: pausedScenario.Job("some-job-1").ID()}, "some-step", "some-path")
 		Expect(err).ToNot(HaveOccurred())
 
-		_, err = taskCacheFactory.FindOrCreate(pausedScenario.Job("some-job-2").ID(), "some-step", "some-path")
+		_, err = taskCacheFactory.FindOrCreate(atc.TaskCacheIdentity{JobID: pausedScenario.Job("some-job-2").ID()}, "some-step", "some-path")
 		Expect(err).ToNot(HaveOccurred())
 
 		deletedCacheIDs, err := taskCacheLifecycle.CleanUpInvalidTaskCaches()

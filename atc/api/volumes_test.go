@@ -225,7 +225,7 @@ var _ = Describe("Volumes API", func() {
 						Expect(found).To(BeTrue())
 
 						taskCache, err := db.NewTaskCacheFactory(realDatabase.Conn).
-							FindOrCreate(job.ID(), "some-task", "some-task-cache-path")
+							FindOrCreate(atc.TaskCacheIdentity{JobID: job.ID()}, "some-task", "some-task-cache-path")
 						Expect(err).NotTo(HaveOccurred())
 						workerTaskCache, err := db.NewWorkerTaskCacheFactory(realDatabase.Conn).FindOrCreate(db.WorkerTaskCache{
 							WorkerName: worker.Name(),

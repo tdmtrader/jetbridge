@@ -56,7 +56,7 @@ var _ = Describe("VolumeRepository", func() {
 		)
 
 		It("returns task cache volumes", func() {
-			taskCache, err := taskCacheFactory.FindOrCreate(defaultJob.ID(), "some-step", "some-path")
+			taskCache, err := taskCacheFactory.FindOrCreate(atc.TaskCacheIdentity{JobID: defaultJob.ID()}, "some-step", "some-path")
 			Expect(err).NotTo(HaveOccurred())
 
 			usedWorkerTaskCache, err := workerTaskCacheFactory.FindOrCreate(db.WorkerTaskCache{
