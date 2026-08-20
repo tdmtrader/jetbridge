@@ -133,3 +133,83 @@ coverage was deleted.
   `postgresrunner.StandardTestRunner` and `Config.ArtifactDaemonNamespace`. The obsolete
   artifact resolve-capability references owned by this task are gone. Those unrelated
   symbols were not broadened into this change.
+
+## Fix round 1: verified materialization outcome
+
+Review and independent security adjudication retained the planned in-command batch
+transport. The Pod spec therefore intentionally contains recoverable 15-minute grants,
+each limited to one exact ref/handle/volume. This is accepted exposure, not grant secrecy.
+The long-lived 32-byte HMAC key remains absent from the command, environment, mounts, and
+serialized init-container Pod spec, with a focused regression assertion.
+
+The same-node `${HOST_IP}` route is not server-authenticated because BusyBox wget uses
+`--no-check-certificate`; NetworkPolicy is optional, defaults off, and depends on CNI
+enforcement. The init no longer treats transport success as the outcome boundary. It now
+requires wget success, an exact final HTTP 204, and a zero-byte response, then independently
+verifies every materialized input through a generated fixed read-only
+`/hangar-inputs/input-N` mount. The daemon writes through its separate hostPath, so the
+init has no writable strict input mount.
+
+For each tree, verification requires a non-symlink directory with exact mode 0555 and a
+non-symlink regular `.hangar-materialized` file with exact mode 0444. The receipt must be
+byte-for-byte identical to the safely base64-encoded Go `json.Marshal(TreeRef)` bytes;
+wrong refs/generations, malformed/trailing content, and mode/type changes fail the whole
+batch. Real server-authenticated local transport remains future hardening.
+
+Strict input/output validation now rejects equality and either separator-aware
+ancestor/descendant direction after cleaning paths, while allowing siblings such as
+`/work/exact` and `/work/exact2`. Signal traps for HUP, INT, and TERM remove the private
+temporary directory and terminate nonzero without recursively invoking the EXIT trap.
+
+### Fix-round TDD evidence
+
+RED:
+
+```text
+go test ./atc/worker/jetbridge -run '^(TestDaemonSetBackend_(BuildFetchInitContainers_AppendsExactHangarBatch|HangarInitRequiresExactResponseAndReceipt|HangarInitSignalsCleanUpAndFail)|TestDaemonSetMode_(StrictInputValidationFailsClosed|StrictInputAllowsSiblingOutput|StrictInputsAreReadOnlyEverywhereAndPodMountsResolve))$' -count=1
+# descendant overlaps reached signer validation; init mount was writable at the user
+# destination; false 204s and altered/missing receipts exited 0; signal cleanup could
+# exit successfully
+```
+
+GREEN after implementation and expanded cases:
+
+```text
+go test ./atc/worker/jetbridge -run '^(TestDaemonSetBackend_(BuildFetchInitContainers|HangarInit)|TestBuildFetchInitContainers|TestDaemonSetMode_(StrictInputValidationFailsClosed|StrictInputAllowsSiblingOutput|StrictInputsAreReadOnlyEverywhereAndPodMountsResolve|OrdinaryOverlappingInputRemainsWritable|BuildPodRejectsUnresolvedMounts))' -count=1
+ok github.com/concourse/concourse/atc/worker/jetbridge 5.375s
+```
+
+The matrix covers exact success, false 204, missing/wrong-ref/wrong-generation/malformed/
+trailing/symlink receipts, symlink roots, wrong receipt/root modes, 200/201, nonempty
+whitespace/truncated/HTML 204 bodies, wget failure after 204, bounded no-status/503 retries,
+terminal other statuses, multiple fixed mounts, and HUP/INT/TERM during wget and retry.
+
+### Fix-round verification
+
+```text
+# Every listed standalone JetBridge test except the Ginkgo entrypoint
+go test ./atc/worker/jetbridge -run '<exact generated alternation>' -count=1
+ok github.com/concourse/concourse/atc/worker/jetbridge 35.358s
+
+ginkgo -r -p ./atc/worker/jetbridge
+369/369 specifications passed (20.741s specs; 1m17.271s command total)
+
+go test ./atc/atccmd -count=1
+ok github.com/concourse/concourse/atc/atccmd 0.685s
+
+go test . -run '^TestAgenticLayerIsImportedOnlyAtItsWiringPoint$' -count=1
+ok github.com/concourse/concourse 0.928s
+
+gofmt -w <four changed Go files>
+git diff --check
+# pass
+
+# Supplemental host-shell parse only
+awk '<extract daemonHangarMaterializationCommand template>' atc/worker/jetbridge/storage_daemonset.go | sh -n
+# pass
+```
+
+BusyBox `stat -c '%a'`, `cmp`, and `base64 -d` are the target applets. The generated
+script includes a macOS `stat -f '%Lp'` fallback solely so supplemental host execution
+can test the same script. A real BusyBox Pod/K3s execution remains CI-only and is not
+claimed here.

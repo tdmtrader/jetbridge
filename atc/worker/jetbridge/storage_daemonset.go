@@ -154,6 +154,7 @@ func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runt
 	seenVolumes := map[string]bool{}
 	var hangarItems []hangarMaterializationItem
 	var hangarMounts []corev1.VolumeMount
+	var hangarReceiptBytes []string
 	seenHangarVolumes := map[string]bool{}
 
 	for _, input := range inputs {
@@ -182,9 +183,16 @@ func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runt
 			hangarItems = append(hangarItems, hangarMaterializationItem{
 				Ref: *input.HangarTree, Handle: handle, Volume: volumeName, Grant: "Bearer " + grant,
 			})
+			receipt, err := json.Marshal(*input.HangarTree)
+			if err != nil {
+				return nil, fmt.Errorf("marshal expected Hangar materialization receipt: %w", err)
+			}
+			hangarReceiptBytes = append(hangarReceiptBytes, base64.StdEncoding.EncodeToString(receipt))
 			if !seenHangarVolumes[volumeName] {
 				seenHangarVolumes[volumeName] = true
-				hangarMounts = append(hangarMounts, corev1.VolumeMount{Name: volumeName, MountPath: input.DestinationPath})
+				hangarMounts = append(hangarMounts, corev1.VolumeMount{
+					Name: volumeName, MountPath: fmt.Sprintf("/hangar-inputs/input-%d", len(hangarMounts)), ReadOnly: true,
+				})
 			}
 			continue
 		}
@@ -241,13 +249,11 @@ func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runt
 		},
 	}
 
-	// Note: when TLS is enabled the init container reaches the daemon over
-	// HTTPS at ${HOST_IP}:7780 (the node IP, via hostPort). The node IP cannot
-	// be a certificate SAN, so BusyBox wget can't verify the hostname; the
-	// resolve command uses --no-check-certificate instead. The connection is
-	// still TLS-encrypted, and /resolve(-batch) is an exempt, same-node,
-	// NetworkPolicy-protected control path — artifact data flows via the shared
-	// hostPath, not over this HTTP call. No CA cert mount is needed.
+	// The init reaches the same-node daemon through ${HOST_IP}:7780. BusyBox wget
+	// cannot authenticate the node-IP endpoint because it is not a certificate
+	// SAN, and NetworkPolicy enforcement is optional and CNI-dependent. Strict
+	// Hangar success therefore does not trust the transport response alone: the
+	// init verifies the daemon's sealed receipt through the read-only input mount.
 
 	if len(items) > 0 {
 		initContainers = append(initContainers, corev1.Container{
@@ -277,7 +283,7 @@ func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runt
 		initContainers = append(initContainers, corev1.Container{
 			Name:            "materialize-hangar-inputs",
 			Image:           helperImage,
-			Command:         b.daemonHangarMaterializationCommand(payload),
+			Command:         b.daemonHangarMaterializationCommand(payload, hangarReceiptBytes),
 			Env:             envVars,
 			VolumeMounts:    hangarMounts,
 			ImagePullPolicy: corev1.PullIfNotPresent,
@@ -288,12 +294,16 @@ func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runt
 	return initContainers, nil
 }
 
-func (b *DaemonSetBackend) daemonHangarMaterializationCommand(payload []byte) []string {
+func (b *DaemonSetBackend) daemonHangarMaterializationCommand(payload []byte, expectedReceipts []string) []string {
 	port := b.config.ArtifactDaemonPort
 	if port == 0 {
 		port = 7780
 	}
 	request := base64.StdEncoding.EncodeToString(payload)
+	var receiptChecks strings.Builder
+	for index, expected := range expectedReceipts {
+		fmt.Fprintf(&receiptChecks, "verify_receipt '/hangar-inputs/input-%d' '%s' '%d'\n", index, expected, index)
+	}
 	script := fmt.Sprintf(`
 set -u
 umask 077
@@ -302,7 +312,22 @@ DAEMON="%s://${HOST_IP}:${PORT}"
 WGET_OPTS="%s"
 REQUEST_B64='%s'
 TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/hangar-materialize.XXXXXX") || exit 1
-trap 'rm -rf "$TMP_DIR"' 0 1 2 15
+cleanup_files() {
+  rm -rf "$TMP_DIR"
+}
+on_exit() {
+  STATUS=$?
+  trap - 0
+  cleanup_files
+  exit "$STATUS"
+}
+on_signal() {
+  trap - 0 1 2 15
+  cleanup_files
+  exit 1
+}
+trap on_exit 0
+trap on_signal 1 2 15
 REQUEST="$TMP_DIR/request.json"
 RESPONSE="$TMP_DIR/response"
 HEADERS="$TMP_DIR/headers"
@@ -327,29 +352,40 @@ while [ "$ATTEMPT" -lt "$MAX_ATTEMPTS" ]; do
     sleep 2
     continue
   fi
-  case "$HTTP_STATUS" in
-    2??)
-      if [ "$WGET_STATUS" -ne 0 ]; then
-        printf 'hangar materialization transport failed after HTTP response\n' >&2
-        exit 1
-      fi
-      RESPONSE_STATUS=$(sed 's/[[:space:]]//g' "$RESPONSE")
-      case "$RESPONSE_STATUS" in
-        *'"status":"error"'*|*'"status":"partial"'*)
-          printf 'hangar materialization returned an incomplete result\n' >&2
-          exit 1
-          ;;
-      esac
-      exit 0
-      ;;
-    *)
-      printf 'hangar materialization failed with HTTP status %%s\n' "$HTTP_STATUS" >&2
-      exit 1
-      ;;
-  esac
+  if [ "$WGET_STATUS" -ne 0 ] || [ "$HTTP_STATUS" != 204 ] || [ -s "$RESPONSE" ]; then
+    printf 'hangar materialization did not return an exact empty HTTP 204\n' >&2
+    exit 1
+  fi
+  break
 done
-exit 1
-`, port, b.daemonScheme(), b.wgetTLSOpts(), request)
+mode_of() {
+  stat -c '%%a' "$1" 2>/dev/null || stat -f '%%Lp' "$1" 2>/dev/null
+}
+verify_receipt() {
+  ROOT=$1
+  EXPECTED_B64=$2
+  INDEX=$3
+  RECEIPT="$ROOT/.hangar-materialized"
+  EXPECTED="$TMP_DIR/expected-$INDEX.json"
+  if [ -L "$ROOT" ] || [ ! -d "$ROOT" ] || [ "$(mode_of "$ROOT")" != 555 ]; then
+    printf 'hangar materialization root verification failed\n' >&2
+    exit 1
+  fi
+  if [ -L "$RECEIPT" ] || [ ! -f "$RECEIPT" ] || [ "$(mode_of "$RECEIPT")" != 444 ]; then
+    printf 'hangar materialization receipt verification failed\n' >&2
+    exit 1
+  fi
+  if ! printf '%%s' "$EXPECTED_B64" | base64 -d >"$EXPECTED"; then
+    printf 'hangar materialization receipt expectation preparation failed\n' >&2
+    exit 1
+  fi
+  if ! cmp "$RECEIPT" "$EXPECTED" >/dev/null 2>&1; then
+    printf 'hangar materialization receipt did not match the exact tree reference\n' >&2
+    exit 1
+  fi
+}
+%sexit 0
+`, port, b.daemonScheme(), b.wgetTLSOpts(), request, receiptChecks.String())
 	return []string{"sh", "-c", script}
 }
 
@@ -359,9 +395,9 @@ func (b *DaemonSetBackend) daemonScheme() string {
 
 // wgetTLSOpts returns extra BusyBox wget options for daemon HTTPS calls. When
 // TLS is enabled it adds --no-check-certificate: the init container dials the
-// daemon by node IP (HOST_IP), which is not a cert SAN, so hostname
-// verification cannot succeed. The connection is still encrypted; /resolve is
-// an exempt, same-node, NetworkPolicy-protected control path.
+// daemon by node IP (HOST_IP), which is not a cert SAN, so server authentication
+// cannot succeed. Strict Hangar calls verify the sealed materialization receipt
+// as their outcome boundary; authenticated local transport is future hardening.
 func (b *DaemonSetBackend) wgetTLSOpts() string {
 	if b.config.ArtifactDaemonTLSEnabled {
 		return "--no-check-certificate"

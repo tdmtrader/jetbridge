@@ -132,6 +132,16 @@ func TestDaemonSetMode_StrictInputValidationFailsClosed(t *testing.T) {
 			inputs:  []runtime.Input{{HangarTree: &ref, DestinationPath: "/work/input"}},
 			outputs: runtime.OutputPaths{"result": "/work/input/"}, want: "overlap",
 		},
+		"strict input contains output": {
+			cfg:     func() Config { cfg := daemonSetConfig(); cfg.HangarEnabled = true; return cfg }(),
+			inputs:  []runtime.Input{{HangarTree: &ref, DestinationPath: "/work/exact"}},
+			outputs: runtime.OutputPaths{"result": "/work/exact/result"}, want: "overlap",
+		},
+		"output contains strict input": {
+			cfg:     func() Config { cfg := daemonSetConfig(); cfg.HangarEnabled = true; return cfg }(),
+			inputs:  []runtime.Input{{HangarTree: &ref, DestinationPath: "/work/exact/input"}},
+			outputs: runtime.OutputPaths{"result": "/work/exact"}, want: "overlap",
+		},
 	}
 
 	for name, test := range tests {
@@ -150,6 +160,26 @@ func TestDaemonSetMode_StrictInputValidationFailsClosed(t *testing.T) {
 				t.Fatalf("expected error containing %q, got %v", test.want, err)
 			}
 		})
+	}
+}
+
+func TestDaemonSetMode_StrictInputAllowsSiblingOutput(t *testing.T) {
+	ref := hangar.TreeRef{
+		Scope:      "builds",
+		Digest:     "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Generation: 1,
+	}
+	cfg := daemonSetConfig()
+	cfg.HangarEnabled = true
+	container := &Container{
+		containerSpec: runtime.ContainerSpec{
+			Inputs:  []runtime.Input{{HangarTree: &ref, DestinationPath: "/work/exact"}},
+			Outputs: runtime.OutputPaths{"result": "/work/exact2"},
+		},
+		config: cfg, storageBackend: NewDaemonSetBackend(cfg, nil, nil),
+	}
+	if err := container.validateInputs(); err != nil {
+		t.Fatalf("sibling output must not overlap strict input: %v", err)
 	}
 }
 
@@ -197,8 +227,14 @@ func TestDaemonSetMode_StrictInputsAreReadOnlyEverywhereAndPodMountsResolve(t *t
 	if len(pod.Spec.InitContainers) != 1 || pod.Spec.InitContainers[0].Name != "materialize-hangar-inputs" {
 		t.Fatalf("unexpected strict init containers: %+v", pod.Spec.InitContainers)
 	}
-	if mountAtPath(t, pod.Spec.InitContainers[0].VolumeMounts, "/work/exact").ReadOnly {
-		t.Fatal("materialization init must mount the destination writable for daemon population")
+	strictInitMount := mountAtPath(t, pod.Spec.InitContainers[0].VolumeMounts, "/hangar-inputs/input-0")
+	if !strictInitMount.ReadOnly {
+		t.Fatal("materialization init must verify through a read-only input mount")
+	}
+	for _, mount := range pod.Spec.InitContainers[0].VolumeMounts {
+		if mount.MountPath == "/work/exact" {
+			t.Fatal("materialization init must not mount at the user-controlled destination")
+		}
 	}
 	assertPodMountsResolve(t, pod)
 
