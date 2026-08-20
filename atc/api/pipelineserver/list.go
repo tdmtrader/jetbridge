@@ -44,7 +44,7 @@ func (s *Server) ListPipelines(w http.ResponseWriter, r *http.Request) {
 
 	err = json.NewEncoder(w).Encode(present.Pipelines(pipelines, present.PipelinesOptions{
 		OptionsForPipeline: func(pipeline db.Pipeline) present.PipelineOptions {
-			return pipelineOptions(acc, pipeline)
+			return pipelineOptions(r, acc, pipeline)
 		},
 	}))
 	if err != nil {

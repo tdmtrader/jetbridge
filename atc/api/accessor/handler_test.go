@@ -1,6 +1,7 @@
 package accessor_test
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"time"
@@ -231,6 +232,12 @@ var _ = Describe("Handler", func() {
 			It("never reaches the wrapped handler", func() {
 				Expect(servedRequests).To(BeEmpty())
 			})
+		})
+	})
+
+	Describe("RequiredRole", func() {
+		It("falls back to the default role when the request has no custom mapping", func() {
+			Expect(accessor.RequiredRole(context.Background(), atc.CreatePipelineRun)).To(Equal(accessor.MemberRole))
 		})
 	})
 })
