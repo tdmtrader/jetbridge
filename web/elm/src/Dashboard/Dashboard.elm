@@ -373,6 +373,7 @@ handleCallback callback ( model, effects ) =
             let
                 newPipelines =
                     allPipelinesInEntireCluster
+                        |> List.filter (not << Concourse.isRunPayload)
                         |> List.map (toDashboardPipeline False (model.jobsError == Just Disabled))
                         |> groupBy .teamName
                         |> Just
@@ -530,8 +531,9 @@ handleDeliveryBody delivery ( model, effects ) =
             if model.pipelines == Nothing then
                 ( { model
                     | pipelines =
-                        pipelines
-                            |> List.map
+                    pipelines
+                        |> List.filter (not << Concourse.isRunPayload)
+                        |> List.map
                                 (toDashboardPipeline
                                     True
                                     (model.jobsError == Just Disabled)
@@ -600,6 +602,8 @@ toDashboardPipeline isStale jobsDisabled p =
     , archived = p.archived
     , stale = isStale
     , jobsDisabled = jobsDisabled
+    , template = p.template == Just True
+    , lastRunNumber = p.lastRunNumber
     }
 
 
@@ -622,7 +626,7 @@ toConcoursePipeline p =
     , runNumber = Nothing
     , runTemplateRef = Nothing
     , paramsSchema = []
-    , lastRunNumber = Nothing
+    , lastRunNumber = p.lastRunNumber
     , canCreateRun = False
     }
 

@@ -101,9 +101,9 @@ init session route =
             PipelineRuns.init flags
                 |> Tuple.mapFirst PipelineRunsModel
 
-        Routes.PipelineRun _ ->
-            NotFound.init { notFoundImgSrc = session.notFoundImgSrc, route = session.route }
-                |> Tuple.mapFirst NotFoundModel
+        Routes.PipelineRun flags ->
+            Pipeline.initRun flags
+                |> Tuple.mapFirst PipelineModel
 
         Routes.Dashboard { searchType, dashboardView } ->
             Dashboard.init

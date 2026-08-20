@@ -98,4 +98,6 @@ type alias Pipeline =
     , archived : Bool
     , stale : Bool
     , jobsDisabled : Bool
+    , template : Bool
+    , lastRunNumber : Maybe Int
     }

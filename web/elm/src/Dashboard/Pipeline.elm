@@ -93,7 +93,7 @@ hdPipelineView { pipelineRunningKeyframes } { pipeline, resourceError, existingJ
         ([ class "card"
          , attribute "data-pipeline-name" pipeline.name
          , attribute "data-team-name" pipeline.teamName
-         , href <| Routes.toString <| Routes.pipelineRoute pipeline []
+         , href <| pipelineHref pipeline
          ]
             ++ Styles.pipelineCardHd (pipelineStatus existingJobs pipeline)
         )
@@ -172,6 +172,14 @@ pipelineView session { now, pipeline, hovered, resourceError, existingJobs, laye
             bodyView section hovered layers
         , footerView session pipeline section now hovered existingJobs
         ]
+
+
+pipelineHref : Pipeline -> String
+pipelineHref pipeline =
+    if pipeline.template then
+        Routes.toString <| Routes.PipelineRuns { id = Concourse.toPipelineId pipeline, page = Nothing }
+    else
+        Routes.toString <| Routes.pipelineRoute pipeline []
 
 
 pipelineStatus : List Concourse.Job -> Pipeline -> PipelineStatus.PipelineStatus
@@ -291,7 +299,7 @@ headerView section pipeline resourceError headerHeight viewingInstanceGroups inI
                 []
     in
     Html.a
-        [ href <| Routes.toString <| Routes.pipelineRoute pipeline [], draggable "false" ]
+        [ href <| pipelineHref pipeline, draggable "false" ]
         [ Html.div
             (class "card-header" :: Styles.pipelineCardHeader headerHeight)
             (rows ++ [ resourceErrorElem ])
@@ -311,7 +319,12 @@ headerRows section viewingInstanceGroups pipeline inInstanceGroup =
                         :: Styles.pipelineName
                         ++ Tooltip.hoverAttrs (PipelineCardName section pipeline.id)
                     )
-                    [ Html.text pipeline.name ]
+                    [ Html.text <|
+                        if pipeline.template then
+                            pipeline.name ++ " • " ++ (Maybe.map (\number -> "runs through #" ++ String.fromInt number) pipeline.lastRunNumber |> Maybe.withDefault "no runs")
+                        else
+                            pipeline.name
+                    ]
                 ]
 
         instanceVarRows =

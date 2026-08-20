@@ -7,6 +7,7 @@ module Pipeline.Pipeline exposing
     , handleCallback
     , handleDelivery
     , init
+    , initRun
     , subscriptions
     , tooltip
     , update
@@ -16,7 +17,8 @@ module Pipeline.Pipeline exposing
 import Application.Models exposing (Session)
 import Colors
 import Concourse
-import Concourse.BuildStatus exposing (BuildStatus(..))
+import Concourse.BuildStatus as BuildStatus exposing (BuildStatus(..))
+import Concourse.PipelineRun exposing (PipelineRun)
 import DateFormat
 import EffectTransformer exposing (ET)
 import Favorites
@@ -58,6 +60,7 @@ import Time
 import Tooltip
 import UpdateMsg exposing (UpdateMsg)
 import Views.FavoritedIcon as FavoritedIcon
+import Views.RunContext as RunContext
 import Views.PauseToggle as PauseToggle
 import Views.Styles
 import Views.TopBar as TopBar
@@ -78,6 +81,13 @@ type alias Model =
         , hideLegendCounter : Float
         , isToggleLoading : Bool
         , pinMenuExpanded : Bool
+        , runTemplate : Maybe Concourse.PipelineIdentifier
+        , runNumber : Maybe Int
+        , runHeader : Maybe PipelineRun
+        , runContext : Maybe RunContext.Context
+        , refetchedRunHeader : Bool
+        , missingPayloadRef : Maybe Concourse.PipelineIdentifier
+        , runNotFound : Bool
         }
 
 
@@ -106,6 +116,13 @@ init flags =
             , selectedGroups = flags.selectedGroups
             , isUserMenuExpanded = False
             , pinMenuExpanded = False
+            , runTemplate = Nothing
+            , runNumber = Nothing
+            , runHeader = Nothing
+            , runContext = Nothing
+            , refetchedRunHeader = False
+            , missingPayloadRef = Nothing
+            , runNotFound = False
             }
     in
     ( model
@@ -114,6 +131,25 @@ init flags =
       , FetchAllPipelines
       , GetCurrentTimeZone
       ]
+    )
+
+
+initRun : { template : Concourse.PipelineIdentifier, number : Int } -> ( Model, List Effect )
+initRun flags =
+    let
+        ( model, _ ) =
+            init
+                { pipelineLocator = flags.template
+                , turbulenceImgSrc = ""
+                , selectedGroups = []
+                }
+    in
+    ( { model
+        | runTemplate = Just flags.template
+        , runNumber = Just flags.number
+        , pipeline = RemoteData.NotAsked
+      }
+    , [ FetchPipelineRun flags.template flags.number ]
     )
 
 
@@ -154,12 +190,15 @@ timeUntilHiddenCheckInterval =
 
 getUpdateMessage : Model -> UpdateMsg
 getUpdateMessage model =
-    case model.pipeline of
-        RemoteData.Failure _ ->
-            UpdateMsg.NotFound
+    if model.runNotFound then
+        UpdateMsg.NotFound
+    else
+        case model.pipeline of
+            RemoteData.Failure _ ->
+                UpdateMsg.NotFound
 
-        _ ->
-            UpdateMsg.AOK
+            _ ->
+                UpdateMsg.AOK
 
 
 handleCallback : Callback -> ET Model
@@ -173,39 +212,71 @@ handleCallback callback ( model, effects ) =
                 []
     in
     case callback of
+        PipelineRunFetched (Ok run) ->
+            handleRunHeader run model effects
+
+        PipelineRunFetched (Err err) ->
+            handleRunHeaderError err model effects
+
         PipelineFetched (Ok pipeline) ->
             let
                 locator =
                     Concourse.toPipelineId pipeline
             in
+            let
+                context =
+                    model.runHeader
+                        |> Maybe.map
+                            (\run ->
+                                if BuildStatus.isRunning run.status then
+                                    RunContext.Live run pipeline
+                                else
+                                    RunContext.Completed run pipeline
+                            )
+
+                canonicalRoute =
+                    case ( pipeline.runNumber, pipeline.runTemplateRef, model.runTemplate ) of
+                        ( Just number, Just base, Nothing ) ->
+                            [ ModifyUrl <| Routes.toString <| Routes.PipelineRun { template = base, number = number } ]
+
+                        _ ->
+                            []
+            in
             ( { model
                 | pipeline = RemoteData.Success pipeline
                 , pipelineLocator = locator
+                , runContext = context
               }
             , effects
+                ++ canonicalRoute
                 ++ [ FetchJobs locator
                    , FetchResources locator
                    ]
             )
 
         PipelineFetched (Err err) ->
-            case err of
-                Http.BadStatus { status } ->
-                    if status.code == 404 then
-                        ( { model | pipeline = RemoteData.Failure err }
-                        , effects
-                        )
+            case model.runTemplate of
+                Just template ->
+                    handleRunPayloadError template err model effects
 
-                    else
-                        ( model
-                        , effects ++ redirectToLoginIfUnauthenticated status
-                        )
+                Nothing ->
+                    case err of
+                        Http.BadStatus { status } ->
+                            if status.code == 404 then
+                                ( { model | pipeline = RemoteData.Failure err }
+                                , effects
+                                )
 
-                _ ->
-                    renderIfNeeded
-                        ( { model | experiencingTurbulence = True }
-                        , effects
-                        )
+                            else
+                                ( model
+                                , effects ++ redirectToLoginIfUnauthenticated status
+                                )
+
+                        _ ->
+                            renderIfNeeded
+                                ( { model | experiencingTurbulence = True }
+                                , effects
+                                )
 
         PipelineToggled _ (Ok ()) ->
             ( { model
@@ -282,6 +353,87 @@ handleCallback callback ( model, effects ) =
 
         _ ->
             ( model, effects )
+
+
+handleRunHeader : PipelineRun -> Model -> List Effect -> ( Model, List Effect )
+handleRunHeader run model effects =
+    case run.instanceRef of
+        Nothing ->
+            ( { model
+                | runHeader = Just run
+                , runContext = Just <| if run.reclaimed then RunContext.Reclaimed run else RunContext.RecordOnly run
+              }
+            , effects
+            )
+
+        Just ref ->
+            if model.refetchedRunHeader && model.missingPayloadRef == Just ref then
+                ( { model | runHeader = Just run, runContext = Just <| RunContext.RecordOnly run }, effects )
+            else
+                ( { model
+                    | runHeader = Just run
+                    , pipelineLocator = ref
+                    , pipeline = RemoteData.Loading
+                  }
+                , effects ++ [ FetchPipeline ref ]
+                )
+
+
+handleRunHeaderError : Http.Error -> Model -> List Effect -> ( Model, List Effect )
+handleRunHeaderError err model effects =
+    case ( err, model.runTemplate, model.runNumber ) of
+        ( Http.BadStatus { status }, _, _ ) ->
+            if status.code == 404 then
+                ( { model | runNotFound = True }, effects )
+            else if status.code == 401 then
+                ( model, effects ++ [ RedirectToLogin ] )
+            else
+                retryRunHeader model effects
+
+        _ ->
+            retryRunHeader model effects
+
+
+retryRunHeader : Model -> List Effect -> ( Model, List Effect )
+retryRunHeader model effects =
+    case ( model.runTemplate, model.runNumber ) of
+        ( Just template, Just number ) ->
+            ( model, effects ++ [ FetchPipelineRun template number ] )
+
+        _ ->
+            ( model, effects )
+
+
+handleRunPayloadError : Concourse.PipelineIdentifier -> Http.Error -> Model -> List Effect -> ( Model, List Effect )
+handleRunPayloadError template err model effects =
+    case err of
+        Http.BadStatus { status } ->
+            if status.code == 404 then
+                if model.refetchedRunHeader then
+                    case model.runHeader of
+                        Just run ->
+                            ( { model | runContext = Just <| RunContext.RecordOnly run }, effects )
+
+                        Nothing ->
+                            ( model, effects )
+                else
+                    ( { model | refetchedRunHeader = True, missingPayloadRef = Just model.pipelineLocator }
+                    , effects ++ [ FetchPipelineRun template (Maybe.withDefault 0 model.runNumber) ]
+                    )
+            else if status.code == 401 || status.code == 403 then
+                case model.runHeader of
+                    Just run ->
+                        ( { model | runContext = Just <| RunContext.RecordOnly run }
+                        , effects ++ (if status.code == 401 then [ RedirectToLogin ] else [])
+                        )
+
+                    Nothing ->
+                        ( model, effects )
+            else
+                ( model, effects ++ [ FetchPipeline model.pipelineLocator ] )
+
+        _ ->
+            ( model, effects ++ [ FetchPipeline model.pipelineLocator ] )
 
 
 handleDelivery : Delivery -> ET Model
@@ -377,14 +529,26 @@ view : Session -> Model -> Html Message
 view session model =
     let
         route =
-            Routes.Pipeline
-                { id = model.pipelineLocator
-                , groups = model.selectedGroups
-                }
+            case ( model.runTemplate, model.runNumber ) of
+                ( Just template, Just number ) ->
+                    Routes.PipelineRun { template = template, number = number }
+
+                _ ->
+                    Routes.Pipeline
+                        { id = model.pipelineLocator
+                        , groups = model.selectedGroups
+                        }
 
         displayPaused =
             isPaused model.pipeline
                 && not (isArchived model.pipeline)
+                && not (runIsCompleted model)
+
+        showPipelineControls =
+            runAllowsPipelineControls model
+
+        selectedPipeline =
+            Maybe.withDefault model.pipelineLocator model.runTemplate
     in
     Html.div [ Html.Attributes.style "height" "100%" ]
         [ Html.div
@@ -393,7 +557,7 @@ view session model =
                 (id "top-bar-app" :: Views.Styles.topBar displayPaused)
                 (SideBar.sideBarIcon session
                     :: TopBar.breadcrumbs session route
-                    ++ [ if isArchived model.pipeline then
+                    ++ [ if isArchived model.pipeline || not showPipelineControls then
                             Html.text ""
 
                          else
@@ -403,21 +567,25 @@ view session model =
                                 , pausedAt = pausedAt model.pipeline
                                 , timeZone = session.timeZone
                                 }
-                       , PinMenu.viewPinMenu session model
-                       , Html.div
-                            Styles.favoritedIcon
-                            [ FavoritedIcon.view
-                                { isHovered = HoverState.isHovered (TopBarFavoritedIcon <| getPipelineId model.pipeline) session.hovered
-                                , isFavorited =
-                                    model.pipeline
-                                        |> RemoteData.map (Favorites.isPipelineFavorited session)
-                                        |> RemoteData.withDefault False
-                                , isSideBar = False
-                                , domID = TopBarFavoritedIcon <| getPipelineId model.pipeline
-                                }
-                                [ style "margin" "17px" ]
-                            ]
-                       , if isArchived model.pipeline then
+                       , if showPipelineControls then PinMenu.viewPinMenu session model else Html.text ""
+                       , if showPipelineControls then
+                            Html.div
+                                Styles.favoritedIcon
+                                [ FavoritedIcon.view
+                                    { isHovered = HoverState.isHovered (TopBarFavoritedIcon <| getPipelineId model.pipeline) session.hovered
+                                    , isFavorited =
+                                        model.pipeline
+                                            |> RemoteData.map (Favorites.isPipelineFavorited session)
+                                            |> RemoteData.withDefault False
+                                    , isSideBar = False
+                                    , domID = TopBarFavoritedIcon <| getPipelineId model.pipeline
+                                    }
+                                    [ style "margin" "17px" ]
+                                ]
+
+                         else
+                            Html.text ""
+                       , if isArchived model.pipeline || not showPipelineControls then
                             Html.text ""
 
                          else
@@ -443,11 +611,56 @@ view session model =
             , Html.div
                 (id "page-below-top-bar" :: Views.Styles.pageBelowTopBar route)
               <|
-                [ SideBar.view session (Just model.pipelineLocator)
-                , viewSubPage session model
+                [ SideBar.view session (Just selectedPipeline)
+                , viewRunPage session model
                 ]
             ]
         ]
+
+
+runIsCompleted : Model -> Bool
+runIsCompleted model =
+    model.runContext |> Maybe.map RunContext.isCompleted |> Maybe.withDefault False
+
+
+runAllowsPipelineControls : Model -> Bool
+runAllowsPipelineControls model =
+    case model.runContext of
+        Just (RunContext.Completed _ _) ->
+            False
+
+        Just (RunContext.RecordOnly _) ->
+            False
+
+        Just (RunContext.Reclaimed _) ->
+            False
+
+        _ ->
+            True
+
+
+viewRunPage :
+    { a | hovered : HoverState.HoverState, version : String, jetbridgeVersion : String, concourseVersion : String }
+    -> Model
+    -> Html Message
+viewRunPage session model =
+    case model.runContext of
+        Just context ->
+            case context of
+                RunContext.RecordOnly _ ->
+                    Html.main_ [ id "run-record" ] [ RunContext.view context ]
+
+                RunContext.Reclaimed _ ->
+                    Html.main_ [ id "run-record" ] [ RunContext.view context ]
+
+                _ ->
+                    Html.div [] [ RunContext.view context, viewSubPage session model ]
+
+        Nothing ->
+            if model.runTemplate /= Nothing then
+                Html.main_ [ id "run-record" ] [ Html.p [] [ Html.text "Loading run…" ] ]
+            else
+                viewSubPage session model
 
 
 tooltip : Model -> Session -> Maybe Tooltip.Tooltip

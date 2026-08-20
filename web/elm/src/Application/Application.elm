@@ -181,6 +181,10 @@ handleCallback callback model =
             subpageHandleCallback callback ( model, [] )
                 |> redirectToLoginIfNecessary err
 
+        PipelineRunFetched (Err err) ->
+            subpageHandleCallback callback ( model, [] )
+                |> redirectToLoginIfNecessary err
+
         PipelineToggled _ (Err err) ->
             subpageHandleCallback callback ( model, [] )
                 |> redirectToLoginIfNecessary err
@@ -540,6 +544,9 @@ routeMatchesModel route model =
 
         ( Routes.PipelineRuns _, SubPage.PipelineRunsModel _ ) ->
             True
+
+        ( Routes.PipelineRun _, SubPage.PipelineModel _ ) ->
+            False
 
         ( Routes.Resource _, SubPage.ResourceModel _ ) ->
             True
