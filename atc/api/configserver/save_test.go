@@ -9,6 +9,7 @@ import (
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/configserver"
+	"github.com/concourse/concourse/atc/db"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -28,9 +29,15 @@ var _ = Describe("Template configuration save", func() {
 		request.Header.Set("Content-Type", "application/json")
 		response := httptest.NewRecorder()
 
-		configserver.NewServer(lagertest.NewTestLogger("test"), nil, nil).SaveConfig(response, request)
+		configserver.NewServer(lagertest.NewTestLogger("test"), absentTeamFactory{}, nil).SaveConfig(response, request)
 
 		Expect(response.Code).To(Equal(http.StatusBadRequest))
 		Expect(response.Body.Bytes()).To(MatchJSON(`{"errors":["templates cannot have instance vars"]}`))
 	})
 })
+
+type absentTeamFactory struct{ db.TeamFactory }
+
+func (absentTeamFactory) FindTeam(string) (db.Team, bool, error) {
+	return nil, false, nil
+}
