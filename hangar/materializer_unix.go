@@ -307,14 +307,22 @@ func publishMaterializationAt(ctx context.Context, parent *os.File, stageName st
 		if err := sealOpenedTreeContents(stage); err != nil {
 			return false, fmt.Errorf("hangar: seal retry comparison tree: %w", err)
 		}
-		if exact, verifyErr := completedMaterializationOpened(destination, ref); verifyErr == nil && exact {
+		receipt, exact, verifyErr := openCompletedMaterializationReceipt(destination, ref)
+		if verifyErr == nil && exact {
 			same, compareErr := sameOpenedTree(stage, destination, hooks.duringRetryCompare)
-			if compareErr == nil && same {
+			receiptStable, receiptErr := receipt.revalidate(destination)
+			if compareErr == nil && receiptErr == nil && same && receiptStable {
 				if authorityErr := verifyAuthority(destination); authorityErr != nil {
-					return false, fmt.Errorf("hangar: recheck retry authority before materialization success: %w", authorityErr)
+					return false, fmt.Errorf("hangar: recheck retry authority before materialization success: %w", errors.Join(authorityErr, receipt.file.Close()))
 				}
+				receiptStable, receiptErr = receipt.revalidate(destination)
+			}
+			closeErr := receipt.file.Close()
+			if compareErr == nil && receiptErr == nil && closeErr == nil && same && receiptStable {
 				return false, nil
 			}
+		} else if receipt != nil {
+			_ = receipt.file.Close()
 		}
 		return false, ErrConflict
 	}
@@ -934,31 +942,106 @@ func writeExclusiveFileAt(directory *os.File, name string, contents []byte, mode
 	return errors.Join(writeErr, syncErr, chmodErr, closeErr)
 }
 
-func completedMaterializationOpened(destination *os.File, ref TreeRef) (bool, error) {
+type openedMaterializationReceipt struct {
+	file     *os.File
+	stat     unix.Stat_t
+	contents string
+}
+
+func openCompletedMaterializationReceipt(destination *os.File, ref TreeRef) (*openedMaterializationReceipt, bool, error) {
+	var destinationStat unix.Stat_t
+	if err := unix.Fstat(int(destination.Fd()), &destinationStat); err != nil {
+		return nil, false, err
+	}
+	if destinationStat.Mode&unix.S_IFMT != unix.S_IFDIR || destinationStat.Mode&07777 != 0555 {
+		return nil, false, nil
+	}
+	var namedStat unix.Stat_t
+	if err := unix.Fstatat(int(destination.Fd()), materializationReceiptName, &namedStat, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		return nil, false, err
+	}
+	if namedStat.Mode&unix.S_IFMT != unix.S_IFREG || namedStat.Mode&07777 != 0444 {
+		return nil, false, nil
+	}
+	fd, err := unix.Openat(int(destination.Fd()), materializationReceiptName, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, false, err
+	}
+	file := os.NewFile(uintptr(fd), materializationReceiptName)
+	var receiptStat unix.Stat_t
+	if err := unix.Fstat(fd, &receiptStat); err != nil {
+		return nil, false, errors.Join(err, file.Close())
+	}
+	if !sameRelevantStat(&namedStat, &receiptStat) {
+		return nil, false, file.Close()
+	}
+	want, err := json.Marshal(ref)
+	if err != nil {
+		return nil, false, errors.Join(err, file.Close())
+	}
+	receipt := &openedMaterializationReceipt{file: file, stat: receiptStat, contents: string(want)}
+	exact, err := receipt.revalidate(destination)
+	if err != nil || !exact {
+		return nil, false, errors.Join(err, file.Close())
+	}
+	return receipt, true, nil
+}
+
+func (receipt *openedMaterializationReceipt) revalidate(destination *os.File) (bool, error) {
+	if receipt == nil || receipt.file == nil {
+		return false, nil
+	}
 	var destinationStat unix.Stat_t
 	if err := unix.Fstat(int(destination.Fd()), &destinationStat); err != nil {
 		return false, err
 	}
-	if destinationStat.Mode&07777 != 0555 {
+	if destinationStat.Mode&unix.S_IFMT != unix.S_IFDIR || destinationStat.Mode&07777 != 0555 {
 		return false, nil
 	}
-	fd, err := unix.Openat(int(destination.Fd()), materializationReceiptName, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
-	if err != nil {
+	var beforeRead unix.Stat_t
+	if err := unix.Fstat(int(receipt.file.Fd()), &beforeRead); err != nil {
 		return false, err
 	}
-	file := os.NewFile(uintptr(fd), materializationReceiptName)
-	var receiptStat unix.Stat_t
-	if err := unix.Fstat(fd, &receiptStat); err != nil || receiptStat.Mode&unix.S_IFMT != unix.S_IFREG || receiptStat.Mode&07777 != 0444 {
-		file.Close()
+	if !sameRelevantStat(&receipt.stat, &beforeRead) {
+		return false, nil
+	}
+	if _, err := receipt.file.Seek(0, io.SeekStart); err != nil {
 		return false, err
 	}
-	contents, readErr := io.ReadAll(io.LimitReader(file, 4097))
-	closeErr := file.Close()
-	if readErr != nil || closeErr != nil || len(contents) > 4096 {
-		return false, errors.Join(readErr, closeErr)
+	contents, readErr := io.ReadAll(io.LimitReader(receipt.file, 4097))
+	if readErr != nil {
+		return false, readErr
 	}
-	want, _ := json.Marshal(ref)
-	return string(contents) == string(want), nil
+	if len(contents) > 4096 || string(contents) != receipt.contents {
+		return false, nil
+	}
+	var afterRead unix.Stat_t
+	if err := unix.Fstat(int(receipt.file.Fd()), &afterRead); err != nil {
+		return false, err
+	}
+	if !sameRelevantStat(&receipt.stat, &afterRead) {
+		return false, nil
+	}
+	var namedStat unix.Stat_t
+	if err := unix.Fstatat(int(destination.Fd()), materializationReceiptName, &namedStat, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		return false, err
+	}
+	if !sameRelevantStat(&receipt.stat, &namedStat) {
+		return false, nil
+	}
+	same, err := sameOpenEntryAt(destination, materializationReceiptName, receipt.file)
+	if err != nil || !same {
+		return false, err
+	}
+	return true, nil
+}
+
+func completedMaterializationOpened(destination *os.File, ref TreeRef) (bool, error) {
+	receipt, exact, err := openCompletedMaterializationReceipt(destination, ref)
+	if receipt == nil {
+		return exact, err
+	}
+	return exact, errors.Join(err, receipt.file.Close())
 }
 
 func sameOpenedTree(expected, actual *os.File, duringEntry func() error) (bool, error) {
