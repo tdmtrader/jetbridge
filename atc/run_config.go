@@ -48,8 +48,6 @@ func MaterializeRunConfig(config Config, identity RunIdentity, params RunParams)
 		return RunMaterialization{}, err
 	}
 	materialized.Template = false
-	materialized.Params = nil
-	materialized.RunRetention = nil
 	clearUnpassedTriggers(materialized.Jobs)
 
 	policyKeys, err := policyKeysByMaterializedJobName(config.Jobs, materialized.Jobs)
@@ -153,22 +151,21 @@ func expectedJobNames(jobs JobConfigs, entries []string) map[string]bool {
 }
 
 func jobHasTriggeredReachableInput(job JobConfig, expected map[string]bool) bool {
+	hasTriggeredPassedInput := false
 	for _, input := range job.Inputs() {
-		if !input.Trigger || len(input.Passed) == 0 {
+		if len(input.Passed) == 0 {
 			continue
 		}
+		if input.Trigger {
+			hasTriggeredPassedInput = true
+		}
 
-		reachable := true
 		for _, passedJobName := range input.Passed {
 			if !expected[passedJobName] {
-				reachable = false
-				break
+				return false
 			}
-		}
-		if reachable {
-			return true
 		}
 	}
 
-	return false
+	return hasTriggeredPassedInput
 }

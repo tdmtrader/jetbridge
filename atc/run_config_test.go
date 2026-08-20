@@ -36,7 +36,7 @@ var _ = Describe("Run config materialization", func() {
 		Expect(config.Template).To(BeTrue())
 		Expect(config.Jobs[0].Name).To(Equal("deploy-((environment))-((run))-((run_id))"))
 		Expect(json.Valid(result.CanonicalJSON)).To(BeTrue())
-		Expect(result.CanonicalJSON).To(MatchJSON(`{"jobs":[{"name":"deploy-staging-12-99","plan":[{"task":"deploy-staging","config":{"platform":"linux","run":{"path":"echo","args":["((runtime:token))"]}}}]}]}`))
+		Expect(result.CanonicalJSON).To(MatchJSON(`{"params":[{"name":"environment","type":"string","default":"staging"}],"jobs":[{"name":"deploy-staging-12-99","plan":[{"task":"deploy-staging","config":{"platform":"linux","run":{"path":"echo","args":["((runtime:token))"]}}}]}]}`))
 	})
 
 	It("clears source triggers but preserves passed triggers in the materialized graph", func() {
@@ -80,6 +80,33 @@ var _ = Describe("Run config materialization", func() {
 			"deploy-staging": "deploy-((environment))",
 		}))
 	})
+
+	It("retains parameter declarations and run retention in the materialized config and payload", func() {
+		// This fails if materialization strips data which later run management needs
+		// to retain from its template definition.
+		keepLast := 5
+		ttlDays := 30
+		config := Config{
+			Template: true,
+			Params: []ParamSchema{{
+				Name: "environment", Type: ParamTypeString, Default: "staging",
+			}},
+			RunRetention: &RunRetentionConfig{KeepLast: &keepLast, TTLDays: &ttlDays},
+			Jobs:         JobConfigs{{Name: "entry", PlanSequence: []Step{}}},
+		}
+
+		result, err := MaterializeRunConfig(config, RunIdentity{}, RunParams{})
+
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.Config.Template).To(BeFalse())
+		Expect(result.Config.Params).To(Equal(config.Params))
+		Expect(result.Config.RunRetention).To(Equal(config.RunRetention))
+		Expect(result.CanonicalJSON).To(MatchJSON(`{
+			"params": [{"name":"environment","type":"string","default":"staging"}],
+			"run_retention": {"keep_last":5,"ttl_days":30},
+			"jobs": [{"name":"entry","plan":[]}]
+		}`))
+	})
 })
 
 var _ = Describe("Run expected jobs", func() {
@@ -102,5 +129,21 @@ var _ = Describe("Run expected jobs", func() {
 		Expect(result.ExpectedJobNames).To(Equal(map[string]bool{
 			"entry": true, "deploy-staging": true,
 		}))
+	})
+
+	It("requires every passed dependency of a triggered job to be expected", func() {
+		// This fails if a triggered get is treated as sufficient while an untriggered
+		// passed constraint would leave the job permanently manual-only.
+		result, err := MaterializeRunConfig(Config{Jobs: JobConfigs{
+			{Name: "entry", PlanSequence: []Step{{Config: &GetStep{Name: "source", Trigger: true}}}},
+			{Name: "manual", PlanSequence: []Step{{Config: &GetStep{Name: "source", Passed: []string{"entry"}}}}},
+			{Name: "deploy", PlanSequence: []Step{
+				{Config: &GetStep{Name: "source", Passed: []string{"entry"}, Trigger: true}},
+				{Config: &GetStep{Name: "other-source", Passed: []string{"manual"}}},
+			}},
+		}}, RunIdentity{}, RunParams{})
+
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.ExpectedJobNames).To(Equal(map[string]bool{"entry": true}))
 	})
 })
