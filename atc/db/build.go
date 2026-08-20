@@ -857,8 +857,9 @@ WITH RECURSIVE pipelines_to_archive AS (
 			return err
 		}
 	}
+	completedRun := false
 	if runID.Valid {
-		if _, err = attemptRunCompletion(tx, int(runID.Int64)); err != nil {
+		if completedRun, err = attemptRunCompletion(tx, int(runID.Int64)); err != nil {
 			return err
 		}
 	}
@@ -866,6 +867,9 @@ WITH RECURSIVE pipelines_to_archive AS (
 	err = tx.Commit()
 	if err != nil {
 		return err
+	}
+	if completedRun {
+		b.conn.Bus().Notify(atc.ComponentReclaimerPipelineRuns)
 	}
 
 	err = b.conn.Bus().Notify(buildEventsChannel(b.id))

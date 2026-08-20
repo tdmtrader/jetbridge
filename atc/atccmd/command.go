@@ -1498,6 +1498,7 @@ func (cmd *RunCommand) gcComponents(
 	dbBuildFactory := db.NewBuildFactory(gcConn, lockFactory, cmd.GC.OneOffBuildGracePeriod, cmd.GC.FailedGracePeriod)
 	dbResourceConfigFactory := db.NewResourceConfigFactory(gcConn, lockFactory)
 	dbPipelineLifecycle := db.NewPipelineLifecycle(gcConn, lockFactory)
+	dbPipelineRunReclaimLifecycle := db.NewPipelineRunReclaimLifecycle(gcConn)
 	dbCheckLifecycle := db.NewCheckLifecycle(gcConn)
 
 	dbVolumeRepository := db.NewVolumeRepository(gcConn)
@@ -1527,7 +1528,6 @@ func (cmd *RunCommand) gcComponents(
 		atc.ComponentCollectorChecks:            gc.NewChecksCollector(dbCheckLifecycle),
 		atc.ComponentCollectorDeprecatedScopes:  gc.NewDeprecatedScopeCollector(gcConn, cmd.GC.DeprecatedScopeGracePeriod),
 	}
-
 	var components []RunnableComponent
 	for collectorName, collector := range collectors {
 		components = append(components, RunnableComponent{
@@ -1537,8 +1537,17 @@ func (cmd *RunCommand) gcComponents(
 			Runnable: collector,
 		})
 	}
+	components = append(components, newPipelineRunReclaimerComponent(dbPipelineRunReclaimLifecycle, time.Now))
 
 	return components, nil
+}
+
+func newPipelineRunReclaimerComponent(lifecycle db.PipelineRunReclaimLifecycle, now func() time.Time) RunnableComponent {
+	return RunnableComponent{
+		Component: atc.Component{Name: atc.ComponentReclaimerPipelineRuns},
+		Runnable:  gc.NewPipelineRunReclaimer(lifecycle, now),
+		Interval:  time.Minute,
+	}
 }
 
 func (cmd *RunCommand) validateCustomRoles() error {

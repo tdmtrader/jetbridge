@@ -18,6 +18,7 @@ import (
 var _ = Describe("run build admission", func() {
 	var (
 		factory  db.PipelineRunFactory
+		template db.Pipeline
 		run      db.PipelineRun
 		payload  db.Pipeline
 		entryJob db.Job
@@ -33,7 +34,8 @@ var _ = Describe("run build admission", func() {
 
 	BeforeEach(func() {
 		factory = db.NewPipelineRunFactory(dbConn, lockFactory)
-		template, _, err := defaultTeam.SavePipeline(atc.PipelineRef{Name: "admission-template"}, atc.Config{
+		var err error
+		template, _, err = defaultTeam.SavePipeline(atc.PipelineRef{Name: "admission-template"}, atc.Config{
 			Template: true,
 			Resources: atc.ResourceConfigs{{
 				Name: "source", Type: "some-base-resource-type", Source: atc.Source{"repository": "example"},
@@ -147,11 +149,9 @@ var _ = Describe("run build admission", func() {
 	})
 
 	It("refuses a stale job after its terminal payload has been reclaimed", func() {
-		_, err := dbConn.Exec("UPDATE pipeline_runs SET status = 'succeeded', completed_at = now() WHERE id = $1", run.ID())
-		Expect(err).NotTo(HaveOccurred())
-		Expect(payload.Destroy()).To(Succeed())
+		reclaimRunPayloadForTest(template, run)
 
-		_, err = workJob.CreateBuild("after-reclaim")
+		_, err := workJob.CreateBuild("after-reclaim")
 		Expect(err).To(HaveOccurred())
 		Expect(workJob.EnsurePendingBuildExists(context.Background())).To(HaveOccurred())
 	})
@@ -196,11 +196,7 @@ var _ = Describe("run build admission", func() {
 		Expect(dbConn.QueryRow(fmt.Sprintf("SELECT count(*) FROM team_build_events_%d WHERE build_id = $1", defaultTeam.ID()), build.ID()).Scan(&count)).To(Succeed())
 		Expect(count).To(Equal(1))
 
-		_, err = dbConn.Exec("UPDATE pipeline_runs SET status = 'succeeded', completed_at = now() WHERE id = $1", run.ID())
-		Expect(err).NotTo(HaveOccurred())
-		_, err = dbConn.Exec("UPDATE builds SET job_id = NULL, pipeline_id = NULL WHERE id = $1", build.ID())
-		Expect(err).NotTo(HaveOccurred())
-		Expect(payload.Destroy()).To(Succeed())
+		reclaimRunPayloadForTest(template, run)
 
 		Expect(build.SaveEvent(event.Log{Payload: "after detach"})).To(Succeed())
 		Expect(dbConn.QueryRow(fmt.Sprintf("SELECT count(*) FROM team_build_events_%d WHERE build_id = $1", defaultTeam.ID()), build.ID()).Scan(&count)).To(Succeed())

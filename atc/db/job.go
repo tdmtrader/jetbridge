@@ -791,6 +791,7 @@ func (j *job) EnsurePendingBuildExists(ctx context.Context) error {
 	created, err := createJobBuild(tx, build, j.id, jobBuildArgs{
 		NextBuildName:   true,
 		OnlyIfNoPending: true,
+		ObservedRunID:   j.pipelineRunID,
 		Values: map[string]any{
 			"status": BuildStatusPending, "needs_v6_migration": false, "span_context": string(spanContextJSON),
 		},
@@ -863,6 +864,7 @@ func (j *job) CreateBuild(createdBy string) (_ Build, err error) {
 	_, err = createJobBuild(tx, build, j.id, jobBuildArgs{
 		NextBuildName:  true,
 		ReopenTerminal: true,
+		ObservedRunID:  j.pipelineRunID,
 		Values: map[string]any{
 			"status": BuildStatusPending, "manually_triggered": true, "created_by": createdBy,
 		},
@@ -922,7 +924,7 @@ func (j *job) tryRerunBuild(buildToRerun Build, createdBy string) (Build, error)
 		buildToRerunID = buildToRerun.RerunOf()
 	}
 
-	admission, err := lockJobBuildAdmission(tx, j.id, true)
+	admission, err := lockJobBuildAdmission(tx, j.id, j.pipelineRunID, true)
 	if err != nil {
 		return nil, err
 	}
@@ -1125,12 +1127,19 @@ func (j *job) ConsumeScheduleRequest(observed time.Time, noBuild bool) error {
 	if err != nil {
 		return err
 	}
+	completedRun := false
 	if noBuild && runID.Valid {
-		if _, err = attemptRunCompletion(tx, int(runID.Int64)); err != nil {
+		if completedRun, err = attemptRunCompletion(tx, int(runID.Int64)); err != nil {
 			return err
 		}
 	}
-	return tx.Commit()
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	if completedRun {
+		j.conn.Bus().Notify(atc.ComponentReclaimerPipelineRuns)
+	}
+	return nil
 }
 
 func (j *job) getRunningBuildsBySerialGroup(tx Tx, serialGroups []string) ([]Build, error) {

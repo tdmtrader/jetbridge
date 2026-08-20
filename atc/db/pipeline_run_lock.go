@@ -38,6 +38,7 @@ type jobBuildArgs struct {
 	NextBuildName   bool
 	OnlyIfNoPending bool
 	ReopenTerminal  bool
+	ObservedRunID   int
 }
 
 type jobBuildAdmission struct {
@@ -53,7 +54,7 @@ type jobBuildAdmission struct {
 // resolves identity in the caller transaction and treats supplied run labels
 // as untrusted input.
 func createJobBuild(tx Tx, build *build, jobID int, args jobBuildArgs) (bool, error) {
-	admission, err := lockJobBuildAdmission(tx, jobID, args.ReopenTerminal)
+	admission, err := lockJobBuildAdmission(tx, jobID, args.ObservedRunID, args.ReopenTerminal)
 	if err != nil {
 		return false, err
 	}
@@ -112,7 +113,7 @@ func createAdmittedJobBuild(tx Tx, build *build, admission jobBuildAdmission, ar
 	return true, nil
 }
 
-func lockJobBuildAdmission(tx Tx, jobID int, reopenTerminal bool) (jobBuildAdmission, error) {
+func lockJobBuildAdmission(tx Tx, jobID, hydratedRunID int, reopenTerminal bool) (jobBuildAdmission, error) {
 	var observedRunID sql.NullInt64
 	err := tx.QueryRow(`
 		SELECT p.pipeline_run_id
@@ -120,8 +121,14 @@ func lockJobBuildAdmission(tx Tx, jobID int, reopenTerminal bool) (jobBuildAdmis
 		JOIN pipelines p ON p.id = j.pipeline_id
 		WHERE j.id = $1
 	`, jobID).Scan(&observedRunID)
+	if err == sql.ErrNoRows && hydratedRunID != 0 {
+		return jobBuildAdmission{}, ErrPipelineRunPayloadGone
+	}
 	if err != nil {
 		return jobBuildAdmission{}, err
+	}
+	if hydratedRunID != 0 && (!observedRunID.Valid || int(observedRunID.Int64) != hydratedRunID) {
+		return jobBuildAdmission{}, ErrPipelineRunPayloadGone
 	}
 
 	var lockedRun PipelineRun
@@ -152,6 +159,9 @@ func lockJobBuildAdmission(tx Tx, jobID int, reopenTerminal bool) (jobBuildAdmis
 		&admission.teamID,
 		&liveRunID,
 	)
+	if err == sql.ErrNoRows && (lockedRun != nil || hydratedRunID != 0) {
+		return jobBuildAdmission{}, ErrPipelineRunPayloadGone
+	}
 	if err != nil {
 		return jobBuildAdmission{}, err
 	}

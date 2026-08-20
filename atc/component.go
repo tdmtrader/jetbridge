@@ -19,6 +19,7 @@ const (
 	ComponentCollectorVolumes           = "collector_volumes"
 	ComponentCollectorWorkers           = "collector_workers"
 	ComponentCollectorPipelines         = "collector_pipelines"
+	ComponentReclaimerPipelineRuns      = "reclaimer_pipeline_runs"
 	ComponentCollectorDeprecatedScopes  = "collector_deprecated_scopes"
 	ComponentK8sWorkerRegistrar         = "k8s_worker_registrar"
 	ComponentK8sWorkerReaper            = "k8s_worker_reaper"

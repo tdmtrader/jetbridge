@@ -333,6 +333,7 @@ func (p *pipeline) CreateJobBuild(jobName string) (Build, error) {
 	build := newEmptyBuild(p.conn, p.lockFactory)
 	_, err = createJobBuild(tx, build, jobID, jobBuildArgs{
 		NextBuildName: true,
+		ObservedRunID: p.pipelineRunID,
 		Values: map[string]any{
 			"status": BuildStatusPending, "manually_triggered": true,
 		},
@@ -750,6 +751,9 @@ func (p *pipeline) Archive() error {
 	}
 
 	defer Rollback(tx)
+	if err = rejectPipelineRunPayloadMutation(tx, p.id); err != nil {
+		return err
+	}
 	err = p.archive(tx)
 	if err != nil {
 		return err
@@ -793,37 +797,52 @@ func (p *pipeline) archive(tx Tx) error {
 }
 
 func (p *pipeline) Hide() error {
-	_, err := psql.Update("pipelines").
-		Set("public", false).
-		Where(sq.Eq{
-			"id": p.id,
-		}).
-		RunWith(p.conn).
-		Exec()
-
-	return err
+	return p.setPublic(false)
 }
 
 func (p *pipeline) Expose() error {
-	_, err := psql.Update("pipelines").
-		Set("public", true).
-		Where(sq.Eq{
-			"id": p.id,
-		}).
-		RunWith(p.conn).
-		Exec()
+	return p.setPublic(true)
+}
 
-	return err
+func (p *pipeline) setPublic(public bool) error {
+	tx, err := p.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer Rollback(tx)
+	if err = rejectPipelineRunPayloadMutation(tx, p.id); err != nil {
+		return err
+	}
+	if _, err = psql.Update("pipelines").Set("public", public).Where(sq.Eq{"id": p.id}).RunWith(tx).Exec(); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (p *pipeline) Destroy() error {
-	_, err := psql.Delete("pipelines").
-		Where(sq.Eq{
-			"id": p.id,
-		}).
-		RunWith(p.conn).
-		Exec()
+	tx, err := p.conn.Begin()
 	if err != nil {
+		return err
+	}
+	defer Rollback(tx)
+	if err = rejectPipelineRunPayloadMutation(tx, p.id); err != nil {
+		return err
+	}
+	var template, hasRuns bool
+	err = tx.QueryRow(`
+		SELECT template, EXISTS (SELECT 1 FROM pipeline_runs WHERE template_pipeline_id = pipelines.id)
+		FROM pipelines WHERE id = $1 FOR UPDATE
+	`, p.id).Scan(&template, &hasRuns)
+	if err != nil {
+		return err
+	}
+	if template && hasRuns {
+		return ErrPipelineTemplateHasRunHistory
+	}
+	if _, err = psql.Delete("pipelines").Where(sq.Eq{"id": p.id}).RunWith(tx).Exec(); err != nil {
+		return err
+	}
+	if err = tx.Commit(); err != nil {
 		return err
 	}
 

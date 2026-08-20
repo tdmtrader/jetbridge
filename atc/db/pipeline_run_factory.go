@@ -158,6 +158,7 @@ func (f *pipelineRunFactory) CreateRunInTx(_ context.Context, tx Tx, base Pipeli
 		build := newEmptyBuild(f.conn, f.lockFactory)
 		created, err := createJobBuild(tx, build, jobID, jobBuildArgs{
 			NextBuildName: true,
+			ObservedRunID: runID,
 			Values: map[string]any{
 				"status": BuildStatusPending, "manually_triggered": true, "created_by": createdBy,
 			},

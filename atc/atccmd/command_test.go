@@ -3,9 +3,11 @@ package atccmd_test
 import (
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/atccmd"
+	"github.com/concourse/concourse/atc/db"
 	"github.com/jessevdk/go-flags"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
@@ -73,6 +75,21 @@ func (s *CommandSuite) TestBuildTrackerIntervalFlagRemoved() {
 	opt := runCmd.FindOptionByLongName("build-tracker-interval")
 	s.Nil(opt, "--build-tracker-interval should not exist; build tracker is notification-only")
 }
+
+func (s *CommandSuite) TestPipelineRunReclaimerComponentIsBoundedAndPeriodic() {
+	component := atccmd.NewPipelineRunReclaimerComponentForTest(commandRunReclaimLifecycle{}, time.Now)
+	s.Equal(atc.ComponentReclaimerPipelineRuns, component.Component.Name)
+	s.Equal(time.Minute, component.Interval)
+	s.NotNil(component.Runnable)
+}
+
+type commandRunReclaimLifecycle struct{}
+
+func (commandRunReclaimLifecycle) ReclaimCandidateRunIDs(int) ([]int, error) { return nil, nil }
+func (commandRunReclaimLifecycle) DestroyReclaimableRun(int) (bool, error)   { return false, nil }
+func (commandRunReclaimLifecycle) DeferRunReclaim(int, time.Time) error      { return nil }
+
+var _ db.PipelineRunReclaimLifecycle = commandRunReclaimLifecycle{}
 
 func (s *CommandSuite) TestKubernetesFieldsExistOnRunCommand() {
 	cmd := &atccmd.RunCommand{}
