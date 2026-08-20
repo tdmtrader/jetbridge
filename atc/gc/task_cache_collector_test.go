@@ -41,9 +41,9 @@ var _ = Describe("TaskCacheCollector", func() {
 				builder.WithPipeline(atc.Config{Jobs: []atc.JobConfig{{Name: "surviving-job"}}}),
 			)
 
-			doomed, err := taskCacheFactory.FindOrCreate(archived.Job("doomed-job").ID(), "some-step", "some-path")
+			doomed, err := taskCacheFactory.FindOrCreate(atc.TaskCacheIdentity{JobID: archived.Job("doomed-job").ID()}, "some-step", "some-path")
 			Expect(err).NotTo(HaveOccurred())
-			surviving, err := taskCacheFactory.FindOrCreate(live.Job("surviving-job").ID(), "some-step", "some-path")
+			surviving, err := taskCacheFactory.FindOrCreate(atc.TaskCacheIdentity{JobID: live.Job("surviving-job").ID()}, "some-step", "some-path")
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(archived.Pipeline.Archive()).To(Succeed())

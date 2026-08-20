@@ -1,8 +1,10 @@
 package db
 
+import "github.com/concourse/concourse/atc"
+
 type TaskCacheFactory interface {
-	Find(jobID int, stepName string, path string) (UsedTaskCache, bool, error)
-	FindOrCreate(jobID int, stepName string, path string) (UsedTaskCache, error)
+	Find(identity atc.TaskCacheIdentity, stepName string, path string) (UsedTaskCache, bool, error)
+	FindOrCreate(identity atc.TaskCacheIdentity, stepName string, path string) (UsedTaskCache, error)
 }
 
 type taskCacheFactory struct {
@@ -15,15 +17,21 @@ func NewTaskCacheFactory(conn DbConn) TaskCacheFactory {
 	}
 }
 
-func (f *taskCacheFactory) Find(jobID int, stepName string, path string) (UsedTaskCache, bool, error) {
+func (f *taskCacheFactory) Find(identity atc.TaskCacheIdentity, stepName string, path string) (UsedTaskCache, bool, error) {
+	if err := identity.Validate(); err != nil {
+		return nil, false, err
+	}
 	return usedTaskCache{
-		jobID:    jobID,
+		identity: identity,
 		stepName: stepName,
 		path:     path,
 	}.find(f.conn)
 }
 
-func (f *taskCacheFactory) FindOrCreate(jobID int, stepName string, path string) (UsedTaskCache, error) {
+func (f *taskCacheFactory) FindOrCreate(identity atc.TaskCacheIdentity, stepName string, path string) (UsedTaskCache, error) {
+	if err := identity.Validate(); err != nil {
+		return nil, err
+	}
 	tx, err := f.conn.Begin()
 	if err != nil {
 		return nil, err
@@ -32,7 +40,7 @@ func (f *taskCacheFactory) FindOrCreate(jobID int, stepName string, path string)
 	defer Rollback(tx)
 
 	utc, err := usedTaskCache{
-		jobID:    jobID,
+		identity: identity,
 		stepName: stepName,
 		path:     path,
 	}.findOrCreate(tx)

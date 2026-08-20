@@ -161,7 +161,7 @@ type CreatedVolume interface {
 	InitializeStreamedResourceCache(ResourceCache, int) (*UsedWorkerResourceCache, error)
 	GetResourceCacheID() int
 	InitializeArtifact(name string, buildID int) (WorkerArtifact, error)
-	InitializeTaskCache(jobID int, stepName string, path string) error
+	InitializeTaskCache(identity atc.TaskCacheIdentity, stepName string, path string) error
 
 	ContainerHandle() string
 	ParentHandle() string
@@ -545,7 +545,10 @@ func initializeArtifact(conn DbConn, volumeID int, name string, buildID int) (Wo
 	return workerArtifact, nil
 }
 
-func (volume *createdVolume) InitializeTaskCache(jobID int, stepName string, path string) error {
+func (volume *createdVolume) InitializeTaskCache(identity atc.TaskCacheIdentity, stepName string, path string) error {
+	if err := identity.Validate(); err != nil {
+		return err
+	}
 	tx, err := volume.conn.Begin()
 	if err != nil {
 		return err
@@ -554,7 +557,7 @@ func (volume *createdVolume) InitializeTaskCache(jobID int, stepName string, pat
 	defer Rollback(tx)
 
 	usedTaskCache, err := usedTaskCache{
-		jobID:    jobID,
+		identity: identity,
 		stepName: stepName,
 		path:     path,
 	}.findOrCreate(tx)

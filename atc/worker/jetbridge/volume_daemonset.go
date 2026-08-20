@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/compression"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runtime"
@@ -259,7 +260,7 @@ func (v *DaemonSetVolume) InitializeTaskCache(ctx context.Context, jobID int, st
 	if v.dbVolume == nil {
 		return nil
 	}
-	return v.dbVolume.InitializeTaskCache(jobID, stepName, path)
+	return v.dbVolume.InitializeTaskCache(atc.TaskCacheIdentity{JobID: jobID}, stepName, path)
 }
 
 // fetchArtifactWithPeerFallback gets the artifact tar from the recorded

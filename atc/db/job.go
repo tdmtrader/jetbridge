@@ -20,6 +20,7 @@ import (
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db/lock"
 	"github.com/concourse/concourse/tracing"
+	"github.com/concourse/concourse/vars"
 )
 
 type InputConfigs []InputConfig
@@ -70,6 +71,7 @@ type Job interface {
 	DisableManualTrigger() bool
 	RunExpected() bool
 	RunPolicyKey() string
+	TaskCacheIdentity() (atc.TaskCacheIdentity, error)
 
 	Config() (atc.JobConfig, error)
 	Inputs() ([]atc.JobInput, error)
@@ -149,6 +151,14 @@ type FirstLoggedBuildIDDecreasedError struct {
 	Job   string
 	OldID int
 	NewID int
+}
+
+type TaskCacheIdentityConflictError struct {
+	JobName string
+}
+
+func (e TaskCacheIdentityConflictError) Error() string {
+	return fmt.Sprintf("task cache for interpolated template job %q must be cleared from a live run job", e.JobName)
 }
 
 func (e FirstLoggedBuildIDDecreasedError) Error() string {
@@ -239,6 +249,25 @@ func (j *job) MaxInFlight() int                 { return j.maxInFlight }
 func (j *job) DisableManualTrigger() bool       { return j.disableManualTrigger }
 func (j *job) RunExpected() bool                { return j.runExpected }
 func (j *job) RunPolicyKey() string             { return j.runPolicyKey }
+
+func (j *job) TaskCacheIdentity() (atc.TaskCacheIdentity, error) {
+	if j.basePipelineID != 0 {
+		return atc.TaskCacheIdentity{TeamID: j.teamID, TemplatePipelineID: j.basePipelineID, RunJobName: j.name}, nil
+	}
+
+	pipeline, found, err := j.Pipeline()
+	if err != nil {
+		return atc.TaskCacheIdentity{}, err
+	}
+	if found && pipeline.Template() {
+		if len(vars.NewTemplate([]byte(j.name)).ExtraVarNames()) != 0 {
+			return atc.TaskCacheIdentity{}, TaskCacheIdentityConflictError{JobName: j.name}
+		}
+		return atc.TaskCacheIdentity{TeamID: j.teamID, TemplatePipelineID: j.pipelineID, RunJobName: j.name}, nil
+	}
+
+	return atc.TaskCacheIdentity{JobID: j.id}, nil
+}
 
 func (j *job) LatestCompletedBuildId() (int, error) {
 	var id int
@@ -934,6 +963,10 @@ func (j *job) tryRerunBuild(buildToRerun Build, createdBy string) (Build, error)
 }
 
 func (j *job) ClearTaskCache(stepName string, cachePath string) (int64, error) {
+	identity, err := j.TaskCacheIdentity()
+	if err != nil {
+		return 0, err
+	}
 	tx, err := j.conn.Begin()
 	if err != nil {
 		return 0, err
@@ -941,11 +974,12 @@ func (j *job) ClearTaskCache(stepName string, cachePath string) (int64, error) {
 
 	defer Rollback(tx)
 
-	var sqlBuilder = psql.Delete("task_caches").
-		Where(sq.Eq{
-			"job_id":    j.id,
-			"step_name": stepName,
-		})
+	var sqlBuilder = psql.Delete("task_caches").Where(sq.Eq{"step_name": stepName})
+	if identity.JobID != 0 {
+		sqlBuilder = sqlBuilder.Where(sq.Eq{"job_id": identity.JobID})
+	} else {
+		sqlBuilder = sqlBuilder.Where(sq.Eq{"template_pipeline_id": identity.TemplatePipelineID, "run_job_name": identity.RunJobName})
+	}
 
 	if len(cachePath) > 0 {
 		sqlBuilder = sqlBuilder.Where(sq.Eq{"path": cachePath})
