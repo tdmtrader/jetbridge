@@ -150,7 +150,21 @@ func (s *Server) handleHangarOpen(w http.ResponseWriter, r *http.Request) {
 }
 
 func normalizeHangarIOError(err error) error {
-	if err == nil || hangarTypedError(err) {
+	if err == nil {
+		return nil
+	}
+	if multi, ok := err.(interface{ Unwrap() []error }); ok {
+		children := multi.Unwrap()
+		if len(children) == 0 {
+			return errors.Join(hangar.ErrInfrastructure, err)
+		}
+		normalized := make([]error, 0, len(children))
+		for _, child := range children {
+			normalized = append(normalized, normalizeHangarIOError(child))
+		}
+		return errors.Join(normalized...)
+	}
+	if hangarTypedError(err) {
 		return err
 	}
 	return errors.Join(hangar.ErrInfrastructure, err)
