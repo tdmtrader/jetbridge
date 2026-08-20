@@ -1,6 +1,11 @@
-//go:build live
+//go:build live || hangar_live
 
 package jetbridge
+
+// The repository-wide live tag retains this contract alongside the older live
+// suite. The narrower hangar_live tag lets CI compile and run this internal
+// generated-Pod contract independently while that external suite finishes its
+// PostgreSQL harness migration.
 
 import (
 	"context"

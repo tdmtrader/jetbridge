@@ -186,6 +186,12 @@ type Config struct {
 	// on each node when using the DaemonSet backend.
 	ArtifactDaemonHostPath string
 
+	// ArtifactDaemonNamespace is the namespace the artifact daemon runs in,
+	// when that differs from the namespace this config schedules pods into.
+	// It only affects which SAN the daemon's server certificate is verified
+	// against; empty means the daemon shares Namespace.
+	ArtifactDaemonNamespace string
+
 	// ArtifactDaemonService is the headless Service name for per-pod DNS
 	// resolution of the DaemonSet pods.
 	ArtifactDaemonService string

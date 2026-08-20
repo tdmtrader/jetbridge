@@ -139,6 +139,11 @@ func TestDaemonTLSServerName(t *testing.T) {
 	if got, want := daemonTLSServerName(testDaemonConfig()), "artifact-daemon.test-ns.svc"; got != want {
 		t.Errorf("expected ServerName %q, got %q", want, got)
 	}
+	separateDaemonNamespace := testDaemonConfig()
+	separateDaemonNamespace.ArtifactDaemonNamespace = "cicd"
+	if got, want := daemonTLSServerName(separateDaemonNamespace), "artifact-daemon.cicd.svc"; got != want {
+		t.Errorf("expected daemon-namespace ServerName %q, got %q", want, got)
+	}
 	empty := testDaemonConfig()
 	empty.ArtifactDaemonService = ""
 	if got := daemonTLSServerName(empty); got != "" {

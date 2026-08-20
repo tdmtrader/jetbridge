@@ -29,15 +29,18 @@ generation reads. It implements both official-client upload forms encountered
 by the suite and rejects unexpected requests.
 
 `TestLiveHangarGeneratedPodMaterializesStrictTree` is guarded by the existing
-`live` build tag and additionally skips Darwin and missing `KUBECONFIG`. In a
-Linux/K3s environment it generates a Pod through `Container.buildPod`, proves
-every init/main mount resolves to a Pod Volume, checks both required readiness
-affinities and the read-only strict mount, and runs the generated BusyBox init
-and task container against a same-node BusyBox daemon fixture. The task checks
-tree contents, types, modes, mutation failure, symlink target, and exact
-receipt. It was intentionally not executed on macOS. The existing live harness
-does not provide a reusable failure-injection fixture, so daemon-level tests
-own the absent/corrupt/replacement failure matrix.
+`live` build tag and the narrower `hangar_live` tag, and additionally skips
+Darwin and missing `KUBECONFIG`. The narrow tag keeps this internal-package
+contract independently runnable while the older external live suite has an
+unrelated PostgreSQL fixture migration gap. In a Linux/K3s environment it
+generates a Pod through `Container.buildPod`, proves every init/main mount
+resolves to a Pod Volume, checks both required readiness affinities and the
+read-only strict mount, and runs the generated BusyBox init and task container
+against a same-node BusyBox daemon fixture. The task checks tree contents,
+types, modes, mutation failure, symlink target, and exact receipt. It was
+intentionally not executed on macOS. The existing live harness does not
+provide a reusable failure-injection fixture, so daemon-level tests own the
+absent/corrupt/replacement failure matrix.
 
 ## RED and narrow fix
 
@@ -114,6 +117,12 @@ $ env GOCACHE=/private/tmp/hangar-task8-gocache go test ./cmd/artifact-daemon -r
 exit 0
 ok github.com/concourse/concourse/cmd/artifact-daemon 0.582s
 
+$ env GOCACHE=/private/tmp/hangar-root-gocache go test -tags hangar_live ./atc/worker/jetbridge -run '^TestLiveHangarGeneratedPodMaterializesStrictTree$' -count=1 -v
+exit 0
+--- SKIP: TestLiveHangarGeneratedPodMaterializesStrictTree (0.00s)
+PASS
+ok github.com/concourse/concourse/atc/worker/jetbridge 0.600s
+
 $ git diff --check
 exit 0
 ```
@@ -123,20 +132,21 @@ plain `go test ./...` was used.
 
 ## Truthful live/CI gap
 
-The local compile-only probe of the existing live test package was:
+The local compile-only probe of the repository-wide live test package was:
 
 ```text
 $ go test -tags live ./atc/worker/jetbridge -run '^$' -count=1
 exit 1
-atc/worker/jetbridge/live_test.go:25:47: undefined: postgresrunner.StandardTestRunner
-atc/worker/jetbridge/live_test.go:195:6: cfg.ArtifactDaemonNamespace undefined
+atc/worker/jetbridge/live_test.go:25:39: undefined: postgresrunner.StandardTestRunner
 ```
 
-Both diagnostics are in the pre-existing `live_test.go`; the new live Hangar
-test produced no compiler diagnostic. This known stale harness surface must be
-repaired by its owner before CI can compile and execute the live contract. No
-K3s cluster was started locally, consistent with the repository's macOS
-constraint.
+The historical live port omitted two companion dependencies. This branch
+restores the small, production-correct daemon-namespace TLS SAN override and
+its unit test. Its larger real-DB port still references a
+`StandardTestRunner` from a divergent PostgreSQL-runner architecture, so the
+unrelated broad suite remains blocked. The Hangar contract itself compiles and
+is independently selectable with `-tags hangar_live`, as proved above. No K3s
+cluster was started locally, consistent with the repository's macOS constraint.
 
 The first sandboxed `go test ./hangar` attempt also exited 1 because the
 sandbox denied `httptest` loopback binding. The identical approved loopback
