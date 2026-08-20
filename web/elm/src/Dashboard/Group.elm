@@ -19,6 +19,7 @@ import Dashboard.Models exposing (DragState(..), DropState(..))
 import Dashboard.Pipeline as Pipeline
 import Dashboard.Styles as Styles
 import Dict exposing (Dict)
+import HoverState
 import Html exposing (Html)
 import Html.Attributes exposing (attribute, class, classList, draggable, id, style)
 import Html.Events exposing (on, preventDefaultOn, stopPropagationOn)
@@ -267,7 +268,7 @@ hdView :
     , dashboardView : Routes.DashboardView
     , query : String
     }
-    -> { a | userState : UserState, pipelineRunningKeyframes : String }
+    -> { a | hovered : HoverState.HoverState, userState : UserState, pipelineRunningKeyframes : String }
     -> Section Card
     -> List (Html Message)
 hdView { pipelinesWithResourceErrors, pipelineJobs, jobs, dashboardView, query } session { teamName, cards, header } =
