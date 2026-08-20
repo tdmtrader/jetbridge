@@ -6,7 +6,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"sync"
 
 	sq "github.com/Masterminds/squirrel"
 	"github.com/concourse/concourse/atc"
@@ -42,7 +41,6 @@ type PipelineRunFactory interface {
 type pipelineRunFactory struct {
 	conn        DbConn
 	lockFactory lock.LockFactory
-	notified    sync.Map
 }
 
 func NewPipelineRunFactory(conn DbConn, lockFactory lock.LockFactory) PipelineRunFactory {
@@ -62,9 +60,9 @@ func (f *pipelineRunFactory) CreateRun(ctx context.Context, base Pipeline, param
 	if err = tx.Commit(); err != nil {
 		return RunCreation{}, err
 	}
-	if err = f.AfterRunCreated(ctx, creation); err != nil {
-		return RunCreation{}, err
-	}
+	// A committed run is durable even if the best-effort wakeup is unavailable.
+	// Component polling recovers missed notifications.
+	_ = f.AfterRunCreated(ctx, creation)
 	return creation, nil
 }
 
@@ -83,11 +81,11 @@ func (f *pipelineRunFactory) CreateRunInTx(_ context.Context, tx Tx, base Pipeli
 	if !locked.Template() {
 		return RunCreation{}, ErrPipelineRunNotTemplate
 	}
-	if locked.Paused() {
-		return RunCreation{}, ErrPipelineRunPaused
-	}
 	if locked.Archived() {
 		return RunCreation{}, ErrPipelineRunArchived
+	}
+	if locked.Paused() {
+		return RunCreation{}, ErrPipelineRunPaused
 	}
 
 	effective, err := f.effectiveConfig(tx, locked, opts.Config)
@@ -121,6 +119,8 @@ func (f *pipelineRunFactory) CreateRunInTx(_ context.Context, tx Tx, base Pipeli
 		return RunCreation{}, err
 	}
 	run := &pipelineRun{id: runID, templatePipelineID: locked.ID(), number: number, params: atc.Params(normalized), status: atc.RunStatusRunning, createdBy: createdBy, configHash: hashText}
+	// Keep the header timestamp projection local to this insert: Task 3's
+	// completed_at schema follow-up changes this compatibility seam.
 	if err = tx.QueryRow(`INSERT INTO pipeline_runs (id, template_pipeline_id, number, params, status, created_by, config_hash)
 		VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING created_at, updated_at`, runID, locked.ID(), number, paramsJSON, atc.RunStatusRunning, createdBy, hashText).Scan(&run.createdAt, &run.updatedAt); err != nil {
 		return RunCreation{}, err
@@ -158,6 +158,16 @@ func (f *pipelineRunFactory) CreateRunInTx(_ context.Context, tx Tx, base Pipeli
 			"manually_triggered": true, "created_by": createdBy, "pipeline_run_id": runID, "run_job_name": name, "run_job_key": metadata.policyKey,
 		})
 		if err != nil {
+			return RunCreation{}, err
+		}
+		latestNonRerunID, err := latestCompletedNonRerunBuild(tx, jobID)
+		if err != nil {
+			return RunCreation{}, err
+		}
+		if err = updateNextBuildForJob(tx, jobID, latestNonRerunID); err != nil {
+			return RunCreation{}, err
+		}
+		if err = requestSchedule(tx, jobID); err != nil {
 			return RunCreation{}, err
 		}
 		entryBuilds = append(entryBuilds, build)
@@ -258,14 +268,7 @@ func (f *pipelineRunFactory) allocateNumber(tx Tx, base *pipeline) (int, error) 
 }
 
 func (f *pipelineRunFactory) AfterRunCreated(_ context.Context, creation RunCreation) error {
-	if _, loaded := f.notified.LoadOrStore(creation.Run.ID(), struct{}{}); loaded {
-		return nil
-	}
-	if err := f.conn.Bus().Notify(atc.ComponentBuildTracker); err != nil {
-		f.notified.Delete(creation.Run.ID())
-		return err
-	}
-	return nil
+	return f.conn.Bus().Notify(atc.ComponentBuildTracker)
 }
 
 func (f *pipelineRunFactory) GetRun(base Pipeline, number int) (PipelineRun, bool, error) {
@@ -288,22 +291,84 @@ func (f *pipelineRunFactory) getRun(row scannable) (PipelineRun, bool, error) {
 }
 
 func (f *pipelineRunFactory) Runs(base Pipeline, page Page) ([]PipelineRun, Pagination, error) {
-	query := pipelineRunsQuery.Where(sq.Eq{"r.template_pipeline_id": base.ID()}).OrderBy("r.number DESC")
-	if page.Limit > 0 {
-		query = query.Limit(uint64(page.Limit))
+	if page.From != nil && page.To != nil && *page.From > *page.To {
+		return nil, Pagination{}, fmt.Errorf("invalid range boundaries")
 	}
-	rows, err := query.RunWith(f.conn).Query()
+	tx, err := f.conn.Begin()
 	if err != nil {
 		return nil, Pagination{}, err
+	}
+	defer Rollback(tx)
+
+	original := pipelineRunsQuery.Where(sq.Eq{"r.template_pipeline_id": base.ID()})
+	query, reverse := original.Limit(uint64(page.Limit)), false
+	switch {
+	case page.From == nil && page.To == nil:
+		query = query.OrderBy("r.number DESC")
+	case page.From != nil && page.To == nil:
+		query = query.Where(sq.GtOrEq{"r.number": *page.From}).OrderBy("r.number ASC")
+		reverse = true
+	case page.From == nil && page.To != nil:
+		query = query.Where(sq.LtOrEq{"r.number": *page.To}).OrderBy("r.number DESC")
+	default:
+		query = query.Where(sq.GtOrEq{"r.number": *page.From}).Where(sq.LtOrEq{"r.number": *page.To}).OrderBy("r.number ASC")
+		reverse = true
+	}
+	runs, err := f.queryRuns(tx, query)
+	if err != nil {
+		return nil, Pagination{}, err
+	}
+	if reverse {
+		for i, j := 0, len(runs)-1; i < j; i, j = i+1, j-1 {
+			runs[i], runs[j] = runs[j], runs[i]
+		}
+	}
+	if len(runs) == 0 {
+		return runs, Pagination{}, tx.Commit()
+	}
+
+	pagination := Pagination{}
+	oldest, newest := runs[len(runs)-1].Number(), runs[0].Number()
+	if older, err := f.queryOneRun(tx, original.Where(sq.Lt{"r.number": oldest}).OrderBy("r.number DESC").Limit(1)); err != nil {
+		return nil, Pagination{}, err
+	} else if older != nil {
+		pagination.Older = &Page{To: NewIntPtr(older.Number()), Limit: page.Limit}
+	}
+	if newer, err := f.queryOneRun(tx, original.Where(sq.Gt{"r.number": newest}).OrderBy("r.number ASC").Limit(1)); err != nil {
+		return nil, Pagination{}, err
+	} else if newer != nil {
+		pagination.Newer = &Page{From: NewIntPtr(newer.Number()), Limit: page.Limit}
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, Pagination{}, err
+	}
+	return runs, pagination, nil
+}
+
+func (f *pipelineRunFactory) queryRuns(tx Tx, query sq.SelectBuilder) ([]PipelineRun, error) {
+	rows, err := query.RunWith(tx).Query()
+	if err != nil {
+		return nil, err
 	}
 	defer Close(rows)
 	var runs []PipelineRun
 	for rows.Next() {
 		run := &pipelineRun{}
 		if err := scanPipelineRun(run, rows); err != nil {
-			return nil, Pagination{}, err
+			return nil, err
 		}
 		runs = append(runs, run)
 	}
-	return runs, Pagination{}, rows.Err()
+	return runs, rows.Err()
+}
+
+func (f *pipelineRunFactory) queryOneRun(tx Tx, query sq.SelectBuilder) (PipelineRun, error) {
+	run := &pipelineRun{}
+	if err := scanPipelineRun(run, query.RunWith(tx).QueryRow()); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return run, nil
 }
