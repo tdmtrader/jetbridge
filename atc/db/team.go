@@ -1440,6 +1440,9 @@ func scanPipeline(p *pipeline, scan scannable) error {
 		if err := json.Unmarshal([]byte(params.String), &p.params); err != nil {
 			return err
 		}
+		if len(p.params) == 0 {
+			p.params = nil
+		}
 	}
 	if keepLast.Valid || ttlDays.Valid {
 		p.runRetention = &atc.RunRetentionConfig{}

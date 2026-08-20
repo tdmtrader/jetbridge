@@ -272,7 +272,12 @@ func (f *pipelineRunFactory) allocateNumber(tx Tx, base *pipeline) (int, error) 
 }
 
 func (f *pipelineRunFactory) AfterRunCreated(_ context.Context, creation RunCreation) error {
-	return f.conn.Bus().Notify(atc.ComponentBuildTracker)
+	scannerErr := f.conn.Bus().Notify(atc.ComponentLidarScanner)
+	schedulerErr := f.conn.Bus().Notify(atc.ComponentScheduler)
+	if scannerErr != nil {
+		return scannerErr
+	}
+	return schedulerErr
 }
 
 func (f *pipelineRunFactory) GetRun(base Pipeline, number int) (PipelineRun, bool, error) {
