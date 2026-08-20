@@ -131,3 +131,55 @@ ok  github.com/concourse/concourse/hangar                        1.074s
 ```
 
 Fix commit subject: `fix(artifact-daemon): close Hangar service boundaries`.
+
+## Fix round 2: preserve fail-closed daemon state
+
+Scoped review of `2a82eb9117..c0c08969db` was not approved. New regression tests were added before the implementation changes. The first RED run showed that the required startup-composition seam did not yet exist (and also caught a mistaken test assumption that the durable GCS wrapper owned a public `Close` method):
+
+```text
+$ env GOCACHE=/private/tmp/hangar-task5-gocache go test ./cmd/artifact-daemon -run 'TestHangar(OpenClassifiesReadAndCloseFailuresTogether|LabelCollisionClearsStaleReadinessBeforeRejection|LabelPreparationFailureRetriesCentralCleanup|CleanupRemovesLabelsThenClosesClient|AndDurableGCSShareRootEndpointAndValidateBucket)$' -count=1
+cmd/artifact-daemon/hangar_test.go:911:87: too many arguments in call to prepareDaemonLabels
+cmd/artifact-daemon/hangar_test.go:932:101: too many arguments in call to prepareDaemonLabels
+cmd/artifact-daemon/hangar_test.go:945:101: too many arguments in call to prepareDaemonLabels
+cmd/artifact-daemon/hangar_test.go:816:21: durableStore.Close undefined
+FAIL github.com/concourse/concourse/cmd/artifact-daemon [build failed]
+```
+
+After adding the composition seam, the strengthened shared-endpoint test also failed rather than accepting the old fail-open miss:
+
+```text
+--- FAIL: TestHangarAndDurableGCSShareRootEndpointAndValidateBucket
+    durable stat found=false err=<nil> paths=[GET /storage/v1/b/bucket GET /b/bucket/o/resource-caches%2Fshared]
+FAIL
+```
+
+Fixes and self-review:
+
+- GET always closes the opened tree and normalizes read and close errors independently, joins them, then applies the established fail-closed status precedence once. Infrastructure/context or untyped local I/O now outranks absence, corruption, and conflict in compound failures, and no success headers or bytes are emitted.
+- Node-label startup now creates the Kubernetes client and Hangar label identity, clears stale Hangar readiness, and only then validates a colliding legacy key. A preparation error performs centralized best-effort removal of both daemon-owned labels before returning. With no node identity configured, legacy no-label startup remains unchanged.
+- Cleanup coverage observes the actual patch sequence and asserts Hangar readiness removal, legacy readiness removal, HTTP shutdown, then strict-client close.
+- The shared custom endpoint test now asserts the two exact wire paths: Hangar JSON bucket validation at `/storage/v1/b/bucket` and a successful durable XML body read at `/bucket/resource-caches%2Fshared`. It reads and closes the returned durable object and verifies its bytes, rather than treating a fail-open miss as evidence.
+- Reviewed the scoped diff for cache semantics: no durable implementation or legacy handler was changed.
+
+Final fix-round verification:
+
+```text
+$ gofmt -w cmd/artifact-daemon/hangar.go cmd/artifact-daemon/hangar_handlers.go cmd/artifact-daemon/main.go cmd/artifact-daemon/hangar_test.go
+
+$ env GOCACHE=/private/tmp/hangar-task5-gocache go test ./cmd/artifact-daemon -run Hangar -count=1
+ok  github.com/concourse/concourse/cmd/artifact-daemon  0.634s
+
+$ env GOCACHE=/private/tmp/hangar-task5-gocache go test ./cmd/artifact-daemon/... ./hangar/... -count=1
+ok  github.com/concourse/concourse/cmd/artifact-daemon          57.745s
+ok  github.com/concourse/concourse/cmd/artifact-daemon/durable   4.262s
+ok  github.com/concourse/concourse/hangar                        2.010s
+
+$ git diff --check
+# exit 0, no output
+```
+
+Files changed in this round: `cmd/artifact-daemon/hangar.go`, `cmd/artifact-daemon/hangar_handlers.go`, `cmd/artifact-daemon/main.go`, `cmd/artifact-daemon/hangar_test.go`, and this report.
+
+Fix commit subject: `fix(artifact-daemon): preserve fail-closed daemon state`.
+
+Local gap: the lifecycle tests use the Kubernetes fake client and listener/server callbacks; no live Kubernetes node was mutated. The full local suites otherwise pass, with loopback permission required for `httptest` listeners.

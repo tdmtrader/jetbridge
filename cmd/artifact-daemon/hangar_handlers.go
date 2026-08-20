@@ -123,20 +123,9 @@ func (s *Server) handleHangarOpen(w http.ResponseWriter, r *http.Request) {
 	hasher := sha256.New()
 	n, copyErr := io.Copy(io.MultiWriter(spool, hasher), io.LimitReader(reader, service.MaxArchiveBytes+1))
 	closeErr := reader.Close()
-	if copyErr != nil {
-		if hangarTypedError(copyErr) {
-			s.refuseHangar(w, r, copyErr)
-		} else {
-			s.refuseHangar(w, r, hangar.ErrInfrastructure)
-		}
-		return
-	}
-	if closeErr != nil {
-		if hangarTypedError(closeErr) {
-			s.refuseHangar(w, r, closeErr)
-		} else {
-			s.refuseHangar(w, r, hangar.ErrInfrastructure)
-		}
+	streamErr := errors.Join(normalizeHangarIOError(copyErr), normalizeHangarIOError(closeErr))
+	if streamErr != nil {
+		s.refuseHangar(w, r, streamErr)
 		return
 	}
 	if n > service.MaxArchiveBytes {
@@ -158,6 +147,13 @@ func (s *Server) handleHangarOpen(w http.ResponseWriter, r *http.Request) {
 	if _, err := io.Copy(w, spool); err != nil {
 		panic(http.ErrAbortHandler)
 	}
+}
+
+func normalizeHangarIOError(err error) error {
+	if err == nil || hangarTypedError(err) {
+		return err
+	}
+	return errors.Join(hangar.ErrInfrastructure, err)
 }
 
 func hangarRefFromRequest(r *http.Request) (hangar.TreeRef, error) {

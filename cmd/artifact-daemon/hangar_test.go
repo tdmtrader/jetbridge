@@ -24,8 +24,11 @@ import (
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 
+	"github.com/concourse/concourse/cmd/artifact-daemon/durable"
 	"github.com/concourse/concourse/hangar"
 )
 
@@ -246,6 +249,44 @@ type hangarErrorReader struct{ err error }
 
 func (reader hangarErrorReader) Read([]byte) (int, error) { return 0, reader.err }
 func (hangarErrorReader) Close() error                    { return nil }
+
+type hangarReadCloseErrorReader struct {
+	readErr  error
+	closeErr error
+}
+
+func (reader hangarReadCloseErrorReader) Read([]byte) (int, error) { return 0, reader.readErr }
+func (reader hangarReadCloseErrorReader) Close() error             { return reader.closeErr }
+
+func TestHangarOpenClassifiesReadAndCloseFailuresTogether(t *testing.T) {
+	digest := hangar.Digest("sha256:" + strings.Repeat("d", 64))
+	ref := hangar.TreeRef{Scope: "ci", Digest: digest, Generation: 6}
+	for _, tc := range []struct {
+		name     string
+		readErr  error
+		closeErr error
+	}{
+		{"not-found-read-infrastructure-close", hangar.ErrNotFound, hangar.ErrInfrastructure},
+		{"corrupt-read-context-close", hangar.ErrCorrupt, context.Canceled},
+		{"untyped-read-conflict-close", errors.New("local spool read"), hangar.ErrConflict},
+		{"not-found-read-untyped-close", hangar.ErrNotFound, errors.New("local close")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &hangarStoreStub{ensure: func(context.Context, hangar.Scope, hangar.Digest, io.Reader, int64) (hangar.TreeAttributes, bool, error) {
+				panic("unexpected")
+			}}
+			store.open = func(context.Context, hangar.TreeRef, int64) (io.ReadCloser, hangar.TreeAttributes, error) {
+				return hangarReadCloseErrorReader{readErr: tc.readErr, closeErr: tc.closeErr}, hangar.TreeAttributes{Ref: ref}, nil
+			}
+			server, _, _ := newHangarTestServer(t, store)
+			recorder := httptest.NewRecorder()
+			server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/hangar/v1/scopes/ci/trees/sha256/"+strings.Repeat("d", 64)+"/generations/6", nil))
+			if recorder.Code != http.StatusServiceUnavailable || recorder.Body.String() != "service unavailable\n" {
+				t.Fatalf("status=%d body=%q, want sanitized 503", recorder.Code, recorder.Body.String())
+			}
+		})
+	}
+}
 
 func TestHangarOpenPreservesTypedReadAndCloseFailures(t *testing.T) {
 	digest := hangar.Digest("sha256:" + strings.Repeat("c", 64))
@@ -742,11 +783,16 @@ func TestHangarAndDurableGCSShareRootEndpointAndValidateBucket(t *testing.T) {
 	var paths []string
 	fakeGCS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
-		paths = append(paths, r.URL.Path)
+		paths = append(paths, r.Method+" "+r.URL.EscapedPath())
 		mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Path == "/storage/v1/b/bucket" {
 			_, _ = w.Write([]byte(`{"name":"bucket"}`))
+			return
+		}
+		if r.URL.Path == "/bucket/resource-caches/shared" {
+			w.Header().Set("Content-Length", "3")
+			_, _ = w.Write([]byte("obj"))
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)
@@ -773,21 +819,31 @@ func TestHangarAndDurableGCSShareRootEndpointAndValidateBucket(t *testing.T) {
 	if err := closeService(); err != nil {
 		t.Fatal(err)
 	}
-	tier, err := buildDurableTier(lagertest.NewTestLogger("durable-build"), newMetrics(), durableOptions{kind: "gcs", bucket: "bucket", endpoint: fakeGCS.URL, timeout: time.Second})
+	durableStore, err := durable.NewGCS(context.Background(), durable.GCSConfig{Bucket: "bucket", Endpoint: fakeGCS.URL})
 	if err != nil {
 		t.Fatalf("build durable: %v", err)
 	}
-	if tier.Has(context.Background(), "resource-caches/missing") {
-		t.Fatal("fake missing durable object reported hit")
+	reader, found, err := durableStore.Get(context.Background(), "resource-caches/shared")
+	if err != nil || !found {
+		mu.Lock()
+		gotPaths := append([]string(nil), paths...)
+		mu.Unlock()
+		t.Fatalf("durable get found=%v err=%v paths=%v", found, err, gotPaths)
+	}
+	body, readErr := io.ReadAll(reader)
+	closeErr := reader.Close()
+	if readErr != nil || closeErr != nil || string(body) != "obj" {
+		t.Fatalf("durable get body=%q read=%v close=%v", body, readErr, closeErr)
 	}
 	mu.Lock()
 	gotPaths := append([]string(nil), paths...)
 	mu.Unlock()
-	if !slices.Contains(gotPaths, "/storage/v1/b/bucket") {
-		t.Fatalf("Hangar bucket validation missed JSON API base: %v", gotPaths)
+	wantPaths := []string{
+		"GET /storage/v1/b/bucket",
+		"GET /bucket/resource-caches%2Fshared",
 	}
-	if len(gotPaths) < 2 {
-		t.Fatalf("both clients did not reach shared endpoint: %v", gotPaths)
+	if !slices.Equal(gotPaths, wantPaths) {
+		t.Fatalf("shared endpoint paths = %v, want %v", gotPaths, wantPaths)
 	}
 }
 
@@ -862,11 +918,45 @@ func TestHangarReadinessLabelCannotCollideWithLegacyLabel(t *testing.T) {
 	}
 }
 
+func TestHangarLabelCollisionClearsStaleReadinessBeforeRejection(t *testing.T) {
+	client := fake.NewSimpleClientset(&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node", Labels: map[string]string{HangarReadyLabel: "ready"}}})
+	hangarLabeler := NewNodeLabeler(lagertest.NewTestLogger("hangar-label"), client, "node", HangarReadyLabel)
+	legacyLabeler := NewNodeLabeler(lagertest.NewTestLogger("legacy-label"), client, "node", HangarReadyLabel)
+	if err := prepareDaemonLabels(context.Background(), HangarReadyLabel, hangarLabeler, legacyLabeler); err == nil {
+		t.Fatal("accepted colliding label configuration")
+	}
+	node, _ := client.CoreV1().Nodes().Get(context.Background(), "node", metav1.GetOptions{})
+	if _, found := node.Labels[HangarReadyLabel]; found {
+		t.Fatal("stale Hangar readiness survived colliding startup")
+	}
+}
+
+func TestHangarLabelPreparationFailureRetriesCentralCleanup(t *testing.T) {
+	client := fake.NewSimpleClientset(&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node", Labels: map[string]string{HangarReadyLabel: "ready", "concourse.dev/artifact-cache": "ready"}}})
+	patches := 0
+	client.PrependReactor("patch", "nodes", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		patches++
+		if patches == 1 {
+			return true, nil, errors.New("transient patch failure")
+		}
+		return false, nil, nil
+	})
+	hangarLabeler := NewNodeLabeler(lagertest.NewTestLogger("hangar-label"), client, "node", HangarReadyLabel)
+	legacyLabeler := NewNodeLabeler(lagertest.NewTestLogger("legacy-label"), client, "node", "concourse.dev/artifact-cache")
+	if err := prepareDaemonLabels(context.Background(), "concourse.dev/artifact-cache", hangarLabeler, legacyLabeler); err == nil {
+		t.Fatal("ignored preparation failure")
+	}
+	node, _ := client.CoreV1().Nodes().Get(context.Background(), "node", metav1.GetOptions{})
+	if len(node.Labels) != 0 || patches < 3 {
+		t.Fatalf("cleanup retry patches=%d labels=%v", patches, node.Labels)
+	}
+}
+
 func TestHangarDisabledStartupClearsStaleReadinessAndKeepsLegacyReady(t *testing.T) {
 	client := fake.NewSimpleClientset(&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node", Labels: map[string]string{HangarReadyLabel: "ready"}}})
 	hangarLabeler := NewNodeLabeler(lagertest.NewTestLogger("hangar-label"), client, "node", HangarReadyLabel)
 	legacyLabeler := NewNodeLabeler(lagertest.NewTestLogger("legacy-label"), client, "node", "concourse.dev/artifact-cache")
-	if err := prepareDaemonLabels(context.Background(), hangarLabeler, legacyLabeler); err != nil {
+	if err := prepareDaemonLabels(context.Background(), "concourse.dev/artifact-cache", hangarLabeler, legacyLabeler); err != nil {
 		t.Fatal(err)
 	}
 	node, _ := client.CoreV1().Nodes().Get(context.Background(), "node", metav1.GetOptions{})
@@ -918,14 +1008,29 @@ func TestHangarReadinessIsAddedOnlyAfterListenerExists(t *testing.T) {
 
 func TestHangarCleanupRemovesLabelsThenClosesClient(t *testing.T) {
 	client := fake.NewSimpleClientset(&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node", Labels: map[string]string{HangarReadyLabel: "ready", "concourse.dev/artifact-cache": "ready"}}})
+	var order []string
+	client.PrependReactor("patch", "nodes", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		var patch struct {
+			Metadata struct {
+				Labels map[string]any `json:"labels"`
+			} `json:"metadata"`
+		}
+		if err := json.Unmarshal(action.(k8stesting.PatchAction).GetPatch(), &patch); err != nil {
+			t.Fatal(err)
+		}
+		for key := range patch.Metadata.Labels {
+			order = append(order, key)
+		}
+		return false, nil, nil
+	})
 	hangarLabeler := NewNodeLabeler(lagertest.NewTestLogger("hangar-label"), client, "node", HangarReadyLabel)
 	legacyLabeler := NewNodeLabeler(lagertest.NewTestLogger("legacy-label"), client, "node", "concourse.dev/artifact-cache")
-	closed := false
-	if err := cleanupDaemonServices(context.Background(), hangarLabeler, legacyLabeler, nil, func() error { closed = true; return nil }); err != nil {
+	if err := cleanupDaemonServices(context.Background(), hangarLabeler, legacyLabeler, func() error { order = append(order, "shutdown"); return nil }, func() error { order = append(order, "close"); return nil }); err != nil {
 		t.Fatal(err)
 	}
 	node, _ := client.CoreV1().Nodes().Get(context.Background(), "node", metav1.GetOptions{})
-	if len(node.Labels) != 0 || !closed {
-		t.Fatalf("cleanup left labels=%v closed=%v", node.Labels, closed)
+	wantOrder := []string{HangarReadyLabel, "concourse.dev/artifact-cache", "shutdown", "close"}
+	if len(node.Labels) != 0 || !slices.Equal(order, wantOrder) {
+		t.Fatalf("cleanup left labels=%v order=%v, want %v", node.Labels, order, wantOrder)
 	}
 }
