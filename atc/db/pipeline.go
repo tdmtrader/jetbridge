@@ -66,6 +66,10 @@ type Pipeline interface {
 	Public() bool
 	Archived() bool
 	LastUpdated() time.Time
+	PipelineRef() atc.PipelineRef
+	PipelineRunID() (int, bool)
+	BasePipelineID() int
+	BasePipelineRef() (atc.PipelineRef, bool)
 
 	CheckPaused() (bool, error)
 	Reload() (bool, error)
@@ -127,23 +131,26 @@ type Pipeline interface {
 }
 
 type pipeline struct {
-	id            int
-	name          string
-	teamID        int
-	teamName      string
-	instanceVars  atc.InstanceVars
-	parentJobID   int
-	parentBuildID int
-	groups        atc.GroupConfigs
-	varSources    atc.VarSourceConfigs
-	display       *atc.DisplayConfig
-	configVersion ConfigVersion
-	paused        bool
-	pausedBy      string
-	pausedAt      time.Time
-	public        bool
-	archived      bool
-	lastUpdated   time.Time
+	id               int
+	name             string
+	teamID           int
+	teamName         string
+	instanceVars     atc.InstanceVars
+	parentJobID      int
+	parentBuildID    int
+	groups           atc.GroupConfigs
+	varSources       atc.VarSourceConfigs
+	display          *atc.DisplayConfig
+	configVersion    ConfigVersion
+	paused           bool
+	pausedBy         string
+	pausedAt         time.Time
+	public           bool
+	archived         bool
+	lastUpdated      time.Time
+	pipelineRunID    int
+	basePipelineID   int
+	basePipelineName string
 
 	conn        DbConn
 	lockFactory lock.LockFactory
@@ -170,9 +177,14 @@ var pipelinesQuery = psql.Select(`
 		p.parent_build_id,
 		p.instance_vars,
 		p.paused_by,
-		p.paused_at`).
+		p.paused_at,
+		p.pipeline_run_id,
+		pr.template_pipeline_id,
+		base.name`).
 	From("pipelines p").
-	LeftJoin("teams t ON p.team_id = t.id")
+	LeftJoin("teams t ON p.team_id = t.id").
+	LeftJoin("pipeline_runs pr ON p.pipeline_run_id = pr.id").
+	LeftJoin("pipelines base ON pr.template_pipeline_id = base.id")
 
 func newPipeline(conn DbConn, lockFactory lock.LockFactory) *pipeline {
 	return &pipeline{
@@ -198,6 +210,17 @@ func (p *pipeline) PausedAt() time.Time              { return p.pausedAt }
 func (p *pipeline) PausedBy() string                 { return p.pausedBy }
 func (p *pipeline) Archived() bool                   { return p.archived }
 func (p *pipeline) LastUpdated() time.Time           { return p.lastUpdated }
+func (p *pipeline) PipelineRef() atc.PipelineRef {
+	return atc.PipelineRef{Name: p.name, InstanceVars: p.instanceVars}
+}
+func (p *pipeline) PipelineRunID() (int, bool) { return p.pipelineRunID, p.pipelineRunID != 0 }
+func (p *pipeline) BasePipelineID() int        { return p.basePipelineID }
+func (p *pipeline) BasePipelineRef() (atc.PipelineRef, bool) {
+	if p.basePipelineID == 0 {
+		return atc.PipelineRef{}, false
+	}
+	return atc.PipelineRef{Name: p.basePipelineName}, true
+}
 
 func (p *pipeline) CheckPaused() (bool, error) {
 	var paused bool

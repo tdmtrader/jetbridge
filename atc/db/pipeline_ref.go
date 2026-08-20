@@ -17,6 +17,7 @@ type PipelineRef interface {
 	PipelineName() string
 	PipelineInstanceVars() atc.InstanceVars
 	PipelineRef() atc.PipelineRef
+	PipelineRunID() (int, bool)
 	Pipeline() (Pipeline, bool, error)
 }
 
@@ -24,6 +25,9 @@ type pipelineRef struct {
 	pipelineID           int
 	pipelineName         string
 	pipelineInstanceVars atc.InstanceVars
+	pipelineRunID        int
+	basePipelineID       int
+	basePipelineName     string
 
 	conn        DbConn
 	lockFactory lock.LockFactory
@@ -56,6 +60,15 @@ func (r pipelineRef) PipelineRef() atc.PipelineRef {
 		Name:         r.pipelineName,
 		InstanceVars: r.pipelineInstanceVars,
 	}
+}
+
+func (r pipelineRef) PipelineRunID() (int, bool) { return r.pipelineRunID, r.pipelineRunID != 0 }
+func (r pipelineRef) BasePipelineID() int        { return r.basePipelineID }
+func (r pipelineRef) BasePipelineRef() (atc.PipelineRef, bool) {
+	if r.basePipelineID == 0 {
+		return atc.PipelineRef{}, false
+	}
+	return atc.PipelineRef{Name: r.basePipelineName}, true
 }
 
 func (r pipelineRef) Pipeline() (Pipeline, bool, error) {

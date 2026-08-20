@@ -33,6 +33,7 @@ func (f *pipelineFactory) VisiblePipelines(teamNames []string) ([]Pipeline, erro
 
 	rows, err := pipelinesQuery.
 		Where(sq.Eq{"t.name": teamNames}).
+		Where(sq.Eq{"p.pipeline_run_id": nil}).
 		OrderBy("t.name ASC", "p.ordering ASC", "p.secondary_ordering ASC").
 		RunWith(tx).
 		Query()
@@ -48,6 +49,7 @@ func (f *pipelineFactory) VisiblePipelines(teamNames []string) ([]Pipeline, erro
 	rows, err = pipelinesQuery.
 		Where(sq.NotEq{"t.name": teamNames}).
 		Where(sq.Eq{"public": true}).
+		Where(sq.Eq{"p.pipeline_run_id": nil}).
 		OrderBy("t.name ASC", "p.ordering ASC", "p.id ASC").
 		RunWith(tx).
 		Query()
@@ -70,6 +72,7 @@ func (f *pipelineFactory) VisiblePipelines(teamNames []string) ([]Pipeline, erro
 
 func (f *pipelineFactory) AllPipelines() ([]Pipeline, error) {
 	rows, err := pipelinesQuery.
+		Where(sq.Eq{"p.pipeline_run_id": nil}).
 		OrderBy("t.name ASC", "p.ordering ASC", "p.secondary_ordering ASC").
 		RunWith(f.conn).
 		Query()
@@ -83,6 +86,7 @@ func (f *pipelineFactory) AllPipelines() ([]Pipeline, error) {
 func (f *pipelineFactory) PipelinesToSchedule() ([]Pipeline, error) {
 	rows, err := pipelinesQuery.
 		Join("jobs j ON j.pipeline_id = p.id").
+		Where(sq.Eq{"p.pipeline_run_id": nil}).
 		Where(sq.Expr("j.schedule_requested > j.last_scheduled")).
 		RunWith(f.conn).
 		Query()

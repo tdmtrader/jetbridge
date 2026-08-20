@@ -63,6 +63,9 @@ func (b *inMemoryCheckBuildForApi) PipelineID() int                   { return b
 func (b *inMemoryCheckBuildForApi) PipelineName() string              { return b.checkable.PipelineName() }
 func (b *inMemoryCheckBuildForApi) PipelineRef() atc.PipelineRef      { return b.checkable.PipelineRef() }
 func (b *inMemoryCheckBuildForApi) Pipeline() (Pipeline, bool, error) { return b.checkable.Pipeline() }
+func (b *inMemoryCheckBuildForApi) PipelineRunID() (int, bool)        { return b.checkable.PipelineRunID() }
+func (b *inMemoryCheckBuildForApi) RunJobName() string                { return "" }
+func (b *inMemoryCheckBuildForApi) RunJobKey() string                 { return "" }
 func (b *inMemoryCheckBuildForApi) ResourceID() int                   { return b.resourceId }
 func (b *inMemoryCheckBuildForApi) ResourceName() string              { return b.resourceName }
 func (b *inMemoryCheckBuildForApi) ResourceTypeID() int               { return 0 }
