@@ -197,6 +197,7 @@ type RunCommand struct {
 		ArtifactDaemonTLSCACert            string        `long:"kubernetes-artifact-daemon-tls-ca-cert" description:"Path to CA certificate for verifying the artifact daemon's server certificate."`
 		HangarEnabled                      bool          `long:"kubernetes-hangar-enabled"                  description:"Enable exact immutable Hangar tree inputs for Kubernetes task Pods."`
 		HangarCapabilityKey                string        `long:"kubernetes-hangar-capability-key"           description:"Path to the raw 32-byte Hangar materialization capability key."`
+		HangarCapabilityTTL                time.Duration `long:"kubernetes-hangar-capability-ttl"           default:"15m" description:"Lifetime of exact Hangar materialization grants (maximum 15m)."`
 		ImageRegistryPrefix                string        `long:"kubernetes-image-registry-prefix"     description:"Registry path prefix for custom resource type images (e.g. gcr.io/my-project/concourse). Images are resolved as <prefix>/<type-name>."`
 		ImageRegistrySecret                string        `long:"kubernetes-image-registry-secret"     description:"Kubernetes Secret name (type kubernetes.io/dockerconfigjson) for registry auth. Auto-added to imagePullSecrets on every pod."`
 		BaseResourceTypes                  []string      `long:"kubernetes-base-resource-type"        description:"Override or add a base resource type image. Format: name=image (e.g. git=my-registry/git-resource:v2). Can be specified multiple times. Merges with built-in defaults." value-name:"NAME=IMAGE"`
@@ -1920,6 +1921,9 @@ func (cmd *RunCommand) validateK8sRuntime() error {
 	if !cmd.Kubernetes.HangarEnabled {
 		return nil
 	}
+	if cmd.Kubernetes.HangarCapabilityTTL <= 0 || cmd.Kubernetes.HangarCapabilityTTL > hangar.MaxGrantTTL {
+		return fmt.Errorf("--kubernetes-hangar-capability-ttl must be positive and no greater than %s", hangar.MaxGrantTTL)
+	}
 	if cmd.Kubernetes.ArtifactDaemonTLSCert == "" || cmd.Kubernetes.ArtifactDaemonTLSKey == "" || cmd.Kubernetes.ArtifactDaemonTLSCACert == "" {
 		return errors.New("--kubernetes-hangar-enabled requires complete artifact daemon TLS: " +
 			"--kubernetes-artifact-daemon-tls-cert, --kubernetes-artifact-daemon-tls-key, and --kubernetes-artifact-daemon-tls-ca-cert")
@@ -1935,7 +1939,7 @@ func (cmd *RunCommand) validateK8sRuntime() error {
 		if len(key) != sha256.Size {
 			return fmt.Errorf("--kubernetes-hangar-capability-key must contain exactly %d raw bytes", sha256.Size)
 		}
-		signer, err := hangar.NewGrantSigner(key, hangar.MaxGrantTTL, nil)
+		signer, err := hangar.NewGrantSigner(key, cmd.Kubernetes.HangarCapabilityTTL, nil)
 		if err != nil {
 			return fmt.Errorf("construct Hangar materialization grant signer: %w", err)
 		}

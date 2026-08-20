@@ -191,9 +191,22 @@ directories or ephemeral emptyDirs.
 | `artifactDaemon.hostPath` | `/var/concourse/artifacts` | Node directory the daemon stores artifacts in. |
 | `artifactDaemon.port` | `7780` | Port the daemon serves on. |
 | `artifactDaemon.ttl` | `2h` | How long an artifact is retained before the daemon sweeps it. |
+| `artifactDaemon.hangar.enabled` | `false` | Enable fail-closed exact immutable tree inputs. Requires TLS and native GCS. |
+| `artifactDaemon.hangar.scratchPath` | `/var/concourse/hangar-scratch` | Private daemon-only `emptyDir` mount, disjoint from `hostPath`. |
+| `artifactDaemon.hangar.maxContentBytes` | `10737418240` | Maximum regular-file content in one exact tree. |
+| `artifactDaemon.hangar.maxEntries` | `100000` | Maximum filesystem entries in one exact tree. |
+| `artifactDaemon.hangar.capabilityTTL` | `15m` | Shared web/daemon grant TTL; positive and at most 15m. |
 
 `artifactDaemon` also carries `mirror`, `preemption`, `tls` and `networkPolicy`
 blocks; see [`values.yaml`](values.yaml) for those.
+
+Hangar reuses `artifactDaemon.durable`'s GCS bucket, prefix, endpoint, timeout,
+and Workload Identity; S3-compatible and filesystem stores are unsupported.
+When `artifactDaemon.tls.existingSecret` is set, that Secret must include
+`hangar.key` containing exactly 32 raw bytes after base64 decoding. The key is
+mounted only into web and artifact-daemon Pods, never task Pods. See
+[`docs/hangar.md`](../../docs/hangar.md) for rollout order, sizing, security,
+and fail-closed behavior.
 
 ### PostgreSQL
 

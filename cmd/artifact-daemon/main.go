@@ -63,6 +63,7 @@ func main() {
 	hangarEnabled := flag.Bool("hangar-enabled", false, "Enable strict Hangar tree publication and materialization")
 	hangarScratchDir := flag.String("hangar-scratch-dir", "/var/concourse/hangar-scratch", "Absolute private scratch directory for Hangar verification")
 	hangarCapabilityKey := flag.String("hangar-capability-key", "", "Path to the raw 32-byte materialization capability key")
+	hangarCapabilityTTL := flag.Duration("hangar-capability-ttl", 15*time.Minute, "Maximum accepted Hangar materialization grant lifetime")
 	hangarMaxContentBytes := flag.Int64("hangar-max-content-bytes", 10<<30, "Maximum regular-file content admitted in one Hangar tree")
 	hangarMaxEntries := flag.Int64("hangar-max-entries", 100000, "Maximum filesystem entries admitted in one Hangar tree")
 
@@ -233,7 +234,7 @@ func main() {
 
 	hangarService, hangarClose, err := buildHangarService(context.Background(), logger, *storagePath, hangarOptions{
 		Enabled: *hangarEnabled, ScratchDir: *hangarScratchDir, CapabilityKey: *hangarCapabilityKey,
-		MaxContentBytes: *hangarMaxContentBytes, MaxEntries: *hangarMaxEntries,
+		MaxContentBytes: *hangarMaxContentBytes, MaxEntries: *hangarMaxEntries, CapabilityTTL: *hangarCapabilityTTL,
 		DurableKind: *durableStore, Bucket: *durableBucket, Prefix: *durablePrefix, Endpoint: *durableEndpoint, Timeout: *durableTimeout,
 		TLSCert: *tlsCert, TLSKey: *tlsKey, TLSCACert: *tlsCACert,
 	})

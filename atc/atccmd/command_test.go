@@ -5,9 +5,11 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/atccmd"
+	"github.com/concourse/concourse/hangar"
 	"github.com/jessevdk/go-flags"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
@@ -65,6 +67,7 @@ func (s *CommandSuite) TestKubernetesFlags() {
 
 	s.NotNil(runCmd.FindOptionByLongName("kubernetes-hangar-enabled"), "--kubernetes-hangar-enabled flag should exist")
 	s.NotNil(runCmd.FindOptionByLongName("kubernetes-hangar-capability-key"), "--kubernetes-hangar-capability-key flag should exist")
+	s.NotNil(runCmd.FindOptionByLongName("kubernetes-hangar-capability-ttl"), "--kubernetes-hangar-capability-ttl flag should exist")
 }
 
 func (s *CommandSuite) TestBuildTrackerIntervalFlagRemoved() {
@@ -173,6 +176,7 @@ func (s *CommandSuite) TestHangarRuntimeRequiresCompleteDaemonTLSAndExactCapabil
 			cmd.Kubernetes.ArtifactDaemonTLSCACert = "/tls/ca.crt"
 			cmd.Kubernetes.HangarEnabled = true
 			cmd.Kubernetes.HangarCapabilityKey = validKey
+			cmd.Kubernetes.HangarCapabilityTTL = 15 * time.Minute
 			test.configure(cmd)
 
 			err := atccmd.ValidateK8sRuntimeForTest(cmd)
@@ -194,6 +198,7 @@ func (s *CommandSuite) TestHangarRuntimeAcceptsCompleteConfigurationAndDisabledC
 	enabled.Kubernetes.ArtifactDaemonTLSCACert = "/tls/ca.crt"
 	enabled.Kubernetes.HangarEnabled = true
 	enabled.Kubernetes.HangarCapabilityKey = validKey
+	enabled.Kubernetes.HangarCapabilityTTL = 15 * time.Minute
 	s.NoError(atccmd.ValidateK8sRuntimeForTest(enabled))
 
 	disabled := &atccmd.RunCommand{}
@@ -201,6 +206,25 @@ func (s *CommandSuite) TestHangarRuntimeAcceptsCompleteConfigurationAndDisabledC
 	disabled.Kubernetes.ArtifactDaemonHostPath = "/var/concourse/artifacts"
 	disabled.Kubernetes.HangarCapabilityKey = "/does/not/exist"
 	s.NoError(atccmd.ValidateK8sRuntimeForTest(disabled), "disabled Hangar must not load or require its key")
+}
+
+func (s *CommandSuite) TestHangarRuntimeRejectsCapabilityTTLOutsideCoreBound() {
+	validKey := filepath.Join(s.T().TempDir(), "hangar.key")
+	s.Require().NoError(os.WriteFile(validKey, []byte("0123456789abcdef0123456789abcdef"), 0600))
+	for _, ttl := range []time.Duration{0, -time.Second, hangar.MaxGrantTTL + time.Nanosecond} {
+		cmd := &atccmd.RunCommand{}
+		cmd.Kubernetes.Namespace = "concourse"
+		cmd.Kubernetes.ArtifactDaemonHostPath = "/var/concourse/artifacts"
+		cmd.Kubernetes.ArtifactDaemonTLSCert = "/tls/client.crt"
+		cmd.Kubernetes.ArtifactDaemonTLSKey = "/tls/client.key"
+		cmd.Kubernetes.ArtifactDaemonTLSCACert = "/tls/ca.crt"
+		cmd.Kubernetes.HangarEnabled = true
+		cmd.Kubernetes.HangarCapabilityKey = validKey
+		cmd.Kubernetes.HangarCapabilityTTL = ttl
+		err := atccmd.ValidateK8sRuntimeForTest(cmd)
+		s.Error(err)
+		s.Contains(err.Error(), "kubernetes-hangar-capability-ttl")
+	}
 }
 
 func TestSuite(t *testing.T) {

@@ -137,6 +137,9 @@ func TestChartRendersOnlyFlagsTheBinaryAccepts(t *testing.T) {
 			}
 
 			for subcommand, rendered := range bySubcommand {
+				if len(rendered) == 0 {
+					t.Fatalf("%s matched a command surface but no flags", surface.template)
+				}
 				accepted := binaryFlags(t, binary, subcommand)
 
 				var missing []string

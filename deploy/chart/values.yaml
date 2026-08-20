@@ -458,6 +458,25 @@ artifactDaemon:
   # -- TTL for automatic artifact cleanup (Go duration)
   ttl: "2h"
 
+  # -- Strict, exact immutable tree storage for task inputs. Hangar is
+  # fail-closed and therefore remains opt-in. It reuses the durable GCS
+  # bucket, prefix, endpoint, timeout, and Workload Identity configuration.
+  hangar:
+    # -- Enable the GCS-only Hangar foundation. Requires daemon TLS and a
+    # configured artifactDaemon.durable GCS bucket.
+    enabled: false
+    # -- Private transient canonicalization scratch. This must be an absolute
+    # path disjoint from artifactDaemon.hostPath; the chart mounts a dedicated
+    # emptyDir here only in the artifact-daemon Pod.
+    scratchPath: /var/concourse/hangar-scratch
+    # -- Maximum regular-file content admitted in one immutable tree.
+    maxContentBytes: 10737418240
+    # -- Maximum filesystem entries admitted in one immutable tree.
+    maxEntries: 100000
+    # -- Lifetime of attenuated per-input materialization grants. Must be
+    # positive and no greater than Hangar's core maximum of 15m.
+    capabilityTTL: 15m
+
   # -- Long-term store for resource caches.
   # The node-local copy above is a cache with a TTL; this is the copy that
   # outlives the sweeper, the node, and the cluster. Only resource caches go
