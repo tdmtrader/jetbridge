@@ -30,7 +30,7 @@ v8.0.1:1765921815
 # Must equal the highest migration in atc/db/migration/migrations. This script
 # runs on an operator's laptop against a live database before an upgrade, so it
 # cannot ask the binary; TestPreflightTargetsTheHeadMigration keeps it honest.
-JETBRIDGE_VERSION=1773105504
+JETBRIDGE_VERSION=1773105506
 
 # Minimum supported source version (v6.x)
 MIN_SUPPORTED_VERSION=1601993582
