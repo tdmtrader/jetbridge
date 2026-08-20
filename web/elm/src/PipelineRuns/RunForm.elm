@@ -32,18 +32,21 @@ encodeField form schema result =
     result
         |> Result.andThen
             (\vars ->
-                let
-                    input =
-                        value schema.name form
-                in
-                if String.trim input == "" then
-                    if schema.required then
-                        Err (invalid schema (schema.name ++ " is required"))
-                    else
-                        Ok vars
-                else
-                    coerce schema input
-                        |> Result.map (Dict.insert schema.name >> (|>) vars)
+                case Dict.get schema.name form of
+                    Nothing ->
+                        if schema.required then
+                            Err (invalid schema (schema.name ++ " is required"))
+                        else
+                            Ok vars
+                    Just input ->
+                        if schema.type_ /= StringParam && String.trim input == "" then
+                            if schema.required then
+                                Err (invalid schema (schema.name ++ " is required"))
+                            else
+                                Ok vars
+                        else
+                            coerce schema input
+                                |> Result.map (Dict.insert schema.name >> (|>) vars)
             )
 coerce : ParamSchema -> String -> Result ValidationError JsonValue
 coerce schema input =
