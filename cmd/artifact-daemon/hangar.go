@@ -54,15 +54,18 @@ func validateDaemonLabelKeys(legacyLabelKey string) error {
 	return nil
 }
 
-func prepareDaemonLabels(ctx context.Context, hangarLabeler, legacyLabeler *NodeLabeler) error {
+func prepareDaemonLabels(ctx context.Context, legacyLabelKey string, hangarLabeler, legacyLabeler *NodeLabeler) error {
 	if hangarLabeler != nil {
 		if err := hangarLabeler.RemoveLabel(ctx); err != nil {
-			return fmt.Errorf("clear stale Hangar readiness: %w", err)
+			return errors.Join(fmt.Errorf("clear stale Hangar readiness: %w", err), cleanupDaemonServices(ctx, hangarLabeler, legacyLabeler, nil, nil))
 		}
+	}
+	if err := validateDaemonLabelKeys(legacyLabelKey); err != nil {
+		return errors.Join(err, cleanupDaemonServices(ctx, hangarLabeler, legacyLabeler, nil, nil))
 	}
 	if legacyLabeler != nil {
 		if err := legacyLabeler.AddLabel(ctx); err != nil {
-			return fmt.Errorf("add legacy readiness: %w", err)
+			return errors.Join(fmt.Errorf("add legacy readiness: %w", err), cleanupDaemonServices(ctx, hangarLabeler, legacyLabeler, nil, nil))
 		}
 	}
 	return nil

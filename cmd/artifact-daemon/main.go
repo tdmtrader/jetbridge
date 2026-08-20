@@ -70,10 +70,6 @@ func main() {
 
 	logger := lager.NewLogger("artifact-daemon")
 	logger.RegisterSink(lager.NewWriterSink(os.Stdout, lager.INFO))
-	if err := validateDaemonLabelKeys(*labelKey); err != nil {
-		logger.Error("node-label-config-invalid", err)
-		os.Exit(1)
-	}
 
 	// Build K8s client for node labeling.
 	var labeler *NodeLabeler
@@ -91,7 +87,7 @@ func main() {
 		hangarLabeler = NewNodeLabeler(logger, k8sClient, *nodeName, HangarReadyLabel)
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		if err := prepareDaemonLabels(ctx, hangarLabeler, labeler); err != nil {
+		if err := prepareDaemonLabels(ctx, *labelKey, hangarLabeler, labeler); err != nil {
 			cancel()
 			logger.Error("failed-to-prepare-node-labels", err)
 			os.Exit(1)
