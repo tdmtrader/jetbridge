@@ -48,6 +48,7 @@ type jobBuildAdmission struct {
 	pipelineID int
 	teamID     int
 	runID      int
+	template   bool
 }
 
 // createJobBuild is the only insertion seam for non-check job builds. It
@@ -62,6 +63,10 @@ func createJobBuild(tx Tx, build *build, jobID int, args jobBuildArgs) (bool, er
 }
 
 func createAdmittedJobBuild(tx Tx, build *build, admission jobBuildAdmission, args jobBuildArgs) (bool, error) {
+	if admission.template {
+		return false, ErrPipelineTemplateBuild
+	}
+
 	var err error
 	if args.OnlyIfNoPending {
 		var exists bool
@@ -146,7 +151,7 @@ func lockJobBuildAdmission(tx Tx, jobID, hydratedRunID int, reopenTerminal bool)
 	var liveRunID sql.NullInt64
 	var policyKey sql.NullString
 	err = tx.QueryRow(`
-		SELECT j.id, j.name, j.run_policy_key, p.id, p.team_id, p.pipeline_run_id
+		SELECT j.id, j.name, j.run_policy_key, p.id, p.team_id, p.pipeline_run_id, p.template
 		FROM jobs j
 		JOIN pipelines p ON p.id = j.pipeline_id
 		WHERE j.id = $1
@@ -158,6 +163,7 @@ func lockJobBuildAdmission(tx Tx, jobID, hydratedRunID int, reopenTerminal bool)
 		&admission.pipelineID,
 		&admission.teamID,
 		&liveRunID,
+		&admission.template,
 	)
 	if err == sql.ErrNoRows && (lockedRun != nil || hydratedRunID != 0) {
 		return jobBuildAdmission{}, ErrPipelineRunPayloadGone
@@ -192,16 +198,25 @@ func lockJobBuildAdmission(tx Tx, jobID, hydratedRunID int, reopenTerminal bool)
 	return admission, nil
 }
 
-func lockPipelineRunForPayload(tx Tx, pipelineID int) (PipelineRun, bool, error) {
+func lockPipelineRunForPayload(tx Tx, pipelineID, hydratedRunID int) (PipelineRun, bool, error) {
 	var observedRunID sql.NullInt64
 	err := tx.QueryRow("SELECT pipeline_run_id FROM pipelines WHERE id = $1", pipelineID).Scan(&observedRunID)
+	if err == sql.ErrNoRows && hydratedRunID != 0 {
+		return nil, false, ErrPipelineRunPayloadGone
+	}
 	if err != nil {
 		return nil, false, err
+	}
+	if hydratedRunID != 0 && (!observedRunID.Valid || int(observedRunID.Int64) != hydratedRunID) {
+		return nil, false, ErrPipelineRunPayloadGone
 	}
 	if !observedRunID.Valid {
 		return nil, false, nil
 	}
 	run, err := lockPipelineRun(tx, int(observedRunID.Int64))
+	if errors.Is(err, ErrPipelineRunNotFound) && hydratedRunID != 0 {
+		return nil, false, ErrPipelineRunPayloadGone
+	}
 	if err != nil {
 		return nil, false, err
 	}

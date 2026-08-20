@@ -34,9 +34,11 @@ var _ = Describe("Mutation error status", func() {
 		Entry("payload mutation", db.ErrPipelineRunPayloadMutation),
 		Entry("template has runs", db.ErrPipelineTemplateHasRuns),
 		Entry("template history", db.ErrPipelineTemplateHasRunHistory),
+		Entry("ordinary template transition state", db.ErrPipelineTemplateHasOrdinaryJobState),
 		Entry("completed run", db.ErrPipelineRunNotRunning),
 		Entry("reclaimed payload", db.ErrPipelineRunPayloadGone),
 		Entry("one-off run payload", db.ErrPipelineRunOneOffBuild),
+		Entry("template build", db.ErrPipelineTemplateBuild),
 		Entry("ambiguous template cache", db.TaskCacheIdentityConflictError{JobName: "deploy-((environment))"}),
 	)
 

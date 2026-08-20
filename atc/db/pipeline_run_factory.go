@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	sq "github.com/Masterminds/squirrel"
 	"github.com/concourse/concourse/atc"
@@ -111,7 +112,10 @@ func (f *pipelineRunFactory) CreateRunInTx(_ context.Context, tx Tx, base Pipeli
 	}
 	materialized, err := atc.MaterializeRunConfig(effective, atc.RunIdentity{Number: number, ID: runID}, normalized)
 	if err != nil {
-		return RunCreation{}, err
+		return RunCreation{}, atc.InvalidRunParamsError{Err: err}
+	}
+	if _, errors := configvalidate.Validate(materialized.Config); len(errors) > 0 {
+		return RunCreation{}, atc.InvalidRunParamsError{Err: fmt.Errorf("materialized config is invalid: %s", strings.Join(errors, "\n"))}
 	}
 	hash := sha256.Sum256(append([]byte("run-instance-config/v1\x00"), materialized.CanonicalJSON...))
 	hashText := fmt.Sprintf("%x", hash)

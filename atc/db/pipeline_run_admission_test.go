@@ -27,6 +27,7 @@ var _ = Describe("run build admission", func() {
 	const (
 		runNotRunningMessage = "pipeline run is not running"
 		runOneOffMessage     = "pipeline run payload cannot create one-off builds"
+		templateBuildMessage = "pipeline templates cannot create builds directly"
 	)
 	type legacyJobBuildPipeline interface {
 		CreateJobBuild(string) (db.Build, error)
@@ -41,7 +42,7 @@ var _ = Describe("run build admission", func() {
 				Name: "source", Type: "some-base-resource-type", Source: atc.Source{"repository": "example"},
 			}},
 			Jobs: atc.JobConfigs{
-				{Name: "entry"},
+				{Name: "entry", PlanSequence: []atc.Step{{Config: &atc.GetStep{Name: "source", Trigger: true}}}},
 				{Name: "work", PlanSequence: []atc.Step{{Config: &atc.GetStep{Name: "source", Passed: []string{"entry"}, Trigger: true}}}},
 			},
 		}, 0, false)
@@ -151,7 +152,10 @@ var _ = Describe("run build admission", func() {
 	It("refuses a stale job after its terminal payload has been reclaimed", func() {
 		reclaimRunPayloadForTest(template, run)
 
-		_, err := workJob.CreateBuild("after-reclaim")
+		legacy, err := payload.(legacyJobBuildPipeline).CreateJobBuild("work")
+		Expect(legacy).To(BeNil())
+		Expect(err).To(MatchError(db.ErrPipelineRunPayloadGone))
+		_, err = workJob.CreateBuild("after-reclaim")
 		Expect(err).To(HaveOccurred())
 		Expect(workJob.EnsurePendingBuildExists(context.Background())).To(HaveOccurred())
 	})
@@ -161,6 +165,25 @@ var _ = Describe("run build admission", func() {
 		Expect(err).To(MatchError(runOneOffMessage))
 		_, err = payload.CreateStartedBuild(atc.Plan{})
 		Expect(err).To(MatchError(runOneOffMessage))
+
+		oneOff, err := defaultTeam.CreateOneOffBuild()
+		Expect(err).NotTo(HaveOccurred())
+		_, stamped := oneOff.PipelineRunID()
+		Expect(stamped).To(BeFalse())
+	})
+
+	It("rejects template job and pipeline builds while ordinary team one-offs stay ordinary", func() {
+		templateJob, found, err := template.Job("work")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+
+		_, err = templateJob.CreateBuild("manual-user")
+		Expect(err).To(MatchError(templateBuildMessage))
+		Expect(templateJob.EnsurePendingBuildExists(context.Background())).To(MatchError(templateBuildMessage))
+		_, err = template.CreateOneOffBuild()
+		Expect(err).To(MatchError(templateBuildMessage))
+		_, err = template.CreateStartedBuild(atc.Plan{})
+		Expect(err).To(MatchError(templateBuildMessage))
 
 		oneOff, err := defaultTeam.CreateOneOffBuild()
 		Expect(err).NotTo(HaveOccurred())

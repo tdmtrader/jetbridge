@@ -1,6 +1,7 @@
 package db_test
 
 import (
+	"context"
 	"time"
 
 	"github.com/concourse/concourse/atc"
@@ -910,6 +911,36 @@ var _ = Describe("Volume", func() {
 			Expect(pipelineRef).To(Equal(defaultPipelineRef))
 			Expect(jobName).To(Equal(defaultJob.Name()))
 			Expect(stepName).To(Equal("some-task"))
+		})
+
+		It("resolves a run task cache to its base template", func() {
+			template, _, err := defaultTeam.SavePipeline(atc.PipelineRef{Name: "run-cache-template"}, atc.Config{
+				Template: true,
+				Jobs:     atc.JobConfigs{{Name: "entry"}},
+			}, 0, false)
+			Expect(err).NotTo(HaveOccurred())
+			_, err = db.NewPipelineRunFactory(dbConn, lockFactory).CreateRun(context.Background(), template, db.RunParams{}, "run-user")
+			Expect(err).NotTo(HaveOccurred())
+
+			taskCache, err := taskCacheFactory.FindOrCreate(atc.TaskCacheIdentity{
+				TeamID: defaultTeam.ID(), TemplatePipelineID: template.ID(), RunJobName: "entry",
+			}, "run-task", "run-cache")
+			Expect(err).NotTo(HaveOccurred())
+			usedWorkerTaskCache, err := workerTaskCacheFactory.FindOrCreate(db.WorkerTaskCache{
+				WorkerName: defaultWorker.Name(), TaskCache: taskCache,
+			})
+			Expect(err).NotTo(HaveOccurred())
+			creatingVolume, err := volumeRepository.CreateTaskCacheVolume(defaultTeam.ID(), usedWorkerTaskCache)
+			Expect(err).NotTo(HaveOccurred())
+			createdVolume, err := creatingVolume.Created()
+			Expect(err).NotTo(HaveOccurred())
+
+			pipelineID, pipelineRef, jobName, stepName, err := createdVolume.TaskIdentifier()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(pipelineID).To(Equal(template.ID()))
+			Expect(pipelineRef).To(Equal(atc.PipelineRef{Name: template.Name()}))
+			Expect(jobName).To(Equal("entry"))
+			Expect(stepName).To(Equal("run-task"))
 		})
 	})
 

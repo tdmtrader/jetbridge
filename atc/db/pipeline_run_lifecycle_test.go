@@ -104,6 +104,20 @@ func consumeObservedSchedule(job db.Job, noBuild bool) {
 	Expect(job.ConsumeScheduleRequest(job.ScheduleRequestedTime(), noBuild)).To(Succeed())
 }
 
+func requestOutstandingSchedule(job db.Job) {
+	GinkgoHelper()
+	found, err := job.Reload()
+	Expect(err).NotTo(HaveOccurred())
+	Expect(found).To(BeTrue())
+	observed := job.ScheduleRequestedTime()
+	Eventually(func() time.Time {
+		Expect(job.RequestSchedule()).To(Succeed())
+		var requested time.Time
+		Expect(dbConn.QueryRow("SELECT schedule_requested FROM jobs WHERE id = $1", job.ID()).Scan(&requested)).To(Succeed())
+		return requested
+	}).Should(BeTemporally(">", observed))
+}
+
 func basicRunConfig(names ...string) atc.Config {
 	jobs := make(atc.JobConfigs, 0, len(names))
 	for _, name := range names {
@@ -113,7 +127,7 @@ func basicRunConfig(names ...string) atc.Config {
 }
 
 func downstreamRunConfig(names ...string) atc.Config {
-	jobs := atc.JobConfigs{{Name: "entry"}}
+	jobs := atc.JobConfigs{{Name: "entry", PlanSequence: []atc.Step{{Config: &atc.GetStep{Name: "source"}}}}}
 	for _, name := range names {
 		jobs = append(jobs, atc.JobConfig{
 			Name: name,
@@ -217,6 +231,42 @@ var _ = Describe("Pipeline run lifecycle", func() {
 		Expect(build.Finish(db.BuildStatusErrored)).To(Succeed())
 		consumeObservedSchedule(fixture.jobs["downstream"], true)
 		Expect(fixture.reloadRun().Status()).To(Equal(atc.RunStatusErrored))
+	})
+
+	It("completes when pausing a payload clears its last schedule debt", func() {
+		fixture := createRunLifecycleFixture(basicRunConfig("entry"))
+		entry := fixture.jobs["entry"]
+		build := pendingRunBuild(entry)
+		consumeObservedSchedule(entry, false)
+		requestOutstandingSchedule(entry)
+
+		Expect(build.Finish(db.BuildStatusFailed)).To(Succeed())
+		Expect(fixture.reloadRun().Status()).To(Equal(atc.RunStatusRunning))
+
+		Expect(fixture.payload.Pause("alice")).To(Succeed())
+		Expect(fixture.reloadRun().Status()).To(Equal(atc.RunStatusFailed))
+		found, err := fixture.payload.Reload()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(fixture.payload.PausedBy()).To(Equal("alice"))
+	})
+
+	It("completes when pausing a run job clears its last schedule debt", func() {
+		fixture := createRunLifecycleFixture(basicRunConfig("entry"))
+		entry := fixture.jobs["entry"]
+		build := pendingRunBuild(entry)
+		consumeObservedSchedule(entry, false)
+		requestOutstandingSchedule(entry)
+
+		Expect(build.Finish(db.BuildStatusFailed)).To(Succeed())
+		Expect(fixture.reloadRun().Status()).To(Equal(atc.RunStatusRunning))
+
+		Expect(entry.Pause("alice")).To(Succeed())
+		Expect(fixture.reloadRun().Status()).To(Equal(atc.RunStatusFailed))
+		found, err := entry.Reload()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(entry.PausedBy()).To(Equal("alice"))
 	})
 
 	DescribeTable("aggregates the rerun-aware latest status with lifecycle severity",
@@ -515,6 +565,22 @@ var _ = Describe("Pipeline run lifecycle structural guard", func() {
 		Expect(consumeBody).To(ContainSubstring("attemptRunCompletion("), "no-build consumption must be the second completion call site")
 		Expect(string(jobSource)).NotTo(ContainSubstring("UpdateLastScheduled"), "the obsolete independent consumer must be removed")
 
+		pauseStart := strings.Index(string(pipelineSource), "func (p *pipeline) Pause(pausedBy string)")
+		Expect(pauseStart).To(BeNumerically(">=", 0), "guard must find payload pause")
+		pauseEnd := strings.Index(string(pipelineSource)[pauseStart:], "\nfunc ")
+		Expect(pauseEnd).To(BeNumerically(">", 0), "guard must bound payload pause")
+		pauseBody := string(pipelineSource)[pauseStart : pauseStart+pauseEnd]
+		Expect(pauseBody).To(ContainSubstring("lockPipelineRunForPayload("), "payload pause must lock its durable run")
+		Expect(pauseBody).To(ContainSubstring("attemptRunCompletion("), "payload pause must settle cleared schedule debt")
+
+		jobPauseStart := strings.Index(string(jobSource), "func (j *job) Pause(pausedBy string)")
+		Expect(jobPauseStart).To(BeNumerically(">=", 0), "guard must find run job pause")
+		jobPauseEnd := strings.Index(string(jobSource)[jobPauseStart:], "\nfunc ")
+		Expect(jobPauseEnd).To(BeNumerically(">", 0), "guard must bound run job pause")
+		jobPauseBody := string(jobSource)[jobPauseStart : jobPauseStart+jobPauseEnd]
+		Expect(jobPauseBody).To(ContainSubstring("lockJobBuildAdmission("), "run job pause must lock its durable admission")
+		Expect(jobPauseBody).To(ContainSubstring("attemptRunCompletion("), "run job pause must settle cleared schedule debt")
+
 		unpauseStart := strings.Index(string(pipelineSource), "func (p *pipeline) Unpause")
 		Expect(unpauseStart).To(BeNumerically(">=", 0), "guard must find payload unpause")
 		unpauseEnd := strings.Index(string(pipelineSource)[unpauseStart:], "\nfunc ")
@@ -524,6 +590,5 @@ var _ = Describe("Pipeline run lifecycle structural guard", func() {
 		Expect(string(lockSource)).To(ContainSubstring("ReopenTerminal"), "canonical admission must own terminal reopen")
 		Expect(string(lockSource)).To(ContainSubstring("reopenPipelineRun("), "canonical admission must call the one reopen transaction body")
 		Expect(string(lifecycleSource)).To(ContainSubstring("func attemptRunCompletion("), "guard must find the single stateless completion predicate")
-		Expect(strings.Count(string(buildSource)+string(jobSource), "attemptRunCompletion(")).To(Equal(2), "exactly two blocker-removal call sites are permitted")
 	})
 })

@@ -81,6 +81,17 @@ var _ = Describe("PipelineRunReclaimer", func() {
 		}))
 	})
 
+	It("backs off an injected eligibility-recheck failure without monopolizing the batch", func() {
+		lifecycle.candidates = []int{4, 7}
+		lifecycle.destroyErr[4] = errors.New("injected eligibility recheck failure")
+		lifecycle.destroyResult[7] = true
+
+		err := collector.Run(context.Background())
+		Expect(err).To(MatchError(ContainSubstring("injected eligibility recheck failure")))
+		Expect(lifecycle.destroyed).To(Equal([]int{4, 7}))
+		Expect(lifecycle.deferred).To(Equal(map[int]time.Time{4: now.Add(5 * time.Minute)}))
+	})
+
 	It("reports a defer error without preventing later candidates", func() {
 		lifecycle.candidates = []int{1, 2}
 		lifecycle.destroyErr[1] = errors.New("destroy failed")

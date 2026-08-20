@@ -99,6 +99,27 @@ func (s *Server) SaveConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	team, found, err := s.teamFactory.FindTeam(teamName)
+	if err != nil {
+		session.Error("failed-to-find-team", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	if found {
+		target, targetFound, err := team.Pipeline(pipelineRef)
+		if err != nil {
+			session.Error("failed-to-find-pipeline", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		if targetFound {
+			if _, isPayload := target.PipelineRunID(); isPayload {
+				errormap.Write(w, db.ErrPipelineRunPayloadMutation)
+				return
+			}
+		}
+	}
+
 	err = configvalidate.ValidateTemplateDeclaration(pipelineRef, config)
 	if err != nil {
 		session.Info("ignoring-invalid-template-config", lager.Data{"error": err.Error()})
@@ -117,13 +138,6 @@ func (s *Server) SaveConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	session.Info("saving")
-
-	team, found, err := s.teamFactory.FindTeam(teamName)
-	if err != nil {
-		session.Error("failed-to-find-team", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
 
 	if !found {
 		session.Debug("team-not-found")

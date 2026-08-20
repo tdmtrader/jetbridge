@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"sync"
 	"time"
 
@@ -64,6 +65,66 @@ func (pipeline jobsAPIPipeline) Job(name string) (db.Job, bool, error) {
 		return pipeline.job, true, nil
 	}
 	return pipeline.Pipeline.Job(name)
+}
+
+type reclaimBeforeJobLookupPipeline struct {
+	db.Pipeline
+	reclaim func() error
+}
+
+func (pipeline reclaimBeforeJobLookupPipeline) Job(name string) (db.Job, bool, error) {
+	if err := pipeline.reclaim(); err != nil {
+		return nil, false, err
+	}
+	return pipeline.Pipeline.Job(name)
+}
+
+type reclaimBeforeBuildLookupJob struct {
+	db.Job
+	reclaim func() error
+}
+
+func (job reclaimBeforeBuildLookupJob) Build(name string) (db.Build, bool, error) {
+	if err := job.reclaim(); err != nil {
+		return nil, false, err
+	}
+	return job.Job.Build(name)
+}
+
+type reclaimBeforePayloadLockPipeline struct {
+	db.Pipeline
+	reclaim func() error
+}
+
+func (pipeline reclaimBeforePayloadLockPipeline) CreateStartedBuild(plan atc.Plan) (db.Build, error) {
+	if err := pipeline.reclaim(); err != nil {
+		return nil, err
+	}
+	return pipeline.Pipeline.CreateStartedBuild(plan)
+}
+
+type reclaimBeforePausePipeline struct {
+	db.Pipeline
+	reclaim func() error
+}
+
+func (pipeline reclaimBeforePausePipeline) Pause(pausedBy string) error {
+	if err := pipeline.reclaim(); err != nil {
+		return err
+	}
+	return pipeline.Pipeline.Pause(pausedBy)
+}
+
+type reclaimBeforePauseJob struct {
+	db.Job
+	reclaim func() error
+}
+
+func (job reclaimBeforePauseJob) Pause(pausedBy string) error {
+	if err := job.reclaim(); err != nil {
+		return err
+	}
+	return job.Job.Pause(pausedBy)
 }
 
 type outputsErrorJob struct {
@@ -233,6 +294,54 @@ func (fixture *jobsAPIFixture) ServePipeline(pipeline db.Pipeline) *httptest.Ser
 	server := newAPIServer(deps)
 	DeferCleanup(server.Close)
 	return server
+}
+
+func createReclaimableJobsAPIRun(fixture *jobsAPIFixture) (db.Pipeline, db.PipelineRun, db.Job, db.Build) {
+	GinkgoHelper()
+
+	creation, err := db.NewPipelineRunFactory(fixture.Real.Conn, fixture.Real.LockFactory).CreateRun(
+		context.Background(), fixture.Pipeline, db.RunParams{}, "api-user",
+	)
+	Expect(err).NotTo(HaveOccurred())
+	payload, found, err := fixture.Team.Pipeline(atc.PipelineRef{
+		Name: fixture.Pipeline.Name(), InstanceVars: atc.InstanceVars{"run": float64(creation.Run.Number())},
+	})
+	Expect(err).NotTo(HaveOccurred())
+	Expect(found).To(BeTrue())
+	job, found, err := payload.Job("entry")
+	Expect(err).NotTo(HaveOccurred())
+	Expect(found).To(BeTrue())
+	builds, err := job.GetPendingBuilds()
+	Expect(err).NotTo(HaveOccurred())
+	Expect(builds).To(HaveLen(1))
+
+	_, err = fixture.Real.Conn.Exec(`UPDATE pipelines SET run_retention_ttl_days = 1 WHERE id = $1`, fixture.Pipeline.ID())
+	Expect(err).NotTo(HaveOccurred())
+	_, err = fixture.Real.Conn.Exec(`UPDATE builds SET status = 'failed', completed = true, end_time = now() WHERE pipeline_run_id = $1`, creation.Run.ID())
+	Expect(err).NotTo(HaveOccurred())
+	_, err = fixture.Real.Conn.Exec(`UPDATE pipeline_runs SET status = 'failed', completed_at = now() - interval '2 days' WHERE id = $1`, creation.Run.ID())
+	Expect(err).NotTo(HaveOccurred())
+
+	return payload, creation.Run, job, builds[0]
+}
+
+func reclaimJobsAPIRun(fixture *jobsAPIFixture, run db.PipelineRun) error {
+	destroyed, err := db.NewPipelineRunReclaimLifecycle(fixture.Real.Conn).DestroyReclaimableRun(run.ID())
+	if err != nil {
+		return err
+	}
+	if !destroyed {
+		return fmt.Errorf("pipeline run %d was not reclaimed", run.ID())
+	}
+	return nil
+}
+
+func jobsAPIPayloadPath(pipeline db.Pipeline, suffix string) string {
+	path := "/api/v1/teams/" + pipeline.TeamName() + "/pipelines/" + pipeline.Name() + suffix
+	if query := pipeline.PipelineRef().QueryParams().Encode(); query != "" {
+		path += "?" + query
+	}
+	return path
 }
 
 func (fixture *jobsAPIFixture) doomedPipeline() db.Pipeline {
@@ -1554,6 +1663,24 @@ var _ = Describe("Jobs API", func() {
 			Expect(count).To(BeZero())
 		})
 
+		It("rejects a template job manual build without inserting a build", func() {
+			config := manualConfig(false)
+			config.Template = true
+			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, config)
+			server = fixture.Serve()
+			response := jobsAPIPost(server, path)
+			Expect(response.StatusCode).To(Equal(http.StatusConflict))
+			body, err := io.ReadAll(response.Body)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(body)).To(ContainSubstring("pipeline templates cannot create builds directly"))
+
+			var count int
+			Expect(fixture.Real.Conn.QueryRow(
+				`SELECT count(*) FROM builds WHERE job_id = $1`, fixture.Job("some-job").ID(),
+			).Scan(&count)).To(Succeed())
+			Expect(count).To(BeZero())
+		})
+
 		It("returns 500 when the real job create fails on its closed connection", func() {
 			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, manualConfig(false))
 			doomed := fixture.doomedJob("some-job")
@@ -2052,6 +2179,25 @@ var _ = Describe("Jobs API", func() {
 			Expect(count).To(Equal(1))
 		})
 
+		It("rejects a template job rerun without inserting a build", func() {
+			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, rerunConfig())
+			original := setupOriginalBuild(fixture)
+			_, err := fixture.Real.Conn.Exec(`UPDATE pipelines SET template = true WHERE id = $1`, fixture.Pipeline.ID())
+			Expect(err).NotTo(HaveOccurred())
+			server = fixture.Serve()
+			response := jobsAPIPost(server, rerunPath(original.Name()))
+			Expect(response.StatusCode).To(Equal(http.StatusConflict))
+			body, err := io.ReadAll(response.Body)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(body)).To(ContainSubstring("pipeline templates cannot create builds directly"))
+
+			var count int
+			Expect(fixture.Real.Conn.QueryRow(
+				`SELECT count(*) FROM builds WHERE rerun_of = $1`, original.ID(),
+			).Scan(&count)).To(Succeed())
+			Expect(count).To(BeZero())
+		})
+
 		It("returns 500 for an ordinary persisted build whose inputs are not ready", func() {
 			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, rerunConfig())
 			original := createJobsAPIBuild(fixture.Job("some-job"), "original-user")
@@ -2430,6 +2576,158 @@ var _ = Describe("Jobs API", func() {
 			server = fixture.Serve()
 			response := jobsAPIRequest(server, http.MethodPut, path)
 			Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
+		})
+	})
+
+	Describe("reclaimed payload request races", func() {
+		newFixture := func() *jobsAPIFixture {
+			GinkgoHelper()
+			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, atc.Config{
+				Template: true,
+				Jobs:     atc.JobConfigs{{Name: "entry"}},
+			})
+			fakeAccess.IsAuthenticatedReturns(true)
+			fakeAccess.IsAuthorizedReturns(true)
+			return fixture
+		}
+
+		It("maps scope-to-job reclamation to conflict while a fresh lookup stays not found", func() {
+			fixture := newFixture()
+			payload, run, _, _ := createReclaimableJobsAPIRun(fixture)
+			path := jobsAPIPayloadPath(payload, "/jobs/entry/builds")
+			server := fixture.ServePipeline(reclaimBeforeJobLookupPipeline{
+				Pipeline: payload,
+				reclaim: func() error {
+					return reclaimJobsAPIRun(fixture, run)
+				},
+			})
+
+			response := jobsAPIPost(server, path)
+			Expect(response.StatusCode).To(Equal(http.StatusConflict))
+			body, err := io.ReadAll(response.Body)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(body)).To(ContainSubstring(db.ErrPipelineRunPayloadGone.Error()))
+
+			fresh := jobsAPIPost(fixture.Serve(), path)
+			Expect(fresh.StatusCode).To(Equal(http.StatusNotFound))
+		})
+
+		It("maps job-to-build reclamation to conflict while a fresh lookup stays not found", func() {
+			fixture := newFixture()
+			payload, run, job, build := createReclaimableJobsAPIRun(fixture)
+			path := jobsAPIPayloadPath(payload, "/jobs/entry/builds/"+build.Name())
+			server := fixture.ServePipeline(jobsAPIPipeline{
+				Pipeline: payload,
+				jobName:  "entry",
+				job: reclaimBeforeBuildLookupJob{
+					Job: job,
+					reclaim: func() error {
+						return reclaimJobsAPIRun(fixture, run)
+					},
+				},
+			})
+
+			response := jobsAPIPost(server, path)
+			Expect(response.StatusCode).To(Equal(http.StatusConflict))
+			body, err := io.ReadAll(response.Body)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(body)).To(ContainSubstring(db.ErrPipelineRunPayloadGone.Error()))
+
+			fresh := jobsAPIPost(fixture.Serve(), path)
+			Expect(fresh.StatusCode).To(Equal(http.StatusNotFound))
+		})
+
+		It("maps scope-to-lock reclamation to conflict while a fresh lookup stays not found", func() {
+			fixture := newFixture()
+			payload, run, _, _ := createReclaimableJobsAPIRun(fixture)
+			path := jobsAPIPayloadPath(payload, "/builds")
+			server := fixture.ServePipeline(reclaimBeforePayloadLockPipeline{
+				Pipeline: payload,
+				reclaim: func() error {
+					return reclaimJobsAPIRun(fixture, run)
+				},
+			})
+
+			request, err := http.NewRequest(http.MethodPost, server.URL+path, strings.NewReader(`{}`))
+			Expect(err).NotTo(HaveOccurred())
+			request.Header.Set("Content-Type", "application/json")
+			response, err := client.Do(request)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(response.StatusCode).To(Equal(http.StatusConflict))
+			body, err := io.ReadAll(response.Body)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(response.Body.Close()).To(Succeed())
+			Expect(string(body)).To(ContainSubstring(db.ErrPipelineRunPayloadGone.Error()))
+
+			fresh := jobsAPIPost(fixture.Serve(), path)
+			Expect(fresh.StatusCode).To(Equal(http.StatusNotFound))
+		})
+
+		It("maps scope-to-pause-lock reclamation to conflict while a fresh lookup stays not found", func() {
+			fixture := newFixture()
+			payload, run, _, _ := createReclaimableJobsAPIRun(fixture)
+			path := jobsAPIPayloadPath(payload, "/pause")
+			server := fixture.ServePipeline(reclaimBeforePausePipeline{
+				Pipeline: payload,
+				reclaim: func() error {
+					return reclaimJobsAPIRun(fixture, run)
+				},
+			})
+
+			response := jobsAPIRequest(server, http.MethodPut, path)
+			Expect(response.StatusCode).To(Equal(http.StatusConflict))
+			body, err := io.ReadAll(response.Body)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(body)).To(ContainSubstring(db.ErrPipelineRunPayloadGone.Error()))
+
+			fresh := jobsAPIRequest(fixture.Serve(), http.MethodPut, path)
+			Expect(fresh.StatusCode).To(Equal(http.StatusNotFound))
+		})
+
+		It("maps scope-to-job-pause reclamation to conflict while a fresh lookup stays not found", func() {
+			fixture := newFixture()
+			payload, run, job, _ := createReclaimableJobsAPIRun(fixture)
+			path := jobsAPIPayloadPath(payload, "/jobs/entry/pause")
+			server := fixture.ServePipeline(jobsAPIPipeline{
+				Pipeline: payload,
+				jobName:  "entry",
+				job: reclaimBeforePauseJob{
+					Job: job,
+					reclaim: func() error {
+						return reclaimJobsAPIRun(fixture, run)
+					},
+				},
+			})
+
+			response := jobsAPIRequest(server, http.MethodPut, path)
+			Expect(response.StatusCode).To(Equal(http.StatusConflict))
+			body, err := io.ReadAll(response.Body)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(body)).To(ContainSubstring(db.ErrPipelineRunPayloadGone.Error()))
+
+			fresh := jobsAPIRequest(fixture.Serve(), http.MethodPut, path)
+			Expect(fresh.StatusCode).To(Equal(http.StatusNotFound))
+		})
+
+		It("maps scope-to-job-pause lookup reclamation to conflict while a fresh lookup stays not found", func() {
+			fixture := newFixture()
+			payload, run, _, _ := createReclaimableJobsAPIRun(fixture)
+			path := jobsAPIPayloadPath(payload, "/jobs/entry/pause")
+			server := fixture.ServePipeline(reclaimBeforeJobLookupPipeline{
+				Pipeline: payload,
+				reclaim: func() error {
+					return reclaimJobsAPIRun(fixture, run)
+				},
+			})
+
+			response := jobsAPIRequest(server, http.MethodPut, path)
+			Expect(response.StatusCode).To(Equal(http.StatusConflict))
+			body, err := io.ReadAll(response.Body)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(body)).To(ContainSubstring(db.ErrPipelineRunPayloadGone.Error()))
+
+			fresh := jobsAPIRequest(fixture.Serve(), http.MethodPut, path)
+			Expect(fresh.StatusCode).To(Equal(http.StatusNotFound))
 		})
 	})
 })

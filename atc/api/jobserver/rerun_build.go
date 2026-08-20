@@ -27,6 +27,9 @@ func (s *Server) RerunJobBuild(pipeline db.Pipeline) http.Handler {
 		}
 
 		if !found {
+			if s.writePipelineRunPayloadGoneIfReclaimed(w, pipeline, logger) {
+				return
+			}
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
@@ -39,6 +42,9 @@ func (s *Server) RerunJobBuild(pipeline db.Pipeline) http.Handler {
 		}
 
 		if !found {
+			if s.writePipelineRunPayloadGoneIfReclaimed(w, pipeline, logger) {
+				return
+			}
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
