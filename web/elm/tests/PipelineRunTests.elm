@@ -2,11 +2,15 @@ module PipelineRunTests exposing (all)
 
 import Concourse
 import Concourse.BuildStatus exposing (BuildStatus(..))
+import Concourse.Pagination as Pagination
 import Concourse.PipelineRun as PipelineRun
+import Api.Endpoints as Endpoints
+import Api.Pagination
 import Dict
 import Expect
 import Json.Decode
 import Json.Encode
+import Message.Effects as Effects
 import Test exposing (Test, describe, test)
 import Time
 
@@ -143,4 +147,61 @@ all =
                     |> Json.Decode.decodeString PipelineRun.decodePipelineRun
                     |> Result.map (\run -> run.instanceRef |> Maybe.map .pipelineName)
                     |> Expect.equal (Ok (Just "generated"))
+        , test "list effect builds the paginated GET request and callback" <|
+            \_ ->
+                Effects.FetchPipelineRuns pipelineId { direction = Pagination.To 9, limit = 20 }
+                    |> Effects.pipelineRunRequest
+                    |> Maybe.map requestSummary
+                    |> Expect.equal
+                        (Just
+                            { url = "/api/v1/teams/team/pipelines/pipeline/runs?to=9&limit=20"
+                            , method = "GET"
+                            , body = Nothing
+                            , callback = Effects.PipelineRunsFetchedCallback
+                            }
+                        )
+        , test "detail effect builds the GET request and callback" <|
+            \_ ->
+                Effects.FetchPipelineRun pipelineId 42
+                    |> Effects.pipelineRunRequest
+                    |> Maybe.map requestSummary
+                    |> Expect.equal
+                        (Just
+                            { url = "/api/v1/teams/team/pipelines/pipeline/runs/42"
+                            , method = "GET"
+                            , body = Nothing
+                            , callback = Effects.PipelineRunFetchedCallback
+                            }
+                        )
+        , test "create effect builds the vars POST body and callback" <|
+            \_ ->
+                Effects.CreatePipelineRun pipelineId
+                    (Dict.fromList [ ( "count", Concourse.JsonNumber 2 ) ])
+                    |> Effects.pipelineRunRequest
+                    |> Maybe.map requestSummary
+                    |> Expect.equal
+                        (Just
+                            { url = "/api/v1/teams/team/pipelines/pipeline/runs"
+                            , method = "POST"
+                            , body = Just "{\"vars\":{\"count\":2}}"
+                            , callback = Effects.PipelineRunCreatedCallback
+                            }
+                        )
         ]
+
+
+pipelineId : Concourse.PipelineIdentifier
+pipelineId =
+    { teamName = "team"
+    , pipelineName = "pipeline"
+    , pipelineInstanceVars = Dict.empty
+    }
+
+
+requestSummary : Effects.PipelineRunRequest -> { url : String, method : String, body : Maybe String, callback : Effects.PipelineRunCallback }
+requestSummary request =
+    { url = Endpoints.toString (Api.Pagination.params request.page) request.endpoint
+    , method = request.method
+    , body = request.body |> Maybe.map (Json.Encode.encode 0)
+    , callback = request.callback
+    }
