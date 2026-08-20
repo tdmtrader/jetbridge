@@ -18,6 +18,7 @@ import (
 const (
 	HangarReadyLabel                = "concourse.dev/hangar-v1"
 	defaultHangarControlBytes int64 = 1 << 20
+	daemonLabelCleanupTimeout       = 10 * time.Second
 )
 
 type HangarService struct {
@@ -57,18 +58,24 @@ func validateDaemonLabelKeys(legacyLabelKey string) error {
 func prepareDaemonLabels(ctx context.Context, legacyLabelKey string, hangarLabeler, legacyLabeler *NodeLabeler) error {
 	if hangarLabeler != nil {
 		if err := hangarLabeler.RemoveLabel(ctx); err != nil {
-			return errors.Join(fmt.Errorf("clear stale Hangar readiness: %w", err), cleanupDaemonServices(ctx, hangarLabeler, legacyLabeler, nil, nil))
+			return errors.Join(fmt.Errorf("clear stale Hangar readiness: %w", err), cleanupFailedDaemonLabelPreparation(hangarLabeler, legacyLabeler))
 		}
 	}
 	if err := validateDaemonLabelKeys(legacyLabelKey); err != nil {
-		return errors.Join(err, cleanupDaemonServices(ctx, hangarLabeler, legacyLabeler, nil, nil))
+		return errors.Join(err, cleanupFailedDaemonLabelPreparation(hangarLabeler, legacyLabeler))
 	}
 	if legacyLabeler != nil {
 		if err := legacyLabeler.AddLabel(ctx); err != nil {
-			return errors.Join(fmt.Errorf("add legacy readiness: %w", err), cleanupDaemonServices(ctx, hangarLabeler, legacyLabeler, nil, nil))
+			return errors.Join(fmt.Errorf("add legacy readiness: %w", err), cleanupFailedDaemonLabelPreparation(hangarLabeler, legacyLabeler))
 		}
 	}
 	return nil
+}
+
+func cleanupFailedDaemonLabelPreparation(hangarLabeler, legacyLabeler *NodeLabeler) error {
+	ctx, cancel := context.WithTimeout(context.Background(), daemonLabelCleanupTimeout)
+	defer cancel()
+	return cleanupDaemonServices(ctx, hangarLabeler, legacyLabeler, nil, nil)
 }
 
 func listenAndAdvertiseHangar(ctx context.Context, address string, labeler *NodeLabeler, listen func(string, string) (net.Listener, error)) (net.Listener, error) {

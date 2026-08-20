@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -25,7 +26,10 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
+	typedcorev1 "k8s.io/client-go/kubernetes/typed/core/v1"
 	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/concourse/concourse/cmd/artifact-daemon/durable"
@@ -203,7 +207,7 @@ func TestHangarPublishCanonicalizesAndReturnsExactAttributes(t *testing.T) {
 type failingReadCloser struct{ closeErr error }
 
 func (*failingReadCloser) Read([]byte) (int, error) {
-	return 0, errors.Join(hangar.ErrCorrupt, errors.New("corrupt after open"))
+	return 0, fmt.Errorf("corrupt after open: %w", hangar.ErrCorrupt)
 }
 func (reader *failingReadCloser) Close() error { return reader.closeErr }
 
@@ -265,11 +269,16 @@ func TestHangarOpenClassifiesReadAndCloseFailuresTogether(t *testing.T) {
 		name     string
 		readErr  error
 		closeErr error
+		status   int
+		body     string
 	}{
-		{"not-found-read-infrastructure-close", hangar.ErrNotFound, hangar.ErrInfrastructure},
-		{"corrupt-read-context-close", hangar.ErrCorrupt, context.Canceled},
-		{"untyped-read-conflict-close", errors.New("local spool read"), hangar.ErrConflict},
-		{"not-found-read-untyped-close", hangar.ErrNotFound, errors.New("local close")},
+		{"not-found-read-infrastructure-close", hangar.ErrNotFound, hangar.ErrInfrastructure, 503, "service unavailable\n"},
+		{"corrupt-read-context-close", hangar.ErrCorrupt, context.Canceled, 503, "service unavailable\n"},
+		{"untyped-read-conflict-close", errors.New("local spool read"), hangar.ErrConflict, 503, "service unavailable\n"},
+		{"not-found-read-untyped-close", hangar.ErrNotFound, errors.New("local close"), 503, "service unavailable\n"},
+		{"joined-not-found-and-untyped-read", errors.Join(hangar.ErrNotFound, errors.New("backend read failed")), nil, 503, "service unavailable\n"},
+		{"joined-conflict-and-untyped-close", io.EOF, errors.Join(hangar.ErrConflict, errors.New("backend close failed")), 503, "service unavailable\n"},
+		{"high-precedence-typed-alone", hangar.ErrCorrupt, nil, 422, "tree verification failed\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			store := &hangarStoreStub{ensure: func(context.Context, hangar.Scope, hangar.Digest, io.Reader, int64) (hangar.TreeAttributes, bool, error) {
@@ -281,8 +290,8 @@ func TestHangarOpenClassifiesReadAndCloseFailuresTogether(t *testing.T) {
 			server, _, _ := newHangarTestServer(t, store)
 			recorder := httptest.NewRecorder()
 			server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/hangar/v1/scopes/ci/trees/sha256/"+strings.Repeat("d", 64)+"/generations/6", nil))
-			if recorder.Code != http.StatusServiceUnavailable || recorder.Body.String() != "service unavailable\n" {
-				t.Fatalf("status=%d body=%q, want sanitized 503", recorder.Code, recorder.Body.String())
+			if recorder.Code != tc.status || recorder.Body.String() != tc.body {
+				t.Fatalf("status=%d body=%q, want sanitized %d %q", recorder.Code, recorder.Body.String(), tc.status, tc.body)
 			}
 		})
 	}
@@ -949,6 +958,73 @@ func TestHangarLabelPreparationFailureRetriesCentralCleanup(t *testing.T) {
 	node, _ := client.CoreV1().Nodes().Get(context.Background(), "node", metav1.GetOptions{})
 	if len(node.Labels) != 0 || patches < 3 {
 		t.Fatalf("cleanup retry patches=%d labels=%v", patches, node.Labels)
+	}
+}
+
+type contextAwareNodeClient struct {
+	kubernetes.Interface
+	nodes typedcorev1.NodeInterface
+}
+
+func (client *contextAwareNodeClient) CoreV1() typedcorev1.CoreV1Interface {
+	return &contextAwareCoreClient{CoreV1Interface: client.Interface.CoreV1(), nodes: client.nodes}
+}
+
+type contextAwareCoreClient struct {
+	typedcorev1.CoreV1Interface
+	nodes typedcorev1.NodeInterface
+}
+
+func (client *contextAwareCoreClient) Nodes() typedcorev1.NodeInterface { return client.nodes }
+
+type expiringFirstPatchNodes struct {
+	typedcorev1.NodeInterface
+	preparation context.Context
+	cancel      context.CancelFunc
+	patches     int
+	cleanupRuns int
+	cleanupLive bool
+	cleanupNew  bool
+	bounded     bool
+}
+
+func (nodes *expiringFirstPatchNodes) Patch(ctx context.Context, name string, patchType types.PatchType, data []byte, options metav1.PatchOptions, subresources ...string) (*corev1.Node, error) {
+	nodes.patches++
+	if nodes.patches == 1 {
+		nodes.cancel()
+		return nil, context.DeadlineExceeded
+	}
+	nodes.cleanupRuns++
+	nodes.cleanupLive = nodes.cleanupLive && ctx.Err() == nil
+	nodes.cleanupNew = nodes.cleanupNew && ctx != nodes.preparation
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		nodes.bounded = nodes.bounded && remaining > 0 && remaining <= daemonLabelCleanupTimeout
+	} else {
+		nodes.bounded = false
+	}
+	return nodes.NodeInterface.Patch(ctx, name, patchType, data, options, subresources...)
+}
+
+func TestHangarLabelPreparationFailureUsesFreshBoundedCleanupContext(t *testing.T) {
+	base := fake.NewSimpleClientset(&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node", Labels: map[string]string{HangarReadyLabel: "ready"}}})
+	preparation, cancel := context.WithCancel(context.Background())
+	nodes := &expiringFirstPatchNodes{
+		NodeInterface: base.CoreV1().Nodes(), preparation: preparation, cancel: cancel,
+		cleanupLive: true, cleanupNew: true, bounded: true,
+	}
+	client := &contextAwareNodeClient{Interface: base, nodes: nodes}
+	hangarLabeler := NewNodeLabeler(lagertest.NewTestLogger("hangar-label"), client, "node", HangarReadyLabel)
+	legacyLabeler := NewNodeLabeler(lagertest.NewTestLogger("legacy-label"), client, "node", "concourse.dev/artifact-cache")
+	if err := prepareDaemonLabels(preparation, "concourse.dev/artifact-cache", hangarLabeler, legacyLabeler); err == nil {
+		t.Fatal("ignored expired preparation context")
+	}
+	node, _ := base.CoreV1().Nodes().Get(context.Background(), "node", metav1.GetOptions{})
+	if _, found := node.Labels[HangarReadyLabel]; found {
+		t.Fatal("stale readiness survived cleanup after preparation deadline")
+	}
+	if nodes.cleanupRuns != 2 || !nodes.cleanupLive || !nodes.cleanupNew || !nodes.bounded {
+		t.Fatalf("cleanup runs=%d context live=%v new=%v bounded=%v patches=%d", nodes.cleanupRuns, nodes.cleanupLive, nodes.cleanupNew, nodes.bounded, nodes.patches)
 	}
 }
 

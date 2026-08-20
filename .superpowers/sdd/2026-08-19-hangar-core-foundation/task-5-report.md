@@ -183,3 +183,49 @@ Files changed in this round: `cmd/artifact-daemon/hangar.go`, `cmd/artifact-daem
 Fix commit subject: `fix(artifact-daemon): preserve fail-closed daemon state`.
 
 Local gap: the lifecycle tests use the Kubernetes fake client and listener/server callbacks; no live Kubernetes node was mutated. The full local suites otherwise pass, with loopback permission required for `httptest` listeners.
+
+## Fix round 3: retain cleanup authority
+
+The remaining scoped review findings were reproduced with behavioral tests before production changes:
+
+```text
+$ env GOCACHE=/private/tmp/hangar-task5-gocache go test ./cmd/artifact-daemon -run 'TestHangar(OpenClassifiesReadAndCloseFailuresTogether|LabelPreparationFailureUsesFreshBoundedCleanupContext)$' -count=1
+--- FAIL: TestHangarOpenClassifiesReadAndCloseFailuresTogether
+    --- FAIL: .../joined-not-found-and-untyped-read
+        status=404 body="not found\n", want sanitized 503 "service unavailable\n"
+    --- FAIL: .../joined-conflict-and-untyped-close
+        status=409 body="conflict\n", want sanitized 503 "service unavailable\n"
+--- FAIL: TestHangarLabelPreparationFailureUsesFreshBoundedCleanupContext
+    cleanup context live=false new=false bounded=false patches=3
+FAIL
+```
+
+Fixes and self-review:
+
+- `normalizeHangarIOError` now recursively walks each `Unwrap() []error` child and converts every untyped I/O leaf to infrastructure before rejoining. A joined low-precedence typed error can no longer hide an untyped backend failure. Ordinary single `%w` typed wrappers and context errors remain intact; coverage confirms a lone typed corruption still returns sanitized 422.
+- Preparation failure cleanup now derives a fresh background context bounded to ten seconds and always cancels it. A context-aware Kubernetes client wrapper forces the first patch to expire its preparation context, then verifies both cleanup patches receive the distinct, live, bounded cleanup context and remove stale readiness.
+- The pre-existing corruption-reader fixture was changed from a multi-error to an ordinary `%w` typed wrapper so it continues to exercise the intentionally preserved typed-wrapper behavior rather than representing a new untyped sibling failure.
+- No legacy cache handler, durable-store implementation, TLS behavior, or route composition changed in this round.
+
+Final fix-round verification:
+
+```text
+$ gofmt -w cmd/artifact-daemon/hangar.go cmd/artifact-daemon/hangar_handlers.go cmd/artifact-daemon/hangar_test.go
+
+$ env GOCACHE=/private/tmp/hangar-task5-gocache go test ./cmd/artifact-daemon -run Hangar -count=1
+ok  github.com/concourse/concourse/cmd/artifact-daemon  0.601s
+
+$ env GOCACHE=/private/tmp/hangar-task5-gocache go test ./cmd/artifact-daemon/... ./hangar/... -count=1
+ok  github.com/concourse/concourse/cmd/artifact-daemon          57.669s
+ok  github.com/concourse/concourse/cmd/artifact-daemon/durable   3.929s
+ok  github.com/concourse/concourse/hangar                        1.406s
+
+$ git diff --check
+# exit 0, no output
+```
+
+Files changed in this round: `cmd/artifact-daemon/hangar.go`, `cmd/artifact-daemon/hangar_handlers.go`, `cmd/artifact-daemon/hangar_test.go`, and this report.
+
+Fix commit subject: `fix(artifact-daemon): retain cleanup authority`.
+
+Local gap remains unchanged: lifecycle behavior is covered with a context-aware Kubernetes fake rather than a live node.
