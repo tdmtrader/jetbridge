@@ -711,7 +711,8 @@ func (t *team) Pipeline(pipelineRef atc.PipelineRef) (Pipeline, bool, error) {
 func (t *team) Pipelines() ([]Pipeline, error) {
 	rows, err := pipelinesQuery.
 		Where(sq.Eq{
-			"team_id": t.id,
+			"p.team_id":         t.id,
+			"p.pipeline_run_id": nil,
 		}).
 		OrderBy("p.ordering", "p.secondary_ordering").
 		RunWith(t.conn).
@@ -731,8 +732,9 @@ func (t *team) Pipelines() ([]Pipeline, error) {
 func (t *team) PublicPipelines() ([]Pipeline, error) {
 	rows, err := pipelinesQuery.
 		Where(sq.Eq{
-			"team_id": t.id,
-			"public":  true,
+			"p.team_id":         t.id,
+			"public":            true,
+			"p.pipeline_run_id": nil,
 		}).
 		OrderBy("p.ordering ASC", "p.secondary_ordering ASC").
 		RunWith(t.conn).
@@ -1331,19 +1333,22 @@ func (t *team) findContainer(whereClause sq.Sqlizer) (CreatingContainer, Created
 
 func scanPipeline(p *pipeline, scan scannable) error {
 	var (
-		groups        sql.NullString
-		varSources    sql.NullString
-		display       sql.NullString
-		nonce         sql.NullString
-		nonceStr      *string
-		lastUpdated   sql.NullTime
-		parentJobID   sql.NullInt64
-		parentBuildID sql.NullInt64
-		instanceVars  sql.NullString
-		pausedBy      sql.NullString
-		pausedAt      sql.NullTime
+		groups           sql.NullString
+		varSources       sql.NullString
+		display          sql.NullString
+		nonce            sql.NullString
+		nonceStr         *string
+		lastUpdated      sql.NullTime
+		parentJobID      sql.NullInt64
+		parentBuildID    sql.NullInt64
+		instanceVars     sql.NullString
+		pausedBy         sql.NullString
+		pausedAt         sql.NullTime
+		pipelineRunID    sql.NullInt64
+		basePipelineID   sql.NullInt64
+		basePipelineName sql.NullString
 	)
-	err := scan.Scan(&p.id, &p.name, &groups, &varSources, &display, &nonce, &p.configVersion, &p.teamID, &p.teamName, &p.paused, &p.public, &p.archived, &lastUpdated, &parentJobID, &parentBuildID, &instanceVars, &pausedBy, &pausedAt)
+	err := scan.Scan(&p.id, &p.name, &groups, &varSources, &display, &nonce, &p.configVersion, &p.teamID, &p.teamName, &p.paused, &p.public, &p.archived, &lastUpdated, &parentJobID, &parentBuildID, &instanceVars, &pausedBy, &pausedAt, &pipelineRunID, &basePipelineID, &basePipelineName)
 	if err != nil {
 		return err
 	}
@@ -1351,6 +1356,9 @@ func scanPipeline(p *pipeline, scan scannable) error {
 	p.lastUpdated = lastUpdated.Time
 	p.parentJobID = int(parentJobID.Int64)
 	p.parentBuildID = int(parentBuildID.Int64)
+	p.pipelineRunID = int(pipelineRunID.Int64)
+	p.basePipelineID = int(basePipelineID.Int64)
+	p.basePipelineName = basePipelineName.String
 
 	if groups.Valid {
 		var pipelineGroups atc.GroupConfigs

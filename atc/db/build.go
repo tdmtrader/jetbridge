@@ -91,6 +91,12 @@ var buildsQuery = psql.Select(`
 		b.pipeline_id,
 		p.name,
 		p.instance_vars,
+		p.pipeline_run_id,
+		(SELECT template_pipeline_id FROM pipeline_runs WHERE id = p.pipeline_run_id),
+		(SELECT name FROM pipelines WHERE id = (SELECT template_pipeline_id FROM pipeline_runs WHERE id = p.pipeline_run_id)),
+		b.pipeline_run_id,
+		b.run_job_name,
+		b.run_job_key,
 		t.name,
 		b.nonce,
 		b.drained,
@@ -160,6 +166,8 @@ type Build interface {
 	RerunOfName() string
 	RerunNumber() int
 	CreatedBy() *string
+	RunJobName() string
+	RunJobKey() string
 
 	LagerData() lager.Data
 	TracingAttrs() tracing.Attrs
@@ -243,7 +251,9 @@ type build struct {
 
 	isManuallyTriggered bool
 
-	createdBy *string
+	createdBy  *string
+	runJobName string
+	runJobKey  string
 
 	rerunOf     int
 	rerunOfName string
@@ -387,6 +397,8 @@ func (b *build) RerunOf() int                     { return b.rerunOf }
 func (b *build) RerunOfName() string              { return b.rerunOfName }
 func (b *build) RerunNumber() int                 { return b.rerunNumber }
 func (b *build) CreatedBy() *string               { return b.createdBy }
+func (b *build) RunJobName() string               { return b.runJobName }
+func (b *build) RunJobKey() string                { return b.runJobKey }
 
 func (b *build) isNewerThanLastCheckOf(input Resource) bool {
 	return b.createTime.After(input.LastCheckEndTime())
@@ -1887,7 +1899,8 @@ func scanBuild(b *build, row scannable, encryptionStrategy encryption.Strategy) 
 		nonce, spanContext, createdBy                                                     sql.NullString
 		drained, aborted, completed                                                       bool
 		status                                                                            string
-		pipelineInstanceVars, comment                                                     sql.NullString
+		pipelineInstanceVars, comment, basePipelineName, runJobName, runJobKey            sql.NullString
+		pipelineRunID, basePipelineID, buildPipelineRunID                                 sql.NullInt64
 	)
 
 	err := row.Scan(
@@ -1913,6 +1926,12 @@ func scanBuild(b *build, row scannable, encryptionStrategy encryption.Strategy) 
 		&pipelineID,
 		&pipelineName,
 		&pipelineInstanceVars,
+		&pipelineRunID,
+		&basePipelineID,
+		&basePipelineName,
+		&buildPipelineRunID,
+		&runJobName,
+		&runJobKey,
 		&b.teamName,
 		&nonce,
 		&drained,
@@ -1937,6 +1956,14 @@ func scanBuild(b *build, row scannable, encryptionStrategy encryption.Strategy) 
 	b.resourceTypeID = int(resourceTypeID.Int64)
 	b.pipelineID = int(pipelineID.Int64)
 	b.pipelineName = pipelineName.String
+	b.pipelineRunID = int(pipelineRunID.Int64)
+	b.basePipelineID = int(basePipelineID.Int64)
+	b.basePipelineName = basePipelineName.String
+	if buildPipelineRunID.Valid {
+		b.pipelineRunID = int(buildPipelineRunID.Int64)
+	}
+	b.runJobName = runJobName.String
+	b.runJobKey = runJobKey.String
 	b.schema = schema.String
 	b.createTime = createTime.Time
 	b.startTime = startTime.Time

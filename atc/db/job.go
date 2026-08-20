@@ -68,6 +68,8 @@ type Job interface {
 	ScheduleRequestedTime() time.Time
 	MaxInFlight() int
 	DisableManualTrigger() bool
+	RunExpected() bool
+	RunPolicyKey() string
 
 	Config() (atc.JobConfig, error)
 	Inputs() ([]atc.JobInput, error)
@@ -130,10 +132,17 @@ var jobsQuery = psql.Select(
 	"j.max_in_flight",
 	"j.disable_manual_trigger",
 	"j.paused_by",
-	"j.paused_at").
+	"j.paused_at",
+	"j.run_expected",
+	"j.run_policy_key",
+	"p.pipeline_run_id",
+	"pr.template_pipeline_id",
+	"base.name").
 	From("jobs j").
 	LeftJoin("pipelines p ON j.pipeline_id = p.id").
-	LeftJoin("teams t ON p.team_id = t.id")
+	LeftJoin("teams t ON p.team_id = t.id").
+	LeftJoin("pipeline_runs pr ON p.pipeline_run_id = pr.id").
+	LeftJoin("pipelines base ON pr.template_pipeline_id = base.id")
 
 type FirstLoggedBuildIDDecreasedError struct {
 	Job   string
@@ -162,6 +171,8 @@ type job struct {
 	scheduleRequestedTime time.Time
 	maxInFlight           int
 	disableManualTrigger  bool
+	runExpected           bool
+	runPolicyKey          string
 
 	config    *atc.JobConfig
 	rawConfig *string
@@ -225,6 +236,8 @@ func (j *job) HasNewInputs() bool               { return j.hasNewInputs }
 func (j *job) ScheduleRequestedTime() time.Time { return j.scheduleRequestedTime }
 func (j *job) MaxInFlight() int                 { return j.maxInFlight }
 func (j *job) DisableManualTrigger() bool       { return j.disableManualTrigger }
+func (j *job) RunExpected() bool                { return j.runExpected }
+func (j *job) RunPolicyKey() string             { return j.runPolicyKey }
 
 func (j *job) LatestCompletedBuildId() (int, error) {
 	var id int
@@ -1413,10 +1426,14 @@ func scanJob(j *job, row scannable) error {
 		pipelineInstanceVars sql.NullString
 		pausedBy             sql.NullString
 		pausedAt             sql.NullTime
+		runPolicyKey         sql.NullString
+		pipelineRunID        sql.NullInt64
+		basePipelineID       sql.NullInt64
+		basePipelineName     sql.NullString
 	)
 
 	m := pgtype.NewMap()
-	err := row.Scan(&j.id, &j.name, &config, &j.paused, &j.public, &j.firstLoggedBuildID, &j.pipelineID, &j.pipelineName, &pipelineInstanceVars, &j.teamID, &j.teamName, &nonce, m.SQLScanner(&j.tags), &j.hasNewInputs, &j.scheduleRequestedTime, &j.maxInFlight, &j.disableManualTrigger, &pausedBy, &pausedAt)
+	err := row.Scan(&j.id, &j.name, &config, &j.paused, &j.public, &j.firstLoggedBuildID, &j.pipelineID, &j.pipelineName, &pipelineInstanceVars, &j.teamID, &j.teamName, &nonce, m.SQLScanner(&j.tags), &j.hasNewInputs, &j.scheduleRequestedTime, &j.maxInFlight, &j.disableManualTrigger, &pausedBy, &pausedAt, &j.runExpected, &runPolicyKey, &pipelineRunID, &basePipelineID, &basePipelineName)
 	if err != nil {
 		return err
 	}
@@ -1443,6 +1460,10 @@ func scanJob(j *job, row scannable) error {
 	if pausedAt.Valid {
 		j.pausedAt = pausedAt.Time
 	}
+	j.runPolicyKey = runPolicyKey.String
+	j.pipelineRunID = int(pipelineRunID.Int64)
+	j.basePipelineID = int(basePipelineID.Int64)
+	j.basePipelineName = basePipelineName.String
 
 	return nil
 }
