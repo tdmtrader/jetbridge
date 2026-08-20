@@ -269,7 +269,14 @@ func TestMaterializerRetryRechecksAuthorityAfterComparison(t *testing.T) {
 }
 
 func TestMaterializerRetryComparisonRechecksNamespaceAndMetadata(t *testing.T) {
-	for _, attack := range []string{"extra entry", "same-inode mode mutation"} {
+	for _, attack := range []string{
+		"extra entry",
+		"same-inode mode mutation",
+		"receipt removal",
+		"receipt same-inode content mutation",
+		"receipt mode mutation",
+		"receipt exact replacement",
+	} {
 		t.Run(attack, func(t *testing.T) {
 			ref, canonical := canonicalTreeFixture(t, testTreeArchive(t, []testTreeEntry{{name: "file", kind: tar.TypeReg, body: "same"}}))
 			storage := t.TempDir()
@@ -281,6 +288,14 @@ func TestMaterializerRetryComparisonRechecksNamespaceAndMetadata(t *testing.T) {
 			}
 			var once sync.Once
 			var attackErr error
+			mutateReceipt := func(mutate func(string) error) error {
+				if err := os.Chmod(destination, 0700); err != nil {
+					return err
+				}
+				mutationErr := mutate(filepath.Join(destination, materializationReceiptName))
+				restoreErr := os.Chmod(destination, 0555)
+				return errors.Join(mutationErr, restoreErr)
+			}
 			materializer.hooks.duringRetryCompare = func() error {
 				once.Do(func() {
 					switch attack {
@@ -296,6 +311,64 @@ func TestMaterializerRetryComparisonRechecksNamespaceAndMetadata(t *testing.T) {
 						attackErr = os.Chmod(destination, 0555)
 					case "same-inode mode mutation":
 						attackErr = os.Chmod(filepath.Join(destination, "file"), 0400)
+					case "receipt removal":
+						attackErr = mutateReceipt(os.Remove)
+					case "receipt same-inode content mutation":
+						attackErr = mutateReceipt(func(receipt string) error {
+							before, err := os.Stat(receipt)
+							if err != nil {
+								return err
+							}
+							contents, err := os.ReadFile(receipt)
+							if err != nil || len(contents) == 0 {
+								return errors.Join(err, errorUnless(len(contents) > 0, "empty receipt fixture"))
+							}
+							contents[0] ^= 1
+							if err := os.Chmod(receipt, 0644); err != nil {
+								return err
+							}
+							writeErr := os.WriteFile(receipt, contents, 0644)
+							resealErr := os.Chmod(receipt, 0444)
+							after, statErr := os.Stat(receipt)
+							if writeErr == nil && resealErr == nil && statErr == nil && !os.SameFile(before, after) {
+								return errors.New("receipt content mutation replaced the inode")
+							}
+							return errors.Join(writeErr, resealErr, statErr)
+						})
+					case "receipt mode mutation":
+						attackErr = mutateReceipt(func(receipt string) error {
+							return os.Chmod(receipt, 0644)
+						})
+					case "receipt exact replacement":
+						attackErr = mutateReceipt(func(receipt string) error {
+							contents, err := os.ReadFile(receipt)
+							if err != nil {
+								return err
+							}
+							oldReceipt, err := os.Open(receipt)
+							if err != nil {
+								return err
+							}
+							defer oldReceipt.Close()
+							before, err := oldReceipt.Stat()
+							if err != nil {
+								return err
+							}
+							if err := os.Remove(receipt); err != nil {
+								return err
+							}
+							if err := os.WriteFile(receipt, contents, 0444); err != nil {
+								return err
+							}
+							after, err := os.Stat(receipt)
+							if err != nil {
+								return err
+							}
+							if os.SameFile(before, after) {
+								return errors.New("receipt replacement reused the live inode")
+							}
+							return nil
+						})
 					}
 				})
 				return attackErr
