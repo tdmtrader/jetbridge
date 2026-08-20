@@ -78,6 +78,9 @@ const (
 	ListPipelineBuilds        = "ListPipelineBuilds"
 	CreatePipelineBuild       = "CreatePipelineBuild"
 	PipelineBadge             = "PipelineBadge"
+	CreatePipelineRun         = "CreatePipelineRun"
+	ListPipelineRuns          = "ListPipelineRuns"
+	GetPipelineRun            = "GetPipelineRun"
 
 	RegisterWorker = "RegisterWorker"
 	ListWorkers    = "ListWorkers"
@@ -158,6 +161,9 @@ var Routes = rata.Routes([]rata.Route{
 
 	{Path: "/api/v1/pipelines", Method: "GET", Name: ListAllPipelines},
 	{Path: "/api/v1/teams/:team_name/pipelines", Method: "GET", Name: ListPipelines},
+	{Path: "/api/v1/teams/:team_name/pipelines/:pipeline_name/runs", Method: "POST", Name: CreatePipelineRun},
+	{Path: "/api/v1/teams/:team_name/pipelines/:pipeline_name/runs", Method: "GET", Name: ListPipelineRuns},
+	{Path: "/api/v1/teams/:team_name/pipelines/:pipeline_name/runs/:number", Method: "GET", Name: GetPipelineRun},
 	{Path: "/api/v1/teams/:team_name/pipelines/:pipeline_name", Method: "GET", Name: GetPipeline},
 	{Path: "/api/v1/teams/:team_name/pipelines/:pipeline_name", Method: "DELETE", Name: DeletePipeline},
 	{Path: "/api/v1/teams/:team_name/pipelines/ordering", Method: "PUT", Name: OrderPipelines},

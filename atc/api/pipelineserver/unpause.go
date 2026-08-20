@@ -3,6 +3,7 @@ package pipelineserver
 import (
 	"net/http"
 
+	"github.com/concourse/concourse/atc/api/errormap"
 	"github.com/concourse/concourse/atc/db"
 )
 
@@ -13,6 +14,9 @@ func (s *Server) UnpausePipeline(pipelineDB db.Pipeline) http.Handler {
 
 		if err != nil {
 			logger.Error("failed-to-unpause-pipeline", err)
+			if errormap.Write(w, err) {
+				return
+			}
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}

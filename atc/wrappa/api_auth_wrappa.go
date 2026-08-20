@@ -57,6 +57,8 @@ func (wrappa *APIAuthWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 
 		// pipeline is public or authorized
 		case atc.GetPipeline,
+			atc.ListPipelineRuns,
+			atc.GetPipelineRun,
 			atc.GetJobBuild,
 			atc.PipelineBadge,
 			atc.JobBadge,
@@ -130,6 +132,7 @@ func (wrappa *APIAuthWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 			atc.CreateJobBuild,
 			atc.RerunJobBuild,
 			atc.CreatePipelineBuild,
+			atc.CreatePipelineRun,
 			atc.DeletePipeline,
 			atc.DisableResourceVersion,
 			atc.EnableResourceVersion,

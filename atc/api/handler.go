@@ -18,6 +18,7 @@ import (
 	"github.com/concourse/concourse/atc/api/infoserver"
 	"github.com/concourse/concourse/atc/api/jobserver"
 	"github.com/concourse/concourse/atc/api/loglevelserver"
+	"github.com/concourse/concourse/atc/api/pipelinerunserver"
 	"github.com/concourse/concourse/atc/api/pipelineserver"
 	"github.com/concourse/concourse/atc/api/resourceserver"
 	"github.com/concourse/concourse/atc/api/resourceserver/versionserver"
@@ -49,6 +50,7 @@ func NewHandler(
 
 	dbTeamFactory db.TeamFactory,
 	dbPipelineFactory db.PipelineFactory,
+	dbPipelineRunFactory db.PipelineRunFactory,
 	dbJobFactory db.JobFactory,
 	dbResourceFactory db.ResourceFactory,
 	dbWorkerFactory db.WorkerFactory,
@@ -98,6 +100,7 @@ func NewHandler(
 
 	versionServer := versionserver.NewServer(logger, externalURL)
 	pipelineServer := pipelineserver.NewServer(logger, dbTeamFactory, dbPipelineFactory, externalURL)
+	pipelineRunServer := pipelinerunserver.NewServer(logger, dbPipelineRunFactory, externalURL)
 	configServer := configserver.NewServer(logger, dbTeamFactory, secretManager)
 	ccServer := ccserver.NewServer(logger, dbTeamFactory, externalURL)
 	workerServer := workerserver.NewServer(logger, workerTeamFactory, dbWorkerFactory)
@@ -153,6 +156,9 @@ func NewHandler(
 
 		atc.ListAllPipelines:          http.HandlerFunc(pipelineServer.ListAllPipelines),
 		atc.ListPipelines:             http.HandlerFunc(pipelineServer.ListPipelines),
+		atc.CreatePipelineRun:         pipelineHandlerFactory.HandlerFor(pipelineRunServer.CreatePipelineRun),
+		atc.ListPipelineRuns:          pipelineHandlerFactory.HandlerFor(pipelineRunServer.ListPipelineRuns),
+		atc.GetPipelineRun:            pipelineHandlerFactory.HandlerFor(pipelineRunServer.GetPipelineRun),
 		atc.GetPipeline:               pipelineHandlerFactory.HandlerFor(pipelineServer.GetPipeline),
 		atc.DeletePipeline:            pipelineHandlerFactory.HandlerFor(pipelineServer.DeletePipeline),
 		atc.OrderPipelines:            teamHandlerFactory.HandlerFor(pipelineServer.OrderPipelines),

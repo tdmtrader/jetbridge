@@ -8,6 +8,7 @@ import (
 
 	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/api/errormap"
 	. "github.com/concourse/concourse/atc/api/helpers"
 	"github.com/concourse/concourse/atc/configvalidate"
 	"github.com/concourse/concourse/atc/creds"
@@ -133,6 +134,9 @@ func (s *Server) SaveConfig(w http.ResponseWriter, r *http.Request) {
 	_, created, err := team.SavePipeline(pipelineRef, config, version, true)
 	if err != nil {
 		session.Error("failed-to-save-config", err)
+		if errormap.Write(w, err) {
+			return
+		}
 		w.WriteHeader(http.StatusInternalServerError)
 		fmt.Fprintf(w, "failed to save config: %s", err)
 		return

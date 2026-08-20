@@ -6,6 +6,7 @@ import (
 
 	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/api/errormap"
 	"github.com/concourse/concourse/atc/api/present"
 	"github.com/concourse/concourse/atc/db"
 )
@@ -24,6 +25,9 @@ func (s *Server) CreateBuild(pipeline db.Pipeline) http.Handler {
 		build, err := pipeline.CreateStartedBuild(plan)
 		if err != nil {
 			logger.Error("failed-to-create-one-off-build", err)
+			if errormap.Write(w, err) {
+				return
+			}
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}

@@ -174,6 +174,7 @@ var _ = BeforeEach(func() {
 type apiDBDeps struct {
 	teamFactory           db.TeamFactory
 	pipelineFactory       db.PipelineFactory
+	pipelineRunFactory    db.PipelineRunFactory
 	jobFactory            db.JobFactory
 	resourceFactory       db.ResourceFactory
 	workerFactory         db.WorkerFactory
@@ -261,6 +262,7 @@ func newAPIServer(deps apiDBDeps) *httptest.Server {
 
 		deps.teamFactory,
 		deps.pipelineFactory,
+		deps.pipelineRunFactory,
 		deps.jobFactory,
 		deps.resourceFactory,
 		deps.workerFactory,

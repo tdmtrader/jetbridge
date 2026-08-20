@@ -9,6 +9,13 @@ import (
 
 type RunParams map[string]any
 
+// InvalidRunParamsError identifies a request whose supplied run parameters do
+// not satisfy a template's declared schema.
+type InvalidRunParamsError struct{ Err error }
+
+func (e InvalidRunParamsError) Error() string { return e.Err.Error() }
+func (e InvalidRunParamsError) Unwrap() error { return e.Err }
+
 type ParamType string
 
 const (
@@ -35,6 +42,14 @@ type RunRetentionConfig struct {
 }
 
 func ValidateRunParams(schemas []ParamSchema, params RunParams) (RunParams, error) {
+	normalized, err := validateRunParams(schemas, params)
+	if err != nil {
+		return nil, InvalidRunParamsError{Err: err}
+	}
+	return normalized, nil
+}
+
+func validateRunParams(schemas []ParamSchema, params RunParams) (RunParams, error) {
 	schemaByName := make(map[string]ParamSchema, len(schemas))
 	for _, schema := range schemas {
 		schemaByName[schema.Name] = schema

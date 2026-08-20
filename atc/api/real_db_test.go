@@ -82,6 +82,7 @@ func useRealDB() *realDB {
 	deps := apiDBDeps{
 		teamFactory:           teamFactory,
 		pipelineFactory:       db.NewPipelineFactory(conn, lockFactory),
+		pipelineRunFactory:    db.NewPipelineRunFactory(conn, lockFactory),
 		jobFactory:            db.NewJobFactory(conn, lockFactory),
 		resourceFactory:       db.NewResourceFactory(conn, lockFactory),
 		workerFactory:         db.NewWorkerFactory(conn, db.NewStaticWorkerCache(logger, conn, 0)),

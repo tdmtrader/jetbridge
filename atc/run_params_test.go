@@ -2,6 +2,7 @@ package atc_test
 
 import (
 	"encoding/json"
+	"errors"
 
 	. "github.com/concourse/concourse/atc"
 	. "github.com/onsi/ginkgo/v2"
@@ -9,6 +10,13 @@ import (
 )
 
 var _ = Describe("Run parameter validation", func() {
+	It("marks user-supplied validation failures with a typed error", func() {
+		// This fails if API handlers must parse an unstable validation message to return 400.
+		_, err := ValidateRunParams([]ParamSchema{{Name: "environment", Type: ParamTypeString, Required: true}}, RunParams{})
+		var invalid InvalidRunParamsError
+		Expect(errors.As(err, &invalid)).To(BeTrue())
+	})
+
 	It("normalizes supplied values after applying schema defaults", func() {
 		// This fails if defaults are applied after interpolation/storage, or if
 		// strings from an API request are not coerced to their declared scalars.

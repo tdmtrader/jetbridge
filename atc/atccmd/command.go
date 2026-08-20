@@ -899,6 +899,7 @@ func (cmd *RunCommand) constructAPIMembers(
 
 	credsManagers := cmd.CredentialManagers
 	dbPipelineFactory := db.NewPipelineFactory(dbConn, lockFactory)
+	dbPipelineRunFactory := db.NewPipelineRunFactory(dbConn, lockFactory)
 	dbJobFactory := db.NewJobFactory(dbConn, lockFactory)
 	dbResourceFactory := db.NewResourceFactory(dbConn, lockFactory)
 	dbContainerRepository := db.NewContainerRepository(dbConn)
@@ -941,6 +942,7 @@ func (cmd *RunCommand) constructAPIMembers(
 		teamFactory,
 		workerTeamFactory,
 		dbPipelineFactory,
+		dbPipelineRunFactory,
 		dbJobFactory,
 		dbResourceFactory,
 		dbWorkerFactory,
@@ -2224,6 +2226,7 @@ func (cmd *RunCommand) constructAPIHandler(
 	teamFactory db.TeamFactory,
 	workerTeamFactory db.TeamFactory,
 	dbPipelineFactory db.PipelineFactory,
+	dbPipelineRunFactory db.PipelineRunFactory,
 	dbJobFactory db.JobFactory,
 	dbResourceFactory db.ResourceFactory,
 	dbWorkerFactory db.WorkerFactory,
@@ -2302,6 +2305,7 @@ func (cmd *RunCommand) constructAPIHandler(
 
 		teamFactory,
 		dbPipelineFactory,
+		dbPipelineRunFactory,
 		dbJobFactory,
 		dbResourceFactory,
 		dbWorkerFactory,

@@ -36,6 +36,7 @@ type PipelineRunFactory interface {
 	GetRun(Pipeline, int) (PipelineRun, bool, error)
 	GetRunByID(int) (PipelineRun, bool, error)
 	Runs(Pipeline, Page) ([]PipelineRun, Pagination, error)
+	InstancePipeline(PipelineRun) (Pipeline, bool, error)
 }
 
 type pipelineRunFactory struct {
@@ -291,6 +292,21 @@ func (f *pipelineRunFactory) GetRun(base Pipeline, number int) (PipelineRun, boo
 
 func (f *pipelineRunFactory) GetRunByID(id int) (PipelineRun, bool, error) {
 	return f.getRun(pipelineRunsQuery.Where(sq.Eq{"r.id": id}).RunWith(f.conn).QueryRow())
+}
+
+func (f *pipelineRunFactory) InstancePipeline(run PipelineRun) (Pipeline, bool, error) {
+	pipeline := newPipeline(f.conn, f.lockFactory)
+	err := scanPipeline(pipeline, pipelinesQuery.
+		Where(sq.Eq{"p.pipeline_run_id": run.ID()}).
+		RunWith(f.conn).
+		QueryRow())
+	if err == sql.ErrNoRows {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return pipeline, true, nil
 }
 
 func (f *pipelineRunFactory) getRun(row scannable) (PipelineRun, bool, error) {
