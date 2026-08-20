@@ -868,8 +868,14 @@ all =
             \_ ->
                 SideBarPipeline.regularPipeline
                     { hovered = HoverState.NoHover, currentPipeline = Nothing, favoritedPipelines = Set.empty, isFavoritesSection = False }
-                    (Data.pipeline "team" 1 |> Data.withName "template" |> asTemplate)
+                    (Data.pipeline "team" 1 |> Data.withName "template" |> asTemplate Nothing)
                     |> Expect.all [ .href >> Expect.equal "/teams/team/pipelines/template/runs", .name >> .text >> Expect.equal "template • no runs" ]
+        , test "template rows show their latest run number" <|
+            \_ ->
+                SideBarPipeline.regularPipeline
+                    { hovered = HoverState.NoHover, currentPipeline = Nothing, favoritedPipelines = Set.empty, isFavoritesSection = False }
+                    (Data.pipeline "team" 1 |> Data.withName "template" |> asTemplate (Just 7))
+                    |> Expect.all [ .href >> Expect.equal "/teams/team/pipelines/template/runs", .name >> .text >> Expect.equal "template • runs through #7" ]
         , describe "on dashboard page" <| hasSideBar (when iVisitTheDashboard)
         , describe "loading dashboard page" <| pageLoadIsSideBarCompatible iVisitTheDashboard
         , describe "dashboard page exceptions"
@@ -944,9 +950,9 @@ all =
         ]
 
 
-asTemplate : Concourse.Pipeline -> Concourse.Pipeline
-asTemplate pipeline =
-    { pipeline | template = Just True, lastRunNumber = Nothing }
+asTemplate : Maybe Int -> Concourse.Pipeline -> Concourse.Pipeline
+asTemplate lastRun pipeline =
+    { pipeline | template = Just True, lastRunNumber = lastRun }
 
 
 iAmViewingTheDashboardOnANonPhoneScreen =

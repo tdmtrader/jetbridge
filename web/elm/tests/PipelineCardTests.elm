@@ -125,21 +125,55 @@ all =
                         [ Query.has [ attribute <| Attr.href "/teams/team/pipelines/template/runs", text "no runs" ]
                         , Query.hasNot [ class "banner" ]
                         ]
-        , test "a high-density template card keeps the neutral history label" <|
+        , test "a high-density active template card keeps neutral history and state chrome" <|
             \_ ->
                 let
                     template =
                         Data.dashboardPipeline "team" 1
                 in
                 DashboardPipeline.hdPipelineView { pipelineRunningKeyframes = "" }
-                    { pipeline = { template | name = "template", template = True }
+                    { pipeline = { template | name = "release", template = True }
                     , resourceError = False
                     , existingJobs = []
                     }
                     |> (\view -> Html.div [] [ view ])
                     |> Query.fromHtml
                     |> Expect.all
-                        [ Query.has [ attribute <| Attr.href "/teams/team/pipelines/template/runs", text "no runs" ]
+                        [ Query.has [ attribute <| Attr.href "/teams/team/pipelines/release/runs", text "no runs", text "template" ]
+                        , Query.hasNot [ class "banner" ]
+                        ]
+        , test "a high-density paused template card shows its last run and paused chrome" <|
+            \_ ->
+                let
+                    template =
+                        Data.dashboardPipeline "team" 1
+                in
+                DashboardPipeline.hdPipelineView { pipelineRunningKeyframes = "" }
+                    { pipeline = { template | name = "release", template = True, paused = True, lastRunNumber = Just 7 }
+                    , resourceError = False
+                    , existingJobs = []
+                    }
+                    |> (\view -> Html.div [] [ view ])
+                    |> Query.fromHtml
+                    |> Expect.all
+                        [ Query.has [ attribute <| Attr.href "/teams/team/pipelines/release/runs", text "runs through #7", text "paused" ]
+                        , Query.hasNot [ class "banner" ]
+                        ]
+        , test "a high-density archived template card shows its last run and archived chrome" <|
+            \_ ->
+                let
+                    template =
+                        Data.dashboardPipeline "team" 1
+                in
+                DashboardPipeline.hdPipelineView { pipelineRunningKeyframes = "" }
+                    { pipeline = { template | name = "release", template = True, archived = True, lastRunNumber = Just 7 }
+                    , resourceError = False
+                    , existingJobs = []
+                    }
+                    |> (\view -> Html.div [] [ view ])
+                    |> Query.fromHtml
+                    |> Expect.all
+                        [ Query.has [ attribute <| Attr.href "/teams/team/pipelines/release/runs", text "runs through #7", text "archived" ]
                         , Query.hasNot [ class "banner" ]
                         ]
         , test "mixed dashboard refreshes omit explicit run payloads" <|
