@@ -468,10 +468,7 @@ handleDelivery delivery ( model, effects ) =
         ClockTicked FiveSeconds _ ->
             case model.runTemplate of
                 Just _ ->
-                    if runAllowsPipelineControls model then
-                        retryRunHeader model effects
-                    else
-                        ( model, effects )
+                    retryRunHeader model effects
 
                 Nothing ->
                     ( model, effects ++ [ FetchPipeline model.pipelineLocator, FetchAllPipelines ] )

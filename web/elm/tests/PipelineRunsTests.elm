@@ -11,10 +11,10 @@ import Dict
 import Expect
 import Html.Attributes as Attr
 import Http
+import Message.Callback exposing (Callback(..))
 import Message.Effects as Effects
 import Message.Message exposing (Message(..))
 import Message.TopLevelMessage exposing (TopLevelMessage(..))
-import Message.Callback exposing (Callback(..))
 import PipelineRuns.PipelineRuns as PipelineRuns
 import Routes
 import Test exposing (Test, describe, test)
@@ -71,6 +71,28 @@ all =
                     |> Common.queryView
                     |> Query.find [ id "run-param-environment" ]
                     |> Query.has [ attribute <| Attr.attribute "aria-describedby" "run-param-environment-description" ]
+        , test "renders the empty encoded enum state as the selected prompt" <|
+            \_ ->
+                pageWithTemplate
+                    |> Application.update (Update OpenPipelineRunForm)
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.find [ id "run-param-environment" ]
+                    |> Expect.all
+                        [ Query.has [ attribute <| Attr.value "" ]
+                        , Query.has [ containing [ tag "option", attribute <| Attr.value "", text "Select environment" ] ]
+                        ]
+        , test "keeps an optional enum prompt selectable" <|
+            \_ ->
+                pageFor optionalEnumTemplate
+                    |> Application.update (Update OpenPipelineRunForm)
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.find [ id "run-param-environment" ]
+                    |> Expect.all
+                        [ Query.has [ containing [ tag "option", attribute <| Attr.value "" ] ]
+                        , Query.hasNot [ containing [ tag "option", attribute <| Attr.value "", attribute <| Attr.disabled True ] ]
+                        ]
         , test "uses a native pretty link only when the server gives an instance reference" <|
             \_ ->
                 pageWithRuns
@@ -184,6 +206,14 @@ all =
                     |> Application.handleCallback (PipelineRunCreated (Err conflict))
                     |> Tuple.second
                     |> Expect.equal [ Effects.FetchPipeline Data.pipelineId, Effects.Focus "run-form-error" ]
+        , test "preserves the actionable 409 response body" <|
+            \_ ->
+                submitted
+                    |> Application.handleCallback (PipelineRunCreated (Err serverConflict))
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.find [ id "run-form-error" ]
+                    |> Query.has [ text "environment must be approved for this template" ]
         , test "marks the form busy while its controls are disabled" <|
             \_ ->
                 submitted
@@ -378,7 +408,10 @@ submitted =
 
 template : Concourse.Pipeline
 template =
-    let pipeline = Data.pipeline "team" 1 in
+    let
+        pipeline =
+            Data.pipeline "team" 1
+    in
     { pipeline
         | template = Just True
         , canCreateRun = True
@@ -399,6 +432,13 @@ archivedTemplate =
 nonWriterTemplate : Concourse.Pipeline
 nonWriterTemplate =
     { template | canCreateRun = False }
+
+
+optionalEnumTemplate : Concourse.Pipeline
+optionalEnumTemplate =
+    { template
+        | paramsSchema = [ { name = "environment", type_ = Concourse.EnumParam, required = False, default = Nothing, values = [ Concourse.JsonString "staging" ], description = Nothing } ]
+    }
 
 
 pageFor : Concourse.Pipeline -> Application.Model
@@ -434,6 +474,16 @@ conflict =
         , status = { code = 409, message = "template changed" }
         , headers = Dict.empty
         , body = ""
+        }
+
+
+serverConflict : Http.Error
+serverConflict =
+    Http.BadStatus
+        { url = "http://example.com"
+        , status = { code = 409, message = "Conflict" }
+        , headers = Dict.empty
+        , body = " environment must be approved for this template \n"
         }
 
 
