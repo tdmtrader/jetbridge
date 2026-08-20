@@ -209,8 +209,11 @@ all =
         , test "does not render a creation action for a non-writer" <|
             \_ ->
                 pageFor nonWriterTemplate
-                    |> Common.queryView
-                    |> Query.hasNot [ text "Start a run", tag "form" ]
+                    |> Expect.all
+                        [ Common.queryView >> Query.hasNot [ text "Start a run" ]
+                        , Common.queryView >> Query.hasNot [ tag "form" ]
+                        , Common.queryView >> Query.hasNot [ tag "button", text "Start run" ]
+                        ]
         , test "renders a loading state" <|
             \_ ->
                 Common.init "/teams/team/pipelines/pipeline/runs" |> Common.queryView |> Query.has [ text "Loading run history…" ]
@@ -272,6 +275,16 @@ all =
                     |> Common.queryView
                     |> Query.find [ id "run-form-error" ]
                     |> Query.has [ text "template changed" ]
+        , test "does not let a racing history failure erase a refresh-hold error" <|
+            \_ ->
+                submitted
+                    |> Application.handleCallback (PipelineRunCreated (Err conflict))
+                    |> Tuple.first
+                    |> Application.handleCallback (PipelineRunsFetched Data.httpInternalServerError)
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.find [ id "run-form-error" ]
+                    |> Query.has [ text "template changed" ]
         , test "holds paused creation but leaves values editable" <|
             \_ ->
                 pageFor pausedTemplate
@@ -300,8 +313,15 @@ all =
         , test "does not render deferred search, filters, jump, prefill, or fly controls" <|
             \_ ->
                 pageWithRuns
-                    |> Common.queryView
-                    |> Query.hasNot [ text "Search", text "Fly", text "Jump to run" ]
+                    |> Expect.all
+                        [ Common.queryView >> Query.hasNot [ text "Search" ]
+                        , Common.queryView >> Query.hasNot [ text "Facets" ]
+                        , Common.queryView >> Query.hasNot [ text "Filters" ]
+                        , Common.queryView >> Query.hasNot [ text "Jump to run" ]
+                        , Common.queryView >> Query.hasNot [ text "Prefill" ]
+                        , Common.queryView >> Query.hasNot [ text "Fly" ]
+                        , Common.queryView >> Query.hasNot [ text "Fly preview" ]
+                        ]
         ]
 
 

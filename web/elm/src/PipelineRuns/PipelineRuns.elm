@@ -95,7 +95,7 @@ handleCallback callback ( model, effects ) =
         PipelineRunsFetched (Ok ( _, runs )) ->
             ( { model | runs = RemoteData.Success runs, error = if model.refreshing then model.error else Nothing }, effects )
         PipelineRunsFetched (Err err) ->
-            ( { model | runs = RemoteData.Failure err, error = Just "Unable to load run history." }, effects )
+            ( { model | runs = RemoteData.Failure err, error = if model.refreshing then model.error else Just "Unable to load run history." }, effects )
         PipelineRunCreated (Ok run) ->
             ( { model | pending = False, refreshing = False }
             , effects ++ [ NavigateTo <| Routes.toString <| Routes.PipelineRun { template = model.pipelineId, number = run.number } ]
