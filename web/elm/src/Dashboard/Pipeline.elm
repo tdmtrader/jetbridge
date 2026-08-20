@@ -67,22 +67,25 @@ pipelineNotSetView =
 
 
 hdPipelineView :
-    { u | pipelineRunningKeyframes : String }
+    { u | hovered : HoverState.HoverState, pipelineRunningKeyframes : String, userState : UserState.UserState }
     ->
         { pipeline : Pipeline
         , resourceError : Bool
         , existingJobs : List Concourse.Job
         }
     -> Html Message
-hdPipelineView { pipelineRunningKeyframes } { pipeline, resourceError, existingJobs } =
+hdPipelineView session { pipeline, resourceError, existingJobs } =
     if pipeline.template then
-        Html.a [ class "card", href <| pipelineHref pipeline ]
-            [ Html.div [ class "dashboardhd-pipeline-name" ] [ Html.text pipeline.name ]
-            , Html.div [] [ Html.text <| runLabel pipeline ]
-            , Html.div [] [ Html.text <| templateState pipeline ]
+        Html.div [ class "card" ]
+            [ Html.a [ href <| pipelineHref pipeline ]
+                [ Html.div [ class "dashboardhd-pipeline-name" ] [ Html.text pipeline.name ]
+                , Html.div [] [ Html.text <| runLabel pipeline ]
+                , Html.div [] [ Html.text <| templateState pipeline ]
+                ]
+            , templatePauseToggle session AllPipelinesSection session.hovered pipeline
             ]
     else
-        regularHdPipelineView { pipelineRunningKeyframes = pipelineRunningKeyframes } { pipeline = pipeline, resourceError = resourceError, existingJobs = existingJobs }
+        regularHdPipelineView { pipelineRunningKeyframes = session.pipelineRunningKeyframes } { pipeline = pipeline, resourceError = resourceError, existingJobs = existingJobs }
 
 
 regularHdPipelineView { pipelineRunningKeyframes } { pipeline, resourceError, existingJobs } =
@@ -205,22 +208,18 @@ runLabel pipeline =
     Maybe.map (\number -> "runs through #" ++ String.fromInt number) pipeline.lastRunNumber
         |> Maybe.withDefault "no runs"
 templateState p = if p.archived then "archived" else if p.paused then "paused" else "template"
+templatePauseToggle session section hovered pipeline = if pipeline.archived then Html.text "" else PauseToggle.view
+        { isPaused = pipeline.paused, pipeline = Concourse.toPipelineId pipeline
+        , isToggleHovered = HoverState.isHovered (PipelineCardPauseToggle section pipeline.id) hovered
+        , isToggleLoading = pipeline.isToggleLoading, tooltipPosition = Views.Styles.Above
+        , margin = "0", userState = session.userState, domID = PipelineCardPauseToggle section pipeline.id }
 templatePipelineView session { pipeline, section, hovered, headerHeight } =
     Html.div Styles.pipelineCard
         [ headerView section pipeline False headerHeight False False
         , Html.a (class "card-body" :: Styles.pipelineCardBody ++ [ href <| pipelineHref pipeline ]) [ Html.text <| runLabel pipeline ]
         , Html.div (class "card-footer" :: Styles.pipelineCardFooter)
             [ Html.text <| templateState pipeline
-            , if pipeline.archived then Html.text "" else PauseToggle.view
-                { isPaused = pipeline.paused
-                , pipeline = Concourse.toPipelineId pipeline
-                , isToggleHovered = HoverState.isHovered (PipelineCardPauseToggle section pipeline.id) hovered
-                , isToggleLoading = pipeline.isToggleLoading
-                , tooltipPosition = Views.Styles.Above
-                , margin = "0"
-                , userState = session.userState
-                , domID = PipelineCardPauseToggle section pipeline.id
-                }
+            , templatePauseToggle session section hovered pipeline
             ]
         ]
 

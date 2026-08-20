@@ -16,6 +16,7 @@ import Message.Message exposing (Message(..))
 import Message.Subscription exposing (Delivery(..), Interval(..))
 import Pipeline.Pipeline as Pipeline
 import Routes
+import SubPage.SubPage as SubPage
 import Views.RunContext as RunContext
 import Test exposing (Test, describe, test)
 import Time
@@ -82,16 +83,23 @@ all =
                     |> Expect.all [ expectNoEffect RedirectToLogin, expectNoEffect (FetchPipeline returnedRef) ]
         , test "renders a reclaimed result when the second header wins the reclaim race" <|
             \_ ->
-                runPage
-                    |> Application.handleCallback (PipelineFetched Data.httpNotFound)
-                    |> Tuple.first
-                    |> Application.handleCallback (PipelineRunFetched (Ok { liveRun | reclaimed = True }))
-                    |> Tuple.first
-                    |> Common.queryView
-                    |> Expect.all
-                        [ Query.has [ id "run-record", text "This run payload has been reclaimed." ]
-                        , Query.hasNot [ text "The run payload is unavailable to this viewer." ]
-                        ]
+                let
+                    model =
+                        runPage
+                            |> Application.handleCallback (PipelineFetched Data.httpNotFound)
+                            |> Tuple.first
+                            |> Application.handleCallback (PipelineRunFetched (Ok { liveRun | reclaimed = True }))
+                            |> Tuple.first
+                in
+                Expect.all
+                    [ hasReclaimedContext
+                    , Common.queryView
+                        >> Expect.all
+                            [ Query.has [ id "run-record", text "This run payload has been reclaimed." ]
+                            , Query.hasNot [ text "The run payload is unavailable to this viewer." ]
+                            ]
+                    ]
+                    model
         , test "polls only the durable header before a payload is known" <|
             \_ ->
                 Pipeline.initRun { template = template, number = 42 }
@@ -241,6 +249,21 @@ expectNoEffect effect effects =
 withoutEffects : ( a, List Effect ) -> ( a, List Effect )
 withoutEffects =
     Tuple.mapSecond (always [])
+
+
+hasReclaimedContext : Application.Model -> Expect.Expectation
+hasReclaimedContext model =
+    case model.subModel of
+        SubPage.PipelineModel pipeline ->
+            case pipeline.runContext of
+                Just (RunContext.Reclaimed run) ->
+                    Expect.equal ( 42, True ) ( run.number, run.reclaimed )
+
+                _ ->
+                    Expect.fail "Expected reclaimed run context"
+
+        _ ->
+            Expect.fail "Expected pipeline model"
 
 
 runPage : Application.Model

@@ -14,7 +14,6 @@ import Common
 import Concourse exposing (JsonValue(..))
 import Concourse.BuildStatus exposing (BuildStatus(..))
 import Concourse.PipelineStatus exposing (PipelineStatus(..), StatusDetails(..))
-import Dashboard.Pipeline as DashboardPipeline
 import DashboardInstanceGroupTests exposing (pipelineInstanceWithVars)
 import DashboardTests
     exposing
@@ -108,6 +107,24 @@ all =
                         (ClockTicked OneSecond <| Time.millisToPosix 0)
                     >> Tuple.first
                     >> Common.queryView
+
+            highDensityTemplate paused archived lastRun =
+                whenOnDashboardViewingAllPipelines { highDensity = True }
+                    |> givenDataAndUser
+                        (apiData [ ( "team", [] ) ])
+                        (userWithRoles [ ( "team", [ "owner" ] ) ])
+                    |> Tuple.first
+                    |> Application.handleCallback
+                        (Callback.AllPipelinesFetched <|
+                            Ok
+                                [ Data.pipeline "team" 1
+                                    |> Data.withName "release"
+                                    |> Data.withPaused paused
+                                    |> Data.withArchived archived
+                                    |> asTemplate lastRun
+                                ]
+                        )
+                    |> Tuple.first
         in
         [ test "a template card is neutral and links to its run history" <|
             \_ ->
@@ -125,56 +142,51 @@ all =
                         [ Query.has [ attribute <| Attr.href "/teams/team/pipelines/template/runs", text "no runs" ]
                         , Query.hasNot [ class "banner" ]
                         ]
-        , test "a high-density active template card keeps neutral history and state chrome" <|
+        , test "a high-density active template card keeps neutral history and pauses through its control" <|
             \_ ->
-                let
-                    template =
-                        Data.dashboardPipeline "team" 1
-                in
-                DashboardPipeline.hdPipelineView { pipelineRunningKeyframes = "" }
-                    { pipeline = { template | name = "release", template = True }
-                    , resourceError = False
-                    , existingJobs = []
-                    }
-                    |> (\view -> Html.div [] [ view ])
-                    |> Query.fromHtml
+                highDensityTemplate False False Nothing
+                    |> Common.queryView
                     |> Expect.all
-                        [ Query.has [ attribute <| Attr.href "/teams/team/pipelines/release/runs", text "no runs", text "template" ]
-                        , Query.hasNot [ class "banner" ]
+                        [ Query.find [ attribute <| Attr.href "/teams/team/pipelines/release/runs" ]
+                            >> Query.has [ text "no runs", text "template" ]
+                        , Query.find [ class "card" ] >> Query.hasNot [ class "banner" ]
+                        , Query.find [ class "pause-toggle" ]
+                            >> Query.has (iconSelector { size = "20px", image = Assets.PauseIcon })
+                        , Query.find [ class "pause-toggle" ]
+                            >> Event.simulate Event.click
+                            >> Event.expect
+                                (ApplicationMsgs.Update <|
+                                    Msgs.Click <|
+                                        Msgs.PipelineCardPauseToggle AllPipelinesSection 1
+                                )
                         ]
-        , test "a high-density paused template card shows its last run and paused chrome" <|
+        , test "a high-density paused template card keeps history and unpauses through its control" <|
             \_ ->
-                let
-                    template =
-                        Data.dashboardPipeline "team" 1
-                in
-                DashboardPipeline.hdPipelineView { pipelineRunningKeyframes = "" }
-                    { pipeline = { template | name = "release", template = True, paused = True, lastRunNumber = Just 7 }
-                    , resourceError = False
-                    , existingJobs = []
-                    }
-                    |> (\view -> Html.div [] [ view ])
-                    |> Query.fromHtml
+                highDensityTemplate True False (Just 7)
+                    |> Common.queryView
                     |> Expect.all
-                        [ Query.has [ attribute <| Attr.href "/teams/team/pipelines/release/runs", text "runs through #7", text "paused" ]
-                        , Query.hasNot [ class "banner" ]
+                        [ Query.find [ attribute <| Attr.href "/teams/team/pipelines/release/runs" ]
+                            >> Query.has [ text "runs through #7", text "paused" ]
+                        , Query.find [ class "card" ] >> Query.hasNot [ class "banner" ]
+                        , Query.find [ class "pause-toggle" ]
+                            >> Query.has (iconSelector { size = "20px", image = Assets.PlayIcon })
+                        , Query.find [ class "pause-toggle" ]
+                            >> Event.simulate Event.click
+                            >> Event.expect
+                                (ApplicationMsgs.Update <|
+                                    Msgs.Click <|
+                                        Msgs.PipelineCardPauseToggle AllPipelinesSection 1
+                                )
                         ]
         , test "a high-density archived template card shows its last run and archived chrome" <|
             \_ ->
-                let
-                    template =
-                        Data.dashboardPipeline "team" 1
-                in
-                DashboardPipeline.hdPipelineView { pipelineRunningKeyframes = "" }
-                    { pipeline = { template | name = "release", template = True, archived = True, lastRunNumber = Just 7 }
-                    , resourceError = False
-                    , existingJobs = []
-                    }
-                    |> (\view -> Html.div [] [ view ])
-                    |> Query.fromHtml
+                highDensityTemplate False True (Just 7)
+                    |> Common.queryView
                     |> Expect.all
-                        [ Query.has [ attribute <| Attr.href "/teams/team/pipelines/release/runs", text "runs through #7", text "archived" ]
-                        , Query.hasNot [ class "banner" ]
+                        [ Query.find [ attribute <| Attr.href "/teams/team/pipelines/release/runs" ]
+                            >> Query.has [ text "runs through #7", text "archived" ]
+                        , Query.find [ class "card" ] >> Query.hasNot [ class "banner" ]
+                        , Query.hasNot [ class "pause-toggle" ]
                         ]
         , test "mixed dashboard refreshes omit explicit run payloads" <|
             \_ ->
