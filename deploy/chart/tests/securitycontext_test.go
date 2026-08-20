@@ -26,24 +26,44 @@ type deployment struct {
 		Template struct {
 			Spec struct {
 				SecurityContext struct {
-					RunAsNonRoot *bool  `json:"runAsNonRoot"`
-					RunAsUser    *int64 `json:"runAsUser"`
-					FSGroup      *int64 `json:"fsGroup"`
+					RunAsNonRoot   *bool  `json:"runAsNonRoot"`
+					RunAsUser      *int64 `json:"runAsUser"`
+					FSGroup        *int64 `json:"fsGroup"`
+					SeccompProfile struct {
+						Type string `json:"type"`
+					} `json:"seccompProfile"`
 				} `json:"securityContext"`
 				Containers []struct {
 					Name            string   `json:"name"`
 					Args            []string `json:"args"`
 					SecurityContext struct {
-						AllowPrivilegeEscalation *bool `json:"allowPrivilegeEscalation"`
-						ReadOnlyRootFilesystem   *bool `json:"readOnlyRootFilesystem"`
+						AllowPrivilegeEscalation *bool  `json:"allowPrivilegeEscalation"`
+						RunAsUser                *int64 `json:"runAsUser"`
+						ReadOnlyRootFilesystem   *bool  `json:"readOnlyRootFilesystem"`
 						Capabilities             struct {
 							Drop []string `json:"drop"`
+							Add  []string `json:"add"`
 						} `json:"capabilities"`
+						SeccompProfile struct {
+							Type string `json:"type"`
+						} `json:"seccompProfile"`
 					} `json:"securityContext"`
 				} `json:"containers"`
 			} `json:"spec"`
 		} `json:"template"`
 	} `json:"spec"`
+}
+
+func findDaemonSet(t *testing.T, manifests, nameSuffix string) deployment {
+	t.Helper()
+	for _, doc := range strings.Split(manifests, "\n---") {
+		var d deployment
+		if yaml.Unmarshal([]byte(doc), &d) == nil && d.Kind == "DaemonSet" && strings.HasSuffix(d.Metadata.Name, nameSuffix) {
+			return d
+		}
+	}
+	t.Fatalf("no DaemonSet with name ending %q found", nameSuffix)
+	return deployment{}
 }
 
 // renderChart runs `helm template` against the chart (the parent dir of this
@@ -136,6 +156,43 @@ func TestPostgresContainerSecurityContext(t *testing.T) {
 	}
 	if !containsStr(c.SecurityContext.Capabilities.Drop, "ALL") {
 		t.Errorf("postgres container should drop ALL capabilities, got %v", c.SecurityContext.Capabilities.Drop)
+	}
+}
+
+func TestHangarKeepsArtifactDaemonAtItsMinimalSecurityContext(t *testing.T) {
+	daemon := findDaemonSet(t, renderChart(t,
+		"artifactDaemon.hangar.enabled=true",
+		"artifactDaemon.tls.enabled=true",
+		"artifactDaemon.durable.store=gcs",
+		"artifactDaemon.durable.bucket=b",
+	), "-artifact-daemon")
+	if boolVal(daemon.Spec.Template.Spec.SecurityContext.RunAsNonRoot) {
+		t.Fatal("artifact-daemon must remain root for arbitrary-UID hostPath content")
+	}
+	if user := daemon.Spec.Template.Spec.SecurityContext.RunAsUser; user != nil && *user != 0 {
+		t.Fatalf("artifact-daemon pod runAsUser=%d, want root", *user)
+	}
+	if daemon.Spec.Template.Spec.SecurityContext.SeccompProfile.Type != "RuntimeDefault" {
+		t.Fatalf("pod seccomp=%q, want RuntimeDefault", daemon.Spec.Template.Spec.SecurityContext.SeccompProfile.Type)
+	}
+	if len(daemon.Spec.Template.Spec.Containers) != 1 {
+		t.Fatalf("artifact-daemon containers=%d, want 1", len(daemon.Spec.Template.Spec.Containers))
+	}
+	c := daemon.Spec.Template.Spec.Containers[0]
+	if user := c.SecurityContext.RunAsUser; user != nil && *user != 0 {
+		t.Fatalf("artifact-daemon container runAsUser=%d, want root", *user)
+	}
+	if boolVal(c.SecurityContext.AllowPrivilegeEscalation) {
+		t.Fatal("artifact-daemon allowPrivilegeEscalation should be false")
+	}
+	if !containsStr(c.SecurityContext.Capabilities.Drop, "ALL") {
+		t.Fatalf("artifact-daemon capability drops=%v, want ALL", c.SecurityContext.Capabilities.Drop)
+	}
+	if len(c.SecurityContext.Capabilities.Add) != 1 || c.SecurityContext.Capabilities.Add[0] != "DAC_OVERRIDE" {
+		t.Fatalf("artifact-daemon added capabilities=%v, want only DAC_OVERRIDE", c.SecurityContext.Capabilities.Add)
+	}
+	if c.SecurityContext.SeccompProfile.Type != "RuntimeDefault" {
+		t.Fatalf("container seccomp=%q, want RuntimeDefault", c.SecurityContext.SeccompProfile.Type)
 	}
 }
 

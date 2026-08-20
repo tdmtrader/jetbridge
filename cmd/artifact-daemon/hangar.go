@@ -38,6 +38,7 @@ type hangarOptions struct {
 	CapabilityKey   string
 	MaxContentBytes int64
 	MaxEntries      int64
+	CapabilityTTL   time.Duration
 	DurableKind     string
 	Bucket          string
 	Prefix          string
@@ -127,6 +128,9 @@ func validateHangarOptions(opts hangarOptions, storagePath string) error {
 	if opts.MaxContentBytes <= 0 || opts.MaxEntries <= 0 {
 		return fmt.Errorf("Hangar content and entry limits must be positive")
 	}
+	if opts.CapabilityTTL <= 0 || opts.CapabilityTTL > hangar.MaxGrantTTL {
+		return fmt.Errorf("--hangar-capability-ttl must be positive and no greater than %s", hangar.MaxGrantTTL)
+	}
 	if opts.Timeout <= 0 {
 		return fmt.Errorf("Hangar store timeout must be positive")
 	}
@@ -157,7 +161,7 @@ func buildHangarService(ctx context.Context, logger lager.Logger, storagePath st
 	if len(key) != 32 {
 		return nil, nil, fmt.Errorf("--hangar-capability-key must contain exactly 32 raw bytes")
 	}
-	verifier, err := hangar.NewGrantVerifier(key, hangar.MaxGrantTTL, nil)
+	verifier, err := hangar.NewGrantVerifier(key, opts.CapabilityTTL, nil)
 	if err != nil {
 		return nil, nil, err
 	}

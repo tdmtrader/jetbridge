@@ -180,6 +180,11 @@ spec:
             - --kubernetes-artifact-daemon-tls-key=/etc/concourse/daemon-tls/client.key
             - --kubernetes-artifact-daemon-tls-ca-cert=/etc/concourse/daemon-tls/ca.crt
             {{- end }}
+            {{- if .Values.artifactDaemon.hangar.enabled }}
+            - --kubernetes-hangar-enabled
+            - --kubernetes-hangar-capability-key=/etc/concourse/daemon-tls/hangar.key
+            - --kubernetes-hangar-capability-ttl={{ .Values.artifactDaemon.hangar.capabilityTTL }}
+            {{- end }}
             {{- end }}
             # Kubernetes credential manager (resolve ((vars)) from k8s Secrets)
             {{- if .Values.kubernetes.credentialManager.enabled }}
@@ -338,6 +343,17 @@ spec:
         - name: daemon-tls
           secret:
             secretName: {{ .Values.artifactDaemon.tls.existingSecret | default (printf "%s-artifact-daemon-tls" (include "concourse.fullname" .)) }}
+            items:
+              - key: client.crt
+                path: client.crt
+              - key: client.key
+                path: client.key
+              - key: ca.crt
+                path: ca.crt
+              {{- if .Values.artifactDaemon.hangar.enabled }}
+              - key: hangar.key
+                path: hangar.key
+              {{- end }}
         {{- end }}
         {{- if and .Values.artifactDaemon.enabled .Values.artifactDaemon.resolveCapability.existingSecret }}
         - name: resolve-capability

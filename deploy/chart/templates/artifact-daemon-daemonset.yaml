@@ -1,3 +1,35 @@
+{{- $hangarEnabled := .Values.artifactDaemon.hangar.enabled | default false }}
+{{- if $hangarEnabled }}
+  {{- if not .Values.artifactDaemon.enabled }}
+    {{- fail "artifactDaemon.enabled must be true when artifactDaemon.hangar.enabled is true" }}
+  {{- end }}
+  {{- if not (.Values.artifactDaemon.tls.enabled | default false) }}
+    {{- fail "artifactDaemon.tls.enabled must be true when artifactDaemon.hangar.enabled is true" }}
+  {{- end }}
+  {{- if ne .Values.artifactDaemon.durable.store "gcs" }}
+    {{- fail "artifactDaemon.durable.store must be gcs when Hangar is enabled" }}
+  {{- end }}
+  {{- if empty .Values.artifactDaemon.durable.bucket }}
+    {{- fail "artifactDaemon.durable.bucket is required when Hangar is enabled" }}
+  {{- end }}
+  {{- $scratch := clean .Values.artifactDaemon.hangar.scratchPath }}
+  {{- $storage := clean (.Values.artifactDaemon.hostPath | default "/var/concourse/artifacts") }}
+  {{- if or (not (hasPrefix "/" $scratch)) (eq $scratch "/") }}
+    {{- fail "artifactDaemon.hangar.scratchPath must be an absolute non-root path" }}
+  {{- end }}
+  {{- if or (eq $storage "/") (eq $scratch $storage) (hasPrefix (printf "%s/" $storage) $scratch) (hasPrefix (printf "%s/" $scratch) $storage) }}
+    {{- fail "artifactDaemon.hangar.scratchPath and artifactDaemon.hostPath must be disjoint" }}
+  {{- end }}
+  {{- if or (le (int64 .Values.artifactDaemon.hangar.maxContentBytes) 0) (le (int64 .Values.artifactDaemon.hangar.maxEntries) 0) }}
+    {{- fail "artifactDaemon.hangar content and entry limits must be positive" }}
+  {{- end }}
+  {{- $ttlBase := mustToDate "2006-01-02" "2000-01-01" }}
+  {{- $ttlEnd := mustDateModify .Values.artifactDaemon.hangar.capabilityTTL $ttlBase }}
+  {{- $ttlSeconds := sub ($ttlEnd | unixEpoch) ($ttlBase | unixEpoch) }}
+  {{- if or (le $ttlSeconds 0) (gt $ttlSeconds 900) }}
+    {{- fail "artifactDaemon.hangar.capabilityTTL must be positive and no greater than 15m" }}
+  {{- end }}
+{{- end }}
 {{- if .Values.artifactDaemon.enabled }}
 {{- $tlsEnabled := .Values.artifactDaemon.tls.enabled | default false }}
 {{- $tlsSecretName := .Values.artifactDaemon.tls.existingSecret | default (printf "%s-artifact-daemon-tls" (include "concourse.fullname" .)) }}
@@ -72,6 +104,16 @@ spec:
             - --tls-cert=/etc/concourse/daemon-tls/tls.crt
             - --tls-key=/etc/concourse/daemon-tls/tls.key
             - --tls-ca-cert=/etc/concourse/daemon-tls/ca.crt
+            {{- end }}
+            {{- if $hangarEnabled }}
+            # The daemon adds concourse.dev/hangar-v1=ready to its node only
+            # after strict GCS, key, TLS, and scratch validation succeeds.
+            - --hangar-enabled
+            - --hangar-scratch-dir={{ .Values.artifactDaemon.hangar.scratchPath }}
+            - --hangar-capability-key=/etc/concourse/daemon-tls/hangar.key
+            - --hangar-capability-ttl={{ .Values.artifactDaemon.hangar.capabilityTTL }}
+            - --hangar-max-content-bytes={{ .Values.artifactDaemon.hangar.maxContentBytes | int64 }}
+            - --hangar-max-entries={{ .Values.artifactDaemon.hangar.maxEntries | int64 }}
             {{- end }}
             - --mirror-replicas={{ $mirrorReplicas }}
             - --mirror-concurrency={{ .Values.artifactDaemon.mirror.concurrency | default 4 }}
@@ -174,6 +216,10 @@ spec:
               mountPath: /etc/concourse/resolve-capability
               readOnly: true
             {{- end }}
+            {{- if $hangarEnabled }}
+            - name: hangar-scratch
+              mountPath: {{ .Values.artifactDaemon.hangar.scratchPath }}
+            {{- end }}
       volumes:
         - name: artifact-storage
           hostPath:
@@ -183,6 +229,21 @@ spec:
         - name: daemon-tls
           secret:
             secretName: {{ $tlsSecretName }}
+            items:
+              - key: tls.crt
+                path: tls.crt
+              - key: tls.key
+                path: tls.key
+              - key: ca.crt
+                path: ca.crt
+              {{- if $hangarEnabled }}
+              - key: hangar.key
+                path: hangar.key
+              {{- end }}
+        {{- end }}
+        {{- if $hangarEnabled }}
+        - name: hangar-scratch
+          emptyDir: {}
         {{- end }}
         {{- with .Values.artifactDaemon.resolveCapability.existingSecret }}
         - name: resolve-capability

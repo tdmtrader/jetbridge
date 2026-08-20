@@ -757,7 +757,7 @@ func TestHangarConcurrentIdenticalPublish(t *testing.T) {
 func TestHangarConfigRequiresStrictPrerequisitesBeforeStoreConstruction(t *testing.T) {
 	base := hangarOptions{
 		Enabled: true, ScratchDir: filepath.Join(t.TempDir(), "scratch"), CapabilityKey: filepath.Join(t.TempDir(), "key"),
-		MaxContentBytes: 1024, MaxEntries: 10, DurableKind: "gcs", Bucket: "bucket", Timeout: time.Minute,
+		MaxContentBytes: 1024, MaxEntries: 10, CapabilityTTL: 15 * time.Minute, DurableKind: "gcs", Bucket: "bucket", Timeout: time.Minute,
 		TLSCert: "cert", TLSKey: "key", TLSCACert: "ca",
 	}
 	if err := os.WriteFile(base.CapabilityKey, bytes.Repeat([]byte{1}, 32), 0600); err != nil {
@@ -784,6 +784,26 @@ func TestHangarConfigRequiresStrictPrerequisitesBeforeStoreConstruction(t *testi
 				t.Fatal("accepted invalid Hangar configuration")
 			}
 		})
+	}
+}
+
+func TestHangarConfigRejectsCapabilityTTLOutsideCoreBound(t *testing.T) {
+	keyPath := filepath.Join(t.TempDir(), "hangar.key")
+	if err := os.WriteFile(keyPath, bytes.Repeat([]byte("k"), 32), 0600); err != nil {
+		t.Fatal(err)
+	}
+	base := hangarOptions{
+		Enabled: true, ScratchDir: filepath.Join(t.TempDir(), "scratch"), CapabilityKey: keyPath,
+		MaxContentBytes: 1024, MaxEntries: 10, CapabilityTTL: 15 * time.Minute,
+		DurableKind: "gcs", Bucket: "bucket", Timeout: time.Minute,
+		TLSCert: "cert", TLSKey: "key", TLSCACert: "ca",
+	}
+	for _, ttl := range []time.Duration{0, -time.Second, hangar.MaxGrantTTL + time.Nanosecond} {
+		opts := base
+		opts.CapabilityTTL = ttl
+		if err := validateHangarOptions(opts, filepath.Join(t.TempDir(), "artifacts")); err == nil || !strings.Contains(err.Error(), "hangar-capability-ttl") {
+			t.Fatalf("TTL %s: got %v, want bounded capability TTL error", ttl, err)
+		}
 	}
 }
 
@@ -815,7 +835,7 @@ func TestHangarAndDurableGCSShareRootEndpointAndValidateBucket(t *testing.T) {
 	storage := t.TempDir()
 	scratch := filepath.Join(t.TempDir(), "scratch")
 	service, closeService, err := buildHangarService(context.Background(), lagertest.NewTestLogger("hangar-build"), storage, hangarOptions{
-		Enabled: true, ScratchDir: scratch, CapabilityKey: keyPath, MaxContentBytes: 1024, MaxEntries: 10,
+		Enabled: true, ScratchDir: scratch, CapabilityKey: keyPath, MaxContentBytes: 1024, MaxEntries: 10, CapabilityTTL: 15 * time.Minute,
 		DurableKind: "gcs", Bucket: "bucket", Endpoint: fakeGCS.URL, Timeout: time.Second,
 		TLSCert: "cert", TLSKey: "key", TLSCACert: "ca",
 	})

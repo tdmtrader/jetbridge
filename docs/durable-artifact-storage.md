@@ -23,19 +23,19 @@ sweeper, the node, and the cluster.
 It is **off by default**. With `artifactDaemon.durable.store` unset the daemon
 behaves exactly as it did before.
 
-## What it is not
+## Relationship to core Hangar
 
-This is not v3's `agent/hangar`, and the difference is deliberate.
+This resource-cache tier is one consumer policy, not the future boundary for
+all durable artifacts. Core Hangar now provides a separate opt-in strict path
+for exact immutable tree references; see [Hangar exact tree
+storage](hangar.md). It currently supports native GCS only.
 
-`agent/hangar` held LLM workspace bytes, which have no upstream and genuinely
-cannot be recreated. So it was fail-**closed**: content-addressed with a
-mandatory digest over a canonical tar, an exact three-key metadata vocabulary
-enforced on read, and a daemon that turned any non-miss error into HTTP 502.
-
-Every artifact here is re-derivable by re-running the step that produced it.
-Applying that strictness to derivable bytes converts a free cache miss into a
-broken build. So this tier is fail-**open** in every path, name-keyed rather
-than digest-keyed, and S3-compatible rather than GCS-only.
+Every resource-cache artifact described here is re-derivable by re-running the
+step that produced it. Applying Hangar's strictness to these derivable bytes
+would convert a free cache miss into a broken build. This tier therefore
+remains fail-**open** in every path and name-keyed, while exact Hangar inputs
+fail closed on absence, corruption, conflict, authorization, limits, or
+infrastructure failure.
 
 **Fail-open is the property to preserve through any future change.** A
 durable-store miss, timeout, expired credential or corrupt object must all
@@ -451,9 +451,9 @@ Identity, and behaviour against a bucket under lifecycle policy.
 
 ## Rollout
 
-Nothing to roll out yet: the store has no caller. The flags and chart values
-exist and are validated, so the configuration surface can be reviewed now, but
-setting `artifactDaemon.durable.store` currently only constructs the backend.
+Resource caches use this tier independently of Hangar. Enabling core Hangar
+reuses native GCS connection values but does not change cache fail-open
+semantics; follow the daemon-first rollout in [the Hangar guide](hangar.md).
 
 **Kill switch:** set `store: ""` and roll. The daemon reverts to node-local plus
 peers immediately; nothing else depends on the tier, and the objects in the
