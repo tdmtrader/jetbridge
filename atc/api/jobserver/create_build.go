@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagerctx"
 
 	"github.com/concourse/concourse/atc/api/accessor"
@@ -36,6 +37,9 @@ func (s *Server) CreateJobBuild(pipeline db.Pipeline) http.Handler {
 		}
 
 		if !found {
+			if s.writePipelineRunPayloadGoneIfReclaimed(w, pipeline, logger) {
+				return
+			}
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
@@ -107,4 +111,22 @@ func (s *Server) CreateJobBuild(pipeline db.Pipeline) http.Handler {
 			w.WriteHeader(http.StatusInternalServerError)
 		}
 	})
+}
+
+func (s *Server) writePipelineRunPayloadGoneIfReclaimed(w http.ResponseWriter, pipeline db.Pipeline, logger lager.Logger) bool {
+	if _, isPayload := pipeline.PipelineRunID(); !isPayload {
+		return false
+	}
+
+	found, err := pipeline.Reload()
+	if err != nil {
+		logger.Error("failed-to-reload-pipeline-after-payload-lookup", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return true
+	}
+	if found {
+		return false
+	}
+	errormap.Write(w, db.ErrPipelineRunPayloadGone)
+	return true
 }

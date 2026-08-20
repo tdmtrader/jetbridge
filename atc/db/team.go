@@ -562,15 +562,29 @@ func savePipelineWithOptions(
 		ttlDays = config.RunRetention.TTLDays
 	}
 
-	if existingConfig && !config.Template {
-		var template, hasRuns bool
-		err = psql.Select("template", "EXISTS (SELECT 1 FROM pipeline_runs WHERE template_pipeline_id = pipelines.id)").
-			From("pipelines").Where(pipelineRefWhereClause).RunWith(tx).QueryRow().Scan(&template, &hasRuns)
+	if existingConfig {
+		var template, hasRuns, hasOrdinaryJobState bool
+		err = psql.Select(
+			"template",
+			"EXISTS (SELECT 1 FROM pipeline_runs WHERE template_pipeline_id = pipelines.id)",
+			`EXISTS (
+				SELECT 1 FROM builds b
+				WHERE b.pipeline_id = pipelines.id AND b.job_id IS NOT NULL
+				UNION ALL
+				SELECT 1 FROM task_caches tc
+				JOIN jobs j ON j.id = tc.job_id
+				WHERE j.pipeline_id = pipelines.id AND tc.job_id IS NOT NULL
+			)`,
+		).
+			From("pipelines").Where(pipelineRefWhereClause).Suffix("FOR UPDATE").RunWith(tx).QueryRow().Scan(&template, &hasRuns, &hasOrdinaryJobState)
 		if err != nil {
 			return 0, false, err
 		}
-		if template && hasRuns {
+		if template && !config.Template && hasRuns {
 			return 0, false, ErrPipelineTemplateHasRuns
+		}
+		if !template && config.Template && hasOrdinaryJobState {
+			return 0, false, ErrPipelineTemplateHasOrdinaryJobState
 		}
 	}
 

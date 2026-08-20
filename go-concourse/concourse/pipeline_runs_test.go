@@ -10,6 +10,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/onsi/gomega/ghttp"
+	. "github.com/onsi/gomega/gstruct"
 )
 
 var _ = Describe("Pipeline runs client", func() {
@@ -103,6 +104,31 @@ var _ = Describe("Pipeline runs client", func() {
 	})
 
 	Describe("PipelineRun", func() {
+		It("decodes the server's Unix-second timestamp wire format", func() {
+			atcServer.AppendHandlers(ghttp.CombineHandlers(
+				ghttp.VerifyRequest("GET", collectionPath+"/7"),
+				ghttp.RespondWith(http.StatusOK, `{
+					"id": 7,
+					"template_pipeline_id": 1,
+					"number": 7,
+					"status": "succeeded",
+					"created_by": "some-user",
+					"created_at": 1700000000,
+					"completed_at": 1700000011,
+					"reclaim_retry_after": 1700000022,
+					"reclaimed": false
+				}`),
+			))
+
+			run, found, err := team.PipelineRun("template", 7)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(run.CreatedAt).To(Equal(time.Unix(1700000000, 0).UTC()))
+			Expect(run.CompletedAt).To(PointTo(Equal(time.Unix(1700000011, 0).UTC())))
+			Expect(run.ReclaimRetryAfter).To(PointTo(Equal(time.Unix(1700000022, 0).UTC())))
+		})
+
 		It("gets a numbered run", func() {
 			expected := pipelineRun(7)
 			atcServer.AppendHandlers(ghttp.CombineHandlers(

@@ -326,6 +326,11 @@ func (p *pipeline) CreateJobBuild(jobName string) (Build, error) {
 	}
 
 	defer Rollback(tx)
+	if p.pipelineRunID != 0 {
+		if _, _, err = lockPipelineRunForPayload(tx, p.id, p.pipelineRunID); err != nil {
+			return nil, err
+		}
+	}
 
 	var jobID int
 	if err = tx.QueryRow("SELECT id FROM jobs WHERE name = $1 AND pipeline_id = $2", jobName, p.id).Scan(&jobID); err != nil {
@@ -695,19 +700,42 @@ func (p *pipeline) Dashboard() ([]atc.JobSummary, error) {
 }
 
 func (p *pipeline) Pause(pausedBy string) error {
-	_, err := psql.Update("pipelines").
+	pause := psql.Update("pipelines").
 		Set("paused", true).
 		Set("paused_at", sq.Expr("now()")).
 		Set("paused_by", pausedBy).
-		Where(sq.Eq{"id": p.id, "paused": false}).
-		RunWith(p.conn).
-		Exec()
+		Where(sq.Eq{"id": p.id, "paused": false})
+
+	if p.pipelineRunID == 0 {
+		if _, err := pause.RunWith(p.conn).Exec(); err != nil {
+			return err
+		}
+		p.conn.Bus().Notify(atc.ComponentCollectorTaskCaches)
+		return nil
+	}
+
+	tx, err := p.conn.Begin()
 	if err != nil {
 		return err
 	}
-
+	defer Rollback(tx)
+	if _, _, err = lockPipelineRunForPayload(tx, p.id, p.pipelineRunID); err != nil {
+		return err
+	}
+	if _, err = pause.RunWith(tx).Exec(); err != nil {
+		return err
+	}
+	completedRun, err := attemptRunCompletion(tx, p.pipelineRunID)
+	if err != nil {
+		return err
+	}
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	if completedRun {
+		p.conn.Bus().Notify(atc.ComponentReclaimerPipelineRuns)
+	}
 	p.conn.Bus().Notify(atc.ComponentCollectorTaskCaches)
-
 	return nil
 }
 
@@ -718,7 +746,7 @@ func (p *pipeline) Unpause() error {
 	}
 
 	defer Rollback(tx)
-	run, isPayload, err := lockPipelineRunForPayload(tx, p.id)
+	run, isPayload, err := lockPipelineRunForPayload(tx, p.id, p.pipelineRunID)
 	if err != nil {
 		return err
 	}
@@ -753,7 +781,7 @@ func (p *pipeline) Archive() error {
 	}
 
 	defer Rollback(tx)
-	if err = rejectPipelineRunPayloadMutation(tx, p.id); err != nil {
+	if err = rejectPipelineRunPayloadMutation(tx, p.id, p.pipelineRunID); err != nil {
 		return err
 	}
 	err = p.archive(tx)
@@ -812,7 +840,7 @@ func (p *pipeline) setPublic(public bool) error {
 		return err
 	}
 	defer Rollback(tx)
-	if err = rejectPipelineRunPayloadMutation(tx, p.id); err != nil {
+	if err = rejectPipelineRunPayloadMutation(tx, p.id, p.pipelineRunID); err != nil {
 		return err
 	}
 	if _, err = psql.Update("pipelines").Set("public", public).Where(sq.Eq{"id": p.id}).RunWith(tx).Exec(); err != nil {
@@ -827,7 +855,7 @@ func (p *pipeline) Destroy() error {
 		return err
 	}
 	defer Rollback(tx)
-	if err = rejectPipelineRunPayloadMutation(tx, p.id); err != nil {
+	if err = rejectPipelineRunPayloadMutation(tx, p.id, p.pipelineRunID); err != nil {
 		return err
 	}
 	var template, hasRuns bool
@@ -1107,10 +1135,17 @@ func (p *pipeline) CreateOneOffBuild() (Build, error) {
 	}
 
 	defer Rollback(tx)
-	if _, isPayload, err := lockPipelineRunForPayload(tx, p.id); err != nil {
+	if _, isPayload, err := lockPipelineRunForPayload(tx, p.id, p.pipelineRunID); err != nil {
 		return nil, err
 	} else if isPayload {
 		return nil, ErrPipelineRunOneOffBuild
+	}
+	var template bool
+	if err = tx.QueryRow("SELECT template FROM pipelines WHERE id = $1 FOR UPDATE", p.id).Scan(&template); err != nil {
+		return nil, err
+	}
+	if template {
+		return nil, ErrPipelineTemplateBuild
 	}
 
 	build := newEmptyBuild(p.conn, p.lockFactory)
@@ -1139,10 +1174,17 @@ func (p *pipeline) CreateStartedBuild(plan atc.Plan) (Build, error) {
 	}
 
 	defer Rollback(tx)
-	if _, isPayload, err := lockPipelineRunForPayload(tx, p.id); err != nil {
+	if _, isPayload, err := lockPipelineRunForPayload(tx, p.id, p.pipelineRunID); err != nil {
 		return nil, err
 	} else if isPayload {
 		return nil, ErrPipelineRunOneOffBuild
+	}
+	var template bool
+	if err = tx.QueryRow("SELECT template FROM pipelines WHERE id = $1 FOR UPDATE", p.id).Scan(&template); err != nil {
+		return nil, err
+	}
+	if template {
+		return nil, ErrPipelineTemplateBuild
 	}
 
 	metadata, err := json.Marshal(plan)
@@ -1255,6 +1297,9 @@ func (p *pipeline) SetParentIDs(jobID, buildID int) error {
 	}
 
 	defer Rollback(tx)
+	if err = rejectPipelineRunPayloadMutation(tx, p.id, p.pipelineRunID); err != nil {
+		return err
+	}
 
 	result, err := psql.Update("pipelines").
 		Set("parent_job_id", jobID).

@@ -100,7 +100,10 @@ func (a *auditor) ValidateAction(action string) bool {
 		atc.RenamePipeline,
 		atc.ListPipelineBuilds,
 		atc.CreatePipelineBuild,
-		atc.PipelineBadge:
+		atc.PipelineBadge,
+		atc.CreatePipelineRun,
+		atc.ListPipelineRuns,
+		atc.GetPipelineRun:
 		return a.EnablePipelineAuditLog
 	case atc.ListAllResources,
 		atc.ListResources,

@@ -2990,6 +2990,26 @@ var _ = Describe("Pipelines API", func() {
 					})
 				})
 			})
+
+			Context("when the target is a template", func() {
+				BeforeEach(func() {
+					fakeAccess.IsAuthorizedReturns(true)
+					postDB = useRealDB()
+					postPipeline = postDB.SavePipeline(postDB.Main, "a-pipeline", atc.Config{Template: true, Jobs: atc.JobConfigs{{Name: "job"}}})
+					server = postDB.Serve()
+					postTeam = "main"
+				})
+
+				It("returns an actionable conflict without creating a build", func() {
+					Expect(response.StatusCode).To(Equal(http.StatusConflict))
+					body, err := io.ReadAll(response.Body)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(string(body)).To(ContainSubstring("pipeline templates cannot create builds directly"))
+					builds, _, err := postPipeline.Builds(db.Page{Limit: 10})
+					Expect(err).NotTo(HaveOccurred())
+					Expect(builds).To(BeEmpty())
+				})
+			})
 		})
 	})
 })

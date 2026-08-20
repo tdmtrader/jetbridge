@@ -188,6 +188,11 @@ func (step *SetPipelineStep) run(ctx context.Context, state RunState, delegate S
 	if err != nil {
 		return false, err
 	}
+	if found {
+		if _, isPayload := pipeline.PipelineRunID(); isPayload {
+			return false, db.ErrPipelineRunPayloadMutation
+		}
+	}
 
 	fromVersion := db.ConfigVersion(0)
 	var existingConfig atc.Config

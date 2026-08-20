@@ -53,6 +53,37 @@ var _ = Describe("Pipeline Runs API", func() {
 		return run
 	}
 
+	assertMaterializationConflict := func(config atc.Config, expectedBody string) {
+		GinkgoHelper()
+		updated, _, err := database.Main.SavePipeline(template.PipelineRef(), config, template.ConfigVersion(), false)
+		Expect(err).NotTo(HaveOccurred())
+		template = updated
+
+		response := create(map[string]any{"environment": "prod"})
+		body, err := io.ReadAll(response.Body)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(response.Body.Close()).To(Succeed())
+		Expect(response.StatusCode).To(Equal(http.StatusBadRequest))
+		Expect(string(body)).To(ContainSubstring(expectedBody))
+
+		var runCount int
+		Expect(database.Conn.QueryRow("SELECT count(*) FROM pipeline_runs WHERE template_pipeline_id = $1", template.ID()).Scan(&runCount)).To(Succeed())
+		Expect(runCount).To(BeZero())
+		found, err := template.Reload()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(template.LastRunNumber()).To(BeZero())
+
+		updated, _, err = database.Main.SavePipeline(template.PipelineRef(), atc.Config{
+			Template: true,
+			Params:   config.Params,
+			Jobs:     atc.JobConfigs{{Name: "entry"}},
+		}, template.ConfigVersion(), false)
+		Expect(err).NotTo(HaveOccurred())
+		template = updated
+		Expect(decodeRun(create(map[string]any{"environment": "prod"})).Number).To(Equal(1))
+	}
+
 	It("creates a run and returns its committed actual payload reference", func() {
 		// This fails if creation emits a synthetic {run:N} reference or responds before the child commits.
 		response := create(map[string]any{"environment": "production"})
@@ -70,6 +101,20 @@ var _ = Describe("Pipeline Runs API", func() {
 		runID, hasRunID := payload.PipelineRunID()
 		Expect(hasRunID).To(BeTrue())
 		Expect(runID).To(Equal(run.ID))
+	})
+
+	It("writes a raw Unix-second created_at value in the server response", func() {
+		response := create(map[string]any{"environment": "production"})
+		body, err := io.ReadAll(response.Body)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(response.Body.Close()).To(Succeed())
+		Expect(response.StatusCode).To(Equal(http.StatusCreated))
+
+		var wire struct {
+			CreatedAt json.RawMessage `json:"created_at"`
+		}
+		Expect(json.Unmarshal(body, &wire)).To(Succeed())
+		Expect(string(wire.CreatedAt)).To(MatchRegexp(`^[0-9]+$`))
 	})
 
 	It("lists durable runs newest first with a default limit of fifty", func() {
@@ -140,6 +185,29 @@ var _ = Describe("Pipeline Runs API", func() {
 		Expect(string(body)).To(ContainSubstring("paused"))
 	})
 
+	It("rejects materialized job-name collisions as invalid run parameters", func() {
+		assertMaterializationConflict(atc.Config{
+			Template: true,
+			Params:   []atc.ParamSchema{{Name: "environment", Type: atc.ParamTypeString, Required: true}},
+			Jobs: atc.JobConfigs{
+				{Name: "deploy-((environment))"},
+				{Name: "deploy-prod"},
+			},
+		}, "duplicate job name deploy-prod")
+	})
+
+	It("rejects materialized resource-name collisions as invalid run parameters", func() {
+		assertMaterializationConflict(atc.Config{
+			Template: true,
+			Params:   []atc.ParamSchema{{Name: "environment", Type: atc.ParamTypeString, Required: true}},
+			Resources: atc.ResourceConfigs{
+				{Name: "source-((environment))", Type: "git", Source: atc.Source{"uri": "https://example.com/one"}},
+				{Name: "source-prod", Type: "git", Source: atc.Source{"uri": "https://example.com/two"}},
+			},
+			Jobs: atc.JobConfigs{{Name: "entry"}},
+		}, "same name ('source-prod')")
+	})
+
 	It("allows public durable history while redacting params and an inaccessible child", func() {
 		// This fails if template publicity leaks params or makes a private payload enterable.
 		Expect(template.Expose()).To(Succeed())
@@ -208,6 +276,56 @@ var _ = Describe("Pipeline Runs API", func() {
 		Expect(response.Body.Close()).To(Succeed())
 		Expect(response.StatusCode).To(Equal(http.StatusConflict))
 		Expect(string(body)).To(ContainSubstring("archived"))
+	})
+
+	It("rejects instanced pipeline references at each run route boundary", func() {
+		created := decodeRun(create(map[string]any{"environment": "production"}))
+		Expect(created.InstanceRef).NotTo(BeNil())
+		instanceQuery := atc.PipelineRef{InstanceVars: created.InstanceRef.InstanceVars}.QueryParams().Encode()
+		instanceRunsPath := pipelineRunsURL(server, template.Name())
+		instanceRunsURL := instanceRunsPath + "?" + instanceQuery
+
+		for _, request := range []struct {
+			method string
+			url    string
+			body   io.Reader
+		}{
+			{method: http.MethodGet, url: instanceRunsURL},
+			{method: http.MethodGet, url: instanceRunsPath + "/" + strconv.Itoa(created.Number) + "?" + instanceQuery},
+			{method: http.MethodPost, url: instanceRunsURL, body: bytes.NewBufferString(`{"vars":{}}`)},
+		} {
+			httpRequest, err := http.NewRequest(request.method, request.url, request.body)
+			Expect(err).NotTo(HaveOccurred())
+			if request.body != nil {
+				httpRequest.Header.Set("Content-Type", "application/json")
+			}
+			response, err := client.Do(httpRequest)
+			Expect(err).NotTo(HaveOccurred())
+			body, err := io.ReadAll(response.Body)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(response.Body.Close()).To(Succeed())
+			Expect(response.StatusCode).To(Equal(http.StatusConflict))
+			Expect(string(body)).To(ContainSubstring(db.ErrPipelineRunInstanced.Error()))
+		}
+	})
+
+	It("maps payload visibility changes to actionable conflicts", func() {
+		created := decodeRun(create(map[string]any{"environment": "production"}))
+		Expect(created.InstanceRef).NotTo(BeNil())
+		instanceQuery := atc.PipelineRef{InstanceVars: created.InstanceRef.InstanceVars}.QueryParams().Encode()
+		baseURL := server.URL + "/api/v1/teams/main/pipelines/" + template.Name()
+
+		for _, action := range []string{"expose", "hide"} {
+			request, err := http.NewRequest(http.MethodPut, baseURL+"/"+action+"?"+instanceQuery, nil)
+			Expect(err).NotTo(HaveOccurred())
+			response, err := client.Do(request)
+			Expect(err).NotTo(HaveOccurred())
+			body, err := io.ReadAll(response.Body)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(response.Body.Close()).To(Succeed())
+			Expect(response.StatusCode).To(Equal(http.StatusConflict))
+			Expect(string(body)).To(ContainSubstring(db.ErrPipelineRunPayloadMutation.Error()))
+		}
 	})
 
 	It("retains durable detail after its payload is reclaimed", func() {

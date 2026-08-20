@@ -2,8 +2,10 @@ package api_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +19,7 @@ import (
 	"github.com/concourse/concourse/atc/creds/dummy"
 	"github.com/concourse/concourse/atc/creds/noop"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/event"
 	. "github.com/concourse/concourse/atc/testhelpers"
 	"github.com/tedsuo/rata"
 	"sigs.k8s.io/yaml"
@@ -347,6 +350,124 @@ var _ = Describe("Config API", func() {
 				},
 			},
 		}
+	})
+
+	Describe("PUT materialized run payload config", func() {
+		It("returns a payload mutation conflict before template declaration validation", func() {
+			realdb := useRealDB()
+			team, err := realdb.Deps.teamFactory.CreateTeam(atc.Team{Name: "run-config-team"})
+			Expect(err).NotTo(HaveOccurred())
+			keepLast := 1
+			template := realdb.SavePipeline(team, "run-config-template", atc.Config{
+				Template: true,
+				Params:   []atc.ParamSchema{{Name: "environment", Type: atc.ParamTypeString, Required: true}},
+				RunRetention: &atc.RunRetentionConfig{
+					KeepLast: &keepLast,
+				},
+				Jobs: atc.JobConfigs{{Name: "entry"}},
+			})
+			creation, err := db.NewPipelineRunFactory(realdb.Conn, realdb.LockFactory).CreateRun(
+				context.Background(), template, db.RunParams{Vars: atc.RunParams{"environment": "production"}}, "api-user",
+			)
+			Expect(err).NotTo(HaveOccurred())
+			payload, found, err := team.Pipeline(atc.PipelineRef{
+				Name: template.Name(), InstanceVars: atc.InstanceVars{"run": float64(creation.Run.Number())},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+
+			fakeAccess.IsAuthenticatedReturns(true)
+			fakeAccess.IsAuthorizedReturns(true)
+			server := realdb.Serve()
+			generator := rata.NewRequestGenerator(server.URL, atc.Routes)
+			routeParams := rata.Params{"team_name": team.Name(), "pipeline_name": template.Name()}
+			query := payload.PipelineRef().QueryParams().Encode()
+			get, err := generator.CreateRequest(atc.GetConfig, routeParams, nil)
+			Expect(err).NotTo(HaveOccurred())
+			get.URL.RawQuery = query
+			getResponse, err := client.Do(get)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(getResponse.StatusCode).To(Equal(http.StatusOK))
+			var materialized atc.ConfigResponse
+			Expect(json.NewDecoder(getResponse.Body).Decode(&materialized)).To(Succeed())
+			Expect(getResponse.Body.Close()).To(Succeed())
+			Expect(materialized.Config.Template).To(BeFalse())
+			Expect(materialized.Config.Params).NotTo(BeNil())
+			Expect(materialized.Config.RunRetention).NotTo(BeNil())
+
+			body, err := json.Marshal(materialized.Config)
+			Expect(err).NotTo(HaveOccurred())
+			put, err := generator.CreateRequest(atc.SaveConfig, routeParams, nil)
+			Expect(err).NotTo(HaveOccurred())
+			put.URL.RawQuery = query
+			put.Header.Set("Content-Type", "application/json")
+			put.Body = io.NopCloser(bytes.NewReader(body))
+			putResponse, err := client.Do(put)
+			Expect(err).NotTo(HaveOccurred())
+			defer putResponse.Body.Close()
+
+			Expect(putResponse.StatusCode).To(Equal(http.StatusConflict))
+			responseBody, err := io.ReadAll(putResponse.Body)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(responseBody)).To(ContainSubstring(db.ErrPipelineRunPayloadMutation.Error()))
+		})
+	})
+
+	Describe("PUT ordinary pipeline template conversion", func() {
+		It("preserves ordinary job history while allowing a fresh pipeline to become a template", func() {
+			realdb := useRealDB()
+			team, err := realdb.Deps.teamFactory.CreateTeam(atc.Team{Name: "ordinary-conversion-team"})
+			Expect(err).NotTo(HaveOccurred())
+			ordinary := realdb.SavePipeline(team, "ordinary-history", atc.Config{Jobs: atc.JobConfigs{{Name: "entry"}}})
+			job, found, err := ordinary.Job("entry")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			build, err := job.CreateBuild("manual-user")
+			Expect(err).NotTo(HaveOccurred())
+
+			fakeAccess.IsAuthenticatedReturns(true)
+			fakeAccess.IsAuthorizedReturns(true)
+			server := realdb.Serve()
+			generator := rata.NewRequestGenerator(server.URL, atc.Routes)
+			templateConfig := atc.Config{Template: true, Jobs: atc.JobConfigs{{Name: "entry"}}}
+			save := func(pipeline db.Pipeline) *http.Response {
+				GinkgoHelper()
+				body, err := json.Marshal(templateConfig)
+				Expect(err).NotTo(HaveOccurred())
+				request, err := generator.CreateRequest(atc.SaveConfig, rata.Params{
+					"team_name": team.Name(), "pipeline_name": pipeline.Name(),
+				}, nil)
+				Expect(err).NotTo(HaveOccurred())
+				request.Header.Set("Content-Type", "application/json")
+				request.Header.Set(atc.ConfigVersionHeader, strconv.Itoa(int(pipeline.ConfigVersion())))
+				request.Body = io.NopCloser(bytes.NewReader(body))
+				response, err := client.Do(request)
+				Expect(err).NotTo(HaveOccurred())
+				return response
+			}
+
+			response := save(ordinary)
+			Expect(response.StatusCode).To(Equal(http.StatusConflict))
+			body, err := io.ReadAll(response.Body)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(response.Body.Close()).To(Succeed())
+			Expect(string(body)).To(ContainSubstring("ordinary job history or task caches"))
+			Expect(ordinary.Reload()).To(BeTrue())
+			Expect(ordinary.Template()).To(BeFalse())
+			Expect(build.SaveEvent(event.Log{Payload: "still reachable"})).To(Succeed())
+			var events int
+			Expect(realdb.Conn.QueryRow(
+				fmt.Sprintf("SELECT count(*) FROM pipeline_build_events_%d WHERE build_id = $1", ordinary.ID()), build.ID(),
+			).Scan(&events)).To(Succeed())
+			Expect(events).To(BeNumerically(">", 0))
+
+			fresh := realdb.SavePipeline(team, "ordinary-fresh", atc.Config{Jobs: atc.JobConfigs{{Name: "entry"}}})
+			response = save(fresh)
+			Expect(response.StatusCode).To(Equal(http.StatusOK))
+			Expect(response.Body.Close()).To(Succeed())
+			Expect(fresh.Reload()).To(BeTrue())
+			Expect(fresh.Template()).To(BeTrue())
+		})
 	})
 
 	Describe("GET /api/v1/teams/:team_name/pipelines/:name/config", func() {

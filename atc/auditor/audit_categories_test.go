@@ -72,6 +72,9 @@ var auditCategories = map[string][]string{
 		atc.ListPipelineBuilds,
 		atc.CreatePipelineBuild,
 		atc.PipelineBadge,
+		atc.CreatePipelineRun,
+		atc.ListPipelineRuns,
+		atc.GetPipelineRun,
 	},
 	"resource": {
 		atc.ListAllResources,

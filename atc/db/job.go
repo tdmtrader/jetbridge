@@ -483,6 +483,37 @@ func (j *job) Reload() (bool, error) {
 }
 
 func (j *job) Pause(pausedBy string) error {
+	if j.pipelineRunID != 0 {
+		tx, err := j.conn.Begin()
+		if err != nil {
+			return err
+		}
+		defer Rollback(tx)
+		admission, err := lockJobBuildAdmission(tx, j.id, j.pipelineRunID, false)
+		if err != nil {
+			return err
+		}
+		if _, err = psql.Update("jobs").
+			Set("paused", true).
+			Set("paused_at", sq.Expr("now()")).
+			Set("paused_by", pausedBy).
+			Where(sq.Eq{"id": j.id, "paused": false}).
+			RunWith(tx).
+			Exec(); err != nil {
+			return err
+		}
+		completedRun, err := attemptRunCompletion(tx, admission.runID)
+		if err != nil {
+			return err
+		}
+		if err = tx.Commit(); err != nil {
+			return err
+		}
+		if completedRun {
+			j.conn.Bus().Notify(atc.ComponentReclaimerPipelineRuns)
+		}
+		return nil
+	}
 
 	_, err := psql.Update("jobs").
 		Set("paused", true).

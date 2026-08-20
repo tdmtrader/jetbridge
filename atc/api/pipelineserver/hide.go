@@ -3,6 +3,7 @@ package pipelineserver
 import (
 	"net/http"
 
+	"github.com/concourse/concourse/atc/api/errormap"
 	"github.com/concourse/concourse/atc/db"
 )
 
@@ -12,6 +13,9 @@ func (s *Server) HidePipeline(pipelineDB db.Pipeline) http.Handler {
 		err := pipelineDB.Hide()
 		if err != nil {
 			logger.Error("failed-to-hide-pipeline", err)
+			if errormap.Write(w, err) {
+				return
+			}
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}

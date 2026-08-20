@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -238,6 +239,27 @@ var _ = Describe("Volumes API", func() {
 						taskCacheVolume, err := creatingTaskCacheVolume.Created()
 						Expect(err).NotTo(HaveOccurred())
 
+						runTemplate := realDatabase.SavePipeline(team, "run-cache-template", atc.Config{
+							Template: true,
+							Jobs:     atc.JobConfigs{{Name: "entry"}},
+						})
+						_, err = db.NewPipelineRunFactory(realDatabase.Conn, realDatabase.LockFactory).CreateRun(
+							context.Background(), runTemplate, db.RunParams{}, "run-user",
+						)
+						Expect(err).NotTo(HaveOccurred())
+						runTaskCache, err := db.NewTaskCacheFactory(realDatabase.Conn).FindOrCreate(atc.TaskCacheIdentity{
+							TeamID: team.ID(), TemplatePipelineID: runTemplate.ID(), RunJobName: "entry",
+						}, "run-task", "run-task-cache-path")
+						Expect(err).NotTo(HaveOccurred())
+						runWorkerTaskCache, err := db.NewWorkerTaskCacheFactory(realDatabase.Conn).FindOrCreate(db.WorkerTaskCache{
+							WorkerName: worker.Name(), TaskCache: runTaskCache,
+						})
+						Expect(err).NotTo(HaveOccurred())
+						creatingRunTaskCacheVolume, err := repository.CreateTaskCacheVolume(team.ID(), runWorkerTaskCache)
+						Expect(err).NotTo(HaveOccurred())
+						runTaskCacheVolume, err := creatingRunTaskCacheVolume.Created()
+						Expect(err).NotTo(HaveOccurred())
+
 						expectedVolumes = []atc.Volume{
 							{
 								ID:         resourceVolume.Handle(),
@@ -287,6 +309,15 @@ var _ = Describe("Volumes API", func() {
 								PipelineInstanceVars: atc.InstanceVars{"branch": "master"},
 								JobName:              "some-job",
 								StepName:             "some-task",
+							},
+							{
+								ID:           runTaskCacheVolume.Handle(),
+								WorkerName:   worker.Name(),
+								Type:         string(db.VolumeTypeTaskCache),
+								PipelineID:   runTemplate.ID(),
+								PipelineName: runTemplate.Name(),
+								JobName:      "entry",
+								StepName:     "run-task",
 							},
 						}
 					})

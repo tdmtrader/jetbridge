@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/concourse/concourse/atc/api/accessor"
+	"github.com/concourse/concourse/atc/api/errormap"
 	"github.com/concourse/concourse/atc/db"
 )
 
@@ -16,6 +17,9 @@ func (s *Server) PausePipeline(pipelineDB db.Pipeline) http.Handler {
 		err := pipelineDB.Pause(user)
 		if err != nil {
 			logger.Error("failed-to-pause-pipeline", err)
+			if errormap.Write(w, err) {
+				return
+			}
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}

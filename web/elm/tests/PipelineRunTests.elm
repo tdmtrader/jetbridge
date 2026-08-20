@@ -50,6 +50,22 @@ all =
                             , completedAt = Nothing
                             }
                         )
+        , test "decodes Unix-second timestamps from a terminal API response" <|
+            \_ ->
+                """
+                {"id":8,"number":4,"status":"succeeded","created_at":1700000000,"completed_at":1700000011,"reclaimed":false}
+                """
+                    |> Json.Decode.decodeString PipelineRun.decodePipelineRun
+                    |> Result.map
+                        (\run ->
+                            ( run.createdAt, run.completedAt )
+                        )
+                    |> Expect.equal
+                        (Ok
+                            ( Time.millisToPosix 1700000000000
+                            , Just (Time.millisToPosix 1700000011000)
+                            )
+                        )
         , test "decodes base, run payload, and ordinary pipeline markers independently" <|
             \_ ->
                 [ """

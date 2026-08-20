@@ -58,6 +58,10 @@ func (s *Server) writeRun(w http.ResponseWriter, pipeline db.Pipeline, run db.Pi
 
 func (s *Server) CreatePipelineRun(pipeline db.Pipeline) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if rejectInstancedPipelineRun(w, pipeline) {
+			return
+		}
+
 		var request atc.CreatePipelineRunRequest
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			http.Error(w, "invalid pipeline run request", http.StatusBadRequest)
@@ -81,6 +85,10 @@ func (s *Server) CreatePipelineRun(pipeline db.Pipeline) http.Handler {
 
 func (s *Server) ListPipelineRuns(pipeline db.Pipeline) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if rejectInstancedPipelineRun(w, pipeline) {
+			return
+		}
+
 		page, err := pipelineRunPage(r)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -119,6 +127,10 @@ func (s *Server) ListPipelineRuns(pipeline db.Pipeline) http.Handler {
 
 func (s *Server) GetPipelineRun(pipeline db.Pipeline) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if rejectInstancedPipelineRun(w, pipeline) {
+			return
+		}
+
 		number, err := strconv.Atoi(r.FormValue(":number"))
 		if err != nil || number < 1 {
 			http.Error(w, "invalid pipeline run number", http.StatusBadRequest)
@@ -138,6 +150,14 @@ func (s *Server) GetPipelineRun(pipeline db.Pipeline) http.Handler {
 
 		s.writeRun(w, pipeline, run, r, http.StatusOK)
 	})
+}
+
+func rejectInstancedPipelineRun(w http.ResponseWriter, pipeline db.Pipeline) bool {
+	if pipeline.InstanceVars() == nil {
+		return false
+	}
+	errormap.Write(w, db.ErrPipelineRunInstanced)
+	return true
 }
 
 func pipelineRunPage(r *http.Request) (db.Page, error) {

@@ -139,11 +139,14 @@ func (l *pipelineRunReclaimLifecycle) DestroyReclaimableRun(runID int) (bool, er
 		JOIN pipelines template ON template.id = run.template_pipeline_id
 		WHERE run.id = $1 AND template.id = $2
 	`, runID, templateID).Scan(&eligible)
-	if err == sql.ErrNoRows || !eligible {
+	if err == sql.ErrNoRows {
 		return false, nil
 	}
 	if err != nil {
 		return false, err
+	}
+	if !eligible {
+		return false, nil
 	}
 
 	var blocked bool
@@ -192,8 +195,8 @@ func (l *pipelineRunReclaimLifecycle) DeferRunReclaim(runID int, retryAt time.Ti
 	return err
 }
 
-func rejectPipelineRunPayloadMutation(tx Tx, pipelineID int) error {
-	_, isPayload, err := lockPipelineRunForPayload(tx, pipelineID)
+func rejectPipelineRunPayloadMutation(tx Tx, pipelineID, hydratedRunID int) error {
+	_, isPayload, err := lockPipelineRunForPayload(tx, pipelineID, hydratedRunID)
 	if err != nil {
 		return err
 	}

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	sq "github.com/Masterminds/squirrel"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/event"
@@ -395,6 +396,20 @@ var _ = Describe("Pipeline run reclamation", func() {
 		Expect(pipelineID.Valid).To(BeTrue())
 	})
 
+	It("propagates an eligibility recheck query failure", func() {
+		keepLast := 1
+		template := newReclaimTemplate("eligibility-query-failure", &keepLast, nil)
+		completed := time.Now().Add(-time.Hour)
+		victim := newReclaimRun(template, &completed)
+		newReclaimRun(template, &completed)
+		failing := db.NewPipelineRunReclaimLifecycle(reclaimEligibilityFailingConn{DbConn: dbConn})
+
+		destroyed, err := failing.DestroyReclaimableRun(victim.run.ID())
+		Expect(destroyed).To(BeFalse())
+		Expect(err).To(MatchError("injected eligibility recheck failure"))
+		expectPipelineExists(victim.payload.ID(), true)
+	})
+
 	It("serializes manual reopen before reclaim on the durable run lock", func() {
 		keepLast := 1
 		template := newReclaimTemplate("admission-first", &keepLast, nil)
@@ -504,7 +519,63 @@ func (tx reclaimDeleteFailingTx) Exec(query string, args ...any) (sql.Result, er
 	return tx.Tx.Exec(query, args...)
 }
 
+type reclaimEligibilityFailingConn struct{ db.DbConn }
+
+func (c reclaimEligibilityFailingConn) Begin() (db.Tx, error) {
+	tx, err := c.DbConn.Begin()
+	if err != nil {
+		return nil, err
+	}
+	return reclaimEligibilityFailingTx{Tx: tx}, nil
+}
+
+type reclaimEligibilityFailingTx struct{ db.Tx }
+
+func (tx reclaimEligibilityFailingTx) QueryRow(query string, args ...any) sq.RowScanner {
+	if strings.Contains(query, "template.run_retention_keep_last") && strings.Contains(query, "run.completed_at < now()") {
+		return reclaimEligibilityFailingRow{}
+	}
+	return tx.Tx.QueryRow(query, args...)
+}
+
+type reclaimEligibilityFailingRow struct{}
+
+func (reclaimEligibilityFailingRow) Scan(...any) error {
+	return errors.New("injected eligibility recheck failure")
+}
+
 var _ = Describe("run payload mutation guards", func() {
+	It("rejects parent-link updates for a live payload", func() {
+		template := newReclaimTemplate("payload-parent-link", nil, nil)
+		fixture := newReclaimRun(template, nil)
+
+		Expect(fixture.payload.SetParentIDs(fixture.jobID, fixture.buildID)).To(MatchError(db.ErrPipelineRunPayloadMutation))
+		Expect(fixture.payload.Reload()).To(BeTrue())
+		Expect(fixture.payload.ParentJobID()).To(BeZero())
+		Expect(fixture.payload.ParentBuildID()).To(BeZero())
+	})
+
+	It("reports a hydrated payload or job reclaimed before its mutation lock as gone", func() {
+		template := newReclaimTemplate("reclaimed-mutation", nil, nil)
+		fixture := newReclaimRun(template, nil)
+		job, found, err := fixture.payload.Job("entry")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		reclaimRunPayloadForTest(template, fixture.run)
+
+		Expect(fixture.payload.Pause("alice")).To(MatchError(db.ErrPipelineRunPayloadGone))
+		Expect(fixture.payload.Unpause()).To(MatchError(db.ErrPipelineRunPayloadGone))
+		Expect(fixture.payload.Archive()).To(MatchError(db.ErrPipelineRunPayloadGone))
+		Expect(fixture.payload.Destroy()).To(MatchError(db.ErrPipelineRunPayloadGone))
+		Expect(fixture.payload.Expose()).To(MatchError(db.ErrPipelineRunPayloadGone))
+		Expect(fixture.payload.Hide()).To(MatchError(db.ErrPipelineRunPayloadGone))
+		Expect(job.Pause("alice")).To(MatchError(db.ErrPipelineRunPayloadGone))
+		_, err = fixture.payload.CreateOneOffBuild()
+		Expect(err).To(MatchError(db.ErrPipelineRunPayloadGone))
+		_, err = fixture.payload.CreateStartedBuild(atc.Plan{})
+		Expect(err).To(MatchError(db.ErrPipelineRunPayloadGone))
+	})
+
 	It("refuses generic set, rename, archive, and destroy while preserving active pause/unpause", func() {
 		keepLast := 1
 		template := newReclaimTemplate("mutation-base", &keepLast, nil)

@@ -562,6 +562,38 @@ jobs:
 				})
 			})
 
+			Context("when the target is a run payload", func() {
+				BeforeEach(func() {
+					templateConfig := setPipelineTestConfig()
+					templateConfig.Template = true
+					template, _, err := currentTeam.SavePipeline(
+						atc.PipelineRef{Name: targetRef.Name}, templateConfig, 0, false,
+					)
+					Expect(err).NotTo(HaveOccurred())
+					creation, err := db.NewPipelineRunFactory(fixture.Conn, fixture.LockFactory).CreateRun(
+						context.Background(), template, db.RunParams{}, "run-user",
+					)
+					Expect(err).NotTo(HaveOccurred())
+					targetRef = atc.PipelineRef{
+						Name: template.Name(), InstanceVars: atc.InstanceVars{"run": float64(creation.Run.Number())},
+					}
+					spPlan.InstanceVars = targetRef.InstanceVars
+					spPlan.Vars = map[string]any{"branch": "feature/foo"}
+				})
+
+				It("rejects the payload before the no-diff parent-link path", func() {
+					Expect(stepOk).To(BeFalse())
+					Expect(stepErr).To(MatchError(db.ErrPipelineRunPayloadMutation))
+					Expect(execBuildLog(fixture, realBuild, event.OriginSourceStdout)).NotTo(ContainSubstring("no changes to apply."))
+
+					payload, found, err := currentTeam.Pipeline(targetRef)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(found).To(BeTrue())
+					Expect(payload.ParentJobID()).To(BeZero())
+					Expect(payload.ParentBuildID()).To(BeZero())
+				})
+			})
+
 			Context("when specified pipeline exists already", func() {
 				var existingPipeline db.Pipeline
 

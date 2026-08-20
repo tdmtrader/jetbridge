@@ -26,7 +26,10 @@ var _ = Describe("PipelineRunFactory", func() {
 			Template:  true,
 			Params:    []atc.ParamSchema{{Name: "value", Type: atc.ParamTypeString, Required: true}},
 			Resources: atc.ResourceConfigs{{Name: "input", Type: "some-base-resource-type", Source: atc.Source{"repository": "example"}}},
-			Jobs:      atc.JobConfigs{{Name: "entry-((value))"}, {Name: "downstream", PlanSequence: []atc.Step{{Config: &atc.GetStep{Name: "input", Passed: []string{"entry-((value))"}, Trigger: true}}}}},
+			Jobs: atc.JobConfigs{
+				{Name: "entry-((value))", PlanSequence: []atc.Step{{Config: &atc.GetStep{Name: "input"}}}},
+				{Name: "downstream", PlanSequence: []atc.Step{{Config: &atc.GetStep{Name: "input", Passed: []string{"entry-((value))"}, Trigger: true}}}},
+			},
 		}, 0, false)
 		Expect(err).NotTo(HaveOccurred())
 
@@ -337,6 +340,43 @@ var _ = Describe("PipelineRunFactory", func() {
 		Expect(ordinary.Params()).To(BeEmpty())
 		Expect(ordinary.RunRetention()).To(BeNil())
 		Expect(ordinary.LastRunNumber()).To(Equal(0))
+	})
+
+	It("refuses ordinary-to-template conversion with surviving job history or task caches", func() {
+		templateConfig := atc.Config{Template: true, Jobs: atc.JobConfigs{{Name: "entry"}}}
+
+		withBuild, _, err := defaultTeam.SavePipeline(atc.PipelineRef{Name: "ordinary-build-history"}, atc.Config{Jobs: atc.JobConfigs{{Name: "entry"}}}, 0, false)
+		Expect(err).NotTo(HaveOccurred())
+		buildJob, found, err := withBuild.Job("entry")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		_, err = buildJob.CreateBuild("manual-user")
+		Expect(err).NotTo(HaveOccurred())
+
+		_, _, err = defaultTeam.SavePipeline(withBuild.PipelineRef(), templateConfig, withBuild.ConfigVersion(), false)
+		Expect(err).To(MatchError("pipeline with ordinary job history or task caches cannot become a template"))
+		Expect(withBuild.Reload()).To(BeTrue())
+		Expect(withBuild.Template()).To(BeFalse())
+
+		withCache, _, err := defaultTeam.SavePipeline(atc.PipelineRef{Name: "ordinary-task-cache"}, atc.Config{Jobs: atc.JobConfigs{{Name: "entry"}}}, 0, false)
+		Expect(err).NotTo(HaveOccurred())
+		cacheJob, found, err := withCache.Job("entry")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		_, err = taskCacheFactory.FindOrCreate(atc.TaskCacheIdentity{JobID: cacheJob.ID()}, "task", "cache")
+		Expect(err).NotTo(HaveOccurred())
+
+		_, _, err = defaultTeam.SavePipeline(withCache.PipelineRef(), templateConfig, withCache.ConfigVersion(), false)
+		Expect(err).To(MatchError("pipeline with ordinary job history or task caches cannot become a template"))
+		_, found, err = taskCacheFactory.Find(atc.TaskCacheIdentity{JobID: cacheJob.ID()}, "task", "cache")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+
+		withoutHistory, _, err := defaultTeam.SavePipeline(atc.PipelineRef{Name: "ordinary-no-history"}, atc.Config{Jobs: atc.JobConfigs{{Name: "entry"}}}, 0, false)
+		Expect(err).NotTo(HaveOccurred())
+		converted, _, err := defaultTeam.SavePipeline(withoutHistory.PipelineRef(), templateConfig, withoutHistory.ConfigVersion(), false)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(converted.Template()).To(BeTrue())
 	})
 
 	It("keeps a committed creation successful when post-commit notification fails", func() {
