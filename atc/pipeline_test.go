@@ -1,6 +1,7 @@
 package atc_test
 
 import (
+	"encoding/json"
 	"net/url"
 
 	"github.com/concourse/concourse/atc"
@@ -217,5 +218,21 @@ var _ = Describe("PipelineRef", func() {
 				}
 			})
 		}
+	})
+})
+
+var _ = Describe("PipelineIdentifier", func() {
+	It("uses team and pipeline wire names without changing PipelineRef", func() {
+		encoded, err := json.Marshal(atc.PipelineIdentifier{
+			TeamName:     "team",
+			PipelineName: "pipeline",
+			InstanceVars: atc.InstanceVars{"run": float64(1)},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(string(encoded)).To(MatchJSON(`{"team_name":"team","pipeline_name":"pipeline","instance_vars":{"run":1}}`))
+
+		ref, err := json.Marshal(atc.PipelineRef{Name: "pipeline"})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(string(ref)).To(MatchJSON(`{"name":"pipeline"}`))
 	})
 })
