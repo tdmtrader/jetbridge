@@ -90,6 +90,7 @@ type Job interface {
 
 	RequestSchedule() error
 	UpdateLastScheduled(time.Time) error
+	ConsumeScheduleRequest(time.Time, bool) error
 
 	ChronoBuilds(page Page) ([]BuildForAPI, Pagination, error)
 	Builds(page Page) ([]BuildForAPI, Pagination, error)
@@ -758,36 +759,19 @@ func (j *job) EnsurePendingBuildExists(ctx context.Context) error {
 
 	defer Rollback(tx)
 
-	buildName, err := j.getNewBuildName(tx)
+	build := newEmptyBuild(j.conn, j.lockFactory)
+	created, err := createJobBuild(tx, build, j.id, jobBuildArgs{
+		NextBuildName:   true,
+		OnlyIfNoPending: true,
+		Values: map[string]any{
+			"status": BuildStatusPending, "needs_v6_migration": false, "span_context": string(spanContextJSON),
+		},
+	})
 	if err != nil {
 		return err
 	}
 
-	rows, err := tx.Query(`
-		INSERT INTO builds (name, job_id, pipeline_id, team_id, status, needs_v6_migration, span_context)
-		SELECT $1, $2, $3, $4, 'pending', false, $5
-		WHERE NOT EXISTS
-			(SELECT id FROM builds WHERE job_id = $2 AND status = 'pending')
-		RETURNING id
-	`, buildName, j.id, j.pipelineID, j.teamID, string(spanContextJSON))
-	if err != nil {
-		return err
-	}
-
-	defer Close(rows)
-
-	if rows.Next() {
-		var buildID int
-		err := rows.Scan(&buildID)
-		if err != nil {
-			return err
-		}
-
-		err = rows.Close()
-		if err != nil {
-			return err
-		}
-
+	if created {
 		latestNonRerunID, err := latestCompletedNonRerunBuild(tx, j.id)
 		if err != nil {
 			return err
@@ -847,20 +831,12 @@ func (j *job) CreateBuild(createdBy string) (_ Build, err error) {
 
 	defer Rollback(tx)
 
-	buildName, err := j.getNewBuildName(tx)
-	if err != nil {
-		return nil, err
-	}
-
 	build := newEmptyBuild(j.conn, j.lockFactory)
-	err = createBuild(tx, build, map[string]any{
-		"name":               buildName,
-		"job_id":             j.id,
-		"pipeline_id":        j.pipelineID,
-		"team_id":            j.teamID,
-		"status":             BuildStatusPending,
-		"manually_triggered": true,
-		"created_by":         createdBy,
+	_, err = createJobBuild(tx, build, j.id, jobBuildArgs{
+		NextBuildName: true,
+		Values: map[string]any{
+			"status": BuildStatusPending, "manually_triggered": true, "created_by": createdBy,
+		},
 	})
 	if err != nil {
 		return nil, err
@@ -923,16 +899,13 @@ func (j *job) tryRerunBuild(buildToRerun Build, createdBy string) (Build, error)
 	}
 
 	rerunBuild := newEmptyBuild(j.conn, j.lockFactory)
-	err = createBuild(tx, rerunBuild, map[string]any{
+	_, err = createJobBuild(tx, rerunBuild, j.id, jobBuildArgs{Values: map[string]any{
 		"name":         rerunBuildName,
-		"job_id":       j.id,
-		"pipeline_id":  j.pipelineID,
-		"team_id":      j.teamID,
 		"status":       BuildStatusPending,
 		"rerun_of":     buildToRerunID,
 		"rerun_number": rerunNumber,
 		"created_by":   createdBy,
-	})
+	}})
 	if err != nil {
 		return nil, err
 	}
@@ -1094,6 +1067,45 @@ func (j *job) UpdateLastScheduled(requestedTime time.Time) error {
 	return err
 }
 
+func (j *job) ConsumeScheduleRequest(observed time.Time, noBuild bool) error {
+	tx, err := j.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer Rollback(tx)
+
+	var runID sql.NullInt64
+	err = tx.QueryRow(`
+		SELECT p.pipeline_run_id
+		FROM jobs j
+		JOIN pipelines p ON p.id = j.pipeline_id
+		WHERE j.id = $1
+	`, j.id).Scan(&runID)
+	if err != nil {
+		return err
+	}
+	if runID.Valid {
+		if _, err = lockPipelineRun(tx, int(runID.Int64)); err != nil {
+			return err
+		}
+	}
+
+	_, err = psql.Update("jobs").
+		Set("last_scheduled", sq.Expr("GREATEST(last_scheduled, ?)", observed)).
+		Where(sq.Eq{"id": j.id}).
+		RunWith(tx).
+		Exec()
+	if err != nil {
+		return err
+	}
+	if noBuild && runID.Valid {
+		if err = consumeScheduleRequestCompletion(tx, int(runID.Int64)); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 func (j *job) getRunningBuildsBySerialGroup(tx Tx, serialGroups []string) ([]Build, error) {
 	rows, err := buildsQuery.Options(`DISTINCT ON (b.id)`).
 		Join(`jobs_serial_groups jsg ON j.id = jsg.job_id`).
@@ -1154,22 +1166,6 @@ func (j *job) getNextPendingBuildBySerialGroup(tx Tx, serialGroups []string) (Bu
 	}
 
 	return build, true, nil
-}
-
-func (j *job) getNewBuildName(tx Tx) (string, error) {
-	var buildName string
-	err := psql.Update("jobs").
-		Set("build_number_seq", sq.Expr("build_number_seq + 1")).
-		Where(sq.Eq{
-			"name":        j.name,
-			"pipeline_id": j.pipelineID,
-		}).
-		Suffix("RETURNING build_number_seq").
-		RunWith(tx).
-		QueryRow().
-		Scan(&buildName)
-
-	return buildName, err
 }
 
 func (j *job) SaveNextInputMapping(inputMapping InputMapping, inputsDetermined bool) error {

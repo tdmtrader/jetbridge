@@ -11,7 +11,7 @@ import (
 )
 
 type FakeBuildScheduler struct {
-	ScheduleStub        func(context.Context, lager.Logger, db.SchedulerJob) (bool, error)
+	ScheduleStub        func(context.Context, lager.Logger, db.SchedulerJob) (scheduler.ScheduleResult, error)
 	scheduleMutex       sync.RWMutex
 	scheduleArgsForCall []struct {
 		arg1 context.Context
@@ -19,18 +19,18 @@ type FakeBuildScheduler struct {
 		arg3 db.SchedulerJob
 	}
 	scheduleReturns struct {
-		result1 bool
+		result1 scheduler.ScheduleResult
 		result2 error
 	}
 	scheduleReturnsOnCall map[int]struct {
-		result1 bool
+		result1 scheduler.ScheduleResult
 		result2 error
 	}
 	invocations      map[string][][]interface{}
 	invocationsMutex sync.RWMutex
 }
 
-func (fake *FakeBuildScheduler) Schedule(arg1 context.Context, arg2 lager.Logger, arg3 db.SchedulerJob) (bool, error) {
+func (fake *FakeBuildScheduler) Schedule(arg1 context.Context, arg2 lager.Logger, arg3 db.SchedulerJob) (scheduler.ScheduleResult, error) {
 	fake.scheduleMutex.Lock()
 	ret, specificReturn := fake.scheduleReturnsOnCall[len(fake.scheduleArgsForCall)]
 	fake.scheduleArgsForCall = append(fake.scheduleArgsForCall, struct {
@@ -57,7 +57,7 @@ func (fake *FakeBuildScheduler) ScheduleCallCount() int {
 	return len(fake.scheduleArgsForCall)
 }
 
-func (fake *FakeBuildScheduler) ScheduleCalls(stub func(context.Context, lager.Logger, db.SchedulerJob) (bool, error)) {
+func (fake *FakeBuildScheduler) ScheduleCalls(stub func(context.Context, lager.Logger, db.SchedulerJob) (scheduler.ScheduleResult, error)) {
 	fake.scheduleMutex.Lock()
 	defer fake.scheduleMutex.Unlock()
 	fake.ScheduleStub = stub
@@ -70,28 +70,28 @@ func (fake *FakeBuildScheduler) ScheduleArgsForCall(i int) (context.Context, lag
 	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3
 }
 
-func (fake *FakeBuildScheduler) ScheduleReturns(result1 bool, result2 error) {
+func (fake *FakeBuildScheduler) ScheduleReturns(result1 scheduler.ScheduleResult, result2 error) {
 	fake.scheduleMutex.Lock()
 	defer fake.scheduleMutex.Unlock()
 	fake.ScheduleStub = nil
 	fake.scheduleReturns = struct {
-		result1 bool
+		result1 scheduler.ScheduleResult
 		result2 error
 	}{result1, result2}
 }
 
-func (fake *FakeBuildScheduler) ScheduleReturnsOnCall(i int, result1 bool, result2 error) {
+func (fake *FakeBuildScheduler) ScheduleReturnsOnCall(i int, result1 scheduler.ScheduleResult, result2 error) {
 	fake.scheduleMutex.Lock()
 	defer fake.scheduleMutex.Unlock()
 	fake.ScheduleStub = nil
 	if fake.scheduleReturnsOnCall == nil {
 		fake.scheduleReturnsOnCall = make(map[int]struct {
-			result1 bool
+			result1 scheduler.ScheduleResult
 			result2 error
 		})
 	}
 	fake.scheduleReturnsOnCall[i] = struct {
-		result1 bool
+		result1 scheduler.ScheduleResult
 		result2 error
 	}{result1, result2}
 }

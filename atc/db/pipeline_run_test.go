@@ -78,7 +78,7 @@ var _ = Describe("PipelineRun", func() {
 		Expect(baseRef).To(Equal(atc.PipelineRef{Name: "detached-base"}))
 	})
 
-	It("hydrates a live unstamped run check build's base template from its payload pipeline", func() {
+	It("hydrates a live unstamped run check build's base template without stamping run identity", func() {
 		var templateID, runID, childID, resourceID, buildID int
 		Expect(dbConn.QueryRow(`INSERT INTO pipelines(team_id, name, template, secondary_ordering) VALUES ($1, 'live-base', true, 1) RETURNING id`, defaultTeam.ID()).Scan(&templateID)).To(Succeed())
 
@@ -95,8 +95,8 @@ var _ = Describe("PipelineRun", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeTrue())
 		buildRunID, hasRun := build.PipelineRunID()
-		Expect(hasRun).To(BeTrue())
-		Expect(buildRunID).To(Equal(runID))
+		Expect(hasRun).To(BeFalse())
+		Expect(buildRunID).To(BeZero())
 		Expect(build.BasePipelineID()).To(Equal(templateID))
 		baseRef, found := build.BasePipelineRef()
 		Expect(found).To(BeTrue())

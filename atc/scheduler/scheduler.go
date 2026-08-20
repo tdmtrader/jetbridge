@@ -26,39 +26,45 @@ type Scheduler struct {
 	BuildStarter BuildStarter
 }
 
+type ScheduleResult struct {
+	NeedsRetry bool
+	NoBuild    bool
+}
+
 func (s *Scheduler) Schedule(
 	ctx context.Context,
 	logger lager.Logger,
 	job db.SchedulerJob,
-) (bool, error) {
+) (ScheduleResult, error) {
 	jobInputs, err := job.AlgorithmInputs()
 	if err != nil {
-		return false, fmt.Errorf("inputs: %w", err)
+		return ScheduleResult{}, fmt.Errorf("inputs: %w", err)
 	}
 
 	inputMapping, resolved, runAgain, err := s.Algorithm.Compute(ctx, job, jobInputs)
 	if err != nil {
-		return false, fmt.Errorf("compute inputs: %w", err)
+		return ScheduleResult{}, fmt.Errorf("compute inputs: %w", err)
 	}
 
 	if runAgain {
 		err = job.RequestSchedule()
 		if err != nil {
-			return false, fmt.Errorf("request schedule: %w", err)
+			return ScheduleResult{}, fmt.Errorf("request schedule: %w", err)
 		}
 	}
 
 	err = job.SaveNextInputMapping(inputMapping, resolved)
 	if err != nil {
-		return false, fmt.Errorf("save next input mapping: %w", err)
+		return ScheduleResult{}, fmt.Errorf("save next input mapping: %w", err)
 	}
 
-	err = s.ensurePendingBuildExists(ctx, logger, job, jobInputs)
+	buildFound, err := s.ensurePendingBuildExists(ctx, logger, job, jobInputs)
 	if err != nil {
-		return false, err
+		return ScheduleResult{}, err
 	}
 
-	return s.BuildStarter.TryStartPendingBuildsForJob(ctx, logger, job, jobInputs)
+	needsRetry, err := s.BuildStarter.TryStartPendingBuildsForJob(ctx, logger, job, jobInputs)
+	return ScheduleResult{NeedsRetry: needsRetry, NoBuild: !buildFound}, err
 }
 
 func (s *Scheduler) ensurePendingBuildExists(
@@ -66,15 +72,21 @@ func (s *Scheduler) ensurePendingBuildExists(
 	logger lager.Logger,
 	job db.SchedulerJob,
 	jobInputs db.InputConfigs,
-) error {
+) (bool, error) {
+	pendingBuilds, err := job.GetPendingBuilds()
+	if err != nil {
+		return false, fmt.Errorf("get pending builds: %w", err)
+	}
+	buildFound := len(pendingBuilds) > 0
+
 	buildInputs, satisfiableInputs, err := job.GetFullNextBuildInputs()
 	if err != nil {
-		return fmt.Errorf("get next build inputs: %w", err)
+		return false, fmt.Errorf("get next build inputs: %w", err)
 	}
 
 	if !satisfiableInputs {
 		logger.Debug("next-build-inputs-not-determined")
-		return nil
+		return buildFound, nil
 	}
 
 	inputMapping := map[string]db.BuildInput{}
@@ -105,8 +117,9 @@ func (s *Scheduler) ensurePendingBuildExists(
 				)
 				err := job.EnsurePendingBuildExists(spanCtx)
 				if err != nil {
-					return fmt.Errorf("ensure pending build exists: %w", err)
+					return false, fmt.Errorf("ensure pending build exists: %w", err)
 				}
+				buildFound = true
 
 				break
 			}
@@ -115,9 +128,9 @@ func (s *Scheduler) ensurePendingBuildExists(
 
 	if hasNewInputs != job.HasNewInputs() {
 		if err := job.SetHasNewInputs(hasNewInputs); err != nil {
-			return fmt.Errorf("set has new inputs: %w", err)
+			return false, fmt.Errorf("set has new inputs: %w", err)
 		}
 	}
 
-	return nil
+	return buildFound, nil
 }

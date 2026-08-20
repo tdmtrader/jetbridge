@@ -87,9 +87,9 @@ var _ = Describe("Scheduler Metrics & Observability", func() {
 			)
 
 			gaugeObserved := make(chan float64, 1)
-			fakeScheduler.ScheduleStub = func(_ context.Context, _ lager.Logger, _ db.SchedulerJob) (bool, error) {
+			fakeScheduler.ScheduleStub = func(_ context.Context, _ lager.Logger, _ db.SchedulerJob) (ScheduleResult, error) {
 				gaugeObserved <- metric.Metrics.JobsScheduling.Max()
-				return false, nil
+				return ScheduleResult{NoBuild: true}, nil
 			}
 
 			metric.Metrics.JobsScheduled.Delta()
@@ -113,7 +113,7 @@ var _ = Describe("Scheduler Metrics & Observability", func() {
 				"duration-pipeline",
 				"duration-job",
 			)
-			fakeScheduler.ScheduleReturns(false, nil)
+			fakeScheduler.ScheduleReturns(ScheduleResult{NoBuild: true}, nil)
 
 			runAndJoin(ctx, fixture, job, jobFactory)
 			Expect(fakeScheduler.ScheduleCallCount()).To(Equal(1))
@@ -225,7 +225,7 @@ var _ = Describe("Scheduler Metrics & Observability", func() {
 				"traced-pipeline",
 				"traced-job",
 			)
-			fakeScheduler.ScheduleReturns(false, nil)
+			fakeScheduler.ScheduleReturns(ScheduleResult{NoBuild: true}, nil)
 			runAndJoin(ctx, fixture, job, jobFactory)
 
 			spans := exporter.GetSpans()

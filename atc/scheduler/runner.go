@@ -20,7 +20,7 @@ type BuildScheduler interface {
 		ctx context.Context,
 		logger lager.Logger,
 		job db.SchedulerJob,
-	) (bool, error)
+	) (ScheduleResult, error)
 }
 
 type Runner struct {
@@ -140,7 +140,7 @@ func (s *Runner) scheduleJob(ctx context.Context, logger lager.Logger, job db.Sc
 
 	jStart := time.Now()
 
-	needsRetry, err := s.scheduler.Schedule(
+	result, err := s.scheduler.Schedule(
 		spanCtx,
 		logger,
 		job,
@@ -149,12 +149,12 @@ func (s *Runner) scheduleJob(ctx context.Context, logger lager.Logger, job db.Sc
 		return fmt.Errorf("schedule job: %w", err)
 	}
 
-	span.SetAttributes(attribute.Bool("needs-retry", needsRetry))
-	if !needsRetry {
-		err = job.UpdateLastScheduled(requestedTime)
+	span.SetAttributes(attribute.Bool("needs-retry", result.NeedsRetry))
+	if !result.NeedsRetry {
+		err = job.ConsumeScheduleRequest(requestedTime, result.NoBuild)
 		if err != nil {
-			logger.Error("failed-to-update-last-scheduled", err, lager.Data{"job": job.Name()})
-			return fmt.Errorf("update last scheduled: %w", err)
+			logger.Error("failed-to-consume-schedule-request", err, lager.Data{"job": job.Name()})
+			return fmt.Errorf("consume schedule request: %w", err)
 		}
 	}
 
