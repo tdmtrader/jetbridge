@@ -33,7 +33,7 @@ func (s *Server) ListAllPipelines(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	err = json.NewEncoder(w).Encode(present.Pipelines(pipelines, present.PipelinesOptions{
 		OptionsForPipeline: func(pipeline db.Pipeline) present.PipelineOptions {
-			return pipelineOptions(acc, pipeline)
+			return pipelineOptions(r, acc, pipeline)
 		},
 	}))
 	if err != nil {

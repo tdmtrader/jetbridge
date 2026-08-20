@@ -10,6 +10,7 @@ import (
 )
 
 const accessorContextKey atc.ContextKey = "accessor"
+const customRolesContextKey atc.ContextKey = "custom-roles"
 
 //counterfeiter:generate . AccessFactory
 type AccessFactory interface {
@@ -44,10 +45,8 @@ type accessorHandler struct {
 }
 
 func (h *accessorHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	requiredRole := h.customRoles[h.action]
-	if requiredRole == "" {
-		requiredRole = DefaultRoles[h.action]
-	}
+	ctx := context.WithValue(r.Context(), customRolesContextKey, h.customRoles)
+	requiredRole := RequiredRole(ctx, h.action)
 
 	acc, err := h.accessFactory.Create(r, requiredRole)
 	if err != nil {
@@ -58,10 +57,20 @@ func (h *accessorHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	claims := acc.Claims()
 
-	ctx := context.WithValue(r.Context(), accessorContextKey, acc)
+	ctx = context.WithValue(ctx, accessorContextKey, acc)
 
 	h.auditor.Audit(h.action, claims.UserName, r)
 	h.handler.ServeHTTP(w, r.WithContext(ctx))
+}
+
+func RequiredRole(ctx context.Context, action string) string {
+	if customRoles, ok := ctx.Value(customRolesContextKey).(map[string]string); ok {
+		if role := customRoles[action]; role != "" {
+			return role
+		}
+	}
+
+	return DefaultRoles[action]
 }
 
 func GetAccessor(r *http.Request) Access {

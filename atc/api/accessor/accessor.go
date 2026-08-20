@@ -183,7 +183,11 @@ func (a *access) hasPermission(roles []string) bool {
 }
 
 func (a *access) hasRequiredRole(role string) bool {
-	switch a.requiredRole {
+	return RoleHasRequiredRole(role, a.requiredRole)
+}
+
+func RoleHasRequiredRole(role string, requiredRole string) bool {
+	switch requiredRole {
 	case OwnerRole:
 		return role == OwnerRole
 	case MemberRole:
