@@ -513,10 +513,13 @@ func closeReadCloserOnCancel(ctx context.Context, reader io.Reader) func() {
 		defer close(done)
 		_ = closer.Close()
 	})
+	var stopOnce sync.Once
 	return func() {
-		if !stop() {
-			<-done
-		}
+		stopOnce.Do(func() {
+			if !stop() {
+				<-done
+			}
+		})
 	}
 }
 
