@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+
+	"github.com/concourse/concourse/atc"
 )
 
 type StepMetadata struct {
@@ -19,6 +21,7 @@ type StepMetadata struct {
 	InstanceVarsQuery    url.Values
 	ExternalURL          string
 	CreatedBy            string
+	TaskCacheIdentity    *atc.TaskCacheIdentity
 }
 
 func (metadata StepMetadata) Env() []string {

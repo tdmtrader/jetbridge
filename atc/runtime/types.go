@@ -167,9 +167,9 @@ type ContainerSpec struct {
 	TeamID int
 	// TeamName is the name of the team to which the Container belongs.
 	TeamName string
-	// JobID identifies the job in which the Container is running, used for
-	// identifying task caches.
-	JobID int
+	// TaskCacheIdentity identifies the task cache scope when this container
+	// belongs to a job build. It is absent for checks and one-off builds.
+	TaskCacheIdentity *atc.TaskCacheIdentity
 	// StepName is the name of the task step, used for identifying task caches.
 	// If the Container is not for a task step, this may be left empty.
 	StepName string
@@ -438,7 +438,7 @@ type Volume interface {
 
 	// InitializeTaskCache is called upon a successful run of the task step to
 	// register this Volume as a task cache.
-	InitializeTaskCache(ctx context.Context, jobID int, stepName string, path string, privileged bool) error
+	InitializeTaskCache(ctx context.Context, identity atc.TaskCacheIdentity, stepName string, path string, privileged bool) error
 
 	DBVolume() db.CreatedVolume
 }

@@ -167,6 +167,7 @@ type Build interface {
 	CreatedBy() *string
 	RunJobName() string
 	RunJobKey() string
+	TaskCacheIdentity() (atc.TaskCacheIdentity, bool)
 
 	LagerData() lager.Data
 	TracingAttrs() tracing.Attrs
@@ -398,6 +399,19 @@ func (b *build) RerunNumber() int                 { return b.rerunNumber }
 func (b *build) CreatedBy() *string               { return b.createdBy }
 func (b *build) RunJobName() string               { return b.runJobName }
 func (b *build) RunJobKey() string                { return b.runJobKey }
+func (b *build) TaskCacheIdentity() (atc.TaskCacheIdentity, bool) {
+	if b.pipelineRunID != 0 && b.basePipelineID != 0 && b.runJobName != "" {
+		return atc.TaskCacheIdentity{
+			TeamID:             b.teamID,
+			TemplatePipelineID: b.basePipelineID,
+			RunJobName:         b.runJobName,
+		}, true
+	}
+	if b.jobID != 0 {
+		return atc.TaskCacheIdentity{JobID: b.jobID}, true
+	}
+	return atc.TaskCacheIdentity{}, false
+}
 
 func (b *build) isNewerThanLastCheckOf(input Resource) bool {
 	return b.createTime.After(input.LastCheckEndTime())
@@ -2082,6 +2096,9 @@ func (b *build) isForCheck() bool {
 func (b *build) eventsTable() string {
 	if b.isForCheck() {
 		return "check_build_events"
+	}
+	if b.pipelineRunID != 0 {
+		return fmt.Sprintf("team_build_events_%d", b.teamID)
 	}
 	if b.pipelineID != 0 {
 		return fmt.Sprintf("pipeline_build_events_%d", b.pipelineID)

@@ -404,8 +404,8 @@ func (step *TaskStep) run(ctx context.Context, state RunState, delegate TaskDele
 
 	step.registerOutputs(logger, repository, worker, config, volumeMounts, step.containerMetadata)
 
-	// Do not initialize caches for one-off builds
-	if step.metadata.JobID != 0 {
+	// Do not initialize caches for checks or one-off builds.
+	if step.metadata.TaskCacheIdentity != nil {
 		if err := step.registerCaches(ctx, repository, config, volumeMounts, step.containerMetadata); err != nil {
 			return false, err
 		}
@@ -513,10 +513,10 @@ func (step *TaskStep) containerSpec(logger lager.Logger, state RunState, imageSp
 	env = append(env, config.Params.Env()...)
 
 	containerSpec := runtime.ContainerSpec{
-		TeamID:   step.metadata.TeamID,
-		TeamName: step.metadata.TeamName,
-		JobID:    step.metadata.JobID,
-		StepName: step.plan.Name,
+		TeamID:            step.metadata.TeamID,
+		TeamName:          step.metadata.TeamName,
+		TaskCacheIdentity: step.metadata.TaskCacheIdentity,
+		StepName:          step.plan.Name,
 
 		ImageSpec: imageSpec,
 		Env:       env,
@@ -746,7 +746,7 @@ func (step *TaskStep) registerCaches(ctx context.Context, repository *build.Repo
 				})
 				err := volumeMount.Volume.InitializeTaskCache(
 					ctx,
-					step.metadata.JobID,
+					*step.metadata.TaskCacheIdentity,
 					step.plan.Name,
 					cacheConfig.Path,
 					step.plan.Privileged,

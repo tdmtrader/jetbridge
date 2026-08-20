@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
+	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/compression"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runtime"
@@ -157,14 +158,13 @@ func TestDaemonSetBackend_StepVolume_DirSubdir(t *testing.T) {
 
 func TestDaemonSetBackend_CacheVolume_ReturnsHostPathWithStableKey(t *testing.T) {
 	b := testBackend(nil)
-	vol := b.CacheVolume("cache-0", 42, "my-step", "/cache/path")
+	vol := b.CacheVolume("cache-0", atc.TaskCacheIdentity{JobID: 42}, "my-step", "/cache/path")
 
 	if vol.HostPath == nil {
 		t.Fatal("expected hostPath volume")
 	}
-	// Stable key should be deterministic
-	key := stableCacheKey(42, "my-step", "/cache/path")
-	expected := filepath.Join("/artifact-store/caches", key)
+	// This literal is the pre-run cache key and must remain compatible.
+	expected := filepath.Join("/artifact-store/caches", "job-42-my-step-3f84b7078395")
 	if vol.HostPath.Path != expected {
 		t.Errorf("expected path %q, got %q", expected, vol.HostPath.Path)
 	}
@@ -175,7 +175,7 @@ func TestDaemonSetBackend_CacheVolume_UsesCacheHostPathWhenSet(t *testing.T) {
 	cfg.CacheHostPath = "/custom-cache-dir"
 	b := NewDaemonSetBackend(cfg, nil, nil)
 
-	vol := b.CacheVolume("cache-0", 1, "step", "/path")
+	vol := b.CacheVolume("cache-0", atc.TaskCacheIdentity{JobID: 1}, "step", "/path")
 	if !strings.HasPrefix(vol.HostPath.Path, "/custom-cache-dir/") {
 		t.Errorf("expected path under /custom-cache-dir, got %q", vol.HostPath.Path)
 	}
@@ -183,11 +183,30 @@ func TestDaemonSetBackend_CacheVolume_UsesCacheHostPathWhenSet(t *testing.T) {
 
 func TestDaemonSetBackend_CacheVolume_Deterministic(t *testing.T) {
 	b := testBackend(nil)
-	vol1 := b.CacheVolume("c1", 42, "step", "/cache")
-	vol2 := b.CacheVolume("c2", 42, "step", "/cache")
+	vol1 := b.CacheVolume("c1", atc.TaskCacheIdentity{JobID: 42}, "step", "/cache")
+	vol2 := b.CacheVolume("c2", atc.TaskCacheIdentity{JobID: 42}, "step", "/cache")
 
 	if vol1.HostPath.Path != vol2.HostPath.Path {
 		t.Errorf("same (jobID, step, path) should produce same hostPath, got %q and %q", vol1.HostPath.Path, vol2.HostPath.Path)
+	}
+}
+
+func TestDaemonSetBackend_CacheVolume_UsesRunIdentityInsteadOfEphemeralIDs(t *testing.T) {
+	b := testBackend(nil)
+	shared := atc.TaskCacheIdentity{TeamID: 17, TemplatePipelineID: 23, RunJobName: "deploy-staging"}
+
+	first := b.CacheVolume("cache-0", shared, "build.assets", "/work/cache")
+	second := b.CacheVolume("cache-1", shared, "build.assets", "/work/cache")
+	differentJob := b.CacheVolume("cache-2", atc.TaskCacheIdentity{TeamID: 17, TemplatePipelineID: 23, RunJobName: "deploy-production"}, "build.assets", "/work/cache")
+
+	if first.HostPath.Path != "/artifact-store/caches/run-17-23-build-assets-34a6ec221a61" {
+		t.Fatalf("expected exact run cache key, got %q", first.HostPath.Path)
+	}
+	if second.HostPath.Path != first.HostPath.Path {
+		t.Fatalf("same run scope should converge: %q != %q", second.HostPath.Path, first.HostPath.Path)
+	}
+	if differentJob.HostPath.Path == first.HostPath.Path {
+		t.Fatal("different materialized job names must use different run cache keys")
 	}
 }
 

@@ -2,6 +2,7 @@ package db_test
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/event"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -177,6 +179,32 @@ var _ = Describe("run build admission", func() {
 		Expect(stamped).To(BeFalse())
 		Expect(check.RunJobName()).To(BeEmpty())
 		Expect(check.RunJobKey()).To(BeEmpty())
+		Expect(check.SaveEvent(event.Log{Payload: "check event"})).To(Succeed())
+		var count int
+		Expect(dbConn.QueryRow("SELECT count(*) FROM check_build_events WHERE build_id = $1", check.ID()).Scan(&count)).To(Succeed())
+		Expect(count).To(Equal(2))
+	})
+
+	It("routes stamped run build events to the team partition before and after payload detachment", func() {
+		entryBuilds, err := entryJob.GetPendingBuilds()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(entryBuilds).To(HaveLen(1))
+		build := entryBuilds[0]
+
+		Expect(build.SaveEvent(event.Log{Payload: "before detach"})).To(Succeed())
+		var count int
+		Expect(dbConn.QueryRow(fmt.Sprintf("SELECT count(*) FROM team_build_events_%d WHERE build_id = $1", defaultTeam.ID()), build.ID()).Scan(&count)).To(Succeed())
+		Expect(count).To(Equal(1))
+
+		_, err = dbConn.Exec("UPDATE pipeline_runs SET status = 'succeeded', completed_at = now() WHERE id = $1", run.ID())
+		Expect(err).NotTo(HaveOccurred())
+		_, err = dbConn.Exec("UPDATE builds SET job_id = NULL, pipeline_id = NULL WHERE id = $1", build.ID())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(payload.Destroy()).To(Succeed())
+
+		Expect(build.SaveEvent(event.Log{Payload: "after detach"})).To(Succeed())
+		Expect(dbConn.QueryRow(fmt.Sprintf("SELECT count(*) FROM team_build_events_%d WHERE build_id = $1", defaultTeam.ID()), build.ID()).Scan(&count)).To(Succeed())
+		Expect(count).To(Equal(2))
 	})
 })
 

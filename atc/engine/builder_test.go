@@ -78,6 +78,7 @@ var _ = Describe("Builder", func() {
 					PipelineInstanceVars: atc.InstanceVars{"branch": "master"},
 					InstanceVarsQuery:    url.Values{"vars.branch": []string{`"master"`}},
 					ExternalURL:          "http://example.com",
+					TaskCacheIdentity:    &atc.TaskCacheIdentity{JobID: job.ID()},
 				}
 
 				expectedMetadataWithCreatedBy = expectedMetadataWithoutCreatedBy
