@@ -35,6 +35,14 @@ all =
                     |> RunForm.set "environment" "development"
                     |> RunForm.encode schemas
                     |> Expect.equal (Err { fieldId = Just "run-param-environment", message = "environment must be one of staging, production" })
+        , test "keeps a required enum without a default empty and invalid" <|
+            \_ ->
+                RunForm.init [ requiredEnum ]
+                    |> Expect.all
+                        [ RunForm.value "environment" >> Expect.equal ""
+                        , RunForm.encode [ requiredEnum ]
+                            >> Expect.equal (Err { fieldId = Just "run-param-environment", message = "environment is required" })
+                        ]
         ]
 
 
@@ -45,3 +53,8 @@ schemas =
     , { name = "enabled", type_ = Concourse.BoolParam, required = True, default = Nothing, values = [], description = Nothing }
     , { name = "environment", type_ = Concourse.EnumParam, required = True, default = Nothing, values = [ Concourse.JsonString "staging", Concourse.JsonString "production" ], description = Nothing }
     ]
+
+
+requiredEnum : Concourse.ParamSchema
+requiredEnum =
+    { name = "environment", type_ = Concourse.EnumParam, required = True, default = Nothing, values = [ Concourse.JsonString "staging", Concourse.JsonString "production" ], description = Nothing }

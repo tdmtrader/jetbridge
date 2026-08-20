@@ -1,15 +1,15 @@
 module RunContextTests exposing (all)
 
-import Concourse
 import Application.Application as Application
 import Common
+import Concourse
 import Concourse.BuildStatus as BuildStatus
 import Concourse.PipelineRun as PipelineRun
 import Data
 import Dict
 import Expect
-import Http
 import Html
+import Http
 import Message.Callback exposing (Callback(..))
 import Message.Effects exposing (Effect(..))
 import Message.Message exposing (Message(..))
@@ -17,12 +17,12 @@ import Message.Subscription exposing (Delivery(..), Interval(..))
 import Pipeline.Pipeline as Pipeline
 import Routes
 import SubPage.SubPage as SubPage
-import Views.RunContext as RunContext
 import Test exposing (Test, describe, test)
-import Time
-import UpdateMsg exposing (UpdateMsg(..))
 import Test.Html.Query as Query
 import Test.Html.Selector exposing (id, text)
+import Time
+import UpdateMsg exposing (UpdateMsg(..))
+import Views.RunContext as RunContext
 
 
 all : Test
@@ -113,6 +113,23 @@ all =
                     |> Pipeline.handleDelivery (ClockTicked FiveSeconds (Time.millisToPosix 0))
                     |> Tuple.second
                     |> expectNoEffect (FetchPipeline template)
+        , test "polls the durable header after a completed payload" <|
+            \_ ->
+                Pipeline.initRun { template = template, number = 42 }
+                    |> Pipeline.handleCallback (PipelineRunFetched (Ok { liveRun | status = BuildStatus.BuildStatusSucceeded }))
+                    |> Pipeline.handleCallback (PipelineFetched (Ok payload))
+                    |> withoutEffects
+                    |> Pipeline.handleDelivery (ClockTicked FiveSeconds (Time.millisToPosix 0))
+                    |> Tuple.second
+                    |> Expect.all [ expectEffect (FetchPipelineRun template 42), expectNoEffect (FetchPipeline returnedRef) ]
+        , test "polls the durable header for a record-only run" <|
+            \_ ->
+                Pipeline.initRun { template = template, number = 42 }
+                    |> Pipeline.handleCallback (PipelineRunFetched (Ok { liveRun | instanceRef = Nothing }))
+                    |> withoutEffects
+                    |> Pipeline.handleDelivery (ClockTicked FiveSeconds (Time.millisToPosix 0))
+                    |> Tuple.second
+                    |> Expect.all [ expectEffect (FetchPipelineRun template 42), expectNoEffect (FetchPipeline returnedRef) ]
         , test "renders text for every durable context state" <|
             \_ ->
                 let
@@ -234,6 +251,7 @@ expectEffect : Effect -> List Effect -> Expect.Expectation
 expectEffect effect effects =
     if List.member effect effects then
         Expect.pass
+
     else
         Expect.fail ("Expected effect: " ++ Debug.toString effect)
 
@@ -242,6 +260,7 @@ expectNoEffect : Effect -> List Effect -> Expect.Expectation
 expectNoEffect effect effects =
     if List.member effect effects then
         Expect.fail ("Unexpected effect: " ++ Debug.toString effect)
+
     else
         Expect.pass
 

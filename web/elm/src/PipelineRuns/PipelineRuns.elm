@@ -273,7 +273,7 @@ viewField model schema =
                     , attribute "aria-describedby" describedBy
                     , disabled model.pending
                     ]
-                    (List.map (\option -> Html.option [ value (jsonText option) ] [ Html.text (jsonText option) ]) schema.values)
+                    ((if schema.default == Nothing then [ Html.option [ value "" ] [ Html.text ("Select " ++ schema.name) ] ] else []) ++ List.map (\option -> Html.option [ value (jsonText option) ] [ Html.text (jsonText option) ]) schema.values)
             else
                 Html.input
                     [ id fieldId
@@ -377,8 +377,12 @@ pagerLink label pipelineId maybePage =
 httpMessage : Http.Error -> String -> String
 httpMessage err fallback =
     case err of
-        Http.BadStatus { status } ->
-            if status.message == "" then fallback else status.message
+        Http.BadStatus response ->
+            let body = String.trim response.body in
+            if body == "" then
+                if response.status.message == "" then fallback else response.status.message
+            else
+                body
         _ -> fallback
 refreshableError : Http.Error -> Bool
 refreshableError err =
