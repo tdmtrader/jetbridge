@@ -512,7 +512,7 @@ visiblePipelines : Model m -> List Concourse.Pipeline
 visiblePipelines model =
     model.pipelines
         |> RemoteData.withDefault []
-        |> List.filter (isPipelineVisible model)
+        |> List.filter (\pipeline -> not (Concourse.isRunPayload pipeline) && isPipelineVisible model pipeline)
 
 
 hasVisiblePipelines : Model m -> Bool
@@ -580,6 +580,12 @@ curPipeline pipelines route =
 
         Routes.Pipeline { id } ->
             List.Extra.find (byPipelineId id) pipelines
+
+        Routes.PipelineRuns { id } ->
+            List.Extra.find (byPipelineId id) pipelines
+
+        Routes.PipelineRun { template } ->
+            List.Extra.find (byPipelineId template) pipelines
 
         _ ->
             Nothing

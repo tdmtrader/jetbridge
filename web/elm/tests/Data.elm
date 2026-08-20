@@ -214,6 +214,8 @@ dashboardPipeline team id =
     , archived = False
     , stale = False
     , jobsDisabled = False
+    , template = False
+    , lastRunNumber = Nothing
     }
 
 

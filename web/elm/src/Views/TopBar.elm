@@ -146,6 +146,30 @@ breadcrumbs session route =
                         , pipeline.archived
                         )
 
+            Routes.PipelineRuns { id } ->
+                case lookupPipeline (byPipelineId id) session of
+                    Nothing ->
+                        ( [], False, False )
+
+                    Just pipeline ->
+                        ( pipelineBreadcrumbs session pipeline []
+                            ++ [ breadcrumbSeparator, runBreadcrumb "runs" ]
+                        , pipeline.paused
+                        , pipeline.archived
+                        )
+
+            Routes.PipelineRun { template, number } ->
+                case lookupPipeline (byPipelineId template) session of
+                    Nothing ->
+                        ( [], False, False )
+
+                    Just pipeline ->
+                        ( pipelineBreadcrumbs session pipeline []
+                            ++ [ breadcrumbSeparator, runBreadcrumb ("run #" ++ String.fromInt number) ]
+                        , pipeline.paused
+                        , pipeline.archived
+                        )
+
             Routes.Dashboard _ ->
                 ( [ clusterNameBreadcrumb session ], False, False )
 
@@ -394,3 +418,10 @@ formatDate =
         , DateFormat.text " "
         , DateFormat.amPmUppercase
         ]
+
+
+runBreadcrumb : String -> Bool -> Html Message
+runBreadcrumb name isLastBreadcrumb =
+    Html.li
+        (id "breadcrumb-runs" :: Styles.breadcrumbItem False isLastBreadcrumb)
+        [ Html.text name ]

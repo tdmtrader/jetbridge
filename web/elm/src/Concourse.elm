@@ -93,6 +93,7 @@ module Concourse exposing
     , hyphenNotation
     , isInInstanceGroup
     , isInstanceGroup
+    , isRunPayload
     , mapBuildPlan
     , pipelineId
     , resourceId
@@ -1182,6 +1183,13 @@ type alias Pipeline =
     , lastRunNumber : Maybe Int
     , canCreateRun : Bool
     }
+
+
+isRunPayload : Pipeline -> Bool
+isRunPayload pipeline =
+    pipeline.template == Just False
+        && pipeline.runNumber /= Nothing
+        && pipeline.runTemplateRef /= Nothing
 
 
 type ParamType = StringParam | NumberParam | BoolParam | EnumParam
