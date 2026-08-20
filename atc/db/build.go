@@ -91,7 +91,6 @@ var buildsQuery = psql.Select(`
 		b.pipeline_id,
 		p.name,
 		p.instance_vars,
-		p.pipeline_run_id,
 		(SELECT template_pipeline_id FROM pipeline_runs WHERE id = COALESCE(b.pipeline_run_id, p.pipeline_run_id)),
 		(SELECT name FROM pipelines WHERE id = (SELECT template_pipeline_id FROM pipeline_runs WHERE id = COALESCE(b.pipeline_run_id, p.pipeline_run_id))),
 		b.pipeline_run_id,
@@ -1914,7 +1913,7 @@ func scanBuild(b *build, row scannable, encryptionStrategy encryption.Strategy) 
 		drained, aborted, completed                                                       bool
 		status                                                                            string
 		pipelineInstanceVars, comment, basePipelineName, runJobName, runJobKey            sql.NullString
-		payloadPipelineRunID, basePipelineID, buildPipelineRunID                          sql.NullInt64
+		basePipelineID, buildPipelineRunID                                                sql.NullInt64
 	)
 
 	err := row.Scan(
@@ -1940,7 +1939,6 @@ func scanBuild(b *build, row scannable, encryptionStrategy encryption.Strategy) 
 		&pipelineID,
 		&pipelineName,
 		&pipelineInstanceVars,
-		&payloadPipelineRunID,
 		&basePipelineID,
 		&basePipelineName,
 		&buildPipelineRunID,
