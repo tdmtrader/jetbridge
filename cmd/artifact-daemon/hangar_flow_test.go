@@ -236,6 +236,23 @@ func rawHostileAwareTree(t *testing.T, producer string) []byte {
 	if err := os.Symlink("nested/run.sh", filepath.Join(producer, "latest")); err != nil {
 		t.Fatal(err)
 	}
+	return rawHostileAwareTreeFromProducer(t, producer)
+}
+
+func rawHostileAwareTreeFromProducer(t *testing.T, producer string) []byte {
+	t.Helper()
+	run, err := os.ReadFile(filepath.Join(producer, "nested", "run.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	literal, err := os.ReadFile(filepath.Join(producer, "literal [x]"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := os.Readlink(filepath.Join(producer, "latest"))
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	var raw bytes.Buffer
 	tarWriter := tar.NewWriter(&raw)
@@ -254,10 +271,10 @@ func rawHostileAwareTree(t *testing.T, producer string) []byte {
 		}
 	}
 	writeHeader(&tar.Header{Name: "nested", Typeflag: tar.TypeDir, Mode: 0700}, nil)
-	writeHeader(&tar.Header{Name: "nested/run.sh", Typeflag: tar.TypeReg, Mode: 0711, Size: 25}, []byte("#!/bin/sh\nprintf exact\\n\n"))
-	writeHeader(&tar.Header{Name: "literal [x]", Typeflag: tar.TypeReg, Mode: 0666, Size: 14}, []byte("payload\x00bytes\n"))
+	writeHeader(&tar.Header{Name: "nested/run.sh", Typeflag: tar.TypeReg, Mode: 0711, Size: int64(len(run))}, run)
+	writeHeader(&tar.Header{Name: "literal [x]", Typeflag: tar.TypeReg, Mode: 0666, Size: int64(len(literal))}, literal)
 	writeHeader(&tar.Header{Name: "empty", Typeflag: tar.TypeDir, Mode: 0700}, nil)
-	writeHeader(&tar.Header{Name: "latest", Typeflag: tar.TypeSymlink, Mode: 0700, Linkname: "./nested/run.sh"}, nil)
+	writeHeader(&tar.Header{Name: "latest", Typeflag: tar.TypeSymlink, Mode: 0700, Linkname: target}, nil)
 	if err := tarWriter.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -267,6 +284,12 @@ func rawHostileAwareTree(t *testing.T, producer string) []byte {
 func TestHangarDaemonStrictGCSFullTreeFlowFailsClosed(t *testing.T) {
 	producer := t.TempDir()
 	raw := rawHostileAwareTree(t, producer)
+	if err := os.WriteFile(filepath.Join(producer, "literal [x]"), []byte("producer mutation\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(raw, rawHostileAwareTreeFromProducer(t, producer)) {
+		t.Fatal("raw upload did not depend on producer content")
+	}
 	fake, fakeServer := newStrictGCSFake(t)
 	client, err := hangar.NewStorageClient(context.Background(), fakeServer.URL)
 	if err != nil {
@@ -315,6 +338,23 @@ func TestHangarDaemonStrictGCSFullTreeFlowFailsClosed(t *testing.T) {
 	}
 	assertCanonicalTreeArchive(t, opened.Body.Bytes())
 
+	baseline := fake.snapshot(t)
+	fake.mu.Lock()
+	fake.object.data[len(fake.object.data)/2] ^= 0xff
+	fake.mu.Unlock()
+	conflicted := httptest.NewRecorder()
+	conflictPublish := httptest.NewRequest(http.MethodPost, "/hangar/v1/scopes/ci/trees", bytes.NewReader(raw))
+	conflictPublish.Header.Set("Content-Type", "application/x-tar")
+	conflictPublish.TLS = verifiedTestTLSState()
+	handler.ServeHTTP(conflicted, conflictPublish)
+	if conflicted.Code != http.StatusConflict {
+		t.Fatalf("publish against malformed existing object status=%d body=%q, want sanitized conflict", conflicted.Code, conflicted.Body.String())
+	}
+	if strings.Contains(conflicted.Body.String(), "corrupt") {
+		t.Fatalf("publish conflict exposed malformed-object detail: %q", conflicted.Body.String())
+	}
+	fake.restore(baseline)
+
 	materialize := func(handle, volume string) *httptest.ResponseRecorder {
 		t.Helper()
 		signer, signErr := hangar.NewGrantSigner(key, time.Minute, nil)
@@ -342,7 +382,6 @@ func TestHangarDaemonStrictGCSFullTreeFlowFailsClosed(t *testing.T) {
 	}
 	assertMaterializedTree(t, filepath.Join(server.storagePath, "steps", "consumer", "input"), attributes.Ref)
 
-	baseline := fake.snapshot(t)
 	failures := []struct {
 		name   string
 		mutate func()
@@ -447,7 +486,7 @@ func assertMaterializedTree(t *testing.T, root string, ref hangar.TreeRef) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if info.Mode()&os.ModeType != kind || info.Mode().Perm() != mode {
+		if info.Mode()&os.ModeType != kind || info.Mode()&os.ModePerm != mode || info.Mode()&(os.ModeSetuid|os.ModeSetgid|os.ModeSticky) != 0 {
 			t.Fatalf("%s mode=%v, want kind=%v permissions=%#o", relative, info.Mode(), kind, mode)
 		}
 		if kind == 0 {

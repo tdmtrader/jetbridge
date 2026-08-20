@@ -25,16 +25,37 @@ in `atc/worker/jetbridge/live_test.go`: missing
   semantics, exact receipt, producer-node independence, and fail-closed absent,
   corrupt-byte, corrupt-metadata, and replacement-generation behavior without
   partial destinations.
-- Added a CI-only `live` K3s contract through JetBridge's strict generated-Pod
-  path. It asserts all mounts resolve, required affinities and read-only input,
-  then executes the generated BusyBox init/main flow on Linux.
+- Added a CI-only `live || hangar_live` K3s contract through JetBridge's strict
+  generated-Pod path. It asserts all mounts resolve, required affinities and
+  read-only input, then executes the generated BusyBox init/main flow on Linux.
+  The pipeline invokes the focused `hangar_live` contract explicitly before
+  the historical broad live suite.
 - Restored the daemon-namespace TLS SAN override omitted by the historical live
   test port. Added the narrower `hangar_live` tag so this contract can compile
   and run independently of that port's unrelated PostgreSQL-runner gap.
 
-## Commit
+## Final review fix round
 
-Planned commit subject: `test(hangar): prove strict tree flow`.
+The whole-branch reviewer found no Critical issue and four Important boundary
+failures. The fix round:
+
+- made same-key malformed-object publication a conflict-only result and proved
+  the public route returns sanitized 409;
+- typed every daemon-owned GCS scratch failure as infrastructure while retaining
+  the underlying cause and distinguishing compression-sink failures from source
+  reads;
+- changed artifact-daemon ingress policy to select the labels JetBridge actually
+  places on task/check Pods, with a parsed non-vacuous chart test;
+- made the focused live contract use in-cluster configuration when no explicit
+  kubeconfig is set, moved its fixture off the deployed daemon port, and added
+  the exact command to CI;
+- built the published archive from the producer directory and proved producer
+  mutation changes the upload; and
+- joined materializer-owned archive/root/capture cleanup errors into its result,
+  retaining an already-published receipt for idempotent retry.
+
+The reviewer also identified coverage guards that now assert their tables are
+non-empty and mode checks that include setuid, setgid, and sticky bits.
 
 ## Verification
 
@@ -60,8 +81,10 @@ The new live test was not run on macOS and no local K3s was started. The
 repository-wide external live suite still cannot compile with `-tags live`
 because its historical real-DB port references the absent
 `postgresrunner.StandardTestRunner`. The missing daemon-namespace companion
-change is fixed here, and the new contract independently compiles with
-`-tags hangar_live`; it does not inherit the unrelated database fixture. The
-existing harness offers no reusable backend failure injector, so the strict
-daemon test carries those failure cases. Final whole-branch review and
-re-review remain with the controller.
+change is fixed here, and the pipeline now runs the independent
+`-tags hangar_live` contract before that legacy command. The existing harness
+offers no reusable backend failure injector, so the strict daemon test carries
+those failure cases. These are layered proofs: they do not constitute a real
+multi-node deployment using GCS after ejecting the producing node; that remains
+environment-dependent follow-up coverage. Final scoped re-review remains with
+the controller.

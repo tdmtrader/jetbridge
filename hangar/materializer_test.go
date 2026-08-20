@@ -593,6 +593,45 @@ func TestMaterializerUsesAnchoredCapturedRootAndRebindsStageDigest(t *testing.T)
 	}
 }
 
+func TestMaterializerReturnsOwnedCaptureCleanupFailureAfterPublication(t *testing.T) {
+	ref, canonical := canonicalTreeFixture(t, testTreeArchive(t, []testTreeEntry{{name: "file", kind: tar.TypeReg, body: "payload"}}))
+	storage := t.TempDir()
+	cleanupMaterializedStorage(t, storage)
+	cleanupErr := errors.New("remove captured tree")
+	materializer := Materializer{
+		Store: &strictMaterializerStore{want: ref, archive: canonical},
+		Canonicalizer: Canonicalizer{
+			TempDir: t.TempDir(),
+			removeAll: func(string) error {
+				return cleanupErr
+			},
+		},
+		StoragePath:  storage,
+		MaxTreeBytes: 1 << 20,
+	}
+
+	err := materializer.Materialize(context.Background(), ref, "handle", "volume")
+	if !errors.Is(err, cleanupErr) {
+		t.Fatalf("Materialize error = %v, want owned cleanup error", err)
+	}
+	destination := filepath.Join(storage, "steps", "handle", "volume")
+	content, readErr := os.ReadFile(filepath.Join(destination, "file"))
+	if readErr != nil || string(content) != "payload" {
+		t.Fatalf("published payload = %q, %v", content, readErr)
+	}
+	receipt, readErr := os.ReadFile(filepath.Join(destination, materializationReceiptName))
+	if readErr != nil {
+		t.Fatalf("read published receipt: %v", readErr)
+	}
+	wantReceipt, marshalErr := json.Marshal(ref)
+	if marshalErr != nil {
+		t.Fatal(marshalErr)
+	}
+	if !bytes.Equal(receipt, wantReceipt) {
+		t.Fatalf("published receipt = %q, want %q", receipt, wantReceipt)
+	}
+}
+
 func TestMaterializerAbsentDestinationRaceNeverOverwritesWinner(t *testing.T) {
 	firstRef, firstArchive := canonicalTreeFixture(t, testTreeArchive(t, []testTreeEntry{{name: "file", kind: tar.TypeReg, body: "first"}}))
 	secondRef, secondArchive := canonicalTreeFixture(t, testTreeArchive(t, []testTreeEntry{{name: "file", kind: tar.TypeReg, body: "second"}}))
@@ -1024,7 +1063,7 @@ func assertMaterializedMode(t *testing.T, name string, want os.FileMode) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := info.Mode().Perm(); got != want {
+	if got := info.Mode() & (os.ModePerm | os.ModeSetuid | os.ModeSetgid | os.ModeSticky); got != want {
 		t.Fatalf("%s mode = %#o, want %#o", name, got, want)
 	}
 }

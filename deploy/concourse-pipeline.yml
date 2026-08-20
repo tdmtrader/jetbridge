@@ -766,6 +766,8 @@ jobs:
           echo "These tests create real K8s pods against the live cluster."
           echo "Artifact daemon: hostPath=$ARTIFACT_DAEMON_HOST_PATH port=$ARTIFACT_DAEMON_PORT"
           echo ""
+          echo "=== Running focused Hangar generated-Pod contract ==="
+          go test -tags hangar_live -v -count=1 -timeout 5m -run '^TestLiveHangarGeneratedPodMaterializesStrictTree$' ./atc/worker/jetbridge/...
           go test -tags live -v -count=1 -timeout 5m ./atc/worker/jetbridge/...
           echo "=== Live integration tests passed ==="
 

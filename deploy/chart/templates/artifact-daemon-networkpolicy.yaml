@@ -27,8 +27,9 @@ spec:
     # Allow traffic from Concourse task/check pods (labeled by the K8s runtime)
     - from:
         - podSelector:
-            matchLabels:
-              app.kubernetes.io/name: {{ include "concourse.name" . }}
+            matchExpressions:
+              - key: concourse.ci/worker
+                operator: Exists
       ports:
         - protocol: TCP
           port: {{ .Values.artifactDaemon.port | default 7780 }}

@@ -50,7 +50,7 @@ func (tree *CapturedTree) OpenRoot() (*os.Root, error) {
 	return root, nil
 }
 
-func (materializer *Materializer) Materialize(ctx context.Context, ref TreeRef, handle, volume string) error {
+func (materializer *Materializer) Materialize(ctx context.Context, ref TreeRef, handle, volume string) (err error) {
 	if materializer == nil || materializer.Store == nil {
 		return fmt.Errorf("hangar: materializer store is required")
 	}
@@ -77,19 +77,29 @@ func (materializer *Materializer) Materialize(ctx context.Context, ref TreeRef, 
 	if archive == nil {
 		return fmt.Errorf("hangar: open exact tree for materialization: %w", ErrCorrupt)
 	}
+	archiveNeedsClose := true
+	defer func() {
+		if archiveNeedsClose {
+			err = errors.Join(err, archive.Close())
+		}
+	}()
 	if attributes.Ref != ref {
-		_ = archive.Close()
 		return fmt.Errorf("hangar: opened tree identity differs from request: %w", ErrCorrupt)
 	}
 	captured, captureErr := materializer.Canonicalizer.Capture(ctx, archive)
 	closeErr := archive.Close()
+	archiveNeedsClose = false
+	if captured != nil {
+		defer func() {
+			err = errors.Join(err, captured.Close())
+		}()
+	}
 	if captureErr != nil || closeErr != nil {
-		if captured != nil {
-			_ = captured.Close()
-		}
 		return errors.Join(captureErr, closeErr)
 	}
-	defer captured.Close()
+	if captured == nil {
+		return fmt.Errorf("hangar: canonical capture returned no tree: %w", ErrCorrupt)
+	}
 	if captured.Digest != ref.Digest {
 		return fmt.Errorf("hangar: captured tree digest differs from exact reference: %w", ErrCorrupt)
 	}
@@ -102,6 +112,8 @@ func (materializer *Materializer) Materialize(ctx context.Context, ref TreeRef, 
 	if err != nil {
 		return err
 	}
-	defer source.Close()
+	defer func() {
+		err = errors.Join(err, source.Close())
+	}()
 	return materializeCapturedTree(ctx, materializer.StoragePath, handle, volume, ref, source, materializer.hooks)
 }

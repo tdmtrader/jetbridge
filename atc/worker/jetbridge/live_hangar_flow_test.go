@@ -28,16 +28,14 @@ import (
 
 // TestLiveHangarGeneratedPodMaterializesStrictTree is CI-only by construction:
 // it needs the repository's live build tag, a Linux Kubernetes node, and a
-// kubeconfig (the K3s behavioral tier provides all three). It deliberately does
-// not silently fall back to a fake client or host shell.
+// kubeconfig or an in-cluster service account (the K3s behavioral tier provides
+// one of these). It deliberately does not silently fall back to a fake client
+// or host shell.
 func TestLiveHangarGeneratedPodMaterializesStrictTree(t *testing.T) {
 	if runtime.GOOS == "darwin" {
 		t.Skip("real BusyBox/Linux and K3s execution is CI-only on macOS")
 	}
 	kubeconfig := os.Getenv("KUBECONFIG")
-	if kubeconfig == "" {
-		t.Skip("live Hangar flow requires KUBECONFIG for the CI/K3s cluster")
-	}
 	namespace := os.Getenv("K8S_TEST_NAMESPACE")
 	if namespace == "" {
 		namespace = "default"
@@ -100,7 +98,7 @@ func TestLiveHangarGeneratedPodMaterializesStrictTree(t *testing.T) {
 	hostRoot := "/tmp/" + unique
 	cfg.Namespace = namespace
 	cfg.ArtifactDaemonHostPath = hostRoot
-	cfg.ArtifactDaemonPort = 7780
+	cfg.ArtifactDaemonPort = 31780
 	cfg.ArtifactHelperImage = "busybox:latest"
 	cfg.HangarEnabled = true
 	cfg.HangarGrantSigner = signer
@@ -170,7 +168,7 @@ printf 'HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\
 			NodeName: node.Name, HostNetwork: true, RestartPolicy: corev1.RestartPolicyNever,
 			Containers: []corev1.Container{{
 				Name: "daemon-fixture", Image: "busybox:latest",
-				Command:      []string{"sh", "-c", "printf '%s' \"$HANDLER\" >/tmp/handler; chmod 700 /tmp/handler; exec nc -ll -p 7780 -e /tmp/handler"},
+				Command:      []string{"sh", "-c", "printf '%s' \"$HANDLER\" >/tmp/handler; chmod 700 /tmp/handler; exec nc -ll -p 31780 -e /tmp/handler"},
 				Env:          []corev1.EnvVar{{Name: "HANDLER", Value: "#!/bin/sh\n" + fixtureScript}},
 				VolumeMounts: []corev1.VolumeMount{{Name: "host", MountPath: "/host"}},
 			}},
