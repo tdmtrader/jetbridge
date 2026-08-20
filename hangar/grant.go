@@ -84,8 +84,14 @@ func (signer *GrantSigner) Sign(ref TreeRef, handle, volume string) (string, err
 		return "", fmt.Errorf("hangar: sign materialization grant: handle and volume must be canonical path segments")
 	}
 	now := signer.clock().UTC()
-	if now.IsZero() || now.UnixNano() <= 0 {
+	issuedAt, ok := exactUnixNano(now)
+	if now.IsZero() || !ok || issuedAt <= 0 {
 		return "", fmt.Errorf("hangar: sign materialization grant: clock is outside the supported range")
+	}
+	expires := now.Add(signer.ttl)
+	expiresAt, ok := exactUnixNano(expires)
+	if !ok || expiresAt <= issuedAt || expiresAt-issuedAt != signer.ttl.Nanoseconds() {
+		return "", fmt.Errorf("hangar: sign materialization grant: expiry is outside the supported range")
 	}
 	nonce := make([]byte, grantNonceLen)
 	if _, err := io.ReadFull(signer.random, nonce); err != nil {
@@ -93,7 +99,7 @@ func (signer *GrantSigner) Sign(ref TreeRef, handle, volume string) (string, err
 	}
 	claims := materializationGrantClaims{
 		Domain: grantDomain, Version: grantVersion, Ref: ref, Handle: handle, Volume: volume,
-		IssuedAt: now.UnixNano(), ExpiresAt: now.Add(signer.ttl).UnixNano(),
+		IssuedAt: issuedAt, ExpiresAt: expiresAt,
 		Nonce: base64.RawURLEncoding.EncodeToString(nonce),
 	}
 	payload, err := json.Marshal(claims)
@@ -147,7 +153,8 @@ func (verifier *GrantVerifier) Verify(token string, ref TreeRef, handle, volume 
 		return unauthorized()
 	}
 	now := verifier.clock().UTC()
-	if now.UnixNano() < claims.IssuedAt || now.UnixNano() >= claims.ExpiresAt {
+	nowNanos, ok := exactUnixNano(now)
+	if !ok || nowNanos < claims.IssuedAt || nowNanos >= claims.ExpiresAt {
 		return unauthorized()
 	}
 	if !sameTreeRef(claims.Ref, ref) || !constantTimeStringEqual(claims.Handle, handle) || !constantTimeStringEqual(claims.Volume, volume) {
@@ -166,14 +173,24 @@ func constantTimeStringEqual(left, right string) bool {
 }
 
 func validMaterializationSegment(segment string) bool {
-	if len(segment) < 1 || len(segment) > 255 || segment == "." || segment == ".." {
+	if len(segment) < 1 || len(segment) > 128 || !isASCIIAlphanumeric(segment[0]) || !isASCIIAlphanumeric(segment[len(segment)-1]) {
 		return false
 	}
 	for index := 0; index < len(segment); index++ {
 		character := segment[index]
-		if character == '/' || character == '\\' || character == 0 {
+		if !isASCIIAlphanumeric(character) && character != '.' && character != '_' && character != '-' {
 			return false
 		}
 	}
 	return true
+}
+
+func isASCIIAlphanumeric(character byte) bool {
+	return character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9'
+}
+
+func exactUnixNano(value time.Time) (int64, bool) {
+	value = value.UTC()
+	nanos := value.UnixNano()
+	return nanos, time.Unix(0, nanos).UTC().Equal(value)
 }

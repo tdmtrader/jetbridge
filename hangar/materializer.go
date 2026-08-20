@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 )
 
 const materializationReceiptName = ".hangar-materialized"
@@ -17,11 +18,35 @@ type Materializer struct {
 }
 
 type materializerHooks struct {
+	afterCapture         func(*CapturedTree) error
+	beforeLock           func() error
 	afterStage           func(string) error
 	beforePublish        func() error
 	afterDestinationOpen func() error
+	beforePayloadSeal    func() error
 	beforeReceipt        func() error
 	afterReceipt         func() error
+	duringRetryCompare   func() error
+	beforeRootChmod      func() error
+	beforeRootSync       func() error
+}
+
+// OpenRoot returns a new descriptor-anchored view of the verified extracted
+// tree. It never resolves CapturedTree.Root after Capture returns.
+func (tree *CapturedTree) OpenRoot() (*os.Root, error) {
+	if tree == nil {
+		return nil, fmt.Errorf("hangar: captured tree is required")
+	}
+	tree.closeMu.Lock()
+	defer tree.closeMu.Unlock()
+	if tree.closed || tree.materializationRoot == nil {
+		return nil, fmt.Errorf("hangar: captured tree is closed")
+	}
+	root, err := tree.materializationRoot.OpenRoot(".")
+	if err != nil {
+		return nil, fmt.Errorf("hangar: duplicate captured tree root: %w", err)
+	}
+	return root, nil
 }
 
 func (materializer *Materializer) Materialize(ctx context.Context, ref TreeRef, handle, volume string) error {
@@ -67,5 +92,15 @@ func (materializer *Materializer) Materialize(ctx context.Context, ref TreeRef, 
 	if captured.Digest != ref.Digest {
 		return fmt.Errorf("hangar: captured tree digest differs from exact reference: %w", ErrCorrupt)
 	}
-	return materializeCapturedTree(ctx, materializer.StoragePath, handle, volume, ref, captured.Root, materializer.hooks)
+	if materializer.hooks.afterCapture != nil {
+		if err := materializer.hooks.afterCapture(captured); err != nil {
+			return fmt.Errorf("hangar: after capturing materialization tree: %w", err)
+		}
+	}
+	source, err := captured.OpenRoot()
+	if err != nil {
+		return err
+	}
+	defer source.Close()
+	return materializeCapturedTree(ctx, materializer.StoragePath, handle, volume, ref, source, materializer.hooks)
 }

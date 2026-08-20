@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -81,6 +82,41 @@ func TestGrantSignerRequiresExactRawKeyAndBoundedTTL(t *testing.T) {
 	for _, ttl := range []time.Duration{0, -time.Second, 15*time.Minute + time.Nanosecond} {
 		if _, err := NewGrantSigner(key, ttl, now); err == nil {
 			t.Fatalf("accepted invalid TTL %v", ttl)
+		}
+	}
+}
+
+func TestGrantSignerRejectsUnixNanoAliasesAndOverflow(t *testing.T) {
+	key := []byte("0123456789abcdef0123456789abcdef")
+	for name, now := range map[string]time.Time{
+		"clock outside UnixNano range":  time.Date(2300, time.January, 1, 0, 0, 0, 0, time.UTC),
+		"expiry outside UnixNano range": time.Unix(0, math.MaxInt64).Add(-30 * time.Second),
+	} {
+		t.Run(name, func(t *testing.T) {
+			signer, err := NewGrantSigner(key, time.Minute, func() time.Time { return now })
+			if err != nil {
+				t.Fatal(err)
+			}
+			ref := mustGrantRef(t, "builds", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 1)
+			if _, err := signer.Sign(ref, "handle-1", "volume-1"); err == nil {
+				t.Fatal("UnixNano alias/overflow was signed")
+			}
+		})
+	}
+}
+
+func TestMaterializationSegmentGrammar(t *testing.T) {
+	for _, segment := range []string{"a", "A1", "handle-01234567-89ab-cdef", "volume.input_2"} {
+		if !validMaterializationSegment(segment) {
+			t.Fatalf("valid segment rejected: %q", segment)
+		}
+	}
+	for _, segment := range []string{
+		"", ".", "..", "-leading", "trailing-", ".hidden", "hidden.", "a/b", `a\b`,
+		"has space", "colon:value", "control\x1f", "é", "e\u0301", string([]byte{0xff}), strings.Repeat("a", 129),
+	} {
+		if validMaterializationSegment(segment) {
+			t.Fatalf("invalid or alias-prone segment accepted: %q", segment)
 		}
 	}
 }
