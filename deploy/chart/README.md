@@ -214,6 +214,13 @@ and fail-closed behavior.
 the chart rejects it with `store: gcs`. Native GCS uses Application Default
 Credentials/Workload Identity.
 
+The opt-in artifact-daemon NetworkPolicy includes both current GKE Workload
+Identity metadata profiles: standard/Calico (GKE 1.21+) at
+`169.254.169.252/32` TCP 987/988 and Dataplane V2 at
+`169.254.169.254/32` TCP 80/8080. Enforcement and routing depend on the
+cluster CNI; validate this allowlist for the target environment. The obsolete
+pre-1.21 loopback profile is not included.
+
 ### PostgreSQL
 
 | Parameter | Default | Description |

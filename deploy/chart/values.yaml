@@ -665,5 +665,7 @@ artifactDaemon:
     ttl: 2h
 
   networkPolicy:
-    # -- Enable NetworkPolicy restricting daemon ingress to Concourse pods only
+    # -- Enable NetworkPolicy restricting daemon ingress to Concourse pods and
+    # egress to required services. Current GKE standard/Calico and Dataplane V2
+    # metadata profiles are included; validate CNI-specific routing before use.
     enabled: false
