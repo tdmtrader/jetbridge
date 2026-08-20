@@ -267,6 +267,70 @@ func TestHangarNetworkPolicyAllowsGKEWorkloadIdentityMetadata(t *testing.T) {
 	}
 }
 
+func TestHangarNetworkPolicyAllowsWebWorkersAndPeers(t *testing.T) {
+	out := renderHangar(t, "artifactDaemon.networkPolicy.enabled=true")
+	var ingress []struct {
+		From []struct {
+			PodSelector struct {
+				MatchLabels      map[string]string `json:"matchLabels"`
+				MatchExpressions []struct {
+					Key      string `json:"key"`
+					Operator string `json:"operator"`
+				} `json:"matchExpressions"`
+			} `json:"podSelector"`
+		} `json:"from"`
+	}
+	for _, doc := range strings.Split(out, "\n---") {
+		var policy struct {
+			Kind     string `json:"kind"`
+			Metadata struct {
+				Name string `json:"name"`
+			} `json:"metadata"`
+			Spec struct {
+				Ingress []struct {
+					From []struct {
+						PodSelector struct {
+							MatchLabels      map[string]string `json:"matchLabels"`
+							MatchExpressions []struct {
+								Key      string `json:"key"`
+								Operator string `json:"operator"`
+							} `json:"matchExpressions"`
+						} `json:"podSelector"`
+					} `json:"from"`
+				} `json:"ingress"`
+			} `json:"spec"`
+		}
+		if yaml.Unmarshal([]byte(doc), &policy) == nil && policy.Kind == "NetworkPolicy" && strings.HasSuffix(policy.Metadata.Name, "-artifact-daemon") {
+			ingress = policy.Spec.Ingress
+			break
+		}
+	}
+	if len(ingress) == 0 {
+		t.Fatal("enabled render contained no artifact-daemon ingress rules")
+	}
+
+	web, workers, peers := false, false, false
+	for _, rule := range ingress {
+		for _, from := range rule.From {
+			labels := from.PodSelector.MatchLabels
+			if labels["app.kubernetes.io/component"] == "web" {
+				web = true
+			}
+			if labels["app.kubernetes.io/component"] == "artifact-daemon" {
+				peers = true
+			}
+			for _, expression := range from.PodSelector.MatchExpressions {
+				if expression.Key == "concourse.ci/worker" && expression.Operator == "Exists" {
+					workers = true
+				}
+			}
+		}
+	}
+	if !web || !workers || !peers {
+		t.Fatalf("artifact-daemon ingress web=%t workers=%t peers=%t, want all allowed", web, workers, peers)
+	}
+}
+
 func daemonSetDocument(t *testing.T, manifests string) string {
 	t.Helper()
 	for _, doc := range strings.Split(manifests, "\n---") {

@@ -447,7 +447,11 @@ func TestExtractRejectsUnsafePAXEffectivePathsAndLinks(t *testing.T) {
 func TestExtractRejectsUnknownAndSocketTypes(t *testing.T) {
 	t.Parallel()
 
-	for _, typeflag := range []byte{'s', 'Z'} {
+	typeflags := []byte{'s', 'Z'}
+	if len(typeflags) == 0 {
+		t.Fatal("unknown/socket type guard table is empty")
+	}
+	for _, typeflag := range typeflags {
 		t.Run(fmt.Sprintf("type-%c", typeflag), func(t *testing.T) {
 			raw := rawTarHeader("hostile", typeflag, 0, nil)
 			_, err := (Canonicalizer{}).Capture(context.Background(), bytes.NewReader(raw))

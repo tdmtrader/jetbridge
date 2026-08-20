@@ -152,9 +152,10 @@ func (store *GCSStore) EnsureTree(ctx context.Context, scope Scope, digest Diges
 		}
 	}()
 	hasher := sha256.New()
-	encoder, err := zstd.NewWriter(scratch, zstd.WithEncoderLevel(store.config.ZstdLevel), zstd.WithEncoderConcurrency(1), zstd.WithEncoderCRC(true))
+	trackedScratch := &errorTrackingWriter{writer: scratch}
+	encoder, err := zstd.NewWriter(trackedScratch, zstd.WithEncoderLevel(store.config.ZstdLevel), zstd.WithEncoderConcurrency(1), zstd.WithEncoderCRC(true))
 	if err != nil {
-		return TreeAttributes{}, false, fmt.Errorf("hangar: create zstd encoder: %w", err)
+		return TreeAttributes{}, false, infrastructure("create zstd encoder", err)
 	}
 	stopClose := closeReadCloserOnCancel(ctx, source)
 	defer stopClose()
@@ -165,13 +166,19 @@ func (store *GCSStore) EnsureTree(ctx context.Context, scope Scope, digest Diges
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return TreeAttributes{}, false, ctxErr
 		}
-		return TreeAttributes{}, false, fmt.Errorf("hangar: read logical source: %w", copyErr)
+		if trackedScratch.err != nil {
+			return TreeAttributes{}, false, infrastructure("write compressed scratch", trackedScratch.err)
+		}
+		return TreeAttributes{}, false, infrastructure("read logical source", copyErr)
 	}
 	if closeErr != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return TreeAttributes{}, false, ctxErr
 		}
-		return TreeAttributes{}, false, fmt.Errorf("hangar: finish zstd source: %w", closeErr)
+		if trackedScratch.err != nil {
+			return TreeAttributes{}, false, infrastructure("write compressed scratch", trackedScratch.err)
+		}
+		return TreeAttributes{}, false, infrastructure("finish zstd source", closeErr)
 	}
 	if logicalBytes > maxLogicalBytes {
 		return TreeAttributes{}, false, fmt.Errorf("%w: logical object exceeds %d-byte limit", ErrLimitExceeded, maxLogicalBytes)
@@ -185,7 +192,7 @@ func (store *GCSStore) EnsureTree(ctx context.Context, scope Scope, digest Diges
 	}
 	storedBytes, err := scratch.Seek(0, io.SeekEnd)
 	if err != nil {
-		return TreeAttributes{}, false, fmt.Errorf("hangar: inspect compressed scratch: %w", err)
+		return TreeAttributes{}, false, infrastructure("inspect compressed scratch", err)
 	}
 	maxStoredBytes, err := maxCompressedRepresentation(logicalBytes)
 	if err != nil {
@@ -195,7 +202,7 @@ func (store *GCSStore) EnsureTree(ctx context.Context, scope Scope, digest Diges
 		return TreeAttributes{}, false, fmt.Errorf("%w: compressed scratch size %d exceeds %d-byte representation limit", ErrLimitExceeded, storedBytes, maxStoredBytes)
 	}
 	if _, err := scratch.Seek(0, io.SeekStart); err != nil {
-		return TreeAttributes{}, false, fmt.Errorf("hangar: rewind compressed scratch: %w", err)
+		return TreeAttributes{}, false, infrastructure("rewind compressed scratch", err)
 	}
 
 	handle := store.objects.Object(store.config.Bucket, key).If(storage.Conditions{DoesNotExist: true})
@@ -255,7 +262,7 @@ func (store *GCSStore) InspectTree(ctx context.Context, scope Scope, digest Dige
 		return TreeAttributes{}, err
 	}
 	if err := reader.Close(); err != nil {
-		return TreeAttributes{}, fmt.Errorf("hangar: close verified inspect scratch: %w", err)
+		return TreeAttributes{}, infrastructure("close verified inspect scratch", err)
 	}
 	return attrs, nil
 }
@@ -307,12 +314,12 @@ func (store *GCSStore) inspectAfterCreateConflict(ctx context.Context, scope Sco
 	reader, attrs, err := store.inspect(ctx, scope, digest, key, maxLogicalBytes)
 	if err != nil {
 		if errors.Is(err, ErrCorrupt) || errors.Is(err, ErrNotFound) || errors.Is(err, ErrConflict) {
-			return TreeAttributes{}, false, wrapSentinel(ErrConflict, "existing immutable tree failed verification", err)
+			return TreeAttributes{}, false, fmt.Errorf("%w: existing immutable tree failed verification: %v", ErrConflict, err)
 		}
 		return TreeAttributes{}, false, err
 	}
 	if err := reader.Close(); err != nil {
-		return TreeAttributes{}, false, fmt.Errorf("hangar: close verified conflict scratch: %w", err)
+		return TreeAttributes{}, false, infrastructure("close verified conflict scratch", err)
 	}
 	return attrs, false, nil
 }
@@ -455,7 +462,7 @@ func (store *GCSStore) openVerified(ctx context.Context, handle objectHandle, re
 			return nil, TreeAttributes{}, infrastructure("read compressed tree", countedCompressed.err)
 		}
 		if trackedScratch.err != nil {
-			return nil, TreeAttributes{}, fmt.Errorf("hangar: write verified scratch: %w", trackedScratch.err)
+			return nil, TreeAttributes{}, infrastructure("write verified scratch", trackedScratch.err)
 		}
 		return nil, TreeAttributes{}, wrapSentinel(ErrCorrupt, "decompress tree", err)
 	}
@@ -486,7 +493,7 @@ func (store *GCSStore) openVerified(ctx context.Context, handle objectHandle, re
 		return nil, TreeAttributes{}, infrastructure("close compressed tree", closeErr)
 	}
 	if _, err := scratch.Seek(0, io.SeekStart); err != nil {
-		return nil, TreeAttributes{}, fmt.Errorf("hangar: rewind verified scratch: %w", err)
+		return nil, TreeAttributes{}, infrastructure("rewind verified scratch", err)
 	}
 	keepScratch = true
 	return &scratchReadCloser{file: scratch, path: scratch.Name(), remove: store.removeScratch}, TreeAttributes{Ref: ref, StoredBytes: stored.Size, LogicalBytes: actualBytes, CreatedAt: stored.Created}, nil
@@ -541,7 +548,7 @@ type scratchFile interface {
 func (store *GCSStore) newScratch(pattern string) (scratchFile, func() error, error) {
 	file, err := store.createScratch(store.config.ScratchDir, pattern)
 	if err != nil {
-		return nil, nil, fmt.Errorf("hangar: create scratch file: %w", err)
+		return nil, nil, infrastructure("create scratch file", err)
 	}
 	var once sync.Once
 	var cleanupErr error
@@ -553,7 +560,7 @@ func (store *GCSStore) newScratch(pattern string) (scratchFile, func() error, er
 				removeErr = nil
 			}
 			if err := errors.Join(closeErr, removeErr); err != nil {
-				cleanupErr = fmt.Errorf("hangar: cleanup scratch file: %w", err)
+				cleanupErr = infrastructure("cleanup scratch file", err)
 			}
 		})
 		return cleanupErr
@@ -643,7 +650,9 @@ func (reader *scratchReadCloser) Close() error {
 		if errors.Is(removeErr, os.ErrNotExist) {
 			removeErr = nil
 		}
-		reader.err = errors.Join(closeErr, removeErr)
+		if err := errors.Join(closeErr, removeErr); err != nil {
+			reader.err = infrastructure("close verified scratch", err)
+		}
 	})
 	return reader.err
 }
