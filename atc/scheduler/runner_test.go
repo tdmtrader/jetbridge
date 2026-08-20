@@ -181,7 +181,7 @@ var _ = Describe("Runner", func() {
 			Template:  true,
 			Resources: atc.ResourceConfigs{{Name: "source", Type: "some-base-resource-type", Source: atc.Source{"repository": "example"}}},
 			Jobs: atc.JobConfigs{
-				{Name: "entry"},
+				{Name: "entry", PlanSequence: []atc.Step{{Config: &atc.GetStep{Name: "source", Trigger: true}}}},
 				{Name: "downstream", PlanSequence: []atc.Step{{Config: &atc.GetStep{Name: "source", Passed: []string{"entry"}, Trigger: true}}}},
 			},
 		}, 0, false)
