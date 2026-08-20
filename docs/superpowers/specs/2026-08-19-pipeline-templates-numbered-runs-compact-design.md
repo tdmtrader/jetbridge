@@ -203,8 +203,8 @@ reclamation without allowing a committed active orphan.
 
 The template foreign key is restrictive: templates with durable run history
 cannot be destroyed through the ordinary pipeline delete path. They may be
-archived. A future explicit purge can define deletion of headers, detached
-builds, and team event rows as one deliberate operation.
+archived. A future explicit per-template purge can define deletion of headers,
+detached builds, and team event rows as one deliberate operation.
 
 ### 5.3 Jobs and builds
 
@@ -510,9 +510,11 @@ fields: unauthorized viewers see no form, while an authorized writer sees a
 disabled form and the creation-hold reason. The lean dashboard fetches no run
 status summary or recent-run window per card.
 
-A real run payload response includes nullable `run_number`. This field, not
-`template` or instance vars, is authoritative. A run record includes durable
-ID, number, status, creator/timestamps, team/template identity, authorized
+A real run payload response includes nullable `run_number` and
+`run_template_ref`. These fields, not `template` or instance vars, are
+authoritative and let a direct payload URL canonicalize after a template
+rename. A run record includes durable ID, number, status, creator/timestamps,
+team/template identity, authorized
 params, `reclaimed`, and optional `instance_ref`. `instance_ref` is present
 only while the payload exists and the viewer may enter it. It is read from the
 actual child pipeline rather than synthesized from the template's current
@@ -542,8 +544,9 @@ The pipeline presenter matrix is a protocol invariant:
 - ordinary run-shaped instance: neither field.
 
 Directly loading a real payload route canonicalizes to the explicit pretty run
-route. The UI does this only when the presenter supplies `run_number`; it never
-infers from instance vars.
+route. The UI does this only when the presenter supplies both `run_number` and
+the current base `run_template_ref`; it never infers from instance vars or a
+possibly stale payload name.
 
 ## 13. Lean web UI
 
