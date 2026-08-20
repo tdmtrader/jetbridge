@@ -100,10 +100,14 @@ server-authenticated mTLS. The independently verified, read-only local receipt
 is the outcome proof that the exact requested tree was committed on the node.
 
 NetworkPolicy remains off by default. When the artifact-daemon policy is
-enabled it permits the GKE metadata endpoint `169.254.169.254/32` on TCP 80 and
-988 for Workload Identity refresh. Policy enforcement and metadata routing are
-CNI/environment-dependent; non-GKE clusters may require different egress. It
-is defense in depth and does not change the receipt or TLS identity model.
+enabled it permits both current GKE metadata profiles for Workload Identity
+refresh: standard/Calico on GKE 1.21 and later uses
+`169.254.169.252/32` on TCP 987 and 988, while Dataplane V2 uses
+`169.254.169.254/32` on TCP 80 and 8080. The obsolete pre-1.21 loopback profile
+is not included. Policy enforcement and metadata routing are
+CNI/environment-dependent; non-GKE clusters may require different egress, and
+operators must validate the policy against their cluster. It is defense in
+depth and does not change the receipt or TLS identity model.
 
 ## Rollout and downgrade
 

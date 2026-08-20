@@ -3,6 +3,7 @@ package tests
 import (
 	"encoding/base64"
 	"os/exec"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -210,7 +211,8 @@ func TestHangarAcceptsWholeSecondCapabilityTTLBoundaries(t *testing.T) {
 
 func TestHangarNetworkPolicyAllowsGKEWorkloadIdentityMetadata(t *testing.T) {
 	out := renderHangar(t, "artifactDaemon.networkPolicy.enabled=true")
-	var found bool
+	policyFound := false
+	metadataRules := map[string][]map[int]string{}
 	for _, doc := range strings.Split(out, "\n---") {
 		var policy struct {
 			Kind     string `json:"kind"`
@@ -234,21 +236,34 @@ func TestHangarNetworkPolicyAllowsGKEWorkloadIdentityMetadata(t *testing.T) {
 		if yaml.Unmarshal([]byte(doc), &policy) != nil || policy.Kind != "NetworkPolicy" || !strings.HasSuffix(policy.Metadata.Name, "-artifact-daemon") {
 			continue
 		}
+		policyFound = true
 		for _, rule := range policy.Spec.Egress {
-			if len(rule.To) != 1 || rule.To[0].IPBlock.CIDR != "169.254.169.254/32" {
+			if len(rule.To) != 1 || rule.To[0].IPBlock.CIDR == "" {
 				continue
 			}
 			ports := map[int]string{}
 			for _, port := range rule.Ports {
 				ports[port.Port] = port.Protocol
 			}
-			if ports[80] == "TCP" && ports[988] == "TCP" {
-				found = true
-			}
+			metadataRules[rule.To[0].IPBlock.CIDR] = append(metadataRules[rule.To[0].IPBlock.CIDR], ports)
 		}
 	}
-	if !found {
-		t.Fatal("enabled artifact-daemon NetworkPolicy omitted GKE metadata TCP 80/988 egress")
+	if !policyFound {
+		t.Fatal("enabled render contained no artifact-daemon NetworkPolicy")
+	}
+
+	wants := map[string]map[int]string{
+		"169.254.169.252/32": {987: "TCP", 988: "TCP"},
+		"169.254.169.254/32": {80: "TCP", 8080: "TCP"},
+	}
+	for cidr, want := range wants {
+		got := metadataRules[cidr]
+		if len(got) != 1 || !reflect.DeepEqual(got[0], want) {
+			t.Errorf("GKE metadata egress for %s = %#v, want one exact rule %#v", cidr, got, want)
+		}
+	}
+	if got := metadataRules["127.0.0.1/32"]; len(got) != 0 {
+		t.Errorf("obsolete pre-GKE-1.21 loopback metadata egress was rendered: %#v", got)
 	}
 }
 

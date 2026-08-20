@@ -61,9 +61,18 @@ spec:
     - ports:
         - protocol: TCP
           port: 443
-    # GKE metadata server — required for Workload Identity token refresh.
-    # Other environments/CNIs may use a different metadata path; operators
-    # must validate enforcement and identity plumbing in their cluster.
+    # GKE standard/Calico (GKE 1.21+) metadata server — required for
+    # Workload Identity token refresh.
+    - to:
+        - ipBlock:
+            cidr: 169.254.169.252/32
+      ports:
+        - protocol: TCP
+          port: 987
+        - protocol: TCP
+          port: 988
+    # GKE Dataplane V2 metadata server. Both current profiles are included
+    # because Helm cannot infer the cluster's network policy provider.
     - to:
         - ipBlock:
             cidr: 169.254.169.254/32
@@ -71,5 +80,5 @@ spec:
         - protocol: TCP
           port: 80
         - protocol: TCP
-          port: 988
+          port: 8080
 {{- end }}

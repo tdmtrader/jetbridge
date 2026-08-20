@@ -201,3 +201,54 @@ no `--kubernetes-hangar-*`; full enablement added web flags with the same
 `900s`; and explicit live generation produced a base64 value decoding to 32
 raw bytes. Live Helm `lookup`, GCS/Workload Identity, CNI enforcement, and K3s
 remain environment-dependent gaps and are not claimed here.
+
+## Fix round 2: current GKE metadata profiles
+
+The remaining NetworkPolicy finding was checked against Google's current
+primary GKE documentation. Standard/Calico GKE 1.21 and later requires
+`169.254.169.252/32` on TCP 987 and 988, while Dataplane V2 requires
+`169.254.169.254/32` on TCP 80 and 8080. The previous rule mixed the latter
+address with TCP 988 and therefore only partially allowed either profile.
+
+The exact-profile test was written first and failed for both discrepancies:
+
+```text
+$ env GOCACHE=/private/tmp/hangar-task7-gocache go test ./deploy/chart/tests -run '^TestHangarNetworkPolicy' -count=1
+--- FAIL: TestHangarNetworkPolicyAllowsGKEWorkloadIdentityMetadata
+    hangar_test.go:262: GKE metadata egress for 169.254.169.252/32 = []map[int]string(nil), want one exact rule map[int]string{987:"TCP", 988:"TCP"}
+    hangar_test.go:262: GKE metadata egress for 169.254.169.254/32 = []map[int]string{map[int]string{80:"TCP", 988:"TCP"}}, want one exact rule map[int]string{80:"TCP", 8080:"TCP"}
+FAIL
+```
+
+The opt-in artifact-daemon policy now renders one exact egress rule per
+current GKE profile. It deliberately omits the obsolete pre-1.21 loopback
+profile. The test parses the enabled policy, proves that it found the target
+resource, checks both exact CIDR/port sets, and rejects a loopback rule. Chart
+and operator documentation describe the CNI/environment dependency and tell
+operators to validate routing and enforcement for their cluster.
+
+Green verification:
+
+```text
+$ env GOCACHE=/private/tmp/hangar-task7-gocache go test ./deploy/chart/tests -run '^TestHangarNetworkPolicy' -count=1
+ok github.com/concourse/concourse/deploy/chart/tests 0.458s
+
+$ env GOCACHE=/private/tmp/hangar-task7-gocache go test ./deploy/chart/tests -count=1
+ok github.com/concourse/concourse/deploy/chart/tests 22.293s
+
+$ helm lint deploy/chart
+1 chart(s) linted, 0 chart(s) failed
+
+$ helm template jb deploy/chart >/dev/null
+$ helm template jb deploy/chart <daemon-only Hangar sets> >/dev/null
+$ helm template jb deploy/chart <fully enabled Hangar sets> >/dev/null
+# all exit 0
+
+$ git diff --check
+# exit 0
+```
+
+No live standard/Calico or Dataplane V2 cluster was available, so actual CNI
+enforcement and Workload Identity token refresh remain environment-dependent
+gaps. The chart test verifies the rendered Kubernetes objects, not dataplane
+behavior.
