@@ -136,6 +136,17 @@ func (step *SetPipelineStep) run(ctx context.Context, state RunState, delegate S
 		return false, nil
 	}
 
+	pipelineRef := atc.PipelineRef{
+		Name:         step.plan.Name,
+		InstanceVars: step.plan.InstanceVars,
+	}
+	if err := configvalidate.ValidateTemplateDeclaration(pipelineRef, atcConfig); err != nil {
+		fmt.Fprintln(delegate.Stderr(), "invalid pipeline:")
+		fmt.Fprintf(stderr, "- %s\n", err)
+		delegate.Finished(logger, false)
+		return false, nil
+	}
+
 	var team db.Team
 	if step.plan.Team == "" {
 		team = step.teamFactory.GetByID(step.metadata.TeamID)
@@ -173,10 +184,6 @@ func (step *SetPipelineStep) run(ctx context.Context, state RunState, delegate S
 		team = targetTeam
 	}
 
-	pipelineRef := atc.PipelineRef{
-		Name:         step.plan.Name,
-		InstanceVars: step.plan.InstanceVars,
-	}
 	pipeline, found, err := team.Pipeline(pipelineRef)
 	if err != nil {
 		return false, err

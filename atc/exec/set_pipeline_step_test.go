@@ -220,6 +220,26 @@ jobs:
          - ((branch))
 `
 
+	const instancedTemplatePipelineContent = `
+---
+template: true
+run_retention:
+  keep_last: 1
+jobs:
+- name: entry
+  plan: []
+`
+
+	const ordinaryPipelineWithTemplateParamsContent = `
+---
+params:
+- name: environment
+  type: string
+jobs:
+- name: entry
+  plan: []
+`
+
 	var (
 		ctx        context.Context
 		cancel     func()
@@ -460,6 +480,40 @@ jobs:
 				_, found, err := currentTeam.Pipeline(targetRef)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(found).To(BeFalse())
+			})
+		})
+
+		Describe("template declaration validation", func() {
+			assertDeclarationRejected := func(expectedError string) {
+				GinkgoHelper()
+				Expect(stepErr).NotTo(HaveOccurred())
+				Expect(stepOk).To(BeFalse())
+				Expect(execBuildLog(fixture, realBuild, event.OriginSourceStderr)).To(ContainSubstring(expectedError))
+				Expect(execBuildFinishEvents(fixture, realBuild)).To(HaveLen(1))
+				Expect(execBuildFinishEvents(fixture, realBuild)[0].Succeeded).To(BeFalse())
+				_, found, err := currentTeam.Pipeline(targetRef)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(found).To(BeFalse())
+			}
+
+			Context("when an instanced target declares a template", func() {
+				BeforeEach(func() {
+					pipelineFileContent = instancedTemplatePipelineContent
+				})
+
+				It("reports the declaration error without saving the pipeline", func() {
+					assertDeclarationRejected("templates cannot have instance vars")
+				})
+			})
+
+			Context("when an ordinary pipeline declares template-only fields", func() {
+				BeforeEach(func() {
+					pipelineFileContent = ordinaryPipelineWithTemplateParamsContent
+				})
+
+				It("reports the declaration error without saving the pipeline", func() {
+					assertDeclarationRejected("params are only valid on templates")
+				})
 			})
 		})
 
