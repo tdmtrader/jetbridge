@@ -159,10 +159,8 @@ func (step *PutStep) run(ctx context.Context, state RunState, delegate PutDelega
 	}
 
 	containerSpec := runtime.ContainerSpec{
-		TeamID:   step.metadata.TeamID,
-		TeamName: step.metadata.TeamName,
-		JobID:    step.metadata.JobID,
-
+		TeamID:    step.metadata.TeamID,
+		TeamName:  step.metadata.TeamName,
 		ImageSpec: imageSpec,
 
 		Env:  step.metadata.Env(),

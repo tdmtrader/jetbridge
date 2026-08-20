@@ -495,6 +495,9 @@ func (factory *stepperFactory) stepMetadata(
 		InstanceVarsQuery:    build.PipelineRef().QueryParams(),
 		ExternalURL:          externalURL,
 	}
+	if identity, found := build.TaskCacheIdentity(); found {
+		meta.TaskCacheIdentity = &identity
+	}
 	if exposeBuildCreatedBy && build.CreatedBy() != nil {
 		meta.CreatedBy = *build.CreatedBy()
 	}

@@ -73,6 +73,13 @@ var _ = Describe("PipelineRun", func() {
 		Expect(hasRun).To(BeTrue())
 		Expect(buildRunID).To(Equal(runID))
 		Expect(build.BasePipelineID()).To(Equal(templateID))
+		identity, found := build.TaskCacheIdentity()
+		Expect(found).To(BeTrue())
+		Expect(identity).To(Equal(atc.TaskCacheIdentity{
+			TeamID:             defaultTeam.ID(),
+			TemplatePipelineID: templateID,
+			RunJobName:         "run-job",
+		}))
 		baseRef, found := build.BasePipelineRef()
 		Expect(found).To(BeTrue())
 		Expect(baseRef).To(Equal(atc.PipelineRef{Name: "detached-base"}))
@@ -98,6 +105,8 @@ var _ = Describe("PipelineRun", func() {
 		Expect(hasRun).To(BeFalse())
 		Expect(buildRunID).To(BeZero())
 		Expect(build.BasePipelineID()).To(Equal(templateID))
+		_, found = build.TaskCacheIdentity()
+		Expect(found).To(BeFalse())
 		baseRef, found := build.BasePipelineRef()
 		Expect(found).To(BeTrue())
 		Expect(baseRef).To(Equal(atc.PipelineRef{Name: "live-base"}))

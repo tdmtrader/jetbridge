@@ -256,11 +256,11 @@ func (v *DaemonSetVolume) InitializeStreamedResourceCache(ctx context.Context, c
 	return v.dbVolume.InitializeStreamedResourceCache(cache, sourceWorkerResourceCacheID)
 }
 
-func (v *DaemonSetVolume) InitializeTaskCache(ctx context.Context, jobID int, stepName string, path string, privileged bool) error {
+func (v *DaemonSetVolume) InitializeTaskCache(ctx context.Context, identity atc.TaskCacheIdentity, stepName string, path string, privileged bool) error {
 	if v.dbVolume == nil {
 		return nil
 	}
-	return v.dbVolume.InitializeTaskCache(atc.TaskCacheIdentity{JobID: jobID}, stepName, path)
+	return v.dbVolume.InitializeTaskCache(identity, stepName, path)
 }
 
 // fetchArtifactWithPeerFallback gets the artifact tar from the recorded

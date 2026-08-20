@@ -652,10 +652,11 @@ var _ = Describe("Container", func() {
 						StepName: "compile",
 					},
 					runtime.ContainerSpec{
-						TeamID:    1,
-						Dir:       "/tmp/build/workdir",
-						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
-						Caches:    []string{"/tmp/build/workdir/.cache"},
+						TeamID:            1,
+						TaskCacheIdentity: &atc.TaskCacheIdentity{JobID: 7},
+						Dir:               "/tmp/build/workdir",
+						ImageSpec:         runtime.ImageSpec{ImageURL: "docker:///busybox"},
+						Caches:            []string{"/tmp/build/workdir/.cache"},
 					},
 					delegate,
 				)
@@ -672,6 +673,7 @@ var _ = Describe("Container", func() {
 				pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
 				Expect(err).ToNot(HaveOccurred())
 				pod := pods.Items[0]
+				assertAllPodMountsResolve(pod)
 
 				By("creating hostPath volumes for caches")
 				var hostPathVol *corev1.Volume
@@ -704,6 +706,7 @@ var _ = Describe("Container", func() {
 			BeforeEach(func() {
 				cfgWithHostPath := jetbridge.NewConfig("test-namespace", "")
 				cfgWithHostPath.CacheHostPath = "/var/concourse/cache"
+				cfgWithHostPath.CacheStore = jetbridge.CacheStoreHostPath
 
 				hostPathWorker := jetbridge.NewWorker(dbWorker, fakeClientset, cfgWithHostPath)
 
@@ -765,10 +768,11 @@ var _ = Describe("Container", func() {
 						StepName: "compile",
 					},
 					runtime.ContainerSpec{
-						TeamID:    1,
-						Dir:       "/tmp/build/workdir",
-						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
-						Caches:    []string{"/tmp/build/workdir/.cache"},
+						TeamID:            1,
+						TaskCacheIdentity: &atc.TaskCacheIdentity{JobID: 7},
+						Dir:               "/tmp/build/workdir",
+						ImageSpec:         runtime.ImageSpec{ImageURL: "docker:///busybox"},
+						Caches:            []string{"/tmp/build/workdir/.cache"},
 					},
 					delegate,
 				)
@@ -2428,6 +2432,20 @@ var _ = Describe("Container", func() {
 		})
 	})
 })
+
+func assertAllPodMountsResolve(pod corev1.Pod) {
+	volumeNames := map[string]int{}
+	for _, volume := range pod.Spec.Volumes {
+		volumeNames[volume.Name]++
+	}
+	containers := append([]corev1.Container{}, pod.Spec.InitContainers...)
+	containers = append(containers, pod.Spec.Containers...)
+	for _, container := range containers {
+		for _, mount := range container.VolumeMounts {
+			Expect(volumeNames[mount.Name]).To(Equal(1), "container %q mount %q must resolve to exactly one pod volume", container.Name, mount.Name)
+		}
+	}
+}
 
 // filterMountsByPaths returns volume mounts whose MountPath matches any of the given paths.
 func filterMountsByPaths(mounts []runtime.VolumeMount, paths []string) []runtime.VolumeMount {

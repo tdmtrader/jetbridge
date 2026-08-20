@@ -555,21 +555,36 @@ func TestPVCMode_VolumesStillEmptyDir(t *testing.T) {
 
 func TestDaemonSetMode_CachesAreDirectHostPath(t *testing.T) {
 	cfg := daemonSetConfig()
+	locator := NewArtifactLocator()
+	locator.Record(ArtifactKey("src-vol"), "node-a", "source/dir")
 	c := &Container{
 		handle:   "build-50",
 		podName:  "test-pod",
 		metadata: db.ContainerMetadata{Type: db.ContainerTypeTask, JobID: 7, StepName: "build"},
 		containerSpec: runtime.ContainerSpec{
-			Dir:    "/tmp/build",
-			Type:   db.ContainerTypeTask,
-			Caches: []string{"/tmp/build/.cache"},
+			TaskCacheIdentity: &atc.TaskCacheIdentity{TeamID: 17, TemplatePipelineID: 23, RunJobName: "deploy-staging"},
+			StepName:          "ignored-by-cache-renderer",
+			Dir:               "/tmp/build",
+			Type:              db.ContainerTypeTask,
+			ImageSpec:         runtime.ImageSpec{ImageURL: "docker:///busybox"},
+			Caches:            []string{"/tmp/build/.cache"},
+			Inputs: []runtime.Input{
+				{
+					Artifact:        &stubArtifact{handle: "src-vol"},
+					DestinationPath: "/tmp/build/src",
+				},
+			},
 		},
 		config:         cfg,
 		properties:     make(map[string]string),
-		storageBackend: NewDaemonSetBackend(cfg, nil, nil),
+		storageBackend: NewDaemonSetBackend(cfg, locator, nil),
 	}
 
-	volumes, _ := c.buildVolumeMounts()
+	pod, err := c.buildPod(runtime.ProcessSpec{}, []string{"/bin/sh"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	volumes := pod.Spec.Volumes
 
 	foundCache := false
 	for _, vol := range volumes {
@@ -581,12 +596,36 @@ func TestDaemonSetMode_CachesAreDirectHostPath(t *testing.T) {
 			if !strings.HasPrefix(vol.HostPath.Path, filepath.Join(cfg.ArtifactDaemonHostPath, "caches")) {
 				t.Errorf("cache hostPath should be under <hostPath>/caches/, got %s", vol.HostPath.Path)
 			}
+			if vol.HostPath.Path != "/var/concourse/artifacts/caches/run-17-23-build-f07d9dac9385" {
+				t.Errorf("expected exact run cache key, got %s", vol.HostPath.Path)
+			}
 		}
 	}
 	if !foundCache {
 		t.Fatal("no cache volume found")
 	}
+	if len(pod.Spec.InitContainers) == 0 || pod.Spec.InitContainers[0].Name != "fetch-inputs" {
+		t.Fatalf("expected the full pod to include the fetch-inputs init container, got %#v", pod.Spec.InitContainers)
+	}
+	assertPodMountsResolve(t, pod)
 
+}
+
+func assertPodMountsResolve(t *testing.T, pod *corev1.Pod) {
+	t.Helper()
+	volumeNames := map[string]int{}
+	for _, volume := range pod.Spec.Volumes {
+		volumeNames[volume.Name]++
+	}
+	containers := append([]corev1.Container{}, pod.Spec.InitContainers...)
+	containers = append(containers, pod.Spec.Containers...)
+	for _, container := range containers {
+		for _, mount := range container.VolumeMounts {
+			if volumeNames[mount.Name] != 1 {
+				t.Fatalf("container %q mount %q resolves to %d pod volumes", container.Name, mount.Name, volumeNames[mount.Name])
+			}
+		}
+	}
 }
 
 // =======================================================================

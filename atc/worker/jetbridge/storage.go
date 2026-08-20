@@ -3,6 +3,7 @@ package jetbridge
 import (
 	"context"
 
+	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runtime"
 	corev1 "k8s.io/api/core/v1"
@@ -18,7 +19,7 @@ import (
 // behavior for non-DaemonSet deployments.
 type StorageBackend interface {
 	StepVolume(name, handle, subdir string) corev1.Volume
-	CacheVolume(name string, jobID int, stepName, cachePath string) corev1.Volume
+	CacheVolume(name string, identity atc.TaskCacheIdentity, stepName, cachePath string) corev1.Volume
 	ArtifactStoreVolume(containerType db.ContainerType) *corev1.Volume
 	ArtifactStoreVolumeName() string
 	BuildFetchInitContainers(handle string, inputs []runtime.Input, podVolumes []corev1.Volume, mainMounts []corev1.VolumeMount) ([]corev1.Container, error)

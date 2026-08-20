@@ -872,9 +872,13 @@ func buildImagePullSecrets(secretNames []string, registry *ImageRegistryConfig) 
 // stableCacheKey returns a deterministic, filesystem-safe key for a task cache
 // scoped to a specific job and step. The same job+step+path always produces
 // the same key, enabling cache reuse across builds.
-func stableCacheKey(jobID int, stepName string, cachePath string) string {
+func stableCacheKey(identity atc.TaskCacheIdentity, stepName string, cachePath string) string {
 	h := sha256.New()
-	fmt.Fprintf(h, "%d\x00%s\x00%s", jobID, stepName, cachePath)
+	if identity.JobID > 0 {
+		fmt.Fprintf(h, "%d\x00%s\x00%s", identity.JobID, stepName, cachePath)
+	} else {
+		fmt.Fprintf(h, "run-task-cache/v1\x00%d\x00%d\x00%s\x00%s\x00%s", identity.TeamID, identity.TemplatePipelineID, identity.RunJobName, stepName, cachePath)
+	}
 	hash := hex.EncodeToString(h.Sum(nil))[:12]
 	// Sanitize stepName for filesystem safety (replace non-alphanumeric with -)
 	safe := strings.Map(func(r rune) rune {
@@ -886,7 +890,10 @@ func stableCacheKey(jobID int, stepName string, cachePath string) string {
 	if len(safe) > 40 {
 		safe = safe[:40]
 	}
-	return fmt.Sprintf("job-%d-%s-%s", jobID, safe, hash)
+	if identity.JobID > 0 {
+		return fmt.Sprintf("job-%d-%s-%s", identity.JobID, safe, hash)
+	}
+	return fmt.Sprintf("run-%d-%d-%s-%s", identity.TeamID, identity.TemplatePipelineID, safe, hash)
 }
 
 // buildVolumeMounts creates K8s Volume and VolumeMount entries for
@@ -992,13 +999,16 @@ func (c *Container) buildVolumeMounts() ([]corev1.Volume, []corev1.VolumeMount) 
 	cacheMode := c.config.CacheStore
 	if cacheMode == "" {
 		switch {
-		case c.storageBackend != nil && len(resolvedCaches) > 0:
+		case c.storageBackend != nil && len(resolvedCaches) > 0 && c.containerSpec.TaskCacheIdentity != nil:
 			cacheMode = CacheStoreHostPath
-		case c.config.CacheHostPath != "" && c.metadata.JobID != 0:
+		case c.config.CacheHostPath != "" && c.containerSpec.TaskCacheIdentity != nil:
 			cacheMode = CacheStoreHostPath
 		default:
 			cacheMode = CacheStoreEmptyDir
 		}
+	}
+	if cacheMode == CacheStoreHostPath && c.containerSpec.TaskCacheIdentity == nil {
+		cacheMode = CacheStoreEmptyDir
 	}
 
 	switch cacheMode {
@@ -1007,7 +1017,7 @@ func (c *Container) buildVolumeMounts() ([]corev1.Volume, []corev1.VolumeMount) 
 			for _, cachePath := range resolvedCaches {
 				name := fmt.Sprintf("cache-%d", idx)
 				idx++
-				volumes = append(volumes, c.storageBackend.CacheVolume(name, c.metadata.JobID, c.metadata.StepName, cachePath))
+				volumes = append(volumes, c.storageBackend.CacheVolume(name, *c.containerSpec.TaskCacheIdentity, c.metadata.StepName, cachePath))
 				mounts = append(mounts, corev1.VolumeMount{
 					Name:      name,
 					MountPath: cachePath,
@@ -1018,7 +1028,7 @@ func (c *Container) buildVolumeMounts() ([]corev1.Volume, []corev1.VolumeMount) 
 			basePath := c.config.CacheHostPath
 			dirType := corev1.HostPathDirectoryOrCreate
 			for _, cachePath := range resolvedCaches {
-				key := stableCacheKey(c.metadata.JobID, c.metadata.StepName, cachePath)
+				key := stableCacheKey(*c.containerSpec.TaskCacheIdentity, c.metadata.StepName, cachePath)
 				name := fmt.Sprintf("cache-%d", idx)
 				idx++
 				volumes = append(volumes, corev1.Volume{

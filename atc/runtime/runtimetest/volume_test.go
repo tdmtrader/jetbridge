@@ -4,11 +4,21 @@ import (
 	"context"
 	"testing"
 
+	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/compression"
 	"github.com/stretchr/testify/require"
 )
 
 var gzipCompression = compression.NewGzipCompression()
+
+func TestVolume_InitializeTaskCache_RetainsRunIdentity(t *testing.T) {
+	volume := NewVolume("cache")
+	identity := atc.TaskCacheIdentity{TeamID: 17, TemplatePipelineID: 23, RunJobName: "deploy-staging"}
+
+	require.NoError(t, volume.InitializeTaskCache(context.Background(), identity, "build", "/cache", false))
+	require.True(t, volume.TaskCacheInitialized)
+	require.Equal(t, &identity, volume.TaskCacheIdentity)
+}
 
 func TestVolume_StreamInOut_Root(t *testing.T) {
 	content := VolumeContent{

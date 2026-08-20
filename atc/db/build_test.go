@@ -118,6 +118,19 @@ var _ = Describe("Build", func() {
 		Expect(build.ResourceCacheUser()).To(Equal(db.ForBuild(build.ID())))
 	})
 
+	It("derives an ordinary task cache identity from its job", func() {
+		identity, found := build.TaskCacheIdentity()
+		Expect(found).To(BeTrue())
+		Expect(identity).To(Equal(atc.TaskCacheIdentity{JobID: job.ID()}))
+	})
+
+	It("keeps ordinary job build events in the pipeline partition", func() {
+		Expect(build.SaveEvent(event.Log{Payload: "ordinary event"})).To(Succeed())
+		var count int
+		Expect(dbConn.QueryRow(fmt.Sprintf("SELECT count(*) FROM pipeline_build_events_%d WHERE build_id = $1", build.PipelineID()), build.ID()).Scan(&count)).To(Succeed())
+		Expect(count).To(Equal(1))
+	})
+
 	It("has container owner", func() {
 		Expect(build.ContainerOwner("some-plan")).To(Equal(db.NewBuildStepContainerOwner(build.ID(), "some-plan", build.TeamID())))
 	})

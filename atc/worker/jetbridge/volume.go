@@ -334,11 +334,11 @@ func (v *Volume) InitializeStreamedResourceCache(ctx context.Context, cache db.R
 	return v.dbVolume.InitializeStreamedResourceCache(cache, sourceWorkerResourceCacheID)
 }
 
-func (v *Volume) InitializeTaskCache(ctx context.Context, jobID int, stepName string, path string, privileged bool) error {
+func (v *Volume) InitializeTaskCache(ctx context.Context, identity atc.TaskCacheIdentity, stepName string, path string, privileged bool) error {
 	if v.dbVolume == nil {
 		return nil
 	}
 	start := time.Now()
 	defer func() { metric.RecordVolumeOperationDuration(ctx, time.Since(start), "initialize") }()
-	return v.dbVolume.InitializeTaskCache(atc.TaskCacheIdentity{JobID: jobID}, stepName, path)
+	return v.dbVolume.InitializeTaskCache(identity, stepName, path)
 }

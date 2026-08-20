@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/runtime"
@@ -78,13 +79,13 @@ func (b *DaemonSetBackend) StepVolume(name, handle, subdir string) corev1.Volume
 	}
 }
 
-func (b *DaemonSetBackend) CacheVolume(name string, jobID int, stepName, cachePath string) corev1.Volume {
+func (b *DaemonSetBackend) CacheVolume(name string, identity atc.TaskCacheIdentity, stepName, cachePath string) corev1.Volume {
 	basePath := b.config.CacheHostPath
 	if basePath == "" {
 		basePath = filepath.Join(b.config.ArtifactDaemonHostPath, "caches")
 	}
 	dirType := corev1.HostPathDirectoryOrCreate
-	key := stableCacheKey(jobID, stepName, cachePath)
+	key := stableCacheKey(identity, stepName, cachePath)
 	return corev1.Volume{
 		Name: name,
 		VolumeSource: corev1.VolumeSource{

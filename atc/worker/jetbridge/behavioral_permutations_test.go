@@ -380,6 +380,9 @@ func TestBuildVolumeMounts_AllVolumeTypes_DaemonSet(t *testing.T) {
 		},
 		Caches:       []string{"/cache/path"},
 		ScratchPaths: []string{"/scratch"},
+		TaskCacheIdentity: &atc.TaskCacheIdentity{
+			JobID: 42,
+		},
 	}
 
 	meta := db.ContainerMetadata{

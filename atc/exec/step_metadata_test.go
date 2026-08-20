@@ -3,6 +3,7 @@ package exec_test
 import (
 	"net/url"
 
+	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/exec"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -105,13 +106,15 @@ var _ = Describe("StepMetadata", func() {
 	Describe("TaskEnv", func() {
 		Context("when populating fields", func() {
 			It("returns build identity env for tasks", func() {
+				identity := atc.TaskCacheIdentity{TeamID: 17, TemplatePipelineID: 23, RunJobName: "deploy-staging"}
 				Expect(exec.StepMetadata{
-					BuildID:      42,
-					BuildName:    "3",
-					TeamName:     "main",
-					JobName:      "build-and-test",
-					PipelineName: "concourse-self",
-					ExternalURL:  "https://concourse.home",
+					BuildID:           42,
+					BuildName:         "3",
+					TeamName:          "main",
+					JobName:           "build-and-test",
+					PipelineName:      "concourse-self",
+					ExternalURL:       "https://concourse.home",
+					TaskCacheIdentity: &identity,
 				}.TaskEnv()).To(ConsistOf(
 					"BUILD_ID=42",
 					"BUILD_NAME=3",

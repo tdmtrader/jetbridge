@@ -702,12 +702,24 @@ var _ = Describe("TaskStep", func() {
 				It("registers cache volumes as task caches", func() {
 					Expect(volume1.TaskCacheInitialized).To(Equal(didRegister))
 					Expect(volume2.TaskCacheInitialized).To(Equal(didRegister))
+					if didRegister {
+						Expect(volume1.TaskCacheIdentity).To(Equal(&atc.TaskCacheIdentity{JobID: 12}))
+						Expect(volume2.TaskCacheIdentity).To(Equal(&atc.TaskCacheIdentity{JobID: 12}))
+					} else {
+						Expect(volume1.TaskCacheIdentity).To(BeNil())
+						Expect(volume2.TaskCacheIdentity).To(BeNil())
+					}
 				})
 			}
 
 			Context("when task belongs to a job", func() {
 				BeforeEach(func() {
 					stepMetadata.JobID = 12
+					stepMetadata.TaskCacheIdentity = &atc.TaskCacheIdentity{JobID: 12}
+				})
+
+				It("carries the task cache identity to the runtime container", func() {
+					Expect(chosenContainer.Spec.TaskCacheIdentity).To(Equal(&atc.TaskCacheIdentity{JobID: 12}))
 				})
 
 				Context("when the task succeeds", func() {
@@ -728,6 +740,22 @@ var _ = Describe("TaskStep", func() {
 					})
 
 					itRegistersCaches(true)
+				})
+			})
+
+			Context("when task belongs to a numbered run", func() {
+				identity := atc.TaskCacheIdentity{TeamID: 17, TemplatePipelineID: 23, RunJobName: "deploy-staging"}
+
+				BeforeEach(func() {
+					stepMetadata.JobID = 91
+					stepMetadata.TaskCacheIdentity = &identity
+				})
+
+				It("initializes every cache volume with the run cache identity", func() {
+					Expect(volume1.TaskCacheInitialized).To(BeTrue())
+					Expect(volume2.TaskCacheInitialized).To(BeTrue())
+					Expect(volume1.TaskCacheIdentity).To(Equal(&identity))
+					Expect(volume2.TaskCacheIdentity).To(Equal(&identity))
 				})
 			})
 

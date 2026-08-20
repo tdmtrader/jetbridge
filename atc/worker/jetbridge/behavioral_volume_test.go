@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/compression"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runtime"
@@ -318,7 +319,7 @@ func TestVT09_DaemonSetVolume_NilDBVolume_InitializeTaskCacheReturnsNil(t *testi
 		handle: "test-handle",
 	}
 
-	err := vol.InitializeTaskCache(context.Background(), 1, "step", "/path", false)
+	err := vol.InitializeTaskCache(context.Background(), atc.TaskCacheIdentity{JobID: 1}, "step", "/path", false)
 	if err != nil {
 		t.Errorf("expected nil error, got: %v", err)
 	}
@@ -339,7 +340,7 @@ func TestVT09_Volume_NilDBVolume_InitializeResourceCacheReturnsNil(t *testing.T)
 func TestVT09_Volume_NilDBVolume_InitializeTaskCacheReturnsNil(t *testing.T) {
 	vol := NewStubVolume("h", "w", "/mnt")
 
-	err := vol.InitializeTaskCache(context.Background(), 1, "step", "/path", false)
+	err := vol.InitializeTaskCache(context.Background(), atc.TaskCacheIdentity{JobID: 1}, "step", "/path", false)
 	if err != nil {
 		t.Errorf("expected nil error, got: %v", err)
 	}

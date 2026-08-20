@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing/fstest"
 
+	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/compression"
 	"github.com/concourse/concourse/atc/db"
 )
@@ -26,6 +27,7 @@ type Volume struct {
 	ResourceCacheInitialized  bool
 	ResourceCacheStreamedFrom int
 	TaskCacheInitialized      bool
+	TaskCacheIdentity         *atc.TaskCacheIdentity
 }
 
 func NewVolume(handle string) *Volume {
@@ -67,8 +69,9 @@ func (v *Volume) InitializeStreamedResourceCache(_ context.Context, _ db.Resourc
 	return nil, nil
 }
 
-func (v *Volume) InitializeTaskCache(_ context.Context, _ int, _, _ string, _ bool) error {
+func (v *Volume) InitializeTaskCache(_ context.Context, identity atc.TaskCacheIdentity, _, _ string, _ bool) error {
 	v.TaskCacheInitialized = true
+	v.TaskCacheIdentity = &identity
 	return nil
 }
 
