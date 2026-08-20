@@ -55,6 +55,14 @@ func main() {
 	flag.Var(&durableRetention, "durable-retention", "Retention for one class of durable artifact, as CLASS=DURATION (e.g. resource-caches=720h). Repeatable. A class with no entry is never reclaimed.")
 	durableMaxBytes := flag.Int64("durable-max-bytes", 5<<30, "Largest single artifact to store durably; 0 disables the limit")
 
+	// Hangar is a strict immutable-tree service composed beside the fail-open
+	// cache tier. It deliberately reuses only the GCS connection settings.
+	hangarEnabled := flag.Bool("hangar-enabled", false, "Enable strict Hangar tree publication and materialization")
+	hangarScratchDir := flag.String("hangar-scratch-dir", "/var/concourse/hangar-scratch", "Absolute private scratch directory for Hangar verification")
+	hangarCapabilityKey := flag.String("hangar-capability-key", "", "Path to the raw 32-byte materialization capability key")
+	hangarMaxContentBytes := flag.Int64("hangar-max-content-bytes", 10<<30, "Maximum regular-file content admitted in one Hangar tree")
+	hangarMaxEntries := flag.Int64("hangar-max-entries", 100000, "Maximum filesystem entries admitted in one Hangar tree")
+
 	flag.Parse()
 
 	logger := lager.NewLogger("artifact-daemon")
@@ -62,8 +70,10 @@ func main() {
 
 	// Build K8s client for node labeling.
 	var labeler *NodeLabeler
+	var k8sClient kubernetes.Interface
 	if *nodeName != "" {
-		k8sClient, err := buildK8sClient()
+		var err error
+		k8sClient, err = buildK8sClient()
 		if err != nil {
 			logger.Error("failed-to-create-k8s-client", err)
 			os.Exit(1)
@@ -98,6 +108,9 @@ func main() {
 		logger.Error("failed-to-open-storage-root", err, lager.Data{"path": *storagePath})
 		os.Exit(1)
 	}
+
+	var hangarLabeler *NodeLabeler
+	closeHangar := func() error { return nil }
 
 	// Set up alias persistence so volume-handle mappings survive restarts.
 	aliasStore := NewAliasStore(logger, *storagePath, server.Root())
@@ -189,10 +202,46 @@ func main() {
 		}
 	}
 
+	tlsEnabled := *tlsCert != "" && *tlsKey != "" && *tlsCACert != ""
+	var tlsCfg *tls.Config
+	if tlsEnabled {
+		var err error
+		tlsCfg, err = BuildTLSConfig(*tlsCert, *tlsKey, *tlsCACert)
+		if err != nil {
+			logger.Error("failed-to-build-tls-config", err)
+			os.Exit(1)
+		}
+	}
+
+	hangarService, hangarClose, err := buildHangarService(context.Background(), logger, *storagePath, hangarOptions{
+		Enabled: *hangarEnabled, ScratchDir: *hangarScratchDir, CapabilityKey: *hangarCapabilityKey,
+		MaxContentBytes: *hangarMaxContentBytes, MaxEntries: *hangarMaxEntries,
+		DurableKind: *durableStore, Bucket: *durableBucket, Prefix: *durablePrefix, Endpoint: *durableEndpoint, Timeout: *durableTimeout,
+		TLSCert: *tlsCert, TLSKey: *tlsKey, TLSCACert: *tlsCACert,
+	})
+	if err != nil {
+		logger.Error("hangar-config-invalid", err)
+		os.Exit(1)
+	}
+	if hangarService != nil {
+		server.SetHangarService(hangarService)
+		closeHangar = hangarClose
+		if *nodeName != "" {
+			hangarLabeler = NewNodeLabeler(logger, k8sClient, *nodeName, HangarReadyLabel)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			if err := hangarLabeler.AddLabel(ctx); err != nil {
+				cancel()
+				_ = closeHangar()
+				logger.Error("failed-to-label-hangar-node", err)
+				os.Exit(1)
+			}
+			cancel()
+			logger.Info("hangar-node-labeled", lager.Data{"node": *nodeName, "label": HangarReadyLabel})
+		}
+	}
+
 	sweeper := NewSweeper(logger, *storagePath, *ttl, 5*time.Minute, server.Registry())
 	sweeper.SetGuard(server.Guard())
-
-	tlsEnabled := *tlsCert != "" && *tlsKey != "" && *tlsCACert != ""
 
 	// Set up peer resolver for cross-node artifact resolution.
 	var mirror *Mirror
@@ -294,11 +343,6 @@ func main() {
 	}
 
 	if tlsEnabled {
-		tlsCfg, err := BuildTLSConfig(*tlsCert, *tlsKey, *tlsCACert)
-		if err != nil {
-			logger.Error("failed-to-build-tls-config", err)
-			os.Exit(1)
-		}
 		httpServer.TLSConfig = tlsCfg
 	}
 
@@ -344,7 +388,19 @@ func main() {
 	close(sweepDone)
 	maintenanceCancel()
 
-	// Remove node label before shutting down.
+	// Withdraw the strict capability before the legacy cache label so no new
+	// exact-tree workload can bind while the daemon drains.
+	if hangarLabeler != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := hangarLabeler.RemoveLabel(ctx); err != nil {
+			logger.Error("failed-to-remove-hangar-node-label", err)
+		} else {
+			logger.Info("hangar-node-label-removed")
+		}
+		cancel()
+	}
+
+	// Remove legacy node label before shutting down.
 	if labeler != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		if err := labeler.RemoveLabel(ctx); err != nil {
@@ -360,6 +416,10 @@ func main() {
 
 	if err := httpServer.Shutdown(ctx); err != nil {
 		logger.Error("shutdown-error", err)
+		os.Exit(1)
+	}
+	if err := closeHangar(); err != nil {
+		logger.Error("hangar-close-error", err)
 		os.Exit(1)
 	}
 

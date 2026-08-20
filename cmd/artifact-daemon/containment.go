@@ -997,6 +997,15 @@ const (
 	reasonArchive        = "archive"
 	reasonNotFound       = "not_found"
 	reasonClientCert     = "client_cert"
+
+	// Hangar's strict-tree routes. Kept in the same bounded set rather than a
+	// second one of their own: the metric has one series space, and a Hangar
+	// refusal is a refusal.
+	reasonMalformed        = "malformed"
+	reasonLimitExceeded    = "limit_exceeded"
+	reasonConflict         = "conflict"
+	reasonTreeVerification = "tree_verification"
+	reasonUnavailable      = "unavailable"
 )
 
 // refusalRoute is the bounded route label for a refusal.

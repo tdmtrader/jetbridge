@@ -38,6 +38,7 @@ type Server struct {
 	metrics       *metrics
 	guard         *ReadGuard
 	durable       *DurableTier
+	hangar        *HangarService
 
 	// restoreFlight collapses concurrent durable restores of one key.
 	restoreFlight singleflight.Group
@@ -202,6 +203,12 @@ func (s *Server) SetDurableTier(tier *DurableTier) {
 	s.durable = tier
 }
 
+// SetHangarService enables strict immutable-tree routes. A nil service keeps
+// the routes absent, so disabled daemons retain their pre-Hangar 404 surface.
+func (s *Server) SetHangarService(service *HangarService) {
+	s.hangar = service
+}
+
 // Guard returns the read/sweep coordination guard. The sweeper takes its
 // exclusive side per directory removal so reads never copy from a directory
 // being deleted.
@@ -337,6 +344,11 @@ func (s *Server) Handler(opts ...HandlerOption) http.Handler {
 	mux.HandleFunc("POST /durable/restore", protect(s.handleDurableRestore))
 	mux.HandleFunc("HEAD /resource-caches/", protect(s.handleHeadResourceCache))
 	mux.HandleFunc("GET /resource-caches/", protect(s.handleGetResourceCache))
+	if s.hangar != nil {
+		mux.HandleFunc("POST /hangar/v1/scopes/{scope}/trees", protect(s.handleHangarPublish))
+		mux.HandleFunc("GET /hangar/v1/scopes/{scope}/trees/sha256/{digest}/generations/{generation}", protect(s.handleHangarOpen))
+		mux.HandleFunc("POST /hangar/v1/materializations", s.handleHangarMaterializations)
+	}
 
 	return mux
 }
