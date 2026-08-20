@@ -12,16 +12,19 @@ import (
 )
 
 type memoryObjectClient struct {
-	mu                                                    sync.Mutex
-	objects                                               map[string]memoryObject
-	versions                                              map[string]map[int64]memoryObject
-	nextGeneration                                        int64
-	writeConditions                                       []storage.Conditions
-	deleteConditions                                      []storage.Conditions
-	readGenerations                                       []int64
-	writeErr, closeErr, attrsErr, deleteErr, readCloseErr error
-	blockRead, blockReadBody, blockWrite, retainVersions  bool
-	afterAttrs, afterRead                                 func(string)
+	mu                                                                                     sync.Mutex
+	objects                                                                                map[string]memoryObject
+	versions                                                                               map[string]map[int64]memoryObject
+	nextGeneration                                                                         int64
+	writeConditions                                                                        []storage.Conditions
+	deleteConditions                                                                       []storage.Conditions
+	readGenerations                                                                        []int64
+	writeErr, closeErr, abortErr, attrsErr, deleteErr, newReaderErr, readErr, readCloseErr error
+	abortCalls                                                                             int
+	readErrAfter                                                                           int
+	readBytes                                                                              int64
+	blockRead, blockReadBody, blockWrite, retainVersions                                   bool
+	afterAttrs, afterRead                                                                  func(string)
 }
 
 type memoryObject struct {
@@ -109,6 +112,7 @@ func (handle *memoryObjectHandle) NewWriter(ctx context.Context) objectWriter {
 func (handle *memoryObjectHandle) NewReader(ctx context.Context) (io.ReadCloser, error) {
 	handle.client.mu.Lock()
 	blocked, blockBody, closeErr := handle.client.blockRead, handle.client.blockReadBody, handle.client.readCloseErr
+	newReaderErr, readErr, readErrAfter := handle.client.newReaderErr, handle.client.readErr, handle.client.readErrAfter
 	object, found := handle.client.lookupLocked(handle.key, handle.generation)
 	after := handle.client.afterRead
 	handle.client.afterRead = nil
@@ -123,10 +127,19 @@ func (handle *memoryObjectHandle) NewReader(ctx context.Context) (io.ReadCloser,
 		<-ctx.Done()
 		return nil, ctx.Err()
 	}
+	if newReaderErr != nil {
+		return nil, newReaderErr
+	}
 	if !found {
 		return nil, &googleapi.Error{Code: 404, Message: "missing generation"}
 	}
-	return &memoryObjectReader{ctx: ctx, reader: bytes.NewReader(object.data), block: blockBody, closeErr: closeErr}, nil
+	return &memoryObjectReader{ctx: ctx, reader: bytes.NewReader(object.data), block: blockBody, readErr: readErr, readErrAfter: readErrAfter, closeErr: closeErr, recordRead: handle.client.recordRead}, nil
+}
+
+func (client *memoryObjectClient) recordRead(count int) {
+	client.mu.Lock()
+	client.readBytes += int64(count)
+	client.mu.Unlock()
 }
 func (handle *memoryObjectHandle) Attrs(context.Context) (objectAttrs, error) {
 	handle.client.mu.Lock()
@@ -214,14 +227,23 @@ func (writer *memoryObjectWriter) Close() error {
 	writer.attrs = objectAttrs{Generation: generation, Metageneration: 1, Size: object.size, Created: object.created, Metadata: cloneMetadata(object.metadata)}
 	return nil
 }
-func (writer *memoryObjectWriter) Abort(error) error  { writer.aborted = true; return nil }
+func (writer *memoryObjectWriter) Abort(error) error {
+	writer.handle.client.mu.Lock()
+	defer writer.handle.client.mu.Unlock()
+	writer.aborted = true
+	writer.handle.client.abortCalls++
+	return writer.handle.client.abortErr
+}
 func (writer *memoryObjectWriter) Attrs() objectAttrs { return writer.attrs }
 
 type memoryObjectReader struct {
-	ctx      context.Context
-	reader   io.Reader
-	block    bool
-	closeErr error
+	ctx          context.Context
+	reader       io.Reader
+	block        bool
+	readErr      error
+	readErrAfter int
+	closeErr     error
+	recordRead   func(int)
 }
 
 func (reader *memoryObjectReader) Read(buffer []byte) (int, error) {
@@ -229,7 +251,25 @@ func (reader *memoryObjectReader) Read(buffer []byte) (int, error) {
 		<-reader.ctx.Done()
 		return 0, reader.ctx.Err()
 	}
-	return reader.reader.Read(buffer)
+	if reader.readErr != nil {
+		if reader.readErrAfter <= 0 {
+			return 0, reader.readErr
+		}
+		if len(buffer) > reader.readErrAfter {
+			buffer = buffer[:reader.readErrAfter]
+		}
+		count, err := reader.reader.Read(buffer)
+		reader.readErrAfter -= count
+		if reader.recordRead != nil {
+			reader.recordRead(count)
+		}
+		return count, err
+	}
+	count, err := reader.reader.Read(buffer)
+	if reader.recordRead != nil {
+		reader.recordRead(count)
+	}
+	return count, err
 }
 func (reader *memoryObjectReader) Close() error { return reader.closeErr }
 
@@ -267,6 +307,33 @@ type failingScratch struct {
 }
 
 func (scratch *failingScratch) Write([]byte) (int, error) { return 0, scratch.err }
+
+type expandingScratch struct {
+	scratchFile
+	extra int
+}
+
+type countingScratch struct {
+	scratchFile
+	written int64
+}
+
+func (scratch *countingScratch) Write(buffer []byte) (int, error) {
+	count, err := scratch.scratchFile.Write(buffer)
+	scratch.written += int64(count)
+	return count, err
+}
+
+func (scratch *expandingScratch) Write(buffer []byte) (int, error) {
+	count, err := scratch.scratchFile.Write(buffer)
+	if err != nil {
+		return count, err
+	}
+	if _, err := scratch.scratchFile.Write(make([]byte, scratch.extra)); err != nil {
+		return count, err
+	}
+	return count, nil
+}
 
 func cloneMetadata(metadata map[string]string) map[string]string {
 	copy := make(map[string]string, len(metadata))

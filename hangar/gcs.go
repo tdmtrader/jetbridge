@@ -151,7 +151,7 @@ func (store *GCSStore) EnsureTree(ctx context.Context, scope Scope, digest Diges
 		return TreeAttributes{}, false, fmt.Errorf("hangar: finish zstd source: %w", closeErr)
 	}
 	if logicalBytes > maxLogicalBytes {
-		return TreeAttributes{}, false, fmt.Errorf("%w: logical object exceeds %d-byte limit", ErrCorrupt, maxLogicalBytes)
+		return TreeAttributes{}, false, fmt.Errorf("%w: logical object exceeds %d-byte limit", ErrLimitExceeded, maxLogicalBytes)
 	}
 	actualDigest := Digest(fmt.Sprintf("sha256:%x", hasher.Sum(nil)))
 	if actualDigest != digest {
@@ -164,6 +164,13 @@ func (store *GCSStore) EnsureTree(ctx context.Context, scope Scope, digest Diges
 	if err != nil {
 		return TreeAttributes{}, false, fmt.Errorf("hangar: inspect compressed scratch: %w", err)
 	}
+	maxStoredBytes, err := maxCompressedRepresentation(logicalBytes)
+	if err != nil {
+		return TreeAttributes{}, false, fmt.Errorf("hangar: derive compressed scratch limit: %w", err)
+	}
+	if storedBytes > maxStoredBytes {
+		return TreeAttributes{}, false, fmt.Errorf("%w: compressed scratch size %d exceeds %d-byte representation limit", ErrLimitExceeded, storedBytes, maxStoredBytes)
+	}
 	if _, err := scratch.Seek(0, io.SeekStart); err != nil {
 		return TreeAttributes{}, false, fmt.Errorf("hangar: rewind compressed scratch: %w", err)
 	}
@@ -175,6 +182,9 @@ func (store *GCSStore) EnsureTree(ctx context.Context, scope Scope, digest Diges
 	if copyErr != nil {
 		ctxErr := ctx.Err()
 		abortErr := writer.Abort(copyErr)
+		if isPreconditionFailed(copyErr) {
+			return store.inspectAfterCreateConflict(ctx, scope, digest, maxLogicalBytes)
+		}
 		cancel()
 		if abortErr != nil {
 			copyErr = errors.Join(copyErr, abortErr)
@@ -384,11 +394,14 @@ func (store *GCSStore) openVerified(ctx context.Context, handle objectHandle, re
 			}
 		}
 	}()
-	countedCompressed := &countingReader{reader: contextReader{ctx: ctx, reader: compressed}}
+	countedCompressed := &countingReader{reader: contextReader{ctx: ctx, reader: io.LimitReader(compressed, maxStoredBytes+1)}}
 	decoder, err := zstd.NewReader(countedCompressed, zstd.WithDecoderConcurrency(1), zstd.WithDecoderMaxMemory(decoderMaxMemory))
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, TreeAttributes{}, ctxErr
+		}
+		if countedCompressed.err != nil {
+			return nil, TreeAttributes{}, infrastructure("read compressed tree", countedCompressed.err)
 		}
 		return nil, TreeAttributes{}, wrapSentinel(ErrCorrupt, "initialize zstd decoder", err)
 	}
@@ -409,18 +422,28 @@ func (store *GCSStore) openVerified(ctx context.Context, handle objectHandle, re
 		}
 	}()
 	hasher := sha256.New()
-	actualBytes, err := io.Copy(io.MultiWriter(scratch, hasher), io.LimitReader(decoder, maxLogicalBytes+1))
+	trackedScratch := &errorTrackingWriter{writer: scratch}
+	actualBytes, err := io.Copy(io.MultiWriter(trackedScratch, hasher), io.LimitReader(decoder, logicalBytes+1))
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, TreeAttributes{}, ctxErr
 		}
+		if countedCompressed.err != nil {
+			return nil, TreeAttributes{}, infrastructure("read compressed tree", countedCompressed.err)
+		}
+		if trackedScratch.err != nil {
+			return nil, TreeAttributes{}, fmt.Errorf("hangar: write verified scratch: %w", trackedScratch.err)
+		}
 		return nil, TreeAttributes{}, wrapSentinel(ErrCorrupt, "decompress tree", err)
 	}
 	if actualBytes > maxLogicalBytes {
-		return nil, TreeAttributes{}, fmt.Errorf("%w: logical tree exceeds %d-byte limit", ErrCorrupt, maxLogicalBytes)
+		return nil, TreeAttributes{}, fmt.Errorf("%w: logical tree exceeds %d-byte limit", ErrLimitExceeded, maxLogicalBytes)
 	}
 	if actualBytes != logicalBytes {
 		return nil, TreeAttributes{}, fmt.Errorf("%w: logical byte count %d does not match metadata %d", ErrCorrupt, actualBytes, logicalBytes)
+	}
+	if countedCompressed.bytes > maxStoredBytes {
+		return nil, TreeAttributes{}, fmt.Errorf("%w: compressed tree body exceeds %d-byte representation limit", ErrCorrupt, maxStoredBytes)
 	}
 	if countedCompressed.bytes != stored.Size {
 		return nil, TreeAttributes{}, fmt.Errorf("%w: compressed byte count %d does not match object size %d", ErrCorrupt, countedCompressed.bytes, stored.Size)
@@ -465,7 +488,7 @@ func validateStoredMetadata(metadata map[string]string, digest Digest, maxLogica
 		return 0, fmt.Errorf("%w: invalid logical byte metadata", ErrCorrupt)
 	}
 	if size > maxLogicalBytes {
-		return 0, fmt.Errorf("%w: declared logical size exceeds %d-byte limit", ErrCorrupt, maxLogicalBytes)
+		return 0, fmt.Errorf("%w: declared logical size exceeds %d-byte limit", ErrLimitExceeded, maxLogicalBytes)
 	}
 	return size, nil
 }
@@ -529,10 +552,20 @@ func isPreconditionFailed(err error) bool {
 	var apiError *googleapi.Error
 	return errors.As(err, &apiError) && apiError.Code == 412
 }
+func isUnauthorized(err error) bool {
+	if status.Code(err) == codes.Unauthenticated || status.Code(err) == codes.PermissionDenied {
+		return true
+	}
+	var apiError *googleapi.Error
+	return errors.As(err, &apiError) && (apiError.Code == 401 || apiError.Code == 403)
+}
 func wrapSentinel(sentinel error, message string, cause error) error {
 	return fmt.Errorf("%w: %s: %w", sentinel, message, cause)
 }
 func infrastructure(message string, cause error) error {
+	if isUnauthorized(cause) {
+		return wrapSentinel(ErrUnauthorized, message, cause)
+	}
 	if errors.Is(cause, context.Canceled) || errors.Is(cause, context.DeadlineExceeded) {
 		return cause
 	}
@@ -542,11 +575,28 @@ func infrastructure(message string, cause error) error {
 type countingReader struct {
 	reader io.Reader
 	bytes  int64
+	err    error
 }
 
 func (reader *countingReader) Read(buffer []byte) (int, error) {
 	count, err := reader.reader.Read(buffer)
 	reader.bytes += int64(count)
+	if err != nil && !errors.Is(err, io.EOF) {
+		reader.err = err
+	}
+	return count, err
+}
+
+type errorTrackingWriter struct {
+	writer io.Writer
+	err    error
+}
+
+func (writer *errorTrackingWriter) Write(buffer []byte) (int, error) {
+	count, err := writer.writer.Write(buffer)
+	if err != nil {
+		writer.err = err
+	}
 	return count, err
 }
 
