@@ -89,8 +89,10 @@ type Pipeline interface {
 
 	Builds(page Page) ([]BuildForAPI, Pagination, error)
 	BuildsWithTime(page Page) ([]BuildForAPI, Pagination, error)
+	ChronoRunBuilds(runJobKey string, page Page) ([]BuildForAPI, Pagination, error)
 
 	DeleteBuildEventsByBuildIDs(buildIDs []int) error
+	DeleteRunBuildEventsByBuildIDs(buildIDs []int) error
 
 	LoadDebugVersionsDB() (*atc.DebugVersionsDB, error)
 

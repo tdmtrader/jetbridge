@@ -67,7 +67,16 @@ func (br *buildLogCollector) Run(ctx context.Context) error {
 				continue
 			}
 
-			err = br.reapLogsOfJob(pipeline, job, logger)
+			builds := job.ChronoBuilds
+			deleteEvents := pipeline.DeleteBuildEventsByBuildIDs
+			if pipeline.Template() {
+				builds = func(page db.Page) ([]db.BuildForAPI, db.Pagination, error) {
+					return pipeline.ChronoRunBuilds(job.Name(), page)
+				}
+				deleteEvents = pipeline.DeleteRunBuildEventsByBuildIDs
+			}
+
+			err = br.reapLogsOfJob(job, builds, deleteEvents, logger)
 			if err != nil {
 				continue
 			}
@@ -77,8 +86,10 @@ func (br *buildLogCollector) Run(ctx context.Context) error {
 	return nil
 }
 
-func (br *buildLogCollector) reapLogsOfJob(pipeline db.Pipeline,
+func (br *buildLogCollector) reapLogsOfJob(
 	job db.Job,
+	builds func(db.Page) ([]db.BuildForAPI, db.Pagination, error),
+	deleteEvents func([]int) error,
 	logger lager.Logger) error {
 
 	jobConfig, err := job.Config()
@@ -98,14 +109,14 @@ func (br *buildLogCollector) reapLogsOfJob(pipeline db.Pipeline,
 	limit := br.batchSize
 	page := &db.Page{From: &from, Limit: limit}
 	for page != nil {
-		builds, pagination, err := job.ChronoBuilds(*page)
+		pageBuilds, pagination, err := builds(*page)
 		if err != nil {
 			logger.Error("failed-to-get-job-builds-to-delete", err)
 			return err
 		}
 
 		buildsOfBatch := []db.BuildForAPI{}
-		for _, build := range builds {
+		for _, build := range pageBuilds {
 			// Ignore reaped builds
 			if !build.ReapTime().IsZero() {
 				continue
@@ -207,7 +218,7 @@ func (br *buildLogCollector) reapLogsOfJob(pipeline db.Pipeline,
 		"build_ids": buildIDsToDelete,
 	})
 
-	err = pipeline.DeleteBuildEventsByBuildIDs(buildIDsToDelete)
+	err = deleteEvents(buildIDsToDelete)
 	if err != nil {
 		logger.Error("failed-to-delete-build-events", err)
 		return err
