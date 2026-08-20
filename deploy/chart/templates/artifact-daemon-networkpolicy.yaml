@@ -61,4 +61,15 @@ spec:
     - ports:
         - protocol: TCP
           port: 443
+    # GKE metadata server — required for Workload Identity token refresh.
+    # Other environments/CNIs may use a different metadata path; operators
+    # must validate enforcement and identity plumbing in their cluster.
+    - to:
+        - ipBlock:
+            cidr: 169.254.169.254/32
+      ports:
+        - protocol: TCP
+          port: 80
+        - protocol: TCP
+          port: 988
 {{- end }}

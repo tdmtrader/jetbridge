@@ -155,6 +155,19 @@ func TestGCSNeedsNoCredentialFlags(t *testing.T) {
 	}
 }
 
+func TestGCSRejectsS3CredentialSecret(t *testing.T) {
+	args := []string{"template", "jb", "deploy/chart", "--set", "artifactDaemon.durable.store=gcs", "--set", "artifactDaemon.durable.bucket=b", "--set", "artifactDaemon.durable.existingSecret=s3-creds"}
+	cmd := exec.Command("helm", args...)
+	cmd.Dir = repoRoot(t)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("GCS render accepted an S3 credential Secret:\n%s", out)
+	}
+	if !strings.Contains(string(out), "existingSecret") || !strings.Contains(string(out), "s3") {
+		t.Fatalf("GCS credential error was unclear:\n%s", out)
+	}
+}
+
 // An unset retention keeps everything forever. That is a defensible default --
 // deleting by default would be far worse -- but it has to be legible, because
 // the failure mode is a bill rather than an error.
