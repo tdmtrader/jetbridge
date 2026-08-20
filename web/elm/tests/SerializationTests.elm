@@ -6,6 +6,7 @@ import Data
 import Dict
 import Expect
 import Json.Decode
+import Json.Encode
 import Test exposing (Test, describe, test)
 import Time
 
@@ -118,6 +119,32 @@ all =
                     |> Concourse.encodePipeline
                     |> Json.Decode.decodeValue Concourse.decodePipeline
                     |> Expect.equal (Ok pipeline)
+        , test "decodes the API bool parameter literal" <|
+            \_ ->
+                """
+                {"id":1,"name":"template","instance_vars":{},"paused":false,"archived":false,"public":true,"team_name":"team","groups":[],"last_updated":0,"display":{},"template":true,"params_schema":[{"name":"enabled","type":"bool","required":false,"default":false,"values":[],"description":"toggle"}],"last_run_number":0,"can_create_run":true}
+                """
+                    |> Json.Decode.decodeString Concourse.decodePipeline
+                    |> Result.map (.paramsSchema >> List.map .type_)
+                    |> Expect.equal (Ok [ Concourse.BoolParam ])
+        , test "encodes BoolParam with the API bool literal" <|
+            \_ ->
+                let
+                    basePipeline =
+                        Data.pipeline "team" 1
+
+                    pipeline =
+                        { basePipeline
+                            | template = Just True
+                            , paramsSchema = [ { name = "enabled", type_ = Concourse.BoolParam, required = False, default = Just <| JsonRaw <| Json.Encode.bool False, values = [], description = Nothing } ]
+                            , lastRunNumber = Just 0
+                            , canCreateRun = True
+                        }
+                in
+                pipeline
+                    |> Concourse.encodePipeline
+                    |> Json.Decode.decodeValue (Json.Decode.at [ "params_schema" ] (Json.Decode.list (Json.Decode.field "type" Json.Decode.string)))
+                    |> Expect.equal (Ok [ "bool" ])
         , test "team encoding/decoding are inverses" <|
             \_ ->
                 let

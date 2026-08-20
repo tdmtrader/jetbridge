@@ -53,7 +53,7 @@ all =
         , test "decodes base, run payload, and ordinary pipeline markers independently" <|
             \_ ->
                 [ """
-                  {"id":1,"name":"template","instance_vars":{},"paused":false,"archived":false,"public":true,"team_name":"team","groups":[],"last_updated":0,"display":{},"template":true,"params_schema":[{"name":"size","type":"number","required":true,"default":2,"values":[1,2],"description":"worker count"}],"last_run_number":0,"can_create_run":false}
+                  {"id":1,"name":"template","instance_vars":{},"paused":false,"archived":false,"public":true,"team_name":"team","groups":[],"last_updated":0,"display":{},"template":true,"params_schema":[{"name":"size","type":"number","required":true,"default":2,"values":[1,2],"description":"worker count"},{"name":"enabled","type":"bool","required":false,"default":false,"values":[],"description":"toggle"}],"last_run_number":0,"can_create_run":false}
                   """
                 , """
                   {"id":2,"name":"run-instance","instance_vars":{"run":3},"paused":false,"archived":false,"public":true,"team_name":"team","groups":[],"last_updated":0,"display":{},"template":false,"run_number":3,"run_template_ref":{"team_name":"team","pipeline_name":"template","instance_vars":{}}}
@@ -98,6 +98,13 @@ all =
                                   , default = Just "2"
                                   , valueCount = 2
                                   , description = Just "worker count"
+                                  }
+                                , { name = "enabled"
+                                  , type_ = Concourse.BoolParam
+                                  , required = False
+                                  , default = Just "false"
+                                  , valueCount = 0
+                                  , description = Just "toggle"
                                   }
                                 ]
                             , lastRunNumber = Just 0
