@@ -61,22 +61,17 @@ func ValidateArchiveLimits(ctx context.Context, source io.Reader, limits TreeLim
 		return err
 	}
 
-	reader := tar.NewReader(contextReader{ctx: ctx, reader: source})
+	reader, err := newArchiveAdmission(ctx, source, limits.MaxContentBytes, limits.MaxEntries)
+	if err != nil {
+		return err
+	}
 	materialized := make(map[string]capturedEntry)
 	seenHeaders := make(map[string]struct{})
 	var contentBytes int64
 	for {
 		header, err := reader.Next()
 		if errors.Is(err, io.EOF) {
-			var trailing [1]byte
-			n, trailingErr := io.ReadFull(contextReader{ctx: ctx, reader: source}, trailing[:])
-			if n != 0 {
-				return fmt.Errorf("hangar: archive contains trailing data after the tar terminator")
-			}
-			if errors.Is(trailingErr, io.EOF) {
-				return nil
-			}
-			return fmt.Errorf("hangar: inspect archive terminator: %w", trailingErr)
+			return nil
 		}
 		if err != nil {
 			return fmt.Errorf("hangar: read admitted archive: %w", err)
@@ -160,6 +155,85 @@ func CanonicalArchiveByteLimit(maxContentBytes, maxEntries int64) (int64, error)
 	return maxContentBytes + overhead, nil
 }
 
+type archiveAdmission struct {
+	reader   *tar.Reader
+	physical *physicalArchiveReader
+	finished bool
+}
+
+func newArchiveAdmission(ctx context.Context, source io.Reader, maxContentBytes, maxEntries int64) (*archiveAdmission, error) {
+	limit, err := CanonicalArchiveByteLimit(maxContentBytes, maxEntries)
+	if err != nil {
+		if maxContentBytes <= 0 || maxEntries <= 0 {
+			return nil, err
+		}
+		// A logical limit near MaxInt64 can overflow once bounded tar overhead
+		// is added. Saturating the internal reader cap preserves a finite,
+		// non-wrapping admission bound while the public derivation still reports
+		// that no exact int64 transport bound can represent the configuration.
+		limit = math.MaxInt64
+	}
+	physical := &physicalArchiveReader{
+		reader:    contextReader{ctx: ctx, reader: source},
+		remaining: limit,
+		limit:     limit,
+	}
+	return &archiveAdmission{reader: tar.NewReader(physical), physical: physical}, nil
+}
+
+func (admission *archiveAdmission) Next() (*tar.Header, error) {
+	if admission.finished {
+		return nil, io.EOF
+	}
+	header, err := admission.reader.Next()
+	if !errors.Is(err, io.EOF) {
+		return header, err
+	}
+	admission.finished = true
+	var trailing [1]byte
+	n, probeErr := admission.physical.Read(trailing[:])
+	if n != 0 {
+		return nil, fmt.Errorf("hangar: archive contains trailing data after the tar terminator")
+	}
+	if errors.Is(probeErr, io.EOF) {
+		return nil, io.EOF
+	}
+	if probeErr != nil {
+		return nil, fmt.Errorf("hangar: inspect archive terminator: %w", probeErr)
+	}
+	return nil, fmt.Errorf("hangar: inspect archive terminator: reader made no progress")
+}
+
+func (admission *archiveAdmission) Read(buffer []byte) (int, error) {
+	return admission.reader.Read(buffer)
+}
+
+type physicalArchiveReader struct {
+	reader    io.Reader
+	remaining int64
+	limit     int64
+}
+
+func (reader *physicalArchiveReader) Read(buffer []byte) (int, error) {
+	if len(buffer) == 0 {
+		return 0, nil
+	}
+	if reader.remaining == 0 {
+		var probe [1]byte
+		n, err := reader.reader.Read(probe[:])
+		if n != 0 {
+			return 0, fmt.Errorf("%w: archive exceeds physical byte limit of %d", ErrLimitExceeded, reader.limit)
+		}
+		return 0, err
+	}
+	if int64(len(buffer)) > reader.remaining {
+		buffer = buffer[:reader.remaining]
+	}
+	n, err := reader.reader.Read(buffer)
+	reader.remaining -= int64(n)
+	return n, err
+}
+
 // Canonicalizer safely materializes a tar stream and emits its deterministic
 // filesystem-tree representation. Zero limits select the secure defaults.
 //
@@ -203,6 +277,7 @@ type CapturedTree struct {
 	closed      bool
 	rootedWiped bool
 	captureRoot *os.Root
+	closeRoot   func(*os.Root) error
 	removeAll   func(string) error
 }
 
@@ -221,21 +296,25 @@ func (t *CapturedTree) Close() error {
 		}
 		t.rootedWiped = true
 	}
+	var closeErr error
 	if t.captureRoot != nil {
-		if err := t.captureRoot.Close(); err != nil {
-			return err
-		}
+		root := t.captureRoot
 		t.captureRoot = nil
+		closeRoot := t.closeRoot
+		if closeRoot == nil {
+			closeRoot = (*os.Root).Close
+		}
+		closeErr = closeRoot(root)
 	}
 	removeAll := t.removeAll
 	if removeAll == nil {
 		removeAll = os.RemoveAll
 	}
-	if err := removeAll(t.privateRoot); err != nil {
-		return err
+	removeErr := removeAll(t.privateRoot)
+	if removeErr == nil {
+		t.closed = true
 	}
-	t.closed = true
-	return nil
+	return errors.Join(closeErr, removeErr)
 }
 
 // Capture extracts rawTar into a private directory, emits a canonical tar next
@@ -255,11 +334,12 @@ func (c Canonicalizer) Capture(ctx context.Context, rawTar io.Reader) (tree *Cap
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if err := validateConfiguredTempDir(c.TempDir); err != nil {
+	tempDir, err := resolveConfiguredTempDir(c.TempDir)
+	if err != nil {
 		return nil, err
 	}
 
-	privateRoot, err := os.MkdirTemp(c.TempDir, "hangar-tree-")
+	privateRoot, err := os.MkdirTemp(tempDir, "hangar-tree-")
 	if err != nil {
 		return nil, fmt.Errorf("hangar: create private capture directory: %w", err)
 	}
@@ -475,8 +555,18 @@ func ValidateTempDir(tempDir string) error {
 	return nil
 }
 
-func validateConfiguredTempDir(tempDir string) error {
-	return ValidateTempDir(tempDir)
+func resolveConfiguredTempDir(tempDir string) (string, error) {
+	if tempDir == "" {
+		tempDir = os.TempDir()
+	}
+	absolute, err := filepath.Abs(tempDir)
+	if err != nil {
+		return "", fmt.Errorf("hangar: resolve temporary parent %q: %w", tempDir, err)
+	}
+	if err := ValidateTempDir(absolute); err != nil {
+		return "", err
+	}
+	return absolute, nil
 }
 
 func wipeCaptureRoot(root *os.Root) error {
@@ -692,7 +782,10 @@ func extractTar(
 	maxContent int64,
 	beforeMaterialize func(*os.Root, string) error,
 ) (*captureIndex, error) {
-	tr := tar.NewReader(contextReader{ctx: ctx, reader: rawTar})
+	tr, err := newArchiveAdmission(ctx, rawTar, maxContent, maxEntries)
+	if err != nil {
+		return nil, err
+	}
 	seenHeaders := make(map[string]struct{})
 	index := &captureIndex{entries: make(map[string]capturedEntry)}
 
@@ -1012,7 +1105,7 @@ func normalizeExistingDirectory(root *os.Root, name string) (fs.FileInfo, error)
 
 func extractRegular(
 	ctx context.Context,
-	tr *tar.Reader,
+	tr io.Reader,
 	root *os.Root,
 	spool *os.File,
 	hdr *tar.Header,

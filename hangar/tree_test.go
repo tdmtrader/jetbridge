@@ -131,6 +131,50 @@ func TestValidateArchiveLimitsEnforcesLogicalContentAndImplicitEntries(t *testin
 	})
 }
 
+func TestCanonicalizerCaptureEnforcesPhysicalArchiveAdmission(t *testing.T) {
+	t.Parallel()
+
+	limit, err := CanonicalArchiveByteLimit(1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exact := rawRepeatedPAXTar(10)
+	if int64(len(exact)) != limit {
+		t.Fatalf("exact archive fixture size = %d, want physical limit %d", len(exact), limit)
+	}
+
+	t.Run("accepts the exact physical bound", func(t *testing.T) {
+		tree := capture(t, Canonicalizer{MaxEntries: 1, MaxContentBytes: 1}, bytes.NewReader(exact))
+		defer tree.Close()
+	})
+
+	t.Run("rejects repeated extension metadata beyond the bound", func(t *testing.T) {
+		raw := rawRepeatedPAXTar(11)
+		_, err := (Canonicalizer{MaxEntries: 1, MaxContentBytes: 1}).Capture(context.Background(), bytes.NewReader(raw))
+		if !errors.Is(err, ErrLimitExceeded) {
+			t.Fatalf("Capture() error = %v, want ErrLimitExceeded", err)
+		}
+	})
+
+	t.Run("rejects bytes after the tar terminator", func(t *testing.T) {
+		raw := append(makeTar(t, []tarEntry{{name: "file", typeflag: tar.TypeReg, content: "x"}}), byte('x'))
+		_, err := (Canonicalizer{MaxEntries: 1, MaxContentBytes: 1}).Capture(context.Background(), bytes.NewReader(raw))
+		if err == nil || !strings.Contains(err.Error(), "trailing data") {
+			t.Fatalf("Capture() error = %v, want trailing-data rejection", err)
+		}
+	})
+
+	t.Run("validator uses the same physical bound", func(t *testing.T) {
+		err := ValidateArchiveLimits(context.Background(), bytes.NewReader(rawRepeatedPAXTar(11)), TreeLimits{
+			MaxContentBytes: 1,
+			MaxEntries:      1,
+		})
+		if !errors.Is(err, ErrLimitExceeded) {
+			t.Fatalf("ValidateArchiveLimits() error = %v, want ErrLimitExceeded", err)
+		}
+	})
+}
+
 func TestCanonicalizerCaptureNormalizesMetadataAndInputOrder(t *testing.T) {
 	t.Parallel()
 
@@ -1227,6 +1271,51 @@ func TestCanonicalizerCaptureRejectsUntrustedConfiguredTempDir(t *testing.T) {
 	})
 }
 
+func TestCanonicalizerCaptureStabilizesRelativeTempDir(t *testing.T) {
+	originalWorkingDirectory, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace := t.TempDir()
+	captureWorkingDirectory := filepath.Join(workspace, "capture-cwd")
+	otherWorkingDirectory := filepath.Join(workspace, "other-cwd")
+	for _, directory := range []string{captureWorkingDirectory, otherWorkingDirectory, filepath.Join(captureWorkingDirectory, "scratch")} {
+		if err := os.Mkdir(directory, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Chdir(captureWorkingDirectory); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(originalWorkingDirectory)
+
+	tree := capture(t, Canonicalizer{TempDir: "scratch"}, bytes.NewReader(makeTar(t, []tarEntry{{
+		name: "file", typeflag: tar.TypeReg, content: "stable",
+	}})))
+	privateRoot := filepath.Dir(tree.Root)
+	cleanupRoot := privateRoot
+	if !filepath.IsAbs(cleanupRoot) {
+		cleanupRoot = filepath.Join(captureWorkingDirectory, cleanupRoot)
+	}
+	defer os.RemoveAll(cleanupRoot)
+
+	if !filepath.IsAbs(tree.Root) || !filepath.IsAbs(tree.ArchivePath) || !filepath.IsAbs(tree.privateRoot) {
+		t.Fatalf("capture paths are not absolute: Root=%q ArchivePath=%q privateRoot=%q", tree.Root, tree.ArchivePath, tree.privateRoot)
+	}
+	if err := os.Chdir(otherWorkingDirectory); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(readFile(t, filepath.Join(tree.Root, "file"))); got != "stable" {
+		t.Fatalf("captured content after cwd change = %q, want stable", got)
+	}
+	if err := tree.Close(); err != nil {
+		t.Fatalf("Close() after cwd change = %v", err)
+	}
+	if _, err := os.Stat(privateRoot); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("private root remains after cwd change and Close: %v", err)
+	}
+}
+
 func TestCapturedTreeCloseWipesThroughAnchoredRootAfterRename(t *testing.T) {
 	t.Parallel()
 
@@ -1425,6 +1514,30 @@ func TestCanonicalizerCaptureJoinsCleanupErrorsAndCloseRetries(t *testing.T) {
 			t.Fatalf("successful Close retried removal: attempts = %d", attempts)
 		}
 	})
+
+	t.Run("Close continues pathname cleanup after root close error", func(t *testing.T) {
+		tree := capture(t, Canonicalizer{}, bytes.NewReader(makeTar(t, nil)))
+		privateRoot := filepath.Dir(tree.Root)
+		closeErr := errors.New("root close failed")
+		closeCalls := 0
+		tree.closeRoot = func(root *os.Root) error {
+			closeCalls++
+			return errors.Join(root.Close(), closeErr)
+		}
+
+		if err := tree.Close(); !errors.Is(err, closeErr) {
+			t.Fatalf("Close() = %v, want root close error", err)
+		}
+		if _, err := os.Stat(privateRoot); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("private root remains after root close error: %v", err)
+		}
+		if err := tree.Close(); err != nil {
+			t.Fatalf("retry Close() = %v", err)
+		}
+		if closeCalls != 1 {
+			t.Fatalf("root close calls = %d, want 1", closeCalls)
+		}
+	})
 }
 
 func makeTar(t *testing.T, entries []tarEntry) []byte {
@@ -1505,6 +1618,16 @@ func rawPAXTar(t *testing.T, entry tarEntry) []byte {
 	}
 	result := rawTarEntry("PaxHeaders.0/entry", tar.TypeXHeader, 0644, "", []byte(records.String()))
 	result = append(result, rawTarEntry(entry.name, typeflag, mode, entry.linkname, []byte(entry.content))...)
+	return append(result, make([]byte, 1024)...)
+}
+
+func rawRepeatedPAXTar(extensionCount int) []byte {
+	result := make([]byte, 0, extensionCount*1024+2048)
+	record := []byte(formatRawPAXRecord("path", "file"))
+	for range extensionCount {
+		result = append(result, rawTarEntry("PaxHeaders.0/file", tar.TypeXHeader, 0644, "", record)...)
+	}
+	result = append(result, rawTarEntry("file", tar.TypeReg, 0644, "", []byte("x"))...)
 	return append(result, make([]byte, 1024)...)
 }
 
