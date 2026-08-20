@@ -212,8 +212,8 @@ var _ = Describe("Integration", func() {
 				},
 				Type: db.ContainerTypePut,
 				Inputs: []runtime.Input{
-					{DestinationPath: "/tmp/build/put/compiled-binary"},
-					{DestinationPath: "/tmp/build/put/release-notes"},
+					{Artifact: &fakeArtifact{handle: "compiled-binary"}, DestinationPath: "/tmp/build/put/compiled-binary"},
+					{Artifact: &fakeArtifact{handle: "release-notes"}, DestinationPath: "/tmp/build/put/release-notes"},
 				},
 			})
 
@@ -269,7 +269,7 @@ var _ = Describe("Integration", func() {
 					ImageURL: "docker:///node:18",
 				},
 				Inputs: []runtime.Input{
-					{DestinationPath: "/tmp/build/workdir/my-app"},
+					{Artifact: &fakeArtifact{handle: "my-app"}, DestinationPath: "/tmp/build/workdir/my-app"},
 				},
 				Sidecars: []atc.SidecarConfig{
 					{
