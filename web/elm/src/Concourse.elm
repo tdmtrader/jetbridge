@@ -1253,7 +1253,7 @@ encodeParamType paramType =
         case paramType of
             StringParam -> "string"
             NumberParam -> "number"
-            BoolParam -> "boolean"
+            BoolParam -> "bool"
             EnumParam -> "enum"
 
 
@@ -1300,7 +1300,7 @@ decodeParamType =
                 case paramType of
                     "string" -> Json.Decode.succeed StringParam
                     "number" -> Json.Decode.succeed NumberParam
-                    "boolean" -> Json.Decode.succeed BoolParam
+                    "bool" -> Json.Decode.succeed BoolParam
                     "enum" -> Json.Decode.succeed EnumParam
                     unknown -> Json.Decode.fail <| "unknown parameter type: " ++ unknown
             )
