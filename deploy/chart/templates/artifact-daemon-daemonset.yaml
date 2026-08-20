@@ -1,4 +1,11 @@
 {{- $hangarEnabled := .Values.artifactDaemon.hangar.enabled | default false }}
+{{- $hangarWebEnabled := .Values.artifactDaemon.hangar.webEnabled | default false }}
+{{- if and $hangarWebEnabled (not $hangarEnabled) }}
+  {{- fail "artifactDaemon.hangar.webEnabled requires artifactDaemon.hangar.enabled" }}
+{{- end }}
+{{- if and .Values.artifactDaemon.enabled (eq .Values.artifactDaemon.durable.store "gcs") (not (empty .Values.artifactDaemon.durable.existingSecret)) }}
+  {{- fail "artifactDaemon.durable.existingSecret supplies s3 credentials and must be empty for gcs; use Workload Identity/Application Default Credentials" }}
+{{- end }}
 {{- if $hangarEnabled }}
   {{- if not .Values.artifactDaemon.enabled }}
     {{- fail "artifactDaemon.enabled must be true when artifactDaemon.hangar.enabled is true" }}
@@ -12,6 +19,9 @@
   {{- if empty .Values.artifactDaemon.durable.bucket }}
     {{- fail "artifactDaemon.durable.bucket is required when Hangar is enabled" }}
   {{- end }}
+  {{- if and (empty .Values.artifactDaemon.tls.existingSecret) (not (.Values.artifactDaemon.hangar.allowGeneratedKey | default false)) }}
+    {{- fail "artifactDaemon.hangar.allowGeneratedKey=true is required to generate hangar.key; offline/GitOps rendering must use artifactDaemon.tls.existingSecret" }}
+  {{- end }}
   {{- $scratch := clean .Values.artifactDaemon.hangar.scratchPath }}
   {{- $storage := clean (.Values.artifactDaemon.hostPath | default "/var/concourse/artifacts") }}
   {{- if or (not (hasPrefix "/" $scratch)) (eq $scratch "/") }}
@@ -23,11 +33,17 @@
   {{- if or (le (int64 .Values.artifactDaemon.hangar.maxContentBytes) 0) (le (int64 .Values.artifactDaemon.hangar.maxEntries) 0) }}
     {{- fail "artifactDaemon.hangar content and entry limits must be positive" }}
   {{- end }}
-  {{- $ttlBase := mustToDate "2006-01-02" "2000-01-01" }}
-  {{- $ttlEnd := mustDateModify .Values.artifactDaemon.hangar.capabilityTTL $ttlBase }}
-  {{- $ttlSeconds := sub ($ttlEnd | unixEpoch) ($ttlBase | unixEpoch) }}
-  {{- if or (le $ttlSeconds 0) (gt $ttlSeconds 900) }}
-    {{- fail "artifactDaemon.hangar.capabilityTTL must be positive and no greater than 15m" }}
+  {{- $ttl := toString .Values.artifactDaemon.hangar.capabilityTTL }}
+  {{- if not (regexMatch "^[1-9][0-9]*s$" $ttl) }}
+    {{- fail "artifactDaemon.hangar.capabilityTTL must use positive whole seconds (for example 900s)" }}
+  {{- end }}
+  {{- $ttlDigits := trimSuffix "s" $ttl }}
+  {{- if gt (len $ttlDigits) 3 }}
+    {{- fail "artifactDaemon.hangar.capabilityTTL must be no greater than 900s" }}
+  {{- end }}
+  {{- $ttlSeconds := atoi $ttlDigits }}
+  {{- if gt $ttlSeconds 900 }}
+    {{- fail "artifactDaemon.hangar.capabilityTTL must be no greater than 900s" }}
   {{- end }}
 {{- end }}
 {{- if .Values.artifactDaemon.enabled }}
@@ -151,7 +167,7 @@ spec:
             {{- end }}
             {{- end }}
           {{- with .Values.artifactDaemon.durable }}
-          {{- if and .store .existingSecret }}
+          {{- if and (eq .store "s3") .existingSecret }}
           envFrom:
             # Bucket credentials as AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY.
             # Prefer IRSA or Workload Identity on a managed cluster and leave
@@ -193,6 +209,8 @@ spec:
             initialDelaySeconds: 2
             periodSeconds: 5
           securityContext:
+            runAsUser: 0
+            privileged: false
             allowPrivilegeEscalation: false
             capabilities:
               drop:

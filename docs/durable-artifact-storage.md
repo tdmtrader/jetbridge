@@ -358,6 +358,8 @@ Credentials arrive as environment from `existingSecret`, never as flags — a fl
 lands in the process table and in `kubectl describe pod`. On a managed cluster,
 leave `existingSecret` empty and use IRSA or Workload Identity; nothing then
 holds a long-lived key. With `store: gcs` on GKE it is not needed at all.
+The chart reserves `existingSecret` for S3-compatible credentials and rejects
+it with `store: gcs`, which always uses Application Default Credentials.
 
 An incomplete config fails at `helm template`, not at runtime: a daemon that
 starts, reports healthy and quietly caches nothing is a much worse failure.

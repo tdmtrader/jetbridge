@@ -38,6 +38,7 @@ type deployment struct {
 					Args            []string `json:"args"`
 					SecurityContext struct {
 						AllowPrivilegeEscalation *bool  `json:"allowPrivilegeEscalation"`
+						Privileged               *bool  `json:"privileged"`
 						RunAsUser                *int64 `json:"runAsUser"`
 						ReadOnlyRootFilesystem   *bool  `json:"readOnlyRootFilesystem"`
 						Capabilities             struct {
@@ -163,14 +164,15 @@ func TestHangarKeepsArtifactDaemonAtItsMinimalSecurityContext(t *testing.T) {
 	daemon := findDaemonSet(t, renderChart(t,
 		"artifactDaemon.hangar.enabled=true",
 		"artifactDaemon.tls.enabled=true",
+		"artifactDaemon.tls.existingSecret=operator-daemon-tls",
 		"artifactDaemon.durable.store=gcs",
 		"artifactDaemon.durable.bucket=b",
 	), "-artifact-daemon")
 	if boolVal(daemon.Spec.Template.Spec.SecurityContext.RunAsNonRoot) {
 		t.Fatal("artifact-daemon must remain root for arbitrary-UID hostPath content")
 	}
-	if user := daemon.Spec.Template.Spec.SecurityContext.RunAsUser; user != nil && *user != 0 {
-		t.Fatalf("artifact-daemon pod runAsUser=%d, want root", *user)
+	if user := daemon.Spec.Template.Spec.SecurityContext.RunAsUser; user != nil {
+		t.Fatalf("artifact-daemon pod runAsUser=%d; root must be scoped to the daemon container", *user)
 	}
 	if daemon.Spec.Template.Spec.SecurityContext.SeccompProfile.Type != "RuntimeDefault" {
 		t.Fatalf("pod seccomp=%q, want RuntimeDefault", daemon.Spec.Template.Spec.SecurityContext.SeccompProfile.Type)
@@ -179,11 +181,14 @@ func TestHangarKeepsArtifactDaemonAtItsMinimalSecurityContext(t *testing.T) {
 		t.Fatalf("artifact-daemon containers=%d, want 1", len(daemon.Spec.Template.Spec.Containers))
 	}
 	c := daemon.Spec.Template.Spec.Containers[0]
-	if user := c.SecurityContext.RunAsUser; user != nil && *user != 0 {
-		t.Fatalf("artifact-daemon container runAsUser=%d, want root", *user)
+	if user := c.SecurityContext.RunAsUser; user == nil || *user != 0 {
+		t.Fatalf("artifact-daemon container runAsUser=%v, want explicit root", user)
 	}
-	if boolVal(c.SecurityContext.AllowPrivilegeEscalation) {
-		t.Fatal("artifact-daemon allowPrivilegeEscalation should be false")
+	if c.SecurityContext.Privileged == nil || *c.SecurityContext.Privileged {
+		t.Fatalf("artifact-daemon privileged=%v, want explicit false", c.SecurityContext.Privileged)
+	}
+	if c.SecurityContext.AllowPrivilegeEscalation == nil || *c.SecurityContext.AllowPrivilegeEscalation {
+		t.Fatalf("artifact-daemon allowPrivilegeEscalation=%v, want explicit false", c.SecurityContext.AllowPrivilegeEscalation)
 	}
 	if !containsStr(c.SecurityContext.Capabilities.Drop, "ALL") {
 		t.Fatalf("artifact-daemon capability drops=%v, want ALL", c.SecurityContext.Capabilities.Drop)

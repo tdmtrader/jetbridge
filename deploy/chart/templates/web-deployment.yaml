@@ -180,7 +180,7 @@ spec:
             - --kubernetes-artifact-daemon-tls-key=/etc/concourse/daemon-tls/client.key
             - --kubernetes-artifact-daemon-tls-ca-cert=/etc/concourse/daemon-tls/ca.crt
             {{- end }}
-            {{- if .Values.artifactDaemon.hangar.enabled }}
+            {{- if .Values.artifactDaemon.hangar.webEnabled }}
             - --kubernetes-hangar-enabled
             - --kubernetes-hangar-capability-key=/etc/concourse/daemon-tls/hangar.key
             - --kubernetes-hangar-capability-ttl={{ .Values.artifactDaemon.hangar.capabilityTTL }}
@@ -350,7 +350,7 @@ spec:
                 path: client.key
               - key: ca.crt
                 path: ca.crt
-              {{- if .Values.artifactDaemon.hangar.enabled }}
+              {{- if .Values.artifactDaemon.hangar.webEnabled }}
               - key: hangar.key
                 path: hangar.key
               {{- end }}

@@ -114,3 +114,90 @@ label declaration in the enabled render.
 - The first sandboxed daemon run failed at `httptest` listener creation with
   `bind: operation not permitted`; the identical loopback-approved focused and
   full runs passed.
+
+## Fix round 1: deterministic staged rollout
+
+Independent Helm and capability review of `808d9a82c7..6b38e1d333` was not
+approved. The findings were reproduced with behavioral render tests before
+template changes:
+
+```text
+$ env GOCACHE=/private/tmp/hangar-task7-gocache go test ./deploy/chart/tests -run 'Test(Hangar|GCSRejects)' -count=1
+--- FAIL: TestGCSRejectsS3CredentialSecret
+    GCS render accepted an S3 credential Secret and emitted envFrom
+--- FAIL: TestHangarRejectsImplicitGeneratedKey
+    helm template unexpectedly accepted generated hangar.key without opt-in
+--- FAIL: TestHangarStagesDaemonSupportBeforeWebEmission
+    daemon-only rollout enabled web Hangar emission
+--- FAIL: TestHangarAcceptsWholeSecondCapabilityTTLBoundaries
+    default render missing --hangar-capability-ttl=900s
+--- FAIL: TestHangarNetworkPolicyAllowsGKEWorkloadIdentityMetadata
+    enabled artifact-daemon NetworkPolicy omitted GKE metadata TCP 80/988
+--- FAIL: TestHangarKeepsArtifactDaemonAtItsMinimalSecurityContext
+    artifact-daemon container runAsUser=<nil>, want explicit root
+FAIL
+```
+
+The same RED matrix showed `webEnabled` without daemon support was accepted and
+that minute, nanosecond, and millisecond TTL forms were accepted or rounded.
+
+Fixes:
+
+- Split daemon support (`hangar.enabled`) from web signing/emission
+  (`hangar.webEnabled`). Daemon-only rendering has strict routes, readiness,
+  key, and scratch but no web Hangar flags/key item. Toggling only
+  `webEnabled` leaves the DaemonSet document byte-for-byte unchanged.
+- Made generated `hangar.key` an explicit `allowGeneratedKey: true` mode for
+  live Helm install/upgrade only. Offline/GitOps rendering defaults to a
+  deterministic operator-managed TLS Secret and fails rather than minting a
+  changing key. Documentation also states that auto-generated TLS itself is
+  nondeterministic when `lookup` has no live cluster state.
+- Restricted chart TTL syntax to positive whole seconds with the exact range
+  `1s..900s`; the default is `900s` and the unchanged value reaches both
+  binaries. Subsecond, compound, minute, zero, negative, and above-bound forms
+  fail during render. Binary duration bounds remain unchanged.
+- Reserved `durable.existingSecret` for S3-compatible credentials. Native GCS
+  now fails clearly if it is set and never renders that Secret through
+  `envFrom`; existing S3 behavior remains covered.
+- Added GKE Workload Identity metadata egress
+  `169.254.169.254/32` TCP 80/988 to the opt-in artifact-daemon NetworkPolicy,
+  with explicit CNI/environment caveats.
+- Scoped explicit UID 0, `privileged: false`, and
+  `allowPrivilegeEscalation: false` to the daemon container. The Pod security
+  context remains free of `runAsUser`, so init/task containers do not inherit
+  root. `RuntimeDefault`, drop `ALL`, and only `DAC_OVERRIDE` remain exact.
+
+Capability audit clarification: the ordinary exact destination is created by
+kubelet/daemon and root-owned. Descriptor-relative materialization therefore
+does not need `FOWNER`; a custom non-root daemon image or pre-chowned
+destination fails closed instead of widening capabilities.
+
+Fix-round verification:
+
+```text
+$ env GOCACHE=/private/tmp/hangar-task7-gocache go test ./deploy/chart/tests -run 'Test(Hangar|GCSRejects)' -count=1
+ok github.com/concourse/concourse/deploy/chart/tests 1.725s
+
+$ env GOCACHE=/private/tmp/hangar-task7-gocache go test ./deploy/chart/tests -count=1
+ok github.com/concourse/concourse/deploy/chart/tests 18.926s
+
+$ helm lint deploy/chart
+1 chart(s) linted, 0 chart(s) failed
+
+$ env GOCACHE=/private/tmp/hangar-task7-gocache go test ./atc/atccmd -count=1
+ok github.com/concourse/concourse/atc/atccmd 0.674s
+
+$ env GOCACHE=/private/tmp/hangar-task7-gocache go test ./cmd/artifact-daemon ./cmd/artifact-daemon/durable -count=1
+ok github.com/concourse/concourse/cmd/artifact-daemon 57.722s
+ok github.com/concourse/concourse/cmd/artifact-daemon/durable 3.759s
+
+$ git diff --check
+# exit 0
+```
+
+Separate default, daemon-only, fully enabled, and explicit live-generated-key
+renders passed. The default scan found no Hangar surface; daemon-only contained
+no `--kubernetes-hangar-*`; full enablement added web flags with the same
+`900s`; and explicit live generation produced a base64 value decoding to 32
+raw bytes. Live Helm `lookup`, GCS/Workload Identity, CNI enforcement, and K3s
+remain environment-dependent gaps and are not claimed here.

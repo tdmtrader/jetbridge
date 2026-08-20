@@ -465,6 +465,14 @@ artifactDaemon:
     # -- Enable the GCS-only Hangar foundation. Requires daemon TLS and a
     # configured artifactDaemon.durable GCS bucket.
     enabled: false
+    # -- Enable web emission/signing of strict inputs after every eligible
+    # daemon node has advertised Hangar readiness. Requires enabled: true.
+    webEnabled: false
+    # -- Permit the chart to generate hangar.key in its managed TLS Secret.
+    # Use only with live Helm install/upgrade, where lookup can preserve the
+    # Secret. Offline/GitOps rendering must leave this false and provide
+    # tls.existingSecret with all TLS keys plus an exact raw-32-byte hangar.key.
+    allowGeneratedKey: false
     # -- Private transient canonicalization scratch. This must be an absolute
     # path disjoint from artifactDaemon.hostPath; the chart mounts a dedicated
     # emptyDir here only in the artifact-daemon Pod.
@@ -473,9 +481,9 @@ artifactDaemon:
     maxContentBytes: 10737418240
     # -- Maximum filesystem entries admitted in one immutable tree.
     maxEntries: 100000
-    # -- Lifetime of attenuated per-input materialization grants. Must be
-    # positive and no greater than Hangar's core maximum of 15m.
-    capabilityTTL: 15m
+    # -- Lifetime of attenuated per-input materialization grants, expressed as
+    # positive whole seconds. Maximum 900s (Hangar's core 15-minute bound).
+    capabilityTTL: "900s"
 
   # -- Long-term store for resource caches.
   # The node-local copy above is a cache with a TTL; this is the copy that
@@ -611,8 +619,11 @@ artifactDaemon:
     # server cert via the mounted CA. Health probes use HTTPS without client cert.
     enabled: false
     # -- Name of an existing Secret containing TLS certs. Keys expected:
-    # ca.crt, tls.crt, tls.key, client.crt, client.key.
-    # When empty and tls.enabled=true, certs are auto-generated.
+    # ca.crt, tls.crt, tls.key, client.crt, client.key; Hangar additionally
+    # selects hangar.key, whose decoded value must be exactly 32 raw bytes.
+    # When empty and tls.enabled=true, certs are auto-generated. That path is
+    # nondeterministic under offline/GitOps rendering because Helm lookup has
+    # no live Secret; use existingSecret for GitOps.
     existingSecret: ""
   # -- NetworkPolicy configuration for the artifact daemon
   resolveCapability:
