@@ -18,6 +18,8 @@ type PipelineRef interface {
 	PipelineInstanceVars() atc.InstanceVars
 	PipelineRef() atc.PipelineRef
 	PipelineRunID() (int, bool)
+	BasePipelineID() int
+	BasePipelineRef() (atc.PipelineRef, bool)
 	Pipeline() (Pipeline, bool, error)
 }
 

@@ -64,18 +64,22 @@ func (b *inMemoryCheckBuildForApi) PipelineName() string              { return b
 func (b *inMemoryCheckBuildForApi) PipelineRef() atc.PipelineRef      { return b.checkable.PipelineRef() }
 func (b *inMemoryCheckBuildForApi) Pipeline() (Pipeline, bool, error) { return b.checkable.Pipeline() }
 func (b *inMemoryCheckBuildForApi) PipelineRunID() (int, bool)        { return b.checkable.PipelineRunID() }
-func (b *inMemoryCheckBuildForApi) RunJobName() string                { return "" }
-func (b *inMemoryCheckBuildForApi) RunJobKey() string                 { return "" }
-func (b *inMemoryCheckBuildForApi) ResourceID() int                   { return b.resourceId }
-func (b *inMemoryCheckBuildForApi) ResourceName() string              { return b.resourceName }
-func (b *inMemoryCheckBuildForApi) ResourceTypeID() int               { return 0 }
-func (b *inMemoryCheckBuildForApi) StartTime() time.Time              { return b.startTime }
-func (b *inMemoryCheckBuildForApi) EndTime() time.Time                { return b.endTime }
-func (b *inMemoryCheckBuildForApi) Status() BuildStatus               { return b.status }
-func (b *inMemoryCheckBuildForApi) CreatedBy() *string                { return nil }
-func (b *inMemoryCheckBuildForApi) Schema() string                    { return schema }
-func (b *inMemoryCheckBuildForApi) IsRunning() bool                   { return b.status == BuildStatusStarted }
-func (b *inMemoryCheckBuildForApi) IsDrained() bool                   { return false }
+func (b *inMemoryCheckBuildForApi) BasePipelineID() int               { return b.checkable.BasePipelineID() }
+func (b *inMemoryCheckBuildForApi) BasePipelineRef() (atc.PipelineRef, bool) {
+	return b.checkable.BasePipelineRef()
+}
+func (b *inMemoryCheckBuildForApi) RunJobName() string   { return "" }
+func (b *inMemoryCheckBuildForApi) RunJobKey() string    { return "" }
+func (b *inMemoryCheckBuildForApi) ResourceID() int      { return b.resourceId }
+func (b *inMemoryCheckBuildForApi) ResourceName() string { return b.resourceName }
+func (b *inMemoryCheckBuildForApi) ResourceTypeID() int  { return 0 }
+func (b *inMemoryCheckBuildForApi) StartTime() time.Time { return b.startTime }
+func (b *inMemoryCheckBuildForApi) EndTime() time.Time   { return b.endTime }
+func (b *inMemoryCheckBuildForApi) Status() BuildStatus  { return b.status }
+func (b *inMemoryCheckBuildForApi) CreatedBy() *string   { return nil }
+func (b *inMemoryCheckBuildForApi) Schema() string       { return schema }
+func (b *inMemoryCheckBuildForApi) IsRunning() bool      { return b.status == BuildStatusStarted }
+func (b *inMemoryCheckBuildForApi) IsDrained() bool      { return false }
 func (b *inMemoryCheckBuildForApi) PipelineInstanceVars() atc.InstanceVars {
 	return b.checkable.PipelineInstanceVars()
 }

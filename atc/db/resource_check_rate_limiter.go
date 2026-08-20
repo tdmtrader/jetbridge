@@ -110,8 +110,9 @@ func (limiter *ResourceCheckRateLimiter) refreshCheckLimiterIfNeeded() error {
 		From("resources r").
 		Join("pipelines p ON p.id = r.pipeline_id").
 		Where(sq.Eq{
-			"r.active": true,
-			"p.paused": false,
+			"r.active":   true,
+			"p.paused":   false,
+			"p.template": false,
 		}).
 		RunWith(limiter.refreshConn).
 		QueryRow().

@@ -42,6 +42,18 @@ var _ = Describe("Pipeline template run schema", func() {
 		Expect(tx.Commit()).To(MatchError(ContainSubstring("exactly one payload pipeline")))
 	})
 
+	It("stores a nullable completion timestamp on run headers", func() {
+		var templateID int
+		Expect(database.QueryRow(`INSERT INTO pipelines(team_id, name, template, secondary_ordering) SELECT id, 'completed-base', true, 1 FROM teams WHERE name = 'template-runs' RETURNING id`).Scan(&templateID)).To(Succeed())
+
+		var completedAt sql.NullTime
+		Expect(database.QueryRow(`INSERT INTO pipeline_runs(template_pipeline_id, number, params, status, created_by, config_hash) VALUES ($1, 1, '{}', 'succeeded', 'a-user', 'hash') RETURNING completed_at`, templateID).Scan(&completedAt)).To(Succeed())
+		Expect(completedAt.Valid).To(BeFalse())
+
+		Expect(database.QueryRow(`UPDATE pipeline_runs SET completed_at = now() WHERE template_pipeline_id = $1 RETURNING completed_at`, templateID).Scan(&completedAt)).To(Succeed())
+		Expect(completedAt.Valid).To(BeTrue())
+	})
+
 	It("rejects a second payload child and permits deleting a terminal child", func() {
 		var templateID, runID, childID int
 		Expect(database.QueryRow(`INSERT INTO pipelines(team_id, name, template, secondary_ordering) SELECT id, 'children-base', true, 1 FROM teams WHERE name = 'template-runs' RETURNING id`).Scan(&templateID)).To(Succeed())
@@ -71,6 +83,8 @@ var _ = Describe("Pipeline template run schema", func() {
 		Expect(database.QueryRow(`INSERT INTO jobs(name, pipeline_id, config, run_expected, run_policy_key) VALUES ('job', $1, '{}', true, 'policy') RETURNING id`, childID).Scan(&jobID)).To(Succeed())
 		_, err = database.Exec(`UPDATE pipelines SET pipeline_run_id = NULL WHERE id = $1`, childID)
 		Expect(err).To(MatchError(ContainSubstring("immutable")))
+		_, err = database.Exec(`UPDATE pipelines SET template = false WHERE id = $1`, templateID)
+		Expect(err).To(MatchError(ContainSubstring("referenced by pipeline runs")))
 		_, err = database.Exec(`UPDATE jobs SET run_policy_key = 'other' WHERE id = $1`, jobID)
 		Expect(err).To(MatchError(ContainSubstring("immutable")))
 		_, err = database.Exec(`INSERT INTO jobs(name, pipeline_id, config, run_expected) VALUES ('ordinary-job', $1, '{}', true)`, templateID)
@@ -95,5 +109,35 @@ var _ = Describe("Pipeline template run schema", func() {
 		Expect(database.Close()).To(Succeed())
 		_, err = postgresRunner.TryOpenDBAtVersion(1773105504)
 		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("refuses a down migration when future template-owned task caches remain", func() {
+		_, err := database.Exec(`
+			ALTER TABLE task_caches ADD COLUMN template_pipeline_id integer;
+			INSERT INTO task_caches(step_name, path, template_pipeline_id)
+			  VALUES ('run-cache', '/cache', 1)
+		`)
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(database.Close()).To(Succeed())
+		_, err = postgresRunner.TryOpenDBAtVersion(1773105504)
+		Expect(err).To(MatchError(ContainSubstring("cannot roll back pipeline template runs")))
+
+		database = postgresRunner.OpenDBAtVersion(pipelineTemplateRunsVersion)
+	})
+
+	It("refuses a down migration when future run job task caches remain", func() {
+		_, err := database.Exec(`
+			ALTER TABLE task_caches ADD COLUMN run_job_name text;
+			INSERT INTO task_caches(step_name, path, run_job_name)
+			  VALUES ('run-cache', '/cache', 'run-job')
+		`)
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(database.Close()).To(Succeed())
+		_, err = postgresRunner.TryOpenDBAtVersion(1773105504)
+		Expect(err).To(MatchError(ContainSubstring("cannot roll back pipeline template runs")))
+
+		database = postgresRunner.OpenDBAtVersion(pipelineTemplateRunsVersion)
 	})
 })

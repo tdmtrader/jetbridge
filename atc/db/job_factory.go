@@ -93,9 +93,10 @@ func (j *jobFactory) jobsToSchedule(jobIDs []int) (SchedulerJobs, error) {
 	query := jobsQuery.
 		Where(sq.Expr("j.schedule_requested > j.last_scheduled")).
 		Where(sq.Eq{
-			"j.active": true,
-			"j.paused": false,
-			"p.paused": false,
+			"j.active":   true,
+			"j.paused":   false,
+			"p.paused":   false,
+			"p.template": false,
 		})
 	if len(jobIDs) > 0 {
 		query = query.Where(sq.Eq{"j.id": jobIDs})
@@ -257,9 +258,12 @@ func (j *jobFactory) VisibleJobs(teamNames []string) ([]atc.JobSummary, error) {
 
 	defer Rollback(tx)
 
-	dashboardFactory := newDashboardFactory(tx, sq.Or{
-		sq.Eq{"tm.name": teamNames},
-		sq.Eq{"p.public": true},
+	dashboardFactory := newDashboardFactory(tx, sq.And{
+		sq.Or{
+			sq.Eq{"tm.name": teamNames},
+			sq.Eq{"p.public": true},
+		},
+		sq.Eq{"p.pipeline_run_id": nil},
 	})
 
 	dashboard, err := dashboardFactory.buildDashboard()
@@ -283,7 +287,7 @@ func (j *jobFactory) AllActiveJobs() ([]atc.JobSummary, error) {
 
 	defer Rollback(tx)
 
-	dashboardFactory := newDashboardFactory(tx, nil)
+	dashboardFactory := newDashboardFactory(tx, sq.Eq{"p.pipeline_run_id": nil})
 	dashboard, err := dashboardFactory.buildDashboard()
 	if err != nil {
 		return nil, err

@@ -170,6 +170,7 @@ func (c *checkFactory) Resources() ([]Resource, error) {
 		LeftJoin("(select DISTINCT(resource_id) FROM job_outputs) jo ON jo.resource_id = r.id").
 		Where(sq.And{
 			sq.Eq{"p.paused": false},
+			sq.Eq{"p.template": false},
 		}).
 		Where(sq.Or{
 			sq.And{
@@ -214,6 +215,7 @@ func (c *checkFactory) ResourceTypesByPipeline() (map[int]ResourceTypes, error) 
 	rows, err := resourceTypesQuery.
 		Where(sq.And{
 			sq.Eq{"p.paused": false},
+			sq.Eq{"p.template": false},
 		}).
 		OrderBy("r.id ASC").
 		RunWith(c.conn).

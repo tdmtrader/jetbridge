@@ -6,12 +6,14 @@ DROP TRIGGER run_job_metadata_check ON jobs;
 DROP TRIGGER pipeline_run_ownership_immutable ON pipelines;
 DROP TRIGGER pipeline_run_immutable_fields ON pipeline_runs;
 DROP TRIGGER pipeline_run_template_check ON pipeline_runs;
+DROP TRIGGER referenced_pipeline_template_check ON pipelines;
 
 DROP FUNCTION require_running_pipeline_run_child();
 DROP FUNCTION check_run_job_metadata();
 DROP FUNCTION immutable_pipeline_run_ownership();
 DROP FUNCTION immutable_pipeline_run_fields();
 DROP FUNCTION check_pipeline_run_template();
+DROP FUNCTION prevent_referenced_pipeline_from_becoming_non_template();
 DROP FUNCTION ensure_pipeline_template_runs_empty();
 
 ALTER TABLE jobs
