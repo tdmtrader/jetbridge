@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"code.cloudfoundry.org/lager/v3"
+	"github.com/concourse/concourse/atc/api/errormap"
 	"github.com/concourse/concourse/atc/db"
 )
 
@@ -18,6 +19,9 @@ func (s *Server) DeletePipeline(pipelineDB db.Pipeline) http.Handler {
 		err := pipelineDB.Destroy()
 		if err != nil {
 			logger.Error("failed", err)
+			if errormap.Write(w, err) {
+				return
+			}
 
 			w.WriteHeader(http.StatusInternalServerError)
 			return

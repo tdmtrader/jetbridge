@@ -7,6 +7,7 @@ import (
 
 	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/api/errormap"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/google/jsonapi"
 )
@@ -45,6 +46,9 @@ func (s *Server) ClearTaskCache(pipeline db.Pipeline) http.Handler {
 
 		if err != nil {
 			logger.Error("failed-to-clear-task-cache", err)
+			if errormap.Write(w, err) {
+				return
+			}
 			w.Header().Set("Content-Type", jsonapi.MediaType)
 			w.WriteHeader(http.StatusInternalServerError)
 			_ = jsonapi.MarshalErrors(w, []*jsonapi.ErrorObject{{

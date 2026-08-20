@@ -7,6 +7,7 @@ import (
 
 	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/api/errormap"
 	. "github.com/concourse/concourse/atc/api/helpers"
 	"github.com/concourse/concourse/atc/db"
 )
@@ -46,6 +47,9 @@ func (s *Server) RenamePipeline(team db.Team) http.Handler {
 		found, err := team.RenamePipeline(oldName, rename.NewName)
 		if err != nil {
 			logger.Error("failed-to-update-name", err)
+			if errormap.Write(w, err) {
+				return
+			}
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}

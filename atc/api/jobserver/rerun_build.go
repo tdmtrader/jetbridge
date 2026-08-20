@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/concourse/concourse/atc/api/accessor"
+	"github.com/concourse/concourse/atc/api/errormap"
 	"github.com/concourse/concourse/atc/api/present"
 	"github.com/concourse/concourse/atc/db"
 )
@@ -52,6 +53,9 @@ func (s *Server) RerunJobBuild(pipeline db.Pipeline) http.Handler {
 		build, err := job.RerunBuild(buildToRerun, acc.UserInfo().DisplayUserId)
 		if err != nil {
 			logger.Error("failed-to-retrigger-build", err)
+			if errormap.Write(w, err) {
+				return
+			}
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}

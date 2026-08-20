@@ -8,6 +8,7 @@ import (
 	"code.cloudfoundry.org/lager/v3/lagerctx"
 
 	"github.com/concourse/concourse/atc/api/accessor"
+	"github.com/concourse/concourse/atc/api/errormap"
 	"github.com/concourse/concourse/atc/api/present"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/tracing"
@@ -48,6 +49,9 @@ func (s *Server) CreateJobBuild(pipeline db.Pipeline) http.Handler {
 		build, err := job.CreateBuild(acc.UserInfo().DisplayUserId)
 		if err != nil {
 			logger.Error("failed-to-create-job-build", err)
+			if errormap.Write(w, err) {
+				return
+			}
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}

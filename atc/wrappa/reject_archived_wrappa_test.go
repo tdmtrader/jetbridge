@@ -31,6 +31,7 @@ var _ = Describe("RejectArchivedWrappa", func() {
 		rejectArchivedRoutes := []string{
 			atc.PausePipeline,
 			atc.UnpausePipeline,
+			atc.CreatePipelineRun,
 			atc.CreateJobBuild,
 			atc.ScheduleJob,
 			atc.CheckResource,
@@ -65,5 +66,27 @@ var _ = Describe("RejectArchivedWrappa", func() {
 			"unknownHandler": &stupidHandler{},
 		}
 		Expect(func() { raWrappa.Wrap(inputHandlers) }).To(PanicWith("how do archived pipelines affect your endpoint?"))
+	})
+
+	It("rejects creation but leaves durable history readable", func() {
+		// This fails if archive policy blocks history or permits creation from an archived template.
+		inputHandlers := rata.Handlers{
+			atc.CreatePipelineRun: &stupidHandler{},
+			atc.ListPipelineRuns:  &stupidHandler{},
+			atc.GetPipelineRun:    &stupidHandler{},
+		}
+		matched := 0
+		for name := range inputHandlers {
+			switch name {
+			case atc.CreatePipelineRun, atc.ListPipelineRuns, atc.GetPipelineRun:
+				matched++
+			}
+		}
+		Expect(matched).To(Equal(3))
+
+		wrapped := raWrappa.Wrap(inputHandlers)
+		Expect(wrapped[atc.CreatePipelineRun]).To(BeIdenticalTo(raHandlerFactory.RejectArchived(inputHandlers[atc.CreatePipelineRun])))
+		Expect(wrapped[atc.ListPipelineRuns]).To(BeIdenticalTo(inputHandlers[atc.ListPipelineRuns]))
+		Expect(wrapped[atc.GetPipelineRun]).To(BeIdenticalTo(inputHandlers[atc.GetPipelineRun]))
 	})
 })

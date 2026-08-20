@@ -127,6 +127,22 @@ var _ = Describe("PipelineRunFactory", func() {
 		Expect(err).To(MatchError("invalid range boundaries"))
 	})
 
+	It("loads the owned payload through the durable run ID", func() {
+		// This fails if presentation reconstructs {run:N} instead of using ownership indexed by pipeline_run_id.
+		template, _, err := defaultTeam.SavePipeline(atc.PipelineRef{Name: "actual-run-child"}, atc.Config{Template: true, Jobs: atc.JobConfigs{{Name: "entry"}}}, 0, false)
+		Expect(err).NotTo(HaveOccurred())
+		creation, err := factory.CreateRun(context.Background(), template, db.RunParams{}, "creator")
+		Expect(err).NotTo(HaveOccurred())
+
+		child, found, err := factory.InstancePipeline(creation.Run)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		childID, hasChild := creation.Run.InstancePipelineID()
+		Expect(hasChild).To(BeTrue())
+		Expect(child.ID()).To(Equal(childID))
+		Expect(child.InstanceVars()).To(Equal(atc.InstanceVars{"run": float64(creation.Run.Number())}))
+	})
+
 	It("does not allocate a number when validation fails", func() {
 		template, _, err := defaultTeam.SavePipeline(atc.PipelineRef{Name: "invalid-run"}, atc.Config{
 			Template: true,
