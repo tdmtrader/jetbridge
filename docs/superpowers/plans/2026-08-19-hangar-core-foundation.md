@@ -19,7 +19,7 @@
 - Exact logical identity is `sha256:<64 lowercase hex>` over the deterministic uncompressed canonical tar. GCS generation pins a physical read/delete but never replaces digest verification.
 - Strict errors remain distinguishable with `errors.Is`: not found, conflict, corruption, authorization, limit exceeded, and infrastructure. Context cancellation/deadline errors remain discoverable too.
 - Publication is create-if-absent. A verified identical existing object is idempotent success; an unverifiable or different object at the same key is a conflict. No strict operation silently overwrites.
-- Materialization stages and verifies a complete tree before exposing it, accepts only a daemon-derived destination under `<storage-path>/steps/<handle>/<volume>`, and makes regular files/directories read-only. It never accepts a caller-provided absolute path.
+- Materialization stages and verifies a complete tree before exposing it, accepts only a daemon-derived destination under `<storage-path>/steps/<handle>/<volume>`, and makes regular files/directories read-only. It never accepts a caller-provided absolute path. If kubelet has already bind-mounted an empty destination, publication preserves and writes through that anchored directory inode; replacing its pathname would leave the container bound to the old empty inode.
 - The task main container and sidecars must not receive the Hangar signing key. A short-lived grant is bound to exact ref, handle, volume, and expiry. Tokens must not be logged or used as metric labels.
 - Hangar defaults off. Enabling requires daemon TLS, a persisted capability key of at least 32 bytes, strict GCS configuration, and a distinct `concourse.dev/hangar-v1=ready` node label. Older/disabled daemons must never receive strict inputs.
 - Every changed Pod test must assert that every `volumeMount` name has a matching Pod `Volume`. Hangar input/output path overlap is rejected because the first slice is read-only.
@@ -159,7 +159,7 @@ func NewGCSStore(*storage.Client, GCSConfig) (*GCSStore, error)
 - [ ] Write tests first for a versioned HMAC-SHA256 grant bound to `TreeRef`, handle, volume, and expiry. Cover a minimum 32-byte key, tampering of every field, malformed/base64-variant tokens, wrong version, expiry/skew boundary, constant-time MAC comparison behavior through results, and safe error text that never includes the token.
 - [ ] Verify RED with `go test ./hangar -run 'Test(MaterializationGrant|GrantSigner)'`.
 - [ ] Implement `GrantSigner`/`GrantVerifier` over one shared key. The token is unpadded base64url of canonical JSON plus a 32-byte MAC, contains no secret, and verifies all requested fields rather than returning caller-controlled claims. Use an injected clock in tests and a default grant TTL of 15 minutes in runtime wiring.
-- [ ] Write materializer tests first using a fake strict store. Cover exact open and digest recheck, read-only result modes (`0555` directories, `0444` regular files, symlink preserved), destination derivation under `steps/<handle>/<volume>`, invalid segments, absent/non-empty destination, no partial destination after any store/archive/chmod/rename failure, and concurrent duplicate materializations.
+- [ ] Write materializer tests first using a fake strict store. Cover exact open and digest recheck, read-only result modes (`0555` directories, `0444` regular files, symlink preserved), destination derivation under `steps/<handle>/<volume>`, invalid segments, absent/non-empty destination, no task-visible completion after any store/archive/chmod/publication failure, concurrent duplicate materializations, parent/destination inode swaps, and a pre-opened destination descriptor observing the finished tree.
 - [ ] Verify RED with `go test ./hangar -run 'TestMaterializer'`.
 - [ ] Implement:
 
@@ -174,7 +174,7 @@ type Materializer struct {
 func (m *Materializer) Materialize(context.Context, TreeRef, string, string) error
 ```
 
-  Derive and validate the destination internally, open the exact generation, capture/verify the canonical tree into a private sibling staging directory, compare the captured digest with the ref again, recursively remove write bits without following symlinks, require an absent or empty final directory, and expose with one same-filesystem rename. Clean all staging state on failure.
+  Derive and validate the destination internally, open the exact generation, capture/verify the canonical tree into a private sibling staging directory, compare the captured digest with the ref again, recursively remove write bits without following symlinks, and require an absent or empty final directory. If absent, expose with one same-filesystem rename. If an empty kubelet-created destination already exists, preserve and revalidate its anchored inode while transferring staged entries descriptor-relatively, and publish a completion receipt last; never replace the bind-mounted pathname. Clean all staging state on failure.
 - [ ] Run `go test ./hangar -run 'Test(MaterializationGrant|GrantSigner|Materializer)' -count=1` and `go test ./hangar -count=1`.
 - [ ] Request a security-focused review of grant parsing, destination confinement, symlink handling, and rename races; fix every load-bearing finding. Commit as `feat(hangar): authorize and stage exact tree mounts`.
 
