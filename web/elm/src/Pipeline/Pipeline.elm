@@ -88,6 +88,7 @@ type alias Model =
         , refetchedRunHeader : Bool
         , missingPayloadRef : Maybe Concourse.PipelineIdentifier
         , runNotFound : Bool
+        , runError : Maybe String
         }
 
 
@@ -123,6 +124,7 @@ init flags =
             , refetchedRunHeader = False
             , missingPayloadRef = Nothing
             , runNotFound = False
+            , runError = Nothing
             }
     in
     ( model
@@ -357,26 +359,31 @@ handleCallback callback ( model, effects ) =
 
 handleRunHeader : PipelineRun -> Model -> List Effect -> ( Model, List Effect )
 handleRunHeader run model effects =
-    case run.instanceRef of
-        Nothing ->
-            ( { model
-                | runHeader = Just run
-                , runContext = Just <| if run.reclaimed then RunContext.Reclaimed run else RunContext.RecordOnly run
-              }
-            , effects
-            )
-
-        Just ref ->
-            if model.refetchedRunHeader && model.missingPayloadRef == Just ref then
-                ( { model | runHeader = Just run, runContext = Just <| RunContext.RecordOnly run }, effects )
-            else
+    if run.reclaimed then
+        ( { model | runHeader = Just run, runContext = Just <| RunContext.Reclaimed run, runError = Nothing }, effects )
+    else
+        case run.instanceRef of
+            Nothing ->
                 ( { model
                     | runHeader = Just run
-                    , pipelineLocator = ref
-                    , pipeline = RemoteData.Loading
+                    , runContext = Just <| RunContext.RecordOnly run
+                    , runError = Nothing
                   }
-                , effects ++ [ FetchPipeline ref ]
+                , effects
                 )
+
+            Just ref ->
+                if model.refetchedRunHeader && model.missingPayloadRef == Just ref then
+                    ( { model | runHeader = Just run, runContext = Just <| RunContext.RecordOnly run, runError = Nothing }, effects )
+                else
+                    ( { model
+                        | runHeader = Just run
+                        , pipelineLocator = ref
+                        , pipeline = RemoteData.Loading
+                        , runError = Nothing
+                      }
+                    , effects ++ [ FetchPipeline ref ]
+                    )
 
 
 handleRunHeaderError : Http.Error -> Model -> List Effect -> ( Model, List Effect )
@@ -388,10 +395,10 @@ handleRunHeaderError err model effects =
             else if status.code == 401 then
                 ( model, effects ++ [ RedirectToLogin ] )
             else
-                retryRunHeader model effects
+                ( { model | runError = Just "Unable to load this run." }, effects )
 
         _ ->
-            retryRunHeader model effects
+            ( { model | runError = Just "Unable to load this run." }, effects )
 
 
 retryRunHeader : Model -> List Effect -> ( Model, List Effect )
@@ -423,17 +430,15 @@ handleRunPayloadError template err model effects =
             else if status.code == 401 || status.code == 403 then
                 case model.runHeader of
                     Just run ->
-                        ( { model | runContext = Just <| RunContext.RecordOnly run }
-                        , effects ++ (if status.code == 401 then [ RedirectToLogin ] else [])
-                        )
+                        ( { model | runContext = Just <| RunContext.RecordOnly run, runError = Nothing }, effects )
 
                     Nothing ->
                         ( model, effects )
             else
-                ( model, effects ++ [ FetchPipeline model.pipelineLocator ] )
+                ( { model | runError = Just "Unable to load this run payload." }, effects )
 
         _ ->
-            ( model, effects ++ [ FetchPipeline model.pipelineLocator ] )
+            ( { model | runError = Just "Unable to load this run payload." }, effects )
 
 
 handleDelivery : Delivery -> ET Model
@@ -461,12 +466,15 @@ handleDelivery delivery ( model, effects ) =
                 )
 
         ClockTicked FiveSeconds _ ->
-            ( model
-            , effects
-                ++ [ FetchPipeline model.pipelineLocator
-                   , FetchAllPipelines
-                   ]
-            )
+            case model.runTemplate of
+                Just _ ->
+                    if runAllowsPipelineControls model then
+                        retryRunHeader model effects
+                    else
+                        ( model, effects )
+
+                Nothing ->
+                    ( model, effects ++ [ FetchPipeline model.pipelineLocator, FetchAllPipelines ] )
 
         ClockTicked OneMinute _ ->
             ( model, effects ++ [ FetchClusterInfo ] )
@@ -478,6 +486,14 @@ handleDelivery delivery ( model, effects ) =
 update : Message -> ET Model
 update msg ( model, effects ) =
     (case msg of
+        RetryPipelineRuns ->
+            case model.runTemplate of
+                Just _ ->
+                    retryRunHeader { model | runError = Nothing } effects
+
+                Nothing ->
+                    ( model, effects )
+
         ToggleGroup group ->
             ( model
             , effects
@@ -648,19 +664,27 @@ viewRunPage session model =
         Just context ->
             case context of
                 RunContext.RecordOnly _ ->
-                    Html.main_ [ id "run-record" ] [ RunContext.view context ]
+                    Html.main_ [ id "run-record" ] [ RunContext.view model.runError context ]
 
                 RunContext.Reclaimed _ ->
-                    Html.main_ [ id "run-record" ] [ RunContext.view context ]
+                    Html.main_ [ id "run-record" ] [ RunContext.view model.runError context ]
 
                 _ ->
-                    Html.div [] [ RunContext.view context, viewSubPage session model ]
+                    Html.div [] [ RunContext.view model.runError context, viewSubPage session model ]
 
         Nothing ->
             if model.runTemplate /= Nothing then
-                Html.main_ [ id "run-record" ] [ Html.p [] [ Html.text "Loading run…" ] ]
+                Html.main_ [ id "run-record" ] [ Html.p [] [ Html.text <| Maybe.withDefault "Loading run…" model.runError ], viewRunRetry model ]
             else
                 viewSubPage session model
+
+
+viewRunRetry : Model -> Html Message
+viewRunRetry model =
+    if model.runError == Nothing then
+        Html.text ""
+    else
+        Html.button [ Html.Events.onClick RetryPipelineRuns ] [ Html.text "Retry" ]
 
 
 tooltip : Model -> Session -> Maybe Tooltip.Tooltip

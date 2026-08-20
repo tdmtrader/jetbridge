@@ -118,8 +118,10 @@ pipeline isInstancedPipeline params p =
         else
             Styles.Invisible
     , href =
-        Routes.toString <|
-            Routes.Pipeline { id = pipelineId, groups = [] }
+        if p.template == Just True then
+            Routes.toString <| Routes.PipelineRuns { id = pipelineId, page = Nothing }
+        else
+            Routes.toString <| Routes.Pipeline { id = pipelineId, groups = [] }
     , domID = domID
     , starIcon =
         { filled = isFavorited
@@ -158,4 +160,7 @@ regularPipeline =
 
 regularPipelineText : Concourse.Pipeline -> String
 regularPipelineText p =
-    p.name
+    if p.template == Just True then
+        p.name ++ " • " ++ (Maybe.map (\number -> "runs through #" ++ String.fromInt number) p.lastRunNumber |> Maybe.withDefault "no runs")
+    else
+        p.name

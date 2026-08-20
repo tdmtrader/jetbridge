@@ -75,6 +75,16 @@ hdPipelineView :
         }
     -> Html Message
 hdPipelineView { pipelineRunningKeyframes } { pipeline, resourceError, existingJobs } =
+    if pipeline.template then
+        Html.a [ class "card", href <| pipelineHref pipeline ]
+            [ Html.div [ class "dashboardhd-pipeline-name" ] [ Html.text pipeline.name ]
+            , Html.div [] [ Html.text <| runLabel pipeline ]
+            ]
+    else
+        regularHdPipelineView { pipelineRunningKeyframes = pipelineRunningKeyframes } { pipeline = pipeline, resourceError = resourceError, existingJobs = existingJobs }
+
+
+regularHdPipelineView { pipelineRunningKeyframes } { pipeline, resourceError, existingJobs } =
     let
         bannerStyle =
             if pipeline.stale then
@@ -132,6 +142,13 @@ pipelineView :
         }
     -> Html Message
 pipelineView session { now, pipeline, hovered, resourceError, existingJobs, layers, section, headerHeight, viewingInstanceGroups, inInstanceGroup } =
+    if pipeline.template then
+        templatePipelineView session { pipeline = pipeline, section = section, hovered = hovered, headerHeight = headerHeight }
+    else
+        regularPipelineView session { now = now, pipeline = pipeline, hovered = hovered, resourceError = resourceError, existingJobs = existingJobs, layers = layers, section = section, headerHeight = headerHeight, viewingInstanceGroups = viewingInstanceGroups, inInstanceGroup = inInstanceGroup }
+
+
+regularPipelineView session { now, pipeline, hovered, resourceError, existingJobs, layers, section, headerHeight, viewingInstanceGroups, inInstanceGroup } =
     let
         bannerStyle =
             if pipeline.stale then
@@ -180,6 +197,32 @@ pipelineHref pipeline =
         Routes.toString <| Routes.PipelineRuns { id = Concourse.toPipelineId pipeline, page = Nothing }
     else
         Routes.toString <| Routes.pipelineRoute pipeline []
+
+
+runLabel : Pipeline -> String
+runLabel pipeline =
+    Maybe.map (\number -> "runs through #" ++ String.fromInt number) pipeline.lastRunNumber
+        |> Maybe.withDefault "no runs"
+
+
+templatePipelineView session { pipeline, section, hovered, headerHeight } =
+    Html.div Styles.pipelineCard
+        [ headerView section pipeline False headerHeight False False
+        , Html.a (class "card-body" :: Styles.pipelineCardBody ++ [ href <| pipelineHref pipeline ]) [ Html.text <| runLabel pipeline ]
+        , Html.div (class "card-footer" :: Styles.pipelineCardFooter)
+            [ Html.text <| if pipeline.archived then "archived" else if pipeline.paused then "paused" else "template"
+            , if pipeline.archived then Html.text "" else PauseToggle.view
+                { isPaused = pipeline.paused
+                , pipeline = Concourse.toPipelineId pipeline
+                , isToggleHovered = HoverState.isHovered (PipelineCardPauseToggle section pipeline.id) hovered
+                , isToggleLoading = pipeline.isToggleLoading
+                , tooltipPosition = Views.Styles.Above
+                , margin = "0"
+                , userState = session.userState
+                , domID = PipelineCardPauseToggle section pipeline.id
+                }
+            ]
+        ]
 
 
 pipelineStatus : List Concourse.Job -> Pipeline -> PipelineStatus.PipelineStatus
@@ -321,7 +364,7 @@ headerRows section viewingInstanceGroups pipeline inInstanceGroup =
                     )
                     [ Html.text <|
                         if pipeline.template then
-                            pipeline.name ++ " • " ++ (Maybe.map (\number -> "runs through #" ++ String.fromInt number) pipeline.lastRunNumber |> Maybe.withDefault "no runs")
+                            pipeline.name ++ " • " ++ runLabel pipeline
                         else
                             pipeline.name
                     ]

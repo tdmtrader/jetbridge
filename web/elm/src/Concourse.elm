@@ -1189,7 +1189,6 @@ isRunPayload : Pipeline -> Bool
 isRunPayload pipeline =
     pipeline.template == Just False
         && pipeline.runNumber /= Nothing
-        && pipeline.runTemplateRef /= Nothing
 
 
 type ParamType = StringParam | NumberParam | BoolParam | EnumParam

@@ -181,10 +181,6 @@ handleCallback callback model =
             subpageHandleCallback callback ( model, [] )
                 |> redirectToLoginIfNecessary err
 
-        PipelineRunFetched (Err err) ->
-            subpageHandleCallback callback ( model, [] )
-                |> redirectToLoginIfNecessary err
-
         PipelineToggled _ (Err err) ->
             subpageHandleCallback callback ( model, [] )
                 |> redirectToLoginIfNecessary err

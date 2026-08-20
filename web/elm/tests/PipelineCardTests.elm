@@ -14,6 +14,7 @@ import Common
 import Concourse exposing (JsonValue(..))
 import Concourse.BuildStatus exposing (BuildStatus(..))
 import Concourse.PipelineStatus exposing (PipelineStatus(..), StatusDetails(..))
+import Dashboard.Pipeline as DashboardPipeline
 import DashboardInstanceGroupTests exposing (pipelineInstanceWithVars)
 import DashboardTests
     exposing
@@ -44,6 +45,7 @@ import DashboardTests
 import Data
 import Dict
 import Expect exposing (Expectation)
+import Html
 import Html.Attributes as Attr
 import Message.Callback as Callback
 import Message.Effects as Effects
@@ -107,7 +109,55 @@ all =
                     >> Tuple.first
                     >> Common.queryView
         in
-        [ describe "when team has no visible pipelines" <|
+        [ test "a template card is neutral and links to its run history" <|
+            \_ ->
+                whenOnDashboard { highDensity = False }
+                    |> givenDataUnauthenticated (apiData [ ( "team", [] ) ])
+                    |> Tuple.first
+                    |> Application.handleCallback
+                        (Callback.AllPipelinesFetched <|
+                            Ok [ Data.pipeline "team" 1 |> Data.withName "template" |> asTemplate Nothing ]
+                        )
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.find [ class "card" ]
+                    |> Expect.all
+                        [ Query.has [ attribute <| Attr.href "/teams/team/pipelines/template/runs", text "no runs" ]
+                        , Query.hasNot [ class "banner" ]
+                        ]
+        , test "a high-density template card keeps the neutral history label" <|
+            \_ ->
+                let
+                    template =
+                        Data.dashboardPipeline "team" 1
+                in
+                DashboardPipeline.hdPipelineView { pipelineRunningKeyframes = "" }
+                    { pipeline = { template | name = "template", template = True }
+                    , resourceError = False
+                    , existingJobs = []
+                    }
+                    |> (\view -> Html.div [] [ view ])
+                    |> Query.fromHtml
+                    |> Expect.all
+                        [ Query.has [ attribute <| Attr.href "/teams/team/pipelines/template/runs", text "no runs" ]
+                        , Query.hasNot [ class "banner" ]
+                        ]
+        , test "mixed dashboard refreshes omit explicit run payloads" <|
+            \_ ->
+                whenOnDashboard { highDensity = False }
+                    |> givenDataUnauthenticated (apiData [ ( "team", [] ) ])
+                    |> Tuple.first
+                    |> Application.handleCallback
+                        (Callback.AllPipelinesFetched <|
+                            Ok
+                                [ Data.pipeline "team" 1 |> Data.withName "ordinary"
+                                , Data.pipeline "team" 2 |> Data.withName "payload" |> asRunPayload
+                                ]
+                        )
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Expect.all [ Query.has [ text "ordinary" ], Query.hasNot [ text "payload" ] ]
+        , describe "when team has no visible pipelines" <|
             let
                 noPipelinesCard : () -> Query.Single ApplicationMsgs.TopLevelMessage
                 noPipelinesCard _ =
@@ -2750,3 +2800,13 @@ all =
                 ]
             ]
         ]
+
+
+asTemplate : Maybe Int -> Concourse.Pipeline -> Concourse.Pipeline
+asTemplate lastRun pipeline =
+    { pipeline | template = Just True, lastRunNumber = lastRun }
+
+
+asRunPayload : Concourse.Pipeline -> Concourse.Pipeline
+asRunPayload pipeline =
+    { pipeline | template = Just False, runNumber = Just 1 }
