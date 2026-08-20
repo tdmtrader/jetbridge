@@ -342,3 +342,56 @@ func cloneMetadata(metadata map[string]string) map[string]string {
 	}
 	return copy
 }
+
+type writeErrorObservingObjectClient struct {
+	objectClient
+	mu     sync.Mutex
+	errors []error
+}
+
+func (client *writeErrorObservingObjectClient) Object(bucket, key string) objectHandle {
+	return writeErrorObservingObjectHandle{objectHandle: client.objectClient.Object(bucket, key), client: client}
+}
+
+func (client *writeErrorObservingObjectClient) record(err error) {
+	if err == nil {
+		return
+	}
+	client.mu.Lock()
+	client.errors = append(client.errors, err)
+	client.mu.Unlock()
+}
+
+func (client *writeErrorObservingObjectClient) snapshot() []error {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	return append([]error(nil), client.errors...)
+}
+
+type writeErrorObservingObjectHandle struct {
+	objectHandle
+	client *writeErrorObservingObjectClient
+}
+
+func (handle writeErrorObservingObjectHandle) If(conditions storage.Conditions) objectHandle {
+	return writeErrorObservingObjectHandle{objectHandle: handle.objectHandle.If(conditions), client: handle.client}
+}
+
+func (handle writeErrorObservingObjectHandle) Generation(generation int64) objectHandle {
+	return writeErrorObservingObjectHandle{objectHandle: handle.objectHandle.Generation(generation), client: handle.client}
+}
+
+func (handle writeErrorObservingObjectHandle) NewWriter(ctx context.Context) objectWriter {
+	return &writeErrorObservingObjectWriter{objectWriter: handle.objectHandle.NewWriter(ctx), client: handle.client}
+}
+
+type writeErrorObservingObjectWriter struct {
+	objectWriter
+	client *writeErrorObservingObjectClient
+}
+
+func (writer *writeErrorObservingObjectWriter) Write(buffer []byte) (int, error) {
+	count, err := writer.objectWriter.Write(buffer)
+	writer.client.record(err)
+	return count, err
+}

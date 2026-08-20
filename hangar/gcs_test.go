@@ -10,12 +10,14 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"mime"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -259,6 +261,132 @@ func TestGCSOfficialClientPinsGenerationAndConditionsDeleteQuery(t *testing.T) {
 	require.Equal(t, objectPath, requests[2].path)
 	require.Empty(t, requests[2].query.Get("generation"))
 	require.Equal(t, "73", requests[2].query.Get("ifGenerationMatch"))
+}
+
+func TestGCSOfficialClientConditionalUploadWriteConflictVerifiesExistingGeneration(t *testing.T) {
+	t.Parallel()
+	const (
+		bucket = "bucket"
+		key    = "deployment/blue/hangar/v1/scopes/build-artifacts/trees/sha256/93ce83b42df1b49ec1e81266bbc0dd22982a7323278479473c26ef8206ac293f.tar.zst"
+	)
+	content := make([]byte, 17*1024*1024)
+	state := uint32(1)
+	for index := range content {
+		state = state*1664525 + 1013904223
+		content[index] = byte(state >> 24)
+	}
+	digest := Digest("sha256:93ce83b42df1b49ec1e81266bbc0dd22982a7323278479473c26ef8206ac293f")
+	compressed := compressTest(t, content)
+	type requestRecord struct {
+		method, path string
+		query        url.Values
+		metadata     []byte
+	}
+	var requestMu sync.Mutex
+	var requests []requestRecord
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var metadata []byte
+		if request.Method == http.MethodPost {
+			mediaType, parameters, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
+			require.NoError(t, err)
+			require.Equal(t, "resumable", request.URL.Query().Get("uploadType"))
+			require.Equal(t, "application/json", mediaType)
+			require.Empty(t, parameters)
+			metadata, err = io.ReadAll(request.Body)
+			require.NoError(t, err)
+		}
+		requestMu.Lock()
+		requests = append(requests, requestRecord{method: request.Method, path: request.URL.EscapedPath(), query: request.URL.Query(), metadata: metadata})
+		requestMu.Unlock()
+		switch {
+		case request.Method == http.MethodPost && request.URL.EscapedPath() == "/upload/storage/v1/b/bucket/o":
+			writer.Header().Set("Content-Type", "application/json")
+			writer.WriteHeader(http.StatusPreconditionFailed)
+			_, _ = writer.Write([]byte(`{"error":{"code":412,"message":"object already exists"}}`))
+		case request.Method == http.MethodGet && request.URL.Query().Get("alt") == "json":
+			writer.Header().Set("Content-Type", "application/json")
+			require.NoError(t, json.NewEncoder(writer).Encode(map[string]any{
+				"bucket": bucket, "name": key, "generation": "91", "metageneration": "4",
+				"size": strconv.Itoa(len(compressed)), "timeCreated": "2026-08-19T00:00:00Z", "updated": "2026-08-19T00:00:00Z",
+				"metadata": map[string]string{
+					"concourse-uncompressed-sha256": "sha256:93ce83b42df1b49ec1e81266bbc0dd22982a7323278479473c26ef8206ac293f",
+					"concourse-uncompressed-bytes":  "17825792", "concourse-representation": "zstd",
+				},
+			}))
+		case request.Method == http.MethodGet && request.URL.Query().Get("alt") == "media":
+			writer.Header().Set("Content-Type", "application/octet-stream")
+			writer.Header().Set("Content-Length", strconv.Itoa(len(compressed)))
+			writer.Header().Set("X-Goog-Generation", "91")
+			writer.Header().Set("X-Goog-Metageneration", "4")
+			writer.Header().Set("X-Goog-Stored-Content-Length", strconv.Itoa(len(compressed)))
+			_, _ = writer.Write(compressed)
+		default:
+			http.Error(writer, "unexpected request", http.StatusBadRequest)
+		}
+	}))
+	t.Cleanup(server.Close)
+	client, err := NewStorageClient(context.Background(), server.URL+"/storage/v1/")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+	scratch := t.TempDir()
+	store, err := NewGCSStore(client, GCSConfig{Bucket: bucket, Prefix: "deployment/blue", ScratchDir: scratch, ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second})
+	require.NoError(t, err)
+	writeObserver := &writeErrorObservingObjectClient{objectClient: store.objects}
+	store.objects = writeObserver
+
+	attrs, created, ensureErr := store.EnsureTree(context.Background(), testScope, digest, bytes.NewReader(content), int64(len(content)))
+
+	requestMu.Lock()
+	recorded := append([]requestRecord(nil), requests...)
+	requestMu.Unlock()
+	require.NotEmpty(t, recorded)
+	upload := recorded[0]
+	require.Equal(t, http.MethodPost, upload.method)
+	require.Equal(t, "/upload/storage/v1/b/bucket/o", upload.path)
+	require.Equal(t, "resumable", upload.query.Get("uploadType"))
+	require.Equal(t, "0", upload.query.Get("ifGenerationMatch"))
+	require.Empty(t, upload.query.Get("ifGenerationNotMatch"))
+	require.Equal(t, key, upload.query.Get("name"))
+	var uploadObject struct {
+		Metadata map[string]string `json:"metadata"`
+	}
+	require.NoError(t, json.Unmarshal(upload.metadata, &uploadObject))
+	require.Equal(t, map[string]string{
+		"concourse-uncompressed-sha256": "sha256:93ce83b42df1b49ec1e81266bbc0dd22982a7323278479473c26ef8206ac293f",
+		"concourse-uncompressed-bytes":  "17825792",
+		"concourse-representation":      "zstd",
+	}, uploadObject.Metadata)
+	writeErrors := writeObserver.snapshot()
+	require.NotEmpty(t, writeErrors)
+	require.True(t, isPreconditionFailed(writeErrors[0]))
+	require.NoError(t, ensureErr)
+	require.False(t, created)
+	require.Equal(t, TreeRef{Scope: testScope, Digest: digest, Generation: 91}, attrs.Ref)
+	require.Equal(t, int64(len(content)), attrs.LogicalBytes)
+	require.Equal(t, int64(len(compressed)), attrs.StoredBytes)
+	requireScratchEmpty(t, scratch)
+	require.Len(t, recorded, 5)
+	objectPath := "/storage/v1/b/bucket/o/" + url.PathEscape(key)
+	require.Equal(t, http.MethodGet, recorded[1].method)
+	require.Equal(t, objectPath, recorded[1].path)
+	require.Equal(t, "json", recorded[1].query.Get("alt"))
+	require.Empty(t, recorded[1].query.Get("generation"))
+	require.Empty(t, recorded[1].query.Get("ifGenerationMatch"))
+	require.Equal(t, http.MethodGet, recorded[2].method)
+	require.Equal(t, objectPath, recorded[2].path)
+	require.Equal(t, "json", recorded[2].query.Get("alt"))
+	require.Equal(t, "91", recorded[2].query.Get("generation"))
+	require.Empty(t, recorded[2].query.Get("ifGenerationMatch"))
+	require.Equal(t, http.MethodGet, recorded[3].method)
+	require.Equal(t, objectPath, recorded[3].path)
+	require.Equal(t, "media", recorded[3].query.Get("alt"))
+	require.Equal(t, "91", recorded[3].query.Get("generation"))
+	require.Empty(t, recorded[3].query.Get("ifGenerationMatch"))
+	require.Equal(t, http.MethodGet, recorded[4].method)
+	require.Equal(t, objectPath, recorded[4].path)
+	require.Equal(t, "json", recorded[4].query.Get("alt"))
+	require.Empty(t, recorded[4].query.Get("generation"))
+	require.Empty(t, recorded[4].query.Get("ifGenerationMatch"))
 }
 
 func TestGCSOpenTreePinsGenerationAndSpoolsBeforeExposure(t *testing.T) {
