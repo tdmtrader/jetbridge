@@ -79,6 +79,7 @@ hdPipelineView { pipelineRunningKeyframes } { pipeline, resourceError, existingJ
         Html.a [ class "card", href <| pipelineHref pipeline ]
             [ Html.div [ class "dashboardhd-pipeline-name" ] [ Html.text pipeline.name ]
             , Html.div [] [ Html.text <| runLabel pipeline ]
+            , Html.div [] [ Html.text <| templateState pipeline ]
             ]
     else
         regularHdPipelineView { pipelineRunningKeyframes = pipelineRunningKeyframes } { pipeline = pipeline, resourceError = resourceError, existingJobs = existingJobs }
@@ -203,14 +204,13 @@ runLabel : Pipeline -> String
 runLabel pipeline =
     Maybe.map (\number -> "runs through #" ++ String.fromInt number) pipeline.lastRunNumber
         |> Maybe.withDefault "no runs"
-
-
+templateState p = if p.archived then "archived" else if p.paused then "paused" else "template"
 templatePipelineView session { pipeline, section, hovered, headerHeight } =
     Html.div Styles.pipelineCard
         [ headerView section pipeline False headerHeight False False
         , Html.a (class "card-body" :: Styles.pipelineCardBody ++ [ href <| pipelineHref pipeline ]) [ Html.text <| runLabel pipeline ]
         , Html.div (class "card-footer" :: Styles.pipelineCardFooter)
-            [ Html.text <| if pipeline.archived then "archived" else if pipeline.paused then "paused" else "template"
+            [ Html.text <| templateState pipeline
             , if pipeline.archived then Html.text "" else PauseToggle.view
                 { isPaused = pipeline.paused
                 , pipeline = Concourse.toPipelineId pipeline

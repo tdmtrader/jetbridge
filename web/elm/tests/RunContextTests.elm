@@ -82,13 +82,16 @@ all =
                     |> Expect.all [ expectNoEffect RedirectToLogin, expectNoEffect (FetchPipeline returnedRef) ]
         , test "renders a reclaimed result when the second header wins the reclaim race" <|
             \_ ->
-                Pipeline.initRun { template = template, number = 42 }
-                    |> Pipeline.handleCallback (PipelineRunFetched (Ok liveRun))
-                    |> Pipeline.handleCallback (PipelineFetched Data.httpNotFound)
-                    |> withoutEffects
-                    |> Pipeline.handleCallback (PipelineRunFetched (Ok { liveRun | reclaimed = True }))
-                    |> Tuple.second
-                    |> expectNoEffect (FetchPipeline returnedRef)
+                runPage
+                    |> Application.handleCallback (PipelineFetched Data.httpNotFound)
+                    |> Tuple.first
+                    |> Application.handleCallback (PipelineRunFetched (Ok { liveRun | reclaimed = True }))
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Expect.all
+                        [ Query.has [ id "run-record", text "This run payload has been reclaimed." ]
+                        , Query.hasNot [ text "The run payload is unavailable to this viewer." ]
+                        ]
         , test "polls only the durable header before a payload is known" <|
             \_ ->
                 Pipeline.initRun { template = template, number = 42 }
