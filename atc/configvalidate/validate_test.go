@@ -2756,3 +2756,132 @@ var _ = Describe("ValidateConfig", func() {
 		})
 	})
 })
+
+var _ = Describe("Template parameter schema and run retention configuration", func() {
+	positive := func(value int) *int { return &value }
+	templateWith := func(params ...atc.ParamSchema) atc.Config {
+		return atc.Config{
+			Template:     true,
+			Params:       params,
+			RunRetention: &atc.RunRetentionConfig{KeepLast: positive(20), TTLDays: positive(30)},
+			Jobs:         atc.JobConfigs{{Name: "entry", PlanSequence: []atc.Step{}}},
+		}
+	}
+	dynamicTemplateConfig := func() atc.Config {
+		return atc.Config{
+			Template: true,
+			Params: []atc.ParamSchema{{
+				Name: "environment", Type: atc.ParamTypeString, Required: true,
+			}},
+			RunRetention: &atc.RunRetentionConfig{KeepLast: positive(5)},
+			Resources: atc.ResourceConfigs{{
+				Name: "source", Type: "registry-image", Source: atc.Source{"repository": "example/source"},
+			}},
+			Jobs: atc.JobConfigs{{
+				Name: "build-((environment))",
+				PlanSequence: []atc.Step{
+					{Config: &atc.GetStep{
+						Name: "input-((environment))", Resource: "source",
+						Version: &atc.VersionConfig{Pinned: atc.Version{"digest": "sha256:abc123"}},
+					}},
+					{Config: &atc.TaskStep{
+						Name: "task-((environment))",
+						Config: &atc.TaskConfig{
+							Platform: "linux",
+							Run:      atc.TaskRunConfig{Path: "true"},
+							Caches:   []atc.TaskCacheConfig{{Path: "cache-((environment))"}},
+						},
+					}},
+				},
+			}},
+		}
+	}
+
+	DescribeTable("validates template declarations",
+		func(ref atc.PipelineRef, config atc.Config, expectedError string) {
+			err := configvalidate.ValidateTemplateDeclaration(ref, config)
+			if expectedError == "" {
+				Expect(err).NotTo(HaveOccurred())
+				return
+			}
+			Expect(err).To(MatchError(ContainSubstring(expectedError)))
+		},
+		Entry("keep-only retention", atc.PipelineRef{Name: "template"}, func() atc.Config {
+			config := templateWith()
+			config.RunRetention = &atc.RunRetentionConfig{KeepLast: positive(1)}
+			return config
+		}(), ""),
+		Entry("TTL-only retention", atc.PipelineRef{Name: "template"}, func() atc.Config {
+			config := templateWith()
+			config.RunRetention = &atc.RunRetentionConfig{TTLDays: positive(1)}
+			return config
+		}(), ""),
+		Entry("empty retention", atc.PipelineRef{Name: "template"}, func() atc.Config {
+			config := templateWith()
+			config.RunRetention = &atc.RunRetentionConfig{}
+			return config
+		}(), "run_retention must declare keep_last or ttl_days"),
+		Entry("zero keep_last", atc.PipelineRef{Name: "template"}, func() atc.Config {
+			config := templateWith()
+			config.RunRetention = &atc.RunRetentionConfig{KeepLast: positive(0)}
+			return config
+		}(), "run_retention.keep_last must be positive"),
+		Entry("zero ttl_days", atc.PipelineRef{Name: "template"}, func() atc.Config {
+			config := templateWith()
+			config.RunRetention = &atc.RunRetentionConfig{TTLDays: positive(0)}
+			return config
+		}(), "run_retention.ttl_days must be positive"),
+		Entry("over-bound keep_last", atc.PipelineRef{Name: "template"}, func() atc.Config {
+			config := templateWith()
+			config.RunRetention = &atc.RunRetentionConfig{KeepLast: positive(atc.MaxRunRetentionKeepLast + 1)}
+			return config
+		}(), "run_retention.keep_last must not exceed 2147483647"),
+		Entry("over-bound ttl_days", atc.PipelineRef{Name: "template"}, func() atc.Config {
+			config := templateWith()
+			config.RunRetention = &atc.RunRetentionConfig{TTLDays: positive(atc.MaxRunRetentionTTLDays + 1)}
+			return config
+		}(), "run_retention.ttl_days must not exceed 1000000"),
+		Entry("ordinary pipeline", atc.PipelineRef{Name: "pipeline"}, atc.Config{
+			Params: []atc.ParamSchema{{Name: "env", Type: atc.ParamTypeString}},
+		}, "params are only valid on templates"),
+		Entry("ordinary pipeline with explicit empty params", atc.PipelineRef{Name: "pipeline"}, atc.Config{
+			Params: []atc.ParamSchema{},
+		}, "params are only valid on templates"),
+		Entry("ordinary pipeline with retention", atc.PipelineRef{Name: "pipeline"}, atc.Config{
+			RunRetention: &atc.RunRetentionConfig{KeepLast: positive(1)},
+		}, "run_retention is only valid on templates"),
+		Entry("instanced template", atc.PipelineRef{Name: "template", InstanceVars: atc.InstanceVars{"branch": "main"}}, templateWith(), "templates cannot have instance vars"),
+		Entry("template without an entry job", atc.PipelineRef{Name: "template"}, func() atc.Config {
+			config := templateWith()
+			config.Jobs = atc.JobConfigs{{
+				Name:         "dependent",
+				PlanSequence: []atc.Step{{Config: &atc.GetStep{Name: "input", Passed: []string{"upstream"}}}},
+			}}
+			return config
+		}(), "template must contain at least one entry job"),
+		Entry("duplicate names", atc.PipelineRef{Name: "template"}, templateWith(
+			atc.ParamSchema{Name: "env", Type: atc.ParamTypeString},
+			atc.ParamSchema{Name: "env", Type: atc.ParamTypeString},
+		), "parameter name env is duplicated"),
+		Entry("reserved run", atc.PipelineRef{Name: "template"}, templateWith(atc.ParamSchema{Name: "run", Type: atc.ParamTypeString}), "parameter name run is reserved"),
+		Entry("reserved run_id", atc.PipelineRef{Name: "template"}, templateWith(atc.ParamSchema{Name: "run_id", Type: atc.ParamTypeString}), "parameter name run_id is reserved"),
+		Entry("wrong string default", atc.PipelineRef{Name: "template"}, templateWith(atc.ParamSchema{Name: "env", Type: atc.ParamTypeString, Default: true}), "parameter env default must be a string"),
+		Entry("wrong number default", atc.PipelineRef{Name: "template"}, templateWith(atc.ParamSchema{Name: "count", Type: atc.ParamTypeNumber, Default: "1"}), "parameter count default must be a number"),
+		Entry("wrong bool default", atc.PipelineRef{Name: "template"}, templateWith(atc.ParamSchema{Name: "dry_run", Type: atc.ParamTypeBool, Default: "false"}), "parameter dry_run default must be a bool"),
+		Entry("wrong enum member scalar", atc.PipelineRef{Name: "template"}, templateWith(atc.ParamSchema{Name: "env", Type: atc.ParamTypeEnum, Values: []any{"staging", true}}), "parameter env enum values must have one scalar type"),
+		Entry("non-scalar enum member", atc.PipelineRef{Name: "template"}, templateWith(atc.ParamSchema{Name: "env", Type: atc.ParamTypeEnum, Values: []any{"staging", map[string]any{"name": "production"}}}), "parameter env enum values must be string, number, or bool"),
+		Entry("wrong enum default scalar", atc.PipelineRef{Name: "template"}, templateWith(atc.ParamSchema{Name: "env", Type: atc.ParamTypeEnum, Values: []any{"staging", "production"}, Default: true}), "parameter env default must have the enum value type"),
+		Entry("dynamic identities", atc.PipelineRef{Name: "template"}, dynamicTemplateConfig(), ""),
+	)
+
+	It("accepts a valid effective template shape even when the declaration bit is false", func() {
+		config := dynamicTemplateConfig()
+		config.Template = false
+		Expect(configvalidate.ValidateTemplateConfig(config)).To(Succeed())
+	})
+
+	It("keeps pinned versions and interpolated identities valid under normal config validation", func() {
+		_, errorMessages := configvalidate.Validate(dynamicTemplateConfig())
+		Expect(errorMessages).To(BeEmpty())
+	})
+})
