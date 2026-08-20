@@ -381,11 +381,9 @@ var _ = Describe("Pipeline run lifecycle", func() {
 		original := pendingRunBuild(entry)
 		consumeObservedSchedule(entry, false)
 		Expect(original.Finish(db.BuildStatusFailed)).To(Succeed())
-		_, err := dbConn.Exec("UPDATE pipeline_runs SET status = 'failed', completed_at = now() WHERE id = $1", fixture.run.ID())
-		Expect(err).NotTo(HaveOccurred())
-		Expect(fixture.payload.Destroy()).To(Succeed())
+		reclaimRunPayloadForTest(fixture.template, fixture.run)
 
-		_, err = entry.CreateBuild("manual-user")
+		_, err := entry.CreateBuild("manual-user")
 		Expect(err).To(HaveOccurred())
 		_, err = entry.RerunBuild(original, "rerun-user")
 		Expect(err).To(HaveOccurred())

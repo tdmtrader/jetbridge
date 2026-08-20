@@ -99,14 +99,84 @@ func (t *team) Admin() bool  { return t.admin }
 func (t *team) Auth() atc.TeamAuth { return t.auth }
 
 func (t *team) Delete() error {
-	_, err := psql.Delete("teams").
-		Where(sq.Eq{
-			"name": t.name,
-		}).
-		RunWith(t.conn).
-		Exec()
+	tx, err := t.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer Rollback(tx)
 
-	return err
+	if err = lockTeamPipelineRuns(tx, t.id); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(`SELECT set_config('concourse.pipeline_run_team_purge', 'on', true)`); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(`
+		DELETE FROM builds
+		WHERE pipeline_run_id IN (
+			SELECT run.id FROM pipeline_runs run
+			JOIN pipelines template ON template.id = run.template_pipeline_id
+			WHERE template.team_id = $1
+		)
+	`, t.id); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(`
+		DELETE FROM task_caches
+		WHERE template_pipeline_id IN (SELECT id FROM pipelines WHERE team_id = $1)
+	`, t.id); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(`
+		DELETE FROM pipelines payload
+		USING pipeline_runs run, pipelines template
+		WHERE payload.pipeline_run_id = run.id
+		  AND template.id = run.template_pipeline_id
+		  AND template.team_id = $1
+	`, t.id); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(`
+		DELETE FROM pipeline_runs run
+		USING pipelines template
+		WHERE template.id = run.template_pipeline_id AND template.team_id = $1
+	`, t.id); err != nil {
+		return err
+	}
+	if _, err = psql.Delete("teams").Where(sq.Eq{"id": t.id}).RunWith(tx).Exec(); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func lockTeamPipelineRuns(tx Tx, teamID int) error {
+	for _, query := range []string{
+		`SELECT id FROM pipelines WHERE team_id = $1 AND template ORDER BY id FOR UPDATE`,
+		`SELECT run.id
+		 FROM pipeline_runs run
+		 JOIN pipelines template ON template.id = run.template_pipeline_id
+		 WHERE template.team_id = $1
+		 ORDER BY run.id
+		 FOR UPDATE OF run`,
+	} {
+		rows, err := tx.Query(query, teamID)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var id int
+			if err = rows.Scan(&id); err != nil {
+				Close(rows)
+				return err
+			}
+		}
+		err = rows.Err()
+		Close(rows)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (t *team) Rename(name string) error {
@@ -467,6 +537,16 @@ func savePipelineWithOptions(
 	if err != nil {
 		return 0, false, err
 	}
+	if existingConfig {
+		var existingRunID sql.NullInt64
+		err = psql.Select("pipeline_run_id").From("pipelines").Where(pipelineRefWhereClause).RunWith(tx).QueryRow().Scan(&existingRunID)
+		if err != nil {
+			return 0, false, err
+		}
+		if existingRunID.Valid {
+			return 0, false, ErrPipelineRunPayloadMutation
+		}
+	}
 
 	params := config.Params
 	if params == nil {
@@ -717,24 +797,44 @@ func (t *team) SavePipeline(
 	if err != nil {
 		return nil, false, err
 	}
+	t.conn.Bus().Notify(atc.ComponentReclaimerPipelineRuns)
 
 	return pipeline, isNewPipeline, nil
 }
 
 func (t *team) RenamePipeline(oldName, newName string) (bool, error) {
+	tx, err := t.conn.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer Rollback(tx)
 	result, err := psql.Update("pipelines").
 		Set("name", newName).
 		Where(sq.Eq{
-			"team_id": t.id,
-			"name":    oldName,
+			"team_id":         t.id,
+			"name":            oldName,
+			"pipeline_run_id": nil,
 		}).
-		RunWith(t.conn).
+		RunWith(tx).
 		Exec()
 	if err != nil {
 		return false, err
 	}
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
+		return false, err
+	}
+	if rowsAffected == 0 {
+		var payloadExists bool
+		err = tx.QueryRow(`SELECT EXISTS (SELECT 1 FROM pipelines WHERE team_id = $1 AND name = $2 AND pipeline_run_id IS NOT NULL)`, t.id, oldName).Scan(&payloadExists)
+		if err != nil {
+			return false, err
+		}
+		if payloadExists {
+			return false, ErrPipelineRunPayloadMutation
+		}
+	}
+	if err = tx.Commit(); err != nil {
 		return false, err
 	}
 	return rowsAffected > 0, nil
