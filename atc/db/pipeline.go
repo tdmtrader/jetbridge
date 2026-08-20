@@ -197,7 +197,7 @@ var pipelinesQuery = psql.Select(`
 	From("pipelines p").
 	LeftJoin("teams t ON p.team_id = t.id").
 	LeftJoin("pipeline_runs pr ON p.pipeline_run_id = pr.id").
-	LeftJoin("pipelines base ON pr.template_pipeline_id = base.id")
+	LeftJoin("(SELECT id, name FROM pipelines) base ON pr.template_pipeline_id = base.id")
 
 func newPipeline(conn DbConn, lockFactory lock.LockFactory) *pipeline {
 	return &pipeline{

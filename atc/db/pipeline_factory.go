@@ -86,7 +86,7 @@ func (f *pipelineFactory) AllPipelines() ([]Pipeline, error) {
 func (f *pipelineFactory) PipelinesToSchedule() ([]Pipeline, error) {
 	rows, err := pipelinesQuery.
 		Join("jobs j ON j.pipeline_id = p.id").
-		Where(sq.Eq{"p.pipeline_run_id": nil}).
+		Where(sq.Eq{"p.template": false}).
 		Where(sq.Expr("j.schedule_requested > j.last_scheduled")).
 		RunWith(f.conn).
 		Query()

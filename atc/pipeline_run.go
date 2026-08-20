@@ -20,7 +20,7 @@ type PipelineRun struct {
 	Status             RunStatus  `json:"status"`
 	CreatedBy          string     `json:"created_by"`
 	CreatedAt          time.Time  `json:"created_at"`
-	UpdatedAt          time.Time  `json:"updated_at"`
+	CompletedAt        *time.Time `json:"completed_at,omitempty"`
 	ReclaimRetryAfter  *time.Time `json:"reclaim_retry_after,omitempty"`
 	ConfigHash         string     `json:"config_hash"`
 }

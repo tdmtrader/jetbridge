@@ -16,7 +16,7 @@ CREATE TABLE pipeline_runs (
   status text NOT NULL CHECK (status IN ('running', 'succeeded', 'failed', 'errored', 'aborted')),
   created_by text NOT NULL,
   created_at timestamp with time zone NOT NULL DEFAULT now(),
-  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  completed_at timestamp with time zone,
   reclaim_retry_after timestamp with time zone,
   config_hash text NOT NULL,
   UNIQUE (template_pipeline_id, number)
@@ -46,6 +46,20 @@ $$;
 CREATE TRIGGER pipeline_run_template_check
   BEFORE INSERT OR UPDATE OF template_pipeline_id ON pipeline_runs
   FOR EACH ROW EXECUTE FUNCTION check_pipeline_run_template();
+
+CREATE OR REPLACE FUNCTION prevent_referenced_pipeline_from_becoming_non_template() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF OLD.template AND NOT NEW.template
+    AND EXISTS (SELECT 1 FROM pipeline_runs WHERE template_pipeline_id = OLD.id) THEN
+    RAISE EXCEPTION 'template pipeline referenced by pipeline runs cannot become non-template';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER referenced_pipeline_template_check
+  BEFORE UPDATE OF template ON pipelines
+  FOR EACH ROW EXECUTE FUNCTION prevent_referenced_pipeline_from_becoming_non_template();
 
 CREATE OR REPLACE FUNCTION immutable_pipeline_run_fields() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
@@ -141,7 +155,8 @@ CREATE OR REPLACE FUNCTION ensure_pipeline_template_runs_empty() RETURNS void LA
 DECLARE
   feature_exists boolean := false;
   has_build_run_identity boolean;
-  has_run_cache boolean;
+  has_run_cache_template_pipeline_id boolean;
+  has_run_cache_job_name boolean;
   feature_rows boolean;
 BEGIN
   SELECT EXISTS (SELECT 1 FROM pipelines WHERE template OR pipeline_run_id IS NOT NULL)
@@ -161,10 +176,21 @@ BEGIN
 
   SELECT EXISTS (
     SELECT 1 FROM information_schema.columns
-    WHERE table_schema = current_schema() AND table_name = 'worker_task_caches' AND column_name = 'pipeline_run_id'
-  ) INTO has_run_cache;
-  IF has_run_cache THEN
-    EXECUTE 'SELECT EXISTS (SELECT 1 FROM worker_task_caches WHERE pipeline_run_id IS NOT NULL)' INTO feature_rows;
+    WHERE table_schema = current_schema() AND table_name = 'task_caches' AND column_name = 'template_pipeline_id'
+  ) INTO has_run_cache_template_pipeline_id;
+  IF has_run_cache_template_pipeline_id THEN
+    EXECUTE 'SELECT EXISTS (SELECT 1 FROM task_caches WHERE template_pipeline_id IS NOT NULL)' INTO feature_rows;
+    IF feature_rows THEN
+      RAISE EXCEPTION 'cannot roll back pipeline template runs while templates, runs, run builds, or run caches remain';
+    END IF;
+  END IF;
+
+  SELECT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = current_schema() AND table_name = 'task_caches' AND column_name = 'run_job_name'
+  ) INTO has_run_cache_job_name;
+  IF has_run_cache_job_name THEN
+    EXECUTE 'SELECT EXISTS (SELECT 1 FROM task_caches WHERE run_job_name IS NOT NULL)' INTO feature_rows;
     IF feature_rows THEN
       RAISE EXCEPTION 'cannot roll back pipeline template runs while templates, runs, run builds, or run caches remain';
     END IF;

@@ -144,6 +144,16 @@ var _ = Describe("ResourceConfigCheckSessionLifecycle", func() {
 				By("having created a new session, as the old one was removed")
 				Expect(rccsID).ToNot(Equal(oldRccsID))
 			})
+
+			It("removes check sessions for resources in template pipelines", func() {
+				_, err := dbConn.Exec(`UPDATE pipelines SET template = true WHERE id = $1`, scenario.Pipeline.ID())
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(lifecycle.CleanInactiveResourceConfigCheckSessions()).To(Succeed())
+
+				rccsID := findOrCreateSession(scenario.Resource("some-resource").ResourceConfigID())
+				Expect(rccsID).ToNot(Equal(oldRccsID))
+			})
 		})
 
 		Context("for resource types", func() {
@@ -198,6 +208,16 @@ var _ = Describe("ResourceConfigCheckSessionLifecycle", func() {
 				By("having created a new session, as the old one was removed")
 				Expect(rccsID).ToNot(Equal(oldRccsID))
 			})
+
+			It("removes check sessions for resource types in template pipelines", func() {
+				_, err := dbConn.Exec(`UPDATE pipelines SET template = true WHERE id = $1`, scenario.Pipeline.ID())
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(lifecycle.CleanInactiveResourceConfigCheckSessions()).To(Succeed())
+
+				rccsID := findOrCreateSession(scenario.ResourceType("some-type").ResourceConfigID())
+				Expect(rccsID).ToNot(Equal(oldRccsID))
+			})
 		})
 
 		Context("for prototypes", func() {
@@ -250,6 +270,16 @@ var _ = Describe("ResourceConfigCheckSessionLifecycle", func() {
 				rccsID := findOrCreateSession(scenario.Prototype("some-prototype").ResourceConfigID())
 
 				By("having created a new session, as the old one was removed")
+				Expect(rccsID).ToNot(Equal(oldRccsID))
+			})
+
+			It("removes check sessions for prototypes in template pipelines", func() {
+				_, err := dbConn.Exec(`UPDATE pipelines SET template = true WHERE id = $1`, scenario.Pipeline.ID())
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(lifecycle.CleanInactiveResourceConfigCheckSessions()).To(Succeed())
+
+				rccsID := findOrCreateSession(scenario.Prototype("some-prototype").ResourceConfigID())
 				Expect(rccsID).ToNot(Equal(oldRccsID))
 			})
 		})

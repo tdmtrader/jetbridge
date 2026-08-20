@@ -175,6 +175,15 @@ var _ = Describe("ResourceCheckRateLimiter", func() {
 			Expect(<-wait(limiter)).To(Succeed())
 			Expect(limiter.Limit()).To(Equal(rate.Limit(rate.Inf)))
 		})
+
+		It("does not count resources owned by template pipelines", func() {
+			createCheckable()
+			_, err := dbConn.Exec(`UPDATE pipelines SET template = true WHERE id = $1`, scenario.Pipeline.ID())
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(<-wait(limiter)).To(Succeed())
+			Expect(limiter.Limit()).To(Equal(rate.Limit(rate.Inf)))
+		})
 	})
 
 	Context("when a static checks per second value is provided", func() {
