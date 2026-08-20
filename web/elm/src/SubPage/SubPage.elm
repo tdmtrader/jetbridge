@@ -167,6 +167,9 @@ getUpdateMessage model =
         PipelineModel mdl ->
             Pipeline.getUpdateMessage mdl
 
+        PipelineRunsModel mdl ->
+            PipelineRuns.getUpdateMessage mdl
+
         CausalityModel mdl ->
             Causality.getUpdateMessage mdl
 
