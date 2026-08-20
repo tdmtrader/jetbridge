@@ -9,5 +9,9 @@ import (
 )
 
 func renameNoReplaceAt(parent *os.File, oldName, newName string) error {
-	return unix.RenameatxNp(int(parent.Fd()), oldName, int(parent.Fd()), newName, unix.RENAME_EXCL)
+	return renameNoReplaceBetween(parent, oldName, parent, newName)
+}
+
+func renameNoReplaceBetween(oldParent *os.File, oldName string, newParent *os.File, newName string) error {
+	return unix.RenameatxNp(int(oldParent.Fd()), oldName, int(newParent.Fd()), newName, unix.RENAME_EXCL)
 }
