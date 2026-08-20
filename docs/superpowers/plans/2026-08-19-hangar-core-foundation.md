@@ -69,7 +69,7 @@ type Store interface {
 
   `EnsureTree`'s boolean is `true` only for a newly committed object. Add sentinels `ErrNotFound`, `ErrConflict`, `ErrCorrupt`, `ErrUnauthorized`, `ErrLimitExceeded`, and `ErrInfrastructure`; wrap causes rather than replacing them.
 - [ ] Add an architecture guard that scans every non-test and test Go file beneath `hangar/`, asserts it matched at least one file, parses imports, and rejects any import whose path contains `/agent/` or ends in `/agent`. Do not assert an exact file count.
-- [ ] Verify GREEN with `go test ./hangar`, then run `go test . -run 'TestArchitecture'` to exercise the repository-wide boundary.
+- [ ] Verify GREEN with `go test ./hangar`, then run `go test . -run '^TestAgenticLayerIsImportedOnlyAtItsWiringPoint$'` to exercise the repository-wide boundary.
 - [ ] Self-review against the spec, format, and commit as `feat(hangar): define exact tree storage contract`.
 
 ### Task 2: Admit and emit safe canonical filesystem trees
@@ -228,7 +228,7 @@ POST /hangar/v1/materializations
 - [ ] Add config/flags for `--kubernetes-hangar-enabled` and `--kubernetes-hangar-capability-key`. Load and validate the same persisted key at web startup. Refuse a Hangar-enabled runtime without the daemon hostPath/TLS/key. Hangar refs presented while disabled must fail pod construction, never degrade to an empty input.
 - [ ] Keep the main task mount read-only, but let the init request the daemon to populate the node-local hostPath. Assert the init and main mounts all resolve to declared volumes in the same tests. Do not add a new pod volume through `StorageBackend`; reuse the already-created input volume.
 - [ ] Exercise the generated shell under a real BusyBox pod in CI. Locally, inspect it with `sh -n` only as a supplemental check and record the CI-only gap; do not claim BusyBox proof from the host shell.
-- [ ] Run focused unit tests, then `ginkgo -r -p ./atc/worker/jetbridge` if the local database prerequisites are available. Run `go test . -run 'TestArchitecture'` after the new core import.
+- [ ] Run focused unit tests, then `ginkgo -r -p ./atc/worker/jetbridge` if the local database prerequisites are available. Run `go test . -run '^TestAgenticLayerIsImportedOnlyAtItsWiringPoint$'` after the new core import.
 - [ ] Self-review fail-closed behavior, token exposure, mount/volume consistency, read-only enforcement, overlap rejection, affinity, and disabled compatibility; commit as `feat(jetbridge): mount exact Hangar tree inputs`.
 
 ### Task 7: Add opt-in Helm rollout and operator documentation
@@ -265,7 +265,7 @@ POST /hangar/v1/materializations
 
 - [ ] Add or finish one daemon-level behavioral test that sends a raw tree, publishes it to a strict fake GCS, deletes any producing node-local source, materializes the exact generation into another step/volume path, and compares tree bytes/types/modes. Inject absent, corrupt, and replacement-generation cases and prove they fail closed without a partial destination.
 - [ ] Add a CI/K3s behavioral test contract for the same flow through a generated Pod. It must compare contents and assert every mount resolves to a volume. Mark it with the repository's existing live/K3s mechanism so it is not falsely reported as locally executed.
-- [ ] Run formatting and targeted tests, then the broad non-K3s verification appropriate to this repository: `go test ./hangar ./cmd/artifact-daemon/durable ./cmd/artifact-daemon ./deploy/chart/tests -count=1`, `go test . -run 'TestArchitecture' -count=1`, and `make test-unit` (or the documented Ginkgo equivalent). Capture exact commands, exit codes, and elapsed times in the verification report.
+- [ ] Run formatting and targeted tests, then the broad non-K3s verification appropriate to this repository: `go test ./hangar ./cmd/artifact-daemon/durable ./cmd/artifact-daemon ./deploy/chart/tests -count=1`, `go test . -run '^TestAgenticLayerIsImportedOnlyAtItsWiringPoint$' -count=1`, and `make test-unit` (or the documented Ginkgo equivalent). Capture exact commands, exit codes, and elapsed times in the verification report.
 - [ ] Review `git diff 069c8e8634c1f1cb6abcec2edf09f9a6934d2343...HEAD` for unrelated edits, stale docs, secret/token leaks, TODO/TBD placeholders, exact-count guards, cache semantic drift, agent imports, unpinned reads, unconditional deletes, and claims of unsupported S3/filesystem profiles.
 - [ ] Dispatch a whole-branch architecture/security/code-quality reviewer on the most capable available model. Fix load-bearing findings once, run a scoped re-review, and record any adjudicated non-blocking residuals in the SDD ledger and verification report.
 - [ ] Run `superpowers:verification-before-completion`, then `superpowers:finishing-a-development-branch`. Do not push, merge, or release without a new explicit user instruction; leave the reviewed commits on `codex/hangar-core-foundation` with a concise handoff.
