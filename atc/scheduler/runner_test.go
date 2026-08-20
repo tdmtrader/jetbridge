@@ -173,6 +173,45 @@ var _ = Describe("Runner", func() {
 		Eventually(consumed).Should(Receive(Equal(scheduleConsumption{observed: observed, noBuild: true})))
 	})
 
+	It("schedules no build and invokes run completion after consuming the observed request", func(ctx SpecContext) {
+		fixture := useSchedulerDB()
+		team, err := fixture.TeamFactory.CreateTeam(atc.Team{Name: "completion-team"})
+		Expect(err).NotTo(HaveOccurred())
+		template, _, err := team.SavePipeline(atc.PipelineRef{Name: "completion-template"}, atc.Config{
+			Template:  true,
+			Resources: atc.ResourceConfigs{{Name: "source", Type: "some-base-resource-type", Source: atc.Source{"repository": "example"}}},
+			Jobs: atc.JobConfigs{
+				{Name: "entry"},
+				{Name: "downstream", PlanSequence: []atc.Step{{Config: &atc.GetStep{Name: "source", Passed: []string{"entry"}, Trigger: true}}}},
+			},
+		}, 0, false)
+		Expect(err).NotTo(HaveOccurred())
+		runFactory := db.NewPipelineRunFactory(fixture.Conn, fixture.LockFactory)
+		creation, err := runFactory.CreateRun(context.Background(), template, db.RunParams{}, "creator")
+		Expect(err).NotTo(HaveOccurred())
+		payload, found, err := team.Pipeline(atc.PipelineRef{Name: template.Name(), InstanceVars: atc.InstanceVars{"run": float64(creation.Run.Number())}})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		entry := schedulerPipelineJob(payload, "entry")
+		downstream := schedulerPipelineJob(payload, "downstream")
+		pending := schedulerPendingBuilds(entry)
+		Expect(pending).To(HaveLen(1))
+		Expect(entry.Reload()).To(BeTrue())
+		Expect(entry.ConsumeScheduleRequest(entry.ScheduleRequestedTime(), false)).To(Succeed())
+		Expect(pending[0].Finish(db.BuildStatusFailed)).To(Succeed())
+
+		tracked := observeSchedulerJobFactory(fixture.JobFactory)
+		deferObservedFactory(tracked, downstream.ID())
+		fakeScheduler.ScheduleReturns(ScheduleResult{NoBuild: true}, nil)
+		Expect(newRunner(tracked, 1).Run(ctx)).To(Succeed())
+		waitObservedFactory(ctx, tracked, downstream.ID())
+
+		run, found, err := runFactory.GetRun(template, creation.Run.Number())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(run.Status()).To(Equal(atc.RunStatusFailed))
+	})
+
 	It("loads the full persisted job scan and schedules jobs with their resources", func(ctx SpecContext) {
 		fixture := useSchedulerDB()
 		_, firstPipeline := persistSchedulerPipeline(
@@ -235,7 +274,7 @@ var _ = Describe("Runner", func() {
 		}
 		notRequested := schedulerPipelineJob(firstPipeline, "not-requested")
 		notRequestedTime, _ := schedulerJobTimestamps(fixture, notRequested.ID())
-		Expect(notRequested.UpdateLastScheduled(notRequestedTime)).To(Succeed())
+		Expect(notRequested.ConsumeScheduleRequest(notRequestedTime, false)).To(Succeed())
 
 		counted := &countedSchedulerJobFactory{JobFactory: fixture.JobFactory}
 		observed := observeSchedulerJobFactory(counted)

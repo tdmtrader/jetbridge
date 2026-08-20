@@ -715,6 +715,13 @@ func (p *pipeline) Unpause() error {
 	}
 
 	defer Rollback(tx)
+	run, isPayload, err := lockPipelineRunForPayload(tx, p.id)
+	if err != nil {
+		return err
+	}
+	if isPayload && run.Status() != atc.RunStatusRunning {
+		return ErrPipelineRunNotRunning
+	}
 
 	_, err = psql.Update("pipelines").
 		Set("paused", false).
