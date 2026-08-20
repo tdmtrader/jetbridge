@@ -1,4 +1,4 @@
-module PipelineRuns.PipelineRuns exposing (Model, change, documentTitle, getUpdateMessage, handleCallback, init, subscriptions, tooltip, update, view)
+module PipelineRuns.PipelineRuns exposing (Model, change, documentTitle, getUpdateMessage, handleCallback, handleDelivery, init, subscriptions, tooltip, update, view)
 import Application.Models exposing (Session)
 import Concourse
 import Concourse.BuildStatus as BuildStatus
@@ -6,6 +6,7 @@ import Concourse.Pagination as Pagination exposing (Page, Paginated)
 import Concourse.PipelineRun exposing (PipelineRun)
 import Dict
 import Duration
+import EffectTransformer exposing (ET)
 import Html exposing (Html)
 import Html.Attributes exposing (attribute, class, disabled, href, id, style, tabindex, type_, value)
 import Html.Events exposing (onClick, onInput, onSubmit)
@@ -14,7 +15,7 @@ import Json.Encode
 import Message.Callback exposing (Callback(..))
 import Message.Effects exposing (Effect(..))
 import Message.Message exposing (Message(..))
-import Message.Subscription exposing (Subscription)
+import Message.Subscription exposing (Delivery(..), Interval(..), Subscription)
 import PipelineRuns.RunForm as RunForm
 import PipelineRuns.Styles as Styles
 import RemoteData exposing (WebData)
@@ -109,6 +110,13 @@ handleCallback callback ( model, effects ) =
             , effects ++ (if refreshableError err then [ FetchPipeline model.pipelineId ] else []) ++ [ Focus "run-form-error" ]
             )
         GotCurrentTime now ->
+            ( { model | now = Just now }, effects )
+        _ ->
+            ( model, effects )
+handleDelivery : Delivery -> ET Model
+handleDelivery delivery ( model, effects ) =
+    case delivery of
+        ClockTicked FiveSeconds now ->
             ( { model | now = Just now }, effects )
         _ ->
             ( model, effects )

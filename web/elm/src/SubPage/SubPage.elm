@@ -298,7 +298,7 @@ handleDelivery session delivery =
         (NotFound.handleDelivery delivery)
         (FlySuccess.handleDelivery delivery)
         (DownloadFly.handleDelivery delivery)
-        >> updatePipelineRuns identity
+        >> updatePipelineRuns (PipelineRuns.handleDelivery delivery)
 
 
 update : Session -> Message -> ET Model
