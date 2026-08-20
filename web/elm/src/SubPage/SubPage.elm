@@ -95,6 +95,14 @@ init session route =
                 }
                 |> Tuple.mapFirst PipelineModel
 
+        Routes.PipelineRuns _ ->
+            NotFound.init { notFoundImgSrc = session.notFoundImgSrc, route = session.route }
+                |> Tuple.mapFirst NotFoundModel
+
+        Routes.PipelineRun _ ->
+            NotFound.init { notFoundImgSrc = session.notFoundImgSrc, route = session.route }
+                |> Tuple.mapFirst NotFoundModel
+
         Routes.Dashboard { searchType, dashboardView } ->
             Dashboard.init
                 { searchType = searchType

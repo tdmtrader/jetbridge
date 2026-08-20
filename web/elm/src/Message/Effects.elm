@@ -17,6 +17,7 @@ import Browser.Navigation as Navigation
 import Concourse exposing (DatabaseID, encodeJob, encodePipeline, encodeTeam)
 import Concourse.BuildStatus exposing (BuildStatus)
 import Concourse.Pagination exposing (Page)
+import Concourse.PipelineRun as PipelineRun
 import Json.Decode
 import Json.Encode
 import Maybe exposing (Maybe)
@@ -135,6 +136,9 @@ type Effect
     | FetchBuildResources Concourse.BuildId
     | FetchPipeline Concourse.PipelineIdentifier
     | FetchPipelines String
+    | FetchPipelineRuns Concourse.PipelineIdentifier Page
+    | FetchPipelineRun Concourse.PipelineIdentifier Int
+    | CreatePipelineRun Concourse.PipelineIdentifier Concourse.InstanceVars
     | FetchClusterInfo
     | FetchWall
     | FetchInputTo Concourse.VersionedResourceIdentifier
@@ -308,6 +312,29 @@ runEffect effect key csrfToken =
                 |> Api.expectJson (Json.Decode.list Concourse.decodePipeline)
                 |> Api.request
                 |> Task.attempt PipelinesFetched
+
+        FetchPipelineRuns id page ->
+            Api.paginatedGet
+                (Endpoints.PipelineRunsList |> Endpoints.Pipeline id)
+                (Just page)
+                []
+                PipelineRun.decodePipelineRun
+                |> Api.request
+                |> Task.map (\runs -> ( page, runs ))
+                |> Task.attempt PipelineRunsFetched
+
+        FetchPipelineRun id number ->
+            Api.get (Endpoints.PipelineRun number |> Endpoints.Pipeline id)
+                |> Api.expectJson PipelineRun.decodePipelineRun
+                |> Api.request
+                |> Task.attempt PipelineRunFetched
+
+        CreatePipelineRun id vars ->
+            Api.post (Endpoints.PipelineRunsList |> Endpoints.Pipeline id) csrfToken
+                |> Api.withJsonBody (PipelineRun.encodeCreatePipelineRun vars)
+                |> Api.expectJson PipelineRun.decodePipelineRun
+                |> Api.request
+                |> Task.attempt PipelineRunCreated
 
         FetchAllResources ->
             Api.get Endpoints.ResourcesList

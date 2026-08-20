@@ -44,6 +44,8 @@ type PipelineEndpoint
     | HidePipeline
     | PipelineJobsList
     | PipelineResourcesList
+    | PipelineRunsList
+    | PipelineRun Int
 
 
 type JobEndpoint
@@ -223,6 +225,12 @@ pipelineEndpoint endpoint =
 
         PipelineResourcesList ->
             [ "resources" ]
+
+        PipelineRunsList ->
+            [ "runs" ]
+
+        PipelineRun number ->
+            [ "runs", String.fromInt number ]
     , []
     )
 
