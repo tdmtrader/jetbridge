@@ -98,6 +98,13 @@ func (s *Server) SaveConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	err = configvalidate.ValidateTemplateDeclaration(pipelineRef, config)
+	if err != nil {
+		session.Info("ignoring-invalid-template-config", lager.Data{"error": err.Error()})
+		HandleBadRequest(w, err.Error())
+		return
+	}
+
 	if checkCredentials {
 		variables := creds.NewVariables(s.secretManager, creds.SecretLookupParams{Team: teamName, Pipeline: pipelineName}, false)
 

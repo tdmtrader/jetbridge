@@ -7,9 +7,64 @@ import (
 	. "github.com/concourse/concourse/atc"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"sigs.k8s.io/yaml"
 )
 
 var _ = Describe("Config", func() {
+	Describe("Template configuration", func() {
+		keepLast := 20
+		ttlDays := 30
+		expected := Config{
+			Template: true,
+			Params: []ParamSchema{
+				{
+					Name:        "environment",
+					Type:        ParamTypeEnum,
+					Required:    true,
+					Values:      []any{"staging", "production"},
+					Description: "deployment environment",
+				},
+				{
+					Name:    "dry_run",
+					Type:    ParamTypeBool,
+					Default: false,
+				},
+			},
+			RunRetention: &RunRetentionConfig{
+				KeepLast: &keepLast,
+				TTLDays:  &ttlDays,
+			},
+			Jobs: JobConfigs{{Name: "entry", PlanSequence: []Step{}}},
+		}
+
+		DescribeTable("strictly decodes and round trips template fields",
+			func(marshal func(any) ([]byte, error)) {
+				payload, err := marshal(expected)
+				Expect(err).NotTo(HaveOccurred())
+
+				var actual Config
+				Expect(UnmarshalConfig(payload, &actual)).To(Succeed())
+				Expect(actual).To(Equal(expected))
+			},
+			Entry("JSON", json.Marshal),
+			Entry("YAML", yaml.Marshal),
+		)
+
+		It("strictly rejects unknown parameter fields", func() {
+			var config Config
+			Expect(UnmarshalConfig([]byte(`
+template: true
+params:
+- name: environment
+  type: string
+  typo: true
+jobs:
+- name: entry
+  plan: []
+`), &config)).To(MatchError(ContainSubstring(`unknown field "typo"`)))
+		})
+	})
+
 	Describe("ResourceTypes.ImageForType", func() {
 		var types ResourceTypes
 

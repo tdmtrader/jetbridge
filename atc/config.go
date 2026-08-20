@@ -18,13 +18,16 @@ const ConfigVersionHeader = "X-Concourse-Config-Version"
 const DefaultTeamName = "main"
 
 type Config struct {
-	Groups        GroupConfigs     `json:"groups,omitempty"`
-	VarSources    VarSourceConfigs `json:"var_sources,omitempty"`
-	Resources     ResourceConfigs  `json:"resources,omitempty"`
-	ResourceTypes ResourceTypes    `json:"resource_types,omitempty"`
-	Prototypes    Prototypes       `json:"prototypes,omitempty"`
-	Jobs          JobConfigs       `json:"jobs,omitempty"`
-	Display       *DisplayConfig   `json:"display,omitempty"`
+	Groups        GroupConfigs        `json:"groups,omitempty"`
+	VarSources    VarSourceConfigs    `json:"var_sources,omitempty"`
+	Resources     ResourceConfigs     `json:"resources,omitempty"`
+	ResourceTypes ResourceTypes       `json:"resource_types,omitempty"`
+	Prototypes    Prototypes          `json:"prototypes,omitempty"`
+	Jobs          JobConfigs          `json:"jobs,omitempty"`
+	Display       *DisplayConfig      `json:"display,omitempty"`
+	Template      bool                `json:"template,omitempty"`
+	Params        []ParamSchema       `json:"params,omitempty"`
+	RunRetention  *RunRetentionConfig `json:"run_retention,omitempty"`
 }
 
 func UnmarshalConfig(payload []byte, config any) error {
@@ -37,6 +40,9 @@ func UnmarshalConfig(payload []byte, config any) error {
 		Prototypes    any `json:"prototypes,omitempty"`
 		Jobs          any `json:"jobs,omitempty"`
 		Display       any `json:"display,omitempty"`
+		Template      any `json:"template,omitempty"`
+		Params        any `json:"params,omitempty"`
+		RunRetention  any `json:"run_retention,omitempty"`
 	}
 
 	var stripped skeletonConfig

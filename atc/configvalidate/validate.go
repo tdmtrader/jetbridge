@@ -1,6 +1,7 @@
 package configvalidate
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -11,6 +12,148 @@ import (
 	"github.com/concourse/concourse/atc/creds"
 	"github.com/gobwas/glob"
 )
+
+func ValidateTemplateDeclaration(ref atc.PipelineRef, config atc.Config) error {
+	if !config.Template {
+		if config.Params != nil {
+			return errors.New("params are only valid on templates")
+		}
+		if config.RunRetention != nil {
+			return errors.New("run_retention is only valid on templates")
+		}
+		return nil
+	}
+
+	if len(ref.InstanceVars) > 0 {
+		return errors.New("templates cannot have instance vars")
+	}
+
+	return ValidateTemplateConfig(config)
+}
+
+func ValidateTemplateConfig(config atc.Config) error {
+	seenNames := map[string]struct{}{}
+	for _, schema := range config.Params {
+		if schema.Name == "" {
+			return errors.New("parameter name cannot be empty")
+		}
+		if schema.Name == "run" || schema.Name == "run_id" {
+			return fmt.Errorf("parameter name %s is reserved", schema.Name)
+		}
+		if _, found := seenNames[schema.Name]; found {
+			return fmt.Errorf("parameter name %s is duplicated", schema.Name)
+		}
+		seenNames[schema.Name] = struct{}{}
+
+		if err := validateParamSchema(schema); err != nil {
+			return err
+		}
+	}
+
+	if config.RunRetention != nil {
+		if err := validateRunRetention(*config.RunRetention); err != nil {
+			return err
+		}
+	}
+
+	for _, job := range config.Jobs {
+		entry := true
+		for _, input := range job.Inputs() {
+			if len(input.Passed) > 0 {
+				entry = false
+				break
+			}
+		}
+		if entry {
+			return nil
+		}
+	}
+
+	return errors.New("template must contain at least one entry job")
+}
+
+func validateParamSchema(schema atc.ParamSchema) error {
+	switch schema.Type {
+	case atc.ParamTypeString:
+		if schema.Default != nil && scalarType(schema.Default) != "string" {
+			return fmt.Errorf("parameter %s default must be a string", schema.Name)
+		}
+	case atc.ParamTypeNumber:
+		if schema.Default != nil && scalarType(schema.Default) != "number" {
+			return fmt.Errorf("parameter %s default must be a number", schema.Name)
+		}
+	case atc.ParamTypeBool:
+		if schema.Default != nil && scalarType(schema.Default) != "bool" {
+			return fmt.Errorf("parameter %s default must be a bool", schema.Name)
+		}
+	case atc.ParamTypeEnum:
+		if len(schema.Values) == 0 {
+			return fmt.Errorf("parameter %s enum must declare values", schema.Name)
+		}
+		valueType := scalarType(schema.Values[0])
+		if valueType == "" {
+			return fmt.Errorf("parameter %s enum values must be string, number, or bool", schema.Name)
+		}
+		for _, value := range schema.Values[1:] {
+			kind := scalarType(value)
+			if kind == "" {
+				return fmt.Errorf("parameter %s enum values must be string, number, or bool", schema.Name)
+			}
+			if kind != valueType {
+				return fmt.Errorf("parameter %s enum values must have one scalar type", schema.Name)
+			}
+		}
+		if schema.Default != nil && scalarType(schema.Default) != valueType {
+			return fmt.Errorf("parameter %s default must have the enum value type", schema.Name)
+		}
+	default:
+		return fmt.Errorf("parameter %s has invalid type %q", schema.Name, schema.Type)
+	}
+
+	if schema.Type != atc.ParamTypeEnum && len(schema.Values) > 0 {
+		return fmt.Errorf("parameter %s values are only valid for enum parameters", schema.Name)
+	}
+
+	return nil
+}
+
+func scalarType(value any) string {
+	switch value.(type) {
+	case string:
+		return "string"
+	case bool:
+		return "bool"
+	case int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64,
+		float32, float64, json.Number:
+		return "number"
+	default:
+		return ""
+	}
+}
+
+func validateRunRetention(retention atc.RunRetentionConfig) error {
+	if retention.KeepLast == nil && retention.TTLDays == nil {
+		return errors.New("run_retention must declare keep_last or ttl_days")
+	}
+	if retention.KeepLast != nil {
+		if *retention.KeepLast <= 0 {
+			return errors.New("run_retention.keep_last must be positive")
+		}
+		if *retention.KeepLast > atc.MaxRunRetentionKeepLast {
+			return fmt.Errorf("run_retention.keep_last must not exceed %d", atc.MaxRunRetentionKeepLast)
+		}
+	}
+	if retention.TTLDays != nil {
+		if *retention.TTLDays <= 0 {
+			return errors.New("run_retention.ttl_days must be positive")
+		}
+		if *retention.TTLDays > atc.MaxRunRetentionTTLDays {
+			return fmt.Errorf("run_retention.ttl_days must not exceed %d", atc.MaxRunRetentionTTLDays)
+		}
+	}
+	return nil
+}
 
 func formatErr(groupName string, err error) string {
 	lines := strings.Split(err.Error(), "\n")
