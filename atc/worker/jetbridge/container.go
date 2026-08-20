@@ -520,12 +520,29 @@ func (c *Container) validateInputs() error {
 			return fmt.Errorf("invalid Hangar tree input %q: %w", input.DestinationPath, err)
 		}
 		for outputName, outputPath := range c.containerSpec.Outputs {
-			if filepath.Clean(outputPath) == filepath.Clean(input.DestinationPath) {
+			if containerPathsOverlap(outputPath, input.DestinationPath) {
 				return fmt.Errorf("Hangar tree input %q must not overlap output %q", input.DestinationPath, outputName)
 			}
 		}
 	}
 	return nil
+}
+
+func containerPathsOverlap(left, right string) bool {
+	left = filepath.Clean(left)
+	right = filepath.Clean(right)
+	return pathContains(left, right) || pathContains(right, left)
+}
+
+func pathContains(parent, child string) bool {
+	if parent == child {
+		return true
+	}
+	separator := string(filepath.Separator)
+	if parent == separator {
+		return filepath.IsAbs(child)
+	}
+	return strings.HasPrefix(child, parent+separator)
 }
 
 func validatePodVolumeMounts(pod *corev1.Pod) error {
