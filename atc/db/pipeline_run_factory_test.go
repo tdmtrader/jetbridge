@@ -80,10 +80,15 @@ var _ = Describe("PipelineRunFactory", func() {
 		Expect(creation.EntryBuilds).To(HaveLen(1))
 		Expect(creation.EntryBuilds[0].RunJobName()).To(Equal("entry-one"))
 		Expect(creation.EntryBuilds[0].RunJobKey()).To(Equal("entry-((value))"))
+		Expect(creation.Run.CompletedAt()).To(BeNil())
 		expectedHash := fmt.Sprintf("%x", sha256.Sum256(append([]byte("run-instance-config/v1\x00"), creation.CanonicalJSON...)))
 		Expect(creation.ConfigHash).To(Equal(expectedHash))
 
 		Expect(tx.Commit()).To(Succeed())
+		stored, found, err := factory.GetRun(template, creation.Run.Number())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(stored.CompletedAt()).To(BeNil())
 	})
 
 	It("paginates runs newest first with inclusive run-number cursors", func() {
