@@ -72,6 +72,7 @@ type Pipeline interface {
 	LastUpdated() time.Time
 	PipelineRef() atc.PipelineRef
 	PipelineRunID() (int, bool)
+	RunNumber() (int, bool)
 	BasePipelineID() int
 	BasePipelineRef() (atc.PipelineRef, bool)
 
@@ -157,6 +158,7 @@ type pipeline struct {
 	lastRunNumber    int
 	lastUpdated      time.Time
 	pipelineRunID    int
+	runNumber        int
 	basePipelineID   int
 	basePipelineName string
 
@@ -193,6 +195,7 @@ var pipelinesQuery = psql.Select(`
 		p.last_run_number,
 		p.pipeline_run_id,
 		pr.template_pipeline_id,
+		pr.number,
 		base.name`).
 	From("pipelines p").
 	LeftJoin("teams t ON p.team_id = t.id").
@@ -231,6 +234,7 @@ func (p *pipeline) PipelineRef() atc.PipelineRef {
 	return atc.PipelineRef{Name: p.name, InstanceVars: p.instanceVars}
 }
 func (p *pipeline) PipelineRunID() (int, bool) { return p.pipelineRunID, p.pipelineRunID != 0 }
+func (p *pipeline) RunNumber() (int, bool)     { return p.runNumber, p.pipelineRunID != 0 }
 func (p *pipeline) BasePipelineID() int        { return p.basePipelineID }
 func (p *pipeline) BasePipelineRef() (atc.PipelineRef, bool) {
 	if p.basePipelineID == 0 {

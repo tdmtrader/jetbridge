@@ -1399,6 +1399,11 @@ func (t *team) findContainer(whereClause sq.Sqlizer) (CreatingContainer, Created
 }
 
 func scanPipeline(p *pipeline, scan scannable) error {
+	// scanPipeline also refreshes existing objects through Reload, so nullable
+	// template metadata must not survive a later NULL value.
+	p.params = nil
+	p.runRetention = nil
+	p.runNumber = 0
 	var (
 		groups           sql.NullString
 		varSources       sql.NullString
@@ -1416,9 +1421,10 @@ func scanPipeline(p *pipeline, scan scannable) error {
 		ttlDays          sql.NullInt64
 		pipelineRunID    sql.NullInt64
 		basePipelineID   sql.NullInt64
+		runNumber        sql.NullInt64
 		basePipelineName sql.NullString
 	)
-	err := scan.Scan(&p.id, &p.name, &groups, &varSources, &display, &nonce, &p.configVersion, &p.teamID, &p.teamName, &p.paused, &p.public, &p.archived, &lastUpdated, &parentJobID, &parentBuildID, &instanceVars, &pausedBy, &pausedAt, &p.template, &params, &keepLast, &ttlDays, &p.lastRunNumber, &pipelineRunID, &basePipelineID, &basePipelineName)
+	err := scan.Scan(&p.id, &p.name, &groups, &varSources, &display, &nonce, &p.configVersion, &p.teamID, &p.teamName, &p.paused, &p.public, &p.archived, &lastUpdated, &parentJobID, &parentBuildID, &instanceVars, &pausedBy, &pausedAt, &p.template, &params, &keepLast, &ttlDays, &p.lastRunNumber, &pipelineRunID, &basePipelineID, &runNumber, &basePipelineName)
 	if err != nil {
 		return err
 	}
@@ -1428,6 +1434,7 @@ func scanPipeline(p *pipeline, scan scannable) error {
 	p.parentBuildID = int(parentBuildID.Int64)
 	p.pipelineRunID = int(pipelineRunID.Int64)
 	p.basePipelineID = int(basePipelineID.Int64)
+	p.runNumber = int(runNumber.Int64)
 	p.basePipelineName = basePipelineName.String
 	if params.Valid {
 		if err := json.Unmarshal([]byte(params.String), &p.params); err != nil {
