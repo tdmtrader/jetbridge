@@ -272,13 +272,14 @@ type CapturedTree struct {
 	ByteSize    int64
 	FileCount   int64
 
-	privateRoot string
-	closeMu     sync.Mutex
-	closed      bool
-	rootedWiped bool
-	captureRoot *os.Root
-	closeRoot   func(*os.Root) error
-	removeAll   func(string) error
+	privateRoot         string
+	closeMu             sync.Mutex
+	closed              bool
+	rootedWiped         bool
+	captureRoot         *os.Root
+	materializationRoot *os.Root
+	closeRoot           func(*os.Root) error
+	removeAll           func(string) error
 }
 
 func (t *CapturedTree) Close() error {
@@ -289,6 +290,11 @@ func (t *CapturedTree) Close() error {
 	defer t.closeMu.Unlock()
 	if t.closed || t.privateRoot == "" {
 		return nil
+	}
+	var materializationCloseErr error
+	if t.materializationRoot != nil {
+		materializationCloseErr = t.materializationRoot.Close()
+		t.materializationRoot = nil
 	}
 	if !t.rootedWiped && t.captureRoot != nil {
 		if err := wipeCaptureRoot(t.captureRoot); err != nil {
@@ -314,7 +320,7 @@ func (t *CapturedTree) Close() error {
 	if removeErr == nil {
 		t.closed = true
 	}
-	return errors.Join(closeErr, removeErr)
+	return errors.Join(materializationCloseErr, closeErr, removeErr)
 }
 
 // Capture extracts rawTar into a private directory, emits a canonical tar next
@@ -479,24 +485,21 @@ func (c Canonicalizer) Capture(ctx context.Context, rawTar io.Reader) (tree *Cap
 	if err := verifyCanonicalArchive(ctx, captureRoot, archiveInfo, privateRoot, byteSize, digest); err != nil {
 		return nil, fmt.Errorf("hangar: verify returned canonical archive: %w", err)
 	}
-	if err := extractionRoot.Close(); err != nil {
-		return nil, fmt.Errorf("hangar: close extraction root: %w", err)
-	}
-	extractionRoot = nil
-
 	rootPath := filepath.Join(privateRoot, "root")
 	archivePath := filepath.Join(privateRoot, "canonical.tar")
 	tree = &CapturedTree{
-		Root:        rootPath,
-		ArchivePath: archivePath,
-		Digest:      digest,
-		ByteSize:    byteSize,
-		FileCount:   int64(len(index.entries)),
-		privateRoot: privateRoot,
-		captureRoot: captureRoot,
-		removeAll:   removeAll,
+		Root:                rootPath,
+		ArchivePath:         archivePath,
+		Digest:              digest,
+		ByteSize:            byteSize,
+		FileCount:           int64(len(index.entries)),
+		privateRoot:         privateRoot,
+		captureRoot:         captureRoot,
+		materializationRoot: extractionRoot,
+		removeAll:           removeAll,
 	}
 	captureRoot = nil
+	extractionRoot = nil
 	return tree, nil
 }
 

@@ -3,8 +3,10 @@
 package hangar
 
 import (
+	"archive/tar"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -13,19 +15,17 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
 
-func materializeCapturedTree(ctx context.Context, storagePath, handle, volume string, ref TreeRef, sourcePath string, hooks materializerHooks) (result error) {
+func materializeCapturedTree(ctx context.Context, storagePath, handle, volume string, ref TreeRef, sourceRoot *os.Root, hooks materializerHooks) (result error) {
 	resolvedStorage, err := filepath.EvalSymlinks(storagePath)
 	if err != nil {
 		return fmt.Errorf("hangar: resolve materialization storage: %w", err)
-	}
-	resolvedSource, err := filepath.EvalSymlinks(sourcePath)
-	if err != nil {
-		return fmt.Errorf("hangar: resolve captured tree: %w", err)
 	}
 	storage, err := openAbsoluteDirectoryNoFollow(resolvedStorage)
 	if err != nil {
@@ -42,6 +42,16 @@ func materializeCapturedTree(ctx context.Context, storagePath, handle, volume st
 		return fmt.Errorf("hangar: anchor materialization handle: %w", err)
 	}
 	defer handleDir.Close()
+	if hooks.beforeLock != nil {
+		if err := hooks.beforeLock(); err != nil {
+			return fmt.Errorf("hangar: before materialization destination lock: %w", err)
+		}
+	}
+	destinationLock, err := acquireMaterializationLock(ctx, handleDir, volume)
+	if err != nil {
+		return fmt.Errorf("hangar: acquire materialization destination lock: %w", err)
+	}
+	defer func() { result = errors.Join(result, releaseMaterializationLock(destinationLock)) }()
 
 	stageName, stage, err := randomDirectoryAt(handleDir, ".hangar-stage-")
 	if err != nil {
@@ -52,20 +62,36 @@ func materializeCapturedTree(ctx context.Context, storagePath, handle, volume st
 		if stageOwned {
 			_ = makeOpenedTreeWritable(stage)
 			wipeErr := removeOpenedDirectoryContents(context.Background(), stage)
-			cleanupErr := removeTreeAt(context.Background(), handleDir, stageName)
+			var cleanupErr error
+			if same, identityErr := sameOpenEntryAt(handleDir, stageName, stage); identityErr == nil && same {
+				cleanupErr = unix.Unlinkat(int(handleDir.Fd()), stageName, unix.AT_REMOVEDIR)
+			} else if identityErr != nil && !errors.Is(identityErr, unix.ENOENT) {
+				cleanupErr = identityErr
+			}
 			result = errors.Join(result, wipeErr, cleanupErr)
 		}
 		closeErr := stage.Close()
 		result = errors.Join(result, closeErr)
 	}()
 
-	source, err := openAbsoluteDirectoryNoFollow(resolvedSource)
+	source, err := sourceRoot.Open(".")
 	if err != nil {
 		return fmt.Errorf("hangar: anchor captured tree: %w", err)
 	}
 	defer source.Close()
 	if err := copyOpenedTree(ctx, source, stage, ""); err != nil {
 		return fmt.Errorf("hangar: copy captured tree: %w", err)
+	}
+	sameSource, err := sameOpenedTree(source, stage, nil)
+	if err != nil || !sameSource {
+		return fmt.Errorf("hangar: staged tree differs from anchored captured tree: %w", errors.Join(err, ErrCorrupt))
+	}
+	stageDigest, err := canonicalDigestOpenedTree(ctx, stage)
+	if err != nil {
+		return fmt.Errorf("hangar: rebind staged tree digest: %w", err)
+	}
+	if stageDigest != ref.Digest {
+		return fmt.Errorf("hangar: staged tree digest differs from exact reference: %w", ErrCorrupt)
 	}
 	receipt, err := json.Marshal(ref)
 	if err != nil {
@@ -100,17 +126,96 @@ func materializeCapturedTree(ctx context.Context, storagePath, handle, volume st
 		return fmt.Errorf("hangar: materialization stage changed before publication: %w", err)
 	}
 
-	publishedByRename, err := publishMaterializationAt(ctx, handleDir, stageName, stage, volume, ref, hooks)
-	if err != nil {
-		return err
+	verifyAuthority := func(destination *os.File) error {
+		if same, err := sameOpenAbsoluteDirectory(resolvedStorage, storage); err != nil || !same {
+			return errors.Join(err, fmt.Errorf("materialization storage authority changed"))
+		}
+		if same, err := sameOpenEntryAt(storage, "steps", steps); err != nil || !same {
+			return errors.Join(err, fmt.Errorf("materialization steps authority changed"))
+		}
+		if same, err := sameOpenEntryAt(steps, handle, handleDir); err != nil || !same {
+			return errors.Join(err, fmt.Errorf("materialization handle authority changed"))
+		}
+		if same, err := sameOpenEntryAt(handleDir, volume, destination); err != nil || !same {
+			return errors.Join(err, fmt.Errorf("materialization destination authority changed"))
+		}
+		return nil
 	}
+	publishedByRename, err := publishMaterializationAt(ctx, handleDir, stageName, stage, volume, ref, hooks, verifyAuthority)
 	if publishedByRename {
 		stageOwned = false
+	}
+	if err != nil {
+		return err
 	}
 	return nil
 }
 
-func publishMaterializationAt(ctx context.Context, parent *os.File, stageName string, stage *os.File, destinationName string, ref TreeRef, hooks materializerHooks) (bool, error) {
+func acquireMaterializationLock(ctx context.Context, parent *os.File, volume string) (*os.File, error) {
+	sum := sha256.Sum256([]byte(volume))
+	name := ".hangar-lock-" + hex.EncodeToString(sum[:16])
+	fd := -1
+	var err error
+	for attempt := 0; attempt < 128; attempt++ {
+		fd, err = unix.Openat(int(parent.Fd()), name, unix.O_RDWR|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, unix.ENOENT) {
+			return nil, fmt.Errorf("open lock: %w", err)
+		}
+		fd, err = unix.Openat(int(parent.Fd()), name, unix.O_RDWR|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0600)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, unix.EEXIST) {
+			return nil, fmt.Errorf("create lock: %w", err)
+		}
+	}
+	if fd < 0 {
+		return nil, fmt.Errorf("open lock: exhausted creation races")
+	}
+	lock := os.NewFile(uintptr(fd), name)
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil || stat.Mode&unix.S_IFMT != unix.S_IFREG || int(stat.Uid) != os.Geteuid() {
+		lock.Close()
+		return nil, errors.Join(err, fmt.Errorf("materialization lock has invalid identity"))
+	}
+	if same, err := sameOpenEntryAt(parent, name, lock); err != nil || !same {
+		lock.Close()
+		return nil, errors.Join(fmt.Errorf("recheck opened lock: %w", err), fmt.Errorf("materialization lock changed while opening"))
+	}
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if err := unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB); err == nil {
+			if same, recheckErr := sameOpenEntryAt(parent, name, lock); recheckErr != nil || !same {
+				_ = unix.Flock(fd, unix.LOCK_UN)
+				lock.Close()
+				return nil, errors.Join(fmt.Errorf("recheck acquired lock: %w", recheckErr), fmt.Errorf("materialization lock changed while acquiring"))
+			}
+			return lock, nil
+		} else if !errors.Is(err, unix.EWOULDBLOCK) && !errors.Is(err, unix.EAGAIN) {
+			lock.Close()
+			return nil, fmt.Errorf("flock lock: %w", err)
+		}
+		select {
+		case <-ctx.Done():
+			lock.Close()
+			return nil, ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func releaseMaterializationLock(lock *os.File) error {
+	if lock == nil {
+		return nil
+	}
+	return errors.Join(unix.Flock(int(lock.Fd()), unix.LOCK_UN), lock.Close())
+}
+
+func publishMaterializationAt(ctx context.Context, parent *os.File, stageName string, stage *os.File, destinationName string, ref TreeRef, hooks materializerHooks, verifyAuthority func(*os.File) error) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
@@ -119,28 +224,61 @@ func publishMaterializationAt(ctx context.Context, parent *os.File, stageName st
 		if err := sealOpenedTreeContents(stage); err != nil {
 			return false, fmt.Errorf("hangar: seal materialization stage: %w", err)
 		}
+		if hooks.beforeRootChmod != nil {
+			if err := hooks.beforeRootChmod(); err != nil {
+				return false, fmt.Errorf("hangar: before sealing materialization stage root: %w", err)
+			}
+		}
+		if err := unix.Fchmod(int(stage.Fd()), 0555); err != nil {
+			return false, fmt.Errorf("hangar: seal materialization stage root: %w", err)
+		}
+		if hooks.beforeRootSync != nil {
+			if err := hooks.beforeRootSync(); err != nil {
+				return false, fmt.Errorf("hangar: before syncing materialization stage root: %w", err)
+			}
+		}
 		if err := unix.Fsync(int(stage.Fd())); err != nil {
 			return false, fmt.Errorf("hangar: sync sealed materialization stage: %w", err)
 		}
-		if err := renameNoReplaceAt(parent, stageName, destinationName); err != nil {
-			if errors.Is(err, unix.EEXIST) || errors.Is(err, unix.ENOTEMPTY) {
-				if exact, verifyErr := completedMaterializationAt(parent, destinationName, ref); verifyErr == nil && exact {
-					return false, nil
+		renameErr := renameNoReplaceAt(parent, stageName, destinationName)
+		if renameErr != nil && os.Geteuid() != 0 && (errors.Is(renameErr, unix.EACCES) || errors.Is(renameErr, unix.EPERM)) {
+			_ = unix.Fchmod(int(stage.Fd()), 0700)
+			renameErr = renameNoReplaceAt(parent, stageName, destinationName)
+			if renameErr == nil {
+				if resealErr := errors.Join(unix.Fchmod(int(stage.Fd()), 0555), unix.Fsync(int(stage.Fd()))); resealErr != nil {
+					return true, fmt.Errorf("hangar: reseal published materialization root: %w", resealErr)
+				}
+			}
+		}
+		if renameErr != nil {
+			if errors.Is(renameErr, unix.EEXIST) || errors.Is(renameErr, unix.ENOTEMPTY) {
+				existing, openErr := openDirectoryAt(parent, destinationName, false, 0)
+				if openErr == nil {
+					defer existing.Close()
+					receiptExact, receiptErr := completedMaterializationOpened(existing, ref)
+					treeExact, compareErr := sameOpenedTree(stage, existing, nil)
+					authorityErr := verifyAuthority(existing)
+					if receiptErr == nil && compareErr == nil && authorityErr == nil && receiptExact && treeExact {
+						return false, nil
+					}
 				}
 				return false, ErrConflict
 			}
-			return false, fmt.Errorf("hangar: publish absent materialization destination: %w", err)
-		}
-		if err := unix.Fchmod(int(stage.Fd()), 0555); err != nil {
-			return true, fmt.Errorf("hangar: seal materialization root after receipt publication: %w", err)
+			return false, fmt.Errorf("hangar: publish absent materialization destination: %w", renameErr)
 		}
 		if hooks.afterReceipt != nil {
 			if err := hooks.afterReceipt(); err != nil {
 				return true, fmt.Errorf("hangar: after materialization receipt publication: %w", err)
 			}
 		}
+		if err := verifyAuthority(stage); err != nil {
+			return true, fmt.Errorf("hangar: recheck authority after receipt publication: %w", err)
+		}
 		if err := unix.Fsync(int(parent.Fd())); err != nil {
 			return true, fmt.Errorf("hangar: sync materialization parent after receipt publication: %w", err)
+		}
+		if err := verifyAuthority(stage); err != nil {
+			return true, fmt.Errorf("hangar: recheck authority before materialization success: %w", err)
 		}
 		return true, nil
 	}
@@ -166,12 +304,16 @@ func publishMaterializationAt(ctx context.Context, parent *os.File, stageName st
 			return false, fmt.Errorf("hangar: seal retry comparison tree: %w", err)
 		}
 		if exact, verifyErr := completedMaterializationOpened(destination, ref); verifyErr == nil && exact {
-			same, compareErr := sameOpenedTree(stage, destination)
+			same, compareErr := sameOpenedTree(stage, destination, hooks.duringRetryCompare)
 			if compareErr == nil && same {
 				return false, nil
 			}
 		}
 		return false, ErrConflict
+	}
+	var destinationInitial unix.Stat_t
+	if err := unix.Fstat(int(destination.Fd()), &destinationInitial); err != nil {
+		return false, err
 	}
 
 	entries, err := readOpenedEntries(stage)
@@ -179,11 +321,15 @@ func publishMaterializationAt(ctx context.Context, parent *os.File, stageName st
 		return false, err
 	}
 	committed := false
+	owned := make([]ownedMaterializationEntry, 0, len(entries))
 	cleanup := func(publicationErr error) error {
 		if committed {
 			return publicationErr
 		}
-		return errors.Join(publicationErr, removeOpenedDirectoryContents(context.Background(), destination))
+		_ = unix.Fchmod(int(destination.Fd()), 0700)
+		cleanupErr := cleanupOwnedMaterializationEntries(destination, owned)
+		restoreErr := unix.Fchmod(int(destination.Fd()), uint32(destinationInitial.Mode&0777))
+		return errors.Join(publicationErr, cleanupErr, restoreErr)
 	}
 	for _, entry := range entries {
 		if entry == materializationReceiptName {
@@ -192,19 +338,58 @@ func publishMaterializationAt(ctx context.Context, parent *os.File, stageName st
 		if err := ctx.Err(); err != nil {
 			return false, cleanup(err)
 		}
+		ownership, err := captureOwnedMaterializationEntry(stage, entry)
+		if err != nil {
+			return false, cleanup(err)
+		}
 		if err := unix.Renameat(int(stage.Fd()), entry, int(destination.Fd()), entry); err != nil {
 			return false, cleanup(fmt.Errorf("hangar: transfer materialization entry %q: %w", entry, err))
+		}
+		if same, err := ownership.sameAt(destination); err != nil || !same {
+			return false, cleanup(errors.Join(err, fmt.Errorf("hangar: transferred entry changed identity")))
+		}
+		owned = append(owned, ownership)
+	}
+	if hooks.beforePayloadSeal != nil {
+		if err := hooks.beforePayloadSeal(); err != nil {
+			return false, cleanup(fmt.Errorf("hangar: before sealing materialization payload: %w", err))
 		}
 	}
 	if err := sealOpenedTreeContents(destination); err != nil {
 		return false, cleanup(fmt.Errorf("hangar: seal existing materialization contents: %w", err))
+	}
+	if hooks.beforeRootChmod != nil {
+		if err := hooks.beforeRootChmod(); err != nil {
+			return false, cleanup(fmt.Errorf("hangar: before sealing existing materialization root: %w", err))
+		}
+	}
+	if err := unix.Fchmod(int(destination.Fd()), 0555); err != nil {
+		return false, cleanup(fmt.Errorf("hangar: seal existing materialization root: %w", err))
+	}
+	if hooks.beforeRootSync != nil {
+		if err := hooks.beforeRootSync(); err != nil {
+			return false, cleanup(fmt.Errorf("hangar: before syncing existing materialization root: %w", err))
+		}
+	}
+	if err := unix.Fsync(int(destination.Fd())); err != nil {
+		return false, cleanup(fmt.Errorf("hangar: sync existing materialization root: %w", err))
 	}
 	if hooks.beforeReceipt != nil {
 		if err := hooks.beforeReceipt(); err != nil {
 			return false, cleanup(fmt.Errorf("hangar: before materialization receipt publication: %w", err))
 		}
 	}
-	if err := unix.Renameat(int(stage.Fd()), materializationReceiptName, int(destination.Fd()), materializationReceiptName); err != nil {
+	if err := verifyAuthority(destination); err != nil {
+		return false, cleanup(fmt.Errorf("hangar: authority changed before receipt publication: %w", err))
+	}
+	if exact, err := validateOwnedMaterializationDestination(destination, owned); err != nil || !exact {
+		return false, cleanup(errors.Join(err, fmt.Errorf("hangar: destination changed before receipt publication")))
+	}
+	receiptMoved, err := renameIntoSealedDirectory(stage, materializationReceiptName, destination, materializationReceiptName)
+	if receiptMoved {
+		committed = true
+	}
+	if err != nil {
 		return false, cleanup(fmt.Errorf("hangar: publish materialization receipt: %w", err))
 	}
 	committed = true
@@ -213,8 +398,8 @@ func publishMaterializationAt(ctx context.Context, parent *os.File, stageName st
 			return false, fmt.Errorf("hangar: after materialization receipt publication: %w", err)
 		}
 	}
-	if err := unix.Fchmod(int(destination.Fd()), 0555); err != nil {
-		return false, fmt.Errorf("hangar: seal existing destination after receipt publication: %w", err)
+	if err := verifyAuthority(destination); err != nil {
+		return false, fmt.Errorf("hangar: recheck authority after receipt publication: %w", err)
 	}
 	if err := unix.Fsync(int(destination.Fd())); err != nil {
 		return false, fmt.Errorf("hangar: sync existing destination after receipt publication: %w", err)
@@ -225,6 +410,9 @@ func publishMaterializationAt(ctx context.Context, parent *os.File, stageName st
 	}
 	if err := unix.Fsync(int(parent.Fd())); err != nil {
 		return false, fmt.Errorf("hangar: sync parent after receipt publication: %w", err)
+	}
+	if err := verifyAuthority(destination); err != nil {
+		return false, fmt.Errorf("hangar: recheck authority before materialization success: %w", err)
 	}
 	return false, nil
 }
@@ -243,7 +431,7 @@ func openAbsoluteDirectoryNoFollow(name string) (*os.File, error) {
 		if segment == "" {
 			continue
 		}
-		if !validMaterializationSegment(segment) {
+		if !validFilesystemComponent(segment) {
 			current.Close()
 			return nil, fmt.Errorf("unsafe absolute directory segment")
 		}
@@ -276,7 +464,7 @@ func sameOpenAbsoluteDirectory(name string, opened *os.File) (bool, error) {
 }
 
 func openDirectoryAt(parent *os.File, name string, create bool, mode uint32) (*os.File, error) {
-	if !validMaterializationSegment(name) {
+	if !validFilesystemComponent(name) {
 		return nil, fmt.Errorf("unsafe directory segment")
 	}
 	fd, err := unix.Openat(int(parent.Fd()), name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
@@ -358,7 +546,7 @@ func copyOpenedTree(ctx context.Context, source, destination *os.File, prefix st
 			if err != nil {
 				return err
 			}
-			if err := unix.Mkdirat(int(destination.Fd()), name, 0700); err != nil {
+			if err := unix.Mkdirat(int(destination.Fd()), name, uint32(before.Mode&0777)); err != nil {
 				sourceChild.Close()
 				return err
 			}
@@ -385,7 +573,7 @@ func copyOpenedTree(ctx context.Context, source, destination *os.File, prefix st
 				sourceFile.Close()
 				return errors.Join(infoErr, err, fmt.Errorf("source file changed while opening"))
 			}
-			destinationFD, err := unix.Openat(int(destination.Fd()), name, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0600)
+			destinationFD, err := unix.Openat(int(destination.Fd()), name, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, uint32(opened.Mode&0777))
 			if err != nil {
 				sourceFile.Close()
 				return err
@@ -394,8 +582,8 @@ func copyOpenedTree(ctx context.Context, source, destination *os.File, prefix st
 			copyErr := copyFileContext(ctx, destinationFile, sourceFile)
 			afterInfo, afterInfoErr := sourceFile.Stat()
 			unchanged, recheckErr := sameOpenEntryAt(source, name, sourceFile)
+			chmodErr := unix.Fchmod(destinationFD, uint32(opened.Mode&0777))
 			syncErr := destinationFile.Sync()
-			chmodErr := unix.Fchmod(destinationFD, 0444)
 			closeErr := errors.Join(sourceFile.Close(), destinationFile.Close())
 			metadataSame := beforeInfo != nil && afterInfo != nil && os.SameFile(beforeInfo, afterInfo) && beforeInfo.Size() == afterInfo.Size() && beforeInfo.Mode() == afterInfo.Mode() && beforeInfo.ModTime() == afterInfo.ModTime()
 			if copyErr != nil || afterInfoErr != nil || recheckErr != nil || !unchanged || !metadataSame || syncErr != nil || chmodErr != nil || closeErr != nil {
@@ -444,12 +632,16 @@ func readOpenedEntries(directory *os.File) ([]string, error) {
 	}
 	names := make([]string, 0, len(entries))
 	for _, entry := range entries {
-		if !validMaterializationSegment(entry.Name()) {
+		if !validFilesystemComponent(entry.Name()) {
 			return nil, fmt.Errorf("unsafe directory entry")
 		}
 		names = append(names, entry.Name())
 	}
 	return names, nil
+}
+
+func validFilesystemComponent(name string) bool {
+	return name != "" && name != "." && name != ".." && len(name) <= 255 && !strings.ContainsAny(name, "/\\\x00")
 }
 
 func copyFileContext(ctx context.Context, destination io.Writer, source io.Reader) error {
@@ -477,6 +669,156 @@ func copyFileContext(ctx context.Context, destination io.Writer, source io.Reade
 	}
 }
 
+type openedCanonicalEntry struct {
+	name   string
+	kind   uint32
+	mode   int64
+	size   int64
+	target string
+}
+
+func canonicalDigestOpenedTree(ctx context.Context, root *os.File) (Digest, error) {
+	entries := make([]openedCanonicalEntry, 0)
+	if err := collectOpenedCanonicalEntries(ctx, root, "", &entries); err != nil {
+		return "", err
+	}
+	sort.Slice(entries, func(left, right int) bool { return entries[left].name < entries[right].name })
+	hash := sha256.New()
+	writer := tar.NewWriter(hash)
+	epoch := time.Unix(0, 0).UTC()
+	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			_ = writer.Close()
+			return "", err
+		}
+		header := &tar.Header{
+			Name: entry.name, Mode: entry.mode, Size: entry.size, Linkname: entry.target,
+			Uid: 0, Gid: 0, ModTime: epoch, AccessTime: epoch, ChangeTime: epoch, Format: tar.FormatGNU,
+		}
+		switch entry.kind {
+		case unix.S_IFDIR:
+			header.Typeflag = tar.TypeDir
+		case unix.S_IFREG:
+			header.Typeflag = tar.TypeReg
+		case unix.S_IFLNK:
+			header.Typeflag = tar.TypeSymlink
+		default:
+			_ = writer.Close()
+			return "", fmt.Errorf("hangar: unsupported staged entry type")
+		}
+		if err := writer.WriteHeader(header); err != nil {
+			_ = writer.Close()
+			return "", err
+		}
+		if entry.kind != unix.S_IFREG {
+			continue
+		}
+		file, err := openRegularAt(root, entry.name)
+		if err != nil {
+			_ = writer.Close()
+			return "", err
+		}
+		copied, copyErr := io.CopyN(writer, &contextReader{ctx: ctx, reader: file}, entry.size)
+		var trailing [1]byte
+		trailingCount, trailingErr := file.Read(trailing[:])
+		closeErr := file.Close()
+		if copyErr != nil || copied != entry.size || trailingCount != 0 || !errors.Is(trailingErr, io.EOF) || closeErr != nil {
+			_ = writer.Close()
+			return "", errors.Join(copyErr, trailingErr, closeErr, errorUnless(copied == entry.size && trailingCount == 0, "staged file changed while hashing"))
+		}
+	}
+	if err := writer.Close(); err != nil {
+		return "", err
+	}
+	return Digest(fmt.Sprintf("sha256:%x", hash.Sum(nil))), nil
+}
+
+func collectOpenedCanonicalEntries(ctx context.Context, directory *os.File, prefix string, entries *[]openedCanonicalEntry) error {
+	names, err := readOpenedEntries(directory)
+	if err != nil {
+		return err
+	}
+	for _, name := range names {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		entryName := name
+		if prefix != "" {
+			entryName = path.Join(prefix, name)
+		}
+		var stat unix.Stat_t
+		if err := unix.Fstatat(int(directory.Fd()), name, &stat, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+			return err
+		}
+		entry := openedCanonicalEntry{name: entryName, kind: uint32(stat.Mode & unix.S_IFMT), mode: int64(stat.Mode & 0777)}
+		switch entry.kind {
+		case unix.S_IFDIR:
+			child, err := openDirectoryAt(directory, name, false, 0)
+			if err != nil {
+				return err
+			}
+			*entries = append(*entries, entry)
+			collectErr := collectOpenedCanonicalEntries(ctx, child, entryName, entries)
+			unchanged, recheckErr := sameOpenEntryAt(directory, name, child)
+			closeErr := child.Close()
+			if collectErr != nil || recheckErr != nil || !unchanged || closeErr != nil {
+				return errors.Join(collectErr, recheckErr, closeErr, errorUnless(unchanged, "staged directory changed while hashing"))
+			}
+		case unix.S_IFREG:
+			entry.size = stat.Size
+			*entries = append(*entries, entry)
+		case unix.S_IFLNK:
+			target, err := readlinkAt(int(directory.Fd()), name)
+			if err != nil {
+				return err
+			}
+			entry.target = target
+			entry.mode = 0777
+			*entries = append(*entries, entry)
+		default:
+			return fmt.Errorf("hangar: unsupported staged entry type")
+		}
+	}
+	return nil
+}
+
+func openRegularAt(root *os.File, relative string) (*os.File, error) {
+	components := strings.Split(relative, "/")
+	current, err := duplicateFile(root)
+	if err != nil {
+		return nil, err
+	}
+	for _, segment := range components[:len(components)-1] {
+		next, err := openDirectoryAt(current, segment, false, 0)
+		current.Close()
+		if err != nil {
+			return nil, err
+		}
+		current = next
+	}
+	name := components[len(components)-1]
+	fd, err := unix.Openat(int(current.Fd()), name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	current.Close()
+	if err != nil {
+		return nil, err
+	}
+	file := os.NewFile(uintptr(fd), relative)
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		file.Close()
+		return nil, errors.Join(err, fmt.Errorf("staged path is not regular"))
+	}
+	return file, nil
+}
+
+func duplicateFile(file *os.File) (*os.File, error) {
+	fd, err := unix.Dup(int(file.Fd()))
+	if err != nil {
+		return nil, err
+	}
+	return os.NewFile(uintptr(fd), file.Name()), nil
+}
+
 func sealOpenedTreeContents(directory *os.File) error {
 	entries, err := readOpenedEntries(directory)
 	if err != nil {
@@ -487,7 +829,8 @@ func sealOpenedTreeContents(directory *os.File) error {
 		if err := unix.Fstatat(int(directory.Fd()), name, &stat, unix.AT_SYMLINK_NOFOLLOW); err != nil {
 			return err
 		}
-		if stat.Mode&unix.S_IFMT == unix.S_IFDIR {
+		switch stat.Mode & unix.S_IFMT {
+		case unix.S_IFDIR:
 			child, err := openDirectoryAt(directory, name, false, 0)
 			if err != nil {
 				return err
@@ -496,10 +839,35 @@ func sealOpenedTreeContents(directory *os.File) error {
 			if sealErr == nil {
 				sealErr = unix.Fchmod(int(child.Fd()), 0555)
 			}
+			if sealErr == nil {
+				sealErr = unix.Fsync(int(child.Fd()))
+			}
 			closeErr := child.Close()
 			if sealErr != nil || closeErr != nil {
 				return errors.Join(sealErr, closeErr)
 			}
+		case unix.S_IFREG:
+			fd, err := unix.Openat(int(directory.Fd()), name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+			if err != nil {
+				return err
+			}
+			file := os.NewFile(uintptr(fd), name)
+			chmodErr := unix.Fchmod(fd, 0444)
+			syncErr := error(nil)
+			if chmodErr == nil {
+				syncErr = unix.Fsync(fd)
+			}
+			unchanged, recheckErr := sameOpenEntryAt(directory, name, file)
+			closeErr := file.Close()
+			if chmodErr != nil || syncErr != nil || recheckErr != nil || !unchanged || closeErr != nil {
+				return errors.Join(chmodErr, syncErr, recheckErr, errorUnless(unchanged, "sealed file changed identity"), closeErr)
+			}
+		case unix.S_IFLNK:
+			if _, err := readlinkAt(int(directory.Fd()), name); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("hangar: unsupported entry while sealing")
 		}
 	}
 	return nil
@@ -538,19 +906,13 @@ func writeExclusiveFileAt(directory *os.File, name string, contents []byte, mode
 	}
 	file := os.NewFile(uintptr(fd), name)
 	_, writeErr := file.Write(contents)
-	syncErr := file.Sync()
 	chmodErr := unix.Fchmod(fd, mode)
+	syncErr := error(nil)
+	if writeErr == nil && chmodErr == nil {
+		syncErr = file.Sync()
+	}
 	closeErr := file.Close()
 	return errors.Join(writeErr, syncErr, chmodErr, closeErr)
-}
-
-func completedMaterializationAt(parent *os.File, name string, ref TreeRef) (bool, error) {
-	destination, err := openDirectoryAt(parent, name, false, 0)
-	if err != nil {
-		return false, err
-	}
-	defer destination.Close()
-	return completedMaterializationOpened(destination, ref)
 }
 
 func completedMaterializationOpened(destination *os.File, ref TreeRef) (bool, error) {
@@ -558,7 +920,7 @@ func completedMaterializationOpened(destination *os.File, ref TreeRef) (bool, er
 	if err := unix.Fstat(int(destination.Fd()), &destinationStat); err != nil {
 		return false, err
 	}
-	if destinationStat.Mode&0777 != 0555 {
+	if destinationStat.Mode&07777 != 0555 {
 		return false, nil
 	}
 	fd, err := unix.Openat(int(destination.Fd()), materializationReceiptName, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
@@ -567,7 +929,7 @@ func completedMaterializationOpened(destination *os.File, ref TreeRef) (bool, er
 	}
 	file := os.NewFile(uintptr(fd), materializationReceiptName)
 	var receiptStat unix.Stat_t
-	if err := unix.Fstat(fd, &receiptStat); err != nil || receiptStat.Mode&unix.S_IFMT != unix.S_IFREG || receiptStat.Mode&0777 != 0444 {
+	if err := unix.Fstat(fd, &receiptStat); err != nil || receiptStat.Mode&unix.S_IFMT != unix.S_IFREG || receiptStat.Mode&07777 != 0444 {
 		file.Close()
 		return false, err
 	}
@@ -580,7 +942,14 @@ func completedMaterializationOpened(destination *os.File, ref TreeRef) (bool, er
 	return string(contents) == string(want), nil
 }
 
-func sameOpenedTree(expected, actual *os.File) (bool, error) {
+func sameOpenedTree(expected, actual *os.File, duringEntry func() error) (bool, error) {
+	var expectedRootBefore, actualRootBefore unix.Stat_t
+	if err := unix.Fstat(int(expected.Fd()), &expectedRootBefore); err != nil {
+		return false, err
+	}
+	if err := unix.Fstat(int(actual.Fd()), &actualRootBefore); err != nil {
+		return false, err
+	}
 	expectedNames, err := readOpenedEntries(expected)
 	if err != nil {
 		return false, err
@@ -618,7 +987,12 @@ func sameOpenedTree(expected, actual *os.File) (bool, error) {
 		if err := unix.Fstatat(int(actual.Fd()), name, &actualStat, unix.AT_SYMLINK_NOFOLLOW); err != nil {
 			return false, err
 		}
-		if expectedStat.Mode&unix.S_IFMT != actualStat.Mode&unix.S_IFMT || expectedStat.Mode&0777 != actualStat.Mode&0777 {
+		if duringEntry != nil {
+			if err := duringEntry(); err != nil {
+				return false, err
+			}
+		}
+		if expectedStat.Mode&unix.S_IFMT != actualStat.Mode&unix.S_IFMT || expectedStat.Mode&07777 != actualStat.Mode&07777 {
 			return false, nil
 		}
 		switch expectedStat.Mode & unix.S_IFMT {
@@ -632,10 +1006,22 @@ func sameOpenedTree(expected, actual *os.File) (bool, error) {
 				expectedChild.Close()
 				return false, err
 			}
-			same, compareErr := sameOpenedTree(expectedChild, actualChild)
+			if matches, err := openedFileMatchesStat(expectedChild, &expectedStat); err != nil || !matches {
+				expectedChild.Close()
+				actualChild.Close()
+				return false, err
+			}
+			if matches, err := openedFileMatchesStat(actualChild, &actualStat); err != nil || !matches {
+				expectedChild.Close()
+				actualChild.Close()
+				return false, err
+			}
+			same, compareErr := sameOpenedTree(expectedChild, actualChild, duringEntry)
+			expectedUnchanged, expectedRecheckErr := sameOpenEntryAt(expected, name, expectedChild)
+			actualUnchanged, actualRecheckErr := sameOpenEntryAt(actual, name, actualChild)
 			closeErr := errors.Join(expectedChild.Close(), actualChild.Close())
-			if compareErr != nil || closeErr != nil {
-				return false, errors.Join(compareErr, closeErr)
+			if compareErr != nil || expectedRecheckErr != nil || actualRecheckErr != nil || !expectedUnchanged || !actualUnchanged || closeErr != nil {
+				return false, errors.Join(compareErr, expectedRecheckErr, actualRecheckErr, errorUnless(expectedUnchanged && actualUnchanged, "compared directory changed identity"), closeErr)
 			}
 			if !same {
 				return false, nil
@@ -655,10 +1041,22 @@ func sameOpenedTree(expected, actual *os.File) (bool, error) {
 			}
 			expectedFile := os.NewFile(uintptr(expectedFD), name)
 			actualFile := os.NewFile(uintptr(actualFD), name)
+			if matches, err := openedFileMatchesStat(expectedFile, &expectedStat); err != nil || !matches {
+				expectedFile.Close()
+				actualFile.Close()
+				return false, err
+			}
+			if matches, err := openedFileMatchesStat(actualFile, &actualStat); err != nil || !matches {
+				expectedFile.Close()
+				actualFile.Close()
+				return false, err
+			}
 			equal, compareErr := equalOpenedFiles(expectedFile, actualFile)
+			expectedUnchanged, expectedRecheckErr := sameOpenEntryAt(expected, name, expectedFile)
+			actualUnchanged, actualRecheckErr := sameOpenEntryAt(actual, name, actualFile)
 			closeErr := errors.Join(expectedFile.Close(), actualFile.Close())
-			if compareErr != nil || closeErr != nil {
-				return false, errors.Join(compareErr, closeErr)
+			if compareErr != nil || expectedRecheckErr != nil || actualRecheckErr != nil || !expectedUnchanged || !actualUnchanged || closeErr != nil {
+				return false, errors.Join(compareErr, expectedRecheckErr, actualRecheckErr, errorUnless(expectedUnchanged && actualUnchanged, "compared file changed identity"), closeErr)
 			}
 			if !equal {
 				return false, nil
@@ -675,11 +1073,39 @@ func sameOpenedTree(expected, actual *os.File) (bool, error) {
 			if expectedTarget != actualTarget {
 				return false, nil
 			}
+			var expectedAfter, actualAfter unix.Stat_t
+			if err := unix.Fstatat(int(expected.Fd()), name, &expectedAfter, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+				return false, err
+			}
+			if err := unix.Fstatat(int(actual.Fd()), name, &actualAfter, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+				return false, err
+			}
+			if identityFromStat(&expectedStat) != identityFromStat(&expectedAfter) || identityFromStat(&actualStat) != identityFromStat(&actualAfter) {
+				return false, nil
+			}
 		default:
 			return false, nil
 		}
 	}
+	var expectedRootAfter, actualRootAfter unix.Stat_t
+	if err := unix.Fstat(int(expected.Fd()), &expectedRootAfter); err != nil {
+		return false, err
+	}
+	if err := unix.Fstat(int(actual.Fd()), &actualRootAfter); err != nil {
+		return false, err
+	}
+	if identityFromStat(&expectedRootBefore) != identityFromStat(&expectedRootAfter) || identityFromStat(&actualRootBefore) != identityFromStat(&actualRootAfter) {
+		return false, nil
+	}
 	return true, nil
+}
+
+func openedFileMatchesStat(file *os.File, before *unix.Stat_t) (bool, error) {
+	var opened unix.Stat_t
+	if err := unix.Fstat(int(file.Fd()), &opened); err != nil {
+		return false, err
+	}
+	return identityFromStat(before) == identityFromStat(&opened), nil
 }
 
 func equalOpenedFiles(left, right *os.File) (bool, error) {
@@ -705,6 +1131,169 @@ func equalOpenedFiles(left, right *os.File) (bool, error) {
 func openedDirectoryEmpty(directory *os.File) (bool, error) {
 	entries, err := readOpenedEntries(directory)
 	return len(entries) == 0, err
+}
+
+type materializationEntryIdentity struct {
+	device uint64
+	inode  uint64
+	kind   uint32
+}
+
+type ownedMaterializationEntry struct {
+	name     string
+	identity materializationEntryIdentity
+	children []ownedMaterializationEntry
+}
+
+func identityFromStat(stat *unix.Stat_t) materializationEntryIdentity {
+	return materializationEntryIdentity{device: uint64(stat.Dev), inode: uint64(stat.Ino), kind: uint32(stat.Mode & unix.S_IFMT)}
+}
+
+func captureOwnedMaterializationEntry(parent *os.File, name string) (ownedMaterializationEntry, error) {
+	var stat unix.Stat_t
+	if err := unix.Fstatat(int(parent.Fd()), name, &stat, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		return ownedMaterializationEntry{}, err
+	}
+	owned := ownedMaterializationEntry{name: name, identity: identityFromStat(&stat)}
+	if owned.identity.kind != unix.S_IFDIR {
+		return owned, nil
+	}
+	directory, err := openDirectoryAt(parent, name, false, 0)
+	if err != nil {
+		return ownedMaterializationEntry{}, err
+	}
+	defer directory.Close()
+	names, err := readOpenedEntries(directory)
+	if err != nil {
+		return ownedMaterializationEntry{}, err
+	}
+	for _, childName := range names {
+		child, err := captureOwnedMaterializationEntry(directory, childName)
+		if err != nil {
+			return ownedMaterializationEntry{}, err
+		}
+		owned.children = append(owned.children, child)
+	}
+	if same, err := owned.sameAt(parent); err != nil || !same {
+		return ownedMaterializationEntry{}, errors.Join(err, fmt.Errorf("owned directory changed while recording"))
+	}
+	return owned, nil
+}
+
+func (owned ownedMaterializationEntry) sameAt(parent *os.File) (bool, error) {
+	var stat unix.Stat_t
+	if err := unix.Fstatat(int(parent.Fd()), owned.name, &stat, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		return false, err
+	}
+	return owned.identity == identityFromStat(&stat), nil
+}
+
+func validateOwnedMaterializationDestination(destination *os.File, owned []ownedMaterializationEntry) (bool, error) {
+	var rootStat unix.Stat_t
+	if err := unix.Fstat(int(destination.Fd()), &rootStat); err != nil {
+		return false, err
+	}
+	if rootStat.Mode&unix.S_IFMT != unix.S_IFDIR || rootStat.Mode&07777 != 0555 {
+		return false, nil
+	}
+	names, err := readOpenedEntries(destination)
+	if err != nil {
+		return false, err
+	}
+	if len(names) != len(owned) {
+		return false, nil
+	}
+	byName := make(map[string]ownedMaterializationEntry, len(owned))
+	for _, entry := range owned {
+		byName[entry.name] = entry
+	}
+	for _, name := range names {
+		entry, found := byName[name]
+		if !found {
+			return false, nil
+		}
+		same, err := validateOwnedMaterializationEntry(destination, entry)
+		if err != nil || !same {
+			return false, err
+		}
+	}
+	return true, nil
+}
+
+func validateOwnedMaterializationEntry(parent *os.File, owned ownedMaterializationEntry) (bool, error) {
+	var stat unix.Stat_t
+	if err := unix.Fstatat(int(parent.Fd()), owned.name, &stat, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		return false, err
+	}
+	if owned.identity != identityFromStat(&stat) {
+		return false, nil
+	}
+	if owned.identity.kind == unix.S_IFDIR && stat.Mode&07777 != 0555 || owned.identity.kind == unix.S_IFREG && stat.Mode&07777 != 0444 {
+		return false, nil
+	}
+	if owned.identity.kind != unix.S_IFDIR {
+		return true, nil
+	}
+	directory, err := openDirectoryAt(parent, owned.name, false, 0)
+	if err != nil {
+		return false, err
+	}
+	defer directory.Close()
+	return validateOwnedMaterializationDestination(directory, owned.children)
+}
+
+func cleanupOwnedMaterializationEntries(destination *os.File, owned []ownedMaterializationEntry) error {
+	var cleanupErr error
+	for index := len(owned) - 1; index >= 0; index-- {
+		cleanupErr = errors.Join(cleanupErr, cleanupOwnedMaterializationEntry(destination, owned[index]))
+	}
+	return cleanupErr
+}
+
+func cleanupOwnedMaterializationEntry(parent *os.File, owned ownedMaterializationEntry) error {
+	same, err := owned.sameAt(parent)
+	if errors.Is(err, unix.ENOENT) || !same {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if owned.identity.kind != unix.S_IFDIR {
+		return unix.Unlinkat(int(parent.Fd()), owned.name, 0)
+	}
+	directory, err := openDirectoryAt(parent, owned.name, false, 0)
+	if err != nil {
+		return err
+	}
+	_ = unix.Fchmod(int(directory.Fd()), 0700)
+	cleanupErr := cleanupOwnedMaterializationEntries(directory, owned.children)
+	closeErr := directory.Close()
+	if cleanupErr != nil || closeErr != nil {
+		return errors.Join(cleanupErr, closeErr)
+	}
+	err = unix.Unlinkat(int(parent.Fd()), owned.name, unix.AT_REMOVEDIR)
+	if errors.Is(err, unix.ENOTEMPTY) || errors.Is(err, unix.EEXIST) {
+		return nil
+	}
+	return err
+}
+
+func renameIntoSealedDirectory(source *os.File, sourceName string, destination *os.File, destinationName string) (bool, error) {
+	err := unix.Renameat(int(source.Fd()), sourceName, int(destination.Fd()), destinationName)
+	if err == nil {
+		return true, nil
+	}
+	if os.Geteuid() == 0 || !errors.Is(err, unix.EACCES) && !errors.Is(err, unix.EPERM) {
+		return false, err
+	}
+	// Tests and local development do not hold the daemon's DAC_OVERRIDE. The
+	// production root path never takes this compatibility branch.
+	if chmodErr := unix.Fchmod(int(destination.Fd()), 0700); chmodErr != nil {
+		return false, errors.Join(err, chmodErr)
+	}
+	renameErr := unix.Renameat(int(source.Fd()), sourceName, int(destination.Fd()), destinationName)
+	resealErr := unix.Fchmod(int(destination.Fd()), 0555)
+	return renameErr == nil, errors.Join(renameErr, resealErr)
 }
 
 func removeOpenedDirectoryContents(ctx context.Context, directory *os.File) error {
