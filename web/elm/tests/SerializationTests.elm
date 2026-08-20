@@ -74,6 +74,50 @@ all =
                     |> Concourse.encodePipeline
                     |> Json.Decode.decodeValue Concourse.decodePipeline
                     |> Expect.equal (Ok pipeline)
+        , test "pre-feature pipeline caches decode with safe run defaults" <|
+            \_ ->
+                """
+                {"id":1,"name":"pipeline-1","instance_vars":{},"paused":false,"archived":false,"public":true,"team_name":"team","groups":[],"last_updated":0,"display":{"background_image":null,"background_filter":null}}
+                """
+                    |> Json.Decode.decodeString Concourse.decodePipeline
+                    |> Result.map
+                        (\pipeline ->
+                            { template = pipeline.template
+                            , runNumber = pipeline.runNumber
+                            , runTemplateRef = pipeline.runTemplateRef
+                            , paramsSchemaLength = List.length pipeline.paramsSchema
+                            , lastRunNumber = pipeline.lastRunNumber
+                            , canCreateRun = pipeline.canCreateRun
+                            }
+                        )
+                    |> Expect.equal
+                        (Ok
+                            { template = Nothing
+                            , runNumber = Nothing
+                            , runTemplateRef = Nothing
+                            , paramsSchemaLength = 0
+                            , lastRunNumber = Nothing
+                            , canCreateRun = False
+                            }
+                        )
+        , test "new pipeline cache values round-trip" <|
+            \_ ->
+                let
+                    basePipeline =
+                        Data.pipeline "team" 1
+
+                    pipeline =
+                        { basePipeline
+                            | template = Just True
+                            , paramsSchema = []
+                            , lastRunNumber = Just 0
+                            , canCreateRun = False
+                        }
+                in
+                pipeline
+                    |> Concourse.encodePipeline
+                    |> Json.Decode.decodeValue Concourse.decodePipeline
+                    |> Expect.equal (Ok pipeline)
         , test "team encoding/decoding are inverses" <|
             \_ ->
                 let

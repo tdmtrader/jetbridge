@@ -51,6 +51,8 @@ type Route
     = Build { id : Concourse.JobBuildIdentifier, highlight : Highlight, groups : List String }
     | Resource { id : Concourse.ResourceIdentifier, page : Maybe Pagination.Page, version : Maybe Concourse.Version, groups : List String }
     | Job { id : Concourse.JobIdentifier, page : Maybe Pagination.Page, groups : List String }
+    | PipelineRuns { id : Concourse.PipelineIdentifier, page : Maybe Pagination.Page }
+    | PipelineRun { template : Concourse.PipelineIdentifier, number : Int }
     | OneOffBuild { id : Concourse.BuildId, highlight : Highlight }
     | Pipeline { id : Concourse.PipelineIdentifier, groups : List String }
     | Dashboard { searchType : SearchType, dashboardView : DashboardView }
@@ -267,6 +269,45 @@ pipeline =
         (pipelineIdentifier <?> Query.custom "group" identity)
 
 
+pipelineRuns : Parser ((InstanceVars -> Route) -> a) a
+pipelineRuns =
+    map
+        (\{ teamName, pipelineName } from to limit ->
+            \iv ->
+                PipelineRuns
+                    { id =
+                        { teamName = teamName
+                        , pipelineName = pipelineName
+                        , pipelineInstanceVars = iv
+                        }
+                    , page = parsePage from to limit
+                    }
+        )
+        (pipelineIdentifier
+            </> s "runs"
+            <?> Query.int "from"
+            <?> Query.int "to"
+            <?> Query.int "limit"
+        )
+
+
+pipelineRun : Parser ((InstanceVars -> Route) -> a) a
+pipelineRun =
+    map
+        (\{ teamName, pipelineName } number ->
+            \iv ->
+                PipelineRun
+                    { template =
+                        { teamName = teamName
+                        , pipelineName = pipelineName
+                        , pipelineInstanceVars = iv
+                        }
+                    , number = number
+                    }
+        )
+        (pipelineIdentifier </> s "runs" </> int)
+
+
 dashboard : Parser ((b -> Route) -> a) a
 dashboard =
     map (\st view -> always <| Dashboard { searchType = st, dashboardView = view }) <|
@@ -473,7 +514,9 @@ tokenToFlyRoute authToken flyPort =
 sitemap : Parser ((InstanceVars -> Route) -> a) a
 sitemap =
     oneOf
-        [ resource
+        [ pipelineRun
+        , pipelineRuns
+        , resource
         , job
         , dashboard
         , pipeline
@@ -499,6 +542,17 @@ toString route =
             pipelineIdBuilder id
                 |> appendPath [ "jobs", id.jobName ]
                 |> appendQuery (Api.Pagination.params page)
+                |> RouteBuilder.build
+
+        PipelineRuns { id, page } ->
+            pipelineIdBuilder id
+                |> appendPath [ "runs" ]
+                |> appendQuery (Api.Pagination.params page)
+                |> RouteBuilder.build
+
+        PipelineRun { template, number } ->
+            pipelineIdBuilder template
+                |> appendPath [ "runs", String.fromInt number ]
                 |> RouteBuilder.build
 
         Resource { id, page, version } ->
@@ -627,6 +681,12 @@ extractPid route =
         Job { id } ->
             Just <| Concourse.pipelineId id
 
+        PipelineRuns { id } ->
+            Just id
+
+        PipelineRun { template } ->
+            Just template
+
         Resource { id } ->
             Just <| Concourse.pipelineId id
 
@@ -675,6 +735,12 @@ getGroups route =
         Job { groups } ->
             groups
 
+        PipelineRuns _ ->
+            []
+
+        PipelineRun _ ->
+            []
+
         Pipeline { groups } ->
             groups
 
@@ -705,6 +771,12 @@ withGroups groups route =
 
         Job params ->
             Job { params | groups = groups }
+
+        PipelineRuns _ ->
+            route
+
+        PipelineRun _ ->
+            route
 
         Pipeline params ->
             Pipeline { params | groups = groups }

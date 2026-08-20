@@ -3,6 +3,7 @@ module Message.Callback exposing (Callback(..))
 import Browser.Dom
 import Concourse
 import Concourse.Pagination exposing (Page, Paginated)
+import Concourse.PipelineRun exposing (PipelineRun)
 import Http
 import Message.Message
     exposing
@@ -29,6 +30,9 @@ type Callback
     | JobsFetched (Fetched (List Concourse.Job))
     | PipelineFetched (Fetched Concourse.Pipeline)
     | PipelinesFetched (Fetched (List Concourse.Pipeline))
+    | PipelineRunsFetched (Fetched ( Page, Paginated PipelineRun ))
+    | PipelineRunFetched (Fetched PipelineRun)
+    | PipelineRunCreated (Fetched PipelineRun)
     | PipelineToggled Concourse.PipelineIdentifier (Fetched ())
     | PipelinesOrdered Concourse.TeamName (Fetched ())
     | UserFetched (Fetched Concourse.User)

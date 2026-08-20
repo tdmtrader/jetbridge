@@ -101,6 +101,12 @@ pageBelowTopBar route =
                     , style "display" "flex"
                     ]
 
+                Routes.PipelineRuns _ ->
+                    []
+
+                Routes.PipelineRun _ ->
+                    []
+
                 Routes.Dashboard _ ->
                     [ style "box-sizing" "border-box"
                     , style "display" "flex"

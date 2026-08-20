@@ -1,6 +1,7 @@
 module RoutesTests exposing (all)
 
 import Concourse exposing (JsonValue(..))
+import Concourse.Pagination as Pagination
 import Dict
 import Expect
 import Routes
@@ -296,4 +297,55 @@ all =
                                 , groups = []
                                 }
                         )
+        , test "pipeline run routes round-trip pagination without treating vars=run:N as instance vars" <|
+            \_ ->
+                let
+                    route =
+                        Routes.PipelineRuns
+                            { id =
+                                { teamName = "team"
+                                , pipelineName = "pipeline"
+                                , pipelineInstanceVars = Dict.empty
+                                }
+                            , page = Just { direction = Pagination.From 17, limit = 20 }
+                            }
+                in
+                ("http://example.com" ++ Routes.toString route ++ "&vars=run:42")
+                    |> Url.fromString
+                    |> Maybe.andThen Routes.parsePath
+                    |> Expect.equal (Just route)
+        , test "pipeline run detail routes round-trip" <|
+            \_ ->
+                let
+                    route =
+                        Routes.PipelineRun
+                            { template =
+                                { teamName = "team"
+                                , pipelineName = "pipeline"
+                                , pipelineInstanceVars = Dict.empty
+                                }
+                            , number = 42
+                            }
+                in
+                ("http://example.com" ++ Routes.toString route)
+                    |> Url.fromString
+                    |> Maybe.andThen Routes.parsePath
+                    |> Expect.equal (Just route)
+        , test "pipeline run routes round-trip to pagination" <|
+            \_ ->
+                let
+                    route =
+                        Routes.PipelineRuns
+                            { id =
+                                { teamName = "team"
+                                , pipelineName = "pipeline"
+                                , pipelineInstanceVars = Dict.empty
+                                }
+                            , page = Just { direction = Pagination.To 9, limit = 20 }
+                            }
+                in
+                ("http://example.com" ++ Routes.toString route)
+                    |> Url.fromString
+                    |> Maybe.andThen Routes.parsePath
+                    |> Expect.equal (Just route)
         ]
