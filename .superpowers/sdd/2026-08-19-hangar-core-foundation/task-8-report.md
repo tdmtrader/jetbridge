@@ -28,6 +28,9 @@ in `atc/worker/jetbridge/live_test.go`: missing
 - Added a CI-only `live` K3s contract through JetBridge's strict generated-Pod
   path. It asserts all mounts resolve, required affinities and read-only input,
   then executes the generated BusyBox init/main flow on Linux.
+- Restored the daemon-namespace TLS SAN override omitted by the historical live
+  test port. Added the narrower `hangar_live` tag so this contract can compile
+  and run independently of that port's unrelated PostgreSQL-runner gap.
 
 ## Commit
 
@@ -44,6 +47,8 @@ Planned commit subject: `test(hangar): prove strict tree flow`.
   11m13.010266625s; real 673.89s.
 - Final focused rerun: cancellation regression 0.311s and daemon full flow
   0.582s, both exit 0.
+- Dedicated Hangar live compile/run probe: exit 0; the test compiled and
+  truthfully skipped on macOS before contacting Kubernetes.
 - `git diff --check`: exit 0 after final formatting and report creation.
 
 Exact commands, package timings, and environment notes are recorded in
@@ -51,9 +56,12 @@ Exact commands, package timings, and environment notes are recorded in
 
 ## CI-only gap
 
-The new live test was not run on macOS and no local K3s was started. The package
-cannot currently compile with `-tags live` because of the two pre-existing
-stale symbols listed under RED; neither is introduced or referenced by the new
-contract. The existing harness offers no reusable backend failure injector, so
-the strict daemon test carries those failure cases. Final whole-branch review
-and re-review remain with the controller.
+The new live test was not run on macOS and no local K3s was started. The
+repository-wide external live suite still cannot compile with `-tags live`
+because its historical real-DB port references the absent
+`postgresrunner.StandardTestRunner`. The missing daemon-namespace companion
+change is fixed here, and the new contract independently compiles with
+`-tags hangar_live`; it does not inherit the unrelated database fixture. The
+existing harness offers no reusable backend failure injector, so the strict
+daemon test carries those failure cases. Final whole-branch review and
+re-review remain with the controller.

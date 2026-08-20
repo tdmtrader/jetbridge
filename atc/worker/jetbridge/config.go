@@ -186,16 +186,15 @@ type Config struct {
 	// on each node when using the DaemonSet backend.
 	ArtifactDaemonHostPath string
 
+	// ArtifactDaemonNamespace is the namespace the artifact daemon runs in,
+	// when that differs from the namespace this config schedules pods into.
+	// It only affects which SAN the daemon's server certificate is verified
+	// against; empty means the daemon shares Namespace.
+	ArtifactDaemonNamespace string
+
 	// ArtifactDaemonService is the headless Service name for per-pod DNS
 	// resolution of the DaemonSet pods.
 	ArtifactDaemonService string
-
-	// ArtifactDaemonNamespace is the namespace the artifact daemon runs in,
-	// when that differs from Namespace. It only affects TLS verification: the
-	// daemon's server certificate names <service>.<namespace>.svc, and a
-	// caller scheduling pods into another namespace (the live tests do) must
-	// still verify against the daemon's own. Empty means Namespace.
-	ArtifactDaemonNamespace string
 
 	// ArtifactDaemonTLSCert is the path to the client certificate for mTLS
 	// connections to the artifact daemon.
