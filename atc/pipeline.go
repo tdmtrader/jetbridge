@@ -12,20 +12,26 @@ import (
 )
 
 type Pipeline struct {
-	ID            int            `json:"id"`
-	Name          string         `json:"name"`
-	InstanceVars  InstanceVars   `json:"instance_vars,omitempty"`
-	Paused        bool           `json:"paused"`
-	PausedBy      string         `json:"paused_by,omitempty"`
-	PausedAt      int64          `json:"paused_at,omitempty"`
-	Public        bool           `json:"public"`
-	Archived      bool           `json:"archived"`
-	Groups        GroupConfigs   `json:"groups,omitempty"`
-	TeamName      string         `json:"team_name"`
-	Display       *DisplayConfig `json:"display,omitempty"`
-	ParentBuildID int            `json:"parent_build_id,omitempty"`
-	ParentJobID   int            `json:"parent_job_id,omitempty"`
-	LastUpdated   int64          `json:"last_updated,omitempty"`
+	ID             int                 `json:"id"`
+	Name           string              `json:"name"`
+	InstanceVars   InstanceVars        `json:"instance_vars,omitempty"`
+	Paused         bool                `json:"paused"`
+	PausedBy       string              `json:"paused_by,omitempty"`
+	PausedAt       int64               `json:"paused_at,omitempty"`
+	Public         bool                `json:"public"`
+	Archived       bool                `json:"archived"`
+	Groups         GroupConfigs        `json:"groups,omitempty"`
+	TeamName       string              `json:"team_name"`
+	Display        *DisplayConfig      `json:"display,omitempty"`
+	ParentBuildID  int                 `json:"parent_build_id,omitempty"`
+	ParentJobID    int                 `json:"parent_job_id,omitempty"`
+	LastUpdated    int64               `json:"last_updated,omitempty"`
+	Template       *bool               `json:"template,omitempty"`
+	RunNumber      *int                `json:"run_number,omitempty"`
+	RunTemplateRef *PipelineIdentifier `json:"run_template_ref,omitempty"`
+	ParamsSchema   *[]ParamSchema      `json:"params_schema,omitempty"`
+	LastRunNumber  *int                `json:"last_run_number,omitempty"`
+	CanCreateRun   *bool               `json:"can_create_run,omitempty"`
 }
 
 func (p Pipeline) Ref() PipelineRef {
@@ -84,6 +90,14 @@ func unquoteString(s string) string {
 
 type PipelineRef struct {
 	Name         string       `json:"name"`
+	InstanceVars InstanceVars `json:"instance_vars,omitempty"`
+}
+
+// PipelineIdentifier identifies a pipeline across team boundaries in API
+// payloads. PipelineRef deliberately remains the existing name-based value.
+type PipelineIdentifier struct {
+	TeamName     string       `json:"team_name"`
+	PipelineName string       `json:"pipeline_name"`
 	InstanceVars InstanceVars `json:"instance_vars,omitempty"`
 }
 
