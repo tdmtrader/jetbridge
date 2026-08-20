@@ -66,7 +66,7 @@ func TestMaterializerPreservesPreopenedEmptyDestination(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	materializer := Materializer{Store: &strictMaterializerStore{want: ref, archive: canonical}, Canonicalizer: Canonicalizer{}, StoragePath: storage, MaxTreeBytes: 1 << 20}
+	materializer := Materializer{Store: &strictMaterializerStore{want: ref, archive: canonical}, Canonicalizer: Canonicalizer{}, StoragePath: storage, MaxTreeBytes: 1 << 20, hooks: withTestReceiptPrivilege(destination, materializerHooks{})}
 	if err := materializer.Materialize(context.Background(), ref, "handle", "volume"); err != nil {
 		t.Fatal(err)
 	}
@@ -190,6 +190,150 @@ func TestMaterializerRejectsReplacementDuringRetryComparison(t *testing.T) {
 	}
 }
 
+func TestMaterializerRevalidatesPayloadBytesAfterMutationHooks(t *testing.T) {
+	ref, canonical := canonicalTreeFixture(t, testTreeArchive(t, []testTreeEntry{{name: "file", kind: tar.TypeReg, body: "good"}}))
+	for _, test := range []struct {
+		name     string
+		existing bool
+		mutate   func(string) materializerHooks
+	}{
+		{
+			name: "staged payload",
+			mutate: func(_ string) materializerHooks {
+				return materializerHooks{afterStage: func(stagePath string) error {
+					return os.WriteFile(filepath.Join(stagePath, "file"), []byte("evil"), 0644)
+				}}
+			},
+		},
+		{
+			name:     "transferred payload",
+			existing: true,
+			mutate: func(destination string) materializerHooks {
+				return materializerHooks{beforePayloadSeal: func() error {
+					return os.WriteFile(filepath.Join(destination, "file"), []byte("evil"), 0644)
+				}}
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			storage := t.TempDir()
+			cleanupMaterializedStorage(t, storage)
+			destination := filepath.Join(storage, "steps", "handle", "volume")
+			if test.existing {
+				if err := os.MkdirAll(destination, 0755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			materializer := Materializer{
+				Store:         &strictMaterializerStore{want: ref, archive: canonical},
+				Canonicalizer: Canonicalizer{},
+				StoragePath:   storage,
+				MaxTreeBytes:  1 << 20,
+				hooks:         test.mutate(destination),
+			}
+			if err := materializer.Materialize(context.Background(), ref, "handle", "volume"); !errors.Is(err, ErrCorrupt) {
+				t.Fatalf("same-inode payload rewrite got %v, want ErrCorrupt", err)
+			}
+			if _, err := os.Lstat(filepath.Join(destination, materializationReceiptName)); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("payload rewrite published a completion receipt: %v", err)
+			}
+		})
+	}
+}
+
+func TestMaterializerRetryRechecksAuthorityAfterComparison(t *testing.T) {
+	ref, canonical := canonicalTreeFixture(t, testTreeArchive(t, []testTreeEntry{{name: "file", kind: tar.TypeReg, body: "same"}}))
+	storage := t.TempDir()
+	cleanupMaterializedStorage(t, storage)
+	handlePath := filepath.Join(storage, "steps", "handle")
+	materializer := Materializer{Store: &strictMaterializerStore{want: ref, archive: canonical}, Canonicalizer: Canonicalizer{}, StoragePath: storage, MaxTreeBytes: 1 << 20}
+	if err := materializer.Materialize(context.Background(), ref, "handle", "volume"); err != nil {
+		t.Fatal(err)
+	}
+	materializer.hooks.afterDestinationOpen = func() error {
+		if err := os.Rename(handlePath, handlePath+"-displaced"); err != nil {
+			return err
+		}
+		if err := os.Mkdir(handlePath, 0755); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(handlePath, "victim"), []byte("keep"), 0644)
+	}
+	if err := materializer.Materialize(context.Background(), ref, "handle", "volume"); err == nil {
+		t.Fatal("retry accepted an ancestor swap after opening the destination")
+	}
+	content, err := os.ReadFile(filepath.Join(handlePath, "victim"))
+	if err != nil || string(content) != "keep" {
+		t.Fatalf("replacement authority changed: %q, %v", content, err)
+	}
+}
+
+func TestMaterializerRetryComparisonRechecksNamespaceAndMetadata(t *testing.T) {
+	for _, attack := range []string{"extra entry", "same-inode mode mutation"} {
+		t.Run(attack, func(t *testing.T) {
+			ref, canonical := canonicalTreeFixture(t, testTreeArchive(t, []testTreeEntry{{name: "file", kind: tar.TypeReg, body: "same"}}))
+			storage := t.TempDir()
+			cleanupMaterializedStorage(t, storage)
+			destination := filepath.Join(storage, "steps", "handle", "volume")
+			materializer := Materializer{Store: &strictMaterializerStore{want: ref, archive: canonical}, Canonicalizer: Canonicalizer{}, StoragePath: storage, MaxTreeBytes: 1 << 20}
+			if err := materializer.Materialize(context.Background(), ref, "handle", "volume"); err != nil {
+				t.Fatal(err)
+			}
+			var once sync.Once
+			var attackErr error
+			materializer.hooks.duringRetryCompare = func() error {
+				once.Do(func() {
+					switch attack {
+					case "extra entry":
+						if err := os.Chmod(destination, 0700); err != nil {
+							attackErr = err
+							return
+						}
+						if err := os.WriteFile(filepath.Join(destination, "extra"), []byte("injected"), 0444); err != nil {
+							attackErr = err
+							return
+						}
+						attackErr = os.Chmod(destination, 0555)
+					case "same-inode mode mutation":
+						attackErr = os.Chmod(filepath.Join(destination, "file"), 0400)
+					}
+				})
+				return attackErr
+			}
+			if err := materializer.Materialize(context.Background(), ref, "handle", "volume"); err == nil {
+				t.Fatalf("retry accepted %s", attack)
+			}
+		})
+	}
+}
+
+func TestMaterializerReceiptCollisionRaceNeverOverwritesWinner(t *testing.T) {
+	ref, canonical := canonicalTreeFixture(t, testTreeArchive(t, []testTreeEntry{{name: "file", kind: tar.TypeReg, body: "payload"}}))
+	storage := t.TempDir()
+	cleanupMaterializedStorage(t, storage)
+	destination := filepath.Join(storage, "steps", "handle", "volume")
+	if err := os.MkdirAll(destination, 0755); err != nil {
+		t.Fatal(err)
+	}
+	hooks := materializerHooks{beforeReceiptRename: func() error {
+		if err := os.Chmod(destination, 0700); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(destination, materializationReceiptName), []byte("winner"), 0444)
+	}}
+	materializer := Materializer{Store: &strictMaterializerStore{want: ref, archive: canonical}, Canonicalizer: Canonicalizer{}, StoragePath: storage, MaxTreeBytes: 1 << 20, hooks: hooks}
+	if err := materializer.Materialize(context.Background(), ref, "handle", "volume"); err == nil {
+		t.Fatal("receipt collision was overwritten")
+	}
+	contents, err := os.ReadFile(filepath.Join(destination, materializationReceiptName))
+	if err != nil || string(contents) != "winner" {
+		t.Fatalf("colliding receipt changed: %q, %v", contents, err)
+	}
+	if _, err := os.Lstat(filepath.Join(destination, "file")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("failed collision left owned payload: %v", err)
+	}
+}
+
 func TestMaterializerRejectsSourceReceiptCollisionWithoutPublishing(t *testing.T) {
 	ref, canonical := canonicalTreeFixture(t, testTreeArchive(t, []testTreeEntry{{name: materializationReceiptName, kind: tar.TypeReg, body: "forged"}}))
 	storage := t.TempDir()
@@ -220,7 +364,7 @@ func TestMaterializerCleansExistingDestinationBeforeReceiptButNotAfter(t *testin
 			if err := os.MkdirAll(destination, 0755); err != nil {
 				t.Fatal(err)
 			}
-			materializer := Materializer{Store: &strictMaterializerStore{want: ref, archive: canonical}, Canonicalizer: Canonicalizer{}, StoragePath: storage, MaxTreeBytes: 1 << 20, hooks: test.hooks}
+			materializer := Materializer{Store: &strictMaterializerStore{want: ref, archive: canonical}, Canonicalizer: Canonicalizer{}, StoragePath: storage, MaxTreeBytes: 1 << 20, hooks: withTestReceiptPrivilege(destination, test.hooks)}
 			if err := materializer.Materialize(context.Background(), ref, "handle", "volume"); err == nil {
 				t.Fatal("injected failure was ignored")
 			}
@@ -423,8 +567,8 @@ func TestMaterializerSerializesWritersForExistingEmptyDestination(t *testing.T) 
 		return nil
 	}
 	materializers := []*Materializer{
-		{Store: &strictMaterializerStore{want: firstRef, archive: firstArchive}, Canonicalizer: Canonicalizer{}, StoragePath: storage, MaxTreeBytes: 1 << 20, hooks: materializerHooks{beforeLock: beforeLock}},
-		{Store: &strictMaterializerStore{want: secondRef, archive: secondArchive}, Canonicalizer: Canonicalizer{}, StoragePath: storage, MaxTreeBytes: 1 << 20, hooks: materializerHooks{beforeLock: beforeLock}},
+		{Store: &strictMaterializerStore{want: firstRef, archive: firstArchive}, Canonicalizer: Canonicalizer{}, StoragePath: storage, MaxTreeBytes: 1 << 20, hooks: withTestReceiptPrivilege(destination, materializerHooks{beforeLock: beforeLock})},
+		{Store: &strictMaterializerStore{want: secondRef, archive: secondArchive}, Canonicalizer: Canonicalizer{}, StoragePath: storage, MaxTreeBytes: 1 << 20, hooks: withTestReceiptPrivilege(destination, materializerHooks{beforeLock: beforeLock})},
 	}
 	refs := []TreeRef{firstRef, secondRef}
 	errs := make(chan error, 2)
@@ -604,6 +748,9 @@ func TestMaterializerRechecksAuthorityChainAfterReceipt(t *testing.T) {
 				}
 				return os.WriteFile(filepath.Join(handlePath, "victim"), []byte("keep"), 0644)
 			}}
+			if existing {
+				hooks = withTestReceiptPrivilege(destination, hooks)
+			}
 			materializer := Materializer{Store: &strictMaterializerStore{want: ref, archive: canonical}, Canonicalizer: Canonicalizer{}, StoragePath: storage, MaxTreeBytes: 1 << 20, hooks: hooks}
 			if err := materializer.Materialize(context.Background(), ref, "handle", "volume"); err == nil {
 				t.Fatal("post-receipt ancestor swap was accepted")
@@ -644,6 +791,9 @@ func TestMaterializerRechecksDestinationNameAfterReceipt(t *testing.T) {
 				}
 				return os.WriteFile(filepath.Join(destination, "victim"), []byte("keep"), 0644)
 			}}
+			if existing {
+				hooks = withTestReceiptPrivilege(destination, hooks)
+			}
 			materializer := Materializer{Store: &strictMaterializerStore{want: ref, archive: canonical}, Canonicalizer: Canonicalizer{}, StoragePath: storage, MaxTreeBytes: 1 << 20, hooks: hooks}
 			if err := materializer.Materialize(context.Background(), ref, "handle", "volume"); err == nil {
 				t.Fatal("post-receipt destination swap was accepted")
@@ -816,4 +966,38 @@ func cleanupMaterializedStorage(t *testing.T, storage string) {
 			return nil
 		})
 	})
+}
+
+func withTestReceiptPrivilege(destination string, hooks materializerHooks) materializerHooks {
+	beforeReceiptRename := hooks.beforeReceiptRename
+	hooks.beforeReceiptRename = func() error {
+		if beforeReceiptRename != nil {
+			if err := beforeReceiptRename(); err != nil {
+				return err
+			}
+		}
+		return os.Chmod(destination, 0700)
+	}
+	afterReceipt := hooks.afterReceipt
+	hooks.afterReceipt = func() error {
+		if err := os.Chmod(destination, 0555); err != nil {
+			return err
+		}
+		if err := syncDirectoryPath(destination); err != nil {
+			return err
+		}
+		if afterReceipt != nil {
+			return afterReceipt()
+		}
+		return nil
+	}
+	return hooks
+}
+
+func syncDirectoryPath(name string) error {
+	directory, err := os.Open(name)
+	if err != nil {
+		return err
+	}
+	return errors.Join(directory.Sync(), directory.Close())
 }

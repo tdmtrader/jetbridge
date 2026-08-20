@@ -25,6 +25,7 @@ type materializerHooks struct {
 	afterDestinationOpen func() error
 	beforePayloadSeal    func() error
 	beforeReceipt        func() error
+	beforeReceiptRename  func() error
 	afterReceipt         func() error
 	duringRetryCompare   func() error
 	beforeRootChmod      func() error
