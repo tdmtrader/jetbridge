@@ -14,9 +14,11 @@ import Http
 import Message.Callback exposing (Callback(..))
 import Message.Effects as Effects
 import Message.Message exposing (Message(..))
+import Message.Subscription exposing (Delivery(..), Interval(..))
 import Message.TopLevelMessage exposing (TopLevelMessage(..))
 import PipelineRuns.PipelineRuns as PipelineRuns
 import Routes
+import SubPage.SubPage as SubPage
 import Test exposing (Test, describe, test)
 import Test.Html.Query as Query
 import Test.Html.Selector exposing (attribute, containing, id, tag, text)
@@ -200,6 +202,21 @@ all =
                     |> Tuple.first
                     |> Common.queryView
                     |> Query.has [ text "2s ago" ]
+        , test "updates running durations after a five-second tick while completed durations stay fixed" <|
+            \_ ->
+                let
+                    afterTick =
+                        pageWithRunningAndCompleted
+                            |> Application.handleCallback (GotCurrentTime (Time.millisToPosix 2000))
+                            |> Tuple.first
+                            |> Application.handleDelivery (ClockTicked FiveSeconds (Time.millisToPosix 5000))
+                in
+                afterTick
+                    |> Expect.all
+                        [ Tuple.first >> pipelineRunsNow >> Expect.equal (Just 5000)
+                        , Tuple.first >> Common.queryView >> Query.has [ text "5s ago", text "2s" ]
+                        , Tuple.second >> Expect.equal [ Effects.FetchWall ]
+                        ]
         , test "focuses the mounted server error and fetches the template after a conflict" <|
             \_ ->
                 submitted
@@ -376,6 +393,20 @@ pageWithRuns =
         |> Tuple.first
 
 
+pageWithRunningAndCompleted : Application.Model
+pageWithRunningAndCompleted =
+    pageWithTemplate
+        |> Application.handleCallback
+            (PipelineRunsFetched
+                (Ok
+                    ( { direction = Pagination.ToMostRecent, limit = 50 }
+                    , { content = [ liveRun, completedRun ], pagination = { previousPage = Nothing, nextPage = Nothing } }
+                    )
+                )
+            )
+        |> Tuple.first
+
+
 pagedRuns : Application.Model
 pagedRuns =
     pageWithTemplate
@@ -465,6 +496,21 @@ liveRun =
 reclaimedRun : Concourse.PipelineRun.PipelineRun
 reclaimedRun =
     { liveRun | number = 41, instanceRef = Nothing, reclaimed = True }
+
+
+completedRun : Concourse.PipelineRun.PipelineRun
+completedRun =
+    { liveRun | number = 40, status = BuildStatus.BuildStatusSucceeded, completedAt = Just (Time.millisToPosix 2000) }
+
+
+pipelineRunsNow : Application.Model -> Maybe Int
+pipelineRunsNow model =
+    case model.subModel of
+        SubPage.PipelineRunsModel runs ->
+            runs.now |> Maybe.map Time.posixToMillis
+
+        _ ->
+            Nothing
 
 
 conflict : Http.Error
