@@ -131,7 +131,15 @@ archivedPipelineInstance =
 all : Test
 all =
     describe "TopBar"
-        [ rspecStyleDescribe "when on pipeline page"
+        [ test "run detail breadcrumbs retain the base template identity" <|
+            \_ ->
+                Common.initRoute (Routes.PipelineRun { template = Data.pipelineId |> Data.withPipelineName "template", number = 42 })
+                    |> Application.handleCallback (Callback.AllPipelinesFetched <| Ok [ Data.pipeline "team" 1 |> Data.withName "template" ])
+                    |> Tuple.first
+                    |> queryView
+                    |> Query.find [ id "breadcrumbs" ]
+                    |> Query.has [ id "breadcrumb-pipeline", id "breadcrumb-runs", text "run #42" ]
+        , rspecStyleDescribe "when on pipeline page"
             (Common.init "/teams/team/pipelines/pipeline"
                 |> Application.handleCallback
                     (Callback.AllPipelinesFetched <|

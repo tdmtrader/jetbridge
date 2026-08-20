@@ -23,6 +23,7 @@ import Dict
 import Expect
 import Html.Attributes as Attr
 import Http
+import HoverState
 import Message.Callback as Callback
 import Message.Effects as Effects exposing (pipelinesSectionName)
 import Message.Message as Message exposing (PipelinesSection(..))
@@ -30,6 +31,7 @@ import Message.Subscription as Subscription
 import Message.TopLevelMessage as TopLevelMessage
 import Routes
 import Set
+import SideBar.Pipeline as SideBarPipeline
 import Test exposing (Test, describe, test)
 import Test.Html.Event as Event
 import Test.Html.Query as Query
@@ -862,7 +864,13 @@ hasCurrentPipelineInSideBar iAmLookingAtThePage =
 all : Test
 all =
     describe "sidebar"
-        [ describe "on dashboard page" <| hasSideBar (when iVisitTheDashboard)
+        [ test "template rows link to history and label their run count" <|
+            \_ ->
+                SideBarPipeline.regularPipeline
+                    { hovered = HoverState.NoHover, currentPipeline = Nothing, favoritedPipelines = Set.empty, isFavoritesSection = False }
+                    (Data.pipeline "team" 1 |> Data.withName "template" |> asTemplate)
+                    |> Expect.all [ .href >> Expect.equal "/teams/team/pipelines/template/runs", .name >> .text >> Expect.equal "template • no runs" ]
+        , describe "on dashboard page" <| hasSideBar (when iVisitTheDashboard)
         , describe "loading dashboard page" <| pageLoadIsSideBarCompatible iVisitTheDashboard
         , describe "dashboard page exceptions"
             [ test "page contents are to the right of the sidebar" <|
@@ -934,6 +942,11 @@ all =
                 >> when iAmLookingAtTheOtherInstance
                 >> then_ iSeeAnInvisibleBackground
         ]
+
+
+asTemplate : Concourse.Pipeline -> Concourse.Pipeline
+asTemplate pipeline =
+    { pipeline | template = Just True, lastRunNumber = Nothing }
 
 
 iAmViewingTheDashboardOnANonPhoneScreen =

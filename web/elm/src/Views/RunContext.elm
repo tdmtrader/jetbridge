@@ -1,20 +1,16 @@
 module Views.RunContext exposing (Context(..), isCompleted, view)
-
 import Concourse
 import Concourse.BuildStatus as BuildStatus
 import Concourse.PipelineRun exposing (PipelineRun)
 import Html exposing (Html)
 import Html.Attributes exposing (class, id)
-import Message.Message exposing (Message)
-
-
+import Html.Events exposing (onClick)
+import Message.Message exposing (Message(..))
 type Context
     = Live PipelineRun Concourse.Pipeline
     | Completed PipelineRun Concourse.Pipeline
     | RecordOnly PipelineRun
     | Reclaimed PipelineRun
-
-
 isCompleted : Context -> Bool
 isCompleted context =
     case context of
@@ -23,10 +19,8 @@ isCompleted context =
 
         _ ->
             False
-
-
-view : Context -> Html Message
-view context =
+view : Maybe String -> Context -> Html Message
+view error context =
     let
         run =
             case context of
@@ -54,5 +48,11 @@ view context =
                 Html.p [] [ Html.text "This run payload has been reclaimed." ]
 
             _ ->
+                Html.text ""
+        , case error of
+            Just message ->
+                Html.p [] [ Html.text message, Html.button [ onClick RetryPipelineRuns ] [ Html.text "Retry" ] ]
+
+            Nothing ->
                 Html.text ""
         ]

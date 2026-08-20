@@ -15,6 +15,11 @@ all =
                 payload
                     |> Concourse.isRunPayload
                     |> Expect.equal True
+        , test "recognizes a payload marker even when its rename reference is absent" <|
+            \_ ->
+                { payload | runTemplateRef = Nothing }
+                    |> Concourse.isRunPayload
+                    |> Expect.equal True
         , test "keeps ordinary instances with a run variable in normal grouping" <|
             \_ ->
                 (Data.pipeline "team" 2 |> Data.withInstanceVars (Dict.fromList [ ( "run", Concourse.JsonNumber 42 ) ]))
