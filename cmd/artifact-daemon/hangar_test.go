@@ -9,16 +9,22 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagertest"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/fake"
 
 	"github.com/concourse/concourse/hangar"
 )
@@ -73,6 +79,11 @@ func canonicalHangarTree(t *testing.T, scratch string, raw []byte) ([]byte, hang
 
 func newHangarTestServer(t *testing.T, store hangar.Store) (*Server, *HangarService, []byte) {
 	t.Helper()
+	return newHangarTestServerWithLogger(t, store, lagertest.NewTestLogger("hangar-daemon"))
+}
+
+func newHangarTestServerWithLogger(t *testing.T, store hangar.Store, logger lager.Logger) (*Server, *HangarService, []byte) {
+	t.Helper()
 	storage := t.TempDir()
 	scratch := t.TempDir()
 	key := bytes.Repeat([]byte{0x42}, 32)
@@ -86,7 +97,7 @@ func newHangarTestServer(t *testing.T, store hangar.Store) (*Server, *HangarServ
 		Materializer:    &hangar.Materializer{Store: store, Canonicalizer: canonicalizer, StoragePath: storage, MaxTreeBytes: 1 << 20},
 		MaxContentBytes: 1024, MaxEntries: 10, MaxArchiveBytes: 1 << 20, MaxControlBytes: 16 << 10,
 	}
-	server, err := NewServer(lagertest.NewTestLogger("hangar-daemon"), storage, "node-a")
+	server, err := NewServer(logger, storage, "node-a")
 	if err != nil {
 		t.Fatalf("NewServer(%q): %v", storage, err)
 	}
@@ -151,6 +162,32 @@ func TestHangarPublishCanonicalizesAndReturnsExactAttributes(t *testing.T) {
 			t.Fatalf("publish = %d body=%q, want %d", recorder.Code, recorder.Body.String(), want)
 		}
 		var got hangar.TreeAttributes
+		var vocabulary map[string]json.RawMessage
+		if err := json.Unmarshal(recorder.Body.Bytes(), &vocabulary); err != nil {
+			t.Fatal(err)
+		}
+		if len(vocabulary) != 4 {
+			t.Fatalf("publication response vocabulary: %v", vocabulary)
+		}
+		var refVocabulary map[string]json.RawMessage
+		if err := json.Unmarshal(vocabulary["ref"], &refVocabulary); err != nil {
+			t.Fatal(err)
+		}
+		if len(refVocabulary) != 3 {
+			t.Fatalf("publication ref vocabulary: %v", refVocabulary)
+		}
+		for _, key := range []string{"scope", "digest", "generation"} {
+			delete(refVocabulary, key)
+		}
+		if len(refVocabulary) != 0 {
+			t.Fatalf("publication ref has nonexact keys: %v", refVocabulary)
+		}
+		for _, key := range []string{"ref", "stored_bytes", "logical_bytes", "created_at"} {
+			delete(vocabulary, key)
+		}
+		if len(vocabulary) != 0 {
+			t.Fatalf("publication response has nonexact keys: %v", vocabulary)
+		}
 		if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
 			t.Fatal(err)
 		}
@@ -162,8 +199,10 @@ func TestHangarPublishCanonicalizesAndReturnsExactAttributes(t *testing.T) {
 
 type failingReadCloser struct{ closeErr error }
 
-func (*failingReadCloser) Read([]byte) (int, error) { return 0, errors.New("corrupt after open") }
-func (reader *failingReadCloser) Close() error      { return reader.closeErr }
+func (*failingReadCloser) Read([]byte) (int, error) {
+	return 0, errors.Join(hangar.ErrCorrupt, errors.New("corrupt after open"))
+}
+func (reader *failingReadCloser) Close() error { return reader.closeErr }
 
 func TestHangarOpenFullyVerifiesBeforeWritingSuccess(t *testing.T) {
 	digest := hangar.Digest("sha256:" + strings.Repeat("a", 64))
@@ -181,6 +220,68 @@ func TestHangarOpenFullyVerifiesBeforeWritingSuccess(t *testing.T) {
 		t.Fatalf("open = %d %q, want sanitized 422", recorder.Code, recorder.Body.String())
 	}
 }
+
+func TestHangarOpenHashesActualSpooledBytesBeforeSuccess(t *testing.T) {
+	raw := rawHangarTar(t, "x", "payload")
+	canonical, digest := canonicalHangarTree(t, t.TempDir(), raw)
+	mutated := append([]byte(nil), canonical...)
+	mutated[len(mutated)/2] ^= 0x01
+	ref := hangar.TreeRef{Scope: "ci", Digest: digest, Generation: 4}
+	store := &hangarStoreStub{ensure: func(context.Context, hangar.Scope, hangar.Digest, io.Reader, int64) (hangar.TreeAttributes, bool, error) {
+		panic("unexpected")
+	}}
+	store.open = func(context.Context, hangar.TreeRef, int64) (io.ReadCloser, hangar.TreeAttributes, error) {
+		return io.NopCloser(bytes.NewReader(mutated)), hangar.TreeAttributes{Ref: ref, LogicalBytes: int64(len(mutated))}, nil
+	}
+	server, _, _ := newHangarTestServer(t, store)
+	recorder := httptest.NewRecorder()
+	path := "/hangar/v1/scopes/ci/trees/sha256/" + strings.TrimPrefix(string(digest), "sha256:") + "/generations/4"
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+	if recorder.Code != http.StatusUnprocessableEntity || recorder.Body.String() != "tree verification failed\n" {
+		t.Fatalf("same-length mutation = %d %q, want sanitized 422", recorder.Code, recorder.Body.String())
+	}
+}
+
+type hangarErrorReader struct{ err error }
+
+func (reader hangarErrorReader) Read([]byte) (int, error) { return 0, reader.err }
+func (hangarErrorReader) Close() error                    { return nil }
+
+func TestHangarOpenPreservesTypedReadAndCloseFailures(t *testing.T) {
+	digest := hangar.Digest("sha256:" + strings.Repeat("c", 64))
+	ref := hangar.TreeRef{Scope: "ci", Digest: digest, Generation: 5}
+	for _, tc := range []struct {
+		name   string
+		reader io.ReadCloser
+		want   int
+	}{
+		{"infrastructure-read", hangarErrorReader{err: errors.Join(hangar.ErrInfrastructure, errors.New("backend"))}, 503},
+		{"context-read", hangarErrorReader{err: context.Canceled}, 503},
+		{"close", &closeErrorReader{Reader: bytes.NewReader(nil), err: hangar.ErrInfrastructure}, 503},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &hangarStoreStub{ensure: func(context.Context, hangar.Scope, hangar.Digest, io.Reader, int64) (hangar.TreeAttributes, bool, error) {
+				panic("unexpected")
+			}}
+			store.open = func(context.Context, hangar.TreeRef, int64) (io.ReadCloser, hangar.TreeAttributes, error) {
+				return tc.reader, hangar.TreeAttributes{Ref: ref}, nil
+			}
+			server, _, _ := newHangarTestServer(t, store)
+			recorder := httptest.NewRecorder()
+			server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/hangar/v1/scopes/ci/trees/sha256/"+strings.Repeat("c", 64)+"/generations/5", nil))
+			if recorder.Code != tc.want || recorder.Body.String() != "service unavailable\n" {
+				t.Fatalf("status=%d body=%q", recorder.Code, recorder.Body.String())
+			}
+		})
+	}
+}
+
+type closeErrorReader struct {
+	*bytes.Reader
+	err error
+}
+
+func (reader *closeErrorReader) Close() error { return reader.err }
 
 func TestHangarOpenExactGeneration(t *testing.T) {
 	raw := rawHangarTar(t, "x", "y")
@@ -222,6 +323,30 @@ func TestHangarTypedStatuses(t *testing.T) {
 			server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/hangar/v1/scopes/ci/trees", bytes.NewReader(rawHangarTar(t, "x", "y"))))
 			if recorder.Code != tc.status {
 				t.Fatalf("status=%d body=%q want=%d", recorder.Code, recorder.Body.String(), tc.status)
+			}
+		})
+	}
+}
+
+func TestHangarStatusPrecedenceNeverDowngradesCompoundFailuresToNotFound(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want int
+	}{
+		{"infrastructure", errors.Join(hangar.ErrNotFound, hangar.ErrInfrastructure), 503},
+		{"context", errors.Join(hangar.ErrNotFound, context.Canceled), 503},
+		{"unauthorized", errors.Join(hangar.ErrNotFound, hangar.ErrUnauthorized), 401},
+		{"corrupt", errors.Join(hangar.ErrNotFound, hangar.ErrCorrupt), 422},
+		{"limit", errors.Join(hangar.ErrNotFound, hangar.ErrLimitExceeded), 413},
+		{"conflict", errors.Join(hangar.ErrNotFound, hangar.ErrConflict), 409},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server, _, _ := newHangarTestServer(t, &hangarStoreStub{})
+			recorder := httptest.NewRecorder()
+			server.refuseHangar(recorder, httptest.NewRequest(http.MethodGet, "/hangar/v1/scopes/ci/trees", nil), tc.err)
+			if recorder.Code != tc.want {
+				t.Fatalf("status=%d body=%q want=%d", recorder.Code, recorder.Body.String(), tc.want)
 			}
 		})
 	}
@@ -357,6 +482,41 @@ func TestHangarRejectsMissingDuplicateAndAlternateGrantsUniformly(t *testing.T) 
 	}
 }
 
+func TestHangarMaterializationRequiresExactCaseSensitiveJSONVocabulary(t *testing.T) {
+	digest := "sha256:" + strings.Repeat("a", 64)
+	store := &hangarStoreStub{ensure: func(context.Context, hangar.Scope, hangar.Digest, io.Reader, int64) (hangar.TreeAttributes, bool, error) {
+		panic("unexpected")
+	}}
+	server, _, _ := newHangarTestServer(t, store)
+	validRef := `{"scope":"ci","digest":"` + digest + `","generation":1}`
+	for _, body := range []string{
+		`{"Items":[]}`,
+		`{"items":[{"Ref":` + validRef + `,"handle":"h","volume":"v","grant":"Bearer x"}]}`,
+		`{"items":[{"ref":{"Scope":"ci","digest":"` + digest + `","generation":1},"handle":"h","volume":"v","grant":"Bearer x"}]}`,
+		`{"items":[{"ref":{"scope":"ci","digest":"` + digest + `","Generation":1},"handle":"h","volume":"v","grant":"Bearer x"}]}`,
+		`{"items":[{"ref":` + validRef + `,"handle":"h","volume":"v","grant":"Bearer x","Grant":"Bearer y"}]}`,
+	} {
+		recorder := httptest.NewRecorder()
+		server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/hangar/v1/materializations", strings.NewReader(body)))
+		if recorder.Code != http.StatusBadRequest {
+			t.Fatalf("mixed-case schema = %d %q for %s", recorder.Code, recorder.Body.String(), body)
+		}
+	}
+}
+
+func TestHangarMaterializationRejectsOversizedJSONBeforeAuthorization(t *testing.T) {
+	store := &hangarStoreStub{ensure: func(context.Context, hangar.Scope, hangar.Digest, io.Reader, int64) (hangar.TreeAttributes, bool, error) {
+		panic("unexpected")
+	}}
+	server, service, _ := newHangarTestServer(t, store)
+	service.MaxControlBytes = 32
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/hangar/v1/materializations", strings.NewReader(`{"items":[],"padding":"`+strings.Repeat("x", 64)+`"}`)))
+	if recorder.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status=%d body=%q", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestHangarMaterializationStoreFailureLeavesTargetUntouched(t *testing.T) {
 	digest := hangar.Digest("sha256:" + strings.Repeat("b", 64))
 	ref := hangar.TreeRef{Scope: "ci", Digest: digest, Generation: 2}
@@ -377,6 +537,27 @@ func TestHangarMaterializationStoreFailureLeavesTargetUntouched(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(server.storagePath, "steps", "handle", "volume")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("failed strict store left destination visible: %v", err)
+	}
+}
+
+func TestHangarMaterializationRejectsAbsoluteAndInvalidSegments(t *testing.T) {
+	digest := "sha256:" + strings.Repeat("e", 64)
+	store := &hangarStoreStub{ensure: func(context.Context, hangar.Scope, hangar.Digest, io.Reader, int64) (hangar.TreeAttributes, bool, error) {
+		panic("unexpected")
+	}}
+	server, _, _ := newHangarTestServer(t, store)
+	for _, fields := range [][2]string{{"/absolute", "volume"}, {"handle", "../escape"}, {"a/b", "volume"}} {
+		body := `{"items":[{"ref":{"scope":"ci","digest":"` + digest + `","generation":1},"handle":"` + fields[0] + `","volume":"` + fields[1] + `","grant":"Bearer opaque"}]}`
+		recorder := httptest.NewRecorder()
+		server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/hangar/v1/materializations", strings.NewReader(body)))
+		if recorder.Code != http.StatusUnauthorized {
+			t.Errorf("segments %q/%q = %d", fields[0], fields[1], recorder.Code)
+		}
+	}
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/hangar/v1/materializations", strings.NewReader(`{"items":[],"destination":"/tmp/escape"}`)))
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("absolute destination field = %d", recorder.Code)
 	}
 }
 
@@ -416,6 +597,55 @@ func TestHangarInterruptedPublishNeverCallsStore(t *testing.T) {
 	server.Handler().ServeHTTP(recorder, req)
 	if recorder.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status=%d body=%q", recorder.Code, recorder.Body.String())
+	}
+}
+
+type cancelingBody struct {
+	cancel context.CancelFunc
+	sent   bool
+}
+
+func (body *cancelingBody) Read(buffer []byte) (int, error) {
+	if body.sent {
+		return 0, context.Canceled
+	}
+	body.sent = true
+	copy(buffer, []byte("partial tar bytes"))
+	body.cancel()
+	return len("partial tar bytes"), nil
+}
+func (*cancelingBody) Close() error { return nil }
+
+func TestHangarInterruptedBodyStopsBeforeStoreMutation(t *testing.T) {
+	store := &hangarStoreStub{ensure: func(context.Context, hangar.Scope, hangar.Digest, io.Reader, int64) (hangar.TreeAttributes, bool, error) {
+		panic("interrupted body reached store")
+	}}
+	server, _, _ := newHangarTestServer(t, store)
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodPost, "/hangar/v1/scopes/ci/trees", nil).WithContext(ctx)
+	req.Body = &cancelingBody{cancel: cancel}
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d body=%q", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestHangarAuthorizationFailureDoesNotLeakTokenOrFieldsToResponseOrLogs(t *testing.T) {
+	logger := lagertest.NewTestLogger("hangar-secret-test")
+	store := &hangarStoreStub{ensure: func(context.Context, hangar.Scope, hangar.Digest, io.Reader, int64) (hangar.TreeAttributes, bool, error) {
+		panic("unexpected")
+	}}
+	server, _, _ := newHangarTestServerWithLogger(t, store, logger)
+	secret := "Bearer secret-token-value"
+	body := `{"items":[{"ref":{"scope":"opaque-scope","digest":"sha256:` + strings.Repeat("d", 64) + `","generation":1},"handle":"secret-handle","volume":"secret-volume","grant":"` + secret + `"}]}`
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/hangar/v1/materializations", strings.NewReader(body)))
+	combined := recorder.Body.String() + string(logger.Buffer().Contents())
+	for _, forbidden := range []string{"secret-token-value", "opaque-scope", "secret-handle", "secret-volume"} {
+		if strings.Contains(combined, forbidden) {
+			t.Fatalf("authorization failure leaked %q: %s", forbidden, combined)
+		}
 	}
 }
 
@@ -507,6 +737,60 @@ func TestHangarConfigRequiresStrictPrerequisitesBeforeStoreConstruction(t *testi
 	}
 }
 
+func TestHangarAndDurableGCSShareRootEndpointAndValidateBucket(t *testing.T) {
+	var mu sync.Mutex
+	var paths []string
+	fakeGCS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/storage/v1/b/bucket" {
+			_, _ = w.Write([]byte(`{"name":"bucket"}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":{"code":404,"message":"missing"}}`))
+	}))
+	defer fakeGCS.Close()
+	keyPath := filepath.Join(t.TempDir(), "key")
+	if err := os.WriteFile(keyPath, bytes.Repeat([]byte{7}, 32), 0600); err != nil {
+		t.Fatal(err)
+	}
+	storage := t.TempDir()
+	scratch := filepath.Join(t.TempDir(), "scratch")
+	service, closeService, err := buildHangarService(context.Background(), lagertest.NewTestLogger("hangar-build"), storage, hangarOptions{
+		Enabled: true, ScratchDir: scratch, CapabilityKey: keyPath, MaxContentBytes: 1024, MaxEntries: 10,
+		DurableKind: "gcs", Bucket: "bucket", Endpoint: fakeGCS.URL, Timeout: time.Second,
+		TLSCert: "cert", TLSKey: "key", TLSCACert: "ca",
+	})
+	if err != nil {
+		t.Fatalf("build Hangar: %v", err)
+	}
+	if service == nil {
+		t.Fatal("Hangar service disabled unexpectedly")
+	}
+	if err := closeService(); err != nil {
+		t.Fatal(err)
+	}
+	tier, err := buildDurableTier(lagertest.NewTestLogger("durable-build"), newMetrics(), durableOptions{kind: "gcs", bucket: "bucket", endpoint: fakeGCS.URL, timeout: time.Second})
+	if err != nil {
+		t.Fatalf("build durable: %v", err)
+	}
+	if tier.Has(context.Background(), "resource-caches/missing") {
+		t.Fatal("fake missing durable object reported hit")
+	}
+	mu.Lock()
+	gotPaths := append([]string(nil), paths...)
+	mu.Unlock()
+	if !slices.Contains(gotPaths, "/storage/v1/b/bucket") {
+		t.Fatalf("Hangar bucket validation missed JSON API base: %v", gotPaths)
+	}
+	if len(gotPaths) < 2 {
+		t.Fatalf("both clients did not reach shared endpoint: %v", gotPaths)
+	}
+}
+
 func TestHangarScratchRejectsSymlinkWithoutChangingItsTarget(t *testing.T) {
 	parent := t.TempDir()
 	target := filepath.Join(parent, "target")
@@ -526,5 +810,122 @@ func TestHangarScratchRejectsSymlinkWithoutChangingItsTarget(t *testing.T) {
 	}
 	if info.Mode().Perm() != 0755 {
 		t.Fatalf("rejected symlink changed target mode to %04o", info.Mode().Perm())
+	}
+}
+
+func TestHangarScratchPathsRejectRootsAndContainmentBeforeMutation(t *testing.T) {
+	for _, tc := range []struct{ scratch, storage string }{
+		{"/", filepath.Join(t.TempDir(), "storage")},
+		{filepath.Join(t.TempDir(), "scratch"), "/"},
+	} {
+		// The first two cases prove roots are rejected by the pure path gate;
+		// no chmod or mkdir is reachable from this function.
+		if err := validateHangarScratchPaths(tc.scratch, tc.storage); err == nil {
+			t.Errorf("accepted scratch=%q storage=%q", tc.scratch, tc.storage)
+		}
+	}
+	base := t.TempDir()
+	if err := validateHangarScratchPaths(filepath.Join(base, "scratch"), filepath.Join(base, "storage")); err != nil {
+		t.Fatalf("rejected disjoint siblings: %v", err)
+	}
+	if err := validateHangarScratchPaths(filepath.Join(base, "storage", "scratch"), filepath.Join(base, "storage")); err == nil {
+		t.Fatal("accepted scratch contained by storage")
+	}
+	if err := validateHangarScratchPaths(filepath.Join(base, "storage"), filepath.Join(base, "storage", "steps")); err == nil {
+		t.Fatal("accepted storage contained by scratch")
+	}
+}
+
+func TestHangarRootRejectionLeavesFilesystemRootModeUnchanged(t *testing.T) {
+	before, err := os.Stat(string(filepath.Separator))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validatePrivateHangarScratch(string(filepath.Separator), filepath.Join(t.TempDir(), "storage")); err == nil {
+		t.Fatal("accepted filesystem root")
+	}
+	after, err := os.Stat(string(filepath.Separator))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.Mode().Perm() != after.Mode().Perm() {
+		t.Fatalf("root mode changed from %04o to %04o", before.Mode().Perm(), after.Mode().Perm())
+	}
+}
+
+func TestHangarReadinessLabelCannotCollideWithLegacyLabel(t *testing.T) {
+	if err := validateDaemonLabelKeys(HangarReadyLabel); err == nil {
+		t.Fatal("accepted Hangar readiness as legacy label key")
+	}
+	if err := validateDaemonLabelKeys("concourse.dev/artifact-cache"); err != nil {
+		t.Fatalf("rejected distinct label: %v", err)
+	}
+}
+
+func TestHangarDisabledStartupClearsStaleReadinessAndKeepsLegacyReady(t *testing.T) {
+	client := fake.NewSimpleClientset(&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node", Labels: map[string]string{HangarReadyLabel: "ready"}}})
+	hangarLabeler := NewNodeLabeler(lagertest.NewTestLogger("hangar-label"), client, "node", HangarReadyLabel)
+	legacyLabeler := NewNodeLabeler(lagertest.NewTestLogger("legacy-label"), client, "node", "concourse.dev/artifact-cache")
+	if err := prepareDaemonLabels(context.Background(), hangarLabeler, legacyLabeler); err != nil {
+		t.Fatal(err)
+	}
+	node, _ := client.CoreV1().Nodes().Get(context.Background(), "node", metav1.GetOptions{})
+	if _, found := node.Labels[HangarReadyLabel]; found {
+		t.Fatal("stale Hangar readiness survived disabled startup")
+	}
+	if node.Labels["concourse.dev/artifact-cache"] != "ready" {
+		t.Fatal("legacy readiness was not preserved")
+	}
+}
+
+type hangarListenerStub struct{ closed bool }
+
+func (*hangarListenerStub) Accept() (net.Conn, error) { return nil, errors.New("unused") }
+func (listener *hangarListenerStub) Close() error     { listener.closed = true; return nil }
+func (*hangarListenerStub) Addr() net.Addr            { return &net.TCPAddr{} }
+
+func TestHangarReadinessIsNotAddedWhenListenerBindFails(t *testing.T) {
+	client := fake.NewSimpleClientset(&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node"}})
+	labeler := NewNodeLabeler(lagertest.NewTestLogger("hangar-label"), client, "node", HangarReadyLabel)
+	_, err := listenAndAdvertiseHangar(context.Background(), ":0", labeler, func(string, string) (net.Listener, error) { return nil, errors.New("bind failed") })
+	if err == nil {
+		t.Fatal("bind failure was ignored")
+	}
+	node, _ := client.CoreV1().Nodes().Get(context.Background(), "node", metav1.GetOptions{})
+	if _, found := node.Labels[HangarReadyLabel]; found {
+		t.Fatal("readiness was added before listener bind")
+	}
+}
+
+func TestHangarReadinessIsAddedOnlyAfterListenerExists(t *testing.T) {
+	client := fake.NewSimpleClientset(&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node"}})
+	labeler := NewNodeLabeler(lagertest.NewTestLogger("hangar-label"), client, "node", HangarReadyLabel)
+	stub := &hangarListenerStub{}
+	bound := false
+	listener, err := listenAndAdvertiseHangar(context.Background(), ":0", labeler, func(string, string) (net.Listener, error) { bound = true; return stub, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	if !bound {
+		t.Fatal("label path ran without binding")
+	}
+	node, _ := client.CoreV1().Nodes().Get(context.Background(), "node", metav1.GetOptions{})
+	if node.Labels[HangarReadyLabel] != "ready" {
+		t.Fatal("bound listener did not advertise readiness")
+	}
+}
+
+func TestHangarCleanupRemovesLabelsThenClosesClient(t *testing.T) {
+	client := fake.NewSimpleClientset(&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node", Labels: map[string]string{HangarReadyLabel: "ready", "concourse.dev/artifact-cache": "ready"}}})
+	hangarLabeler := NewNodeLabeler(lagertest.NewTestLogger("hangar-label"), client, "node", HangarReadyLabel)
+	legacyLabeler := NewNodeLabeler(lagertest.NewTestLogger("legacy-label"), client, "node", "concourse.dev/artifact-cache")
+	closed := false
+	if err := cleanupDaemonServices(context.Background(), hangarLabeler, legacyLabeler, nil, func() error { closed = true; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	node, _ := client.CoreV1().Nodes().Get(context.Background(), "node", metav1.GetOptions{})
+	if len(node.Labels) != 0 || !closed {
+		t.Fatalf("cleanup left labels=%v closed=%v", node.Labels, closed)
 	}
 }

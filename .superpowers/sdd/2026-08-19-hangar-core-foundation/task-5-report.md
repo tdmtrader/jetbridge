@@ -75,3 +75,59 @@ The loopback-based daemon/TLS tests require permission to bind local test ports 
 
 - No live GCS credentials were available. Startup performs a real bounded bucket-attributes check before readiness; the strict GCS implementation itself is covered by the existing fake and conformance tests, while this task's local verification used store fakes at the HTTP boundary.
 - No Kubernetes cluster was used for a process-level label lifecycle test. Node label patch behavior remains covered by the existing fake-client tests; the shutdown order was reviewed directly in the small `main.go` composition diff.
+
+## Fix round 1: close Hangar service boundaries
+
+Independent review of `ea7f0f2488..2a82eb9117` was not approved. The findings were reproduced before fixes:
+
+```text
+$ env GOCACHE=/tmp/hangar-task5-gocache go test ./cmd/artifact-daemon -run 'TestHangarScratchPaths' -count=1
+cmd/artifact-daemon/hangar_test.go:532:13: undefined: validateHangarScratchPaths
+FAIL github.com/concourse/concourse/cmd/artifact-daemon [build failed]
+
+$ env GOCACHE=/tmp/hangar-task5-gocache go test ./cmd/artifact-daemon -run 'TestHangar(OpenHashes|OpenPreserves|StatusPrecedence)' -count=1
+--- FAIL: TestHangarOpenHashesActualSpooledBytesBeforeSuccess
+    same-length mutation = 200 ... want sanitized 422
+--- FAIL: TestHangarOpenPreservesTypedReadAndCloseFailures
+    infrastructure/context/close returned 422, want 503
+--- FAIL: TestHangarStatusPrecedenceNeverDowngradesCompoundFailuresToNotFound
+    joined failures returned 404, want their fail-closed typed status
+FAIL
+
+$ env GOCACHE=/tmp/hangar-task5-gocache go test ./cmd/artifact-daemon -run 'TestHangarMaterializationRequires' -count=1
+--- FAIL: TestHangarMaterializationRequiresExactCaseSensitiveJSONVocabulary
+    mixed-case Ref was accepted by encoding/json and reached authorization
+FAIL
+
+$ env GOCACHE=/tmp/hangar-task5-gocache go test ./hangar -run 'Test(NormalizeStorageEndpoint|NewStorageClientRootEndpoint)' -count=1
+hangar/gcs_test.go:215:15: undefined: normalizeStorageEndpoint
+FAIL github.com/concourse/concourse/hangar [build failed]
+```
+
+Fixes and self-review:
+
+- Replaced separator-prefix containment with a pure `filepath.Rel` containment gate. Filesystem roots are rejected before `MkdirAll` or `Chmod`; tests verify `/` remains unchanged and symlink targets are not mutated.
+- GET now hashes the complete final spool and compares it with the requested digest. Same-length mutations return sanitized 422 without a partial 200. Typed infrastructure/context read or close errors retain 503; local untyped I/O errors also fail closed as 503.
+- Reordered status classification so infrastructure/context, unauthorized, corrupt, limit, and conflict cannot be downgraded by a joined `ErrNotFound`.
+- Replaced the generic duplicate scan with an exact recursive token schema for `items`, item fields, and nested refs. Mixed-case aliases and semantic duplicates are rejected before `encoding/json`'s case-insensitive binding; unknown, trailing, and oversized control bodies remain bounded failures.
+- Added actual mid-body interruption, invalid/absolute materialization segments, exact raw response vocabulary, and token/field-free response and Lager sink assertions.
+- Startup now rejects readiness-label collisions, clears stale Hangar readiness even while disabled, binds the HTTP listener before adding readiness, and funnels bind failure, validation failure, graceful shutdown, and server failure through ordered label/server/client cleanup. Fake Kubernetes and listener tests cover disabled stale cleanup, bind failure, post-bind advertisement, and client closure.
+- Normalized only Hangar's nonempty custom GCS endpoint: server root and `/storage/v1` forms become `/storage/v1/`. Durable GCS remains byte-for-byte unchanged. Nonempty endpoints retain the repository's unauthenticated emulator/proxy convention. Wire tests and a shared-root composition test cover strict startup bucket attributes and both clients reaching the same fake.
+
+Final fix-round verification:
+
+```text
+$ gofmt -w cmd/artifact-daemon/main.go cmd/artifact-daemon/hangar.go cmd/artifact-daemon/hangar_handlers.go cmd/artifact-daemon/hangar_test.go hangar/gcs.go hangar/gcs_test.go
+$ git diff --check
+# exit 0, no output
+
+$ env GOCACHE=/tmp/hangar-task5-gocache go test ./cmd/artifact-daemon -run 'Test(Hangar|TLS|Durable)' -count=1
+ok  github.com/concourse/concourse/cmd/artifact-daemon  0.661s
+
+$ env GOCACHE=/tmp/hangar-task5-gocache go test ./cmd/artifact-daemon ./cmd/artifact-daemon/durable ./hangar -count=1
+ok  github.com/concourse/concourse/cmd/artifact-daemon          57.403s
+ok  github.com/concourse/concourse/cmd/artifact-daemon/durable   5.857s
+ok  github.com/concourse/concourse/hangar                        1.074s
+```
+
+Fix commit subject: `fix(artifact-daemon): close Hangar service boundaries`.

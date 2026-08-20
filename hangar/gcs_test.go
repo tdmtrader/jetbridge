@@ -205,6 +205,35 @@ func TestGCSEnsureTreeVerifiesPreconditionReportedDuringUploadWrite(t *testing.T
 	requireScratchEmpty(t, scratch)
 }
 
+func TestNormalizeStorageEndpointAcceptsSharedDurableRoot(t *testing.T) {
+	for _, tc := range []struct{ input, want string }{
+		{"http://127.0.0.1:4443", "http://127.0.0.1:4443/storage/v1/"},
+		{"http://127.0.0.1:4443/", "http://127.0.0.1:4443/storage/v1/"},
+		{"http://127.0.0.1:4443/storage/v1", "http://127.0.0.1:4443/storage/v1/"},
+		{"http://127.0.0.1:4443/storage/v1/", "http://127.0.0.1:4443/storage/v1/"},
+	} {
+		got, err := normalizeStorageEndpoint(tc.input)
+		require.NoError(t, err)
+		require.Equal(t, tc.want, got)
+	}
+}
+
+func TestNewStorageClientRootEndpointUsesJSONAPIBase(t *testing.T) {
+	var path string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"name":"bucket"}`))
+	}))
+	t.Cleanup(server.Close)
+	client, err := NewStorageClient(context.Background(), server.URL)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+	_, err = client.Bucket("bucket").Attrs(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, "/storage/v1/b/bucket", path)
+}
+
 func TestGCSOfficialClientPinsGenerationAndConditionsDeleteQuery(t *testing.T) {
 	t.Parallel()
 	const generation int64 = 73

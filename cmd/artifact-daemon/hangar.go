@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -44,6 +45,57 @@ type hangarOptions struct {
 	TLSCert         string
 	TLSKey          string
 	TLSCACert       string
+}
+
+func validateDaemonLabelKeys(legacyLabelKey string) error {
+	if legacyLabelKey == HangarReadyLabel {
+		return fmt.Errorf("--label-key must not collide with %s", HangarReadyLabel)
+	}
+	return nil
+}
+
+func prepareDaemonLabels(ctx context.Context, hangarLabeler, legacyLabeler *NodeLabeler) error {
+	if hangarLabeler != nil {
+		if err := hangarLabeler.RemoveLabel(ctx); err != nil {
+			return fmt.Errorf("clear stale Hangar readiness: %w", err)
+		}
+	}
+	if legacyLabeler != nil {
+		if err := legacyLabeler.AddLabel(ctx); err != nil {
+			return fmt.Errorf("add legacy readiness: %w", err)
+		}
+	}
+	return nil
+}
+
+func listenAndAdvertiseHangar(ctx context.Context, address string, labeler *NodeLabeler, listen func(string, string) (net.Listener, error)) (net.Listener, error) {
+	listener, err := listen("tcp", address)
+	if err != nil {
+		return nil, err
+	}
+	if labeler != nil {
+		if err := labeler.AddLabel(ctx); err != nil {
+			return nil, errors.Join(err, listener.Close())
+		}
+	}
+	return listener, nil
+}
+
+func cleanupDaemonServices(ctx context.Context, hangarLabeler, legacyLabeler *NodeLabeler, shutdown, closeHangar func() error) error {
+	var errs []error
+	if hangarLabeler != nil {
+		errs = append(errs, hangarLabeler.RemoveLabel(ctx))
+	}
+	if legacyLabeler != nil {
+		errs = append(errs, legacyLabeler.RemoveLabel(ctx))
+	}
+	if shutdown != nil {
+		errs = append(errs, shutdown())
+	}
+	if closeHangar != nil {
+		errs = append(errs, closeHangar())
+	}
+	return errors.Join(errs...)
 }
 
 func validateHangarOptions(opts hangarOptions, storagePath string) error {
@@ -136,8 +188,8 @@ func buildHangarService(ctx context.Context, logger lager.Logger, storagePath st
 func validatePrivateHangarScratch(scratch, storage string) error {
 	cleanScratch := filepath.Clean(scratch)
 	cleanStorage := filepath.Clean(storage)
-	if cleanScratch == cleanStorage || strings.HasPrefix(cleanScratch, cleanStorage+string(filepath.Separator)) || strings.HasPrefix(cleanStorage, cleanScratch+string(filepath.Separator)) {
-		return fmt.Errorf("--hangar-scratch-dir must be outside artifact storage")
+	if err := validateHangarScratchPaths(cleanScratch, cleanStorage); err != nil {
+		return err
 	}
 	if err := os.MkdirAll(cleanScratch, 0700); err != nil {
 		return fmt.Errorf("create Hangar scratch directory: %w", err)
@@ -154,8 +206,10 @@ func validatePrivateHangarScratch(scratch, storage string) error {
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("resolve artifact storage directory: %w", err)
 	}
-	if err == nil && (resolvedScratch == resolvedStorage || strings.HasPrefix(resolvedScratch, resolvedStorage+string(filepath.Separator)) || strings.HasPrefix(resolvedStorage, resolvedScratch+string(filepath.Separator))) {
-		return fmt.Errorf("--hangar-scratch-dir must be outside artifact storage")
+	if err == nil {
+		if err := validateHangarScratchPaths(resolvedScratch, resolvedStorage); err != nil {
+			return err
+		}
 	}
 	if err := hangar.ValidateTempDir(resolvedScratch); err != nil {
 		return err
@@ -166,6 +220,36 @@ func validatePrivateHangarScratch(scratch, storage string) error {
 	info, err = os.Lstat(cleanScratch)
 	if err != nil || !info.IsDir() || info.Mode().Perm() != 0700 {
 		return fmt.Errorf("Hangar scratch directory must be a private 0700 directory")
+	}
+	return nil
+}
+
+func validateHangarScratchPaths(scratch, storage string) error {
+	if !filepath.IsAbs(scratch) || !filepath.IsAbs(storage) {
+		return fmt.Errorf("Hangar scratch and artifact storage paths must be absolute")
+	}
+	scratch = filepath.Clean(scratch)
+	storage = filepath.Clean(storage)
+	if scratch == string(filepath.Separator) || storage == string(filepath.Separator) || filepath.VolumeName(scratch) == scratch || filepath.VolumeName(storage) == storage {
+		return fmt.Errorf("Hangar scratch and artifact storage paths must not be filesystem roots")
+	}
+	contains := func(parent, child string) (bool, error) {
+		rel, err := filepath.Rel(parent, child)
+		if err != nil {
+			return false, err
+		}
+		return rel == "." || rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)), nil
+	}
+	scratchContainsStorage, err := contains(scratch, storage)
+	if err != nil {
+		return fmt.Errorf("compare Hangar scratch and artifact storage: %w", err)
+	}
+	storageContainsScratch, err := contains(storage, scratch)
+	if err != nil {
+		return fmt.Errorf("compare artifact storage and Hangar scratch: %w", err)
+	}
+	if scratchContainsStorage || storageContainsScratch {
+		return fmt.Errorf("--hangar-scratch-dir must be outside artifact storage")
 	}
 	return nil
 }
