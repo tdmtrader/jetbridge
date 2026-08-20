@@ -1137,22 +1137,12 @@ decodePipelineIdentifier =
     Json.Decode.succeed PipelineIdentifier
         |> andMap (Json.Decode.field "team_name" Json.Decode.string)
         |> andMap (Json.Decode.field "pipeline_name" Json.Decode.string)
-        |> andMap
-            (defaultTo Dict.empty <|
-                Json.Decode.oneOf
-                    [ Json.Decode.field "instance_vars" decodeInstanceVars
-                    , Json.Decode.field "pipeline_instance_vars" decodeInstanceVars
-                    ]
-            )
+        |> andMap (defaultTo Dict.empty <| Json.Decode.oneOf [ Json.Decode.field "instance_vars" decodeInstanceVars, Json.Decode.field "pipeline_instance_vars" decodeInstanceVars ])
 
 
 encodePipelineIdentifier : PipelineIdentifier -> Json.Encode.Value
 encodePipelineIdentifier pipelineIdentifier =
-    Json.Encode.object
-        [ ( "team_name", Json.Encode.string pipelineIdentifier.teamName )
-        , ( "pipeline_name", Json.Encode.string pipelineIdentifier.pipelineName )
-        , ( "instance_vars", encodeInstanceVars pipelineIdentifier.pipelineInstanceVars )
-        ]
+    Json.Encode.object [ ( "team_name", Json.Encode.string pipelineIdentifier.teamName ), ( "pipeline_name", Json.Encode.string pipelineIdentifier.pipelineName ), ( "instance_vars", encodeInstanceVars pipelineIdentifier.pipelineInstanceVars ) ]
 
 
 pipelineId : { r | teamName : TeamName, pipelineName : PipelineName, pipelineInstanceVars : InstanceVars } -> PipelineIdentifier
@@ -1194,21 +1184,10 @@ type alias Pipeline =
     }
 
 
-type ParamType
-    = StringParam
-    | NumberParam
-    | BoolParam
-    | EnumParam
+type ParamType = StringParam | NumberParam | BoolParam | EnumParam
 
 
-type alias ParamSchema =
-    { name : String
-    , type_ : ParamType
-    , required : Bool
-    , default : Maybe JsonValue
-    , values : List JsonValue
-    , description : Maybe String
-    }
+type alias ParamSchema = { name : String, type_ : ParamType, required : Bool, default : Maybe JsonValue, values : List JsonValue, description : Maybe String }
 
 
 type alias PipelineGroup =
@@ -1248,47 +1227,27 @@ encodePipelineRunFields pipeline =
             []
 
         Just isTemplate ->
-            ( "template", Json.Encode.bool isTemplate )
-                :: (if isTemplate then
-                        [ ( "params_schema", Json.Encode.list encodeParamSchema pipeline.paramsSchema )
-                        , ( "last_run_number", Json.Encode.Extra.maybe Json.Encode.int pipeline.lastRunNumber )
-                        , ( "can_create_run", Json.Encode.bool pipeline.canCreateRun )
-                        ]
-
-                    else
-                        [ ( "run_number", Json.Encode.Extra.maybe Json.Encode.int pipeline.runNumber )
-                        , ( "run_template_ref", Json.Encode.Extra.maybe encodePipelineIdentifier pipeline.runTemplateRef )
-                        ]
-                   )
+            ( "template", Json.Encode.bool isTemplate ) ::
+                (if isTemplate then
+                    [ ( "params_schema", Json.Encode.list encodeParamSchema pipeline.paramsSchema ), ( "last_run_number", Json.Encode.Extra.maybe Json.Encode.int pipeline.lastRunNumber ), ( "can_create_run", Json.Encode.bool pipeline.canCreateRun ) ]
+                 else
+                    [ ( "run_number", Json.Encode.Extra.maybe Json.Encode.int pipeline.runNumber ), ( "run_template_ref", Json.Encode.Extra.maybe encodePipelineIdentifier pipeline.runTemplateRef ) ]
+                )
 
 
 encodeParamSchema : ParamSchema -> Json.Encode.Value
 encodeParamSchema schema =
-    Json.Encode.object
-        [ ( "name", Json.Encode.string schema.name )
-        , ( "type", encodeParamType schema.type_ )
-        , ( "required", Json.Encode.bool schema.required )
-        , ( "default", Json.Encode.Extra.maybe encodeJsonValue schema.default )
-        , ( "values", Json.Encode.list encodeJsonValue schema.values )
-        , ( "description", Json.Encode.Extra.maybe Json.Encode.string schema.description )
-        ]
+    Json.Encode.object [ ( "name", Json.Encode.string schema.name ), ( "type", encodeParamType schema.type_ ), ( "required", Json.Encode.bool schema.required ), ( "default", Json.Encode.Extra.maybe encodeJsonValue schema.default ), ( "values", Json.Encode.list encodeJsonValue schema.values ), ( "description", Json.Encode.Extra.maybe Json.Encode.string schema.description ) ]
 
 
 encodeParamType : ParamType -> Json.Encode.Value
 encodeParamType paramType =
     Json.Encode.string <|
         case paramType of
-            StringParam ->
-                "string"
-
-            NumberParam ->
-                "number"
-
-            BoolParam ->
-                "boolean"
-
-            EnumParam ->
-                "enum"
+            StringParam -> "string"
+            NumberParam -> "number"
+            BoolParam -> "boolean"
+            EnumParam -> "enum"
 
 
 decodePipeline : Json.Decode.Decoder Pipeline
@@ -1332,20 +1291,11 @@ decodeParamType =
         |> Json.Decode.andThen
             (\paramType ->
                 case paramType of
-                    "string" ->
-                        Json.Decode.succeed StringParam
-
-                    "number" ->
-                        Json.Decode.succeed NumberParam
-
-                    "boolean" ->
-                        Json.Decode.succeed BoolParam
-
-                    "enum" ->
-                        Json.Decode.succeed EnumParam
-
-                    unknown ->
-                        Json.Decode.fail <| "unknown parameter type: " ++ unknown
+                    "string" -> Json.Decode.succeed StringParam
+                    "number" -> Json.Decode.succeed NumberParam
+                    "boolean" -> Json.Decode.succeed BoolParam
+                    "enum" -> Json.Decode.succeed EnumParam
+                    unknown -> Json.Decode.fail <| "unknown parameter type: " ++ unknown
             )
 
 

@@ -1,6 +1,9 @@
 port module Message.Effects exposing
     ( Effect(..)
+    , PipelineRunCallback(..)
+    , PipelineRunRequest
     , pipelinesSectionName
+    , pipelineRunRequest
     , renderPipeline
     , renderSvgIcon
     , runEffect
@@ -221,8 +224,61 @@ type alias VersionId =
     Concourse.VersionedResourceIdentifier
 
 
+type PipelineRunCallback = PipelineRunsFetchedCallback | PipelineRunFetchedCallback | PipelineRunCreatedCallback
+
+
+type alias PipelineRunRequest = { endpoint : Endpoints.Endpoint, method : String, page : Maybe Page, body : Maybe Json.Encode.Value, callback : PipelineRunCallback }
+
+
+pipelineRunRequest : Effect -> Maybe PipelineRunRequest
+pipelineRunRequest effect =
+    case effect of
+        FetchPipelineRuns id page ->
+            Just { endpoint = Endpoints.PipelineRunsList |> Endpoints.Pipeline id, method = "GET", page = Just page, body = Nothing, callback = PipelineRunsFetchedCallback }
+
+        FetchPipelineRun id number ->
+            Just { endpoint = Endpoints.PipelineRun number |> Endpoints.Pipeline id, method = "GET", page = Nothing, body = Nothing, callback = PipelineRunFetchedCallback }
+
+        CreatePipelineRun id vars ->
+            Just { endpoint = Endpoints.PipelineRunsList |> Endpoints.Pipeline id, method = "POST", page = Nothing, body = Just <| PipelineRun.encodeCreatePipelineRun vars, callback = PipelineRunCreatedCallback }
+
+        _ ->
+            Nothing
+
+
 runEffect : Effect -> Navigation.Key -> Concourse.CSRFToken -> Cmd Callback
 runEffect effect key csrfToken =
+    case pipelineRunRequest effect of
+        Just request -> runPipelineRunRequest request csrfToken
+        Nothing ->
+            runNonPipelineRunEffect effect key csrfToken
+
+
+runPipelineRunRequest : PipelineRunRequest -> Concourse.CSRFToken -> Cmd Callback
+runPipelineRunRequest request csrfToken =
+    case ( request.method, request.callback ) of
+        ( "GET", PipelineRunsFetchedCallback ) ->
+            case request.page of
+                Just page ->
+                    Api.paginatedGet request.endpoint request.page [] PipelineRun.decodePipelineRun |> Api.request |> Task.map (\runs -> ( page, runs )) |> Task.attempt PipelineRunsFetched
+
+                Nothing -> Cmd.none
+
+        ( "GET", PipelineRunFetchedCallback ) ->
+            Api.get request.endpoint |> Api.expectJson PipelineRun.decodePipelineRun |> Api.request |> Task.attempt PipelineRunFetched
+
+        ( "POST", PipelineRunCreatedCallback ) ->
+            case request.body of
+                Just body ->
+                    Api.post request.endpoint csrfToken |> Api.withJsonBody body |> Api.expectJson PipelineRun.decodePipelineRun |> Api.request |> Task.attempt PipelineRunCreated
+
+                Nothing -> Cmd.none
+
+        _ -> Cmd.none
+
+
+runNonPipelineRunEffect : Effect -> Navigation.Key -> Concourse.CSRFToken -> Cmd Callback
+runNonPipelineRunEffect effect key csrfToken =
     case effect of
         FetchJob id ->
             Api.get (Endpoints.BaseJob |> Endpoints.Job id)
@@ -313,28 +369,14 @@ runEffect effect key csrfToken =
                 |> Api.request
                 |> Task.attempt PipelinesFetched
 
-        FetchPipelineRuns id page ->
-            Api.paginatedGet
-                (Endpoints.PipelineRunsList |> Endpoints.Pipeline id)
-                (Just page)
-                []
-                PipelineRun.decodePipelineRun
-                |> Api.request
-                |> Task.map (\runs -> ( page, runs ))
-                |> Task.attempt PipelineRunsFetched
+        FetchPipelineRuns _ _ ->
+            Cmd.none
 
-        FetchPipelineRun id number ->
-            Api.get (Endpoints.PipelineRun number |> Endpoints.Pipeline id)
-                |> Api.expectJson PipelineRun.decodePipelineRun
-                |> Api.request
-                |> Task.attempt PipelineRunFetched
+        FetchPipelineRun _ _ ->
+            Cmd.none
 
-        CreatePipelineRun id vars ->
-            Api.post (Endpoints.PipelineRunsList |> Endpoints.Pipeline id) csrfToken
-                |> Api.withJsonBody (PipelineRun.encodeCreatePipelineRun vars)
-                |> Api.expectJson PipelineRun.decodePipelineRun
-                |> Api.request
-                |> Task.attempt PipelineRunCreated
+        CreatePipelineRun _ _ ->
+            Cmd.none
 
         FetchAllResources ->
             Api.get Endpoints.ResourcesList
