@@ -55,7 +55,7 @@ failures. The fix round:
   retaining an already-published receipt for idempotent retry.
 
 The reviewer also identified coverage guards that now assert their tables are
-non-empty and mode checks that include setuid, setgid, and sticky bits.
+non-empty and exact mode checks that include setuid, setgid, and sticky bits.
 
 ## Verification
 
@@ -70,6 +70,7 @@ non-empty and mode checks that include setuid, setgid, and sticky bits.
   0.582s, both exit 0.
 - Dedicated Hangar live compile/run probe: exit 0; the test compiled and
   truthfully skipped on macOS before contacting Kubernetes.
+- Final Hangar package rerun after the exact-mode cleanup: exit 0, 1.080s.
 - `git diff --check`: exit 0 after final formatting and report creation.
 
 Exact commands, package timings, and environment notes are recorded in
@@ -86,5 +87,4 @@ change is fixed here, and the pipeline now runs the independent
 offers no reusable backend failure injector, so the strict daemon test carries
 those failure cases. These are layered proofs: they do not constitute a real
 multi-node deployment using GCS after ejecting the producing node; that remains
-environment-dependent follow-up coverage. Final scoped re-review remains with
-the controller.
+environment-dependent follow-up coverage.
