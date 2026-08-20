@@ -482,7 +482,7 @@ func TestMaterializerKeepsStagePrivateUntilPublication(t *testing.T) {
 	hooks := materializerHooks{afterStage: func(stagePath string) error {
 		info, err := os.Stat(stagePath)
 		if err == nil {
-			observed = info.Mode().Perm()
+			observed = info.Mode() & (os.ModePerm | os.ModeSetuid | os.ModeSetgid | os.ModeSticky)
 		}
 		return err
 	}}
@@ -793,7 +793,7 @@ func TestMaterializerSealsExistingRootBeforeReceipt(t *testing.T) {
 	hooks := materializerHooks{beforeReceipt: func() error {
 		info, err := os.Stat(destination)
 		if err == nil {
-			observed = info.Mode().Perm()
+			observed = info.Mode() & (os.ModePerm | os.ModeSetuid | os.ModeSetgid | os.ModeSticky)
 		}
 		return errors.New("stop before receipt")
 	}}

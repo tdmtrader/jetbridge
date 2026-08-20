@@ -1732,7 +1732,7 @@ func assertMode(t *testing.T, name string, want os.FileMode) {
 	if err != nil {
 		t.Fatalf("stat %q: %v", name, err)
 	}
-	got := info.Mode() & (os.ModeType | os.ModePerm)
+	got := info.Mode() & (os.ModeType | os.ModePerm | os.ModeSetuid | os.ModeSetgid | os.ModeSticky)
 	if got != want {
 		t.Fatalf("mode %q = %v, want %v", name, got, want)
 	}
