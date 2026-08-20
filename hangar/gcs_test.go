@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +23,7 @@ import (
 	"cloud.google.com/go/storage"
 	"github.com/klauspost/compress/zstd"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/api/googleapi"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -80,9 +82,10 @@ func TestGCSEnsureTreeRejectsUnverifiedOrOversizedSourceBeforeUpload(t *testing.
 		content []byte
 		digest  Digest
 		limit   int64
+		wantErr error
 	}{
-		{name: "digest mismatch", content: []byte("actual"), digest: digestFor([]byte("expected")), limit: 64},
-		{name: "logical size overflow", content: []byte("too large"), digest: digestFor([]byte("too large")), limit: 3},
+		{name: "digest mismatch", content: []byte("actual"), digest: digestFor([]byte("expected")), limit: 64, wantErr: ErrCorrupt},
+		{name: "logical size overflow", content: []byte("too large"), digest: digestFor([]byte("too large")), limit: 3, wantErr: ErrLimitExceeded},
 	}
 	for _, test := range tests {
 		test := test
@@ -90,7 +93,7 @@ func TestGCSEnsureTreeRejectsUnverifiedOrOversizedSourceBeforeUpload(t *testing.
 			t.Parallel()
 			store, objects, scratch := newTestGCSStore(t)
 			attrs, created, err := store.EnsureTree(context.Background(), testScope, test.digest, bytes.NewReader(test.content), test.limit)
-			require.ErrorIs(t, err, ErrCorrupt)
+			require.ErrorIs(t, err, test.wantErr)
 			require.Zero(t, attrs)
 			require.False(t, created)
 			require.Empty(t, objects.writeConditions)
@@ -98,6 +101,29 @@ func TestGCSEnsureTreeRejectsUnverifiedOrOversizedSourceBeforeUpload(t *testing.
 			requireScratchEmpty(t, scratch)
 		})
 	}
+}
+
+func TestGCSEnsureTreeRejectsOversizedCompressedScratchBeforeCreatingWriter(t *testing.T) {
+	t.Parallel()
+	store, objects, scratch := newTestGCSStore(t)
+	content := []byte("x")
+	digest := digestFor(content)
+	store.createScratch = func(directory, pattern string) (scratchFile, error) {
+		file, err := os.CreateTemp(directory, pattern)
+		if err != nil {
+			return nil, err
+		}
+		return &expandingScratch{scratchFile: file, extra: 128}, nil
+	}
+
+	attrs, created, err := store.EnsureTree(context.Background(), testScope, digest, bytes.NewReader(content), 64)
+
+	require.ErrorIs(t, err, ErrLimitExceeded)
+	require.Zero(t, attrs)
+	require.False(t, created)
+	require.Empty(t, objects.writeConditions)
+	require.Empty(t, objects.objects)
+	requireScratchEmpty(t, scratch)
 }
 
 func TestGCSEnsureTreeIsIdempotentOnlyForFullyVerifiedExistingObject(t *testing.T) {
@@ -155,6 +181,25 @@ func TestGCSConcurrentIdenticalEnsureHasOneCreator(t *testing.T) {
 	require.NotEqual(t, first.created, second.created)
 	require.Equal(t, first.attrs, second.attrs)
 	require.Len(t, objects.objects, 1)
+	requireScratchEmpty(t, scratch)
+}
+
+func TestGCSEnsureTreeVerifiesPreconditionReportedDuringUploadWrite(t *testing.T) {
+	t.Parallel()
+	store, objects, scratch := newTestGCSStore(t)
+	content := []byte("already committed by a concurrent writer")
+	digest := digestFor(content)
+	ref := putLogical(t, objects, store.config.Prefix, testScope, digest, content)
+	objects.writeErr = &googleapi.Error{Code: http.StatusPreconditionFailed, Message: "doesNotExist failed"}
+	objects.abortErr = errors.New("writer already stopped after precondition failure")
+
+	attrs, created, err := store.EnsureTree(context.Background(), testScope, digest, bytes.NewReader(content), int64(len(content)))
+
+	require.NoError(t, err)
+	require.False(t, created)
+	require.Equal(t, ref, attrs.Ref)
+	require.Equal(t, 1, objects.abortCalls)
+	require.Equal(t, []int64{ref.Generation}, objects.readGenerations)
 	requireScratchEmpty(t, scratch)
 }
 
@@ -249,7 +294,6 @@ func TestGCSOpenTreeRejectsCorruptionBeforeReturningReader(t *testing.T) {
 		{name: "wrong digest", data: wrongCompressed, metadata: metadataFor(digest, int64(len("different bytes"))), size: int64(len(wrongCompressed)), limit: int64(len(content))},
 		{name: "wrong declared size", data: compressed, metadata: metadataFor(digest, int64(len(content))+1), size: int64(len(compressed)), limit: int64(len(content)) + 1},
 		{name: "compressed size mismatch", data: compressed, metadata: metadataFor(digest, int64(len(content))), size: int64(len(compressed)) + 1, limit: int64(len(content))},
-		{name: "declared logical limit", data: compressed, metadata: metadataFor(digest, int64(len(content))), size: int64(len(compressed)), limit: int64(len(content)) - 1},
 		{name: "extra metadata", data: compressed, metadata: func() map[string]string { m := metadataFor(digest, int64(len(content))); m["extra"] = "bad"; return m }(), size: int64(len(compressed)), limit: int64(len(content))},
 		{name: "compressed representation limit", data: bytes.Repeat([]byte{0}, 128), metadata: metadataFor(digest, 1), size: 128, limit: 64},
 	}
@@ -271,6 +315,197 @@ func TestGCSOpenTreeRejectsCorruptionBeforeReturningReader(t *testing.T) {
 	}
 	_, err := maxCompressedRepresentation((math.MaxInt64-32)/4 + 1)
 	require.Error(t, err)
+}
+
+func TestGCSOpenTreeSeparatesBackendAndScratchFailuresFromCorruption(t *testing.T) {
+	t.Parallel()
+	content := bytes.Repeat([]byte("transport provenance must survive\n"), 4096)
+	digest := digestFor(content)
+	sentinel := errors.New("GCS response body failed")
+
+	t.Run("reader open", func(t *testing.T) {
+		t.Parallel()
+		store, objects, scratch := newTestGCSStore(t)
+		ref := putLogical(t, objects, store.config.Prefix, testScope, digest, content)
+		objects.newReaderErr = sentinel
+		reader, _, err := store.OpenTree(context.Background(), ref, int64(len(content)))
+		require.ErrorIs(t, err, ErrInfrastructure)
+		require.ErrorIs(t, err, sentinel)
+		require.NotErrorIs(t, err, ErrCorrupt)
+		require.Nil(t, reader)
+		requireScratchEmpty(t, scratch)
+	})
+
+	t.Run("decoder initialization", func(t *testing.T) {
+		t.Parallel()
+		store, objects, scratch := newTestGCSStore(t)
+		ref := putLogical(t, objects, store.config.Prefix, testScope, digest, content)
+		objects.readErr = sentinel
+		reader, _, err := store.OpenTree(context.Background(), ref, int64(len(content)))
+		require.ErrorIs(t, err, ErrInfrastructure)
+		require.ErrorIs(t, err, sentinel)
+		require.NotErrorIs(t, err, ErrCorrupt)
+		require.Nil(t, reader)
+		requireScratchEmpty(t, scratch)
+	})
+
+	t.Run("midstream body read", func(t *testing.T) {
+		t.Parallel()
+		store, objects, scratch := newTestGCSStore(t)
+		ref := putLogical(t, objects, store.config.Prefix, testScope, digest, content)
+		key, err := TreeKey(store.config.Prefix, testScope, digest)
+		require.NoError(t, err)
+		objects.readErr = sentinel
+		objects.readErrAfter = len(objects.objects[key].data) / 2
+		reader, _, err := store.OpenTree(context.Background(), ref, int64(len(content)))
+		require.ErrorIs(t, err, ErrInfrastructure)
+		require.ErrorIs(t, err, sentinel)
+		require.NotErrorIs(t, err, ErrCorrupt)
+		require.Nil(t, reader)
+		requireScratchEmpty(t, scratch)
+	})
+
+	t.Run("local scratch write", func(t *testing.T) {
+		t.Parallel()
+		store, objects, scratch := newTestGCSStore(t)
+		ref := putLogical(t, objects, store.config.Prefix, testScope, digest, content)
+		store.createScratch = func(directory, pattern string) (scratchFile, error) {
+			file, err := os.CreateTemp(directory, pattern)
+			if err != nil {
+				return nil, err
+			}
+			return &failingScratch{scratchFile: file, err: syscall.ENOSPC}, nil
+		}
+		reader, _, err := store.OpenTree(context.Background(), ref, int64(len(content)))
+		require.ErrorIs(t, err, syscall.ENOSPC)
+		require.NotErrorIs(t, err, ErrCorrupt)
+		require.Nil(t, reader)
+		requireScratchEmpty(t, scratch)
+	})
+}
+
+func TestGCSOpenTreeCapsCompressedBodyBeforeDecoder(t *testing.T) {
+	t.Parallel()
+	store, objects, scratch := newTestGCSStore(t)
+	content := []byte("x")
+	digest := digestFor(content)
+	compressed := compressTest(t, content)
+	skippable := make([]byte, 8+128)
+	binary.LittleEndian.PutUint32(skippable[:4], 0x184d2a50)
+	binary.LittleEndian.PutUint32(skippable[4:8], 128)
+	data := append(compressed, skippable...)
+	key, err := TreeKey(store.config.Prefix, testScope, digest)
+	require.NoError(t, err)
+	generation := objects.putRaw(key, data, metadataFor(digest, 1), int64(len(compressed)))
+	ref, err := NewTreeRef(testScope, digest, generation)
+	require.NoError(t, err)
+
+	reader, _, err := store.OpenTree(context.Background(), ref, 64)
+
+	require.ErrorIs(t, err, ErrCorrupt)
+	require.Nil(t, reader)
+	require.LessOrEqual(t, objects.readBytes, int64(37))
+	requireScratchEmpty(t, scratch)
+}
+
+func TestGCSCallerLogicalLimitViolationsAreTypedAndDeclaredSizeBoundsSpooling(t *testing.T) {
+	t.Parallel()
+
+	t.Run("declared size exceeds caller maximum", func(t *testing.T) {
+		t.Parallel()
+		store, objects, scratch := newTestGCSStore(t)
+		content := []byte("12345")
+		digest := digestFor(content)
+		ref := putLogical(t, objects, store.config.Prefix, testScope, digest, content)
+		reader, _, err := store.OpenTree(context.Background(), ref, 4)
+		require.ErrorIs(t, err, ErrLimitExceeded)
+		require.NotErrorIs(t, err, ErrCorrupt)
+		require.Nil(t, reader)
+		requireScratchEmpty(t, scratch)
+	})
+
+	t.Run("downloaded logical bytes exceed caller maximum", func(t *testing.T) {
+		t.Parallel()
+		store, objects, scratch := newTestGCSStore(t)
+		content := []byte("1234")
+		digest := digestFor(content)
+		compressed := compressTest(t, content)
+		key, err := TreeKey(store.config.Prefix, testScope, digest)
+		require.NoError(t, err)
+		generation := objects.putRaw(key, compressed, metadataFor(digest, 3), int64(len(compressed)))
+		ref, err := NewTreeRef(testScope, digest, generation)
+		require.NoError(t, err)
+		reader, _, err := store.OpenTree(context.Background(), ref, 3)
+		require.ErrorIs(t, err, ErrLimitExceeded)
+		require.NotErrorIs(t, err, ErrCorrupt)
+		require.Nil(t, reader)
+		requireScratchEmpty(t, scratch)
+	})
+
+	t.Run("metadata body mismatch below caller maximum remains corrupt", func(t *testing.T) {
+		t.Parallel()
+		store, objects, scratch := newTestGCSStore(t)
+		content := []byte("1234")
+		digest := digestFor(content)
+		compressed := compressTest(t, content)
+		key, err := TreeKey(store.config.Prefix, testScope, digest)
+		require.NoError(t, err)
+		generation := objects.putRaw(key, compressed, metadataFor(digest, 3), int64(len(compressed)))
+		ref, err := NewTreeRef(testScope, digest, generation)
+		require.NoError(t, err)
+		reader, _, err := store.OpenTree(context.Background(), ref, 10)
+		require.ErrorIs(t, err, ErrCorrupt)
+		require.NotErrorIs(t, err, ErrLimitExceeded)
+		require.Nil(t, reader)
+		requireScratchEmpty(t, scratch)
+	})
+
+	t.Run("declared size plus one caps scratch writes", func(t *testing.T) {
+		t.Parallel()
+		store, objects, scratch := newTestGCSStore(t)
+		content := bytes.Repeat([]byte("x"), 100)
+		digest := digestFor(content)
+		compressed := compressTest(t, content)
+		key, err := TreeKey(store.config.Prefix, testScope, digest)
+		require.NoError(t, err)
+		generation := objects.putRaw(key, compressed, metadataFor(digest, 3), int64(len(compressed)))
+		ref, err := NewTreeRef(testScope, digest, generation)
+		require.NoError(t, err)
+		var observed *countingScratch
+		store.createScratch = func(directory, pattern string) (scratchFile, error) {
+			file, err := os.CreateTemp(directory, pattern)
+			if err != nil {
+				return nil, err
+			}
+			observed = &countingScratch{scratchFile: file}
+			return observed, nil
+		}
+		reader, _, err := store.OpenTree(context.Background(), ref, 100)
+		require.ErrorIs(t, err, ErrCorrupt)
+		require.Nil(t, reader)
+		require.NotNil(t, observed)
+		require.LessOrEqual(t, observed.written, int64(4))
+		requireScratchEmpty(t, scratch)
+	})
+}
+
+func TestGCSEnsureTreeKeepsConflictVerificationTransportFailureAsInfrastructure(t *testing.T) {
+	t.Parallel()
+	store, objects, scratch := newTestGCSStore(t)
+	content := []byte("existing immutable object")
+	digest := digestFor(content)
+	putLogical(t, objects, store.config.Prefix, testScope, digest, content)
+	sentinel := errors.New("GCS read outage")
+	objects.readErr = sentinel
+
+	attrs, created, err := store.EnsureTree(context.Background(), testScope, digest, bytes.NewReader(content), int64(len(content)))
+
+	require.ErrorIs(t, err, ErrInfrastructure)
+	require.ErrorIs(t, err, sentinel)
+	require.NotErrorIs(t, err, ErrConflict)
+	require.Zero(t, attrs)
+	require.False(t, created)
+	requireScratchEmpty(t, scratch)
 }
 
 func TestGCSMissingTreeIsTypedNotFound(t *testing.T) {
@@ -350,6 +585,76 @@ func TestGCSMapsBackendErrorsToInfrastructureWithoutHidingCause(t *testing.T) {
 	err = store.DeleteTree(context.Background(), ref)
 	require.ErrorIs(t, err, ErrInfrastructure)
 	require.ErrorIs(t, err, sentinel)
+}
+
+func TestGCSClassifiesUnauthorizedAcrossBackendOperations(t *testing.T) {
+	t.Parallel()
+	authorizationErrors := []struct {
+		name string
+		err  error
+	}{
+		{name: "HTTP 401", err: &googleapi.Error{Code: http.StatusUnauthorized, Message: "unauthenticated"}},
+		{name: "HTTP 403", err: &googleapi.Error{Code: http.StatusForbidden, Message: "forbidden"}},
+		{name: "gRPC Unauthenticated", err: status.Error(codes.Unauthenticated, "unauthenticated")},
+		{name: "gRPC PermissionDenied", err: status.Error(codes.PermissionDenied, "forbidden")},
+	}
+	operations := []struct {
+		name string
+		run  func(*testing.T, *GCSStore, *memoryObjectClient, error) error
+	}{
+		{name: "attributes", run: func(t *testing.T, store *GCSStore, objects *memoryObjectClient, backendErr error) error {
+			objects.attrsErr = backendErr
+			_, err := store.InspectTree(context.Background(), testScope, digestFor([]byte("missing")), 64)
+			return err
+		}},
+		{name: "reader open", run: func(t *testing.T, store *GCSStore, objects *memoryObjectClient, backendErr error) error {
+			content := []byte("read")
+			ref := putLogical(t, objects, store.config.Prefix, testScope, digestFor(content), content)
+			objects.newReaderErr = backendErr
+			_, _, err := store.OpenTree(context.Background(), ref, 64)
+			return err
+		}},
+		{name: "reader body", run: func(t *testing.T, store *GCSStore, objects *memoryObjectClient, backendErr error) error {
+			content := []byte("read body")
+			ref := putLogical(t, objects, store.config.Prefix, testScope, digestFor(content), content)
+			objects.readErr = backendErr
+			_, _, err := store.OpenTree(context.Background(), ref, 64)
+			return err
+		}},
+		{name: "upload write", run: func(t *testing.T, store *GCSStore, objects *memoryObjectClient, backendErr error) error {
+			content := []byte("upload")
+			objects.writeErr = backendErr
+			_, _, err := store.EnsureTree(context.Background(), testScope, digestFor(content), bytes.NewReader(content), 64)
+			return err
+		}},
+		{name: "upload commit", run: func(t *testing.T, store *GCSStore, objects *memoryObjectClient, backendErr error) error {
+			content := []byte("commit")
+			objects.closeErr = backendErr
+			_, _, err := store.EnsureTree(context.Background(), testScope, digestFor(content), bytes.NewReader(content), 64)
+			return err
+		}},
+		{name: "delete", run: func(t *testing.T, store *GCSStore, objects *memoryObjectClient, backendErr error) error {
+			content := []byte("delete")
+			ref := putLogical(t, objects, store.config.Prefix, testScope, digestFor(content), content)
+			objects.deleteErr = backendErr
+			return store.DeleteTree(context.Background(), ref)
+		}},
+	}
+	for _, authorizationError := range authorizationErrors {
+		authorizationError := authorizationError
+		for _, operation := range operations {
+			operation := operation
+			t.Run(authorizationError.name+"/"+operation.name, func(t *testing.T) {
+				t.Parallel()
+				store, objects, scratch := newTestGCSStore(t)
+				err := operation.run(t, store, objects, authorizationError.err)
+				require.ErrorIs(t, err, ErrUnauthorized)
+				require.ErrorIs(t, err, authorizationError.err)
+				require.NotErrorIs(t, err, ErrInfrastructure)
+				requireScratchEmpty(t, scratch)
+			})
+		}
+	}
 }
 
 func TestGCSDoesNotReclassifyContextErrorsAsInfrastructure(t *testing.T) {
