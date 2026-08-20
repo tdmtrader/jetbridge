@@ -163,6 +163,24 @@ handleCallback callback model =
         OutputOfFetched (Err err) ->
             redirectToLoginIfNecessary err ( model, [] )
 
+        PipelineFetched (Err err) ->
+            case model.subModel of
+                SubPage.PipelineRunsModel _ ->
+                    subpageHandleCallback callback ( model, [] )
+                        |> redirectToLoginIfNecessary err
+
+                _ ->
+                    sideBarHandleCallback callback ( model, [] )
+                        |> subpageHandleCallback callback
+
+        PipelineRunsFetched (Err err) ->
+            subpageHandleCallback callback ( model, [] )
+                |> redirectToLoginIfNecessary err
+
+        PipelineRunCreated (Err err) ->
+            subpageHandleCallback callback ( model, [] )
+                |> redirectToLoginIfNecessary err
+
         PipelineToggled _ (Err err) ->
             subpageHandleCallback callback ( model, [] )
                 |> redirectToLoginIfNecessary err
@@ -518,6 +536,9 @@ routeMatchesModel : Routes.Route -> Model -> Bool
 routeMatchesModel route model =
     case ( route, model.subModel ) of
         ( Routes.Pipeline _, SubPage.PipelineModel _ ) ->
+            True
+
+        ( Routes.PipelineRuns _, SubPage.PipelineRunsModel _ ) ->
             True
 
         ( Routes.Resource _, SubPage.ResourceModel _ ) ->
