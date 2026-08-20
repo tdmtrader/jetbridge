@@ -65,6 +65,10 @@ type Pipeline interface {
 	Config() (atc.Config, error)
 	Public() bool
 	Archived() bool
+	Template() bool
+	Params() []atc.ParamSchema
+	RunRetention() *atc.RunRetentionConfig
+	LastRunNumber() int
 	LastUpdated() time.Time
 	PipelineRef() atc.PipelineRef
 	PipelineRunID() (int, bool)
@@ -147,6 +151,10 @@ type pipeline struct {
 	pausedAt         time.Time
 	public           bool
 	archived         bool
+	template         bool
+	params           []atc.ParamSchema
+	runRetention     *atc.RunRetentionConfig
+	lastRunNumber    int
 	lastUpdated      time.Time
 	pipelineRunID    int
 	basePipelineID   int
@@ -178,6 +186,11 @@ var pipelinesQuery = psql.Select(`
 		p.instance_vars,
 		p.paused_by,
 		p.paused_at,
+		p.template,
+		p.params,
+		p.run_retention_keep_last,
+		p.run_retention_ttl_days,
+		p.last_run_number,
 		p.pipeline_run_id,
 		pr.template_pipeline_id,
 		base.name`).
@@ -193,23 +206,27 @@ func newPipeline(conn DbConn, lockFactory lock.LockFactory) *pipeline {
 	}
 }
 
-func (p *pipeline) ID() int                          { return p.id }
-func (p *pipeline) Name() string                     { return p.name }
-func (p *pipeline) TeamID() int                      { return p.teamID }
-func (p *pipeline) TeamName() string                 { return p.teamName }
-func (p *pipeline) ParentJobID() int                 { return p.parentJobID }
-func (p *pipeline) ParentBuildID() int               { return p.parentBuildID }
-func (p *pipeline) InstanceVars() atc.InstanceVars   { return p.instanceVars }
-func (p *pipeline) Groups() atc.GroupConfigs         { return p.groups }
-func (p *pipeline) VarSources() atc.VarSourceConfigs { return p.varSources }
-func (p *pipeline) Display() *atc.DisplayConfig      { return p.display }
-func (p *pipeline) ConfigVersion() ConfigVersion     { return p.configVersion }
-func (p *pipeline) Public() bool                     { return p.public }
-func (p *pipeline) Paused() bool                     { return p.paused }
-func (p *pipeline) PausedAt() time.Time              { return p.pausedAt }
-func (p *pipeline) PausedBy() string                 { return p.pausedBy }
-func (p *pipeline) Archived() bool                   { return p.archived }
-func (p *pipeline) LastUpdated() time.Time           { return p.lastUpdated }
+func (p *pipeline) ID() int                               { return p.id }
+func (p *pipeline) Name() string                          { return p.name }
+func (p *pipeline) TeamID() int                           { return p.teamID }
+func (p *pipeline) TeamName() string                      { return p.teamName }
+func (p *pipeline) ParentJobID() int                      { return p.parentJobID }
+func (p *pipeline) ParentBuildID() int                    { return p.parentBuildID }
+func (p *pipeline) InstanceVars() atc.InstanceVars        { return p.instanceVars }
+func (p *pipeline) Groups() atc.GroupConfigs              { return p.groups }
+func (p *pipeline) VarSources() atc.VarSourceConfigs      { return p.varSources }
+func (p *pipeline) Display() *atc.DisplayConfig           { return p.display }
+func (p *pipeline) ConfigVersion() ConfigVersion          { return p.configVersion }
+func (p *pipeline) Public() bool                          { return p.public }
+func (p *pipeline) Paused() bool                          { return p.paused }
+func (p *pipeline) PausedAt() time.Time                   { return p.pausedAt }
+func (p *pipeline) PausedBy() string                      { return p.pausedBy }
+func (p *pipeline) Archived() bool                        { return p.archived }
+func (p *pipeline) Template() bool                        { return p.template }
+func (p *pipeline) Params() []atc.ParamSchema             { return p.params }
+func (p *pipeline) RunRetention() *atc.RunRetentionConfig { return p.runRetention }
+func (p *pipeline) LastRunNumber() int                    { return p.lastRunNumber }
+func (p *pipeline) LastUpdated() time.Time                { return p.lastUpdated }
 func (p *pipeline) PipelineRef() atc.PipelineRef {
 	return atc.PipelineRef{Name: p.name, InstanceVars: p.instanceVars}
 }
@@ -288,6 +305,9 @@ func (p *pipeline) Config() (atc.Config, error) {
 		Prototypes:    prototypes.Configs(),
 		Jobs:          jobConfigs,
 		Display:       p.Display(),
+		Template:      p.Template(),
+		Params:        p.Params(),
+		RunRetention:  p.RunRetention(),
 	}
 
 	return config, nil

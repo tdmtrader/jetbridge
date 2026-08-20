@@ -415,6 +415,31 @@ func savePipeline(
 	jobID sql.NullInt64,
 	buildID sql.NullInt64,
 ) (int, bool, error) {
+	return savePipelineWithOptions(tx, pipelineRef, config, from, initiallyPaused, teamID, jobID, buildID, pipelineSaveOptions{persistTemplateMetadata: true})
+}
+
+type pipelineSaveOptions struct {
+	persistTemplateMetadata bool
+	pipelineRunID           sql.NullInt64
+	runJobs                 map[string]runJobMetadata
+}
+
+type runJobMetadata struct {
+	expected  bool
+	policyKey string
+}
+
+func savePipelineWithOptions(
+	tx Tx,
+	pipelineRef atc.PipelineRef,
+	config atc.Config,
+	from ConfigVersion,
+	initiallyPaused bool,
+	teamID int,
+	jobID sql.NullInt64,
+	buildID sql.NullInt64,
+	options pipelineSaveOptions,
+) (int, bool, error) {
 
 	var instanceVars sql.NullString
 	if pipelineRef.InstanceVars != nil {
@@ -441,6 +466,32 @@ func savePipeline(
 		Scan(&existingConfig)
 	if err != nil {
 		return 0, false, err
+	}
+
+	params := config.Params
+	if params == nil {
+		params = []atc.ParamSchema{}
+	}
+	paramsPayload, err := json.Marshal(params)
+	if err != nil {
+		return 0, false, err
+	}
+	var keepLast, ttlDays any
+	if config.RunRetention != nil {
+		keepLast = config.RunRetention.KeepLast
+		ttlDays = config.RunRetention.TTLDays
+	}
+
+	if existingConfig && !config.Template {
+		var template, hasRuns bool
+		err = psql.Select("template", "EXISTS (SELECT 1 FROM pipeline_runs WHERE template_pipeline_id = pipelines.id)").
+			From("pipelines").Where(pipelineRefWhereClause).RunWith(tx).QueryRow().Scan(&template, &hasRuns)
+		if err != nil {
+			return 0, false, err
+		}
+		if template && hasRuns {
+			return 0, false, ErrPipelineTemplateHasRuns
+		}
 	}
 
 	groupsPayload, err := json.Marshal(config.Groups)
@@ -478,6 +529,15 @@ func savePipeline(
 			"parent_job_id":   jobID,
 			"parent_build_id": buildID,
 			"instance_vars":   instanceVars,
+		}
+		if options.persistTemplateMetadata {
+			values["template"] = config.Template
+			values["params"] = paramsPayload
+			values["run_retention_keep_last"] = keepLast
+			values["run_retention_ttl_days"] = ttlDays
+		}
+		if options.pipelineRunID.Valid {
+			values["pipeline_run_id"] = options.pipelineRunID
 		}
 		var ordering sql.NullInt64
 		var secondaryOrdering sql.NullInt64
@@ -524,6 +584,12 @@ func savePipeline(
 				pipelineRefWhereClause,
 				sq.Eq{"version": from},
 			})
+		if options.persistTemplateMetadata {
+			q = q.Set("template", config.Template).
+				Set("params", paramsPayload).
+				Set("run_retention_keep_last", keepLast).
+				Set("run_retention_ttl_days", ttlDays)
+		}
 
 		if !initiallyPaused {
 			// The set_pipeline step creates pipelines that aren't initially
@@ -592,7 +658,7 @@ func savePipeline(
 		return 0, false, err
 	}
 
-	jobNameToID, err := saveJobsAndSerialGroups(tx, config.Jobs, config.Groups, pipelineID)
+	jobNameToID, err := saveJobsAndSerialGroups(tx, config.Jobs, config.Groups, pipelineID, options.runJobs)
 	if err != nil {
 		return 0, false, err
 	}
@@ -1210,7 +1276,7 @@ func sortUpdateNames(updateNames []UpdateName) []UpdateName {
 	return updateNames
 }
 
-func saveJob(tx Tx, job atc.JobConfig, pipelineID int, groups []string) (int, error) {
+func saveJob(tx Tx, job atc.JobConfig, pipelineID int, groups []string, runMetadata *runJobMetadata) (int, error) {
 	configPayload, err := json.Marshal(job)
 	if err != nil {
 		return 0, err
@@ -1222,15 +1288,16 @@ func saveJob(tx Tx, job atc.JobConfig, pipelineID int, groups []string) (int, er
 		return 0, err
 	}
 
+	columns := []string{"name", "pipeline_id", "config", "public", "max_in_flight", "disable_manual_trigger", "interruptible", "active", "nonce", "tags"}
+	values := []any{job.Name, pipelineID, encryptedPayload, job.Public, job.MaxInFlight(), job.DisableManualTrigger, job.Interruptible, true, nonce, groups}
+	if runMetadata != nil {
+		columns = append(columns, "run_expected", "run_policy_key")
+		values = append(values, runMetadata.expected, runMetadata.policyKey)
+	}
+	query := psql.Insert("jobs").Columns(columns...).Values(values...)
 	var jobID int
-	err = psql.Insert("jobs").
-		Columns("name", "pipeline_id", "config", "public", "max_in_flight", "disable_manual_trigger", "interruptible", "active", "nonce", "tags").
-		Values(job.Name, pipelineID, encryptedPayload, job.Public, job.MaxInFlight(), job.DisableManualTrigger, job.Interruptible, true, nonce, groups).
-		Suffix("ON CONFLICT (name, pipeline_id) DO UPDATE SET config = EXCLUDED.config, public = EXCLUDED.public, max_in_flight = EXCLUDED.max_in_flight, disable_manual_trigger = EXCLUDED.disable_manual_trigger, interruptible = EXCLUDED.interruptible, active = EXCLUDED.active, nonce = EXCLUDED.nonce, tags = EXCLUDED.tags").
-		Suffix("RETURNING id").
-		RunWith(tx).
-		QueryRow().
-		Scan(&jobID)
+	err = query.Suffix("ON CONFLICT (name, pipeline_id) DO UPDATE SET config = EXCLUDED.config, public = EXCLUDED.public, max_in_flight = EXCLUDED.max_in_flight, disable_manual_trigger = EXCLUDED.disable_manual_trigger, interruptible = EXCLUDED.interruptible, active = EXCLUDED.active, nonce = EXCLUDED.nonce, tags = EXCLUDED.tags").
+		Suffix("RETURNING id").RunWith(tx).QueryRow().Scan(&jobID)
 	if err != nil {
 		return 0, err
 	}
@@ -1344,11 +1411,14 @@ func scanPipeline(p *pipeline, scan scannable) error {
 		instanceVars     sql.NullString
 		pausedBy         sql.NullString
 		pausedAt         sql.NullTime
+		params           sql.NullString
+		keepLast         sql.NullInt64
+		ttlDays          sql.NullInt64
 		pipelineRunID    sql.NullInt64
 		basePipelineID   sql.NullInt64
 		basePipelineName sql.NullString
 	)
-	err := scan.Scan(&p.id, &p.name, &groups, &varSources, &display, &nonce, &p.configVersion, &p.teamID, &p.teamName, &p.paused, &p.public, &p.archived, &lastUpdated, &parentJobID, &parentBuildID, &instanceVars, &pausedBy, &pausedAt, &pipelineRunID, &basePipelineID, &basePipelineName)
+	err := scan.Scan(&p.id, &p.name, &groups, &varSources, &display, &nonce, &p.configVersion, &p.teamID, &p.teamName, &p.paused, &p.public, &p.archived, &lastUpdated, &parentJobID, &parentBuildID, &instanceVars, &pausedBy, &pausedAt, &p.template, &params, &keepLast, &ttlDays, &p.lastRunNumber, &pipelineRunID, &basePipelineID, &basePipelineName)
 	if err != nil {
 		return err
 	}
@@ -1359,6 +1429,22 @@ func scanPipeline(p *pipeline, scan scannable) error {
 	p.pipelineRunID = int(pipelineRunID.Int64)
 	p.basePipelineID = int(basePipelineID.Int64)
 	p.basePipelineName = basePipelineName.String
+	if params.Valid {
+		if err := json.Unmarshal([]byte(params.String), &p.params); err != nil {
+			return err
+		}
+	}
+	if keepLast.Valid || ttlDays.Valid {
+		p.runRetention = &atc.RunRetentionConfig{}
+		if keepLast.Valid {
+			value := int(keepLast.Int64)
+			p.runRetention.KeepLast = &value
+		}
+		if ttlDays.Valid {
+			value := int(ttlDays.Int64)
+			p.runRetention.TTLDays = &value
+		}
+	}
 
 	if groups.Valid {
 		var pipelineGroups atc.GroupConfigs
@@ -1725,7 +1811,7 @@ func savePrototypes(tx Tx, prototypes atc.Prototypes, pipelineID int) error {
 	return nil
 }
 
-func saveJobsAndSerialGroups(tx Tx, jobs atc.JobConfigs, groups atc.GroupConfigs, pipelineID int) (map[string]int, error) {
+func saveJobsAndSerialGroups(tx Tx, jobs atc.JobConfigs, groups atc.GroupConfigs, pipelineID int, runJobs map[string]runJobMetadata) (map[string]int, error) {
 	jobGroups := make(map[string][]string)
 	for _, group := range groups {
 		for _, jobGlob := range group.Jobs {
@@ -1739,7 +1825,15 @@ func saveJobsAndSerialGroups(tx Tx, jobs atc.JobConfigs, groups atc.GroupConfigs
 
 	jobNameToID := make(map[string]int)
 	for _, job := range jobs {
-		jobID, err := saveJob(tx, job, pipelineID, jobGroups[job.Name])
+		metadata, hasMetadata := runJobs[job.Name]
+		if !hasMetadata {
+			metadata = runJobMetadata{}
+		}
+		var metadataPtr *runJobMetadata
+		if hasMetadata {
+			metadataPtr = &metadata
+		}
+		jobID, err := saveJob(tx, job, pipelineID, jobGroups[job.Name], metadataPtr)
 		if err != nil {
 			return nil, err
 		}
