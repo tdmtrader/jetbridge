@@ -1827,3 +1827,46 @@ func (r *trackingReadCloser) Close() error {
 	r.closeCalls++
 	return nil
 }
+
+func TestCloseReadCloserOnCancelStopIsIdempotent(t *testing.T) {
+	reader := newBlockingReadCloser()
+	stop := closeReadCloserOnCancel(context.Background(), reader)
+	done := make(chan struct{})
+	go func() {
+		stop()
+		stop()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("calling the cancellation stopper twice blocked forever")
+	}
+	if calls := reader.closeCalls(); calls != 0 {
+		t.Fatalf("stopping a live cancellation hook closed the reader %d times", calls)
+	}
+}
+
+func TestCloseReadCloserOnCancelConcurrentStopAndCancellationClosesAtMostOnce(t *testing.T) {
+	for iteration := 0; iteration < 100; iteration++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		reader := newBlockingReadCloser()
+		stop := closeReadCloserOnCancel(ctx, reader)
+		start := make(chan struct{})
+		var callers sync.WaitGroup
+		for caller := 0; caller < 8; caller++ {
+			callers.Add(1)
+			go func() {
+				defer callers.Done()
+				<-start
+				stop()
+			}()
+		}
+		close(start)
+		cancel()
+		callers.Wait()
+		if calls := reader.closeCalls(); calls > 1 {
+			t.Fatalf("iteration %d closed the reader %d times", iteration, calls)
+		}
+	}
+}
