@@ -29,6 +29,9 @@ type Team interface {
 	ListPipelines() ([]atc.Pipeline, error)
 	PipelineConfig(pipelineRef atc.PipelineRef) (atc.Config, string, bool, error)
 	CreateOrUpdatePipelineConfig(pipelineRef atc.PipelineRef, configVersion string, passedConfig []byte, checkCredentials bool) (bool, bool, []ConfigWarning, error)
+	CreatePipelineRun(pipelineName string, vars map[string]any) (atc.PipelineRun, error)
+	PipelineRuns(pipelineName string, page Page) ([]atc.PipelineRun, Pagination, error)
+	PipelineRun(pipelineName string, number int) (atc.PipelineRun, bool, error)
 
 	CreatePipelineBuild(pipelineRef atc.PipelineRef, plan atc.Plan) (atc.Build, error)
 
