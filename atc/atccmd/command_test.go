@@ -2,6 +2,8 @@ package atccmd_test
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/concourse/concourse/atc"
@@ -60,6 +62,9 @@ func (s *CommandSuite) TestKubernetesFlags() {
 	kubeconfigOpt := runCmd.FindOptionByLongName("kubernetes-kubeconfig")
 	s.NotNil(kubeconfigOpt, "--kubernetes-kubeconfig flag should exist")
 	s.Contains(kubeconfigOpt.Description, "kubeconfig")
+
+	s.NotNil(runCmd.FindOptionByLongName("kubernetes-hangar-enabled"), "--kubernetes-hangar-enabled flag should exist")
+	s.NotNil(runCmd.FindOptionByLongName("kubernetes-hangar-capability-key"), "--kubernetes-hangar-capability-key flag should exist")
 }
 
 func (s *CommandSuite) TestBuildTrackerIntervalFlagRemoved() {
@@ -118,6 +123,84 @@ func (s *CommandSuite) TestK8sRuntimeValidationSkippedWhenK8sDisabled() {
 
 	err := atccmd.ValidateK8sRuntimeForTest(cmd)
 	s.NoError(err, "expected validation to be a no-op when --kubernetes-namespace is empty")
+}
+
+func (s *CommandSuite) TestHangarRuntimeRequiresCompleteDaemonTLSAndExactCapabilityKey() {
+	validKey := filepath.Join(s.T().TempDir(), "hangar.key")
+	s.Require().NoError(os.WriteFile(validKey, []byte("0123456789abcdef0123456789abcdef"), 0600))
+
+	tests := map[string]struct {
+		configure func(*atccmd.RunCommand)
+		want      string
+	}{
+		"daemon hostPath": {
+			configure: func(cmd *atccmd.RunCommand) { cmd.Kubernetes.ArtifactDaemonHostPath = "" },
+			want:      "kubernetes-artifact-daemon-host-path",
+		},
+		"TLS certificate": {
+			configure: func(cmd *atccmd.RunCommand) { cmd.Kubernetes.ArtifactDaemonTLSCert = "" },
+			want:      "complete artifact daemon TLS",
+		},
+		"TLS private key": {
+			configure: func(cmd *atccmd.RunCommand) { cmd.Kubernetes.ArtifactDaemonTLSKey = "" },
+			want:      "complete artifact daemon TLS",
+		},
+		"TLS CA": {
+			configure: func(cmd *atccmd.RunCommand) { cmd.Kubernetes.ArtifactDaemonTLSCACert = "" },
+			want:      "complete artifact daemon TLS",
+		},
+		"capability key path": {
+			configure: func(cmd *atccmd.RunCommand) { cmd.Kubernetes.HangarCapabilityKey = "" },
+			want:      "kubernetes-hangar-capability-key",
+		},
+		"exact raw key": {
+			configure: func(cmd *atccmd.RunCommand) {
+				shortKey := filepath.Join(s.T().TempDir(), "short.key")
+				s.Require().NoError(os.WriteFile(shortKey, []byte("too-short"), 0600))
+				cmd.Kubernetes.HangarCapabilityKey = shortKey
+			},
+			want: "exactly 32 raw bytes",
+		},
+	}
+
+	for name, test := range tests {
+		s.Run(name, func() {
+			cmd := &atccmd.RunCommand{}
+			cmd.Kubernetes.Namespace = "concourse"
+			cmd.Kubernetes.ArtifactDaemonHostPath = "/var/concourse/artifacts"
+			cmd.Kubernetes.ArtifactDaemonTLSCert = "/tls/client.crt"
+			cmd.Kubernetes.ArtifactDaemonTLSKey = "/tls/client.key"
+			cmd.Kubernetes.ArtifactDaemonTLSCACert = "/tls/ca.crt"
+			cmd.Kubernetes.HangarEnabled = true
+			cmd.Kubernetes.HangarCapabilityKey = validKey
+			test.configure(cmd)
+
+			err := atccmd.ValidateK8sRuntimeForTest(cmd)
+			s.Error(err)
+			s.Contains(err.Error(), test.want)
+		})
+	}
+}
+
+func (s *CommandSuite) TestHangarRuntimeAcceptsCompleteConfigurationAndDisabledCompatibility() {
+	validKey := filepath.Join(s.T().TempDir(), "hangar.key")
+	s.Require().NoError(os.WriteFile(validKey, []byte("0123456789abcdef0123456789abcdef"), 0600))
+
+	enabled := &atccmd.RunCommand{}
+	enabled.Kubernetes.Namespace = "concourse"
+	enabled.Kubernetes.ArtifactDaemonHostPath = "/var/concourse/artifacts"
+	enabled.Kubernetes.ArtifactDaemonTLSCert = "/tls/client.crt"
+	enabled.Kubernetes.ArtifactDaemonTLSKey = "/tls/client.key"
+	enabled.Kubernetes.ArtifactDaemonTLSCACert = "/tls/ca.crt"
+	enabled.Kubernetes.HangarEnabled = true
+	enabled.Kubernetes.HangarCapabilityKey = validKey
+	s.NoError(atccmd.ValidateK8sRuntimeForTest(enabled))
+
+	disabled := &atccmd.RunCommand{}
+	disabled.Kubernetes.Namespace = "concourse"
+	disabled.Kubernetes.ArtifactDaemonHostPath = "/var/concourse/artifacts"
+	disabled.Kubernetes.HangarCapabilityKey = "/does/not/exist"
+	s.NoError(atccmd.ValidateK8sRuntimeForTest(disabled), "disabled Hangar must not load or require its key")
 }
 
 func TestSuite(t *testing.T) {

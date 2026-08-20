@@ -2,6 +2,7 @@ package jetbridge
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"github.com/concourse/concourse/artifactcap"
@@ -14,10 +15,16 @@ import (
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/runtime"
+	"github.com/concourse/concourse/hangar"
 	corev1 "k8s.io/api/core/v1"
 )
 
 const artifactDaemonHostPathVolumeName = "artifact-daemon-hostpath"
+
+const (
+	maxHangarMaterializationItems = 64
+	maxHangarMaterializationBytes = 64 << 10
+)
 
 // Compile-time check that DaemonSetBackend satisfies StorageBackend.
 var _ StorageBackend = (*DaemonSetBackend)(nil)
@@ -127,6 +134,17 @@ type batchItem struct {
 	Capability string `json:"capability,omitempty"`
 }
 
+type hangarMaterializationItem struct {
+	Ref    hangar.TreeRef `json:"ref"`
+	Handle string         `json:"handle"`
+	Volume string         `json:"volume"`
+	Grant  string         `json:"grant"`
+}
+
+type hangarMaterializationRequest struct {
+	Items []hangarMaterializationItem `json:"items"`
+}
+
 func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runtime.Input, podVolumes []corev1.Volume, mainMounts []corev1.VolumeMount) ([]corev1.Container, error) {
 	helperImage := b.helperImage()
 	allowEscalation := false
@@ -134,8 +152,43 @@ func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runt
 	var items []batchItem
 	var mounts []corev1.VolumeMount
 	seenVolumes := map[string]bool{}
+	var hangarItems []hangarMaterializationItem
+	var hangarMounts []corev1.VolumeMount
+	seenHangarVolumes := map[string]bool{}
 
 	for _, input := range inputs {
+		if input.HangarTree != nil {
+			if !b.config.HangarEnabled {
+				return nil, fmt.Errorf("Hangar tree input requires Hangar to be enabled")
+			}
+			if b.config.HangarGrantSigner == nil {
+				return nil, fmt.Errorf("Hangar tree input requires a materialization grant signer")
+			}
+			if err := input.HangarTree.Validate(); err != nil {
+				return nil, fmt.Errorf("invalid Hangar tree input: %w", err)
+			}
+			volumeName := volumeNameForMountPath(mainMounts, input.DestinationPath)
+			if volumeName == "" {
+				return nil, fmt.Errorf("Hangar tree input %q has no task volume mount", input.DestinationPath)
+			}
+			expectedHostPath := filepath.Join(b.config.ArtifactDaemonHostPath, "steps", handle, volumeName)
+			if actualHostPath := hostPathForVolume(podVolumes, volumeName); actualHostPath != expectedHostPath {
+				return nil, fmt.Errorf("Hangar tree input %q volume does not resolve to its exact node-local destination", input.DestinationPath)
+			}
+			grant, err := b.config.HangarGrantSigner.Sign(*input.HangarTree, handle, volumeName)
+			if err != nil {
+				return nil, fmt.Errorf("sign Hangar tree input grant: %w", err)
+			}
+			hangarItems = append(hangarItems, hangarMaterializationItem{
+				Ref: *input.HangarTree, Handle: handle, Volume: volumeName, Grant: "Bearer " + grant,
+			})
+			if !seenHangarVolumes[volumeName] {
+				seenHangarVolumes[volumeName] = true
+				hangarMounts = append(hangarMounts, corev1.VolumeMount{Name: volumeName, MountPath: input.DestinationPath})
+			}
+			continue
+		}
+
 		if input.Artifact == nil {
 			continue
 		}
@@ -172,9 +225,7 @@ func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runt
 		}
 	}
 
-	if len(items) == 0 {
-		return nil, nil
-	}
+	var initContainers []corev1.Container
 
 	// Prepend the hostpath volume mount.
 	allMounts := append([]corev1.VolumeMount{
@@ -198,8 +249,8 @@ func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runt
 	// NetworkPolicy-protected control path — artifact data flows via the shared
 	// hostPath, not over this HTTP call. No CA cert mount is needed.
 
-	return []corev1.Container{
-		{
+	if len(items) > 0 {
+		initContainers = append(initContainers, corev1.Container{
 			Name:            "fetch-inputs",
 			Image:           helperImage,
 			Command:         b.daemonResolveBatchCommand(items),
@@ -209,8 +260,97 @@ func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runt
 			SecurityContext: &corev1.SecurityContext{
 				AllowPrivilegeEscalation: &allowEscalation,
 			},
-		},
-	}, nil
+		})
+	}
+
+	if len(hangarItems) > 0 {
+		if len(hangarItems) > maxHangarMaterializationItems {
+			return nil, fmt.Errorf("Hangar materialization batch exceeds %d items", maxHangarMaterializationItems)
+		}
+		payload, err := json.Marshal(hangarMaterializationRequest{Items: hangarItems})
+		if err != nil {
+			return nil, fmt.Errorf("marshal Hangar materialization batch: %w", err)
+		}
+		if len(payload) > maxHangarMaterializationBytes {
+			return nil, fmt.Errorf("Hangar materialization batch exceeds %d bytes", maxHangarMaterializationBytes)
+		}
+		initContainers = append(initContainers, corev1.Container{
+			Name:            "materialize-hangar-inputs",
+			Image:           helperImage,
+			Command:         b.daemonHangarMaterializationCommand(payload),
+			Env:             envVars,
+			VolumeMounts:    hangarMounts,
+			ImagePullPolicy: corev1.PullIfNotPresent,
+			SecurityContext: &corev1.SecurityContext{AllowPrivilegeEscalation: &allowEscalation},
+		})
+	}
+
+	return initContainers, nil
+}
+
+func (b *DaemonSetBackend) daemonHangarMaterializationCommand(payload []byte) []string {
+	port := b.config.ArtifactDaemonPort
+	if port == 0 {
+		port = 7780
+	}
+	request := base64.StdEncoding.EncodeToString(payload)
+	script := fmt.Sprintf(`
+set -u
+umask 077
+PORT=%d
+DAEMON="%s://${HOST_IP}:${PORT}"
+WGET_OPTS="%s"
+REQUEST_B64='%s'
+TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/hangar-materialize.XXXXXX") || exit 1
+trap 'rm -rf "$TMP_DIR"' 0 1 2 15
+REQUEST="$TMP_DIR/request.json"
+RESPONSE="$TMP_DIR/response"
+HEADERS="$TMP_DIR/headers"
+if ! printf '%%s' "$REQUEST_B64" | base64 -d >"$REQUEST"; then
+  printf 'hangar materialization request preparation failed\n' >&2
+  exit 1
+fi
+ATTEMPT=0
+MAX_ATTEMPTS=5
+while [ "$ATTEMPT" -lt "$MAX_ATTEMPTS" ]; do
+  ATTEMPT=$((ATTEMPT + 1))
+  : >"$RESPONSE"
+  : >"$HEADERS"
+  wget ${WGET_OPTS} -S -q -O "$RESPONSE" -T 180 --header='Content-Type: application/json' --post-file="$REQUEST" "${DAEMON}/hangar/v1/materializations" 2>"$HEADERS"
+  WGET_STATUS=$?
+  HTTP_STATUS=$(sed -n 's/^[[:space:]]*HTTP\/[0-9.]* \([0-9][0-9][0-9]\).*/\1/p' "$HEADERS" | tail -n 1)
+  if [ -z "$HTTP_STATUS" ] || [ "$HTTP_STATUS" = 503 ]; then
+    if [ "$ATTEMPT" -ge "$MAX_ATTEMPTS" ]; then
+      printf 'hangar materialization unavailable after %%s attempts\n' "$MAX_ATTEMPTS" >&2
+      exit 1
+    fi
+    sleep 2
+    continue
+  fi
+  case "$HTTP_STATUS" in
+    2??)
+      if [ "$WGET_STATUS" -ne 0 ]; then
+        printf 'hangar materialization transport failed after HTTP response\n' >&2
+        exit 1
+      fi
+      RESPONSE_STATUS=$(sed 's/[[:space:]]//g' "$RESPONSE")
+      case "$RESPONSE_STATUS" in
+        *'"status":"error"'*|*'"status":"partial"'*)
+          printf 'hangar materialization returned an incomplete result\n' >&2
+          exit 1
+          ;;
+      esac
+      exit 0
+      ;;
+    *)
+      printf 'hangar materialization failed with HTTP status %%s\n' "$HTTP_STATUS" >&2
+      exit 1
+      ;;
+  esac
+done
+exit 1
+`, port, b.daemonScheme(), b.wgetTLSOpts(), request)
+	return []string{"sh", "-c", script}
 }
 
 func (b *DaemonSetBackend) daemonScheme() string {
@@ -356,18 +496,29 @@ func (b *DaemonSetBackend) BuildCleanupInitContainer(handle string, containerTyp
 }
 
 func (b *DaemonSetBackend) BuildAffinity(inputs []runtime.Input) *corev1.Affinity {
+	requiredExpressions := []corev1.NodeSelectorRequirement{
+		{
+			Key:      "concourse.dev/artifact-cache",
+			Operator: corev1.NodeSelectorOpIn,
+			Values:   []string{"ready"},
+		},
+	}
+	for _, input := range inputs {
+		if input.HangarTree != nil {
+			requiredExpressions = append(requiredExpressions, corev1.NodeSelectorRequirement{
+				Key:      "concourse.dev/hangar-v1",
+				Operator: corev1.NodeSelectorOpIn,
+				Values:   []string{"ready"},
+			})
+			break
+		}
+	}
 	affinity := &corev1.Affinity{
 		NodeAffinity: &corev1.NodeAffinity{
 			RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
 				NodeSelectorTerms: []corev1.NodeSelectorTerm{
 					{
-						MatchExpressions: []corev1.NodeSelectorRequirement{
-							{
-								Key:      "concourse.dev/artifact-cache",
-								Operator: corev1.NodeSelectorOpIn,
-								Values:   []string{"ready"},
-							},
-						},
+						MatchExpressions: requiredExpressions,
 					},
 				},
 			},

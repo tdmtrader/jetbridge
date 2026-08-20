@@ -10,6 +10,7 @@ import (
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/compression"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/vars"
 	"go.opentelemetry.io/otel/propagation"
 )
@@ -346,6 +347,9 @@ type Input struct {
 	// Artifact is the artifact to mount. This artifact may need to be
 	// streamed (if it is not a Volume on the target worker).
 	Artifact Artifact
+	// HangarTree is an exact immutable tree to materialize into this input.
+	// Exactly one of Artifact and HangarTree must be set.
+	HangarTree *hangar.TreeRef
 	// DestinationPath is the path in the container to mount the input.
 	//
 	// May be absolute or relative to ContainerSpec.Dir.

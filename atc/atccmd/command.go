@@ -55,6 +55,7 @@ import (
 	"github.com/concourse/concourse/atc/worker"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	"github.com/concourse/concourse/atc/wrappa"
+	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/skymarshal/dexserver"
 	"github.com/concourse/concourse/skymarshal/legacyserver"
 	"github.com/concourse/concourse/skymarshal/skycmd"
@@ -123,6 +124,9 @@ type RunCommand struct {
 	// k8sArtifactLocator is shared between the Reaper and Worker factory
 	// for DaemonSet mode. Created in backendComponents, used in constructPool.
 	k8sArtifactLocator *jetbridge.ArtifactLocator
+	// k8sHangarGrantSigner is constructed once during startup validation and
+	// shared by every separately composed JetBridge Config.
+	k8sHangarGrantSigner *hangar.GrantSigner
 
 	BindIP   flag.IP `long:"bind-ip"   default:"0.0.0.0" description:"IP address on which to listen for web traffic."`
 	BindPort uint16  `long:"bind-port" default:"8080"    description:"Port on which to listen for HTTP traffic."`
@@ -191,6 +195,8 @@ type RunCommand struct {
 		ArtifactDaemonTLSCert              string        `long:"kubernetes-artifact-daemon-tls-cert"    description:"Path to client certificate for mTLS with the artifact daemon."`
 		ArtifactDaemonTLSKey               string        `long:"kubernetes-artifact-daemon-tls-key"     description:"Path to client private key for mTLS with the artifact daemon."`
 		ArtifactDaemonTLSCACert            string        `long:"kubernetes-artifact-daemon-tls-ca-cert" description:"Path to CA certificate for verifying the artifact daemon's server certificate."`
+		HangarEnabled                      bool          `long:"kubernetes-hangar-enabled"                  description:"Enable exact immutable Hangar tree inputs for Kubernetes task Pods."`
+		HangarCapabilityKey                string        `long:"kubernetes-hangar-capability-key"           description:"Path to the raw 32-byte Hangar materialization capability key."`
 		ImageRegistryPrefix                string        `long:"kubernetes-image-registry-prefix"     description:"Registry path prefix for custom resource type images (e.g. gcr.io/my-project/concourse). Images are resolved as <prefix>/<type-name>."`
 		ImageRegistrySecret                string        `long:"kubernetes-image-registry-secret"     description:"Kubernetes Secret name (type kubernetes.io/dockerconfigjson) for registry auth. Auto-added to imagePullSecrets on every pod."`
 		BaseResourceTypes                  []string      `long:"kubernetes-base-resource-type"        description:"Override or add a base resource type image. Format: name=image (e.g. git=my-registry/git-resource:v2). Can be specified multiple times. Merges with built-in defaults." value-name:"NAME=IMAGE"`
@@ -1297,6 +1303,8 @@ func (cmd *RunCommand) backendComponents(
 		k8sCfg.ArtifactDaemonTLSKey = cmd.Kubernetes.ArtifactDaemonTLSKey
 		k8sCfg.ArtifactDaemonTLSCACert = cmd.Kubernetes.ArtifactDaemonTLSCACert
 		k8sCfg.ArtifactDaemonTLSEnabled = cmd.Kubernetes.ArtifactDaemonTLSCert != ""
+		k8sCfg.HangarEnabled = cmd.Kubernetes.HangarEnabled
+		k8sCfg.HangarGrantSigner = cmd.k8sHangarGrantSigner
 		if cmd.Kubernetes.CacheStore != "" && !jetbridge.ValidCacheStores[cmd.Kubernetes.CacheStore] {
 			return nil, fmt.Errorf("invalid --kubernetes-cache-store value %q (valid: hostpath, emptydir)", cmd.Kubernetes.CacheStore)
 		}
@@ -1427,6 +1435,8 @@ func (cmd *RunCommand) constructPool(dbConn db.DbConn, lockFactory lock.LockFact
 		k8sCfg.ArtifactDaemonTLSKey = cmd.Kubernetes.ArtifactDaemonTLSKey
 		k8sCfg.ArtifactDaemonTLSCACert = cmd.Kubernetes.ArtifactDaemonTLSCACert
 		k8sCfg.ArtifactDaemonTLSEnabled = cmd.Kubernetes.ArtifactDaemonTLSCert != ""
+		k8sCfg.HangarEnabled = cmd.Kubernetes.HangarEnabled
+		k8sCfg.HangarGrantSigner = cmd.k8sHangarGrantSigner
 		if cmd.Kubernetes.ImageRegistryPrefix != "" || cmd.Kubernetes.ImageRegistrySecret != "" {
 			k8sCfg.ImageRegistry = &jetbridge.ImageRegistryConfig{
 				Prefix:     cmd.Kubernetes.ImageRegistryPrefix,
@@ -1896,6 +1906,9 @@ func (cmd *RunCommand) validate() error {
 // See track
 // route_artifact_reads_through_daemonset_remove_exec_backed_artifact_io_20260418.
 func (cmd *RunCommand) validateK8sRuntime() error {
+	if cmd.Kubernetes.HangarEnabled && cmd.Kubernetes.Namespace == "" {
+		return errors.New("--kubernetes-namespace is required when --kubernetes-hangar-enabled is set")
+	}
 	if cmd.Kubernetes.Namespace == "" {
 		return nil
 	}
@@ -1903,6 +1916,30 @@ func (cmd *RunCommand) validateK8sRuntime() error {
 		return errors.New("--kubernetes-artifact-daemon-host-path is required when --kubernetes-namespace is set: " +
 			"the DaemonSet artifact cache is mandatory for the K8s runtime, because downstream artifact reads " +
 			"must not exec into the producing pod (which is reaped as soon as the step finishes)")
+	}
+	if !cmd.Kubernetes.HangarEnabled {
+		return nil
+	}
+	if cmd.Kubernetes.ArtifactDaemonTLSCert == "" || cmd.Kubernetes.ArtifactDaemonTLSKey == "" || cmd.Kubernetes.ArtifactDaemonTLSCACert == "" {
+		return errors.New("--kubernetes-hangar-enabled requires complete artifact daemon TLS: " +
+			"--kubernetes-artifact-daemon-tls-cert, --kubernetes-artifact-daemon-tls-key, and --kubernetes-artifact-daemon-tls-ca-cert")
+	}
+	if cmd.Kubernetes.HangarCapabilityKey == "" {
+		return errors.New("--kubernetes-hangar-capability-key is required when --kubernetes-hangar-enabled is set")
+	}
+	if cmd.k8sHangarGrantSigner == nil {
+		key, err := os.ReadFile(cmd.Kubernetes.HangarCapabilityKey)
+		if err != nil {
+			return fmt.Errorf("read --kubernetes-hangar-capability-key: %w", err)
+		}
+		if len(key) != sha256.Size {
+			return fmt.Errorf("--kubernetes-hangar-capability-key must contain exactly %d raw bytes", sha256.Size)
+		}
+		signer, err := hangar.NewGrantSigner(key, hangar.MaxGrantTTL, nil)
+		if err != nil {
+			return fmt.Errorf("construct Hangar materialization grant signer: %w", err)
+		}
+		cmd.k8sHangarGrantSigner = signer
 	}
 	return nil
 }

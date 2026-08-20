@@ -189,7 +189,7 @@ var _ = Describe("Resource Step Execution", func() {
 				},
 				Type: db.ContainerTypePut,
 				Inputs: []runtime.Input{
-					{DestinationPath: "/tmp/build/put/my-repo"},
+					{Artifact: &fakeArtifact{handle: "my-repo"}, DestinationPath: "/tmp/build/put/my-repo"},
 				},
 				CertsBindMount: true,
 			})

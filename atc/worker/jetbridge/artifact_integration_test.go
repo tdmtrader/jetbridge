@@ -238,6 +238,13 @@ var _ = Describe("Artifact Integration", func() {
 			fakeExecutor.execCalls = nil
 			putStdout := `{"version":{"ref":"v1.0.0"}}`
 			fakeExecutor.execStdout = []byte(putStdout)
+			var taskOutput runtime.Artifact
+			for _, mount := range mounts {
+				if mount.MountPath == "/tmp/build/workdir/binary" {
+					taskOutput = mount.Volume
+				}
+			}
+			Expect(taskOutput).ToNot(BeNil())
 
 			putContainer, putMounts, err := worker.FindOrCreateContainer(
 				ctx,
@@ -251,7 +258,7 @@ var _ = Describe("Artifact Integration", func() {
 					},
 					Type: db.ContainerTypePut,
 					Inputs: []runtime.Input{
-						{DestinationPath: "/tmp/build/put/binary"},
+						{Artifact: taskOutput, DestinationPath: "/tmp/build/put/binary"},
 					},
 				},
 				delegate,

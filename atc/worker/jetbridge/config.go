@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/concourse/concourse/hangar"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -214,6 +215,14 @@ type Config struct {
 	// ArtifactDaemonTLSEnabled indicates whether TLS is enabled for daemon
 	// communication. Derived from the presence of TLS cert/key/CA paths.
 	ArtifactDaemonTLSEnabled bool
+
+	// HangarEnabled permits exact immutable Hangar tree inputs.
+	HangarEnabled bool
+
+	// HangarGrantSigner mints short-lived grants bound to an exact tree,
+	// container handle, and input volume. The raw signing key is never passed
+	// to task pods.
+	HangarGrantSigner *hangar.GrantSigner
 }
 
 // ImageRegistryConfig holds configuration for a container image registry

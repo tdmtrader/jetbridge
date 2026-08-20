@@ -2,6 +2,7 @@ package jetbridge
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -13,11 +14,13 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc/compression"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runtime"
+	"github.com/concourse/concourse/hangar"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -346,6 +349,144 @@ func TestDaemonSetBackend_BuildFetchInitContainers_NoInputs(t *testing.T) {
 	}
 	if len(inits) != 0 {
 		t.Errorf("expected 0 init containers for nil inputs, got %d", len(inits))
+	}
+}
+
+func TestDaemonSetBackend_BuildFetchInitContainers_AppendsExactHangarBatch(t *testing.T) {
+	key := []byte("0123456789abcdef0123456789abcdef")
+	signer, err := hangar.NewGrantSigner(key, hangar.MaxGrantTTL, func() time.Time {
+		return time.Unix(1_800_000_000, 0).UTC()
+	})
+	if err != nil {
+		t.Fatalf("new grant signer: %v", err)
+	}
+	verifier, err := hangar.NewGrantVerifier(key, hangar.MaxGrantTTL, func() time.Time {
+		return time.Unix(1_800_000_001, 0).UTC()
+	})
+	if err != nil {
+		t.Fatalf("new grant verifier: %v", err)
+	}
+
+	cfg := testDaemonConfig()
+	cfg.HangarEnabled = true
+	cfg.HangarGrantSigner = signer
+	b := NewDaemonSetBackend(cfg, nil, nil)
+	ref := hangar.TreeRef{
+		Scope:      "builds",
+		Digest:     "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Generation: 7,
+	}
+	inputs := []runtime.Input{
+		{Artifact: &testArtifact{handle: "ordinary"}, DestinationPath: "/work/ordinary"},
+		{HangarTree: &ref, DestinationPath: "/work/exact"},
+	}
+	mounts := []corev1.VolumeMount{
+		{Name: "input-0", MountPath: "/work/ordinary"},
+		{Name: "input-1", MountPath: "/work/exact", ReadOnly: true},
+	}
+	volumes := []corev1.Volume{
+		b.StepVolume("input-0", "task-handle", "input-0"),
+		b.StepVolume("input-1", "task-handle", "input-1"),
+	}
+	volumes = append(volumes, *b.ArtifactStoreVolume(db.ContainerTypeTask))
+
+	inits, err := b.BuildFetchInitContainers("task-handle", inputs, volumes, mounts)
+	if err != nil {
+		t.Fatalf("build fetch init containers: %v", err)
+	}
+	if len(inits) != 2 {
+		t.Fatalf("expected ordered ordinary and Hangar init containers, got %d", len(inits))
+	}
+	if inits[0].Name != "fetch-inputs" || inits[1].Name != "materialize-hangar-inputs" {
+		t.Fatalf("unexpected init order: %q then %q", inits[0].Name, inits[1].Name)
+	}
+
+	command := strings.Join(inits[1].Command, " ")
+	const prefix = "REQUEST_B64='"
+	start := strings.Index(command, prefix)
+	if start < 0 {
+		t.Fatalf("Hangar command has no base64 request marker")
+	}
+	start += len(prefix)
+	end := strings.Index(command[start:], "'")
+	if end < 0 {
+		t.Fatalf("Hangar command has an unterminated base64 request")
+	}
+	payload, err := base64.StdEncoding.DecodeString(command[start : start+end])
+	if err != nil {
+		t.Fatalf("decode Hangar request: %v", err)
+	}
+	var request struct {
+		Items []struct {
+			Ref    hangar.TreeRef `json:"ref"`
+			Handle string         `json:"handle"`
+			Volume string         `json:"volume"`
+			Grant  string         `json:"grant"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(payload, &request); err != nil {
+		t.Fatalf("decode Hangar request JSON: %v", err)
+	}
+	if len(request.Items) != 1 {
+		t.Fatalf("expected one Hangar request item, got %d", len(request.Items))
+	}
+	item := request.Items[0]
+	if item.Ref != ref || item.Handle != "task-handle" || item.Volume != "input-1" {
+		t.Fatalf("unexpected exact request binding: %+v", item)
+	}
+	token := strings.TrimPrefix(item.Grant, "Bearer ")
+	if token == item.Grant || verifier.Verify(token, ref, "task-handle", "input-1") != nil {
+		t.Fatal("Hangar item did not carry a valid exact bearer grant")
+	}
+	if strings.Contains(command, string(key)) {
+		t.Fatal("capability signing key entered the init command")
+	}
+	for _, env := range inits[1].Env {
+		if strings.Contains(env.Value, string(key)) {
+			t.Fatal("capability signing key entered the init environment")
+		}
+	}
+	if len(inits[1].VolumeMounts) != 1 || inits[1].VolumeMounts[0].Name != "input-1" {
+		t.Fatalf("strict init must reuse its input volume, got %+v", inits[1].VolumeMounts)
+	}
+	assertContainerMountsResolve(t, inits, volumes)
+}
+
+func TestDaemonSetBackend_BuildFetchInitContainers_RejectsDisabledOrUnsignableHangar(t *testing.T) {
+	ref := hangar.TreeRef{
+		Scope:      "builds",
+		Digest:     "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Generation: 1,
+	}
+	inputs := []runtime.Input{{HangarTree: &ref, DestinationPath: "/work/exact"}}
+	mounts := []corev1.VolumeMount{{Name: "input-0", MountPath: "/work/exact", ReadOnly: true}}
+
+	for name, cfg := range map[string]Config{
+		"disabled":       testDaemonConfig(),
+		"missing signer": func() Config { c := testDaemonConfig(); c.HangarEnabled = true; return c }(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			b := NewDaemonSetBackend(cfg, nil, nil)
+			volumes := []corev1.Volume{b.StepVolume("input-0", "task-handle", "input-0")}
+			if _, err := b.BuildFetchInitContainers("task-handle", inputs, volumes, mounts); err == nil {
+				t.Fatal("expected strict input construction to fail closed")
+			}
+		})
+	}
+}
+
+func assertContainerMountsResolve(t *testing.T, containers []corev1.Container, volumes []corev1.Volume) {
+	t.Helper()
+	declared := make(map[string]struct{}, len(volumes))
+	for _, volume := range volumes {
+		declared[volume.Name] = struct{}{}
+	}
+	for _, container := range containers {
+		for _, mount := range container.VolumeMounts {
+			if _, found := declared[mount.Name]; !found {
+				t.Errorf("container %q mount %q has no Pod volume", container.Name, mount.Name)
+			}
+		}
 	}
 }
 

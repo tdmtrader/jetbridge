@@ -403,6 +403,10 @@ func (c *Container) createPausePod(ctx context.Context, processSpec runtime.Proc
 // fields (image, env, volumes, security, etc.) are derived from the
 // Container's spec and config.
 func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, args []string) (*corev1.Pod, error) {
+	if err := c.validateInputs(); err != nil {
+		return nil, err
+	}
+
 	image := resolveImage(c.containerSpec.ImageSpec, c.config.ResourceTypeImages)
 	if image == "" {
 		typeName := c.containerSpec.ImageSpec.ResourceType
@@ -470,7 +474,7 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 
 	affinity := c.buildAffinity()
 
-	return &corev1.Pod{
+	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        c.podName,
 			Namespace:   c.config.Namespace,
@@ -489,7 +493,56 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 
 			TerminationGracePeriodSeconds: &terminationGrace,
 		},
-	}, nil
+	}
+	if err := validatePodVolumeMounts(pod); err != nil {
+		return nil, err
+	}
+	return pod, nil
+}
+
+func (c *Container) validateInputs() error {
+	for _, input := range c.containerSpec.Inputs {
+		hasArtifact := input.Artifact != nil
+		hasHangarTree := input.HangarTree != nil
+		if hasArtifact == hasHangarTree {
+			return fmt.Errorf("input %q must set exactly one of Artifact or HangarTree", input.DestinationPath)
+		}
+		if !hasHangarTree {
+			continue
+		}
+		if !c.config.HangarEnabled {
+			return fmt.Errorf("Hangar tree input %q was presented while Hangar is disabled", input.DestinationPath)
+		}
+		if c.storageBackend == nil {
+			return fmt.Errorf("Hangar tree input %q requires node-local storage", input.DestinationPath)
+		}
+		if err := input.HangarTree.Validate(); err != nil {
+			return fmt.Errorf("invalid Hangar tree input %q: %w", input.DestinationPath, err)
+		}
+		for outputName, outputPath := range c.containerSpec.Outputs {
+			if filepath.Clean(outputPath) == filepath.Clean(input.DestinationPath) {
+				return fmt.Errorf("Hangar tree input %q must not overlap output %q", input.DestinationPath, outputName)
+			}
+		}
+	}
+	return nil
+}
+
+func validatePodVolumeMounts(pod *corev1.Pod) error {
+	declared := make(map[string]struct{}, len(pod.Spec.Volumes))
+	for _, volume := range pod.Spec.Volumes {
+		declared[volume.Name] = struct{}{}
+	}
+	for _, containers := range [][]corev1.Container{pod.Spec.InitContainers, pod.Spec.Containers} {
+		for _, container := range containers {
+			for _, mount := range container.VolumeMounts {
+				if _, found := declared[mount.Name]; !found {
+					return fmt.Errorf("container %q volume mount %q has no matching Pod volume", container.Name, mount.Name)
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // buildArtifactStoreVolume returns a volume for the artifact store via the
@@ -946,6 +999,7 @@ func (c *Container) buildVolumeMounts() ([]corev1.Volume, []corev1.VolumeMount) 
 		mounts = append(mounts, corev1.VolumeMount{
 			Name:      name,
 			MountPath: input.DestinationPath,
+			ReadOnly:  input.HangarTree != nil,
 		})
 		inputMountPaths[filepath.Clean(input.DestinationPath)] = true
 	}

@@ -371,7 +371,7 @@ var _ = Describe("Pod Name Integration", func() {
 					Dir:       "/tmp/build/workdir",
 					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 					Inputs: []runtime.Input{
-						{DestinationPath: "/tmp/build/workdir/my-input"},
+						{Artifact: &fakeArtifact{handle: "my-input"}, DestinationPath: "/tmp/build/workdir/my-input"},
 					},
 				},
 				delegate,

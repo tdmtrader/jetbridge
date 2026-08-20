@@ -249,7 +249,7 @@ var _ = Describe("Integration", func() {
 				},
 				Type: db.ContainerTypePut,
 				Inputs: []runtime.Input{
-					{DestinationPath: "/tmp/build/put/repo"},
+					{Artifact: &fakeArtifact{handle: "repo"}, DestinationPath: "/tmp/build/put/repo"},
 				},
 				CertsBindMount: true,
 			})
@@ -505,8 +505,8 @@ var _ = Describe("Integration", func() {
 					ImageURL: "docker:///golang:1.25",
 				},
 				Inputs: []runtime.Input{
-					{DestinationPath: "/tmp/build/workdir/source-code"},
-					{DestinationPath: "/tmp/build/workdir/ci"},
+					{Artifact: &fakeArtifact{handle: "source-code"}, DestinationPath: "/tmp/build/workdir/source-code"},
+					{Artifact: &fakeArtifact{handle: "ci"}, DestinationPath: "/tmp/build/workdir/ci"},
 				},
 				Outputs: runtime.OutputPaths{
 					"binary":   "/tmp/build/workdir/binary",
@@ -569,8 +569,8 @@ var _ = Describe("Integration", func() {
 				},
 				Type: db.ContainerTypePut,
 				Inputs: []runtime.Input{
-					{DestinationPath: "/tmp/build/put/compiled-binary"},
-					{DestinationPath: "/tmp/build/put/release-notes"},
+					{Artifact: &fakeArtifact{handle: "compiled-binary"}, DestinationPath: "/tmp/build/put/compiled-binary"},
+					{Artifact: &fakeArtifact{handle: "release-notes"}, DestinationPath: "/tmp/build/put/release-notes"},
 				},
 			})
 
@@ -626,7 +626,7 @@ var _ = Describe("Integration", func() {
 					ImageURL: "docker:///node:18",
 				},
 				Inputs: []runtime.Input{
-					{DestinationPath: "/tmp/build/workdir/my-app"},
+					{Artifact: &fakeArtifact{handle: "my-app"}, DestinationPath: "/tmp/build/workdir/my-app"},
 				},
 				Sidecars: []atc.SidecarConfig{
 					{

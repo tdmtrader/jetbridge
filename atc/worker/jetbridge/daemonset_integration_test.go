@@ -13,12 +13,14 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/compression"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runtime"
+	"github.com/concourse/concourse/hangar"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -99,6 +101,194 @@ func TestDaemonSetMode_HardAffinity(t *testing.T) {
 	}
 	if len(expr.Values) != 1 || expr.Values[0] != "ready" {
 		t.Errorf("expected values [ready], got %v", expr.Values)
+	}
+}
+
+func TestDaemonSetMode_StrictInputValidationFailsClosed(t *testing.T) {
+	ref := hangar.TreeRef{
+		Scope:      "builds",
+		Digest:     "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Generation: 1,
+	}
+	ordinary := &stubArtifact{handle: "ordinary"}
+
+	tests := map[string]struct {
+		cfg     Config
+		inputs  []runtime.Input
+		outputs runtime.OutputPaths
+		want    string
+	}{
+		"missing source": {
+			cfg: daemonSetConfig(), inputs: []runtime.Input{{DestinationPath: "/work/input"}}, want: "exactly one",
+		},
+		"two sources": {
+			cfg: daemonSetConfig(), inputs: []runtime.Input{{Artifact: ordinary, HangarTree: &ref, DestinationPath: "/work/input"}}, want: "exactly one",
+		},
+		"disabled": {
+			cfg: daemonSetConfig(), inputs: []runtime.Input{{HangarTree: &ref, DestinationPath: "/work/input"}}, want: "disabled",
+		},
+		"strict input output overlap": {
+			cfg:     func() Config { cfg := daemonSetConfig(); cfg.HangarEnabled = true; return cfg }(),
+			inputs:  []runtime.Input{{HangarTree: &ref, DestinationPath: "/work/input"}},
+			outputs: runtime.OutputPaths{"result": "/work/input/"}, want: "overlap",
+		},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			container := &Container{
+				handle: "task-handle", podName: "test-pod",
+				metadata: db.ContainerMetadata{Type: db.ContainerTypeTask},
+				containerSpec: runtime.ContainerSpec{
+					Dir: "/work", Type: db.ContainerTypeTask,
+					ImageSpec: runtime.ImageSpec{ImageURL: "busybox"}, Inputs: test.inputs, Outputs: test.outputs,
+				},
+				config: test.cfg, storageBackend: NewDaemonSetBackend(test.cfg, nil, nil),
+			}
+			_, err := container.buildPod(runtime.ProcessSpec{}, []string{"sh", "-c", "true"}, nil)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("expected error containing %q, got %v", test.want, err)
+			}
+		})
+	}
+}
+
+func TestDaemonSetMode_StrictInputsAreReadOnlyEverywhereAndPodMountsResolve(t *testing.T) {
+	key := []byte("0123456789abcdef0123456789abcdef")
+	signer, err := hangar.NewGrantSigner(key, hangar.MaxGrantTTL, func() time.Time {
+		return time.Unix(1_800_000_000, 0).UTC()
+	})
+	if err != nil {
+		t.Fatalf("new grant signer: %v", err)
+	}
+	cfg := daemonSetConfig()
+	cfg.HangarEnabled = true
+	cfg.HangarGrantSigner = signer
+	ref := hangar.TreeRef{
+		Scope:      "builds",
+		Digest:     "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Generation: 9,
+	}
+	container := &Container{
+		handle: "task-handle", podName: "test-pod",
+		metadata: db.ContainerMetadata{Type: db.ContainerTypeTask},
+		containerSpec: runtime.ContainerSpec{
+			Dir: "/work", Type: db.ContainerTypeTask,
+			ImageSpec: runtime.ImageSpec{ImageURL: "busybox"},
+			Inputs:    []runtime.Input{{HangarTree: &ref, DestinationPath: "/work/exact"}},
+			Sidecars:  []atc.SidecarConfig{{Name: "observer", Image: "busybox"}},
+		},
+		config: cfg, storageBackend: NewDaemonSetBackend(cfg, nil, nil),
+	}
+
+	pod, err := container.buildPod(runtime.ProcessSpec{}, []string{"sh", "-c", "true"}, nil)
+	if err != nil {
+		t.Fatalf("build strict input Pod: %v", err)
+	}
+	if len(pod.Spec.Containers) != 2 {
+		t.Fatalf("expected task plus sidecar, got %d containers", len(pod.Spec.Containers))
+	}
+	for _, taskContainer := range pod.Spec.Containers {
+		mount := mountAtPath(t, taskContainer.VolumeMounts, "/work/exact")
+		if !mount.ReadOnly {
+			t.Errorf("container %q strict input mount is writable", taskContainer.Name)
+		}
+	}
+	if len(pod.Spec.InitContainers) != 1 || pod.Spec.InitContainers[0].Name != "materialize-hangar-inputs" {
+		t.Fatalf("unexpected strict init containers: %+v", pod.Spec.InitContainers)
+	}
+	if mountAtPath(t, pod.Spec.InitContainers[0].VolumeMounts, "/work/exact").ReadOnly {
+		t.Fatal("materialization init must mount the destination writable for daemon population")
+	}
+	assertPodMountsResolve(t, pod)
+
+	required := pod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution
+	if required == nil || len(required.NodeSelectorTerms) != 1 {
+		t.Fatalf("expected one required selector term, got %+v", required)
+	}
+	want := map[string]bool{
+		"concourse.dev/artifact-cache": false,
+		"concourse.dev/hangar-v1":      false,
+	}
+	for _, expression := range required.NodeSelectorTerms[0].MatchExpressions {
+		if _, found := want[expression.Key]; found && expression.Operator == corev1.NodeSelectorOpIn && len(expression.Values) == 1 && expression.Values[0] == "ready" {
+			want[expression.Key] = true
+		}
+	}
+	for key, found := range want {
+		if !found {
+			t.Errorf("required selector term is missing %s In [ready]", key)
+		}
+	}
+}
+
+func TestDaemonSetMode_OrdinaryOverlappingInputRemainsWritable(t *testing.T) {
+	cfg := daemonSetConfig()
+	container := &Container{
+		handle: "task-handle", podName: "test-pod",
+		metadata: db.ContainerMetadata{Type: db.ContainerTypeTask},
+		containerSpec: runtime.ContainerSpec{
+			Dir: "/work", Type: db.ContainerTypeTask,
+			ImageSpec: runtime.ImageSpec{ImageURL: "busybox"},
+			Inputs:    []runtime.Input{{Artifact: &stubArtifact{handle: "ordinary"}, DestinationPath: "/work/shared"}},
+			Outputs:   runtime.OutputPaths{"result": "/work/shared/"},
+		},
+		config: cfg, storageBackend: NewDaemonSetBackend(cfg, nil, nil),
+	}
+	pod, err := container.buildPod(runtime.ProcessSpec{}, []string{"sh", "-c", "true"}, nil)
+	if err != nil {
+		t.Fatalf("ordinary input/output overlap changed behavior: %v", err)
+	}
+	if mountAtPath(t, pod.Spec.Containers[0].VolumeMounts, "/work/shared").ReadOnly {
+		t.Fatal("ordinary overlapping input unexpectedly became read-only")
+	}
+	assertPodMountsResolve(t, pod)
+}
+
+type unresolvedMountBackend struct{ *DaemonSetBackend }
+
+func (backend unresolvedMountBackend) BuildFetchInitContainers(string, []runtime.Input, []corev1.Volume, []corev1.VolumeMount) ([]corev1.Container, error) {
+	return []corev1.Container{{Name: "bad-init", Image: "busybox", VolumeMounts: []corev1.VolumeMount{{Name: "missing", MountPath: "/missing"}}}}, nil
+}
+
+func TestDaemonSetMode_BuildPodRejectsUnresolvedMounts(t *testing.T) {
+	cfg := daemonSetConfig()
+	container := &Container{
+		handle: "task-handle", podName: "test-pod",
+		metadata:      db.ContainerMetadata{Type: db.ContainerTypeTask},
+		containerSpec: runtime.ContainerSpec{Dir: "/work", Type: db.ContainerTypeTask, ImageSpec: runtime.ImageSpec{ImageURL: "busybox"}},
+		config:        cfg, storageBackend: unresolvedMountBackend{NewDaemonSetBackend(cfg, nil, nil)},
+	}
+	if _, err := container.buildPod(runtime.ProcessSpec{}, []string{"sh", "-c", "true"}, nil); err == nil || !strings.Contains(err.Error(), "missing") {
+		t.Fatalf("expected unresolved init mount to reject Pod construction, got %v", err)
+	}
+}
+
+func mountAtPath(t *testing.T, mounts []corev1.VolumeMount, path string) corev1.VolumeMount {
+	t.Helper()
+	for _, mount := range mounts {
+		if filepath.Clean(mount.MountPath) == filepath.Clean(path) {
+			return mount
+		}
+	}
+	t.Fatalf("no mount at %q in %+v", path, mounts)
+	return corev1.VolumeMount{}
+}
+
+func assertPodMountsResolve(t *testing.T, pod *corev1.Pod) {
+	t.Helper()
+	declared := make(map[string]struct{}, len(pod.Spec.Volumes))
+	for _, volume := range pod.Spec.Volumes {
+		declared[volume.Name] = struct{}{}
+	}
+	for _, containers := range [][]corev1.Container{pod.Spec.InitContainers, pod.Spec.Containers} {
+		for _, container := range containers {
+			for _, mount := range container.VolumeMounts {
+				if _, found := declared[mount.Name]; !found {
+					t.Errorf("container %q mount %q has no Pod volume", container.Name, mount.Name)
+				}
+			}
+		}
 	}
 }
 
