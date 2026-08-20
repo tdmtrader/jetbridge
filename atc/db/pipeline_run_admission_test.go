@@ -111,14 +111,12 @@ var _ = Describe("run build admission", func() {
 		assertIdentity(build, "renamed-work", "renamed-policy")
 	})
 
-	It("refuses terminal admission and defensively refuses a pending build start", func() {
+	It("refuses non-manual terminal admission and defensively refuses a pending build start", func() {
 		pending, err := workJob.CreateBuild("manual-user")
 		Expect(err).NotTo(HaveOccurred())
 		_, err = dbConn.Exec("UPDATE pipeline_runs SET status = 'succeeded', completed_at = now() WHERE id = $1", run.ID())
 		Expect(err).NotTo(HaveOccurred())
 
-		_, err = workJob.CreateBuild("too-late")
-		Expect(err).To(MatchError(runNotRunningMessage))
 		_, err = payload.(legacyJobBuildPipeline).CreateJobBuild("work")
 		Expect(err).To(MatchError(runNotRunningMessage))
 		Expect(workJob.EnsurePendingBuildExists(context.Background())).To(MatchError(runNotRunningMessage))
@@ -137,8 +135,7 @@ var _ = Describe("run build admission", func() {
 
 		result := make(chan error, 1)
 		go func() {
-			_, err := workJob.CreateBuild("racing-user")
-			result <- err
+			result <- workJob.EnsurePendingBuildExists(context.Background())
 		}()
 		Consistently(result, 150*time.Millisecond).ShouldNot(Receive())
 		_, err = tx.Exec("UPDATE pipeline_runs SET status = 'failed', completed_at = now() WHERE id = $1", run.ID())
@@ -325,7 +322,7 @@ var _ = Describe("pending build before schedule consumption", func() {
 		Expect(lastScheduled).To(Equal(observed))
 		Expect(requested).To(BeTemporally(">", lastScheduled))
 
-		Expect(defaultJob.UpdateLastScheduled(requested)).To(Succeed())
+		Expect(consumer.ConsumeScheduleRequest(requested, false)).To(Succeed())
 		Expect(consumer.ConsumeScheduleRequest(observed, true)).To(Succeed())
 		Expect(dbConn.QueryRow("SELECT last_scheduled FROM jobs WHERE id = $1", defaultJob.ID()).Scan(&lastScheduled)).To(Succeed())
 		Expect(lastScheduled).To(Equal(requested))

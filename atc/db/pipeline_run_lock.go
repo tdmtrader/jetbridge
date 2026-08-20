@@ -37,6 +37,7 @@ type jobBuildArgs struct {
 	Values          map[string]any
 	NextBuildName   bool
 	OnlyIfNoPending bool
+	ReopenTerminal  bool
 }
 
 type jobBuildAdmission struct {
@@ -52,11 +53,15 @@ type jobBuildAdmission struct {
 // resolves identity in the caller transaction and treats supplied run labels
 // as untrusted input.
 func createJobBuild(tx Tx, build *build, jobID int, args jobBuildArgs) (bool, error) {
-	admission, err := lockJobBuildAdmission(tx, jobID)
+	admission, err := lockJobBuildAdmission(tx, jobID, args.ReopenTerminal)
 	if err != nil {
 		return false, err
 	}
+	return createAdmittedJobBuild(tx, build, admission, args)
+}
 
+func createAdmittedJobBuild(tx Tx, build *build, admission jobBuildAdmission, args jobBuildArgs) (bool, error) {
+	var err error
 	if args.OnlyIfNoPending {
 		var exists bool
 		err = tx.QueryRow(`SELECT EXISTS (
@@ -107,7 +112,7 @@ func createJobBuild(tx Tx, build *build, jobID int, args jobBuildArgs) (bool, er
 	return true, nil
 }
 
-func lockJobBuildAdmission(tx Tx, jobID int) (jobBuildAdmission, error) {
+func lockJobBuildAdmission(tx Tx, jobID int, reopenTerminal bool) (jobBuildAdmission, error) {
 	var observedRunID sql.NullInt64
 	err := tx.QueryRow(`
 		SELECT p.pipeline_run_id
@@ -125,8 +130,8 @@ func lockJobBuildAdmission(tx Tx, jobID int) (jobBuildAdmission, error) {
 		if err != nil {
 			return jobBuildAdmission{}, err
 		}
-		if lockedRun.Status() != atc.RunStatusRunning {
-			return jobBuildAdmission{}, ErrPipelineRunNotRunning
+		if _, found := lockedRun.InstancePipelineID(); !found {
+			return jobBuildAdmission{}, ErrPipelineRunPayloadGone
 		}
 	}
 
@@ -153,6 +158,9 @@ func lockJobBuildAdmission(tx Tx, jobID int) (jobBuildAdmission, error) {
 	admission.policyKey = policyKey.String
 
 	if !liveRunID.Valid {
+		if lockedRun != nil {
+			return jobBuildAdmission{}, ErrPipelineRunPayloadGone
+		}
 		return admission, nil
 	}
 	admission.runID = int(liveRunID.Int64)
@@ -162,6 +170,14 @@ func lockJobBuildAdmission(tx Tx, jobID int) (jobBuildAdmission, error) {
 	payloadID, found := lockedRun.InstancePipelineID()
 	if !found || payloadID != admission.pipelineID {
 		return jobBuildAdmission{}, ErrPipelineRunPayloadGone
+	}
+	if lockedRun.Status() != atc.RunStatusRunning {
+		if !reopenTerminal {
+			return jobBuildAdmission{}, ErrPipelineRunNotRunning
+		}
+		if err = reopenPipelineRun(tx, admission.runID, admission.pipelineID); err != nil {
+			return jobBuildAdmission{}, err
+		}
 	}
 	return admission, nil
 }
@@ -185,7 +201,3 @@ func lockPipelineRunForPayload(tx Tx, pipelineID int) (PipelineRun, bool, error)
 	}
 	return run, true, nil
 }
-
-// consumeScheduleRequestCompletion is the Task 6 hook. Task 5 deliberately
-// leaves lifecycle policy out of admission and scheduling debt consumption.
-func consumeScheduleRequestCompletion(Tx, int) error { return nil }

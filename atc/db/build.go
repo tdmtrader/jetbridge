@@ -638,6 +638,16 @@ func (b *build) Finish(status BuildStatus) error {
 
 	defer Rollback(tx)
 
+	var runID sql.NullInt64
+	if err = tx.QueryRow("SELECT pipeline_run_id FROM builds WHERE id = $1", b.id).Scan(&runID); err != nil {
+		return err
+	}
+	if runID.Valid {
+		if _, err = lockPipelineRun(tx, int(runID.Int64)); err != nil {
+			return err
+		}
+	}
+
 	var endTime time.Time
 
 	updateBuilder := psql.Update("builds").
@@ -830,6 +840,11 @@ WITH RECURSIVE pipelines_to_archive AS (
 
 		err = updateNextBuildForJob(tx, b.jobID, latestNonRerunID)
 		if err != nil {
+			return err
+		}
+	}
+	if runID.Valid {
+		if _, err = attemptRunCompletion(tx, int(runID.Int64)); err != nil {
 			return err
 		}
 	}

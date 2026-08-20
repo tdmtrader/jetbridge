@@ -430,7 +430,7 @@ var _ = Describe("JobFactory", func() {
 				Expect(err).ToNot(HaveOccurred())
 				Expect(found).To(BeTrue())
 
-				err = job1.UpdateLastScheduled(job1.ScheduleRequestedTime())
+				err = job1.ConsumeScheduleRequest(job1.ScheduleRequestedTime(), false)
 				Expect(err).ToNot(HaveOccurred())
 			})
 

@@ -91,7 +91,6 @@ type Job interface {
 	RerunBuild(build Build, createdBy string) (Build, error)
 
 	RequestSchedule() error
-	UpdateLastScheduled(time.Time) error
 	ConsumeScheduleRequest(time.Time, bool) error
 
 	ChronoBuilds(page Page) ([]BuildForAPI, Pagination, error)
@@ -862,7 +861,8 @@ func (j *job) CreateBuild(createdBy string) (_ Build, err error) {
 
 	build := newEmptyBuild(j.conn, j.lockFactory)
 	_, err = createJobBuild(tx, build, j.id, jobBuildArgs{
-		NextBuildName: true,
+		NextBuildName:  true,
+		ReopenTerminal: true,
 		Values: map[string]any{
 			"status": BuildStatusPending, "manually_triggered": true, "created_by": createdBy,
 		},
@@ -922,13 +922,18 @@ func (j *job) tryRerunBuild(buildToRerun Build, createdBy string) (Build, error)
 		buildToRerunID = buildToRerun.RerunOf()
 	}
 
+	admission, err := lockJobBuildAdmission(tx, j.id, true)
+	if err != nil {
+		return nil, err
+	}
+
 	rerunBuildName, rerunNumber, err := j.getNewRerunBuildName(tx, buildToRerunID)
 	if err != nil {
 		return nil, err
 	}
 
 	rerunBuild := newEmptyBuild(j.conn, j.lockFactory)
-	_, err = createJobBuild(tx, rerunBuild, j.id, jobBuildArgs{Values: map[string]any{
+	_, err = createAdmittedJobBuild(tx, rerunBuild, admission, jobBuildArgs{Values: map[string]any{
 		"name":         rerunBuildName,
 		"status":       BuildStatusPending,
 		"rerun_of":     buildToRerunID,
@@ -1089,18 +1094,6 @@ func (j *job) RequestSchedule() error {
 	return tx.Commit()
 }
 
-func (j *job) UpdateLastScheduled(requestedTime time.Time) error {
-	_, err := psql.Update("jobs").
-		Set("last_scheduled", requestedTime).
-		Where(sq.Eq{
-			"id": j.id,
-		}).
-		RunWith(j.conn).
-		Exec()
-
-	return err
-}
-
 func (j *job) ConsumeScheduleRequest(observed time.Time, noBuild bool) error {
 	tx, err := j.conn.Begin()
 	if err != nil {
@@ -1133,7 +1126,7 @@ func (j *job) ConsumeScheduleRequest(observed time.Time, noBuild bool) error {
 		return err
 	}
 	if noBuild && runID.Valid {
-		if err = consumeScheduleRequestCompletion(tx, int(runID.Int64)); err != nil {
+		if _, err = attemptRunCompletion(tx, int(runID.Int64)); err != nil {
 			return err
 		}
 	}
