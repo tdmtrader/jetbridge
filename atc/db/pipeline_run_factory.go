@@ -119,11 +119,15 @@ func (f *pipelineRunFactory) CreateRunInTx(_ context.Context, tx Tx, base Pipeli
 		return RunCreation{}, err
 	}
 	run := &pipelineRun{id: runID, templatePipelineID: locked.ID(), number: number, params: atc.Params(normalized), status: atc.RunStatusRunning, createdBy: createdBy, configHash: hashText}
-	// Keep the header timestamp projection local to this insert: Task 3's
-	// completed_at schema follow-up changes this compatibility seam.
+	// New runs are not completed; retain the nullable header value in creation
+	// memory so it stays consistent with later header reads.
+	var completedAt sql.NullTime
 	if err = tx.QueryRow(`INSERT INTO pipeline_runs (id, template_pipeline_id, number, params, status, created_by, config_hash)
-		VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING created_at, updated_at`, runID, locked.ID(), number, paramsJSON, atc.RunStatusRunning, createdBy, hashText).Scan(&run.createdAt, &run.updatedAt); err != nil {
+		VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING created_at, completed_at`, runID, locked.ID(), number, paramsJSON, atc.RunStatusRunning, createdBy, hashText).Scan(&run.createdAt, &completedAt); err != nil {
 		return RunCreation{}, err
+	}
+	if completedAt.Valid {
+		run.completedAt = &completedAt.Time
 	}
 
 	runJobs := make(map[string]runJobMetadata, len(materialized.Config.Jobs))
