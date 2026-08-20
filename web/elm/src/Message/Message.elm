@@ -23,6 +23,11 @@ type Message
     | BlurMsg
       -- Pipeline
     | ToggleGroup Concourse.PipelineGroup
+      -- Pipeline runs
+    | OpenPipelineRunForm
+    | SetPipelineRunParam String String
+    | SubmitPipelineRun
+    | RetryPipelineRuns
       -- Dashboard
     | DragStart Dashboard.Group.Models.Card
     | DragOver DropTarget

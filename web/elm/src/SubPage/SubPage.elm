@@ -34,6 +34,7 @@ import Message.TopLevelMessage exposing (TopLevelMessage(..))
 import NotFound.Model
 import NotFound.NotFound as NotFound
 import Pipeline.Pipeline as Pipeline
+import PipelineRuns.PipelineRuns as PipelineRuns
 import Resource.Models
 import Resource.Resource as Resource
 import Routes
@@ -46,6 +47,7 @@ type Model
     | JobModel Job.Model
     | ResourceModel Resource.Models.Model
     | PipelineModel Pipeline.Model
+    | PipelineRunsModel PipelineRuns.Model
     | NotFoundModel NotFound.Model.Model
     | DashboardModel Dashboard.Models.Model
     | FlySuccessModel FlySuccess.Models.Model
@@ -95,9 +97,9 @@ init session route =
                 }
                 |> Tuple.mapFirst PipelineModel
 
-        Routes.PipelineRuns _ ->
-            NotFound.init { notFoundImgSrc = session.notFoundImgSrc, route = session.route }
-                |> Tuple.mapFirst NotFoundModel
+        Routes.PipelineRuns flags ->
+            PipelineRuns.init flags
+                |> Tuple.mapFirst PipelineRunsModel
 
         Routes.PipelineRun _ ->
             NotFound.init { notFoundImgSrc = session.notFoundImgSrc, route = session.route }
@@ -221,6 +223,20 @@ genericUpdate fBuild fJob fRes fPipe fDash fCaus fNF fFS dFly ( model, effects )
             dFly ( downloadFlyModel, effects )
                 |> Tuple.mapFirst DownloadFlyModel
 
+        PipelineRunsModel pipelineRunsModel ->
+            ( PipelineRunsModel pipelineRunsModel, effects )
+
+
+updatePipelineRuns : ET PipelineRuns.Model -> ET Model
+updatePipelineRuns f ( model, effects ) =
+    case model of
+        PipelineRunsModel pipelineRunsModel ->
+            f ( pipelineRunsModel, effects )
+                |> Tuple.mapFirst PipelineRunsModel
+
+        _ ->
+            ( model, effects )
+
 
 handleCallback : Callback -> Session -> ET Model
 handleCallback callback session =
@@ -234,6 +250,7 @@ handleCallback callback session =
         identity
         identity
         identity
+        >> updatePipelineRuns (PipelineRuns.handleCallback callback)
         >> (case callback of
                 LoggedOut (Ok ()) ->
                     genericUpdate
@@ -278,6 +295,7 @@ handleDelivery session delivery =
         (NotFound.handleDelivery delivery)
         (FlySuccess.handleDelivery delivery)
         (DownloadFly.handleDelivery delivery)
+        >> updatePipelineRuns identity
 
 
 update : Session -> Message -> ET Model
@@ -292,6 +310,7 @@ update session msg =
         (Login.update msg)
         (Login.update msg >> FlySuccess.update msg)
         (Login.update msg >> DownloadFly.update msg)
+        >> updatePipelineRuns (PipelineRuns.update msg)
         >> (case msg of
                 GoToRoute route ->
                     handleGoToRoute route
@@ -399,6 +418,14 @@ urlUpdateValid routes =
         identity
         identity
         identity
+        >> updatePipelineRuns
+            (case routes.to of
+                Routes.PipelineRuns flags ->
+                    PipelineRuns.change flags
+
+                _ ->
+                    identity
+            )
 
 
 view : Session -> Model -> ( String, Html Message )
@@ -417,6 +444,11 @@ view ({ userState } as session) mdl =
         PipelineModel model ->
             ( Pipeline.documentTitle model
             , Pipeline.view session model
+            )
+
+        PipelineRunsModel model ->
+            ( PipelineRuns.documentTitle model
+            , PipelineRuns.view session model
             )
 
         ResourceModel model ->
@@ -462,6 +494,9 @@ tooltip mdl =
         PipelineModel model ->
             Pipeline.tooltip model
 
+        PipelineRunsModel model ->
+            PipelineRuns.tooltip model
+
         ResourceModel model ->
             Resource.tooltip model
 
@@ -492,6 +527,9 @@ subscriptions mdl =
 
         PipelineModel _ ->
             Pipeline.subscriptions
+
+        PipelineRunsModel _ ->
+            PipelineRuns.subscriptions
 
         ResourceModel model ->
             Resource.subscriptions model
