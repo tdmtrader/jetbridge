@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
@@ -337,6 +338,40 @@ var _ = Describe("PipelineRunFactory", func() {
 		Expect(failingFactory.AfterRunCreated(context.Background(), creation)).To(MatchError("notification unavailable"))
 	})
 
+	It("attempts both post-commit wakeups when one notification fails", func() {
+		template, _, err := defaultTeam.SavePipeline(atc.PipelineRef{Name: "partial-notification-run"}, atc.Config{Template: true, Jobs: atc.JobConfigs{{Name: "entry"}}}, 0, false)
+		Expect(err).NotTo(HaveOccurred())
+		bus := &notificationRecordingBus{NotificationsBus: dbConn.Bus(), failChannel: atc.ComponentLidarScanner}
+		recordingFactory := db.NewPipelineRunFactory(notificationRecordingConn{DbConn: dbConn, bus: bus}, lockFactory)
+
+		creation, err := recordingFactory.CreateRun(context.Background(), template, db.RunParams{}, "creator")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(bus.notifications).To(Equal([]string{atc.ComponentLidarScanner, atc.ComponentScheduler}))
+		Expect(recordingFactory.AfterRunCreated(context.Background(), creation)).To(MatchError("notification unavailable"))
+		Expect(bus.notifications).To(Equal([]string{atc.ComponentLidarScanner, atc.ComponentScheduler, atc.ComponentLidarScanner, atc.ComponentScheduler}))
+	})
+
+	It("wakes the scanner and scheduler after creation, repeatedly", func() {
+		template, _, err := defaultTeam.SavePipeline(atc.PipelineRef{Name: "wake-run"}, atc.Config{Template: true, Jobs: atc.JobConfigs{{Name: "entry"}}}, 0, false)
+		Expect(err).NotTo(HaveOccurred())
+		bus := dbConn.Bus()
+		scanner, err := bus.ListenSignal(atc.ComponentLidarScanner)
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { Expect(bus.UnlistenSignal(atc.ComponentLidarScanner, scanner)).To(Succeed()) })
+		scheduler, err := bus.ListenSignal(atc.ComponentScheduler)
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { Expect(bus.UnlistenSignal(atc.ComponentScheduler, scheduler)).To(Succeed()) })
+
+		creation, err := factory.CreateRun(context.Background(), template, db.RunParams{}, "creator")
+		Expect(err).NotTo(HaveOccurred())
+		Eventually(scanner.C(), 10*time.Second).Should(Receive())
+		Eventually(scheduler.C(), 10*time.Second).Should(Receive())
+
+		Expect(factory.AfterRunCreated(context.Background(), creation)).To(Succeed())
+		Eventually(scanner.C(), 10*time.Second).Should(Receive())
+		Eventually(scheduler.C(), 10*time.Second).Should(Receive())
+	})
+
 	It("rolls back all run rows when BeforeCommit rejects the creation", func() {
 		template, _, err := defaultTeam.SavePipeline(atc.PipelineRef{Name: "rollback-run"}, atc.Config{Template: true, Jobs: atc.JobConfigs{{Name: "entry"}}}, 0, false)
 		Expect(err).NotTo(HaveOccurred())
@@ -386,3 +421,24 @@ func (c notificationFailingConn) Bus() db.NotificationsBus {
 type notificationFailingBus struct{ db.NotificationsBus }
 
 func (notificationFailingBus) Notify(string) error { return fmt.Errorf("notification unavailable") }
+
+type notificationRecordingConn struct {
+	db.DbConn
+	bus *notificationRecordingBus
+}
+
+func (c notificationRecordingConn) Bus() db.NotificationsBus { return c.bus }
+
+type notificationRecordingBus struct {
+	db.NotificationsBus
+	notifications []string
+	failChannel   string
+}
+
+func (b *notificationRecordingBus) Notify(channel string) error {
+	b.notifications = append(b.notifications, channel)
+	if channel == b.failChannel {
+		return fmt.Errorf("notification unavailable")
+	}
+	return nil
+}
