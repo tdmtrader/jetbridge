@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -119,14 +120,32 @@ func (s *Server) handleHangarOpen(w http.ResponseWriter, r *http.Request) {
 		_ = spool.Close()
 		_ = os.Remove(spoolName)
 	}()
-	n, copyErr := io.Copy(spool, io.LimitReader(reader, service.MaxArchiveBytes+1))
+	hasher := sha256.New()
+	n, copyErr := io.Copy(io.MultiWriter(spool, hasher), io.LimitReader(reader, service.MaxArchiveBytes+1))
 	closeErr := reader.Close()
-	if copyErr != nil || closeErr != nil || n > service.MaxArchiveBytes || attributes.Ref != ref || attributes.LogicalBytes != n {
-		if n > service.MaxArchiveBytes {
-			s.refuseHangar(w, r, hangar.ErrLimitExceeded)
+	if copyErr != nil {
+		if hangarTypedError(copyErr) {
+			s.refuseHangar(w, r, copyErr)
 		} else {
-			s.refuseHangar(w, r, hangar.ErrCorrupt)
+			s.refuseHangar(w, r, hangar.ErrInfrastructure)
 		}
+		return
+	}
+	if closeErr != nil {
+		if hangarTypedError(closeErr) {
+			s.refuseHangar(w, r, closeErr)
+		} else {
+			s.refuseHangar(w, r, hangar.ErrInfrastructure)
+		}
+		return
+	}
+	if n > service.MaxArchiveBytes {
+		s.refuseHangar(w, r, hangar.ErrLimitExceeded)
+		return
+	}
+	actualDigest := hangar.Digest(fmt.Sprintf("sha256:%x", hasher.Sum(nil)))
+	if attributes.Ref != ref || attributes.LogicalBytes != n || actualDigest != ref.Digest {
+		s.refuseHangar(w, r, hangar.ErrCorrupt)
 		return
 	}
 	if _, err := spool.Seek(0, io.SeekStart); err != nil {
@@ -216,7 +235,7 @@ func decodeHangarControl(w http.ResponseWriter, r *http.Request, limit int64, de
 	if err != nil {
 		return err
 	}
-	if err := rejectDuplicateJSONFields(body); err != nil {
+	if err := validateHangarControlSchema(body); err != nil {
 		return err
 	}
 	decoder := json.NewDecoder(bytes.NewReader(body))
@@ -230,70 +249,89 @@ func decodeHangarControl(w http.ResponseWriter, r *http.Request, limit int64, de
 	return nil
 }
 
-func rejectDuplicateJSONFields(body []byte) error {
+func validateHangarControlSchema(body []byte) error {
 	decoder := json.NewDecoder(bytes.NewReader(body))
-	var visit func() error
-	visit = func() error {
+	var parseObject func(map[string]func() error) error
+	parseScalar := func() error {
 		token, err := decoder.Token()
 		if err != nil {
 			return err
 		}
-		delimiter, composite := token.(json.Delim)
-		if !composite {
-			return nil
-		}
-		switch delimiter {
-		case '{':
-			seen := make(map[string]struct{})
-			for decoder.More() {
-				keyToken, err := decoder.Token()
-				if err != nil {
-					return err
-				}
-				key, ok := keyToken.(string)
-				if !ok {
-					return fmt.Errorf("invalid JSON object key")
-				}
-				if _, duplicate := seen[key]; duplicate {
-					if key == "grant" {
-						return errDuplicateHangarGrant
-					}
-					return fmt.Errorf("duplicate JSON field")
-				}
-				seen[key] = struct{}{}
-				if err := visit(); err != nil {
-					return err
-				}
-			}
-			end, err := decoder.Token()
-			if err != nil || end != json.Delim('}') {
-				return fmt.Errorf("invalid JSON object")
-			}
-		case '[':
-			for decoder.More() {
-				if err := visit(); err != nil {
-					return err
-				}
-			}
-			end, err := decoder.Token()
-			if err != nil || end != json.Delim(']') {
-				return fmt.Errorf("invalid JSON array")
-			}
-		default:
-			return fmt.Errorf("invalid JSON delimiter")
+		if _, composite := token.(json.Delim); composite {
+			return fmt.Errorf("expected scalar JSON value")
 		}
 		return nil
 	}
-	return visit()
+	parseObject = func(fields map[string]func() error) error {
+		start, err := decoder.Token()
+		if err != nil || start != json.Delim('{') {
+			return fmt.Errorf("expected JSON object")
+		}
+		seen := make(map[string]struct{})
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return fmt.Errorf("invalid JSON object key")
+			}
+			parse, allowed := fields[key]
+			if !allowed {
+				return fmt.Errorf("unknown or noncanonical JSON field")
+			}
+			if _, duplicate := seen[key]; duplicate {
+				if key == "grant" {
+					return errDuplicateHangarGrant
+				}
+				return fmt.Errorf("duplicate JSON field")
+			}
+			seen[key] = struct{}{}
+			if err := parse(); err != nil {
+				return err
+			}
+		}
+		end, err := decoder.Token()
+		if err != nil || end != json.Delim('}') {
+			return fmt.Errorf("invalid JSON object")
+		}
+		return nil
+	}
+	parseRef := func() error {
+		return parseObject(map[string]func() error{"scope": parseScalar, "digest": parseScalar, "generation": parseScalar})
+	}
+	parseItem := func() error {
+		return parseObject(map[string]func() error{"ref": parseRef, "handle": parseScalar, "volume": parseScalar, "grant": parseScalar})
+	}
+	parseItems := func() error {
+		start, err := decoder.Token()
+		if err != nil || start != json.Delim('[') {
+			return fmt.Errorf("expected items array")
+		}
+		for decoder.More() {
+			if err := parseItem(); err != nil {
+				return err
+			}
+		}
+		end, err := decoder.Token()
+		if err != nil || end != json.Delim(']') {
+			return fmt.Errorf("invalid items array")
+		}
+		return nil
+	}
+	return parseObject(map[string]func() error{"items": parseItems})
 }
 
 // Hangar replies go through s.refuse for the same reason every other daemon
 // refusal does: a refused build must leave a counted, logged trace instead of
-// a bare http.Error. The status and the client-visible message are unchanged
-// from the standalone writers these replaced; only the accounting is new.
+// a bare http.Error. Status and client-visible message are unchanged from the
+// standalone writers these replaced; only the accounting is new, and the case
+// order is preserved exactly (ErrInfrastructure first, so a wrapped
+// infrastructure failure is never reported as a client fault).
 //
-// The reply text is deliberately a fixed classification, never err.Error():
-// a Hangar error can carry a scope, a digest or a store message, and refuse
+// The reply text stays a fixed classification and is never err.Error(): a
+// Hangar error can carry a scope, a digest or a store message, and refuse
 // writes its error text to the client.
 func (s *Server) refuseHangarMalformed(w http.ResponseWriter, r *http.Request) {
 	s.refuse(w, r, http.StatusBadRequest, reasonMalformed, errors.New("malformed request"))
@@ -304,18 +342,25 @@ func (s *Server) refuseHangar(w http.ResponseWriter, r *http.Request, err error)
 	message := "service unavailable"
 	reason := reasonUnavailable
 	switch {
-	case errors.Is(err, hangar.ErrUnauthorized):
-		status, message, reason = http.StatusUnauthorized, "unauthorized", reasonCapability
-	case errors.Is(err, hangar.ErrNotFound):
-		status, message, reason = http.StatusNotFound, "not found", reasonNotFound
-	case errors.Is(err, hangar.ErrConflict):
-		status, message, reason = http.StatusConflict, "conflict", reasonConflict
-	case errors.Is(err, hangar.ErrLimitExceeded):
-		status, message, reason = http.StatusRequestEntityTooLarge, "request too large", reasonLimitExceeded
-	case errors.Is(err, hangar.ErrCorrupt):
-		status, message, reason = http.StatusUnprocessableEntity, "tree verification failed", reasonTreeVerification
 	case errors.Is(err, hangar.ErrInfrastructure), errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		status, message, reason = http.StatusServiceUnavailable, "service unavailable", reasonUnavailable
+	case errors.Is(err, hangar.ErrUnauthorized):
+		status, message, reason = http.StatusUnauthorized, "unauthorized", reasonCapability
+	case errors.Is(err, hangar.ErrCorrupt):
+		status, message, reason = http.StatusUnprocessableEntity, "tree verification failed", reasonTreeVerification
+	case errors.Is(err, hangar.ErrLimitExceeded):
+		status, message, reason = http.StatusRequestEntityTooLarge, "request too large", reasonLimitExceeded
+	case errors.Is(err, hangar.ErrConflict):
+		status, message, reason = http.StatusConflict, "conflict", reasonConflict
+	case errors.Is(err, hangar.ErrNotFound):
+		status, message, reason = http.StatusNotFound, "not found", reasonNotFound
 	}
 	s.refuse(w, r, status, reason, errors.New(message))
+}
+
+func hangarTypedError(err error) bool {
+	return errors.Is(err, hangar.ErrInfrastructure) || errors.Is(err, hangar.ErrUnauthorized) ||
+		errors.Is(err, hangar.ErrCorrupt) || errors.Is(err, hangar.ErrLimitExceeded) ||
+		errors.Is(err, hangar.ErrConflict) || errors.Is(err, hangar.ErrNotFound) ||
+		errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -50,7 +51,29 @@ func NewStorageClient(ctx context.Context, endpoint string) (*storage.Client, er
 	if endpoint == "" {
 		return storage.NewClient(ctx)
 	}
-	return storage.NewClient(ctx, option.WithEndpoint(endpoint), option.WithoutAuthentication(), storage.WithJSONReads())
+	normalized, err := normalizeStorageEndpoint(endpoint)
+	if err != nil {
+		return nil, err
+	}
+	// A non-empty endpoint is the repository's existing emulator or explicitly
+	// unauthenticated proxy convention, shared with durable.NewGCS.
+	return storage.NewClient(ctx, option.WithEndpoint(normalized), option.WithoutAuthentication(), storage.WithJSONReads())
+}
+
+func normalizeStorageEndpoint(endpoint string) (string, error) {
+	parsed, err := url.Parse(endpoint)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", fmt.Errorf("hangar: invalid GCS endpoint")
+	}
+	switch strings.TrimSuffix(parsed.Path, "/") {
+	case "":
+		parsed.Path = "/storage/v1/"
+	case "/storage/v1":
+		parsed.Path = "/storage/v1/"
+	default:
+		return "", fmt.Errorf("hangar: GCS endpoint path must be empty or /storage/v1/")
+	}
+	return parsed.String(), nil
 }
 
 func NewGCSStore(client *storage.Client, config GCSConfig) (*GCSStore, error) {
