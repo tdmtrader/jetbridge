@@ -86,7 +86,7 @@ var buildsQuery = psql.Select(`
 		b.start_time,
 		b.end_time,
 		b.reap_time,
-		j.name,
+		COALESCE(j.name, b.run_job_name),
 		r.name,
 		b.pipeline_id,
 		p.name,

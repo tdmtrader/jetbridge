@@ -10,6 +10,7 @@ import (
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/event"
 	. "github.com/concourse/concourse/atc/gc"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -238,6 +239,203 @@ var _ = Describe("BuildLogCollector", func() {
 		}),
 	)
 
+	Describe("numbered runs", func() {
+		DescribeTable("uses the ordinary retention decisions across runs", runNumberedRetentionScenario,
+			Entry("days", retentionScenario{
+				jobRetention: atc.JobConfig{BuildLogRetention: &atc.BuildLogRetention{Days: 1}},
+				calculator:   NewBuildLogRetentionCalculator(0, 0, 0, 0),
+				builds: []retentionBuild{
+					{name: "b1", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 49 * time.Hour},
+					{name: "b2", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 23 * time.Hour},
+				},
+				expectedDeleted:     []string{"b1"},
+				expectedFirstLogged: "b2",
+			}),
+			Entry("minimum success", retentionScenario{
+				jobRetention: atc.JobConfig{BuildLogRetention: &atc.BuildLogRetention{Builds: 3, MinimumSucceededBuilds: 2}},
+				calculator:   NewBuildLogRetentionCalculator(0, 0, 0, 0),
+				builds: []retentionBuild{
+					{name: "b1", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 2 * time.Hour},
+					{name: "b2", status: db.BuildStatusSucceeded, completed: true, drained: true, endAgo: 2 * time.Hour},
+					{name: "b3", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 2 * time.Hour},
+					{name: "b4", status: db.BuildStatusSucceeded, completed: true, drained: true, endAgo: 2 * time.Hour},
+					{name: "b5", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 2 * time.Hour},
+				},
+				expectedDeleted:     []string{"b1", "b3"},
+				expectedFirstLogged: "b2",
+			}),
+			Entry("running rows", retentionScenario{
+				jobRetention: atc.JobConfig{BuildLogRetention: &atc.BuildLogRetention{Builds: 3}},
+				calculator:   NewBuildLogRetentionCalculator(0, 0, 0, 0),
+				builds: []retentionBuild{
+					{name: "b1", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 2 * time.Hour},
+					{name: "b2", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 2 * time.Hour},
+					{name: "b3", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 2 * time.Hour},
+					{name: "b4", status: db.BuildStatusStarted, drained: true},
+					{name: "b5", status: db.BuildStatusStarted, drained: true},
+					{name: "b6", status: db.BuildStatusSucceeded, completed: true, drained: true, endAgo: 2 * time.Hour},
+				},
+				expectedDeleted:     []string{"b1"},
+				expectedFirstLogged: "b2",
+			}),
+			Entry("drain filters", retentionScenario{
+				jobRetention:      atc.JobConfig{BuildLogsToRetain: 2},
+				calculator:        NewBuildLogRetentionCalculator(0, 0, 0, 0),
+				drainerConfigured: true,
+				builds: []retentionBuild{
+					{name: "b1", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 2 * time.Hour},
+					{name: "b2", status: db.BuildStatusFailed, completed: true, drained: false, endAgo: 2 * time.Hour},
+					{name: "b3", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 2 * time.Hour},
+					{name: "b4", status: db.BuildStatusFailed, completed: true, drained: false, endAgo: 2 * time.Hour},
+					{name: "b5", status: db.BuildStatusFailed, completed: true, drained: false, endAgo: 2 * time.Hour},
+					{name: "b6", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 2 * time.Hour},
+					{name: "b7", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 2 * time.Hour},
+				},
+				expectedDeleted:     []string{"b1", "b3"},
+				expectedFirstLogged: "b2",
+			}),
+			Entry("paused template", retentionScenario{
+				jobRetention:   atc.JobConfig{BuildLogRetention: &atc.BuildLogRetention{Builds: 1}},
+				calculator:     NewBuildLogRetentionCalculator(0, 0, 0, 0),
+				pausedPipeline: true,
+				builds: []retentionBuild{
+					{name: "b1", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 2 * time.Hour},
+					{name: "b2", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 2 * time.Hour},
+				},
+				expectedFirstLogged: "b1",
+			}),
+			Entry("paused base job", retentionScenario{
+				jobRetention: atc.JobConfig{BuildLogRetention: &atc.BuildLogRetention{Builds: 1}},
+				calculator:   NewBuildLogRetentionCalculator(0, 0, 0, 0),
+				pausedJob:    true,
+				builds: []retentionBuild{
+					{name: "b1", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 2 * time.Hour},
+					{name: "b2", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 2 * time.Hour},
+				},
+				expectedFirstLogged: "b1",
+			}),
+		)
+
+		It("applies one global budget after every page across dynamic live and reclaimed runs", func() {
+			ttl := 1
+			template := saveRunLogTemplate("global-budget", atc.JobConfig{
+				Name: "deploy-((environment))", BuildLogRetention: &atc.BuildLogRetention{Builds: 3},
+			}, &atc.RunRetentionConfig{TTLDays: &ttl})
+			builds := make([]db.Build, 8)
+			var oldestRun db.PipelineRun
+			for i := range builds {
+				run, build := createNumberedLogBuild(template, fmt.Sprintf("environment-%d", i), retentionBuild{
+					name: fmt.Sprintf("b%d", i+1), status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 48 * time.Hour,
+				})
+				if i == 0 {
+					oldestRun = run
+				}
+				builds[i] = build
+			}
+			_, err := dbConn.Exec("UPDATE pipeline_runs SET status = 'failed', completed_at = now() - interval '2 days' WHERE id = $1", oldestRun.ID())
+			Expect(err).NotTo(HaveOccurred())
+			destroyed, err := db.NewPipelineRunReclaimLifecycle(dbConn).DestroyReclaimableRun(oldestRun.ID())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(destroyed).To(BeTrue())
+
+			runBuildLogCollector(2, NewBuildLogRetentionCalculator(0, 0, 0, 0), false)
+
+			for i, build := range builds {
+				if i < 5 {
+					Expect(numberedBuildEventCount(build.ID())).To(BeZero(), "old build %d must be reaped by the one global budget", i+1)
+				} else {
+					Expect(numberedBuildEventCount(build.ID())).To(Equal(1), "new build %d must be globally retained", i+1)
+				}
+			}
+			job := reloadRunLogJob(template, "deploy-((environment))")
+			Expect(job.FirstLoggedBuildID()).To(Equal(builds[5].ID()))
+		})
+
+		It("uses current tightening, cannot restore after loosening, and leaves absent keys untouched until they reappear", func() {
+			template := saveRunLogTemplate("current-policy", atc.JobConfig{Name: "source", BuildLogRetention: &atc.BuildLogRetention{Builds: 4}}, nil)
+			builds := make([]db.Build, 6)
+			for i := range builds {
+				_, builds[i] = createNumberedLogBuild(template, "", retentionBuild{name: fmt.Sprintf("b%d", i+1), status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 2 * time.Hour})
+			}
+
+			runBuildLogCollector(2, NewBuildLogRetentionCalculator(0, 0, 0, 0), false)
+			expectRunEventPresence(builds, []bool{false, false, true, true, true, true})
+
+			var err error
+			template, _, err = defaultTeam.SavePipeline(template.PipelineRef(), atc.Config{Template: true, Jobs: atc.JobConfigs{{Name: "other", BuildLogRetention: &atc.BuildLogRetention{Builds: 1}}}}, template.ConfigVersion(), false)
+			Expect(err).NotTo(HaveOccurred())
+			runBuildLogCollector(2, NewBuildLogRetentionCalculator(0, 0, 0, 0), false)
+			expectRunEventPresence(builds, []bool{false, false, true, true, true, true})
+
+			template, _, err = defaultTeam.SavePipeline(template.PipelineRef(), atc.Config{Template: true, Jobs: atc.JobConfigs{{Name: "source", BuildLogRetention: &atc.BuildLogRetention{Builds: 2}}}}, template.ConfigVersion(), false)
+			Expect(err).NotTo(HaveOccurred())
+			runBuildLogCollector(2, NewBuildLogRetentionCalculator(0, 0, 0, 0), false)
+			expectRunEventPresence(builds, []bool{false, false, false, false, true, true})
+
+			template, _, err = defaultTeam.SavePipeline(template.PipelineRef(), atc.Config{Template: true, Jobs: atc.JobConfigs{{Name: "source", BuildLogRetention: &atc.BuildLogRetention{Builds: 5}}}}, template.ConfigVersion(), false)
+			Expect(err).NotTo(HaveOccurred())
+			runBuildLogCollector(2, NewBuildLogRetentionCalculator(0, 0, 0, 0), false)
+			expectRunEventPresence(builds, []bool{false, false, false, false, true, true})
+		})
+
+		It("revisits an undrained build through the base cursor after newer logs were reaped", func() {
+			template := saveRunLogTemplate("late-drain", atc.JobConfig{Name: "source", BuildLogRetention: &atc.BuildLogRetention{Builds: 1}}, nil)
+			builds := make([]db.Build, 4)
+			for i := range builds {
+				drained := i != 0
+				_, builds[i] = createNumberedLogBuild(template, "", retentionBuild{name: fmt.Sprintf("b%d", i+1), status: db.BuildStatusFailed, completed: true, drained: drained, endAgo: 2 * time.Hour})
+			}
+
+			runBuildLogCollector(2, NewBuildLogRetentionCalculator(0, 0, 0, 0), true)
+			expectRunEventPresence(builds, []bool{true, false, false, true})
+			Expect(reloadRunLogJob(template, "source").FirstLoggedBuildID()).To(Equal(builds[0].ID()))
+
+			Expect(builds[0].SetDrained(true)).To(Succeed())
+			runBuildLogCollector(2, NewBuildLogRetentionCalculator(0, 0, 0, 0), true)
+			expectRunEventPresence(builds, []bool{false, false, false, true})
+			Expect(reloadRunLogJob(template, "source").FirstLoggedBuildID()).To(Equal(builds[3].ID()))
+		})
+
+		It("leaves team events and the base cursor untouched when numbered deletion fails", func() {
+			template := saveRunLogTemplate("delete-fault", atc.JobConfig{Name: "source", BuildLogRetention: &atc.BuildLogRetention{Builds: 1}}, nil)
+			builds := make([]db.Build, 2)
+			for i := range builds {
+				_, builds[i] = createNumberedLogBuild(template, "", retentionBuild{name: fmt.Sprintf("b%d", i+1), status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 2 * time.Hour})
+			}
+			faultLogger := lagertest.NewTestLogger("numbered-delete-fault")
+			factory := decoratedPipelines{db.NewPipelineFactory(dbConn, lockFactory), func(p db.Pipeline) db.Pipeline {
+				if p.Template() {
+					return failDeleteRunBuildEvents{p}
+				}
+				return p
+			}}
+			collector := NewBuildLogCollector(factory, db.NewPipelineLifecycle(dbConn, lockFactory), 2, NewBuildLogRetentionCalculator(0, 0, 0, 0), false)
+
+			Expect(collector.Run(lagerctx.NewContext(context.Background(), faultLogger))).To(Succeed())
+			Eventually(faultLogger.Buffer()).Should(gbytes.Say(errDisaster.Error()))
+			expectRunEventPresence(builds, []bool{true, true})
+			Expect(reloadRunLogJob(template, "source").FirstLoggedBuildID()).To(BeZero())
+		})
+
+		It("leaves the base cursor untouched when numbered history lookup fails", func() {
+			template := saveRunLogTemplate("query-fault", atc.JobConfig{Name: "source", BuildLogRetention: &atc.BuildLogRetention{Builds: 1}}, nil)
+			_, build := createNumberedLogBuild(template, "", retentionBuild{name: "b1", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 2 * time.Hour})
+			faultLogger := lagertest.NewTestLogger("numbered-query-fault")
+			factory := decoratedPipelines{db.NewPipelineFactory(dbConn, lockFactory), func(p db.Pipeline) db.Pipeline {
+				if p.Template() {
+					return failChronoRunBuilds{p}
+				}
+				return p
+			}}
+			collector := NewBuildLogCollector(factory, db.NewPipelineLifecycle(dbConn, lockFactory), 2, NewBuildLogRetentionCalculator(0, 0, 0, 0), false)
+
+			Expect(collector.Run(lagerctx.NewContext(context.Background(), faultLogger))).To(Succeed())
+			Eventually(faultLogger.Buffer()).Should(gbytes.Say(errDisaster.Error()))
+			Expect(numberedBuildEventCount(build.ID())).To(Equal(1))
+			Expect(reloadRunLogJob(template, "source").FirstLoggedBuildID()).To(BeZero())
+		})
+	})
+
 	// Each spec below decorates the real, PostgreSQL-backed collaborator so that
 	// exactly one call fails. Every other read and write still reaches the
 	// database, so what the collector did before and after the fault is visible
@@ -425,6 +623,16 @@ type failDeleteBuildEvents struct{ db.Pipeline }
 
 func (failDeleteBuildEvents) DeleteBuildEventsByBuildIDs([]int) error { return errDisaster }
 
+type failDeleteRunBuildEvents struct{ db.Pipeline }
+
+func (failDeleteRunBuildEvents) DeleteRunBuildEventsByBuildIDs([]int) error { return errDisaster }
+
+type failChronoRunBuilds struct{ db.Pipeline }
+
+func (failChronoRunBuilds) ChronoRunBuilds(string, db.Page) ([]db.BuildForAPI, db.Pagination, error) {
+	return nil, db.Pagination{}, errDisaster
+}
+
 type failChronoBuilds struct{ db.Job }
 
 func (failChronoBuilds) ChronoBuilds(db.Page) ([]db.BuildForAPI, db.Pagination, error) {
@@ -551,6 +759,119 @@ func runRetentionScenario(scenario retentionScenario) {
 		Expect(job.FirstLoggedBuildID()).To(BeZero())
 	} else {
 		Expect(job.FirstLoggedBuildID()).To(Equal(buildsByName[scenario.expectedFirstLogged].ID()))
+	}
+}
+
+func runNumberedRetentionScenario(scenario retentionScenario) {
+	jobConfig := scenario.jobRetention
+	jobConfig.Name = "some-job"
+	template := saveRunLogTemplate("numbered-retention", jobConfig, nil)
+	buildsByName := make(map[string]db.Build, len(scenario.builds))
+	for _, buildSpec := range scenario.builds {
+		_, build := createNumberedLogBuild(template, buildSpec.name, buildSpec)
+		buildsByName[buildSpec.name] = build
+	}
+	if len(scenario.builds) > 0 {
+		_, err := dbConn.Exec("UPDATE jobs SET first_logged_build_id = $1 WHERE pipeline_id = $2 AND name = $3", buildsByName[scenario.builds[0].name].ID(), template.ID(), jobConfig.Name)
+		Expect(err).NotTo(HaveOccurred())
+	}
+
+	job := reloadRunLogJob(template, jobConfig.Name)
+	if scenario.pausedPipeline {
+		Expect(template.Pause("collector-test")).To(Succeed())
+	}
+	if scenario.pausedJob {
+		Expect(job.Pause("collector-test")).To(Succeed())
+	}
+
+	runBuildLogCollector(2, scenario.calculator, scenario.drainerConfigured)
+	deleted := []string{}
+	for _, buildSpec := range scenario.builds {
+		if numberedBuildEventCount(buildsByName[buildSpec.name].ID()) == 0 {
+			deleted = append(deleted, buildSpec.name)
+		}
+	}
+	Expect(deleted).To(ConsistOf(scenario.expectedDeleted))
+
+	job = reloadRunLogJob(template, jobConfig.Name)
+	if scenario.expectedFirstLogged == "" {
+		Expect(job.FirstLoggedBuildID()).To(BeZero())
+	} else {
+		Expect(job.FirstLoggedBuildID()).To(Equal(buildsByName[scenario.expectedFirstLogged].ID()))
+	}
+}
+
+func saveRunLogTemplate(name string, job atc.JobConfig, retention *atc.RunRetentionConfig) db.Pipeline {
+	GinkgoHelper()
+	template, _, err := defaultTeam.SavePipeline(atc.PipelineRef{Name: name}, atc.Config{
+		Template:     true,
+		Params:       []atc.ParamSchema{{Name: "environment", Type: atc.ParamTypeString}},
+		RunRetention: retention,
+		Jobs:         atc.JobConfigs{job},
+	}, 0, false)
+	Expect(err).NotTo(HaveOccurred())
+	return template
+}
+
+func createNumberedLogBuild(template db.Pipeline, environment string, spec retentionBuild) (db.PipelineRun, db.Build) {
+	GinkgoHelper()
+	creation, err := db.NewPipelineRunFactory(dbConn, lockFactory).CreateRun(context.Background(), template, db.RunParams{
+		Vars: atc.RunParams{"environment": environment},
+	}, "creator")
+	Expect(err).NotTo(HaveOccurred())
+	Expect(creation.EntryBuilds).To(HaveLen(1))
+	build := creation.EntryBuilds[0]
+	Expect(build.SaveEvent(event.Log{Payload: spec.name})).To(Succeed())
+
+	var endTime any
+	if spec.endAgo > 0 {
+		endTime = time.Now().Add(-spec.endAgo)
+	}
+	_, err = dbConn.Exec(`
+		UPDATE builds
+		SET status = $2, completed = $3, drained = $4, end_time = $5
+		WHERE id = $1
+	`, build.ID(), spec.status, spec.completed, spec.drained, endTime)
+	Expect(err).NotTo(HaveOccurred())
+	if spec.reapAgo > 0 {
+		_, err = dbConn.Exec("UPDATE builds SET reap_time = $2 WHERE id = $1", build.ID(), time.Now().Add(-spec.reapAgo))
+		Expect(err).NotTo(HaveOccurred())
+	}
+	return creation.Run, build
+}
+
+func runBuildLogCollector(batchSize int, calculator BuildLogRetentionCalculator, drainerConfigured bool) {
+	GinkgoHelper()
+	collector := NewBuildLogCollector(
+		db.NewPipelineFactory(dbConn, lockFactory),
+		db.NewPipelineLifecycle(dbConn, lockFactory),
+		batchSize,
+		calculator,
+		drainerConfigured,
+	)
+	Expect(collector.Run(lagerctx.NewContext(context.Background(), logger))).To(Succeed())
+}
+
+func reloadRunLogJob(template db.Pipeline, name string) db.Job {
+	GinkgoHelper()
+	job, found, err := template.Job(name)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(found).To(BeTrue())
+	return job
+}
+
+func numberedBuildEventCount(buildID int) int {
+	GinkgoHelper()
+	var count int
+	Expect(dbConn.QueryRow(fmt.Sprintf("SELECT count(*) FROM team_build_events_%d WHERE build_id = $1", defaultTeam.ID()), buildID).Scan(&count)).To(Succeed())
+	return count
+}
+
+func expectRunEventPresence(builds []db.Build, expected []bool) {
+	GinkgoHelper()
+	Expect(builds).To(HaveLen(len(expected)))
+	for i, build := range builds {
+		Expect(numberedBuildEventCount(build.ID()) > 0).To(Equal(expected[i]), "build %d event presence", i+1)
 	}
 }
 
