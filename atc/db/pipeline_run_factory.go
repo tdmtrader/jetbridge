@@ -151,18 +151,22 @@ func (f *pipelineRunFactory) CreateRunInTx(_ context.Context, tx Tx, base Pipeli
 
 	entryBuilds := make([]Build, 0, len(materialized.EntryJobNames))
 	for _, name := range materialized.EntryJobNames {
-		buildName, jobID, err := getNewBuildNameForJob(tx, name, childID)
-		if err != nil {
+		var jobID int
+		if err = tx.QueryRow("SELECT id FROM jobs WHERE name = $1 AND pipeline_id = $2", name, childID).Scan(&jobID); err != nil {
 			return RunCreation{}, err
 		}
-		metadata := runJobs[name]
 		build := newEmptyBuild(f.conn, f.lockFactory)
-		err = createBuild(tx, build, map[string]any{
-			"name": buildName, "job_id": jobID, "pipeline_id": childID, "team_id": locked.TeamID(), "status": BuildStatusPending,
-			"manually_triggered": true, "created_by": createdBy, "pipeline_run_id": runID, "run_job_name": name, "run_job_key": metadata.policyKey,
+		created, err := createJobBuild(tx, build, jobID, jobBuildArgs{
+			NextBuildName: true,
+			Values: map[string]any{
+				"status": BuildStatusPending, "manually_triggered": true, "created_by": createdBy,
+			},
 		})
 		if err != nil {
 			return RunCreation{}, err
+		}
+		if !created {
+			return RunCreation{}, fmt.Errorf("entry build for job %q was not created", name)
 		}
 		latestNonRerunID, err := latestCompletedNonRerunBuild(tx, jobID)
 		if err != nil {

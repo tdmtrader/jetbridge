@@ -151,6 +151,18 @@ var _ = Describe("Scheduler", func() {
 			Expect(actualInputs).To(BeNil())
 		})
 
+		It("reports explicitly whether the pass found a pending build", func() {
+			result, err := scheduler.Schedule(context.Background(), lagertest.NewTestLogger("test"), db.SchedulerJob{Job: job})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.NoBuild).To(BeTrue())
+
+			_, err = job.CreateBuild("manual-user")
+			Expect(err).NotTo(HaveOccurred())
+			result, err = scheduler.Schedule(context.Background(), lagertest.NewTestLogger("test"), db.SchedulerJob{Job: job})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.NoBuild).To(BeFalse())
+		})
+
 		It("returns the error when the job inputs fail to fetch", func() {
 			err := schedule(context.Background(), algorithmInputsFailsJob{Job: job, err: disaster})
 			Expect(err).To(Equal(fmt.Errorf("inputs: %w", disaster)))
@@ -230,6 +242,63 @@ var _ = Describe("Scheduler", func() {
 			Expect(schedulerPendingBuilds(job)).To(BeEmpty())
 			Expect(fakeBuildStarter.TryStartPendingBuildsForJobCallCount()).To(Equal(1))
 		})
+	})
+
+	It("keeps an unresolved run payload entry pending and starts it after ordinary version admission", func() {
+		fixture := useSchedulerDB()
+		team, err := fixture.TeamFactory.CreateTeam(atc.Team{Name: "run-payload-team"})
+		Expect(err).NotTo(HaveOccurred())
+		template, _, err := team.SavePipeline(atc.PipelineRef{Name: "run-payload"}, atc.Config{
+			Template: true,
+			Resources: atc.ResourceConfigs{{
+				Name: "source", Type: dbtest.BaseResourceType, Source: atc.Source{"some": "source"},
+			}},
+			Jobs: atc.JobConfigs{{
+				Name: "entry", PlanSequence: []atc.Step{{Config: &atc.GetStep{Name: "source", Trigger: true}}},
+			}},
+		}, 0, false)
+		Expect(err).NotTo(HaveOccurred())
+		creation, err := db.NewPipelineRunFactory(fixture.Conn, fixture.LockFactory).CreateRun(context.Background(), template, db.RunParams{}, "creator")
+		Expect(err).NotTo(HaveOccurred())
+		payload, found, err := team.Pipeline(atc.PipelineRef{Name: "run-payload", InstanceVars: atc.InstanceVars{"run": float64(creation.Run.Number())}})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		job := schedulerPipelineJob(payload, "entry")
+		schedulerJob := db.SchedulerJob{
+			Job: job,
+			Resources: db.SchedulerResources{{
+				Name: "source", Type: dbtest.BaseResourceType, Source: atc.Source{"some": "source"},
+			}},
+		}
+
+		fakeAlgorithm.ComputeReturns(db.InputMapping{}, false, false, nil)
+		result, err := scheduler.Schedule(context.Background(), lagertest.NewTestLogger("test"), schedulerJob)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.NoBuild).To(BeFalse())
+		pending := schedulerPendingBuilds(job)
+		Expect(pending).To(HaveLen(1))
+		Expect(pending[0].Status()).To(Equal(db.BuildStatusPending))
+
+		scenario := &dbtest.Scenario{Team: team, Pipeline: payload}
+		scenario.Run(fixture.Builder.WithResourceVersions("source", atc.Version{"ref": "v1"}))
+		versions := schedulerVersionsDB(fixture)
+		mapping := db.InputMapping{
+			"source": schedulerInputResult(versions, scenario.Resource("source"), atc.Version{"ref": "v1"}, true),
+		}
+		fakeAlgorithm.ComputeReturns(mapping, true, false, nil)
+		fakePlanner := new(schedulerfakes.FakeBuildPlanner)
+		scheduler.BuildStarter = NewBuildStarter(fakePlanner, fakeAlgorithm)
+
+		result, err = scheduler.Schedule(context.Background(), lagertest.NewTestLogger("test"), schedulerJob)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.NoBuild).To(BeFalse())
+		started, found, err := fixture.BuildFactory.Build(pending[0].ID())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(started.Status()).To(Equal(db.BuildStatusStarted))
+		runID, stamped := started.PipelineRunID()
+		Expect(stamped).To(BeTrue())
+		Expect(runID).To(Equal(creation.Run.ID()))
 	})
 
 	Describe("a job with resource inputs", func() {

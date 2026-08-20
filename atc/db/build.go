@@ -572,6 +572,20 @@ func (b *build) Start(plan atc.Plan) (bool, error) {
 }
 
 func (b *build) start(tx Tx, plan atc.Plan) (bool, error) {
+	if b.pipelineRunID != 0 {
+		run, err := lockPipelineRun(tx, b.pipelineRunID)
+		if err != nil {
+			return false, err
+		}
+		if run.Status() != atc.RunStatusRunning {
+			return false, ErrPipelineRunNotRunning
+		}
+		payloadID, found := run.InstancePipelineID()
+		if !found || payloadID != b.pipelineID {
+			return false, ErrPipelineRunPayloadGone
+		}
+	}
+
 	metadata, err := json.Marshal(plan)
 	if err != nil {
 		return false, err
@@ -1900,7 +1914,7 @@ func scanBuild(b *build, row scannable, encryptionStrategy encryption.Strategy) 
 		drained, aborted, completed                                                       bool
 		status                                                                            string
 		pipelineInstanceVars, comment, basePipelineName, runJobName, runJobKey            sql.NullString
-		pipelineRunID, basePipelineID, buildPipelineRunID                                 sql.NullInt64
+		payloadPipelineRunID, basePipelineID, buildPipelineRunID                          sql.NullInt64
 	)
 
 	err := row.Scan(
@@ -1926,7 +1940,7 @@ func scanBuild(b *build, row scannable, encryptionStrategy encryption.Strategy) 
 		&pipelineID,
 		&pipelineName,
 		&pipelineInstanceVars,
-		&pipelineRunID,
+		&payloadPipelineRunID,
 		&basePipelineID,
 		&basePipelineName,
 		&buildPipelineRunID,
@@ -1956,7 +1970,7 @@ func scanBuild(b *build, row scannable, encryptionStrategy encryption.Strategy) 
 	b.resourceTypeID = int(resourceTypeID.Int64)
 	b.pipelineID = int(pipelineID.Int64)
 	b.pipelineName = pipelineName.String
-	b.pipelineRunID = int(pipelineRunID.Int64)
+	b.pipelineRunID = 0
 	b.basePipelineID = int(basePipelineID.Int64)
 	b.basePipelineName = basePipelineName.String
 	if buildPipelineRunID.Valid {

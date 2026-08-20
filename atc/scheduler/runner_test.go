@@ -65,6 +65,37 @@ type destroyPipelineAfterScanJobFactory struct {
 	destroyErr error
 }
 
+type scheduleConsumption struct {
+	observed time.Time
+	noBuild  bool
+}
+
+type consumeRecordingJob struct {
+	db.Job
+	consumed chan<- scheduleConsumption
+}
+
+func (job consumeRecordingJob) ConsumeScheduleRequest(observed time.Time, noBuild bool) error {
+	job.consumed <- scheduleConsumption{observed: observed, noBuild: noBuild}
+	return job.Job.ConsumeScheduleRequest(observed, noBuild)
+}
+
+type consumeRecordingJobFactory struct {
+	db.JobFactory
+	consumed chan<- scheduleConsumption
+}
+
+func (factory consumeRecordingJobFactory) JobsToSchedule() (db.SchedulerJobs, error) {
+	jobs, err := factory.JobFactory.JobsToSchedule()
+	if err != nil {
+		return nil, err
+	}
+	for i := range jobs {
+		jobs[i].Job = consumeRecordingJob{Job: jobs[i].Job, consumed: factory.consumed}
+	}
+	return jobs, nil
+}
+
 func (factory *destroyPipelineAfterScanJobFactory) JobsToSchedule() (db.SchedulerJobs, error) {
 	jobs, err := factory.JobFactory.JobsToSchedule()
 	if err != nil {
@@ -118,6 +149,29 @@ var _ = Describe("Runner", func() {
 			waitForSchedulerCompletion(ctx, factory.completion(jobID))
 		}
 	}
+
+	It("reports no pending build before schedule consumption and passes the observed token and explicit no-build result", func(ctx SpecContext) {
+		fixture := useSchedulerDB()
+		_, pipeline := persistSchedulerPipeline(
+			fixture,
+			"consume-team",
+			"consume-pipeline",
+			atc.Config{Jobs: atc.JobConfigs{{Name: "consume-job"}}},
+		)
+		job := schedulerPipelineJob(pipeline, "consume-job")
+		requestSchedulerJob(fixture, job)
+		observed, _ := schedulerJobTimestamps(fixture, job.ID())
+
+		consumed := make(chan scheduleConsumption, 1)
+		recording := consumeRecordingJobFactory{JobFactory: fixture.JobFactory, consumed: consumed}
+		tracked := observeSchedulerJobFactory(recording)
+		deferObservedFactory(tracked, job.ID())
+		fakeScheduler.ScheduleReturns(ScheduleResult{NoBuild: true}, nil)
+
+		Expect(newRunner(tracked, 1).Run(ctx)).To(Succeed())
+		waitObservedFactory(ctx, tracked, job.ID())
+		Eventually(consumed).Should(Receive(Equal(scheduleConsumption{observed: observed, noBuild: true})))
+	})
 
 	It("loads the full persisted job scan and schedules jobs with their resources", func(ctx SpecContext) {
 		fixture := useSchedulerDB()
@@ -187,7 +241,7 @@ var _ = Describe("Runner", func() {
 		observed := observeSchedulerJobFactory(counted)
 		jobIDs := []int{jobs[0].ID(), jobs[1].ID(), jobs[2].ID()}
 		deferObservedFactory(observed, jobIDs...)
-		fakeScheduler.ScheduleReturns(false, nil)
+		fakeScheduler.ScheduleReturns(ScheduleResult{NoBuild: true}, nil)
 
 		Expect(newRunner(observed, 1).Run(ctx)).To(Succeed())
 		waitObservedFactory(ctx, observed, jobIDs...)
@@ -250,7 +304,7 @@ var _ = Describe("Runner", func() {
 
 		observed := observeSchedulerJobFactory(fixture.JobFactory)
 		deferObservedFactory(observed, lockedJob.ID(), availableJob.ID())
-		fakeScheduler.ScheduleReturns(false, nil)
+		fakeScheduler.ScheduleReturns(ScheduleResult{NoBuild: true}, nil)
 		Expect(newRunner(observed, 2).Run(ctx)).To(Succeed())
 		waitObservedFactory(ctx, observed, lockedJob.ID(), availableJob.ID())
 
@@ -307,22 +361,22 @@ var _ = Describe("Runner", func() {
 			affectedRequested, affectedLast := schedulerJobTimestamps(fixture, affectedJob.ID())
 			successfulRequested, _ := schedulerJobTimestamps(fixture, successfulJob.ID())
 
-			fakeScheduler.ScheduleStub = func(_ context.Context, _ lager.Logger, job db.SchedulerJob) (bool, error) {
+			fakeScheduler.ScheduleStub = func(_ context.Context, _ lager.Logger, job db.SchedulerJob) (ScheduleResult, error) {
 				if job.Name() == "successful-job" {
-					return false, nil
+					return ScheduleResult{NoBuild: true}, nil
 				}
 				if job.Name() != "affected-job" {
-					return false, fmt.Errorf("unexpected job %q", job.Name())
+					return ScheduleResult{}, fmt.Errorf("unexpected job %q", job.Name())
 				}
 				switch outcome {
 				case "error":
-					return false, errors.New("schedule failed")
+					return ScheduleResult{}, errors.New("schedule failed")
 				case "panic":
 					panic("schedule panic")
 				case "retry":
-					return true, nil
+					return ScheduleResult{NeedsRetry: true}, nil
 				default:
-					return false, fmt.Errorf("unexpected outcome %q", outcome)
+					return ScheduleResult{}, fmt.Errorf("unexpected outcome %q", outcome)
 				}
 			}
 
@@ -371,10 +425,10 @@ var _ = Describe("Runner", func() {
 		unblock := make(chan struct{})
 		var once sync.Once
 		release := func() { once.Do(func() { close(unblock) }) }
-		fakeScheduler.ScheduleStub = func(context.Context, lager.Logger, db.SchedulerJob) (bool, error) {
+		fakeScheduler.ScheduleStub = func(context.Context, lager.Logger, db.SchedulerJob) (ScheduleResult, error) {
 			scheduling <- struct{}{}
 			<-unblock
-			return false, nil
+			return ScheduleResult{NoBuild: true}, nil
 		}
 		deferSchedulerCompletions(release, func() []*schedulerJobCompletion {
 			return []*schedulerJobCompletion{completion}
@@ -471,10 +525,10 @@ var _ = Describe("Runner", func() {
 		secondaryConn := schedulerPostgresRunner.OpenConn()
 		closeCalls := 0
 		var closeErr error
-		fakeScheduler.ScheduleStub = func(_ context.Context, _ lager.Logger, _ db.SchedulerJob) (bool, error) {
+		fakeScheduler.ScheduleStub = func(_ context.Context, _ lager.Logger, _ db.SchedulerJob) (ScheduleResult, error) {
 			closeCalls++
 			closeErr = secondaryConn.Close()
-			return false, closeErr
+			return ScheduleResult{}, closeErr
 		}
 		observed := observeSchedulerJobFactory(db.NewJobFactory(secondaryConn, fixture.LockFactory))
 		deferObservedFactory(observed, job.ID())

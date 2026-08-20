@@ -325,30 +325,18 @@ func (p *pipeline) CreateJobBuild(jobName string) (Build, error) {
 
 	defer Rollback(tx)
 
-	buildName, jobID, err := getNewBuildNameForJob(tx, jobName, p.id)
-	if err != nil {
-		return nil, err
-	}
-
-	var buildID int
-	err = psql.Insert("builds").
-		Columns("name", "job_id", "team_id", "status", "manually_triggered").
-		Values(buildName, jobID, p.teamID, "pending", true).
-		Suffix("RETURNING id").
-		RunWith(tx).
-		QueryRow().
-		Scan(&buildID)
-	if err != nil {
+	var jobID int
+	if err = tx.QueryRow("SELECT id FROM jobs WHERE name = $1 AND pipeline_id = $2", jobName, p.id).Scan(&jobID); err != nil {
 		return nil, err
 	}
 
 	build := newEmptyBuild(p.conn, p.lockFactory)
-	err = scanBuild(build, buildsQuery.
-		Where(sq.Eq{"b.id": buildID}).
-		RunWith(tx).
-		QueryRow(),
-		p.conn.EncryptionStrategy(),
-	)
+	_, err = createJobBuild(tx, build, jobID, jobBuildArgs{
+		NextBuildName: true,
+		Values: map[string]any{
+			"status": BuildStatusPending, "manually_triggered": true,
+		},
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -1091,6 +1079,11 @@ func (p *pipeline) CreateOneOffBuild() (Build, error) {
 	}
 
 	defer Rollback(tx)
+	if _, isPayload, err := lockPipelineRunForPayload(tx, p.id); err != nil {
+		return nil, err
+	} else if isPayload {
+		return nil, ErrPipelineRunOneOffBuild
+	}
 
 	build := newEmptyBuild(p.conn, p.lockFactory)
 	err = createBuild(tx, build, map[string]any{
@@ -1118,6 +1111,11 @@ func (p *pipeline) CreateStartedBuild(plan atc.Plan) (Build, error) {
 	}
 
 	defer Rollback(tx)
+	if _, isPayload, err := lockPipelineRunForPayload(tx, p.id); err != nil {
+		return nil, err
+	} else if isPayload {
+		return nil, ErrPipelineRunOneOffBuild
+	}
 
 	metadata, err := json.Marshal(plan)
 	if err != nil {
@@ -1253,18 +1251,6 @@ func (p *pipeline) SetParentIDs(jobID, buildID int) error {
 	}
 
 	return tx.Commit()
-}
-
-func getNewBuildNameForJob(tx Tx, jobName string, pipelineID int) (string, int, error) {
-	var buildName string
-	var jobID int
-	err := tx.QueryRow(`
-		UPDATE jobs
-		SET build_number_seq = build_number_seq + 1
-		WHERE name = $1 AND pipeline_id = $2
-		RETURNING build_number_seq, id
-	`, jobName, pipelineID).Scan(&buildName, &jobID)
-	return buildName, jobID, err
 }
 
 func resources(pipelineID int, conn DbConn, lockFactory lock.LockFactory) (Resources, error) {
