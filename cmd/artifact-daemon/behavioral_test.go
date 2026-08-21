@@ -1102,19 +1102,35 @@ func TestPeerFetch_AllAttemptsExhausted(t *testing.T) {
 // PD-04: Tar extraction path traversal
 // ---------------------------------------------------------------------------
 
-func TestExtractTar_PathTraversal_Skipped(t *testing.T) {
-	// Build a tar with a ".." path entry.
+// This test previously asserted that a "../../../etc/passwd" entry was SKIPPED
+// and that the extraction then succeeded. It passed, and it reported path
+// traversal as covered — while the vector that actually worked (a symlink out
+// of the destination, then a write through it) went untested. A test that
+// cannot fail for the reason that matters is worse than no test, because it
+// stops anyone looking.
+//
+// It now asserts the current contract: a traversing entry FAILS the extraction
+// rather than being silently dropped, and nothing lands outside the
+// destination. The symlink vectors are covered in containment_test.go.
+func TestExtractTar_PathTraversal_FailsExtraction(t *testing.T) {
+	// A file outside the destination that the archive will try to reach.
+	outside := t.TempDir()
+	victim := filepath.Join(outside, "victim.txt")
+	if err := os.WriteFile(victim, []byte("original"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
-	// Malicious entry.
-	tw.WriteHeader(&tar.Header{Name: "../../../etc/passwd", Size: 6, Mode: 0644})
+	// Malicious entry: climbs out of any plausible destination and lands on the
+	// victim by absolute-ish traversal.
+	tw.WriteHeader(&tar.Header{Name: "../../../../../../.." + victim, Size: 6, Mode: 0644})
 	tw.Write([]byte("hacked"))
-	// Legitimate entry.
+	// Legitimate entry, after the malicious one.
 	tw.WriteHeader(&tar.Header{Name: "safe.txt", Size: 4, Mode: 0644})
 	tw.Write([]byte("safe"))
 	tw.Close()
 
-	// Set up a fake peer that serves this tar.
 	fakePeer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/x-tar")
 		w.Write(buf.Bytes())
@@ -1127,22 +1143,19 @@ func TestExtractTar_PathTraversal_Skipped(t *testing.T) {
 
 	destDir := filepath.Join(t.TempDir(), "extract")
 	err := resolver.Fetch(context.Background(), host, "traversal-key", destDir)
-	if err != nil {
-		t.Fatalf("Fetch: %v", err)
+
+	// The contract: refused, loudly.
+	if err == nil {
+		t.Error("Fetch returned nil for an archive whose entry traverses out of the destination")
 	}
 
-	// The ".." entry should have been skipped.
-	if _, err := os.Stat(filepath.Join(destDir, "..", "..", "..", "etc", "passwd")); !os.IsNotExist(err) {
-		t.Error("path traversal entry should have been skipped")
+	// And nothing outside the destination was touched.
+	got, readErr := os.ReadFile(victim)
+	if readErr != nil {
+		t.Fatalf("victim unreadable: %v", readErr)
 	}
-
-	// Legitimate file should exist.
-	data, err := os.ReadFile(filepath.Join(destDir, "safe.txt"))
-	if err != nil {
-		t.Fatalf("safe.txt not extracted: %v", err)
-	}
-	if string(data) != "safe" {
-		t.Errorf("expected 'safe', got %q", string(data))
+	if string(got) != "original" {
+		t.Errorf("ESCAPE: file outside the destination was modified; got %q, want %q", got, "original")
 	}
 }
 

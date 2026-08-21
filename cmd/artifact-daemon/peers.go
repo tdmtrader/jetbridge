@@ -9,7 +9,7 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"path/filepath"
+	"path"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
@@ -235,6 +235,19 @@ func extractTarToDir(r io.Reader, destDir string) error {
 		return fmt.Errorf("create dest dir: %w", err)
 	}
 
+	// Containment is a property of the handle every write goes through, not a
+	// check performed before writing. The previous implementation validated
+	// each entry's path as a STRING and then wrote through the ambient
+	// filesystem; the two disagreed the moment an entry created a symlink, and
+	// an archive could hatch out of the destination in two steps. os.Root
+	// refuses to resolve a path out of the root, so there is no ordering to get
+	// wrong and no name to out-think.
+	root, err := os.OpenRoot(destDir)
+	if err != nil {
+		return fmt.Errorf("open dest root: %w", err)
+	}
+	defer root.Close()
+
 	tr := tar.NewReader(r)
 	for {
 		hdr, err := tr.Next()
@@ -245,36 +258,57 @@ func extractTarToDir(r io.Reader, destDir string) error {
 			return fmt.Errorf("reading tar: %w", err)
 		}
 
-		target := filepath.Join(destDir, hdr.Name)
-
-		// Prevent path traversal.
-		rel, err := filepath.Rel(destDir, target)
-		if err != nil || len(rel) >= 2 && rel[:2] == ".." {
-			continue
-		}
-
 		// Normalize permissions: strip setuid/setgid, enforce minimum readable floor.
-		mode := sanitizeMode(hdr.Typeflag, os.FileMode(hdr.Mode))
+		// .Perm() masks to the low 9 bits before the mode reaches os.Root, which
+		// rejects a FileMode carrying anything else ("unsupported file mode").
+		// This is not a behaviour change: hdr.Mode is a TAR mode, where setuid is
+		// 0o4000, while os.ModeSetuid is bit 23 — so os.FileMode(hdr.Mode) never
+		// carried a flag os.OpenFile would act on, and its syscallMode() already
+		// reduced to exactly these bits. The stray 0o4000 was simply discarded
+		// later instead of earlier.
+		mode := sanitizeMode(hdr.Typeflag, os.FileMode(hdr.Mode)).Perm()
 
+		// Every failure below fails the WHOLE extraction. A skipped entry
+		// produces a tree the caller believes is complete, which is the same
+		// class of defect as the discarded errors this replaced.
 		switch hdr.Typeflag {
 		case tar.TypeDir:
-			os.MkdirAll(target, mode)
-		case tar.TypeReg:
-			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
-				return err
+			if err := root.MkdirAll(hdr.Name, mode); err != nil {
+				return fmt.Errorf("create dir %q: %w", hdr.Name, err)
 			}
-			f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+		case tar.TypeReg:
+			if dir := path.Dir(hdr.Name); dir != "." {
+				if err := root.MkdirAll(dir, 0755); err != nil {
+					return fmt.Errorf("create parent of %q: %w", hdr.Name, err)
+				}
+			}
+			f, err := root.OpenFile(hdr.Name, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
 			if err != nil {
-				return err
+				return fmt.Errorf("create file %q: %w", hdr.Name, err)
 			}
 			if _, err := io.Copy(f, tr); err != nil {
 				f.Close()
+				return fmt.Errorf("write file %q: %w", hdr.Name, err)
+			}
+			if err := f.Close(); err != nil {
+				return fmt.Errorf("close file %q: %w", hdr.Name, err)
+			}
+		case tar.TypeSymlink:
+			// os.Root will not FOLLOW a link out of the root, but it does not
+			// validate the link's own target — so without this the extraction
+			// stays safe while leaving an outward-pointing link on disk for the
+			// next consumer to follow.
+			if err := validateSymlinkTarget(hdr.Name, hdr.Linkname); err != nil {
 				return err
 			}
-			f.Close()
-		case tar.TypeSymlink:
-			os.MkdirAll(filepath.Dir(target), 0755)
-			os.Symlink(hdr.Linkname, target)
+			if dir := path.Dir(hdr.Name); dir != "." {
+				if err := root.MkdirAll(dir, 0755); err != nil {
+					return fmt.Errorf("create parent of symlink %q: %w", hdr.Name, err)
+				}
+			}
+			if err := root.Symlink(hdr.Linkname, hdr.Name); err != nil {
+				return fmt.Errorf("create symlink %q -> %q: %w", hdr.Name, hdr.Linkname, err)
+			}
 		}
 	}
 	return nil

@@ -1,11 +1,14 @@
 package main
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
 	"errors"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -198,4 +201,68 @@ func (c *countingStore) Delete(ctx context.Context, key string) error {
 }
 func (c *countingStore) List(ctx context.Context, fn func(durable.Attributes) error) error {
 	return c.inner.List(ctx, fn)
+}
+
+// A hostile object in the shared bucket must not escape the restore
+// destination. This is the second ingest call site: Restore reaches the same
+// extraction helper as a peer fetch, so the containment property has to hold
+// here too — and requirement 9 of the track spec asks that this be asserted
+// rather than assumed to follow from the shared helper.
+func TestRestoreRefusesAnObjectThatEscapesItsDestination(t *testing.T) {
+	tier, _ := newTier(t, mustFS(t))
+	work := t.TempDir()
+
+	// A file the archive will try to overwrite from inside the destination.
+	outside := filepath.Join(work, "outside")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	victim := filepath.Join(outside, "victim.txt")
+	if err := os.WriteFile(victim, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Put a hostile tar into the bucket directly, bypassing tarDirectory: the
+	// premise is that bucket contents are untrusted and need not have been
+	// produced by us.
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	tw.WriteHeader(&tar.Header{Name: "hatch", Typeflag: tar.TypeSymlink, Linkname: outside, Mode: 0o777})
+	body := []byte("PWNED")
+	tw.WriteHeader(&tar.Header{Name: "hatch/victim.txt", Typeflag: tar.TypeReg, Size: int64(len(body)), Mode: 0o644})
+	tw.Write(body)
+	tw.Close()
+
+	if err := tier.ObjectStore().Put(context.Background(), "rc-hostile", &buf); err != nil {
+		t.Fatalf("seed hostile object: %v", err)
+	}
+
+	dest := filepath.Join(work, "restored")
+	if tier.Restore(context.Background(), "rc-hostile", dest) {
+		t.Error("Restore reported success for an object that escapes its destination")
+	}
+
+	got, err := os.ReadFile(victim)
+	if err != nil {
+		t.Fatalf("victim unreadable: %v", err)
+	}
+	if string(got) != "original" {
+		t.Errorf("ESCAPE: file outside the destination was modified; got %q, want %q", got, "original")
+	}
+
+	if _, err := os.Stat(dest); !os.IsNotExist(err) {
+		t.Error("a refused Restore promoted the destination directory")
+	}
+
+	// The tier extracts to a temp dir beside dest and renames on success. A
+	// refusal must clean it, not leave residue for the sweeper to find.
+	entries, err := os.ReadDir(work)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".restore-") {
+			t.Errorf("refused Restore left temp residue: %s", e.Name())
+		}
+	}
 }
