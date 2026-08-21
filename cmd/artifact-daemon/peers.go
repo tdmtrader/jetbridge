@@ -5,11 +5,13 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path"
+	"path/filepath"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
@@ -181,6 +183,12 @@ func (p *PeerResolver) Probe(ctx context.Context, key string) (string, bool) {
 func (p *PeerResolver) Fetch(ctx context.Context, peerIP, key, destPath string) error {
 	logger := p.logger.Session("peer-fetch", lager.Data{"key": key, "peer": peerIP, "dest": destPath})
 
+	// The temp directory is a sibling of destPath, so the parent has to exist
+	// before the first attempt and rename has to stay on one filesystem.
+	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+		return fmt.Errorf("create dest parent: %w", err)
+	}
+
 	url := fmt.Sprintf("http://%s:%d/artifacts/steps/%s", peerIP, p.port, key)
 
 	var lastErr error
@@ -210,12 +218,42 @@ func (p *PeerResolver) Fetch(ctx context.Context, peerIP, key, destPath string) 
 			continue
 		}
 
-		// Stream response (tar) to a temp file, then extract.
-		err = extractTarToDir(resp.Body, destPath)
+		// Extract into a sibling temp directory and promote by rename, the
+		// same discipline DurableTier.Restore uses. Extracting straight into
+		// destPath had two consequences: a refused archive left everything
+		// written before the refusal sitting at the destination, and the next
+		// retry then re-extracted over that residue and failed early with a
+		// spurious "file exists" on a legitimate entry — so the error the
+		// operator finally saw named the wrong cause entirely.
+		tmpDir, err := os.MkdirTemp(filepath.Dir(destPath), ".fetch-*")
+		if err != nil {
+			resp.Body.Close()
+			return fmt.Errorf("create temp dir: %w", err)
+		}
+
+		err = extractTarToDir(resp.Body, tmpDir)
 		resp.Body.Close()
 		if err != nil {
+			os.RemoveAll(tmpDir)
 			lastErr = err
 			logger.Error("extract-failed", err, lager.Data{"attempt": attempt})
+			if attempt < 3 {
+				time.Sleep(time.Duration(attempt) * time.Second)
+			}
+			continue
+		}
+
+		if err := os.Rename(tmpDir, destPath); err != nil {
+			os.RemoveAll(tmpDir)
+			// A racing peer fetch or a durable restore may already have landed
+			// this artifact; either copy is equally valid, so keep whichever
+			// arrived first rather than swapping bytes under an in-flight read.
+			if errors.Is(err, os.ErrExist) || isNotEmptyErr(err) {
+				logger.Info("already-present", lager.Data{"attempt": attempt})
+				return nil
+			}
+			lastErr = fmt.Errorf("promote extracted artifact: %w", err)
+			logger.Error("rename-failed", err, lager.Data{"attempt": attempt})
 			if attempt < 3 {
 				time.Sleep(time.Duration(attempt) * time.Second)
 			}
@@ -309,6 +347,36 @@ func extractTarToDir(r io.Reader, destDir string) error {
 			if err := root.Symlink(hdr.Linkname, hdr.Name); err != nil {
 				return fmt.Errorf("create symlink %q -> %q: %w", hdr.Name, hdr.Linkname, err)
 			}
+		case tar.TypeLink:
+			// A hard link's target is a path inside the archive, so it takes
+			// the same containment rule as a symlink target. Previously this
+			// case did not exist: the entry fell through the switch, was
+			// dropped, and the extraction still reported success — handing the
+			// caller a tree missing files it asked for.
+			if err := validateSymlinkTarget(hdr.Name, hdr.Linkname); err != nil {
+				return err
+			}
+			if dir := path.Dir(hdr.Name); dir != "." {
+				if err := root.MkdirAll(dir, 0755); err != nil {
+					return fmt.Errorf("create parent of hard link %q: %w", hdr.Name, err)
+				}
+			}
+			if err := root.Link(hdr.Linkname, hdr.Name); err != nil {
+				return fmt.Errorf("create hard link %q -> %q: %w", hdr.Name, hdr.Linkname, err)
+			}
+		case tar.TypeXGlobalHeader, tar.TypeXHeader:
+			// pax metadata, not a filesystem entry. Go's reader applies these
+			// to subsequent headers itself; there is nothing to materialize and
+			// skipping them loses nothing.
+			continue
+		default:
+			// Everything else — character and block devices, FIFOs, sockets,
+			// unknown vendor types. An artifact has no business carrying them,
+			// and the daemon has no way to materialize one safely. Refuse
+			// rather than skip: a silent drop hands back a tree the caller
+			// believes is complete, which is the defect this function's error
+			// propagation exists to prevent.
+			return fmt.Errorf("entry %q has unsupported type %q", hdr.Name, string(rune(hdr.Typeflag)))
 		}
 	}
 	return nil

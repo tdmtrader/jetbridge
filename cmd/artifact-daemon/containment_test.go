@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
@@ -232,5 +233,119 @@ func TestPeerFetch_InternalSymlinkPreserved(t *testing.T) {
 	}
 	if target != "../shared" {
 		t.Errorf("symlink target rewritten: got %q, want %q", target, "../shared")
+	}
+}
+
+// --- Regressions from the adversarial review of ab1c66c2c5 ---
+
+// F1 — a hard link is a real entry, not something to drop on the floor. The
+// switch previously handled Dir/Reg/Symlink only, so a TypeLink entry vanished
+// and the extraction still reported success.
+func TestPeerFetch_HardLinkIsMaterialized(t *testing.T) {
+	host, port := serveTar(t,
+		tarEntry{hdr: &tar.Header{Name: "real.txt", Typeflag: tar.TypeReg, Mode: 0644}, body: "data"},
+		tarEntry{hdr: &tar.Header{Name: "hard.txt", Typeflag: tar.TypeLink, Linkname: "real.txt", Mode: 0644}},
+	)
+
+	destDir, err := fetchInto(t, host, port)
+	if err != nil {
+		t.Fatalf("Fetch of an archive with a legitimate hard link failed: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(destDir, "hard.txt"))
+	if err != nil {
+		t.Fatalf("SILENT DATA LOSS: hard link entry absent after a successful extraction: %v", err)
+	}
+	if string(got) != "data" {
+		t.Errorf("hard link content = %q, want %q", got, "data")
+	}
+}
+
+// F1 — a hard link whose target escapes takes the same rule as a symlink.
+func TestPeerFetch_HardLinkEscape_Refused(t *testing.T) {
+	victim, assertUntouched := guardedFile(t)
+
+	host, port := serveTar(t,
+		tarEntry{hdr: &tar.Header{Name: "hard.txt", Typeflag: tar.TypeLink, Linkname: victim, Mode: 0644}},
+	)
+
+	destDir, err := fetchInto(t, host, port)
+
+	assertUntouched()
+	if err == nil {
+		t.Error("Fetch returned nil for a hard link targeting a file outside the destination")
+	}
+	if _, serr := os.Stat(filepath.Join(destDir, "hard.txt")); serr == nil {
+		t.Error("ESCAPE: hard link to a file outside the destination was created")
+	}
+}
+
+// F1 — an entry type the daemon cannot materialize fails loudly rather than
+// being skipped into a tree the caller thinks is complete.
+func TestPeerFetch_UnsupportedEntryType_Refused(t *testing.T) {
+	host, port := serveTar(t,
+		tarEntry{hdr: &tar.Header{Name: "dev", Typeflag: tar.TypeChar, Mode: 0666, Devmajor: 1, Devminor: 3}},
+	)
+
+	_, err := fetchInto(t, host, port)
+	if err == nil {
+		t.Error("Fetch returned nil for an archive containing a character-device entry")
+	}
+}
+
+// F2 — a refused extraction leaves nothing at the destination, not even the
+// entries that preceded the refusal.
+func TestPeerFetch_RefusalLeavesNoResidue(t *testing.T) {
+	host, port := serveTar(t,
+		tarEntry{hdr: &tar.Header{Name: "good.txt", Typeflag: tar.TypeReg, Mode: 0644}, body: "legit"},
+		tarEntry{hdr: &tar.Header{Name: "sub/also-good.txt", Typeflag: tar.TypeReg, Mode: 0644}, body: "legit"},
+		tarEntry{hdr: &tar.Header{Name: "bad", Typeflag: tar.TypeSymlink, Linkname: "/etc", Mode: 0777}},
+	)
+
+	destDir, err := fetchInto(t, host, port)
+	if err == nil {
+		t.Fatal("expected the archive to be refused")
+	}
+
+	if _, serr := os.Stat(destDir); !os.IsNotExist(serr) {
+		var left []string
+		filepath.Walk(destDir, func(p string, info os.FileInfo, e error) error {
+			if e == nil && !info.IsDir() {
+				rel, _ := filepath.Rel(destDir, p)
+				left = append(left, rel)
+			}
+			return nil
+		})
+		t.Errorf("PARTIAL RESIDUE: a refused extraction left %v at the destination", left)
+	}
+
+	// The temp directory must be cleaned too, not merely unpromoted.
+	parent := filepath.Dir(destDir)
+	entries, _ := os.ReadDir(parent)
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".fetch-") {
+			t.Errorf("refused extraction left temp residue: %s", e.Name())
+		}
+	}
+}
+
+// F3 — the error the operator finally sees must name the real cause, not a
+// spurious "file exists" produced by a retry re-running over its own residue.
+func TestPeerFetch_RetryReportsTheRealCause(t *testing.T) {
+	host, port := serveTar(t,
+		tarEntry{hdr: &tar.Header{Name: "first.txt", Typeflag: tar.TypeReg, Mode: 0644}, body: "x"},
+		tarEntry{hdr: &tar.Header{Name: "link", Typeflag: tar.TypeSymlink, Linkname: "first.txt", Mode: 0777}},
+		tarEntry{hdr: &tar.Header{Name: "bad", Typeflag: tar.TypeSymlink, Linkname: "/etc", Mode: 0777}},
+	)
+
+	_, err := fetchInto(t, host, port)
+	if err == nil {
+		t.Fatal("expected the archive to be refused")
+	}
+	if !strings.Contains(err.Error(), "absolute") {
+		t.Errorf("MASKED CAUSE: error does not name the real reason; got: %v", err)
+	}
+	if strings.Contains(err.Error(), "file exists") {
+		t.Errorf("MASKED CAUSE: error is a retry artifact rather than the real reason; got: %v", err)
 	}
 }
