@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -243,15 +242,19 @@ func (p *PeerResolver) Fetch(ctx context.Context, peerIP, key, destPath string) 
 			continue
 		}
 
+		// Clear any existing destination before promoting, the same way
+		// copyArtifact does for the registry and filesystem resolve paths that
+		// feed this identical dest. An earlier version treated a rename onto an
+		// existing directory as success, copied from DurableTier.Restore — but
+		// Restore's destination corresponds to a bucket key, so "either copy is
+		// equally valid" holds there. This dest is chosen by the caller, so a
+		// directory already sitting here is not necessarily this artifact, and
+		// reporting success while delivering none of the fetched bytes is the
+		// same lie as the nil return this track set out to remove.
+		os.RemoveAll(destPath)
+
 		if err := os.Rename(tmpDir, destPath); err != nil {
 			os.RemoveAll(tmpDir)
-			// A racing peer fetch or a durable restore may already have landed
-			// this artifact; either copy is equally valid, so keep whichever
-			// arrived first rather than swapping bytes under an in-flight read.
-			if errors.Is(err, os.ErrExist) || isNotEmptyErr(err) {
-				logger.Info("already-present", lager.Data{"attempt": attempt})
-				return nil
-			}
 			lastErr = fmt.Errorf("promote extracted artifact: %w", err)
 			logger.Error("rename-failed", err, lager.Data{"attempt": attempt})
 			if attempt < 3 {

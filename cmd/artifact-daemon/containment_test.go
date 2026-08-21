@@ -349,3 +349,41 @@ func TestPeerFetch_RetryReportsTheRealCause(t *testing.T) {
 		t.Errorf("MASKED CAUSE: error is a retry artifact rather than the real reason; got: %v", err)
 	}
 }
+
+// Round-two regression: a Fetch into a destination that already holds unrelated
+// content must deliver the fetched artifact, not report success and leave the
+// stale bytes in place. An earlier revision treated a rename onto an existing
+// directory as success — a policy borrowed from DurableTier.Restore, whose
+// destination corresponds to a bucket key. This destination is chosen by the
+// caller, so "something is already here" does not mean "this artifact is
+// already here".
+func TestPeerFetch_ReplacesUnrelatedExistingDestination(t *testing.T) {
+	host, port := serveTar(t,
+		tarEntry{hdr: &tar.Header{Name: "fetched.txt", Typeflag: tar.TypeReg, Mode: 0644}, body: "NEW"},
+	)
+
+	destDir := filepath.Join(t.TempDir(), "extract")
+	if err := os.MkdirAll(destDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(destDir, "stale.txt"), []byte("OLD"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	logger := lagertest.NewTestLogger("containment")
+	resolver := daemon.NewPeerResolver(logger, nil, "", "", port, "", nil)
+	if err := resolver.Fetch(t.Context(), host, "containment-key", destDir); err != nil {
+		t.Fatalf("Fetch into an existing destination failed: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(destDir, "fetched.txt"))
+	if err != nil {
+		t.Fatalf("SILENT NO-OP: Fetch reported success but did not deliver the artifact: %v", err)
+	}
+	if string(got) != "NEW" {
+		t.Errorf("fetched.txt = %q, want %q", got, "NEW")
+	}
+	if _, err := os.Stat(filepath.Join(destDir, "stale.txt")); err == nil {
+		t.Error("unrelated content from the previous occupant survived the fetch")
+	}
+}
