@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
@@ -385,5 +386,51 @@ func TestPeerFetch_ReplacesUnrelatedExistingDestination(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(destDir, "stale.txt")); err == nil {
 		t.Error("unrelated content from the previous occupant survived the fetch")
+	}
+}
+
+// Round-three regression: concurrent fetches of the same key into the same
+// destination must all succeed and leave a complete artifact.
+//
+// Promotion clears the destination and then renames, which is not atomic. A
+// racing fetch can create the destination in that window, making our rename
+// fail with "directory not empty". Because we cleared it ourselves a moment
+// earlier, anything there now arrived concurrently and is this same artifact —
+// so that specific failure is success. A destination that existed BEFORE we
+// cleared it is a different case entirely and is replaced, covered by
+// TestPeerFetch_ReplacesUnrelatedExistingDestination.
+func TestPeerFetch_ConcurrentFetchesIntoOneDestination(t *testing.T) {
+	host, port := serveTar(t,
+		tarEntry{hdr: &tar.Header{Name: "payload.txt", Typeflag: tar.TypeReg, Mode: 0644}, body: "content"},
+	)
+
+	destDir := filepath.Join(t.TempDir(), "shared-dest")
+	logger := lagertest.NewTestLogger("containment")
+
+	const concurrent = 8
+	var wg sync.WaitGroup
+	errs := make([]error, concurrent)
+	for i := range concurrent {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			resolver := daemon.NewPeerResolver(logger, nil, "", "", port, "", nil)
+			errs[i] = resolver.Fetch(t.Context(), host, "containment-key", destDir)
+		}(i)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("concurrent fetch %d failed: %v", i, err)
+		}
+	}
+
+	got, err := os.ReadFile(filepath.Join(destDir, "payload.txt"))
+	if err != nil {
+		t.Fatalf("destination incomplete after concurrent fetches: %v", err)
+	}
+	if string(got) != "content" {
+		t.Errorf("payload = %q, want %q", got, "content")
 	}
 }

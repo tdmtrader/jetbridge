@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -255,6 +256,23 @@ func (p *PeerResolver) Fetch(ctx context.Context, peerIP, key, destPath string) 
 
 		if err := os.Rename(tmpDir, destPath); err != nil {
 			os.RemoveAll(tmpDir)
+
+			// We cleared destPath ourselves a moment ago, so a directory there
+			// NOW was created after that — which only a concurrent fetch of this
+			// same key does, and its bytes are this same artifact. Keep theirs
+			// rather than churning the directory under an in-flight reader.
+			//
+			// The timing is what makes this sound. An earlier revision tolerated
+			// a PRE-EXISTING destination the same way, copying the policy from
+			// DurableTier.Restore, and that was wrong: a directory already there
+			// before we started is not necessarily this artifact, and treating it
+			// as success delivered stale bytes under a nil error. Clearing first
+			// and only then tolerating a reappearance separates the two cases.
+			if errors.Is(err, os.ErrExist) || isNotEmptyErr(err) {
+				logger.Info("raced-by-concurrent-fetch", lager.Data{"attempt": attempt})
+				return nil
+			}
+
 			lastErr = fmt.Errorf("promote extracted artifact: %w", err)
 			logger.Error("rename-failed", err, lager.Data{"attempt": attempt})
 			if attempt < 3 {
