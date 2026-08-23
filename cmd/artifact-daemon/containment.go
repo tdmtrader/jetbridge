@@ -97,6 +97,17 @@ func validateRequestKey(key string) error {
 	// escapes its root does so lexically here, before it ever reaches the
 	// filesystem.
 	cleaned := filepath.Clean(key)
+
+	// "." names the storage root itself, and every one of these routes is a
+	// SINGLE-ARTIFACT verb. Admitting it turns DELETE /artifacts/<key> into
+	// "delete the node's entire artifact store" and POST /mirror into "tar every
+	// artifact on this node and PUT it to every peer" — both in one
+	// unauthenticated request. The first cut of this validator checked only for
+	// ".." and shipped that amplification; an adversarial review found it.
+	if cleaned == "." {
+		return fmt.Errorf("request key %q names the storage root itself", key)
+	}
+
 	if cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
 		return fmt.Errorf("request key %q escapes the storage root (resolves to %q)", key, cleaned)
 	}
@@ -161,6 +172,16 @@ func validateContainedPath(root, candidate string) error {
 	if err != nil {
 		return fmt.Errorf("path %q is not comparable to the storage root: %w", candidate, err)
 	}
+	// rel == "." means the candidate IS the root. That is not "contained": the
+	// callers derive siblings from it — copyArtifact does
+	// os.MkdirTemp(filepath.Dir(dest)), so dest==root writes into the root's
+	// PARENT, which in production is a host directory — and os.RemoveAll(dest)
+	// then removes the whole store. Rel reports "." for that case and the first
+	// cut of this validator accepted it.
+	if rel == "." {
+		return fmt.Errorf("path %q is the storage root itself, not a location within it", candidate)
+	}
+
 	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return fmt.Errorf("path %q resolves outside the storage root (relative: %q)", candidate, rel)
 	}

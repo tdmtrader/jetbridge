@@ -204,7 +204,24 @@ func (s *Server) artifactPath(r *http.Request) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(s.storagePath, key), nil
+
+	path := filepath.Join(s.storagePath, key)
+
+	// A lexically-contained key is not a filesystem-contained path. If anything
+	// under the root is a symlink pointing out — and the stream-in extractor can
+	// still plant one until its own track lands — then Stat/Open/RemoveAll on
+	// this path follows it straight out. The first cut of this function stopped
+	// at the lexical check and an adversarial review read a node file through a
+	// planted link.
+	//
+	// Resolving here is deliberately the same rule the body-supplied paths get.
+	// An artifact's own INTERNAL symlinks still resolve inside the root and are
+	// unaffected, which is what keeps this containment rather than prohibition.
+	if err := validateContainedPath(s.storagePath, path); err != nil {
+		return "", err
+	}
+
+	return path, nil
 }
 
 func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {

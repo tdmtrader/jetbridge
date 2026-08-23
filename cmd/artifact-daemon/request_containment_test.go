@@ -518,3 +518,81 @@ func TestRequestContainment_ResolveBatch_RefusesWholeBatchBeforeAnyCopy(t *testi
 		t.Errorf("first item was copied despite a later item being refused (status %d)", resp.StatusCode)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Bypass regressions. Every one of these PASSED against the first cut of this
+// track and was found by an adversarial review, not by the author. They stay
+// as the record of what the rule missed.
+// ---------------------------------------------------------------------------
+
+// B2: does validateRequestKey accept "."?
+func TestBypass_DotKeyDestroysWholeStore(t *testing.T) {
+	ts, storagePath := setupServer(t)
+	keep := filepath.Join(storagePath, "steps", "keepme", "out")
+	os.MkdirAll(keep, 0o755)
+	os.WriteFile(filepath.Join(keep, "f.txt"), []byte("KEEP"), 0o644)
+
+	req, _ := http.NewRequest(http.MethodDelete, ts.URL+"/artifacts/%2e", nil)
+	resp, _ := http.DefaultClient.Do(req)
+	resp.Body.Close()
+	t.Logf("DELETE /artifacts/%%2e -> %d", resp.StatusCode)
+	if _, err := os.Stat(keep); os.IsNotExist(err) {
+		t.Errorf("B2 CONFIRMED: whole storage root destroyed by a single request")
+	}
+}
+
+// B1: does validateContainedPath accept dest == root?
+func TestBypass_DestEqualsRoot(t *testing.T) {
+	ts, storagePath := setupServer(t)
+	src := filepath.Join(storagePath, "steps", "s", "out")
+	os.MkdirAll(src, 0o755)
+	os.WriteFile(filepath.Join(src, "f.txt"), []byte("x"), 0o644)
+	keep := filepath.Join(storagePath, "steps", "keep2")
+	os.MkdirAll(keep, 0o755)
+
+	b, _ := json.Marshal(map[string]string{"key": "s/out", "dest": storagePath})
+	resp, _ := http.Post(ts.URL+"/resolve", "application/json", bytes.NewReader(b))
+	resp.Body.Close()
+	t.Logf("POST /resolve dest=<root> -> %d", resp.StatusCode)
+	if _, err := os.Stat(keep); os.IsNotExist(err) {
+		t.Errorf("B1 CONFIRMED: dest==root removed the whole root")
+	}
+}
+
+// B3: plant an absolute symlink via the (still-uncontained) stream-in extractor,
+// then try to read through it.
+func TestBypass_ReadThroughPlantedSymlink(t *testing.T) {
+	ts, _ := setupServer(t)
+
+	outside := t.TempDir()
+	secret := filepath.Join(outside, "secret.txt")
+	os.WriteFile(secret, []byte("TOP-SECRET-NODE-FILE"), 0o600)
+
+	var buf bytes.Buffer
+	tw := newTar(&buf)
+	tw.symlink("pwn", secret)
+	tw.close()
+
+	req, _ := http.NewRequest(http.MethodPut, ts.URL+"/stream-in/evil", &buf)
+	req.Header.Set("Content-Type", "application/x-tar")
+	r1, _ := http.DefaultClient.Do(req)
+	r1.Body.Close()
+	t.Logf("stream-in -> %d", r1.StatusCode)
+
+	r2, _ := http.Get(ts.URL + "/artifacts/steps/evil/pwn")
+	defer r2.Body.Close()
+	body := make([]byte, 64)
+	n, _ := r2.Body.Read(body)
+	t.Logf("GET -> %d body=%q", r2.StatusCode, string(body[:n]))
+	if bytes.Contains(body[:n], []byte("TOP-SECRET")) {
+		t.Errorf("B3 CONFIRMED: arbitrary read through a planted symlink")
+	}
+}
+
+type tarHelper struct{ w *tar.Writer }
+
+func newTar(b *bytes.Buffer) *tarHelper { return &tarHelper{tar.NewWriter(b)} }
+func (h *tarHelper) symlink(name, target string) {
+	h.w.WriteHeader(&tar.Header{Name: name, Typeflag: tar.TypeSymlink, Linkname: target, Mode: 0o777})
+}
+func (h *tarHelper) close() { h.w.Close() }
