@@ -1154,7 +1154,7 @@ func TestResolve_TouchesStepDirSoSweeperSpares(t *testing.T) {
 	os.Chtimes(handleDir, past, past)
 
 	// Resolve the artifact — this read must refresh the handle dir mtime.
-	dest := filepath.Join(t.TempDir(), "dest")
+	dest := destUnder(t, storagePath, "dest")
 	body := strings.NewReader(`{"key":"old-handle/output","dest":"` + dest + `"}`)
 	resp, err := http.Post(ts.URL+"/resolve", "application/json", body)
 	if err != nil {
@@ -1210,4 +1210,24 @@ func TestStreamIn_MirrorOriginWrite_DoesNotRetriggerMirror(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(storagePath, "steps", "handle", "output")); err != nil {
 		t.Errorf("mirror-origin write not stored: %v", err)
 	}
+}
+
+// destUnder returns a resolve destination inside the daemon's storage root and
+// creates its parent directory.
+//
+// Before Track 5 these specs used a t.TempDir() unrelated to the storage root,
+// which encoded the assumption that a dest outside the root is legitimate.
+// Production does the opposite: every real dest is rooted at
+// ArtifactDaemonHostPath, which the chart passes as --storage-path. R4 enforces
+// that, so the specs move rather than the requirement.
+//
+// The parent must exist because copyArtifact creates its temp directory as a
+// SIBLING of dest, and stats the parent first.
+func destUnder(t *testing.T, storagePath, name string) string {
+	t.Helper()
+	parent := filepath.Join(storagePath, "resolved")
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		t.Fatalf("create dest parent: %v", err)
+	}
+	return filepath.Join(parent, name)
 }

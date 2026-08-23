@@ -52,7 +52,12 @@ func TestRegisterEndpoint_MissingFields(t *testing.T) {
 	}
 }
 
-func TestRegisterEndpoint_PathNotFound(t *testing.T) {
+// A local_path outside the storage root is refused as a bad request BEFORE the
+// existence check. This is a deliberate contract change from Track 5: an
+// uncontained path is refused on containment grounds regardless of whether it
+// happens to exist, because the existence check was the only thing standing
+// between a caller and an arbitrary-read primitive.
+func TestRegisterEndpoint_PathOutsideStorageRootRefused(t *testing.T) {
 	ts, _ := setupServer(t)
 
 	body := `{"key":"nope","local_path":"/nonexistent/path"}`
@@ -61,8 +66,24 @@ func TestRegisterEndpoint_PathNotFound(t *testing.T) {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected 400 for an uncontained local_path, got %d", resp.StatusCode)
+	}
+}
+
+// The 404 contract survives for a CONTAINED path that does not exist — the
+// containment check must not have swallowed the not-found case.
+func TestRegisterEndpoint_ContainedPathNotFound(t *testing.T) {
+	ts, storagePath := setupServer(t)
+
+	body := `{"key":"nope","local_path":"` + filepath.Join(storagePath, "steps", "absent") + `"}`
+	resp, err := http.Post(ts.URL+"/register", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
-		t.Errorf("expected 404 for nonexistent path, got %d", resp.StatusCode)
+		t.Errorf("expected 404 for a contained but nonexistent path, got %d", resp.StatusCode)
 	}
 }
 
@@ -83,7 +104,7 @@ func TestResolveEndpoint_LocalRegistry(t *testing.T) {
 	resp.Body.Close()
 
 	// Create destination directory.
-	destDir := filepath.Join(t.TempDir(), "input")
+	destDir := destUnder(t, storagePath, "input")
 
 	// POST /resolve
 	resolveBody := `{"key":"handle-a/out","dest":"` + destDir + `"}`
@@ -124,7 +145,7 @@ func TestResolveEndpoint_FilesystemFallback(t *testing.T) {
 	os.MkdirAll(srcDir, 0755)
 	os.WriteFile(filepath.Join(srcDir, "file.txt"), []byte("fallback data"), 0644)
 
-	destDir := filepath.Join(t.TempDir(), "resolved")
+	destDir := destUnder(t, storagePath, "resolved")
 
 	// POST /resolve — should find via filesystem scan fallback.
 	resolveBody := `{"key":"handle-b/dir","dest":"` + destDir + `"}`
@@ -154,9 +175,9 @@ func TestResolveEndpoint_FilesystemFallback(t *testing.T) {
 }
 
 func TestResolveEndpoint_NotFound(t *testing.T) {
-	ts, _ := setupServer(t)
+	ts, storagePath := setupServer(t)
 
-	destDir := filepath.Join(t.TempDir(), "nope")
+	destDir := destUnder(t, storagePath, "nope")
 	body := `{"key":"nonexistent","dest":"` + destDir + `"}`
 	resp, err := http.Post(ts.URL+"/resolve", "application/json", strings.NewReader(body))
 	if err != nil {
@@ -203,7 +224,7 @@ func TestResolveEndpoint_MultipleFiles(t *testing.T) {
 	resp, _ := http.Post(ts.URL+"/register", "application/json", strings.NewReader(regBody))
 	resp.Body.Close()
 
-	destDir := filepath.Join(t.TempDir(), "dest")
+	destDir := destUnder(t, storagePath, "dest")
 	resolveBody := `{"key":"handle-c/result","dest":"` + destDir + `"}`
 	resp, err := http.Post(ts.URL+"/resolve", "application/json", strings.NewReader(resolveBody))
 	if err != nil {
@@ -243,7 +264,7 @@ func TestResolveEndpoint_RestrictivePermissionsBecomWorldReadable(t *testing.T) 
 	resp, _ := http.Post(ts.URL+"/register", "application/json", strings.NewReader(regBody))
 	resp.Body.Close()
 
-	destDir := filepath.Join(t.TempDir(), "dest-restricted")
+	destDir := destUnder(t, storagePath, "dest-restricted")
 	resolveBody := `{"key":"handle-restricted/out","dest":"` + destDir + `"}`
 	resp, err := http.Post(ts.URL+"/resolve", "application/json", strings.NewReader(resolveBody))
 	if err != nil {
@@ -286,7 +307,7 @@ func TestResolveEndpoint_StartupScanThenResolve(t *testing.T) {
 	os.MkdirAll(srcDir, 0755)
 	os.WriteFile(filepath.Join(srcDir, "legacy.txt"), []byte("old data"), 0644)
 
-	destDir := filepath.Join(t.TempDir(), "legacy-dest")
+	destDir := destUnder(t, storagePath, "legacy-dest")
 	body := `{"key":"old-handle/output","dest":"` + destDir + `"}`
 	resp, err := http.Post(ts.URL+"/resolve", "application/json", strings.NewReader(body))
 	if err != nil {

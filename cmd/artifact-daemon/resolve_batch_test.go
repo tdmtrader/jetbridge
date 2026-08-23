@@ -38,8 +38,8 @@ func TestResolveBatch_HappyPath(t *testing.T) {
 		os.WriteFile(filepath.Join(dir, "data.txt"), []byte("content-"+name), 0644)
 	}
 
-	destA := filepath.Join(t.TempDir(), "dest-a")
-	destB := filepath.Join(t.TempDir(), "dest-b")
+	destA := destUnder(t, storagePath, "dest-a")
+	destB := destUnder(t, storagePath, "dest-b")
 
 	body, _ := json.Marshal(batchRequest{
 		Items: []batchItem{
@@ -103,8 +103,8 @@ func TestResolveBatch_PartialFailure(t *testing.T) {
 	os.MkdirAll(dir, 0755)
 	os.WriteFile(filepath.Join(dir, "file.txt"), []byte("ok"), 0644)
 
-	destGood := filepath.Join(t.TempDir(), "good")
-	destBad := filepath.Join(t.TempDir(), "bad")
+	destGood := destUnder(t, storagePath, "good")
+	destBad := destUnder(t, storagePath, "bad")
 
 	body, _ := json.Marshal(batchRequest{
 		Items: []batchItem{

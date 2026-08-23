@@ -75,7 +75,7 @@ func TestDaemonResolve_CrossNode_PeerFallback(t *testing.T) {
 	defer tsB.Close()
 
 	// POST /resolve to server B, which should discover the artifact on server A.
-	destDir := filepath.Join(t.TempDir(), "cross-resolved")
+	destDir := destUnder(t, storageB, "cross-resolved")
 	resolveBody := `{"key":"cross-handle/output","dest":"` + destDir + `"}`
 	resp, err := http.Post(tsB.URL+"/resolve", "application/json", strings.NewReader(resolveBody))
 	if err != nil {
@@ -136,7 +136,7 @@ func TestDaemonResolve_LocalRegistry(t *testing.T) {
 	}
 
 	// POST /resolve — should resolve via local registry.
-	destDir := filepath.Join(t.TempDir(), "local-resolved")
+	destDir := destUnder(t, storagePath, "local-resolved")
 	resolveBody := `{"key":"local-handle/output","dest":"` + destDir + `"}`
 	resp, err = http.Post(ts.URL+"/resolve", "application/json", strings.NewReader(resolveBody))
 	if err != nil {
@@ -221,7 +221,7 @@ func TestDaemonResolve_LocalRegistry_NoPeerQueries(t *testing.T) {
 	resp.Body.Close()
 
 	// Resolve — should use registry, NOT contact peer.
-	destDir := filepath.Join(t.TempDir(), "no-peer-dest")
+	destDir := destUnder(t, storagePath, "no-peer-dest")
 	resolveBody := `{"key":"no-peer-handle/dir","dest":"` + destDir + `"}`
 	resp, err := http.Post(ts.URL+"/resolve", "application/json", strings.NewReader(resolveBody))
 	if err != nil {

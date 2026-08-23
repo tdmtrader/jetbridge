@@ -203,7 +203,7 @@ func TestRegister_ThenResolve_FullFlow(t *testing.T) {
 	}
 
 	// Resolve should find it via registry (method=registry), not filesystem.
-	destDir := filepath.Join(t.TempDir(), "resolved")
+	destDir := destUnder(t, storagePath, "resolved")
 	resolveBody := `{"key":"reg-handle/output","dest":"` + destDir + `"}`
 	resp, err = http.Post(ts.URL+"/resolve", "application/json", strings.NewReader(resolveBody))
 	if err != nil {
@@ -254,7 +254,7 @@ func TestRegister_DuplicateOverwrites(t *testing.T) {
 	resp.Body.Close()
 
 	// Resolve should use the second registration.
-	destDir := filepath.Join(t.TempDir(), "dup-dest")
+	destDir := destUnder(t, storagePath, "dup-dest")
 	resolveBody := `{"key":"dup-key","dest":"` + destDir + `"}`
 	resp, err := http.Post(ts.URL+"/resolve", "application/json", strings.NewReader(resolveBody))
 	if err != nil {
@@ -298,7 +298,7 @@ func TestResolve_AtomicCopy_OverwritesStaleDestination(t *testing.T) {
 	// Pre-create a "stale" destination with a read-only file to simulate a
 	// prior interrupted copy. Without atomic copy, cp -R would fail trying
 	// to overwrite the read-only file.
-	destDir := filepath.Join(t.TempDir(), "stale-dest")
+	destDir := destUnder(t, storagePath, "stale-dest")
 	os.MkdirAll(destDir, 0755)
 	os.WriteFile(filepath.Join(destDir, "result.txt"), []byte("stale-data"), 0444) // read-only
 
@@ -377,7 +377,7 @@ func TestResolve_PeerFallback_EndToEnd(t *testing.T) {
 	defer localTS.Close()
 
 	// Resolve via local daemon - should fall back to peer.
-	destDir := filepath.Join(t.TempDir(), "peer-resolved")
+	destDir := destUnder(t, localStorage, "peer-resolved")
 	resolveBody := `{"key":"peer-handle/result","dest":"` + destDir + `"}`
 	resp, err := http.Post(localTS.URL+"/resolve", "application/json", strings.NewReader(resolveBody))
 	if err != nil {
@@ -417,7 +417,7 @@ func TestResolve_FilesystemFallback_AutoRegisters(t *testing.T) {
 	os.WriteFile(filepath.Join(srcDir, "data.txt"), []byte("auto-data"), 0644)
 
 	// First resolve: filesystem fallback.
-	destDir1 := filepath.Join(t.TempDir(), "dest1")
+	destDir1 := destUnder(t, storagePath, "dest1")
 	body := `{"key":"auto-reg/output","dest":"` + destDir1 + `"}`
 	resp, err := http.Post(ts.URL+"/resolve", "application/json", strings.NewReader(body))
 	if err != nil {
@@ -431,7 +431,7 @@ func TestResolve_FilesystemFallback_AutoRegisters(t *testing.T) {
 	}
 
 	// Second resolve: should use registry (auto-registered by first resolve).
-	destDir2 := filepath.Join(t.TempDir(), "dest2")
+	destDir2 := destUnder(t, storagePath, "dest2")
 	body = `{"key":"auto-reg/output","dest":"` + destDir2 + `"}`
 	resp, err = http.Post(ts.URL+"/resolve", "application/json", strings.NewReader(body))
 	if err != nil {
@@ -460,7 +460,7 @@ func TestResolve_ResponseIncludesStructuredFields(t *testing.T) {
 	resp, _ := http.Post(ts.URL+"/register", "application/json", strings.NewReader(regBody))
 	resp.Body.Close()
 
-	destDir := filepath.Join(t.TempDir(), "struct-dest")
+	destDir := destUnder(t, storagePath, "struct-dest")
 	resolveBody := `{"key":"struct-handle/out","dest":"` + destDir + `"}`
 	resp, err := http.Post(ts.URL+"/resolve", "application/json", strings.NewReader(resolveBody))
 	if err != nil {
@@ -484,9 +484,9 @@ func TestResolve_ResponseIncludesStructuredFields(t *testing.T) {
 }
 
 func TestResolve_NotFound_IncludesStructuredFields(t *testing.T) {
-	ts, _ := setupServer(t)
+	ts, storagePath := setupServer(t)
 
-	destDir := filepath.Join(t.TempDir(), "nf-dest")
+	destDir := destUnder(t, storagePath, "nf-dest")
 	body := `{"key":"nonexistent-key","dest":"` + destDir + `"}`
 	resp, err := http.Post(ts.URL+"/resolve", "application/json", strings.NewReader(body))
 	if err != nil {

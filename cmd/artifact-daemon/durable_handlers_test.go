@@ -129,7 +129,7 @@ func TestDurableRestoreMaterialisesAndRegisters(t *testing.T) {
 
 	// Seed the store with a real tar of a real directory, produced the same way
 	// a promotion would produce it.
-	src := writeDir(t, t.TempDir(), "payload", map[string]string{"file": "cached bytes"})
+	src := writeDir(t, server.storagePath, "payload", map[string]string{"file": "cached bytes"})
 	var buf bytes.Buffer
 	if err := server.tarDirectory(&buf, src); err != nil {
 		t.Fatalf("tar: %v", err)
@@ -224,7 +224,7 @@ func TestConcurrentRestoresOfOneKeyCollapse(t *testing.T) {
 	counting := &countingGetStore{inner: mustFS(t)}
 	server.SetDurableTier(NewDurableTier(lagertest.NewTestLogger("tier"), counting, server.Metrics(), time.Minute))
 
-	src := writeDir(t, t.TempDir(), "payload", map[string]string{"file": "x"})
+	src := writeDir(t, server.storagePath, "payload", map[string]string{"file": "x"})
 	var buf bytes.Buffer
 	if err := server.tarDirectory(&buf, src); err != nil {
 		t.Fatalf("tar: %v", err)
@@ -266,7 +266,7 @@ func TestRegisterPromotesOnlyWhenTheATCNamesADurableKey(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			server, ts, store := newDaemon(t, "node-a", true)
-			src := writeDir(t, t.TempDir(), "payload", map[string]string{"file": "x"})
+			src := writeDir(t, server.storagePath, "payload", map[string]string{"file": "x"})
 
 			resp := post(t, ts, "/register", fmt.Sprintf(tc.body, "rc-abc", src))
 			if resp.StatusCode != http.StatusCreated {
@@ -331,7 +331,7 @@ func (c *countingGetStore) List(ctx context.Context, fn func(durable.Attributes)
 func TestRestoreLandsFlatEvenWhenTheDurableKeyIsPrefixed(t *testing.T) {
 	server, ts, store := newDaemon(t, "node-a", true)
 
-	src := writeDir(t, t.TempDir(), "payload", map[string]string{"file": "x"})
+	src := writeDir(t, server.storagePath, "payload", map[string]string{"file": "x"})
 	var buf bytes.Buffer
 	if err := server.tarDirectory(&buf, src); err != nil {
 		t.Fatalf("tar: %v", err)
@@ -380,8 +380,8 @@ func TestRestoreRejectsANestedLocalKey(t *testing.T) {
 // Conflating them would drop the retention class, and the object would then fall
 // outside every lifecycle rule the operator wrote.
 func TestRegisterStoresUnderTheDurableKeyNotTheAlias(t *testing.T) {
-	_, ts, store := newDaemon(t, "node-a", true)
-	src := writeDir(t, t.TempDir(), "payload", map[string]string{"file": "x"})
+	server, ts, store := newDaemon(t, "node-a", true)
+	src := writeDir(t, server.storagePath, "payload", map[string]string{"file": "x"})
 
 	resp := post(t, ts, "/register",
 		fmt.Sprintf(`{"key":"rc-abc","local_path":%q,"durable_key":"resource-caches/rc-abc"}`, src))

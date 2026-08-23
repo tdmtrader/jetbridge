@@ -178,13 +178,41 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-func (s *Server) artifactPath(r *http.Request) string {
-	key := strings.TrimPrefix(r.URL.Path, "/artifacts/")
-	return filepath.Join(s.storagePath, key)
+// requestKey is the ONLY place a request URL becomes a key. Every handler that
+// needs one goes through here, so there is exactly one place the containment
+// rule can be forgotten.
+//
+// It returns the key rather than a path because three of its five callers want
+// the key: lookupRegistryAlias strips a "steps/" prefix and does a second
+// registry lookup, and both /resource-caches/ handlers look the key up in the
+// registry without joining anything. An accessor that returned a joined path
+// would force them to un-join it.
+func (s *Server) requestKey(r *http.Request, prefix string) (string, error) {
+	key := strings.TrimPrefix(r.URL.Path, prefix)
+	if err := validateRequestKey(key); err != nil {
+		return "", err
+	}
+	return key, nil
+}
+
+// artifactPath joins a validated /artifacts/ key onto the storage root. The
+// error return is deliberate and compiler-enforced: before this existed,
+// DELETE /artifacts/<percent-encoded traversal> removed a tree outside the
+// storage root and returned 204.
+func (s *Server) artifactPath(r *http.Request) (string, error) {
+	key, err := s.requestKey(r, "/artifacts/")
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(s.storagePath, key), nil
 }
 
 func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
-	path := s.artifactPath(r)
+	path, err := s.artifactPath(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	// Check filesystem first, then fall back to registry aliases.
 	// This enables peer daemons to serve registry-only artifacts
@@ -301,7 +329,11 @@ func (s *Server) touchStepDir(path string) {
 }
 
 func (s *Server) handlePutArtifact(w http.ResponseWriter, r *http.Request) {
-	path := s.artifactPath(r)
+	path, err := s.artifactPath(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		s.logger.Error("failed-to-create-artifact-dir", err, lager.Data{"path": path})
@@ -360,9 +392,9 @@ func (s *Server) handlePutArtifact(w http.ResponseWriter, r *http.Request) {
 // number (\x1f\x8b). This allows both raw tar (from DaemonSetVolume.StreamIn)
 // and gzipped tar (from fly CLI uploads) to work.
 func (s *Server) handleStreamIn(w http.ResponseWriter, r *http.Request) {
-	key := strings.TrimPrefix(r.URL.Path, "/stream-in/")
-	if key == "" {
-		http.Error(w, "key required", http.StatusBadRequest)
+	key, err := s.requestKey(r, "/stream-in/")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -493,15 +525,18 @@ func (s *Server) handleStreamIn(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteArtifact(w http.ResponseWriter, r *http.Request) {
-	path := s.artifactPath(r)
+	path, err := s.artifactPath(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	// Deletion is destructive like a sweep: wait out in-flight reads so a
 	// concurrent copy never sees a half-removed tree.
 	release := s.guard.BeginSweep(s.stepHandle(path))
 	defer release()
 
-	err := os.RemoveAll(path)
-	if err != nil {
+	if err := os.RemoveAll(path); err != nil {
 		s.logger.Error("failed-to-delete-artifact", err, lager.Data{"path": path})
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
@@ -511,7 +546,11 @@ func (s *Server) handleDeleteArtifact(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleHeadArtifact(w http.ResponseWriter, r *http.Request) {
-	path := s.artifactPath(r)
+	path, err := s.artifactPath(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	// Check filesystem first, then fall back to registry aliases.
 	if _, err := os.Stat(path); err != nil {
@@ -538,7 +577,10 @@ func (s *Server) handleHeadArtifact(w http.ResponseWriter, r *http.Request) {
 // the key "steps/rc-42" — but the registry stores just "rc-42". We try the
 // full key first, then strip common prefixes.
 func (s *Server) lookupRegistryAlias(r *http.Request) (string, bool) {
-	key := strings.TrimPrefix(r.URL.Path, "/artifacts/")
+	key, err := s.requestKey(r, "/artifacts/")
+	if err != nil {
+		return "", false
+	}
 	if path, found := s.registry.Lookup(key); found {
 		return path, true
 	}
@@ -598,6 +640,13 @@ func (s *Server) handleMirrorTrigger(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "key is required", http.StatusBadRequest)
 		return
 	}
+	// Mirror.run joins this onto the storage root and tars the result to every
+	// peer, so an unvalidated key reads a tree outside the root and ships it
+	// off-node.
+	if err := validateRequestKey(req.Key); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	if s.mirrorTrigger != nil {
 		s.mirrorTrigger(r.Context(), req.Key)
@@ -634,6 +683,24 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validate EVERYTHING before the first side effect. This handler used to
+	// call RegisterAlias and persist it to disk before validating DurableKey,
+	// so a 400 left a poisoned alias behind that survived a restart.
+	if err := validateRequestKey(req.Key); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := validateContainedPath(s.storagePath, req.LocalPath); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.DurableKey != "" {
+		if err := durable.ValidateKey(req.DurableKey); err != nil {
+			http.Error(w, fmt.Sprintf("invalid durable_key: %v", err), http.StatusBadRequest)
+			return
+		}
+	}
+
 	// Validate that the path exists on disk.
 	if _, err := os.Stat(req.LocalPath); err != nil {
 		if os.IsNotExist(err) {
@@ -649,10 +716,6 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	s.registry.RegisterAlias(req.Key, req.LocalPath)
 
 	if req.DurableKey != "" {
-		if err := durable.ValidateKey(req.DurableKey); err != nil {
-			http.Error(w, fmt.Sprintf("invalid durable_key: %v", err), http.StatusBadRequest)
-			return
-		}
 		s.promoteToDurable(r.Context(), req.DurableKey, req.LocalPath)
 	}
 
@@ -732,6 +795,14 @@ func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "key and dest are required", http.StatusBadRequest)
 		return
 	}
+	if err := validateRequestKey(req.Key); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := validateContainedPath(s.storagePath, req.Dest); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	resp := s.resolveOne(r.Context(), req.Key, req.Dest)
 
@@ -764,6 +835,21 @@ func (s *Server) handleResolveBatch(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, fmt.Sprintf("invalid JSON: %v", err), http.StatusBadRequest)
 		return
+	}
+
+	// Validate EVERY item before starting ANY of them. A partial batch that
+	// refuses item 3 after item 1 has already copied is a side effect from a
+	// refused request, which R5 forbids — and this endpoint is mTLS-exempt, so
+	// it is the least authenticated way into resolveOne.
+	for i, item := range req.Items {
+		if err := validateRequestKey(item.Key); err != nil {
+			http.Error(w, fmt.Sprintf("item %d: %v", i, err), http.StatusBadRequest)
+			return
+		}
+		if err := validateContainedPath(s.storagePath, item.Dest); err != nil {
+			http.Error(w, fmt.Sprintf("item %d: %v", i, err), http.StatusBadRequest)
+			return
+		}
 	}
 
 	results := make([]resolveResponse, len(req.Items))
@@ -874,8 +960,8 @@ func (s *Server) handleHeadResourceCache(w http.ResponseWriter, r *http.Request)
 	// on a hit would mean it is known exactly when it is not needed.
 	s.advertiseDurableTier(w)
 
-	key := strings.TrimPrefix(r.URL.Path, "/resource-caches/")
-	if key == "" {
+	key, err := s.requestKey(r, "/resource-caches/")
+	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
@@ -910,9 +996,9 @@ func (s *Server) handleHeadResourceCache(w http.ResponseWriter, r *http.Request)
 func (s *Server) handleGetResourceCache(w http.ResponseWriter, r *http.Request) {
 	s.advertiseDurableTier(w)
 
-	key := strings.TrimPrefix(r.URL.Path, "/resource-caches/")
-	if key == "" {
-		http.Error(w, "key required", http.StatusBadRequest)
+	key, err := s.requestKey(r, "/resource-caches/")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
