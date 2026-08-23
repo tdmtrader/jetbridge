@@ -144,7 +144,7 @@ func (p *PeerResolver) Probe(ctx context.Context, key string) (string, bool) {
 
 	for _, ip := range ips {
 		go func(ip string) {
-			url := fmt.Sprintf("%s://%s:%d/artifacts/steps/%s", p.scheme, ip, p.port, key)
+			url := peerURL(p.scheme, ip, p.port, "/artifacts/steps/", key)
 			req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
 			if err != nil {
 				results <- probeResult{ip: ip, found: false}
@@ -189,7 +189,11 @@ func (p *PeerResolver) Fetch(ctx context.Context, peerIP, key, destPath string) 
 		return fmt.Errorf("create dest parent: %w", err)
 	}
 
-	url := fmt.Sprintf("http://%s:%d/artifacts/steps/%s", peerIP, p.port, key)
+	// NOTE: the hardcoded "http" here is a known defect — Probe uses
+	// p.scheme, so peer FETCH cannot work with TLS enabled. It is out of scope
+	// for this track by explicit review decision and is preserved verbatim; only
+	// the escaping changes.
+	url := peerURL("http", peerIP, p.port, "/artifacts/steps/", key)
 
 	var lastErr error
 	for attempt := 1; attempt <= 3; attempt++ {

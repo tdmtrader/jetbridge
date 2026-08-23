@@ -233,7 +233,7 @@ func (j *mirrorJob) putToPeer(ctx context.Context, peer string) mirrorPeerOutcom
 		pw.CloseWithError(tarDir(pw, j.sourceDir))
 	}()
 
-	url := fmt.Sprintf("%s://%s:%d/stream-in/%s", j.scheme, peer, j.port, j.key)
+	url := peerURL(j.scheme, peer, j.port, "/stream-in/", j.key)
 	req, err := http.NewRequestWithContext(pctx, http.MethodPut, url, pr)
 	if err != nil {
 		pr.Close()

@@ -41,10 +41,32 @@ type Server struct {
 	// artifact through temporary storage, so unbounded promotion is a way to
 	// run the node out of disk.
 	uploadSem chan struct{}
+	// resolveSem bounds concurrent batch resolves. Same reasoning as uploadSem,
+	// on the endpoint that needs it more: /resolve-batch is mTLS-exempt, and it
+	// spawned one goroutine per request item with no cap, each running cp -R
+	// and chmod -R. The authenticated path was bounded and the unauthenticated
+	// one was not.
+	resolveSem chan struct{}
+	// destLocks serialises copies by DESTINATION. copyArtifactGuarded locks on
+	// the SOURCE handle, so two items with different keys and the same dest
+	// raced on os.RemoveAll(dest) and os.Rename — reachable with entirely
+	// legitimate keys.
+	destLocks sync.Map
 }
 
 // maxConcurrentDurableUploads caps in-flight promotions per daemon.
 const maxConcurrentDurableUploads = 4
+
+// maxConcurrentBatchResolves caps in-flight copies from one batch request.
+// Production batches are one item per step input — single digits — against a
+// 180s per-attempt timeout, so this is invisible to legitimate traffic.
+const maxConcurrentBatchResolves = 4
+
+// maxJSONBodyBytes caps the JSON control-plane bodies. Deliberately NOT applied
+// to PUT /stream-in/ or PUT /artifacts/, which stream whole artifacts: every
+// mirror push and ATC upload goes through those, and a cap there would break
+// artifact delivery outright.
+const maxJSONBodyBytes = 1 << 20
 
 // NewServer creates a new artifact-daemon server.
 func NewServer(logger lager.Logger, storagePath, nodeName string) *Server {
@@ -56,6 +78,7 @@ func NewServer(logger lager.Logger, storagePath, nodeName string) *Server {
 		metrics:     newMetrics(),
 		guard:       NewReadGuard(),
 		uploadSem:   make(chan struct{}, maxConcurrentDurableUploads),
+		resolveSem:  make(chan struct{}, maxConcurrentBatchResolves),
 	}
 }
 
@@ -648,6 +671,7 @@ type mirrorRequest struct {
 // that ATC callers don't fail when talking to a daemon that has mirror
 // off.
 func (s *Server) handleMirrorTrigger(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
 	var req mirrorRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, fmt.Sprintf("invalid JSON: %v", err), http.StatusBadRequest)
@@ -690,6 +714,7 @@ type resolveResponse struct {
 // handleRegister accepts POST /register with a JSON body containing
 // {key, local_path} and registers the artifact in the daemon's registry.
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
 	var req registerRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, fmt.Sprintf("invalid JSON: %v", err), http.StatusBadRequest)
@@ -803,6 +828,7 @@ func (s *Server) resolveOne(ctx context.Context, key, dest string) (resp resolve
 //  2. Fall back to filesystem scan (check if the key maps to a steps/ directory)
 //  3. Query peer daemons for cross-node resolution
 func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
 	var req resolveRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, fmt.Sprintf("invalid JSON: %v", err), http.StatusBadRequest)
@@ -848,6 +874,7 @@ type batchResolveResponse struct {
 // returns an aggregated response. If any item fails, the overall status is
 // "error" and the HTTP status is 500.
 func (s *Server) handleResolveBatch(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
 	var req batchResolveRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, fmt.Sprintf("invalid JSON: %v", err), http.StatusBadRequest)
@@ -876,6 +903,15 @@ func (s *Server) handleResolveBatch(w http.ResponseWriter, r *http.Request) {
 		wg.Add(1)
 		go func(idx int, key, dest string) {
 			defer wg.Done()
+			// Bounded like the durable upload path. results[idx] is
+			// index-assigned, so ordering and partial results survive.
+			select {
+			case s.resolveSem <- struct{}{}:
+			case <-r.Context().Done():
+				results[idx] = resolveResponse{Status: "error", Error: r.Context().Err().Error()}
+				return
+			}
+			defer func() { <-s.resolveSem }()
 			results[idx] = s.resolveOne(r.Context(), key, dest)
 		}(i, item.Key, item.Dest)
 	}
@@ -905,6 +941,17 @@ func (s *Server) copyArtifactGuarded(src, dest string) error {
 	release := s.guard.BeginRead(s.stepHandle(src))
 	defer release()
 	s.touchStepDir(src)
+
+	// Serialise on the DESTINATION as well. The read guard above keys on the
+	// source handle, so two copies with different sources and the same dest
+	// were free to interleave os.RemoveAll(dest) and os.Rename — one would
+	// delete the other's freshly-renamed tree. Reachable with legitimate keys,
+	// so containment does not address it.
+	lock, _ := s.destLocks.LoadOrStore(filepath.Clean(dest), &sync.Mutex{})
+	mu := lock.(*sync.Mutex)
+	mu.Lock()
+	defer mu.Unlock()
+
 	return s.copyArtifact(src, dest)
 }
 

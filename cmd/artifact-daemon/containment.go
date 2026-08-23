@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net/url"
 	"path/filepath"
 	"strings"
 )
@@ -187,4 +188,28 @@ func validateContainedPath(root, candidate string) error {
 	}
 
 	return nil
+}
+
+// peerURL builds an outbound request URL from a key this daemon has already
+// validated.
+//
+// The old form was fmt.Sprintf("%s://%s:%d/stream-in/%s", …, key), which splices
+// the key in raw. That matters because the receiving peer does
+// strings.TrimPrefix(r.URL.Path, "/stream-in/") and gets whatever we sent,
+// decoded — so an unescaped key could inject path structure into a peer's route.
+// This daemon writing outside a PEER's root is the confused-deputy half of the
+// same defect the inbound validators close.
+//
+// url.URL.String() escapes what must be escaped and leaves "/" structural, so a
+// conforming key is BYTE-IDENTICAL to what Sprintf produced. That is the
+// rolling-upgrade guarantee: an escaping daemon and a non-escaping one agree on
+// the wire for every legitimate key, and the only keys that differ are ones
+// validateRequestKey refuses before they are sent.
+func peerURL(scheme, host string, port int, prefix, key string) string {
+	u := url.URL{
+		Scheme: scheme,
+		Host:   fmt.Sprintf("%s:%d", host, port),
+		Path:   prefix + key,
+	}
+	return u.String()
 }

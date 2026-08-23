@@ -63,6 +63,7 @@ type durableRestoreResponse struct {
 // affinity the probe exists to provide. This verb answers the different question
 // "who can get it", and makes its own answer true before returning.
 func (s *Server) handleDurableRestore(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
 	var req durableRestoreRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, fmt.Sprintf("invalid JSON: %v", err), http.StatusBadRequest)
