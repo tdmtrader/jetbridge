@@ -101,7 +101,7 @@ func (s *Server) handleDurableRestore(w http.ResponseWriter, r *http.Request) {
 	logger := s.logger.Session("durable-restore", lager.Data{"key": req.Key, "durable_key": req.DurableKey})
 	start := time.Now()
 
-	if path, found := s.registry.Lookup(req.Key); found {
+	if path, found := s.lookupRegistry(req.Key); found {
 		if _, err := os.Stat(path); err == nil {
 			s.writeRestoreResult(w, http.StatusOK, "local", durableRestoreResponse{
 				Restored: false, Node: s.nodeName, Path: path,

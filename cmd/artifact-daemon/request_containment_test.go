@@ -670,3 +670,142 @@ func TestRequestContainment_StreamInCannotEscapeStepsIntoStoreRoot(t *testing.T)
 		t.Errorf("PROBE HIT: aliases.json overwritten, now %q", got)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Round-5 regressions. All five passed against the previous commit. Four of the
+// five were the SAME defect as an earlier round, at a site the earlier
+// reproduction had not used.
+// ---------------------------------------------------------------------------
+
+// R5-1: /resolve step 1 copies from a registry path without validating it, then
+// serves the result. mTLS-exempt.
+func TestRequestContainment_ResolveRegistryBranchIsValidated(t *testing.T) {
+	ts, storagePath := setupServer(t)
+
+	outside := t.TempDir()
+	os.WriteFile(filepath.Join(outside, "loot.txt"), []byte("HOST-SECRET"), 0o600)
+
+	os.MkdirAll(filepath.Join(storagePath, "steps", "a1"), 0o755)
+	real := filepath.Join(storagePath, "steps", "a1", "d")
+	os.MkdirAll(real, 0o755)
+	body, _ := json.Marshal(map[string]string{"key": "alias1", "local_path": real})
+	rr, err := http.Post(ts.URL+"/register", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rr.Body.Close()
+
+	// Swap the registered target for a link pointing out.
+	os.RemoveAll(real)
+	if err := os.Symlink(outside, real); err != nil {
+		t.Fatal(err)
+	}
+
+	os.MkdirAll(filepath.Join(storagePath, "resolved"), 0o755)
+	dest := filepath.Join(storagePath, "resolved", "d1")
+	rb, _ := json.Marshal(map[string]string{"key": "alias1", "dest": dest})
+	resp, err := http.Post(ts.URL+"/resolve", "application/json", bytes.NewReader(rb))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	if got, err := os.ReadFile(filepath.Join(dest, "loot.txt")); err == nil {
+		t.Errorf("R5-1: /resolve copied from outside the root into the store: %q", got)
+	}
+}
+
+// R5-2 / R5-3: the resource-cache routes read the registry, and a poisoned
+// alias must not be served there either.
+func TestRequestContainment_ResourceCacheRoutesValidateRegistry(t *testing.T) {
+	ts, storagePath := setupServer(t)
+
+	outside := t.TempDir()
+	secret := filepath.Join(outside, "rc.txt")
+	os.WriteFile(secret, []byte("RC-HOST-SECRET"), 0o600)
+
+	os.MkdirAll(filepath.Join(storagePath, "steps", "rc"), 0o755)
+	real := filepath.Join(storagePath, "steps", "rc", "f")
+	os.WriteFile(real, []byte("ok"), 0o644)
+	body, _ := json.Marshal(map[string]string{"key": "rc-9", "local_path": real})
+	rr, err := http.Post(ts.URL+"/register", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rr.Body.Close()
+
+	os.Remove(real)
+	if err := os.Symlink(secret, real); err != nil {
+		t.Fatal(err)
+	}
+
+	g, err := http.Get(ts.URL + "/resource-caches/rc-9")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer g.Body.Close()
+	got, _ := io.ReadAll(g.Body)
+	if bytes.Contains(got, []byte("RC-HOST-SECRET")) {
+		t.Errorf("R5-2: GET /resource-caches/ served a path outside the root")
+	}
+
+	h, err := http.Head(ts.URL + "/resource-caches/rc-9")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.Body.Close()
+	if h.StatusCode == http.StatusOK {
+		t.Errorf("R5-3: HEAD /resource-caches/ advertised an out-of-root path as node-local")
+	}
+}
+
+// R5-4: aliases.json is a structural file at the store root, not an artifact.
+func TestRequestContainment_AliasStoreIsNotAddressable(t *testing.T) {
+	ts, storagePath := setupServer(t)
+	sentinel := filepath.Join(storagePath, "aliases.json")
+	os.WriteFile(sentinel, []byte(`{"legit":"data"}`), 0o644)
+
+	for _, m := range []string{http.MethodGet, http.MethodDelete, http.MethodPut} {
+		req, err := http.NewRequest(m, ts.URL+"/artifacts/aliases.json", bytes.NewReader([]byte("x")))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode < 400 {
+			t.Errorf("R5-4: %s /artifacts/aliases.json -> %d, want 4xx", m, resp.StatusCode)
+		}
+	}
+	if got, err := os.ReadFile(sentinel); err != nil || !bytes.Contains(got, []byte("legit")) {
+		t.Errorf("R5-4: the alias store was modified or destroyed (got %q, err %v)", got, err)
+	}
+}
+
+// R5-4b: structural names are compared case-insensitively, because APFS and
+// NTFS fold case and an exact-string map let DELETE /artifacts/STEPS through.
+func TestRequestContainment_StructuralNamesAreCaseFolded(t *testing.T) {
+	ts, storagePath := setupServer(t)
+	keep := filepath.Join(storagePath, "steps", "b", "out")
+	os.MkdirAll(keep, 0o755)
+
+	for _, variant := range []string{"STEPS", "Steps", "sTePs", "ALIASES.JSON"} {
+		req, err := http.NewRequest(http.MethodDelete, ts.URL+"/artifacts/"+variant, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode < 400 {
+			t.Errorf("DELETE /artifacts/%s -> %d, want 4xx", variant, resp.StatusCode)
+		}
+	}
+	if _, err := os.Stat(keep); err != nil {
+		t.Errorf("a case variant of a structural name destroyed the store")
+	}
+}

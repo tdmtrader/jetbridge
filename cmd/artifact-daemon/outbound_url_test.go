@@ -9,45 +9,58 @@ package main
 // ever sent.
 
 import (
-	"fmt"
+	"net/url"
+	"strings"
 	"testing"
 )
 
-// Byte-identity is now a PROPERTY over the whole accepted set, not six
-// hand-picked strings. The first version asserted identity for a sample while a
-// second test asserted that "a b?c#d" — which the validator then accepted —
-// was escaped. The two contradicted each other; the charset restriction in
-// validateRequestKey is what makes the property true.
-func TestPeerURL_ByteIdenticalForEveryAcceptedKey(t *testing.T) {
-	candidates := []string{
-		// real shapes
+// What peerURL actually guarantees — and what it does not.
+//
+// Two earlier versions of this file were wrong. The first asserted byte
+// identity with fmt.Sprintf over six hand-picked keys while the validator
+// accepted "a b" and "a%2fb", which render differently. The second made the
+// property true by narrowing the accepted charset — and that narrowing was a
+// regression that 400'd legal Concourse identifiers, so it was reverted.
+//
+// The reasoning was also at the wrong layer: net/http escapes URL.EscapedPath()
+// on the wire regardless of how the string was built, so Sprintf and url.URL
+// were never going to differ in what a peer RECEIVES for an ordinary key. The
+// real divergence was in PARSING a key that already contained a percent
+// sequence.
+//
+// So the guarantee is the narrow, true one: round-tripping. Whatever peerURL
+// builds, a peer's TrimPrefix on the decoded path recovers exactly the key we
+// meant — which is the property that matters, because a peer that recovers a
+// different key stores the artifact somewhere else.
+func TestPeerURL_KeyRoundTripsThroughAPeersDecoding(t *testing.T) {
+	var checked int
+	for _, key := range []string{
 		"build-42-output.tar", "steps/build-99", "steps/build-42/result",
 		"caches/job-42/build-abc.tar", "handle/output", "rc-42",
-		// the ones the first cut accepted and rendered differently
-		"a b", "a?b", "a#b", "a%2fb", "a\\b", "a[1]", "a|b", "a'b", "a\"b", "café",
-		// traversal and degenerate forms
-		"..", ".", "./", "a/../b", "steps",
-	}
-
-	var checked int
-	for _, key := range candidates {
+		// legal Concourse identifiers the narrow charset used to refuse
+		"café", "_out", "-leading-dash", ".git",
+		// the percent case that actually diverged
+		"a%2fb", "a b",
+	} {
 		if validateRequestKey(key) != nil {
-			continue // refused before it could ever be sent
+			continue
 		}
 		checked++
-		want := fmt.Sprintf("%s://%s:%d/stream-in/%s", "https", "10.0.0.5", 7780, key)
-		got := peerURL("https", "10.0.0.5", 7780, "/stream-in/", key)
-		if got != want {
-			t.Errorf("accepted key %q renders differently — a mixed-version rolling upgrade "+
-				"would land it under two different keys:\n  sprintf: %s\n  urlpkg : %s",
-				key, want, got)
+
+		raw := peerURL("https", "10.0.0.5", 7780, "/stream-in/", key)
+		u, err := url.Parse(raw)
+		if err != nil {
+			t.Errorf("key %q produced an unparseable URL %q: %v", key, raw, err)
+			continue
+		}
+		// This is what the receiving daemon does.
+		got := strings.TrimPrefix(u.Path, "/stream-in/")
+		if got != key {
+			t.Errorf("key %q does not round-trip: peer would recover %q from %s", key, got, raw)
 		}
 	}
-
-	// The guard must be able to fail: if the validator ever rejects everything,
-	// this test would pass vacuously.
 	if checked == 0 {
 		t.Fatal("no candidate key was accepted — this test asserted nothing")
 	}
-	t.Logf("byte-identity verified over %d accepted keys of %d candidates", checked, len(candidates))
+	t.Logf("round-trip verified for %d accepted keys", checked)
 }

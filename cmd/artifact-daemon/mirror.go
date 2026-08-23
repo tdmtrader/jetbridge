@@ -396,7 +396,17 @@ func (m *Mirror) Trigger(ctx context.Context, key string) {
 }
 
 func (m *Mirror) run(ctx context.Context, key string) {
-	sourceDir := filepath.Join(m.storagePath, "steps", key)
+	// Routed through the same guard as every other join. This got the lexical
+	// key check at the handler but no symlink resolution, so a link planted
+	// under steps/ let POST /mirror tar a tree from outside the root and PUT it
+	// to every peer — vector 6, re-opened by fixing only the sites the
+	// reproduction used.
+	stepsRoot := filepath.Join(m.storagePath, "steps")
+	sourceDir, err := locateArtifact(stepsRoot, key)
+	if err != nil {
+		m.logger.Info("mirror-key-refused", lager.Data{"key": key, "reason": err.Error()})
+		return
+	}
 	if _, err := os.Stat(sourceDir); err != nil {
 		m.logger.Error("mirror-source-missing", err, lager.Data{
 			"key": key,

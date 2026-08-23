@@ -252,7 +252,7 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 	info, err := os.Stat(path)
 	if err != nil && os.IsNotExist(err) {
 		// Filesystem miss — try registry lookup.
-		if regPath, found := s.lookupRegistryAlias(r); found && s.validateRegistryPath(regPath) == nil {
+		if regPath, found := s.lookupRegistryAlias(r); found {
 			path = regPath
 			info, err = os.Stat(path)
 		}
@@ -591,7 +591,7 @@ func (s *Server) handleHeadArtifact(w http.ResponseWriter, r *http.Request) {
 	// Check filesystem first, then fall back to registry aliases.
 	if _, err := os.Stat(path); err != nil {
 		if os.IsNotExist(err) {
-			if regPath, found := s.lookupRegistryAlias(r); found && s.validateRegistryPath(regPath) == nil {
+			if regPath, found := s.lookupRegistryAlias(r); found {
 				if _, err := os.Stat(regPath); err == nil {
 					w.WriteHeader(http.StatusOK)
 					return
@@ -617,12 +617,12 @@ func (s *Server) lookupRegistryAlias(r *http.Request) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	if path, found := s.registry.Lookup(key); found {
+	if path, found := s.lookupRegistry(key); found {
 		return path, true
 	}
 	// Strip "steps/" prefix — peer probes prepend it but aliases don't have it.
 	if stripped := strings.TrimPrefix(key, "steps/"); stripped != key {
-		if path, found := s.registry.Lookup(stripped); found {
+		if path, found := s.lookupRegistry(stripped); found {
 			return path, true
 		}
 	}
@@ -771,7 +771,7 @@ func (s *Server) resolveOne(ctx context.Context, key, dest string) (resp resolve
 	logger := s.logger.Session("resolve", lager.Data{"key": key, "dest": dest})
 
 	// Step 1: Check registry for explicit registration.
-	sourcePath, found := s.registry.Lookup(key)
+	sourcePath, found := s.lookupRegistry(key)
 	if found {
 		if err := s.copyArtifactGuarded(sourcePath, dest); err != nil {
 			logger.Error("copy-failed", err, lager.Data{"source": sourcePath})
@@ -1040,7 +1040,7 @@ func (s *Server) handleHeadResourceCache(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	path, found := s.registry.Lookup(key)
+	path, found := s.lookupRegistry(key)
 	if !found {
 		w.WriteHeader(http.StatusNotFound)
 		return
@@ -1076,7 +1076,7 @@ func (s *Server) handleGetResourceCache(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	path, found := s.registry.Lookup(key)
+	path, found := s.lookupRegistry(key)
 	if !found {
 		http.NotFound(w, r)
 		return

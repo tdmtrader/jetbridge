@@ -1,10 +1,10 @@
 package main
 
 import (
+	"code.cloudfoundry.org/lager/v3"
 	"fmt"
 	"net/url"
 	"path/filepath"
-	"regexp"
 	"strings"
 )
 
@@ -100,24 +100,30 @@ func validateRequestKey(key string) error {
 	// filesystem.
 	cleaned := filepath.Clean(key)
 
-	// Every segment must be an ordinary name. This is the same charset
-	// durable.ValidateKey enforces (durable/durable.go:117) and deliberately so
-	// — what differs is arity: a durable key carries at most one prefix
-	// segment, while a local key runs to three (steps/build-42/result). The
-	// duplication is conscious; silently diverging charsets between two
-	// validators in one binary is the failure durable_handlers.go already warns
-	// about.
+	// Segment rule, deliberately MINIMAL.
 	//
-	// It also makes the outbound guarantee TRUE rather than asserted: no
-	// character in this set needs URL escaping, so peerURL's rendering is
-	// byte-identical to the old fmt.Sprintf for every key this accepts. The
-	// first cut claimed that while accepting "a b", "a?b" and "a%2fb" — and
-	// "a%2fb" was behavioural, landing the artifact under a different key on a
-	// peer running the other version.
+	// An earlier version required every segment to match durable.ValidateKey's
+	// charset (^[a-zA-Z0-9][a-zA-Z0-9._-]{0,254}$). That was a regression worse
+	// in user impact than the bug it was part of fixing: Concourse's own
+	// identifier rule (atc/configwarning.go:14) admits ANY Unicode letter and
+	// is only a warning, and the user-controlled segment reaches the daemon as
+	// handle + "/" + subdir. So "café", "_out", "-leading-dash" and ".git" are
+	// legal config today, and the daemon began 400ing them — a broken build,
+	// surfacing nowhere in the test suite.
+	//
+	// Safety here does not come from the charset. It comes from the traversal
+	// check below and from resolving the joined path against its root. So this
+	// rejects only what cannot be a usable single path component.
 	if cleaned != "." {
 		for _, seg := range strings.Split(cleaned, string(filepath.Separator)) {
-			if !keySegmentPattern.MatchString(seg) {
-				return fmt.Errorf("request key %q has an unusable segment %q", key, seg)
+			if seg == "" || seg == "." || seg == ".." {
+				return fmt.Errorf("request key %q has an empty or relative segment", key)
+			}
+			if strings.ContainsRune(seg, 0) {
+				return fmt.Errorf("request key %q contains a NUL byte", key)
+			}
+			if len(seg) > 255 {
+				return fmt.Errorf("request key %q has a segment longer than 255 bytes", key)
 			}
 		}
 	}
@@ -245,14 +251,20 @@ func peerURL(scheme, host string, port int, prefix, key string) string {
 // The first cut of validateRequestKey rejected "." on the reasoning that "every
 // route it guards is a SINGLE-ARTIFACT verb". That reasoning is right and was
 // applied to exactly one string. These are the rest of it.
-// keySegmentPattern mirrors durable.ValidateKey's segmentPattern.
-var keySegmentPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,254}$`)
-
-var structuralDirs = map[string]struct{}{
+// Compared case-INSENSITIVELY: on APFS and NTFS the filesystem folds case, so
+// DELETE /artifacts/STEPS reached the same directory as /steps and an
+// exact-string map let it through. Not exploitable on a Linux prod node, but a
+// guarantee that depends on the filesystem is not a guarantee.
+//
+// aliases.json is here because it is a structural FILE at the store root, not
+// an artifact: GET disclosed host paths, PUT replaced the alias store, and
+// DELETE destroyed it — a full arbitrary-read chain needing no symlink at all.
+var structuralNames = map[string]struct{}{
 	"steps":           {},
 	"artifacts":       {},
 	"resource-caches": {},
 	"caches":          {},
+	"aliases.json":    {},
 }
 
 // artifactLocation is THE way a key becomes a filesystem path. Not "the way for
@@ -268,13 +280,21 @@ var structuralDirs = map[string]struct{}{
 // Callers get a path that is: derived from a syntactically valid key, not a
 // structural directory, and — after symlink resolution — inside the root.
 func (s *Server) artifactLocation(root, key string) (string, error) {
+	return locateArtifact(root, key)
+}
+
+// locateArtifact is a FREE function, not a Server method, because the rule must
+// not be inaccessible to a caller. Mirror is a separate struct and could not
+// reach the method version — which is exactly how its join stayed unguarded
+// while every Server-side join was routed.
+func locateArtifact(root, key string) (string, error) {
 	if err := validateRequestKey(key); err != nil {
 		return "", err
 	}
 
 	cleaned := filepath.Clean(key)
-	if _, ok := structuralDirs[cleaned]; ok {
-		return "", fmt.Errorf("key %q names a structural directory, not an artifact", key)
+	if _, ok := structuralNames[strings.ToLower(cleaned)]; ok {
+		return "", fmt.Errorf("key %q names a structural path, not an artifact", key)
 	}
 
 	path := filepath.Join(root, cleaned)
@@ -308,4 +328,42 @@ func (s *Server) artifactLocation(root, key string) (string, error) {
 // the read.
 func (s *Server) validateRegistryPath(path string) error {
 	return validateContainedPath(s.storagePath, path)
+}
+
+// lookupRegistry is THE way a key becomes a path via the registry, exactly as
+// artifactLocation is the way it becomes one via a join.
+//
+// The first attempt at this added validateRegistryPath at the two sites the
+// reproduction happened to use and left three — including the mTLS-exempt
+// /resolve — reading the registry raw. That is the same site-not-class mistake
+// this proposal has now made five times, so the check moved into the lookup
+// where it cannot be skipped by writing a new caller.
+//
+// A registry entry is a cached string. It can be poisoned before this code
+// existed (aliases.json is reloaded at boot), or registered legitimately and
+// have its target swapped afterwards. Validating at registration is a snapshot;
+// this is the check that guards the use.
+func (s *Server) lookupRegistry(key string) (string, bool) {
+	path, found := s.registry.Lookup(key)
+	if !found {
+		return "", false
+	}
+	if err := s.validateRegistryPath(path); err != nil {
+		// EVICT, don't merely ignore. An entry resolving outside the root is
+		// poison — it can only have come from a pre-existing aliases.json or a
+		// target swapped after registration — and leaving it in place means
+		// every later lookup pays the check again and the poison survives the
+		// next reload.
+		//
+		// Evicting also preserves behaviour this refusal would otherwise have
+		// silently removed: the resource-cache handlers used to prune stale
+		// entries after a failed Stat, and short-circuiting before that turned
+		// the registry into an accumulator of dead keys.
+		s.logger.Info("registry-path-evicted", lager.Data{
+			"key": key, "path": path, "reason": err.Error(),
+		})
+		s.registry.Remove(key)
+		return "", false
+	}
+	return path, true
 }
