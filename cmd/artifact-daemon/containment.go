@@ -282,7 +282,15 @@ func (s *Server) artifactLocation(root, key string) (string, error) {
 	// Resolution matters as much as syntax. A lexically fine key can still land
 	// on a symlink planted under the root by an earlier legitimate stream-in,
 	// and every write, read and delete then follows it out.
-	if err := validateContainedPath(s.storagePath, path); err != nil {
+	//
+	// Validated against the ROOT THE CALLER PASSED, not against s.storagePath.
+	// The first version checked s.storagePath, which made containment vacuous
+	// for any caller with a narrower boundary: stream-in passes
+	// storagePath/steps, so a symlink planted under steps/ pointing at the
+	// store root passed the check and let PUT /stream-in/x/link/aliases.json
+	// destroy the alias file. A guard must enforce the boundary its caller
+	// means, not the widest one available.
+	if err := validateContainedPath(root, path); err != nil {
 		return "", err
 	}
 

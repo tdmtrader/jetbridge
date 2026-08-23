@@ -609,3 +609,64 @@ func (h *tarHelper) symlink(name, target string) {
 	h.w.WriteHeader(&tar.Header{Name: name, Typeflag: tar.TypeSymlink, Linkname: target, Mode: 0o777})
 }
 func (h *tarHelper) close() { h.w.Close() }
+
+// A stream-in must not escape steps/ into the store root, even though the store
+// root is still "inside the daemon's storage".
+//
+// artifactLocation first validated against s.storagePath rather than the root
+// its caller passed, which made containment vacuous for any caller with a
+// narrower boundary. stream-in passes storagePath/steps, so a symlink planted
+// under steps/ pointing at the store root let
+// PUT /stream-in/x/link/aliases.json destroy the alias file (201).
+func TestRequestContainment_StreamInCannotEscapeStepsIntoStoreRoot(t *testing.T) {
+	ts, storagePath := setupServer(t)
+
+	// A file at the store root that must not be writable by a stream-in.
+	sentinel := filepath.Join(storagePath, "aliases.json")
+	if err := os.WriteFile(sentinel, []byte(`{"legit":"data"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. plant steps/x/link -> <storagePath>
+	var b1 bytes.Buffer
+	tw := tar.NewWriter(&b1)
+	tw.WriteHeader(&tar.Header{Name: "link", Typeflag: tar.TypeSymlink, Linkname: storagePath, Mode: 0o777})
+	tw.Close()
+	r1, err := http.NewRequest(http.MethodPut, ts.URL+"/stream-in/x", &b1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p1, err := http.DefaultClient.Do(r1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p1.Body.Close()
+	t.Logf("plant steps/x/link -> storagePath : %d", p1.StatusCode)
+
+	// 2. stream in through it, targeting the store root's aliases.json
+	var b2 bytes.Buffer
+	tw2 := tar.NewWriter(&b2)
+	body := []byte("POISONED")
+	tw2.WriteHeader(&tar.Header{Name: "f", Typeflag: tar.TypeReg, Size: int64(len(body)), Mode: 0o644})
+	tw2.Write(body)
+	tw2.Close()
+	r2, err := http.NewRequest(http.MethodPut, ts.URL+"/stream-in/x/link/aliases.json", &b2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p2, err := http.DefaultClient.Do(r2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p2.Body.Close()
+	t.Logf("stream-in through link to store root : %d", p2.StatusCode)
+
+	got, err := os.ReadFile(sentinel)
+	if err != nil {
+		t.Errorf("PROBE HIT: aliases.json at the store root was destroyed (%v)", err)
+		return
+	}
+	if !bytes.Contains(got, []byte("legit")) {
+		t.Errorf("PROBE HIT: aliases.json overwritten, now %q", got)
+	}
+}
