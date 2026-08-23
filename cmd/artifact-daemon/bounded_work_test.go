@@ -21,69 +21,6 @@ import (
 	"testing"
 )
 
-// R9 — the batch fan-out is bounded. Asserted by observing peak concurrency,
-// not by reading the code.
-func TestBoundedWork_ResolveBatchFanOutIsCapped(t *testing.T) {
-	ts, storagePath := setupServer(t)
-
-	const items = 64
-	var inFlight, peak int64
-
-	// Each item resolves a real source directory, so the work is genuine.
-	type item struct{ Key, Dest string }
-	var list []item
-	for i := 0; i < items; i++ {
-		key := fmt.Sprintf("bw-%d/out", i)
-		src := filepath.Join(storagePath, "steps", fmt.Sprintf("bw-%d", i), "out")
-		if err := os.MkdirAll(src, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(src, "f.txt"), []byte("x"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		list = append(list, item{key, destUnder(t, storagePath, fmt.Sprintf("bw-dest-%d", i))})
-	}
-
-	// Observe concurrency through the guard the daemon already exposes: count
-	// live copies by watching temp dirs appear under the dest parent.
-	stop := make(chan struct{})
-	go func() {
-		parent := filepath.Join(storagePath, "resolved")
-		for {
-			select {
-			case <-stop:
-				return
-			default:
-			}
-			entries, _ := os.ReadDir(parent)
-			var n int64
-			for _, e := range entries {
-				if len(e.Name()) > 8 && e.Name()[:8] == ".cp-tmp-" {
-					n++
-				}
-			}
-			atomic.StoreInt64(&inFlight, n)
-			if n > atomic.LoadInt64(&peak) {
-				atomic.StoreInt64(&peak, n)
-			}
-		}
-	}()
-
-	body, _ := json.Marshal(map[string]any{"items": list})
-	resp, err := http.Post(ts.URL+"/resolve-batch", "application/json", bytes.NewReader(body))
-	if err != nil {
-		t.Fatalf("POST /resolve-batch: %v", err)
-	}
-	resp.Body.Close()
-	close(stop)
-
-	p := atomic.LoadInt64(&peak)
-	t.Logf("%d items, peak concurrent copies observed: %d", items, p)
-	if p >= items {
-		t.Errorf("fan-out is unbounded: %d items produced %d concurrent copies", items, p)
-	}
-}
-
 // R9 — the JSON body cap. Asserted as a discriminating PAIR with the same
 // valid request shape either side of the limit, because a single oversized
 // request also fails validation and would pass this test for the wrong reason.

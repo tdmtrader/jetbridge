@@ -573,18 +573,31 @@ func TestBypass_ReadThroughPlantedSymlink(t *testing.T) {
 	tw.symlink("pwn", secret)
 	tw.close()
 
-	req, _ := http.NewRequest(http.MethodPut, ts.URL+"/stream-in/evil", &buf)
+	req, err := http.NewRequest(http.MethodPut, ts.URL+"/stream-in/evil", &buf)
+	if err != nil {
+		t.Fatal(err)
+	}
 	req.Header.Set("Content-Type", "application/x-tar")
-	r1, _ := http.DefaultClient.Do(req)
+	r1, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
 	r1.Body.Close()
 	t.Logf("stream-in -> %d", r1.StatusCode)
 
-	r2, _ := http.Get(ts.URL + "/artifacts/steps/evil/pwn")
+	r2, err := http.Get(ts.URL + "/artifacts/steps/evil/pwn")
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer r2.Body.Close()
-	body := make([]byte, 64)
-	n, _ := r2.Body.Read(body)
-	t.Logf("GET -> %d body=%q", r2.StatusCode, string(body[:n]))
-	if bytes.Contains(body[:n], []byte("TOP-SECRET")) {
+	// io.ReadAll, not a single Read: a short read of 1 byte would make this
+	// pass regardless of what the server returned.
+	body, err := io.ReadAll(r2.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("GET -> %d body=%q", r2.StatusCode, string(body))
+	if bytes.Contains(body, []byte("TOP-SECRET")) {
 		t.Errorf("B3 CONFIRMED: arbitrary read through a planted symlink")
 	}
 }

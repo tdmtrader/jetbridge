@@ -13,40 +13,41 @@ import (
 	"testing"
 )
 
-func TestPeerURL_ConformingKeysAreByteIdenticalToSprintf(t *testing.T) {
-	// Every real key shape, measured from the suite.
-	for _, key := range []string{
-		"build-42-output.tar",
-		"steps/build-99",
-		"steps/build-42/result",
-		"caches/job-42/build-abc.tar",
-		"handle/output",
-		"rc-42",
-	} {
+// Byte-identity is now a PROPERTY over the whole accepted set, not six
+// hand-picked strings. The first version asserted identity for a sample while a
+// second test asserted that "a b?c#d" — which the validator then accepted —
+// was escaped. The two contradicted each other; the charset restriction in
+// validateRequestKey is what makes the property true.
+func TestPeerURL_ByteIdenticalForEveryAcceptedKey(t *testing.T) {
+	candidates := []string{
+		// real shapes
+		"build-42-output.tar", "steps/build-99", "steps/build-42/result",
+		"caches/job-42/build-abc.tar", "handle/output", "rc-42",
+		// the ones the first cut accepted and rendered differently
+		"a b", "a?b", "a#b", "a%2fb", "a\\b", "a[1]", "a|b", "a'b", "a\"b", "café",
+		// traversal and degenerate forms
+		"..", ".", "./", "a/../b", "steps",
+	}
+
+	var checked int
+	for _, key := range candidates {
+		if validateRequestKey(key) != nil {
+			continue // refused before it could ever be sent
+		}
+		checked++
 		want := fmt.Sprintf("%s://%s:%d/stream-in/%s", "https", "10.0.0.5", 7780, key)
 		got := peerURL("https", "10.0.0.5", 7780, "/stream-in/", key)
 		if got != want {
-			t.Errorf("key %q: rolling upgrade would break\n  sprintf: %s\n  urlpkg : %s", key, want, got)
+			t.Errorf("accepted key %q renders differently — a mixed-version rolling upgrade "+
+				"would land it under two different keys:\n  sprintf: %s\n  urlpkg : %s",
+				key, want, got)
 		}
 	}
-}
 
-// A key cannot inject path structure into a peer's route. This is the property
-// Sprintf did not have: the peer's own TrimPrefix would decode whatever we sent.
-func TestPeerURL_EscapesCharactersThatWouldInjectStructure(t *testing.T) {
-	got := peerURL("http", "10.0.0.5", 7780, "/stream-in/", "a b?c#d")
-	for _, bad := range []string{" ", "?", "#"} {
-		if containsRune(got[len("http://10.0.0.5:7780/stream-in/"):], bad) {
-			t.Errorf("unescaped %q survived into the path: %s", bad, got)
-		}
+	// The guard must be able to fail: if the validator ever rejects everything,
+	// this test would pass vacuously.
+	if checked == 0 {
+		t.Fatal("no candidate key was accepted — this test asserted nothing")
 	}
-}
-
-func containsRune(s, sub string) bool {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
+	t.Logf("byte-identity verified over %d accepted keys of %d candidates", checked, len(candidates))
 }

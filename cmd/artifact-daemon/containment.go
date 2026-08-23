@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -98,6 +99,28 @@ func validateRequestKey(key string) error {
 	// escapes its root does so lexically here, before it ever reaches the
 	// filesystem.
 	cleaned := filepath.Clean(key)
+
+	// Every segment must be an ordinary name. This is the same charset
+	// durable.ValidateKey enforces (durable/durable.go:117) and deliberately so
+	// — what differs is arity: a durable key carries at most one prefix
+	// segment, while a local key runs to three (steps/build-42/result). The
+	// duplication is conscious; silently diverging charsets between two
+	// validators in one binary is the failure durable_handlers.go already warns
+	// about.
+	//
+	// It also makes the outbound guarantee TRUE rather than asserted: no
+	// character in this set needs URL escaping, so peerURL's rendering is
+	// byte-identical to the old fmt.Sprintf for every key this accepts. The
+	// first cut claimed that while accepting "a b", "a?b" and "a%2fb" — and
+	// "a%2fb" was behavioural, landing the artifact under a different key on a
+	// peer running the other version.
+	if cleaned != "." {
+		for _, seg := range strings.Split(cleaned, string(filepath.Separator)) {
+			if !keySegmentPattern.MatchString(seg) {
+				return fmt.Errorf("request key %q has an unusable segment %q", key, seg)
+			}
+		}
+	}
 
 	// "." names the storage root itself, and every one of these routes is a
 	// SINGLE-ARTIFACT verb. Admitting it turns DELETE /artifacts/<key> into
@@ -212,4 +235,69 @@ func peerURL(scheme, host string, port int, prefix, key string) string {
 		Path:   prefix + key,
 	}
 	return u.String()
+}
+
+// structuralDirs are the directories that give the store its shape rather than
+// naming an artifact. They must never be addressable through a per-artifact
+// verb: DELETE /artifacts/steps removed every artifact on the node and returned
+// 204, and GET /artifacts/steps tarred the lot.
+//
+// The first cut of validateRequestKey rejected "." on the reasoning that "every
+// route it guards is a SINGLE-ARTIFACT verb". That reasoning is right and was
+// applied to exactly one string. These are the rest of it.
+// keySegmentPattern mirrors durable.ValidateKey's segmentPattern.
+var keySegmentPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,254}$`)
+
+var structuralDirs = map[string]struct{}{
+	"steps":           {},
+	"artifacts":       {},
+	"resource-caches": {},
+	"caches":          {},
+}
+
+// artifactLocation is THE way a key becomes a filesystem path. Not "the way for
+// /artifacts/" — the way, full stop.
+//
+// Four rounds of review found the same shape of defect four times: a fix landed
+// at the site the reproduction happened to use, and the identical escape stayed
+// open one route over. /artifacts/ got a containment check and /stream-in/ did
+// not; "." was rejected and "steps" was not. The answer is not a fifth patch, it
+// is to make the join itself the guarded operation, so a new caller cannot
+// acquire a path without acquiring the rule with it.
+//
+// Callers get a path that is: derived from a syntactically valid key, not a
+// structural directory, and — after symlink resolution — inside the root.
+func (s *Server) artifactLocation(root, key string) (string, error) {
+	if err := validateRequestKey(key); err != nil {
+		return "", err
+	}
+
+	cleaned := filepath.Clean(key)
+	if _, ok := structuralDirs[cleaned]; ok {
+		return "", fmt.Errorf("key %q names a structural directory, not an artifact", key)
+	}
+
+	path := filepath.Join(root, cleaned)
+
+	// Resolution matters as much as syntax. A lexically fine key can still land
+	// on a symlink planted under the root by an earlier legitimate stream-in,
+	// and every write, read and delete then follows it out.
+	if err := validateContainedPath(s.storagePath, path); err != nil {
+		return "", err
+	}
+
+	return path, nil
+}
+
+// validateRegistryPath checks a path the registry hands back, at the moment it
+// is USED.
+//
+// Registering a contained path is not enough. The registry is a cache of
+// strings: an alias registered legitimately can have its target swapped for a
+// symlink afterwards, and aliases.json is reloaded at boot from whatever was
+// persisted — including entries written before any of this existed. Validating
+// only at registration is a snapshot; this is the check that actually guards
+// the read.
+func (s *Server) validateRegistryPath(path string) error {
+	return validateContainedPath(s.storagePath, path)
 }

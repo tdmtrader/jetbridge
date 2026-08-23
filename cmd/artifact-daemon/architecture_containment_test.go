@@ -16,11 +16,11 @@ package main_test
 // tightens rather than loosens as the package grows.
 
 import (
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -33,64 +33,96 @@ func TestArchitecture_RequestPathIsDerivedInExactlyOnePlace(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Test files legitimately reference r.URL.Path when standing up fake peers
-	// (preemption_test.go, mirror_test.go). The exclusion is required and is
-	// stated here rather than left implicit.
 	var scanned int
-	holders := map[string]string{} // enclosing func -> file
+	holders := map[string]string{} // "file:func" -> what it touched
 
 	for _, e := range entries {
 		name := e.Name()
 		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
 			continue
 		}
-		scanned++
 
 		f, err := parser.ParseFile(fset, name, nil, 0)
 		if err != nil {
-			t.Fatalf("parse %s: %v", name, err)
+			// Do NOT Fatal. Unrelated debris in the package would otherwise
+			// turn this guard into a hard failure instead of a scan it can
+			// reason about — and an unparseable file is the build's problem,
+			// not this guard's.
+			t.Logf("skipping unparseable %s: %v", name, err)
+			continue
+		}
+		scanned++
+
+		// Walk EVERY function-like node, not just FuncDecl. A handler written
+		// as a package-level `var h = func(w, r) {...}` is a FuncLit and the
+		// first version of this guard never looked inside one.
+		record := func(where string, body ast.Node) {
+			ast.Inspect(body, func(m ast.Node) bool {
+				sel, ok := m.(*ast.SelectorExpr)
+				if !ok {
+					return true
+				}
+				// r.RequestURI — a genuine alternate source, and it carries the
+				// UNDECODED path, so it is more dangerous than r.URL.Path.
+				if sel.Sel.Name == "RequestURI" {
+					holders[name+":"+where] = "RequestURI"
+					return true
+				}
+				// r.URL — matched at the URL level, not at .Path, so that
+				// `u := r.URL; u.Path` is caught too. The first version matched
+				// only SelectorExpr{X: SelectorExpr}, so binding r.URL to a
+				// local defeated it.
+				//
+				// Without type information this cannot tell r.URL (the request
+				// field) from url.URL (the package type), so the net/url
+				// package qualifier is excluded by name. That is a real
+				// limitation: a local variable named `url` holding a request
+				// would slip through. It is narrower than the hole it closes,
+				// and stated rather than hidden.
+				if sel.Sel.Name == "URL" {
+					if id, ok := sel.X.(*ast.Ident); ok && id.Name == "url" {
+						return true
+					}
+					holders[name+":"+where] = "URL"
+				}
+				return true
+			})
 		}
 
 		ast.Inspect(f, func(n ast.Node) bool {
-			fn, ok := n.(*ast.FuncDecl)
-			if !ok {
-				return true
+			switch fn := n.(type) {
+			case *ast.FuncDecl:
+				recv := ""
+				if fn.Recv != nil && len(fn.Recv.List) > 0 {
+					if st, ok := fn.Recv.List[0].Type.(*ast.StarExpr); ok {
+						if id, ok := st.X.(*ast.Ident); ok {
+							recv = id.Name + "."
+						}
+					}
+				}
+				if fn.Body != nil {
+					record(recv+fn.Name.Name, fn.Body)
+				}
+			case *ast.FuncLit:
+				record(fmt.Sprintf("func-literal@%d", fset.Position(fn.Pos()).Line), fn.Body)
 			}
-			ast.Inspect(fn.Body, func(m ast.Node) bool {
-				sel, ok := m.(*ast.SelectorExpr)
-				if !ok || sel.Sel.Name != "Path" {
-					return true
-				}
-				inner, ok := sel.X.(*ast.SelectorExpr)
-				if !ok || inner.Sel.Name != "URL" {
-					return true
-				}
-				holders[fn.Name.Name] = filepath.Base(name)
-				return true
-			})
 			return true
 		})
 	}
 
-	// The scan must be able to fail. Zero files scanned, or zero matches, means
-	// the guard is asserting nothing.
 	if scanned == 0 {
 		t.Fatal("guard scanned no production files — it cannot fail and protects nothing")
 	}
 	if len(holders) == 0 {
-		t.Fatalf("guard found no r.URL.Path in %d production files — the token moved and this "+
-			"guard is now inert", scanned)
+		t.Fatalf("guard found no request-URL access in %d production files — the token moved "+
+			"and this guard is now inert", scanned)
 	}
 
-	if len(holders) != 1 {
-		t.Errorf("r.URL.Path is derived in %d functions, want exactly 1 (the single accessor). "+
-			"Each extra one is a place the containment rule can be forgotten:\n  %v",
-			len(holders), holders)
-	}
-	for fn := range holders {
-		if fn != "requestKey" {
-			t.Errorf("r.URL.Path is derived in %q; it belongs only in requestKey", fn)
+	const accessor = "server.go:Server.requestKey"
+	for where, what := range holders {
+		if where != accessor {
+			t.Errorf("request URL (%s) is read in %q; it belongs only in %s", what, where, accessor)
 		}
 	}
-	t.Logf("scanned %d production files; r.URL.Path derived only in %v", scanned, holders)
+	t.Logf("scanned %d production files; request URL read only in %v", scanned, holders)
 }

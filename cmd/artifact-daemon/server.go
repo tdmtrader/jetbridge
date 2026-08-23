@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
@@ -52,6 +53,14 @@ type Server struct {
 	// raced on os.RemoveAll(dest) and os.Rename — reachable with entirely
 	// legitimate keys.
 	destLocks sync.Map
+}
+
+// destLock serialises copies to one destination and refcounts its own lifetime,
+// so the map holding it is bounded by IN-FLIGHT copies rather than by every
+// destination ever seen.
+type destLock struct {
+	mu      sync.Mutex
+	waiters atomic.Int64
 }
 
 // maxConcurrentDurableUploads caps in-flight promotions per daemon.
@@ -227,24 +236,7 @@ func (s *Server) artifactPath(r *http.Request) (string, error) {
 	if err != nil {
 		return "", err
 	}
-
-	path := filepath.Join(s.storagePath, key)
-
-	// A lexically-contained key is not a filesystem-contained path. If anything
-	// under the root is a symlink pointing out — and the stream-in extractor can
-	// still plant one until its own track lands — then Stat/Open/RemoveAll on
-	// this path follows it straight out. The first cut of this function stopped
-	// at the lexical check and an adversarial review read a node file through a
-	// planted link.
-	//
-	// Resolving here is deliberately the same rule the body-supplied paths get.
-	// An artifact's own INTERNAL symlinks still resolve inside the root and are
-	// unaffected, which is what keeps this containment rather than prohibition.
-	if err := validateContainedPath(s.storagePath, path); err != nil {
-		return "", err
-	}
-
-	return path, nil
+	return s.artifactLocation(s.storagePath, key)
 }
 
 func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
@@ -260,7 +252,7 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 	info, err := os.Stat(path)
 	if err != nil && os.IsNotExist(err) {
 		// Filesystem miss — try registry lookup.
-		if regPath, found := s.lookupRegistryAlias(r); found {
+		if regPath, found := s.lookupRegistryAlias(r); found && s.validateRegistryPath(regPath) == nil {
 			path = regPath
 			info, err = os.Stat(path)
 		}
@@ -438,7 +430,11 @@ func (s *Server) handleStreamIn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dest := filepath.Join(s.storagePath, "steps", key)
+	dest, err := s.artifactLocation(filepath.Join(s.storagePath, "steps"), key)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	// Extract into a temp sibling and rename into place on success. Readers
 	// (resolve, GET/HEAD, peer probes) treat any existing steps/{key} dir as
@@ -595,7 +591,7 @@ func (s *Server) handleHeadArtifact(w http.ResponseWriter, r *http.Request) {
 	// Check filesystem first, then fall back to registry aliases.
 	if _, err := os.Stat(path); err != nil {
 		if os.IsNotExist(err) {
-			if regPath, found := s.lookupRegistryAlias(r); found {
+			if regPath, found := s.lookupRegistryAlias(r); found && s.validateRegistryPath(regPath) == nil {
 				if _, err := os.Stat(regPath); err == nil {
 					w.WriteHeader(http.StatusOK)
 					return
@@ -787,7 +783,10 @@ func (s *Server) resolveOne(ctx context.Context, key, dest string) (resp resolve
 	}
 
 	// Step 2: Fallback — check if key maps to a steps/ directory on disk.
-	stepsPath := filepath.Join(s.storagePath, "steps", key)
+	stepsPath, keyErr := s.artifactLocation(filepath.Join(s.storagePath, "steps"), key)
+	if keyErr != nil {
+		return resolveResponse{Status: "error", Error: keyErr.Error()}
+	}
 	if info, err := os.Stat(stepsPath); err == nil && info.IsDir() {
 		s.registry.Register(key, stepsPath)
 
@@ -947,10 +946,21 @@ func (s *Server) copyArtifactGuarded(src, dest string) error {
 	// were free to interleave os.RemoveAll(dest) and os.Rename — one would
 	// delete the other's freshly-renamed tree. Reachable with legitimate keys,
 	// so containment does not address it.
-	lock, _ := s.destLocks.LoadOrStore(filepath.Clean(dest), &sync.Mutex{})
-	mu := lock.(*sync.Mutex)
-	mu.Lock()
-	defer mu.Unlock()
+	// Refcounted so the map cannot grow without bound. The first version was a
+	// bare sync.Map that stored an entry per distinct dest and never pruned —
+	// 200 failed requests leaked 200 permanent entries, on an mTLS-exempt
+	// endpoint whose dest length is bounded only by the body cap.
+	key := filepath.Clean(dest)
+	lock, _ := s.destLocks.LoadOrStore(key, &destLock{})
+	dl := lock.(*destLock)
+	dl.waiters.Add(1)
+	dl.mu.Lock()
+	defer func() {
+		dl.mu.Unlock()
+		if dl.waiters.Add(-1) == 0 {
+			s.destLocks.CompareAndDelete(key, dl)
+		}
+	}()
 
 	return s.copyArtifact(src, dest)
 }
