@@ -170,8 +170,6 @@ var resourceTypesQuery = psql.Select(
 	"p.name",
 	"p.instance_vars",
 	"p.pipeline_run_id",
-	"pr.template_pipeline_id",
-	"base.name",
 	"t.id",
 	"t.name",
 	"r.resource_config_id",
@@ -182,8 +180,6 @@ var resourceTypesQuery = psql.Select(
 	From("resource_types r").
 	Join("pipelines p ON p.id = r.pipeline_id").
 	Join("teams t ON t.id = p.team_id").
-	LeftJoin("pipeline_runs pr ON p.pipeline_run_id = pr.id").
-	LeftJoin("pipelines base ON pr.template_pipeline_id = base.id").
 	LeftJoin("resource_configs c ON c.id = r.resource_config_id").
 	LeftJoin("resource_config_scopes ro ON ro.resource_config_id = c.id").
 	Where(sq.Eq{"r.active": true})
@@ -436,13 +432,12 @@ func scanResourceType(t *resourceType, row scannable) error {
 		rcsID, nonce                         sql.NullString
 		lastCheckStartTime, lastCheckEndTime sql.NullTime
 		pipelineInstanceVars                 sql.NullString
-		pipelineRunID, basePipelineID        sql.NullInt64
-		basePipelineName                     sql.NullString
+		pipelineRunID                        sql.NullInt64
 		resourceConfigID                     sql.NullInt64
 	)
 
 	err := row.Scan(&t.id, &t.pipelineID, &t.name, &t.type_, &configJSON,
-		&nonce, &t.pipelineName, &pipelineInstanceVars, &pipelineRunID, &basePipelineID, &basePipelineName,
+		&nonce, &t.pipelineName, &pipelineInstanceVars, &pipelineRunID,
 		&t.teamID, &t.teamName, &resourceConfigID, &rcsID,
 		&lastCheckStartTime, &lastCheckEndTime)
 	if err != nil {
@@ -452,8 +447,6 @@ func scanResourceType(t *resourceType, row scannable) error {
 	t.lastCheckStartTime = lastCheckStartTime.Time
 	t.lastCheckEndTime = lastCheckEndTime.Time
 	t.pipelineRunID = int(pipelineRunID.Int64)
-	t.basePipelineID = int(basePipelineID.Int64)
-	t.basePipelineName = basePipelineName.String
 
 	es := t.conn.EncryptionStrategy()
 

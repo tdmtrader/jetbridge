@@ -158,8 +158,6 @@ var (
 		"p.name",
 		"p.instance_vars",
 		"p.pipeline_run_id",
-		"pr.template_pipeline_id",
-		"base.name",
 		"t.id",
 		"t.name",
 		"rp.version",
@@ -173,8 +171,6 @@ var (
 		From("resources r").
 		Join("pipelines p ON p.id = r.pipeline_id").
 		Join("teams t ON t.id = p.team_id").
-		LeftJoin("pipeline_runs pr ON p.pipeline_run_id = pr.id").
-		LeftJoin("pipelines base ON pr.template_pipeline_id = base.id").
 		LeftJoin("resource_config_scopes rs ON r.resource_config_scope_id = rs.id").
 		LeftJoin("resource_pins rp ON rp.resource_id = r.id").
 		Where(sq.Eq{"r.active": true})
@@ -1026,15 +1022,14 @@ func scanResource(r *resource, row scannable) error {
 		nonce, rcID, rcScopeID, pinnedVersion, pinComment sql.NullString
 		pinnedThroughConfig                               sql.NullBool
 		pipelineInstanceVars                              sql.NullString
-		pipelineRunID, basePipelineID                     sql.NullInt64
-		basePipelineName                                  sql.NullString
+		pipelineRunID                                     sql.NullInt64
 		buildData                                         buildData
 	)
 
 	err := row.Scan(&r.id, &r.name, &r.type_, &configBlob, &buildData.lastCheckStartTime,
 		&buildData.lastCheckEndTime, &buildData.lastCheckBuildId, &buildData.lastCheckSucceeded, &buildData.lastCheckBuildPlan,
 		&r.pipelineID, &nonce, &rcID, &rcScopeID,
-		&r.pipelineName, &pipelineInstanceVars, &pipelineRunID, &basePipelineID, &basePipelineName, &r.teamID, &r.teamName,
+		&r.pipelineName, &pipelineInstanceVars, &pipelineRunID, &r.teamID, &r.teamName,
 		&pinnedVersion, &pinComment, &pinnedThroughConfig,
 		&buildData.inMemoryBuildId, &buildData.inMemoryBuildStartTime, &buildData.inMemoryBuildPlan, &buildData.inMemoryBuildStatus)
 	if err != nil {
@@ -1108,8 +1103,6 @@ func scanResource(r *resource, row scannable) error {
 		}
 	}
 	r.pipelineRunID = int(pipelineRunID.Int64)
-	r.basePipelineID = int(basePipelineID.Int64)
-	r.basePipelineName = basePipelineName.String
 
 	if buildData.inMemoryBuildId.Valid || buildData.lastCheckBuildId.Valid {
 		r.buildSummary = &atc.BuildSummary{

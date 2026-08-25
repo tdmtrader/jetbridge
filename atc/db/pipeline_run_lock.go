@@ -147,6 +147,26 @@ func lockJobBuildAdmission(tx Tx, jobID, hydratedRunID int, reopenTerminal bool)
 		}
 	}
 
+	// The pipelines row lock is only taken for the run case. Three things the
+	// unconditional `FOR UPDATE OF j, p` was protecting, and where they now live:
+	//  1. a TOCTOU re-read of p.pipeline_run_id -- unnecessary: the
+	//     pipeline_run_ownership_immutable trigger installed by
+	//     migrations/1773105505_add_pipeline_template_runs.up.sql rejects any
+	//     UPDATE that changes pipelines.pipeline_run_id, so the unlocked read
+	//     above is authoritative for the row's whole lifetime;
+	//  2. existence of the jobs/pipelines rows at insert time -- provided by the
+	//     builds.job_id / builds.pipeline_id foreign keys, which take FOR KEY
+	//     SHARE on the parent rows during the INSERT;
+	//  3. serializing createAdmittedJobBuild's OnlyIfNoPending check-then-insert
+	//     -- held by `FOR UPDATE OF j`, which stays unconditional because on this
+	//     branch the EXISTS check runs before the build_number_seq UPDATE.
+	// The run case additionally pins the payload pipeline row so it cannot be
+	// reclaimed out from under a build that is attaching to the run.
+	lockClause := "FOR UPDATE OF j"
+	if observedRunID.Valid {
+		lockClause = "FOR UPDATE OF j, p"
+	}
+
 	var admission jobBuildAdmission
 	var liveRunID sql.NullInt64
 	var policyKey sql.NullString
@@ -155,8 +175,7 @@ func lockJobBuildAdmission(tx Tx, jobID, hydratedRunID int, reopenTerminal bool)
 		FROM jobs j
 		JOIN pipelines p ON p.id = j.pipeline_id
 		WHERE j.id = $1
-		FOR UPDATE OF j, p
-	`, jobID).Scan(
+		`+lockClause, jobID).Scan(
 		&admission.jobID,
 		&admission.jobName,
 		&policyKey,
