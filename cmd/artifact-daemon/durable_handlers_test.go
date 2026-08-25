@@ -26,7 +26,7 @@ import (
 func newDaemon(t *testing.T, node string, withTier bool) (*Server, *httptest.Server, durable.Store) {
 	t.Helper()
 
-	server := NewServer(lagertest.NewTestLogger("daemon-"+node), t.TempDir(), node)
+	server := newServerT(t, lagertest.NewTestLogger("daemon-"+node), t.TempDir(), node)
 
 	var store durable.Store
 	if withTier {

@@ -54,6 +54,17 @@ type Server struct {
 	// raced on os.RemoveAll(dest) and os.Rename — reachable with entirely
 	// legitimate keys.
 	destLocks sync.Map
+
+	// root is the handle every direct filesystem operation on artifact data
+	// goes through. Containment is a property of this handle, not of a check
+	// performed before the operation — os.Root refuses to resolve a path out of
+	// itself, so there is no ordering to get wrong and no name to out-think.
+	//
+	// It does NOT replace validateContainedPath in this track. tarDirectory
+	// still walks an ambient path (egress is Track 2's), and three wire inputs
+	// still terminate in ambient calls, so that validator survives here and
+	// dies where its uses actually move.
+	root *os.Root
 }
 
 // destLock serialises copies to one destination and refcounts its own lifetime,
@@ -79,7 +90,19 @@ const maxConcurrentBatchResolves = 4
 const maxJSONBodyBytes = 1 << 20
 
 // NewServer creates a new artifact-daemon server.
-func NewServer(logger lager.Logger, storagePath, nodeName string) *Server {
+// NewServer can now fail: it acquires the storage root at construction.
+//
+// Deliberately at construction rather than lazily. A lazy open converts a boot
+// failure into a per-request failure and makes "every operation goes through
+// the handle" conditional on something having succeeded earlier; opening it in
+// Handler() cannot work because Mirror, Sweeper and DurableTier are built
+// outside it and need the same root.
+func NewServer(logger lager.Logger, storagePath, nodeName string) (*Server, error) {
+	root, err := os.OpenRoot(storagePath)
+	if err != nil {
+		return nil, fmt.Errorf("open storage root %q: %w", storagePath, err)
+	}
+
 	return &Server{
 		logger:      logger,
 		storagePath: storagePath,
@@ -89,7 +112,8 @@ func NewServer(logger lager.Logger, storagePath, nodeName string) *Server {
 		guard:       NewReadGuard(),
 		uploadSem:   make(chan struct{}, maxConcurrentDurableUploads),
 		resolveSem:  make(chan struct{}, maxConcurrentBatchResolves),
-	}
+		root:        root,
+	}, nil
 }
 
 // SetDurableTier attaches the long-term store. When unset the daemon behaves
@@ -233,24 +257,45 @@ func (s *Server) requestKey(r *http.Request, prefix string) (string, error) {
 // DELETE /artifacts/<percent-encoded traversal> removed a tree outside the
 // storage root and returned 204.
 func (s *Server) artifactPath(r *http.Request) (string, error) {
+	key, err := s.artifactKey(r)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(s.storagePath, key), nil
+}
+
+// artifactKey returns the validated key an /artifacts/ request names.
+//
+// Operations go through s.root with this key. The absolute form is still
+// needed by the read/sweep guard (whose keys stay absolute under R12) and by
+// tarDirectory (which walks a path; egress belongs to another track), and
+// artifactPath above produces it — routed through artifactLocation so the
+// walked path keeps the containment check the walker itself does not have.
+func (s *Server) artifactKey(r *http.Request) (string, error) {
 	key, err := s.requestKey(r, "/artifacts/")
 	if err != nil {
 		return "", err
 	}
-	return s.artifactLocation(s.storagePath, key)
+	if _, err := s.artifactLocation(s.storagePath, key); err != nil {
+		return "", err
+	}
+	return key, nil
 }
 
 func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
-	path, err := s.artifactPath(r)
+	key, err := s.artifactKey(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	// tarDirectory walks a path and the guard keys on one, so the absolute
+	// form is still needed. Direct reads go through the handle.
+	path := filepath.Join(s.storagePath, key)
 
 	// Check filesystem first, then fall back to registry aliases.
 	// This enables peer daemons to serve registry-only artifacts
 	// (e.g., resource caches registered via POST /register).
-	info, err := os.Stat(path)
+	info, err := s.root.Stat(key)
 	if err != nil && os.IsNotExist(err) {
 		// Filesystem miss — try registry lookup.
 		if regPath, found := s.lookupRegistryAlias(r); found {
@@ -288,7 +333,7 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// File: serve as-is (backward compat for legacy tar files).
-	f, err := os.Open(path)
+	f, err := s.root.Open(key)
 	if err != nil {
 		s.logger.Error("failed-to-open-artifact", err, lager.Data{"path": path})
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -362,11 +407,12 @@ func (s *Server) touchStepDir(path string) {
 }
 
 func (s *Server) handlePutArtifact(w http.ResponseWriter, r *http.Request) {
-	path, err := s.artifactPath(r)
+	key, err := s.artifactKey(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	path := filepath.Join(s.storagePath, key)
 
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		s.logger.Error("failed-to-create-artifact-dir", err, lager.Data{"path": path})
@@ -529,18 +575,22 @@ func (s *Server) handleStreamIn(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteArtifact(w http.ResponseWriter, r *http.Request) {
-	path, err := s.artifactPath(r)
+	key, err := s.artifactKey(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	// The guard's keys stay absolute under R12, so the path is still computed
+	// for it — but the removal itself goes through the root handle, where a
+	// symlink under the store cannot carry it out.
+	path := filepath.Join(s.storagePath, key)
 
 	// Deletion is destructive like a sweep: wait out in-flight reads so a
 	// concurrent copy never sees a half-removed tree.
 	release := s.guard.BeginSweep(s.stepHandle(path))
 	defer release()
 
-	if err := os.RemoveAll(path); err != nil {
+	if err := s.root.RemoveAll(key); err != nil {
 		s.logger.Error("failed-to-delete-artifact", err, lager.Data{"path": path})
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
@@ -550,11 +600,12 @@ func (s *Server) handleDeleteArtifact(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleHeadArtifact(w http.ResponseWriter, r *http.Request) {
-	path, err := s.artifactPath(r)
+	key, err := s.artifactKey(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	path := filepath.Join(s.storagePath, key)
 
 	// Check filesystem first, then fall back to registry aliases.
 	if _, err := os.Stat(path); err != nil {

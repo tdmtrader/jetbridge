@@ -81,7 +81,21 @@ func main() {
 		logger.Info("skipping-node-labeling", lager.Data{"reason": "no --node-name provided"})
 	}
 
-	server := NewServer(logger, *storagePath, *nodeName)
+	// The daemon now creates its own storage directory. New production
+	// behaviour, and deliberate: the storage root is acquired at construction,
+	// and a missing hostPath would otherwise turn a first boot into a startup
+	// failure. The chart's hostPath uses DirectoryOrCreate, so the kubelet
+	// normally makes it — this covers the cases where it has not.
+	if err := os.MkdirAll(*storagePath, 0755); err != nil {
+		logger.Error("failed-to-create-storage-path", err, lager.Data{"path": *storagePath})
+		os.Exit(1)
+	}
+
+	server, err := NewServer(logger, *storagePath, *nodeName)
+	if err != nil {
+		logger.Error("failed-to-open-storage-root", err, lager.Data{"path": *storagePath})
+		os.Exit(1)
+	}
 
 	// Set up alias persistence so volume-handle mappings survive restarts.
 	aliasStore := NewAliasStore(logger, *storagePath)

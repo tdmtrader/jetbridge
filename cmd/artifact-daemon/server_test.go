@@ -3,6 +3,7 @@ package main_test
 import (
 	"archive/tar"
 	"bytes"
+	"code.cloudfoundry.org/lager/v3"
 	"compress/gzip"
 	"context"
 	"io"
@@ -25,7 +26,7 @@ func setupServer(t *testing.T) (*httptest.Server, string) {
 
 	storagePath := t.TempDir()
 	logger := lagertest.NewTestLogger("artifact-daemon")
-	server := daemon.NewServer(logger, storagePath, "test-node")
+	server := newDaemonServer(t, logger, storagePath, "test-node")
 	ts := httptest.NewServer(server.Handler())
 	t.Cleanup(ts.Close)
 	return ts, storagePath
@@ -338,7 +339,7 @@ func setupServerWithRegistry(t *testing.T) (*httptest.Server, string, *daemon.Se
 	t.Helper()
 	storagePath := t.TempDir()
 	logger := lagertest.NewTestLogger("artifact-daemon")
-	server := daemon.NewServer(logger, storagePath, "test-node")
+	server := newDaemonServer(t, logger, storagePath, "test-node")
 	ts := httptest.NewServer(server.Handler())
 	t.Cleanup(ts.Close)
 	return ts, storagePath, server
@@ -812,7 +813,7 @@ func (m *recordingMirror) calls() []string {
 func TestPostMirror_EnqueuesJobAndReturns202(t *testing.T) {
 	storagePath := t.TempDir()
 	logger := lagertest.NewTestLogger("artifact-daemon")
-	server := daemon.NewServer(logger, storagePath, "test-node")
+	server := newDaemonServer(t, logger, storagePath, "test-node")
 
 	rec := &recordingMirror{}
 	server.SetMirrorTrigger(rec.Trigger)
@@ -840,7 +841,7 @@ func TestPostMirror_EnqueuesJobAndReturns202(t *testing.T) {
 func TestPostMirror_EmptyKey_Returns400(t *testing.T) {
 	storagePath := t.TempDir()
 	logger := lagertest.NewTestLogger("artifact-daemon")
-	server := daemon.NewServer(logger, storagePath, "test-node")
+	server := newDaemonServer(t, logger, storagePath, "test-node")
 
 	rec := &recordingMirror{}
 	server.SetMirrorTrigger(rec.Trigger)
@@ -866,7 +867,7 @@ func TestPostMirror_EmptyKey_Returns400(t *testing.T) {
 func TestPostMirror_InvalidJSON_Returns400(t *testing.T) {
 	storagePath := t.TempDir()
 	logger := lagertest.NewTestLogger("artifact-daemon")
-	server := daemon.NewServer(logger, storagePath, "test-node")
+	server := newDaemonServer(t, logger, storagePath, "test-node")
 
 	rec := &recordingMirror{}
 	server.SetMirrorTrigger(rec.Trigger)
@@ -917,7 +918,7 @@ func makeTarPayload(t *testing.T, content string) *bytes.Reader {
 func TestStreamIn_SchedulesMirrorTrigger(t *testing.T) {
 	storagePath := t.TempDir()
 	logger := lagertest.NewTestLogger("artifact-daemon")
-	server := daemon.NewServer(logger, storagePath, "test-node")
+	server := newDaemonServer(t, logger, storagePath, "test-node")
 
 	rec := &recordingMirror{}
 	server.SetMirrorTrigger(rec.Trigger)
@@ -1182,7 +1183,7 @@ func TestResolve_TouchesStepDirSoSweeperSpares(t *testing.T) {
 
 func TestStreamIn_MirrorOriginWrite_DoesNotRetriggerMirror(t *testing.T) {
 	storagePath := t.TempDir()
-	server := daemon.NewServer(lagertest.NewTestLogger("artifact-daemon"), storagePath, "test-node")
+	server := newDaemonServer(t, lagertest.NewTestLogger("artifact-daemon"), storagePath, "test-node")
 	rec := &recordingMirror{}
 	server.SetMirrorTrigger(rec.Trigger)
 	ts := httptest.NewServer(server.Handler())
@@ -1230,4 +1231,20 @@ func destUnder(t *testing.T, storagePath, name string) string {
 		t.Fatalf("create dest parent: %v", err)
 	}
 	return filepath.Join(parent, name)
+}
+
+// newDaemonServer constructs a Server for tests, failing the test if the
+// storage root cannot be acquired.
+//
+// NewServer gained an error return when it began holding an os.Root at
+// construction. A helper keeps that from becoming a two-line ceremony at every
+// call site, and gives one place to change if construction grows another
+// failure mode.
+func newDaemonServer(t *testing.T, logger lager.Logger, storagePath, nodeName string) *daemon.Server {
+	t.Helper()
+	srv, err := daemon.NewServer(logger, storagePath, nodeName)
+	if err != nil {
+		t.Fatalf("NewServer(%q): %v", storagePath, err)
+	}
+	return srv
 }

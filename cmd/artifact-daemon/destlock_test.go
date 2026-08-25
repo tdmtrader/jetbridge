@@ -11,6 +11,7 @@ package main
 // would be worse than reading it here.
 
 import (
+	"code.cloudfoundry.org/lager/v3"
 	"os"
 	"path/filepath"
 	"testing"
@@ -20,7 +21,7 @@ import (
 
 func TestDestLocks_BoundedByInFlightCopies(t *testing.T) {
 	root := t.TempDir()
-	s := NewServer(lagertest.NewTestLogger("destlock"), root, "test-node")
+	s := newServerT(t, lagertest.NewTestLogger("destlock"), root, "test-node")
 
 	src := filepath.Join(root, "steps", "leak", "out")
 	if err := os.MkdirAll(src, 0o755); err != nil {
@@ -80,7 +81,7 @@ func itoa(i int) string {
 // real property badly. This holds every slot and proves the bound by observing
 // that work cannot start until a slot is released.
 func TestResolveSem_BoundIsRealAndBlocking(t *testing.T) {
-	s := NewServer(lagertest.NewTestLogger("sem"), t.TempDir(), "test-node")
+	s := newServerT(t, lagertest.NewTestLogger("sem"), t.TempDir(), "test-node")
 
 	if got := cap(s.resolveSem); got != maxConcurrentBatchResolves {
 		t.Fatalf("semaphore capacity %d, want %d", got, maxConcurrentBatchResolves)
@@ -115,4 +116,14 @@ func TestResolveSem_BoundIsRealAndBlocking(t *testing.T) {
 	default:
 	}
 	t.Logf("bound holds at %d: full, refused, released one, admitted exactly one", maxConcurrentBatchResolves)
+}
+
+// newServerT is the in-package equivalent of newDaemonServer.
+func newServerT(t *testing.T, logger lager.Logger, storagePath, nodeName string) *Server {
+	t.Helper()
+	srv, err := NewServer(logger, storagePath, nodeName)
+	if err != nil {
+		t.Fatalf("newServerT(t, %q): %v", storagePath, err)
+	}
+	return srv
 }

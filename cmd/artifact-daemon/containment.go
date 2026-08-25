@@ -295,11 +295,12 @@ func peerURL(scheme, host string, port int, prefix, key string) string {
 // an artifact: GET disclosed host paths, PUT replaced the alias store, and
 // DELETE destroyed it — a full arbitrary-read chain needing no symlink at all.
 var structuralNames = map[string]struct{}{
-	"steps":           {},
-	"artifacts":       {},
-	"resource-caches": {},
-	"caches":          {},
-	"aliases.json":    {},
+	"steps":            {},
+	"artifacts":        {},
+	"resource-caches":  {},
+	"caches":           {},
+	"aliases.json":     {},
+	"aliases.json.tmp": {},
 }
 
 // artifactLocation is THE way a key becomes a filesystem path. Not "the way for

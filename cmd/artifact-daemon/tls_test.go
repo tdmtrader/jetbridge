@@ -162,7 +162,7 @@ func startTLSServer(t *testing.T, fix *tlsTestFixture) (string, string) {
 
 	storagePath := t.TempDir()
 	logger := lagertest.NewTestLogger("artifact-daemon-tls")
-	server := daemon.NewServer(logger, storagePath, "test-node")
+	server := newDaemonServer(t, logger, storagePath, "test-node")
 
 	tlsCfg, err := daemon.BuildTLSConfig(fix.ServerCertPath, fix.ServerKeyPath, fix.CACertPath)
 	if err != nil {

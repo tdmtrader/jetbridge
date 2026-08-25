@@ -809,3 +809,72 @@ func TestRequestContainment_StructuralNamesAreCaseFolded(t *testing.T) {
 		t.Errorf("a case variant of a structural name destroyed the store")
 	}
 }
+
+// AC1b — "." must be refused on EVERY per-artifact verb, and on /mirror.
+//
+// os.Root refuses "." only for Remove/RemoveAll. Root.Stat(".") and
+// Root.Open(".") succeed and enumerate the whole store. An earlier draft of
+// this track's spec deleted validateRequestKey's "." check on the stated
+// grounds that os.Root refused it — which was false and unverified. The
+// existing bypass regression covers only DELETE, the one verb that happens to
+// fail safe, so it would have shipped green.
+func TestRequestContainment_DotRefusedOnEveryVerb(t *testing.T) {
+	ts, storagePath := setupServer(t)
+
+	keep := filepath.Join(storagePath, "steps", "keep", "out")
+	if err := os.MkdirAll(keep, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(keep, "f.txt"), []byte("KEEP"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(storagePath, "aliases.json"), []byte(`{"a":"b"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, m := range []string{http.MethodGet, http.MethodHead, http.MethodPut, http.MethodDelete} {
+		req, err := http.NewRequest(m, ts.URL+"/artifacts/%2e", bytes.NewReader([]byte("x")))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode < 400 {
+			t.Errorf(`%s /artifacts/%%2e -> %d, want 4xx`, m, resp.StatusCode)
+		}
+		if bytes.Contains(body, []byte("aliases.json")) {
+			t.Errorf("%s /artifacts/%%2e leaked the store listing", m)
+		}
+	}
+
+	mb, _ := json.Marshal(map[string]string{"key": "."})
+	resp, err := http.Post(ts.URL+"/mirror", "application/json", bytes.NewReader(mb))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode < 400 {
+		t.Errorf(`POST /mirror {"key":"."} -> %d, want 4xx`, resp.StatusCode)
+	}
+
+	if _, err := os.Stat(keep); err != nil {
+		t.Errorf("the store was damaged by a '.' request: %v", err)
+	}
+
+	// Zero-case: an ordinary key still works on each verb.
+	for _, m := range []string{http.MethodGet, http.MethodHead} {
+		req, _ := http.NewRequest(m, ts.URL+"/artifacts/steps/keep/out/f.txt", nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("%s of an ordinary key -> %d, want 200", m, resp.StatusCode)
+		}
+	}
+}

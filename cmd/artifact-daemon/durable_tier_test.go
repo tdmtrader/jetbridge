@@ -22,7 +22,7 @@ func newTier(t *testing.T, store durable.Store) (*DurableTier, *Server) {
 	t.Helper()
 
 	logger := lagertest.NewTestLogger("durable-test")
-	server := NewServer(logger, t.TempDir(), "node-a")
+	server := newServerT(t, logger, t.TempDir(), "node-a")
 	tier := NewDurableTier(logger, store, server.Metrics(), time.Minute)
 	server.SetDurableTier(tier)
 

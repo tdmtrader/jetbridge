@@ -97,7 +97,7 @@ func TestSweeper_RemovesExpiredDirAfterReadReleases_WhenNotTouched(t *testing.T)
 // cannot delete the source mid-cp.
 func TestResolve_HoldsReadGuardDuringCopy(t *testing.T) {
 	storagePath := t.TempDir()
-	srv := NewServer(lagertest.NewTestLogger("server"), storagePath, "node")
+	srv := newServerT(t, lagertest.NewTestLogger("server"), storagePath, "node")
 
 	dir := filepath.Join(storagePath, "steps", "handle-y", "output")
 	if err := os.MkdirAll(dir, 0755); err != nil {

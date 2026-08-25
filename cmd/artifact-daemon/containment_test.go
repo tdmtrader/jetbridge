@@ -207,7 +207,7 @@ func TestPeerFetch_InternalSymlinkPreserved(t *testing.T) {
 	}
 
 	peerLogger := lagertest.NewTestLogger("peer")
-	peerServer := daemon.NewServer(peerLogger, peerStorage, "peer-node")
+	peerServer := newDaemonServer(t, peerLogger, peerStorage, "peer-node")
 	peerTS := httptest.NewServer(peerServer.Handler())
 	defer peerTS.Close()
 

@@ -31,7 +31,7 @@ func TestPeerFetch_DownloadsAndExtractsTar(t *testing.T) {
 	os.WriteFile(filepath.Join(stepDir, "sub", "nested.txt"), []byte("nested"), 0644)
 
 	peerLogger := lagertest.NewTestLogger("peer")
-	peerServer := daemon.NewServer(peerLogger, peerStorage, "peer-node")
+	peerServer := newDaemonServer(t, peerLogger, peerStorage, "peer-node")
 	peerTS := httptest.NewServer(peerServer.Handler())
 	defer peerTS.Close()
 
@@ -250,7 +250,7 @@ func TestResolveEndpoint_PeerFallback(t *testing.T) {
 	os.WriteFile(filepath.Join(stepDir, "remote.txt"), []byte("from-peer"), 0644)
 
 	peerLogger := lagertest.NewTestLogger("peer")
-	peerServer := daemon.NewServer(peerLogger, peerStorage, "peer-node")
+	peerServer := newDaemonServer(t, peerLogger, peerStorage, "peer-node")
 	peerTS := httptest.NewServer(peerServer.Handler())
 	defer peerTS.Close()
 

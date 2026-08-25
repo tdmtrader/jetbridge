@@ -36,7 +36,7 @@ func TestDaemonResolve_CrossNode_PeerFallback(t *testing.T) {
 	}
 
 	loggerA := lagertest.NewTestLogger("server-a")
-	serverA := daemon.NewServer(loggerA, storageA, "node-a")
+	serverA := newDaemonServer(t, loggerA, storageA, "node-a")
 	tsA := httptest.NewServer(serverA.Handler())
 	defer tsA.Close()
 
@@ -45,7 +45,7 @@ func TestDaemonResolve_CrossNode_PeerFallback(t *testing.T) {
 	// Server B: the local daemon that does NOT have the artifact.
 	storageB := t.TempDir()
 	loggerB := lagertest.NewTestLogger("server-b")
-	serverB := daemon.NewServer(loggerB, storageB, "node-b")
+	serverB := newDaemonServer(t, loggerB, storageB, "node-b")
 
 	// Create a fake K8s clientset with an EndpointSlice pointing to server A.
 	ready := true
@@ -187,7 +187,7 @@ func TestDaemonResolve_LocalRegistry_NoPeerQueries(t *testing.T) {
 	// Set up local daemon with artifact registered locally.
 	storagePath := t.TempDir()
 	logger := lagertest.NewTestLogger("local-no-peer")
-	server := daemon.NewServer(logger, storagePath, "test-node")
+	server := newDaemonServer(t, logger, storagePath, "test-node")
 
 	// Wire up peer resolver pointing to the fake peer.
 	ready := true
@@ -249,7 +249,7 @@ func TestMirror_AfterStreamIn_PeerServesAfterProducerDeath(t *testing.T) {
 	// ---- Peer (server B) — should receive the mirrored data. ----
 	storageB := t.TempDir()
 	loggerB := lagertest.NewTestLogger("server-b")
-	serverB := daemon.NewServer(loggerB, storageB, "node-b")
+	serverB := newDaemonServer(t, loggerB, storageB, "node-b")
 	tsB := httptest.NewServer(serverB.Handler())
 	defer tsB.Close()
 
@@ -258,7 +258,7 @@ func TestMirror_AfterStreamIn_PeerServesAfterProducerDeath(t *testing.T) {
 	// ---- Producer (server A) — receives stream-in, mirrors to B. ----
 	storageA := t.TempDir()
 	loggerA := lagertest.NewTestLogger("server-a")
-	serverA := daemon.NewServer(loggerA, storageA, "node-a")
+	serverA := newDaemonServer(t, loggerA, storageA, "node-a")
 
 	// EndpointSlice has B as the only peer. myPodIP=10.0.0.99 ensures
 	// nothing on the slice matches "self" so B isn't accidentally skipped.

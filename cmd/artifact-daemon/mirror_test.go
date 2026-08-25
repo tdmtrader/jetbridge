@@ -527,7 +527,7 @@ func TestMirrorJob_Run_PreservesSubdirsAndMultipleFiles(t *testing.T) {
 	// path (not just "did the bytes get sent").
 	peerStorage := t.TempDir()
 	peerLogger := lagertest.NewTestLogger("peer-rcv")
-	peerServer := NewServer(peerLogger, peerStorage, "peer")
+	peerServer := newServerT(t, peerLogger, peerStorage, "peer")
 	peerHTTP := httptest.NewServer(peerServer.Handler())
 	defer peerHTTP.Close()
 
@@ -800,7 +800,7 @@ func TestMirrorJob_Run_EmptySourceDir_NoPanic(t *testing.T) {
 	src := t.TempDir() // empty
 
 	peerStorage := t.TempDir()
-	peerServer := NewServer(lagertest.NewTestLogger("empty-peer"), peerStorage, "peer")
+	peerServer := newServerT(t, lagertest.NewTestLogger("empty-peer"), peerStorage, "peer")
 	peerHTTP := httptest.NewServer(peerServer.Handler())
 	defer peerHTTP.Close()
 
