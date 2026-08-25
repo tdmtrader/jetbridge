@@ -8,6 +8,10 @@ import (
 )
 
 func evaluate(variablesResolver vars.Variables, in, out any) error {
+	return evaluateWithReferenceExclusion(variablesResolver, in, out, nil)
+}
+
+func evaluateWithReferenceExclusion(variablesResolver vars.Variables, in, out any, excludeReference vars.ReferenceExclusion) error {
 	byteParams, err := json.Marshal(in)
 	if err != nil {
 		return err
@@ -16,7 +20,8 @@ func evaluate(variablesResolver vars.Variables, in, out any) error {
 	tpl := vars.NewTemplate(byteParams)
 
 	bytes, err := tpl.Evaluate(variablesResolver, vars.EvaluateOpts{
-		ExpectAllKeys: true,
+		ExpectAllKeys:    true,
+		ExcludeReference: excludeReference,
 	})
 	if err != nil {
 		return err

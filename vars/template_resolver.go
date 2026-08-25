@@ -16,8 +16,17 @@ func NewTemplateResolver(configPayload []byte, params []Variables) TemplateResol
 }
 
 func (resolver TemplateResolver) Resolve(expectAllKeys bool) ([]byte, error) {
+	return resolver.ResolveWithReferenceExclusion(expectAllKeys, nil)
+}
+
+// ResolveWithReferenceExclusion resolves the payload while leaving every
+// reference matched by excludeReference exactly as written.
+func (resolver TemplateResolver) ResolveWithReferenceExclusion(expectAllKeys bool, excludeReference ReferenceExclusion) ([]byte, error) {
 	tpl := NewTemplate(resolver.configPayload)
-	bytes, err := tpl.Evaluate(NewMultiVars(resolver.params), EvaluateOpts{ExpectAllKeys: expectAllKeys})
+	bytes, err := tpl.Evaluate(NewMultiVars(resolver.params), EvaluateOpts{
+		ExpectAllKeys:    expectAllKeys,
+		ExcludeReference: excludeReference,
+	})
 	if err != nil {
 		return nil, err
 	}

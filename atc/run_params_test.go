@@ -3,6 +3,7 @@ package atc_test
 import (
 	"encoding/json"
 	"errors"
+	"math"
 
 	. "github.com/concourse/concourse/atc"
 	. "github.com/onsi/ginkgo/v2"
@@ -62,6 +63,60 @@ var _ = Describe("Run parameter validation", func() {
 		Entry("wrong type", []ParamSchema{{Name: "dry_run", Type: ParamTypeBool}}, RunParams{"dry_run": "not-a-bool"}, "parameter dry_run must be a bool"),
 		Entry("enum member with a different scalar type", []ParamSchema{{Name: "retries", Type: ParamTypeEnum, Values: []any{1, 2}}}, RunParams{"retries": "2"}, "parameter retries must be one of"),
 	)
+	It("keeps a required parameter required even when the schema also declares a default", func() {
+		// This fails if the default is assigned before the required check, which
+		// silently downgrades `required: true` to optional.
+		_, err := ValidateRunParams([]ParamSchema{
+			{Name: "environment", Type: ParamTypeString, Required: true, Default: "staging"},
+		}, RunParams{})
+		Expect(err).To(MatchError(ContainSubstring("parameter environment is required")))
+	})
+
+	It("treats an explicit null as absent rather than as a supplied value", func() {
+		// This fails if `{"environment": null}` satisfies a required parameter.
+		_, err := ValidateRunParams([]ParamSchema{
+			{Name: "environment", Type: ParamTypeString, Required: true},
+		}, RunParams{"environment": nil})
+		Expect(err).To(MatchError(ContainSubstring("parameter environment is required")))
+	})
+
+	It("reports every unknown parameter in a stable order", func() {
+		// This fails if the message depends on Go's randomized map iteration
+		// order, so the same request produces different 400 bodies.
+		for i := 0; i < 20; i++ {
+			_, err := ValidateRunParams([]ParamSchema{{Name: "environment", Type: ParamTypeString}}, RunParams{
+				"zebra":  "x",
+				"alpha":  "y",
+				"middle": "z",
+			})
+			Expect(err).To(MatchError(ContainSubstring("unknown parameter alpha, middle, zebra")))
+		}
+	})
+
+	DescribeTable("rejects numbers outside the safe binary64 integer domain",
+		func(supplied any) {
+			// This fails if a value that cannot survive the JSON round trip
+			// through the API, the database and interpolation is admitted.
+			_, err := ValidateRunParams([]ParamSchema{{Name: "count", Type: ParamTypeNumber}}, RunParams{"count": supplied})
+			Expect(err).To(MatchError(ContainSubstring("parameter count must be")))
+		},
+		Entry("NaN", math.NaN()),
+		Entry("positive infinity", math.Inf(1)),
+		Entry("above the safe integer range", float64(1<<53)+2),
+		Entry("below the safe integer range", -(float64(1<<53) + 2)),
+		Entry("NaN as a supplied string", "NaN"),
+		Entry("over-magnitude as a supplied string", "9007199254740993"),
+	)
+
+	It("folds negative zero", func() {
+		// This fails if -0 and 0 are stored as distinct parameter values, so
+		// two identical runs produce different canonical configs.
+		result, err := ValidateRunParams([]ParamSchema{{Name: "offset", Type: ParamTypeNumber}}, RunParams{
+			"offset": math.Copysign(0, -1),
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(math.Signbit(result["offset"].(float64))).To(BeFalse())
+	})
 })
 
 var _ = Describe("Template parameter schema", func() {

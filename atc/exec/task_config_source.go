@@ -213,9 +213,10 @@ func (configSource OverrideParamsConfigSource) Warnings() []string {
 
 // InterpolateTemplateConfigSource represents a config source interpolated by template vars
 type InterpolateTemplateConfigSource struct {
-	ConfigSource  TaskConfigSource
-	Vars          []vars.Variables
-	ExpectAllKeys bool
+	ConfigSource     TaskConfigSource
+	Vars             []vars.Variables
+	ExpectAllKeys    bool
+	ExcludeReference vars.ReferenceExclusion
 }
 
 // FetchConfig returns the interpolated configuration
@@ -231,7 +232,7 @@ func (configSource InterpolateTemplateConfigSource) FetchConfig(ctx context.Cont
 	}
 
 	// process task config using the provided variables
-	byteConfig, err = vars.NewTemplateResolver(byteConfig, configSource.Vars).Resolve(configSource.ExpectAllKeys)
+	byteConfig, err = vars.NewTemplateResolver(byteConfig, configSource.Vars).ResolveWithReferenceExclusion(configSource.ExpectAllKeys, configSource.ExcludeReference)
 	if err != nil {
 		return atc.TaskConfig{}, fmt.Errorf("failed to interpolate task config: %s", err)
 	}

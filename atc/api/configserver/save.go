@@ -130,7 +130,11 @@ func (s *Server) SaveConfig(w http.ResponseWriter, r *http.Request) {
 	if checkCredentials {
 		variables := creds.NewVariables(s.secretManager, creds.SecretLookupParams{Team: teamName, Pipeline: pipelineName}, false)
 
-		errs := validateCredParams(variables, config, session)
+		// A template's declared parameters and run identity are supplied per
+		// run, not by the credential manager. Without the exclusion, every
+		// ((param)) in a template is reported as a missing credential and
+		// `fly set-pipeline --check-creds` fails with 400.
+		errs := validateCredParams(variables, config, session, config.ParamReferenceExclusion())
 		if errs != nil {
 			HandleBadRequest(w, fmt.Sprintf("credential validation failed\n\n%s", errs))
 			return
@@ -176,23 +180,28 @@ func (s *Server) SaveConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 // Simply validate that the credentials exist; don't do anything with the actual secrets
-func validateCredParams(credMgrVars vars.Variables, config atc.Config, session lager.Logger) error {
+func validateCredParams(
+	credMgrVars vars.Variables,
+	config atc.Config,
+	session lager.Logger,
+	excludeReference vars.ReferenceExclusion,
+) error {
 	var errs error
 
 	for _, resourceType := range config.ResourceTypes {
-		_, err := creds.NewSource(credMgrVars, resourceType.Source).Evaluate()
+		_, err := creds.NewSource(credMgrVars, resourceType.Source).EvaluateWithReferenceExclusion(excludeReference)
 		if err != nil {
 			errs = multierror.Append(errs, err)
 		}
 	}
 
 	for _, resource := range config.Resources {
-		_, err := creds.NewSource(credMgrVars, resource.Source).Evaluate()
+		_, err := creds.NewSource(credMgrVars, resource.Source).EvaluateWithReferenceExclusion(excludeReference)
 		if err != nil {
 			errs = multierror.Append(errs, err)
 		}
 
-		_, err = creds.NewString(credMgrVars, resource.WebhookToken).Evaluate()
+		_, err = creds.NewString(credMgrVars, resource.WebhookToken).EvaluateWithReferenceExclusion(excludeReference)
 		if err != nil {
 			errs = multierror.Append(errs, err)
 		}
@@ -201,12 +210,12 @@ func validateCredParams(credMgrVars vars.Variables, config atc.Config, session l
 	for _, job := range config.Jobs {
 		_ = job.StepConfig().Visit(atc.StepRecursor{
 			OnTask: func(step *atc.TaskStep) error {
-				err := creds.NewTaskEnvValidator(credMgrVars, step.Params).Validate()
+				err := creds.NewTaskEnvValidator(credMgrVars, step.Params).ValidateWithReferenceExclusion(excludeReference)
 				if err != nil {
 					errs = multierror.Append(errs, err)
 				}
 
-				err = creds.NewTaskVarsValidator(credMgrVars, step.Vars).Validate()
+				err = creds.NewTaskVarsValidator(credMgrVars, step.Vars).ValidateWithReferenceExclusion(excludeReference)
 				if err != nil {
 					errs = multierror.Append(errs, err)
 				}
@@ -217,9 +226,10 @@ func validateCredParams(credMgrVars vars.Variables, config atc.Config, session l
 					embeddedTaskVars := []vars.Variables{credMgrVars}
 					taskConfigSource = exec.StaticConfigSource{Config: step.Config}
 					taskConfigSource = exec.InterpolateTemplateConfigSource{
-						ConfigSource:  taskConfigSource,
-						Vars:          embeddedTaskVars,
-						ExpectAllKeys: true,
+						ConfigSource:     taskConfigSource,
+						Vars:             embeddedTaskVars,
+						ExpectAllKeys:    true,
+						ExcludeReference: excludeReference,
 					}
 					taskConfigSource = exec.ValidatingConfigSource{ConfigSource: taskConfigSource}
 					_, err = taskConfigSource.FetchConfig(context.TODO(), session, nil)

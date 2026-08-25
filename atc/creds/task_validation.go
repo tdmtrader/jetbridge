@@ -18,8 +18,14 @@ func NewTaskEnvValidator(variables vars.Variables, params atc.TaskEnv) TaskEnvVa
 }
 
 func (s TaskEnvValidator) Validate() error {
+	return s.ValidateWithReferenceExclusion(nil)
+}
+
+// ValidateWithReferenceExclusion validates while leaving every reference
+// matched by excludeReference in place.
+func (s TaskEnvValidator) ValidateWithReferenceExclusion(excludeReference vars.ReferenceExclusion) error {
 	var params atc.TaskEnv
-	return evaluate(s.variablesResolver, s.rawTaskEnv, &params)
+	return evaluateWithReferenceExclusion(s.variablesResolver, s.rawTaskEnv, &params, excludeReference)
 }
 
 type TaskVarsValidator struct {
@@ -35,6 +41,12 @@ func NewTaskVarsValidator(variables vars.Variables, taskVars atc.Params) TaskVar
 }
 
 func (s TaskVarsValidator) Validate() error {
+	return s.ValidateWithReferenceExclusion(nil)
+}
+
+// ValidateWithReferenceExclusion validates while leaving every reference
+// matched by excludeReference in place.
+func (s TaskVarsValidator) ValidateWithReferenceExclusion(excludeReference vars.ReferenceExclusion) error {
 	var params atc.Params
-	return evaluate(s.variablesResolver, s.rawTaskVars, &params)
+	return evaluateWithReferenceExclusion(s.variablesResolver, s.rawTaskVars, &params, excludeReference)
 }

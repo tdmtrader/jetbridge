@@ -86,7 +86,14 @@ func (yamlTemplate YamlTemplateWithParams) Evaluate(strict bool) ([]byte, error)
 		params = append(params, staticVars)
 	}
 
-	evaluatedConfig, err := vars.NewTemplateResolver(config, params).Resolve(false)
+	// A pipeline template's declared parameters and run identity are filled in
+	// per run by the ATC. Excluding them stops a locally supplied -v/-l var of
+	// the same name from baking a constant over a declared parameter, which no
+	// run could then ever influence. Non-template payloads get a nil exclusion
+	// and behave exactly as before.
+	excludeReference := atc.ParamReferenceExclusionFromPayload(config)
+
+	evaluatedConfig, err := vars.NewTemplateResolver(config, params).ResolveWithReferenceExclusion(false, excludeReference)
 	if err != nil {
 		return nil, err
 	}

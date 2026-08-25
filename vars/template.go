@@ -18,6 +18,34 @@ type Template struct {
 type EvaluateOpts struct {
 	ExpectAllKeys     bool
 	ExpectAllVarsUsed bool
+
+	// ExcludeReference, when non-nil, decides whether an already-parsed
+	// reference must be left in place rather than interpolated. Excluded
+	// references are never looked up and take no part in missing- or
+	// visited-variable accounting.
+	ExcludeReference ReferenceExclusion
+}
+
+// ReferenceExclusion reports whether a reference should be left untouched by
+// interpolation.
+type ReferenceExclusion func(Reference) bool
+
+// NewExactReferenceExclusion builds an exclusion predicate that matches only
+// exact, unqualified references: ((name)) is excluded, while ((source:name))
+// and ((name.field)) remain ordinary vars. The names are copied, so callers
+// may reuse or mutate their input afterwards.
+func NewExactReferenceExclusion(names []string) ReferenceExclusion {
+	excluded := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		excluded[name] = struct{}{}
+	}
+	return func(reference Reference) bool {
+		if reference.Source != "" || len(reference.Fields) != 0 {
+			return false
+		}
+		_, found := excluded[reference.Path]
+		return found
+	}
 }
 
 func NewTemplate(bytes []byte) Template {
@@ -49,7 +77,7 @@ func (t Template) Evaluate(vars Variables, opts EvaluateOpts) ([]byte, error) {
 		return []byte{}, err
 	}
 
-	obj, err = t.interpolateRoot(obj, newVarsTracker(vars, opts.ExpectAllKeys, opts.ExpectAllVarsUsed))
+	obj, err = t.interpolateRoot(obj, newVarsTracker(vars, opts.ExpectAllKeys, opts.ExpectAllVarsUsed, opts.ExcludeReference))
 	if err != nil {
 		return []byte{}, err
 	}
@@ -108,7 +136,15 @@ func (i interpolator) Interpolate(node any, tracker varsTracker) (any, error) {
 
 	case string:
 		for _, name := range i.extractVarNames(typedNode) {
-			foundVal, found, err := tracker.Get(name)
+			reference, err := ParseReference(name)
+			if err != nil {
+				return nil, err
+			}
+			if tracker.Excludes(reference) {
+				continue
+			}
+
+			foundVal, found, err := tracker.GetReference(reference)
 			if err != nil {
 				return nil, err
 			}
@@ -120,7 +156,7 @@ func (i interpolator) Interpolate(node any, tracker varsTracker) (any, error) {
 				}
 
 				switch foundVal.(type) {
-				case string, int, int16, int32, int64, uint, uint16, uint32, uint64, json.Number:
+				case string, bool, int, int16, int32, int64, uint, uint16, uint32, uint64, json.Number:
 					foundValStr := fmt.Sprintf("%v", foundVal)
 					typedNode = strings.ReplaceAll(typedNode, fmt.Sprintf("((%s))", name), foundValStr)
 				default:
@@ -151,32 +187,32 @@ func (i interpolator) extractVarNames(value string) []string {
 type varsTracker struct {
 	vars Variables
 
-	expectAllFound bool
-	expectAllUsed  bool
+	expectAllFound   bool
+	expectAllUsed    bool
+	excludeReference ReferenceExclusion
 
 	missing map[string]struct{}
 	visited map[string]struct{} // track all var names that were accessed
 }
 
-func newVarsTracker(vars Variables, expectAllFound, expectAllUsed bool) varsTracker {
+func newVarsTracker(vars Variables, expectAllFound, expectAllUsed bool, excludeReference ReferenceExclusion) varsTracker {
 	return varsTracker{
-		vars:           vars,
-		expectAllFound: expectAllFound,
-		expectAllUsed:  expectAllUsed,
-		missing:        map[string]struct{}{},
-		visited:        map[string]struct{}{},
+		vars:             vars,
+		expectAllFound:   expectAllFound,
+		expectAllUsed:    expectAllUsed,
+		excludeReference: excludeReference,
+		missing:          map[string]struct{}{},
+		visited:          map[string]struct{}{},
 	}
 }
 
-// Get value of a var. Name can be the following formats: 1) 'foo', where foo
-// is var name; 2) 'foo:bar', where foo is var source name, and bar is var name;
-// 3) '.:foo', where . means a local var, foo is var name.
-func (t varsTracker) Get(varName string) (any, bool, error) {
-	varRef, err := ParseReference(varName)
-	if err != nil {
-		return nil, false, err
-	}
+func (t varsTracker) Excludes(varRef Reference) bool {
+	return t.excludeReference != nil && t.excludeReference(varRef)
+}
 
+// GetReference gets the value of an already-parsed var reference, recording
+// it as visited and, when absent, as missing.
+func (t varsTracker) GetReference(varRef Reference) (any, bool, error) {
 	t.visited[identifier(varRef)] = struct{}{}
 
 	val, found, err := t.vars.Get(varRef)
