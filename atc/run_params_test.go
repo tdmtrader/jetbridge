@@ -103,7 +103,7 @@ var _ = Describe("Run parameter validation", func() {
 		Entry("NaN", math.NaN()),
 		Entry("positive infinity", math.Inf(1)),
 		Entry("above the safe integer range", float64(1<<53)+2),
-		Entry("below the safe integer range", -(float64(1<<53) + 2)),
+		Entry("below the safe integer range", -(float64(1<<53)+2)),
 		Entry("NaN as a supplied string", "NaN"),
 		Entry("over-magnitude as a supplied string", "9007199254740993"),
 	)

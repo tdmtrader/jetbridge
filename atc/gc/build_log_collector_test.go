@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3/lagerctx"
@@ -230,6 +231,38 @@ var _ = Describe("BuildLogCollector", func() {
 			jobRetention: atc.JobConfig{BuildLogRetention: &atc.BuildLogRetention{Builds: 1}},
 			calculator:   NewBuildLogRetentionCalculator(0, 0, 0, 0),
 			pausedJob:    true,
+			builds: []retentionBuild{
+				{name: "b1", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 49 * time.Hour},
+				{name: "b2", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 23 * time.Hour},
+			},
+			expectedDeleted:     []string{},
+			expectedFirstLogged: "b1",
+		}), // A job may declare min_success_builds without declaring builds:
+		// configvalidate's min_success_builds > builds check is gated on
+		// builds > 0, so this config is accepted by the config API and by the
+		// set_pipeline step, and the count then comes from
+		// --default-build-logs-to-retain. Unbounded, the min-succeeded arm retains
+		// b3 and b2 WITHOUT appending either to the keep list, so the trailing
+		// over-retention correction computes delta=1 against an empty list and
+		// evaluates candidateBuildIDsToKeep[-1].
+		Entry("min-succeeded above the default budget does not run off the keep list", retentionScenario{
+			jobRetention: atc.JobConfig{BuildLogRetention: &atc.BuildLogRetention{MinimumSucceededBuilds: 2}},
+			calculator:   NewBuildLogRetentionCalculator(1, 0, 0, 0),
+			builds: []retentionBuild{
+				{name: "b1", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 2 * time.Hour},
+				{name: "b2", status: db.BuildStatusSucceeded, completed: true, drained: true, endAgo: 2 * time.Hour},
+				{name: "b3", status: db.BuildStatusSucceeded, completed: true, drained: true, endAgo: 2 * time.Hour},
+			},
+			expectedDeleted:     []string{"b1", "b2"},
+			expectedFirstLogged: "b3",
+		}),
+		// An absurd --default-days-to-retain-build-logs truncates from uint64 to
+		// int as -1, and AddDate(0, 0, -1) is in the past for every finished
+		// build, so the days arm deletes the job's whole log history with no
+		// panic and no error. Bounded, the same flag retains everything.
+		Entry("an absurd days default retains rather than wiping the history", retentionScenario{
+			jobRetention: atc.JobConfig{},
+			calculator:   NewBuildLogRetentionCalculator(0, 0, math.MaxUint64, 0),
 			builds: []retentionBuild{
 				{name: "b1", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 49 * time.Hour},
 				{name: "b2", status: db.BuildStatusFailed, completed: true, drained: true, endAgo: 23 * time.Hour},

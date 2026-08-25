@@ -2864,7 +2864,7 @@ var _ = Describe("Template parameter schema and run retention configuration", fu
 			atc.ParamSchema{Name: "env", Type: atc.ParamTypeString},
 		), "parameter name env is duplicated"),
 		Entry("reserved run", atc.PipelineRef{Name: "template"}, templateWith(atc.ParamSchema{Name: "run", Type: atc.ParamTypeString}), "parameter name run is reserved"),
-		Entry("reserved run_id", atc.PipelineRef{Name: "template"}, templateWith(atc.ParamSchema{Name: "run_id", Type: atc.ParamTypeString}), "parameter name run_id is reserved"),		Entry("dotted name", atc.PipelineRef{Name: "template"}, templateWith(atc.ParamSchema{Name: "my.param", Type: atc.ParamTypeString}), "parameter name my.param must match"),
+		Entry("reserved run_id", atc.PipelineRef{Name: "template"}, templateWith(atc.ParamSchema{Name: "run_id", Type: atc.ParamTypeString}), "parameter name run_id is reserved"), Entry("dotted name", atc.PipelineRef{Name: "template"}, templateWith(atc.ParamSchema{Name: "my.param", Type: atc.ParamTypeString}), "parameter name my.param must match"),
 		Entry("hyphenated name", atc.PipelineRef{Name: "template"}, templateWith(atc.ParamSchema{Name: "my-param", Type: atc.ParamTypeString}), "parameter name my-param must match"),
 		Entry("leading digit name", atc.PipelineRef{Name: "template"}, templateWith(atc.ParamSchema{Name: "1st", Type: atc.ParamTypeString}), "parameter name 1st must match"),
 		Entry("underscored name is fine", atc.PipelineRef{Name: "template"}, templateWith(atc.ParamSchema{Name: "_my_param2", Type: atc.ParamTypeString}), ""),

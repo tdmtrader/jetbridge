@@ -15,7 +15,7 @@ var _ = Describe("Pipeline run shared query scanners", func() {
 		// disagree after the run presentation columns are dropped, and if
 		// TaskCacheIdentity stops resolving the base template lazily.
 		template, _, err := defaultTeam.SavePipeline(atc.PipelineRef{Name: "scan-template"}, atc.Config{
-			Template:      true,
+			Template: true,
 			// The job must consume the resource: Concourse refuses a config
 			// whose resource no job references ("resource 'x' is not used").
 			Jobs: atc.JobConfigs{{
