@@ -82,8 +82,6 @@ var prototypesQuery = psql.Select(
 	"p.name",
 	"p.instance_vars",
 	"p.pipeline_run_id",
-	"pr.template_pipeline_id",
-	"base.name",
 	"t.id",
 	"t.name",
 	"pt.resource_config_id",
@@ -94,8 +92,6 @@ var prototypesQuery = psql.Select(
 	From("prototypes pt").
 	Join("pipelines p ON p.id = pt.pipeline_id").
 	Join("teams t ON t.id = p.team_id").
-	LeftJoin("pipeline_runs pr ON p.pipeline_run_id = pr.id").
-	LeftJoin("pipelines base ON pr.template_pipeline_id = base.id").
 	LeftJoin("resource_configs c ON c.id = pt.resource_config_id").
 	LeftJoin("resource_config_scopes ro ON ro.resource_config_id = c.id").
 	LeftJoin(`LATERAL (
@@ -257,12 +253,11 @@ func scanPrototype(p *prototype, row scannable) error {
 		rcsID, version, nonce                sql.NullString
 		lastCheckStartTime, lastCheckEndTime sql.NullTime
 		pipelineInstanceVars                 sql.NullString
-		pipelineRunID, basePipelineID        sql.NullInt64
-		basePipelineName                     sql.NullString
+		pipelineRunID                        sql.NullInt64
 		resourceConfigID                     sql.NullInt64
 	)
 
-	err := row.Scan(&p.id, &p.pipelineID, &p.name, &p.type_, &configJSON, &version, &nonce, &p.pipelineName, &pipelineInstanceVars, &pipelineRunID, &basePipelineID, &basePipelineName, &p.teamID, &p.teamName, &resourceConfigID, &rcsID, &lastCheckStartTime, &lastCheckEndTime)
+	err := row.Scan(&p.id, &p.pipelineID, &p.name, &p.type_, &configJSON, &version, &nonce, &p.pipelineName, &pipelineInstanceVars, &pipelineRunID, &p.teamID, &p.teamName, &resourceConfigID, &rcsID, &lastCheckStartTime, &lastCheckEndTime)
 	if err != nil {
 		return err
 	}
@@ -270,8 +265,6 @@ func scanPrototype(p *prototype, row scannable) error {
 	p.lastCheckStartTime = lastCheckStartTime.Time
 	p.lastCheckEndTime = lastCheckEndTime.Time
 	p.pipelineRunID = int(pipelineRunID.Int64)
-	p.basePipelineID = int(basePipelineID.Int64)
-	p.basePipelineName = basePipelineName.String
 
 	if version.Valid {
 		err = json.Unmarshal([]byte(version.String), &p.version)

@@ -137,14 +137,10 @@ var jobsQuery = psql.Select(
 	"j.paused_at",
 	"j.run_expected",
 	"j.run_policy_key",
-	"p.pipeline_run_id",
-	"pr.template_pipeline_id",
-	"base.name").
+	"p.pipeline_run_id").
 	From("jobs j").
 	LeftJoin("pipelines p ON j.pipeline_id = p.id").
-	LeftJoin("teams t ON p.team_id = t.id").
-	LeftJoin("pipeline_runs pr ON p.pipeline_run_id = pr.id").
-	LeftJoin("pipelines base ON pr.template_pipeline_id = base.id")
+	LeftJoin("teams t ON p.team_id = t.id")
 
 type FirstLoggedBuildIDDecreasedError struct {
 	Job   string
@@ -249,20 +245,26 @@ func (j *job) DisableManualTrigger() bool       { return j.disableManualTrigger 
 func (j *job) RunExpected() bool                { return j.runExpected }
 func (j *job) RunPolicyKey() string             { return j.runPolicyKey }
 
+// TaskCacheIdentity resolves the base template lazily rather than carrying it
+// inline on jobsQuery. The only caller is ClearTaskCache (fly
+// clear-task-cache), which is cold, and the two remaining branches already
+// loaded the pipeline anyway -- so keeping two LEFT JOINs on the scheduler's
+// hottest query to serve it was the wrong trade.
 func (j *job) TaskCacheIdentity() (atc.TaskCacheIdentity, error) {
-	if j.basePipelineID != 0 {
-		return atc.TaskCacheIdentity{TeamID: j.teamID, TemplatePipelineID: j.basePipelineID, RunJobName: j.name}, nil
-	}
-
 	pipeline, found, err := j.Pipeline()
 	if err != nil {
 		return atc.TaskCacheIdentity{}, err
 	}
-	if found && pipeline.Template() {
-		if len(vars.NewTemplate([]byte(j.name)).ExtraVarNames()) != 0 {
-			return atc.TaskCacheIdentity{}, TaskCacheIdentityConflictError{JobName: j.name}
+	if found {
+		if basePipelineID := pipeline.BasePipelineID(); basePipelineID != 0 {
+			return atc.TaskCacheIdentity{TeamID: j.teamID, TemplatePipelineID: basePipelineID, RunJobName: j.name}, nil
 		}
-		return atc.TaskCacheIdentity{TeamID: j.teamID, TemplatePipelineID: j.pipelineID, RunJobName: j.name}, nil
+		if pipeline.Template() {
+			if len(vars.NewTemplate([]byte(j.name)).ExtraVarNames()) != 0 {
+				return atc.TaskCacheIdentity{}, TaskCacheIdentityConflictError{JobName: j.name}
+			}
+			return atc.TaskCacheIdentity{TeamID: j.teamID, TemplatePipelineID: j.pipelineID, RunJobName: j.name}, nil
+		}
 	}
 
 	return atc.TaskCacheIdentity{JobID: j.id}, nil
@@ -1503,12 +1505,10 @@ func scanJob(j *job, row scannable) error {
 		pausedAt             sql.NullTime
 		runPolicyKey         sql.NullString
 		pipelineRunID        sql.NullInt64
-		basePipelineID       sql.NullInt64
-		basePipelineName     sql.NullString
 	)
 
 	m := pgtype.NewMap()
-	err := row.Scan(&j.id, &j.name, &config, &j.paused, &j.public, &j.firstLoggedBuildID, &j.pipelineID, &j.pipelineName, &pipelineInstanceVars, &j.teamID, &j.teamName, &nonce, m.SQLScanner(&j.tags), &j.hasNewInputs, &j.scheduleRequestedTime, &j.maxInFlight, &j.disableManualTrigger, &pausedBy, &pausedAt, &j.runExpected, &runPolicyKey, &pipelineRunID, &basePipelineID, &basePipelineName)
+	err := row.Scan(&j.id, &j.name, &config, &j.paused, &j.public, &j.firstLoggedBuildID, &j.pipelineID, &j.pipelineName, &pipelineInstanceVars, &j.teamID, &j.teamName, &nonce, m.SQLScanner(&j.tags), &j.hasNewInputs, &j.scheduleRequestedTime, &j.maxInFlight, &j.disableManualTrigger, &pausedBy, &pausedAt, &j.runExpected, &runPolicyKey, &pipelineRunID)
 	if err != nil {
 		return err
 	}
@@ -1537,8 +1537,6 @@ func scanJob(j *job, row scannable) error {
 	}
 	j.runPolicyKey = runPolicyKey.String
 	j.pipelineRunID = int(pipelineRunID.Int64)
-	j.basePipelineID = int(basePipelineID.Int64)
-	j.basePipelineName = basePipelineName.String
 
 	return nil
 }

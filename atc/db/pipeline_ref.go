@@ -64,6 +64,11 @@ func (r pipelineRef) PipelineRef() atc.PipelineRef {
 	}
 }
 
+// BasePipelineID and BasePipelineRef are only populated for pipeline and build
+// -- the two queries that still carry run identity inline (pipelinesQuery,
+// buildsQuery). resource, resourceType, prototype and job deliberately do NOT
+// join pipeline_runs, so they report a zero base pipeline; resolve the base
+// through Pipeline() instead, as job.TaskCacheIdentity does.
 func (r pipelineRef) PipelineRunID() (int, bool) { return r.pipelineRunID, r.pipelineRunID != 0 }
 func (r pipelineRef) BasePipelineID() int        { return r.basePipelineID }
 func (r pipelineRef) BasePipelineRef() (atc.PipelineRef, bool) {
