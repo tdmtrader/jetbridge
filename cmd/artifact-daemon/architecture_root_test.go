@@ -158,15 +158,16 @@ func TestArchitecture_NoAmbientWriteThroughAJoinedKey(t *testing.T) {
 	// which R12 requires to stay absolute, and whose writes go through a
 	// handle. Each is here because its containment comes from somewhere the
 	// scanner cannot see.
+	//
+	// Kept MINIMAL on purpose. The first version listed seven functions and the
+	// liveness assertion below showed five of them never tripped the guard at
+	// all — pre-emptive exemptions for code that did not need them, which is
+	// both noise and a mask: a future regression in one of those five would
+	// have been silently excused by an entry written before the regression
+	// existed. An exemption is only legitimate once the scan actually flags the
+	// thing.
 	known := map[string]string{
-		"server.go:Server.handleStreamIn":    "joins dest for the read/sweep guard key; writes go through stepsRoot",
-		"server.go:Server.handleGetArtifact": "joins for tarDirectory's walk and the guard; reads go through s.root or a validated registry path",
-		"server.go:Server.artifactPath":      "returns the absolute form for the guard and tarDirectory; performs no filesystem call",
-		"server.go:Server.resolveOne":        "registry and copyArtifact paths stay absolute until their own tracks land",
-		"server.go:Server.copyArtifact":      "split out of this track; dest is validated by validateContainedPath",
-		"mirror.go:Mirror.run":               "routed through locateArtifact; Mirror is not on a handle in this track",
-		"mirror.go:Mirror.evacuateOne":       "routed through locateArtifact; Mirror is not on a handle in this track",
-		"sweeper.go:Sweeper.sweep":           "joins are CONSTANT suffixes (steps, artifacts) and os.ReadDir-derived names — no untrusted input reaches them. Deliberately not migrated: R12 names ScanHostPath as a coin flip whose losing side is a SILENT read/sweep guard failure, and uniformity is not worth that trade",
+		"sweeper.go:Sweeper.sweep": "joins are CONSTANT suffixes (steps, artifacts) and os.ReadDir-derived names — no untrusted input reaches them. Deliberately not migrated: R12 names ScanHostPath as a coin flip whose losing side is a SILENT read/sweep guard failure, and uniformity is not worth that trade",
 	}
 
 	mutating := map[string]bool{
@@ -244,11 +245,14 @@ func TestArchitecture_NoAmbientWriteThroughAJoinedKey(t *testing.T) {
 		t.Fatal("guard found no storage-path joins at all — it is inert")
 	}
 
+	matched := map[string]bool{}
+
 	for where, s := range found {
 		if !s.joins || !s.writes {
 			continue
 		}
 		if reason, ok := known[where]; ok {
+			matched[where] = true
 			t.Logf("known: %s — %s", where, reason)
 			continue
 		}
@@ -256,5 +260,20 @@ func TestArchitecture_NoAmbientWriteThroughAJoinedKey(t *testing.T) {
 			"Either route the write through a handle, or add it above with the reason its "+
 			"containment comes from elsewhere.", where)
 	}
-	t.Logf("scanned %d functions joining a storage path", scanned)
+	// The map must be falsifiable too, or it is an allowlist in costume.
+	//
+	// An entry that matches nothing is a permanent exemption no scan can
+	// retire — and this guard acquired one within a single commit, when
+	// artifactPath was deleted in the same change that listed it. The
+	// scanned==0 check above protects the scan; this protects the map.
+	for where := range known {
+		if !matched[where] {
+			t.Errorf("known entry %q matched nothing — the function was renamed, moved or "+
+				"deleted, and the exemption is now stale. Remove it; a reason that guards "+
+				"nothing is an allowlist in costume.", where)
+		}
+	}
+
+	t.Logf("scanned %d functions joining a storage path; %d known entries all live",
+		scanned, len(known))
 }

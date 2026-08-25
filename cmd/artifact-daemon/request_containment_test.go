@@ -16,7 +16,9 @@ package main_test
 import (
 	"archive/tar"
 	"bytes"
+	"code.cloudfoundry.org/lager/v3/lagertest"
 	"encoding/json"
+	daemon "github.com/concourse/concourse/cmd/artifact-daemon"
 	"io"
 	"net/http"
 	"os"
@@ -993,5 +995,61 @@ func TestRequestContainment_FileValuedRegistryAliasIsServed(t *testing.T) {
 	}
 	if !bytes.Contains(got, []byte("LEGACY-BYTES")) {
 		t.Errorf("alias served wrong content: %q", got)
+	}
+}
+
+// AC10 — aliases.json is unchanged by this track.
+//
+// Its on-disk format must be byte-identical before and after for the same
+// sequence of registrations. The representation change that would alter it was
+// split into its own track, so "unchanged" is the assertion here — and this
+// track's whole thesis is that an unasserted claim is what keeps failing.
+func TestRequestContainment_AliasStoreFormatUnchanged(t *testing.T) {
+	register := func(t *testing.T) []byte {
+		t.Helper()
+		ts, storagePath, srv := setupServerWithRegistry(t)
+		// Persistence is wired in main.go, not setupServer. Attaching the real
+		// AliasStore is the point: AC10 is about the ON-DISK format, so a test
+		// that never writes the file would assert nothing.
+		srv.Registry().SetAliasStore(daemon.NewAliasStore(lagertest.NewTestLogger("alias"), storagePath))
+
+		for _, k := range []string{"vol-a", "vol-b", "steps-like"} {
+			dir := filepath.Join(storagePath, "reg", k)
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			body, _ := json.Marshal(map[string]string{"key": k, "local_path": dir})
+			resp, err := http.Post(ts.URL+"/register", "application/json", bytes.NewReader(body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusCreated {
+				t.Fatalf("register %s -> %d", k, resp.StatusCode)
+			}
+		}
+
+		data, err := os.ReadFile(filepath.Join(storagePath, "aliases.json"))
+		if err != nil {
+			t.Fatalf("aliases.json not written: %v", err)
+		}
+		// Normalise the per-test temp root out so two runs are comparable.
+		return bytes.ReplaceAll(data, []byte(storagePath), []byte("<ROOT>"))
+	}
+
+	first := register(t)
+	second := register(t)
+
+	if !bytes.Equal(first, second) {
+		t.Errorf("aliases.json is not stable across identical registration sequences:\n %s\n %s",
+			first, second)
+	}
+
+	// The property this track must preserve: values are still ABSOLUTE. The
+	// registry-representation track changes this deliberately; nothing here
+	// should.
+	if !bytes.Contains(first, []byte("<ROOT>/reg/vol-a")) {
+		t.Errorf("aliases.json no longer stores absolute paths — the representation changed, "+
+			"which belongs to the registry track, not this one. Got: %s", first)
 	}
 }
