@@ -413,13 +413,16 @@ func (r *resourceType) ClearVersions() (int64, error) {
 		}).
 		RunWith(r.conn).
 		Exec()
+	if err != nil {
+		return 0, err
+	}
 
 	rowsDeleted, err := results.RowsAffected()
 	if err != nil {
 		return 0, err
 	}
 
-	return rowsDeleted, err
+	return rowsDeleted, nil
 }
 
 func (r *resourceType) SharedResourcesAndTypes() (atc.ResourcesAndTypes, error) {

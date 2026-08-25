@@ -1,6 +1,8 @@
 package db_test
 
 import (
+	"context"
+
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	. "github.com/onsi/ginkgo/v2"
@@ -76,5 +78,50 @@ var _ = Describe("Resource Factory", func() {
 				Expect(visibleResources[1].TeamName()).To(Equal("other-team"))
 			})
 		})
+	})
+})
+var _ = Describe("Resource Factory run payload exclusion", func() {
+	var resourceFactory db.ResourceFactory
+
+	resourceNames := func(resources []db.Resource) []string {
+		names := make([]string, len(resources))
+		for i, resource := range resources {
+			names[i] = resource.Name()
+		}
+		return names
+	}
+
+	BeforeEach(func() {
+		resourceFactory = db.NewResourceFactory(dbConn, lockFactory)
+
+		template, _, err := defaultTeam.SavePipeline(atc.PipelineRef{Name: "run-template"}, atc.Config{
+			Template:  true,
+			Params:    []atc.ParamSchema{{Name: "value", Type: atc.ParamTypeString, Required: true}},
+			Resources: atc.ResourceConfigs{{Name: "input-((value))", Type: "some-base-resource-type", Source: atc.Source{"repository": "example"}}},
+			Jobs: atc.JobConfigs{
+				{Name: "entry", PlanSequence: []atc.Step{{Config: &atc.GetStep{Name: "input-((value))"}}}},
+			},
+		}, db.ConfigVersion(0), false)
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = db.NewPipelineRunFactory(dbConn, lockFactory).CreateRun(
+			context.Background(), template, db.RunParams{Vars: atc.RunParams{"value": "one"}}, "creator")
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("keeps run payload resources out of AllResources", func() {
+		// This fails if GET /api/v1/resources scales with run count instead of pipeline count.
+		resources, err := resourceFactory.AllResources()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resourceNames(resources)).To(ContainElement("input-((value))"))
+		Expect(resourceNames(resources)).NotTo(ContainElement("input-one"))
+	})
+
+	It("keeps run payload resources out of VisibleResources", func() {
+		// This fails if the exclusion is applied to only one of the two enumerations.
+		resources, err := resourceFactory.VisibleResources([]string{"default-team"})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resourceNames(resources)).To(ContainElement("input-((value))"))
+		Expect(resourceNames(resources)).NotTo(ContainElement("input-one"))
 	})
 })

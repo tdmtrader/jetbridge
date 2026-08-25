@@ -44,6 +44,14 @@ func (r *resourceFactory) Resource(resourceID int) (Resource, bool, error) {
 }
 
 func (r *resourceFactory) VisibleResources(teamNames []string) ([]Resource, error) {
+	// Run payload pipelines are excluded from both cluster-wide resource
+	// enumerations so that GET /api/v1/resources -- which is unpaginated --
+	// scales with #templates + #regular pipelines, never #runs. This is NOT
+	// interchangeable with `p.template = false`: a template shell never runs,
+	// so the scheduling and checking surfaces exclude it by that column, but a
+	// run payload DOES run and those surfaces must keep it (check_factory.go
+	// :173, :218). Use pipeline_run_id only where the response is a list a
+	// human reads.
 	rows, err := resourcesQuery.
 		Where(sq.Or{
 			sq.Eq{"t.name": teamNames},
@@ -52,6 +60,7 @@ func (r *resourceFactory) VisibleResources(teamNames []string) ([]Resource, erro
 				sq.Eq{"p.public": true},
 			},
 		}).
+		Where(sq.Eq{"p.pipeline_run_id": nil}).
 		OrderBy("r.id ASC").
 		RunWith(r.conn).
 		Query()
@@ -64,6 +73,7 @@ func (r *resourceFactory) VisibleResources(teamNames []string) ([]Resource, erro
 
 func (r *resourceFactory) AllResources() ([]Resource, error) {
 	rows, err := resourcesQuery.
+		Where(sq.Eq{"p.pipeline_run_id": nil}).
 		OrderBy("r.id ASC").
 		RunWith(r.conn).
 		Query()
