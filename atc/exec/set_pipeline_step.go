@@ -312,7 +312,11 @@ func (s setPipelineSource) MarshalPipelineConfig(config []byte) (atc.Config, err
 	}
 
 	if len(staticVars) > 0 {
-		config, err = vars.NewTemplateResolver(config, staticVars).Resolve(false)
+		// The step's own vars:/var_files: must not consume a placeholder that
+		// the template declares as a parameter; those are supplied per run.
+		excludeReference := atc.ParamReferenceExclusionFromPayload(config)
+
+		config, err = vars.NewTemplateResolver(config, staticVars).ResolveWithReferenceExclusion(false, excludeReference)
 		if err != nil {
 			return atc.Config{}, err
 		}

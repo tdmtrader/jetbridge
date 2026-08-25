@@ -2864,7 +2864,15 @@ var _ = Describe("Template parameter schema and run retention configuration", fu
 			atc.ParamSchema{Name: "env", Type: atc.ParamTypeString},
 		), "parameter name env is duplicated"),
 		Entry("reserved run", atc.PipelineRef{Name: "template"}, templateWith(atc.ParamSchema{Name: "run", Type: atc.ParamTypeString}), "parameter name run is reserved"),
-		Entry("reserved run_id", atc.PipelineRef{Name: "template"}, templateWith(atc.ParamSchema{Name: "run_id", Type: atc.ParamTypeString}), "parameter name run_id is reserved"),
+		Entry("reserved run_id", atc.PipelineRef{Name: "template"}, templateWith(atc.ParamSchema{Name: "run_id", Type: atc.ParamTypeString}), "parameter name run_id is reserved"),		Entry("dotted name", atc.PipelineRef{Name: "template"}, templateWith(atc.ParamSchema{Name: "my.param", Type: atc.ParamTypeString}), "parameter name my.param must match"),
+		Entry("hyphenated name", atc.PipelineRef{Name: "template"}, templateWith(atc.ParamSchema{Name: "my-param", Type: atc.ParamTypeString}), "parameter name my-param must match"),
+		Entry("leading digit name", atc.PipelineRef{Name: "template"}, templateWith(atc.ParamSchema{Name: "1st", Type: atc.ParamTypeString}), "parameter name 1st must match"),
+		Entry("underscored name is fine", atc.PipelineRef{Name: "template"}, templateWith(atc.ParamSchema{Name: "_my_param2", Type: atc.ParamTypeString}), ""),
+		Entry("required with a default", atc.PipelineRef{Name: "template"}, templateWith(atc.ParamSchema{Name: "env", Type: atc.ParamTypeString, Required: true, Default: "staging"}), "parameter env cannot be required and declare a default"),
+		Entry("duplicate enum members", atc.PipelineRef{Name: "template"}, templateWith(atc.ParamSchema{Name: "env", Type: atc.ParamTypeEnum, Values: []any{"staging", "staging"}}), "parameter env enum values are duplicated"),
+		Entry("duplicate enum members after numeric normalization", atc.PipelineRef{Name: "template"}, templateWith(atc.ParamSchema{Name: "count", Type: atc.ParamTypeEnum, Values: []any{1, json.Number("1.0")}}), "parameter count enum values are duplicated"),
+		Entry("over-magnitude number default", atc.PipelineRef{Name: "template"}, templateWith(atc.ParamSchema{Name: "count", Type: atc.ParamTypeNumber, Default: float64(1<<53) + 2}), "parameter count default must be a finite number"),
+		Entry("over-magnitude enum member", atc.PipelineRef{Name: "template"}, templateWith(atc.ParamSchema{Name: "count", Type: atc.ParamTypeEnum, Values: []any{float64(1<<53) + 2}}), "parameter count enum values must be finite numbers"),
 		Entry("wrong string default", atc.PipelineRef{Name: "template"}, templateWith(atc.ParamSchema{Name: "env", Type: atc.ParamTypeString, Default: true}), "parameter env default must be a string"),
 		Entry("wrong number default", atc.PipelineRef{Name: "template"}, templateWith(atc.ParamSchema{Name: "count", Type: atc.ParamTypeNumber, Default: "1"}), "parameter count default must be a number"),
 		Entry("wrong bool default", atc.PipelineRef{Name: "template"}, templateWith(atc.ParamSchema{Name: "dry_run", Type: atc.ParamTypeBool, Default: "false"}), "parameter dry_run default must be a bool"),
@@ -2884,13 +2892,21 @@ var _ = Describe("Template parameter schema and run retention configuration", fu
 		}(), "template parameter ((run)) is not allowed in a map key"),
 		Entry("parameter in a parameter default", atc.PipelineRef{Name: "template"}, func() atc.Config {
 			config := dynamicTemplateConfig()
+			// Required is cleared so the required-XOR-default rule does not
+			// answer first: this entry is about the placeholder, not the pair.
+			config.Params[0].Required = false
 			config.Params[0].Default = "((environment))"
 			return config
 		}(), "params[0].default: template parameter ((environment)) is not allowed in a parameter declaration"),
+		// A placeholder in a parameter NAME is refused by the name charset rule
+		// before the placeholder walk is reached -- "((" contains characters the
+		// pattern does not admit. The walk still owns default, enum values and
+		// description, which the charset rule does not inspect. This entry pins
+		// that the input is refused and names which rule owns it.
 		Entry("parameter in a parameter name", atc.PipelineRef{Name: "template"}, templateWith(
 			atc.ParamSchema{Name: "env-((env))", Type: atc.ParamTypeString},
 			atc.ParamSchema{Name: "env", Type: atc.ParamTypeString},
-		), "params[0].name: template parameter ((env)) is not allowed in a parameter declaration"),
+		), "parameter name env-((env)) must match"),
 		Entry("undeclared reference in a map key is left alone", atc.PipelineRef{Name: "template"}, func() atc.Config {
 			config := dynamicTemplateConfig()
 			config.Resources[0].Source = atc.Source{"((not-a-parameter))": "example/source"}

@@ -15,9 +15,15 @@ func NewString(variables vars.Variables, credString string) String {
 }
 
 func (s String) Evaluate() (string, error) {
+	return s.EvaluateWithReferenceExclusion(nil)
+}
+
+// EvaluateWithReferenceExclusion evaluates the string while leaving every
+// reference matched by excludeReference in place.
+func (s String) EvaluateWithReferenceExclusion(excludeReference vars.ReferenceExclusion) (string, error) {
 	var credsString string
 
-	err := evaluate(s.variablesResolver, s.rawCredString, &credsString)
+	err := evaluateWithReferenceExclusion(s.variablesResolver, s.rawCredString, &credsString, excludeReference)
 	if err != nil {
 		return s.rawCredString, err
 	}

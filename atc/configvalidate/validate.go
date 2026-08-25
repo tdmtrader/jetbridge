@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"path"
+	"regexp"
 	"strings"
 
 	"github.com/concourse/concourse/atc"
@@ -31,6 +32,13 @@ func ValidateTemplateDeclaration(ref atc.PipelineRef, config atc.Config) error {
 	return ValidateTemplateConfig(config)
 }
 
+// paramNamePattern is the identifier grammar for a declared template
+// parameter. A name outside it can never be resolved: vars.ParseReference
+// splits ((my.param)) into Path "my" with Fields ["param"], which never
+// matches the flat parameter map, so the placeholder survives untouched into
+// every materialized run config.
+var paramNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
 func ValidateTemplateConfig(config atc.Config) error {
 	seenNames := map[string]struct{}{}
 	for _, schema := range config.Params {
@@ -39,6 +47,9 @@ func ValidateTemplateConfig(config atc.Config) error {
 		}
 		if schema.Name == "run" || schema.Name == "run_id" {
 			return fmt.Errorf("parameter name %s is reserved", schema.Name)
+		}
+		if !paramNamePattern.MatchString(schema.Name) {
+			return fmt.Errorf("parameter name %s must match %s", schema.Name, paramNamePattern.String())
 		}
 		if _, found := seenNames[schema.Name]; found {
 			return fmt.Errorf("parameter name %s is duplicated", schema.Name)
@@ -77,14 +88,25 @@ func ValidateTemplateConfig(config atc.Config) error {
 }
 
 func validateParamSchema(schema atc.ParamSchema) error {
+	if schema.Required && schema.Default != nil {
+		// A default makes a parameter optional by construction, so declaring
+		// both is a contradiction rather than a preference.
+		return fmt.Errorf("parameter %s cannot be required and declare a default", schema.Name)
+	}
+
 	switch schema.Type {
 	case atc.ParamTypeString:
 		if schema.Default != nil && scalarType(schema.Default) != "string" {
 			return fmt.Errorf("parameter %s default must be a string", schema.Name)
 		}
 	case atc.ParamTypeNumber:
-		if schema.Default != nil && scalarType(schema.Default) != "number" {
-			return fmt.Errorf("parameter %s default must be a number", schema.Name)
+		if schema.Default != nil {
+			if scalarType(schema.Default) != "number" {
+				return fmt.Errorf("parameter %s default must be a number", schema.Name)
+			}
+			if _, ok := atc.NormalizeParamNumber(schema.Default); !ok {
+				return fmt.Errorf("parameter %s default must be a finite number no larger than %.0f in magnitude", schema.Name, atc.MaxSafeParamNumber)
+			}
 		}
 	case atc.ParamTypeBool:
 		if schema.Default != nil && scalarType(schema.Default) != "bool" {
@@ -98,7 +120,8 @@ func validateParamSchema(schema atc.ParamSchema) error {
 		if valueType == "" {
 			return fmt.Errorf("parameter %s enum values must be string, number, or bool", schema.Name)
 		}
-		for _, value := range schema.Values[1:] {
+		seen := make([]any, 0, len(schema.Values))
+		for _, value := range schema.Values {
 			kind := scalarType(value)
 			if kind == "" {
 				return fmt.Errorf("parameter %s enum values must be string, number, or bool", schema.Name)
@@ -106,6 +129,18 @@ func validateParamSchema(schema atc.ParamSchema) error {
 			if kind != valueType {
 				return fmt.Errorf("parameter %s enum values must have one scalar type", schema.Name)
 			}
+			key, ok := paramScalarKey(value)
+			if !ok {
+				return fmt.Errorf("parameter %s enum values must be finite numbers no larger than %.0f in magnitude", schema.Name, atc.MaxSafeParamNumber)
+			}
+			// Compare after normalization: 1, 1.0 and json.Number("1") are one
+			// member, and a duplicate makes the declaration ambiguous.
+			for _, existing := range seen {
+				if existing == key {
+					return fmt.Errorf("parameter %s enum values are duplicated", schema.Name)
+				}
+			}
+			seen = append(seen, key)
 		}
 		if schema.Default != nil && scalarType(schema.Default) != valueType {
 			return fmt.Errorf("parameter %s default must have the enum value type", schema.Name)
@@ -119,6 +154,23 @@ func validateParamSchema(schema atc.ParamSchema) error {
 	}
 
 	return nil
+}
+
+// paramScalarKey reduces a declared scalar to a comparable identity, so that
+// enum members that differ only in Go representation collide.
+func paramScalarKey(value any) (any, bool) {
+	switch typed := value.(type) {
+	case string:
+		return typed, true
+	case bool:
+		return typed, true
+	default:
+		number, ok := atc.NormalizeParamNumber(value)
+		if !ok {
+			return nil, false
+		}
+		return number, true
+	}
 }
 
 func scalarType(value any) string {

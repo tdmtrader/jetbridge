@@ -18,8 +18,15 @@ func NewSource(variables vars.Variables, source atc.Source) Source {
 }
 
 func (s Source) Evaluate() (atc.Source, error) {
+	return s.EvaluateWithReferenceExclusion(nil)
+}
+
+// EvaluateWithReferenceExclusion evaluates the source while leaving every
+// reference matched by excludeReference in place. Template parameters are
+// filled in per run, so they must not be reported as missing credentials.
+func (s Source) EvaluateWithReferenceExclusion(excludeReference vars.ReferenceExclusion) (atc.Source, error) {
 	var source atc.Source
-	err := evaluate(s.variablesResolver, s.rawSource, &source)
+	err := evaluateWithReferenceExclusion(s.variablesResolver, s.rawSource, &source, excludeReference)
 	if err != nil {
 		return nil, err
 	}

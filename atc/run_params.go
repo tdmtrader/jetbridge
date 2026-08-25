@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"sort"
 	"strconv"
+	"strings"
 )
 
 type RunParams map[string]any
@@ -26,6 +28,11 @@ const (
 	MaxRunRetentionKeepLast           = 2147483647
 	MaxRunRetentionTTLDays            = 1000000
 )
+
+// MaxSafeParamNumber bounds the magnitude of a number parameter to the
+// largest integer exactly representable in binary64, so that a value survives
+// the round trip through JSON, the database, and interpolation unchanged.
+const MaxSafeParamNumber = float64(9007199254740991)
 
 type ParamSchema struct {
 	Name        string    `json:"name"`
@@ -55,26 +62,41 @@ func validateRunParams(schemas []ParamSchema, params RunParams) (RunParams, erro
 		schemaByName[schema.Name] = schema
 	}
 
+	var unknown []string
 	for name := range params {
 		if name == "run" || name == "run_id" {
 			continue
 		}
 		if _, found := schemaByName[name]; !found {
-			return nil, fmt.Errorf("unknown parameter %s", name)
+			unknown = append(unknown, name)
 		}
+	}
+	if len(unknown) > 0 {
+		// Sort before reporting: Go randomizes map iteration order, so an
+		// unsorted report gives a different message for the same request.
+		sort.Strings(unknown)
+		return nil, fmt.Errorf("unknown parameter %s", strings.Join(unknown, ", "))
 	}
 
 	normalized := RunParams{}
 	for _, schema := range schemas {
 		value, supplied := params[schema.Name]
-		if !supplied {
-			value = schema.Default
-		}
 		if value == nil {
+			// An explicit null is not a value: it must neither satisfy a
+			// required parameter nor shadow a declared default.
+			supplied = false
+		}
+		if !supplied {
 			if schema.Required {
+				// Required wins unconditionally. Assigning the default first
+				// and only then testing for nil silently downgraded every
+				// `required: true` parameter that also declared a default.
 				return nil, fmt.Errorf("parameter %s is required", schema.Name)
 			}
-			continue
+			value = schema.Default
+			if value == nil {
+				continue
+			}
 		}
 
 		value, err := normalizeRunParam(schema, value, supplied)
@@ -97,15 +119,19 @@ func normalizeRunParam(schema ParamSchema, value any, supplied bool) (any, error
 	case ParamTypeNumber:
 		if stringValue, ok := value.(string); ok && supplied {
 			parsed, err := strconv.ParseFloat(stringValue, 64)
-			if err != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) {
+			if err != nil {
 				return nil, fmt.Errorf("parameter %s must be a number", schema.Name)
 			}
-			return parsed, nil
+			value = parsed
 		}
-		if number, ok := normalizedNumber(value); ok {
-			return number, nil
+		if _, isNumber := paramNumberValue(value); !isNumber {
+			return nil, fmt.Errorf("parameter %s must be a number", schema.Name)
 		}
-		return nil, fmt.Errorf("parameter %s must be a number", schema.Name)
+		number, ok := NormalizeParamNumber(value)
+		if !ok {
+			return nil, fmt.Errorf("parameter %s must be a finite number no larger than %.0f in magnitude", schema.Name, MaxSafeParamNumber)
+		}
+		return number, nil
 	case ParamTypeBool:
 		if boolValue, ok := value.(bool); ok {
 			return boolValue, nil
@@ -143,13 +169,39 @@ func equalRunParamScalars(value, allowed any) (any, bool) {
 		valueBool, ok := value.(bool)
 		return valueBool, ok && valueBool == allowedValue
 	default:
-		allowedNumber, allowedOK := normalizedNumber(allowed)
-		valueNumber, valueOK := normalizedNumber(value)
+		allowedNumber, allowedOK := NormalizeParamNumber(allowed)
+		valueNumber, valueOK := NormalizeParamNumber(value)
 		return valueNumber, allowedOK && valueOK && valueNumber == allowedNumber
 	}
 }
 
-func normalizedNumber(value any) (float64, bool) {
+// NormalizeParamNumber coerces a JSON scalar to the float64 domain used for
+// number parameters. It reports false for non-numbers, for NaN and the
+// infinities, and for magnitudes outside the safe binary64 integer range.
+// Negative zero is folded to positive zero so that -0 and 0 compare and
+// marshal identically.
+func NormalizeParamNumber(value any) (float64, bool) {
+	number, ok := paramNumberValue(value)
+	if !ok {
+		return 0, false
+	}
+	if math.IsNaN(number) || math.IsInf(number, 0) {
+		return 0, false
+	}
+	if math.Abs(number) > MaxSafeParamNumber {
+		return 0, false
+	}
+	if number == 0 {
+		// Fold -0 to +0; the comparison above is true for both.
+		number = 0
+	}
+	return number, true
+}
+
+// paramNumberValue converts a JSON scalar to float64 without applying the
+// parameter numeric domain. It reports false only for values that are not
+// numbers at all.
+func paramNumberValue(value any) (float64, bool) {
 	switch typed := value.(type) {
 	case int:
 		return float64(typed), true
@@ -174,10 +226,10 @@ func normalizedNumber(value any) (float64, bool) {
 	case float32:
 		return float64(typed), true
 	case float64:
-		return typed, !math.IsNaN(typed) && !math.IsInf(typed, 0)
+		return typed, true
 	case json.Number:
 		parsed, err := typed.Float64()
-		return parsed, err == nil && !math.IsNaN(parsed) && !math.IsInf(parsed, 0)
+		return parsed, err == nil
 	default:
 		return 0, false
 	}

@@ -48,6 +48,47 @@ var _ = Describe("Template", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result).To(Equal([]byte("otherstuff: true\n")))
 	})
+	It("can interpolate a boolean into a surrounding string", func() {
+		// This fails if a bool var may only replace a whole field: a declared
+		// bool parameter written as `flag: "on=((verbose))"` errors out instead
+		// of substituting.
+		template := NewTemplate([]byte(`flag: "on=((verbose))"`))
+		vars := StaticVariables{"verbose": true}
+
+		result, err := template.Evaluate(vars, EvaluateOpts{})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(string(result)).To(ContainSubstring("on=true"))
+	})
+
+	DescribeTable("excludes only exact unqualified references",
+		func(name string, excluded bool) {
+			// This fails if the exclusion also swallows a source-qualified or
+			// dotted reference, which belong to the credential manager.
+			reference, err := ParseReference(name)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(NewExactReferenceExclusion([]string{"environment"})(reference)).To(Equal(excluded))
+		},
+		Entry("exact", "environment", true),
+		Entry("source qualified", "source:environment", false),
+		Entry("dotted", "environment.key", false),
+		Entry("undeclared", "other", false),
+	)
+
+	It("leaves excluded references exactly as written, whole-field or inline", func() {
+		// This fails if a supplied var with the same name as a declared
+		// template parameter consumes the placeholder, baking a constant into
+		// the template that no run could ever influence.
+		template := NewTemplate([]byte("plain: ((environment))\ninline: on=((environment))\ndotted: ((environment.key))\n"))
+		vars := StaticVariables{"environment": map[string]any{"key": "dotted-value"}}
+
+		result, err := template.Evaluate(vars, EvaluateOpts{
+			ExcludeReference: NewExactReferenceExclusion([]string{"environment"}),
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(string(result)).To(ContainSubstring("plain: ((environment))"))
+		Expect(string(result)).To(ContainSubstring("inline: on=((environment))"))
+		Expect(string(result)).To(ContainSubstring("dotted: dotted-value"))
+	})
 
 	It("can interpolate a different data types into a byte slice", func() {
 		hashValue := map[string]any{"key2": []string{"value1", "value2"}}
