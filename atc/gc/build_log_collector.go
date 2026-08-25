@@ -158,6 +158,13 @@ func (br *buildLogCollector) reapLogsOfJob(
 		}
 
 		maxBuildsRetained := retainedBuilds >= logRetention.Builds
+		// INVARIANT: 0 <= logRetention.Days <= gc.MaxRetentionDays. The calculator
+		// is the only producer of a retention, and it bounds all three sources of
+		// Days (both operator flags and the job's own declaration) into that range
+		// -- because BOTH ends of it delete everything here. A negative Days makes
+		// this line true for every build ever run; a Days near MaxInt overflows
+		// AddDate's `day + days` into an arbitrary instant that reads the same way.
+		// Neither says a word on the way out.
 		buildHasExpired := !build.EndTime().IsZero() && build.EndTime().AddDate(0, 0, logRetention.Days).Before(time.Now())
 
 		if logRetention.Builds != 0 {
@@ -202,7 +209,34 @@ func (br *buildLogCollector) reapLogsOfJob(
 		return nil
 	}
 
-	// If we exceeded the maximum number of builds we should delete the oldest candidates
+	// If we exceeded the maximum number of builds we should delete the oldest
+	// candidates. This correction only ever fires when the minimum-succeeded arm
+	// retained past the count.
+	//
+	// INVARIANT: delta <= len(candidateBuildIDsToKeep), so the indexing below
+	// cannot run off the front of the keep list. Writing M for the retentions the
+	// min-succeeded arm took and K for len(candidateBuildIDsToKeep):
+	//
+	//   - the min-succeeded arm is the ONLY retention that does not append to the
+	//     keep list, and it is gated on
+	//     retainedSucceededBuilds < MinimumSucceededBuilds, so
+	//     M <= logRetention.MinimumSucceededBuilds;
+	//   - every other retention (count arm, days arm) appends, so
+	//     retainedBuilds == M + K;
+	//   - hence delta == retainedBuilds - Builds == M + K - Builds, and
+	//     delta <= K exactly when M <= Builds.
+	//
+	// The bound therefore rests entirely on two things the CALCULATOR owes this
+	// site, neither of them checkable from here: MinimumSucceededBuilds <= Builds,
+	// which BuildLogsToRetain applies in BOTH of its branches (when only one of
+	// them did, an ordinary job config panicked this line on index [-1]), and
+	// Builds > 0, which is why the uint64 operator flags are saturated rather than
+	// truncated into int.
+	//
+	// A defensive clamp of delta was considered and REJECTED: with the
+	// calculator's bounds in place it has no reachable input, and it would
+	// silently absorb precisely the breakage this contract exists to make loud --
+	// clamped, the reaper would go on quietly deleting logs it was asked to keep.
 	if logRetention.Builds != 0 && retainedBuilds > logRetention.Builds {
 		logger.Debug("more-builds-to-retain", lager.Data{
 			"retained_builds": retainedBuilds,
