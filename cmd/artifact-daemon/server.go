@@ -9,11 +9,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"os"
 	"os/exec"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -253,18 +255,6 @@ func (s *Server) requestKey(r *http.Request, prefix string) (string, error) {
 	return key, nil
 }
 
-// artifactPath joins a validated /artifacts/ key onto the storage root. The
-// error return is deliberate and compiler-enforced: before this existed,
-// DELETE /artifacts/<percent-encoded traversal> removed a tree outside the
-// storage root and returned 204.
-func (s *Server) artifactPath(r *http.Request) (string, error) {
-	key, err := s.artifactKey(r)
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(s.storagePath, key), nil
-}
-
 // artifactKey returns the validated key an /artifacts/ request names.
 //
 // Operations go through s.root with this key. The absolute form is still
@@ -296,11 +286,16 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 	// Check filesystem first, then fall back to registry aliases.
 	// This enables peer daemons to serve registry-only artifacts
 	// (e.g., resource caches registered via POST /register).
+	// Tracks whether the registry fallback substituted an alias path, so the
+	// file branch below opens the same thing the directory branch tars.
+	servedFromRegistry := false
+
 	info, err := s.root.Stat(key)
 	if err != nil && os.IsNotExist(err) {
 		// Filesystem miss — try registry lookup.
 		if regPath, found := s.lookupRegistryAlias(r); found {
 			path = regPath
+			servedFromRegistry = true
 			info, err = os.Stat(path)
 		}
 	}
@@ -334,7 +329,22 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// File: serve as-is (backward compat for legacy tar files).
-	f, err := s.root.Open(key)
+	//
+	// Open by KEY through the handle normally. When the registry fallback
+	// substituted an alias path, open THAT instead — the key is the one that
+	// did not exist, which is why we fell back, and opening it returns a 500 on
+	// a request that should succeed. The directory branch above already uses
+	// `path` for exactly this reason; migrating one branch and not the other is
+	// how this broke.
+	//
+	// The alias path is registry-derived and stays ambient in this track,
+	// guarded by lookupRegistry's validateRegistryPath at the moment of use.
+	var f *os.File
+	if servedFromRegistry {
+		f, err = os.Open(path)
+	} else {
+		f, err = s.root.Open(key)
+	}
 	if err != nil {
 		s.logger.Error("failed-to-open-artifact", err, lager.Data{"path": path})
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -413,50 +423,54 @@ func (s *Server) handlePutArtifact(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	path := filepath.Join(s.storagePath, key)
+	absPath := filepath.Join(s.storagePath, key)
 
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		s.logger.Error("failed-to-create-artifact-dir", err, lager.Data{"path": path})
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
+	if dir := path.Dir(key); dir != "." {
+		if err := s.root.MkdirAll(dir, 0755); err != nil {
+			s.logger.Error("failed-to-create-artifact-dir", err, lager.Data{"path": absPath})
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
 	}
 
 	// Write through a temp file + rename: GET serves whatever exists at the
 	// final path, so an in-flight or failed upload must never be visible
 	// there as a truncated artifact.
-	f, err := os.CreateTemp(filepath.Dir(path), ".put-tmp-")
+	// os.Root has no CreateTemp, so the temp name is made in the same
+	// hand-rolled way as mkdirTempIn and opened through the handle.
+	tmpKey := path.Join(path.Dir(key), ".put-tmp-"+strconv.FormatUint(rand.Uint64(), 36))
+	f, err := s.root.OpenFile(tmpKey, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
-		s.logger.Error("failed-to-create-artifact", err, lager.Data{"path": path})
+		s.logger.Error("failed-to-create-artifact", err, lager.Data{"path": absPath})
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	tmpPath := f.Name()
 
 	if _, err := io.Copy(f, r.Body); err != nil {
 		f.Close()
-		os.Remove(tmpPath)
-		s.logger.Error("failed-to-write-artifact", err, lager.Data{"path": path})
+		s.root.Remove(tmpKey)
+		s.logger.Error("failed-to-write-artifact", err, lager.Data{"path": absPath})
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	if err := f.Close(); err != nil {
-		os.Remove(tmpPath)
-		s.logger.Error("failed-to-close-artifact", err, lager.Data{"path": path})
+		s.root.Remove(tmpKey)
+		s.logger.Error("failed-to-close-artifact", err, lager.Data{"path": absPath})
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 
 	// CreateTemp uses 0600; artifacts are served to any authenticated reader.
-	if err := os.Chmod(tmpPath, 0644); err != nil {
-		os.Remove(tmpPath)
-		s.logger.Error("failed-to-chmod-artifact", err, lager.Data{"path": path})
+	if err := s.root.Chmod(tmpKey, 0644); err != nil {
+		s.root.Remove(tmpKey)
+		s.logger.Error("failed-to-chmod-artifact", err, lager.Data{"path": absPath})
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 
-	if err := os.Rename(tmpPath, path); err != nil {
-		os.Remove(tmpPath)
-		s.logger.Error("failed-to-rename-artifact", err, lager.Data{"path": path})
+	if err := s.root.Rename(tmpKey, key); err != nil {
+		s.root.Remove(tmpKey)
+		s.logger.Error("failed-to-rename-artifact", err, lager.Data{"path": absPath})
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -474,6 +488,22 @@ func (s *Server) handlePutArtifact(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleStreamIn(w http.ResponseWriter, r *http.Request) {
 	key, err := s.requestKey(r, "/stream-in/")
 	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Structural-name AUTHORIZATION survives the handle. os.Root has no opinion
+	// about WHICH names a per-artifact verb may address — it will happily
+	// create steps/steps or steps/aliases.json — so this rule is not
+	// containment and the handle does not replace it.
+	//
+	// Phase 5 removed artifactLocation from this path on the evidence that
+	// containment came from stepsRoot. It did. But artifactLocation carried TWO
+	// rules and only one was replaced, so PUT /stream-in/aliases.json started
+	// returning 201. Not an escape — it lands inside steps/ — but AC8 requires
+	// structural names refused on every per-artifact verb, and stream-in is
+	// one.
+	if err := rejectStructuralName(key); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -643,7 +673,7 @@ func (s *Server) handleHeadArtifact(w http.ResponseWriter, r *http.Request) {
 	path := filepath.Join(s.storagePath, key)
 
 	// Check filesystem first, then fall back to registry aliases.
-	if _, err := os.Stat(path); err != nil {
+	if _, err := s.root.Stat(key); err != nil {
 		if os.IsNotExist(err) {
 			if regPath, found := s.lookupRegistryAlias(r); found {
 				if _, err := os.Stat(regPath); err == nil {

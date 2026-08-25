@@ -30,6 +30,7 @@ worker/runtime/integration/sample/sample
 /concourse-linux-amd64
 /fly-linux-amd64
 /artifact-daemon
+cmd/artifact-daemon/artifact-daemon
 /artifact-daemon-linux-amd64
 /artifact-daemon-linux-arm64
 

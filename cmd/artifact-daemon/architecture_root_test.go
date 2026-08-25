@@ -135,3 +135,126 @@ func keysOf(m map[string]bool) []string {
 	}
 	return out
 }
+
+// AC5 — no production filesystem call joins an untrusted key onto a storage
+// path and then writes through the result.
+//
+// I did NOT implement this initially, arguing instead in a commit that no
+// unrouted request-derived join remained. The argument was wrong: handlePut
+// and handleHead were both still ambient, and this guard finds exactly that.
+// An argument is not a gate.
+//
+// BLIND SPOT, stated rather than hidden: "joins an untrusted key" is a
+// dataflow property and this is a syntactic scan. It approximates it by
+// flagging any function that BOTH joins onto a storage path AND performs an
+// ambient mutating os.* call — so a function that joins for a lock key only
+// (which R12 requires) is flagged too, and must be listed below with its
+// reason. That list is the approximation made visible; it is not an allowlist
+// of things exempt from the rule.
+func TestArchitecture_NoAmbientWriteThroughAJoinedKey(t *testing.T) {
+	files := productionFiles(t)
+
+	// Functions that legitimately join for a LOCK KEY or a REGISTRY VALUE,
+	// which R12 requires to stay absolute, and whose writes go through a
+	// handle. Each is here because its containment comes from somewhere the
+	// scanner cannot see.
+	known := map[string]string{
+		"server.go:Server.handleStreamIn":    "joins dest for the read/sweep guard key; writes go through stepsRoot",
+		"server.go:Server.handleGetArtifact": "joins for tarDirectory's walk and the guard; reads go through s.root or a validated registry path",
+		"server.go:Server.artifactPath":      "returns the absolute form for the guard and tarDirectory; performs no filesystem call",
+		"server.go:Server.resolveOne":        "registry and copyArtifact paths stay absolute until their own tracks land",
+		"server.go:Server.copyArtifact":      "split out of this track; dest is validated by validateContainedPath",
+		"mirror.go:Mirror.run":               "routed through locateArtifact; Mirror is not on a handle in this track",
+		"mirror.go:Mirror.evacuateOne":       "routed through locateArtifact; Mirror is not on a handle in this track",
+		"sweeper.go:Sweeper.sweep":           "joins are CONSTANT suffixes (steps, artifacts) and os.ReadDir-derived names — no untrusted input reaches them. Deliberately not migrated: R12 names ScanHostPath as a coin flip whose losing side is a SILENT read/sweep guard failure, and uniformity is not worth that trade",
+	}
+
+	mutating := map[string]bool{
+		"Create": true, "CreateTemp": true, "MkdirAll": true, "Mkdir": true,
+		"MkdirTemp": true, "Remove": true, "RemoveAll": true, "Rename": true,
+		"OpenFile": true, "WriteFile": true, "Symlink": true, "Link": true, "Chmod": true,
+	}
+
+	type site struct{ joins, writes bool }
+	found := map[string]*site{}
+
+	for name, f := range files {
+		ast.Inspect(f, func(n ast.Node) bool {
+			fn, ok := n.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				return true
+			}
+			recv := ""
+			if fn.Recv != nil && len(fn.Recv.List) > 0 {
+				if st, ok := fn.Recv.List[0].Type.(*ast.StarExpr); ok {
+					if id, ok := st.X.(*ast.Ident); ok {
+						recv = id.Name + "."
+					}
+				}
+			}
+			where := name + ":" + recv + fn.Name.Name
+			ast.Inspect(fn.Body, func(m ast.Node) bool {
+				call, ok := m.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				sel, ok := call.Fun.(*ast.SelectorExpr)
+				if !ok {
+					return true
+				}
+				pkg, _ := sel.X.(*ast.Ident)
+				if pkg == nil {
+					return true
+				}
+				if pkg.Name == "filepath" && sel.Sel.Name == "Join" {
+					for _, a := range call.Args {
+						if s, ok := a.(*ast.SelectorExpr); ok && strings.Contains(s.Sel.Name, "toragePath") {
+							if found[where] == nil {
+								found[where] = &site{}
+							}
+							found[where].joins = true
+						}
+						if id, ok := a.(*ast.Ident); ok && strings.Contains(id.Name, "toragePath") {
+							if found[where] == nil {
+								found[where] = &site{}
+							}
+							found[where].joins = true
+						}
+					}
+				}
+				if pkg.Name == "os" && mutating[sel.Sel.Name] {
+					if found[where] == nil {
+						found[where] = &site{}
+					}
+					found[where].writes = true
+				}
+				return true
+			})
+			return true
+		})
+	}
+
+	var scanned int
+	for _, s := range found {
+		if s.joins {
+			scanned++
+		}
+	}
+	if scanned == 0 {
+		t.Fatal("guard found no storage-path joins at all — it is inert")
+	}
+
+	for where, s := range found {
+		if !s.joins || !s.writes {
+			continue
+		}
+		if reason, ok := known[where]; ok {
+			t.Logf("known: %s — %s", where, reason)
+			continue
+		}
+		t.Errorf("%s joins a key onto a storage path AND performs an ambient mutating os.* call. "+
+			"Either route the write through a handle, or add it above with the reason its "+
+			"containment comes from elsewhere.", where)
+	}
+	t.Logf("scanned %d functions joining a storage path", scanned)
+}

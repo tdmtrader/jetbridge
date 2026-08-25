@@ -327,14 +327,26 @@ func (s *Server) artifactLocation(root, key string) (string, error) {
 // not be inaccessible to a caller. Mirror is a separate struct and could not
 // reach the method version — which is exactly how its join stayed unguarded
 // while every Server-side join was routed.
+// rejectStructuralName is the AUTHORIZATION half of what locateArtifact used
+// to do, split out so a caller that gets containment from a handle can still
+// apply it.
+//
+// Keeping them fused is what let phase 5 drop one by replacing the other.
+func rejectStructuralName(key string) error {
+	if _, ok := structuralNames[strings.ToLower(filepath.Clean(key))]; ok {
+		return fmt.Errorf("key %q names a structural path, not an artifact", key)
+	}
+	return nil
+}
+
 func locateArtifact(root, key string) (string, error) {
 	if err := validateRequestKey(key); err != nil {
 		return "", err
 	}
 
 	cleaned := filepath.Clean(key)
-	if _, ok := structuralNames[strings.ToLower(cleaned)]; ok {
-		return "", fmt.Errorf("key %q names a structural path, not an artifact", key)
+	if err := rejectStructuralName(cleaned); err != nil {
+		return "", err
 	}
 
 	path := filepath.Join(root, cleaned)

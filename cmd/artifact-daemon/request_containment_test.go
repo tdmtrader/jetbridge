@@ -878,3 +878,120 @@ func TestRequestContainment_DotRefusedOnEveryVerb(t *testing.T) {
 		}
 	}
 }
+
+// AC8, widened. The first version exercised only DELETE /artifacts/, which is
+// why stream-in could silently lose structural-name authorization when phase 5
+// replaced containment with a handle: artifactLocation carried TWO rules and
+// only one was replaced.
+func TestRequestContainment_StructuralNamesRefusedOnEveryVerb(t *testing.T) {
+	names := []string{"steps", "STEPS", "Steps", "artifacts", "caches",
+		"resource-caches", "aliases.json", "ALIASES.JSON", "aliases.json.tmp"}
+
+	for _, name := range names {
+		t.Run("stream-in/"+name, func(t *testing.T) {
+			ts, storagePath := setupServer(t)
+			var buf bytes.Buffer
+			tw := tar.NewWriter(&buf)
+			tw.WriteHeader(&tar.Header{Name: "f", Typeflag: tar.TypeReg, Size: 1, Mode: 0o644})
+			tw.Write([]byte("x"))
+			tw.Close()
+
+			req, err := http.NewRequest(http.MethodPut, ts.URL+"/stream-in/"+name, &buf)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Content-Type", "application/x-tar")
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp.Body.Close()
+			if resp.StatusCode < 400 {
+				t.Errorf("PUT /stream-in/%s -> %d, want 4xx", name, resp.StatusCode)
+			}
+			if _, err := os.Stat(filepath.Join(storagePath, "steps", name)); err == nil {
+				t.Errorf("PUT /stream-in/%s created steps/%s", name, name)
+			}
+		})
+
+		t.Run("artifacts/"+name, func(t *testing.T) {
+			ts, _ := setupServer(t)
+			for _, m := range []string{http.MethodGet, http.MethodHead, http.MethodDelete} {
+				req, err := http.NewRequest(m, ts.URL+"/artifacts/"+name, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				resp, err := http.DefaultClient.Do(req)
+				if err != nil {
+					t.Fatal(err)
+				}
+				resp.Body.Close()
+				if resp.StatusCode < 400 {
+					t.Errorf("%s /artifacts/%s -> %d, want 4xx", m, name, resp.StatusCode)
+				}
+			}
+		})
+	}
+
+	// Zero-case: an ordinary key is still accepted on stream-in.
+	t.Run("ordinary key still accepted", func(t *testing.T) {
+		ts, _ := setupServer(t)
+		var buf bytes.Buffer
+		tw := tar.NewWriter(&buf)
+		tw.WriteHeader(&tar.Header{Name: "f", Typeflag: tar.TypeReg, Size: 1, Mode: 0o644})
+		tw.Write([]byte("x"))
+		tw.Close()
+		req, _ := http.NewRequest(http.MethodPut, ts.URL+"/stream-in/build-1/out", &buf)
+		req.Header.Set("Content-Type", "application/x-tar")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusCreated {
+			t.Errorf("ordinary key -> %d, want 201", resp.StatusCode)
+		}
+	})
+}
+
+// B1 regression — a FILE-valued registry alias must still be served.
+//
+// Phase 2 migrated GET's directory branch to use the alias path and left the
+// file branch opening s.root.Open(key) — the key that did not exist, which is
+// why the fallback ran. Result: 500 on a request that should succeed. Nothing
+// caught it because no test registered an alias to a file.
+func TestRequestContainment_FileValuedRegistryAliasIsServed(t *testing.T) {
+	ts, storagePath := setupServer(t)
+
+	legacy := filepath.Join(storagePath, "legacy")
+	if err := os.MkdirAll(legacy, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	blob := filepath.Join(legacy, "blob.tar")
+	if err := os.WriteFile(blob, []byte("LEGACY-BYTES"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	body, _ := json.Marshal(map[string]string{"key": "vol-file", "local_path": blob})
+	reg, err := http.Post(ts.URL+"/register", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg.Body.Close()
+	if reg.StatusCode != http.StatusCreated {
+		t.Fatalf("register -> %d, want 201", reg.StatusCode)
+	}
+
+	resp, err := http.Get(ts.URL + "/artifacts/vol-file")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	got, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET a file-valued alias -> %d, want 200 (body %q)", resp.StatusCode, got)
+	}
+	if !bytes.Contains(got, []byte("LEGACY-BYTES")) {
+		t.Errorf("alias served wrong content: %q", got)
+	}
+}
