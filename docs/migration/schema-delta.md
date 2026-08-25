@@ -127,10 +127,33 @@ ALTER TABLE components DROP COLUMN IF EXISTS paused;
 - **Duration:** Instant
 - **Reversible:** Yes — down migration adds column back with default `false`
 
+### `1773105505`–`1773105509` — Pipeline templates and numbered runs (JetBridge-only)
+
+Adds `pipelines.template`, `pipelines.params`, `pipelines.pipeline_run_id`,
+`pipelines.last_run_number` and the run-retention columns; creates the
+`pipeline_runs` table; adds run identity to `builds` and `jobs`; skips
+build-event partition creation for run payloads; and installs the guard trigger
+on payload deletion.
+
+- **Type:** Additive schema, plus one trigger-function replacement
+  (`on_pipeline_insert`) and seven constraint triggers
+- **Risk:** Medium — `1773105506` adds a validating CHECK on `builds`, which
+  takes ACCESS EXCLUSIVE for a full heap scan; duration scales with build history
+- **Duration:** Proportional to `builds` row count; measure on a restored copy first
+- **Reversible:** **No, once used.** Every `.down.sql` calls
+  `ensure_pipeline_template_runs_empty()` and raises if any template, run payload
+  or run header exists. Down from an unused install works; down from a used one
+  is a restore-from-backup operation. See Key Observation 3.
+
 ## Key Observations
 
 1. **The schema delta is small.** Only 3 migrations are JetBridge-specific, and they are all minor column/trigger changes.
 2. **The md5→sha256 migration is the most expensive** — it rehashes every row in `resource_config_versions`. Plan for this on large instances.
-3. **All migrations are reversible** — every `.up.sql` has a corresponding `.down.sql`.
+3. **Migrations are reversible up to `1773105501`.** The five pipeline-template
+   migrations (`1773105505`–`1773105509`) are **one-way once the feature is used**:
+   each `.down.sql` calls `ensure_pipeline_template_runs_empty()`, which raises if
+   any template, run payload or run header exists. This is deliberate — the down
+   path refuses rather than silently discarding run history. Rolling a binary back
+   after a template has been created means restoring the database from backup.
 4. **v7.x users have the biggest gap** — up to 29 migrations depending on the exact v7.x version.
 5. **v8.0.0 and v8.0.1 are identical** in terms of migrations — only 3 JetBridge-specific migrations need to apply.
