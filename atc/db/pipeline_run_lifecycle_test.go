@@ -183,6 +183,25 @@ var _ = Describe("Pipeline run lifecycle", func() {
 		Expect(run.Status()).To(Equal(atc.RunStatusFailed))
 		Expect(run.CompletedAt()).NotTo(BeNil())
 	})
+	It("completes when the last build finished during a pass that started with a pending build", func() {
+		fixture := createRunLifecycleFixture(basicRunConfig("entry"))
+		entry := fixture.jobs["entry"]
+		build := pendingRunBuild(entry)
+
+		By("leaving schedule debt outstanding, as aborting a pending build does")
+		requestOutstandingSchedule(entry)
+
+		By("finishing the build in-pass, where Finish's own hook is blocked by that debt")
+		Expect(build.Finish(db.BuildStatusAborted)).To(Succeed())
+		Expect(fixture.reloadRun().Status()).To(Equal(atc.RunStatusRunning))
+
+		By("consuming the request from a pass that reports noBuild=false, because it found the build")
+		consumeObservedSchedule(entry, false)
+
+		run := fixture.reloadRun()
+		Expect(run.Status()).To(Equal(atc.RunStatusAborted), "the scheduler's no-build hint must not gate run completion")
+		Expect(run.CompletedAt()).NotTo(BeNil())
+	})
 
 	It("does not consume a newer unresolved request when settling an observed token", func() {
 		fixture := createRunLifecycleFixture(basicRunConfig("entry"))
@@ -562,7 +581,8 @@ var _ = Describe("Pipeline run lifecycle structural guard", func() {
 		consumeEnd := strings.Index(string(jobSource)[consumeStart:], "\nfunc ")
 		Expect(consumeEnd).To(BeNumerically(">", 0), "guard must bound schedule consumption")
 		consumeBody := string(jobSource)[consumeStart : consumeStart+consumeEnd]
-		Expect(consumeBody).To(ContainSubstring("attemptRunCompletion("), "no-build consumption must be the second completion call site")
+		Expect(consumeBody).To(ContainSubstring("attemptRunCompletion("), "schedule consumption must be the second completion call site")
+		Expect(consumeBody).NotTo(ContainSubstring("noBuild &&"), "schedule consumption must not gate completion on the scheduler's no-build hint")
 		Expect(string(jobSource)).NotTo(ContainSubstring("UpdateLastScheduled"), "the obsolete independent consumer must be removed")
 
 		pauseStart := strings.Index(string(pipelineSource), "func (p *pipeline) Pause(pausedBy string)")

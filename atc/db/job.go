@@ -1158,8 +1158,20 @@ func (j *job) ConsumeScheduleRequest(observed time.Time, noBuild bool) error {
 	if err != nil {
 		return err
 	}
+	// noBuild is advisory only and deliberately does NOT gate this hook. The
+	// scheduler computes it as "this pass found no pending build when it
+	// started" (atc/scheduler/scheduler.go:67, NoBuild: !buildFound), which is
+	// false whenever the pass's own build was finished DURING the pass — the
+	// abort path finishes a pending build in-pass, and Build.Finish's own
+	// completion attempt is blocked at that instant by this job's
+	// still-outstanding schedule debt. Gating here cleared the debt with
+	// nobody left to notice quiescence, and the run stayed 'running' forever.
+	//
+	// attemptRunCompletion is a stateless predicate that no-ops unless the run
+	// is genuinely quiescent, so running it on every consumed request for a
+	// run job is both correct and cheap: the run row is already locked above.
 	completedRun := false
-	if noBuild && runID.Valid {
+	if runID.Valid {
 		if completedRun, err = attemptRunCompletion(tx, int(runID.Int64)); err != nil {
 			return err
 		}

@@ -274,7 +274,20 @@ func (f *pipelineRunFactory) allocateNumber(tx Tx, base *pipeline) (int, error) 
 		}
 		instanceVars, _ := json.Marshal(atc.InstanceVars{"run": float64(number)})
 		var occupied bool
-		err := tx.QueryRow("SELECT EXISTS (SELECT 1 FROM pipelines WHERE team_id = $1 AND name = $2 AND pipeline_run_id IS NULL AND instance_vars = $3::jsonb)", base.TeamID(), base.Name(), string(instanceVars)).Scan(&occupied)
+		// The probe answers exactly one question: is the instance ref
+		// (team, name, {"run": N}) already taken? The index that governs that,
+		// pipelines_name_team_id_instance_vars, is on (name, team_id,
+		// instance_vars) and does not mention pipeline_run_id — so neither may
+		// this probe. A run payload sitting on the ref is just as much an
+		// occupant as an ordinary instanced pipeline, and skipping any occupant
+		// is the whole point of this retry loop. Filtering payloads out made
+		// stale payloads invisible: RenamePipeline deliberately renames only the
+		// template row and leaves its payloads on the old name, so a template
+		// renamed away and recreated under the old name starts at
+		// last_run_number 0, the probe reports {run: 1} free, and
+		// savePipelineWithOptions refuses it with ErrPipelineRunPayloadMutation
+		// on every attempt, forever.
+		err := tx.QueryRow("SELECT EXISTS (SELECT 1 FROM pipelines WHERE team_id = $1 AND name = $2 AND instance_vars = $3::jsonb)", base.TeamID(), base.Name(), string(instanceVars)).Scan(&occupied)
 		if err != nil || !occupied {
 			return number, err
 		}

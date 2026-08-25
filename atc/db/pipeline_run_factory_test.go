@@ -241,6 +241,34 @@ var _ = Describe("PipelineRunFactory", func() {
 		Expect(template.Reload()).To(BeTrue())
 		Expect(template.LastRunNumber()).To(Equal(2))
 	})
+	It("skips a run-shaped instance occupied by another template's payload", func() {
+		original, _, err := defaultTeam.SavePipeline(atc.PipelineRef{Name: "recycled-name"}, atc.Config{Template: true, Jobs: atc.JobConfigs{{Name: "entry"}}}, 0, false)
+		Expect(err).NotTo(HaveOccurred())
+		first, err := factory.CreateRun(context.Background(), original, db.RunParams{}, "creator")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(first.Run.Number()).To(Equal(1))
+
+		By("renaming the template away, which deliberately leaves its payloads on the old name")
+		renamed, err := defaultTeam.RenamePipeline("recycled-name", "recycled-name-archive")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(renamed).To(BeTrue())
+
+		By("recreating a fresh template under the old name")
+		replacement, _, err := defaultTeam.SavePipeline(atc.PipelineRef{Name: "recycled-name"}, atc.Config{Template: true, Jobs: atc.JobConfigs{{Name: "entry"}}}, 0, false)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(replacement.LastRunNumber()).To(Equal(0))
+
+		creation, err := factory.CreateRun(context.Background(), replacement, db.RunParams{}, "creator")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(creation.Run.Number()).To(Equal(2), "the stale payload on {run: 1} must be skipped like any other occupant")
+
+		payload, found, err := defaultTeam.Pipeline(atc.PipelineRef{Name: "recycled-name", InstanceVars: atc.InstanceVars{"run": float64(2)}})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		runID, hasRun := payload.PipelineRunID()
+		Expect(hasRun).To(BeTrue())
+		Expect(runID).To(Equal(creation.Run.ID()))
+	})
 
 	It("hydrates the durable run number only for payload pipelines", func() {
 		template, _, err := defaultTeam.SavePipeline(atc.PipelineRef{Name: "run-number"}, atc.Config{Template: true, Jobs: atc.JobConfigs{{Name: "entry"}}}, 0, false)
