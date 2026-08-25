@@ -293,6 +293,12 @@ func (p *PeerResolver) Fetch(ctx context.Context, peerIP, key, destPath string) 
 }
 
 // extractTarToDir reads a tar stream and extracts files to destDir.
+// extractTarToDir is the path-taking wrapper. Kept for callers that own a
+// directory rather than a handle; the real work is in extractTarToRoot.
+//
+// Its own failures are ENVIRONMENT-attributable — a caller that cannot create
+// or open its own destination is not being told something about the archive —
+// so they are deliberately NOT marked with ErrRefused.
 func extractTarToDir(r io.Reader, destDir string) error {
 	if err := os.MkdirAll(destDir, 0755); err != nil {
 		return fmt.Errorf("create dest dir: %w", err)
@@ -311,6 +317,16 @@ func extractTarToDir(r io.Reader, destDir string) error {
 	}
 	defer root.Close()
 
+	return extractTarToRoot(r, root)
+}
+
+// extractTarToRoot extracts into a root the CALLER owns.
+//
+// Taking the handle rather than a path is the point: a caller that already
+// holds a nested boundary — stream-in, on root.OpenRoot("steps") — must not
+// have to re-join a path to call this, because "the boundary as an argument" is
+// the shape that let an earlier track validate against the wrong root.
+func extractTarToRoot(r io.Reader, root *os.Root) error {
 	tr := tar.NewReader(r)
 	for {
 		hdr, err := tr.Next()
@@ -318,7 +334,7 @@ func extractTarToDir(r io.Reader, destDir string) error {
 			break
 		}
 		if err != nil {
-			return fmt.Errorf("reading tar: %w", err)
+			return refused("reading tar: %w", err)
 		}
 
 		// Normalize permissions: strip setuid/setgid, enforce minimum readable floor.
@@ -337,19 +353,28 @@ func extractTarToDir(r io.Reader, destDir string) error {
 		switch hdr.Typeflag {
 		case tar.TypeDir:
 			if err := root.MkdirAll(hdr.Name, mode); err != nil {
-				return fmt.Errorf("create dir %q: %w", hdr.Name, err)
+				return refused("create dir %q: %w", hdr.Name, err)
 			}
 		case tar.TypeReg:
 			if dir := path.Dir(hdr.Name); dir != "." {
 				if err := root.MkdirAll(dir, 0755); err != nil {
-					return fmt.Errorf("create parent of %q: %w", hdr.Name, err)
+					return refused("create parent of %q: %w", hdr.Name, err)
 				}
 			}
 			f, err := root.OpenFile(hdr.Name, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
 			if err != nil {
-				return fmt.Errorf("create file %q: %w", hdr.Name, err)
+				return refused("create file %q: %w", hdr.Name, err)
 			}
 			if _, err := io.Copy(f, tr); err != nil {
+				// A truncated archive surfaces HERE, not from tr.Next — measured
+				// at five truncation offsets, four of which failed in Copy. It is
+				// the likeliest corrupt input from a flaky or hostile peer, and
+				// reporting it as environment failure makes mirror.go read it as
+				// a PEER fault.
+				if errors.Is(err, io.ErrUnexpectedEOF) {
+					f.Close()
+					return refused("write file %q: %w", hdr.Name, err)
+				}
 				f.Close()
 				return fmt.Errorf("write file %q: %w", hdr.Name, err)
 			}
@@ -366,11 +391,11 @@ func extractTarToDir(r io.Reader, destDir string) error {
 			}
 			if dir := path.Dir(hdr.Name); dir != "." {
 				if err := root.MkdirAll(dir, 0755); err != nil {
-					return fmt.Errorf("create parent of symlink %q: %w", hdr.Name, err)
+					return refused("create parent of symlink %q: %w", hdr.Name, err)
 				}
 			}
 			if err := root.Symlink(hdr.Linkname, hdr.Name); err != nil {
-				return fmt.Errorf("create symlink %q -> %q: %w", hdr.Name, hdr.Linkname, err)
+				return refused("create symlink %q -> %q: %w", hdr.Name, hdr.Linkname, err)
 			}
 		case tar.TypeLink:
 			// A hard link's target is a path inside the archive, so it takes
@@ -378,16 +403,24 @@ func extractTarToDir(r io.Reader, destDir string) error {
 			// case did not exist: the entry fell through the switch, was
 			// dropped, and the extraction still reported success — handing the
 			// caller a tree missing files it asked for.
-			if err := validateSymlinkTarget(hdr.Name, hdr.Linkname); err != nil {
+			//
+			// The target is resolved against the ARCHIVE ROOT, not against the
+			// entry's own directory. That is what root.Link below does with it,
+			// and validating it any other way makes validation and use disagree
+			// — the first version passed hdr.Name here, so a legal archive with
+			// "target.txt" at the root and a hard link at "a/b/link" was
+			// validated as "a/b/target.txt" and wrongly refused. Unreachable
+			// while stream-in dropped TypeLink silently; reachable now.
+			if err := validateSymlinkTarget(".", hdr.Linkname); err != nil {
 				return err
 			}
 			if dir := path.Dir(hdr.Name); dir != "." {
 				if err := root.MkdirAll(dir, 0755); err != nil {
-					return fmt.Errorf("create parent of hard link %q: %w", hdr.Name, err)
+					return refused("create parent of hard link %q: %w", hdr.Name, err)
 				}
 			}
 			if err := root.Link(hdr.Linkname, hdr.Name); err != nil {
-				return fmt.Errorf("create hard link %q -> %q: %w", hdr.Name, hdr.Linkname, err)
+				return refused("create hard link %q -> %q: %w", hdr.Name, hdr.Linkname, err)
 			}
 		case tar.TypeXGlobalHeader, tar.TypeXHeader:
 			// pax metadata, not a filesystem entry. Go's reader applies these
@@ -401,7 +434,7 @@ func extractTarToDir(r io.Reader, destDir string) error {
 			// rather than skip: a silent drop hands back a tree the caller
 			// believes is complete, which is the defect this function's error
 			// propagation exists to prevent.
-			return fmt.Errorf("entry %q has unsupported type %q", hdr.Name, string(rune(hdr.Typeflag)))
+			return refused("entry %q has unsupported type %q", hdr.Name, string(rune(hdr.Typeflag)))
 		}
 	}
 	return nil

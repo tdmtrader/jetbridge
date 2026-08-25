@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -469,58 +470,25 @@ func (s *Server) handleStreamIn(w http.ResponseWriter, r *http.Request) {
 		tarSource = gr
 	}
 
-	tr := tar.NewReader(tarSource)
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			break
+	// One extraction implementation, not two. This handler carried its own
+	// tar loop with a strings.HasPrefix boundary and an unvalidated
+	// os.Symlink; extractTarToDir has driven every entry through an os.Root
+	// handle since Track 1 and has been adversarially reviewed five times.
+	//
+	// What stays here: the gzip peek above (extractTarToDir takes a plain
+	// reader), the temp-dir/rename machinery below, and the registry
+	// registration. Only the loop goes.
+	if err := extractTarToDir(tarSource, tmpDest); err != nil {
+		// Attribution, not containment. mirror.go reads any non-201 from a
+		// peer as "rejected", so an archive-attributable failure reported as
+		// 500 makes a poisoned artifact look like a peer fault.
+		status := http.StatusInternalServerError
+		if errors.Is(err, ErrRefused) {
+			status = http.StatusBadRequest
 		}
-		if err != nil {
-			s.logger.Error("failed-to-read-tar", err, lager.Data{"key": key})
-			http.Error(w, "tar: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-
-		target := filepath.Join(tmpDest, hdr.Name)
-		// Path traversal protection.
-		if !strings.HasPrefix(filepath.Clean(target), filepath.Clean(tmpDest)) {
-			continue
-		}
-
-		// Normalize permissions: strip setuid/setgid, enforce minimum readable floor.
-		// Dirs get at least 0755, files get at least 0644, so the daemon can always
-		// read and serve artifacts it extracted.
-		mode := sanitizeMode(hdr.Typeflag, os.FileMode(hdr.Mode))
-
-		switch hdr.Typeflag {
-		case tar.TypeDir:
-			if err := os.MkdirAll(target, mode); err != nil {
-				s.logger.Error("failed-to-create-dir", err, lager.Data{"target": target})
-				http.Error(w, "mkdir: "+err.Error(), http.StatusInternalServerError)
-				return
-			}
-		case tar.TypeReg:
-			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
-				s.logger.Error("failed-to-create-parent-dir", err, lager.Data{"target": target})
-				http.Error(w, "mkdir: "+err.Error(), http.StatusInternalServerError)
-				return
-			}
-			f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
-			if err != nil {
-				s.logger.Error("failed-to-create-file", err, lager.Data{"target": target})
-				http.Error(w, "create: "+err.Error(), http.StatusInternalServerError)
-				return
-			}
-			if _, err := io.Copy(f, tr); err != nil {
-				f.Close()
-				s.logger.Error("failed-to-write-file", err, lager.Data{"target": target})
-				http.Error(w, "write: "+err.Error(), http.StatusInternalServerError)
-				return
-			}
-			f.Close()
-		case tar.TypeSymlink:
-			_ = os.Symlink(hdr.Linkname, target)
-		}
+		s.logger.Error("failed-to-extract-stream-in", err, lager.Data{"key": key, "status": status})
+		http.Error(w, err.Error(), status)
+		return
 	}
 
 	// Move the fully-extracted tree into place. Remove any previous copy

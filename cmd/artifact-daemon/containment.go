@@ -2,11 +2,46 @@ package main
 
 import (
 	"code.cloudfoundry.org/lager/v3"
+	"errors"
 	"fmt"
 	"net/url"
 	"path/filepath"
 	"strings"
 )
+
+// ErrRefused marks an error the ARCHIVE is answerable for, as opposed to one
+// the environment is.
+//
+// It exists for attribution, not for containment. Containment comes from the
+// root handle; this decides whether the caller sees 4xx or 5xx. That matters
+// because mirror.go classifies any non-201 from a peer as "rejected", so a
+// poisoned artifact reported as 500 reads to an operator as the PEER being at
+// fault rather than the artifact's source — the exact attribution problem
+// Track 2 exists to fix.
+//
+// Classify by CAUSE, not by which function raised the error. An earlier draft
+// wrapped "containment refusals" and sent malformed tar (400 today) and every
+// os.Root traversal refusal to 500 — the two most likely hostile inputs both
+// landing on the peer-fault side of the very split invented to prevent that.
+var ErrRefused = errors.New("artifact-daemon: refused")
+
+// refused marks err as archive-attributable.
+//
+// os.Root's escape error is *fs.PathError wrapping an unexported
+// *errors.errorString — it matches neither fs.ErrNotExist, fs.ErrPermission nor
+// fs.ErrInvalid, so there is no identity to test for. Refusals are therefore
+// marked at the CALL SITE, by the code that knows the operation was driven by
+// an archive entry.
+//
+// Owned consequence: a genuine ENOSPC at one of those sites is misreported as
+// 400. The alternative — a lexical pre-check to attribute the failure — would
+// reintroduce a name check whose disagreement with the handle is this whole
+// track's subject, and it does not even work uniformly: Root.Symlink returns
+// *os.LinkError rather than *fs.PathError, so error-shape discrimination needs
+// two type switches resting on an undocumented invariant.
+func refused(format string, args ...any) error {
+	return fmt.Errorf("%w: "+format, append([]any{ErrRefused}, args...)...)
+}
 
 // validateSymlinkTarget decides whether a tar symlink entry may be created.
 //
@@ -38,11 +73,11 @@ import (
 // track removes.
 func validateSymlinkTarget(entryName, linkname string) error {
 	if linkname == "" {
-		return fmt.Errorf("symlink entry %q has an empty target", entryName)
+		return refused("symlink entry %q has an empty target", entryName)
 	}
 
 	if filepath.IsAbs(linkname) {
-		return fmt.Errorf(
+		return refused(
 			"symlink entry %q targets an absolute path %q: absolute targets name the producing machine's filesystem and are refused",
 			entryName, linkname,
 		)
@@ -53,7 +88,7 @@ func validateSymlinkTarget(entryName, linkname string) error {
 	resolved := filepath.Clean(filepath.Join(filepath.Dir(entryName), linkname))
 
 	if resolved == ".." || strings.HasPrefix(resolved, ".."+string(filepath.Separator)) {
-		return fmt.Errorf(
+		return refused(
 			"symlink entry %q targets %q, which resolves outside the destination (%q)",
 			entryName, linkname, resolved,
 		)
