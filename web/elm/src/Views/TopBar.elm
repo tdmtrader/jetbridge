@@ -99,7 +99,7 @@ breadcrumbs session route =
             Routes.Pipeline { id } ->
                 case lookupPipeline (byPipelineId id) session of
                     Nothing ->
-                        ( [], False, False )
+                        runPipelineBreadcrumbs session id []
 
                     Just pipeline ->
                         ( pipelineBreadcrumbs session pipeline [], pipeline.paused, pipeline.archived )
@@ -107,7 +107,7 @@ breadcrumbs session route =
             Routes.Build { id, groups } ->
                 case lookupPipeline (byPipelineId id) session of
                     Nothing ->
-                        ( [], False, False )
+                        runPipelineBreadcrumbs session id [ breadcrumbSeparator, jobBreadcrumb id.jobName ]
 
                     Just pipeline ->
                         ( pipelineBreadcrumbs session pipeline groups
@@ -121,7 +121,7 @@ breadcrumbs session route =
             Routes.Resource { id, groups } ->
                 case lookupPipeline (byPipelineId id) session of
                     Nothing ->
-                        ( [], False, False )
+                        runPipelineBreadcrumbs session id [ breadcrumbSeparator, resourceBreadcrumb id ]
 
                     Just pipeline ->
                         ( pipelineBreadcrumbs session pipeline groups
@@ -135,7 +135,7 @@ breadcrumbs session route =
             Routes.Job { id, groups } ->
                 case lookupPipeline (byPipelineId id) session of
                     Nothing ->
-                        ( [], False, False )
+                        runPipelineBreadcrumbs session id [ breadcrumbSeparator, jobBreadcrumb id.jobName ]
 
                     Just pipeline ->
                         ( pipelineBreadcrumbs session pipeline groups
@@ -176,7 +176,13 @@ breadcrumbs session route =
             Routes.Causality { id, direction, version, groups } ->
                 case lookupPipeline (byPipelineId id) session of
                     Nothing ->
-                        ( [], False, False )
+                        runPipelineBreadcrumbs session
+                            id
+                            [ breadcrumbSeparator
+                            , resourceBreadcrumb <| Concourse.resourceIdFromVersionedResourceId id
+                            , breadcrumbSeparator
+                            , causalityBreadCrumb id direction (Maybe.withDefault Dict.empty version)
+                            ]
 
                     Just pipeline ->
                         ( pipelineBreadcrumbs session pipeline groups
@@ -272,6 +278,65 @@ pipelineBreadcrumbs session pipeline groups =
         []
     )
         ++ [ pipelineBreadcrumb inInstanceGroup pipeline groups ]
+
+{-| A run payload pipeline is deliberately excluded from cluster-wide pipeline
+lists server-side -- atc/db/pipeline_factory.go AllPipelines and atc/db/team.go
+Pipelines both require `p.pipeline_run_id IS NULL`, and /api/v1/pipelines is the
+only source of session.pipelines -- so `lookupPipeline` can never resolve it and
+every page nested inside a run would otherwise render an empty breadcrumb bar.
+Fall back to the base template's row, which *is* listed, and name the run
+explicitly, producing the same `template / run #N / ...` chain the run page
+itself renders.
+
+The `template` guard matters: an ordinary instanced pipeline whose vars merely
+look like {run: N} must keep stock breadcrumb treatment rather than being
+re-parented under a same-named pipeline.
+
+-}
+runPipelineBreadcrumbs :
+    Session
+    -> { r | teamName : String, pipelineName : String, pipelineInstanceVars : Concourse.InstanceVars }
+    -> List (Bool -> Html Message)
+    -> ( List (Bool -> Html Message), Bool, Bool )
+runPipelineBreadcrumbs session routeId rest =
+    let
+        templateId =
+            { teamName = routeId.teamName
+            , pipelineName = routeId.pipelineName
+            , pipelineInstanceVars = Dict.empty
+            }
+    in
+    case
+        ( Concourse.runNumberFromInstanceVars routeId.pipelineInstanceVars
+        , lookupPipeline (byPipelineId templateId) session
+        )
+    of
+        ( Just number, Just template ) ->
+            if template.template == Just True then
+                ( pipelineBreadcrumbs session template []
+                    ++ (breadcrumbSeparator :: runLinkBreadcrumb templateId number :: rest)
+                , False
+                , template.archived
+                )
+
+            else
+                ( [], False, False )
+
+        _ ->
+            ( [], False, False )
+
+
+runLinkBreadcrumb : Concourse.PipelineIdentifier -> Int -> Bool -> Html Message
+runLinkBreadcrumb templateId number isLastBreadcrumb =
+    Html.a
+        ([ id "breadcrumb-run"
+         , href <|
+            Routes.toString <|
+                Routes.PipelineRun { template = templateId, number = number }
+         ]
+            ++ Styles.breadcrumbItem True isLastBreadcrumb
+        )
+        [ Html.text <| "run #" ++ String.fromInt number ]
 
 
 pipelineNameView : String -> Bool -> String
