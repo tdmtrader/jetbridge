@@ -2872,6 +2872,35 @@ var _ = Describe("Template parameter schema and run retention configuration", fu
 		Entry("non-scalar enum member", atc.PipelineRef{Name: "template"}, templateWith(atc.ParamSchema{Name: "env", Type: atc.ParamTypeEnum, Values: []any{"staging", map[string]any{"name": "production"}}}), "parameter env enum values must be string, number, or bool"),
 		Entry("wrong enum default scalar", atc.PipelineRef{Name: "template"}, templateWith(atc.ParamSchema{Name: "env", Type: atc.ParamTypeEnum, Values: []any{"staging", "production"}, Default: true}), "parameter env default must have the enum value type"),
 		Entry("dynamic identities", atc.PipelineRef{Name: "template"}, dynamicTemplateConfig(), ""),
+		Entry("parameter in a map key", atc.PipelineRef{Name: "template"}, func() atc.Config {
+			config := dynamicTemplateConfig()
+			config.Resources[0].Source = atc.Source{"((environment))": "example/source"}
+			return config
+		}(), "resources[0].source.((environment)): template parameter ((environment)) is not allowed in a map key"),
+		Entry("reserved run number in a map key", atc.PipelineRef{Name: "template"}, func() atc.Config {
+			config := dynamicTemplateConfig()
+			config.Jobs[0].PlanSequence[1].Config.(*atc.TaskStep).Config.Params = atc.TaskEnv{"((run))": "1"}
+			return config
+		}(), "template parameter ((run)) is not allowed in a map key"),
+		Entry("parameter in a parameter default", atc.PipelineRef{Name: "template"}, func() atc.Config {
+			config := dynamicTemplateConfig()
+			config.Params[0].Default = "((environment))"
+			return config
+		}(), "params[0].default: template parameter ((environment)) is not allowed in a parameter declaration"),
+		Entry("parameter in a parameter name", atc.PipelineRef{Name: "template"}, templateWith(
+			atc.ParamSchema{Name: "env-((env))", Type: atc.ParamTypeString},
+			atc.ParamSchema{Name: "env", Type: atc.ParamTypeString},
+		), "params[0].name: template parameter ((env)) is not allowed in a parameter declaration"),
+		Entry("undeclared reference in a map key is left alone", atc.PipelineRef{Name: "template"}, func() atc.Config {
+			config := dynamicTemplateConfig()
+			config.Resources[0].Source = atc.Source{"((not-a-parameter))": "example/source"}
+			return config
+		}(), ""),
+		Entry("qualified reference in a map key is left alone", atc.PipelineRef{Name: "template"}, func() atc.Config {
+			config := dynamicTemplateConfig()
+			config.Resources[0].Source = atc.Source{"((vault:environment))": "example/source"}
+			return config
+		}(), ""),
 	)
 
 	It("accepts a valid effective template shape even when the declaration bit is false", func() {
