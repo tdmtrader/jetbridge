@@ -543,7 +543,21 @@ func (m *Mirror) Evacuate(ctx context.Context, budget time.Duration) {
 // directly on the calling goroutine instead of via the (already-stopped)
 // worker pool.
 func (m *Mirror) evacuateOne(ctx context.Context, key string) {
-	sourceDir := filepath.Join(m.storagePath, "steps", key)
+	// Routed through the same guard as run. This was the finding carried out
+	// of the predecessor track: a raw join four lines below the one that had
+	// just been routed, in the commit whose message claimed the checks had
+	// moved into the operations.
+	//
+	// It was safe only by accident — findUnmirroredKeys filters with
+	// DirEntry.IsDir(), which has lstat semantics, so a planted symlink was
+	// skipped before reaching here. A guarantee living in a property of a
+	// different function, written down nowhere.
+	stepsRoot := filepath.Join(m.storagePath, "steps")
+	sourceDir, err := locateArtifact(stepsRoot, key)
+	if err != nil {
+		m.logger.Info("evacuate-key-refused", lager.Data{"key": key, "reason": err.Error()})
+		return
+	}
 	if _, err := os.Stat(sourceDir); err != nil {
 		m.logger.Debug("evacuate-source-missing", lager.Data{"key": key})
 		return

@@ -5,12 +5,15 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -1061,5 +1064,70 @@ func TestMirrorJob_PutsCarryMirrorOriginHeader(t *testing.T) {
 	}
 	if gotHeader == "" {
 		t.Error("expected mirror PUT to carry the mirror-origin header")
+	}
+}
+
+// AC2 — the carried finding. evacuateOne joined its key raw, four lines below
+// the run() that had already been routed. Safe only because
+// findUnmirroredKeys filters with DirEntry.IsDir() (lstat semantics), so a
+// planted symlink never reached it — a guarantee living in a different
+// function and written down nowhere.
+func TestEvacuateOne_RefusesAKeyResolvingOutsideTheRoot(t *testing.T) {
+	storage := t.TempDir()
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("HOST-SECRET"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// A link under steps/ pointing out — the shape the IsDir() filter used to
+	// hide, planted directly because that is how one would arrive.
+	if err := os.MkdirAll(filepath.Join(storage, "steps", "h"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(storage, "steps", "h", "out")); err != nil {
+		t.Fatal(err)
+	}
+
+	var mu sync.Mutex
+	var served [][]byte
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		served = append(served, b)
+		mu.Unlock()
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer peer.Close()
+
+	host := strings.TrimPrefix(peer.URL, "http://")
+	ip, portStr, _ := net.SplitHostPort(host)
+	port, _ := strconv.Atoi(portStr)
+
+	m := NewMirror(MirrorConfig{
+		Logger:      lagertest.NewTestLogger("evac"),
+		StoragePath: storage,
+		Port:        port,
+		Scheme:      "http",
+		// -1 = all peers. Replicas:1 means "local + 0 peers", which selects
+		// nothing — the first version of this test used it and therefore
+		// passed with and without the fix.
+		Replicas: -1,
+		Guard:    NewReadGuard(),
+		Client:   &http.Client{Timeout: 5 * time.Second},
+	})
+	defer m.Stop()
+	m.evacuationPeers = []string{ip}
+
+	m.evacuateOne(context.Background(), "h/out")
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, b := range served {
+		if bytes.Contains(b, []byte("HOST-SECRET")) {
+			t.Errorf("AC2: evacuate shipped out-of-root content to a peer")
+		}
+	}
+	if len(served) > 0 {
+		t.Errorf("AC2: evacuate sent %d request(s) for a key resolving outside the root", len(served))
 	}
 }
