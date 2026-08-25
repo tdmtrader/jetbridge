@@ -478,11 +478,17 @@ func (s *Server) handleStreamIn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dest, err := s.artifactLocation(filepath.Join(s.storagePath, "steps"), key)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
+	// No containment check here, and that is the point of the track.
+	//
+	// Containment on this path is now a property of stepsRoot below: every
+	// operation resolves inside that handle or fails. Demonstrated, not
+	// assumed — with the old check still present it was removed and the escape
+	// test still passed.
+	//
+	// dest is still computed because the read/sweep guard keys on the absolute
+	// form under R12, and the registry stores absolute values. It is a LOCK KEY
+	// and a registry value, not a path anything writes through.
+	dest := filepath.Join(s.storagePath, "steps", key)
 
 	// The steps/ boundary is a HANDLE, not an argument.
 	//
