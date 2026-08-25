@@ -41,6 +41,19 @@ func (pl *pipelineLifecycle) ArchiveAbandonedPipelines() error {
 			sq.NotEq{"p.parent_job_id": nil},
 			// pipeline is not already archived
 			sq.Eq{"p.archived": false},
+			// a pipeline template is never abandoned work. Archiving clears
+			// every job and resource config row (see pipeline.archive), which
+			// would destroy the body that all of the template's future runs
+			// are materialized from, with no recovery path and no version skew
+			// required. Templates are removed explicitly, through
+			// DeletePipeline, which refuses once run history exists.
+			sq.Eq{"p.template": false},
+			// a run payload is owned by its pipeline_runs row, not by a parent
+			// job. pipeline.archive is the one payload writer in the tree that
+			// does not pass through the run-payload mutation guard, so exclude
+			// payloads here instead of relying on the invariant that payloads
+			// are always created with a NULL parent_job_id.
+			sq.Eq{"p.pipeline_run_id": nil},
 			sq.Or{
 				// job (that set child pipeline) from parent pipeline is
 				// removed, Concourse marks job as inactive

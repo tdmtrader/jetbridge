@@ -1,6 +1,7 @@
 package db_test
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -149,6 +150,74 @@ var _ = Describe("PipelineLifecycle", func() {
 					childPipeline.Reload()
 					Expect(childPipeline.Archived()).To(BeFalse())
 				})
+			})
+		})
+
+		Context("the child pipeline set by a job is a template", func() {
+			var childTemplate db.Pipeline
+
+			BeforeEach(func() {
+				setTemplateBuild, _ := defaultJob.CreateBuild(defaultBuildCreatedBy)
+
+				var saveErr error
+				childTemplate, _, saveErr = setTemplateBuild.SavePipeline(
+					atc.PipelineRef{Name: "child-template"},
+					defaultTeam.ID(),
+					atc.Config{Template: true, Jobs: atc.JobConfigs{{Name: "entry"}}},
+					db.ConfigVersion(0),
+					false,
+				)
+				Expect(saveErr).ToNot(HaveOccurred())
+				setTemplateBuild.Finish(db.BuildStatusSucceeded)
+
+				Expect(defaultPipeline.Destroy()).To(Succeed())
+			})
+
+			It("leaves the template alone so its body survives the parent job", func() {
+				// This fails if the automatic archiver erases a template's jobs
+				// and resources, which is unrecoverable and takes every future
+				// run of that template with it.
+				Expect(childTemplate.Reload()).To(BeTrue())
+				Expect(childTemplate.Archived()).To(BeFalse())
+
+				config, configErr := childTemplate.Config()
+				Expect(configErr).ToNot(HaveOccurred())
+				Expect(config.Template).To(BeTrue())
+				Expect(config.Jobs).To(HaveLen(1))
+			})
+		})
+
+		Context("the pipeline is the payload of a numbered run", func() {
+			var payload db.Pipeline
+
+			BeforeEach(func() {
+				templatePipeline, _, saveErr := defaultTeam.SavePipeline(
+					atc.PipelineRef{Name: "archiver-template"},
+					atc.Config{Template: true, Jobs: atc.JobConfigs{{Name: "entry"}}},
+					0,
+					false,
+				)
+				Expect(saveErr).ToNot(HaveOccurred())
+
+				factory := db.NewPipelineRunFactory(dbConn, lockFactory)
+				creation, runErr := factory.CreateRun(context.Background(), templatePipeline, db.RunParams{}, defaultBuildCreatedBy)
+				Expect(runErr).ToNot(HaveOccurred())
+
+				var found bool
+				var lookupErr error
+				payload, found, lookupErr = factory.InstancePipeline(creation.Run)
+				Expect(lookupErr).ToNot(HaveOccurred())
+				Expect(found).To(BeTrue())
+			})
+
+			It("is never archived by the abandoned-pipeline collector", func() {
+				// This fails if a live run's materialized body is erased out from
+				// under its running builds. Regression pin: payloads are created
+				// with a NULL parent_job_id, so this also holds today -- it pins
+				// the exclusion locally rather than by an invariant set in
+				// another file.
+				Expect(payload.Reload()).To(BeTrue())
+				Expect(payload.Archived()).To(BeFalse())
 			})
 		})
 
