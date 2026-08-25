@@ -182,6 +182,15 @@ func pipelineRunPage(r *http.Request) (db.Page, error) {
 		if err != nil || limit < 1 {
 			return db.Page{}, fmt.Errorf("invalid limit pagination value")
 		}
+		// This route is reachable by an unauthenticated viewer on an exposed
+		// template, and the handler issues one InstancePipeline query per
+		// returned run, so an unbounded caller-supplied limit is an
+		// unauthenticated amplifier. A well-formed but absurd limit clamps
+		// rather than 400s, so existing scripted callers keep working; the
+		// Link headers then echo the clamped value.
+		if limit > atc.PaginationAPIMaxLimit {
+			limit = atc.PaginationAPIMaxLimit
+		}
 		page.Limit = limit
 	}
 	if page.From != nil && page.To != nil && *page.From > *page.To {
