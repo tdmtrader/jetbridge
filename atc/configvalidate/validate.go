@@ -56,6 +56,10 @@ func ValidateTemplateConfig(config atc.Config) error {
 		}
 	}
 
+	if err := atc.ValidateTemplatePlaceholders(config); err != nil {
+		return err
+	}
+
 	for _, job := range config.Jobs {
 		entry := true
 		for _, input := range job.Inputs() {
