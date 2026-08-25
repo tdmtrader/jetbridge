@@ -31,6 +31,26 @@ func (p *pipelinePauser) PausePipelines(ctx context.Context, daysSinceLastBuild 
 	rows, err := pipelinesQuery.Where(sq.And{
 		sq.Eq{
 			"p.paused": false,
+			// A template's jobs structurally cannot build:
+			// createAdmittedJobBuild refuses every build on a template pipeline
+			// (ErrPipelineTemplateBuild), so its job rows can never carry a
+			// completed build or a next_build_id and therefore ALWAYS satisfy
+			// the idle subquery below. The damage is not cosmetic: a paused
+			// template makes CreateRunInTx refuse with ErrPipelineRunPaused,
+			// and buildLogCollector skips paused pipelines — run build logs are
+			// reached only through the template's job rows
+			// (pipeline.ChronoRunBuilds), so every run of that template stops
+			// being reaped.
+			"p.template": false,
+			// Run payloads are platform-managed, not user-managed, and their
+			// dormancy already has an owner: attemptRunCompletion pauses them
+			// with paused_by='run-completed', and reopenPipelineRun un-pauses
+			// exactly that attribution and no other. An auto-pause writes an
+			// attribution reopen will never clear, so a still-'running' run
+			// idle past the threshold would wedge permanently: its payload is
+			// paused, so no build can start, so the run can neither complete
+			// nor be freed by a manual re-trigger.
+			"p.pipeline_run_id": nil,
 		},
 		// subquery returns a list of pipelines who jobs ran WITHIN the range.
 		// These are the pipelines that SHOULD NOT be paused which we use to

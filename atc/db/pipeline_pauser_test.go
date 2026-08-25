@@ -222,6 +222,67 @@ var _ = Describe("PipelinePauser", func() {
 			Expect(newPipeline.Paused()).To(BeFalse(), "pipeline should NOT be paused")
 		})
 	})
+	Describe("templates and run payloads", func() {
+		It("never auto-pauses a template", func() {
+			By("creating a template, whose jobs structurally cannot build")
+			template, _, err := defaultTeam.SavePipeline(
+				atc.PipelineRef{Name: "idle-template"},
+				atc.Config{Template: true, Jobs: atc.JobConfigs{{Name: "entry"}}},
+				db.ConfigVersion(0), false,
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(template.Paused()).To(BeFalse(), "template should start unpaused")
+
+			By("making it look like the template was set 15 days ago")
+			_, err = dbConn.Exec(`UPDATE pipelines SET last_updated = NOW() - INTERVAL '15' DAY WHERE id = $1`, template.ID())
+			Expect(err).NotTo(HaveOccurred())
+
+			By("running the pipeline pauser")
+			Expect(pauser.PausePipelines(context.TODO(), 10)).To(Succeed())
+
+			_, err = template.Reload()
+			Expect(err).To(BeNil())
+			Expect(template.Paused()).To(BeFalse(), "a template must never be auto-paused: run creation would refuse and run log reaping would stop")
+
+			By("proving run creation still works")
+			_, err = db.NewPipelineRunFactory(dbConn, lockFactory).CreateRun(context.TODO(), template, db.RunParams{}, "creator")
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("never auto-pauses the payload of a run that is still running", func() {
+			template, _, err := defaultTeam.SavePipeline(
+				atc.PipelineRef{Name: "idle-payload-template"},
+				atc.Config{Template: true, Jobs: atc.JobConfigs{{Name: "entry"}}},
+				db.ConfigVersion(0), false,
+			)
+			Expect(err).NotTo(HaveOccurred())
+			creation, err := db.NewPipelineRunFactory(dbConn, lockFactory).CreateRun(context.TODO(), template, db.RunParams{}, "creator")
+			Expect(err).NotTo(HaveOccurred())
+
+			payload, found, err := defaultTeam.Pipeline(atc.PipelineRef{
+				Name:         template.Name(),
+				InstanceVars: atc.InstanceVars{"run": float64(creation.Run.Number())},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(payload.Paused()).To(BeFalse(), "payload should start unpaused")
+
+			By("aging the payload into the idle window with no build to point at")
+			// The shape of a run whose builds all finished long ago while the
+			// run header is still 'running'.
+			_, err = dbConn.Exec(`UPDATE pipelines SET last_updated = NOW() - INTERVAL '15' DAY WHERE id = $1`, payload.ID())
+			Expect(err).NotTo(HaveOccurred())
+			_, err = dbConn.Exec(`UPDATE jobs SET next_build_id = NULL WHERE pipeline_id = $1`, payload.ID())
+			Expect(err).NotTo(HaveOccurred())
+
+			By("running the pipeline pauser")
+			Expect(pauser.PausePipelines(context.TODO(), 10)).To(Succeed())
+
+			_, err = payload.Reload()
+			Expect(err).To(BeNil())
+			Expect(payload.Paused()).To(BeFalse(), "reopen only clears paused_by='run-completed', so an auto-pause would wedge the run permanently")
+		})
+	})
 	Describe("pipeline with a build currently running", func() {
 		It("should not be paused", func() {
 			By("using the default pipeline with one job")
