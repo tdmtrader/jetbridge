@@ -138,7 +138,70 @@ all =
                     |> Tuple.first
                     |> queryView
                     |> Query.find [ id "breadcrumbs" ]
-                    |> Query.has [ id "breadcrumb-pipeline", id "breadcrumb-runs", text "run #42" ]
+                    |> Query.has [ id "breadcrumb-pipeline", id "breadcrumb-runs", text "run #42" ]        , test "a page inside a run falls back to the base template's breadcrumbs" <|
+            \_ ->
+                let
+                    baseTemplate =
+                        Data.pipeline "team" 1 |> Data.withName "template"
+                in
+                Common.initRoute
+                    (Routes.Build
+                        { id =
+                            { teamName = "team"
+                            , pipelineName = "template"
+                            , pipelineInstanceVars = Dict.fromList [ ( "run", JsonNumber 42 ) ]
+                            , jobName = "some-job"
+                            , buildName = "1"
+                            }
+                        , highlight = Routes.HighlightNothing
+                        , groups = []
+                        }
+                    )
+                    |> Application.handleCallback
+                        (Callback.AllPipelinesFetched <|
+                            Ok [ { baseTemplate | template = Just True } ]
+                        )
+                    |> Tuple.first
+                    |> queryView
+                    |> Query.find [ id "breadcrumbs" ]
+                    |> Expect.all
+                        [ Query.has
+                            [ id "breadcrumb-pipeline"
+                            , text "template"
+                            , id "breadcrumb-run"
+                            , text "run #42"
+                            , id "breadcrumb-job"
+                            , text "some-job"
+                            ]
+                        , Query.find [ id "breadcrumb-run" ]
+                            >> Query.has
+                                [ tag "a"
+                                , attribute <| Attr.href "/teams/team/pipelines/template/runs/42"
+                                ]
+                        ]
+        , test "an ordinary instanced pipeline that merely looks like a run gets no run breadcrumbs" <|
+            \_ ->
+                Common.initRoute
+                    (Routes.Build
+                        { id =
+                            { teamName = "team"
+                            , pipelineName = "template"
+                            , pipelineInstanceVars = Dict.fromList [ ( "run", JsonNumber 42 ) ]
+                            , jobName = "some-job"
+                            , buildName = "1"
+                            }
+                        , highlight = Routes.HighlightNothing
+                        , groups = []
+                        }
+                    )
+                    |> Application.handleCallback
+                        (Callback.AllPipelinesFetched <|
+                            Ok [ Data.pipeline "team" 1 |> Data.withName "template" ]
+                        )
+                    |> Tuple.first
+                    |> queryView
+                    |> Query.find [ id "breadcrumbs" ]
+                    |> Query.hasNot [ id "breadcrumb-run" ]
         , rspecStyleDescribe "when on pipeline page"
             (Common.init "/teams/team/pipelines/pipeline"
                 |> Application.handleCallback

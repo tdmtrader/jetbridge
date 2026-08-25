@@ -98,7 +98,7 @@ module Concourse exposing
     , pipelineId
     , resourceId
     , resourceIdFromVersionedResourceId
-    , retrieveCSRFToken
+    , retrieveCSRFToken    , runNumberFromInstanceVars
     , toInstanceGroupId
     , toPipelineId
     , toVersionedResourceId
@@ -1189,6 +1189,30 @@ isRunPayload : Pipeline -> Bool
 isRunPayload pipeline =
     pipeline.template == Just False
         && pipeline.runNumber /= Nothing
+
+{-| A run payload pipeline is stored as `(<template name>, {"run": N})` -- see
+atc/db/pipeline_run_factory.go:146, which materialises the child ref as
+`atc.InstanceVars{"run": float64(number)}`. Given the instance vars carried by a
+route, recover N -- but only when the vars are exactly that single integral key,
+so an ordinary instanced pipeline that merely has a `run` var is not mistaken
+for a run payload.
+-}
+runNumberFromInstanceVars : InstanceVars -> Maybe Int
+runNumberFromInstanceVars vars =
+    case Dict.toList vars of
+        [ ( "run", JsonNumber f ) ] ->
+            let
+                n =
+                    round f
+            in
+            if toFloat n == f then
+                Just n
+
+            else
+                Nothing
+
+        _ ->
+            Nothing
 
 
 type ParamType = StringParam | NumberParam | BoolParam | EnumParam
