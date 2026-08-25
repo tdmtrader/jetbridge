@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -483,24 +484,38 @@ func (s *Server) handleStreamIn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Extract into a temp sibling and rename into place on success. Readers
-	// (resolve, GET/HEAD, peer probes) treat any existing steps/{key} dir as
-	// a complete artifact, so partial state — an in-flight extraction or a
-	// failed upload — must never be visible at the final path.
-	stepsRoot := filepath.Join(s.storagePath, "steps")
-	if err := os.MkdirAll(stepsRoot, 0755); err != nil {
+	// The steps/ boundary is a HANDLE, not an argument.
+	//
+	// An earlier track passed the boundary as a parameter and then validated
+	// against a different one, so a symlink under steps/ pointing at the store
+	// root satisfied "contained" while plainly escaping steps/. A nested root
+	// cannot be passed and ignored: every operation below resolves inside it or
+	// fails.
+	if err := s.root.MkdirAll("steps", 0755); err != nil {
 		s.logger.Error("failed-to-create-stream-in-dir", err, lager.Data{"key": key})
 		http.Error(w, "create dir: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	tmpDest, err := os.MkdirTemp(stepsRoot, ".in-tmp-")
+	stepsRoot, err := s.root.OpenRoot("steps")
+	if err != nil {
+		s.logger.Error("failed-to-open-steps-root", err, lager.Data{"key": key})
+		http.Error(w, "open steps root: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer stepsRoot.Close()
+
+	// Extract into a temp sibling and rename into place on success. Readers
+	// (resolve, GET/HEAD, peer probes) treat any existing steps/{key} dir as
+	// a complete artifact, so partial state — an in-flight extraction or a
+	// failed upload — must never be visible at the final path.
+	tmpName, err := mkdirTempIn(stepsRoot, ".in-tmp-")
 	if err != nil {
 		s.logger.Error("failed-to-create-stream-in-tmp-dir", err, lager.Data{"key": key})
 		http.Error(w, "create tmp dir: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	// No-op after the successful rename; cleans up on every error path.
-	defer os.RemoveAll(tmpDest)
+	defer stepsRoot.RemoveAll(tmpName)
 
 	// Auto-detect gzip by peeking at the first 2 bytes.
 	br := bufio.NewReader(r.Body)
@@ -524,7 +539,15 @@ func (s *Server) handleStreamIn(w http.ResponseWriter, r *http.Request) {
 	// What stays here: the gzip peek above (extractTarToDir takes a plain
 	// reader), the temp-dir/rename machinery below, and the registry
 	// registration. Only the loop goes.
-	if err := extractTarToDir(tarSource, tmpDest); err != nil {
+	tmpRoot, err := stepsRoot.OpenRoot(tmpName)
+	if err != nil {
+		s.logger.Error("failed-to-open-tmp-root", err, lager.Data{"key": key})
+		http.Error(w, "open tmp root: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer tmpRoot.Close()
+
+	if err := extractTarToRoot(tarSource, tmpRoot); err != nil {
 		// Attribution, not containment. mirror.go reads any non-201 from a
 		// peer as "rejected", so an archive-attributable failure reported as
 		// 500 makes a poisoned artifact look like a peer fault.
@@ -541,19 +564,25 @@ func (s *Server) handleStreamIn(w http.ResponseWriter, r *http.Request) {
 	// first (rename onto a non-empty dir fails). The replace is destructive
 	// like a sweep: take the handle's exclusive lock so in-flight reads
 	// (resolve copies, GET/mirror tar walks) never see a half-removed tree.
-	if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
-		s.logger.Error("failed-to-create-stream-in-parent", err, lager.Data{"key": key})
-		http.Error(w, "create parent: "+err.Error(), http.StatusInternalServerError)
-		return
+	if dir := path.Dir(key); dir != "." {
+		if err := stepsRoot.MkdirAll(dir, 0755); err != nil {
+			s.logger.Error("failed-to-create-stream-in-parent", err, lager.Data{"key": key})
+			http.Error(w, "create parent: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 	renameErr := func() error {
+		// The guard's keys stay ABSOLUTE under R12 — the sweeper and every
+		// reader key on the absolute form, and a relative key here would mean
+		// the two stop excluding each other silently. The OPERATIONS go through
+		// the handle; only the lock key is a path.
 		release := s.guard.BeginSweep(s.stepHandle(dest))
 		defer release()
-		os.RemoveAll(dest)
-		return os.Rename(tmpDest, dest)
+		stepsRoot.RemoveAll(key)
+		return stepsRoot.Rename(tmpName, key)
 	}()
 	if renameErr != nil {
-		s.logger.Error("failed-to-rename-stream-in", renameErr, lager.Data{"key": key, "tmp": tmpDest})
+		s.logger.Error("failed-to-rename-stream-in", renameErr, lager.Data{"key": key, "tmp": tmpName})
 		http.Error(w, "rename: "+renameErr.Error(), http.StatusInternalServerError)
 		return
 	}

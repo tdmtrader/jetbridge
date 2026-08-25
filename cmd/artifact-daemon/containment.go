@@ -4,8 +4,12 @@ import (
 	"code.cloudfoundry.org/lager/v3"
 	"errors"
 	"fmt"
+	"io/fs"
+	"math/rand/v2"
 	"net/url"
+	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -402,4 +406,27 @@ func (s *Server) lookupRegistry(key string) (string, bool) {
 		return "", false
 	}
 	return path, true
+}
+
+// mkdirTempIn is os.MkdirTemp for a root handle.
+//
+// os.Root has no MkdirTemp. Hand-rolled rather than reached for by path,
+// because taking the path would mean re-joining storagePath and handing the
+// boundary around as a string again — the shape this track exists to remove.
+//
+// Same contract as os.MkdirTemp: a private-mode directory with an
+// unpredictable name, retrying on collision.
+func mkdirTempIn(root *os.Root, prefix string) (string, error) {
+	for attempt := 0; attempt < 10000; attempt++ {
+		name := prefix + strconv.FormatUint(rand.Uint64(), 36)
+		err := root.Mkdir(name, 0o700)
+		if err == nil {
+			return name, nil
+		}
+		if errors.Is(err, fs.ErrExist) {
+			continue
+		}
+		return "", err
+	}
+	return "", fmt.Errorf("mkdirTempIn %q: exhausted attempts", prefix)
 }
