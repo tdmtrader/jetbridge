@@ -151,6 +151,83 @@ func (index ResourceTypeIndex) FindEquivalent(obj any) (any, bool) {
 	return ResourceTypes(index).Lookup(name(obj))
 }
 
+// TemplateDiff renders a change to a pipeline's template classification. The
+// flag decides whether a `fly set-pipeline` is editing an ordinary pipeline or
+// a template, so a change to it alone must still count as a change.
+type TemplateDiff struct {
+	Before bool
+	After  bool
+}
+
+func (diff TemplateDiff) Render(to io.Writer) {
+	fmt.Fprintln(to, ansi.Color("template has changed:", "yellow"))
+
+	renderDiff(to,
+		fmt.Sprintf("template: %t\n", diff.Before),
+		fmt.Sprintf("template: %t\n", diff.After),
+	)
+}
+
+// RunRetentionDiff renders a change to a template's run retention policy.
+type RunRetentionDiff struct {
+	Before *RunRetentionConfig
+	After  *RunRetentionConfig
+}
+
+func (diff RunRetentionDiff) Render(to io.Writer) {
+	label := "run retention"
+	if diff.Before != nil && diff.After != nil {
+		fmt.Fprintf(to, ansi.Color("%s has changed:", "yellow")+"\n", label)
+		payloadA, _ := yaml.Marshal(diff.Before)
+		payloadB, _ := yaml.Marshal(diff.After)
+		renderDiff(to, string(payloadA), string(payloadB))
+	} else if diff.Before != nil {
+		fmt.Fprintf(to, ansi.Color("%s has been removed:", "yellow")+"\n", label)
+		payloadA, _ := yaml.Marshal(diff.Before)
+		renderDiff(to, string(payloadA), "")
+	} else {
+		fmt.Fprintf(to, ansi.Color("%s has been added:", "yellow")+"\n", label)
+		payloadB, _ := yaml.Marshal(diff.After)
+		renderDiff(to, "", string(payloadB))
+	}
+}
+
+type ParamIndex []ParamSchema
+
+func (index ParamIndex) Slice() []any {
+	slice := make([]any, len(index))
+	for i, object := range index {
+		slice[i] = object
+	}
+
+	return slice
+}
+
+func (index ParamIndex) FindEquivalent(obj any) (any, bool) {
+	target := name(obj)
+	for _, schema := range index {
+		if schema.Name == target {
+			return schema, true
+		}
+	}
+
+	return nil, false
+}
+
+func diffRunRetention(oldRetention, newRetention *RunRetentionConfig) (RunRetentionDiff, bool) {
+	if oldRetention == nil && newRetention == nil {
+		return RunRetentionDiff{
+			Before: nil,
+			After:  nil,
+		}, false
+	}
+
+	return RunRetentionDiff{
+		Before: oldRetention,
+		After:  newRetention,
+	}, practicallyDifferent(oldRetention, newRetention)
+}
+
 func groupDiffIndices(oldIndex GroupIndex, newIndex GroupIndex) Diffs {
 	diffs := Diffs{}
 
@@ -337,6 +414,27 @@ func (c Config) Diff(out io.Writer, newConfig Config) bool {
 	if diff {
 		diffExists = true
 		displayDiff.Render(indent)
+	}
+
+	if c.Template != newConfig.Template {
+		diffExists = true
+		TemplateDiff{Before: c.Template, After: newConfig.Template}.Render(indent)
+	}
+
+	paramDiffs := diffIndices(ParamIndex(c.Params), ParamIndex(newConfig.Params))
+	if len(paramDiffs) > 0 {
+		diffExists = true
+		fmt.Fprintln(out, "parameters:")
+
+		for _, paramDiff := range paramDiffs {
+			paramDiff.Render(indent, "parameter")
+		}
+	}
+
+	retentionDiff, retentionChanged := diffRunRetention(c.RunRetention, newConfig.RunRetention)
+	if retentionChanged {
+		diffExists = true
+		retentionDiff.Render(indent)
 	}
 
 	return diffExists
