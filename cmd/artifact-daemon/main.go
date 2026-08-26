@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"flag"
 	"fmt"
+	"github.com/concourse/concourse/agent/artifactcap"
 	"net/http"
 	"os"
 	"os/signal"
@@ -21,6 +22,7 @@ func main() {
 	port := flag.Int("port", 7780, "HTTP server port")
 	storagePath := flag.String("storage-path", "/var/concourse/artifacts", "Path to artifact storage directory")
 	ttl := flag.Duration("ttl", 2*time.Hour, "TTL for artifact cleanup sweep")
+	resolveCapabilityKeyFile := flag.String("resolve-capability-key", "", "Path to the raw 32-byte key required to authorize resolve operations")
 	nodeName := flag.String("node-name", "", "Kubernetes node name (for node labeling)")
 	namespace := flag.String("namespace", "default", "Kubernetes namespace")
 	serviceName := flag.String("service-name", "artifact-daemon", "Headless service name for EndpointSlice peer discovery")
@@ -102,6 +104,26 @@ func main() {
 	server.Registry().SetAliasStore(aliasStore)
 
 	// Scan hostPath at startup to populate registry with existing artifacts.
+	// /resolve and /resolve-batch are mTLS-exempt by design, so this key is
+	// their only authentication. Absent, they are open to anything that can
+	// reach the port — said once, loudly, rather than left to be inferred.
+	if *resolveCapabilityKeyFile == "" {
+		logger.Info("resolve-unauthenticated", lager.Data{
+			"detail": "no --resolve-capability-key: POST /resolve and /resolve-batch accept any caller",
+		})
+	} else {
+		key, err := artifactcap.LoadKeyFile(*resolveCapabilityKeyFile)
+		if err != nil {
+			logger.Error("failed-to-load-resolve-capability-key", err)
+			os.Exit(1)
+		}
+		if err := server.SetResolveCapabilityKey(key); err != nil {
+			logger.Error("failed-to-configure-resolve-capability", err)
+			os.Exit(1)
+		}
+		logger.Info("resolve-capability-required")
+	}
+
 	if err := server.Registry().ScanHostPath(*storagePath); err != nil {
 		logger.Error("failed-to-scan-hostpath", err)
 		// Non-fatal — daemon can still serve explicitly registered artifacts.

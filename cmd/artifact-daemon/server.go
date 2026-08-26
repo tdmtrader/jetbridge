@@ -23,6 +23,7 @@ import (
 	"code.cloudfoundry.org/lager/v3"
 	"golang.org/x/sync/singleflight"
 
+	"github.com/concourse/concourse/agent/artifactcap"
 	"github.com/concourse/concourse/cmd/artifact-daemon/durable"
 )
 
@@ -62,6 +63,10 @@ type Server struct {
 	// performed before the operation: os.Root refuses to resolve a path out of
 	// itself, so there is no ordering to get wrong and no name to out-think.
 	root *os.Root
+
+	// resolveVerifier authenticates the two mTLS-exempt resolve routes. nil
+	// means no key was configured and they are unauthenticated.
+	resolveVerifier *artifactcap.Verifier
 }
 
 // destLock serialises copies to one destination and refcounts its own lifetime,
@@ -163,6 +168,38 @@ func (s *Server) Metrics() *metrics {
 
 func (s *Server) Registry() *Registry {
 	return s.registry
+}
+
+// SetResolveCapabilityKey requires every resolve to carry a capability bound to
+// its exact key and destination.
+//
+// /resolve and /resolve-batch are mTLS-EXEMPT by design: the init container
+// dials the daemon by node IP, which cannot be a certificate SAN. This is
+// therefore the only authentication those two routes can have — and they take a
+// caller-supplied dest that becomes a RemoveAll and a Rename.
+//
+// When no key is configured the routes stay open, because that is how every
+// deployment without the flag behaves today. main.go logs loudly in that case;
+// the chart always sets it.
+func (s *Server) SetResolveCapabilityKey(key []byte) error {
+	v, err := artifactcap.NewVerifier(key)
+	if err != nil {
+		return err
+	}
+	s.resolveVerifier = v
+	return nil
+}
+
+// authorizeResolve fails CLOSED: once a key is configured, a missing or
+// unverifiable capability is refused rather than warned about.
+func (s *Server) authorizeResolve(req resolveRequest) bool {
+	if s.resolveVerifier == nil {
+		return true
+	}
+	if req.Capability == "" {
+		return false
+	}
+	return s.resolveVerifier.VerifyResolve(req.Capability, req.Key, req.Dest, time.Now()) == nil
 }
 
 // SetPeerResolver configures the peer resolver for cross-node artifact
@@ -732,6 +769,11 @@ func (s *Server) handleMirrorTrigger(w http.ResponseWriter, r *http.Request) {
 type resolveRequest struct {
 	Key  string `json:"key"`
 	Dest string `json:"dest"`
+
+	// Capability is a short-lived token bound to this exact Key and Dest,
+	// signed by the ATC with a key both sides share. Required whenever the
+	// daemon was started with --resolve-capability-key.
+	Capability string `json:"capability,omitempty"`
 }
 
 // resolveResponse is the JSON body returned by POST /resolve.
@@ -901,6 +943,11 @@ func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if !s.authorizeResolve(req) {
+		s.logger.Info("resolve-unauthorized", lager.Data{"key": req.Key})
+		http.Error(w, "resolve capability required", http.StatusForbidden)
+		return
+	}
 
 	resp := s.resolveOne(r.Context(), req.Key, req.Dest)
 
@@ -947,6 +994,13 @@ func (s *Server) handleResolveBatch(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := validateContainedPath(s.storagePath, item.Dest); err != nil {
 			http.Error(w, fmt.Sprintf("item %d: %v", i, err), http.StatusBadRequest)
+			return
+		}
+		// Authorized in the same pass, for the same reason: refusing item 3
+		// after item 1 has copied is a side effect from a refused request.
+		if !s.authorizeResolve(item) {
+			s.logger.Info("resolve-batch-unauthorized", lager.Data{"item": i, "key": item.Key})
+			http.Error(w, fmt.Sprintf("item %d: resolve capability required", i), http.StatusForbidden)
 			return
 		}
 	}
