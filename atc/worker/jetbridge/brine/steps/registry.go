@@ -46,6 +46,7 @@ func Definitions() []brine.StepDefinition {
 	defs = append(defs, ContainerExtraDefinitions()...)
 	defs = append(defs, VolumeIdentityDefinitions()...)
 	defs = append(defs, SidecarLogDefinitions()...)
+	defs = append(defs, ClosingDefinitions()...)
 	return defs
 }
 
