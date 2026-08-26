@@ -41,3 +41,63 @@ Feature: Failure detection priority order
       | pullbackoff | ImagePullBackOff           |
       | errpull     | ErrImagePull               |
       | crashloop   | CrashLoopBackOff           |
+
+  # RF-01, RF-02, RF-03: the failures a user meets most often. Each row is a
+  # different way the cluster refuses to run the step, and in every case the
+  # build log has to name the cause — "the step failed" is not actionable.
+  @RF-01 @RF-02 @RF-03
+  Scenario Outline: A container that cannot start says why
+    Given a jetbridge worker on a fake Kubernetes cluster
+    And a task container "rf-<slug>" is running
+    When the pod is "Pending" with waiting reason "<reason>" and last terminated reason "none"
+    Then the step fails naming "<reason>"
+
+    Examples:
+      | slug        | reason           |
+      | pullbackoff | ImagePullBackOff |
+      | errpull     | ErrImagePull     |
+      | crashloop   | CrashLoopBackOff |
+
+  # RF-01. An OOM kill is a memory problem, and saying so is the whole value —
+  # the user has to know to raise the limit rather than debug their code.
+  @RF-01
+  Scenario: A step killed for using too much memory is told so
+    Given a jetbridge worker on a fake Kubernetes cluster
+    And a task container "rf01-oom" is running
+    When the main container is killed for using too much memory
+    Then the step fails naming "OOMKilled"
+    And the failure explains "exceeded memory limit"
+    And the build log explains "Pod Failure Diagnostics"
+
+  # RF-05. The cluster took the pod away; this is not the pipeline's fault and
+  # the log has to make that distinguishable.
+  @RF-05
+  # DRIFT, recorded rather than smoothed over. RF-05 specifies the error
+  # `"pod failed: Evicted: %s"`. The code reports `pod interrupted: evicted`
+  # (process.go:1290) — an INTERRUPTION rather than a failure, which is a
+  # different build classification, not just different wording. The scenario
+  # states what the code does; the specification is stale.
+  Scenario: An evicted step reports the eviction, not a generic failure
+    Given a jetbridge worker on a fake Kubernetes cluster
+    And a task container "rf05-evicted" is running
+    When the node evicts the pod
+    Then the failure explains "evicted"
+    And the build log explains "Evicted"
+
+  # RF-07 is NOT migrated, and the reason is worth recording rather than
+  # hiding. An unschedulable pod is only reported once the SCHEDULING deadline
+  # passes, and that deadline is only enforced on the exec-mode path
+  # (process_test.go tests it with a ContainerTypeGet container and an
+  # executor). Expressed over the direct-mode chain used above, the scenario
+  # does not fail — it hangs for the 15-minute default, which is how it was
+  # found. Migrating it needs an impatient EXEC-mode worker; the vocabulary
+  # for that exists ("a jetbridge worker that waits only seconds for a pod to
+  # be scheduled") and is left in place for whoever writes it.
+
+  # RF-06
+  @RF-06
+  Scenario: A pod deleted underneath a running step is reported
+    Given a jetbridge worker on a fake Kubernetes cluster
+    And a task container "rf06-deleted" is running
+    When the pod is deleted from the cluster
+    Then the step is told the pod was deleted

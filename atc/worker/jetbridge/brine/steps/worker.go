@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -88,11 +90,11 @@ type ContainerOutcome struct {
 // ContainerRun is what the cluster looked like before and after the container
 // was run. Pod creation is deferred to Run, so both halves matter.
 type ContainerRun struct {
-	Outcome     ContainerOutcome
-	PodsBefore  int
-	PodsAfter   []string
-	Err         error
-	Message     string
+	Outcome    ContainerOutcome
+	PodsBefore int
+	PodsAfter  []string
+	Err        error
+	Message    string
 }
 
 // InterceptOutcome is what an operator running `fly intercept` saw.
@@ -885,6 +887,17 @@ func workerInterceptDefinitions() []brine.StepDefinition {
 					return InterceptOutcome{}, fmt.Errorf("expected a handle and a command")
 				}
 
+				// A real interception lands in a pod whose /tmp belongs to that
+				// pod alone. The local shell adapter runs in THIS host's /tmp,
+				// which outlives the run, so a second invocation of the suite
+				// would find the first one's supervisor state and replay its log
+				// instead of exec-ing afresh. That is the adapter's platform
+				// leaking, not anything the runtime does, so it is cleared at
+				// the source rather than papered over in the assertion.
+				if err := clearSupervisorState(handle); err != nil {
+					return InterceptOutcome{}, err
+				}
+
 				out := InterceptOutcome{Ready: in}
 				container, found, err := in.Worker.LookupContainer(in.Ctx, handle)
 				if err != nil {
@@ -1367,7 +1380,7 @@ func workerArtifactDefinitions() []brine.StepDefinition {
 					return fmt.Errorf("expected a handle parameter")
 				}
 				if in.Artifact == nil {
-					return fmt.Errorf("expected an artifact with handle %q, got none", want)
+					return fmt.Errorf("expected an artifact with handle %q for volume %q, got none", want, in.Handle)
 				}
 				if in.Artifact.Handle() != want {
 					return fmt.Errorf("expected the artifact handle %q, got %q", want, in.Artifact.Handle())
@@ -1655,6 +1668,33 @@ func readArtifact(ctx context.Context, source interface {
 		return "", err
 	}
 	return string(body), nil
+}
+
+// clearSupervisorState removes any in-pod task-supervisor state left under the
+// host's /tmp by an earlier invocation of the suite. The supervisor derives its
+// state directory from the process ID and a hash of the command, so the glob is
+// narrowed to the leading alphanumeric run of this scenario's handle — never a
+// blanket sweep, which would take another scenario's state with it.
+func clearSupervisorState(handle string) error {
+	prefix := handle
+	if i := strings.IndexFunc(handle, func(r rune) bool {
+		return !(r >= 'a' && r <= 'z') && !(r >= '0' && r <= '9')
+	}); i > 0 {
+		prefix = handle[:i]
+	}
+	if len(prefix) < 4 {
+		return fmt.Errorf("handle %q has no distinctive prefix to scope supervisor cleanup to", handle)
+	}
+	matches, err := filepath.Glob("/tmp/concourse-task-" + prefix + "*")
+	if err != nil {
+		return fmt.Errorf("look for stale supervisor state: %w", err)
+	}
+	for _, dir := range matches {
+		if err := os.RemoveAll(dir); err != nil {
+			return fmt.Errorf("clear stale supervisor state %q: %w", dir, err)
+		}
+	}
+	return nil
 }
 
 func expectFailure(what string, err error, message, want string) error {
