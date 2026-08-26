@@ -220,3 +220,171 @@ func ContainerLifecycleDefinitions() []brine.StepDefinition {
 		),
 	}
 }
+
+// RecoveredStep is what a re-attaching web sees when it picks a step back up.
+type RecoveredStep struct {
+	ExitStatus int
+	Err        error
+	Message    string
+}
+
+// AttachDefinitions covers PE-11/PE-12 — how a restarted web recovers a step's
+// result instead of running it a second time.
+//
+// This is the single most consequential recovery path in the runtime: get it
+// wrong and a web restart silently re-executes a completed step, in a
+// workspace that already has its outputs.
+func AttachDefinitions() []brine.StepDefinition {
+	return []brine.StepDefinition{
+
+		// PE-12 first branch: the in-process property store still remembers.
+		brine.DefineMapUsing[brine.Empty, RecoveredStep](
+			"a step the runtime still remembers finishing with exit code {int}",
+			[]string{"jetbridge-db"},
+			func(_ brine.Empty, p brine.Params, _ *brine.Recorder, res brine.Resources) (RecoveredStep, error) {
+				code, ok := p.GetInt(0)
+				if !ok {
+					return RecoveredStep{}, fmt.Errorf("expected an exit code parameter")
+				}
+				container, ctx, err := attachableContainer(res, "attach-handle", nil)
+				if err != nil {
+					return RecoveredStep{}, err
+				}
+				if err := container.SetProperty("concourse:exit-status", fmt.Sprintf("%d", code)); err != nil {
+					return RecoveredStep{}, fmt.Errorf("record exit status: %w", err)
+				}
+				return attachAndWait(ctx, container)
+			},
+		),
+
+		// PE-12 second branch: the web restarted, so the property store is
+		// empty and the pod annotation is the only surviving record.
+		brine.DefineMapUsing[brine.Empty, RecoveredStep](
+			"a web restart, and a pod annotated as having finished with exit code {int}",
+			[]string{"jetbridge-db"},
+			func(_ brine.Empty, p brine.Params, _ *brine.Recorder, res brine.Resources) (RecoveredStep, error) {
+				code, ok := p.GetInt(0)
+				if !ok {
+					return RecoveredStep{}, fmt.Errorf("expected an exit code parameter")
+				}
+				handle := "attach-annotated"
+				container, ctx, err := attachableContainer(res, handle, func(clientset *fake.Clientset) error {
+					pod := &corev1.Pod{
+						ObjectMeta: metav1.ObjectMeta{
+							Name: handle, Namespace: "test-namespace",
+							Annotations: map[string]string{
+								"concourse.ci/exit-status": fmt.Sprintf("%d", code),
+							},
+						},
+						Status: corev1.PodStatus{Phase: corev1.PodRunning},
+					}
+					_, err := clientset.CoreV1().Pods("test-namespace").
+						Create(context.Background(), pod, metav1.CreateOptions{})
+					return err
+				})
+				if err != nil {
+					return RecoveredStep{}, err
+				}
+				return attachAndWait(ctx, container)
+			},
+		),
+
+		// PE-12 last branch: nothing recorded the result, so re-attaching must
+		// FAIL. Reporting success here would mark an unfinished step complete.
+		brine.DefineMapUsing[brine.Empty, RecoveredStep](
+			"a web restart, and a pod with no record of having finished",
+			[]string{"jetbridge-db"},
+			func(_ brine.Empty, _ brine.Params, _ *brine.Recorder, res brine.Resources) (RecoveredStep, error) {
+				handle := "attach-unannotated"
+				container, ctx, err := attachableContainer(res, handle, func(clientset *fake.Clientset) error {
+					pod := &corev1.Pod{
+						ObjectMeta: metav1.ObjectMeta{Name: handle, Namespace: "test-namespace"},
+						Status:     corev1.PodStatus{Phase: corev1.PodRunning},
+					}
+					_, err := clientset.CoreV1().Pods("test-namespace").
+						Create(context.Background(), pod, metav1.CreateOptions{})
+					return err
+				})
+				if err != nil {
+					return RecoveredStep{}, err
+				}
+				return attachAndWait(ctx, container)
+			},
+		),
+
+		brine.DefineCheck[RecoveredStep](
+			"the step is recovered as having exited {int}",
+			func(in RecoveredStep, p brine.Params, _ *brine.Recorder) error {
+				want, ok := p.GetInt(0)
+				if !ok {
+					return fmt.Errorf("expected an exit code parameter")
+				}
+				if in.Err != nil {
+					return fmt.Errorf("expected the step to be recovered as exit %d, got error: %v", want, in.Err)
+				}
+				if in.ExitStatus != want {
+					return fmt.Errorf("expected exit %d, got %d", want, in.ExitStatus)
+				}
+				return nil
+			},
+		),
+
+		brine.DefineCheck[RecoveredStep](
+			"the step cannot be recovered and must be run again",
+			func(in RecoveredStep, _ brine.Params, _ *brine.Recorder) error {
+				if in.Err == nil {
+					return fmt.Errorf(
+						"expected re-attaching to fail so the engine re-runs the step; "+
+							"it reported success with exit %d, which would mark an unfinished step complete",
+						in.ExitStatus)
+				}
+				return nil
+			},
+		),
+	}
+}
+
+func attachableContainer(res brine.Resources, handle string, seed func(*fake.Clientset) error) (runtime.Container, context.Context, error) {
+	database, ok := res.Get("jetbridge-db").(JetbridgeDB)
+	if !ok {
+		return nil, nil, fmt.Errorf("jetbridge-db resource is %T", res.Get("jetbridge-db"))
+	}
+	dbWorker, err := database.PersistNamedWorker("k8s-worker-1")
+	if err != nil {
+		return nil, nil, err
+	}
+	ctx := context.Background()
+	clientset := fake.NewSimpleClientset()
+	if seed != nil {
+		if err := seed(clientset); err != nil {
+			return nil, nil, fmt.Errorf("seed cluster: %w", err)
+		}
+	}
+	worker := jetbridge.NewWorker(dbWorker, clientset, jetbridge.NewConfig("test-namespace", ""))
+	worker.SetExecutor(execStub{})
+
+	container, _, err := worker.FindOrCreateContainer(
+		ctx,
+		db.NewFixedHandleContainerOwner(handle),
+		db.ContainerMetadata{},
+		runtime.ContainerSpec{ImageSpec: runtime.ImageSpec{ImageURL: "docker:///alpine"}},
+		&noopDelegate{},
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("find or create container: %w", err)
+	}
+	return container, ctx, nil
+}
+
+func attachAndWait(ctx context.Context, container runtime.Container) (RecoveredStep, error) {
+	process, err := container.Attach(ctx, "some-process-id", runtime.ProcessIO{})
+	if err != nil {
+		return RecoveredStep{Err: err, Message: err.Error()}, nil
+	}
+	result, waitErr := process.Wait(ctx)
+	msg := ""
+	if waitErr != nil {
+		msg = waitErr.Error()
+	}
+	return RecoveredStep{ExitStatus: result.ExitStatus, Err: waitErr, Message: msg}, nil
+}
