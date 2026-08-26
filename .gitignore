@@ -57,3 +57,5 @@ package-lock.json
 # elm.min.js, and index.html loads only the minified file. Committing it
 # put 1.4 MB of generated code into every binary via //go:embed.
 web/public/elm.js
+.brine-runs/
+atc/worker/jetbridge/brine/.build/
