@@ -151,3 +151,34 @@ func PodNameDefinitions() []brine.StepDefinition {
 		),
 	}
 }
+
+// PodNameSegmentDefinitions covers PN-06's per-segment cap.
+func PodNameSegmentDefinitions() []brine.StepDefinition {
+	return []brine.StepDefinition{
+		// The 63-character total is not the whole rule. If one segment could
+		// take the entire budget the name would still be a valid label and
+		// still be useless: an operator scanning `kubectl get pods` needs to
+		// see WHICH JOB the pod belongs to, not just which pipeline.
+		brine.DefineCheck[GeneratedPodName](
+			"the pod name still identifies its job",
+			func(in GeneratedPodName, _ brine.Params, _ *brine.Recorder) error {
+				parts := strings.Split(in.Name, "-b1-")
+				if len(parts) != 2 {
+					return fmt.Errorf("expected the name to carry a build segment, got %q", in.Name)
+				}
+				prefix := parts[0]
+				// Two segments capped at 20 each, plus the hyphen between them.
+				if len(prefix) > 41 {
+					return fmt.Errorf(
+						"expected pipeline and job to be capped at 20 characters each (41 with the separator), "+
+							"got a %d-character prefix %q", len(prefix), prefix)
+				}
+				if !strings.Contains(prefix, "-") {
+					return fmt.Errorf(
+						"expected both a pipeline and a job segment so the pod is findable by job; got only %q", prefix)
+				}
+				return nil
+			},
+		),
+	}
+}

@@ -89,12 +89,19 @@ Feature: Closing the loop — a whole step, the durable tier, and the artifact i
   # cancelled during exec-mode task" and its resource-step twin never cancel a
   # context. They set `fakeExecutor.execErr = context.Canceled` and assert the
   # error surfaces and the pod survives. That is an exec FAILURE, not a
-  # cancellation, and the two paths behave differently: a genuinely cancelled
-  # step deletes its pod (pod-lifecycle.feature, "A cancelled build takes its
-  # pod with it") while a failed one keeps it (container-run.feature, "A failed
-  # step's pod is kept for the operator"). Both real behaviors are already
-  # covered under their true names. Migrating these two would have imported a
-  # mislabelled test into the new format.
+  # cancellation, so migrating them under their own names would import a
+  # mislabelled test.
+  #
+  # CORRECTION (this comment previously said something false). It claimed "a
+  # genuinely cancelled step deletes its pod while a failed one keeps it", as
+  # if that were the whole rule. It is direct-mode only. PE-10 splits by mode:
+  # a cancelled DIRECT-mode step deletes its pod, and a cancelled EXEC-mode
+  # step deliberately KEEPS the pause pod so `fly hijack` still works — see
+  # process_test.go:1123, "preserves the pause pod when context is cancelled
+  # (for fly hijack)". The exec-mode half was asserted nowhere, in Go or in
+  # brine, and the reasoning above had waved it away. It is now covered by
+  # "A cancelled step leaves its pod behind so an operator can hijack it"
+  # below.
 
   # DISPOSITION — "mounts input volumes from a get step and output volumes for
   # a task" and "passes inputs from a get step to a put step via volume
@@ -303,3 +310,15 @@ Feature: Closing the loop — a whole step, the durable tier, and the artifact i
     Given an empty artifact index
     When 100 artifacts are recorded at the same moment
     Then every artifact that was recorded is still held
+
+  # PE-10, exec-mode half. When a build is cancelled the operator very often
+  # wants to know WHY, and `fly hijack` into the surviving pause pod is how
+  # they find out. Deleting the pod on cancellation would take the evidence
+  # with it — which is why the direct-mode rule (delete) must not be applied
+  # here by someone tidying up.
+  @PE-10
+  Scenario: A cancelled step leaves its pod behind so an operator can hijack it
+    Given an exec-mode step "hijackable" that is waiting for its pod
+    When the build is cancelled before the pod ever starts
+    Then the step reports the cancellation
+    And the pod "hijackable" is still there for the operator

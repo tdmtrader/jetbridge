@@ -6,8 +6,9 @@ Feature: Keeping sight of a pod while a step runs
   and it has to keep doing it when the Kubernetes connection drops, when it
   reconnects, and when it cannot reconnect at all.
 
-  Source: k8s_runtime_behavioral_spec_20260331 — PW-01 to PW-07. Migrated whole
-  from watch_test.go, which carried no requirement identifiers.
+  Source: k8s_runtime_behavioral_spec_20260331 — PW-01 to PW-07. Migrated from
+  watch_test.go, which carried no requirement identifiers. NOT whole: PW-03
+  (field-selector scoping) has no scenario — see the note below.
 
   # PW-01, PW-02: the first answer comes from a direct read, not from the
   # watch, so a pod that changed before the watch existed is not missed.
@@ -24,9 +25,16 @@ Feature: Keeping sight of a pod while a step runs
     And the pod becomes "Running"
     Then the runtime is told the pod is "Running"
 
-  # PW-04, PW-05: the reconnect carries the last resource version, so a change
-  # that lands during the gap is still delivered. This is the scenario that
-  # would fail if the runtime reconnected from scratch.
+  # PW-04, PW-05: the reconnect delivers a change that landed during the gap.
+  #
+  # CORRECTION — this comment used to claim the scenario "would fail if the
+  # runtime reconnected from scratch". That is false, and a review caught it:
+  # the watch reactor here returns the second fake watcher on any call
+  # regardless of ListOptions, and nothing captures ResourceVersion, so a
+  # from-scratch reconnect passes this scenario unchanged. What it does prove
+  # is CONTINUITY — the step is still told about the change — which is the
+  # part a hanging step would lose. The resource-version mechanism itself is
+  # not covered.
   Scenario: A dropped connection does not lose the change that happened during it
     Given a pod "reconnect-pod" that the runtime is watching
     And the connection to Kubernetes drops and comes back
@@ -70,14 +78,16 @@ Feature: Keeping sight of a pod while a step runs
     And the pod becomes "Succeeded"
     Then the runtime is told the pod is "Succeeded"
 
-  # PW-03. The watch follows ONE pod. The neighbour below sits in a different
-  # phase on purpose: a watch that reported the wrong pod would say "Running"
-  # here. On a busy cluster this is the difference between a working watch and
-  # a step that reacts to somebody else's pod.
-  @PW-03
-  Scenario: The watch follows one pod, not the whole namespace
-    Given a pod "selective-pod" that the runtime is watching
-    And another pod "noisy-neighbour" is churning in the same namespace
-    And the connection to Kubernetes is steady
-    When the runtime asks what the pod is doing
-    Then the runtime is told the pod is "Pending"
+  # PW-03 IS NOT COVERED, and the scenario that claimed to cover it was
+  # removed because it could not fail.
+  #
+  # It put a "noisy neighbour" pod in the namespace in a different phase and
+  # asserted the runtime reported OUR pod's phase. But the first answer comes
+  # from Get(name), which returns our pod by name whether or not the watch is
+  # scoped — the neighbour is never consulted, so an unscoped watch would pass
+  # it unchanged. A mutation of the expected PHASE goes red, which is what
+  # misled me: it proves the phase check works, not that scoping is tested.
+  #
+  # Asserting the field selector directly would be a spy assertion. Observing
+  # scoping properly needs a watch that actually delivers other pods' events,
+  # which client-go's fake does not do through the reactor used here.

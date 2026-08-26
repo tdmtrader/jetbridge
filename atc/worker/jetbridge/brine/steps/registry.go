@@ -50,6 +50,8 @@ func Definitions() []brine.StepDefinition {
 	defs = append(defs, CacheStorageDefinitions()...)
 	defs = append(defs, NoisyNeighbourDefinitions()...)
 	defs = append(defs, SeveredExecDefinitions()...)
+	defs = append(defs, PodNameSegmentDefinitions()...)
+	defs = append(defs, CancelledExecDefinitions()...)
 	return defs
 }
 

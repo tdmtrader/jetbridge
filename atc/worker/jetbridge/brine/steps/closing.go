@@ -1236,3 +1236,123 @@ func closingLocatorDefinitions() []brine.StepDefinition {
 		),
 	}
 }
+
+// CancelledExecOutcome is what survives after an exec-mode step is cancelled.
+type CancelledExecOutcome struct {
+	Namespace string
+	Clientset *fake.Clientset
+	Ctx       context.Context
+	Handle    string
+	Err       error
+	Message   string
+}
+
+// CancelledExecDefinitions covers PE-10's exec-mode half: a cancelled step
+// KEEPS its pause pod, because `fly hijack` into that pod is how an operator
+// finds out why a build was cancelled. The direct-mode rule is the opposite,
+// and applying it here would delete the evidence.
+func CancelledExecDefinitions() []brine.StepDefinition {
+	return []brine.StepDefinition{
+
+		brine.DefineMapUsing[brine.Empty, CancelledExecOutcome](
+			"an exec-mode step {string} that is waiting for its pod",
+			[]string{"jetbridge-db"},
+			func(_ brine.Empty, p brine.Params, _ *brine.Recorder, res brine.Resources) (CancelledExecOutcome, error) {
+				handle, ok := p.GetString(0)
+				if !ok {
+					return CancelledExecOutcome{}, fmt.Errorf("expected a handle parameter")
+				}
+				database, ok := res.Get("jetbridge-db").(JetbridgeDB)
+				if !ok {
+					return CancelledExecOutcome{}, fmt.Errorf("jetbridge-db resource is %T", res.Get("jetbridge-db"))
+				}
+				dbWorker, err := database.PersistNamedWorker("k8s-worker-1")
+				if err != nil {
+					return CancelledExecOutcome{}, err
+				}
+				ctx := context.Background()
+				namespace := "test-namespace"
+				clientset := fake.NewSimpleClientset()
+				worker := jetbridge.NewWorker(dbWorker, clientset, jetbridge.NewConfig(namespace, ""))
+				worker.SetExecutor(execStub{})
+
+				container, _, err := worker.FindOrCreateContainer(
+					ctx,
+					db.NewFixedHandleContainerOwner(handle),
+					db.ContainerMetadata{Type: db.ContainerTypeGet},
+					runtime.ContainerSpec{
+						TeamID:    1,
+						Dir:       "/tmp/build/get",
+						ImageSpec: runtime.ImageSpec{ImageURL: "busybox"},
+						Type:      db.ContainerTypeGet,
+					},
+					&noopDelegate{},
+				)
+				if err != nil {
+					return CancelledExecOutcome{}, fmt.Errorf("find or create container: %w", err)
+				}
+				process, err := container.Run(ctx,
+					runtime.ProcessSpec{Path: "/opt/resource/in", Args: []string{"/tmp/build/get"}},
+					runtime.ProcessIO{
+						Stdin:  strings.NewReader("{}"),
+						Stdout: new(bytes.Buffer),
+						Stderr: new(bytes.Buffer),
+					},
+				)
+				if err != nil {
+					return CancelledExecOutcome{}, fmt.Errorf("run step: %w", err)
+				}
+
+				// The pod never reaches Running; the build is cancelled while
+				// the step is still waiting for it.
+				cancelCtx, cancel := context.WithCancel(ctx)
+				cancel()
+				_, waitErr := process.Wait(cancelCtx)
+				msg := ""
+				if waitErr != nil {
+					msg = waitErr.Error()
+				}
+				return CancelledExecOutcome{
+					Namespace: namespace, Clientset: clientset, Ctx: ctx,
+					Handle: handle, Err: waitErr, Message: msg,
+				}, nil
+			},
+		),
+
+		brine.DefineMap[CancelledExecOutcome, CancelledExecOutcome](
+			"the build is cancelled before the pod ever starts",
+			func(in CancelledExecOutcome, _ brine.Params, _ *brine.Recorder) (CancelledExecOutcome, error) {
+				return in, nil
+			},
+		),
+
+		brine.DefineCheck[CancelledExecOutcome](
+			"the step reports the cancellation",
+			func(in CancelledExecOutcome, _ brine.Params, _ *brine.Recorder) error {
+				if in.Err == nil {
+					return fmt.Errorf("expected the cancelled step to report an error; it reported success")
+				}
+				return nil
+			},
+		),
+
+		brine.DefineCheck[CancelledExecOutcome](
+			"the pod {string} is still there for the operator",
+			func(in CancelledExecOutcome, p brine.Params, _ *brine.Recorder) error {
+				name, ok := p.GetString(0)
+				if !ok {
+					return fmt.Errorf("expected a pod name parameter")
+				}
+				_, err := in.Clientset.CoreV1().Pods(in.Namespace).
+					Get(in.Ctx, name, metav1.GetOptions{})
+				if err != nil {
+					return fmt.Errorf(
+						"expected the pause pod %q to survive cancellation so `fly hijack` can reach it; "+
+							"it is gone (%v) — the direct-mode delete rule must not be applied to exec mode",
+						name, err)
+				}
+				return nil
+			},
+		),
+	}
+}

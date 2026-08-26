@@ -7,8 +7,10 @@ Feature: Naming a pod after the step that runs in it
   label rules however long those names are.
 
   Source: k8s_runtime_behavioral_spec_20260331 — PN-01 to PN-07. Migrated
-  whole from podname_test.go, which carried no requirement identifiers despite
-  covering the family completely.
+  from podname_test.go, which carried no requirement identifiers despite
+  covering the family completely. The per-segment cap and the chk- truncation
+  rule were absent until a review found them missing; they are the last two
+  scenarios in this file.
 
   Scenario Outline: A pod is named after its step — <case>
     Given a "<type>" container in pipeline "<pipeline>" job "<job>" build "<build>" step "<step>" with handle "<handle>"
@@ -90,3 +92,24 @@ Feature: Naming a pod after the step that runs in it
       | standard uuid     | abcdef12-3456-7890-abcd-ef1234567890 | abcdef12 |
       | hyphens stripped  | abcd-ef12-3456-7890-abcdef123456     | abcdef12 |
       | handle under 8    | abc                                  | abc      |
+
+  # PN-06's per-segment cap, distinct from the 63-character total. Without it a
+  # single very long pipeline name would consume the whole budget and leave no
+  # room for the job — the name would still be a valid label and would still be
+  # useless for finding the pod.
+  @PN-06
+  Scenario: One long segment cannot crowd out the others
+    Given a "task" container in pipeline "this-is-a-very-long-pipeline-name-that-exceeds" job "this-is-a-very-long-job-name-that-exceeds-too" build "1" step "" with handle "abcdef12-0000-0000-0000-000000000000"
+    When the pod name is generated
+    Then the pod name is a valid DNS label
+    And the pod name still identifies its job
+
+  # PN-02 with a resource name long enough to need truncating. A check pod is
+  # named after its resource, and resource names are not bounded.
+  @PN-02 @PN-06
+  Scenario: A check on a very long resource name still fits
+    Given a "check" container in pipeline "" job "" build "" step "extremely-long-resource-name-that-goes-on-forever-and-ever" with handle "aabbccdd-1122-3344-5566-778899aabbcc"
+    When the pod name is generated
+    Then the pod name is at most 63 characters
+    And the pod name is a valid DNS label
+    And the pod name matches "^chk-"
