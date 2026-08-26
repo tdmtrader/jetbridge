@@ -36,6 +36,7 @@ func Definitions() []brine.StepDefinition {
 	defs = append(defs, PodFailureDefinitions()...)
 	defs = append(defs, WorkerDefinitions()...)
 	defs = append(defs, DaemonDefinitions()...)
+	defs = append(defs, ContainerLifecycleDefinitions()...)
 	return defs
 }
 
