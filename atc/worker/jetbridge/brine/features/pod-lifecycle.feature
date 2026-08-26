@@ -21,7 +21,7 @@ Feature: What a step gets back from its pod
     Given a jetbridge worker on a fake Kubernetes cluster
     And a task container "wait-success" is running
     When the pod ends with the main container exiting 0
-    Then the step reports exit status 0
+    Then the step comes back with exit status 0
     And the pod has been removed from the cluster
 
   # A non-zero exit is a failed step, NOT a failed runtime: the error return is
@@ -32,7 +32,7 @@ Feature: What a step gets back from its pod
     Given a jetbridge worker on a fake Kubernetes cluster
     And a task container "wait-nonzero" is running
     When the pod ends with the main container exiting 1
-    Then the step reports exit status 1
+    Then the step comes back with exit status 1
 
   # PE-10. Aborting a build has to take the pod with it, or the node keeps
   # paying for work nobody is waiting for.
@@ -200,7 +200,7 @@ Feature: What a step gets back from its pod
     Given a jetbridge worker on a fake Kubernetes cluster
     And a task container "transient-tolerated" is running
     When the pod succeeds but the next <failures> status reads fail
-    Then the step reports exit status 0
+    Then the step comes back with exit status 0
 
     Examples:
       | failures |
@@ -264,7 +264,7 @@ Feature: What a step gets back from its pod
     And a sidecar "postgres" runs "postgres:15" alongside it
     And the described container starts
     When the main container exits 0 while the sidecar "postgres" keeps running
-    Then the step reports exit status 0
+    Then the step comes back with exit status 0
     And the pod has been removed from the cluster
 
   @SC-10
@@ -274,7 +274,7 @@ Feature: What a step gets back from its pod
     And a sidecar "redis" runs "redis:7" alongside it
     And the described container starts
     When the main container exits 42 while the sidecar "redis" keeps running
-    Then the step reports exit status 42
+    Then the step comes back with exit status 42
 
   # SC-08. A sidecar that never starts is a step that never starts. Failing
   # fast is the difference between a clear error and a build that sits at the
@@ -298,4 +298,4 @@ Feature: What a step gets back from its pod
     And a sidecar "bad-image" runs "nonexistent:latest" alongside it
     And the described container starts
     When the sidecar "bad-image" cannot pull the image "nonexistent:latest" after the main container exited 0
-    Then the step reports exit status 0
+    Then the step comes back with exit status 0

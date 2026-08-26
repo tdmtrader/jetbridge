@@ -38,6 +38,9 @@ func Definitions() []brine.StepDefinition {
 	defs = append(defs, DaemonDefinitions()...)
 	defs = append(defs, ContainerLifecycleDefinitions()...)
 	defs = append(defs, ObservabilityExtraDefinitions()...)
+	defs = append(defs, AttachDefinitions()...)
+	defs = append(defs, ObservabilityMetricDefinitions()...)
+	defs = append(defs, IntegrationDefinitions()...)
 	return defs
 }
 

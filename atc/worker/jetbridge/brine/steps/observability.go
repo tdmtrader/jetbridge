@@ -10,6 +10,7 @@ import (
 
 	"github.com/brine-dev/brine-go/pkg/brine"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	"github.com/concourse/concourse/tracing"
@@ -502,4 +503,41 @@ func (in ExecStepRunning) stageThenRun(stage func(*corev1.Pod)) (SpansRecorded, 
 		_, _ = pods.UpdateStatus(in.Ctx, p, metav1.UpdateOptions{})
 	}(pod.DeepCopy())
 	return waitAndCapture(in)
+}
+
+// ObservabilityMetricDefinitions covers OE-08 and OE-10 — the phase timeline
+// and the operator-facing metrics.
+//
+// Metrics are the only signal an operator has BEFORE anyone opens a build.
+// A cluster that has started failing to pull images, or whose pods have got
+// slow to start, shows up here first or not at all.
+func ObservabilityMetricDefinitions() []brine.StepDefinition {
+	return []brine.StepDefinition{
+
+		// OE-08 / OE-10: the ordinary successful startup, which is what makes
+		// the phase timeline and the startup-duration gauge meaningful.
+		brine.DefineMap[ExecStepRunning, SpansRecorded](
+			"the pod is pending and then starts normally",
+			func(in ExecStepRunning, _ brine.Params, _ *brine.Recorder) (SpansRecorded, error) {
+				metric.Metrics.K8sPodStartupDuration.Max() // reset max-tracking
+				return in.stageThenRun(func(pod *corev1.Pod) {
+					pod.Status.Phase = corev1.PodPending
+				})
+			},
+		),
+
+		brine.DefineCheck[SpansRecorded](
+			"a pod startup duration was recorded",
+			func(in SpansRecorded, _ brine.Params, _ *brine.Recorder) error {
+				if in.WaitErr != nil {
+					return fmt.Errorf("the step failed before startup could be timed: %v", in.WaitErr)
+				}
+				if got := metric.Metrics.K8sPodStartupDuration.Max(); got <= 0 {
+					return fmt.Errorf("expected a positive startup duration, got %v — "+
+						"an operator watching this gauge would see nothing", got)
+				}
+				return nil
+			},
+		),
+	}
 }
