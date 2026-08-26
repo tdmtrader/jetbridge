@@ -167,7 +167,7 @@ func TestArchitecture_NoAmbientWriteThroughAJoinedKey(t *testing.T) {
 	// existed. An exemption is only legitimate once the scan actually flags the
 	// thing.
 	known := map[string]string{
-		"sweeper.go:Sweeper.sweep": "joins are CONSTANT suffixes (steps, artifacts) and os.ReadDir-derived names — no untrusted input reaches them. Deliberately not migrated: R12 names ScanHostPath as a coin flip whose losing side is a SILENT read/sweep guard failure, and uniformity is not worth that trade",
+		"sweeper.go:Sweeper.sweep": "joins are CONSTANT suffixes (steps, artifacts) and os.ReadDir-derived names — no untrusted input reaches them. The second half of this reason has since changed and is updated rather than left standing: it used to say the read/sweep guard made migrating ScanHostPath a coin flip whose losing side was SILENT. The registry-relative track settled that — the sweeper's entry.Name() and stepHandle now derive the same key by construction, asserted in registry_relative_test.go — so what keeps this exempt is only the first clause. A liveness check catches a stale KEY; nothing catches a stale REASON.",
 	}
 
 	mutating := map[string]bool{
