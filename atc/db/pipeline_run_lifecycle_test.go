@@ -369,7 +369,7 @@ var _ = Describe("Pipeline run lifecycle", func() {
 			Expect(fixture.payload.PausedBy()).To(Equal(pausedBy))
 		},
 		Entry("internal completion", "run-completed"),
-		Entry("user pause", "alice"),
+		Entry("user pause", "alice"), Entry("automatic pause", "automatic-pipeline-pauser"),
 	)
 
 	It("keeps ordinary running-run unpause behavior", func() {
@@ -441,6 +441,22 @@ var _ = Describe("Pipeline run lifecycle", func() {
 		Expect(found).To(BeTrue())
 		Expect(fixture.payload.Paused()).To(BeTrue())
 		Expect(fixture.payload.PausedBy()).To(Equal("alice"))
+		Expect(fixture.reloadRun().Status()).To(Equal(atc.RunStatusRunning))
+	})
+	It("clears an automatic-pauser pause during manual reopen", func() {
+		fixture := createRunLifecycleFixture(basicRunConfig("entry"))
+		entry := fixture.jobs["entry"]
+		consumeObservedSchedule(entry, false)
+		Expect(fixture.payload.Pause("automatic-pipeline-pauser")).To(Succeed())
+		Expect(pendingRunBuild(entry).Finish(db.BuildStatusFailed)).To(Succeed())
+
+		_, err := entry.CreateBuild("manual-user")
+		Expect(err).NotTo(HaveOccurred())
+		found, err := fixture.payload.Reload()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(fixture.payload.Paused()).To(BeFalse(), "a platform pause must dissolve on reopen or the admitted build never schedules")
+		Expect(fixture.payload.PausedBy()).To(BeEmpty())
 		Expect(fixture.reloadRun().Status()).To(Equal(atc.RunStatusRunning))
 	})
 

@@ -249,14 +249,19 @@ var _ = Describe("PipelinePauser", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 
-		It("never auto-pauses the payload of a run that is still running", func() {
+		It("auto-pauses the idle payload of a still-running run, and leaves it recoverable", func() {
 			template, _, err := defaultTeam.SavePipeline(
 				atc.PipelineRef{Name: "idle-payload-template"},
-				atc.Config{Template: true, Jobs: atc.JobConfigs{{Name: "entry"}}},
+				atc.Config{
+					Template:  true,
+					Resources: atc.ResourceConfigs{{Name: "source", Type: "some-base-resource-type", Source: atc.Source{"repository": "example"}}},
+					Jobs:      atc.JobConfigs{{Name: "entry", PlanSequence: []atc.Step{{Config: &atc.GetStep{Name: "source"}}}}},
+				},
 				db.ConfigVersion(0), false,
 			)
 			Expect(err).NotTo(HaveOccurred())
-			creation, err := db.NewPipelineRunFactory(dbConn, lockFactory).CreateRun(context.TODO(), template, db.RunParams{}, "creator")
+			runFactory := db.NewPipelineRunFactory(dbConn, lockFactory)
+			creation, err := runFactory.CreateRun(context.TODO(), template, db.RunParams{}, "creator")
 			Expect(err).NotTo(HaveOccurred())
 
 			payload, found, err := defaultTeam.Pipeline(atc.PipelineRef{
@@ -267,9 +272,28 @@ var _ = Describe("PipelinePauser", func() {
 			Expect(found).To(BeTrue())
 			Expect(payload.Paused()).To(BeFalse(), "payload should start unpaused")
 
+			source, found, err := payload.Resource("source")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+
+			checkedResourceIDs := func() []int {
+				GinkgoHelper()
+				resources, err := checkFactory.Resources()
+				Expect(err).NotTo(HaveOccurred())
+				ids := make([]int, 0, len(resources))
+				for _, resource := range resources {
+					ids = append(ids, resource.ID())
+				}
+				return ids
+			}
+
+			By("proving lidar is checking the run's resources")
+			Expect(checkedResourceIDs()).To(ContainElement(source.ID()))
+
 			By("aging the payload into the idle window with no build to point at")
-			// The shape of a run whose builds all finished long ago while the
-			// run header is still 'running'.
+			// The shape of a run whose expected job never produced a build: the
+			// header stays 'running', so reclaim never collects it and this
+			// sweep is the only thing that can stop the checks.
 			_, err = dbConn.Exec(`UPDATE pipelines SET last_updated = NOW() - INTERVAL '15' DAY WHERE id = $1`, payload.ID())
 			Expect(err).NotTo(HaveOccurred())
 			_, err = dbConn.Exec(`UPDATE jobs SET next_build_id = NULL WHERE pipeline_id = $1`, payload.ID())
@@ -280,7 +304,23 @@ var _ = Describe("PipelinePauser", func() {
 
 			_, err = payload.Reload()
 			Expect(err).To(BeNil())
-			Expect(payload.Paused()).To(BeFalse(), "reopen only clears paused_by='run-completed', so an auto-pause would wedge the run permanently")
+			Expect(payload.Paused()).To(BeTrue(), "an idle payload must be pausable or its checks leak forever")
+			Expect(payload.PausedBy()).To(Equal("automatic-pipeline-pauser"))
+
+			By("proving the check load is gone")
+			Expect(checkedResourceIDs()).NotTo(ContainElement(source.ID()))
+
+			By("proving the run header is untouched and the operator can unpause")
+			run, found, err := runFactory.GetRun(template, creation.Run.Number())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(run.Status()).To(Equal(atc.RunStatusRunning))
+
+			Expect(payload.Unpause()).To(Succeed())
+			_, err = payload.Reload()
+			Expect(err).To(BeNil())
+			Expect(payload.Paused()).To(BeFalse())
+			Expect(checkedResourceIDs()).To(ContainElement(source.ID()))
 		})
 	})
 	Describe("pipeline with a build currently running", func() {

@@ -181,10 +181,18 @@ func reopenPipelineRun(tx Tx, runID, payloadID int) error {
 	if err != nil {
 		return err
 	}
+	// A payload pause is reversible only through the attribution it carries.
+	// Two writers pause a payload without an operator asking: completion above
+	// ('run-completed') and the idle sweep in pipeline_pauser.go. Both are
+	// platform attributions, so both must dissolve when a manual trigger
+	// reopens the run -- otherwise the sweep's pause survives reopen, the
+	// admitted build never schedules, and the run is wedged with no way out.
+	// A user pause is deliberate and must survive; it is not listed here.
 	_, err = tx.Exec(`
 		UPDATE pipelines
 		SET paused = false, paused_at = NULL, paused_by = NULL
-		WHERE id = $1 AND paused = true AND paused_by = 'run-completed'
-	`, payloadID)
+		WHERE id = $1 AND paused = true
+		  AND (paused_by = 'run-completed' OR paused_by = $2)
+	`, payloadID, pipelinePauserAttribution)
 	return err
 }
