@@ -163,7 +163,7 @@ Feature: Closing the loop — a whole step, the durable tier, and the artifact i
     And the daemon predates the durable tier
     And the durable store holds "resource-caches/rc-content" containing "in the bucket"
     When a get step looks up the resource cache "rc-42" offering content key "resource-caches/rc-content"
-    Then the resource cache is found
+    Then the resource cache is not found
     And the operator sees no warm activity at all
 
   # The payoff path: nothing local, a content key, a capable daemon. The

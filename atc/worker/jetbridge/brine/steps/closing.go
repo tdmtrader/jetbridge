@@ -902,23 +902,6 @@ func closingCacheDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineCheck[ClosingCacheLookup](
-			"reading the cached artifact fails saying {string}",
-			func(in ClosingCacheLookup, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected a reason parameter")
-				}
-				if in.CacheReadErr == nil {
-					return fmt.Errorf("expected the read to fail saying %q, but it returned %v", want, in.CacheFiles)
-				}
-				if !strings.Contains(in.CacheMessage, want) {
-					return fmt.Errorf("expected the failure to say %q, got %q", want, in.CacheMessage)
-				}
-				return nil
-			},
-		),
-
 		// The four counters must partition every lookup that reaches the
 		// daemon. If they do not, no ratio computed from them means anything,
 		// and answering "is this tier earning its egress?" is impossible.
