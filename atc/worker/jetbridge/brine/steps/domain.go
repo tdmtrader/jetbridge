@@ -17,6 +17,7 @@ import (
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes/fake"
 )
 
@@ -195,4 +196,43 @@ type ClientsetAttempt struct {
 type ResourceTypeImages struct {
 	Images         map[string]string
 	DefaultsBefore map[string]string
+}
+
+// RegistrarReady and RegistrationOutcome are the worker-registration states.
+type RegistrarReady struct {
+	Namespace string
+	Clientset *fake.Clientset
+	DB        JetbridgeDB
+	Config    jetbridge.Config
+	Registrar *jetbridge.Registrar
+	Ctx       context.Context
+}
+
+type RegistrationOutcome struct {
+	Ready   RegistrarReady
+	Worker  db.Worker
+	Err     error
+	Message string
+}
+
+// WatchedPod and WatchObservation are the pod-watch states. Feed and
+// SecondFeed are client-go's own controllable watch fakes — real
+// implementations of watch.Interface, used to make a connection drop
+// deterministic rather than to record calls.
+type WatchedPod struct {
+	Name       string
+	Clientset  *fake.Clientset
+	Pod        *corev1.Pod
+	Ctx        context.Context
+	Watcher    *jetbridge.PodWatcher
+	Feed       *watch.RaceFreeFakeWatcher
+	SecondFeed *watch.RaceFreeFakeWatcher
+	Version    int
+}
+
+type WatchObservation struct {
+	Watched WatchedPod
+	Pod     *corev1.Pod
+	Err     error
+	Message string
 }
