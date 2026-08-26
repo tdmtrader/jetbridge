@@ -43,6 +43,7 @@ func Definitions() []brine.StepDefinition {
 	defs = append(defs, IntegrationDefinitions()...)
 	defs = append(defs, ProcessDefinitions()...)
 	defs = append(defs, InitContainerDefinitions()...)
+	defs = append(defs, ContainerExtraDefinitions()...)
 	return defs
 }
 

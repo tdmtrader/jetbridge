@@ -2028,9 +2028,9 @@ func integrationEnvVar(pod *corev1.Pod, name string) (corev1.EnvVar, error) {
 //	    configured", which configured nothing. Migrating it would import the
 //	    vacuum.
 //
-// executor_test.go — all 3 cases are dispositioned; see executorDisposition.
+// executor_test.go — all 3 cases are dispositioned, immediately below.
 //
-// executorDisposition records why executor_test.go is not migrated at all.
+// executor_test.go is not migrated at all, for two separate reasons.
 //
 //	TestNewSPDYExecutorCreation and TestNewSPDYExecutorWithDifferentConfigs
 //	assert `executor.clientset == clientset` and `executor.restConfig.Host ==
@@ -2050,4 +2050,3 @@ func integrationEnvVar(pod *corev1.Pod, name string) (corev1.EnvVar, error) {
 //	exit code back" in step-integration.feature drives exactly that path
 //	through a real non-zero exit. Disposition: covered by effect; the string
 //	assertion stays a Go unit test.
-var executorDisposition = "see the comment above"
