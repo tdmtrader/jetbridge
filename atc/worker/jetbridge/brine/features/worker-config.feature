@@ -8,7 +8,7 @@ Feature: Configuring the Kubernetes worker
 
   Source: k8s_runtime_behavioral_spec_20260331 — CF-01, CF-02, CF-03, CF-07;
   and WR-05, WR-06 for the resource-type image mapping. Migrated whole from
-  config_test.go, which carried no requirement identifiers.
+  config_test.go — verified case by case: all 17, which carried no requirement identifiers.
 
   # CF-01
   Scenario Outline: The namespace falls back to "default" — <case>

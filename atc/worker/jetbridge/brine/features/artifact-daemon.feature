@@ -318,24 +318,23 @@ Feature: Getting artifacts from the artifact daemon
   # contract. Keep it as a Go unit test labelled as one, move it to the live
   # suite, or delete it; do not dress it up as behavior.
 
-  Scenario: A daemon that is not there does not fail the producing step
-    Given an artifact daemon
-    And the daemon has gone away
-    When the ATC asks that daemon to mirror "handle/output"
-    Then the producing step is not failed
-
-  Scenario: A daemon that errors does not fail the producing step
-    Given an artifact daemon
-    And the daemon refuses mirror requests with a server error
-    When the ATC asks that daemon to mirror "handle/output"
-    Then the producing step is not failed
-
-  Scenario: An empty daemon address does not fail the producing step
-    Given a cluster with no artifact daemons
-    When the ATC asks a daemon with no address to mirror "handle/output"
-    Then the producing step is not failed
-
-  Scenario: A cancelled context does not fail the producing step
-    Given a cluster with no artifact daemons
-    When the ATC gives up before asking a daemon to mirror "handle/output"
-    Then the producing step is not failed
+  # THESE FOUR SCENARIOS WERE REMOVED because they could not fail.
+  #
+  # They asserted "the producing step is not failed" for a dead daemon, an
+  # erroring daemon, an empty address and a cancelled context. But
+  # DaemonClient.TriggerMirror (daemon_client.go:345) returns nil on EVERY
+  # path — request-construction failure, transport failure, non-202 and
+  # success alike — so the check was constant-false and all four passed for
+  # any implementation. Verified by substituting a healthy daemon for the dead
+  # one, for the erroring one, and by removing the cancellation: 29/29 still
+  # passed each time.
+  #
+  # The design decision they describe is real and deliberate: a mirror is
+  # best-effort and must never fail a build. But a scenario that cannot fail
+  # does not guard it, and four of them read as four times the assurance.
+  #
+  # What is genuinely missing, and is NOT covered anywhere in Go or brine now
+  # that TestTriggerMirror_PostsCorrectBody is disposed: nothing asserts a
+  # mirror request is ever ISSUED, or carries the right key. A
+  # `func TriggerMirror(...) error { return nil }` would satisfy the entire
+  # surviving suite. Stating that gap is worth more than four green lines.

@@ -6,8 +6,14 @@ Feature: Reclaiming pods and the rows that track them
   deleted too early loses a running build, and a row deleted too early makes a
   live container invisible to the scheduler.
 
-  Source: k8s_runtime_behavioral_spec_20260331 — GC-01 to GC-07. Migrated whole
-  from reaper_test.go, which carried no requirement identifiers.
+  Source: k8s_runtime_behavioral_spec_20260331 — GC-01 to GC-07. Migrated
+  from reaper_test.go — NOT whole. Five of its nineteen cases remain uncovered:
+  the pod that vanishes between the list and the delete, the
+  GetAllStartedBuilds error branch (distinct from the nil-lookup branch), the
+  retained-pod-through-destroying path, and two production branches no
+  scenario here can reach, because every pod these scenarios build has
+  handle == pod.Name.
+  From reaper_test.go, which carried no requirement identifiers.
 
   # GC-04. A container whose pod is present is alive; one whose pod is gone is
   # marked missing so the scheduler can eventually give up on it.
