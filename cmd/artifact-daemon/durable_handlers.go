@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -212,8 +213,9 @@ func (s *Server) promoteToDurable(ctx context.Context, key string, loc RelKey) {
 		defer release()
 		s.touchStepDir(loc)
 
-		// tarDirectory walks by path; slice 8's territory.
-		s.durable.Store(ctx, key, s.registry.AmbientPath(loc), s.tarDirectory)
+		s.durable.Store(ctx, key, func(w io.Writer) error {
+			return s.tarDirectory(w, loc)
+		})
 	}()
 }
 

@@ -123,25 +123,26 @@ func (d *DurableTier) Restore(ctx context.Context, key, destDir string) bool {
 		return false
 	}
 
-	tmpDir, err := os.MkdirTemp(filepath.Dir(destDir), ".restore-*")
+	parent, base, err := openParent(destDir)
 	if err != nil {
-		logger.Error("create-temp-failed", err)
+		logger.Error("open-parent-failed", err)
 		d.metrics.recordDurable("restore", "error")
 		return false
 	}
-	cleanup := func() { os.RemoveAll(tmpDir) }
+	defer parent.Close()
 
-	if err := extractTarToDir(body, tmpDir); err != nil {
-		cleanup()
+	tmpDir, err := extractTarInto(body, parent, ".restore-")
+	if err != nil {
 		logger.Error("extract-failed", err)
 		d.metrics.recordDurable("restore", "error")
 		return false
 	}
+	cleanup := func() { parent.RemoveAll(tmpDir) }
 
 	// A previous restore or a racing peer fetch may already have put the
 	// artifact here; either copy is equally valid, so keep whichever landed
 	// first rather than swapping bytes under an in-flight read.
-	if err := os.Rename(tmpDir, destDir); err != nil {
+	if err := parent.Rename(tmpDir, base); err != nil {
 		cleanup()
 		if errors.Is(err, os.ErrExist) || isNotEmptyErr(err) {
 			logger.Info("already-present")
@@ -163,7 +164,7 @@ func (d *DurableTier) Restore(ctx context.Context, key, destDir string) bool {
 //
 // It is synchronous; callers that must not block should run it in a goroutine.
 // Concurrent calls for the same key collapse to one upload.
-func (d *DurableTier) Store(ctx context.Context, key, srcDir string, tar func(io.Writer, string) error) {
+func (d *DurableTier) Store(ctx context.Context, key string, tar func(io.Writer) error) {
 	if d == nil {
 		return
 	}
@@ -183,7 +184,7 @@ func (d *DurableTier) Store(ctx context.Context, key, srcDir string, tar func(io
 	// the kind of artifact that should not be held in memory on every node.
 	pr, pw := io.Pipe()
 	go func() {
-		pw.CloseWithError(tar(pw, srcDir))
+		pw.CloseWithError(tar(pw))
 	}()
 	defer pr.Close()
 

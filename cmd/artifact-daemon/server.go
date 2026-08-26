@@ -9,10 +9,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"math/rand/v2"
 	"net/http"
 	"os"
-	"os/exec"
 	"path"
 	"path/filepath"
 	"strconv"
@@ -338,9 +338,7 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 	// Directory: tar on-the-fly and stream.
 	if info.IsDir() {
 		w.Header().Set("Content-Type", "application/x-tar")
-		// tarDirectory walks by path — egress belongs to slice 8 — so this is
-		// one of the sites that still needs the ambient form.
-		if err := s.tarDirectory(w, s.registry.AmbientPath(loc)); err != nil {
+		if err := s.tarDirectory(w, loc); err != nil {
 			s.logger.Error("failed-to-tar-artifact", err, lager.Data{"rel": string(loc)})
 			// The 200 header and part of the body are already out; abort
 			// the connection so the client sees a hard failure instead of
@@ -378,14 +376,23 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 // including a file changing or disappearing mid-walk — is returned so the
 // caller can abort the response; a silently truncated tar reads as complete
 // on the client side.
-func (s *Server) tarDirectory(w io.Writer, dir string) error {
+func (s *Server) tarDirectory(w io.Writer, loc RelKey) error {
 	tw := tar.NewWriter(w)
+	name := osName(loc)
+	srcFS := s.root.FS()
 
-	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() {
+	err := fs.WalkDir(srcFS, name, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
 			return err
 		}
-		rel, _ := filepath.Rel(dir, path)
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(name, p)
+		if err != nil {
+			return err
+		}
 		hdr := &tar.Header{
 			Name:    rel,
 			Size:    info.Size(),
@@ -393,7 +400,10 @@ func (s *Server) tarDirectory(w io.Writer, dir string) error {
 			ModTime: info.ModTime(),
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
-			link, _ := os.Readlink(path)
+			link, err := s.root.Readlink(p)
+			if err != nil {
+				return err
+			}
 			hdr.Typeflag = tar.TypeSymlink
 			hdr.Linkname = link
 			hdr.Size = 0
@@ -402,7 +412,7 @@ func (s *Server) tarDirectory(w io.Writer, dir string) error {
 		if err := tw.WriteHeader(hdr); err != nil {
 			return err
 		}
-		f, err := os.Open(path)
+		f, err := srcFS.Open(p)
 		if err != nil {
 			return err
 		}
@@ -1093,53 +1103,47 @@ func (s *Server) copyArtifactGuarded(src RelKey, dest string) error {
 		}
 	}()
 
-	// copyArtifact shells out to cp -R and so still travels by path. This is
-	// one of the ambient sites slice 8 removes; naming the call makes it
-	// findable rather than leaving a bare string conversion.
-	return s.copyArtifact(s.registry.AmbientPath(src), dest)
+	return s.copyArtifact(src, dest)
 }
 
-// copyArtifact copies the contents of src directory to dest atomically.
-// It copies into a temporary sibling directory first, then renames to the
-// final path. This prevents partial state from blocking retries when a
-// previous copy was interrupted (e.g., by restrictive or read-only files
-// left in the destination).
-func (s *Server) copyArtifact(src, dest string) error {
-	// Create a temp directory alongside dest (same filesystem for atomic rename).
-	tmpDest, err := os.MkdirTemp(filepath.Dir(dest), ".cp-tmp-")
+// copyArtifact copies the artifact at src into dest, atomically.
+//
+// Both sides go through a root handle: src through the daemon's storage root,
+// dest through a handle on its parent opened once. Every step after that —
+// temp directory, replace, rename — is relative to that handle, so a symlink
+// swapped in mid-copy cannot redirect a later step somewhere else. The previous
+// version re-derived the parent as a string for each step, which is how a
+// validated dest could still land outside the tree it was validated against.
+//
+// Copies land in a temp sibling and are renamed into place, so an interrupted
+// copy never leaves partial state at dest to block the retry.
+func (s *Server) copyArtifact(src RelKey, dest string) error {
+	parent, base, err := openParent(dest)
+	if err != nil {
+		return err
+	}
+	defer parent.Close()
+
+	tmp, err := mkdirTempIn(parent, ".cp-tmp-")
 	if err != nil {
 		return fmt.Errorf("create temp dir: %w", err)
 	}
+	tmpRoot, err := parent.OpenRoot(tmp)
+	if err != nil {
+		parent.RemoveAll(tmp)
+		return fmt.Errorf("open temp dir: %w", err)
+	}
+	defer tmpRoot.Close()
 
-	// Use cp -R (recursive only — no ownership/mode preservation). The daemon
-	// has CAP_DAC_OVERRIDE to read source files owned by any UID, but does NOT
-	// have CAP_CHOWN. GNU cp -p as root treats chown failure as a hard error,
-	// so we must not use -p. Ownership/mode preservation is unnecessary anyway —
-	// these are ephemeral artifact cache copies.
-	cmd := exec.Command("cp", "-R", src+"/.", tmpDest+"/")
-	if output, err := cmd.CombinedOutput(); err != nil {
-		os.RemoveAll(tmpDest)
-		return fmt.Errorf("cp -R %s/. %s/: %w (output: %s)", src, tmpDest, err, strings.TrimSpace(string(output)))
+	if err := copyTree(s.root, osName(src), tmpRoot); err != nil {
+		parent.RemoveAll(tmp)
+		return fmt.Errorf("copy %s -> %s: %w", src, dest, err)
 	}
 
-	// Ensure world-readable permissions so non-root task containers can access
-	// artifacts. Source files may have restrictive modes (e.g. 0600) set by the
-	// producing step's UID. The daemon owns the copies (root:root) so chmod
-	// succeeds without CAP_FOWNER. "a+rX" adds read for all and execute only
-	// on directories (where owner already has execute).
-	chmodCmd := exec.Command("chmod", "-R", "a+rX", tmpDest)
-	if output, err := chmodCmd.CombinedOutput(); err != nil {
-		os.RemoveAll(tmpDest)
-		return fmt.Errorf("chmod -R a+rX %s: %w (output: %s)", tmpDest, err, strings.TrimSpace(string(output)))
-	}
-
-	// Remove any existing dest (may contain partial state from a prior failed copy).
-	os.RemoveAll(dest)
-
-	// Atomic rename on the same filesystem.
-	if err := os.Rename(tmpDest, dest); err != nil {
-		os.RemoveAll(tmpDest)
-		return fmt.Errorf("rename %s -> %s: %w", tmpDest, dest, err)
+	parent.RemoveAll(base)
+	if err := parent.Rename(tmp, base); err != nil {
+		parent.RemoveAll(tmp)
+		return fmt.Errorf("rename %s -> %s: %w", tmp, dest, err)
 	}
 	return nil
 }
@@ -1239,8 +1243,7 @@ func (s *Server) handleGetResourceCache(w http.ResponseWriter, r *http.Request) 
 
 	if info.IsDir() {
 		w.Header().Set("Content-Type", "application/x-tar")
-		// Walks by path; slice 8's territory.
-		if err := s.tarDirectory(w, s.registry.AmbientPath(loc)); err != nil {
+		if err := s.tarDirectory(w, loc); err != nil {
 			s.logger.Error("failed-to-tar-resource-cache", err, lager.Data{"key": key, "rel": string(loc)})
 			// Headers already sent; abort so the peer sees a hard failure
 			// rather than a clean-looking truncated tar.

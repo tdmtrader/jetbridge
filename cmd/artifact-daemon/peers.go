@@ -229,16 +229,16 @@ func (p *PeerResolver) Fetch(ctx context.Context, peerIP, key, destPath string) 
 		// retry then re-extracted over that residue and failed early with a
 		// spurious "file exists" on a legitimate entry — so the error the
 		// operator finally saw named the wrong cause entirely.
-		tmpDir, err := os.MkdirTemp(filepath.Dir(destPath), ".fetch-*")
+		parent, base, err := openParent(destPath)
 		if err != nil {
 			resp.Body.Close()
-			return fmt.Errorf("create temp dir: %w", err)
+			return err
 		}
 
-		err = extractTarToDir(resp.Body, tmpDir)
+		tmpDir, err := extractTarInto(resp.Body, parent, ".fetch-")
 		resp.Body.Close()
 		if err != nil {
-			os.RemoveAll(tmpDir)
+			parent.Close()
 			lastErr = err
 			logger.Error("extract-failed", err, lager.Data{"attempt": attempt})
 			if attempt < 3 {
@@ -256,10 +256,11 @@ func (p *PeerResolver) Fetch(ctx context.Context, peerIP, key, destPath string) 
 		// directory already sitting here is not necessarily this artifact, and
 		// reporting success while delivering none of the fetched bytes is the
 		// same lie as the nil return this track set out to remove.
-		os.RemoveAll(destPath)
+		parent.RemoveAll(base)
 
-		if err := os.Rename(tmpDir, destPath); err != nil {
-			os.RemoveAll(tmpDir)
+		if err := parent.Rename(tmpDir, base); err != nil {
+			parent.RemoveAll(tmpDir)
+			parent.Close()
 
 			// We cleared destPath ourselves a moment ago, so a directory there
 			// NOW was created after that — which only a concurrent fetch of this
@@ -285,6 +286,7 @@ func (p *PeerResolver) Fetch(ctx context.Context, peerIP, key, destPath string) 
 			continue
 		}
 
+		parent.Close()
 		logger.Info("fetched", lager.Data{"attempt": attempt})
 		return nil
 	}
@@ -299,25 +301,32 @@ func (p *PeerResolver) Fetch(ctx context.Context, peerIP, key, destPath string) 
 // Its own failures are ENVIRONMENT-attributable — a caller that cannot create
 // or open its own destination is not being told something about the archive —
 // so they are deliberately NOT marked with ErrRefused.
-func extractTarToDir(r io.Reader, destDir string) error {
-	if err := os.MkdirAll(destDir, 0755); err != nil {
-		return fmt.Errorf("create dest dir: %w", err)
-	}
-
-	// Containment is a property of the handle every write goes through, not a
-	// check performed before writing. The previous implementation validated
-	// each entry's path as a STRING and then wrote through the ambient
-	// filesystem; the two disagreed the moment an entry created a symlink, and
-	// an archive could hatch out of the destination in two steps. os.Root
-	// refuses to resolve a path out of the root, so there is no ordering to get
-	// wrong and no name to out-think.
-	root, err := os.OpenRoot(destDir)
+// extractTarInto extracts an archive into a fresh directory under parent and
+// returns its name. The caller renames it into place.
+//
+// parent is a HANDLE, and the extraction root is derived from it with
+// OpenRoot rather than reopened from a path. The previous version took destDir
+// as a string, os.MkdirAll'd it and os.OpenRoot'd it — both ambient — so a
+// symlink at destDir anchored the "contained" root outside the store and every
+// write inside it landed there. os.Root contains operations within a root; it
+// cannot contain the choice of root.
+func extractTarInto(r io.Reader, parent *os.Root, prefix string) (string, error) {
+	tmp, err := mkdirTempIn(parent, prefix)
 	if err != nil {
-		return fmt.Errorf("open dest root: %w", err)
+		return "", fmt.Errorf("create temp dir: %w", err)
+	}
+	root, err := parent.OpenRoot(tmp)
+	if err != nil {
+		parent.RemoveAll(tmp)
+		return "", fmt.Errorf("open temp dir: %w", err)
 	}
 	defer root.Close()
 
-	return extractTarToRoot(r, root)
+	if err := extractTarToRoot(r, root); err != nil {
+		parent.RemoveAll(tmp)
+		return "", err
+	}
+	return tmp, nil
 }
 
 // extractTarToRoot extracts into a root the CALLER owns.

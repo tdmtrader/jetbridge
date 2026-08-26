@@ -4,10 +4,12 @@ import (
 	"code.cloudfoundry.org/lager/v3"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"math/rand/v2"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -541,4 +543,96 @@ func resolvePath(p string) string {
 		resolved = r
 	}
 	return resolved
+}
+
+// openParent returns a handle on path's parent directory and path's base name.
+//
+// Callers that create, replace or rename `path` do all of it through this one
+// handle. The alternative — re-deriving the parent as a string for each step —
+// lets a symlink swapped in between two steps redirect the later ones.
+func openParent(path string) (*os.Root, string, error) {
+	root, err := os.OpenRoot(filepath.Dir(path))
+	if err != nil {
+		return nil, "", fmt.Errorf("open parent of %q: %w", path, err)
+	}
+	return root, filepath.Base(path), nil
+}
+
+// plusRX applies chmod's "a+rX" to mode: read for all, execute for all only
+// where execute already exists or the entry is a directory.
+//
+// Artifact copies must be readable by task containers running as arbitrary
+// UIDs, and a producing step may leave files at 0600.
+func plusRX(mode os.FileMode, isDir bool) os.FileMode {
+	mode |= 0o444
+	if isDir || mode&0o111 != 0 {
+		mode |= 0o111
+	}
+	return mode
+}
+
+// copyTree copies the contents of srcRoot/srcName into dstRoot.
+//
+// Replaces an exec of `cp -R` followed by `chmod -R a+rX`. Modes are set from
+// plusRX rather than preserved: the daemon holds CAP_DAC_OVERRIDE but not
+// CAP_CHOWN, so ownership cannot be preserved and `cp -p` as root treats the
+// chown failure as fatal.
+func copyTree(srcRoot *os.Root, srcName string, dstRoot *os.Root) error {
+	srcFS := srcRoot.FS()
+	return fs.WalkDir(srcFS, srcName, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(srcName, p)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+
+		switch {
+		case d.IsDir():
+			return dstRoot.Mkdir(rel, plusRX(info.Mode().Perm(), true))
+
+		case d.Type()&fs.ModeSymlink != 0:
+			target, err := srcRoot.Readlink(path.Join(srcName, rel))
+			if err != nil {
+				return err
+			}
+			// `cp -R` copied these verbatim. The daemon must not: dest is a
+			// container mount, so an outward link resolves against the
+			// container's filesystem, not ours. Extraction already refuses
+			// absolute targets, so anything that arrived by stream-in passes
+			// this for free; it bites only trees written straight through the
+			// hostPath mount.
+			if err := validateSymlinkTarget(rel, target); err != nil {
+				return err
+			}
+			return dstRoot.Symlink(target, rel)
+
+		case !info.Mode().IsRegular():
+			return nil // devices, sockets, fifos: never in an artifact
+
+		default:
+			in, err := srcFS.Open(p)
+			if err != nil {
+				return err
+			}
+			defer in.Close()
+			out, err := dstRoot.OpenFile(rel, os.O_CREATE|os.O_EXCL|os.O_WRONLY, plusRX(info.Mode().Perm(), false))
+			if err != nil {
+				return err
+			}
+			if _, err := io.Copy(out, in); err != nil {
+				out.Close()
+				return err
+			}
+			return out.Close()
+		}
+	})
 }

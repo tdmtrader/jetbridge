@@ -29,10 +29,12 @@ func newTier(t *testing.T, store durable.Store) (*DurableTier, *Server) {
 	return tier, server
 }
 
-func writeDir(t *testing.T, root, name string, files map[string]string) string {
+// writeDir seeds a directory inside the server's storage root and returns its
+// location, which is what every caller passes on to tarDirectory or Store.
+func writeDir(t *testing.T, s *Server, name string, files map[string]string) RelKey {
 	t.Helper()
 
-	dir := filepath.Join(root, name)
+	dir := filepath.Join(s.storagePath, name)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -41,8 +43,7 @@ func writeDir(t *testing.T, root, name string, files map[string]string) string {
 			t.Fatalf("write %s: %v", file, err)
 		}
 	}
-
-	return dir
+	return RelKey(name)
 }
 
 func mustFS(t *testing.T) durable.Store {
@@ -58,11 +59,11 @@ func mustFS(t *testing.T) durable.Store {
 
 func TestStoreThenRestoreRoundTripsADirectory(t *testing.T) {
 	tier, server := newTier(t, mustFS(t))
-	work := t.TempDir()
+	work := t.TempDir() // restore destinations are container mounts, outside the store
 
-	src := writeDir(t, work, "src", map[string]string{"payload": "cached bytes"})
+	src := writeDir(t, server, "src", map[string]string{"payload": "cached bytes"})
 
-	tier.Store(context.Background(), "rc-1", src, server.tarDirectory)
+	tier.Store(context.Background(), "rc-1", tarOf(server, src))
 
 	if !tier.Has(context.Background(), "rc-1") {
 		t.Fatal("Store did not put the object")
@@ -120,8 +121,8 @@ func TestABrokenStoreDegradesInsteadOfPropagating(t *testing.T) {
 	// nothing else. The methods return bool precisely so there is no error for
 	// a caller to accidentally turn into a failed build.
 	tier, server := newTier(t, brokenStore{})
-	work := t.TempDir()
-	src := writeDir(t, work, "src", map[string]string{"payload": "x"})
+	work := t.TempDir() // restore destinations are container mounts, outside the store
+	src := writeDir(t, server, "src", map[string]string{"payload": "x"})
 
 	if tier.Has(context.Background(), "rc-1") {
 		t.Error("Has against a broken store reported a hit")
@@ -135,7 +136,7 @@ func TestABrokenStoreDegradesInsteadOfPropagating(t *testing.T) {
 
 	// Store returns nothing; the assertion is that it neither panics nor
 	// blocks, since it is meant to run detached from a request.
-	tier.Store(context.Background(), "rc-1", src, server.tarDirectory)
+	tier.Store(context.Background(), "rc-1", tarOf(server, src))
 }
 
 func TestANilTierIsSafe(t *testing.T) {
@@ -152,19 +153,19 @@ func TestANilTierIsSafe(t *testing.T) {
 	if tier.Delete(context.Background(), "rc-1") {
 		t.Error("nil tier reported a delete")
 	}
-	tier.Store(context.Background(), "rc-1", t.TempDir(), nil)
+	tier.Store(context.Background(), "rc-1", nil)
 }
 
 func TestConcurrentStoresOfOneKeyCollapse(t *testing.T) {
 	counting := &countingStore{inner: mustFS(t)}
 	tier, server := newTier(t, counting)
-	src := writeDir(t, t.TempDir(), "src", map[string]string{"payload": "x"})
+	src := writeDir(t, server, "src", map[string]string{"payload": "x"})
 
 	done := make(chan struct{})
 	for range 5 {
 		go func() {
 			defer func() { done <- struct{}{} }()
-			tier.Store(context.Background(), "rc-5", src, server.tarDirectory)
+			tier.Store(context.Background(), "rc-5", tarOf(server, src))
 		}()
 	}
 	for range 5 {
@@ -210,7 +211,7 @@ func (c *countingStore) List(ctx context.Context, fn func(durable.Attributes) er
 // rather than assumed to follow from the shared helper.
 func TestRestoreRefusesAnObjectThatEscapesItsDestination(t *testing.T) {
 	tier, _ := newTier(t, mustFS(t))
-	work := t.TempDir()
+	work := t.TempDir() // restore destinations are container mounts, outside the store
 
 	// A file the archive will try to overwrite from inside the destination.
 	outside := filepath.Join(work, "outside")
@@ -265,4 +266,9 @@ func TestRestoreRefusesAnObjectThatEscapesItsDestination(t *testing.T) {
 			t.Errorf("refused Restore left temp residue: %s", e.Name())
 		}
 	}
+}
+
+// tarOf adapts tarDirectory to Store's callback, which no longer takes a path.
+func tarOf(s *Server, loc RelKey) func(io.Writer) error {
+	return func(w io.Writer) error { return s.tarDirectory(w, loc) }
 }
