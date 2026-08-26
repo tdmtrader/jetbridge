@@ -1,12 +1,20 @@
 package steps
 
 import (
+	"bytes"
+	"context"
+	"errors"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/brine-dev/brine-go/pkg/brine"
+	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/runtime"
+	"github.com/concourse/concourse/atc/worker/jetbridge"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/fake"
 )
 
 // PodFailureDefinitions covers the ways a step's pod can die, migrated from
@@ -160,4 +168,139 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
+}
+
+// SeveredExecOutcome is what a step and its downstream see after the exec
+// connection is cut mid-run.
+type SeveredExecOutcome struct {
+	Err       error
+	Message   string
+	Locator   *jetbridge.ArtifactLocator
+	OutputKey string
+}
+
+// severingExec is a real PodExecutor whose connection dies mid-step, the way a
+// web restart or an API-server rollout kills a long SPDY stream.
+type severingExec struct{}
+
+func (severingExec) ExecInPod(
+	_ context.Context, _, _, _ string, _ []string,
+	_ io.Reader, _, _ io.Writer, _ bool, _ jetbridge.ExecAttrs,
+) error {
+	return errors.New("error dialing backend: EOF")
+}
+
+// SeveredExecDefinitions covers F23 — what must NOT happen when the exec
+// connection to a running step is severed.
+//
+// The step's process is still alive in the pod, still writing its outputs. If
+// the runtime published an artifact location anyway, an on_failure or on_error
+// hook could stream out a HALF-WRITTEN artifact and get no error at all. The
+// missing location is what makes the hook fail fast instead, so the assertion
+// is about an absence — and absences are exactly what a spy assertion cannot
+// distinguish from "the call happened with different arguments".
+func SeveredExecDefinitions() []brine.StepDefinition {
+	return []brine.StepDefinition{
+
+		brine.DefineMapUsing[brine.Empty, SeveredExecOutcome](
+			"a task step whose connection to its pod is severed while it writes {string}",
+			[]string{"jetbridge-db"},
+			func(_ brine.Empty, p brine.Params, _ *brine.Recorder, res brine.Resources) (SeveredExecOutcome, error) {
+				output, ok := p.GetString(0)
+				if !ok {
+					return SeveredExecOutcome{}, fmt.Errorf("expected an output name")
+				}
+				database, ok := res.Get("jetbridge-db").(JetbridgeDB)
+				if !ok {
+					return SeveredExecOutcome{}, fmt.Errorf("jetbridge-db resource is %T", res.Get("jetbridge-db"))
+				}
+				dbWorker, err := database.PersistNamedWorker("k8s-worker-1")
+				if err != nil {
+					return SeveredExecOutcome{}, err
+				}
+
+				ctx := context.Background()
+				handle := "severed-task-handle"
+				clientset := fake.NewSimpleClientset()
+				cfg := jetbridge.NewConfig("test-namespace", "")
+				worker := jetbridge.NewWorker(dbWorker, clientset, cfg)
+				worker.SetExecutor(severingExec{})
+				locator := jetbridge.NewArtifactLocator()
+				worker.SetArtifactLocator(locator)
+
+				container, _, err := worker.FindOrCreateContainer(
+					ctx,
+					db.NewFixedHandleContainerOwner(handle),
+					db.ContainerMetadata{Type: db.ContainerTypeTask},
+					runtime.ContainerSpec{
+						TeamID:    1,
+						Dir:       "/tmp/build/workdir",
+						ImageSpec: runtime.ImageSpec{ImageURL: "busybox"},
+						Outputs:   runtime.OutputPaths{output: "/tmp/build/workdir/" + output},
+					},
+					&noopDelegate{},
+				)
+				if err != nil {
+					return SeveredExecOutcome{}, fmt.Errorf("find or create container: %w", err)
+				}
+
+				process, err := container.Run(ctx,
+					runtime.ProcessSpec{Path: "/bin/sh", Args: []string{"-c", "echo hi"}},
+					runtime.ProcessIO{Stdout: new(bytes.Buffer), Stderr: new(bytes.Buffer)},
+				)
+				if err != nil {
+					return SeveredExecOutcome{}, fmt.Errorf("run step: %w", err)
+				}
+
+				pods := clientset.CoreV1().Pods("test-namespace")
+				pod, err := pods.Get(ctx, handle, metav1.GetOptions{})
+				if err != nil {
+					return SeveredExecOutcome{}, fmt.Errorf("get pod: %w", err)
+				}
+				pod.Status.Phase = corev1.PodRunning
+				pod.Status.Conditions = []corev1.PodCondition{
+					{Type: corev1.PodReady, Status: corev1.ConditionTrue},
+				}
+				if _, err := pods.UpdateStatus(ctx, pod, metav1.UpdateOptions{}); err != nil {
+					return SeveredExecOutcome{}, fmt.Errorf("update pod: %w", err)
+				}
+
+				_, waitErr := process.Wait(ctx)
+				msg := ""
+				if waitErr != nil {
+					msg = waitErr.Error()
+				}
+				return SeveredExecOutcome{
+					Err: waitErr, Message: msg, Locator: locator,
+					OutputKey: handle + "-output-" + output,
+				}, nil
+			},
+		),
+
+		brine.DefineCheck[SeveredExecOutcome](
+			"the step fails rather than reporting success",
+			func(in SeveredExecOutcome, _ brine.Params, _ *brine.Recorder) error {
+				if in.Err == nil {
+					return fmt.Errorf("expected the severed step to fail; it reported success")
+				}
+				if !strings.Contains(in.Message, "exec in pod") {
+					return fmt.Errorf("expected the failure to name the exec, got %q", in.Message)
+				}
+				return nil
+			},
+		),
+
+		brine.DefineCheck[SeveredExecOutcome](
+			"the half-written artifact cannot be located by a later step",
+			func(in SeveredExecOutcome, _ brine.Params, _ *brine.Recorder) error {
+				if _, found := in.Locator.Locate(in.OutputKey); found {
+					return fmt.Errorf(
+						"the torn artifact %q is locatable — an on_failure hook could stream out a "+
+							"half-written artifact and get NO error, which is the failure this guards",
+						in.OutputKey)
+				}
+				return nil
+			},
+		),
+	}
 }

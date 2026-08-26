@@ -101,3 +101,17 @@ Feature: Failure detection priority order
     And a task container "rf06-deleted" is running
     When the pod is deleted from the cluster
     Then the step is told the pod was deleted
+
+  # F23. When the exec connection to a running step is severed — a web restart,
+  # an API-server rollout — the step's process is still alive in the pod and
+  # still writing its outputs. If the runtime published an artifact location
+  # anyway, an on_failure or on_error hook could stream out a HALF-WRITTEN
+  # artifact and get no error at all. The missing location is what makes the
+  # hook fail fast instead.
+  #
+  # The assertion is about an ABSENCE, which is precisely what a spy assertion
+  # cannot distinguish from "the call happened with different arguments".
+  Scenario: A step torn from its pod leaves nothing for a later step to read
+    Given a task step whose connection to its pod is severed while it writes "out"
+    Then the step fails rather than reporting success
+    And the half-written artifact cannot be located by a later step
