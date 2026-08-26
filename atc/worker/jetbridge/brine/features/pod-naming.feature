@@ -57,6 +57,7 @@ Feature: Naming a pod after the step that runs in it
       | spaces          | my pipe      | unit test | my pipe      | my-pipe      |
       | punctuation     | pipe@line!   | job#1     | pipe@line!   | pipeline     |
       | doubled hyphens | my--pipe     | my___job  | my--pipe     | my-pipe      |
+      | edge separators | _my-pipe_    | unit_test | _my-pipe_    | my-pipe      |
 
   # PN-06. The 63-character cap is a hard Kubernetes limit; exceeding it means
   # the pod cannot be created at all.
@@ -117,3 +118,24 @@ Feature: Naming a pod after the step that runs in it
     Then the pod name is at most 63 characters
     And the pod name is a valid DNS label
     And the pod name matches "^chk-"
+
+  # An untyped container still has to be findable. "task" is the default and
+  # it is what an operator greps for; a different default silently breaks that
+  # habit for every container Concourse fails to type.
+  Scenario: A container with no recorded type is named as a task
+    Given a "" container in pipeline "p" job "j" build "1" step "" with handle "abcdef12-0000-0000-0000-000000000000"
+    When the pod name is generated
+    Then the pod name matches "^p-j-b1-task-[a-f0-9]{8}$"
+    And the pod name is a valid DNS label
+
+  # The 63-character cap has to hold for every input, not just long pipeline
+  # and job names. Pipeline and job SHARE the remaining budget; a deletion
+  # probe gave each of them the whole of it and the suite stayed green,
+  # because no scenario made the fixed part big enough for the split to
+  # matter. With a long build number it produces a 76-character name, which
+  # Kubernetes rejects outright.
+  Scenario: A long build number cannot push the pod name past the DNS limit
+    Given a "task" container in pipeline "extremely-long-pipeline-name" job "extremely-long-job-name" build "1234567890123456789" step "" with handle "abcdef12-0000-0000-0000-000000000000"
+    When the pod name is generated
+    Then the pod name is at most 63 characters
+    And the pod name is a valid DNS label
