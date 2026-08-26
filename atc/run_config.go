@@ -47,7 +47,19 @@ func MaterializeRunConfig(config Config, identity RunIdentity, params RunParams)
 	if err := UnmarshalConfig(resolvedPayload, &materialized); err != nil {
 		return RunMaterialization{}, err
 	}
+	// A materialized run config is a payload, not a template: it declares no
+	// parameters of its own and carries no retention policy. Both belong to the
+	// template row and are only ever read from there — effectiveConfig rebuilds
+	// the template config from the template pipeline, every retention predicate
+	// in pipeline_run_reclaim.go joins pipeline_runs back to its template, and
+	// present.Pipeline exposes a parameter schema only when the pipeline is a
+	// template. Leaving them here makes the payload's stored config, its
+	// canonical JSON and its config hash all claim a schema the pipeline does
+	// not have, so `fly get-pipeline` on a run emits a config that
+	// configvalidate.ValidateTemplateDeclaration refuses.
 	materialized.Template = false
+	materialized.Params = nil
+	materialized.RunRetention = nil
 	clearUnpassedTriggers(materialized.Jobs)
 
 	policyKeys, err := policyKeysByMaterializedJobName(config.Jobs, materialized.Jobs)

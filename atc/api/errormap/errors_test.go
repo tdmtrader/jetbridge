@@ -1,6 +1,7 @@
 package errormap_test
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -48,11 +49,16 @@ var _ = Describe("Mutation error status", func() {
 		Expect(found).To(BeFalse())
 	})
 
-	It("writes an actionable typed error body", func() {
-		// This fails if a client-visible conflict loses the domain message needed to recover.
+	It("writes an actionable typed error body as JSON", func() {
+		// This fails if a client-visible conflict loses the domain message needed to
+		// recover, or answers a JSON handler with a text/plain body.
 		writer := httptest.NewRecorder()
 		Expect(errormap.Write(writer, db.ErrPipelineRunPaused)).To(BeTrue())
 		Expect(writer.Code).To(Equal(http.StatusConflict))
-		Expect(writer.Body.String()).To(ContainSubstring("paused"))
+		Expect(writer.Header().Get("Content-Type")).To(Equal("application/json"))
+
+		var decoded atc.SaveConfigResponse
+		Expect(json.Unmarshal(writer.Body.Bytes(), &decoded)).To(Succeed())
+		Expect(decoded.Errors).To(ConsistOf(ContainSubstring("paused")))
 	})
 })

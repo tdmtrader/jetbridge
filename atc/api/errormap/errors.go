@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/api/helpers"
 	"github.com/concourse/concourse/atc/db"
 )
 
@@ -29,11 +30,18 @@ func Status(err error) (int, bool) {
 }
 
 // Write emits a classified domain error and reports whether it handled err.
+//
+// The body is the same envelope the rest of the API already answers errors
+// with, atc.SaveConfigResponse (see helpers.HandleBadRequest). http.Error
+// would stamp text/plain on handlers whose every other response is JSON, so a
+// client switching on Content-Type saw plain text on every refusal.
 func Write(w http.ResponseWriter, err error) bool {
 	status, known := Status(err)
 	if !known {
 		return false
 	}
-	http.Error(w, err.Error(), status)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	helpers.WriteSaveConfigResponse(w, atc.SaveConfigResponse{Errors: []string{err.Error()}})
 	return true
 }

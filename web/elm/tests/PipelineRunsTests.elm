@@ -230,7 +230,14 @@ all =
                     |> Tuple.first
                     |> Common.queryView
                     |> Query.find [ id "run-form-error" ]
-                    |> Query.has [ text "environment must be approved for this template" ]
+                    |> Query.has [ text "environment must be approved for this template" ]        , test "unwraps the JSON error envelope in a 409 response body" <|
+            \_ ->
+                submitted
+                    |> Application.handleCallback (PipelineRunCreated (Err jsonConflict))
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.find [ id "run-form-error" ]
+                    |> Query.has [ text "job \"deploy-prod\" must be cleared" ]
         , test "marks the form busy while its controls are disabled" <|
             \_ ->
                 submitted
@@ -530,6 +537,15 @@ serverConflict =
         , status = { code = 409, message = "Conflict" }
         , headers = Dict.empty
         , body = " environment must be approved for this template \n"
+        }
+
+jsonConflict : Http.Error
+jsonConflict =
+    Http.BadStatus
+        { url = "http://example.com"
+        , status = { code = 409, message = "Conflict" }
+        , headers = Dict.empty
+        , body = "{\"errors\":[\"task cache for interpolated template job \\\"deploy-prod\\\" must be cleared\"]}"
         }
 
 

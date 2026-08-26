@@ -36,7 +36,7 @@ var _ = Describe("Run config materialization", func() {
 		Expect(config.Template).To(BeTrue())
 		Expect(config.Jobs[0].Name).To(Equal("deploy-((environment))-((run))-((run_id))"))
 		Expect(json.Valid(result.CanonicalJSON)).To(BeTrue())
-		Expect(result.CanonicalJSON).To(MatchJSON(`{"params":[{"name":"environment","type":"string","default":"staging"}],"jobs":[{"name":"deploy-staging-12-99","plan":[{"task":"deploy-staging","config":{"platform":"linux","run":{"path":"echo","args":["((runtime:token))"]}}}]}]}`))
+		Expect(result.CanonicalJSON).To(MatchJSON(`{"jobs":[{"name":"deploy-staging-12-99","plan":[{"task":"deploy-staging","config":{"platform":"linux","run":{"path":"echo","args":["((runtime:token))"]}}}]}]}`))
 	})
 
 	It("clears source triggers but preserves passed triggers in the materialized graph", func() {
@@ -81,9 +81,14 @@ var _ = Describe("Run config materialization", func() {
 		}))
 	})
 
-	It("retains parameter declarations and run retention in the materialized config and payload", func() {
-		// This fails if materialization strips data which later run management needs
-		// to retain from its template definition.
+	It("clears the template declaration from the materialized config and payload", func() {
+		// This fails if a materialized run keeps its template's parameter schema or
+		// retention policy. Nothing reads either from a payload: the effective template
+		// config is rebuilt from the template row, every retention predicate joins
+		// pipeline_runs back to its template, and a parameter schema is presented only
+		// for a template. Keeping them makes `fly get-pipeline` on a run emit a config
+		// that ValidateTemplateDeclaration refuses with "params are only valid on
+		// templates", while the config hash digests a schema the payload does not have.
 		keepLast := 5
 		ttlDays := 30
 		config := Config{
@@ -92,20 +97,23 @@ var _ = Describe("Run config materialization", func() {
 				Name: "environment", Type: ParamTypeString, Default: "staging",
 			}},
 			RunRetention: &RunRetentionConfig{KeepLast: &keepLast, TTLDays: &ttlDays},
-			Jobs:         JobConfigs{{Name: "entry", PlanSequence: []Step{}}},
+			Jobs:         JobConfigs{{Name: "entry-((environment))", PlanSequence: []Step{}}},
 		}
 
 		result, err := MaterializeRunConfig(config, RunIdentity{}, RunParams{})
 
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result.Config.Template).To(BeFalse())
-		Expect(result.Config.Params).To(Equal(config.Params))
-		Expect(result.Config.RunRetention).To(Equal(config.RunRetention))
+		Expect(result.Config.Params).To(BeNil())
+		Expect(result.Config.RunRetention).To(BeNil())
+		// The declaration is still what drives interpolation; only the result is free of it.
+		Expect(result.Config.Jobs[0].Name).To(Equal("entry-staging"))
 		Expect(result.CanonicalJSON).To(MatchJSON(`{
-			"params": [{"name":"environment","type":"string","default":"staging"}],
-			"run_retention": {"keep_last":5,"ttl_days":30},
-			"jobs": [{"name":"entry","plan":[]}]
+			"jobs": [{"name":"entry-staging","plan":[]}]
 		}`))
+		// The template itself is not mutated.
+		Expect(config.Params).To(HaveLen(1))
+		Expect(config.RunRetention).NotTo(BeNil())
 	})
 })
 
