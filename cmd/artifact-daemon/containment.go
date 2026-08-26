@@ -139,6 +139,33 @@ func validateRequestKey(key string) error {
 	// filesystem.
 	cleaned := filepath.Clean(key)
 
+	// REFUSE a key that is not already canonical, rather than validating the
+	// cleaned form and letting the caller keep the raw one.
+	//
+	// That gap was a working guard bypass. requestKey returned the RAW key;
+	// handleGetArtifact and handleDeleteArtifact built a RelKey from it by
+	// hand; and stepHandle splits a RelKey on "/", so:
+	//
+	//	GET /artifacts/steps%2f%2fbuild-42/out   -> stepHandle ""
+	//	GET /artifacts/steps%2f%2e%2fbuild-42/out -> stepHandle "."
+	//
+	// while the sweeper's key for that tree is "build-42". Both spellings
+	// routed, both served 200, and both took a lock that excluded nobody — so
+	// a DELETE removed the tree while a read of the same artifact was in
+	// flight, and filepath.Walk silently omits what vanishes mid-walk. A
+	// truncated tar, served and mirrored onward as complete.
+	//
+	// Normalising here instead of refusing would fix it only for callers that
+	// remember to use the return value — the identical discipline that just
+	// failed. Refusing makes "a key IS canonical" true by construction.
+	//
+	// No legitimate producer emits one: the ATC builds keys by path join.
+	// %2e and %2f survive routing because ServeMux cleans the ESCAPED path, so
+	// this is the first place a decoded key can be inspected at all.
+	if cleaned != key {
+		return fmt.Errorf("request key %q is not canonical (cleans to %q)", key, cleaned)
+	}
+
 	// Segment rule, deliberately MINIMAL.
 	//
 	// An earlier version required every segment to match durable.ValidateKey's
@@ -229,30 +256,9 @@ func containedRelKey(root, candidate string) (RelKey, error) {
 		return "", fmt.Errorf("path is empty")
 	}
 
-	// Resolve the nearest EXISTING ancestor and re-append the remainder.
-	//
-	// Walking up matters: resolving only the candidate or only its immediate
-	// parent leaves a deeply-nonexistent path unresolved while the root
-	// resolves, and on macOS /var is a symlink to /private/var — so the two
-	// sides end up in different roots and filepath.Rel reports an escape for a
-	// perfectly contained path. That failure looks exactly like this rule being
-	// too strict, which is the trap the plan review named.
-	resolve := func(p string) string {
-		p = filepath.Clean(p)
-		var trailing []string
-		cur := p
-		for {
-			if r, err := filepath.EvalSymlinks(cur); err == nil {
-				return filepath.Join(append([]string{r}, trailing...)...)
-			}
-			parent := filepath.Dir(cur)
-			if parent == cur {
-				return p
-			}
-			trailing = append([]string{filepath.Base(cur)}, trailing...)
-			cur = parent
-		}
-	}
+	// Both sides go through resolvePath, which walks DOWN. See its comment for
+	// why walking up was wrong.
+	resolve := resolvePath
 
 	rootResolved := resolve(root)
 	candidateResolved := resolve(candidate)
@@ -487,4 +493,52 @@ func mkdirTempIn(root *os.Root, prefix string) (string, error) {
 // boundary on purpose.
 func osName(rel RelKey) string {
 	return filepath.FromSlash(string(rel))
+}
+
+// resolvePath answers "where does this path actually land", resolving symlinks
+// the way the kernel does: one component at a time, left to right.
+//
+// THE ORDER IS THE WHOLE POINT, and getting it wrong made the containment rule
+// a lie. The previous version called filepath.Clean on the input first, then
+// walked UP looking for an ancestor that resolved. Clean collapses "link/.."
+// textually, so the symlink was never on the path EvalSymlinks saw:
+//
+//	candidate = <store>/steps/h/link/../victim.txt   (link -> /outside/deep)
+//	validator said:  contained, "steps/h/victim.txt"
+//	kernel said:     /outside/victim.txt
+//
+// Every caller that then used the RAW path escaped — including copyArtifact's
+// dest, reached from the mTLS-exempt /resolve, where it becomes os.RemoveAll
+// and os.Rename. Unauthenticated arbitrary delete and write outside the store.
+//
+// Walking down fixes it because ".." is only ever applied to a prefix that has
+// ALREADY been resolved, which is exactly the kernel's semantics. filepath.Dir
+// could not be used for the upward walk for the same reason Clean could not be
+// used on the input: it cleans.
+//
+// The nearest-existing-ancestor behaviour is retained, and still matters: a
+// deeply-nonexistent candidate must still be comparable against a root that
+// resolves, or macOS's /var -> /private/var makes every contained path look
+// like an escape. That is the trap the plan review named, and the differential
+// test in containment_resolve_test.go covers both it and the escape above.
+func resolvePath(p string) string {
+	sep := string(filepath.Separator)
+	resolved := "."
+	if filepath.IsAbs(p) {
+		resolved = sep
+	}
+	parts := strings.Split(p, sep)
+	for i, part := range parts {
+		if part == "" || part == "." {
+			continue
+		}
+		r, err := filepath.EvalSymlinks(filepath.Join(resolved, part))
+		if err != nil {
+			// Nothing exists from here down. No symlink can live at a path
+			// that does not exist, so the remainder is safe to join lexically.
+			return filepath.Join(append([]string{resolved}, parts[i:]...)...)
+		}
+		resolved = r
+	}
+	return resolved
 }

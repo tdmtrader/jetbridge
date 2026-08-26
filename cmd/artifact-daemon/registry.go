@@ -91,23 +91,18 @@ func (r *Registry) Lookup(key string) (RelKey, bool) {
 	return rel, ok
 }
 
-// LookupAmbientPath returns the location as an ABSOLUTE path, outside the root
-// handle and therefore outside the containment the handle provides.
+// AmbientPath re-joins a RelKey to the storage root, producing a path OUTSIDE
+// the root handle and therefore outside the containment the handle provides.
 //
 // Named for what it costs rather than for what it does. Every caller is a place
 // where an operation still travels by path — a cp -R exec, a filepath.WalkDir —
-// and every one is a site slice 8 has to remove. Reach for Lookup unless the
-// operation genuinely cannot go through the handle.
-func (r *Registry) LookupAmbientPath(key string) (string, bool) {
-	rel, ok := r.Lookup(key)
-	if !ok {
-		return "", false
-	}
-	return r.AmbientPath(rel), true
-}
-
-// AmbientPath re-joins a RelKey to the storage root. Same caveat as
-// LookupAmbientPath: the result has left the handle.
+// and every one is a site slice 8 has to remove.
+//
+// A sibling LookupAmbientPath used to sit here, carrying this same warning. It
+// was deleted with nothing to replace it because it had ZERO production callers:
+// every ambient site was written against AmbientPath instead, so the deterrent
+// name guarded nothing. A cautionary name on a function nobody calls is
+// decoration; this is the one that is actually in the way.
 func (r *Registry) AmbientPath(rel RelKey) string {
 	return filepath.Join(r.storagePath, filepath.FromSlash(string(rel)))
 }
@@ -183,7 +178,12 @@ func (r *Registry) RemoveByPath(dirPath string) {
 	dir, err := containedRelKey(r.storagePath, dirPath)
 	if err != nil {
 		// Outside the root: nothing stored can be under it, because Register
-		// refuses anything that is not.
+		// refuses anything that is not. Logged rather than returned in
+		// silence — this is the alias-leak path, and every other refusal
+		// in this file logs.
+		r.logger.Info("remove-by-path-refused", lager.Data{
+			"path": dirPath, "reason": err.Error(),
+		})
 		return
 	}
 
@@ -287,7 +287,19 @@ func (r *Registry) ScanHostPath(storagePath string) error {
 			// Multiple outputs per handle are registered separately — the
 			// ATC records each output volume with its own key.
 			outputPath := filepath.Join(handlePath, output.Name())
-			r.Register(handle+"/"+output.Name(), outputPath)
+			if _, err := r.Register(handle+"/"+output.Name(), outputPath); err != nil {
+				// The scan walks the store's own tree, so a refusal here means
+				// a directory resolves outside it. Skip it, and do NOT count
+				// it: this line previously dropped the error and incremented
+				// anyway, so the scan reported entries it had not registered —
+				// Len()=0 under a log line saying registered=2. A discarded
+				// (T, error) call is legal Go, so neither the compiler nor vet
+				// could see it.
+				r.logger.Error("scan-register-refused", err, lager.Data{
+					"handle": handle, "output": output.Name(),
+				})
+				continue
+			}
 			registered++
 		}
 	}

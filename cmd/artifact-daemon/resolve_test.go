@@ -60,7 +60,7 @@ func TestRegisterEndpoint_MissingFields(t *testing.T) {
 func TestRegisterEndpoint_PathOutsideStorageRootRefused(t *testing.T) {
 	ts, _ := setupServer(t)
 
-	body := `{"key":"nope","local_path":"/nonexistent/path"}`
+	body := `{"key":"nope","local_path":existingOutsideDir(t)}`
 	resp, err := http.Post(ts.URL+"/register", "application/json", strings.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
@@ -326,4 +326,16 @@ func TestResolveEndpoint_StartupScanThenResolve(t *testing.T) {
 	if string(data) != "old data" {
 		t.Errorf("expected 'old data', got %q", string(data))
 	}
+}
+
+// existingOutsideDir returns a directory that EXISTS and lies outside the
+// storage root.
+//
+// The fixture here used to be "/nonexistent/path", which is outside the root
+// AND absent — so the handler's os.Stat refused it first and the test passed on
+// a 404 without ever reaching the containment check. An out-of-root path that
+// exists is the only fixture that exercises the rule this test is named for.
+func existingOutsideDir(t *testing.T) string {
+	t.Helper()
+	return t.TempDir()
 }

@@ -150,7 +150,17 @@ func (s *Server) stepHandle(rel RelKey) string {
 	if len(segments) >= 2 && segments[0] == "steps" {
 		return segments[1]
 	}
-	return string(rel)
+	// Non-steps locations (caches/, resource-caches/, legacy flat files) get a
+	// NAMESPACED key so they cannot collide with a bare step handle.
+	//
+	// Without the prefix, stepHandle(RelKey("build-42")) and
+	// stepHandle(RelKey("steps/build-42/out")) both return "build-42", and an
+	// unrelated cache entry serialises against a step it has nothing to do
+	// with. Safe — over-locking never loses data — but it is contention nobody
+	// asked for and the old absolute-path fallback could not produce it. The
+	// sweeper only ever keys on a bare handle name, so the prefix can never
+	// collide with it.
+	return "loc:" + string(rel)
 }
 
 // MirrorOriginHeader marks a PUT /stream-in as originating from a peer
@@ -682,10 +692,12 @@ func (s *Server) handleHeadArtifact(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	loc := RelKey(key) // canonical: validateRequestKey refuses anything else
+
 	// Check filesystem first, then fall back to registry aliases. Both stats go
 	// through the root handle now that the registry value is a location under
 	// the same root.
-	if _, err := s.root.Stat(key); err != nil {
+	if _, err := s.root.Stat(osName(loc)); err != nil {
 		if os.IsNotExist(err) {
 			if regLoc, found := s.lookupRegistryAlias(r); found {
 				if _, err := s.root.Stat(osName(regLoc)); err == nil {

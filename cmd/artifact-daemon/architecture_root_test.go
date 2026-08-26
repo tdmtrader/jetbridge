@@ -274,6 +274,118 @@ func TestArchitecture_NoAmbientWriteThroughAJoinedKey(t *testing.T) {
 		}
 	}
 
-	t.Logf("scanned %d functions joining a storage path; %d known entries all live",
-		scanned, len(known))
+	if !t.Failed() {
+		t.Logf("scanned %d functions joining a storage path; %d known entries all live",
+			scanned, len(known))
+	}
+}
+
+// Registry-derived reads must go through the root handle.
+//
+// There was no guard for this at all: reverting all eight read sites to ambient
+// os.Stat/os.Open on an AmbientPath result left the whole package green and vet
+// clean, because lookupRegistry's use-time check evicts the poisoned entry
+// first. The two layers are redundant by design — that redundancy is R4's whole
+// argument — but redundancy means neither layer's removal is DETECTABLE, and
+// slice 8 is about to churn precisely these sites.
+//
+// So this asserts the structure rather than the behaviour: a function that
+// obtains a registry value must not then reach the filesystem ambiently.
+func TestArchitecture_RegistryReadsGoThroughTheHandle(t *testing.T) {
+	files := productionFiles(t)
+
+	// Functions where an ambient read of a registry value is the POINT, each
+	// with the reason its containment comes from somewhere else.
+	// ONE entry, because one is what the scan flags.
+	//
+	// The first version of this list had seven, written from what I expected to
+	// be exempt rather than from what the guard actually reported — and six of
+	// them matched nothing. The liveness check below caught it immediately.
+	// That is the same error the sibling guard's comment warns about, made
+	// while writing a guard whose whole purpose is to prevent it.
+	//
+	// The other six functions do reach the filesystem ambiently, but through
+	// tarDirectory's walk and copyArtifact's cp -R rather than an ambient
+	// os.Stat/os.Open — so this rule does not flag them and they must not be
+	// listed here. Their ambient surface is the sibling guard's business, and
+	// slice 8's.
+	known := map[string]string{
+		"server.go:Server.resolveOne": "step 2 stats a steps/ path BEFORE any registry value exists, to decide whether to register it at all — a read that precedes the lookup cannot travel through a value it does not yet have",
+	}
+
+	ambientRead := map[string]bool{"Stat": true, "Lstat": true, "Open": true, "ReadFile": true, "ReadDir": true}
+
+	type site struct{ ambient, registry bool }
+	found := map[string]*site{}
+	scanned := 0
+
+	for name, f := range files {
+		ast.Inspect(f, func(n ast.Node) bool {
+			fn, ok := n.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				return true
+			}
+			scanned++
+			recv := ""
+			if fn.Recv != nil && len(fn.Recv.List) > 0 {
+				if st, ok := fn.Recv.List[0].Type.(*ast.StarExpr); ok {
+					if id, ok := st.X.(*ast.Ident); ok {
+						recv = id.Name + "."
+					}
+				}
+			}
+			where := name + ":" + recv + fn.Name.Name
+			ast.Inspect(fn.Body, func(m ast.Node) bool {
+				call, ok := m.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				sel, ok := call.Fun.(*ast.SelectorExpr)
+				if !ok {
+					return true
+				}
+				if found[where] == nil {
+					found[where] = &site{}
+				}
+				// os.Stat / os.Open / ... — ambient, not through a handle.
+				if id, ok := sel.X.(*ast.Ident); ok && id.Name == "os" && ambientRead[sel.Sel.Name] {
+					found[where].ambient = true
+				}
+				switch sel.Sel.Name {
+				case "lookupRegistry", "lookupRegistryAlias", "AmbientPath", "Lookup":
+					found[where].registry = true
+				}
+				return true
+			})
+			return true
+		})
+	}
+
+	if scanned == 0 {
+		t.Fatal("scanned no production functions — this guard cannot fail")
+	}
+
+	matched := map[string]bool{}
+	for where, st := range found {
+		if !st.ambient || !st.registry {
+			continue
+		}
+		if reason, ok := known[where]; ok {
+			matched[where] = true
+			t.Logf("known: %s — %s", where, reason)
+			continue
+		}
+		t.Errorf("%s obtains a registry value AND performs an ambient os.* read. "+
+			"Route it through s.root, or list it above with the reason its containment "+
+			"comes from elsewhere.", where)
+	}
+	for where := range known {
+		if !matched[where] {
+			t.Errorf("known entry %q matched nothing — it was renamed, moved or migrated, "+
+				"and the exemption is now stale. Remove it.", where)
+		}
+	}
+	if !t.Failed() {
+		t.Logf("scanned %d functions; %d exemptions all live", scanned, len(known))
+	}
 }

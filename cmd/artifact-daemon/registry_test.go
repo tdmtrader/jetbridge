@@ -51,9 +51,8 @@ func TestRegistry_RegisterAndLookup(t *testing.T) {
 	if rel != "steps/abc/result" {
 		t.Errorf("expected steps/abc/result, got %s", rel)
 	}
-	abs, ok := r.LookupAmbientPath("vol-abc")
-	if !ok || abs != disk {
-		t.Errorf("expected ambient path %q, got %q (found=%v)", disk, abs, ok)
+	if abs := r.AmbientPath(rel); abs != disk {
+		t.Errorf("expected ambient path %q, got %q", disk, abs)
 	}
 }
 
@@ -233,7 +232,7 @@ func TestRegistry_RegisterAliasPersists(t *testing.T) {
 		t.Errorf("expected steps/container-abc/result, got %q", rel)
 	}
 	// The round trip through disk must still name the same place.
-	if abs, _ := r2.LookupAmbientPath("vol-handle-xyz"); abs != diskPath {
+	if abs := r2.AmbientPath(rel); abs != diskPath {
 		t.Errorf("expected %q, got %q", diskPath, abs)
 	}
 }

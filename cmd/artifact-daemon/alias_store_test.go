@@ -185,3 +185,55 @@ func TestAliasStore_LoadAcceptsTheLegacyAbsoluteForm(t *testing.T) {
 			"aliases.json is exactly where a pre-containment entry survives")
 	}
 }
+
+// The escape half above was a FALSE WITNESS, and this is what it should have
+// asserted.
+//
+// It checked only that the entry was absent from the map. With the containment
+// check inside relativize deleted entirely — replaced by a lexical TrimPrefix —
+// it still passed, because os.Root.Stat rejects an absolute name and the entry
+// was dropped as STALE instead. A different rejection reaching the same green:
+// exactly the defect diagnosed and fixed for the staleness fixtures one commit
+// earlier, reintroduced by the person who had just fixed it.
+//
+// Two changes make it a real witness. It asserts on the ATTRIBUTION —
+// refused, not stale — and it uses a NIL root, which NewAliasStore's own doc
+// comment supports and which disables the staleness check, so containment is
+// the only thing that can reject anything.
+func TestAliasStore_LoadRefusesEscapingValues_ByContainmentNotStaleness(t *testing.T) {
+	dir := t.TempDir()
+	logger := lagertest.NewTestLogger("alias-store")
+
+	inside := filepath.Join(dir, "steps", "legacy", "result")
+	os.MkdirAll(inside, 0755)
+
+	legacy := map[string]string{
+		"vol-legacy":      inside,          // absolute, contained
+		"vol-abs-escape":  "/etc",          // absolute, outside
+		"vol-rel-escape":  "../../etc",     // relative, escaping
+		"vol-deep-escape": "steps/../../x", // escapes after cleaning
+	}
+	data, err := json.MarshalIndent(legacy, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "aliases.json"), data, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// NIL root: no staleness check, so nothing but containment can reject.
+	loaded, err := daemon.NewAliasStore(logger, dir, nil).Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := loaded["vol-legacy"]; got != "steps/legacy/result" {
+		t.Errorf("the contained value was not kept — with staleness disabled, "+
+			"nothing below proves anything. got %q", got)
+	}
+	for _, k := range []string{"vol-abs-escape", "vol-rel-escape", "vol-deep-escape"} {
+		if v, ok := loaded[k]; ok {
+			t.Errorf("%s survived as %q — containment is not what rejected it", k, v)
+		}
+	}
+}
