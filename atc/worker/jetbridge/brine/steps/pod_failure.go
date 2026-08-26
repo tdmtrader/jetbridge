@@ -155,12 +155,15 @@ func (in StepRunning) settlePod(mutate func(*corev1.Pod)) (StepOutcome, error) {
 	if _, err := pods.UpdateStatus(in.Ctx, pod, metav1.UpdateOptions{}); err != nil {
 		return StepOutcome{}, fmt.Errorf("update pod status: %w", err)
 	}
-	_, waitErr := in.Process.Wait(in.Ctx)
+	result, waitErr := in.Process.Wait(in.Ctx)
 	msg := ""
 	if waitErr != nil {
 		msg = waitErr.Error()
 	}
-	return StepOutcome{Err: waitErr, Message: msg, Stderr: in.Stderr.String()}, nil
+	return StepOutcome{
+		Err: waitErr, Message: msg, Stderr: in.Stderr.String(),
+		ExitStatus: result.ExitStatus,
+	}, nil
 }
 
 func truncate(s string, n int) string {

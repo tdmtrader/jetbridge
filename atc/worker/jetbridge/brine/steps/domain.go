@@ -52,6 +52,10 @@ type StepOutcome struct {
 	Err     error
 	Message string
 	Stderr  string
+	// ExitStatus is what the step actually reports. Process.Wait returns a
+	// non-zero exit as a RESULT, not an error, so Err alone cannot tell a
+	// failed task from a successful one.
+	ExitStatus int
 }
 
 // noopDelegate satisfies runtime.BuildStepDelegate for scenarios that need
@@ -74,20 +78,20 @@ type ContainerDraft struct {
 	ContainerEnv []string
 	ProcessEnv   []string
 
-	Inputs        []string
-	Outputs       []string
-	Caches        []string
-	Scratch       []string
-	LimitCPU      *uint64
-	LimitMemory   *uint64
-	RequestCPU    *uint64
-	RequestMemory *uint64
+	Inputs           []string
+	Outputs          []string
+	Caches           []string
+	Scratch          []string
+	LimitCPU         *uint64
+	LimitMemory      *uint64
+	RequestCPU       *uint64
+	RequestMemory    *uint64
 	LimitEphemeral   *uint64
 	RequestEphemeral *uint64
 	JobID            int
 	StepName         string
-	Privileged    bool
-	Sidecars      []atc.SidecarConfig
+	Privileged       bool
+	Sidecars         []atc.SidecarConfig
 
 	// ContainerType is empty for the task containers every scenario written
 	// before check containers existed assumes; draftContainerType defaults it.
