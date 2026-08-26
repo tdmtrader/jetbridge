@@ -1,8 +1,12 @@
 package jetbridge_test
 
 import (
+	"bytes"
+	"context"
 	"database/sql"
 	"fmt"
+	"io"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,6 +18,7 @@ import (
 	"github.com/concourse/concourse/atc/db/lock"
 	"github.com/concourse/concourse/atc/postgresrunner"
 	"github.com/concourse/concourse/atc/runtime"
+	"github.com/concourse/concourse/atc/worker/jetbridge"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -182,4 +187,73 @@ func filterMountsByPaths(mounts []runtime.VolumeMount, paths []string) []runtime
 		}
 	}
 	return result
+}
+
+// fakeExecExecutor lived in volume_test.go until that suite was retired under
+// the brine migration. Four suites still use it:
+// artifact_integration_test.go, integration_test.go, resource_test.go and
+// podname_integration_test.go.
+//
+// fakeExecExecutor is a test double for jetbridge.PodExecutor.
+// It consumes stdin (like a real executor) to prevent io.Pipe deadlocks.
+type fakeExecExecutor struct {
+	mu         sync.Mutex
+	execCalls  []execCall
+	execErr    error
+	execStdout []byte
+	execFunc   func() error // per-call error function; takes priority over execErr when set
+}
+
+type execCall struct {
+	podName       string
+	namespace     string
+	containerName string
+	command       []string
+	stdin         io.Reader
+	tty           bool
+	attrs         jetbridge.ExecAttrs
+}
+
+func (f *fakeExecExecutor) ExecInPod(
+	ctx context.Context,
+	namespace, podName, containerName string,
+	command []string,
+	stdin io.Reader,
+	stdout, stderr io.Writer,
+	tty bool,
+	attrs jetbridge.ExecAttrs,
+) error {
+	// Consume stdin into a buffer (mimics real executor behavior and
+	// unblocks io.Pipe writers used by streaming StreamOut).
+	var stdinBuf io.Reader
+	if stdin != nil {
+		data, _ := io.ReadAll(stdin)
+		stdinBuf = bytes.NewReader(data)
+	}
+
+	f.mu.Lock()
+	f.execCalls = append(f.execCalls, execCall{
+		podName:       podName,
+		namespace:     namespace,
+		containerName: containerName,
+		command:       command,
+		stdin:         stdinBuf,
+		tty:           tty,
+		attrs:         attrs,
+	})
+	execFunc := f.execFunc
+	execErr := f.execErr
+	execStdout := f.execStdout
+	f.mu.Unlock()
+
+	if execFunc != nil {
+		return execFunc()
+	}
+	if execErr != nil {
+		return execErr
+	}
+	if stdout != nil && execStdout != nil {
+		_, _ = stdout.Write(execStdout)
+	}
+	return nil
 }

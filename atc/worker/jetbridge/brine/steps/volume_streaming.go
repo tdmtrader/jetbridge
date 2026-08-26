@@ -1,9 +1,11 @@
 package steps
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"github.com/klauspost/compress/s2"
 	"io"
 	"os"
 	"os/exec"
@@ -223,6 +225,59 @@ func VolumeStreamingDefinitions() []brine.StepDefinition {
 					return VolumeRead{Err: readErr, Message: readErr.Error()}, nil
 				}
 				return VolumeRead{Files: files}, nil
+			},
+		),
+
+		// StreamIn must decompress what the Streamer hands it. Every other
+		// streaming scenario uses gzip, and gzip CANNOT witness that step:
+		// bsdtar auto-detects it, and libarchive auto-detects zstd too, so
+		// with the decompressor removed tar still extracts the archive and
+		// every one of those scenarios keeps passing. Verified on this host —
+		// bsdtar 3.5.3 accepted both encodings undecompressed.
+		//
+		// S2 settles it. libarchive has no Snappy reader, so an
+		// undecompressed S2 stream is refused outright, and Concourse offers
+		// s2 as a compression option. The assertion is about the runtime doing
+		// the work, not about the extractor being clever.
+		brine.DefineMap[VolumeSet, VolumeSet](
+			"a file {string} containing {string} is put into volume {string} compressed with s2",
+			func(in VolumeSet, p brine.Params, _ *brine.Recorder) (VolumeSet, error) {
+				name, _ := p.GetString(0)
+				content, _ := p.GetString(1)
+				volName, ok := p.GetString(2)
+				if !ok {
+					return VolumeSet{}, fmt.Errorf("expected a name, content and volume")
+				}
+				volume, err := in.volume(volName)
+				if err != nil {
+					return VolumeSet{}, err
+				}
+
+				plain, err := tarOfOneFile(name, content)
+				if err != nil {
+					return VolumeSet{}, err
+				}
+				raw, err := io.ReadAll(plain)
+				if err != nil {
+					return VolumeSet{}, fmt.Errorf("read tar: %w", err)
+				}
+
+				// compression.Compression only reads; the Streamer compresses
+				// with the same library on the way in, so this does too.
+				enc := compression.NewS2Compression()
+				var packed bytes.Buffer
+				w := s2.NewWriter(&packed)
+				if _, err := w.Write(raw); err != nil {
+					return VolumeSet{}, fmt.Errorf("s2 write: %w", err)
+				}
+				if err := w.Close(); err != nil {
+					return VolumeSet{}, fmt.Errorf("close s2 writer: %w", err)
+				}
+
+				if err := volume.StreamIn(in.Ctx, ".", enc, 0, &packed); err != nil {
+					return VolumeSet{}, fmt.Errorf("stream in: %w", err)
+				}
+				return in, nil
 			},
 		),
 
