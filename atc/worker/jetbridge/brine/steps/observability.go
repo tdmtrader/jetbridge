@@ -541,3 +541,70 @@ func ObservabilityMetricDefinitions() []brine.StepDefinition {
 		),
 	}
 }
+
+// InitContainerDefinitions covers RF-14 — what a step is told when the init
+// container that stages its inputs fails.
+//
+// This is a distinct failure from "the step failed": the step never ran at
+// all. Without the init container's name, state and logs in the error, the
+// user sees a red build with no output and nothing to act on.
+func InitContainerDefinitions() []brine.StepDefinition {
+	return []brine.StepDefinition{
+
+		brine.DefineMap[ExecStepRunning, SpansRecorded](
+			"the init container {string} fails before the step can start",
+			func(in ExecStepRunning, p brine.Params, _ *brine.Recorder) (SpansRecorded, error) {
+				name, ok := p.GetString(0)
+				if !ok {
+					return SpansRecorded{}, fmt.Errorf("expected an init container name")
+				}
+				pods := in.Clientset.CoreV1().Pods(in.Namespace)
+				pod, err := pods.Get(in.Ctx, in.Handle, metav1.GetOptions{})
+				if err != nil {
+					return SpansRecorded{}, fmt.Errorf("get pod: %w", err)
+				}
+				// PodSucceeded rather than PodFailed keeps waitForRunning out
+				// of the pause-pod recreate branch, so the init diagnostics
+				// are reported directly — the same choice the original makes.
+				pod.Status.Phase = corev1.PodSucceeded
+				pod.Status.InitContainerStatuses = []corev1.ContainerStatus{{
+					Name: name, Image: "alpine:latest",
+					State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
+						ExitCode: 1, Reason: "Error",
+					}},
+				}}
+				if _, err := pods.UpdateStatus(in.Ctx, pod, metav1.UpdateOptions{}); err != nil {
+					return SpansRecorded{}, fmt.Errorf("update pod: %w", err)
+				}
+				result, waitErr := in.Process.Wait(in.Ctx)
+				msg := ""
+				if waitErr != nil {
+					msg = waitErr.Error()
+				}
+				return SpansRecorded{
+					Capture: in.Capture, ExitStatus: result.ExitStatus,
+					WaitErr: waitErr, Message: msg,
+				}, nil
+			},
+		),
+
+		brine.DefineCheck[SpansRecorded](
+			"the step is told which init container failed, naming {string}",
+			func(in SpansRecorded, p brine.Params, _ *brine.Recorder) error {
+				name, ok := p.GetString(0)
+				if !ok {
+					return fmt.Errorf("expected an init container name")
+				}
+				if in.WaitErr == nil {
+					return fmt.Errorf("expected the step to fail because its init container did; it succeeded")
+				}
+				if !strings.Contains(in.Message, name) {
+					return fmt.Errorf(
+						"expected the failure to name the init container %q so the user knows the step never ran; got %q",
+						name, in.Message)
+				}
+				return nil
+			},
+		),
+	}
+}

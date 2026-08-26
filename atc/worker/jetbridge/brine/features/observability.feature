@@ -75,3 +75,14 @@ Feature: Observability span events
     # OE-10: the gauge an operator watches. Without it, a cluster that has
     # become slow to schedule looks exactly like a cluster that has not.
     And a pod startup duration was recorded
+
+  # RF-14. When the init container that stages a step's inputs fails, the step
+  # never ran at all — a different thing from "the step failed". Without the
+  # init container named in the error the user sees a red build with no output
+  # and nothing to act on.
+  @RF-14
+  Scenario: A step whose inputs could not be staged says so
+    Given a jetbridge worker whose spans are recorded
+    And an exec-mode task container "rf14-init" is running
+    When the init container "fetch-input-0" fails before the step can start
+    Then the step is told which init container failed, naming "fetch-input-0"
