@@ -81,3 +81,25 @@ Feature: Moving artifacts through volumes
     # The DB row is what survives a web restart; a volume that lost it would be
     # invisible to garbage collection.
     And both volume kinds still carry their database row
+
+  # VT-08's other half. Every other streaming scenario uses gzip, which cannot
+  # show that StreamIn decompresses anything: bsdtar auto-detects gzip, and
+  # libarchive auto-detects zstd as well, so removing the decompressor leaves
+  # them all passing. S2 is the encoding tar has no reader for, so it is the
+  # one that proves the runtime did the work rather than the extractor.
+  @VT-08
+  Scenario: An artifact compressed with s2 is decompressed on the way in
+    Given a volume "inputs" mounted at "/tmp/build/inputs"
+    And a file "packed.txt" containing "compressed payload" is put into volume "inputs" compressed with s2
+    When volume "inputs" is read from "."
+    Then the artifact "packed.txt" containing "compressed payload" is there
+
+  # The write half of the swallow check. The scenario above it covers a read
+  # that cannot reach the cluster; a WRITE that cannot reach it and reports
+  # success is worse, because the step carries on believing its output landed
+  # and the next step reads an empty directory.
+  Scenario: A cluster failure reaches the writer rather than being swallowed
+    Given a volume "real" mounted at "/tmp/build/inputs"
+    And volume "broken" sits on a cluster that cannot run commands
+    When a file is put into volume "broken"
+    Then it fails rather than panicking, saying "exec failed"
