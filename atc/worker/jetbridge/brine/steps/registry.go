@@ -55,6 +55,8 @@ func Definitions() []brine.StepDefinition {
 	defs = append(defs, ConfigCompletenessDefinitions()...)
 	defs = append(defs, RegistrarIdentityDefinitions()...)
 	defs = append(defs, PodWatchFidelityDefinitions()...)
+	defs = append(defs, ReaperLookupFailureDefinitions()...)
+	defs = append(defs, ReaperGapDefinitions()...)
 	return defs
 }
 
