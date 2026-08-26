@@ -278,3 +278,24 @@ Feature: Running a step, and what the caller gets back
   # DISPOSITION — "marks the container as failed when Created() fails" (the
   # non-stale path) is already worker.feature's "A container that cannot be
   # recorded is left for the collector", same fault, same two assertions.
+
+  # PE-08. `fly hijack` gives an interactive shell, and it only behaves like
+  # one if the exec actually allocates a terminal. The command is its own
+  # witness here: `test -t 1` is the check every interactive tool makes.
+  #
+  # behavioral_runtime_spec_test.go covered this by recording the ExecInPod
+  # call and asserting calls[0].tty — a spy on a parameter every double in
+  # this package declares as `_`. Nothing observed what the flag DOES, so the
+  # executor could ignore it entirely and the assertion would still pass.
+  @PE-08
+  Scenario: A step that asks for a terminal gets a real one
+    When a step asks whether it has a terminal, with one attached
+    Then the step reports "terminal"
+
+  # The other direction, and the reason it matters: a step given a terminal it
+  # did not ask for has its stderr folded into stdout, which for a resource
+  # step corrupts the JSON the runtime parses back.
+  @PE-08
+  Scenario: A step that asks for no terminal does not get one
+    When a step asks whether it has a terminal, with none attached
+    Then the step reports "pipe"
