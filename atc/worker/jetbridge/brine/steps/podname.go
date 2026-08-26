@@ -98,6 +98,28 @@ func PodNameDefinitions() []brine.StepDefinition {
 			},
 		),
 
+		// A deletion probe found the sanitization outline asserted only
+		// NEGATIVE properties — no underscore, no dot, valid label — so a
+		// mutation that DELETED separators instead of replacing them with
+		// hyphens passed: "my_pipe" became "mypipe", still a valid label and
+		// still wrong. The positive form is what pins it.
+		brine.DefineCheck[GeneratedPodName](
+			"the pod name reads {string}",
+			func(in GeneratedPodName, p brine.Params, _ *brine.Recorder) error {
+				want, ok := p.GetString(0)
+				if !ok {
+					return fmt.Errorf("expected an expected-name parameter")
+				}
+				if !strings.Contains(in.Name, want) {
+					return fmt.Errorf(
+						"expected the sanitized name to read %q — a separator that is DELETED rather than "+
+							"hyphenated still yields a valid label, so the positive form is the assertion "+
+							"that matters; got %q", want, in.Name)
+				}
+				return nil
+			},
+		),
+
 		brine.DefineCheck[GeneratedPodName](
 			"the pod name does not contain {string}",
 			func(in GeneratedPodName, p brine.Params, _ *brine.Recorder) error {

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -268,4 +269,58 @@ func mergeImages(overrides []string) (ResourceTypeImages, error) {
 		Images:         jetbridge.MergeResourceTypeImages(overrides),
 		DefaultsBefore: before,
 	}, nil
+}
+
+// ConfigCompletenessDefinitions closes the gap a deletion probe found: brine
+// asserted that three named resource types resolve, and nothing at all about
+// the SIZE or COMPLETENESS of the merged map.
+//
+// The consequence, verified by mutation: dropping `s3` from the defaults copy
+// passed a fully green 300-scenario suite. A built-in resource type can vanish
+// from every pipeline on the cluster and no brine scenario notices. Naming
+// three types is not the same as guarding the set.
+func ConfigCompletenessDefinitions() []brine.StepDefinition {
+	return []brine.StepDefinition{
+
+		brine.DefineCheck[ResourceTypeImages](
+			"every built-in resource type is still offered",
+			func(in ResourceTypeImages, _ brine.Params, _ *brine.Recorder) error {
+				var missing []string
+				for name := range jetbridge.DefaultResourceTypeImages {
+					if _, ok := in.Images[name]; !ok {
+						missing = append(missing, name)
+					}
+				}
+				if len(missing) > 0 {
+					sort.Strings(missing)
+					return fmt.Errorf(
+						"these built-in resource types vanished from the merge: %s — every pipeline using one "+
+							"would fail to find its image", strings.Join(missing, ", "))
+				}
+				return nil
+			},
+		),
+
+		// The other direction: a merge that INVENTS a type is just as wrong,
+		// and is how a typo in an override silently becomes a resource type.
+		brine.DefineCheck[ResourceTypeImages](
+			"no resource type was invented that nobody configured",
+			func(in ResourceTypeImages, p brine.Params, _ *brine.Recorder) error {
+				expected := len(jetbridge.DefaultResourceTypeImages)
+				if got := len(in.Images); got != expected {
+					var extra []string
+					for name := range in.Images {
+						if _, ok := jetbridge.DefaultResourceTypeImages[name]; !ok {
+							extra = append(extra, name)
+						}
+					}
+					sort.Strings(extra)
+					return fmt.Errorf(
+						"expected exactly the %d built-in types with no overrides, got %d (unexpected: %s)",
+						expected, got, strings.Join(extra, ", "))
+				}
+				return nil
+			},
+		),
+	}
 }

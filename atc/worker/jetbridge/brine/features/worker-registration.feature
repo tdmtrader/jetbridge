@@ -19,6 +19,7 @@ Feature: A Kubernetes worker presenting itself to Concourse
     And it presents itself as a running linux worker on this Concourse version
     And it belongs to no team and is not ephemeral
     And its lease has not expired
+    And its lease expires within 1 minute
 
   # WR-04. The count is what the scheduler uses for placement, so counting a
   # stranger's pod would make this worker look busier than it is.
@@ -45,6 +46,10 @@ Feature: A Kubernetes worker presenting itself to Concourse
     When the worker registers itself
     And the lease expires and the worker heartbeats
     Then its lease has not expired
+    # The CEILING is the safety property. A deletion probe widened the TTL from
+    # 30 seconds to 24 hours and the suite stayed green — an unbounded lease
+    # means the scheduler keeps placing work on a worker that is already gone.
+    And its lease expires within 1 minute
 
   # WR-05
   @WR-05

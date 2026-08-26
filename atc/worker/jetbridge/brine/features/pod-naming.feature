@@ -44,15 +44,19 @@ Feature: Naming a pod after the step that runs in it
     # and it is expressible for every case — a lone space cannot be written
     # in a table cell, because Gherkin trims cell edges.
     And the pod name does not contain "<raw>"
+    # The positive form. Negative assertions alone let a mutation DELETE a
+    # separator instead of hyphenating it — "my_pipe" becomes "mypipe", still a
+    # valid label and still wrong.
+    And the pod name reads "<reads>"
 
     Examples:
-      | case            | pipeline     | job       | raw          |
-      | uppercase       | My-Pipeline  | Unit-TEST | My-Pipeline  |
-      | underscores     | my_pipe      | unit_test | my_pipe      |
-      | dots            | my.pipe.line | job       | my.pipe.line |
-      | spaces          | my pipe      | unit test | my pipe      |
-      | punctuation     | pipe@line!   | job#1     | pipe@line!   |
-      | doubled hyphens | my--pipe     | my___job  | my--pipe     |
+      | case            | pipeline     | job       | raw          | reads        |
+      | uppercase       | My-Pipeline  | Unit-TEST | My-Pipeline  | my-pipeline  |
+      | underscores     | my_pipe      | unit_test | my_pipe      | my-pipe      |
+      | dots            | my.pipe.line | job       | my.pipe.line | my-pipe-line |
+      | spaces          | my pipe      | unit test | my pipe      | my-pipe      |
+      | punctuation     | pipe@line!   | job#1     | pipe@line!   | pipeline     |
+      | doubled hyphens | my--pipe     | my___job  | my--pipe     | my-pipe      |
 
   # PN-06. The 63-character cap is a hard Kubernetes limit; exceeding it means
   # the pod cannot be created at all.
