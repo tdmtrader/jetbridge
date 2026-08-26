@@ -59,6 +59,7 @@ func Definitions() []brine.StepDefinition {
 	defs = append(defs, ReaperGapDefinitions()...)
 	defs = append(defs, WorkerArtifactKeyDefinitions()...)
 	defs = append(defs, ContainerGapDefinitions()...)
+	defs = append(defs, ProcessGapDefinitions()...)
 	return defs
 }
 

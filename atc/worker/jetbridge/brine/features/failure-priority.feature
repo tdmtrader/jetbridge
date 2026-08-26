@@ -115,3 +115,48 @@ Feature: Failure detection priority order
     Given a task step whose connection to its pod is severed while it writes "out"
     Then the step fails rather than reporting success
     And the half-written artifact cannot be located by a later step
+
+  # RF-07. Nothing in the cluster can host this pod — the wrong node selector,
+  # a resource request no node can satisfy, a cluster at capacity. The step
+  # has to be told, with the scheduler's own message, rather than waiting.
+  #
+  # This is EXEC MODE, and that is not incidental. Written over the
+  # direct-mode chain the scenario HANGS: Process.pollUntilDone blocks in
+  # watcher.Next, so it only re-checks the scheduling deadline when another
+  # watch event arrives, and a pod nobody can schedule stops producing them.
+  # execProcess.waitForRunning polls on a timer instead and does time out.
+  # The scenario was removed once before for exactly this hang; putting it on
+  # the right chain is what fixes it, not a longer timeout.
+  @RF-07
+  Scenario: A pod nothing can schedule fails the step instead of waiting
+    When a resource step waits for a pod nothing in the cluster can schedule
+    Then the step fails naming "Unschedulable"
+    And the step fails naming "pod scheduling timeout"
+
+  # A pod can reach a terminal phase carrying no container status at all —
+  # the kubelet pruned it, or the container never started. podExitCode falls
+  # back on the phase alone, and that fallback decides whether a build passes.
+  #
+  # Both directions were uncovered. A Failed pod defaulting to exit 0 turns a
+  # task that died into a green build, which is the worse of the two.
+  Scenario: A failed pod with no container status still fails the step
+    Given a jetbridge worker on a fake Kubernetes cluster
+    And a task container "no-status-failed" is running
+    When the pod reaches "Failed" without ever reporting a container status
+    Then the step's exit status is 1
+
+  Scenario: A succeeded pod with no container status still passes the step
+    Given a jetbridge worker on a fake Kubernetes cluster
+    And a task container "no-status-succeeded" is running
+    When the pod reaches "Succeeded" without ever reporting a container status
+    Then the step's exit status is 0
+
+  # The step's result is the MAIN container's exit code. A sidecar that
+  # finished first must not supply it: a log shipper exiting cleanly would
+  # then mask a task that failed, and the build would go green on a step that
+  # did not work.
+  Scenario: A clean sidecar does not mask a failing task
+    Given a jetbridge worker on a fake Kubernetes cluster
+    And a task container "sidecar-mask" is running
+    When a sidecar exits 0 before the main container exits 1
+    Then the step's exit status is 1

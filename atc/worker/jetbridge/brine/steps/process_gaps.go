@@ -1,0 +1,194 @@
+package steps
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/brine-dev/brine-go/pkg/brine"
+	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/runtime"
+	"github.com/concourse/concourse/atc/worker/jetbridge"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/fake"
+)
+
+// ProcessGapDefinitions closes what mutating process.go exposed. Three of the
+// four were missed by BOTH suites, and all three are the same failure in
+// different clothes: a step reporting the wrong result for a pod that did not
+// do what the happy path assumes.
+func ProcessGapDefinitions() []brine.StepDefinition {
+	return []brine.StepDefinition{
+
+		// RF-07, on the EXEC-mode path. Direct mode blocks in watcher.Next
+		// and only re-checks the scheduling deadline when another watch event
+		// arrives, so a pod nothing can schedule simply stops the loop
+		// forever. waitForRunning polls on a timer and does time out — which
+		// is the path a real get step takes anyway.
+		brine.DefineMapUsing[brine.Empty, StepOutcome](
+			"a resource step waits for a pod nothing in the cluster can schedule",
+			[]string{"jetbridge-db"},
+			func(_ brine.Empty, _ brine.Params, _ *brine.Recorder, res brine.Resources) (StepOutcome, error) {
+				database, ok := res.Get("jetbridge-db").(JetbridgeDB)
+				if !ok {
+					return StepOutcome{}, fmt.Errorf("jetbridge-db resource is %T", res.Get("jetbridge-db"))
+				}
+				dbWorker, err := database.PersistNamedWorker("k8s-worker-1")
+				if err != nil {
+					return StepOutcome{}, err
+				}
+
+				ctx := context.Background()
+				namespace := "test-namespace"
+				handle := "unschedulable-handle"
+				clientset := fake.NewSimpleClientset()
+
+				// Impatient, so the deadline lands in seconds rather than the
+				// five-minute default. Same values process_test.go used.
+				cfg := jetbridge.NewConfig(namespace, "")
+				cfg.PodSchedulingTimeout = 3 * time.Second
+				cfg.PodStartupTimeout = 2 * time.Second
+
+				worker := jetbridge.NewWorker(dbWorker, clientset, cfg)
+				worker.SetExecutor(execStub{})
+
+				container, _, err := worker.FindOrCreateContainer(ctx,
+					db.NewFixedHandleContainerOwner(handle),
+					db.ContainerMetadata{Type: db.ContainerTypeGet},
+					runtime.ContainerSpec{
+						TeamID:    1,
+						Dir:       "/tmp/build/get",
+						ImageSpec: runtime.ImageSpec{ImageURL: "busybox"},
+						Type:      db.ContainerTypeGet,
+					},
+					&noopDelegate{},
+				)
+				if err != nil {
+					return StepOutcome{}, fmt.Errorf("find or create container: %w", err)
+				}
+
+				stderr := new(bytes.Buffer)
+				process, err := container.Run(ctx,
+					runtime.ProcessSpec{Path: "/opt/resource/in", Args: []string{"/tmp/build/get"}},
+					runtime.ProcessIO{
+						Stdin:  strings.NewReader("{}"),
+						Stdout: new(bytes.Buffer),
+						Stderr: stderr,
+					},
+				)
+				if err != nil {
+					return StepOutcome{}, fmt.Errorf("run container: %w", err)
+				}
+
+				pods := clientset.CoreV1().Pods(namespace)
+				pod, err := pods.Get(ctx, handle, metav1.GetOptions{})
+				if err != nil {
+					return StepOutcome{}, fmt.Errorf("get pod: %w", err)
+				}
+				pod.Status.Phase = corev1.PodPending
+				pod.Status.Conditions = []corev1.PodCondition{{
+					Type:    corev1.PodScheduled,
+					Status:  corev1.ConditionFalse,
+					Reason:  "Unschedulable",
+					Message: "0/3 nodes are available: insufficient cpu.",
+				}}
+				if _, err := pods.UpdateStatus(ctx, pod, metav1.UpdateOptions{}); err != nil {
+					return StepOutcome{}, fmt.Errorf("update pod status: %w", err)
+				}
+
+				_, waitErr := process.Wait(ctx)
+				msg := ""
+				if waitErr != nil {
+					msg = waitErr.Error()
+				}
+				return StepOutcome{Err: waitErr, Message: msg, Stderr: stderr.String()}, nil
+			},
+		),
+
+		// A pod that reaches a terminal phase without a container status is
+		// the case podExitCode falls back for: the kubelet pruned the status,
+		// or the container never started at all. The fallback decides whether
+		// a build passes, and both directions were uncovered — a Failed pod
+		// defaulting to 0 turns a dead task into a green build.
+		brine.DefineMap[StepRunning, StepOutcome](
+			"the pod reaches {string} without ever reporting a container status",
+			func(in StepRunning, p brine.Params, _ *brine.Recorder) (StepOutcome, error) {
+				phase, ok := p.GetString(0)
+				if !ok {
+					return StepOutcome{}, fmt.Errorf("expected a pod phase parameter")
+				}
+				return in.settlePod(func(pod *corev1.Pod) {
+					pod.Status.Phase = corev1.PodPhase(phase)
+					pod.Status.ContainerStatuses = nil
+				})
+			},
+		),
+
+		// A non-zero exit is a RESULT, not an error: Process.Wait returns
+		// ProcessResult{ExitStatus: 1} with a nil error for a failed task. An
+		// assertion on Err alone cannot tell a failed step from a passing one,
+		// which is how the first version of these scenarios passed while
+		// asserting nothing.
+		//
+		// Worded distinctly from step-integration's "the step reports exit
+		// status {int}", which sits on a different state.
+		brine.DefineCheck[StepOutcome](
+			"the step's exit status is {int}",
+			func(in StepOutcome, p brine.Params, _ *brine.Recorder) error {
+				want, ok := p.GetInt(0)
+				if !ok {
+					return fmt.Errorf("expected an exit status parameter")
+				}
+				if in.Err != nil {
+					return fmt.Errorf(
+						"expected the step to report exit %d, it failed outright with %q",
+						want, in.Message)
+				}
+				if in.ExitStatus != want {
+					return fmt.Errorf(
+						"expected the step to report exit %d, got %d — the build takes this as its "+
+							"verdict on the task", want, in.ExitStatus)
+				}
+				return nil
+			},
+		),
+
+		// The step's result is the MAIN container's exit code, not whichever
+		// container happens to have terminated first. The sidecar is listed
+		// ahead of main here deliberately: reading "any terminated container"
+		// then picks up the sidecar's 0 and reports a failed step as green.
+		brine.DefineMap[StepRunning, StepOutcome](
+			"a sidecar exits {int} before the main container exits {int}",
+			func(in StepRunning, p brine.Params, _ *brine.Recorder) (StepOutcome, error) {
+				sidecarCode, ok := p.GetInt(0)
+				if !ok {
+					return StepOutcome{}, fmt.Errorf("expected a sidecar exit code")
+				}
+				mainCode, ok := p.GetInt(1)
+				if !ok {
+					return StepOutcome{}, fmt.Errorf("expected a main exit code")
+				}
+				return in.settlePod(func(pod *corev1.Pod) {
+					pod.Status.Phase = corev1.PodFailed
+					pod.Status.ContainerStatuses = []corev1.ContainerStatus{
+						{
+							Name: "log-shipper",
+							State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
+								ExitCode: int32(sidecarCode),
+							}},
+						},
+						{
+							Name: "main",
+							State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
+								ExitCode: int32(mainCode),
+							}},
+						},
+					}
+				})
+			},
+		),
+	}
+}
