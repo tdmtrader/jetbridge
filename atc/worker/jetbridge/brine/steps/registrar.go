@@ -359,3 +359,37 @@ func (o RegistrationOutcome) ok() error {
 	}
 	return nil
 }
+
+// RegistrarIdentityDefinitions closes a gap a deletion probe found in
+// registrar_test.go: the ginkgo suite asserted ActiveVolumes and StartTime
+// were zero, and brine asserted nothing about either.
+//
+// Both are zero by OMISSION — the registrar never sets them on the atc.Worker
+// it builds — which is exactly the kind of property that regresses when
+// somebody adds a field "for completeness". A worker reporting volumes it does
+// not have, or a start time it did not start at, lies to `fly workers` and to
+// anything scheduling on volume locality.
+func RegistrarIdentityDefinitions() []brine.StepDefinition {
+	return []brine.StepDefinition{
+
+		brine.DefineCheck[RegistrationOutcome](
+			"it claims no volumes and no start time",
+			func(in RegistrationOutcome, _ brine.Params, _ *brine.Recorder) error {
+				if err := in.ok(); err != nil {
+					return err
+				}
+				if got := in.Worker.ActiveVolumes(); got != 0 {
+					return fmt.Errorf(
+						"expected the worker to claim no volumes, it claimed %d — a k8s worker "+
+							"holds no Concourse volumes, so any count here is fabricated", got)
+				}
+				if got := in.Worker.StartTime().Unix(); got != 0 {
+					return fmt.Errorf(
+						"expected no start time, got %d — the registrar does not track uptime, "+
+							"so a non-zero value is invented", got)
+				}
+				return nil
+			},
+		),
+	}
+}
