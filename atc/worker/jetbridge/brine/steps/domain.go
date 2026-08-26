@@ -245,6 +245,10 @@ type WatchedPod struct {
 	Feed       *watch.RaceFreeFakeWatcher
 	SecondFeed *watch.RaceFreeFakeWatcher
 	Version    int
+	// Bus and Replay are shared by pointer because the watch reactor writes
+	// into them after this struct has already been copied down the chain.
+	Bus    *WatchBus
+	Replay *WatchReplay
 }
 
 type WatchObservation struct {
