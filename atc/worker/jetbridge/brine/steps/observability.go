@@ -314,3 +314,192 @@ func waitAndCapture(in ExecStepRunning) (SpansRecorded, error) {
 		WaitErr:    waitErr,
 	}, nil
 }
+
+// ObservabilityExtraDefinitions covers the rest of the OE family: what the
+// span says about scheduling, init containers, sidecars and phase changes.
+//
+// The consumer is whoever opens a trace because a step took eight minutes.
+// The events are the timeline that tells them WHERE the time went — waiting
+// for a node, pulling an image, running an init container — so each scenario
+// asserts a moment a reader would look for.
+func ObservabilityExtraDefinitions() []brine.StepDefinition {
+	return []brine.StepDefinition{
+
+		// OE-01
+		brine.DefineMap[ExecStepRunning, SpansRecorded](
+			"the pod is placed on node {string} and then starts",
+			func(in ExecStepRunning, p brine.Params, _ *brine.Recorder) (SpansRecorded, error) {
+				node, ok := p.GetString(0)
+				if !ok {
+					return SpansRecorded{}, fmt.Errorf("expected a node parameter")
+				}
+				return in.stageThenRun(func(pod *corev1.Pod) {
+					pod.Spec.NodeName = node
+					pod.Status.Phase = corev1.PodPending
+					pod.Status.Conditions = []corev1.PodCondition{
+						{Type: corev1.PodScheduled, Status: corev1.ConditionTrue},
+					}
+				})
+			},
+		),
+
+		// OE-05 / OE-06: an init container is where artifact staging happens,
+		// so its outcome is the difference between "the step failed" and "the
+		// step never got its inputs".
+		brine.DefineMap[ExecStepRunning, SpansRecorded](
+			"an init container finishes with exit code {int} and the pod then starts",
+			func(in ExecStepRunning, p brine.Params, _ *brine.Recorder) (SpansRecorded, error) {
+				code, ok := p.GetInt(0)
+				if !ok {
+					return SpansRecorded{}, fmt.Errorf("expected an exit code parameter")
+				}
+				return in.stageThenRun(func(pod *corev1.Pod) {
+					pod.Status.Phase = corev1.PodPending
+					pod.Status.InitContainerStatuses = []corev1.ContainerStatus{{
+						Name: "artifact-init",
+						State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
+							ExitCode: int32(code), Reason: "Completed",
+						}},
+					}}
+				})
+			},
+		),
+
+		// OE-07
+		brine.DefineMap[ExecStepRunning, SpansRecorded](
+			"a sidecar {string} reaches running and the pod then starts",
+			func(in ExecStepRunning, p brine.Params, _ *brine.Recorder) (SpansRecorded, error) {
+				name, ok := p.GetString(0)
+				if !ok {
+					return SpansRecorded{}, fmt.Errorf("expected a sidecar name parameter")
+				}
+				return in.stageThenRun(func(pod *corev1.Pod) {
+					pod.Status.Phase = corev1.PodPending
+					pod.Status.ContainerStatuses = []corev1.ContainerStatus{{
+						Name:  name,
+						State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}},
+					}}
+				})
+			},
+		),
+
+		// OE-09: the same condition observed twice must not produce two
+		// events, or a trace of a slow step becomes unreadable noise.
+		brine.DefineMap[ExecStepRunning, SpansRecorded](
+			"the pod is placed on node {string}, observed twice, and then starts",
+			func(in ExecStepRunning, p brine.Params, _ *brine.Recorder) (SpansRecorded, error) {
+				node, ok := p.GetString(0)
+				if !ok {
+					return SpansRecorded{}, fmt.Errorf("expected a node parameter")
+				}
+				pods := in.Clientset.CoreV1().Pods(in.Namespace)
+				pod, err := pods.Get(in.Ctx, in.Handle, metav1.GetOptions{})
+				if err != nil {
+					return SpansRecorded{}, fmt.Errorf("get pod: %w", err)
+				}
+				pod.Spec.NodeName = node
+				pod.Status.Phase = corev1.PodPending
+				pod.Status.Conditions = []corev1.PodCondition{
+					{Type: corev1.PodScheduled, Status: corev1.ConditionTrue},
+				}
+				if _, err := pods.UpdateStatus(in.Ctx, pod, metav1.UpdateOptions{}); err != nil {
+					return SpansRecorded{}, fmt.Errorf("update pod: %w", err)
+				}
+				// Observed a second time in the same condition.
+				if _, err := pods.UpdateStatus(in.Ctx, pod, metav1.UpdateOptions{}); err != nil {
+					return SpansRecorded{}, fmt.Errorf("re-update pod: %w", err)
+				}
+				go func(p *corev1.Pod) {
+					time.Sleep(20 * time.Millisecond)
+					p.Status.Phase = corev1.PodRunning
+					p.Status.ContainerStatuses = []corev1.ContainerStatus{{
+						Name: "main", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}},
+					}}
+					_, _ = pods.UpdateStatus(in.Ctx, p, metav1.UpdateOptions{})
+				}(pod.DeepCopy())
+				return waitAndCapture(in)
+			},
+		),
+
+		brine.DefineCheck[SpansRecorded](
+			"the {string} span records the event {string} exactly once",
+			func(in SpansRecorded, p brine.Params, _ *brine.Recorder) error {
+				spanName, _ := p.GetString(0)
+				eventName, ok := p.GetString(1)
+				if !ok {
+					return fmt.Errorf("expected a span and an event name")
+				}
+				names, found := in.Capture.EventNames(spanName)
+				if !found {
+					return fmt.Errorf("expected a %q span, none was recorded", spanName)
+				}
+				n := 0
+				for _, e := range names {
+					if e == eventName {
+						n++
+					}
+				}
+				if n != 1 {
+					return fmt.Errorf("expected %q exactly once on the %q span, found it %d times (all: %s)",
+						eventName, spanName, n, strings.Join(names, ", "))
+				}
+				return nil
+			},
+		),
+
+		// OE-01's node.name is the attribute that makes the event actionable —
+		// "waited for scheduling" is not useful without "onto which node".
+		brine.DefineCheck[SpansRecorded](
+			"the {string} event names the node {string}",
+			func(in SpansRecorded, p brine.Params, _ *brine.Recorder) error {
+				eventName, _ := p.GetString(0)
+				want, ok := p.GetString(1)
+				if !ok {
+					return fmt.Errorf("expected an event and a node name")
+				}
+				for _, span := range in.Capture.Recorder.Ended() {
+					for _, e := range span.Events() {
+						if e.Name != eventName {
+							continue
+						}
+						for _, a := range e.Attributes {
+							if string(a.Key) == "node.name" {
+								if a.Value.AsString() == want {
+									return nil
+								}
+								return fmt.Errorf("expected %q to name node %q, it named %q",
+									eventName, want, a.Value.AsString())
+							}
+						}
+						return fmt.Errorf("the %q event carries no node.name attribute", eventName)
+					}
+				}
+				return fmt.Errorf("no %q event was recorded", eventName)
+			},
+		),
+	}
+}
+
+// stageThenRun applies a pre-Wait pod state, then transitions the pod to
+// Running on a goroutine so Wait can complete. The staged state has to be
+// visible to the watcher's initial sync, which is why it is not a second step.
+func (in ExecStepRunning) stageThenRun(stage func(*corev1.Pod)) (SpansRecorded, error) {
+	pods := in.Clientset.CoreV1().Pods(in.Namespace)
+	pod, err := pods.Get(in.Ctx, in.Handle, metav1.GetOptions{})
+	if err != nil {
+		return SpansRecorded{}, fmt.Errorf("get pod %q: %w", in.Handle, err)
+	}
+	stage(pod)
+	if _, err := pods.UpdateStatus(in.Ctx, pod, metav1.UpdateOptions{}); err != nil {
+		return SpansRecorded{}, fmt.Errorf("update pod status: %w", err)
+	}
+	go func(p *corev1.Pod) {
+		time.Sleep(20 * time.Millisecond)
+		p.Status.Phase = corev1.PodRunning
+		p.Status.ContainerStatuses = append(p.Status.ContainerStatuses, corev1.ContainerStatus{
+			Name: "main", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}},
+		})
+		_, _ = pods.UpdateStatus(in.Ctx, p, metav1.UpdateOptions{})
+	}(pod.DeepCopy())
+	return waitAndCapture(in)
+}
