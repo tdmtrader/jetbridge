@@ -443,3 +443,39 @@ func (r ReaperReady) containerRow(handle string) (containerRowState, bool, error
 	}
 	return row, true, nil
 }
+
+// ReaperLookupFailureDefinitions closes the second retention path in
+// splitCompletedPods. There are two distinct ways the reaper can fail to learn
+// which builds are running, and they are separate branches:
+//
+//	if r.buildLookup == nil            { return nil, completed }  // covered
+//	builds, err := ...; if err != nil  { return nil, completed }  // was not
+//
+// Retaining is the safe answer for both — deleting the pod of a build that is
+// still running loses the build — but only the first had a scenario, and a
+// deletion probe that reaped on a failed lookup passed the whole suite.
+//
+// The lookup here is a real db.BuildFactory over a connection that has been
+// closed, so GetAllStartedBuilds fails for the reason it fails in production:
+// the database went away.
+func ReaperLookupFailureDefinitions() []brine.StepDefinition {
+	return []brine.StepDefinition{
+		brine.DefineMap[ReaperReady, ReaperReady](
+			"the reaper's view of running builds has been lost",
+			func(in ReaperReady, _ brine.Params, _ *brine.Recorder) (ReaperReady, error) {
+				closed, err := in.DB.ClosedConn()
+				if err != nil {
+					return ReaperReady{}, err
+				}
+				logger := lagertest.NewTestLogger("reaper")
+				destroyer := gc.NewDestroyer(logger, in.DB.ContainerRepository, in.DB.VolumeRepository)
+				reaper := jetbridge.NewReaper(
+					logger, in.Clientset, in.Config, in.DB.ContainerRepository, destroyer)
+				reaper.SetBuildLookup(db.NewBuildFactory(closed, nil, 0, 0))
+				in.Reaper = reaper
+				in.BuildLookup = true
+				return in, nil
+			},
+		),
+	}
+}

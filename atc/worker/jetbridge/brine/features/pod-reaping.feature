@@ -109,6 +109,18 @@ Feature: Reclaiming pods and the rows that track them
     When the reaper runs
     Then the pod "finished-unknown" is still there
 
+  # The other retention path. A lookup that EXISTS but cannot answer is a
+  # different branch from no lookup at all, and only the second had a
+  # scenario. Reaping on a failed lookup deletes the pod of a build that is
+  # still running, which loses the build.
+  @GC-02
+  Scenario: A build lookup that cannot answer still keeps finished pods
+    Given a Kubernetes worker whose reaper is running
+    And the reaper's view of running builds has been lost
+    And a finished step left a pod "finished-unreadable" behind, for a build that is "finished"
+    When the reaper runs
+    Then the pod "finished-unreadable" is still there
+
   # GC-03. The pod name is readable; the handle is the database key. The label
   # is what joins them, and losing that join would make the reaper delete by
   # the wrong name.
@@ -163,3 +175,74 @@ Feature: Reclaiming pods and the rows that track them
     And the reaper runs again
     Then the pod "brand-new" is still there
     And the container "brand-new" is still tracked as "created"
+
+  # Retention has two halves. The pod survives, and so must the row that
+  # tracks it: a retained pod is still in the cluster, so the same sweep has
+  # to report it as active. Otherwise the container is marked missing, the
+  # next sweep destroys the row, and the resumed build finds an exit-status
+  # annotation with nothing to attach it to.
+  @GC-02
+  Scenario: A pod kept for a running build keeps its container row too
+    Given a Kubernetes worker whose reaper is running
+    And a finished step left a pod "kept-for-build" behind, for a build that is "still running"
+    When the reaper runs
+    And the reaper runs again
+    Then the pod "kept-for-build" is still there
+    And the container behind the pod "kept-for-build" is not marked as missing
+
+  # GC-03's other half. The pod name is readable and the database key is the
+  # handle, so the reaper has to delete BY POD NAME. Deleting by handle finds
+  # nothing, the NotFound is swallowed as routine, and the pod leaks forever
+  # while its row is destroyed — the cluster fills with pods no record points
+  # at. The scenario above proves the label is READ; this one proves it is
+  # USED to delete.
+  @GC-03 @GC-07
+  Scenario: A destroyed container's readable pod is deleted by its pod name
+    Given a Kubernetes worker whose reaper is running
+    And a container "handle-bbb" on this worker is being destroyed
+    And a pod "my-pipeline-my-job-b2-task-handle-b" is running, labelled with the handle "handle-bbb"
+    When the reaper runs
+    Then the pod "my-pipeline-my-job-b2-task-handle-b" is gone
+
+  # The pod vanished between the list and the delete — a concurrent sweep, an
+  # operator with kubectl, a node that went away. NotFound on delete is
+  # routine and must not fail the sweep: an erroring reaper returns before
+  # cleaning up the artifacts those containers produced, and reports failure
+  # on every cycle thereafter.
+  #
+  # The scenario above ("already vanished") does NOT reach this path: with no
+  # pod at all, DestroyContainers removes the row first and
+  # FindDestroyingContainers then returns nothing, so the delete loop never
+  # runs. The container here has a pod at list time, which is what keeps its
+  # row alive long enough for the delete to be attempted.
+  @GC-07
+  Scenario: A pod deleted by someone else mid-sweep does not fail the reaper
+    Given a Kubernetes worker whose reaper is running
+    And a container "racing" on this worker is being destroyed
+    And a pod "racing" is running, labelled with the handle "racing"
+    And the pod is deleted by someone else before the reaper gets to it
+    When the reaper runs
+    Then the reaper completes without error
+    And the container "racing" is still tracked as "destroying"
+
+  # A reaper that cannot reach the cluster has reclaimed nothing. Saying so is
+  # the difference between an operator seeing a broken component and an
+  # operator seeing a healthy one while pods pile up.
+  Scenario: A reaper that cannot reach the cluster says so
+    Given a Kubernetes worker whose reaper is running
+    And the cluster stops answering when the reaper lists pods
+    When the reaper runs
+    Then the reaper reports that it could not sweep
+
+  # GC-01's other edge. A namespace is shared: another Concourse worker, or a
+  # pod nobody labelled, can sit alongside this worker's. Reaping by the label
+  # selector is what keeps them apart, and the failure is not a miscount — an
+  # unrecognised pod has no container row, so it is marked destroying and then
+  # deleted. One worker would delete another worker's running builds.
+  @GC-01
+  Scenario: Another worker's pods in the same namespace are left alone
+    Given a Kubernetes worker whose reaper is running
+    And a pod "someone-elses-pod" belonging to another worker is running in the same namespace
+    When the reaper runs
+    And the reaper runs again
+    Then the pod "someone-elses-pod" is still there
