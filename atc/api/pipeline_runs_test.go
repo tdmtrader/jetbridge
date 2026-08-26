@@ -348,6 +348,47 @@ var _ = Describe("Pipeline Runs API", func() {
 		Expect(run.Reclaimed).To(BeTrue())
 		Expect(run.InstanceRef).To(BeNil())
 	})
+	It("lists a reclaimed run beside live ones without misattributing payloads", func() {
+		// This fails if the batched payload lookup drops a run, attributes one
+		// run's payload to another, or presents a reclaimed run as enterable.
+		first := decodeRun(create(map[string]any{"environment": "one"}))
+		second := decodeRun(create(map[string]any{"environment": "two"}))
+		third := decodeRun(create(map[string]any{"environment": "three"}))
+
+		_, err := database.Conn.Exec(`UPDATE pipelines SET run_retention_ttl_days = 1 WHERE id = $1`, template.ID())
+		Expect(err).NotTo(HaveOccurred())
+		_, err = database.Conn.Exec(`UPDATE builds SET status = 'failed', end_time = now() WHERE pipeline_run_id = $1`, second.ID)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = database.Conn.Exec(`UPDATE pipeline_runs SET status = 'failed', completed_at = now() - interval '2 days' WHERE id = $1`, second.ID)
+		Expect(err).NotTo(HaveOccurred())
+		destroyed, err := db.NewPipelineRunReclaimLifecycle(database.Conn).DestroyReclaimableRun(second.ID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(destroyed).To(BeTrue())
+
+		response, err := client.Get(pipelineRunsURL(server, template.Name()))
+		Expect(err).NotTo(HaveOccurred())
+		defer response.Body.Close()
+		Expect(response.StatusCode).To(Equal(http.StatusOK))
+		var runs []atc.PipelineRun
+		Expect(json.NewDecoder(response.Body).Decode(&runs)).To(Succeed())
+		Expect(runs).To(HaveLen(3))
+
+		byNumber := map[int]atc.PipelineRun{}
+		for _, listed := range runs {
+			byNumber[listed.Number] = listed
+		}
+		Expect(byNumber[second.Number].ID).To(Equal(second.ID))
+		Expect(byNumber[second.Number].Reclaimed).To(BeTrue())
+		Expect(byNumber[second.Number].InstanceRef).To(BeNil())
+		for _, live := range []atc.PipelineRun{first, third} {
+			listed := byNumber[live.Number]
+			Expect(listed.ID).To(Equal(live.ID))
+			Expect(listed.Reclaimed).To(BeFalse())
+			Expect(listed.InstanceRef).NotTo(BeNil())
+			Expect(listed.InstanceRef.PipelineName).To(Equal(template.Name()))
+			Expect(listed.InstanceRef.InstanceVars).To(Equal(atc.InstanceVars{"run": float64(live.Number)}))
+		}
+	})
 })
 
 func pipelineRunsURL(server *httptest.Server, pipeline string) string {

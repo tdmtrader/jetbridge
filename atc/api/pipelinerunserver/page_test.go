@@ -8,8 +8,9 @@ import (
 )
 
 // The runs listing is reachable by an unauthenticated viewer on an exposed
-// template and issues one InstancePipeline query per returned run, so the
-// caller-supplied limit must be bounded before it reaches the DB layer.
+// template, and the caller-supplied limit sizes the response, the batched
+// payload lookup's IN list, and the rows scanned for it, so it must be bounded
+// before it reaches the DB layer.
 func TestPipelineRunPageBoundsCallerSuppliedLimit(t *testing.T) {
 	for _, testCase := range []struct {
 		name      string

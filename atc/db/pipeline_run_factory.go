@@ -38,6 +38,7 @@ type PipelineRunFactory interface {
 	GetRunByID(int) (PipelineRun, bool, error)
 	Runs(Pipeline, Page) ([]PipelineRun, Pagination, error)
 	InstancePipeline(PipelineRun) (Pipeline, bool, error)
+	InstancePipelines([]PipelineRun) (map[int]Pipeline, error)
 }
 
 type pipelineRunFactory struct {
@@ -324,6 +325,50 @@ func (f *pipelineRunFactory) InstancePipeline(run PipelineRun) (Pipeline, bool, 
 		return nil, false, err
 	}
 	return pipeline, true, nil
+}
+
+// InstancePipelines resolves the payloads of a whole page of runs in one query,
+// keyed by run ID. The runs listing is reachable by an unauthenticated viewer on
+// an exposed template, so resolving payloads one run at a time made the page an
+// amplifier bounded only by atc.PaginationAPIMaxLimit.
+//
+// A run whose payload has been reclaimed is absent from the map rather than
+// present-and-nil: a caller's map lookup then yields the zero db.Pipeline -- a
+// nil interface -- which is the same value the single-run path hands the
+// presenter for a reclaimed run. pipelines_pipeline_run_id_unique guarantees at
+// most one payload row per run, so no entry is ever overwritten.
+func (f *pipelineRunFactory) InstancePipelines(runs []PipelineRun) (map[int]Pipeline, error) {
+	payloads := make(map[int]Pipeline, len(runs))
+	if len(runs) == 0 {
+		return payloads, nil
+	}
+
+	ids := make([]int, 0, len(runs))
+	for _, run := range runs {
+		ids = append(ids, run.ID())
+	}
+
+	rows, err := pipelinesQuery.
+		Where(sq.Eq{"p.pipeline_run_id": ids}).
+		RunWith(f.conn).
+		Query()
+	if err != nil {
+		return nil, err
+	}
+	defer Close(rows)
+
+	for rows.Next() {
+		payload := newPipeline(f.conn, f.lockFactory)
+		if err := scanPipeline(payload, rows); err != nil {
+			return nil, err
+		}
+		runID, found := payload.PipelineRunID()
+		if !found {
+			continue
+		}
+		payloads[runID] = payload
+	}
+	return payloads, rows.Err()
 }
 
 func (f *pipelineRunFactory) getRun(row scannable) (PipelineRun, bool, error) {
