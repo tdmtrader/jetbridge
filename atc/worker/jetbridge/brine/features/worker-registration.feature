@@ -18,6 +18,7 @@ Feature: A Kubernetes worker presenting itself to Concourse
     Then the worker is registered as "k8s-test-namespace"
     And it presents itself as a running linux worker on this Concourse version
     And it belongs to no team and is not ephemeral
+    And it claims no volumes and no start time
     And its lease has not expired
     And its lease expires within 1 minute
 
