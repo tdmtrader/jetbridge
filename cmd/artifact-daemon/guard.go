@@ -5,7 +5,7 @@ import "sync"
 // ReadGuard coordinates artifact directory reads with destructive operations
 // (TTL sweeps, DELETE, stream-in replaces) inside the daemon process.
 //
-// Without it, deleters race in-flight tree walks: cp -R and filepath.Walk
+// Without it, deleters race in-flight tree walks: a copy and a tar walk
 // both silently omit files that were deleted before they enumerated the
 // parent directory, so the read completes "successfully" with a subset of
 // the tree — a partial artifact served (or mirrored onward) as complete.

@@ -252,7 +252,8 @@ func TestMirrorJob_Run_RecordsPerPeerOutcomes(t *testing.T) {
 
 	job := &mirrorJob{
 		key:            "handle/output",
-		sourceDir:      src,
+		root:           mustRoot(t, src),
+		loc:            ".",
 		peers:          []string{peerOK, peerReject, peerSlow},
 		port:           7780,
 		scheme:         "http",
@@ -289,13 +290,14 @@ func TestMirrorJob_Run_RecordsPerPeerOutcomes(t *testing.T) {
 func TestMirrorJob_Run_NoPeers_NoOp(t *testing.T) {
 	src := t.TempDir()
 	job := &mirrorJob{
-		key:       "h/o",
-		sourceDir: src,
-		peers:     nil,
-		port:      7780,
-		scheme:    "http",
-		client:    &http.Client{},
-		logger:    lagertest.NewTestLogger("mirror"),
+		key:    "h/o",
+		root:   mustRoot(t, src),
+		loc:    ".",
+		peers:  nil,
+		port:   7780,
+		scheme: "http",
+		client: &http.Client{},
+		logger: lagertest.NewTestLogger("mirror"),
 	}
 
 	outcomes := job.Run(context.Background())
@@ -350,6 +352,7 @@ func TestMirror_Evacuate_FlushesUnmirroredStepDirs(t *testing.T) {
 	logger := lagertest.NewTestLogger("evacuate")
 	mirror := &Mirror{
 		storagePath:    storage,
+		root:           mustRoot(t, storage),
 		port:           7780,
 		scheme:         "http",
 		replicas:       2,
@@ -401,6 +404,7 @@ func TestMirror_Evacuate_RespectsBudget(t *testing.T) {
 
 	mirror := &Mirror{
 		storagePath:     storage,
+		root:            mustRoot(t, storage),
 		port:            7780,
 		scheme:          "http",
 		replicas:        2,
@@ -427,6 +431,7 @@ func TestMirror_Evacuate_RespectsBudget(t *testing.T) {
 func TestMirror_Evacuate_RejectsNewTriggerAfterCall(t *testing.T) {
 	mirror := &Mirror{
 		storagePath: t.TempDir(),
+		root:        mustRoot(t, t.TempDir()),
 		replicas:    2,
 		pool:        NewWorkerPool(2),
 		logger:      lagertest.NewTestLogger("evacuate-reject"),
@@ -541,7 +546,8 @@ func TestMirrorJob_Run_PreservesSubdirsAndMultipleFiles(t *testing.T) {
 
 	job := &mirrorJob{
 		key:            "h/o",
-		sourceDir:      src,
+		root:           mustRoot(t, src),
+		loc:            ".",
 		peers:          []string{peerHost},
 		port:           7780,
 		scheme:         "http",
@@ -597,6 +603,7 @@ func TestMirror_Trigger_SourceDisappearsBeforeJobRuns(t *testing.T) {
 
 	mirror := &Mirror{
 		storagePath:     storage,
+		root:            mustRoot(t, storage),
 		port:            7780,
 		scheme:          "http",
 		replicas:        2,
@@ -660,6 +667,7 @@ func TestMirror_Trigger_ConcurrentMultiKeyLoad(t *testing.T) {
 
 	mirror := &Mirror{
 		storagePath:     storage,
+		root:            mustRoot(t, storage),
 		port:            7780,
 		scheme:          "http",
 		replicas:        2,
@@ -695,6 +703,7 @@ func TestMirror_Trigger_AfterStop_ReturnsCleanly(t *testing.T) {
 	storage := t.TempDir()
 	mirror := &Mirror{
 		storagePath: storage,
+		root:        mustRoot(t, storage),
 		port:        7780,
 		scheme:      "http",
 		replicas:    2,
@@ -751,6 +760,7 @@ func TestMirror_Trigger_ReplicasZero_NoOp(t *testing.T) {
 	const peerHost = "should-not-be-called"
 	mirror := &Mirror{
 		storagePath:     storage,
+		root:            mustRoot(t, storage),
 		replicas:        0, // disabled
 		pool:            NewWorkerPool(2),
 		client:          &http.Client{},
@@ -775,6 +785,7 @@ func TestMirror_Trigger_ReplicasZero_NoOp(t *testing.T) {
 func TestMirror_Evacuate_NoStepsDir_CleanNoOp(t *testing.T) {
 	mirror := &Mirror{
 		storagePath: t.TempDir(), // no steps/ subdirectory
+		root:        mustRoot(t, t.TempDir()),
 		replicas:    2,
 		pool:        NewWorkerPool(2),
 		client:      &http.Client{},
@@ -814,7 +825,8 @@ func TestMirrorJob_Run_EmptySourceDir_NoPanic(t *testing.T) {
 
 	job := &mirrorJob{
 		key:            "h/o",
-		sourceDir:      src,
+		root:           mustRoot(t, src),
+		loc:            ".",
 		peers:          []string{peerHost},
 		port:           7780,
 		scheme:         "http",
@@ -854,7 +866,8 @@ func TestMirrorJob_Run_PartialPeerSuccess(t *testing.T) {
 
 	job := &mirrorJob{
 		key:            "h/o",
-		sourceDir:      src,
+		root:           mustRoot(t, src),
+		loc:            ".",
 		peers:          []string{"ok-peer", "reject-peer", "dead-peer"},
 		port:           7780,
 		scheme:         "http",
@@ -909,7 +922,8 @@ func TestMirrorJob_Run_StreamsBodyInsteadOfBuffering(t *testing.T) {
 	}}
 	job := &mirrorJob{
 		key:            "handle/output",
-		sourceDir:      src,
+		root:           mustRoot(t, src),
+		loc:            ".",
 		peers:          []string{"peer-a"},
 		port:           7780,
 		scheme:         "http",
@@ -959,8 +973,10 @@ func TestMirrorJob_Run_StreamsBodyInsteadOfBuffering(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestMirror_ForgetHandle_PrunesStatusEntries(t *testing.T) {
+	storage := t.TempDir()
 	m := NewMirror(MirrorConfig{
-		StoragePath: t.TempDir(),
+		StoragePath: storage,
+		Root:        mustRoot(t, storage),
 		Replicas:    2,
 		Logger:      lagertest.NewTestLogger("mirror"),
 	})
@@ -998,7 +1014,8 @@ func TestMirrorJob_TarWalkWaitsForExclusiveHolder(t *testing.T) {
 	guard := NewReadGuard()
 	job := &mirrorJob{
 		key:            "handle-z/output",
-		sourceDir:      src,
+		root:           mustRoot(t, src),
+		loc:            ".",
 		peers:          []string{"peer-a"},
 		port:           7780,
 		scheme:         "http",
@@ -1050,7 +1067,8 @@ func TestMirrorJob_PutsCarryMirrorOriginHeader(t *testing.T) {
 
 	job := &mirrorJob{
 		key:            "h/o",
-		sourceDir:      src,
+		root:           mustRoot(t, src),
+		loc:            ".",
 		peers:          []string{"peer-a"},
 		port:           7780,
 		scheme:         "http",
@@ -1112,6 +1130,7 @@ func TestEvacuateOne_RefusesAKeyResolvingOutsideTheRoot(t *testing.T) {
 		// nothing — the first version of this test used it and therefore
 		// passed with and without the fix.
 		Replicas: -1,
+		Root:     mustRoot(t, storage),
 		Guard:    NewReadGuard(),
 		Client:   &http.Client{Timeout: 5 * time.Second},
 	})
@@ -1130,4 +1149,16 @@ func TestEvacuateOne_RefusesAKeyResolvingOutsideTheRoot(t *testing.T) {
 	if len(served) > 0 {
 		t.Errorf("AC2: evacuate sent %d request(s) for a key resolving outside the root", len(served))
 	}
+}
+
+// mustRoot opens a storage-root handle on dir: the mirror's tar walk goes
+// through a handle now, not a bare path.
+func mustRoot(t *testing.T, dir string) *os.Root {
+	t.Helper()
+	r, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { r.Close() })
+	return r
 }

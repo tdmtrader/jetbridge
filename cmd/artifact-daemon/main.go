@@ -215,6 +215,7 @@ func main() {
 					Client:         mirrorClient,
 					Logger:         logger.Session("mirror"),
 					Guard:          server.Guard(),
+					Root:           server.Root(),
 				})
 				server.SetMirrorTrigger(mirror.Trigger)
 				logger.Info("mirror-configured", lager.Data{

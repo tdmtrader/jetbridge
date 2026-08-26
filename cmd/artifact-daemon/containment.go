@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/tar"
 	"code.cloudfoundry.org/lager/v3"
 	"errors"
 	"fmt"
@@ -473,4 +474,87 @@ func copyTree(srcRoot *os.Root, srcName string, dstRoot *os.Root) error {
 			return out.Close()
 		}
 	})
+}
+
+// tarTree writes a tar archive of root/loc.
+//
+// The daemon's only tar producer. Two existed — one walking a handle and one
+// walking an ambient path, disagreeing about directory entries and file modes —
+// which is the "two pieces of code disagreeing about what a path means" shape
+// this package exists to remove.
+//
+// Symlinks are VALIDATED, so the daemon refuses to emit an archive its own
+// extractor would refuse to accept. Absolute targets name the producing
+// machine's filesystem; carried into a consumer they resolve against that
+// consumer's namespace instead.
+//
+// Directory entries ARE emitted, so empty directories survive transport.
+func tarTree(w io.Writer, root *os.Root, loc RelKey) error {
+	tw := tar.NewWriter(w)
+	name := osName(loc)
+	rootFS := root.FS()
+
+	err := fs.WalkDir(rootFS, name, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(name, p)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+
+		hdr := &tar.Header{
+			Name:    rel,
+			Mode:    int64(info.Mode().Perm()),
+			ModTime: info.ModTime(),
+		}
+
+		switch {
+		case d.IsDir():
+			hdr.Typeflag = tar.TypeDir
+			return tw.WriteHeader(hdr)
+
+		case d.Type()&fs.ModeSymlink != 0:
+			link, err := root.Readlink(p)
+			if err != nil {
+				return err
+			}
+			if err := validateSymlinkTarget(rel, link); err != nil {
+				return err
+			}
+			hdr.Typeflag = tar.TypeSymlink
+			hdr.Linkname = link
+			return tw.WriteHeader(hdr)
+
+		case !info.Mode().IsRegular():
+			return nil
+
+		default:
+			hdr.Typeflag = tar.TypeReg
+			hdr.Size = info.Size()
+			if err := tw.WriteHeader(hdr); err != nil {
+				return err
+			}
+			f, err := rootFS.Open(p)
+			if err != nil {
+				return err
+			}
+			defer f.Close()
+			_, err = io.Copy(tw, f)
+			return err
+		}
+	})
+	if err != nil {
+		// Deliberately skip tw.Close(): the terminator would make a truncated
+		// stream parse as a complete archive.
+		return err
+	}
+	return tw.Close()
 }

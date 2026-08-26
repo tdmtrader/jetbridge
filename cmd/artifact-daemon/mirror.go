@@ -1,13 +1,13 @@
 package main
 
 import (
-	"archive/tar"
 	"context"
 	"fmt"
 	"hash/fnv"
 	"io"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -166,7 +166,8 @@ type mirrorPeerOutcome struct {
 // value.
 type mirrorJob struct {
 	key            string       // artifact key (e.g., "handle/output")
-	sourceDir      string       // absolute path to the directory to mirror
+	root           *os.Root     // storage root the tar walk goes through
+	loc            RelKey       // location of the directory to mirror
 	peers          []string     // peer hosts (no port)
 	port           int          // daemon port on each peer
 	scheme         string       // "http" or "https"
@@ -222,7 +223,7 @@ func (j *mirrorJob) putToPeer(ctx context.Context, peer string) mirrorPeerOutcom
 	// CloseWithError as the request body error; on an early peer response
 	// the transport closes the body, unblocking the writer goroutine.
 	//
-	// The walk holds the handle's shared lock: filepath.Walk silently omits
+	// The walk holds the handle's shared lock: a tree walk silently omits
 	// files deleted before it enumerates them, so tarring a tree that a
 	// concurrent stream-in replace or sweep is deleting would mirror a
 	// truncated copy as if complete.
@@ -230,7 +231,7 @@ func (j *mirrorJob) putToPeer(ctx context.Context, peer string) mirrorPeerOutcom
 	go func() {
 		release := j.guard.BeginRead(keyHandle(j.key))
 		defer release()
-		pw.CloseWithError(tarDir(pw, j.sourceDir))
+		pw.CloseWithError(tarTree(pw, j.root, j.loc))
 	}()
 
 	url := peerURL(j.scheme, peer, j.port, "/stream-in/", j.key)
@@ -259,60 +260,6 @@ func (j *mirrorJob) putToPeer(ctx context.Context, peer string) mirrorPeerOutcom
 	return mirrorPeerOutcome{Peer: peer, Status: "rejected", Err: fmt.Errorf("HTTP %d", resp.StatusCode)}
 }
 
-// tarDir streams a tar archive of src into w. Directories, regular files,
-// and symlinks are preserved; everything else is skipped.
-func tarDir(w io.Writer, src string) error {
-	tw := tar.NewWriter(w)
-	defer tw.Close()
-
-	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(src, path)
-		if err != nil {
-			return err
-		}
-		if rel == "." {
-			return nil
-		}
-
-		hdr := &tar.Header{
-			Name:    rel,
-			Mode:    int64(info.Mode().Perm()),
-			ModTime: info.ModTime(),
-		}
-		switch {
-		case info.IsDir():
-			hdr.Typeflag = tar.TypeDir
-			hdr.Size = 0
-			return tw.WriteHeader(hdr)
-		case info.Mode()&os.ModeSymlink != 0:
-			link, err := os.Readlink(path)
-			if err != nil {
-				return err
-			}
-			hdr.Typeflag = tar.TypeSymlink
-			hdr.Linkname = link
-			hdr.Size = 0
-			return tw.WriteHeader(hdr)
-		default:
-			hdr.Typeflag = tar.TypeReg
-			hdr.Size = info.Size()
-			if err := tw.WriteHeader(hdr); err != nil {
-				return err
-			}
-			f, err := os.Open(path)
-			if err != nil {
-				return err
-			}
-			defer f.Close()
-			_, err = io.Copy(tw, f)
-			return err
-		}
-	})
-}
-
 // ---------------------------------------------------------------------------
 // Mirror: top-level mirror manager wiring everything together.
 // ---------------------------------------------------------------------------
@@ -322,6 +269,7 @@ func tarDir(w io.Writer, src string) error {
 // settled; the worker pool fans out to peers in the background.
 type Mirror struct {
 	storagePath    string
+	root           *os.Root
 	port           int
 	scheme         string
 	replicas       int
@@ -356,17 +304,24 @@ type MirrorConfig struct {
 	Client         *http.Client
 	Logger         lager.Logger
 	Guard          *ReadGuard // coordinates tar walks with deleters (nil-safe)
+	Root           *os.Root   // storage root; tar walks go through it
 }
 
 // NewMirror constructs a Mirror with its worker pool started. Caller must
 // call Stop on shutdown.
+// Root is required: the tar walk goes through it, and a nil one would surface
+// as a panic inside a detached goroutine at the first mirror.
 func NewMirror(cfg MirrorConfig) *Mirror {
+	if cfg.Root == nil {
+		panic("NewMirror: Root is required")
+	}
 	concurrency := cfg.Concurrency
 	if concurrency <= 0 {
 		concurrency = 4
 	}
 	return &Mirror{
 		storagePath:    cfg.StoragePath,
+		root:           cfg.Root,
 		port:           cfg.Port,
 		scheme:         cfg.Scheme,
 		replicas:       cfg.Replicas,
@@ -441,7 +396,8 @@ func (m *Mirror) run(ctx context.Context, key string) {
 
 	job := &mirrorJob{
 		key:            key,
-		sourceDir:      sourceDir,
+		root:           m.root,
+		loc:            RelKey(path.Join("steps", key)),
 		peers:          chosen,
 		port:           m.port,
 		scheme:         m.scheme,
@@ -584,7 +540,8 @@ func (m *Mirror) evacuateOne(ctx context.Context, key string) {
 
 	job := &mirrorJob{
 		key:            key,
-		sourceDir:      sourceDir,
+		root:           m.root,
+		loc:            RelKey(path.Join("steps", key)),
 		peers:          chosen,
 		port:           m.port,
 		scheme:         m.scheme,

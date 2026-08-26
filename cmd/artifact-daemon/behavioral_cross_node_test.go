@@ -279,6 +279,7 @@ func TestMirror_AfterStreamIn_PeerServesAfterProducerDeath(t *testing.T) {
 
 	mirror := daemon.NewMirror(daemon.MirrorConfig{
 		StoragePath:    storageA,
+		Root:           serverA.Root(),
 		Port:           portB, // mirror PUTs to peers on this port
 		Scheme:         "http",
 		Replicas:       2,

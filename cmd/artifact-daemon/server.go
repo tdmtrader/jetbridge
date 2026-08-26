@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"math/rand/v2"
 	"net/http"
 	"os"
@@ -362,55 +361,7 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 // caller can abort the response; a silently truncated tar reads as complete
 // on the client side.
 func (s *Server) tarDirectory(w io.Writer, loc RelKey) error {
-	tw := tar.NewWriter(w)
-	name := osName(loc)
-	srcFS := s.root.FS()
-
-	err := fs.WalkDir(srcFS, name, func(p string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return err
-		}
-		info, err := d.Info()
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(name, p)
-		if err != nil {
-			return err
-		}
-		hdr := &tar.Header{
-			Name:    rel,
-			Size:    info.Size(),
-			Mode:    int64(info.Mode()),
-			ModTime: info.ModTime(),
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			link, err := s.root.Readlink(p)
-			if err != nil {
-				return err
-			}
-			hdr.Typeflag = tar.TypeSymlink
-			hdr.Linkname = link
-			hdr.Size = 0
-			return tw.WriteHeader(hdr)
-		}
-		if err := tw.WriteHeader(hdr); err != nil {
-			return err
-		}
-		f, err := srcFS.Open(p)
-		if err != nil {
-			return err
-		}
-		defer f.Close()
-		_, err = io.Copy(tw, f)
-		return err
-	})
-	if err != nil {
-		// Deliberately skip tw.Close(): writing the tar terminator would
-		// make the truncated stream parse as a complete archive.
-		return err
-	}
-	return tw.Close()
+	return tarTree(w, s.root, loc)
 }
 
 // touchStepDir bumps the mtime of the steps/{handle} directory containing rel

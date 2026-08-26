@@ -141,6 +141,7 @@ func TestPreemptionWatcher_FiresEvacuate_FlushesUnmirroredToPeer(t *testing.T) {
 	logger := lagertest.NewTestLogger("preempt-evacuate")
 	mirror := &Mirror{
 		storagePath:     storage,
+		root:            mustRoot(t, storage),
 		port:            7780,
 		scheme:          "http",
 		replicas:        2,
