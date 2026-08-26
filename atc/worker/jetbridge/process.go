@@ -250,20 +250,37 @@ func (p *Process) streamLogs(ctx context.Context) {
 	}
 
 	// Stream sidecar containers in background goroutines.
+	//
+	// These are WAITED ON before returning. Wait() closes logDone when this
+	// function returns and then deletes the pod, so a sidecar goroutine still
+	// copying at that moment has its stream cut and its output never reaches
+	// the build log. The caller's comment at `<-logDone` — "wait for log
+	// streaming to finish so all output is captured" — was only true of the
+	// main container.
+	var sidecars sync.WaitGroup
 	if p.container != nil {
 		for _, sc := range p.container.containerSpec.Sidecars {
+			sidecars.Add(1)
 			if w, ok := p.processIO.SidecarWriters[sc.Name]; ok {
 				// Dedicated writer: stream directly to the per-sidecar event writer.
-				go p.streamContainerLogsDirect(ctx, sc.Name, w)
+				go func(name string, w io.Writer) {
+					defer sidecars.Done()
+					p.streamContainerLogsDirect(ctx, name, w)
+				}(sc.Name, w)
 			} else {
 				// Fallback: prefix sidecar output into shared stdout.
-				go p.streamContainerLogsPrefixed(ctx, sc.Name)
+				go func(name string) {
+					defer sidecars.Done()
+					p.streamContainerLogsPrefixed(ctx, name)
+				}(sc.Name)
 			}
 		}
 	}
 
 	// Stream main container logs directly (no prefix).
 	p.streamContainerLogsMain(ctx, mainContainerName)
+
+	sidecars.Wait()
 }
 
 // streamContainerLogsPrefixed streams logs from a named container, prefixing
