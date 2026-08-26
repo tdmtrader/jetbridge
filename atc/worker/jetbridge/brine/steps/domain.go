@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
@@ -69,6 +70,17 @@ type ContainerDraft struct {
 	Dir          string
 	ContainerEnv []string
 	ProcessEnv   []string
+
+	Inputs        []string
+	Outputs       []string
+	Caches        []string
+	Scratch       []string
+	LimitCPU      *uint64
+	LimitMemory   *uint64
+	RequestCPU    *uint64
+	RequestMemory *uint64
+	Privileged    bool
+	Sidecars      []atc.SidecarConfig
 }
 
 // PodCreated is the state after a described container has run and its pod has
