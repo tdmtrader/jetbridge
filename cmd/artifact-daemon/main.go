@@ -98,7 +98,7 @@ func main() {
 	}
 
 	// Set up alias persistence so volume-handle mappings survive restarts.
-	aliasStore := NewAliasStore(logger, *storagePath)
+	aliasStore := NewAliasStore(logger, *storagePath, server.Root())
 	server.Registry().SetAliasStore(aliasStore)
 
 	// Scan hostPath at startup to populate registry with existing artifacts.

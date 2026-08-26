@@ -110,7 +110,7 @@ func NewServer(logger lager.Logger, storagePath, nodeName string) (*Server, erro
 		logger:      logger,
 		storagePath: storagePath,
 		nodeName:    nodeName,
-		registry:    NewRegistry(logger),
+		registry:    NewRegistry(logger, storagePath),
 		metrics:     newMetrics(),
 		guard:       NewReadGuard(),
 		uploadSem:   make(chan struct{}, maxConcurrentDurableUploads),
@@ -133,16 +133,24 @@ func (s *Server) Guard() *ReadGuard {
 	return s.guard
 }
 
-// stepHandle returns the steps/{handle} segment guarding a path under the
-// steps root, or the path itself for non-steps paths (legacy flat files) so
-// they still get a consistent per-path lock.
-func (s *Server) stepHandle(path string) string {
-	stepsRoot := filepath.Join(s.storagePath, "steps")
-	rel, err := filepath.Rel(stepsRoot, path)
-	if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
-		return path
+// stepHandle returns the guard key for a location: the {handle} segment for
+// anything under steps/, or the location itself for non-steps entries (legacy
+// flat files) so they still get a consistent per-location lock.
+//
+// It takes a RelKey rather than a path, and this is the whole point of the
+// type. The key it returns must be IDENTICAL to the one the sweeper takes —
+// the sweeper takes entry.Name(), a bare handle — or the two stop excluding
+// each other and the sweeper deletes a directory mid-read. Previously the
+// callers passed a mixture of absolutes and registry values, and the
+// filepath.Rel fallback returned a whole path when the two disagreed: a
+// plausible-looking key that locks nothing, failing silently in the direction
+// of data loss rather than of a hang.
+func (s *Server) stepHandle(rel RelKey) string {
+	segments := strings.Split(string(rel), "/")
+	if len(segments) >= 2 && segments[0] == "steps" {
+		return segments[1]
 	}
-	return strings.Split(rel, string(filepath.Separator))[0]
+	return string(rel)
 }
 
 // MirrorOriginHeader marks a PUT /stream-in as originating from a peer
@@ -279,24 +287,26 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	// tarDirectory walks a path and the guard keys on one, so the absolute
-	// form is still needed. Direct reads go through the handle.
-	path := filepath.Join(s.storagePath, key)
+	// The request key IS a location under the root: artifactKey has already run
+	// it through artifactLocation. This is the boundary where a validated
+	// request key becomes a RelKey, and the only reason the conversion is
+	// sound.
+	loc := RelKey(key)
 
 	// Check filesystem first, then fall back to registry aliases.
 	// This enables peer daemons to serve registry-only artifacts
 	// (e.g., resource caches registered via POST /register).
-	// Tracks whether the registry fallback substituted an alias path, so the
-	// file branch below opens the same thing the directory branch tars.
-	servedFromRegistry := false
-
-	info, err := s.root.Stat(key)
+	//
+	// The fallback used to substitute an ABSOLUTE alias path, which forced this
+	// handler to carry a servedFromRegistry flag and branch between os.Open and
+	// root.Open — and migrating one branch and not the other is how this broke
+	// once already. Registry values are now locations under the same root, so
+	// there is one representation and one code path.
+	info, err := s.root.Stat(osName(loc))
 	if err != nil && os.IsNotExist(err) {
-		// Filesystem miss — try registry lookup.
-		if regPath, found := s.lookupRegistryAlias(r); found {
-			path = regPath
-			servedFromRegistry = true
-			info, err = os.Stat(path)
+		if regLoc, found := s.lookupRegistryAlias(r); found {
+			loc = regLoc
+			info, err = s.root.Stat(osName(loc))
 		}
 	}
 	if err != nil {
@@ -304,22 +314,24 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 			http.NotFound(w, r)
 			return
 		}
-		s.logger.Error("failed-to-stat-artifact", err, lager.Data{"path": path})
+		s.logger.Error("failed-to-stat-artifact", err, lager.Data{"rel": string(loc)})
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 
 	// Hold the read guard while serving so the sweeper cannot delete the
 	// directory mid-stream. Released via defer: the tar-abort path panics.
-	release := s.guard.BeginRead(s.stepHandle(path))
+	release := s.guard.BeginRead(s.stepHandle(loc))
 	defer release()
-	s.touchStepDir(path)
+	s.touchStepDir(loc)
 
 	// Directory: tar on-the-fly and stream.
 	if info.IsDir() {
 		w.Header().Set("Content-Type", "application/x-tar")
-		if err := s.tarDirectory(w, path); err != nil {
-			s.logger.Error("failed-to-tar-artifact", err, lager.Data{"path": path})
+		// tarDirectory walks by path — egress belongs to slice 8 — so this is
+		// one of the sites that still needs the ambient form.
+		if err := s.tarDirectory(w, s.registry.AmbientPath(loc)); err != nil {
+			s.logger.Error("failed-to-tar-artifact", err, lager.Data{"rel": string(loc)})
 			// The 200 header and part of the body are already out; abort
 			// the connection so the client sees a hard failure instead of
 			// a clean-looking truncated tar.
@@ -337,16 +349,9 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 	// `path` for exactly this reason; migrating one branch and not the other is
 	// how this broke.
 	//
-	// The alias path is registry-derived and stays ambient in this track,
-	// guarded by lookupRegistry's validateRegistryPath at the moment of use.
-	var f *os.File
-	if servedFromRegistry {
-		f, err = os.Open(path)
-	} else {
-		f, err = s.root.Open(key)
-	}
+	f, err := s.root.Open(osName(loc))
 	if err != nil {
-		s.logger.Error("failed-to-open-artifact", err, lager.Data{"path": path})
+		s.logger.Error("failed-to-open-artifact", err, lager.Data{"rel": string(loc)})
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -354,7 +359,7 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/octet-stream")
 	if _, err := io.Copy(w, f); err != nil {
-		s.logger.Error("failed-to-stream-artifact", err, lager.Data{"path": path})
+		s.logger.Error("failed-to-stream-artifact", err, lager.Data{"rel": string(loc)})
 		panic(http.ErrAbortHandler)
 	}
 }
@@ -403,18 +408,16 @@ func (s *Server) tarDirectory(w io.Writer, dir string) error {
 	return tw.Close()
 }
 
-// touchStepDir bumps the mtime of the steps/{handle} directory containing
-// path (when path is under steps/) so the TTL sweeper treats actively-read
-// artifacts as fresh. Best-effort.
-func (s *Server) touchStepDir(path string) {
-	stepsRoot := filepath.Join(s.storagePath, "steps")
-	rel, err := filepath.Rel(stepsRoot, path)
-	if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+// touchStepDir bumps the mtime of the steps/{handle} directory containing rel
+// (when rel is under steps/) so the TTL sweeper treats actively-read artifacts
+// as fresh. Best-effort, and through the root handle.
+func (s *Server) touchStepDir(rel RelKey) {
+	segments := strings.Split(string(rel), "/")
+	if len(segments) < 2 || segments[0] != "steps" {
 		return
 	}
-	handle := strings.Split(rel, string(filepath.Separator))[0]
 	now := time.Now()
-	_ = os.Chtimes(filepath.Join(stepsRoot, handle), now, now)
+	_ = s.root.Chtimes(path.Join("steps", segments[1]), now, now)
 }
 
 func (s *Server) handlePutArtifact(w http.ResponseWriter, r *http.Request) {
@@ -518,6 +521,11 @@ func (s *Server) handleStreamIn(w http.ResponseWriter, r *http.Request) {
 	// dest is still computed because the read/sweep guard keys on the absolute
 	// form under R12, and the registry stores absolute values. It is a LOCK KEY
 	// and a registry value, not a path anything writes through.
+	// The stream-in key is relative to the STEPS root; the registry and the
+	// guard are relative to the storage root, so the location carries the
+	// "steps/" segment. Getting this wrong is not a compile error — both are
+	// RelKey — so it is stated here once and derived everywhere else.
+	loc := RelKey(path.Join("steps", key))
 	dest := filepath.Join(s.storagePath, "steps", key)
 
 	// The steps/ boundary is a HANDLE, not an argument.
@@ -608,11 +616,10 @@ func (s *Server) handleStreamIn(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	renameErr := func() error {
-		// The guard's keys stay ABSOLUTE under R12 — the sweeper and every
-		// reader key on the absolute form, and a relative key here would mean
-		// the two stop excluding each other silently. The OPERATIONS go through
-		// the handle; only the lock key is a path.
-		release := s.guard.BeginSweep(s.stepHandle(dest))
+		// stepHandle(loc) is the same key the sweeper derives from the handle
+		// directory's name. That equality is what makes this lock exclude the
+		// sweeper at all; when the two representations disagreed it did not.
+		release := s.guard.BeginSweep(s.stepHandle(loc))
 		defer release()
 		stepsRoot.RemoveAll(key)
 		return stepsRoot.Rename(tmpName, key)
@@ -623,8 +630,16 @@ func (s *Server) handleStreamIn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.registry.Register(key, dest)
-	s.logger.Info("stream-in-complete", lager.Data{"key": key, "dest": dest})
+	if _, err := s.registry.Register(key, dest); err != nil {
+		// The tree is already in place under the root handle, so this cannot
+		// mean an escape — only that storagePath itself stopped resolving.
+		// Serving it would mean reporting 201 for an artifact no lookup can
+		// find, which presents later as an unexplained cache miss.
+		s.logger.Error("failed-to-register-stream-in", err, lager.Data{"key": key, "dest": dest})
+		http.Error(w, "register: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.logger.Info("stream-in-complete", lager.Data{"key": key, "rel": string(loc)})
 
 	// Schedule outbound mirror to peer daemons so the new artifact survives
 	// loss of this node. Best-effort: the trigger queues a background job
@@ -645,18 +660,15 @@ func (s *Server) handleDeleteArtifact(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	// The guard's keys stay absolute under R12, so the path is still computed
-	// for it — but the removal itself goes through the root handle, where a
-	// symlink under the store cannot carry it out.
-	path := filepath.Join(s.storagePath, key)
+	loc := RelKey(key) // validated by artifactKey
 
 	// Deletion is destructive like a sweep: wait out in-flight reads so a
 	// concurrent copy never sees a half-removed tree.
-	release := s.guard.BeginSweep(s.stepHandle(path))
+	release := s.guard.BeginSweep(s.stepHandle(loc))
 	defer release()
 
-	if err := s.root.RemoveAll(key); err != nil {
-		s.logger.Error("failed-to-delete-artifact", err, lager.Data{"path": path})
+	if err := s.root.RemoveAll(osName(loc)); err != nil {
+		s.logger.Error("failed-to-delete-artifact", err, lager.Data{"rel": string(loc)})
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -670,13 +682,13 @@ func (s *Server) handleHeadArtifact(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	path := filepath.Join(s.storagePath, key)
-
-	// Check filesystem first, then fall back to registry aliases.
+	// Check filesystem first, then fall back to registry aliases. Both stats go
+	// through the root handle now that the registry value is a location under
+	// the same root.
 	if _, err := s.root.Stat(key); err != nil {
 		if os.IsNotExist(err) {
-			if regPath, found := s.lookupRegistryAlias(r); found {
-				if _, err := os.Stat(regPath); err == nil {
+			if regLoc, found := s.lookupRegistryAlias(r); found {
+				if _, err := s.root.Stat(osName(regLoc)); err == nil {
 					w.WriteHeader(http.StatusOK)
 					return
 				}
@@ -684,7 +696,7 @@ func (s *Server) handleHeadArtifact(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
-		s.logger.Error("failed-to-stat-artifact", err, lager.Data{"path": path})
+		s.logger.Error("failed-to-stat-artifact", err, lager.Data{"key": key})
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
@@ -696,18 +708,18 @@ func (s *Server) handleHeadArtifact(w http.ResponseWriter, r *http.Request) {
 // the request URL. Peer probes send URLs like /artifacts/steps/rc-42, yielding
 // the key "steps/rc-42" — but the registry stores just "rc-42". We try the
 // full key first, then strip common prefixes.
-func (s *Server) lookupRegistryAlias(r *http.Request) (string, bool) {
+func (s *Server) lookupRegistryAlias(r *http.Request) (RelKey, bool) {
 	key, err := s.requestKey(r, "/artifacts/")
 	if err != nil {
 		return "", false
 	}
-	if path, found := s.lookupRegistry(key); found {
-		return path, true
+	if rel, found := s.lookupRegistry(key); found {
+		return rel, true
 	}
 	// Strip "steps/" prefix — peer probes prepend it but aliases don't have it.
 	if stripped := strings.TrimPrefix(key, "steps/"); stripped != key {
-		if path, found := s.lookupRegistry(stripped); found {
-			return path, true
+		if rel, found := s.lookupRegistry(stripped); found {
+			return rel, true
 		}
 	}
 	return "", false
@@ -835,10 +847,19 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.registry.RegisterAlias(req.Key, req.LocalPath)
+	// REFUSE here rather than store-and-hope. req.LocalPath is client-supplied,
+	// so this is the one Register call whose input is not derived from the
+	// daemon's own tree — and 400 is the honest status: the caller named a path
+	// outside the store.
+	loc, err := s.registry.RegisterAlias(req.Key, req.LocalPath)
+	if err != nil {
+		s.logger.Info("register-refused", lager.Data{"key": req.Key, "path": req.LocalPath, "reason": err.Error()})
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	if req.DurableKey != "" {
-		s.promoteToDurable(r.Context(), req.DurableKey, req.LocalPath)
+		s.promoteToDurable(r.Context(), req.DurableKey, loc)
 	}
 
 	s.logger.Info("registered", lager.Data{"key": req.Key, "path": req.LocalPath, "durable_key": req.DurableKey})
@@ -855,9 +876,15 @@ func (s *Server) resolveOne(ctx context.Context, key, dest string) (resp resolve
 	logger := s.logger.Session("resolve", lager.Data{"key": key, "dest": dest})
 
 	// Step 1: Check registry for explicit registration.
-	sourcePath, found := s.lookupRegistry(key)
+	//
+	// resolveResponse.Source stays the ABSOLUTE path. It is response JSON the
+	// ATC logs and surfaces, so it is an external contract, not an internal
+	// representation — the one place in this handler where the ambient form is
+	// the right answer rather than a leftover.
+	sourceLoc, found := s.lookupRegistry(key)
 	if found {
-		if err := s.copyArtifactGuarded(sourcePath, dest); err != nil {
+		sourcePath := s.registry.AmbientPath(sourceLoc)
+		if err := s.copyArtifactGuarded(sourceLoc, dest); err != nil {
 			logger.Error("copy-failed", err, lager.Data{"source": sourcePath})
 			return resolveResponse{Status: "error", Source: sourcePath, Method: "local", Error: err.Error()}
 		}
@@ -872,9 +899,14 @@ func (s *Server) resolveOne(ctx context.Context, key, dest string) (resp resolve
 		return resolveResponse{Status: "error", Error: keyErr.Error()}
 	}
 	if info, err := os.Stat(stepsPath); err == nil && info.IsDir() {
-		s.registry.Register(key, stepsPath)
+		// Take the location Register stored rather than deriving a second one.
+		stepsLoc, err := s.registry.Register(key, stepsPath)
+		if err != nil {
+			logger.Error("register-failed", err, lager.Data{"source": stepsPath})
+			return resolveResponse{Status: "error", Source: stepsPath, Method: "filesystem", Error: err.Error()}
+		}
 
-		if err := s.copyArtifactGuarded(stepsPath, dest); err != nil {
+		if err := s.copyArtifactGuarded(stepsLoc, dest); err != nil {
 			logger.Error("copy-failed", err, lager.Data{"source": stepsPath})
 			return resolveResponse{Status: "error", Source: stepsPath, Method: "filesystem", Error: err.Error()}
 		}
@@ -1020,7 +1052,10 @@ func (s *Server) handleResolveBatch(w http.ResponseWriter, r *http.Request) {
 // pre-copy mtime touch: the guard keeps the sweeper from deleting src
 // mid-copy (cp -R silently omits files removed before enumeration), and the
 // touch makes the sweeper's under-lock re-check spare the directory.
-func (s *Server) copyArtifactGuarded(src, dest string) error {
+// src is a location under the storage root; dest is an arbitrary absolute path
+// on the node (a container's mount), which is why only one of the two is a
+// RelKey.
+func (s *Server) copyArtifactGuarded(src RelKey, dest string) error {
 	release := s.guard.BeginRead(s.stepHandle(src))
 	defer release()
 	s.touchStepDir(src)
@@ -1046,7 +1081,10 @@ func (s *Server) copyArtifactGuarded(src, dest string) error {
 		}
 	}()
 
-	return s.copyArtifact(src, dest)
+	// copyArtifact shells out to cp -R and so still travels by path. This is
+	// one of the ambient sites slice 8 removes; naming the call makes it
+	// findable rather than leaving a bare string conversion.
+	return s.copyArtifact(s.registry.AmbientPath(src), dest)
 }
 
 // copyArtifact copies the contents of src directory to dest atomically.
@@ -1124,21 +1162,21 @@ func (s *Server) handleHeadResourceCache(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	path, found := s.lookupRegistry(key)
+	loc, found := s.lookupRegistry(key)
 	if !found {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
 
-	// Verify the path still exists on disk — aliases can become stale if
-	// the sweeper removed the step directory.
-	if _, err := os.Stat(path); err != nil {
+	// Verify the location still exists on disk — aliases can become stale if
+	// the sweeper removed the step directory. Through the handle.
+	if _, err := s.root.Stat(osName(loc)); err != nil {
 		if os.IsNotExist(err) {
 			s.registry.Remove(key)
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
-		s.logger.Error("resource-cache-stat-error", err, lager.Data{"key": key, "path": path})
+		s.logger.Error("resource-cache-stat-error", err, lager.Data{"key": key, "rel": string(loc)})
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
@@ -1160,20 +1198,20 @@ func (s *Server) handleGetResourceCache(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	path, found := s.lookupRegistry(key)
+	loc, found := s.lookupRegistry(key)
 	if !found {
 		http.NotFound(w, r)
 		return
 	}
 
-	info, err := os.Stat(path)
+	info, err := s.root.Stat(osName(loc))
 	if err != nil {
 		if os.IsNotExist(err) {
 			s.registry.Remove(key)
 			http.NotFound(w, r)
 			return
 		}
-		s.logger.Error("resource-cache-stat-error", err, lager.Data{"key": key, "path": path})
+		s.logger.Error("resource-cache-stat-error", err, lager.Data{"key": key, "rel": string(loc)})
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -1183,14 +1221,15 @@ func (s *Server) handleGetResourceCache(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Same guard discipline as handleGetArtifact: no sweeps mid-stream.
-	release := s.guard.BeginRead(s.stepHandle(path))
+	release := s.guard.BeginRead(s.stepHandle(loc))
 	defer release()
-	s.touchStepDir(path)
+	s.touchStepDir(loc)
 
 	if info.IsDir() {
 		w.Header().Set("Content-Type", "application/x-tar")
-		if err := s.tarDirectory(w, path); err != nil {
-			s.logger.Error("failed-to-tar-resource-cache", err, lager.Data{"key": key, "path": path})
+		// Walks by path; slice 8's territory.
+		if err := s.tarDirectory(w, s.registry.AmbientPath(loc)); err != nil {
+			s.logger.Error("failed-to-tar-resource-cache", err, lager.Data{"key": key, "rel": string(loc)})
 			// Headers already sent; abort so the peer sees a hard failure
 			// rather than a clean-looking truncated tar.
 			panic(http.ErrAbortHandler)
@@ -1198,9 +1237,9 @@ func (s *Server) handleGetResourceCache(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	f, err := os.Open(path)
+	f, err := s.root.Open(osName(loc))
 	if err != nil {
-		s.logger.Error("resource-cache-open-error", err, lager.Data{"key": key, "path": path})
+		s.logger.Error("resource-cache-open-error", err, lager.Data{"key": key, "rel": string(loc)})
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -1208,7 +1247,7 @@ func (s *Server) handleGetResourceCache(w http.ResponseWriter, r *http.Request) 
 
 	w.Header().Set("Content-Type", "application/octet-stream")
 	if _, err := io.Copy(w, f); err != nil {
-		s.logger.Error("failed-to-stream-resource-cache", err, lager.Data{"key": key, "path": path})
+		s.logger.Error("failed-to-stream-resource-cache", err, lager.Data{"key": key, "rel": string(loc)})
 		panic(http.ErrAbortHandler)
 	}
 }
@@ -1217,4 +1256,10 @@ func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)
+}
+
+// Root returns the storage root handle, so components constructed alongside the
+// Server operate inside the same containment rather than opening their own.
+func (s *Server) Root() *os.Root {
+	return s.root
 }

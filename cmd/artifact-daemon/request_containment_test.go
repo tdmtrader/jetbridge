@@ -998,20 +998,23 @@ func TestRequestContainment_FileValuedRegistryAliasIsServed(t *testing.T) {
 	}
 }
 
-// AC10 — aliases.json is unchanged by this track.
+// AC10 — aliases.json has ONE deterministic on-disk format.
 //
-// Its on-disk format must be byte-identical before and after for the same
-// sequence of registrations. The representation change that would alter it was
-// split into its own track, so "unchanged" is the assertion here — and this
-// track's whole thesis is that an unasserted claim is what keeps failing.
-func TestRequestContainment_AliasStoreFormatUnchanged(t *testing.T) {
+// Written for the containment track, where the assertion was "values are still
+// absolute, because the representation change was split out". This IS that
+// split-out track, so the second half of the assertion inverts: values are now
+// relative. What does not change is the reason the test exists — the format is
+// a persisted contract that survives restarts and upgrades, so it must be
+// stable across identical registration sequences and must be asserted rather
+// than assumed.
+func TestRequestContainment_AliasStoreFormat(t *testing.T) {
 	register := func(t *testing.T) []byte {
 		t.Helper()
 		ts, storagePath, srv := setupServerWithRegistry(t)
 		// Persistence is wired in main.go, not setupServer. Attaching the real
 		// AliasStore is the point: AC10 is about the ON-DISK format, so a test
 		// that never writes the file would assert nothing.
-		srv.Registry().SetAliasStore(daemon.NewAliasStore(lagertest.NewTestLogger("alias"), storagePath))
+		srv.Registry().SetAliasStore(daemon.NewAliasStore(lagertest.NewTestLogger("alias"), storagePath, srv.Root()))
 
 		for _, k := range []string{"vol-a", "vol-b", "steps-like"} {
 			dir := filepath.Join(storagePath, "reg", k)
@@ -1045,11 +1048,14 @@ func TestRequestContainment_AliasStoreFormatUnchanged(t *testing.T) {
 			first, second)
 	}
 
-	// The property this track must preserve: values are still ABSOLUTE. The
-	// registry-representation track changes this deliberately; nothing here
-	// should.
-	if !bytes.Contains(first, []byte("<ROOT>/reg/vol-a")) {
-		t.Errorf("aliases.json no longer stores absolute paths — the representation changed, "+
-			"which belongs to the registry track, not this one. Got: %s", first)
+	// Values are RELATIVE, and the storage root does not appear anywhere in the
+	// file. That second half matters as much as the first: an aliases.json
+	// carrying absolute paths is what let a node restore, after an upgrade or a
+	// hostPath move, a set of entries naming a tree that is no longer the store.
+	if !bytes.Contains(first, []byte(`"reg/vol-a"`)) {
+		t.Errorf("aliases.json does not store the relative form. Got: %s", first)
+	}
+	if bytes.Contains(first, []byte("<ROOT>")) {
+		t.Errorf("aliases.json still contains the storage root. Got: %s", first)
 	}
 }

@@ -140,10 +140,17 @@ func TestSweeper_CleansUpAliasesOnRemove(t *testing.T) {
 	os.Chtimes(oldStep, time.Now().Add(-3*time.Hour), time.Now().Add(-3*time.Hour))
 
 	// Set up registry with alias store and register an alias pointing into that step dir.
-	registry := daemon.NewRegistry(logger)
-	aliasStore := daemon.NewAliasStore(logger, storagePath)
+	registry := daemon.NewRegistry(logger, storagePath)
+	rootHandle, err := os.OpenRoot(storagePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rootHandle.Close()
+	aliasStore := daemon.NewAliasStore(logger, storagePath, rootHandle)
 	registry.SetAliasStore(aliasStore)
-	registry.RegisterAlias("vol-cached-xyz", resultDir)
+	if _, err := registry.RegisterAlias("vol-cached-xyz", resultDir); err != nil {
+		t.Fatal(err)
+	}
 
 	// Verify alias is there.
 	if _, ok := registry.Lookup("vol-cached-xyz"); !ok {
@@ -164,7 +171,7 @@ func TestSweeper_CleansUpAliasesOnRemove(t *testing.T) {
 	}
 
 	// Verify the alias file is also updated (load into fresh registry).
-	r2 := daemon.NewRegistry(logger)
+	r2 := daemon.NewRegistry(logger, storagePath)
 	r2.SetAliasStore(aliasStore)
 	r2.LoadAliases()
 	if _, ok := r2.Lookup("vol-cached-xyz"); ok {

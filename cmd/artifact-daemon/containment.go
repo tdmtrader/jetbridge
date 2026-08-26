@@ -204,9 +204,29 @@ func validateRequestKey(key string) error {
 //   - root and candidate must be compared in the same resolved form. On macOS
 //     t.TempDir() and os.MkdirTemp both hand back /var/folders/... symlinks, so
 //     resolving one side only yields spurious rejections.
-func validateContainedPath(root, candidate string) error {
+//
+// RelKey is a location inside the daemon's storage root, expressed relative to
+// it. It is a defined type rather than a string alias so that every place the
+// old absolute representation was used becomes a COMPILE ERROR: os.Stat(rk),
+// filepath.Join(root, rk), passing it to a string parameter, comparing it to a
+// path, and using it as a map key of the wrong map all fail to build.
+//
+// The type is a migration instrument, not a standing guarantee. string(rk)
+// compiles anywhere and is invisible in a diff, so the compiler gives a
+// complete checklist ONCE — while this change is being made. Every string(...)
+// conversion introduced here is a decision: it becomes LookupAmbientPath, or it
+// carries a reason.
+type RelKey string
+
+// containedRelKey is validateContainedPath's answer, kept rather than thrown
+// away.
+//
+// The validator already computes exactly the relative form the registry now
+// stores; returning it means the representation and the check cannot disagree,
+// and there is no second implementation of the symlink walk-up to keep in step.
+func containedRelKey(root, candidate string) (RelKey, error) {
 	if candidate == "" {
-		return fmt.Errorf("path is empty")
+		return "", fmt.Errorf("path is empty")
 	}
 
 	// Resolve the nearest EXISTING ancestor and re-append the remainder.
@@ -239,7 +259,7 @@ func validateContainedPath(root, candidate string) error {
 
 	rel, err := filepath.Rel(rootResolved, candidateResolved)
 	if err != nil {
-		return fmt.Errorf("path %q is not comparable to the storage root: %w", candidate, err)
+		return "", fmt.Errorf("path %q is not comparable to the storage root: %w", candidate, err)
 	}
 	// rel == "." means the candidate IS the root. That is not "contained": the
 	// callers derive siblings from it — copyArtifact does
@@ -248,14 +268,21 @@ func validateContainedPath(root, candidate string) error {
 	// then removes the whole store. Rel reports "." for that case and the first
 	// cut of this validator accepted it.
 	if rel == "." {
-		return fmt.Errorf("path %q is the storage root itself, not a location within it", candidate)
+		return "", fmt.Errorf("path %q is the storage root itself, not a location within it", candidate)
 	}
 
 	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return fmt.Errorf("path %q resolves outside the storage root (relative: %q)", candidate, rel)
+		return "", fmt.Errorf("path %q resolves outside the storage root (relative: %q)", candidate, rel)
 	}
 
-	return nil
+	return RelKey(filepath.ToSlash(rel)), nil
+}
+
+// validateContainedPath reports whether candidate lies within root, discarding
+// the relative form. Callers that want the relative form call containedRelKey.
+func validateContainedPath(root, candidate string) error {
+	_, err := containedRelKey(root, candidate)
+	return err
 }
 
 // peerURL builds an outbound request URL from a key this daemon has already
@@ -395,11 +422,19 @@ func (s *Server) validateRegistryPath(path string) error {
 // existed (aliases.json is reloaded at boot), or registered legitimately and
 // have its target swapped afterwards. Validating at registration is a snapshot;
 // this is the check that guards the use.
-func (s *Server) lookupRegistry(key string) (string, bool) {
-	path, found := s.registry.Lookup(key)
+// The value is now a RelKey, refused at Register if it did not relativize —
+// but the check below STAYS. Register validates once, at registration; this
+// validates at use. A directory registered legitimately can have a component
+// replaced by a symlink afterwards, and the relative form says nothing about
+// what its components resolve to today. The relativization removed the class of
+// entry that was never contained; it did not make containment a property of the
+// string.
+func (s *Server) lookupRegistry(key string) (RelKey, bool) {
+	rel, found := s.registry.Lookup(key)
 	if !found {
 		return "", false
 	}
+	path := s.registry.AmbientPath(rel)
 	if err := s.validateRegistryPath(path); err != nil {
 		// EVICT, don't merely ignore. An entry resolving outside the root is
 		// poison — it can only have come from a pre-existing aliases.json or a
@@ -417,7 +452,7 @@ func (s *Server) lookupRegistry(key string) (string, bool) {
 		s.registry.Remove(key)
 		return "", false
 	}
-	return path, true
+	return rel, true
 }
 
 // mkdirTempIn is os.MkdirTemp for a root handle.
@@ -441,4 +476,15 @@ func mkdirTempIn(root *os.Root, prefix string) (string, error) {
 		return "", err
 	}
 	return "", fmt.Errorf("mkdirTempIn %q: exhausted attempts", prefix)
+}
+
+// osName is the ONE place a RelKey becomes a string for an os.Root call.
+//
+// Root methods take a slash-or-native relative name; RelKey is canonically
+// slash-separated so that guard keys compare identically everywhere. Funnelling
+// the conversion through a named function keeps `string(rel)` out of the call
+// sites, where it would be indistinguishable from a conversion that drops the
+// boundary on purpose.
+func osName(rel RelKey) string {
+	return filepath.FromSlash(string(rel))
 }

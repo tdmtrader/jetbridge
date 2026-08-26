@@ -23,11 +23,12 @@ func TestDestLocks_BoundedByInFlightCopies(t *testing.T) {
 	root := t.TempDir()
 	s := newServerT(t, lagertest.NewTestLogger("destlock"), root, "test-node")
 
-	src := filepath.Join(root, "steps", "leak", "out")
-	if err := os.MkdirAll(src, 0o755); err != nil {
+	src := RelKey("steps/leak/out")
+	srcPath := filepath.Join(root, "steps", "leak", "out")
+	if err := os.MkdirAll(srcPath, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(src, "f.txt"), []byte("x"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(srcPath, "f.txt"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	parent := filepath.Join(root, "resolved")

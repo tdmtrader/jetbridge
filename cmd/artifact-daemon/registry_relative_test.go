@@ -101,12 +101,23 @@ func TestGuardKeys_SweepBlocksWhileReadHeld(t *testing.T) {
 // "/…/steps/build-4" as a string prefix.
 func TestRemoveByPath_DoesNotEvictASibling(t *testing.T) {
 	root := t.TempDir()
-	r := NewRegistry(lagertest.NewTestLogger("reg"))
+	r := NewRegistry(lagertest.NewTestLogger("reg"), root)
 
 	four := filepath.Join(root, "steps", "build-4")
 	fortyTwo := filepath.Join(root, "steps", "build-42")
-	r.Register("build-4/out", filepath.Join(four, "out"))
-	r.Register("build-42/out", filepath.Join(fortyTwo, "out"))
+	// Register refuses what will not relativize, so the directories have to
+	// exist for the symlink walk-up to resolve them.
+	for _, d := range []string{four, fortyTwo} {
+		if err := os.MkdirAll(filepath.Join(d, "out"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := r.Register("build-4/out", filepath.Join(four, "out")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Register("build-42/out", filepath.Join(fortyTwo, "out")); err != nil {
+		t.Fatal(err)
+	}
 
 	r.RemoveByPath(four)
 
@@ -134,14 +145,20 @@ func TestAliasStore_LoadKeepsRelativeValues(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	store := NewAliasStore(lagertest.NewTestLogger("alias"), root)
-	if err := store.Save(map[string]string{"vol-a": "steps/build-1/out"}); err != nil {
+	handle, err := os.OpenRoot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer handle.Close()
+
+	store := NewAliasStore(lagertest.NewTestLogger("alias"), root, handle)
+	if err := store.Save(map[string]RelKey{"vol-a": "steps/build-1/out"}); err != nil {
 		t.Fatal(err)
 	}
 
-	loaded, err := store.Load()
-	if err != nil {
-		t.Fatal(err)
+	loaded, loadErr := store.Load()
+	if loadErr != nil {
+		t.Fatal(loadErr)
 	}
 	if _, ok := loaded["vol-a"]; !ok {
 		t.Errorf("Load dropped a relative value as stale — it stats against the process CWD, "+

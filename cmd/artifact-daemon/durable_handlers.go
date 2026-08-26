@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -101,10 +100,13 @@ func (s *Server) handleDurableRestore(w http.ResponseWriter, r *http.Request) {
 	logger := s.logger.Session("durable-restore", lager.Data{"key": req.Key, "durable_key": req.DurableKey})
 	start := time.Now()
 
-	if path, found := s.lookupRegistry(req.Key); found {
-		if _, err := os.Stat(path); err == nil {
+	if loc, found := s.lookupRegistry(req.Key); found {
+		if _, err := s.root.Stat(osName(loc)); err == nil {
+			// Path in the response is the ABSOLUTE form: it is response JSON
+			// the caller acts on, an external contract rather than an internal
+			// representation.
 			s.writeRestoreResult(w, http.StatusOK, "local", durableRestoreResponse{
-				Restored: false, Node: s.nodeName, Path: path,
+				Restored: false, Node: s.nodeName, Path: s.registry.AmbientPath(loc),
 			})
 			return
 		}
@@ -130,7 +132,14 @@ func (s *Server) handleDurableRestore(w http.ResponseWriter, r *http.Request) {
 		if !s.durable.Restore(r.Context(), req.DurableKey, dest) {
 			return false, nil
 		}
-		s.registry.RegisterAlias(req.Key, dest)
+		if _, err := s.registry.RegisterAlias(req.Key, dest); err != nil {
+			// The tree was just renamed into place under the steps root, so a
+			// refusal cannot mean an escape. Reporting success for something no
+			// later lookup can find would show up as an unexplained repeat
+			// restore of the same key on every build.
+			logger.Error("failed-to-register-restored-alias", err, lager.Data{"dest": dest})
+			return false, nil
+		}
 
 		return true, nil
 	})
@@ -174,7 +183,12 @@ func (s *Server) writeRestoreResult(w http.ResponseWriter, status int, tier stri
 // makes that survivable is that the next producer of the same content key
 // overwrites it. Skipping the upload when the key is present would instead make
 // one truncated object permanent and cluster-wide.
-func (s *Server) promoteToDurable(ctx context.Context, key, path string) {
+// loc is where the artifact lives under the storage root. The guard key must be
+// derived from it, not from the path the caller happened to hold: this runs in a
+// detached goroutine that only logs, so a guard key that locks nothing here is
+// invisible — the failure is a truncated object in the bucket, discovered on a
+// later restore.
+func (s *Server) promoteToDurable(ctx context.Context, key string, loc RelKey) {
 	if s.durable == nil {
 		return
 	}
@@ -194,11 +208,12 @@ func (s *Server) promoteToDurable(ctx context.Context, key, path string) {
 		// walk callback does; a subtree deleted before it is enumerated yields
 		// no entries and no error, and the archive closes cleanly — a short tar
 		// that reads as a complete one.
-		release := s.guard.BeginRead(s.stepHandle(path))
+		release := s.guard.BeginRead(s.stepHandle(loc))
 		defer release()
-		s.touchStepDir(path)
+		s.touchStepDir(loc)
 
-		s.durable.Store(ctx, key, path, s.tarDirectory)
+		// tarDirectory walks by path; slice 8's territory.
+		s.durable.Store(ctx, key, s.registry.AmbientPath(loc), s.tarDirectory)
 	}()
 }
 

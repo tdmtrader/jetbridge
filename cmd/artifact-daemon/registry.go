@@ -20,21 +20,35 @@ import (
 //
 // Only alias entries are persisted to disk (via AliasStore) because scan
 // entries are always recoverable from the directory structure.
+// Values are RelKey — a location relative to storagePath — not absolute disk
+// paths. The registry is the daemon's only source of ambient paths, so it is
+// the one place the boundary can be attached to the value itself instead of
+// re-derived by each of its consumers. An entry that will not relativize is
+// REFUSED at Register rather than stored and re-checked at every use.
 type Registry struct {
-	mu         sync.RWMutex
-	entries    map[string]string // key → absolute disk path (all entries)
-	aliases    map[string]string // key → absolute disk path (alias entries only, persisted)
-	aliasStore *AliasStore       // optional persistence; nil disables persistence
-	logger     lager.Logger
+	mu sync.RWMutex
+	// storagePath is the root every value is relative to. It is the only
+	// absolute path the registry holds.
+	storagePath string
+	entries     map[string]RelKey // key → location under storagePath (all entries)
+	aliases     map[string]RelKey // key → location under storagePath (aliases only, persisted)
+	aliasStore  *AliasStore       // optional persistence; nil disables persistence
+	logger      lager.Logger
 }
 
-// NewRegistry creates an empty Registry.
-func NewRegistry(logger lager.Logger) *Registry {
+// NewRegistry creates an empty Registry rooted at storagePath.
+func NewRegistry(logger lager.Logger, storagePath string) *Registry {
 	return &Registry{
-		entries: make(map[string]string),
-		aliases: make(map[string]string),
-		logger:  logger,
+		storagePath: storagePath,
+		entries:     make(map[string]RelKey),
+		aliases:     make(map[string]RelKey),
+		logger:      logger,
 	}
+}
+
+// StoragePath returns the root all values are relative to.
+func (r *Registry) StoragePath() string {
+	return r.storagePath
 }
 
 // SetAliasStore attaches a persistence store for alias entries.
@@ -43,32 +57,80 @@ func (r *Registry) SetAliasStore(store *AliasStore) {
 	r.aliasStore = store
 }
 
-// Register records that artifact `key` is stored at `localPath`.
-func (r *Registry) Register(key, localPath string) {
+// Register records that artifact `key` is stored at `localPath`, which must lie
+// within the storage root.
+//
+// REFUSING here is the point of the change. Previously any absolute path could
+// be stored and the escape was caught — or not — at each of the places that
+// later used it. A path that will not relativize never enters the map, so no
+// consumer has to be trusted to re-check it.
+// It returns the stored location so callers that need it do not re-derive it —
+// re-deriving is how the guard key and the stored value drifted apart before.
+func (r *Registry) Register(key, localPath string) (RelKey, error) {
+	rk, err := containedRelKey(r.storagePath, localPath)
+	if err != nil {
+		r.logger.Info("register-refused", lager.Data{
+			"key": key, "path": localPath, "reason": err.Error(),
+		})
+		return "", refused("registry: %s", err)
+	}
+
 	r.mu.Lock()
-	r.entries[key] = localPath
+	r.entries[key] = rk
 	r.mu.Unlock()
-	r.logger.Debug("registered", lager.Data{"key": key, "path": localPath})
+	r.logger.Debug("registered", lager.Data{"key": key, "rel": string(rk)})
+	return rk, nil
 }
 
-// Lookup returns the local disk path for a key, or ("", false) if not found.
-func (r *Registry) Lookup(key string) (string, bool) {
+// Lookup returns the artifact's location relative to the storage root, or
+// ("", false) if not found.
+func (r *Registry) Lookup(key string) (RelKey, bool) {
 	r.mu.RLock()
-	path, ok := r.entries[key]
+	rel, ok := r.entries[key]
 	r.mu.RUnlock()
-	return path, ok
+	return rel, ok
 }
 
-// RegisterAlias records an alias entry (volume handle → disk path) and
+// LookupAmbientPath returns the location as an ABSOLUTE path, outside the root
+// handle and therefore outside the containment the handle provides.
+//
+// Named for what it costs rather than for what it does. Every caller is a place
+// where an operation still travels by path — a cp -R exec, a filepath.WalkDir —
+// and every one is a site slice 8 has to remove. Reach for Lookup unless the
+// operation genuinely cannot go through the handle.
+func (r *Registry) LookupAmbientPath(key string) (string, bool) {
+	rel, ok := r.Lookup(key)
+	if !ok {
+		return "", false
+	}
+	return r.AmbientPath(rel), true
+}
+
+// AmbientPath re-joins a RelKey to the storage root. Same caveat as
+// LookupAmbientPath: the result has left the handle.
+func (r *Registry) AmbientPath(rel RelKey) string {
+	return filepath.Join(r.storagePath, filepath.FromSlash(string(rel)))
+}
+
+// RegisterAlias records an alias entry (volume handle → location) and
 // persists it to disk so it survives daemon restarts.
-func (r *Registry) RegisterAlias(key, localPath string) {
+func (r *Registry) RegisterAlias(key, localPath string) (RelKey, error) {
+	rk, err := containedRelKey(r.storagePath, localPath)
+	if err != nil {
+		r.logger.Info("register-alias-refused", lager.Data{
+			"key": key, "path": localPath, "reason": err.Error(),
+		})
+		return "", refused("registry: %s", err)
+	}
+
 	r.mu.Lock()
-	r.entries[key] = localPath
-	r.aliases[key] = localPath
+	r.entries[key] = rk
+	r.aliases[key] = rk
 	r.mu.Unlock()
 
-	r.logger.Debug("registered-alias", lager.Data{"key": key, "path": localPath})
+	r.logger.Debug("registered-alias", lager.Data{"key": key, "rel": string(rk)})
 	r.persistAliases()
+	return rk, nil
 }
 
 // LoadAliases reads persisted aliases from the AliasStore and merges them
@@ -85,9 +147,9 @@ func (r *Registry) LoadAliases() error {
 	}
 
 	r.mu.Lock()
-	for key, path := range loaded {
-		r.entries[key] = path
-		r.aliases[key] = path
+	for key, rel := range loaded {
+		r.entries[key] = rel
+		r.aliases[key] = rel
 	}
 	r.mu.Unlock()
 
@@ -110,18 +172,31 @@ func (r *Registry) Remove(key string) {
 	}
 }
 
-// RemoveByPath removes all entries whose disk path is under dirPath.
-// Used by the sweeper to clean up aliases when a step directory is removed.
+// RemoveByPath removes all entries at or under dirPath. Used by the sweeper to
+// clean up aliases when a step directory is removed.
+//
+// The comparison is by PATH SEGMENT, not by string prefix. strings.HasPrefix
+// made sweeping .../steps/build-4 also evict build-42, build-4a and every other
+// sibling sharing those characters — the artifact stayed on disk and became
+// permanently unfindable, presenting as a cache miss rather than as a bug.
 func (r *Registry) RemoveByPath(dirPath string) {
+	dir, err := containedRelKey(r.storagePath, dirPath)
+	if err != nil {
+		// Outside the root: nothing stored can be under it, because Register
+		// refuses anything that is not.
+		return
+	}
+
 	r.mu.Lock()
 	hadAliases := false
-	for key, path := range r.entries {
-		if strings.HasPrefix(path, dirPath) {
-			delete(r.entries, key)
-			if _, ok := r.aliases[key]; ok {
-				delete(r.aliases, key)
-				hadAliases = true
-			}
+	for key, rel := range r.entries {
+		if rel != dir && !strings.HasPrefix(string(rel), string(dir)+"/") {
+			continue
+		}
+		delete(r.entries, key)
+		if _, ok := r.aliases[key]; ok {
+			delete(r.aliases, key)
+			hadAliases = true
 		}
 	}
 	r.mu.Unlock()
@@ -139,7 +214,7 @@ func (r *Registry) persistAliases() {
 	}
 
 	r.mu.RLock()
-	snapshot := make(map[string]string, len(r.aliases))
+	snapshot := make(map[string]RelKey, len(r.aliases))
 	for k, v := range r.aliases {
 		snapshot[k] = v
 	}

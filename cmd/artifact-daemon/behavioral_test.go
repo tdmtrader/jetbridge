@@ -538,12 +538,20 @@ func TestRegistry_Register_DoesNotAddToAliases(t *testing.T) {
 	dir := t.TempDir()
 	logger := lagertest.NewTestLogger("registry")
 
-	r := daemon.NewRegistry(logger)
-	store := daemon.NewAliasStore(logger, dir)
+	r := daemon.NewRegistry(logger, dir)
+	store := daemon.NewAliasStore(logger, dir, openRootT(t, dir))
 	r.SetAliasStore(store)
 
+	// "/some/path" would now be refused for being outside the storage root —
+	// which would make this test pass on the refusal rather than on what it
+	// means to assert. Register a real location instead.
+	scanned := filepath.Join(dir, "steps", "scan", "out")
+	os.MkdirAll(scanned, 0755)
+
 	// Register (not RegisterAlias) should add to entries but NOT aliases.
-	r.Register("scan-key", "/some/path")
+	if _, err := r.Register("scan-key", scanned); err != nil {
+		t.Fatal(err)
+	}
 
 	// Verify lookup works.
 	if _, ok := r.Lookup("scan-key"); !ok {
@@ -551,7 +559,7 @@ func TestRegistry_Register_DoesNotAddToAliases(t *testing.T) {
 	}
 
 	// Load aliases in a fresh registry to check persistence.
-	r2 := daemon.NewRegistry(logger)
+	r2 := daemon.NewRegistry(logger, dir)
 	r2.SetAliasStore(store)
 	r2.LoadAliases()
 
@@ -567,11 +575,13 @@ func TestRegistry_RegisterAlias_AddsToBothMaps(t *testing.T) {
 	diskPath := filepath.Join(dir, "steps", "abc", "out")
 	os.MkdirAll(diskPath, 0755)
 
-	r := daemon.NewRegistry(logger)
-	store := daemon.NewAliasStore(logger, dir)
+	r := daemon.NewRegistry(logger, dir)
+	store := daemon.NewAliasStore(logger, dir, openRootT(t, dir))
 	r.SetAliasStore(store)
 
-	r.RegisterAlias("alias-key", diskPath)
+	if _, err := r.RegisterAlias("alias-key", diskPath); err != nil {
+		t.Fatal(err)
+	}
 
 	// Should be in entries.
 	if _, ok := r.Lookup("alias-key"); !ok {
@@ -579,7 +589,7 @@ func TestRegistry_RegisterAlias_AddsToBothMaps(t *testing.T) {
 	}
 
 	// Should persist and be loadable.
-	r2 := daemon.NewRegistry(logger)
+	r2 := daemon.NewRegistry(logger, dir)
 	r2.SetAliasStore(store)
 	r2.LoadAliases()
 	if _, ok := r2.Lookup("alias-key"); !ok {
@@ -593,10 +603,9 @@ func TestRegistry_RegisterAlias_AddsToBothMaps(t *testing.T) {
 
 func TestRegistry_ConcurrentAccess(t *testing.T) {
 	logger := lagertest.NewTestLogger("registry")
-	r := daemon.NewRegistry(logger)
-
 	dir := t.TempDir()
-	store := daemon.NewAliasStore(logger, dir)
+	r := daemon.NewRegistry(logger, dir)
+	store := daemon.NewAliasStore(logger, dir, openRootT(t, dir))
 	r.SetAliasStore(store)
 
 	const goroutines = 50
@@ -654,9 +663,9 @@ func TestRegistry_ConcurrentAccess(t *testing.T) {
 
 func TestRegistry_ScanHostPath_SkipsFilesInSteps(t *testing.T) {
 	logger := lagertest.NewTestLogger("registry")
-	r := daemon.NewRegistry(logger)
-
 	storagePath := t.TempDir()
+	r := daemon.NewRegistry(logger, storagePath)
+
 	stepsDir := filepath.Join(storagePath, "steps")
 	os.MkdirAll(stepsDir, 0755)
 
@@ -678,9 +687,9 @@ func TestRegistry_ScanHostPath_SkipsFilesInSteps(t *testing.T) {
 
 func TestRegistry_ScanHostPath_NestedOutputSubdirs(t *testing.T) {
 	logger := lagertest.NewTestLogger("registry")
-	r := daemon.NewRegistry(logger)
-
 	storagePath := t.TempDir()
+	r := daemon.NewRegistry(logger, storagePath)
+
 	stepsDir := filepath.Join(storagePath, "steps")
 
 	// Handle with multiple output subdirectories.
@@ -714,12 +723,12 @@ func TestRegistry_ScanHostPath_NestedOutputSubdirs(t *testing.T) {
 func TestAliasStore_Save_NoTmpFileRemains(t *testing.T) {
 	dir := t.TempDir()
 	logger := lagertest.NewTestLogger("alias-store")
-	store := daemon.NewAliasStore(logger, dir)
+	store := daemon.NewAliasStore(logger, dir, openRootT(t, dir))
 
 	path1 := filepath.Join(dir, "steps", "x", "y")
 	os.MkdirAll(path1, 0755)
 
-	err := store.Save(map[string]string{"k1": path1})
+	err := store.Save(map[string]daemon.RelKey{"k1": "steps/x/y"})
 	if err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -743,17 +752,20 @@ func TestAliasStore_Save_NoTmpFileRemains(t *testing.T) {
 func TestAliasStore_Load_FiltersAllStaleEntries(t *testing.T) {
 	dir := t.TempDir()
 	logger := lagertest.NewTestLogger("alias-store")
-	store := daemon.NewAliasStore(logger, dir)
+	store := daemon.NewAliasStore(logger, dir, openRootT(t, dir))
 
 	validPath := filepath.Join(dir, "steps", "valid", "out")
 	os.MkdirAll(validPath, 0755)
 
-	// Save with a mix of valid and stale entries.
-	aliases := map[string]string{
-		"valid-1": validPath,
-		"stale-1": "/nonexistent/path/one",
-		"stale-2": "/nonexistent/path/two",
-		"stale-3": "/another/missing/path",
+	// Save with a mix of valid and stale entries. The stale ones are now
+	// locations INSIDE the root that do not exist: "/nonexistent/…" is refused
+	// for being outside the root, which is a different rejection and would have
+	// left this test green while asserting nothing about staleness.
+	aliases := map[string]daemon.RelKey{
+		"valid-1": "steps/valid/out",
+		"stale-1": "steps/gone/one",
+		"stale-2": "steps/gone/two",
+		"stale-3": "steps/missing/three",
 	}
 	if err := store.Save(aliases); err != nil {
 		t.Fatal(err)
@@ -777,19 +789,25 @@ func TestAliasStore_Load_FiltersAllStaleEntries(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRegistry_RegisterAlias_NilAliasStore_NoPanic(t *testing.T) {
+	dir := t.TempDir()
 	logger := lagertest.NewTestLogger("registry")
-	r := daemon.NewRegistry(logger)
+	r := daemon.NewRegistry(logger, dir)
 	// Do NOT call SetAliasStore — aliasStore is nil.
 
-	// Should not panic.
-	r.RegisterAlias("key-no-store", "/some/path")
+	disk := filepath.Join(dir, "steps", "no-store", "out")
+	os.MkdirAll(disk, 0755)
 
-	path, ok := r.Lookup("key-no-store")
+	// Should not panic.
+	if _, err := r.RegisterAlias("key-no-store", disk); err != nil {
+		t.Fatal(err)
+	}
+
+	rel, ok := r.Lookup("key-no-store")
 	if !ok {
 		t.Error("expected alias to be in memory even without store")
 	}
-	if path != "/some/path" {
-		t.Errorf("expected /some/path, got %s", path)
+	if rel != "steps/no-store/out" {
+		t.Errorf("expected steps/no-store/out, got %s", rel)
 	}
 }
 
@@ -811,14 +829,17 @@ func TestRegistry_RemoveByPath_MultipleSamePrefix(t *testing.T) {
 		os.MkdirAll(p, 0755)
 	}
 
-	r := daemon.NewRegistry(logger)
-	store := daemon.NewAliasStore(logger, dir)
+	r := daemon.NewRegistry(logger, dir)
+	store := daemon.NewAliasStore(logger, dir, openRootT(t, dir))
 	r.SetAliasStore(store)
 
-	r.RegisterAlias("vol-1", path1)
-	r.RegisterAlias("vol-2", path2)
-	r.RegisterAlias("vol-3", path3)
-	r.RegisterAlias("vol-other", unrelated)
+	for key, p := range map[string]string{
+		"vol-1": path1, "vol-2": path2, "vol-3": path3, "vol-other": unrelated,
+	} {
+		if _, err := r.RegisterAlias(key, p); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	if r.Len() != 4 {
 		t.Fatalf("expected 4 entries before remove, got %d", r.Len())
@@ -842,11 +863,13 @@ func TestRegistry_RemoveByPath_TriggersAliasPersistence(t *testing.T) {
 	path1 := filepath.Join(prefix, "result")
 	os.MkdirAll(path1, 0755)
 
-	r := daemon.NewRegistry(logger)
-	store := daemon.NewAliasStore(logger, dir)
+	r := daemon.NewRegistry(logger, dir)
+	store := daemon.NewAliasStore(logger, dir, openRootT(t, dir))
 	r.SetAliasStore(store)
 
-	r.RegisterAlias("persist-vol", path1)
+	if _, err := r.RegisterAlias("persist-vol", path1); err != nil {
+		t.Fatal(err)
+	}
 
 	// Verify it's persisted.
 	loaded1, _ := store.Load()
@@ -1277,10 +1300,12 @@ func TestSweeper_CallsRemoveByPath_OnRegistry(t *testing.T) {
 	os.Chtimes(oldStep, time.Now().Add(-5*time.Hour), time.Now().Add(-5*time.Hour))
 
 	// Set up registry with an alias pointing into the expired step.
-	registry := daemon.NewRegistry(logger)
-	store := daemon.NewAliasStore(logger, storagePath)
+	registry := daemon.NewRegistry(logger, storagePath)
+	store := daemon.NewAliasStore(logger, storagePath, openRootT(t, storagePath))
 	registry.SetAliasStore(store)
-	registry.RegisterAlias("vol-expired", resultDir)
+	if _, err := registry.RegisterAlias("vol-expired", resultDir); err != nil {
+		t.Fatal(err)
+	}
 
 	if registry.Len() != 1 {
 		t.Fatalf("expected 1 entry, got %d", registry.Len())
@@ -1300,10 +1325,23 @@ func TestSweeper_CallsRemoveByPath_OnRegistry(t *testing.T) {
 	}
 
 	// Alias persistence should also be updated.
-	r2 := daemon.NewRegistry(logger)
+	r2 := daemon.NewRegistry(logger, storagePath)
 	r2.SetAliasStore(store)
 	r2.LoadAliases()
 	if _, ok := r2.Lookup("vol-expired"); ok {
 		t.Error("expected alias to be gone from disk after sweep")
 	}
+}
+
+// openRootT opens the storage root handle these components now take. The
+// AliasStore uses it for its existence check; passing nil disables that check
+// entirely, which would quietly defeat every staleness assertion in this file.
+func openRootT(t *testing.T, dir string) *os.Root {
+	t.Helper()
+	h, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { h.Close() })
+	return h
 }
