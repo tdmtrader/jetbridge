@@ -70,3 +70,14 @@ Feature: Moving artifacts through volumes
     And volume "broken" sits on a cluster that cannot run commands
     When volume "broken" is read from "."
     Then it fails rather than panicking, saying "exec failed"
+
+  # A volume's identity is what the artifact repository keys on. A volume that
+  # reported the wrong handle would hand the next step somebody else's
+  # artifact — which is why this is asserted rather than assumed.
+  Scenario: A volume identifies itself by its database handle
+    Given a persisted volume on this worker
+    Then the volume identifies itself by its database handle
+    And the volume names the worker it lives on
+    # The DB row is what survives a web restart; a volume that lost it would be
+    # invisible to garbage collection.
+    And both volume kinds still carry their database row

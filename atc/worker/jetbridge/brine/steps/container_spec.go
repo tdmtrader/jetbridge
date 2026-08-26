@@ -92,8 +92,10 @@ func ContainerSpecDefinitions() []brine.StepDefinition {
 					Limits: runtime.ContainerLimits{
 						CPU:           in.LimitCPU,
 						Memory:        in.LimitMemory,
-						CPURequest:    in.RequestCPU,
-						MemoryRequest: in.RequestMemory,
+						CPURequest:              in.RequestCPU,
+						MemoryRequest:           in.RequestMemory,
+						EphemeralStorage:        in.LimitEphemeral,
+						EphemeralStorageRequest: in.RequestEphemeral,
 					},
 				}
 				if len(outputs) > 0 {

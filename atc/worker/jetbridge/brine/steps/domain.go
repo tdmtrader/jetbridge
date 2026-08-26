@@ -79,6 +79,8 @@ type ContainerDraft struct {
 	LimitMemory   *uint64
 	RequestCPU    *uint64
 	RequestMemory *uint64
+	LimitEphemeral   *uint64
+	RequestEphemeral *uint64
 	Privileged    bool
 	Sidecars      []atc.SidecarConfig
 }
@@ -264,4 +266,12 @@ type ReaperReady struct {
 type ReaperOutcome struct {
 	Ready ReaperReady
 	Err   error
+}
+
+// VolumeIdentity is the state for a volume's identity and its database row.
+type VolumeIdentity struct {
+	Volume       *jetbridge.Volume
+	DaemonVolume *jetbridge.DaemonSetVolume
+	DBHandle     string
+	WorkerName   string
 }

@@ -220,3 +220,26 @@ Feature: What a step's pod actually looks like
     And a task container "registry-dup-handle" built from image "docker:///busybox"
     When the container runs
     Then the pod names the secret "gcr-auth" exactly once
+
+  # PE-07, the clause the QoS scenarios do not reach. Requests without limits
+  # reserve capacity without capping it — a step that may burst but must be
+  # guaranteed a floor.
+  @PE-07
+  Scenario: Requests without limits reserve a floor but set no ceiling
+    Given a jetbridge worker on a fake Kubernetes cluster
+    And a task container "requests-only-handle" built from image "docker:///busybox"
+    And it requests 512 CPU shares and 1073741824 bytes of memory
+    When the container runs
+    Then the step is reserved "512m" CPU and "1Gi" memory
+    And the pod is scheduled as "Burstable"
+
+  # A step that writes a large artifact to local disk is evicted without an
+  # ephemeral-storage reservation, and that eviction reads as an unexplained
+  # failure rather than a capacity problem.
+  @PE-07
+  Scenario: Local disk is reserved and capped like any other resource
+    Given a jetbridge worker on a fake Kubernetes cluster
+    And a task container "ephemeral-handle" built from image "docker:///busybox"
+    And it is limited to 2147483648 bytes of local disk, requesting 1073741824
+    When the container runs
+    Then the step may use at most "2Gi" of local disk, reserving "1Gi"
