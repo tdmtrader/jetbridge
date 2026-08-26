@@ -60,3 +60,18 @@ Feature: Observability span events
     And an exec-mode task container "oe09-dedup" is running
     When the pod is placed on node "node-oe09", observed twice, and then starts
     Then the "k8s.exec-process.wait-for-running" span records the event "pod.scheduled" exactly once
+
+  # OE-08. The phase timeline is what turns "the step was slow" into "the step
+  # spent six minutes Pending", which is a different problem with a different
+  # owner.
+  @OE-08 @OE-10
+  Scenario: An ordinary startup is timed and its phases recorded
+    Given a jetbridge worker whose spans are recorded
+    And an exec-mode task container "oe08-phase" is running
+    When the pod is pending and then starts normally
+    Then the step exits 0
+    And the "k8s.exec-process.wait-for-running" span records the event "pod.phase.pending"
+    And the "k8s.exec-process.wait-for-running" span records the event "pod.phase.running"
+    # OE-10: the gauge an operator watches. Without it, a cluster that has
+    # become slow to schedule looks exactly like a cluster that has not.
+    And a pod startup duration was recorded

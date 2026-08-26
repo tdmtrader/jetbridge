@@ -6,7 +6,9 @@ import (
 )
 
 func buildAppRegistry() brine.StepRegistry {
-	return brine.NewStepRegistry(steps.Definitions())
+	defs := steps.Definitions()
+	defs = append(defs, steps.IntegrationDefinitions()...)
+	return brine.NewStepRegistry(defs)
 }
 
 func buildAppResources() (*brine.ResourceRegistry, error) {

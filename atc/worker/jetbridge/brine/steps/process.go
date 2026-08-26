@@ -622,7 +622,7 @@ func ProcessDefinitions() []brine.StepDefinition {
 		// --- Checks over ProcessOutcome ---
 
 		brine.DefineCheck[ProcessOutcome](
-			"the step reports exit status {int}",
+			"the step comes back with exit status {int}",
 			func(in ProcessOutcome, p brine.Params, _ *brine.Recorder) error {
 				want, ok := p.GetInt(0)
 				if !ok {
