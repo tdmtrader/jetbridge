@@ -1,8 +1,10 @@
 package steps
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/brine-dev/brine-go/pkg/brine"
@@ -387,4 +389,122 @@ func attachAndWait(ctx context.Context, container runtime.Container) (RecoveredS
 		msg = waitErr.Error()
 	}
 	return RecoveredStep{ExitStatus: result.ExitStatus, Err: waitErr, Message: msg}, nil
+}
+
+// SidecarLogs is the state after a step with sidecars has run and its output
+// has been collected.
+type SidecarLogs struct {
+	Stdout        string
+	SidecarWriter string
+	Err           error
+}
+
+// SidecarLogDefinitions covers SC-07 — where a sidecar's output ends up.
+//
+// The ginkgo tests assert that `GetLogs` was REQUESTED for the sidecar by
+// name, which is a call, not an effect. What a user experiences is whether the
+// database container's log appears in their build output at all, and whether
+// it is distinguishable from the step's own. So these scenarios assert the
+// bytes arrive, and where.
+func SidecarLogDefinitions() []brine.StepDefinition {
+	return []brine.StepDefinition{
+
+		brine.DefineMap[ContainerDraft, SidecarLogs](
+			"the step runs with a dedicated log stream for sidecar {string}",
+			func(in ContainerDraft, p brine.Params, _ *brine.Recorder) (SidecarLogs, error) {
+				name, ok := p.GetString(0)
+				if !ok {
+					return SidecarLogs{}, fmt.Errorf("expected a sidecar name")
+				}
+				sidecarBuf := new(bytes.Buffer)
+				return runWithSidecarIO(in, runtime.ProcessIO{
+					Stdout:         new(bytes.Buffer),
+					SidecarWriters: map[string]io.Writer{name: sidecarBuf},
+				}, sidecarBuf)
+			},
+		),
+
+		brine.DefineMap[ContainerDraft, SidecarLogs](
+			"the step runs with nowhere separate to put sidecar output",
+			func(in ContainerDraft, _ brine.Params, _ *brine.Recorder) (SidecarLogs, error) {
+				return runWithSidecarIO(in, runtime.ProcessIO{Stdout: new(bytes.Buffer)}, nil)
+			},
+		),
+
+		brine.DefineCheck[SidecarLogs](
+			"the sidecar's output arrives on its own stream",
+			func(in SidecarLogs, _ brine.Params, _ *brine.Recorder) error {
+				if in.SidecarWriter == "" {
+					return fmt.Errorf(
+						"expected the sidecar's log on its dedicated stream; nothing arrived, so a user watching " +
+							"that sidecar would see an empty pane")
+				}
+				return nil
+			},
+		),
+
+		brine.DefineCheck[SidecarLogs](
+			"the sidecar's output is folded into the build log, labelled {string}",
+			func(in SidecarLogs, p brine.Params, _ *brine.Recorder) error {
+				label, ok := p.GetString(0)
+				if !ok {
+					return fmt.Errorf("expected a label parameter")
+				}
+				if !strings.Contains(in.Stdout, label) {
+					return fmt.Errorf(
+						"expected the sidecar's output labelled %q in the build log so it is distinguishable "+
+							"from the step's own; the log was %q", label, truncate(in.Stdout, 300))
+				}
+				return nil
+			},
+		),
+	}
+}
+
+func runWithSidecarIO(in ContainerDraft, io0 runtime.ProcessIO, sidecarBuf *bytes.Buffer) (SidecarLogs, error) {
+	container, _, err := in.Worker.FindOrCreateContainer(
+		in.Ctx,
+		db.NewFixedHandleContainerOwner(in.Handle),
+		db.ContainerMetadata{Type: db.ContainerTypeTask},
+		runtime.ContainerSpec{
+			TeamID:    1,
+			Dir:       in.Dir,
+			ImageSpec: runtime.ImageSpec{ImageURL: in.ImageURL},
+			Sidecars:  in.Sidecars,
+		},
+		&noopDelegate{},
+	)
+	if err != nil {
+		return SidecarLogs{}, fmt.Errorf("find or create container: %w", err)
+	}
+
+	process, err := container.Run(in.Ctx, runtime.ProcessSpec{Path: "/bin/sh"}, io0)
+	if err != nil {
+		return SidecarLogs{}, fmt.Errorf("run container: %w", err)
+	}
+
+	pods := in.Clientset.CoreV1().Pods(in.Namespace)
+	pod, err := pods.Get(in.Ctx, in.Handle, metav1.GetOptions{})
+	if err != nil {
+		return SidecarLogs{}, fmt.Errorf("get pod: %w", err)
+	}
+	pod.Status.Phase = corev1.PodSucceeded
+	pod.Status.ContainerStatuses = []corev1.ContainerStatus{{
+		Name:  "main",
+		State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 0}},
+	}}
+	if _, err := pods.UpdateStatus(in.Ctx, pod, metav1.UpdateOptions{}); err != nil {
+		return SidecarLogs{}, fmt.Errorf("update pod: %w", err)
+	}
+
+	_, waitErr := process.Wait(in.Ctx)
+
+	out := SidecarLogs{Err: waitErr}
+	if b, ok := io0.Stdout.(*bytes.Buffer); ok {
+		out.Stdout = b.String()
+	}
+	if sidecarBuf != nil {
+		out.SidecarWriter = sidecarBuf.String()
+	}
+	return out, nil
 }

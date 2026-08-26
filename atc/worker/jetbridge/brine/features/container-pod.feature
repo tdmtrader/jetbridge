@@ -243,3 +243,24 @@ Feature: What a step's pod actually looks like
     And it is limited to 2147483648 bytes of local disk, requesting 1073741824
     When the container runs
     Then the step may use at most "2Gi" of local disk, reserving "1Gi"
+
+  # SC-07. A sidecar exists to serve the step — a database, a log shipper. If
+  # its output never reaches the build, a user debugging a failing integration
+  # test has no way to see why the database rejected the connection.
+  @SC-07
+  Scenario: A sidecar's output reaches its own stream when there is one
+    Given a jetbridge worker on a fake Kubernetes cluster
+    And a task container "sc07-dedicated" built from image "docker:///busybox"
+    And a sidecar "postgres" runs "postgres:15" alongside it
+    When the step runs with a dedicated log stream for sidecar "postgres"
+    Then the sidecar's output arrives on its own stream
+
+  # And when there is no separate pane for it, the output still has to appear —
+  # labelled, so it is distinguishable from the step's own.
+  @SC-07
+  Scenario: Without a separate stream the sidecar's output is labelled in the build log
+    Given a jetbridge worker on a fake Kubernetes cluster
+    And a task container "sc07-fallback" built from image "docker:///busybox"
+    And a sidecar "postgres" runs "postgres:15" alongside it
+    When the step runs with nowhere separate to put sidecar output
+    Then the sidecar's output is folded into the build log, labelled "[postgres]"
