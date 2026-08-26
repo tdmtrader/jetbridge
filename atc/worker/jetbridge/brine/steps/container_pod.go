@@ -789,3 +789,89 @@ func splitList(s string) []string {
 	}
 	return out
 }
+
+// CacheStorageDefinitions covers where a step's caches actually live.
+//
+// A cache exists to survive between builds. Whether it does depends entirely
+// on which storage backs it and on the key it is filed under: a key that
+// varies per build gives a directory that is always empty, which looks exactly
+// like a working cache and is never a hit.
+func CacheStorageDefinitions() []brine.StepDefinition {
+	return []brine.StepDefinition{
+
+		brine.DefineMapUsing[brine.Empty, ClusterReady](
+			"a jetbridge worker keeping caches on the node under {string}",
+			[]string{"jetbridge-db"},
+			func(_ brine.Empty, p brine.Params, _ *brine.Recorder, res brine.Resources) (ClusterReady, error) {
+				path, ok := p.GetString(0)
+				if !ok {
+					return ClusterReady{}, fmt.Errorf("expected a host path parameter")
+				}
+				return newConfiguredWorker(res, func(cfg *jetbridge.Config) {
+					cfg.CacheHostPath = path
+				})
+			},
+		),
+
+		brine.DefineMapUsing[brine.Empty, ClusterReady](
+			"a jetbridge worker with an artifact store, told to keep caches {string}",
+			[]string{"jetbridge-db"},
+			func(_ brine.Empty, p brine.Params, _ *brine.Recorder, res brine.Resources) (ClusterReady, error) {
+				store, ok := p.GetString(0)
+				if !ok {
+					return ClusterReady{}, fmt.Errorf("expected a cache store parameter")
+				}
+				return newConfiguredWorker(res, func(cfg *jetbridge.Config) {
+					cfg.ArtifactDaemonHostPath = "/var/concourse/artifacts"
+					cfg.CacheStore = store
+				})
+			},
+		),
+
+		// The job and step identify a cache across builds. Without them the
+		// key varies per build and the cache never hits.
+		brine.DefineMap[ContainerDraft, ContainerDraft](
+			"it belongs to job {int} step {string}",
+			func(in ContainerDraft, p brine.Params, _ *brine.Recorder) (ContainerDraft, error) {
+				jobID, _ := p.GetInt(0)
+				step, ok := p.GetString(1)
+				if !ok {
+					return ContainerDraft{}, fmt.Errorf("expected a job id and a step name")
+				}
+				in.JobID, in.StepName = jobID, step
+				return in, nil
+			},
+		),
+
+		brine.DefineCheck[PodCreated](
+			"the cache at {string} is kept on the node under {string}",
+			func(in PodCreated, p brine.Params, _ *brine.Recorder) error {
+				mountPath, _ := p.GetString(0)
+				prefix, ok := p.GetString(1)
+				if !ok {
+					return fmt.Errorf("expected a mount path and a host prefix")
+				}
+				v, err := volumeAt(in.Pod, mountPath)
+				if err != nil {
+					return err
+				}
+				if v.HostPath == nil {
+					return fmt.Errorf(
+						"expected the cache at %q to live on the node so it survives the pod; it is ephemeral",
+						mountPath)
+				}
+				if !strings.HasPrefix(v.HostPath.Path, prefix) {
+					return fmt.Errorf(
+						"expected the cache filed under %q so the next build finds it; it is at %q",
+						prefix, v.HostPath.Path)
+				}
+				if v.HostPath.Type == nil || *v.HostPath.Type != corev1.HostPathDirectoryOrCreate {
+					return fmt.Errorf(
+						"expected the cache directory to be created when absent, or the first build fails (type=%v)",
+						v.HostPath.Type)
+				}
+				return nil
+			},
+		),
+	}
+}

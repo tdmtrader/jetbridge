@@ -105,7 +105,7 @@ func ContainerSpecDefinitions() []brine.StepDefinition {
 				container, _, err := in.Worker.FindOrCreateContainer(
 					in.Ctx,
 					db.NewFixedHandleContainerOwner(in.Handle),
-					db.ContainerMetadata{Type: db.ContainerTypeTask},
+					db.ContainerMetadata{Type: db.ContainerTypeTask, JobID: in.JobID, StepName: in.StepName},
 					spec,
 					&noopDelegate{},
 				)
