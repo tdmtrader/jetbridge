@@ -18,7 +18,7 @@ Feature: Naming a pod after the step that runs in it
 
     Examples: build steps
       | case            | type | pipeline    | job       | build | step       | handle                               | pattern                                  |
-      | task            | task | my-pipeline | unit-test | 42    | run-tests  | 550e8400-e29b-41d4-a716-446655440000 | ^my-pipeline-unit-test-b42-task-[a-f0-9]{8}$ |
+      | task            | task | my-pipeline | unit-test | 42    | run-tests  | 550e8400-e29b-41d4-a716-446655440000 | ^my-pipeline-unit-test-b99-task-[a-f0-9]{8}$ |
       | get             | get  | ci          | build     | 7     | source     | aabbccdd-1122-3344-5566-778899aabbcc | ^ci-build-b7-get-[a-f0-9]{8}$            |
       | put             | put  | ci          | build     | 7     | push-image | aabbccdd-1122-3344-5566-778899aabbcc | ^ci-build-b7-put-[a-f0-9]{8}$            |
 
