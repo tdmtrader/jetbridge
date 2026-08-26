@@ -81,6 +81,8 @@ type ContainerDraft struct {
 	RequestMemory *uint64
 	LimitEphemeral   *uint64
 	RequestEphemeral *uint64
+	JobID            int
+	StepName         string
 	Privileged    bool
 	Sidecars      []atc.SidecarConfig
 }

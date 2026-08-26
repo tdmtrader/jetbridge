@@ -58,3 +58,26 @@ Feature: Keeping sight of a pod while a step runs
     When the runtime asks what the pod is doing
     And the build is cancelled
     Then the runtime is told to stop waiting
+
+  # A watch delivers a burst of updates faster than the step consumes them.
+  # What must never happen is the step settling on a stale one — it would wait
+  # on a pod state the cluster has already left behind.
+  Scenario: A burst of updates does not leave the step on a stale state
+    Given a pod "rapid-pod" that the runtime is watching
+    And the connection to Kubernetes is steady
+    When the runtime asks what the pod is doing
+    And the pod becomes "Running"
+    And the pod becomes "Succeeded"
+    Then the runtime is told the pod is "Succeeded"
+
+  # PW-03. The watch follows ONE pod. The neighbour below sits in a different
+  # phase on purpose: a watch that reported the wrong pod would say "Running"
+  # here. On a busy cluster this is the difference between a working watch and
+  # a step that reacts to somebody else's pod.
+  @PW-03
+  Scenario: The watch follows one pod, not the whole namespace
+    Given a pod "selective-pod" that the runtime is watching
+    And another pod "noisy-neighbour" is churning in the same namespace
+    And the connection to Kubernetes is steady
+    When the runtime asks what the pod is doing
+    Then the runtime is told the pod is "Pending"

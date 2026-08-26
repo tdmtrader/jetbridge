@@ -125,3 +125,35 @@ Feature: Reclaiming pods and the rows that track them
     And the reaper runs again
     Then the reaper completes without error
     And the pod "twice" is gone
+
+  # GC-01. With no pods at all the reaper still has to report an empty set —
+  # reporting nothing at all would leave every container's missing_since
+  # untouched and the scheduler placing work on a worker with no pods.
+  @GC-01 @GC-04
+  Scenario: An empty cluster is reported as empty, not skipped
+    Given a Kubernetes worker whose reaper is running
+    And a container "orphan-row" exists on this worker
+    When the reaper runs
+    Then the reaper completes without error
+    And the container "orphan-row" is marked as missing
+
+  # GC-06. A pod with no container row is an orphan — it survived a database
+  # it is no longer recorded in, and nothing else will ever clean it up.
+  @GC-06
+  Scenario: A pod nothing in the database knows about is reclaimed
+    Given a Kubernetes worker whose reaper is running
+    And a pod "unknown-pod" is running for it
+    When the reaper runs
+    And the reaper runs again
+    Then the pod "unknown-pod" is gone
+
+  # A container created but never marked for destruction must survive every
+  # sweep; reaping it would kill a step that is still running.
+  Scenario: A newly created container is never reaped
+    Given a Kubernetes worker whose reaper is running
+    And a container "brand-new" exists on this worker
+    And a pod "brand-new" is running for it
+    When the reaper runs
+    And the reaper runs again
+    Then the pod "brand-new" is still there
+    And the container "brand-new" is still tracked as "created"

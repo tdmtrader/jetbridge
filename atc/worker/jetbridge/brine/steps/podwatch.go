@@ -252,3 +252,33 @@ func (w WatchedPod) next() WatchObservation {
 	}
 	return WatchObservation{Watched: w, Pod: pod, Err: err, Message: msg}
 }
+
+// NoisyNeighbourDefinitions adds an unrelated pod to the namespace, in a
+// different phase, so that a watch reporting the wrong pod is detectable.
+func NoisyNeighbourDefinitions() []brine.StepDefinition {
+	return []brine.StepDefinition{
+		brine.DefineMap[WatchedPod, WatchedPod](
+			"another pod {string} is churning in the same namespace",
+			func(in WatchedPod, p brine.Params, _ *brine.Recorder) (WatchedPod, error) {
+				name, ok := p.GetString(0)
+				if !ok {
+					return WatchedPod{}, fmt.Errorf("expected a pod name parameter")
+				}
+				neighbour := &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: name, Namespace: "test-namespace", ResourceVersion: "1",
+					},
+					Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "main", Image: "busybox"}}},
+					// A DIFFERENT phase from the watched pod, so a watch that
+					// reported this one instead would be caught.
+					Status: corev1.PodStatus{Phase: corev1.PodRunning},
+				}
+				if _, err := in.Clientset.CoreV1().Pods("test-namespace").
+					Create(in.Ctx, neighbour, metav1.CreateOptions{}); err != nil {
+					return WatchedPod{}, fmt.Errorf("create neighbour pod: %w", err)
+				}
+				return in, nil
+			},
+		),
+	}
+}

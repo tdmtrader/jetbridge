@@ -264,3 +264,45 @@ Feature: What a step's pod actually looks like
     And a sidecar "postgres" runs "postgres:15" alongside it
     When the step runs with nowhere separate to put sidecar output
     Then the sidecar's output is folded into the build log, labelled "[postgres]"
+
+  # CO-07 / CF-04. A cache exists to survive between builds, and whether it
+  # does depends on which storage backs it and what key it is filed under. A
+  # key that varied per build would give a directory that is always empty —
+  # indistinguishable from a working cache that never hits.
+  @CO-07 @CF-04
+  Scenario: A cache is kept on the node, under a key stable across builds
+    Given a jetbridge worker keeping caches on the node under "/var/concourse/cache"
+    And a task container "cache-hostpath-handle" built from image "docker:///busybox"
+    And it works in "/tmp/build/workdir"
+    And it belongs to job 7 step "compile"
+    And it caches "/tmp/build/workdir/.cache"
+    When the container runs
+    Then the cache at "/tmp/build/workdir/.cache" is kept on the node under "/var/concourse/cache/job-7-compile-"
+
+  # A one-off build (`fly execute`) has no job to key on, so there is nothing
+  # stable to file a cache under and it falls back to ephemeral storage.
+  @CO-07
+  Scenario: A one-off build with no job gets an ephemeral cache
+    Given a jetbridge worker keeping caches on the node under "/var/concourse/cache"
+    And a task container "cache-oneoff-handle" built from image "docker:///busybox"
+    And it works in "/tmp/build/workdir"
+    And it caches "/tmp/build/workdir/.cache"
+    When the container runs
+    Then the volume mounted at "/tmp/build/workdir/.cache" is lost with the pod
+
+  # CF-04. The operator's explicit choice overrides the artifact store's
+  # default, in both directions.
+  @CF-04
+  Scenario Outline: An explicit cache store overrides the artifact store default
+    Given a jetbridge worker with an artifact store, told to keep caches "<store>"
+    And a task container "cache-<store>-handle" built from image "docker:///busybox"
+    And it works in "/tmp/build/workdir"
+    And it belongs to job 7 step "compile"
+    And it caches "/tmp/build/workdir/.cache"
+    When the container runs
+    Then the volume mounted at "/tmp/build/workdir/.cache" <fate>
+
+    Examples:
+      | store    | fate                  |
+      | hostpath | survives the pod      |
+      | emptydir | is lost with the pod  |
