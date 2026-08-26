@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/brine-dev/brine-go/pkg/brine"
 	"github.com/concourse/concourse/atc"
@@ -662,6 +663,20 @@ func ClusterConfigDefinitions() []brine.StepDefinition {
 				return newConfiguredWorker(res, func(cfg *jetbridge.Config) {
 					cfg.ImagePullSecrets = splitList(secrets)
 					cfg.ServiceAccount = account
+				})
+			},
+		),
+
+		// An unschedulable pod is only reported once the scheduling deadline
+		// passes. With the 5-minute default a scenario would simply hang, so
+		// this worker is impatient — the same move process_test.go makes.
+		brine.DefineMapUsing[brine.Empty, ClusterReady](
+			"a jetbridge worker that waits only seconds for a pod to be scheduled",
+			[]string{"jetbridge-db"},
+			func(_ brine.Empty, _ brine.Params, _ *brine.Recorder, res brine.Resources) (ClusterReady, error) {
+				return newConfiguredWorker(res, func(cfg *jetbridge.Config) {
+					cfg.PodSchedulingTimeout = 3 * time.Second
+					cfg.PodStartupTimeout = 2 * time.Second
 				})
 			},
 		),
