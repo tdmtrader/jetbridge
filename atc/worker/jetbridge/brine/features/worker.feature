@@ -163,6 +163,19 @@ Feature: A Kubernetes worker serving containers, volumes and artifacts
     Then creating the volume succeeds
     And reading the volume yields "step-output-bytes"
 
+  # The key is where the artifact lives in the store. A constant one puts
+  # every artifact on the worker in the same place: the second overwrites the
+  # first, and a step asking for its own output is handed another step's.
+  #
+  # step-integration.feature already checks a key against its handle, but on
+  # the LookupVolume path. This is the creation path, and the mutation that
+  # pins the key to a constant does not reach the other one.
+  Scenario: Two artifacts do not share a storage key
+    Given a Kubernetes worker "k8s-worker-1" with a database behind it
+    When the worker creates two volumes for artifacts
+    Then each artifact is stored under its own key
+    And each artifact's key is its own volume handle
+
   Scenario: Creating an artifact volume without a volume repository is refused
     Given a Kubernetes worker "k8s-worker-1" with a database behind it
     And the worker has no volume repository configured

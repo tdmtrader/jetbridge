@@ -131,3 +131,37 @@ func expectSupervisedExec(command []string, quotedCommand string) {
 	ExpectWithOffset(1, command[2]).To(ContainSubstring(quotedCommand))
 	ExpectWithOffset(1, command[2]).To(ContainSubstring(`trap '' HUP`))
 }
+
+// The decorators below wrap the real PostgreSQL-backed worker so that exactly
+// one transition in the middle of a sequence fails. Everything before the
+// fault is a real row, so what the worker leaves behind is asserted against
+// the database rather than against a call count.
+//
+// They lived in worker_test.go until that suite was retired under the brine
+// migration; container_test.go is the remaining consumer.
+
+type failCreatedTransition struct{ db.Worker }
+
+func (w failCreatedTransition) CreateContainer(owner db.ContainerOwner, meta db.ContainerMetadata) (db.CreatingContainer, error) {
+	creating, err := w.Worker.CreateContainer(owner, meta)
+	if err != nil {
+		return nil, err
+	}
+	return creatingContainerCreatedFails{creating}, nil
+}
+
+type failStaleCreatedTransition struct{ db.Worker }
+
+func (w failStaleCreatedTransition) FindContainer(owner db.ContainerOwner) (db.CreatingContainer, db.CreatedContainer, error) {
+	creating, created, err := w.Worker.FindContainer(owner)
+	if err != nil || creating == nil {
+		return creating, created, err
+	}
+	return creatingContainerCreatedFails{creating}, created, nil
+}
+
+type creatingContainerCreatedFails struct{ db.CreatingContainer }
+
+func (creatingContainerCreatedFails) Created() (db.CreatedContainer, error) {
+	return nil, fmt.Errorf("db connection lost")
+}
