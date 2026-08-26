@@ -70,7 +70,7 @@ func (v *DaemonSetVolume) Key() string {
 }
 
 func (v *DaemonSetVolume) Source() string {
-	return v.handle
+	return v.workerName
 }
 
 func (v *DaemonSetVolume) DBVolume() db.CreatedVolume {

@@ -119,6 +119,7 @@ type SpansRecorded struct {
 	Capture    SpanCapture
 	ExitStatus int
 	WaitErr    error
+	Message    string
 }
 
 // VolumeSet and VolumeRead are the volume states. Note what they do NOT

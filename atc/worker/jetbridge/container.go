@@ -736,7 +736,6 @@ func applySecretRefs(envList []corev1.EnvVar, secretEnv map[string]vars.SecretRe
 		if !ok {
 			continue
 		}
-		envList[i].Value = ""
 		envList[i].ValueFrom = &corev1.EnvVarSource{
 			SecretKeyRef: &corev1.SecretKeySelector{
 				LocalObjectReference: corev1.LocalObjectReference{Name: ref.Name},
