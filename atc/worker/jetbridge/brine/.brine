@@ -1,0 +1,22 @@
+# JetBridge behavioral contract, run through brine.
+#
+# A `runner:` block, NOT `language: go`. `language:` is sugar for the OFFICIAL
+# runner — for go that resolves to brine's own brine-adapter-go, whose registry
+# is the conformance vocabulary, and which accept-and-ignores the `--binary`
+# flag that `config.binary` becomes. A consuming repo hosting its own registry
+# is a third-party runner by brine's own definition
+# (docs/RUNNER-AUTHORS.md §3), and names itself here.
+runner:
+  name: jetbridge
+  binary: .build/brine-adapter-jetbridge
+  contract: 3
+
+# The FROZEN conformance version. 4 is current-but-growing (it minted with 34
+# goldens and holds 60); 3 is byte-frozen forever. A first consumer wants the
+# version that cannot move underneath it. The cost is one advisory
+# CONTRACT_LAG finding, which never fails a run or a gate.
+contract: 3
+
+features: "features/*.feature"
+budgets:
+  undefined: 0

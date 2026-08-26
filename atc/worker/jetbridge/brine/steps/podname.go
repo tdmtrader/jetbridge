@@ -1,0 +1,153 @@
+package steps
+
+import (
+	"fmt"
+	"regexp"
+	"strings"
+
+	"github.com/brine-dev/brine-go/pkg/brine"
+	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/worker/jetbridge"
+)
+
+// PodNameDefinitions migrates podname_test.go — pod-name generation,
+// sanitization, truncation and fallback. GeneratePodName is a pure exported
+// function, so this suite needs no cluster, no database and no doubles: the
+// seam is the function itself.
+
+var dnsLabel = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
+
+// PodNameDefinitions is the vocabulary for pod naming.
+func PodNameDefinitions() []brine.StepDefinition {
+	return []brine.StepDefinition{
+
+		brine.DefineMap[brine.Empty, PodNameRequest](
+			"a {string} container in pipeline {string} job {string} build {string} step {string} with handle {string}",
+			func(_ brine.Empty, p brine.Params, _ *brine.Recorder) (PodNameRequest, error) {
+				ctype, _ := p.GetString(0)
+				pipeline, _ := p.GetString(1)
+				job, _ := p.GetString(2)
+				build, _ := p.GetString(3)
+				step, _ := p.GetString(4)
+				handle, ok := p.GetString(5)
+				if !ok {
+					return PodNameRequest{}, fmt.Errorf("expected six parameters")
+				}
+				return PodNameRequest{
+					Metadata: db.ContainerMetadata{
+						Type:         db.ContainerType(ctype),
+						PipelineName: pipeline,
+						JobName:      job,
+						BuildName:    build,
+						StepName:     step,
+					},
+					Handle: handle,
+				}, nil
+			},
+		),
+
+		brine.DefineMap[PodNameRequest, GeneratedPodName](
+			"the pod name is generated",
+			func(in PodNameRequest, _ brine.Params, _ *brine.Recorder) (GeneratedPodName, error) {
+				return GeneratedPodName{
+					Name:   jetbridge.GeneratePodName(in.Metadata, in.Handle),
+					Handle: in.Handle,
+				}, nil
+			},
+		),
+
+		brine.DefineCheck[GeneratedPodName](
+			"the pod name matches {string}",
+			func(in GeneratedPodName, p brine.Params, _ *brine.Recorder) error {
+				pattern, ok := p.GetString(0)
+				if !ok {
+					return fmt.Errorf("expected a pattern parameter")
+				}
+				re, err := regexp.Compile(pattern)
+				if err != nil {
+					return fmt.Errorf("bad pattern %q: %w", pattern, err)
+				}
+				if !re.MatchString(in.Name) {
+					return fmt.Errorf("expected %q to match %q", in.Name, pattern)
+				}
+				return nil
+			},
+		),
+
+		brine.DefineCheck[GeneratedPodName](
+			"the pod name is the handle unchanged",
+			func(in GeneratedPodName, _ brine.Params, _ *brine.Recorder) error {
+				if in.Name != in.Handle {
+					return fmt.Errorf("expected the handle %q unchanged, got %q", in.Handle, in.Name)
+				}
+				return nil
+			},
+		),
+
+		brine.DefineCheck[GeneratedPodName](
+			"the pod name is at most {int} characters",
+			func(in GeneratedPodName, p brine.Params, _ *brine.Recorder) error {
+				max, ok := p.GetInt(0)
+				if !ok {
+					return fmt.Errorf("expected a length parameter")
+				}
+				if len(in.Name) > max {
+					return fmt.Errorf("expected at most %d characters, got %d (%q)", max, len(in.Name), in.Name)
+				}
+				return nil
+			},
+		),
+
+		brine.DefineCheck[GeneratedPodName](
+			"the pod name does not contain {string}",
+			func(in GeneratedPodName, p brine.Params, _ *brine.Recorder) error {
+				unwanted, ok := p.GetString(0)
+				if !ok {
+					return fmt.Errorf("expected a substring parameter")
+				}
+				if strings.Contains(in.Name, unwanted) {
+					return fmt.Errorf("expected %q not to contain %q", in.Name, unwanted)
+				}
+				return nil
+			},
+		),
+
+		brine.DefineCheck[GeneratedPodName](
+			"the pod name ends with {string}",
+			func(in GeneratedPodName, p brine.Params, _ *brine.Recorder) error {
+				suffix, ok := p.GetString(0)
+				if !ok {
+					return fmt.Errorf("expected a suffix parameter")
+				}
+				if !strings.HasSuffix(in.Name, suffix) {
+					return fmt.Errorf("expected %q to end with %q", in.Name, suffix)
+				}
+				return nil
+			},
+		),
+
+		// The rule the whole sanitization block exists to keep. A Kubernetes
+		// DNS label is lowercase alphanumerics and hyphens, at most 63
+		// characters, starting and ending alphanumeric — which also rules out
+		// the doubled and trailing hyphens the individual cases checked for.
+		brine.DefineCheck[GeneratedPodName](
+			"the pod name is a valid DNS label",
+			func(in GeneratedPodName, _ brine.Params, _ *brine.Recorder) error {
+				if in.Name == "" {
+					return fmt.Errorf("the pod name is empty")
+				}
+				if len(in.Name) > 63 {
+					return fmt.Errorf("a DNS label is at most 63 characters, got %d (%q)", len(in.Name), in.Name)
+				}
+				if !dnsLabel.MatchString(in.Name) {
+					return fmt.Errorf("%q is not a valid DNS label (lowercase alphanumerics and hyphens, "+
+						"starting and ending alphanumeric)", in.Name)
+				}
+				if strings.Contains(in.Name, "--") {
+					return fmt.Errorf("%q contains consecutive hyphens", in.Name)
+				}
+				return nil
+			},
+		),
+	}
+}
