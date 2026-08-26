@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 
 	"github.com/brine-dev/brine-go/pkg/brine"
 	"github.com/concourse/concourse/atc/db"
@@ -52,7 +53,27 @@ func (localShellAdapter) ExecInPod(
 	}
 	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
 	cmd.Stdout, cmd.Stderr = stdout, stderr
+
+	// Run in its own process group, and tear the whole group down afterwards.
+	//
+	// The in-pod task supervisor backgrounds a `tail -f` on its log and kills
+	// it on the way out. Inside a real pod that cleanup is belt-and-braces:
+	// the pod dies and takes any survivor with it. Here the "pod" is this
+	// host, so a survivor survives for real — and one leaks per supervised
+	// scenario. Measured: 164 orphaned `tail -f` processes after a few full
+	// suite runs, at which point the machine is loaded enough that the
+	// supervisor's own kill/wait sequence starts losing races and a scenario
+	// fails with the supervisor's exit-255 fallback.
+	//
+	// That failure looks like a flaky test and is really an exhausted host, so
+	// it is fixed at the source rather than by clearing /tmp between runs.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	err := cmd.Run()
+	if cmd.Process != nil {
+		// Negative pid signals the group. The leader is already gone; this is
+		// for whatever it backgrounded.
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
 
 	// Surface a non-zero exit the way the SPDY executor does, so the runtime's
 	// exit-code extraction is on the real path (PE-08's last clause).
