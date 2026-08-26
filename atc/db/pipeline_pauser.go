@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"errors"
 	"strconv"
 
 	"code.cloudfoundry.org/lager/v3"
@@ -9,6 +10,14 @@ import (
 	sq "github.com/Masterminds/squirrel"
 	"github.com/concourse/concourse/atc/db/lock"
 )
+
+// pipelinePauserAttribution is the paused_by this sweep writes. It is a
+// platform attribution, not a user one: reopenPipelineRun clears it alongside
+// 'run-completed', so a run payload auto-paused here is always recoverable --
+// by pipeline.Unpause while the run is still 'running', and by a manual job
+// trigger once it is terminal. Do not reuse this string for a pause a user
+// asked for; a user pause is meant to survive reopen.
+const pipelinePauserAttribution = "automatic-pipeline-pauser"
 
 type PipelinePauser interface {
 	PausePipelines(ctx context.Context, daysSinceLastBuild int) error
@@ -42,15 +51,19 @@ func (p *pipelinePauser) PausePipelines(ctx context.Context, daysSinceLastBuild 
 			// (pipeline.ChronoRunBuilds), so every run of that template stops
 			// being reaped.
 			"p.template": false,
-			// Run payloads are platform-managed, not user-managed, and their
-			// dormancy already has an owner: attemptRunCompletion pauses them
-			// with paused_by='run-completed', and reopenPipelineRun un-pauses
-			// exactly that attribution and no other. An auto-pause writes an
-			// attribution reopen will never clear, so a still-'running' run
-			// idle past the threshold would wedge permanently: its payload is
-			// paused, so no build can start, so the run can neither complete
-			// nor be freed by a manual re-trigger.
-			"p.pipeline_run_id": nil,
+			// Run payloads stay in scope, and this sweep is the only brake on
+			// a run that never terminalises. A run whose expected job never
+			// produces a build stays 'running' forever, so
+			// pipelineRunReclaimLifecycle -- which requires a terminal status
+			// -- never collects it, and checkFactory.Resources, which filters
+			// on p.paused = false, keeps lidar checking its resources forever.
+			// Nothing else can stop that. The pause is reversible from both
+			// ends: pipeline.Unpause is permitted while the run is still
+			// 'running', and reopenPipelineRun clears
+			// pipelinePauserAttribution alongside 'run-completed' when a
+			// manual trigger reopens a terminal run. Unlike a template pause
+			// this costs no log reaping: buildLogCollector walks
+			// pipelineFactory.AllPipelines, which excludes payloads outright.
 		},
 		// subquery returns a list of pipelines who jobs ran WITHIN the range.
 		// These are the pipelines that SHOULD NOT be paused which we use to
@@ -81,8 +94,16 @@ func (p *pipelinePauser) PausePipelines(ctx context.Context, daysSinceLastBuild 
 	}
 
 	for _, pipeline := range pipelines {
-		err = pipeline.Pause("automatic-pipeline-pauser")
 		loggingData := p.generateLoggingData(pipeline)
+		err = pipeline.Pause(pipelinePauserAttribution)
+		// Payloads are the one candidate kind that can vanish between the scan
+		// and the pause: the run reclaimer deletes the pipelines row, and
+		// lockPipelineRunForPayload then reports it gone. That is a race, not a
+		// failure, and it must not abandon the rest of the sweep.
+		if errors.Is(err, ErrPipelineRunPayloadGone) || errors.Is(err, ErrPipelineRunNotFound) {
+			logger.Info("skipped-reclaimed-run-payload", loggingData)
+			continue
+		}
 		if err != nil {
 			logger.Error("failed-to-pause-pipeline", err, loggingData)
 			return err
