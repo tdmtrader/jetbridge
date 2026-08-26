@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/configvalidate"
 	"github.com/concourse/concourse/fly/commands/internal/flaghelpers"
 	"github.com/concourse/concourse/fly/rc"
 	"github.com/concourse/concourse/vars"
@@ -62,6 +63,14 @@ func (command *RunPipelineCommand) run(client pipelineRunCreator, targetURL, tea
 	if err != nil {
 		return err
 	}
+
+	// The run number is the identifier the user works with everywhere else --
+	// `fly runs`, the runs table, the run URL -- so name it here instead of
+	// leaving it to be dug out of the payload pipeline's query string.
+	if _, err := fmt.Fprintf(output, "started %s run #%d (%s)\n", command.Pipeline.Name, run.Number, run.Status); err != nil {
+		return err
+	}
+
 	_, err = fmt.Fprintln(output, payloadURL)
 	return err
 }
@@ -70,8 +79,43 @@ func (command *RunPipelineCommand) validate() error {
 	if len(command.Pipeline.InstanceVars) > 0 {
 		return fmt.Errorf("cannot run an instanced pipeline")
 	}
-	_, err := command.Pipeline.Validate()
-	return err
+	if _, err := command.Pipeline.Validate(); err != nil {
+		return err
+	}
+
+	for _, pair := range command.Vars {
+		if err := validateParameterName("--var", pair.Ref); err != nil {
+			return err
+		}
+	}
+	for _, pair := range command.JSONVars {
+		if err := validateParameterName("--json-var", pair.Ref); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// validateParameterName refuses a flag name that fly would otherwise turn
+// silently into something no template parameter can be. vars.ParseReference
+// splits "a.b" into path "a" with field "b" (vars/variables.go:26), and
+// vars.KVPairs.Expand then nests the value under a parameter named "a"
+// (vars/static_vars.go:107), so the server is asked about a parameter the user
+// never named and answers "unknown parameter a" or "parameter a must be a
+// string" instead of naming the real rule.
+//
+// A declared parameter name has exactly one grammar, and it is the server's:
+// configvalidate.ParamNamePattern.
+//
+// The check lives here rather than in flaghelpers.VariablePairFlag because
+// that flag type is shared with set-pipeline, validate-pipeline and execute,
+// where a dotted name is a legitimate nested template var.
+func validateParameterName(flag string, ref vars.Reference) error {
+	if ref.Source != "" || len(ref.Fields) > 0 || !configvalidate.ParamNamePattern.MatchString(ref.Path) {
+		return fmt.Errorf("%s parameter name %s must match %s", flag, ref, configvalidate.ParamNamePattern.String())
+	}
+	return nil
 }
 
 func (command *RunPipelineCommand) variables() map[string]any {

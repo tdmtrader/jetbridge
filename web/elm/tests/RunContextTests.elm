@@ -171,7 +171,7 @@ all =
                             RunContext.view Nothing (RunContext.RecordOnly { liveRun | status = status })
                                 |> (\view -> Html.div [] [ view ])
                                 |> Query.fromHtml
-                                |> Query.has [ text (BuildStatus.show status) ]
+                                |> Query.has [ text (PipelineRun.showStatus status) ]
                         )
                         [ BuildStatus.BuildStatusPending, BuildStatus.BuildStatusStarted, BuildStatus.BuildStatusSucceeded, BuildStatus.BuildStatusFailed, BuildStatus.BuildStatusErrored, BuildStatus.BuildStatusAborted ]
                     )

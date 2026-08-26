@@ -1,7 +1,7 @@
 module Views.RunContext exposing (Context(..), isCompleted, view)
 import Concourse
 import Concourse.BuildStatus as BuildStatus
-import Concourse.PipelineRun exposing (PipelineRun)
+import Concourse.PipelineRun as PipelineRun exposing (PipelineRun)
 import Html exposing (Html)
 import Html.Attributes exposing (class, id)
 import Html.Events exposing (onClick)
@@ -38,7 +38,7 @@ view error context =
     in
     Html.div [ id "run-context", class (BuildStatus.show run.status) ]
         [ Html.h1 [] [ Html.text ("Run #" ++ String.fromInt run.number) ]
-        , Html.p [] [ Html.text ("Status: " ++ BuildStatus.show run.status) ]
+        , Html.p [] [ Html.text ("Status: " ++ PipelineRun.showStatus run.status) ]
         , Html.p [] [ Html.text ("Parameters: " ++ Concourse.hyphenNotation run.params) ]
         , case context of
             RecordOnly _ ->

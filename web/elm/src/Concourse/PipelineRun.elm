@@ -1,7 +1,7 @@
-module Concourse.PipelineRun exposing (PipelineRun, decodePipelineRun, encodeCreatePipelineRun)
+module Concourse.PipelineRun exposing (PipelineRun, decodePipelineRun, encodeCreatePipelineRun, showStatus)
 
 import Concourse exposing (InstanceVars, PipelineIdentifier, decodeInstanceVars, decodePipelineIdentifier)
-import Concourse.BuildStatus exposing (BuildStatus(..))
+import Concourse.BuildStatus as BuildStatus exposing (BuildStatus(..))
 import Dict
 import Json.Decode
 import Json.Decode.Extra exposing (andMap)
@@ -63,6 +63,26 @@ decodeRunStatus =
 secondsToPosix : Int -> Posix
 secondsToPosix =
     Time.millisToPosix << (*) 1000
+
+{-| Renders a run status in the API's vocabulary.
+
+The wire contract says "running" (atc.RunStatusRunning) and `fly runs` prints
+it, but the decoder above maps it onto BuildStatusStarted -- the constructor a
+build shares -- and BuildStatus.show spells that "started". A run is not a
+build, so the run pages say what the API says.
+
+Only the visible text moves. Callers keep BuildStatus.show for the class
+attribute, because the status CSS is keyed on the build vocabulary.
+
+-}
+showStatus : BuildStatus -> String
+showStatus status =
+    case status of
+        BuildStatusStarted ->
+            "running"
+
+        _ ->
+            BuildStatus.show status
 
 defaultTo : a -> Json.Decode.Decoder a -> Json.Decode.Decoder a
 defaultTo default =
