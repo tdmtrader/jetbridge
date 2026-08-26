@@ -237,7 +237,9 @@ var _ = Describe("BuildLogCollector", func() {
 			},
 			expectedDeleted:     []string{},
 			expectedFirstLogged: "b1",
-		}), // A job may declare min_success_builds without declaring builds:
+		}),
+
+		// A job may declare min_success_builds without declaring builds:
 		// configvalidate's min_success_builds > builds check is gated on
 		// builds > 0, so this config is accepted by the config API and by the
 		// set_pipeline step, and the count then comes from

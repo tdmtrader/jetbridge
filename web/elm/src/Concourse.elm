@@ -98,7 +98,8 @@ module Concourse exposing
     , pipelineId
     , resourceId
     , resourceIdFromVersionedResourceId
-    , retrieveCSRFToken    , runNumberFromInstanceVars
+    , retrieveCSRFToken
+    , runNumberFromInstanceVars
     , toInstanceGroupId
     , toPipelineId
     , toVersionedResourceId
