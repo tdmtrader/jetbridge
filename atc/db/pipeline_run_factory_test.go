@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/configvalidate"
 	"github.com/concourse/concourse/atc/db"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -144,6 +145,39 @@ var _ = Describe("PipelineRunFactory", func() {
 		Expect(hasChild).To(BeTrue())
 		Expect(child.ID()).To(Equal(childID))
 		Expect(child.InstanceVars()).To(Equal(atc.InstanceVars{"run": float64(creation.Run.Number())}))
+	})
+	It("stores a payload whose config a template declaration accepts", func() {
+		// This fails if a run payload row keeps its template's parameter schema or
+		// retention policy: `fly get-pipeline -p tmpl/run:1` then emits a config with
+		// params: and no template:, which `fly set-pipeline` refuses with
+		// "params are only valid on templates".
+		keepLast := 3
+		template, _, err := defaultTeam.SavePipeline(atc.PipelineRef{Name: "payload-declaration"}, atc.Config{
+			Template:     true,
+			Params:       []atc.ParamSchema{{Name: "environment", Type: atc.ParamTypeString, Required: true}},
+			RunRetention: &atc.RunRetentionConfig{KeepLast: &keepLast},
+			Jobs:         atc.JobConfigs{{Name: "entry-((environment))"}},
+		}, 0, false)
+		Expect(err).NotTo(HaveOccurred())
+		creation, err := factory.CreateRun(context.Background(), template, db.RunParams{Vars: atc.RunParams{"environment": "production"}}, "creator")
+		Expect(err).NotTo(HaveOccurred())
+
+		child, found, err := factory.InstancePipeline(creation.Run)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(child.Template()).To(BeFalse())
+		Expect(child.Params()).To(BeEmpty())
+		Expect(child.RunRetention()).To(BeNil())
+
+		config, err := child.Config()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(config.Jobs[0].Name).To(Equal("entry-production"))
+		Expect(configvalidate.ValidateTemplateDeclaration(child.PipelineRef(), config)).To(Succeed())
+
+		// The template keeps its own declaration; only the payload is free of it.
+		Expect(template.Reload()).To(BeTrue())
+		Expect(template.Params()).To(HaveLen(1))
+		Expect(template.RunRetention()).NotTo(BeNil())
 	})
 
 	It("does not allocate a number when validation fails", func() {

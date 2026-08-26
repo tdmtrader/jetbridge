@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/configvalidate"
 	"github.com/concourse/concourse/atc/creds"
 	"github.com/concourse/concourse/atc/creds/dummy"
 	"github.com/concourse/concourse/atc/creds/noop"
@@ -392,10 +393,18 @@ var _ = Describe("Config API", func() {
 			Expect(json.NewDecoder(getResponse.Body).Decode(&materialized)).To(Succeed())
 			Expect(getResponse.Body.Close()).To(Succeed())
 			Expect(materialized.Config.Template).To(BeFalse())
-			Expect(materialized.Config.Params).NotTo(BeNil())
-			Expect(materialized.Config.RunRetention).NotTo(BeNil())
+			// A payload declares nothing of its own: what GetConfig emits for a run must be
+			// something SaveConfig would accept, not a config refused for carrying params
+			// while template is false.
+			Expect(materialized.Config.Params).To(BeNil())
+			Expect(materialized.Config.RunRetention).To(BeNil())
+			Expect(configvalidate.ValidateTemplateDeclaration(payload.PipelineRef(), materialized.Config)).To(Succeed())
 
-			body, err := json.Marshal(materialized.Config)
+			// The PUT still carries a declaration, so the payload-mutation conflict is
+			// still proven to win over template declaration validation.
+			declared := materialized.Config
+			declared.Params = []atc.ParamSchema{{Name: "environment", Type: atc.ParamTypeString, Required: true}}
+			body, err := json.Marshal(declared)
 			Expect(err).NotTo(HaveOccurred())
 			put, err := generator.CreateRequest(atc.SaveConfig, routeParams, nil)
 			Expect(err).NotTo(HaveOccurred())

@@ -11,6 +11,7 @@ import Html exposing (Html)
 import Html.Attributes exposing (attribute, class, disabled, href, id, style, tabindex, type_, value)
 import Html.Events exposing (onClick, onInput, onSubmit)
 import Http
+import Json.Decode
 import Json.Encode
 import Message.Callback exposing (Callback(..))
 import Message.Effects exposing (Effect(..))
@@ -387,11 +388,19 @@ httpMessage err fallback =
     case err of
         Http.BadStatus response ->
             let body = String.trim response.body in
-            if body == "" then
-                if response.status.message == "" then fallback else response.status.message
-            else
-                body
+            case Json.Decode.decodeString errorsDecoder body of
+                Ok errors ->
+                    let joined = String.trim (String.join "\n" errors) in
+                    if joined == "" then fallback else joined
+                Err _ ->
+                    if body == "" then
+                        if response.status.message == "" then fallback else response.status.message
+                    else
+                        body
         _ -> fallback
+errorsDecoder : Json.Decode.Decoder (List String)
+errorsDecoder =
+    Json.Decode.field "errors" (Json.Decode.list Json.Decode.string)
 refreshableError : Http.Error -> Bool
 refreshableError err =
     case err of
