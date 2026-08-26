@@ -138,7 +138,8 @@ all =
                     |> Tuple.first
                     |> queryView
                     |> Query.find [ id "breadcrumbs" ]
-                    |> Query.has [ id "breadcrumb-pipeline", id "breadcrumb-runs", text "run #42" ]        , test "a page inside a run falls back to the base template's breadcrumbs" <|
+                    |> Query.has [ id "breadcrumb-pipeline", id "breadcrumb-runs", text "run #42" ]
+        , test "a page inside a run falls back to the base template's breadcrumbs" <|
             \_ ->
                 let
                     baseTemplate =

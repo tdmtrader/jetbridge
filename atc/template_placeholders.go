@@ -10,7 +10,7 @@ import (
 )
 
 // templatePlaceholderPattern is the same lexical grammar Concourse variable
-// interpolation uses (the unexported interpolationRegex, vars/template.go:78),
+// interpolation uses (the unexported interpolationRegex, vars/template.go:106),
 // duplicated here so this check reads exactly what run materialization will
 // later rewrite.
 var templatePlaceholderPattern = regexp.MustCompile(`\(\((([-/\.\w\pL]+\:)?[-/\.:@"\w\pL]+)\)\)`)
@@ -43,13 +43,13 @@ func declaredTemplateParameter(text string, declared map[string]struct{}) (strin
 // substitute a value:
 //
 //   - A map key anywhere in the config. Interpolation rewrites keys as well as
-//     values -- vars/template.go:92 deletes the old key and reinserts under the
+//     values -- vars/template.go:124 deletes the old key and reinserts under the
 //     evaluated one -- so ((param)): value renames the field it keys instead of
 //     setting one, and two runs can silently collapse onto the same key.
 //
 //   - The template's own parameter declarations. Schemas are read before
 //     substitution runs: ValidateRunParams is handed the un-interpolated
-//     effective config (atc/db/pipeline_run_factory.go:99), so a placeholder in
+//     effective config (atc/db/pipeline_run_factory.go:100), so a placeholder in
 //     a parameter name, type, default, enum value, or description is taken
 //     literally and can never resolve.
 //

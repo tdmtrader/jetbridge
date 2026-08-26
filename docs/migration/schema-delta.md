@@ -11,11 +11,11 @@ This document catalogs every migration between upstream Concourse releases and J
 | v7.14.3 (last v7.x) | `1746768931` | 148 |
 | v8.0.0 | `1765921815` | 150 |
 | v8.0.1 | `1765921815` | 150 |
-| JetBridge HEAD | `1773105501` | 153 |
+| JetBridge HEAD | `1773105509` | 160 |
 
 ## Migration Gap by Source Version
 
-### From v7.14.3 to JetBridge HEAD (5 migrations)
+### From v7.14.3 to JetBridge HEAD (10 migrations)
 
 | Migration | Name | Type | Destructive? |
 |-----------|------|------|-------------|
@@ -24,16 +24,26 @@ This document catalogs every migration between upstream Concourse releases and J
 | `1773104944` | `simplify_worker_cache_triggers` | **Schema** | **Yes** — drops the JSON-payload `notify_trigger()` function and worker/container triggers, replaces with simpler bare-NOTIFY trigger functions. |
 | `1773105500` | `drop_component_interval_and_last_ran` | **Schema** | **Yes** — drops `interval` and `last_ran` columns from `components` table. |
 | `1773105501` | `drop_component_paused` | **Schema** | **Yes** — drops `paused` column from `components` table. |
+| `1773105505` | `add_pipeline_template_runs` | **Schema** | No — additive; creates `pipeline_runs`, adds template/params/retention columns to `pipelines`, 9 triggers |
+| `1773105506` | `add_pipeline_run_build_identity` | **Schema** | No — additive, but see the risk note below: three full scans of `builds` under ACCESS EXCLUSIVE |
+| `1773105507` | `add_run_task_cache_identity` | **Schema** | No — additive |
+| `1773105508` | `skip_run_payload_event_partitions` | **Schema** | No — replaces `on_pipeline_insert()` so run payloads get no per-pipeline event partition |
+| `1773105509` | `guard_run_payload_deletion` | **Schema** | No — adds a `BEFORE DELETE` guard on `pipelines` |
 
-### From v8.0.1 to JetBridge HEAD (3 migrations — JetBridge-only)
+### From v8.0.1 to JetBridge HEAD (8 migrations — JetBridge-only)
 
 | Migration | Name | Type | Destructive? |
 |-----------|------|------|-------------|
 | `1773104944` | `simplify_worker_cache_triggers` | **Schema** | **Yes** — replaces notify triggers |
 | `1773105500` | `drop_component_interval_and_last_ran` | **Schema** | **Yes** — drops columns |
 | `1773105501` | `drop_component_paused` | **Schema** | **Yes** — drops column |
+| `1773105505` | `add_pipeline_template_runs` | **Schema** | No — additive; creates `pipeline_runs`, adds template/params/retention columns to `pipelines`, 9 triggers |
+| `1773105506` | `add_pipeline_run_build_identity` | **Schema** | No — additive, but see the risk note below: three full scans of `builds` under ACCESS EXCLUSIVE |
+| `1773105507` | `add_run_task_cache_identity` | **Schema** | No — additive |
+| `1773105508` | `skip_run_payload_event_partitions` | **Schema** | No — replaces `on_pipeline_insert()` so run payloads get no per-pipeline event partition |
+| `1773105509` | `guard_run_payload_deletion` | **Schema** | No — adds a `BEFORE DELETE` guard on `pipelines` |
 
-### From v8.0.0 to JetBridge HEAD (3 migrations)
+### From v8.0.0 to JetBridge HEAD (8 migrations)
 
 Same as v8.0.1 — v8.0.0 and v8.0.1 share identical migration sets.
 
@@ -136,7 +146,7 @@ build-event partition creation for run payloads; and installs the guard trigger
 on payload deletion.
 
 - **Type:** Additive schema, plus one trigger-function replacement
-  (`on_pipeline_insert`) and seven constraint triggers
+  (`on_pipeline_insert`) and nine triggers, two of which are CONSTRAINT triggers
 - **Risk:** Medium — `1773105506` adds a validating CHECK on `builds`, which
   takes ACCESS EXCLUSIVE for a full heap scan; duration scales with build history
 - **Duration:** Proportional to `builds` row count; measure on a restored copy first
@@ -147,7 +157,9 @@ on payload deletion.
 
 ## Key Observations
 
-1. **The schema delta is small.** Only 3 migrations are JetBridge-specific, and they are all minor column/trigger changes.
+1. **The schema delta is no longer small.** Eight migrations are JetBridge-specific. Five of
+   them (`1773105505`–`1773105509`) add pipeline templates and numbered runs, and one of
+   those, `1773105506`, is the second most expensive migration in the set — see Observation 6.
 2. **The md5→sha256 migration is the most expensive** — it rehashes every row in `resource_config_versions`. Plan for this on large instances.
 3. **Migrations are reversible up to `1773105501`.** The five pipeline-template
    migrations (`1773105505`–`1773105509`) are **one-way once the feature is used**:
@@ -156,4 +168,11 @@ on payload deletion.
    path refuses rather than silently discarding run history. Rolling a binary back
    after a template has been created means restoring the database from backup.
 4. **v7.x users have the biggest gap** — up to 29 migrations depending on the exact v7.x version.
-5. **v8.0.0 and v8.0.1 are identical** in terms of migrations — only 3 JetBridge-specific migrations need to apply.
+5. **v8.0.0 and v8.0.1 are identical** in terms of migrations — 8 JetBridge-specific migrations need to apply.
+6. **`1773105506` locks `builds` ACCESS EXCLUSIVE for three full scans.** In one transaction it
+   validates a new foreign key on `builds.pipeline_run_id`, verifies a new CHECK constraint, and
+   builds a non-concurrent index. Because the migration runner wraps each file in a single
+   transaction, none of these can be deferred with `NOT VALID` or `CONCURRENTLY` without splitting
+   the file. Duration scales with `builds` row count; every in-flight build's status write and event
+   insert blocks for the whole transaction. **Measure on a restored copy before upgrading a busy
+   cluster.** No `ANALYZE builds` is run afterwards, unlike `1765921815`.

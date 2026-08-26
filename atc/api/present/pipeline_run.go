@@ -22,7 +22,6 @@ func PipelineRun(savedRun db.PipelineRun, instancePipeline db.Pipeline, options 
 		CreatedBy:          savedRun.CreatedBy(),
 		CreatedAt:          savedRun.CreatedAt(),
 		CompletedAt:        savedRun.CompletedAt(),
-		ReclaimRetryAfter:  savedRun.ReclaimRetryAfter(),
 		Reclaimed:          instancePipeline == nil,
 	}
 
@@ -34,6 +33,12 @@ func PipelineRun(savedRun db.PipelineRun, instancePipeline db.Pipeline, options 
 		configHash := savedRun.ConfigHash()
 		atcRun.Params = &params
 		atcRun.ConfigHash = &configHash
+
+		// The reclaimer's backoff deadline is internal GC scheduling state.
+		// It was previously set on every response, so an unauthenticated
+		// viewer of an exposed template could read the ATC's GC timing for
+		// every run of that template.
+		atcRun.ReclaimRetryAfter = savedRun.ReclaimRetryAfter()
 	}
 
 	if instancePipeline != nil && options.CanEnterPayload {
