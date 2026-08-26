@@ -73,6 +73,18 @@ func (j JetbridgeDB) PersistNamedWorker(name string) (db.Worker, error) {
 	return worker, nil
 }
 
+// ClosedConn opens a second connection to the same database and closes it, so
+// every statement issued over it fails the way a lost connection does. It
+// mirrors the ginkgo suite's closedJetbridgeCloneConn helper, which lives in a
+// _test.go file and so cannot be imported.
+func (j JetbridgeDB) ClosedConn() (db.DbConn, error) {
+	conn := j.runner.OpenConn()
+	if err := conn.Close(); err != nil {
+		return nil, fmt.Errorf("close the cloned connection: %w", err)
+	}
+	return conn, nil
+}
+
 // RegisterGomegaFailHandler is the one-line cost Track 0 identified.
 // atc/postgresrunner uses gomega Expect() in non-test code; outside a ginkgo
 // suite the fail handler is ours, and without one gomega panics on the FIRST

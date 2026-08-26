@@ -28,6 +28,8 @@ func Definitions() []brine.StepDefinition {
 	defs = append(defs, TaskCommandDefinitions()...)
 	defs = append(defs, PodNameDefinitions()...)
 	defs = append(defs, ConfigDefinitions()...)
+	defs = append(defs, RegistrarDefinitions()...)
+	defs = append(defs, PodWatchDefinitions()...)
 	return defs
 }
 
