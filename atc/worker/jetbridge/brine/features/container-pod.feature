@@ -306,3 +306,78 @@ Feature: What a step's pod actually looks like
       | store    | fate                  |
       | hostpath | survives the pod      |
       | emptydir | is lost with the pod  |
+
+  # A check container's working directory must be ephemeral EVEN WHEN the
+  # worker keeps step data on the node. The same container handle is reused
+  # for every check of a resource, so node-local storage would carry one
+  # check's state into the next one — a check would see the previous check's
+  # files and could report a version it never fetched.
+  #
+  # Every other pod scenario runs on a worker with no storage backend, where
+  # every volume is ephemeral anyway and the distinction cannot be observed.
+  # NOTE the Given. "keeping caches on the node" sets CacheHostPath, which
+  # governs CACHE volumes only; the step's working directory comes from the
+  # STORAGE BACKEND, installed by ArtifactDaemonHostPath. Written against the
+  # cache worker this scenario passed the mutation unchanged, because that
+  # worker still has no backend and every volume is ephemeral regardless.
+  @CO-08
+  Scenario: A check's workspace is ephemeral even on a node-local worker
+    Given a jetbridge worker with an artifact store, told to keep caches "node"
+    And a check container "check-ephemeral-handle" built from image "docker:///busybox"
+    And it works in "/tmp/build/check"
+    When the container runs
+    Then the volume mounted at "/tmp/build/check" is lost with the pod
+
+  # The contrast that gives the scenario above its teeth: the SAME worker
+  # gives a task's working directory node-local storage. Without both, an
+  # "ephemeral" assertion cannot distinguish a check being handled correctly
+  # from a backend that was never configured.
+  Scenario: A task's workspace on the same worker is kept on the node
+    Given a jetbridge worker with an artifact store, told to keep caches "node"
+    And a task container "task-hostpath-handle" built from image "docker:///busybox"
+    And it works in "/tmp/build/workdir"
+    When the container runs
+    Then the volume mounted at "/tmp/build/workdir" survives the pod
+
+  # A reused container starts on top of whatever the previous run left in its
+  # node-local workspace, so the pod clears it first. Without that, a retried
+  # step meets its own half-written outputs — the "destination path already
+  # exists" failure.
+  Scenario: A retried step clears the workspace its last attempt left behind
+    Given a jetbridge worker with an artifact store, told to keep caches "node"
+    And a task container "reused-handle" built from image "docker:///busybox"
+    And it works in "/tmp/build/workdir"
+    And the container has run before on this worker
+    When the container runs
+    Then the pod clears the workspace left by the previous run
+
+  # The other direction: a fresh container has nothing to clean, and the
+  # cleanup would only cost an image pull on every step.
+  Scenario: A first attempt does not clear a workspace nothing has used
+    Given a jetbridge worker with an artifact store, told to keep caches "node"
+    And a task container "fresh-handle" built from image "docker:///busybox"
+    And it works in "/tmp/build/workdir"
+    When the container runs
+    Then the pod does not clear the workspace
+
+  # A step reads its inputs from the artifact daemon running on its own node,
+  # so the pod must not be scheduled where that daemon is not. Without the
+  # requirement the scheduler is free to place it on a node with no artifact
+  # cache, and the step cannot read its inputs at all.
+  Scenario: A pod is pinned to a node that can serve its artifacts
+    Given a jetbridge worker with an artifact store, told to keep caches "node"
+    And a task container "affinity-handle" built from image "docker:///busybox"
+    And it works in "/tmp/build/workdir"
+    When the container runs
+    Then the pod is only scheduled where the artifact cache is ready
+
+  # Inputs arrive in the workspace via init containers that run before the
+  # step's own command. Without them the step starts against an empty
+  # directory and fails on a file it was handed.
+  Scenario: A step's inputs are fetched before its command runs
+    Given a jetbridge worker with an artifact store, told to keep caches "node"
+    And a task container "fetch-handle" built from image "docker:///busybox"
+    And it works in "/tmp/build/workdir"
+    And it takes an input at "/tmp/build/workdir/from-earlier" produced by an earlier step
+    When the container runs
+    Then the pod fetches its inputs before the step starts

@@ -37,6 +37,7 @@ func ContainerSpecDefinitions() []brine.StepDefinition {
 					Handle:    handle,
 					ImageURL:  image,
 					Dir:       "/workdir",
+					TeamID:    in.TeamID,
 				}, nil
 			},
 		),
@@ -72,6 +73,13 @@ func ContainerSpecDefinitions() []brine.StepDefinition {
 			"the container runs",
 			func(in ContainerDraft, _ brine.Params, _ *brine.Recorder) (PodCreated, error) {
 				var inputs []runtime.Input
+				for _, path := range in.ArtifactInputs {
+					vol, _, err := in.Worker.CreateVolumeForArtifact(in.Ctx, in.TeamID)
+					if err != nil {
+						return PodCreated{}, fmt.Errorf("create artifact for input %q: %w", path, err)
+					}
+					inputs = append(inputs, runtime.Input{Artifact: vol, DestinationPath: path})
+				}
 				for _, path := range in.Inputs {
 					inputs = append(inputs, runtime.Input{DestinationPath: path})
 				}
@@ -102,10 +110,25 @@ func ContainerSpecDefinitions() []brine.StepDefinition {
 					spec.Outputs = outputs
 				}
 
+				owner := db.NewFixedHandleContainerOwner(in.Handle)
+				metadata := db.ContainerMetadata{
+					Type: draftContainerType(in.ContainerType), JobID: in.JobID, StepName: in.StepName,
+				}
+
+				// A container whose row already exists is reused, and a reused
+				// container's pod clears the workspace its last attempt left.
+				if in.RanBefore {
+					if _, _, err := in.Worker.FindOrCreateContainer(
+						in.Ctx, owner, metadata, spec, &noopDelegate{},
+					); err != nil {
+						return PodCreated{}, fmt.Errorf("pre-create container %q: %w", in.Handle, err)
+					}
+				}
+
 				container, _, err := in.Worker.FindOrCreateContainer(
 					in.Ctx,
-					db.NewFixedHandleContainerOwner(in.Handle),
-					db.ContainerMetadata{Type: db.ContainerTypeTask, JobID: in.JobID, StepName: in.StepName},
+					owner,
+					metadata,
 					spec,
 					&noopDelegate{},
 				)

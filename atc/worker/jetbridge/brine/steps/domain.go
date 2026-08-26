@@ -29,6 +29,9 @@ type ClusterReady struct {
 	Worker    *jetbridge.Worker
 	Clientset *fake.Clientset
 	Ctx       context.Context
+	// TeamID is a real team row, needed by anything that persists a volume;
+	// the volumes table has a foreign key onto teams.
+	TeamID int
 }
 
 // StepRunning is the state after a task container has been created and its
@@ -85,6 +88,19 @@ type ContainerDraft struct {
 	StepName         string
 	Privileged    bool
 	Sidecars      []atc.SidecarConfig
+
+	// ContainerType is empty for the task containers every scenario written
+	// before check containers existed assumes; draftContainerType defaults it.
+	ContainerType db.ContainerType
+	// RanBefore makes the run step create the container row once first, so
+	// the run under test finds it already created and is REUSED.
+	RanBefore bool
+	// ArtifactInputs are destination paths whose input carries a real
+	// artifact, which is what makes the backend emit a fetch init container.
+	ArtifactInputs []string
+	// TeamID carried from ClusterReady, so artifact volumes satisfy the
+	// volumes table's foreign key onto teams.
+	TeamID int
 }
 
 // PodCreated is the state after a described container has run and its pod has

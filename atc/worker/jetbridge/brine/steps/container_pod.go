@@ -772,11 +772,20 @@ func newConfiguredWorker(res brine.Resources, apply func(*jetbridge.Config)) (Cl
 	clientset := fake.NewSimpleClientset()
 	cfg := jetbridge.NewConfig(namespace, "")
 	apply(&cfg)
+	team, err := database.TeamFactory.CreateTeam(atc.Team{Name: "container-pod-" + namespace})
+	if err != nil {
+		return ClusterReady{}, fmt.Errorf("create team: %w", err)
+	}
+	worker := jetbridge.NewWorker(dbWorker, clientset, cfg)
+	// Artifact inputs need somewhere to record their volumes; without a
+	// repository CreateVolumeForArtifact refuses outright.
+	worker.SetVolumeRepo(database.VolumeRepository)
 	return ClusterReady{
 		Namespace: namespace,
-		Worker:    jetbridge.NewWorker(dbWorker, clientset, cfg),
+		Worker:    worker,
 		Clientset: clientset,
 		Ctx:       context.Background(),
+		TeamID:    team.ID(),
 	}, nil
 }
 

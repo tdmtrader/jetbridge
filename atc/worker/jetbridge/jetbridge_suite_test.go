@@ -13,6 +13,7 @@ import (
 	"github.com/concourse/concourse/atc/db/dbtest"
 	"github.com/concourse/concourse/atc/db/lock"
 	"github.com/concourse/concourse/atc/postgresrunner"
+	"github.com/concourse/concourse/atc/runtime"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -164,4 +165,21 @@ type creatingContainerCreatedFails struct{ db.CreatingContainer }
 
 func (creatingContainerCreatedFails) Created() (db.CreatedContainer, error) {
 	return nil, fmt.Errorf("db connection lost")
+}
+
+// filterMountsByPaths lived in container_test.go until that suite was retired
+// under the brine migration; podname_integration_test.go is the remaining
+// consumer.
+func filterMountsByPaths(mounts []runtime.VolumeMount, paths []string) []runtime.VolumeMount {
+	pathSet := make(map[string]bool, len(paths))
+	for _, p := range paths {
+		pathSet[p] = true
+	}
+	var result []runtime.VolumeMount
+	for _, m := range mounts {
+		if pathSet[m.MountPath] {
+			result = append(result, m)
+		}
+	}
+	return result
 }
