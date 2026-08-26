@@ -651,10 +651,24 @@ func TestRegistry_ConcurrentAccess(t *testing.T) {
 
 	wg.Wait()
 
-	// Should not have panicked. Len should be deterministic-ish but we just
-	// verify it doesn't crash.
-	_ = r.Len()
-	_ = r.Keys()
+	// The point is that no goroutine panics and no map is corrupted. Assert the
+	// end state rather than calling Len for its side effects: without this the
+	// test can only ever fail by CRASHING, so a silently corrupted registry —
+	// a key whose value was torn between two writers — reads as a pass.
+	keys := r.Keys()
+	if len(keys) != r.Len() {
+		t.Fatalf("Keys() returned %d entries but Len() says %d", len(keys), r.Len())
+	}
+	for _, k := range keys {
+		rel, ok := r.Lookup(k)
+		if !ok {
+			t.Errorf("Keys() returned %q but Lookup does not find it", k)
+			continue
+		}
+		if want := daemon.RelKey("steps/" + k); rel != want {
+			t.Errorf("%q holds %q, want %q — a value was torn between writers", k, rel, want)
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------

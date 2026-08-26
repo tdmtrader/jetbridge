@@ -229,6 +229,9 @@ func (p *PeerResolver) Fetch(ctx context.Context, peerIP, key, destPath string) 
 		// retry then re-extracted over that residue and failed early with a
 		// spurious "file exists" on a legitimate entry — so the error the
 		// operator finally saw named the wrong cause entirely.
+		// parent is a live fd. defer cannot run per-iteration, so EVERY exit
+		// from the rest of this loop body closes it explicitly — three today,
+		// and a fourth branch added without one leaks a descriptor per retry.
 		parent, base, err := openParent(destPath)
 		if err != nil {
 			resp.Body.Close()
