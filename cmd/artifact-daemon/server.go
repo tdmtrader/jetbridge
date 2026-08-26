@@ -58,15 +58,10 @@ type Server struct {
 	// legitimate keys.
 	destLocks sync.Map
 
-	// root is the handle every direct filesystem operation on artifact data
-	// goes through. Containment is a property of this handle, not of a check
-	// performed before the operation — os.Root refuses to resolve a path out of
+	// root is the handle every filesystem operation on artifact data goes
+	// through. Containment is a property of the handle, not of a check
+	// performed before the operation: os.Root refuses to resolve a path out of
 	// itself, so there is no ordering to get wrong and no name to out-think.
-	//
-	// It does NOT replace validateContainedPath in this track. tarDirectory
-	// still walks an ambient path (egress is Track 2's), and three wire inputs
-	// still terminate in ambient calls, so that validator survives here and
-	// dies where its uses actually move.
 	root *os.Root
 }
 
@@ -137,29 +132,19 @@ func (s *Server) Guard() *ReadGuard {
 // anything under steps/, or the location itself for non-steps entries (legacy
 // flat files) so they still get a consistent per-location lock.
 //
-// It takes a RelKey rather than a path, and this is the whole point of the
-// type. The key it returns must be IDENTICAL to the one the sweeper takes —
-// the sweeper takes entry.Name(), a bare handle — or the two stop excluding
-// each other and the sweeper deletes a directory mid-read. Previously the
-// callers passed a mixture of absolutes and registry values, and the
-// filepath.Rel fallback returned a whole path when the two disagreed: a
-// plausible-looking key that locks nothing, failing silently in the direction
-// of data loss rather than of a hang.
+// The key MUST be identical to the sweeper's, which is entry.Name() — a bare
+// handle — or the two stop excluding each other and the sweeper deletes a
+// directory mid-read. That failure is silent and loses data rather than
+// hanging, which is why the argument is a RelKey and not a path.
 func (s *Server) stepHandle(rel RelKey) string {
 	segments := strings.Split(string(rel), "/")
 	if len(segments) >= 2 && segments[0] == "steps" {
 		return segments[1]
 	}
-	// Non-steps locations (caches/, resource-caches/, legacy flat files) get a
-	// NAMESPACED key so they cannot collide with a bare step handle.
-	//
-	// Without the prefix, stepHandle(RelKey("build-42")) and
-	// stepHandle(RelKey("steps/build-42/out")) both return "build-42", and an
-	// unrelated cache entry serialises against a step it has nothing to do
-	// with. Safe — over-locking never loses data — but it is contention nobody
-	// asked for and the old absolute-path fallback could not produce it. The
-	// sweeper only ever keys on a bare handle name, so the prefix can never
-	// collide with it.
+	// Namespaced so a non-steps location cannot collide with a bare step
+	// handle: without it, "build-42" and "steps/build-42/out" both key on
+	// "build-42" and unrelated work serialises. The sweeper only ever keys on a
+	// bare handle, so the prefix can never collide with it.
 	return "loc:" + string(rel)
 }
 
@@ -515,36 +500,23 @@ func (s *Server) handleStreamIn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Structural-name AUTHORIZATION survives the handle. os.Root has no opinion
-	// about WHICH names a per-artifact verb may address — it will happily
-	// create steps/steps or steps/aliases.json — so this rule is not
-	// containment and the handle does not replace it.
-	//
-	// Phase 5 removed artifactLocation from this path on the evidence that
-	// containment came from stepsRoot. It did. But artifactLocation carried TWO
-	// rules and only one was replaced, so PUT /stream-in/aliases.json started
-	// returning 201. Not an escape — it lands inside steps/ — but AC8 requires
-	// structural names refused on every per-artifact verb, and stream-in is
-	// one.
+	// Structural-name AUTHORIZATION survives the handle: os.Root has no opinion
+	// about WHICH names a per-artifact verb may address and will happily create
+	// steps/aliases.json. Containment and authorization were once fused here,
+	// and replacing only the containment half let PUT /stream-in/aliases.json
+	// return 201.
 	if err := rejectStructuralName(key); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	// No containment check here, and that is the point of the track.
+	// No containment check here: it is a property of stepsRoot below, where
+	// every operation resolves inside the handle or fails.
 	//
-	// Containment on this path is now a property of stepsRoot below: every
-	// operation resolves inside that handle or fails. Demonstrated, not
-	// assumed — with the old check still present it was removed and the escape
-	// test still passed.
-	//
-	// dest is still computed because the read/sweep guard keys on the absolute
-	// form under R12, and the registry stores absolute values. It is a LOCK KEY
-	// and a registry value, not a path anything writes through.
-	// The stream-in key is relative to the STEPS root; the registry and the
-	// guard are relative to the storage root, so the location carries the
-	// "steps/" segment. Getting this wrong is not a compile error — both are
-	// RelKey — so it is stated here once and derived everywhere else.
+	// The stream-in key is relative to the STEPS root while the registry and
+	// the guard are relative to the storage root, so the location carries the
+	// "steps/" segment. Both are RelKey, so getting it wrong is not a compile
+	// error — stated once here and derived everywhere else.
 	loc := RelKey(path.Join("steps", key))
 	dest := filepath.Join(s.storagePath, "steps", key)
 
@@ -755,18 +727,13 @@ type registerRequest struct {
 	// DurableKey is the name to store this artifact under for the long term,
 	// or empty for "do not keep it".
 	//
-	// Its presence is the entire eligibility protocol. The daemon does not
-	// parse it and does not derive it from Key: whether an artifact is
-	// re-derivable, whether anything will ask for it again, and how long it
-	// should be kept are all questions about its meaning that only the ATC can
-	// answer. The ATC answers the last one by choosing the key's retention-class
-	// prefix, which an object lifecycle rule acts on.
+	// Its presence is the entire eligibility protocol: whether an artifact is
+	// re-derivable and how long to keep it are questions only the ATC can
+	// answer, so the daemon neither parses this nor derives it from Key.
 	//
-	// It is deliberately not the same field as Key. Key names the node-local
-	// alias and must stay a single path segment; DurableKey names an object in
-	// a bucket and carries a class prefix.
-	//
-	// Absent behaves exactly as the daemon did before the durable tier existed.
+	// Deliberately a separate field: Key names a node-local alias and stays a
+	// single segment; DurableKey names a bucket object and carries a
+	// retention-class prefix that a lifecycle rule acts on.
 	DurableKey string `json:"durable_key,omitempty"`
 }
 
@@ -1108,15 +1075,12 @@ func (s *Server) copyArtifactGuarded(src RelKey, dest string) error {
 
 // copyArtifact copies the artifact at src into dest, atomically.
 //
-// Both sides go through a root handle: src through the daemon's storage root,
-// dest through a handle on its parent opened once. Every step after that —
-// temp directory, replace, rename — is relative to that handle, so a symlink
-// swapped in mid-copy cannot redirect a later step somewhere else. The previous
-// version re-derived the parent as a string for each step, which is how a
-// validated dest could still land outside the tree it was validated against.
+// Both sides go through a root handle: src through the storage root, dest
+// through one handle on its parent. Every later step is relative to that
+// handle, so a symlink swapped in mid-copy cannot redirect it.
 //
-// Copies land in a temp sibling and are renamed into place, so an interrupted
-// copy never leaves partial state at dest to block the retry.
+// Copies land in a temp sibling and rename into place, so an interrupted copy
+// leaves no partial state at dest to block the retry.
 func (s *Server) copyArtifact(src RelKey, dest string) error {
 	parent, base, err := openParent(dest)
 	if err != nil {

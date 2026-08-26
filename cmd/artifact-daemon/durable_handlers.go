@@ -178,17 +178,14 @@ func (s *Server) writeRestoreResult(w http.ResponseWriter, status int, tier stri
 // each spool a full copy to temporary storage and could evict the DaemonSet on
 // disk pressure.
 //
-// It deliberately does NOT check whether the object already exists first. A
-// cleanup init container removes step directories from a separate pod, outside
-// any guard this daemon can take, so a tar can in principle be cut short. What
-// makes that survivable is that the next producer of the same content key
-// overwrites it. Skipping the upload when the key is present would instead make
-// one truncated object permanent and cluster-wide.
-// loc is where the artifact lives under the storage root. The guard key must be
-// derived from it, not from the path the caller happened to hold: this runs in a
-// detached goroutine that only logs, so a guard key that locks nothing here is
-// invisible — the failure is a truncated object in the bucket, discovered on a
-// later restore.
+// It deliberately does NOT skip an upload when the key already exists. A
+// cleanup init container can truncate a tar from outside any guard this daemon
+// holds; what makes that survivable is the next producer overwriting it.
+// Skipping would make one truncated object permanent and cluster-wide.
+//
+// The guard key comes from loc, not from a path the caller holds: this runs
+// detached and only logs, so a key that locks nothing is invisible until a
+// later restore finds a short object.
 func (s *Server) promoteToDurable(ctx context.Context, key string, loc RelKey) {
 	if s.durable == nil {
 		return

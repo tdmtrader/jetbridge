@@ -70,13 +70,10 @@ func (s *AliasStore) Save(aliases map[string]RelKey) error {
 // whose target no longer exists. Returns an empty map (not an error) if the
 // file doesn't exist yet (first boot).
 //
-// The existence check goes through the ROOT HANDLE. It used to be os.Stat on
-// the stored value; against relative values that resolves against the process
-// CWD, so every entry would miss, every entry would be logged as "stale", and
-// the whole alias store would be silently emptied on the first boot after
-// deploy — the loudest possible consequence behind the quietest possible log
-// line. It is also the check a planted absolute symlink would have been
-// following.
+// The existence check goes through the ROOT HANDLE. An os.Stat on the stored
+// value resolves a relative path against the process CWD, so every entry would
+// miss, every one would log as "stale", and the store would silently empty
+// itself on the first boot after deploy.
 func (s *AliasStore) Load() (map[string]RelKey, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

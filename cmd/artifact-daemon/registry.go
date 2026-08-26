@@ -18,13 +18,13 @@ import (
 //   - ScanHostPath: discovers "containerHandle/output" keys from the directory tree
 //   - RegisterAlias: records "volumeHandle" → disk path mappings from the ATC
 //
-// Only alias entries are persisted to disk (via AliasStore) because scan
-// entries are always recoverable from the directory structure.
-// Values are RelKey — a location relative to storagePath — not absolute disk
-// paths. The registry is the daemon's only source of ambient paths, so it is
-// the one place the boundary can be attached to the value itself instead of
-// re-derived by each of its consumers. An entry that will not relativize is
-// REFUSED at Register rather than stored and re-checked at every use.
+// Only alias entries are persisted (via AliasStore); scan entries are always
+// recoverable from the directory structure.
+//
+// Values are RelKey, relative to storagePath. The registry is the daemon's only
+// source of ambient paths, so it is the one place the boundary can attach to
+// the value itself rather than be re-derived by every consumer. An entry that
+// will not relativize is REFUSED at Register, not stored and re-checked later.
 type Registry struct {
 	mu sync.RWMutex
 	// storagePath is the root every value is relative to. It is the only
@@ -94,15 +94,9 @@ func (r *Registry) Lookup(key string) (RelKey, bool) {
 // AmbientPath re-joins a RelKey to the storage root, producing a path OUTSIDE
 // the root handle and therefore outside the containment the handle provides.
 //
-// Named for what it costs rather than for what it does. Every caller is a place
-// where an operation still travels by path — a cp -R exec, a filepath.WalkDir —
-// and every one is a site slice 8 has to remove.
-//
-// A sibling LookupAmbientPath used to sit here, carrying this same warning. It
-// was deleted with nothing to replace it because it had ZERO production callers:
-// every ambient site was written against AmbientPath instead, so the deterrent
-// name guarded nothing. A cautionary name on a function nobody calls is
-// decoration; this is the one that is actually in the way.
+// Named for what it costs. The three remaining callers are two response-JSON
+// fields the ATC acts on and lookupRegistry's use-time check; anything else
+// should take a handle.
 func (r *Registry) AmbientPath(rel RelKey) string {
 	return filepath.Join(r.storagePath, filepath.FromSlash(string(rel)))
 }
@@ -251,8 +245,7 @@ func (r *Registry) Keys() []string {
 //
 //	<storagePath>/steps/<handle>/<output>/
 //
-// Each <handle> directory is registered with key = handle and path = the
-// full disk path to the handle directory.
+// Each output is registered under "<handle>/<output>".
 func (r *Registry) ScanHostPath(storagePath string) error {
 	stepsDir := filepath.Join(storagePath, "steps")
 	entries, err := os.ReadDir(stepsDir)
