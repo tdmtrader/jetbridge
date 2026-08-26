@@ -32,12 +32,16 @@ func ValidateTemplateDeclaration(ref atc.PipelineRef, config atc.Config) error {
 	return ValidateTemplateConfig(config)
 }
 
-// paramNamePattern is the identifier grammar for a declared template
+// ParamNamePattern is the identifier grammar for a declared template
 // parameter. A name outside it can never be resolved: vars.ParseReference
 // splits ((my.param)) into Path "my" with Fields ["param"], which never
 // matches the flat parameter map, so the placeholder survives untouched into
 // every materialized run config.
-var paramNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+//
+// It is exported so that fly can refuse a dotted or source-qualified
+// --var/--json-var name locally, against this one grammar, instead of letting
+// the server answer about a parameter the user never named.
+var ParamNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 func ValidateTemplateConfig(config atc.Config) error {
 	seenNames := map[string]struct{}{}
@@ -48,8 +52,8 @@ func ValidateTemplateConfig(config atc.Config) error {
 		if schema.Name == "run" || schema.Name == "run_id" {
 			return fmt.Errorf("parameter name %s is reserved", schema.Name)
 		}
-		if !paramNamePattern.MatchString(schema.Name) {
-			return fmt.Errorf("parameter name %s must match %s", schema.Name, paramNamePattern.String())
+		if !ParamNamePattern.MatchString(schema.Name) {
+			return fmt.Errorf("parameter name %s must match %s", schema.Name, ParamNamePattern.String())
 		}
 		if _, found := seenNames[schema.Name]; found {
 			return fmt.Errorf("parameter name %s is duplicated", schema.Name)

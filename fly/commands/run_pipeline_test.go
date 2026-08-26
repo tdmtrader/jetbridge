@@ -69,16 +69,23 @@ var _ = Describe("RunPipelineCommand", func() {
 		}))
 	})
 
-	It("prints the escaped ordinary URL for the returned payload reference", func() {
-		client := &recordingRunCreator{run: atc.PipelineRun{InstanceRef: &atc.PipelineIdentifier{
-			PipelineName: "payload/name",
-			InstanceVars: atc.InstanceVars{"branch": "a&b", "z": float64(2)},
-		}}}
+	It("names the created run and then the escaped ordinary URL for its payload", func() {
+		client := &recordingRunCreator{run: atc.PipelineRun{
+			Number: 7,
+			Status: atc.RunStatusRunning,
+			InstanceRef: &atc.PipelineIdentifier{
+				PipelineName: "payload/name",
+				InstanceVars: atc.InstanceVars{"branch": "a&b", "z": float64(2)},
+			},
+		}}
 		output := new(bytes.Buffer)
 		command := &RunPipelineCommand{Pipeline: flaghelpers.PipelineFlag{Name: "template"}}
 
 		Expect(command.run(client, "https://ci.example", "ops team", output)).To(Succeed())
-		Expect(output.String()).To(Equal("https://ci.example/teams/ops%20team/pipelines/payload%2Fname?vars.branch=%22a%5Cu0026b%22&vars.z=2\n"))
+		Expect(output.String()).To(Equal(
+			"started template run #7 (running)\n" +
+				"https://ci.example/teams/ops%20team/pipelines/payload%2Fname?vars.branch=%22a%5Cu0026b%22&vars.z=2\n",
+		))
 	})
 
 	It("rejects an instanced template without calling the client", func() {
@@ -90,6 +97,55 @@ var _ = Describe("RunPipelineCommand", func() {
 
 		Expect(command.run(client, "https://ci.example", "main", new(bytes.Buffer))).To(MatchError(ContainSubstring("instanced")))
 		Expect(client.calls).To(BeZero())
+	})
+	It("refuses a dotted parameter name instead of nesting it, for both flags", func() {
+		client := &recordingRunCreator{}
+
+		dotted := &RunPipelineCommand{
+			Pipeline: flaghelpers.PipelineFlag{Name: "template"},
+			Vars:     []flaghelpers.VariablePairFlag{{Ref: vars.Reference{Path: "a", Fields: []string{"b"}}, Value: "1"}},
+		}
+		err := dotted.run(client, "https://ci.example", "main", new(bytes.Buffer))
+		Expect(err).To(MatchError(ContainSubstring("--var parameter name a.b")))
+		Expect(err).To(MatchError(ContainSubstring(`^[A-Za-z_][A-Za-z0-9_]*$`)))
+
+		dottedJSON := &RunPipelineCommand{
+			Pipeline: flaghelpers.PipelineFlag{Name: "template"},
+			JSONVars: []flaghelpers.JSONVariablePairFlag{{Ref: vars.Reference{Path: "a", Fields: []string{"b"}}, Value: float64(1)}},
+		}
+		Expect(dottedJSON.run(client, "https://ci.example", "main", new(bytes.Buffer))).To(
+			MatchError(ContainSubstring("--json-var parameter name a.b")),
+		)
+
+		sourced := &RunPipelineCommand{
+			Pipeline: flaghelpers.PipelineFlag{Name: "template"},
+			JSONVars: []flaghelpers.JSONVariablePairFlag{{Ref: vars.Reference{Source: "vault", Path: "a"}, Value: float64(1)}},
+		}
+		Expect(sourced.run(client, "https://ci.example", "main", new(bytes.Buffer))).To(
+			MatchError(ContainSubstring("--json-var parameter name vault:a")),
+		)
+
+		illFormed := &RunPipelineCommand{
+			Pipeline: flaghelpers.PipelineFlag{Name: "template"},
+			Vars:     []flaghelpers.VariablePairFlag{{Ref: vars.Reference{Path: "not-a-name"}, Value: "1"}},
+		}
+		Expect(illFormed.run(client, "https://ci.example", "main", new(bytes.Buffer))).To(
+			MatchError(ContainSubstring("--var parameter name not-a-name")),
+		)
+
+		Expect(client.calls).To(BeZero())
+	})
+
+	It("still accepts a plain parameter name on both flags", func() {
+		client := &recordingRunCreator{run: atc.PipelineRun{Number: 1, Status: atc.RunStatusRunning, InstanceRef: &atc.PipelineIdentifier{PipelineName: "payload"}}}
+		command := &RunPipelineCommand{
+			Pipeline: flaghelpers.PipelineFlag{Name: "template"},
+			Vars:     []flaghelpers.VariablePairFlag{{Ref: vars.Reference{Path: "_count"}, Value: "1"}},
+			JSONVars: []flaghelpers.JSONVariablePairFlag{{Ref: vars.Reference{Path: "Enabled2"}, Value: true}},
+		}
+
+		Expect(command.run(client, "https://ci.example", "main", new(bytes.Buffer))).To(Succeed())
+		Expect(client.vars).To(Equal(map[string]any{"_count": "1", "Enabled2": true}))
 	})
 
 	It("fails when the server omits the returned payload reference", func() {

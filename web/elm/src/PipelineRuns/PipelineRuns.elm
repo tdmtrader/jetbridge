@@ -3,7 +3,7 @@ import Application.Models exposing (Session)
 import Concourse
 import Concourse.BuildStatus as BuildStatus
 import Concourse.Pagination as Pagination exposing (Page, Paginated)
-import Concourse.PipelineRun exposing (PipelineRun)
+import Concourse.PipelineRun as PipelineRun exposing (PipelineRun)
 import Dict
 import Duration
 import EffectTransformer exposing (ET)
@@ -346,7 +346,7 @@ viewRun : Concourse.PipelineIdentifier -> Maybe Time.Posix -> PipelineRun -> Htm
 viewRun template now run =
     Html.tr []
         [ Html.td [] [ viewRunNumber template run ]
-        , Html.td [ class (BuildStatus.show run.status) ] [ Html.text (BuildStatus.show run.status) ]
+        , Html.td [ class (BuildStatus.show run.status) ] [ Html.text (PipelineRun.showStatus run.status) ]
         , Html.td [] [ Html.text (Concourse.hyphenNotation run.params) ]
         , Html.td [] [ Html.text (runDuration now run) ]
         , Html.td [] [ Html.text (Maybe.withDefault "—" run.createdBy) ]

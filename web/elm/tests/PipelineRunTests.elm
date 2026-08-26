@@ -28,6 +28,24 @@ all =
                     )
                     |> Json.Encode.encode 0
                     |> Expect.equal "{\"vars\":{\"count\":2,\"enabled\":true}}"
+        , test "renders every run status in the API's vocabulary" <|
+            \_ ->
+                [ BuildStatusStarted
+                , BuildStatusSucceeded
+                , BuildStatusFailed
+                , BuildStatusErrored
+                , BuildStatusAborted
+                , BuildStatusPending
+                ]
+                    |> List.map PipelineRun.showStatus
+                    |> Expect.equal
+                        [ "running"
+                        , "succeeded"
+                        , "failed"
+                        , "errored"
+                        , "aborted"
+                        , "pending"
+                        ]
         , test "decodes running as started and keeps numeric and Boolean params typed" <|
             \_ ->
                 """
