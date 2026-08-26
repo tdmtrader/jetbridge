@@ -26,6 +26,17 @@ func NewServer(logger lager.Logger, runFactory db.PipelineRunFactory, externalUR
 	return &Server{logger: logger, runFactory: runFactory, externalURL: externalURL}
 }
 
+// presentRun is the single place the run presentation options are decided, so
+// the per-run detail path and the batched listing path cannot drift apart. A
+// nil instance is the reclaimed state and the only reclaimed state.
+func (s *Server) presentRun(pipeline db.Pipeline, run db.PipelineRun, instance db.Pipeline, r *http.Request) atc.PipelineRun {
+	access := accessor.GetAccessor(r)
+	return present.PipelineRun(run, instance, present.PipelineRunOptions{
+		AuthorizedForParams: access.IsAuthorized(pipeline.TeamName()),
+		CanEnterPayload:     instance != nil && (instance.Public() || access.IsAuthorized(instance.TeamName())),
+	})
+}
+
 func (s *Server) pipelineRun(pipeline db.Pipeline, run db.PipelineRun, r *http.Request) (atc.PipelineRun, error) {
 	instance, found, err := s.runFactory.InstancePipeline(run)
 	if err != nil {
@@ -34,12 +45,7 @@ func (s *Server) pipelineRun(pipeline db.Pipeline, run db.PipelineRun, r *http.R
 	if !found {
 		instance = nil
 	}
-
-	access := accessor.GetAccessor(r)
-	return present.PipelineRun(run, instance, present.PipelineRunOptions{
-		AuthorizedForParams: access.IsAuthorized(pipeline.TeamName()),
-		CanEnterPayload:     instance != nil && (instance.Public() || access.IsAuthorized(instance.TeamName())),
-	}), nil
+	return s.presentRun(pipeline, run, instance, r), nil
 }
 
 func (s *Server) writeRun(w http.ResponseWriter, pipeline db.Pipeline, run db.PipelineRun, r *http.Request, status int) {
@@ -102,14 +108,21 @@ func (s *Server) ListPipelineRuns(pipeline db.Pipeline) http.Handler {
 			return
 		}
 
+		// One query for the whole page. Resolving payloads run-by-run made this
+		// unauthenticated-reachable route issue up to atc.PaginationAPIMaxLimit
+		// round trips per request.
+		payloads, err := s.runFactory.InstancePipelines(runs)
+		if err != nil {
+			s.logger.Error("failed-to-load-pipeline-run-payload", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
 		presented := make([]atc.PipelineRun, len(runs))
 		for i, run := range runs {
-			presented[i], err = s.pipelineRun(pipeline, run, r)
-			if err != nil {
-				s.logger.Error("failed-to-load-pipeline-run-payload", err)
-				w.WriteHeader(http.StatusInternalServerError)
-				return
-			}
+			// A run with no payload row is reclaimed: the missing map entry is
+			// the nil db.Pipeline the presenter reads as such.
+			presented[i] = s.presentRun(pipeline, run, payloads[run.ID()], r)
 		}
 
 		if pagination.Older != nil {
@@ -183,11 +196,11 @@ func pipelineRunPage(r *http.Request) (db.Page, error) {
 			return db.Page{}, fmt.Errorf("invalid limit pagination value")
 		}
 		// This route is reachable by an unauthenticated viewer on an exposed
-		// template, and the handler issues one InstancePipeline query per
-		// returned run, so an unbounded caller-supplied limit is an
-		// unauthenticated amplifier. A well-formed but absurd limit clamps
-		// rather than 400s, so existing scripted callers keep working; the
-		// Link headers then echo the clamped value.
+		// template, so an unbounded caller-supplied limit is an unauthenticated
+		// amplifier: it sizes the response, the payload batch's IN list, and the
+		// rows scanned for it. A well-formed but absurd limit clamps rather than
+		// 400s, so existing scripted callers keep working; the Link headers then
+		// echo the clamped value.
 		if limit > atc.PaginationAPIMaxLimit {
 			limit = atc.PaginationAPIMaxLimit
 		}
