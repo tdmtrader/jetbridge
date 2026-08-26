@@ -122,6 +122,61 @@ func ContainerPodDefinitions() []brine.StepDefinition {
 			},
 		),
 
+		// PE-07's ephemeral-storage clause: a step that writes a large
+		// artifact to local disk is evicted without this, and the eviction
+		// looks like an unexplained failure.
+		brine.DefineMap[ContainerDraft, ContainerDraft](
+			"it is limited to {int} bytes of local disk, requesting {int}",
+			func(in ContainerDraft, p brine.Params, _ *brine.Recorder) (ContainerDraft, error) {
+				lim, _ := p.GetInt(0)
+				req, ok := p.GetInt(1)
+				if !ok {
+					return ContainerDraft{}, fmt.Errorf("expected a limit and a request")
+				}
+				l, r := uint64(lim), uint64(req)
+				in.LimitEphemeral, in.RequestEphemeral = &l, &r
+				return in, nil
+			},
+		),
+
+		brine.DefineCheck[PodCreated](
+			"the step may use at most {string} of local disk, reserving {string}",
+			func(in PodCreated, p brine.Params, _ *brine.Recorder) error {
+				lim, _ := p.GetString(0)
+				req, ok := p.GetString(1)
+				if !ok {
+					return fmt.Errorf("expected a limit and a request")
+				}
+				main, err := mainContainer(in.Pod)
+				if err != nil {
+					return err
+				}
+				want, err := resource.ParseQuantity(lim)
+				if err != nil {
+					return fmt.Errorf("bad limit %q: %w", lim, err)
+				}
+				got, ok2 := main.Resources.Limits[corev1.ResourceEphemeralStorage]
+				if !ok2 {
+					return fmt.Errorf("expected an ephemeral-storage limit of %s, none is set", lim)
+				}
+				if got.Cmp(want) != 0 {
+					return fmt.Errorf("expected an ephemeral-storage limit of %s, got %s", lim, got.String())
+				}
+				wantReq, err := resource.ParseQuantity(req)
+				if err != nil {
+					return fmt.Errorf("bad request %q: %w", req, err)
+				}
+				gotReq, ok3 := main.Resources.Requests[corev1.ResourceEphemeralStorage]
+				if !ok3 {
+					return fmt.Errorf("expected an ephemeral-storage request of %s, none is set", req)
+				}
+				if gotReq.Cmp(wantReq) != 0 {
+					return fmt.Errorf("expected an ephemeral-storage request of %s, got %s", req, gotReq.String())
+				}
+				return nil
+			},
+		),
+
 		// PE-04
 		brine.DefineMap[ContainerDraft, ContainerDraft](
 			"it runs privileged",

@@ -10,7 +10,9 @@ import (
 	"path/filepath"
 
 	"github.com/brine-dev/brine-go/pkg/brine"
+	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/compression"
+	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 )
 
@@ -312,4 +314,102 @@ func addVolume(set VolumeSet, p brine.Params) (VolumeSet, error) {
 	volume.SetPodName(name + "-pod")
 	set.Volumes[name] = volume
 	return set, nil
+}
+
+// VolumeIdentityDefinitions covers the rest of volume_test.go — a volume's
+// identity, its source worker, and the database row behind it.
+//
+// Identity is what the artifact repository keys on, so a volume that reported
+// the wrong handle would hand the next step somebody else's artifact.
+func VolumeIdentityDefinitions() []brine.StepDefinition {
+	return []brine.StepDefinition{
+
+		brine.DefineMapUsing[brine.Empty, VolumeIdentity](
+			"a persisted volume on this worker",
+			[]string{"jetbridge-db"},
+			func(_ brine.Empty, _ brine.Params, _ *brine.Recorder, res brine.Resources) (VolumeIdentity, error) {
+				database, ok := res.Get("jetbridge-db").(JetbridgeDB)
+				if !ok {
+					return VolumeIdentity{}, fmt.Errorf("jetbridge-db resource is %T", res.Get("jetbridge-db"))
+				}
+				dbWorker, err := database.PersistNamedWorker("k8s-worker-1")
+				if err != nil {
+					return VolumeIdentity{}, err
+				}
+				team, err := database.TeamFactory.CreateTeam(atc.Team{Name: "volume-identity"})
+				if err != nil {
+					return VolumeIdentity{}, fmt.Errorf("create team: %w", err)
+				}
+				creating, err := database.VolumeRepository.CreateVolume(
+					team.ID(), dbWorker.Name(), db.VolumeTypeArtifact)
+				if err != nil {
+					return VolumeIdentity{}, fmt.Errorf("create volume: %w", err)
+				}
+				created, err := creating.Created()
+				if err != nil {
+					return VolumeIdentity{}, fmt.Errorf("mark volume created: %w", err)
+				}
+
+				root, err := os.MkdirTemp("", "brine-identity")
+				if err != nil {
+					return VolumeIdentity{}, fmt.Errorf("temp dir: %w", err)
+				}
+				vol := jetbridge.NewVolume(created, &localExecAdapter{root: root},
+					"identity-pod", "test-namespace", "main", "/tmp/build/inputs")
+
+				daemonVol := jetbridge.NewDaemonSetVolume(
+					"key", "runtime-handle", dbWorker.Name(), created, "",
+					jetbridge.NewConfig("test-namespace", ""), nil)
+
+				return VolumeIdentity{
+					Volume: vol, DaemonVolume: daemonVol,
+					DBHandle: created.Handle(), WorkerName: dbWorker.Name(),
+				}, nil
+			},
+		),
+
+		brine.DefineCheck[VolumeIdentity](
+			"the volume identifies itself by its database handle",
+			func(in VolumeIdentity, _ brine.Params, _ *brine.Recorder) error {
+				if in.Volume.Handle() != in.DBHandle {
+					return fmt.Errorf(
+						"expected the volume to identify as %q — the handle the artifact repository keys on — got %q",
+						in.DBHandle, in.Volume.Handle())
+				}
+				return nil
+			},
+		),
+
+		brine.DefineCheck[VolumeIdentity](
+			"the volume names the worker it lives on",
+			func(in VolumeIdentity, _ brine.Params, _ *brine.Recorder) error {
+				if in.Volume.Source() != in.WorkerName {
+					return fmt.Errorf("expected the volume to name worker %q, got %q",
+						in.WorkerName, in.Volume.Source())
+				}
+				return nil
+			},
+		),
+
+		// The DB row is what survives a web restart; a volume that lost it
+		// would be invisible to garbage collection.
+		brine.DefineCheck[VolumeIdentity](
+			"both volume kinds still carry their database row",
+			func(in VolumeIdentity, _ brine.Params, _ *brine.Recorder) error {
+				if in.Volume.DBVolume() == nil {
+					return fmt.Errorf("the deferred volume lost its database row")
+				}
+				if in.DaemonVolume.DBVolume() == nil {
+					return fmt.Errorf("the daemonset volume lost its database row")
+				}
+				if got := in.DaemonVolume.DBVolume().Handle(); got != in.DBHandle {
+					return fmt.Errorf("expected the daemonset volume's row to be %q, got %q", in.DBHandle, got)
+				}
+				if got := in.DaemonVolume.DBVolume().WorkerName(); got != in.WorkerName {
+					return fmt.Errorf("expected the row to name worker %q, got %q", in.WorkerName, got)
+				}
+				return nil
+			},
+		),
+	}
 }
