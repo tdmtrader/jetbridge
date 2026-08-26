@@ -47,11 +47,22 @@ Feature: Configuring the Kubernetes worker
     Then it fails to build a clientset
 
   # WR-05: the built-in resource types an operator gets for free.
-  Scenario: Resource types resolve to their built-in images by default
+  # A deletion probe found this scenario named three types and guarded none of
+  # the set: dropping `s3` from the defaults copy passed a fully green suite. A
+  # built-in resource type vanishing breaks every pipeline that uses it, so the
+  # SET is what has to be asserted, not a sample of it.
+  Scenario: Every built-in resource type is offered by default
     Given the resource type images are merged with no overrides
     Then the resource type "git" resolves to image "concourse/git-resource"
     And the resource type "registry-image" resolves to image "concourse/registry-image-resource"
     And the resource type "time" resolves to image "concourse/time-resource"
+    And the resource type "s3" resolves to image "concourse/s3-resource"
+    And the resource type "docker-image" resolves to image "concourse/docker-image-resource"
+    And the resource type "pool" resolves to image "concourse/pool-resource"
+    And the resource type "semver" resolves to image "concourse/semver-resource"
+    And the resource type "mock" resolves to image "concourse/mock-resource"
+    And every built-in resource type is still offered
+    And no resource type was invented that nobody configured
 
   # WR-06: overrides. Every row also asserts the untouched defaults survive,
   # because an override that silently drops the rest of the map would break

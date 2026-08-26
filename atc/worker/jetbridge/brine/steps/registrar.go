@@ -222,6 +222,32 @@ func RegistrarDefinitions() []brine.StepDefinition {
 			},
 		),
 
+		// A deletion probe found the lease check was a LOWER bound only:
+		// widening heartbeatTTL from 30s to 24h passed a fully green suite.
+		// The TTL is the window in which a dead worker still looks alive to
+		// the scheduler, so its CEILING is the safety property — an unbounded
+		// lease means work is placed on a worker that is gone.
+		brine.DefineCheck[RegistrationOutcome](
+			"its lease expires within {int} minute",
+			func(in RegistrationOutcome, p brine.Params, _ *brine.Recorder) error {
+				mins, ok := p.GetInt(0)
+				if !ok {
+					return fmt.Errorf("expected a minutes parameter")
+				}
+				if err := in.ok(); err != nil {
+					return err
+				}
+				ceiling := time.Now().Add(time.Duration(mins) * time.Minute)
+				if !in.Worker.ExpiresAt().Before(ceiling) {
+					return fmt.Errorf(
+						"expected the lease to expire within %d minute(s) so a dead worker stops being scheduled; "+
+							"it expires at %s, which is %s away",
+						mins, in.Worker.ExpiresAt(), time.Until(in.Worker.ExpiresAt()).Round(time.Second))
+				}
+				return nil
+			},
+		),
+
 		brine.DefineCheck[RegistrationOutcome](
 			"its lease has not expired",
 			func(in RegistrationOutcome, _ brine.Params, _ *brine.Recorder) error {

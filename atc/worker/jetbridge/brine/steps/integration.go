@@ -292,6 +292,24 @@ func IntegrationDefinitions() []brine.StepDefinition {
 func integrationClusterDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 
+		// PodCount was a DEAD FIELD: declared, assigned, never read. Four
+		// cases in podname_integration_test.go assert exactly one pod is
+		// created, and brine carried that nowhere — a step that leaked a
+		// second pod would have passed. This reads the value that was already
+		// being captured.
+		brine.DefineCheck[StepRan](
+			"the step created exactly one pod",
+			func(in StepRan, _ brine.Params, _ *brine.Recorder) error {
+				if in.PodCount != 1 {
+					return fmt.Errorf(
+						"expected exactly one pod for the step; found %d — a leaked pod is a leaked container "+
+							"the reaper will not match to any handle", in.PodCount)
+				}
+				return nil
+			},
+		),
+
+
 		brine.DefineMapUsing[brine.Empty, IntegrationCluster](
 			"a jetbridge cluster in namespace {string}",
 			[]string{"jetbridge-db"},
