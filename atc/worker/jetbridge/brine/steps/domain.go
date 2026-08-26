@@ -236,3 +236,19 @@ type WatchObservation struct {
 	Err     error
 	Message string
 }
+
+// ReaperReady and ReaperOutcome are the garbage-collection states.
+type ReaperReady struct {
+	DB          JetbridgeDB
+	Worker      db.Worker
+	Clientset   *fake.Clientset
+	Config      jetbridge.Config
+	Reaper      *jetbridge.Reaper
+	Ctx         context.Context
+	BuildLookup bool
+}
+
+type ReaperOutcome struct {
+	Ready ReaperReady
+	Err   error
+}

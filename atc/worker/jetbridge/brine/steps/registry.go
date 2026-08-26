@@ -30,6 +30,7 @@ func Definitions() []brine.StepDefinition {
 	defs = append(defs, ConfigDefinitions()...)
 	defs = append(defs, RegistrarDefinitions()...)
 	defs = append(defs, PodWatchDefinitions()...)
+	defs = append(defs, ReaperDefinitions()...)
 	return defs
 }
 
