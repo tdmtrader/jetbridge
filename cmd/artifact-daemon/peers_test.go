@@ -240,33 +240,6 @@ func TestPeerProbe_ConcurrentFirstHitWins(t *testing.T) {
 	}
 }
 
-// TestResolveEndpoint_PeerFallback verifies that /resolve queries peers when
-// artifact is not found locally.
-func TestResolveEndpoint_PeerFallback(t *testing.T) {
-	// Set up a peer daemon with the artifact.
-	peerStorage := t.TempDir()
-	stepDir := filepath.Join(peerStorage, "steps", "remote-handle", "output")
-	os.MkdirAll(stepDir, 0755)
-	os.WriteFile(filepath.Join(stepDir, "remote.txt"), []byte("from-peer"), 0644)
-
-	peerLogger := lagertest.NewTestLogger("peer")
-	peerServer := newDaemonServer(t, peerLogger, peerStorage, "peer-node")
-	peerTS := httptest.NewServer(peerServer.Handler())
-	defer peerTS.Close()
-
-	// Set up the local daemon (no artifact locally).
-	localTS, _ := setupServer(t)
-
-	// We can't easily inject a real PeerResolver into the test server since
-	// setupServer creates its own. Instead, test the peer fetch mechanism
-	// directly — the integration of /resolve + peers was already wired in
-	// handleResolve and tested via the Fetch unit test above.
-	//
-	// For a full end-to-end test, we'd need a fake K8s EndpointSlice.
-	// That's better suited for a live integration test.
-	_ = localTS // verify it compiles
-}
-
 // splitHostPort extracts host and port from "host:port" string.
 // TestPeerFetch_RestrictiveModesNormalized verifies that tar entries with
 // restrictive modes (e.g., 0700 dirs, 0600 files from container rootfs) are

@@ -85,30 +85,22 @@ func TestAC3_RegisterRefusesAnOutOfRootLocalPath(t *testing.T) {
 	}
 }
 
-// AC2 — the TOCTOU is closed for the handle-backed consumers.
+// A registry alias resolved, then swapped for an outward symlink before use,
+// must yield no read of the swapped target.
 //
-// Written as a SEQUENCE, not a race, so it cannot be flaky: register a real
-// alias, then replace its target with a symlink pointing out of the store, then
-// request it. The swapped target must never be read.
+// Written as a SEQUENCE, not a race, so it cannot be flaky. The route is real:
+// task containers write into the store through the hostPath mount, so a symlink
+// can appear without the daemon being involved — which is why validating at
+// registration is not enough.
 //
-// The route is narrow but real. Task containers write directly into the store
-// through the hostPath mount, so a symlink can appear under it without passing
-// through the daemon at all — which is why validating at REGISTRATION is not
-// enough and lookupRegistry's check at USE survives this track.
+// THE SWAPPED TARGET IS A FILE, and that is load-bearing. Swapping in a symlink
+// to a DIRECTORY passes with every defence removed, because filepath.WalkDir
+// does not descend a symlinked root — it stages an escape the code path cannot
+// perform. A symlink to a file reaches os.Open, which follows it.
 //
-// Scoped per the spec: GET and HEAD on /artifacts/, both /resource-caches/
-// routes, and the durable lookup. resolveOne's registry branch is EXCLUDED —
-// its src reaches cp -R, which is not a handle, and that window closes in
-// slice 8. Naming the exclusion matters: a version of this test covering only
-// GET /artifacts/ would pass while the busiest consumer stayed open.
-//
-// THE SWAPPED TARGET IS A FILE, and that detail is load-bearing. The first
-// version of this test swapped in a symlink to a DIRECTORY, and it passed with
-// BOTH defences removed — filepath.WalkDir does not descend a symlinked root
-// (verified: it visits one entry and stops), so tarDirectory could not have
-// leaked the content whatever the daemon did. The test staged an escape the
-// code path cannot perform, and would have reported a guard as proven that it
-// never exercised. A symlink to a file reaches os.Open, which follows it.
+// This proves the DISJUNCTION: deleting lookupRegistry's use-time check leaves
+// it green, and so does reverting every handle-backed read. Only losing both
+// fails it.
 func TestAC2_SwappedAliasTargetIsNeverRead(t *testing.T) {
 	const secret = "SECRET-OUTSIDE-THE-STORE"
 	const contained = "legitimately-contained-content"
@@ -217,11 +209,9 @@ func TestAC2_SwappedAliasTargetIsNeverRead(t *testing.T) {
 		})
 	}
 
-	// The durable-lookup half of AC2 is in registry_relative_ac_inpkg_test.go.
-	// It needs a configured durable tier, whose constructor is unexported, and
-	// without one the handler returns 501 before it ever reaches the registry
-	// lookup — so a subtest here would have asserted nothing. Which it did:
-	// the first version of it passed with every guard removed.
+	// The durable half lives in registry_relative_ac_inpkg_test.go: it needs a
+	// configured tier, whose constructor is unexported, and without one the
+	// handler 501s before reaching the registry lookup.
 }
 
 // AC4's positive half, at the level the spec states it: EVERY value in

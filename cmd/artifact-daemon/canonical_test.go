@@ -9,22 +9,12 @@ import (
 	"code.cloudfoundry.org/lager/v3/lagertest"
 )
 
-// The defect these cover is ONE shape in two places:
-//
-//	A validator computes a canonical form, and the caller uses the ORIGINAL.
-//
-// This track wrote the cure for it one level lower — "containedRelKey is
-// validateContainedPath's answer, kept rather than thrown away… returning it
-// means the representation and the check cannot disagree" — and did not apply
-// it to the two validators above. Both instances shipped.
+// These cover one defect shape in two places: a validator computes a canonical
+// form and the caller uses the original.
 
-// resolvePath must resolve symlinks in the KERNEL's order — component by
-// component, left to right — not collapse ".." lexically first.
-//
-// The old implementation called filepath.Clean on its input, so "link/.."
-// vanished textually and the symlink was never walked. The validator reported
-// contained; the kernel landed outside. Reached from the mTLS-exempt /resolve,
-// where dest becomes os.RemoveAll and os.Rename.
+// resolvePath must resolve symlinks in the kernel's order, component by
+// component. Cleaning the input first makes "link/.." vanish textually, so the
+// validator reports contained for a path the kernel lands outside.
 func TestResolvePath_DoesNotCollapseDotDotAcrossASymlink(t *testing.T) {
 	base := t.TempDir()
 	store := filepath.Join(base, "store")
@@ -111,11 +101,9 @@ func TestResolvePath_TheKernelReallyLandsOutside(t *testing.T) {
 	}
 }
 
-// A request key must BE canonical, not merely clean to something canonical.
-//
-// requestKey returned the RAW key while validateRequestKey checked the cleaned
-// one; handleGetArtifact and handleDeleteArtifact then built a RelKey from that
-// raw string by hand, and stepHandle splits a RelKey on "/".
+// A request key must BE canonical, not merely clean to something canonical:
+// two handlers build a RelKey from the raw key by hand, and stepHandle splits
+// a RelKey on "/".
 func TestValidateRequestKey_RefusesNonCanonical(t *testing.T) {
 	for _, tc := range []struct {
 		key     string
@@ -145,14 +133,14 @@ func TestValidateRequestKey_RefusesNonCanonical(t *testing.T) {
 	}
 }
 
-// The consequence, stated as the guard keys themselves: for every key the
-// validator now admits, the reader's key equals the sweeper's.
+// For every key the validator admits, the reader's guard key must equal the
+// sweeper's.
 //
-// This is the assertion AC1 could not make. AC1 derives the reader key from a
-// Lookup value, which is always canonical because Register goes through
-// filepath.Join — so it never exercised the two sites that construct a RelKey
-// BY HAND. The type made every stale READ a compile error and no stale
-// CONSTRUCTION one.
+// The sibling assertion in registry_relative_test.go derives the reader key
+// from a Lookup value, which is always canonical because Register goes through
+// filepath.Join — so it never reaches the two sites that build a RelKey by
+// hand. The type makes a stale READ a compile error, never a stale
+// CONSTRUCTION.
 func TestGuardKey_EveryAdmittedKeyAgreesWithTheSweeper(t *testing.T) {
 	s := newServerT(t, lagertest.NewTestLogger("canonical"), t.TempDir(), "node")
 

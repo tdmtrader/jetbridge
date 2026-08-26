@@ -21,14 +21,11 @@ import (
 	daemon "github.com/concourse/concourse/cmd/artifact-daemon"
 )
 
+// setupServer is setupServerWithRegistry for the 96 callers that do not need
+// the *Server back.
 func setupServer(t *testing.T) (*httptest.Server, string) {
 	t.Helper()
-
-	storagePath := t.TempDir()
-	logger := lagertest.NewTestLogger("artifact-daemon")
-	server := newDaemonServer(t, logger, storagePath, "test-node")
-	ts := httptest.NewServer(server.Handler())
-	t.Cleanup(ts.Close)
+	ts, storagePath, _ := setupServerWithRegistry(t)
 	return ts, storagePath
 }
 
@@ -338,8 +335,7 @@ func TestHeadDirectoryReturns200(t *testing.T) {
 func setupServerWithRegistry(t *testing.T) (*httptest.Server, string, *daemon.Server) {
 	t.Helper()
 	storagePath := t.TempDir()
-	logger := lagertest.NewTestLogger("artifact-daemon")
-	server := newDaemonServer(t, logger, storagePath, "test-node")
+	server := newDaemonServer(t, lagertest.NewTestLogger("artifact-daemon"), storagePath, "test-node")
 	ts := httptest.NewServer(server.Handler())
 	t.Cleanup(ts.Close)
 	return ts, storagePath, server
