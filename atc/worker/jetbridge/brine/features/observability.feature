@@ -86,3 +86,17 @@ Feature: Observability span events
     And an exec-mode task container "rf14-init" is running
     When the init container "fetch-input-0" fails before the step can start
     Then the step is told which init container failed, naming "fetch-input-0"
+
+  # OE-06. The failure counterpart of OE-05, and the one that matters more: an
+  # init container that exits non-zero means the step never got its inputs, so
+  # the trace has to distinguish that from the step itself failing.
+  #
+  # No new step definition — the exit code is already a parameter, so this
+  # requirement migrated as feature text alone.
+  @OE-06
+  Scenario: A failed init container is recorded as a failure, not a completion
+    Given a jetbridge worker whose spans are recorded
+    And an exec-mode task container "oe06-init-failed" is running
+    When an init container finishes with exit code 1 and the pod then starts
+    Then the "k8s.exec-process.wait-for-running" span records the event "init.container.failed"
+    And the "k8s.exec-process.wait-for-running" span records the event "init.container.failed" exactly once
