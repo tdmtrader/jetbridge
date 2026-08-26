@@ -581,6 +581,38 @@ artifactDaemon:
     # When empty and tls.enabled=true, certs are auto-generated.
     existingSecret: ""
   # -- NetworkPolicy configuration for the artifact daemon
+  resolveCapability:
+    # -- Name of a Secret holding `resolve.key`, exactly 32 random bytes shared
+    # by web and daemon. Empty generates one, the same way the daemon TLS
+    # Secret generates its CA.
+    #
+    # Signing is always on when the daemon is enabled. UPGRADE NOTE: during the
+    # first rollout from a version without this, an old web that does not sign
+    # can meet a new daemon that requires — those resolves 403 and their builds
+    # fail until web has rolled. Brief, and self-healing.
+    #
+    # UNDER ARGO CD, SET THIS. `lookup` needs a live cluster and returns empty
+    # during `helm template`, so a generated key is fresh on every reconcile and
+    # rotates on sync — after which each side rejects the other's capabilities
+    # until both have rolled. That is not brief, because it repeats every sync.
+    # The same hazard already applies to artifactDaemon.tls.existingSecret.
+    #
+    #   head -c 32 /dev/urandom > resolve.key
+    #   kubectl create secret generic concourse-resolve-capability \
+    #     --from-file=resolve.key -n <namespace>
+    #
+    # Or tell Argo CD not to diff the generated one:
+    #   ignoreDifferences:
+    #     - group: ""
+    #       kind: Secret
+    #       name: <release>-artifact-daemon-resolve-capability
+    #       jsonPointers: ["/data"]
+    existingSecret: ""
+    # -- Capability lifetime. Must exceed pod scheduling + startup + the init
+    # container's retry budget, or a slow-to-schedule pod gets a 403 on a
+    # perfectly legitimate request.
+    ttl: 2h
+
   networkPolicy:
     # -- Enable NetworkPolicy restricting daemon ingress to Concourse pods only
     enabled: false

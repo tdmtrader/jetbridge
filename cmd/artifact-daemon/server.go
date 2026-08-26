@@ -23,7 +23,7 @@ import (
 	"code.cloudfoundry.org/lager/v3"
 	"golang.org/x/sync/singleflight"
 
-	"github.com/concourse/concourse/agent/artifactcap"
+	"github.com/concourse/concourse/artifactcap"
 	"github.com/concourse/concourse/cmd/artifact-daemon/durable"
 )
 

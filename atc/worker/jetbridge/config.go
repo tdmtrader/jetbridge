@@ -11,6 +11,16 @@ import (
 )
 
 const (
+	// DefaultArtifactResolveCapabilityTTL covers bounded pod admission plus the
+	// init container's retry budget.
+	DefaultArtifactResolveCapabilityTTL = 2 * time.Hour
+
+	// ArtifactResolveInitRetryBudget matches ten wget attempts at 180 seconds
+	// plus the backoff between them.
+	ArtifactResolveInitRetryBudget = 31 * time.Minute
+
+	artifactResolveExpirySafetyMargin = 5 * time.Minute
+
 	// DefaultPodStartupTimeout is the default maximum time to wait for a
 	// pod to reach Running state before failing the task.
 	DefaultPodStartupTimeout = 5 * time.Minute
@@ -191,6 +201,16 @@ type Config struct {
 	// the artifact daemon's server certificate.
 	ArtifactDaemonTLSCACert string
 
+	// ArtifactDaemonResolveCapabilityKey is the raw 32-byte key the ATC signs
+	// resolve capabilities with. The daemon verifies with the same key. Empty
+	// disables signing, and the daemon then accepts unsigned resolves.
+	ArtifactDaemonResolveCapabilityKey []byte
+
+	// ArtifactDaemonResolveCapabilityTTL is how long a signed capability stays
+	// valid. Must exceed MinimumArtifactResolveCapabilityTTL or a slow-to-start
+	// pod gets a 403 on a legitimate request.
+	ArtifactDaemonResolveCapabilityTTL time.Duration
+
 	// ArtifactDaemonTLSEnabled indicates whether TLS is enabled for daemon
 	// communication. Derived from the presence of TLS cert/key/CA paths.
 	ArtifactDaemonTLSEnabled bool
@@ -246,4 +266,31 @@ func RestConfig(cfg Config) (*rest.Config, error) {
 		return clientcmd.BuildConfigFromFlags("", cfg.KubeconfigPath)
 	}
 	return rest.InClusterConfig()
+}
+
+// MinimumArtifactResolveCapabilityTTL is the shortest capability lifetime that
+// cannot expire before a legitimate resolve gets to run.
+//
+// A capability is signed when the pod SPEC is built, and verified when the init
+// container finally executes. Between those, the pod may wait to be scheduled,
+// then wait to start, then retry the fetch. A lifetime shorter than that sum
+// makes a busy node look like an authorization failure: the request is
+// perfectly legitimate and gets a 403.
+func MinimumArtifactResolveCapabilityTTL(schedulingTimeout, startupTimeout time.Duration) (time.Duration, error) {
+	if schedulingTimeout < 0 || startupTimeout < 0 {
+		return 0, fmt.Errorf("pod scheduling and startup timeouts must not be negative")
+	}
+	minimum := schedulingTimeout + startupTimeout
+	if minimum < schedulingTimeout {
+		return 0, fmt.Errorf("artifact resolve capability lifetime bound overflows")
+	}
+	minimum += ArtifactResolveInitRetryBudget
+	if minimum < ArtifactResolveInitRetryBudget {
+		return 0, fmt.Errorf("artifact resolve capability lifetime bound overflows")
+	}
+	minimum += artifactResolveExpirySafetyMargin
+	if minimum < artifactResolveExpirySafetyMargin {
+		return 0, fmt.Errorf("artifact resolve capability lifetime bound overflows")
+	}
+	return minimum, nil
 }

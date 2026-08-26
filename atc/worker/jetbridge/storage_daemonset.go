@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/concourse/concourse/artifactcap"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -23,6 +24,7 @@ var _ StorageBackend = (*DaemonSetBackend)(nil)
 
 type DaemonSetBackend struct {
 	config          Config
+	resolveSigner   *artifactcap.Signer
 	artifactLocator *ArtifactLocator
 	nodeIPResolver  *NodeIPResolver
 	daemonClient    *DaemonClient
@@ -34,8 +36,20 @@ func NewDaemonSetBackend(config Config, locator *ArtifactLocator, resolver *Node
 		config.ArtifactDaemonWarmTimeout = defaultWarmTimeout
 	}
 
+	// Signing is configured, or it is off. A half-configured signer is treated
+	// as off rather than as an error, because the alternative is an ATC that
+	// refuses to start over a control the daemon may not be enforcing anyway —
+	// and a TTL below the floor would 403 legitimate requests on a busy node,
+	// which is worse than not signing at all.
+	signer, signerErr := artifactcap.NewSigner(config.ArtifactDaemonResolveCapabilityKey)
+	minimumTTL, ttlErr := MinimumArtifactResolveCapabilityTTL(config.PodSchedulingTimeout, config.PodStartupTimeout)
+	if signerErr != nil || ttlErr != nil || resolveCapabilityLifetime(config) <= minimumTTL {
+		signer = nil
+	}
+
 	return &DaemonSetBackend{
 		config:          config,
+		resolveSigner:   signer,
 		artifactLocator: locator,
 		nodeIPResolver:  resolver,
 		warmNegative:    newWarmNegativeCache(),
@@ -104,9 +118,14 @@ func (b *DaemonSetBackend) ArtifactStoreVolumeName() string {
 type batchItem struct {
 	Key  string `json:"key"`
 	Dest string `json:"dest"`
+
+	// Capability authorizes this one copy: bound to Key and Dest, and
+	// short-lived. Empty when no signing key is configured, which the daemon
+	// accepts only if it too was started without a key.
+	Capability string `json:"capability,omitempty"`
 }
 
-func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runtime.Input, podVolumes []corev1.Volume, mainMounts []corev1.VolumeMount) []corev1.Container {
+func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runtime.Input, podVolumes []corev1.Volume, mainMounts []corev1.VolumeMount) ([]corev1.Container, error) {
 	helperImage := b.helperImage()
 	allowEscalation := false
 
@@ -135,7 +154,15 @@ func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runt
 			hostDestPath = filepath.Join(b.config.ArtifactDaemonHostPath, "steps", handle, volumeName)
 		}
 
-		items = append(items, batchItem{Key: daemonKey, Dest: hostDestPath})
+		item := batchItem{Key: daemonKey, Dest: hostDestPath}
+		if b.resolveSigner != nil {
+			capability, err := b.resolveSigner.SignResolve(daemonKey, hostDestPath, resolveCapabilityExpiry(b.config))
+			if err != nil {
+				return nil, fmt.Errorf("sign resolve capability for %q: %w", daemonKey, err)
+			}
+			item.Capability = capability
+		}
+		items = append(items, item)
 
 		if !seenVolumes[volumeName] {
 			seenVolumes[volumeName] = true
@@ -144,7 +171,7 @@ func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runt
 	}
 
 	if len(items) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	// Prepend the hostpath volume mount.
@@ -181,7 +208,7 @@ func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runt
 				AllowPrivilegeEscalation: &allowEscalation,
 			},
 		},
-	}
+	}, nil
 }
 
 func (b *DaemonSetBackend) daemonScheme() string {
@@ -678,4 +705,16 @@ func (b *DaemonSetBackend) bindProbed(cacheKey, workerName, ip string) runtime.V
 	vol.SetDaemonClient(b.daemonClient)
 
 	return vol
+}
+
+// resolveCapabilityLifetime is how long a signed capability stays valid.
+func resolveCapabilityLifetime(cfg Config) time.Duration {
+	if cfg.ArtifactDaemonResolveCapabilityTTL <= 0 {
+		return DefaultArtifactResolveCapabilityTTL
+	}
+	return cfg.ArtifactDaemonResolveCapabilityTTL
+}
+
+func resolveCapabilityExpiry(cfg Config) time.Time {
+	return time.Now().Add(resolveCapabilityLifetime(cfg))
 }

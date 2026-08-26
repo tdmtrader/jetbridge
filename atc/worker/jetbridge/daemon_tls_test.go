@@ -194,7 +194,10 @@ func TestBuildFetchInitContainers_TLSWiring(t *testing.T) {
 	mounts := []corev1.VolumeMount{{Name: "input-0", MountPath: "/tmp/input"}}
 	volumes := []corev1.Volume{b.StepVolume("input-0", "handle", "input-0")}
 
-	inits := b.BuildFetchInitContainers("handle", inputs, volumes, mounts)
+	inits, err := b.BuildFetchInitContainers("handle", inputs, volumes, mounts)
+	if err != nil {
+		t.Fatalf("BuildFetchInitContainers: %v", err)
+	}
 	if len(inits) != 1 {
 		t.Fatalf("expected 1 init container, got %d", len(inits))
 	}
@@ -230,7 +233,10 @@ func TestBuildFetchInitContainers_NoTLSMountWhenDisabled(t *testing.T) {
 	mounts := []corev1.VolumeMount{{Name: "input-0", MountPath: "/tmp/input"}}
 	volumes := []corev1.Volume{b.StepVolume("input-0", "handle", "input-0")}
 
-	inits := b.BuildFetchInitContainers("handle", inputs, volumes, mounts)
+	inits, err := b.BuildFetchInitContainers("handle", inputs, volumes, mounts)
+	if err != nil {
+		t.Fatalf("BuildFetchInitContainers: %v", err)
+	}
 	if len(inits) != 1 {
 		t.Fatalf("expected 1 init container, got %d", len(inits))
 	}

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/concourse/concourse/agent/artifactcap"
+	"github.com/concourse/concourse/artifactcap"
 )
 
 func TestResolveCapabilityBindsEveryAuthorizedField(t *testing.T) {

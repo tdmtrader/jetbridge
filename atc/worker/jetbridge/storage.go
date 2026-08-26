@@ -21,7 +21,7 @@ type StorageBackend interface {
 	CacheVolume(name string, jobID int, stepName, cachePath string) corev1.Volume
 	ArtifactStoreVolume(containerType db.ContainerType) *corev1.Volume
 	ArtifactStoreVolumeName() string
-	BuildFetchInitContainers(handle string, inputs []runtime.Input, podVolumes []corev1.Volume, mainMounts []corev1.VolumeMount) []corev1.Container
+	BuildFetchInitContainers(handle string, inputs []runtime.Input, podVolumes []corev1.Volume, mainMounts []corev1.VolumeMount) ([]corev1.Container, error)
 	BuildCleanupInitContainer(handle string, containerType db.ContainerType, reused bool) *corev1.Container
 	BuildAffinity(inputs []runtime.Input) *corev1.Affinity
 	RecordOutputs(ctx context.Context, handle, nodeName string, volumes []*Volume, spec runtime.ContainerSpec)

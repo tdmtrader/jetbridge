@@ -249,7 +249,10 @@ func TestDaemonSetBackend_BuildFetchInitContainers_MultipleInputs(t *testing.T) 
 		b.StepVolume("input-2", "handle", "input-2"),
 	}
 
-	inits := b.BuildFetchInitContainers("handle", inputs, volumes, mounts)
+	inits, err := b.BuildFetchInitContainers("handle", inputs, volumes, mounts)
+	if err != nil {
+		t.Fatalf("BuildFetchInitContainers: %v", err)
+	}
 
 	// Multiple inputs should produce a single batch init container.
 	if len(inits) != 1 {
@@ -292,7 +295,10 @@ func TestDaemonSetBackend_BuildFetchInitContainers_SkipsNilArtifact(t *testing.T
 		b.StepVolume("input-1", "handle", "input-1"),
 	}
 
-	inits := b.BuildFetchInitContainers("handle", inputs, volumes, mounts)
+	inits, err := b.BuildFetchInitContainers("handle", inputs, volumes, mounts)
+	if err != nil {
+		t.Fatalf("BuildFetchInitContainers: %v", err)
+	}
 	if len(inits) != 1 {
 		t.Fatalf("expected 1 init container (nil artifact skipped), got %d", len(inits))
 	}
@@ -317,7 +323,10 @@ func TestDaemonSetBackend_BuildFetchInitContainers_LocatorHit(t *testing.T) {
 		b.StepVolume("input-0", "handle", "input-0"),
 	}
 
-	inits := b.BuildFetchInitContainers("handle", inputs, volumes, mounts)
+	inits, err := b.BuildFetchInitContainers("handle", inputs, volumes, mounts)
+	if err != nil {
+		t.Fatalf("BuildFetchInitContainers: %v", err)
+	}
 	if len(inits) != 1 {
 		t.Fatalf("expected 1 init container, got %d", len(inits))
 	}
@@ -331,7 +340,10 @@ func TestDaemonSetBackend_BuildFetchInitContainers_LocatorHit(t *testing.T) {
 
 func TestDaemonSetBackend_BuildFetchInitContainers_NoInputs(t *testing.T) {
 	b := testBackend(nil)
-	inits := b.BuildFetchInitContainers("handle", nil, nil, nil)
+	inits, err := b.BuildFetchInitContainers("handle", nil, nil, nil)
+	if err != nil {
+		t.Fatalf("BuildFetchInitContainers: %v", err)
+	}
 	if len(inits) != 0 {
 		t.Errorf("expected 0 init containers for nil inputs, got %d", len(inits))
 	}

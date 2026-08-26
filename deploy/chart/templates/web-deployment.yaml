@@ -171,6 +171,8 @@ spec:
             - --kubernetes-artifact-daemon-port={{ .Values.artifactDaemon.port | default 7780 }}
             - --kubernetes-artifact-daemon-host-path={{ .Values.artifactDaemon.hostPath | default "/var/concourse/artifacts" }}
             - --kubernetes-artifact-daemon-service={{ include "concourse.artifactDaemonServiceName" . }}
+            - --kubernetes-artifact-daemon-resolve-capability-key=/etc/concourse/resolve-capability/resolve.key
+            - --kubernetes-artifact-daemon-resolve-capability-ttl={{ .Values.artifactDaemon.resolveCapability.ttl | default "2h" }}
             {{- if .Values.artifactDaemon.tls.enabled }}
             - --kubernetes-artifact-daemon-tls-cert=/etc/concourse/daemon-tls/client.crt
             - --kubernetes-artifact-daemon-tls-key=/etc/concourse/daemon-tls/client.key
@@ -274,6 +276,11 @@ spec:
               mountPath: /etc/concourse/daemon-tls
               readOnly: true
             {{- end }}
+            {{- if .Values.artifactDaemon.enabled }}
+            - name: resolve-capability
+              mountPath: /etc/concourse/resolve-capability
+              readOnly: true
+            {{- end }}
             - name: tmp
               mountPath: /tmp
             {{- with .Values.web.extraVolumeMounts }}
@@ -319,6 +326,11 @@ spec:
         - name: daemon-tls
           secret:
             secretName: {{ .Values.artifactDaemon.tls.existingSecret | default (printf "%s-artifact-daemon-tls" (include "concourse.fullname" .)) }}
+        {{- end }}
+        {{- if .Values.artifactDaemon.enabled }}
+        - name: resolve-capability
+          secret:
+            secretName: {{ .Values.artifactDaemon.resolveCapability.existingSecret | default (printf "%s-artifact-daemon-resolve-capability" (include "concourse.fullname" .)) }}
         {{- end }}
         {{- with .Values.web.extraVolumes }}
         {{- toYaml . | nindent 8 }}

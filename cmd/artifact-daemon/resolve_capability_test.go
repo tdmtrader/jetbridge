@@ -12,7 +12,7 @@ import (
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
 
-	"github.com/concourse/concourse/agent/artifactcap"
+	"github.com/concourse/concourse/artifactcap"
 )
 
 // /resolve and /resolve-batch are mTLS-EXEMPT by design — the init container

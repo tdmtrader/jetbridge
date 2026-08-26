@@ -516,7 +516,7 @@ func (c *Container) buildArtifactInitContainers(podVolumes []corev1.Volume, main
 	if c.storageBackend == nil {
 		return nil, nil
 	}
-	return c.storageBackend.BuildFetchInitContainers(c.handle, c.containerSpec.Inputs, podVolumes, mainMounts), nil
+	return c.storageBackend.BuildFetchInitContainers(c.handle, c.containerSpec.Inputs, podVolumes, mainMounts)
 }
 
 // buildCleanupInitContainer creates an init container that removes stale data

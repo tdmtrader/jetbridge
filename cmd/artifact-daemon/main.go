@@ -6,7 +6,7 @@ import (
 	"crypto/x509"
 	"flag"
 	"fmt"
-	"github.com/concourse/concourse/agent/artifactcap"
+	"github.com/concourse/concourse/artifactcap"
 	"net/http"
 	"os"
 	"os/signal"
