@@ -71,16 +71,40 @@ func ContainerSpecDefinitions() []brine.StepDefinition {
 		brine.DefineMap[ContainerDraft, PodCreated](
 			"the container runs",
 			func(in ContainerDraft, _ brine.Params, _ *brine.Recorder) (PodCreated, error) {
+				var inputs []runtime.Input
+				for _, path := range in.Inputs {
+					inputs = append(inputs, runtime.Input{DestinationPath: path})
+				}
+				outputs := runtime.OutputPaths{}
+				for i, path := range in.Outputs {
+					outputs[fmt.Sprintf("output-%d", i)] = path
+				}
+
+				spec := runtime.ContainerSpec{
+					TeamID:       1,
+					Dir:          in.Dir,
+					ImageSpec:    runtime.ImageSpec{ImageURL: in.ImageURL, Privileged: in.Privileged},
+					Env:          in.ContainerEnv,
+					Inputs:       inputs,
+					Caches:       in.Caches,
+					ScratchPaths: in.Scratch,
+					Sidecars:     in.Sidecars,
+					Limits: runtime.ContainerLimits{
+						CPU:           in.LimitCPU,
+						Memory:        in.LimitMemory,
+						CPURequest:    in.RequestCPU,
+						MemoryRequest: in.RequestMemory,
+					},
+				}
+				if len(outputs) > 0 {
+					spec.Outputs = outputs
+				}
+
 				container, _, err := in.Worker.FindOrCreateContainer(
 					in.Ctx,
 					db.NewFixedHandleContainerOwner(in.Handle),
 					db.ContainerMetadata{Type: db.ContainerTypeTask},
-					runtime.ContainerSpec{
-						TeamID:    1,
-						Dir:       in.Dir,
-						ImageSpec: runtime.ImageSpec{ImageURL: in.ImageURL},
-						Env:       in.ContainerEnv,
-					},
+					spec,
 					&noopDelegate{},
 				)
 				if err != nil {

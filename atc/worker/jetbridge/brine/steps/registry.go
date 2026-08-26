@@ -31,6 +31,9 @@ func Definitions() []brine.StepDefinition {
 	defs = append(defs, RegistrarDefinitions()...)
 	defs = append(defs, PodWatchDefinitions()...)
 	defs = append(defs, ReaperDefinitions()...)
+	defs = append(defs, ContainerPodDefinitions()...)
+	defs = append(defs, ClusterConfigDefinitions()...)
+	defs = append(defs, DaemonDefinitions()...) // TEMPORARY-DAEMON-WIRE
 	return defs
 }
 
