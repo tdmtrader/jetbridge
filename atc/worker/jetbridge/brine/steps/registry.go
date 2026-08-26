@@ -54,6 +54,7 @@ func Definitions() []brine.StepDefinition {
 	defs = append(defs, CancelledExecDefinitions()...)
 	defs = append(defs, ConfigCompletenessDefinitions()...)
 	defs = append(defs, RegistrarIdentityDefinitions()...)
+	defs = append(defs, PodWatchFidelityDefinitions()...)
 	return defs
 }
 

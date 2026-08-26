@@ -78,16 +78,55 @@ Feature: Keeping sight of a pod while a step runs
     And the pod becomes "Succeeded"
     Then the runtime is told the pod is "Succeeded"
 
-  # PW-03 IS NOT COVERED, and the scenario that claimed to cover it was
-  # removed because it could not fail.
+  # PW-03. The watch is scoped to one pod by field selector. A namespace runs
+  # many pods, and a step told about somebody else's pod acts on a phase that
+  # has nothing to do with it.
   #
-  # It put a "noisy neighbour" pod in the namespace in a different phase and
-  # asserted the runtime reported OUR pod's phase. But the first answer comes
-  # from Get(name), which returns our pod by name whether or not the watch is
-  # scoped — the neighbour is never consulted, so an unscoped watch would pass
-  # it unchanged. A mutation of the expected PHASE goes red, which is what
-  # misled me: it proves the phase check works, not that scoping is tested.
-  #
-  # Asserting the field selector directly would be a spy assertion. Observing
-  # scoping properly needs a watch that actually delivers other pods' events,
-  # which client-go's fake does not do through the reactor used here.
+  # The earlier attempt at this scenario could not fail and was deleted: it
+  # relied on Get(name), which returns our pod by name whether the watch is
+  # scoped or not. This one puts the neighbour's event on the WATCH, through a
+  # connection that applies the runtime's own field selector the way an API
+  # server would. Drop the selector and the neighbour's "Failed" arrives
+  # first, and that is what the step is told.
+  @PW-03
+  Scenario: A step is never told about somebody else's pod
+    Given a pod "watch-pod" that the runtime is watching
+    And the connection to Kubernetes carries every pod in the namespace
+    When the runtime asks what the pod is doing
+    And another pod "noisy-neighbour" in the namespace reports "Failed"
+    And the pod becomes "Running"
+    Then the runtime is told the pod is "Running"
+
+  # The other half of PW-04: not just that the runtime reconnects, but that it
+  # resumes from where it left off. This connection replays what happened
+  # during the gap only to a watcher that names the version it last saw —
+  # which is what a real API server does. A reconnect from scratch is told
+  # nothing, and the step waits for a pod that has already finished.
+  @PW-04 @PW-05
+  Scenario: A reconnect resumes from the last version, so the finish is not missed
+    Given a pod "resume-pod" that the runtime is watching
+    And the connection replays only what happened after the version it is given
+    When the runtime asks what the pod is doing
+    And the pod finishes while the connection is down
+    Then the runtime is told the pod is "Succeeded"
+
+  # Cancellation that arrives while the runtime is ALREADY waiting. The
+  # scenario above cancels first and asks second, which the non-blocking check
+  # at the top of Next's loop catches; this is the only path that exercises
+  # the blocked case. Remove that guard and a build cannot be cancelled at
+  # all — it hangs until its timeout.
+  Scenario: Cancelling a build that is already waiting stops the wait
+    Given a pod "hanging-pod" that the runtime is watching
+    And the connection to Kubernetes is steady
+    When the runtime asks what the pod is doing
+    And the build is cancelled while the runtime is still waiting
+    Then the runtime is told to stop waiting
+
+  # Not everything on a watch channel is a pod.
+  Scenario: A watch error is stepped over, not mistaken for a pod
+    Given a pod "erroring-pod" that the runtime is watching
+    And the connection to Kubernetes is steady
+    When the runtime asks what the pod is doing
+    And the watch reports an error instead of a pod
+    And the pod becomes "Running"
+    Then the runtime is told the pod is "Running"

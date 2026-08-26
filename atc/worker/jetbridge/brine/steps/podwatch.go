@@ -124,7 +124,12 @@ func PodWatchDefinitions() []brine.StepDefinition {
 					UpdateStatus(w.Ctx, w.Pod, metav1.UpdateOptions{}); err != nil {
 					return WatchObservation{}, fmt.Errorf("update pod: %w", err)
 				}
-				if w.Feed != nil {
+				switch {
+				case w.Bus != nil:
+					// A namespace-wide connection filters this event the same
+					// way it filters everyone else's.
+					w.Bus.deliver(w.Pod.DeepCopy())
+				case w.Feed != nil:
 					w.Feed.Modify(w.Pod.DeepCopy())
 				}
 				return w.next(), nil
@@ -245,6 +250,24 @@ func (w WatchedPod) start() WatchedPod {
 func (w WatchedPod) next() WatchObservation {
 	ctx, cancel := context.WithTimeout(w.Ctx, 5*time.Second)
 	defer cancel()
+	return w.nextWith(ctx)
+}
+
+// nextWith reports a panic inside the runtime as an ordinary failure.
+//
+// A panic here is a real defect — a watch error arrives as a Status object,
+// and a runtime that mistakes it for a pod dereferences nil and takes the ATC
+// down with it. But letting the panic escape kills the adapter process, and
+// brine is then left waiting on a runner that will never answer: the run hangs
+// for its full timeout and reports nothing about why. Catching it turns the
+// same defect into a named failure in under a second.
+func (w WatchedPod) nextWith(ctx context.Context) (obs WatchObservation) {
+	defer func() {
+		if r := recover(); r != nil {
+			err := fmt.Errorf("the runtime panicked while reading the watch: %v", r)
+			obs = WatchObservation{Watched: w, Err: err, Message: err.Error()}
+		}
+	}()
 	pod, err := w.Watcher.Next(ctx)
 	msg := ""
 	if err != nil {
