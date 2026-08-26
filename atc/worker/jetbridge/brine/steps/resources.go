@@ -44,11 +44,14 @@ type postmaster struct {
 // unexported jetbridgeDB struct, which is unreachable from here because Go
 // cannot import identifiers from another package's _test.go files.
 type JetbridgeDB struct {
-	Conn          db.DbConn
-	LockFactory   lock.LockFactory
-	Builder       dbtest.Builder
-	TeamFactory   db.TeamFactory
-	WorkerFactory db.WorkerFactory
+	Conn                db.DbConn
+	LockFactory         lock.LockFactory
+	Builder             dbtest.Builder
+	TeamFactory         db.TeamFactory
+	WorkerFactory       db.WorkerFactory
+	VolumeRepository    db.VolumeRepository
+	ContainerRepository db.ContainerRepository
+	BuildFactory        db.BuildFactory
 
 	lockConns [lock.FactoryCount]*sql.DB
 	runner    *postgresrunner.Runner
@@ -151,13 +154,16 @@ func ResourceDefinitions() []brine.ResourceDefinition {
 
 				logger := lagertest.NewTestLogger("brine-jetbridge")
 				return JetbridgeDB{
-					Conn:          conn,
-					LockFactory:   lockFactory,
-					Builder:       dbtest.NewBuilder(conn, lockFactory),
-					TeamFactory:   db.NewTeamFactory(conn, lockFactory),
-					WorkerFactory: db.NewWorkerFactory(conn, db.NewStaticWorkerCache(logger, conn, 0)),
-					lockConns:     lockConns,
-					runner:        runner,
+					Conn:                conn,
+					LockFactory:         lockFactory,
+					Builder:             dbtest.NewBuilder(conn, lockFactory),
+					TeamFactory:         db.NewTeamFactory(conn, lockFactory),
+					WorkerFactory:       db.NewWorkerFactory(conn, db.NewStaticWorkerCache(logger, conn, 0)),
+					VolumeRepository:    db.NewVolumeRepository(conn),
+					ContainerRepository: db.NewContainerRepository(conn),
+					BuildFactory:        db.NewBuildFactory(conn, lockFactory, 0, time.Hour),
+					lockConns:           lockConns,
+					runner:              runner,
 				}, nil
 			},
 			Disposer: func(value any) error {
