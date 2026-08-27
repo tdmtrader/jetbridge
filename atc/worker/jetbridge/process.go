@@ -280,7 +280,34 @@ func (p *Process) streamLogs(ctx context.Context) {
 	// Stream main container logs directly (no prefix).
 	p.streamContainerLogsMain(ctx, mainContainerName)
 
-	sidecars.Wait()
+	// Give the sidecars a BOUNDED moment to flush, then proceed.
+	//
+	// An unbounded join here hangs the step. A sidecar outlives the main
+	// container by design, and its Follow:true stream does not end until the
+	// sidecar does, so waiting for it means waiting for the sidecar — which
+	// may be forever. Losing a late sidecar line is bad; never returning from
+	// Wait is worse.
+	waitWithGrace(&sidecars, sidecarLogGrace)
+}
+
+// sidecarLogGrace is how long the step will wait for sidecar log streams to
+// drain once the main container has finished.
+const sidecarLogGrace = 2 * time.Second
+
+// waitWithGrace waits for wg, giving up after grace. It reports whether the
+// group finished, so the bound is observable rather than implicit.
+func waitWithGrace(wg *sync.WaitGroup, grace time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(grace):
+		return false
+	}
 }
 
 // streamContainerLogsPrefixed streams logs from a named container, prefixing
