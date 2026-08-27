@@ -103,6 +103,7 @@ func ResourceDefinitions() []brine.ResourceDefinition {
 	return append([]brine.ResourceDefinition{
 		TracingResourceDefinition(),
 		TaskWorkspaceResourceDefinition(),
+		RealClusterResourceDefinition(),
 	}, []brine.ResourceDefinition{
 		{
 			Name:  "postgres",
