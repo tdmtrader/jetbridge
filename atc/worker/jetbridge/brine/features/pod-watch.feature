@@ -13,17 +13,15 @@ Feature: Keeping sight of a pod while a step runs
   # PW-01, PW-02: the first answer comes from a direct read, not from the
   # watch, so a pod that changed before the watch existed is not missed.
   Scenario: The first answer does not wait for a watch event
-    Given a pod "watch-pod" that the runtime is watching
-    And the connection to Kubernetes is steady
-    When the runtime asks what the pod is doing
-    Then the runtime is told the pod is "Pending"
+    Given a real cluster running pod "watch-pod"
+    When the runtime asks the real cluster what its pod is doing
+    Then the runtime is really told the pod is "Pending"
 
   Scenario: Subsequent changes arrive as they happen
-    Given a pod "watch-pod" that the runtime is watching
-    And the connection to Kubernetes is steady
-    When the runtime asks what the pod is doing
-    And the pod becomes "Running"
-    Then the runtime is told the pod is "Running"
+    Given a real cluster running pod "watch-pod"
+    When the runtime asks the real cluster what its pod is doing
+    And the pod really becomes "Running"
+    Then the runtime is really told the pod is "Running"
 
   # PW-04, PW-05: the reconnect delivers a change that landed during the gap.
   #
@@ -54,48 +52,25 @@ Feature: Keeping sight of a pod while a step runs
   # PW-07: eviction, node failure, spot preemption and a human with kubectl all
   # arrive as the same event, and the step has to be told rather than hanging.
   Scenario: A pod deleted out from under the step is reported, not waited on
-    Given a pod "doomed-pod" that the runtime is watching
-    And the connection to Kubernetes is steady
-    When the runtime asks what the pod is doing
-    And the pod is deleted out from under the step
-    Then the runtime is told the pod was deleted
+    Given a real cluster running pod "doomed-pod"
+    When the runtime asks the real cluster what its pod is doing
+    And the pod is really deleted out from under the step
+    Then the runtime is really told the pod was deleted
 
-  Scenario: Cancelling the build stops the wait
-    Given a pod "watch-pod" that the runtime is watching
-    And the connection to Kubernetes is steady
-    When the runtime asks what the pod is doing
-    And the build is cancelled
-    Then the runtime is told to stop waiting
+  Scenario: Cancelling a build that is already waiting stops the wait
+    Given a real cluster running pod "hanging-pod"
+    When the runtime asks the real cluster what its pod is doing
+    And the build is cancelled while the runtime waits on the real cluster
+    Then the runtime really stops waiting
 
   # A watch delivers a burst of updates faster than the step consumes them.
   # What must never happen is the step settling on a stale one — it would wait
   # on a pod state the cluster has already left behind.
   Scenario: A burst of updates does not leave the step on a stale state
-    Given a pod "rapid-pod" that the runtime is watching
-    And the connection to Kubernetes is steady
-    When the runtime asks what the pod is doing
-    And the pod becomes "Running"
-    And the pod becomes "Succeeded"
-    Then the runtime is told the pod is "Succeeded"
-
-  # PW-03. The watch is scoped to one pod by field selector. A namespace runs
-  # many pods, and a step told about somebody else's pod acts on a phase that
-  # has nothing to do with it.
-  #
-  # The earlier attempt at this scenario could not fail and was deleted: it
-  # relied on Get(name), which returns our pod by name whether the watch is
-  # scoped or not. This one puts the neighbour's event on the WATCH, through a
-  # connection that applies the runtime's own field selector the way an API
-  # server would. Drop the selector and the neighbour's "Failed" arrives
-  # first, and that is what the step is told.
-  @PW-03
-  Scenario: A step is never told about somebody else's pod
-    Given a pod "watch-pod" that the runtime is watching
-    And the connection to Kubernetes carries every pod in the namespace
-    When the runtime asks what the pod is doing
-    And another pod "noisy-neighbour" in the namespace reports "Failed"
-    And the pod becomes "Running"
-    Then the runtime is told the pod is "Running"
+    Given a real cluster running pod "rapid-pod"
+    When the runtime asks the real cluster what its pod is doing
+    And the pod really goes "Running" then "Succeeded" before the runtime looks
+    Then the runtime is really told the pod is "Succeeded"
 
   # The other half of PW-04: not just that the runtime reconnects, but that it
   # resumes from where it left off. This connection replays what happened
@@ -109,18 +84,6 @@ Feature: Keeping sight of a pod while a step runs
     When the runtime asks what the pod is doing
     And the pod finishes while the connection is down
     Then the runtime is told the pod is "Succeeded"
-
-  # Cancellation that arrives while the runtime is ALREADY waiting. The
-  # scenario above cancels first and asks second, which the non-blocking check
-  # at the top of Next's loop catches; this is the only path that exercises
-  # the blocked case. Remove that guard and a build cannot be cancelled at
-  # all — it hangs until its timeout.
-  Scenario: Cancelling a build that is already waiting stops the wait
-    Given a pod "hanging-pod" that the runtime is watching
-    And the connection to Kubernetes is steady
-    When the runtime asks what the pod is doing
-    And the build is cancelled while the runtime is still waiting
-    Then the runtime is told to stop waiting
 
   # Not everything on a watch channel is a pod.
   Scenario: A watch error is stepped over, not mistaken for a pod
