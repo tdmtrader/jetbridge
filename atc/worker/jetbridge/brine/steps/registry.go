@@ -61,6 +61,7 @@ func Definitions() []brine.StepDefinition {
 	defs = append(defs, ContainerGapDefinitions()...)
 	defs = append(defs, ProcessGapDefinitions()...)
 	defs = append(defs, TTYDefinitions()...)
+	defs = append(defs, ExecTargetDefinitions()...)
 	return defs
 }
 

@@ -441,3 +441,14 @@ Feature: A step from end to end — its rows, its pod, its artifacts
       | CGNAT IPv4      | 100.68.228.107  |
       | loopback IPv6   | ::1             |
       | documentation   | 2001:db8::1     |
+
+  # The container a step's command is exec'd into. Every PodExecutor double in
+  # this package declared that parameter as `_`, so nothing observed it — and
+  # resource_test.go covered it by inspecting the recorded call.
+  #
+  # This pod has only "main". An exec naming anything else is refused the way
+  # the API server refuses it, so a runtime that targeted a sidecar would run
+  # the resource script in the wrong image, against the wrong filesystem.
+  Scenario: A step's command is exec'd into the pod's main container
+    When a resource step runs on a pod whose only container is "main"
+    Then the step ran, so it was exec'd into the container that exists
