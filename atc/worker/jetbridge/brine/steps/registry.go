@@ -62,6 +62,7 @@ func Definitions() []brine.StepDefinition {
 	defs = append(defs, ProcessGapDefinitions()...)
 	defs = append(defs, TTYDefinitions()...)
 	defs = append(defs, ExecTargetDefinitions()...)
+	defs = append(defs, PodWatchRealDefinitions()...)
 	return defs
 }
 
