@@ -257,3 +257,19 @@ func (f *fakeExecExecutor) ExecInPod(
 	}
 	return nil
 }
+
+// expectPersistedContainer lived in podname_integration_test.go until that
+// suite was retired under the brine migration; secret_env_test.go is the
+// remaining consumer.
+func expectPersistedContainer(database jetbridgeDB, workerName, handle string) {
+	GinkgoHelper()
+	persistedWorker, found, err := database.WorkerFactory.GetWorker(workerName)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(found).To(BeTrue())
+
+	creating, created, err := persistedWorker.FindContainer(db.NewFixedHandleContainerOwner(handle))
+	Expect(err).NotTo(HaveOccurred())
+	Expect(creating).To(BeNil())
+	Expect(created).NotTo(BeNil())
+	Expect(created.Handle()).To(Equal(handle))
+}
