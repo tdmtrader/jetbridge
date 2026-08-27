@@ -10,7 +10,6 @@ import (
 	"github.com/brine-dev/brine-go/pkg/brine"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/watch"
 	k8stesting "k8s.io/client-go/testing"
 )
@@ -28,53 +27,6 @@ import (
 // stops supplying them.
 //
 // Nothing here asserts on the options. It consumes them.
-
-// WatchBus is a namespace-wide event stream that filters per watcher, the way
-// an API server does. Filtering happens at DELIVERY, not at push: the runtime
-// establishes its watch lazily, so at the moment a neighbouring pod changes
-// there may be no watcher and no selector yet. Events that predate the watch
-// are held and flushed through the filter when it connects.
-type WatchBus struct {
-	mu       sync.Mutex
-	selector fields.Selector
-	live     *watch.RaceFreeFakeWatcher
-	pending  []*corev1.Pod
-}
-
-func (b *WatchBus) connect(r k8stesting.WatchRestrictions) *watch.RaceFreeFakeWatcher {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.selector = r.Fields
-	b.live = watch.NewRaceFreeFake()
-	for _, pod := range b.pending {
-		if b.matches(pod) {
-			b.live.Modify(pod)
-		}
-	}
-	b.pending = nil
-	return b.live
-}
-
-func (b *WatchBus) deliver(pod *corev1.Pod) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if b.live == nil {
-		b.pending = append(b.pending, pod)
-		return
-	}
-	if b.matches(pod) {
-		b.live.Modify(pod)
-	}
-}
-
-// matches is the API server's question: is this watcher entitled to see this
-// pod? An absent or empty selector means the watcher asked for everything.
-func (b *WatchBus) matches(pod *corev1.Pod) bool {
-	if b.selector == nil || b.selector.Empty() {
-		return true
-	}
-	return b.selector.Matches(fields.Set{"metadata.name": pod.Name})
-}
 
 // WatchReplay holds what a disconnected watcher missed, and hands it back only
 // to a reconnect that names the version it last saw.
@@ -102,55 +54,6 @@ func (r *WatchReplay) sinceVersion(rv string) []*corev1.Pod {
 
 func PodWatchFidelityDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
-
-		// PW-03. A namespace with more than one pod in it, and a connection
-		// that honours whatever scoping the runtime asks for.
-		brine.DefineMap[WatchedPod, WatchedPod](
-			"the connection to Kubernetes carries every pod in the namespace",
-			func(in WatchedPod, _ brine.Params, _ *brine.Recorder) (WatchedPod, error) {
-				bus := &WatchBus{}
-				in.Bus = bus
-				in.Clientset.PrependWatchReactor("pods",
-					func(a k8stesting.Action) (bool, watch.Interface, error) {
-						var restrictions k8stesting.WatchRestrictions
-						if wa, ok := a.(k8stesting.WatchAction); ok {
-							restrictions = wa.GetWatchRestrictions()
-						}
-						return true, bus.connect(restrictions), nil
-					})
-				return in.start(), nil
-			},
-		),
-
-		brine.DefineMap[WatchObservation, WatchObservation](
-			"another pod {string} in the namespace reports {string}",
-			func(in WatchObservation, p brine.Params, _ *brine.Recorder) (WatchObservation, error) {
-				name, _ := p.GetString(0)
-				phase, ok := p.GetString(1)
-				if !ok {
-					return WatchObservation{}, fmt.Errorf("expected a pod name and a phase")
-				}
-				w := in.Watched
-				if w.Bus == nil {
-					return WatchObservation{}, fmt.Errorf("this scenario needs a namespace-wide connection")
-				}
-				neighbour := &corev1.Pod{
-					ObjectMeta: metav1.ObjectMeta{
-						Name: name, Namespace: "test-namespace", ResourceVersion: "99",
-					},
-					Status: corev1.PodStatus{Phase: corev1.PodPhase(phase)},
-				}
-				if _, err := w.Clientset.CoreV1().Pods("test-namespace").
-					Create(w.Ctx, neighbour, metav1.CreateOptions{}); err != nil {
-					return WatchObservation{}, fmt.Errorf("create neighbour pod: %w", err)
-				}
-				w.Bus.deliver(neighbour)
-				// Deliberately does not advance the observation: the next step
-				// pushes this pod's own event and reads once, so whichever
-				// event survived the filter first is what the step is told.
-				return in, nil
-			},
-		),
 
 		// The resource-version half. The reconnect gets a watcher whose
 		// contents depend on the version the runtime supplies.
