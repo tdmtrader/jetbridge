@@ -98,8 +98,8 @@ func ContainerSpecDefinitions() []brine.StepDefinition {
 					ScratchPaths: in.Scratch,
 					Sidecars:     in.Sidecars,
 					Limits: runtime.ContainerLimits{
-						CPU:           in.LimitCPU,
-						Memory:        in.LimitMemory,
+						CPU:                     in.LimitCPU,
+						Memory:                  in.LimitMemory,
 						CPURequest:              in.RequestCPU,
 						MemoryRequest:           in.RequestMemory,
 						EphemeralStorage:        in.LimitEphemeral,

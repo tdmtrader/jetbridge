@@ -14,7 +14,6 @@ import (
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes/fake"
 )
 
 // ExecTargetDefinitions closes the last gap the coverage matrix carried: every
@@ -82,21 +81,15 @@ func ExecTargetDefinitions() []brine.StepDefinition {
 				if !ok {
 					return StepOutcome{}, fmt.Errorf("expected a container name parameter")
 				}
-				database, ok := res.Get("jetbridge-db").(JetbridgeDB)
-				if !ok {
-					return StepOutcome{}, fmt.Errorf("jetbridge-db resource is %T", res.Get("jetbridge-db"))
-				}
-				dbWorker, err := database.PersistNamedWorker("k8s-worker-1")
+				cluster, err := NewCluster(res,
+					WithExecutor(containerAwareAdapter{present: map[string]bool{only: true}}),
+				)
 				if err != nil {
 					return StepOutcome{}, err
 				}
-
-				ctx := context.Background()
-				namespace := "test-namespace"
+				ctx, namespace, worker := cluster.Ctx, cluster.Namespace, cluster.Worker
+				clientset := cluster.Clientset
 				handle := "exec-target-handle"
-				clientset := fake.NewSimpleClientset()
-				worker := jetbridge.NewWorker(dbWorker, clientset, jetbridge.NewConfig(namespace, ""))
-				worker.SetExecutor(containerAwareAdapter{present: map[string]bool{only: true}})
 
 				container, _, err := worker.FindOrCreateContainer(ctx,
 					db.NewFixedHandleContainerOwner(handle),

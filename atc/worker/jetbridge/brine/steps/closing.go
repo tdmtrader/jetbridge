@@ -138,20 +138,14 @@ func closingStepDefinitions() []brine.StepDefinition {
 			"a jetbridge worker driving a whole step from end to end",
 			[]string{"jetbridge-db"},
 			func(_ brine.Empty, _ brine.Params, _ *brine.Recorder, res brine.Resources) (ClosingCluster, error) {
-				database, ok := res.Get("jetbridge-db").(JetbridgeDB)
-				if !ok {
-					return ClosingCluster{}, fmt.Errorf("jetbridge-db resource is %T", res.Get("jetbridge-db"))
-				}
-
-				dbWorker, err := database.PersistNamedWorker("k8s-worker-1")
+				cluster, err := NewCluster(res,
+					WithNamespace("ci-namespace"),
+					WithExecutor(closingShellAdapter{}),
+				)
 				if err != nil {
 					return ClosingCluster{}, err
 				}
-
-				namespace := "ci-namespace"
-				clientset := fake.NewSimpleClientset()
-				worker := jetbridge.NewWorker(dbWorker, clientset, jetbridge.NewConfig(namespace, ""))
-				worker.SetExecutor(closingShellAdapter{})
+				namespace, clientset, worker := cluster.Namespace, cluster.Clientset, cluster.Worker
 
 				return ClosingCluster{
 					ClosingNamespace: namespace,
@@ -1262,19 +1256,14 @@ func CancelledExecDefinitions() []brine.StepDefinition {
 				if !ok {
 					return CancelledExecOutcome{}, fmt.Errorf("expected a handle parameter")
 				}
-				database, ok := res.Get("jetbridge-db").(JetbridgeDB)
-				if !ok {
-					return CancelledExecOutcome{}, fmt.Errorf("jetbridge-db resource is %T", res.Get("jetbridge-db"))
-				}
-				dbWorker, err := database.PersistNamedWorker("k8s-worker-1")
+				cluster, err := NewCluster(res,
+					WithExecutor(execStub{}),
+				)
 				if err != nil {
 					return CancelledExecOutcome{}, err
 				}
-				ctx := context.Background()
-				namespace := "test-namespace"
-				clientset := fake.NewSimpleClientset()
-				worker := jetbridge.NewWorker(dbWorker, clientset, jetbridge.NewConfig(namespace, ""))
-				worker.SetExecutor(execStub{})
+				ctx, namespace := cluster.Ctx, cluster.Namespace
+				clientset, worker := cluster.Clientset, cluster.Worker
 
 				container, _, err := worker.FindOrCreateContainer(
 					ctx,

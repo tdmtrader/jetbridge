@@ -16,7 +16,6 @@ import (
 	"github.com/creack/pty"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes/fake"
 )
 
 // TTYDefinitions closes PE-08, which behavioral_runtime_spec_test.go covered
@@ -135,24 +134,17 @@ func TTYDefinitions() []brine.StepDefinition {
 // merges both streams into its log and replays that, which would mask the
 // difference this scenario exists to show.
 func runTerminalProbe(res brine.Resources, withTTY bool) (TerminalOutcome, error) {
-	database, ok := res.Get("jetbridge-db").(JetbridgeDB)
-	if !ok {
-		return TerminalOutcome{}, fmt.Errorf("jetbridge-db resource is %T", res.Get("jetbridge-db"))
-	}
-	dbWorker, err := database.PersistNamedWorker("k8s-worker-1")
+	cluster, err := NewCluster(res, WithExecutor(ttyAwareShellAdapter{}))
 	if err != nil {
 		return TerminalOutcome{}, err
 	}
+	ctx, namespace := cluster.Ctx, cluster.Namespace
+	clientset, worker := cluster.Clientset, cluster.Worker
 
-	ctx := context.Background()
-	namespace := "test-namespace"
 	handle := "tty-probe-handle"
 	if !withTTY {
 		handle = "notty-probe-handle"
 	}
-	clientset := fake.NewSimpleClientset()
-	worker := jetbridge.NewWorker(dbWorker, clientset, jetbridge.NewConfig(namespace, ""))
-	worker.SetExecutor(ttyAwareShellAdapter{})
 
 	container, _, err := worker.FindOrCreateContainer(ctx,
 		db.NewFixedHandleContainerOwner(handle),
