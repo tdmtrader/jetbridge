@@ -230,7 +230,7 @@ func (s *Server) Handler(opts ...HandlerOption) http.Handler {
 	// protect wraps a handler with mTLS enforcement when TLS is enabled.
 	protect := func(h http.HandlerFunc) http.HandlerFunc {
 		if cfg.tlsEnabled {
-			return requireClientCert(h)
+			return s.requireClientCert(h)
 		}
 		return h
 	}
@@ -271,6 +271,29 @@ func WithTLS() HandlerOption {
 	return func(c *handlerConfig) {
 		c.tlsEnabled = true
 	}
+}
+
+// refuse is THE way a handler turns a request away: it counts, logs, and
+// replies. Not a convenience wrapper — before it existed, 24 of ~30 refusal
+// sites wrote an http.Error and nothing else, so a build could fail on a
+// daemon-side refusal with no daemon-side trace of it at all. Every new
+// refusal this series added was silent in exactly that way.
+//
+// reason must come from the bounded set in containment.go; it is a metric
+// label. The client still sees err's text where the site used to pass it, so
+// the reply is unchanged.
+func (s *Server) refuse(w http.ResponseWriter, r *http.Request, status int, reason string, err error) {
+	route := refusalRoute(r)
+	s.metrics.recordRefusal(route, reason)
+
+	data := lager.Data{"route": route, "reason": reason, "status": status}
+	msg := reason
+	if err != nil {
+		data["detail"] = err.Error()
+		msg = err.Error()
+	}
+	s.logger.Info("refused", data)
+	http.Error(w, msg, status)
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
@@ -315,7 +338,7 @@ func (s *Server) artifactKey(r *http.Request) (string, error) {
 func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 	key, err := s.artifactKey(r)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		s.refuse(w, r, http.StatusBadRequest, reasonInvalidKey, err)
 		return
 	}
 	// The request key IS a location under the root: artifactKey has already run
@@ -416,7 +439,7 @@ func (s *Server) touchStepDir(rel RelKey) {
 func (s *Server) handlePutArtifact(w http.ResponseWriter, r *http.Request) {
 	key, err := s.artifactKey(r)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		s.refuse(w, r, http.StatusBadRequest, reasonInvalidKey, err)
 		return
 	}
 	absPath := filepath.Join(s.storagePath, key)
@@ -484,7 +507,7 @@ func (s *Server) handlePutArtifact(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleStreamIn(w http.ResponseWriter, r *http.Request) {
 	key, err := s.requestKey(r, "/stream-in/")
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		s.refuse(w, r, http.StatusBadRequest, reasonInvalidKey, err)
 		return
 	}
 
@@ -494,7 +517,7 @@ func (s *Server) handleStreamIn(w http.ResponseWriter, r *http.Request) {
 	// and replacing only the containment half let PUT /stream-in/aliases.json
 	// return 201.
 	if err := rejectStructuralName(key); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		s.refuse(w, r, http.StatusBadRequest, reasonStructuralName, err)
 		return
 	}
 
@@ -548,7 +571,7 @@ func (s *Server) handleStreamIn(w http.ResponseWriter, r *http.Request) {
 		gr, err := gzip.NewReader(br)
 		if err != nil {
 			s.logger.Error("failed-to-open-gzip", err, lager.Data{"key": key})
-			http.Error(w, "gzip: "+err.Error(), http.StatusBadRequest)
+			s.refuse(w, r, http.StatusBadRequest, reasonArchive, fmt.Errorf("gzip: %w", err))
 			return
 		}
 		defer gr.Close()
@@ -575,12 +598,12 @@ func (s *Server) handleStreamIn(w http.ResponseWriter, r *http.Request) {
 		// Attribution, not containment. mirror.go reads any non-201 from a
 		// peer as "rejected", so an archive-attributable failure reported as
 		// 500 makes a poisoned artifact look like a peer fault.
-		status := http.StatusInternalServerError
 		if errors.Is(err, ErrRefused) {
-			status = http.StatusBadRequest
+			s.refuse(w, r, http.StatusBadRequest, reasonArchive, err)
+			return
 		}
-		s.logger.Error("failed-to-extract-stream-in", err, lager.Data{"key": key, "status": status})
-		http.Error(w, err.Error(), status)
+		s.logger.Error("failed-to-extract-stream-in", err, lager.Data{"key": key})
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -637,7 +660,7 @@ func (s *Server) handleStreamIn(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDeleteArtifact(w http.ResponseWriter, r *http.Request) {
 	key, err := s.artifactKey(r)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		s.refuse(w, r, http.StatusBadRequest, reasonInvalidKey, err)
 		return
 	}
 	loc := RelKey(key) // validated by artifactKey
@@ -659,7 +682,7 @@ func (s *Server) handleDeleteArtifact(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleHeadArtifact(w http.ResponseWriter, r *http.Request) {
 	key, err := s.artifactKey(r)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		s.refuse(w, r, http.StatusBadRequest, reasonInvalidKey, err)
 		return
 	}
 	loc := RelKey(key) // canonical: validateRequestKey refuses anything else
@@ -743,18 +766,18 @@ func (s *Server) handleMirrorTrigger(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
 	var req mirrorRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, fmt.Sprintf("invalid JSON: %v", err), http.StatusBadRequest)
+		s.refuse(w, r, http.StatusBadRequest, reasonInvalidJSON, fmt.Errorf("invalid JSON: %v", err))
 		return
 	}
 	if req.Key == "" {
-		http.Error(w, "key is required", http.StatusBadRequest)
+		s.refuse(w, r, http.StatusBadRequest, reasonMissingField, errors.New("key is required"))
 		return
 	}
 	// Mirror.run joins this onto the storage root and tars the result to every
 	// peer, so an unvalidated key reads a tree outside the root and ships it
 	// off-node.
 	if err := validateRequestKey(req.Key); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		s.refuse(w, r, http.StatusBadRequest, reasonInvalidKey, err)
 		return
 	}
 
@@ -791,11 +814,11 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
 	var req registerRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, fmt.Sprintf("invalid JSON: %v", err), http.StatusBadRequest)
+		s.refuse(w, r, http.StatusBadRequest, reasonInvalidJSON, fmt.Errorf("invalid JSON: %v", err))
 		return
 	}
 	if req.Key == "" || req.LocalPath == "" {
-		http.Error(w, "key and local_path are required", http.StatusBadRequest)
+		s.refuse(w, r, http.StatusBadRequest, reasonMissingField, errors.New("key and local_path are required"))
 		return
 	}
 
@@ -803,16 +826,16 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	// call RegisterAlias and persist it to disk before validating DurableKey,
 	// so a 400 left a poisoned alias behind that survived a restart.
 	if err := validateRequestKey(req.Key); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		s.refuse(w, r, http.StatusBadRequest, reasonInvalidKey, err)
 		return
 	}
 	if err := validateContainedPath(s.storagePath, req.LocalPath); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		s.refuse(w, r, http.StatusBadRequest, reasonUncontained, err)
 		return
 	}
 	if req.DurableKey != "" {
 		if err := durable.ValidateKey(req.DurableKey); err != nil {
-			http.Error(w, fmt.Sprintf("invalid durable_key: %v", err), http.StatusBadRequest)
+			s.refuse(w, r, http.StatusBadRequest, reasonInvalidKey, fmt.Errorf("invalid durable_key: %v", err))
 			return
 		}
 	}
@@ -821,7 +844,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if _, err := os.Stat(req.LocalPath); err != nil {
 		if os.IsNotExist(err) {
 			s.logger.Info("register-path-not-found", lager.Data{"key": req.Key, "path": req.LocalPath})
-			http.Error(w, fmt.Sprintf("path not found: %s", req.LocalPath), http.StatusNotFound)
+			s.refuse(w, r, http.StatusNotFound, reasonNotFound, fmt.Errorf("path not found: %s", req.LocalPath))
 			return
 		}
 		s.logger.Error("register-stat-error", err, lager.Data{"key": req.Key, "path": req.LocalPath})
@@ -836,7 +859,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	loc, err := s.registry.RegisterAlias(req.Key, req.LocalPath)
 	if err != nil {
 		s.logger.Info("register-refused", lager.Data{"key": req.Key, "path": req.LocalPath, "reason": err.Error()})
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		s.refuse(w, r, http.StatusBadRequest, reasonUncontained, err)
 		return
 	}
 
@@ -928,24 +951,24 @@ func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
 	var req resolveRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, fmt.Sprintf("invalid JSON: %v", err), http.StatusBadRequest)
+		s.refuse(w, r, http.StatusBadRequest, reasonInvalidJSON, fmt.Errorf("invalid JSON: %v", err))
 		return
 	}
 	if req.Key == "" || req.Dest == "" {
-		http.Error(w, "key and dest are required", http.StatusBadRequest)
+		s.refuse(w, r, http.StatusBadRequest, reasonMissingField, errors.New("key and dest are required"))
 		return
 	}
 	if err := validateRequestKey(req.Key); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		s.refuse(w, r, http.StatusBadRequest, reasonInvalidKey, err)
 		return
 	}
 	if err := validateContainedPath(s.storagePath, req.Dest); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		s.refuse(w, r, http.StatusBadRequest, reasonUncontained, err)
 		return
 	}
 	if !s.authorizeResolve(req) {
 		s.logger.Info("resolve-unauthorized", lager.Data{"key": req.Key})
-		http.Error(w, "resolve capability required", http.StatusForbidden)
+		s.refuse(w, r, http.StatusForbidden, reasonCapability, errors.New("resolve capability required"))
 		return
 	}
 
@@ -979,7 +1002,7 @@ func (s *Server) handleResolveBatch(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
 	var req batchResolveRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, fmt.Sprintf("invalid JSON: %v", err), http.StatusBadRequest)
+		s.refuse(w, r, http.StatusBadRequest, reasonInvalidJSON, fmt.Errorf("invalid JSON: %v", err))
 		return
 	}
 
@@ -989,18 +1012,18 @@ func (s *Server) handleResolveBatch(w http.ResponseWriter, r *http.Request) {
 	// it is the least authenticated way into resolveOne.
 	for i, item := range req.Items {
 		if err := validateRequestKey(item.Key); err != nil {
-			http.Error(w, fmt.Sprintf("item %d: %v", i, err), http.StatusBadRequest)
+			s.refuse(w, r, http.StatusBadRequest, reasonInvalidKey, fmt.Errorf("item %d: %v", i, err))
 			return
 		}
 		if err := validateContainedPath(s.storagePath, item.Dest); err != nil {
-			http.Error(w, fmt.Sprintf("item %d: %v", i, err), http.StatusBadRequest)
+			s.refuse(w, r, http.StatusBadRequest, reasonUncontained, fmt.Errorf("item %d: %v", i, err))
 			return
 		}
 		// Authorized in the same pass, for the same reason: refusing item 3
 		// after item 1 has copied is a side effect from a refused request.
 		if !s.authorizeResolve(item) {
 			s.logger.Info("resolve-batch-unauthorized", lager.Data{"item": i, "key": item.Key})
-			http.Error(w, fmt.Sprintf("item %d: resolve capability required", i), http.StatusForbidden)
+			s.refuse(w, r, http.StatusForbidden, reasonCapability, fmt.Errorf("item %d: resolve capability required", i))
 			return
 		}
 	}
@@ -1179,7 +1202,7 @@ func (s *Server) handleGetResourceCache(w http.ResponseWriter, r *http.Request) 
 
 	key, err := s.requestKey(r, "/resource-caches/")
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		s.refuse(w, r, http.StatusBadRequest, reasonInvalidKey, err)
 		return
 	}
 

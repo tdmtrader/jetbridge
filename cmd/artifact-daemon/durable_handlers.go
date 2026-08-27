@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -66,7 +67,7 @@ func (s *Server) handleDurableRestore(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
 	var req durableRestoreRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, fmt.Sprintf("invalid JSON: %v", err), http.StatusBadRequest)
+		s.refuse(w, r, http.StatusBadRequest, reasonInvalidJSON, fmt.Errorf("invalid JSON: %v", err))
 		return
 	}
 	// SHAPE checks, not meaning checks: can these strings be joined onto a root
@@ -78,7 +79,7 @@ func (s *Server) handleDurableRestore(w http.ResponseWriter, r *http.Request) {
 	// Reusing the store's validator rather than restating the pattern: two copies
 	// of a key format in one binary is how they drift apart.
 	if err := durable.ValidateKey(req.DurableKey); err != nil {
-		http.Error(w, fmt.Sprintf("invalid durable_key: %v", err), http.StatusBadRequest)
+		s.refuse(w, r, http.StatusBadRequest, reasonInvalidKey, fmt.Errorf("invalid durable_key: %v", err))
 		return
 	}
 
@@ -87,14 +88,14 @@ func (s *Server) handleDurableRestore(w http.ResponseWriter, r *http.Request) {
 	// never be swept, and node disk would grow without bound -- which is exactly
 	// how task caches on hostPath became monotonic.
 	if err := durable.ValidateKey(req.Key); err != nil || strings.Contains(req.Key, "/") {
-		http.Error(w, "invalid key: must be a single path segment", http.StatusBadRequest)
+		s.refuse(w, r, http.StatusBadRequest, reasonInvalidKey, errors.New("invalid key: must be a single path segment"))
 		return
 	}
 
 	// Distinguished from 404 so a half-configured cluster does not read as a
 	// permanently cold cache in the logs.
 	if s.durable == nil {
-		http.Error(w, "durable tier not configured", http.StatusNotImplemented)
+		s.refuse(w, r, http.StatusNotImplemented, reasonNotConfigured, errors.New("durable tier not configured"))
 		return
 	}
 

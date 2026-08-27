@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/fs"
 	"math/rand/v2"
+	"net/http"
 	"net/url"
 	"os"
 	"path"
@@ -557,4 +558,38 @@ func tarTree(w io.Writer, root *os.Root, loc RelKey) error {
 		return err
 	}
 	return tw.Close()
+}
+
+// Refusal reasons. A BOUNDED SET, because they are Prometheus labels: deriving
+// one from a key, path or error string would give the metric a series per
+// request and eventually take the scrape down.
+const (
+	reasonInvalidKey     = "invalid_key"
+	reasonUncontained    = "uncontained_path"
+	reasonStructuralName = "structural_name"
+	reasonInvalidJSON    = "invalid_json"
+	reasonMissingField   = "missing_field"
+	reasonBodyTooLarge   = "body_too_large"
+	reasonCapability     = "capability"
+	reasonNotConfigured  = "not_configured"
+	reasonArchive        = "archive"
+	reasonNotFound       = "not_found"
+	reasonClientCert     = "client_cert"
+)
+
+// refusalRoute is the bounded route label for a refusal.
+//
+// Taken from r.Pattern — the pattern the request MATCHED in the mux — not from
+// r.URL.Path, which contains the artifact key and would give the metric a
+// series per request. Using the registered pattern also means a new route
+// labels itself correctly instead of falling into a catch-all.
+//
+// It is why this function does not read the request URL: an architecture guard
+// keeps URL reads confined to requestKey so a key is derived in exactly one
+// place, and that guard caught an earlier version of this that scanned the path.
+func refusalRoute(r *http.Request) string {
+	if r == nil || r.Pattern == "" {
+		return "unknown"
+	}
+	return r.Pattern
 }

@@ -14,6 +14,7 @@ import (
 type metrics struct {
 	registry        *prometheus.Registry
 	resolveRequests *prometheus.CounterVec
+	refusals        *prometheus.CounterVec
 	resolveDuration *prometheus.HistogramVec
 	peerFetch       *prometheus.CounterVec
 	durableOps      *prometheus.CounterVec
@@ -42,6 +43,11 @@ func newMetrics() *metrics {
 			Help:      "Artifact resolve duration in seconds, by resolution method.",
 			Buckets:   prometheus.DefBuckets,
 		}, []string{"method"}),
+		refusals: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "artifact_daemon",
+			Name:      "refusals_total",
+			Help:      "Requests refused, by route and reason. Every refusal is a build that failed or a caller that was turned away, and none of them were visible before this existed. Both labels are BOUNDED SETS -- never derive a label from a key, path or error string, which would give this metric one series per request.",
+		}, []string{"route", "reason"}),
 		peerFetch: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: "artifact_daemon",
 			Name:      "peer_fetch_total",
@@ -87,7 +93,7 @@ func newMetrics() *metrics {
 			Help:      "Age of the oldest object in the durable store. Reclaim is a bucket lifecycle rule nothing here performs, so this is the only signal that the rule is working: it should plateau near the configured expiry and grow without bound if the rule matches nothing. SHARED VALUE -- aggregate with max by(), never sum().",
 		}),
 	}
-	reg.MustRegister(m.resolveRequests, m.resolveDuration, m.peerFetch, m.durableOps,
+	reg.MustRegister(m.resolveRequests, m.refusals, m.resolveDuration, m.peerFetch, m.durableOps,
 		m.durableObjects, m.durableBytes, m.durableOldestAge,
 		m.durableReclaimed, m.durableReclaimedBytes)
 
@@ -167,4 +173,17 @@ func (m *metrics) recordReclaimed(objects, bytes int64) {
 
 	m.durableReclaimed.Add(float64(objects))
 	m.durableReclaimedBytes.Add(float64(bytes))
+}
+
+func (m *metrics) recordRefusal(route, reason string) {
+	if m == nil {
+		return
+	}
+	if route == "" {
+		route = "unknown"
+	}
+	if reason == "" {
+		reason = "unknown"
+	}
+	m.refusals.WithLabelValues(route, reason).Inc()
 }
