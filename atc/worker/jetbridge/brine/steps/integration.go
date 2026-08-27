@@ -309,7 +309,6 @@ func integrationClusterDefinitions() []brine.StepDefinition {
 			},
 		),
 
-
 		brine.DefineMapUsing[brine.Empty, IntegrationCluster](
 			"a jetbridge cluster in namespace {string}",
 			[]string{"jetbridge-db"},

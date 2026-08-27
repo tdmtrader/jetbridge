@@ -551,17 +551,9 @@ func runExtraOutputDefinitions() []brine.StepDefinition {
 				if !ok {
 					return RunExtraOutput{}, fmt.Errorf("expected a handle and a content parameter")
 				}
-				database, ok := res.Get("jetbridge-db").(JetbridgeDB)
-				if !ok {
-					return RunExtraOutput{}, fmt.Errorf("jetbridge-db resource is %T", res.Get("jetbridge-db"))
-				}
 				workspace, ok := res.Get("task-workspace").(TaskWorkspace)
 				if !ok {
 					return RunExtraOutput{}, fmt.Errorf("task-workspace resource is %T", res.Get("task-workspace"))
-				}
-				dbWorker, err := database.PersistNamedWorker("k8s-worker-1")
-				if err != nil {
-					return RunExtraOutput{}, err
 				}
 				// The local shell adapter runs in THIS host's /tmp, which
 				// outlives the run; a second invocation would find the first
@@ -571,11 +563,12 @@ func runExtraOutputDefinitions() []brine.StepDefinition {
 					return RunExtraOutput{}, err
 				}
 
-				ctx := context.Background()
-				namespace := "test-namespace"
-				clientset := fake.NewSimpleClientset()
-				worker := jetbridge.NewWorker(dbWorker, clientset, jetbridge.NewConfig(namespace, ""))
-				worker.SetExecutor(localShellAdapter{})
+				cluster, err := NewCluster(res, WithExecutor(localShellAdapter{}))
+				if err != nil {
+					return RunExtraOutput{}, err
+				}
+				ctx, namespace := cluster.Ctx, cluster.Namespace
+				clientset, worker := cluster.Clientset, cluster.Worker
 
 				outputPath := filepath.Join(workspace.Dir, "result")
 				container, mounts, err := worker.FindOrCreateContainer(

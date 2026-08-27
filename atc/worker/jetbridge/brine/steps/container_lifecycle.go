@@ -63,20 +63,14 @@ func ContainerLifecycleDefinitions() []brine.StepDefinition {
 				if !ok {
 					return LeftoverPod{}, fmt.Errorf("expected a phase parameter")
 				}
-				database, ok := res.Get("jetbridge-db").(JetbridgeDB)
-				if !ok {
-					return LeftoverPod{}, fmt.Errorf("jetbridge-db resource is %T", res.Get("jetbridge-db"))
-				}
-				dbWorker, err := database.PersistNamedWorker("k8s-worker-1")
+				cluster, err := NewCluster(res,
+					WithExecutor(execStub{}),
+				)
 				if err != nil {
 					return LeftoverPod{}, err
 				}
-
-				ctx := context.Background()
-				namespace := "test-namespace"
-				clientset := fake.NewSimpleClientset()
-				worker := jetbridge.NewWorker(dbWorker, clientset, jetbridge.NewConfig(namespace, ""))
-				worker.SetExecutor(execStub{})
+				ctx, namespace := cluster.Ctx, cluster.Namespace
+				clientset, worker := cluster.Clientset, cluster.Worker
 
 				handle := "aaaa1111-bbbb-cccc-dddd-eeee2222ffff"
 				metadata := db.ContainerMetadata{Type: db.ContainerTypeCheck, StepName: "my-time"}
@@ -169,17 +163,11 @@ func ContainerLifecycleDefinitions() []brine.StepDefinition {
 				if !ok {
 					return ContainerProperties{}, fmt.Errorf("expected a key and a value")
 				}
-				database, ok := res.Get("jetbridge-db").(JetbridgeDB)
-				if !ok {
-					return ContainerProperties{}, fmt.Errorf("jetbridge-db resource is %T", res.Get("jetbridge-db"))
-				}
-				dbWorker, err := database.PersistNamedWorker("k8s-worker-1")
+				cluster, err := NewCluster(res)
 				if err != nil {
 					return ContainerProperties{}, err
 				}
-				ctx := context.Background()
-				clientset := fake.NewSimpleClientset()
-				worker := jetbridge.NewWorker(dbWorker, clientset, jetbridge.NewConfig("test-namespace", ""))
+				ctx, worker := cluster.Ctx, cluster.Worker
 
 				container, _, err := worker.FindOrCreateContainer(
 					ctx,
@@ -347,23 +335,18 @@ func AttachDefinitions() []brine.StepDefinition {
 }
 
 func attachableContainer(res brine.Resources, handle string, seed func(*fake.Clientset) error) (runtime.Container, context.Context, error) {
-	database, ok := res.Get("jetbridge-db").(JetbridgeDB)
-	if !ok {
-		return nil, nil, fmt.Errorf("jetbridge-db resource is %T", res.Get("jetbridge-db"))
-	}
-	dbWorker, err := database.PersistNamedWorker("k8s-worker-1")
+	cluster, err := NewCluster(res, WithExecutor(execStub{}))
 	if err != nil {
 		return nil, nil, err
 	}
-	ctx := context.Background()
-	clientset := fake.NewSimpleClientset()
+	ctx, clientset, worker := cluster.Ctx, cluster.Clientset, cluster.Worker
+	// Seeding only adds objects to the fake, so it is equivalent after
+	// construction — the worker reads the clientset lazily.
 	if seed != nil {
 		if err := seed(clientset); err != nil {
 			return nil, nil, fmt.Errorf("seed cluster: %w", err)
 		}
 	}
-	worker := jetbridge.NewWorker(dbWorker, clientset, jetbridge.NewConfig("test-namespace", ""))
-	worker.SetExecutor(execStub{})
 
 	container, _, err := worker.FindOrCreateContainer(
 		ctx,

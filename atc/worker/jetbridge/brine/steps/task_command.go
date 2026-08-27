@@ -17,7 +17,6 @@ import (
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes/fake"
 )
 
 // localShellAdapter is a REAL PodExecutor that actually runs the command.
@@ -93,24 +92,15 @@ func TaskCommandDefinitions() []brine.StepDefinition {
 			"a jetbridge worker that really runs task commands",
 			[]string{"jetbridge-db", "task-workspace"},
 			func(_ brine.Empty, _ brine.Params, _ *brine.Recorder, res brine.Resources) (TaskCluster, error) {
-				database, ok := res.Get("jetbridge-db").(JetbridgeDB)
-				if !ok {
-					return TaskCluster{}, fmt.Errorf("jetbridge-db resource is %T", res.Get("jetbridge-db"))
-				}
 				workspace, ok := res.Get("task-workspace").(TaskWorkspace)
 				if !ok {
 					return TaskCluster{}, fmt.Errorf("task-workspace resource is %T", res.Get("task-workspace"))
 				}
-
-				dbWorker, err := database.PersistNamedWorker("k8s-worker-1")
+				cluster, err := NewCluster(res, WithExecutor(localShellAdapter{}))
 				if err != nil {
 					return TaskCluster{}, err
 				}
-
-				namespace := "test-namespace"
-				clientset := fake.NewSimpleClientset()
-				worker := jetbridge.NewWorker(dbWorker, clientset, jetbridge.NewConfig(namespace, ""))
-				worker.SetExecutor(localShellAdapter{})
+				namespace, clientset, worker := cluster.Namespace, cluster.Clientset, cluster.Worker
 
 				return TaskCluster{
 					Namespace: namespace,

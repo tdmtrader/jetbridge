@@ -14,7 +14,6 @@ import (
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes/fake"
 )
 
 // PodFailureDefinitions covers the ways a step's pod can die, migrated from
@@ -213,21 +212,14 @@ func SeveredExecDefinitions() []brine.StepDefinition {
 				if !ok {
 					return SeveredExecOutcome{}, fmt.Errorf("expected an output name")
 				}
-				database, ok := res.Get("jetbridge-db").(JetbridgeDB)
-				if !ok {
-					return SeveredExecOutcome{}, fmt.Errorf("jetbridge-db resource is %T", res.Get("jetbridge-db"))
-				}
-				dbWorker, err := database.PersistNamedWorker("k8s-worker-1")
+				cluster, err := NewCluster(res,
+					WithExecutor(severingExec{}),
+				)
 				if err != nil {
 					return SeveredExecOutcome{}, err
 				}
-
-				ctx := context.Background()
-				handle := "severed-task-handle"
-				clientset := fake.NewSimpleClientset()
-				cfg := jetbridge.NewConfig("test-namespace", "")
-				worker := jetbridge.NewWorker(dbWorker, clientset, cfg)
-				worker.SetExecutor(severingExec{})
+				ctx, clientset, worker := cluster.Ctx, cluster.Clientset, cluster.Worker
+				handle := "severed-handle"
 				locator := jetbridge.NewArtifactLocator()
 				worker.SetArtifactLocator(locator)
 

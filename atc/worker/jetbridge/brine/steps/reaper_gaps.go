@@ -63,7 +63,6 @@ func ReaperGapDefinitions() []brine.StepDefinition {
 			},
 		),
 
-
 		// Namespaces are shared. Listing every pod rather than this worker's
 		// own is not a counting error: an unrecognised pod has no container
 		// row, so DestroyUnknownContainers marks it destroying and the delete

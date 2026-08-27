@@ -1,7 +1,6 @@
 package steps
 
 import (
-	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -10,7 +9,6 @@ import (
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/apimachinery/pkg/api/resource"
 )
 
@@ -759,34 +757,14 @@ func ClusterConfigDefinitions() []brine.StepDefinition {
 	}
 }
 
+// newConfiguredWorker is now a thin alias over the shared fixture. It keeps
+// its own name because six steps read better with it.
 func newConfiguredWorker(res brine.Resources, apply func(*jetbridge.Config)) (ClusterReady, error) {
-	database, ok := res.Get("jetbridge-db").(JetbridgeDB)
-	if !ok {
-		return ClusterReady{}, fmt.Errorf("jetbridge-db resource is %T", res.Get("jetbridge-db"))
-	}
-	dbWorker, err := database.PersistNamedWorker("k8s-worker-1")
+	cluster, err := NewCluster(res, WithConfig(apply), WithVolumeRepo(), WithTeam())
 	if err != nil {
 		return ClusterReady{}, err
 	}
-	namespace := "test-namespace"
-	clientset := fake.NewSimpleClientset()
-	cfg := jetbridge.NewConfig(namespace, "")
-	apply(&cfg)
-	team, err := database.TeamFactory.CreateTeam(atc.Team{Name: "container-pod-" + namespace})
-	if err != nil {
-		return ClusterReady{}, fmt.Errorf("create team: %w", err)
-	}
-	worker := jetbridge.NewWorker(dbWorker, clientset, cfg)
-	// Artifact inputs need somewhere to record their volumes; without a
-	// repository CreateVolumeForArtifact refuses outright.
-	worker.SetVolumeRepo(database.VolumeRepository)
-	return ClusterReady{
-		Namespace: namespace,
-		Worker:    worker,
-		Clientset: clientset,
-		Ctx:       context.Background(),
-		TeamID:    team.ID(),
-	}, nil
+	return cluster.Ready(), nil
 }
 
 func splitList(s string) []string {

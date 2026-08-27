@@ -18,7 +18,6 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes/fake"
 )
 
 // This file migrates the observability family (OE-*) from
@@ -113,24 +112,16 @@ func ObservabilityDefinitions() []brine.StepDefinition {
 			"a jetbridge worker whose spans are recorded",
 			[]string{"jetbridge-db", "span-capture"},
 			func(_ brine.Empty, _ brine.Params, _ *brine.Recorder, res brine.Resources) (ExecClusterReady, error) {
-				database, ok := res.Get("jetbridge-db").(JetbridgeDB)
-				if !ok {
-					return ExecClusterReady{}, fmt.Errorf("jetbridge-db resource is %T", res.Get("jetbridge-db"))
-				}
 				capture, ok := res.Get("span-capture").(SpanCapture)
 				if !ok {
 					return ExecClusterReady{}, fmt.Errorf("span-capture resource is %T", res.Get("span-capture"))
 				}
 
-				dbWorker, err := database.PersistNamedWorker("k8s-worker-1")
+				cluster, err := NewCluster(res, WithExecutor(execStub{}))
 				if err != nil {
 					return ExecClusterReady{}, err
 				}
-
-				namespace := "test-namespace"
-				clientset := fake.NewSimpleClientset()
-				worker := jetbridge.NewWorker(dbWorker, clientset, jetbridge.NewConfig(namespace, ""))
-				worker.SetExecutor(execStub{})
+				namespace, clientset, worker := cluster.Namespace, cluster.Clientset, cluster.Worker
 
 				return ExecClusterReady{
 					Namespace: namespace,

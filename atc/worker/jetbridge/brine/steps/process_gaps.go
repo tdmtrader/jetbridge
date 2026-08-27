@@ -2,7 +2,6 @@ package steps
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -13,7 +12,6 @@ import (
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes/fake"
 )
 
 // ProcessGapDefinitions closes what mutating process.go exposed. Three of the
@@ -32,28 +30,21 @@ func ProcessGapDefinitions() []brine.StepDefinition {
 			"a resource step waits for a pod nothing in the cluster can schedule",
 			[]string{"jetbridge-db"},
 			func(_ brine.Empty, _ brine.Params, _ *brine.Recorder, res brine.Resources) (StepOutcome, error) {
-				database, ok := res.Get("jetbridge-db").(JetbridgeDB)
-				if !ok {
-					return StepOutcome{}, fmt.Errorf("jetbridge-db resource is %T", res.Get("jetbridge-db"))
-				}
-				dbWorker, err := database.PersistNamedWorker("k8s-worker-1")
+				// Impatient, so the deadline lands in seconds rather than the
+				// five-minute default. Same values process_test.go used.
+				cluster, err := NewCluster(res,
+					WithExecutor(execStub{}),
+					WithConfig(func(cfg *jetbridge.Config) {
+						cfg.PodSchedulingTimeout = 3 * time.Second
+						cfg.PodStartupTimeout = 2 * time.Second
+					}),
+				)
 				if err != nil {
 					return StepOutcome{}, err
 				}
-
-				ctx := context.Background()
-				namespace := "test-namespace"
+				ctx, namespace := cluster.Ctx, cluster.Namespace
+				clientset, worker := cluster.Clientset, cluster.Worker
 				handle := "unschedulable-handle"
-				clientset := fake.NewSimpleClientset()
-
-				// Impatient, so the deadline lands in seconds rather than the
-				// five-minute default. Same values process_test.go used.
-				cfg := jetbridge.NewConfig(namespace, "")
-				cfg.PodSchedulingTimeout = 3 * time.Second
-				cfg.PodStartupTimeout = 2 * time.Second
-
-				worker := jetbridge.NewWorker(dbWorker, clientset, cfg)
-				worker.SetExecutor(execStub{})
 
 				container, _, err := worker.FindOrCreateContainer(ctx,
 					db.NewFixedHandleContainerOwner(handle),

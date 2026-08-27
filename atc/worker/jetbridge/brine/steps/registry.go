@@ -2,7 +2,6 @@ package steps
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -10,10 +9,8 @@ import (
 	"github.com/brine-dev/brine-go/pkg/brine"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runtime"
-	"github.com/concourse/concourse/atc/worker/jetbridge"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes/fake"
 )
 
 func (d *noopDelegate) BuildStartTime() time.Time { return time.Time{} }
@@ -74,27 +71,11 @@ func failureDefinitions() []brine.StepDefinition {
 			"a jetbridge worker on a fake Kubernetes cluster",
 			[]string{"jetbridge-db"},
 			func(_ brine.Empty, _ brine.Params, _ *brine.Recorder, res brine.Resources) (ClusterReady, error) {
-				handle := res.Get("jetbridge-db")
-				database, ok := handle.(JetbridgeDB)
-				if !ok {
-					return ClusterReady{}, fmt.Errorf("jetbridge-db resource is %T", handle)
-				}
-
-				dbWorker, err := database.PersistNamedWorker("k8s-worker-1")
+				cluster, err := NewCluster(res)
 				if err != nil {
 					return ClusterReady{}, err
 				}
-
-				namespace := "test-namespace"
-				clientset := fake.NewSimpleClientset()
-				cfg := jetbridge.NewConfig(namespace, "")
-
-				return ClusterReady{
-					Namespace: namespace,
-					Worker:    jetbridge.NewWorker(dbWorker, clientset, cfg),
-					Clientset: clientset,
-					Ctx:       context.Background(),
-				}, nil
+				return cluster.Ready(), nil
 			},
 		),
 
