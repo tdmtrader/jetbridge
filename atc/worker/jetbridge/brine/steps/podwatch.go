@@ -162,33 +162,6 @@ func PodWatchDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineMap[WatchObservation, WatchObservation](
-			"the pod is deleted out from under the step",
-			func(in WatchObservation, _ brine.Params, _ *brine.Recorder) (WatchObservation, error) {
-				w := in.Watched
-				if w.Feed == nil {
-					return WatchObservation{}, fmt.Errorf("this scenario needs a controllable watch")
-				}
-				w.Feed.Delete(w.Pod.DeepCopy())
-				return w.next(), nil
-			},
-		),
-
-		brine.DefineMap[WatchObservation, WatchObservation](
-			"the build is cancelled",
-			func(in WatchObservation, _ brine.Params, _ *brine.Recorder) (WatchObservation, error) {
-				w := in.Watched
-				ctx, cancel := context.WithCancel(w.Ctx)
-				cancel()
-				pod, err := w.Watcher.Next(ctx)
-				msg := ""
-				if err != nil {
-					msg = err.Error()
-				}
-				return WatchObservation{Watched: w, Pod: pod, Err: err, Message: msg}, nil
-			},
-		),
-
 		// Being told an error, or nothing at all, is not being told a phase:
 		// both are reported from the getter, which is where the sentence's
 		// presumption fails.
@@ -202,17 +175,6 @@ func PodWatchDefinitions() []brine.StepDefinition {
 					return "", fmt.Errorf("expected a pod, got nil")
 				}
 				return string(in.Pod.Status.Phase), nil
-			}),
-
-		CheckThat[WatchObservation]("the runtime is told the pod was deleted",
-			func(in WatchObservation) error {
-				if in.Err == nil {
-					return fmt.Errorf("expected to be told the pod was deleted, got no error")
-				}
-				if !errors.Is(in.Err, jetbridge.ErrPodDeleted) {
-					return fmt.Errorf("expected ErrPodDeleted, got %v", in.Err)
-				}
-				return nil
 			}),
 
 		CheckThat[WatchObservation]("the runtime is told to stop waiting",

@@ -106,13 +106,6 @@ type ProbeOutcome struct {
 	EndpointCount  int
 }
 
-// MirrorOutcome is the whole of what a mirror request is observable as. The
-// contract is that it never fails the producing step, so there is one field.
-type MirrorOutcome struct {
-	Err     error
-	Message string
-}
-
 // -----------------------------------------------------------------------
 // The daemon double
 // -----------------------------------------------------------------------
@@ -131,9 +124,8 @@ type daemonStore struct {
 	artifacts     map[string][]byte
 	stepArtifacts map[string][]byte
 
-	durableTier  bool
-	resolves     bool
-	mirrorStatus int
+	durableTier bool
+	resolves    bool
 }
 
 func newDaemonStore() *daemonStore {
@@ -175,12 +167,12 @@ func (s *daemonStore) handler() http.Handler {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"status":"ok","method":"registry"}`))
 
+		// The route the real daemon answers, so a client that posts here is
+		// not answered with a 404 it would never see in production. Nothing
+		// asks it: see the note in ../features/artifact-daemon.feature about
+		// the mirror trigger having no scenario.
 		case r.URL.Path == "/mirror":
-			status := s.mirrorStatus
-			if status == 0 {
-				status = http.StatusAccepted
-			}
-			w.WriteHeader(status)
+			w.WriteHeader(http.StatusAccepted)
 
 		case strings.HasPrefix(r.URL.Path, "/artifacts/steps/"):
 			serveArtifactBody(w, s.stepArtifacts[strings.TrimPrefix(r.URL.Path, "/artifacts/steps/")])
@@ -444,25 +436,7 @@ func DaemonDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineMap[DaemonPlan, DaemonPlan](
-			"the daemon refuses mirror requests with a server error",
-			func(in DaemonPlan, _ brine.Params, _ *brine.Recorder) (DaemonPlan, error) {
-				in.Store.mu.Lock()
-				in.Store.mirrorStatus = http.StatusInternalServerError
-				in.Store.mu.Unlock()
-				return in, nil
-			},
-		),
-
 		// --- the shape of the cluster ---
-
-		brine.DefineMap[DaemonPlan, DaemonPlan](
-			"the daemon has gone away",
-			func(in DaemonPlan, _ brine.Params, _ *brine.Recorder) (DaemonPlan, error) {
-				in.close()
-				return in, nil
-			},
-		),
 
 		brine.DefineMap[DaemonPlan, DaemonPlan](
 			"the daemon address is published twice",
@@ -678,59 +652,6 @@ func DaemonDefinitions() []brine.StepDefinition {
 		),
 
 		// --- mirroring ---
-
-		brine.DefineMap[DaemonPlan, MirrorOutcome](
-			"the ATC asks that daemon to mirror {string}",
-			func(in DaemonPlan, p brine.Params, _ *brine.Recorder) (MirrorOutcome, error) {
-				defer in.close()
-
-				key, ok := p.GetString(0)
-				if !ok {
-					return MirrorOutcome{}, fmt.Errorf("expected an artifact key parameter")
-				}
-				cs, err := in.cluster()
-				if err != nil {
-					return MirrorOutcome{}, err
-				}
-				return mirrorOutcome(in.daemonClient(cs).TriggerMirror(in.Ctx, in.DaemonIP, key)), nil
-			},
-		),
-
-		brine.DefineMap[DaemonPlan, MirrorOutcome](
-			"the ATC asks a daemon with no address to mirror {string}",
-			func(in DaemonPlan, p brine.Params, _ *brine.Recorder) (MirrorOutcome, error) {
-				defer in.close()
-
-				key, ok := p.GetString(0)
-				if !ok {
-					return MirrorOutcome{}, fmt.Errorf("expected an artifact key parameter")
-				}
-				cs, err := in.cluster()
-				if err != nil {
-					return MirrorOutcome{}, err
-				}
-				return mirrorOutcome(in.daemonClient(cs).TriggerMirror(in.Ctx, "", key)), nil
-			},
-		),
-
-		brine.DefineMap[DaemonPlan, MirrorOutcome](
-			"the ATC gives up before asking a daemon to mirror {string}",
-			func(in DaemonPlan, p brine.Params, _ *brine.Recorder) (MirrorOutcome, error) {
-				defer in.close()
-
-				key, ok := p.GetString(0)
-				if !ok {
-					return MirrorOutcome{}, fmt.Errorf("expected an artifact key parameter")
-				}
-				cs, err := in.cluster()
-				if err != nil {
-					return MirrorOutcome{}, err
-				}
-				ctx, cancel := context.WithCancel(in.Ctx)
-				cancel()
-				return mirrorOutcome(in.daemonClient(cs).TriggerMirror(ctx, "1.2.3.4", key)), nil
-			},
-		),
 
 		// -------------------------------------------------------------------
 		// Checks
@@ -949,27 +870,12 @@ func DaemonDefinitions() []brine.StepDefinition {
 			func(in ProbeOutcome) (int, error) {
 				return in.EndpointCount, nil
 			}),
-
-		CheckThat[MirrorOutcome]("the producing step is not failed",
-			func(in MirrorOutcome) error {
-				if in.Err != nil {
-					return fmt.Errorf("a mirror request failed the producing step: %s", in.Message)
-				}
-				return nil
-			}),
 	}
 }
 
 // -----------------------------------------------------------------------
 // Helpers
 // -----------------------------------------------------------------------
-
-func mirrorOutcome(err error) MirrorOutcome {
-	if err == nil {
-		return MirrorOutcome{}
-	}
-	return MirrorOutcome{Err: err, Message: err.Error()}
-}
 
 func (s *daemonStore) put(into *map[string][]byte, key string, body []byte) {
 	s.mu.Lock()

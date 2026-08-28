@@ -31,6 +31,21 @@ Feature: Closing the loop — a whole step, the durable tier, and the artifact i
   # what a web that restarted after the command finished reads to decide the
   # build already succeeded. The pod's worker label is what `kubectl get pods
   # -l` and the reaper select on.
+  # The pod annotation is the OTHER record, and the one a restarted web falls
+  # back on when the container it rebuilt holds nothing in memory. There is a
+  # scenario elsewhere for reading it — but that one builds the pod itself and
+  # writes "concourse.ci/exit-status" by hand, so it pins the reader against a
+  # string the test supplied. Nothing ran the writer. Measured: making
+  # annotateExitStatus record exitCode+1 left all 328 scenarios green.
+  #
+  # Here the step really runs, production writes the annotation, and a new web
+  # reads it back. Neither half is supplied by the test.
+  Scenario: The exit status a restarted web reads is the one the step itself recorded
+    Given a jetbridge worker driving a whole step from end to end
+    When the step "recorded-exit" runs "exit 3" and finishes
+    And the web dies after the step finished and a new web takes over
+    Then the finished step reported exit 3
+
   Scenario: A finished step leaves its exit status where a restarted web will find it
     Given a jetbridge worker driving a whole step from end to end
     When the step "task-abc123" runs "echo hello world" and finishes

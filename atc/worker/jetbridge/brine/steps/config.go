@@ -85,12 +85,6 @@ func ConfigDefinitions() []brine.StepDefinition {
 				return in.Config.Namespace, nil
 			}),
 
-		CheckString[ResolvedConfig]("the kubeconfig path is {string}",
-			"the kubeconfig path",
-			func(in ResolvedConfig) (string, error) {
-				return in.Config.KubeconfigPath, nil
-			}),
-
 		// Keeps its own body: the sentence counts minutes but the field is a
 		// Duration, and an integer comparison would let 5m30s pass as 5.
 		brine.DefineCheck[ResolvedConfig](

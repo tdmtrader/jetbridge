@@ -263,6 +263,40 @@ Feature: Getting artifacts from the artifact daemon
     And the daemon is not known to have a durable tier
 
   # -------------------------------------------------------------------------
+  # NOT WHOLE: asking a daemon to mirror has no scenario
+  # -------------------------------------------------------------------------
+  #
+  # Reading a mirrored copy is covered above. Asking for one is not, and the
+  # gap is deliberate rather than overlooked, so it is written down here.
+  #
+  # DaemonClient.TriggerMirror returns nil on every path BY CONTRACT — 202,
+  # non-202, transport failure and a request that could not even be built all
+  # return nil, because failing to schedule a mirror must not fail a step that
+  # already succeeded. Five step definitions existed for its branches and no
+  # scenario ever used them; they were deleted in the vocabulary pass rather
+  # than left standing as coverage that was not there (recover them from git
+  # if this is picked up).
+  #
+  # They were not simply wired to scenarios because the only assertion those
+  # steps could make was "the producing step is not failed", and against a
+  # function that always returns nil that assertion cannot fail. Five green
+  # scenarios asserting nothing is worse than an acknowledged gap.
+  #
+  # Closing it needs a decision about this file's double, which records
+  # NOTHING on purpose (see the header of ../steps/daemon.go). Either:
+  #   - it records the keys it was asked to mirror, and the scenarios assert
+  #     the request arrived — which is the recording-double pattern the header
+  #     rejects, defensible here only because there is no output to assert on;
+  #   - or the double actually mirrors, moving the artifact into the set it
+  #     serves as a mirrored copy, and the scenarios assert the copy can then
+  #     be fetched — an output assertion, but a behavioural difference beyond
+  #     "it holds its artifacts in a map", since a real daemon mirrors to
+  #     peers rather than to itself.
+  #
+  # The second is truer to the header. Neither is a decision to make in
+  # passing, which is why this is a note and not a scenario.
+
+  # -------------------------------------------------------------------------
   # Finding which daemon holds a step artifact
   # -------------------------------------------------------------------------
 

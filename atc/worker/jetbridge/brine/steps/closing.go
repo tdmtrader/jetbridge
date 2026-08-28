@@ -201,6 +201,46 @@ func closingStepDefinitions() []brine.StepDefinition {
 			},
 		),
 
+		// The other side of that story, and the one that pins the WRITE.
+		//
+		// Above, the annotation is stripped to reach the no-record branch. Here
+		// it is left exactly as the finished step wrote it, and a new web
+		// attaches. Until this existed, only the READ was covered: the scenario
+		// for it hand-builds a pod and spells "concourse.ci/exit-status" itself,
+		// so production's annotateExitStatus could write the wrong number and
+		// nothing noticed. Measured — writing exitCode+1 left all 328 scenarios
+		// green.
+		brine.DefineMap[ClosingRun, ClosingRun](
+			"the web dies after the step finished and a new web takes over",
+			func(in ClosingRun, _ brine.Params, _ *brine.Recorder) (ClosingRun, error) {
+				// A new container object, which is what a restarted web has:
+				// the exit status it held in memory is gone, so the only
+				// surviving record is the one the step left on the pod.
+				container, err := closingContainer(in.Cluster, in.Handle)
+				if err != nil {
+					return ClosingRun{}, err
+				}
+
+				out := in
+				out.Container = container
+				out.ExitStatus, out.Err, out.Message = -1, nil, ""
+
+				process, attachErr := container.Attach(in.Cluster.ClosingCtx, in.Handle, runtime.ProcessIO{})
+				if attachErr != nil {
+					out.AttachErr, out.AttachMessage = attachErr, attachErr.Error()
+					out.Err, out.Message = attachErr, attachErr.Error()
+					return out, nil
+				}
+				result, waitErr := process.Wait(in.Cluster.ClosingCtx)
+				if waitErr != nil {
+					out.Err, out.Message = waitErr, waitErr.Error()
+					return out, nil
+				}
+				out.ExitStatus = result.ExitStatus
+				return out, nil
+			},
+		),
+
 		// ...and then runs the same command again, which must land on the pod
 		// that is already there rather than scheduling a second one.
 		brine.DefineMap[ClosingRun, ClosingRun](
