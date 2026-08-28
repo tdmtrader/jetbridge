@@ -403,23 +403,15 @@ func SidecarLogDefinitions() []brine.StepDefinition {
 				return nil
 			}),
 
-		// Keeps its own body: the message explains what the label is FOR, and
-		// truncates the log — the generic message would dump a whole build log.
-		brine.DefineCheck[SidecarLogs](
-			"the sidecar's output is folded into the build log, labelled {string}",
-			func(in SidecarLogs, p brine.Params, _ *brine.Recorder) error {
-				label, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected a label parameter")
-				}
-				if !strings.Contains(in.Stdout, label) {
-					return fmt.Errorf(
-						"expected the sidecar's output labelled %q in the build log so it is distinguishable "+
-							"from the step's own; the log was %q", label, truncate(in.Stdout, 300))
-				}
-				return nil
-			},
-		),
+		// The combinator abbreviates the log it prints, which is what this
+		// used to hand-roll; truncating inside the getter would instead NARROW
+		// the assertion, because a label past the cut would stop matching.
+		CheckContains[SidecarLogs]("the sidecar's output is folded into the build log, labelled {string}",
+			"the build log",
+			func(in SidecarLogs) (string, error) { return in.Stdout, nil },
+			func(SidecarLogs) string {
+				return "the label is what makes the sidecar's output distinguishable from the step's own"
+			}),
 	}
 }
 

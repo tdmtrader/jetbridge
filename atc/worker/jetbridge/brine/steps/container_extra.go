@@ -324,25 +324,18 @@ func runExtraPauseDefinitions() []brine.StepDefinition {
 
 		// fly hijack: the intercepted command's exit code is what the operator
 		// sees in their shell. Swallowing it makes a failed hijack look clean.
-		// Keeps its own body: a wrong exit code is diagnosed from the command's
-		// log, which the generic want/got message has nowhere to carry.
-		brine.DefineCheck[InterceptOutcome](
-			"the intercepted command exits {int}",
-			func(in InterceptOutcome, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetInt(0)
-				if !ok {
-					return fmt.Errorf("expected an exit status parameter")
-				}
+		// A wrong exit code is diagnosed from the command's log, so the check
+		// carries it into the failure; an interception that failed outright has
+		// no exit code to compare, which is the getter's error.
+		CheckInt[InterceptOutcome]("the intercepted command exits {int}",
+			"the intercepted command's exit status",
+			func(in InterceptOutcome) (int, error) {
 				if in.Err != nil {
-					return fmt.Errorf("expected the interception to report exit %d, it failed: %v", want, in.Err)
+					return 0, fmt.Errorf("the interception failed: %v", in.Err)
 				}
-				if in.ExitStatus != want {
-					return fmt.Errorf("expected the intercepted command to exit %d, it exited %d (log: %q)",
-						want, in.ExitStatus, in.Log)
-				}
-				return nil
+				return in.ExitStatus, nil
 			},
-		),
+			func(in InterceptOutcome) string { return fmt.Sprintf("log: %q", in.Log) }),
 	}
 }
 
@@ -394,9 +387,10 @@ func runExtraMountDefinitions() []brine.StepDefinition {
 
 		// CO-04/CO-05: the caller is a build step, and these mounts are how it
 		// finds its own inputs, outputs and caches. A missing one means the
-		// step's artifact never gets registered. Keeps its own body: it asks
-		// whether a path is present in a collection, and names every path that
-		// was handed over instead.
+		// step's artifact never gets registered. Keeps its own body: it asserts
+		// two things — that a mount at that path was handed over AND that the
+		// mount carries a volume — and CheckMember, which is membership and
+		// nothing else, cannot say the second.
 		brine.DefineCheck[RunExtraMounts](
 			"the caller is handed a volume mounted at {string}",
 			func(in RunExtraMounts, p brine.Params, _ *brine.Recorder) error {
@@ -419,27 +413,17 @@ func runExtraMountDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		// Keeps its own body: a wrong count is only actionable alongside the
-		// list of paths that were handed over, which says WHICH mount is
-		// missing or extra.
-		brine.DefineCheck[RunExtraMounts](
-			"the caller is handed {int} volumes in all",
-			func(in RunExtraMounts, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetInt(0)
-				if !ok {
-					return fmt.Errorf("expected a count parameter")
+		// A wrong count is only actionable alongside the list of paths that were
+		// handed over, which says WHICH mount is missing or extra.
+		CheckCount[RunExtraMounts]("the caller is handed {int} volumes in all",
+			"volumes",
+			func(in RunExtraMounts) ([]string, error) {
+				paths := make([]string, 0, len(in.Mounts))
+				for _, m := range in.Mounts {
+					paths = append(paths, m.MountPath)
 				}
-				if len(in.Mounts) != want {
-					var seen []string
-					for _, m := range in.Mounts {
-						seen = append(seen, m.MountPath)
-					}
-					return fmt.Errorf("expected %d volumes, the caller was handed %d ([%s])",
-						want, len(in.Mounts), strings.Join(seen, ", "))
-				}
-				return nil
-			},
-		),
+				return paths, nil
+			}),
 
 		// Two mounts sharing a handle would make the artifact registry point
 		// two paths at one blob — the CO-05 failure, one step's outputs
@@ -483,8 +467,9 @@ func runExtraMountDefinitions() []brine.StepDefinition {
 			}),
 
 		// And afterwards it does — which is the only reason StreamOut can
-		// reach the step's outputs at all. Keeps its own body: it asserts over
-		// EVERY handed-back volume, and names the one that disagrees.
+		// reach the step's outputs at all. Keeps its own body: this is a for-all
+		// over every handed-back volume rather than one derived value or a
+		// membership, and it names the volume that disagrees.
 		brine.DefineCheck[RunExtraMounts](
 			"every volume the caller was handed now names the pod {string}",
 			func(in RunExtraMounts, p brine.Params, _ *brine.Recorder) error {

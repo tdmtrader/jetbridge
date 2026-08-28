@@ -23,6 +23,7 @@ type probe struct {
 	value string
 	num   int
 	byKey map[string]string
+	list  []string
 	err   error
 }
 
@@ -196,5 +197,187 @@ func TestParamAtNamesTheStepWhenThePatternDeclaresNoParameter(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), pat) {
 		t.Fatalf("the failure should name the step so it can be found, got: %v", err)
+	}
+}
+
+func TestCheckCountPassesAndFails(t *testing.T) {
+	const pat = "the pod has {int} volumes"
+	get := func(in probe) ([]string, error) { return in.list, nil }
+	def := CheckCount[probe](pat, "volumes", get)
+	run := countCheck(pat, "volumes", get)
+	p := paramsFor(t, def, "the pod has 2 volumes")
+
+	if err := run(probe{list: []string{"a", "b"}}, p); err != nil {
+		t.Fatalf("a matching count should pass, got %v", err)
+	}
+	err := run(probe{list: []string{"a"}}, p)
+	if err == nil {
+		t.Fatal("a different count MUST fail; it passed")
+	}
+	// The whole reason this combinator exists rather than CheckInt: a wrong
+	// count is only diagnosable from what is actually in the collection.
+	if !strings.Contains(err.Error(), "[a]") {
+		t.Fatalf("the failure must list the collection, got: %v", err)
+	}
+	// An empty collection is the state a struct has when nothing filled it, so
+	// a check that treated empty as "not supplied" would pass vacuously.
+	if err := run(probe{}, p); err == nil {
+		t.Fatal("an empty collection MUST fail against a count of 2; it passed")
+	}
+}
+
+func TestCheckMemberPassesAndFails(t *testing.T) {
+	const pat = "the step's pod mounts {string}"
+	get := func(in probe) ([]string, error) { return in.list, nil }
+	def := CheckMember[probe](pat, "the pod's mounts", get)
+	run := memberCheck(pat, "the pod's mounts", get, true)
+	p := paramsFor(t, def, `the step's pod mounts "/tmp/build"`)
+
+	if err := run(probe{list: []string{"/etc", "/tmp/build"}}, p); err != nil {
+		t.Fatalf("a present member should pass, got %v", err)
+	}
+	err := run(probe{list: []string{"/etc"}}, p)
+	if err == nil {
+		t.Fatal("an absent member MUST fail; it passed")
+	}
+	if !strings.Contains(err.Error(), "/etc") {
+		t.Fatalf("the failure must list what was there instead, got: %v", err)
+	}
+	// Membership is equality on an element, not a substring of one: a mount at
+	// /tmp/build-cache must not satisfy a sentence about /tmp/build.
+	if err := run(probe{list: []string{"/tmp/build-cache"}}, p); err == nil {
+		t.Fatal("a member that merely CONTAINS the wanted string MUST fail; it passed")
+	}
+	if err := run(probe{}, p); err == nil {
+		t.Fatal("an empty collection MUST fail; it passed")
+	}
+}
+
+func TestCheckNotMemberIsTheInverse(t *testing.T) {
+	const pat = "the pod carries no {string} label"
+	get := func(in probe) ([]string, error) { return in.list, nil }
+	def := CheckNotMember[probe](pat, "the pod's labels", get)
+	run := memberCheck(pat, "the pod's labels", get, false)
+	p := paramsFor(t, def, `the pod carries no "concourse.ci/job" label`)
+
+	if err := run(probe{list: []string{"concourse.ci/worker"}}, p); err != nil {
+		t.Fatalf("an absent member should pass, got %v", err)
+	}
+	// The direction that matters: PRESENCE is the failure. A check that shared
+	// CheckMember's polarity would pass exactly when it should fail.
+	if err := run(probe{list: []string{"concourse.ci/job"}}, p); err == nil {
+		t.Fatal("a present member MUST fail a not-member check; it passed")
+	}
+}
+
+func TestFailureDetailIsAppendedAndOnlyOnFailure(t *testing.T) {
+	const pat = "it exited {int}"
+	get := func(in probe) (int, error) { return in.num, nil }
+	det := func(in probe) string { return "log: " + in.value }
+	def := CheckInt[probe](pat, "the exit status", get, det)
+	run := intCheck(pat, "the exit status", get, det)
+	p := paramsFor(t, def, "it exited 0")
+
+	if err := run(probe{num: 0, value: "hello"}, p); err != nil {
+		t.Fatalf("a match should pass whatever the detail says, got %v", err)
+	}
+	err := run(probe{num: 2, value: "hello"}, p)
+	if err == nil {
+		t.Fatal("a mismatch MUST fail")
+	}
+	if !strings.Contains(err.Error(), "log: hello") {
+		t.Fatalf("the detail must reach the failure, got: %v", err)
+	}
+	// A detail that has nothing to add must not leave an empty bracket.
+	quiet := intCheck(pat, "the exit status", get, func(probe) string { return "" })
+	if e := quiet(probe{num: 2}, p).Error(); strings.Contains(e, "()") {
+		t.Fatalf("an empty detail should be omitted, got: %v", e)
+	}
+}
+
+func TestLongValuesAreShortenedForDisplayButComparedInFull(t *testing.T) {
+	const pat = "the build log shows {string}"
+	// A needle in the MIDDLE of a value far longer than the display limit —
+	// exactly the region abbreviation drops. A first attempt at this test put
+	// the needle at the END, which abbrev keeps, so truncating the value before
+	// comparing it still passed. The point is that the comparison sees text the
+	// message never shows.
+	log := strings.Repeat("x", shownValueLimit*2) + "the-needle" +
+		strings.Repeat("y", shownValueLimit*2) + "the-tail"
+	get := func(in probe) (string, error) { return in.value, nil }
+	def := CheckContains[probe](pat, "the build log", get)
+	run := containsCheck(pat, "the build log", get)
+
+	if err := run(probe{value: log}, paramsFor(t, def, `the build log shows "the-needle"`)); err != nil {
+		t.Fatalf("a match past the display limit MUST still pass — the comparison is on the whole value: %v", err)
+	}
+
+	err := run(probe{value: log}, paramsFor(t, def, `the build log shows "absent"`))
+	if err == nil {
+		t.Fatal("a missing substring MUST fail")
+	}
+	msg := err.Error()
+	if len(msg) > shownValueLimit*2 {
+		t.Fatalf("the failure printed %d characters; long values are meant to be abbreviated", len(msg))
+	}
+	// Abbreviating must not be able to masquerade as the whole value.
+	if !strings.Contains(msg, "elided") {
+		t.Fatalf("an abbreviated message must say what it dropped, got: %v", msg)
+	}
+	// Both ends survive: a mismatch is as often at the end as the start.
+	if !strings.Contains(msg, "the-tail") {
+		t.Fatalf("the tail of the value must survive abbreviation, got: %v", msg)
+	}
+	if !strings.HasPrefix(strings.SplitN(msg, "xxx", 2)[1], "x") {
+		t.Fatalf("the head of the value must survive abbreviation, got: %v", msg)
+	}
+	// A short value is untouched.
+	if got := abbrev("short"); got != "short" {
+		t.Fatalf("a short value must pass through unchanged, got %q", got)
+	}
+}
+
+func TestDetailReachesEveryCombinator(t *testing.T) {
+	// The exemption this fixes: authors were told a check could not move
+	// because "the For combinators take no detail func". Whether a combinator
+	// carries context should not depend on which one it is.
+	det := func(in probe) string { return "ctx:" + in.value }
+	cases := map[string]func(probe, brine.Params) error{
+		"CheckStringFor": stringForCheck("p {string} q {string}", "s",
+			func(in probe, k string) (string, error) { return in.byKey[k], nil }, det),
+		"CheckIntFor": intForCheck("p {string} q {int}", "s",
+			func(in probe, k string) (int, error) { return len(in.byKey[k]), nil }, det),
+		"CheckCount": countCheck("p {int} q", "things",
+			func(in probe) ([]string, error) { return in.list, nil }, det),
+		"CheckMember": memberCheck("p {string} q", "things",
+			func(in probe) ([]string, error) { return in.list, nil }, true, det),
+		"CheckNotMember": memberCheck("p {string} q", "things",
+			func(in probe) ([]string, error) { return in.list, nil }, false, det),
+	}
+	lines := map[string]string{
+		"CheckStringFor": `p "k" q "want"`,
+		"CheckIntFor":    `p "k" q 9`,
+		"CheckCount":     `p 9 q`,
+		"CheckMember":    `p "absent" q`,
+		"CheckNotMember": `p "here" q`,
+	}
+	patterns := map[string]string{
+		"CheckStringFor": "p {string} q {string}",
+		"CheckIntFor":    "p {string} q {int}",
+		"CheckCount":     "p {int} q",
+		"CheckMember":    "p {string} q",
+		"CheckNotMember": "p {string} q",
+	}
+	state := probe{value: "seen", byKey: map[string]string{"k": "other"}, list: []string{"here"}}
+	for name, run := range cases {
+		def := CheckThat[probe](patterns[name], func(probe) error { return nil })
+		err := run(state, paramsFor(t, def, lines[name]))
+		if err == nil {
+			t.Errorf("%s: expected a failure to attach detail to", name)
+			continue
+		}
+		if !strings.Contains(err.Error(), "ctx:seen") {
+			t.Errorf("%s: detail did not reach the failure: %v", name, err)
+		}
 	}
 }

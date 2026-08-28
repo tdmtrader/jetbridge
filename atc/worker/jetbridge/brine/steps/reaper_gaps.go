@@ -28,9 +28,13 @@ func ReaperGapDefinitions() []brine.StepDefinition {
 		// `remainingPods = append(remainingPods, retained...)` keeps the pod
 		// and loses the row, and brine asserted only the pod.
 		//
-		// Not a combinator: its parameter names WHICH pod rather than an
-		// expected value, and it asserts both halves separately so a failure
-		// says which one went.
+		// Not a combinator, the negative ones included: the parameter names a
+		// POD, while any collection a CheckNotMember could search is container
+		// handles, and the two are joined only by a label this step has to
+		// read off the pod first. It also asserts three things in sequence —
+		// the pod is there, its row is there, its row is not marked missing —
+		// so a failure can say which one went, and each of the last two
+		// carries the consequence a resumed build pays for it.
 		brine.DefineCheck[ReaperOutcome](
 			"the container behind the pod {string} is not marked as missing",
 			func(in ReaperOutcome, p brine.Params, _ *brine.Recorder) error {

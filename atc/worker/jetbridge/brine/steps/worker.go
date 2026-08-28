@@ -633,6 +633,8 @@ func workerContainerDefinitions() []brine.StepDefinition {
 
 		// Keeps its own body: the count comes first and the handle second, so the
 		// parameter the sentence expects is not the one a For combinator routes.
+		// CheckCount does read the count from that position, but its getter sees
+		// no parameters at all and so cannot reach the handle the query needs.
 		brine.DefineCheck[ContainerOutcome](
 			"exactly {int} container row carries the handle {string}",
 			func(in ContainerOutcome, p brine.Params, _ *brine.Recorder) error {
@@ -668,6 +670,11 @@ func workerContainerDefinitions() []brine.StepDefinition {
 				return state, nil
 			}),
 
+		// Keeps its own body: four independent assertions — the recorded state,
+		// the container type, the step the row is recorded for, and the handle on
+		// the container the caller was handed. A combinator compares one derived
+		// value; folding the other three into getter errors would demote real
+		// assertions to presumptions.
 		brine.DefineCheck[ContainerRun](
 			"the container {string} is recorded as a created task container for step {string}",
 			func(in ContainerRun, p brine.Params, _ *brine.Recorder) error {
@@ -711,8 +718,11 @@ func workerContainerDefinitions() []brine.StepDefinition {
 				return nil
 			}),
 
-		// Keeps its own body: the failure dumps every pod the run left behind,
-		// which a want/got message cannot carry.
+		// Keeps its own body: the sentence is a cardinality as much as an
+		// identity — exactly one pod, and it is that one. CheckMember asserts
+		// only presence, so a second, unexpected pod alongside the wanted one
+		// would pass it; CheckCount takes the count as its parameter, and here
+		// the parameter is the name.
 		brine.DefineCheck[ContainerRun](
 			"the pod {string} is now on the cluster",
 			func(in ContainerRun, p brine.Params, _ *brine.Recorder) error {
@@ -923,8 +933,10 @@ func workerInterceptDefinitions() []brine.StepDefinition {
 				return failureMessage("the interception", in.Err, in.Message)
 			}),
 
-		// Keeps its own body: the failure dumps every pod on the cluster, which is
-		// the evidence "only" is about, and a want/got message cannot carry a list.
+		// Keeps its own body: "only" is the assertion, and membership does not
+		// express it. CheckMember would pass with a leftover pod beside the
+		// wanted one — which is precisely the state this sentence exists to
+		// catch — and CheckCount's parameter is a count, not a name.
 		brine.DefineCheck[InterceptOutcome](
 			"the cluster still holds only the pod {string}",
 			func(in InterceptOutcome, p brine.Params, _ *brine.Recorder) error {
@@ -1037,6 +1049,11 @@ func workerVolumeDefinitions() []brine.StepDefinition {
 				return failureMessage("looking up the volume", in.Err, in.Message)
 			}),
 
+		// Keeps its own body: four independent assertions — the owning team, the
+		// owning worker, the recorded state and the persisted type — of which the
+		// sentence names only two as parameters. The team and worker are compared
+		// against the live state rather than against anything the sentence says,
+		// and turning them into getter errors would make them presumptions.
 		brine.DefineCheck[VolumeOutcome](
 			"the volume is recorded for this worker and team in state {string} as type {string}",
 			func(in VolumeOutcome, p brine.Params, _ *brine.Recorder) error {

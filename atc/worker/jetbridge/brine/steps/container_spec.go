@@ -186,44 +186,51 @@ func ContainerSpecDefinitions() []brine.StepDefinition {
 			}),
 
 		// The effective value: last assignment wins, which is how the runtime
-		// expresses process-over-container precedence. This one keeps its own
-		// body: on a mismatch it lists EVERY value it found for the key, which
-		// is the evidence a precedence rule is actually about, and is more than
-		// the generic want/got message can carry.
-		brine.DefineCheck[PodCreated](
-			"the main container environment resolves {string} to {string}",
-			func(in PodCreated, p brine.Params, _ *brine.Recorder) error {
-				key, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected an environment key parameter")
+		// expresses process-over-container precedence. The detail is the point
+		// of the check — on a mismatch it lists EVERY value found for the key,
+		// which is the evidence a precedence rule is about.
+		CheckStringFor[PodCreated]("the main container environment resolves {string} to {string}",
+			"the effective value",
+			func(in PodCreated, key string) (string, error) {
+				values, err := envValues(in, key)
+				if err != nil {
+					return "", err
 				}
-				want, ok := p.GetString(1)
-				if !ok {
-					return fmt.Errorf("expected an expected-value parameter")
-				}
+				return values[len(values)-1], nil
+			},
+			func(in PodCreated) string {
 				main, err := mainContainer(in.Pod)
 				if err != nil {
-					return err
+					return ""
 				}
-
-				var values []string
+				var all []string
 				for _, e := range main.Env {
-					if e.Name == key {
-						values = append(values, e.Value)
-					}
+					all = append(all, e.Name+"="+e.Value)
 				}
-				if len(values) == 0 {
-					return fmt.Errorf("expected %q in the main container environment, found none of %d vars",
-						key, len(main.Env))
-				}
-				if got := values[len(values)-1]; got != want {
-					return fmt.Errorf("expected %q to resolve to %q, got %q (all values: %s)",
-						key, want, got, strings.Join(values, ", "))
-				}
-				return nil
-			},
-		),
+				return "all values: " + strings.Join(all, ", ")
+			}),
 	}
+}
+
+// envValues returns every value the main container carries for key, in order,
+// so the LAST one is the effective one. Absence is an error rather than an
+// empty list: a sentence about what a key resolves to presumes the key is set.
+func envValues(in PodCreated, key string) ([]string, error) {
+	main, err := mainContainer(in.Pod)
+	if err != nil {
+		return nil, err
+	}
+	var values []string
+	for _, e := range main.Env {
+		if e.Name == key {
+			values = append(values, e.Value)
+		}
+	}
+	if len(values) == 0 {
+		return nil, fmt.Errorf("expected %q in the main container environment, found none of %d vars",
+			key, len(main.Env))
+	}
+	return values, nil
 }
 
 func mainContainer(pod *corev1.Pod) (corev1.Container, error) {

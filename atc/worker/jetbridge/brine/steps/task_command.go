@@ -158,41 +158,25 @@ func TaskCommandDefinitions() []brine.StepDefinition {
 				return in.Log, nil
 			}),
 
-		// Keeps its own body: a wrong count is diagnosed from the log itself —
-		// where the second copy came from — which a want/got pair cannot say.
-		brine.DefineCheck[TaskOutcome](
-			"the build log contains {string} exactly {int} time(s)",
-			func(in TaskOutcome, p brine.Params, _ *brine.Recorder) error {
-				want, _ := p.GetString(0)
-				times, ok := p.GetInt(1)
-				if !ok {
-					return fmt.Errorf("expected a text and a count")
-				}
-				got := strings.Count(in.Log, want)
-				if got != times {
-					return fmt.Errorf("expected %q %d time(s) in the build log, found %d — full log: %q",
-						want, times, got, in.Log)
-				}
-				return nil
+		// The count and the log that produced it: CheckIntFor routes the text
+		// to the getter and takes the count as the expectation, and the detail
+		// carries the log, which is where a second copy came from.
+		CheckIntFor[TaskOutcome]("the build log contains {string} exactly {int} time(s)",
+			"occurrences in the build log",
+			func(in TaskOutcome, text string) (int, error) {
+				return strings.Count(in.Log, text), nil
 			},
-		),
+			func(in TaskOutcome) string { return fmt.Sprintf("full log: %q", in.Log) }),
 
-		// Keeps its own body: an unexpected exit status is only actionable
-		// alongside the error and the log that produced it.
-		brine.DefineCheck[TaskOutcome](
-			"the task exits {int}",
-			func(in TaskOutcome, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetInt(0)
-				if !ok {
-					return fmt.Errorf("expected an exit status parameter")
-				}
-				if in.ExitStatus != want {
-					return fmt.Errorf("expected exit %d, got %d (err: %v, log: %q)",
-						want, in.ExitStatus, in.Err, in.Log)
-				}
-				return nil
+		// An unexpected exit status is only actionable alongside the error and
+		// the log that produced it, which is what the detail funcs carry.
+		CheckInt[TaskOutcome]("the task exits {int}",
+			"the task's exit status",
+			func(in TaskOutcome) (int, error) {
+				return in.ExitStatus, nil
 			},
-		),
+			func(in TaskOutcome) string { return fmt.Sprintf("err: %v", in.Err) },
+			func(in TaskOutcome) string { return fmt.Sprintf("log: %q", in.Log) }),
 	}
 }
 

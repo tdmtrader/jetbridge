@@ -302,24 +302,18 @@ func closingStepDefinitions() []brine.StepDefinition {
 				return nil
 			}),
 
-		// Keeps its own body: a wrong exit status is diagnosed from the build
-		// log, which it quotes and the generic message cannot.
-		brine.DefineCheck[ClosingRun](
-			"the finished step reported exit {int}",
-			func(in ClosingRun, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetInt(0)
-				if !ok {
-					return fmt.Errorf("expected an exit status parameter")
-				}
+		// A wrong exit status is diagnosed from the build log, so the check
+		// carries the log into the failure. A step that errored has no exit
+		// status to compare at all, which is the getter's error.
+		CheckInt[ClosingRun]("the finished step reported exit {int}",
+			"the finished step's exit status",
+			func(in ClosingRun) (int, error) {
 				if in.Err != nil {
-					return fmt.Errorf("expected exit %d, but the step errored: %v", want, in.Err)
+					return 0, fmt.Errorf("the step errored: %v", in.Err)
 				}
-				if in.ExitStatus != want {
-					return fmt.Errorf("expected exit %d, got %d (log: %q)", want, in.ExitStatus, in.Log)
-				}
-				return nil
+				return in.ExitStatus, nil
 			},
-		),
+			func(in ClosingRun) string { return fmt.Sprintf("log: %q", in.Log) }),
 
 		CheckContains[ClosingRun]("the step's output reached the build log as {string}",
 			"the build log",
@@ -336,22 +330,11 @@ func closingStepDefinitions() []brine.StepDefinition {
 				return in.AttachMessage, nil
 			}),
 
-		// Keeps its own body: on a mismatch it names every pod on the cluster,
-		// which is how the duplicate that should not have been scheduled is
-		// identified.
-		brine.DefineCheck[ClosingRun](
-			"the cluster is running exactly {int} pod for the step",
-			func(in ClosingRun, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetInt(0)
-				if !ok {
-					return fmt.Errorf("expected a pod count parameter")
-				}
-				if len(in.Pods) != want {
-					return fmt.Errorf("expected %d pod on the cluster, found %d: %v", want, len(in.Pods), in.Pods)
-				}
-				return nil
-			},
-		),
+		// On a mismatch the failure names every pod on the cluster, which is how
+		// the duplicate that should not have been scheduled is identified.
+		CheckCount[ClosingRun]("the cluster is running exactly {int} pod for the step",
+			"pods on the cluster",
+			func(in ClosingRun) ([]string, error) { return in.Pods, nil }),
 
 		// Keeps its own body: it asserts a TYPE as well as a reason, and the
 		// message on the wrong type explains the classification rule — a plain
@@ -881,9 +864,10 @@ func closingCacheDefinitions() []brine.StepDefinition {
 				return nil
 			}),
 
-		// Keeps its own body: it asserts the archive holds exactly ONE member
-		// as well as what that member says, and names the member it read — a
-		// collection the generic message cannot describe.
+		// Keeps its own body: it asserts the archive holds exactly ONE member as
+		// well as what that member says. Two independent assertions in one
+		// sentence fit no combinator — folding the count into a getter error
+		// would turn an assertion into a presumption.
 		brine.DefineCheck[ClosingCacheLookup](
 			"the cached artifact reads {string}",
 			func(in ClosingCacheLookup, p brine.Params, _ *brine.Recorder) error {
@@ -910,6 +894,8 @@ func closingCacheDefinitions() []brine.StepDefinition {
 		// The four counters must partition every lookup that reaches the
 		// daemon. If they do not, no ratio computed from them means anything,
 		// and answering "is this tier earning its egress?" is impossible.
+		// Keeps its own body: four expectations in one sentence, plus that
+		// partition invariant, is a shape no combinator has.
 		brine.DefineCheck[ClosingCacheLookup](
 			"the warm counters read {int} local, {int} hit, {int} miss, {int} suppressed",
 			func(in ClosingCacheLookup, p brine.Params, _ *brine.Recorder) error {
@@ -1192,9 +1178,10 @@ func closingLocatorDefinitions() []brine.StepDefinition {
 				return loc.HostDir, nil
 			}),
 
-		// Keeps its own body: this is a negative, and its parameter is the key
-		// being asked about rather than an expectation to compare against, so
-		// no combinator is the right shape for it.
+		// Keeps its own body: CheckNotMember is the shape for a negative that
+		// takes a parameter, but it searches a collection, and this index
+		// exposes no listing — only a lookup per key — so there is nothing for
+		// it to search. The failure names the node the index does claim.
 		brine.DefineCheck[ClosingIndex](
 			"the artifact {string} is not held anywhere",
 			func(in ClosingIndex, p brine.Params, _ *brine.Recorder) error {
@@ -1318,26 +1305,25 @@ func CancelledExecDefinitions() []brine.StepDefinition {
 				return nil
 			}),
 
-		// Keeps its own body: its parameter is the pod to look up rather than
-		// an expectation, and the failure message is where the exec-mode rule
-		// itself is written down.
-		brine.DefineCheck[CancelledExecOutcome](
-			"the pod {string} is still there for the operator",
-			func(in CancelledExecOutcome, p brine.Params, _ *brine.Recorder) error {
-				name, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected a pod name parameter")
-				}
-				_, err := in.Clientset.CoreV1().Pods(in.Namespace).
-					Get(in.Ctx, name, metav1.GetOptions{})
+		// A pod among the pods, with the rule the check exists for riding along
+		// as detail. Listing is also a better failure than a Get: it says what
+		// the cluster DOES hold instead of only that this one is missing.
+		CheckMember[CancelledExecOutcome]("the pod {string} is still there for the operator",
+			"the pods on the cluster",
+			func(in CancelledExecOutcome) ([]string, error) {
+				pods, err := in.Clientset.CoreV1().Pods(in.Namespace).List(in.Ctx, metav1.ListOptions{})
 				if err != nil {
-					return fmt.Errorf(
-						"expected the pause pod %q to survive cancellation so `fly hijack` can reach it; "+
-							"it is gone (%v) — the direct-mode delete rule must not be applied to exec mode",
-						name, err)
+					return nil, fmt.Errorf("list pods: %w", err)
 				}
-				return nil
+				var names []string
+				for _, p := range pods.Items {
+					names = append(names, p.Name)
+				}
+				return names, nil
 			},
-		),
+			func(CancelledExecOutcome) string {
+				return "the pause pod must survive cancellation so `fly hijack` can reach it — " +
+					"the direct-mode delete rule must not be applied to exec mode"
+			}),
 	}
 }

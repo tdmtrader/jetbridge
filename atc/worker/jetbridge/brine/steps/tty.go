@@ -106,28 +106,21 @@ func TTYDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		// Keeps its own body: on a mismatch it explains what a shell that
-		// believes it is talking to a pipe costs a hijack session, which is
-		// the whole point of the scenario and more than want/got can say.
-		brine.DefineCheck[TerminalOutcome](
-			"the step reports {string}",
-			func(in TerminalOutcome, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected an expected-output parameter")
-				}
+		// The detail func carries what the hand-written message carried: what a
+		// shell that believes it is talking to a pipe costs a hijack session,
+		// which is the whole point of the scenario.
+		CheckContains[TerminalOutcome]("the step reports {string}",
+			"the command's output",
+			func(in TerminalOutcome) (string, error) {
 				if in.Err != nil {
-					return fmt.Errorf("the step failed: %v", in.Err)
+					return "", fmt.Errorf("the step failed: %v", in.Err)
 				}
-				if !strings.Contains(in.Output, want) {
-					return fmt.Errorf(
-						"expected the command to report %q, it reported %q — a shell that believes "+
-							"it is talking to a pipe gives `fly hijack` no line editing, no job "+
-							"control and no colour", want, strings.TrimSpace(in.Output))
-				}
-				return nil
+				return in.Output, nil
 			},
-		),
+			func(TerminalOutcome) string {
+				return "a shell that believes it is talking to a pipe gives `fly hijack` " +
+					"no line editing, no job control and no colour"
+			}),
 	}
 }
 

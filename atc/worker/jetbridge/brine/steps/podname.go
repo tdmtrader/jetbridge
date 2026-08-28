@@ -56,6 +56,10 @@ func PodNameDefinitions() []brine.StepDefinition {
 			},
 		),
 
+		// Keeps its own body: a regular-expression match. No combinator
+		// compares against a pattern — CheckString would demand the name equal
+		// the pattern and CheckContains would demand the pattern appear in it
+		// literally, and both are different rules.
 		brine.DefineCheck[GeneratedPodName](
 			"the pod name matches {string}",
 			func(in GeneratedPodName, p brine.Params, _ *brine.Recorder) error {
@@ -104,25 +108,21 @@ func PodNameDefinitions() []brine.StepDefinition {
 		// hyphens passed: "my_pipe" became "mypipe", still a valid label and
 		// still wrong. The positive form is what pins it.
 		//
-		// It keeps its own body because the failure message states that rule:
-		// whoever trips it is looking at a name that is still a valid label.
-		brine.DefineCheck[GeneratedPodName](
-			"the pod name reads {string}",
-			func(in GeneratedPodName, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected an expected-name parameter")
-				}
-				if !strings.Contains(in.Name, want) {
-					return fmt.Errorf(
-						"expected the sanitized name to read %q — a separator that is DELETED rather than "+
-							"hyphenated still yields a valid label, so the positive form is the assertion "+
-							"that matters; got %q", want, in.Name)
-				}
-				return nil
-			},
-		),
+		// The failure carries that rule as its detail: whoever trips it is
+		// looking at a name that is still a valid label, and needs telling why
+		// that is not enough.
+		CheckContains[GeneratedPodName]("the pod name reads {string}",
+			"the sanitized name",
+			func(in GeneratedPodName) (string, error) { return in.Name, nil },
+			func(GeneratedPodName) string {
+				return "a separator that is DELETED rather than hyphenated still yields a valid label, " +
+					"so the positive form is the assertion that matters"
+			}),
 
+		// Keeps its own body: a negative check on a SUBSTRING of one string.
+		// CheckNotMember is the negative form for a collection and compares
+		// whole elements, so it cannot say that "_" appears nowhere inside a
+		// single name.
 		brine.DefineCheck[GeneratedPodName](
 			"the pod name does not contain {string}",
 			func(in GeneratedPodName, p brine.Params, _ *brine.Recorder) error {
@@ -137,6 +137,9 @@ func PodNameDefinitions() []brine.StepDefinition {
 			},
 		),
 
+		// Keeps its own body: a suffix is neither equality nor "mentions
+		// anywhere". CheckContains would pass on a name carrying the suffix in
+		// the middle, which is the wider rule.
 		brine.DefineCheck[GeneratedPodName](
 			"the pod name ends with {string}",
 			func(in GeneratedPodName, p brine.Params, _ *brine.Recorder) error {
