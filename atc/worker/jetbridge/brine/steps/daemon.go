@@ -362,31 +362,17 @@ func DaemonDefinitions() []brine.StepDefinition {
 
 		// --- what the daemon holds ---
 
-		brine.DefineMap[DaemonPlan, DaemonPlan](
-			"it holds the artifact {string} containing {string}",
-			func(in DaemonPlan, p brine.Params, _ *brine.Recorder) (DaemonPlan, error) {
-				key, _ := p.GetString(0)
-				body, ok := p.GetString(1)
-				if !ok {
-					return DaemonPlan{}, fmt.Errorf("expected an artifact key and its contents")
-				}
-				in.Store.put(&in.Store.artifacts, key, []byte(body))
-				return in, nil
-			},
-		),
+		Refine[DaemonPlan]("it holds the artifact {string} containing {string}",
+			func(in DaemonPlan, a Args) DaemonPlan {
+				in.Store.put(&in.Store.artifacts, a.String(0), []byte(a.String(1)))
+				return in
+			}),
 
-		brine.DefineMap[DaemonPlan, DaemonPlan](
-			"it holds a mirrored copy of the artifact {string} containing {string}",
-			func(in DaemonPlan, p brine.Params, _ *brine.Recorder) (DaemonPlan, error) {
-				key, _ := p.GetString(0)
-				body, ok := p.GetString(1)
-				if !ok {
-					return DaemonPlan{}, fmt.Errorf("expected an artifact key and its contents")
-				}
-				in.Store.put(&in.Store.stepArtifacts, key, []byte(body))
-				return in, nil
-			},
-		),
+		Refine[DaemonPlan]("it holds a mirrored copy of the artifact {string} containing {string}",
+			func(in DaemonPlan, a Args) DaemonPlan {
+				in.Store.put(&in.Store.stepArtifacts, a.String(0), []byte(a.String(1)))
+				return in
+			}),
 
 		brine.DefineMap[DaemonPlan, DaemonPlan](
 			"it holds the archive {string} containing the file {string} with {string}",
@@ -402,39 +388,30 @@ func DaemonDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineMap[DaemonPlan, DaemonPlan](
-			"it holds the resource cache {string}",
-			func(in DaemonPlan, p brine.Params, _ *brine.Recorder) (DaemonPlan, error) {
-				key, ok := p.GetString(0)
-				if !ok {
-					return DaemonPlan{}, fmt.Errorf("expected a cache key parameter")
-				}
+		Refine[DaemonPlan]("it holds the resource cache {string}",
+			func(in DaemonPlan, a Args) DaemonPlan {
+				key := a.String(0)
 				in.Store.mu.Lock()
 				in.Store.caches[key] = true
 				in.Store.mu.Unlock()
-				return in, nil
-			},
-		),
+				return in
+			}),
 
-		brine.DefineMap[DaemonPlan, DaemonPlan](
-			"it advertises a durable tier",
-			func(in DaemonPlan, _ brine.Params, _ *brine.Recorder) (DaemonPlan, error) {
+		Refine[DaemonPlan]("it advertises a durable tier",
+			func(in DaemonPlan, _ Args) DaemonPlan {
 				in.Store.mu.Lock()
 				in.Store.durableTier = true
 				in.Store.mu.Unlock()
-				return in, nil
-			},
-		),
+				return in
+			}),
 
-		brine.DefineMap[DaemonPlan, DaemonPlan](
-			"it answers resolve requests but holds nothing locally",
-			func(in DaemonPlan, _ brine.Params, _ *brine.Recorder) (DaemonPlan, error) {
+		Refine[DaemonPlan]("it answers resolve requests but holds nothing locally",
+			func(in DaemonPlan, _ Args) DaemonPlan {
 				in.Store.mu.Lock()
 				in.Store.resolves = true
 				in.Store.mu.Unlock()
-				return in, nil
-			},
-		),
+				return in
+			}),
 
 		// --- the shape of the cluster ---
 
@@ -452,13 +429,11 @@ func DaemonDefinitions() []brine.StepDefinition {
 		// 203.0.113.99 is TEST-NET-3: reserved for documentation, routed
 		// nowhere. It behaves exactly like a daemon pod that has stopped
 		// answering, which is the point.
-		brine.DefineMap[DaemonPlan, DaemonPlan](
-			"a second daemon address that never answers",
-			func(in DaemonPlan, _ brine.Params, _ *brine.Recorder) (DaemonPlan, error) {
+		Refine[DaemonPlan]("a second daemon address that never answers",
+			func(in DaemonPlan, _ Args) DaemonPlan {
 				in.IPs = append(append([]string{}, in.IPs...), "203.0.113.99")
-				return in, nil
-			},
-		),
+				return in
+			}),
 
 		// --- what the ATC remembers about where the artifact came from ---
 
@@ -485,24 +460,20 @@ func DaemonDefinitions() []brine.StepDefinition {
 
 		// The node is still recorded against the artifact; it is simply not in
 		// the cluster any more. Spot preemption, a crash, a drain.
-		brine.DefineMap[DaemonPlan, DaemonPlan](
-			"the node that produced the artifact has left the cluster",
-			func(in DaemonPlan, _ brine.Params, _ *brine.Recorder) (DaemonPlan, error) {
+		Refine[DaemonPlan]("the node that produced the artifact has left the cluster",
+			func(in DaemonPlan, _ Args) DaemonPlan {
 				in.SourceNode = "node-1"
 				in.Nodes = map[string]string{}
-				return in, nil
-			},
-		),
+				return in
+			}),
 
 		// A web restart wipes the in-memory locator, so artifacts wrapped
 		// afterwards carry no producing node at all.
-		brine.DefineMap[DaemonPlan, DaemonPlan](
-			"no producing node was ever recorded",
-			func(in DaemonPlan, _ brine.Params, _ *brine.Recorder) (DaemonPlan, error) {
+		Refine[DaemonPlan]("no producing node was ever recorded",
+			func(in DaemonPlan, _ Args) DaemonPlan {
 				in.SourceNode = ""
-				return in, nil
-			},
-		),
+				return in
+			}),
 
 		brine.DefineMap[DaemonPlan, DaemonPlan](
 			"the ATC already knows the daemon address",
@@ -515,43 +486,31 @@ func DaemonDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineMap[DaemonPlan, DaemonPlan](
-			"the ATC recorded an empty daemon address",
-			func(in DaemonPlan, _ brine.Params, _ *brine.Recorder) (DaemonPlan, error) {
+		Refine[DaemonPlan]("the ATC recorded an empty daemon address",
+			func(in DaemonPlan, _ Args) DaemonPlan {
 				in.UseKnownIP, in.KnownIP = true, ""
-				return in, nil
-			},
-		),
+				return in
+			}),
 
-		brine.DefineMap[DaemonPlan, DaemonPlan](
-			"the ATC can fall back to other daemons",
-			func(in DaemonPlan, _ brine.Params, _ *brine.Recorder) (DaemonPlan, error) {
+		Refine[DaemonPlan]("the ATC can fall back to other daemons",
+			func(in DaemonPlan, _ Args) DaemonPlan {
 				in.Fallback = true
-				return in, nil
-			},
-		),
+				return in
+			}),
 
 		// --- what the consumer is asking for ---
 
-		brine.DefineMap[DaemonPlan, DaemonPlan](
-			"the consumer asks for the sub-path {string}",
-			func(in DaemonPlan, p brine.Params, _ *brine.Recorder) (DaemonPlan, error) {
-				path, ok := p.GetString(0)
-				if !ok {
-					return DaemonPlan{}, fmt.Errorf("expected a sub-path parameter")
-				}
-				in.SubPath = path
-				return in, nil
-			},
-		),
+		Refine[DaemonPlan]("the consumer asks for the sub-path {string}",
+			func(in DaemonPlan, a Args) DaemonPlan {
+				in.SubPath = a.String(0)
+				return in
+			}),
 
-		brine.DefineMap[DaemonPlan, DaemonPlan](
-			"the consumer asks for a gzip-compressed stream",
-			func(in DaemonPlan, _ brine.Params, _ *brine.Recorder) (DaemonPlan, error) {
+		Refine[DaemonPlan]("the consumer asks for a gzip-compressed stream",
+			func(in DaemonPlan, _ Args) DaemonPlan {
 				in.Gzip = true
-				return in, nil
-			},
-		),
+				return in
+			}),
 
 		// --- reading ---
 

@@ -240,13 +240,11 @@ func runExtraDirectDefinitions() []brine.StepDefinition {
 		// A step with no working directory declares no workspace, so the pod
 		// must not invent one. An unasked-for emptyDir would silently shadow
 		// whatever the image ships at that path.
-		brine.DefineMap[ContainerDraft, ContainerDraft](
-			"it declares no working directory",
-			func(in ContainerDraft, _ brine.Params, _ *brine.Recorder) (ContainerDraft, error) {
+		Refine[ContainerDraft]("it declares no working directory",
+			func(in ContainerDraft, _ Args) ContainerDraft {
 				in.Dir = ""
-				return in, nil
-			},
-		),
+				return in
+			}),
 
 		CheckThat[PodCreated]("the step has nothing mounted at all",
 			func(in PodCreated) error {

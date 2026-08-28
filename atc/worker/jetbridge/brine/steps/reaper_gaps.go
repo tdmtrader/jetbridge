@@ -103,9 +103,8 @@ func ReaperGapDefinitions() []brine.StepDefinition {
 		// Blocker 3. The pod vanished between the list and the delete. NotFound
 		// is what the API server returns, and the reaper has to treat it as
 		// routine rather than failing the whole sweep.
-		brine.DefineMap[ReaperReady, ReaperReady](
-			"the pod is deleted by someone else before the reaper gets to it",
-			func(in ReaperReady, _ brine.Params, _ *brine.Recorder) (ReaperReady, error) {
+		Refine[ReaperReady]("the pod is deleted by someone else before the reaper gets to it",
+			func(in ReaperReady, _ Args) ReaperReady {
 				in.Clientset.PrependReactor("delete", "pods",
 					func(action k8stesting.Action) (bool, apiruntime.Object, error) {
 						name := ""
@@ -114,23 +113,20 @@ func ReaperGapDefinitions() []brine.StepDefinition {
 						}
 						return true, nil, apierrors.NewNotFound(corev1.Resource("pods"), name)
 					})
-				return in, nil
-			},
-		),
+				return in
+			}),
 
 		// Neither suite looked here: a sweep that cannot list pods has swept
 		// nothing, and reporting success makes it look healthy to the component
 		// runner while the cluster fills up.
-		brine.DefineMap[ReaperReady, ReaperReady](
-			"the cluster stops answering when the reaper lists pods",
-			func(in ReaperReady, _ brine.Params, _ *brine.Recorder) (ReaperReady, error) {
+		Refine[ReaperReady]("the cluster stops answering when the reaper lists pods",
+			func(in ReaperReady, _ Args) ReaperReady {
 				in.Clientset.PrependReactor("list", "pods",
 					func(k8stesting.Action) (bool, apiruntime.Object, error) {
 						return true, nil, fmt.Errorf("connection refused")
 					})
-				return in, nil
-			},
-		),
+				return in
+			}),
 
 		CheckThat[ReaperOutcome]("the reaper reports that it could not sweep",
 			func(in ReaperOutcome) error {

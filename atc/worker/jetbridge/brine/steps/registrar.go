@@ -52,15 +52,10 @@ func RegistrarDefinitions() []brine.StepDefinition {
 
 		// Overrides have to be applied before the registrar is built, so this
 		// replaces it rather than mutating one.
-		brine.DefineMap[RegistrarReady, RegistrarReady](
-			"the operator overrides the resource type images with {string}",
-			func(in RegistrarReady, p brine.Params, _ *brine.Recorder) (RegistrarReady, error) {
-				spec, ok := p.GetString(0)
-				if !ok {
-					return RegistrarReady{}, fmt.Errorf("expected an overrides parameter")
-				}
+		Refine[RegistrarReady]("the operator overrides the resource type images with {string}",
+			func(in RegistrarReady, a Args) RegistrarReady {
 				var overrides []string
-				for _, o := range strings.Split(spec, ",") {
+				for _, o := range strings.Split(a.String(0), ",") {
 					if o = strings.TrimSpace(o); o != "" {
 						overrides = append(overrides, o)
 					}
@@ -68,9 +63,8 @@ func RegistrarDefinitions() []brine.StepDefinition {
 				in.Config.ResourceTypeImages = jetbridge.MergeResourceTypeImages(overrides)
 				in.Registrar = jetbridge.NewRegistrar(
 					lagertest.NewTestLogger("registrar"), in.Clientset, in.Config, in.DB.WorkerFactory)
-				return in, nil
-			},
-		),
+				return in
+			}),
 
 		brine.DefineMap[RegistrarReady, RegistrarReady](
 			"{int} pods belonging to this worker are running",

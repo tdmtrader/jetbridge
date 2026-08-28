@@ -61,25 +61,17 @@ func ContainerGapDefinitions() []brine.StepDefinition {
 		// An input that carries a real artifact, rather than just a mount
 		// path. The backend only emits a fetch init container for inputs it
 		// can actually locate.
-		brine.DefineMap[ContainerDraft, ContainerDraft](
-			"it takes an input at {string} produced by an earlier step",
-			func(in ContainerDraft, p brine.Params, _ *brine.Recorder) (ContainerDraft, error) {
-				path, ok := p.GetString(0)
-				if !ok {
-					return ContainerDraft{}, fmt.Errorf("expected a path parameter")
-				}
-				in.ArtifactInputs = append(in.ArtifactInputs, path)
-				return in, nil
-			},
-		),
+		Refine[ContainerDraft]("it takes an input at {string} produced by an earlier step",
+			func(in ContainerDraft, a Args) ContainerDraft {
+				in.ArtifactInputs = append(in.ArtifactInputs, a.String(0))
+				return in
+			}),
 
-		brine.DefineMap[ContainerDraft, ContainerDraft](
-			"the container has run before on this worker",
-			func(in ContainerDraft, _ brine.Params, _ *brine.Recorder) (ContainerDraft, error) {
+		Refine[ContainerDraft]("the container has run before on this worker",
+			func(in ContainerDraft, _ Args) ContainerDraft {
 				in.RanBefore = true
-				return in, nil
-			},
-		),
+				return in
+			}),
 
 		CheckThat[PodCreated]("the pod clears the workspace left by the previous run",
 			func(in PodCreated) error {

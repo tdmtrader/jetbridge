@@ -676,78 +676,54 @@ func closingCacheDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineMap[ClosingCachePlan, ClosingCachePlan](
-			"the node already holds the resource cache {string} containing {string}",
-			func(in ClosingCachePlan, p brine.Params, _ *brine.Recorder) (ClosingCachePlan, error) {
-				key, _ := p.GetString(0)
-				content, ok := p.GetString(1)
-				if !ok {
-					return in, fmt.Errorf("expected a cache key and its content")
-				}
+		Refine[ClosingCachePlan]("the node already holds the resource cache {string} containing {string}",
+			func(in ClosingCachePlan, a Args) ClosingCachePlan {
+				key, content := a.String(0), a.String(1)
 				in.CacheDaemon.mu.Lock()
 				in.CacheDaemon.node[key] = content
 				in.CacheDaemon.mu.Unlock()
-				return in, nil
-			},
-		),
+				return in
+			}),
 
-		brine.DefineMap[ClosingCachePlan, ClosingCachePlan](
-			"the durable store holds {string} containing {string}",
-			func(in ClosingCachePlan, p brine.Params, _ *brine.Recorder) (ClosingCachePlan, error) {
-				key, _ := p.GetString(0)
-				content, ok := p.GetString(1)
-				if !ok {
-					return in, fmt.Errorf("expected a content key and its content")
-				}
+		Refine[ClosingCachePlan]("the durable store holds {string} containing {string}",
+			func(in ClosingCachePlan, a Args) ClosingCachePlan {
+				key, content := a.String(0), a.String(1)
 				in.CacheDaemon.mu.Lock()
 				in.CacheDaemon.store[key] = content
 				in.CacheDaemon.mu.Unlock()
-				return in, nil
-			},
-		),
+				return in
+			}),
 
-		brine.DefineMap[ClosingCachePlan, ClosingCachePlan](
-			"a peer still holds a mirrored copy of {string} containing {string}",
-			func(in ClosingCachePlan, p brine.Params, _ *brine.Recorder) (ClosingCachePlan, error) {
-				key, _ := p.GetString(0)
-				content, ok := p.GetString(1)
-				if !ok {
-					return in, fmt.Errorf("expected a cache key and its content")
-				}
+		Refine[ClosingCachePlan]("a peer still holds a mirrored copy of {string} containing {string}",
+			func(in ClosingCachePlan, a Args) ClosingCachePlan {
+				key, content := a.String(0), a.String(1)
 				in.CacheDaemon.mu.Lock()
 				in.CacheDaemon.mirror[key] = content
 				in.CacheDaemon.mu.Unlock()
-				return in, nil
-			},
-		),
+				return in
+			}),
 
-		brine.DefineMap[ClosingCachePlan, ClosingCachePlan](
-			"the daemon predates the durable tier",
-			func(in ClosingCachePlan, _ brine.Params, _ *brine.Recorder) (ClosingCachePlan, error) {
+		Refine[ClosingCachePlan]("the daemon predates the durable tier",
+			func(in ClosingCachePlan, _ Args) ClosingCachePlan {
 				in.CacheDaemon.mu.Lock()
 				in.CacheDaemon.durableCapable = false
 				in.CacheDaemon.mu.Unlock()
-				return in, nil
-			},
-		),
+				return in
+			}),
 
-		brine.DefineMap[ClosingCachePlan, ClosingCachePlan](
-			"the durable store cannot be reached",
-			func(in ClosingCachePlan, _ brine.Params, _ *brine.Recorder) (ClosingCachePlan, error) {
+		Refine[ClosingCachePlan]("the durable store cannot be reached",
+			func(in ClosingCachePlan, _ Args) ClosingCachePlan {
 				in.CacheDaemon.mu.Lock()
 				in.CacheDaemon.storeReachable = false
 				in.CacheDaemon.mu.Unlock()
-				return in, nil
-			},
-		),
+				return in
+			}),
 
-		brine.DefineMap[ClosingCachePlan, ClosingCachePlan](
-			"the API has marked the daemon pod not ready",
-			func(in ClosingCachePlan, _ brine.Params, _ *brine.Recorder) (ClosingCachePlan, error) {
+		Refine[ClosingCachePlan]("the API has marked the daemon pod not ready",
+			func(in ClosingCachePlan, _ Args) ClosingCachePlan {
 				in.CacheReady = false
-				return in, nil
-			},
-		),
+				return in
+			}),
 
 		// Registration is the producing half: it is what puts an object into
 		// permanent storage under a content key, or does not.
@@ -774,19 +750,14 @@ func closingCacheDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineMap[ClosingCachePlan, ClosingCachePlan](
-			"the node's own copy of {string} is reclaimed",
-			func(in ClosingCachePlan, p brine.Params, _ *brine.Recorder) (ClosingCachePlan, error) {
-				key, ok := p.GetString(0)
-				if !ok {
-					return in, fmt.Errorf("expected a cache key")
-				}
+		Refine[ClosingCachePlan]("the node's own copy of {string} is reclaimed",
+			func(in ClosingCachePlan, a Args) ClosingCachePlan {
+				key := a.String(0)
 				in.CacheDaemon.mu.Lock()
 				delete(in.CacheDaemon.node, key)
 				in.CacheDaemon.mu.Unlock()
-				return in, nil
-			},
-		),
+				return in
+			}),
 
 		// ------------------------------------------------------------------
 		// The consumer's action. Every one of these closes the daemon: the
@@ -1071,42 +1042,25 @@ func closingLocatorDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineMap[ClosingIndex, ClosingIndex](
-			"the artifact {string} is recorded on node {string}",
-			func(in ClosingIndex, p brine.Params, _ *brine.Recorder) (ClosingIndex, error) {
-				key, _ := p.GetString(0)
-				node, ok := p.GetString(1)
-				if !ok {
-					return in, fmt.Errorf("expected an artifact key and a node")
-				}
+		Refine[ClosingIndex]("the artifact {string} is recorded on node {string}",
+			func(in ClosingIndex, a Args) ClosingIndex {
+				key, node := a.String(0), a.String(1)
 				in.Index.Record(key, node, "")
 				in.Expecting = append(in.Expecting, key)
-				return in, nil
-			},
-		),
+				return in
+			}),
 
-		brine.DefineMap[ClosingIndex, ClosingIndex](
-			"the artifact {string} is recorded on node {string} in directory {string}",
-			func(in ClosingIndex, p brine.Params, _ *brine.Recorder) (ClosingIndex, error) {
-				key, _ := p.GetString(0)
-				node, _ := p.GetString(1)
-				dir, ok := p.GetString(2)
-				if !ok {
-					return in, fmt.Errorf("expected an artifact key, a node and a directory")
-				}
+		Refine[ClosingIndex]("the artifact {string} is recorded on node {string} in directory {string}",
+			func(in ClosingIndex, a Args) ClosingIndex {
+				key, node, dir := a.String(0), a.String(1), a.String(2)
 				in.Index.Record(key, node, dir)
 				in.Expecting = append(in.Expecting, key)
-				return in, nil
-			},
-		),
+				return in
+			}),
 
-		brine.DefineMap[ClosingIndex, ClosingIndex](
-			"the artifact {string} is collected",
-			func(in ClosingIndex, p brine.Params, _ *brine.Recorder) (ClosingIndex, error) {
-				key, ok := p.GetString(0)
-				if !ok {
-					return in, fmt.Errorf("expected an artifact key")
-				}
+		Refine[ClosingIndex]("the artifact {string} is collected",
+			func(in ClosingIndex, a Args) ClosingIndex {
+				key := a.String(0)
 				in.Index.Remove(key)
 				kept := in.Expecting[:0:0]
 				for _, k := range in.Expecting {
@@ -1115,22 +1069,17 @@ func closingLocatorDefinitions() []brine.StepDefinition {
 					}
 				}
 				in.Expecting = kept
-				return in, nil
-			},
-		),
+				return in
+			}),
 
 		// The ginkgo case this replaces spawned 300 goroutines and asserted
 		// nothing at all — it was a race-detector probe, and `make test-unit`
 		// does not run with -race, so it proved nothing there either. Distinct
 		// keys make it an assertable claim: nothing recorded concurrently may
 		// be lost.
-		brine.DefineMap[ClosingIndex, ClosingIndex](
-			"{int} artifacts are recorded at the same moment",
-			func(in ClosingIndex, p brine.Params, _ *brine.Recorder) (ClosingIndex, error) {
-				count, ok := p.GetInt(0)
-				if !ok {
-					return in, fmt.Errorf("expected a count")
-				}
+		Refine[ClosingIndex]("{int} artifacts are recorded at the same moment",
+			func(in ClosingIndex, a Args) ClosingIndex {
+				count := a.Int(0)
 
 				var wg sync.WaitGroup
 				for i := range count {
@@ -1147,9 +1096,8 @@ func closingLocatorDefinitions() []brine.StepDefinition {
 					}()
 				}
 				wg.Wait()
-				return in, nil
-			},
-		),
+				return in
+			}),
 
 		// ------------------------------------------------------------------
 		// Checks
@@ -1290,12 +1238,10 @@ func CancelledExecDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineMap[CancelledExecOutcome, CancelledExecOutcome](
-			"the build is cancelled before the pod ever starts",
-			func(in CancelledExecOutcome, _ brine.Params, _ *brine.Recorder) (CancelledExecOutcome, error) {
-				return in, nil
-			},
-		),
+		Refine[CancelledExecOutcome]("the build is cancelled before the pod ever starts",
+			func(in CancelledExecOutcome, _ Args) CancelledExecOutcome {
+				return in
+			}),
 
 		CheckThat[CancelledExecOutcome]("the step reports the cancellation",
 			func(in CancelledExecOutcome) error {

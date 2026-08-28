@@ -2,6 +2,7 @@ package steps
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -379,5 +380,153 @@ func TestDetailReachesEveryCombinator(t *testing.T) {
 		if !strings.Contains(err.Error(), "ctx:seen") {
 			t.Errorf("%s: detail did not reach the failure: %v", name, err)
 		}
+	}
+}
+
+// A draft the refinement steps adjust, standing in for ContainerDraft.
+type draft struct {
+	paths []string
+	dir   string
+	n     int
+	flag  bool
+}
+
+func TestRefineAppliesTheChangeAndCarriesItForward(t *testing.T) {
+	def := Refine[draft]("it caches {string}", func(in draft, a Args) draft {
+		in.paths = append(in.paths, a.String(0))
+		return in
+	})
+	if def.Pattern() != "it caches {string}" {
+		t.Fatalf("the pattern must reach the definition unchanged, got %q", def.Pattern())
+	}
+	if def.Mode() != brine.ModeMap {
+		t.Fatal("a refinement is a map step; a check would not carry its result forward")
+	}
+	if def.InType() != def.OutType() {
+		t.Fatalf("a refinement's In and Out must be the same type, got %v -> %v", def.InType(), def.OutType())
+	}
+}
+
+func TestRefineReadsEveryParameterShape(t *testing.T) {
+	const pat = "it belongs to job {int} step {string} with {int} retries"
+	def := Refine[draft](pat, func(in draft, a Args) draft {
+		in.n = a.Int(0)
+		in.dir = a.String(1)
+		in.paths = append(in.paths, fmt.Sprint(a.Int(2)))
+		return in
+	})
+	// Drive the real handler the way the pipeline would.
+	reg := brine.NewStepRegistry([]brine.StepDefinition{def})
+	if _, _, ok := reg.Lookup(`it belongs to job 7 step "build" with 3 retries`); !ok {
+		t.Fatal("the pattern did not match a line it declares")
+	}
+	// Mixed {int}/{string} in one pattern is the case a family of
+	// shape-named combinators would have needed a separate name for.
+	_, p, _ := reg.Lookup(`it belongs to job 7 step "build" with 3 retries`)
+	var missing []string
+	a := Args{pattern: pat, params: p, missing: &missing}
+	if got := a.Int(0); got != 7 {
+		t.Errorf("Int(0) = %d, want 7", got)
+	}
+	if got := a.String(1); got != "build" {
+		t.Errorf("String(1) = %q, want \"build\"", got)
+	}
+	if got := a.Int(2); got != 3 {
+		t.Errorf("Int(2) = %d, want 3", got)
+	}
+	if len(missing) != 0 {
+		t.Errorf("no read should have been recorded as missing, got %v", missing)
+	}
+}
+
+func TestRefineReportsAReadThePatternDoesNotDeclare(t *testing.T) {
+	// The authoring bug the unreachable guards pretended to catch. Without
+	// this, a refinement reading a parameter its sentence never declared
+	// would silently apply the zero value and pass.
+	const pat = "it runs privileged"
+	var missing []string
+	a := Args{pattern: pat, params: brine.Params{}, missing: &missing}
+	if got := a.String(0); got != "" {
+		t.Errorf("a read past the declared parameters should yield the zero value, got %q", got)
+	}
+	if len(missing) != 1 {
+		t.Fatalf("the out-of-range read MUST be recorded, got %v", missing)
+	}
+	if !strings.Contains(missing[0], "parameter 0") {
+		t.Errorf("the record should name which parameter, got %v", missing)
+	}
+}
+
+func TestRefineReportsANumberItCannotUse(t *testing.T) {
+	const pat = "it retries {int} times"
+	def := Refine[draft](pat, func(in draft, a Args) draft { in.n = a.Int(0); return in })
+	_, p, ok := brine.NewStepRegistry([]brine.StepDefinition{def}).
+		Lookup("it retries 99999999999999999999999 times")
+	if !ok {
+		t.Fatal("the pattern did not match")
+	}
+	var missing []string
+	a := Args{pattern: pat, params: p, missing: &missing}
+	if got := a.Int(0); got != 0 {
+		t.Errorf("an unusable number should yield zero, got %d", got)
+	}
+	if len(missing) != 1 || !strings.Contains(missing[0], "as a number") {
+		t.Fatalf("a number that does not fit MUST be recorded rather than compared as zero, got %v", missing)
+	}
+}
+
+func TestRefineCarriesTheRefinedValueOut(t *testing.T) {
+	// The end-to-end property, and the one an earlier version of these tests
+	// missed: a Refine that returned its INPUT instead of the refined value
+	// passed everything above, because none of it ran the handler.
+	const pat = "it caches {string}"
+	apply := func(in draft, a Args) draft {
+		in.paths = append(in.paths, a.String(0))
+		in.flag = true
+		return in
+	}
+	def := Refine[draft](pat, apply)
+	run := refineHandler(pat, apply)
+
+	_, p, ok := brine.NewStepRegistry([]brine.StepDefinition{def}).Lookup(`it caches "/tmp/cache"`)
+	if !ok {
+		t.Fatal("the pattern did not match")
+	}
+	out, err := run(draft{}, p, nil)
+	if err != nil {
+		t.Fatalf("a refinement must not fail, got %v", err)
+	}
+	if len(out.paths) != 1 || out.paths[0] != "/tmp/cache" {
+		t.Fatalf("the refinement MUST reach the value carried forward, got %v", out.paths)
+	}
+	if !out.flag {
+		t.Fatal("every field the refinement set MUST survive, not just the one read from a parameter")
+	}
+	// Refinements compose: the second must see the first's result.
+	out2, err := run(out, p, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(out2.paths) != 2 {
+		t.Fatalf("a second refinement MUST build on the first, got %v", out2.paths)
+	}
+}
+
+func TestRefineFailsTheStepOnAnUndeclaredRead(t *testing.T) {
+	const pat = "it runs privileged"
+	apply := func(in draft, a Args) draft { in.dir = a.String(0); return in }
+	def := Refine[draft](pat, apply)
+	run := refineHandler(pat, apply)
+
+	_, p, ok := brine.NewStepRegistry([]brine.StepDefinition{def}).Lookup("it runs privileged")
+	if !ok {
+		t.Fatal("the pattern did not match")
+	}
+	_, err := run(draft{}, p, nil)
+	if err == nil {
+		t.Fatal("reading a parameter the pattern does not declare MUST fail the step, not apply a zero value")
+	}
+	if !strings.Contains(err.Error(), pat) {
+		t.Fatalf("the failure must name the step so it can be found, got %v", err)
 	}
 }

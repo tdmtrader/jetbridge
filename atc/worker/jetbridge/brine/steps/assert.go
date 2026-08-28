@@ -350,3 +350,93 @@ func memberCheck[T any](pattern, subject string, get func(T) ([]string, error), 
 		return nil
 	}
 }
+
+// -----------------------------------------------------------------------
+// Refinements
+// -----------------------------------------------------------------------
+
+// Refine backs a map step whose In and Out are the same type: a step that
+// adjusts a draft rather than transforming it into something else. Because the
+// live state's type is unchanged, any number of them may appear in any order
+// before the thing under description is built.
+//
+// 87 of them were spelled out by hand at ~10 lines each, and every one of those
+// lines except the assignment was ceremony: the handler signature, the
+// parameter extraction, the unreachable guard, and the two-value return.
+//
+//	Refine[ContainerDraft]("it caches {string}",
+//	    func(in ContainerDraft, a Args) ContainerDraft {
+//	        in.Caches = append(in.Caches, a.String(0))
+//	        return in
+//	    }),
+//
+// One combinator covers every arity and any mix of {string} and {int}, so
+// there is one name to learn rather than a family named after shapes.
+//
+// A refinement here cannot fail. That is not a limitation being worked around
+// — it is what these steps are. A step that CAN fail describes something the
+// runtime might refuse, and it keeps brine.DefineMap so the failure is on the
+// page where a reader will look for it.
+func Refine[T any](pattern string, apply func(T, Args) T) brine.StepDefinition {
+	return brine.DefineMap[T, T](pattern, refineHandler(pattern, apply))
+}
+
+// refineHandler is separated from the Define call for the same reason the
+// comparisons above are: a combinator that dropped the refinement on the floor
+// would leave every step built on it doing nothing, and the suite would stay
+// green because the next step reads a state that merely looks unchanged. A
+// first version of the test for this only inspected the definition's types and
+// drove Args directly, and a mutation returning `in` instead of the refined
+// value went unnoticed.
+func refineHandler[T any](pattern string, apply func(T, Args) T) func(T, brine.Params, *brine.Recorder) (T, error) {
+	return func(in T, p brine.Params, _ *brine.Recorder) (T, error) {
+		args := Args{pattern: pattern, params: p, missing: &[]string{}}
+		out := apply(in, args)
+		if bad := *args.missing; len(bad) > 0 {
+			var zero T
+			return zero, fmt.Errorf("step %q reads %s, which its pattern does not declare",
+				pattern, strings.Join(bad, " and "))
+		}
+		return out, nil
+	}
+}
+
+// Args reads a step's parameters without the four lines of guard each read
+// used to need.
+//
+// Those guards could not fire — brine only dispatches a step after its pattern
+// matched, so a declared capture is always there. What CAN happen is a
+// definition reading a parameter its sentence never declared, and that is an
+// authoring bug rather than a runtime condition. Args records such a read and
+// Refine reports it once, naming the pattern, instead of every call site
+// carrying a branch for it.
+type Args struct {
+	pattern string
+	params  brine.Params
+	missing *[]string
+}
+
+// String returns the n-th capture.
+func (a Args) String(n int) string {
+	s, ok := a.params.GetString(n)
+	if !ok {
+		*a.missing = append(*a.missing, fmt.Sprintf("parameter %d", n))
+	}
+	return s
+}
+
+// Int returns the n-th capture as a number. {int} compiles to (-?\d+), so the
+// only way this fails is a value too large to hold, which is reported rather
+// than quietly compared as zero.
+func (a Args) Int(n int) int {
+	v, ok := a.params.GetInt(n)
+	if !ok {
+		raw, present := a.params.GetString(n)
+		if !present {
+			*a.missing = append(*a.missing, fmt.Sprintf("parameter %d", n))
+		} else {
+			*a.missing = append(*a.missing, fmt.Sprintf("parameter %d as a number (%q)", n, raw))
+		}
+	}
+	return v
+}
