@@ -277,10 +277,18 @@ func TestResolveEndpoint_RestrictivePermissionsBecomWorldReadable(t *testing.T) 
 	}
 
 	// Verify files are world-readable (o+r) and directories are world-traversable (o+rx).
+	//
+	// "." is the DESTINATION DIRECTORY ITSELF, and it is the one that matters
+	// most: it is the container's mount point, so a 0700 root-owned dir means a
+	// non-root task container gets EACCES listing its own input and every entry
+	// below is unreachable however permissive it is. Checking only the children
+	// let exactly that regression through — the staging dir is created 0700 and
+	// promoted by rename, which preserves the mode.
 	for _, check := range []struct {
 		path    string
 		minMode os.FileMode
 	}{
+		{".", 0755},
 		{"secret.txt", 0644},
 		{"subdir", 0755},
 		{"subdir/nested.txt", 0644},

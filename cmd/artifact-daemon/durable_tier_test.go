@@ -57,6 +57,31 @@ func mustFS(t *testing.T) durable.Store {
 	return store
 }
 
+// Restore promotes a staging directory too, and its destination is a container
+// mount like every other resolve destination — so it takes the same
+// world-traversable rule. Asserted here rather than in dest_permissions_test.go
+// because the durable tier is driven directly, not over HTTP.
+func TestRestoreLeavesATraversableDestination(t *testing.T) {
+	tier, server := newTier(t, mustFS(t))
+	work := t.TempDir()
+
+	src := writeDir(t, server, "src-perm", map[string]string{"payload": "cached bytes"})
+	tier.Store(context.Background(), "rc-perm", tarOf(server, src))
+
+	dest := filepath.Join(work, "restored-perm")
+	if !tier.Restore(context.Background(), "rc-perm", dest) {
+		t.Fatal("Restore reported failure")
+	}
+
+	info, err := os.Stat(dest)
+	if err != nil {
+		t.Fatalf("stat restored dest: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm&0o055 != 0o055 {
+		t.Errorf("restored destination is mode %04o; a non-root task container cannot read it (want at least o+rx)", perm)
+	}
+}
+
 func TestStoreThenRestoreRoundTripsADirectory(t *testing.T) {
 	tier, server := newTier(t, mustFS(t))
 	work := t.TempDir() // restore destinations are container mounts, outside the store

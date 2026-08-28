@@ -17,7 +17,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
@@ -46,17 +45,28 @@ type Server struct {
 	// artifact through temporary storage, so unbounded promotion is a way to
 	// run the node out of disk.
 	uploadSem chan struct{}
-	// resolveSem bounds concurrent batch resolves. Same reasoning as uploadSem,
-	// on the endpoint that needs it more: /resolve-batch is mTLS-exempt, and it
-	// spawned one goroutine per request item with no cap, each running cp -R
-	// and chmod -R. The authenticated path was bounded and the unauthenticated
-	// one was not.
+	// resolveSem bounds concurrent resolves NODE-WIDE, across every request on
+	// both mTLS-exempt routes (/resolve and /resolve-batch) — it is one channel
+	// per process, not per batch. Same reasoning as uploadSem: each resolve
+	// copies a whole artifact, and before the bound existed the batch endpoint
+	// spawned one goroutine per item with no cap. The work a slot holds is
+	// cancellable (the copy checks its request context per entry), so a caller
+	// that gives up releases the slot instead of pinning it for the whole copy.
 	resolveSem chan struct{}
-	// destLocks serialises copies by DESTINATION. copyArtifactGuarded locks on
-	// the SOURCE handle, so two items with different keys and the same dest
-	// raced on os.RemoveAll(dest) and os.Rename — reachable with entirely
-	// legitimate keys.
-	destLocks sync.Map
+	// destLocks serialises resolves by DESTINATION. The read guard inside
+	// copyArtifactGuarded keys on the SOURCE handle, so two items with
+	// different keys and the same dest raced on RemoveAll(dest) and Rename —
+	// reachable with entirely legitimate keys, and equally through the peer
+	// branch, which is why resolveOne takes the lock around the WHOLE
+	// resolution rather than copyArtifactGuarded taking it around one copy.
+	//
+	// destLocksMu guards the map AND each entry's waiter count together, so
+	// that registering a waiter and deleting an idle entry are mutually
+	// exclusive. A lock-free refcount cannot make them so — the decrement and
+	// the delete are separate steps, and a newcomer can register on an entry a
+	// releaser has already decided to delete, leaving two holders of one dest.
+	destLocksMu sync.Mutex
+	destLocks   map[string]*destLock
 
 	// root is the handle every filesystem operation on artifact data goes
 	// through. Containment is a property of the handle, not of a check
@@ -69,12 +79,78 @@ type Server struct {
 	resolveVerifier *artifactcap.Verifier
 }
 
-// destLock serialises copies to one destination and refcounts its own lifetime,
-// so the map holding it is bounded by IN-FLIGHT copies rather than by every
-// destination ever seen.
+// destLock serialises resolves to one destination. Its 1-slot channel is the
+// lock itself, so a waiter can give up when its request context dies — a
+// sync.Mutex wait is uninterruptible, and on the sem-bounded resolve path an
+// abandoned request would otherwise pin a semaphore slot for the whole copy.
+//
+// waiters is guarded by Server.destLocksMu, NOT atomic: it is read and written
+// only while that mutex is held, which is exactly what lets "delete when idle"
+// and "register a waiter" be one indivisible decision.
 type destLock struct {
-	mu      sync.Mutex
-	waiters atomic.Int64
+	ch      chan struct{}
+	waiters int
+}
+
+// acquireDest takes the destination lock for dest, waiting until it is free or
+// ctx dies. On success it returns a release func the caller must call exactly
+// once.
+//
+// Registration and reclamation are both done under destLocksMu, so the entry a
+// goroutine registers on cannot be deleted out from under it: a releaser only
+// deletes an entry it observes at waiters==0, and a newcomer only ever
+// increments an entry's waiters while holding the same mutex. That closes the
+// lifetime race a lock-free refcount could not — there, the decrement-to-zero
+// and the map delete were separate steps, so a newcomer could register in
+// between and end up holding a lock no longer in the map while a third
+// goroutine minted a fresh one for the same dest.
+//
+// The mutex is held only for O(1) map bookkeeping, never across the channel
+// wait or the copy.
+func (s *Server) acquireDest(ctx context.Context, dest string) (func(), error) {
+	// Keyed on the RELATIVE form, which is the one identity of a destination
+	// this package recognises. filepath.Clean(dest) was a second computation of
+	// "which destination is this", and it disagreed with the first: lexicalRel
+	// accepts the storage root under either its raw or its resolved spelling,
+	// so two dest strings naming ONE directory produced two different lock
+	// keys and two writers ran on it at once. That is the very thing
+	// peers.Fetch cites this lock for when it treats a failed clear-and-rename
+	// as a hard error rather than tolerating it.
+	rel, err := s.lexicalDestRel(dest)
+	if err != nil {
+		return nil, err
+	}
+	key := string(rel)
+
+	s.destLocksMu.Lock()
+	dl, ok := s.destLocks[key]
+	if !ok {
+		dl = &destLock{ch: make(chan struct{}, 1)}
+		s.destLocks[key] = dl
+	}
+	dl.waiters++
+	s.destLocksMu.Unlock()
+
+	release := func() {
+		s.destLocksMu.Lock()
+		dl.waiters--
+		if dl.waiters == 0 && s.destLocks[key] == dl {
+			delete(s.destLocks, key)
+		}
+		s.destLocksMu.Unlock()
+	}
+
+	select {
+	case dl.ch <- struct{}{}:
+		// Hold the lock; release drains the slot and drops our waiter count.
+		return func() {
+			<-dl.ch
+			release()
+		}, nil
+	case <-ctx.Done():
+		release()
+		return nil, ctx.Err()
+	}
 }
 
 // maxConcurrentDurableUploads caps in-flight promotions per daemon.
@@ -114,6 +190,7 @@ func NewServer(logger lager.Logger, storagePath, nodeName string) (*Server, erro
 		guard:       NewReadGuard(),
 		uploadSem:   make(chan struct{}, maxConcurrentDurableUploads),
 		resolveSem:  make(chan struct{}, maxConcurrentBatchResolves),
+		destLocks:   make(map[string]*destLock),
 		root:        root,
 	}, nil
 }
@@ -179,8 +256,13 @@ func (s *Server) Registry() *Registry {
 // caller-supplied dest that becomes a RemoveAll and a Rename.
 //
 // When no key is configured the routes stay open, because that is how every
-// deployment without the flag behaves today. main.go logs loudly in that case;
-// the chart always sets it.
+// deployment without the flag behaves; main.go logs loudly in that case. The
+// chart arms it only when artifactDaemon.resolveCapability.existingSecret
+// names a Secret — deliberately, since the chart cannot generate a key that
+// survives a GitOps render — so an unconfigured deployment runs these two
+// routes unauthenticated. What must NOT depend on that switch is containment:
+// validateResolveDest refuses a destination that names the store's shape
+// whether or not a capability is required.
 func (s *Server) SetResolveCapabilityKey(key []byte) error {
 	v, err := artifactcap.NewVerifier(key)
 	if err != nil {
@@ -625,7 +707,7 @@ func (s *Server) handleStreamIn(w http.ResponseWriter, r *http.Request) {
 		release := s.guard.BeginSweep(s.stepHandle(loc))
 		defer release()
 		stepsRoot.RemoveAll(key)
-		return stepsRoot.Rename(tmpName, key)
+		return promoteDir(stepsRoot, tmpName, key)
 	}()
 	if renameErr != nil {
 		s.logger.Error("failed-to-rename-stream-in", renameErr, lager.Data{"key": key, "tmp": tmpName})
@@ -880,6 +962,18 @@ func (s *Server) resolveOne(ctx context.Context, key, dest string) (resp resolve
 	}()
 	logger := s.logger.Session("resolve", lager.Data{"key": key, "dest": dest})
 
+	// One resolution per destination at a time, whatever method wins. The lock
+	// must cover the PEER branch too: peers.Fetch does its own clear-and-rename
+	// on the same dest, and outside the lock a fetch racing a local copy (or
+	// another fetch of a DIFFERENT key — dest is caller-supplied and distinct
+	// keys legitimately share one) could lose its rename and report success
+	// while delivering another artifact's bytes.
+	releaseDest, err := s.acquireDest(ctx, dest)
+	if err != nil {
+		return resolveResponse{Status: "error", Error: fmt.Sprintf("waiting for destination %q: %v", dest, err)}
+	}
+	defer releaseDest()
+
 	// Step 1: Check registry for explicit registration.
 	//
 	// resolveResponse.Source stays the ABSOLUTE path. It is response JSON the
@@ -889,7 +983,7 @@ func (s *Server) resolveOne(ctx context.Context, key, dest string) (resp resolve
 	sourceLoc, found := s.lookupRegistry(key)
 	if found {
 		sourcePath := s.registry.AmbientPath(sourceLoc)
-		if err := s.copyArtifactGuarded(sourceLoc, dest); err != nil {
+		if err := s.copyArtifactGuarded(ctx, sourceLoc, dest); err != nil {
 			logger.Error("copy-failed", err, lager.Data{"source": sourcePath})
 			return resolveResponse{Status: "error", Source: sourcePath, Method: "local", Error: err.Error()}
 		}
@@ -911,7 +1005,7 @@ func (s *Server) resolveOne(ctx context.Context, key, dest string) (resp resolve
 			return resolveResponse{Status: "error", Source: stepsPath, Method: "filesystem", Error: err.Error()}
 		}
 
-		if err := s.copyArtifactGuarded(stepsLoc, dest); err != nil {
+		if err := s.copyArtifactGuarded(ctx, stepsLoc, dest); err != nil {
 			logger.Error("copy-failed", err, lager.Data{"source": stepsPath})
 			return resolveResponse{Status: "error", Source: stepsPath, Method: "filesystem", Error: err.Error()}
 		}
@@ -924,7 +1018,7 @@ func (s *Server) resolveOne(ctx context.Context, key, dest string) (resp resolve
 	if s.peers != nil {
 		peerIP, found := s.peers.Probe(ctx, key)
 		if found {
-			if err := s.peers.Fetch(ctx, peerIP, key, dest); err != nil {
+			if err := s.fetchFromPeer(ctx, peerIP, key, dest); err != nil {
 				logger.Error("peer-fetch-failed", err, lager.Data{"peer": peerIP})
 				return resolveResponse{Status: "error", Source: peerIP, Method: "peer", Error: err.Error()}
 			}
@@ -962,7 +1056,7 @@ func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
 		s.refuse(w, r, http.StatusBadRequest, reasonInvalidKey, err)
 		return
 	}
-	if err := validateContainedPath(s.storagePath, req.Dest); err != nil {
+	if err := validateResolveDest(s.storagePath, req.Dest); err != nil {
 		s.refuse(w, r, http.StatusBadRequest, reasonUncontained, err)
 		return
 	}
@@ -971,6 +1065,17 @@ func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
 		s.refuse(w, r, http.StatusForbidden, reasonCapability, errors.New("resolve capability required"))
 		return
 	}
+
+	// The same node-wide bound as /resolve-batch: both routes are mTLS-exempt
+	// and reach the same copy machinery, so capping one and not the other just
+	// moved the unbounded fan-out over by one endpoint.
+	select {
+	case s.resolveSem <- struct{}{}:
+	case <-r.Context().Done():
+		writeJSON(w, http.StatusInternalServerError, resolveResponse{Status: "error", Error: r.Context().Err().Error()})
+		return
+	}
+	defer func() { <-s.resolveSem }()
 
 	resp := s.resolveOne(r.Context(), req.Key, req.Dest)
 
@@ -1015,7 +1120,7 @@ func (s *Server) handleResolveBatch(w http.ResponseWriter, r *http.Request) {
 			s.refuse(w, r, http.StatusBadRequest, reasonInvalidKey, fmt.Errorf("item %d: %v", i, err))
 			return
 		}
-		if err := validateContainedPath(s.storagePath, item.Dest); err != nil {
+		if err := validateResolveDest(s.storagePath, item.Dest); err != nil {
 			s.refuse(w, r, http.StatusBadRequest, reasonUncontained, fmt.Errorf("item %d: %v", i, err))
 			return
 		}
@@ -1072,33 +1177,65 @@ func (s *Server) handleResolveBatch(w http.ResponseWriter, r *http.Request) {
 // src is a location under the storage root; dest is an arbitrary absolute path
 // on the node (a container's mount), which is why only one of the two is a
 // RelKey.
-func (s *Server) copyArtifactGuarded(src RelKey, dest string) error {
+//
+// Destination serialisation lives in resolveOne (acquireDest), not here: the
+// peer-fetch branch writes the same dest without ever calling this function,
+// so a lock taken here covered only two of the three writers.
+func (s *Server) copyArtifactGuarded(ctx context.Context, src RelKey, dest string) error {
 	release := s.guard.BeginRead(s.stepHandle(src))
 	defer release()
 	s.touchStepDir(src)
 
-	// Serialise on the DESTINATION as well. The read guard above keys on the
-	// source handle, so two copies with different sources and the same dest
-	// were free to interleave os.RemoveAll(dest) and os.Rename — one would
-	// delete the other's freshly-renamed tree. Reachable with legitimate keys,
-	// so containment does not address it.
-	// Refcounted so the map cannot grow without bound. The first version was a
-	// bare sync.Map that stored an entry per distinct dest and never pruned —
-	// 200 failed requests leaked 200 permanent entries, on an mTLS-exempt
-	// endpoint whose dest length is bounded only by the body cap.
-	key := filepath.Clean(dest)
-	lock, _ := s.destLocks.LoadOrStore(key, &destLock{})
-	dl := lock.(*destLock)
-	dl.waiters.Add(1)
-	dl.mu.Lock()
-	defer func() {
-		dl.mu.Unlock()
-		if dl.waiters.Add(-1) == 0 {
-			s.destLocks.CompareAndDelete(key, dl)
-		}
-	}()
+	return s.copyArtifact(ctx, src, dest)
+}
 
-	return s.copyArtifact(src, dest)
+// fetchFromPeer is the peer branch's writer, going through the same contained
+// destination handle as the local copy. PeerResolver.Fetch would reopen the
+// parent from the dest string, which is what let a validated destination be
+// swapped for a symlink before the write.
+func (s *Server) fetchFromPeer(ctx context.Context, peerIP, key, dest string) (err error) {
+	// The staging directory is a sibling of dest, so the parent must exist
+	// before the first attempt and the rename must stay on one filesystem.
+	//
+	// Created component by component along the AUTHORIZED name, refusing
+	// symlinks. Neither os.MkdirAll on the raw path nor s.root.MkdirAll on a
+	// symlink-resolved one will do: the first escapes the store outright, and
+	// the second follows a link the caller planted in its own volume and
+	// creates root-owned directories at whatever store path the link names —
+	// on a request the daemon then refuses, which is a side effect from a
+	// refusal.
+	rel, err := s.lexicalDestRel(dest)
+	if err != nil {
+		return err
+	}
+	if err := validateResolveDest(s.storagePath, dest); err != nil {
+		return err
+	}
+	if dir := filepath.Dir(osName(rel)); dir != "." {
+		created, undo, createErr := s.createDestParent(dir)
+		if createErr != nil {
+			return fmt.Errorf("create dest parent: %w", createErr)
+		}
+		created.Close()
+		// Everything after this point can still fail — the destination rules
+		// can refuse, or the peer can go away across all three attempts — and
+		// the directories just created would then be residue from a request
+		// that delivered nothing, under a name the caller chose, reclaimed by
+		// nothing.
+		defer func() {
+			if err != nil {
+				undo()
+			}
+		}()
+	}
+
+	parent, base, err := s.openDestParent(dest)
+	if err != nil {
+		return err
+	}
+	defer parent.Close()
+
+	return s.peers.FetchInto(ctx, peerIP, key, parent, base)
 }
 
 // copyArtifact copies the artifact at src into dest, atomically.
@@ -1109,8 +1246,16 @@ func (s *Server) copyArtifactGuarded(src RelKey, dest string) error {
 //
 // Copies land in a temp sibling and rename into place, so an interrupted copy
 // leaves no partial state at dest to block the retry.
-func (s *Server) copyArtifact(src RelKey, dest string) error {
-	parent, base, err := openParent(dest)
+//
+// ctx aborts the copy between entries. The caller holds a node-wide resolve
+// slot for the whole copy, so a request whose client has already given up
+// (the init container's wget timing out) must release that slot instead of
+// copying an artifact nobody will read.
+func (s *Server) copyArtifact(ctx context.Context, src RelKey, dest string) error {
+	// Walked from the storage root, not reopened from dest: a component that
+	// passed validation as a directory may be a symlink by now, and only a
+	// contained walk refuses it.
+	parent, base, err := s.openDestParent(dest)
 	if err != nil {
 		return err
 	}
@@ -1127,13 +1272,13 @@ func (s *Server) copyArtifact(src RelKey, dest string) error {
 	}
 	defer tmpRoot.Close()
 
-	if err := copyTree(s.root, osName(src), tmpRoot); err != nil {
+	if err := copyTree(ctx, s.root, osName(src), tmpRoot); err != nil {
 		parent.RemoveAll(tmp)
 		return fmt.Errorf("copy %s -> %s: %w", src, dest, err)
 	}
 
 	parent.RemoveAll(base)
-	if err := parent.Rename(tmp, base); err != nil {
+	if err := promoteDir(parent, tmp, base); err != nil {
 		parent.RemoveAll(tmp)
 		return fmt.Errorf("rename %s -> %s: %w", tmp, dest, err)
 	}

@@ -142,7 +142,7 @@ func (d *DurableTier) Restore(ctx context.Context, key, destDir string) bool {
 	// A previous restore or a racing peer fetch may already have put the
 	// artifact here; either copy is equally valid, so keep whichever landed
 	// first rather than swapping bytes under an in-flight read.
-	if err := parent.Rename(tmpDir, base); err != nil {
+	if err := promoteDir(parent, tmpDir, base); err != nil {
 		cleanup()
 		if errors.Is(err, os.ErrExist) || isNotEmptyErr(err) {
 			logger.Info("already-present")

@@ -54,8 +54,17 @@ func TestResolveCapability(t *testing.T) {
 		}
 		ts := httptest.NewServer(s.Handler())
 		t.Cleanup(ts.Close)
-		// dest must be inside the storage root: validateContainedPath runs first.
-		return ts, "build-1/out", filepath.Join(storage, "delivered")
+		// The dest is the shape the ATC actually sends — steps/<handle>/<volume>
+		// — because validateResolveDest runs BEFORE the capability check and
+		// refuses a shallow or structural destination outright. A fixture using
+		// a one-segment dest would get a 400 where these tests mean to assert a
+		// 403, testing the wrong rule. Its parent exists in production because
+		// the input volume is a HostPathDirectoryOrCreate mount.
+		consumer := filepath.Join(storage, "steps", "consumer-1")
+		if err := os.MkdirAll(consumer, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return ts, "build-1/out", filepath.Join(consumer, "input-0")
 	}
 
 	post := func(t *testing.T, ts *httptest.Server, path string, body any) int {

@@ -111,7 +111,14 @@ func TestResolve_HoldsReadGuardDuringCopy(t *testing.T) {
 	// resolve must block rather than copy from a directory being deleted.
 	release := srv.Guard().BeginSweep("handle-y")
 
-	dest := filepath.Join(t.TempDir(), "dest")
+	// A destination inside the store, which is the only shape production
+	// produces: dest is a hostPath mount under the daemon's own storage path,
+	// and both the handlers and the copy require containment.
+	destParent := filepath.Join(storagePath, "steps", "consumer-y")
+	if err := os.MkdirAll(destParent, 0755); err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(destParent, "input-0")
 	resolved := make(chan resolveResponse, 1)
 	go func() {
 		resolved <- srv.resolveOne(context.Background(), "handle-y/output", dest)

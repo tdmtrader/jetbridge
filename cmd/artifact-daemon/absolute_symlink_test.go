@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -46,6 +47,20 @@ func TestAbsoluteSymlink_RefusedOnEveryPath(t *testing.T) {
 		return s, root
 	}
 
+	// deliveryDest is an in-store destination of the shape the ATC sends. The
+	// copy acquires its destination through the storage root, so a dest outside
+	// the store — which no deployment produces, since dest is a hostPath mount
+	// under the daemon's own storage path — is refused before the symlink rule
+	// is ever reached.
+	deliveryDest := func(t *testing.T, root string) string {
+		t.Helper()
+		parent := filepath.Join(root, "steps", "consumer")
+		if err := os.MkdirAll(parent, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return filepath.Join(parent, "delivered")
+	}
+
 	// Names the offending entry, so an operator can act without reading code.
 	wantNamed := func(t *testing.T, err error) {
 		t.Helper()
@@ -63,8 +78,8 @@ func TestAbsoluteSymlink_RefusedOnEveryPath(t *testing.T) {
 	})
 
 	t.Run("copy to a container mount (resolve)", func(t *testing.T) {
-		s, _ := seed(t)
-		wantNamed(t, s.copyArtifact("steps/build-1/out", filepath.Join(t.TempDir(), "delivered")))
+		s, root := seed(t)
+		wantNamed(t, s.copyArtifact(context.Background(), "steps/build-1/out", deliveryDest(t, root)))
 	})
 
 	// The zero case. Without it every assertion above is satisfied by a daemon
@@ -91,8 +106,8 @@ func TestAbsoluteSymlink_RefusedOnEveryPath(t *testing.T) {
 			t.Error("the relative link was dropped from the archive rather than carried")
 		}
 
-		dest := filepath.Join(t.TempDir(), "delivered")
-		if err := s.copyArtifact("steps/build-2/out", dest); err != nil {
+		dest := deliveryDest(t, root)
+		if err := s.copyArtifact(context.Background(), "steps/build-2/out", dest); err != nil {
 			t.Fatalf("copy refused a contained relative symlink: %v", err)
 		}
 		if target, err := os.Readlink(filepath.Join(dest, "bin", "link")); err != nil || target != "../real.txt" {

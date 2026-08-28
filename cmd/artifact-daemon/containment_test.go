@@ -13,6 +13,9 @@ import (
 	"testing"
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
+	discoveryv1 "k8s.io/api/discovery/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/fake"
 
 	daemon "github.com/concourse/concourse/cmd/artifact-daemon"
 )
@@ -389,46 +392,79 @@ func TestPeerFetch_ReplacesUnrelatedExistingDestination(t *testing.T) {
 	}
 }
 
-// Round-three regression: concurrent fetches of the same key into the same
+// Round-three regression: concurrent resolves of the same key into the same
 // destination must all succeed and leave a complete artifact.
 //
-// Promotion clears the destination and then renames, which is not atomic. A
-// racing fetch can create the destination in that window, making our rename
-// fail with "directory not empty". Because we cleared it ourselves a moment
-// earlier, anything there now arrived concurrently and is this same artifact —
-// so that specific failure is success. A destination that existed BEFORE we
-// cleared it is a different case entirely and is replaced, covered by
-// TestPeerFetch_ReplacesUnrelatedExistingDestination.
+// The guarantee lives in the DAEMON, not in Fetch: resolveOne serialises
+// resolves by destination, so concurrent peer fetches of one dest run one at a
+// time and each promotion's clear-then-rename is private. An earlier revision
+// put the guarantee inside Fetch instead, tolerating ErrExist/ENOTEMPTY on the
+// rename as "a concurrent fetch of this same key won" — but Fetch cannot know
+// that: dest is caller-supplied, distinct keys legitimately share one
+// (TestResolveSem_BoundsBothResolveRoutes fires several), and a failed CLEAR
+// produced the same ENOTEMPTY — so the tolerance also reported success while
+// delivering whatever stale content it could not remove. This test therefore
+// drives the real route; direct concurrent Fetch calls to one dest are no
+// longer a supported contract.
 func TestPeerFetch_ConcurrentFetchesIntoOneDestination(t *testing.T) {
 	host, port := serveTar(t,
 		tarEntry{hdr: &tar.Header{Name: "payload.txt", Typeflag: tar.TypeReg, Mode: 0644}, body: "content"},
 	)
 
-	destDir := filepath.Join(t.TempDir(), "shared-dest")
+	storagePath := t.TempDir()
 	logger := lagertest.NewTestLogger("containment")
+	s := newDaemonServer(t, logger, storagePath, "local-node")
+
+	ready := true
+	clientset := fake.NewSimpleClientset(&discoveryv1.EndpointSlice{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "artifact-daemon-slice",
+			Namespace: "concourse",
+			Labels:    map[string]string{discoveryv1.LabelServiceName: "artifact-daemon"},
+		},
+		AddressType: discoveryv1.AddressTypeIPv4,
+		Endpoints: []discoveryv1.Endpoint{
+			{Addresses: []string{host}, Conditions: discoveryv1.EndpointConditions{Ready: &ready}},
+		},
+	})
+	s.SetPeerResolver(daemon.NewPeerResolver(logger, clientset, "concourse", "artifact-daemon", port, "10.0.0.99", nil))
+
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+
+	destDir := destUnder(t, storagePath, "shared-dest")
+	body := `{"key":"containment-key","dest":"` + destDir + `"}`
 
 	const concurrent = 8
 	var wg sync.WaitGroup
-	errs := make([]error, concurrent)
+	statuses := make([]int, concurrent)
+	bodies := make([]string, concurrent)
 	for i := range concurrent {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			resolver := daemon.NewPeerResolver(logger, nil, "", "", port, "", nil)
-			errs[i] = resolver.Fetch(t.Context(), host, "containment-key", destDir)
+			resp, err := http.Post(ts.URL+"/resolve", "application/json", strings.NewReader(body))
+			if err != nil {
+				t.Errorf("concurrent resolve %d: %v", i, err)
+				return
+			}
+			defer resp.Body.Close()
+			b, _ := io.ReadAll(resp.Body)
+			statuses[i] = resp.StatusCode
+			bodies[i] = string(b)
 		}(i)
 	}
 	wg.Wait()
 
-	for i, err := range errs {
-		if err != nil {
-			t.Errorf("concurrent fetch %d failed: %v", i, err)
+	for i := range concurrent {
+		if statuses[i] != http.StatusOK {
+			t.Errorf("concurrent resolve %d failed: %d %s", i, statuses[i], bodies[i])
 		}
 	}
 
 	got, err := os.ReadFile(filepath.Join(destDir, "payload.txt"))
 	if err != nil {
-		t.Fatalf("destination incomplete after concurrent fetches: %v", err)
+		t.Fatalf("destination incomplete after concurrent resolves: %v", err)
 	}
 	if string(got) != "content" {
 		t.Errorf("payload = %q, want %q", got, "content")

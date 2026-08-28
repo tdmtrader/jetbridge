@@ -3,6 +3,7 @@ package main
 import (
 	"archive/tar"
 	"code.cloudfoundry.org/lager/v3"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -240,6 +241,15 @@ var structuralNames = map[string]struct{}{
 	"aliases.json.tmp": {},
 }
 
+// structuralFileNames are the structural entries that are FILES rather than
+// trees. Nothing may ever be created beneath them: a path under aliases.json
+// makes the daemon materialise it as a directory, and the alias store then has
+// no file to write.
+var structuralFileNames = map[string]struct{}{
+	"aliases.json":     {},
+	"aliases.json.tmp": {},
+}
+
 // artifactLocation is THE way a key becomes a filesystem path — not "the way
 // for /artifacts/", the way, full stop. Four review rounds found the same
 // defect four times because fixes landed per-route; making the join itself the
@@ -292,6 +302,386 @@ func locateArtifact(root, key string) (string, error) {
 	}
 
 	return path, nil
+}
+
+// validateResolveDest decides whether a path supplied as a resolve DESTINATION
+// may be written to.
+//
+// Stricter than validateContainedPath, because naming a dest is not "where do
+// I put the bytes" — it is "delete whatever is here and put this in its
+// place": copyArtifact clears dest before renaming over it, and so does the
+// peer promote. "<root>/steps" is perfectly contained, so containment alone
+// let one request delete every artifact on the node and answer 200.
+//
+// Two rules beyond containment:
+//
+//   - not a structural name. Those directories are the store's SHAPE, not
+//     artifacts; rejectStructuralName folds case, because APFS and NTFS do and
+//     an exact-string check let /STEPS through.
+//
+//   - at least two segments. A real destination is an input mount the ATC
+//     built — steps/<handle>/<volume>, three deep — so a single segment is
+//     either a structural directory or a new top-level one, and neither is a
+//     place a resolve belongs. This is what makes the rule hold for a
+//     structural directory nobody has thought of yet.
+//
+// Deliberately NOT a substitute for the capability. This says "no caller may
+// name the store's shape"; only a signed capability says "this caller may name
+// THIS dest", which is what keeps one build from clearing another's inputs.
+// The whole-store delete must not depend on a control that is configuration.
+func validateResolveDest(root, dest string) error {
+	// THE SAME COMPUTATION THE OPERATION USES. Judging a resolved rel while
+	// the copy creates and opens a lexical one is how this rule kept being
+	// true of a path nobody wrote: a symlink expanding deeper than its own
+	// location makes a following ".." run land differently under the two, so
+	// the door approved "steps/mine/vol/d1/aliases.json.tmp/x" while the
+	// daemon created "aliases.json.tmp". One dest, one relative form.
+	rel, err := lexicalRel(root, dest)
+	if err != nil {
+		return err
+	}
+
+	segments := strings.Split(filepath.ToSlash(filepath.Clean(filepath.FromSlash(string(rel)))), "/")
+
+	// The same segment hygiene validateRequestKey applies to keys. A dest is
+	// equally a filesystem path the caller chose, and without this a 300-byte
+	// or NUL-bearing component reaches the filesystem, fails there, and leaves
+	// the directories created before it behind.
+	for _, segment := range segments {
+		if segment == "" || segment == "." || segment == ".." {
+			return fmt.Errorf("destination %q has an empty or relative segment", dest)
+		}
+		if strings.ContainsRune(segment, 0) {
+			return fmt.Errorf("destination %q contains a NUL byte", dest)
+		}
+		if len(segment) > 255 {
+			return fmt.Errorf("destination %q has a segment longer than 255 bytes", dest)
+		}
+	}
+
+	// One segment is never a real destination, which covers every structural
+	// name without naming them: they are all top-level. (rejectStructuralName
+	// is deliberately NOT used here — it would be unreachable behind this rule,
+	// and an unreachable guard reads as protection that is not there.)
+	if len(segments) < 2 {
+		return fmt.Errorf(
+			"destination %q is a top-level entry in the storage root; a resolve destination is an input mount below it",
+			dest,
+		)
+	}
+
+	// A structural FILE can never be a prefix of a destination, at any depth.
+	// aliases.json is the alias store; a destination under it makes the daemon
+	// create it as a DIRECTORY, after which the alias store can never be
+	// written again. Depth does not help here — "aliases.json/a/b" is three
+	// segments — so the name itself has to be refused.
+	if _, isFile := structuralFileNames[strings.ToLower(segments[0])]; isFile {
+		return fmt.Errorf(
+			"destination %q is inside %q, which is a file the store keeps, not a directory tree",
+			dest, segments[0],
+		)
+	}
+
+	// Inside a structural tree, a destination must name a leaf, not a build's
+	// own directory: steps/<handle> holds every volume that build produced, so
+	// resolving onto it deletes all of them and substitutes someone else's
+	// artifact — which then propagates to every downstream step. Real
+	// destinations are steps/<handle>/<volume>, three deep.
+	if _, structural := structuralNames[strings.ToLower(segments[0])]; structural && len(segments) < 3 {
+		return fmt.Errorf(
+			"destination %q names a whole %s entry; a resolve destination is a volume inside one",
+			dest, segments[0],
+		)
+	}
+
+	return nil
+}
+
+// openDestParent acquires the destination's parent as a HANDLE, by walking to
+// it through the storage root rather than reopening the caller's string.
+//
+// This is what makes the destination rules hold at the moment of USE. The
+// checks above resolve symlinks to judge a path, but the filesystem underneath
+// is writable by the containers whose inputs live there, so a component that
+// was a plain directory during validation can be a symlink by the time the
+// copy runs — and re-deriving the parent with os.OpenRoot on the raw string
+// followed it. Walking from s.root instead means os.Root refuses any component
+// that leaves the store, whatever it became in between.
+//
+// Containment is not sufficient on its own: a symlink pointing at the store
+// ROOT stays inside it, and the base would then name a structural directory.
+// So the acquired handle is also required not to BE the storage root, compared
+// by identity rather than by name.
+// lexicalDestRel is the destination's location relative to the storage root,
+// computed WITHOUT resolving symlinks in the destination.
+//
+// Deliberately not containedRelKey. That resolves the candidate, which is
+// right for judging where a path lands but wrong for deciding which path was
+// authorized: the capability signs the destination STRING, so resolving it
+// through links the caller planted makes authorization and effect name
+// different objects. Only the ROOT is resolved — that one is ours, and macOS
+// hands back /var -> /private/var for it.
+func (s *Server) lexicalDestRel(dest string) (RelKey, error) {
+	return lexicalRel(s.storagePath, dest)
+}
+
+// lexicalRel is the ONE way a destination becomes a location under the
+// storage root. Every rule and every operation derives from this and nothing
+// else; two computations of "where does this dest go" is the defect that
+// outlived five rounds of fixes here.
+func lexicalRel(storagePath, dest string) (RelKey, error) {
+	if dest == "" {
+		return "", fmt.Errorf("destination is empty")
+	}
+	if !filepath.IsAbs(dest) {
+		return "", fmt.Errorf("destination %q is not absolute", dest)
+	}
+
+	cleaned := filepath.Clean(dest)
+	for _, root := range []string{filepath.Clean(storagePath), resolvePath(storagePath)} {
+		rel, err := filepath.Rel(root, cleaned)
+		if err != nil {
+			continue
+		}
+		if rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		return RelKey(filepath.ToSlash(rel)), nil
+	}
+	return "", fmt.Errorf("destination %q is not a location inside the storage root", dest)
+}
+
+// descendWithoutSymlinks walks dir one component at a time from the storage
+// root, refusing any component that is a symlink and pinning each level by
+// identity before descending into it.
+//
+// Refusing links outright is the rule the destination guards kept approximating
+// one attack at a time. A destination is a name the caller was authorized to
+// write; if any component is a link the caller controls, the authorized name
+// and the written object are different things, and no later check can tell —
+// a link at steps/<mine>/vol pointing to steps/<victim>/vol makes the parent
+// legitimately BE steps/<victim>, which is not the root, not a structural tree,
+// and correctly shaped. Nothing downstream can see it. So it is refused here.
+//
+// The identity re-check after each open closes the swap between Lstat and
+// OpenRoot: if the component became a link in that window, the opened directory
+// is the link's target and no longer the inode that was checked.
+//
+// Costs nothing legitimate: a destination is a hostPath mount the kubelet
+// created, and those are real directories.
+func (s *Server) descendWithoutSymlinks(dir string) (*os.Root, error) {
+	root, _, err := s.walkDestTracked(dir, false)
+	return root, err
+}
+
+// removeCreated deletes, deepest first, directories a walk created. Plain
+// Remove, never RemoveAll: anything that has since been populated came from
+// somewhere else and is not ours to take.
+func (s *Server) removeCreated(created []string) {
+	for i := len(created) - 1; i >= 0; i-- {
+		parent := path.Dir(created[i])
+		if parent == "." {
+			s.root.Remove(created[i])
+			continue
+		}
+		if root, err := s.descendWithoutSymlinks(parent); err == nil {
+			root.Remove(path.Base(created[i]))
+			root.Close()
+		}
+	}
+}
+
+// createDestParent is descendWithoutSymlinks that CREATES the components it
+// does not find. The peer branch needs it: it delivers artifacts for handles
+// this node has never seen, so steps/<handle> legitimately does not exist yet.
+//
+// Creating is a write, so it obeys the same rule as every other write here —
+// it follows the authorized name and refuses a symlink rather than following
+// one. An os.Root.MkdirAll on the whole path would not: os.Root contains it,
+// but a symlink pointing elsewhere INSIDE the store is followed, so a link the
+// caller planted in its own volume steered root-owned directory creation to
+// any store path it liked, on a request the daemon then refused — a side
+// effect from a refusal, which this package forbids outright.
+// It returns an undo alongside the handle: the caller's work can still fail
+// AFTER the walk succeeds — the destination rules can refuse, or the peer can
+// go away mid-fetch — and the directories this created are then residue from a
+// request that delivered nothing. Nothing reclaims them: the sweeper walks
+// steps/ and artifacts/ only, so an attacker-chosen top-level name is
+// permanent, and the route is unauthenticated unless a capability key is
+// configured. The caller MUST call undo on any later failure.
+func (s *Server) createDestParent(dir string) (*os.Root, func(), error) {
+	root, created, err := s.walkDestTracked(dir, true)
+	if err != nil {
+		return nil, nil, err
+	}
+	return root, func() { s.removeCreated(created) }, nil
+}
+
+func (s *Server) walkDestTracked(dir string, create bool) (_ *os.Root, _ []string, err error) {
+	current := s.root
+	closeCurrent := func() {
+		if current != s.root {
+			current.Close()
+		}
+	}
+
+	// Directories this call created, deepest last. A refused request must
+	// leave nothing behind: without this, a destination that fails at its LAST
+	// component still left every earlier one on disk, so an attacker-chosen
+	// name became a permanent root-owned directory in the store on a request
+	// the daemon reported as refused — repeatable without bound.
+	var created []string
+	defer func() {
+		if err != nil {
+			s.removeCreated(created)
+		}
+	}()
+
+	var walked string
+	for _, component := range strings.Split(filepath.ToSlash(dir), "/") {
+		if component == "" || component == "." {
+			continue
+		}
+		walked = path.Join(walked, component)
+
+		info, lstatErr := current.Lstat(component)
+		if create && errors.Is(lstatErr, fs.ErrNotExist) {
+			if mkErr := current.Mkdir(component, 0o755); mkErr != nil && !errors.Is(mkErr, fs.ErrExist) {
+				closeCurrent()
+				return nil, nil, fmt.Errorf("create %q: %w", component, mkErr)
+			} else if mkErr == nil {
+				created = append(created, walked)
+			}
+			info, lstatErr = current.Lstat(component)
+		}
+		if lstatErr != nil {
+			closeCurrent()
+			return nil, nil, fmt.Errorf("look up %q: %w", component, lstatErr)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			closeCurrent()
+			return nil, nil, fmt.Errorf(
+				"component %q is a symlink; a destination must be a real path, or the name that was authorized and the directory that is written are different places",
+				component,
+			)
+		}
+		if !info.IsDir() {
+			closeCurrent()
+			return nil, nil, fmt.Errorf("component %q is not a directory", component)
+		}
+
+		next, openErr := current.OpenRoot(component)
+		if openErr != nil {
+			closeCurrent()
+			return nil, nil, fmt.Errorf("open %q: %w", component, openErr)
+		}
+		openedInfo, statErr := next.Stat(".")
+		if statErr != nil {
+			next.Close()
+			closeCurrent()
+			return nil, nil, fmt.Errorf("stat %q: %w", component, statErr)
+		}
+		if !os.SameFile(info, openedInfo) {
+			next.Close()
+			closeCurrent()
+			return nil, nil, fmt.Errorf("component %q changed while it was being opened", component)
+		}
+
+		closeCurrent()
+		current = next
+	}
+
+	if current == s.root {
+		return nil, nil, fmt.Errorf("destination parent %q is the storage root", dir)
+	}
+	return current, created, nil
+}
+
+func (s *Server) openDestParent(dest string) (*os.Root, string, error) {
+	rel, err := s.lexicalDestRel(dest)
+	if err != nil {
+		return nil, "", err
+	}
+
+	relPath := osName(rel)
+	dir, base := filepath.Split(relPath)
+	dir = filepath.Clean(dir)
+	if base == "" {
+		return nil, "", fmt.Errorf("destination %q has no final element", dest)
+	}
+
+	parent := s.root
+	if dir != "." {
+		parent, err = s.descendWithoutSymlinks(dir)
+		if err != nil {
+			return nil, "", fmt.Errorf("open destination parent %q: %w", dir, err)
+		}
+	}
+
+	closeParent := func() {
+		if parent != s.root {
+			parent.Close()
+		}
+	}
+
+	// The destination itself must not be a symlink either. RemoveAll would take
+	// the link rather than its target, so this is not the destructive case the
+	// component rule closes — but a caller authorized to write a name has not
+	// been authorized to have that name mean somewhere else, and letting it
+	// through leaves the daemon delivering an artifact to a directory nobody
+	// named.
+	if info, err := parent.Lstat(base); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		closeParent()
+		return nil, "", fmt.Errorf(
+			"destination %q is a symlink; a destination must be a real path", dest,
+		)
+	}
+
+	// Identify the directory that was actually OPENED, and refuse it if it is
+	// the store root or one of the structural trees.
+	//
+	// By IDENTITY, not by the name we asked for. The shape rules applied to the
+	// request string cannot bind this: between validating the string and
+	// walking to it, a component the caller owns can become a symlink, and the
+	// walk then legitimately lands somewhere else inside the store. Comparing
+	// the opened directory with os.SameFile is the only form of the rule that a
+	// later swap cannot invalidate — whatever path led here, this object either
+	// is <store>/steps or it is not.
+	//
+	// Refusing these is what stops a destination one level under the root:
+	// dest "<store>/steps/<handle>" has parent "steps", so its RemoveAll takes
+	// every volume another build produced. A real destination sits inside a
+	// build's own directory, whose parent is <store>/steps/<handle>.
+	parentInfo, err := parent.Stat(".")
+	if err != nil {
+		closeParent()
+		return nil, "", fmt.Errorf("stat destination parent %q: %w", dir, err)
+	}
+
+	forbidden := []string{s.storagePath}
+	for name := range structuralNames {
+		forbidden = append(forbidden, filepath.Join(s.storagePath, name))
+	}
+	for _, path := range forbidden {
+		info, statErr := os.Stat(path)
+		if statErr != nil {
+			continue // a structural directory that does not exist cannot be the target
+		}
+		if os.SameFile(parentInfo, info) {
+			closeParent()
+			return nil, "", fmt.Errorf(
+				"destination %q resolves into %q, where every name is a whole artifact tree rather than a place to write one",
+				dest, path,
+			)
+		}
+	}
+
+	if parent == s.root {
+		// Never hand out the server's own root handle: the caller closes what
+		// it is given, and closing s.root breaks every later operation.
+		return nil, "", fmt.Errorf("destination %q resolves into the storage root", dest)
+	}
+	return parent, base, nil
 }
 
 // validateRegistryPath checks a path the registry hands back, at the moment it
@@ -413,14 +803,46 @@ func plusRX(mode os.FileMode, isDir bool) os.FileMode {
 	return mode
 }
 
+// promoteDir makes a fully-built staging directory visible at its final name.
+//
+// THE CHMOD IS THE POINT, and it is here rather than at each call site because
+// every one of them got it wrong the same way. Staging dirs are created 0700
+// deliberately — a half-built tree must not be readable — and rename PRESERVES
+// the mode, so promoting one without widening it hands the consumer a
+// root-owned 0700 directory. On the resolve path that directory is the task
+// container's mount point, and images pick their own USER (the pod security
+// context sets no runAsUser), so the step fails with EACCES on its own input
+// before reading a byte. The entries INSIDE were always widened by plusRX or
+// sanitizeMode; the container just could not reach them.
+//
+// The existing mode is widened rather than replaced, so a caller that
+// deliberately made a directory more permissive keeps it.
+func promoteDir(parent *os.Root, tmp, base string) error {
+	info, err := parent.Stat(tmp)
+	if err != nil {
+		return fmt.Errorf("stat staged directory %q: %w", tmp, err)
+	}
+	if err := parent.Chmod(tmp, plusRX(info.Mode().Perm(), true)); err != nil {
+		return fmt.Errorf("widen staged directory %q: %w", tmp, err)
+	}
+	return parent.Rename(tmp, base)
+}
+
 // copyTree copies srcRoot/srcName into dstRoot, replacing an exec of `cp -R`
 // plus `chmod -R a+rX`. Modes come from plusRX rather than being preserved: the
 // daemon holds CAP_DAC_OVERRIDE but not CAP_CHOWN, and `cp -p` as root treats
 // the chown failure as fatal.
-func copyTree(srcRoot *os.Root, srcName string, dstRoot *os.Root) error {
+//
+// ctx is checked per entry: the resolve path runs this while holding a
+// node-wide semaphore slot, and a caller that has gone away must free the
+// slot rather than finish a copy nobody will read.
+func copyTree(ctx context.Context, srcRoot *os.Root, srcName string, dstRoot *os.Root) error {
 	srcFS := srcRoot.FS()
 	return fs.WalkDir(srcFS, srcName, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
 			return err
 		}
 		rel, err := filepath.Rel(srcName, p)

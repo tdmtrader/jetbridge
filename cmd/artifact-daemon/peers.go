@@ -8,10 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
@@ -181,13 +183,26 @@ func (p *PeerResolver) Probe(ctx context.Context, key string) (string, bool) {
 // It streams GET /artifacts/steps/<key> from the peer, which returns a tar
 // stream, and extracts it to the destination directory.
 func (p *PeerResolver) Fetch(ctx context.Context, peerIP, key, destPath string) error {
-	logger := p.logger.Session("peer-fetch", lager.Data{"key": key, "peer": peerIP, "dest": destPath})
-
 	// The temp directory is a sibling of destPath, so the parent has to exist
 	// before the first attempt and rename has to stay on one filesystem.
 	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
 		return fmt.Errorf("create dest parent: %w", err)
 	}
+	parent, base, err := openParent(destPath)
+	if err != nil {
+		return err
+	}
+	defer parent.Close()
+	return p.FetchInto(ctx, peerIP, key, parent, base)
+}
+
+// FetchInto is Fetch against a destination the CALLER has already acquired as
+// a handle. The resolve path uses it so the peer branch writes through the
+// same contained handle as every other writer: deriving the parent here from a
+// string would reopen a path that was validated earlier and may since have had
+// a component replaced by a symlink.
+func (p *PeerResolver) FetchInto(ctx context.Context, peerIP, key string, parent *os.Root, base string) error {
+	logger := p.logger.Session("peer-fetch", lager.Data{"key": key, "peer": peerIP, "dest": base})
 
 	// NOTE: the hardcoded "http" here is a known defect — Probe uses
 	// p.scheme, so peer FETCH cannot work with TLS enabled. It is out of scope
@@ -224,24 +239,19 @@ func (p *PeerResolver) Fetch(ctx context.Context, peerIP, key, destPath string) 
 
 		// Extract into a sibling temp directory and promote by rename, the
 		// same discipline DurableTier.Restore uses. Extracting straight into
-		// destPath had two consequences: a refused archive left everything
-		// written before the refusal sitting at the destination, and the next
-		// retry then re-extracted over that residue and failed early with a
-		// spurious "file exists" on a legitimate entry — so the error the
+		// the destination had two consequences: a refused archive left
+		// everything written before the refusal sitting at the destination, and
+		// the next retry then re-extracted over that residue and failed early
+		// with a spurious "file exists" on a legitimate entry — so the error the
 		// operator finally saw named the wrong cause entirely.
-		// parent is a live fd. defer cannot run per-iteration, so EVERY exit
-		// from the rest of this loop body closes it explicitly — three today,
-		// and a fourth branch added without one leaks a descriptor per retry.
-		parent, base, err := openParent(destPath)
-		if err != nil {
-			resp.Body.Close()
-			return err
-		}
-
+		//
+		// parent belongs to the CALLER and is reused across attempts; nothing
+		// here closes it. Reopening it per attempt from a path was how a
+		// validated destination could be swapped for a symlink between the
+		// check and the write.
 		tmpDir, err := extractTarInto(resp.Body, parent, ".fetch-")
 		resp.Body.Close()
 		if err != nil {
-			parent.Close()
 			lastErr = err
 			logger.Error("extract-failed", err, lager.Data{"attempt": attempt})
 			if attempt < 3 {
@@ -255,32 +265,29 @@ func (p *PeerResolver) Fetch(ctx context.Context, peerIP, key, destPath string) 
 		// feed this identical dest. An earlier version treated a rename onto an
 		// existing directory as success, copied from DurableTier.Restore — but
 		// Restore's destination corresponds to a bucket key, so "either copy is
-		// equally valid" holds there. This dest is chosen by the caller, so a
-		// directory already sitting here is not necessarily this artifact, and
-		// reporting success while delivering none of the fetched bytes is the
-		// same lie as the nil return this track set out to remove.
-		parent.RemoveAll(base)
-
-		if err := parent.Rename(tmpDir, base); err != nil {
+		// equally valid" holds there. This dest is chosen by the caller, and
+		// distinct keys legitimately share one, so a directory already sitting
+		// here is not necessarily this artifact.
+		//
+		// The clear is CHECKED and a failed rename is an ERROR, with no
+		// tolerance for a directory "reappearing": the daemon serialises
+		// resolves by destination (resolveOne holds the dest lock across this
+		// call), so nothing legitimate can recreate dest between the clear and
+		// the rename — and when the clear itself fails, tolerating the ensuing
+		// ENOTEMPTY would report success while delivering whatever was already
+		// there, which is the false-success lie this path exists to remove.
+		if err := parent.RemoveAll(base); err != nil {
 			parent.RemoveAll(tmpDir)
-			parent.Close()
-
-			// We cleared destPath ourselves a moment ago, so a directory there
-			// NOW was created after that — which only a concurrent fetch of this
-			// same key does, and its bytes are this same artifact. Keep theirs
-			// rather than churning the directory under an in-flight reader.
-			//
-			// The timing is what makes this sound. An earlier revision tolerated
-			// a PRE-EXISTING destination the same way, copying the policy from
-			// DurableTier.Restore, and that was wrong: a directory already there
-			// before we started is not necessarily this artifact, and treating it
-			// as success delivered stale bytes under a nil error. Clearing first
-			// and only then tolerating a reappearance separates the two cases.
-			if errors.Is(err, os.ErrExist) || isNotEmptyErr(err) {
-				logger.Info("raced-by-concurrent-fetch", lager.Data{"attempt": attempt})
-				return nil
+			lastErr = fmt.Errorf("clear destination before promote: %w", err)
+			logger.Error("clear-dest-failed", err, lager.Data{"attempt": attempt})
+			if attempt < 3 {
+				time.Sleep(time.Duration(attempt) * time.Second)
 			}
+			continue
+		}
 
+		if err := promoteDir(parent, tmpDir, base); err != nil {
+			parent.RemoveAll(tmpDir)
 			lastErr = fmt.Errorf("promote extracted artifact: %w", err)
 			logger.Error("rename-failed", err, lager.Data{"attempt": attempt})
 			if attempt < 3 {
@@ -289,7 +296,6 @@ func (p *PeerResolver) Fetch(ctx context.Context, peerIP, key, destPath string) 
 			continue
 		}
 
-		parent.Close()
 		logger.Info("fetched", lager.Data{"attempt": attempt})
 		return nil
 	}
@@ -340,6 +346,7 @@ func extractTarInto(r io.Reader, parent *os.Root, prefix string) (string, error)
 // the shape that let an earlier track validate against the wrong root.
 func extractTarToRoot(r io.Reader, root *os.Root) error {
 	tr := tar.NewReader(r)
+
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -449,5 +456,77 @@ func extractTarToRoot(r io.Reader, root *os.Root) error {
 			return refused("entry %q has unsupported type %q", hdr.Name, string(rune(hdr.Typeflag)))
 		}
 	}
+
+	// Authoritative containment check, against the tree AS IT NOW EXISTS ON
+	// DISK. The per-entry validateSymlinkTarget above is a lexical fast-path —
+	// necessary for refusing absolute targets, but not sufficient, because it
+	// judges a link by its lexical name and target while the kernel resolves
+	// every path component through whatever symlinks the archive has by then
+	// created. The two diverge the moment a component is a symlink: a link
+	// named "a" -> "." followed by "esc" -> "a/.." lands "esc" pointing at the
+	// destination's PARENT, yet both entries pass the lexical check. Rather
+	// than track created links and re-derive the kernel's resolution (which is
+	// where every lexical attempt springs a leak — cleaned "X/.." vs kernel
+	// order, case folding, hard links through symlinked dirs), resolve each
+	// symlink FROM ITS REAL ON-DISK LOCATION with the same trusted resolver the
+	// daemon uses everywhere else, and refuse any that leaves the destination.
+	if err := refuseEscapingSymlinks(root); err != nil {
+		return err
+	}
 	return nil
+}
+
+// refuseEscapingSymlinks fails the extraction if any symlink now on disk
+// resolves outside root, following intermediate symlinks the way a consumer's
+// kernel will. It reads the ACTUAL layout (fs.WalkDir does not descend into
+// symlinks, so every link is reported at its true location), so there is no
+// lexical-vs-kernel gap from entry ordering.
+func refuseEscapingSymlinks(root *os.Root) error {
+	// root.Name() is the extraction root's absolute path (os.Root records it,
+	// nested roots included). Resolve it too, so a symlinked ancestor of the
+	// root itself (macOS /var -> /private/var) is not mistaken for an escape.
+	absRoot := root.Name()
+	resolvedRoot := resolvePath(absRoot)
+	sep := string(os.PathSeparator)
+	rootFS := root.FS()
+	return fs.WalkDir(rootFS, ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.Type()&fs.ModeSymlink == 0 {
+			return nil
+		}
+		target, err := root.Readlink(p)
+		if err != nil {
+			return refused("read back symlink %q: %v", p, err)
+		}
+		// Absolute targets are refused at creation (validateSymlinkTarget), so
+		// none is on disk here; refuse defensively anyway, because the join
+		// below would neutralise one into a contained path.
+		if filepath.IsAbs(target) {
+			return refused("symlink %q targets an absolute path %q", p, target)
+		}
+
+		// The link's real directory. fs.WalkDir gives p at its true on-disk
+		// location (it never descends into a symlink), so this is where the
+		// kernel starts resolving the target from.
+		linkDir := resolvePath(absRoot + sep + filepath.FromSlash(path.Dir(p)))
+
+		// Resolve the target kernel-order FROM that directory, WITHOUT letting
+		// filepath.Join/Clean collapse a "symlink/.." pair in the target first
+		// — that lexical collapse is the exact gap resolvePath exists to close
+		// (see its doc), and pre-cleaning here reintroduced it. Build the path
+		// by raw concatenation so resolvePath sees every component, symlinks
+		// included, and applies ".." only to an already-resolved prefix.
+		resolvedTarget := resolvePath(linkDir + sep + filepath.FromSlash(target))
+
+		rel, err := filepath.Rel(resolvedRoot, resolvedTarget)
+		// rel == "." means the target IS the extraction root — contained, and a
+		// legitimate shape (npm's node_modules/<pkg> -> ..). Only ".." or a
+		// "../"-prefixed rel leaves the destination.
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+sep) {
+			return refused("symlink %q -> %q resolves outside the destination", p, target)
+		}
+		return nil
+	})
 }
