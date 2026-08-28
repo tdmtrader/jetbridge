@@ -307,13 +307,11 @@ func integrationClusterDefinitions() []brine.StepDefinition {
 		// The worker gets an exec transport. Which one depends on what the
 		// scenario is about: a shell for task commands, a resource image for
 		// the get/put/check protocol.
-		brine.DefineMap[IntegrationCluster, IntegrationCluster](
-			"the worker execs commands in pods",
-			func(in IntegrationCluster, _ brine.Params, _ *brine.Recorder) (IntegrationCluster, error) {
+		Refine[IntegrationCluster]("the worker execs commands in pods",
+			func(in IntegrationCluster, _ Args) IntegrationCluster {
 				in.Worker.SetExecutor(localShellAdapter{})
-				return in, nil
-			},
-		),
+				return in
+			}),
 
 		brine.DefineMap[IntegrationCluster, IntegrationCluster](
 			"the worker runs resource scripts that exit {int}",
@@ -338,20 +336,13 @@ func integrationClusterDefinitions() []brine.StepDefinition {
 		// A locator entry is the state a previous step's output left behind.
 		// LookupVolume is supposed to be indifferent to it — see the
 		// "whatever the locator remembers" scenario.
-		brine.DefineMap[IntegrationCluster, IntegrationCluster](
-			"the worker remembers the artifact {string} on node {string}",
-			func(in IntegrationCluster, p brine.Params, _ *brine.Recorder) (IntegrationCluster, error) {
-				key, _ := p.GetString(0)
-				node, ok := p.GetString(1)
-				if !ok {
-					return IntegrationCluster{}, fmt.Errorf("expected an artifact key and a node")
-				}
+		Refine[IntegrationCluster]("the worker remembers the artifact {string} on node {string}",
+			func(in IntegrationCluster, a Args) IntegrationCluster {
 				locator := jetbridge.NewArtifactLocator()
-				locator.Record(jetbridge.ArtifactKey(key), node, "container/output")
+				locator.Record(jetbridge.ArtifactKey(a.String(0)), a.String(1), "container/output")
 				in.Worker.SetArtifactLocator(locator)
-				return in, nil
-			},
-		),
+				return in
+			}),
 
 		brine.DefineMap[IntegrationCluster, IntegrationCluster](
 			"an artifact volume {string} persisted for this team",
@@ -493,29 +484,17 @@ func integrationStepDefinitions() []brine.StepDefinition {
 
 		// Draft refinements. In and Out are the same type, so any number may
 		// appear in any order before the container is created.
-		brine.DefineMap[StepDraft, StepDraft](
-			"the step works in {string}",
-			func(in StepDraft, p brine.Params, _ *brine.Recorder) (StepDraft, error) {
-				dir, ok := p.GetString(0)
-				if !ok {
-					return StepDraft{}, fmt.Errorf("expected a directory parameter")
-				}
-				in.Spec.Dir = dir
-				return in, nil
-			},
-		),
+		Refine[StepDraft]("the step works in {string}",
+			func(in StepDraft, a Args) StepDraft {
+				in.Spec.Dir = a.String(0)
+				return in
+			}),
 
-		brine.DefineMap[StepDraft, StepDraft](
-			"the step takes an input at {string}",
-			func(in StepDraft, p brine.Params, _ *brine.Recorder) (StepDraft, error) {
-				path, ok := p.GetString(0)
-				if !ok {
-					return StepDraft{}, fmt.Errorf("expected a path parameter")
-				}
-				in.Spec.Inputs = append(in.Spec.Inputs, runtime.Input{DestinationPath: path})
-				return in, nil
-			},
-		),
+		Refine[StepDraft]("the step takes an input at {string}",
+			func(in StepDraft, a Args) StepDraft {
+				in.Spec.Inputs = append(in.Spec.Inputs, runtime.Input{DestinationPath: a.String(0)})
+				return in
+			}),
 
 		brine.DefineMap[StepDraft, StepDraft](
 			"the step takes the artifact {string} as an input at {string}",
@@ -546,63 +525,37 @@ func integrationStepDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineMap[StepDraft, StepDraft](
-			"the step produces an output {string} at {string}",
-			func(in StepDraft, p brine.Params, _ *brine.Recorder) (StepDraft, error) {
-				name, _ := p.GetString(0)
-				path, ok := p.GetString(1)
-				if !ok {
-					return StepDraft{}, fmt.Errorf("expected an output name and a path")
-				}
+		Refine[StepDraft]("the step produces an output {string} at {string}",
+			func(in StepDraft, a Args) StepDraft {
 				if in.Spec.Outputs == nil {
 					in.Spec.Outputs = runtime.OutputPaths{}
 				}
-				in.Spec.Outputs[name] = path
-				return in, nil
-			},
-		),
+				in.Spec.Outputs[a.String(0)] = a.String(1)
+				return in
+			}),
 
-		brine.DefineMap[StepDraft, StepDraft](
-			"the step caches {string}",
-			func(in StepDraft, p brine.Params, _ *brine.Recorder) (StepDraft, error) {
-				path, ok := p.GetString(0)
-				if !ok {
-					return StepDraft{}, fmt.Errorf("expected a cache path parameter")
-				}
-				in.Spec.Caches = append(in.Spec.Caches, path)
-				return in, nil
-			},
-		),
+		Refine[StepDraft]("the step caches {string}",
+			func(in StepDraft, a Args) StepDraft {
+				in.Spec.Caches = append(in.Spec.Caches, a.String(0))
+				return in
+			}),
 
-		brine.DefineMap[StepDraft, StepDraft](
-			"the step sets the environment {string}",
-			func(in StepDraft, p brine.Params, _ *brine.Recorder) (StepDraft, error) {
-				assignment, ok := p.GetString(0)
-				if !ok {
-					return StepDraft{}, fmt.Errorf("expected a KEY=VALUE parameter")
-				}
-				in.Spec.Env = append(in.Spec.Env, assignment)
-				return in, nil
-			},
-		),
+		Refine[StepDraft]("the step sets the environment {string}",
+			func(in StepDraft, a Args) StepDraft {
+				in.Spec.Env = append(in.Spec.Env, a.String(0))
+				return in
+			}),
 
-		brine.DefineMap[StepDraft, StepDraft](
-			"the step reads {string} from the secret {string} key {string} in namespace {string}",
-			func(in StepDraft, p brine.Params, _ *brine.Recorder) (StepDraft, error) {
-				envName, _ := p.GetString(0)
-				secret, _ := p.GetString(1)
-				key, _ := p.GetString(2)
-				ns, ok := p.GetString(3)
-				if !ok {
-					return StepDraft{}, fmt.Errorf("expected four parameters")
-				}
+		Refine[StepDraft]("the step reads {string} from the secret {string} key {string} in namespace {string}",
+			func(in StepDraft, a Args) StepDraft {
 				if in.Spec.SecretEnv == nil {
 					in.Spec.SecretEnv = map[string]vars.SecretRef{}
 				}
-				in.Spec.SecretEnv[envName] = vars.SecretRef{Namespace: ns, Name: secret, Key: key}
-				return in, nil
-			},
-		),
+				in.Spec.SecretEnv[a.String(0)] = vars.SecretRef{
+					Namespace: a.String(3), Name: a.String(1), Key: a.String(2),
+				}
+				return in
+			}),
 
 		// StepDraft -> StepCreated.
 		brine.DefineMap[StepDraft, StepCreated](

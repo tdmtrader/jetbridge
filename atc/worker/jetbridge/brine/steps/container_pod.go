@@ -27,114 +27,63 @@ func ContainerPodDefinitions() []brine.StepDefinition {
 		// --- Draft refinements. In and Out are the same type, so these
 		// compose freely and in any order before the container runs. ---
 
-		brine.DefineMap[ContainerDraft, ContainerDraft](
-			"it takes an input at {string}",
-			func(in ContainerDraft, p brine.Params, _ *brine.Recorder) (ContainerDraft, error) {
-				path, ok := p.GetString(0)
-				if !ok {
-					return ContainerDraft{}, fmt.Errorf("expected a path parameter")
-				}
-				in.Inputs = append(in.Inputs, path)
-				return in, nil
-			},
-		),
+		Refine[ContainerDraft]("it takes an input at {string}",
+			func(in ContainerDraft, a Args) ContainerDraft {
+				in.Inputs = append(in.Inputs, a.String(0))
+				return in
+			}),
 
-		brine.DefineMap[ContainerDraft, ContainerDraft](
-			"it produces an output at {string}",
-			func(in ContainerDraft, p brine.Params, _ *brine.Recorder) (ContainerDraft, error) {
-				path, ok := p.GetString(0)
-				if !ok {
-					return ContainerDraft{}, fmt.Errorf("expected a path parameter")
-				}
-				in.Outputs = append(in.Outputs, path)
-				return in, nil
-			},
-		),
+		Refine[ContainerDraft]("it produces an output at {string}",
+			func(in ContainerDraft, a Args) ContainerDraft {
+				in.Outputs = append(in.Outputs, a.String(0))
+				return in
+			}),
 
-		brine.DefineMap[ContainerDraft, ContainerDraft](
-			"it caches {string}",
-			func(in ContainerDraft, p brine.Params, _ *brine.Recorder) (ContainerDraft, error) {
-				path, ok := p.GetString(0)
-				if !ok {
-					return ContainerDraft{}, fmt.Errorf("expected a path parameter")
-				}
-				in.Caches = append(in.Caches, path)
-				return in, nil
-			},
-		),
+		Refine[ContainerDraft]("it caches {string}",
+			func(in ContainerDraft, a Args) ContainerDraft {
+				in.Caches = append(in.Caches, a.String(0))
+				return in
+			}),
 
-		brine.DefineMap[ContainerDraft, ContainerDraft](
-			"it uses scratch space at {string}",
-			func(in ContainerDraft, p brine.Params, _ *brine.Recorder) (ContainerDraft, error) {
-				path, ok := p.GetString(0)
-				if !ok {
-					return ContainerDraft{}, fmt.Errorf("expected a path parameter")
-				}
-				in.Scratch = append(in.Scratch, path)
-				return in, nil
-			},
-		),
+		Refine[ContainerDraft]("it uses scratch space at {string}",
+			func(in ContainerDraft, a Args) ContainerDraft {
+				in.Scratch = append(in.Scratch, a.String(0))
+				return in
+			}),
 
-		brine.DefineMap[ContainerDraft, ContainerDraft](
-			"it works in {string}",
-			func(in ContainerDraft, p brine.Params, _ *brine.Recorder) (ContainerDraft, error) {
-				dir, ok := p.GetString(0)
-				if !ok {
-					return ContainerDraft{}, fmt.Errorf("expected a directory parameter")
-				}
-				in.Dir = dir
-				return in, nil
-			},
-		),
+		Refine[ContainerDraft]("it works in {string}",
+			func(in ContainerDraft, a Args) ContainerDraft {
+				in.Dir = a.String(0)
+				return in
+			}),
 
 		// PE-07: the resource envelope decides the pod's QoS class, which
 		// decides which pods the kubelet evicts first under pressure.
 		// CPU is CPU shares, memory is bytes — the units ContainerLimits
 		// actually uses. The runtime maps shares to millicores.
-		brine.DefineMap[ContainerDraft, ContainerDraft](
-			"it is limited to {int} CPU shares and {int} bytes of memory",
-			func(in ContainerDraft, p brine.Params, _ *brine.Recorder) (ContainerDraft, error) {
-				cpu, _ := p.GetInt(0)
-				mem, ok := p.GetInt(1)
-				if !ok {
-					return ContainerDraft{}, fmt.Errorf("expected a cpu and a memory parameter")
-				}
-				c, m := uint64(cpu), uint64(mem)
+		Refine[ContainerDraft]("it is limited to {int} CPU shares and {int} bytes of memory",
+			func(in ContainerDraft, a Args) ContainerDraft {
+				c, m := uint64(a.Int(0)), uint64(a.Int(1))
 				in.LimitCPU, in.LimitMemory = &c, &m
-				return in, nil
-			},
-		),
+				return in
+			}),
 
-		brine.DefineMap[ContainerDraft, ContainerDraft](
-			"it requests {int} CPU shares and {int} bytes of memory",
-			func(in ContainerDraft, p brine.Params, _ *brine.Recorder) (ContainerDraft, error) {
-				cpu, _ := p.GetInt(0)
-				mem, ok := p.GetInt(1)
-				if !ok {
-					return ContainerDraft{}, fmt.Errorf("expected a cpu and a memory parameter")
-				}
-				c, m := uint64(cpu), uint64(mem)
+		Refine[ContainerDraft]("it requests {int} CPU shares and {int} bytes of memory",
+			func(in ContainerDraft, a Args) ContainerDraft {
+				c, m := uint64(a.Int(0)), uint64(a.Int(1))
 				in.RequestCPU, in.RequestMemory = &c, &m
-				return in, nil
-			},
-		),
+				return in
+			}),
 
 		// PE-07's ephemeral-storage clause: a step that writes a large
 		// artifact to local disk is evicted without this, and the eviction
 		// looks like an unexplained failure.
-		brine.DefineMap[ContainerDraft, ContainerDraft](
-			"it is limited to {int} bytes of local disk, requesting {int}",
-			func(in ContainerDraft, p brine.Params, _ *brine.Recorder) (ContainerDraft, error) {
-				lim, _ := p.GetInt(0)
-				req, ok := p.GetInt(1)
-				if !ok {
-					return ContainerDraft{}, fmt.Errorf("expected a limit and a request")
-				}
-				l, r := uint64(lim), uint64(req)
+		Refine[ContainerDraft]("it is limited to {int} bytes of local disk, requesting {int}",
+			func(in ContainerDraft, a Args) ContainerDraft {
+				l, r := uint64(a.Int(0)), uint64(a.Int(1))
 				in.LimitEphemeral, in.RequestEphemeral = &l, &r
-				return in, nil
-			},
-		),
+				return in
+			}),
 
 		// Keeps its own body: both parameters are expectations rather than a
 		// key and a value, and each is compared as a quantity, so that "1Gi"
@@ -178,27 +127,19 @@ func ContainerPodDefinitions() []brine.StepDefinition {
 		),
 
 		// PE-04
-		brine.DefineMap[ContainerDraft, ContainerDraft](
-			"it runs privileged",
-			func(in ContainerDraft, _ brine.Params, _ *brine.Recorder) (ContainerDraft, error) {
+		Refine[ContainerDraft]("it runs privileged",
+			func(in ContainerDraft, _ Args) ContainerDraft {
 				in.Privileged = true
-				return in, nil
-			},
-		),
+				return in
+			}),
 
 		// SC-01 to SC-06
-		brine.DefineMap[ContainerDraft, ContainerDraft](
-			"a sidecar {string} runs {string} alongside it",
-			func(in ContainerDraft, p brine.Params, _ *brine.Recorder) (ContainerDraft, error) {
-				name, _ := p.GetString(0)
-				image, ok := p.GetString(1)
-				if !ok {
-					return ContainerDraft{}, fmt.Errorf("expected a name and an image")
-				}
-				in.Sidecars = append(in.Sidecars, atc.SidecarConfig{Name: name, Image: image})
-				return in, nil
-			},
-		),
+		Refine[ContainerDraft]("a sidecar {string} runs {string} alongside it",
+			func(in ContainerDraft, a Args) ContainerDraft {
+				in.Sidecars = append(in.Sidecars,
+					atc.SidecarConfig{Name: a.String(0), Image: a.String(1)})
+				return in
+			}),
 
 		brine.DefineMap[ContainerDraft, ContainerDraft](
 			"the sidecar {string} declares its working directory as {string}",
@@ -727,18 +668,11 @@ func CacheStorageDefinitions() []brine.StepDefinition {
 
 		// The job and step identify a cache across builds. Without them the
 		// key varies per build and the cache never hits.
-		brine.DefineMap[ContainerDraft, ContainerDraft](
-			"it belongs to job {int} step {string}",
-			func(in ContainerDraft, p brine.Params, _ *brine.Recorder) (ContainerDraft, error) {
-				jobID, _ := p.GetInt(0)
-				step, ok := p.GetString(1)
-				if !ok {
-					return ContainerDraft{}, fmt.Errorf("expected a job id and a step name")
-				}
-				in.JobID, in.StepName = jobID, step
-				return in, nil
-			},
-		),
+		Refine[ContainerDraft]("it belongs to job {int} step {string}",
+			func(in ContainerDraft, a Args) ContainerDraft {
+				in.JobID, in.StepName = a.Int(0), a.String(1)
+				return in
+			}),
 
 		// Keeps its own body: it pins three separate properties, and each
 		// failure explains the rule it broke — survives the pod, filed under a

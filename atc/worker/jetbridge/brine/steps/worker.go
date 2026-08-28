@@ -321,29 +321,23 @@ func workerSetupDefinitions() []brine.StepDefinition {
 				return nil
 			}),
 
-		brine.DefineMap[WorkerReady, WorkerReady](
-			"the database cannot transition containers to created",
-			func(in WorkerReady, _ brine.Params, _ *brine.Recorder) (WorkerReady, error) {
+		Refine[WorkerReady]("the database cannot transition containers to created",
+			func(in WorkerReady, _ Args) WorkerReady {
 				in.ContainerFault = true
-				return in.rebuild(), nil
-			},
-		),
+				return in.rebuild()
+			}),
 
-		brine.DefineMap[WorkerReady, WorkerReady](
-			"the worker can exec into pods",
-			func(in WorkerReady, _ brine.Params, _ *brine.Recorder) (WorkerReady, error) {
+		Refine[WorkerReady]("the worker can exec into pods",
+			func(in WorkerReady, _ Args) WorkerReady {
 				in.Executor = localShellAdapter{}
-				return in.rebuild(), nil
-			},
-		),
+				return in.rebuild()
+			}),
 
-		brine.DefineMap[WorkerReady, WorkerReady](
-			"the worker has no volume repository configured",
-			func(in WorkerReady, _ brine.Params, _ *brine.Recorder) (WorkerReady, error) {
+		Refine[WorkerReady]("the worker has no volume repository configured",
+			func(in WorkerReady, _ Args) WorkerReady {
 				in.VolumeRepo = nil
-				return in.rebuild(), nil
-			},
-		),
+				return in.rebuild()
+			}),
 
 		brine.DefineMap[WorkerReady, WorkerReady](
 			"the worker's volume repository has lost its database connection",
@@ -357,29 +351,23 @@ func workerSetupDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineMap[WorkerReady, WorkerReady](
-			"the volume repository cannot transition volumes to created",
-			func(in WorkerReady, _ brine.Params, _ *brine.Recorder) (WorkerReady, error) {
+		Refine[WorkerReady]("the volume repository cannot transition volumes to created",
+			func(in WorkerReady, _ Args) WorkerReady {
 				in.VolumeRepo = failVolumeCreatedTransitionRepo{in.DB.VolumeRepository}
-				return in.rebuild(), nil
-			},
-		),
+				return in.rebuild()
+			}),
 
-		brine.DefineMap[WorkerReady, WorkerReady](
-			"the volume repository cannot initialise artifacts",
-			func(in WorkerReady, _ brine.Params, _ *brine.Recorder) (WorkerReady, error) {
+		Refine[WorkerReady]("the volume repository cannot initialise artifacts",
+			func(in WorkerReady, _ Args) WorkerReady {
 				in.VolumeRepo = failInitializeArtifactRepo{in.DB.VolumeRepository}
-				return in.rebuild(), nil
-			},
-		),
+				return in.rebuild()
+			}),
 
-		brine.DefineMap[WorkerReady, WorkerReady](
-			"the producing pod has been reaped",
-			func(in WorkerReady, _ brine.Params, _ *brine.Recorder) (WorkerReady, error) {
+		Refine[WorkerReady]("the producing pod has been reaped",
+			func(in WorkerReady, _ Args) WorkerReady {
 				in.ProducerReaped = true
-				return in, nil
-			},
-		),
+				return in
+			}),
 
 		// The daemon steps below all stand up a REAL HTTP server and a real
 		// EndpointSlice, then point a real DaemonClient at it. Nothing is
@@ -421,35 +409,27 @@ func workerSetupDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineMap[WorkerReady, WorkerReady](
-			"the worker has no artifact daemon configured",
-			func(in WorkerReady, _ brine.Params, _ *brine.Recorder) (WorkerReady, error) {
+		Refine[WorkerReady]("the worker has no artifact daemon configured",
+			func(in WorkerReady, _ Args) WorkerReady {
 				in.Config.ArtifactDaemonHostPath = ""
 				in.Config.ArtifactDaemonService = ""
 				in.Config.ArtifactDaemonPort = 0
 				in.DaemonClient = nil
 				in.Locator = nil
-				return in.rebuild(), nil
-			},
-		),
+				return in.rebuild()
+			}),
 
 		// A node roll leaves the locator naming a node that no longer exists.
 		// SetArtifactLocator replaces the storage backend, which drops the
 		// daemon client, so the rebuild re-applies it in that order.
-		brine.DefineMap[WorkerReady, WorkerReady](
-			"the worker still remembers the resource cache {int} on a node that has been rolled away",
-			func(in WorkerReady, p brine.Params, _ *brine.Recorder) (WorkerReady, error) {
-				id, ok := p.GetInt(0)
-				if !ok {
-					return WorkerReady{}, fmt.Errorf("expected a cache id parameter")
-				}
-				key := fmt.Sprintf("rc-%d", id)
+		Refine[WorkerReady]("the worker still remembers the resource cache {int} on a node that has been rolled away",
+			func(in WorkerReady, a Args) WorkerReady {
+				key := fmt.Sprintf("rc-%d", a.Int(0))
 				locator := jetbridge.NewArtifactLocator()
 				locator.Record(key, "10.0.0.99", key)
 				in.Locator = locator
-				return in.rebuild(), nil
-			},
-		),
+				return in.rebuild()
+			}),
 	}
 }
 

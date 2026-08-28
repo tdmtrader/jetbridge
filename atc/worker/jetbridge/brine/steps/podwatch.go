@@ -59,20 +59,17 @@ func PodWatchDefinitions() []brine.StepDefinition {
 
 		// Installing a controllable watch has to happen before the watcher is
 		// built, so these steps precede "the runtime starts watching".
-		brine.DefineMap[WatchedPod, WatchedPod](
-			"the connection to Kubernetes is steady",
-			func(in WatchedPod, _ brine.Params, _ *brine.Recorder) (WatchedPod, error) {
+		Refine[WatchedPod]("the connection to Kubernetes is steady",
+			func(in WatchedPod, _ Args) WatchedPod {
 				w := watch.NewRaceFreeFake()
 				in.Feed = w
 				in.Clientset.PrependWatchReactor("pods",
 					func(k8stesting.Action) (bool, watch.Interface, error) { return true, w, nil })
-				return in.start(), nil
-			},
-		),
+				return in.start()
+			}),
 
-		brine.DefineMap[WatchedPod, WatchedPod](
-			"the connection to Kubernetes drops and comes back",
-			func(in WatchedPod, _ brine.Params, _ *brine.Recorder) (WatchedPod, error) {
+		Refine[WatchedPod]("the connection to Kubernetes drops and comes back",
+			func(in WatchedPod, _ Args) WatchedPod {
 				first, second := watch.NewRaceFreeFake(), watch.NewRaceFreeFake()
 				var calls int32
 				in.Clientset.PrependWatchReactor("pods", func(k8stesting.Action) (bool, watch.Interface, error) {
@@ -82,13 +79,11 @@ func PodWatchDefinitions() []brine.StepDefinition {
 					return true, second, nil
 				})
 				in.Feed, in.SecondFeed = first, second
-				return in.start(), nil
-			},
-		),
+				return in.start()
+			}),
 
-		brine.DefineMap[WatchedPod, WatchedPod](
-			"the connection to Kubernetes drops and cannot be re-established",
-			func(in WatchedPod, _ brine.Params, _ *brine.Recorder) (WatchedPod, error) {
+		Refine[WatchedPod]("the connection to Kubernetes drops and cannot be re-established",
+			func(in WatchedPod, _ Args) WatchedPod {
 				first := watch.NewRaceFreeFake()
 				var calls int32
 				in.Clientset.PrependWatchReactor("pods", func(k8stesting.Action) (bool, watch.Interface, error) {
@@ -98,9 +93,8 @@ func PodWatchDefinitions() []brine.StepDefinition {
 					return true, nil, errors.New("watch unavailable")
 				})
 				in.Feed = first
-				return in.start(), nil
-			},
-		),
+				return in.start()
+			}),
 
 		brine.DefineMap[WatchedPod, WatchObservation](
 			"the runtime asks what the pod is doing",

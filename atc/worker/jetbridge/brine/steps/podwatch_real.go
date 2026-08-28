@@ -197,12 +197,10 @@ func PodWatchRealExtraDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineMap[RealWatch, RealWatch](
-			"the runtime asks the real cluster what its pod is doing",
-			func(in RealWatch, _ brine.Params, _ *brine.Recorder) (RealWatch, error) {
-				return in.next(), nil
-			},
-		),
+		Refine[RealWatch]("the runtime asks the real cluster what its pod is doing",
+			func(in RealWatch, _ Args) RealWatch {
+				return in.next()
+			}),
 
 		brine.DefineMap[RealWatch, RealWatch](
 			"the pod really becomes {string}",
@@ -271,9 +269,8 @@ func PodWatchRealExtraDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineMap[RealWatch, RealWatch](
-			"the build is cancelled while the runtime waits on the real cluster",
-			func(in RealWatch, _ brine.Params, _ *brine.Recorder) (RealWatch, error) {
+		Refine[RealWatch]("the build is cancelled while the runtime waits on the real cluster",
+			func(in RealWatch, _ Args) RealWatch {
 				ctx, cancel := context.WithCancel(in.Ctx)
 				type answer struct {
 					pod *corev1.Pod
@@ -299,9 +296,8 @@ func PodWatchRealExtraDefinitions() []brine.StepDefinition {
 					in.Observed, in.Err = nil, fmt.Errorf(
 						"the runtime was still waiting 10s after the build was cancelled")
 				}
-				return in, nil
-			},
-		),
+				return in
+			}),
 
 		CheckString[RealWatch]("the runtime is really told the pod is {string}",
 			"the pod's phase",

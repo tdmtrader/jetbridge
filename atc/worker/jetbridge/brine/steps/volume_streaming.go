@@ -105,17 +105,12 @@ func VolumeStreamingDefinitions() []brine.StepDefinition {
 		),
 
 		// VT-05: a stub volume has no executor and cannot perform I/O.
-		brine.DefineMap[VolumeSet, VolumeSet](
-			"a stub volume {string} with no cluster behind it",
-			func(in VolumeSet, p brine.Params, _ *brine.Recorder) (VolumeSet, error) {
-				name, ok := p.GetString(0)
-				if !ok {
-					return VolumeSet{}, fmt.Errorf("expected a volume name parameter")
-				}
+		Refine[VolumeSet]("a stub volume {string} with no cluster behind it",
+			func(in VolumeSet, a Args) VolumeSet {
+				name := a.String(0)
 				in.Volumes[name] = jetbridge.NewStubVolume(name+"-handle", "k8s-worker-1", "/tmp/stub")
-				return in, nil
-			},
-		),
+				return in
+			}),
 
 		brine.DefineMap[VolumeSet, VolumeSet](
 			"volume {string} sits on a cluster that cannot run commands",

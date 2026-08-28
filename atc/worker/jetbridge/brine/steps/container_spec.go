@@ -44,29 +44,17 @@ func ContainerSpecDefinitions() []brine.StepDefinition {
 
 		// Draft refinements: In and Out are the same type, so these compose
 		// freely and in any order before the container runs.
-		brine.DefineMap[ContainerDraft, ContainerDraft](
-			"the container environment sets {string}",
-			func(in ContainerDraft, p brine.Params, _ *brine.Recorder) (ContainerDraft, error) {
-				assignment, ok := p.GetString(0)
-				if !ok {
-					return ContainerDraft{}, fmt.Errorf("expected a KEY=VALUE parameter")
-				}
-				in.ContainerEnv = append(in.ContainerEnv, assignment)
-				return in, nil
-			},
-		),
+		Refine[ContainerDraft]("the container environment sets {string}",
+			func(in ContainerDraft, a Args) ContainerDraft {
+				in.ContainerEnv = append(in.ContainerEnv, a.String(0))
+				return in
+			}),
 
-		brine.DefineMap[ContainerDraft, ContainerDraft](
-			"the process environment sets {string}",
-			func(in ContainerDraft, p brine.Params, _ *brine.Recorder) (ContainerDraft, error) {
-				assignment, ok := p.GetString(0)
-				if !ok {
-					return ContainerDraft{}, fmt.Errorf("expected a KEY=VALUE parameter")
-				}
-				in.ProcessEnv = append(in.ProcessEnv, assignment)
-				return in, nil
-			},
-		),
+		Refine[ContainerDraft]("the process environment sets {string}",
+			func(in ContainerDraft, a Args) ContainerDraft {
+				in.ProcessEnv = append(in.ProcessEnv, a.String(0))
+				return in
+			}),
 
 		// ContainerDraft -> PodCreated.
 		brine.DefineMap[ContainerDraft, PodCreated](

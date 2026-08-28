@@ -60,9 +60,8 @@ func ReaperDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineMap[ReaperReady, ReaperReady](
-			"the reaper cannot tell which builds are running",
-			func(in ReaperReady, _ brine.Params, _ *brine.Recorder) (ReaperReady, error) {
+		Refine[ReaperReady]("the reaper cannot tell which builds are running",
+			func(in ReaperReady, _ Args) ReaperReady {
 				// A reaper with no build lookup must not guess. Retaining is
 				// the safe answer: deleting a pod whose build is still running
 				// loses the build.
@@ -70,9 +69,8 @@ func ReaperDefinitions() []brine.StepDefinition {
 				destroyer := gc.NewDestroyer(logger, in.DB.ContainerRepository, in.DB.VolumeRepository)
 				in.Reaper = jetbridge.NewReaper(logger, in.Clientset, in.Config, in.DB.ContainerRepository, destroyer)
 				in.BuildLookup = false
-				return in, nil
-			},
-		),
+				return in
+			}),
 
 		brine.DefineMap[ReaperReady, ReaperReady](
 			"a container {string} exists on this worker",
@@ -179,13 +177,14 @@ func ReaperDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineMap[ReaperOutcome, ReaperOutcome](
-			"the reaper runs again",
-			func(in ReaperOutcome, _ brine.Params, _ *brine.Recorder) (ReaperOutcome, error) {
+		// A second sweep cannot fail the STEP: whether it succeeded is what
+		// the scenario goes on to assert, so the result is carried in the
+		// outcome rather than raised here.
+		Refine[ReaperOutcome]("the reaper runs again",
+			func(in ReaperOutcome, _ Args) ReaperOutcome {
 				in.Err = in.Ready.Reaper.Run(in.Ready.Ctx)
-				return in, nil
-			},
-		),
+				return in
+			}),
 
 		CheckThat[ReaperOutcome]("the reaper completes without error",
 			func(in ReaperOutcome) error {
