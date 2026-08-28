@@ -65,7 +65,9 @@ spec:
             - --namespace={{ include "concourse.kubernetesNamespace" . }}
             - --service-name={{ include "concourse.artifactDaemonServiceName" . }}
             - --label-key=concourse.dev/artifact-cache
+            {{- if .Values.artifactDaemon.resolveCapability.existingSecret }}
             - --resolve-capability-key=/etc/concourse/resolve-capability/resolve.key
+            {{- end }}
             {{- if $tlsEnabled }}
             - --tls-cert=/etc/concourse/daemon-tls/tls.crt
             - --tls-key=/etc/concourse/daemon-tls/tls.key
@@ -167,9 +169,11 @@ spec:
               mountPath: /etc/concourse/daemon-tls
               readOnly: true
             {{- end }}
+            {{- if .Values.artifactDaemon.resolveCapability.existingSecret }}
             - name: resolve-capability
               mountPath: /etc/concourse/resolve-capability
               readOnly: true
+            {{- end }}
       volumes:
         - name: artifact-storage
           hostPath:
@@ -180,9 +184,11 @@ spec:
           secret:
             secretName: {{ $tlsSecretName }}
         {{- end }}
+        {{- with .Values.artifactDaemon.resolveCapability.existingSecret }}
         - name: resolve-capability
           secret:
-            secretName: {{ .Values.artifactDaemon.resolveCapability.existingSecret | default (printf "%s-artifact-daemon-resolve-capability" (include "concourse.fullname" .)) }}
+            secretName: {{ . }}
+        {{- end }}
       {{- with .Values.artifactDaemon.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

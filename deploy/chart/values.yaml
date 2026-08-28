@@ -583,30 +583,36 @@ artifactDaemon:
   # -- NetworkPolicy configuration for the artifact daemon
   resolveCapability:
     # -- Name of a Secret holding `resolve.key`, exactly 32 random bytes shared
-    # by web and daemon. Empty generates one, the same way the daemon TLS
-    # Secret generates its CA.
+    # by web and daemon. THIS VALUE IS THE SWITCH: set, both sides enforce
+    # signed resolve capabilities; empty, neither does.
     #
-    # Signing is always on when the daemon is enabled. UPGRADE NOTE: during the
-    # first rollout from a version without this, an old web that does not sign
-    # can meet a new daemon that requires — those resolves 403 and their builds
-    # fail until web has rolled. Brief, and self-healing.
-    #
-    # UNDER ARGO CD, SET THIS. `lookup` needs a live cluster and returns empty
-    # during `helm template`, so a generated key is fresh on every reconcile and
-    # rotates on sync — after which each side rejects the other's capabilities
-    # until both have rolled. That is not brief, because it repeats every sync.
-    # The same hazard already applies to artifactDaemon.tls.existingSecret.
+    # Create it once, yourself:
     #
     #   head -c 32 /dev/urandom > resolve.key
     #   kubectl create secret generic concourse-resolve-capability \
     #     --from-file=resolve.key -n <namespace>
+    #   rm resolve.key
     #
-    # Or tell Argo CD not to diff the generated one:
-    #   ignoreDifferences:
-    #     - group: ""
-    #       kind: Secret
-    #       name: <release>-artifact-daemon-resolve-capability
-    #       jsonPointers: ["/data"]
+    # The chart deliberately does NOT generate this key, for the same reason it
+    # does not generate the session signing key. Generating it needs Helm
+    # `lookup` to carry the old value forward, `lookup` returns empty under
+    # `helm template`, and `helm template` is how Argo CD renders — so a
+    # generated key is fresh on EVERY reconcile. Argo sees a Secret diff every
+    # time and rewrites it; both processes read the key once at startup, so
+    # nothing breaks until the first asymmetric restart, after which each side
+    # rejects the other's capabilities and every build's input fetch 403s until
+    # web and every daemon pod have rolled. Argo CD has no chart-side
+    # "create once, never update" for a rendered resource, so the key stays out
+    # of the render entirely. (artifactDaemon.tls.existingSecret still carries
+    # that hazard; set it too under Argo CD.)
+    #
+    # Both sides are gated on this ONE value so they cannot disagree: a daemon
+    # given a key fails closed, so arming it while the web does not sign would
+    # 403 every resolve on the node with no diagnostic.
+    #
+    # UPGRADE NOTE: on the first rollout after enabling this, an old web that
+    # does not sign can meet a new daemon that requires — those resolves 403
+    # and their builds fail until web has rolled. Brief, and self-healing.
     existingSecret: ""
     # -- Capability lifetime. Must exceed pod scheduling + startup + the init
     # container's retry budget, or a slow-to-schedule pod gets a 403 on a
