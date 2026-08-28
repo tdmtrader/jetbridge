@@ -59,23 +59,6 @@ func PodFailureDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		// RF-07: nothing in the cluster can host this pod. Without a message
-		// the step simply hangs until it times out.
-		brine.DefineMap[StepRunning, StepOutcome](
-			"no node can accept the pod",
-			func(in StepRunning, _ brine.Params, _ *brine.Recorder) (StepOutcome, error) {
-				return in.settlePod(func(pod *corev1.Pod) {
-					pod.Status.Phase = corev1.PodPending
-					pod.Status.Conditions = []corev1.PodCondition{{
-						Type:    corev1.PodScheduled,
-						Status:  corev1.ConditionFalse,
-						Reason:  "Unschedulable",
-						Message: "0/3 nodes are available: insufficient cpu",
-					}}
-				})
-			},
-		),
-
 		// RF-06: eviction, node failure, spot preemption, or a human with
 		// kubectl. All arrive the same way.
 		brine.DefineMap[StepRunning, StepOutcome](

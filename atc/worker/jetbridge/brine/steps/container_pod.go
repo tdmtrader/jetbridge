@@ -3,7 +3,6 @@ package steps
 import (
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/brine-dev/brine-go/pkg/brine"
 	"github.com/concourse/concourse/atc"
@@ -263,27 +262,6 @@ func ContainerPodDefinitions() []brine.StepDefinition {
 				}
 				return fmt.Errorf("expected a volume mounted at %q, the step sees [%s]",
 					path, strings.Join(paths, ", "))
-			},
-		),
-
-		brine.DefineCheck[PodCreated](
-			"the step sees nothing mounted at {string}",
-			func(in PodCreated, p brine.Params, _ *brine.Recorder) error {
-				path, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected a path parameter")
-				}
-				main, err := mainContainer(in.Pod)
-				if err != nil {
-					return err
-				}
-				for _, vm := range main.VolumeMounts {
-					if vm.MountPath == path {
-						return fmt.Errorf("expected nothing mounted at %q, but %q is",
-							path, vm.Name)
-					}
-				}
-				return nil
 			},
 		),
 
@@ -692,20 +670,6 @@ func ClusterConfigDefinitions() []brine.StepDefinition {
 				return newConfiguredWorker(res, func(cfg *jetbridge.Config) {
 					cfg.ImagePullSecrets = splitList(secrets)
 					cfg.ServiceAccount = account
-				})
-			},
-		),
-
-		// An unschedulable pod is only reported once the scheduling deadline
-		// passes. With the 5-minute default a scenario would simply hang, so
-		// this worker is impatient — the same move process_test.go makes.
-		brine.DefineMapUsing[brine.Empty, ClusterReady](
-			"a jetbridge worker that waits only seconds for a pod to be scheduled",
-			[]string{"jetbridge-db"},
-			func(_ brine.Empty, _ brine.Params, _ *brine.Recorder, res brine.Resources) (ClusterReady, error) {
-				return newConfiguredWorker(res, func(cfg *jetbridge.Config) {
-					cfg.PodSchedulingTimeout = 3 * time.Second
-					cfg.PodStartupTimeout = 2 * time.Second
 				})
 			},
 		),

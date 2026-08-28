@@ -63,6 +63,24 @@ Feature: Keeping sight of a pod while a step runs
     And the build is cancelled while the runtime waits on the real cluster
     Then the runtime really stops waiting
 
+  # The other cancellation branch, and the one a real cluster cannot reach.
+  # Above, the runtime is cancelled while its watch is still delivering, so the
+  # loop comes round and the check at the top of it notices. Here the channel is
+  # empty and stays empty: the runtime is blocked INSIDE the read, and only the
+  # select's own cancellation case can interrupt it.
+  #
+  # Removing that case leaves the scenario above green — measured, not assumed —
+  # because a live API server never goes quiet long enough to hold the runtime
+  # there. A step in this state ignores cancellation and hangs until its build
+  # times out, so the fake is not a shortcut here; an empty channel is the
+  # condition under test.
+  Scenario: Cancelling a build stops a wait that has nothing to wait on
+    Given a pod "silent-pod" that the runtime is watching
+    And the connection to Kubernetes is steady
+    When the runtime asks what the pod is doing
+    And the build is cancelled while the runtime is still waiting
+    Then the runtime is told to stop waiting
+
   # A watch delivers a burst of updates faster than the step consumes them.
   # What must never happen is the step settling on a stale one — it would wait
   # on a pod state the cluster has already left behind.
