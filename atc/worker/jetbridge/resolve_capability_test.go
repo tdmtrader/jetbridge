@@ -114,12 +114,14 @@ func TestResolveCapability_UnsignedWhenNoKey(t *testing.T) {
 	}
 }
 
-// A TTL below the floor disables signing rather than minting capabilities that
-// expire before a slow pod can use them.
-//
-// The failure it prevents is nasty: the request is legitimate, the pod simply
-// waited too long to be scheduled, and the operator sees a 403.
-func TestResolveCapability_TooShortATTLDisablesSigning(t *testing.T) {
+// A key that is configured MUST sign. The daemon behind the chart requires a
+// capability unconditionally, so an ATC that quietly stops signing fails every
+// build with no diagnostic — the exact fail-open/fail-closed mismatch this
+// test pins down. A TTL below the floor is a misconfiguration that startup
+// validation refuses; if an unvalidated config gets here anyway, signing with
+// a short TTL 403s only pods slower than the TTL, while not signing 403s all
+// of them.
+func TestResolveCapability_TooShortTTLStillSigns(t *testing.T) {
 	minimum, err := MinimumArtifactResolveCapabilityTTL(DefaultPodSchedulingTimeout, DefaultPodStartupTimeout)
 	if err != nil {
 		t.Fatal(err)
@@ -129,17 +131,121 @@ func TestResolveCapability_TooShortATTLDisablesSigning(t *testing.T) {
 			DefaultArtifactResolveCapabilityTTL, minimum)
 	}
 
-	b := backendWith(t, capKey(), minimum-time.Second)
+	key := capKey()
+	b := backendWith(t, key, minimum-time.Second)
 	inputs, volumes, mounts := oneInput(b)
 	inits, err := b.BuildFetchInitContainers("handle-1", inputs, volumes, mounts)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, item := range capabilitiesFrom(t, inits) {
-		if item.Capability != "" {
-			t.Error("signed with a TTL below the floor; a slow pod would 403 on a legitimate request")
+	verifier, err := artifactcap.NewVerifier(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := capabilitiesFrom(t, inits)
+	if len(items) == 0 {
+		t.Fatal("no batch items were generated")
+	}
+	for _, item := range items {
+		if item.Capability == "" {
+			t.Error("stopped signing on a TTL below the floor; an enforcing daemon now 403s every request instead of only slow pods")
+			continue
+		}
+		if err := verifier.VerifyResolve(item.Capability, item.Key, item.Dest, time.Now()); err != nil {
+			t.Errorf("the daemon would reject what the ATC signed for %q: %v", item.Key, err)
 		}
 	}
+}
+
+// Startup refuses the configurations that used to disable signing silently.
+// The ATC either signs, or says exactly why it will not start — never neither.
+func TestValidateResolveCapabilityConfig(t *testing.T) {
+	minimum, err := MinimumArtifactResolveCapabilityTTL(DefaultPodSchedulingTimeout, DefaultPodStartupTimeout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := func() Config {
+		return Config{
+			ArtifactDaemonHostPath:             "/var/concourse/artifacts",
+			ArtifactDaemonResolveCapabilityKey: capKey(),
+			ArtifactDaemonResolveCapabilityTTL: DefaultArtifactResolveCapabilityTTL,
+			PodSchedulingTimeout:               DefaultPodSchedulingTimeout,
+			PodStartupTimeout:                  DefaultPodStartupTimeout,
+		}
+	}
+
+	t.Run("valid key and TTL pass", func(t *testing.T) {
+		if err := ValidateResolveCapabilityConfig(base()); err != nil {
+			t.Fatalf("valid configuration refused: %v", err)
+		}
+	})
+
+	t.Run("no key is signing deliberately off", func(t *testing.T) {
+		cfg := base()
+		cfg.ArtifactDaemonResolveCapabilityKey = nil
+		if err := ValidateResolveCapabilityConfig(cfg); err != nil {
+			t.Fatalf("keyless configuration refused: %v", err)
+		}
+	})
+
+	t.Run("TTL at or below the floor is refused with the floor named", func(t *testing.T) {
+		cfg := base()
+		cfg.ArtifactDaemonResolveCapabilityTTL = minimum
+		err := ValidateResolveCapabilityConfig(cfg)
+		if err == nil {
+			t.Fatal("a TTL at the floor was accepted; it used to disable signing silently")
+		}
+		if !strings.Contains(err.Error(), minimum.String()) {
+			t.Errorf("error %q does not name the floor %v the operator must clear", err, minimum)
+		}
+	})
+
+	t.Run("raised pod timeouts move the floor and are still refused", func(t *testing.T) {
+		// The live shape of the bug: values.yaml exposes podStartupTimeout, an
+		// operator raises it for slow image pulls, and the default 2h TTL sinks
+		// below the recomputed floor without any flag changing.
+		cfg := base()
+		cfg.PodStartupTimeout = 3 * time.Hour
+		if err := ValidateResolveCapabilityConfig(cfg); err == nil {
+			t.Fatal("a floor raised past the TTL by pod timeouts was accepted")
+		}
+	})
+
+	t.Run("malformed key is refused", func(t *testing.T) {
+		cfg := base()
+		cfg.ArtifactDaemonResolveCapabilityKey = []byte("short")
+		if err := ValidateResolveCapabilityConfig(cfg); err == nil {
+			t.Fatal("a malformed key was accepted; it used to disable signing silently")
+		}
+	})
+
+	t.Run("non-positive pod timeout is normalised to the default, like the pod code", func(t *testing.T) {
+		// podSchedulingTimeout/podStartupTimeout treat <=0 as "use the default",
+		// and validation computes the floor from those same effective values —
+		// so a zero or negative Config timeout is not fatal, it just contributes
+		// the default. With the default 2h TTL that still clears the floor.
+		for _, d := range []time.Duration{0, -time.Second} {
+			cfg := base()
+			cfg.PodSchedulingTimeout = d
+			cfg.PodStartupTimeout = d
+			if err := ValidateResolveCapabilityConfig(cfg); err != nil {
+				t.Errorf("timeout %v (effective = default) was refused: %v", d, err)
+			}
+		}
+	})
+
+	t.Run("floor uses the EFFECTIVE timeout, not the raw zero", func(t *testing.T) {
+		// Zero scheduling + startup means 15m + 5m at runtime, so the floor is
+		// the full default floor — a TTL just under it must still be refused,
+		// proving validation did not compute the floor from the raw zeros.
+		cfg := base()
+		cfg.PodSchedulingTimeout = 0
+		cfg.PodStartupTimeout = 0
+		cfg.ArtifactDaemonResolveCapabilityTTL = minimum - time.Second
+		if err := ValidateResolveCapabilityConfig(cfg); err == nil {
+			t.Fatal("a TTL below the effective (default) floor was accepted; the floor was computed from raw zeros")
+		}
+	})
 }
 
 // The floor must cover scheduling, startup AND the init container's own retry

@@ -1288,6 +1288,9 @@ func (cmd *RunCommand) backendComponents(
 		} else {
 			k8sCfg.ArtifactDaemonResolveCapabilityKey = key
 		}
+		if err := jetbridge.ValidateResolveCapabilityConfig(k8sCfg); err != nil {
+			return nil, err
+		}
 		k8sCfg.ArtifactDaemonService = cmd.Kubernetes.ArtifactDaemonService
 		k8sCfg.ArtifactDaemonWarmTimeout = cmd.Kubernetes.ArtifactDaemonWarmTimeout
 		k8sCfg.ArtifactDaemonTLSCert = cmd.Kubernetes.ArtifactDaemonTLSCert
@@ -1414,6 +1417,9 @@ func (cmd *RunCommand) constructPool(dbConn db.DbConn, lockFactory lock.LockFact
 			return worker.Pool{}, err
 		} else {
 			k8sCfg.ArtifactDaemonResolveCapabilityKey = key
+		}
+		if err := jetbridge.ValidateResolveCapabilityConfig(k8sCfg); err != nil {
+			return worker.Pool{}, err
 		}
 		k8sCfg.ArtifactDaemonService = cmd.Kubernetes.ArtifactDaemonService
 		k8sCfg.ArtifactDaemonWarmTimeout = cmd.Kubernetes.ArtifactDaemonWarmTimeout

@@ -536,6 +536,18 @@ func podSchedulingTimeout(cfg Config) time.Duration {
 	return DefaultPodSchedulingTimeout
 }
 
+// podStartupTimeout returns the configured startup timeout, falling back to
+// DefaultPodStartupTimeout when unconfigured — the same 0-means-default rule
+// waitForRunning enforces. The resolve-capability floor is computed from these
+// EFFECTIVE values, so a zero timeout in Config does not make the floor an
+// underestimate of the wait a pod actually experiences.
+func podStartupTimeout(cfg Config) time.Duration {
+	if cfg.PodStartupTimeout > 0 {
+		return cfg.PodStartupTimeout
+	}
+	return DefaultPodStartupTimeout
+}
+
 // isPodUnschedulable checks whether the pod has an Unschedulable condition.
 func isPodUnschedulable(pod *corev1.Pod) (message string, unschedulable bool) {
 	for _, cond := range pod.Status.Conditions {
@@ -1047,10 +1059,7 @@ func (p *execProcess) streamSidecarLogs(ctx context.Context, containerName strin
 // waitForRunning uses the Watch API to wait for the Pod to reach the Running
 // phase. It enforces a startup timeout from Config.PodStartupTimeout.
 func (p *execProcess) waitForRunning(ctx context.Context) error {
-	timeout := p.config.PodStartupTimeout
-	if timeout == 0 {
-		timeout = DefaultPodStartupTimeout
-	}
+	timeout := podStartupTimeout(p.config)
 	startTime := time.Now()
 
 	// Use the larger of startup and scheduling timeouts as the context
