@@ -161,63 +161,35 @@ func ContainerSpecDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		// Checks over the resulting pod spec.
-		brine.DefineCheck[PodCreated](
-			"the main container is named {string}",
-			func(in PodCreated, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected a name parameter")
-				}
+		// Checks over the resulting pod spec. Each says which field it is
+		// about and nothing else; the parameter handling, the comparison and
+		// the message are the same for all three, so they come from assert.go.
+		CheckString[PodCreated]("the main container is named {string}",
+			"the main container's name",
+			func(in PodCreated) (string, error) {
 				main, err := mainContainer(in.Pod)
-				if err != nil {
-					return err
-				}
-				if main.Name != want {
-					return fmt.Errorf("expected the main container to be named %q, got %q", want, main.Name)
-				}
-				return nil
-			},
-		),
+				return main.Name, err
+			}),
 
-		brine.DefineCheck[PodCreated](
-			"the main container image is {string}",
-			func(in PodCreated, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected an image parameter")
-				}
+		CheckString[PodCreated]("the main container image is {string}",
+			"the main container image",
+			func(in PodCreated) (string, error) {
 				main, err := mainContainer(in.Pod)
-				if err != nil {
-					return err
-				}
-				if main.Image != want {
-					return fmt.Errorf("expected the main container image to be %q, got %q", want, main.Image)
-				}
-				return nil
-			},
-		),
+				return main.Image, err
+			}),
 
-		brine.DefineCheck[PodCreated](
-			"the main container image pull policy is {string}",
-			func(in PodCreated, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected a pull policy parameter")
-				}
+		CheckString[PodCreated]("the main container image pull policy is {string}",
+			"the main container image pull policy",
+			func(in PodCreated) (string, error) {
 				main, err := mainContainer(in.Pod)
-				if err != nil {
-					return err
-				}
-				if string(main.ImagePullPolicy) != want {
-					return fmt.Errorf("expected image pull policy %q, got %q", want, main.ImagePullPolicy)
-				}
-				return nil
-			},
-		),
+				return string(main.ImagePullPolicy), err
+			}),
 
 		// The effective value: last assignment wins, which is how the runtime
-		// expresses process-over-container precedence.
+		// expresses process-over-container precedence. This one keeps its own
+		// body: on a mismatch it lists EVERY value it found for the key, which
+		// is the evidence a precedence rule is actually about, and is more than
+		// the generic want/got message can carry.
 		brine.DefineCheck[PodCreated](
 			"the main container environment resolves {string} to {string}",
 			func(in PodCreated, p brine.Params, _ *brine.Recorder) error {
