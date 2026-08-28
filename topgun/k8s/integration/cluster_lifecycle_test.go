@@ -154,6 +154,44 @@ func loadImagesIntoCluster(concourseImage string) {
 	log.Println("Image loading complete.")
 }
 
+// resolveCapabilitySecretName is the Secret the chart is pointed at to arm
+// signed resolve capabilities. The chart never generates key material —
+// generating it needs Helm `lookup`, which returns empty under `helm template`
+// and so re-mints the key on every GitOps render — so the key is created here,
+// once, exactly as an operator would.
+const resolveCapabilitySecretName = "concourse-resolve-capability"
+
+// createResolveCapabilitySecret puts a 32-byte key in the namespace. Content is
+// fixed rather than random: a test cluster is thrown away, and a deterministic
+// key makes a failure reproducible.
+func createResolveCapabilitySecret(kubeconfig, namespace string) {
+	log.Printf("Creating resolve-capability Secret %s in %s...", resolveCapabilitySecretName, namespace)
+
+	key := strings.Repeat("k", 32)
+	cmd := exec.Command("kubectl", "--kubeconfig", kubeconfig,
+		"-n", namespace,
+		"create", "secret", "generic", resolveCapabilitySecretName,
+		"--from-literal=resolve.key="+key,
+		"--dry-run=client", "-o", "yaml")
+	manifest, err := cmd.Output()
+	if err != nil {
+		// Fatal, not a warning: without the Secret the pods mount a volume
+		// that does not exist and the suite dies later as an unrelated
+		// pod-readiness timeout, naming the wrong cause.
+		log.Fatalf("could not render resolve-capability Secret: %v", err)
+	}
+
+	// Apply rather than create: helmDeployConcourse runs on every install,
+	// including upgrades of a cluster that already has it.
+	apply := exec.Command("kubectl", "--kubeconfig", kubeconfig, "-n", namespace, "apply", "-f", "-")
+	apply.Stdin = strings.NewReader(string(manifest))
+	apply.Stdout = os.Stderr
+	apply.Stderr = os.Stderr
+	if err := apply.Run(); err != nil {
+		log.Fatalf("could not apply resolve-capability Secret: %v", err)
+	}
+}
+
 // labelNodesForArtifactCache labels all K3s nodes with the label that
 // the JetBridge artifact daemon node affinity requires. Without this,
 // build pods are Unschedulable when the artifact daemon is enabled.
@@ -213,6 +251,8 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 	exec.Command("kubectl", "--kubeconfig", kubeconfig,
 		"create", "namespace", namespace).Run()
 
+	createResolveCapabilitySecret(kubeconfig, namespace)
+
 	log.Printf("Deploying Concourse chart from %s into namespace %s...", chartPath, namespace)
 
 	// Build the list of extra args for the web node.
@@ -249,6 +289,12 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 		// Enable the DaemonSet artifact daemon — needed for artifact passing
 		// between steps. Default is false in values.yaml.
 		"--set", "artifactDaemon.enabled=true",
+		// Exercise the SIGNED resolve path. The chart deliberately generates no
+		// key (a generated one re-mints on every GitOps render), so without
+		// this the suite runs the unauthenticated path and a regression in ATC
+		// signing, daemon verification, or the init-container capability
+		// plumbing passes CI silently.
+		"--set", "artifactDaemon.resolveCapability.existingSecret=" + resolveCapabilitySecretName,
 		"--timeout", "5m",
 	}
 	// Optionally harden the daemon with mTLS (opt-in via ARTIFACT_DAEMON_TLS).
