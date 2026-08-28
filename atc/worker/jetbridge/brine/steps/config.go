@@ -183,21 +183,20 @@ func ConfigDefinitions() []brine.StepDefinition {
 				return got, nil
 			}),
 
-		// Keeps its own body: the parameter is the type being looked up, not a
-		// value to compare against, and the assertion is its absence.
-		brine.DefineCheck[ResourceTypeImages](
-			"there is no resource type {string}",
-			func(in ResourceTypeImages, p brine.Params, _ *brine.Recorder) error {
-				name, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected a type parameter")
+		// The parameter is the type being looked up, not a value to compare
+		// against, and the assertion is its absence — which is exactly
+		// CheckNotMember: equality against the merged set's keys, failing when
+		// the type IS there, and listing what is.
+		CheckNotMember[ResourceTypeImages]("there is no resource type {string}",
+			"the merged resource types",
+			func(in ResourceTypeImages) ([]string, error) {
+				names := make([]string, 0, len(in.Images))
+				for name := range in.Images {
+					names = append(names, name)
 				}
-				if _, found := in.Images[name]; found {
-					return fmt.Errorf("expected no resource type %q, but it is present as %q", name, in.Images[name])
-				}
-				return nil
-			},
-		),
+				sort.Strings(names)
+				return names, nil
+			}),
 
 		// The defaults are a package-level map; merging must not mutate it, or
 		// the second worker in a process inherits the first one's overrides.

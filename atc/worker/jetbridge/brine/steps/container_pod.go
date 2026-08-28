@@ -220,50 +220,29 @@ func ContainerPodDefinitions() []brine.StepDefinition {
 
 		// --- Checks over the resulting pod ---
 
-		// Keeps its own body: a wrong count is only diagnosable from the names
-		// of the volumes actually defined, which the generic message drops.
-		brine.DefineCheck[PodCreated](
-			"the pod has {int} volumes",
-			func(in PodCreated, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetInt(0)
-				if !ok {
-					return fmt.Errorf("expected a count parameter")
+		CheckCount[PodCreated]("the pod has {int} volumes",
+			"volumes",
+			func(in PodCreated) ([]string, error) {
+				names := make([]string, 0, len(in.Pod.Spec.Volumes))
+				for _, v := range in.Pod.Spec.Volumes {
+					names = append(names, v.Name)
 				}
-				if got := len(in.Pod.Spec.Volumes); got != want {
-					names := make([]string, 0, got)
-					for _, v := range in.Pod.Spec.Volumes {
-						names = append(names, v.Name)
-					}
-					return fmt.Errorf("expected %d volumes, got %d (%s)", want, got, strings.Join(names, ", "))
-				}
-				return nil
-			},
-		),
+				return names, nil
+			}),
 
-		// Keeps its own body: it searches a collection for a match, and the
-		// failure lists every path the step does see.
-		brine.DefineCheck[PodCreated](
-			"the step sees a volume mounted at {string}",
-			func(in PodCreated, p brine.Params, _ *brine.Recorder) error {
-				path, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected a path parameter")
-				}
+		CheckMember[PodCreated]("the step sees a volume mounted at {string}",
+			"the step's mounts",
+			func(in PodCreated) ([]string, error) {
 				main, err := mainContainer(in.Pod)
 				if err != nil {
-					return err
+					return nil, err
 				}
 				var paths []string
 				for _, vm := range main.VolumeMounts {
-					if vm.MountPath == path {
-						return nil
-					}
 					paths = append(paths, vm.MountPath)
 				}
-				return fmt.Errorf("expected a volume mounted at %q, the step sees [%s]",
-					path, strings.Join(paths, ", "))
-			},
-		),
+				return paths, nil
+			}),
 
 		// CO-06/CO-07/CF-04: which storage backs a volume decides whether its
 		// contents survive the pod.
@@ -278,6 +257,11 @@ func ContainerPodDefinitions() []brine.StepDefinition {
 				return nil
 			}),
 
+		// These two keep their own bodies: the parameter is a lookup key, not a
+		// value to compare against, and the two ways they fail are different
+		// diagnoses — nothing is mounted there at all, or something is but the
+		// wrong storage backs it. volumeAt keeps them apart; membership over a
+		// pre-filtered list of paths would merge them into one message.
 		brine.DefineCheck[PodCreated](
 			"the volume mounted at {string} survives the pod",
 			func(in PodCreated, p brine.Params, _ *brine.Recorder) error {
@@ -314,27 +298,23 @@ func ContainerPodDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		// PE-07: the QoS class is the observable consequence of the envelope.
-		// Keeps its own body: the class is derived, and the failure prints the
-		// limits and requests it was derived from — the evidence the rule is
-		// about, which a want/got message cannot carry.
-		brine.DefineCheck[PodCreated](
-			"the pod is scheduled as {string}",
-			func(in PodCreated, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected a QoS class parameter")
-				}
-				got := qosClassOf(in.Pod)
-				if got != want {
-					main, _ := mainContainer(in.Pod)
-					return fmt.Errorf("expected QoS %q, got %q (limits=%v requests=%v)",
-						want, got, main.Resources.Limits, main.Resources.Requests)
-				}
-				return nil
+		// PE-07: the QoS class is the observable consequence of the envelope,
+		// so the failure carries the limits and requests it was derived from —
+		// the evidence the rule is actually about.
+		CheckString[PodCreated]("the pod is scheduled as {string}",
+			"the pod's QoS class",
+			func(in PodCreated) (string, error) {
+				return qosClassOf(in.Pod), nil
 			},
-		),
+			func(in PodCreated) string {
+				main, _ := mainContainer(in.Pod)
+				return fmt.Sprintf("limits=%v requests=%v",
+					main.Resources.Limits, main.Resources.Requests)
+			}),
 
+		// These two keep their own bodies: both parameters are expectations
+		// rather than a key and a value, and each is compared as a quantity so
+		// that "1Gi" and "1073741824" match — which string equality would not.
 		brine.DefineCheck[PodCreated](
 			"the step may use at most {string} CPU and {string} memory",
 			func(in PodCreated, p brine.Params, _ *brine.Recorder) error {
@@ -396,25 +376,15 @@ func ContainerPodDefinitions() []brine.StepDefinition {
 
 		// --- Sidecars ---
 
-		// Keeps its own body: like the volume count, a wrong number is only
-		// diagnosable from the names of the containers actually there.
-		brine.DefineCheck[PodCreated](
-			"the pod runs {int} containers",
-			func(in PodCreated, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetInt(0)
-				if !ok {
-					return fmt.Errorf("expected a count parameter")
+		CheckCount[PodCreated]("the pod runs {int} containers",
+			"containers",
+			func(in PodCreated) ([]string, error) {
+				names := make([]string, 0, len(in.Pod.Spec.Containers))
+				for _, c := range in.Pod.Spec.Containers {
+					names = append(names, c.Name)
 				}
-				if got := len(in.Pod.Spec.Containers); got != want {
-					var names []string
-					for _, c := range in.Pod.Spec.Containers {
-						names = append(names, c.Name)
-					}
-					return fmt.Errorf("expected %d containers, got %d (%s)", want, got, strings.Join(names, ", "))
-				}
-				return nil
-			},
-		),
+				return names, nil
+			}),
 
 		// containerNamed's error is how "there is no such sidecar" is reported;
 		// it already names the containers the pod does run.
@@ -433,6 +403,10 @@ func ContainerPodDefinitions() []brine.StepDefinition {
 			}),
 
 		// SC-04: a sidecar is unprivileged regardless of the main container.
+		// Keeps its own body: the parameter names WHICH container to look at
+		// rather than a value to compare, and a sidecar the pod does not run
+		// has to stay an error — under a membership check it would pass by
+		// being absent.
 		brine.DefineCheck[PodCreated](
 			"the sidecar {string} cannot escalate its privileges",
 			func(in PodCreated, p brine.Params, _ *brine.Recorder) error {
@@ -454,6 +428,9 @@ func ContainerPodDefinitions() []brine.StepDefinition {
 
 		// SC-02: a sidecar sees the same working set as the step, or it cannot
 		// do its job (a log shipper with no log directory is useless).
+		// Keeps its own body: the parameter names the sidecar, and the
+		// assertion is that one set of mounts covers another — a subset, not
+		// membership of the string the sentence carries.
 		brine.DefineCheck[PodCreated](
 			"the sidecar {string} sees the same volumes as the step",
 			func(in PodCreated, p brine.Params, _ *brine.Recorder) error {
@@ -487,26 +464,19 @@ func ContainerPodDefinitions() []brine.StepDefinition {
 		),
 
 		// PE-03 / CF-05
-		// Keeps its own body: it searches the secret list for a match, and the
-		// failure lists every secret the pod does name.
-		brine.DefineCheck[PodCreated](
-			"the pod pulls images using the secret {string}",
-			func(in PodCreated, p brine.Params, _ *brine.Recorder) error {
-				secret, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected a secret parameter")
-				}
-				var got []string
+		CheckMember[PodCreated]("the pod pulls images using the secret {string}",
+			"the pod's image pull secrets",
+			func(in PodCreated) ([]string, error) {
+				var names []string
 				for _, s := range in.Pod.Spec.ImagePullSecrets {
-					if s.Name == secret {
-						return nil
-					}
-					got = append(got, s.Name)
+					names = append(names, s.Name)
 				}
-				return fmt.Errorf("expected image pull secret %q, got [%s]", secret, strings.Join(got, ", "))
-			},
-		),
+				return names, nil
+			}),
 
+		// Keeps its own body: it counts occurrences, and "exactly once" is not
+		// membership — the duplicate this check exists to catch would satisfy
+		// a member check.
 		brine.DefineCheck[PodCreated](
 			"the pod names the secret {string} exactly once",
 			func(in PodCreated, p brine.Params, _ *brine.Recorder) error {

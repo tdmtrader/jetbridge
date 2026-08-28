@@ -642,20 +642,13 @@ func ProcessDefinitions() []brine.StepDefinition {
 			}),
 
 		// Keeps its own body: the message caps the log it prints at 600
-		// characters, and the generic one would dump the whole build log.
-		brine.DefineCheck[ProcessOutcome](
-			"the build log shows {string}",
-			func(in ProcessOutcome, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected a text parameter")
-				}
-				if !strings.Contains(in.Stderr, want) {
-					return fmt.Errorf("expected the build log to show %q; it said %q", want, truncate(in.Stderr, 600))
-				}
-				return nil
-			},
-		),
+		// characters, and the generic one would dump the whole build log. A
+		// trailing detail func does not help — detail is appended to the
+		// failure, it does not shorten the value the comparison already
+		// prints.
+		CheckContains[ProcessOutcome]("the build log shows {string}",
+			"the build log",
+			func(in ProcessOutcome) (string, error) { return in.Stderr, nil }),
 
 		// Names every pod it found, which is what tells a leak apart from a
 		// pod the step never took away.

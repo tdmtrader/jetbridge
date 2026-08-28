@@ -127,29 +127,17 @@ func ProcessGapDefinitions() []brine.StepDefinition {
 		// Worded distinctly from step-integration's "the step reports exit
 		// status {int}", which sits on a different state.
 		//
-		// Keeps its own body: it separates "failed outright" from "reported
-		// the wrong code", and its message says what the number MEANS to the
-		// build — neither survives a generic want/got line.
-		brine.DefineCheck[StepOutcome](
-			"the step's exit status is {int}",
-			func(in StepOutcome, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetInt(0)
-				if !ok {
-					return fmt.Errorf("expected an exit status parameter")
-				}
+		// A step that failed outright has no exit status to compare at all, so
+		// that case reaches the reader from the getter rather than as a
+		// mismatch against a zero it never reported.
+		CheckInt[StepOutcome]("the step's exit status is {int}",
+			"the step's exit status",
+			func(in StepOutcome) (int, error) {
 				if in.Err != nil {
-					return fmt.Errorf(
-						"expected the step to report exit %d, it failed outright with %q",
-						want, in.Message)
+					return 0, fmt.Errorf("expected an exit status, the step failed outright with %q", in.Message)
 				}
-				if in.ExitStatus != want {
-					return fmt.Errorf(
-						"expected the step to report exit %d, got %d — the build takes this as its "+
-							"verdict on the task", want, in.ExitStatus)
-				}
-				return nil
-			},
-		),
+				return in.ExitStatus, nil
+			}),
 
 		// The step's result is the MAIN container's exit code, not whichever
 		// container happens to have terminated first. The sidecar is listed

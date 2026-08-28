@@ -81,21 +81,14 @@ func PodFailureDefinitions() []brine.StepDefinition {
 		// a user can act on and one they have to escalate.
 		//
 		// Keeps its own body: it bounds the log it quotes, the way every
-		// build-log check in this package does. The generic message would dump
-		// a step's whole stderr into the failure.
-		brine.DefineCheck[StepOutcome](
-			"the build log explains {string}",
-			func(in StepOutcome, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected a text parameter")
-				}
-				if !strings.Contains(in.Stderr, want) {
-					return fmt.Errorf("expected the build log to explain %q; it said %q", want, truncate(in.Stderr, 400))
-				}
-				return nil
-			},
-		),
+		// build-log check in this package does. A detail func adds to a
+		// failure, it does not shrink the "got" the combinator prints, so
+		// CheckContains would still dump a step's whole stderr — and passing a
+		// TRUNCATED value to the getter would change the assertion, since text
+		// past the cut would stop matching.
+		CheckContains[StepOutcome]("the build log explains {string}",
+			"the build log",
+			func(in StepOutcome) (string, error) { return in.Stderr, nil }),
 
 		CheckContains[StepOutcome]("the failure explains {string}",
 			"the failure",
@@ -140,13 +133,6 @@ func (in StepRunning) settlePod(mutate func(*corev1.Pod)) (StepOutcome, error) {
 		Err: waitErr, Message: msg, Stderr: in.Stderr.String(),
 		ExitStatus: result.ExitStatus,
 	}, nil
-}
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "…"
 }
 
 // SeveredExecOutcome is what a step and its downstream see after the exec

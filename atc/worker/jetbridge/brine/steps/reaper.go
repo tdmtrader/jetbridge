@@ -14,7 +14,6 @@ import (
 	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 )
@@ -196,41 +195,16 @@ func ReaperDefinitions() []brine.StepDefinition {
 				return nil
 			}),
 
-		brine.DefineCheck[ReaperOutcome](
-			"the pod {string} is still there",
-			func(in ReaperOutcome, p brine.Params, _ *brine.Recorder) error {
-				name, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected a pod name parameter")
-				}
-				exists, err := in.Ready.podExists(name)
-				if err != nil {
-					return err
-				}
-				if !exists {
-					return fmt.Errorf("expected pod %q to survive the reaper, it was deleted", name)
-				}
-				return nil
-			},
-		),
+		// What a sweep did is a fact about the set of pods it left behind, so
+		// both of these are membership in that set — and a surprise about one
+		// pod is nearly always diagnosed by the others that are still there.
+		CheckMember[ReaperOutcome]("the pod {string} is still there",
+			"the pods in the namespace",
+			func(in ReaperOutcome) ([]string, error) { return in.Ready.podNames() }),
 
-		brine.DefineCheck[ReaperOutcome](
-			"the pod {string} is gone",
-			func(in ReaperOutcome, p brine.Params, _ *brine.Recorder) error {
-				name, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected a pod name parameter")
-				}
-				exists, err := in.Ready.podExists(name)
-				if err != nil {
-					return err
-				}
-				if exists {
-					return fmt.Errorf("expected pod %q to be reaped, it is still there", name)
-				}
-				return nil
-			},
-		),
+		CheckNotMember[ReaperOutcome]("the pod {string} is gone",
+			"the pods in the namespace",
+			func(in ReaperOutcome) ([]string, error) { return in.Ready.podNames() }),
 
 		CheckStringFor[ReaperOutcome]("the container {string} is still tracked as {string}",
 			"the container state",
@@ -245,26 +219,24 @@ func ReaperDefinitions() []brine.StepDefinition {
 				return row.State, nil
 			}),
 
-		brine.DefineCheck[ReaperOutcome](
-			"the container {string} is no longer tracked",
-			func(in ReaperOutcome, p brine.Params, _ *brine.Recorder) error {
-				handle, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected a handle parameter")
-				}
-				_, found, err := in.Ready.containerRow(handle)
-				if err != nil {
-					return err
-				}
-				if found {
-					return fmt.Errorf("expected container %q to be forgotten, its row is still there", handle)
-				}
-				return nil
-			},
-		),
+		// Being tracked is membership in the containers this scenario's
+		// database still holds, and which OTHER rows survived is the whole
+		// question in GC-05 — the sweep must forget this worker's destroyed
+		// container without touching another worker's.
+		CheckNotMember[ReaperOutcome]("the container {string} is no longer tracked",
+			"the containers still tracked",
+			func(in ReaperOutcome) ([]string, error) { return in.Ready.trackedHandles() }),
 
 		// The signal that a container's pod has vanished: the scheduler uses
 		// missing_since to decide when to give up on it.
+		//
+		// Neither of the next two is membership. Each asserts a pair of facts
+		// about ONE row — that it is there at all, and how its missing_since
+		// stands — and the parameter names which row rather than a member to
+		// look for. A CheckNotMember over "the containers marked missing"
+		// would pass for a container whose row has been deleted outright,
+		// which is the state that has to fail loudest, and its positive twin
+		// would report a vanished row as an ordinary membership miss.
 		brine.DefineCheck[ReaperOutcome](
 			"the container {string} is marked as missing",
 			func(in ReaperOutcome, p brine.Params, _ *brine.Recorder) error {
@@ -402,15 +374,43 @@ func (r ReaperReady) persistBuildAndContainer(name string, running bool) (string
 	return fmt.Sprintf("%d", build.ID()), created.Handle(), nil
 }
 
-func (r ReaperReady) podExists(name string) (bool, error) {
-	_, err := r.Clientset.CoreV1().Pods(r.Config.Namespace).Get(r.Ctx, name, metav1.GetOptions{})
-	if err == nil {
-		return true, nil
+// podNames is what the namespace holds after a sweep — every pod in it, not
+// only this worker's, because a sweep that reached across the label selector
+// into someone else's pods is exactly what one of these scenarios is watching
+// for.
+func (r ReaperReady) podNames() ([]string, error) {
+	list, err := r.Clientset.CoreV1().Pods(r.Config.Namespace).List(r.Ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("list pods: %w", err)
 	}
-	if apierrors.IsNotFound(err) {
-		return false, nil
+	names := make([]string, 0, len(list.Items))
+	for _, pod := range list.Items {
+		names = append(names, pod.Name)
 	}
-	return false, fmt.Errorf("get pod %q: %w", name, err)
+	return names, nil
+}
+
+// trackedHandles is every container the database still holds. The database is
+// scenario-scoped, so this is the scenario's own containers and nothing else.
+func (r ReaperReady) trackedHandles() ([]string, error) {
+	rows, err := r.DB.Conn.Query(`SELECT handle FROM containers ORDER BY handle`)
+	if err != nil {
+		return nil, fmt.Errorf("list tracked containers: %w", err)
+	}
+	defer rows.Close()
+
+	var handles []string
+	for rows.Next() {
+		var handle string
+		if err := rows.Scan(&handle); err != nil {
+			return nil, fmt.Errorf("read a tracked container handle: %w", err)
+		}
+		handles = append(handles, handle)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list tracked containers: %w", err)
+	}
+	return handles, nil
 }
 
 type containerRowState struct {

@@ -631,39 +631,25 @@ func integrationStepDefinitions() []brine.StepDefinition {
 
 		// Checks over what the ATC was handed before anything was scheduled.
 
-		// Keeps its own body: on a mismatch it names every mount path the
-		// step was handed, which is what says WHICH mount went missing.
-		brine.DefineCheck[StepCreated](
-			"the step is handed {int} volume mounts",
-			func(in StepCreated, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetInt(0)
-				if !ok {
-					return fmt.Errorf("expected a count parameter")
-				}
-				if len(in.Mounts) != want {
-					return fmt.Errorf("expected %d volume mounts, got %d (%v)",
-						want, len(in.Mounts), mountPaths(in.Mounts))
-				}
-				return nil
-			},
-		),
+		// A wrong count is only diagnosable from the paths themselves, which
+		// is what says WHICH mount went missing — so this is a count over the
+		// collection rather than over its length.
+		CheckCount[StepCreated]("the step is handed {int} volume mounts",
+			"volume mounts",
+			func(in StepCreated) ([]string, error) {
+				return mountPaths(in.Mounts), nil
+			}),
 
-		brine.DefineCheck[StepCreated](
-			"the step is handed a mount at {string}",
-			func(in StepCreated, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected a path parameter")
-				}
-				for _, m := range in.Mounts {
-					if m.MountPath == want {
-						return nil
-					}
-				}
-				return fmt.Errorf("expected a mount at %q, got %v", want, mountPaths(in.Mounts))
-			},
-		),
+		CheckMember[StepCreated]("the step is handed a mount at {string}",
+			"the mounts the step was handed",
+			func(in StepCreated) ([]string, error) {
+				return mountPaths(in.Mounts), nil
+			}),
 
+		// Three parameters, and three independent claims about the row: that
+		// it is created, that it is of that type, and that it is on that
+		// worker. No combinator compares more than one value, and folding two
+		// of the three into a getter error would demote them to presumptions.
 		brine.DefineCheck[StepCreated](
 			"the container row for {string} is a created {string} container on worker {string}",
 			func(in StepCreated, p brine.Params, _ *brine.Recorder) error {
@@ -885,6 +871,8 @@ func integrationRunDefinitions() []brine.StepDefinition {
 func integrationPodCheckDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 
+		// The parameter is a regular expression, so the comparison is neither
+		// equality nor containment and no combinator expresses it.
 		brine.DefineCheck[StepRan](
 			"the pod in the cluster is named to match {string}",
 			func(in StepRan, p brine.Params, _ *brine.Recorder) error {
@@ -940,22 +928,14 @@ func integrationPodCheckDefinitions() []brine.StepDefinition {
 				return got, nil
 			}),
 
-		brine.DefineCheck[StepRan](
-			"the pod carries no {string} label",
-			func(in StepRan, p brine.Params, _ *brine.Recorder) error {
-				key, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected a label key parameter")
-				}
+		CheckNotMember[StepRan]("the pod carries no {string} label",
+			"the pod's labels",
+			func(in StepRan) ([]string, error) {
 				if in.Pod == nil {
-					return fmt.Errorf("no pod was created")
+					return nil, fmt.Errorf("no pod was created")
 				}
-				if got, found := in.Pod.Labels[key]; found {
-					return fmt.Errorf("expected no %q label, got %q", key, got)
-				}
-				return nil
-			},
-		),
+				return labelKeys(in.Pod.Labels), nil
+			}),
 
 		// PN-07's hard half: Kubernetes rejects a pod whose label value is
 		// longer than 63 characters, so a long pipeline name has to be cut.
@@ -998,28 +978,24 @@ func integrationPodCheckDefinitions() []brine.StepDefinition {
 				return nil
 			}),
 
-		brine.DefineCheck[StepRan](
-			"the step's pod mounts {string}",
-			func(in StepRan, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected a mount path parameter")
-				}
+		CheckMember[StepRan]("the step's pod mounts {string}",
+			"the pod's mounts",
+			func(in StepRan) ([]string, error) {
 				main, err := integrationMainContainer(in.Pod)
 				if err != nil {
-					return err
+					return nil, err
 				}
-				var got []string
+				var paths []string
 				for _, vm := range main.VolumeMounts {
-					if vm.MountPath == want {
-						return nil
-					}
-					got = append(got, vm.MountPath)
+					paths = append(paths, vm.MountPath)
 				}
-				return fmt.Errorf("expected the pod to mount %q, it mounts %v", want, got)
-			},
-		),
+				return paths, nil
+			}),
 
+		// Three parameters, and three independent claims about the variable:
+		// that it is read from a secret at all, that it is that secret and
+		// that key, and that it carries no literal alongside. A getter can
+		// derive one value, not adjudicate three.
 		brine.DefineCheck[StepRan](
 			"the pod reads {string} from the secret {string} key {string}",
 			func(in StepRan, p brine.Params, _ *brine.Recorder) error {
@@ -1065,6 +1041,12 @@ func integrationPodCheckDefinitions() []brine.StepDefinition {
 		// The volume-binding claim, stated as the two observations that make
 		// it meaningful: nothing before the pod existed, the step's own pod
 		// afterwards.
+		//
+		// Both keep their own bodies. Their parameter is the mount path — the
+		// KEY a value is looked up by — while the expectation is not in the
+		// sentence at all: it is fixed here, and derived from the state in the
+		// check below. CheckString would compare the parameter itself, and
+		// CheckStringFor wants the expectation as a second parameter.
 		brine.DefineCheck[StepRan](
 			"the mount at {string} read from no pod before the step ran",
 			func(in StepRan, p brine.Params, _ *brine.Recorder) error {
@@ -1124,6 +1106,8 @@ func integrationPodCheckDefinitions() []brine.StepDefinition {
 				return in.Stdout, nil
 			}),
 
+		// Same three claims as the StepCreated form above — created, of that
+		// type, on that worker — so the same reason it keeps its own body.
 		brine.DefineCheck[StepRan](
 			"the step's container row is a created {string} container on worker {string}",
 			func(in StepRan, p brine.Params, _ *brine.Recorder) error {
@@ -1136,22 +1120,17 @@ func integrationPodCheckDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		// Keeps its own body: an unexpected exit is only diagnosable
-		// alongside the error and the output the step produced.
-		brine.DefineCheck[StepRan](
-			"the step reports exit status {int}",
-			func(in StepRan, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetInt(0)
-				if !ok {
-					return fmt.Errorf("expected an exit status parameter")
-				}
-				if in.ExitStatus != want {
-					return fmt.Errorf("expected exit %d, got %d (err: %v, output: %q)",
-						want, in.ExitStatus, in.Err, in.Stdout)
-				}
-				return nil
-			},
-		),
+		// An unexpected exit is only diagnosable alongside the error and the
+		// output the step produced, so both ride along on the failure. The
+		// error is NOT a precondition here — a step that reports a status and
+		// an error at once is exactly what "a script that fails hands its exit
+		// code back" is about — so it stays detail rather than a getter error.
+		CheckInt[StepRan]("the step reports exit status {int}",
+			"the step's exit status",
+			func(in StepRan) (int, error) { return in.ExitStatus, nil },
+			func(in StepRan) string {
+				return fmt.Sprintf("err: %v, output: %q", in.Err, in.Stdout)
+			}),
 
 		CheckString[StepRan]("the running process is identified as {string}",
 			"the running process's id",
@@ -1361,6 +1340,9 @@ func integrationVolumeDefinitions() []brine.StepDefinition {
 				return in.Volume.Source(), nil
 			}),
 
+		// Two parameters and two independent comparisons against the same row.
+		// Splitting them across a getter would make one of them a precondition
+		// of the other, which is not what the sentence says.
 		brine.DefineCheck[IntegrationVolume](
 			"it carries the database row for handle {string} on worker {string}",
 			func(in IntegrationVolume, p brine.Params, _ *brine.Recorder) error {
@@ -1572,6 +1554,10 @@ func integrationNodeIPDefinitions() []brine.StepDefinition {
 			},
 		),
 
+		// EVERY element must equal the parameter, and there must be at least
+		// one. That is neither membership — which one matching element would
+		// satisfy — nor a count, and the failure has to say which answer of
+		// the several differed.
 		brine.DefineCheck[NodeIPOutcome](
 			"every answer is {string}",
 			func(in NodeIPOutcome, p brine.Params, _ *brine.Recorder) error {

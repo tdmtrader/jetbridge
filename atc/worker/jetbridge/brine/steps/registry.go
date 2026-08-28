@@ -188,8 +188,12 @@ func failureDefinitions() []brine.StepDefinition {
 				return in.Message, nil
 			}),
 
-		// Keeps its own body: the assertion is that the text does NOT appear,
-		// and no combinator negates.
+		// Keeps its own body: the assertion is that the text appears NOWHERE in
+		// the message. CheckNotMember is the negative combinator, but it
+		// negates membership by element EQUALITY over a collection, so it would
+		// pass on a message that merely contains the unwanted reason inside a
+		// longer string — which is the case this exists to catch. It also
+		// asserts the step failed at all, which is a second thing.
 		brine.DefineCheck[StepOutcome](
 			"the failure does not mention {string}",
 			func(in StepOutcome, p brine.Params, _ *brine.Recorder) error {

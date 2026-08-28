@@ -676,7 +676,9 @@ func DaemonDefinitions() []brine.StepDefinition {
 
 		// These two match the message case-insensitively. CheckContains is
 		// case-sensitive, so they keep their own bodies rather than quietly
-		// narrowing what a scenario is allowed to say.
+		// narrowing what a scenario is allowed to say — and the second is not
+		// a CheckNotMember either: it is a substring of one message, folded,
+		// not equality against a member of a collection.
 		brine.DefineCheck[DaemonFetch](
 			"the read fails saying {string}",
 			func(in DaemonFetch, p brine.Params, _ *brine.Recorder) error {
@@ -793,28 +795,23 @@ func DaemonDefinitions() []brine.StepDefinition {
 				return nil
 			}),
 
-		// Keeps its own body: on a miscount the message lists the entries it
-		// did find, which is what you actually need to see, and CheckInt's
-		// generic want/got cannot carry them.
-		brine.DefineCheck[DaemonFetch](
-			"the archive holds exactly {int} entries",
-			func(in DaemonFetch, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetInt(0)
-				if !ok {
-					return fmt.Errorf("expected an entry count parameter")
-				}
+		// Not CheckCount: the number being asserted is the tar's entry count,
+		// and Files is keyed by name, so a repeated name would make len(Files)
+		// smaller than the archive really is. The count stays the one the
+		// decoder reported; the detail carries the entries the original
+		// message listed, which is what a miscount is diagnosed from.
+		CheckInt[DaemonFetch]("the archive holds exactly {int} entries",
+			"the number of entries in the archive",
+			func(in DaemonFetch) (int, error) {
 				if in.Err != nil {
-					return fmt.Errorf("the read failed: %s", in.Message)
+					return 0, fmt.Errorf("the read failed: %s", in.Message)
 				}
 				if !in.IsTar {
-					return fmt.Errorf("expected an archive, got %d bytes that do not parse as tar", len(in.Raw))
+					return 0, fmt.Errorf("expected an archive, got %d bytes that do not parse as tar", len(in.Raw))
 				}
-				if in.Entries != want {
-					return fmt.Errorf("expected %d entries in the archive, got %d: %v", want, in.Entries, in.Files)
-				}
-				return nil
+				return in.Entries, nil
 			},
-		),
+			func(in DaemonFetch) string { return fmt.Sprintf("entries: %v", in.Files) }),
 
 		CheckThat[DaemonFetch]("the archive is empty",
 			func(in DaemonFetch) error {

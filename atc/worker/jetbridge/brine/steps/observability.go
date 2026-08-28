@@ -250,9 +250,11 @@ func ObservabilityDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		// Keeps its own body: the expectation is matched against a LIST of
-		// event names, and on a miss the message names every event the span
-		// recorded — the timeline a reader opens a trace for.
+		// Keeps its own body: this is membership in a collection the FIRST
+		// parameter selects. CheckMember lists what was there instead, which
+		// is the timeline a reader opens a trace for — but it takes its member
+		// from parameter 0, and here that is the span name while the event is
+		// parameter 1. No membership combinator takes a key.
 		brine.DefineCheck[SpansRecorded](
 			"the {string} span records the event {string}",
 			func(in SpansRecorded, p brine.Params, _ *brine.Recorder) error {
@@ -410,9 +412,10 @@ func ObservabilityExtraDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		// Keeps its own body: it counts occurrences rather than comparing a
-		// value, and its message lists the whole event sequence, which is what
-		// makes a duplicate visible.
+		// Keeps its own body: CheckCount compares the LENGTH of a collection
+		// the state alone supplies against an {int} parameter. Neither half
+		// fits — the number is fixed in the sentence, and what is counted is
+		// the occurrences of parameter 1 within the span named by parameter 0.
 		brine.DefineCheck[SpansRecorded](
 			"the {string} span records the event {string} exactly once",
 			func(in SpansRecorded, p brine.Params, _ *brine.Recorder) error {
@@ -570,6 +573,8 @@ func InitContainerDefinitions() []brine.StepDefinition {
 		// Keeps its own body: the message says WHY the name has to be there —
 		// that the step never ran at all — which is the whole point of the
 		// check and is more than a generic "expected … to mention" can say.
+		// A trailing detail func would not recover it: detail is appended
+		// context, and what is wanted here is the sentence itself.
 		brine.DefineCheck[SpansRecorded](
 			"the step is told which init container failed, naming {string}",
 			func(in SpansRecorded, p brine.Params, _ *brine.Recorder) error {
