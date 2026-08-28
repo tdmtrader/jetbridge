@@ -139,9 +139,8 @@ func ExecTargetDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineCheck[StepOutcome](
-			"the step ran, so it was exec'd into the container that exists",
-			func(in StepOutcome, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[StepOutcome]("the step ran, so it was exec'd into the container that exists",
+			func(in StepOutcome) error {
 				if in.Err != nil {
 					return fmt.Errorf(
 						"the step failed with %q — the runtime exec'd into a container this pod "+
@@ -149,7 +148,6 @@ func ExecTargetDefinitions() []brine.StepDefinition {
 							"against the wrong filesystem", in.Message)
 				}
 				return nil
-			},
-		),
+			}),
 	}
 }

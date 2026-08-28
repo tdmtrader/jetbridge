@@ -736,33 +736,26 @@ func DaemonDefinitions() []brine.StepDefinition {
 		// Checks
 		// -------------------------------------------------------------------
 
-		brine.DefineCheck[DaemonFetch](
-			"the artifact arrives as {string}",
-			func(in DaemonFetch, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected the artifact contents parameter")
-				}
+		CheckString[DaemonFetch]("the artifact arrives as {string}",
+			"the artifact",
+			func(in DaemonFetch) (string, error) {
 				if in.Err != nil {
-					return fmt.Errorf("expected the artifact %q, but the read failed: %s", want, in.Message)
+					return "", fmt.Errorf("the read failed: %s", in.Message)
 				}
-				if string(in.Raw) != want {
-					return fmt.Errorf("expected the artifact to be %q, got %q", want, string(in.Raw))
-				}
-				return nil
-			},
-		),
+				return string(in.Raw), nil
+			}),
 
-		brine.DefineCheck[DaemonFetch](
-			"the read succeeds",
-			func(in DaemonFetch, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[DaemonFetch]("the read succeeds",
+			func(in DaemonFetch) error {
 				if in.Err != nil {
 					return fmt.Errorf("expected the read to succeed, got %q", in.Message)
 				}
 				return nil
-			},
-		),
+			}),
 
+		// These two match the message case-insensitively. CheckContains is
+		// case-sensitive, so they keep their own bodies rather than quietly
+		// narrowing what a scenario is allowed to say.
 		brine.DefineCheck[DaemonFetch](
 			"the read fails saying {string}",
 			func(in DaemonFetch, p brine.Params, _ *brine.Recorder) error {
@@ -797,6 +790,8 @@ func DaemonDefinitions() []brine.StepDefinition {
 			},
 		),
 
+		// Two fields in one sentence: the combinators compare one value, and
+		// this has to fail on either half, so it keeps its own body.
 		brine.DefineCheck[DaemonFetch](
 			"the volume reports the handle {string} on worker {string}",
 			func(in DaemonFetch, p brine.Params, _ *brine.Recorder) error {
@@ -815,9 +810,8 @@ func DaemonDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineCheck[DaemonFetch](
-			"the stream is gzip compressed",
-			func(in DaemonFetch, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[DaemonFetch]("the stream is gzip compressed",
+			func(in DaemonFetch) error {
 				if in.Err != nil {
 					return fmt.Errorf("the read failed: %s", in.Message)
 				}
@@ -825,15 +819,13 @@ func DaemonDefinitions() []brine.StepDefinition {
 					return fmt.Errorf("expected a gzip-compressed stream, got %d bytes that are not gzip", len(in.Raw))
 				}
 				return nil
-			},
-		),
+			}),
 
 		// "Not compressed" is only worth anything if the bytes are usable as
 		// they stand, so this asserts both halves: not gzip, and a tar the
 		// consumer can read directly.
-		brine.DefineCheck[DaemonFetch](
-			"the stream is not compressed",
-			func(in DaemonFetch, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[DaemonFetch]("the stream is not compressed",
+			func(in DaemonFetch) error {
 				if in.Err != nil {
 					return fmt.Errorf("the read failed: %s", in.Message)
 				}
@@ -844,22 +836,19 @@ func DaemonDefinitions() []brine.StepDefinition {
 					return fmt.Errorf("expected the bytes to be a tar the consumer can read directly, got %d bytes that are not", len(in.Raw))
 				}
 				return nil
-			},
-		),
+			}),
 
-		brine.DefineCheck[DaemonFetch](
-			"the archive holds {string} containing {string}",
-			func(in DaemonFetch, p brine.Params, _ *brine.Recorder) error {
-				name, _ := p.GetString(0)
-				want, ok := p.GetString(1)
-				if !ok {
-					return fmt.Errorf("expected a file name and its contents")
-				}
+		// The named file is the key, its contents the expectation. The getter
+		// keeps the original's not-found error, which names every entry that IS
+		// in the archive — the one thing worth seeing when a name misses.
+		CheckStringFor[DaemonFetch]("the archive holds {string} containing {string}",
+			"the archive entry",
+			func(in DaemonFetch, name string) (string, error) {
 				if in.Err != nil {
-					return fmt.Errorf("the read failed: %s", in.Message)
+					return "", fmt.Errorf("the read failed: %s", in.Message)
 				}
 				if !in.IsTar {
-					return fmt.Errorf("expected an archive, got %d bytes that do not parse as tar", len(in.Raw))
+					return "", fmt.Errorf("expected an archive, got %d bytes that do not parse as tar", len(in.Raw))
 				}
 				got, found := in.Files[name]
 				if !found {
@@ -867,18 +856,13 @@ func DaemonDefinitions() []brine.StepDefinition {
 					for n := range in.Files {
 						names = append(names, n)
 					}
-					return fmt.Errorf("expected %q in the archive, found %v", name, names)
+					return "", fmt.Errorf("expected %q in the archive, found %v", name, names)
 				}
-				if got != want {
-					return fmt.Errorf("expected %q to contain %q, got %q", name, want, got)
-				}
-				return nil
-			},
-		),
+				return got, nil
+			}),
 
-		brine.DefineCheck[DaemonFetch](
-			"the archive holds that entry and nothing else",
-			func(in DaemonFetch, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[DaemonFetch]("the archive holds that entry and nothing else",
+			func(in DaemonFetch) error {
 				if in.Err != nil {
 					return fmt.Errorf("the read failed: %s", in.Message)
 				}
@@ -886,9 +870,11 @@ func DaemonDefinitions() []brine.StepDefinition {
 					return fmt.Errorf("expected exactly one entry in the archive, got %d: %v", in.Entries, in.Files)
 				}
 				return nil
-			},
-		),
+			}),
 
+		// Keeps its own body: on a miscount the message lists the entries it
+		// did find, which is what you actually need to see, and CheckInt's
+		// generic want/got cannot carry them.
 		brine.DefineCheck[DaemonFetch](
 			"the archive holds exactly {int} entries",
 			func(in DaemonFetch, p brine.Params, _ *brine.Recorder) error {
@@ -909,9 +895,8 @@ func DaemonDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineCheck[DaemonFetch](
-			"the archive is empty",
-			func(in DaemonFetch, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[DaemonFetch]("the archive is empty",
+			func(in DaemonFetch) error {
 				if in.Err != nil {
 					return fmt.Errorf("the read failed: %s", in.Message)
 				}
@@ -925,72 +910,53 @@ func DaemonDefinitions() []brine.StepDefinition {
 					return fmt.Errorf("expected an empty archive, got %d entries: %v", in.Entries, in.Files)
 				}
 				return nil
-			},
-		),
+			}),
 
-		brine.DefineCheck[ProbeOutcome](
-			"the probe reports a miss",
-			func(in ProbeOutcome, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[ProbeOutcome]("the probe reports a miss",
+			func(in ProbeOutcome) error {
 				if in.Found {
 					return fmt.Errorf("expected a miss, but a daemon at %q reported holding it", in.IP)
 				}
 				return nil
-			},
-		),
+			}),
 
-		brine.DefineCheck[ProbeOutcome](
-			"the probe names no daemon",
-			func(in ProbeOutcome, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[ProbeOutcome]("the probe names no daemon",
+			func(in ProbeOutcome) error {
 				if in.IP != "" {
 					return fmt.Errorf("expected no daemon address, got %q", in.IP)
 				}
 				return nil
-			},
-		),
+			}),
 
-		brine.DefineCheck[ProbeOutcome](
-			"the daemon is known to have a durable tier",
-			func(in ProbeOutcome, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[ProbeOutcome]("the daemon is known to have a durable tier",
+			func(in ProbeOutcome) error {
 				if !in.DurableCapable {
 					return fmt.Errorf("the probe did not learn the daemon has a durable tier")
 				}
 				return nil
-			},
-		),
+			}),
 
-		brine.DefineCheck[ProbeOutcome](
-			"the daemon is not known to have a durable tier",
-			func(in ProbeOutcome, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[ProbeOutcome]("the daemon is not known to have a durable tier",
+			func(in ProbeOutcome) error {
 				if in.DurableCapable {
 					return fmt.Errorf("the probe credited a durable tier to a daemon that never advertised one")
 				}
 				return nil
-			},
-		),
+			}),
 
-		brine.DefineCheck[ProbeOutcome](
-			"the probe carries back {int} daemon addresses",
-			func(in ProbeOutcome, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetInt(0)
-				if !ok {
-					return fmt.Errorf("expected an address count parameter")
-				}
-				if in.EndpointCount != want {
-					return fmt.Errorf("expected %d daemon addresses carried back, got %d", want, in.EndpointCount)
-				}
-				return nil
-			},
-		),
+		CheckInt[ProbeOutcome]("the probe carries back {int} daemon addresses",
+			"the number of daemon addresses carried back",
+			func(in ProbeOutcome) (int, error) {
+				return in.EndpointCount, nil
+			}),
 
-		brine.DefineCheck[MirrorOutcome](
-			"the producing step is not failed",
-			func(in MirrorOutcome, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[MirrorOutcome]("the producing step is not failed",
+			func(in MirrorOutcome) error {
 				if in.Err != nil {
 					return fmt.Errorf("a mirror request failed the producing step: %s", in.Message)
 				}
 				return nil
-			},
-		),
+			}),
 	}
 }
 

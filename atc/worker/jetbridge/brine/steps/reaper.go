@@ -188,15 +188,13 @@ func ReaperDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineCheck[ReaperOutcome](
-			"the reaper completes without error",
-			func(in ReaperOutcome, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[ReaperOutcome]("the reaper completes without error",
+			func(in ReaperOutcome) error {
 				if in.Err != nil {
 					return fmt.Errorf("the reaper failed: %v", in.Err)
 				}
 				return nil
-			},
-		),
+			}),
 
 		brine.DefineCheck[ReaperOutcome](
 			"the pod {string} is still there",
@@ -234,27 +232,18 @@ func ReaperDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineCheck[ReaperOutcome](
-			"the container {string} is still tracked as {string}",
-			func(in ReaperOutcome, p brine.Params, _ *brine.Recorder) error {
-				handle, _ := p.GetString(0)
-				want, ok := p.GetString(1)
-				if !ok {
-					return fmt.Errorf("expected a handle and a state")
-				}
+		CheckStringFor[ReaperOutcome]("the container {string} is still tracked as {string}",
+			"the container state",
+			func(in ReaperOutcome, handle string) (string, error) {
 				row, found, err := in.Ready.containerRow(handle)
 				if err != nil {
-					return err
+					return "", err
 				}
 				if !found {
-					return fmt.Errorf("expected container %q to still be tracked, its row is gone", handle)
+					return "", fmt.Errorf("expected container %q to still be tracked, its row is gone", handle)
 				}
-				if row.State != want {
-					return fmt.Errorf("expected container %q to be %q, it is %q", handle, want, row.State)
-				}
-				return nil
-			},
-		),
+				return row.State, nil
+			}),
 
 		brine.DefineCheck[ReaperOutcome](
 			"the container {string} is no longer tracked",

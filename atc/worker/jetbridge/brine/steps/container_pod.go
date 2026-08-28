@@ -137,6 +137,9 @@ func ContainerPodDefinitions() []brine.StepDefinition {
 			},
 		),
 
+		// Keeps its own body: both parameters are expectations rather than a
+		// key and a value, and each is compared as a quantity, so that "1Gi"
+		// and "1073741824" match — which string equality would not.
 		brine.DefineCheck[PodCreated](
 			"the step may use at most {string} of local disk, reserving {string}",
 			func(in PodCreated, p brine.Params, _ *brine.Recorder) error {
@@ -218,6 +221,8 @@ func ContainerPodDefinitions() []brine.StepDefinition {
 
 		// --- Checks over the resulting pod ---
 
+		// Keeps its own body: a wrong count is only diagnosable from the names
+		// of the volumes actually defined, which the generic message drops.
 		brine.DefineCheck[PodCreated](
 			"the pod has {int} volumes",
 			func(in PodCreated, p brine.Params, _ *brine.Recorder) error {
@@ -236,6 +241,8 @@ func ContainerPodDefinitions() []brine.StepDefinition {
 			},
 		),
 
+		// Keeps its own body: it searches a collection for a match, and the
+		// failure lists every path the step does see.
 		brine.DefineCheck[PodCreated](
 			"the step sees a volume mounted at {string}",
 			func(in PodCreated, p brine.Params, _ *brine.Recorder) error {
@@ -282,9 +289,8 @@ func ContainerPodDefinitions() []brine.StepDefinition {
 
 		// CO-06/CO-07/CF-04: which storage backs a volume decides whether its
 		// contents survive the pod.
-		brine.DefineCheck[PodCreated](
-			"every volume is ephemeral",
-			func(in PodCreated, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[PodCreated]("every volume is ephemeral",
+			func(in PodCreated) error {
 				for _, v := range in.Pod.Spec.Volumes {
 					if v.EmptyDir == nil {
 						return fmt.Errorf("expected volume %q to be ephemeral, it is not (hostPath=%v)",
@@ -292,8 +298,7 @@ func ContainerPodDefinitions() []brine.StepDefinition {
 					}
 				}
 				return nil
-			},
-		),
+			}),
 
 		brine.DefineCheck[PodCreated](
 			"the volume mounted at {string} survives the pod",
@@ -332,6 +337,9 @@ func ContainerPodDefinitions() []brine.StepDefinition {
 		),
 
 		// PE-07: the QoS class is the observable consequence of the envelope.
+		// Keeps its own body: the class is derived, and the failure prints the
+		// limits and requests it was derived from — the evidence the rule is
+		// about, which a want/got message cannot carry.
 		brine.DefineCheck[PodCreated](
 			"the pod is scheduled as {string}",
 			func(in PodCreated, p brine.Params, _ *brine.Recorder) error {
@@ -382,9 +390,8 @@ func ContainerPodDefinitions() []brine.StepDefinition {
 		),
 
 		// PE-04
-		brine.DefineCheck[PodCreated](
-			"the step can escalate its privileges",
-			func(in PodCreated, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[PodCreated]("the step can escalate its privileges",
+			func(in PodCreated) error {
 				main, err := mainContainer(in.Pod)
 				if err != nil {
 					return err
@@ -394,12 +401,10 @@ func ContainerPodDefinitions() []brine.StepDefinition {
 					return fmt.Errorf("expected a privileged container, got %+v", sc)
 				}
 				return nil
-			},
-		),
+			}),
 
-		brine.DefineCheck[PodCreated](
-			"the step cannot escalate its privileges",
-			func(in PodCreated, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[PodCreated]("the step cannot escalate its privileges",
+			func(in PodCreated) error {
 				main, err := mainContainer(in.Pod)
 				if err != nil {
 					return err
@@ -409,11 +414,12 @@ func ContainerPodDefinitions() []brine.StepDefinition {
 					return fmt.Errorf("expected privilege escalation to be denied, got %+v", sc)
 				}
 				return nil
-			},
-		),
+			}),
 
 		// --- Sidecars ---
 
+		// Keeps its own body: like the volume count, a wrong number is only
+		// diagnosable from the names of the containers actually there.
 		brine.DefineCheck[PodCreated](
 			"the pod runs {int} containers",
 			func(in PodCreated, p brine.Params, _ *brine.Recorder) error {
@@ -432,43 +438,21 @@ func ContainerPodDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineCheck[PodCreated](
-			"the sidecar {string} runs image {string}",
-			func(in PodCreated, p brine.Params, _ *brine.Recorder) error {
-				name, _ := p.GetString(0)
-				image, ok := p.GetString(1)
-				if !ok {
-					return fmt.Errorf("expected a name and an image")
-				}
+		// containerNamed's error is how "there is no such sidecar" is reported;
+		// it already names the containers the pod does run.
+		CheckStringFor[PodCreated]("the sidecar {string} runs image {string}",
+			"the sidecar image",
+			func(in PodCreated, name string) (string, error) {
 				c, err := containerNamed(in.Pod, name)
-				if err != nil {
-					return err
-				}
-				if c.Image != image {
-					return fmt.Errorf("expected sidecar %q to run %q, got %q", name, image, c.Image)
-				}
-				return nil
-			},
-		),
+				return c.Image, err
+			}),
 
-		brine.DefineCheck[PodCreated](
-			"the sidecar {string} works in {string}",
-			func(in PodCreated, p brine.Params, _ *brine.Recorder) error {
-				name, _ := p.GetString(0)
-				dir, ok := p.GetString(1)
-				if !ok {
-					return fmt.Errorf("expected a name and a directory")
-				}
+		CheckStringFor[PodCreated]("the sidecar {string} works in {string}",
+			"the sidecar's working directory",
+			func(in PodCreated, name string) (string, error) {
 				c, err := containerNamed(in.Pod, name)
-				if err != nil {
-					return err
-				}
-				if c.WorkingDir != dir {
-					return fmt.Errorf("expected sidecar %q to work in %q, got %q", name, dir, c.WorkingDir)
-				}
-				return nil
-			},
-		),
+				return c.WorkingDir, err
+			}),
 
 		// SC-04: a sidecar is unprivileged regardless of the main container.
 		brine.DefineCheck[PodCreated](
@@ -525,6 +509,8 @@ func ContainerPodDefinitions() []brine.StepDefinition {
 		),
 
 		// PE-03 / CF-05
+		// Keeps its own body: it searches the secret list for a match, and the
+		// failure lists every secret the pod does name.
 		brine.DefineCheck[PodCreated](
 			"the pod pulls images using the secret {string}",
 			func(in PodCreated, p brine.Params, _ *brine.Recorder) error {
@@ -563,23 +549,16 @@ func ContainerPodDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineCheck[PodCreated](
-			"the pod runs as the service account {string}",
-			func(in PodCreated, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected a service account parameter")
-				}
-				if in.Pod.Spec.ServiceAccountName != want {
-					return fmt.Errorf("expected service account %q, got %q", want, in.Pod.Spec.ServiceAccountName)
-				}
-				return nil
-			},
-		),
+		CheckString[PodCreated]("the pod runs as the service account {string}",
+			"the pod's service account",
+			func(in PodCreated) (string, error) {
+				return in.Pod.Spec.ServiceAccountName, nil
+			}),
 
-		brine.DefineCheck[PodCreated](
-			"the pod names no image pull secret and no service account",
-			func(in PodCreated, _ brine.Params, _ *brine.Recorder) error {
+		// Two fields, so no comparison combinator fits; CheckThat carries the
+		// body unchanged and each arm keeps saying which half failed.
+		CheckThat[PodCreated]("the pod names no image pull secret and no service account",
+			func(in PodCreated) error {
 				if len(in.Pod.Spec.ImagePullSecrets) != 0 {
 					return fmt.Errorf("expected no image pull secrets, got %d", len(in.Pod.Spec.ImagePullSecrets))
 				}
@@ -587,19 +566,16 @@ func ContainerPodDefinitions() []brine.StepDefinition {
 					return fmt.Errorf("expected no service account, got %q", in.Pod.Spec.ServiceAccountName)
 				}
 				return nil
-			},
-		),
+			}),
 
 		// PE-03: a step must never be restarted behind the scheduler's back.
-		brine.DefineCheck[PodCreated](
-			"the pod is never restarted",
-			func(in PodCreated, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[PodCreated]("the pod is never restarted",
+			func(in PodCreated) error {
 				if in.Pod.Spec.RestartPolicy != corev1.RestartPolicyNever {
 					return fmt.Errorf("expected RestartPolicy Never, got %q", in.Pod.Spec.RestartPolicy)
 				}
 				return nil
-			},
-		),
+			}),
 	}
 }
 
@@ -830,6 +806,9 @@ func CacheStorageDefinitions() []brine.StepDefinition {
 			},
 		),
 
+		// Keeps its own body: it pins three separate properties, and each
+		// failure explains the rule it broke — survives the pod, filed under a
+		// stable key, created when absent.
 		brine.DefineCheck[PodCreated](
 			"the cache at {string} is kept on the node under {string}",
 			func(in PodCreated, p brine.Params, _ *brine.Recorder) error {

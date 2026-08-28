@@ -106,6 +106,9 @@ func TTYDefinitions() []brine.StepDefinition {
 			},
 		),
 
+		// Keeps its own body: on a mismatch it explains what a shell that
+		// believes it is talking to a pipe costs a hijack session, which is
+		// the whole point of the scenario and more than want/got can say.
 		brine.DefineCheck[TerminalOutcome](
 			"the step reports {string}",
 			func(in TerminalOutcome, p brine.Params, _ *brine.Recorder) error {

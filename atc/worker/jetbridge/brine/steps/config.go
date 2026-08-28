@@ -79,34 +79,20 @@ func ConfigDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineCheck[ResolvedConfig](
-			"the namespace is {string}",
-			func(in ResolvedConfig, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected a namespace parameter")
-				}
-				if in.Config.Namespace != want {
-					return fmt.Errorf("expected namespace %q, got %q", want, in.Config.Namespace)
-				}
-				return nil
-			},
-		),
+		CheckString[ResolvedConfig]("the namespace is {string}",
+			"the namespace",
+			func(in ResolvedConfig) (string, error) {
+				return in.Config.Namespace, nil
+			}),
 
-		brine.DefineCheck[ResolvedConfig](
-			"the kubeconfig path is {string}",
-			func(in ResolvedConfig, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected a path parameter")
-				}
-				if in.Config.KubeconfigPath != want {
-					return fmt.Errorf("expected kubeconfig path %q, got %q", want, in.Config.KubeconfigPath)
-				}
-				return nil
-			},
-		),
+		CheckString[ResolvedConfig]("the kubeconfig path is {string}",
+			"the kubeconfig path",
+			func(in ResolvedConfig) (string, error) {
+				return in.Config.KubeconfigPath, nil
+			}),
 
+		// Keeps its own body: the sentence counts minutes but the field is a
+		// Duration, and an integer comparison would let 5m30s pass as 5.
 		brine.DefineCheck[ResolvedConfig](
 			"the pod startup timeout is {int} minutes",
 			func(in ResolvedConfig, p brine.Params, _ *brine.Recorder) error {
@@ -122,19 +108,11 @@ func ConfigDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineCheck[ResolvedConfig](
-			"caches are stored under {string}",
-			func(_ ResolvedConfig, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected a path parameter")
-				}
-				if jetbridge.CacheBasePath != want {
-					return fmt.Errorf("expected cache base path %q, got %q", want, jetbridge.CacheBasePath)
-				}
-				return nil
-			},
-		),
+		CheckString[ResolvedConfig]("caches are stored under {string}",
+			"the cache base path",
+			func(_ ResolvedConfig) (string, error) {
+				return jetbridge.CacheBasePath, nil
+			}),
 
 		brine.DefineMap[ResolvedConfig, ClientsetAttempt](
 			"a clientset is built from it",
@@ -154,9 +132,9 @@ func ConfigDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineCheck[ClientsetAttempt](
+		CheckThat[ClientsetAttempt](
 			"a working clientset comes back",
-			func(in ClientsetAttempt, _ brine.Params, _ *brine.Recorder) error {
+			func(in ClientsetAttempt) error {
 				if in.Err != nil {
 					return fmt.Errorf("expected a clientset, got error: %v", in.Err)
 				}
@@ -164,18 +142,16 @@ func ConfigDefinitions() []brine.StepDefinition {
 					return fmt.Errorf("expected a clientset, got nil without an error")
 				}
 				return nil
-			},
-		),
+			}),
 
-		brine.DefineCheck[ClientsetAttempt](
+		CheckThat[ClientsetAttempt](
 			"it fails to build a clientset",
-			func(in ClientsetAttempt, _ brine.Params, _ *brine.Recorder) error {
+			func(in ClientsetAttempt) error {
 				if in.Err == nil {
 					return fmt.Errorf("expected building a clientset to fail, it succeeded")
 				}
 				return nil
-			},
-		),
+			}),
 
 		// --- Resource-type image overrides ---
 
@@ -203,25 +179,18 @@ func ConfigDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineCheck[ResourceTypeImages](
-			"the resource type {string} resolves to image {string}",
-			func(in ResourceTypeImages, p brine.Params, _ *brine.Recorder) error {
-				name, _ := p.GetString(0)
-				want, ok := p.GetString(1)
-				if !ok {
-					return fmt.Errorf("expected a type and an image")
-				}
+		CheckStringFor[ResourceTypeImages]("the resource type {string} resolves to image {string}",
+			"the resource type image",
+			func(in ResourceTypeImages, name string) (string, error) {
 				got, found := in.Images[name]
 				if !found {
-					return fmt.Errorf("expected resource type %q to be present, it was not", name)
+					return "", fmt.Errorf("expected resource type %q to be present, it was not", name)
 				}
-				if got != want {
-					return fmt.Errorf("expected %q to resolve to %q, got %q", name, want, got)
-				}
-				return nil
-			},
-		),
+				return got, nil
+			}),
 
+		// Keeps its own body: the parameter is the type being looked up, not a
+		// value to compare against, and the assertion is its absence.
 		brine.DefineCheck[ResourceTypeImages](
 			"there is no resource type {string}",
 			func(in ResourceTypeImages, p brine.Params, _ *brine.Recorder) error {
@@ -238,9 +207,9 @@ func ConfigDefinitions() []brine.StepDefinition {
 
 		// The defaults are a package-level map; merging must not mutate it, or
 		// the second worker in a process inherits the first one's overrides.
-		brine.DefineCheck[ResourceTypeImages](
+		CheckThat[ResourceTypeImages](
 			"the built-in defaults were left untouched",
-			func(in ResourceTypeImages, _ brine.Params, _ *brine.Recorder) error {
+			func(in ResourceTypeImages) error {
 				for k, v := range in.DefaultsBefore {
 					now, found := jetbridge.DefaultResourceTypeImages[k]
 					if !found {
@@ -255,8 +224,7 @@ func ConfigDefinitions() []brine.StepDefinition {
 						len(in.DefaultsBefore), len(jetbridge.DefaultResourceTypeImages))
 				}
 				return nil
-			},
-		),
+			}),
 	}
 }
 
@@ -282,9 +250,9 @@ func mergeImages(overrides []string) (ResourceTypeImages, error) {
 func ConfigCompletenessDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 
-		brine.DefineCheck[ResourceTypeImages](
+		CheckThat[ResourceTypeImages](
 			"every built-in resource type is still offered",
-			func(in ResourceTypeImages, _ brine.Params, _ *brine.Recorder) error {
+			func(in ResourceTypeImages) error {
 				var missing []string
 				for name := range jetbridge.DefaultResourceTypeImages {
 					if _, ok := in.Images[name]; !ok {
@@ -298,14 +266,13 @@ func ConfigCompletenessDefinitions() []brine.StepDefinition {
 							"would fail to find its image", strings.Join(missing, ", "))
 				}
 				return nil
-			},
-		),
+			}),
 
 		// The other direction: a merge that INVENTS a type is just as wrong,
 		// and is how a typo in an override silently becomes a resource type.
-		brine.DefineCheck[ResourceTypeImages](
+		CheckThat[ResourceTypeImages](
 			"no resource type was invented that nobody configured",
-			func(in ResourceTypeImages, p brine.Params, _ *brine.Recorder) error {
+			func(in ResourceTypeImages) error {
 				expected := len(jetbridge.DefaultResourceTypeImages)
 				if got := len(in.Images); got != expected {
 					var extra []string
@@ -320,7 +287,6 @@ func ConfigCompletenessDefinitions() []brine.StepDefinition {
 						expected, got, strings.Join(extra, ", "))
 				}
 				return nil
-			},
-		),
+			}),
 	}
 }

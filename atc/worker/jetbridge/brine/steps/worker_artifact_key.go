@@ -44,9 +44,8 @@ func WorkerArtifactKeyDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineCheck[TwoArtifactVolumes](
-			"each artifact is stored under its own key",
-			func(in TwoArtifactVolumes, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[TwoArtifactVolumes]("each artifact is stored under its own key",
+			func(in TwoArtifactVolumes) error {
 				if in.Err != nil {
 					return fmt.Errorf("creating the artifact volumes failed: %v", in.Err)
 				}
@@ -65,15 +64,13 @@ func WorkerArtifactKeyDefinitions() []brine.StepDefinition {
 							"asks for its own artifact is handed the other one's", firstKey)
 				}
 				return nil
-			},
-		),
+			}),
 
 		// The key is the handle, so an artifact can be found again from the
 		// database row alone. A key derived from anything else is a key
 		// nothing else can reconstruct.
-		brine.DefineCheck[TwoArtifactVolumes](
-			"each artifact's key is its own volume handle",
-			func(in TwoArtifactVolumes, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[TwoArtifactVolumes]("each artifact's key is its own volume handle",
+			func(in TwoArtifactVolumes) error {
 				if in.Err != nil {
 					return fmt.Errorf("creating the artifact volumes failed: %v", in.Err)
 				}
@@ -90,8 +87,7 @@ func WorkerArtifactKeyDefinitions() []brine.StepDefinition {
 					}
 				}
 				return nil
-			},
-		),
+			}),
 	}
 }
 

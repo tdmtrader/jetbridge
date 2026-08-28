@@ -96,6 +96,10 @@ func PodFailureDefinitions() []brine.StepDefinition {
 
 		// RF-10/RF-11: the diagnostics are the difference between a red build
 		// a user can act on and one they have to escalate.
+		//
+		// Keeps its own body: it bounds the log it quotes, the way every
+		// build-log check in this package does. The generic message would dump
+		// a step's whole stderr into the failure.
 		brine.DefineCheck[StepOutcome](
 			"the build log explains {string}",
 			func(in StepOutcome, p brine.Params, _ *brine.Recorder) error {
@@ -110,26 +114,17 @@ func PodFailureDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineCheck[StepOutcome](
-			"the failure explains {string}",
-			func(in StepOutcome, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected a text parameter")
-				}
+		CheckContains[StepOutcome]("the failure explains {string}",
+			"the failure",
+			func(in StepOutcome) (string, error) {
 				if in.Err == nil {
-					return fmt.Errorf("expected the step to fail explaining %q, it succeeded", want)
+					return "", fmt.Errorf("expected the step to fail, it succeeded")
 				}
-				if !strings.Contains(in.Message, want) {
-					return fmt.Errorf("expected the failure to explain %q, got %q", want, in.Message)
-				}
-				return nil
-			},
-		),
+				return in.Message, nil
+			}),
 
-		brine.DefineCheck[StepOutcome](
-			"the step is told the pod was deleted",
-			func(in StepOutcome, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[StepOutcome]("the step is told the pod was deleted",
+			func(in StepOutcome) error {
 				if in.Err == nil {
 					return fmt.Errorf("expected the step to fail, it succeeded")
 				}
@@ -137,8 +132,7 @@ func PodFailureDefinitions() []brine.StepDefinition {
 					return fmt.Errorf("expected the failure to say the pod was deleted, got %q", in.Message)
 				}
 				return nil
-			},
-		),
+			}),
 	}
 }
 
@@ -272,9 +266,8 @@ func SeveredExecDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineCheck[SeveredExecOutcome](
-			"the step fails rather than reporting success",
-			func(in SeveredExecOutcome, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[SeveredExecOutcome]("the step fails rather than reporting success",
+			func(in SeveredExecOutcome) error {
 				if in.Err == nil {
 					return fmt.Errorf("expected the severed step to fail; it reported success")
 				}
@@ -282,12 +275,10 @@ func SeveredExecDefinitions() []brine.StepDefinition {
 					return fmt.Errorf("expected the failure to name the exec, got %q", in.Message)
 				}
 				return nil
-			},
-		),
+			}),
 
-		brine.DefineCheck[SeveredExecOutcome](
-			"the half-written artifact cannot be located by a later step",
-			func(in SeveredExecOutcome, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[SeveredExecOutcome]("the half-written artifact cannot be located by a later step",
+			func(in SeveredExecOutcome) error {
 				if _, found := in.Locator.Locate(in.OutputKey); found {
 					return fmt.Errorf(
 						"the torn artifact %q is locatable — an on_failure hook could stream out a "+
@@ -295,7 +286,6 @@ func SeveredExecDefinitions() []brine.StepDefinition {
 						in.OutputKey)
 				}
 				return nil
-			},
-		),
+			}),
 	}
 }

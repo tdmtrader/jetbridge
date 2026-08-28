@@ -250,6 +250,9 @@ func ObservabilityDefinitions() []brine.StepDefinition {
 			},
 		),
 
+		// Keeps its own body: the expectation is matched against a LIST of
+		// event names, and on a miss the message names every event the span
+		// recorded — the timeline a reader opens a trace for.
 		brine.DefineCheck[SpansRecorded](
 			"the {string} span records the event {string}",
 			func(in SpansRecorded, p brine.Params, _ *brine.Recorder) error {
@@ -279,22 +282,16 @@ func ObservabilityDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineCheck[SpansRecorded](
-			"the step exits {int}",
-			func(in SpansRecorded, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetInt(0)
-				if !ok {
-					return fmt.Errorf("expected an exit status parameter")
-				}
+		// A step that errored has no exit status to compare, so that case
+		// reaches the reader as the getter's error rather than a comparison.
+		CheckInt[SpansRecorded]("the step exits {int}",
+			"the step's exit status",
+			func(in SpansRecorded) (int, error) {
 				if in.WaitErr != nil {
-					return fmt.Errorf("expected exit %d, the step errored: %w", want, in.WaitErr)
+					return 0, fmt.Errorf("the step errored rather than exiting: %w", in.WaitErr)
 				}
-				if in.ExitStatus != want {
-					return fmt.Errorf("expected exit %d, got %d", want, in.ExitStatus)
-				}
-				return nil
-			},
-		),
+				return in.ExitStatus, nil
+			}),
 	}
 }
 
@@ -413,6 +410,9 @@ func ObservabilityExtraDefinitions() []brine.StepDefinition {
 			},
 		),
 
+		// Keeps its own body: it counts occurrences rather than comparing a
+		// value, and its message lists the whole event sequence, which is what
+		// makes a duplicate visible.
 		brine.DefineCheck[SpansRecorded](
 			"the {string} span records the event {string} exactly once",
 			func(in SpansRecorded, p brine.Params, _ *brine.Recorder) error {
@@ -441,14 +441,9 @@ func ObservabilityExtraDefinitions() []brine.StepDefinition {
 
 		// OE-01's node.name is the attribute that makes the event actionable —
 		// "waited for scheduling" is not useful without "onto which node".
-		brine.DefineCheck[SpansRecorded](
-			"the {string} event names the node {string}",
-			func(in SpansRecorded, p brine.Params, _ *brine.Recorder) error {
-				eventName, _ := p.GetString(0)
-				want, ok := p.GetString(1)
-				if !ok {
-					return fmt.Errorf("expected an event and a node name")
-				}
+		CheckStringFor[SpansRecorded]("the {string} event names the node {string}",
+			"the node named by the event",
+			func(in SpansRecorded, eventName string) (string, error) {
 				for _, span := range in.Capture.Recorder.Ended() {
 					for _, e := range span.Events() {
 						if e.Name != eventName {
@@ -456,19 +451,14 @@ func ObservabilityExtraDefinitions() []brine.StepDefinition {
 						}
 						for _, a := range e.Attributes {
 							if string(a.Key) == "node.name" {
-								if a.Value.AsString() == want {
-									return nil
-								}
-								return fmt.Errorf("expected %q to name node %q, it named %q",
-									eventName, want, a.Value.AsString())
+								return a.Value.AsString(), nil
 							}
 						}
-						return fmt.Errorf("the %q event carries no node.name attribute", eventName)
+						return "", fmt.Errorf("the %q event carries no node.name attribute", eventName)
 					}
 				}
-				return fmt.Errorf("no %q event was recorded", eventName)
-			},
-		),
+				return "", fmt.Errorf("no %q event was recorded", eventName)
+			}),
 	}
 }
 
@@ -517,9 +507,8 @@ func ObservabilityMetricDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineCheck[SpansRecorded](
-			"a pod startup duration was recorded",
-			func(in SpansRecorded, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[SpansRecorded]("a pod startup duration was recorded",
+			func(in SpansRecorded) error {
 				if in.WaitErr != nil {
 					return fmt.Errorf("the step failed before startup could be timed: %v", in.WaitErr)
 				}
@@ -528,8 +517,7 @@ func ObservabilityMetricDefinitions() []brine.StepDefinition {
 						"an operator watching this gauge would see nothing", got)
 				}
 				return nil
-			},
-		),
+			}),
 	}
 }
 
@@ -579,6 +567,9 @@ func InitContainerDefinitions() []brine.StepDefinition {
 			},
 		),
 
+		// Keeps its own body: the message says WHY the name has to be there —
+		// that the step never ran at all — which is the whole point of the
+		// check and is more than a generic "expected … to mention" can say.
 		brine.DefineCheck[SpansRecorded](
 			"the step is told which init container failed, naming {string}",
 			func(in SpansRecorded, p brine.Params, _ *brine.Recorder) error {

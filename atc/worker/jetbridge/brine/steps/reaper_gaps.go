@@ -27,6 +27,10 @@ func ReaperGapDefinitions() []brine.StepDefinition {
 		// that tracks it survives. Dropping
 		// `remainingPods = append(remainingPods, retained...)` keeps the pod
 		// and loses the row, and brine asserted only the pod.
+		//
+		// Not a combinator: its parameter names WHICH pod rather than an
+		// expected value, and it asserts both halves separately so a failure
+		// says which one went.
 		brine.DefineCheck[ReaperOutcome](
 			"the container behind the pod {string} is not marked as missing",
 			func(in ReaperOutcome, p brine.Params, _ *brine.Recorder) error {
@@ -124,9 +128,8 @@ func ReaperGapDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineCheck[ReaperOutcome](
-			"the reaper reports that it could not sweep",
-			func(in ReaperOutcome, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[ReaperOutcome]("the reaper reports that it could not sweep",
+			func(in ReaperOutcome) error {
 				if in.Err == nil {
 					return fmt.Errorf(
 						"expected the reaper to report a failure, it reported success — a sweep " +
@@ -134,7 +137,6 @@ func ReaperGapDefinitions() []brine.StepDefinition {
 							"pods accumulate unreclaimed")
 				}
 				return nil
-			},
-		),
+			}),
 	}
 }

@@ -161,26 +161,18 @@ func RegistrarDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineCheck[RegistrationOutcome](
-			"the worker is registered as {string}",
-			func(in RegistrationOutcome, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected a name parameter")
-				}
+		CheckString[RegistrationOutcome]("the worker is registered as {string}",
+			"the worker's registered name",
+			func(in RegistrationOutcome) (string, error) {
 				if err := in.ok(); err != nil {
-					return err
+					return "", err
 				}
-				if in.Worker.Name() != want {
-					return fmt.Errorf("expected the worker to be registered as %q, got %q", want, in.Worker.Name())
-				}
-				return nil
-			},
-		),
+				return in.Worker.Name(), nil
+			}),
 
-		brine.DefineCheck[RegistrationOutcome](
+		CheckThat[RegistrationOutcome](
 			"it presents itself as a running linux worker on this Concourse version",
-			func(in RegistrationOutcome, _ brine.Params, _ *brine.Recorder) error {
+			func(in RegistrationOutcome) error {
 				if err := in.ok(); err != nil {
 					return err
 				}
@@ -197,14 +189,13 @@ func RegistrarDefinitions() []brine.StepDefinition {
 					return fmt.Errorf("expected version %q, got %q", concourse.WorkerVersion, *in.Worker.Version())
 				}
 				return nil
-			},
-		),
+			}),
 
 		// WR-02's "global worker" identity: not team-scoped, not ephemeral,
 		// no tags. A regression here would silently scope the worker to a team.
-		brine.DefineCheck[RegistrationOutcome](
+		CheckThat[RegistrationOutcome](
 			"it belongs to no team and is not ephemeral",
-			func(in RegistrationOutcome, _ brine.Params, _ *brine.Recorder) error {
+			func(in RegistrationOutcome) error {
 				if err := in.ok(); err != nil {
 					return err
 				}
@@ -219,14 +210,14 @@ func RegistrarDefinitions() []brine.StepDefinition {
 					return fmt.Errorf("expected no tags, got %v", in.Worker.Tags())
 				}
 				return nil
-			},
-		),
+			}),
 
 		// A deletion probe found the lease check was a LOWER bound only:
 		// widening heartbeatTTL from 30s to 24h passed a fully green suite.
 		// The TTL is the window in which a dead worker still looks alive to
 		// the scheduler, so its CEILING is the safety property — an unbounded
-		// lease means work is placed on a worker that is gone.
+		// lease means work is placed on a worker that is gone. Keeps its own body:
+		// the minutes parameter bounds the expiry, it is not compared to it.
 		brine.DefineCheck[RegistrationOutcome](
 			"its lease expires within {int} minute",
 			func(in RegistrationOutcome, p brine.Params, _ *brine.Recorder) error {
@@ -248,9 +239,9 @@ func RegistrarDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineCheck[RegistrationOutcome](
+		CheckThat[RegistrationOutcome](
 			"its lease has not expired",
-			func(in RegistrationOutcome, _ brine.Params, _ *brine.Recorder) error {
+			func(in RegistrationOutcome) error {
 				if err := in.ok(); err != nil {
 					return err
 				}
@@ -258,26 +249,19 @@ func RegistrarDefinitions() []brine.StepDefinition {
 					return fmt.Errorf("expected the lease to be in the future, it expires at %s", in.Worker.ExpiresAt())
 				}
 				return nil
-			},
-		),
+			}),
 
-		brine.DefineCheck[RegistrationOutcome](
-			"it reports {int} active containers",
-			func(in RegistrationOutcome, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetInt(0)
-				if !ok {
-					return fmt.Errorf("expected a count parameter")
-				}
+		CheckInt[RegistrationOutcome]("it reports {int} active containers",
+			"the active container count",
+			func(in RegistrationOutcome) (int, error) {
 				if err := in.ok(); err != nil {
-					return err
+					return 0, err
 				}
-				if in.Worker.ActiveContainers() != want {
-					return fmt.Errorf("expected %d active containers, got %d", want, in.Worker.ActiveContainers())
-				}
-				return nil
-			},
-		),
+				return in.Worker.ActiveContainers(), nil
+			}),
 
+		// Keeps its own body: an empty image means "present, any image", which a
+		// string comparison cannot express.
 		brine.DefineCheck[RegistrationOutcome](
 			"it offers the resource type {string} as image {string}",
 			func(in RegistrationOutcome, p brine.Params, _ *brine.Recorder) error {
@@ -302,22 +286,14 @@ func RegistrarDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineCheck[RegistrationOutcome](
-			"registration fails saying {string}",
-			func(in RegistrationOutcome, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected a message parameter")
-				}
+		CheckContains[RegistrationOutcome]("registration fails saying {string}",
+			"the registration failure",
+			func(in RegistrationOutcome) (string, error) {
 				if in.Err == nil {
-					return fmt.Errorf("expected registration to fail mentioning %q, it succeeded", want)
+					return "", fmt.Errorf("expected registration to fail, it succeeded")
 				}
-				if !strings.Contains(in.Message, want) {
-					return fmt.Errorf("expected the failure to mention %q, got %q", want, in.Message)
-				}
-				return nil
-			},
-		),
+				return in.Message, nil
+			}),
 	}
 }
 
@@ -372,9 +348,9 @@ func (o RegistrationOutcome) ok() error {
 func RegistrarIdentityDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 
-		brine.DefineCheck[RegistrationOutcome](
+		CheckThat[RegistrationOutcome](
 			"it claims no volumes and no start time",
-			func(in RegistrationOutcome, _ brine.Params, _ *brine.Recorder) error {
+			func(in RegistrationOutcome) error {
 				if err := in.ok(); err != nil {
 					return err
 				}
@@ -389,7 +365,6 @@ func RegistrarIdentityDefinitions() []brine.StepDefinition {
 							"so a non-zero value is invented", got)
 				}
 				return nil
-			},
-		),
+			}),
 	}
 }

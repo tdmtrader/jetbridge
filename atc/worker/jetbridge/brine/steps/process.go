@@ -621,40 +621,28 @@ func ProcessDefinitions() []brine.StepDefinition {
 
 		// --- Checks over ProcessOutcome ---
 
-		brine.DefineCheck[ProcessOutcome](
-			"the step comes back with exit status {int}",
-			func(in ProcessOutcome, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetInt(0)
-				if !ok {
-					return fmt.Errorf("expected an exit status parameter")
-				}
+		// A step that failed has no exit status to compare, so "it failed
+		// instead" is reported from the getter.
+		CheckInt[ProcessOutcome]("the step comes back with exit status {int}",
+			"the step's exit status",
+			func(in ProcessOutcome) (int, error) {
 				if in.Err != nil {
-					return fmt.Errorf("expected exit status %d, the step failed with %q", want, in.Message)
+					return 0, fmt.Errorf("expected an exit status, the step failed with %q", in.Message)
 				}
-				if in.ExitStatus != want {
-					return fmt.Errorf("expected exit status %d, got %d", want, in.ExitStatus)
-				}
-				return nil
-			},
-		),
+				return in.ExitStatus, nil
+			}),
 
-		brine.DefineCheck[ProcessOutcome](
-			"the step fails saying {string}",
-			func(in ProcessOutcome, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected an expected-message parameter")
-				}
+		CheckContains[ProcessOutcome]("the step fails saying {string}",
+			"the failure",
+			func(in ProcessOutcome) (string, error) {
 				if in.Err == nil {
-					return fmt.Errorf("expected the step to fail saying %q, it exited %d", want, in.ExitStatus)
+					return "", fmt.Errorf("expected the step to fail, it exited %d", in.ExitStatus)
 				}
-				if !strings.Contains(in.Message, want) {
-					return fmt.Errorf("expected the failure to say %q, got %q", want, in.Message)
-				}
-				return nil
-			},
-		),
+				return in.Message, nil
+			}),
 
+		// Keeps its own body: the message caps the log it prints at 600
+		// characters, and the generic one would dump the whole build log.
 		brine.DefineCheck[ProcessOutcome](
 			"the build log shows {string}",
 			func(in ProcessOutcome, p brine.Params, _ *brine.Recorder) error {
@@ -669,9 +657,10 @@ func ProcessDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineCheck[ProcessOutcome](
-			"the pod has been removed from the cluster",
-			func(in ProcessOutcome, _ brine.Params, _ *brine.Recorder) error {
+		// Names every pod it found, which is what tells a leak apart from a
+		// pod the step never took away.
+		CheckThat[ProcessOutcome]("the pod has been removed from the cluster",
+			func(in ProcessOutcome) error {
 				pods, err := in.Clientset.CoreV1().Pods(in.Namespace).List(in.Ctx, metav1.ListOptions{})
 				if err != nil {
 					return fmt.Errorf("list pods: %w", err)
@@ -684,11 +673,12 @@ func ProcessDefinitions() []brine.StepDefinition {
 					return fmt.Errorf("expected no pods left in the cluster, found %s", strings.Join(names, ", "))
 				}
 				return nil
-			},
-		),
+			}),
 
 		// --- Checks over MetricsObserved ---
 
+		// Keeps its own body: the counter is a float64, and comparing it as an
+		// int would accept a fractional delta this equality rejects.
 		brine.DefineCheck[MetricsObserved](
 			"the image pull failure count has gone up by {int}",
 			func(in MetricsObserved, p brine.Params, _ *brine.Recorder) error {
@@ -704,6 +694,8 @@ func ProcessDefinitions() []brine.StepDefinition {
 			},
 		),
 
+		// Keeps its own body: "at least" is a threshold, not the equality the
+		// numeric combinator compares.
 		brine.DefineCheck[MetricsObserved](
 			"the recorded pod startup duration is at least {int} milliseconds",
 			func(in MetricsObserved, p brine.Params, _ *brine.Recorder) error {
@@ -722,22 +714,14 @@ func ProcessDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineCheck[MetricsObserved](
-			"the metered step fails saying {string}",
-			func(in MetricsObserved, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected an expected-message parameter")
-				}
+		CheckContains[MetricsObserved]("the metered step fails saying {string}",
+			"the failure",
+			func(in MetricsObserved) (string, error) {
 				if in.Err == nil {
-					return fmt.Errorf("expected the step to fail saying %q, it succeeded", want)
+					return "", errors.New("expected the step to fail, it succeeded")
 				}
-				if !strings.Contains(in.Message, want) {
-					return fmt.Errorf("expected the failure to say %q, got %q", want, in.Message)
-				}
-				return nil
-			},
-		),
+				return in.Message, nil
+			}),
 	}
 }
 

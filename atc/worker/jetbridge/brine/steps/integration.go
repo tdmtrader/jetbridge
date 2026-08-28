@@ -297,17 +297,15 @@ func integrationClusterDefinitions() []brine.StepDefinition {
 		// created, and brine carried that nowhere — a step that leaked a
 		// second pod would have passed. This reads the value that was already
 		// being captured.
-		brine.DefineCheck[StepRan](
-			"the step created exactly one pod",
-			func(in StepRan, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[StepRan]("the step created exactly one pod",
+			func(in StepRan) error {
 				if in.PodCount != 1 {
 					return fmt.Errorf(
 						"expected exactly one pod for the step; found %d — a leaked pod is a leaked container "+
 							"the reaper will not match to any handle", in.PodCount)
 				}
 				return nil
-			},
-		),
+			}),
 
 		brine.DefineMapUsing[brine.Empty, IntegrationCluster](
 			"a jetbridge cluster in namespace {string}",
@@ -647,6 +645,9 @@ func integrationStepDefinitions() []brine.StepDefinition {
 		),
 
 		// Checks over what the ATC was handed before anything was scheduled.
+
+		// Keeps its own body: on a mismatch it names every mount path the
+		// step was handed, which is what says WHICH mount went missing.
 		brine.DefineCheck[StepCreated](
 			"the step is handed {int} volume mounts",
 			func(in StepCreated, p brine.Params, _ *brine.Recorder) error {
@@ -862,26 +863,17 @@ func integrationRunDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineCheck[AttachOutcome](
-			"the step resumes reporting exit status {int}",
-			func(in AttachOutcome, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetInt(0)
-				if !ok {
-					return fmt.Errorf("expected an exit status parameter")
-				}
+		CheckInt[AttachOutcome]("the step resumes reporting exit status {int}",
+			"the resumed exit status",
+			func(in AttachOutcome) (int, error) {
 				if in.Err != nil {
-					return fmt.Errorf("expected the step to resume, attaching failed: %v", in.Err)
+					return 0, fmt.Errorf("expected the step to resume, attaching failed: %v", in.Err)
 				}
-				if in.ExitStatus != want {
-					return fmt.Errorf("expected exit status %d, got %d", want, in.ExitStatus)
-				}
-				return nil
-			},
-		),
+				return in.ExitStatus, nil
+			}),
 
-		brine.DefineCheck[AttachOutcome](
-			"attaching fails naming the pod the step would have created",
-			func(in AttachOutcome, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[AttachOutcome]("attaching fails naming the pod the step would have created",
+			func(in AttachOutcome) error {
 				if in.Err == nil {
 					return fmt.Errorf("expected attaching to fail, it succeeded with exit status %d", in.ExitStatus)
 				}
@@ -889,12 +881,10 @@ func integrationRunDefinitions() []brine.StepDefinition {
 					return fmt.Errorf("expected the failure to name the pod %q, got %q", in.ExpectedPod, in.Message)
 				}
 				return nil
-			},
-		),
+			}),
 
-		brine.DefineCheck[AttachOutcome](
-			"the failure does not name the handle",
-			func(in AttachOutcome, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[AttachOutcome]("the failure does not name the handle",
+			func(in AttachOutcome) error {
 				if in.Err == nil {
 					return fmt.Errorf("expected attaching to have failed, it succeeded")
 				}
@@ -903,8 +893,7 @@ func integrationRunDefinitions() []brine.StepDefinition {
 						in.Created.Handle, in.Message)
 				}
 				return nil
-			},
-		),
+			}),
 	}
 }
 
@@ -932,26 +921,17 @@ func integrationPodCheckDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineCheck[StepRan](
-			"the pod in the cluster is named exactly {string}",
-			func(in StepRan, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected a name parameter")
-				}
+		CheckString[StepRan]("the pod in the cluster is named exactly {string}",
+			"the pod's name",
+			func(in StepRan) (string, error) {
 				if in.Pod == nil {
-					return fmt.Errorf("no pod was created")
+					return "", fmt.Errorf("no pod was created")
 				}
-				if in.Pod.Name != want {
-					return fmt.Errorf("expected the pod to be named %q, got %q", want, in.Pod.Name)
-				}
-				return nil
-			},
-		),
+				return in.Pod.Name, nil
+			}),
 
-		brine.DefineCheck[StepRan](
-			"the pod is not named after the handle",
-			func(in StepRan, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[StepRan]("the pod is not named after the handle",
+			func(in StepRan) error {
 				if in.Pod == nil {
 					return fmt.Errorf("no pod was created")
 				}
@@ -959,31 +939,21 @@ func integrationPodCheckDefinitions() []brine.StepDefinition {
 					return fmt.Errorf("expected the pod not to be named after the handle, got %q", in.Pod.Name)
 				}
 				return nil
-			},
-		),
+			}),
 
-		brine.DefineCheck[StepRan](
-			"the pod is labelled {string} as {string}",
-			func(in StepRan, p brine.Params, _ *brine.Recorder) error {
-				key, _ := p.GetString(0)
-				want, ok := p.GetString(1)
-				if !ok {
-					return fmt.Errorf("expected a label key and a value")
-				}
+		CheckStringFor[StepRan]("the pod is labelled {string} as {string}",
+			"the pod label",
+			func(in StepRan, key string) (string, error) {
 				if in.Pod == nil {
-					return fmt.Errorf("no pod was created")
+					return "", fmt.Errorf("no pod was created")
 				}
 				got, found := in.Pod.Labels[key]
 				if !found {
-					return fmt.Errorf("expected the pod to carry the label %q, it carries %v",
+					return "", fmt.Errorf("expected the pod to carry the label %q, it carries %v",
 						key, labelKeys(in.Pod.Labels))
 				}
-				if got != want {
-					return fmt.Errorf("expected the label %q to be %q, got %q", key, want, got)
-				}
-				return nil
-			},
-		),
+				return got, nil
+			}),
 
 		brine.DefineCheck[StepRan](
 			"the pod carries no {string} label",
@@ -1004,9 +974,8 @@ func integrationPodCheckDefinitions() []brine.StepDefinition {
 
 		// PN-07's hard half: Kubernetes rejects a pod whose label value is
 		// longer than 63 characters, so a long pipeline name has to be cut.
-		brine.DefineCheck[StepRan](
-			"every pod label value fits in a Kubernetes label",
-			func(in StepRan, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[StepRan]("every pod label value fits in a Kubernetes label",
+			func(in StepRan) error {
 				if in.Pod == nil {
 					return fmt.Errorf("no pod was created")
 				}
@@ -1017,33 +986,20 @@ func integrationPodCheckDefinitions() []brine.StepDefinition {
 					}
 				}
 				return nil
-			},
-		),
+			}),
 
-		brine.DefineCheck[StepRan](
-			"the step's pod runs the image {string}",
-			func(in StepRan, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected an image parameter")
-				}
+		CheckString[StepRan]("the step's pod runs the image {string}",
+			"the image the step's pod runs",
+			func(in StepRan) (string, error) {
 				main, err := integrationMainContainer(in.Pod)
-				if err != nil {
-					return err
-				}
-				if main.Image != want {
-					return fmt.Errorf("expected the pod to run %q, got %q", want, main.Image)
-				}
-				return nil
-			},
-		),
+				return main.Image, err
+			}),
 
 		// PE-01: the pod is a pause pod. Baking the resource script into the
 		// pod spec would run it once, at pod start, with no stdin and nowhere
 		// to send stdout — the resource protocol needs an exec.
-		brine.DefineCheck[StepRan](
-			"the pod's own command is not the resource script",
-			func(in StepRan, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[StepRan]("the pod's own command is not the resource script",
+			func(in StepRan) error {
 				main, err := integrationMainContainer(in.Pod)
 				if err != nil {
 					return err
@@ -1055,8 +1011,7 @@ func integrationPodCheckDefinitions() []brine.StepDefinition {
 					return fmt.Errorf("expected a pause command, the pod runs %v", main.Command)
 				}
 				return nil
-			},
-		),
+			}),
 
 		brine.DefineCheck[StepRan](
 			"the step's pod mounts {string}",
@@ -1109,27 +1064,18 @@ func integrationPodCheckDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineCheck[StepRan](
-			"the pod sets {string} to the literal {string}",
-			func(in StepRan, p brine.Params, _ *brine.Recorder) error {
-				name, _ := p.GetString(0)
-				want, ok := p.GetString(1)
-				if !ok {
-					return fmt.Errorf("expected a name and a value")
-				}
+		CheckStringFor[StepRan]("the pod sets {string} to the literal {string}",
+			"the pod's literal environment value",
+			func(in StepRan, name string) (string, error) {
 				env, err := integrationEnvVar(in.Pod, name)
 				if err != nil {
-					return err
+					return "", err
 				}
 				if env.ValueFrom != nil {
-					return fmt.Errorf("expected %q to be a literal, it is read from elsewhere", name)
+					return "", fmt.Errorf("expected %q to be a literal, it is read from elsewhere", name)
 				}
-				if env.Value != want {
-					return fmt.Errorf("expected %q to be %q, got %q", name, want, env.Value)
-				}
-				return nil
-			},
-		),
+				return env.Value, nil
+			}),
 
 		// The volume-binding claim, stated as the two observations that make
 		// it meaningful: nothing before the pod existed, the step's own pod
@@ -1175,39 +1121,23 @@ func integrationPodCheckDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineCheck[StepRan](
-			"the resource answers {string}",
-			func(in StepRan, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected an answer parameter")
-				}
+		CheckString[StepRan]("the resource answers {string}",
+			"the resource's answer",
+			func(in StepRan) (string, error) {
 				if in.Err != nil {
-					return fmt.Errorf("the resource step failed: %v", in.Err)
+					return "", fmt.Errorf("the resource step failed: %v", in.Err)
 				}
-				if in.Stdout != want {
-					return fmt.Errorf("expected the resource to answer %q, got %q", want, in.Stdout)
-				}
-				return nil
-			},
-		),
+				return in.Stdout, nil
+			}),
 
-		brine.DefineCheck[StepRan](
-			"the step's output is {string}",
-			func(in StepRan, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected an output parameter")
-				}
+		CheckContains[StepRan]("the step's output is {string}",
+			"the step's output",
+			func(in StepRan) (string, error) {
 				if in.Err != nil {
-					return fmt.Errorf("the step failed: %v", in.Err)
+					return "", fmt.Errorf("the step failed: %v", in.Err)
 				}
-				if !strings.Contains(in.Stdout, want) {
-					return fmt.Errorf("expected the step's output to contain %q, got %q", want, in.Stdout)
-				}
-				return nil
-			},
-		),
+				return in.Stdout, nil
+			}),
 
 		brine.DefineCheck[StepRan](
 			"the step's container row is a created {string} container on worker {string}",
@@ -1221,6 +1151,8 @@ func integrationPodCheckDefinitions() []brine.StepDefinition {
 			},
 		),
 
+		// Keeps its own body: an unexpected exit is only diagnosable
+		// alongside the error and the output the step produced.
 		brine.DefineCheck[StepRan](
 			"the step reports exit status {int}",
 			func(in StepRan, p brine.Params, _ *brine.Recorder) error {
@@ -1236,19 +1168,11 @@ func integrationPodCheckDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineCheck[StepRan](
-			"the running process is identified as {string}",
-			func(in StepRan, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected a process id parameter")
-				}
-				if in.ProcessID != want {
-					return fmt.Errorf("expected the process to be identified as %q, got %q", want, in.ProcessID)
-				}
-				return nil
-			},
-		),
+		CheckString[StepRan]("the running process is identified as {string}",
+			"the running process's id",
+			func(in StepRan) (string, error) {
+				return in.ProcessID, nil
+			}),
 	}
 }
 
@@ -1407,9 +1331,8 @@ func integrationVolumeDefinitions() []brine.StepDefinition {
 		),
 
 		// Checks over IntegrationVolume.
-		brine.DefineCheck[IntegrationVolume](
-			"the lookup finds it",
-			func(in IntegrationVolume, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[IntegrationVolume]("the lookup finds it",
+			func(in IntegrationVolume) error {
 				if in.Err != nil {
 					return fmt.Errorf("the lookup failed: %v", in.Err)
 				}
@@ -1420,12 +1343,10 @@ func integrationVolumeDefinitions() []brine.StepDefinition {
 					return fmt.Errorf("the volume %q was reported found but nothing came back", in.Handle)
 				}
 				return nil
-			},
-		),
+			}),
 
-		brine.DefineCheck[IntegrationVolume](
-			"the lookup finds nothing",
-			func(in IntegrationVolume, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[IntegrationVolume]("the lookup finds nothing",
+			func(in IntegrationVolume) error {
 				if in.Err != nil {
 					return fmt.Errorf("expected a clean miss, the lookup failed: %v", in.Err)
 				}
@@ -1433,45 +1354,27 @@ func integrationVolumeDefinitions() []brine.StepDefinition {
 					return fmt.Errorf("expected the volume %q not to be found, it was", in.Handle)
 				}
 				return nil
-			},
-		),
+			}),
 
-		brine.DefineCheck[IntegrationVolume](
-			"the volume that came back is handle {string}",
-			func(in IntegrationVolume, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected a handle parameter")
-				}
+		CheckString[IntegrationVolume]("the volume that came back is handle {string}",
+			"the volume's handle",
+			func(in IntegrationVolume) (string, error) {
 				if in.Volume == nil {
-					return fmt.Errorf("no volume came back")
+					return "", fmt.Errorf("no volume came back")
 				}
-				if in.Volume.Handle() != want {
-					return fmt.Errorf("expected handle %q, got %q", want, in.Volume.Handle())
-				}
-				return nil
-			},
-		),
+				return in.Volume.Handle(), nil
+			}),
 
 		// Source() is what a downstream step uses to decide where to stream
 		// from. It has to be the worker that persisted the volume.
-		brine.DefineCheck[IntegrationVolume](
-			"it names {string} as the worker holding it",
-			func(in IntegrationVolume, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected a worker name parameter")
-				}
+		CheckString[IntegrationVolume]("it names {string} as the worker holding it",
+			"the worker the volume names as holding it",
+			func(in IntegrationVolume) (string, error) {
 				if in.Volume == nil {
-					return fmt.Errorf("no volume came back")
+					return "", fmt.Errorf("no volume came back")
 				}
-				if in.Volume.Source() != want {
-					return fmt.Errorf("expected the volume to name %q as its worker, got %q",
-						want, in.Volume.Source())
-				}
-				return nil
-			},
-		),
+				return in.Volume.Source(), nil
+			}),
 
 		brine.DefineCheck[IntegrationVolume](
 			"it carries the database row for handle {string} on worker {string}",
@@ -1496,20 +1399,17 @@ func integrationVolumeDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineCheck[IntegrationVolume](
-			"looking it up scheduled nothing",
-			func(in IntegrationVolume, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[IntegrationVolume]("looking it up scheduled nothing",
+			func(in IntegrationVolume) error {
 				if in.PodsAfter != 0 {
 					return fmt.Errorf("expected the lookup to schedule nothing, the cluster holds %d pods",
 						in.PodsAfter)
 				}
 				return nil
-			},
-		),
+			}),
 
-		brine.DefineCheck[IntegrationVolume](
-			"both lookups named the same artifact key",
-			func(in IntegrationVolume, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[IntegrationVolume]("both lookups named the same artifact key",
+			func(in IntegrationVolume) error {
 				if len(in.Keys) < 2 {
 					return fmt.Errorf("expected two artifact keys, observed %d (%v)", len(in.Keys), in.Keys)
 				}
@@ -1519,12 +1419,10 @@ func integrationVolumeDefinitions() []brine.StepDefinition {
 					}
 				}
 				return nil
-			},
-		),
+			}),
 
-		brine.DefineCheck[IntegrationVolume](
-			"the artifact key is the volume's handle",
-			func(in IntegrationVolume, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[IntegrationVolume]("the artifact key is the volume's handle",
+			func(in IntegrationVolume) error {
 				if len(in.Keys) == 0 {
 					return fmt.Errorf("no artifact key was observed")
 				}
@@ -1533,12 +1431,10 @@ func integrationVolumeDefinitions() []brine.StepDefinition {
 						in.Handle, in.Keys[0])
 				}
 				return nil
-			},
-		),
+			}),
 
-		brine.DefineCheck[IntegrationVolume](
-			"the volume row points at the worker resource cache the caller was handed",
-			func(in IntegrationVolume, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[IntegrationVolume]("the volume row points at the worker resource cache the caller was handed",
+			func(in IntegrationVolume) error {
 				if in.Err != nil {
 					return fmt.Errorf("initialising the resource cache failed: %v", in.Err)
 				}
@@ -1564,8 +1460,7 @@ func integrationVolumeDefinitions() []brine.StepDefinition {
 						in.CacheID, resourceCacheID)
 				}
 				return nil
-			},
-		),
+			}),
 
 		// Team isolation. An artifact reachable from another team's id is a
 		// cross-team data leak, not a convenience.
@@ -1606,9 +1501,8 @@ func integrationVolumeDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineCheck[IntegrationVolume](
-			"only its own team can reach it",
-			func(in IntegrationVolume, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[IntegrationVolume]("only its own team can reach it",
+			func(in IntegrationVolume) error {
 				if in.Err != nil {
 					return in.Err
 				}
@@ -1620,8 +1514,7 @@ func integrationVolumeDefinitions() []brine.StepDefinition {
 						in.Handle, in.Keys)
 				}
 				return nil
-			},
-		),
+			}),
 	}
 }
 
@@ -1716,23 +1609,20 @@ func integrationNodeIPDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineCheck[NodeIPOutcome](
-			"resolving fails",
-			func(in NodeIPOutcome, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[NodeIPOutcome]("resolving fails",
+			func(in NodeIPOutcome) error {
 				if in.Err == nil {
 					return fmt.Errorf("expected resolving to fail, it returned %v", in.IPs)
 				}
 				return nil
-			},
-		),
+			}),
 
 		// The sentinel is the whole point: an IP-shaped argument is rejected
 		// as a misuse, not reported as a node that happens not to exist. On a
 		// cluster with no nodes at all the two outcomes are indistinguishable
 		// by anything BUT the sentinel.
-		brine.DefineCheck[NodeIPOutcome](
-			"it is refused as an IP address rather than reported as a missing node",
-			func(in NodeIPOutcome, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[NodeIPOutcome]("it is refused as an IP address rather than reported as a missing node",
+			func(in NodeIPOutcome) error {
 				if in.Err == nil {
 					return fmt.Errorf("expected the argument to be refused, resolving returned %v", in.IPs)
 				}
@@ -1740,8 +1630,7 @@ func integrationNodeIPDefinitions() []brine.StepDefinition {
 					return fmt.Errorf("expected an ErrNodeNameIsIP refusal, got %q", in.Message)
 				}
 				return nil
-			},
-		),
+			}),
 	}
 }
 

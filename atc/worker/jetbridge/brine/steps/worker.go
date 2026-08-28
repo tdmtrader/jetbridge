@@ -304,32 +304,22 @@ func workerSetupDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineCheck[WorkerReady](
-			"the worker answers to the name {string}",
-			func(in WorkerReady, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected a name parameter")
-				}
-				if in.Worker.Name() != want {
-					return fmt.Errorf("expected the worker to answer to %q, got %q", want, in.Worker.Name())
-				}
-				return nil
-			},
-		),
+		CheckString[WorkerReady]("the worker answers to the name {string}",
+			"the name the worker answers to",
+			func(in WorkerReady) (string, error) {
+				return in.Worker.Name(), nil
+			}),
 
 		// RC-01. False means "do not skip the cache", i.e. a get step is
 		// allowed to serve a hit from the daemon instead of downloading again.
-		brine.DefineCheck[WorkerReady](
-			"the worker takes part in resource caching",
-			func(in WorkerReady, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[WorkerReady]("the worker takes part in resource caching",
+			func(in WorkerReady) error {
 				if in.Worker.SkipResourceCache() {
 					return fmt.Errorf("expected the worker to take part in resource caching, " +
 						"but it reports that resource caches should be skipped")
 				}
 				return nil
-			},
-		),
+			}),
 
 		brine.DefineMap[WorkerReady, WorkerReady](
 			"the database cannot transition containers to created",
@@ -567,27 +557,19 @@ func workerContainerDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineCheck[ContainerOutcome](
-			"the container request succeeds",
-			func(in ContainerOutcome, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[ContainerOutcome]("the container request succeeds",
+			func(in ContainerOutcome) error {
 				return in.ok()
-			},
-		),
+			}),
 
-		brine.DefineCheck[ContainerOutcome](
-			"the container request fails saying {string}",
-			func(in ContainerOutcome, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected a message parameter")
-				}
-				return expectFailure("the container request", in.Err, in.Message, want)
-			},
-		),
+		CheckContains[ContainerOutcome]("the container request fails saying {string}",
+			"the container request failure",
+			func(in ContainerOutcome) (string, error) {
+				return failureMessage("the container request", in.Err, in.Message)
+			}),
 
-		brine.DefineCheck[ContainerOutcome](
-			"the container is found",
-			func(in ContainerOutcome, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[ContainerOutcome]("the container is found",
+			func(in ContainerOutcome) error {
 				if in.Err != nil {
 					return fmt.Errorf("looking the container up failed: %v", in.Err)
 				}
@@ -595,12 +577,10 @@ func workerContainerDefinitions() []brine.StepDefinition {
 					return fmt.Errorf("expected the container %q to be found, it was not", in.Handle)
 				}
 				return nil
-			},
-		),
+			}),
 
-		brine.DefineCheck[ContainerOutcome](
-			"the container is not found",
-			func(in ContainerOutcome, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[ContainerOutcome]("the container is not found",
+			func(in ContainerOutcome) error {
 				if in.Err != nil {
 					return fmt.Errorf("expected a clean miss, got an error: %v", in.Err)
 				}
@@ -608,33 +588,26 @@ func workerContainerDefinitions() []brine.StepDefinition {
 					return fmt.Errorf("expected the container %q not to be found, but it was", in.Handle)
 				}
 				return nil
-			},
-		),
+			}),
 
 		// `fly intercept` hands the container's database row to the hijack
 		// handler, which records the hijack against it. A nil row would panic
 		// there rather than here.
-		brine.DefineCheck[ContainerOutcome](
-			"it carries the database row for handle {string}",
-			func(in ContainerOutcome, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected a handle parameter")
-				}
+		CheckString[ContainerOutcome]("it carries the database row for handle {string}",
+			"the handle on the container's database row",
+			func(in ContainerOutcome) (string, error) {
 				if err := in.ok(); err != nil {
-					return err
+					return "", err
 				}
 				row := in.Container.DBContainer()
 				if row == nil {
-					return fmt.Errorf("expected the container to carry a database row, it carries none")
+					return "", fmt.Errorf("expected the container to carry a database row, it carries none")
 				}
-				if row.Handle() != want {
-					return fmt.Errorf("expected the database row for %q, got %q", want, row.Handle())
-				}
-				return nil
-			},
-		),
+				return row.Handle(), nil
+			}),
 
+		// Keeps its own body: the parameter is the row to look up, and what it is
+		// compared against is an id read from the database, not the parameter.
 		brine.DefineCheck[ContainerOutcome](
 			"it returns the container already recorded as {string}",
 			func(in ContainerOutcome, p brine.Params, _ *brine.Recorder) error {
@@ -658,6 +631,8 @@ func workerContainerDefinitions() []brine.StepDefinition {
 			},
 		),
 
+		// Keeps its own body: the count comes first and the handle second, so the
+		// parameter the sentence expects is not the one a For combinator routes.
 		brine.DefineCheck[ContainerOutcome](
 			"exactly {int} container row carries the handle {string}",
 			func(in ContainerOutcome, p brine.Params, _ *brine.Recorder) error {
@@ -681,26 +656,17 @@ func workerContainerDefinitions() []brine.StepDefinition {
 
 		// A row left in `creating` is invisible to the collector; `failed` is
 		// what lets the cluster reclaim it.
-		brine.DefineCheck[ContainerOutcome](
-			"the container {string} is left in state {string}",
-			func(in ContainerOutcome, p brine.Params, _ *brine.Recorder) error {
-				handle, _ := p.GetString(0)
-				want, ok := p.GetString(1)
-				if !ok {
-					return fmt.Errorf("expected a handle and a state")
-				}
+		CheckStringFor[ContainerOutcome]("the container {string} is left in state {string}",
+			"the state the container is left in",
+			func(in ContainerOutcome, handle string) (string, error) {
 				var state string
 				if err := in.Ready.DB.Conn.QueryRow(
 					`SELECT state FROM containers WHERE handle = $1`, handle,
 				).Scan(&state); err != nil {
-					return fmt.Errorf("read the state of container %q: %w", handle, err)
+					return "", fmt.Errorf("read the state of container %q: %w", handle, err)
 				}
-				if state != want {
-					return fmt.Errorf("expected container %q to be left in state %q, it is %q", handle, want, state)
-				}
-				return nil
-			},
-		),
+				return state, nil
+			}),
 
 		brine.DefineCheck[ContainerRun](
 			"the container {string} is recorded as a created task container for step {string}",
@@ -737,16 +703,16 @@ func workerContainerDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineCheck[ContainerRun](
-			"no pod existed until the container ran",
-			func(in ContainerRun, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[ContainerRun]("no pod existed until the container ran",
+			func(in ContainerRun) error {
 				if in.PodsBefore != 0 {
 					return fmt.Errorf("expected no pod before the container ran, found %d", in.PodsBefore)
 				}
 				return nil
-			},
-		),
+			}),
 
+		// Keeps its own body: the failure dumps every pod the run left behind,
+		// which a want/got message cannot carry.
 		brine.DefineCheck[ContainerRun](
 			"the pod {string} is now on the cluster",
 			func(in ContainerRun, p brine.Params, _ *brine.Recorder) error {
@@ -933,9 +899,8 @@ func workerInterceptDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineCheck[InterceptOutcome](
-			"the interception succeeds",
-			func(in InterceptOutcome, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[InterceptOutcome]("the interception succeeds",
+			func(in InterceptOutcome) error {
 				if in.Err != nil {
 					return fmt.Errorf("expected the interception to succeed, it failed: %v", in.Err)
 				}
@@ -944,34 +909,22 @@ func workerInterceptDefinitions() []brine.StepDefinition {
 						in.ExitStatus, in.Log)
 				}
 				return nil
-			},
-		),
+			}),
 
-		brine.DefineCheck[InterceptOutcome](
-			"the operator sees {string}",
-			func(in InterceptOutcome, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected a text parameter")
-				}
-				if !strings.Contains(in.Log, want) {
-					return fmt.Errorf("expected the operator to see %q, the session printed %q", want, in.Log)
-				}
-				return nil
-			},
-		),
+		CheckContains[InterceptOutcome]("the operator sees {string}",
+			"what the operator saw",
+			func(in InterceptOutcome) (string, error) {
+				return in.Log, nil
+			}),
 
-		brine.DefineCheck[InterceptOutcome](
-			"the interception fails saying {string}",
-			func(in InterceptOutcome, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected a message parameter")
-				}
-				return expectFailure("the interception", in.Err, in.Message, want)
-			},
-		),
+		CheckContains[InterceptOutcome]("the interception fails saying {string}",
+			"the interception failure",
+			func(in InterceptOutcome) (string, error) {
+				return failureMessage("the interception", in.Err, in.Message)
+			}),
 
+		// Keeps its own body: the failure dumps every pod on the cluster, which is
+		// the evidence "only" is about, and a want/got message cannot carry a list.
 		brine.DefineCheck[InterceptOutcome](
 			"the cluster still holds only the pod {string}",
 			func(in InterceptOutcome, p brine.Params, _ *brine.Recorder) error {
@@ -988,26 +941,16 @@ func workerInterceptDefinitions() []brine.StepDefinition {
 
 		// A restarted web reads this annotation to resume the step. Replacing
 		// the pod would erase it, which is why interception refuses.
-		brine.DefineCheck[InterceptOutcome](
-			"the pod {string} still records exit status {string}",
-			func(in InterceptOutcome, p brine.Params, _ *brine.Recorder) error {
-				name, _ := p.GetString(0)
-				want, ok := p.GetString(1)
-				if !ok {
-					return fmt.Errorf("expected a pod name and an exit status")
-				}
+		CheckStringFor[InterceptOutcome]("the pod {string} still records exit status {string}",
+			"the exit status the pod still records",
+			func(in InterceptOutcome, name string) (string, error) {
 				pod, err := in.Ready.Clientset.CoreV1().Pods(in.Ready.Namespace).Get(
 					in.Ready.Ctx, name, metav1.GetOptions{})
 				if err != nil {
-					return fmt.Errorf("expected the pod %q to survive: %w", name, err)
+					return "", fmt.Errorf("expected the pod %q to survive: %w", name, err)
 				}
-				if got := pod.Annotations[exitStatusAnnotation]; got != want {
-					return fmt.Errorf("expected pod %q to still record exit status %q, it records %q",
-						name, want, got)
-				}
-				return nil
-			},
-		),
+				return pod.Annotations[exitStatusAnnotation], nil
+			}),
 	}
 }
 
@@ -1077,34 +1020,22 @@ func workerVolumeDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineCheck[VolumeOutcome](
-			"creating the volume succeeds",
-			func(in VolumeOutcome, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[VolumeOutcome]("creating the volume succeeds",
+			func(in VolumeOutcome) error {
 				return in.ok()
-			},
-		),
+			}),
 
-		brine.DefineCheck[VolumeOutcome](
-			"creating the volume fails saying {string}",
-			func(in VolumeOutcome, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected a message parameter")
-				}
-				return expectFailure("creating the volume", in.Err, in.Message, want)
-			},
-		),
+		CheckContains[VolumeOutcome]("creating the volume fails saying {string}",
+			"the volume creation failure",
+			func(in VolumeOutcome) (string, error) {
+				return failureMessage("creating the volume", in.Err, in.Message)
+			}),
 
-		brine.DefineCheck[VolumeOutcome](
-			"looking up the volume fails saying {string}",
-			func(in VolumeOutcome, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected a message parameter")
-				}
-				return expectFailure("looking up the volume", in.Err, in.Message, want)
-			},
-		),
+		CheckContains[VolumeOutcome]("looking up the volume fails saying {string}",
+			"the volume lookup failure",
+			func(in VolumeOutcome) (string, error) {
+				return failureMessage("looking up the volume", in.Err, in.Message)
+			}),
 
 		brine.DefineCheck[VolumeOutcome](
 			"the volume is recorded for this worker and team in state {string} as type {string}",
@@ -1149,9 +1080,8 @@ func workerVolumeDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineCheck[VolumeOutcome](
-			"the volume row points at the artifact the caller was handed",
-			func(in VolumeOutcome, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[VolumeOutcome]("the volume row points at the artifact the caller was handed",
+			func(in VolumeOutcome) error {
 				if err := in.ok(); err != nil {
 					return err
 				}
@@ -1169,12 +1099,10 @@ func workerVolumeDefinitions() []brine.StepDefinition {
 						in.Artifact.ID(), artifactID)
 				}
 				return nil
-			},
-		),
+			}),
 
-		brine.DefineCheck[VolumeOutcome](
-			"the handle the caller got is the handle the database persisted",
-			func(in VolumeOutcome, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[VolumeOutcome]("the handle the caller got is the handle the database persisted",
+			func(in VolumeOutcome) error {
 				if err := in.ok(); err != nil {
 					return err
 				}
@@ -1194,33 +1122,23 @@ func workerVolumeDefinitions() []brine.StepDefinition {
 						in.Volume.Handle(), persisted.Handle())
 				}
 				return nil
-			},
-		),
+			}),
 
-		brine.DefineCheck[VolumeOutcome](
-			"a volume for this worker is left in state {string}",
-			func(in VolumeOutcome, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected a state parameter")
-				}
+		CheckString[VolumeOutcome]("a volume for this worker is left in state {string}",
+			"the state the volume is left in",
+			func(in VolumeOutcome) (string, error) {
 				var state string
 				if err := in.Ready.DB.Conn.QueryRow(
 					`SELECT state FROM volumes WHERE team_id = $1 AND worker_name = $2`,
 					in.Ready.TeamID, in.Ready.DBWorker.Name(),
 				).Scan(&state); err != nil {
-					return fmt.Errorf("read the half-written volume: %w", err)
+					return "", fmt.Errorf("read the half-written volume: %w", err)
 				}
-				if state != want {
-					return fmt.Errorf("expected the volume to be left in state %q, it is %q", want, state)
-				}
-				return nil
-			},
-		),
+				return state, nil
+			}),
 
-		brine.DefineCheck[VolumeOutcome](
-			"no artifact is recorded",
-			func(in VolumeOutcome, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[VolumeOutcome]("no artifact is recorded",
+			func(in VolumeOutcome) error {
 				var count int
 				if err := in.Ready.DB.Conn.QueryRow(`SELECT count(*) FROM worker_artifacts`).Scan(&count); err != nil {
 					return fmt.Errorf("count artifacts: %w", err)
@@ -1229,95 +1147,62 @@ func workerVolumeDefinitions() []brine.StepDefinition {
 					return fmt.Errorf("expected no artifact to be recorded, found %d", count)
 				}
 				return nil
-			},
-		),
+			}),
 
-		brine.DefineCheck[VolumeOutcome](
-			"the volume is found",
-			func(in VolumeOutcome, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[VolumeOutcome]("the volume is found",
+			func(in VolumeOutcome) error {
 				return in.found("volume")
-			},
-		),
+			}),
 
-		brine.DefineCheck[VolumeOutcome](
-			"the volume is not found",
-			func(in VolumeOutcome, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[VolumeOutcome]("the volume is not found",
+			func(in VolumeOutcome) error {
 				return in.notFound("volume")
-			},
-		),
+			}),
 
-		brine.DefineCheck[VolumeOutcome](
-			"the cache is found",
-			func(in VolumeOutcome, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[VolumeOutcome]("the cache is found",
+			func(in VolumeOutcome) error {
 				return in.found("cache")
-			},
-		),
+			}),
 
-		brine.DefineCheck[VolumeOutcome](
-			"the cache is not found",
-			func(in VolumeOutcome, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[VolumeOutcome]("the cache is not found",
+			func(in VolumeOutcome) error {
 				return in.notFound("cache")
-			},
-		),
+			}),
 
-		brine.DefineCheck[VolumeOutcome](
-			"the volume's handle is {string}",
-			func(in VolumeOutcome, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected a handle parameter")
-				}
+		CheckString[VolumeOutcome]("the volume's handle is {string}",
+			"the volume's handle",
+			func(in VolumeOutcome) (string, error) {
 				if err := in.ok(); err != nil {
-					return err
+					return "", err
 				}
-				if in.Volume.Handle() != want {
-					return fmt.Errorf("expected the handle %q, got %q", want, in.Volume.Handle())
-				}
-				return nil
-			},
-		),
+				return in.Volume.Handle(), nil
+			}),
 
 		// Source() is what a cross-worker stream reads to decide where the
 		// bytes live. It is the worker name, never a node or a pod IP.
-		brine.DefineCheck[VolumeOutcome](
-			"it reports {string} as its source",
-			func(in VolumeOutcome, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected a source parameter")
-				}
+		CheckString[VolumeOutcome]("it reports {string} as its source",
+			"the volume's source",
+			func(in VolumeOutcome) (string, error) {
 				if err := in.ok(); err != nil {
-					return err
+					return "", err
 				}
-				if in.Volume.Source() != want {
-					return fmt.Errorf("expected the source %q, got %q", want, in.Volume.Source())
-				}
-				return nil
-			},
-		),
+				return in.Volume.Source(), nil
+			}),
 
 		// The round trip. Nothing is asserted about how the volume reads —
 		// only that the bytes arrive.
-		brine.DefineCheck[VolumeOutcome](
-			"reading the volume yields {string}",
-			func(in VolumeOutcome, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected the expected content")
-				}
+		CheckString[VolumeOutcome]("reading the volume yields {string}",
+			"the volume's contents",
+			func(in VolumeOutcome) (string, error) {
 				if err := in.ok(); err != nil {
-					return err
+					return "", err
 				}
 				body, err := readArtifact(in.Ready.Ctx, in.Volume)
 				if err != nil {
-					return fmt.Errorf("expected to read %q from the volume, the read failed: %w", want, err)
+					return "", fmt.Errorf("reading the volume failed: %w", err)
 				}
-				if body != want {
-					return fmt.Errorf("expected the volume to hold %q, it holds %q", want, body)
-				}
-				return nil
-			},
-		),
+				return body, nil
+			}),
 	}
 }
 
@@ -1372,74 +1257,48 @@ func workerArtifactDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineCheck[ArtifactOutcome](
-			"the artifact's handle is {string}",
-			func(in ArtifactOutcome, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected a handle parameter")
-				}
+		CheckString[ArtifactOutcome]("the artifact's handle is {string}",
+			"the artifact's handle",
+			func(in ArtifactOutcome) (string, error) {
 				if in.Artifact == nil {
-					return fmt.Errorf("expected an artifact with handle %q for volume %q, got none", want, in.Handle)
+					return "", fmt.Errorf("expected an artifact for volume %q, got none", in.Handle)
 				}
-				if in.Artifact.Handle() != want {
-					return fmt.Errorf("expected the artifact handle %q, got %q", want, in.Artifact.Handle())
-				}
-				return nil
-			},
-		),
+				return in.Artifact.Handle(), nil
+			}),
 
-		brine.DefineCheck[ArtifactOutcome](
-			"reading the artifact yields {string}",
-			func(in ArtifactOutcome, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected the expected content")
-				}
+		CheckString[ArtifactOutcome]("reading the artifact yields {string}",
+			"the artifact's contents",
+			func(in ArtifactOutcome) (string, error) {
 				if in.Artifact == nil {
-					return fmt.Errorf("expected an artifact to read, got none")
+					return "", fmt.Errorf("expected an artifact to read, got none")
 				}
 				body, err := readArtifact(in.Ready.Ctx, in.Artifact)
 				if err != nil {
-					return fmt.Errorf("expected to read %q from the artifact, the read failed: %w", want, err)
+					return "", fmt.Errorf("reading the artifact failed: %w", err)
 				}
-				if body != want {
-					return fmt.Errorf("expected the artifact to hold %q, it holds %q", want, body)
-				}
-				return nil
-			},
-		),
+				return body, nil
+			}),
 
-		brine.DefineCheck[ArtifactOutcome](
-			"reading the artifact fails saying {string}",
-			func(in ArtifactOutcome, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected a message parameter")
-				}
+		CheckContains[ArtifactOutcome]("reading the artifact fails saying {string}",
+			"the artifact read failure",
+			func(in ArtifactOutcome) (string, error) {
 				if in.Artifact == nil {
-					return fmt.Errorf("expected an artifact to read, got none")
+					return "", fmt.Errorf("expected an artifact to read, got none")
 				}
 				body, err := readArtifact(in.Ready.Ctx, in.Artifact)
 				if err == nil {
-					return fmt.Errorf("expected the read to fail mentioning %q, it returned %q", want, body)
+					return "", fmt.Errorf("expected the read to fail, it returned %q", body)
 				}
-				if !strings.Contains(err.Error(), want) {
-					return fmt.Errorf("expected the read to fail mentioning %q, it failed with %q", want, err.Error())
-				}
-				return nil
-			},
-		),
+				return err.Error(), nil
+			}),
 
-		brine.DefineCheck[ArtifactOutcome](
-			"no artifact is handed back",
-			func(in ArtifactOutcome, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[ArtifactOutcome]("no artifact is handed back",
+			func(in ArtifactOutcome) error {
 				if in.Artifact != nil {
 					return fmt.Errorf("expected no artifact, got one with handle %q", in.Artifact.Handle())
 				}
 				return nil
-			},
-		),
+			}),
 	}
 }
 
@@ -1697,14 +1556,14 @@ func clearSupervisorState(handle string) error {
 	return nil
 }
 
-func expectFailure(what string, err error, message, want string) error {
+// failureMessage is the half of a "fails saying …" check that a combinator
+// cannot do for itself: it decides whether the operation failed at all, and
+// hands back the message for the mentions-comparison.
+func failureMessage(what string, err error, message string) (string, error) {
 	if err == nil {
-		return fmt.Errorf("expected %s to fail mentioning %q, it succeeded", what, want)
+		return "", fmt.Errorf("expected %s to fail, it succeeded", what)
 	}
-	if !strings.Contains(message, want) {
-		return fmt.Errorf("expected %s to fail mentioning %q, it failed with %q", what, want, message)
-	}
-	return nil
+	return message, nil
 }
 
 // ---------------------------------------------------------------------------
