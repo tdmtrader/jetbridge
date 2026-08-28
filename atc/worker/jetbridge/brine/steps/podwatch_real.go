@@ -123,6 +123,9 @@ func PodWatchRealDefinitions() []brine.StepDefinition {
 			},
 		),
 
+		// Keeps its own body: it pins the pod's IDENTITY as well as its phase,
+		// and the identity mismatch is the whole point of the scenario, so its
+		// message says what an unscoped watch would do to the step.
 		brine.DefineCheck[RealWatch](
 			"the real API server told the runtime only about its own pod, now {string}",
 			func(in RealWatch, p brine.Params, _ *brine.Recorder) error {
@@ -300,29 +303,20 @@ func PodWatchRealExtraDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineCheck[RealWatch](
-			"the runtime is really told the pod is {string}",
-			func(in RealWatch, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected a phase parameter")
-				}
+		CheckString[RealWatch]("the runtime is really told the pod is {string}",
+			"the pod's phase",
+			func(in RealWatch) (string, error) {
 				if in.Err != nil {
-					return fmt.Errorf("expected to be told the pod is %s, got error: %v", want, in.Err)
+					return "", fmt.Errorf("the runtime was told nothing about the pod: %v", in.Err)
 				}
 				if in.Observed == nil {
-					return fmt.Errorf("expected a pod, got nil")
+					return "", fmt.Errorf("expected a pod, got nil")
 				}
-				if string(in.Observed.Status.Phase) != want {
-					return fmt.Errorf("expected phase %q, got %q", want, in.Observed.Status.Phase)
-				}
-				return nil
-			},
-		),
+				return string(in.Observed.Status.Phase), nil
+			}),
 
-		brine.DefineCheck[RealWatch](
-			"the runtime is really told the pod was deleted",
-			func(in RealWatch, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[RealWatch]("the runtime is really told the pod was deleted",
+			func(in RealWatch) error {
 				if in.Err == nil {
 					return fmt.Errorf(
 						"expected to be told the pod was deleted; the step would wait on a pod that " +
@@ -332,12 +326,10 @@ func PodWatchRealExtraDefinitions() []brine.StepDefinition {
 					return fmt.Errorf("expected ErrPodDeleted, got %v", in.Err)
 				}
 				return nil
-			},
-		),
+			}),
 
-		brine.DefineCheck[RealWatch](
-			"the runtime really stops waiting",
-			func(in RealWatch, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[RealWatch]("the runtime really stops waiting",
+			func(in RealWatch) error {
 				if in.Err == nil {
 					return fmt.Errorf("expected an error when the build was cancelled, got none")
 				}
@@ -345,8 +337,7 @@ func PodWatchRealExtraDefinitions() []brine.StepDefinition {
 					return fmt.Errorf("expected a cancellation error, got %q", in.Err.Error())
 				}
 				return nil
-			},
-		),
+			}),
 	}
 }
 

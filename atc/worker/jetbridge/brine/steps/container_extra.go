@@ -182,9 +182,8 @@ func runExtraDirectDefinitions() []brine.StepDefinition {
 		// PE-02. With no exec transport there is nowhere to exec FROM, so the
 		// pod has to carry the command. A pause pod here would leave the step
 		// running `sleep` forever and nothing would ever execute the command.
-		brine.DefineCheck[RunExtraDirectRun](
-			"the pod itself carries the step's command",
-			func(in RunExtraDirectRun, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[RunExtraDirectRun]("the pod itself carries the step's command",
+			func(in RunExtraDirectRun) error {
 				main, err := mainContainer(in.Pod)
 				if err != nil {
 					return err
@@ -196,34 +195,21 @@ func runExtraDirectDefinitions() []brine.StepDefinition {
 						in.Command, got)
 				}
 				return nil
-			},
-		),
+			}),
 
-		brine.DefineCheck[RunExtraDirectRun](
-			"that pod works in {string}",
-			func(in RunExtraDirectRun, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected a directory parameter")
-				}
+		CheckString[RunExtraDirectRun]("that pod works in {string}",
+			"the step's working directory",
+			func(in RunExtraDirectRun) (string, error) {
 				main, err := mainContainer(in.Pod)
-				if err != nil {
-					return err
-				}
-				if main.WorkingDir != want {
-					return fmt.Errorf("expected the step to work in %q, it works in %q", want, main.WorkingDir)
-				}
-				return nil
-			},
-		),
+				return main.WorkingDir, err
+			}),
 
 		// The pod-level half of PE-04, which the matrix records as having no
 		// named test. A step that runs without a seccomp profile can issue
 		// syscalls the runtime default blocks — on a shared build cluster that
 		// is the difference between a sandbox and a foothold.
-		brine.DefineCheck[RunExtraDirectRun](
-			"the step is confined by the runtime's default seccomp profile",
-			func(in RunExtraDirectRun, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[RunExtraDirectRun]("the step is confined by the runtime's default seccomp profile",
+			func(in RunExtraDirectRun) error {
 				sc := in.Pod.Spec.SecurityContext
 				if sc == nil {
 					return fmt.Errorf("expected the pod to carry a security context, it has none")
@@ -236,14 +222,12 @@ func runExtraDirectDefinitions() []brine.StepDefinition {
 						corev1.SeccompProfileTypeRuntimeDefault, sc.SeccompProfile.Type)
 				}
 				return nil
-			},
-		),
+			}),
 
 		// The process ID is what a restarted web passes back to Attach. An
 		// empty one cannot be re-attached to, so the step would be re-run.
-		brine.DefineCheck[RunExtraDirectRun](
-			"the step has an identity a restarted web could attach to",
-			func(in RunExtraDirectRun, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[RunExtraDirectRun]("the step has an identity a restarted web could attach to",
+			func(in RunExtraDirectRun) error {
 				if in.Process == nil {
 					return fmt.Errorf("expected a process, got none")
 				}
@@ -251,8 +235,7 @@ func runExtraDirectDefinitions() []brine.StepDefinition {
 					return fmt.Errorf("expected the process to have an id, it has an empty one")
 				}
 				return nil
-			},
-		),
+			}),
 
 		// A step with no working directory declares no workspace, so the pod
 		// must not invent one. An unasked-for emptyDir would silently shadow
@@ -265,9 +248,8 @@ func runExtraDirectDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineCheck[PodCreated](
-			"the step has nothing mounted at all",
-			func(in PodCreated, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[PodCreated]("the step has nothing mounted at all",
+			func(in PodCreated) error {
 				main, err := mainContainer(in.Pod)
 				if err != nil {
 					return err
@@ -281,8 +263,7 @@ func runExtraDirectDefinitions() []brine.StepDefinition {
 						strings.Join(paths, ", "))
 				}
 				return nil
-			},
-		),
+			}),
 	}
 }
 
@@ -296,9 +277,8 @@ func runExtraPauseDefinitions() []brine.StepDefinition {
 		// The observable difference between the two modes. The ginkgo test
 		// pinned the exact pause string; what matters to a consumer is that
 		// the pod is NOT the step, so the pod outlives the command.
-		brine.DefineCheck[TaskOutcome](
-			"the pod is a placeholder, not the step's command",
-			func(in TaskOutcome, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[TaskOutcome]("the pod is a placeholder, not the step's command",
+			func(in TaskOutcome) error {
 				pod, err := in.Cluster.Clientset.CoreV1().Pods(in.Cluster.Namespace).
 					Get(in.Cluster.Ctx, in.Handle, metav1.GetOptions{})
 				if err != nil {
@@ -318,16 +298,14 @@ func runExtraPauseDefinitions() []brine.StepDefinition {
 							"the step was baked into the pod instead of exec'd into it", all)
 				}
 				return nil
-			},
-		),
+			}),
 
 		// The pod must survive the command in both directions: a consumer
 		// still has to be able to stream the step's outputs out of it, and an
 		// operator still has to be able to intercept a failed step. Deleting
 		// it here is what the GC is for.
-		brine.DefineCheck[TaskOutcome](
-			"the pod is still on the cluster afterwards",
-			func(in TaskOutcome, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[TaskOutcome]("the pod is still on the cluster afterwards",
+			func(in TaskOutcome) error {
 				pods, err := in.Cluster.Clientset.CoreV1().Pods(in.Cluster.Namespace).
 					List(in.Cluster.Ctx, metav1.ListOptions{})
 				if err != nil {
@@ -342,11 +320,12 @@ func runExtraPauseDefinitions() []brine.StepDefinition {
 					"expected the pod %q to still be on the cluster after the step finished, it is gone — "+
 						"its outputs can no longer be streamed out and it cannot be intercepted",
 					in.Handle)
-			},
-		),
+			}),
 
 		// fly hijack: the intercepted command's exit code is what the operator
 		// sees in their shell. Swallowing it makes a failed hijack look clean.
+		// Keeps its own body: a wrong exit code is diagnosed from the command's
+		// log, which the generic want/got message has nowhere to carry.
 		brine.DefineCheck[InterceptOutcome](
 			"the intercepted command exits {int}",
 			func(in InterceptOutcome, p brine.Params, _ *brine.Recorder) error {
@@ -415,7 +394,9 @@ func runExtraMountDefinitions() []brine.StepDefinition {
 
 		// CO-04/CO-05: the caller is a build step, and these mounts are how it
 		// finds its own inputs, outputs and caches. A missing one means the
-		// step's artifact never gets registered.
+		// step's artifact never gets registered. Keeps its own body: it asks
+		// whether a path is present in a collection, and names every path that
+		// was handed over instead.
 		brine.DefineCheck[RunExtraMounts](
 			"the caller is handed a volume mounted at {string}",
 			func(in RunExtraMounts, p brine.Params, _ *brine.Recorder) error {
@@ -438,6 +419,9 @@ func runExtraMountDefinitions() []brine.StepDefinition {
 			},
 		),
 
+		// Keeps its own body: a wrong count is only actionable alongside the
+		// list of paths that were handed over, which says WHICH mount is
+		// missing or extra.
 		brine.DefineCheck[RunExtraMounts](
 			"the caller is handed {int} volumes in all",
 			func(in RunExtraMounts, p brine.Params, _ *brine.Recorder) error {
@@ -460,9 +444,8 @@ func runExtraMountDefinitions() []brine.StepDefinition {
 		// Two mounts sharing a handle would make the artifact registry point
 		// two paths at one blob — the CO-05 failure, one step's outputs
 		// overwriting another's.
-		brine.DefineCheck[RunExtraMounts](
-			"every volume the caller was handed has its own handle",
-			func(in RunExtraMounts, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[RunExtraMounts]("every volume the caller was handed has its own handle",
+			func(in RunExtraMounts) error {
 				seen := map[string]string{}
 				for _, m := range in.Mounts {
 					if m.Volume == nil {
@@ -480,14 +463,12 @@ func runExtraMountDefinitions() []brine.StepDefinition {
 					seen[handle] = m.MountPath
 				}
 				return nil
-			},
-		),
+			}),
 
 		// The deferral itself: the pod name is not known until Run, because
 		// the command is not known until Run.
-		brine.DefineCheck[RunExtraMounts](
-			"no volume the caller was handed knows a pod yet",
-			func(in RunExtraMounts, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[RunExtraMounts]("no volume the caller was handed knows a pod yet",
+			func(in RunExtraMounts) error {
 				for _, m := range in.Mounts {
 					vol, ok := m.Volume.(*jetbridge.Volume)
 					if !ok {
@@ -499,11 +480,11 @@ func runExtraMountDefinitions() []brine.StepDefinition {
 					}
 				}
 				return nil
-			},
-		),
+			}),
 
 		// And afterwards it does — which is the only reason StreamOut can
-		// reach the step's outputs at all.
+		// reach the step's outputs at all. Keeps its own body: it asserts over
+		// EVERY handed-back volume, and names the one that disagrees.
 		brine.DefineCheck[RunExtraMounts](
 			"every volume the caller was handed now names the pod {string}",
 			func(in RunExtraMounts, p brine.Params, _ *brine.Recorder) error {
@@ -653,16 +634,15 @@ func runExtraOutputDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineCheck[RunExtraOutputRead](
-			"the streamed output holds {string} containing {string}",
-			func(in RunExtraOutputRead, p brine.Params, _ *brine.Recorder) error {
-				name, _ := p.GetString(0)
-				want, ok := p.GetString(1)
-				if !ok {
-					return fmt.Errorf("expected a file name and its content")
-				}
+		// The file has to be there before its bytes can be compared, and "not
+		// there at all" is reported by the getter — with every name the stream
+		// did hold, which is what tells you whether nothing was written or the
+		// wrong thing was.
+		CheckStringFor[RunExtraOutputRead]("the streamed output holds {string} containing {string}",
+			"the streamed output",
+			func(in RunExtraOutputRead, name string) (string, error) {
 				if in.Err != nil {
-					return fmt.Errorf("reading the step's output failed: %v", in.Err)
+					return "", fmt.Errorf("reading the step's output failed: %v", in.Err)
 				}
 				got, found := in.Files[name]
 				if !found {
@@ -670,15 +650,11 @@ func runExtraOutputDefinitions() []brine.StepDefinition {
 					for n := range in.Files {
 						names = append(names, n)
 					}
-					return fmt.Errorf("expected %q in the step's output, it holds [%s]",
+					return "", fmt.Errorf("expected %q in the step's output, it holds [%s]",
 						name, strings.Join(names, ", "))
 				}
-				if got != want {
-					return fmt.Errorf("expected %q to contain %q, got %q", name, want, got)
-				}
-				return nil
-			},
-		),
+				return got, nil
+			}),
 	}
 }
 
@@ -717,7 +693,9 @@ func runExtraMetricDefinitions() []brine.StepDefinition {
 
 		// The two counters are what an operator's dashboard is built on. A
 		// failure counted as a success hides a cluster that has stopped
-		// admitting pods behind a healthy-looking creation rate.
+		// admitting pods behind a healthy-looking creation rate. Keeps its own
+		// body: both counters are expectations, so the pair has to move
+		// together, and the run's error is part of reading a wrong pair.
 		brine.DefineCheck[RunExtraMetrics](
 			"the operator sees {int} container created and {int} failed",
 			func(in RunExtraMetrics, p brine.Params, _ *brine.Recorder) error {
@@ -882,55 +860,40 @@ func runExtraDBDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineCheck[RunExtraDBOutcome](
-			"requesting the container fails saying {string}",
-			func(in RunExtraDBOutcome, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected a message parameter")
-				}
+		// The sentence presumes the request failed; a request that succeeded has
+		// no message to match, so that is the getter's error.
+		CheckContains[RunExtraDBOutcome]("requesting the container fails saying {string}",
+			"the failure",
+			func(in RunExtraDBOutcome) (string, error) {
 				if in.Err == nil {
-					return fmt.Errorf("expected the request to fail saying %q, it succeeded", want)
+					return "", fmt.Errorf("expected the request to fail, it succeeded")
 				}
-				if !strings.Contains(in.Message, want) {
-					return fmt.Errorf("expected the failure to say %q, it said %q", want, in.Message)
-				}
-				return nil
-			},
-		),
+				return in.Message, nil
+			}),
 
-		brine.DefineCheck[RunExtraDBOutcome](
-			"requesting the container succeeds",
-			func(in RunExtraDBOutcome, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[RunExtraDBOutcome]("requesting the container succeeds",
+			func(in RunExtraDBOutcome) error {
 				if in.Err != nil {
 					return fmt.Errorf("expected the request to succeed, it failed: %v", in.Err)
 				}
 				return nil
-			},
-		),
+			}),
 
-		brine.DefineCheck[RunExtraDBOutcome](
-			"the container row {string} is left in state {string}",
-			func(in RunExtraDBOutcome, p brine.Params, _ *brine.Recorder) error {
-				handle, _ := p.GetString(0)
-				want, ok := p.GetString(1)
-				if !ok {
-					return fmt.Errorf("expected a handle and a state")
-				}
+		CheckStringFor[RunExtraDBOutcome]("the container row {string} is left in state {string}",
+			"the container's state",
+			func(in RunExtraDBOutcome, handle string) (string, error) {
 				var state string
 				if err := in.DB.Conn.QueryRow(
 					`SELECT state FROM containers WHERE handle = $1`, handle,
 				).Scan(&state); err != nil {
-					return fmt.Errorf("read the state of container %q: %w", handle, err)
+					return "", fmt.Errorf("read the state of container %q: %w", handle, err)
 				}
-				if state != want {
-					return fmt.Errorf("expected the container %q to be left in state %q, it is %q",
-						handle, want, state)
-				}
-				return nil
-			},
-		),
+				return state, nil
+			}),
 
+		// Keeps its own body: this sentence names its expectation FIRST and the
+		// handle second, so the count is parameter 0 and the key is parameter
+		// 1 — the reverse of what the "For" combinators route.
 		brine.DefineCheck[RunExtraDBOutcome](
 			"the database holds exactly {int} row for the handle {string}",
 			func(in RunExtraDBOutcome, p brine.Params, _ *brine.Recorder) error {

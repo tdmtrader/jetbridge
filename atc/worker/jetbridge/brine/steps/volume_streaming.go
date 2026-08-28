@@ -304,16 +304,11 @@ func VolumeStreamingDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineCheck[VolumeRead](
-			"the artifact {string} containing {string} is there",
-			func(in VolumeRead, p brine.Params, _ *brine.Recorder) error {
-				name, _ := p.GetString(0)
-				want, ok := p.GetString(1)
-				if !ok {
-					return fmt.Errorf("expected two parameters")
-				}
+		CheckStringFor[VolumeRead]("the artifact {string} containing {string} is there",
+			"the artifact's contents",
+			func(in VolumeRead, name string) (string, error) {
 				if in.Err != nil {
-					return fmt.Errorf("reading the volume failed: %w", in.Err)
+					return "", fmt.Errorf("reading the volume failed: %w", in.Err)
 				}
 				got, found := in.Files[name]
 				if !found {
@@ -321,15 +316,13 @@ func VolumeStreamingDefinitions() []brine.StepDefinition {
 					for n := range in.Files {
 						names = append(names, n)
 					}
-					return fmt.Errorf("expected %q, found %v", name, names)
+					return "", fmt.Errorf("expected %q, found %v", name, names)
 				}
-				if got != want {
-					return fmt.Errorf("expected %q to contain %q, got %q", name, want, got)
-				}
-				return nil
-			},
-		),
+				return got, nil
+			}),
 
+		// Keeps its own body: the match is case-INSENSITIVE, which CheckContains
+		// is not, and the failure must have happened at all.
 		brine.DefineCheck[VolumeRead](
 			"it fails rather than panicking, saying {string}",
 			func(in VolumeRead, p brine.Params, _ *brine.Recorder) error {
@@ -423,34 +416,29 @@ func VolumeIdentityDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineCheck[VolumeIdentity](
-			"the volume identifies itself by its database handle",
-			func(in VolumeIdentity, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[VolumeIdentity]("the volume identifies itself by its database handle",
+			func(in VolumeIdentity) error {
 				if in.Volume.Handle() != in.DBHandle {
 					return fmt.Errorf(
 						"expected the volume to identify as %q — the handle the artifact repository keys on — got %q",
 						in.DBHandle, in.Volume.Handle())
 				}
 				return nil
-			},
-		),
+			}),
 
-		brine.DefineCheck[VolumeIdentity](
-			"the volume names the worker it lives on",
-			func(in VolumeIdentity, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[VolumeIdentity]("the volume names the worker it lives on",
+			func(in VolumeIdentity) error {
 				if in.Volume.Source() != in.WorkerName {
 					return fmt.Errorf("expected the volume to name worker %q, got %q",
 						in.WorkerName, in.Volume.Source())
 				}
 				return nil
-			},
-		),
+			}),
 
 		// The DB row is what survives a web restart; a volume that lost it
 		// would be invisible to garbage collection.
-		brine.DefineCheck[VolumeIdentity](
-			"both volume kinds still carry their database row",
-			func(in VolumeIdentity, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[VolumeIdentity]("both volume kinds still carry their database row",
+			func(in VolumeIdentity) error {
 				if in.Volume.DBVolume() == nil {
 					return fmt.Errorf("the deferred volume lost its database row")
 				}
@@ -464,7 +452,6 @@ func VolumeIdentityDefinitions() []brine.StepDefinition {
 					return fmt.Errorf("expected the row to name worker %q, got %q", in.WorkerName, got)
 				}
 				return nil
-			},
-		),
+			}),
 	}
 }

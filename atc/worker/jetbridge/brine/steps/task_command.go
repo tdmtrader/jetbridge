@@ -149,23 +149,17 @@ func TaskCommandDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineCheck[TaskOutcome](
-			"the build log contains {string}",
-			func(in TaskOutcome, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected a text parameter")
-				}
+		CheckContains[TaskOutcome]("the build log contains {string}",
+			"the build log",
+			func(in TaskOutcome) (string, error) {
 				if in.Err != nil && in.ExitStatus == 0 {
-					return fmt.Errorf("the task failed before it could log: %v", in.Err)
+					return "", fmt.Errorf("the task failed before it could log: %v", in.Err)
 				}
-				if !strings.Contains(in.Log, want) {
-					return fmt.Errorf("expected the build log to contain %q, got %q", want, in.Log)
-				}
-				return nil
-			},
-		),
+				return in.Log, nil
+			}),
 
+		// Keeps its own body: a wrong count is diagnosed from the log itself —
+		// where the second copy came from — which a want/got pair cannot say.
 		brine.DefineCheck[TaskOutcome](
 			"the build log contains {string} exactly {int} time(s)",
 			func(in TaskOutcome, p brine.Params, _ *brine.Recorder) error {
@@ -183,6 +177,8 @@ func TaskCommandDefinitions() []brine.StepDefinition {
 			},
 		),
 
+		// Keeps its own body: an unexpected exit status is only actionable
+		// alongside the error and the log that produced it.
 		brine.DefineCheck[TaskOutcome](
 			"the task exits {int}",
 			func(in TaskOutcome, p brine.Params, _ *brine.Recorder) error {

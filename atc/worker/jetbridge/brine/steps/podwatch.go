@@ -189,29 +189,23 @@ func PodWatchDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineCheck[WatchObservation](
-			"the runtime is told the pod is {string}",
-			func(in WatchObservation, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected a phase parameter")
-				}
+		// Being told an error, or nothing at all, is not being told a phase:
+		// both are reported from the getter, which is where the sentence's
+		// presumption fails.
+		CheckString[WatchObservation]("the runtime is told the pod is {string}",
+			"the pod's phase",
+			func(in WatchObservation) (string, error) {
 				if in.Err != nil {
-					return fmt.Errorf("expected to be told the pod is %s, got error: %v", want, in.Err)
+					return "", fmt.Errorf("expected to be told the pod's phase, got error: %v", in.Err)
 				}
 				if in.Pod == nil {
-					return fmt.Errorf("expected a pod, got nil")
+					return "", fmt.Errorf("expected a pod, got nil")
 				}
-				if string(in.Pod.Status.Phase) != want {
-					return fmt.Errorf("expected phase %q, got %q", want, in.Pod.Status.Phase)
-				}
-				return nil
-			},
-		),
+				return string(in.Pod.Status.Phase), nil
+			}),
 
-		brine.DefineCheck[WatchObservation](
-			"the runtime is told the pod was deleted",
-			func(in WatchObservation, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[WatchObservation]("the runtime is told the pod was deleted",
+			func(in WatchObservation) error {
 				if in.Err == nil {
 					return fmt.Errorf("expected to be told the pod was deleted, got no error")
 				}
@@ -219,12 +213,10 @@ func PodWatchDefinitions() []brine.StepDefinition {
 					return fmt.Errorf("expected ErrPodDeleted, got %v", in.Err)
 				}
 				return nil
-			},
-		),
+			}),
 
-		brine.DefineCheck[WatchObservation](
-			"the runtime is told to stop waiting",
-			func(in WatchObservation, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[WatchObservation]("the runtime is told to stop waiting",
+			func(in WatchObservation) error {
 				if in.Err == nil {
 					return fmt.Errorf("expected an error when the build was cancelled, got none")
 				}
@@ -232,8 +224,7 @@ func PodWatchDefinitions() []brine.StepDefinition {
 					return fmt.Errorf("expected a cancellation error, got %q", in.Message)
 				}
 				return nil
-			},
-		),
+			}),
 	}
 }
 

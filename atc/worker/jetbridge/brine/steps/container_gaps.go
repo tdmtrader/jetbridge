@@ -81,9 +81,8 @@ func ContainerGapDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineCheck[PodCreated](
-			"the pod clears the workspace left by the previous run",
-			func(in PodCreated, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[PodCreated]("the pod clears the workspace left by the previous run",
+			func(in PodCreated) error {
 				if !hasInitContainer(in, "cleanup-stale") {
 					return fmt.Errorf(
 						"the pod for %q has no cleanup init container, so the step starts on top of "+
@@ -91,16 +90,14 @@ func ContainerGapDefinitions() []brine.StepDefinition {
 							"\"destination path already exists\" failure", in.Handle)
 				}
 				return nil
-			},
-		),
+			}),
 
 		// A step reads its inputs from the artifact daemon on its own node, so
 		// the pod must not be scheduled anywhere that daemon is not running.
 		// Without the requirement the scheduler is free to place it on a node
 		// with no artifact cache, where the step cannot read its inputs.
-		brine.DefineCheck[PodCreated](
-			"the pod is only scheduled where the artifact cache is ready",
-			func(in PodCreated, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[PodCreated]("the pod is only scheduled where the artifact cache is ready",
+			func(in PodCreated) error {
 				if in.Pod == nil {
 					return fmt.Errorf("no pod was created")
 				}
@@ -122,15 +119,13 @@ func ContainerGapDefinitions() []brine.StepDefinition {
 				}
 				return fmt.Errorf(
 					"the pod for %q requires a node, but not one running the artifact cache", in.Handle)
-			},
-		),
+			}),
 
 		// Inputs are fetched into the workspace by init containers before the
 		// step's own command starts. Without them the step runs against an
 		// empty directory and fails on a file it was handed.
-		brine.DefineCheck[PodCreated](
-			"the pod fetches its inputs before the step starts",
-			func(in PodCreated, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[PodCreated]("the pod fetches its inputs before the step starts",
+			func(in PodCreated) error {
 				if in.Pod == nil {
 					return fmt.Errorf("no pod was created")
 				}
@@ -142,12 +137,10 @@ func ContainerGapDefinitions() []brine.StepDefinition {
 				return fmt.Errorf(
 					"the pod for %q has no init container to fetch its inputs, so the step starts "+
 						"with an empty workspace and fails on a file it was given", in.Handle)
-			},
-		),
+			}),
 
-		brine.DefineCheck[PodCreated](
-			"the pod does not clear the workspace",
-			func(in PodCreated, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[PodCreated]("the pod does not clear the workspace",
+			func(in PodCreated) error {
 				if hasInitContainer(in, "cleanup-stale") {
 					return fmt.Errorf(
 						"the pod for %q clears its workspace, but nothing ran here before — a fresh "+
@@ -155,8 +148,7 @@ func ContainerGapDefinitions() []brine.StepDefinition {
 							"an image pull", in.Handle)
 				}
 				return nil
-			},
-		),
+			}),
 	}
 }
 

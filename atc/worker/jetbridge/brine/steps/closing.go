@@ -240,27 +240,18 @@ func closingStepDefinitions() []brine.StepDefinition {
 		// Checks
 		// ------------------------------------------------------------------
 
-		brine.DefineCheck[ClosingRun](
-			"the finished step left exit status {string} on its container",
-			func(in ClosingRun, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected an exit status parameter")
-				}
+		CheckString[ClosingRun]("the finished step left exit status {string} on its container",
+			"the exit status on the container",
+			func(in ClosingRun) (string, error) {
 				got, present := in.Props["concourse:exit-status"]
 				if !present {
-					return fmt.Errorf("the container carries no concourse:exit-status property (has %v)", in.Props)
+					return "", fmt.Errorf("the container carries no concourse:exit-status property (has %v)", in.Props)
 				}
-				if got != want {
-					return fmt.Errorf("expected exit status %q on the container, got %q", want, got)
-				}
-				return nil
-			},
-		),
+				return got, nil
+			}),
 
-		brine.DefineCheck[ClosingRun](
-			"the step's pod is labelled for the worker that owns it",
-			func(in ClosingRun, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[ClosingRun]("the step's pod is labelled for the worker that owns it",
+			func(in ClosingRun) error {
 				got, present := in.PodLabels["concourse.ci/worker"]
 				if !present {
 					return fmt.Errorf("the pod carries no concourse.ci/worker label (has %v)", in.PodLabels)
@@ -269,9 +260,10 @@ func closingStepDefinitions() []brine.StepDefinition {
 					return fmt.Errorf("expected the pod to name worker %q, got %q", "k8s-worker-1", got)
 				}
 				return nil
-			},
-		),
+			}),
 
+		// Keeps its own body: a wrong exit status is diagnosed from the build
+		// log, which it quotes and the generic message cannot.
 		brine.DefineCheck[ClosingRun](
 			"the finished step reported exit {int}",
 			func(in ClosingRun, p brine.Params, _ *brine.Recorder) error {
@@ -289,37 +281,24 @@ func closingStepDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineCheck[ClosingRun](
-			"the step's output reached the build log as {string}",
-			func(in ClosingRun, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected an output parameter")
-				}
-				if !strings.Contains(in.Log, want) {
-					return fmt.Errorf("expected the build log to contain %q, got %q", want, in.Log)
-				}
-				return nil
-			},
-		),
+		CheckContains[ClosingRun]("the step's output reached the build log as {string}",
+			"the build log",
+			func(in ClosingRun) (string, error) { return in.Log, nil }),
 
-		brine.DefineCheck[ClosingRun](
-			"attaching was refused saying {string}",
-			func(in ClosingRun, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected a reason parameter")
-				}
+		// The refusal has to have happened at all before its wording means
+		// anything, so "it succeeded" is reported from the getter.
+		CheckContains[ClosingRun]("attaching was refused saying {string}",
+			"the refusal",
+			func(in ClosingRun) (string, error) {
 				if in.AttachErr == nil {
-					return fmt.Errorf("expected attaching to be refused saying %q, but it succeeded", want)
+					return "", fmt.Errorf("expected attaching to be refused, but it succeeded")
 				}
-				if !strings.Contains(in.AttachMessage, want) {
-					return fmt.Errorf("expected the refusal to say %q, got %q", want, in.AttachMessage)
-				}
-				return nil
-			},
-		),
+				return in.AttachMessage, nil
+			}),
 
+		// Keeps its own body: on a mismatch it names every pod on the cluster,
+		// which is how the duplicate that should not have been scheduled is
+		// identified.
 		brine.DefineCheck[ClosingRun](
 			"the cluster is running exactly {int} pod for the step",
 			func(in ClosingRun, p brine.Params, _ *brine.Recorder) error {
@@ -334,6 +313,9 @@ func closingStepDefinitions() []brine.StepDefinition {
 			},
 		),
 
+		// Keeps its own body: it asserts a TYPE as well as a reason, and the
+		// message on the wrong type explains the classification rule — a plain
+		// error fails the build where an InterruptionError retries it.
 		brine.DefineCheck[ClosingRun](
 			"the step was interrupted rather than failed, because it was {string}",
 			func(in ClosingRun, p brine.Params, _ *brine.Recorder) error {
@@ -358,19 +340,9 @@ func closingStepDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineCheck[ClosingRun](
-			"the diagnostics in the build log explain {string}",
-			func(in ClosingRun, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected a diagnostic parameter")
-				}
-				if !strings.Contains(in.Log, want) {
-					return fmt.Errorf("expected the build log to explain %q, got %q", want, in.Log)
-				}
-				return nil
-			},
-		),
+		CheckContains[ClosingRun]("the diagnostics in the build log explain {string}",
+			"the build log's diagnostics",
+			func(in ClosingRun) (string, error) { return in.Log, nil }),
 	}
 }
 
@@ -853,26 +825,25 @@ func closingCacheDefinitions() []brine.StepDefinition {
 		// Checks
 		// ------------------------------------------------------------------
 
-		brine.DefineCheck[ClosingCacheLookup](
-			"the resource cache is found",
-			func(in ClosingCacheLookup, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[ClosingCacheLookup]("the resource cache is found",
+			func(in ClosingCacheLookup) error {
 				if !in.CacheFound {
 					return fmt.Errorf("expected the resource cache to be found, it was not")
 				}
 				return nil
-			},
-		),
+			}),
 
-		brine.DefineCheck[ClosingCacheLookup](
-			"the resource cache is not found",
-			func(in ClosingCacheLookup, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[ClosingCacheLookup]("the resource cache is not found",
+			func(in ClosingCacheLookup) error {
 				if in.CacheFound {
 					return fmt.Errorf("expected no resource cache, but one was reported found")
 				}
 				return nil
-			},
-		),
+			}),
 
+		// Keeps its own body: it asserts the archive holds exactly ONE member
+		// as well as what that member says, and names the member it read — a
+		// collection the generic message cannot describe.
 		brine.DefineCheck[ClosingCacheLookup](
 			"the cached artifact reads {string}",
 			func(in ClosingCacheLookup, p brine.Params, _ *brine.Recorder) error {
@@ -930,9 +901,8 @@ func closingCacheDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineCheck[ClosingCacheLookup](
-			"the operator sees no warm activity at all",
-			func(in ClosingCacheLookup, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[ClosingCacheLookup]("the operator sees no warm activity at all",
+			func(in ClosingCacheLookup) error {
 				total := in.CacheLocalHits + in.CacheWarmHits + in.CacheWarmMiss + in.CacheSuppressed
 				if total != 0 {
 					return fmt.Errorf(
@@ -940,8 +910,7 @@ func closingCacheDefinitions() []brine.StepDefinition {
 						in.CacheLocalHits, in.CacheWarmHits, in.CacheWarmMiss, in.CacheSuppressed)
 				}
 				return nil
-			},
-		),
+			}),
 	}
 }
 
@@ -1160,44 +1129,32 @@ func closingLocatorDefinitions() []brine.StepDefinition {
 		// Checks
 		// ------------------------------------------------------------------
 
-		brine.DefineCheck[ClosingIndex](
-			"the artifact {string} is held on node {string}",
-			func(in ClosingIndex, p brine.Params, _ *brine.Recorder) error {
-				key, _ := p.GetString(0)
-				want, ok := p.GetString(1)
-				if !ok {
-					return fmt.Errorf("expected an artifact key and a node")
-				}
+		// "not held at all" is how these two say the sentence's premise fails:
+		// the index was never asked about a node or a directory for a key it
+		// does not carry.
+		CheckStringFor[ClosingIndex]("the artifact {string} is held on node {string}",
+			"the holding node",
+			func(in ClosingIndex, key string) (string, error) {
 				node, found := in.Index.LocateNode(key)
 				if !found {
-					return fmt.Errorf("the index does not hold %q at all", key)
+					return "", fmt.Errorf("the index does not hold %q at all", key)
 				}
-				if node != want {
-					return fmt.Errorf("expected %q to be held on %q, the index says %q", key, want, node)
-				}
-				return nil
-			},
-		),
+				return node, nil
+			}),
 
-		brine.DefineCheck[ClosingIndex](
-			"the artifact {string} is stored in directory {string}",
-			func(in ClosingIndex, p brine.Params, _ *brine.Recorder) error {
-				key, _ := p.GetString(0)
-				want, ok := p.GetString(1)
-				if !ok {
-					return fmt.Errorf("expected an artifact key and a directory")
-				}
+		CheckStringFor[ClosingIndex]("the artifact {string} is stored in directory {string}",
+			"the storage directory",
+			func(in ClosingIndex, key string) (string, error) {
 				loc, found := in.Index.Locate(key)
 				if !found {
-					return fmt.Errorf("the index does not hold %q at all", key)
+					return "", fmt.Errorf("the index does not hold %q at all", key)
 				}
-				if loc.HostDir != want {
-					return fmt.Errorf("expected %q to be stored in %q, the index says %q", key, want, loc.HostDir)
-				}
-				return nil
-			},
-		),
+				return loc.HostDir, nil
+			}),
 
+		// Keeps its own body: this is a negative, and its parameter is the key
+		// being asked about rather than an expectation to compare against, so
+		// no combinator is the right shape for it.
 		brine.DefineCheck[ClosingIndex](
 			"the artifact {string} is not held anywhere",
 			func(in ClosingIndex, p brine.Params, _ *brine.Recorder) error {
@@ -1212,9 +1169,8 @@ func closingLocatorDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineCheck[ClosingIndex](
-			"every artifact that was recorded is still held",
-			func(in ClosingIndex, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[ClosingIndex]("every artifact that was recorded is still held",
+			func(in ClosingIndex) error {
 				missing := []string{}
 				for _, key := range in.Expecting {
 					if _, found := in.Index.Locate(key); !found {
@@ -1226,8 +1182,7 @@ func closingLocatorDefinitions() []brine.StepDefinition {
 						len(missing), len(in.Expecting), missing)
 				}
 				return nil
-			},
-		),
+			}),
 	}
 }
 
@@ -1315,16 +1270,17 @@ func CancelledExecDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineCheck[CancelledExecOutcome](
-			"the step reports the cancellation",
-			func(in CancelledExecOutcome, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[CancelledExecOutcome]("the step reports the cancellation",
+			func(in CancelledExecOutcome) error {
 				if in.Err == nil {
 					return fmt.Errorf("expected the cancelled step to report an error; it reported success")
 				}
 				return nil
-			},
-		),
+			}),
 
+		// Keeps its own body: its parameter is the pod to look up rather than
+		// an expectation, and the failure message is where the exec-mode rule
+		// itself is written down.
 		brine.DefineCheck[CancelledExecOutcome](
 			"the pod {string} is still there for the operator",
 			func(in CancelledExecOutcome, p brine.Params, _ *brine.Recorder) error {

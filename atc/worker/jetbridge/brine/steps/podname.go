@@ -74,16 +74,16 @@ func PodNameDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineCheck[GeneratedPodName](
-			"the pod name is the handle unchanged",
-			func(in GeneratedPodName, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[GeneratedPodName]("the pod name is the handle unchanged",
+			func(in GeneratedPodName) error {
 				if in.Name != in.Handle {
 					return fmt.Errorf("expected the handle %q unchanged, got %q", in.Handle, in.Name)
 				}
 				return nil
-			},
-		),
+			}),
 
+		// Keeps its own body: a bound, not an equality. CheckInt would assert
+		// that the name is EXACTLY that long, which is a different rule.
 		brine.DefineCheck[GeneratedPodName](
 			"the pod name is at most {int} characters",
 			func(in GeneratedPodName, p brine.Params, _ *brine.Recorder) error {
@@ -103,6 +103,9 @@ func PodNameDefinitions() []brine.StepDefinition {
 		// mutation that DELETED separators instead of replacing them with
 		// hyphens passed: "my_pipe" became "mypipe", still a valid label and
 		// still wrong. The positive form is what pins it.
+		//
+		// It keeps its own body because the failure message states that rule:
+		// whoever trips it is looking at a name that is still a valid label.
 		brine.DefineCheck[GeneratedPodName](
 			"the pod name reads {string}",
 			func(in GeneratedPodName, p brine.Params, _ *brine.Recorder) error {
@@ -152,9 +155,8 @@ func PodNameDefinitions() []brine.StepDefinition {
 		// DNS label is lowercase alphanumerics and hyphens, at most 63
 		// characters, starting and ending alphanumeric — which also rules out
 		// the doubled and trailing hyphens the individual cases checked for.
-		brine.DefineCheck[GeneratedPodName](
-			"the pod name is a valid DNS label",
-			func(in GeneratedPodName, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[GeneratedPodName]("the pod name is a valid DNS label",
+			func(in GeneratedPodName) error {
 				if in.Name == "" {
 					return fmt.Errorf("the pod name is empty")
 				}
@@ -169,8 +171,7 @@ func PodNameDefinitions() []brine.StepDefinition {
 					return fmt.Errorf("%q contains consecutive hyphens", in.Name)
 				}
 				return nil
-			},
-		),
+			}),
 	}
 }
 
@@ -181,9 +182,8 @@ func PodNameSegmentDefinitions() []brine.StepDefinition {
 		// take the entire budget the name would still be a valid label and
 		// still be useless: an operator scanning `kubectl get pods` needs to
 		// see WHICH JOB the pod belongs to, not just which pipeline.
-		brine.DefineCheck[GeneratedPodName](
-			"the pod name still identifies its job",
-			func(in GeneratedPodName, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[GeneratedPodName]("the pod name still identifies its job",
+			func(in GeneratedPodName) error {
 				parts := strings.Split(in.Name, "-b1-")
 				if len(parts) != 2 {
 					return fmt.Errorf("expected the name to carry a build segment, got %q", in.Name)
@@ -200,7 +200,6 @@ func PodNameSegmentDefinitions() []brine.StepDefinition {
 						"expected both a pipeline and a job segment so the pod is findable by job; got only %q", prefix)
 				}
 				return nil
-			},
-		),
+			}),
 	}
 }

@@ -133,9 +133,8 @@ func ContainerLifecycleDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineCheck[ReusedPod](
-			"the step gets a live pod, not the dead one",
-			func(in ReusedPod, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[ReusedPod]("the step gets a live pod, not the dead one",
+			func(in ReusedPod) error {
 				if in.Err != nil {
 					return fmt.Errorf("the step failed instead of replacing the pod: %v", in.Err)
 				}
@@ -148,8 +147,7 @@ func ContainerLifecycleDefinitions() []brine.StepDefinition {
 						in.PodName, in.Pod.Status.Phase)
 				}
 				return nil
-			},
-		),
+			}),
 
 		// A container's properties are how the runtime remembers a step's
 		// result in-process, which is what Attach reads before it asks
@@ -187,27 +185,18 @@ func ContainerLifecycleDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineCheck[ContainerProperties](
-			"reading it back yields {string} as {string}",
-			func(in ContainerProperties, p brine.Params, _ *brine.Recorder) error {
-				key, _ := p.GetString(0)
-				want, ok := p.GetString(1)
-				if !ok {
-					return fmt.Errorf("expected a key and a value")
-				}
+		CheckStringFor[ContainerProperties]("reading it back yields {string} as {string}",
+			"the recorded property",
+			func(in ContainerProperties, key string) (string, error) {
 				if in.Err != nil {
-					return fmt.Errorf("reading properties failed: %v", in.Err)
+					return "", fmt.Errorf("reading properties failed: %v", in.Err)
 				}
 				got, found := in.Props[key]
 				if !found {
-					return fmt.Errorf("expected property %q, the container has %d properties", key, len(in.Props))
+					return "", fmt.Errorf("expected property %q, the container has %d properties", key, len(in.Props))
 				}
-				if got != want {
-					return fmt.Errorf("expected %q to be %q, got %q", key, want, got)
-				}
-				return nil
-			},
-		),
+				return got, nil
+			}),
 	}
 }
 
@@ -302,26 +291,17 @@ func AttachDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineCheck[RecoveredStep](
-			"the step is recovered as having exited {int}",
-			func(in RecoveredStep, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetInt(0)
-				if !ok {
-					return fmt.Errorf("expected an exit code parameter")
-				}
+		CheckInt[RecoveredStep]("the step is recovered as having exited {int}",
+			"the recovered exit status",
+			func(in RecoveredStep) (int, error) {
 				if in.Err != nil {
-					return fmt.Errorf("expected the step to be recovered as exit %d, got error: %v", want, in.Err)
+					return 0, fmt.Errorf("the step was not recovered at all: %v", in.Err)
 				}
-				if in.ExitStatus != want {
-					return fmt.Errorf("expected exit %d, got %d", want, in.ExitStatus)
-				}
-				return nil
-			},
-		),
+				return in.ExitStatus, nil
+			}),
 
-		brine.DefineCheck[RecoveredStep](
-			"the step cannot be recovered and must be run again",
-			func(in RecoveredStep, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[RecoveredStep]("the step cannot be recovered and must be run again",
+			func(in RecoveredStep) error {
 				if in.Err == nil {
 					return fmt.Errorf(
 						"expected re-attaching to fail so the engine re-runs the step; "+
@@ -329,8 +309,7 @@ func AttachDefinitions() []brine.StepDefinition {
 						in.ExitStatus)
 				}
 				return nil
-			},
-		),
+			}),
 	}
 }
 
@@ -414,18 +393,18 @@ func SidecarLogDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineCheck[SidecarLogs](
-			"the sidecar's output arrives on its own stream",
-			func(in SidecarLogs, _ brine.Params, _ *brine.Recorder) error {
+		CheckThat[SidecarLogs]("the sidecar's output arrives on its own stream",
+			func(in SidecarLogs) error {
 				if in.SidecarWriter == "" {
 					return fmt.Errorf(
 						"expected the sidecar's log on its dedicated stream; nothing arrived, so a user watching " +
 							"that sidecar would see an empty pane")
 				}
 				return nil
-			},
-		),
+			}),
 
+		// Keeps its own body: the message explains what the label is FOR, and
+		// truncates the log — the generic message would dump a whole build log.
 		brine.DefineCheck[SidecarLogs](
 			"the sidecar's output is folded into the build log, labelled {string}",
 			func(in SidecarLogs, p brine.Params, _ *brine.Recorder) error {

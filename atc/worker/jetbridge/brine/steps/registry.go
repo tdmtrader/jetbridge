@@ -176,24 +176,20 @@ func failureDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		// Terminal checks over StepOutcome.
-		brine.DefineCheck[StepOutcome](
-			"the step fails naming {string}",
-			func(in StepOutcome, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected an expected-reason parameter")
-				}
+		// Terminal checks over StepOutcome. A step that succeeded has no
+		// failure to name, which the getter reports rather than comparing an
+		// empty message.
+		CheckContains[StepOutcome]("the step fails naming {string}",
+			"the failure",
+			func(in StepOutcome) (string, error) {
 				if in.Err == nil {
-					return fmt.Errorf("expected the step to fail naming %q, but it succeeded", want)
+					return "", fmt.Errorf("expected the step to fail, but it succeeded")
 				}
-				if !strings.Contains(in.Message, want) {
-					return fmt.Errorf("expected the failure to name %q, got %q", want, in.Message)
-				}
-				return nil
-			},
-		),
+				return in.Message, nil
+			}),
 
+		// Keeps its own body: the assertion is that the text does NOT appear,
+		// and no combinator negates.
 		brine.DefineCheck[StepOutcome](
 			"the failure does not mention {string}",
 			func(in StepOutcome, p brine.Params, _ *brine.Recorder) error {

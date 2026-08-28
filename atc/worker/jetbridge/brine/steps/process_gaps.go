@@ -126,6 +126,10 @@ func ProcessGapDefinitions() []brine.StepDefinition {
 		//
 		// Worded distinctly from step-integration's "the step reports exit
 		// status {int}", which sits on a different state.
+		//
+		// Keeps its own body: it separates "failed outright" from "reported
+		// the wrong code", and its message says what the number MEANS to the
+		// build — neither survives a generic want/got line.
 		brine.DefineCheck[StepOutcome](
 			"the step's exit status is {int}",
 			func(in StepOutcome, p brine.Params, _ *brine.Recorder) error {
