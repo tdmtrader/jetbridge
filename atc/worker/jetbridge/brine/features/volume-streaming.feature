@@ -103,3 +103,152 @@ Feature: Moving artifacts through volumes
     And volume "broken" sits on a cluster that cannot run commands
     When a file is put into volume "broken"
     Then it fails rather than panicking, saying "exec failed"
+
+  # ==========================================================================
+  # Artifacts that live on another node (VT-06, VT-07)
+  # ==========================================================================
+
+  # Everything above moves bytes through a pod's own filesystem. Every input a
+  # step did NOT produce itself arrives the other way: over the network, from
+  # the artifact daemon on the node that produced it. That fetch has its own
+  # failure modes, and until now none of them were stated as an outcome — the
+  # tests that covered them built the volume by hand, swapped the HTTP
+  # transport for one that rewrote every URL, and finished by reading a
+  # counter the request handler had incremented.
+  #
+  # Below, the node is a real Node in the cluster, its address is resolved the
+  # way production resolves it, and the daemon is a real HTTP server whose one
+  # named difference is how it treats a connection.
+
+  # VT-06's "retry up to 3 times" clause, which artifact-daemon.feature
+  # deliberately left for this pass. A daemon pod that is rescheduled mid-build
+  # drops connections that were already open; without the retry, every such
+  # drop is a red build for an artifact sitting intact on disk one
+  # reconnection away.
+  #
+  # This scenario really waits: the backoff is two seconds and two connections
+  # are dropped, so it costs about four seconds. That is the price of stating
+  # the retry as something a consumer experiences instead of as a call count.
+  @VT-06
+  Scenario: An artifact still arrives from a daemon that drops the first connections
+    Given an artifact on another node holding the file "release.tgz" containing "built on another node"
+    And that node's daemon drops the first 2 connections
+    When the next step fetches the artifact from that node
+    Then the artifact "release.tgz" containing "built on another node" is there
+
+  # The other half of the same loop, and the more dangerous one. A daemon that
+  # never completes a connection has to become a FAILED read. The alternative —
+  # an empty stream and no error — sets a step to work on an input that was
+  # never delivered, and it dies later on a missing file with nothing pointing
+  # at the real cause.
+  #
+  # About four seconds as well, and for the same reason: three attempts.
+  @VT-06
+  Scenario: A daemon that never answers is a failed read, not an empty artifact
+    Given an artifact on another node holding the file "release.tgz" containing "built on another node"
+    And that node's daemon never completes a connection
+    When the next step fetches the artifact from that node
+    Then the read fails rather than handing back an empty artifact
+
+  # "Gone" and "broken" send an operator to different places: a missing
+  # artifact is a pipeline bug, a daemon returning 500 is an outage on that
+  # node. artifact-daemon.feature covers the 404, so a 5xx was until now
+  # indistinguishable from a miss anywhere in these features.
+  @VT-06
+  Scenario: A daemon that is failing says so rather than looking like a miss
+    Given an artifact on another node holding the file "release.tgz" containing "built on another node"
+    And that node's daemon is failing and answers every request with an internal error
+    When the next step fetches the artifact from that node
+    Then the read fails rather than handing back an empty artifact
+    And the failure says the daemon is broken rather than that the artifact is gone
+
+  # VT-07, and the write-side twin of "A cluster failure reaches the writer
+  # rather than being swallowed" above. The locator that remembers which node
+  # produced an artifact lives in memory, so a web restart forgets it; when
+  # daemon discovery is not configured there is then nowhere at all to send
+  # the bytes. Reporting success there is the worst available outcome: the
+  # step finishes green and the next one reads an empty directory.
+  @VT-07
+  Scenario: Writing into an artifact with no daemon to send it to fails rather than reporting success
+    Given an artifact whose producing node the web has forgotten, and no way to look it up
+    When the step writes its output into that artifact
+    Then the write fails rather than reporting an output that never left the web
+
+  # ==========================================================================
+  # Which volumes a step is handed, and where its pod is put (CO-05, CO-06,
+  # CO-10, CO-12)
+  # ==========================================================================
+
+  # Before any of the above can happen, the worker has to decide what volumes
+  # a step gets and which node to ask for. Both decisions are made in
+  # Worker.buildVolumeMountsForSpec and the storage backend, and the cases
+  # below are the ones no scenario reached.
+
+  # CO-05 at the worker seam. An output that lands where an input already is
+  # must reuse that input's volume rather than getting a second one. Two
+  # volumes on one path is not untidiness: the step's outputs are registered
+  # from one list and their locations recorded from another, so the artifact
+  # the next step fetches and the artifact this step wrote would be different
+  # objects with different handles.
+  #
+  # container-pod.feature states the same rule about the POD's volumes, which
+  # a different function builds. The two have to agree, and nothing had said
+  # so on this side.
+  @CO-05
+  Scenario: An output that lands on an input's path reuses that input's volume
+    Given a jetbridge worker on a fake Kubernetes cluster
+    And a task container "shared-path-handle" built from image "docker:///busybox"
+    And it works in "/tmp/build/workdir"
+    And it takes an input at "/tmp/build/workdir/shared"
+    And it produces an output at "/tmp/build/workdir/shared"
+    When the container is created but not yet run
+    Then the caller is handed 2 volumes in all
+    And the caller is handed a volume mounted at "/tmp/build/workdir/shared"
+
+  # The realistic spelling of the case above: Concourse output paths routinely
+  # carry a trailing slash, and "shared/" and "shared" are the same directory.
+  # Normalising the path is what makes them match — without it the dedup
+  # quietly stops applying to most real pipelines while the scenario above
+  # keeps passing.
+  @CO-05
+  Scenario: A trailing slash on the output path does not defeat the dedup
+    Given a jetbridge worker on a fake Kubernetes cluster
+    And a task container "trailing-slash-handle" built from image "docker:///busybox"
+    And it works in "/tmp/build/workdir"
+    And it takes an input at "/tmp/build/workdir/shared"
+    And it produces an output at "/tmp/build/workdir/shared/"
+    When the container is created but not yet run
+    Then the caller is handed 2 volumes in all
+    And the caller is handed a volume mounted at "/tmp/build/workdir/shared"
+
+  # CO-06/CO-12. A task declares its caches relative to its working directory
+  # — `caches: [{path: my-cache}]` — and Kubernetes rejects a relative
+  # mountPath outright, so a cache path left unresolved is a pod the API
+  # server refuses to create. Every other cache in these features is absolute,
+  # so the branch that resolves one ran nowhere.
+  @CO-06 @CO-12
+  Scenario: A cache named relative to the working directory is mounted inside it
+    Given a jetbridge worker on a fake Kubernetes cluster
+    And a task container "relative-cache-handle" built from image "docker:///busybox"
+    And it works in "/tmp/build/workdir"
+    And it caches "my-cache"
+    When the container is created but not yet run
+    Then the caller is handed 2 volumes in all
+    And the caller is handed a volume mounted at "/tmp/build/workdir/my-cache"
+
+  # CO-10. A step reads its inputs from the artifact daemon on whatever node
+  # it lands on, and any input that is not already there crosses the network
+  # first. container-pod.feature states the REQUIREMENT — the node must be
+  # running an artifact daemon at all — and that is not the same thing: it is
+  # satisfied by every node in the cluster. The preference on top of it is
+  # what actually keeps the bytes local, and nothing in these features had
+  # mentioned it, so a step placed away from every one of its own inputs was
+  # invisible.
+  @CO-10
+  Scenario: A step is preferably placed on the node holding most of its inputs
+    Given a jetbridge worker that places steps near their inputs
+    And an input artifact that already lives on node "node-1"
+    And an input artifact that already lives on node "node-2"
+    And an input artifact that already lives on node "node-2"
+    When the step is scheduled
+    Then the step prefers to run on node "node-2"
