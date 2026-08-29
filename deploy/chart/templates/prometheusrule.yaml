@@ -84,36 +84,52 @@ spec:
           annotations:
             summary: "Worker stalled"
             description: "A worker stopped re-registering and was marked stalled (heartbeat TTL is 30s); it may be unhealthy or partitioned."
+        # Tuned for a single-node home lab rather than a fleet. The previous
+        # form — increase(...[5m]) > 0 for 5m — paged on ONE error, and the
+        # commonest source of errors here is not a broken store at all: every
+        # daemon restart re-scans and re-reports the same already-known-bad
+        # object. A k3s restart on 2026-08-29 produced 197 identical
+        # "object metadata vocabulary is not exact" failures over 81 minutes
+        # from a single corrupt object, then stopped on its own.
+        #
+        # So the window asks for REPEATED failure and the `for` outlasts a
+        # restart burst: a scan that resolves inside two hours never pages,
+        # while a genuinely unwritable store still does. Rate, not existence.
         - alert: ConcourseHangarSnapshotFailures
-          expr: increase(artifact_daemon_snapshot_operations_total{operation=~"put|get",status="error"}[5m]) > 0
-          for: 5m
+          expr: increase(artifact_daemon_snapshot_operations_total{operation=~"put|get",status="error"}[30m]) > 10
+          for: 2h
           labels:
             severity: warning
           annotations:
-            summary: "Hangar-backed snapshot operation failures"
-            description: "Artifact daemons are unable to commit or restore durable agent snapshots. This is a trailing signal: by the time it fires, snapshot reads or writes are already failing. ConcourseHangarStoreNearCapacity and ConcourseHangarStoreWillFill are the leading indicators for the full-store cause."
+            summary: "Hangar-backed snapshot operations failing repeatedly"
+            description: "Artifact daemons have been failing to commit or restore durable agent snapshots continuously for over two hours. This is a trailing signal: by the time it fires, snapshot reads or writes are already failing. ConcourseHangarStoreNearCapacity and ConcourseHangarStoreWillFill are the leading indicators for the full-store cause. A short burst after a daemon restart is expected and no longer alerts."
 {{- if .Values.agentSnapshots.enabled }}
         # Residency alerts. artifact_daemon_hangar_bytes describes the whole
         # store, and the daemon is a DaemonSet, so every node reports the same
         # total. Deduplicate with `max by (kind)` and only then sum across
         # kinds; sum() over the raw series would multiply the store by the node
         # count and make a healthy store look full.
+        # Six hours rather than one, and an hour of persistence: a single
+        # missed sweep on a box that reboots for a disk swap is not news. The
+        # gauges being stale only matters if they stay stale.
         - alert: ConcourseHangarResidencyStale
-          expr: time() - max(artifact_daemon_hangar_inventory_timestamp_seconds > 0) > 3600
-          for: 15m
+          expr: time() - max(artifact_daemon_hangar_inventory_timestamp_seconds > 0) > 21600
+          for: 1h
           labels:
             severity: warning
           annotations:
-            summary: "Hangar residency has not been observed for over an hour"
+            summary: "Hangar residency has not been observed for over six hours"
             description: "The residency gauges are cached between sweeps, so they hold their last values when refreshes stop. Every capacity and growth alert below is therefore evaluating stale numbers and cannot be trusted to fire. Check daemon logs for hangar-inventory-refresh-failed and confirm the daemons can still list the bucket."
+        # Same reasoning as ConcourseHangarSnapshotFailures: count repeated
+        # failures over a longer window instead of paging on the first one.
         - alert: ConcourseHangarResidencyRefreshFailing
-          expr: increase(artifact_daemon_hangar_inventory_refreshes_total{status="error"}[30m]) > 0
-          for: 30m
+          expr: increase(artifact_daemon_hangar_inventory_refreshes_total{status="error"}[2h]) > 5
+          for: 2h
           labels:
             severity: warning
           annotations:
-            summary: "Hangar residency enumeration is failing"
-            description: "Daemons cannot enumerate the Hangar bucket. This also covers the case where no sweep has ever succeeded, which ConcourseHangarResidencyStale cannot see because it has no successful timestamp to age."
+            summary: "Hangar residency enumeration is failing repeatedly"
+            description: "Daemons cannot enumerate the Hangar bucket, and have failed repeatedly over two hours rather than once. This also covers the case where no sweep has ever succeeded, which ConcourseHangarResidencyStale cannot see because it has no successful timestamp to age."
         - alert: ConcourseHangarStoreGrowthAbnormal
           expr: |-
             sum(max by (kind) (artifact_daemon_hangar_bytes))
