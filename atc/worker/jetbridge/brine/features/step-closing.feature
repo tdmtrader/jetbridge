@@ -316,6 +316,34 @@ Feature: Closing the loop — a whole step, the durable tier, and the artifact i
     And the artifact "abc" is collected
     Then the artifact "abc" is not held anywhere
 
+  # The index answers two questions — where is this, and which node holds it —
+  # and only the first one was ever asked about a key the index does not hold.
+  # The second is the one production asks. Two readers branch on its answer:
+  # the reaper skips a destroyed handle it cannot place, and the scheduler
+  # counts one node per input it can place and sends the pod to the winner.
+  #
+  # A node lookup that says "yes" for a key it has never seen hands both of
+  # them the empty node name as if it were a real placement. The reaper then
+  # tries to resolve an address for "" once per unplaceable handle on every GC
+  # pass and logs a failure for each; the scheduler lets "" collect a vote per
+  # unrecorded input, and once those outvote the node that genuinely holds the
+  # data the winning preference is the empty one — which is no preference at
+  # all, so the pod lands anywhere and every local read becomes a cross-node
+  # fetch. Neither reader ever notices, because the phantom answer is
+  # well-formed.
+  #
+  # Both kinds of absence are here — a key that was collected and a key that
+  # was never recorded — and a held key sits alongside them, so a lookup that
+  # simply denied everything could not pass either.
+  Scenario: The node lookup names nobody for artifacts the index does not hold
+    Given an empty artifact index
+    When the artifact "abc" is recorded on node "node-1"
+    And the artifact "def" is recorded on node "node-2"
+    And the artifact "def" is collected
+    Then the artifact "abc" is held on node "node-1"
+    And no node is named for the artifact "def"
+    And no node is named for the artifact "never-recorded"
+
   # The ginkgo case spawned 300 goroutines over 26 COLLIDING keys and asserted
   # nothing at all — it was a race-detector probe, and this repository's unit
   # tier does not run with -race (CLAUDE.md: "do not use --race"), so it

@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/brine-dev/brine-go/pkg/brine"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/compression"
@@ -25,6 +26,7 @@ import (
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	"github.com/klauspost/compress/s2"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 )
@@ -516,6 +518,90 @@ type RemoteArtifact struct {
 	// artifact, and no daemon discovery is configured to find it again. There
 	// is no daemon at all in that case — that is the point.
 	Forgotten bool
+
+	// Refused means the producing node is STILL IN THE CLUSTER and its
+	// address still resolves — there is simply nothing listening on the
+	// daemon port, so the connection is refused. That is a different
+	// situation from Forgotten and from a node that has left, and it reaches
+	// the runtime down a different branch: those two never produce a URL to
+	// ask, this one produces a URL, asks it, and is turned away.
+	Refused bool
+
+	// Mirror is what a peer daemon holds under the mirrored path, empty when
+	// no peer has a copy. It is deliberately different text from Content so a
+	// scenario can name WHICH copy the consumer received.
+	Mirror string
+
+	// Fallback means the ATC is configured to discover the other daemons and
+	// ask them. Without it there is nowhere to fall back to and the recorded
+	// source's failure is final.
+	Fallback bool
+}
+
+// remoteDaemonService is the headless service the daemon pods are published
+// under, and the one the ATC discovers them through.
+const remoteDaemonService = "artifact-daemon"
+
+// remoteDaemonNamespace is the namespace both the daemons and the ATC's
+// discovery of them are scoped to.
+const remoteDaemonNamespace = "test-namespace"
+
+// refusedPort returns a loopback port with nothing listening on it: a listener
+// is opened to reserve a free port and closed again, so the dial that follows
+// is really refused by the kernel rather than black-holed. A black hole would
+// take the same production branch, but it would cost a full client timeout on
+// each of the three attempts instead of nothing at all.
+func refusedPort() (int, error) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return 0, fmt.Errorf("reserve a port to close: %w", err)
+	}
+	addr, ok := l.Addr().(*net.TCPAddr)
+	if !ok {
+		l.Close()
+		return 0, fmt.Errorf("reserved a %T, not a TCP address", l.Addr())
+	}
+	if err := l.Close(); err != nil {
+		return 0, fmt.Errorf("close the reserved port: %w", err)
+	}
+	return addr.Port, nil
+}
+
+// nodeAndPeers builds the cluster the ATC reads: the producing node, with the
+// address the runtime will resolve out of it, and the EndpointSlice the daemon
+// fleet is published under.
+func nodeAndPeers(ip string) *fake.Clientset {
+	return fake.NewSimpleClientset(
+		&corev1.Node{
+			ObjectMeta: metav1.ObjectMeta{Name: remoteArtifactNode},
+			Status: corev1.NodeStatus{
+				Addresses: []corev1.NodeAddress{
+					{Type: corev1.NodeInternalIP, Address: ip},
+				},
+			},
+		},
+		&discoveryv1.EndpointSlice{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      remoteDaemonService + "-brine",
+				Namespace: remoteDaemonNamespace,
+				Labels:    map[string]string{discoveryv1.LabelServiceName: remoteDaemonService},
+			},
+			Endpoints: []discoveryv1.Endpoint{{Addresses: []string{ip}}},
+		},
+	)
+}
+
+// withFallback gives the volume the daemon discovery the ATC is configured
+// with, when the scenario said it has any.
+func (r RemoteArtifact) withFallback(vol *jetbridge.DaemonSetVolume, cs *fake.Clientset, port int) *jetbridge.DaemonSetVolume {
+	if !r.Fallback {
+		return vol
+	}
+	vol.SetDaemonClient(jetbridge.NewDaemonClient(
+		lagertest.NewTestLogger("brine-remote-artifact"),
+		cs, remoteDaemonNamespace, remoteDaemonService, port, nil,
+	))
+	return vol
 }
 
 // daemon starts the node's artifact daemon and builds the volume the runtime
@@ -523,17 +609,40 @@ type RemoteArtifact struct {
 // the daemon.
 func (r RemoteArtifact) daemon() (*jetbridge.DaemonSetVolume, func(), error) {
 	if r.Forgotten {
-		cfg := jetbridge.NewConfig("test-namespace", "")
+		cfg := jetbridge.NewConfig(remoteDaemonNamespace, "")
 		return jetbridge.NewDaemonSetVolume(
 			r.Key, r.Key, "k8s-worker-1", nil, "", cfg, nil,
 		), func() {}, nil
+	}
+
+	// The node is still in the cluster and still resolves; the daemon on it
+	// is simply not accepting connections. Nothing is started, so the address
+	// the runtime dials is a real address whose port is really closed.
+	if r.Refused {
+		port, err := refusedPort()
+		if err != nil {
+			return nil, nil, err
+		}
+		cs := nodeAndPeers("127.0.0.1")
+		cfg := jetbridge.NewConfig(remoteDaemonNamespace, "")
+		cfg.ArtifactDaemonPort = port
+
+		vol := jetbridge.NewDaemonSetVolume(
+			r.Key, r.Key, "k8s-worker-1", nil, remoteArtifactNode,
+			cfg, jetbridge.NewNodeIPResolver(cs),
+		)
+		return r.withFallback(vol, cs, port), func() {}, nil
 	}
 
 	body, err := plainTarOfOneFile(r.FileName, r.Content)
 	if err != nil {
 		return nil, nil, err
 	}
-	server := httptest.NewServer(r.handler(body))
+	mirror, err := plainTarOfOneFile(r.FileName, r.Mirror)
+	if err != nil {
+		return nil, nil, err
+	}
+	server := httptest.NewServer(r.handler(body, mirror))
 
 	addr, ok := server.Listener.Addr().(*net.TCPAddr)
 	if !ok {
@@ -541,30 +650,53 @@ func (r RemoteArtifact) daemon() (*jetbridge.DaemonSetVolume, func(), error) {
 		return nil, nil, fmt.Errorf("the daemon is listening on %T, not TCP", server.Listener.Addr())
 	}
 
-	clientset := fake.NewSimpleClientset(&corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{Name: remoteArtifactNode},
-		Status: corev1.NodeStatus{
-			Addresses: []corev1.NodeAddress{
-				{Type: corev1.NodeInternalIP, Address: addr.IP.String()},
-			},
-		},
-	})
+	clientset := nodeAndPeers(addr.IP.String())
 
-	cfg := jetbridge.NewConfig("test-namespace", "")
+	cfg := jetbridge.NewConfig(remoteDaemonNamespace, "")
 	cfg.ArtifactDaemonPort = addr.Port
 
-	return jetbridge.NewDaemonSetVolume(
+	vol := jetbridge.NewDaemonSetVolume(
 		r.Key, r.Key, "k8s-worker-1", nil, remoteArtifactNode,
 		cfg, jetbridge.NewNodeIPResolver(clientset),
-	), server.Close, nil
+	)
+	return r.withFallback(vol, clientset, addr.Port), server.Close, nil
 }
 
-// handler answers the one route the artifact daemon answers for a step
+// handler answers the two routes the artifact daemon answers for a step
 // artifact and 404s everything else, so the bytes arriving at all is what
 // proves the right artifact was asked for.
-func (r RemoteArtifact) handler(body []byte) http.Handler {
+//
+// The two routes are two DIFFERENT copies, which is production's own
+// distinction and not an invention here: the producing node serves its own
+// copy at /artifacts/{key} through a registry alias, while a peer that
+// received a mirror has it on disk at /artifacts/steps/{key} and serves it
+// from there. A daemon that has stopped completing connections stops
+// completing them for its own copy; the mirror is another daemon's, and
+// answers.
+//
+// ONE address plays both daemons, and that is a fixture limit worth naming.
+// The ATC reaches every daemon on a single configured port, so a live peer
+// and a dead producer would have to be two addresses sharing one port —
+// which on a loopback interface is one address. What the scenarios need is
+// the branch: a recorded source that resolves, is asked, and fails at the
+// transport, with a peer that then answers. The route split gives exactly
+// that, and no scenario asks this server what it saw.
+func (r RemoteArtifact) handler(body, mirror []byte) http.Handler {
 	var connections atomic.Int32
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		// The peer's mirrored copy. A HEAD is the probe and a GET is the
+		// fetch, and they are the same route, so a peer that answers one
+		// answers the other.
+		if req.URL.Path == "/artifacts/steps/"+r.Key {
+			if r.Mirror == "" {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			w.Header().Set("Content-Type", "application/x-tar")
+			_, _ = w.Write(mirror)
+			return
+		}
+
 		if r.NeverAnswers || (r.DropFirst > 0 && int(connections.Add(1)) <= r.DropFirst) {
 			// Hijack and close: a connection that dies after the request was
 			// written, which is what a daemon pod being rescheduled looks
@@ -664,6 +796,34 @@ func remoteArtifactDefinitions() []brine.StepDefinition {
 				return in
 			}),
 
+		// The node has NOT left. It is in the cluster, it resolves, and the
+		// address the runtime builds out of it is a real one — there is
+		// simply nothing listening on the daemon port, because the daemon
+		// pod is gone or has not come back yet. Every other fallback
+		// scenario in these features takes the artifact's recorded node
+		// away, which fails before a URL exists; this one produces the URL,
+		// dials it, and is turned away.
+		Refine[RemoteArtifact]("that node is still in the cluster, and its daemon port refuses the connection",
+			func(in RemoteArtifact, _ Args) RemoteArtifact {
+				in.Refused = true
+				return in
+			}),
+
+		// A peer that received the mirror. The text it holds is deliberately
+		// not the producer's, so a scenario can name which copy arrived
+		// rather than only that something did.
+		Refine[RemoteArtifact]("a peer daemon holds a mirrored copy of it containing {string}",
+			func(in RemoteArtifact, a Args) RemoteArtifact {
+				in.Mirror = a.String(0)
+				return in
+			}),
+
+		Refine[RemoteArtifact]("the ATC can ask the other daemons for a mirrored copy",
+			func(in RemoteArtifact, _ Args) RemoteArtifact {
+				in.Fallback = true
+				return in
+			}),
+
 		// Reading is an attempt, so a failure is assertable rather than fatal
 		// to the scenario — the same shape the exec-backed reads above use,
 		// and it lands in the same state, so it can reuse their checks.
@@ -749,6 +909,34 @@ func remoteArtifactDefinitions() []brine.StepDefinition {
 						"expected a failing daemon to be reported as a failure, not as a missing "+
 							"artifact — that sends the operator to look for a pipeline bug that is not "+
 							"there; got %q", in.Message)
+				}
+				return nil
+			}),
+
+		// The one outcome that separates "the producer was asked and refused,
+		// and then everyone else was asked too" from "the producer was asked,
+		// refused, and that was the end of it". Both fail; only one of them
+		// searched. A raw refusal reaching the operator IS the diagnosis that
+		// the search never happened, because the peer-miss error replaces it.
+		CheckThat[VolumeRead]("the failure names the node and its peers rather than the refused connection",
+			func(in VolumeRead) error {
+				if in.Err == nil {
+					return fmt.Errorf(
+						"expected the read to fail once neither the node nor any peer had the " +
+							"artifact, but it succeeded")
+				}
+				if !containsFold(in.Message, "or any peer") {
+					return fmt.Errorf(
+						"expected the failure to say the artifact was on neither the node nor any "+
+							"peer — which is the only thing in the message that tells an operator "+
+							"the other daemons were asked at all; got %q", in.Message)
+				}
+				if containsFold(in.Message, "connection refused") {
+					return fmt.Errorf(
+						"expected the producer's refused connection to be superseded by the peer "+
+							"search, not handed over as the diagnosis — a raw refusal sends the "+
+							"operator to the network for an artifact that is simply nowhere, and "+
+							"means the search was skipped; got %q", in.Message)
 				}
 				return nil
 			}),

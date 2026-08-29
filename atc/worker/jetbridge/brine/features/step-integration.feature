@@ -442,6 +442,30 @@ Feature: A step from end to end — its rows, its pod, its artifacts
       | loopback IPv6   | ::1             |
       | documentation   | 2001:db8::1     |
 
+  # The other half of that refusal, and the half the outline above cannot
+  # state: it must not be the Nodes API's 404 doing the work. Every scenario
+  # above runs against a cluster with no nodes, so a resolver that dropped the
+  # short-circuit and asked the API anyway still fails — for the wrong reason,
+  # but it fails.
+  #
+  # A node name is a DNS subdomain, and an IP-shaped string is a legal one.
+  # Clusters that register kubelets with `--hostname-override=<address>` have
+  # exactly that, and on one of those the doomed Get is not doomed: it answers,
+  # with the address of whichever machine happens to be registered under that
+  # name. That is the poisoning case in full — a caller that handed over a
+  # daemon POD's IP would be told, plausibly and with no error, where to fetch
+  # its artifacts from, and would fetch them from the wrong host or from a host
+  # that holds nothing.
+  #
+  # So the claim is not "no request was made", which no returned value can
+  # show. It is that the API's answer is not the resolver's answer: the
+  # argument is refused on its shape, on the one cluster where refusing and
+  # asking would have come back with different things.
+  Scenario: An IP passed as a node name is refused even where the Nodes API would answer
+    Given a cluster whose node "10.0.0.5" has internal address "10.9.9.9" and external address ""
+    When a caller resolves "10.0.0.5" twice
+    Then it is refused as an IP address even though a node is registered under that name
+
   # The container a step's command is exec'd into. Every PodExecutor double in
   # this package declared that parameter as `_`, so nothing observed it — and
   # resource_test.go covered it by inspecting the recorded call.
