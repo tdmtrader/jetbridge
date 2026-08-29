@@ -352,7 +352,9 @@ Feature: Closing the loop — a whole step, the durable tier, and the artifact i
   Scenario: Records made at the same moment are all kept
     Given an empty artifact index
     When 100 artifacts are recorded at the same moment
+    And 100 more are recorded and collected at the same moment
     Then every artifact that was recorded is still held
+    And every artifact that was collected is gone
 
   # PE-10, exec-mode half. When a build is cancelled the operator very often
   # wants to know WHY, and `fly hijack` into the surviving pause pod is how
