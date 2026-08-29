@@ -276,6 +276,35 @@ func closingStepDefinitions() []brine.StepDefinition {
 			},
 		),
 
+		// Removal under concurrency, which the ginkgo probe interleaved and
+		// could not assert. Its Remove ran against the same colliding keys as
+		// its Record, so "was it removed" had no answer even in principle —
+		// another goroutine may have re-recorded it. A separate key set makes
+		// it a claim: everything collected concurrently is gone, and nothing
+		// collected takes a neighbour with it.
+		Refine[ClosingIndex]("{int} more are recorded and collected at the same moment",
+			func(in ClosingIndex, a Args) ClosingIndex {
+				count := a.Int(0)
+
+				var wg sync.WaitGroup
+				for i := range count {
+					key := fmt.Sprintf("collected-%d", i)
+					in.Collected = append(in.Collected, key)
+					in.Index.Record(key, "node-x", "dir-"+key)
+					wg.Add(2)
+					go func() {
+						defer wg.Done()
+						in.Index.Remove(key)
+					}()
+					go func() {
+						defer wg.Done()
+						in.Index.Locate(key)
+					}()
+				}
+				wg.Wait()
+				return in
+			}),
+
 		// ------------------------------------------------------------------
 		// Checks
 		// ------------------------------------------------------------------
@@ -1030,6 +1059,10 @@ func closingDrainWarmCounters() {
 type ClosingIndex struct {
 	Index     *jetbridge.ArtifactLocator
 	Expecting []string
+	// Collected are keys recorded and then removed concurrently. They are
+	// tracked apart from Expecting because the claim about them is the
+	// opposite one: none of them may survive.
+	Collected []string
 }
 
 func closingLocatorDefinitions() []brine.StepDefinition {
@@ -1171,6 +1204,23 @@ func closingLocatorDefinitions() []brine.StepDefinition {
 				return nil
 			},
 		),
+
+		CheckThat[ClosingIndex]("every artifact that was collected is gone",
+			func(in ClosingIndex) error {
+				var survived []string
+				for _, key := range in.Collected {
+					if _, found := in.Index.Locate(key); found {
+						survived = append(survived, key)
+					}
+				}
+				if len(survived) > 0 {
+					return fmt.Errorf(
+						"%d of %d artifacts collected concurrently are still held (%v) — a reaper that "+
+							"cannot remove under load leaves the index growing against a disk that is not",
+						len(survived), len(in.Collected), abbrev(fmt.Sprint(survived)))
+				}
+				return nil
+			}),
 
 		CheckThat[ClosingIndex]("every artifact that was recorded is still held",
 			func(in ClosingIndex) error {
