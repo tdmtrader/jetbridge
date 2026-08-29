@@ -171,6 +171,14 @@ Feature: Recording where a step's outputs went
     Then the other node holds a copy of the output "binary" containing "the compiled binary"
     And the other node holds a copy of the output "report" containing "the test report"
     And the other node holds a copy of the output "logs" containing "the build logs"
+    # Copying is only half of what happens per output: each also has to be
+    # registered with its own node's daemon under the path the disk holds, or
+    # a later step reading output 2 or 3 gets a 404 from the node that has the
+    # bytes. The Go test asserted both halves per output; asserting only the
+    # copies let a change that registers one alias per STEP pass.
+    And the output "vol-binary" reads back as "the compiled binary"
+    And the output "vol-report" reads back as "the test report"
+    And the output "vol-logs" reads back as "the build logs"
 
   # DISPOSITION — TestDaemonSetBackend_RecordOutputs_TriggerMirrorFailureDoes-
   # NotPanic is not here, and this file is where the reason belongs. It stands
@@ -243,6 +251,20 @@ Feature: Recording where a step's outputs went
   # tree. That is what a registered cache actually looks like — the alias
   # points at a get step's output directory — and it is why the read only
   # succeeds if the lookup asks the right question.
+  # WHAT THIS PINS, AND WHAT IT DOES NOT.
+  #
+  # It pins that the probe branch is TAKEN: narrowing resourceCacheKeyPattern,
+  # or deleting the branch, reddens it, and the first of those is the silent
+  # failure resource_cache_key.go's own comment warns about.
+  #
+  # It does NOT pin that the probe READ the answer. Dropping the status check
+  # from ProbeResourceCache — so every daemon reports a hit — leaves this
+  # green, measured twice. The reason is structural: on a hit the volume binds
+  # to the probed IP but is ALSO given the daemon client, so peer fallback
+  # rescues a wrong binding and the bytes arrive anyway. Publishing a second
+  # daemon that holds nothing does not help; that was tried and it still
+  # passed. What a gutted probe actually costs is the database identity, and
+  # that is the scenario below this one, approached from the other side.
   Scenario: A cache the worker has no record of is found by asking the daemons
     Given a jetbridge worker whose step outputs stay on the node that ran them
     And an artifact volume "rc-7" the worker can look up
@@ -269,10 +291,24 @@ Feature: Recording where a step's outputs went
     Then the cache is recorded against the worker in the database
 
   # DISPOSITION — TestDaemonSetBackend_WrapVolumeForLookup_NonRcKeyNeverProbes
-  # is not here. It guards against over-probing: an ordinary artifact handle
-  # must not cost an EndpointSlice list and a HEAD to every daemon. The test
-  # enforces it by failing inside the handler when any request arrives, and
-  # there is no outcome behind it — a probe for a key no daemon has an alias
-  # for misses, and the lookup then takes exactly the branch it would have
-  # taken without probing. Same volume, same bytes, same errors; only the
-  # traffic differs. It stays a Go unit test.
+  # is not here, and the reason first written down was WRONG. It said a probe
+  # for an ordinary artifact handle simply misses, so the lookup takes the
+  # branch it would have taken anyway — "same volume, same bytes, same errors;
+  # only the traffic differs". An audit disproved it.
+  #
+  # The daemon answers HEAD /resource-caches/{key} out of the SAME registry
+  # that POST /register writes, and RecordOutputs registers every step output
+  # under its plain volume handle. So an ordinary handle DOES have an alias on
+  # its producer's daemon and a probe for it HITS. Remove the isResourceCacheKey
+  # gate and an ordinary artifact whose locator entry was lost to a web restart
+  # — the exact case DaemonSetVolume.StreamOut's own comment describes — takes
+  # the probe branch and comes back as NewDaemonSetVolumeFromIP, which carries
+  # no dbVolume. InitializeResourceCache, InitializeStreamedResourceCache and
+  # InitializeTaskCache then all silently return nil: the same loss the
+  # scenario above this note is about, reached from the other direction.
+  #
+  # So the rule has an outcome and only the request-counting half does not.
+  # It is not here because writing it needs a step for "the worker has
+  # forgotten where an output is" that does not exist yet, not because it
+  # cannot be written. Until then it stays a Go unit test — which is the one
+  # thing the original note got right, for the wrong reason.
