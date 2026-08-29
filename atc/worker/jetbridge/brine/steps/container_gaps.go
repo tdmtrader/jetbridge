@@ -9,6 +9,7 @@ import (
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -345,7 +346,276 @@ func ContainerGapDefinitions() []brine.StepDefinition {
 				}
 				return nil
 			}),
+
+		// ---------------------------------------------------------------
+		// The third wave: the on-disk layout of step volumes.
+		//
+		// Three more measured gaps, and two of the three are the same
+		// disagreement. A step volume lands somewhere under the store's
+		// hostPath, and RecordOutputs registers a daemon key that names the
+		// SAME place — "<handle>/<name>", served from
+		// <store>/steps/<handle>/<name>. When the two halves choose different
+		// names nothing fails at the seam: the producing step writes its files
+		// and exits 0, the consumer resolves a key the daemon happily creates
+		// an empty directory for, and the build breaks inside a task several
+		// steps later, on a file the pipeline plainly handed it.
+		//
+		// The third is the input loop giving up on the whole batch when one
+		// input has no artifact to fetch, which fails the same silent way.
+		// ---------------------------------------------------------------
+
+		// A get container. Its output is not in ContainerSpec.Outputs at all:
+		// what a get produces IS its working directory, which is why
+		// RecordOutputs counts spec.Dir as an output for everything that is
+		// not a task or a check.
+		//
+		// Its own Given rather than a refinement on the task one, for the
+		// reason the check container has its own: the type has to be on the
+		// draft before the container runs, so the run sentence can put it on
+		// the CONTAINER SPEC as well as on the metadata.
+		brine.DefineMap[ClusterReady, ContainerDraft](
+			"a get container {string} built from image {string}",
+			func(in ClusterReady, p brine.Params, _ *brine.Recorder) (ContainerDraft, error) {
+				handle, ok := p.GetString(0)
+				if !ok {
+					return ContainerDraft{}, fmt.Errorf("expected a container handle parameter")
+				}
+				image, ok := p.GetString(1)
+				if !ok {
+					return ContainerDraft{}, fmt.Errorf("expected an image parameter")
+				}
+				return ContainerDraft{
+					Namespace:     in.Namespace,
+					Worker:        in.Worker,
+					Clientset:     in.Clientset,
+					Ctx:           in.Ctx,
+					Handle:        handle,
+					ImageURL:      image,
+					Dir:           "/workdir",
+					TeamID:        in.TeamID,
+					ContainerType: db.ContainerTypeGet,
+				}, nil
+			},
+		),
+
+		// Its own sentence rather than "the container runs", for two reasons.
+		// The general step leaves ContainerSpec.Type empty — so a get is
+		// indistinguishable from a task to anything keyed on the spec, which
+		// is what decides whether the working directory counts as an output.
+		// And a get carries no inputs, outputs, caches or scratch, so a draft
+		// that grew some should say so rather than have them dropped.
+		brine.DefineMap[ContainerDraft, PodCreated](
+			"the get container runs",
+			func(in ContainerDraft, _ brine.Params, _ *brine.Recorder) (PodCreated, error) {
+				if kind := draftContainerType(in.ContainerType); kind != db.ContainerTypeGet {
+					return PodCreated{}, fmt.Errorf(
+						"this sentence describes a get container running; %q is a %s", in.Handle, kind)
+				}
+				if n := len(in.Inputs) + len(in.Outputs) + len(in.Caches) +
+					len(in.Scratch) + len(in.ArtifactInputs); n > 0 {
+					return PodCreated{}, fmt.Errorf(
+						"a get container's output is its working directory, and its spec carries no "+
+							"inputs, outputs, caches or scratch; %q was described with %d of them and "+
+							"this sentence would drop them", in.Handle, n)
+				}
+				return runDraft(in, db.ContainerTypeGet, runtime.ContainerSpec{
+					TeamID:    in.TeamID,
+					Dir:       in.Dir,
+					ImageSpec: runtime.ImageSpec{ImageURL: in.ImageURL},
+					Type:      db.ContainerTypeGet,
+				}, false)
+			},
+		),
+
+		// An output the pipeline NAMED, on a path of its own. "it produces an
+		// output at {string}" plus "the container runs" cannot express this:
+		// that pair names outputs positionally, "output-0", which is one
+		// character away from the volume name the mutation files them under —
+		// so a scenario written on it would be asserting against a name brine
+		// invented, and against a near-miss at that.
+		brine.DefineMap[ContainerDraft, PodCreated](
+			"the container runs producing the output {string} at {string}",
+			func(in ContainerDraft, p brine.Params, _ *brine.Recorder) (PodCreated, error) {
+				name, _ := p.GetString(0)
+				path, ok := p.GetString(1)
+				if !ok {
+					return PodCreated{}, fmt.Errorf("expected an output name and a path")
+				}
+				kind := draftContainerType(in.ContainerType)
+				return runDraft(in, kind, runtime.ContainerSpec{
+					TeamID:    in.TeamID,
+					Dir:       in.Dir,
+					ImageSpec: runtime.ImageSpec{ImageURL: in.ImageURL},
+					Outputs:   runtime.OutputPaths{name: path},
+					Type:      kind,
+				}, false)
+			},
+		),
+
+		// Where a step volume actually lands, against the key the daemon will
+		// be asked for.
+		//
+		// It keeps its own body because the two parameters are a lookup key
+		// and a key the expectation is DERIVED from, and because its four
+		// failures are four different diagnoses: nothing is mounted there at
+		// all, the pod carries no store to serve anything from, the directory
+		// is ephemeral, or it is on the node under the wrong name.
+		//
+		// It sits beside "is the node directory recorded for the output
+		// {string}" rather than replacing it. That one asks a narrower
+		// question — when an input and an output share a volume, whose name
+		// wins — and answers it without reference to where the store is
+		// rooted. This one pins the WHOLE path, and takes the daemon key
+		// rather than an output name so it can also speak about a directory
+		// that is nobody's named output: a get step's working directory,
+		// which RecordOutputs files under "dir".
+		//
+		// The root is read off the pod's own artifact-store volume rather
+		// than written into the sentence. That keeps the expectation derived
+		// from what the cluster was actually asked for, and it means a pod
+		// with no store at all — a check's — fails here instead of quietly
+		// agreeing.
+		brine.DefineCheck[PodCreated](
+			"the volume mounted at {string} is the node directory the daemon serves as {string}",
+			func(in PodCreated, p brine.Params, _ *brine.Recorder) error {
+				mountPath, _ := p.GetString(0)
+				key, ok := p.GetString(1)
+				if !ok {
+					return fmt.Errorf("expected a mount path and a daemon key")
+				}
+				keyHandle, subdir, split := strings.Cut(key, "/")
+				if !split || keyHandle == "" || subdir == "" {
+					return fmt.Errorf(
+						"a daemon key is \"<handle>/<name>\"; %q is not one", key)
+				}
+				if keyHandle != in.Handle {
+					return fmt.Errorf(
+						"this sentence names the daemon key %q, but the step under description is "+
+							"%q — the key of another step would be checked against this step's pod",
+						key, in.Handle)
+				}
+				root, err := storeRootOf(in.Pod, in.Handle)
+				if err != nil {
+					return err
+				}
+				want := filepath.Join(root, "steps", key)
+
+				v, err := volumeAt(in.Pod, mountPath)
+				if err != nil {
+					return fmt.Errorf(
+						"%w, so the step writes %q into the container's own image filesystem. No "+
+							"daemon can read that and it is gone when the pod ends, yet the runtime "+
+							"still registers the key %q and points it at %q — a directory the daemon "+
+							"creates empty on demand. The step exits 0 and every later step that "+
+							"resolves that key is handed nothing",
+						err, mountPath, key, want)
+				}
+				if v.HostPath == nil {
+					return fmt.Errorf(
+						"expected what the step writes at %q to live on the node at %q, where the "+
+							"daemon serves the key %q from; it is ephemeral and dies with the pod, so "+
+							"the key resolves to an empty directory for every step downstream",
+						mountPath, want, key)
+				}
+				if got := filepath.Clean(v.HostPath.Path); got != want {
+					return fmt.Errorf(
+						"the step writes %q into %q on the node, but its data is registered under the "+
+							"key %q, which the daemon serves from %q. The two halves name different "+
+							"directories, so nothing fails here: this step writes its files and "+
+							"succeeds, and the next step resolves the key, is handed a directory "+
+							"nothing ever wrote to, and reads an empty input from a producer that "+
+							"plainly ran",
+						mountPath, got, key, want)
+				}
+				return nil
+			},
+		),
+
+		// Which of the step's inputs the pod actually fetches.
+		//
+		// All three read the same list — the destination paths the
+		// fetch-inputs init container mounts, which is exactly the set of
+		// inputs it was built to write into — so the getter reports the
+		// absence of that container rather than returning an empty list.
+		// A sentence about which inputs are fetched presumes some are; left
+		// as "none", the negative check below would pass on a pod that
+		// fetches nothing at all, which is the failure it exists to catch.
+		CheckCount[PodCreated]("the pod fetches exactly {int} of the step's inputs",
+			"inputs fetched before the step starts", fetchedInputPaths),
+
+		CheckMember[PodCreated]("the pod fetches the input at {string}",
+			"the inputs fetched before the step starts", fetchedInputPaths),
+
+		CheckNotMember[PodCreated]("the pod does not fetch the input at {string}",
+			"the inputs fetched before the step starts", fetchedInputPaths),
 	}
+}
+
+// The names production gives the two pod fixtures these checks read back.
+// Both are unexported in the jetbridge package; this file already reads
+// "cleanup-stale" the same way, and the container-spec family reads "main".
+const (
+	podArtifactStoreVolumeName  = "artifact-daemon-hostpath"
+	podFetchInputsContainerName = "fetch-inputs"
+)
+
+// storeRootOf returns the node directory the pod's artifact store is mounted
+// from — the root every step's data is served out of.
+//
+// Reading it off the pod means the expected layout is derived from what the
+// cluster was asked for rather than from a constant that would have to be kept
+// in step with the fixture's configuration; and a pod that carries no store
+// cannot silently satisfy a sentence about where the daemon serves something.
+func storeRootOf(pod *corev1.Pod, handle string) (string, error) {
+	if pod == nil {
+		return "", fmt.Errorf("no pod was created")
+	}
+	for _, v := range pod.Spec.Volumes {
+		if v.Name != podArtifactStoreVolumeName {
+			continue
+		}
+		if v.HostPath == nil {
+			return "", fmt.Errorf(
+				"the pod for %q carries an artifact store volume that is not node storage, so "+
+					"nothing it writes outlives the pod for a later step to read", handle)
+		}
+		return filepath.Clean(v.HostPath.Path), nil
+	}
+	return "", fmt.Errorf(
+		"the pod for %q carries no artifact store volume, so no directory in it is served to "+
+			"any later step — this sentence is about where the daemon serves a directory from, "+
+			"and this worker keeps nothing on the node", handle)
+}
+
+// fetchedInputPaths is where in the step's workspace the fetch init container
+// writes: one mount per input it was given an artifact for, plus the
+// read-only store mount, which is the container's window onto the node and
+// not one of the step's inputs.
+func fetchedInputPaths(in PodCreated) ([]string, error) {
+	if in.Pod == nil {
+		return nil, fmt.Errorf("no pod was created")
+	}
+	var names []string
+	for _, c := range in.Pod.Spec.InitContainers {
+		names = append(names, c.Name)
+		if c.Name != podFetchInputsContainerName {
+			continue
+		}
+		var paths []string
+		for _, m := range c.VolumeMounts {
+			if m.Name == podArtifactStoreVolumeName {
+				continue
+			}
+			paths = append(paths, m.MountPath)
+		}
+		return paths, nil
+	}
+	return nil, fmt.Errorf(
+		"the pod for %q has no %q init container, so nothing is fetched into its workspace at "+
+			"all: every input the step was promised arrives as an empty directory and the "+
+			"command fails on a file the pipeline plainly handed it, with nothing in the build "+
+			"log to say why (init containers: %v)",
+		in.Handle, podFetchInputsContainerName, names)
 }
 
 // runDraft builds the pod through the worker the way the ATC does, then reads

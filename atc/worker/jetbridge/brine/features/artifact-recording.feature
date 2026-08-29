@@ -97,6 +97,168 @@ Feature: Recording where a step's outputs went
     And that fetch asks the daemon for "vol-c"
 
   # =========================================================================
+  # Where a step's data actually lands on the node
+  # =========================================================================
+
+  # Everything above describes a step's outputs as though this file knew where
+  # they were: a Given puts bytes at steps/<handle>/<output> and the reads take
+  # them from there. That is the layout production is SUPPOSED to use, written
+  # down twice — once in the pod and once here — so the two can never disagree,
+  # and no scenario can see it when production's own two halves do.
+  #
+  # They are two halves. The directory the pod keeps an output in is built by
+  # container.go, which names it after the OUTPUT; the daemon key is built by
+  # RecordOutputs, which derives it from the same spec independently. Nothing
+  # joins them, and neither is visible from the other. Rename the subdirectory
+  # on one side and nothing errors at the time: the node holds the bytes, the
+  # index names a directory, and they are different directories.
+  #
+  # What it costs is a build that fails somewhere else. The alias registration
+  # is refused by the daemon — it will not claim a path its node does not hold
+  # — and every later read of that artifact 404s on the one machine that has
+  # it. The step that suffers is the NEXT one, whose init container asks for a
+  # directory that does not exist and stops before its command; the step that
+  # was wrong finished green.
+  #
+  # So the scenarios below stop supplying the layout. The producing step's pod
+  # is built, its mounts are followed to the directories they point at, and the
+  # bytes are written there — which is what a step does: it writes into the
+  # mount it was given, and where that lands is the kubelet's business. Then
+  # the ATC records where it thinks the output went, and the read either
+  # resolves or it does not. Two independent derivations, one assertion, and no
+  # third copy of the layout here to keep them agreeing.
+
+  # A task's named outputs. The failure this closes is a directory named after
+  # the VOLUME rather than after the output — steps/<handle>/output-1 instead
+  # of steps/<handle>/binary — which is invisible from the pod alone, because
+  # the mount the step writes through is at the same place either way. Two
+  # outputs rather than one, because a step that produces a binary and a report
+  # is the ordinary shape and the index has to be right for both.
+  Scenario: A task's outputs are read back from the directories its own pod wrote them to
+    Given a jetbridge worker whose step outputs stay on the node that ran them
+    And the step "build-42" ran on node "node-1"
+    And it writes "the compiled binary" to its output "binary" in the volume "vol-binary"
+    And it writes "the test report" to its output "report" in the volume "vol-report"
+    And the bytes reached the node through the mounts the step's own pod gave it
+    When the worker records where the step's outputs went
+    Then the output "vol-binary" reads back as "the compiled binary"
+    And the output "vol-report" reads back as "the test report"
+
+  # The get step, which has no named output at all: the directory it fetched
+  # into IS the output, and the index files it under the name "dir". That name
+  # is agreed in two places — the pod's subdirectory and the daemon key — and
+  # nothing checks that they still say the same word. Call the pod's directory
+  # "workdir" while the index goes on saying "dir" and every resource a
+  # pipeline gets becomes unreadable by the steps that asked for it, which is
+  # most of what a pipeline does.
+  Scenario: A get step's resource is read back from the directory its own pod wrote it to
+    Given a jetbridge worker whose step outputs stay on the node that ran them
+    And the get step "get-42" ran on node "node-1"
+    And it fetched "the fetched resource" into its working directory, which is the volume "get-42-dir"
+    And the bytes reached the node through the mounts the step's own pod gave it
+    When the worker records where the step's outputs went
+    Then the output "get-42-dir" reads back as "the fetched resource"
+
+  # =========================================================================
+  # What the next step's fetch does with the daemon's answer
+  # =========================================================================
+
+  # The three scenarios below RUN the init container's script. It is
+  # production's own text, a real shell reads it, and the assertion is the exit
+  # status the kubelet reads — which is its entire contract with the pod: a
+  # non-zero exit stops the step before its command, a zero exit lets it
+  # through. supervisor_script_test.go already reads the supervisor script this
+  # way; nothing had ever read this one.
+  #
+  # The daemon answering is the node's real daemon, asked with the pod's own
+  # payload. What is stood in for is the dial itself — BusyBox wget is not on
+  # the machine running this — and the retry backoff, which is not waited out.
+  # Both are named in ../steps/artifact_recording.go where they are done.
+
+  # An output whose producer's node could not be determined is still an output.
+  # The node lookup fails for ordinary reasons — the pod was already gone when
+  # the step finished — and the bytes are on a node's disk regardless. What the
+  # ATC can still do is remember the DIRECTORY, and that is enough: the daemon
+  # resolves a key it was never told about by looking under its own steps tree,
+  # so "build-42/result" finds the data and the raw volume handle does not.
+  #
+  # Skip the index entry because the node is unknown and the next step falls
+  # back to asking for the volume handle — a name no daemon has ever heard, for
+  # an artifact sitting on the disk of the machine being asked. The fetch 404s,
+  # the init container fails, and the build reruns work that was already done.
+  Scenario: An output whose node the worker could not identify is still fetched by its directory
+    Given a jetbridge worker whose step outputs stay on the node that ran them
+    And the step "build-42" ran on a node the worker could not identify
+    And its output "result" is the volume "vol-result" holding "compiled binary"
+    And a later step "consume-42" takes the artifact "vol-result" at "/tmp/build/workdir/from-earlier"
+    When the worker records where the step's outputs went
+    And that step's pod is built
+    And the node's daemon answers its fetch
+    Then the fetch succeeded, so the step starts
+    And what the step finds at "/tmp/build/workdir/from-earlier" is "compiled binary"
+
+  # And the failure this file exists to make loud. The daemon refuses a batch
+  # it could only partly deliver — it answers 500, with an overall status of
+  # "error" — and the init container must turn that into a failed build.
+  #
+  # A fetch that exits 0 instead is the worst shape a build can take. The
+  # kubelet reads success, the step's own command starts, and it runs against a
+  # workspace missing the inputs the pipeline promised it. The failure surfaces
+  # later, as a task erroring on a file it was handed, with nothing in the log
+  # to connect it to the fetch that never happened — and on a green step it may
+  # not surface at all: a put that uploads an empty directory, a test suite that
+  # finds no tests and passes.
+  #
+  # The scenario above is the contrast that keeps this one honest: same script,
+  # same shell, a daemon that CAN deliver, and the step starts.
+  Scenario: A fetch the daemon could not fully deliver fails the step instead of starting it
+    Given a jetbridge worker whose step outputs stay on the node that ran them
+    And the step "build-42" ran on node "node-1"
+    And its output "result" is the volume "vol-result" holding "compiled binary"
+    And a later step "consume-42" takes the artifact "vol-result" at "/tmp/build/workdir/from-earlier"
+    And it also takes the artifact "vol-lost" at "/tmp/build/workdir/lost"
+    When the worker records where the step's outputs went
+    And that step's pod is built
+    And the node's daemon answers its fetch
+    Then the fetch failed, so the step never starts
+
+  # Which daemon the pod talks to. The artifact daemon is a DaemonSet: the copy
+  # that can serve a hostPath is the one on the machine holding it, and a pod
+  # reaches it on the NODE's address, which the kubelet supplies through the
+  # downward API. Dial the pod's own loopback instead and the request leaves
+  # nothing — the step's network namespace has no daemon in it — so every fetch
+  # burns its retry budget and no step with an input ever starts.
+  #
+  # The assertion is on the address the script builds and on where HOST_IP
+  # comes from, not on whether the text "HOST_IP" appears somewhere: a script
+  # that mentions it and then dials 127.0.0.1 mentions it just the same.
+  Scenario: The fetch dials the daemon on the node its own pod landed on
+    Given a jetbridge worker whose step outputs stay on the node that ran them
+    And a later step "needs-inputs" takes the artifact "vol-src" at "/tmp/build/workdir/src"
+    When that step's pod is built
+    Then the fetch dials the daemon on the node the pod lands on
+
+  # DISPOSITION — the SINGLE-ARTIFACT resolve script, daemonResolveCommand, has
+  # no scenario here and cannot have one. Two rules live only in it: that it
+  # dials ${HOST_IP} rather than loopback, and that an empty artifact key makes
+  # the init container exit 1 rather than start a step against an input its
+  # producer never recorded.
+  #
+  # Nothing in production calls it. BuildFetchInitContainers builds every pod's
+  # fetch from daemonResolveBatchCommand, and the only callers of the
+  # single-artifact form are four Go unit tests that invoke the unexported
+  # method directly. There is no consumer for a scenario to be about, so the
+  # two rules above are asserted on the batch script — which every pod really
+  # does run — and the single-artifact form stays where its only callers are.
+  #
+  # The empty-key rule has no batch counterpart to assert. The batch script
+  # carries no such guard, and it does not need one along this path: a producer
+  # that recorded nothing leaves the consumer asking for the raw volume handle,
+  # which is not empty, and the daemon's "not found" then fails the fetch
+  # through the scenario above. An empty key can only be reached by an input
+  # whose artifact has no handle at all, which nothing constructs.
+
+  # =========================================================================
   # What a check container is not given
   # =========================================================================
 

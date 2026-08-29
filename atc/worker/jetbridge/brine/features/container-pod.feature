@@ -493,3 +493,111 @@ Feature: What a step's pod actually looks like
     And it works in "/tmp/build/check"
     When the same check runs again
     Then the check's pod does not try to clear a workspace it never kept
+
+  # ==========================================================================
+  # Third wave: the on-disk layout of step volumes.
+  #
+  # Everything above asks WHICH STORAGE backs a volume — node or ephemeral —
+  # and that question has now been asked from several angles. None of it asks
+  # WHERE on the node the volume lands, and that is the half the rest of the
+  # runtime has to agree with: when a step finishes, RecordOutputs registers
+  # each thing it produced under the daemon key "<handle>/<name>" and tells
+  # the node's daemon to serve that key from <store>/steps/<handle>/<name>.
+  #
+  # When the pod and RecordOutputs choose different names for the same
+  # directory, nothing fails where the mistake is. The producing step writes
+  # its files and exits 0. The daemon, asked for a key it has never seen,
+  # creates the directory empty and serves it. The consumer starts against an
+  # empty input, and the build breaks inside a task several steps away, on a
+  # file the pipeline plainly handed it — with both steps green in the UI.
+  # That is why these scenarios assert the WHOLE path rather than which kind
+  # of storage it is.
+  #
+  # Measured: production was mutated, the Go suite in
+  # behavioral_permutations_test.go went red, every scenario above stayed
+  # green. One scenario each.
+  # ==========================================================================
+
+  # MUTATION: the `continue` that skips an artifact-less input in
+  # BuildFetchInitContainers becomes `return nil`.
+  #
+  # Not every input a step declares has something to fetch. An input the web
+  # could not locate, or one a preceding step chose not to produce, arrives
+  # with no artifact behind it; it still gets its directory, there is simply
+  # nothing to put in it, so the batch skips it and carries on with the rest.
+  #
+  # Abandoning the batch at that point is the quietest failure in this file.
+  # The step keeps every mount it asked for, the pod is created, no error is
+  # logged anywhere — and the inputs that DID have artifacts silently arrive
+  # empty too, because one artifact-less sibling took the whole batch down
+  # with it. The task then fails on a file it was handed, and nothing
+  # distinguishes that from a producing step that emitted nothing.
+  #
+  # "A step's inputs are fetched before its command runs" above cannot see it:
+  # that step has one input and it carries an artifact, so the skip is never
+  # reached. The mixture is the whole scenario.
+  Scenario: An input with nothing to fetch is skipped, not fatal to the rest
+    Given a jetbridge worker with an artifact store
+    And a task container "mixed-inputs-handle" built from image "docker:///busybox"
+    And it works in "/tmp/build/workdir"
+    And it takes an input at "/tmp/build/workdir/from-earlier" produced by an earlier step
+    And it takes an input at "/tmp/build/workdir/no-artifact"
+    When the container runs
+    Then the pod fetches exactly 1 of the step's inputs
+    And the pod fetches the input at "/tmp/build/workdir/from-earlier"
+    And the pod does not fetch the input at "/tmp/build/workdir/no-artifact"
+
+  # MUTATION: a get container is given no volume and no mount for its working
+  # directory, so its pod carries zero step volumes instead of one.
+  #
+  # A get step has no outputs in its container spec. What it produces IS its
+  # working directory, and the runtime knows that: RecordOutputs treats the
+  # working directory of anything that is neither a task nor a check as an
+  # output, files it under the daemon key "<handle>/dir", and points that key
+  # at <store>/steps/<handle>/dir.
+  #
+  # So the working directory has to BE that node directory. Without a volume
+  # for it, the resource writes its files into the container's own image
+  # filesystem — which no daemon can read, and which is gone the moment the
+  # pod ends. The get still exits 0 and the version is still recorded. Every
+  # step downstream resolves "<handle>/dir", is handed a directory the daemon
+  # creates empty on demand, and reads nothing from a resource that plainly
+  # fetched something.
+  #
+  # Every scenario above describes a task or a check, and the working
+  # directory of a task is not an output at all — so this rule is invisible
+  # from any of them.
+  Scenario: A get step's resource lands in the node directory the daemon will serve
+    Given a jetbridge worker with an artifact store
+    And a get container "get-store-handle" built from image "docker:///git-resource"
+    And it works in "/tmp/resource"
+    When the get container runs
+    Then the step sees a volume mounted at "/tmp/resource"
+    And the volume mounted at "/tmp/resource" is the node directory the daemon serves as "get-store-handle/dir"
+
+  # MUTATION: an output volume is backed by steps/<handle>/output-N — the
+  # volume's positional name — instead of steps/<handle>/<output name>.
+  #
+  # buildVolumeMounts numbers the volumes it creates: dir-0, input-1,
+  # output-2. That number is the volume's NAME inside the pod spec, and it
+  # means nothing outside it. The directory under the store has to carry the
+  # name the PIPELINE gave the output, because that is the half RecordOutputs
+  # registers.
+  #
+  # File it under the positional name instead and the two halves disagree by
+  # one string. The step writes into <store>/steps/<handle>/output-1; the next
+  # step resolves "<handle>/compiled" and is handed
+  # <store>/steps/<handle>/compiled, which the daemon creates empty for it.
+  # Both steps succeed. The consumer's input directory is empty.
+  #
+  # "An input sharing an output's path is filed under the output's name" above
+  # pins the same rule for a volume SHARED with an input, where the name comes
+  # from the overlap and a different line of code chooses it. This is the
+  # ordinary output, where nothing forces the choice.
+  Scenario: An output's directory on the node carries the name the pipeline gave it
+    Given a jetbridge worker with an artifact store
+    And a task container "compile-output-handle" built from image "docker:///busybox"
+    And it works in "/tmp/build/workdir"
+    When the container runs producing the output "compiled" at "/tmp/build/workdir/compiled"
+    Then the step sees a volume mounted at "/tmp/build/workdir/compiled"
+    And the volume mounted at "/tmp/build/workdir/compiled" is the node directory the daemon serves as "compile-output-handle/compiled"
