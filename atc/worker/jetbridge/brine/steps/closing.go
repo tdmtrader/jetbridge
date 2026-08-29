@@ -1144,6 +1144,34 @@ func closingLocatorDefinitions() []brine.StepDefinition {
 			},
 		),
 
+		// The same negative asked through the OTHER lookup, and it is not a
+		// restatement. Every negative above goes through Locate; the node
+		// lookup is a second entry point with its own found flag, and it is
+		// the one production calls — the reaper branches on it to decide
+		// whether a destroyed handle can be placed at all, and the input
+		// affinity chooser branches on it to decide whether an input counts
+		// towards a node. A flag that says yes for a key the index does not
+		// hold is invisible to Locate and to every step above: the node it
+		// hands back is the zero value, so the only way to see it is to ask
+		// the node lookup about a key that was never recorded, or that was
+		// collected.
+		//
+		// The failure prints what the lookup answered, because "yes, node
+		// \"\"" is the whole diagnosis.
+		brine.DefineCheck[ClosingIndex](
+			"no node is named for the artifact {string}",
+			func(in ClosingIndex, p brine.Params, _ *brine.Recorder) error {
+				key, ok := p.GetString(0)
+				if !ok {
+					return fmt.Errorf("expected an artifact key")
+				}
+				if node, found := in.Index.LocateNode(key); found {
+					return fmt.Errorf("expected the node lookup to name nobody for %q, it answered yes with node %q", key, node)
+				}
+				return nil
+			},
+		),
+
 		CheckThat[ClosingIndex]("every artifact that was recorded is still held",
 			func(in ClosingIndex) error {
 				missing := []string{}

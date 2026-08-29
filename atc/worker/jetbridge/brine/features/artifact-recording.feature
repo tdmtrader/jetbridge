@@ -128,6 +128,117 @@ Feature: Recording where a step's outputs went
     Then the pod is given the node's artifact store
 
   # =========================================================================
+  # Where the scheduler may put the step, and what it finds when it lands
+  # =========================================================================
+
+  # The hard half of the placement rule, and the half nothing in brine could
+  # see the VALUE of. ../features/container-pod.feature's "A pod is pinned to a
+  # node that can serve its artifacts" walks the required terms looking for the
+  # key concourse.dev/artifact-cache and returns the moment it finds one, so a
+  # requirement demanding a value no daemon ever writes reads exactly like the
+  # correct one.
+  #
+  # That mistake does not degrade the cluster, it stops it. The label is
+  # written by the daemon's own node labeller when it comes up, and the value
+  # is "ready"; ask for anything else — or for a different key — and NO node in
+  # the fleet matches. Every build pod sits Pending until its timeout, and the
+  # only thing the scheduler will say is that no node matched the pod's node
+  # affinity.
+  #
+  # So the assertion is not on the expression. It is on whether a node running
+  # an artifact daemon, labelled the way that daemon labels it, satisfies what
+  # the pod demands — the question the scheduler itself asks. A requirement
+  # nothing can satisfy is invisible from the pod alone and obvious from the
+  # pair.
+  Scenario: A step may only land on a node whose daemon has declared itself ready
+    Given a jetbridge worker whose step outputs stay on the node that ran them
+    And a later step "needs-a-daemon" takes the artifact "vol-src" at "/tmp/build/workdir/src"
+    When that step's pod is built
+    Then the node running the artifact daemon can accept the pod
+
+  # The soft half, sharpened. "The next step fetches its input from the
+  # directory the producing step wrote it to" already pins a step with ONE
+  # located input to that input's node, so dropping the preference outright
+  # reddens there as well as here. What a single input cannot show is WHICH
+  # node is chosen when a step reads from several, and that is the ordinary
+  # case: a task takes a repo, its dependencies and a config, and they are not
+  # all in the same place.
+  #
+  # The rule is the node holding the most of them. Getting it wrong costs
+  # nothing visible — the step still runs — it just drags the majority of its
+  # inputs across the network first, on every build, and the wider the fan-in
+  # the worse the guess.
+  Scenario: A step is steered to the node holding most of its inputs
+    Given a jetbridge worker whose step outputs stay on the node that ran them
+    And the worker already knows the artifact "vol-src" is on node "node-a"
+    And the worker already knows the artifact "vol-deps" is on node "node-b"
+    And the worker already knows the artifact "vol-config" is on node "node-b"
+    And a later step "link" takes the artifact "vol-src" at "/tmp/build/workdir/src"
+    And it also takes the artifact "vol-deps" at "/tmp/build/workdir/deps"
+    And it also takes the artifact "vol-config" at "/tmp/build/workdir/config"
+    When that step's pod is built
+    Then the pod prefers the node "node-b"
+
+  # Every directory a step works in is a directory on the node named after the
+  # step, and the first time a step runs on a node not one of them is there.
+  # The pod says as much: each of those volumes asks the kubelet to create the
+  # path if it is missing. Ask instead for a path that must already exist and
+  # the kubelet refuses to start the pod — and because the directory is named
+  # after a container handle that is new every run, there is no node in the
+  # cluster where it does exist. The step fails before its command runs, with
+  # an error that never mentions artifacts.
+  #
+  # Asserted over every node-local directory the pod carries rather than one,
+  # because the working directory, the inputs and the outputs are all built by
+  # the same call and a regression takes them together.
+  Scenario: A step's node-local directories are made on a node that has never held them
+    Given a jetbridge worker whose step outputs stay on the node that ran them
+    And a later step "first-here" takes the artifact "vol-src" at "/tmp/build/workdir/src"
+    When that step's pod is built
+    Then every directory the pod expects on the node is created if it is missing
+
+  # A task cache and a step's outputs are the same kind of thing on disk and
+  # opposite kinds of thing in their lifetime. The steps tree is build-scoped:
+  # the daemon's sweeper deletes every child of it once it is older than the
+  # TTL, and the mirror walks the same tree and copies what it finds to the
+  # peers. A task cache is the one thing on that node meant to OUTLIVE the
+  # build, and to stay where it is.
+  #
+  # File it among the step data and both of those run over it. The cache is
+  # swept on the daemon's schedule instead of kept, so every build repopulates
+  # it and the feature quietly stops existing; and in the meantime the fleet
+  # copies each node's caches to every peer. Nothing errors. The only symptom
+  # is that a cached build is never faster than an uncached one.
+  Scenario: A task cache is not filed among the step data the daemon sweeps
+    Given a jetbridge worker whose step outputs stay on the node that ran them
+    And a later step "cached-build" takes the artifact "vol-src" at "/tmp/build/workdir/src"
+    And it keeps a task cache at "/tmp/build/workdir/.gradle"
+    When that step's pod is built
+    Then the task cache is filed apart from the step data on that node
+
+  # ../features/container-pod.feature says a retried step is given a cleanup
+  # init container. It does not say the cleanup can do anything. That
+  # container's entire body is an rm over the node's artifact store, and it
+  # reaches the store through a mount — which can be made read-only, at which
+  # point the rm fails with EROFS, the init container exits non-zero, and every
+  # retry of every reused step dies before its command runs. Swallow that
+  # failure instead and the retry meets its own half-written outputs: the
+  # "destination path already exists" failure the cleanup exists to prevent.
+  #
+  # The second Then is the contrast that keeps the first honest. This pod
+  # mounts the same store TWICE, and the other mount is read-only on purpose:
+  # the fetch container never writes the artifacts itself, it posts the batch
+  # and the daemon does the writing. Making every mount writable is not the
+  # fix, and this says so.
+  Scenario: A retried step clears its workspace through a mount it can write to
+    Given a jetbridge worker whose step outputs stay on the node that ran them
+    And a later step "retried-build" takes the artifact "vol-src" at "/tmp/build/workdir/src"
+    And that step has run here before
+    When that step's pod is built
+    Then the step's cleanup can really delete what the last attempt left
+    And the fetch of its inputs still cannot write there
+
+  # =========================================================================
   # Copying outputs off the node that produced them
   # =========================================================================
 

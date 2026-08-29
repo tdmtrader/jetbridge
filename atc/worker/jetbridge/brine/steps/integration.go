@@ -1555,6 +1555,34 @@ func integrationNodeIPDefinitions() []brine.StepDefinition {
 				}
 				return nil
 			}),
+
+		// The refusal has to come BEFORE the Nodes API, and "before" is a
+		// claim about a call, which nothing here records. What can be stated
+		// as an outcome is the consequence: on the one cluster where asking
+		// and not asking differ in what comes back — a cluster that has a
+		// node registered under that very IP-shaped name — the answer the API
+		// would have given must not appear. A resolver that fell through
+		// returns that node's internal address here, and returns it with no
+		// error at all.
+		//
+		// The residue, stated rather than faked: a mutation that made the Get
+		// and then threw the answer away in favour of the sentinel is
+		// indistinguishable from production by any value that comes back out.
+		// Only a call record separates those two, and this file does not keep
+		// one.
+		CheckThat[NodeIPOutcome]("it is refused as an IP address even though a node is registered under that name",
+			func(in NodeIPOutcome) error {
+				if in.Err == nil {
+					return fmt.Errorf("expected the argument to be refused, resolving answered %v — the Nodes API was consulted and its answer used", in.IPs)
+				}
+				if !in.IsIPArg {
+					return fmt.Errorf("expected an ErrNodeNameIsIP refusal, got %q", in.Message)
+				}
+				if len(in.IPs) > 0 {
+					return fmt.Errorf("expected no address to come back, got %v before the refusal %q", in.IPs, in.Message)
+				}
+				return nil
+			}),
 	}
 }
 

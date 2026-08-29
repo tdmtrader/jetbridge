@@ -381,3 +381,115 @@ Feature: What a step's pod actually looks like
     And it takes an input at "/tmp/build/workdir/from-earlier" produced by an earlier step
     When the container runs
     Then the pod fetches its inputs before the step starts
+
+  # ==========================================================================
+  # Measured gaps: production was mutated, the Go suite in
+  # behavioral_permutations_test.go went red, and every scenario above stayed
+  # green. One scenario each.
+  # ==========================================================================
+
+  # CO-05 again, one layer down. The CO-05 scenario near the top of this file
+  # pins that an output sharing an input's path gets ONE volume rather than
+  # two. What it cannot see is where that volume lives, because it runs on a
+  # worker with no storage backend, where the answer is "an emptyDir" for
+  # every volume in the pod.
+  #
+  # The shared directory has to sit under the OUTPUT's name. When the step
+  # finishes, the runtime records what it produced under the key
+  # "<handle>/<output name>" and tells the node's daemon to serve that key
+  # from <store>/steps/<handle>/<output name>. Name the directory after the
+  # input instead and the two halves disagree: the step writes to one path,
+  # the next step's fetch resolves a key naming another, and the consumer gets
+  # an empty directory. It reads as a producing step that emitted nothing,
+  # which is the hardest kind of pipeline failure to place — both steps
+  # succeeded.
+  @CO-05
+  Scenario: An input sharing an output's path is filed under the output's name
+    Given a jetbridge worker with an artifact store
+    And a task container "overlap-store-handle" built from image "docker:///busybox"
+    And it works in "/tmp/build/workdir"
+    When the container runs with an input and the output "repo-modified" both at "/tmp/build/workdir/repo"
+    Then the volume mounted at "/tmp/build/workdir/repo" is the node directory recorded for the output "repo-modified"
+
+  # CO-08. A scratch path may be written relative to the step's working
+  # directory, and it means a directory inside it. Resolved against the
+  # filesystem root instead, the pod mounts the ephemeral volume at
+  # "/tmp-work" while the task — which was told its scratch space is
+  # "tmp-work" — keeps writing under its working directory. Nothing fails
+  # outright, and that is the problem: the writes land in the WORKSPACE
+  # volume, so on a worker that keeps step data on the node the temporary
+  # state outlives the pod and greets the next attempt on the same handle,
+  # while the emptyDir the pod really does carry stays empty for the life of
+  # the build.
+  @CO-08
+  Scenario: A relative scratch path lands inside the working directory
+    Given a jetbridge worker on a fake Kubernetes cluster
+    And a task container "rel-scratch-handle" built from image "docker:///busybox"
+    And it works in "/tmp/build/workdir"
+    And it uses scratch space at "tmp-work"
+    When the container runs
+    Then the step sees a volume mounted at "/tmp/build/workdir/tmp-work"
+
+  # CF-04, the clause the outline above cannot reach: what happens when the
+  # operator names NO cache store at all. The storage backend answers, and a
+  # cache goes to the node beside the artifacts.
+  #
+  # Defaulting to ephemeral instead is silent. The cache directory is there,
+  # it is writable, and it is empty on every build; a cache that never hits
+  # looks exactly like a cache that is merely cold. A pipeline pays the full
+  # dependency download every build, forever, and nothing anywhere reports a
+  # problem. The key is asserted with it because an unstable key is the same
+  # failure by another route.
+  @CO-07 @CF-04
+  Scenario: With no explicit choice, caches follow the artifact store onto the node
+    Given a jetbridge worker with an artifact store
+    And a task container "cache-default-handle" built from image "docker:///busybox"
+    And it works in "/tmp/build/workdir"
+    And it belongs to job 7 step "compile"
+    And it caches "/tmp/build/workdir/.cache"
+    When the container runs
+    Then the cache at "/tmp/build/workdir/.cache" is kept on the node under "/var/concourse/artifacts/caches/job-7-compile-"
+
+  # THE ORDER OF THE INIT CONTAINERS IS THE BEHAVIOUR. Kubernetes runs them in
+  # the order the spec lists them, to completion, one after another. The
+  # cleanup container runs `rm -rf` over this step's whole directory under the
+  # store; the fetch container writes this step's inputs into exactly that
+  # directory. Listed the other way round, the pod deletes the inputs it has
+  # just fetched and the step begins against an empty workspace — a retried
+  # step failing on a file its first attempt was handed, with nothing in the
+  # build log to say why, and only on retries.
+  #
+  # The two scenarios above ask whether each container is present. Presence
+  # survives the swap; only the order does not.
+  Scenario: A retried step clears its workspace before fetching, not after
+    Given a jetbridge worker with an artifact store
+    And a task container "order-handle" built from image "docker:///busybox"
+    And it works in "/tmp/build/workdir"
+    And it takes an input at "/tmp/build/workdir/from-earlier" produced by an earlier step
+    And the container has run before on this worker
+    When the container runs
+    Then the pod clears the workspace before it fetches its inputs
+
+  # A check container's handle is reused for every check of the same resource,
+  # so a check that finds its own row already there is not crash recovery — it
+  # is every check after the first. It still gets no cleanup container: its
+  # workspace is an emptyDir, which arrives empty with the pod, so there is
+  # nothing stale for a cleanup to remove.
+  #
+  # Giving it one is not merely wasteful. The cleanup container mounts the
+  # artifact store's hostPath, and a check's pod does not carry that volume at
+  # all — the API server rejects a container mounting a volume the pod never
+  # defines, so the pod is never created and checking stops for every resource
+  # on the worker.
+  #
+  # NOTE the When. This rule is keyed on the type the CONTAINER SPEC declares,
+  # which is what check_step.go sets; the general "the container runs"
+  # sentence leaves that field empty, so a scenario written on it cannot tell
+  # a check from a task here.
+  @CO-08
+  Scenario: A repeated check is not handed a workspace to clear
+    Given a jetbridge worker with an artifact store
+    And a check container "check-reused-handle" built from image "docker:///busybox"
+    And it works in "/tmp/build/check"
+    When the same check runs again
+    Then the check's pod does not try to clear a workspace it never kept

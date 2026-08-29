@@ -162,6 +162,48 @@ Feature: Moving artifacts through volumes
     Then the read fails rather than handing back an empty artifact
     And the failure says the daemon is broken rather than that the artifact is gone
 
+  # A producer that is asked and refuses is not the same situation as a
+  # producer there is nobody to ask, and until now only the second was stated.
+  # Every fallback scenario in these features — here and in
+  # artifact-daemon.feature — takes the producing node OUT of the cluster, so
+  # the ATC never gets as far as an address: the fallback it exercises is the
+  # one that starts from having nowhere to look. The node in the two
+  # scenarios below is still there. It resolves, the ATC builds the address
+  # and dials it, and the fetch dies on the wire — the connection dropped in
+  # the first, the port closed against it in the second — and everything that
+  # keeps the build alive happens after that. A runtime that treated a failed
+  # dial as the end of the search would pass every scenario written before
+  # these two and lose the build on every rescheduled daemon pod.
+  #
+  # Both cost about four seconds: three attempts and two backoffs before the
+  # producer is given up on, which is the retry that the scenarios above pin.
+
+  # The half that keeps the build: the artifact is one mirror away, and the
+  # step gets it. The peer's copy holds different text from the producer's, so
+  # the scenario names which one arrived rather than only that something did.
+  @VT-06
+  Scenario: A peer's mirror still arrives when the producing node's daemon has stopped answering
+    Given an artifact on another node holding the file "release.tgz" containing "built on another node"
+    And that node's daemon never completes a connection
+    And a peer daemon holds a mirrored copy of it containing "mirrored to a peer"
+    And the ATC can ask the other daemons for a mirrored copy
+    When the next step fetches the artifact from that node
+    Then the artifact "release.tgz" containing "mirrored to a peer" is there
+
+  # The half that diagnoses: nothing has the artifact, and the failure has to
+  # be about the search, not about the first dial. "connection refused"
+  # reaching the build log means the ATC stopped at the producer — it sends an
+  # operator to hunt a network fault on a node that is up, for an artifact
+  # that no daemon in the cluster is holding.
+  @VT-06
+  Scenario: A refused producer that nobody mirrored fails as a search that came up empty
+    Given an artifact on another node holding the file "release.tgz" containing "built on another node"
+    And that node is still in the cluster, and its daemon port refuses the connection
+    And the ATC can ask the other daemons for a mirrored copy
+    When the next step fetches the artifact from that node
+    Then the read fails rather than handing back an empty artifact
+    And the failure names the node and its peers rather than the refused connection
+
   # VT-07, and the write-side twin of "A cluster failure reaches the writer
   # rather than being swallowed" above. The locator that remembers which node
   # produced an artifact lives in memory, so a web restart forgets it; when
