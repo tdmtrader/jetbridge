@@ -1,21 +1,32 @@
 package steps
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"github.com/klauspost/compress/s2"
 	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
+	"strings"
+	"sync/atomic"
 
 	"github.com/brine-dev/brine-go/pkg/brine"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/compression"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
+	"github.com/klauspost/compress/s2"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/fake"
 )
 
 // localExecAdapter is a REAL PodExecutor, not a spy.
@@ -449,4 +460,469 @@ func VolumeIdentityDefinitions() []brine.StepDefinition {
 				return nil
 			}),
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Artifacts that live on another node
+// ---------------------------------------------------------------------------
+
+// The volumes above move bytes through a pod's own filesystem. The ones below
+// move them across the network, from the artifact daemon on the node that
+// produced them — which is where every input a step did not produce itself
+// comes from.
+//
+// The daemon here is a REAL http.Server speaking the daemon's wire contract,
+// the same argument localExecAdapter makes for exec. Its ONE named
+// behavioural difference is how it treats a connection: it may drop the first
+// few, drop every one, or answer with an internal error. It records nothing an
+// assertion reads. The counter behind "drops the first N" decides what the
+// server DOES; no scenario asks it what it saw.
+//
+// The Go tests these replace reached inside the struct — they built a
+// DaemonSetVolume by literal, swapped in a transport that rewrote every URL to
+// the test server, and one of them finished by asserting the handler's own
+// attempt counter. Here the node is a real Node object in the cluster, the
+// address is resolved out of it the way production resolves it, and the
+// assertion is on what the consumer got: the artifact, or the failure.
+
+// remoteArtifactNode is the node the artifact was produced on, and the only
+// one in the cluster. Its address is the live server's, so the fetch really
+// is dialled.
+const (
+	remoteArtifactNode = "producer-node"
+
+	// remoteArtifactKey is the artifact under discussion. It is the key the
+	// daemon is addressed by, so a failure that does not mention it did not
+	// say which artifact went missing.
+	remoteArtifactKey = "step-output"
+)
+
+// RemoteArtifact is an artifact on another node's daemon, described but not
+// yet fetched. Refinements adjust how that node's daemon behaves, so a
+// scenario says what it holds and how it misbehaves in either order.
+type RemoteArtifact struct {
+	Ctx      context.Context
+	Key      string
+	FileName string
+	Content  string
+
+	// DropFirst, NeverAnswers and ServerError are the daemon's behaviour, not
+	// a record of what it was asked.
+	DropFirst    int
+	NeverAnswers bool
+	ServerError  bool
+
+	// Forgotten means the web restarted and lost which node produced this
+	// artifact, and no daemon discovery is configured to find it again. There
+	// is no daemon at all in that case — that is the point.
+	Forgotten bool
+}
+
+// daemon starts the node's artifact daemon and builds the volume the runtime
+// would build for an artifact recorded on that node. The returned func stops
+// the daemon.
+func (r RemoteArtifact) daemon() (*jetbridge.DaemonSetVolume, func(), error) {
+	if r.Forgotten {
+		cfg := jetbridge.NewConfig("test-namespace", "")
+		return jetbridge.NewDaemonSetVolume(
+			r.Key, r.Key, "k8s-worker-1", nil, "", cfg, nil,
+		), func() {}, nil
+	}
+
+	body, err := plainTarOfOneFile(r.FileName, r.Content)
+	if err != nil {
+		return nil, nil, err
+	}
+	server := httptest.NewServer(r.handler(body))
+
+	addr, ok := server.Listener.Addr().(*net.TCPAddr)
+	if !ok {
+		server.Close()
+		return nil, nil, fmt.Errorf("the daemon is listening on %T, not TCP", server.Listener.Addr())
+	}
+
+	clientset := fake.NewSimpleClientset(&corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: remoteArtifactNode},
+		Status: corev1.NodeStatus{
+			Addresses: []corev1.NodeAddress{
+				{Type: corev1.NodeInternalIP, Address: addr.IP.String()},
+			},
+		},
+	})
+
+	cfg := jetbridge.NewConfig("test-namespace", "")
+	cfg.ArtifactDaemonPort = addr.Port
+
+	return jetbridge.NewDaemonSetVolume(
+		r.Key, r.Key, "k8s-worker-1", nil, remoteArtifactNode,
+		cfg, jetbridge.NewNodeIPResolver(clientset),
+	), server.Close, nil
+}
+
+// handler answers the one route the artifact daemon answers for a step
+// artifact and 404s everything else, so the bytes arriving at all is what
+// proves the right artifact was asked for.
+func (r RemoteArtifact) handler(body []byte) http.Handler {
+	var connections atomic.Int32
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if r.NeverAnswers || (r.DropFirst > 0 && int(connections.Add(1)) <= r.DropFirst) {
+			// Hijack and close: a connection that dies after the request was
+			// written, which is what a daemon pod being rescheduled looks
+			// like from the ATC. Go's transport does not silently retry a
+			// fresh connection, so this really does reach the runtime.
+			if hj, ok := w.(http.Hijacker); ok {
+				if conn, _, hjErr := hj.Hijack(); hjErr == nil {
+					_ = conn.Close()
+					return
+				}
+			}
+			panic(http.ErrAbortHandler)
+		}
+		if r.ServerError {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte("artifact daemon: disk is gone"))
+			return
+		}
+		if req.URL.Path != "/artifacts/"+r.Key {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/x-tar")
+		_, _ = w.Write(body)
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Where a step is placed, and which volumes it is handed
+// ---------------------------------------------------------------------------
+
+// InputPlacement is a worker that records where artifacts live, the inputs a
+// step is about to take, and — once it has been scheduled — the pod the
+// Kubernetes scheduler will read.
+type InputPlacement struct {
+	Cluster Cluster
+	Locator *jetbridge.ArtifactLocator
+	Inputs  []runtime.Input
+	Pod     *corev1.Pod
+}
+
+// VolumeGapDefinitions covers the parts of a volume's life the scenarios above
+// do not reach: fetching one across the network, writing one that has nowhere
+// to go, and being placed near the ones a step already needs.
+func VolumeGapDefinitions() []brine.StepDefinition {
+	defs := remoteArtifactDefinitions()
+	defs = append(defs, inputPlacementDefinitions()...)
+	return defs
+}
+
+func remoteArtifactDefinitions() []brine.StepDefinition {
+	return []brine.StepDefinition{
+
+		brine.DefineMap[brine.Empty, RemoteArtifact](
+			"an artifact on another node holding the file {string} containing {string}",
+			func(_ brine.Empty, p brine.Params, _ *brine.Recorder) (RemoteArtifact, error) {
+				name, _ := p.GetString(0)
+				content, ok := p.GetString(1)
+				if !ok {
+					return RemoteArtifact{}, fmt.Errorf("expected a file name and its contents")
+				}
+				return RemoteArtifact{
+					Ctx: context.Background(), Key: remoteArtifactKey,
+					FileName: name, Content: content,
+				}, nil
+			},
+		),
+
+		// The restart case: the locator is in memory, so a web that restarted
+		// no longer knows which node produced this artifact. With daemon
+		// discovery configured the runtime probes for it; with none, there is
+		// nowhere to send anything.
+		brine.DefineMap[brine.Empty, RemoteArtifact](
+			"an artifact whose producing node the web has forgotten, and no way to look it up",
+			func(_ brine.Empty, _ brine.Params, _ *brine.Recorder) (RemoteArtifact, error) {
+				return RemoteArtifact{
+					Ctx: context.Background(), Key: remoteArtifactKey, Forgotten: true,
+				}, nil
+			},
+		),
+
+		Refine[RemoteArtifact]("that node's daemon drops the first {int} connections",
+			func(in RemoteArtifact, a Args) RemoteArtifact {
+				in.DropFirst = a.Int(0)
+				return in
+			}),
+
+		Refine[RemoteArtifact]("that node's daemon never completes a connection",
+			func(in RemoteArtifact, _ Args) RemoteArtifact {
+				in.NeverAnswers = true
+				return in
+			}),
+
+		Refine[RemoteArtifact]("that node's daemon is failing and answers every request with an internal error",
+			func(in RemoteArtifact, _ Args) RemoteArtifact {
+				in.ServerError = true
+				return in
+			}),
+
+		// Reading is an attempt, so a failure is assertable rather than fatal
+		// to the scenario — the same shape the exec-backed reads above use,
+		// and it lands in the same state, so it can reuse their checks.
+		brine.DefineMap[RemoteArtifact, VolumeRead](
+			"the next step fetches the artifact from that node",
+			func(in RemoteArtifact, _ brine.Params, _ *brine.Recorder) (VolumeRead, error) {
+				volume, stop, err := in.daemon()
+				if err != nil {
+					return VolumeRead{}, err
+				}
+				defer stop()
+
+				// gzip is what Streamer.StreamFile asks for, and it is what
+				// makes the answer readable as an archive rather than as an
+				// opaque body.
+				stream, streamErr := volume.StreamOut(in.Ctx, ".", compression.NewGzipCompression())
+				if streamErr != nil {
+					return VolumeRead{Err: streamErr, Message: streamErr.Error()}, nil
+				}
+				defer stream.Close()
+
+				files, readErr := filesInGzippedTar(stream)
+				if readErr != nil {
+					return VolumeRead{Err: readErr, Message: readErr.Error()}, nil
+				}
+				return VolumeRead{Files: files}, nil
+			},
+		),
+
+		brine.DefineMap[RemoteArtifact, VolumeRead](
+			"the step writes its output into that artifact",
+			func(in RemoteArtifact, _ brine.Params, _ *brine.Recorder) (VolumeRead, error) {
+				volume, stop, err := in.daemon()
+				if err != nil {
+					return VolumeRead{}, err
+				}
+				defer stop()
+
+				archive, err := tarOfOneFile("result.json", "built ok")
+				if err != nil {
+					return VolumeRead{}, err
+				}
+				writeErr := volume.StreamIn(in.Ctx, ".", compression.NewGzipCompression(), 0, archive)
+				if writeErr != nil {
+					return VolumeRead{Err: writeErr, Message: writeErr.Error()}, nil
+				}
+				return VolumeRead{}, nil
+			},
+		),
+
+		// Keeps its own body: it is about an ABSENCE of success, which no
+		// comparison combinator states. A transport failure that came back as
+		// a successful read of nothing is the outcome this exists to catch,
+		// and "it succeeded and here is what it handed over" is the message
+		// that diagnoses it.
+		CheckThat[VolumeRead]("the read fails rather than handing back an empty artifact",
+			func(in VolumeRead) error {
+				if in.Err == nil {
+					return fmt.Errorf(
+						"expected the read to fail, but it succeeded and handed back %d files (%v) — "+
+							"a step that cannot reach its input must be told so, not given an empty "+
+							"directory it will then fail on with no explanation",
+						len(in.Files), sortedFileNames(in.Files))
+				}
+				return nil
+			}),
+
+		// "Gone" and "broken" are different situations and a build log that
+		// confuses them sends the operator to the wrong place: a missing
+		// artifact is a pipeline bug, a failing daemon is an outage.
+		CheckThat[VolumeRead]("the failure says the daemon is broken rather than that the artifact is gone",
+			func(in VolumeRead) error {
+				if in.Err == nil {
+					return fmt.Errorf("expected the read to fail against a failing daemon, but it succeeded")
+				}
+				if !strings.Contains(in.Message, "500") {
+					return fmt.Errorf(
+						"expected the failure to carry the daemon's status so an operator can see it is "+
+							"an outage, got %q", in.Message)
+				}
+				if containsFold(in.Message, "not found") {
+					return fmt.Errorf(
+						"expected a failing daemon to be reported as a failure, not as a missing "+
+							"artifact — that sends the operator to look for a pipeline bug that is not "+
+							"there; got %q", in.Message)
+				}
+				return nil
+			}),
+
+		// The Go test this replaces pinned the exact sentence production
+		// prints. What an operator needs from a build log is narrower and more
+		// durable: that there is a failure, that it says a daemon is missing,
+		// and that it says WHICH artifact — a step has many volumes and a
+		// message that names none of them locates nothing.
+		CheckThat[VolumeRead]("the write fails rather than reporting an output that never left the web",
+			func(in VolumeRead) error {
+				if in.Err == nil {
+					return fmt.Errorf(
+						"expected the write to fail, but it reported success — the step then carries " +
+							"on believing its output landed, and the next step reads an empty directory")
+				}
+				if !containsFold(in.Message, "daemon") {
+					return fmt.Errorf(
+						"expected the failure to name the daemon it could not find, got %q", in.Message)
+				}
+				if !strings.Contains(in.Message, remoteArtifactKey) {
+					return fmt.Errorf(
+						"expected the failure to name the artifact %q it could not deliver, so the "+
+							"operator knows which of the step's volumes went nowhere; got %q",
+						remoteArtifactKey, in.Message)
+				}
+				return nil
+			}),
+	}
+}
+
+func sortedFileNames(files map[string]string) []string {
+	names := make([]string, 0, len(files))
+	for n := range files {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func inputPlacementDefinitions() []brine.StepDefinition {
+	return []brine.StepDefinition{
+
+		brine.DefineMapUsing[brine.Empty, InputPlacement](
+			"a jetbridge worker that places steps near their inputs",
+			[]string{"jetbridge-db"},
+			func(_ brine.Empty, _ brine.Params, _ *brine.Recorder, res brine.Resources) (InputPlacement, error) {
+				locator := jetbridge.NewArtifactLocator()
+				cluster, err := NewCluster(res,
+					WithConfig(func(cfg *jetbridge.Config) {
+						cfg.ArtifactDaemonHostPath = "/var/concourse/artifacts"
+					}),
+					WithVolumeRepo(),
+					WithTeam(),
+					WithArtifactLocator(locator),
+				)
+				if err != nil {
+					return InputPlacement{}, err
+				}
+				return InputPlacement{Cluster: cluster, Locator: locator}, nil
+			},
+		),
+
+		// A real artifact volume, with a real database handle, recorded where
+		// the producing step left it. Nothing here stands in for an artifact:
+		// the handle the scheduler is asked about is the one the volume
+		// reports.
+		brine.DefineMap[InputPlacement, InputPlacement](
+			"an input artifact that already lives on node {string}",
+			func(in InputPlacement, p brine.Params, _ *brine.Recorder) (InputPlacement, error) {
+				node, ok := p.GetString(0)
+				if !ok {
+					return InputPlacement{}, fmt.Errorf("expected a node name parameter")
+				}
+				volume, _, err := in.Cluster.Worker.CreateVolumeForArtifact(
+					in.Cluster.Ctx, in.Cluster.TeamID)
+				if err != nil {
+					return InputPlacement{}, fmt.Errorf("create artifact volume: %w", err)
+				}
+				in.Locator.Record(jetbridge.ArtifactKey(volume.Handle()), node, "")
+				in.Inputs = append(in.Inputs, runtime.Input{
+					Artifact:        volume,
+					DestinationPath: fmt.Sprintf("/tmp/build/workdir/input-%d", len(in.Inputs)),
+				})
+				return in, nil
+			},
+		),
+
+		brine.DefineMap[InputPlacement, InputPlacement](
+			"the step is scheduled",
+			func(in InputPlacement, _ brine.Params, _ *brine.Recorder) (InputPlacement, error) {
+				const handle = "placed-step"
+				container, _, err := in.Cluster.Worker.FindOrCreateContainer(
+					in.Cluster.Ctx,
+					db.NewFixedHandleContainerOwner(handle),
+					db.ContainerMetadata{Type: db.ContainerTypeTask},
+					runtime.ContainerSpec{
+						TeamID:    in.Cluster.TeamID,
+						Dir:       "/tmp/build/workdir",
+						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+						Inputs:    in.Inputs,
+					},
+					&noopDelegate{},
+				)
+				if err != nil {
+					return InputPlacement{}, fmt.Errorf("find or create container: %w", err)
+				}
+				if _, err := container.Run(in.Cluster.Ctx,
+					runtime.ProcessSpec{Path: "/bin/sh", Args: []string{"-c", "true"}},
+					runtime.ProcessIO{},
+				); err != nil {
+					return InputPlacement{}, fmt.Errorf("run step: %w", err)
+				}
+
+				pod, err := in.Cluster.Clientset.CoreV1().Pods(in.Cluster.Namespace).
+					Get(in.Cluster.Ctx, handle, metav1.GetOptions{})
+				if err != nil {
+					return InputPlacement{}, fmt.Errorf("get pod %q: %w", handle, err)
+				}
+				in.Pod = pod
+				return in, nil
+			},
+		),
+
+		// The preference is what keeps a step's inputs off the network. A pod
+		// with no preference is scheduled anywhere, and every input then
+		// crosses between nodes to reach it.
+		CheckString[InputPlacement]("the step prefers to run on node {string}",
+			"the node the step prefers",
+			func(in InputPlacement) (string, error) {
+				if in.Pod == nil {
+					return "", fmt.Errorf("no pod was created")
+				}
+				aff := in.Pod.Spec.Affinity
+				if aff == nil || aff.NodeAffinity == nil ||
+					len(aff.NodeAffinity.PreferredDuringSchedulingIgnoredDuringExecution) == 0 {
+					return "", fmt.Errorf(
+						"the pod carries no scheduling preference, so it may be placed anywhere the " +
+							"artifact cache is ready — including a node holding none of its inputs, " +
+							"which then all cross the network")
+				}
+				var named []string
+				for _, term := range aff.NodeAffinity.PreferredDuringSchedulingIgnoredDuringExecution {
+					for _, expr := range term.Preference.MatchExpressions {
+						if expr.Key == "kubernetes.io/hostname" {
+							named = append(named, expr.Values...)
+						}
+					}
+				}
+				if len(named) != 1 {
+					return "", fmt.Errorf(
+						"expected the pod to prefer exactly one node, it names %v", named)
+				}
+				return named[0], nil
+			}),
+	}
+}
+
+// plainTarOfOneFile builds the uncompressed tar an artifact daemon serves off
+// a node's disk. tarOfOneFile gzips, which is what a StreamIn caller hands
+// over; the daemon's own body is raw.
+func plainTarOfOneFile(name, content string) ([]byte, error) {
+	var raw bytes.Buffer
+	tw := tar.NewWriter(&raw)
+	if err := tw.WriteHeader(&tar.Header{
+		Name: name, Mode: 0o644, Size: int64(len(content)), Typeflag: tar.TypeReg,
+	}); err != nil {
+		return nil, fmt.Errorf("write tar header: %w", err)
+	}
+	if _, err := tw.Write([]byte(content)); err != nil {
+		return nil, fmt.Errorf("write tar body: %w", err)
+	}
+	if err := tw.Close(); err != nil {
+		return nil, fmt.Errorf("close tar: %w", err)
+	}
+	return raw.Bytes(), nil
 }

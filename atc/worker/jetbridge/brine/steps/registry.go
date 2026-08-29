@@ -42,6 +42,7 @@ func Definitions() []brine.StepDefinition {
 	defs = append(defs, InitContainerDefinitions()...)
 	defs = append(defs, ContainerExtraDefinitions()...)
 	defs = append(defs, VolumeIdentityDefinitions()...)
+	defs = append(defs, VolumeGapDefinitions()...)
 	defs = append(defs, SidecarLogDefinitions()...)
 	defs = append(defs, ClosingDefinitions()...)
 	defs = append(defs, CacheStorageDefinitions()...)
@@ -60,6 +61,8 @@ func Definitions() []brine.StepDefinition {
 	defs = append(defs, ExecTargetDefinitions()...)
 	defs = append(defs, PodWatchRealDefinitions()...)
 	defs = append(defs, PodWatchRealExtraDefinitions()...)
+	defs = append(defs, DaemonMTLSDefinitions()...)
+	defs = append(defs, ArtifactRecordingDefinitions()...)
 	return defs
 }
 
