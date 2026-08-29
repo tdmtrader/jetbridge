@@ -737,15 +737,30 @@ func artifactPodDefinitions() []brine.StepDefinition {
 				}
 				if !strings.Contains(command, "/resolve-batch") {
 					return fmt.Errorf(
-						"the pod for %q fetches its inputs one request at a time rather than in a batch: %s",
+						"the pod for %q does not use the batch endpoint at all: %s",
 						in.Handle, abbrev(command))
+				}
+				// Counting the PAYLOADS is the assertion; naming the endpoint
+				// is not. A first version of this check only looked for the
+				// string "/resolve-batch", and an audit demonstrated the hole
+				// by rewriting daemonResolveBatchCommand to emit one wget per
+				// item — each still posting to /resolve-batch, inside the same
+				// single init container — which is precisely the serial
+				// round-trip-per-input regression this scenario is about. All
+				// eleven scenarios stayed green.
+				if n := strings.Count(command, "PAYLOAD='"); n != 1 {
+					return fmt.Errorf(
+						"the pod for %q builds %d request payloads, so it fetches its inputs one at a "+
+							"time; a ten-input task pays that ten times over, serially, before the "+
+							"step's own command starts",
+						in.Handle, n)
 				}
 				return nil
 			}),
 
 		CheckContains[FollowingPod]("that fetch asks the daemon for {string}",
-			"the fetch the pod performs",
-			fetchCommand),
+			"the batch of keys the pod asks for in one request",
+			fetchPayload),
 
 		// Keeps its own body: the assertion is that the text appears NOWHERE
 		// in the request, which no comparison combinator expresses.
@@ -756,7 +771,7 @@ func artifactPodDefinitions() []brine.StepDefinition {
 				if !ok {
 					return fmt.Errorf("expected a key parameter")
 				}
-				command, err := fetchCommand(in)
+				command, err := fetchPayload(in)
 				if err != nil {
 					return err
 				}
@@ -958,6 +973,31 @@ func fetchCommand(in FollowingPod) (string, error) {
 	return "", fmt.Errorf(
 		"the pod for %q has no init container to fetch its inputs, so the step starts against an "+
 			"empty workspace and fails on a file it was handed", in.Handle)
+}
+
+// fetchPayload returns the ONE request body the fetch init container posts.
+//
+// Asking whether a key appears anywhere in the script is a weaker question
+// than asking whether it is in the batch: a script looping one request per
+// item mentions every key too. This returns the single payload so that
+// "asks the daemon for X" means X travelled in the same request as the others.
+func fetchPayload(in FollowingPod) (string, error) {
+	command, err := fetchCommand(in)
+	if err != nil {
+		return "", err
+	}
+	const marker = "PAYLOAD='"
+	if n := strings.Count(command, marker); n != 1 {
+		return "", fmt.Errorf(
+			"expected the pod for %q to build exactly one request payload, found %d",
+			in.Handle, n)
+	}
+	rest := command[strings.Index(command, marker)+len(marker):]
+	end := strings.Index(rest, "'")
+	if end < 0 {
+		return "", fmt.Errorf("the pod for %q has an unterminated request payload", in.Handle)
+	}
+	return rest[:end], nil
 }
 
 func preferredTerms(in FollowingPod) ([]corev1.PreferredSchedulingTerm, error) {
