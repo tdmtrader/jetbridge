@@ -808,3 +808,47 @@ func TestVT10_DaemonSetVolume_DBVolume_Nil(t *testing.T) {
 		t.Error("expected DBVolume() to return nil")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Helpers that outlived volume_daemonset_test.go
+//
+// That suite was deleted once every one of its sixteen tests had both-red
+// evidence. These three were used from here as well, so they moved rather
+// than going with it.
+// ---------------------------------------------------------------------------
+
+// fakeNodeIPResolver creates a NodeIPResolver backed by a fake K8s client
+// with nodes pre-loaded so Resolve() returns deterministic IPs.
+func fakeNodeIPResolver(nodes ...corev1.Node) *NodeIPResolver {
+	objs := make([]interface{}, 0, len(nodes))
+	for i := range nodes {
+		objs = append(objs, &nodes[i])
+	}
+	// Use runtime.Object slice for NewSimpleClientset.
+	cs := fake.NewSimpleClientset()
+	for i := range nodes {
+		cs.CoreV1().Nodes().Create(context.Background(), &nodes[i], metav1.CreateOptions{})
+	}
+	return NewNodeIPResolver(cs)
+}
+
+func testNode(name, ip string) corev1.Node {
+	return corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Status: corev1.NodeStatus{
+			Addresses: []corev1.NodeAddress{
+				{Type: corev1.NodeInternalIP, Address: ip},
+			},
+		},
+	}
+}
+
+type rewriteTransport struct {
+	url string
+}
+
+func (t rewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	req.URL.Scheme = "http"
+	req.URL.Host = strings.TrimPrefix(t.url, "http://")
+	return http.DefaultTransport.RoundTrip(req)
+}
