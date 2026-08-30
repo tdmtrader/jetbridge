@@ -62,6 +62,7 @@ func Definitions() []brine.StepDefinition {
 	defs = append(defs, PodWatchRealDefinitions()...)
 	defs = append(defs, PodWatchRealExtraDefinitions()...)
 	defs = append(defs, DaemonMTLSDefinitions()...)
+	defs = append(defs, RealDaemonDefinitions()...)
 	defs = append(defs, ArtifactRecordingDefinitions()...)
 	return defs
 }
