@@ -19,8 +19,27 @@ Feature: Getting artifacts from the artifact daemon
   daemon's wire contract. What they were not was consumer-shaped: several
   asserted `gotPath`, `gotMethod`, `gotBody` and `probeHits` captured by the
   handler, which is the recording-double problem wearing a real server's
-  clothes. Here the daemon double records nothing. It holds artifacts, or it
-  does not, and the scenario asserts what came back.
+  clothes. Nothing here records anything; every assertion is on what came back.
+
+  The daemon is now the REAL one — the binary from cmd/artifact-daemon, run as
+  a process with its own storage root — rather than a hand-written stand-in
+  answering its routes out of a map. "The daemon holds X" means files on its
+  disk, and where the ATC registers an alias for an output it produced, these
+  scenarios POST the same registration. Three things that changes:
+
+    - the tar member names below are the daemon's own, produced by walking a
+      directory. They used to be names the fixture chose when it built the tar
+      it then handed itself.
+    - a resource cache is a registered alias, and the probe route and the
+      fetch route resolve THE SAME one. The stand-in kept two maps, so a probe
+      could name a daemon that could not serve the bytes and the scenario
+      would still pass. It takes one Given now, not two.
+    - a mirrored copy is a directory under steps/, which is where PUT
+      /stream-in extracts one. If the daemon's filesystem branch regressed,
+      the peer-fallback scenarios would now fail — where before they stayed
+      green while every build after a web restart broke.
+
+  ONE scenario still drives a stand-in, and it says why where it stands.
 
   Two spec drifts, noted where they bite: VT-06 says StreamOut MUST validate
   that a source node is present, but it now falls through to daemon discovery
@@ -31,6 +50,10 @@ Feature: Getting artifacts from the artifact daemon
   # Reading an artifact from the node that produced it (VT-06)
   # -------------------------------------------------------------------------
 
+  # A flat artifact file, which the daemon serves back byte for byte — so this
+  # is an assertion about pass-through, not about tar. StreamOut hands the
+  # daemon's body straight to the caller when nothing has to be filtered or
+  # compressed, and this is the scenario that would notice it stopped.
   @VT-06
   Scenario: An artifact comes back from the node that produced it
     Given an artifact daemon
@@ -39,9 +62,9 @@ Feature: Getting artifacts from the artifact daemon
     When a consumer reads the artifact "abc"
     Then the artifact arrives as "tar data here"
 
-  # The daemon serves exactly one key and 404s everything else, so the bytes
-  # arriving at all is what proves the right artifact was asked for. That is
-  # the whole of what `Expect(r.URL.Path).To(ContainSubstring(...))` was for.
+  # The daemon serves what it was told it has and 404s everything else, so the
+  # bytes arriving at all is what proves the right artifact was asked for. That
+  # is the whole of what `Expect(r.URL.Path).To(ContainSubstring(...))` was for.
   @VT-06
   Scenario: An artifact comes back from a daemon whose address is already known
     Given an artifact daemon
@@ -83,10 +106,12 @@ Feature: Getting artifacts from the artifact daemon
   # What the consumer gets back: compressed, filtered, or neither (VT-08)
   # -------------------------------------------------------------------------
 
+  # An artifact with files in it is a DIRECTORY on the node, and the archive
+  # the consumer unpacks is one the daemon builds on the way out.
   @VT-08
   Scenario: A consumer that asks for compression can gunzip what arrives
     Given an artifact daemon
-    And it holds the archive "abc" containing the file "task.yml" with "platform: linux"
+    And it holds the artifact "abc" containing the file "task.yml" with "platform: linux"
     And the artifact was produced on node "node-1"
     And the consumer asks for a gzip-compressed stream
     When a consumer reads the artifact "abc"
@@ -96,18 +121,22 @@ Feature: Getting artifacts from the artifact daemon
   @VT-08
   Scenario: A consumer that asks for no compression can hand the bytes straight to tar
     Given an artifact daemon
-    And it holds the archive "abc" containing the file "README.md" with "hello"
+    And it holds the artifact "abc" containing the file "README.md" with "hello"
     And the artifact was produced on node "node-1"
     When a consumer reads the artifact "abc"
     Then the stream is not compressed
     And the archive holds "README.md" containing "hello"
 
+  # "ci/task.yml" is a name the DAEMON produced, by walking the directory and
+  # taking each file's path relative to its root. Filtering can only pick the
+  # entry out if the daemon names it that way, and until the daemon was real
+  # nothing here said it did — the fixture built the tar and chose the names.
   @VT-08
   Scenario: Asking for one file inside an artifact gets that file and nothing else
     Given an artifact daemon
-    And it holds the archive "abc" containing the file "README.md" with "# My Repo"
-    And the archive "abc" also contains the file "ci/task.yml" with "platform: linux"
-    And the archive "abc" also contains the file "src/main.go" with "package main"
+    And it holds the artifact "abc" containing the file "README.md" with "# My Repo"
+    And the artifact "abc" also contains the file "ci/task.yml" with "platform: linux"
+    And the artifact "abc" also contains the file "src/main.go" with "package main"
     And the artifact was produced on node "node-1"
     And the consumer asks for the sub-path "ci/task.yml"
     And the consumer asks for a gzip-compressed stream
@@ -118,8 +147,8 @@ Feature: Getting artifacts from the artifact daemon
   @VT-08
   Scenario: Asking for the artifact root gets everything in it
     Given an artifact daemon
-    And it holds the archive "abc" containing the file "file1.txt" with "aaa"
-    And the archive "abc" also contains the file "file2.txt" with "bbb"
+    And it holds the artifact "abc" containing the file "file1.txt" with "aaa"
+    And the artifact "abc" also contains the file "file2.txt" with "bbb"
     And the artifact was produced on node "node-1"
     When a consumer reads the artifact "abc"
     Then the archive holds exactly 2 entries
@@ -132,7 +161,7 @@ Feature: Getting artifacts from the artifact daemon
   @VT-08
   Scenario: Asking for a file that is not there succeeds with an empty archive
     Given an artifact daemon
-    And it holds the archive "abc" containing the file "README.md" with "hello"
+    And it holds the artifact "abc" containing the file "README.md" with "hello"
     And the artifact was produced on node "node-1"
     And the consumer asks for the sub-path "nonexistent.yml"
     And the consumer asks for a gzip-compressed stream
@@ -146,13 +175,18 @@ Feature: Getting artifacts from the artifact daemon
 
   # The producing node is the one thing in this system guaranteed to disappear:
   # spot preemption, a crash, a drain. What must survive is the build.
+  #
+  # The daemon serving these is a peer holding a mirrored copy: a directory
+  # under steps/, exactly where a mirror arrives, with no registered alias —
+  # because a peer never receives the producer's registration. That is what
+  # makes the fallback read a different route rather than the same one twice.
   Scenario: A mirrored copy is served when the producing node has left the cluster
     Given an artifact daemon
-    And it holds a mirrored copy of the artifact "handle/output" containing "peer-served-content"
+    And it holds a mirrored copy of the artifact "handle/output" containing the file "f.txt" with "peer-served-content"
     And the node that produced the artifact has left the cluster
     And the ATC can fall back to other daemons
     When a consumer reads the artifact "handle/output"
-    Then the artifact arrives as "peer-served-content"
+    Then the archive holds "f.txt" containing "peer-served-content"
 
   # The failure has to name the situation. "connection refused" would send an
   # operator to the network; the artifact is simply gone.
@@ -172,12 +206,12 @@ Feature: Getting artifacts from the artifact daemon
   # this states it in the consumer's own terms.
   Scenario: The producer's own copy wins over a mirrored one
     Given an artifact daemon
-    And it holds the artifact "handle/output" containing "producer-content"
-    And it holds a mirrored copy of the artifact "handle/output" containing "stale-peer-content"
+    And it holds the artifact "handle/output" containing the file "f.txt" with "producer-content"
+    And it holds a mirrored copy of the artifact "handle/output" containing the file "f.txt" with "stale-peer-content"
     And the artifact was produced on node "node-1"
     And the ATC can fall back to other daemons
     When a consumer reads the artifact "handle/output"
-    Then the artifact arrives as "producer-content"
+    Then the archive holds "f.txt" containing "producer-content"
 
   # -------------------------------------------------------------------------
   # When the ATC restarted and forgot where the artifact was
@@ -190,11 +224,11 @@ Feature: Getting artifacts from the artifact daemon
   # spending.
   Scenario: An artifact is found by asking every daemon when the locator was wiped
     Given an artifact daemon
-    And it holds a mirrored copy of the artifact "handle/output" containing "daemon-served-content"
+    And it holds a mirrored copy of the artifact "handle/output" containing the file "f.txt" with "daemon-served-content"
     And no producing node was ever recorded
     And the ATC can fall back to other daemons
     When a consumer reads the artifact "handle/output"
-    Then the artifact arrives as "daemon-served-content"
+    Then the archive holds "f.txt" containing "daemon-served-content"
 
   Scenario: When nothing was recorded and no daemon has it, the failure says that
     Given an artifact daemon
@@ -210,9 +244,15 @@ Feature: Getting artifacts from the artifact daemon
   # A probe hit is only worth anything if the address it names can actually
   # serve the bytes. Asserting the returned IP equals the fixture's IP proves
   # the fixture; fetching from it proves the probe.
+  #
+  # There is one Given here because on a real daemon there is one fact: the
+  # ATC registers the cache key against the get step's output, and that single
+  # alias is what the probe answers from AND what the fetch reads. The
+  # stand-in had two maps, so "it holds the cache" and "it holds the bytes"
+  # could disagree — and a probe naming a daemon that could not serve would
+  # have passed.
   Scenario: A cached resource is fetchable from the daemon the probe names
     Given an artifact daemon
-    And it holds the resource cache "rc-42"
     And it holds the artifact "rc-42" containing "cached resource data"
     When a consumer fetches the resource cache "rc-42" from wherever the probe finds it
     Then the artifact arrives as "cached resource data"
@@ -233,14 +273,22 @@ Feature: Getting artifacts from the artifact daemon
   # the race and get bound to as the source. Here the daemon answers /resolve
   # enthusiastically and holds nothing; a hit would mean the fallback is back.
   #
+  # THE ONE STAND-IN LEFT IN THIS FEATURE, and not for want of trying. A real
+  # daemon cannot be put in this position: a peer-served resolve needs the
+  # DAEMON's own EndpointSlice discovery, which main.go builds from
+  # rest.InClusterConfig() alone and cannot be pointed at anything outside a
+  # cluster. A real daemon with no peers misses on /resolve as well, which
+  # would reproduce this scenario's wire signature and not its situation — and
+  # would lose the regression it exists to catch. So the daemon here is a
+  # server that answers /resolve and nothing else.
+  #
   # The other half of that regression — /resolve also wrote a full copy of the
   # artifact into the daemon pod's /tmp, outside the swept storage path, where
   # nothing ever reclaimed it — has no consumer-visible form at this seam. It
   # is observable only from inside the daemon, and belongs to the daemon's own
   # suite.
   Scenario: A daemon that can only resolve from peers is not a cache hit
-    Given an artifact daemon
-    And it answers resolve requests but holds nothing locally
+    Given a daemon that answers resolve requests but holds nothing locally
     When the ATC probes for the resource cache "rc-42"
     Then the probe reports a miss
 
@@ -248,9 +296,14 @@ Feature: Getting artifacts from the artifact daemon
   # from ANY status. A daemon answering 404 for this key is still the daemon
   # that can warm it; reading the header only off a 200 would mean the
   # capability is known exactly when it is not needed.
+  #
+  # The tier is a boot flag, which is why it is part of the Given that starts
+  # the daemon rather than something said about a running one. It is also
+  # advertised on the resource-cache routes and nowhere else — the stand-in
+  # used to set the header on every route, which taught a contract the daemon
+  # does not have.
   Scenario: A durable tier is learned from a miss, not just from a hit
-    Given an artifact daemon
-    And it advertises a durable tier
+    Given an artifact daemon with a durable tier
     When the ATC probes for the resource cache "rc-42"
     Then the probe reports a miss
     And the daemon is known to have a durable tier
@@ -282,19 +335,14 @@ Feature: Getting artifacts from the artifact daemon
   # function that always returns nil that assertion cannot fail. Five green
   # scenarios asserting nothing is worse than an acknowledged gap.
   #
-  # Closing it needs a decision about this file's double, which records
-  # NOTHING on purpose (see the header of ../steps/daemon.go). Either:
-  #   - it records the keys it was asked to mirror, and the scenarios assert
-  #     the request arrived — which is the recording-double pattern the header
-  #     rejects, defensible here only because there is no output to assert on;
-  #   - or the double actually mirrors, moving the artifact into the set it
-  #     serves as a mirrored copy, and the scenarios assert the copy can then
-  #     be fetched — an output assertion, but a behavioural difference beyond
-  #     "it holds its artifacts in a map", since a real daemon mirrors to
-  #     peers rather than to itself.
-  #
-  # The second is truer to the header. Neither is a decision to make in
-  # passing, which is why this is a note and not a scenario.
+  # Closing it is now a smaller job than it was, and the shape has changed
+  # with the daemon: POST /mirror on a real daemon with no peer resolver
+  # schedules nothing, so "the mirror arrived" still has no observable form
+  # here. Two daemons could show it — and cannot be had, for the same reason
+  # the resolve scenario above keeps its stand-in: peer discovery is
+  # in-cluster-only, so two real daemons cannot find each other outside one.
+  # Closing this needs a production flag, which is a decision rather than a
+  # detail.
 
   # -------------------------------------------------------------------------
   # Finding which daemon holds a step artifact
@@ -328,12 +376,12 @@ Feature: Getting artifacts from the artifact daemon
   # An unreachable peer must not cost the build the artifact a live one has.
   Scenario: One live daemon wins over an unreachable one
     Given an artifact daemon
-    And it holds a mirrored copy of the artifact "handle/output" containing "peer-served-content"
+    And it holds a mirrored copy of the artifact "handle/output" containing the file "f.txt" with "peer-served-content"
     And a second daemon address that never answers
     And the node that produced the artifact has left the cluster
     And the ATC can fall back to other daemons
     When a consumer reads the artifact "handle/output"
-    Then the artifact arrives as "peer-served-content"
+    Then the archive holds "f.txt" containing "peer-served-content"
 
   # -------------------------------------------------------------------------
   # Asking a daemon to mirror (best-effort by contract)
