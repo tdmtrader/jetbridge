@@ -16,6 +16,7 @@ import (
 	"code.cloudfoundry.org/lager/v3"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 )
 
 func main() {
@@ -25,6 +26,7 @@ func main() {
 	resolveCapabilityKeyFile := flag.String("resolve-capability-key", "", "Path to the raw 32-byte key required to authorize resolve operations")
 	nodeName := flag.String("node-name", "", "Kubernetes node name (for node labeling)")
 	namespace := flag.String("namespace", "default", "Kubernetes namespace")
+	kubeconfig := flag.String("kubeconfig", "", "Path to a kubeconfig file. When empty the in-cluster config is used, which is what the daemon does in a pod. Set this to run the daemon against a cluster from outside one — for debugging against a live cluster, and for tests that need two daemons able to discover each other.")
 	serviceName := flag.String("service-name", "artifact-daemon", "Headless service name for EndpointSlice peer discovery")
 	labelKey := flag.String("label-key", "concourse.dev/artifact-cache", "Node label key to set on startup")
 	tlsCert := flag.String("tls-cert", "", "Path to TLS server certificate (enables HTTPS with mTLS)")
@@ -63,7 +65,7 @@ func main() {
 	// Build K8s client for node labeling.
 	var labeler *NodeLabeler
 	if *nodeName != "" {
-		k8sClient, err := buildK8sClient()
+		k8sClient, err := buildK8sClient(*kubeconfig)
 		if err != nil {
 			logger.Error("failed-to-create-k8s-client", err)
 			os.Exit(1)
@@ -197,7 +199,7 @@ func main() {
 	// Set up peer resolver for cross-node artifact resolution.
 	var mirror *Mirror
 	if *nodeName != "" {
-		k8sClientForPeers, err := buildK8sClient()
+		k8sClientForPeers, err := buildK8sClient(*kubeconfig)
 		if err != nil {
 			logger.Error("failed-to-create-peer-k8s-client", err)
 			// Non-fatal — cross-node resolution won't work but local still does.
@@ -366,8 +368,25 @@ func main() {
 	logger.Info("stopped")
 }
 
-// buildK8sClient creates a Kubernetes client using in-cluster config.
-func buildK8sClient() (kubernetes.Interface, error) {
+// buildK8sClient creates a Kubernetes client, from an explicit kubeconfig when
+// one is given and from the in-cluster config otherwise.
+//
+// The in-cluster path is what runs in production. The kubeconfig path exists
+// because without it the daemon cannot talk to any cluster it is not running
+// inside: rest.InClusterConfig reads KUBERNETES_SERVICE_HOST and a
+// service-account token whose path client-go hardcodes. That made the daemon
+// undebuggable from a laptop, and made peer discovery — the whole of
+// mirroring, evacuation and cross-node fallback — unreachable by any test that
+// does not deploy into Kubernetes. atc/worker/jetbridge/config.go has taken
+// both paths since it was written; this brings the daemon into line with it.
+func buildK8sClient(kubeconfig string) (kubernetes.Interface, error) {
+	if kubeconfig != "" {
+		config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
+		if err != nil {
+			return nil, fmt.Errorf("kubeconfig %q: %w", kubeconfig, err)
+		}
+		return kubernetes.NewForConfig(config)
+	}
 	config, err := rest.InClusterConfig()
 	if err != nil {
 		return nil, fmt.Errorf("in-cluster config: %w", err)
