@@ -2,17 +2,53 @@ package steps
 
 // Artifact-daemon steps: the executable half of ../features/artifact-daemon.feature.
 //
-// The double here is a REAL http.Server speaking the artifact daemon's wire
-// contract — PHILOSOPHY.md's "test adapters are real adapters", and the same
-// argument volume_streaming.go's localExecAdapter makes for exec. Its
-// behavioral difference is one sentence: it holds its artifacts in a map
-// instead of on a node's disk.
+// These scenarios drive the REAL artifact daemon — the binary built from
+// cmd/artifact-daemon, run as a process with its own storage root on a free
+// port (see realdaemon.go for how, and for why it is started in a Given rather
+// than owned by the resource plane). What the daemon holds is what a step's
+// output actually is: files on a node's disk, plus the POST /register alias
+// the ATC writes for the outputs it produced.
 //
-// It records NOTHING. There is no `gotPath`, no `gotMethod`, no `probeHits`.
-// That is deliberate: the two ginkgo suites this replaces already had a real
-// server and still asserted against captures taken inside the handler, which
-// is the recording-double problem with better transport. Every assertion below
-// is on what came back out — the artifact, the error, or nothing.
+// It used to be a hand-written http.Server answering the daemon's routes out
+// of a map. That double was honest about being one and it recorded nothing —
+// no gotPath, no gotMethod, no probeHits — and for asking what the ATC does
+// with an answer it was the right tool. What it could not do is tell you the
+// answer was RIGHT, and three of the sentences below turned out to assert its
+// implementation rather than the daemon's:
+//
+//   - "the archive holds X containing Y" read back a tar the double had been
+//     handed pre-built by tarOfMembers. Nothing said that the daemon, asked
+//     for a directory, produces a tar whose members carry their relative
+//     paths — so "ci/task.yml" was a name the FIXTURE chose. It is now a name
+//     the daemon's own walk produced.
+//   - "it holds the resource cache X" and "it holds the artifact X" wrote into
+//     two different maps, so a probe could name a daemon that could not serve
+//     the bytes and the scenario would still pass. On the real daemon both are
+//     one POST /register: the route the probe answers from and the route the
+//     fetch reads from resolve the SAME alias. That is what makes "fetchable
+//     from the daemon the probe names" mean anything, and it is why those two
+//     sentences are now one.
+//   - the mirrored copy the peer-fallback scenarios read was a map entry under
+//     a "steps/" string key. It is now a directory under steps/ on disk, which
+//     is where PUT /stream-in extracts a mirror — so a regression in the
+//     daemon's filesystem branch fails these scenarios instead of passing
+//     them.
+//
+// A divergence the double taught wrongly, now gone: it advertised the
+// durable-tier header on EVERY route. The daemon advertises it from
+// /resource-caches only (advertiseDurableTier is called by the two
+// resource-cache handlers and nowhere else). No scenario asserted the
+// difference, but a reader would have taken the double's version for the
+// contract; the durable scenarios now learn the capability from the route that
+// really carries it, and would fail if that route stopped carrying it.
+//
+// ONE double survives, for one scenario, and the scenario says why in the
+// feature file: a daemon that answers /resolve while holding nothing locally
+// cannot be built from the real binary. Peer-served resolve needs DAEMON-side
+// peer discovery, which main.go builds only from rest.InClusterConfig() and
+// cannot be pointed anywhere outside a cluster. A real daemon with no peers
+// simply misses — which reproduces the wire signature of that scenario and not
+// its situation, and loses the regression it exists to catch.
 //
 // The domain-state structs are declared here rather than in domain.go so this
 // family can be read, and reviewed, as one file.
@@ -27,9 +63,11 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/brine-dev/brine-go/pkg/brine"
@@ -45,10 +83,10 @@ import (
 // Domain states
 // -----------------------------------------------------------------------
 
-// DaemonPlan is a cluster with artifact daemons in it, under description.
-// Refinement steps take DaemonPlan in and out — the live state's type does not
-// change — so a scenario may say what the daemon holds, who produced the
-// artifact and what the consumer is asking for in any order.
+// DaemonPlan is a cluster with an artifact daemon in it, under description.
+// Steps take DaemonPlan in and out — the live state's type does not change —
+// so a scenario may say what the daemon holds, who produced the artifact and
+// what the consumer is asking for in any order.
 type DaemonPlan struct {
 	Ctx       context.Context
 	Namespace string
@@ -56,20 +94,18 @@ type DaemonPlan struct {
 
 	// Port is the single port the ATC reaches every daemon on, because that is
 	// how the deployment works: one DaemonSet, one containerPort. It is the
-	// live server's real port, so requests really are dialled.
+	// running daemon's real port, so requests really are dialled.
 	Port     int
 	DaemonIP string
-	Server   *httptest.Server
-	Store    *daemonStore
+
+	// Root is the daemon's storage path — the node's disk. Empty when the
+	// scenario has no daemon at all.
+	Root string
 
 	// IPs is what the EndpointSlice publishes. It may name addresses that
 	// nothing answers on.
 	IPs   []string
 	Nodes map[string]string
-
-	// Archives keeps member order so a multi-file artifact can be built up
-	// across several Given steps.
-	Archives map[string][]tarMember
 
 	SourceNode string
 	KnownIP    string
@@ -107,93 +143,76 @@ type ProbeOutcome struct {
 }
 
 // -----------------------------------------------------------------------
-// The daemon double
+// Putting artifacts on the daemon's disk
 // -----------------------------------------------------------------------
 
-type tarMember struct {
-	Name    string
-	Content string
+// Two locations, because the ATC reads through two different routes and one
+// daemon here has to stand in for both ends of them.
+//
+//   - A copy the PRODUCER holds is reached at /artifacts/{key}, which resolves
+//     through the registry: the ATC registers the volume key against the
+//     step's output directory, and the daemon finds nothing at that key on
+//     disk and falls back to the alias. producedPath is where such an output
+//     sits. On a real cluster it would be steps/{handle}/{output} on the
+//     producer's node — it is a subtree of its own here only because the same
+//     process is also playing the peer, whose copy is at the path below.
+//
+//   - A copy a PEER holds is reached at /artifacts/steps/{key} and read
+//     straight off the disk, because a peer receives mirrored data through PUT
+//     /stream-in — which extracts to steps/{key} — and never gets the
+//     producer-side alias.
+//
+// Giving the two copies different contents is what lets a scenario say which
+// of the two routes a consumer actually read.
+
+func (p DaemonPlan) producedPath(key string) string {
+	return filepath.Join(p.Root, "produced", key)
 }
 
-// daemonStore is what one artifact daemon has. The handler reads it at request
-// time, so Given steps may keep adding to it after the server is listening.
-type daemonStore struct {
-	mu sync.Mutex
-
-	caches        map[string]bool
-	artifacts     map[string][]byte
-	stepArtifacts map[string][]byte
-
-	durableTier bool
-	resolves    bool
+func (p DaemonPlan) mirrorPath(key string) string {
+	return filepath.Join(p.Root, "steps", key)
 }
 
-func newDaemonStore() *daemonStore {
-	return &daemonStore{
-		caches:        map[string]bool{},
-		artifacts:     map[string][]byte{},
-		stepArtifacts: map[string][]byte{},
+func (p DaemonPlan) baseURL() string {
+	return fmt.Sprintf("http://%s:%d", p.DaemonIP, p.Port)
+}
+
+// writeArtifactFile writes one file, creating the directories above it.
+func writeArtifactFile(full, content string) error {
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		return fmt.Errorf("create %q: %w", filepath.Dir(full), err)
 	}
-}
-
-// handler answers the routes the artifact daemon answers, and 404s everything
-// else — including a route asked for with the wrong shape. A client that
-// addresses the wrong key gets nothing, which is how the scenarios can assert
-// on arrival instead of on the request.
-func (s *daemonStore) handler() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-
-		// Advertised on every status, not just 200 — a daemon that misses on
-		// this key is still the daemon that could warm it.
-		if s.durableTier {
-			w.Header().Set(jetbridge.DurableTierHeader, "enabled")
-		}
-
-		switch {
-		case strings.HasPrefix(r.URL.Path, "/resource-caches/"):
-			if s.caches[strings.TrimPrefix(r.URL.Path, "/resource-caches/")] {
-				w.WriteHeader(http.StatusOK)
-				return
-			}
-			w.WriteHeader(http.StatusNotFound)
-
-		case r.URL.Path == "/resolve" || r.URL.Path == "/resolve-batch":
-			if !s.resolves {
-				w.WriteHeader(http.StatusNotFound)
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"status":"ok","method":"registry"}`))
-
-		// The route the real daemon answers, so a client that posts here is
-		// not answered with a 404 it would never see in production. Nothing
-		// asks it: see the note in ../features/artifact-daemon.feature about
-		// the mirror trigger having no scenario.
-		case r.URL.Path == "/mirror":
-			w.WriteHeader(http.StatusAccepted)
-
-		case strings.HasPrefix(r.URL.Path, "/artifacts/steps/"):
-			serveArtifactBody(w, s.stepArtifacts[strings.TrimPrefix(r.URL.Path, "/artifacts/steps/")])
-
-		case strings.HasPrefix(r.URL.Path, "/artifacts/"):
-			serveArtifactBody(w, s.artifacts[strings.TrimPrefix(r.URL.Path, "/artifacts/")])
-
-		default:
-			w.WriteHeader(http.StatusNotFound)
-		}
-	})
-}
-
-func serveArtifactBody(w http.ResponseWriter, body []byte) {
-	if body == nil {
-		w.WriteHeader(http.StatusNotFound)
-		return
+	if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+		return fmt.Errorf("write %q: %w", full, err)
 	}
-	w.Header().Set("Content-Type", "application/x-tar")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(body)
+	return nil
+}
+
+// register is the ATC's own move: POST /register, mapping a key to a path the
+// daemon can already see on its disk. The daemon refuses a key whose path is
+// not there, so a fixture that writes nothing cannot pretend to hold anything.
+func (p DaemonPlan) register(key, path string) error {
+	body := fmt.Sprintf("{\"key\":%q,\"local_path\":%q}", key, path)
+	resp, err := http.Post(p.baseURL()+"/register", "application/json", strings.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("register %q with the daemon: %w", key, err)
+	}
+	defer resp.Body.Close()
+	answer, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusCreated {
+		return fmt.Errorf("the daemon refused to register %q at %q: %d %s",
+			key, path, resp.StatusCode, strings.TrimSpace(string(answer)))
+	}
+	return nil
+}
+
+// requireDaemon reports the missing daemon in the scenario's own terms rather
+// than as a path error three steps later.
+func (p DaemonPlan) requireDaemon(what string) error {
+	if p.Root == "" {
+		return fmt.Errorf("there is no artifact daemon for %s", what)
+	}
+	return nil
 }
 
 // -----------------------------------------------------------------------
@@ -203,7 +222,9 @@ func serveArtifactBody(w http.ResponseWriter, body []byte) {
 // cluster builds the fake Kubernetes the ATC discovers daemons and nodes
 // through. fake.Clientset is a real implementation of the client interface
 // whose behavioral property is deterministic delivery; it is not the subject
-// of any assertion here.
+// of any assertion here. It is also the only half of discovery that can be
+// faked from outside a cluster — the daemon's own peer discovery cannot, which
+// is what keeps one scenario on a double.
 func (p DaemonPlan) cluster() (*fake.Clientset, error) {
 	cs := fake.NewSimpleClientset()
 
@@ -267,16 +288,6 @@ func (p DaemonPlan) volume(key string, cs *fake.Clientset) *jetbridge.DaemonSetV
 	return vol
 }
 
-// close shuts the daemon down. Every When step calls it, because the resource
-// plane cannot own an httptest server that a step created — see the note in
-// the migration report. Close is idempotent, so a scenario that already took
-// the daemon away is fine.
-func (p DaemonPlan) close() {
-	if p.Server != nil {
-		p.Server.Close()
-	}
-}
-
 // read is the one consumer action every volume scenario ends in: ask for the
 // artifact, drain what comes back, and put the outcome — bytes or error — into
 // a state a check step can read.
@@ -310,6 +321,39 @@ func (p DaemonPlan) read(vol *jetbridge.DaemonSetVolume) DaemonFetch {
 }
 
 // -----------------------------------------------------------------------
+// Starting one
+// -----------------------------------------------------------------------
+
+// startDaemonPlan runs a daemon and describes the cluster it is the only
+// member of. Its kill goes on the Recorder, which drains at scenario end on
+// pass, on failure and on SIGTERM; it is deliberately NOT a brine resource,
+// because every ScopeScenario resource is acquired for EVERY scenario in the
+// suite — measured at 70 seconds when the daemon was wired that way.
+func startDaemonPlan(rec *brine.Recorder, extraArgs ...string) (DaemonPlan, error) {
+	d, err := startRealDaemon(extraArgs...)
+	if err != nil {
+		return DaemonPlan{}, err
+	}
+	rec.RegisterDisposer(func() { _ = d.stop() })
+
+	host, port, err := hostPortOfURL(d.URL)
+	if err != nil {
+		return DaemonPlan{}, err
+	}
+
+	return DaemonPlan{
+		Ctx:       context.Background(),
+		Namespace: "cicd",
+		Service:   "artifact-daemon",
+		Port:      port,
+		DaemonIP:  host,
+		Root:      d.Root,
+		IPs:       []string{host},
+		Nodes:     map[string]string{},
+	}, nil
+}
+
+// -----------------------------------------------------------------------
 // Steps
 // -----------------------------------------------------------------------
 
@@ -320,28 +364,25 @@ func DaemonDefinitions() []brine.StepDefinition {
 
 		brine.DefineMap[brine.Empty, DaemonPlan](
 			"an artifact daemon",
-			func(_ brine.Empty, _ brine.Params, _ *brine.Recorder) (DaemonPlan, error) {
-				store := newDaemonStore()
-				server := httptest.NewServer(store.handler())
+			func(_ brine.Empty, _ brine.Params, rec *brine.Recorder) (DaemonPlan, error) {
+				return startDaemonPlan(rec)
+			},
+		),
 
-				host, port, err := hostAndPort(server)
+		// A separate Given rather than a refinement of the one above, because
+		// the durable tier is a boot flag: --durable-store decides it before
+		// the first request, and a running daemon cannot acquire one. The
+		// store is a directory of its own so the node's storage root stays
+		// what the node holds.
+		brine.DefineMap[brine.Empty, DaemonPlan](
+			"an artifact daemon with a durable tier",
+			func(_ brine.Empty, _ brine.Params, rec *brine.Recorder) (DaemonPlan, error) {
+				store, err := os.MkdirTemp("", "brine-durable-store-*")
 				if err != nil {
-					server.Close()
-					return DaemonPlan{}, err
+					return DaemonPlan{}, fmt.Errorf("create durable store: %w", err)
 				}
-
-				return DaemonPlan{
-					Ctx:       context.Background(),
-					Namespace: "cicd",
-					Service:   "artifact-daemon",
-					Port:      port,
-					DaemonIP:  host,
-					Server:    server,
-					Store:     store,
-					IPs:       []string{host},
-					Nodes:     map[string]string{},
-					Archives:  map[string][]tarMember{},
-				}, nil
+				rec.RegisterDisposer(func() { _ = os.RemoveAll(store) })
+				return startDaemonPlan(rec, "--durable-store=filesystem", "--durable-path", store)
 			},
 		),
 
@@ -353,65 +394,108 @@ func DaemonDefinitions() []brine.StepDefinition {
 					Namespace: "cicd",
 					Service:   "artifact-daemon",
 					Port:      7780,
-					Store:     newDaemonStore(),
 					Nodes:     map[string]string{},
-					Archives:  map[string][]tarMember{},
+				}, nil
+			},
+		),
+
+		// THE ONE DOUBLE LEFT IN THIS FILE, and the reason is in the scenario
+		// that uses it: the real binary cannot be made to answer /resolve
+		// while holding nothing locally, because a peer-served resolve needs
+		// the daemon's own EndpointSlice discovery and that is built from
+		// rest.InClusterConfig() alone. A real daemon with no peers misses on
+		// /resolve too, which would reproduce the wire signature of the
+		// scenario and not its situation.
+		//
+		// It answers /resolve enthusiastically and 404s everything else,
+		// including the HEAD /resource-caches/ the probe actually sends. A hit
+		// therefore means one thing: the probe fell back to /resolve again.
+		brine.DefineMap[brine.Empty, DaemonPlan](
+			"a daemon that answers resolve requests but holds nothing locally",
+			func(_ brine.Empty, _ brine.Params, rec *brine.Recorder) (DaemonPlan, error) {
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.URL.Path == "/resolve" || r.URL.Path == "/resolve-batch" {
+						w.Header().Set("Content-Type", "application/json")
+						_, _ = w.Write([]byte(`{"status":"ok","method":"registry"}`))
+						return
+					}
+					w.WriteHeader(http.StatusNotFound)
+				}))
+				rec.RegisterDisposer(server.Close)
+
+				host, port, err := hostAndPort(server)
+				if err != nil {
+					return DaemonPlan{}, err
+				}
+				return DaemonPlan{
+					Ctx:       context.Background(),
+					Namespace: "cicd",
+					Service:   "artifact-daemon",
+					Port:      port,
+					DaemonIP:  host,
+					IPs:       []string{host},
+					Nodes:     map[string]string{},
 				}, nil
 			},
 		),
 
 		// --- what the daemon holds ---
 
-		Refine[DaemonPlan]("it holds the artifact {string} containing {string}",
-			func(in DaemonPlan, a Args) DaemonPlan {
-				in.Store.put(&in.Store.artifacts, a.String(0), []byte(a.String(1)))
-				return in
-			}),
-
-		Refine[DaemonPlan]("it holds a mirrored copy of the artifact {string} containing {string}",
-			func(in DaemonPlan, a Args) DaemonPlan {
-				in.Store.put(&in.Store.stepArtifacts, a.String(0), []byte(a.String(1)))
-				return in
-			}),
-
+		// A flat artifact file, which the daemon serves back byte for byte.
+		// This is the shape that makes "the artifact arrives as ..." an
+		// assertion about pass-through rather than about tar.
 		brine.DefineMap[DaemonPlan, DaemonPlan](
-			"it holds the archive {string} containing the file {string} with {string}",
+			"it holds the artifact {string} containing {string}",
 			func(in DaemonPlan, p brine.Params, _ *brine.Recorder) (DaemonPlan, error) {
-				return addArchiveMember(in, p)
+				key, _ := p.GetString(0)
+				content, ok := p.GetString(1)
+				if !ok {
+					return DaemonPlan{}, fmt.Errorf("expected an artifact key and its contents")
+				}
+				if err := in.requireDaemon("the artifact " + key); err != nil {
+					return DaemonPlan{}, err
+				}
+				path := in.producedPath(key)
+				if err := writeArtifactFile(path, content); err != nil {
+					return DaemonPlan{}, err
+				}
+				return in, in.register(key, path)
+			},
+		),
+
+		// A step's output as it really is: a directory. The daemon tars it on
+		// the way out, so the member names in the answer are the daemon's own.
+		brine.DefineMap[DaemonPlan, DaemonPlan](
+			"it holds the artifact {string} containing the file {string} with {string}",
+			func(in DaemonPlan, p brine.Params, _ *brine.Recorder) (DaemonPlan, error) {
+				return addProducedFile(in, p)
 			},
 		),
 
 		brine.DefineMap[DaemonPlan, DaemonPlan](
-			"the archive {string} also contains the file {string} with {string}",
+			"the artifact {string} also contains the file {string} with {string}",
 			func(in DaemonPlan, p brine.Params, _ *brine.Recorder) (DaemonPlan, error) {
-				return addArchiveMember(in, p)
+				return addProducedFile(in, p)
 			},
 		),
 
-		Refine[DaemonPlan]("it holds the resource cache {string}",
-			func(in DaemonPlan, a Args) DaemonPlan {
-				key := a.String(0)
-				in.Store.mu.Lock()
-				in.Store.caches[key] = true
-				in.Store.mu.Unlock()
-				return in
-			}),
-
-		Refine[DaemonPlan]("it advertises a durable tier",
-			func(in DaemonPlan, _ Args) DaemonPlan {
-				in.Store.mu.Lock()
-				in.Store.durableTier = true
-				in.Store.mu.Unlock()
-				return in
-			}),
-
-		Refine[DaemonPlan]("it answers resolve requests but holds nothing locally",
-			func(in DaemonPlan, _ Args) DaemonPlan {
-				in.Store.mu.Lock()
-				in.Store.resolves = true
-				in.Store.mu.Unlock()
-				return in
-			}),
+		// A copy a peer received by mirror: on its disk under steps/, with no
+		// alias, because a peer never gets the producer's registration.
+		brine.DefineMap[DaemonPlan, DaemonPlan](
+			"it holds a mirrored copy of the artifact {string} containing the file {string} with {string}",
+			func(in DaemonPlan, p brine.Params, _ *brine.Recorder) (DaemonPlan, error) {
+				key, _ := p.GetString(0)
+				name, _ := p.GetString(1)
+				content, ok := p.GetString(2)
+				if !ok {
+					return DaemonPlan{}, fmt.Errorf("expected an artifact key, a file name and its contents")
+				}
+				if err := in.requireDaemon("the mirrored copy of " + key); err != nil {
+					return DaemonPlan{}, err
+				}
+				return in, writeArtifactFile(filepath.Join(in.mirrorPath(key), name), content)
+			},
+		),
 
 		// --- the shape of the cluster ---
 
@@ -459,7 +543,9 @@ func DaemonDefinitions() []brine.StepDefinition {
 		),
 
 		// The node is still recorded against the artifact; it is simply not in
-		// the cluster any more. Spot preemption, a crash, a drain.
+		// the cluster any more. Spot preemption, a crash, a drain. The daemon
+		// process stays up: it is the peer now, and the only thing that
+		// disappeared is the ATC's way of resolving the producer's address.
 		Refine[DaemonPlan]("the node that produced the artifact has left the cluster",
 			func(in DaemonPlan, _ Args) DaemonPlan {
 				in.SourceNode = "node-1"
@@ -517,8 +603,6 @@ func DaemonDefinitions() []brine.StepDefinition {
 		brine.DefineMap[DaemonPlan, DaemonFetch](
 			"a consumer reads the artifact {string}",
 			func(in DaemonPlan, p brine.Params, _ *brine.Recorder) (DaemonFetch, error) {
-				defer in.close()
-
 				key, ok := p.GetString(0)
 				if !ok {
 					return DaemonFetch{}, fmt.Errorf("expected an artifact key parameter")
@@ -537,8 +621,6 @@ func DaemonDefinitions() []brine.StepDefinition {
 		brine.DefineMap[DaemonPlan, DaemonFetch](
 			"a consumer fetches the resource cache {string} from wherever the probe finds it",
 			func(in DaemonPlan, p brine.Params, _ *brine.Recorder) (DaemonFetch, error) {
-				defer in.close()
-
 				key, ok := p.GetString(0)
 				if !ok {
 					return DaemonFetch{}, fmt.Errorf("expected a cache key parameter")
@@ -567,8 +649,6 @@ func DaemonDefinitions() []brine.StepDefinition {
 		brine.DefineMap[DaemonPlan, ProbeOutcome](
 			"the ATC probes for the resource cache {string}",
 			func(in DaemonPlan, p brine.Params, _ *brine.Recorder) (ProbeOutcome, error) {
-				defer in.close()
-
 				key, ok := p.GetString(0)
 				if !ok {
 					return ProbeOutcome{}, fmt.Errorf("expected a cache key parameter")
@@ -591,8 +671,6 @@ func DaemonDefinitions() []brine.StepDefinition {
 		brine.DefineMap[DaemonPlan, ProbeOutcome](
 			"the ATC probes for a mirrored copy of {string}",
 			func(in DaemonPlan, p brine.Params, _ *brine.Recorder) (ProbeOutcome, error) {
-				defer in.close()
-
 				key, ok := p.GetString(0)
 				if !ok {
 					return ProbeOutcome{}, fmt.Errorf("expected an artifact key parameter")
@@ -609,8 +687,6 @@ func DaemonDefinitions() []brine.StepDefinition {
 				return ProbeOutcome{Found: found, IP: ip}, nil
 			},
 		),
-
-		// --- mirroring ---
 
 		// -------------------------------------------------------------------
 		// Checks
@@ -833,51 +909,26 @@ func DaemonDefinitions() []brine.StepDefinition {
 // Helpers
 // -----------------------------------------------------------------------
 
-func (s *daemonStore) put(into *map[string][]byte, key string, body []byte) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	(*into)[key] = body
-}
-
-func addArchiveMember(in DaemonPlan, p brine.Params) (DaemonPlan, error) {
+// addProducedFile puts one more file in a produced artifact's directory and
+// (re-)registers the alias. Registering after every file rather than once is
+// deliberate: POST /register refuses a path that is not on disk, so the
+// registration has to follow the write, and RegisterAlias is idempotent.
+func addProducedFile(in DaemonPlan, p brine.Params) (DaemonPlan, error) {
 	key, _ := p.GetString(0)
 	name, _ := p.GetString(1)
 	content, ok := p.GetString(2)
 	if !ok {
-		return DaemonPlan{}, fmt.Errorf("expected an archive key, a file name and its contents")
+		return DaemonPlan{}, fmt.Errorf("expected an artifact key, a file name and its contents")
 	}
-
-	archives := map[string][]tarMember{}
-	for k, v := range in.Archives {
-		archives[k] = append([]tarMember{}, v...)
-	}
-	archives[key] = append(archives[key], tarMember{Name: name, Content: content})
-	in.Archives = archives
-
-	body, err := tarOfMembers(archives[key])
-	if err != nil {
+	if err := in.requireDaemon("the artifact " + key); err != nil {
 		return DaemonPlan{}, err
 	}
-	in.Store.put(&in.Store.artifacts, key, body)
-	return in, nil
-}
 
-func tarOfMembers(members []tarMember) ([]byte, error) {
-	var buf bytes.Buffer
-	tw := tar.NewWriter(&buf)
-	for _, m := range members {
-		hdr := &tar.Header{Name: m.Name, Size: int64(len(m.Content)), Mode: 0o644}
-		if err := tw.WriteHeader(hdr); err != nil {
-			return nil, fmt.Errorf("write tar header for %q: %w", m.Name, err)
-		}
-		if _, err := tw.Write([]byte(m.Content)); err != nil {
-			return nil, fmt.Errorf("write tar body for %q: %w", m.Name, err)
-		}
+	dir := in.producedPath(key)
+	if err := writeArtifactFile(filepath.Join(dir, name), content); err != nil {
+		return DaemonPlan{}, err
 	}
-	if err := tw.Close(); err != nil {
-		return nil, fmt.Errorf("close tar: %w", err)
-	}
-	return buf.Bytes(), nil
+	return in, in.register(key, dir)
 }
 
 // decodeArchive reads what arrived the way a consumer would: gunzip if it is
@@ -926,6 +977,23 @@ func hostAndPort(server *httptest.Server) (string, int, error) {
 	port, err := strconv.Atoi(portStr)
 	if err != nil {
 		return "", 0, fmt.Errorf("parse daemon port: %w", err)
+	}
+	return host, port, nil
+}
+
+// hostPortOfURL splits the address a started daemon reported.
+func hostPortOfURL(raw string) (string, int, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", 0, fmt.Errorf("parse daemon URL %q: %w", raw, err)
+	}
+	host, portStr, err := net.SplitHostPort(u.Host)
+	if err != nil {
+		return "", 0, fmt.Errorf("split daemon address %q: %w", u.Host, err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return "", 0, fmt.Errorf("parse daemon port %q: %w", portStr, err)
 	}
 	return host, port, nil
 }

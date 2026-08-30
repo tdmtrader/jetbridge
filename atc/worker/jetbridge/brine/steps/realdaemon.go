@@ -148,10 +148,21 @@ func startRealDaemon(extraArgs ...string) (*realDaemon, error) {
 	// Readiness: a route that answers even with nothing stored. A daemon that
 	// died on startup must be reported as that, not as a scenario failure
 	// somewhere later.
+	// A daemon that dies at boot has to be reported AS THAT. The first version
+	// of this loop tested cmd.ProcessState, which exec.Cmd populates only in
+	// Wait/Run — nothing here calls either, so it was nil on every iteration
+	// and the guard could not fire. A misconfigured daemon would have been
+	// reported twenty seconds later as "did not answer", hiding its exit code
+	// and the reason. Waiting in a goroutine makes the death observable.
+	died := make(chan error, 1)
+	go func() { died <- cmd.Wait() }()
+
 	deadline := time.Now().Add(20 * time.Second)
 	for time.Now().Before(deadline) {
-		if cmd.ProcessState != nil && cmd.ProcessState.Exited() {
-			return nil, fmt.Errorf("artifact-daemon exited during startup (code %d)", cmd.ProcessState.ExitCode())
+		select {
+		case err := <-died:
+			return nil, fmt.Errorf("artifact-daemon exited during startup: %w", err)
+		default:
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, d.URL+"/artifacts/steps/__ready__", nil)
@@ -169,8 +180,9 @@ func startRealDaemon(extraArgs ...string) (*realDaemon, error) {
 
 func (d *realDaemon) stop() error {
 	if d.cmd != nil && d.cmd.Process != nil {
+		// The goroutine started in startRealDaemon owns Wait; calling it here
+		// too would race for the same exit status.
 		_ = d.cmd.Process.Kill()
-		_, _ = d.cmd.Process.Wait()
 	}
 	if d.Root != "" {
 		return os.RemoveAll(d.Root)

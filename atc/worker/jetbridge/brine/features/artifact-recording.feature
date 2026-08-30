@@ -15,10 +15,23 @@ Feature: Recording where a step's outputs went
   Source: storage_daemonset_test.go — the DaemonSetBackend cases that describe
   a step's outputs rather than the shape of a constructor's return value.
 
-  Nothing here asserts that a request was made. The daemons below are real HTTP
-  servers, and a mirror really lands on a real peer, so "it was asked to
-  mirror" is stated the only way a consumer can observe it: the copy is
-  fetched, from the other node, over the wire. See ../steps/artifact_recording.go.
+  Nothing here asserts that a request was made. Every assertion is on what a
+  later read brought back, what the pod carries, or what the database holds.
+
+  The daemon answering is the artifact daemon — cmd/artifact-daemon, built and
+  run as a process with its own storage root, the same way
+  ../features/artifact-daemon-real.feature runs it. "The node holds this
+  output" is therefore files on a disk, and what comes back is what the daemon
+  made of them.
+
+  Three scenarios are the exception and say so in their opening Given: the ones
+  about copying an output to a SECOND node. A daemon finds the peers it mirrors
+  to through EndpointSlices, using a client cmd/artifact-daemon builds with
+  rest.InClusterConfig() alone, and the flag that wires the mirror up at all
+  makes the process exit outside a cluster — so two real daemons started here
+  cannot find each other. Those three run on stand-ins that really do copy to a
+  real second server, and the copy is really fetched back from it over the
+  wire. See ../steps/artifact_recording.go.
 
   # =========================================================================
   # The index a finished step leaves behind
@@ -35,8 +48,16 @@ Feature: Recording where a step's outputs went
   # node holds the artifact, and that node's daemon has to have been told that
   # the artifact's key names the directory the step wrote. Neither is visible
   # from outside; the artifact arriving is.
+  #
+  # The daemon is deliberately NOT discoverable here. Against the real daemon
+  # the ATC's peer fallback asks /artifacts/steps/<key>, and the daemon answers
+  # that by stripping the prefix and retrying the registry — so the alias alone
+  # is enough and the index stops being load-bearing. Taking discovery away
+  # makes the recorded node the only route again, which is what this scenario
+  # is about.
   Scenario: A finished step's output can be read back by name from the node that ran it
     Given a jetbridge worker whose step outputs stay on the node that ran them
+    And the ATC cannot go looking for daemons it was not told about
     And the step "build-42" ran on node "node-1"
     And its output "result" is the volume "vol-result" holding "compiled binary"
     When the worker records where the step's outputs went
@@ -170,10 +191,16 @@ Feature: Recording where a step's outputs went
   # through. supervisor_script_test.go already reads the supervisor script this
   # way; nothing had ever read this one.
   #
-  # The daemon answering is the node's real daemon, asked with the pod's own
-  # payload. What is stood in for is the dial itself — BusyBox wget is not on
-  # the machine running this — and the retry backoff, which is not waited out.
-  # Both are named in ../steps/artifact_recording.go where they are done.
+  # The daemon answering is the artifact daemon itself, asked with the pod's
+  # own payload — which is what makes these worth running. The batch names keys
+  # the ATC derived and destinations the POD derived, and the daemon has to
+  # find the first on its own disk and land a whole directory on the second.
+  #
+  # Three things are stood in for. The dial, because BusyBox wget is not on the
+  # machine running this; the retry backoff, which is not waited out; and the
+  # kubelet's creation of the pod's input directories, which have to exist
+  # before the daemon will deliver into them. All three are named in
+  # ../steps/artifact_recording.go where they are done.
 
   # An output whose producer's node could not be determined is still an output.
   # The node lookup fails for ordinary reasons — the pod was already gone when
@@ -411,6 +438,17 @@ Feature: Recording where a step's outputs went
   # double that really mirrors, to a real peer, so the copy can be fetched
   # afterwards. The two scenarios below are that.
   #
+  # And they are the reason this section's daemons are stand-ins while every
+  # other section's is the real binary. A daemon mirrors to peers it discovers
+  # through EndpointSlices, using a client cmd/artifact-daemon builds with
+  # rest.InClusterConfig() alone: there is no --kubeconfig flag, client-go
+  # hardcodes the service-account token path, and --node-name — which is what
+  # wires the mirror up at all — makes the process exit outside a cluster. Two
+  # real daemons started here therefore cannot find each other. Closing that
+  # needs a production flag, which is a decision rather than a detail; until
+  # then the mirror is asserted the only way it can be, with servers that can
+  # be handed a peer.
+  #
   # What is at stake is a whole build's work. Every artifact a step produces
   # lives on exactly one node's disk; without the copy, losing that node — a
   # spot reclaim, a drain, a crash — loses the outputs and forces a rerun of
@@ -423,7 +461,7 @@ Feature: Recording where a step's outputs went
   # the artifact by. Asking with the handle mirrors nothing at all, and reports
   # success while doing it.
   Scenario: A step's output is copied to a second node
-    Given a jetbridge worker whose step outputs stay on the node that ran them
+    Given a jetbridge worker whose stand-in daemons can mirror to a peer
     And a second node whose daemon can hold mirrored copies
     And the step "build-42" ran on node "node-1"
     And its output "result" is the volume "vol-result" holding "compiled binary"
@@ -434,7 +472,7 @@ Feature: Recording where a step's outputs went
   # the failure mode is copying the first and stopping. One survivor out of
   # three still loses the build.
   Scenario: Every output is copied, not just the first
-    Given a jetbridge worker whose step outputs stay on the node that ran them
+    Given a jetbridge worker whose stand-in daemons can mirror to a peer
     And a second node whose daemon can hold mirrored copies
     And the step "release" ran on node "node-1"
     And its output "binary" is the volume "vol-binary" holding "the compiled binary"
@@ -477,7 +515,7 @@ Feature: Recording where a step's outputs went
   # answers "path not found" and the registration fails outright, which is what
   # the first Then is about.
   Scenario: A cache registered for a get step is copied off its node too
-    Given a jetbridge worker whose step outputs stay on the node that ran them
+    Given a jetbridge worker whose stand-in daemons can mirror to a peer
     And a second node whose daemon can hold mirrored copies
     And the step "get-handle" ran on node "node-1"
     And its output "dir" is the volume "get-handle-dir" holding "the fetched resource"
@@ -544,6 +582,27 @@ Feature: Recording where a step's outputs went
     And the node's daemon holds the resource cache "rc-7" containing "the cached resource"
     When the worker looks up the volume "rc-7"
     Then the artifact comes back as "the cached resource"
+
+  # The scenario above says the bytes arrive. It cannot say HOW, because since
+  # the daemon became real both routes reach them: the probe finds the alias,
+  # and so does the ATC's peer fallback, which asks /artifacts/steps/<key> —
+  # a URL the real daemon answers by stripping the prefix and retrying the
+  # registry. Deleting the probe branch outright left it green.
+  #
+  # What separates them is the cost. A probe hit binds the volume by IP, with
+  # no database row behind it, so initialising writes nothing and the next
+  # build repeats the get step. The fallback path carries the row. So the
+  # branch is observable exactly where it hurts.
+  #
+  # (A first attempt asserted the missing row after a PLAIN lookup, which
+  # never initialises anything — the row was absent either way and the check
+  # could not fail. It had to be measured to be seen.)
+  Scenario: A cache found by asking the daemons arrives with no database identity
+    Given a jetbridge worker whose step outputs stay on the node that ran them
+    And an artifact volume "rc-7" the worker can look up
+    And the node's daemon holds the resource cache "rc-7" containing "the cached resource"
+    When the worker looks up the volume "rc-7" and initialises it as a resource cache
+    Then the cache arrives without a database identity
 
   # And the other side of that gate: when the index DOES know where the cache
   # is, the recorded location is authoritative and the daemons must not be
