@@ -403,9 +403,24 @@ pdb:
   # -- Minimum number of web pods that must be available during disruption
   minAvailable: 1
 
+# -- Prometheus metrics endpoint on the web node.
+#
+# The ATC only registers its Prometheus emitter when BOTH a bind IP and a bind
+# port are set, and it serves the metrics on that dedicated listener -- never on
+# the 8080 web port. Leave this disabled and /metrics on 8080 returns the Elm
+# SPA HTML, which is what a ServiceMonitor pointed there scrapes: the target
+# fails with `unsupported Content-Type "text/html"` and every alerting rule in
+# this chart silently has no data to evaluate.
+metrics:
+  # -- Expose Prometheus metrics on a dedicated port
+  enabled: true
+  # -- Port for the metrics listener
+  port: 9391
+
 # -- Prometheus ServiceMonitor configuration (requires prometheus-operator CRDs)
 serviceMonitor:
-  # -- Enable ServiceMonitor creation
+  # -- Enable ServiceMonitor creation. Requires metrics.enabled; the render
+  # fails otherwise rather than producing a target that scrapes HTML.
   enabled: false
   # -- Scrape interval
   interval: 30s

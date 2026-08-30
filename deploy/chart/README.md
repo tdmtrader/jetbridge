@@ -327,8 +327,15 @@ requests hit a replica with different keys.
 
 ### Prometheus Monitoring
 
+The ATC serves Prometheus metrics on a dedicated listener, never on the 8080
+web port -- `/metrics` there returns the UI's HTML. `metrics.enabled` is what
+opens that listener, so `serviceMonitor.enabled` requires it and the render
+fails otherwise rather than producing a target that scrapes a web page.
+
 | Parameter | Default | Description |
 |-----------|---------|-------------|
+| `metrics.enabled` | `true` | Expose Prometheus metrics on a dedicated port. |
+| `metrics.port` | `9391` | Port for the metrics listener. |
 | `serviceMonitor.enabled` | `false` | Create ServiceMonitor CRD (requires prometheus-operator). |
 | `serviceMonitor.interval` | `30s` | Scrape interval. |
 | `serviceMonitor.labels` | `{}` | Labels for Prometheus discovery. |

@@ -232,12 +232,22 @@ spec:
                   name: {{ .Values.postgresql.existingSecret }}
                   key: {{ .Values.postgresql.passwordSecretKey }}
             {{- end }}
+            {{- if .Values.metrics.enabled }}
+            - name: CONCOURSE_PROMETHEUS_BIND_IP
+              value: "0.0.0.0"
+            - name: CONCOURSE_PROMETHEUS_BIND_PORT
+              value: {{ .Values.metrics.port | quote }}
+            {{- end }}
             {{- range .Values.web.env }}
             - {{- toYaml . | nindent 14 }}
             {{- end }}
           ports:
             - containerPort: 8080
               name: http
+            {{- if .Values.metrics.enabled }}
+            - containerPort: {{ .Values.metrics.port }}
+              name: metrics
+            {{- end }}
             {{- if .Values.web.tls.enabled }}
             - containerPort: {{ .Values.web.tls.bindPort }}
               name: https

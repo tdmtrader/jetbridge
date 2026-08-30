@@ -27,6 +27,11 @@ spec:
     - name: http
       port: {{ .Values.service.httpPort }}
       targetPort: 8080
+    {{- if .Values.metrics.enabled }}
+    - name: metrics
+      port: {{ .Values.metrics.port }}
+      targetPort: metrics
+    {{- end }}
     {{- if .Values.web.tls.enabled }}
     - name: https
       port: {{ .Values.web.tls.bindPort }}

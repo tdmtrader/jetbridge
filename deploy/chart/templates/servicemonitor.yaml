@@ -1,4 +1,7 @@
 {{- if .Values.serviceMonitor.enabled }}
+{{- if not .Values.metrics.enabled }}
+{{- fail "serviceMonitor.enabled requires metrics.enabled: the ATC serves Prometheus metrics only on its own bind port, so a ServiceMonitor without it scrapes the web UI's HTML and every alerting rule evaluates against no data" }}
+{{- end }}
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
@@ -14,7 +17,7 @@ spec:
     matchLabels:
       {{- include "concourse.selectorLabels" . | nindent 6 }}
   endpoints:
-    - port: http
+    - port: metrics
       interval: {{ .Values.serviceMonitor.interval }}
       path: /metrics
 {{- end }}
