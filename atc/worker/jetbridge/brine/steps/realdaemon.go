@@ -178,24 +178,11 @@ func (d *realDaemon) stop() error {
 	return nil
 }
 
-// RealDaemonResourceDefinition gives each scenario its own daemon process and
-// storage root, disposed at scenario end.
-func RealDaemonResourceDefinition() brine.ResourceDefinition {
-	return brine.ResourceDefinition{
-		Name:  "real-daemon",
-		Scope: brine.ScopeScenario,
-		Factory: func(map[string]any) (any, error) {
-			return startRealDaemon()
-		},
-		Disposer: func(value any) error {
-			d, ok := value.(*realDaemon)
-			if !ok {
-				return fmt.Errorf("real-daemon disposer got %T", value)
-			}
-			return d.stop()
-		},
-	}
-}
+// NOTE: there is deliberately no RealDaemonResourceDefinition. A
+// ScopeScenario resource is acquired for every scenario in the suite
+// regardless of which steps declare it, so registering the daemon that way
+// cost 70 seconds to serve five scenarios. The Given above starts one on
+// demand instead.
 
 // ---------------------------------------------------------------------------
 // Domain state and steps
@@ -275,14 +262,24 @@ func (s RealDaemonState) postJSON(path, payload string) RealDaemonState {
 func RealDaemonDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 
-		brine.DefineMapUsing[brine.Empty, RealDaemonState](
+		// Started HERE rather than as a scenario-scoped resource, and the
+		// difference is 70 seconds of suite.
+		//
+		// brine acquires every ScopeScenario resource before EVERY scenario —
+		// RequireAllForScope iterates the definitions at that scope, not the
+		// ones a scenario's steps declare. A daemon registered that way is
+		// therefore built, started and killed 380 times to be used 5 times.
+		// Measured: the suite went from 118s to 188s. Starting it in the Given
+		// that asks for one, with its kill registered on the Recorder, is lazy
+		// and drains LIFO at scenario end on pass, on failure and on SIGTERM.
+		brine.DefineMap[brine.Empty, RealDaemonState](
 			"a real artifact daemon",
-			[]string{"real-daemon"},
-			func(_ brine.Empty, _ brine.Params, _ *brine.Recorder, res brine.Resources) (RealDaemonState, error) {
-				d, ok := res.Get("real-daemon").(*realDaemon)
-				if !ok {
-					return RealDaemonState{}, fmt.Errorf("real-daemon resource is %T", res.Get("real-daemon"))
+			func(_ brine.Empty, _ brine.Params, rec *brine.Recorder) (RealDaemonState, error) {
+				d, err := startRealDaemon()
+				if err != nil {
+					return RealDaemonState{}, err
 				}
+				rec.RegisterDisposer(func() { _ = d.stop() })
 				return RealDaemonState{Daemon: d, Ctx: context.Background()}, nil
 			},
 		),
