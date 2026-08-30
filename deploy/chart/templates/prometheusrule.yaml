@@ -22,7 +22,10 @@ spec:
             summary: "High image pull failure rate"
             description: "More than 5 image pull failures in the last 5 minutes."
         - alert: ConcoursePodStartupSlow
-          expr: histogram_quantile(0.95, rate(concourse_k8s_pod_startup_duration_bucket[5m])) > 60000
+          # The histogram is named ..._duration_milliseconds; the bucket series
+          # therefore ends _milliseconds_bucket. Summing by le first is what
+          # makes the quantile correct across replicas.
+          expr: histogram_quantile(0.95, sum by (le) (rate(concourse_k8s_pod_startup_duration_milliseconds_bucket[5m]))) > 60000
           for: 5m
           labels:
             severity: warning
@@ -30,19 +33,26 @@ spec:
             summary: "Slow pod startup (p95 > 60s)"
             description: "95th percentile pod startup duration exceeds 60 seconds."
         - alert: ConcourseDBConnectionPoolExhausted
-          expr: concourse_db_connections_open >= concourse_db_connections_max
+          # The ATC emits one gauge per pool, concourse_db_connections{dbname},
+          # and no maximum -- so the ceiling has to come from the same values
+          # this chart passes as --api-max-conns/--backend-max-conns. Naming a
+          # literal here instead would go stale the moment either is tuned.
+          expr: concourse_db_connections{dbname="api"} >= {{ .Values.web.apiMaxConns }} or concourse_db_connections{dbname="backend"} >= {{ .Values.web.backendMaxConns }}
           for: 2m
           labels:
             severity: critical
           annotations:
             summary: "Database connection pool exhausted"
-            description: "Active DB connections have reached the maximum pool size."
-        - alert: ConcourseWorkerHeartbeatStale
-          expr: concourse_worker_heartbeat_age > 60
-          for: 2m
+            description: "A pool has reached its configured maximum (api={{ .Values.web.apiMaxConns }}, backend={{ .Values.web.backendMaxConns }}); requests now queue for a connection."
+        - alert: ConcourseWorkerStalled
+          # There is no heartbeat-age metric. The database's own view of worker
+          # state is what is published, and `stalled` is precisely the state a
+          # worker lands in when it stops re-registering.
+          expr: concourse_workers_registered{state="stalled"} > 0
+          for: 5m
           labels:
             severity: warning
           annotations:
-            summary: "Worker heartbeat stale (>60s)"
-            description: "A worker has not re-registered in over 60 seconds (heartbeat TTL is 30s); it may be unhealthy or partitioned."
+            summary: "A worker is stalled"
+            description: "{{ `{{ $value }}` }} worker(s) have stopped re-registering and are marked stalled; steps scheduled to them will not run."
 {{- end }}
