@@ -35,7 +35,7 @@ jobs:
     attempts: 2
     config:
       platform: linux
-      rootfs_uri: docker:///registry.home/concourse-test-runner:v6
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v7
       inputs:
       - name: repo
       run:
@@ -70,7 +70,7 @@ jobs:
     attempts: 2
     config:
       platform: linux
-      rootfs_uri: docker:///registry.home/concourse-test-runner:v6
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v7
       inputs:
       - name: repo
       run:
@@ -129,7 +129,7 @@ jobs:
     attempts: 2
     config:
       platform: linux
-      rootfs_uri: docker:///registry.home/concourse-test-runner:v6
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v7
       inputs:
       - name: repo
       run:
@@ -154,7 +154,7 @@ jobs:
     attempts: 2
     config:
       platform: linux
-      rootfs_uri: docker:///registry.home/concourse-test-runner:v6
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v7
       inputs:
       - name: repo
       run:
@@ -295,7 +295,7 @@ jobs:
     attempts: 2
     config:
       platform: linux
-      rootfs_uri: docker:///registry.home/concourse-test-runner:v6
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v7
       inputs:
       - name: repo
       - name: web-public
@@ -531,7 +531,7 @@ jobs:
     attempts: 2
     config:
       platform: linux
-      rootfs_uri: docker:///registry.home/concourse-test-runner:v6
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v7
       inputs:
       - name: repo
       run:
@@ -592,7 +592,7 @@ jobs:
     attempts: 2
     config:
       platform: linux
-      rootfs_uri: docker:///registry.home/concourse-test-runner:v6
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v7
       inputs:
       - name: repo
       run:
@@ -703,7 +703,7 @@ jobs:
     attempts: 2
     config:
       platform: linux
-      rootfs_uri: docker:///registry.home/concourse-test-runner:v6
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v7
       inputs:
       - name: repo
       run:
@@ -779,7 +779,7 @@ jobs:
     timeout: 10m
     config:
       platform: linux
-      rootfs_uri: docker:///registry.home/concourse-test-runner:v6
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v7
       inputs:
       - name: repo
       run:
@@ -816,7 +816,7 @@ jobs:
     privileged: true
     config:
       platform: linux
-      rootfs_uri: docker:///registry.home/concourse-test-runner:v6
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v7
       inputs:
       - name: repo
       params:
