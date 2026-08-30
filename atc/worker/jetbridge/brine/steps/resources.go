@@ -104,7 +104,6 @@ func ResourceDefinitions() []brine.ResourceDefinition {
 		TracingResourceDefinition(),
 		TaskWorkspaceResourceDefinition(),
 		RealClusterResourceDefinition(),
-		RealDaemonResourceDefinition(),
 	}, []brine.ResourceDefinition{
 		{
 			Name:  "postgres",
