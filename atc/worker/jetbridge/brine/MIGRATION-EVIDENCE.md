@@ -102,3 +102,75 @@ KEPT, with the reason:
 | storage_daemonset_test.go, behavioral_volume_test.go, daemon_tls_test.go | mixed; the behavioural half migrated, 47 tests are unit tests by nature |
 | supervisor_test.go, supervisor_script_test.go | deliberately kept from the earlier migration |
 | live_*_test.go | `//go:build live`; need a real cluster |
+
+---
+
+# How much of this repository can move to brine
+
+Measured 2026-08-30 across all 196,400 lines of Go test code, package by
+package — not sampled and extrapolated.
+
+**The answer is about 21,000 lines, or 10.7% of the surface.**
+
+| package | verdict | deletable |
+|---|---|---|
+| atc/db | partial — policies, not the data layer | 5,600 |
+| atc/gc + atc/lidar | strong | 4,100 |
+| fly/integration | partial | 3,400 |
+| atc/exec | partial | 1,950 |
+| atc/api | partial | 1,900 |
+| atc/engine + atc/scheduler | partial | 1,800 |
+| cmd/artifact-daemon | measured, after migrating 61 behaviours | ~1,200 |
+| atc/db/migration | weak | 630 |
+| atc/creds + vars | weak | 530 |
+| go-concourse | **should not move** | 0 |
+| atc + atc/configvalidate | **should not move** | 0 |
+| testflight + topgun | **should not move** | 0 |
+
+## Why it is not larger, which is the useful part
+
+**The de-faking already happened.** This programme's engine is "replace the
+recording double with a working one and assert the round trip". That payoff was
+collected in this repository before brine existed — 60,960 lines of fakes
+removed down to 24,190. What is left:
+
+  - atc/db: 31,186 lines, all 1,013 specs on real Postgres, and in the whole
+    package exactly TWO hand-written doubles and zero counterfeiter fakes.
+  - atc/api: one counterfeiter fake in the entire tree; DB-error paths driven
+    by closing a real connection.
+  - atc/exec: 12 of 30 files on real Postgres, real delegates, real streamer.
+  - atc/db/migration: 23 files, 117 specs, ZERO doubles of any kind.
+
+There is no double left to replace, so every migrated line has to be justified
+by the sentence alone — and most of these assertions are not sentences.
+
+**Three packages should not move at all.**
+
+  go-concourse observes a REQUEST, not an outcome, in every assertion. It is
+  the layer whose job is the wire format. fly/integration asserts the same
+  request shapes one layer up against the same ghttp; migrating either would
+  write a third copy of a contract already pinned twice.
+
+  atc/configvalidate varies a GRAMMAR, not a scalar. A Scenario Outline over
+  malformed pipeline YAML is a worse Go table.
+
+  testflight and topgun cannot run in brine's tier: testflight needs a deployed
+  Concourse and topgun needs K3s, which CLAUDE.md prices at 23 minutes to 3
+  hours and marks CI-only. That is 24,187 lines out on physics.
+
+**Shared fixtures bound every estimate.** A file only goes when every test in
+it is covered. atc/db's db_suite_test.go is imported by all 57 root test files
+and its dbtest.Builder is imported by atc/scheduler, atc/lidar and atc/exec —
+it can never be deleted from here, so a brine step layer would WRAP Go that
+stays rather than replacing it. The daemon showed the same shape from the other
+side: 61 behaviours migrated, ~1,200 lines deletable, because 43 of its
+remaining tests assert unexported state or request counts that cannot earn
+both-red evidence at any price.
+
+## What this means for a 30% target
+
+30% is 58,920 lines. The measured ceiling is ~21,000. Reaching 30% would mean
+migrating atc/db's query-shape assertions (pagination cursors, id-range
+boundaries), fly's ui.Table rendering with per-cell colours, and
+configvalidate's grammar — each of which is a good Go test that becomes a worse
+Gherkin one. The programme's own rules forbid all three.
