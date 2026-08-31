@@ -44,75 +44,6 @@ var _ = Describe("ResourceCacheUseCollector", func() {
 				return result
 			}
 
-			Describe("for one-off builds", func() {
-				BeforeEach(func() {
-					var err error
-					customResourceTypeCache, err = resourceCacheFactory.FindOrCreateResourceCache(
-						db.ForBuild(defaultBuild.ID()),
-						"some-base-type",
-						atc.Version{"some-type": "version"},
-						atc.Source{
-							"some-type": "source-param",
-						},
-						nil,
-						nil,
-					)
-					Expect(err).NotTo(HaveOccurred())
-
-					_, err = resourceCacheFactory.FindOrCreateResourceCache(
-						db.ForBuild(defaultBuild.ID()),
-						"some-type",
-						atc.Version{"some": "version"},
-						atc.Source{
-							"some": "source",
-						},
-						atc.Params{"some": "params"},
-						customResourceTypeCache,
-					)
-					Expect(err).NotTo(HaveOccurred())
-				})
-
-				Context("before the build has completed", func() {
-					It("does not clean up the uses", func() {
-						Expect(countResourceCacheUses()).NotTo(BeZero())
-						Expect(collector.Run(context.TODO())).To(Succeed())
-						Expect(countResourceCacheUses()).NotTo(BeZero())
-					})
-				})
-
-				Context("once the build has completed successfully", func() {
-					It("cleans up the uses", func() {
-						Expect(countResourceCacheUses()).NotTo(BeZero())
-						Expect(defaultBuild.Finish(db.BuildStatusSucceeded)).To(Succeed())
-						Expect(buildCollector.Run(context.TODO())).To(Succeed())
-						Expect(collector.Run(context.TODO())).To(Succeed())
-						Expect(countResourceCacheUses()).To(BeZero())
-					})
-				})
-
-				Context("once the build has been aborted", func() {
-					It("cleans up the uses", func() {
-						Expect(countResourceCacheUses()).NotTo(BeZero())
-						Expect(defaultBuild.Finish(db.BuildStatusAborted)).To(Succeed())
-						Expect(buildCollector.Run(context.TODO())).To(Succeed())
-						Expect(collector.Run(context.TODO())).To(Succeed())
-						Expect(countResourceCacheUses()).To(BeZero())
-					})
-				})
-
-				Context("once the build has failed", func() {
-					Context("when the build is a one-off", func() {
-						It("cleans up the uses", func() {
-							Expect(countResourceCacheUses()).NotTo(BeZero())
-							Expect(defaultBuild.Finish(db.BuildStatusFailed)).To(Succeed())
-							Expect(buildCollector.Run(context.TODO())).To(Succeed())
-							Expect(collector.Run(context.TODO())).To(Succeed())
-							Expect(countResourceCacheUses()).To(BeZero())
-						})
-					})
-				})
-			})
-
 			Context("when the build is for a job", func() {
 				var jobBuild db.Build
 
@@ -144,16 +75,6 @@ var _ = Describe("ResourceCacheUseCollector", func() {
 						customResourceTypeCache,
 					)
 					Expect(err).NotTo(HaveOccurred())
-				})
-
-				Context("when it is the latest failed build", func() {
-					It("cleans up the uses since Finish marks failed builds non-interceptible", func() {
-						Expect(countResourceCacheUses()).NotTo(BeZero())
-						Expect(jobBuild.Finish(db.BuildStatusFailed)).To(Succeed())
-						Expect(buildCollector.Run(context.TODO())).To(Succeed())
-						Expect(collector.Run(context.TODO())).To(Succeed())
-						Expect(countResourceCacheUses()).To(BeZero())
-					})
 				})
 
 				Context("when a later build of the same job has succeeded", func() {

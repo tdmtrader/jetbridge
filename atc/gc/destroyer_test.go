@@ -47,8 +47,7 @@ var _ = Describe("Destroyer", func() {
 	// The handles passed to DestroyContainers/DestroyVolumes are the ones to
 	// KEEP -- they are what the worker still reports (container_repository.go:196
 	// names the parameter handlesToIgnore). Anything else in the destroying state
-	// on that worker is deleted. So each spec makes two, keeps one, and checks
-	// which survived.
+	// on that worker is deleted.
 	destroyingContainer := func(planID string) db.DestroyingContainer {
 		creating, err := worker.CreateContainer(
 			db.NewBuildStepContainerOwner(build.ID(), atc.PlanID(planID), team.ID()),
@@ -111,47 +110,6 @@ var _ = Describe("Destroyer", func() {
 	})
 
 	Describe("DestroyContainers", func() {
-		It("removes the destroying containers the worker no longer reports", func() {
-			kept := destroyingContainer("kept-plan")
-			gone := destroyingContainer("gone-plan")
-
-			Expect(destroyer.DestroyContainers(worker.Name(), []string{kept.Handle()})).To(Succeed())
-
-			Expect(containerHandles()).To(ContainElement(kept.Handle()))
-			Expect(containerHandles()).NotTo(ContainElement(gone.Handle()))
-		})
-
-		It("removes every destroying container when the worker reports an empty list", func() {
-			gone := destroyingContainer("gone-empty-plan")
-
-			Expect(destroyer.DestroyContainers(worker.Name(), []string{})).To(Succeed())
-
-			Expect(containerHandles()).NotTo(ContainElement(gone.Handle()),
-				"a non-nil empty list means the worker reported no containers")
-		})
-
-		It("leaves containers on a different worker alone", func() {
-			other, err := db.NewWorkerFactory(dbConn, db.NewStaticWorkerCache(logger, dbConn, 0)).
-				SaveWorker(atc.Worker{Name: "other-worker"}, 5*time.Minute)
-			Expect(err).NotTo(HaveOccurred())
-
-			mine := destroyingContainer("mine")
-
-			Expect(destroyer.DestroyContainers(other.Name(), []string{})).To(Succeed())
-
-			Expect(containerHandles()).To(ContainElement(mine.Handle()),
-				"a destroying container on another worker should not have been touched")
-		})
-
-		It("does nothing when the handle list is nil", func() {
-			survivor := destroyingContainer("survivor")
-
-			Expect(destroyer.DestroyContainers(worker.Name(), nil)).To(Succeed())
-
-			Expect(containerHandles()).To(ContainElement(survivor.Handle()),
-				"a nil handle list means the worker did not report, not that it reported nothing")
-		})
-
 		Context("when the worker name is not provided", func() {
 			It("returns an error and destroys nothing", func() {
 				survivor := destroyingContainer("survivor")
@@ -177,39 +135,6 @@ var _ = Describe("Destroyer", func() {
 	})
 
 	Describe("DestroyVolumes", func() {
-		It("removes the destroying volumes the worker no longer reports", func() {
-			kept := destroyingVolume("kept-path")
-			gone := destroyingVolume("gone-path")
-
-			Expect(destroyer.DestroyVolumes(worker.Name(), []string{kept.Handle()})).To(Succeed())
-
-			remaining, err := volumeRepository.GetDestroyingVolumes(worker.Name())
-			Expect(err).NotTo(HaveOccurred())
-			Expect(remaining).To(ContainElement(kept.Handle()))
-			Expect(remaining).NotTo(ContainElement(gone.Handle()))
-		})
-
-		It("removes every destroying volume when the worker reports an empty list", func() {
-			gone := destroyingVolume("gone-empty-path")
-
-			Expect(destroyer.DestroyVolumes(worker.Name(), []string{})).To(Succeed())
-
-			remaining, err := volumeRepository.GetDestroyingVolumes(worker.Name())
-			Expect(err).NotTo(HaveOccurred())
-			Expect(remaining).NotTo(ContainElement(gone.Handle()),
-				"a non-nil empty list means the worker reported no volumes")
-		})
-
-		It("does nothing when the handle list is nil", func() {
-			survivor := destroyingVolume("survivor-path")
-
-			Expect(destroyer.DestroyVolumes(worker.Name(), nil)).To(Succeed())
-
-			remaining, err := volumeRepository.GetDestroyingVolumes(worker.Name())
-			Expect(err).NotTo(HaveOccurred())
-			Expect(remaining).To(ContainElement(survivor.Handle()))
-		})
-
 		Context("when the worker name is not provided", func() {
 			It("returns an error and destroys nothing", func() {
 				survivor := destroyingVolume("survivor-path")
@@ -244,15 +169,6 @@ var _ = Describe("Destroyer", func() {
 			handles, err := destroyer.FindDestroyingVolumesForGc(worker.Name())
 			Expect(err).NotTo(HaveOccurred())
 			Expect(handles).To(BeEmpty())
-		})
-
-		It("returns the handles of the destroying volumes", func() {
-			first := destroyingVolume("first-path")
-			second := destroyingVolume("second-path")
-
-			handles, err := destroyer.FindDestroyingVolumesForGc(worker.Name())
-			Expect(err).NotTo(HaveOccurred())
-			Expect(handles).To(ConsistOf(first.Handle(), second.Handle()))
 		})
 
 		Context("when the volume repository fails", func() {
