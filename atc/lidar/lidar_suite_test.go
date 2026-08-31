@@ -68,8 +68,6 @@ type lidarCheckFactory struct {
 
 	mu                    sync.Mutex
 	calls                 []lidarCheckCall
-	resourcesErr          error
-	resourceTypesErr      error
 	panicTryCreate        bool
 	resourceScopeErrs     map[int]error
 	resourceTypeScopeErrs map[int]error
@@ -114,13 +112,6 @@ func (factory *lidarCheckFactory) TryCreateCheck(
 }
 
 func (factory *lidarCheckFactory) Resources() ([]db.Resource, error) {
-	factory.mu.Lock()
-	configuredErr := factory.resourcesErr
-	factory.mu.Unlock()
-	if configuredErr != nil {
-		return nil, configuredErr
-	}
-
 	resources, err := factory.CheckFactory.Resources()
 	if err != nil {
 		return nil, err
@@ -137,13 +128,6 @@ func (factory *lidarCheckFactory) Resources() ([]db.Resource, error) {
 }
 
 func (factory *lidarCheckFactory) ResourceTypesByPipeline() (map[int]db.ResourceTypes, error) {
-	factory.mu.Lock()
-	configuredErr := factory.resourceTypesErr
-	factory.mu.Unlock()
-	if configuredErr != nil {
-		return nil, configuredErr
-	}
-
 	byPipeline, err := factory.CheckFactory.ResourceTypesByPipeline()
 	if err != nil {
 		return nil, err
@@ -167,18 +151,6 @@ func (factory *lidarCheckFactory) Calls() []lidarCheckCall {
 	factory.mu.Lock()
 	defer factory.mu.Unlock()
 	return append([]lidarCheckCall(nil), factory.calls...)
-}
-
-func (factory *lidarCheckFactory) FailResources(err error) {
-	factory.mu.Lock()
-	defer factory.mu.Unlock()
-	factory.resourcesErr = err
-}
-
-func (factory *lidarCheckFactory) FailResourceTypes(err error) {
-	factory.mu.Lock()
-	defer factory.mu.Unlock()
-	factory.resourceTypesErr = err
 }
 
 func (factory *lidarCheckFactory) PanicOnTryCreate() {
@@ -363,19 +335,6 @@ func lidarPipelineResourceType(pipeline db.Pipeline, name string) db.ResourceTyp
 	Expect(err).NotTo(HaveOccurred())
 	Expect(found).To(BeTrue(), "resource type %q not found", name)
 	return resourceType
-}
-
-func attachLidarResourceScope(fixture *lidarDB, resource db.Resource) db.ResourceConfigScope {
-	GinkgoHelper()
-	config, err := fixture.ResourceConfigFactory.FindOrCreateResourceConfig(
-		resource.Type(), resource.Source(), nil,
-	)
-	Expect(err).NotTo(HaveOccurred())
-	resourceID := resource.ID()
-	scope, err := config.FindOrCreateScope(&resourceID)
-	Expect(err).NotTo(HaveOccurred())
-	Expect(resource.SetResourceConfigScope(scope)).To(Succeed())
-	return scope
 }
 
 func attachLidarNativeResourceScope(fixture *lidarDB, resource db.Resource) db.ResourceConfigScope {
