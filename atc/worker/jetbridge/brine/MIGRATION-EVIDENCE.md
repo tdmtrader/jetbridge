@@ -299,3 +299,56 @@ yield 9.1%, and 4.5% once fly/integration is set aside as structurally atypical.
 **Unreachable by a factor of four.** Reaching it means repealing rule 4 — the
 rule that stopped seven unevidenced tests being deleted with `daemon_client_test.go`.
 The target should be withdrawn, not renegotiated.
+
+---
+
+# The gc/lidar deletion campaign, measured
+
+82 Its across 15 files, each measured with a named production mutation run
+against BOTH estates. Skeptics then tried to refute every DELETABLE claim.
+
+| outcome | count |
+|---|---|
+| survived refutation | 58 |
+| **refuted by a skeptic** | **24 (29%)** |
+| gap — old reddens, brine green | 18 |
+| inert — no mutation reddens the Go test | 4 |
+| brine strictly stronger | 4 |
+
+**Deleted: 4 files, 403 lines.** 58 survivors bought only 403 lines, because
+rule 4 needs EVERY It in a file covered and 11 of 15 files had at least one
+that was not. atc/gc yields 403 of 3,150 lines — **12.8%**, against the
+adjudicator's "generous 60%". The corrected ceiling of ~15,000 is still
+optimistic.
+
+Deleted, each It with a straddling or predicate-isolating mutation:
+`artifacts_collector_test.go` (62), `pipeline_collector_test.go` (62),
+`volume_collector_test.go` (195), `worker_collector_test.go` (84).
+
+## The skeptics earned their place
+
+24 of 82 claims died under refutation — nearly a third. The protocol without an
+adversarial stage would have deleted those tests on evidence that looked
+identical to the good evidence.
+
+## Four Go tests that cannot fail
+
+Found by mutation, not by reading. Each stayed green under every mutation tried:
+
+  - `container_collector_test.go` — "succeeds with nothing to collect"
+  - `destroyer_test.go` — "FindDestroyingVolumesForGc returns nothing when the
+    worker has no destroying volumes"
+  - `scanner_test.go` — "reads persisted pipeline state through a separately
+    constructed factory": green under all 37 mutations attempted
+  - `scanner_test.go` — "does not schedule a check for an already-cancelled
+    empty enumeration"
+
+These are defects in the EXISTING suite, unrelated to migration. They are left
+in place and recorded, not deleted — an inert test is a finding, not a licence.
+
+## Eighteen gaps, which are the real inventory
+
+Cases where the Go test reddens and brine does not. These are brine's holes,
+concentrated in `scanner_test.go` (6), `resource_config_check_session_collector_test.go`
+(4), and pairs in check/task_cache/deprecated_scope/access_tokens. Closing them
+is the honest next task; deleting around them would be the dishonest one.
