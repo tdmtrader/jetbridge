@@ -352,3 +352,79 @@ Cases where the Go test reddens and brine does not. These are brine's holes,
 concentrated in `scanner_test.go` (6), `resource_config_check_session_collector_test.go`
 (4), and pairs in check/task_cache/deprecated_scope/access_tokens. Closing them
 is the honest next task; deleting around them would be the dishonest one.
+
+---
+
+# The whole-file rule was withdrawn. The ceiling nearly tripled.
+
+"A file only goes when every test in it is covered" was never a safety rule.
+The safety property is that no test dies without its own adversarially-verified
+both-red evidence; whole-file deletion was just the tidiest way to honour it.
+Individual evidenced `It` blocks can go while the file stands, at the same bar.
+
+| | whole-file | per-It |
+|---|---|---|
+| atc/db | 1,784 | **12,500** |
+| atc/api | ~776 | **5,000** |
+| atc/exec | 740 | **2,300** |
+| atc/scheduler + atc/engine | 0 | **1,750** |
+| fly/integration | 5,138 | **~7,000** |
+| remainder | ~6,500 | **~9,500** |
+| **programme-wide** | **~13,000** | **~38,000 (19.3%)** |
+
+Confirmed in practice before it was estimated: six gc/lidar files the old rule
+valued at ZERO yielded 51 evidenced tests and 1,004 lines at the identical bar.
+
+## What the prior was really measuring
+
+`job_test.go` — 2,861 lines — was zeroed by six pagination Its worth **39 lines
+of body**. `job_factory_test.go` was zeroed by one DTO projection at :201 while
+750 lines of prime scheduling-admission policy sat beside it. `team_test.go` was
+zeroed largely by a single 304-line SQL-scanning It at :3022.
+
+## Why 30% is still not reachable, now for a structural reason
+
+A brace-matched census of every It/Specify/Entry body in the migratable tier
+(excluding topgun, testflight and brine itself):
+
+  - migratable-tier test lines: **170,567**
+  - lines inside an It body at all: **59,743 — 35.0%**, across **5,152 Its**,
+    mean **11.6 lines each**
+
+30% of the 196,400-line corpus is 58,920. The entire It-body surface is 59,743.
+
+**The target is the whole thing.** Reaching 30% means deleting essentially every
+test body in the repository — the pagination cursors, the SQL row-shape dumps,
+the DTO projections, the span names, the concurrency deadlock guards — because
+everything outside those 59,743 lines is scaffolding, helpers, imports and suite
+files that no migration can claim.
+
+(The adjudicator put this surface at 54,882 and concluded the target was 4,000
+lines out of reach. My own census says 59,743, i.e. ~800 lines PAST it. The
+correction makes the point sharper, not weaker: 30% is not near the ceiling, it
+IS the ceiling, and only if no rule applies at all.)
+
+## The cost inverts the case above ~15,000
+
+Mean movable It: **11.6 lines**. Mean brine scenario: **93.8 lines** all-in
+(10,846 feature + 33,333 step lines over 471 scenarios; the ~80 estimate was 15%
+low). Outline collapse is the exception — 39 outlines over 471 scenarios.
+
+Pursuing the full 38,000 means writing ~85,000 lines to delete 38,000:
+**net +47,000 lines added.** At the corpus's observed collapse density, nearer
++160,000.
+
+**The net-positive programme is ~15,000 lines**, and it is a disciplined subset
+chosen for discrimination, not volume: `JobsToSchedule` (750), `ScheduleBuild`
+(608), the SavePipeline rename/history family (337), pin precedence (195).
+
+## Two things the rule change buys nothing
+
+~14,000 test lines carry almost no Its: `cmd/artifact-daemon` is 11,737 lines
+with **22** It lines, `atc/worker` 10,140 with **149**. Whole-file remains the
+only available rule there.
+
+And `atc/api`'s worth-it figure is **zero**: 379 of its 640 movable Its are
+3.15-line status assertions, and its 255-row authorization table is reddened
+~150 rows at a time by deleting a single wrapper — coverage that discriminates
+once.
