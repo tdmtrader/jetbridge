@@ -227,3 +227,75 @@ not deliver. A green suite cannot detect those. The additions that can:
      line reddens. One finding was exactly this.
   3. "Reddened by" prose names the ONE line that reddens, and says plainly when
      the others are decorative.
+
+---
+
+# The ceiling was wrong. Corrected: ~15,000, not 21,000
+
+Four assessors re-derived the ceiling for the four largest candidate packages,
+blind to the 21,000 figure. An adjudicator was then shown the prior and sent to
+the files where they disagreed. The prior lost.
+
+| package | prior | adjudicated | delta |
+|---|---|---|---|
+| atc/db | 5,600 | **1,784** | −68% |
+| atc/api | 1,900 | **776** (583 after strike) | −59% |
+| fly/integration | 3,400 | **5,138** | **+51%** |
+| atc/exec | 1,950 | **740** (549 floor) | −62% |
+| **programme-wide** | **21,000** | **~15,000** | **−29%** |
+
+## The error has a name
+
+The prior counted BEHAVIOURS EXPRESSIBLE IN GHERKIN. The rule counts WHOLE
+FILES. Those diverge by 3-4x here, because the good behaviours live in bad
+neighbourhoods — a policy worth migrating sits in a file pinned open by one
+assertion about a cursor, a DTO or a schema name.
+
+This is the same error class this programme keeps finding in its own scenarios:
+counting what READS like coverage instead of what DISCRIMINATES. I made it at
+the level of the estimate rather than the assertion.
+
+The refutation is the programme's own data, which I had and did not apply:
+`pipeline-retention.feature` migrated **39 atc/db cases** with named mutations
+and can delete **exactly one file, 255 lines**. That measured exchange rate was
+sitting in this repository while the estimate said 5,600.
+
+## The largest casualty, which no assessor found and the adjudicator did
+
+`atc/db/job_factory_test.go` — the `JobsToSchedule` Describe is ~800 lines of
+the best policy material in the package ("a paused job is not scheduled", "a job
+in a paused pipeline is not scheduled"), every case with a one-line mutation and
+already in brine's vocabulary. It is held by `VisibleJobs` at line 201 asserting
+`visibleJobs[0].NextBuild.{ID,Name,JobName,PipelineID,PipelineName,
+PipelineInstanceVars,TeamName}` field by field. **800 lines of first-rate
+movable policy, blocked by one dashboard DTO.**
+
+## fly/integration is the one place the prior was too LOW
+
+73 files, one CLI verb each, no shared fixture beyond a 275-line suite. Rule 4
+barely bites, so it is now the single largest opportunity in the tree. The prior
+set its rate by analogy to atc/db; it should have been set by observing that the
+package has no shared state to bind files together.
+
+## Deletable lines are not lines saved — and this should be the headline
+
+brine is **44,179 lines (33,333 steps + 10,846 features) for 472 scenarios ≈ 80
+lines per scenario.** A 15,000-line deletion bought with 8,000-10,000 lines of
+new Gherkin and step vocabulary is a WASH on volume. About 1,425 lines of fly's
+thin verb files are line-neutral at best.
+
+So the programme should stop reporting a deletion count and report **net line
+delta plus a discrimination argument**. The volume case does not survive
+scrutiny at 15,000. The discrimination case does, and it is the real one: the
+audits keep finding assertions that cannot fail, in both estates.
+
+## The 30% target
+
+30% is 58,920-63,000 lines. Rule 5 zeroes topgun/k8s and topgun/k8s_behavioral
+outright — 20,268 lines, 10.3% of the corpus. Of the 176,132 addressable lines
+you would have to delete 36%, when the four packages holding 47% of the corpus
+yield 9.1%, and 4.5% once fly/integration is set aside as structurally atypical.
+
+**Unreachable by a factor of four.** Reaching it means repealing rule 4 — the
+rule that stopped seven unevidenced tests being deleted with `daemon_client_test.go`.
+The target should be withdrawn, not renegotiated.
