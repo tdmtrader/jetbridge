@@ -73,6 +73,9 @@ func Definitions() []brine.StepDefinition {
 	defs = append(defs, GCCacheDefinitions()...)
 	defs = append(defs, GCContainerDefinitions()...)
 	defs = append(defs, ResourceCheckingDefinitions()...)
+	defs = append(defs, StepExecutionDefinitions()...)
+	defs = append(defs, BuildSchedulingDefinitions()...)
+	defs = append(defs, PipelineRetentionDefinitions()...)
 	return defs
 }
 
