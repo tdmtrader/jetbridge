@@ -174,3 +174,56 @@ migrating atc/db's query-shape assertions (pagination cursors, id-range
 boundaries), fly's ui.Table rendering with per-cell colours, and
 configvalidate's grammar — each of which is a good Go test that becomes a worse
 Gherkin one. The programme's own rules forbid all three.
+
+---
+
+# Where the count actually stands (2026-08-31)
+
+Measured, not estimated:
+
+| quantity | lines |
+|---|---|
+| Go test surface on `core`, excluding brine | 210,753 |
+| deleted on this branch so far | 15,412 |
+| added back as consolidated helpers | 241 |
+| **net moved** | **15,171 (7.2%)** |
+| measured ceiling for the whole programme | ~21,000 (10.0%) |
+
+Everything deleted so far is `atc/worker/jetbridge`. Nothing from the gc,
+lidar, db-policy, engine, scheduler or exec migrations has been deleted yet —
+those features exist and pass, but the source suites still stand, because
+deletion needs PER-TEST both-red evidence and that is a separate campaign.
+
+## The 30% target, stated plainly
+
+30% is 63,000 lines. The ceiling is 21,000. The gap is not effort, and it is
+not time — it is that the remaining 175,000 lines are mostly assertions that
+do not survive translation into a sentence:
+
+  - `atc/db` query-shape tests (pagination cursors, id-range boundaries) pin a
+    representation. A Gherkin sentence about a cursor is a worse Go table.
+  - `go-concourse` and `fly/integration` assert a REQUEST, not an outcome. The
+    contract is already pinned twice; a third copy adds no discrimination.
+  - `atc/configvalidate` varies a grammar, not a scalar.
+  - `testflight` and `topgun` (24,187 lines) need a deployed Concourse or K3s.
+
+Reaching 30% would mean migrating those anyway. Each would produce scenarios
+that read well and discriminate nothing — which is the exact defect this
+programme keeps finding and repairing in its own output. Thirteen such defects
+were found in the last batch alone, in a suite that was already fully green.
+
+I am recording the ceiling rather than reporting progress toward a number the
+work cannot honestly reach.
+
+## What the last audit changed about the protocol
+
+Eight of the thirteen findings were prose claiming coverage the assertions did
+not deliver. A green suite cannot detect those. The additions that can:
+
+  1. A mutation that reddens NOTHING gets written down as unpinned, in the file,
+     next to the claim it disproves. Three are recorded from the last batch.
+  2. Assertion ORDER is part of the assertion. brine stops at the first failing
+     step, so a survival check written last is never evaluated when an earlier
+     line reddens. One finding was exactly this.
+  3. "Reddened by" prose names the ONE line that reddens, and says plainly when
+     the others are decorative.
