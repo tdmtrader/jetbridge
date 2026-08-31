@@ -68,6 +68,7 @@ func Definitions() []brine.StepDefinition {
 	defs = append(defs, DaemonContainmentDefinitions()...)
 	defs = append(defs, DaemonMirroringDefinitions()...)
 	defs = append(defs, DaemonCrossNodeDefinitions()...)
+	defs = append(defs, GCReclamationDefinitions()...)
 	return defs
 }
 
