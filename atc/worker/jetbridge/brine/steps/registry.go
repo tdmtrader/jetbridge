@@ -75,6 +75,7 @@ func Definitions() []brine.StepDefinition {
 	defs = append(defs, ResourceCheckingDefinitions()...)
 	defs = append(defs, StepExecutionDefinitions()...)
 	defs = append(defs, BuildSchedulingDefinitions()...)
+	defs = append(defs, JobAdmissionDefinitions()...)
 	defs = append(defs, PipelineRetentionDefinitions()...)
 	return defs
 }
