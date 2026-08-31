@@ -1,22 +1,112 @@
 # Build environment for Concourse CI pipeline tasks.
-# Contains Go toolchain, kubectl, docker CLI, and source code at /src.
+#
+# THIS FILE HAD DRIFTED. v6/v7/v8 were built by hand as the pipeline hit one
+# missing tool after another -- PostgreSQL for the unit tier, helm for the
+# chart tests, zip for the fly-download endpoint -- and none of those additions
+# came back here. Anyone rebuilding from the old file would have produced an
+# image that silently lost Postgres and failed `make test-unit`. Everything the
+# running image contains is now declared below; keep it that way.
+
+# --- brine ------------------------------------------------------------------
+# The brine CLI is a Rust workspace in a PRIVATE third-party repository, so it
+# cannot be fetched at task time and cannot be copied from a developer's Mac
+# (that binary is Mach-O arm64; tasks run linux/amd64). It is built here and
+# only the two binaries are carried forward, which keeps Rust, protoc and the
+# ~5GB target dir out of the final image.
+#
+# The GitHub token is consumed in this stage ONLY, via a BuildKit secret mount
+# (see below). Builder stages are discarded and never pushed, so it reaches no
+# layer of the shipped image -- but the mount is what keeps it out of the build
+# LOG, which is the part that actually went wrong the first time.
+FROM rust:1.98-bookworm AS brine
+# NOT main. brine's default branch is 987 commits behind and does not contain
+# the engine crate at all -- building from it fails with "package ID
+# specification `brine-engine` did not match any packages". NEW-NAME is where
+# the Go runner and contract 4 live, and is what the developer machine builds
+# from. The resolved commit is recorded at /etc/brine-commit in the final image
+# so a given runner tag can always be traced back to an exact brine revision.
+ARG BRINE_REF=NEW-NAME
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      protobuf-compiler ca-certificates git \
+    && rm -rf /var/lib/apt/lists/*
+# The token is read from a BuildKit secret mount at RUN time, NEVER from an ARG
+# or an interpolated URL. Docker echoes each RUN line into the build log exactly
+# as written here, so a `${GITHUB_TOKEN}` in the clone URL prints the token in
+# full -- which is precisely how the previous PAT was leaked and had to be
+# rotated. Expanding it inside the shell keeps the echoed line literal.
+# The credentialed remote is stripped afterwards so it cannot persist in
+# .git/config even within this discarded stage.
+RUN --mount=type=secret,id=gh,required=true \
+    GH="$(cat /run/secrets/gh)" \
+    && git clone --depth 1 --branch "${BRINE_REF}" \
+         "https://x-access-token:${GH}@github.com/MarkDucommun/brine-private.git" /brine \
+    && git -C /brine rev-parse HEAD > /brine-commit \
+    && git -C /brine remote set-url origin https://github.com/MarkDucommun/brine-private.git
+WORKDIR /brine
+# brine run spawns brine-engine as a separate process and looks it up on PATH;
+# building only brine-cli yields engine_unreachable at the first scenario.
+RUN cargo build --release -p brine-cli --bin brine \
+    && cargo build --release -p brine-engine
+
+# --- runner -----------------------------------------------------------------
 FROM golang:1.25-bookworm
 
+# The brine adapter module (atc/worker/jetbridge/brine) declares go 1.26 while
+# this image ships 1.25. The golang image exports GOTOOLCHAIN=local, which
+# overrides the go env file and turns that into a hard failure instead of a
+# download. Tasks that only build the root module are unaffected either way.
+ENV GOTOOLCHAIN=auto
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
-    git \
-    jq \
+      curl git jq zip unzip ca-certificates gnupg \
     && rm -rf /var/lib/apt/lists/*
 
-# Install kubectl
-RUN curl -fsSL "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" \
+# PostgreSQL 17 server AND client: the unit and integration tiers need a real
+# server, and postgresrunner spawns its own instances from these binaries.
+# policy-rc.d stops dpkg trying to start the service during the image build.
+RUN printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d && chmod +x /usr/sbin/policy-rc.d \
+    && install -d /usr/share/postgresql-common/pgdg \
+    && curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+         -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+    && echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" \
+         > /etc/apt/sources.list.d/pgdg.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends postgresql-17 postgresql-client-17 \
+    && rm -rf /var/lib/apt/lists/*
+ENV PATH="/usr/lib/postgresql/17/bin:${PATH}"
+
+RUN curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 "https://dl.k8s.io/release/$(curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" \
     -o /usr/local/bin/kubectl && chmod +x /usr/local/bin/kubectl
 
-# Install Docker CLI (for build-image job that mounts Docker socket)
-RUN curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-27.5.1.tgz \
+# Docker CLI for the build-image job, which mounts a DinD socket.
+RUN curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 https://download.docker.com/linux/static/stable/x86_64/docker-27.5.1.tgz \
     | tar xz --strip-components=1 -C /usr/local/bin docker/docker
 
-# Copy source and cache Go modules
+# Pinned: the chart tests render against a known helm, and a floating version
+# has changed rendering under us before.
+RUN curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 https://get.helm.sh/helm-v3.16.4-linux-amd64.tar.gz \
+    | tar xz --strip-components=1 -C /usr/local/bin linux-amd64/helm
+
+COPY --from=brine /brine/target/release/brine        /usr/local/bin/brine
+COPY --from=brine /brine/target/release/brine-engine /usr/local/bin/brine-engine
+COPY --from=brine /brine-commit                      /etc/brine-commit
+
+# The adapter module reaches github.com/brine-dev/brine-go through a `replace`
+# pointing at an absolute path on ONE developer's Mac. That module is not
+# published, so a clean CI clone cannot resolve it and `go build` fails with
+# "replacement directory /Users/... does not exist" -- exactly the case the
+# adapter's own go.mod header calls out as unsolved. Ship the module here and
+# let the task override the replace with a go.work; nothing in the repo has to
+# carry a machine-specific path.
+COPY --from=brine /brine/runners/implementations/go /opt/brine-go
+
+# envtest assets back the brine `real-cluster` resource; without them every
+# scenario using it fails with "no envtest assets" before running anything.
+ENV KUBEBUILDER_ASSETS=/opt/envtest/bin
+RUN GOTOOLCHAIN=auto go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest \
+    && /go/bin/setup-envtest use --bin-dir /opt/envtest \
+    && ln -s "$(/go/bin/setup-envtest use --bin-dir /opt/envtest -p path)" /opt/envtest/bin
+
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download

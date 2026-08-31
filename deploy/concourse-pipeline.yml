@@ -435,7 +435,16 @@ jobs:
               env:
               - name: DOCKER_TLS_CERTDIR
                 value: ""
-              command: ["dockerd", "--host=unix:///var/run/docker.sock", "--insecure-registry=${REGISTRY}", "--insecure-registry=registry.home"]
+              # --mtu MUST match the cluster network. flannel gives this
+              # node's pods an MTU of 1450, but dockerd defaults docker0 to
+              # 1500, so containers inside this builder emit frames the path
+              # cannot carry. TLS handshakes are small and succeed; bulk
+              # downloads reset mid-stream with "Connection reset by peer".
+              # That is the "dind has no egress" symptom that made earlier
+              # test-runner images need helm and zip hand-copied into the
+              # build context. Measured 2026-08-31: a 17MB helm tarball fails
+              # at 1500 and completes at 1450.
+              command: ["dockerd", "--host=unix:///var/run/docker.sock", "--mtu=1450", "--insecure-registry=${REGISTRY}", "--insecure-registry=registry.home"]
           PODEOF
 
           echo "Waiting for builder pod to be ready..."
@@ -895,7 +904,9 @@ jobs:
               env:
               - name: DOCKER_TLS_CERTDIR
                 value: ""
-              command: ["dockerd", "--host=unix:///var/run/docker.sock", "--insecure-registry=${REGISTRY}", "--insecure-registry=registry.home"]
+              # --mtu=1450 to match flannel; see the note on the other
+              # builder pod above.
+              command: ["dockerd", "--host=unix:///var/run/docker.sock", "--mtu=1450", "--insecure-registry=${REGISTRY}", "--insecure-registry=registry.home"]
           PODEOF
 
           echo "Waiting for push pod to be ready..."
