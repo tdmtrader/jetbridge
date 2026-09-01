@@ -1,0 +1,142 @@
+{
+  "name": "cc-api-strict",
+  "test_package": "./atc/api",
+  "source_test_file": "atc/api/cc_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/cc-api.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/cc_api_strict.go"
+  ],
+  "cases": [
+    {
+      "id": "successful-cc-responses-return-ok",
+      "source_file": "atc/api/ccserver/get.go",
+      "old": "\tw.Header().Set(\"Content-Type\", \"application/xml\")\n\terr = xml.NewEncoder(w).Encode(ProjectsContainer{Projects: projects})",
+      "new": "\tw.Header().Set(\"Content-Type\", \"application/xml\")\n\tw.WriteHeader(http.StatusCreated)\n\terr = xml.NewEncoder(w).Encode(ProjectsContainer{Projects: projects})",
+      "tests": [
+        "cc.xml GET /api/v1/teams/:team_name/cc.xml when authorized when the team is found when a pipeline is found when a job is found when the last build is successful returns 200",
+        "cc.xml GET /api/v1/teams/:team_name/cc.xml when authorized when the team is found when a pipeline is found when no job is found returns 200",
+        "cc.xml GET /api/v1/teams/:team_name/cc.xml when authorized when the team is found when no pipeline is found returns 200"
+      ],
+      "scenarios": [
+        "Strict CC profile <profile> preserves <source> (row 1)",
+        "Strict CC profile <profile> preserves <source> (row 9)",
+        "Strict CC profile <profile> preserves <source> (row 12)"
+      ],
+      "failure_contains": "strict CC"
+    },
+    {
+      "id": "cc-content-type-is-xml",
+      "source_file": "atc/api/ccserver/get.go",
+      "old": "\tw.Header().Set(\"Content-Type\", \"application/xml\")",
+      "new": "\tw.Header().Set(\"Content-Type\", \"text/plain\")",
+      "tests": [
+        "cc.xml GET /api/v1/teams/:team_name/cc.xml when authorized when the team is found when a pipeline is found when a job is found when the last build is successful returns Content-Type 'application/xml'"
+      ],
+      "scenarios": ["Strict CC profile <profile> preserves <source> (row 2)"],
+      "failure_contains": "strict CC"
+    },
+    {
+      "id": "succeeded-build-maps-to-success",
+      "source_file": "atc/api/ccserver/get.go",
+      "old": "\tcase db.BuildStatus(j.FinishedBuild.Status) == db.BuildStatusSucceeded:\n\t\tlastBuildStatus = \"Success\"",
+      "new": "\tcase db.BuildStatus(j.FinishedBuild.Status) == db.BuildStatusSucceeded:\n\t\tlastBuildStatus = \"Failure\"",
+      "tests": [
+        "cc.xml GET /api/v1/teams/:team_name/cc.xml when authorized when the team is found when a pipeline is found when a job is found when the last build is successful returns the CC.xml"
+      ],
+      "scenarios": ["Strict CC profile <profile> preserves <source> (row 3)"],
+      "failure_contains": "strict CC"
+    },
+    {
+      "id": "exception-builds-map-to-exception",
+      "source_file": "atc/api/ccserver/get.go",
+      "old": "\tdefault:\n\t\tlastBuildStatus = \"Exception\"",
+      "new": "\tdefault:\n\t\tlastBuildStatus = \"Failure\"",
+      "tests": [
+        "cc.xml GET /api/v1/teams/:team_name/cc.xml when authorized when the team is found when a pipeline is found when a job is found when the last build is aborted returns the CC.xml",
+        "cc.xml GET /api/v1/teams/:team_name/cc.xml when authorized when the team is found when a pipeline is found when a job is found when the last build is errored returns the CC.xml"
+      ],
+      "scenarios": [
+        "Strict CC profile <profile> preserves <source> (row 4)",
+        "Strict CC profile <profile> preserves <source> (row 5)"
+      ],
+      "failure_contains": "strict CC"
+    },
+    {
+      "id": "failed-build-maps-to-failure",
+      "source_file": "atc/api/ccserver/get.go",
+      "old": "\tcase db.BuildStatus(j.FinishedBuild.Status) == db.BuildStatusFailed:\n\t\tlastBuildStatus = \"Failure\"",
+      "new": "\tcase db.BuildStatus(j.FinishedBuild.Status) == db.BuildStatusFailed:\n\t\tlastBuildStatus = \"Exception\"",
+      "tests": [
+        "cc.xml GET /api/v1/teams/:team_name/cc.xml when authorized when the team is found when a pipeline is found when a job is found when the last build is failed returns the CC.xml"
+      ],
+      "scenarios": ["Strict CC profile <profile> preserves <source> (row 6)"],
+      "failure_contains": "strict CC"
+    },
+    {
+      "id": "next-build-makes-project-building",
+      "source_file": "atc/api/ccserver/get.go",
+      "old": "\tif j.NextBuild != nil {\n\t\tactivity = \"Building\"\n\t} else {\n\t\tactivity = \"Sleeping\"\n\t}",
+      "new": "\tif j.NextBuild == nil {\n\t\tactivity = \"Building\"\n\t} else {\n\t\tactivity = \"Sleeping\"\n\t}",
+      "tests": [
+        "cc.xml GET /api/v1/teams/:team_name/cc.xml when authorized when the team is found when a pipeline is found when a job is found when a next build exists returns the CC.xml"
+      ],
+      "scenarios": ["Strict CC profile <profile> preserves <source> (row 7)"],
+      "failure_contains": "strict CC"
+    },
+    {
+      "id": "job-without-finished-build-is-omitted",
+      "source_file": "atc/api/ccserver/get.go",
+      "old": "\t\tfor _, dashboardJob := range dashboards {\n\t\t\tif dashboardJob.FinishedBuild != nil {\n\t\t\t\tprojects = append(projects, s.buildProject(dashboardJob))\n\t\t\t}\n\t\t}",
+      "new": "\t\tfor _, dashboardJob := range dashboards {\n\t\t\tif dashboardJob.FinishedBuild != nil {\n\t\t\t\tprojects = append(projects, s.buildProject(dashboardJob))\n\t\t\t} else {\n\t\t\t\tprojects = append(projects, Project{Name: dashboardJob.Name})\n\t\t\t}\n\t\t}",
+      "tests": [
+        "cc.xml GET /api/v1/teams/:team_name/cc.xml when authorized when the team is found when a pipeline is found when a job is found when no last build exists returns the CC.xml without the job"
+      ],
+      "scenarios": ["Strict CC profile <profile> preserves <source> (row 8)"],
+      "failure_contains": "strict CC"
+    },
+    {
+      "id": "pipeline-without-jobs-has-no-projects",
+      "source_file": "atc/api/ccserver/get.go",
+      "old": "\t\tif err != nil {\n\t\t\tlogger.Error(\"failed-to-get-dashboards\", err)\n\t\t\tw.WriteHeader(http.StatusInternalServerError)\n\t\t\treturn\n\t\t}\n\n\t\tfor _, dashboardJob := range dashboards {",
+      "new": "\t\tif err != nil {\n\t\t\tlogger.Error(\"failed-to-get-dashboards\", err)\n\t\t\tw.WriteHeader(http.StatusInternalServerError)\n\t\t\treturn\n\t\t}\n\t\tif len(dashboards) == 0 {\n\t\t\tprojects = append(projects, Project{Name: \"unexpected-job\"})\n\t\t}\n\n\t\tfor _, dashboardJob := range dashboards {",
+      "tests": [
+        "cc.xml GET /api/v1/teams/:team_name/cc.xml when authorized when the team is found when a pipeline is found when no job is found returns the CC.xml"
+      ],
+      "scenarios": ["Strict CC profile <profile> preserves <source> (row 10)"],
+      "failure_contains": "strict CC"
+    },
+    {
+      "id": "instance-vars-stay-in-name-and-url",
+      "source_file": "atc/api/ccserver/get.go",
+      "old": "\tqueryParams := pipelineRef.QueryParams().Encode()",
+      "new": "\tqueryParams := \"\"",
+      "tests": [
+        "cc.xml GET /api/v1/teams/:team_name/cc.xml when authorized when the team is found when an instanced pipeline is found returns the proper web url in the CC.xml"
+      ],
+      "scenarios": ["Strict CC profile <profile> preserves <source> (row 11)"],
+      "failure_contains": "strict CC"
+    },
+    {
+      "id": "team-without-pipelines-has-no-projects",
+      "source_file": "atc/api/ccserver/get.go",
+      "old": "\tvar projects []Project\n\n\tfor _, pipeline := range pipelines {",
+      "new": "\tvar projects []Project\n\tif len(pipelines) == 0 {\n\t\tprojects = append(projects, Project{Name: \"unexpected-pipeline\"})\n\t}\n\n\tfor _, pipeline := range pipelines {",
+      "tests": [
+        "cc.xml GET /api/v1/teams/:team_name/cc.xml when authorized when the team is found when no pipeline is found returns the CC.xml"
+      ],
+      "scenarios": ["Strict CC profile <profile> preserves <source> (row 13)"],
+      "failure_contains": "strict CC"
+    },
+    {
+      "id": "missing-team-is-not-found",
+      "source_file": "atc/api/ccserver/get.go",
+      "old": "\tif !found {\n\t\tlogger.Debug(\"team-not-found\", lager.Data{\"team\": teamName})\n\t\tw.WriteHeader(http.StatusNotFound)\n\t\treturn\n\t}",
+      "new": "\tif !found {\n\t\tlogger.Debug(\"team-not-found\", lager.Data{\"team\": teamName})\n\t\tw.WriteHeader(http.StatusInternalServerError)\n\t\treturn\n\t}",
+      "tests": [
+        "cc.xml GET /api/v1/teams/:team_name/cc.xml when authorized when the team is not found returns 404"
+      ],
+      "scenarios": ["Strict CC profile <profile> preserves <source> (row 14)"],
+      "failure_contains": "strict CC"
+    }
+  ]
+}

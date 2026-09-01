@@ -1,52 +1,27 @@
 Feature: CCTray XML reflects persisted pipeline and build state
 
-  Source: 14 specs in atc/api/cc_test.go covering status/header/XML, build
-  status translation, activity, empty projects, instance vars, and not-found.
+  The strict rows use a production CC server, production authentication and
+  concrete PostgreSQL state over a real TCP listener. Each row corresponds to
+  one source leaf in atc/api/cc_test.go. Selective database-failure leaves and
+  the separate anonymous-visibility contexts remain in the source suite.
 
-  Scenario: A successful build renders a sleeping successful project
-    When the real CC API handles profile "succeeded"
-    Then the CC API returned status 200
-    And the CC API content type is "application/xml"
-    And the CC XML activity is "Sleeping"
-    And the CC XML build status is "Success"
-
-  Scenario Outline: Finished build status <profile> renders <status>
-    When the real CC API handles profile "<profile>"
-    Then the CC API returned status 200
-    And the CC XML build status is "<status>"
+  Scenario Outline: Strict CC profile <profile> preserves <source>
+    When strict CC API profile "<profile>" is exercised over real HTTP
+    Then the strict CC observation "<kind>" is "<expected>"
 
     Examples:
-      | profile | status    |
-      | aborted | Exception |
-      | errored | Exception |
-      | failed  | Failure   |
-
-  Scenario: A running next build changes project activity to building
-    When the real CC API handles profile "building"
-    Then the CC XML activity is "Building"
-    And the CC XML build status is "Success"
-
-  Scenario: A buildless job is omitted
-    When the real CC API handles profile "no-last-build"
-    Then the CC API returned status 200
-    And the CC XML is empty
-
-  Scenario: A pipeline with no jobs returns an empty project list
-    When the real CC API handles profile "no-job"
-    Then the CC API returned status 200
-    And the CC XML is empty
-
-  Scenario: A team with no pipelines returns an empty project list
-    When the real CC API handles profile "no-pipeline"
-    Then the CC API returned status 200
-    And the CC XML is empty
-
-  Scenario: Instance variables are preserved in project name and URL
-    When the real CC API handles profile "instanced"
-    Then the CC API returned status 200
-    And the CC XML contains "feature/foo"
-    And the CC XML contains "vars.branch"
-
-  Scenario: A missing team returns not found
-    When the real CC API handles profile "missing-team"
-    Then the CC API returned status 404
+      | profile                | source                              | kind         | expected                                                                                                                                                                                                                                  |
+      | succeeded-status       | successful build status             | status       | 200                                                                                                                                                                                                                                       |
+      | succeeded-content-type | successful build content type       | content-type | application/xml                                                                                                                                                                                                                           |
+      | succeeded-project      | successful build XML                | project      | activity=Sleeping;label=1;build-status=Success;time=2018-11-04T21:26:38Z;name=something-else/some-job;url=https://example.com/teams/a-team/pipelines/something-else/jobs/some-job                              |
+      | aborted-project        | aborted build XML                   | project      | activity=Sleeping;label=1;build-status=Exception;time=2018-11-04T21:26:38Z;name=something-else/some-job;url=https://example.com/teams/a-team/pipelines/something-else/jobs/some-job                            |
+      | errored-project        | errored build XML                   | project      | activity=Sleeping;label=1;build-status=Exception;time=2018-11-04T21:26:38Z;name=something-else/some-job;url=https://example.com/teams/a-team/pipelines/something-else/jobs/some-job                            |
+      | failed-project         | failed build XML                    | project      | activity=Sleeping;label=1;build-status=Failure;time=2018-11-04T21:26:38Z;name=something-else/some-job;url=https://example.com/teams/a-team/pipelines/something-else/jobs/some-job                              |
+      | building-project       | next build activity XML             | project      | activity=Building;label=1;build-status=Success;time=2018-11-04T21:26:38Z;name=something-else/some-job;url=https://example.com/teams/a-team/pipelines/something-else/jobs/some-job                              |
+      | no-last-build-empty    | job without a finished build        | empty        | root=Projects;projects=0                                                                                                                                                                                                                  |
+      | no-job-status          | pipeline without jobs status        | status       | 200                                                                                                                                                                                                                                       |
+      | no-job-empty           | pipeline without jobs XML           | empty        | root=Projects;projects=0                                                                                                                                                                                                                  |
+      | instanced-project      | instanced pipeline name and URL     | project      | activity=Sleeping;label=1;build-status=Success;time=2018-11-04T21:26:38Z;name=something-else/branch:'feature/foo'/some-job;url=https://example.com/teams/a-team/pipelines/something-else/jobs/some-job?vars.branch=%22feature%2Ffoo%22 |
+      | no-pipeline-status     | team without pipelines status       | status       | 200                                                                                                                                                                                                                                       |
+      | no-pipeline-empty      | team without pipelines XML          | empty        | root=Projects;projects=0                                                                                                                                                                                                                  |
+      | missing-team-status    | missing authorized team             | status       | 404                                                                                                                                                                                                                                       |

@@ -1,0 +1,132 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/cc-api-strict.json",
+  "git_head": "3e2d074ccf4f195e1a9a30e9ad29edfc16087e37",
+  "completed_at": "2026-09-01T08:18:24Z",
+  "source_tests": 14,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "mutation_cases": [
+    {
+      "id": "successful-cc-responses-return-ok",
+      "mutation_sha256": "78e741c29fa01a2afd0cba8fc9453e1b730b2c027a051a46def45ffc3412d710",
+      "failed_source_tests": [
+        "cc.xml GET /api/v1/teams/:team_name/cc.xml when authorized when the team is found when a pipeline is found when a job is found when the last build is successful returns 200",
+        "cc.xml GET /api/v1/teams/:team_name/cc.xml when authorized when the team is found when a pipeline is found when no job is found returns 200",
+        "cc.xml GET /api/v1/teams/:team_name/cc.xml when authorized when the team is found when no pipeline is found returns 200"
+      ],
+      "failed_brine_scenarios": [
+        "Strict CC profile \u003cprofile\u003e preserves \u003csource\u003e (row 1)",
+        "Strict CC profile \u003cprofile\u003e preserves \u003csource\u003e (row 12)",
+        "Strict CC profile \u003cprofile\u003e preserves \u003csource\u003e (row 9)"
+      ]
+    },
+    {
+      "id": "cc-content-type-is-xml",
+      "mutation_sha256": "69670a7712867b61c5723afb6852144a231d76723aa3158b71f94dea47553e0a",
+      "failed_source_tests": [
+        "cc.xml GET /api/v1/teams/:team_name/cc.xml when authorized when the team is found when a pipeline is found when a job is found when the last build is successful returns Content-Type 'application/xml'"
+      ],
+      "failed_brine_scenarios": [
+        "Strict CC profile \u003cprofile\u003e preserves \u003csource\u003e (row 2)"
+      ]
+    },
+    {
+      "id": "succeeded-build-maps-to-success",
+      "mutation_sha256": "975f7160f0d95a95d11977e09cb073ac44c82430038897eca585b32a37925d49",
+      "failed_source_tests": [
+        "cc.xml GET /api/v1/teams/:team_name/cc.xml when authorized when the team is found when a pipeline is found when a job is found when the last build is successful returns the CC.xml"
+      ],
+      "failed_brine_scenarios": [
+        "Strict CC profile \u003cprofile\u003e preserves \u003csource\u003e (row 11)",
+        "Strict CC profile \u003cprofile\u003e preserves \u003csource\u003e (row 3)",
+        "Strict CC profile \u003cprofile\u003e preserves \u003csource\u003e (row 7)"
+      ]
+    },
+    {
+      "id": "exception-builds-map-to-exception",
+      "mutation_sha256": "baa744c08bfb3f495be86f6a4b4fbaf0b3545333e1b8ad69e32fac94782bd333",
+      "failed_source_tests": [
+        "cc.xml GET /api/v1/teams/:team_name/cc.xml when authorized when the team is found when a pipeline is found when a job is found when the last build is aborted returns the CC.xml",
+        "cc.xml GET /api/v1/teams/:team_name/cc.xml when authorized when the team is found when a pipeline is found when a job is found when the last build is errored returns the CC.xml"
+      ],
+      "failed_brine_scenarios": [
+        "Strict CC profile \u003cprofile\u003e preserves \u003csource\u003e (row 4)",
+        "Strict CC profile \u003cprofile\u003e preserves \u003csource\u003e (row 5)"
+      ]
+    },
+    {
+      "id": "failed-build-maps-to-failure",
+      "mutation_sha256": "d3ab6b38f2583ed06ed2814980d1936adf6239c32708921fb772beba89337ac7",
+      "failed_source_tests": [
+        "cc.xml GET /api/v1/teams/:team_name/cc.xml when authorized when the team is found when a pipeline is found when a job is found when the last build is failed returns the CC.xml"
+      ],
+      "failed_brine_scenarios": [
+        "Strict CC profile \u003cprofile\u003e preserves \u003csource\u003e (row 6)"
+      ]
+    },
+    {
+      "id": "next-build-makes-project-building",
+      "mutation_sha256": "4a30708e76a716ec8eee0143c8b8f090bf5ad899b329b296fd5cefa1ba2186ff",
+      "failed_source_tests": [
+        "cc.xml GET /api/v1/teams/:team_name/cc.xml when authorized when the team is found when a pipeline is found when a job is found when a next build exists returns the CC.xml"
+      ],
+      "failed_brine_scenarios": [
+        "Strict CC profile \u003cprofile\u003e preserves \u003csource\u003e (row 11)",
+        "Strict CC profile \u003cprofile\u003e preserves \u003csource\u003e (row 3)",
+        "Strict CC profile \u003cprofile\u003e preserves \u003csource\u003e (row 4)",
+        "Strict CC profile \u003cprofile\u003e preserves \u003csource\u003e (row 5)",
+        "Strict CC profile \u003cprofile\u003e preserves \u003csource\u003e (row 6)",
+        "Strict CC profile \u003cprofile\u003e preserves \u003csource\u003e (row 7)"
+      ]
+    },
+    {
+      "id": "job-without-finished-build-is-omitted",
+      "mutation_sha256": "d14cc38a4136baf45c3fd4a5874fe52c6e516789e203e133bc62d3c1c7ce75fd",
+      "failed_source_tests": [
+        "cc.xml GET /api/v1/teams/:team_name/cc.xml when authorized when the team is found when a pipeline is found when a job is found when no last build exists returns the CC.xml without the job"
+      ],
+      "failed_brine_scenarios": [
+        "Strict CC profile \u003cprofile\u003e preserves \u003csource\u003e (row 8)"
+      ]
+    },
+    {
+      "id": "pipeline-without-jobs-has-no-projects",
+      "mutation_sha256": "0a1af717606cd031302b82d8bd0cf338239feb154b96e58f9e51feef88299511",
+      "failed_source_tests": [
+        "cc.xml GET /api/v1/teams/:team_name/cc.xml when authorized when the team is found when a pipeline is found when no job is found returns the CC.xml"
+      ],
+      "failed_brine_scenarios": [
+        "Strict CC profile \u003cprofile\u003e preserves \u003csource\u003e (row 10)"
+      ]
+    },
+    {
+      "id": "instance-vars-stay-in-name-and-url",
+      "mutation_sha256": "0025b92efa73755827b870556a0deb626cbb7531bd58f400eacac8f1bdeedd79",
+      "failed_source_tests": [
+        "cc.xml GET /api/v1/teams/:team_name/cc.xml when authorized when the team is found when an instanced pipeline is found returns the proper web url in the CC.xml"
+      ],
+      "failed_brine_scenarios": [
+        "Strict CC profile \u003cprofile\u003e preserves \u003csource\u003e (row 11)"
+      ]
+    },
+    {
+      "id": "team-without-pipelines-has-no-projects",
+      "mutation_sha256": "345d7d1e0b66eb2b2fec670a05bbdda70f4560417423cb68b5e067acc89ca93d",
+      "failed_source_tests": [
+        "cc.xml GET /api/v1/teams/:team_name/cc.xml when authorized when the team is found when no pipeline is found returns the CC.xml"
+      ],
+      "failed_brine_scenarios": [
+        "Strict CC profile \u003cprofile\u003e preserves \u003csource\u003e (row 13)"
+      ]
+    },
+    {
+      "id": "missing-team-is-not-found",
+      "mutation_sha256": "76b487530998f2c03fd408e1ec2bf2bed74f13bb596cac222fe4ee2db269c215",
+      "failed_source_tests": [
+        "cc.xml GET /api/v1/teams/:team_name/cc.xml when authorized when the team is not found returns 404"
+      ],
+      "failed_brine_scenarios": [
+        "Strict CC profile \u003cprofile\u003e preserves \u003csource\u003e (row 14)"
+      ]
+    }
+  ]
+}
