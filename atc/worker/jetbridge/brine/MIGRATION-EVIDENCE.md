@@ -22,19 +22,19 @@ scenario fail is also not evidence.
 
 | quantity | source leaf tests | percentage of 6,857 |
 |---|---:|---:|
-| **fully migrated**: paired failure evidence, no prohibited double, source removed | **629** | **9.17%** |
+| **fully migrated**: paired failure evidence, no prohibited double, source removed | **668** | **9.74%** |
 | strict paired evidence, but source still present | 0 | 0.00% |
 | **runs in Brine but not the full philosophy**: paired failure evidence, but uses a stub, test sink, injected-fault object, fake, or mock | **112** | **1.63%** |
 | of the preceding exception bucket whose source test was removed | 66 | 0.96% |
-| total source tests with paired per-test failure evidence | 741 | 10.81% |
-| former claimed tests with no admissible paired evidence | 1,318 | 19.22% |
+| total source tests with paired per-test failure evidence | 780 | 11.38% |
+| former claimed tests with no admissible paired evidence | 1,279 | 18.65% |
 | Brine scenarios | 1,877 | execution count only |
 
-The requested two headline percentages are therefore **9.17% fully migrated**
+The requested two headline percentages are therefore **9.74% fully migrated**
 and **1.63% validated but running outside the full philosophy**. The second is
 not another migration percentage: 46 of its 112 source tests still exist. If
 "migrated" is restricted to removed source tests in both buckets, the figures
-are 9.17% strict and 0.96% philosophy-exception.
+are 9.74% strict and 0.96% philosophy-exception.
 
 ## Admitted evidence ledger
 
@@ -62,7 +62,7 @@ production-logger resource path.
 | `db/job_test.go` strict real-PostgreSQL subset **†** | 35 | 35 | 0 | 35 |
 | `db/worker_factory_test.go` real-PostgreSQL production-cache suite **†** | 20 | 20 | 0 | 20 |
 | `db/resource_config_scope_test.go` real-PostgreSQL resource-scope domain **†** | 23 | 23 | 0 | 23 |
-| `db/container_test.go` strict real-PostgreSQL subset **†** | 17 | 17 | 0 | 17 |
+| `db/container_test.go` strict real-PostgreSQL subset | 17 | 17 | 0 | 17 |
 | `db/component_notifications_test.go` | 21 | 21 | 0 | 21 |
 | `db/notifications_bus_test.go` strict real-PostgreSQL subset **†** | 11 | 11 | 0 | 11 |
 | `event/parser_test.go` | 26 | 26 | 0 | 26 |
@@ -76,14 +76,15 @@ production-logger resource path.
 | `configwarning_test.go` | 14 | 14 | 0 | 14 |
 | `fly/eventstream/render_test.go` real TCP SSE rendering | 37 | 37 | 0 | 37 |
 | `api/auth` real TCP/production-handler authorization boundaries | 18 | 18 | 0 | 18 |
-| `api/auth` resource authorization, real TCP/production handlers/real PostgreSQL **†** | 29 | 29 | 0 | 29 |
+| `api/auth` build/pipeline resource authorization, real TCP/production handlers/real PostgreSQL | 15 | 15 | 0 | 15 |
+| `api/auth` worker resource authorization, real TCP/production handlers/real PostgreSQL **†** | 14 | 14 | 0 | 14 |
 | `api/accessor/accessor_test.go` production accessor profiles | 38 | 38 | 0 | 38 |
 | `api/users_test.go` production users serialization/filter subset **†** | 12 | 12 | 0 | 12 |
 | `api/cli_test.go` production CLI downloads **†** | 12 | 12 | 0 | 12 |
 | `api/cc_test.go` production CC XML over real TCP/PostgreSQL **†** | 14 | 14 | 0 | 14 |
 | `api/wall_test.go` production wall API over real TCP/PostgreSQL **†** | 14 | 14 | 0 | 14 |
 | `go-concourse/concourse/teams_test.go` strict real-server client subset | 9 | 9 | 0 | 9 |
-| `api/teams_test.go` strict real-server team API subset **†** | 7 | 7 | 0 | 7 |
+| `api/teams_test.go` strict real-server team API subset | 7 | 7 | 0 | 7 |
 | `db/resource_type_test.go` production resource-type domain **†** | 22 | 22 | 0 | 22 |
 | `db/build_factory_test.go` production build-factory policy **†** | 25 | 25 | 0 | 25 |
 | `go-concourse/concourse/jobs_test.go` strict real-server client subset **†** | 19 | 19 | 0 | 19 |
@@ -100,7 +101,7 @@ production-logger resource path.
 | `scanner_test.go` | 14 | 0 | 14 | 14 |
 | durable-storage, volume-DaemonSet, and behavioral-permutation campaign | 44 | 0 | 44 | 44 |
 | daemonset-integration and daemon-client retained cases | 46 | 0 | 46 | 0 |
-| **admitted total († rows excluded)** | **741** | **629** | **112** | **695** |
+| **admitted total († rows excluded)** | **780** | **668** | **112** | **734** |
 
 ### Superseded sink-free revalidation
 
