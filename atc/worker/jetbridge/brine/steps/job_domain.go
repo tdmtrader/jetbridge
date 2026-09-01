@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/brine-dev/brine-go/pkg/brine"
@@ -95,12 +96,6 @@ func observeJobDomain(database JetbridgeDB, profile string) (string, error) {
 			return fmt.Sprintf("recent=%t", time.Since(job.PausedAt()) < time.Second), nil
 		}
 	case "unpause-state", "unpause-schedule":
-		if err := job.Pause(""); err != nil {
-			return "", err
-		}
-		if err := reload(); err != nil {
-			return "", err
-		}
 		before := job.ScheduleRequestedTime()
 		if err := job.Unpause(); err != nil {
 			return "", err
@@ -111,7 +106,7 @@ func observeJobDomain(database JetbridgeDB, profile string) (string, error) {
 		if profile == "unpause-state" {
 			return fmt.Sprintf("paused=%t", job.Paused()), nil
 		}
-		return fmt.Sprintf("advanced=%t", !job.ScheduleRequestedTime().Before(before)), nil
+		return fmt.Sprintf("within-second=%t", absDuration(job.ScheduleRequestedTime().Sub(before)) <= time.Second), nil
 	case "first-logged":
 		if job.FirstLoggedBuildID() != 0 {
 			return "", fmt.Errorf("initial first logged ID was %d", job.FirstLoggedBuildID())
@@ -124,7 +119,9 @@ func observeJobDomain(database JetbridgeDB, profile string) (string, error) {
 		}
 		sameErr := job.UpdateFirstLoggedBuildID(57)
 		decreaseErr := job.UpdateFirstLoggedBuildID(56)
-		return fmt.Sprintf("id=%d;same-ok=%t;decrease-error=%t", job.FirstLoggedBuildID(), sameErr == nil, decreaseErr != nil), nil
+		decreased, exact := decreaseErr.(db.FirstLoggedBuildIDDecreasedError)
+		exact = exact && decreased.Job == job.Name() && decreased.OldID == 57 && decreased.NewID == 56
+		return fmt.Sprintf("id=%d;same-ok=%t;decrease-exact=%t", job.FirstLoggedBuildID(), sameErr == nil, exact), nil
 	case "latest-completed":
 		build, err := job.CreateBuild("brine-user")
 		if err != nil {
@@ -142,13 +139,6 @@ func observeJobDomain(database JetbridgeDB, profile string) (string, error) {
 	case "time-empty", "time-limit", "time-to", "time-from", "time-range":
 		return observeJobTimePages(database, job, profile)
 	case "ensure-pending", "ensure-idempotent":
-		started, err := job.CreateBuild("brine-user")
-		if err != nil {
-			return "", err
-		}
-		if _, err := started.Start(atc.Plan{}); err != nil {
-			return "", err
-		}
 		if err := job.EnsurePendingBuildExists(context.Background()); err != nil {
 			return "", err
 		}
@@ -158,7 +148,29 @@ func observeJobDomain(database JetbridgeDB, profile string) (string, error) {
 			}
 		}
 		pending, err := job.GetPendingBuilds()
-		return fmt.Sprintf("pending=%d", len(pending)), err
+		if err != nil {
+			return "", err
+		}
+		_, next, nextErr := job.FinishedAndNextBuild()
+		if nextErr != nil {
+			return "", nextErr
+		}
+		nextMatches := len(pending) == 1 && next != nil && pending[0].ID() == next.ID()
+		if profile == "ensure-pending" {
+			return fmt.Sprintf("pending=%d;next-matches=%t", len(pending), nextMatches), nil
+		}
+		if len(pending) != 1 {
+			return fmt.Sprintf("pending=%d;next-matches=%t;after-start=-1", len(pending), nextMatches), nil
+		}
+		startedPending, startErr := pending[0].Start(atc.Plan{})
+		if startErr != nil {
+			return "", startErr
+		}
+		after, afterErr := job.GetPendingBuilds()
+		if afterErr != nil {
+			return "", afterErr
+		}
+		return fmt.Sprintf("pending=%d;next-matches=%t;started=%t;after-start=%d", len(pending), nextMatches, startedPending, len(after)), nil
 	case "new-inputs-initial":
 		return fmt.Sprintf("new=%t", job.HasNewInputs()), nil
 	case "new-inputs-toggle":
@@ -211,7 +223,7 @@ func observeJobBuildLookup(job db.Job, profile string, reload func() error) (str
 		name, expectedID = "latest", second.ID()
 	}
 	build, found, err := job.Build(name)
-	return fmt.Sprintf("found=%t;matches=%t", found, found && build.ID() == expectedID), err
+	return fmt.Sprintf("found=%t;matches=%t;status=pending:%t", found, found && build.ID() == expectedID, found && build.Status() == db.BuildStatusPending), err
 }
 
 func observeJobBuildPages(pipeline db.Pipeline, job db.Job, profile string) (string, error) {
@@ -221,7 +233,7 @@ func observeJobBuildPages(pipeline db.Pipeline, job db.Job, profile string) (str
 			return "", firstError(err, fmt.Errorf("beta job missing"))
 		}
 		builds, pagination, err := other.Builds(db.Page{})
-		return fmt.Sprintf("count=%d;empty-pages=%t", len(builds), pagination.Newer == nil && pagination.Older == nil), err
+		return fmt.Sprintf("builds-exact=%t;pagination-exact=%t", len(builds) == 0, reflect.DeepEqual(pagination, db.Pagination{})), err
 	}
 	builds := make([]db.Build, 10)
 	for i := range builds {
@@ -246,14 +258,23 @@ func observeJobBuildPages(pipeline db.Pipeline, job db.Job, profile string) (str
 	if err != nil {
 		return "", err
 	}
-	newer, older := pagination.Newer != nil, pagination.Older != nil
-	wantNewer, wantOlder := false, true
-	if profile == "builds-to-middle" || profile == "builds-from-middle" {
-		wantNewer, wantOlder = true, true
-	} else if profile == "builds-to-end" {
-		wantNewer, wantOlder = true, false
+	wantBuilds := []db.Build{builds[9], builds[8]}
+	wantPagination := db.Pagination{Older: &db.Page{To: db.NewIntPtr(builds[7].ID()), Limit: 2}}
+	switch profile {
+	case "builds-to-middle":
+		wantBuilds = []db.Build{builds[6], builds[5]}
+		wantPagination = db.Pagination{Newer: &db.Page{From: db.NewIntPtr(builds[7].ID()), Limit: 2}, Older: &db.Page{To: db.NewIntPtr(builds[4].ID()), Limit: 2}}
+	case "builds-to-end":
+		wantBuilds = []db.Build{builds[1], builds[0]}
+		wantPagination = db.Pagination{Newer: &db.Page{From: db.NewIntPtr(builds[2].ID()), Limit: 2}}
+	case "builds-from-middle":
+		wantBuilds = []db.Build{builds[7], builds[6]}
+		wantPagination = db.Pagination{Newer: &db.Page{From: db.NewIntPtr(builds[8].ID()), Limit: 2}, Older: &db.Page{To: db.NewIntPtr(builds[5].ID()), Limit: 2}}
+	case "builds-from-start":
+		wantBuilds = []db.Build{builds[9], builds[8]}
+		wantPagination = db.Pagination{Older: &db.Page{To: db.NewIntPtr(builds[7].ID()), Limit: 2}}
 	}
-	return fmt.Sprintf("count=%d;newer=%t;older=%t;pages-correct=%t", len(got), newer, older, newer == wantNewer && older == wantOlder), nil
+	return fmt.Sprintf("builds-exact=%t;pagination-exact=%t", sameBuildIDsInOrder(got, wantBuilds), reflect.DeepEqual(pagination, wantPagination)), nil
 }
 
 func observeJobTimePages(database JetbridgeDB, job db.Job, profile string) (string, error) {
@@ -270,21 +291,58 @@ func observeJobTimePages(database JetbridgeDB, job db.Job, profile string) (stri
 		}
 	}
 	page := db.Page{}
-	want := 0
+	want := []db.Build{}
 	switch profile {
 	case "time-empty":
-		want = 0
 	case "time-limit":
-		page.Limit, want = 2, 2
+		page.Limit, want = 2, []db.Build{builds[3], builds[2]}
 	case "time-to":
-		page.To, page.Limit, want = db.NewIntPtr(int(time.Date(2020, 11, 3, 0, 0, 0, 0, time.UTC).Unix())), 50, 3
+		page.To, page.Limit, want = db.NewIntPtr(int(time.Date(2020, 11, 3, 0, 0, 0, 0, time.UTC).Unix())), 50, []db.Build{builds[0], builds[1], builds[2]}
 	case "time-from":
-		page.From, page.Limit, want = db.NewIntPtr(int(time.Date(2020, 11, 2, 0, 0, 0, 0, time.UTC).Unix())), 50, 3
+		page.From, page.Limit, want = db.NewIntPtr(int(time.Date(2020, 11, 2, 0, 0, 0, 0, time.UTC).Unix())), 50, []db.Build{builds[1], builds[2], builds[3]}
 	case "time-range":
 		page.From = db.NewIntPtr(int(time.Date(2020, 11, 2, 0, 0, 0, 0, time.UTC).Unix()))
 		page.To = db.NewIntPtr(int(time.Date(2020, 11, 3, 0, 0, 0, 0, time.UTC).Unix()))
-		page.Limit, want = 50, 2
+		page.Limit, want = 50, []db.Build{builds[1], builds[2]}
 	}
 	got, _, err := job.BuildsWithTime(page)
-	return fmt.Sprintf("count=%d;correct=%t", len(got), len(got) == want), err
+	return fmt.Sprintf("builds-exact=%t", sameBuildIDsUnordered(got, want)), err
+}
+
+func sameBuildIDsInOrder(got []db.BuildForAPI, want []db.Build) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i].ID() != want[i].ID() {
+			return false
+		}
+	}
+	return true
+}
+
+func sameBuildIDsUnordered(got []db.BuildForAPI, want []db.Build) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	ids := map[int]int{}
+	for _, build := range want {
+		ids[build.ID()]++
+	}
+	for _, build := range got {
+		ids[build.ID()]--
+	}
+	for _, count := range ids {
+		if count != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func absDuration(value time.Duration) time.Duration {
+	if value < 0 {
+		return -value
+	}
+	return value
 }

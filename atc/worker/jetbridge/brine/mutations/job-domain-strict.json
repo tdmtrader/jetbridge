@@ -1,0 +1,279 @@
+{
+  "name": "job-domain-strict",
+  "test_package": "./atc/db",
+  "source_test_file": "atc/db/job_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/job-domain.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/job_domain.go",
+    "atc/worker/jetbridge/brine/steps/resources.go"
+  ],
+  "cases": [
+    {
+      "id": "public-config-value",
+      "source_file": "atc/db/job.go",
+      "old": "func (j *job) Public() bool                     { return j.public }",
+      "new": "func (j *job) Public() bool                     { return !j.public }",
+      "tests": [
+        "Job Public when the config has public set to true returns true",
+        "Job Public when the config has public set to false returns false",
+        "Job Public when the config does not have public set returns false"
+      ],
+      "scenarios": [
+        "Job domain profile <profile> produces <result> (row 1)",
+        "Job domain profile <profile> produces <result> (row 2)",
+        "Job domain profile <profile> produces <result> (row 3)"
+      ],
+      "failure_contains": "job domain result"
+    },
+    {
+      "id": "disable-manual-trigger-value",
+      "source_file": "atc/db/job.go",
+      "old": "func (j *job) DisableManualTrigger() bool       { return j.disableManualTrigger }",
+      "new": "func (j *job) DisableManualTrigger() bool       { return !j.disableManualTrigger }",
+      "tests": [
+        "Job DisableManualTrigger when the config has disable_manual_trigger set to true returns true",
+        "Job DisableManualTrigger when the config does not have disable_manual_trigger set returns false"
+      ],
+      "scenarios": [
+        "Job domain profile <profile> produces <result> (row 4)",
+        "Job domain profile <profile> produces <result> (row 5)"
+      ],
+      "failure_contains": "job domain result"
+    },
+    {
+      "id": "paused-state-value",
+      "source_file": "atc/db/job.go",
+      "old": "func (j *job) Paused() bool                     { return j.paused }",
+      "new": "func (j *job) Paused() bool                     { return !j.paused }",
+      "tests": [
+        "Job Pause and Unpause starts out as unpaused",
+        "Job Pause and Unpause when pausing job job is succesfully paused",
+        "Job Pause and Unpause when unpausing job job is successfully unpaused"
+      ],
+      "scenarios": [
+        "Job domain profile <profile> produces <result> (row 6)",
+        "Job domain profile <profile> produces <result> (row 7)",
+        "Job domain profile <profile> produces <result> (row 12)"
+      ],
+      "failure_contains": "job domain result"
+    },
+    {
+      "id": "pause-does-not-request-schedule",
+      "source_file": "atc/db/job.go",
+      "old": "\tif err != nil {\n\t\treturn err\n\t}\n\n\treturn nil\n}\n\nfunc (j *job) Unpause",
+      "new": "\tif err != nil {\n\t\treturn err\n\t}\n\n\tif err := j.RequestSchedule(); err != nil {\n\t\treturn err\n\t}\n\treturn nil\n}\n\nfunc (j *job) Unpause",
+      "tests": ["Job Pause and Unpause when pausing job does not request schedule on job"],
+      "scenarios": ["Job domain profile <profile> produces <result> (row 8)"],
+      "failure_contains": "job domain result"
+    },
+    {
+      "id": "paused-by-value",
+      "source_file": "atc/db/job.go",
+      "old": "func (j *job) PausedBy() string                 { return j.pausedBy }",
+      "new": "func (j *job) PausedBy() string                 { return \"mutated\" }",
+      "tests": [
+        "Job Pause and Unpause when pausing job was paused by should be set",
+        "Job Pause and Unpause when pausing with a user was paused by should be set"
+      ],
+      "scenarios": [
+        "Job domain profile <profile> produces <result> (row 9)",
+        "Job domain profile <profile> produces <result> (row 11)"
+      ],
+      "failure_contains": "job domain result"
+    },
+    {
+      "id": "paused-at-value",
+      "source_file": "atc/db/job.go",
+      "old": "func (j *job) PausedAt() time.Time              { return j.pausedAt }",
+      "new": "func (j *job) PausedAt() time.Time              { return time.Time{} }",
+      "tests": ["Job Pause and Unpause when pausing job was paused at should be set"],
+      "scenarios": ["Job domain profile <profile> produces <result> (row 10)"],
+      "failure_contains": "job domain result"
+    },
+    {
+      "id": "unpause-preserves-request-time-when-already-unpaused",
+      "source_file": "atc/db/job.go",
+      "old": "\tif rowsAffected == 1 {\n\t\terr = j.RequestSchedule()\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t}\n\n\treturn nil\n}",
+      "new": "\tif rowsAffected == 1 {\n\t\terr = j.RequestSchedule()\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t}\n\n\t_, err = psql.Update(\"jobs\").Set(\"schedule_requested\", time.Unix(0, 0)).Where(sq.Eq{\"id\": j.id}).RunWith(j.conn).Exec()\n\treturn err\n}",
+      "tests": ["Job Pause and Unpause when unpausing job requests schedule on job"],
+      "scenarios": ["Job domain profile <profile> produces <result> (row 13)"],
+      "failure_contains": "job domain result"
+    },
+    {
+      "id": "first-logged-monotonic",
+      "source_file": "atc/db/job.go",
+      "old": "\tif j.firstLoggedBuildID > newFirstLoggedBuildID {",
+      "new": "\tif j.firstLoggedBuildID >= newFirstLoggedBuildID {",
+      "tests": ["Job UpdateFirstLoggedBuildID updates FirstLoggedBuildID on a job"],
+      "scenarios": ["Job domain profile <profile> produces <result> (row 14)"],
+      "failure_contains": "job domain result"
+    },
+    {
+      "id": "latest-completed-build-id",
+      "source_file": "atc/db/job.go",
+      "old": "psql.Select(\"latest_completed_build_id\")",
+      "new": "psql.Select(\"latest_completed_build_id + 1\")",
+      "tests": ["Job LatestCompletedBuildId fetches latest completed build id on a job"],
+      "scenarios": ["Job domain profile <profile> produces <result> (row 15)"],
+      "failure_contains": "job domain result"
+    },
+    {
+      "id": "build-latest-order",
+      "source_file": "atc/db/job.go",
+      "old": "OrderBy(\"b.id DESC\").\n\t\t\tLimit(1)",
+      "new": "OrderBy(\"b.id ASC\").\n\t\t\tLimit(1)",
+      "tests": ["Job Build when a build exists finds the latest build"],
+      "scenarios": ["Job domain profile <profile> produces <result> (row 16)"],
+      "failure_contains": "job domain result"
+    },
+    {
+      "id": "build-exact-name",
+      "source_file": "atc/db/job.go",
+      "old": "\t\t\t\"b.name\":   name,",
+      "new": "\t\t\t\"b.name\":   name + \"-mutant\",",
+      "tests": ["Job Build when a build exists finds the build"],
+      "scenarios": ["Job domain profile <profile> produces <result> (row 17)"],
+      "failure_contains": "job domain result"
+    },
+    {
+      "id": "build-missing-result",
+      "source_file": "atc/db/job.go",
+      "old": "\trow := query.RunWith(j.conn).QueryRow()\n\n\tbuild := newEmptyBuild(j.conn, j.lockFactory)\n\n\terr := scanBuild(build, row, j.conn.EncryptionStrategy())\n\tif err != nil {\n\t\tif err == sql.ErrNoRows {\n\t\t\treturn nil, false, nil\n\t\t}",
+      "new": "\trow := query.RunWith(j.conn).QueryRow()\n\n\tbuild := newEmptyBuild(j.conn, j.lockFactory)\n\n\terr := scanBuild(build, row, j.conn.EncryptionStrategy())\n\tif err != nil {\n\t\tif err == sql.ErrNoRows {\n\t\t\treturn build, true, nil\n\t\t}",
+      "tests": [
+        "Job Build when the build does not exist does not error",
+        "Job Build when the build does not exist does not error finding the latest"
+      ],
+      "scenarios": [
+        "Job domain profile <profile> produces <result> (row 18)",
+        "Job domain profile <profile> produces <result> (row 19)"
+      ],
+      "failure_contains": "job domain result"
+    },
+    {
+      "id": "create-build-requests-schedule",
+      "source_file": "atc/db/job.go",
+      "old": "\t\t\"manually_triggered\": true,\n\t\t\"created_by\":         createdBy,\n\t})\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\n\tlatestNonRerunID, err := latestCompletedNonRerunBuild(tx, j.id)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\n\terr = updateNextBuildForJob(tx, j.id, latestNonRerunID)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\n\terr = requestSchedule(tx, j.id)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\n\terr = tx.Commit()",
+      "new": "\t\t\"manually_triggered\": true,\n\t\t\"created_by\":         createdBy,\n\t})\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\n\tlatestNonRerunID, err := latestCompletedNonRerunBuild(tx, j.id)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\n\terr = updateNextBuildForJob(tx, j.id, latestNonRerunID)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\n\terr = tx.Commit()",
+      "tests": ["Job Build creating a build requests schedule on the job"],
+      "scenarios": ["Job domain profile <profile> produces <result> (row 20)"],
+      "failure_contains": "job domain result"
+    },
+    {
+      "id": "builds-empty-pagination",
+      "source_file": "atc/db/build_factory.go",
+      "old": "\tif len(builds) == 0 {\n\t\treturn builds, Pagination{}, nil\n\t}",
+      "new": "\tif len(builds) == 0 {\n\t\treturn builds, Pagination{Newer: &Page{}}, nil\n\t}",
+      "tests": ["Job Builds when there are no builds to be found returns the builds, with previous/next pages"],
+      "scenarios": ["Job domain profile <profile> produces <result> (row 21)"],
+      "failure_contains": "job domain result"
+    },
+    {
+      "id": "builds-first-page-order",
+      "source_file": "atc/db/build_factory.go",
+      "old": "\tif page.From == nil && page.To == nil { // none\n\t\tbuildsQuery = buildsQuery.\n\t\t\tOrderBy(desc)",
+      "new": "\tif page.From == nil && page.To == nil { // none\n\t\tbuildsQuery = buildsQuery.\n\t\t\tOrderBy(asc)",
+      "tests": ["Job Builds with no from/to returns the first page, with the given limit, and a next page"],
+      "scenarios": ["Job domain profile <profile> produces <result> (row 22)"],
+      "failure_contains": "job domain result"
+    },
+    {
+      "id": "builds-to-boundary-inclusive",
+      "source_file": "atc/db/build_factory.go",
+      "old": "Where(sq.LtOrEq{\"b.id\": uint64(*page.To)}).",
+      "new": "Where(sq.Lt{\"b.id\": uint64(*page.To)}).",
+      "tests": [
+        "Job Builds with a to that places it in the middle of the builds returns the builds, with previous/next pages",
+        "Job Builds with a to that places it at the end of the builds returns the builds, with previous/next pages"
+      ],
+      "scenarios": [
+        "Job domain profile <profile> produces <result> (row 23)",
+        "Job domain profile <profile> produces <result> (row 24)"
+      ],
+      "failure_contains": "job domain result"
+    },
+    {
+      "id": "builds-from-boundary-inclusive",
+      "source_file": "atc/db/build_factory.go",
+      "old": "Where(sq.GtOrEq{\"b.id\": uint64(*page.From)}).",
+      "new": "Where(sq.Gt{\"b.id\": uint64(*page.From)}).",
+      "tests": [
+        "Job Builds with a from that places it in the middle of the builds returns the builds, with previous/next pages",
+        "Job Builds with a from that places it at the beginning of the builds returns the builds, with previous/next pages"
+      ],
+      "scenarios": [
+        "Job domain profile <profile> produces <result> (row 25)",
+        "Job domain profile <profile> produces <result> (row 26)"
+      ],
+      "failure_contains": "job domain result"
+    },
+    {
+      "id": "time-page-zero-limit",
+      "source_file": "atc/db/build_factory.go",
+      "old": "func getBuildsWithDates(buildsQuery sq.SelectBuilder, page Page, conn DbConn, lockFactory lock.LockFactory) ([]BuildForAPI, Pagination, error) {\n\tif page.From != nil {",
+      "new": "func getBuildsWithDates(buildsQuery sq.SelectBuilder, page Page, conn DbConn, lockFactory lock.LockFactory) ([]BuildForAPI, Pagination, error) {\n\tif page.Limit == 0 {\n\t\tpage.Limit = 1\n\t}\n\tif page.From != nil {",
+      "tests": ["Job BuildsWithTime when not providing boundaries without a limit specified returns no builds"],
+      "scenarios": ["Job domain profile <profile> produces <result> (row 27)"],
+      "failure_contains": "job domain result"
+    },
+    {
+      "id": "time-page-limit",
+      "source_file": "atc/db/build_factory.go",
+      "old": "\tbuildsQuery = buildsQuery.\n\t\tOrderBy(\"COALESCE(b.rerun_of, b.rerun_of_old, b.id) DESC, b.id DESC\").\n\t\tLimit(uint64(page.Limit))",
+      "new": "\tbuildsQuery = buildsQuery.\n\t\tOrderBy(\"COALESCE(b.rerun_of, b.rerun_of_old, b.id) DESC, b.id DESC\").\n\t\tLimit(uint64(page.Limit + 1))",
+      "tests": ["Job BuildsWithTime when not providing boundaries when a limit specified returns a subset of the builds"],
+      "scenarios": ["Job domain profile <profile> produces <result> (row 28)"],
+      "failure_contains": "job domain result"
+    },
+    {
+      "id": "time-boundaries-inclusive",
+      "source_file": "atc/db/build_factory.go",
+      "old": "\tif page.From != nil {\n\t\tbuildsQuery = buildsQuery.Where(sq.Expr(\"b.start_time >= to_timestamp(?)\", *page.From))\n\t}\n\tif page.To != nil {\n\t\tbuildsQuery = buildsQuery.Where(sq.Expr(\"b.start_time <= to_timestamp(?)\", *page.To))\n\t}",
+      "new": "\tif page.From != nil {\n\t\tbuildsQuery = buildsQuery.Where(sq.Expr(\"b.start_time > to_timestamp(?)\", *page.From))\n\t}\n\tif page.To != nil {\n\t\tbuildsQuery = buildsQuery.Where(sq.Expr(\"b.start_time < to_timestamp(?)\", *page.To))\n\t}",
+      "tests": [
+        "Job BuildsWithTime when providing boundaries only to returns only those before to",
+        "Job BuildsWithTime when providing boundaries only from returns only those after from",
+        "Job BuildsWithTime when providing boundaries from and to returns only elements in the range"
+      ],
+      "scenarios": [
+        "Job domain profile <profile> produces <result> (row 29)",
+        "Job domain profile <profile> produces <result> (row 30)",
+        "Job domain profile <profile> produces <result> (row 31)"
+      ],
+      "failure_contains": "job domain result"
+    },
+    {
+      "id": "ensure-pending-updates-next-build",
+      "source_file": "atc/db/job.go",
+      "old": "\t\terr = updateNextBuildForJob(tx, j.id, latestNonRerunID)\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\n\t\treturn tx.Commit()",
+      "new": "\t\t_ = latestNonRerunID\n\t\treturn tx.Commit()",
+      "tests": ["Job EnsurePendingBuildExists when only a started build exists creates a build and updates the next build for the job"],
+      "scenarios": ["Job domain profile <profile> produces <result> (row 32)"],
+      "failure_contains": "job domain result"
+    },
+    {
+      "id": "ensure-pending-idempotent",
+      "source_file": "atc/db/job.go",
+      "old": "\t\tWHERE NOT EXISTS\n\t\t\t(SELECT id FROM builds WHERE job_id = $2 AND status = 'pending')\n\t\tRETURNING id",
+      "new": "\t\tRETURNING id",
+      "tests": ["Job EnsurePendingBuildExists when only a started build exists doesn't create another build the second time it's called"],
+      "scenarios": ["Job domain profile <profile> produces <result> (row 33)"],
+      "failure_contains": "job domain result"
+    },
+    {
+      "id": "new-inputs-state",
+      "source_file": "atc/db/job.go",
+      "old": "func (j *job) HasNewInputs() bool               { return j.hasNewInputs }",
+      "new": "func (j *job) HasNewInputs() bool               { return !j.hasNewInputs }",
+      "tests": [
+        "Job New Inputs starts out as false",
+        "Job New Inputs can be set to true then back to false"
+      ],
+      "scenarios": [
+        "Job domain profile <profile> produces <result> (row 34)",
+        "Job domain profile <profile> produces <result> (row 35)"
+      ],
+      "failure_contains": "job domain result"
+    }
+  ]
+}

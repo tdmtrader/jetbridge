@@ -113,127 +113,6 @@ var _ = Describe("Job", func() {
 		Expect(found).To(BeTrue())
 	})
 
-	Describe("Public", func() {
-		Context("when the config has public set to true", func() {
-			It("returns true", func() {
-				Expect(job.Public()).To(BeTrue())
-			})
-		})
-
-		Context("when the config has public set to false", func() {
-			It("returns false", func() {
-				privateJob, found, err := pipeline.Job("some-private-job")
-				Expect(err).ToNot(HaveOccurred())
-				Expect(found).To(BeTrue())
-				Expect(privateJob.Public()).To(BeFalse())
-			})
-		})
-
-		Context("when the config does not have public set", func() {
-			It("returns false", func() {
-				otherJob, found, err := pipeline.Job("some-other-job")
-				Expect(err).ToNot(HaveOccurred())
-				Expect(found).To(BeTrue())
-				Expect(otherJob.Public()).To(BeFalse())
-			})
-		})
-	})
-
-	Describe("DisableManualTrigger", func() {
-		Context("when the config has disable_manual_trigger set to true", func() {
-			It("returns true", func() {
-				nonTriggerableJob, found, err := pipeline.Job("non-triggerable-job")
-				Expect(err).ToNot(HaveOccurred())
-				Expect(found).To(BeTrue())
-				Expect(nonTriggerableJob.DisableManualTrigger()).To(BeTrue())
-			})
-		})
-
-		Context("when the config does not have disable_manual_trigger set", func() {
-			It("returns false", func() {
-				otherJob, found, err := pipeline.Job("some-other-job")
-				Expect(err).ToNot(HaveOccurred())
-				Expect(found).To(BeTrue())
-				Expect(otherJob.DisableManualTrigger()).To(BeFalse())
-			})
-		})
-	})
-
-	Describe("Pause and Unpause", func() {
-		var initialRequestedTime time.Time
-		It("starts out as unpaused", func() {
-			Expect(job.Paused()).To(BeFalse())
-		})
-
-		Context("when pausing job", func() {
-			BeforeEach(func() {
-				initialRequestedTime = job.ScheduleRequestedTime()
-
-				err := job.Pause("")
-				Expect(err).ToNot(HaveOccurred())
-
-				found, err := job.Reload()
-				Expect(err).ToNot(HaveOccurred())
-				Expect(found).To(BeTrue())
-			})
-
-			It("job is succesfully paused", func() {
-				Expect(job.Paused()).To(BeTrue())
-			})
-
-			It("does not request schedule on job", func() {
-				Expect(job.ScheduleRequestedTime()).Should(BeTemporally("==", initialRequestedTime))
-			})
-
-			It("was paused by should be set", func() {
-				Expect(job.PausedBy()).To(Equal(""))
-			})
-
-			It("was paused at should be set", func() {
-				Expect(job.PausedAt()).Should(BeTemporally("~", time.Now(), time.Duration(1*time.Second)))
-			})
-		})
-
-		Context("when pausing with a user", func() {
-			BeforeEach(func() {
-				initialRequestedTime = job.ScheduleRequestedTime()
-
-				err := job.Pause("concourse")
-				Expect(err).ToNot(HaveOccurred())
-
-				found, err := job.Reload()
-				Expect(err).ToNot(HaveOccurred())
-				Expect(found).To(BeTrue())
-			})
-
-			It("was paused by should be set", func() {
-				Expect(job.PausedBy()).To(Equal("concourse"))
-			})
-		})
-
-		Context("when unpausing job", func() {
-			BeforeEach(func() {
-				initialRequestedTime = job.ScheduleRequestedTime()
-
-				err := job.Unpause()
-				Expect(err).ToNot(HaveOccurred())
-
-				found, err := job.Reload()
-				Expect(err).ToNot(HaveOccurred())
-				Expect(found).To(BeTrue())
-			})
-
-			It("job is successfully unpaused", func() {
-				Expect(job.Paused()).To(BeFalse())
-			})
-
-			It("requests schedule on job", func() {
-				Expect(job.ScheduleRequestedTime()).Should(BeTemporally("~", initialRequestedTime, time.Second))
-			})
-		})
-
-	})
-
 	Describe("FinishedAndNextBuild", func() {
 		var otherPipeline db.Pipeline
 		var otherJob db.Job
@@ -330,62 +209,6 @@ var _ = Describe("Job", func() {
 		})
 	})
 
-	Describe("UpdateFirstLoggedBuildID", func() {
-		It("updates FirstLoggedBuildID on a job", func() {
-			By("starting out as 0")
-			Expect(job.FirstLoggedBuildID()).To(BeZero())
-
-			By("increasing it to 57")
-			err := job.UpdateFirstLoggedBuildID(57)
-			Expect(err).NotTo(HaveOccurred())
-
-			found, err := job.Reload()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(found).To(BeTrue())
-			Expect(job.FirstLoggedBuildID()).To(Equal(57))
-
-			By("not erroring when it's called with the same number")
-			err = job.UpdateFirstLoggedBuildID(57)
-			Expect(err).NotTo(HaveOccurred())
-
-			By("erroring when the number decreases")
-			err = job.UpdateFirstLoggedBuildID(56)
-			Expect(err).To(Equal(db.FirstLoggedBuildIDDecreasedError{
-				Job:   "some-job",
-				OldID: 57,
-				NewID: 56,
-			}))
-		})
-	})
-
-	Describe("LatestCompletedBuildId", func() {
-		var (
-			someJob db.Job
-			build   db.Build
-			err     error
-		)
-
-		BeforeEach(func() {
-			var found bool
-			someJob, found, err = pipeline.Job("some-job")
-			Expect(err).NotTo(HaveOccurred())
-			Expect(found).To(BeTrue())
-
-			build, err = someJob.CreateBuild(defaultBuildCreatedBy)
-			Expect(err).NotTo(HaveOccurred())
-		})
-
-		It("fetches latest completed build id on a job", func() {
-			By("finishing the build")
-			err = build.Finish(db.BuildStatusFailed)
-			Expect(err).NotTo(HaveOccurred())
-
-			latestCompletedBuildId, err := someJob.LatestCompletedBuildId()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(latestCompletedBuildId).To(Equal(build.ID()))
-		})
-	})
-
 	Describe("ChronoBuilds", func() {
 		var (
 			someJob                     db.Job
@@ -426,6 +249,9 @@ var _ = Describe("Job", func() {
 			someJob      db.Job
 			someOtherJob db.Job
 		)
+		_ = builds
+		_ = someJob
+		_ = someOtherJob
 
 		BeforeEach(func() {
 			for i := 0; i < 10; i++ {
@@ -439,76 +265,9 @@ var _ = Describe("Job", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(found).To(BeTrue())
 
-				build, err := someJob.CreateBuild(defaultBuildCreatedBy)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(build.CreatedBy()).ToNot(BeNil())
-				Expect(*build.CreatedBy()).To(Equal(defaultBuildCreatedBy))
-
-				_, err = someOtherJob.CreateBuild(defaultBuildCreatedBy)
-				Expect(err).NotTo(HaveOccurred())
-
-				builds[i] = build
 			}
 		})
 
-		Context("when there are no builds to be found", func() {
-			It("returns the builds, with previous/next pages", func() {
-				buildsPage, pagination, err := someOtherJob.Builds(db.Page{})
-				Expect(err).ToNot(HaveOccurred())
-				Expect(buildsPage).To(Equal([]db.BuildForAPI{}))
-				Expect(pagination).To(Equal(db.Pagination{}))
-			})
-		})
-
-		Context("with no from/to", func() {
-			It("returns the first page, with the given limit, and a next page", func() {
-				buildsPage, pagination, err := someJob.Builds(db.Page{Limit: 2})
-				Expect(err).ToNot(HaveOccurred())
-				Expect(buildsPage).To(Equal([]db.BuildForAPI{builds[9], builds[8]}))
-				Expect(pagination.Newer).To(BeNil())
-				Expect(pagination.Older).To(Equal(&db.Page{To: db.NewIntPtr(builds[7].ID()), Limit: 2}))
-			})
-		})
-
-		Context("with a to that places it in the middle of the builds", func() {
-			It("returns the builds, with previous/next pages", func() {
-				buildsPage, pagination, err := someJob.Builds(db.Page{To: db.NewIntPtr(builds[6].ID()), Limit: 2})
-				Expect(err).ToNot(HaveOccurred())
-				Expect(buildsPage).To(Equal([]db.BuildForAPI{builds[6], builds[5]}))
-				Expect(pagination.Newer).To(Equal(&db.Page{From: db.NewIntPtr(builds[7].ID()), Limit: 2}))
-				Expect(pagination.Older).To(Equal(&db.Page{To: db.NewIntPtr(builds[4].ID()), Limit: 2}))
-			})
-		})
-
-		Context("with a to that places it at the end of the builds", func() {
-			It("returns the builds, with previous/next pages", func() {
-				buildsPage, pagination, err := someJob.Builds(db.Page{To: db.NewIntPtr(builds[1].ID()), Limit: 2})
-				Expect(err).ToNot(HaveOccurred())
-				Expect(buildsPage).To(Equal([]db.BuildForAPI{builds[1], builds[0]}))
-				Expect(pagination.Newer).To(Equal(&db.Page{From: db.NewIntPtr(builds[2].ID()), Limit: 2}))
-				Expect(pagination.Older).To(BeNil())
-			})
-		})
-
-		Context("with a from that places it in the middle of the builds", func() {
-			It("returns the builds, with previous/next pages", func() {
-				buildsPage, pagination, err := someJob.Builds(db.Page{From: db.NewIntPtr(builds[6].ID()), Limit: 2})
-				Expect(err).ToNot(HaveOccurred())
-				Expect(buildsPage).To(Equal([]db.BuildForAPI{builds[7], builds[6]}))
-				Expect(pagination.Newer).To(Equal(&db.Page{From: db.NewIntPtr(builds[8].ID()), Limit: 2}))
-				Expect(pagination.Older).To(Equal(&db.Page{To: db.NewIntPtr(builds[5].ID()), Limit: 2}))
-			})
-		})
-
-		Context("with a from that places it at the beginning of the builds", func() {
-			It("returns the builds, with previous/next pages", func() {
-				buildsPage, pagination, err := someJob.Builds(db.Page{From: db.NewIntPtr(builds[8].ID()), Limit: 2})
-				Expect(err).ToNot(HaveOccurred())
-				Expect(buildsPage).To(Equal([]db.BuildForAPI{builds[9], builds[8]}))
-				Expect(pagination.Newer).To(BeNil())
-				Expect(pagination.Older).To(Equal(&db.Page{To: db.NewIntPtr(builds[7].ID()), Limit: 2}))
-			})
-		})
 	})
 
 	Describe("BuildsWithTime", func() {
@@ -558,122 +317,20 @@ var _ = Describe("Job", func() {
 
 		Context("when not providing boundaries", func() {
 			Context("without a limit specified", func() {
-				It("returns no builds", func() {
-					returnedBuilds, _, err := job.BuildsWithTime(db.Page{})
-					Expect(err).NotTo(HaveOccurred())
-
-					Expect(returnedBuilds).To(BeEmpty())
-				})
 			})
 
 			Context("when a limit specified", func() {
-				It("returns a subset of the builds", func() {
-					returnedBuilds, _, err := job.BuildsWithTime(db.Page{
-						Limit: 2,
-					})
-					Expect(err).NotTo(HaveOccurred())
-					Expect(returnedBuilds).To(ConsistOf(builds[3], builds[2]))
-				})
 			})
 		})
 
 		Context("when providing boundaries", func() {
 			Context("only to", func() {
-				It("returns only those before to", func() {
-					returnedBuilds, _, err := job.BuildsWithTime(db.Page{
-						To:    db.NewIntPtr(int(builds[2].StartTime().Unix())),
-						Limit: 50,
-					})
-
-					Expect(err).NotTo(HaveOccurred())
-					Expect(returnedBuilds).To(ConsistOf(builds[0], builds[1], builds[2]))
-				})
 			})
 
 			Context("only from", func() {
-				It("returns only those after from", func() {
-					returnedBuilds, _, err := job.BuildsWithTime(db.Page{
-						From:  db.NewIntPtr(int(builds[1].StartTime().Unix())),
-						Limit: 50,
-					})
-
-					Expect(err).NotTo(HaveOccurred())
-					Expect(returnedBuilds).To(ConsistOf(builds[1], builds[2], builds[3]))
-				})
 			})
 
 			Context("from and to", func() {
-				It("returns only elements in the range", func() {
-					returnedBuilds, _, err := job.BuildsWithTime(db.Page{
-						From:  db.NewIntPtr(int(builds[1].StartTime().Unix())),
-						To:    db.NewIntPtr(int(builds[2].StartTime().Unix())),
-						Limit: 50,
-					})
-					Expect(err).NotTo(HaveOccurred())
-					Expect(returnedBuilds).To(ConsistOf(builds[1], builds[2]))
-				})
-			})
-		})
-	})
-
-	Describe("Build", func() {
-		var firstBuild db.Build
-
-		Context("when a build exists", func() {
-			BeforeEach(func() {
-				var err error
-				firstBuild, err = job.CreateBuild(defaultBuildCreatedBy)
-				Expect(err).NotTo(HaveOccurred())
-			})
-
-			It("finds the latest build", func() {
-				secondBuild, err := job.CreateBuild(defaultBuildCreatedBy)
-				Expect(err).NotTo(HaveOccurred())
-
-				build, found, err := job.Build("latest")
-				Expect(err).NotTo(HaveOccurred())
-				Expect(found).To(BeTrue())
-				Expect(build.ID()).To(Equal(secondBuild.ID()))
-				Expect(build.Status()).To(Equal(secondBuild.Status()))
-			})
-
-			It("finds the build", func() {
-				build, found, err := job.Build(firstBuild.Name())
-				Expect(err).NotTo(HaveOccurred())
-				Expect(found).To(BeTrue())
-				Expect(build.ID()).To(Equal(firstBuild.ID()))
-				Expect(build.Status()).To(Equal(firstBuild.Status()))
-			})
-		})
-
-		Context("when the build does not exist", func() {
-			It("does not error", func() {
-				build, found, err := job.Build("bogus-build")
-				Expect(err).NotTo(HaveOccurred())
-				Expect(found).To(BeFalse())
-				Expect(build).To(BeNil())
-			})
-
-			It("does not error finding the latest", func() {
-				build, found, err := job.Build("latest")
-				Expect(err).NotTo(HaveOccurred())
-				Expect(found).To(BeFalse())
-				Expect(build).To(BeNil())
-			})
-		})
-
-		Context("creating a build", func() {
-			It("requests schedule on the job", func() {
-				requestedSchedule := job.ScheduleRequestedTime()
-
-				_, err := job.CreateBuild(defaultBuildCreatedBy)
-				Expect(err).NotTo(HaveOccurred())
-
-				found, err := job.Reload()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(found).To(BeTrue())
-
-				Expect(job.ScheduleRequestedTime()).Should(BeTemporally(">", requestedSchedule))
 			})
 		})
 	})
@@ -2038,18 +1695,6 @@ var _ = Describe("Job", func() {
 
 	Describe("EnsurePendingBuildExists", func() {
 		Context("when only a started build exists", func() {
-			It("creates a build and updates the next build for the job", func() {
-				err := job.EnsurePendingBuildExists(context.TODO())
-				Expect(err).NotTo(HaveOccurred())
-
-				pendingBuilds, err := job.GetPendingBuilds()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(pendingBuilds).To(HaveLen(1))
-
-				_, nextBuild, err := job.FinishedAndNextBuild()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(pendingBuilds[0].ID()).To(Equal(nextBuild.ID()))
-			})
 
 			Context("when tracing is configured", func() {
 				BeforeEach(func() {
@@ -2075,25 +1720,6 @@ var _ = Describe("Job", func() {
 				})
 			})
 
-			It("doesn't create another build the second time it's called", func() {
-				err := job.EnsurePendingBuildExists(context.TODO())
-				Expect(err).NotTo(HaveOccurred())
-
-				err = job.EnsurePendingBuildExists(context.TODO())
-				Expect(err).NotTo(HaveOccurred())
-
-				builds2, err := job.GetPendingBuilds()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(builds2).To(HaveLen(1))
-
-				started, err := builds2[0].Start(atc.Plan{})
-				Expect(err).NotTo(HaveOccurred())
-				Expect(started).To(BeTrue())
-
-				builds2, err = job.GetPendingBuilds()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(builds2).To(HaveLen(0))
-			})
 		})
 	})
 
@@ -2231,32 +1857,6 @@ var _ = Describe("Job", func() {
 					})
 				})
 			})
-		})
-	})
-
-	Describe("New Inputs", func() {
-		It("starts out as false", func() {
-			Expect(job.HasNewInputs()).To(BeFalse())
-		})
-
-		It("can be set to true then back to false", func() {
-			job.SetHasNewInputs(true)
-
-			found, err := job.Reload()
-
-			Expect(err).NotTo(HaveOccurred())
-			Expect(found).To(BeTrue())
-
-			Expect(job.HasNewInputs()).To(BeTrue())
-
-			job.SetHasNewInputs(false)
-
-			found, err = job.Reload()
-
-			Expect(err).NotTo(HaveOccurred())
-			Expect(found).To(BeTrue())
-
-			Expect(job.HasNewInputs()).To(BeFalse())
 		})
 	})
 

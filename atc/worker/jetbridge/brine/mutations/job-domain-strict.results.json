@@ -1,0 +1,265 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/job-domain-strict.json",
+  "git_head": "9078d020a26ae35cb1553c8869f5b8bed33a0ee5",
+  "completed_at": "2026-09-01T06:07:52Z",
+  "source_tests": 35,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "mutation_cases": [
+    {
+      "id": "public-config-value",
+      "mutation_sha256": "0e6205d2b2a8b335fb97053ee51feeac8ed1f6f80fa20ca5bd6be3b9ed2aa2e9",
+      "failed_source_tests": [
+        "Job Public when the config does not have public set returns false",
+        "Job Public when the config has public set to false returns false",
+        "Job Public when the config has public set to true returns true"
+      ],
+      "failed_brine_scenarios": [
+        "Job domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 1)",
+        "Job domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 2)",
+        "Job domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 3)"
+      ]
+    },
+    {
+      "id": "disable-manual-trigger-value",
+      "mutation_sha256": "7919764d4a9023fde9c271fddb0030946438634789c49018b1b5102dacd7cc4c",
+      "failed_source_tests": [
+        "Job DisableManualTrigger when the config does not have disable_manual_trigger set returns false",
+        "Job DisableManualTrigger when the config has disable_manual_trigger set to true returns true"
+      ],
+      "failed_brine_scenarios": [
+        "Job domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 4)",
+        "Job domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 5)"
+      ]
+    },
+    {
+      "id": "paused-state-value",
+      "mutation_sha256": "b9e9c31d6fefd98468c0d91a9364bdab49b06bb5b73b843a5bedb2ff917eb228",
+      "failed_source_tests": [
+        "Job Pause and Unpause starts out as unpaused",
+        "Job Pause and Unpause when pausing job job is succesfully paused",
+        "Job Pause and Unpause when unpausing job job is successfully unpaused"
+      ],
+      "failed_brine_scenarios": [
+        "Job domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 12)",
+        "Job domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 6)",
+        "Job domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 7)"
+      ]
+    },
+    {
+      "id": "pause-does-not-request-schedule",
+      "mutation_sha256": "8f65f1652c72a6035673905b37abd745107a9c3acc320dca0ec1932116a35a8e",
+      "failed_source_tests": [
+        "Job Pause and Unpause when pausing job does not request schedule on job"
+      ],
+      "failed_brine_scenarios": [
+        "Job domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 8)"
+      ]
+    },
+    {
+      "id": "paused-by-value",
+      "mutation_sha256": "90f3cd30426defc65acae5ef58f25957c9949140e659d0468c1fdbcc87b21c85",
+      "failed_source_tests": [
+        "Job Pause and Unpause when pausing job was paused by should be set",
+        "Job Pause and Unpause when pausing with a user was paused by should be set"
+      ],
+      "failed_brine_scenarios": [
+        "Job domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 11)",
+        "Job domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 9)"
+      ]
+    },
+    {
+      "id": "paused-at-value",
+      "mutation_sha256": "43ca3be8c140fe3e182a320aa0befd25e7acaf5f0665b2536f1273730537f01c",
+      "failed_source_tests": [
+        "Job Pause and Unpause when pausing job was paused at should be set"
+      ],
+      "failed_brine_scenarios": [
+        "Job domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 10)"
+      ]
+    },
+    {
+      "id": "unpause-preserves-request-time-when-already-unpaused",
+      "mutation_sha256": "2045ad13f426104c313db00c469f8ed197e003d034fbcadec3066817134e1fdd",
+      "failed_source_tests": [
+        "Job Pause and Unpause when unpausing job requests schedule on job"
+      ],
+      "failed_brine_scenarios": [
+        "Job domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 13)"
+      ]
+    },
+    {
+      "id": "first-logged-monotonic",
+      "mutation_sha256": "aa7004d20b3c40b5bdb09befc1bc2f67417c0811307be2cf4195a3927cb20c5d",
+      "failed_source_tests": [
+        "Job UpdateFirstLoggedBuildID updates FirstLoggedBuildID on a job"
+      ],
+      "failed_brine_scenarios": [
+        "Job domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 14)"
+      ]
+    },
+    {
+      "id": "latest-completed-build-id",
+      "mutation_sha256": "1c96a6098c3c1c8aae2f51af38ba62b19baa2142e342cb8e4417f28225f4dcaa",
+      "failed_source_tests": [
+        "Job LatestCompletedBuildId fetches latest completed build id on a job"
+      ],
+      "failed_brine_scenarios": [
+        "Job domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 15)"
+      ]
+    },
+    {
+      "id": "build-latest-order",
+      "mutation_sha256": "cd7e6e510f00fbea56d9c6f2a66de76327fdffe43e8b5ab36d0ff4e036e2494b",
+      "failed_source_tests": [
+        "Job Build when a build exists finds the latest build"
+      ],
+      "failed_brine_scenarios": [
+        "Job domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 16)"
+      ]
+    },
+    {
+      "id": "build-exact-name",
+      "mutation_sha256": "820be57aa8c52aeeff5e70f4b09c399683de78dd16c8c9746613bbed4e933004",
+      "failed_source_tests": [
+        "Job Build when a build exists finds the build"
+      ],
+      "failed_brine_scenarios": [
+        "Job domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 17)"
+      ]
+    },
+    {
+      "id": "build-missing-result",
+      "mutation_sha256": "7c061a5ac110affe3227e820b51919f8108772997e6b0330cb72f50bb5799a11",
+      "failed_source_tests": [
+        "Job Build when the build does not exist does not error",
+        "Job Build when the build does not exist does not error finding the latest"
+      ],
+      "failed_brine_scenarios": [
+        "Job domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 18)",
+        "Job domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 19)"
+      ]
+    },
+    {
+      "id": "create-build-requests-schedule",
+      "mutation_sha256": "037cace15eacef26aa934a45faf5fd26d670d0f905fc29e0e0a0dca99cd994cf",
+      "failed_source_tests": [
+        "Job Build creating a build requests schedule on the job"
+      ],
+      "failed_brine_scenarios": [
+        "Job domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 20)"
+      ]
+    },
+    {
+      "id": "builds-empty-pagination",
+      "mutation_sha256": "96a7006b345e02a805866902ddb2e1c865ccef8a36e93388b7ec3fa23deb3e59",
+      "failed_source_tests": [
+        "Job Builds when there are no builds to be found returns the builds, with previous/next pages"
+      ],
+      "failed_brine_scenarios": [
+        "Job domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 21)"
+      ]
+    },
+    {
+      "id": "builds-first-page-order",
+      "mutation_sha256": "aac9f4926cd42fbb4383048e90a7b9937dbfe1f80507d368199adcd629b8a6a3",
+      "failed_source_tests": [
+        "Job Builds with no from/to returns the first page, with the given limit, and a next page"
+      ],
+      "failed_brine_scenarios": [
+        "Job domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 22)"
+      ]
+    },
+    {
+      "id": "builds-to-boundary-inclusive",
+      "mutation_sha256": "ed7754f1ce3eeee97c71c0dd0564f9b4f84f55f021230db9e47c2a3e30f2720c",
+      "failed_source_tests": [
+        "Job Builds with a to that places it at the end of the builds returns the builds, with previous/next pages",
+        "Job Builds with a to that places it in the middle of the builds returns the builds, with previous/next pages"
+      ],
+      "failed_brine_scenarios": [
+        "Job domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 23)",
+        "Job domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 24)"
+      ]
+    },
+    {
+      "id": "builds-from-boundary-inclusive",
+      "mutation_sha256": "75200bd5c2d5677169157b032d886f383bce927ddf7d16a0bb65075c31ff5865",
+      "failed_source_tests": [
+        "Job Builds with a from that places it at the beginning of the builds returns the builds, with previous/next pages",
+        "Job Builds with a from that places it in the middle of the builds returns the builds, with previous/next pages"
+      ],
+      "failed_brine_scenarios": [
+        "Job domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 25)",
+        "Job domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 26)"
+      ]
+    },
+    {
+      "id": "time-page-zero-limit",
+      "mutation_sha256": "5ceeb0d001e9e48c6f20cfe8fa390dfb12ce33a6e62dc29daf0ca36fa04cf2cd",
+      "failed_source_tests": [
+        "Job BuildsWithTime when not providing boundaries without a limit specified returns no builds"
+      ],
+      "failed_brine_scenarios": [
+        "Job domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 27)"
+      ]
+    },
+    {
+      "id": "time-page-limit",
+      "mutation_sha256": "d40de575699787c1ab360f8b1889213354f4d1d6801f4e7e7eb7e669a089bd9c",
+      "failed_source_tests": [
+        "Job BuildsWithTime when not providing boundaries when a limit specified returns a subset of the builds"
+      ],
+      "failed_brine_scenarios": [
+        "Job domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 27)",
+        "Job domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 28)"
+      ]
+    },
+    {
+      "id": "time-boundaries-inclusive",
+      "mutation_sha256": "e7aeb061278e7a5a114c2d0e3b2657dd08ecfa54522423764edd39fb2fc3942e",
+      "failed_source_tests": [
+        "Job BuildsWithTime when providing boundaries from and to returns only elements in the range",
+        "Job BuildsWithTime when providing boundaries only from returns only those after from",
+        "Job BuildsWithTime when providing boundaries only to returns only those before to"
+      ],
+      "failed_brine_scenarios": [
+        "Job domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 29)",
+        "Job domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 30)",
+        "Job domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 31)"
+      ]
+    },
+    {
+      "id": "ensure-pending-updates-next-build",
+      "mutation_sha256": "c44889b4c1ec87e91ae11696ba66b1b86932421978bd0a111392f15ab99fd1dd",
+      "failed_source_tests": [
+        "Job EnsurePendingBuildExists when only a started build exists creates a build and updates the next build for the job"
+      ],
+      "failed_brine_scenarios": [
+        "Job domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 32)",
+        "Job domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 33)"
+      ]
+    },
+    {
+      "id": "ensure-pending-idempotent",
+      "mutation_sha256": "e3765fb64d5b859f6d8221f92fe44451489f48dd64956ff2d54be7db7fbda7de",
+      "failed_source_tests": [
+        "Job EnsurePendingBuildExists when only a started build exists doesn't create another build the second time it's called"
+      ],
+      "failed_brine_scenarios": [
+        "Job domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 33)"
+      ]
+    },
+    {
+      "id": "new-inputs-state",
+      "mutation_sha256": "7ce1a73e139918279aeba0caebeae5ba004cf15764a4359cfea499f6cfb03676",
+      "failed_source_tests": [
+        "Job New Inputs can be set to true then back to false",
+        "Job New Inputs starts out as false"
+      ],
+      "failed_brine_scenarios": [
+        "Job domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 34)",
+        "Job domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 35)"
+      ]
+    }
+  ]
+}
