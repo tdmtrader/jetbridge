@@ -1,0 +1,83 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/team-api-strict.json",
+  "git_head": "b72b49c44c0c66ea2023a6e1c36df51824c8cba4",
+  "completed_at": "2026-09-01T10:54:44Z",
+  "source_tests": 7,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "mutation_cases": [
+    {
+      "id": "list-teams-filters-by-production-authorization",
+      "mutation_sha256": "62e96c0db7935748a9643e9fdf827f9ca94a23e4d8adc529dcbdccb9c016cdf9",
+      "failed_source_tests": [
+        "Teams API GET /api/v1/teams returns only the teams the user is authorized for"
+      ],
+      "failed_brine_scenarios": [
+        "ListTeams returns only exact authorized persisted teams"
+      ]
+    },
+    {
+      "id": "get-team-preserves-provider-auth",
+      "mutation_sha256": "ef9527eafbc79b249e47644277677fc3e28c57dde4526158da52ba3875b18d93",
+      "failed_source_tests": [
+        "Teams API GET /api/v1/teams/:team_name returns the persisted team"
+      ],
+      "failed_brine_scenarios": [
+        "GetTeam returns the exact persisted representation"
+      ]
+    },
+    {
+      "id": "ordinary-team-create-persists-requested-auth",
+      "mutation_sha256": "e3b8572acb2ebc0cd5a9c4e065a822b636a17582b1b40da2a2345f6bb0f151dc",
+      "failed_source_tests": [
+        "Teams API PUT /api/v1/teams/:team_name when the requester is an admin and the team is not found persists team mutations through PostgreSQL"
+      ],
+      "failed_brine_scenarios": [
+        "SetTeam creates and returns exact persisted state"
+      ]
+    },
+    {
+      "id": "team-create-returns-compatibility-warning",
+      "mutation_sha256": "20c77234c4d9b64705b99339a50f5bd347085e1b17adac1525603aa44fd015d0",
+      "failed_source_tests": [
+        "Teams API PUT /api/v1/teams/:team_name when the requester is an admin and the team is not found when the team name needs a compatibility warning returns the warning and persisted team"
+      ],
+      "failed_brine_scenarios": [
+        "SetTeam returns the exact compatibility warning and persisted state"
+      ]
+    },
+    {
+      "id": "team-update-persists-provider-auth",
+      "mutation_sha256": "0607210206cd17db79f3cee831cf986b429a3843db29b22527dfc98b23be9100",
+      "failed_source_tests": [
+        "Teams API PUT /api/v1/teams/:team_name when an authorized non-admin updates an existing team updates persisted provider auth"
+      ],
+      "failed_brine_scenarios": [
+        "DestroyTeam removes the persisted team",
+        "DestroyTeam returns not found for a missing team",
+        "SetTeam creates and returns exact persisted state",
+        "SetTeam returns the exact compatibility warning and persisted state",
+        "SetTeam updates persisted provider auth"
+      ]
+    },
+    {
+      "id": "team-delete-removes-persisted-row",
+      "mutation_sha256": "af0b60f5240cca92882543ac7baf58fb9d07fdbc7899c4d23c16ad099371f86b",
+      "failed_source_tests": [
+        "Teams API DELETE /api/v1/teams/:team_name when the team exists deletes the persisted team"
+      ],
+      "failed_brine_scenarios": [
+        "DestroyTeam removes the persisted team"
+      ]
+    },
+    {
+      "id": "missing-team-delete-is-not-found",
+      "mutation_sha256": "53f604fca77e9198c7097d3af11e1cdff032e846252317c050d873784951a1e1",
+      "failed_source_tests": [
+        "Teams API DELETE /api/v1/teams/:team_name when the team does not exist returns 404 Not Found"
+      ],
+      "failed_brine_scenarios": [
+        "DestroyTeam returns not found for a missing team"
+      ]
+    }
+  ]
+}

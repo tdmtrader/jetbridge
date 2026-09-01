@@ -263,7 +263,8 @@ func observeStrictTeamAPI(database JetbridgeDB, profile string) (string, error) 
 		if profile == "warning-persisted" {
 			name = "_warning"
 		}
-		payload, err := json.Marshal(atc.Team{Auth: strictTeamAuth()})
+		requested := atc.Team{Name: name, Auth: strictTeamAuth()}
+		payload, err := json.Marshal(atc.Team{Auth: requested.Auth})
 		if err != nil {
 			return "", err
 		}
@@ -279,7 +280,10 @@ func observeStrictTeamAPI(database JetbridgeDB, profile string) (string, error) 
 		if err != nil || !found {
 			return "", fmt.Errorf("strict team API created %q found=%t err=%v", name, found, err)
 		}
-		want := atc.Team{ID: persisted.ID(), Name: persisted.Name(), Auth: persisted.Auth()}
+		want := atc.Team{ID: persisted.ID(), Name: requested.Name, Auth: requested.Auth}
+		if persisted.Name() != requested.Name || !reflect.DeepEqual(persisted.Auth(), requested.Auth) {
+			return "", fmt.Errorf("strict team API persisted name=%q auth=%v, want name=%q auth=%v", persisted.Name(), persisted.Auth(), requested.Name, requested.Auth)
+		}
 		if !reflect.DeepEqual(response.Team, want) {
 			return "", fmt.Errorf("strict team API response team %#v, want %#v", response.Team, want)
 		}
