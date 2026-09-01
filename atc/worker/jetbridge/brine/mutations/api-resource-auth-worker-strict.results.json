@@ -1,7 +1,7 @@
 {
   "manifest": "atc/worker/jetbridge/brine/mutations/api-resource-auth-worker-strict.json",
-  "git_head": "7bd9c0816fe6ba3779a949fd3f4c88d216941f47",
-  "completed_at": "2026-09-01T07:41:15Z",
+  "git_head": "aa118c85768f8eb61933f1640a02edef60f5675c",
+  "completed_at": "2026-09-01T09:06:49Z",
   "source_tests": 14,
   "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
   "mutation_cases": [

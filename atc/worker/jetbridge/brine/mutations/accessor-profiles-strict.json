@@ -172,15 +172,17 @@
       "failure_contains": "accessor observation"
     },
     {
-      "id": "team-roles-user-id",
+      "id": "team-roles-user-id-grants-role",
       "source_file": "atc/api/accessor/accessor.go",
-      "old": "\t\tif roleOnTeam(userID, userName, groups, roleAuth) {",
-      "new": "\t\tif roleOnTeam(\"\", userName, groups, roleAuth) {",
+      "old": "\t\t\tif strings.EqualFold(user, userID) {\n\t\t\t\treturn true\n\t\t\t}",
+      "new": "\t\t\tif strings.EqualFold(user, userID) {\n\t\t\t\treturn false\n\t\t\t}",
       "tests": [
-        "Accessor TeamRoles when the token has claims when the user is granted a role from their user id returns result with teams"
+        "Accessor TeamRoles when the token has claims when the user is granted a role from their user id returns result with teams",
+        "Accessor TeamRoles when the token has claims when the user is granted the same role multiple times only adds the role once"
       ],
       "scenarios": [
-        "The accessor exposes the profile API consumers rely on — <profile> (row 33)"
+        "The accessor exposes the profile API consumers rely on — <profile> (row 33)",
+        "The accessor exposes the profile API consumers rely on — <profile> (row 38)"
       ],
       "failure_contains": "accessor observation"
     },
@@ -233,19 +235,6 @@
       ],
       "scenarios": [
         "The accessor exposes the profile API consumers rely on — <profile> (row 37)"
-      ],
-      "failure_contains": "accessor observation"
-    },
-    {
-      "id": "team-roles-deduplicated",
-      "source_file": "atc/api/accessor/accessor.go",
-      "old": "\t\t\troles = append(roles, role)",
-      "new": "\t\t\troles = append(roles, role)\n\t\t\tif len(roleAuth[\"users\"]) > 0 && len(roleAuth[\"groups\"]) > 0 {\n\t\t\t\troles = append(roles, role)\n\t\t\t}",
-      "tests": [
-        "Accessor TeamRoles when the token has claims when the user is granted the same role multiple times only adds the role once"
-      ],
-      "scenarios": [
-        "The accessor exposes the profile API consumers rely on — <profile> (row 38)"
       ],
       "failure_contains": "accessor observation"
     }

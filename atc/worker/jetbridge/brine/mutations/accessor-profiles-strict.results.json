@@ -1,7 +1,7 @@
 {
   "manifest": "atc/worker/jetbridge/brine/mutations/accessor-profiles-strict.json",
-  "git_head": "f3099c93985872311e697330d0e4ae086dbc2d17",
-  "completed_at": "2026-09-01T07:27:19Z",
+  "git_head": "aa118c85768f8eb61933f1640a02edef60f5675c",
+  "completed_at": "2026-09-01T09:29:46Z",
   "source_tests": 38,
   "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
   "mutation_cases": [
@@ -163,10 +163,11 @@
       ]
     },
     {
-      "id": "team-roles-user-id",
-      "mutation_sha256": "4ee39e96e74db9e512e58e6b9b463d4789c7c0210bdb6637c5731337a2b91d15",
+      "id": "team-roles-user-id-grants-role",
+      "mutation_sha256": "088807c47aa79db155254432a6facd76f5905d872a14ef5c744dc59a5c10463a",
       "failed_source_tests": [
-        "Accessor TeamRoles when the token has claims when the user is granted a role from their user id returns result with teams"
+        "Accessor TeamRoles when the token has claims when the user is granted a role from their user id returns result with teams",
+        "Accessor TeamRoles when the token has claims when the user is granted the same role multiple times only adds the role once"
       ],
       "failed_brine_scenarios": [
         "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 11)",
@@ -177,6 +178,7 @@
         "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 33)",
         "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 35)",
         "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 37)",
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 38)",
         "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 8)"
       ]
     },
@@ -220,16 +222,6 @@
       ],
       "failed_brine_scenarios": [
         "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 37)"
-      ]
-    },
-    {
-      "id": "team-roles-deduplicated",
-      "mutation_sha256": "c29d20c5be8df1a5d0f41cdf28c376937e6b60271c13e2f03233a1f162c63903",
-      "failed_source_tests": [
-        "Accessor TeamRoles when the token has claims when the user is granted the same role multiple times only adds the role once"
-      ],
-      "failed_brine_scenarios": [
-        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 38)"
       ]
     }
   ]

@@ -1,7 +1,7 @@
 {
   "manifest": "atc/worker/jetbridge/brine/mutations/api-auth-admin-strict.json",
-  "git_head": "f3099c93985872311e697330d0e4ae086dbc2d17",
-  "completed_at": "2026-09-01T07:27:26Z",
+  "git_head": "aa118c85768f8eb61933f1640a02edef60f5675c",
+  "completed_at": "2026-09-01T08:57:35Z",
   "source_tests": 4,
   "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
   "mutation_cases": [

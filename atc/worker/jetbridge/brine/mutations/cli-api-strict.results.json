@@ -1,7 +1,7 @@
 {
   "manifest": "atc/worker/jetbridge/brine/mutations/cli-api-strict.json",
-  "git_head": "c2a4f67f27c8675c5fca92eed2eb15eb97406ceb",
-  "completed_at": "2026-09-01T08:00:01Z",
+  "git_head": "aa118c85768f8eb61933f1640a02edef60f5675c",
+  "completed_at": "2026-09-01T09:16:04Z",
   "source_tests": 12,
   "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
   "mutation_cases": [
