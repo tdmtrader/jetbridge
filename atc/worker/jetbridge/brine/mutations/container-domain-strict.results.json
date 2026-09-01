@@ -1,0 +1,203 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/container-domain-strict.json",
+  "git_head": "f5a657983ac1a50a38348f901dcd893c59fd160d",
+  "completed_at": "2026-09-01T06:57:37Z",
+  "source_tests": 17,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "mutation_cases": [
+    {
+      "id": "creating-container-preserves-metadata",
+      "mutation_sha256": "a0337743f210e187ddba2e58293f84a75c59936b435a126e14ad0efeea656016",
+      "failed_source_tests": [
+        "Container Metadata returns the container metadata"
+      ],
+      "failed_brine_scenarios": [
+        "Container profile \u003cprofile\u003e produces \u003cresult\u003e (row 1)"
+      ]
+    },
+    {
+      "id": "created-transition-returns-container",
+      "mutation_sha256": "74782c93db5dc98e31ce418b9bc9dbe581e46153c24dbb1445cef6d77a82d83a",
+      "failed_source_tests": [
+        "Container Created when the container is already created returns a created container and no error"
+      ],
+      "failed_brine_scenarios": [
+        "Container profile \u003cprofile\u003e produces \u003cresult\u003e (row 11)",
+        "Container profile \u003cprofile\u003e produces \u003cresult\u003e (row 12)",
+        "Container profile \u003cprofile\u003e produces \u003cresult\u003e (row 13)",
+        "Container profile \u003cprofile\u003e produces \u003cresult\u003e (row 14)",
+        "Container profile \u003cprofile\u003e produces \u003cresult\u003e (row 15)",
+        "Container profile \u003cprofile\u003e produces \u003cresult\u003e (row 2)",
+        "Container profile \u003cprofile\u003e produces \u003cresult\u003e (row 3)",
+        "Container profile \u003cprofile\u003e produces \u003cresult\u003e (row 4)",
+        "Container profile \u003cprofile\u003e produces \u003cresult\u003e (row 5)",
+        "Container profile \u003cprofile\u003e produces \u003cresult\u003e (row 6)"
+      ]
+    },
+    {
+      "id": "created-container-finds-attached-volumes",
+      "mutation_sha256": "060adf3e2b9541d45f8e1990855eac7d9306d9468d19e006862252a23d9bccca",
+      "failed_source_tests": [
+        "Container Created when the container is already created Volumes returns created container volumes"
+      ],
+      "failed_brine_scenarios": [
+        "Container profile \u003cprofile\u003e produces \u003cresult\u003e (row 3)"
+      ]
+    },
+    {
+      "id": "created-container-preserves-metadata",
+      "mutation_sha256": "217ba1691239dc2bf4f79273d6734144bdd107397919cfc6e77c6702fc403e57",
+      "failed_source_tests": [
+        "Container Created when the container is already created Metadata returns the container metadata"
+      ],
+      "failed_brine_scenarios": [
+        "Container profile \u003cprofile\u003e produces \u003cresult\u003e (row 4)"
+      ]
+    },
+    {
+      "id": "destroying-transition-returns-container",
+      "mutation_sha256": "861a1552450ede2bca9f75798c76adc55428bb885b831057773c4e13ecf25343",
+      "failed_source_tests": [
+        "Container Destroying when the container is already in destroying state returns a destroying container and no error"
+      ],
+      "failed_brine_scenarios": [
+        "Container profile \u003cprofile\u003e produces \u003cresult\u003e (row 12)",
+        "Container profile \u003cprofile\u003e produces \u003cresult\u003e (row 13)",
+        "Container profile \u003cprofile\u003e produces \u003cresult\u003e (row 14)",
+        "Container profile \u003cprofile\u003e produces \u003cresult\u003e (row 15)",
+        "Container profile \u003cprofile\u003e produces \u003cresult\u003e (row 5)",
+        "Container profile \u003cprofile\u003e produces \u003cresult\u003e (row 6)"
+      ]
+    },
+    {
+      "id": "destroying-container-preserves-metadata",
+      "mutation_sha256": "9e92ccdf482abb1f852bae62498592070b81cd9d4aeeb94c9cdcbff911301f36",
+      "failed_source_tests": [
+        "Container Destroying when the container is already in destroying state Metadata returns the container metadata"
+      ],
+      "failed_brine_scenarios": [
+        "Container profile \u003cprofile\u003e produces \u003cresult\u003e (row 6)"
+      ]
+    },
+    {
+      "id": "failed-transition-persists-failed-state",
+      "mutation_sha256": "4ba07897de661a850f90e4f167b685ef54e6e95cc4ea20502c774b2a00da8b26",
+      "failed_source_tests": [
+        "Container Failed db conn is good when the container is in the creating state makes the state failed"
+      ],
+      "failed_brine_scenarios": [
+        "Container profile \u003cprofile\u003e produces \u003cresult\u003e (row 16)",
+        "Container profile \u003cprofile\u003e produces \u003cresult\u003e (row 17)",
+        "Container profile \u003cprofile\u003e produces \u003cresult\u003e (row 7)",
+        "Container profile \u003cprofile\u003e produces \u003cresult\u003e (row 9)"
+      ]
+    },
+    {
+      "id": "failed-transition-returns-no-error",
+      "mutation_sha256": "5a5c4c74150027a1e65f6e2ae392850e4398abc151483b705c25fb0ceac92950",
+      "failed_source_tests": [
+        "Container Failed db conn is good when the container is in the creating state does not return an error"
+      ],
+      "failed_brine_scenarios": [
+        "Container profile \u003cprofile\u003e produces \u003cresult\u003e (row 10)",
+        "Container profile \u003cprofile\u003e produces \u003cresult\u003e (row 16)",
+        "Container profile \u003cprofile\u003e produces \u003cresult\u003e (row 17)",
+        "Container profile \u003cprofile\u003e produces \u003cresult\u003e (row 8)",
+        "Container profile \u003cprofile\u003e produces \u003cresult\u003e (row 9)"
+      ]
+    },
+    {
+      "id": "failed-transition-is-idempotent-state",
+      "mutation_sha256": "4ba07897de661a850f90e4f167b685ef54e6e95cc4ea20502c774b2a00da8b26",
+      "failed_source_tests": [
+        "Container Failed db conn is good when the container is already in failed state keeps the state failed"
+      ],
+      "failed_brine_scenarios": [
+        "Container profile \u003cprofile\u003e produces \u003cresult\u003e (row 16)",
+        "Container profile \u003cprofile\u003e produces \u003cresult\u003e (row 17)",
+        "Container profile \u003cprofile\u003e produces \u003cresult\u003e (row 7)",
+        "Container profile \u003cprofile\u003e produces \u003cresult\u003e (row 9)"
+      ]
+    },
+    {
+      "id": "failed-transition-is-idempotent-without-error",
+      "mutation_sha256": "5a5c4c74150027a1e65f6e2ae392850e4398abc151483b705c25fb0ceac92950",
+      "failed_source_tests": [
+        "Container Failed db conn is good when the container is already in failed state does not return an error"
+      ],
+      "failed_brine_scenarios": [
+        "Container profile \u003cprofile\u003e produces \u003cresult\u003e (row 10)",
+        "Container profile \u003cprofile\u003e produces \u003cresult\u003e (row 16)",
+        "Container profile \u003cprofile\u003e produces \u003cresult\u003e (row 17)",
+        "Container profile \u003cprofile\u003e produces \u003cresult\u003e (row 8)",
+        "Container profile \u003cprofile\u003e produces \u003cresult\u003e (row 9)"
+      ]
+    },
+    {
+      "id": "failed-transition-refuses-created-container",
+      "mutation_sha256": "773595b342ef0ca5ad9a89c1274dc5be883acff71bc9cbc4f1226c36ed0aaa0e",
+      "failed_source_tests": [
+        "Container Failed db conn is good when the container is actually in created state does not mark it as failed"
+      ],
+      "failed_brine_scenarios": [
+        "Container profile \u003cprofile\u003e produces \u003cresult\u003e (row 10)",
+        "Container profile \u003cprofile\u003e produces \u003cresult\u003e (row 11)",
+        "Container profile \u003cprofile\u003e produces \u003cresult\u003e (row 9)"
+      ]
+    },
+    {
+      "id": "failed-transition-refuses-destroying-container",
+      "mutation_sha256": "5e477d3d79eb04ac995baf15a2ba79cf723f8f24f65dadd6d77b02030f9f0393",
+      "failed_source_tests": [
+        "Container Failed db conn is good when the container is actually in destroying state does not mark it as failed",
+        "Container Failed db conn is good when the container is actually in destroying state returns an error"
+      ],
+      "failed_brine_scenarios": [
+        "Container profile \u003cprofile\u003e produces \u003cresult\u003e (row 10)",
+        "Container profile \u003cprofile\u003e produces \u003cresult\u003e (row 12)",
+        "Container profile \u003cprofile\u003e produces \u003cresult\u003e (row 13)",
+        "Container profile \u003cprofile\u003e produces \u003cresult\u003e (row 9)"
+      ]
+    },
+    {
+      "id": "destroying-container-destroy-reports-success",
+      "mutation_sha256": "35792f5f8847e36c4262697c63dcf854ddb0262e91a1de04ceb2869d8f05415c",
+      "failed_source_tests": [
+        "Container Destroy called on a destroying container successfully removes the row from the db"
+      ],
+      "failed_brine_scenarios": [
+        "Container profile \u003cprofile\u003e produces \u003cresult\u003e (row 14)"
+      ]
+    },
+    {
+      "id": "destroying-container-destroy-reports-disappearance",
+      "mutation_sha256": "3e70fca4321a79a76a5cd1f5eb198bcf64f588fe31ccd1522a9bb4af98d269dc",
+      "failed_source_tests": [
+        "Container Destroy called on a destroying container errors when the container dissapears from the db returns an error"
+      ],
+      "failed_brine_scenarios": [
+        "Container profile \u003cprofile\u003e produces \u003cresult\u003e (row 15)"
+      ]
+    },
+    {
+      "id": "failed-container-destroy-reports-success",
+      "mutation_sha256": "c8f419508f02d2ec7d5ee51d320c20d6590067a97593bae628cb0f5ab09f63d1",
+      "failed_source_tests": [
+        "Container Destroy called on a failed container successfully removes the row from the db"
+      ],
+      "failed_brine_scenarios": [
+        "Container profile \u003cprofile\u003e produces \u003cresult\u003e (row 16)"
+      ]
+    },
+    {
+      "id": "failed-container-destroy-reports-disappearance",
+      "mutation_sha256": "300773e2674494ca84d74f852ac318bcd0f9dd4df3d6006b4beebc640d10d03d",
+      "failed_source_tests": [
+        "Container Destroy called on a failed container errors when the container dissapears from the db returns an error"
+      ],
+      "failed_brine_scenarios": [
+        "Container profile \u003cprofile\u003e produces \u003cresult\u003e (row 17)"
+      ]
+    }
+  ]
+}

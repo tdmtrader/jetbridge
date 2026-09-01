@@ -1,0 +1,162 @@
+{
+  "name": "container-domain-strict",
+  "test_package": "./atc/db",
+  "source_test_file": "atc/db/container_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/container-domain.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/container_domain.go",
+    "atc/worker/jetbridge/brine/steps/container_domain_strict.go"
+  ],
+  "cases": [
+    {
+      "id": "creating-container-preserves-metadata",
+      "source_file": "atc/db/container.go",
+      "old": "func (container *creatingContainer) Metadata() ContainerMetadata { return container.metadata }",
+      "new": "func (container *creatingContainer) Metadata() ContainerMetadata { return ContainerMetadata{} }",
+      "tests": ["Container Metadata returns the container metadata"],
+      "scenarios": ["Container profile <profile> produces <result> (row 1)"],
+      "failure_contains": "container domain result"
+    },
+    {
+      "id": "created-transition-returns-container",
+      "source_file": "atc/db/container.go",
+      "old": "\treturn newCreatedContainer(\n\t\tcontainer.id,\n\t\tcontainer.handle,\n\t\tcontainer.workerName,\n\t\tcontainer.metadata,\n\t\ttime.Time{},\n\t\tcontainer.conn,\n\t), nil\n}\n\nfunc (container *creatingContainer) Failed",
+      "new": "\treturn nil, nil\n}\n\nfunc (container *creatingContainer) Failed",
+      "tests": ["Container Created when the container is already created returns a created container and no error"],
+      "scenarios": ["Container profile <profile> produces <result> (row 2)"],
+      "failure_contains": "container domain result"
+    },
+    {
+      "id": "created-container-finds-attached-volumes",
+      "source_file": "atc/db/volume_repository.go",
+      "old": "\t\t\t\"v.state\":        VolumeStateCreated,\n\t\t\t\"v.container_id\": container.ID(),",
+      "new": "\t\t\t\"v.state\":        VolumeStateCreated,\n\t\t\t\"v.container_id\": container.ID() + 1,",
+      "tests": ["Container Created when the container is already created Volumes returns created container volumes"],
+      "scenarios": ["Container profile <profile> produces <result> (row 3)"],
+      "failure_contains": "container domain result"
+    },
+    {
+      "id": "created-container-preserves-metadata",
+      "source_file": "atc/db/container.go",
+      "old": "func (container *createdContainer) Metadata() ContainerMetadata { return container.metadata }",
+      "new": "func (container *createdContainer) Metadata() ContainerMetadata { return ContainerMetadata{} }",
+      "tests": ["Container Created when the container is already created Metadata returns the container metadata"],
+      "scenarios": ["Container profile <profile> produces <result> (row 4)"],
+      "failure_contains": "container domain result"
+    },
+    {
+      "id": "destroying-transition-returns-container",
+      "source_file": "atc/db/container.go",
+      "old": "\treturn newDestroyingContainer(\n\t\tcontainer.id,\n\t\tcontainer.handle,\n\t\tcontainer.workerName,\n\t\tcontainer.metadata,\n\t\tcontainer.conn,\n\t), nil\n}\n\nfunc (container *createdContainer) UpdateLastHijack",
+      "new": "\treturn nil, nil\n}\n\nfunc (container *createdContainer) UpdateLastHijack",
+      "tests": ["Container Destroying when the container is already in destroying state returns a destroying container and no error"],
+      "scenarios": ["Container profile <profile> produces <result> (row 5)"],
+      "failure_contains": "container domain result"
+    },
+    {
+      "id": "destroying-container-preserves-metadata",
+      "source_file": "atc/db/container.go",
+      "old": "func (container *destroyingContainer) Metadata() ContainerMetadata { return container.metadata }",
+      "new": "func (container *destroyingContainer) Metadata() ContainerMetadata { return ContainerMetadata{} }",
+      "tests": ["Container Destroying when the container is already in destroying state Metadata returns the container metadata"],
+      "scenarios": ["Container profile <profile> produces <result> (row 6)"],
+      "failure_contains": "container domain result"
+    },
+    {
+      "id": "failed-transition-persists-failed-state",
+      "source_file": "atc/db/container.go",
+      "old": "func (container *creatingContainer) Failed() (FailedContainer, error) {\n\trows, err := psql.Update(\"containers\").\n\t\tSet(\"state\", atc.ContainerStateFailed).",
+      "new": "func (container *creatingContainer) Failed() (FailedContainer, error) {\n\trows, err := psql.Update(\"containers\").\n\t\tSet(\"state\", atc.ContainerStateCreating).",
+      "tests": ["Container Failed db conn is good when the container is in the creating state makes the state failed"],
+      "scenarios": ["Container profile <profile> produces <result> (row 7)"],
+      "failure_contains": "container domain result"
+    },
+    {
+      "id": "failed-transition-returns-no-error",
+      "source_file": "atc/db/container.go",
+      "old": "\treturn newFailedContainer(\n\t\tcontainer.id,\n\t\tcontainer.handle,\n\t\tcontainer.workerName,\n\t\tcontainer.metadata,\n\t\tcontainer.conn,\n\t), nil\n}\n\ntype CreatedContainer interface",
+      "new": "\treturn newFailedContainer(\n\t\tcontainer.id,\n\t\tcontainer.handle,\n\t\tcontainer.workerName,\n\t\tcontainer.metadata,\n\t\tcontainer.conn,\n\t), ErrContainerDisappeared\n}\n\ntype CreatedContainer interface",
+      "tests": ["Container Failed db conn is good when the container is in the creating state does not return an error"],
+      "scenarios": ["Container profile <profile> produces <result> (row 8)"],
+      "failure_contains": "container domain result"
+    },
+    {
+      "id": "failed-transition-is-idempotent-state",
+      "source_file": "atc/db/container.go",
+      "old": "func (container *creatingContainer) Failed() (FailedContainer, error) {\n\trows, err := psql.Update(\"containers\").\n\t\tSet(\"state\", atc.ContainerStateFailed).",
+      "new": "func (container *creatingContainer) Failed() (FailedContainer, error) {\n\trows, err := psql.Update(\"containers\").\n\t\tSet(\"state\", atc.ContainerStateCreating).",
+      "tests": ["Container Failed db conn is good when the container is already in failed state keeps the state failed"],
+      "scenarios": ["Container profile <profile> produces <result> (row 9)"],
+      "failure_contains": "container domain result"
+    },
+    {
+      "id": "failed-transition-is-idempotent-without-error",
+      "source_file": "atc/db/container.go",
+      "old": "\treturn newFailedContainer(\n\t\tcontainer.id,\n\t\tcontainer.handle,\n\t\tcontainer.workerName,\n\t\tcontainer.metadata,\n\t\tcontainer.conn,\n\t), nil\n}\n\ntype CreatedContainer interface",
+      "new": "\treturn newFailedContainer(\n\t\tcontainer.id,\n\t\tcontainer.handle,\n\t\tcontainer.workerName,\n\t\tcontainer.metadata,\n\t\tcontainer.conn,\n\t), ErrContainerDisappeared\n}\n\ntype CreatedContainer interface",
+      "tests": ["Container Failed db conn is good when the container is already in failed state does not return an error"],
+      "scenarios": ["Container profile <profile> produces <result> (row 10)"],
+      "failure_contains": "container disappeared from db"
+    },
+    {
+      "id": "failed-transition-refuses-created-container",
+      "source_file": "atc/db/container.go",
+      "old": "\t\t\tsq.Or{\n\t\t\t\tsq.Eq{\"state\": string(atc.ContainerStateCreating)},\n\t\t\t\tsq.Eq{\"state\": string(atc.ContainerStateFailed)},\n\t\t\t},\n\t\t}).\n\t\tRunWith(container.conn).\n\t\tExec()",
+      "new": "\t\t\tsq.Or{\n\t\t\t\tsq.Eq{\"state\": string(atc.ContainerStateCreating)},\n\t\t\t\tsq.Eq{\"state\": string(atc.ContainerStateCreated)},\n\t\t\t},\n\t\t}).\n\t\tRunWith(container.conn).\n\t\tExec()",
+      "tests": ["Container Failed db conn is good when the container is actually in created state does not mark it as failed"],
+      "scenarios": ["Container profile <profile> produces <result> (row 11)"],
+      "failure_contains": "container domain result"
+    },
+    {
+      "id": "failed-transition-refuses-destroying-container",
+      "source_file": "atc/db/container.go",
+      "old": "\t\t\tsq.Or{\n\t\t\t\tsq.Eq{\"state\": string(atc.ContainerStateCreating)},\n\t\t\t\tsq.Eq{\"state\": string(atc.ContainerStateFailed)},\n\t\t\t},\n\t\t}).\n\t\tRunWith(container.conn).\n\t\tExec()",
+      "new": "\t\t\tsq.Or{\n\t\t\t\tsq.Eq{\"state\": string(atc.ContainerStateCreating)},\n\t\t\t\tsq.Eq{\"state\": string(atc.ContainerStateDestroying)},\n\t\t\t},\n\t\t}).\n\t\tRunWith(container.conn).\n\t\tExec()",
+      "tests": [
+        "Container Failed db conn is good when the container is actually in destroying state does not mark it as failed",
+        "Container Failed db conn is good when the container is actually in destroying state returns an error"
+      ],
+      "scenarios": [
+        "Container profile <profile> produces <result> (row 12)",
+        "Container profile <profile> produces <result> (row 13)"
+      ],
+      "failure_contains": "container domain result"
+    },
+    {
+      "id": "destroying-container-destroy-reports-success",
+      "source_file": "atc/db/container.go",
+      "old": "\treturn true, nil\n}\n\ntype FailedContainer interface",
+      "new": "\treturn false, nil\n}\n\ntype FailedContainer interface",
+      "tests": ["Container Destroy called on a destroying container successfully removes the row from the db"],
+      "scenarios": ["Container profile <profile> produces <result> (row 14)"],
+      "failure_contains": "container domain result"
+    },
+    {
+      "id": "destroying-container-destroy-reports-disappearance",
+      "source_file": "atc/db/container.go",
+      "old": "\tif affected == 0 {\n\t\treturn false, ErrContainerDisappeared\n\t}\n\n\treturn true, nil\n}\n\ntype FailedContainer interface",
+      "new": "\tif affected == 0 {\n\t\treturn true, nil\n\t}\n\n\treturn true, nil\n}\n\ntype FailedContainer interface",
+      "tests": ["Container Destroy called on a destroying container errors when the container dissapears from the db returns an error"],
+      "scenarios": ["Container profile <profile> produces <result> (row 15)"],
+      "failure_contains": "container domain result"
+    },
+    {
+      "id": "failed-container-destroy-reports-success",
+      "source_file": "atc/db/container.go",
+      "old": "func (container *failedContainer) Destroy() (bool, error) {\n\trows, err := psql.Delete(\"containers\").\n\t\tWhere(sq.Eq{\n\t\t\t\"id\":    container.id,\n\t\t\t\"state\": atc.ContainerStateFailed,\n\t\t}).\n\t\tRunWith(container.conn).\n\t\tExec()\n\tif err != nil {\n\t\treturn false, err\n\t}\n\n\taffected, err := rows.RowsAffected()\n\tif err != nil {\n\t\treturn false, err\n\t}\n\n\tif affected == 0 {\n\t\treturn false, ErrContainerDisappeared\n\t}\n\n\treturn true, nil\n}",
+      "new": "func (container *failedContainer) Destroy() (bool, error) {\n\trows, err := psql.Delete(\"containers\").\n\t\tWhere(sq.Eq{\n\t\t\t\"id\":    container.id,\n\t\t\t\"state\": atc.ContainerStateFailed,\n\t\t}).\n\t\tRunWith(container.conn).\n\t\tExec()\n\tif err != nil {\n\t\treturn false, err\n\t}\n\n\taffected, err := rows.RowsAffected()\n\tif err != nil {\n\t\treturn false, err\n\t}\n\n\tif affected == 0 {\n\t\treturn false, ErrContainerDisappeared\n\t}\n\n\treturn false, nil\n}",
+      "tests": ["Container Destroy called on a failed container successfully removes the row from the db"],
+      "scenarios": ["Container profile <profile> produces <result> (row 16)"],
+      "failure_contains": "container domain result"
+    },
+    {
+      "id": "failed-container-destroy-reports-disappearance",
+      "source_file": "atc/db/container.go",
+      "old": "func (container *failedContainer) Destroy() (bool, error) {\n\trows, err := psql.Delete(\"containers\").\n\t\tWhere(sq.Eq{\n\t\t\t\"id\":    container.id,\n\t\t\t\"state\": atc.ContainerStateFailed,\n\t\t}).\n\t\tRunWith(container.conn).\n\t\tExec()\n\tif err != nil {\n\t\treturn false, err\n\t}\n\n\taffected, err := rows.RowsAffected()\n\tif err != nil {\n\t\treturn false, err\n\t}\n\n\tif affected == 0 {\n\t\treturn false, ErrContainerDisappeared\n\t}\n\n\treturn true, nil\n}",
+      "new": "func (container *failedContainer) Destroy() (bool, error) {\n\trows, err := psql.Delete(\"containers\").\n\t\tWhere(sq.Eq{\n\t\t\t\"id\":    container.id,\n\t\t\t\"state\": atc.ContainerStateFailed,\n\t\t}).\n\t\tRunWith(container.conn).\n\t\tExec()\n\tif err != nil {\n\t\treturn false, err\n\t}\n\n\taffected, err := rows.RowsAffected()\n\tif err != nil {\n\t\treturn false, err\n\t}\n\n\tif affected == 0 {\n\t\treturn true, nil\n\t}\n\n\treturn true, nil\n}",
+      "tests": ["Container Destroy called on a failed container errors when the container dissapears from the db returns an error"],
+      "scenarios": ["Container profile <profile> produces <result> (row 17)"],
+      "failure_contains": "container domain result"
+    }
+  ]
+}

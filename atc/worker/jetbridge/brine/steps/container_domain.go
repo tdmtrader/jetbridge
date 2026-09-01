@@ -8,7 +8,7 @@ import (
 	"sort"
 	"time"
 
-	"code.cloudfoundry.org/lager/v3/lagertest"
+	"code.cloudfoundry.org/lager/v3"
 	"github.com/brine-dev/brine-go/pkg/brine"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
@@ -35,7 +35,7 @@ func ContainerDomainDefinitions() []brine.StepDefinition {
 					return ContainerDomainObservation{}, fmt.Errorf("jetbridge-db resource is %T", resources.Get("jetbridge-db"))
 				}
 				profile, _ := p.GetString(0)
-				value, err := observeContainerDomain(database, profile)
+				value, err := observeStrictContainerDomain(database, profile)
 				return ContainerDomainObservation{Value: value}, err
 			},
 		),
@@ -115,7 +115,10 @@ func newDomainContainer(database JetbridgeDB, conn db.DbConn, suffix string) (db
 	if _, err = database.PersistNamedWorker(workerName); err != nil {
 		return nil, err
 	}
-	cache := db.NewStaticWorkerCache(lagertest.NewTestLogger("container-domain"), conn, time.Hour)
+	cache, err := db.NewWorkerCache(lager.NewLogger("brine-container-domain"), conn, time.Hour)
+	if err != nil {
+		return nil, err
+	}
 	worker, found, err := db.NewWorkerFactory(conn, cache).GetWorker(workerName)
 	if err != nil || !found {
 		return nil, firstError(err, fmt.Errorf("worker %q not found through container connection", workerName))
