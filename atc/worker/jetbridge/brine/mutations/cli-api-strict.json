@@ -1,0 +1,124 @@
+{
+  "name": "cli-api-strict",
+  "test_package": "./atc/api",
+  "source_test_file": "atc/api/cli_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/cli-api.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/cli_api.go",
+    "atc/worker/jetbridge/brine/steps/resources.go"
+  ],
+  "cases": [
+    {
+      "id": "darwin-success-status",
+      "source_file": "atc/api/cliserver/download.go",
+      "old": "\t\t\t_, _ = io.Copy(w, tarReader)",
+      "new": "\t\t\tw.WriteHeader(http.StatusCreated)\n\n\t\t\t_, _ = io.Copy(w, tarReader)",
+      "tests": [
+        "CLI Downloads API GET /api/v1/cli?platform=darwin&arch=amd64 returns 200"
+      ],
+      "scenarios": [
+        "Darwin downloads return status 200"
+      ],
+      "failure_contains": "CLI API status"
+    },
+    {
+      "id": "darwin-download-headers",
+      "source_file": "atc/api/cliserver/download.go",
+      "old": "\t\t\tw.Header().Set(\"Last-Modified\", f.ModTime.UTC().Format(http.TimeFormat))",
+      "new": "\t\t\tw.Header().Set(\"Last-Modified\", \"mutated\")",
+      "tests": [
+        "CLI Downloads API GET /api/v1/cli?platform=darwin&arch=amd64 returns the a response with expected headers"
+      ],
+      "scenarios": [
+        "Darwin downloads return Unix headers"
+      ],
+      "failure_contains": "unexpected Unix headers"
+    },
+    {
+      "id": "darwin-selects-fly-member",
+      "source_file": "atc/api/cliserver/download.go",
+      "old": "\t\t\tif f.Name != flyFile {\n\t\t\t\tcontinue\n\t\t\t}\n\n\t\t\tw.Header().Set(\"Content-Type\", \"application/octet-stream\")\n\t\t\tw.Header().Set(\"Content-Length\", fmt.Sprintf(\"%d\", f.Size))",
+      "new": "\t\t\tif f.Name == flyFile {\n\t\t\t\tcontinue\n\t\t\t}\n\n\t\t\tw.Header().Set(\"Content-Type\", \"application/octet-stream\")\n\t\t\tw.Header().Set(\"Content-Length\", fmt.Sprintf(\"%d\", f.Size))",
+      "tests": [
+        "CLI Downloads API GET /api/v1/cli?platform=darwin&arch=amd64 returns the file binary"
+      ],
+      "scenarios": [
+        "Darwin downloads return the fly binary"
+      ],
+      "failure_contains": "CLI API body"
+    },
+    {
+      "id": "windows-success-status",
+      "source_file": "atc/api/cliserver/download.go",
+      "old": "\t\t\t_, _ = io.Copy(w, stream)",
+      "new": "\t\t\tw.WriteHeader(http.StatusCreated)\n\n\t\t\t_, _ = io.Copy(w, stream)",
+      "tests": [
+        "CLI Downloads API GET /api/v1/cli?platform=windows&arch=amd64 returns 200"
+      ],
+      "scenarios": [
+        "Windows downloads return status 200"
+      ],
+      "failure_contains": "CLI API status"
+    },
+    {
+      "id": "windows-download-headers",
+      "source_file": "atc/api/cliserver/download.go",
+      "old": "\t\t\tw.Header().Set(\"Last-Modified\", f.Modified.UTC().Format(http.TimeFormat))",
+      "new": "\t\t\tw.Header().Set(\"Last-Modified\", \"mutated\")",
+      "tests": [
+        "CLI Downloads API GET /api/v1/cli?platform=windows&arch=amd64 returns the a response with expected headers"
+      ],
+      "scenarios": [
+        "Windows downloads return executable headers"
+      ],
+      "failure_contains": "unexpected Windows headers"
+    },
+    {
+      "id": "windows-selects-fly-member",
+      "source_file": "atc/api/cliserver/download.go",
+      "old": "\t\t\tif f.Name != flyFile {\n\t\t\t\tcontinue\n\t\t\t}\n\n\t\t\tw.Header().Set(\"Content-Type\", \"application/octet-stream\")\n\t\t\tw.Header().Set(\"Content-Length\", fmt.Sprintf(\"%d\", f.UncompressedSize64))",
+      "new": "\t\t\tif f.Name == flyFile {\n\t\t\t\tcontinue\n\t\t\t}\n\n\t\t\tw.Header().Set(\"Content-Type\", \"application/octet-stream\")\n\t\t\tw.Header().Set(\"Content-Length\", fmt.Sprintf(\"%d\", f.UncompressedSize64))",
+      "tests": [
+        "CLI Downloads API GET /api/v1/cli?platform=windows&arch=amd64 returns the file binary"
+      ],
+      "scenarios": [
+        "Windows downloads return the executable binary"
+      ],
+      "failure_contains": "CLI API body"
+    },
+    {
+      "id": "platform-case-insensitive",
+      "source_file": "atc/api/cliserver/download.go",
+      "old": "\tplatform := strings.ToLower(r.URL.Query().Get(\"platform\"))",
+      "new": "\tplatform := strings.TrimSpace(r.URL.Query().Get(\"platform\"))",
+      "tests": [
+        "CLI Downloads API GET /api/v1/cli?platform=Darwin&arch=amd64 returns 200",
+        "CLI Downloads API GET /api/v1/cli?platform=Darwin&arch=amd64 returns the file binary",
+        "CLI Downloads API GET /api/v1/cli?platform=Windows&arch=amd64 returns 200",
+        "CLI Downloads API GET /api/v1/cli?platform=Windows&arch=amd64 returns the file binary"
+      ],
+      "scenarios": [
+        "Darwin platform matching is case insensitive for status",
+        "Darwin platform matching is case insensitive for the binary",
+        "Windows platform matching is case insensitive for status",
+        "Windows platform matching is case insensitive for the binary"
+      ],
+      "failure_contains": "CLI API"
+    },
+    {
+      "id": "path-traversal-validation",
+      "source_file": "atc/api/cliserver/download.go",
+      "old": "\tif !whitelist.MatchString(platform) || !whitelist.MatchString(arch) {",
+      "new": "\tif !whitelist.MatchString(platform) && !whitelist.MatchString(arch) {",
+      "tests": [
+        "CLI Downloads API GET /api/v1/cli?platform=darwin&arch=../darwin/amd64 returns Bad Request",
+        "CLI Downloads API GET /api/v1/cli?platform=../etc/passwd&arch=amd64 returns Bad Request"
+      ],
+      "scenarios": [
+        "Architecture path traversal is rejected",
+        "Platform path traversal is rejected"
+      ],
+      "failure_contains": "CLI API status"
+    }
+  ]
+}

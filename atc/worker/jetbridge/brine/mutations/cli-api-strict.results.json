@@ -1,0 +1,103 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/cli-api-strict.json",
+  "git_head": "c2a4f67f27c8675c5fca92eed2eb15eb97406ceb",
+  "completed_at": "2026-09-01T08:00:01Z",
+  "source_tests": 12,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "mutation_cases": [
+    {
+      "id": "darwin-success-status",
+      "mutation_sha256": "f13320be084bf94c74aa9528fe6b8b9da8a6b83b4d343af8f7488fbdda45eef3",
+      "failed_source_tests": [
+        "CLI Downloads API GET /api/v1/cli?platform=darwin\u0026arch=amd64 returns 200"
+      ],
+      "failed_brine_scenarios": [
+        "Darwin downloads return status 200",
+        "Darwin platform matching is case insensitive for status"
+      ]
+    },
+    {
+      "id": "darwin-download-headers",
+      "mutation_sha256": "661eedc6e685d3e9ad2562a964ca5b298b3c7690fbda1d9244732a19ee021187",
+      "failed_source_tests": [
+        "CLI Downloads API GET /api/v1/cli?platform=darwin\u0026arch=amd64 returns the a response with expected headers"
+      ],
+      "failed_brine_scenarios": [
+        "Darwin downloads return Unix headers"
+      ]
+    },
+    {
+      "id": "darwin-selects-fly-member",
+      "mutation_sha256": "588aba0d045ce3767a56be4522e9e61d37f49508c2ac235b259fc603b55c22da",
+      "failed_source_tests": [
+        "CLI Downloads API GET /api/v1/cli?platform=darwin\u0026arch=amd64 returns the file binary"
+      ],
+      "failed_brine_scenarios": [
+        "Darwin downloads return Unix headers",
+        "Darwin downloads return the fly binary",
+        "Darwin platform matching is case insensitive for the binary"
+      ]
+    },
+    {
+      "id": "windows-success-status",
+      "mutation_sha256": "f887eed0b6a3365be68e05e613fbfe527c1d477fbf70402971fdd873ac17aae4",
+      "failed_source_tests": [
+        "CLI Downloads API GET /api/v1/cli?platform=windows\u0026arch=amd64 returns 200"
+      ],
+      "failed_brine_scenarios": [
+        "Windows downloads return status 200",
+        "Windows platform matching is case insensitive for status"
+      ]
+    },
+    {
+      "id": "windows-download-headers",
+      "mutation_sha256": "4937e62cfadefc8426e936889632c8bc21ba0b6003582abd9eb6ca53fbe92f3c",
+      "failed_source_tests": [
+        "CLI Downloads API GET /api/v1/cli?platform=windows\u0026arch=amd64 returns the a response with expected headers"
+      ],
+      "failed_brine_scenarios": [
+        "Windows downloads return executable headers"
+      ]
+    },
+    {
+      "id": "windows-selects-fly-member",
+      "mutation_sha256": "ac1a28bf23e8ffcdf31afea093fecc04f6fe30de92d4e5f2518884c0b8db9c5c",
+      "failed_source_tests": [
+        "CLI Downloads API GET /api/v1/cli?platform=windows\u0026arch=amd64 returns the file binary"
+      ],
+      "failed_brine_scenarios": [
+        "Windows downloads return executable headers",
+        "Windows downloads return the executable binary",
+        "Windows platform matching is case insensitive for the binary"
+      ]
+    },
+    {
+      "id": "platform-case-insensitive",
+      "mutation_sha256": "c61b85fd5eac08f8cb48908217f7909a002e3c850cf668f1f046e9f1c7437727",
+      "failed_source_tests": [
+        "CLI Downloads API GET /api/v1/cli?platform=Darwin\u0026arch=amd64 returns 200",
+        "CLI Downloads API GET /api/v1/cli?platform=Darwin\u0026arch=amd64 returns the file binary",
+        "CLI Downloads API GET /api/v1/cli?platform=Windows\u0026arch=amd64 returns 200",
+        "CLI Downloads API GET /api/v1/cli?platform=Windows\u0026arch=amd64 returns the file binary"
+      ],
+      "failed_brine_scenarios": [
+        "Darwin platform matching is case insensitive for status",
+        "Darwin platform matching is case insensitive for the binary",
+        "Windows platform matching is case insensitive for status",
+        "Windows platform matching is case insensitive for the binary"
+      ]
+    },
+    {
+      "id": "path-traversal-validation",
+      "mutation_sha256": "815eba606e58c7fd648e616533312fa91a2707390281738915b82c88b031b6e6",
+      "failed_source_tests": [
+        "CLI Downloads API GET /api/v1/cli?platform=../etc/passwd\u0026arch=amd64 returns Bad Request",
+        "CLI Downloads API GET /api/v1/cli?platform=darwin\u0026arch=../darwin/amd64 returns Bad Request"
+      ],
+      "failed_brine_scenarios": [
+        "Architecture path traversal is rejected",
+        "Platform path traversal is rejected"
+      ]
+    }
+  ]
+}
