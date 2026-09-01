@@ -1,0 +1,236 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/accessor-profiles-strict.json",
+  "git_head": "f3099c93985872311e697330d0e4ae086dbc2d17",
+  "completed_at": "2026-09-01T07:27:19Z",
+  "source_tests": 38,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "mutation_cases": [
+    {
+      "id": "has-token-value",
+      "mutation_sha256": "cc58d90656a8ca006da457b7d7cf844917575baa3e48bb0797fb7a5520e79d9f",
+      "failed_source_tests": [
+        "Accessor HasToken when verification does not have a token returns false",
+        "Accessor HasToken when verification has a token returns true"
+      ],
+      "failed_brine_scenarios": [
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 1)",
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 2)"
+      ]
+    },
+    {
+      "id": "authenticated-value",
+      "mutation_sha256": "83153c4cf09bf30136ab505cb292410382c7cc2a22b09adf41a7bffa6cd8c8f9",
+      "failed_source_tests": [
+        "Accessor IsAuthenticated when verification does not have a token returns false",
+        "Accessor IsAuthenticated when verification has a token when verification token is not valid returns false",
+        "Accessor IsAuthenticated when verification has a token when verification token is valid returns true"
+      ],
+      "failed_brine_scenarios": [
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 11)",
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 12)",
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 13)",
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 14)",
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 20)",
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 24)",
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 27)",
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 28)",
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 29)",
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 3)",
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 33)",
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 34)",
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 35)",
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 36)",
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 37)",
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 38)",
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 4)",
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 5)",
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 8)"
+      ]
+    },
+    {
+      "id": "authorized-value",
+      "mutation_sha256": "b26a0a0452c260a2d388fb018ade660c65289057085c5d0034da8f5422658a00",
+      "failed_source_tests": [
+        "Accessor IsAuthorized when the user has invalid token returns false",
+        "Accessor IsAuthorized when the user has no token returns false",
+        "Accessor IsAuthorized when the user has valid token when the user is part of any admin team returns true"
+      ],
+      "failed_brine_scenarios": [
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 6)",
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 7)",
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 8)"
+      ]
+    },
+    {
+      "id": "team-names-exact-set",
+      "mutation_sha256": "be4b49106dcf3eeeb4bdbfb885775415fa9698e4a6dfa4f9944a8050be22374c",
+      "failed_source_tests": [
+        "Accessor TeamNames when the user has invalid token returns nothing",
+        "Accessor TeamNames when the user has no token returns nothing",
+        "Accessor TeamNames when the user has valid token the team has the user configured when the action requires a 'member' role returns all teams",
+        "Accessor TeamNames when the user has valid token the team has the user configured when the action requires a 'viewer' role returns all teams",
+        "Accessor TeamNames when the user has valid token the team has the user configured when the action requires an 'owner' role returns all teams",
+        "Accessor TeamNames when the user has valid token when the user is part of any admin team returns all teams"
+      ],
+      "failed_brine_scenarios": [
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 10)",
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 11)",
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 12)",
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 13)",
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 14)",
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 9)"
+      ]
+    },
+    {
+      "id": "admin-value",
+      "mutation_sha256": "15d9ae1c248ce19c950ecb83247d97d8312b3964f8f4645788058fde4f52ec5a",
+      "failed_source_tests": [
+        "Accessor IsAdmin when the user has invalid token returns false",
+        "Accessor IsAdmin when the user has no token returns false",
+        "Accessor IsAdmin when the user has valid token when the user is a 'member' on an admin team returns false",
+        "Accessor IsAdmin when the user has valid token when the user is a 'owner' on an admin team returns true",
+        "Accessor IsAdmin when the user has valid token when the user is a 'viewer' on an admin team returns false",
+        "Accessor IsAdmin when the user has valid token when the user is a not on an admin team returns false"
+      ],
+      "failed_brine_scenarios": [
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 15)",
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 16)",
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 17)",
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 18)",
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 19)",
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 20)",
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 28)"
+      ]
+    },
+    {
+      "id": "system-value",
+      "mutation_sha256": "74611ec60785e570fde947aac250f254489bb86db103a2e9f6ae7e9e6dcd039e",
+      "failed_source_tests": [
+        "Accessor IsSystem when the token does have the system sub returns true",
+        "Accessor IsSystem when the token does not have the system sub returns false",
+        "Accessor IsSystem when the user has invalid token returns false",
+        "Accessor IsSystem when the user has no token returns false"
+      ],
+      "failed_brine_scenarios": [
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 21)",
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 22)",
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 23)",
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 24)",
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 28)"
+      ]
+    },
+    {
+      "id": "claims-exact-value",
+      "mutation_sha256": "40a4eaaf653e5a36f473494d6c602ba7e2dfbc006d87f4395f729bdf28a6b4c6",
+      "failed_source_tests": [
+        "Accessor Claims when the token has a preferred user_name returns the result",
+        "Accessor Claims when the user has invalid token returns empty",
+        "Accessor Claims when the user has no token returns empty"
+      ],
+      "failed_brine_scenarios": [
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 25)",
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 26)",
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 27)",
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 28)",
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 29)"
+      ]
+    },
+    {
+      "id": "user-info-display-value",
+      "mutation_sha256": "abf114fd590d23a7785766da4e7abd5ccc6243b54517f58ef96b33d36ee06397",
+      "failed_source_tests": [
+        "Accessor UserInfo when there is a valid token returns the result",
+        "Accessor UserInfo when there is a valid token when the connector is not configured falls back to the preferred username"
+      ],
+      "failed_brine_scenarios": [
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 28)",
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 29)"
+      ]
+    },
+    {
+      "id": "team-roles-empty-exact-set",
+      "mutation_sha256": "94e3d2f0dc95f2d93c9cd82579aade1df76455dac81614db1a3ee6b07bcc81ef",
+      "failed_source_tests": [
+        "Accessor TeamRoles when the token has claims when the user is not part of any teams returns empty",
+        "Accessor TeamRoles when the user has invalid token returns empty",
+        "Accessor TeamRoles when the user has no token returns empty"
+      ],
+      "failed_brine_scenarios": [
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 28)",
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 30)",
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 31)",
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 32)"
+      ]
+    },
+    {
+      "id": "team-roles-user-id",
+      "mutation_sha256": "4ee39e96e74db9e512e58e6b9b463d4789c7c0210bdb6637c5731337a2b91d15",
+      "failed_source_tests": [
+        "Accessor TeamRoles when the token has claims when the user is granted a role from their user id returns result with teams"
+      ],
+      "failed_brine_scenarios": [
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 11)",
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 12)",
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 13)",
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 14)",
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 20)",
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 33)",
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 35)",
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 37)",
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 8)"
+      ]
+    },
+    {
+      "id": "team-roles-user-name",
+      "mutation_sha256": "2e9f1d232daca476acca75fd57c3f78ae10bda70106b902de99884f5fde2705e",
+      "failed_source_tests": [
+        "Accessor TeamRoles when the token has claims when the user is granted a role from their user name returns result with teams"
+      ],
+      "failed_brine_scenarios": [
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 34)"
+      ]
+    },
+    {
+      "id": "team-roles-cloudfoundry-alias",
+      "mutation_sha256": "3617c7be2c855269c1963c20abea0d69ae6e3e70e8b849dc3f3bb6d56c705c81",
+      "failed_source_tests": [
+        "Accessor TeamRoles when the token has claims when the user is granted a role from a group by connector cloudfoundry returns result with teams"
+      ],
+      "failed_brine_scenarios": [
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 35)"
+      ]
+    },
+    {
+      "id": "team-roles-group",
+      "mutation_sha256": "162fd760c3f87694aeb129d1be38f60bf9069d5cfeff4ae57bc1de875f3ad098",
+      "failed_source_tests": [
+        "Accessor TeamRoles when the token has claims when the user is granted a role from a group returns result with teams"
+      ],
+      "failed_brine_scenarios": [
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 35)",
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 36)",
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 37)"
+      ]
+    },
+    {
+      "id": "team-roles-multiple",
+      "mutation_sha256": "ec271314e5b1b9be602de343b2f5ade9fbb42c9dab91226964a3cbf3649d6da4",
+      "failed_source_tests": [
+        "Accessor TeamRoles when the token has claims when the user is granted multiple roles on the same team adds both roles"
+      ],
+      "failed_brine_scenarios": [
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 37)"
+      ]
+    },
+    {
+      "id": "team-roles-deduplicated",
+      "mutation_sha256": "c29d20c5be8df1a5d0f41cdf28c376937e6b60271c13e2f03233a1f162c63903",
+      "failed_source_tests": [
+        "Accessor TeamRoles when the token has claims when the user is granted the same role multiple times only adds the role once"
+      ],
+      "failed_brine_scenarios": [
+        "The accessor exposes the profile API consumers rely on — \u003cprofile\u003e (row 38)"
+      ]
+    }
+  ]
+}
