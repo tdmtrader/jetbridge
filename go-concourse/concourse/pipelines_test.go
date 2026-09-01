@@ -16,6 +16,7 @@ var _ = Describe("ATC Handler Pipelines", func() {
 
 		expectedURL := "/api/v1/teams/some-team/pipelines/mypipeline/pause"
 		queryParams := "vars.branch=%22master%22"
+		pipelineRef := atc.PipelineRef{Name: "mypipeline", InstanceVars: atc.InstanceVars{"branch": "master"}}
 
 		Context("when the pipeline exists", func() {
 			BeforeEach(func() {
@@ -37,6 +38,11 @@ var _ = Describe("ATC Handler Pipelines", func() {
 						ghttp.RespondWithJSONEncoded(http.StatusNotFound, ""),
 					),
 				)
+			})
+			It("returns false and no error", func() {
+				found, err := team.PausePipeline(pipelineRef)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(found).To(BeFalse())
 			})
 		})
 	})
@@ -45,6 +51,7 @@ var _ = Describe("ATC Handler Pipelines", func() {
 
 		expectedURL := "/api/v1/teams/some-team/pipelines/mypipeline/archive"
 		queryParams := "vars.branch=%22master%22"
+		pipelineRef := atc.PipelineRef{Name: "mypipeline", InstanceVars: atc.InstanceVars{"branch": "master"}}
 
 		Context("when the pipeline exists", func() {
 			BeforeEach(func() {
@@ -68,6 +75,11 @@ var _ = Describe("ATC Handler Pipelines", func() {
 				)
 			})
 
+			It("returns false and no error", func() {
+				found, err := team.ArchivePipeline(pipelineRef)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(found).To(BeFalse())
+			})
 		})
 	})
 
@@ -75,6 +87,7 @@ var _ = Describe("ATC Handler Pipelines", func() {
 
 		expectedURL := "/api/v1/teams/some-team/pipelines/mypipeline/unpause"
 		queryParams := "vars.branch=%22master%22"
+		pipelineRef := atc.PipelineRef{Name: "mypipeline", InstanceVars: atc.InstanceVars{"branch": "master"}}
 
 		Context("when the pipeline exists", func() {
 			BeforeEach(func() {
@@ -96,6 +109,11 @@ var _ = Describe("ATC Handler Pipelines", func() {
 						ghttp.RespondWithJSONEncoded(http.StatusNotFound, ""),
 					),
 				)
+			})
+			It("returns false and no error", func() {
+				found, err := team.UnpausePipeline(pipelineRef)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(found).To(BeFalse())
 			})
 		})
 	})
@@ -104,6 +122,7 @@ var _ = Describe("ATC Handler Pipelines", func() {
 
 		expectedURL := "/api/v1/teams/some-team/pipelines/mypipeline/expose"
 		queryParams := "vars.branch=%22master%22"
+		pipelineRef := atc.PipelineRef{Name: "mypipeline", InstanceVars: atc.InstanceVars{"branch": "master"}}
 
 		Context("when the pipeline exists", func() {
 			BeforeEach(func() {
@@ -125,6 +144,11 @@ var _ = Describe("ATC Handler Pipelines", func() {
 						ghttp.RespondWithJSONEncoded(http.StatusNotFound, ""),
 					),
 				)
+			})
+			It("returns false and no error", func() {
+				found, err := team.ExposePipeline(pipelineRef)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(found).To(BeFalse())
 			})
 		})
 	})
@@ -133,6 +157,7 @@ var _ = Describe("ATC Handler Pipelines", func() {
 
 		expectedURL := "/api/v1/teams/some-team/pipelines/mypipeline/hide"
 		queryParams := "vars.branch=%22master%22"
+		pipelineRef := atc.PipelineRef{Name: "mypipeline", InstanceVars: atc.InstanceVars{"branch": "master"}}
 
 		Context("when the pipeline exists", func() {
 			BeforeEach(func() {
@@ -155,6 +180,11 @@ var _ = Describe("ATC Handler Pipelines", func() {
 						ghttp.RespondWithJSONEncoded(http.StatusNotFound, ""),
 					),
 				)
+			})
+			It("returns false and no error", func() {
+				found, err := team.HidePipeline(pipelineRef)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(found).To(BeFalse())
 			})
 		})
 	})
@@ -189,6 +219,10 @@ var _ = Describe("ATC Handler Pipelines", func() {
 						ghttp.RespondWithJSONEncoded(http.StatusNotFound, ""),
 					),
 				)
+			})
+			It("returns error", func() {
+				err := team.OrderingPipelines([]string{"p"})
+				Expect(err).To(HaveOccurred())
 			})
 		})
 	})
@@ -239,6 +273,7 @@ var _ = Describe("ATC Handler Pipelines", func() {
 		var expectedPipeline atc.Pipeline
 		expectedURL := "/api/v1/teams/some-team/pipelines/mypipeline"
 		queryParams := "vars.branch=%22master%22"
+		pipelineRef := atc.PipelineRef{Name: "mypipeline", InstanceVars: atc.InstanceVars{"branch": "master"}}
 
 		BeforeEach(func() {
 			expectedPipeline = atc.Pipeline{
@@ -276,6 +311,11 @@ var _ = Describe("ATC Handler Pipelines", func() {
 				)
 			})
 
+			It("returns false", func() {
+				_, found, err := team.Pipeline(pipelineRef)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(found).To(BeFalse())
+			})
 		})
 	})
 
@@ -364,6 +404,7 @@ var _ = Describe("ATC Handler Pipelines", func() {
 	Describe("DeletePipeline", func() {
 		expectedURL := "/api/v1/teams/some-team/pipelines/mypipeline"
 		queryParams := "vars.branch=%22master%22"
+		pipelineRef := atc.PipelineRef{Name: "mypipeline", InstanceVars: atc.InstanceVars{"branch": "master"}}
 
 		Context("when the pipeline exists", func() {
 			BeforeEach(func() {
@@ -375,6 +416,15 @@ var _ = Describe("ATC Handler Pipelines", func() {
 				)
 			})
 
+			It("deletes the pipeline when called", func() {
+				Expect(func() {
+					found, err := team.DeletePipeline(pipelineRef)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(found).To(BeTrue())
+				}).To(Change(func() int {
+					return len(atcServer.ReceivedRequests())
+				}).By(1))
+			})
 		})
 
 		Context("when the pipeline does not exist", func() {
@@ -387,6 +437,11 @@ var _ = Describe("ATC Handler Pipelines", func() {
 				)
 			})
 
+			It("returns false and no error", func() {
+				found, err := team.DeletePipeline(pipelineRef)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(found).To(BeFalse())
+			})
 		})
 	})
 
@@ -470,7 +525,6 @@ var _ = Describe("ATC Handler Pipelines", func() {
 	Describe("CreatePipelineBuild", func() {
 		expectedURL := "/api/v1/teams/some-team/pipelines/mypipeline/builds"
 		queryParams := "vars.branch=%22master%22"
-
 		var expectedBuild atc.Build
 		Context("When the build is created", func() {
 			BeforeEach(func() {
@@ -622,6 +676,11 @@ var _ = Describe("ATC Handler Pipelines", func() {
 				)
 			})
 
+			It("returns false and no error", func() {
+				_, _, found, err := team.PipelineBuilds(pipelineRef, concourse.Page{})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(found).To(BeFalse())
+			})
 		})
 
 		Context("pagination data", func() {

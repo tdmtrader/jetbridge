@@ -214,6 +214,14 @@ func pipelineClientStrictDefinitions() []brine.StepDefinition {
 				default:
 					return in, fmt.Errorf("unknown initial pipeline state %q", state)
 				}
+				fresh, found, err := in.API.Team.Pipeline(clientPipelineRef(name))
+				if err != nil {
+					return in, err
+				}
+				if !found {
+					return in, fmt.Errorf("instanced pipeline %q disappeared after setting state", name)
+				}
+				in.API.Saved[name] = fresh
 				return in, nil
 			},
 		),
@@ -259,7 +267,14 @@ func pipelineClientStrictDefinitions() []brine.StepDefinition {
 				if err := pipeline.Expose(); err != nil {
 					return in, err
 				}
-				in.API.Saved[teamName+"/"+name] = pipeline
+				fresh, found, err := team.Pipeline(atc.PipelineRef{Name: name})
+				if err != nil {
+					return in, err
+				}
+				if !found {
+					return in, fmt.Errorf("public pipeline %q on team %q disappeared", name, teamName)
+				}
+				in.API.Saved[teamName+"/"+name] = fresh
 				return in, nil
 			},
 		),
@@ -299,9 +314,6 @@ func pipelineClientStrictDefinitions() []brine.StepDefinition {
 				if pipeline == nil {
 					return fmt.Errorf("persisted pipeline %q was not tracked", name)
 				}
-				if _, err := pipeline.Reload(); err != nil {
-					return err
-				}
 				want := present.Pipeline(pipeline)
 				if !reflect.DeepEqual(in.Pipeline, want) {
 					return fmt.Errorf("decoded pipeline mismatch: got %#v, want %#v", in.Pipeline, want)
@@ -313,24 +325,18 @@ func pipelineClientStrictDefinitions() []brine.StepDefinition {
 			"the client decoded exact persisted pipelines {string}",
 			func(in *PipelineClientState, p brine.Params, _ *brine.Recorder) error {
 				raw, _ := p.GetString(0)
-				names := strings.Split(raw, ",")
-				if len(in.Pipelines) != len(names) {
-					return fmt.Errorf("decoded %d pipelines, want %d", len(in.Pipelines), len(names))
+				keys := strings.Split(raw, ",")
+				if len(in.Pipelines) != len(keys) {
+					return fmt.Errorf("decoded %d pipelines, want %d", len(in.Pipelines), len(keys))
 				}
-				got := append([]atc.Pipeline(nil), in.Pipelines...)
-				sort.Slice(got, func(i, j int) bool { return got[i].Name < got[j].Name })
-				sort.Strings(names)
-				for i, name := range names {
-					pipeline := in.API.Saved[name]
+				for i, key := range keys {
+					pipeline := in.API.Saved[key]
 					if pipeline == nil {
-						return fmt.Errorf("persisted pipeline %q was not tracked", name)
-					}
-					if _, err := pipeline.Reload(); err != nil {
-						return err
+						return fmt.Errorf("persisted pipeline %q was not tracked", key)
 					}
 					want := present.Pipeline(pipeline)
-					if !reflect.DeepEqual(got[i], want) {
-						return fmt.Errorf("decoded pipeline %q mismatch: got %#v, want %#v", name, got[i], want)
+					if !reflect.DeepEqual(in.Pipelines[i], want) {
+						return fmt.Errorf("decoded pipeline %q at index %d mismatch: got %#v, want %#v", key, i, in.Pipelines[i], want)
 					}
 				}
 				return nil

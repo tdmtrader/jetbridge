@@ -14,69 +14,59 @@
       "source_file": "go-concourse/concourse/pipelines.go",
       "old": "func (team *team) PausePipeline(pipelineRef atc.PipelineRef) (bool, error) {\n\treturn team.managePipeline(pipelineRef, atc.PausePipeline)\n}",
       "new": "func (team *team) PausePipeline(pipelineRef atc.PipelineRef) (bool, error) {\n\treturn team.managePipeline(pipelineRef, atc.ArchivePipeline)\n}",
-      "tests": ["ATC Handler Pipelines PausePipeline when the pipeline exists return true and no error"],
-      "scenarios": ["Existing instanced pipeline supports pauses"]
+      "tests": [
+        "ATC Handler Pipelines PausePipeline when the pipeline exists return true and no error"
+      ],
+      "scenarios": [
+        "Existing instanced pipeline supports pauses"
+      ]
     },
     {
       "id": "archive-uses-production-archive-route",
       "source_file": "go-concourse/concourse/pipelines.go",
       "old": "func (team *team) ArchivePipeline(pipelineRef atc.PipelineRef) (bool, error) {\n\treturn team.managePipeline(pipelineRef, atc.ArchivePipeline)\n}",
       "new": "func (team *team) ArchivePipeline(pipelineRef atc.PipelineRef) (bool, error) {\n\treturn team.managePipeline(pipelineRef, atc.PausePipeline)\n}",
-      "tests": ["ATC Handler Pipelines ArchivePipeline when the pipeline exists return true and no error"],
-      "scenarios": ["Existing instanced pipeline supports archives"]
+      "tests": [
+        "ATC Handler Pipelines ArchivePipeline when the pipeline exists return true and no error"
+      ],
+      "scenarios": [
+        "Existing instanced pipeline supports archives"
+      ]
     },
     {
       "id": "unpause-uses-production-unpause-route",
       "source_file": "go-concourse/concourse/pipelines.go",
       "old": "func (team *team) UnpausePipeline(pipelineRef atc.PipelineRef) (bool, error) {\n\treturn team.managePipeline(pipelineRef, atc.UnpausePipeline)\n}",
       "new": "func (team *team) UnpausePipeline(pipelineRef atc.PipelineRef) (bool, error) {\n\treturn team.managePipeline(pipelineRef, atc.PausePipeline)\n}",
-      "tests": ["ATC Handler Pipelines UnpausePipeline when the pipeline exists return true and no error"],
-      "scenarios": ["Existing instanced pipeline supports unpauses"]
+      "tests": [
+        "ATC Handler Pipelines UnpausePipeline when the pipeline exists return true and no error"
+      ],
+      "scenarios": [
+        "Existing instanced pipeline supports unpauses"
+      ]
     },
     {
       "id": "expose-uses-production-expose-route",
       "source_file": "go-concourse/concourse/pipelines.go",
       "old": "func (team *team) ExposePipeline(pipelineRef atc.PipelineRef) (bool, error) {\n\treturn team.managePipeline(pipelineRef, atc.ExposePipeline)\n}",
       "new": "func (team *team) ExposePipeline(pipelineRef atc.PipelineRef) (bool, error) {\n\treturn team.managePipeline(pipelineRef, atc.HidePipeline)\n}",
-      "tests": ["ATC Handler Pipelines ExposePipeline when the pipeline exists return true and no error"],
-      "scenarios": ["Existing instanced pipeline supports exposes"]
+      "tests": [
+        "ATC Handler Pipelines ExposePipeline when the pipeline exists return true and no error"
+      ],
+      "scenarios": [
+        "Existing instanced pipeline supports exposes"
+      ]
     },
     {
       "id": "hide-uses-production-hide-route",
       "source_file": "go-concourse/concourse/pipelines.go",
       "old": "func (team *team) HidePipeline(pipelineRef atc.PipelineRef) (bool, error) {\n\treturn team.managePipeline(pipelineRef, atc.HidePipeline)\n}",
       "new": "func (team *team) HidePipeline(pipelineRef atc.PipelineRef) (bool, error) {\n\treturn team.managePipeline(pipelineRef, atc.ExposePipeline)\n}",
-      "tests": ["ATC Handler Pipelines HidePipeline when the pipeline exists return true and no error"],
-      "scenarios": ["Existing instanced pipeline supports hides"]
-    },
-    {
-      "id": "delete-uses-production-delete-route",
-      "source_file": "go-concourse/concourse/pipelines.go",
-      "old": "func (team *team) DeletePipeline(pipelineRef atc.PipelineRef) (bool, error) {\n\treturn team.managePipeline(pipelineRef, atc.DeletePipeline)\n}",
-      "new": "func (team *team) DeletePipeline(pipelineRef atc.PipelineRef) (bool, error) {\n\treturn team.managePipeline(pipelineRef, atc.PausePipeline)\n}",
-      "tests": ["ATC Handler Pipelines DeletePipeline when the pipeline exists deletes the pipeline when called"],
-      "scenarios": ["Existing instanced pipeline supports deletes"]
-    },
-    {
-      "id": "manage-pipeline-missing-is-not-found",
-      "source_file": "go-concourse/concourse/pipelines.go",
-      "old": "func (team *team) managePipeline(pipelineRef atc.PipelineRef, endpoint string) (bool, error) {\n\tparams := rata.Params{\n\t\t\"pipeline_name\": pipelineRef.Name,\n\t\t\"team_name\":     team.Name(),\n\t}\n\terr := team.connection.Send(internal.Request{\n\t\tRequestName: endpoint,\n\t\tParams:      params,\n\t\tQuery:       pipelineRef.QueryParams(),\n\t}, nil)\n\n\tswitch err.(type) {\n\tcase nil:\n\t\treturn true, nil\n\tcase internal.ResourceNotFoundError:\n\t\treturn false, nil",
-      "new": "func (team *team) managePipeline(pipelineRef atc.PipelineRef, endpoint string) (bool, error) {\n\tparams := rata.Params{\n\t\t\"pipeline_name\": pipelineRef.Name,\n\t\t\"team_name\":     team.Name(),\n\t}\n\terr := team.connection.Send(internal.Request{\n\t\tRequestName: endpoint,\n\t\tParams:      params,\n\t\tQuery:       pipelineRef.QueryParams(),\n\t}, nil)\n\n\tswitch err.(type) {\n\tcase nil:\n\t\treturn true, nil\n\tcase internal.ResourceNotFoundError:\n\t\treturn true, nil",
       "tests": [
-        "ATC Handler Pipelines PausePipeline when the pipeline doesn't exist returns false and no error",
-        "ATC Handler Pipelines ArchivePipeline when the pipeline doesn't exist returns false and no error",
-        "ATC Handler Pipelines UnpausePipeline when the pipeline doesn't exist returns false and no error",
-        "ATC Handler Pipelines ExposePipeline when the pipeline doesn't exist returns false and no error",
-        "ATC Handler Pipelines HidePipeline when the pipeline doesn't exist returns false and no error",
-        "ATC Handler Pipelines DeletePipeline when the pipeline does not exist returns false and no error"
+        "ATC Handler Pipelines HidePipeline when the pipeline exists return true and no error"
       ],
       "scenarios": [
-        "Missing instanced pipeline reports not found for pauses",
-        "Missing instanced pipeline reports not found for archives",
-        "Missing instanced pipeline reports not found for unpauses",
-        "Missing instanced pipeline reports not found for exposes",
-        "Missing instanced pipeline reports not found for hides",
-        "Missing instanced pipeline reports not found for deletes"
+        "Existing instanced pipeline supports hides"
       ]
     },
     {
@@ -84,96 +74,108 @@
       "source_file": "go-concourse/concourse/pipelines.go",
       "old": "\tswitch err.(type) {\n\tcase nil:\n\t\treturn pipeline, true, nil\n\tcase internal.ResourceNotFoundError:\n\t\treturn atc.Pipeline{}, false, nil",
       "new": "\tswitch err.(type) {\n\tcase nil:\n\t\treturn atc.Pipeline{}, true, nil\n\tcase internal.ResourceNotFoundError:\n\t\treturn atc.Pipeline{}, false, nil",
-      "tests": ["ATC Handler Pipelines Pipeline when the pipeline is found returns the requested pipeline"],
-      "scenarios": ["Pipeline lookup decodes a real instanced pipeline"]
+      "tests": [
+        "ATC Handler Pipelines Pipeline when the pipeline is found returns the requested pipeline"
+      ],
+      "scenarios": [
+        "Pipeline lookup decodes a real instanced pipeline"
+      ]
     },
     {
-      "id": "pipeline-lookup-missing-is-not-found",
-      "source_file": "go-concourse/concourse/pipelines.go",
-      "old": "\tcase internal.ResourceNotFoundError:\n\t\treturn atc.Pipeline{}, false, nil\n\tdefault:\n\t\treturn atc.Pipeline{}, false, err\n\t}\n}\n\nfunc (team *team) OrderingPipelines",
-      "new": "\tcase internal.ResourceNotFoundError:\n\t\treturn atc.Pipeline{}, true, nil\n\tdefault:\n\t\treturn atc.Pipeline{}, false, err\n\t}\n}\n\nfunc (team *team) OrderingPipelines",
-      "tests": ["ATC Handler Pipelines Pipeline when the pipeline is not found returns false"],
-      "scenarios": ["Missing pipeline lookup returns false without an error"]
-    },
-    {
-      "id": "team-pipeline-list-returns-decoded-objects",
+      "id": "team-pipeline-list-keeps-team-scope-and-order",
       "source_file": "go-concourse/concourse/pipelines.go",
       "old": "func (team *team) ListPipelines() ([]atc.Pipeline, error) {\n\tparams := rata.Params{\n\t\t\"team_name\": team.Name(),\n\t}\n\n\tvar pipelines []atc.Pipeline\n\terr := team.connection.Send(internal.Request{\n\t\tRequestName: atc.ListPipelines,\n\t\tParams:      params,\n\t}, &internal.Response{\n\t\tResult: &pipelines,\n\t})\n\n\treturn pipelines, err\n}",
-      "new": "func (team *team) ListPipelines() ([]atc.Pipeline, error) {\n\tparams := rata.Params{\n\t\t\"team_name\": team.Name(),\n\t}\n\n\tvar pipelines []atc.Pipeline\n\terr := team.connection.Send(internal.Request{\n\t\tRequestName: atc.ListPipelines,\n\t\tParams:      params,\n\t}, &internal.Response{\n\t\tResult: &pipelines,\n\t})\n\n\treturn nil, err\n}",
-      "tests": ["ATC Handler Pipelines team.ListPipelines returns pipelines that belong to team"],
-      "scenarios": ["Pipeline listing scope team decodes real objects"]
+      "new": "func (team *team) ListPipelines() ([]atc.Pipeline, error) {\n\tvar pipelines []atc.Pipeline\n\terr := team.connection.Send(internal.Request{\n\t\tRequestName: atc.ListAllPipelines,\n\t}, &internal.Response{\n\t\tResult: &pipelines,\n\t})\n\n\treturn pipelines, err\n}",
+      "tests": [
+        "ATC Handler Pipelines team.ListPipelines returns pipelines that belong to team"
+      ],
+      "scenarios": [
+        "Pipeline listing scope team decodes real objects"
+      ]
     },
     {
-      "id": "global-pipeline-list-returns-decoded-objects",
+      "id": "global-pipeline-list-keeps-global-scope-and-order",
       "source_file": "go-concourse/concourse/pipelines.go",
       "old": "func (client *client) ListPipelines() ([]atc.Pipeline, error) {\n\tvar pipelines []atc.Pipeline\n\terr := client.connection.Send(internal.Request{\n\t\tRequestName: atc.ListAllPipelines,\n\t}, &internal.Response{\n\t\tResult: &pipelines,\n\t})\n\n\treturn pipelines, err\n}",
-      "new": "func (client *client) ListPipelines() ([]atc.Pipeline, error) {\n\tvar pipelines []atc.Pipeline\n\terr := client.connection.Send(internal.Request{\n\t\tRequestName: atc.ListAllPipelines,\n\t}, &internal.Response{\n\t\tResult: &pipelines,\n\t})\n\n\treturn nil, err\n}",
-      "tests": ["ATC Handler Pipelines client.ListPipelines returns all the pipelines"],
-      "scenarios": ["Pipeline listing scope all decodes real objects"]
+      "new": "func (client *client) ListPipelines() ([]atc.Pipeline, error) {\n\treturn client.Team(\"api-team\").ListPipelines()\n}",
+      "tests": [
+        "ATC Handler Pipelines client.ListPipelines returns all the pipelines"
+      ],
+      "scenarios": [
+        "Pipeline listing scope all decodes real objects"
+      ]
     },
     {
       "id": "pipeline-ordering-sends-requested-order",
       "source_file": "go-concourse/concourse/pipelines.go",
       "old": "\terr := json.NewEncoder(buffer).Encode(pipelineNames)",
       "new": "\terr := json.NewEncoder(buffer).Encode([]string{})",
-      "tests": ["ATC Handler Pipelines OrderingPipelines when the API call succeeds return no error"],
-      "scenarios": ["Ordering pipelines sends a body accepted and persisted by the API"]
-    },
-    {
-      "id": "pipeline-ordering-propagates-bad-request",
-      "source_file": "go-concourse/concourse/pipelines.go",
-      "old": "func (team *team) OrderingPipelines(pipelineNames []string) error {\n\tparams := rata.Params{\n\t\t\"team_name\": team.Name(),\n\t}",
-      "new": "func (team *team) OrderingPipelines(pipelineNames []string) error {\n\treturn nil\n\n\tparams := rata.Params{\n\t\t\"team_name\": team.Name(),\n\t}",
-      "tests": ["ATC Handler Pipelines OrderingPipelines when the API call errors returns error"],
-      "scenarios": ["Ordering a missing pipeline propagates the API error"]
+      "tests": [
+        "ATC Handler Pipelines OrderingPipelines when the API call succeeds return no error"
+      ],
+      "scenarios": [
+        "Ordering pipelines sends a body accepted and persisted by the API"
+      ]
     },
     {
       "id": "rename-success-reports-found",
       "source_file": "go-concourse/concourse/pipelines.go",
       "old": "\tswitch err.(type) {\n\tcase nil:\n\t\treturn true, response.Warnings, nil\n\tcase internal.ResourceNotFoundError:",
       "new": "\tswitch err.(type) {\n\tcase nil:\n\t\treturn false, response.Warnings, nil\n\tcase internal.ResourceNotFoundError:",
-      "tests": ["ATC Handler Pipelines RenamePipeline when the pipeline exists renames the pipeline when called"],
-      "scenarios": ["Rename returns the real API result"]
+      "tests": [
+        "ATC Handler Pipelines RenamePipeline when the pipeline exists renames the pipeline when called"
+      ],
+      "scenarios": [
+        "Rename returns the real API result"
+      ]
     },
     {
       "id": "rename-missing-reports-not-found",
       "source_file": "go-concourse/concourse/pipelines.go",
       "old": "\tcase internal.ResourceNotFoundError:\n\t\treturn false, []ConfigWarning{}, nil\n\tdefault:\n\t\treturn false, []ConfigWarning{}, err\n\t}\n}\n\nfunc (team *team) PipelineBuilds",
       "new": "\tcase internal.ResourceNotFoundError:\n\t\treturn true, []ConfigWarning{}, nil\n\tdefault:\n\t\treturn false, []ConfigWarning{}, err\n\t}\n}\n\nfunc (team *team) PipelineBuilds",
-      "tests": ["ATC Handler Pipelines RenamePipeline when the pipeline does not exist returns false and no error"],
-      "scenarios": ["Rename of a missing pipeline is not an error"]
+      "tests": [
+        "ATC Handler Pipelines RenamePipeline when the pipeline does not exist returns false and no error"
+      ],
+      "scenarios": [
+        "Rename of a missing pipeline is not an error"
+      ]
     },
     {
       "id": "create-pipeline-build-returns-decoded-build",
       "source_file": "go-concourse/concourse/pipelines.go",
       "old": "\treturn build, err\n}\nfunc (team *team) DeletePipeline",
       "new": "\treturn atc.Build{}, err\n}\nfunc (team *team) DeletePipeline",
-      "tests": ["ATC Handler Pipelines CreatePipelineBuild When the build is created returns the build and no error"],
-      "scenarios": ["Creating a pipeline build returns the exact persisted build"]
+      "tests": [
+        "ATC Handler Pipelines CreatePipelineBuild When the build is created returns the build and no error"
+      ],
+      "scenarios": [
+        "Creating a pipeline build returns the exact persisted build"
+      ]
     },
     {
       "id": "pipeline-build-list-returns-decoded-builds",
       "source_file": "go-concourse/concourse/pipelines.go",
       "old": "\t\treturn builds, pagination, true, nil\n\tcase internal.ResourceNotFoundError:",
       "new": "\t\treturn nil, pagination, true, nil\n\tcase internal.ResourceNotFoundError:",
-      "tests": ["ATC Handler Pipelines PipelineBuilds when from, to, and limit are 0 calls to get all builds"],
-      "scenarios": ["Listing pipeline builds returns the exact persisted builds"]
-    },
-    {
-      "id": "pipeline-build-list-missing-reports-not-found",
-      "source_file": "go-concourse/concourse/pipelines.go",
-      "old": "\tcase internal.ResourceNotFoundError:\n\t\treturn builds, Pagination{}, false, nil\n\tdefault:\n\t\treturn builds, Pagination{}, false, err",
-      "new": "\tcase internal.ResourceNotFoundError:\n\t\treturn builds, Pagination{}, true, nil\n\tdefault:\n\t\treturn builds, Pagination{}, false, err",
-      "tests": ["ATC Handler Pipelines PipelineBuilds when the server returns not found returns false and no error"],
-      "scenarios": ["Listing builds for a missing pipeline returns not found"]
+      "tests": [
+        "ATC Handler Pipelines PipelineBuilds when from, to, and limit are 0 calls to get all builds"
+      ],
+      "scenarios": [
+        "Listing pipeline builds returns the exact persisted builds"
+      ]
     },
     {
       "id": "pipeline-build-list-without-links-returns-nil-pages",
       "source_file": "go-concourse/concourse/pagination.go",
       "old": "\treturn pagination, nil\n}\n\ntype Page struct",
       "new": "\tif pagination.Next == nil && pagination.Previous == nil {\n\t\tpagination.Previous = &Page{}\n\t}\n\treturn pagination, nil\n}\n\ntype Page struct",
-      "tests": ["ATC Handler Pipelines PipelineBuilds without a link header returns pagination data with nil pages"],
-      "scenarios": ["Listing pipeline builds without Link headers returns nil pagination"]
+      "tests": [
+        "ATC Handler Pipelines PipelineBuilds without a link header returns pagination data with nil pages"
+      ],
+      "scenarios": [
+        "Listing pipeline builds without Link headers returns nil pagination"
+      ]
     }
   ]
 }

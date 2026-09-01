@@ -1,10 +1,11 @@
 Feature: The Go Concourse client manages pipelines through the real API
 
-  Source: 24 exact specs in go-concourse/concourse/pipelines_test.go. The
+  Source: 14 exact specs in go-concourse/concourse/pipelines_test.go. The
   replacement crosses the production client, rata router, handlers, accessor,
   and PostgreSQL over a real TCP listener. The five admissible API specs are
   isolated in pipeline-client-api-strict.feature; the injected-error-only API
-  leaf remains in Go.
+  leaf remains in Go. Ten client leaves whose assertions require request
+  recording or an injected error remain in Go.
 
   Scenario: Existing instanced pipeline supports pauses
     Given the production Go pipeline client, real API, and PostgreSQL
@@ -51,68 +52,19 @@ Feature: The Go Concourse client manages pipelines through the real API
     And the Go client returned no error
     And pipeline "target" persisted state is "private"
 
-  Scenario: Existing instanced pipeline supports deletes
-    Given the production Go pipeline client, real API, and PostgreSQL
-    And the client team has instanced pipeline "target"
-    And the client instanced pipeline "target" starts "plain"
-    When the Go client "deletes" instanced pipeline "target"
-    Then the Go client found the resource
-    And the Go client returned no error
-    And pipeline "target" persisted state is "deleted"
-
-  Scenario: Missing instanced pipeline reports not found for pauses
-    Given the production Go pipeline client, real API, and PostgreSQL
-    When the Go client "pauses" instanced pipeline "missing"
-    Then the Go client did not find the resource
-    And the Go client returned no error
-
-  Scenario: Missing instanced pipeline reports not found for archives
-    Given the production Go pipeline client, real API, and PostgreSQL
-    When the Go client "archives" instanced pipeline "missing"
-    Then the Go client did not find the resource
-    And the Go client returned no error
-
-  Scenario: Missing instanced pipeline reports not found for unpauses
-    Given the production Go pipeline client, real API, and PostgreSQL
-    When the Go client "unpauses" instanced pipeline "missing"
-    Then the Go client did not find the resource
-    And the Go client returned no error
-
-  Scenario: Missing instanced pipeline reports not found for exposes
-    Given the production Go pipeline client, real API, and PostgreSQL
-    When the Go client "exposes" instanced pipeline "missing"
-    Then the Go client did not find the resource
-    And the Go client returned no error
-
-  Scenario: Missing instanced pipeline reports not found for hides
-    Given the production Go pipeline client, real API, and PostgreSQL
-    When the Go client "hides" instanced pipeline "missing"
-    Then the Go client did not find the resource
-    And the Go client returned no error
-
-  Scenario: Missing instanced pipeline reports not found for deletes
-    Given the production Go pipeline client, real API, and PostgreSQL
-    When the Go client "deletes" instanced pipeline "missing"
-    Then the Go client did not find the resource
-    And the Go client returned no error
-
   Scenario: Pipeline lookup decodes a real instanced pipeline
     Given the production Go pipeline client, real API, and PostgreSQL
     And the client team has instanced pipeline "target"
     And the client instanced pipeline "target" starts "paused"
     When the Go client reads instanced pipeline "target"
     Then the Go client found the resource
-    And the client decoded the exact persisted pipeline "target"
-
-  Scenario: Missing pipeline lookup returns false without an error
-    Given the production Go pipeline client, real API, and PostgreSQL
-    When the Go client reads instanced pipeline "missing"
-    Then the Go client did not find the resource
     And the Go client returned no error
+    And the client decoded the exact persisted pipeline "target"
 
   Scenario: Pipeline listing scope team decodes real objects
     Given the production Go pipeline client, real API, and PostgreSQL
     And the client team has named pipelines "alpha,beta"
+    And public pipeline "outside" exists on client team "other-team"
     When the Go client lists "team" pipelines
     Then the client decoded exact persisted pipelines "alpha,beta"
     And the Go client returned no error
@@ -120,8 +72,9 @@ Feature: The Go Concourse client manages pipelines through the real API
   Scenario: Pipeline listing scope all decodes real objects
     Given the production Go pipeline client, real API, and PostgreSQL
     And the client team has named pipelines "alpha,beta"
+    And public pipeline "outside" exists on client team "other-team"
     When the Go client lists "all" pipelines
-    Then the client decoded exact persisted pipelines "alpha,beta"
+    Then the client decoded exact persisted pipelines "alpha,beta,other-team/outside"
     And the Go client returned no error
 
   Scenario: Ordering pipelines sends a body accepted and persisted by the API
@@ -131,18 +84,11 @@ Feature: The Go Concourse client manages pipelines through the real API
     Then the Go client returned no error
     And the persisted named pipeline order is "beta,alpha"
 
-  Scenario: Ordering a missing pipeline propagates the API error
-    Given the production Go pipeline client, real API, and PostgreSQL
-    And the client team has named pipelines "alpha"
-    When the Go client orders named pipelines as "alpha,missing"
-    Then the Go client returned an error
-
   Scenario: Rename returns the real API result
     Given the production Go pipeline client, real API, and PostgreSQL
     And the client team has named pipelines "old"
     When the Go client renames pipeline "old" to "new"
     Then the Go client found the resource
-    And the Go client returned 0 warning(s)
     And the Go client returned no error
     And pipeline "old" was renamed to "new" in PostgreSQL
 
@@ -173,11 +119,6 @@ Feature: The Go Concourse client manages pipelines through the real API
     And the client team has instanced pipeline "target"
     And the client instanced pipeline "target" has two persisted builds
     When the Go client lists builds for instanced pipeline "target"
-    Then the client returned nil pipeline-build pagination
-    And the Go client returned no error
-
-  Scenario: Listing builds for a missing pipeline returns not found
-    Given the production Go pipeline client, real API, and PostgreSQL
-    When the Go client lists builds for instanced pipeline "missing"
-    Then the Go client did not find the resource
+    Then the Go client found the resource
+    And the client returned nil pipeline-build pagination
     And the Go client returned no error

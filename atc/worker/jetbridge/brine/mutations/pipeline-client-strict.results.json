@@ -1,8 +1,8 @@
 {
   "manifest": "atc/worker/jetbridge/brine/mutations/pipeline-client-strict.json",
-  "git_head": "0f71b691c45dcb9b1bf959fa8c663c4889644548",
-  "completed_at": "2026-09-01T11:01:35Z",
-  "source_tests": 24,
+  "git_head": "109d8190a161d4575d61c8867a35232047b7de26",
+  "completed_at": "2026-09-01T11:22:13Z",
+  "source_tests": 14,
   "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
   "mutation_cases": [
     {
@@ -56,36 +56,6 @@
       ]
     },
     {
-      "id": "delete-uses-production-delete-route",
-      "mutation_sha256": "ed7bb0a01ca1514614d115fbc77fe2b01c706a0dd42e0180e2044afb28fdb6ce",
-      "failed_source_tests": [
-        "ATC Handler Pipelines DeletePipeline when the pipeline exists deletes the pipeline when called"
-      ],
-      "failed_brine_scenarios": [
-        "Existing instanced pipeline supports deletes"
-      ]
-    },
-    {
-      "id": "manage-pipeline-missing-is-not-found",
-      "mutation_sha256": "e38237934d8218520c866cdf803ecb7b81891d38ce27f693f8fc651919192869",
-      "failed_source_tests": [
-        "ATC Handler Pipelines ArchivePipeline when the pipeline doesn't exist returns false and no error",
-        "ATC Handler Pipelines DeletePipeline when the pipeline does not exist returns false and no error",
-        "ATC Handler Pipelines ExposePipeline when the pipeline doesn't exist returns false and no error",
-        "ATC Handler Pipelines HidePipeline when the pipeline doesn't exist returns false and no error",
-        "ATC Handler Pipelines PausePipeline when the pipeline doesn't exist returns false and no error",
-        "ATC Handler Pipelines UnpausePipeline when the pipeline doesn't exist returns false and no error"
-      ],
-      "failed_brine_scenarios": [
-        "Missing instanced pipeline reports not found for archives",
-        "Missing instanced pipeline reports not found for deletes",
-        "Missing instanced pipeline reports not found for exposes",
-        "Missing instanced pipeline reports not found for hides",
-        "Missing instanced pipeline reports not found for pauses",
-        "Missing instanced pipeline reports not found for unpauses"
-      ]
-    },
-    {
       "id": "pipeline-lookup-returns-decoded-object",
       "mutation_sha256": "488aa5f7328de7cc339fd24815491ce4c90c5a600f69f7466ae950cb73febe57",
       "failed_source_tests": [
@@ -96,18 +66,8 @@
       ]
     },
     {
-      "id": "pipeline-lookup-missing-is-not-found",
-      "mutation_sha256": "c6677dae3a02533c4e4153397a7000034d7eeaaa2c3b4ff82919ca1a04a7a789",
-      "failed_source_tests": [
-        "ATC Handler Pipelines Pipeline when the pipeline is not found returns false"
-      ],
-      "failed_brine_scenarios": [
-        "Missing pipeline lookup returns false without an error"
-      ]
-    },
-    {
-      "id": "team-pipeline-list-returns-decoded-objects",
-      "mutation_sha256": "27759daf6fa94578320eb0a0864ff6d1e13984f0167f9a6574983daf6578356b",
+      "id": "team-pipeline-list-keeps-team-scope-and-order",
+      "mutation_sha256": "c71eb46bb1e30e23de347cf40bc1bb69ed4db7fc54e390f427c462c181576b45",
       "failed_source_tests": [
         "ATC Handler Pipelines team.ListPipelines returns pipelines that belong to team"
       ],
@@ -116,8 +76,8 @@
       ]
     },
     {
-      "id": "global-pipeline-list-returns-decoded-objects",
-      "mutation_sha256": "b1805bf63f7858d8a0f4bb40c7f0e2526c93f4bc187342d304d87bab36b129dd",
+      "id": "global-pipeline-list-keeps-global-scope-and-order",
+      "mutation_sha256": "3b6f7f2434ebdac3052167f0b5de900ddf45ad1ea40ab9007e7fed814dcbf85a",
       "failed_source_tests": [
         "ATC Handler Pipelines client.ListPipelines returns all the pipelines"
       ],
@@ -132,18 +92,6 @@
         "ATC Handler Pipelines OrderingPipelines when the API call succeeds return no error"
       ],
       "failed_brine_scenarios": [
-        "Ordering a missing pipeline propagates the API error",
-        "Ordering pipelines sends a body accepted and persisted by the API"
-      ]
-    },
-    {
-      "id": "pipeline-ordering-propagates-bad-request",
-      "mutation_sha256": "85a313a50fe37ec948d5cebd156e5a903ddf6ffd18b5e68edd61223453671334",
-      "failed_source_tests": [
-        "ATC Handler Pipelines OrderingPipelines when the API call errors returns error"
-      ],
-      "failed_brine_scenarios": [
-        "Ordering a missing pipeline propagates the API error",
         "Ordering pipelines sends a body accepted and persisted by the API"
       ]
     },
@@ -185,16 +133,6 @@
       ],
       "failed_brine_scenarios": [
         "Listing pipeline builds returns the exact persisted builds"
-      ]
-    },
-    {
-      "id": "pipeline-build-list-missing-reports-not-found",
-      "mutation_sha256": "17743c3db483c73e86a215af99486c19d619fa2a53b2037418af3734fb2801b9",
-      "failed_source_tests": [
-        "ATC Handler Pipelines PipelineBuilds when the server returns not found returns false and no error"
-      ],
-      "failed_brine_scenarios": [
-        "Listing builds for a missing pipeline returns not found"
       ]
     },
     {
