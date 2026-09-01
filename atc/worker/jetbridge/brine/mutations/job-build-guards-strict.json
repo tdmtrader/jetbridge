@@ -1,0 +1,37 @@
+{
+  "name": "job-build-guards-strict",
+  "test_package": "./atc/api",
+  "source_test_file": "atc/api/jobs_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/job-build-guards-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/job_build_guards_strict.go",
+    "atc/worker/jetbridge/brine/steps/build_client_strict.go",
+    "atc/worker/jetbridge/brine/steps/resources.go"
+  ],
+  "cases": [
+    {
+      "id": "manual-trigger-disabled-job-returns-conflict",
+      "source_file": "atc/api/jobserver/create_build.go",
+      "old": "\t\tif job.DisableManualTrigger() {\n\t\t\tw.WriteHeader(http.StatusConflict)\n\t\t\treturn\n\t\t}",
+      "new": "\t\tif job.DisableManualTrigger() {\n\t\t\tw.WriteHeader(http.StatusOK)\n\t\t\treturn\n\t\t}",
+      "tests": [
+        "Jobs API POST /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/builds rejects a job with manual triggering disabled without inserting a build"
+      ],
+      "scenarios": [
+        "Manual-trigger-disabled jobs reject creation without persisting a build"
+      ]
+    },
+    {
+      "id": "missing-job-returns-not-found",
+      "source_file": "atc/api/jobserver/create_build.go",
+      "old": "\t\tif !found {\n\t\t\tw.WriteHeader(http.StatusNotFound)\n\t\t\treturn\n\t\t}",
+      "new": "\t\tif !found {\n\t\t\tw.WriteHeader(http.StatusGone)\n\t\t\treturn\n\t\t}",
+      "tests": [
+        "Jobs API POST /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/builds returns 404 for a missing persisted job"
+      ],
+      "scenarios": [
+        "Missing persisted jobs return HTTP 404 from build creation"
+      ]
+    }
+  ]
+}

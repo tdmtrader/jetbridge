@@ -1,0 +1,29 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/job-build-guards-strict.json",
+  "git_head": "7905430ec793d4bc5e79d4ba332e90706e07ff77",
+  "completed_at": "2026-09-01T11:56:09Z",
+  "source_tests": 2,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "mutation_cases": [
+    {
+      "id": "manual-trigger-disabled-job-returns-conflict",
+      "mutation_sha256": "1920fe0bf616750311c35a07119910e588ba4d6b1625d718cf8c372f41a08ef0",
+      "failed_source_tests": [
+        "Jobs API POST /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/builds rejects a job with manual triggering disabled without inserting a build"
+      ],
+      "failed_brine_scenarios": [
+        "Manual-trigger-disabled jobs reject creation without persisting a build"
+      ]
+    },
+    {
+      "id": "missing-job-returns-not-found",
+      "mutation_sha256": "8e07bbf0c80a48959f85bd4bcc7206967a9c331f45c9f17a9e2147a3371bf832",
+      "failed_source_tests": [
+        "Jobs API POST /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/builds returns 404 for a missing persisted job"
+      ],
+      "failed_brine_scenarios": [
+        "Missing persisted jobs return HTTP 404 from build creation"
+      ]
+    }
+  ]
+}

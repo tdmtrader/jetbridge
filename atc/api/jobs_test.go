@@ -1524,19 +1524,6 @@ var _ = Describe("Jobs API", func() {
 			Expect(call.build.ID()).To(BeNumerically(">", 0))
 		})
 
-		It("rejects a job with manual triggering disabled without inserting a build", func() {
-			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, manualConfig(true))
-			server = fixture.Serve()
-			response := jobsAPIPost(server, path)
-			Expect(response.StatusCode).To(Equal(http.StatusConflict))
-
-			var count int
-			Expect(fixture.Real.Conn.QueryRow(
-				`SELECT count(*) FROM builds WHERE job_id = $1`, fixture.Job("some-job").ID(),
-			).Scan(&count)).To(Succeed())
-			Expect(count).To(BeZero())
-		})
-
 		It("returns 500 when the real job create fails on its closed connection", func() {
 			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, manualConfig(false))
 			doomed := fixture.doomedJob("some-job")
@@ -1558,16 +1545,6 @@ var _ = Describe("Jobs API", func() {
 			server = fixture.ServePipeline(fixture.doomedPipeline())
 			response := jobsAPIPost(server, path)
 			Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-		})
-
-		It("returns 404 for a missing persisted job", func() {
-			fixture := useJobsAPIFixture(
-				atc.PipelineRef{Name: "some-pipeline"},
-				atc.Config{Jobs: atc.JobConfigs{{Name: "other-job"}}},
-			)
-			server = fixture.Serve()
-			response := jobsAPIPost(server, path)
-			Expect(response.StatusCode).To(Equal(http.StatusNotFound))
 		})
 
 		DescribeTable("keeps the inserted manual build when a downstream read fails",

@@ -127,6 +127,7 @@ func Definitions() []brine.StepDefinition {
 	defs = append(defs, CCAPIStrictDefinitions()...)
 	defs = append(defs, WallAPIStrictDefinitions()...)
 	defs = append(defs, ClearTaskCacheAPIStrictDefinitions()...)
+	defs = append(defs, JobBuildGuardsStrictDefinitions()...)
 	defs = append(defs, UsersAPIDefinitions()...)
 	defs = append(defs, CLIAPIDefinitions()...)
 	defs = append(defs, SmallClientDefinitions()...)
