@@ -81,10 +81,32 @@ func (j JetbridgeDB) PersistNamedWorker(name string) (db.Worker, error) {
 // mirrors the ginkgo suite's closedJetbridgeCloneConn helper, which lives in a
 // _test.go file and so cannot be imported.
 func (j JetbridgeDB) ClosedConn() (db.DbConn, error) {
-	conn := j.runner.OpenConn()
+	conn, err := openJetbridgeConn(j.runner)
+	if err != nil {
+		return nil, fmt.Errorf("open the cloned connection: %w", err)
+	}
 	if err := conn.Close(); err != nil {
 		return nil, fmt.Errorf("close the cloned connection: %w", err)
 	}
+	return conn, nil
+}
+
+func openJetbridgeConn(runner *postgresrunner.Runner) (db.DbConn, error) {
+	conn, err := db.Open(
+		lager.NewLogger("brine-jetbridge-db"),
+		"pgx",
+		runner.DataSourceName(),
+		nil,
+		nil,
+		"brine-jetbridge",
+		nil,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	conn.SetMaxOpenConns(1)
+	conn.SetMaxIdleConns(1)
 	return conn, nil
 }
 
@@ -140,7 +162,10 @@ func ResourceDefinitions() []brine.ResourceDefinition {
 				runner := pm.runner
 
 				runner.CreateTestDBFromTemplate()
-				conn := runner.OpenConn()
+				conn, err := openJetbridgeConn(runner)
+				if err != nil {
+					return nil, fmt.Errorf("open production scenario connection: %w", err)
+				}
 				db.CleanupBaseResourceTypesCache()
 
 				var lockConns [lock.FactoryCount]*sql.DB
