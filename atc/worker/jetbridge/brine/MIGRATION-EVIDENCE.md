@@ -22,19 +22,19 @@ scenario fail is also not evidence.
 
 | quantity | source leaf tests | percentage of 6,857 |
 |---|---:|---:|
-| **fully migrated**: paired failure evidence, no prohibited double, source removed | **668** | **9.74%** |
+| **fully migrated**: paired failure evidence, no prohibited double, source removed | **743** | **10.84%** |
 | strict paired evidence, but source still present | 0 | 0.00% |
 | **runs in Brine but not the full philosophy**: paired failure evidence, but uses a stub, test sink, injected-fault object, fake, or mock | **112** | **1.63%** |
 | of the preceding exception bucket whose source test was removed | 66 | 0.96% |
-| total source tests with paired per-test failure evidence | 780 | 11.38% |
-| former claimed tests with no admissible paired evidence | 1,279 | 18.65% |
+| total source tests with paired per-test failure evidence | 855 | 12.47% |
+| former claimed tests with no admissible paired evidence | 1,204 | 17.56% |
 | Brine scenarios | 1,877 | execution count only |
 
-The requested two headline percentages are therefore **9.74% fully migrated**
+The requested two headline percentages are therefore **10.84% fully migrated**
 and **1.63% validated but running outside the full philosophy**. The second is
 not another migration percentage: 46 of its 112 source tests still exist. If
 "migrated" is restricted to removed source tests in both buckets, the figures
-are 9.74% strict and 0.96% philosophy-exception.
+are 10.84% strict and 0.96% philosophy-exception.
 
 ## Admitted evidence ledger
 
@@ -57,7 +57,7 @@ production-logger resource path.
 | `task_test.go` | 37 | 37 | 0 | 37 |
 | `api/config_test.go` strict real-server subset | 73 | 73 | 0 | 73 |
 | `db/team_test.go` strict real-PostgreSQL subset **†** | 18 | 18 | 0 | 18 |
-| `db/build_test.go` strict real-PostgreSQL subset **†** | 27 | 27 | 0 | 27 |
+| `db/build_test.go` strict real-PostgreSQL subset | 27 | 27 | 0 | 27 |
 | `db/pipeline_test.go` strict real-PostgreSQL subset **†** | 24 | 24 | 0 | 24 |
 | `db/job_test.go` strict real-PostgreSQL subset **†** | 35 | 35 | 0 | 35 |
 | `db/worker_factory_test.go` real-PostgreSQL production-cache suite **†** | 20 | 20 | 0 | 20 |
@@ -77,15 +77,15 @@ production-logger resource path.
 | `fly/eventstream/render_test.go` real TCP SSE rendering | 37 | 37 | 0 | 37 |
 | `api/auth` real TCP/production-handler authorization boundaries | 18 | 18 | 0 | 18 |
 | `api/auth` build/pipeline resource authorization, real TCP/production handlers/real PostgreSQL | 15 | 15 | 0 | 15 |
-| `api/auth` worker resource authorization, real TCP/production handlers/real PostgreSQL **†** | 14 | 14 | 0 | 14 |
+| `api/auth` worker resource authorization, real TCP/production handlers/real PostgreSQL | 14 | 14 | 0 | 14 |
 | `api/accessor/accessor_test.go` production accessor profiles | 38 | 38 | 0 | 38 |
-| `api/users_test.go` production users serialization/filter subset **†** | 12 | 12 | 0 | 12 |
+| `api/users_test.go` production users serialization/filter subset | 12 | 12 | 0 | 12 |
 | `api/cli_test.go` production CLI downloads **†** | 12 | 12 | 0 | 12 |
 | `api/cc_test.go` production CC XML over real TCP/PostgreSQL **†** | 14 | 14 | 0 | 14 |
 | `api/wall_test.go` production wall API over real TCP/PostgreSQL **†** | 14 | 14 | 0 | 14 |
 | `go-concourse/concourse/teams_test.go` strict real-server client subset | 9 | 9 | 0 | 9 |
 | `api/teams_test.go` strict real-server team API subset | 7 | 7 | 0 | 7 |
-| `db/resource_type_test.go` production resource-type domain **†** | 22 | 22 | 0 | 22 |
+| `db/resource_type_test.go` production resource-type domain | 22 | 22 | 0 | 22 |
 | `db/build_factory_test.go` production build-factory policy **†** | 25 | 25 | 0 | 25 |
 | `go-concourse/concourse/jobs_test.go` strict real-server client subset **†** | 19 | 19 | 0 | 19 |
 | `api/jobs_test.go` strict real-server job API subset **†** | 9 | 9 | 0 | 9 |
@@ -101,7 +101,7 @@ production-logger resource path.
 | `scanner_test.go` | 14 | 0 | 14 | 14 |
 | durable-storage, volume-DaemonSet, and behavioral-permutation campaign | 44 | 0 | 44 | 44 |
 | daemonset-integration and daemon-client retained cases | 46 | 0 | 46 | 0 |
-| **admitted total († rows excluded)** | **780** | **668** | **112** | **734** |
+| **admitted total († rows excluded)** | **855** | **743** | **112** | **809** |
 
 ### Superseded sink-free revalidation
 

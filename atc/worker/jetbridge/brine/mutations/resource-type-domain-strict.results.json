@@ -1,7 +1,7 @@
 {
   "manifest": "atc/worker/jetbridge/brine/mutations/resource-type-domain-strict.json",
-  "git_head": "df19964cfa056e253fe04c5ba5e6784a03a633bb",
-  "completed_at": "2026-09-01T10:34:33Z",
+  "git_head": "7fea15037b02f0137d5ba3298906b3e990070197",
+  "completed_at": "2026-09-01T13:20:48Z",
   "source_tests": 22,
   "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
   "mutation_cases": [
