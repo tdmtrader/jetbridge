@@ -22,19 +22,19 @@ scenario fail is also not evidence.
 
 | quantity | source leaf tests | percentage of 6,857 |
 |---|---:|---:|
-| **fully migrated**: paired failure evidence, no prohibited double, source removed | **227** | **3.31%** |
-| strict paired evidence, but source still present | 15 | 0.22% |
+| **fully migrated**: paired failure evidence, no prohibited double, source removed | **242** | **3.53%** |
+| strict paired evidence, but source still present | 88 | 1.28% |
 | **runs in Brine but not the full philosophy**: paired failure evidence, but uses a stub, test sink, injected-fault object, fake, or mock | **112** | **1.63%** |
 | of the preceding exception bucket whose source test was removed | 66 | 0.96% |
-| total source tests with paired per-test failure evidence | 354 | 5.16% |
-| former claimed tests with no admissible paired evidence | 1,705 | 24.87% |
+| total source tests with paired per-test failure evidence | 442 | 6.45% |
+| former claimed tests with no admissible paired evidence | 1,617 | 23.58% |
 | Brine scenarios | 1,527 | execution count only |
 
-The requested two headline percentages are therefore **3.31% fully migrated**
+The requested two headline percentages are therefore **3.53% fully migrated**
 and **1.63% validated but running outside the full philosophy**. The second is
 not another migration percentage: 46 of its 112 source tests still exist. If
 "migrated" is restricted to removed source tests in both buckets, the figures
-are 3.31% strict and 0.96% philosophy-exception.
+are 3.53% strict and 0.96% philosophy-exception.
 
 ## Admitted evidence ledger
 
@@ -47,12 +47,14 @@ are 3.31% strict and 0.96% philosophy-exception.
 | `config_test.go` | 19 | 19 | 0 | 19 |
 | `pipeline_test.go` | 19 | 19 | 0 | 19 |
 | `configvalidate/validate_test.go` | 114 | 114 | 0 | 114 |
+| `container_limits_test.go` | 15 | 15 | 0 | 15 |
+| `api/config_test.go` strict real-server subset | 73 | 73 | 0 | 0 |
 | `JobFactory.JobsToSchedule` | 15 | 15 | 0 | 0 |
 | `destroyer_test.go` | 8 | 0 | 8 | 8 |
 | `scanner_test.go` | 14 | 0 | 14 | 14 |
 | durable-storage, volume-DaemonSet, and behavioral-permutation campaign | 44 | 0 | 44 | 44 |
 | daemonset-integration and daemon-client retained cases | 46 | 0 | 46 | 0 |
-| **total** | **354** | **242** | **112** | **293** |
+| **total** | **442** | **330** | **112** | **308** |
 
 Why the exception rows are exceptions:
 

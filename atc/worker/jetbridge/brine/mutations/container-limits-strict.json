@@ -1,0 +1,138 @@
+{
+  "name": "container-limits-strict",
+  "test_package": "./atc",
+  "source_test_file": "atc/container_limits_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/container-limits-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/container_limits_strict.go"
+  ],
+  "cases": [
+    {
+      "id": "plain-bytes-change",
+      "source_file": "atc/container_limits.go",
+      "old": "\tif len(matches) < 3 || matches[2] == \"\" {\n\t\treturn MemoryLimit(value), nil\n\t}",
+      "new": "\tif len(matches) < 3 || matches[2] == \"\" {\n\t\treturn MemoryLimit(value + 1), nil\n\t}",
+      "tests": [
+        "ContainerLimits ParseMemoryLimit parses plain bytes"
+      ],
+      "scenarios": [
+        "Strict container limit profile <profile> (row 1)"
+      ],
+      "failure_contains": "value=1025"
+    },
+    {
+      "id": "kibibyte-multiplier-change",
+      "source_file": "atc/container_limits.go",
+      "old": "multiplier = 1 << 10 // 2^10 = 1024",
+      "new": "multiplier = 1 << 9 // mutation: 512",
+      "tests": [
+        "ContainerLimits ParseMemoryLimit parses KB as binary units",
+        "ContainerLimits ParseMemoryLimit parses KiB as binary units",
+        "ContainerLimits ParseMemoryLimit handles single prefix units (K, M, G) as binary"
+      ],
+      "scenarios": [
+        "Strict container limit profile <profile> (row 2)",
+        "Strict container limit profile <profile> (row 5)",
+        "Strict container limit profile <profile> (row 11)"
+      ],
+      "failure_contains": "512"
+    },
+    {
+      "id": "mebibyte-multiplier-change",
+      "source_file": "atc/container_limits.go",
+      "old": "multiplier = 1 << 20 // 2^20 = 1,048,576",
+      "new": "if strings.HasSuffix(strings.ToUpper(limit), \"B\") {\n\t\t\tmultiplier = 1 << 19 // mutation: suffixed M units use 524,288\n\t\t} else {\n\t\t\tmultiplier = 1 << 20\n\t\t}",
+      "tests": [
+        "ContainerLimits ParseMemoryLimit parses MB as binary units",
+        "ContainerLimits ParseMemoryLimit parses MiB as binary units"
+      ],
+      "scenarios": [
+        "Strict container limit profile <profile> (row 3)",
+        "Strict container limit profile <profile> (row 6)"
+      ],
+      "failure_contains": "524288"
+    },
+    {
+      "id": "gibibyte-multiplier-change",
+      "source_file": "atc/container_limits.go",
+      "old": "multiplier = 1 << 30 // 2^30 = 1,073,741,824",
+      "new": "if strings.HasSuffix(strings.ToUpper(limit), \"B\") {\n\t\t\tmultiplier = 1 << 29 // mutation: suffixed G units use 536,870,912\n\t\t} else {\n\t\t\tmultiplier = 1 << 30\n\t\t}",
+      "tests": [
+        "ContainerLimits ParseMemoryLimit parses GB as binary units",
+        "ContainerLimits ParseMemoryLimit parses GiB as binary units"
+      ],
+      "scenarios": [
+        "Strict container limit profile <profile> (row 4)",
+        "Strict container limit profile <profile> (row 7)"
+      ]
+    },
+    {
+      "id": "case-sensitivity-regression",
+      "source_file": "atc/container_limits.go",
+      "old": "var memoryRegex = regexp.MustCompile(`(?i)^([0-9]+)(([KMG])(i)?B?)?$`)",
+      "new": "var memoryRegex = regexp.MustCompile(`^([0-9]+)(([KMG])(i)?B?)?$`)",
+      "tests": [
+        "ContainerLimits ParseMemoryLimit is case insensitive for units",
+        "ContainerLimits ParseMemoryLimit is case insensitive for binary prefix"
+      ],
+      "scenarios": [
+        "Strict container limit profile <profile> (row 8)",
+        "Strict container limit profile <profile> (row 9)"
+      ],
+      "failure_contains": "could not parse container memory limit"
+    },
+    {
+      "id": "invalid-input-is-accepted",
+      "source_file": "atc/container_limits.go",
+      "old": "\tif len(matches) == 0 {\n\t\treturn 0, errors.New(\"could not parse container memory limit\")\n\t}",
+      "new": "\tif len(matches) == 0 {\n\t\treturn 0, nil\n\t}",
+      "tests": [
+        "ContainerLimits ParseMemoryLimit returns error for invalid format"
+      ],
+      "scenarios": [
+        "Strict container limit profile <profile> (row 10)"
+      ],
+      "failure_contains": "value=0"
+    },
+    {
+      "id": "numeric-ephemeral-storage-change",
+      "source_file": "atc/container_limits.go",
+      "old": "*e = EphemeralStorageLimit(v)",
+      "new": "*e = EphemeralStorageLimit(v + 1)",
+      "tests": [
+        "ContainerLimits EphemeralStorageLimit unmarshals a numeric value as bytes"
+      ],
+      "scenarios": [
+        "Strict container limit profile <profile> (row 12)"
+      ],
+      "failure_contains": "1073741825"
+    },
+    {
+      "id": "string-ephemeral-storage-change",
+      "source_file": "atc/container_limits.go",
+      "old": "*e = EphemeralStorageLimit(parsed)",
+      "new": "*e = EphemeralStorageLimit(parsed + 1)",
+      "tests": [
+        "ContainerLimits EphemeralStorageLimit unmarshals a string value with units",
+        "ContainerLimits EphemeralStorageLimit unmarshals GiB string"
+      ],
+      "scenarios": [
+        "Strict container limit profile <profile> (row 13)",
+        "Strict container limit profile <profile> (row 14)"
+      ]
+    },
+    {
+      "id": "nil-ephemeral-storage-is-emitted",
+      "source_file": "atc/container_limits.go",
+      "old": "EphemeralStorage *EphemeralStorageLimit `json:\"ephemeral_storage,omitempty\"`",
+      "new": "EphemeralStorage *EphemeralStorageLimit `json:\"ephemeral_storage\"`",
+      "tests": [
+        "ContainerLimits EphemeralStorageLimit is omitted when nil"
+      ],
+      "scenarios": [
+        "Strict container limit profile <profile> (row 15)"
+      ],
+      "failure_contains": "ephemeral_storage"
+    }
+  ]
+}

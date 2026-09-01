@@ -1,0 +1,113 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/container-limits-strict.json",
+  "git_head": "65344b4566056d9e9cfc07a00807b952d0698b70",
+  "completed_at": "2026-09-01T03:36:23Z",
+  "source_tests": 15,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "mutation_cases": [
+    {
+      "id": "plain-bytes-change",
+      "mutation_sha256": "faccc5d325dc379f8bdc945c61d04c07f13aee261001edf4a868791e2325e202",
+      "failed_source_tests": [
+        "ContainerLimits ParseMemoryLimit parses plain bytes"
+      ],
+      "failed_brine_scenarios": [
+        "Strict container limit profile \u003cprofile\u003e (row 1)"
+      ]
+    },
+    {
+      "id": "kibibyte-multiplier-change",
+      "mutation_sha256": "a4ed99003b69c025caa1fc6bc9ccdf6a65bf11ea56ef83a019a424bc27f76de9",
+      "failed_source_tests": [
+        "ContainerLimits ParseMemoryLimit handles single prefix units (K, M, G) as binary",
+        "ContainerLimits ParseMemoryLimit parses KB as binary units",
+        "ContainerLimits ParseMemoryLimit parses KiB as binary units"
+      ],
+      "failed_brine_scenarios": [
+        "Strict container limit profile \u003cprofile\u003e (row 11)",
+        "Strict container limit profile \u003cprofile\u003e (row 2)",
+        "Strict container limit profile \u003cprofile\u003e (row 5)"
+      ]
+    },
+    {
+      "id": "mebibyte-multiplier-change",
+      "mutation_sha256": "a4ea87721bc2f014560616a8eab09c1308c238880cd37b1361a930823d688d7b",
+      "failed_source_tests": [
+        "ContainerLimits ParseMemoryLimit parses MB as binary units",
+        "ContainerLimits ParseMemoryLimit parses MiB as binary units"
+      ],
+      "failed_brine_scenarios": [
+        "Strict container limit profile \u003cprofile\u003e (row 3)",
+        "Strict container limit profile \u003cprofile\u003e (row 6)"
+      ]
+    },
+    {
+      "id": "gibibyte-multiplier-change",
+      "mutation_sha256": "a459539aeaad056bc60c70b9568819b1ddbf562b244c5828f66e6fb77a981662",
+      "failed_source_tests": [
+        "ContainerLimits ParseMemoryLimit parses GB as binary units",
+        "ContainerLimits ParseMemoryLimit parses GiB as binary units"
+      ],
+      "failed_brine_scenarios": [
+        "Strict container limit profile \u003cprofile\u003e (row 14)",
+        "Strict container limit profile \u003cprofile\u003e (row 4)",
+        "Strict container limit profile \u003cprofile\u003e (row 7)"
+      ]
+    },
+    {
+      "id": "case-sensitivity-regression",
+      "mutation_sha256": "7288523552545d86175018e3a1476a111a6120fa8c511e11cc9bbcc5587aa509",
+      "failed_source_tests": [
+        "ContainerLimits ParseMemoryLimit is case insensitive for binary prefix",
+        "ContainerLimits ParseMemoryLimit is case insensitive for units"
+      ],
+      "failed_brine_scenarios": [
+        "Strict container limit profile \u003cprofile\u003e (row 11)",
+        "Strict container limit profile \u003cprofile\u003e (row 8)",
+        "Strict container limit profile \u003cprofile\u003e (row 9)"
+      ]
+    },
+    {
+      "id": "invalid-input-is-accepted",
+      "mutation_sha256": "20cf4260b64cc99b6a012a7b48567632bc88c1df298e6762b16eabe1a39ec4e6",
+      "failed_source_tests": [
+        "ContainerLimits ParseMemoryLimit returns error for invalid format"
+      ],
+      "failed_brine_scenarios": [
+        "Strict container limit profile \u003cprofile\u003e (row 10)"
+      ]
+    },
+    {
+      "id": "numeric-ephemeral-storage-change",
+      "mutation_sha256": "8b11f648837c29ecef660fe4f34bca072d6c864552f982e9d469b668d2025c30",
+      "failed_source_tests": [
+        "ContainerLimits EphemeralStorageLimit unmarshals a numeric value as bytes"
+      ],
+      "failed_brine_scenarios": [
+        "Strict container limit profile \u003cprofile\u003e (row 12)"
+      ]
+    },
+    {
+      "id": "string-ephemeral-storage-change",
+      "mutation_sha256": "6fe5cfee01f2da12076af18d39f18bc5bfa4b8aea536b4da365d74428d33d40e",
+      "failed_source_tests": [
+        "ContainerLimits EphemeralStorageLimit unmarshals GiB string",
+        "ContainerLimits EphemeralStorageLimit unmarshals a string value with units"
+      ],
+      "failed_brine_scenarios": [
+        "Strict container limit profile \u003cprofile\u003e (row 13)",
+        "Strict container limit profile \u003cprofile\u003e (row 14)"
+      ]
+    },
+    {
+      "id": "nil-ephemeral-storage-is-emitted",
+      "mutation_sha256": "d0fcfa8e5df56631904c9c073d5f828ef6239cf64110bf26d64bce9ae29b9910",
+      "failed_source_tests": [
+        "ContainerLimits EphemeralStorageLimit is omitted when nil"
+      ],
+      "failed_brine_scenarios": [
+        "Strict container limit profile \u003cprofile\u003e (row 15)"
+      ]
+    }
+  ]
+}
