@@ -10,14 +10,11 @@ import (
 	"net/url"
 	"strconv"
 	"sync"
-	"time"
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/creds"
 	"github.com/concourse/concourse/atc/creds/dummy"
-	"github.com/concourse/concourse/atc/creds/noop"
 	"github.com/concourse/concourse/atc/db"
-	. "github.com/concourse/concourse/atc/testhelpers"
 	"github.com/tedsuo/rata"
 	"sigs.k8s.io/yaml"
 
@@ -415,26 +412,6 @@ var _ = Describe("Config API", func() {
 								requestQuery.Add("vars.branch", "{")
 							})
 
-							It("returns 400", func() {
-								Expect(response.StatusCode).To(Equal(http.StatusBadRequest))
-							})
-
-							It("returns Content-Type 'application/json'", func() {
-								expectedHeaderEntries := map[string]string{
-									"Content-Type": "application/json",
-								}
-								Expect(response).Should(IncludeHeaderEntries(expectedHeaderEntries))
-							})
-
-							It("returns an error in the response body", func() {
-								Expect(io.ReadAll(response.Body)).To(MatchJSON(`
-										{
-											"errors": [
-												"instance vars are malformed: unexpected end of JSON input"
-											]
-										}`))
-							})
-
 							It("doesn't find the pipeline", func() {
 								Expect(configTeamFactory.findTeamCallSnapshot()).To(BeEmpty())
 								Expect(configTeam.pipelineCallSnapshot()).To(BeEmpty())
@@ -487,27 +464,6 @@ var _ = Describe("Config API", func() {
 					})
 
 					Context("when the pipeline config is found", func() {
-						It("returns 200", func() {
-							Expect(response.StatusCode).To(Equal(http.StatusOK))
-						})
-
-						It("returns Content-Type 'application/json' and config version as X-Concourse-Config-Version", func() {
-							expectedHeaderEntries := map[string]string{
-								"Content-Type":          "application/json",
-								atc.ConfigVersionHeader: strconv.Itoa(int(realPipeline.ConfigVersion())),
-							}
-							Expect(response).Should(IncludeHeaderEntries(expectedHeaderEntries))
-						})
-
-						It("returns the config", func() {
-							var actualConfigResponse atc.ConfigResponse
-							err := json.NewDecoder(response.Body).Decode(&actualConfigResponse)
-							Expect(err).NotTo(HaveOccurred())
-
-							Expect(actualConfigResponse).To(Equal(atc.ConfigResponse{
-								Config: pipelineConfig,
-							}))
-						})
 
 						Context("when finding the config fails", func() {
 							BeforeEach(func() {
@@ -524,9 +480,6 @@ var _ = Describe("Config API", func() {
 						BeforeEach(func() {
 							Expect(realPipeline.Archive()).To(Succeed())
 						})
-						It("returns 404", func() {
-							Expect(response.StatusCode).To(Equal(http.StatusNotFound))
-						})
 					})
 				})
 
@@ -535,9 +488,6 @@ var _ = Describe("Config API", func() {
 						Expect(realPipeline.Destroy()).To(Succeed())
 					})
 
-					It("returns 404", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusNotFound))
-					})
 				})
 
 				Context("when finding the pipeline fails", func() {
@@ -556,9 +506,6 @@ var _ = Describe("Config API", func() {
 					Expect(realTeam.Delete()).To(Succeed())
 				})
 
-				It("returns 404", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusNotFound))
-				})
 			})
 
 			Context("when finding the team fails", func() {
@@ -577,9 +524,6 @@ var _ = Describe("Config API", func() {
 				fakeAccess.IsAuthenticatedReturns(false)
 			})
 
-			It("returns 401", func() {
-				Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
-			})
 		})
 	})
 
@@ -589,7 +533,6 @@ var _ = Describe("Config API", func() {
 			deps                    apiDBDeps
 			server                  *httptest.Server
 			realTeam                db.Team
-			realRequestedTeam       db.Team
 			realPipeline            db.Pipeline
 			configTeam              *configAPITeam
 			configTeamFactory       *configAPITeamFactory
@@ -716,80 +659,6 @@ var _ = Describe("Config API", func() {
 				fakeAccess.IsAuthorizedReturns(true)
 			})
 
-			Context("when an identifier is invalid", func() {
-				Context("and is a string", func() {
-					BeforeEach(func() {
-						var err error
-						realRequestedTeam, err = configTeamFactory.TeamFactory.CreateTeam(atc.Team{Name: "_team"})
-						Expect(err).NotTo(HaveOccurred())
-						routeParams = rata.Params{
-							"team_name":     "_team",
-							"pipeline_name": "_pipeline",
-						}
-
-						requestHeader.Set("Content-Type", "application/json")
-
-						payload, err := json.Marshal(pipelineConfig)
-						Expect(err).NotTo(HaveOccurred())
-
-						requestBody = payload
-					})
-
-					It("returns warnings in the response body", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusCreated))
-						Expect(io.ReadAll(response.Body)).To(MatchJSON(`
-							{
-								"warnings": [
-									{
-										"type": "invalid_identifier",
-										"message": "pipeline: '_pipeline' is not a valid identifier: must start with a lowercase letter or a number"
-									},
-									{
-										"type": "invalid_identifier",
-										"message": "team: '_team' is not a valid identifier: must start with a lowercase letter or a number"
-									}
-								]
-							}`))
-						persisted := expectPersistedPipeline(
-							realRequestedTeam,
-							atc.PipelineRef{Name: "_pipeline"},
-							pipelineConfig,
-							true,
-							nil,
-						)
-						Expect(persisted.ConfigVersion()).NotTo(BeZero())
-					})
-				})
-				Context("and is an empty string", func() {
-					BeforeEach(func() {
-						routeParams = rata.Params{
-							"team_name":     "",
-							"pipeline_name": "",
-						}
-
-						requestHeader.Set("Content-Type", "application/json")
-
-						payload, err := json.Marshal(pipelineConfig)
-						Expect(err).NotTo(HaveOccurred())
-
-						requestBody = payload
-					})
-
-					It("returns warnings in the response body", func() {
-						Expect(io.ReadAll(response.Body)).To(MatchJSON(`
-							{
-								"errors": [
-										"pipeline: identifier cannot be an empty string"
-								]
-							}`))
-						Expect(configTeamFactory.findTeamCallSnapshot()).To(BeEmpty())
-						Expect(saveCalls()).To(BeEmpty())
-						expectOriginalUnchanged()
-					})
-				})
-
-			})
-
 			Context("when a config version is specified", func() {
 				BeforeEach(func() {
 					requestHeader.Set(atc.ConfigVersionHeader, strconv.FormatInt(int64(fromVersion), 10))
@@ -802,26 +671,6 @@ var _ = Describe("Config API", func() {
 							requestBody = []byte(`{`)
 						})
 
-						It("returns 400", func() {
-							Expect(response.StatusCode).To(Equal(http.StatusBadRequest))
-						})
-
-						It("returns Content-Type 'application/json'", func() {
-							expectedHeaderEntries := map[string]string{
-								"Content-Type": "application/json",
-							}
-							Expect(response).Should(IncludeHeaderEntries(expectedHeaderEntries))
-						})
-
-						It("returns error JSON", func() {
-							Expect(io.ReadAll(response.Body)).To(MatchJSON(`
-								{
-									"errors": [
-										"malformed config: error converting YAML to JSON: yaml: line 1: did not find expected node content"
-									]
-								}`))
-						})
-
 						It("does not save anything", func() {
 							Expect(saveCalls()).To(BeEmpty())
 							expectOriginalUnchanged()
@@ -832,26 +681,6 @@ var _ = Describe("Config API", func() {
 						BeforeEach(func() {
 							requestHeader.Set("Content-Type", "application/x-yaml")
 							requestBody = []byte(`{`)
-						})
-
-						It("returns 400", func() {
-							Expect(response.StatusCode).To(Equal(http.StatusBadRequest))
-						})
-
-						It("returns Content-Type 'application/json'", func() {
-							expectedHeaderEntries := map[string]string{
-								"Content-Type": "application/json",
-							}
-							Expect(response).Should(IncludeHeaderEntries(expectedHeaderEntries))
-						})
-
-						It("returns error JSON", func() {
-							Expect(io.ReadAll(response.Body)).To(MatchJSON(`
-								{
-									"errors": [
-										"malformed config: error converting YAML to JSON: yaml: line 1: did not find expected node content"
-									]
-								}`))
 						})
 
 						It("does not save anything", func() {
@@ -872,20 +701,9 @@ var _ = Describe("Config API", func() {
 							requestBody = payload
 						})
 
-						It("returns 200", func() {
-							Expect(response.StatusCode).To(Equal(http.StatusOK))
-						})
-
 						It("notifies the scanner to run", func() {
 							Expect(configTeamFactory.notifyResourceScannerCallCount()).To(Equal(1))
 							Eventually(scannerSignal.C()).Should(Receive())
-						})
-
-						It("returns Content-Type 'application/json'", func() {
-							expectedHeaderEntries := map[string]string{
-								"Content-Type": "application/json",
-							}
-							Expect(response).Should(IncludeHeaderEntries(expectedHeaderEntries))
 						})
 
 						It("saves it initially paused", func() {
@@ -912,17 +730,6 @@ var _ = Describe("Config API", func() {
 								Expect(realPipeline.Destroy()).To(Succeed())
 							})
 
-							It("returns 201", func() {
-								Expect(response.StatusCode).To(Equal(http.StatusCreated))
-								Expect(saveCalls()).To(Equal([]configAPISaveCall{{
-									ref:             atc.PipelineRef{Name: "a-pipeline"},
-									config:          pipelineConfig,
-									from:            fromVersion,
-									initiallyPaused: true,
-								}}))
-								expectPersistedPipeline(realTeam, atc.PipelineRef{Name: "a-pipeline"}, pipelineConfig, true, nil)
-							})
-
 							It("does not notify the scanner to run", func() {
 								Expect(configTeamFactory.notifyResourceScannerCallCount()).To(BeZero())
 								Consistently(scannerSignal.C()).ShouldNot(Receive())
@@ -935,26 +742,6 @@ var _ = Describe("Config API", func() {
 								payload, err := json.Marshal(pipelineConfig)
 								Expect(err).NotTo(HaveOccurred())
 								requestBody = payload
-							})
-
-							It("returns 400", func() {
-								Expect(response.StatusCode).To(Equal(http.StatusBadRequest))
-							})
-
-							It("returns Content-Type 'application/json'", func() {
-								expectedHeaderEntries := map[string]string{
-									"Content-Type": "application/json",
-								}
-								Expect(response).Should(IncludeHeaderEntries(expectedHeaderEntries))
-							})
-
-							It("returns error JSON", func() {
-								Expect(io.ReadAll(response.Body)).To(MatchJSON(`
-								{
-									"errors": [
-										"invalid groups:\n\tgroup 'some-group' has unknown resource 'missing-resource'\n"
-									]
-								}`))
 							})
 
 							It("does not save it", func() {
@@ -974,20 +761,9 @@ var _ = Describe("Config API", func() {
 							requestBody = payload
 						})
 
-						It("returns 200", func() {
-							Expect(response.StatusCode).To(Equal(http.StatusOK))
-						})
-
 						It("notifies the scanner to run", func() {
 							Expect(configTeamFactory.notifyResourceScannerCallCount()).To(Equal(1))
 							Eventually(scannerSignal.C()).Should(Receive())
-						})
-
-						It("returns Content-Type 'application/json'", func() {
-							expectedHeaderEntries := map[string]string{
-								"Content-Type": "application/json",
-							}
-							Expect(response).Should(IncludeHeaderEntries(expectedHeaderEntries))
 						})
 
 						It("saves it initially paused", func() {
@@ -1020,61 +796,6 @@ jobs:
 								requestBody = []byte(payload)
 							})
 
-							It("returns 200", func() {
-								Expect(response.StatusCode).To(Equal(http.StatusOK))
-							})
-
-							It("returns Content-Type 'application/json'", func() {
-								expectedHeaderEntries := map[string]string{
-									"Content-Type": "application/json",
-								}
-								Expect(response).Should(IncludeHeaderEntries(expectedHeaderEntries))
-							})
-
-							It("saves it", func() {
-								expectedConfig := atc.Config{
-									Resources: []atc.ResourceConfig{
-										{
-											Name:         "some-resource",
-											Type:         "some-type",
-											Source:       nil,
-											CheckEvery:   &atc.CheckEvery{Interval: 10 * time.Second},
-											CheckTimeout: "1m",
-										},
-									},
-									Jobs: atc.JobConfigs{
-										{
-											Name: "some-job",
-											PlanSequence: []atc.Step{
-												{
-													Config: &atc.GetStep{
-														Name: "some-resource",
-													},
-												},
-												{
-													Config: &atc.TaskStep{
-														Name: "some-task",
-														Config: &atc.TaskConfig{
-															Platform: "linux",
-
-															Run: atc.TaskRunConfig{
-																Path: "ls",
-															},
-
-															Params: atc.TaskEnv{
-																"FOO": "true",
-																"BAR": "1",
-																"BAZ": "1.9",
-															},
-														},
-													},
-												},
-											},
-										},
-									},
-								}
-								expectUpdatedSave(atc.PipelineRef{Name: "a-pipeline"}, expectedConfig)
-							})
 						})
 
 						Describe("test validate cred params when the check_creds param is set in request", func() {
@@ -1092,15 +813,6 @@ jobs:
 										secretManager = configAPISecrets("BAR", "this-string-value-doesn't-matter")
 									})
 
-									It("passes validation", func() {
-										var expectedConfig atc.Config
-										Expect(yaml.Unmarshal([]byte(payload), &expectedConfig)).To(Succeed())
-										expectUpdatedSave(atc.PipelineRef{Name: "a-pipeline"}, expectedConfig)
-									})
-
-									It("returns 200 ok", func() {
-										Expect(response.StatusCode).To(Equal(http.StatusOK))
-									})
 								})
 							}
 
@@ -1113,10 +825,6 @@ jobs:
 									It("fail validation", func() {
 										Expect(saveCalls()).To(BeEmpty())
 										expectOriginalUnchanged()
-									})
-
-									It("returns 400", func() {
-										Expect(response.StatusCode).To(Equal(http.StatusBadRequest))
 									})
 
 								})
@@ -1259,135 +967,9 @@ jobs:
 							})
 						})
 
-						Context("when it contains credentials to be interpolated", func() {
-							var (
-								payloadAsConfig atc.Config
-								payload         string
-							)
-
-							BeforeEach(func() {
-								payload = `---
-resources:
-- name: some-resource
-  type: some-type
-  check_every: 10s
-jobs:
-- name: some-job
-  plan:
-  - get: some-resource
-  - task: some-task
-    config:
-      platform: linux
-      run:
-        path: ls
-      params:
-        FOO: ((BAR))`
-								payloadAsConfig = atc.Config{Resources: []atc.ResourceConfig{
-									{
-										Name:       "some-resource",
-										Type:       "some-type",
-										Source:     nil,
-										CheckEvery: &atc.CheckEvery{Interval: 10 * time.Second},
-									},
-								},
-									Jobs: atc.JobConfigs{
-										{
-											Name: "some-job",
-											PlanSequence: []atc.Step{
-												{
-													Config: &atc.GetStep{
-														Name: "some-resource",
-													},
-												},
-												{
-													Config: &atc.TaskStep{
-														Name: "some-task",
-														Config: &atc.TaskConfig{
-															Platform: "linux",
-
-															Run: atc.TaskRunConfig{
-																Path: "ls",
-															},
-
-															Params: atc.TaskEnv{
-																"FOO": "((BAR))",
-															},
-														},
-													},
-												},
-											},
-										},
-									},
-								}
-
-								requestHeader.Set("Content-Type", "application/x-yaml")
-								requestBody = []byte(payload)
-							})
-
-							Context("when the check_creds param is set", func() {
-								BeforeEach(func() {
-									requestQuery.Add(atc.SaveConfigCheckCreds, "")
-								})
-
-								Context("when the credential exists in the credential manager", func() {
-									BeforeEach(func() {
-										secretManager = configAPISecrets("BAR", "this-string-value-doesn't-matter")
-									})
-
-									It("passes validation and saves it un-interpolated", func() {
-										expectUpdatedSave(atc.PipelineRef{Name: "a-pipeline"}, payloadAsConfig)
-									})
-
-									It("returns 200", func() {
-										Expect(response.StatusCode).To(Equal(http.StatusOK))
-									})
-								})
-
-								Context("when the credential does not exist in the credential manager", func() {
-									BeforeEach(func() {
-										secretManager = configAPISecrets("SOME-OTHER-VAR", "this-string-value-doesn't-matter")
-									})
-
-									It("returns 400", func() {
-										Expect(response.StatusCode).To(Equal(http.StatusBadRequest))
-									})
-
-									It("returns the credential name that was missing", func() {
-										Expect(io.ReadAll(response.Body)).To(MatchJSON(`{"errors":["credential validation failed\n\n1 error occurred:\n\t* failed to interpolate task config: undefined vars: BAR\n\n"]}`))
-									})
-								})
-
-								Context("when a credentials manager is not used", func() {
-									BeforeEach(func() {
-										secretManager = noop.Noop{}
-									})
-
-									It("returns 400", func() {
-										Expect(response.StatusCode).To(Equal(http.StatusBadRequest))
-									})
-
-									It("returns the credential name that was missing", func() {
-										Expect(io.ReadAll(response.Body)).To(MatchJSON(`{"errors":["credential validation failed\n\n1 error occurred:\n\t* failed to interpolate task config: undefined vars: BAR\n\n"]}`))
-									})
-								})
-							})
-
-						})
-
 						Context("when it's the first time the pipeline has been created", func() {
 							BeforeEach(func() {
 								Expect(realPipeline.Destroy()).To(Succeed())
-							})
-
-							It("returns 201", func() {
-								Expect(response.StatusCode).To(Equal(http.StatusCreated))
-								Expect(saveCalls()).To(Equal([]configAPISaveCall{{
-									ref:             atc.PipelineRef{Name: "a-pipeline"},
-									config:          pipelineConfig,
-									from:            fromVersion,
-									initiallyPaused: true,
-								}}))
-								expectPersistedPipeline(realTeam, atc.PipelineRef{Name: "a-pipeline"}, pipelineConfig, true, nil)
 							})
 
 							It("does not notify the scanner to run", func() {
@@ -1419,26 +1001,6 @@ jobs:
 								requestBody = payload
 							})
 
-							It("returns 400", func() {
-								Expect(response.StatusCode).To(Equal(http.StatusBadRequest))
-							})
-
-							It("returns Content-Type 'application/json'", func() {
-								expectedHeaderEntries := map[string]string{
-									"Content-Type": "application/json",
-								}
-								Expect(response).Should(IncludeHeaderEntries(expectedHeaderEntries))
-							})
-
-							It("returns error JSON", func() {
-								Expect(io.ReadAll(response.Body)).To(MatchJSON(`
-								{
-									"errors": [
-										"invalid groups:\n\tgroup 'some-group' has unknown resource 'missing-resource'\n"
-									]
-								}`))
-							})
-
 							It("does not save it", func() {
 								Expect(saveCalls()).To(BeEmpty())
 								expectOriginalUnchanged()
@@ -1449,26 +1011,6 @@ jobs:
 							Context("when instance vars are malformed", func() {
 								BeforeEach(func() {
 									requestQuery.Add("vars.foo", "{")
-								})
-
-								It("returns 400", func() {
-									Expect(response.StatusCode).To(Equal(http.StatusBadRequest))
-								})
-
-								It("returns Content-Type 'application/json'", func() {
-									expectedHeaderEntries := map[string]string{
-										"Content-Type": "application/json",
-									}
-									Expect(response).Should(IncludeHeaderEntries(expectedHeaderEntries))
-								})
-
-								It("returns an error in the response body", func() {
-									Expect(io.ReadAll(response.Body)).To(MatchJSON(`
-										{
-											"errors": [
-												"instance vars are malformed: unexpected end of JSON input"
-											]
-										}`))
 								})
 
 								It("does not save anything", func() {
@@ -1482,20 +1024,6 @@ jobs:
 									requestQuery.Add("vars", "{\"branch\":\"feature\"}")
 								})
 
-								It("saves an instanced pipeline", func() {
-									ref := atc.PipelineRef{
-										Name:         "a-pipeline",
-										InstanceVars: atc.InstanceVars{"branch": "feature"},
-									}
-									Expect(saveCalls()).To(Equal([]configAPISaveCall{{
-										ref:             ref,
-										config:          pipelineConfig,
-										from:            fromVersion,
-										initiallyPaused: true,
-									}}))
-									expectPersistedPipeline(realTeam, ref, pipelineConfig, true, nil)
-									expectOriginalUnchanged()
-								})
 							})
 						})
 					})
@@ -1515,9 +1043,6 @@ jobs:
 								Expect(realTeam.Delete()).To(Succeed())
 							})
 
-							It("returns 404", func() {
-								Expect(response.StatusCode).To(Equal(http.StatusNotFound))
-							})
 						})
 
 						Context("when finding the team fails", func() {
@@ -1541,10 +1066,6 @@ jobs:
 						Expect(err).NotTo(HaveOccurred())
 
 						requestBody = payload
-					})
-
-					It("returns Unsupported Media Type", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusUnsupportedMediaType))
 					})
 
 					It("does not save it", func() {
@@ -1577,29 +1098,6 @@ jobs:
 						requestBody = remoraPayload
 					})
 
-					It("returns 200", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusOK))
-					})
-
-					It("returns Content-Type 'application/json'", func() {
-						expectedHeaderEntries := map[string]string{
-							"Content-Type": "application/json",
-						}
-						Expect(response).Should(IncludeHeaderEntries(expectedHeaderEntries))
-					})
-
-					It("saves it", func() {
-						expectedConfig := atc.Config{
-							Jobs: atc.JobConfigs{
-								{
-									Name:         "some-job",
-									Public:       true,
-									PlanSequence: []atc.Step{},
-								},
-							},
-						}
-						expectUpdatedSave(atc.PipelineRef{Name: "a-pipeline"}, expectedConfig)
-					})
 				})
 
 				Context("when the config contains extra keys nested under a valid key", func() {
@@ -1622,21 +1120,6 @@ jobs:
 						requestBody = remoraPayload
 					})
 
-					It("returns 400", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusBadRequest))
-					})
-
-					It("returns Content-Type 'application/json'", func() {
-						expectedHeaderEntries := map[string]string{
-							"Content-Type": "application/json",
-						}
-						Expect(response).Should(IncludeHeaderEntries(expectedHeaderEntries))
-					})
-
-					It("returns an error in the response body", func() {
-						Expect(io.ReadAll(response.Body)).To(ContainSubstring(`malformed config: error unmarshaling JSON: while decoding JSON: json: unknown field \"pubic\"`))
-					})
-
 					It("does not save it", func() {
 						Expect(saveCalls()).To(BeEmpty())
 						expectOriginalUnchanged()
@@ -1649,26 +1132,6 @@ jobs:
 					requestHeader.Set(atc.ConfigVersionHeader, "forty-two")
 				})
 
-				It("returns 400", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusBadRequest))
-				})
-
-				It("returns Content-Type 'application/json'", func() {
-					expectedHeaderEntries := map[string]string{
-						"Content-Type": "application/json",
-					}
-					Expect(response).Should(IncludeHeaderEntries(expectedHeaderEntries))
-				})
-
-				It("returns an error in the response body", func() {
-					Expect(io.ReadAll(response.Body)).To(MatchJSON(`
-							{
-								"errors": [
-									"config version is malformed: expected integer"
-								]
-							}`))
-				})
-
 				It("does not save it", func() {
 					Expect(saveCalls()).To(BeEmpty())
 					expectOriginalUnchanged()
@@ -1679,10 +1142,6 @@ jobs:
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
 				fakeAccess.IsAuthenticatedReturns(false)
-			})
-
-			It("returns 401", func() {
-				Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
 			})
 
 			It("does not save the config", func() {

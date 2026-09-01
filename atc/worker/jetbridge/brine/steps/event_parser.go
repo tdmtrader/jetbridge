@@ -10,13 +10,6 @@ import (
 	"github.com/concourse/concourse/atc/event"
 )
 
-type brineFakeEvent struct {
-	Hello string `json:"hello"`
-}
-
-func (brineFakeEvent) EventType() atc.EventType  { return "brine-fake" }
-func (brineFakeEvent) Version() atc.EventVersion { return "5.1" }
-
 type EventParserObservation struct {
 	Value string
 }
@@ -38,26 +31,33 @@ func EventParserDefinitions() []brine.StepDefinition {
 }
 
 func observeEventParser(profile string) (string, error) {
-	event.RegisterEvent(brineFakeEvent{})
 	switch profile {
 	case "compatible-older":
-		parsed, err := event.ParseEvent("5.0", "brine-fake", []byte(`{"hello":"sup"}`))
+		parsed, err := event.ParseEvent("1.0", event.EventTypeImageCheck, []byte(`{"time":7}`))
 		if err != nil {
 			return "", err
 		}
-		return fmt.Sprintf("%T:%s", parsed, parsed.(brineFakeEvent).Hello), nil
+		return fmt.Sprintf("%T:%d", parsed, parsed.(event.ImageCheck).Time), nil
 	case "compatible-newer":
-		parsed, err := event.ParseEvent("5.3", "brine-fake", []byte(`{"hello":"sup","future":"field"}`))
+		parsed, err := event.ParseEvent("1.3", event.EventTypeImageCheck, []byte(`{"time":7,"future":"field"}`))
 		if err != nil {
 			return "", err
 		}
-		return fmt.Sprintf("%T:%s", parsed, parsed.(brineFakeEvent).Hello), nil
+		return fmt.Sprintf("%T:%d", parsed, parsed.(event.ImageCheck).Time), nil
 	case "unknown-type":
 		_, err := event.ParseEvent("4.0", "brine-unknown", []byte(`{}`))
-		return fmt.Sprintf("%T", err), nil
+		unknown, ok := err.(event.UnknownEventTypeError)
+		if !ok {
+			return fmt.Sprintf("%T", err), nil
+		}
+		return fmt.Sprintf("%T:%s", err, unknown.Type), nil
 	case "incompatible-version":
-		_, err := event.ParseEvent("4.0", "brine-fake", []byte(`{}`))
-		return fmt.Sprintf("%T", err), nil
+		_, err := event.ParseEvent("2.0", event.EventTypeImageCheck, []byte(`{}`))
+		unknown, ok := err.(event.UnknownEventVersionError)
+		if !ok {
+			return fmt.Sprintf("%T", err), nil
+		}
+		return fmt.Sprintf("%T:%s:%s:%v", err, unknown.Type, unknown.Version, unknown.KnownVersions), nil
 	case "message-round-trip":
 		payload, err := json.Marshal(event.Message{Event: event.Log{Payload: "sup"}})
 		if err != nil {

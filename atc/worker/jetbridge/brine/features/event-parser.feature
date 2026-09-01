@@ -1,24 +1,24 @@
 Feature: Build events parse through the production registry
 
   Source: all 26 specs in atc/event/parser_test.go. These scenarios call the
-  production registry and JSON envelope implementation directly, without a
-  fake parser or duplicated event table.
+  production registry and JSON envelope implementation directly with concrete
+  production event types and no parser or event doubles.
 
   Scenario: Older minor versions use the compatible registered parser
     When the production event parser handles profile "compatible-older"
-    Then the event parser result is "steps.brineFakeEvent:sup"
+    Then the event parser result is "event.ImageCheck:7"
 
   Scenario: Newer minor versions ignore compatible future fields
     When the production event parser handles profile "compatible-newer"
-    Then the event parser result is "steps.brineFakeEvent:sup"
+    Then the event parser result is "event.ImageCheck:7"
 
   Scenario: Unknown event types return their typed error
     When the production event parser handles profile "unknown-type"
-    Then the event parser result is "event.UnknownEventTypeError"
+    Then the event parser result is "event.UnknownEventTypeError:brine-unknown"
 
   Scenario: Incompatible major versions return their typed error
     When the production event parser handles profile "incompatible-version"
-    Then the event parser result is "event.UnknownEventVersionError"
+    Then the event parser result is "event.UnknownEventVersionError:image-check:2.0:[1.1]"
 
   Scenario Outline: The production registry contains <event>
     When the production event parser handles profile "<event>"

@@ -1,0 +1,113 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/event-parser-strict.json",
+  "git_head": "212b51769408f89185f8f5aa6a80cc99dff1ae35",
+  "completed_at": "2026-09-01T04:01:33Z",
+  "source_tests": 26,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "mutation_cases": [
+    {
+      "id": "minor-versions-require-exact-match",
+      "mutation_sha256": "1865b07ac2952ec14906d8f6da8ca07607e8b57f66898c1dca165a27a925511e",
+      "failed_source_tests": [
+        "ParseEvent can parse a newer event type with a compatible major version",
+        "ParseEvent can parse an older event type with a compatible major version"
+      ],
+      "failed_brine_scenarios": [
+        "Newer minor versions ignore compatible future fields",
+        "Older minor versions use the compatible registered parser"
+      ]
+    },
+    {
+      "id": "unknown-type-error-loses-requested-type",
+      "mutation_sha256": "6452f0031d4bd971763001cfb01cfe25197c3a8f578c7ee5cd1728e31dceb2ab",
+      "failed_source_tests": [
+        "ParseEvent fails to parse if the type is unknown"
+      ],
+      "failed_brine_scenarios": [
+        "Unknown event types return their typed error"
+      ]
+    },
+    {
+      "id": "unknown-version-error-loses-requested-version",
+      "mutation_sha256": "d228754e416c7fd1ca22c4aebc4ca12cc08824bb2db3ac7c12833390961f50f8",
+      "failed_source_tests": [
+        "ParseEvent fails to parse if the version is incompatible"
+      ],
+      "failed_brine_scenarios": [
+        "Incompatible major versions return their typed error"
+      ]
+    },
+    {
+      "id": "production-events-are-not-registered",
+      "mutation_sha256": "e20b8afb0993d615417fff9389fb0ba31b4f0ce18dfec49761d0b6d900ac25e5",
+      "failed_source_tests": [
+        "ParseEvent should register all non-deprecated events successfully AcrossSubsteps",
+        "ParseEvent should register all non-deprecated events successfully Error",
+        "ParseEvent should register all non-deprecated events successfully FinishGet",
+        "ParseEvent should register all non-deprecated events successfully FinishPut",
+        "ParseEvent should register all non-deprecated events successfully FinishTask",
+        "ParseEvent should register all non-deprecated events successfully ImageCheck",
+        "ParseEvent should register all non-deprecated events successfully ImageGet",
+        "ParseEvent should register all non-deprecated events successfully InitializeCheck",
+        "ParseEvent should register all non-deprecated events successfully InitializeGet",
+        "ParseEvent should register all non-deprecated events successfully InitializePut",
+        "ParseEvent should register all non-deprecated events successfully InitializeTask",
+        "ParseEvent should register all non-deprecated events successfully Log",
+        "ParseEvent should register all non-deprecated events successfully SelectedWorker",
+        "ParseEvent should register all non-deprecated events successfully SetPipelineChanged",
+        "ParseEvent should register all non-deprecated events successfully StartGet",
+        "ParseEvent should register all non-deprecated events successfully StartPut",
+        "ParseEvent should register all non-deprecated events successfully StartTask",
+        "ParseEvent should register all non-deprecated events successfully Status",
+        "ParseEvent should register all non-deprecated events successfully WaitingForWorker"
+      ],
+      "failed_brine_scenarios": [
+        "Event messages round-trip their concrete payload",
+        "Incompatible major versions return their typed error",
+        "Newer minor versions ignore compatible future fields",
+        "Older minor versions use the compatible registered parser",
+        "The production registry contains \u003cevent\u003e (row 1)",
+        "The production registry contains \u003cevent\u003e (row 10)",
+        "The production registry contains \u003cevent\u003e (row 11)",
+        "The production registry contains \u003cevent\u003e (row 12)",
+        "The production registry contains \u003cevent\u003e (row 13)",
+        "The production registry contains \u003cevent\u003e (row 14)",
+        "The production registry contains \u003cevent\u003e (row 15)",
+        "The production registry contains \u003cevent\u003e (row 16)",
+        "The production registry contains \u003cevent\u003e (row 17)",
+        "The production registry contains \u003cevent\u003e (row 18)",
+        "The production registry contains \u003cevent\u003e (row 19)",
+        "The production registry contains \u003cevent\u003e (row 2)",
+        "The production registry contains \u003cevent\u003e (row 3)",
+        "The production registry contains \u003cevent\u003e (row 4)",
+        "The production registry contains \u003cevent\u003e (row 5)",
+        "The production registry contains \u003cevent\u003e (row 6)",
+        "The production registry contains \u003cevent\u003e (row 7)",
+        "The production registry contains \u003cevent\u003e (row 8)",
+        "The production registry contains \u003cevent\u003e (row 9)"
+      ]
+    },
+    {
+      "id": "message-envelope-loses-event-type",
+      "mutation_sha256": "443a31794541d363f4b55164a76938b7dfba6a0eb4b219f4f07364148f786ed0",
+      "failed_source_tests": [
+        "Message can round-trip an event"
+      ],
+      "failed_brine_scenarios": [
+        "Event messages round-trip their concrete payload"
+      ]
+    },
+    {
+      "id": "missing-data-error-loses-event-type",
+      "mutation_sha256": "071a878ebd4f579fbe33106193a837cef5a3e36f9247830d9a6f9a76679aad46",
+      "failed_source_tests": [
+        "Message fails to unmarshal an envelope with no data, rather than panicking",
+        "Message fails to unmarshal an envelope with null data, rather than panicking"
+      ],
+      "failed_brine_scenarios": [
+        "Missing envelope data returns an error rather than panicking",
+        "Null envelope data returns an error rather than panicking"
+      ]
+    }
+  ]
+}

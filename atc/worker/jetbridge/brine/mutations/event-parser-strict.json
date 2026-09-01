@@ -1,0 +1,123 @@
+{
+  "name": "event-parser-strict",
+  "test_package": "./atc/event",
+  "source_test_file": "atc/event/parser_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/event-parser.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/event_parser.go"
+  ],
+  "cases": [
+    {
+      "id": "minor-versions-require-exact-match",
+      "source_file": "atc/event/parser.go",
+      "old": "\t\tif v.IsCompatibleWith(version) {",
+      "new": "\t\tif v == version {",
+      "tests": [
+        "ParseEvent can parse an older event type with a compatible major version",
+        "ParseEvent can parse a newer event type with a compatible major version"
+      ],
+      "scenarios": [
+        "Older minor versions use the compatible registered parser",
+        "Newer minor versions ignore compatible future fields"
+      ]
+    },
+    {
+      "id": "unknown-type-error-loses-requested-type",
+      "source_file": "atc/event/parser.go",
+      "old": "\t\treturn nil, UnknownEventTypeError{typ}",
+      "new": "\t\treturn nil, UnknownEventTypeError{\"mutated-\" + typ}",
+      "tests": [
+        "ParseEvent fails to parse if the type is unknown"
+      ],
+      "scenarios": [
+        "Unknown event types return their typed error"
+      ]
+    },
+    {
+      "id": "unknown-version-error-loses-requested-version",
+      "source_file": "atc/event/parser.go",
+      "old": "\t\tVersion:       version,",
+      "new": "\t\tVersion:       \"mutated-\" + version,",
+      "tests": [
+        "ParseEvent fails to parse if the version is incompatible"
+      ],
+      "scenarios": [
+        "Incompatible major versions return their typed error"
+      ]
+    },
+    {
+      "id": "production-events-are-not-registered",
+      "source_file": "atc/event/parser.go",
+      "old": "func RegisterEvent(e atc.Event) {\n\tversions, found := events[e.EventType()]\n\tif !found {\n\t\tversions = eventVersions{}\n\t\tevents[e.EventType()] = versions\n\t}\n\n\tversions[e.Version()] = unmarshaler(e)\n}",
+      "new": "func RegisterEvent(e atc.Event) {\n\t_ = e\n}",
+      "tests": [
+        "ParseEvent should register all non-deprecated events successfully InitializeCheck",
+        "ParseEvent should register all non-deprecated events successfully InitializeTask",
+        "ParseEvent should register all non-deprecated events successfully StartTask",
+        "ParseEvent should register all non-deprecated events successfully FinishTask",
+        "ParseEvent should register all non-deprecated events successfully InitializeGet",
+        "ParseEvent should register all non-deprecated events successfully StartGet",
+        "ParseEvent should register all non-deprecated events successfully FinishGet",
+        "ParseEvent should register all non-deprecated events successfully InitializePut",
+        "ParseEvent should register all non-deprecated events successfully StartPut",
+        "ParseEvent should register all non-deprecated events successfully FinishPut",
+        "ParseEvent should register all non-deprecated events successfully SetPipelineChanged",
+        "ParseEvent should register all non-deprecated events successfully Status",
+        "ParseEvent should register all non-deprecated events successfully WaitingForWorker",
+        "ParseEvent should register all non-deprecated events successfully SelectedWorker",
+        "ParseEvent should register all non-deprecated events successfully Log",
+        "ParseEvent should register all non-deprecated events successfully Error",
+        "ParseEvent should register all non-deprecated events successfully ImageCheck",
+        "ParseEvent should register all non-deprecated events successfully ImageGet",
+        "ParseEvent should register all non-deprecated events successfully AcrossSubsteps"
+      ],
+      "scenarios": [
+        "The production registry contains <event> (row 1)",
+        "The production registry contains <event> (row 2)",
+        "The production registry contains <event> (row 3)",
+        "The production registry contains <event> (row 4)",
+        "The production registry contains <event> (row 5)",
+        "The production registry contains <event> (row 6)",
+        "The production registry contains <event> (row 7)",
+        "The production registry contains <event> (row 8)",
+        "The production registry contains <event> (row 9)",
+        "The production registry contains <event> (row 10)",
+        "The production registry contains <event> (row 11)",
+        "The production registry contains <event> (row 12)",
+        "The production registry contains <event> (row 13)",
+        "The production registry contains <event> (row 14)",
+        "The production registry contains <event> (row 15)",
+        "The production registry contains <event> (row 16)",
+        "The production registry contains <event> (row 17)",
+        "The production registry contains <event> (row 18)",
+        "The production registry contains <event> (row 19)"
+      ]
+    },
+    {
+      "id": "message-envelope-loses-event-type",
+      "source_file": "atc/event/parser.go",
+      "old": "\tenvelope.Event = m.Event.EventType()",
+      "new": "\tenvelope.Event = \"mutated-event\"",
+      "tests": [
+        "Message can round-trip an event"
+      ],
+      "scenarios": [
+        "Event messages round-trip their concrete payload"
+      ]
+    },
+    {
+      "id": "missing-data-error-loses-event-type",
+      "source_file": "atc/event/parser.go",
+      "old": "\t\t\tType:    envelope.Event,",
+      "new": "\t\t\tType:    \"mutated-\" + envelope.Event,",
+      "tests": [
+        "Message fails to unmarshal an envelope with no data, rather than panicking",
+        "Message fails to unmarshal an envelope with null data, rather than panicking"
+      ],
+      "scenarios": [
+        "Missing envelope data returns an error rather than panicking",
+        "Null envelope data returns an error rather than panicking"
+      ]
+    }
+  ]
+}
