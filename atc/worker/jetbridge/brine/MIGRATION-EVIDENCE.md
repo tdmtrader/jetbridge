@@ -22,19 +22,19 @@ scenario fail is also not evidence.
 
 | quantity | source leaf tests | percentage of 6,857 |
 |---|---:|---:|
-| **fully migrated**: paired failure evidence, no prohibited double, source removed | **441** | **6.43%** |
+| **fully migrated**: paired failure evidence, no prohibited double, source removed | **862** | **12.57%** |
 | strict paired evidence, but source still present | 0 | 0.00% |
-| **runs in Brine but not the full philosophy**: paired failure evidence, but uses a stub, test sink, injected-fault object, fake, or mock | **533** | **7.77%** |
-| of the preceding exception bucket whose source test was removed | 487 | 7.10% |
+| **runs in Brine but not the full philosophy**: paired failure evidence, but uses a stub, test sink, injected-fault object, fake, or mock | **112** | **1.63%** |
+| of the preceding exception bucket whose source test was removed | 66 | 0.96% |
 | total source tests with paired per-test failure evidence | 974 | 14.20% |
 | former claimed tests with no admissible paired evidence | 1,085 | 15.82% |
-| Brine scenarios | 1,863 | execution count only |
+| Brine scenarios | 1,877 | execution count only |
 
-The requested two headline percentages are therefore **6.43% fully migrated**
-and **7.77% validated but running outside the full philosophy**. The second is
-not another migration percentage: 46 of its 533 source tests still exist. If
+The requested two headline percentages are therefore **12.57% fully migrated**
+and **1.63% validated but running outside the full philosophy**. The second is
+not another migration percentage: 46 of its 112 source tests still exist. If
 "migrated" is restricted to removed source tests in both buckets, the figures
-are 6.43% strict and 7.10% philosophy-exception.
+are 12.57% strict and 0.96% philosophy-exception.
 
 ## Admitted evidence ledger
 
@@ -49,18 +49,18 @@ are 6.43% strict and 7.10% philosophy-exception.
 | `configvalidate/validate_test.go` | 114 | 114 | 0 | 114 |
 | `container_limits_test.go` | 15 | 15 | 0 | 15 |
 | `task_test.go` | 37 | 37 | 0 | 37 |
-| `api/config_test.go` strict real-server subset, pending sink-free rerun | 73 | 0 | 73 | 73 |
-| `db/team_test.go` strict real-PostgreSQL subset, pending sink-free rerun | 18 | 0 | 18 | 18 |
-| `db/build_test.go` strict real-PostgreSQL subset, pending sink-free rerun | 27 | 0 | 27 | 27 |
-| `db/pipeline_test.go` strict real-PostgreSQL subset, pending sink-free rerun | 24 | 0 | 24 | 24 |
-| `db/job_test.go` strict real-PostgreSQL subset, pending sink-free rerun | 35 | 0 | 35 | 35 |
-| `db/worker_factory_test.go` real-PostgreSQL production-cache suite, pending sink-free rerun | 20 | 0 | 20 | 20 |
-| `db/resource_config_scope_test.go` real-PostgreSQL resource-scope domain, pending sink-free rerun | 23 | 0 | 23 | 23 |
-| `db/container_test.go` strict real-PostgreSQL subset, pending sink-free rerun | 17 | 0 | 17 | 17 |
-| `db/component_notifications_test.go`, pending sink-free rerun | 21 | 0 | 21 | 21 |
-| `db/notifications_bus_test.go` strict real-PostgreSQL subset, pending sink-free rerun | 11 | 0 | 11 | 11 |
+| `api/config_test.go` strict real-server subset | 73 | 73 | 0 | 73 |
+| `db/team_test.go` strict real-PostgreSQL subset | 18 | 18 | 0 | 18 |
+| `db/build_test.go` strict real-PostgreSQL subset | 27 | 27 | 0 | 27 |
+| `db/pipeline_test.go` strict real-PostgreSQL subset | 24 | 24 | 0 | 24 |
+| `db/job_test.go` strict real-PostgreSQL subset | 35 | 35 | 0 | 35 |
+| `db/worker_factory_test.go` real-PostgreSQL production-cache suite | 20 | 20 | 0 | 20 |
+| `db/resource_config_scope_test.go` real-PostgreSQL resource-scope domain | 23 | 23 | 0 | 23 |
+| `db/container_test.go` strict real-PostgreSQL subset | 17 | 17 | 0 | 17 |
+| `db/component_notifications_test.go` | 21 | 21 | 0 | 21 |
+| `db/notifications_bus_test.go` strict real-PostgreSQL subset | 11 | 11 | 0 | 11 |
 | `event/parser_test.go` | 26 | 26 | 0 | 26 |
-| `creds/idtoken/token_generator_test.go`, pending sink-free rerun | 15 | 0 | 15 | 15 |
+| `creds/idtoken/token_generator_test.go` | 15 | 15 | 0 | 15 |
 | `JobFactory.JobsToSchedule` | 15 | 15 | 0 | 15 |
 | `build_test.go` core value methods | 8 | 8 | 0 | 8 |
 | `public_plan_test.go` concrete public serialization | 5 | 5 | 0 | 5 |
@@ -69,30 +69,31 @@ are 6.43% strict and 7.10% philosophy-exception.
 | `sidecar_test.go` production parser/validation/JSON subset | 20 | 20 | 0 | 20 |
 | `configwarning_test.go` | 14 | 14 | 0 | 14 |
 | `fly/eventstream/render_test.go` real TCP SSE rendering | 37 | 37 | 0 | 37 |
-| `api/auth` real TCP/production-handler authorization boundaries, pending sink-free rerun | 18 | 0 | 18 | 18 |
-| `api/auth` resource authorization, real TCP/production handlers/real PostgreSQL, pending sink-free rerun | 29 | 0 | 29 | 29 |
-| `api/accessor/accessor_test.go` production accessor profiles, pending sink-free rerun | 38 | 0 | 38 | 38 |
-| `api/users_test.go` production users serialization/filter subset, pending sink-free rerun | 12 | 0 | 12 | 12 |
-| `api/cli_test.go` production CLI downloads, pending sink-free rerun | 12 | 0 | 12 | 12 |
-| `api/cc_test.go` production CC XML over real TCP/PostgreSQL, pending sink-free rerun | 14 | 0 | 14 | 14 |
-| `api/wall_test.go` production wall API over real TCP/PostgreSQL, pending sink-free rerun | 14 | 0 | 14 | 14 |
+| `api/auth` real TCP/production-handler authorization boundaries | 18 | 18 | 0 | 18 |
+| `api/auth` resource authorization, real TCP/production handlers/real PostgreSQL | 29 | 29 | 0 | 29 |
+| `api/accessor/accessor_test.go` production accessor profiles | 38 | 38 | 0 | 38 |
+| `api/users_test.go` production users serialization/filter subset | 12 | 12 | 0 | 12 |
+| `api/cli_test.go` production CLI downloads | 12 | 12 | 0 | 12 |
+| `api/cc_test.go` production CC XML over real TCP/PostgreSQL | 14 | 14 | 0 | 14 |
+| `api/wall_test.go` production wall API over real TCP/PostgreSQL | 14 | 14 | 0 | 14 |
 | `destroyer_test.go` | 8 | 0 | 8 | 8 |
 | `scanner_test.go` | 14 | 0 | 14 | 14 |
 | durable-storage, volume-DaemonSet, and behavioral-permutation campaign | 44 | 0 | 44 | 44 |
 | daemonset-integration and daemon-client retained cases | 46 | 0 | 46 | 0 |
-| **total** | **974** | **441** | **533** | **928** |
+| **total** | **974** | **862** | **112** | **928** |
 
-### Pending sink-free revalidation
+### Completed sink-free revalidation
 
 The scenario-scoped `jetbridge-db` resource previously called
 `dbtest.NewBuilder`, which constructed a `lagertest` logger even when the
 scenario's own step never used the Builder. The resource now constructs the
 same exported Builder factory surface with an ordinary production logger and
-`db.NewWorkerCache`, but results recorded before that correction crossed the
-old sink-bearing constructor. The behavioral source/Brine pairings remain
-admitted; the following exact 22 result manifests, covering 421 leaves, are
-temporarily classified as philosophy exceptions until their mutations are
-rerun against the corrected resource plane:
+`db.NewWorkerCache`. All exact 22 affected manifests were rerun in full from
+mutation case 1 against restored historical source leaves and the sink-free
+resource plane. The three terminal batches recorded 243 production mutation
+cases and 421 individually paired source/Brine failures: batch A, 82 cases
+(`192179406`); batch B, 69 cases (`e3029c15e`); and batch C, 92 cases
+(`ff59ff22d`). The affected manifests are:
 
 - `accessor-profiles-strict.results.json` (38)
 - `api-auth-admin-strict.results.json` (4)
@@ -116,6 +117,19 @@ rerun against the corrected resource plane:
 - `users-api-strict.results.json` (12)
 - `wall-api-strict.results.json` (14)
 - `worker-factory-domain-strict.results.json` (20)
+
+The accessor correction uses a natural mutation of the production user-ID
+match branch. Its historical "granted the same role multiple times" source
+leaf asserts only that the role is present when both user and group
+authorization match; it does not prove uniqueness. The corrected manifest and
+evidence claim that actual role-presence behavior, not a stronger deduplication
+property.
+
+After the mutation reruns, all 18 affected features were executed against the
+clean adapter and passed 421/421 with terminal `run_end` records in
+`.brine-runs` (runs `01M1E5MX8D7NR3EX4KVZ0EBPE5` through
+`01M1E5S44R2JSA4GYSBBPVC9EH`). This targeted run is the execution check for
+the promoted cohorts.
 
 Why the exception rows are exceptions:
 
@@ -158,9 +172,13 @@ candidates.
 
 ## Execution verification (not equivalence evidence)
 
-- `brine check`: 1,849/1,849 valid.
-- `brine run --mode sync`: 80 features, 1,527/1,527 passed, terminal
-  `run_end`, run `01M1D36GHSK0Z4MADV1GA9RJWD`.
+- `brine check`: 1,877/1,877 valid.
+- the exact 18 affected features: 421/421 passed with terminal `run_end`
+  records, runs `01M1E5MX8D7NR3EX4KVZ0EBPE5` through
+  `01M1E5S44R2JSA4GYSBBPVC9EH`.
+- the all-feature run executed 1,877 scenarios and finished 1,875/1,877; its
+  two failures are in newly prepared, not-yet-validated pipeline coverage.
+  This document does not claim a globally green full run.
 - adapter build and `go test ./steps`: passed.
 - `go test ./go-concourse/concourse`: passed.
 - `git diff --check`: passed.
