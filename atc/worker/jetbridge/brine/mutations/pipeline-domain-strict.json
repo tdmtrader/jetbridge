@@ -1,0 +1,205 @@
+{
+  "name": "pipeline-domain-strict",
+  "test_package": "./atc/db",
+  "source_test_file": "atc/db/pipeline_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/pipeline-domain.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/pipeline_domain.go",
+    "atc/worker/jetbridge/brine/steps/pipeline_domain_strict.go"
+  ],
+  "cases": [
+    {
+      "id": "check-paused-reports-unpaused",
+      "source_file": "atc/db/pipeline.go",
+      "old": "\treturn paused, nil\n}\nfunc (p *pipeline) Reload()",
+      "new": "\treturn true, nil\n}\nfunc (p *pipeline) Reload()",
+      "tests": ["Pipeline CheckPaused when the pipeline is unpaused returns the pipeline is paused"],
+      "scenarios": ["Pipeline domain profile <profile> produces <result> (row 1)"],
+      "failure_contains": "pipeline domain result"
+    },
+    {
+      "id": "check-paused-reports-paused",
+      "source_file": "atc/db/pipeline.go",
+      "old": "\treturn paused, nil\n}\nfunc (p *pipeline) Reload()",
+      "new": "\treturn false, nil\n}\nfunc (p *pipeline) Reload()",
+      "tests": ["Pipeline CheckPaused when the pipeline is paused returns the pipeline is paused"],
+      "scenarios": ["Pipeline domain profile <profile> produces <result> (row 2)"],
+      "failure_contains": "pipeline domain result"
+    },
+    {
+      "id": "pause-persists-paused-state",
+      "source_file": "atc/db/pipeline.go",
+      "old": "\t_, err := psql.Update(\"pipelines\").\n\t\tSet(\"paused\", true).\n\t\tSet(\"paused_at\", sq.Expr(\"now()\")).\n\t\tSet(\"paused_by\", pausedBy).",
+      "new": "\t_, err := psql.Update(\"pipelines\").\n\t\tSet(\"paused\", false).\n\t\tSet(\"paused_at\", sq.Expr(\"now()\")).\n\t\tSet(\"paused_by\", pausedBy).",
+      "tests": ["Pipeline Pause when the pipeline is unpaused pauses the pipeline"],
+      "scenarios": ["Pipeline domain profile <profile> produces <result> (row 3)"],
+      "failure_contains": "pipeline domain result"
+    },
+    {
+      "id": "pause-persists-actor",
+      "source_file": "atc/db/pipeline.go",
+      "old": "\t\tSet(\"paused_by\", pausedBy).",
+      "new": "\t\tSet(\"paused_by\", pausedBy+\"-mutated\").",
+      "tests": [
+        "Pipeline PausedBy when the pipeline is paused has an empty paused by",
+        "Pipeline PausedBy when the pipeline is paused with a username has an paused by"
+      ],
+      "scenarios": [
+        "Pipeline domain profile <profile> produces <result> (row 4)",
+        "Pipeline domain profile <profile> produces <result> (row 5)"
+      ],
+      "failure_contains": "pipeline domain result"
+    },
+    {
+      "id": "pause-persists-current-timestamp",
+      "source_file": "atc/db/pipeline.go",
+      "old": "\t\tSet(\"paused_at\", sq.Expr(\"now()\")).\n\t\tSet(\"paused_by\", pausedBy).",
+      "new": "\t\tSet(\"paused_at\", sq.Expr(\"now() + interval '2 seconds'\")).\n\t\tSet(\"paused_by\", pausedBy).",
+      "tests": ["Pipeline PausedAt when the pipeline is paused has a paused at time stamp"],
+      "scenarios": ["Pipeline domain profile <profile> produces <result> (row 6)"],
+      "failure_contains": "pipeline domain result"
+    },
+    {
+      "id": "archive-persists-state",
+      "source_file": "atc/db/pipeline.go",
+      "old": "\t\tSet(\"archived\", true).",
+      "new": "\t\tSet(\"archived\", false).",
+      "tests": ["Pipeline Archive archives the pipeline"],
+      "scenarios": ["Pipeline domain profile <profile> produces <result> (row 7)"],
+      "failure_contains": "pipeline domain result"
+    },
+    {
+      "id": "archive-advances-last-updated",
+      "source_file": "atc/db/pipeline.go",
+      "old": "\t\tSet(\"last_updated\", sq.Expr(\"now()\")).",
+      "new": "\t\tSet(\"last_updated\", sq.Expr(\"last_updated\")).",
+      "tests": ["Pipeline Archive updates last updated"],
+      "scenarios": ["Pipeline domain profile <profile> produces <result> (row 8)"],
+      "failure_contains": "pipeline domain result"
+    },
+    {
+      "id": "archive-resets-config-version",
+      "source_file": "atc/db/pipeline.go",
+      "old": "\t\tSet(\"version\", 0).",
+      "new": "\t\tSet(\"version\", 1).",
+      "tests": ["Pipeline Archive resets the pipeline version to zero"],
+      "scenarios": ["Pipeline domain profile <profile> produces <result> (row 9)"],
+      "failure_contains": "pipeline domain result"
+    },
+    {
+      "id": "archive-clears-object-configs",
+      "source_file": "atc/db/pipeline.go",
+      "old": "\t\tSet(\"config\", nil).\n\t\tSet(\"nonce\", nil).",
+      "new": "\t\tSet(\"config\", sq.Expr(\"config\")).\n\t\tSet(\"nonce\", nil).",
+      "tests": [
+        "Pipeline Archive removes the config of each job",
+        "Pipeline Archive removes the config of each resource",
+        "Pipeline Archive removes the config of each resource_type",
+        "Pipeline Archive removes the config of each prototype"
+      ],
+      "scenarios": [
+        "Pipeline domain profile <profile> produces <result> (row 10)",
+        "Pipeline domain profile <profile> produces <result> (row 11)",
+        "Pipeline domain profile <profile> produces <result> (row 12)",
+        "Pipeline domain profile <profile> produces <result> (row 13)"
+      ],
+      "failure_contains": "pipeline domain result"
+    },
+    {
+      "id": "unpause-persists-state",
+      "source_file": "atc/db/pipeline.go",
+      "old": "\t\tSet(\"paused\", false).\n\t\tSet(\"paused_by\", nil).\n\t\tSet(\"paused_at\", nil).",
+      "new": "\t\tSet(\"paused\", true).\n\t\tSet(\"paused_by\", nil).\n\t\tSet(\"paused_at\", nil).",
+      "tests": ["Pipeline Unpause when the pipeline is paused unpauses the pipeline"],
+      "scenarios": ["Pipeline domain profile <profile> produces <result> (row 14)"],
+      "failure_contains": "pipeline domain result"
+    },
+    {
+      "id": "unpause-schedules-all-pipeline-jobs",
+      "source_file": "atc/db/pipeline.go",
+      "old": "\terr = requestScheduleForJobsInPipeline(tx, p.id)",
+      "new": "\terr = requestScheduleForJobsInPipeline(tx, p.id+1)",
+      "tests": ["Pipeline Unpause when requesting schedule for unpausing pipeline requests schedule on all the jobs in the pipeline"],
+      "scenarios": ["Pipeline domain profile <profile> produces <result> (row 15)"],
+      "failure_contains": "pipeline domain result"
+    },
+    {
+      "id": "destroy-deletes-pipeline-and-records-marker",
+      "source_file": "atc/db/pipeline.go",
+      "old": "func (p *pipeline) Destroy() error {\n\t_, err := psql.Delete(\"pipelines\").\n\t\tWhere(sq.Eq{\n\t\t\t\"id\": p.id,\n\t\t}).",
+      "new": "func (p *pipeline) Destroy() error {\n\t_, err := psql.Delete(\"pipelines\").\n\t\tWhere(sq.Eq{\n\t\t\t\"id\": p.id + 1,\n\t\t}).",
+      "tests": [
+        "Pipeline Destroy removes the pipeline and all of its data",
+        "Pipeline Destroy marks the pipeline ID in the deleted_pipelines table"
+      ],
+      "scenarios": [
+        "Pipeline domain profile <profile> produces <result> (row 16)",
+        "Pipeline domain profile <profile> produces <result> (row 17)"
+      ],
+      "failure_contains": "pipeline domain result"
+    },
+    {
+      "id": "jobs-retain-configured-order",
+      "source_file": "atc/db/pipeline.go",
+      "old": "\t\tOrderBy(\"j.id ASC\").",
+      "new": "\t\tOrderBy(\"j.id DESC\").",
+      "tests": ["Pipeline Jobs returns all the jobs"],
+      "scenarios": ["Pipeline domain profile <profile> produces <result> (row 18)"],
+      "failure_contains": "pipeline domain result"
+    },
+    {
+      "id": "builds-are-scoped-to-pipeline",
+      "source_file": "atc/db/pipeline.go",
+      "old": "\t\tbuildsQuery.Where(sq.Eq{\"b.pipeline_id\": p.id}), page, p.conn, p.lockFactory, false)",
+      "new": "\t\tbuildsQuery.Where(sq.Eq{\"b.pipeline_id\": p.id + 1}), page, p.conn, p.lockFactory, false)",
+      "tests": ["Pipeline Builds returns builds for the current pipeline"],
+      "scenarios": ["Pipeline domain profile <profile> produces <result> (row 19)"],
+      "failure_contains": "pipeline domain result"
+    },
+    {
+      "id": "started-build-retains-generated-name",
+      "source_file": "atc/db/pipeline.go",
+      "old": "\t\t\"name\":         sq.Expr(\"nextval('one_off_name')\"),\n\t\t\"pipeline_id\":  p.id,\n\t\t\"team_id\":      p.teamID,\n\t\t\"status\":       BuildStatusStarted,",
+      "new": "\t\t\"name\":         \"mutated\",\n\t\t\"pipeline_id\":  p.id,\n\t\t\"team_id\":      p.teamID,\n\t\t\"status\":       BuildStatusStarted,",
+      "tests": ["Pipeline CreateStartedBuild can create started builds with plans"],
+      "scenarios": ["Pipeline domain profile <profile> produces <result> (row 20)"],
+      "failure_contains": "pipeline domain result"
+    },
+    {
+      "id": "started-build-persists-public-plan",
+      "source_file": "atc/db/pipeline.go",
+      "old": "\t\t\"public_plan\":  plan.Public(),",
+      "new": "\t\t\"public_plan\":  (&atc.Plan{}).Public(),",
+      "tests": ["Pipeline CreateStartedBuild saves the public plan"],
+      "scenarios": ["Pipeline domain profile <profile> produces <result> (row 21)"],
+      "failure_contains": "pipeline domain result"
+    },
+    {
+      "id": "started-build-emits-start-event",
+      "source_file": "atc/db/pipeline.go",
+      "old": "\terr = build.saveEvent(tx, event.Status{\n\t\tStatus: atc.StatusStarted,\n\t\tTime:   build.StartTime().Unix(),\n\t})",
+      "new": "\terr = build.saveEvent(tx, event.Status{\n\t\tStatus: atc.StatusPending,\n\t\tTime:   build.StartTime().Unix(),\n\t})",
+      "tests": ["Pipeline CreateStartedBuild creates Start event"],
+      "scenarios": ["Pipeline domain profile <profile> produces <result> (row 22)"],
+      "failure_contains": "pipeline domain result"
+    },
+    {
+      "id": "resource-types-are-scoped-to-pipeline",
+      "source_file": "atc/db/pipeline.go",
+      "old": "\t\tWhere(sq.Eq{\"r.pipeline_id\": p.id}).\n\t\tOrderBy(\"r.name\").",
+      "new": "\t\tWhere(sq.Eq{\"r.pipeline_id\": p.id + 1}).\n\t\tOrderBy(\"r.name\").",
+      "tests": ["Pipeline ResourceTypes returns the resource types"],
+      "scenarios": ["Pipeline domain profile <profile> produces <result> (row 23)"],
+      "failure_contains": "pipeline domain result"
+    },
+    {
+      "id": "config-retains-display",
+      "source_file": "atc/db/pipeline.go",
+      "old": "\t\tDisplay:       p.Display(),",
+      "new": "\t\tDisplay:       nil,",
+      "tests": ["Pipeline Config should return config correctly"],
+      "scenarios": ["Pipeline domain profile <profile> produces <result> (row 24)"],
+      "failure_contains": "pipeline domain result"
+    }
+  ]
+}

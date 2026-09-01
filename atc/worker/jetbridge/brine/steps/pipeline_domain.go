@@ -23,7 +23,7 @@ func PipelineDomainDefinitions() []brine.StepDefinition {
 					return PipelineDomainObservation{}, fmt.Errorf("jetbridge-db resource is %T", resources.Get("jetbridge-db"))
 				}
 				profile, _ := p.GetString(0)
-				value, err := observePipelineDomain(database, profile)
+				value, err := observeStrictPipelineDomain(database, profile)
 				return PipelineDomainObservation{Value: value}, err
 			},
 		),

@@ -1,0 +1,213 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/pipeline-domain-strict.json",
+  "git_head": "a544b0b811693a359f5fa938e0016c363221b87a",
+  "completed_at": "2026-09-01T05:19:36Z",
+  "source_tests": 24,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "mutation_cases": [
+    {
+      "id": "check-paused-reports-unpaused",
+      "mutation_sha256": "418b1deeb58e8ab85c2dcc3209f0ad3a474b82f1ecfaf1945a8ad47c1d18487a",
+      "failed_source_tests": [
+        "Pipeline CheckPaused when the pipeline is unpaused returns the pipeline is paused"
+      ],
+      "failed_brine_scenarios": [
+        "Pipeline domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 1)"
+      ]
+    },
+    {
+      "id": "check-paused-reports-paused",
+      "mutation_sha256": "c52dda6debb33b7fc1c4e101497791742d4fe0ce8ffdd67387db8e371a75f7ef",
+      "failed_source_tests": [
+        "Pipeline CheckPaused when the pipeline is paused returns the pipeline is paused"
+      ],
+      "failed_brine_scenarios": [
+        "Pipeline domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 2)"
+      ]
+    },
+    {
+      "id": "pause-persists-paused-state",
+      "mutation_sha256": "09c8d7ce726253d210075077f5665f81a038eab797682b3f75e94c3172fe55e3",
+      "failed_source_tests": [
+        "Pipeline Pause when the pipeline is unpaused pauses the pipeline"
+      ],
+      "failed_brine_scenarios": [
+        "Pipeline domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 2)",
+        "Pipeline domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 3)"
+      ]
+    },
+    {
+      "id": "pause-persists-actor",
+      "mutation_sha256": "155afe7973a2c845bb2ca57b5f7a9f1da445e2e393f2f3ad8681a007a5b62bbb",
+      "failed_source_tests": [
+        "Pipeline PausedBy when the pipeline is paused has an empty paused by",
+        "Pipeline PausedBy when the pipeline is paused with a username has an paused by"
+      ],
+      "failed_brine_scenarios": [
+        "Pipeline domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 4)",
+        "Pipeline domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 5)"
+      ]
+    },
+    {
+      "id": "pause-persists-current-timestamp",
+      "mutation_sha256": "c77f558508eacaefccf734a61c1f2d6e3eed6145d14248ed1c5237d299ecb380",
+      "failed_source_tests": [
+        "Pipeline PausedAt when the pipeline is paused has a paused at time stamp"
+      ],
+      "failed_brine_scenarios": [
+        "Pipeline domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 6)"
+      ]
+    },
+    {
+      "id": "archive-persists-state",
+      "mutation_sha256": "01b1b943ea05ab8a638c4fa3b05ca45cefd41c57cea9c82cfef1895784ca31cf",
+      "failed_source_tests": [
+        "Pipeline Archive archives the pipeline"
+      ],
+      "failed_brine_scenarios": [
+        "Pipeline domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 7)"
+      ]
+    },
+    {
+      "id": "archive-advances-last-updated",
+      "mutation_sha256": "0ad9e32254ce1c6a88a6c04b444d78fcf0895fd5427e891f3d9d34fe8ba230a6",
+      "failed_source_tests": [
+        "Pipeline Archive updates last updated"
+      ],
+      "failed_brine_scenarios": [
+        "Pipeline domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 8)"
+      ]
+    },
+    {
+      "id": "archive-resets-config-version",
+      "mutation_sha256": "7535c99cdf77be866e455bbcae8ca8680d3f705769880ca83db66927977a7cf5",
+      "failed_source_tests": [
+        "Pipeline Archive resets the pipeline version to zero"
+      ],
+      "failed_brine_scenarios": [
+        "Pipeline domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 9)"
+      ]
+    },
+    {
+      "id": "archive-clears-object-configs",
+      "mutation_sha256": "89dc756ef8f30c32ee2dbd7ec22e9ebd6b4b1f6c5be65c7ff85aff7a8330091b",
+      "failed_source_tests": [
+        "Pipeline Archive removes the config of each job",
+        "Pipeline Archive removes the config of each prototype",
+        "Pipeline Archive removes the config of each resource",
+        "Pipeline Archive removes the config of each resource_type"
+      ],
+      "failed_brine_scenarios": [
+        "Pipeline domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 10)",
+        "Pipeline domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 11)",
+        "Pipeline domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 12)",
+        "Pipeline domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 13)"
+      ]
+    },
+    {
+      "id": "unpause-persists-state",
+      "mutation_sha256": "2c010b61e2ec926c23b12b9b308eeaa50ba10df7aec79ce35f6720277c3d3d94",
+      "failed_source_tests": [
+        "Pipeline Unpause when the pipeline is paused unpauses the pipeline"
+      ],
+      "failed_brine_scenarios": [
+        "Pipeline domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 14)"
+      ]
+    },
+    {
+      "id": "unpause-schedules-all-pipeline-jobs",
+      "mutation_sha256": "14b7374782078006fbb8b9f17b25f4cc45d4010fe2e89734bf90cb748bd91df4",
+      "failed_source_tests": [
+        "Pipeline Unpause when requesting schedule for unpausing pipeline requests schedule on all the jobs in the pipeline"
+      ],
+      "failed_brine_scenarios": [
+        "Pipeline domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 15)"
+      ]
+    },
+    {
+      "id": "destroy-deletes-pipeline-and-records-marker",
+      "mutation_sha256": "a499b90b7d6fa13736e4f8b2ca8c1d9d3fcc6034bdbf3f56e2a3f63a68bd8174",
+      "failed_source_tests": [
+        "Pipeline Destroy marks the pipeline ID in the deleted_pipelines table",
+        "Pipeline Destroy removes the pipeline and all of its data"
+      ],
+      "failed_brine_scenarios": [
+        "Pipeline domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 16)",
+        "Pipeline domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 17)"
+      ]
+    },
+    {
+      "id": "jobs-retain-configured-order",
+      "mutation_sha256": "50db6a834742a1dea7580567ac9e19f2ca42b98c0ba6df412bde36dd526312fa",
+      "failed_source_tests": [
+        "Pipeline Jobs returns all the jobs"
+      ],
+      "failed_brine_scenarios": [
+        "Pipeline domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 18)",
+        "Pipeline domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 24)"
+      ]
+    },
+    {
+      "id": "builds-are-scoped-to-pipeline",
+      "mutation_sha256": "e30ff307c6afb5e1128b8dd0257508bafd1353cfe096c9d5e69158ad7174a28b",
+      "failed_source_tests": [
+        "Pipeline Builds returns builds for the current pipeline"
+      ],
+      "failed_brine_scenarios": [
+        "Pipeline domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 19)"
+      ]
+    },
+    {
+      "id": "started-build-retains-generated-name",
+      "mutation_sha256": "a4f1bff5cc183ac53236c0e28010bcd6349320d8e9491ea434e9aeede20b0a65",
+      "failed_source_tests": [
+        "Pipeline CreateStartedBuild can create started builds with plans"
+      ],
+      "failed_brine_scenarios": [
+        "Pipeline domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 20)"
+      ]
+    },
+    {
+      "id": "started-build-persists-public-plan",
+      "mutation_sha256": "c1d4bba4aee2e6906fafd892eaa9a0fb88b8b61809128cac8d3de5c155669f49",
+      "failed_source_tests": [
+        "Pipeline CreateStartedBuild saves the public plan"
+      ],
+      "failed_brine_scenarios": [
+        "Pipeline domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 21)"
+      ]
+    },
+    {
+      "id": "started-build-emits-start-event",
+      "mutation_sha256": "b6711a9a4bfb3cfba623c01d849c373565379f7b5003ab27a8b767fe7e1707f2",
+      "failed_source_tests": [
+        "Pipeline CreateStartedBuild creates Start event"
+      ],
+      "failed_brine_scenarios": [
+        "Pipeline domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 22)"
+      ]
+    },
+    {
+      "id": "resource-types-are-scoped-to-pipeline",
+      "mutation_sha256": "a117e07dbb5201a196543fd168cbad0011ede4b123ea2939489d9400b345c433",
+      "failed_source_tests": [
+        "Pipeline ResourceTypes returns the resource types"
+      ],
+      "failed_brine_scenarios": [
+        "Pipeline domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 12)",
+        "Pipeline domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 23)",
+        "Pipeline domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 24)"
+      ]
+    },
+    {
+      "id": "config-retains-display",
+      "mutation_sha256": "a1b29110c788e1ce188019ce02580d1998f4afcc8897f280d80af979b16d5a51",
+      "failed_source_tests": [
+        "Pipeline Config should return config correctly"
+      ],
+      "failed_brine_scenarios": [
+        "Pipeline domain profile \u003cprofile\u003e produces \u003cresult\u003e (row 24)"
+      ]
+    }
+  ]
+}
