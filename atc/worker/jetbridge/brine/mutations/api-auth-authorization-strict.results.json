@@ -1,0 +1,25 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/api-auth-authorization-strict.json",
+  "git_head": "f3099c93985872311e697330d0e4ae086dbc2d17",
+  "completed_at": "2026-09-01T07:29:47Z",
+  "source_tests": 4,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "mutation_cases": [
+    {
+      "id": "authorization-authentication-decision-is-inverted",
+      "mutation_sha256": "d7d38e4f20724053b0ac4c87dbe064a23c9a65a5404585da6fcdb20828bdbc84",
+      "failed_source_tests": [
+        "CheckAuthorizationHandler when a request is made when the request is authenticated when the bearer token's team is set to something other than the request's team returns 403",
+        "CheckAuthorizationHandler when a request is made when the request is authenticated when the bearer token's team matches the request's team proxies to the handler",
+        "CheckAuthorizationHandler when a request is made when the request is authenticated when the bearer token's team matches the request's team returns 200",
+        "CheckAuthorizationHandler when a request is made when the request is not authenticated returns 401"
+      ],
+      "failed_brine_scenarios": [
+        "A member of another team is forbidden",
+        "A member of the requested team reaches the production pipelines endpoint",
+        "A member of the requested team receives an OK status",
+        "An anonymous team request is rejected"
+      ]
+    }
+  ]
+}

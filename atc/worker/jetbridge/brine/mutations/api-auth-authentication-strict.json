@@ -1,0 +1,69 @@
+{
+  "name": "api-auth-authentication-strict",
+  "test_package": "./atc/api/auth",
+  "source_test_file": "atc/api/auth/check_authentication_handler_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/api-auth-boundaries.feature",
+  "step_files": ["atc/worker/jetbridge/brine/steps/api_auth.go"],
+  "cases": [
+    {
+      "id": "authenticated-required-requests-are-rejected",
+      "source_file": "atc/api/auth/check_authentication_handler.go",
+      "old": "\tif acc.IsAuthenticated() {\n\t\th.handler.ServeHTTP(w, r)\n\t} else {",
+      "new": "\tif acc.IsAuthenticated() && false {\n\t\th.handler.ServeHTTP(w, r)\n\t} else {",
+      "tests": [
+        "AuthenticationHandler CheckAuthenticationHandler when a request is made when the user is authenticated  returns 200",
+        "AuthenticationHandler CheckAuthenticationHandler when a request is made when the user is authenticated  proxies to the handler"
+      ],
+      "scenarios": [
+        "An authenticated request receives an OK status",
+        "An authenticated request reaches the production user endpoint"
+      ]
+    },
+    {
+      "id": "anonymous-required-requests-are-forbidden-instead-of-unauthorized",
+      "source_file": "atc/api/auth/check_authentication_handler.go",
+      "old": "\t} else {\n\t\th.rejector.Unauthorized(w, r)\n\t}\n}\n\ntype checkAuthIfProvidedHandler",
+      "new": "\t} else {\n\t\th.rejector.Forbidden(w, r)\n\t}\n}\n\ntype checkAuthIfProvidedHandler",
+      "tests": [
+        "AuthenticationHandler CheckAuthenticationHandler when a request is made when the user is not authenticated returns 401",
+        "AuthenticationHandler CheckAuthenticationHandler when a request is made when the user is not authenticated rejects the request"
+      ],
+      "scenarios": [
+        "An anonymous request to an authentication-required route receives unauthorized",
+        "An anonymous request to an authentication-required route is rejected"
+      ]
+    },
+    {
+      "id": "expired-optional-tokens-are-accepted",
+      "source_file": "atc/api/auth/check_authentication_handler.go",
+      "old": "\tif acc.HasToken() && !acc.IsAuthenticated() {\n\t\th.rejector.Unauthorized(w, r)",
+      "new": "\tif acc.HasToken() && false {\n\t\th.rejector.Unauthorized(w, r)",
+      "tests": [
+        "AuthenticationHandler CheckAuthenticationIfProvidedHandler when a request is made when a token is provided when the user is not authenticated returns 401",
+        "AuthenticationHandler CheckAuthenticationIfProvidedHandler when a request is made when a token is provided when the user is not authenticated rejects the request"
+      ],
+      "scenarios": [
+        "An expired supplied token receives unauthorized",
+        "An expired supplied token is rejected"
+      ]
+    },
+    {
+      "id": "accepted-optional-token-path-is-forbidden",
+      "source_file": "atc/api/auth/check_authentication_handler.go",
+      "old": "\t} else {\n\t\th.handler.ServeHTTP(w, r)\n\t}\n}",
+      "new": "\t} else {\n\t\th.rejector.Forbidden(w, r)\n\t}\n}",
+      "tests": [
+        "AuthenticationHandler CheckAuthenticationIfProvidedHandler when a request is made when a token is provided when the user is authenticated  returns 200",
+        "AuthenticationHandler CheckAuthenticationIfProvidedHandler when a request is made when a token is provided when the user is authenticated  proxies to the handler",
+        "AuthenticationHandler CheckAuthenticationIfProvidedHandler when a request is made when a token is NOT provided returns 200",
+        "AuthenticationHandler CheckAuthenticationIfProvidedHandler when a request is made when a token is NOT provided proxies to the handler"
+      ],
+      "scenarios": [
+        "A valid optional token receives an OK status",
+        "A valid optional token reaches the production signing-keys endpoint",
+        "An omitted optional token receives an OK status",
+        "An omitted optional token reaches the production signing-keys endpoint"
+      ]
+    }
+  ]
+}

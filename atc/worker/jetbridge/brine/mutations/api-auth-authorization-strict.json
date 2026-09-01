@@ -1,0 +1,27 @@
+{
+  "name": "api-auth-authorization-strict",
+  "test_package": "./atc/api/auth",
+  "source_test_file": "atc/api/auth/check_authorization_handler_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/api-auth-boundaries.feature",
+  "step_files": ["atc/worker/jetbridge/brine/steps/api_auth.go"],
+  "cases": [
+    {
+      "id": "authorization-authentication-decision-is-inverted",
+      "source_file": "atc/api/auth/check_authorization_handler.go",
+      "old": "\tif !acc.IsAuthenticated() {\n\t\th.rejector.Unauthorized(w, r)\n\t\treturn\n\t}",
+      "new": "\tif acc.IsAuthenticated() {\n\t\th.rejector.Unauthorized(w, r)\n\t\treturn\n\t}",
+      "tests": [
+        "CheckAuthorizationHandler when a request is made when the request is authenticated when the bearer token's team matches the request's team returns 200",
+        "CheckAuthorizationHandler when a request is made when the request is authenticated when the bearer token's team matches the request's team proxies to the handler",
+        "CheckAuthorizationHandler when a request is made when the request is authenticated when the bearer token's team is set to something other than the request's team returns 403",
+        "CheckAuthorizationHandler when a request is made when the request is not authenticated returns 401"
+      ],
+      "scenarios": [
+        "A member of the requested team receives an OK status",
+        "A member of the requested team reaches the production pipelines endpoint",
+        "A member of another team is forbidden",
+        "An anonymous team request is rejected"
+      ]
+    }
+  ]
+}

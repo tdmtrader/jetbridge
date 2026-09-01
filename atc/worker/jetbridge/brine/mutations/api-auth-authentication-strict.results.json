@@ -1,0 +1,61 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/api-auth-authentication-strict.json",
+  "git_head": "f3099c93985872311e697330d0e4ae086dbc2d17",
+  "completed_at": "2026-09-01T07:28:22Z",
+  "source_tests": 10,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "mutation_cases": [
+    {
+      "id": "authenticated-required-requests-are-rejected",
+      "mutation_sha256": "4e94aec6dc58e68a900fa3cb211117e3e742eca1709023422a9d7bcc6d3580c8",
+      "failed_source_tests": [
+        "AuthenticationHandler CheckAuthenticationHandler when a request is made when the user is authenticated  proxies to the handler",
+        "AuthenticationHandler CheckAuthenticationHandler when a request is made when the user is authenticated  returns 200"
+      ],
+      "failed_brine_scenarios": [
+        "An authenticated request reaches the production user endpoint",
+        "An authenticated request receives an OK status"
+      ]
+    },
+    {
+      "id": "anonymous-required-requests-are-forbidden-instead-of-unauthorized",
+      "mutation_sha256": "9d32106864c3b091dedfa07a770a39a12b7be7202516d9d5434c7710b79d56cc",
+      "failed_source_tests": [
+        "AuthenticationHandler CheckAuthenticationHandler when a request is made when the user is not authenticated rejects the request",
+        "AuthenticationHandler CheckAuthenticationHandler when a request is made when the user is not authenticated returns 401"
+      ],
+      "failed_brine_scenarios": [
+        "An anonymous request to an authentication-required route is rejected",
+        "An anonymous request to an authentication-required route receives unauthorized"
+      ]
+    },
+    {
+      "id": "expired-optional-tokens-are-accepted",
+      "mutation_sha256": "2ef826a8536780e12ffada9360ba2abe8ce3daec91528644f6a1a19e95ad5f10",
+      "failed_source_tests": [
+        "AuthenticationHandler CheckAuthenticationIfProvidedHandler when a request is made when a token is provided when the user is not authenticated rejects the request",
+        "AuthenticationHandler CheckAuthenticationIfProvidedHandler when a request is made when a token is provided when the user is not authenticated returns 401"
+      ],
+      "failed_brine_scenarios": [
+        "An expired supplied token is rejected",
+        "An expired supplied token receives unauthorized"
+      ]
+    },
+    {
+      "id": "accepted-optional-token-path-is-forbidden",
+      "mutation_sha256": "014fd4dc4946d96a86d95c8691805ece5e495c08a2f464d3bed2b8a92c45ee2f",
+      "failed_source_tests": [
+        "AuthenticationHandler CheckAuthenticationIfProvidedHandler when a request is made when a token is NOT provided proxies to the handler",
+        "AuthenticationHandler CheckAuthenticationIfProvidedHandler when a request is made when a token is NOT provided returns 200",
+        "AuthenticationHandler CheckAuthenticationIfProvidedHandler when a request is made when a token is provided when the user is authenticated  proxies to the handler",
+        "AuthenticationHandler CheckAuthenticationIfProvidedHandler when a request is made when a token is provided when the user is authenticated  returns 200"
+      ],
+      "failed_brine_scenarios": [
+        "A valid optional token reaches the production signing-keys endpoint",
+        "A valid optional token receives an OK status",
+        "An omitted optional token reaches the production signing-keys endpoint",
+        "An omitted optional token receives an OK status"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,33 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/api-auth-admin-strict.json",
+  "git_head": "f3099c93985872311e697330d0e4ae086dbc2d17",
+  "completed_at": "2026-09-01T07:27:26Z",
+  "source_tests": 4,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "mutation_cases": [
+    {
+      "id": "admin-membership-decision-is-inverted",
+      "mutation_sha256": "789bd5d8046c08e7bf32cbcea4e34bb3b181833605102ca44a66d1c85431aa44",
+      "failed_source_tests": [
+        "CheckAdminHandler when a request is made when the validator returns true when is admin proxies to the handler",
+        "CheckAdminHandler when a request is made when the validator returns true when is admin returns 200 OK",
+        "CheckAdminHandler when a request is made when the validator returns true when is not admin returns 403 Forbidden"
+      ],
+      "failed_brine_scenarios": [
+        "A team owner without an administrator team is forbidden",
+        "An administrator reaches the production active-users endpoint",
+        "An administrator request receives an OK status"
+      ]
+    },
+    {
+      "id": "anonymous-admin-requests-are-treated-as-authenticated",
+      "mutation_sha256": "63fea182c0e4d9496d17939b24d964ace11ce1b906d758554f760331031e0da0",
+      "failed_source_tests": [
+        "CheckAdminHandler when a request is made when the validator returns false rejects the request"
+      ],
+      "failed_brine_scenarios": [
+        "An anonymous administrator request is rejected"
+      ]
+    }
+  ]
+}

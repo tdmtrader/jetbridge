@@ -1,26 +1,87 @@
-Feature: API authentication boundaries expose only authorized handlers
+Feature: Production API authentication and authorization boundaries
 
-  Source: all 18 specs in check_admin_handler_test.go,
-  check_authentication_handler_test.go, and check_authorization_handler_test.go.
-  Tokens are real access_tokens rows, roles are stored on real teams, access is
-  constructed by the production verifier/factory, and assertions observe the
-  HTTP status and whether the delegate's response crossed the boundary.
+  The requests cross a real TCP listener, the selected production rata route,
+  the production accessor/verifier/auditor, and a concrete production API
+  handler backed by PostgreSQL. Access tokens, teams, roles, and the pipeline
+  returned by the authorized endpoint are persisted in the scenario database.
 
-  Scenario Outline: The auth boundary answers from persisted identity — <boundary>/<identity>
-    Given the real API auth boundary "<boundary>" receives identity "<identity>"
-    Then the auth response status is <status>
-    And the auth response body is "<body>"
+  Scenario: An administrator request receives an OK status
+    Given the real API auth boundary "admin" receives identity "admin"
+    Then the auth response status is 200
 
-    Examples:
-      | boundary                   | identity    | status | body           |
-      | admin                      | admin       | 200    | delegate       |
-      | admin                      | team-owner  | 403    | forbidden      |
-      | admin                      | anonymous   | 401    | not authorized |
-      | authentication             | valid       | 200    | delegate       |
-      | authentication             | anonymous   | 401    | not authorized |
-      | authentication-if-provided | expired     | 401    | not authorized |
-      | authentication-if-provided | valid       | 200    | delegate       |
-      | authentication-if-provided | anonymous   | 200    | delegate       |
-      | team-authorization         | same-team   | 200    | delegate       |
-      | team-authorization         | other-team  | 403    | forbidden      |
-      | team-authorization         | anonymous   | 401    | not authorized |
+  Scenario: An administrator reaches the production active-users endpoint
+    Given the real API auth boundary "admin" receives identity "admin"
+    Then the auth response is the exact empty active-users document
+    And the auth response content type is "application/json"
+
+  Scenario: A team owner without an administrator team is forbidden
+    Given the real API auth boundary "admin" receives identity "team-owner"
+    Then the auth response status is 403
+    And the auth response body is "forbidden"
+
+  Scenario: An anonymous administrator request is rejected
+    Given the real API auth boundary "admin" receives identity "anonymous"
+    Then the auth response status is 401
+    And the auth response body is "not authorized"
+
+  Scenario: An authenticated request receives an OK status
+    Given the real API auth boundary "authentication" receives identity "valid"
+    Then the auth response status is 200
+
+  Scenario: An authenticated request reaches the production user endpoint
+    Given the real API auth boundary "authentication" receives identity "valid"
+    Then the auth response identifies subject "brine-subject"
+    And the auth response content type is "application/json"
+
+  Scenario: An anonymous request to an authentication-required route receives unauthorized
+    Given the real API auth boundary "authentication" receives identity "anonymous"
+    Then the auth response status is 401
+
+  Scenario: An anonymous request to an authentication-required route is rejected
+    Given the real API auth boundary "authentication" receives identity "anonymous"
+    Then the auth response body is "not authorized"
+
+  Scenario: An expired supplied token receives unauthorized
+    Given the real API auth boundary "authentication-if-provided" receives identity "expired"
+    Then the auth response status is 401
+
+  Scenario: An expired supplied token is rejected
+    Given the real API auth boundary "authentication-if-provided" receives identity "expired"
+    Then the auth response body is "not authorized"
+
+  Scenario: A valid optional token receives an OK status
+    Given the real API auth boundary "authentication-if-provided" receives identity "valid"
+    Then the auth response status is 200
+
+  Scenario: A valid optional token reaches the production signing-keys endpoint
+    Given the real API auth boundary "authentication-if-provided" receives identity "valid"
+    Then the auth response is the exact empty signing-keys document
+    And the auth response content type is "application/json"
+
+  Scenario: An omitted optional token receives an OK status
+    Given the real API auth boundary "authentication-if-provided" receives identity "anonymous"
+    Then the auth response status is 200
+
+  Scenario: An omitted optional token reaches the production signing-keys endpoint
+    Given the real API auth boundary "authentication-if-provided" receives identity "anonymous"
+    Then the auth response is the exact empty signing-keys document
+    And the auth response content type is "application/json"
+
+  Scenario: A member of the requested team receives an OK status
+    Given the real API auth boundary "team-authorization" receives identity "same-team"
+    Then the auth response status is 200
+
+  Scenario: A member of the requested team reaches the production pipelines endpoint
+    Given the real API auth boundary "team-authorization" receives identity "same-team"
+    Then the auth response lists pipeline "auth-pipeline"
+    And the auth response content type is "application/json"
+
+  Scenario: A member of another team is forbidden
+    Given the real API auth boundary "team-authorization" receives identity "other-team"
+    Then the auth response status is 403
+    And the auth response body is "forbidden"
+
+  Scenario: An anonymous team request is rejected
+    Given the real API auth boundary "team-authorization" receives identity "anonymous"
+    Then the auth response status is 401
+    And the auth response body is "not authorized"

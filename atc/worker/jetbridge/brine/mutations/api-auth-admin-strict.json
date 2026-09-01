@@ -1,0 +1,37 @@
+{
+  "name": "api-auth-admin-strict",
+  "test_package": "./atc/api/auth",
+  "source_test_file": "atc/api/auth/check_admin_handler_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/api-auth-boundaries.feature",
+  "step_files": ["atc/worker/jetbridge/brine/steps/api_auth.go"],
+  "cases": [
+    {
+      "id": "admin-membership-decision-is-inverted",
+      "source_file": "atc/api/auth/check_admin_handler.go",
+      "old": "\t\tif acc.IsAdmin() {\n\t\t\th.handler.ServeHTTP(w, r)\n\t\t} else {\n\t\t\th.rejector.Forbidden(w, r)\n\t\t}",
+      "new": "\t\tif !acc.IsAdmin() {\n\t\t\th.handler.ServeHTTP(w, r)\n\t\t} else {\n\t\t\th.rejector.Forbidden(w, r)\n\t\t}",
+      "tests": [
+        "CheckAdminHandler when a request is made when the validator returns true when is admin returns 200 OK",
+        "CheckAdminHandler when a request is made when the validator returns true when is admin proxies to the handler",
+        "CheckAdminHandler when a request is made when the validator returns true when is not admin returns 403 Forbidden"
+      ],
+      "scenarios": [
+        "An administrator request receives an OK status",
+        "An administrator reaches the production active-users endpoint",
+        "A team owner without an administrator team is forbidden"
+      ]
+    },
+    {
+      "id": "anonymous-admin-requests-are-treated-as-authenticated",
+      "source_file": "atc/api/auth/check_admin_handler.go",
+      "old": "\tif acc.IsAuthenticated() {\n\t\tif acc.IsAdmin()",
+      "new": "\tif true {\n\t\tif acc.IsAdmin()",
+      "tests": [
+        "CheckAdminHandler when a request is made when the validator returns false rejects the request"
+      ],
+      "scenarios": [
+        "An anonymous administrator request is rejected"
+      ]
+    }
+  ]
+}
