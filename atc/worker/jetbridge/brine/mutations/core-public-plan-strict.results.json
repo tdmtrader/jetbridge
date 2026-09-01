@@ -1,0 +1,54 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/core-public-plan-strict.json",
+  "git_head": "272f6e9e94b92b96d89c93cddd1d58927d766963",
+  "completed_at": "2026-09-01T04:20:23Z",
+  "source_tests": 5,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "mutation_cases": [
+    {
+      "id": "sidecar-plan-id-loses-separator",
+      "mutation_sha256": "38d878868100663e4cced960665cc5bf685c956cd61122c59a5c12303b8341cd",
+      "failed_source_tests": [
+        "Plan SidecarPlanID derives a plan ID from the parent and sidecar name"
+      ],
+      "failed_brine_scenarios": [
+        "Public plan profile \u003cprofile\u003e produces \u003cresult\u003e (row 1)",
+        "Public plan profile \u003cprofile\u003e produces \u003cresult\u003e (row 2)"
+      ]
+    },
+    {
+      "id": "new-sidecar-plan-loses-image",
+      "mutation_sha256": "97678b68f441cf06155bb20f8c0435f4d067b68a174a8d5aeec5501a6ddc9a5c",
+      "failed_source_tests": [
+        "Plan NewSidecarPlan constructs a plan with a sidecar and derived ID"
+      ],
+      "failed_brine_scenarios": [
+        "Public plan profile \u003cprofile\u003e produces \u003cresult\u003e (row 2)"
+      ]
+    },
+    {
+      "id": "sidecar-public-name-is-mutated",
+      "mutation_sha256": "87c46457ee78b9549e818930acea725e65b497ae8f70b6890ec2b7dd0fd4347c",
+      "failed_source_tests": [
+        "Plan SidecarPlan Public omits image when empty",
+        "Plan SidecarPlan Public serializes name and image"
+      ],
+      "failed_brine_scenarios": [
+        "Public plan profile \u003cprofile\u003e produces \u003cresult\u003e (row 3)",
+        "Public plan profile \u003cprofile\u003e produces \u003cresult\u003e (row 4)"
+      ]
+    },
+    {
+      "id": "public-plan-root-id-is-mutated",
+      "mutation_sha256": "4e849db67bbf3782e209d7b74a032eff0f80f277a1b16195b3cb1bac02d6d869",
+      "failed_source_tests": [
+        "Plan Public returns a sanitized form of the plan"
+      ],
+      "failed_brine_scenarios": [
+        "Public plan profile \u003cprofile\u003e produces \u003cresult\u003e (row 3)",
+        "Public plan profile \u003cprofile\u003e produces \u003cresult\u003e (row 4)",
+        "Public plan profile \u003cprofile\u003e produces \u003cresult\u003e (row 5)"
+      ]
+    }
+  ]
+}

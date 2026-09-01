@@ -1,0 +1,33 @@
+{
+  "name": "core-worker-strict",
+  "test_package": "./atc",
+  "source_test_file": "atc/worker_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/core-values.feature",
+  "step_files": ["atc/worker/jetbridge/brine/steps/core_values.go"],
+  "cases": [
+    {
+      "id": "empty-worker-version-is-rejected",
+      "source_file": "atc/worker.go",
+      "old": "\tif w.Version != \"\" && !regexp.MustCompile(`^[0-9\\.]+$`).MatchString(w.Version) {",
+      "new": "\tif w.Version == \"\" || !regexp.MustCompile(`^[0-9\\.]+$`).MatchString(w.Version) {",
+      "tests": ["Worker Validate when version is empty returns no errors"],
+      "scenarios": ["Worker version profile <profile> has result <result> (row 1)"]
+    },
+    {
+      "id": "dotted-numeric-worker-version-is-rejected",
+      "source_file": "atc/worker.go",
+      "old": "regexp.MustCompile(`^[0-9\\.]+$`)",
+      "new": "regexp.MustCompile(`^[0-9]+$`)",
+      "tests": ["Worker Validate when version is contains numeric charactes returns no errors"],
+      "scenarios": ["Worker version profile <profile> has result <result> (row 2)"]
+    },
+    {
+      "id": "invalid-worker-version-error-text-changes",
+      "source_file": "atc/worker.go",
+      "old": "var ErrInvalidWorkerVersion = errors.New(\"invalid worker version, only numeric characters are allowed\")",
+      "new": "var ErrInvalidWorkerVersion = errors.New(\"mutated worker version error\")",
+      "tests": ["Worker Validate when version is contains non-numeric charactes returns errors"],
+      "scenarios": ["Non-numeric worker versions are rejected"]
+    }
+  ]
+}

@@ -1,0 +1,39 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/core-worker-strict.json",
+  "git_head": "272f6e9e94b92b96d89c93cddd1d58927d766963",
+  "completed_at": "2026-09-01T04:20:23Z",
+  "source_tests": 3,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "mutation_cases": [
+    {
+      "id": "empty-worker-version-is-rejected",
+      "mutation_sha256": "39a4a929a8fcf19942ba449518a848d70aca06b69ecb6a1af75c428fbbc1f099",
+      "failed_source_tests": [
+        "Worker Validate when version is empty returns no errors"
+      ],
+      "failed_brine_scenarios": [
+        "Worker version profile \u003cprofile\u003e has result \u003cresult\u003e (row 1)"
+      ]
+    },
+    {
+      "id": "dotted-numeric-worker-version-is-rejected",
+      "mutation_sha256": "b937bcd754c54290d269c840eac8e179c81bfa914582b275320f320f4d38596f",
+      "failed_source_tests": [
+        "Worker Validate when version is contains numeric charactes returns no errors"
+      ],
+      "failed_brine_scenarios": [
+        "Worker version profile \u003cprofile\u003e has result \u003cresult\u003e (row 2)"
+      ]
+    },
+    {
+      "id": "invalid-worker-version-error-text-changes",
+      "mutation_sha256": "30030ae9ce104c77df487c568adca58092a490237c36bda0c4857259a79f5230",
+      "failed_source_tests": [
+        "Worker Validate when version is contains non-numeric charactes returns errors"
+      ],
+      "failed_brine_scenarios": [
+        "Non-numeric worker versions are rejected"
+      ]
+    }
+  ]
+}

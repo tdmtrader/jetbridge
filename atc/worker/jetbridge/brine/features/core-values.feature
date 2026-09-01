@@ -65,6 +65,7 @@ Feature: Core ATC values retain their user-visible semantics
 
   Scenario: Non-numeric worker versions are rejected
     When the production ATC value model handles profile "worker-invalid"
+    Then the ATC value result is "invalid worker version, only numeric characters are allowed"
     Then the ATC value operation returned an error
 
   Scenario Outline: Public plan profile <profile> produces <result>
@@ -77,4 +78,4 @@ Feature: Core ATC values retain their user-visible semantics
       | sidecar-new              | 10/sidecar/redis:redis:redis:7                                 |
       | sidecar-public           | id=5/sidecar/postgres;name=postgres;image=postgres:16;has-image=true |
       | sidecar-public-no-image  | id=5/sidecar/helper;name=helper;image=<nil>;has-image=false    |
-      | plan-sanitized           | sanitized=true                                                |
+      | plan-sanitized           | sha256:3b7433090854ffcca2a6b549b07bce7f905161d1a89be8379061e40bdc4bef37 |

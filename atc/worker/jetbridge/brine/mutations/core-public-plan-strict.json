@@ -1,0 +1,47 @@
+{
+  "name": "core-public-plan-strict",
+  "test_package": "./atc",
+  "source_test_file": "atc/public_plan_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/core-values.feature",
+  "step_files": ["atc/worker/jetbridge/brine/steps/core_values.go"],
+  "cases": [
+    {
+      "id": "sidecar-plan-id-loses-separator",
+      "source_file": "atc/plan.go",
+      "old": "\treturn parentPlanID + \"/sidecar/\" + PlanID(sidecarName)",
+      "new": "\treturn parentPlanID + \"/sidecar-mutated/\" + PlanID(sidecarName)",
+      "tests": ["Plan SidecarPlanID derives a plan ID from the parent and sidecar name"],
+      "scenarios": ["Public plan profile <profile> produces <result> (row 1)"]
+    },
+    {
+      "id": "new-sidecar-plan-loses-image",
+      "source_file": "atc/plan.go",
+      "old": "\t\t\tImage: config.Image,",
+      "new": "\t\t\tImage: \"mutated-image\",",
+      "tests": ["Plan NewSidecarPlan constructs a plan with a sidecar and derived ID"],
+      "scenarios": ["Public plan profile <profile> produces <result> (row 2)"]
+    },
+    {
+      "id": "sidecar-public-name-is-mutated",
+      "source_file": "atc/public_plan.go",
+      "old": "func (plan SidecarPlan) Public() *json.RawMessage {\n\treturn enc(struct {\n\t\tName  string `json:\"name\"`\n\t\tImage string `json:\"image,omitempty\"`\n\t}{\n\t\tName:  plan.Name,\n\t\tImage: plan.Image,\n\t})\n}",
+      "new": "func (plan SidecarPlan) Public() *json.RawMessage {\n\treturn enc(struct {\n\t\tName  string `json:\"name\"`\n\t\tImage string `json:\"image,omitempty\"`\n\t}{\n\t\tName:  \"mutated-name\",\n\t\tImage: plan.Image,\n\t})\n}",
+      "tests": [
+        "Plan SidecarPlan Public serializes name and image",
+        "Plan SidecarPlan Public omits image when empty"
+      ],
+      "scenarios": [
+        "Public plan profile <profile> produces <result> (row 3)",
+        "Public plan profile <profile> produces <result> (row 4)"
+      ]
+    },
+    {
+      "id": "public-plan-root-id-is-mutated",
+      "source_file": "atc/public_plan.go",
+      "old": "\tpublic.ID = plan.ID",
+      "new": "\tpublic.ID = \"mutated-id\"",
+      "tests": ["Plan Public returns a sanitized form of the plan"],
+      "scenarios": ["Public plan profile <profile> produces <result> (row 5)"]
+    }
+  ]
+}

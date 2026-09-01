@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -67,7 +68,8 @@ func observeCoreValue(profile string) (string, error, error) {
 	case "worker-numeric":
 		return "valid", (atc.Worker{Version: "1.2.3"}).Validate(), nil
 	case "worker-invalid":
-		return "", (atc.Worker{Version: "a.b.c"}).Validate(), nil
+		err := (atc.Worker{Version: "a.b.c"}).Validate()
+		return err.Error(), err, nil
 	case "sidecar-id":
 		return string(atc.SidecarPlanID("42", "cloud-sql-proxy")), nil, nil
 	case "sidecar-new":
@@ -80,18 +82,20 @@ func observeCoreValue(profile string) (string, error, error) {
 		plan := atc.Plan{ID: "5/sidecar/helper", Sidecar: &atc.SidecarPlan{Name: "helper"}}
 		return canonicalPublicPlan(plan)
 	case "plan-sanitized":
-		plan := atc.Plan{ID: "0", Task: &atc.TaskPlan{Name: "task", ConfigPath: "ci/task.yml", Config: &atc.TaskConfig{
-			Params: atc.TaskEnv{"password": "secret"}, Run: atc.TaskRunConfig{Path: "true"},
-		}}}
+		plan := fullCorePublicPlan()
 		public := plan.Public()
 		if public == nil {
 			return "", nil, fmt.Errorf("public plan was nil")
 		}
-		raw := string(*public)
-		if strings.Contains(raw, "secret") || strings.Contains(raw, "config_path") || !strings.Contains(raw, `"name":"task"`) {
-			return "", nil, fmt.Errorf("plan was not safely sanitized: %s", raw)
+		var decoded any
+		if err := json.Unmarshal(*public, &decoded); err != nil {
+			return "", err, nil
 		}
-		return "sanitized=true", nil, nil
+		canonical, err := json.Marshal(decoded)
+		if err != nil {
+			return "", err, nil
+		}
+		return fmt.Sprintf("sha256:%x", sha256.Sum256(canonical)), nil, nil
 	default:
 		return "", nil, fmt.Errorf("unknown ATC value profile %q", profile)
 	}
@@ -166,12 +170,108 @@ func observeBuildValue(profile string) (string, error, error) {
 	}
 	build := atc.Build{Status: status}
 	if parts[0] == "running" {
-		return fmt.Sprintf("%t", build.IsRunning()), nil, nil
+		// The source specs under the IsRunning description call Abortable. Keep
+		// this profile paired to the behavior those specs actually execute.
+		return fmt.Sprintf("%t", build.Abortable()), nil, nil
 	}
 	if parts[0] == "abortable" {
 		return fmt.Sprintf("%t", build.Abortable()), nil, nil
 	}
 	return "", nil, fmt.Errorf("unknown build predicate %q", parts[0])
+}
+
+func fullCorePublicPlan() atc.Plan {
+	task := func(id atc.PlanID) atc.Plan {
+		return atc.Plan{ID: id, Task: &atc.TaskPlan{
+			Name: "name", ConfigPath: "some/config/path.yml",
+			Config: &atc.TaskConfig{Params: atc.TaskEnv{"some": "secret"}},
+		}}
+	}
+	imagePlan := func(id atc.PlanID, check bool) *atc.Plan {
+		plan := &atc.Plan{ID: id}
+		if check {
+			plan.Check = &atc.CheckPlan{Type: "some-base-type", Name: "name", Source: atc.Source{"some": "source"}, TypeImage: atc.TypeImage{BaseType: "some-base-type"}}
+		} else {
+			plan.Get = &atc.GetPlan{Type: "some-base-type", Name: "name", Source: atc.Source{"some": "source"}, TypeImage: atc.TypeImage{BaseType: "some-base-type"}}
+		}
+		return plan
+	}
+	baseImage := func(prefix atc.PlanID) atc.TypeImage {
+		return atc.TypeImage{
+			BaseType:  "some-base-type",
+			GetPlan:   imagePlan(prefix+"/image-get", false),
+			CheckPlan: imagePlan(prefix+"/image-check", true),
+		}
+	}
+	customImagePlan := func(id atc.PlanID, check bool) *atc.Plan {
+		second := atc.TypeImage{
+			BaseType: "some-base-type",
+			GetPlan: &atc.Plan{ID: id + "/image-get", Get: &atc.GetPlan{
+				Name: "second-custom-type", Type: "some-base-type", Source: atc.Source{"custom": "second-source"},
+				TypeImage: atc.TypeImage{BaseType: "some-base-type"},
+			}},
+			CheckPlan: &atc.Plan{ID: id + "/image-check", Check: &atc.CheckPlan{
+				Name: "second-custom-type", Type: "some-base-type", Source: atc.Source{"custom": "second-source"},
+				TypeImage: atc.TypeImage{BaseType: "some-base-type"},
+			}},
+		}
+		plan := &atc.Plan{ID: id}
+		if check {
+			plan.Check = &atc.CheckPlan{Name: "some-custom-type", Type: "second-custom-type", Source: atc.Source{"custom": "source"}, TypeImage: second}
+		} else {
+			plan.Get = &atc.GetPlan{Name: "some-custom-type", Type: "second-custom-type", Source: atc.Source{"custom": "source"}, TypeImage: second}
+		}
+		return plan
+	}
+
+	return atc.Plan{ID: "0", InParallel: &atc.InParallelPlan{Steps: []atc.Plan{
+		{ID: "1", InParallel: &atc.InParallelPlan{Steps: []atc.Plan{task("2")}}},
+		{ID: "3", Get: &atc.GetPlan{
+			Type: "type", Name: "name", Resource: "resource", Source: atc.Source{"some": "source"},
+			Params: atc.Params{"some": "params"}, Version: &atc.Version{"some": "version"}, Tags: atc.Tags{"tags"}, TypeImage: baseImage("3"),
+		}},
+		{ID: "3.1", Get: &atc.GetPlan{
+			Name: "name", Type: "some-custom-type", Resource: "resource", Source: atc.Source{"some": "source"},
+			Params: atc.Params{"some": "params"}, Version: &atc.Version{"some": "version"}, Tags: atc.Tags{"tags"},
+			TypeImage: atc.TypeImage{BaseType: "some-base-type", GetPlan: customImagePlan("3.1/image-get", false), CheckPlan: customImagePlan("3.1/image-check", true)},
+		}},
+		{ID: "4", Put: &atc.PutPlan{
+			Type: "type", Name: "name", Resource: "resource", Source: atc.Source{"some": "source"},
+			Params: atc.Params{"some": "params"}, Tags: atc.Tags{"tags"}, TypeImage: baseImage("4"),
+		}},
+		{ID: "4.2", Check: &atc.CheckPlan{
+			Type: "type", Name: "name", Source: atc.Source{"some": "source"}, Tags: atc.Tags{"tags"}, TypeImage: baseImage("4.2"),
+		}},
+		{ID: "5", Task: &atc.TaskPlan{
+			Name: "name", Privileged: true, Hermetic: true, Tags: atc.Tags{"tags"}, ConfigPath: "some/config/path.yml",
+			Config: &atc.TaskConfig{Params: atc.TaskEnv{"some": "secret"}},
+		}},
+		{ID: "6", Ensure: &atc.EnsurePlan{Step: task("7"), Next: task("8")}},
+		{ID: "9", OnSuccess: &atc.OnSuccessPlan{Step: task("10"), Next: task("11")}},
+		{ID: "12", OnFailure: &atc.OnFailurePlan{Step: task("13"), Next: task("14")}},
+		{ID: "15", OnAbort: &atc.OnAbortPlan{Step: task("16"), Next: task("17")}},
+		{ID: "18", Try: &atc.TryPlan{Step: task("19")}},
+		{ID: "20", Timeout: &atc.TimeoutPlan{Step: task("21"), Duration: "lol"}},
+		{ID: "22", Do: &atc.DoPlan{task("23")}},
+		{ID: "24", Retry: &atc.RetryPlan{task("25"), task("26"), task("27")}},
+		{ID: "28", OnAbort: &atc.OnAbortPlan{Step: task("29"), Next: task("30")}},
+		{ID: "31", ArtifactInput: &atc.ArtifactInputPlan{ArtifactID: 17, Name: "some-name"}},
+		{ID: "32", ArtifactOutput: &atc.ArtifactOutputPlan{Name: "some-name"}},
+		{ID: "33", OnError: &atc.OnErrorPlan{Step: task("34"), Next: task("35")}},
+		{ID: "36", InParallel: &atc.InParallelPlan{Limit: 1, FailFast: true, Steps: []atc.Plan{task("37")}}},
+		{ID: "38", SetPipeline: &atc.SetPipelinePlan{
+			Name: "some-pipeline", Team: "some-team", File: "some-file", VarFiles: []string{"vf"},
+			Vars: map[string]any{"k1": "v1"}, InstanceVars: map[string]any{"branch": "feature/foo"},
+		}},
+		{ID: "39", Across: &atc.AcrossPlan{
+			Vars: []atc.AcrossVar{
+				{Var: "v1", Values: []any{"a"}, MaxInFlight: &atc.MaxInFlightConfig{Limit: 1}},
+				{Var: "v2", Values: []any{"b"}, MaxInFlight: &atc.MaxInFlightConfig{All: true}},
+			},
+			SubStepTemplate: `{"id":"ACROSS_STEP_TEMPLATE"}`, FailFast: true,
+		}},
+		{ID: "42", LoadVar: &atc.LoadVarPlan{Name: "some-name", File: "some-file", Format: "some-format", Reveal: true}},
+	}}}
 }
 
 func canonicalPublicPlan(plan atc.Plan) (string, error, error) {

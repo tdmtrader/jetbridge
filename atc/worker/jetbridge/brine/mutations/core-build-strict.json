@@ -1,0 +1,55 @@
+{
+  "name": "core-build-strict",
+  "test_package": "./atc",
+  "source_test_file": "atc/build_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/core-values.feature",
+  "step_files": ["atc/worker/jetbridge/brine/steps/core_values.go"],
+  "cases": [
+    {
+      "id": "one-off-job-name-predicate-is-inverted",
+      "source_file": "atc/build.go",
+      "old": "func (b Build) OneOff() bool {\n\treturn b.JobName == \"\"\n}",
+      "new": "func (b Build) OneOff() bool {\n\treturn b.JobName != \"\"\n}",
+      "tests": [
+        "Build OneOff returns true if there is no JobName",
+        "Build OneOff returns false if there is a JobName"
+      ],
+      "scenarios": [
+        "Build value profile <profile> is <value> (row 1)",
+        "Build value profile <profile> is <value> (row 2)"
+      ]
+    },
+    {
+      "id": "abortable-rejects-running-builds",
+      "source_file": "atc/build.go",
+      "old": "func (b Build) Abortable() bool {\n\treturn b.IsRunning()\n}",
+      "new": "func (b Build) Abortable() bool {\n\treturn false\n}",
+      "tests": [
+        "Build IsRunning returns true if the build is pending",
+        "Build IsRunning returns true if the build is started",
+        "Build Abortable returns true if the build is pending",
+        "Build Abortable returns true if the build is started"
+      ],
+      "scenarios": [
+        "Build value profile <profile> is <value> (row 3)",
+        "Build value profile <profile> is <value> (row 4)",
+        "Build value profile <profile> is <value> (row 6)",
+        "Build value profile <profile> is <value> (row 7)"
+      ]
+    },
+    {
+      "id": "finished-builds-are-reported-running",
+      "source_file": "atc/build.go",
+      "old": "func (b Build) IsRunning() bool {\n\tswitch BuildStatus(b.Status) {\n\tcase StatusPending, StatusStarted:\n\t\treturn true\n\tdefault:\n\t\treturn false\n\t}\n}",
+      "new": "func (b Build) IsRunning() bool {\n\tswitch BuildStatus(b.Status) {\n\tcase StatusPending, StatusStarted:\n\t\treturn true\n\tdefault:\n\t\treturn true\n\t}\n}",
+      "tests": [
+        "Build IsRunning returns false if in any other state",
+        "Build Abortable returns false if in any other state"
+      ],
+      "scenarios": [
+        "Build value profile <profile> is <value> (row 5)",
+        "Build value profile <profile> is <value> (row 8)"
+      ]
+    }
+  ]
+}

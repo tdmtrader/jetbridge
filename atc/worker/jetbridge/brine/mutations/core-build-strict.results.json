@@ -1,0 +1,49 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/core-build-strict.json",
+  "git_head": "272f6e9e94b92b96d89c93cddd1d58927d766963",
+  "completed_at": "2026-09-01T04:20:23Z",
+  "source_tests": 8,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "mutation_cases": [
+    {
+      "id": "one-off-job-name-predicate-is-inverted",
+      "mutation_sha256": "0bdffadff813a1187ad1da998528871a051a885902a335a8a2bde55785270e88",
+      "failed_source_tests": [
+        "Build OneOff returns false if there is a JobName",
+        "Build OneOff returns true if there is no JobName"
+      ],
+      "failed_brine_scenarios": [
+        "Build value profile \u003cprofile\u003e is \u003cvalue\u003e (row 1)",
+        "Build value profile \u003cprofile\u003e is \u003cvalue\u003e (row 2)"
+      ]
+    },
+    {
+      "id": "abortable-rejects-running-builds",
+      "mutation_sha256": "3b38df81902eb22b2e41bab74deb88c7bc78bff13ec124cd23050166252d89ae",
+      "failed_source_tests": [
+        "Build Abortable returns true if the build is pending",
+        "Build Abortable returns true if the build is started",
+        "Build IsRunning returns true if the build is pending",
+        "Build IsRunning returns true if the build is started"
+      ],
+      "failed_brine_scenarios": [
+        "Build value profile \u003cprofile\u003e is \u003cvalue\u003e (row 3)",
+        "Build value profile \u003cprofile\u003e is \u003cvalue\u003e (row 4)",
+        "Build value profile \u003cprofile\u003e is \u003cvalue\u003e (row 6)",
+        "Build value profile \u003cprofile\u003e is \u003cvalue\u003e (row 7)"
+      ]
+    },
+    {
+      "id": "finished-builds-are-reported-running",
+      "mutation_sha256": "86ea0d49ab44c723e66434d271dfcf45cdf20b4522893f0d2f0537bce2a19ae0",
+      "failed_source_tests": [
+        "Build Abortable returns false if in any other state",
+        "Build IsRunning returns false if in any other state"
+      ],
+      "failed_brine_scenarios": [
+        "Build value profile \u003cprofile\u003e is \u003cvalue\u003e (row 5)",
+        "Build value profile \u003cprofile\u003e is \u003cvalue\u003e (row 8)"
+      ]
+    }
+  ]
+}
