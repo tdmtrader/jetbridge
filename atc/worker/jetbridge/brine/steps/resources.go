@@ -7,12 +7,12 @@ import (
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
-	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/brine-dev/brine-go/pkg/brine"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbtest"
 	"github.com/concourse/concourse/atc/db/lock"
+	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/postgresrunner"
 	"github.com/onsi/gomega"
 	"github.com/tedsuo/ifrit"
@@ -149,11 +149,11 @@ func ResourceDefinitions() []brine.ResourceDefinition {
 				}
 				lockFactory := lock.NewLockFactory(
 					lockConns,
-					func(lager.Logger, lock.LockID) {},
-					func(lager.Logger, lock.LockID) {},
+					metric.LogLockAcquired,
+					metric.LogLockReleased,
 				)
 
-				logger := lagertest.NewTestLogger("brine-jetbridge")
+				logger := lager.NewLogger("brine-jetbridge")
 				return JetbridgeDB{
 					Conn:                conn,
 					LockFactory:         lockFactory,
