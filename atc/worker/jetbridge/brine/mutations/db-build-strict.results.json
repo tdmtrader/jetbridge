@@ -1,7 +1,7 @@
 {
   "manifest": "atc/worker/jetbridge/brine/mutations/db-build-strict.json",
-  "git_head": "db3d9653f5ff8c0e92a07774c8fc4c47e08bfdc3",
-  "completed_at": "2026-09-01T04:37:46Z",
+  "git_head": "aa118c85768f8eb61933f1640a02edef60f5675c",
+  "completed_at": "2026-09-01T09:10:27Z",
   "source_tests": 27,
   "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
   "mutation_cases": [
