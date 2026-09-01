@@ -1,0 +1,82 @@
+{
+  "name": "team-client-strict",
+  "test_package": "./go-concourse/concourse",
+  "source_test_file": "go-concourse/concourse/teams_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/team-client-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/team_client_strict.go",
+    "atc/worker/jetbridge/brine/steps/resources.go"
+  ],
+  "cases": [
+    {
+      "id": "list-teams-returns-decoded-teams",
+      "source_file": "go-concourse/concourse/teams.go",
+      "old": "\treturn teams, err\n}",
+      "new": "\treturn nil, err\n}",
+      "tests": ["ATC Handler Teams ListTeams returns all of the teams"],
+      "scenarios": ["ListTeams decodes every exact team returned by the real API"]
+    },
+    {
+      "id": "find-team-preserves-provider-auth",
+      "source_file": "go-concourse/concourse/teams.go",
+      "old": "\t\treturn &team{\n\t\t\tatcTeam:    atcTeam,\n\t\t\tconnection: client.connection,",
+      "new": "\t\tatcTeam.Auth = nil\n\t\treturn &team{\n\t\t\tatcTeam:    atcTeam,\n\t\t\tconnection: client.connection,",
+      "tests": ["ATC Handler Teams FindTeam when the team is found returns the requested team"],
+      "scenarios": ["FindTeam returns the persisted name and provider auth"]
+    },
+    {
+      "id": "find-team-not-found-error-is-exact",
+      "source_file": "go-concourse/concourse/teams.go",
+      "old": "\tcase http.StatusNotFound:\n\t\treturn nil, fmt.Errorf(\"team '%s' does not exist\", teamName)",
+      "new": "\tcase http.StatusNotFound:\n\t\treturn nil, fmt.Errorf(\"team '%s' was not found\", teamName)",
+      "tests": [
+        "ATC Handler Teams FindTeam when the team is not found returns an error",
+        "ATC Handler Teams FindTeam when not belonging to the team returns false and error"
+      ],
+      "scenarios": [
+        "FindTeam describes a missing team exactly",
+        "A second 404 preserves the duplicate FindTeam error contract"
+      ]
+    },
+    {
+      "id": "create-or-update-returns-response-team",
+      "source_file": "go-concourse/concourse/teams.go",
+      "old": "\treturn result.Team, created, updated, result.Warnings, nil",
+      "new": "\treturn atc.Team{}, created, updated, result.Warnings, nil",
+      "tests": ["ATC Handler Teams CreateOrUpdate when passed a properly constructed team returns back the team"],
+      "scenarios": ["CreateOrUpdate returns the exact persisted team"]
+    },
+    {
+      "id": "create-or-update-reports-created",
+      "source_file": "go-concourse/concourse/teams.go",
+      "old": "\tif response.Created {\n\t\tcreated = true\n\t} else {",
+      "new": "\tif response.Created {\n\t\tcreated = false\n\t} else {",
+      "tests": ["ATC Handler Teams CreateOrUpdate when passed a team that doesn't exist returns back true for created, and false for updated"],
+      "scenarios": ["CreateOrUpdate reports a newly created team"]
+    },
+    {
+      "id": "create-or-update-reports-updated",
+      "source_file": "go-concourse/concourse/teams.go",
+      "old": "\t} else {\n\t\tupdated = true\n\t}\n\n\treturn result.Team",
+      "new": "\t} else {\n\t\tupdated = false\n\t}\n\n\treturn result.Team",
+      "tests": ["ATC Handler Teams CreateOrUpdate when passed a team that exists returns back false for created, and true for updated"],
+      "scenarios": ["CreateOrUpdate reports an updated existing team"]
+    },
+    {
+      "id": "create-or-update-returns-warnings",
+      "source_file": "go-concourse/concourse/teams.go",
+      "old": "\treturn result.Team, created, updated, result.Warnings, nil",
+      "new": "\treturn result.Team, created, updated, nil, nil",
+      "tests": ["ATC Handler Teams CreateOrUpdate when passed a team that exists when the team has an invalid identifier returns back false for created, and true for updated"],
+      "scenarios": ["CreateOrUpdate decodes the exact compatibility warning"]
+    },
+    {
+      "id": "destroy-team-accepts-no-content",
+      "source_file": "go-concourse/concourse/teams.go",
+      "old": "\tif err == ErrForbidden {\n\t\treturn ErrDestroyRefused\n\t}\n\n\treturn err",
+      "new": "\tif err == ErrForbidden {\n\t\treturn ErrDestroyRefused\n\t}\n\tif err == nil {\n\t\treturn ErrDestroyRefused\n\t}\n\n\treturn err",
+      "tests": ["ATC Handler Teams Destroy when the server deletes the team returns back false for created, and true for updated"],
+      "scenarios": ["DestroyTeam accepts a production no-content response"]
+    }
+  ]
+}

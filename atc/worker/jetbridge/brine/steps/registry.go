@@ -123,7 +123,7 @@ func Definitions() []brine.StepDefinition {
 	defs = append(defs, JobDomainDefinitions()...)
 	defs = append(defs, WorkerFactoryDomainDefinitions()...)
 	defs = append(defs, TeamClientDefinitions()...)
-	defs = append(defs, CCAPIDefinitions()...)
+	defs = append(defs, TeamClientStrictDefinitions()...)
 	defs = append(defs, CCAPIStrictDefinitions()...)
 	defs = append(defs, WallAPIStrictDefinitions()...)
 	defs = append(defs, UsersAPIDefinitions()...)

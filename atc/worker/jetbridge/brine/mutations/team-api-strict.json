@@ -1,0 +1,68 @@
+{
+  "name": "team-api-strict",
+  "test_package": "./atc/api",
+  "source_test_file": "atc/api/teams_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/team-api-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/team_client_strict.go",
+    "atc/worker/jetbridge/brine/steps/resources.go"
+  ],
+  "cases": [
+    {
+      "id": "list-teams-filters-by-production-authorization",
+      "source_file": "atc/api/teamserver/list.go",
+      "old": "\t\tif acc.IsAuthorized(team.Name()) {\n\t\t\tpresentedTeams = append(presentedTeams, present.Team(team))\n\t\t}",
+      "new": "\t\tif !acc.IsAuthorized(team.Name()) {\n\t\t\tpresentedTeams = append(presentedTeams, present.Team(team))\n\t\t}",
+      "tests": ["Teams API GET /api/v1/teams returns only the teams the user is authorized for"],
+      "scenarios": ["ListTeams returns only exact authorized persisted teams"]
+    },
+    {
+      "id": "get-team-preserves-provider-auth",
+      "source_file": "atc/api/teamserver/get.go",
+      "old": "\t\tif err := json.NewEncoder(w).Encode(present.Team(team)); err != nil {",
+      "new": "\t\tpresented := present.Team(team)\n\t\tpresented.Auth = nil\n\t\tif err := json.NewEncoder(w).Encode(presented); err != nil {",
+      "tests": ["Teams API GET /api/v1/teams/:team_name returns the persisted team"],
+      "scenarios": ["GetTeam returns the exact persisted representation"]
+    },
+    {
+      "id": "ordinary-team-create-persists-requested-auth",
+      "source_file": "atc/api/teamserver/set.go",
+      "old": "\t\tteam, err = s.teamFactory.CreateTeam(atcTeam)",
+      "new": "\t\tteamToCreate := atcTeam\n\t\tif warning == nil {\n\t\t\tteamToCreate.Auth = atc.TeamAuth{\"owner\": {\"users\": {\"unexpected\"}}}\n\t\t}\n\t\tteam, err = s.teamFactory.CreateTeam(teamToCreate)",
+      "tests": ["Teams API PUT /api/v1/teams/:team_name when the requester is an admin and the team is not found persists team mutations through PostgreSQL"],
+      "scenarios": ["SetTeam creates and returns exact persisted state"]
+    },
+    {
+      "id": "team-create-returns-compatibility-warning",
+      "source_file": "atc/api/teamserver/set.go",
+      "old": "\t\tif warning != nil {\n\t\t\tresponse.Warnings = append(response.Warnings, *warning)\n\t\t}",
+      "new": "\t\tif warning != nil {\n\t\t\tresponse.Errors = append(response.Errors, warning.Message)\n\t\t}",
+      "tests": ["Teams API PUT /api/v1/teams/:team_name when the requester is an admin and the team is not found when the team name needs a compatibility warning returns the warning and persisted team"],
+      "scenarios": ["SetTeam returns the exact compatibility warning and persisted state"]
+    },
+    {
+      "id": "team-update-persists-provider-auth",
+      "source_file": "atc/db/team.go",
+      "old": "\t\tUPDATE teams\n\t\tSET auth = $1, legacy_auth = NULL, nonce = NULL",
+      "new": "\t\tUPDATE teams\n\t\tSET auth = auth, legacy_auth = NULL, nonce = NULL",
+      "tests": ["Teams API PUT /api/v1/teams/:team_name when an authorized non-admin updates an existing team updates persisted provider auth"],
+      "scenarios": ["SetTeam updates persisted provider auth"]
+    },
+    {
+      "id": "team-delete-removes-persisted-row",
+      "source_file": "atc/db/team.go",
+      "old": "\t\tWhere(sq.Eq{\n\t\t\t\"name\": t.name,\n\t\t}).\n\t\tRunWith(t.conn).\n\t\tExec()",
+      "new": "\t\tWhere(sq.Eq{\n\t\t\t\"name\": \"__never_delete_a_team__\",\n\t\t}).\n\t\tRunWith(t.conn).\n\t\tExec()",
+      "tests": ["Teams API DELETE /api/v1/teams/:team_name when the team exists deletes the persisted team"],
+      "scenarios": ["DestroyTeam removes the persisted team"]
+    },
+    {
+      "id": "missing-team-delete-is-not-found",
+      "source_file": "atc/api/team_scoped_handler_factory.go",
+      "old": "\t\tif !found {\n\t\t\tlogger.Error(\"team-not-found-in-database\", errors.New(\"team-not-found-in-database\"), lager.Data{\"team-name\": teamName})\n\t\t\tw.WriteHeader(http.StatusNotFound)",
+      "new": "\t\tif !found {\n\t\t\tlogger.Error(\"team-not-found-in-database\", errors.New(\"team-not-found-in-database\"), lager.Data{\"team-name\": teamName})\n\t\t\tw.WriteHeader(http.StatusInternalServerError)",
+      "tests": ["Teams API DELETE /api/v1/teams/:team_name when the team does not exist returns 404 Not Found"],
+      "scenarios": ["DestroyTeam returns not found for a missing team"]
+    }
+  ]
+}

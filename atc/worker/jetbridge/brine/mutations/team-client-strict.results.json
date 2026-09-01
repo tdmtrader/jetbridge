@@ -1,0 +1,92 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/team-client-strict.json",
+  "git_head": "df19964cfa056e253fe04c5ba5e6784a03a633bb",
+  "completed_at": "2026-09-01T10:29:10Z",
+  "source_tests": 9,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "mutation_cases": [
+    {
+      "id": "list-teams-returns-decoded-teams",
+      "mutation_sha256": "649a72cb4dc852e90ea328af3ae1491287dd0ed5eab19a3d6e512e2e0fe19377",
+      "failed_source_tests": [
+        "ATC Handler Teams ListTeams returns all of the teams"
+      ],
+      "failed_brine_scenarios": [
+        "ListTeams decodes every exact team returned by the real API"
+      ]
+    },
+    {
+      "id": "find-team-preserves-provider-auth",
+      "mutation_sha256": "2c114c4a04cf7aec34ea947e4ac3799e1a5e7be919ec4e8280b4e500551e2e3a",
+      "failed_source_tests": [
+        "ATC Handler Teams FindTeam when the team is found returns the requested team"
+      ],
+      "failed_brine_scenarios": [
+        "FindTeam returns the persisted name and provider auth"
+      ]
+    },
+    {
+      "id": "find-team-not-found-error-is-exact",
+      "mutation_sha256": "e371162dd3d5307e77eecc7788c2cd7f0bf1dbfefa97cf6a2071886b8b38000a",
+      "failed_source_tests": [
+        "ATC Handler Teams FindTeam when not belonging to the team returns false and error",
+        "ATC Handler Teams FindTeam when the team is not found returns an error"
+      ],
+      "failed_brine_scenarios": [
+        "A second 404 preserves the duplicate FindTeam error contract",
+        "FindTeam describes a missing team exactly"
+      ]
+    },
+    {
+      "id": "create-or-update-returns-response-team",
+      "mutation_sha256": "3e9ff28f97442ce5a711a52a89587f47b71cbb0b9dd63f886222ef06b6a420bb",
+      "failed_source_tests": [
+        "ATC Handler Teams CreateOrUpdate when passed a properly constructed team returns back the team"
+      ],
+      "failed_brine_scenarios": [
+        "CreateOrUpdate returns the exact persisted team"
+      ]
+    },
+    {
+      "id": "create-or-update-reports-created",
+      "mutation_sha256": "0133dd59790e269f82f53356532eadbc7369ae52587ca7f99e7ab44f2fb63853",
+      "failed_source_tests": [
+        "ATC Handler Teams CreateOrUpdate when passed a team that doesn't exist returns back true for created, and false for updated"
+      ],
+      "failed_brine_scenarios": [
+        "CreateOrUpdate decodes the exact compatibility warning",
+        "CreateOrUpdate reports a newly created team"
+      ]
+    },
+    {
+      "id": "create-or-update-reports-updated",
+      "mutation_sha256": "67a6e0e3285d7698b3250b30401bc8e05ad1a4fb538174c4b015b9d32a5877bc",
+      "failed_source_tests": [
+        "ATC Handler Teams CreateOrUpdate when passed a team that exists returns back false for created, and true for updated"
+      ],
+      "failed_brine_scenarios": [
+        "CreateOrUpdate reports an updated existing team"
+      ]
+    },
+    {
+      "id": "create-or-update-returns-warnings",
+      "mutation_sha256": "a6310a5c3955eb8195c7d5a661f11cf44784015a6f380c8054144615a1b44925",
+      "failed_source_tests": [
+        "ATC Handler Teams CreateOrUpdate when passed a team that exists when the team has an invalid identifier returns back false for created, and true for updated"
+      ],
+      "failed_brine_scenarios": [
+        "CreateOrUpdate decodes the exact compatibility warning"
+      ]
+    },
+    {
+      "id": "destroy-team-accepts-no-content",
+      "mutation_sha256": "8e3605991155f7501956d5bac631fb8bd7c4b0db6c568a34276777eb3caf6464",
+      "failed_source_tests": [
+        "ATC Handler Teams Destroy when the server deletes the team returns back false for created, and true for updated"
+      ],
+      "failed_brine_scenarios": [
+        "DestroyTeam accepts a production no-content response"
+      ]
+    }
+  ]
+}
