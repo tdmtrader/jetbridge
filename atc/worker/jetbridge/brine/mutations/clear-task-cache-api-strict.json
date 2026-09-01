@@ -1,0 +1,77 @@
+{
+  "name": "clear-task-cache-api-strict",
+  "test_package": "./atc/api",
+  "source_test_file": "atc/api/jobs_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/clear-task-cache-api-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/clear_task_cache_api_strict.go",
+    "atc/worker/jetbridge/brine/steps/resources.go"
+  ],
+  "cases": [
+    {
+      "id": "empty-cache-path-clears-all-matching-step-caches",
+      "source_file": "atc/db/job.go",
+      "old": "\tif len(cachePath) > 0 {",
+      "new": "\tif len(cachePath) >= 0 {",
+      "tests": [
+        "Jobs API DELETE /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/tasks/:step_name/cache deletes all matching step caches and preserves another job's cache"
+      ],
+      "scenarios": [
+        "Clearing a step without a path deletes both matching caches and preserves another job"
+      ],
+      "failure_contains": "removed = 0, want 2"
+    },
+    {
+      "id": "selected-cache-path-is-part-of-the-delete-predicate",
+      "source_file": "atc/db/job.go",
+      "old": "\t\tsqlBuilder = sqlBuilder.Where(sq.Eq{\"path\": cachePath})",
+      "new": "\t\tsqlBuilder = sqlBuilder.Where(sq.Eq{\"path\": cachePath + \"-unmatched\"})",
+      "tests": [
+        "Jobs API DELETE /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/tasks/:step_name/cache deletes only the selected cache path and preserves decoys"
+      ],
+      "scenarios": [
+        "Clearing one path deletes only that cache and preserves both decoys"
+      ],
+      "failure_contains": "removed = 0, want 1"
+    },
+    {
+      "id": "absent-selected-cache-path-reports-zero",
+      "source_file": "atc/db/job.go",
+      "old": "\treturn rowsDeleted, tx.Commit()",
+      "new": "\tif rowsDeleted == 0 && len(cachePath) > 0 {\n\t\trowsDeleted = 1\n\t}\n\treturn rowsDeleted, tx.Commit()",
+      "tests": [
+        "Jobs API DELETE /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/tasks/:step_name/cache reports zero when no persisted cache matches"
+      ],
+      "scenarios": [
+        "Clearing an absent path reports zero removed caches"
+      ],
+      "failure_contains": "removed = 1, want 0"
+    },
+    {
+      "id": "absent-step-reports-zero",
+      "source_file": "atc/db/job.go",
+      "old": "\treturn rowsDeleted, tx.Commit()",
+      "new": "\tif rowsDeleted == 0 && len(cachePath) == 0 {\n\t\trowsDeleted = 1\n\t}\n\treturn rowsDeleted, tx.Commit()",
+      "tests": [
+        "Jobs API DELETE /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/tasks/:step_name/cache reports zero for a missing step and preserves persisted caches"
+      ],
+      "scenarios": [
+        "Clearing an absent step reports zero and preserves all caches"
+      ],
+      "failure_contains": "removed = 1, want 0"
+    },
+    {
+      "id": "missing-configured-job-is-not-found",
+      "source_file": "atc/api/jobserver/clear_task_cache.go",
+      "old": "\t\tw.WriteHeader(http.StatusNotFound)",
+      "new": "\t\tw.WriteHeader(http.StatusOK)",
+      "tests": [
+        "Jobs API DELETE /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/tasks/:step_name/cache returns 404 for a missing configured job"
+      ],
+      "scenarios": [
+        "Clearing a cache for a missing configured job returns not found"
+      ],
+      "failure_contains": "missing job status = 200, want 404"
+    }
+  ]
+}

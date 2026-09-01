@@ -1,0 +1,59 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/clear-task-cache-api-strict.json",
+  "git_head": "d95604d6352bdf77738f0f266d47784797545d46",
+  "completed_at": "2026-09-01T11:45:09Z",
+  "source_tests": 5,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "mutation_cases": [
+    {
+      "id": "empty-cache-path-clears-all-matching-step-caches",
+      "mutation_sha256": "ffca8404e447ff67a88a2480bdb62e025a328d78fee68ad56cb505c6e417c9c4",
+      "failed_source_tests": [
+        "Jobs API DELETE /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/tasks/:step_name/cache deletes all matching step caches and preserves another job's cache"
+      ],
+      "failed_brine_scenarios": [
+        "Clearing a step without a path deletes both matching caches and preserves another job"
+      ]
+    },
+    {
+      "id": "selected-cache-path-is-part-of-the-delete-predicate",
+      "mutation_sha256": "b3cbd57f1957d8387f128d92c9dd7d0a7684165d399567bfde2f2fef2452b129",
+      "failed_source_tests": [
+        "Jobs API DELETE /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/tasks/:step_name/cache deletes only the selected cache path and preserves decoys"
+      ],
+      "failed_brine_scenarios": [
+        "Clearing one path deletes only that cache and preserves both decoys"
+      ]
+    },
+    {
+      "id": "absent-selected-cache-path-reports-zero",
+      "mutation_sha256": "ae56e5cc98b9b7d4896448d6de24f0211ba0876e463a5dbf2b37670970a38dc2",
+      "failed_source_tests": [
+        "Jobs API DELETE /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/tasks/:step_name/cache reports zero when no persisted cache matches"
+      ],
+      "failed_brine_scenarios": [
+        "Clearing an absent path reports zero removed caches"
+      ]
+    },
+    {
+      "id": "absent-step-reports-zero",
+      "mutation_sha256": "c4acdeddbb771fb291b23d0f4680abc126a79c6b8da86e77146873805808d176",
+      "failed_source_tests": [
+        "Jobs API DELETE /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/tasks/:step_name/cache reports zero for a missing step and preserves persisted caches"
+      ],
+      "failed_brine_scenarios": [
+        "Clearing an absent step reports zero and preserves all caches"
+      ]
+    },
+    {
+      "id": "missing-configured-job-is-not-found",
+      "mutation_sha256": "1e3757e1d0af3acee1539fa7d2ff7fac0b65223b74ced893629891a2bb0c2b0d",
+      "failed_source_tests": [
+        "Jobs API DELETE /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/tasks/:step_name/cache returns 404 for a missing configured job"
+      ],
+      "failed_brine_scenarios": [
+        "Clearing a cache for a missing configured job returns not found"
+      ]
+    }
+  ]
+}
