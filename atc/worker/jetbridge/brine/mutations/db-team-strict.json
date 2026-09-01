@@ -1,0 +1,191 @@
+{
+  "name": "db-team-strict-subset",
+  "test_package": "./atc/db",
+  "source_test_file": "atc/db/team_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/db-team-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/db_team_strict.go",
+    "atc/worker/jetbridge/brine/steps/team_domain.go"
+  ],
+  "cases": [
+    {
+      "id": "delete-removes-team-and-event-table",
+      "source_file": "atc/db/team.go",
+      "old": "\t\t\t\"name\": t.name,\n\t\t}).\n\t\tRunWith(t.conn).\n\t\tExec()\n\n\treturn err\n}\n\nfunc (t *team) Rename",
+      "new": "\t\t\t\"name\": t.name + \"-mutated\",\n\t\t}).\n\t\tRunWith(t.conn).\n\t\tExec()\n\n\treturn err\n}\n\nfunc (t *team) Rename",
+      "tests": [
+        "Team Delete deletes the team",
+        "Team Delete drops the team_build_events_ID table"
+      ],
+      "scenarios": [
+        "Strict DB team profile <profile> (row 1)",
+        "Strict DB team profile <profile> (row 2)"
+      ],
+      "failure_contains": "strict DB team observation"
+    },
+    {
+      "id": "rename-persists-new-team-name",
+      "source_file": "atc/db/team.go",
+      "old": "Set(\"name\", name).\n\t\tWhere(sq.Eq{\n\t\t\t\"id\": t.id,\n\t\t})",
+      "new": "Set(\"name\", name + \"-mutated\").\n\t\tWhere(sq.Eq{\n\t\t\t\"id\": t.id,\n\t\t})",
+      "tests": [
+        "Team Rename find the renamed team"
+      ],
+      "scenarios": [
+        "Strict DB team profile <profile> (row 3)"
+      ],
+      "failure_contains": "strict DB team observation"
+    },
+    {
+      "id": "workers-include-global-workers",
+      "source_file": "atc/db/team.go",
+      "old": "return getWorkers(t.conn, workersQuery.Where(sq.Or{\n\t\tsq.Eq{\"t.id\": t.id},\n\t\tsq.Eq{\"w.team_id\": nil},\n\t}))",
+      "new": "return getWorkers(t.conn, workersQuery.Where(sq.Eq{\"t.id\": t.id}))",
+      "tests": [
+        "Team Workers when there are global workers and workers for the team finds them without error"
+      ],
+      "scenarios": [
+        "Strict DB team profile <profile> (row 4)"
+      ],
+      "failure_contains": "strict DB team observation"
+    },
+    {
+      "id": "workers-exclude-other-team-workers",
+      "source_file": "atc/db/team.go",
+      "old": "return getWorkers(t.conn, workersQuery.Where(sq.Or{\n\t\tsq.Eq{\"t.id\": t.id},\n\t\tsq.Eq{\"w.team_id\": nil},\n\t}))",
+      "new": "return getWorkers(t.conn, workersQuery)",
+      "tests": [
+        "Team Workers when there are workers for another team does not find the other team workers"
+      ],
+      "scenarios": [
+        "Strict DB team profile <profile> (row 5)"
+      ],
+      "failure_contains": "strict DB team observation"
+    },
+    {
+      "id": "pipelines-are-scoped-to-team",
+      "source_file": "atc/db/team.go",
+      "old": "func (t *team) Pipelines() ([]Pipeline, error) {\n\trows, err := pipelinesQuery.\n\t\tWhere(sq.Eq{\n\t\t\t\"team_id\": t.id,\n\t\t})",
+      "new": "func (t *team) Pipelines() ([]Pipeline, error) {\n\trows, err := pipelinesQuery.\n\t\tWhere(sq.Eq{\n\t\t\t\"team_id\": -1,\n\t\t})",
+      "tests": [
+        "Team Pipelines when the team has configured pipelines returns the pipelines",
+        "Team Pipelines when the team has configured pipelines when a pipeline with the same name as an existing pipeline is created returns the pipelines with the same name grouped together, ordered by creation time",
+        "Team OrderPipelines orders pipelines that belong to team"
+      ],
+      "scenarios": [
+        "Strict DB team profile <profile> (row 6)",
+        "Strict DB team profile <profile> (row 7)",
+        "Strict DB team profile <profile> (row 11)"
+      ],
+      "failure_contains": "strict DB team observation"
+    },
+    {
+      "id": "empty-team-has-no-pipelines",
+      "source_file": "atc/db/team.go",
+      "old": "\treturn pipelines, nil\n}\n\nfunc (t *team) PublicPipelines()",
+      "new": "\tif len(pipelines) == 0 {\n\t\treturn []Pipeline{newPipeline(t.conn, t.lockFactory)}, nil\n\t}\n\treturn pipelines, nil\n}\n\nfunc (t *team) PublicPipelines()",
+      "tests": [
+        "Team Pipelines when the team has no configured pipelines returns no pipelines"
+      ],
+      "scenarios": [
+        "Strict DB team profile <profile> (row 8)"
+      ],
+      "failure_contains": "strict DB team observation"
+    },
+    {
+      "id": "public-pipelines-filter-public-state",
+      "source_file": "atc/db/team.go",
+      "old": "\t\t\t\"team_id\": t.id,\n\t\t\t\"public\":  true,\n\t\t}).\n\t\tOrderBy(\"p.ordering ASC\"",
+      "new": "\t\t\t\"team_id\": t.id,\n\t\t\t\"public\":  false,\n\t\t}).\n\t\tOrderBy(\"p.ordering ASC\"",
+      "tests": [
+        "Team PublicPipelines when the team has configured pipelines returns the pipelines"
+      ],
+      "scenarios": [
+        "Strict DB team profile <profile> (row 9)"
+      ],
+      "failure_contains": "strict DB team observation"
+    },
+    {
+      "id": "empty-team-has-no-public-pipelines",
+      "source_file": "atc/db/team.go",
+      "old": "\treturn pipelines, nil\n}\n\nfunc (t *team) OrderPipelines(names []string) error",
+      "new": "\tif len(pipelines) == 0 {\n\t\treturn []Pipeline{newPipeline(t.conn, t.lockFactory)}, nil\n\t}\n\treturn pipelines, nil\n}\n\nfunc (t *team) OrderPipelines(names []string) error",
+      "tests": [
+        "Team PublicPipelines when the team has no configured pipelines returns no pipelines"
+      ],
+      "scenarios": [
+        "Strict DB team profile <profile> (row 10)"
+      ],
+      "failure_contains": "strict DB team observation"
+    },
+    {
+      "id": "order-pipelines-rejects-missing-name",
+      "source_file": "atc/db/team.go",
+      "old": "if updatedPipelines == 0 {\n\t\t\treturn ErrPipelineNotFound{Name: name}\n\t\t}",
+      "new": "if updatedPipelines < 0 {\n\t\t\treturn ErrPipelineNotFound{Name: name}\n\t\t}",
+      "tests": [
+        "Team OrderPipelines when pipeline does not exist returns not found error"
+      ],
+      "scenarios": [
+        "Strict DB team profile <profile> (row 12)"
+      ],
+      "failure_contains": "strict DB team observation"
+    },
+    {
+      "id": "pipeline-lookup-matches-instance-vars",
+      "source_file": "atc/db/team.go",
+      "old": "var instanceVars sql.NullString\n\tif pipelineRef.InstanceVars != nil {\n\t\tbytes, _ := json.Marshal(pipelineRef.InstanceVars)\n\t\tinstanceVars = sql.NullString{\n\t\t\tString: string(bytes),\n\t\t\tValid:  true,\n\t\t}\n\t}\n\n\terr := scanPipeline(",
+      "new": "var instanceVars sql.NullString\n\tif pipelineRef.InstanceVars != nil {\n\t\tinstanceVars = sql.NullString{}\n\t}\n\n\terr := scanPipeline(",
+      "tests": [
+        "Team Pipeline when the team has instanced pipelines configured returns the pipeline when requesting by name and instance vars"
+      ],
+      "scenarios": [
+        "Strict DB team profile <profile> (row 13)"
+      ],
+      "failure_contains": "strict DB team observation"
+    },
+    {
+      "id": "pipeline-name-only-does-not-match-instance",
+      "source_file": "atc/db/team.go",
+      "old": "var instanceVars sql.NullString\n\tif pipelineRef.InstanceVars != nil {\n\t\tbytes, _ := json.Marshal(pipelineRef.InstanceVars)\n\t\tinstanceVars = sql.NullString{\n\t\t\tString: string(bytes),\n\t\t\tValid:  true,\n\t\t}\n\t}\n\n\terr := scanPipeline(",
+      "new": "var instanceVars sql.NullString\n\tif pipelineRef.InstanceVars != nil {\n\t\tbytes, _ := json.Marshal(pipelineRef.InstanceVars)\n\t\tinstanceVars = sql.NullString{\n\t\t\tString: string(bytes),\n\t\t\tValid:  true,\n\t\t}\n\t} else {\n\t\tinstanceVars = sql.NullString{String: `{\"branch\":\"feature\"}`, Valid: true}\n\t}\n\n\terr := scanPipeline(",
+      "tests": [
+        "Team Pipeline when the team has instanced pipelines configured returns nothing when requesting by name only",
+        "Team Pipeline when the team has instanced pipelines configured when the team has instanced and named pipelines configured with the same name returns the named pipeline when requesting with name only"
+      ],
+      "scenarios": [
+        "Strict DB team profile <profile> (row 14)",
+        "Strict DB team profile <profile> (row 15)"
+      ],
+      "failure_contains": "strict DB team observation"
+    },
+    {
+      "id": "rename-pipeline-updates-all-matching-instances",
+      "source_file": "atc/db/team.go",
+      "old": "\t\tWhere(sq.Eq{\n\t\t\t\"team_id\": t.id,\n\t\t\t\"name\":    oldName,\n\t\t}).\n\t\tRunWith(t.conn).",
+      "new": "\t\tWhere(sq.Eq{\n\t\t\t\"team_id\": t.id,\n\t\t\t\"name\":    oldName + \"-mutated\",\n\t\t}).\n\t\tRunWith(t.conn).",
+      "tests": [
+        "Team RenamePipeline renames individual pipelines",
+        "Team RenamePipeline when multiple pipeline instances have the same name renames every instance"
+      ],
+      "scenarios": [
+        "Strict DB team profile <profile> (row 16)",
+        "Strict DB team profile <profile> (row 17)"
+      ],
+      "failure_contains": "strict DB team observation"
+    },
+    {
+      "id": "rename-pipeline-reports-no-match",
+      "source_file": "atc/db/team.go",
+      "old": "return rowsAffected > 0, nil\n}\n\nfunc (t *team) Pipeline",
+      "new": "return rowsAffected >= 0, nil\n}\n\nfunc (t *team) Pipeline",
+      "tests": [
+        "Team RenamePipeline when there are no pipelines with the old name returns not found"
+      ],
+      "scenarios": [
+        "Strict DB team profile <profile> (row 18)"
+      ],
+      "failure_contains": "strict DB team observation"
+    }
+  ]
+}

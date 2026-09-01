@@ -1,0 +1,149 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/db-team-strict.json",
+  "git_head": "de9833e3399e54d475e9d7d451c35ca4b46ad624",
+  "completed_at": "2026-09-01T03:45:50Z",
+  "source_tests": 18,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "mutation_cases": [
+    {
+      "id": "delete-removes-team-and-event-table",
+      "mutation_sha256": "ab2618bc8b6f79258d220d77d4c69892adf6db0a8e7b1d624c6d9592fb3405ac",
+      "failed_source_tests": [
+        "Team Delete deletes the team",
+        "Team Delete drops the team_build_events_ID table"
+      ],
+      "failed_brine_scenarios": [
+        "Strict DB team profile \u003cprofile\u003e (row 1)",
+        "Strict DB team profile \u003cprofile\u003e (row 2)"
+      ]
+    },
+    {
+      "id": "rename-persists-new-team-name",
+      "mutation_sha256": "3da484c691d2d553f961edad3ada3bdb5029b3c8f853f5b720f7845ac0b0d680",
+      "failed_source_tests": [
+        "Team Rename find the renamed team"
+      ],
+      "failed_brine_scenarios": [
+        "Strict DB team profile \u003cprofile\u003e (row 3)"
+      ]
+    },
+    {
+      "id": "workers-include-global-workers",
+      "mutation_sha256": "fa4764f9a889f9f046ff2fff79f6aabd7a1c94108d4a1ffadcc1a720f55abbd0",
+      "failed_source_tests": [
+        "Team Workers when there are global workers and workers for the team finds them without error"
+      ],
+      "failed_brine_scenarios": [
+        "Strict DB team profile \u003cprofile\u003e (row 4)"
+      ]
+    },
+    {
+      "id": "workers-exclude-other-team-workers",
+      "mutation_sha256": "b45757df862beea27113ce7208986a4aba315a537e9fcaab3f84759f8f0bb781",
+      "failed_source_tests": [
+        "Team Workers when there are workers for another team does not find the other team workers"
+      ],
+      "failed_brine_scenarios": [
+        "Strict DB team profile \u003cprofile\u003e (row 5)"
+      ]
+    },
+    {
+      "id": "pipelines-are-scoped-to-team",
+      "mutation_sha256": "a2d8a72d8b494ec26d396cd767bd8d2b357a7834bdec02a77baebd7d502fb908",
+      "failed_source_tests": [
+        "Team OrderPipelines orders pipelines that belong to team",
+        "Team Pipelines when the team has configured pipelines returns the pipelines",
+        "Team Pipelines when the team has configured pipelines when a pipeline with the same name as an existing pipeline is created returns the pipelines with the same name grouped together, ordered by creation time"
+      ],
+      "failed_brine_scenarios": [
+        "Strict DB team profile \u003cprofile\u003e (row 11)",
+        "Strict DB team profile \u003cprofile\u003e (row 6)",
+        "Strict DB team profile \u003cprofile\u003e (row 7)"
+      ]
+    },
+    {
+      "id": "empty-team-has-no-pipelines",
+      "mutation_sha256": "55eed9dd76b5f13ba10c72220e9ba2d991232a685a73382bd540e20817f41bd7",
+      "failed_source_tests": [
+        "Team Pipelines when the team has no configured pipelines returns no pipelines"
+      ],
+      "failed_brine_scenarios": [
+        "Strict DB team profile \u003cprofile\u003e (row 8)"
+      ]
+    },
+    {
+      "id": "public-pipelines-filter-public-state",
+      "mutation_sha256": "5e3412c2ced44e6af385a31f50d2c5c47bfb962b592ec9ec560b2b5695b2f779",
+      "failed_source_tests": [
+        "Team PublicPipelines when the team has configured pipelines returns the pipelines"
+      ],
+      "failed_brine_scenarios": [
+        "Strict DB team profile \u003cprofile\u003e (row 9)"
+      ]
+    },
+    {
+      "id": "empty-team-has-no-public-pipelines",
+      "mutation_sha256": "932babc8ce84c09ab45e6feb9a8166fc12b1fe3f984af7df9d58cf4baa9059c9",
+      "failed_source_tests": [
+        "Team PublicPipelines when the team has no configured pipelines returns no pipelines"
+      ],
+      "failed_brine_scenarios": [
+        "Strict DB team profile \u003cprofile\u003e (row 10)"
+      ]
+    },
+    {
+      "id": "order-pipelines-rejects-missing-name",
+      "mutation_sha256": "1713e8531a95d32547ab3859b1dbfe4f96c1707bd5426df4bd6e313eade78a5a",
+      "failed_source_tests": [
+        "Team OrderPipelines when pipeline does not exist returns not found error"
+      ],
+      "failed_brine_scenarios": [
+        "Strict DB team profile \u003cprofile\u003e (row 12)"
+      ]
+    },
+    {
+      "id": "pipeline-lookup-matches-instance-vars",
+      "mutation_sha256": "9b4954c52e4d13339f21f0ff59f8ef2dad2d38f5a3832b65c97c1dbf4e048baa",
+      "failed_source_tests": [
+        "Team Pipeline when the team has instanced pipelines configured returns the pipeline when requesting by name and instance vars"
+      ],
+      "failed_brine_scenarios": [
+        "Strict DB team profile \u003cprofile\u003e (row 13)"
+      ]
+    },
+    {
+      "id": "pipeline-name-only-does-not-match-instance",
+      "mutation_sha256": "5776e01f1d31e7c584a0f84f31f66ace951ef50c7fc0b25a332fc8022ecd4cf0",
+      "failed_source_tests": [
+        "Team Pipeline when the team has instanced pipelines configured returns nothing when requesting by name only",
+        "Team Pipeline when the team has instanced pipelines configured when the team has instanced and named pipelines configured with the same name returns the named pipeline when requesting with name only"
+      ],
+      "failed_brine_scenarios": [
+        "Strict DB team profile \u003cprofile\u003e (row 14)",
+        "Strict DB team profile \u003cprofile\u003e (row 15)"
+      ]
+    },
+    {
+      "id": "rename-pipeline-updates-all-matching-instances",
+      "mutation_sha256": "1a7f6d2edb4f6d88644ccceb7bda1480c0f81a2fc4e3baeaf45923e0390a86ac",
+      "failed_source_tests": [
+        "Team RenamePipeline renames individual pipelines",
+        "Team RenamePipeline when multiple pipeline instances have the same name renames every instance"
+      ],
+      "failed_brine_scenarios": [
+        "Strict DB team profile \u003cprofile\u003e (row 16)",
+        "Strict DB team profile \u003cprofile\u003e (row 17)"
+      ]
+    },
+    {
+      "id": "rename-pipeline-reports-no-match",
+      "mutation_sha256": "8513620cc913f0b782ff9b034009b3d5969c1239939f01777a75e0a91baf24bc",
+      "failed_source_tests": [
+        "Team RenamePipeline when there are no pipelines with the old name returns not found"
+      ],
+      "failed_brine_scenarios": [
+        "Strict DB team profile \u003cprofile\u003e (row 18)"
+      ]
+    }
+  ]
+}

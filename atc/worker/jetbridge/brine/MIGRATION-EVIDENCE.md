@@ -22,19 +22,19 @@ scenario fail is also not evidence.
 
 | quantity | source leaf tests | percentage of 6,857 |
 |---|---:|---:|
-| **fully migrated**: paired failure evidence, no prohibited double, source removed | **279** | **4.07%** |
+| **fully migrated**: paired failure evidence, no prohibited double, source removed | **297** | **4.33%** |
 | strict paired evidence, but source still present | 88 | 1.28% |
 | **runs in Brine but not the full philosophy**: paired failure evidence, but uses a stub, test sink, injected-fault object, fake, or mock | **112** | **1.63%** |
 | of the preceding exception bucket whose source test was removed | 66 | 0.96% |
-| total source tests with paired per-test failure evidence | 479 | 6.99% |
-| former claimed tests with no admissible paired evidence | 1,580 | 23.04% |
+| total source tests with paired per-test failure evidence | 497 | 7.25% |
+| former claimed tests with no admissible paired evidence | 1,562 | 22.78% |
 | Brine scenarios | 1,527 | execution count only |
 
-The requested two headline percentages are therefore **4.07% fully migrated**
+The requested two headline percentages are therefore **4.33% fully migrated**
 and **1.63% validated but running outside the full philosophy**. The second is
 not another migration percentage: 46 of its 112 source tests still exist. If
 "migrated" is restricted to removed source tests in both buckets, the figures
-are 4.07% strict and 0.96% philosophy-exception.
+are 4.33% strict and 0.96% philosophy-exception.
 
 ## Admitted evidence ledger
 
@@ -50,12 +50,13 @@ are 4.07% strict and 0.96% philosophy-exception.
 | `container_limits_test.go` | 15 | 15 | 0 | 15 |
 | `task_test.go` | 37 | 37 | 0 | 37 |
 | `api/config_test.go` strict real-server subset | 73 | 73 | 0 | 0 |
+| `db/team_test.go` strict real-PostgreSQL subset | 18 | 18 | 0 | 18 |
 | `JobFactory.JobsToSchedule` | 15 | 15 | 0 | 0 |
 | `destroyer_test.go` | 8 | 0 | 8 | 8 |
 | `scanner_test.go` | 14 | 0 | 14 | 14 |
 | durable-storage, volume-DaemonSet, and behavioral-permutation campaign | 44 | 0 | 44 | 44 |
 | daemonset-integration and daemon-client retained cases | 46 | 0 | 46 | 0 |
-| **total** | **479** | **367** | **112** | **345** |
+| **total** | **497** | **385** | **112** | **363** |
 
 Why the exception rows are exceptions:
 
