@@ -22,19 +22,19 @@ scenario fail is also not evidence.
 
 | quantity | source leaf tests | percentage of 6,857 |
 |---|---:|---:|
-| **fully migrated**: paired failure evidence, no prohibited double, source removed | **41** | **0.60%** |
+| **fully migrated**: paired failure evidence, no prohibited double, source removed | **75** | **1.09%** |
 | strict paired evidence, but source still present | 15 | 0.22% |
 | **runs in Brine but not the full philosophy**: paired failure evidence, but uses a stub, test sink, injected-fault object, fake, or mock | **112** | **1.63%** |
 | of the preceding exception bucket whose source test was removed | 66 | 0.96% |
-| total source tests with paired per-test failure evidence | 168 | 2.45% |
-| former claimed tests with no admissible paired evidence | 1,891 | 27.58% |
+| total source tests with paired per-test failure evidence | 202 | 2.95% |
+| former claimed tests with no admissible paired evidence | 1,857 | 27.08% |
 | Brine scenarios | 1,527 | execution count only |
 
-The requested two headline percentages are therefore **0.60% fully migrated**
+The requested two headline percentages are therefore **1.09% fully migrated**
 and **1.63% validated but running outside the full philosophy**. The second is
 not another migration percentage: 46 of its 112 source tests still exist. If
 "migrated" is restricted to removed source tests in both buckets, the figures
-are 0.60% strict and 0.96% philosophy-exception.
+are 1.09% strict and 0.96% philosophy-exception.
 
 ## Admitted evidence ledger
 
@@ -42,12 +42,14 @@ are 0.60% strict and 0.96% philosophy-exception.
 |---|---:|---:|---:|---:|
 | gc/lidar disposition, excluding scanner and Destroyer | 36 | 36 | 0 | 36 |
 | `artifact_locator_test.go` | 5 | 5 | 0 | 5 |
+| `job_config_test.go` | 23 | 23 | 0 | 23 |
+| `config_diff_test.go` | 11 | 11 | 0 | 11 |
 | `JobFactory.JobsToSchedule` | 15 | 15 | 0 | 0 |
 | `destroyer_test.go` | 8 | 0 | 8 | 8 |
 | `scanner_test.go` | 14 | 0 | 14 | 14 |
 | durable-storage, volume-DaemonSet, and behavioral-permutation campaign | 44 | 0 | 44 | 44 |
 | daemonset-integration and daemon-client retained cases | 46 | 0 | 46 | 0 |
-| **total** | **168** | **56** | **112** | **107** |
+| **total** | **202** | **90** | **112** | **141** |
 
 Why the exception rows are exceptions:
 

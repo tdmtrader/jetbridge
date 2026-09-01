@@ -1,0 +1,95 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/config-diff.json",
+  "git_head": "e04145c3f98e90a91f641601ee77113321ada38d",
+  "completed_at": "2026-09-01T03:07:02Z",
+  "source_tests": 11,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "mutation_cases": [
+    {
+      "id": "empty-configs-report-a-diff",
+      "mutation_sha256": "11c68fee6872aef8007ce4c7056ebaeaeb9198202f96b2faff5296b647996f76",
+      "failed_source_tests": [
+        "Config diff display config when there is no display config does not print anything about display config",
+        "Config diff display config when there is no display config to change says there are no changes to apply",
+        "Config diff job config when there are no jobs does not print anything about jobs",
+        "Config diff job config when there are no jobs to change says there are no changes to apply"
+      ],
+      "failed_brine_scenarios": [
+        "Config diff profile \u003cprofile\u003e (row 1)",
+        "Config diff profile \u003cprofile\u003e (row 10)",
+        "Config diff profile \u003cprofile\u003e (row 4)",
+        "Config diff profile \u003cprofile\u003e (row 7)"
+      ]
+    },
+    {
+      "id": "job-addition-heading-regresses",
+      "mutation_sha256": "8c195c12d9846fde4401009001b4ee50ac99f3a460771781ff6821ff559b2cf6",
+      "failed_source_tests": [
+        "Config diff job config when a job is added says config has been added"
+      ],
+      "failed_brine_scenarios": [
+        "Config diff profile \u003cprofile\u003e (row 2)"
+      ]
+    },
+    {
+      "id": "job-removal-heading-regresses",
+      "mutation_sha256": "635f2d835ecbebe9a2936570f97d705a102a61c1e35a53fc7252a05a81b7745d",
+      "failed_source_tests": [
+        "Config diff job config when display config is removed says config has been removed"
+      ],
+      "failed_brine_scenarios": [
+        "Config diff profile \u003cprofile\u003e (row 3)"
+      ]
+    },
+    {
+      "id": "removed-default-field-is-hidden",
+      "mutation_sha256": "e18d23a6ed49cb2e1a042c1b7da469fca3e5eddbb4d5d84694c839b2583ea52d",
+      "failed_source_tests": [
+        "Config diff job config when a single field changes removes the field if it has a default value"
+      ],
+      "failed_brine_scenarios": [
+        "Config diff profile \u003cprofile\u003e (row 5)"
+      ]
+    },
+    {
+      "id": "changed-resource-lines-are-hidden",
+      "mutation_sha256": "6ada9d2e0f9e4c88ae8bb59563e76fc66317c42935713a64a912c008f924b750",
+      "failed_source_tests": [
+        "Config diff job config when a single field changes replaces the field if it does not have a default value"
+      ],
+      "failed_brine_scenarios": [
+        "Config diff profile \u003cprofile\u003e (row 6)"
+      ]
+    },
+    {
+      "id": "display-addition-heading-regresses",
+      "mutation_sha256": "33624b2d78e65c6ed24fdf0c790a6cbad9071cb9dce4f77e9dbbea3cc1e62a3a",
+      "failed_source_tests": [
+        "Config diff display config when display config is added says config has been added"
+      ],
+      "failed_brine_scenarios": [
+        "Config diff profile \u003cprofile\u003e (row 8)"
+      ]
+    },
+    {
+      "id": "display-removal-heading-regresses",
+      "mutation_sha256": "9c76eae5bfcd278422b18a5df3b06a74b738cc5c29fd5913d531f44f8b7a06d2",
+      "failed_source_tests": [
+        "Config diff display config when display config is removed says config has been removed"
+      ],
+      "failed_brine_scenarios": [
+        "Config diff profile \u003cprofile\u003e (row 9)"
+      ]
+    },
+    {
+      "id": "display-change-heading-regresses",
+      "mutation_sha256": "c212101904ae431142fd5a33dce1c01690960d0049b057d107bdcfe4b5bce46f",
+      "failed_source_tests": [
+        "Config diff display config when the background changes replaces the background"
+      ],
+      "failed_brine_scenarios": [
+        "Config diff profile \u003cprofile\u003e (row 11)"
+      ]
+    }
+  ]
+}

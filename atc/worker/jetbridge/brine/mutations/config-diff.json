@@ -1,0 +1,121 @@
+{
+  "name": "atc-config-diff",
+  "test_package": "./atc",
+  "source_test_file": "atc/config_diff_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/config-diff-behavior.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/config_diff_behavior.go"
+  ],
+  "cases": [
+    {
+      "id": "empty-configs-report-a-diff",
+      "source_file": "atc/config_diff.go",
+      "old": "\tvar diffExists bool",
+      "new": "\tdiffExists := true",
+      "tests": [
+        "Config diff job config when there are no jobs does not print anything about jobs",
+        "Config diff job config when there are no jobs to change says there are no changes to apply",
+        "Config diff display config when there is no display config does not print anything about display config",
+        "Config diff display config when there is no display config to change says there are no changes to apply"
+      ],
+      "scenarios": [
+        "Config diff profile <profile> (row 1)",
+        "Config diff profile <profile> (row 4)",
+        "Config diff profile <profile> (row 7)",
+        "Config diff profile <profile> (row 10)"
+      ],
+      "failure_contains": "config diff observation"
+    },
+    {
+      "id": "job-addition-heading-regresses",
+      "source_file": "atc/config_diff.go",
+      "old": "\t\tfmt.Fprintf(to, ansi.Color(\"%s %s has been added:\", \"yellow\")+\"\\n\", label, name(diff.After))",
+      "new": "\t\tfmt.Fprintf(to, ansi.Color(\"%s %s was added:\", \"yellow\")+\"\\n\", label, name(diff.After))",
+      "tests": [
+        "Config diff job config when a job is added says config has been added"
+      ],
+      "scenarios": [
+        "Config diff profile <profile> (row 2)"
+      ],
+      "failure_contains": "has been added"
+    },
+    {
+      "id": "job-removal-heading-regresses",
+      "source_file": "atc/config_diff.go",
+      "old": "\t\tfmt.Fprintf(to, ansi.Color(\"%s %s has been removed:\", \"yellow\")+\"\\n\", label, name(diff.Before))",
+      "new": "\t\tfmt.Fprintf(to, ansi.Color(\"%s %s was removed:\", \"yellow\")+\"\\n\", label, name(diff.Before))",
+      "tests": [
+        "Config diff job config when display config is removed says config has been removed"
+      ],
+      "scenarios": [
+        "Config diff profile <profile> (row 3)"
+      ],
+      "failure_contains": "has been removed"
+    },
+    {
+      "id": "removed-default-field-is-hidden",
+      "source_file": "atc/config_diff.go",
+      "old": "\t\tcase difflib.LeftOnly:\n\t\t\tfmt.Fprintf(indent, \"%s %s\\n\", ansi.Color(\"-\", \"red\"), ansi.Color(text, \"red\"))",
+      "new": "\t\tcase difflib.LeftOnly:\n\t\t\tif b != \"\" && strings.Contains(text, \"trigger: true\") {\n\t\t\t\tcontinue\n\t\t\t}\n\t\t\tfmt.Fprintf(indent, \"%s %s\\n\", ansi.Color(\"-\", \"red\"), ansi.Color(text, \"red\"))",
+      "tests": [
+        "Config diff job config when a single field changes removes the field if it has a default value"
+      ],
+      "scenarios": [
+        "Config diff profile <profile> (row 5)"
+      ],
+      "failure_contains": "trigger: true"
+    },
+    {
+      "id": "changed-resource-lines-are-hidden",
+      "source_file": "atc/config_diff.go",
+      "old": "\t\ttext := diff.Payload",
+      "new": "\t\ttext := diff.Payload\n\t\tif a != \"\" && b != \"\" && strings.Contains(text, \"resource: some-\") {\n\t\t\tcontinue\n\t\t}",
+      "tests": [
+        "Config diff job config when a single field changes replaces the field if it does not have a default value"
+      ],
+      "scenarios": [
+        "Config diff profile <profile> (row 6)"
+      ],
+      "failure_contains": "resource: some-resource"
+    },
+    {
+      "id": "display-addition-heading-regresses",
+      "source_file": "atc/config_diff.go",
+      "old": "\t\tfmt.Fprintf(to, ansi.Color(\"%s has been added:\", \"yellow\")+\"\\n\", label)",
+      "new": "\t\tfmt.Fprintf(to, ansi.Color(\"%s was added:\", \"yellow\")+\"\\n\", label)",
+      "tests": [
+        "Config diff display config when display config is added says config has been added"
+      ],
+      "scenarios": [
+        "Config diff profile <profile> (row 8)"
+      ],
+      "failure_contains": "has been added"
+    },
+    {
+      "id": "display-removal-heading-regresses",
+      "source_file": "atc/config_diff.go",
+      "old": "\t\tfmt.Fprintf(to, ansi.Color(\"%s has been removed:\", \"yellow\")+\"\\n\", label)",
+      "new": "\t\tfmt.Fprintf(to, ansi.Color(\"%s was removed:\", \"yellow\")+\"\\n\", label)",
+      "tests": [
+        "Config diff display config when display config is removed says config has been removed"
+      ],
+      "scenarios": [
+        "Config diff profile <profile> (row 9)"
+      ],
+      "failure_contains": "has been removed"
+    },
+    {
+      "id": "display-change-heading-regresses",
+      "source_file": "atc/config_diff.go",
+      "old": "\t\tfmt.Fprintf(to, ansi.Color(\"%s has changed:\", \"yellow\")+\"\\n\", label)",
+      "new": "\t\tfmt.Fprintf(to, ansi.Color(\"%s changed:\", \"yellow\")+\"\\n\", label)",
+      "tests": [
+        "Config diff display config when the background changes replaces the background"
+      ],
+      "scenarios": [
+        "Config diff profile <profile> (row 11)"
+      ],
+      "failure_contains": "has changed"
+    }
+  ]
+}
