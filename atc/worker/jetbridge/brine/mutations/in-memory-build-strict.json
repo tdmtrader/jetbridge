@@ -1,0 +1,170 @@
+{
+  "name": "in-memory-build-strict",
+  "test_package": "./atc/db",
+  "source_test_file": "atc/db/build_in_memory_check_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/in-memory-build.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/in_memory_build.go",
+    "atc/worker/jetbridge/brine/steps/resources.go"
+  ],
+  "cases": [
+    {
+      "id": "transient-identity-has-no-resource-type-build-id",
+      "source_file": "atc/db/build_in_memory_check.go",
+      "old": "func (b *inMemoryCheckBuildForApi) ResourceTypeID() int               { return 0 }",
+      "new": "func (b *inMemoryCheckBuildForApi) ResourceTypeID() int               { return 1 }",
+      "tests": ["Build Running in-memory-build creates a build"],
+      "scenarios": ["A new in-memory check exposes its complete transient identity"]
+    },
+    {
+      "id": "transient-lager-data-omits-zero-build-id",
+      "source_file": "atc/db/build_in_memory_check.go",
+      "old": "\tif b.id != 0 {\n\t\tdata[\"build_id\"] = b.id\n\t}\n\n\tif b.resourceId != 0 {",
+      "new": "\tif b.id >= 0 {\n\t\tdata[\"build_id\"] = b.id\n\t}\n\n\tif b.resourceId != 0 {",
+      "tests": ["Build Running in-memory-build LagerData"],
+      "scenarios": ["A new in-memory check exposes exact Lager fields"]
+    },
+    {
+      "id": "transient-tracing-data-omits-zero-build-id",
+      "source_file": "atc/db/build_in_memory_check.go",
+      "old": "\tif b.id != 0 {\n\t\tattrs[\"build_id\"] = fmt.Sprintf(\"%d\", b.id)\n\t}\n\n\tif b.resourceId != 0 {",
+      "new": "\tif b.id >= 0 {\n\t\tattrs[\"build_id\"] = fmt.Sprintf(\"%d\", b.id)\n\t}\n\n\tif b.resourceId != 0 {",
+      "tests": ["Build Running in-memory-build TracingAttrs"],
+      "scenarios": ["A new in-memory check exposes exact tracing fields"]
+    },
+    {
+      "id": "in-memory-build-retains-creation-span-context",
+      "source_file": "atc/db/build_in_memory_check.go",
+      "old": "func (b *inMemoryCheckBuild) SpanContext() propagation.TextMapCarrier { return b.spanContext }",
+      "new": "func (b *inMemoryCheckBuild) SpanContext() propagation.TextMapCarrier { return nil }",
+      "tests": ["Build Running in-memory-build SpanContext"],
+      "scenarios": ["A new in-memory check retains its creation span context"]
+    },
+    {
+      "id": "transient-builds-do-not-expose-persisted-event-streams",
+      "source_file": "atc/db/build_in_memory_check.go",
+      "old": "\tif b.id == 0 {\n\t\treturn nil, fmt.Errorf(\"no build event\")\n\t}",
+      "new": "\tif b.id < 0 {\n\t\treturn nil, fmt.Errorf(\"no build event\")\n\t}",
+      "tests": [
+        "Build Running in-memory-build Event should fail",
+        "Build Running in-memory-build start to run Event should fail"
+      ],
+      "scenarios": [
+        "A new in-memory check has no persisted event stream",
+        "Saved transient start events remain unavailable before persistence"
+      ]
+    },
+    {
+      "id": "successful-prestart-finish-does-not-persist-build",
+      "source_file": "atc/db/build_in_memory_check.go",
+      "old": "\tif !b.runningInContainer && status == BuildStatusSucceeded {\n\t\treturn nil\n\t}",
+      "new": "\tif !b.runningInContainer && status == BuildStatusAborted {\n\t\treturn nil\n\t}",
+      "tests": ["Build Running in-memory-build start to run BeforeCheckBuildStart Finish when build finishes with status succeed does not init DB"],
+      "scenarios": ["Successful completion before check start allocates no build ID"]
+    },
+    {
+      "id": "finish-persists-the-requested-resource-summary-status",
+      "source_file": "atc/db/build_in_memory_check.go",
+      "old": "\t\t\tSet(\"in_memory_build_status\", status).\n\t\t\tWhere(sq.Eq{\"id\": b.resourceId}).",
+      "new": "\t\t\tSet(\"in_memory_build_status\", BuildStatusPending).\n\t\t\tWhere(sq.Eq{\"id\": b.resourceId}).",
+      "tests": [
+        "Build Running in-memory-build start to run BeforeCheckBuildStart Finish when build finishes with status errored update in-memory build status for resource",
+        "Build Running in-memory-build start to run OnCheckBuildStart Finish update in-memory build status for resource"
+      ],
+      "scenarios": [
+        "Errored completion before check start updates the resource summary",
+        "Successful persisted completion updates the resource summary"
+      ]
+    },
+    {
+      "id": "running-event-sequence-starts-at-zero",
+      "source_file": "atc/db/build_in_memory_check.go",
+      "old": "\t\tValues(b.eventIdSeq.Next(), b.id, string(event.EventType()), string(event.Version()), payload).",
+      "new": "\t\tValues(b.eventIdSeq.Next()+1, b.id, string(event.EventType()), string(event.Version()), payload).",
+      "tests": [
+        "Build Running in-memory-build start to run BeforeCheckBuildStart Finish when build finishes with status errored save build status",
+        "Build Running in-memory-build start to run OnCheckBuildStart saved build events",
+        "Build Running in-memory-build start to run OnCheckBuildStart save a new event",
+        "Build Running in-memory-build start to run OnCheckBuildStart Finish save build status"
+      ],
+      "scenarios": [
+        "Errored completion before check start saves status event three",
+        "Persistence copies status initialize and start events in order",
+        "A persisted in-memory check saves a new log event at event three",
+        "Successful persisted completion saves status event three"
+      ]
+    },
+    {
+      "id": "running-public-build-id-remains-positive-and-matches-telemetry",
+      "source_file": "atc/db/build_in_memory_check.go",
+      "old": "func (b *inMemoryCheckBuild) RunStateID() string {",
+      "new": "func (b *inMemoryCheckBuild) ID() int { return -b.id }\n\nfunc (b *inMemoryCheckBuild) RunStateID() string {",
+      "tests": [
+        "Build Running in-memory-build start to run OnCheckBuildStart get a build id",
+        "Build Running in-memory-build start to run OnCheckBuildStart LagerData",
+        "Build Running in-memory-build start to run OnCheckBuildStart TracingAttrs"
+      ],
+      "scenarios": [
+        "Starting an in-memory check allocates a positive build ID",
+        "A persisted in-memory check exposes exact Lager fields",
+        "A persisted in-memory check exposes exact tracing fields"
+      ]
+    },
+    {
+      "id": "starting-a-check-persists-started-resource-summary",
+      "source_file": "atc/db/build_in_memory_check.go",
+      "old": "\t\t\tSet(\"in_memory_build_status\", BuildStatusStarted).\n\t\t\tWhere(sq.Eq{\"id\": b.resourceId}).",
+      "new": "\t\t\tSet(\"in_memory_build_status\", BuildStatusPending).\n\t\t\tWhere(sq.Eq{\"id\": b.resourceId}).",
+      "tests": ["Build Running in-memory-build start to run OnCheckBuildStart update in-memory build status for resource"],
+      "scenarios": ["Starting an in-memory check marks the resource summary started"]
+    },
+    {
+      "id": "resource-cache-user-keeps-transient-build-identity",
+      "source_file": "atc/db/build_in_memory_check.go",
+      "old": "\treturn ForInMemoryBuild(b.preId, b.createTime)\n}",
+      "new": "\treturn ForInMemoryBuild(b.preId+1, b.createTime)\n}",
+      "tests": ["Build Running in-memory-build start to run OnCheckBuildStart ResourceCacheUser"],
+      "scenarios": ["A persisted in-memory check retains its transient cache identity"]
+    },
+    {
+      "id": "container-owner-keeps-transient-build-identity",
+      "source_file": "atc/db/build_in_memory_check.go",
+      "old": "\treturn NewInMemoryCheckBuildContainerOwner(b.preId, b.createTime, planId, b.TeamID())\n}",
+      "new": "\treturn NewInMemoryCheckBuildContainerOwner(b.preId+1, b.createTime, planId, b.TeamID())\n}",
+      "tests": ["Build Running in-memory-build start to run OnCheckBuildStart ContainerOwner"],
+      "scenarios": ["A persisted in-memory check creates its transient container owner"]
+    },
+    {
+      "id": "run-state-id-keeps-in-memory-check-prefix",
+      "source_file": "atc/db/build_in_memory_check.go",
+      "old": "\treturn fmt.Sprintf(\"in-memory-check-build:%v\", b.preId)\n}",
+      "new": "\treturn fmt.Sprintf(\"in-memory-build:%v\", b.preId)\n}",
+      "tests": ["Build Running in-memory-build start to run OnCheckBuildStart RunStateID"],
+      "scenarios": ["A persisted in-memory check retains its transient run-state ID"]
+    },
+    {
+      "id": "tracking-lock-remains-held-until-the-caller-releases-it",
+      "source_file": "atc/db/build_in_memory_check.go",
+      "old": "\tif !acquired {\n\t\treturn nil, false, nil\n\t}\n\n\treturn lock, true, nil",
+      "new": "\tif !acquired {\n\t\treturn nil, false, nil\n\t}\n\n\tif err := lock.Release(); err != nil {\n\t\treturn nil, false, err\n\t}\n\treturn lock, true, nil",
+      "tests": ["Build Running in-memory-build start to run OnCheckBuildStart AcquireTrackingLock cannot acquire the lock when it's acquired already"],
+      "scenarios": ["A held production tracking lock cannot be acquired twice"]
+    },
+    {
+      "id": "api-reconstruction-retains-the-persisted-check-build-id",
+      "source_file": "atc/db/build_in_memory_check.go",
+      "old": "\tbuild := inMemoryCheckBuildForApi{\n\t\tid:        buildId,\n\t\tconn:      conn,",
+      "new": "\tbuild := inMemoryCheckBuildForApi{\n\t\tid:        0,\n\t\tconn:      conn,",
+      "tests": [
+        "Build in-memory build for api find a build",
+        "Build in-memory build for api LagerData",
+        "Build in-memory build for api Events"
+      ],
+      "scenarios": [
+        "The API factory reconstructs the complete in-memory check identity",
+        "The API in-memory check exposes exact Lager fields",
+        "The API in-memory check exposes an event stream"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,177 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/in-memory-build-strict.json",
+  "git_head": "109d8190a161d4575d61c8867a35232047b7de26",
+  "completed_at": "2026-09-01T11:25:31Z",
+  "source_tests": 24,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "mutation_cases": [
+    {
+      "id": "transient-identity-has-no-resource-type-build-id",
+      "mutation_sha256": "bbb7de9754a90dd1f4bd59a3c1184aba11773a0301709716ac472d25211551e6",
+      "failed_source_tests": [
+        "Build Running in-memory-build creates a build"
+      ],
+      "failed_brine_scenarios": [
+        "A new in-memory check exposes its complete transient identity"
+      ]
+    },
+    {
+      "id": "transient-lager-data-omits-zero-build-id",
+      "mutation_sha256": "ec40042138c2ed6a507129c28fa5b3e1af3aa167082c4110dfb2b504eb5474cb",
+      "failed_source_tests": [
+        "Build Running in-memory-build LagerData"
+      ],
+      "failed_brine_scenarios": [
+        "A new in-memory check exposes exact Lager fields"
+      ]
+    },
+    {
+      "id": "transient-tracing-data-omits-zero-build-id",
+      "mutation_sha256": "99373c668b894fecf375f4f34704856819e33b02f6e1f9971940bca9ff45b8cc",
+      "failed_source_tests": [
+        "Build Running in-memory-build TracingAttrs"
+      ],
+      "failed_brine_scenarios": [
+        "A new in-memory check exposes exact tracing fields"
+      ]
+    },
+    {
+      "id": "in-memory-build-retains-creation-span-context",
+      "mutation_sha256": "8a581f77f179f6fe83c3dcd39183439fc47b2063aa1d433dca94663018181a85",
+      "failed_source_tests": [
+        "Build Running in-memory-build SpanContext"
+      ],
+      "failed_brine_scenarios": [
+        "A new in-memory check retains its creation span context"
+      ]
+    },
+    {
+      "id": "transient-builds-do-not-expose-persisted-event-streams",
+      "mutation_sha256": "8281dad19f3936ca4494abdc5248846b736a56640b30876053ed7979363585c3",
+      "failed_source_tests": [
+        "Build Running in-memory-build Event should fail",
+        "Build Running in-memory-build start to run Event should fail"
+      ],
+      "failed_brine_scenarios": [
+        "A new in-memory check has no persisted event stream",
+        "Saved transient start events remain unavailable before persistence"
+      ]
+    },
+    {
+      "id": "successful-prestart-finish-does-not-persist-build",
+      "mutation_sha256": "45a5c1d6c49ed65f3dff01758808f1e4eac237ced9034cbce625e1c6fe11a9f4",
+      "failed_source_tests": [
+        "Build Running in-memory-build start to run BeforeCheckBuildStart Finish when build finishes with status succeed does not init DB"
+      ],
+      "failed_brine_scenarios": [
+        "Successful completion before check start allocates no build ID"
+      ]
+    },
+    {
+      "id": "finish-persists-the-requested-resource-summary-status",
+      "mutation_sha256": "c9edf03ad5f91f46da4a5f9787ac759c3ea2760974b80427f933cf37753ae7d6",
+      "failed_source_tests": [
+        "Build Running in-memory-build start to run BeforeCheckBuildStart Finish when build finishes with status errored update in-memory build status for resource",
+        "Build Running in-memory-build start to run OnCheckBuildStart Finish update in-memory build status for resource"
+      ],
+      "failed_brine_scenarios": [
+        "Errored completion before check start updates the resource summary",
+        "Successful persisted completion updates the resource summary"
+      ]
+    },
+    {
+      "id": "running-event-sequence-starts-at-zero",
+      "mutation_sha256": "c8cbdca9eb6e1118dd029e2ff25aaa6651c5f721eff8b0033ea7c26f6ef2349e",
+      "failed_source_tests": [
+        "Build Running in-memory-build start to run BeforeCheckBuildStart Finish when build finishes with status errored save build status",
+        "Build Running in-memory-build start to run OnCheckBuildStart Finish save build status",
+        "Build Running in-memory-build start to run OnCheckBuildStart save a new event",
+        "Build Running in-memory-build start to run OnCheckBuildStart saved build events"
+      ],
+      "failed_brine_scenarios": [
+        "A persisted in-memory check saves a new log event at event three",
+        "Errored completion before check start saves status event three",
+        "Persistence copies status initialize and start events in order",
+        "Successful persisted completion saves status event three"
+      ]
+    },
+    {
+      "id": "running-public-build-id-remains-positive-and-matches-telemetry",
+      "mutation_sha256": "d636bbe7fd5bbd6b250e32191b201166b42c3566d3a7350f539993262f06eff6",
+      "failed_source_tests": [
+        "Build Running in-memory-build start to run OnCheckBuildStart LagerData",
+        "Build Running in-memory-build start to run OnCheckBuildStart TracingAttrs",
+        "Build Running in-memory-build start to run OnCheckBuildStart get a build id"
+      ],
+      "failed_brine_scenarios": [
+        "A persisted in-memory check exposes exact Lager fields",
+        "A persisted in-memory check exposes exact tracing fields",
+        "Starting an in-memory check allocates a positive build ID"
+      ]
+    },
+    {
+      "id": "starting-a-check-persists-started-resource-summary",
+      "mutation_sha256": "90565c2fc930a7e6d9a715b9bb6b4ecdb8ff7b5271973d1c09b6c3f463d6832b",
+      "failed_source_tests": [
+        "Build Running in-memory-build start to run OnCheckBuildStart update in-memory build status for resource"
+      ],
+      "failed_brine_scenarios": [
+        "Starting an in-memory check marks the resource summary started"
+      ]
+    },
+    {
+      "id": "resource-cache-user-keeps-transient-build-identity",
+      "mutation_sha256": "17453cbbdb8a2230f06d9456e1decca789b12e339b7b1c1e6da311d72dfdfe73",
+      "failed_source_tests": [
+        "Build Running in-memory-build start to run OnCheckBuildStart ResourceCacheUser"
+      ],
+      "failed_brine_scenarios": [
+        "A persisted in-memory check retains its transient cache identity"
+      ]
+    },
+    {
+      "id": "container-owner-keeps-transient-build-identity",
+      "mutation_sha256": "9857168fe42bb36722730f85ce6e8115b78a98fb3e4ecc794d0432782921e283",
+      "failed_source_tests": [
+        "Build Running in-memory-build start to run OnCheckBuildStart ContainerOwner"
+      ],
+      "failed_brine_scenarios": [
+        "A persisted in-memory check creates its transient container owner"
+      ]
+    },
+    {
+      "id": "run-state-id-keeps-in-memory-check-prefix",
+      "mutation_sha256": "117c93b4f88ac3d9d2afd7eb153fedfc26a8b32fc9396e5f2c75021dfbaf80ba",
+      "failed_source_tests": [
+        "Build Running in-memory-build start to run OnCheckBuildStart RunStateID"
+      ],
+      "failed_brine_scenarios": [
+        "A persisted in-memory check retains its transient run-state ID"
+      ]
+    },
+    {
+      "id": "tracking-lock-remains-held-until-the-caller-releases-it",
+      "mutation_sha256": "9b63af1406bbde6bc604da24db859855b747231f99482df76c34fd48a9e06a27",
+      "failed_source_tests": [
+        "Build Running in-memory-build start to run OnCheckBuildStart AcquireTrackingLock cannot acquire the lock when it's acquired already"
+      ],
+      "failed_brine_scenarios": [
+        "A held production tracking lock cannot be acquired twice"
+      ]
+    },
+    {
+      "id": "api-reconstruction-retains-the-persisted-check-build-id",
+      "mutation_sha256": "296b4b20f8e48ed0ad684f9259d695ee9e4bba62d0a7458790fdda71ac345e77",
+      "failed_source_tests": [
+        "Build in-memory build for api Events",
+        "Build in-memory build for api LagerData",
+        "Build in-memory build for api find a build"
+      ],
+      "failed_brine_scenarios": [
+        "The API factory reconstructs the complete in-memory check identity",
+        "The API in-memory check exposes an event stream",
+        "The API in-memory check exposes exact Lager fields"
+      ]
+    }
+  ]
+}

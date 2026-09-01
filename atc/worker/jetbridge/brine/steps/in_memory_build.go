@@ -4,9 +4,10 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"strings"
 	"time"
 
-	"code.cloudfoundry.org/lager/v3/lagertest"
+	"code.cloudfoundry.org/lager/v3"
 	"github.com/brine-dev/brine-go/pkg/brine"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
@@ -68,64 +69,60 @@ func observeInMemoryBuild(database JetbridgeDB, profile string) (string, error) 
 		return "", err
 	}
 	switch profile {
-	case "creation":
-		_, eventsErr := build.Events(0)
-		lager := build.LagerData()
-		trace := build.TracingAttrs()
-		return fmt.Sprintf("id=%d;name=%s;pending=%t;running=%t;manual=%t;plan=%t;lager=%t;trace=%t;span=%t;events-error=%t",
-			build.ID(), build.Name(), build.Status() == db.BuildStatusPending, build.IsRunning(), build.IsManuallyTriggered(), build.HasPlan() && reflect.DeepEqual(build.PrivatePlan(), plan),
-			lager["pre_build_id"] == 1 && lager["resource"] == resource.Name(), trace["pre_build_id"] == "1" && trace["resource"] == resource.Name(), reflect.DeepEqual(build.SpanContext(), db.NewSpanContext(ctx)), eventsErr != nil), nil
-	case "prestart-success":
+	case "creation-identity":
+		valid := build.ID() == 0 && build.Name() == db.CheckBuildName &&
+			build.TeamID() == resource.TeamID() && build.TeamName() == resource.TeamName() &&
+			build.PipelineID() == resource.PipelineID() && build.PipelineName() == resource.PipelineName() &&
+			build.JobID() == 0 && build.JobName() == "" && build.ResourceID() == resource.ID() &&
+			build.ResourceName() == resource.Name() && build.ResourceTypeID() == 0 && build.Schema() == "exec.v2" &&
+			build.Status() == db.BuildStatusPending && build.IsRunning() && !build.IsManuallyTriggered() &&
+			build.HasPlan() && reflect.DeepEqual(build.PrivatePlan(), plan) && reflect.DeepEqual(build.PublicPlan(), plan.Public())
+		return fmt.Sprintf("creation=%t", valid), nil
+	case "creation-lager":
+		data := build.LagerData()
+		valid := len(data) == 5 && data["team"] == resource.TeamName() && data["pipeline"] == resource.PipelineName() && data["pre_build_id"] == 1 && data["resource"] == resource.Name() && data["build"] == "check"
+		return fmt.Sprintf("lager=%t", valid), nil
+	case "creation-tracing":
+		data := build.TracingAttrs()
+		valid := len(data) == 5 && data["team"] == resource.TeamName() && data["pipeline"] == resource.PipelineName() && data["pre_build_id"] == "1" && data["resource"] == resource.Name() && data["build"] == "check"
+		return fmt.Sprintf("tracing=%t", valid), nil
+	case "creation-span":
+		return fmt.Sprintf("span=%t", reflect.DeepEqual(build.SpanContext(), db.NewSpanContext(ctx))), nil
+	case "creation-events-error":
+		_, err := build.Events(0)
+		return fmt.Sprintf("events-error=%t", err != nil && err.Error() == "no build event"), nil
+	case "started-events-error":
 		if err := saveMemoryStartEvents(build, plan); err != nil {
 			return "", err
 		}
-		_, eventsErr := build.Events(0)
+		_, err := build.Events(0)
+		return fmt.Sprintf("events-error=%t", err != nil && err.Error() == "no build event"), nil
+	case "prestart-success-id":
+		if err := saveMemoryStartEvents(build, plan); err != nil {
+			return "", err
+		}
 		if err := build.Finish(db.BuildStatusSucceeded); err != nil {
 			return "", err
 		}
-		return fmt.Sprintf("events-error=%t;id=%d", eventsErr != nil, build.ID()), nil
-	case "prestart-error":
+		return fmt.Sprintf("id=%d", build.ID()), nil
+	case "prestart-error-summary", "prestart-error-event":
 		if err := saveMemoryStartEvents(build, plan); err != nil {
 			return "", err
 		}
 		if err := build.Finish(db.BuildStatusErrored); err != nil {
 			return "", err
 		}
-		if _, err := resource.Reload(); err != nil {
-			return "", err
+		if profile == "prestart-error-summary" {
+			if _, err := resource.Reload(); err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("summary=%s", resource.BuildSummary().Status), nil
 		}
-		source, err := build.Events(3)
-		if err != nil {
-			return "", err
-		}
-		defer source.Close()
-		ev, err := source.Next()
-		return fmt.Sprintf("summary=%s;event=%s;id=%s", resource.BuildSummary().Status, ev.Event, ev.EventID), err
-	case "started":
-		return observeStartedInMemoryBuild(resource, plan, build)
-	case "api":
-		config, err := db.NewResourceConfigFactory(database.Conn, database.LockFactory).FindOrCreateResourceConfig(resource.Type(), resource.Source(), nil)
-		if err != nil {
-			return "", err
-		}
-		resourceID := resource.ID()
-		scope, err := config.FindOrCreateScope(&resourceID)
-		if err != nil {
-			return "", err
-		}
-		found, err := scope.UpdateLastCheckStartTime(1999, plan.Public())
-		if err != nil || !found {
-			return "", fmt.Errorf("save API in-memory build: found=%t: %w", found, err)
-		}
-		if err := resource.SetResourceConfigScope(scope); err != nil {
-			return "", err
-		}
-		apiBuild, found, err := database.BuildFactory.BuildForAPI(1999)
-		if err != nil || !found {
-			return "", fmt.Errorf("load API in-memory build: found=%t: %w", found, err)
-		}
-		_, eventsErr := apiBuild.Events(0)
-		return fmt.Sprintf("found=true;id=%d;name=%s;running=%t;plan=%t;events=%t", apiBuild.ID(), apiBuild.Name(), apiBuild.IsRunning(), apiBuild.HasPlan() && reflect.DeepEqual(apiBuild.PublicPlan(), plan.Public()), eventsErr == nil), nil
+		return memoryBuildEvent(build, 3, "status", "errored")
+	case "started-id", "started-summary", "started-lager", "started-tracing", "started-events", "started-log", "started-cache-user", "started-owner", "started-run-state", "started-tracking-lock", "finish-summary", "finish-event":
+		return observeStartedInMemoryBuild(resource, plan, build, profile)
+	case "api-find", "api-lager", "api-events":
+		return observeAPIInMemoryBuild(database, resource, plan, profile)
 	default:
 		return "", fmt.Errorf("unknown in-memory build profile %q", profile)
 	}
@@ -138,65 +135,138 @@ func saveMemoryStartEvents(build db.Build, plan atc.Plan) error {
 	return build.SaveEvent(event.Start{Origin: event.Origin{ID: event.OriginID(plan.ID)}, Time: time.Now().Unix()})
 }
 
-func observeStartedInMemoryBuild(resource db.Resource, plan atc.Plan, build db.Build) (string, error) {
+func observeStartedInMemoryBuild(resource db.Resource, plan atc.Plan, build db.Build, profile string) (string, error) {
 	if err := saveMemoryStartEvents(build, plan); err != nil {
 		return "", err
 	}
 	if err := build.OnCheckBuildStart(); err != nil {
 		return "", err
 	}
-	if _, err := resource.Reload(); err != nil {
-		return "", err
-	}
-	source, err := build.Events(0)
-	if err != nil {
-		return "", err
-	}
-	eventTypes := make([]string, 0, 3)
-	for i := 0; i < 3; i++ {
-		ev, err := source.Next()
+	switch profile {
+	case "started-id":
+		return fmt.Sprintf("id-positive=%t", build.ID() > 0), nil
+	case "started-summary":
+		if _, err := resource.Reload(); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("summary=%s", resource.BuildSummary().Status), nil
+	case "started-lager":
+		data := build.LagerData()
+		valid := len(data) == 6 && data["build_id"] == build.ID() && data["pre_build_id"] == 1 && data["team"] == resource.TeamName() && data["pipeline"] == resource.PipelineName() && data["resource"] == resource.Name() && data["build"] == "check"
+		return fmt.Sprintf("lager=%t", valid), nil
+	case "started-tracing":
+		data := build.TracingAttrs()
+		valid := len(data) == 6 && data["build_id"] == fmt.Sprintf("%d", build.ID()) && data["pre_build_id"] == "1" && data["team"] == resource.TeamName() && data["pipeline"] == resource.PipelineName() && data["resource"] == resource.Name() && data["build"] == "check"
+		return fmt.Sprintf("tracing=%t", valid), nil
+	case "started-events":
+		source, err := build.Events(0)
 		if err != nil {
 			return "", err
 		}
-		eventTypes = append(eventTypes, string(ev.Event))
+		want := []string{"status:0", "initialize:1", "start:2"}
+		got := []string{}
+		for range 3 {
+			ev, err := source.Next()
+			if err != nil {
+				return "", err
+			}
+			got = append(got, fmt.Sprintf("%s:%s", ev.Event, ev.EventID))
+		}
+		if err := source.Close(); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("events=%t", reflect.DeepEqual(got, want)), nil
+	case "started-log":
+		if err := build.SaveEvent(event.Log{Origin: event.Origin{ID: event.OriginID(plan.ID)}, Time: time.Now().Unix(), Payload: "some-log-line"}); err != nil {
+			return "", err
+		}
+		return memoryBuildEvent(build, 3, "log", "")
+	case "started-cache-user":
+		return fmt.Sprintf("cache-user=%t", reflect.DeepEqual(build.ResourceCacheUser(), db.ForInMemoryBuild(1, build.CreateTime()))), nil
+	case "started-owner":
+		return fmt.Sprintf("owner=%t", reflect.DeepEqual(build.ContainerOwner("some-plan"), db.NewInMemoryCheckBuildContainerOwner(1, build.CreateTime(), "some-plan", resource.TeamID()))), nil
+	case "started-run-state":
+		return fmt.Sprintf("run-state=%s", build.RunStateID()), nil
+	case "started-tracking-lock":
+		logger := lager.NewLogger("brine-in-memory-build-lock")
+		held, acquired, err := build.AcquireTrackingLock(logger, time.Second)
+		if err != nil || !acquired {
+			return "", fmt.Errorf("acquire tracking lock: %t: %w", acquired, err)
+		}
+		_, second, secondErr := build.AcquireTrackingLock(logger, time.Second)
+		releaseErr := held.Release()
+		if secondErr != nil {
+			return "", secondErr
+		}
+		if releaseErr != nil {
+			return "", releaseErr
+		}
+		return fmt.Sprintf("second-lock=%t", second), nil
+	case "finish-summary", "finish-event":
+		if err := build.Finish(db.BuildStatusSucceeded); err != nil {
+			return "", err
+		}
+		if _, err := resource.Reload(); err != nil {
+			return "", err
+		}
+		if profile == "finish-summary" {
+			return fmt.Sprintf("summary=%s", resource.BuildSummary().Status), nil
+		}
+		return memoryBuildEvent(build, 3, "status", "")
+	default:
+		return "", fmt.Errorf("unknown started profile %q", profile)
 	}
-	if err := source.Close(); err != nil {
-		return "", err
-	}
-	if err := build.SaveEvent(event.Log{Origin: event.Origin{ID: event.OriginID(plan.ID)}, Time: time.Now().Unix(), Payload: "line"}); err != nil {
-		return "", err
-	}
-	logSource, err := build.Events(3)
+}
+
+func memoryBuildEvent(build db.Build, from uint, want, payloadSubstring string) (string, error) {
+	source, err := build.Events(from)
 	if err != nil {
 		return "", err
 	}
-	logEvent, err := logSource.Next()
+	ev, err := source.Next()
 	if err != nil {
 		return "", err
 	}
-	_ = logSource.Close()
-	lock, acquired, err := build.AcquireTrackingLock(lagertest.NewTestLogger("memory-build"), time.Second)
-	if err != nil || !acquired {
-		return "", fmt.Errorf("acquire memory build lock: acquired=%t: %w", acquired, err)
+	matches := string(ev.Event) == want
+	if payloadSubstring != "" {
+		matches = matches && ev.Data != nil && strings.Contains(string(*ev.Data), payloadSubstring)
 	}
-	_, acquiredAgain, err := build.AcquireTrackingLock(lagertest.NewTestLogger("memory-build-second"), time.Second)
-	if releaseErr := lock.Release(); err == nil {
-		err = releaseErr
-	}
+	return fmt.Sprintf("event=%s;id=%s;matches=%t", ev.Event, ev.EventID, matches), nil
+}
+
+func observeAPIInMemoryBuild(database JetbridgeDB, resource db.Resource, plan atc.Plan, profile string) (string, error) {
+	config, err := db.NewResourceConfigFactory(database.Conn, database.LockFactory).FindOrCreateResourceConfig(resource.Type(), resource.Source(), nil)
 	if err != nil {
 		return "", err
 	}
-	if err := build.Finish(db.BuildStatusSucceeded); err != nil {
-		return "", err
-	}
-	if _, err := resource.Reload(); err != nil {
-		return "", err
-	}
-	owner, err := build.ContainerOwner("plan").Create(nil, "")
+	resourceID := resource.ID()
+	scope, err := config.FindOrCreateScope(&resourceID)
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("id-positive=%t;summary=%s;events=%s,%s,%s;log=%s;cache=%t;owner=%t;run-state=%s;second-lock=%t",
-		build.ID() > 0, resource.BuildSummary().Status, eventTypes[0], eventTypes[1], eventTypes[2], logEvent.Event,
-		build.ResourceCacheUser() != nil, owner["in_memory_build_id"] != nil, build.RunStateID(), acquiredAgain), nil
+	found, err := scope.UpdateLastCheckStartTime(1999, plan.Public())
+	if err != nil || !found {
+		return "", fmt.Errorf("save API in-memory build: found=%t: %w", found, err)
+	}
+	if err := resource.SetResourceConfigScope(scope); err != nil {
+		return "", err
+	}
+	build, found, err := database.BuildFactory.BuildForAPI(1999)
+	if err != nil || !found {
+		return "", fmt.Errorf("load API in-memory build: found=%t: %w", found, err)
+	}
+	switch profile {
+	case "api-find":
+		valid := build.ID() == 1999 && build.Name() == db.CheckBuildName && build.TeamID() == resource.TeamID() && build.TeamName() == resource.TeamName() && build.PipelineID() == resource.PipelineID() && build.PipelineName() == resource.PipelineName() && build.JobID() == 0 && build.JobName() == "" && build.ResourceID() == resource.ID() && build.ResourceName() == resource.Name() && build.Schema() == "exec.v2" && !build.IsRunning() && build.HasPlan() && reflect.DeepEqual(build.PublicPlan(), plan.Public())
+		return fmt.Sprintf("api-find=%t", valid), nil
+	case "api-lager":
+		data := build.LagerData()
+		valid := len(data) == 5 && data["build_id"] == 1999 && data["team"] == resource.TeamName() && data["pipeline"] == resource.PipelineName() && data["resource"] == resource.Name() && data["build"] == "check"
+		return fmt.Sprintf("api-lager=%t", valid), nil
+	case "api-events":
+		_, err := build.Events(0)
+		return fmt.Sprintf("api-events=%t", err == nil), nil
+	default:
+		return "", fmt.Errorf("unknown API profile %q", profile)
+	}
 }
