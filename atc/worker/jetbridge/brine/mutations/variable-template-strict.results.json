@@ -1,0 +1,93 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/variable-template-strict.json",
+  "git_head": "4ceec5513589d836d4842c3f4eb4cedc8d311fe7",
+  "completed_at": "2026-09-01T04:25:38Z",
+  "source_tests": 34,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "mutation_cases": [
+    {
+      "id": "evaluated-template-marshals-null-instead-of-result",
+      "mutation_sha256": "43fbe871d1929dd0554f3a8c499c6e4d93aadf73cdf472f795344f5e62553ec0",
+      "failed_source_tests": [
+        "Template When template is a number returns it",
+        "Template When variable has nil as value for key uses null",
+        "Template allow var_source name in variable keys",
+        "Template allows @ in a var name",
+        "Template allows to access sub key of an interpolated value via dot syntax",
+        "Template can interpolate a different data types into a byte slice",
+        "Template can interpolate a secret key in the middle of a string",
+        "Template can interpolate a single key multiple times in the middle of a string",
+        "Template can interpolate boolean values into a byte slice",
+        "Template can interpolate keys with dashes and underscores into a byte slice",
+        "Template can interpolate multiple keys of type string and int in the middle of a string",
+        "Template can interpolate multiple secret keys in the middle of a string",
+        "Template can interpolate multiple values into a byte slice",
+        "Template can interpolate quoted keys with colon and no var source",
+        "Template can interpolate quoted keys with dot and colon into a byte slice",
+        "Template can interpolate quoted keys with dot in subkey into a byte slice",
+        "Template can interpolate the same value multiple times into a byte slice",
+        "Template can interpolate unicode values into a byte slice",
+        "Template can interpolate values into a struct with byte slice",
+        "Template can interpolate values into the middle of a key",
+        "Template can interpolate values with leading slash into a struct with byte slice",
+        "Template can interpolate values with strange newlines",
+        "Template does not return error if there are missing variable keys and ExpectAllKeys is false",
+        "Template does not return error if there are unused variable keys and ExpectAllVarsUsed is false",
+        "Template ignores an invalid input",
+        "Template ignores if operation is not specified"
+      ],
+      "failed_brine_scenarios": [
+        "Variable template profile \u003cprofile\u003e (row 1)",
+        "Variable template profile \u003cprofile\u003e (row 11)",
+        "Variable template profile \u003cprofile\u003e (row 13)",
+        "Variable template profile \u003cprofile\u003e (row 14)",
+        "Variable template profile \u003cprofile\u003e (row 15)",
+        "Variable template profile \u003cprofile\u003e (row 16)",
+        "Variable template profile \u003cprofile\u003e (row 17)",
+        "Variable template profile \u003cprofile\u003e (row 18)",
+        "Variable template profile \u003cprofile\u003e (row 19)",
+        "Variable template profile \u003cprofile\u003e (row 2)",
+        "Variable template profile \u003cprofile\u003e (row 20)",
+        "Variable template profile \u003cprofile\u003e (row 21)",
+        "Variable template profile \u003cprofile\u003e (row 22)",
+        "Variable template profile \u003cprofile\u003e (row 23)",
+        "Variable template profile \u003cprofile\u003e (row 25)",
+        "Variable template profile \u003cprofile\u003e (row 26)",
+        "Variable template profile \u003cprofile\u003e (row 27)",
+        "Variable template profile \u003cprofile\u003e (row 28)",
+        "Variable template profile \u003cprofile\u003e (row 29)",
+        "Variable template profile \u003cprofile\u003e (row 3)",
+        "Variable template profile \u003cprofile\u003e (row 30)",
+        "Variable template profile \u003cprofile\u003e (row 31)",
+        "Variable template profile \u003cprofile\u003e (row 32)",
+        "Variable template profile \u003cprofile\u003e (row 4)",
+        "Variable template profile \u003cprofile\u003e (row 5)",
+        "Variable template profile \u003cprofile\u003e (row 8)"
+      ]
+    },
+    {
+      "id": "interpolation-errors-lose-production-diagnostic",
+      "mutation_sha256": "fa3b2c9b7c9166fcdbfdc528d819eebec5df12a25d514492c9bf2afecaf83ac1",
+      "failed_source_tests": [
+        "Template raises error when interpolating an unsupported type in the middle of a string",
+        "Template return errors if there are missing variable keys and ExpectAllKeys is true",
+        "Template return errors if there are multiple variables with same path and ExpectAllKeys is true",
+        "Template return errors if there are not found and unused variables and ExpectAllKeys and ExpectAllVarsUsed are true",
+        "Template return errors if there are unused named variable keys and ExpectAllVarsUsed is true",
+        "Template return errors if there are unused variable keys and ExpectAllVarsUsed is true",
+        "Template returns an error if accessing sub key of an interpolated value fails",
+        "Template returns an error if variable is not found and is being used with a sub key"
+      ],
+      "failed_brine_scenarios": [
+        "Variable template profile \u003cprofile\u003e (row 10)",
+        "Variable template profile \u003cprofile\u003e (row 12)",
+        "Variable template profile \u003cprofile\u003e (row 24)",
+        "Variable template profile \u003cprofile\u003e (row 33)",
+        "Variable template profile \u003cprofile\u003e (row 34)",
+        "Variable template profile \u003cprofile\u003e (row 6)",
+        "Variable template profile \u003cprofile\u003e (row 7)",
+        "Variable template profile \u003cprofile\u003e (row 9)"
+      ]
+    }
+  ]
+}

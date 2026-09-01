@@ -16,11 +16,11 @@ Feature: Pipeline variables interpolate into YAML without losing type or path se
       | multiple                     | is         | foo: bar\n                                                            |
       | boolean                      | is         | otherstuff: true\n                                                   |
       | typed-values                 | is         | typed-yaml-preserved                                                  |
-      | missing-required             | contains   | undefined vars: key, key2, key4, key_in_array                         |
-      | missing-named                | contains   | undefined vars: var1:key1, var2:key1                                  |
+      | missing-required             | is         | error:undefined vars: key, key2, key4, key_in_array                   |
+      | missing-named                | is         | error:undefined vars: var1:key1, var2:key1                            |
       | missing-tolerated            | is         | ((key)): ((key2))\nfoo: 2\n                                        |
-      | unused-required              | contains   | unused vars: key1, key3                                               |
-      | unused-named                 | contains   | unused vars: var1:key1, var2:key1                                     |
+      | unused-required              | is         | error:unused vars: key1, key3                                         |
+      | unused-named                 | is         | error:unused vars: var1:key1, var2:key1                               |
       | unused-tolerated             | is         | ((key)): ((key2))\n                                                 |
       | missing-and-unused           | contains   | undefined vars: key2 ;; unused vars: key1, key3                       |
       | number-template              | is         | 1234\n                                                                |
