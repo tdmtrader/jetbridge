@@ -1,0 +1,84 @@
+{
+  "name": "job-client-api-strict",
+  "test_package": "./atc/api",
+  "source_test_file": "atc/api/jobs_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/job-client-api-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/job_client_strict.go",
+    "atc/worker/jetbridge/brine/steps/resources.go"
+  ],
+  "cases": [
+    {
+      "id": "administrator-job-list-discards-active-jobs",
+      "source_file": "atc/api/jobserver/list_all.go",
+      "old": "\tif acc.IsAdmin() {\n\t\tjobs, err = s.jobFactory.AllActiveJobs()",
+      "new": "\tif acc.IsAdmin() {\n\t\t_, err = s.jobFactory.AllActiveJobs()",
+      "tests": ["Jobs API GET /api/v1/jobs returns every persisted active job for an administrator"],
+      "scenarios": ["Administrator job listing returns jobs across persisted teams"]
+    },
+    {
+      "id": "missing-job-status-is-changed",
+      "source_file": "atc/api/jobserver/get.go",
+      "old": "\t\tif !found {\n\t\t\tw.WriteHeader(http.StatusNotFound)\n\t\t\treturn\n\t\t}",
+      "new": "\t\tif !found {\n\t\t\tw.WriteHeader(http.StatusGone)\n\t\t\treturn\n\t\t}",
+      "tests": ["Jobs API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name when authorized when the job is absent returns 404"],
+      "scenarios": ["Missing production job lookup returns HTTP 404"]
+    },
+    {
+      "id": "missing-job-build-list-status-is-changed",
+      "source_file": "atc/api/jobserver/list_builds.go",
+      "old": "\t\tif !found {\n\t\t\tw.WriteHeader(http.StatusNotFound)\n\t\t\treturn\n\t\t}",
+      "new": "\t\tif !found {\n\t\t\tw.WriteHeader(http.StatusGone)\n\t\t\treturn\n\t\t}",
+      "tests": ["Jobs API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/builds when authorized when the job is naturally absent returns 404"],
+      "scenarios": ["Missing production job build listing returns HTTP 404"]
+    },
+    {
+      "id": "pause-does-not-persist-paused-state",
+      "source_file": "atc/db/job.go",
+      "old": "\t\tSet(\"paused\", true).\n\t\tSet(\"paused_at\", sq.Expr(\"now()\")).",
+      "new": "\t\tSet(\"paused\", false).\n\t\tSet(\"paused_at\", sq.Expr(\"now()\")).",
+      "tests": ["Jobs API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/pause persists the authenticated user's pause state"],
+      "scenarios": ["Production pause endpoint persists authenticated pause state"]
+    },
+    {
+      "id": "missing-pause-status-is-changed",
+      "source_file": "atc/api/jobserver/pause_job.go",
+      "old": "\t\tif !found {\n\t\t\tw.WriteHeader(http.StatusNotFound)\n\t\t\treturn\n\t\t}",
+      "new": "\t\tif !found {\n\t\t\tw.WriteHeader(http.StatusGone)\n\t\t\treturn\n\t\t}",
+      "tests": ["Jobs API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/pause returns 404 for a missing configured job"],
+      "scenarios": ["Production pause endpoint returns HTTP 404 for a missing job"]
+    },
+    {
+      "id": "unpause-does-not-clear-paused-state",
+      "source_file": "atc/db/job.go",
+      "old": "\t\tSet(\"paused\", false).\n\t\tSet(\"paused_by\", nil).",
+      "new": "\t\tSet(\"paused\", true).\n\t\tSet(\"paused_by\", nil).",
+      "tests": ["Jobs API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/unpause clears a real job's persisted pause state"],
+      "scenarios": ["Production unpause endpoint clears persisted pause state"]
+    },
+    {
+      "id": "missing-unpause-status-is-changed",
+      "source_file": "atc/api/jobserver/unpause_job.go",
+      "old": "\t\tif !found {\n\t\t\tw.WriteHeader(http.StatusNotFound)\n\t\t\treturn\n\t\t}",
+      "new": "\t\tif !found {\n\t\t\tw.WriteHeader(http.StatusGone)\n\t\t\treturn\n\t\t}",
+      "tests": ["Jobs API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/unpause returns 404 for a missing configured job"],
+      "scenarios": ["Production unpause endpoint returns HTTP 404 for a missing job"]
+    },
+    {
+      "id": "schedule-does-not-request-production-schedule",
+      "source_file": "atc/api/jobserver/schedule_job.go",
+      "old": "\t\terr = job.RequestSchedule()\n\t\tif err != nil {",
+      "new": "\t\terr = job.Pause(\"\")\n\t\tif err != nil {",
+      "tests": ["Jobs API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/schedule advances the persisted schedule-request timestamp"],
+      "scenarios": ["Production schedule endpoint advances persisted request time"]
+    },
+    {
+      "id": "missing-schedule-status-is-changed",
+      "source_file": "atc/api/jobserver/schedule_job.go",
+      "old": "\t\tif !found {\n\t\t\tw.WriteHeader(http.StatusNotFound)\n\t\t\treturn\n\t\t}",
+      "new": "\t\tif !found {\n\t\t\tw.WriteHeader(http.StatusGone)\n\t\t\treturn\n\t\t}",
+      "tests": ["Jobs API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/schedule returns 404 for a missing configured job"],
+      "scenarios": ["Production schedule endpoint returns HTTP 404 for a missing job"]
+    }
+  ]
+}

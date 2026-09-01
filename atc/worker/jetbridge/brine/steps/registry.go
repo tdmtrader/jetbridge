@@ -108,7 +108,7 @@ func Definitions() []brine.StepDefinition {
 	defs = append(defs, ResourceScopeDomainDefinitions()...)
 	defs = append(defs, ResourceTypeDomainDefinitions()...)
 	defs = append(defs, PipelineClientDefinitions()...)
-	defs = append(defs, JobClientDefinitions()...)
+	defs = append(defs, JobClientStrictDefinitions()...)
 	defs = append(defs, BuildClientDefinitions()...)
 	defs = append(defs, ConfigClientDefinitions()...)
 	defs = append(defs, EventParserDefinitions()...)

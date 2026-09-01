@@ -10,7 +10,6 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"sync"
-	"time"
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
@@ -544,14 +543,6 @@ var _ = Describe("Jobs API", func() {
 			expectListing(response, state, "public-pipeline", "private-authorized")
 		})
 
-		It("returns every persisted active job for an administrator", func() {
-			state := setupListing()
-			fakeAccess.IsAdminReturns(true)
-			server = state.fixture.Serve()
-			response := jobsAPIGet(server, "/api/v1/jobs")
-			expectListing(response, state, "public-pipeline", "private-authorized", "private-unauthorized")
-		})
-
 		It("returns an empty array when no configured jobs are visible", func() {
 			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "empty-pipeline"}, atc.Config{})
 			server = fixture.Serve()
@@ -715,10 +706,6 @@ var _ = Describe("Jobs API", func() {
 				BeforeEach(func() {
 					config.Jobs = atc.JobConfigs{{Name: "other-job"}}
 					setup = func(*jobsAPIFixture) {}
-				})
-
-				It("returns 404", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusNotFound))
 				})
 			})
 
@@ -1018,10 +1005,6 @@ var _ = Describe("Jobs API", func() {
 			Context("when the job is naturally absent", func() {
 				BeforeEach(func() {
 					config = atc.Config{Jobs: atc.JobConfigs{{Name: "other-job"}}}
-				})
-
-				It("returns 404", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusNotFound))
 				})
 			})
 
@@ -2128,32 +2111,6 @@ var _ = Describe("Jobs API", func() {
 			Jobs:      atc.JobConfigs{{Name: "job-name", PlanSequence: []atc.Step{{Config: &atc.GetStep{Name: "repository-source", Resource: "repository"}}}}},
 		}
 
-		It("persists the authenticated user's pause state", func() {
-			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, config)
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAuthorizedReturns(true)
-			fakeAccess.UserInfoReturns(atc.UserInfo{DisplayUserId: "api-user"})
-			server = fixture.Serve()
-			response := jobsAPIRequest(server, http.MethodPut, path)
-			Expect(response.StatusCode).To(Equal(http.StatusOK))
-			job := fixture.Job("job-name")
-			found, err := job.Reload()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(found).To(BeTrue())
-			Expect(job.Paused()).To(BeTrue())
-			Expect(job.PausedBy()).To(Equal("api-user"))
-			Expect(job.PausedAt()).To(BeTemporally("~", time.Now(), time.Second))
-		})
-
-		It("returns 404 for a missing configured job", func() {
-			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, atc.Config{Jobs: atc.JobConfigs{{Name: "other-job"}}})
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAuthorizedReturns(true)
-			server = fixture.Serve()
-			response := jobsAPIRequest(server, http.MethodPut, path)
-			Expect(response.StatusCode).To(Equal(http.StatusNotFound))
-		})
-
 		It("returns 500 when the real pipeline job lookup fails", func() {
 			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, config)
 			fakeAccess.IsAuthenticatedReturns(true)
@@ -2189,32 +2146,6 @@ var _ = Describe("Jobs API", func() {
 			Resources: atc.ResourceConfigs{{Name: "repository", Type: dbtest.BaseResourceType}},
 			Jobs:      atc.JobConfigs{{Name: "job-name", PlanSequence: []atc.Step{{Config: &atc.GetStep{Name: "repository-source", Resource: "repository"}}}}},
 		}
-
-		It("clears a real job's persisted pause state", func() {
-			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, config)
-			job := fixture.Job("job-name")
-			Expect(job.Pause("setup-user")).To(Succeed())
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAuthorizedReturns(true)
-			server = fixture.Serve()
-			response := jobsAPIRequest(server, http.MethodPut, path)
-			Expect(response.StatusCode).To(Equal(http.StatusOK))
-			found, err := job.Reload()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(found).To(BeTrue())
-			Expect(job.Paused()).To(BeFalse())
-			Expect(job.PausedBy()).To(BeEmpty())
-			Expect(job.PausedAt()).To(BeZero())
-		})
-
-		It("returns 404 for a missing configured job", func() {
-			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, atc.Config{Jobs: atc.JobConfigs{{Name: "other-job"}}})
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAuthorizedReturns(true)
-			server = fixture.Serve()
-			response := jobsAPIRequest(server, http.MethodPut, path)
-			Expect(response.StatusCode).To(Equal(http.StatusNotFound))
-		})
 
 		It("returns 500 when the real pipeline job lookup fails", func() {
 			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, config)
@@ -2380,30 +2311,6 @@ var _ = Describe("Jobs API", func() {
 		var server *httptest.Server
 		path := "/api/v1/teams/some-team/pipelines/some-pipeline/jobs/job-name/schedule"
 		config := atc.Config{Jobs: atc.JobConfigs{{Name: "job-name"}}}
-
-		It("advances the persisted schedule-request timestamp", func() {
-			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, config)
-			job := fixture.Job("job-name")
-			before := job.ScheduleRequestedTime()
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAuthorizedReturns(true)
-			server = fixture.Serve()
-			response := jobsAPIRequest(server, http.MethodPut, path)
-			Expect(response.StatusCode).To(Equal(http.StatusOK))
-			found, err := job.Reload()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(found).To(BeTrue())
-			Expect(job.ScheduleRequestedTime()).To(BeTemporally(">", before))
-		})
-
-		It("returns 404 for a missing configured job", func() {
-			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, atc.Config{Jobs: atc.JobConfigs{{Name: "other-job"}}})
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAuthorizedReturns(true)
-			server = fixture.Serve()
-			response := jobsAPIRequest(server, http.MethodPut, path)
-			Expect(response.StatusCode).To(Equal(http.StatusNotFound))
-		})
 
 		It("returns 500 when the real pipeline job lookup fails", func() {
 			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, config)

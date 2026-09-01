@@ -1,98 +1,77 @@
-Feature: The Go Concourse client manages jobs through the real API
+Feature: The Go Concourse job client crosses the production API boundary
 
-  Source: 26 initial specs. The original 17 are in
-  go-concourse/concourse/jobs_test.go and cover pipeline/global listing,
-  lookup, cursor combinations, missing resources, and the three job state
-  mutations. Because every request crosses the production router and handlers,
-  the same scenarios also replace these 9 distinct atc/api/jobs_test.go specs:
-  administrator global listing (:547), missing lookup (:720), missing build
-  listing (:1439), and existing/missing pause (:2131/:2148), unpause
-  (:2193/:2210), and schedule (:2384/:2399). PostgreSQL models and real
-  instance-vars query encoding participate throughout.
+  Scenario: Pipeline job listing returns the persisted instanced job
+    Given the production job boundary executes profile "client-list-pipeline"
+    Then the production job observation exactly matches profile "client-list-pipeline"
 
-  Scenario Outline: Job listing scope <scope> returns the persisted job
-    Given the production Go job client, real API, and PostgreSQL
-    And the client team has a real instanced job
-    When the Go client lists "<scope>" jobs
-    Then the Go job client returned jobs "build"
-    And the Go job client returned no error
+  Scenario: Global job listing returns the persisted instanced job
+    Given the production job boundary executes profile "client-list-all"
+    Then the production job observation exactly matches profile "client-list-all"
 
-    Examples:
-      | scope    |
-      | pipeline |
-      | all      |
+  Scenario: Existing job lookup returns its production representation
+    Given the production job boundary executes profile "client-get-existing"
+    Then the production job observation exactly matches profile "client-get-existing"
 
-  Scenario: Reading an existing job decodes its production representation
-    Given the production Go job client, real API, and PostgreSQL
-    And the client team has a real instanced job
-    When the Go client reads job "build"
-    Then the Go job client found the resource
-    And the Go job client returned jobs "build"
-    And the Go job client returned no error
+  Scenario: Missing job lookup returns not found without an error
+    Given the production job boundary executes profile "client-get-missing"
+    Then the production job observation exactly matches profile "client-get-missing"
 
-  Scenario: Reading a missing job returns not found without an error
-    Given the production Go job client, real API, and PostgreSQL
-    And the client team has a real instanced job
-    When the Go client reads job "missing"
-    Then the Go job client did not find the resource
-    And the Go job client returned no error
+  Scenario: Unbounded job build listing returns every persisted build
+    Given the production job boundary executes profile "client-builds-all"
+    Then the production job observation exactly matches profile "client-builds-all"
 
-  Scenario: Listing all persisted job builds returns real builds and nil cursors
-    Given the production Go job client, real API, and PostgreSQL
-    And the client team has a real instanced job
-    And the real job has 3 persisted builds
-    When the Go client lists job builds with page "all"
-    Then the Go job client found the resource
-    And the Go job client returned 3 build(s)
-    And the Go job client returned empty pagination
-    And the Go job client returned no error
+  Scenario: From cursor returns the exact persisted build suffix
+    Given the production job boundary executes profile "client-builds-from"
+    Then the production job observation exactly matches profile "client-builds-from"
 
-  Scenario Outline: Job build page <page> is accepted by the production API
-    Given the production Go job client, real API, and PostgreSQL
-    And the client team has a real instanced job
-    And the real job has 3 persisted builds
-    When the Go client lists job builds with page "<page>"
-    Then the Go job client found the resource
-    And the Go job client returned no error
+  Scenario: From cursor with limit returns the exact oldest persisted build
+    Given the production job boundary executes profile "client-builds-from-limit"
+    Then the production job observation exactly matches profile "client-builds-from-limit"
 
-    Examples:
-      | page       |
-      | from       |
-      | from-limit |
-      | to         |
-      | to-limit   |
-      | from-to    |
+  Scenario: To cursor returns the exact persisted build prefix
+    Given the production job boundary executes profile "client-builds-to"
+    Then the production job observation exactly matches profile "client-builds-to"
 
-  Scenario: Listing builds for a missing job returns not found
-    Given the production Go job client, real API, and PostgreSQL
-    And the client team has a real instanced job
-    When the Go client lists builds for missing job
-    Then the Go job client did not find the resource
-    And the Go job client returned no error
+  Scenario: To cursor with limit returns the exact bounded persisted build
+    Given the production job boundary executes profile "client-builds-to-limit"
+    Then the production job observation exactly matches profile "client-builds-to-limit"
 
-  Scenario Outline: Existing job mutation <operation> persists <state>
-    Given the production Go job client, real API, and PostgreSQL
-    And the client team has a real instanced job
-    When the Go client "<operation>" job "build"
-    Then the Go job client found the resource
-    And the Go job client returned no error
-    And the persisted job state is "<state>"
+  Scenario: Combined cursors return only the exact persisted range
+    Given the production job boundary executes profile "client-builds-from-to"
+    Then the production job observation exactly matches profile "client-builds-from-to"
 
-    Examples:
-      | operation | state         |
-      | pauses    | paused=true   |
-      | unpauses  | paused=false  |
-      | schedules | advanced=true |
+  Scenario: Missing job build listing returns not found without an error
+    Given the production job boundary executes profile "client-builds-missing"
+    Then the production job observation exactly matches profile "client-builds-missing"
 
-  Scenario Outline: Missing job mutation <operation> returns not found
-    Given the production Go job client, real API, and PostgreSQL
-    And the client team has a real instanced job
-    When the Go client "<operation>" job "missing"
-    Then the Go job client did not find the resource
-    And the Go job client returned no error
+  Scenario: Bounded job build listing decodes production pagination links
+    Given the production job boundary executes profile "client-pagination-links"
+    Then the production job observation exactly matches profile "client-pagination-links"
 
-    Examples:
-      | operation |
-      | pauses    |
-      | unpauses  |
-      | schedules |
+  Scenario: Unbounded job build listing returns empty pagination
+    Given the production job boundary executes profile "client-pagination-empty"
+    Then the production job observation exactly matches profile "client-pagination-empty"
+
+  Scenario: Pausing an existing job persists the authenticated identity
+    Given the production job boundary executes profile "client-pause-existing"
+    Then the production job observation exactly matches profile "client-pause-existing"
+
+  Scenario: Pausing a missing job returns not found without an error
+    Given the production job boundary executes profile "client-pause-missing"
+    Then the production job observation exactly matches profile "client-pause-missing"
+
+  Scenario: Unpausing an existing job clears persisted pause state
+    Given the production job boundary executes profile "client-unpause-existing"
+    Then the production job observation exactly matches profile "client-unpause-existing"
+
+  Scenario: Unpausing a missing job returns not found without an error
+    Given the production job boundary executes profile "client-unpause-missing"
+    Then the production job observation exactly matches profile "client-unpause-missing"
+
+  Scenario: Scheduling an existing job advances its persisted request time
+    Given the production job boundary executes profile "client-schedule-existing"
+    Then the production job observation exactly matches profile "client-schedule-existing"
+
+  Scenario: Scheduling a missing job returns not found without an error
+    Given the production job boundary executes profile "client-schedule-missing"
+    Then the production job observation exactly matches profile "client-schedule-missing"

@@ -1,0 +1,144 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/job-client-strict.json",
+  "git_head": "df19964cfa056e253fe04c5ba5e6784a03a633bb",
+  "completed_at": "2026-09-01T10:34:33Z",
+  "source_tests": 19,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "mutation_cases": [
+    {
+      "id": "pipeline-job-list-discards-response",
+      "mutation_sha256": "239e5ffd60035b2b8f6132fa0fe8b665d566704b5b2e69d05953c1389d8f3998",
+      "failed_source_tests": [
+        "ATC Handler Jobs team.ListJobs returns jobs that belong to the pipeline"
+      ],
+      "failed_brine_scenarios": [
+        "Pipeline job listing returns the persisted instanced job"
+      ]
+    },
+    {
+      "id": "global-job-list-discards-response",
+      "mutation_sha256": "02de27156dd11d1979cf63e1a16ded6e6fffb01e3a4327d3558b150eed012cf5",
+      "failed_source_tests": [
+        "ATC Handler Jobs client.ListAllJobs returns all jobs that belong to the account"
+      ],
+      "failed_brine_scenarios": [
+        "Global job listing returns the persisted instanced job"
+      ]
+    },
+    {
+      "id": "existing-job-is-reported-missing",
+      "mutation_sha256": "8d7076ed5666ee2e086dbd1e64ea2478d60dda60dde7262260684cc476f0ae39",
+      "failed_source_tests": [
+        "ATC Handler Jobs Job when job exists returns the given job for that pipeline"
+      ],
+      "failed_brine_scenarios": [
+        "Existing job lookup returns its production representation"
+      ]
+    },
+    {
+      "id": "missing-job-is-reported-found",
+      "mutation_sha256": "e81b939e581339822e0e84465f15cbb2289e6ea5f613868622e3035dbe0e0049",
+      "failed_source_tests": [
+        "ATC Handler Jobs Job when job does not exist returns false and no error"
+      ],
+      "failed_brine_scenarios": [
+        "Missing job lookup returns not found without an error"
+      ]
+    },
+    {
+      "id": "job-build-list-drops-instance-vars",
+      "mutation_sha256": "55ac1e930c6ad3e682871cfdc3765cbb503066b33f1c640e61c723dc921150a3",
+      "failed_source_tests": [
+        "ATC Handler Jobs JobBuilds pagination data with a link header returns the pagination data from the header",
+        "ATC Handler Jobs JobBuilds when from and to are both specified sends both the from and the to",
+        "ATC Handler Jobs JobBuilds when from is specified and limit is specified appends limit to the url",
+        "ATC Handler Jobs JobBuilds when from is specified calls to get all builds from that id",
+        "ATC Handler Jobs JobBuilds when from, to, and limit are 0 calls to get all builds",
+        "ATC Handler Jobs JobBuilds when to is specified and limit is specified appends limit to the url",
+        "ATC Handler Jobs JobBuilds when to is specified calls to get all builds to that id",
+        "ATC Handler Jobs JobBuilds without a link header returns pagination data with nil pages"
+      ],
+      "failed_brine_scenarios": [
+        "Bounded job build listing decodes production pagination links",
+        "Combined cursors return only the exact persisted range",
+        "From cursor returns the exact persisted build suffix",
+        "From cursor with limit returns the exact oldest persisted build",
+        "Missing job build listing returns not found without an error",
+        "To cursor returns the exact persisted build prefix",
+        "To cursor with limit returns the exact bounded persisted build",
+        "Unbounded job build listing returns empty pagination",
+        "Unbounded job build listing returns every persisted build"
+      ]
+    },
+    {
+      "id": "missing-job-build-list-is-reported-found",
+      "mutation_sha256": "43801218cfbcc8a49ccc86e9070c856c191e9e5e6bb5deab38b6e7c2347e6347",
+      "failed_source_tests": [
+        "ATC Handler Jobs JobBuilds when the server returns not found returns false and no error"
+      ],
+      "failed_brine_scenarios": [
+        "Missing job build listing returns not found without an error"
+      ]
+    },
+    {
+      "id": "pause-success-is-reported-missing",
+      "mutation_sha256": "68262909ce2180f547ffde967c46fd418d8f36e389dc40bbc9e903024cab686b",
+      "failed_source_tests": [
+        "ATC Handler Jobs PauseJob when the job exists and there are no issues calls the pause job and returns no error"
+      ],
+      "failed_brine_scenarios": [
+        "Pausing an existing job persists the authenticated identity"
+      ]
+    },
+    {
+      "id": "pause-not-found-is-reported-found",
+      "mutation_sha256": "ff85faec0b1baa796ff7320031669eb86bcb1d8aacfc3f057ab08c6fe8efa0f8",
+      "failed_source_tests": [
+        "ATC Handler Jobs PauseJob when the job does not exist calls the pause job and returns an error"
+      ],
+      "failed_brine_scenarios": [
+        "Pausing a missing job returns not found without an error"
+      ]
+    },
+    {
+      "id": "unpause-success-is-reported-missing",
+      "mutation_sha256": "7a11bad83da25e824ec626e6c31397f2e2857f34965f40e2dd247b215ce4debc",
+      "failed_source_tests": [
+        "ATC Handler Jobs UnpauseJob when the job exists and there are no issues calls the pause job and returns no error"
+      ],
+      "failed_brine_scenarios": [
+        "Unpausing an existing job clears persisted pause state"
+      ]
+    },
+    {
+      "id": "unpause-not-found-is-reported-found",
+      "mutation_sha256": "dde984d419201a32d1463d360439469883f2907c339b524637155b8e6c3ea0fb",
+      "failed_source_tests": [
+        "ATC Handler Jobs UnpauseJob when the job does not exist calls the pause job and returns an error"
+      ],
+      "failed_brine_scenarios": [
+        "Unpausing a missing job returns not found without an error"
+      ]
+    },
+    {
+      "id": "schedule-success-is-reported-missing",
+      "mutation_sha256": "1f6201e386ebed875d4e00a4b7571eb239d8cac2cc4cac4bc1fdf4645f549267",
+      "failed_source_tests": [
+        "ATC Handler Jobs ScheduleJob when the job exists and there are no issues calls the schedule job and returns no error"
+      ],
+      "failed_brine_scenarios": [
+        "Scheduling an existing job advances its persisted request time"
+      ]
+    },
+    {
+      "id": "schedule-not-found-is-reported-found",
+      "mutation_sha256": "5628def625e35328cdf364ed5228c917068366292b1874c763305e2f5a1cbe86",
+      "failed_source_tests": [
+        "ATC Handler Jobs ScheduleJob when the job does not exist calls the schedule job and returns an error"
+      ],
+      "failed_brine_scenarios": [
+        "Scheduling a missing job returns not found without an error"
+      ]
+    }
+  ]
+}

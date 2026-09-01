@@ -1,0 +1,126 @@
+{
+  "name": "job-client-strict",
+  "test_package": "./go-concourse/concourse",
+  "source_test_file": "go-concourse/concourse/jobs_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/job-client.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/job_client_strict.go",
+    "atc/worker/jetbridge/brine/steps/resources.go"
+  ],
+  "cases": [
+    {
+      "id": "pipeline-job-list-discards-response",
+      "source_file": "go-concourse/concourse/jobs.go",
+      "old": "\treturn jobs, err\n}\n\nfunc (client *client) ListAllJobs",
+      "new": "\treturn nil, err\n}\n\nfunc (client *client) ListAllJobs",
+      "tests": ["ATC Handler Jobs team.ListJobs returns jobs that belong to the pipeline"],
+      "scenarios": ["Pipeline job listing returns the persisted instanced job"]
+    },
+    {
+      "id": "global-job-list-discards-response",
+      "source_file": "go-concourse/concourse/jobs.go",
+      "old": "\treturn jobs, err\n}\n\nfunc (team *team) Job",
+      "new": "\treturn nil, err\n}\n\nfunc (team *team) Job",
+      "tests": ["ATC Handler Jobs client.ListAllJobs returns all jobs that belong to the account"],
+      "scenarios": ["Global job listing returns the persisted instanced job"]
+    },
+    {
+      "id": "existing-job-is-reported-missing",
+      "source_file": "go-concourse/concourse/jobs.go",
+      "old": "\tcase nil:\n\t\treturn job, true, nil\n\tcase internal.ResourceNotFoundError:\n\t\treturn job, false, nil",
+      "new": "\tcase nil:\n\t\treturn job, false, nil\n\tcase internal.ResourceNotFoundError:\n\t\treturn job, false, nil",
+      "tests": ["ATC Handler Jobs Job when job exists returns the given job for that pipeline"],
+      "scenarios": ["Existing job lookup returns its production representation"]
+    },
+    {
+      "id": "missing-job-is-reported-found",
+      "source_file": "go-concourse/concourse/jobs.go",
+      "old": "\tcase internal.ResourceNotFoundError:\n\t\treturn job, false, nil\n\tdefault:\n\t\treturn job, false, err",
+      "new": "\tcase internal.ResourceNotFoundError:\n\t\treturn job, true, nil\n\tdefault:\n\t\treturn job, false, err",
+      "tests": ["ATC Handler Jobs Job when job does not exist returns false and no error"],
+      "scenarios": ["Missing job lookup returns not found without an error"]
+    },
+    {
+      "id": "job-build-list-drops-instance-vars",
+      "source_file": "go-concourse/concourse/jobs.go",
+      "old": "\t\tQuery:       merge(page.QueryParams(), pipelineRef.QueryParams()),",
+      "new": "\t\tQuery:       page.QueryParams(),",
+      "tests": [
+        "ATC Handler Jobs JobBuilds when from, to, and limit are 0 calls to get all builds",
+        "ATC Handler Jobs JobBuilds when from is specified calls to get all builds from that id",
+        "ATC Handler Jobs JobBuilds when from is specified and limit is specified appends limit to the url",
+        "ATC Handler Jobs JobBuilds when to is specified calls to get all builds to that id",
+        "ATC Handler Jobs JobBuilds when to is specified and limit is specified appends limit to the url",
+        "ATC Handler Jobs JobBuilds when from and to are both specified sends both the from and the to",
+        "ATC Handler Jobs JobBuilds pagination data with a link header returns the pagination data from the header",
+        "ATC Handler Jobs JobBuilds without a link header returns pagination data with nil pages"
+      ],
+      "scenarios": [
+        "Unbounded job build listing returns every persisted build",
+        "From cursor returns the exact persisted build suffix",
+        "From cursor with limit returns the exact oldest persisted build",
+        "To cursor returns the exact persisted build prefix",
+        "To cursor with limit returns the exact bounded persisted build",
+        "Combined cursors return only the exact persisted range",
+        "Bounded job build listing decodes production pagination links",
+        "Unbounded job build listing returns empty pagination"
+      ]
+    },
+    {
+      "id": "missing-job-build-list-is-reported-found",
+      "source_file": "go-concourse/concourse/jobs.go",
+      "old": "\tcase internal.ResourceNotFoundError:\n\t\treturn builds, Pagination{}, false, nil\n\tdefault:\n\t\treturn builds, Pagination{}, false, err",
+      "new": "\tcase internal.ResourceNotFoundError:\n\t\treturn builds, Pagination{}, true, nil\n\tdefault:\n\t\treturn builds, Pagination{}, false, err",
+      "tests": ["ATC Handler Jobs JobBuilds when the server returns not found returns false and no error"],
+      "scenarios": ["Missing job build listing returns not found without an error"]
+    },
+    {
+      "id": "pause-success-is-reported-missing",
+      "source_file": "go-concourse/concourse/jobs.go",
+      "old": "\t\tRequestName: atc.PauseJob,\n\t\tParams:      params,\n\t\tQuery:       pipelineRef.QueryParams(),\n\t}, &internal.Response{})\n\n\tswitch err.(type) {\n\tcase nil:\n\t\treturn true, nil",
+      "new": "\t\tRequestName: atc.PauseJob,\n\t\tParams:      params,\n\t\tQuery:       pipelineRef.QueryParams(),\n\t}, &internal.Response{})\n\n\tswitch err.(type) {\n\tcase nil:\n\t\treturn false, nil",
+      "tests": ["ATC Handler Jobs PauseJob when the job exists and there are no issues calls the pause job and returns no error"],
+      "scenarios": ["Pausing an existing job persists the authenticated identity"]
+    },
+    {
+      "id": "pause-not-found-is-reported-found",
+      "source_file": "go-concourse/concourse/jobs.go",
+      "old": "\t\tRequestName: atc.PauseJob,\n\t\tParams:      params,\n\t\tQuery:       pipelineRef.QueryParams(),\n\t}, &internal.Response{})\n\n\tswitch err.(type) {\n\tcase nil:\n\t\treturn true, nil\n\tcase internal.ResourceNotFoundError:\n\t\treturn false, nil",
+      "new": "\t\tRequestName: atc.PauseJob,\n\t\tParams:      params,\n\t\tQuery:       pipelineRef.QueryParams(),\n\t}, &internal.Response{})\n\n\tswitch err.(type) {\n\tcase nil:\n\t\treturn true, nil\n\tcase internal.ResourceNotFoundError:\n\t\treturn true, nil",
+      "tests": ["ATC Handler Jobs PauseJob when the job does not exist calls the pause job and returns an error"],
+      "scenarios": ["Pausing a missing job returns not found without an error"]
+    },
+    {
+      "id": "unpause-success-is-reported-missing",
+      "source_file": "go-concourse/concourse/jobs.go",
+      "old": "\t\tRequestName: atc.UnpauseJob,\n\t\tParams:      params,\n\t\tQuery:       pipelineRef.QueryParams(),\n\t}, &internal.Response{})\n\n\tswitch err.(type) {\n\tcase nil:\n\t\treturn true, nil",
+      "new": "\t\tRequestName: atc.UnpauseJob,\n\t\tParams:      params,\n\t\tQuery:       pipelineRef.QueryParams(),\n\t}, &internal.Response{})\n\n\tswitch err.(type) {\n\tcase nil:\n\t\treturn false, nil",
+      "tests": ["ATC Handler Jobs UnpauseJob when the job exists and there are no issues calls the pause job and returns no error"],
+      "scenarios": ["Unpausing an existing job clears persisted pause state"]
+    },
+    {
+      "id": "unpause-not-found-is-reported-found",
+      "source_file": "go-concourse/concourse/jobs.go",
+      "old": "\t\tRequestName: atc.UnpauseJob,\n\t\tParams:      params,\n\t\tQuery:       pipelineRef.QueryParams(),\n\t}, &internal.Response{})\n\n\tswitch err.(type) {\n\tcase nil:\n\t\treturn true, nil\n\tcase internal.ResourceNotFoundError:\n\t\treturn false, nil",
+      "new": "\t\tRequestName: atc.UnpauseJob,\n\t\tParams:      params,\n\t\tQuery:       pipelineRef.QueryParams(),\n\t}, &internal.Response{})\n\n\tswitch err.(type) {\n\tcase nil:\n\t\treturn true, nil\n\tcase internal.ResourceNotFoundError:\n\t\treturn true, nil",
+      "tests": ["ATC Handler Jobs UnpauseJob when the job does not exist calls the pause job and returns an error"],
+      "scenarios": ["Unpausing a missing job returns not found without an error"]
+    },
+    {
+      "id": "schedule-success-is-reported-missing",
+      "source_file": "go-concourse/concourse/jobs.go",
+      "old": "\t\tRequestName: atc.ScheduleJob,\n\t\tParams:      params,\n\t\tQuery:       pipelineRef.QueryParams(),\n\t}, &internal.Response{})\n\n\tswitch err.(type) {\n\tcase nil:\n\t\treturn true, nil",
+      "new": "\t\tRequestName: atc.ScheduleJob,\n\t\tParams:      params,\n\t\tQuery:       pipelineRef.QueryParams(),\n\t}, &internal.Response{})\n\n\tswitch err.(type) {\n\tcase nil:\n\t\treturn false, nil",
+      "tests": ["ATC Handler Jobs ScheduleJob when the job exists and there are no issues calls the schedule job and returns no error"],
+      "scenarios": ["Scheduling an existing job advances its persisted request time"]
+    },
+    {
+      "id": "schedule-not-found-is-reported-found",
+      "source_file": "go-concourse/concourse/jobs.go",
+      "old": "\t\tRequestName: atc.ScheduleJob,\n\t\tParams:      params,\n\t\tQuery:       pipelineRef.QueryParams(),\n\t}, &internal.Response{})\n\n\tswitch err.(type) {\n\tcase nil:\n\t\treturn true, nil\n\tcase internal.ResourceNotFoundError:\n\t\treturn false, nil",
+      "new": "\t\tRequestName: atc.ScheduleJob,\n\t\tParams:      params,\n\t\tQuery:       pipelineRef.QueryParams(),\n\t}, &internal.Response{})\n\n\tswitch err.(type) {\n\tcase nil:\n\t\treturn true, nil\n\tcase internal.ResourceNotFoundError:\n\t\treturn true, nil",
+      "tests": ["ATC Handler Jobs ScheduleJob when the job does not exist calls the schedule job and returns an error"],
+      "scenarios": ["Scheduling a missing job returns not found without an error"]
+    }
+  ]
+}

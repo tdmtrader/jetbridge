@@ -1,0 +1,99 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/job-client-api-strict.json",
+  "git_head": "df19964cfa056e253fe04c5ba5e6784a03a633bb",
+  "completed_at": "2026-09-01T10:40:20Z",
+  "source_tests": 9,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "mutation_cases": [
+    {
+      "id": "administrator-job-list-discards-active-jobs",
+      "mutation_sha256": "a056366a640300252794ef607b38bbb97c0bb510b49c8df37a7c018beb346976",
+      "failed_source_tests": [
+        "Jobs API GET /api/v1/jobs returns every persisted active job for an administrator"
+      ],
+      "failed_brine_scenarios": [
+        "Administrator job listing returns jobs across persisted teams"
+      ]
+    },
+    {
+      "id": "missing-job-status-is-changed",
+      "mutation_sha256": "16a0c04af35a1afbc51bbc50563d3a60e58d4b16df0f4fdec8f09f5c229173f2",
+      "failed_source_tests": [
+        "Jobs API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name when authorized when the job is absent returns 404"
+      ],
+      "failed_brine_scenarios": [
+        "Missing production job lookup returns HTTP 404"
+      ]
+    },
+    {
+      "id": "missing-job-build-list-status-is-changed",
+      "mutation_sha256": "40d1c906006c47224fb19bc1c82d368fb23914150d07f574f202540a4409518a",
+      "failed_source_tests": [
+        "Jobs API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/builds when authorized when the job is naturally absent returns 404"
+      ],
+      "failed_brine_scenarios": [
+        "Missing production job build listing returns HTTP 404"
+      ]
+    },
+    {
+      "id": "pause-does-not-persist-paused-state",
+      "mutation_sha256": "8452a05db3dbb534d8ccbd36c9b45394af03de58932d942e887c482aeada8157",
+      "failed_source_tests": [
+        "Jobs API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/pause persists the authenticated user's pause state"
+      ],
+      "failed_brine_scenarios": [
+        "Production pause endpoint persists authenticated pause state"
+      ]
+    },
+    {
+      "id": "missing-pause-status-is-changed",
+      "mutation_sha256": "732fd84f71e6429f0c6e77f66b403161a37e3de6ab5b16ca047320aa58c66dd7",
+      "failed_source_tests": [
+        "Jobs API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/pause returns 404 for a missing configured job"
+      ],
+      "failed_brine_scenarios": [
+        "Production pause endpoint returns HTTP 404 for a missing job"
+      ]
+    },
+    {
+      "id": "unpause-does-not-clear-paused-state",
+      "mutation_sha256": "f34c1b3858d7d86ee5f6011f2fd458af4a83a5df22cc4d908c2dbc4c9f2a6e0e",
+      "failed_source_tests": [
+        "Jobs API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/unpause clears a real job's persisted pause state"
+      ],
+      "failed_brine_scenarios": [
+        "Production unpause endpoint clears persisted pause state"
+      ]
+    },
+    {
+      "id": "missing-unpause-status-is-changed",
+      "mutation_sha256": "17e2356cb7d3084393f108d5c4c3216c4ce0f49488f3dea8828892fb058e7f8e",
+      "failed_source_tests": [
+        "Jobs API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/unpause returns 404 for a missing configured job"
+      ],
+      "failed_brine_scenarios": [
+        "Production unpause endpoint returns HTTP 404 for a missing job"
+      ]
+    },
+    {
+      "id": "schedule-does-not-request-production-schedule",
+      "mutation_sha256": "e93b63a798588fba9c4de13942059e7f0833d33c7ba5c45dca190785dd5e5ce6",
+      "failed_source_tests": [
+        "Jobs API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/schedule advances the persisted schedule-request timestamp"
+      ],
+      "failed_brine_scenarios": [
+        "Production schedule endpoint advances persisted request time"
+      ]
+    },
+    {
+      "id": "missing-schedule-status-is-changed",
+      "mutation_sha256": "036f01ef724fe1ba7836ccf8b431299c3b9fe1db3888e8eafdd54531897f4ce6",
+      "failed_source_tests": [
+        "Jobs API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/schedule returns 404 for a missing configured job"
+      ],
+      "failed_brine_scenarios": [
+        "Production schedule endpoint returns HTTP 404 for a missing job"
+      ]
+    }
+  ]
+}
