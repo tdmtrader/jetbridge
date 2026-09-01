@@ -22,19 +22,19 @@ scenario fail is also not evidence.
 
 | quantity | source leaf tests | percentage of 6,857 |
 |---|---:|---:|
-| **fully migrated**: paired failure evidence, no prohibited double, source removed | **855** | **12.47%** |
+| **fully migrated**: paired failure evidence, no prohibited double, source removed | **869** | **12.67%** |
 | strict paired evidence, but source still present | 0 | 0.00% |
 | **runs in Brine but not the full philosophy**: paired failure evidence, but uses a stub, test sink, injected-fault object, fake, or mock | **112** | **1.63%** |
 | of the preceding exception bucket whose source test was removed | 66 | 0.96% |
-| total source tests with paired per-test failure evidence | 967 | 14.10% |
-| former claimed tests with no admissible paired evidence | 1,092 | 15.93% |
+| total source tests with paired per-test failure evidence | 981 | 14.31% |
+| former claimed tests with no admissible paired evidence | 1,078 | 15.72% |
 | Brine scenarios | 1,877 | execution count only |
 
-The requested two headline percentages are therefore **12.47% fully migrated**
+The requested two headline percentages are therefore **12.67% fully migrated**
 and **1.63% validated but running outside the full philosophy**. The second is
 not another migration percentage: 46 of its 112 source tests still exist. If
 "migrated" is restricted to removed source tests in both buckets, the figures
-are 12.47% strict and 0.96% philosophy-exception.
+are 12.67% strict and 0.96% philosophy-exception.
 
 ## Admitted evidence ledger
 
@@ -82,7 +82,7 @@ production-logger resource path.
 | `api/users_test.go` production users serialization/filter subset | 12 | 12 | 0 | 12 |
 | `api/cli_test.go` production CLI downloads | 12 | 12 | 0 | 12 |
 | `api/cc_test.go` production CC XML over real TCP/PostgreSQL | 14 | 14 | 0 | 14 |
-| `api/wall_test.go` production wall API over real TCP/PostgreSQL **†** | 14 | 14 | 0 | 14 |
+| `api/wall_test.go` production wall API over real TCP/PostgreSQL | 14 | 14 | 0 | 14 |
 | `go-concourse/concourse/teams_test.go` strict real-server client subset | 9 | 9 | 0 | 9 |
 | `api/teams_test.go` strict real-server team API subset | 7 | 7 | 0 | 7 |
 | `db/resource_type_test.go` production resource-type domain | 22 | 22 | 0 | 22 |
@@ -101,7 +101,7 @@ production-logger resource path.
 | `scanner_test.go` | 14 | 0 | 14 | 14 |
 | durable-storage, volume-DaemonSet, and behavioral-permutation campaign | 44 | 0 | 44 | 44 |
 | daemonset-integration and daemon-client retained cases | 46 | 0 | 46 | 0 |
-| **admitted total († rows excluded)** | **967** | **855** | **112** | **921** |
+| **admitted total († rows excluded)** | **981** | **869** | **112** | **935** |
 
 ### Superseded sink-free revalidation
 
