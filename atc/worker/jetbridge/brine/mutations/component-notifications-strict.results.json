@@ -1,7 +1,7 @@
 {
   "manifest": "atc/worker/jetbridge/brine/mutations/component-notifications-strict.json",
-  "git_head": "aa118c85768f8eb61933f1640a02edef60f5675c",
-  "completed_at": "2026-09-01T08:59:02Z",
+  "git_head": "aef6c0fe7de7d42a59ef137289956b20cf7a7568",
+  "completed_at": "2026-09-01T12:58:43Z",
   "source_tests": 21,
   "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
   "mutation_cases": [
