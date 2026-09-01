@@ -1,7 +1,7 @@
 {
   "manifest": "atc/worker/jetbridge/brine/mutations/pipeline-client-api-strict.json",
-  "git_head": "52d0c977e81a720dd8df4f42c42e2bd6abdbf11e",
-  "completed_at": "2026-09-01T10:48:43Z",
+  "git_head": "3582b8eb50592b9195b0f100c3cafd09c5c674ae",
+  "completed_at": "2026-09-01T13:39:43Z",
   "source_tests": 5,
   "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
   "mutation_cases": [
