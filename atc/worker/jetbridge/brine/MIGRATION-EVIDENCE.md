@@ -22,19 +22,19 @@ scenario fail is also not evidence.
 
 | quantity | source leaf tests | percentage of 6,857 |
 |---|---:|---:|
-| **fully migrated**: paired failure evidence, no prohibited double, source removed | **965** | **14.07%** |
+| **fully migrated**: paired failure evidence, no prohibited double, source removed | **1,012** | **14.76%** |
 | strict paired evidence, but source still present | 0 | 0.00% |
 | **runs in Brine but not the full philosophy**: paired failure evidence, but uses a stub, test sink, injected-fault object, fake, or mock | **112** | **1.63%** |
 | of the preceding exception bucket whose source test was removed | 66 | 0.96% |
-| total source tests with paired per-test failure evidence | 1,077 | 15.71% |
-| former claimed tests with no admissible paired evidence | 982 | 14.32% |
+| total source tests with paired per-test failure evidence | 1,124 | 16.39% |
+| former claimed tests with no admissible paired evidence | 935 | 13.64% |
 | Brine scenarios | 1,877 | execution count only |
 
-The requested two headline percentages are therefore **14.07% fully migrated**
+The requested two headline percentages are therefore **14.76% fully migrated**
 and **1.63% validated but running outside the full philosophy**. The second is
 not another migration percentage: 46 of its 112 source tests still exist. If
 "migrated" is restricted to removed source tests in both buckets, the figures
-are 14.07% strict and 0.96% philosophy-exception.
+are 14.76% strict and 0.96% philosophy-exception.
 
 ## Admitted evidence ledger
 
@@ -58,10 +58,10 @@ production-logger resource path.
 | `api/config_test.go` strict real-server subset | 73 | 73 | 0 | 73 |
 | `db/team_test.go` strict real-PostgreSQL subset | 18 | 18 | 0 | 18 |
 | `db/build_test.go` strict real-PostgreSQL subset | 27 | 27 | 0 | 27 |
-| `db/pipeline_test.go` strict real-PostgreSQL subset **†** | 24 | 24 | 0 | 24 |
+| `db/pipeline_test.go` strict real-PostgreSQL subset | 24 | 24 | 0 | 24 |
 | `db/job_test.go` strict real-PostgreSQL subset | 35 | 35 | 0 | 35 |
 | `db/worker_factory_test.go` real-PostgreSQL production-cache suite **†** | 20 | 20 | 0 | 20 |
-| `db/resource_config_scope_test.go` real-PostgreSQL resource-scope domain **†** | 23 | 23 | 0 | 23 |
+| `db/resource_config_scope_test.go` real-PostgreSQL resource-scope domain | 23 | 23 | 0 | 23 |
 | `db/container_test.go` strict real-PostgreSQL subset | 17 | 17 | 0 | 17 |
 | `db/component_notifications_test.go` | 21 | 21 | 0 | 21 |
 | `db/notifications_bus_test.go` strict real-PostgreSQL subset | 11 | 11 | 0 | 11 |
@@ -101,7 +101,7 @@ production-logger resource path.
 | `scanner_test.go` | 14 | 0 | 14 | 14 |
 | durable-storage, volume-DaemonSet, and behavioral-permutation campaign | 44 | 0 | 44 | 44 |
 | daemonset-integration and daemon-client retained cases | 46 | 0 | 46 | 0 |
-| **admitted total († rows excluded)** | **1,077** | **965** | **112** | **1,031** |
+| **admitted total († rows excluded)** | **1,124** | **1,012** | **112** | **1,078** |
 
 ### Superseded sink-free revalidation
 
