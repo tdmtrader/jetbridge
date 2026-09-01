@@ -1,0 +1,225 @@
+{
+  "name": "atc-config",
+  "test_package": "./atc",
+  "source_test_file": "atc/config_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/atc-config-behavior.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/atc_config_behavior.go"
+  ],
+  "cases": [
+    {
+      "id": "image-ref",
+      "source_file": "atc/config.go",
+      "old": "ImageRef:   parent.Image,",
+      "new": "ImageRef:   \"mutated-direct-image\",",
+      "tests": [
+        "Config ResourceTypes.ImageForType when the resource type has a direct image reference returns a TypeImage with ImageRef and no GetPlan/CheckPlan",
+        "Config ResourceTypes.ImageForType when the resource type has a resolved digest (from native registry resolution) returns a TypeImage with ImageRef and no GetPlan/CheckPlan"
+      ],
+      "scenarios": [
+        "ATC config profile <profile> (row 1)",
+        "ATC config profile <profile> (row 5)"
+      ],
+      "failure_contains": "mutated-direct-image"
+    },
+    {
+      "id": "source-check-plan",
+      "source_file": "atc/config.go",
+      "old": "CheckPlan: checkPlan,",
+      "new": "CheckPlan: nil,",
+      "tests": [
+        "Config ResourceTypes.ImageForType when the resource type has type+source (no image) returns a TypeImage with GetPlan and CheckPlan (existing behavior)"
+      ],
+      "scenarios": [
+        "ATC config profile <profile> (row 2)"
+      ],
+      "failure_contains": "check=false"
+    },
+    {
+      "id": "registry-skip-download",
+      "source_file": "atc/config.go",
+      "old": "SkipDownload: image.Type == \"registry-image\",",
+      "new": "SkipDownload: false,",
+      "tests": [
+        "Config ResourceTypes.ImageForType when the resource type has type+source (no image) sets SkipDownload on the image get plan for registry-image types"
+      ],
+      "scenarios": [
+        "ATC config profile <profile> (row 3)"
+      ],
+      "failure_contains": "skip-download=false"
+    },
+    {
+      "id": "non-registry-download",
+      "source_file": "atc/config.go",
+      "old": "SkipDownload: image.Type == \"registry-image\",",
+      "new": "SkipDownload: true,",
+      "tests": [
+        "Config ResourceTypes.ImageForType when the resource type uses a non-registry-image type does not set SkipDownload on the image get plan"
+      ],
+      "scenarios": [
+        "ATC config profile <profile> (row 4)"
+      ],
+      "failure_contains": "skip-download=true"
+    },
+    {
+      "id": "base-type",
+      "source_file": "atc/config.go",
+      "old": "BaseType: resourceType,",
+      "new": "BaseType: \"mutated-base-type\",",
+      "tests": [
+        "Config ResourceTypes.ImageForType when the resource type is not found (base type) returns a TypeImage with just BaseType"
+      ],
+      "scenarios": [
+        "ATC config profile <profile> (row 6)"
+      ],
+      "failure_contains": "mutated-base-type"
+    },
+    {
+      "id": "version-string-values",
+      "source_file": "atc/steps.go",
+      "old": "version[k] = s",
+      "new": "if k == \"other\" {\n\t\t\tversion[k] = \"mutated-version-\" + s\n\t\t} else {\n\t\t\tversion[k] = s\n\t\t}",
+      "tests": [
+        "Config VersionConfig when unmarshaling a pinned version from JSON when the version is all string produces the correct version config without error"
+      ],
+      "scenarios": [
+        "ATC config profile <profile> (row 7)"
+      ],
+      "failure_contains": "mutated-version"
+    },
+    {
+      "id": "version-non-string",
+      "source_file": "atc/steps.go",
+      "old": "return fmt.Errorf(\"the value %v of %s is not a string\", v, k)",
+      "new": "return fmt.Errorf(\"mutated non-string version for %s: %v\", k, v)",
+      "tests": [
+        "Config VersionConfig when unmarshaling a pinned version from JSON when the version contains not all string produces an error"
+      ],
+      "scenarios": [
+        "ATC config profile <profile> (row 8)"
+      ],
+      "failure_contains": "mutated non-string version"
+    },
+    {
+      "id": "var-source-order",
+      "source_file": "atc/config.go",
+      "old": "\treturn ordered, nil\n}",
+      "new": "\tif len(ordered) > 1 {\n\t\tordered[0], ordered[1] = ordered[1], ordered[0]\n\t}\n\treturn ordered, nil\n}",
+      "tests": [
+        "Config VarSourceConfigs.OrderByDependency var_sources with ideal order should keep the original order",
+        "Config VarSourceConfigs.OrderByDependency var_sources with random order should order properly"
+      ],
+      "scenarios": [
+        "ATC config profile <profile> (row 9)",
+        "ATC config profile <profile> (row 10)"
+      ],
+      "failure_contains": "expected ATC config observation"
+    },
+    {
+      "id": "var-source-unresolved",
+      "source_file": "atc/config.go",
+      "old": "return nil, fmt.Errorf(\"could not resolve inter-dependent var sources: %s\", strings.Join(names, \", \"))",
+      "new": "return nil, fmt.Errorf(\"mutated unresolved var sources: %s\", strings.Join(names, \", \"))",
+      "tests": [
+        "Config VarSourceConfigs.OrderByDependency var_sources with unresolved dependency should raise error",
+        "Config VarSourceConfigs.OrderByDependency var_sources with cyclic dependencies should raise error"
+      ],
+      "scenarios": [
+        "ATC config profile <profile> (row 11)",
+        "ATC config profile <profile> (row 12)"
+      ],
+      "failure_contains": "mutated unresolved var sources"
+    },
+    {
+      "id": "check-every-never",
+      "source_file": "atc/config.go",
+      "old": "c.Never = true",
+      "new": "c.Never = false",
+      "tests": [
+        "Config CheckEvery when unmarshaling check_every is never parses as a bool without error"
+      ],
+      "scenarios": [
+        "ATC config profile <profile> (row 13)"
+      ],
+      "failure_contains": "never=false"
+    },
+    {
+      "id": "check-every-duration",
+      "source_file": "atc/config.go",
+      "old": "c.Interval, err = time.ParseDuration(actual)",
+      "new": "c.Interval, err = time.ParseDuration(actual)\n\t\tc.Interval += time.Second",
+      "tests": [
+        "Config CheckEvery when unmarshaling check_every is a duration parses as a duration without error"
+      ],
+      "scenarios": [
+        "ATC config profile <profile> (row 14)"
+      ],
+      "failure_contains": "interval=11s"
+    },
+    {
+      "id": "check-every-invalid-duration",
+      "source_file": "atc/config.go",
+      "old": "\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t}\n\treturn nil\n}",
+      "new": "\t\tif err != nil {\n\t\t\treturn nil\n\t\t}\n\t}\n\treturn nil\n}",
+      "tests": [
+        "Config CheckEvery when unmarshaling check_every is a non-duration string errors"
+      ],
+      "scenarios": [
+        "ATC config profile <profile> (row 15)"
+      ],
+      "failure_contains": "never=false;interval=0s"
+    },
+    {
+      "id": "check-every-non-string",
+      "source_file": "atc/config.go",
+      "old": "return errors.New(\"non-string value provided\")",
+      "new": "return errors.New(\"mutated non-string check-every\")",
+      "tests": [
+        "Config CheckEvery when unmarshaling check_every is not a string errors"
+      ],
+      "scenarios": [
+        "ATC config profile <profile> (row 16)"
+      ],
+      "failure_contains": "mutated non-string check-every"
+    },
+    {
+      "id": "check-every-marshal-never",
+      "source_file": "atc/config.go",
+      "old": "return json.Marshal(\"never\")",
+      "new": "return json.Marshal(\"mutated-never\")",
+      "tests": [
+        "Config CheckEvery marshaling never is true returns never"
+      ],
+      "scenarios": [
+        "ATC config profile <profile> (row 17)"
+      ],
+      "failure_contains": "mutated-never"
+    },
+    {
+      "id": "check-every-marshal-duration",
+      "source_file": "atc/config.go",
+      "old": "return json.Marshal(c.Interval.String())",
+      "new": "return json.Marshal((c.Interval + time.Second).String())",
+      "tests": [
+        "Config CheckEvery marshaling interval is set returns the duration as a string"
+      ],
+      "scenarios": [
+        "ATC config profile <profile> (row 18)"
+      ],
+      "failure_contains": "11s"
+    },
+    {
+      "id": "check-every-marshal-empty",
+      "source_file": "atc/config.go",
+      "old": "return json.Marshal(\"\")",
+      "new": "return json.Marshal(\"mutated-empty\")",
+      "tests": [
+        "Config CheckEvery marshaling both never and interval are not set returns an empty byte"
+      ],
+      "scenarios": [
+        "ATC config profile <profile> (row 19)"
+      ],
+      "failure_contains": "mutated-empty"
+    }
+  ]
+}

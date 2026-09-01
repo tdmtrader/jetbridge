@@ -1,0 +1,111 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/pipeline-ref-strict.json",
+  "git_head": "9258225b6309ab4af7659d108a27130f95d7ffa9",
+  "completed_at": "2026-09-01T03:16:24Z",
+  "source_tests": 19,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "mutation_cases": [
+    {
+      "id": "string-without-instance-vars-is-the-name",
+      "mutation_sha256": "8b4dfdbcdd2acc5380825f59d7de5ea9f1fd97515097bf063f13c4b1113b0e6f",
+      "failed_source_tests": [
+        "PipelineRef String simple"
+      ],
+      "failed_brine_scenarios": [
+        "Strict pipeline reference profile \u003cprofile\u003e (row 1)"
+      ]
+    },
+    {
+      "id": "string-flattens-and-renders-instance-vars",
+      "mutation_sha256": "a1b61a950ad4bca6eab15bff78e9960d70ec30c8046ab92098c8ee7d62b5a87c",
+      "failed_source_tests": [
+        "PipelineRef String doesn't quote non-string primitives",
+        "PipelineRef String instance vars sorted alphabetically",
+        "PipelineRef String quotes string values that contain special characters",
+        "PipelineRef String quotes string values that match special YAML values",
+        "PipelineRef String with instance vars"
+      ],
+      "failed_brine_scenarios": [
+        "Strict pipeline reference profile \u003cprofile\u003e (row 2)",
+        "Strict pipeline reference profile \u003cprofile\u003e (row 3)",
+        "Strict pipeline reference profile \u003cprofile\u003e (row 4)",
+        "Strict pipeline reference profile \u003cprofile\u003e (row 5)",
+        "Strict pipeline reference profile \u003cprofile\u003e (row 6)"
+      ]
+    },
+    {
+      "id": "empty-instance-vars-produce-no-query-params",
+      "mutation_sha256": "615d1825b764ac495cab7a8323af784b472aab4617c81fbc20e9b38de1eabe57",
+      "failed_source_tests": [
+        "PipelineRef QueryParams empty"
+      ],
+      "failed_brine_scenarios": [
+        "Strict pipeline reference profile \u003cprofile\u003e (row 7)"
+      ]
+    },
+    {
+      "id": "query-params-use-flattened-vars-prefix",
+      "mutation_sha256": "88c6b9a278a4a729ff7df19c8f4939fdaf4d901139920124fc80ce18ff6d5feb",
+      "failed_source_tests": [
+        "PipelineRef QueryParams nested",
+        "PipelineRef QueryParams quoted",
+        "PipelineRef QueryParams simple"
+      ],
+      "failed_brine_scenarios": [
+        "Strict pipeline reference profile \u003cprofile\u003e (row 10)",
+        "Strict pipeline reference profile \u003cprofile\u003e (row 8)",
+        "Strict pipeline reference profile \u003cprofile\u003e (row 9)"
+      ]
+    },
+    {
+      "id": "empty-query-produces-nil-instance-vars",
+      "mutation_sha256": "d738bf4884ec16735a3c1b0efae4870286c45a8754b065170b8a1e0bb2012919",
+      "failed_source_tests": [
+        "PipelineRef InstanceVarsFromQueryParams empty"
+      ],
+      "failed_brine_scenarios": [
+        "Strict pipeline reference profile \u003cprofile\u003e (row 11)"
+      ]
+    },
+    {
+      "id": "query-vars-expand-into-instance-vars",
+      "mutation_sha256": "a95f9b85f6ee93a2aefdd95b4dad36f30a2549e8854b3bd7f94f152b6bdf4931",
+      "failed_source_tests": [
+        "PipelineRef InstanceVarsFromQueryParams complex refs",
+        "PipelineRef InstanceVarsFromQueryParams ignores non-var params",
+        "PipelineRef InstanceVarsFromQueryParams root-level vars",
+        "PipelineRef InstanceVarsFromQueryParams root-level vars with other subvars",
+        "PipelineRef InstanceVarsFromQueryParams simple",
+        "PipelineRef InstanceVarsFromQueryParams val is JSON"
+      ],
+      "failed_brine_scenarios": [
+        "Strict pipeline reference profile \u003cprofile\u003e (row 12)",
+        "Strict pipeline reference profile \u003cprofile\u003e (row 13)",
+        "Strict pipeline reference profile \u003cprofile\u003e (row 14)",
+        "Strict pipeline reference profile \u003cprofile\u003e (row 15)",
+        "Strict pipeline reference profile \u003cprofile\u003e (row 16)",
+        "Strict pipeline reference profile \u003cprofile\u003e (row 17)"
+      ]
+    },
+    {
+      "id": "invalid-var-reference-error-is-returned",
+      "mutation_sha256": "cad010713865b416dba8f0525fcf4e19d6a61f79bccbb9adb432899338affae4",
+      "failed_source_tests": [
+        "PipelineRef InstanceVarsFromQueryParams errors on invalid ref"
+      ],
+      "failed_brine_scenarios": [
+        "Strict pipeline reference profile \u003cprofile\u003e (row 18)"
+      ]
+    },
+    {
+      "id": "invalid-json-error-is-returned",
+      "mutation_sha256": "e2d02adc42031ff0559e7353377c315084d99cec960aea69be29e603748e7942",
+      "failed_source_tests": [
+        "PipelineRef InstanceVarsFromQueryParams errors when invalid JSON"
+      ],
+      "failed_brine_scenarios": [
+        "Strict pipeline reference profile \u003cprofile\u003e (row 19)"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,175 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/atc-config.json",
+  "git_head": "9258225b6309ab4af7659d108a27130f95d7ffa9",
+  "completed_at": "2026-09-01T03:16:29Z",
+  "source_tests": 19,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "mutation_cases": [
+    {
+      "id": "image-ref",
+      "mutation_sha256": "7bf5ba5723a40403cebc5d5e8c0903a873ae97722106a21bc13287fcf3890375",
+      "failed_source_tests": [
+        "Config ResourceTypes.ImageForType when the resource type has a direct image reference returns a TypeImage with ImageRef and no GetPlan/CheckPlan",
+        "Config ResourceTypes.ImageForType when the resource type has a resolved digest (from native registry resolution) returns a TypeImage with ImageRef and no GetPlan/CheckPlan"
+      ],
+      "failed_brine_scenarios": [
+        "ATC config profile \u003cprofile\u003e (row 1)",
+        "ATC config profile \u003cprofile\u003e (row 5)"
+      ]
+    },
+    {
+      "id": "source-check-plan",
+      "mutation_sha256": "99189d574d80f180bd47dac404e47ede5487e1dd41ed80d04330aecb74ba69e6",
+      "failed_source_tests": [
+        "Config ResourceTypes.ImageForType when the resource type has type+source (no image) returns a TypeImage with GetPlan and CheckPlan (existing behavior)"
+      ],
+      "failed_brine_scenarios": [
+        "ATC config profile \u003cprofile\u003e (row 2)"
+      ]
+    },
+    {
+      "id": "registry-skip-download",
+      "mutation_sha256": "e4f976f8d63e19b92acfefdffec0350d6ab089b8684217af7d768f69e30badea",
+      "failed_source_tests": [
+        "Config ResourceTypes.ImageForType when the resource type has type+source (no image) sets SkipDownload on the image get plan for registry-image types"
+      ],
+      "failed_brine_scenarios": [
+        "ATC config profile \u003cprofile\u003e (row 3)"
+      ]
+    },
+    {
+      "id": "non-registry-download",
+      "mutation_sha256": "01370daa90f3ae50cdc346900dce106735c2a0b0f0d95b70827e36c6aac92fbf",
+      "failed_source_tests": [
+        "Config ResourceTypes.ImageForType when the resource type uses a non-registry-image type does not set SkipDownload on the image get plan"
+      ],
+      "failed_brine_scenarios": [
+        "ATC config profile \u003cprofile\u003e (row 4)"
+      ]
+    },
+    {
+      "id": "base-type",
+      "mutation_sha256": "0afae4130294b79cd02d6f2326328714cb0864a36b263288a7b133dad05ac40c",
+      "failed_source_tests": [
+        "Config ResourceTypes.ImageForType when the resource type is not found (base type) returns a TypeImage with just BaseType"
+      ],
+      "failed_brine_scenarios": [
+        "ATC config profile \u003cprofile\u003e (row 6)"
+      ]
+    },
+    {
+      "id": "version-string-values",
+      "mutation_sha256": "e5b6253abf0a93c2e991df5cac56b440e430ed8a9a42b89da56f8addd9648888",
+      "failed_source_tests": [
+        "Config VersionConfig when unmarshaling a pinned version from JSON when the version is all string produces the correct version config without error"
+      ],
+      "failed_brine_scenarios": [
+        "ATC config profile \u003cprofile\u003e (row 7)"
+      ]
+    },
+    {
+      "id": "version-non-string",
+      "mutation_sha256": "f5920a07adbc8d8f78d5b3957342b8641dbd5ea4b52b1872432d7d25881d0d34",
+      "failed_source_tests": [
+        "Config VersionConfig when unmarshaling a pinned version from JSON when the version contains not all string produces an error"
+      ],
+      "failed_brine_scenarios": [
+        "ATC config profile \u003cprofile\u003e (row 8)"
+      ]
+    },
+    {
+      "id": "var-source-order",
+      "mutation_sha256": "9181d1f24db5c0a32822e045224be45ec4869b6f1eeb67a8ca3bf7cd3dd977d8",
+      "failed_source_tests": [
+        "Config VarSourceConfigs.OrderByDependency var_sources with ideal order should keep the original order",
+        "Config VarSourceConfigs.OrderByDependency var_sources with random order should order properly"
+      ],
+      "failed_brine_scenarios": [
+        "ATC config profile \u003cprofile\u003e (row 10)",
+        "ATC config profile \u003cprofile\u003e (row 9)"
+      ]
+    },
+    {
+      "id": "var-source-unresolved",
+      "mutation_sha256": "5bceec2c26cdd0b18ddba8f22f4203dd6394969c458c5139c0e9d0fba68fded4",
+      "failed_source_tests": [
+        "Config VarSourceConfigs.OrderByDependency var_sources with cyclic dependencies should raise error",
+        "Config VarSourceConfigs.OrderByDependency var_sources with unresolved dependency should raise error"
+      ],
+      "failed_brine_scenarios": [
+        "ATC config profile \u003cprofile\u003e (row 11)",
+        "ATC config profile \u003cprofile\u003e (row 12)"
+      ]
+    },
+    {
+      "id": "check-every-never",
+      "mutation_sha256": "75ae5ee86ab068f364d1f0530384c82ffe9c2fc081b7c12c186812e01658715c",
+      "failed_source_tests": [
+        "Config CheckEvery when unmarshaling check_every is never parses as a bool without error"
+      ],
+      "failed_brine_scenarios": [
+        "ATC config profile \u003cprofile\u003e (row 13)"
+      ]
+    },
+    {
+      "id": "check-every-duration",
+      "mutation_sha256": "2e1b4a9df7c6a9ab73e82454a9a42aa000d7f6bc096d899c5396df7ef05c6b97",
+      "failed_source_tests": [
+        "Config CheckEvery when unmarshaling check_every is a duration parses as a duration without error"
+      ],
+      "failed_brine_scenarios": [
+        "ATC config profile \u003cprofile\u003e (row 14)"
+      ]
+    },
+    {
+      "id": "check-every-invalid-duration",
+      "mutation_sha256": "1c4ce33112f2ad93fc62ee830c2cc5e4e4d12d33bf50784e829779c7f922fcbf",
+      "failed_source_tests": [
+        "Config CheckEvery when unmarshaling check_every is a non-duration string errors"
+      ],
+      "failed_brine_scenarios": [
+        "ATC config profile \u003cprofile\u003e (row 15)"
+      ]
+    },
+    {
+      "id": "check-every-non-string",
+      "mutation_sha256": "46d546ed588bdec07808ffd72c36c0017f7c9d439e460027998bcdaf1d0aeb35",
+      "failed_source_tests": [
+        "Config CheckEvery when unmarshaling check_every is not a string errors"
+      ],
+      "failed_brine_scenarios": [
+        "ATC config profile \u003cprofile\u003e (row 16)"
+      ]
+    },
+    {
+      "id": "check-every-marshal-never",
+      "mutation_sha256": "caa76365ab6b05fd4cbc89233e25f350d70fd4f7e325e7e457cfd1ddc5c0084c",
+      "failed_source_tests": [
+        "Config CheckEvery marshaling never is true returns never"
+      ],
+      "failed_brine_scenarios": [
+        "ATC config profile \u003cprofile\u003e (row 17)"
+      ]
+    },
+    {
+      "id": "check-every-marshal-duration",
+      "mutation_sha256": "acae7673d71339f0d50b606d8e7563416bdf926a5211610948fe6dedff668f07",
+      "failed_source_tests": [
+        "Config CheckEvery marshaling interval is set returns the duration as a string"
+      ],
+      "failed_brine_scenarios": [
+        "ATC config profile \u003cprofile\u003e (row 18)"
+      ]
+    },
+    {
+      "id": "check-every-marshal-empty",
+      "mutation_sha256": "573f605720e6a3ca42b74d1e4773a5795543ac5b8a91619a912eabefeccf0a1b",
+      "failed_source_tests": [
+        "Config CheckEvery marshaling both never and interval are not set returns an empty byte"
+      ],
+      "failed_brine_scenarios": [
+        "ATC config profile \u003cprofile\u003e (row 19)"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,137 @@
+{
+  "name": "pipeline-ref-strict",
+  "test_package": "./atc",
+  "source_test_file": "atc/pipeline_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/pipeline-ref-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/pipeline_ref_strict.go"
+  ],
+  "cases": [
+    {
+      "id": "string-without-instance-vars-is-the-name",
+      "source_file": "atc/pipeline.go",
+      "old": "\treturn ref.Name\n}\n\nfunc (ref PipelineRef) QueryParams()",
+      "new": "\treturn ref.Name + \"/mutated\"\n}\n\nfunc (ref PipelineRef) QueryParams()",
+      "tests": [
+        "PipelineRef String simple"
+      ],
+      "scenarios": [
+        "Strict pipeline reference profile <profile> (row 1)"
+      ],
+      "failure_contains": "strict pipeline reference profile"
+    },
+    {
+      "id": "string-flattens-and-renders-instance-vars",
+      "source_file": "atc/pipeline.go",
+      "old": "parts = append(parts, fmt.Sprintf(\"%s:%s\", kvPair.Ref, val))",
+      "new": "parts = append(parts, fmt.Sprintf(\"%s:mutated\", kvPair.Ref))",
+      "tests": [
+        "PipelineRef String with instance vars",
+        "PipelineRef String instance vars sorted alphabetically",
+        "PipelineRef String quotes string values that contain special characters",
+        "PipelineRef String quotes string values that match special YAML values",
+        "PipelineRef String doesn't quote non-string primitives"
+      ],
+      "scenarios": [
+        "Strict pipeline reference profile <profile> (row 2)",
+        "Strict pipeline reference profile <profile> (row 3)",
+        "Strict pipeline reference profile <profile> (row 4)",
+        "Strict pipeline reference profile <profile> (row 5)",
+        "Strict pipeline reference profile <profile> (row 6)"
+      ],
+      "failure_contains": "strict pipeline reference profile"
+    },
+    {
+      "id": "empty-instance-vars-produce-no-query-params",
+      "source_file": "atc/pipeline.go",
+      "old": "if len(ref.InstanceVars) == 0 {\n\t\treturn nil\n\t}",
+      "new": "if len(ref.InstanceVars) == 0 {\n\t\treturn url.Values{\"mutated\": {\"mutated\"}}\n\t}",
+      "tests": [
+        "PipelineRef QueryParams empty"
+      ],
+      "scenarios": [
+        "Strict pipeline reference profile <profile> (row 7)"
+      ],
+      "failure_contains": "strict pipeline reference profile"
+    },
+    {
+      "id": "query-params-use-flattened-vars-prefix",
+      "source_file": "atc/pipeline.go",
+      "old": "params.Set(\"vars.\"+kvp.Ref.String(), string(payload))",
+      "new": "params.Set(\"mutated.\"+kvp.Ref.String(), string(payload))",
+      "tests": [
+        "PipelineRef QueryParams simple",
+        "PipelineRef QueryParams nested",
+        "PipelineRef QueryParams quoted"
+      ],
+      "scenarios": [
+        "Strict pipeline reference profile <profile> (row 8)",
+        "Strict pipeline reference profile <profile> (row 9)",
+        "Strict pipeline reference profile <profile> (row 10)"
+      ],
+      "failure_contains": "strict pipeline reference profile"
+    },
+    {
+      "id": "empty-query-produces-nil-instance-vars",
+      "source_file": "atc/pipeline.go",
+      "old": "if len(kvPairs) == 0 {\n\t\treturn nil, nil\n\t}",
+      "new": "if len(kvPairs) == 0 {\n\t\treturn InstanceVars{}, nil\n\t}",
+      "tests": [
+        "PipelineRef InstanceVarsFromQueryParams empty"
+      ],
+      "scenarios": [
+        "Strict pipeline reference profile <profile> (row 11)"
+      ],
+      "failure_contains": "strict pipeline reference profile"
+    },
+    {
+      "id": "query-vars-expand-into-instance-vars",
+      "source_file": "atc/pipeline.go",
+      "old": "instanceVars, _ := kvPairs.Expand()[\"vars\"].(map[string]any)\n\treturn InstanceVars(instanceVars), nil",
+      "new": "instanceVars := map[string]any{\"mutated\": true}\n\treturn InstanceVars(instanceVars), nil",
+      "tests": [
+        "PipelineRef InstanceVarsFromQueryParams simple",
+        "PipelineRef InstanceVarsFromQueryParams complex refs",
+        "PipelineRef InstanceVarsFromQueryParams val is JSON",
+        "PipelineRef InstanceVarsFromQueryParams root-level vars",
+        "PipelineRef InstanceVarsFromQueryParams root-level vars with other subvars",
+        "PipelineRef InstanceVarsFromQueryParams ignores non-var params"
+      ],
+      "scenarios": [
+        "Strict pipeline reference profile <profile> (row 12)",
+        "Strict pipeline reference profile <profile> (row 13)",
+        "Strict pipeline reference profile <profile> (row 14)",
+        "Strict pipeline reference profile <profile> (row 15)",
+        "Strict pipeline reference profile <profile> (row 16)",
+        "Strict pipeline reference profile <profile> (row 17)"
+      ],
+      "failure_contains": "strict pipeline reference profile"
+    },
+    {
+      "id": "invalid-var-reference-error-is-returned",
+      "source_file": "atc/pipeline.go",
+      "old": "kvp.Ref, err = vars.ParseReference(k)\n\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}",
+      "new": "kvp.Ref, err = vars.ParseReference(k)\n\t\tif err != nil {\n\t\t\treturn nil, fmt.Errorf(\"mutated reference error\")\n\t\t}",
+      "tests": [
+        "PipelineRef InstanceVarsFromQueryParams errors on invalid ref"
+      ],
+      "scenarios": [
+        "Strict pipeline reference profile <profile> (row 18)"
+      ],
+      "failure_contains": "strict pipeline reference profile"
+    },
+    {
+      "id": "invalid-json-error-is-returned",
+      "source_file": "atc/pipeline.go",
+      "old": "if err = json.Unmarshal([]byte(q.Get(k)), &kvp.Value); err != nil {\n\t\t\treturn nil, err\n\t\t}",
+      "new": "if err = json.Unmarshal([]byte(q.Get(k)), &kvp.Value); err != nil {\n\t\t\treturn nil, fmt.Errorf(\"mutated JSON error\")\n\t\t}",
+      "tests": [
+        "PipelineRef InstanceVarsFromQueryParams errors when invalid JSON"
+      ],
+      "scenarios": [
+        "Strict pipeline reference profile <profile> (row 19)"
+      ],
+      "failure_contains": "strict pipeline reference profile"
+    }
+  ]
+}

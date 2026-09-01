@@ -1,0 +1,127 @@
+Feature: Config validation preserves complete operator diagnostics
+
+  Source: every one of the 114 leaf specs in atc/configvalidate/validate_test.go.
+  Each row constructs a concrete atc.Config, invokes configvalidate.Validate, and
+  snapshots the complete diagnostic channel asserted by its source spec. Message
+  and line ordering are canonicalized because production map iteration is unordered.
+
+  Scenario Outline: Configvalidate behavior <profile>
+    Given configvalidate runs the production validator for profile "<profile>"
+    Then the configvalidate "<channel>" snapshot has SHA-256 "<sha256>"
+
+    Examples:
+      | profile | channel | sha256 |
+      | valid | errors | 74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b |
+      | identifier/group | warnings | 431f3b2ac21c9252f5551c7d0c2dae6efc7f1870c407aeca08c9af222733dded |
+      | identifier/resource | warnings | 031da7a26cf81994c447d2e9c579f4d8a3f201fcc85f69afcd56b3acb1f27713 |
+      | identifier/resource-type | warnings | 3aab3ddfed3e585f5a001c631e6778b572cc644f3af39b2ecc9b6859e4ba9d09 |
+      | identifier/prototype | warnings | 9d8922f6b8e5ddb9d6b61c637e07ca14285c7d74ff3df31ea0e9317803eafc3e |
+      | identifier/var-source | warnings | 3d84d463fe7eef88746480728128872139caadc85231e47cf5f2e2e51d7dd94a |
+      | identifier/job | warnings | 9ff3ce8ca99edf9c867593194b7d35f86edb3b46fbf298921ca3818188eaf932 |
+      | identifier/steps | warnings | 13cb35e82ada51037bf4a1bd8c9af9456100d6bb0717436282aa45d324bc5cb7 |
+      | group/unknown-resource | errors | fda0da760050384a4e040aad037bc349b7d2cd19cf2ffa299a7d0ef56cfe281e |
+      | group/unknown-job-glob | errors | 4d993bf270b53feae9464e35aa9ca92f205ed85a291d918bb21cc23fe0801470 |
+      | group/jobs-excluded | errors | aa0a61ef0c382a3f96c97ec23f53d2b5259338a16a102f389b6ef8c959a7fe2e |
+      | group/duplicate-twice | errors | e8f5611fb2d211ecd81a402136dc4ec7b52e5b3975b9cce445466090c86c55fa |
+      | group/duplicate-four-times | errors | 468d4421a5f46ae3a1d16eebba16264804f3b0d838c1a1414d7ddb606180282e |
+      | group/invalid-glob | errors | a92c72db6425160784e09f8f548ca6638e85290e3e02ab646e517c3bb6fc7e33 |
+      | var-source/unknown-type | errors | 1654f63010ceb94d65e48b5bdb9446f4d5667f6f3032af41f7c4f511aa9f0cfa |
+      | var-source/invalid-config | errors | eacd95fddf6941d0f79c77f07395061db3a944b0b4a4951f40e5575848d82b40 |
+      | var-source/duplicate | errors | 7c9a44ecbe42804833c1ca63395518eb3825508be545be6edf8dffaf628f4c47 |
+      | var-source/unresolved | errors | d9a8a4a9c02505a36679abcd7a3cf3f2e71ee4e0afb94b1820cca1fb5ba69dc2 |
+      | var-source/circular | errors | d14dda67cc29ea879fa00713bd1877fc1b84cc49756664c8b8f80c6a7cae1a03 |
+      | resource/no-name | errors | a4dffee7ddf882714ef8bc0fa3f0f47c7bc7013683b4ef43c4db9dc192388eb6 |
+      | resource/no-type | errors | f3f76474b4881395ac8356da057e5f4f920bf85e1b824fd0cd856d0e417b72e1 |
+      | resource/no-name-or-type | errors | a4dffee7ddf882714ef8bc0fa3f0f47c7bc7013683b4ef43c4db9dc192388eb6 |
+      | resource/duplicate | errors | 81f750d028dcd430e0aec97eb731f8aa95ed089b25078ffc895ca94d81a88c34 |
+      | resource/unused-and-aliased | errors | b4eb6f528deab8570fd9085b9a4f20195d19e37d041d99f0b9a32a9a27915a27 |
+      | resource-type/no-name | errors | 338216dfdc877f5d2aa7507ff06e990ee63a14aff4c676d526a06a2bfaf7dae2 |
+      | resource-type/no-type | errors | d3539b4bba7fb8d989446452a82c0305758de04c7acab4923b69212db514ce70 |
+      | resource-type/no-name-or-type | errors | 338216dfdc877f5d2aa7507ff06e990ee63a14aff4c676d526a06a2bfaf7dae2 |
+      | resource-type/image-only | errors | 74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b |
+      | resource-type/image-and-type | errors | c1378007d49d774e44f5da83cb8389de7bbc7ed946d4a76c9f78e807085ad9ee |
+      | resource-type/duplicate | errors | f66979eddbe2c2cedd201f97d310a57e5f12e8a9a1c81a4dbdf139beb2a55bb0 |
+      | prototype/no-name | errors | 4da5483fc30f03735f02174d474b40bc2d70c9879fe0380dcee78c747e3a467d |
+      | prototype/no-type | errors | 0b2f88f2ab5d879e62dffadac781a74f7e5583a0c315740d51ceda669e591d99 |
+      | prototype/no-name-or-type | errors | 4da5483fc30f03735f02174d474b40bc2d70c9879fe0380dcee78c747e3a467d |
+      | prototype/duplicate | errors | e8e61f858546d321344f8c7c0676c0da418610550d7fa2f8fb07768db3138d14 |
+      | prototype/name-conflicts-with-resource-type | errors | 69c678f7c4cb1a157a0d87a71ccc059fa8865727e48d2465e14bcffeeb77ab42 |
+      | job/no-name | errors | d472df5b5b5cbfa959eeead9aa1b278116802d7e911fcc524c5394b5daa01de7 |
+      | job/appended-negative-build-logs | errors | 7f5dd21bd67e4edd67d87a547e10067585f6f0b5ced5d8c80819175255830a5a |
+      | job/duplicate-inputs | errors | 284b67b949effce6578f405661a3512ce8ea4958ce6564282a4fc35df16e607f |
+      | job/duplicate-input-names | errors | bfe321bd2b7bae71ea267e49d370dc50e421a15dce320633b7c688f41424d169 |
+      | job/same-resource-different-names | errors | 74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b |
+      | plan/task-missing-config-and-name | errors | d57105a732048543f4e15f9e0a3552ed51dcf863e6eb5b626f36eee79e469205 |
+      | plan/task-file-and-config | errors | d562c202e96f4d325bbc35614f2026a880430b0cf131a72716e3706d3d8b54d1 |
+      | plan/task-invalid-inline | errors | f67c71ab5abb304b58b05f59dd1741c406bdd24a93b2f51d596c96dc8ffb3f57 |
+      | plan/task-hermetic | warnings | 18817f19bcf88d755b7b99a8eba9064d76a500f3e35ee13be914faca34111ee4 |
+      | plan/sidecar-missing-name | errors | 4a89ae49b7a2381c4ca59e71c5c5241c45b943a733ff6a7ae46e3a8bed0a7372 |
+      | plan/sidecar-missing-image | errors | 962b5b636331fb48f435aa2780131d7b07686313a95f097bf8e54f362f72f0c3 |
+      | plan/sidecar-reserved-name | errors | 100feb19b52c4adb508c90cd24af8ceb3a293bba746278eb8e94c7b5bf301d1e |
+      | plan/sidecar-valid | errors | 74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b |
+      | plan/skip-download-registry-image | errors | 74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b |
+      | plan/skip-download-image-field | errors | 74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b |
+      | plan/skip-download-non-image | errors | 8418447c77be75924644fff7cd814953ad2ce75b58f05e7de51f96fc8115cde7 |
+      | plan/normal-download-any-type | errors | 74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b |
+      | plan/put-existing | errors | 74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b |
+      | plan/get-missing | errors | af9dd22c50cf213356de4e24330ccda50cfb5e0508a733b01dd915843d7c0015 |
+      | plan/put-missing | errors | e2628bff53231b49f56328387d12bb5fe1332309ef4f87fa1f1648de10e6ebf3 |
+      | plan/run-missing-prototype | errors | 738c6908adcafb4ab4874adf88cbde19d507e0ac67e86e82d12311d9973f2ad3 |
+      | plan/get-custom-existing | errors | 74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b |
+      | plan/get-custom-missing | errors | fe062fd13d59ae366d47d206d111294f311ec61cbc223fde2aa59fca7cd7749c |
+      | plan/put-custom-existing | errors | 74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b |
+      | plan/put-custom-missing | errors | cc123259ed79b1b2c4fad6b32f716bc7a3aee0806c3048dee7a8322e45758c97 |
+      | job-hook/success/existing | errors | 74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b |
+      | job-hook/success/missing | errors | 236e42bc3fc6ed09c4026bc74b85350cf6078cf7c0bb25deab2a89ec8129f297 |
+      | job-hook/failure/existing | errors | 74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b |
+      | job-hook/failure/missing | errors | 5d6bbe320f9651431221b62cee0cda45b9acd960bccb74ed61dad39c9586e79e |
+      | job-hook/error/existing | errors | 74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b |
+      | job-hook/error/missing | errors | 1802e2195402883836557f3d39cc4b59cde4ec8a1a5237ded3d398a248408ebf |
+      | job-hook/abort/existing | errors | 74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b |
+      | job-hook/abort/missing | errors | 420e570a35f00dd667128c39b63d9ca4573c6d0e741b52c728514e782ecc374a |
+      | job-hook/ensure/existing | errors | 74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b |
+      | job-hook/ensure/missing | errors | e640eb10ecc279ff44446fcae791a698b35e8966b8c918c9b648317cdf5058df |
+      | cross-job/hook-put | errors | 74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b |
+      | cross-job/hook-get | errors | 74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b |
+      | cross-job/try-put | errors | 74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b |
+      | cross-job/try-get | errors | 74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b |
+      | nested/abort | errors | 7eba80e0b8f4547039d5b9488fb091858404483c56d5cbe178c81a75623ff4b6 |
+      | nested/error | errors | b7f547cf8f7d8afd7bcd7c2bef2df0dc77ecaa5aeb0f01d888e3f53cb8cd5c02 |
+      | nested/ensure | errors | d3336e55d39a32444f1bcdac9d01e51f2ddc14d034196c968ef4e97723215315 |
+      | nested/success | errors | 38520b12fbcfa3759c18af2fc5815c25e989684b392ab3e1ca316db7aeedef63 |
+      | nested/failure | errors | f755475ec80b23b537d04e38edce05c5672aeb75637ddf19d3a57dfb42af5660 |
+      | nested/try | errors | be55577901ff8004b5679b6f1781dca24cf51ed394e2f746a26b12e7539fb596 |
+      | plan/invalid-timeout | errors | f330ac8554d1d8423fec0e0e9d400d5ce9d258e177c94c6128c11e615938e8e1 |
+      | plan/non-positive-retry | errors | 7344344a944c57917da0c99ec3b76f08eb1259d2fb816eec5ef3f766a6355b39 |
+      | plan/set-pipeline-empty | errors | 00702cab12806103414aac2058514205321b9d0a341c6a24b54ffbd2e1195ccc |
+      | passed/bogus-job | errors | 1132d1a74781360a0454768f6ca08fb4b8ad2e893b71e9c7eb4dc785c61927be |
+      | passed/unmatched-glob | errors | 66fa1d4e3417c311db41f0fbeb6bd7f3216e7ff4da25c971899ab9a11e57d53c |
+      | passed/valid-output | errors | 74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b |
+      | passed/valid-input | errors | 74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b |
+      | passed/valid-glob | errors | 74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b |
+      | passed/custom-name | errors | 74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b |
+      | passed/job-does-not-use-resource | errors | 97853f3873466d473b4a227296f70837ad3056a4269695cfbe8d7d84ca582734 |
+      | load-var/empty | errors | 603cb9c52c5887693b4576d7476138009ac0de64d37155ac37fd9342936fbb93 |
+      | load-var/duplicate | errors | f1f4ce14c5c9cb095d1fa055256f8ad7da2f6e522524f2b5816fd520e8e3f214 |
+      | plan/unknown-field | errors | 394d6a2e95731aec01b0a94838f9124ca6844ee71bbc5f34ab8787045e1a90ae |
+      | across/valid | errors | 74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b |
+      | across/no-vars | errors | 05707d7bda115ddf29ce5fa3777c38e0782c303ddd3d25dc7f80af5c1e50655e |
+      | across/repeated-var | errors | c92df4633529744b5a58dbd1e24900dc28f1f491b18ddf789fb9f194ab7ed7d8 |
+      | across/shadows-parent | warnings | 503a5251eea6553e86f2e1c03dc8b93f817e3a80b6988191a668aa14010487e9 |
+      | across/substep-shadows-parent | warnings | 6d48b47441fb3da6add401daf7ae96c174aa2b1d163c53f7f78271897bc75417 |
+      | across/non-positive-limit | errors | a12f08d22826a930570404ff5e0fccdcf9ff4b6115324a0649d683b2f972fb66 |
+      | job/duplicate-name | errors | 6f366d5a8efeba1a6d0c5d991b2d344acdb7a4ea458d16596414d599247e1e11 |
+      | job/both-retention-fields | errors | 5d2ab62468d864b6cc36c932574e2c55f3737b598896fa60813c4c6efaa71326 |
+      | job/negative-build-logs | errors | 886d619781fdb673759576b65e18e78c5f363552a0ccc6578d2b083c7100a4d0 |
+      | job/deprecated-build-logs | warnings | 8cfb7c23dc2705dd4f5b844bba52a955ed3d014a8226673b17ca496a7d8623e2 |
+      | job/negative-retention | errors | 8658076a48125b86d74162494ea1e107db0ea6c12dfa13c239e4fec7bb24e354 |
+      | display/http | errors | 74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b |
+      | display/relative | errors | 74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b |
+      | display/unsupported-scheme | errors | cdc5bcd5b0a00ed660161a10cfa2f10846b4c230120f345c123fc777e24e40fd |
+      | display/invalid-url | errors | 024b8bc4c522c3b61a8dc903410302dd8af15a20eabec24dd9da637a50fc8453 |
+      | pipeline/no-jobs | errors | de813ded963c33ce0778db4eabe18cb41cc70ae84a634eae4f6b2b4c3192a9e1 |
+      | cycle/self | errors | 68ed3b801ea03118cd651fab14519bc40d2ea9c7ea2fb4fa74530304717afd62 |
+      | cycle/multiple-jobs | errors | 487b7b1eeac03f237ecbdcd4fba02406aae78a6c4911dda20ba79ebf8ee14199 |
+      | cycle/glob | errors | 68ed3b801ea03118cd651fab14519bc40d2ea9c7ea2fb4fa74530304717afd62 |
+      | cycle/multiple-passes-acyclic | errors | 74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b |
+      | cycle/none | errors | 74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b |
