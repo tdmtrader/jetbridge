@@ -1,0 +1,151 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/idtoken-generator-strict.json",
+  "git_head": "05fef9d4c7188df962fbee09a5eca7ccad9f23dd",
+  "completed_at": "2026-09-01T04:10:34Z",
+  "source_tests": 15,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "mutation_cases": [
+    {
+      "id": "default-pipeline-subject",
+      "mutation_sha256": "ae8d4ce99d3a6bda6d05bbab9950f80d69a4d63e903842e2d0dc8e711e555419",
+      "failed_source_tests": [
+        "IDToken TokenGenerator Generated Token contains the correct subject",
+        "IDToken TokenGenerator generates a valid token"
+      ],
+      "failed_brine_scenarios": [
+        "Strict ID token generator profile \u003cprofile\u003e (row 1)",
+        "Strict ID token generator profile \u003cprofile\u003e (row 8)"
+      ]
+    },
+    {
+      "id": "team-subject-scope",
+      "mutation_sha256": "e82f9e0fb955d8cf3728c75cb0eb8861b69d0d2ddae3ee5329a8d8615f6e1311",
+      "failed_source_tests": [
+        "IDToken TokenGenerator respects subject scope team"
+      ],
+      "failed_brine_scenarios": [
+        "Strict ID token generator profile \u003cprofile\u003e (row 2)"
+      ]
+    },
+    {
+      "id": "instance-subject-scope",
+      "mutation_sha256": "a7589ab17f523073fd22a84a243ec8c41f595abecf3f542e31078ed6c256e76d",
+      "failed_source_tests": [
+        "IDToken TokenGenerator respects subject scope instance"
+      ],
+      "failed_brine_scenarios": [
+        "Strict ID token generator profile \u003cprofile\u003e (row 3)"
+      ]
+    },
+    {
+      "id": "job-subject-scope",
+      "mutation_sha256": "6baead065791e86d01ef46e8e4e9309721f9c36e5afa5e9f712f91013a094c7e",
+      "failed_source_tests": [
+        "IDToken TokenGenerator respects subject scope job"
+      ],
+      "failed_brine_scenarios": [
+        "Strict ID token generator profile \u003cprofile\u003e (row 4)"
+      ]
+    },
+    {
+      "id": "subject-part-slash-escaping",
+      "mutation_sha256": "23d60ff68bc7522a9969971ccbdeb76439c598d608d836d60cf2f0af39188821",
+      "failed_source_tests": [
+        "IDToken TokenGenerator escapes sub parts safely"
+      ],
+      "failed_brine_scenarios": [
+        "Strict ID token generator profile \u003cprofile\u003e (row 5)"
+      ]
+    },
+    {
+      "id": "requested-audience-claim",
+      "mutation_sha256": "447a660918dcf9537c7acf330a196cd1aaa48bcdb81affda431fb89f5c2ccde1",
+      "failed_source_tests": [
+        "IDToken TokenGenerator adds aud claim when requested"
+      ],
+      "failed_brine_scenarios": [
+        "Strict ID token generator profile \u003cprofile\u003e (row 6)"
+      ]
+    },
+    {
+      "id": "es256-selects-ec-key",
+      "mutation_sha256": "bec492bef630ef71e5855e76c83b1fdd297ae2c1a63cee48f83b004a498bd6ce",
+      "failed_source_tests": [
+        "IDToken TokenGenerator uses ES256 when requested"
+      ],
+      "failed_brine_scenarios": [
+        "Strict ID token generator profile \u003cprofile\u003e (row 7)"
+      ]
+    },
+    {
+      "id": "issuer-claim",
+      "mutation_sha256": "71b1d47f8d52d57b0dc1c9ebe5ecf292e7ba2e7bcc6b5dc1b708ebb5ae100c07",
+      "failed_source_tests": [
+        "IDToken TokenGenerator Generated Token contains the correct issuer"
+      ],
+      "failed_brine_scenarios": [
+        "Strict ID token generator profile \u003cprofile\u003e (row 9)"
+      ]
+    },
+    {
+      "id": "expiration-claim",
+      "mutation_sha256": "97c9396b452d1794a98c8596c237c8c4da7ebdfb6c42ba0cea4dda569b36e028",
+      "failed_source_tests": [
+        "IDToken TokenGenerator Generated Token has the correct expiration time"
+      ],
+      "failed_brine_scenarios": [
+        "Strict ID token generator profile \u003cprofile\u003e (row 10)"
+      ]
+    },
+    {
+      "id": "team-custom-claim",
+      "mutation_sha256": "6be932d593afd0d8932c4793b50a688730cb6c18879f01d373c38f328ac0130c",
+      "failed_source_tests": [
+        "IDToken TokenGenerator Generated Token contains the correct team"
+      ],
+      "failed_brine_scenarios": [
+        "Strict ID token generator profile \u003cprofile\u003e (row 11)"
+      ]
+    },
+    {
+      "id": "pipeline-custom-claim",
+      "mutation_sha256": "127234fcf22fc9089367a569864fc6cfdb4b8f78801de3a0e149bd115b41ef41",
+      "failed_source_tests": [
+        "IDToken TokenGenerator Generated Token contains the correct pipeline"
+      ],
+      "failed_brine_scenarios": [
+        "Strict ID token generator profile \u003cprofile\u003e (row 12)"
+      ]
+    },
+    {
+      "id": "instance-vars-custom-claim",
+      "mutation_sha256": "e9fd4e6aa67627e5a375f21b2ecc1ad0d29b7012ad3d8b37872c1c57d315b6b6",
+      "failed_source_tests": [
+        "IDToken TokenGenerator Generated Token contains the correct instance vars"
+      ],
+      "failed_brine_scenarios": [
+        "Strict ID token generator profile \u003cprofile\u003e (row 13)"
+      ]
+    },
+    {
+      "id": "job-custom-claim",
+      "mutation_sha256": "29bf76ea059304a70377964edd9c647ca9fa6376a44c11d3cb5bd9ea3e406860",
+      "failed_source_tests": [
+        "IDToken TokenGenerator Generated Token contains the correct job"
+      ],
+      "failed_brine_scenarios": [
+        "Strict ID token generator profile \u003cprofile\u003e (row 14)"
+      ]
+    },
+    {
+      "id": "no-default-audience",
+      "mutation_sha256": "9e1a86db01a06ed2817bc44dac90e01a22e3dee50b8f1efa451cb3c7aab54c76",
+      "failed_source_tests": [
+        "IDToken TokenGenerator Generated Token has no default audience"
+      ],
+      "failed_brine_scenarios": [
+        "Strict ID token generator profile \u003cprofile\u003e (row 15)"
+      ]
+    }
+  ]
+}

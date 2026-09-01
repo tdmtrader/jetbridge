@@ -1,0 +1,195 @@
+{
+  "name": "idtoken-generator-strict",
+  "test_package": "./atc/creds/idtoken",
+  "source_test_file": "atc/creds/idtoken/token_generator_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/idtoken-generator-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/idtoken_generator_strict.go"
+  ],
+  "cases": [
+    {
+      "id": "default-pipeline-subject",
+      "source_file": "atc/creds/idtoken/token_generator.go",
+      "old": "\tcase SubjectScopePipeline:\n\t\treturn fmt.Sprintf(\"%s/%s\", team, pipeline)",
+      "new": "\tcase SubjectScopePipeline:\n\t\treturn fmt.Sprintf(\"%s/%s-mutated\", team, pipeline)",
+      "tests": [
+        "IDToken TokenGenerator generates a valid token",
+        "IDToken TokenGenerator Generated Token contains the correct subject"
+      ],
+      "scenarios": [
+        "Strict ID token generator profile <profile> (row 1)",
+        "Strict ID token generator profile <profile> (row 8)"
+      ],
+      "failure_contains": "strict ID token generator observation"
+    },
+    {
+      "id": "team-subject-scope",
+      "source_file": "atc/creds/idtoken/token_generator.go",
+      "old": "\tcase SubjectScopeTeam:\n\t\treturn team",
+      "new": "\tcase SubjectScopeTeam:\n\t\treturn team + \"-mutated\"",
+      "tests": [
+        "IDToken TokenGenerator respects subject scope team"
+      ],
+      "scenarios": [
+        "Strict ID token generator profile <profile> (row 2)"
+      ],
+      "failure_contains": "strict ID token generator observation"
+    },
+    {
+      "id": "instance-subject-scope",
+      "source_file": "atc/creds/idtoken/token_generator.go",
+      "old": "\tcase SubjectScopeInstance:\n\t\treturn fmt.Sprintf(\"%s/%s/%s\", team, pipeline, ivars)",
+      "new": "\tcase SubjectScopeInstance:\n\t\treturn fmt.Sprintf(\"%s/%s/%s-mutated\", team, pipeline, ivars)",
+      "tests": [
+        "IDToken TokenGenerator respects subject scope instance"
+      ],
+      "scenarios": [
+        "Strict ID token generator profile <profile> (row 3)"
+      ],
+      "failure_contains": "strict ID token generator observation"
+    },
+    {
+      "id": "job-subject-scope",
+      "source_file": "atc/creds/idtoken/token_generator.go",
+      "old": "\tcase SubjectScopeJob:\n\t\treturn fmt.Sprintf(\"%s/%s/%s/%s\", team, pipeline, ivars, job)",
+      "new": "\tcase SubjectScopeJob:\n\t\tif params.Job == \"testjob\" {\n\t\t\treturn fmt.Sprintf(\"%s/%s/%s/%s-mutated\", team, pipeline, ivars, job)\n\t\t}\n\t\treturn fmt.Sprintf(\"%s/%s/%s/%s\", team, pipeline, ivars, job)",
+      "tests": [
+        "IDToken TokenGenerator respects subject scope job"
+      ],
+      "scenarios": [
+        "Strict ID token generator profile <profile> (row 4)"
+      ],
+      "failure_contains": "strict ID token generator observation"
+    },
+    {
+      "id": "subject-part-slash-escaping",
+      "source_file": "atc/creds/idtoken/token_generator.go",
+      "old": "\treturn strings.ReplaceAll(input, \"/\", \"%2F\")",
+      "new": "\treturn input",
+      "tests": [
+        "IDToken TokenGenerator escapes sub parts safely"
+      ],
+      "scenarios": [
+        "Strict ID token generator profile <profile> (row 5)"
+      ],
+      "failure_contains": "strict ID token generator observation"
+    },
+    {
+      "id": "requested-audience-claim",
+      "source_file": "atc/creds/idtoken/token_generator.go",
+      "old": "\t\tAudience: jwt.Audience(g.Audience),",
+      "new": "\t\tAudience: nil,",
+      "tests": [
+        "IDToken TokenGenerator adds aud claim when requested"
+      ],
+      "scenarios": [
+        "Strict ID token generator profile <profile> (row 6)"
+      ],
+      "failure_contains": "strict ID token generator observation"
+    },
+    {
+      "id": "es256-selects-ec-key",
+      "source_file": "atc/creds/idtoken/token_generator.go",
+      "old": "\t} else if strings.HasPrefix(string(alg), \"ES\") {\n\t\tkeyType = db.SigningKeyTypeEC",
+      "new": "\t} else if strings.HasPrefix(string(alg), \"ES\") {\n\t\tkeyType = db.SigningKeyTypeRSA",
+      "tests": [
+        "IDToken TokenGenerator uses ES256 when requested"
+      ],
+      "scenarios": [
+        "Strict ID token generator profile <profile> (row 7)"
+      ],
+      "failure_contains": ""
+    },
+    {
+      "id": "issuer-claim",
+      "source_file": "atc/creds/idtoken/token_generator.go",
+      "old": "\t\tIssuer:   g.Issuer,",
+      "new": "\t\tIssuer:   \"https://mutated.invalid\",",
+      "tests": [
+        "IDToken TokenGenerator Generated Token contains the correct issuer"
+      ],
+      "scenarios": [
+        "Strict ID token generator profile <profile> (row 9)"
+      ],
+      "failure_contains": "strict ID token generator observation"
+    },
+    {
+      "id": "expiration-claim",
+      "source_file": "atc/creds/idtoken/token_generator.go",
+      "old": "\tvalidUntil = now.Add(g.ExpiresIn)",
+      "new": "\tvalidUntil = now.Add(g.ExpiresIn + time.Minute)",
+      "tests": [
+        "IDToken TokenGenerator Generated Token has the correct expiration time"
+      ],
+      "scenarios": [
+        "Strict ID token generator profile <profile> (row 10)"
+      ],
+      "failure_contains": "strict ID token generator observation"
+    },
+    {
+      "id": "team-custom-claim",
+      "source_file": "atc/creds/idtoken/token_generator.go",
+      "old": "\t\tTeam:         params.Team,",
+      "new": "\t\tTeam:         params.Team + \"-mutated\",",
+      "tests": [
+        "IDToken TokenGenerator Generated Token contains the correct team"
+      ],
+      "scenarios": [
+        "Strict ID token generator profile <profile> (row 11)"
+      ],
+      "failure_contains": "strict ID token generator observation"
+    },
+    {
+      "id": "pipeline-custom-claim",
+      "source_file": "atc/creds/idtoken/token_generator.go",
+      "old": "\t\tPipeline:     params.Pipeline,",
+      "new": "\t\tPipeline:     params.Pipeline + \"-mutated\",",
+      "tests": [
+        "IDToken TokenGenerator Generated Token contains the correct pipeline"
+      ],
+      "scenarios": [
+        "Strict ID token generator profile <profile> (row 12)"
+      ],
+      "failure_contains": "strict ID token generator observation"
+    },
+    {
+      "id": "instance-vars-custom-claim",
+      "source_file": "atc/creds/idtoken/token_generator.go",
+      "old": "\t\tInstanceVars: params.InstanceVars,",
+      "new": "\t\tInstanceVars: map[string]any{\"foo\": \"mutated\"},",
+      "tests": [
+        "IDToken TokenGenerator Generated Token contains the correct instance vars"
+      ],
+      "scenarios": [
+        "Strict ID token generator profile <profile> (row 13)"
+      ],
+      "failure_contains": "strict ID token generator observation"
+    },
+    {
+      "id": "job-custom-claim",
+      "source_file": "atc/creds/idtoken/token_generator.go",
+      "old": "\t\tJob:          params.Job,",
+      "new": "\t\tJob:          params.Job + \"-mutated\",",
+      "tests": [
+        "IDToken TokenGenerator Generated Token contains the correct job"
+      ],
+      "scenarios": [
+        "Strict ID token generator profile <profile> (row 14)"
+      ],
+      "failure_contains": "strict ID token generator observation"
+    },
+    {
+      "id": "no-default-audience",
+      "source_file": "atc/creds/idtoken/token_generator.go",
+      "old": "\t\tAudience: jwt.Audience(g.Audience),",
+      "new": "\t\tAudience: jwt.Audience(append([]string{\"mutated-default\"}, g.Audience...)),",
+      "tests": [
+        "IDToken TokenGenerator Generated Token has no default audience"
+      ],
+      "scenarios": [
+        "Strict ID token generator profile <profile> (row 15)"
+      ],
+      "failure_contains": "strict ID token generator observation"
+    }
+  ]
+}
