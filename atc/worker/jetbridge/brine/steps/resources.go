@@ -154,12 +154,30 @@ func ResourceDefinitions() []brine.ResourceDefinition {
 				)
 
 				logger := lager.NewLogger("brine-jetbridge")
+				workerCache, err := db.NewWorkerCache(logger, conn, 0)
+				if err != nil {
+					for i := 0; i < lock.FactoryCount; i++ {
+						_ = lockConns[i].Close()
+					}
+					_ = conn.Close()
+					return nil, fmt.Errorf("construct production worker cache: %w", err)
+				}
+				workerFactory := db.NewWorkerFactory(conn, workerCache)
+				builder := dbtest.Builder{
+					TeamFactory:            db.NewTeamFactory(conn, lockFactory),
+					WorkerFactory:          workerFactory,
+					ResourceConfigFactory:  db.NewResourceConfigFactory(conn, lockFactory),
+					VolumeRepo:             db.NewVolumeRepository(conn),
+					ResourceCacheFactory:   db.NewResourceCacheFactory(conn, lockFactory),
+					TaskCacheFactory:       db.NewTaskCacheFactory(conn),
+					WorkerTaskCacheFactory: db.NewWorkerTaskCacheFactory(conn),
+				}
 				return JetbridgeDB{
 					Conn:                conn,
 					LockFactory:         lockFactory,
-					Builder:             dbtest.NewBuilder(conn, lockFactory),
+					Builder:             builder,
 					TeamFactory:         db.NewTeamFactory(conn, lockFactory),
-					WorkerFactory:       db.NewWorkerFactory(conn, db.NewStaticWorkerCache(logger, conn, 0)),
+					WorkerFactory:       workerFactory,
 					VolumeRepository:    db.NewVolumeRepository(conn),
 					ContainerRepository: db.NewContainerRepository(conn),
 					BuildFactory:        db.NewBuildFactory(conn, lockFactory, 0, time.Hour),

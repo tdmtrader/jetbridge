@@ -22,19 +22,19 @@ scenario fail is also not evidence.
 
 | quantity | source leaf tests | percentage of 6,857 |
 |---|---:|---:|
-| **fully migrated**: paired failure evidence, no prohibited double, source removed | **862** | **12.57%** |
+| **fully migrated**: paired failure evidence, no prohibited double, source removed | **441** | **6.43%** |
 | strict paired evidence, but source still present | 0 | 0.00% |
-| **runs in Brine but not the full philosophy**: paired failure evidence, but uses a stub, test sink, injected-fault object, fake, or mock | **112** | **1.63%** |
-| of the preceding exception bucket whose source test was removed | 66 | 0.96% |
+| **runs in Brine but not the full philosophy**: paired failure evidence, but uses a stub, test sink, injected-fault object, fake, or mock | **533** | **7.77%** |
+| of the preceding exception bucket whose source test was removed | 487 | 7.10% |
 | total source tests with paired per-test failure evidence | 974 | 14.20% |
 | former claimed tests with no admissible paired evidence | 1,085 | 15.82% |
 | Brine scenarios | 1,863 | execution count only |
 
-The requested two headline percentages are therefore **12.57% fully migrated**
-and **1.63% validated but running outside the full philosophy**. The second is
-not another migration percentage: 46 of its 112 source tests still exist. If
+The requested two headline percentages are therefore **6.43% fully migrated**
+and **7.77% validated but running outside the full philosophy**. The second is
+not another migration percentage: 46 of its 533 source tests still exist. If
 "migrated" is restricted to removed source tests in both buckets, the figures
-are 12.57% strict and 0.96% philosophy-exception.
+are 6.43% strict and 7.10% philosophy-exception.
 
 ## Admitted evidence ledger
 
@@ -49,18 +49,18 @@ are 12.57% strict and 0.96% philosophy-exception.
 | `configvalidate/validate_test.go` | 114 | 114 | 0 | 114 |
 | `container_limits_test.go` | 15 | 15 | 0 | 15 |
 | `task_test.go` | 37 | 37 | 0 | 37 |
-| `api/config_test.go` strict real-server subset | 73 | 73 | 0 | 73 |
-| `db/team_test.go` strict real-PostgreSQL subset | 18 | 18 | 0 | 18 |
-| `db/build_test.go` strict real-PostgreSQL subset | 27 | 27 | 0 | 27 |
-| `db/pipeline_test.go` strict real-PostgreSQL subset | 24 | 24 | 0 | 24 |
-| `db/job_test.go` strict real-PostgreSQL subset | 35 | 35 | 0 | 35 |
-| `db/worker_factory_test.go` real-PostgreSQL production-cache suite | 20 | 20 | 0 | 20 |
-| `db/resource_config_scope_test.go` real-PostgreSQL resource-scope domain | 23 | 23 | 0 | 23 |
-| `db/container_test.go` strict real-PostgreSQL subset | 17 | 17 | 0 | 17 |
-| `db/component_notifications_test.go` | 21 | 21 | 0 | 21 |
-| `db/notifications_bus_test.go` strict real-PostgreSQL subset | 11 | 11 | 0 | 11 |
+| `api/config_test.go` strict real-server subset, pending sink-free rerun | 73 | 0 | 73 | 73 |
+| `db/team_test.go` strict real-PostgreSQL subset, pending sink-free rerun | 18 | 0 | 18 | 18 |
+| `db/build_test.go` strict real-PostgreSQL subset, pending sink-free rerun | 27 | 0 | 27 | 27 |
+| `db/pipeline_test.go` strict real-PostgreSQL subset, pending sink-free rerun | 24 | 0 | 24 | 24 |
+| `db/job_test.go` strict real-PostgreSQL subset, pending sink-free rerun | 35 | 0 | 35 | 35 |
+| `db/worker_factory_test.go` real-PostgreSQL production-cache suite, pending sink-free rerun | 20 | 0 | 20 | 20 |
+| `db/resource_config_scope_test.go` real-PostgreSQL resource-scope domain, pending sink-free rerun | 23 | 0 | 23 | 23 |
+| `db/container_test.go` strict real-PostgreSQL subset, pending sink-free rerun | 17 | 0 | 17 | 17 |
+| `db/component_notifications_test.go`, pending sink-free rerun | 21 | 0 | 21 | 21 |
+| `db/notifications_bus_test.go` strict real-PostgreSQL subset, pending sink-free rerun | 11 | 0 | 11 | 11 |
 | `event/parser_test.go` | 26 | 26 | 0 | 26 |
-| `creds/idtoken/token_generator_test.go` | 15 | 15 | 0 | 15 |
+| `creds/idtoken/token_generator_test.go`, pending sink-free rerun | 15 | 0 | 15 | 15 |
 | `JobFactory.JobsToSchedule` | 15 | 15 | 0 | 15 |
 | `build_test.go` core value methods | 8 | 8 | 0 | 8 |
 | `public_plan_test.go` concrete public serialization | 5 | 5 | 0 | 5 |
@@ -69,18 +69,53 @@ are 12.57% strict and 0.96% philosophy-exception.
 | `sidecar_test.go` production parser/validation/JSON subset | 20 | 20 | 0 | 20 |
 | `configwarning_test.go` | 14 | 14 | 0 | 14 |
 | `fly/eventstream/render_test.go` real TCP SSE rendering | 37 | 37 | 0 | 37 |
-| `api/auth` real TCP/production-handler authorization boundaries | 18 | 18 | 0 | 18 |
-| `api/auth` resource authorization, real TCP/production handlers/real PostgreSQL | 29 | 29 | 0 | 29 |
-| `api/accessor/accessor_test.go` production accessor profiles | 38 | 38 | 0 | 38 |
-| `api/users_test.go` production users serialization/filter subset | 12 | 12 | 0 | 12 |
-| `api/cli_test.go` production CLI downloads | 12 | 12 | 0 | 12 |
-| `api/cc_test.go` production CC XML over real TCP/PostgreSQL | 14 | 14 | 0 | 14 |
-| `api/wall_test.go` production wall API over real TCP/PostgreSQL | 14 | 14 | 0 | 14 |
+| `api/auth` real TCP/production-handler authorization boundaries, pending sink-free rerun | 18 | 0 | 18 | 18 |
+| `api/auth` resource authorization, real TCP/production handlers/real PostgreSQL, pending sink-free rerun | 29 | 0 | 29 | 29 |
+| `api/accessor/accessor_test.go` production accessor profiles, pending sink-free rerun | 38 | 0 | 38 | 38 |
+| `api/users_test.go` production users serialization/filter subset, pending sink-free rerun | 12 | 0 | 12 | 12 |
+| `api/cli_test.go` production CLI downloads, pending sink-free rerun | 12 | 0 | 12 | 12 |
+| `api/cc_test.go` production CC XML over real TCP/PostgreSQL, pending sink-free rerun | 14 | 0 | 14 | 14 |
+| `api/wall_test.go` production wall API over real TCP/PostgreSQL, pending sink-free rerun | 14 | 0 | 14 | 14 |
 | `destroyer_test.go` | 8 | 0 | 8 | 8 |
 | `scanner_test.go` | 14 | 0 | 14 | 14 |
 | durable-storage, volume-DaemonSet, and behavioral-permutation campaign | 44 | 0 | 44 | 44 |
 | daemonset-integration and daemon-client retained cases | 46 | 0 | 46 | 0 |
-| **total** | **974** | **862** | **112** | **928** |
+| **total** | **974** | **441** | **533** | **928** |
+
+### Pending sink-free revalidation
+
+The scenario-scoped `jetbridge-db` resource previously called
+`dbtest.NewBuilder`, which constructed a `lagertest` logger even when the
+scenario's own step never used the Builder. The resource now constructs the
+same exported Builder factory surface with an ordinary production logger and
+`db.NewWorkerCache`, but results recorded before that correction crossed the
+old sink-bearing constructor. The behavioral source/Brine pairings remain
+admitted; the following exact 22 result manifests, covering 421 leaves, are
+temporarily classified as philosophy exceptions until their mutations are
+rerun against the corrected resource plane:
+
+- `accessor-profiles-strict.results.json` (38)
+- `api-auth-admin-strict.results.json` (4)
+- `api-auth-authentication-strict.results.json` (10)
+- `api-auth-authorization-strict.results.json` (4)
+- `api-config-strict.results.json` (73)
+- `api-resource-auth-build-strict.results.json` (6)
+- `api-resource-auth-pipeline-strict.results.json` (9)
+- `api-resource-auth-worker-strict.results.json` (14)
+- `cc-api-strict.results.json` (14)
+- `cli-api-strict.results.json` (12)
+- `component-notifications-strict.results.json` (21)
+- `container-domain-strict.results.json` (17)
+- `db-build-strict.results.json` (27)
+- `db-team-strict.results.json` (18)
+- `idtoken-generator-strict.results.json` (15)
+- `job-domain-strict.results.json` (35)
+- `notification-bus-domain-strict.results.json` (11)
+- `pipeline-domain-strict.results.json` (24)
+- `resource-scope-domain-strict.results.json` (23)
+- `users-api-strict.results.json` (12)
+- `wall-api-strict.results.json` (14)
+- `worker-factory-domain-strict.results.json` (20)
 
 Why the exception rows are exceptions:
 
