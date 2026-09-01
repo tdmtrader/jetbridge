@@ -1,0 +1,123 @@
+{
+  "name": "users-api-strict",
+  "test_package": "./atc/api",
+  "source_test_file": "atc/api/users_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/users-api.feature",
+  "step_files": ["atc/worker/jetbridge/brine/steps/users_api.go"],
+  "cases": [
+    {
+      "id": "current-user-success-status-is-changed",
+      "source_file": "atc/api/usersserver/get.go",
+      "old": "\tw.Header().Set(\"Content-Type\", \"application/json\")\n\n\tacc := accessor.GetAccessor(r)",
+      "new": "\tw.Header().Set(\"Content-Type\", \"application/json\")\n\tw.WriteHeader(http.StatusAccepted)\n\n\tacc := accessor.GetAccessor(r)",
+      "tests": [
+        "Users API GET /api/v1/user when authenticated succeeds"
+      ],
+      "scenarios": [
+        "The current-user endpoint succeeds for a persisted identity"
+      ]
+    },
+    {
+      "id": "current-user-content-type-is-changed",
+      "source_file": "atc/api/usersserver/get.go",
+      "old": "w.Header().Set(\"Content-Type\", \"application/json\")",
+      "new": "w.Header().Set(\"Content-Type\", \"text/plain\")",
+      "tests": [
+        "Users API GET /api/v1/user when authenticated returns Content-Type 'application/json'"
+      ],
+      "scenarios": [
+        "The current-user endpoint returns the production JSON content type"
+      ]
+    },
+    {
+      "id": "current-user-document-loses-identity-fields",
+      "source_file": "atc/api/usersserver/get.go",
+      "old": "err := json.NewEncoder(w).Encode(acc.UserInfo())",
+      "new": "err := json.NewEncoder(w).Encode(map[string]any{\"sub\": acc.UserInfo().Sub})",
+      "tests": [
+        "Users API GET /api/v1/user when authenticated returns the current user"
+      ],
+      "scenarios": [
+        "The current-user endpoint serializes every persisted identity field"
+      ]
+    },
+    {
+      "id": "successful-users-list-status-is-changed",
+      "source_file": "atc/api/usersserver/get_since.go",
+      "old": "\tpresentedUsers := make([]atc.User, len(users))",
+      "new": "\tw.WriteHeader(http.StatusAccepted)\n\n\tpresentedUsers := make([]atc.User, len(users))",
+      "tests": [
+        "Users API GET /api/v1/users when authenticated being an admin succeeds"
+      ],
+      "scenarios": [
+        "The administrator users endpoint succeeds with no login rows"
+      ]
+    },
+    {
+      "id": "users-list-content-type-is-changed",
+      "source_file": "atc/api/usersserver/get_since.go",
+      "old": "w.Header().Set(\"Content-Type\", \"application/json\")",
+      "new": "w.Header().Set(\"Content-Type\", \"text/plain\")",
+      "tests": [
+        "Users API GET /api/v1/users when authenticated being an admin returns Content-Type 'application/json'"
+      ],
+      "scenarios": [
+        "The administrator users endpoint returns the production JSON content type"
+      ]
+    },
+    {
+      "id": "empty-user-results-contain-a-phantom-row",
+      "source_file": "atc/api/usersserver/get_since.go",
+      "old": "\tpresentedUsers := make([]atc.User, len(users))\n\tfor idx, user := range users {",
+      "new": "\tpresentedUsers := make([]atc.User, len(users))\n\tif len(presentedUsers) == 0 {\n\t\tpresentedUsers = append(presentedUsers, atc.User{})\n\t}\n\tfor idx, user := range users {",
+      "tests": [
+        "Users API GET /api/v1/users when authenticated being an admin having no users returns an empty array",
+        "Users API GET /api/v1/users?since= with a date later than any login returns an empty array",
+        "Users API GET /api/v1/users?since= no users logged in since the given date returns an empty array"
+      ],
+      "scenarios": [
+        "The administrator users endpoint serializes no rows as an empty array",
+        "A future since date returns an empty array",
+        "An empty since value returns an empty array"
+      ]
+    },
+    {
+      "id": "presented-users-lose-persisted-metadata",
+      "source_file": "atc/api/usersserver/get_since.go",
+      "old": "\t\tpresentedUsers[idx] = present.User(user)",
+      "new": "\t\tpresentedUsers[idx] = atc.User{Username: present.User(user).Username}",
+      "tests": [
+        "Users API GET /api/v1/users when authenticated being an admin having users returns all users logged in since table creation",
+        "Users API GET /api/v1/users?since= with correct date format returns users"
+      ],
+      "scenarios": [
+        "The administrator users endpoint returns persisted login metadata",
+        "A past since date returns persisted login metadata"
+      ]
+    },
+    {
+      "id": "invalid-date-document-message-is-changed",
+      "source_file": "atc/api/usersserver/get_since.go",
+      "old": "map[string]string{\"error\": \"wrong date format (yyyy-mm-dd)\"}",
+      "new": "map[string]string{\"error\": \"invalid date\"}",
+      "tests": [
+        "Users API GET /api/v1/users?since= with incorrect date format returns an error message"
+      ],
+      "scenarios": [
+        "An invalid since date returns the exact production validation document"
+      ]
+    },
+    {
+      "id": "invalid-date-status-is-changed",
+      "source_file": "atc/api/usersserver/get_since.go",
+      "old": "\t\t\thLog.Error(\"failed-to-parse-time\", err)\n\t\t\tw.WriteHeader(http.StatusBadRequest)",
+      "new": "\t\t\thLog.Error(\"failed-to-parse-time\", err)\n\t\t\tw.WriteHeader(http.StatusUnprocessableEntity)",
+      "tests": [
+        "Users API GET /api/v1/users?since= with incorrect date format returns a HTTP 400"
+      ],
+      "scenarios": [
+        "An invalid since date returns bad request"
+      ]
+    }
+  ]
+}

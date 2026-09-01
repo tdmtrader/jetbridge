@@ -1,39 +1,53 @@
-Feature: Administrators inspect current and recently active users
+Feature: Production users API serialization and filtering
 
-  Source: 12 success/filter/validation specs in atc/api/users_test.go. Requests
-  cross production auth routing and real PostgreSQL user rows.
+  Every request crosses a real TCP listener, the selected production rata
+  route, the production verifier/accessor/auditor and users handler, with
+  identity, administrator teams, and user login rows persisted in PostgreSQL.
 
-  Scenario: Current user returns the authenticated production accessor
-    When the real users API handles profile "current"
+  Scenario: The current-user endpoint succeeds for a persisted identity
+    When the production users API handles profile "current"
     Then the users API returned status 200
-    And the users API content type is "application/json"
-    And the users response contains "brine-user"
-    And the users response contains "is_admin"
 
-  Scenario: Listing an empty user table returns an empty JSON array
-    When the real users API handles profile "list-empty"
+  Scenario: The current-user endpoint returns the production JSON content type
+    When the production users API handles profile "current"
+    Then the users API content type is "application/json"
+
+  Scenario: The current-user endpoint serializes every persisted identity field
+    When the production users API handles profile "current"
+    Then the users API returns the exact persisted identity
+
+  Scenario: The administrator users endpoint succeeds with no login rows
+    When the production users API handles profile "list-empty"
     Then the users API returned status 200
-    And the users API content type is "application/json"
-    And the users API returned users ""
 
-  Scenario: Listing users returns persisted login metadata
-    When the real users API handles profile "list-user"
-    Then the users API returned users "bob"
+  Scenario: The administrator users endpoint returns the production JSON content type
+    When the production users API handles profile "list-empty"
+    Then the users API content type is "application/json"
 
-  Scenario: A past since date includes a recent login
-    When the real users API handles profile "since-past"
-    Then the users API returned status 200
-    And the users API returned users "bob"
+  Scenario: The administrator users endpoint serializes no rows as an empty array
+    When the production users API handles profile "list-empty"
+    Then the users API returns the exact empty JSON array
 
-  Scenario: A future since date excludes every login
-    When the real users API handles profile "since-future"
-    Then the users API returned users ""
+  Scenario: The administrator users endpoint returns persisted login metadata
+    When the production users API handles profile "list-user"
+    Then the users API returns the exact persisted user metadata
 
-  Scenario: An invalid since date returns JSON validation and bad request
-    When the real users API handles profile "since-invalid"
+  Scenario: A past since date returns persisted login metadata
+    When the production users API handles profile "since-past"
+    Then the users API returns the exact persisted user metadata
+
+  Scenario: A future since date returns an empty array
+    When the production users API handles profile "since-future"
+    Then the users API returns the exact empty JSON array
+
+  Scenario: An invalid since date returns the exact production validation document
+    When the production users API handles profile "since-invalid"
+    Then the users API returns the exact invalid-date document
+
+  Scenario: An invalid since date returns bad request
+    When the production users API handles profile "since-invalid"
     Then the users API returned status 400
-    And the users response contains "wrong date format"
 
-  Scenario: An empty since value returns no users
-    When the real users API handles profile "since-empty"
-    Then the users API returned users ""
+  Scenario: An empty since value returns an empty array
+    When the production users API handles profile "since-empty"
+    Then the users API returns the exact empty JSON array
