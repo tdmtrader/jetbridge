@@ -14,9 +14,14 @@ Feature: Reclaiming a worker's rows, and the workers themselves
   stopped heartbeating, and removing the wrong one throws away a worker that
   was merely stalled.
 
-  Source: atc/gc/destroyer_test.go (14 cases) and atc/gc/worker_collector_test.go
-  (4 cases), all 18 migrated, into 11 scenarios. Neither carried requirement
-  identifiers, so there are no tags.
+  Source: 31 initial specs. All 18 from atc/gc/destroyer_test.go (14) and
+  atc/gc/worker_collector_test.go (4) are migrated into 11 scenarios. Their
+  real repository effects also replace 7 atc/db/container_repository_test.go
+  specs (destroying-row deletion/retention and the closed-query error) and 6
+  atc/db/volume_repository_test.go specs (destroying-row deletion/retention
+  plus selecting only the worker's destroying volumes). Row-count assertions
+  discarded by the Destroyer API are not counted. Neither collector suite
+  carried requirement identifiers.
 
   This file is a PILOT, and its size is the measurement. brine's Postgres plane
   gives every scenario its own database cloned from a template, sequentially,

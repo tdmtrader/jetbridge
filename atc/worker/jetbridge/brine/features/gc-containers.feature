@@ -24,10 +24,15 @@ Feature: Collecting the containers and volumes a finished build left behind
   missing-volume and orphaned-volume specs read as they do. Here every
   scenario has one, in the same database and under the same sweep.
 
-  Source: atc/gc/container_collector_test.go (13 specs) and
-  atc/gc/volume_collector_test.go (3 specs). 15 of the 16 are here in 10
-  scenarios; the sixteenth is dispositioned at the foot of the file. Neither
-  suite carried requirement identifiers, so there are no tags.
+  Source: 31 initial specs. From atc/gc/container_collector_test.go (13) and
+  atc/gc/volume_collector_test.go (3), 15 of 16 are here; the sixteenth is
+  dispositioned below. The real sweeps also replace 10 repository specs in
+  atc/db/container_repository_test.go: build-owned orphan selection (2),
+  missing-container grace/stalled-worker outcomes (4), failed selection and
+  success (2), and excess/hijacked check-container outcomes (2). They replace
+  6 in atc/db/volume_repository_test.go: missing-volume grace and selectivity
+  (3), failed-volume removal (1), orphan selection (1), and its held-volume
+  negative (1). Neither collector suite carried requirement identifiers.
 
   # ==========================================================================
   # Containers a build has finished with

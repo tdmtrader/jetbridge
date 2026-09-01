@@ -301,6 +301,7 @@ func mirroringGiven(pattern string, toldItsOwnAddress bool, producerArgs ...stri
 			rec.RegisterDisposer(func() { _ = peer.stop() })
 
 			args := append([]string{
+				"--listen-address", "127.0.0.1",
 				"--kubeconfig", kubeconfig,
 				"--node-name", nodeName,
 				"--namespace", "default",

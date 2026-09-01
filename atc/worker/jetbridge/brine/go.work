@@ -1,0 +1,7 @@
+// Keep the private runner dependency scoped to the Brine adapter module while
+// avoiding the host-specific /Users/tdmtrader path in go.mod.
+go 1.26.0
+
+use .
+
+replace github.com/brine-dev/brine-go => ../../../../../../brine-private/runners/implementations/go

@@ -35,20 +35,20 @@ package steps
 // --port (main.go passes *port to NewPeerResolver), and it binds the wildcard.
 // So for the local daemon to reach the peer, the peer must answer on the
 // LOCAL daemon's port number — and two processes on one host cannot both hold
-// one port. In a cluster this problem does not exist: every pod has its own
-// network namespace and every daemon is 7780 on its own address.
+// one wildcard port. In a cluster this problem does not exist: every pod has
+// its own network namespace and every daemon is 7780 on its own address.
 //
 // The forwarder restores that. It binds the published address at the local
 // daemon's port and moves bytes to the peer's port. A specific-address
-// listener takes precedence over a wildcard one on the same port, so the
-// local daemon's own listener never sees these connections. The forwarder
+// listener is separate from the daemon's loopback-only listener, so the
+// local daemon never sees these connections. The forwarder
 // reads nothing, answers nothing and counts nothing: it is the network, not a
 // daemon. Both ends of every request in this file are real daemon processes.
 //
-// If a host will not let those two listeners coexist, the Given says so in
-// one sentence instead of leaving six scenarios to fail as "the artifact did
-// not arrive" — verifyPeerRoute fetches, through the published address, an
-// artifact only the peer holds, before any scenario runs.
+// The local daemon is deliberately bound to loopback in this single-host
+// harness, leaving the routable address available to the forwarder. Production
+// keeps the default wildcard bind. verifyPeerRoute fetches, through the
+// published address, an artifact only the peer holds before any scenario runs.
 //
 // WHY THE DAEMONS ARE STARTED IN THE GIVEN and not registered as brine
 // resources: brine acquires every ScopeScenario resource before EVERY
@@ -244,10 +244,7 @@ func daemonPort(d *realDaemon) (int, error) {
 func routeToPeer(listenAddr, targetAddr string) (net.Listener, error) {
 	ln, err := net.Listen("tcp", listenAddr)
 	if err != nil {
-		return nil, fmt.Errorf(
-			"listen on %s to publish the peer there: %w (the asking daemon holds the same port on "+
-				"the wildcard address; this host will not let a specific-address listener sit beside it)",
-			listenAddr, err)
+		return nil, fmt.Errorf("listen on %s to publish the peer there: %w", listenAddr, err)
 	}
 	go func() {
 		for {
@@ -398,6 +395,7 @@ func DaemonCrossNodeDefinitions() []brine.StepDefinition {
 				rec.RegisterDisposer(func() { _ = peer.stop() })
 
 				local, err := startRealDaemon(
+					"--listen-address", "127.0.0.1",
 					"--kubeconfig", kubeconfig,
 					"--node-name", nodeName,
 					"--namespace", "default",

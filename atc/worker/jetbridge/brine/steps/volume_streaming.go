@@ -261,13 +261,9 @@ func VolumeStreamingDefinitions() []brine.StepDefinition {
 					return VolumeSet{}, err
 				}
 
-				plain, err := tarOfOneFile(name, content)
+				plain, err := plainTarOfOneFile(name, content)
 				if err != nil {
 					return VolumeSet{}, err
-				}
-				raw, err := io.ReadAll(plain)
-				if err != nil {
-					return VolumeSet{}, fmt.Errorf("read tar: %w", err)
 				}
 
 				// compression.Compression only reads; the Streamer compresses
@@ -275,7 +271,7 @@ func VolumeStreamingDefinitions() []brine.StepDefinition {
 				enc := compression.NewS2Compression()
 				var packed bytes.Buffer
 				w := s2.NewWriter(&packed)
-				if _, err := w.Write(raw); err != nil {
+				if _, err := w.Write(plain); err != nil {
 					return VolumeSet{}, fmt.Errorf("s2 write: %w", err)
 				}
 				if err := w.Close(); err != nil {
