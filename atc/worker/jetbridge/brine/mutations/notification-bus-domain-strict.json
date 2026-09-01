@@ -1,0 +1,101 @@
+{
+  "name": "notification-bus-domain-strict",
+  "test_package": "./atc/db",
+  "source_test_file": "atc/db/notifications_bus_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/notification-bus-domain.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/notification_bus_domain.go",
+    "atc/worker/jetbridge/brine/steps/resources.go"
+  ],
+  "cases": [
+    {
+      "id": "notify-listen-postgres-routing",
+      "source_file": "atc/db/notifications_bus.go",
+      "old": "func (bus *notificationsBus) Notify(channel string) error {\n\t_, err := bus.executor.Exec(\"NOTIFY \" + channel)\n\treturn err\n}\n\nfunc (bus *notificationsBus) wait() {\n\tfor {\n\t\tnotification, ok := <-bus.listener.NotificationChannel()\n\t\tif !ok {\n\t\t\tbreak\n\t\t}\n\n\t\tif notification != nil {\n\t\t\tbus.handleNotification(notification)\n\t\t} else {\n\t\t\tbus.handleReconnect()\n\t\t}\n\t}\n}\n\nfunc (bus *notificationsBus) ListenSignal(channel string) (*NotifySignal, error) {\n\tbus.Lock()\n\tdefer bus.Unlock()\n\n\tif bus.signals.empty(channel) {\n\t\terr := bus.listener.Listen(channel)",
+      "new": "func (bus *notificationsBus) Notify(channel string) error {\n\t_, err := bus.executor.Exec(\"NOTIFY \" + channel + \"_notify_mutant\")\n\treturn err\n}\n\nfunc (bus *notificationsBus) wait() {\n\tfor {\n\t\tnotification, ok := <-bus.listener.NotificationChannel()\n\t\tif !ok {\n\t\t\tbreak\n\t\t}\n\n\t\tif notification != nil {\n\t\t\tbus.handleNotification(notification)\n\t\t} else {\n\t\t\tbus.handleReconnect()\n\t\t}\n\t}\n}\n\nfunc (bus *notificationsBus) ListenSignal(channel string) (*NotifySignal, error) {\n\tbus.Lock()\n\tdefer bus.Unlock()\n\n\tif bus.signals.empty(channel) {\n\t\terr := bus.listener.Listen(channel + \"_listen_mutant\")",
+      "tests": [
+        "NotificationBus Notify notifies the channel",
+        "NotificationBus ListenSignal when not already listening on channel listens on the given channel",
+        "NotificationBus backed by Postgres LISTEN/NOTIFY delivers a signal for a NOTIFY that round-trips through Postgres"
+      ],
+      "scenarios": [
+        "Strict notification bus profile <profile> produces <result> (row 1)",
+        "Strict notification bus profile <profile> produces <result> (row 2)",
+        "Strict notification bus profile <profile> produces <result> (row 10)"
+      ],
+      "failure_contains": "notification bus result"
+    },
+    {
+      "id": "unlisten-last-unregisters",
+      "source_file": "atc/db/notifications_bus.go",
+      "old": "\tbus.signals.unregister(channel, signal)\n\n\tif bus.signals.empty(channel)",
+      "new": "\t_ = signal\n\n\tif bus.signals.empty(channel)",
+      "tests": ["NotificationBus UnlistenSignal when there's only one listener unlistens on the given channel"],
+      "scenarios": ["Strict notification bus profile <profile> produces <result> (row 3)"],
+      "failure_contains": "notification bus result"
+    },
+    {
+      "id": "unlisten-multiple-keeps-listener",
+      "source_file": "atc/db/notifications_bus.go",
+      "old": "\tif bus.signals.empty(channel) {\n\t\treturn bus.listener.Unlisten(channel)\n\t}\n\n\treturn nil\n}",
+      "new": "\treturn bus.listener.Unlisten(channel)\n}",
+      "tests": ["NotificationBus UnlistenSignal when there's multiple listeners does not unlisten on the given channel"],
+      "scenarios": ["Strict notification bus profile <profile> produces <result> (row 4)"],
+      "failure_contains": "notification bus result"
+    },
+    {
+      "id": "fanout-all-listeners",
+      "source_file": "atc/db/notifications_bus.go",
+      "old": "\tfor signal := range m.signals[channel] {\n\t\tf(signal)\n\t}\n}",
+      "new": "\tfor signal := range m.signals[channel] {\n\t\tf(signal)\n\t\treturn\n\t}\n}",
+      "tests": ["NotificationBus Receiving Signals when there are multiple listeners for the same channel when it receives an upstream notification delivers the signal to all listeners"],
+      "scenarios": ["Strict notification bus profile <profile> produces <result> (row 5)"],
+      "failure_contains": "notification bus result"
+    },
+    {
+      "id": "unlisten-preserves-survivor",
+      "source_file": "atc/db/notifications_bus.go",
+      "old": "\tdelete(m.signals[channel], signal)\n\n\tif len(m.signals[channel]) == 0 {\n\t\tdelete(m.signals, channel)\n\t}",
+      "new": "\tdelete(m.signals, channel)",
+      "tests": ["NotificationBus Receiving Signals when there are multiple listeners for the same channel when one of the listeners unlistens should still send signals to the other listeners"],
+      "scenarios": ["Strict notification bus profile <profile> produces <result> (row 6)"],
+      "failure_contains": "notification bus result"
+    },
+    {
+      "id": "route-only-specific-channel",
+      "source_file": "atc/db/notifications_bus.go",
+      "old": "\tbus.signals.eachForChannel(notification.Channel, func(signal *NotifySignal) {",
+      "new": "\tbus.signals.each(func(signal *NotifySignal) {",
+      "tests": ["NotificationBus Receiving Signals when there are multiple listeners on different channels when it receives an upstream notification delivers the signal to only specific listeners"],
+      "scenarios": ["Strict notification bus profile <profile> produces <result> (row 7)"],
+      "failure_contains": "notification bus result"
+    },
+    {
+      "id": "signal-coalesces",
+      "source_file": "atc/db/notify_signal.go",
+      "old": "\t\tch: make(chan struct{}, 1),",
+      "new": "\t\tch: make(chan struct{}, 100),",
+      "tests": ["NotificationBus Receiving Signals when the signal coalesces when it receives many upstream notifications only sends one signal to the Go channel"],
+      "scenarios": ["Strict notification bus profile <profile> produces <result> (row 8)"],
+      "failure_contains": "notification bus result"
+    },
+    {
+      "id": "signal-rearms-after-drain",
+      "source_file": "atc/db/notify_signal.go",
+      "old": "type NotifySignal struct {\n\tch chan struct{}\n}\n\n// NewNotifySignal creates a new coalescing signal.\nfunc NewNotifySignal() *NotifySignal {\n\treturn &NotifySignal{\n\t\tch: make(chan struct{}, 1),\n\t}\n}\n\n// Signal wakes the reader. If a signal is already pending (reader hasn't\n// consumed it yet), this is a no-op — which is safe because the reader\n// will do a full scan when it wakes. Never blocks.\nfunc (s *NotifySignal) Signal() {\n\tselect {",
+      "new": "type NotifySignal struct {\n\tch       chan struct{}\n\tsignaled bool\n}\n\n// NewNotifySignal creates a new coalescing signal.\nfunc NewNotifySignal() *NotifySignal {\n\treturn &NotifySignal{\n\t\tch: make(chan struct{}, 1),\n\t}\n}\n\n// Signal wakes the reader. If a signal is already pending (reader hasn't\n// consumed it yet), this is a no-op — which is safe because the reader\n// will do a full scan when it wakes. Never blocks.\nfunc (s *NotifySignal) Signal() {\n\tif s.signaled {\n\t\treturn\n\t}\n\ts.signaled = true\n\tselect {",
+      "tests": ["NotificationBus Receiving Signals when the signal coalesces when it receives many upstream notifications should send signals again after the channel is drained"],
+      "scenarios": ["Strict notification bus profile <profile> produces <result> (row 9)"],
+      "failure_contains": "notification bus result"
+    },
+    {
+      "id": "wrong-channel-stays-isolated",
+      "source_file": "atc/db/notifications_bus.go",
+      "old": "func (bus *notificationsBus) Notify(channel string) error {\n\t_, err := bus.executor.Exec(\"NOTIFY \" + channel)\n\treturn err\n}",
+      "new": "func (bus *notificationsBus) Notify(channel string) error {\n\t_, err := bus.executor.Exec(\"NOTIFY \" + channel)\n\tbus.signals.each(func(signal *NotifySignal) { signal.Signal() })\n\treturn err\n}",
+      "tests": ["NotificationBus backed by Postgres LISTEN/NOTIFY does not deliver a signal for a channel it is not listening on"],
+      "scenarios": ["Strict notification bus profile <profile> produces <result> (row 11)"],
+      "failure_contains": "notification bus result"
+    }
+  ]
+}

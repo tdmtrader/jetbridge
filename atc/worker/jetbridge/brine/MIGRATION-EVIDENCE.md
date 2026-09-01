@@ -22,19 +22,19 @@ scenario fail is also not evidence.
 
 | quantity | source leaf tests | percentage of 6,857 |
 |---|---:|---:|
-| **fully migrated**: paired failure evidence, no prohibited double, source removed | **547** | **7.98%** |
+| **fully migrated**: paired failure evidence, no prohibited double, source removed | **579** | **8.44%** |
 | strict paired evidence, but source still present | 0 | 0.00% |
 | **runs in Brine but not the full philosophy**: paired failure evidence, but uses a stub, test sink, injected-fault object, fake, or mock | **112** | **1.63%** |
 | of the preceding exception bucket whose source test was removed | 66 | 0.96% |
-| total source tests with paired per-test failure evidence | 659 | 9.61% |
-| former claimed tests with no admissible paired evidence | 1,400 | 20.42% |
+| total source tests with paired per-test failure evidence | 691 | 10.08% |
+| former claimed tests with no admissible paired evidence | 1,368 | 19.95% |
 | Brine scenarios | 1,523 | execution count only |
 
-The requested two headline percentages are therefore **7.98% fully migrated**
+The requested two headline percentages are therefore **8.44% fully migrated**
 and **1.63% validated but running outside the full philosophy**. The second is
 not another migration percentage: 46 of its 112 source tests still exist. If
 "migrated" is restricted to removed source tests in both buckets, the figures
-are 7.98% strict and 0.96% philosophy-exception.
+are 8.44% strict and 0.96% philosophy-exception.
 
 ## Admitted evidence ledger
 
@@ -53,6 +53,8 @@ are 7.98% strict and 0.96% philosophy-exception.
 | `db/team_test.go` strict real-PostgreSQL subset | 18 | 18 | 0 | 18 |
 | `db/build_test.go` strict real-PostgreSQL subset | 27 | 27 | 0 | 27 |
 | `db/pipeline_test.go` strict real-PostgreSQL subset | 24 | 24 | 0 | 24 |
+| `db/component_notifications_test.go` | 21 | 21 | 0 | 21 |
+| `db/notifications_bus_test.go` strict real-PostgreSQL subset | 11 | 11 | 0 | 11 |
 | `event/parser_test.go` | 26 | 26 | 0 | 26 |
 | `creds/idtoken/token_generator_test.go` | 15 | 15 | 0 | 15 |
 | `JobFactory.JobsToSchedule` | 15 | 15 | 0 | 15 |
@@ -65,7 +67,7 @@ are 7.98% strict and 0.96% philosophy-exception.
 | `scanner_test.go` | 14 | 0 | 14 | 14 |
 | durable-storage, volume-DaemonSet, and behavioral-permutation campaign | 44 | 0 | 44 | 44 |
 | daemonset-integration and daemon-client retained cases | 46 | 0 | 46 | 0 |
-| **total** | **659** | **547** | **112** | **613** |
+| **total** | **691** | **579** | **112** | **645** |
 
 Why the exception rows are exceptions:
 
@@ -82,7 +84,7 @@ component.
 
 ## What does not count
 
-The other 1,400 tests in the former numerator have source references and green
+The other 1,368 tests in the former numerator have source references and green
 scenarios, but no admissible record of the individual old test and its Brine
 replacement failing on the same production defect. This includes all recent
 client/API/domain cross-layer counts, exact-status claims, and the 39 source

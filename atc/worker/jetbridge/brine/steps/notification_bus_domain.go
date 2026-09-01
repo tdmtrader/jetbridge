@@ -13,7 +13,7 @@ type NotificationBusObservation struct{ Value string }
 func NotificationBusDomainDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 		brine.DefineMapUsing[brine.Empty, NotificationBusObservation](
-			"the real PostgreSQL notification bus evaluates profile {string}",
+			"the real PostgreSQL notification bus evaluates strict profile {string}",
 			[]string{"jetbridge-db"},
 			func(_ brine.Empty, p brine.Params, _ *brine.Recorder, resources brine.Resources) (NotificationBusObservation, error) {
 				database, ok := resources.Get("jetbridge-db").(JetbridgeDB)
@@ -21,13 +21,154 @@ func NotificationBusDomainDefinitions() []brine.StepDefinition {
 					return NotificationBusObservation{}, fmt.Errorf("jetbridge-db resource is %T", resources.Get("jetbridge-db"))
 				}
 				profile, _ := p.GetString(0)
-				value, err := observeNotificationBus(database, profile)
+				value, err := observeStrictNotificationBus(database, profile)
 				return NotificationBusObservation{Value: value}, err
 			},
 		),
 		CheckString[NotificationBusObservation]("the notification bus result is {string}", "notification bus result", func(in NotificationBusObservation) (string, error) {
 			return in.Value, nil
 		}),
+	}
+}
+
+func observeStrictNotificationBus(database JetbridgeDB, profile string) (string, error) {
+	bus := database.Conn.Bus()
+	const firstChannel = "brine_strict_notification_first"
+	const secondChannel = "brine_strict_notification_second"
+	subscribe := func(channel string) (*db.NotifySignal, error) { return bus.ListenSignal(channel) }
+	unsubscribe := func(channel string, signal *db.NotifySignal) { _ = bus.UnlistenSignal(channel, signal) }
+
+	switch profile {
+	case "notify-channel", "listen-channel", "postgres-round-trip":
+		signal, err := subscribe(firstChannel)
+		if err != nil {
+			return "", err
+		}
+		defer unsubscribe(firstChannel, signal)
+		if err := bus.Notify(firstChannel); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("received=%t", notificationBusReceive(signal, 2*time.Second)), nil
+	case "unlisten-last":
+		signal, err := subscribe(firstChannel)
+		if err != nil {
+			return "", err
+		}
+		if err := bus.UnlistenSignal(firstChannel, signal); err != nil {
+			return "", err
+		}
+		if err := bus.Notify(firstChannel); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("received=%t", notificationBusReceive(signal, 150*time.Millisecond)), nil
+	case "keep-underlying-multiple":
+		first, err := subscribe(firstChannel)
+		if err != nil {
+			return "", err
+		}
+		second, err := subscribe(firstChannel)
+		if err != nil {
+			return "", err
+		}
+		defer unsubscribe(firstChannel, second)
+		if err := bus.UnlistenSignal(firstChannel, first); err != nil {
+			return "", err
+		}
+		if err := bus.Notify(firstChannel); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("remaining=%t", notificationBusReceive(second, 2*time.Second)), nil
+	case "fanout":
+		first, err := subscribe(firstChannel)
+		if err != nil {
+			return "", err
+		}
+		second, err := subscribe(firstChannel)
+		if err != nil {
+			return "", err
+		}
+		defer unsubscribe(firstChannel, first)
+		defer unsubscribe(firstChannel, second)
+		if err := bus.Notify(firstChannel); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("first=%t;second=%t", notificationBusReceive(first, 2*time.Second), notificationBusReceive(second, 2*time.Second)), nil
+	case "survivor-after-unlisten":
+		first, err := subscribe(firstChannel)
+		if err != nil {
+			return "", err
+		}
+		second, err := subscribe(firstChannel)
+		if err != nil {
+			return "", err
+		}
+		defer unsubscribe(firstChannel, second)
+		if err := bus.UnlistenSignal(firstChannel, first); err != nil {
+			return "", err
+		}
+		if err := bus.Notify(firstChannel); err != nil {
+			return "", err
+		}
+		remaining := notificationBusReceive(second, 2*time.Second)
+		removed := notificationBusReceive(first, 150*time.Millisecond)
+		return fmt.Sprintf("removed=%t;remaining=%t", removed, remaining), nil
+	case "route-specific":
+		first, err := subscribe(firstChannel)
+		if err != nil {
+			return "", err
+		}
+		second, err := subscribe(secondChannel)
+		if err != nil {
+			return "", err
+		}
+		defer unsubscribe(firstChannel, first)
+		defer unsubscribe(secondChannel, second)
+		if err := bus.Notify(firstChannel); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("first=%t;second=%t", notificationBusReceive(first, 2*time.Second), notificationBusReceive(second, 150*time.Millisecond)), nil
+	case "coalesce-once":
+		signal, err := subscribe(firstChannel)
+		if err != nil {
+			return "", err
+		}
+		defer unsubscribe(firstChannel, signal)
+		for range 100 {
+			if err := bus.Notify(firstChannel); err != nil {
+				return "", err
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+		one := notificationBusReceive(signal, 2*time.Second)
+		extra := notificationBusReceive(signal, 150*time.Millisecond)
+		return fmt.Sprintf("one=%t;extra=%t", one, extra), nil
+	case "coalesce-rearm":
+		signal, err := subscribe(firstChannel)
+		if err != nil {
+			return "", err
+		}
+		defer unsubscribe(firstChannel, signal)
+		if err := bus.Notify(firstChannel); err != nil {
+			return "", err
+		}
+		first := notificationBusReceive(signal, 2*time.Second)
+		if err := bus.Notify(firstChannel); err != nil {
+			return "", err
+		}
+		again := notificationBusReceive(signal, 2*time.Second)
+		return fmt.Sprintf("first=%t;again=%t", first, again), nil
+	case "wrong-channel":
+		signal, err := subscribe(firstChannel)
+		if err != nil {
+			return "", err
+		}
+		defer unsubscribe(firstChannel, signal)
+		if err := bus.Notify(secondChannel); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("received=%t", notificationBusReceive(signal, 150*time.Millisecond)), nil
+	default:
+		return "", fmt.Errorf("unknown strict notification bus profile %q", profile)
 	}
 }
 

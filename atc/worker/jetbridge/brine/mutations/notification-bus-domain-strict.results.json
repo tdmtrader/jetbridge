@@ -1,0 +1,113 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/notification-bus-domain-strict.json",
+  "git_head": "a544b0b811693a359f5fa938e0016c363221b87a",
+  "completed_at": "2026-09-01T05:28:27Z",
+  "source_tests": 11,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "mutation_cases": [
+    {
+      "id": "notify-listen-postgres-routing",
+      "mutation_sha256": "eba1b244aac1bc6761a9091ac1e9a760dbcb03e4725e74a31e99bf250c1b9cc2",
+      "failed_source_tests": [
+        "NotificationBus ListenSignal when not already listening on channel listens on the given channel",
+        "NotificationBus Notify notifies the channel",
+        "NotificationBus backed by Postgres LISTEN/NOTIFY delivers a signal for a NOTIFY that round-trips through Postgres"
+      ],
+      "failed_brine_scenarios": [
+        "Strict notification bus profile \u003cprofile\u003e produces \u003cresult\u003e (row 1)",
+        "Strict notification bus profile \u003cprofile\u003e produces \u003cresult\u003e (row 10)",
+        "Strict notification bus profile \u003cprofile\u003e produces \u003cresult\u003e (row 2)",
+        "Strict notification bus profile \u003cprofile\u003e produces \u003cresult\u003e (row 4)",
+        "Strict notification bus profile \u003cprofile\u003e produces \u003cresult\u003e (row 5)",
+        "Strict notification bus profile \u003cprofile\u003e produces \u003cresult\u003e (row 6)",
+        "Strict notification bus profile \u003cprofile\u003e produces \u003cresult\u003e (row 7)",
+        "Strict notification bus profile \u003cprofile\u003e produces \u003cresult\u003e (row 8)",
+        "Strict notification bus profile \u003cprofile\u003e produces \u003cresult\u003e (row 9)"
+      ]
+    },
+    {
+      "id": "unlisten-last-unregisters",
+      "mutation_sha256": "a138848da5aad53fa3d4f61be3ae43dc949302e580d255b3c9f16fb788eb770e",
+      "failed_source_tests": [
+        "NotificationBus UnlistenSignal when there's only one listener unlistens on the given channel"
+      ],
+      "failed_brine_scenarios": [
+        "Strict notification bus profile \u003cprofile\u003e produces \u003cresult\u003e (row 3)",
+        "Strict notification bus profile \u003cprofile\u003e produces \u003cresult\u003e (row 6)"
+      ]
+    },
+    {
+      "id": "unlisten-multiple-keeps-listener",
+      "mutation_sha256": "fb47153f726071953fc636e68907cdd80a5778f138c9222c7e5562e90eba5c05",
+      "failed_source_tests": [
+        "NotificationBus UnlistenSignal when there's multiple listeners does not unlisten on the given channel"
+      ],
+      "failed_brine_scenarios": [
+        "Strict notification bus profile \u003cprofile\u003e produces \u003cresult\u003e (row 4)",
+        "Strict notification bus profile \u003cprofile\u003e produces \u003cresult\u003e (row 6)"
+      ]
+    },
+    {
+      "id": "fanout-all-listeners",
+      "mutation_sha256": "254aebdc4cbc664a72e604c5fb7770e723ea151930479804a121f11ff4b77bfe",
+      "failed_source_tests": [
+        "NotificationBus Receiving Signals when there are multiple listeners for the same channel when it receives an upstream notification delivers the signal to all listeners"
+      ],
+      "failed_brine_scenarios": [
+        "Strict notification bus profile \u003cprofile\u003e produces \u003cresult\u003e (row 5)"
+      ]
+    },
+    {
+      "id": "unlisten-preserves-survivor",
+      "mutation_sha256": "9c77ec0a0f48c914772614b48009f342a11fee720c67146bcdf1f4ffed89bad2",
+      "failed_source_tests": [
+        "NotificationBus Receiving Signals when there are multiple listeners for the same channel when one of the listeners unlistens should still send signals to the other listeners"
+      ],
+      "failed_brine_scenarios": [
+        "Strict notification bus profile \u003cprofile\u003e produces \u003cresult\u003e (row 4)",
+        "Strict notification bus profile \u003cprofile\u003e produces \u003cresult\u003e (row 6)"
+      ]
+    },
+    {
+      "id": "route-only-specific-channel",
+      "mutation_sha256": "c236b8259a6c06ae1a5759d7edd79e34d59cd23353ca873a55a3601965a17f05",
+      "failed_source_tests": [
+        "NotificationBus Receiving Signals when there are multiple listeners on different channels when it receives an upstream notification delivers the signal to only specific listeners"
+      ],
+      "failed_brine_scenarios": [
+        "Strict notification bus profile \u003cprofile\u003e produces \u003cresult\u003e (row 7)"
+      ]
+    },
+    {
+      "id": "signal-coalesces",
+      "mutation_sha256": "cbfa5ce4bace6ae904fc61470ddcee0af497262c0d00ad9030d771909c93b5c3",
+      "failed_source_tests": [
+        "NotificationBus Receiving Signals when the signal coalesces when it receives many upstream notifications only sends one signal to the Go channel"
+      ],
+      "failed_brine_scenarios": [
+        "Strict notification bus profile \u003cprofile\u003e produces \u003cresult\u003e (row 8)"
+      ]
+    },
+    {
+      "id": "signal-rearms-after-drain",
+      "mutation_sha256": "4421a18feb281636ff3b813236e3727c2d9689c2b3522d12f3e2448ef25ddf92",
+      "failed_source_tests": [
+        "NotificationBus Receiving Signals when the signal coalesces when it receives many upstream notifications should send signals again after the channel is drained"
+      ],
+      "failed_brine_scenarios": [
+        "Strict notification bus profile \u003cprofile\u003e produces \u003cresult\u003e (row 9)"
+      ]
+    },
+    {
+      "id": "wrong-channel-stays-isolated",
+      "mutation_sha256": "f368406727bb51b0c090c31d95958fa5b574004647b0acb149d00b6b789ab61b",
+      "failed_source_tests": [
+        "NotificationBus backed by Postgres LISTEN/NOTIFY does not deliver a signal for a channel it is not listening on"
+      ],
+      "failed_brine_scenarios": [
+        "Strict notification bus profile \u003cprofile\u003e produces \u003cresult\u003e (row 11)",
+        "Strict notification bus profile \u003cprofile\u003e produces \u003cresult\u003e (row 7)"
+      ]
+    }
+  ]
+}

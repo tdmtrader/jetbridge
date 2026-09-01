@@ -1,0 +1,201 @@
+{
+  "name": "component-notifications-strict",
+  "test_package": "./atc/db",
+  "source_test_file": "atc/db/component_notifications_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/component-notifications.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/component_notifications.go",
+    "atc/worker/jetbridge/brine/steps/resources.go"
+  ],
+  "cases": [
+    {
+      "id": "resource-scope-changed-notifies",
+      "source_file": "atc/db/resource.go",
+      "old": "\tif changed {\n\t\tr.conn.Bus().Notify(atc.ComponentLidarScanner)\n\t}\n\n\treturn nil\n}",
+      "new": "\tif changed {\n\t\tr.conn.Bus().Notify(atc.ComponentCollectorPipelines)\n\t}\n\n\treturn nil\n}",
+      "tests": ["Component Notifications LidarScanner notifications Resource.SetResourceConfigScope notifies the scanner when scope changes"],
+      "scenarios": ["Component notification profile <profile> produces <result> (row 1)"],
+      "failure_contains": "component notification result"
+    },
+    {
+      "id": "resource-scope-same-silent",
+      "source_file": "atc/db/resource.go",
+      "old": "\tif changed {\n\t\tr.conn.Bus().Notify(atc.ComponentLidarScanner)\n\t}\n\n\treturn nil\n}",
+      "new": "\t_ = changed\n\tr.conn.Bus().Notify(atc.ComponentLidarScanner)\n\n\treturn nil\n}",
+      "tests": ["Component Notifications LidarScanner notifications Resource.SetResourceConfigScope does not notify the scanner when scope is unchanged"],
+      "scenarios": ["Component notification profile <profile> produces <result> (row 2)"],
+      "failure_contains": "component notification result"
+    },
+    {
+      "id": "resource-pin-notifies",
+      "source_file": "atc/db/resource.go",
+      "old": "\tr.conn.Bus().Notify(atc.ComponentLidarScanner)\n\n\treturn true, nil\n}",
+      "new": "\tr.conn.Bus().Notify(atc.ComponentCollectorPipelines)\n\n\treturn true, nil\n}",
+      "tests": ["Component Notifications LidarScanner notifications Resource.PinVersion notifies the scanner"],
+      "scenarios": ["Component notification profile <profile> produces <result> (row 3)"],
+      "failure_contains": "component notification result"
+    },
+    {
+      "id": "resource-unpin-notifies",
+      "source_file": "atc/db/resource.go",
+      "old": "\tr.conn.Bus().Notify(atc.ComponentLidarScanner)\n\n\treturn nil\n}\n\nfunc (r *resource) toggleVersion",
+      "new": "\tr.conn.Bus().Notify(atc.ComponentCollectorPipelines)\n\n\treturn nil\n}\n\nfunc (r *resource) toggleVersion",
+      "tests": ["Component Notifications LidarScanner notifications Resource.UnpinVersion notifies the scanner"],
+      "scenarios": ["Component notification profile <profile> produces <result> (row 4)"],
+      "failure_contains": "component notification result"
+    },
+    {
+      "id": "resource-disable-notifies",
+      "source_file": "atc/db/resource.go",
+      "old": "\tr.conn.Bus().Notify(atc.ComponentLidarScanner)\n\n\treturn nil\n}\n\nfunc (r *resource) NotifyScan",
+      "new": "\tif enable {\n\t\tr.conn.Bus().Notify(atc.ComponentLidarScanner)\n\t}\n\n\treturn nil\n}\n\nfunc (r *resource) NotifyScan",
+      "tests": ["Component Notifications LidarScanner notifications Resource.DisableVersion notifies the scanner"],
+      "scenarios": ["Component notification profile <profile> produces <result> (row 5)"],
+      "failure_contains": "component notification result"
+    },
+    {
+      "id": "resource-enable-notifies",
+      "source_file": "atc/db/resource.go",
+      "old": "\tr.conn.Bus().Notify(atc.ComponentLidarScanner)\n\n\treturn nil\n}\n\nfunc (r *resource) NotifyScan",
+      "new": "\tif !enable {\n\t\tr.conn.Bus().Notify(atc.ComponentLidarScanner)\n\t}\n\n\treturn nil\n}\n\nfunc (r *resource) NotifyScan",
+      "tests": ["Component Notifications LidarScanner notifications Resource.EnableVersion notifies the scanner"],
+      "scenarios": ["Component notification profile <profile> produces <result> (row 6)"],
+      "failure_contains": "component notification result"
+    },
+    {
+      "id": "save-new-version-notifies",
+      "source_file": "atc/db/resource_config_scope.go",
+      "old": "\tif containsNewVersion {\n\t\tr.conn.Bus().Notify(atc.ComponentLidarScanner)\n\t}\n\n\treturn nil\n}",
+      "new": "\tif containsNewVersion {\n\t\tr.conn.Bus().Notify(atc.ComponentCollectorPipelines)\n\t}\n\n\treturn nil\n}",
+      "tests": ["Component Notifications LidarScanner notifications ResourceConfigScope.SaveVersions notifies the scanner when new versions are saved"],
+      "scenarios": ["Component notification profile <profile> produces <result> (row 7)"],
+      "failure_contains": "component notification result"
+    },
+    {
+      "id": "save-existing-version-silent",
+      "source_file": "atc/db/resource_config_scope.go",
+      "old": "\tif containsNewVersion {\n\t\tr.conn.Bus().Notify(atc.ComponentLidarScanner)\n\t}\n\n\treturn nil\n}",
+      "new": "\t_ = containsNewVersion\n\tr.conn.Bus().Notify(atc.ComponentLidarScanner)\n\n\treturn nil\n}",
+      "tests": ["Component Notifications LidarScanner notifications ResourceConfigScope.SaveVersions does not notify the scanner when re-saving existing versions"],
+      "scenarios": ["Component notification profile <profile> produces <result> (row 8)"],
+      "failure_contains": "component notification result"
+    },
+    {
+      "id": "check-time-update-silent",
+      "source_file": "atc/db/resource_config_scope.go",
+      "old": "func (r *resourceConfigScope) UpdateLastCheckEndTime(succeeded bool) (bool, error) {\n\ttx, err := r.conn.Begin()\n\tif err != nil {\n\t\treturn false, err\n\t}\n\n\tdefer Rollback(tx)\n\n\tupdated, err := checkIfRowsUpdated(tx, `\n\t\tUPDATE resource_config_scopes\n\t\tSET last_check_end_time = now(), last_check_succeeded = $1\n\t\tWHERE id = $2\n\t`, succeeded, r.id)\n\tif err != nil {\n\t\treturn false, err\n\t}\n\n\tif !updated {\n\t\treturn false, nil\n\t}\n\n\terr = tx.Commit()\n\tif err != nil {\n\t\treturn false, err\n\t}\n\n\treturn true, nil\n}",
+      "new": "func (r *resourceConfigScope) UpdateLastCheckEndTime(succeeded bool) (bool, error) {\n\ttx, err := r.conn.Begin()\n\tif err != nil {\n\t\treturn false, err\n\t}\n\n\tdefer Rollback(tx)\n\n\tupdated, err := checkIfRowsUpdated(tx, `\n\t\tUPDATE resource_config_scopes\n\t\tSET last_check_end_time = now(), last_check_succeeded = $1\n\t\tWHERE id = $2\n\t`, succeeded, r.id)\n\tif err != nil {\n\t\treturn false, err\n\t}\n\n\tif !updated {\n\t\treturn false, nil\n\t}\n\n\terr = tx.Commit()\n\tif err != nil {\n\t\treturn false, err\n\t}\n\n\tr.conn.Bus().Notify(atc.ComponentLidarScanner)\n\treturn true, nil\n}",
+      "tests": ["Component Notifications LidarScanner notifications ResourceConfigScope.UpdateLastCheckEndTime does not notify the scanner"],
+      "scenarios": ["Component notification profile <profile> produces <result> (row 9)"],
+      "failure_contains": "component notification result"
+    },
+    {
+      "id": "finish-syslog-notifies",
+      "source_file": "atc/db/build.go",
+      "old": "\tb.conn.Bus().Notify(atc.ComponentSyslogDrainer)",
+      "new": "\tb.conn.Bus().Notify(atc.ComponentScheduler)",
+      "tests": ["Component Notifications Build completion notifications build.Finish notifies SyslogDrainer notifies the drainer"],
+      "scenarios": ["Component notification profile <profile> produces <result> (row 10)"],
+      "failure_contains": "component notification result"
+    },
+    {
+      "id": "finish-build-reaper-notifies",
+      "source_file": "atc/db/build.go",
+      "old": "\tb.conn.Bus().Notify(atc.ComponentBuildReaper)",
+      "new": "\tb.conn.Bus().Notify(atc.ComponentScheduler)",
+      "tests": ["Component Notifications Build completion notifications build.Finish notifies BuildReaper notifies the reaper"],
+      "scenarios": ["Component notification profile <profile> produces <result> (row 11)"],
+      "failure_contains": "component notification result"
+    },
+    {
+      "id": "finish-builds-notifies",
+      "source_file": "atc/db/build.go",
+      "old": "\tb.conn.Bus().Notify(atc.ComponentCollectorBuilds)",
+      "new": "\tb.conn.Bus().Notify(atc.ComponentScheduler)",
+      "tests": ["Component Notifications Build completion notifications build.Finish notifies CollectorBuilds notifies the build collector"],
+      "scenarios": ["Component notification profile <profile> produces <result> (row 12)"],
+      "failure_contains": "component notification result"
+    },
+    {
+      "id": "finish-cache-uses-notifies",
+      "source_file": "atc/db/build.go",
+      "old": "\tb.conn.Bus().Notify(atc.ComponentCollectorResourceCacheUses)",
+      "new": "\tb.conn.Bus().Notify(atc.ComponentScheduler)",
+      "tests": ["Component Notifications Build completion notifications build.Finish notifies CollectorResourceCacheUses notifies the resource cache use collector"],
+      "scenarios": ["Component notification profile <profile> produces <result> (row 13)"],
+      "failure_contains": "component notification result"
+    },
+    {
+      "id": "finish-checks-notifies",
+      "source_file": "atc/db/build.go",
+      "old": "\tb.conn.Bus().Notify(atc.ComponentCollectorChecks)",
+      "new": "\tb.conn.Bus().Notify(atc.ComponentScheduler)",
+      "tests": ["Component Notifications Build completion notifications build.Finish notifies CollectorChecks notifies the checks collector"],
+      "scenarios": ["Component notification profile <profile> produces <result> (row 14)"],
+      "failure_contains": "component notification result"
+    },
+    {
+      "id": "archive-pipelines-notifies",
+      "source_file": "atc/db/pipeline.go",
+      "old": "\tp.conn.Bus().Notify(atc.ComponentCollectorPipelines)\n\tp.conn.Bus().Notify(atc.ComponentCollectorTaskCaches)",
+      "new": "\tp.conn.Bus().Notify(atc.ComponentScheduler)\n\tp.conn.Bus().Notify(atc.ComponentCollectorTaskCaches)",
+      "tests": ["Component Notifications Pipeline lifecycle notifications pipeline.Archive notifies CollectorPipelines notifies the pipeline collector"],
+      "scenarios": ["Component notification profile <profile> produces <result> (row 15)"],
+      "failure_contains": "component notification result"
+    },
+    {
+      "id": "archive-task-caches-notifies",
+      "source_file": "atc/db/pipeline.go",
+      "old": "\tp.conn.Bus().Notify(atc.ComponentCollectorPipelines)\n\tp.conn.Bus().Notify(atc.ComponentCollectorTaskCaches)",
+      "new": "\tp.conn.Bus().Notify(atc.ComponentCollectorPipelines)\n\tp.conn.Bus().Notify(atc.ComponentScheduler)",
+      "tests": ["Component Notifications Pipeline lifecycle notifications pipeline.Archive notifies CollectorTaskCaches notifies the task cache collector"],
+      "scenarios": ["Component notification profile <profile> produces <result> (row 16)"],
+      "failure_contains": "component notification result"
+    },
+    {
+      "id": "destroy-pipelines-notifies",
+      "source_file": "atc/db/pipeline.go",
+      "old": "\tp.conn.Bus().Notify(atc.ComponentCollectorPipelines)\n\n\treturn nil\n}\n\nfunc (p *pipeline) LoadDebugVersionsDB",
+      "new": "\tp.conn.Bus().Notify(atc.ComponentScheduler)\n\n\treturn nil\n}\n\nfunc (p *pipeline) LoadDebugVersionsDB",
+      "tests": ["Component Notifications Pipeline lifecycle notifications pipeline.Destroy notifies CollectorPipelines notifies the pipeline collector"],
+      "scenarios": ["Component notification profile <profile> produces <result> (row 17)"],
+      "failure_contains": "component notification result"
+    },
+    {
+      "id": "pause-task-caches-notifies",
+      "source_file": "atc/db/pipeline.go",
+      "old": "\tp.conn.Bus().Notify(atc.ComponentCollectorTaskCaches)\n\n\treturn nil\n}\n\nfunc (p *pipeline) Unpause",
+      "new": "\tp.conn.Bus().Notify(atc.ComponentScheduler)\n\n\treturn nil\n}\n\nfunc (p *pipeline) Unpause",
+      "tests": ["Component Notifications Pipeline lifecycle notifications pipeline.Pause notifies CollectorTaskCaches notifies the task cache collector"],
+      "scenarios": ["Component notification profile <profile> produces <result> (row 18)"],
+      "failure_contains": "component notification result"
+    },
+    {
+      "id": "finish-resource-caches-notifies",
+      "source_file": "atc/db/build.go",
+      "old": "\tb.conn.Bus().Notify(atc.ComponentCollectorResourceCaches)",
+      "new": "\tb.conn.Bus().Notify(atc.ComponentScheduler)",
+      "tests": ["Component Notifications Pipeline lifecycle notifications build.Finish notifies CollectorResourceCaches notifies the resource cache collector"],
+      "scenarios": ["Component notification profile <profile> produces <result> (row 19)"],
+      "failure_contains": "component notification result"
+    },
+    {
+      "id": "resource-type-scope-changed-notifies",
+      "source_file": "atc/db/resource_type.go",
+      "old": "\tif changed {\n\t\tr.conn.Bus().Notify(atc.ComponentLidarScanner)\n\t}\n\n\treturn nil\n}",
+      "new": "\tif changed {\n\t\tr.conn.Bus().Notify(atc.ComponentCollectorPipelines)\n\t}\n\n\treturn nil\n}",
+      "tests": ["Component Notifications ResourceType scanner notifications notifies the scanner when scope changes"],
+      "scenarios": ["Component notification profile <profile> produces <result> (row 20)"],
+      "failure_contains": "component notification result"
+    },
+    {
+      "id": "resource-type-scope-same-silent",
+      "source_file": "atc/db/resource_type.go",
+      "old": "\tif changed {\n\t\tr.conn.Bus().Notify(atc.ComponentLidarScanner)\n\t}\n\n\treturn nil\n}",
+      "new": "\t_ = changed\n\tr.conn.Bus().Notify(atc.ComponentLidarScanner)\n\n\treturn nil\n}",
+      "tests": ["Component Notifications ResourceType scanner notifications does not notify the scanner when scope is unchanged"],
+      "scenarios": ["Component notification profile <profile> produces <result> (row 21)"],
+      "failure_contains": "component notification result"
+    }
+  ]
+}

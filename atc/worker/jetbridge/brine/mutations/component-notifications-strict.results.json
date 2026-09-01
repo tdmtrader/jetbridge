@@ -1,0 +1,219 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/component-notifications-strict.json",
+  "git_head": "a544b0b811693a359f5fa938e0016c363221b87a",
+  "completed_at": "2026-09-01T05:17:35Z",
+  "source_tests": 21,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "mutation_cases": [
+    {
+      "id": "resource-scope-changed-notifies",
+      "mutation_sha256": "8c562a364b1ae5adb4b1737bc734fc1ca4423214b58a1ba812132475f07117fa",
+      "failed_source_tests": [
+        "Component Notifications LidarScanner notifications Resource.SetResourceConfigScope notifies the scanner when scope changes"
+      ],
+      "failed_brine_scenarios": [
+        "Component notification profile \u003cprofile\u003e produces \u003cresult\u003e (row 1)"
+      ]
+    },
+    {
+      "id": "resource-scope-same-silent",
+      "mutation_sha256": "8a0c9b47504286fb2fec8f16dd57f0cbb37dbefa572fe622137d0ea499527626",
+      "failed_source_tests": [
+        "Component Notifications LidarScanner notifications Resource.SetResourceConfigScope does not notify the scanner when scope is unchanged"
+      ],
+      "failed_brine_scenarios": [
+        "Component notification profile \u003cprofile\u003e produces \u003cresult\u003e (row 2)"
+      ]
+    },
+    {
+      "id": "resource-pin-notifies",
+      "mutation_sha256": "14193747d716015830a73f29e4e70afe0000c09ed8320a2a36ac033c0da2e28a",
+      "failed_source_tests": [
+        "Component Notifications LidarScanner notifications Resource.PinVersion notifies the scanner"
+      ],
+      "failed_brine_scenarios": [
+        "Component notification profile \u003cprofile\u003e produces \u003cresult\u003e (row 3)"
+      ]
+    },
+    {
+      "id": "resource-unpin-notifies",
+      "mutation_sha256": "015933f8c041b4da9da1f5474617fdea6a6488254428bb64266a91589bcf0bf5",
+      "failed_source_tests": [
+        "Component Notifications LidarScanner notifications Resource.UnpinVersion notifies the scanner"
+      ],
+      "failed_brine_scenarios": [
+        "Component notification profile \u003cprofile\u003e produces \u003cresult\u003e (row 4)"
+      ]
+    },
+    {
+      "id": "resource-disable-notifies",
+      "mutation_sha256": "cbaf07d93ea25e360a43f43e1624a2954f19fc78a048357e00956ce8479ae4b2",
+      "failed_source_tests": [
+        "Component Notifications LidarScanner notifications Resource.DisableVersion notifies the scanner"
+      ],
+      "failed_brine_scenarios": [
+        "Component notification profile \u003cprofile\u003e produces \u003cresult\u003e (row 5)"
+      ]
+    },
+    {
+      "id": "resource-enable-notifies",
+      "mutation_sha256": "d952ea87beee5c6080ce91de38c97b07206dd84ecda0ca9b02fe33c987227374",
+      "failed_source_tests": [
+        "Component Notifications LidarScanner notifications Resource.EnableVersion notifies the scanner"
+      ],
+      "failed_brine_scenarios": [
+        "Component notification profile \u003cprofile\u003e produces \u003cresult\u003e (row 6)"
+      ]
+    },
+    {
+      "id": "save-new-version-notifies",
+      "mutation_sha256": "0bba45d9bdcca37ab4fad0e3a5801a4771b96ad9f980dad2df5ce5b2cf4f1abd",
+      "failed_source_tests": [
+        "Component Notifications LidarScanner notifications ResourceConfigScope.SaveVersions notifies the scanner when new versions are saved"
+      ],
+      "failed_brine_scenarios": [
+        "Component notification profile \u003cprofile\u003e produces \u003cresult\u003e (row 7)"
+      ]
+    },
+    {
+      "id": "save-existing-version-silent",
+      "mutation_sha256": "383636e1aebddf4a18537d7bf20124708ba7ff8260f678cab798ce313193e5c6",
+      "failed_source_tests": [
+        "Component Notifications LidarScanner notifications ResourceConfigScope.SaveVersions does not notify the scanner when re-saving existing versions"
+      ],
+      "failed_brine_scenarios": [
+        "Component notification profile \u003cprofile\u003e produces \u003cresult\u003e (row 8)"
+      ]
+    },
+    {
+      "id": "check-time-update-silent",
+      "mutation_sha256": "b24d8e80b20470889e35772a3e7c1c37576176cb06a0372ef56d629c35538c59",
+      "failed_source_tests": [
+        "Component Notifications LidarScanner notifications ResourceConfigScope.UpdateLastCheckEndTime does not notify the scanner"
+      ],
+      "failed_brine_scenarios": [
+        "Component notification profile \u003cprofile\u003e produces \u003cresult\u003e (row 9)"
+      ]
+    },
+    {
+      "id": "finish-syslog-notifies",
+      "mutation_sha256": "20d2d3f6bf9e615ab89d3568351b576838fe86db36884c5e92475d486ff9593b",
+      "failed_source_tests": [
+        "Component Notifications Build completion notifications build.Finish notifies SyslogDrainer notifies the drainer"
+      ],
+      "failed_brine_scenarios": [
+        "Component notification profile \u003cprofile\u003e produces \u003cresult\u003e (row 10)"
+      ]
+    },
+    {
+      "id": "finish-build-reaper-notifies",
+      "mutation_sha256": "c4516871d0e7338a19a687db2f3bfe0e73c1cb875403c3dee321bc36cd729d37",
+      "failed_source_tests": [
+        "Component Notifications Build completion notifications build.Finish notifies BuildReaper notifies the reaper"
+      ],
+      "failed_brine_scenarios": [
+        "Component notification profile \u003cprofile\u003e produces \u003cresult\u003e (row 11)"
+      ]
+    },
+    {
+      "id": "finish-builds-notifies",
+      "mutation_sha256": "dd82eabf0927d85e4d4bd486c6abb71eade914f9a018e733499c2dcac70bac4b",
+      "failed_source_tests": [
+        "Component Notifications Build completion notifications build.Finish notifies CollectorBuilds notifies the build collector"
+      ],
+      "failed_brine_scenarios": [
+        "Component notification profile \u003cprofile\u003e produces \u003cresult\u003e (row 12)"
+      ]
+    },
+    {
+      "id": "finish-cache-uses-notifies",
+      "mutation_sha256": "57cf826929baf6ca6eb8f06b34275ef4a8b03b8d2a3147d509c8b58d9881cc29",
+      "failed_source_tests": [
+        "Component Notifications Build completion notifications build.Finish notifies CollectorResourceCacheUses notifies the resource cache use collector"
+      ],
+      "failed_brine_scenarios": [
+        "Component notification profile \u003cprofile\u003e produces \u003cresult\u003e (row 13)"
+      ]
+    },
+    {
+      "id": "finish-checks-notifies",
+      "mutation_sha256": "a0403ba7915f2eced1c385ea13ae69c8038ebf02403292ca0cdd9c1b2cfd5707",
+      "failed_source_tests": [
+        "Component Notifications Build completion notifications build.Finish notifies CollectorChecks notifies the checks collector"
+      ],
+      "failed_brine_scenarios": [
+        "Component notification profile \u003cprofile\u003e produces \u003cresult\u003e (row 14)"
+      ]
+    },
+    {
+      "id": "archive-pipelines-notifies",
+      "mutation_sha256": "0a54c95573be6235f3f718808258d10cd58c38e7c315ef342145d599adca0ab4",
+      "failed_source_tests": [
+        "Component Notifications Pipeline lifecycle notifications pipeline.Archive notifies CollectorPipelines notifies the pipeline collector"
+      ],
+      "failed_brine_scenarios": [
+        "Component notification profile \u003cprofile\u003e produces \u003cresult\u003e (row 15)"
+      ]
+    },
+    {
+      "id": "archive-task-caches-notifies",
+      "mutation_sha256": "e244a83c4c2afc4f53c8629a6584c5752dfc6fe97a72d03fb59fd012ab5f5370",
+      "failed_source_tests": [
+        "Component Notifications Pipeline lifecycle notifications pipeline.Archive notifies CollectorTaskCaches notifies the task cache collector"
+      ],
+      "failed_brine_scenarios": [
+        "Component notification profile \u003cprofile\u003e produces \u003cresult\u003e (row 16)"
+      ]
+    },
+    {
+      "id": "destroy-pipelines-notifies",
+      "mutation_sha256": "1f7ae207fe83b43ccae19652eaa1dfbfb9ac85cdbef1acd0c94f5e5cb6af5c2b",
+      "failed_source_tests": [
+        "Component Notifications Pipeline lifecycle notifications pipeline.Destroy notifies CollectorPipelines notifies the pipeline collector"
+      ],
+      "failed_brine_scenarios": [
+        "Component notification profile \u003cprofile\u003e produces \u003cresult\u003e (row 17)"
+      ]
+    },
+    {
+      "id": "pause-task-caches-notifies",
+      "mutation_sha256": "a7ccc52d178e958fd56dcca98a1e66a1857ae8162d025a0d5b2de39f56ef7e63",
+      "failed_source_tests": [
+        "Component Notifications Pipeline lifecycle notifications pipeline.Pause notifies CollectorTaskCaches notifies the task cache collector"
+      ],
+      "failed_brine_scenarios": [
+        "Component notification profile \u003cprofile\u003e produces \u003cresult\u003e (row 18)"
+      ]
+    },
+    {
+      "id": "finish-resource-caches-notifies",
+      "mutation_sha256": "da5bd80e829834d513d9a9f9baf302ea9be67b3652fd3d930c840763f9591b54",
+      "failed_source_tests": [
+        "Component Notifications Pipeline lifecycle notifications build.Finish notifies CollectorResourceCaches notifies the resource cache collector"
+      ],
+      "failed_brine_scenarios": [
+        "Component notification profile \u003cprofile\u003e produces \u003cresult\u003e (row 19)"
+      ]
+    },
+    {
+      "id": "resource-type-scope-changed-notifies",
+      "mutation_sha256": "9c31accd8ec09e07895d6f37d292682868ef0d8d0ac3bef2f3a9c41ab0261fc3",
+      "failed_source_tests": [
+        "Component Notifications ResourceType scanner notifications notifies the scanner when scope changes"
+      ],
+      "failed_brine_scenarios": [
+        "Component notification profile \u003cprofile\u003e produces \u003cresult\u003e (row 20)"
+      ]
+    },
+    {
+      "id": "resource-type-scope-same-silent",
+      "mutation_sha256": "6d196514df84547e3a3a5e4d9a509e77fb7b31960a3720ca2480b12e2e5e51be",
+      "failed_source_tests": [
+        "Component Notifications ResourceType scanner notifications does not notify the scanner when scope is unchanged"
+      ],
+      "failed_brine_scenarios": [
+        "Component notification profile \u003cprofile\u003e produces \u003cresult\u003e (row 21)"
+      ]
+    }
+  ]
+}
